@@ -1,0 +1,20 @@
+//===- version.h - Ascend-MLIR version information --------------*- C++ -*-===//
+//
+// Part of the Ascend-MLIR Project
+//
+//===----------------------------------------------------------------------===//
+//
+// This file defines version macros for Ascend-MLIR.
+//
+//===----------------------------------------------------------------------===//
+
+#ifndef ASCEND_MLIR_VERSION_H
+#define ASCEND_MLIR_VERSION_H
+
+#define ASCEND_MLIR_VERSION_MAJOR @ASCEND_MLIR_VERSION_MAJOR@
+#define ASCEND_MLIR_VERSION_MINOR @ASCEND_MLIR_VERSION_MINOR@
+#define ASCEND_MLIR_VERSION_PATCH @ASCEND_MLIR_VERSION_PATCH@
+
+#define ASCEND_MLIR_VERSION_STRING "@ASCEND_MLIR_VERSION@"
+
+#endif // ASCEND_MLIR_VERSION_H

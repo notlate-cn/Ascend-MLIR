@@ -1,0 +1,50 @@
+#!/bin/bash
+#===----------------------------------------------------------------------===//
+# LLVM/MLIR Build Script for Ascend-MLIR
+#===----------------------------------------------------------------------===//
+
+set -e
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+
+LLVM_SRC="${PROJECT_ROOT}/externals/llvm-project"
+LLVM_BUILD="${LLVM_SRC}/build"
+
+BUILD_TYPE="${BUILD_TYPE:-Release}"
+NUM_JOBS="${NUM_JOBS:-$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 4)}"
+
+echo "=== Building LLVM/MLIR ==="
+echo "Source:     ${LLVM_SRC}"
+echo "Build:      ${LLVM_BUILD}"
+echo "Build Type: ${BUILD_TYPE}"
+echo "Jobs:       ${NUM_JOBS}"
+
+# Initialize submodule if needed
+if [ ! -d "${LLVM_SRC}/llvm" ]; then
+    echo "Initializing LLVM submodule..."
+    cd "${PROJECT_ROOT}"
+    git submodule update --init externals/llvm-project
+fi
+
+# Create build directory
+mkdir -p "${LLVM_BUILD}"
+cd "${LLVM_BUILD}"
+
+# Configure
+cmake -G Ninja ../llvm \
+    -DCMAKE_BUILD_TYPE=${BUILD_TYPE} \
+    -DLLVM_ENABLE_PROJECTS="mlir" \
+    -DLLVM_TARGETS_TO_BUILD="host" \
+    -DLLVM_ENABLE_ASSERTIONS=ON \
+    -DLLVM_ENABLE_RTTI=ON \
+    -DLLVM_BUILD_EXAMPLES=OFF \
+    -DLLVM_INSTALL_UTILS=ON \
+    -DMLIR_ENABLE_BINDINGS_PYTHON=OFF
+
+# Build
+cmake --build . --target all -j${NUM_JOBS}
+
+echo "=== LLVM/MLIR build completed ==="
+echo "LLVM_DIR: ${LLVM_BUILD}/lib/cmake/llvm"
+echo "MLIR_DIR: ${LLVM_BUILD}/lib/cmake/mlir"
