@@ -130,7 +130,7 @@ cmake --build . --target check-afir
 
 | Dependency | Version | Description |
 |------------|---------|-------------|
-| LLVM/MLIR  | 18.x    | Core compiler infrastructure |
+| LLVM/MLIR  | 21.1    | Core compiler infrastructure |
 | StableHLO  | main    | StableHLO dialect for ML frameworks |
 | PyAsc      | main    | ASC-IR dialect for Ascend hardware |
 
