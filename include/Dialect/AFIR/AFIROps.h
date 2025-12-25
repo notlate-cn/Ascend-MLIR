@@ -1,0 +1,21 @@
+//===- AFIROps.h - AFIR operation declarations ------------------*- C++ -*-===//
+//
+// Part of the Ascend-MLIR Project
+//
+//===----------------------------------------------------------------------===//
+
+#ifndef MLIR_DIALECT_AFIR_AFIROPS_H
+#define MLIR_DIALECT_AFIR_AFIROPS_H
+
+#include "Dialect/AFIR/AFIRDialect.h"
+#include "Interface/ShapeHelperOpInterface.h"
+#include "mlir/IR/BuiltinTypes.h"
+#include "mlir/IR/Dialect.h"
+#include "mlir/IR/OpDefinition.h"
+#include "mlir/Interfaces/InferTypeOpInterface.h"
+#include "mlir/Interfaces/SideEffectInterfaces.h"
+
+#define GET_OP_CLASSES
+#include "Dialect/AFIR/AFIROps.h.inc"
+
+#endif // MLIR_DIALECT_AFIR_AFIROPS_H

@@ -1,0 +1,10 @@
+[submodule "externals/llvm-project"]
+    path = externals/llvm-project
+    url = https://github.com/llvm/llvm-project.git
+    branch = main
+[submodule "externals/stablehlo"]
+    path = externals/stablehlo
+    url = https://github.com/openxla/stablehlo.git
+[submodule "externals/pyasc"]
+    path = externals/pyasc
+    url = https://gitcode.com/cann/pyasc.git
