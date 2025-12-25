@@ -7,4 +7,4 @@
     url = https://github.com/openxla/stablehlo.git
 [submodule "externals/pyasc"]
     path = externals/pyasc
-    url = https://gitcode.com/cann/pyasc.git
+    url = https://gitcode.com/niuyuhu/pyasc.git
