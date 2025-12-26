@@ -98,8 +98,8 @@ Or build everything at once:
 ```mlir
 // example.mlir
 func.func @example(%arg0: tensor<4x4xf32>, %arg1: tensor<4x4xf32>) -> tensor<4x4xf32> {
-  %0 = afir.add %arg0, %arg1 : tensor<4x4xf32>
-  %1 = afir.mul %0, %arg1 : tensor<4x4xf32>
+  %0 = afir.add %arg0, %arg1 : (tensor<4x4xf32>, tensor<4x4xf32>) -> tensor<4x4xf32>
+  %1 = afir.mul %0, %arg1 : (tensor<4x4xf32>, tensor<4x4xf32>) -> tensor<4x4xf32>
   return %1 : tensor<4x4xf32>
 }
 ```

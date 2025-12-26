@@ -8,6 +8,6 @@ func.func @convert_add_basic(%arg0: !ascendc.local_tensor<4x4xf32>, %arg1: !asce
   // CHECK: %0 = ascendc.tbuf : <veccalc>
   // CHECK: %1 = ascendc.tbuf.get_tensor %0 : !ascendc.tbuf<veccalc>, !ascendc.local_tensor<4x4xf32>
   // CHECK: ascendc.add_l3 %1, %arg0, %arg1 : !ascendc.local_tensor<4x4xf32>, !ascendc.local_tensor<4x4xf32>, !ascendc.local_tensor<4x4xf32>
-  %0 = afir.add %arg0, %arg1 : !ascendc.local_tensor<4x4xf32>
+  %0 = afir.add %arg0, %arg1 : (!ascendc.local_tensor<4x4xf32>, !ascendc.local_tensor<4x4xf32>) -> !ascendc.local_tensor<4x4xf32>
   return %0 : !ascendc.local_tensor<4x4xf32>
 }

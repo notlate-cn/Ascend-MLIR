@@ -24,7 +24,6 @@ include "Core/Types.td"
 class AFIR_BinaryElementwiseOp<string mnemonic, list<Trait> traits = []> :
     AFIR_Op<mnemonic, !listconcat(traits, [
       Pure,
-      SameOperandsAndResultType,
       DeclareOpInterfaceMethods<ShapeHelperOpInterface>
     ])> {
   let arguments = (ins
@@ -34,7 +33,7 @@ class AFIR_BinaryElementwiseOp<string mnemonic, list<Trait> traits = []> :
   let results = (outs AnyType:$result);
 
   let assemblyFormat = [{
-    $lhs `,` $rhs attr-dict `:` type($result)
+    $lhs `,` $rhs attr-dict `:` `(` type($lhs) `,` type($rhs) `)` `->` type($result)
   }];
 
   let hasVerifier = 1;
@@ -51,7 +50,7 @@ def AFIR_AddOp : AFIR_BinaryElementwiseOp<"add"> {
 
     Example:
     ```mlir
-    %result = afir.add %lhs, %rhs : tensor<4x4xf32>
+    %result = afir.add %lhs, %rhs : (tensor<4x4xf32>, tensor<4x4xf32>) -> tensor<4x4xf32>
     ```
   }];
 }
@@ -67,7 +66,7 @@ def AFIR_SubOp : AFIR_BinaryElementwiseOp<"sub"> {
 
     Example:
     ```mlir
-    %result = afir.sub %lhs, %rhs : tensor<4x4xf32>
+    %result = afir.sub %lhs, %rhs : (tensor<4x4xf32>, tensor<4x4xf32>) -> tensor<4x4xf32>
     ```
   }];
 }
@@ -83,7 +82,7 @@ def AFIR_MulOp : AFIR_BinaryElementwiseOp<"mul"> {
 
     Example:
     ```mlir
-    %result = afir.mul %lhs, %rhs : tensor<4x4xf32>
+    %result = afir.mul %lhs, %rhs : (tensor<4x4xf32>, tensor<4x4xf32>) -> tensor<4x4xf32>
     ```
   }];
 }
@@ -99,7 +98,7 @@ def AFIR_DivOp : AFIR_BinaryElementwiseOp<"div"> {
 
     Example:
     ```mlir
-    %result = afir.div %lhs, %rhs : tensor<4x4xf32>
+    %result = afir.div %lhs, %rhs : (tensor<4x4xf32>, tensor<4x4xf32>) -> tensor<4x4xf32>
     ```
   }];
 }
