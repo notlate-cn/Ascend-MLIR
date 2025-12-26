@@ -29,6 +29,7 @@ int main(int argc, char **argv) {
   registerAllDialects(registry);
   // Register AFIR dialect
   registry.insert<afir::AFIRDialect>();
+  registry.insert<ascendc::AscendCDialect>();
 
   // Register all MLIR core passes
   registerAllPasses();

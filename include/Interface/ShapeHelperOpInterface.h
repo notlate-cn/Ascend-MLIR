@@ -81,6 +81,6 @@ public:
 } // namespace afir
 } // namespace mlir
 
-#include "mlir/Interface/ShapeHelperOpInterface.h.inc"
+#include "Interface/ShapeHelperOpInterface.h.inc"
 
 #endif // MLIR_INTERFACE_SHAPEHELPEROPINTERFACE_H
