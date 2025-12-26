@@ -51,7 +51,7 @@ LogicalResult AddOp::inferShapes(
 
   auto inputType = mlir::cast<ShapedType>(getLhs().getType());
   auto newType = RankedTensorType::get(outputShapes[0], inputType.getElementType());
-  // getResult().setType(newType);
+  getResult().setType(newType);
   return success();
 }
 
@@ -73,7 +73,7 @@ LogicalResult SubOp::inferShapes(
 
   auto inputType = mlir::cast<ShapedType>(getLhs().getType());
   auto newType = RankedTensorType::get(outputShapes[0], inputType.getElementType());
-  // getResult().setType(newType);
+  getResult().setType(newType);
   return success();
 }
 
@@ -95,7 +95,7 @@ LogicalResult MulOp::inferShapes(
 
   auto inputType = mlir::cast<ShapedType>(getLhs().getType());
   auto newType = RankedTensorType::get(outputShapes[0], inputType.getElementType());
-  // getResult().setType(newType);
+  getResult().setType(newType);
   return success();
 }
 
@@ -117,7 +117,7 @@ LogicalResult DivOp::inferShapes(
 
   auto inputType = mlir::cast<ShapedType>(getLhs().getType());
   auto newType = RankedTensorType::get(outputShapes[0], inputType.getElementType());
-  // getResult().setType(newType);
+  getResult().setType(newType);
   return success();
 }
 

@@ -7,6 +7,7 @@
 #include "Dialect/AFIR/AFIROps.h"
 #include "Dialect/AFIR/Transforms/Passes.h"
 #include "Interface/ShapeHelperOpInterface.h"
+#include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/Pass/Pass.h"
 #include <functional>
@@ -42,6 +43,33 @@ struct AFIRShapeInferencePass
           op->emitWarning("Shape inference failed");
         }
       }
+    });
+
+    // Update function signatures to match inferred return types
+    module.walk([&](func::FuncOp funcOp) {
+      // Collect all return operations
+      SmallVector<func::ReturnOp> returnOps;
+      funcOp.walk([&](func::ReturnOp returnOp) {
+        returnOps.push_back(returnOp);
+      });
+
+      if (returnOps.empty())
+        return;
+
+      // Get the types of the values being returned
+      auto firstReturn = returnOps[0];
+      SmallVector<Type> newResultTypes;
+      for (Value operand : firstReturn.getOperands()) {
+        newResultTypes.push_back(operand.getType());
+      }
+
+      // Update function type
+      auto funcType = funcOp.getFunctionType();
+      auto newFuncType = FunctionType::get(
+          funcOp.getContext(),
+          funcType.getInputs(),
+          newResultTypes);
+      funcOp.setFunctionType(newFuncType);
     });
   }
 };
