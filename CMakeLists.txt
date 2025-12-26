@@ -53,7 +53,6 @@ add_subdirectory(lib/Interface)
 add_subdirectory(lib/Conversion)
 add_subdirectory(lib/Utils)
 add_subdirectory(tools/afir-opt)
-add_subdirectory(tools/afir-tool)
 add_subdirectory(test)
 add_subdirectory(${PYASC_DIR} EXCLUDE_FROM_ALL)
 

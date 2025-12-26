@@ -93,13 +93,6 @@ Or build everything at once:
 ./build/bin/afir-opt --afir-canonicalize input.mlir
 ```
 
-### End-to-End Tool
-
-```bash
-# Transform with shape inference and canonicalization
-./build/bin/afir-tool --shape-inference --canonicalize input.mlir -o output.mlir
-```
-
 ## Example
 
 ```mlir

@@ -8,7 +8,6 @@ configure_lit_site_cfg(
 
 set(AFIR_TEST_DEPENDS
   afir-opt
-  afir-tool
   FileCheck
   count
   not
