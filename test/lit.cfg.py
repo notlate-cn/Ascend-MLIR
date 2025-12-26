@@ -51,7 +51,6 @@ llvm_config.with_environment('PATH', config.llvm_tools_dir, append_path=True)
 tool_dirs = [config.afir_tools_dir, config.llvm_tools_dir]
 tools = [
     'afir-opt',
-    'afir-tool',
     ToolSubst('%PYTHON', config.python_executable, unresolved='ignore'),
 ]
 

@@ -28,10 +28,10 @@ class AFIR_BinaryElementwiseOp<string mnemonic, list<Trait> traits = []> :
       DeclareOpInterfaceMethods<ShapeHelperOpInterface>
     ])> {
   let arguments = (ins
-    AscendC_LocalTensor:$lhs,
-    AscendC_LocalTensor:$rhs
+    AnyType:$lhs,
+    AnyType:$rhs
   );
-  let results = (outs AscendC_LocalTensor:$result);
+  let results = (outs AnyType:$result);
 
   let assemblyFormat = [{
     $lhs `,` $rhs attr-dict `:` type($result)
