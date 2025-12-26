@@ -30,28 +30,12 @@ struct ConvertAFIRAddOpToASCIRAddOp : public OpRewritePattern<afir::AddOp> {
     auto bufferTy = ascendc::TBufType::get(op.getContext(), ascendc::TPosition::VECCALC);
     auto shape = SmallVector<int64_t>(mlir::cast<ShapedType>(resultType).getShape());
     Value tbuf1 = ::mlir::ascendc::TBufOp::create(rewriter, op.getLoc(), bufferTy);
-    tbuf1.dump();
     auto localTType = ascendc::LocalTensorType::get(shape, mlir::cast<ShapedType>(resultType).getElementType());
     Value dst = ascendc::TBufGetTensorOp::create(rewriter, op.getLoc(), localTType, tbuf1);
-    dst.dump();
 
-
-    Value tbuf2 = ::mlir::ascendc::TBufOp::create(rewriter, op.getLoc(), bufferTy);
-    Value src0 = ascendc::TBufGetTensorOp::create(rewriter, op.getLoc(), localTType, tbuf2);
-
-    Value tbuf3 = ::mlir::ascendc::TBufOp::create(rewriter, op.getLoc(), bufferTy);
-    Value src1 = ascendc::TBufGetTensorOp::create(rewriter, op.getLoc(), localTType, tbuf3);
-
-    // Value dst = ascendc::LocalTensorOp::create(rewriter, op.getLoc(), resultType);
-    // dst.dump();
-    // Value src0 = ascendc::LocalTensorOp::create(rewriter, op.getLoc(), resultType);
-    // src0.dump();
-    // Value src1 = ascendc::LocalTensorOp::create(rewriter, op.getLoc(), resultType);
-    // src1.dump();
-    ascendc::AddL3Op newOp = ascendc::AddL3Op::create(rewriter, op.getLoc(), dst, src0, src1);
-    newOp.dump();
+    ascendc::AddL3Op::create(rewriter, op.getLoc(), dst, op.getLhs(), op.getRhs());
     // 替换原操作的结果
-    rewriter.replaceOp(op, newOp);
+    rewriter.replaceOp(op, dst);
     return success();
   }
 };
@@ -69,7 +53,6 @@ struct ConvertAFIRToASCIRPass
   }
 
   void getDependentDialects(DialectRegistry &registry) const override {
-    registry.insert<AFIRDialect>();
     registry.insert<ascendc::AscendCDialect>();
   }
 
@@ -79,6 +62,7 @@ struct ConvertAFIRToASCIRPass
 
     ConversionTarget target(*context);
     target.addIllegalDialect<AFIRDialect>();
+    target.addLegalDialect<ascendc::AscendCDialect>();
 
     RewritePatternSet patterns(context);
     patterns.add<ConvertAFIRAddOpToASCIRAddOp>(context);

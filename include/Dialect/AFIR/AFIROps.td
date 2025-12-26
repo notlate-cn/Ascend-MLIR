@@ -15,6 +15,7 @@ include "Dialect/AFIR/AFIRDialect.td"
 include "Interface/ShapeHelperOpInterface.td"
 include "mlir/Interfaces/InferTypeOpInterface.td"
 include "mlir/Interfaces/SideEffectInterfaces.td"
+include "Core/Types.td"
 
 //===----------------------------------------------------------------------===//
 // AFIR Binary Elementwise Operations
@@ -27,10 +28,10 @@ class AFIR_BinaryElementwiseOp<string mnemonic, list<Trait> traits = []> :
       DeclareOpInterfaceMethods<ShapeHelperOpInterface>
     ])> {
   let arguments = (ins
-    AnyTensor:$lhs,
-    AnyTensor:$rhs
+    AscendC_LocalTensor:$lhs,
+    AscendC_LocalTensor:$rhs
   );
-  let results = (outs AnyTensor:$result);
+  let results = (outs AscendC_LocalTensor:$result);
 
   let assemblyFormat = [{
     $lhs `,` $rhs attr-dict `:` type($result)

@@ -9,11 +9,19 @@ add_mlir_dialect_library(AFIRDialect
   AFIRDialectIncGen
   AFIROpsIncGen
   AFIRShapeHelperOpInterfaceIncGen
+  MLIRAscIncGen
 
   LINK_LIBS PUBLIC
   MLIRIR
   MLIRSupport
+  MLIRCastInterfaces
   AFIRInterface
+  MLIRAsc
+  MLIRCastInterfaces
+)
+
+target_include_directories(AFIRDialect PRIVATE
+  ${CMAKE_BINARY_DIR}/externals/pyasc/include
 )
 
 add_subdirectory(Transforms)

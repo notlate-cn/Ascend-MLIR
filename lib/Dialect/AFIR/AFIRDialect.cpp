@@ -15,7 +15,7 @@ using namespace mlir::afir;
 // AFIR dialect initialization
 //===----------------------------------------------------------------------===//
 
-#include "mlir/Dialect/AFIR/AFIRDialect.cpp.inc"
+#include "Dialect/AFIR/AFIRDialect.cpp.inc"
 
 void AFIRDialect::initialize() {
   addOperations<

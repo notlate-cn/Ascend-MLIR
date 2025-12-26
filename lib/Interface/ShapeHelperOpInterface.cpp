@@ -13,4 +13,4 @@ using namespace mlir::afir;
 // ShapeHelperOpInterface
 //===----------------------------------------------------------------------===//
 
-#include "mlir/Interface/ShapeHelperOpInterface.cpp.inc"
+#include "Interface/ShapeHelperOpInterface.cpp.inc"
