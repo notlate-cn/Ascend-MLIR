@@ -22,7 +22,9 @@ cd "${BUILD_DIR}"
 echo "Running lit tests..."
 
 START_TIME=$(date +%s)
+
 cmake --build . --target check-afir
+
 END_TIME=$(date +%s)
 TOTAL_SECONDS=$((END_TIME - START_TIME))
 MINUTES=$((TOTAL_SECONDS / 60))

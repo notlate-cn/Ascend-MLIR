@@ -43,7 +43,12 @@ cmake -G Ninja ../llvm \
     -DMLIR_ENABLE_BINDINGS_PYTHON=OFF
 
 # Build
+BUILD_START_TIME=$(date +%s)
+echo "Building LLVM/MLIR..."
 cmake --build . --target all -j${NUM_JOBS}
+BUILD_END_TIME=$(date +%s)
+BUILD_DURATION=$((BUILD_END_TIME - BUILD_START_TIME))
+echo "Build completed in ${BUILD_DURATION}s ($(printf '%02d:%02d:%02d' $((BUILD_DURATION/3600)) $((BUILD_DURATION%3600/60)) $((BUILD_DURATION%60))))"
 
 echo "=== LLVM/MLIR build completed ==="
 echo "LLVM_DIR: ${LLVM_BUILD}/lib/cmake/llvm"

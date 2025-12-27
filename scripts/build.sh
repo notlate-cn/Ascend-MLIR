@@ -73,6 +73,7 @@ init_submodules() {
 }
 
 build_llvm() {
+    local start_time=$(date +%s)
     print_info "Building LLVM/MLIR..."
 
     local LLVM_SRC="${PROJECT_ROOT}/externals/llvm-project"
@@ -96,10 +97,13 @@ build_llvm() {
 
     cmake --build . --target all -j${NUM_JOBS}
 
-    print_info "LLVM/MLIR build completed."
+    local end_time=$(date +%s)
+    local duration=$((end_time - start_time))
+    print_info "LLVM/MLIR build completed in ${duration}s ($(printf '%02d:%02d:%02d' $((duration/3600)) $((duration%3600/60)) $((duration%60))))"
 }
 
 build_stablehlo() {
+    local start_time=$(date +%s)
     print_info "Building StableHLO..."
 
     local STABLEHLO_SRC="${PROJECT_ROOT}/externals/stablehlo"
@@ -120,10 +124,13 @@ build_stablehlo() {
 
     cmake --build . --target all -j${NUM_JOBS}
 
-    print_info "StableHLO build completed."
+    local end_time=$(date +%s)
+    local duration=$((end_time - start_time))
+    print_info "StableHLO build completed in ${duration}s ($(printf '%02d:%02d:%02d' $((duration/3600)) $((duration%3600/60)) $((duration%60))))"
 }
 
 build_pyasc() {
+    local start_time=$(date +%s)
     print_info "Building PyAsc..."
 
     local PYASC_SRC="${PROJECT_ROOT}/externals/pyasc"
@@ -137,10 +144,13 @@ build_pyasc() {
     # This is a placeholder that should be updated based on PyAsc's build system
     print_warn "PyAsc build: Please check PyAsc documentation for build instructions"
 
-    print_info "PyAsc setup completed."
+    local end_time=$(date +%s)
+    local duration=$((end_time - start_time))
+    print_info "PyAsc setup completed in ${duration}s"
 }
 
 build_project() {
+    local start_time=$(date +%s)
     print_info "Building Ascend-MLIR..."
 
     if [ ! -d "${LLVM_BUILD_DIR}" ]; then
@@ -159,16 +169,21 @@ build_project() {
 
     cmake --build . --target all -j${NUM_JOBS}
 
-    print_info "Ascend-MLIR build completed."
+    local end_time=$(date +%s)
+    local duration=$((end_time - start_time))
+    print_info "Ascend-MLIR build completed in ${duration}s ($(printf '%02d:%02d:%02d' $((duration/3600)) $((duration%3600/60)) $((duration%60))))"
 }
 
 build_tests() {
+    local start_time=$(date +%s)
     print_info "Building and running tests..."
 
     cd "${BUILD_DIR}"
     cmake --build . --target check-afir -j${NUM_JOBS}
 
-    print_info "Tests completed."
+    local end_time=$(date +%s)
+    local duration=$((end_time - start_time))
+    print_info "Tests completed in ${duration}s ($(printf '%02d:%02d:%02d' $((duration/3600)) $((duration%3600/60)) $((duration%60))))"
 }
 
 clean_build() {
