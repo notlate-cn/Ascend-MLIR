@@ -19,4 +19,4 @@
 #define GET_OP_CLASSES
 #include "Dialect/AFIR/AFIROps.h.inc"
 
-#endif // MLIR_DIALECT_AFIR_AFIROPS_H
+#endif  // MLIR_DIALECT_AFIR_AFIROPS_H

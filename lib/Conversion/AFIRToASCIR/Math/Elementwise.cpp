@@ -27,12 +27,10 @@ namespace {
 //===----------------------------------------------------------------------===//
 
 template <typename AFIRBinaryOp, typename ASCBinaryOp>
-struct ConvertAFIRBinaryElementwiseOpToASCIR
-    : public OpRewritePattern<AFIRBinaryOp> {
+struct ConvertAFIRBinaryElementwiseOpToASCIR : public OpRewritePattern<AFIRBinaryOp> {
   using OpRewritePattern<AFIRBinaryOp>::OpRewritePattern;
 
-  LogicalResult matchAndRewrite(AFIRBinaryOp op,
-                               PatternRewriter &rewriter) const override {
+  LogicalResult matchAndRewrite(AFIRBinaryOp op, PatternRewriter &rewriter) const override {
     auto resultType = op.getResult().getType();
 
     auto bufferTy = ascendc::TBufType::get(op.getContext(), ascendc::TPosition::VECCALC);
@@ -47,19 +45,14 @@ struct ConvertAFIRBinaryElementwiseOpToASCIR
   }
 };
 
-using ConvertAFIRAddOpToASCIR =
-    ConvertAFIRBinaryElementwiseOpToASCIR<afir::AddOp, ascendc::AddL3Op>;
-using ConvertAFIRSubOpToASCIR =
-    ConvertAFIRBinaryElementwiseOpToASCIR<afir::SubOp, ascendc::SubL3Op>;
-using ConvertAFIRMulOpToASCIR =
-    ConvertAFIRBinaryElementwiseOpToASCIR<afir::MulOp, ascendc::MulL3Op>;
-using ConvertAFIRDivOpToASCIR =
-    ConvertAFIRBinaryElementwiseOpToASCIR<afir::DivOp, ascendc::DivL3Op>;
+using ConvertAFIRAddOpToASCIR = ConvertAFIRBinaryElementwiseOpToASCIR<afir::AddOp, ascendc::AddL3Op>;
+using ConvertAFIRSubOpToASCIR = ConvertAFIRBinaryElementwiseOpToASCIR<afir::SubOp, ascendc::SubL3Op>;
+using ConvertAFIRMulOpToASCIR = ConvertAFIRBinaryElementwiseOpToASCIR<afir::MulOp, ascendc::MulL3Op>;
+using ConvertAFIRDivOpToASCIR = ConvertAFIRBinaryElementwiseOpToASCIR<afir::DivOp, ascendc::DivL3Op>;
 
-} // namespace
+}  // namespace
 
-void mlir::afir::populateLoweringAFIRElementwiseOpToASCIRPattern(
-    RewritePatternSet &patterns, MLIRContext *ctx) {
+void mlir::afir::populateLoweringAFIRElementwiseOpToASCIRPattern(RewritePatternSet &patterns, MLIRContext *ctx) {
   patterns.add<ConvertAFIRAddOpToASCIR>(ctx);
   patterns.add<ConvertAFIRSubOpToASCIR>(ctx);
   patterns.add<ConvertAFIRMulOpToASCIR>(ctx);

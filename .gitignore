@@ -1,4 +1,11 @@
+# ide files
 /.claude/
 /.idea/
 /.cache
+
+# build files
 build/
+
+# tmp files
+__checked_files_list__
+__code_format_check_result__

@@ -51,5 +51,5 @@ Value AscendCBuilder::createLocalTensor(Type tensorType, Value tbuf) const {
   return ascendc::TBufGetTensorOp::create(b(), loc(), tensorType, tbuf);
 }
 
-} // namespace afir
-} // namespace mlir
+}  // namespace afir
+}  // namespace mlir

@@ -20,9 +20,7 @@ namespace afir {
 
 namespace {
 
-struct AFIRShapeInferencePass
-    : public impl::AFIRShapeInferencePassBase<AFIRShapeInferencePass> {
-
+struct AFIRShapeInferencePass : public impl::AFIRShapeInferencePassBase<AFIRShapeInferencePass> {
   void runOnOperation() override {
     ModuleOp module = getOperation();
 
@@ -49,12 +47,9 @@ struct AFIRShapeInferencePass
     module.walk([&](func::FuncOp funcOp) {
       // Collect all return operations
       SmallVector<func::ReturnOp> returnOps;
-      funcOp.walk([&](func::ReturnOp returnOp) {
-        returnOps.push_back(returnOp);
-      });
+      funcOp.walk([&](func::ReturnOp returnOp) { returnOps.push_back(returnOp); });
 
-      if (returnOps.empty())
-        return;
+      if (returnOps.empty()) return;
 
       // Get the types of the values being returned
       auto firstReturn = returnOps[0];
@@ -65,20 +60,17 @@ struct AFIRShapeInferencePass
 
       // Update function type
       auto funcType = funcOp.getFunctionType();
-      auto newFuncType = FunctionType::get(
-          funcOp.getContext(),
-          funcType.getInputs(),
-          newResultTypes);
+      auto newFuncType = FunctionType::get(funcOp.getContext(), funcType.getInputs(), newResultTypes);
       funcOp.setFunctionType(newFuncType);
     });
   }
 };
 
-} // namespace
+}  // namespace
 
 std::unique_ptr<Pass> createAFIRShapeInferencePass() {
   return std::make_unique<AFIRShapeInferencePass>();
 }
 
-} // namespace afir
-} // namespace mlir
+}  // namespace afir
+}  // namespace mlir

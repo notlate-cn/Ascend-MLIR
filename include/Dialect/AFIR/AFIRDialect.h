@@ -11,4 +11,4 @@
 
 #include "Dialect/AFIR/AFIRDialect.h.inc"
 
-#endif // MLIR_DIALECT_AFIR_AFIRDIALECT_H
+#endif  // MLIR_DIALECT_AFIR_AFIRDIALECT_H

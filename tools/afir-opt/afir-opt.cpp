@@ -42,6 +42,5 @@ int main(int argc, char **argv) {
   afir::registerAFIRPasses();
   afir::registerAFIRConversionPasses();
 
-  return asMainReturnCode(
-      MlirOptMain(argc, argv, "AFIR optimizer driver\n", registry));
+  return asMainReturnCode(MlirOptMain(argc, argv, "AFIR optimizer driver\n", registry));
 }
