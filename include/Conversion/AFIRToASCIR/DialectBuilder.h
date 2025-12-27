@@ -22,35 +22,40 @@ namespace afir {
 
 struct DialectBuilder {
   DialectBuilder(mlir::Location loc) : builder(nullptr), location(loc) {}
-  DialectBuilder(mlir::OpBuilder &b, mlir::Location loc)
-      : builder(&b), location(loc) {}
-  DialectBuilder(const DialectBuilder &db)
-      : builder(db.builder), location(db.location) {}
+  DialectBuilder(mlir::OpBuilder &b, mlir::Location loc) : builder(&b), location(loc) {}
+  DialectBuilder(const DialectBuilder &db) : builder(db.builder), location(db.location) {}
   virtual ~DialectBuilder() {}
   DialectBuilder(DialectBuilder &&) = delete;
   DialectBuilder &operator=(const DialectBuilder &) = delete;
   DialectBuilder &&operator=(const DialectBuilder &&) = delete;
 
-  mlir::OpBuilder &getBuilder() const { return b(); }
-  mlir::OpBuilder *getBuilderPtr() const { return builder; }
-  mlir::Location getLoc() const { return loc(); }
+  mlir::OpBuilder &getBuilder() const {
+    return b();
+  }
+  mlir::OpBuilder *getBuilderPtr() const {
+    return builder;
+  }
+  mlir::Location getLoc() const {
+    return loc();
+  }
 
-protected:
+ protected:
   mlir::OpBuilder &b() const {
     assert(builder);
     return *builder;
   }
-  mlir::Location loc() const { return location; }
+  mlir::Location loc() const {
+    return location;
+  }
 
-private:
+ private:
   mlir::OpBuilder *builder;
   mlir::Location location;
 };
 
 struct AscendCBuilder : DialectBuilder {
   AscendCBuilder(mlir::Location loc) : DialectBuilder(loc) {}
-  AscendCBuilder(mlir::OpBuilder &b, mlir::Location loc)
-      : DialectBuilder(b, loc) {}
+  AscendCBuilder(mlir::OpBuilder &b, mlir::Location loc) : DialectBuilder(b, loc) {}
   AscendCBuilder(const DialectBuilder &db) : DialectBuilder(db) {}
   virtual ~AscendCBuilder() {}
 
@@ -67,33 +72,33 @@ struct AscendCBuilder : DialectBuilder {
 
 template <class... Ts>
 struct MultiDialectBuilder {
-  MultiDialectBuilder(mlir::OpBuilder &b, mlir::Location loc)
-      : builder(&b), location(loc) {}
-  MultiDialectBuilder(const DialectBuilder &db)
-      : builder(db.getBuilderPtr()), location(db.getLoc()) {}
+  MultiDialectBuilder(mlir::OpBuilder &b, mlir::Location loc) : builder(&b), location(loc) {}
+  MultiDialectBuilder(const DialectBuilder &db) : builder(db.getBuilderPtr()), location(db.getLoc()) {}
 
   mlir::OpBuilder &getBuilder() const {
     assert(builder);
     return *builder;
   }
-  mlir::OpBuilder *getBuilderPtr() const { return builder; }
-  mlir::Location getLoc() const { return location; }
+  mlir::OpBuilder *getBuilderPtr() const {
+    return builder;
+  }
+  mlir::Location getLoc() const {
+    return location;
+  }
 
-private:
+ private:
   mlir::OpBuilder *builder;
   mlir::Location location;
 };
 
 template <class... Ts>
 struct MultiDialectBuilder<AscendCBuilder, Ts...> : MultiDialectBuilder<Ts...> {
-  MultiDialectBuilder(mlir::OpBuilder &b, mlir::Location loc)
-      : MultiDialectBuilder<Ts...>(b, loc), ascendc(b, loc) {}
-  MultiDialectBuilder(const DialectBuilder &db)
-      : MultiDialectBuilder<Ts...>(db), ascendc(db) {}
+  MultiDialectBuilder(mlir::OpBuilder &b, mlir::Location loc) : MultiDialectBuilder<Ts...>(b, loc), ascendc(b, loc) {}
+  MultiDialectBuilder(const DialectBuilder &db) : MultiDialectBuilder<Ts...>(db), ascendc(db) {}
   AscendCBuilder ascendc;
 };
 
-} // namespace afir
-} // namespace mlir
+}  // namespace afir
+}  // namespace mlir
 
-#endif // MLIR_CONVERSION_AFIRTOASCIR_DIALECT_BUILDER_H
+#endif  // MLIR_CONVERSION_AFIRTOASCIR_DIALECT_BUILDER_H

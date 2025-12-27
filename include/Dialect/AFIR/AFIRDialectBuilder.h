@@ -29,16 +29,18 @@ namespace afir {
 ///   Value result = afirBuilder.add(lhs, rhs);
 ///
 class AFIRBuilder {
-public:
-  AFIRBuilder(OpBuilder &builder, Location loc)
-      : builder(builder), loc(loc) {}
+ public:
+  AFIRBuilder(OpBuilder &builder, Location loc) : builder(builder), loc(loc) {}
 
-  AFIRBuilder(OpBuilder &builder, Operation *op)
-      : builder(builder), loc(op->getLoc()) {}
+  AFIRBuilder(OpBuilder &builder, Operation *op) : builder(builder), loc(op->getLoc()) {}
 
   // Get the underlying builder and location
-  OpBuilder &getBuilder() const { return builder; }
-  Location getLoc() const { return loc; }
+  OpBuilder &getBuilder() const {
+    return builder;
+  }
+  Location getLoc() const {
+    return loc;
+  }
 
   //===--------------------------------------------------------------------===//
   // Arithmetic Operations
@@ -80,7 +82,7 @@ public:
     return mul(diff, diff);
   }
 
-protected:
+ protected:
   OpBuilder &builder;
   Location loc;
 };
@@ -92,9 +94,8 @@ protected:
 /// ScopedAFIRBuilder extends AFIRBuilder with scope management capabilities.
 /// It can be used to insert operations at specific points in the IR.
 class ScopedAFIRBuilder : public AFIRBuilder {
-public:
-  ScopedAFIRBuilder(OpBuilder &builder, Location loc)
-      : AFIRBuilder(builder, loc), insertionGuard(builder) {}
+ public:
+  ScopedAFIRBuilder(OpBuilder &builder, Location loc) : AFIRBuilder(builder, loc), insertionGuard(builder) {}
 
   /// Create a builder that inserts at the beginning of a block.
   static ScopedAFIRBuilder atBlockBegin(OpBuilder &builder, Block *block) {
@@ -120,11 +121,11 @@ public:
     return ScopedAFIRBuilder(builder, op->getLoc());
   }
 
-private:
+ private:
   OpBuilder::InsertionGuard insertionGuard;
 };
 
-} // namespace afir
-} // namespace mlir
+}  // namespace afir
+}  // namespace mlir
 
-#endif // MLIR_DIALECT_AFIR_AFIRDIALECTBUILDER_H
+#endif  // MLIR_DIALECT_AFIR_AFIRDIALECTBUILDER_H

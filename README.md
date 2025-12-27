@@ -26,16 +26,31 @@ Ascend-MLIR/
 │   ├── llvm-project/       # LLVM/MLIR source
 │   ├── stablehlo/          # StableHLO source
 │   └── pyasc/              # PyAsc (ASC-IR) source
-├── include/mlir/
-│   ├── Dialect/AFIR/       # AFIR dialect definitions
+├── include/               # Header files
 │   ├── Conversion/         # Conversion pass headers
+│   │   └── AFIRToASCIR/    # AFIR to ASC-IR conversion
+│   ├── Dialect/AFIR/       # AFIR dialect definitions
 │   ├── Interface/          # Op interface definitions
 │   └── Utils/              # Utility functions
-├── lib/                    # Implementation files
+├── lib/                   # Implementation files
+│   ├── Conversion/         # Conversion pass implementations
+│   │   └── AFIRToASCIR/    # AFIR to ASC-IR conversion
+│   │       └── Math/       # Math operator conversions (Elementwise)
+│   ├── Dialect/AFIR/       # AFIR dialect implementations
+│   └── Utils/              # Utility implementations
 ├── tools/afir-opt/         # MLIR optimizer tool
-├── test/                   # Test cases
-├── scripts/                # Build scripts
-└── version/                # Version information
+├── test/                  # Test cases
+│   ├── Conversion/         # Conversion tests
+│   ├── Dialect/           # Dialect tests
+│   └── Interface/         # Interface tests
+├── scripts/               # Build and utility scripts
+│   ├── build.sh           # Main build script
+│   ├── build_llvm.sh      # LLVM build script
+│   ├── run_tests.sh       # Test runner
+│   └── check_clang_format.sh  # Code format checker
+├── version/               # Version information
+├── CMakeLists.txt         # Main CMake configuration
+└── .clang-format          # Clang-format configuration
 ```
 
 ## Building
@@ -92,6 +107,37 @@ Or build everything at once:
 # Run canonicalization
 ./build/bin/afir-opt --afir-canonicalize input.mlir
 ```
+
+### Code Formatting
+
+The project uses clang-format for code formatting. You can format the code using the following commands:
+
+```bash
+# Format all files (excluding externals/)
+bash scripts/check_clang_format.sh -a -f
+
+# Format files changed in working directory (compared to last commit)
+bash scripts/check_clang_format.sh -c -f
+
+# Format files in the last commit
+bash scripts/check_clang_format.sh -l -f
+```
+
+To check code format without modifying files, use the check script without the `-f` flag:
+
+```bash
+# Check all files
+bash scripts/check_clang_format.sh -a
+
+# Check files changed in working directory (compared to last commit)
+# Note: This checks uncommitted changes, no need to git add first
+bash scripts/check_clang_format.sh -c
+
+# Check files in the last commit
+bash scripts/check_clang_format.sh -l
+```
+
+Note: The `-f` flag enables format mode (modifies files), while without it the script only verifies format.
 
 ## Example
 

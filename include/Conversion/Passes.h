@@ -17,7 +17,7 @@ namespace afir {
 #define GEN_PASS_REGISTRATION
 #include "Conversion/Passes.h.inc"
 
-} // namespace afir
-} // namespace mlir
+}  // namespace afir
+}  // namespace mlir
 
-#endif // AFIR_CONVERSION_PASSES
+#endif  // AFIR_CONVERSION_PASSES
