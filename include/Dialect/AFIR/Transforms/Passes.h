@@ -23,7 +23,7 @@ std::unique_ptr<Pass> createAFIRShapeInferencePass();
 #define GEN_PASS_REGISTRATION
 #include "Dialect/AFIR/Transforms/Passes.h.inc"
 
-} // namespace afir
-} // namespace mlir
+}  // namespace afir
+}  // namespace mlir
 
-#endif // MLIR_DIALECT_AFIR_TRANSFORMS_PASSES_H
+#endif  // MLIR_DIALECT_AFIR_TRANSFORMS_PASSES_H

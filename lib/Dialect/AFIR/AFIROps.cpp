@@ -22,12 +22,10 @@ static LogicalResult verifyBinaryElementwiseOp(Operation *op) {
   auto rhsType = mlir::dyn_cast<ShapedType>(op->getOperand(1).getType());
   auto resultType = mlir::dyn_cast<ShapedType>(op->getResult(0).getType());
 
-  if (!lhsType || !rhsType || !resultType)
-    return op->emitOpError("expected tensor operands and results");
+  if (!lhsType || !rhsType || !resultType) return op->emitOpError("expected tensor operands and results");
 
   if (lhsType.hasRank() && rhsType.hasRank()) {
-    if (lhsType.getShape() != rhsType.getShape())
-      return op->emitOpError("operands must have the same shape");
+    if (lhsType.getShape() != rhsType.getShape()) return op->emitOpError("operands must have the same shape");
   }
 
   return success();
@@ -37,17 +35,16 @@ static LogicalResult verifyBinaryElementwiseOp(Operation *op) {
 // AddOp
 //===----------------------------------------------------------------------===//
 
-LogicalResult AddOp::verify() { return verifyBinaryElementwiseOp(*this); }
+LogicalResult AddOp::verify() {
+  return verifyBinaryElementwiseOp(*this);
+}
 
-LogicalResult AddOp::inferShapes(
-    std::function<void(mlir::Region &)> doShapeInference) {
+LogicalResult AddOp::inferShapes(std::function<void(mlir::Region &)> doShapeInference) {
   BinaryElementwiseShapeHelper<AddOp> shapeHelper(*this);
-  if (failed(shapeHelper.computeShape()))
-    return failure();
+  if (failed(shapeHelper.computeShape())) return failure();
 
   auto outputShapes = shapeHelper.getOutputShapes();
-  if (outputShapes.empty())
-    return failure();
+  if (outputShapes.empty()) return failure();
 
   auto inputType = mlir::cast<ShapedType>(getLhs().getType());
   auto newType = RankedTensorType::get(outputShapes[0], inputType.getElementType());
@@ -59,17 +56,16 @@ LogicalResult AddOp::inferShapes(
 // SubOp
 //===----------------------------------------------------------------------===//
 
-LogicalResult SubOp::verify() { return verifyBinaryElementwiseOp(*this); }
+LogicalResult SubOp::verify() {
+  return verifyBinaryElementwiseOp(*this);
+}
 
-LogicalResult SubOp::inferShapes(
-    std::function<void(mlir::Region &)> doShapeInference) {
+LogicalResult SubOp::inferShapes(std::function<void(mlir::Region &)> doShapeInference) {
   BinaryElementwiseShapeHelper<SubOp> shapeHelper(*this);
-  if (failed(shapeHelper.computeShape()))
-    return failure();
+  if (failed(shapeHelper.computeShape())) return failure();
 
   auto outputShapes = shapeHelper.getOutputShapes();
-  if (outputShapes.empty())
-    return failure();
+  if (outputShapes.empty()) return failure();
 
   auto inputType = mlir::cast<ShapedType>(getLhs().getType());
   auto newType = RankedTensorType::get(outputShapes[0], inputType.getElementType());
@@ -81,17 +77,16 @@ LogicalResult SubOp::inferShapes(
 // MulOp
 //===----------------------------------------------------------------------===//
 
-LogicalResult MulOp::verify() { return verifyBinaryElementwiseOp(*this); }
+LogicalResult MulOp::verify() {
+  return verifyBinaryElementwiseOp(*this);
+}
 
-LogicalResult MulOp::inferShapes(
-    std::function<void(mlir::Region &)> doShapeInference) {
+LogicalResult MulOp::inferShapes(std::function<void(mlir::Region &)> doShapeInference) {
   BinaryElementwiseShapeHelper<MulOp> shapeHelper(*this);
-  if (failed(shapeHelper.computeShape()))
-    return failure();
+  if (failed(shapeHelper.computeShape())) return failure();
 
   auto outputShapes = shapeHelper.getOutputShapes();
-  if (outputShapes.empty())
-    return failure();
+  if (outputShapes.empty()) return failure();
 
   auto inputType = mlir::cast<ShapedType>(getLhs().getType());
   auto newType = RankedTensorType::get(outputShapes[0], inputType.getElementType());
@@ -103,17 +98,16 @@ LogicalResult MulOp::inferShapes(
 // DivOp
 //===----------------------------------------------------------------------===//
 
-LogicalResult DivOp::verify() { return verifyBinaryElementwiseOp(*this); }
+LogicalResult DivOp::verify() {
+  return verifyBinaryElementwiseOp(*this);
+}
 
-LogicalResult DivOp::inferShapes(
-    std::function<void(mlir::Region &)> doShapeInference) {
+LogicalResult DivOp::inferShapes(std::function<void(mlir::Region &)> doShapeInference) {
   BinaryElementwiseShapeHelper<DivOp> shapeHelper(*this);
-  if (failed(shapeHelper.computeShape()))
-    return failure();
+  if (failed(shapeHelper.computeShape())) return failure();
 
   auto outputShapes = shapeHelper.getOutputShapes();
-  if (outputShapes.empty())
-    return failure();
+  if (outputShapes.empty()) return failure();
 
   auto inputType = mlir::cast<ShapedType>(getLhs().getType());
   auto newType = RankedTensorType::get(outputShapes[0], inputType.getElementType());

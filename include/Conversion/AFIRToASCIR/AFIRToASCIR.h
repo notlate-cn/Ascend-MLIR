@@ -15,7 +15,7 @@ namespace afir {
 
 std::unique_ptr<Pass> createConvertAFIRToASCIRPass();
 
-} // namespace afir
-} // namespace mlir
+}  // namespace afir
+}  // namespace mlir
 
-#endif // AFIR_CONVERSION_AFIRTOASCIR
+#endif  // AFIR_CONVERSION_AFIRTOASCIR
