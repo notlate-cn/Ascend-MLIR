@@ -3,6 +3,8 @@ project(Ascend-MLIR LANGUAGES CXX C)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
+# 生成compile_commands.json文件
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)  
 
 # 设置构建类型
 if(NOT CMAKE_BUILD_TYPE)
@@ -54,7 +56,11 @@ add_subdirectory(lib/Conversion)
 add_subdirectory(lib/Utils)
 add_subdirectory(tools/afir-opt)
 add_subdirectory(test)
-add_subdirectory(${PYASC_DIR} EXCLUDE_FROM_ALL)
+
+# 只构建必要的pyasc，注意需要先构建其tablegen
+add_subdirectory(${PYASC_DIR}/lib/TableGen EXCLUDE_FROM_ALL)
+add_subdirectory(${PYASC_DIR}/include EXCLUDE_FROM_ALL)
+add_subdirectory(${PYASC_DIR}/lib EXCLUDE_FROM_ALL)
 
 # 测试配置
 enable_testing()

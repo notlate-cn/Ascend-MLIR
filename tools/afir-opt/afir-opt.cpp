@@ -12,6 +12,7 @@
 #include "mlir/IR/DialectRegistry.h"
 #include "mlir/IR/MLIRContext.h"
 #include "mlir/InitAllDialects.h"
+#include "mlir/InitAllExtensions.h"
 #include "mlir/InitAllPasses.h"
 #include "mlir/Pass/PassManager.h"
 #include "mlir/Pass/PassRegistry.h"
@@ -31,12 +32,15 @@ int main(int argc, char **argv) {
   registry.insert<afir::AFIRDialect>();
   registry.insert<ascendc::AscendCDialect>();
 
+  // Register all mlir extentions, including some interface and some ops in transform namespace
+  registerAllExtensions(registry);
+
   // Register all MLIR core passes
   registerAllPasses();
 
   // Register AFIR-specific passes
   afir::registerAFIRPasses();
-  afir::registerConversionPasses();
+  afir::registerAFIRConversionPasses();
 
   return asMainReturnCode(
       MlirOptMain(argc, argv, "AFIR optimizer driver\n", registry));
