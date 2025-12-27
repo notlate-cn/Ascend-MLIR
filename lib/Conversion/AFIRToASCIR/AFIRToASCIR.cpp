@@ -18,11 +18,12 @@ namespace afir {
 //===----------------------------------------------------------------------===//
 // Pass Implementation
 //===----------------------------------------------------------------------===//
-struct ConvertAFIRToASCIRPass
-    : public PassWrapper<ConvertAFIRToASCIRPass, OperationPass<ModuleOp>> {
+struct ConvertAFIRToASCIRPass : public PassWrapper<ConvertAFIRToASCIRPass, OperationPass<ModuleOp>> {
   MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(ConvertAFIRToASCIRPass)
 
-  StringRef getArgument() const override { return "convert-afir-to-ascir"; }
+  StringRef getArgument() const override {
+    return "convert-afir-to-ascir";
+  }
   StringRef getDescription() const override {
     return "Convert AFIR dialect to ASC-IR dialect";
   }
@@ -42,8 +43,7 @@ struct ConvertAFIRToASCIRPass
     RewritePatternSet patterns(context);
     populateLoweringAFIRElementwiseOpToASCIRPattern(patterns, context);
 
-    if (failed(applyPartialConversion(module, target, std::move(patterns))))
-      signalPassFailure();
+    if (failed(applyPartialConversion(module, target, std::move(patterns)))) signalPassFailure();
   }
 };
 
@@ -51,5 +51,5 @@ std::unique_ptr<Pass> createConvertAFIRToASCIRPass() {
   return std::make_unique<ConvertAFIRToASCIRPass>();
 }
 
-} // namespace afir
-} // namespace mlir
+}  // namespace afir
+}  // namespace mlir

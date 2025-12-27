@@ -30,8 +30,8 @@ Type getElementType(Type type);
 /// Get the number of elements in a tensor. Returns -1 for dynamic shapes.
 int64_t getNumElements(Type type);
 
-} // namespace utils
-} // namespace afir
-} // namespace mlir
+}  // namespace utils
+}  // namespace afir
+}  // namespace mlir
 
-#endif // MLIR_UTILS_AFIRUTILS_H
+#endif  // MLIR_UTILS_AFIRUTILS_H

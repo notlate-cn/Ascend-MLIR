@@ -25,7 +25,7 @@ namespace afir {
 /// output shapes based on input shapes.
 template <typename OpType>
 class ShapeHelper {
-public:
+ public:
   ShapeHelper(OpType op) : op(op) {}
   virtual ~ShapeHelper() = default;
 
@@ -37,7 +37,7 @@ public:
     return outputShapes;
   }
 
-protected:
+ protected:
   OpType op;
   SmallVector<SmallVector<int64_t>> outputShapes;
 };
@@ -51,7 +51,7 @@ protected:
 /// an output with the same shape.
 template <typename OpType>
 class BinaryElementwiseShapeHelper : public ShapeHelper<OpType> {
-public:
+ public:
   using ShapeHelper<OpType>::ShapeHelper;
   using ShapeHelper<OpType>::op;
   using ShapeHelper<OpType>::outputShapes;
@@ -60,11 +60,9 @@ public:
     auto lhsType = mlir::dyn_cast<ShapedType>(op.getLhs().getType());
     auto rhsType = mlir::dyn_cast<ShapedType>(op.getRhs().getType());
 
-    if (!lhsType || !rhsType)
-      return failure();
+    if (!lhsType || !rhsType) return failure();
 
-    if (!lhsType.hasRank() || !rhsType.hasRank())
-      return failure();
+    if (!lhsType.hasRank() || !rhsType.hasRank()) return failure();
 
     // For same operands and result type, output shape equals input shape
     SmallVector<int64_t> outputShape;
@@ -78,9 +76,9 @@ public:
   }
 };
 
-} // namespace afir
-} // namespace mlir
+}  // namespace afir
+}  // namespace mlir
 
 #include "Interface/ShapeHelperOpInterface.h.inc"
 
-#endif // MLIR_INTERFACE_SHAPEHELPEROPINTERFACE_H
+#endif  // MLIR_INTERFACE_SHAPEHELPEROPINTERFACE_H

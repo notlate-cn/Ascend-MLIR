@@ -19,10 +19,9 @@ class RewritePatternSet;
 
 namespace afir {
 
-void populateLoweringAFIRElementwiseOpToASCIRPattern(RewritePatternSet &patterns,
-                                                      MLIRContext *ctx);
+void populateLoweringAFIRElementwiseOpToASCIRPattern(RewritePatternSet &patterns, MLIRContext *ctx);
 
-} // namespace afir
-} // namespace mlir
+}  // namespace afir
+}  // namespace mlir
 
-#endif // MLIR_CONVERSION_AFIRTOASCIR_MATH_ELEMENTWISE_H
+#endif  // MLIR_CONVERSION_AFIRTOASCIR_MATH_ELEMENTWISE_H
