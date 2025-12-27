@@ -7,17 +7,12 @@
 #ifndef AFIR_CONVERSION_PASSES
 #define AFIR_CONVERSION_PASSES
 
+#include "Conversion/AFIRToASCIR/AFIRToASCIR.h"
 #include "mlir/Pass/Pass.h"
 #include <memory>
 
 namespace mlir {
 namespace afir {
-
-// StableHLO to AFIR conversion pass
-// std::unique_ptr<Pass> createConvertStableHLOToAFIRPass();
-
-// AFIR to ASC-IR conversion pass
-std::unique_ptr<Pass> createConvertAFIRToASCIRPass();
 
 #define GEN_PASS_REGISTRATION
 #include "Conversion/Passes.h.inc"
