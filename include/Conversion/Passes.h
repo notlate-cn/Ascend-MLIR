@@ -4,8 +4,8 @@
 //
 //===----------------------------------------------------------------------===//
 
-#ifndef MLIR_CONVERSION_PASSES_H
-#define MLIR_CONVERSION_PASSES_H
+#ifndef AFIR_CONVERSION_PASSES
+#define AFIR_CONVERSION_PASSES
 
 #include "mlir/Pass/Pass.h"
 #include <memory>
@@ -21,13 +21,8 @@ std::unique_ptr<Pass> createConvertAFIRToASCIRPass();
 
 #define GEN_PASS_REGISTRATION
 #include "Conversion/Passes.h.inc"
-// /// Register all conversion passes
-// inline void registerConversionPasses() {
-//   // Passes are auto-registered via PassWrapper
-//   createConvertAFIRToASCIRPass();
-// }
 
 } // namespace afir
 } // namespace mlir
 
-#endif // MLIR_CONVERSION_PASSES_H
+#endif // AFIR_CONVERSION_PASSES
