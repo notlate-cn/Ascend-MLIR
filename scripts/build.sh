@@ -12,7 +12,7 @@ PROJECT_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 BUILD_TYPE="${BUILD_TYPE:-Release}"
 BUILD_DIR="${PROJECT_ROOT}/build"
 INSTALL_DIR="${PROJECT_ROOT}/install"
-LLVM_BUILD_DIR="${PROJECT_ROOT}/externals/llvm-project/build"
+LLVM_BUILD_DIR="${LLVM_BUILD_DIR:-${PROJECT_ROOT}/externals/llvm-project/build}"
 NUM_JOBS="${NUM_JOBS:-$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 4)}"
 
 # Colors for output
@@ -50,19 +50,22 @@ Options:
     --clean             Clean build directory
     --release           Build in Release mode (default)
     --debug             Build in Debug mode
+    --llvm-build-dir    Path to LLVM build directory (default: externals/llvm-project/build)
     --jobs N            Number of parallel jobs (default: auto)
     --help              Show this help message
 
 Environment Variables:
     BUILD_TYPE          Build type: Release or Debug
     BUILD_DIR           Build directory path
+    LLVM_BUILD_DIR      LLVM build directory path
     NUM_JOBS            Number of parallel jobs
 
 Examples:
-    $0 --build-all           # Build everything
-    $0 --build-llvm          # Build LLVM/MLIR only
-    $0 --build-project       # Build Ascend-MLIR only
-    $0 --clean --build-all   # Clean and rebuild everything
+    $0 --build-all                           # Build everything
+    $0 --build-llvm                          # Build LLVM/MLIR only
+    $0 --build-project                       # Build Ascend-MLIR only
+    $0 --llvm-build-dir /path/to/llvm/build  # Use external LLVM build
+    $0 --clean --build-all                   # Clean and rebuild everything
 EOF
 }
 
@@ -73,33 +76,10 @@ init_submodules() {
 }
 
 build_llvm() {
-    local start_time=$(date +%s)
     print_info "Building LLVM/MLIR..."
 
-    local LLVM_SRC="${PROJECT_ROOT}/externals/llvm-project"
-
-    if [ ! -d "${LLVM_SRC}" ]; then
-        print_error "LLVM source not found. Please run: git submodule update --init"
-        exit 1
-    fi
-
-    mkdir -p "${LLVM_BUILD_DIR}"
-    cd "${LLVM_BUILD_DIR}"
-
-    cmake -G Ninja ../llvm \
-        -DCMAKE_BUILD_TYPE=${BUILD_TYPE} \
-        -DCMAKE_INSTALL_PREFIX="${INSTALL_DIR}" \
-        -DLLVM_ENABLE_PROJECTS="mlir" \
-        -DLLVM_TARGETS_TO_BUILD="host" \
-        -DLLVM_ENABLE_ASSERTIONS=ON \
-        -DLLVM_ENABLE_RTTI=ON \
-        -DMLIR_ENABLE_BINDINGS_PYTHON=OFF
-
-    cmake --build . --target all -j${NUM_JOBS}
-
-    local end_time=$(date +%s)
-    local duration=$((end_time - start_time))
-    print_info "LLVM/MLIR build completed in ${duration}s ($(printf '%02d:%02d:%02d' $((duration/3600)) $((duration%3600/60)) $((duration%60))))"
+    # Call the dedicated build_llvm.sh script
+    "${SCRIPT_DIR}/build_llvm.sh"
 }
 
 build_stablehlo() {
@@ -114,13 +94,16 @@ build_stablehlo() {
         exit 1
     fi
 
+    # Derive MLIR_DIR from LLVM_BUILD_DIR
+    local MLIR_CMAKE_DIR="${LLVM_BUILD_DIR}/lib/cmake/mlir"
+
     mkdir -p "${STABLEHLO_BUILD}"
     cd "${STABLEHLO_BUILD}"
 
+    # Only need to pass MLIR_DIR, LLVM_DIR will be automatically discovered
     cmake -G Ninja .. \
         -DCMAKE_BUILD_TYPE=${BUILD_TYPE} \
-        -DLLVM_DIR="${LLVM_BUILD_DIR}/lib/cmake/llvm" \
-        -DMLIR_DIR="${LLVM_BUILD_DIR}/lib/cmake/mlir"
+        -DMLIR_DIR="${MLIR_CMAKE_DIR}"
 
     cmake --build . --target all -j${NUM_JOBS}
 
@@ -154,18 +137,29 @@ build_project() {
     print_info "Building Ascend-MLIR..."
 
     if [ ! -d "${LLVM_BUILD_DIR}" ]; then
-        print_error "LLVM build not found. Please build LLVM first with --build-llvm"
+        print_error "LLVM build not found at: ${LLVM_BUILD_DIR}"
+        print_error "Please build LLVM first with --build-llvm or specify path with --llvm-build-dir"
+        exit 1
+    fi
+
+    # Verify LLVM build directory has the expected structure
+    local MLIR_CMAKE_DIR="${LLVM_BUILD_DIR}/lib/cmake/mlir"
+    if [ ! -d "${MLIR_CMAKE_DIR}" ]; then
+        print_error "MLIR CMake config not found at: ${MLIR_CMAKE_DIR}"
+        print_error "Please ensure MLIR was built correctly (LLVM_ENABLE_PROJECTS must include mlir)"
         exit 1
     fi
 
     mkdir -p "${BUILD_DIR}"
     cd "${BUILD_DIR}"
 
+    print_info "Using LLVM from: ${LLVM_BUILD_DIR}"
+
+    # Pass LLVM_BUILD_DIR to cmake, it will automatically derive MLIR_DIR
     cmake -G Ninja "${PROJECT_ROOT}" \
         -DCMAKE_BUILD_TYPE=${BUILD_TYPE} \
         -DCMAKE_INSTALL_PREFIX="${INSTALL_DIR}" \
-        -DLLVM_DIR="${LLVM_BUILD_DIR}/lib/cmake/llvm" \
-        -DMLIR_DIR="${LLVM_BUILD_DIR}/lib/cmake/mlir"
+        -DLLVM_BUILD_DIR="${LLVM_BUILD_DIR}"
 
     cmake --build . --target all -j${NUM_JOBS}
 
@@ -249,6 +243,10 @@ while [[ $# -gt 0 ]]; do
             ;;
         --jobs)
             NUM_JOBS="$2"
+            shift 2
+            ;;
+        --llvm-build-dir)
+            LLVM_BUILD_DIR="$2"
             shift 2
             ;;
         --help)
