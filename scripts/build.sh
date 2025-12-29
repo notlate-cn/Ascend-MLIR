@@ -272,7 +272,7 @@ if $CLEAN; then
 fi
 
 # Initialize submodules if any build is requested
-if $BUILD_LLVM || $BUILD_STABLEHLO || $BUILD_PYASC; then
+if $BUILD_STABLEHLO || $BUILD_PYASC; then
     init_submodules
 fi
 
