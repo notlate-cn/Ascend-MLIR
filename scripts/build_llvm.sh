@@ -23,8 +23,9 @@ echo "Jobs:       ${NUM_JOBS}"
 # Initialize submodule if needed
 if [ ! -d "${LLVM_SRC}/llvm" ]; then
     echo "Initializing LLVM submodule..."
-    cd "${PROJECT_ROOT}"
-    git submodule update --init externals/llvm-project
+    cd "${PROJECT_ROOT}/externals"
+    git clone -n https://github.com/llvm/llvm-project.git
+    cd llvm-project && git checkout 2078da43e25a4623cab2d0d60decddf709aaea28 && cd ..  # llvm 21.1.8
 fi
 
 # Create build directory
@@ -40,7 +41,8 @@ cmake -G Ninja ../llvm \
     -DLLVM_ENABLE_RTTI=ON \
     -DLLVM_BUILD_EXAMPLES=OFF \
     -DLLVM_INSTALL_UTILS=ON \
-    -DMLIR_ENABLE_BINDINGS_PYTHON=OFF
+    -DMLIR_ENABLE_BINDINGS_PYTHON=OFF \
+    -DLLVM_ENABLE_LIBEDIT=OFF
 
 # Build
 BUILD_START_TIME=$(date +%s)

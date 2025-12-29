@@ -12,9 +12,40 @@ if(NOT CMAKE_BUILD_TYPE)
 endif()
 
 # LLVM/MLIR配置
-set(LLVM_DIR "${CMAKE_SOURCE_DIR}/externals/llvm-project/build/lib/cmake/llvm")
-set(MLIR_DIR "${CMAKE_SOURCE_DIR}/externals/llvm-project/build/lib/cmake/mlir")
-find_package(LLVM REQUIRED CONFIG)
+# 用户通过 -DLLVM_BUILD_DIR 指定 LLVM 构建根目录
+# 如果未指定，则使用默认的 externals/llvm-project/build
+# 注意：必须 unset LLVM_DIR 缓存，否则当 MLIR_DIR 改变时，LLVM_DIR 不会相应改变
+unset(LLVM_DIR CACHE)
+
+# 如果用户指定了 LLVM_BUILD_DIR，自动推导 MLIR_DIR
+if(LLVM_BUILD_DIR AND NOT MLIR_DIR)
+  set(MLIR_DIR "${LLVM_BUILD_DIR}/lib/cmake/mlir")
+  message(STATUS "LLVM_BUILD_DIR: ${LLVM_BUILD_DIR}")
+endif()
+
+# 如果 MLIR_DIR 仍未设置，使用默认路径
+if(NOT MLIR_DIR)
+  set(MLIR_DIR "${CMAKE_SOURCE_DIR}/externals/llvm-project/build/lib/cmake/mlir")
+endif()
+
+message(STATUS "MLIR_DIR: ${MLIR_DIR}")
+
+# 检查 MLIR_DIR 是否有效
+if(NOT EXISTS "${MLIR_DIR}/MLIRConfig.cmake")
+  message(FATAL_ERROR
+    "MLIRConfig.cmake not found at: ${MLIR_DIR}\n"
+    "\n"
+    "Please specify LLVM build directory:\n"
+    "  cmake -DLLVM_BUILD_DIR=/path/to/llvm-project/build ..\n"
+    "\n"
+    "Example:\n"
+    "  cmake -DLLVM_BUILD_DIR=../llvm-project/build ..\n"
+    "\n"
+    "If you haven't built LLVM yet, run: ./scripts/build_llvm.sh"
+  )
+endif()
+
+# find_package(MLIR) 会自动加载 LLVM
 find_package(MLIR REQUIRED CONFIG)
 message(STATUS "Using LLVMConfig.cmake in: ${LLVM_DIR}")
 message(STATUS "Using MLIRConfig.cmake in: ${MLIR_DIR}")

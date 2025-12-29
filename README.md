@@ -61,33 +61,79 @@ Ascend-MLIR/
 - Ninja build system
 - C++17 compatible compiler (GCC >= 9 or Clang >= 10)
 - Python 3 (optional, for Python bindings)
+- LLVM/MLIR (see LLVM setup below)
 
-### Build Steps
+### LLVM/MLIR Setup
 
-1. Clone the repository and initialize submodules:
+You have two options for setting up LLVM/MLIR:
 
-```bash
-git clone <repository-url>
-cd Ascend-MLIR
-git submodule update --init --recursive
-```
+#### Option 1: Build LLVM from provided script (Recommended)
 
-2. Build LLVM/MLIR:
+If you don't have LLVM/MLIR installed, use the provided script to download and build it:
 
 ```bash
 ./scripts/build_llvm.sh
 ```
 
+This will download LLVM 21.1.8 and build it in `externals/llvm-project/build`.
+
+#### Option 2: Use your own LLVM build
+
+If you already have LLVM/MLIR built elsewhere, you can specify the path to your LLVM build directory:
+
+```bash
+# Using build.sh
+./scripts/build.sh --build-project --llvm-build-dir /path/to/your/llvm/build
+
+# Or using cmake directly
+mkdir build && cd build
+cmake -G Ninja .. \
+    -DLLVM_BUILD_DIR=/path/to/your/llvm/build
+ninja
+```
+
+**Note:** Specify the LLVM **build root** directory (e.g., `/path/to/llvm-project/build`), not the cmake subdirectory
+
+### Build Steps
+
+#### Quick Start (Build everything)
+
+```bash
+# Clone the repository
+git clone <repository-url>
+cd Ascend-MLIR
+
+# Build LLVM/MLIR and Ascend-MLIR
+./scripts/build.sh --build-all
+```
+
+#### Step-by-step Build
+
+1. Clone the repository:
+
+```bash
+git clone <repository-url>
+cd Ascend-MLIR
+```
+
+2. Build or specify LLVM/MLIR (choose one):
+
+```bash
+# Option A: Build LLVM using provided script
+./scripts/build_llvm.sh
+
+# Option B: Use your own LLVM (skip if using Option A)
+# Just note the path to your LLVM build directory
+```
+
 3. Build Ascend-MLIR:
 
 ```bash
+# If using default LLVM location (externals/llvm-project/build)
 ./scripts/build.sh --build-project
-```
 
-Or build everything at once:
-
-```bash
-./scripts/build.sh --build-all
+# If using custom LLVM location
+./scripts/build.sh --build-project --llvm-build-dir /path/to/llvm/build
 ```
 
 ### Build Options
@@ -169,7 +215,7 @@ cmake --build . --target check-afir
 
 | Dependency | Version | Description |
 |------------|---------|-------------|
-| LLVM/MLIR  | 21.1    | Core compiler infrastructure |
+| LLVM/MLIR  | 21.1.8  | Core compiler infrastructure |
 | StableHLO  | main    | StableHLO dialect for ML frameworks |
 | PyAsc      | main    | ASC-IR dialect for Ascend hardware |
 
