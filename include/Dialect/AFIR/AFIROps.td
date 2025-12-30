@@ -13,94 +13,15 @@
 
 include "Dialect/AFIR/AFIRDialect.td"
 include "Interface/ShapeHelperOpInterface.td"
+include "Interface/ShapeInferenceOpInterface.td"
 include "mlir/Interfaces/InferTypeOpInterface.td"
 include "mlir/Interfaces/SideEffectInterfaces.td"
 include "Core/Types.td"
 
 //===----------------------------------------------------------------------===//
-// AFIR Binary Elementwise Operations
+// Math Operations
 //===----------------------------------------------------------------------===//
 
-class AFIR_BinaryElementwiseOp<string mnemonic, list<Trait> traits = []> :
-    AFIR_Op<mnemonic, !listconcat(traits, [
-      Pure,
-      DeclareOpInterfaceMethods<ShapeHelperOpInterface>
-    ])> {
-  let arguments = (ins
-    AnyType:$lhs,
-    AnyType:$rhs
-  );
-  let results = (outs AnyType:$result);
-
-  let assemblyFormat = [{
-    $lhs `,` $rhs attr-dict `:` `(` type($lhs) `,` type($rhs) `)` `->` type($result)
-  }];
-
-  let hasVerifier = 1;
-}
-
-//===----------------------------------------------------------------------===//
-// Add Operation
-//===----------------------------------------------------------------------===//
-
-def AFIR_AddOp : AFIR_BinaryElementwiseOp<"add"> {
-  let summary = "Element-wise addition operation";
-  let description = [{
-    Performs element-wise addition of two tensors.
-
-    Example:
-    ```mlir
-    %result = afir.add %lhs, %rhs : (tensor<4x4xf32>, tensor<4x4xf32>) -> tensor<4x4xf32>
-    ```
-  }];
-}
-
-//===----------------------------------------------------------------------===//
-// Sub Operation
-//===----------------------------------------------------------------------===//
-
-def AFIR_SubOp : AFIR_BinaryElementwiseOp<"sub"> {
-  let summary = "Element-wise subtraction operation";
-  let description = [{
-    Performs element-wise subtraction of two tensors.
-
-    Example:
-    ```mlir
-    %result = afir.sub %lhs, %rhs : (tensor<4x4xf32>, tensor<4x4xf32>) -> tensor<4x4xf32>
-    ```
-  }];
-}
-
-//===----------------------------------------------------------------------===//
-// Mul Operation
-//===----------------------------------------------------------------------===//
-
-def AFIR_MulOp : AFIR_BinaryElementwiseOp<"mul"> {
-  let summary = "Element-wise multiplication operation";
-  let description = [{
-    Performs element-wise multiplication of two tensors.
-
-    Example:
-    ```mlir
-    %result = afir.mul %lhs, %rhs : (tensor<4x4xf32>, tensor<4x4xf32>) -> tensor<4x4xf32>
-    ```
-  }];
-}
-
-//===----------------------------------------------------------------------===//
-// Div Operation
-//===----------------------------------------------------------------------===//
-
-def AFIR_DivOp : AFIR_BinaryElementwiseOp<"div"> {
-  let summary = "Element-wise division operation";
-  let description = [{
-    Performs element-wise division of two tensors.
-
-    Example:
-    ```mlir
-    %result = afir.div %lhs, %rhs : (tensor<4x4xf32>, tensor<4x4xf32>) -> tensor<4x4xf32>
-    ```
-  }];
-}
+include "Dialect/AFIR/AFIROps/Math/Elementwise.td"
 
 #endif // AFIR_OPS

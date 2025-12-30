@@ -1,16 +1,19 @@
-//===- ShapeHelperOpInterface.cpp - Shape helper interface impl -*- C++ -*-===//
+//===- ShapeHelperOpInterface.cpp - Definition for ShapeHelper ------===//
 //
 // Part of the Ascend-MLIR Project
+//
+//===----------------------------------------------------------------------===//
+//
+// This file contains the implementations of the shape helper interfaces
+// defined in ShapeHelperOpInterface.td.
 //
 //===----------------------------------------------------------------------===//
 
 #include "Interface/ShapeHelperOpInterface.h"
 
-using namespace mlir;
-using namespace mlir::afir;
+namespace mlir {
 
-//===----------------------------------------------------------------------===//
-// ShapeHelperOpInterface
-//===----------------------------------------------------------------------===//
-
+/// Include the auto-generated declarations.
 #include "Interface/ShapeHelperOpInterface.cpp.inc"
+
+}  // end namespace mlir

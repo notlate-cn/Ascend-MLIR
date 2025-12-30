@@ -8,7 +8,9 @@
 #define MLIR_DIALECT_AFIR_AFIROPS_H
 
 #include "Dialect/AFIR/AFIRDialect.h"
+#include "Dialect/AFIR/ShapeHelper.hpp"
 #include "Interface/ShapeHelperOpInterface.h"
+#include "Interface/ShapeInferenceOpInterface.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/Dialect.h"
 #include "mlir/IR/OpDefinition.h"
