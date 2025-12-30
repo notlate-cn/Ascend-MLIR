@@ -13,63 +13,39 @@ include "mlir/IR/OpBase.td"
 
 def ShapeHelperOpInterface : OpInterface<"ShapeHelperOpInterface"> {
   let description = [{
-    Interface for operations that can infer their output shapes from their
-    input shapes. This interface is inspired by onnx-mlir's ShapeHelper design.
+    Interface to access a registered method to infer the return shapes for an
+    operation that can be used during type inference. The shape inference
+    interface method takes an operation and its operands as input, augmented
+    by an index expression builder and an index expression scope as optional
+    inputs. It returns a specialized shape helper object for that operation,
+    casted as a generic AFIROpShapeHelper.
+
+    For operations that do not support shape helpers at this stage, a
+    `AFIRUnimplementedOpShapeHelper` object is returned. This object does not
+    compute shapes, and simply return success when `computeShape` is called
+    on it. Users may verify if an operation has an actual implementation by
+    calling `isImplemented()` on the shape helper object. An implementation
+    is required when attempting to read the outputs of a shape helper object
+    via the `getOutputDims` method.
+
+    The new object is allocated on the heap and it is the responsability
+    of the object user to free the memory after last use.
   }];
 
-  let cppNamespace = "::mlir::afir";
+  let cppNamespace = "::mlir";
 
   let methods = [
     InterfaceMethod<
       /*desc=*/[{
-        Infer the output shapes of the operation based on the input shapes.
-        Returns success if shape inference succeeds, failure otherwise.
+        Provide a shape helper object that can be used to compute
+        the output shape for the current operation.
       }],
-      /*retTy=*/"LogicalResult",
-      /*methodName=*/"inferShapes",
-      /*args=*/(ins "std::function<void(mlir::Region &)>":$doShapeInference)
-    >,
-    InterfaceMethod<
-      /*desc=*/[{
-        Check if the operation has static shapes for all inputs and outputs.
-      }],
-      /*retTy=*/"bool",
-      /*methodName=*/"hasStaticShape",
-      /*args=*/(ins),
-      /*methodBody=*/"",
-      /*defaultImpl=*/[{
-        for (auto operand : $_op->getOperands()) {
-          if (auto shapedType = mlir::dyn_cast<ShapedType>(operand.getType())) {
-            if (!shapedType.hasStaticShape())
-              return false;
-          }
-        }
-        for (auto result : $_op->getResults()) {
-          if (auto shapedType = mlir::dyn_cast<ShapedType>(result.getType())) {
-            if (!shapedType.hasStaticShape())
-              return false;
-          }
-        }
-        return true;
-      }]
-    >,
-    InterfaceMethod<
-      /*desc=*/[{
-        Get the rank of the output tensor at the given index.
-        Returns -1 if the rank is unknown.
-      }],
-      /*retTy=*/"int64_t",
-      /*methodName=*/"getOutputRank",
-      /*args=*/(ins "unsigned":$outputIndex),
-      /*methodBody=*/"",
-      /*defaultImpl=*/[{
-        if (outputIndex >= $_op->getNumResults())
-          return -1;
-        auto resultType = $_op->getResult(outputIndex).getType();
-        if (auto shapedType = mlir::dyn_cast<ShapedType>(resultType))
-          return shapedType.hasRank() ? shapedType.getRank() : -1;
-        return -1;
-      }]
+      /*retTy=*/"::mlir::afir::AFIROpShapeHelper *",
+      /*methodName=*/"getShapeHelper",
+      /*args=*/(ins "mlir::Operation *":$op,
+                   "llvm::ArrayRef<mlir::Value>":$operands,
+                   "::mlir::afir::IndexExprBuilder *":$ieBuilder,
+                   "::mlir::afir::IndexExprScope *":$scope)
     >
   ];
 }
