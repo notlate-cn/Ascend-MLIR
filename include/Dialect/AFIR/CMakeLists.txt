@@ -16,6 +16,9 @@ add_dependencies(AFIROpsIncGen AscIRAPITypesIncGen)
 # 确保TableGen能够找到生成的Types.td.inc文件
 set(MLIR_TABLEGEN_FLAGS "${MLIR_TABLEGEN_FLAGS} -I${PYASC_DIR}/include/ascir/API")
 
+# Add AFIROps subdirectory
+add_subdirectory(AFIROps)
+
 add_mlir_doc(AFIRDialect AFIRDialect Dialects/ -gen-dialect-doc)
 add_mlir_doc(AFIROps AFIROps Dialects/ -gen-op-doc)
 

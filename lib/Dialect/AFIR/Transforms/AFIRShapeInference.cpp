@@ -7,6 +7,7 @@
 #include "Dialect/AFIR/AFIROps.h"
 #include "Dialect/AFIR/Transforms/Passes.h"
 #include "Interface/ShapeHelperOpInterface.h"
+#include "Interface/ShapeInferenceOpInterface.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/Pass/Pass.h"
@@ -26,18 +27,18 @@ struct AFIRShapeInferencePass : public impl::AFIRShapeInferencePassBase<AFIRShap
 
     // Walk all operations and infer shapes
     module.walk([&](Operation *op) {
-      if (auto shapeOp = dyn_cast<ShapeHelperOpInterface>(op)) {
+      if (auto shapeInfOp = dyn_cast<ShapeInferenceOpInterface>(op)) {
         // Infer shapes for operations implementing the interface
         std::function<void(mlir::Region &)> doShapeInference = [&](mlir::Region &region) {
           // Recursively process regions if needed
           region.walk([&](Operation *innerOp) {
-            if (auto innerShapeOp = dyn_cast<ShapeHelperOpInterface>(innerOp)) {
-              (void)innerShapeOp.inferShapes(doShapeInference);
+            if (auto innerShapeInfOp = dyn_cast<ShapeInferenceOpInterface>(innerOp)) {
+              (void)innerShapeInfOp.inferShapes(doShapeInference);
             }
           });
         };
 
-        if (failed(shapeOp.inferShapes(doShapeInference))) {
+        if (failed(shapeInfOp.inferShapes(doShapeInference))) {
           op->emitWarning("Shape inference failed");
         }
       }
