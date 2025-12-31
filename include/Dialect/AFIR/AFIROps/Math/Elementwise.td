@@ -37,10 +37,10 @@ def AFIR_AddOp : AFIR_Op<"add", [
   }];
 
   let arguments = (ins
-    AnyType:$lhs,
-    AnyType:$rhs
+    AnyTypeOf<[F16, F32, I16, I32]>:$lhs,
+    AnyTypeOf<[F16, F32, I16, I32]>:$rhs
   );
-  let results = (outs AnyType:$result);
+  let results = (outs AnyTypeOf<[F16, F32, I16, I32]>:$result);
 
   let assemblyFormat = [{
     $lhs `,` $rhs attr-dict `:` `(` type($lhs) `,` type($rhs) `)` `->` type($result)
@@ -91,10 +91,10 @@ def AFIR_SubOp : AFIR_Op<"sub", [
   }];
 
   let arguments = (ins
-    AnyType:$lhs,
-    AnyType:$rhs
+    AnyTypeOf<[F16, F32, I16, I32]>:$lhs,
+    AnyTypeOf<[F16, F32, I16, I32]>:$rhs
   );
-  let results = (outs AnyType:$result);
+  let results = (outs AnyTypeOf<[F16, F32, I16, I32]>:$result);
 
   let assemblyFormat = [{
     $lhs `,` $rhs attr-dict `:` `(` type($lhs) `,` type($rhs) `)` `->` type($result)
@@ -145,10 +145,10 @@ def AFIR_MulOp : AFIR_Op<"mul", [
   }];
 
   let arguments = (ins
-    AnyType:$lhs,
-    AnyType:$rhs
+    AnyTypeOf<[F16, F32, I16, I32]>:$lhs,
+    AnyTypeOf<[F16, F32, I16, I32]>:$rhs
   );
-  let results = (outs AnyType:$result);
+  let results = (outs AnyTypeOf<[F16, F32, I16, I32]>:$result);
 
   let assemblyFormat = [{
     $lhs `,` $rhs attr-dict `:` `(` type($lhs) `,` type($rhs) `)` `->` type($result)
@@ -199,10 +199,10 @@ def AFIR_DivOp : AFIR_Op<"div", [
   }];
 
   let arguments = (ins
-    AnyType:$lhs,
-    AnyType:$rhs
+    AnyTypeOf<[F16, F32]>:$lhs,
+    AnyTypeOf<[F16, F32]>:$rhs
   );
-  let results = (outs AnyType:$result);
+  let results = (outs AnyTypeOf<[F16, F32]>:$result);
 
   let assemblyFormat = [{
     $lhs `,` $rhs attr-dict `:` `(` type($lhs) `,` type($rhs) `)` `->` type($result)
