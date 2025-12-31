@@ -15,9 +15,6 @@
 // Include base definitions (dialect, common classes, and fundamental enums)
 include "Dialect/AFIR/AFIRBase.td"
 
-// Include type definitions
-include "Dialect/AFIR/AFIRTypes.td"
-
 // Include attribute definitions (both operation-level and graph-level)
 include "Dialect/AFIR/AFIRAttrs.td"
 
