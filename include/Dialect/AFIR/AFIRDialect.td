@@ -4,38 +4,21 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// This file defines the AFIR dialect.
+// This file is the main entry point for the AFIR dialect TableGen definitions.
+// It includes all dialect components: base definitions, types, and attributes.
 //
 //===----------------------------------------------------------------------===//
 
 #ifndef AFIR_DIALECT
 #define AFIR_DIALECT
 
-include "mlir/IR/OpBase.td"
+// Include base definitions (dialect, common classes, and fundamental enums)
+include "Dialect/AFIR/AFIRBase.td"
 
-//===----------------------------------------------------------------------===//
-// AFIR Dialect Definition
-//===----------------------------------------------------------------------===//
+// Include type definitions
+include "Dialect/AFIR/AFIRTypes.td"
 
-def AFIR_Dialect : Dialect {
-  let name = "afir";
-  let summary = "Ascend Frontend IR Dialect";
-  let description = [{
-    AFIR (Ascend Frontend IR) is a high-level dialect designed for
-    representing computational operations targeting Ascend hardware.
-    It provides a bridge between high-level ML frameworks and lower-level
-    hardware-specific dialects like ASC-IR.
-  }];
-  let cppNamespace = "::mlir::afir";
-  let useDefaultTypePrinterParser = 1;
-  let useDefaultAttributePrinterParser = 1;
-}
-
-//===----------------------------------------------------------------------===//
-// Base AFIR Operation Definition
-//===----------------------------------------------------------------------===//
-
-class AFIR_Op<string mnemonic, list<Trait> traits = []> :
-    Op<AFIR_Dialect, mnemonic, traits>;
+// Include attribute definitions (both operation-level and graph-level)
+include "Dialect/AFIR/AFIRAttrs.td"
 
 #endif // AFIR_DIALECT
