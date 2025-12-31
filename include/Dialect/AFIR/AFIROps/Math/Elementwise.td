@@ -48,6 +48,18 @@ def AFIR_AddOp : AFIR_Op<"add", [
 
   let hasVerifier = 1;
 
+  let extraClassDeclaration = [{
+    static int getNumberOfOperands() {
+      return 2;
+    }
+    static int getNumberOfResults() {
+      return 1;
+    }
+    static bool isSupportVectorFunction() {
+      return true;
+    }
+  }];
+
   let extraClassDefinition = [{
     mlir::afir::AFIROpShapeHelper * $cppClass::getShapeHelper(mlir::Operation *op, 
         llvm::ArrayRef<mlir::Value> operands, mlir::afir::IndexExprBuilder *ieBuilder, 
@@ -89,6 +101,18 @@ def AFIR_SubOp : AFIR_Op<"sub", [
   }];
 
   let hasVerifier = 1;
+
+  let extraClassDeclaration = [{
+    static int getNumberOfOperands() {
+      return 2;
+    }
+    static int getNumberOfResults() {
+      return 1;
+    }
+    static bool isSupportVectorFunction() {
+      return true;
+    }
+  }];
 
   let extraClassDefinition = [{
     mlir::afir::AFIROpShapeHelper * $cppClass::getShapeHelper(mlir::Operation *op, 
@@ -132,6 +156,18 @@ def AFIR_MulOp : AFIR_Op<"mul", [
 
   let hasVerifier = 1;
 
+  let extraClassDeclaration = [{
+    static int getNumberOfOperands() {
+      return 2;
+    }
+    static int getNumberOfResults() {
+      return 1;
+    }
+    static bool isSupportVectorFunction() {
+      return true;
+    }
+  }];
+
   let extraClassDefinition = [{
     mlir::afir::AFIROpShapeHelper * $cppClass::getShapeHelper(mlir::Operation *op, 
         llvm::ArrayRef<mlir::Value> operands, mlir::afir::IndexExprBuilder *ieBuilder, 
@@ -173,6 +209,18 @@ def AFIR_DivOp : AFIR_Op<"div", [
   }];
 
   let hasVerifier = 1;
+
+  let extraClassDeclaration = [{
+    static int getNumberOfOperands() {
+      return 2;
+    }
+    static int getNumberOfResults() {
+      return 1;
+    }
+    static bool isSupportVectorFunction() {
+      return false;
+    }
+  }];
 
   let extraClassDefinition = [{
     mlir::afir::AFIROpShapeHelper * $cppClass::getShapeHelper(mlir::Operation *op, 
