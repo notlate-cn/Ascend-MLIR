@@ -15,19 +15,19 @@ mlir_tablegen(AFIRTypes.cpp.inc -gen-typedef-defs)
 add_public_tablegen_target(AFIRTypesIncGen)
 add_dependencies(AFIRTypesIncGen AFIRDialectIncGen)
 
-# Attribute definitions
-set(LLVM_TARGET_DEFINITIONS AFIRAttrs.td)
-mlir_tablegen(AFIRAttrs.h.inc -gen-attrdef-decls -attrdef-dialect=afir)
-mlir_tablegen(AFIRAttrs.cpp.inc -gen-attrdef-defs -attrdef-dialect=afir)
-add_public_tablegen_target(AFIRAttrsIncGen)
-add_dependencies(AFIRAttrsIncGen AFIRDialectIncGen)
-
-# Enum definitions (separate to avoid redefinition conflicts)
+# Enum definitions (independent from AttrDefs to avoid redefinition)
 set(LLVM_TARGET_DEFINITIONS AFIREnums.td)
 mlir_tablegen(AFIREnums.h.inc -gen-enum-decls)
 mlir_tablegen(AFIREnums.cpp.inc -gen-enum-defs)
 add_public_tablegen_target(AFIREnumsIncGen)
 add_dependencies(AFIREnumsIncGen AFIRDialectIncGen)
+
+# Attribute definitions (independent from enums in TableGen, but uses enum types in C++)
+set(LLVM_TARGET_DEFINITIONS AFIRAttrs.td)
+mlir_tablegen(AFIRAttrs.h.inc -gen-attrdef-decls)
+mlir_tablegen(AFIRAttrs.cpp.inc -gen-attrdef-defs)
+add_public_tablegen_target(AFIRAttrsIncGen)
+add_dependencies(AFIRAttrsIncGen AFIRDialectIncGen)
 
 # Operation definitions
 set(LLVM_TARGET_DEFINITIONS AFIROps.td)
