@@ -16,6 +16,7 @@
 #include "mlir/Interfaces/SideEffectInterfaces.h"
 #include "ascir/Dialect/Asc/IR/Asc.h"
 
+// Include operation definitions
 #define GET_OP_CLASSES
 #include "Dialect/AFIR/AFIROps.h.inc"
 
