@@ -1,0 +1,44 @@
+/* Copyright (c) Huawei Technologies Co., 2025 Ltd.
+ * This file is a part of the CANN Open Software.
+ * Licensed under CANN Open Software License Agreement Version 1.0 (the "License").
+ * Please refer to the License for details. You may not use this file except in compliance with the License.
+ * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND, EITHER EXPRESS OR IMPLIED,
+ * INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
+ * See LICENSE in the root of the software repository for the full text of the License.
+ * ===================================================================================================================*/
+
+syntax = "proto3";
+package ascendc_ir.proto;
+
+import "ge_ir.proto";
+message AscTensorDef {
+  ge.proto.AscTensorAttrGroupsDef attr = 1;
+}
+
+message AscInputSourceDef {
+  string src_node_name = 1;
+  int32 src_out_index = 2;
+}
+
+message IrDef {
+  repeated string input_names = 1; // IR上的输入名
+  repeated string output_names = 2; // IR上的输出名
+  repeated int64 input_ir_type = 3; // IR上的输入类型
+  repeated int64 output_ir_type = 4; // IR上的输出类型
+  string type = 5; // IR的类型
+  repeated int64 input_nums = 6; // IR的输入个数
+  repeated int64 output_nums = 7; // IR的输入个数
+}
+
+message AscNodeDef {
+  repeated AscInputSourceDef input_src = 1;
+  repeated AscTensorDef outputs = 2;
+  ge.proto.AscNodeAttrGroupsDef attr = 3;
+  IrDef ir_def = 4;
+}
+
+message AscGraphDef {
+  ge.proto.AscGraphAttrGroupsDef asc_graph_attr = 1;
+  repeated AscNodeDef asc_node = 2;
+  string graph_name = 3;
+}
