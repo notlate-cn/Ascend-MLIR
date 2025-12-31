@@ -19,12 +19,12 @@ message AscGraphDef {
 }
 ```
 
-**MLIR 定义** (`AFIRGraphAttrs.td`):
+**MLIR 定义** (`AFIRAttrs.td`):
 ```tablegen
 def AFIR_AscGraph : AFIR_Attr<"AscGraph", "graph"> {
   let parameters = (ins
-    "AFIR_AscGraphAttrGroups":$asc_graph_attr,
-    ArrayRefParameter<"Attribute", "array of AscNode">:$asc_node,
+    "AscGraphAttrGroupsAttr":$asc_graph_attr,
+    ArrayRefParameter<"AscNodeAttr", "array of AscNode">:$asc_node,
     "StringAttr":$graph_name
   );
 }
@@ -53,18 +53,18 @@ message AscGraphAttrGroupsDef {
 ```tablegen
 def AFIR_AscGraphAttrGroups : AFIR_Attr<"AscGraphAttrGroups", "asc_graph"> {
   let parameters = (ins
-    "int64_t":$tiling_key,
-    ArrayRefParameter<"Attribute", "array of AxisAttr">:$axis,
-    "int64_t":$type,
+    DefaultValuedParameter<"int64_t", "-1">:$tiling_key,
+    ArrayRefParameter<"AxisAttrAttr", "array of AxisAttr">:$axis,
+    "AscGraphTypeAttr":$type,  // 使用枚举类型替代 int64
     ArrayRefParameter<"Attribute", "array of size variable strings">:$size_var
   );
 }
 ```
 
 **说明**:
-- `tiling_key`: Tiling 配置的唯一标识
+- `tiling_key`: Tiling 配置的唯一标识（默认值 -1）
 - `axis`: 计算轴的定义数组
-- `type`: 图的类型标识
+- `type`: 图的类型（使用 `AscGraphTypeAttr` 枚举：HintGraph=0, ImplGraph=1）
 - `size_var`: 大小变量的字符串数组
 
 ---
@@ -91,31 +91,25 @@ message AxisDef {
 ```tablegen
 def AFIR_AxisAttr : AFIR_Attr<"AxisAttr", "axis"> {
   let parameters = (ins
-    "int64_t":$id,
+    DefaultValuedParameter<"int64_t", "-1">:$id,
     "StringAttr":$name,
-    "int32_t":$axis_type,
-    "bool":$bind_block,
-    "StringAttr":$size,
-    "StringAttr":$align,
+    "AxisTypeAttr":$axis_type,  // 使用枚举类型
+    DefaultValuedParameter<"bool", "false">:$bind_block,
+    "Attribute":$size,
+    OptionalParameter<"StringAttr">:$align,  // 可选参数
     ArrayRefParameter<"int64_t">:$from,
-    "int64_t":$split_pair_other_id,
-    "bool":$allow_oversize_axis,
-    "bool":$allow_unaligned_tail
+    DefaultValuedParameter<"int64_t", "-1">:$split_pair_other_id
+    // allow_oversize_axis: 未定义
+    // allow_unaligned_tail: 未定义
   );
 }
 ```
 
-**说明**:
-- `id`: 轴的唯一标识符
-- `name`: 轴的名称
-- `axis_type`: 轴的类型（如块轴、线程轴等）
-- `bind_block`: 是否绑定到硬件块
-- `size`: 轴的大小（表达式字符串）
-- `align`: 对齐要求（表达式字符串）
-- `from`: 轴派生自哪些其他轴
-- `split_pair_other_id`: Split pair 的另一个轴 ID
-- `allow_oversize_axis`: 是否允许超大轴
-- `allow_unaligned_tail`: 是否允许未对齐的尾部
+**差异说明**:
+- `axis_type`: 使用 `AxisTypeAttr` 枚举（Original, BlockOuter, BlockInner, TileOuter, TileInner, Merged, Invalid）
+- `align`: 改为可选参数
+- `allow_oversize_axis`: **未定义**
+- `allow_unaligned_tail`: **未定义**
 
 ---
 
@@ -135,10 +129,10 @@ message AscNodeDef {
 ```tablegen
 def AFIR_AscNode : AFIR_Attr<"AscNode", "node"> {
   let parameters = (ins
-    ArrayRefParameter<"Attribute", "array of AscInputSource">:$input_src,
-    ArrayRefParameter<"Attribute", "array of AscTensor">:$outputs,
-    "AFIR_AscNodeAttrGroups":$attr,
-    "AFIR_IrDef":$ir_def
+    ArrayRefParameter<"AscInputSourceAttr", "array of AscInputSource">:$input_src,
+    ArrayRefParameter<"AscTensorAttr", "array of AscTensor">:$outputs,
+    "AscNodeAttrGroupsAttr":$attr,
+    "IrDefAttr":$ir_def
   );
 }
 ```
@@ -190,7 +184,7 @@ message AscTensorDef {
 ```tablegen
 def AFIR_AscTensor : AFIR_Attr<"AscTensor", "tensor_def"> {
   let parameters = (ins
-    "AFIR_AscTensorAttrGroups":$attr
+    "AscTensorAttrGroupsAttr":$attr
   );
 }
 ```
@@ -219,31 +213,24 @@ message AscTensorAttrGroupsDef {
 ```tablegen
 def AFIR_AscTensorAttrGroups : AFIR_Attr<"AscTensorAttrGroups", "asc_tensor"> {
   let parameters = (ins
-    "int64_t":$dtype,
+    "DataTypeAttr":$dtype,  // 使用枚举类型
     ArrayRefParameter<"int64_t">:$axis_ids,
     ArrayRefParameter<"Attribute", "array of expression strings">:$repeats,
     ArrayRefParameter<"Attribute", "array of expression strings">:$strides,
     ArrayRefParameter<"int64_t">:$vectorized_axis,
     ArrayRefParameter<"Attribute", "array of vectorized stride expressions">:$vectorized_strides,
-    OptionalParameter<"AFIR_MemAttr">:$mem,
-    OptionalParameter<"AFIR_MemQueueAttr">:$que,
-    OptionalParameter<"AFIR_MemBufAttr">:$buf,
-    OptionalParameter<"AFIR_MemOptAttr">:$opt
+    OptionalParameter<"MemAttrAttr">:$mem,
+    OptionalParameter<"MemQueueAttrAttr">:$que,
+    OptionalParameter<"MemBufAttrAttr">:$buf
+    // opt (MemOptAttr): 未定义
   );
 }
 ```
 
-**说明**:
-- `dtype`: 数据类型（参见 DataType 枚举）
-- `axis_ids`: 关联的轴 ID 数组
-- `repeats`: 重复次数（表达式数组）
-- `strides`: 步长（表达式数组）
-- `vectorized_axis`: 向量化的轴
-- `vectorized_strides`: 向量化的步长
-- `mem`: 内存属性
-- `que`: 内存队列属性
-- `buf`: 内存缓冲区属性
-- `opt`: 内存优化属性
+**差异说明**:
+- `dtype`: 使用 `DataTypeAttr` 枚举（41种数据类型）
+- `mem`, `que`, `buf`: 改为可选参数
+- `opt` (MemOptAttrDef): **未定义**
 
 ---
 
@@ -269,15 +256,22 @@ message MemAttrDef {
 def AFIR_MemAttr : AFIR_Attr<"MemAttr", "mem"> {
   let parameters = (ins
     "int64_t":$tensor_id,
-    "int32_t":$alloc_type,
-    "int32_t":$position,
-    "int32_t":$hardware,
-    ArrayRefParameter<"int64_t">:$buf_ids,
-    "StringAttr":$name,
-    "int64_t":$reuse_id
+    "AllocTypeAttr":$alloc_type,  // 使用枚举类型 (GLOBAL, L1, L2, QBUF, TBUF)
+    "PositionAttr":$position,     // 使用枚举类型 (GM, VECTOR_IN, VECTOR_OUT, VECTOR_CALC)
+    "HardwareAttr":$hardware,     // 使用枚举类型 (GM, UB)
+    // buf_ids: 未定义
+    // name: 未定义
+    DefaultValuedParameter<"int64_t", "-1">:$reuse_id
   );
 }
 ```
+
+**差异说明**:
+- `alloc_type`: 使用 `AllocTypeAttr` 枚举
+- `position`: 使用 `PositionAttr` 枚举
+- `hardware`: 使用 `HardwareAttr` 枚举
+- `buf_ids`: **未定义**
+- `name`: **未定义**
 
 #### MemQueueAttrDef (内存队列属性)
 
@@ -296,12 +290,16 @@ message MemQueueAttrDef {
 def AFIR_MemQueueAttr : AFIR_Attr<"MemQueueAttr", "mem_queue"> {
   let parameters = (ins
     "int64_t":$id,
-    "int64_t":$depth,
-    "int64_t":$buf_num,
-    "StringAttr":$name
+    DefaultValuedParameter<"int64_t", "2">:$depth,
+    "int64_t":$buf_num
+    // name: 未定义
   );
 }
 ```
+
+**差异说明**:
+- `depth`: 使用默认值 2
+- `name`: **未定义**
 
 #### MemBufAttrDef (内存缓冲区属性)
 
@@ -317,11 +315,14 @@ message MemBufAttrDef {
 ```tablegen
 def AFIR_MemBufAttr : AFIR_Attr<"MemBufAttr", "mem_buf"> {
   let parameters = (ins
-    "int64_t":$id,
-    "StringAttr":$name
+    "int64_t":$id
+    // name: 未定义
   );
 }
 ```
+
+**差异说明**:
+- `name`: **未定义**
 
 #### MemOptAttrDef (内存优化属性)
 
@@ -336,14 +337,10 @@ message MemOptAttrDef {
 
 **MLIR 定义**:
 ```tablegen
-def AFIR_MemOptAttr : AFIR_Attr<"MemOptAttr", "mem_opt"> {
-  let parameters = (ins
-    "int64_t":$reuse_id,
-    "int64_t":$ref_tensor,
-    "int64_t":$merge_scope
-  );
-}
+// 未定义 - 整个 MemOptAttr 属性未实现
 ```
+
+**状态**: **未定义**
 
 ---
 
@@ -367,10 +364,10 @@ def AFIR_AscNodeAttrGroups : AFIR_Attr<"AscNodeAttrGroups", "asc_node"> {
   let parameters = (ins
     "StringAttr":$name,
     "StringAttr":$type,
-    OptionalParameter<"AFIR_SchedInfo">:$sched,
-    OptionalParameter<"AFIR_ApiInfo">:$api,
+    OptionalParameter<"SchedInfoAttr">:$sched,
+    OptionalParameter<"ApiInfoAttr">:$api,
     "DictionaryAttr":$ir_attr_def,
-    ArrayRefParameter<"Attribute", "array of TmpBufferGroup">:$tmp_buffers
+    ArrayRefParameter<"TmpBufferGroupAttr", "array of TmpBufferGroup">:$tmp_buffers
   );
 }
 ```
@@ -378,8 +375,8 @@ def AFIR_AscNodeAttrGroups : AFIR_Attr<"AscNodeAttrGroups", "asc_node"> {
 **说明**:
 - `name`: 节点名称
 - `type`: 节点类型
-- `sched`: 调度信息
-- `api`: API 信息
+- `sched`: 调度信息（可选）
+- `api`: API 信息（可选）
 - `ir_attr_def`: IR 属性字典（映射自 AscIrAttrDef.attr）
 - `tmp_buffers`: 临时缓冲区组数组
 
@@ -401,19 +398,18 @@ message SchedInfoDef {
 ```tablegen
 def AFIR_SchedInfo : AFIR_Attr<"SchedInfo", "sched"> {
   let parameters = (ins
-    "int64_t":$exec_order,
+    DefaultValuedParameter<"int64_t", "-1">:$exec_order,
     ArrayRefParameter<"int64_t">:$axis,
-    "int64_t":$loop_axis,
-    "int32_t":$exec_condition
+    DefaultValuedParameter<"int64_t", "-1">:$loop_axis,
+    "ExecuteConditionAttr":$exec_condition  // 使用枚举类型
   );
 }
 ```
 
-**说明**:
-- `exec_order`: 执行顺序
-- `axis`: 轴映射
-- `loop_axis`: 循环轴
-- `exec_condition`: 执行条件
+**差异说明**:
+- `exec_order`: 使用默认值 -1
+- `loop_axis`: 使用默认值 -1
+- `exec_condition`: 使用 `ExecuteConditionAttr` 枚举（NoCache, CacheBlockSplitFusedBroadcastAxis, CacheBlockSplitOriginBroadcastAxis, ConditionInvalid）
 
 ---
 
@@ -432,17 +428,15 @@ message ApiInfoDef {
 ```tablegen
 def AFIR_ApiInfo : AFIR_Attr<"ApiInfo", "api"> {
   let parameters = (ins
-    "int32_t":$type,
-    "int32_t":$compute_type,
-    "int32_t":$unit
+    "ApiTypeAttr":$type,          // 使用枚举类型 (Buffer, Compute, Invalid)
+    "ComputeTypeAttr":$compute_type,  // 使用枚举类型 (Load, Store, ReduceStore, ...)
+    "ComputeUnitAttr":$unit       // 使用枚举类型 (None, MTE1, MTE2, MTE3, Scalar, Vector, Cube, Invalid)
   );
 }
 ```
 
-**说明**:
-- `type`: API 类型
-- `compute_type`: 计算类型
-- `unit`: 执行单元
+**差异说明**:
+- 所有字段都使用枚举类型替代整数类型
 
 ---
 
@@ -461,12 +455,15 @@ message TmpBufferGroupDef {
 ```tablegen
 def AFIR_TmpBufferGroup : AFIR_Attr<"TmpBufferGroup", "tmp_buffer"> {
   let parameters = (ins
-    "AFIR_TmpBufDesc":$buf_desc,
-    "AFIR_MemAttr":$mem,
-    "int64_t":$id
+    "TmpBufDescAttr":$buf_desc,
+    "MemAttrAttr":$mem,
+    DefaultValuedParameter<"int64_t", "-1">:$id
   );
 }
 ```
+
+**差异说明**:
+- `id`: 使用默认值 -1
 
 ---
 
@@ -485,14 +482,13 @@ message TmpBufDescDef {
 def AFIR_TmpBufDesc : AFIR_Attr<"TmpBufDesc", "tmp_buf_desc"> {
   let parameters = (ins
     "StringAttr":$size,
-    "int64_t":$life_time_axis_id
+    DefaultValuedParameter<"int64_t", "-1">:$life_time_axis_id
   );
 }
 ```
 
-**说明**:
-- `size`: 缓冲区大小（表达式字符串）
-- `life_time_axis_id`: 生命周期轴 ID
+**差异说明**:
+- `life_time_axis_id`: 使用默认值 -1
 
 ---
 
@@ -515,8 +511,8 @@ message IrDef {
 ```tablegen
 def AFIR_IrDef : AFIR_Attr<"IrDef", "ir_def"> {
   let parameters = (ins
-    ArrayRefParameter<"Attribute", "array of input name strings">:$input_names,
-    ArrayRefParameter<"Attribute", "array of output name strings">:$output_names,
+    ArrayRefParameter<"StringAttr", "array of input name strings">:$input_names,
+    ArrayRefParameter<"StringAttr", "array of output name strings">:$output_names,
     ArrayRefParameter<"int64_t">:$input_ir_type,
     ArrayRefParameter<"int64_t">:$output_ir_type,
     "StringAttr":$type,
@@ -537,23 +533,50 @@ def AFIR_IrDef : AFIR_Attr<"IrDef", "ir_def"> {
 
 ---
 
-## DataType 枚举
+## 枚举类型定义
 
-DataType 是一个重要的枚举类型，定义了所有支持的数据类型：
+所有枚举类型定义在 `AFIREnums.td` 中：
 
-```cpp
-enum DataType {
-  DT_UNDEFINED = 0,
-  DT_FLOAT = 1,
-  DT_FLOAT16 = 2,
-  DT_INT8 = 3,
-  DT_UINT8 = 4,
-  // ... 共 41 种数据类型
-  DT_FLOAT4_E1M2 = 40
+### DataType 枚举
+
+```tablegen
+def AFIR_DataTypeEnum : I32EnumAttr<"DataType", ...> {
+  // 41 种数据类型
+  DT_UNDEFINED = 0, DT_FLOAT = 1, DT_FLOAT16 = 2, DT_INT8 = 3,
+  DT_UINT8 = 4, DT_INT16 = 5, DT_UINT16 = 6, DT_INT32 = 7,
+  DT_INT64 = 8, DT_UINT32 = 9, DT_UINT64 = 10, DT_BOOL = 11,
+  DT_DOUBLE = 12, DT_STRING = 13, ... DT_FLOAT4_E1M2 = 40
 }
 ```
 
-在 MLIR 中定义为 `AFIR_DataTypeEnum`，包含所有相同的枚举值。
+### 其他枚举
+
+| 枚举类型 | 说明 | 值 |
+|----------|------|-----|
+| `AllocTypeAttr` | 内存分配类型 | GLOBAL, L1, L2, QBUF, TBUF |
+| `PositionAttr` | 内存位置 | GM, VECTOR_IN, VECTOR_OUT, VECTOR_CALC |
+| `HardwareAttr` | 硬件目标 | GM, UB |
+| `AxisTypeAttr` | 轴类型 | Original, BlockOuter, BlockInner, TileOuter, TileInner, Merged, Invalid |
+| `ExecuteConditionAttr` | 执行条件 | NoCache, CacheBlockSplitFusedBroadcastAxis, CacheBlockSplitOriginBroadcastAxis, ConditionInvalid |
+| `ApiTypeAttr` | API 类型 | Buffer, Compute, Invalid |
+| `ComputeTypeAttr` | 计算类型 | Load, Store, ReduceStore, Elewise, Broadcast, Reduce, Transpose, Concat, Gather, Cube, Split, Invalid |
+| `ComputeUnitAttr` | 计算单元 | None, MTE1, MTE2, MTE3, Scalar, Vector, Cube, Invalid |
+| `AscGraphTypeAttr` | 图类型 | HintGraph, ImplGraph |
+
+---
+
+## 未定义属性汇总
+
+以下 Proto 字段在当前 MLIR 定义中未实现：
+
+| Proto Message | 未定义字段 |
+|---------------|-----------|
+| `AxisDef` | `allow_oversize_axis`, `allow_unaligned_tail` |
+| `MemAttrDef` | `buf_ids`, `name` |
+| `MemQueueAttrDef` | `name` |
+| `MemBufAttrDef` | `name` |
+| `AscTensorAttrGroupsDef` | `opt` (MemOptAttrDef) |
+| `MemOptAttrDef` | **整个属性未定义** |
 
 ---
 
@@ -562,44 +585,43 @@ enum DataType {
 ```
 AscGraphDef
 ├── AscGraphAttrGroupsDef
-│   ├── tiling_key
+│   ├── tiling_key (默认 -1)
 │   ├── axis (array)
-│   │   └── AxisDef
-│   │       ├── id, name, axis_type
-│   │       ├── bind_block
-│   │       ├── size, align
+│   │   └── AxisAttr
+│   │       ├── id (默认 -1), name
+│   │       ├── axis_type (枚举)
+│   │       ├── bind_block (默认 false)
+│   │       ├── size, align (可选)
 │   │       ├── from (array)
-│   │       ├── split_pair_other_id
-│   │       └── allow_oversize_axis, allow_unaligned_tail
-│   ├── type
+│   │       └── split_pair_other_id (默认 -1)
+│   ├── type (AscGraphTypeAttr 枚举)
 │   └── size_var (array)
 ├── asc_node (array)
-│   └── AscNodeDef
+│   └── AscNodeAttr
 │       ├── input_src (array)
-│       │   └── AscInputSourceDef
+│       │   └── AscInputSourceAttr
 │       │       ├── src_node_name
 │       │       └── src_out_index
 │       ├── outputs (array)
-│       │   └── AscTensorDef
-│       │       └── AscTensorAttrGroupsDef
-│       │           ├── dtype
+│       │   └── AscTensorAttr
+│       │       └── AscTensorAttrGroupsAttr
+│       │           ├── dtype (DataTypeAttr 枚举)
 │       │           ├── axis_ids, repeats, strides
 │       │           ├── vectorized_axis, vectorized_strides
-│       │           ├── MemAttrDef
-│       │           ├── MemQueueAttrDef
-│       │           ├── MemBufAttrDef
-│       │           └── MemOptAttrDef
-│       ├── attr (AscNodeAttrGroupsDef)
+│       │           ├── MemAttrAttr (可选)
+│       │           ├── MemQueueAttrAttr (可选)
+│       │           └── MemBufAttrAttr (可选)
+│       ├── attr (AscNodeAttrGroupsAttr)
 │       │   ├── name, type
-│       │   ├── SchedInfoDef
-│       │   ├── ApiInfoDef
-│       │   ├── ir_attr_def (dict)
+│       │   ├── SchedInfoAttr (可选)
+│       │   ├── ApiInfoAttr (可选)
+│       │   ├── ir_attr_def (DictionaryAttr)
 │       │   └── tmp_buffers (array)
-│       │       └── TmpBufferGroupDef
-│       │           ├── TmpBufDescDef
-│       │           ├── MemAttrDef
-│       │           └── id
-│       └── ir_def (IrDef)
+│       │       └── TmpBufferGroupAttr
+│       │           ├── TmpBufDescAttr
+│       │           ├── MemAttrAttr
+│       │           └── id (默认 -1)
+│       └── ir_def (IrDefAttr)
 │           ├── input_names, output_names
 │           ├── input_ir_type, output_ir_type
 │           ├── type
@@ -622,17 +644,13 @@ AscGraphDef
       #afir.axis<
         id = 0,
         name = "block_idx",
-        axis_type = 1,
+        axis_type = #afir.axis_type<BlockOuter>,
         bind_block = true,
         size = "1024",
-        align = "16",
-        from = [],
-        split_pair_other_id = -1,
-        allow_oversize_axis = false,
-        allow_unaligned_tail = false
+        from = []
       >
     ],
-    type = 0,
+    type = #afir.type<HintGraph>,
     size_var = ["N", "M"]
   >,
   asc_node = [
@@ -657,27 +675,29 @@ AscGraphDef
 3. **基本类型映射**:
    - `string` → `StringAttr`
    - `int64` → `int64_t`
-   - `int32` → `int32_t`
+   - `int32` → `int32_t` 或枚举类型
    - `bool` → `bool`
 4. **optional/nullable → OptionalParameter**: 可选字段使用 OptionalParameter
 5. **map → DictionaryAttr**: proto 的 map 映射为 MLIR 的 DictionaryAttr
 6. **表达式字符串**: 在 proto 中标记为 `// expression` 的 string 字段在 MLIR 中保持为 StringAttr
+7. **int32 枚举 → EnumAttr**: proto 中表示枚举的 int32 字段使用 MLIR EnumAttr
 
 ---
 
 ## 文件清单
 
-- **AFIRGraphAttrs.td**: MLIR 属性定义文件
+- **AFIREnums.td**: 所有枚举类型定义
+- **AFIRAttrs.td**: MLIR 属性定义文件
 - **ascendc_ir.proto**: AscGraph 主要结构定义
 - **ge_ir.proto**: 引用的属性组定义
-- **AFIRDialect.td**: 方言主文件（已更新包含图属性）
+- **AFIRDialect.td**: 方言主文件
 
 ---
 
 ## 下一步工作
 
-1. 实现 C++ 类的 parser 和 printer 方法
-2. 实现 Proto ↔ MLIR 的转换工具
-3. 添加 verifier 验证属性的正确性
-4. 实现图操作（GraphOp）使用这些属性
-5. 添加单元测试
+1. ✅ 实现基本属性定义
+2. ⬜ 实现 Proto ↔ MLIR 的转换工具
+3. ⬜ 添加 verifier 验证属性的正确性
+4. ⬜ 实现缺失的属性（MemOptAttr 等）
+5. ⬜ 添加单元测试
