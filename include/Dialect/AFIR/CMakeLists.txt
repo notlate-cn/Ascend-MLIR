@@ -17,19 +17,24 @@ add_dependencies(AFIRTypesIncGen AFIRDialectIncGen)
 
 # Attribute definitions
 set(LLVM_TARGET_DEFINITIONS AFIRAttrs.td)
-mlir_tablegen(AFIRAttrs.h.inc -gen-attrdef-decls)
-mlir_tablegen(AFIRAttrs.cpp.inc -gen-attrdef-defs)
-mlir_tablegen(AFIREnums.h.inc -gen-enum-decls)
-mlir_tablegen(AFIREnums.cpp.inc -gen-enum-defs)
+mlir_tablegen(AFIRAttrs.h.inc -gen-attrdef-decls -attrdef-dialect=afir)
+mlir_tablegen(AFIRAttrs.cpp.inc -gen-attrdef-defs -attrdef-dialect=afir)
 add_public_tablegen_target(AFIRAttrsIncGen)
 add_dependencies(AFIRAttrsIncGen AFIRDialectIncGen)
+
+# Enum definitions (separate to avoid redefinition conflicts)
+set(LLVM_TARGET_DEFINITIONS AFIREnums.td)
+mlir_tablegen(AFIREnums.h.inc -gen-enum-decls)
+mlir_tablegen(AFIREnums.cpp.inc -gen-enum-defs)
+add_public_tablegen_target(AFIREnumsIncGen)
+add_dependencies(AFIREnumsIncGen AFIRDialectIncGen)
 
 # Operation definitions
 set(LLVM_TARGET_DEFINITIONS AFIROps.td)
 mlir_tablegen(AFIROps.h.inc -gen-op-decls)
 mlir_tablegen(AFIROps.cpp.inc -gen-op-defs)
 add_public_tablegen_target(AFIROpsIncGen)
-add_dependencies(AFIROpsIncGen AFIRDialectIncGen AFIRTypesIncGen AFIRAttrsIncGen AscIRAPITypesIncGen)
+add_dependencies(AFIROpsIncGen AFIRDialectIncGen AFIRTypesIncGen AFIRAttrsIncGen AFIREnumsIncGen AscIRAPITypesIncGen)
 
 # 确保TableGen能够找到生成的Types.td.inc文件
 set(MLIR_TABLEGEN_FLAGS "${MLIR_TABLEGEN_FLAGS} -I${PYASC_DIR}/include/ascir/API")
