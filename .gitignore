@@ -9,3 +9,6 @@ build/
 # tmp files
 __checked_files_list__
 __code_format_check_result__
+
+# third_party
+externals/llvm-project
