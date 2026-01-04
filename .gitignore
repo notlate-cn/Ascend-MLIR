@@ -2,6 +2,9 @@
 /.claude/
 /.idea/
 /.cache
+/.gitcode/docker
+/.gitcode/workflows/*.md
+/.gitcode/workflows/ci-with-docker.yml
 
 # build files
 build/
