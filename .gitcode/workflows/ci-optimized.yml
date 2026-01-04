@@ -1,0 +1,179 @@
+name: Ascend-MLIR CI (Optimized)
+
+# 触发条件：仅在创建 MR 时或手动触发时执行
+on:
+  # 创建或更新 Pull Request/Merge Request 时触发
+  pull_request:
+    branches:
+      - main
+      - dev
+    types:
+      - opened       # MR 创建时
+      - synchronize  # MR 更新时（新提交 push 到 MR 分支）
+      - reopened     # MR 重新打开时
+
+  # 支持手动触发
+  workflow_dispatch:
+    inputs:
+      rebuild_llvm:
+        description: 'Force rebuild LLVM from scratch'
+        required: false
+        default: 'false'
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 240  # 4 小时超时限制
+
+    steps:
+      # 1. 检出代码
+      - name: Checkout repository
+        uses: actions/checkout@v3
+        with:
+          submodules: recursive
+          fetch-depth: 1  # 浅克隆加速
+
+      # 2. 设置环境
+      - name: Setup build environment
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential \
+            cmake \
+            ninja-build \
+            ccache \
+            python3 \
+            python3-pip \
+            git \
+            clang \
+            lld
+
+          # 配置 ccache 以加速编译
+          echo "CC=ccache clang" >> $GITHUB_ENV
+          echo "CXX=ccache clang++" >> $GITHUB_ENV
+
+      # 3. 缓存 ccache（编译缓存）
+      - name: Cache ccache
+        uses: actions/cache@v3
+        with:
+          path: ~/.ccache
+          key: ccache-${{ runner.os }}-${{ github.sha }}
+          restore-keys: |
+            ccache-${{ runner.os }}-
+
+      # 4. 缓存 LLVM 构建（关键：避免每次都重新构建 LLVM）
+      - name: Cache LLVM build
+        id: cache-llvm
+        uses: actions/cache@v3
+        with:
+          path: |
+            externals/llvm-project/build
+            externals/stablehlo/build
+          # 使用 submodule commit hash 作为缓存 key
+          key: llvm-build-${{ runner.os }}-${{ hashFiles('externals/llvm-project/.git/HEAD', 'externals/stablehlo/.git/HEAD') }}
+          restore-keys: |
+            llvm-build-${{ runner.os }}-
+
+      # 5. 构建依赖（仅在缓存未命中或手动触发时构建）
+      - name: Build dependencies (LLVM, StableHLO, PyAsc)
+        if: steps.cache-llvm.outputs.cache-hit != 'true' || github.event.inputs.rebuild_llvm == 'true'
+        run: |
+          echo "⚙️  Building LLVM and dependencies (this may take 1-2 hours)..."
+          chmod +x scripts/build.sh
+          ./scripts/build.sh --build-deps
+        env:
+          BUILD_TYPE: Release
+          NUM_JOBS: 4
+
+      # 6. 构建 Ascend-MLIR 项目
+      - name: Build Ascend-MLIR project
+        run: |
+          echo "⚙️  Building Ascend-MLIR project..."
+          chmod +x scripts/build.sh
+          ./scripts/build.sh --build-project
+        env:
+          BUILD_TYPE: Release
+          NUM_JOBS: 4
+
+      # 7. 运行测试
+      - name: Run tests
+        id: run-tests
+        run: |
+          echo "🧪 Running test suite..."
+          chmod +x scripts/build.sh
+          ./scripts/build.sh --build-tests 2>&1 | tee test_output.log
+        continue-on-error: true
+
+      # 8. 解析测试结果并生成报告
+      - name: Parse test results
+        id: parse-results
+        run: |
+          echo "📊 Parsing test results..."
+
+          # 检查测试输出中的关键字
+          TOTAL_TESTS=$(grep -oP '(?<=Testing: )\d+' test_output.log | head -1 || echo "0")
+          PASSED_TESTS=$(grep -oP '\d+(?= passed)' test_output.log | tail -1 || echo "0")
+          FAILED_TESTS=$(grep -oP '\d+(?= failed)' test_output.log | tail -1 || echo "0")
+
+          echo "total_tests=${TOTAL_TESTS}" >> $GITHUB_OUTPUT
+          echo "passed_tests=${PASSED_TESTS}" >> $GITHUB_OUTPUT
+          echo "failed_tests=${FAILED_TESTS}" >> $GITHUB_OUTPUT
+
+          # 计算通过率
+          if [ "${TOTAL_TESTS}" -gt 0 ]; then
+            PASS_RATE=$(awk "BEGIN {printf \"%.2f\", (${PASSED_TESTS}/${TOTAL_TESTS})*100}")
+          else
+            PASS_RATE="0.00"
+          fi
+
+          echo "pass_rate=${PASS_RATE}" >> $GITHUB_OUTPUT
+
+          echo "📈 Test Summary:"
+          echo "  Total:  ${TOTAL_TESTS}"
+          echo "  Passed: ${PASSED_TESTS}"
+          echo "  Failed: ${FAILED_TESTS}"
+          echo "  Pass Rate: ${PASS_RATE}%"
+
+      # 9. 判断流水线成功与否（基于测试通过率）
+      - name: Validate test pass rate
+        run: |
+          PASS_RATE="${{ steps.parse-results.outputs.pass_rate }}"
+          FAILED_TESTS="${{ steps.parse-results.outputs.failed_tests }}"
+
+          echo "🎯 Validating test results..."
+          echo "Pass Rate: ${PASS_RATE}%"
+
+          # 策略：100% 通过才认为成功（可根据需求调整）
+          if [ "${FAILED_TESTS}" -eq 0 ] && [ "${PASS_RATE}" == "100.00" ]; then
+            echo "✅ All tests passed! Pipeline succeeded."
+            exit 0
+          else
+            echo "❌ Tests failed or pass rate below 100%. Pipeline failed."
+            echo "Failed tests: ${FAILED_TESTS}"
+            exit 1
+          fi
+
+      # 10. 上传测试报告和日志
+      - name: Upload test artifacts
+        if: always()
+        uses: actions/upload-artifact@v3
+        with:
+          name: test-results-${{ github.sha }}
+          path: |
+            test_output.log
+            build/Testing/
+            build/**/*.log
+          retention-days: 30
+
+      # 11. 发布测试结果摘要
+      - name: Publish test summary
+        if: always()
+        run: |
+          echo "## 🧪 Test Results Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Metric | Value |" >> $GITHUB_STEP_SUMMARY
+          echo "|--------|-------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Total Tests | ${{ steps.parse-results.outputs.total_tests }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Passed | ${{ steps.parse-results.outputs.passed_tests }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Failed | ${{ steps.parse-results.outputs.failed_tests }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Pass Rate | ${{ steps.parse-results.outputs.pass_rate }}% |" >> $GITHUB_STEP_SUMMARY
