@@ -217,7 +217,7 @@ def AFIR_AscNodeAttrGroups : AFIR_Attr<"AscNodeAttrGroups", "asc_node"> {
     OptionalParameter<"SchedInfoAttr">:$sched,
     OptionalParameter<"ApiInfoAttr">:$api,
     "DictionaryAttr":$ir_attr_def,  // maps to AscIrAttrDef.attr
-    ArrayRefParameter<"TmpBufferGroupAttr", "array of TmpBufferGroup">:$tmp_buffers
+    ArrayRefParameter<"TmpBufferGroupAttr", "array of TmpBufferDesc">:$tmp_buffers
   );
 
   let assemblyFormat = "`<` struct(params) `>`";
@@ -237,7 +237,7 @@ def AFIR_AscGraphAttrGroups : AFIR_Attr<"AscGraphAttrGroups", "asc_graph"> {
 
   let parameters = (ins
     DefaultValuedParameter<"int64_t", "-1">:$tiling_key,
-    ArrayRefParameter<"AxisAttr", "array of AxisAttr">:$axis,
+    ArrayRefParameter<"AxisAttr", "array of Axis">:$axis,
     "AscGraphTypeAttr":$type,
     ArrayRefParameter<"Attribute", "array of size variable strings">:$size_var
   );

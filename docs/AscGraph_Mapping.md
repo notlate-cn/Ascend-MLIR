@@ -54,7 +54,7 @@ message AscGraphAttrGroupsDef {
 def AFIR_AscGraphAttrGroups : AFIR_Attr<"AscGraphAttrGroups", "asc_graph"> {
   let parameters = (ins
     DefaultValuedParameter<"int64_t", "-1">:$tiling_key,
-    ArrayRefParameter<"AxisAttrAttr", "array of AxisAttr">:$axis,
+    ArrayRefParameter<"AxisAttr", "array of Axis">:$axis,
     "AscGraphTypeAttr":$type,  // 使用枚举类型替代 int64
     ArrayRefParameter<"Attribute", "array of size variable strings">:$size_var
   );
@@ -89,7 +89,7 @@ message AxisDef {
 
 **MLIR 定义**:
 ```tablegen
-def AFIR_AxisAttr : AFIR_Attr<"AxisAttr", "axis"> {
+def AFIR_Axis : AFIR_Attr<"Axis", "axis"> {
   let parameters = (ins
     DefaultValuedParameter<"int64_t", "-1">:$id,
     "StringAttr":$name,
@@ -219,9 +219,9 @@ def AFIR_AscTensorAttrGroups : AFIR_Attr<"AscTensorAttrGroups", "asc_tensor"> {
     ArrayRefParameter<"Attribute", "array of expression strings">:$strides,
     ArrayRefParameter<"int64_t">:$vectorized_axis,
     ArrayRefParameter<"Attribute", "array of vectorized stride expressions">:$vectorized_strides,
-    OptionalParameter<"MemAttrAttr">:$mem,
-    OptionalParameter<"MemQueueAttrAttr">:$que,
-    OptionalParameter<"MemBufAttrAttr">:$buf
+    OptionalParameter<"MemAttr">:$mem,
+    OptionalParameter<"MemQueueAttr">:$que,
+    OptionalParameter<"MemBufAttr">:$buf
     // opt (MemOptAttr): 未定义
   );
 }
@@ -253,7 +253,7 @@ message MemAttrDef {
 
 **MLIR 定义**:
 ```tablegen
-def AFIR_MemAttr : AFIR_Attr<"MemAttr", "mem"> {
+def AFIR_Mem : AFIR_Attr<"Mem", "mem"> {
   let parameters = (ins
     "int64_t":$tensor_id,
     "AllocTypeAttr":$alloc_type,  // 使用枚举类型 (GLOBAL, L1, L2, QBUF, TBUF)
@@ -287,7 +287,7 @@ message MemQueueAttrDef {
 
 **MLIR 定义**:
 ```tablegen
-def AFIR_MemQueueAttr : AFIR_Attr<"MemQueueAttr", "mem_queue"> {
+def AFIR_MemQueue : AFIR_Attr<"MemQueue", "mem_queue"> {
   let parameters = (ins
     "int64_t":$id,
     DefaultValuedParameter<"int64_t", "2">:$depth,
@@ -313,7 +313,7 @@ message MemBufAttrDef {
 
 **MLIR 定义**:
 ```tablegen
-def AFIR_MemBufAttr : AFIR_Attr<"MemBufAttr", "mem_buf"> {
+def AFIR_MemBuf : AFIR_Attr<"MemBuf", "mem_buf"> {
   let parameters = (ins
     "int64_t":$id
     // name: 未定义
@@ -456,7 +456,7 @@ message TmpBufferGroupDef {
 def AFIR_TmpBufferGroup : AFIR_Attr<"TmpBufferGroup", "tmp_buffer"> {
   let parameters = (ins
     "TmpBufDescAttr":$buf_desc,
-    "MemAttrAttr":$mem,
+    "MemAttr":$mem,
     DefaultValuedParameter<"int64_t", "-1">:$id
   );
 }
@@ -608,9 +608,9 @@ AscGraphDef
 │       │           ├── dtype (DataTypeAttr 枚举)
 │       │           ├── axis_ids, repeats, strides
 │       │           ├── vectorized_axis, vectorized_strides
-│       │           ├── MemAttrAttr (可选)
-│       │           ├── MemQueueAttrAttr (可选)
-│       │           └── MemBufAttrAttr (可选)
+│       │           ├── MemAttr (可选)
+│       │           ├── MemQueueAttr (可选)
+│       │           └── MemBufAttr (可选)
 │       ├── attr (AscNodeAttrGroupsAttr)
 │       │   ├── name, type
 │       │   ├── SchedInfoAttr (可选)
@@ -619,7 +619,7 @@ AscGraphDef
 │       │   └── tmp_buffers (array)
 │       │       └── TmpBufferGroupAttr
 │       │           ├── TmpBufDescAttr
-│       │           ├── MemAttrAttr
+│       │           ├── MemAttr
 │       │           └── id (默认 -1)
 │       └── ir_def (IrDefAttr)
 │           ├── input_names, output_names
