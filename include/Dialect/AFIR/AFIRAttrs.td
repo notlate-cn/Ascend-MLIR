@@ -25,7 +25,7 @@ include "mlir/IR/AttrTypeBase.td"
 //===----------------------------------------------------------------------===//
 
 // Maps from: ge.proto.MemAttrDef
-def AFIR_MemAttr : AFIR_Attr<"MemAttr", "mem"> {
+def AFIR_Mem : AFIR_Attr<"Mem", "mem"> {
   let summary = "Memory attribute for tensor allocation";
   let description = [{
     Defines memory allocation attributes for tensors, including allocation type,
@@ -44,7 +44,7 @@ def AFIR_MemAttr : AFIR_Attr<"MemAttr", "mem"> {
 }
 
 // Maps from: ge.proto.MemQueueAttrDef
-def AFIR_MemQueueAttr : AFIR_Attr<"MemQueueAttr", "mem_queue"> {
+def AFIR_MemQueue : AFIR_Attr<"MemQueue", "mem_queue"> {
   let summary = "Memory queue attribute";
   let description = [{
     Defines memory queue attributes including queue ID, depth, buffer count, and name.
@@ -60,7 +60,7 @@ def AFIR_MemQueueAttr : AFIR_Attr<"MemQueueAttr", "mem_queue"> {
 }
 
 // Maps from: ge.proto.MemBufAttrDef
-def AFIR_MemBufAttr : AFIR_Attr<"MemBufAttr", "mem_buf"> {
+def AFIR_MemBuf : AFIR_Attr<"MemBuf", "mem_buf"> {
   let summary = "Memory buffer attribute";
   let description = [{
     Defines memory buffer attributes including buffer ID and name.
@@ -92,9 +92,9 @@ def AFIR_AscTensorAttrGroups : AFIR_Attr<"AscTensorAttrGroups", "asc_tensor"> {
     ArrayRefParameter<"Attribute", "array of expression strings">:$strides,
     ArrayRefParameter<"int64_t">:$vectorized_axis,
     ArrayRefParameter<"Attribute", "array of vectorized stride expressions">:$vectorized_strides,
-    OptionalParameter<"MemAttrAttr">:$mem,
-    OptionalParameter<"MemQueueAttrAttr">:$que,
-    OptionalParameter<"MemBufAttrAttr">:$buf
+    OptionalParameter<"MemAttr">:$mem,
+    OptionalParameter<"MemQueueAttr">:$que,
+    OptionalParameter<"MemBufAttr">:$buf
   );
 
   let assemblyFormat = "`<` struct(params) `>`";
@@ -105,7 +105,7 @@ def AFIR_AscTensorAttrGroups : AFIR_Attr<"AscTensorAttrGroups", "asc_tensor"> {
 //===----------------------------------------------------------------------===//
 
 // Maps from: ge.proto.AxisDef
-def AFIR_AxisAttr : AFIR_Attr<"AxisAttr", "axis"> {
+def AFIR_Axis : AFIR_Attr<"Axis", "axis"> {
   let summary = "Axis definition for computational loops";
   let description = [{
     Defines an axis for loop-based computation including axis type, size,
@@ -192,7 +192,7 @@ def AFIR_TmpBufferGroup : AFIR_Attr<"TmpBufferGroup", "tmp_buffer"> {
 
   let parameters = (ins
     "TmpBufDescAttr":$buf_desc,
-    "MemAttrAttr":$mem,
+    "MemAttr":$mem,
     DefaultValuedParameter<"int64_t", "-1">:$id
   );
 
@@ -237,7 +237,7 @@ def AFIR_AscGraphAttrGroups : AFIR_Attr<"AscGraphAttrGroups", "asc_graph"> {
 
   let parameters = (ins
     DefaultValuedParameter<"int64_t", "-1">:$tiling_key,
-    ArrayRefParameter<"AxisAttrAttr", "array of AxisAttr">:$axis,
+    ArrayRefParameter<"AxisAttr", "array of AxisAttr">:$axis,
     "AscGraphTypeAttr":$type,
     ArrayRefParameter<"Attribute", "array of size variable strings">:$size_var
   );
