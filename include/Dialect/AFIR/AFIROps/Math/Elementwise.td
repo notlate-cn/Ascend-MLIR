@@ -11,7 +11,9 @@
 #ifndef AFIR_ELEMENTWISE_OPS
 #define AFIR_ELEMENTWISE_OPS
 
+include "mlir/IR/CommonAttrConstraints.td"
 include "Dialect/AFIR/AFIRDialect.td"
+include "Dialect/AFIR/AFIRBase.td"
 include "Interface/ShapeHelperOpInterface.td"
 include "Interface/ShapeInferenceOpInterface.td"
 include "mlir/Interfaces/SideEffectInterfaces.td"
@@ -37,15 +39,18 @@ def AFIR_AddOp : AFIR_Op<"add", [
   }];
 
   let arguments = (ins
-    AnyTypeOf<[F16, F32, I16, I32]>:$lhs,
-    AnyTypeOf<[F16, F32, I16, I32]>:$rhs
+    ShapedTypeOf<[F16, F32, I16, I32]>:$lhs,
+    ShapedTypeOf<[F16, F32, I16, I32]>:$rhs,
+    AffineMapArrayAttr:$indexing_maps
   );
-  let results = (outs AnyTypeOf<[F16, F32, I16, I32]>:$result);
+  let results = (outs ShapedTypeOf<[F16, F32, I16, I32]>:$result);
 
   let assemblyFormat = [{
-    $lhs `,` $rhs attr-dict `:` `(` type($lhs) `,` type($rhs) `)` `->` type($result)
+    $lhs `,` $rhs `indexing_maps` `=` $indexing_maps attr-dict `:`
+    `(` type($lhs) `,` type($rhs) `)` `->` type($result)
   }];
 
+  let hasCustomAssemblyFormat = 1;
   let hasVerifier = 1;
 
   let extraClassDeclaration = [{
@@ -57,6 +62,12 @@ def AFIR_AddOp : AFIR_Op<"add", [
     }
     static bool isSupportVectorFunction() {
       return true;
+    }
+    static ComputeType getComputeType() {
+      return ComputeType::Elewise;
+    }
+    static ComputeUnit getComputeUnit() {
+      return ComputeUnit::Vector;
     }
   }];
 
@@ -91,15 +102,18 @@ def AFIR_SubOp : AFIR_Op<"sub", [
   }];
 
   let arguments = (ins
-    AnyTypeOf<[F16, F32, I16, I32]>:$lhs,
-    AnyTypeOf<[F16, F32, I16, I32]>:$rhs
+    ShapedTypeOf<[F16, F32, I16, I32]>:$lhs,
+    ShapedTypeOf<[F16, F32, I16, I32]>:$rhs,
+    AffineMapArrayAttr:$indexing_maps
   );
-  let results = (outs AnyTypeOf<[F16, F32, I16, I32]>:$result);
+  let results = (outs ShapedTypeOf<[F16, F32, I16, I32]>:$result);
 
   let assemblyFormat = [{
-    $lhs `,` $rhs attr-dict `:` `(` type($lhs) `,` type($rhs) `)` `->` type($result)
+    $lhs `,` $rhs `indexing_maps` `=` $indexing_maps attr-dict `:`
+    `(` type($lhs) `,` type($rhs) `)` `->` type($result)
   }];
 
+  let hasCustomAssemblyFormat = 1;
   let hasVerifier = 1;
 
   let extraClassDeclaration = [{
@@ -111,6 +125,12 @@ def AFIR_SubOp : AFIR_Op<"sub", [
     }
     static bool isSupportVectorFunction() {
       return true;
+    }
+    static ComputeType getComputeType() {
+      return ComputeType::Elewise;
+    }
+    static ComputeUnit getComputeUnit() {
+      return ComputeUnit::Vector;
     }
   }];
 
@@ -125,9 +145,9 @@ def AFIR_SubOp : AFIR_Op<"sub", [
   }];
 }
 
-//===----------------------------------------------------------------------===//
+//===----------------------------------------------------------------------//
 // Mul Operation
-//===----------------------------------------------------------------------===//
+//===----------------------------------------------------------------------//
 
 def AFIR_MulOp : AFIR_Op<"mul", [
   Pure,
@@ -145,15 +165,18 @@ def AFIR_MulOp : AFIR_Op<"mul", [
   }];
 
   let arguments = (ins
-    AnyTypeOf<[F16, F32, I16, I32]>:$lhs,
-    AnyTypeOf<[F16, F32, I16, I32]>:$rhs
+    ShapedTypeOf<[F16, F32, I16, I32]>:$lhs,
+    ShapedTypeOf<[F16, F32, I16, I32]>:$rhs,
+    AffineMapArrayAttr:$indexing_maps
   );
-  let results = (outs AnyTypeOf<[F16, F32, I16, I32]>:$result);
+  let results = (outs ShapedTypeOf<[F16, F32, I16, I32]>:$result);
 
   let assemblyFormat = [{
-    $lhs `,` $rhs attr-dict `:` `(` type($lhs) `,` type($rhs) `)` `->` type($result)
+    $lhs `,` $rhs `indexing_maps` `=` $indexing_maps attr-dict `:`
+    `(` type($lhs) `,` type($rhs) `)` `->` type($result)
   }];
 
+  let hasCustomAssemblyFormat = 1;
   let hasVerifier = 1;
 
   let extraClassDeclaration = [{
@@ -165,6 +188,12 @@ def AFIR_MulOp : AFIR_Op<"mul", [
     }
     static bool isSupportVectorFunction() {
       return true;
+    }
+    static ComputeType getComputeType() {
+      return ComputeType::Elewise;
+    }
+    static ComputeUnit getComputeUnit() {
+      return ComputeUnit::Vector;
     }
   }];
 
@@ -199,15 +228,18 @@ def AFIR_DivOp : AFIR_Op<"div", [
   }];
 
   let arguments = (ins
-    AnyTypeOf<[F16, F32]>:$lhs,
-    AnyTypeOf<[F16, F32]>:$rhs
+    ShapedTypeOf<[F16, F32, I16, I32]>:$lhs,
+    ShapedTypeOf<[F16, F32, I16, I32]>:$rhs,
+    AffineMapArrayAttr:$indexing_maps
   );
-  let results = (outs AnyTypeOf<[F16, F32]>:$result);
+  let results = (outs ShapedTypeOf<[F16, F32, I16, I32]>:$result);
 
   let assemblyFormat = [{
-    $lhs `,` $rhs attr-dict `:` `(` type($lhs) `,` type($rhs) `)` `->` type($result)
+    $lhs `,` $rhs `indexing_maps` `=` $indexing_maps attr-dict `:`
+    `(` type($lhs) `,` type($rhs) `)` `->` type($result)
   }];
 
+  let hasCustomAssemblyFormat = 1;
   let hasVerifier = 1;
 
   let extraClassDeclaration = [{
@@ -219,6 +251,12 @@ def AFIR_DivOp : AFIR_Op<"div", [
     }
     static bool isSupportVectorFunction() {
       return false;
+    }
+    static ComputeType getComputeType() {
+      return ComputeType::Elewise;
+    }
+    static ComputeUnit getComputeUnit() {
+      return ComputeUnit::Vector;
     }
   }];
 

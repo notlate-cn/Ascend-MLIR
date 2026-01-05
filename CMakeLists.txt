@@ -87,6 +87,7 @@ add_subdirectory(lib/Conversion)
 add_subdirectory(lib/Utils)
 add_subdirectory(tools/afir-opt)
 add_subdirectory(test)
+add_subdirectory(examples)
 
 # 只构建必要的pyasc，注意需要先构建其tablegen
 add_subdirectory(${PYASC_DIR}/lib/TableGen EXCLUDE_FROM_ALL)

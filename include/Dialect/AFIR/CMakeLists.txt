@@ -22,12 +22,19 @@ mlir_tablegen(AFIRAttrs.cpp.inc -gen-attrdef-defs)
 add_public_tablegen_target(AFIRAttrsIncGen)
 add_dependencies(AFIRAttrsIncGen AFIRDialectIncGen)
 
+# Type definitions
+set(LLVM_TARGET_DEFINITIONS AFIRBase.td)
+mlir_tablegen(AFIRTypes.h.inc -gen-typedef-decls)
+mlir_tablegen(AFIRTypes.cpp.inc -gen-typedef-defs)
+add_public_tablegen_target(AFIRTypesIncGen)
+add_dependencies(AFIRTypesIncGen AFIRDialectIncGen AFIRAttrsIncGen)
+
 # Operation definitions
 set(LLVM_TARGET_DEFINITIONS AFIROps.td)
 mlir_tablegen(AFIROps.h.inc -gen-op-decls)
 mlir_tablegen(AFIROps.cpp.inc -gen-op-defs)
 add_public_tablegen_target(AFIROpsIncGen)
-add_dependencies(AFIROpsIncGen AFIRDialectIncGen AFIRAttrsIncGen AFIREnumsIncGen AscIRAPITypesIncGen)
+add_dependencies(AFIROpsIncGen AFIRDialectIncGen AFIRAttrsIncGen AFIREnumsIncGen AFIRTypesIncGen AscIRAPITypesIncGen)
 
 # 确保TableGen能够找到生成的Types.td.inc文件
 set(MLIR_TABLEGEN_FLAGS "${MLIR_TABLEGEN_FLAGS} -I${PYASC_DIR}/include/ascir/API")

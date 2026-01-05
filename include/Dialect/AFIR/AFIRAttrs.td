@@ -20,29 +20,6 @@ include "mlir/IR/AttrTypeBase.td"
 // Graph-Level Attributes (AscGraph Mapping)
 //===----------------------------------------------------------------------===//
 
-//===----------------------------------------------------------------------===//
-// Memory Management Attributes
-//===----------------------------------------------------------------------===//
-
-// Maps from: ge.proto.MemAttrDef
-def AFIR_Mem : AFIR_Attr<"Mem", "mem"> {
-  let summary = "Memory attribute for tensor allocation";
-  let description = [{
-    Defines memory allocation attributes for tensors, including allocation type,
-    position, hardware target, and buffer management information.
-  }];
-
-  let parameters = (ins
-    "int64_t":$tensor_id,
-    "AllocTypeAttr":$alloc_type, // global l1 l2 qbuf tbuf
-    "PositionAttr":$position, // gm vector_in vector_out vector_calc...
-    "HardwareAttr":$hardware, // gm ub
-    DefaultValuedParameter<"int64_t", "-1">:$reuse_id
-  );
-
-  let assemblyFormat = "`<` struct(params) `>`";
-}
-
 // Maps from: ge.proto.MemQueueAttrDef
 def AFIR_MemQueue : AFIR_Attr<"MemQueue", "mem_queue"> {
   let summary = "Memory queue attribute";
@@ -86,13 +63,8 @@ def AFIR_AscTensorAttrGroups : AFIR_Attr<"AscTensorAttrGroups", "asc_tensor"> {
   }];
 
   let parameters = (ins
-    "DataTypeAttr":$dtype,
-    ArrayRefParameter<"int64_t">:$axis_ids,
-    ArrayRefParameter<"Attribute", "array of expression strings">:$repeats,
-    ArrayRefParameter<"Attribute", "array of expression strings">:$strides,
     ArrayRefParameter<"int64_t">:$vectorized_axis,
     ArrayRefParameter<"Attribute", "array of vectorized stride expressions">:$vectorized_strides,
-    OptionalParameter<"MemAttr">:$mem,
     OptionalParameter<"MemQueueAttr">:$que,
     OptionalParameter<"MemBufAttr">:$buf
   );
@@ -192,7 +164,6 @@ def AFIR_TmpBufferGroup : AFIR_Attr<"TmpBufferGroup", "tmp_buffer"> {
 
   let parameters = (ins
     "TmpBufDescAttr":$buf_desc,
-    "MemAttr":$mem,
     DefaultValuedParameter<"int64_t", "-1">:$id
   );
 
@@ -214,9 +185,9 @@ def AFIR_AscNodeAttrGroups : AFIR_Attr<"AscNodeAttrGroups", "asc_node"> {
   let parameters = (ins
     "StringAttr":$name,
     "StringAttr":$type,
-    OptionalParameter<"SchedInfoAttr">:$sched,
+    DefaultValuedParameter<"int64_t", "-1">:$loop_axis,
     OptionalParameter<"ApiInfoAttr">:$api,
-    "DictionaryAttr":$ir_attr_def,  // maps to AscIrAttrDef.attr
+    OptionalParameter<"DictionaryAttr">:$ir_attr_def,  // maps to AscIrAttrDef.attr
     ArrayRefParameter<"TmpBufferGroupAttr", "array of TmpBufferGroup">:$tmp_buffers
   );
 
@@ -240,26 +211,6 @@ def AFIR_AscGraphAttrGroups : AFIR_Attr<"AscGraphAttrGroups", "asc_graph"> {
     ArrayRefParameter<"AxisAttr", "array of AxisAttr">:$axis,
     "AscGraphTypeAttr":$type,
     ArrayRefParameter<"Attribute", "array of size variable strings">:$size_var
-  );
-
-  let assemblyFormat = "`<` struct(params) `>`";
-}
-
-//===----------------------------------------------------------------------===//
-// Input/Output Connection Attributes
-//===----------------------------------------------------------------------===//
-
-// Maps from: ascendc_ir.proto.AscInputSourceDef
-def AFIR_AscInputSource : AFIR_Attr<"AscInputSource", "input_src"> { // 用法未知
-  let summary = "Input source reference";
-  let description = [{
-    References an output of another node as input, specifying the source
-    node name and output index.
-  }];
-
-  let parameters = (ins
-    "StringAttr":$src_node_name,
-    "int32_t":$src_out_index
   );
 
   let assemblyFormat = "`<` struct(params) `>`";
@@ -321,7 +272,6 @@ def AFIR_AscNode : AFIR_Attr<"AscNode", "node"> {
   }];
 
   let parameters = (ins
-    ArrayRefParameter<"AscInputSourceAttr", "array of AscInputSource">:$input_src,
     ArrayRefParameter<"AscTensorAttr", "array of AscTensor">:$outputs,
     "AscNodeAttrGroupsAttr":$attr,
     "IrDefAttr":$ir_def

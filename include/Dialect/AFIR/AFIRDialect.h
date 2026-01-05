@@ -19,4 +19,8 @@
 #define GET_ATTRDEF_CLASSES
 #include "Dialect/AFIR/AFIRAttrs.h.inc"
 
+// Include type definitions
+#define GET_TYPEDEF_CLASSES
+#include "Dialect/AFIR/AFIRTypes.h.inc"
+
 #endif  // MLIR_DIALECT_AFIR_AFIRDIALECT_H
