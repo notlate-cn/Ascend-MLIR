@@ -29,17 +29,7 @@ using namespace mlir::afir;
 #define GET_ATTRDEF_CLASSES
 #include "Dialect/AFIR/AFIRAttrs.cpp.inc"
 
-// Include generated type definitions
-#define GET_TYPEDEF_CLASSES
-#include "Dialect/AFIR/AFIRTypes.cpp.inc"
-
 void AFIRDialect::initialize() {
-  // Register types
-  addTypes<
-#define GET_TYPEDEF_LIST
-#include "Dialect/AFIR/AFIRTypes.cpp.inc"
-      >();
-
   // Register attributes
   addAttributes<
 #define GET_ATTRDEF_LIST
