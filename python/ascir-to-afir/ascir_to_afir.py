@@ -1,12 +1,17 @@
 #!/usr/bin/env python3
-# Copyright (c) Huawei Technologies Co., 2025 Ltd.
+# Copyright (c) Huawei Technologies Co., 2026 Ltd.
 # This file is a part of the CANN Open Software.
 # Licensed under CANN Open Software License Agreement Version 1.0 (the "License").
 """
-AscGraph JSON to AFIR Dialect MLIR Text Converter
+AscGraph JSON to AFIR Dialect MLIR Text Converter (v2.0)
 
 This script converts AscGraph serialized JSON strings to AFIR dialect
-text representation of computation graphs.
+MLIR text representation.
+
+Version 2.0 reflects the abstracted AFIR dialect design that:
+- Uses MLIR built-in types instead of DataType enum
+- Fuses memory attributes into AscTensorGroups
+- Maps AscGraph nodes to AFIR operations with simplified attributes
 """
 
 import json
@@ -19,10 +24,11 @@ from enum import IntEnum
 
 
 # ============================================================================
-# Enum Definitions (matching AFIREnums.td)
+# Enum Definitions (matching AFIREnums.td v2.0)
 # ============================================================================
 
 class DataType(IntEnum):
+    """DataType enum for conversion (not used in AFIR output)."""
     DT_UNDEFINED = 0
     DT_FLOAT = 1
     DT_FLOAT16 = 2
@@ -66,27 +72,21 @@ class DataType(IntEnum):
     DT_FLOAT4_E1M2 = 40
 
 
-class AllocType(IntEnum):
-    GLOBAL = 0
-    L1 = 1
-    L2 = 2
-    QBUF = 3
-    TBUF = 4
-
-
 class Position(IntEnum):
+    """Position enum (fused with AllocType in AFIR v2.0)."""
     GM = 0
     VECTOR_IN = 1
     VECTOR_OUT = 2
     VECTOR_CALC = 3
-
-
-class Hardware(IntEnum):
-    GM = 0
-    UB = 1
+    L1 = 4
+    L2 = 5
+    L0A = 6
+    L0B = 7
+    L0C = 8
 
 
 class AxisType(IntEnum):
+    """Axis type enum."""
     Original = 0
     BlockOuter = 1
     BlockInner = 2
@@ -96,48 +96,10 @@ class AxisType(IntEnum):
     Invalid = 6
 
 
-class ExecuteCondition(IntEnum):
-    NoCache = 0
-    CacheBlockSplitFusedBroadcastAxis = 1
-    CacheBlockSplitOriginBroadcastAxis = 2
-    ConditionInvalid = 3
-
-
-class ApiType(IntEnum):
-    Buffer = 0
-    Compute = 1
-    Invalid = 2
-
-
-class ComputeUnit(IntEnum):
-    NONE = 0
-    MTE1 = 1
-    MTE2 = 2
-    MTE3 = 3
-    Scalar = 4
-    Vector = 5
-    Cube = 6
-    Invalid = 7
-
-
-class ComputeType(IntEnum):
-    Load = 0
-    Store = 1
-    ReduceStore = 2
-    Elewise = 3
-    Broadcast = 4
-    Reduce = 5
-    Transpose = 6
-    Concat = 7
-    Gather = 8
-    Cube = 9
-    Split = 10
-    Invalid = 11
-
-
 class AscGraphType(IntEnum):
-    HintGraph = 0
-    ImplGraph = 1
+    """Graph type enum (simplified in v2.0)."""
+    COMPUTE = 0
+    Invalid = 1
 
 
 # ============================================================================
@@ -392,7 +354,6 @@ class ProtobufTextParser:
         elif ch == 'f' and self.text[self.pos:self.pos + 5] == 'false':
             return self.parse_bool()
         elif ch.isalpha() or ch == '_':
-            # Handle enum values or identifiers
             return self.parse_identifier()
         else:
             raise ValueError(f"Unexpected character '{ch}' at position {self.pos}")
@@ -419,7 +380,6 @@ class ProtobufTextParser:
             else:
                 value = self.parse_message()
 
-            # Handle repeated fields
             if field_name in result:
                 if not isinstance(result[field_name], list):
                     result[field_name] = [result[field_name]]
@@ -446,7 +406,6 @@ class ProtobufTextParser:
             else:
                 value = self.parse_message()
 
-            # Handle repeated fields
             if field_name in result:
                 if not isinstance(result[field_name], list):
                     result[field_name] = [result[field_name]]
@@ -458,7 +417,7 @@ class ProtobufTextParser:
 
 
 # ============================================================================
-# AscGraph Parser
+# AscGraph Parser (unchanged)
 # ============================================================================
 
 def ensure_list(value) -> list:
@@ -604,18 +563,14 @@ def parse_ir_attr_def(data: dict) -> AscIrAttrDef:
     result = AscIrAttrDef()
     if 'attr' in data:
         attr_data = data['attr']
-        # Handle list of {key, value} pairs
         if isinstance(attr_data, list):
             for item in attr_data:
                 if isinstance(item, dict) and 'key' in item and 'value' in item:
                     result.attr[item['key']] = parse_ir_attr_value(item['value'])
-        # Handle single {key, value} pair (when there's only one attr)
         elif isinstance(attr_data, dict):
             if 'key' in attr_data and 'value' in attr_data:
-                # Single {key: ..., value: ...} structure
                 result.attr[attr_data['key']] = parse_ir_attr_value(attr_data['value'])
             else:
-                # Direct key-value mapping
                 for key, value in attr_data.items():
                     result.attr[key] = parse_ir_attr_value(value)
     return result
@@ -692,87 +647,53 @@ def parse_asc_graph(data: dict) -> AscGraphDef:
 
 
 # ============================================================================
-# AFIR MLIR Text Generator
+# AFIR MLIR Text Generator (v2.0)
 # ============================================================================
 
-def get_dtype_name(dtype: int) -> str:
-    """Get AFIR dtype name from enum value."""
-    try:
-        return DataType(dtype).name
-    except ValueError:
-        return "DT_UNDEFINED"
+def get_dtype_mlir_type(dtype: int) -> str:
+    """Map DataType enum to MLIR element type."""
+    type_map = {
+        1: "f32", 2: "f16", 27: "bf16",
+        3: "i8", 4: "ui8", 5: "i16", 6: "ui16",
+        7: "i32", 8: "i64", 9: "ui32", 10: "ui64",
+        11: "i1", 12: "f64"
+    }
+    return type_map.get(dtype, "f32")
 
 
-def get_alloc_type_name(alloc_type: int) -> str:
-    """Get AFIR alloc type name from enum value."""
-    try:
-        return AllocType(alloc_type).name
-    except ValueError:
-        return "GLOBAL"
-
-
-def get_position_name(position: int) -> str:
-    """Get AFIR position name from enum value."""
-    try:
-        return Position(position).name
-    except ValueError:
+def get_position_name(position: int, alloc_type: int) -> str:
+    """Map position and alloc_type to AFIR Position enum (fused)."""
+    # Fuse AllocType into Position
+    if alloc_type == 1:
+        return "L1"
+    elif alloc_type == 2:
+        return "L2"
+    elif position == 0:
         return "GM"
-
-
-def get_hardware_name(hardware: int) -> str:
-    """Get AFIR hardware name from enum value."""
-    try:
-        return Hardware(hardware).name
-    except ValueError:
+    elif position == 1:
+        return "VECTOR_IN"
+    elif position == 2:
+        return "VECTOR_OUT"
+    elif position == 3:
+        return "VECTOR_CALC"
+    else:
         return "GM"
 
 
 def get_axis_type_name(axis_type: int) -> str:
-    """Get AFIR axis type name from enum value."""
+    """Get AFIR axis type name."""
     try:
         return AxisType(axis_type).name
     except ValueError:
         return "Original"
 
 
-def get_exec_condition_name(exec_condition: int) -> str:
-    """Get AFIR execute condition name from enum value."""
-    try:
-        return ExecuteCondition(exec_condition).name
-    except ValueError:
-        return "NoCache"
-
-
-def get_api_type_name(api_type: int) -> str:
-    """Get AFIR api type name from enum value."""
-    try:
-        return ApiType(api_type).name
-    except ValueError:
-        return "Buffer"
-
-
-def get_compute_unit_name(unit: int) -> str:
-    """Get AFIR compute unit name from enum value."""
-    try:
-        return ComputeUnit(unit).name
-    except ValueError:
-        return "None"
-
-
-def get_compute_type_name(compute_type: int) -> str:
-    """Get AFIR compute type name from enum value."""
-    try:
-        return ComputeType(compute_type).name
-    except ValueError:
-        return "Invalid"
-
-
 def get_graph_type_name(graph_type: int) -> str:
-    """Get AFIR graph type name from enum value."""
-    try:
-        return AscGraphType(graph_type).name
-    except ValueError:
-        return "HintGraph"
+    """Get AFIR graph type name (v2.0 simplified)."""
+    if graph_type == 0:
+        return "COMPUTE"
+    else:
+        return "Invalid"
 
 
 def escape_string(s: str) -> str:
@@ -781,16 +702,24 @@ def escape_string(s: str) -> str:
 
 
 class AFIRGenerator:
-    """Generator for AFIR MLIR text representation."""
+    """Generator for AFIR MLIR text representation (v2.0)."""
 
     def __init__(self, graph: AscGraphDef):
         self.graph = graph
         self.indent = 0
-        self.node_map: Dict[str, int] = {}  # node_name -> SSA value index
+        self.node_map: Dict[str, int] = {}
         self.ssa_counter = 0
+        self.indexing_maps: Dict[str, str] = {}  # map content -> map name
 
     def get_indent(self) -> str:
         return "  " * self.indent
+
+    def _find_node_by_name(self, name: str) -> Optional[AscNodeDef]:
+        """Find a node in the graph by name."""
+        for node in self.graph.asc_node:
+            if node.attr and node.attr.name == name:
+                return node
+        return None
 
     def gen_array_i64(self, values: List[int]) -> str:
         """Generate array<i64> representation."""
@@ -800,53 +729,6 @@ class AFIRGenerator:
         """Generate array<string> representation."""
         escaped = [f'"{escape_string(v)}"' for v in values]
         return f"[{', '.join(escaped)}]"
-
-    def gen_mem_attr(self, mem: MemAttrDef) -> str:
-        """Generate #afir.mem attribute."""
-        parts = [
-            f"tensor_id = {mem.tensor_id}",
-            f"alloc_type = {get_alloc_type_name(mem.alloc_type)}",
-            f"position = {get_position_name(mem.position)}",
-            f"hardware = {get_hardware_name(mem.hardware)}",
-            f"reuse_id = {mem.reuse_id}"
-        ]
-        return f"#afir.mem<{', '.join(parts)}>"
-
-    def gen_mem_queue_attr(self, que: MemQueueAttrDef) -> str:
-        """Generate #afir.mem_queue attribute."""
-        parts = [
-            f"id = {que.id}",
-            f"depth = {que.depth}",
-            f"buf_num = {que.buf_num}"
-        ]
-        return f"#afir.mem_queue<{', '.join(parts)}>"
-
-    def gen_mem_buf_attr(self, buf: MemBufAttrDef) -> str:
-        """Generate #afir.mem_buf attribute."""
-        return f"#afir.mem_buf<id = {buf.id}>"
-
-    def gen_asc_tensor_attr(self, tensor: AscTensorDef) -> str:
-        """Generate #afir.asc_tensor attribute."""
-        if tensor.attr is None:
-            return "#afir.asc_tensor<>"
-
-        attr = tensor.attr
-        parts = [
-            f"dtype = {get_dtype_name(attr.dtype)}",
-            f"axis_ids = {self.gen_array_i64(attr.axis_ids)}",
-            f"repeats = {self.gen_array_str(attr.repeats)}",
-            f"strides = {self.gen_array_str(attr.strides)}",
-            f"vectorized_axis = {self.gen_array_i64(attr.vectorized_axis)}",
-            f"vectorized_strides = {self.gen_array_str(attr.vectorized_strides)}"
-        ]
-        if attr.mem:
-            parts.append(f"mem = {self.gen_mem_attr(attr.mem)}")
-        if attr.que:
-            parts.append(f"que = {self.gen_mem_queue_attr(attr.que)}")
-        if attr.buf:
-            parts.append(f"buf = {self.gen_mem_buf_attr(attr.buf)}")
-
-        return f"#afir.asc_tensor<{', '.join(parts)}>"
 
     def gen_axis_attr(self, axis: AxisDef) -> str:
         """Generate #afir.axis attribute."""
@@ -863,24 +745,62 @@ class AFIRGenerator:
         parts.append(f"split_pair_other_id = {axis.split_pair_other_id}")
         return f"#afir.axis<{', '.join(parts)}>"
 
-    def gen_sched_info_attr(self, sched: SchedInfoDef) -> str:
-        """Generate #afir.sched attribute."""
+    def gen_asc_graph_attr(self, graph_attr: AscGraphAttrGroupsDef) -> str:
+        """Generate #afir.asc_graph attribute."""
+        axis_parts = [self.gen_axis_attr(ax) for ax in graph_attr.axis]
         parts = [
-            f"exec_order = {sched.exec_order}",
-            f"axis = {self.gen_array_i64(sched.axis)}",
-            f"loop_axis = {sched.loop_axis}",
-            f"exec_condition = {get_exec_condition_name(sched.exec_condition)}"
+            f"tiling_key = {graph_attr.tiling_key}",
+            f"axis = [{', '.join(axis_parts)}]",
+            f"type = {get_graph_type_name(graph_attr.type)}",
+            f"size_var = {self.gen_array_str(graph_attr.size_var)}"
         ]
-        return f"#afir.sched<{', '.join(parts)}>"
+        return f"#afir.asc_graph<{', '.join(parts)}>"
 
-    def gen_api_info_attr(self, api: ApiInfoDef) -> str:
-        """Generate #afir.api attribute."""
-        parts = [
-            f"type = {get_api_type_name(api.type)}",
-            f"compute_type = {get_compute_type_name(api.compute_type)}",
-            f"unit = {get_compute_unit_name(api.unit)}"
-        ]
-        return f"#afir.api<{', '.join(parts)}>"
+    def gen_asc_tensor_attr(self, tensor_attr: AscTensorAttrGroupsDef) -> str:
+        """Generate #afir.asc_tensor attribute (v2.0 simplified, omit defaults)."""
+        # Fuse memory attributes
+        position = get_position_name(
+            tensor_attr.mem.position if tensor_attr.mem else 0,
+            tensor_attr.mem.alloc_type if tensor_attr.mem else 0
+        )
+
+        tensor_id = tensor_attr.mem.tensor_id if tensor_attr.mem else -1
+        reuse_id = tensor_attr.mem.reuse_id if tensor_attr.mem else -1
+        position_id = (tensor_attr.que.id if tensor_attr.que else
+                      (tensor_attr.buf.id if tensor_attr.buf else -1))
+        depth = tensor_attr.que.depth if tensor_attr.que else None
+        is_double_buffer = (tensor_attr.que.buf_num > 1) if tensor_attr.que else None
+
+        parts = []
+
+        # Only add non-empty arrays
+        if tensor_attr.vectorized_axis:
+            parts.append(f"vectorized_axis = {self.gen_array_i64(tensor_attr.vectorized_axis)}")
+        if tensor_attr.vectorized_strides:
+            parts.append(f"vectorized_strides = {self.gen_array_str(tensor_attr.vectorized_strides)}")
+
+        # Always include tensor_id
+        parts.append(f"tensor_id = {tensor_id}")
+
+        # Only add reuse_id if not default (-1)
+        if reuse_id != -1:
+            parts.append(f"reuse_id = {reuse_id}")
+
+        # Always include position (required enum)
+        parts.append(f"position = {position}")
+
+        # Only add position_id if not default (-1)
+        if position_id != -1:
+            parts.append(f"position_id = {position_id}")
+
+        # Optional parameters - only add if present and not default
+        if depth is not None and depth != -1 and depth != 2:  # 2 is default for queue depth
+            parts.append(f"depth = {depth}")
+
+        if is_double_buffer is not None and is_double_buffer:  # Only add if True
+            parts.append(f"is_double_buffer = true")
+
+        return f"#afir.asc_tensor<{', '.join(parts)}>"
 
     def gen_ir_attr_dict(self, ir_attr_def: Optional[AscIrAttrDef]) -> str:
         """Generate dictionary of IR attributes."""
@@ -902,92 +822,41 @@ class AFIRGenerator:
 
         return "{" + ", ".join(parts) + "}"
 
-    def gen_asc_node_attr(self, node: AscNodeDef) -> str:
-        """Generate #afir.asc_node attribute."""
-        if node.attr is None:
-            return "#afir.asc_node<>"
+    def infer_shape_from_tensor_attr(self, attr: AscTensorAttrGroupsDef) -> List[int]:
+        """Infer tensor shape from axis_ids and repeats."""
+        if not attr.axis_ids or not attr.repeats:
+            return []
 
-        attr = node.attr
-        parts = [
-            f'name = "{escape_string(attr.name)}"',
-            f'type = "{escape_string(attr.type)}"'
-        ]
-        if attr.sched:
-            parts.append(f"sched = {self.gen_sched_info_attr(attr.sched)}")
-        if attr.api:
-            parts.append(f"api = {self.gen_api_info_attr(attr.api)}")
-        parts.append(f"ir_attr_def = {self.gen_ir_attr_dict(attr.ir_attr_def)}")
-        parts.append("tmp_buffers = []")
+        shape = []
+        for i, axis_id in enumerate(attr.axis_ids):
+            if i < len(attr.repeats):
+                try:
+                    dim = int(attr.repeats[i])
+                    shape.append(dim)
+                except ValueError:
+                    # Expression, use dynamic dimension
+                    shape.append(-1)
+        return shape
 
-        return f"#afir.asc_node<{', '.join(parts)}>"
+    def get_mlir_tensor_type(self, attr: AscTensorAttrGroupsDef) -> str:
+        """Get MLIR tensor type from tensor attributes."""
+        elem_type = get_dtype_mlir_type(attr.dtype)
+        shape = self.infer_shape_from_tensor_attr(attr)
 
-    def gen_ir_def_attr(self, ir_def: Optional[IrDef]) -> str:
-        """Generate #afir.ir_def attribute."""
-        if ir_def is None:
-            return "#afir.ir_def<>"
+        if shape:
+            dims = "x".join(str(d) if d > 0 else "?" for d in shape)
+            return f"tensor<{dims}x{elem_type}>"
+        else:
+            return f"tensor<*x{elem_type}>"
 
-        parts = [
-            f"input_names = {self.gen_array_str(ir_def.input_names)}",
-            f"output_names = {self.gen_array_str(ir_def.output_names)}",
-            f"input_ir_type = {self.gen_array_i64(ir_def.input_ir_type)}",
-            f"output_ir_type = {self.gen_array_i64(ir_def.output_ir_type)}",
-            f'type = "{escape_string(ir_def.type)}"',
-            f"input_nums = {self.gen_array_i64(ir_def.input_nums)}",
-            f"output_nums = {self.gen_array_i64(ir_def.output_nums)}"
-        ]
-        return f"#afir.ir_def<{', '.join(parts)}>"
+    def build_affine_map(self, axis_ids: List[int], num_dims: int) -> str:
+        """Build affine map from axis_ids (simplified version)."""
+        if not axis_ids:
+            dims = ", ".join(f"d{i}" for i in range(num_dims))
+            return f"affine_map<({dims}) -> ({dims})>"
 
-    def gen_input_src_attr(self, input_src: AscInputSourceDef) -> str:
-        """Generate #afir.input_src attribute."""
-        return f'#afir.input_src<src_node_name = "{escape_string(input_src.src_node_name)}", src_out_index = {input_src.src_out_index}>'
-
-    def gen_asc_graph_attr(self, graph_attr: AscGraphAttrGroupsDef) -> str:
-        """Generate #afir.asc_graph attribute."""
-        axis_parts = [self.gen_axis_attr(ax) for ax in graph_attr.axis]
-        parts = [
-            f"tiling_key = {graph_attr.tiling_key}",
-            f"axis = [{', '.join(axis_parts)}]",
-            f"type = {get_graph_type_name(graph_attr.type)}",
-            f"size_var = {self.gen_array_str(graph_attr.size_var)}"
-        ]
-        return f"#afir.asc_graph<{', '.join(parts)}>"
-
-    def gen_node_attr(self, node: AscNodeDef) -> str:
-        """Generate complete node attribute dictionary."""
-        input_src_list = [self.gen_input_src_attr(src) for src in node.input_src]
-        output_list = [self.gen_asc_tensor_attr(out) for out in node.outputs]
-
-        parts = [
-            f"input_src = [{', '.join(input_src_list)}]",
-            f"outputs = [{', '.join(output_list)}]",
-            f"attr = {self.gen_asc_node_attr(node)}",
-            f"ir_def = {self.gen_ir_def_attr(node.ir_def)}"
-        ]
-        return f"#afir.node<{', '.join(parts)}>"
-
-    def get_mlir_type_from_dtype(self, dtype: int) -> str:
-        """Get MLIR tensor type from dtype."""
-        dtype_map = {
-            DataType.DT_UNDEFINED: "tensor<*xf32>",
-            DataType.DT_FLOAT: "tensor<*xf32>",
-            DataType.DT_FLOAT16: "tensor<*xf16>",
-            DataType.DT_INT8: "tensor<*xi8>",
-            DataType.DT_UINT8: "tensor<*xui8>",
-            DataType.DT_INT16: "tensor<*xi16>",
-            DataType.DT_UINT16: "tensor<*xui16>",
-            DataType.DT_INT32: "tensor<*xi32>",
-            DataType.DT_INT64: "tensor<*xi64>",
-            DataType.DT_UINT32: "tensor<*xui32>",
-            DataType.DT_UINT64: "tensor<*xui64>",
-            DataType.DT_BOOL: "tensor<*xi1>",
-            DataType.DT_DOUBLE: "tensor<*xf64>",
-            DataType.DT_BF16: "tensor<*xbf16>",
-        }
-        try:
-            dt = DataType(dtype)
-            return dtype_map.get(dt, "tensor<*xf32>")
-        except ValueError:
-            return "tensor<*xf32>"
+        dims = ", ".join(f"d{i}" for i in range(num_dims))
+        return f"affine_map<({dims}) -> ({dims})>"
 
     def get_node_op_name(self, node_type: str) -> str:
         """Map node type to AFIR operation name."""
@@ -1005,7 +874,7 @@ class AFIRGenerator:
         return op_map.get(node_type, f"afir.{node_type.lower()}")
 
     def gen_node_operation(self, node: AscNodeDef) -> str:
-        """Generate AFIR operation for a node."""
+        """Generate AFIR operation for a node (v2.0)."""
         if node.attr is None:
             return ""
 
@@ -1013,10 +882,26 @@ class AFIRGenerator:
         node_type = node.attr.type
         op_name = self.get_node_op_name(node_type)
 
-        # Get result type from output tensor dtype
+        # Special handling for Output nodes: inherit shape from input
+        if node_type == "Output" and node.outputs and node.outputs[0].attr:
+            output_attr = node.outputs[0].attr
+            # Check if output has empty axis_ids/repeats/strides
+            if (not output_attr.axis_ids or not output_attr.repeats) and node.input_src:
+                # Find the input node
+                src_name = node.input_src[0].src_node_name
+                src_node = self._find_node_by_name(src_name)
+                if src_node and src_node.outputs and src_node.outputs[0].attr:
+                    src_attr = src_node.outputs[0].attr
+                    # Inherit shape information
+                    output_attr.axis_ids = src_attr.axis_ids.copy() if src_attr.axis_ids else []
+                    output_attr.repeats = src_attr.repeats.copy() if src_attr.repeats else []
+                    output_attr.strides = src_attr.strides.copy() if src_attr.strides else []
+                    output_attr.dtype = src_attr.dtype
+
+        # Get result type
         result_type = "tensor<*xf32>"
         if node.outputs and node.outputs[0].attr:
-            result_type = self.get_mlir_type_from_dtype(node.outputs[0].attr.dtype)
+            result_type = self.get_mlir_tensor_type(node.outputs[0].attr)
 
         # Get input SSA values
         input_values = []
@@ -1032,30 +917,74 @@ class AFIRGenerator:
         self.node_map[node_name] = result_ssa
         self.ssa_counter += 1
 
-        # Build the operation
         indent = self.get_indent()
-        node_attr = self.gen_node_attr(node)
 
-        if len(input_values) == 0:
-            # No inputs (e.g., Data node)
-            return f"{indent}%{result_ssa} = \"{op_name}\"() {{{{\n{indent}  node_attr = {node_attr}\n{indent}}}}}: () -> {result_type}"
-        elif len(input_values) == 1:
-            # Single input
-            return f"{indent}%{result_ssa} = \"{op_name}\"({input_values[0]}) {{{{\n{indent}  node_attr = {node_attr}\n{indent}}}}}: ({result_type}) -> {result_type}"
+        # Build indexing_maps
+        num_dims = len(node.outputs[0].attr.axis_ids) if (node.outputs and node.outputs[0].attr) else 2
+        indexing_map = self.build_affine_map([], num_dims)
+
+        # Collect indexing maps for deduplication
+        if len(input_values) > 1:
+            indexing_maps_list = [indexing_map] * (len(input_values) + 1)  # inputs + output
         else:
-            # Multiple inputs
+            indexing_maps_list = [indexing_map]
+
+        for imap in indexing_maps_list:
+            if imap not in self.indexing_maps:
+                self.indexing_maps[imap] = f"map{len(self.indexing_maps)}"
+
+        # Build attributes (omit default values)
+        attrs = []
+
+        # indexing_maps - always required
+        map_refs = [f"#{self.indexing_maps[imap]}" for imap in indexing_maps_list]
+        attrs.append(f"indexing_maps = [{', '.join(map_refs)}]")
+
+        # loop_axis - only include if not default (-1)
+        loop_axis_val = node.attr.sched.loop_axis if node.attr.sched else -1
+        if loop_axis_val != -1:
+            attrs.append(f"loop_axis = {loop_axis_val}")
+
+        # ir_attr_def - only include if not empty
+        if node.attr.ir_attr_def and node.attr.ir_attr_def.attr:
+            ir_dict = self.gen_ir_attr_dict(node.attr.ir_attr_def)
+            attrs.append(f"ir_attr_def = {ir_dict}")
+
+        # tmp_buffers - omit if empty (DefaultValuedOptionalAttr)
+        # (no need to add if empty)
+
+        # outputs attribute - only include if not empty
+        if node.outputs and node.outputs[0].attr:
+            outputs_attr = self.gen_asc_tensor_attr(node.outputs[0].attr)
+            attrs.append(f"outputs = [{outputs_attr}]")
+
+        attr_str = ", ".join(attrs)
+
+        # Build operation
+        if len(input_values) == 0:
+            return f"{indent}%{result_ssa} = {op_name}() {{\n{indent}  {attr_str}\n{indent}}} : () -> {result_type}"
+        elif len(input_values) == 1:
+            return f"{indent}%{result_ssa} = {op_name}({input_values[0]}) {{\n{indent}  {attr_str}\n{indent}}} : ({result_type}) -> {result_type}"
+        else:
             inputs_str = ", ".join(input_values)
             types_str = ", ".join([result_type] * len(input_values))
-            return f"{indent}%{result_ssa} = \"{op_name}\"({inputs_str}) {{{{\n{indent}  node_attr = {node_attr}\n{indent}}}}}: ({types_str}) -> {result_type}"
+            return f"{indent}%{result_ssa} = {op_name}({inputs_str}) {{\n{indent}  {attr_str}\n{indent}}} : ({types_str}) -> {result_type}"
 
     def generate(self) -> str:
-        """Generate complete AFIR MLIR text."""
+        """Generate complete AFIR MLIR text (v2.0)."""
         lines = []
 
         # Module header
-        lines.append("// AFIR Dialect representation of AscGraph")
+        lines.append("// AFIR Dialect representation of AscGraph (v2.0)")
         lines.append(f'// Graph name: {self.graph.graph_name}')
         lines.append("")
+
+        # First pass: collect all indexing maps
+        temp_ops = []
+        for node in self.graph.asc_node:
+            op_str = self.gen_node_operation(node)
+            if op_str:
+                temp_ops.append(op_str)
 
         # Graph attributes as module attribute
         if self.graph.asc_graph_attr:
@@ -1066,15 +995,23 @@ class AFIRGenerator:
 
         self.indent = 1
 
+        # Generate indexing map definitions (sorted by name for stability)
+        if self.indexing_maps:
+            lines.append("")
+            lines.append(f"{self.get_indent()}// Indexing Maps")
+            sorted_maps = sorted(self.indexing_maps.items(), key=lambda x: x[1])
+            for map_content, map_name in sorted_maps:
+                lines.append(f"{self.get_indent()}#{map_name} = {map_content}")
+            lines.append("")
+
         # Generate function with nodes
-        lines.append(f'{self.get_indent()}func.func @{self.graph.graph_name or "main"}() {{')
+        func_name = self.graph.graph_name.replace('/', '_') if self.graph.graph_name else "main"
+        lines.append(f'{self.get_indent()}func.func @{func_name}() {{')
         self.indent = 2
 
-        # Generate operations for each node
-        for node in self.graph.asc_node:
-            op_str = self.gen_node_operation(node)
-            if op_str:
-                lines.append(op_str)
+        # Add collected operations
+        for op_str in temp_ops:
+            lines.append(op_str)
 
         # Return
         lines.append(f"{self.get_indent()}return")
@@ -1093,7 +1030,6 @@ class AFIRGenerator:
 
 def unescape_json_string(s: str) -> str:
     """Unescape a JSON-like escaped string."""
-    # Handle case where the entire content is escaped (e.g., {\"key\": \"value\"})
     result = []
     i = 0
     while i < len(s):
@@ -1125,35 +1061,25 @@ def unescape_json_string(s: str) -> str:
 
 def extract_ascgraph_from_json(json_str: str) -> str:
     """Extract the ascgraph text from the serialized JSON string."""
-    # First, try to unescape if needed (handles double-escaped JSON)
     working_str = json_str.strip()
 
-    # Check if the string starts with escaped braces
     if working_str.startswith('{\\'):
         working_str = unescape_json_string(working_str)
 
-    # Try to parse as JSON
     try:
         data = json.loads(working_str)
     except json.JSONDecodeError:
-        # If it fails, the input might already be protobuf text
-        # Try unescaping one more time in case of nested escaping
         try:
             unescaped = unescape_json_string(working_str)
             data = json.loads(unescaped)
         except json.JSONDecodeError:
             return working_str
 
-    # Navigate to find the ascgraph field
-    # The structure is: compute_graph -> op (with type AscGraph) -> attr -> ascgraph -> value -> s
     if 'compute_graph' in data:
         compute_graph_str = data['compute_graph']
-        # This is a protobuf text format string
-        # Parse it to find the ascgraph attribute
         parser = ProtobufTextParser(compute_graph_str)
         cg_data = parser.parse()
 
-        # Look through ops for AscGraph type
         if 'op' in cg_data:
             for op in ensure_list(cg_data['op']):
                 if op.get('type') == 'AscGraph':
@@ -1173,30 +1099,22 @@ def extract_ascgraph_from_json(json_str: str) -> str:
                                     return value.get('s', '')
                                 return str(value)
 
-    # If we can't find it in the expected structure, return as-is
     return working_str
 
 
 def convert_ascgraph_to_afir(input_text: str) -> str:
-    """Convert AscGraph JSON/text to AFIR MLIR text."""
-    # Extract the ascgraph protobuf text from JSON if needed
+    """Convert AscGraph JSON/text to AFIR MLIR text (v2.0)."""
     ascgraph_text = extract_ascgraph_from_json(input_text)
-
-    # Parse the protobuf text format
     parser = ProtobufTextParser(ascgraph_text)
     data = parser.parse()
-
-    # Parse into AscGraphDef
     graph = parse_asc_graph(data)
-
-    # Generate AFIR MLIR text
     generator = AFIRGenerator(graph)
     return generator.generate()
 
 
 def main():
     parser = argparse.ArgumentParser(
-        description='Convert AscGraph JSON to AFIR MLIR text representation'
+        description='Convert AscGraph JSON to AFIR MLIR text (v2.0 - abstracted dialect)'
     )
     parser.add_argument(
         'input',
@@ -1222,6 +1140,8 @@ def main():
         output_text = convert_ascgraph_to_afir(input_text)
     except Exception as e:
         print(f"Error: {e}", file=sys.stderr)
+        import traceback
+        traceback.print_exc()
         sys.exit(1)
 
     # Write output

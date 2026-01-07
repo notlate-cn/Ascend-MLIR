@@ -1,703 +1,607 @@
-# AscGraph 结构梳理与 MLIR AFIR 方言映射
+# AscGraph 到 AFIR 方言的映射关系
 
-本文档详细描述了从 protobuf 定义（`ascendc_ir.proto` 和 `ge_ir.proto`）到 MLIR AFIR 方言的 1:1 映射。
+本文档描述了从 AscGraph protobuf 定义(`ascendc_ir.proto` 和 `ge_ir.proto`)到 MLIR AFIR 方言的映射关系。
 
 ## 概述
 
-AscGraph 是 Ascend 计算图的核心数据结构，定义在 `graph_metadef/proto/ascendc_ir.proto` 中。它描述了一个完整的计算图，包括图属性、节点定义和它们之间的连接关系。
+AFIR (Ascend Fusion IR) 方言是对 AscGraph 计算图的 MLIR 抽象表示。与直接 1:1 映射 protobuf 结构不同,AFIR 采用了更符合 MLIR 惯例的抽象设计:
 
-## 结构映射关系
+- **数据类型抽象**: 使用 MLIR 内置类型系统(如 `f32`, `f16`, `i32`)替代 AscGraph 的 DataType 枚举
+- **简化属性**: 将复杂的 protobuf 嵌套结构简化为核心计算和内存管理属性
+- **操作导向**: 以 MLIR 操作(Operations)为中心,而非节点属性组
 
-### 1. AscGraphDef (顶层结构)
+## 设计原则
 
-**Proto 定义** (`ascendc_ir.proto`):
-```protobuf
-message AscGraphDef {
-  ge.proto.AscGraphAttrGroupsDef asc_graph_attr = 1;
-  repeated AscNodeDef asc_node = 2;
-  string graph_name = 3;
-}
-```
+### 1. 抽象层次
+AFIR 方言处于两个抽象层次之间:
+- **AscGraph (下层)**: Ascend 编译器的低级IR,包含详细的调度、内存分配、API调用信息
+- **MLIR Standard Dialects (上层)**: 通用计算图表示
 
-**MLIR 定义** (`AFIRAttrs.td`):
-```tablegen
-def AFIR_AscGraph : AFIR_Attr<"AscGraph", "graph"> {
-  let parameters = (ins
-    "AscGraphAttrGroupsAttr":$asc_graph_attr,
-    ArrayRefParameter<"AscNodeAttr", "array of AscNode">:$asc_node,
-    "StringAttr":$graph_name
-  );
-}
-```
-
-**说明**:
-- `asc_graph_attr`: 图级别的属性（轴定义、tiling key等）
-- `asc_node`: 图中的所有节点
-- `graph_name`: 图的名称
+### 2. 信息保留策略
+- **核心信息**: 计算轴(Axis)、张量布局(vectorization)、内存位置保留
+- **调度信息**: 通过操作属性保留(如 `loop_axis`, `ir_attr_def`)
+- **类型信息**: 映射到 MLIR 类型系统
+- **丢弃信息**: 低级 API 细节、执行条件等可从上下文推导的信息
 
 ---
 
-### 2. AscGraphAttrGroupsDef (图属性组)
+## 类型映射
 
-**Proto 定义** (`ge_ir.proto`):
-```protobuf
-message AscGraphAttrGroupsDef {
-  int64 tiling_key = 1;
-  repeated AxisDef axis = 2;
-  int64 type = 3;
-  repeated string size_var = 4;
-}
-```
+### AscGraph DataType → MLIR Type
 
-**MLIR 定义**:
+AscGraph 的 `DataType` 枚举映射为 MLIR 内置类型:
+
+| AscGraph DataType | MLIR Type | 说明 |
+|-------------------|-----------|------|
+| `DT_FLOAT` (1) | `f32` | 32位浮点 |
+| `DT_FLOAT16` (2) | `f16` | 16位浮点 |
+| `DT_BF16` (27) | `bf16` | Brain Float 16 |
+| `DT_INT8` (3) | `i8` | 8位有符号整数 |
+| `DT_UINT8` (4) | `ui8` | 8位无符号整数 |
+| `DT_INT16` (5) | `i16` | 16位有符号整数 |
+| `DT_UINT16` (6) | `ui16` | 16位无符号整数 |
+| `DT_INT32` (7) | `i32` | 32位有符号整数 |
+| `DT_INT64` (8) | `i64` | 64位有符号整数 |
+| `DT_BOOL` (11) | `i1` | 布尔类型 |
+| `DT_DOUBLE` (12) | `f64` | 64位浮点 |
+
+**特殊类型**: 复数、量化类型等暂不支持,可扩展。
+
+---
+
+## 属性映射
+
+### 1. 图级别属性 (Graph-Level Attributes)
+
+#### AFIR_AscGraphAttrGroups
+
+**用途**: 描述整个计算图的属性,作为 MLIR 模块(Module)的属性附加。
+
+**映射关系**:
+
 ```tablegen
 def AFIR_AscGraphAttrGroups : AFIR_Attr<"AscGraphAttrGroups", "asc_graph"> {
   let parameters = (ins
-    DefaultValuedParameter<"int64_t", "-1">:$tiling_key,
-    ArrayRefParameter<"AxisAttr", "array of Axis">:$axis,
-    "AscGraphTypeAttr":$type,  // 使用枚举类型替代 int64
-    ArrayRefParameter<"Attribute", "array of size variable strings">:$size_var
+    DefaultValuedParameter<"int64_t", "-1">:$tiling_key,        // from AscGraphAttrGroupsDef.tiling_key
+    ArrayRefParameter<"AxisAttr", "array of Axis">:$axis,      // from AscGraphAttrGroupsDef.axis[]
+    EnumParameter<AFIR_AscGraphTypeEnum>:$type,                // from AscGraphAttrGroupsDef.type
+    ArrayRefParameter<"Attribute", "array of strings">:$size_var // from AscGraphAttrGroupsDef.size_var[]
   );
 }
 ```
 
-**说明**:
-- `tiling_key`: Tiling 配置的唯一标识（默认值 -1）
-- `axis`: 计算轴的定义数组
-- `type`: 图的类型（使用 `AscGraphTypeAttr` 枚举：HintGraph=0, ImplGraph=1）
-- `size_var`: 大小变量的字符串数组
+**Protobuf 源** (`ge.proto.AscGraphAttrGroupsDef`):
+```protobuf
+message AscGraphAttrGroupsDef {
+  int64 tiling_key = 1;       // → tiling_key
+  repeated AxisDef axis = 2;  // → axis[]
+  int64 type = 3;             // → type (0: COMPUTE, 1: Invalid)
+  repeated string size_var = 4; // → size_var[]
+}
+```
+
+**类型枚举变化**:
+- 原 `HintGraph=0, ImplGraph=1` 简化为 `COMPUTE=0, Invalid=1`
 
 ---
 
-### 3. AxisDef (轴定义)
+### 2. 轴定义 (Axis Definition)
 
-**Proto 定义** (`ge_ir.proto`):
+#### AFIR_Axis
+
+**用途**: 定义计算循环的迭代轴,包括轴类型、大小、对齐等。
+
+**映射关系** (保持 1:1):
+
+```tablegen
+def AFIR_Axis : AFIR_Attr<"Axis", "axis"> {
+  let parameters = (ins
+    DefaultValuedParameter<"int64_t", "-1">:$id,              // from AxisDef.id
+    "StringAttr":$name,                                       // from AxisDef.name
+    "AxisTypeAttr":$axis_type,                                // from AxisDef.axis_type
+    DefaultValuedParameter<"bool", "false">:$bind_block,      // from AxisDef.bind_block
+    "Attribute":$size,                                        // from AxisDef.size (expression string)
+    OptionalParameter<"StringAttr">:$align,                   // from AxisDef.align
+    ArrayRefParameter<"int64_t">:$from,                       // from AxisDef.from[]
+    DefaultValuedParameter<"int64_t", "-1">:$split_pair_other_id // from AxisDef.split_pair_other_id
+  );
+}
+```
+
+**Protobuf 源** (`ge.proto.AxisDef`):
 ```protobuf
 message AxisDef {
   int64 id = 1;
   string name = 2;
-  int32 axis_type = 3;
+  int32 axis_type = 3;        // Original, BlockOuter, BlockInner, TileOuter, TileInner, Merged, Invalid
   bool bind_block = 4;
-  string size = 5;  // expression
+  string size = 5;            // expression
   string align = 6;
   repeated int64 from = 7;
   int64 split_pair_other_id = 8;
-  bool allow_oversize_axis = 9;
-  bool allow_unaligned_tail = 10;
+  bool allow_oversize_axis = 9;      // ❌ 未映射
+  bool allow_unaligned_tail = 10;    // ❌ 未映射
 }
 ```
 
-**MLIR 定义**:
+**未映射字段**: `allow_oversize_axis`, `allow_unaligned_tail` 在 AFIR 中省略。
+
+---
+
+### 3. 张量属性 (Tensor Attributes)
+
+#### AFIR_AscTensorGroups
+
+**用途**: 描述张量的内存布局和向量化信息。
+
+**重大简化**: 原 `AscTensorAttrGroupsDef` 包含 9 个字段,新版本只保留 7 个核心字段。
+
 ```tablegen
-def AFIR_Axis : AFIR_Attr<"Axis", "axis"> {
+def AFIR_AscTensorGroups : AFIR_Attr<"AscTensorGroups", "asc_tensor"> {
   let parameters = (ins
-    DefaultValuedParameter<"int64_t", "-1">:$id,
-    "StringAttr":$name,
-    "AxisTypeAttr":$axis_type,  // 使用枚举类型
-    DefaultValuedParameter<"bool", "false">:$bind_block,
-    "Attribute":$size,
-    OptionalParameter<"StringAttr">:$align,  // 可选参数
-    ArrayRefParameter<"int64_t">:$from,
-    DefaultValuedParameter<"int64_t", "-1">:$split_pair_other_id
-    // allow_oversize_axis: 未定义
-    // allow_unaligned_tail: 未定义
+    ArrayRefParameter<"int64_t">:$vectorized_axis,            // from AscTensorAttrGroupsDef.vectorized_axis[]
+    ArrayRefParameter<"Attribute">:$vectorized_strides,       // from AscTensorAttrGroupsDef.vectorized_strides[]
+    "int64_t":$tensor_id,                                     // from MemAttrDef.tensor_id
+    DefaultValuedParameter<"int64_t", "-1">:$reuse_id,        // from MemAttrDef.reuse_id
+    EnumParameter<AFIR_PositionEnum>:$position,               // from MemAttrDef.position + alloc_type (融合)
+    "int64_t":$position_id,                                   // from MemQueueAttrDef.id / MemBufAttrDef.id
+    OptionalParameter<"uint32_t">:$depth,                     // from MemQueueAttrDef.depth
+    OptionalParameter<"bool">:$is_double_buffer               // from MemQueueAttrDef.buf_num > 1
   );
 }
 ```
 
-**差异说明**:
-- `axis_type`: 使用 `AxisTypeAttr` 枚举（Original, BlockOuter, BlockInner, TileOuter, TileInner, Merged, Invalid）
-- `align`: 改为可选参数
-- `allow_oversize_axis`: **未定义**
-- `allow_unaligned_tail`: **未定义**
+**Protobuf 源** (组合多个消息):
 
----
-
-### 4. AscNodeDef (节点定义)
-
-**Proto 定义** (`ascendc_ir.proto`):
-```protobuf
-message AscNodeDef {
-  repeated AscInputSourceDef input_src = 1;
-  repeated AscTensorDef outputs = 2;
-  ge.proto.AscNodeAttrGroupsDef attr = 3;
-  IrDef ir_def = 4;
-}
-```
-
-**MLIR 定义**:
-```tablegen
-def AFIR_AscNode : AFIR_Attr<"AscNode", "node"> {
-  let parameters = (ins
-    ArrayRefParameter<"AscInputSourceAttr", "array of AscInputSource">:$input_src,
-    ArrayRefParameter<"AscTensorAttr", "array of AscTensor">:$outputs,
-    "AscNodeAttrGroupsAttr":$attr,
-    "IrDefAttr":$ir_def
-  );
-}
-```
-
-**说明**:
-- `input_src`: 输入源的引用（指向其他节点的输出）
-- `outputs`: 节点的输出张量定义
-- `attr`: 节点的属性组
-- `ir_def`: IR 级别的定义信息
-
----
-
-### 5. AscInputSourceDef (输入源定义)
-
-**Proto 定义** (`ascendc_ir.proto`):
-```protobuf
-message AscInputSourceDef {
-  string src_node_name = 1;
-  int32 src_out_index = 2;
-}
-```
-
-**MLIR 定义**:
-```tablegen
-def AFIR_AscInputSource : AFIR_Attr<"AscInputSource", "input_src"> {
-  let parameters = (ins
-    "StringAttr":$src_node_name,
-    "int32_t":$src_out_index
-  );
-}
-```
-
-**说明**:
-- `src_node_name`: 源节点的名称
-- `src_out_index`: 源节点的输出索引
-
----
-
-### 6. AscTensorDef (张量定义)
-
-**Proto 定义** (`ascendc_ir.proto`):
-```protobuf
-message AscTensorDef {
-  ge.proto.AscTensorAttrGroupsDef attr = 1;
-}
-```
-
-**MLIR 定义**:
-```tablegen
-def AFIR_AscTensor : AFIR_Attr<"AscTensor", "tensor_def"> {
-  let parameters = (ins
-    "AscTensorAttrGroupsAttr":$attr
-  );
-}
-```
-
----
-
-### 7. AscTensorAttrGroupsDef (张量属性组)
-
-**Proto 定义** (`ge_ir.proto`):
+**原 `AscTensorAttrGroupsDef`**:
 ```protobuf
 message AscTensorAttrGroupsDef {
-  int64 dtype = 1;
-  repeated int64 axis_ids = 2;
-  repeated string repeats = 3;  // expression
-  repeated string strides = 4;  // expression
-  repeated int64 vectorized_axis = 5;
-  repeated string vectorized_strides = 6;
-  MemAttrDef mem = 7;
-  MemQueueAttrDef que = 8;
-  MemBufAttrDef buf = 9;
-  MemOptAttrDef opt = 10;
+  int64 dtype = 1;                    // ❌ 改用 MLIR 类型
+  repeated int64 axis_ids = 2;        // ❌ 隐式在操作类型推断
+  repeated string repeats = 3;        // ❌ 隐式在操作类型推断
+  repeated string strides = 4;        // ❌ 隐式在操作类型推断
+  repeated int64 vectorized_axis = 5; // ✅ → vectorized_axis
+  repeated string vectorized_strides = 6; // ✅ → vectorized_strides
+  MemAttrDef mem = 7;                 // ✅ 部分映射 (见下)
+  MemQueueAttrDef que = 8;            // ✅ 部分映射 (见下)
+  MemBufAttrDef buf = 9;              // ✅ 部分映射 (见下)
+  MemOptAttrDef opt = 10;             // ❌ 未映射
 }
 ```
 
-**MLIR 定义**:
-```tablegen
-def AFIR_AscTensorAttrGroups : AFIR_Attr<"AscTensorAttrGroups", "asc_tensor"> {
-  let parameters = (ins
-    "DataTypeAttr":$dtype,  // 使用枚举类型
-    ArrayRefParameter<"int64_t">:$axis_ids,
-    ArrayRefParameter<"Attribute", "array of expression strings">:$repeats,
-    ArrayRefParameter<"Attribute", "array of expression strings">:$strides,
-    ArrayRefParameter<"int64_t">:$vectorized_axis,
-    ArrayRefParameter<"Attribute", "array of vectorized stride expressions">:$vectorized_strides,
-    OptionalParameter<"MemAttr">:$mem,
-    OptionalParameter<"MemQueueAttr">:$que,
-    OptionalParameter<"MemBufAttr">:$buf
-    // opt (MemOptAttr): 未定义
-  );
-}
-```
+**内存属性融合**:
 
-**差异说明**:
-- `dtype`: 使用 `DataTypeAttr` 枚举（41种数据类型）
-- `mem`, `que`, `buf`: 改为可选参数
-- `opt` (MemOptAttrDef): **未定义**
+| Protobuf 字段 | AFIR 字段 | 说明 |
+|--------------|-----------|------|
+| `MemAttrDef.tensor_id` | `tensor_id` | 张量ID |
+| `MemAttrDef.reuse_id` | `reuse_id` | 复用ID |
+| `MemAttrDef.position` + `MemAttrDef.alloc_type` | `position` | 融合为单一枚举 |
+| `MemQueueAttrDef.id` 或 `MemBufAttrDef.id` | `position_id` | 队列/缓冲区ID |
+| `MemQueueAttrDef.depth` | `depth` | 队列深度 |
+| `MemQueueAttrDef.buf_num` | `is_double_buffer` | buf_num > 1 则为 true |
 
----
+**Position 枚举扩展**:
 
-### 8. 内存相关属性
-
-#### MemAttrDef (内存属性)
-
-**Proto 定义** (`ge_ir.proto`):
-```protobuf
-message MemAttrDef {
-  int64 tensor_id = 1;
-  int32 alloc_type = 2;
-  int32 position = 3;
-  int32 hardware = 4;
-  repeated int64 buf_ids = 5;
-  string name = 6;
-  int64 reuse_id = 7;
-}
-```
-
-**MLIR 定义**:
-```tablegen
-def AFIR_Mem : AFIR_Attr<"Mem", "mem"> {
-  let parameters = (ins
-    "int64_t":$tensor_id,
-    "AllocTypeAttr":$alloc_type,  // 使用枚举类型 (GLOBAL, L1, L2, QBUF, TBUF)
-    "PositionAttr":$position,     // 使用枚举类型 (GM, VECTOR_IN, VECTOR_OUT, VECTOR_CALC)
-    "HardwareAttr":$hardware,     // 使用枚举类型 (GM, UB)
-    // buf_ids: 未定义
-    // name: 未定义
-    DefaultValuedParameter<"int64_t", "-1">:$reuse_id
-  );
-}
-```
-
-**差异说明**:
-- `alloc_type`: 使用 `AllocTypeAttr` 枚举
-- `position`: 使用 `PositionAttr` 枚举
-- `hardware`: 使用 `HardwareAttr` 枚举
-- `buf_ids`: **未定义**
-- `name`: **未定义**
-
-#### MemQueueAttrDef (内存队列属性)
-
-**Proto 定义**:
-```protobuf
-message MemQueueAttrDef {
-  int64 id = 1;
-  int64 depth = 2;
-  int64 buf_num = 3;
-  string name = 4;
-}
-```
-
-**MLIR 定义**:
-```tablegen
-def AFIR_MemQueue : AFIR_Attr<"MemQueue", "mem_queue"> {
-  let parameters = (ins
-    "int64_t":$id,
-    DefaultValuedParameter<"int64_t", "2">:$depth,
-    "int64_t":$buf_num
-    // name: 未定义
-  );
-}
-```
-
-**差异说明**:
-- `depth`: 使用默认值 2
-- `name`: **未定义**
-
-#### MemBufAttrDef (内存缓冲区属性)
-
-**Proto 定义**:
-```protobuf
-message MemBufAttrDef {
-  int64 id = 1;
-  string name = 2;
-}
-```
-
-**MLIR 定义**:
-```tablegen
-def AFIR_MemBuf : AFIR_Attr<"MemBuf", "mem_buf"> {
-  let parameters = (ins
-    "int64_t":$id
-    // name: 未定义
-  );
-}
-```
-
-**差异说明**:
-- `name`: **未定义**
-
-#### MemOptAttrDef (内存优化属性)
-
-**Proto 定义**:
-```protobuf
-message MemOptAttrDef {
-  int64 reuse_id = 1;
-  int64 ref_tensor = 2;
-  int64 merge_scope = 3;
-}
-```
-
-**MLIR 定义**:
-```tablegen
-// 未定义 - 整个 MemOptAttr 属性未实现
-```
-
-**状态**: **未定义**
-
----
-
-### 9. AscNodeAttrGroupsDef (节点属性组)
-
-**Proto 定义** (`ge_ir.proto`):
-```protobuf
-message AscNodeAttrGroupsDef {
-  string name = 1;
-  string type = 2;
-  SchedInfoDef sched = 3;
-  ApiInfoDef api = 4;
-  AscIrAttrDef ir_attr_def = 5;
-  repeated TmpBufferGroupDef tmp_buffers = 6;
-}
-```
-
-**MLIR 定义**:
-```tablegen
-def AFIR_AscNodeAttrGroups : AFIR_Attr<"AscNodeAttrGroups", "asc_node"> {
-  let parameters = (ins
-    "StringAttr":$name,
-    "StringAttr":$type,
-    OptionalParameter<"SchedInfoAttr">:$sched,
-    OptionalParameter<"ApiInfoAttr">:$api,
-    "DictionaryAttr":$ir_attr_def,
-    ArrayRefParameter<"TmpBufferGroupAttr", "array of TmpBufferGroup">:$tmp_buffers
-  );
-}
-```
-
-**说明**:
-- `name`: 节点名称
-- `type`: 节点类型
-- `sched`: 调度信息（可选）
-- `api`: API 信息（可选）
-- `ir_attr_def`: IR 属性字典（映射自 AscIrAttrDef.attr）
-- `tmp_buffers`: 临时缓冲区组数组
-
----
-
-### 10. SchedInfoDef (调度信息)
-
-**Proto 定义** (`ge_ir.proto`):
-```protobuf
-message SchedInfoDef {
-  int64 exec_order = 1;
-  repeated int64 axis = 2;
-  int64 loop_axis = 3;
-  int32 exec_condition = 4;
-}
-```
-
-**MLIR 定义**:
-```tablegen
-def AFIR_SchedInfo : AFIR_Attr<"SchedInfo", "sched"> {
-  let parameters = (ins
-    DefaultValuedParameter<"int64_t", "-1">:$exec_order,
-    ArrayRefParameter<"int64_t">:$axis,
-    DefaultValuedParameter<"int64_t", "-1">:$loop_axis,
-    "ExecuteConditionAttr":$exec_condition  // 使用枚举类型
-  );
-}
-```
-
-**差异说明**:
-- `exec_order`: 使用默认值 -1
-- `loop_axis`: 使用默认值 -1
-- `exec_condition`: 使用 `ExecuteConditionAttr` 枚举（NoCache, CacheBlockSplitFusedBroadcastAxis, CacheBlockSplitOriginBroadcastAxis, ConditionInvalid）
-
----
-
-### 11. ApiInfoDef (API 信息)
-
-**Proto 定义** (`ge_ir.proto`):
-```protobuf
-message ApiInfoDef {
-  int32 type = 1;
-  int32 compute_type = 2;
-  int32 unit = 3;
-}
-```
-
-**MLIR 定义**:
-```tablegen
-def AFIR_ApiInfo : AFIR_Attr<"ApiInfo", "api"> {
-  let parameters = (ins
-    "ApiTypeAttr":$type,          // 使用枚举类型 (Buffer, Compute, Invalid)
-    "ComputeTypeAttr":$compute_type,  // 使用枚举类型 (Load, Store, ReduceStore, ...)
-    "ComputeUnitAttr":$unit       // 使用枚举类型 (None, MTE1, MTE2, MTE3, Scalar, Vector, Cube, Invalid)
-  );
-}
-```
-
-**差异说明**:
-- 所有字段都使用枚举类型替代整数类型
-
----
-
-### 12. TmpBufferGroupDef (临时缓冲区组)
-
-**Proto 定义** (`ge_ir.proto`):
-```protobuf
-message TmpBufferGroupDef {
-  TmpBufDescDef buf_desc = 1;
-  MemAttrDef mem = 2;
-  int64 id = 3;
-}
-```
-
-**MLIR 定义**:
-```tablegen
-def AFIR_TmpBufferGroup : AFIR_Attr<"TmpBufferGroup", "tmp_buffer"> {
-  let parameters = (ins
-    "TmpBufDescAttr":$buf_desc,
-    "MemAttr":$mem,
-    DefaultValuedParameter<"int64_t", "-1">:$id
-  );
-}
-```
-
-**差异说明**:
-- `id`: 使用默认值 -1
-
----
-
-### 13. TmpBufDescDef (临时缓冲区描述)
-
-**Proto 定义** (`ge_ir.proto`):
-```protobuf
-message TmpBufDescDef {
-  string size = 1;  // expression
-  int64 life_time_axis_id = 2;
-}
-```
-
-**MLIR 定义**:
-```tablegen
-def AFIR_TmpBufDesc : AFIR_Attr<"TmpBufDesc", "tmp_buf_desc"> {
-  let parameters = (ins
-    "StringAttr":$size,
-    DefaultValuedParameter<"int64_t", "-1">:$life_time_axis_id
-  );
-}
-```
-
-**差异说明**:
-- `life_time_axis_id`: 使用默认值 -1
-
----
-
-### 14. IrDef (IR 定义)
-
-**Proto 定义** (`ascendc_ir.proto`):
-```protobuf
-message IrDef {
-  repeated string input_names = 1;
-  repeated string output_names = 2;
-  repeated int64 input_ir_type = 3;
-  repeated int64 output_ir_type = 4;
-  string type = 5;
-  repeated int64 input_nums = 6;
-  repeated int64 output_nums = 7;
-}
-```
-
-**MLIR 定义**:
-```tablegen
-def AFIR_IrDef : AFIR_Attr<"IrDef", "ir_def"> {
-  let parameters = (ins
-    ArrayRefParameter<"StringAttr", "array of input name strings">:$input_names,
-    ArrayRefParameter<"StringAttr", "array of output name strings">:$output_names,
-    ArrayRefParameter<"int64_t">:$input_ir_type,
-    ArrayRefParameter<"int64_t">:$output_ir_type,
-    "StringAttr":$type,
-    ArrayRefParameter<"int64_t">:$input_nums,
-    ArrayRefParameter<"int64_t">:$output_nums
-  );
-}
-```
-
-**说明**:
-- `input_names`: 输入名称数组
-- `output_names`: 输出名称数组
-- `input_ir_type`: 输入 IR 类型
-- `output_ir_type`: 输出 IR 类型
-- `type`: IR 类型
-- `input_nums`: 输入数量
-- `output_nums`: 输出数量
-
----
-
-## 枚举类型定义
-
-所有枚举类型定义在 `AFIREnums.td` 中：
-
-### DataType 枚举
+原 AscGraph 分别使用 `Position` (4种) 和 `AllocType` (5种) 枚举,AFIR 融合为单一 `Position` 枚举:
 
 ```tablegen
-def AFIR_DataTypeEnum : I32EnumAttr<"DataType", ...> {
-  // 41 种数据类型
-  DT_UNDEFINED = 0, DT_FLOAT = 1, DT_FLOAT16 = 2, DT_INT8 = 3,
-  DT_UINT8 = 4, DT_INT16 = 5, DT_UINT16 = 6, DT_INT32 = 7,
-  DT_INT64 = 8, DT_UINT32 = 9, DT_UINT64 = 10, DT_BOOL = 11,
-  DT_DOUBLE = 12, DT_STRING = 13, ... DT_FLOAT4_E1M2 = 40
-}
-```
-
-### 其他枚举
-
-| 枚举类型 | 说明 | 值 |
-|----------|------|-----|
-| `AllocTypeAttr` | 内存分配类型 | GLOBAL, L1, L2, QBUF, TBUF |
-| `PositionAttr` | 内存位置 | GM, VECTOR_IN, VECTOR_OUT, VECTOR_CALC |
-| `HardwareAttr` | 硬件目标 | GM, UB |
-| `AxisTypeAttr` | 轴类型 | Original, BlockOuter, BlockInner, TileOuter, TileInner, Merged, Invalid |
-| `ExecuteConditionAttr` | 执行条件 | NoCache, CacheBlockSplitFusedBroadcastAxis, CacheBlockSplitOriginBroadcastAxis, ConditionInvalid |
-| `ApiTypeAttr` | API 类型 | Buffer, Compute, Invalid |
-| `ComputeTypeAttr` | 计算类型 | Load, Store, ReduceStore, Elewise, Broadcast, Reduce, Transpose, Concat, Gather, Cube, Split, Invalid |
-| `ComputeUnitAttr` | 计算单元 | None, MTE1, MTE2, MTE3, Scalar, Vector, Cube, Invalid |
-| `AscGraphTypeAttr` | 图类型 | HintGraph, ImplGraph |
-
----
-
-## 未定义属性汇总
-
-以下 Proto 字段在当前 MLIR 定义中未实现：
-
-| Proto Message | 未定义字段 |
-|---------------|-----------|
-| `AxisDef` | `allow_oversize_axis`, `allow_unaligned_tail` |
-| `MemAttrDef` | `buf_ids`, `name` |
-| `MemQueueAttrDef` | `name` |
-| `MemBufAttrDef` | `name` |
-| `AscTensorAttrGroupsDef` | `opt` (MemOptAttrDef) |
-| `MemOptAttrDef` | **整个属性未定义** |
-
----
-
-## 数据结构层次图
-
-```
-AscGraphDef
-├── AscGraphAttrGroupsDef
-│   ├── tiling_key (默认 -1)
-│   ├── axis (array)
-│   │   └── AxisAttr
-│   │       ├── id (默认 -1), name
-│   │       ├── axis_type (枚举)
-│   │       ├── bind_block (默认 false)
-│   │       ├── size, align (可选)
-│   │       ├── from (array)
-│   │       └── split_pair_other_id (默认 -1)
-│   ├── type (AscGraphTypeAttr 枚举)
-│   └── size_var (array)
-├── asc_node (array)
-│   └── AscNodeAttr
-│       ├── input_src (array)
-│       │   └── AscInputSourceAttr
-│       │       ├── src_node_name
-│       │       └── src_out_index
-│       ├── outputs (array)
-│       │   └── AscTensorAttr
-│       │       └── AscTensorAttrGroupsAttr
-│       │           ├── dtype (DataTypeAttr 枚举)
-│       │           ├── axis_ids, repeats, strides
-│       │           ├── vectorized_axis, vectorized_strides
-│       │           ├── MemAttr (可选)
-│       │           ├── MemQueueAttr (可选)
-│       │           └── MemBufAttr (可选)
-│       ├── attr (AscNodeAttrGroupsAttr)
-│       │   ├── name, type
-│       │   ├── SchedInfoAttr (可选)
-│       │   ├── ApiInfoAttr (可选)
-│       │   ├── ir_attr_def (DictionaryAttr)
-│       │   └── tmp_buffers (array)
-│       │       └── TmpBufferGroupAttr
-│       │           ├── TmpBufDescAttr
-│       │           ├── MemAttr
-│       │           └── id (默认 -1)
-│       └── ir_def (IrDefAttr)
-│           ├── input_names, output_names
-│           ├── input_ir_type, output_ir_type
-│           ├── type
-│           └── input_nums, output_nums
-└── graph_name
-```
-
----
-
-## 使用说明
-
-### 在 MLIR 中使用这些属性
-
-```mlir
-// 示例：定义一个 AscGraph
-#graph = #afir.graph<
-  asc_graph_attr = #afir.asc_graph<
-    tiling_key = 12345,
-    axis = [
-      #afir.axis<
-        id = 0,
-        name = "block_idx",
-        axis_type = #afir.axis_type<BlockOuter>,
-        bind_block = true,
-        size = "1024",
-        from = []
-      >
-    ],
-    type = #afir.type<HintGraph>,
-    size_var = ["N", "M"]
-  >,
-  asc_node = [
-    #afir.node<...>
-  ],
-  graph_name = "example_graph"
+def AFIR_PositionEnum : I32EnumAttr<"Position", "Memory position",
+  [GM,           // 0: Global Memory (原 Position.GM)
+   VECTOR_IN,    // 1: 向量输入 (原 Position.VECTOR_IN)
+   VECTOR_OUT,   // 2: 向量输出 (原 Position.VECTOR_OUT)
+   VECTOR_CALC,  // 3: 向量计算 (原 Position.VECTOR_CALC)
+   L1,           // 4: L1缓存 (原 AllocType.L1)
+   L2,           // 5: L2缓存 (原 AllocType.L2)
+   L0A,          // 6: L0A缓存 (扩展)
+   L0B,          // 7: L0B缓存 (扩展)
+   L0C]          // 8: L0C缓存 (扩展)
 >
 ```
 
-### 与 Proto 的互转
+---
 
-可以实现以下转换函数：
-- `mlir::afir::AscGraphAttr -> ascendc_ir::proto::AscGraphDef`
-- `ascendc_ir::proto::AscGraphDef -> mlir::afir::AscGraphAttr`
+### 4. 临时缓冲区属性 (Temporary Buffer)
+
+#### AFIR_TmpBufDesc
+
+**映射关系** (保持 1:1):
+
+```tablegen
+def AFIR_TmpBufDesc : AFIR_Attr<"TmpBufDesc", "tmp_buf_desc"> {
+  let parameters = (ins
+    "StringAttr":$size,                                       // from TmpBufDescDef.size
+    DefaultValuedParameter<"int64_t", "-1">:$life_time_axis_id // from TmpBufDescDef.life_time_axis_id
+  );
+}
+```
+
+**Protobuf 源** (`ge.proto.TmpBufDescDef`):
+```protobuf
+message TmpBufDescDef {
+  string size = 1;               // expression → size
+  int64 life_time_axis_id = 2;   // → life_time_axis_id
+}
+```
 
 ---
 
-## 映射原则
+## 操作映射 (Operation Mapping)
 
-1. **Proto message → MLIR Attr**: 每个 proto message 映射为一个 MLIR attribute definition
-2. **repeated → ArrayRefParameter**: proto 的 repeated 字段映射为 MLIR 的数组参数
-3. **基本类型映射**:
-   - `string` → `StringAttr`
-   - `int64` → `int64_t`
-   - `int32` → `int32_t` 或枚举类型
-   - `bool` → `bool`
-4. **optional/nullable → OptionalParameter**: 可选字段使用 OptionalParameter
-5. **map → DictionaryAttr**: proto 的 map 映射为 MLIR 的 DictionaryAttr
-6. **表达式字符串**: 在 proto 中标记为 `// expression` 的 string 字段在 MLIR 中保持为 StringAttr
-7. **int32 枚举 → EnumAttr**: proto 中表示枚举的 int32 字段使用 MLIR EnumAttr
+### AFIR 操作结构
+
+AFIR 方言的操作不再直接对应 AscGraph 的节点,而是抽象为标准计算操作。
+
+#### 操作定义模式
+
+以 `afir.add` 为例:
+
+```tablegen
+def AFIR_AddOp : AFIR_Op<"add", [Pure, ShapeHelperOpInterface, ShapeInferenceOpInterface]> {
+  let arguments = (ins
+    TensorOf<[F16, F32, I16, I32]>:$lhs,          // 左操作数
+    TensorOf<[F16, F32, I16, I32]>:$rhs,          // 右操作数
+    AffineMapArrayAttr:$indexing_maps,            // 索引映射 (从 axis_ids, repeats, strides 推导)
+    DefaultValuedAttr<I32Attr, "-1">:$loop_axis,  // 循环轴 (from SchedInfoDef.loop_axis)
+    OptionalAttr<DictionaryAttr>:$ir_attr_def,    // IR属性字典 (from AscIrAttrDef.attr)
+    OptionalAttr<TmpBufDescArrayAttr>:$tmp_buffers, // 临时缓冲区 (from TmpBufferGroupDef[])
+    AscTensorGroupsArrayAttr:$outputs             // 输出张量属性 (from AscTensorDef[])
+  );
+  let results = (outs TensorOf<[F16, F32, I16, I32]>:$result);
+}
+```
+
+#### AscGraph 节点到 AFIR 操作的映射
+
+| AscGraph Node Type | AFIR Operation | 参数映射 |
+|-------------------|----------------|----------|
+| `Add` | `afir.add` | input_src → lhs/rhs, outputs → outputs |
+| `Sub` | `afir.sub` | 同上 |
+| `Mul` | `afir.mul` | 同上 |
+| `Div` | `afir.div` | 同上 (仅支持 F16, F32) |
+| `Data` | `afir.data` | outputs → result type |
+| `Load` | `afir.load` | input_src → input, outputs → result |
+| `Store` | `afir.store` | input_src → value |
+| `Broadcast` | `afir.broadcast` | input_src → input, outputs → result |
+| `Output` | `afir.output` | input_src → input |
+
+### 节点属性组到操作参数的映射
+
+**AscGraph 节点结构**:
+```protobuf
+message AscNodeDef {
+  repeated AscInputSourceDef input_src = 1;    // → 操作输入 (SSA values)
+  repeated AscTensorDef outputs = 2;           // → outputs 属性
+  AscNodeAttrGroupsDef attr = 3;               // → 分散映射到多个属性
+  IrDef ir_def = 4;                            // → 类型推断
+}
+```
+
+**`AscNodeAttrGroupsDef` 拆解**:
+```protobuf
+message AscNodeAttrGroupsDef {
+  string name = 1;                             // → 操作的符号名(可选)
+  string type = 2;                             // → 确定 AFIR 操作类型
+  SchedInfoDef sched = 3;                      // → loop_axis, indexing_maps
+  ApiInfoDef api = 4;                          // ❌ 不映射 (可推导)
+  AscIrAttrDef ir_attr_def = 5;                // → ir_attr_def 字典
+  repeated TmpBufferGroupDef tmp_buffers = 6;  // → tmp_buffers 数组
+}
+```
+
+**`SchedInfoDef` 映射**:
+```protobuf
+message SchedInfoDef {
+  int64 exec_order = 1;           // ❌ 不映射 (拓扑序隐含)
+  repeated int64 axis = 2;        // → indexing_maps 推导
+  int64 loop_axis = 3;            // → loop_axis
+  int32 exec_condition = 4;       // ❌ 不映射
+}
+```
+
+**`ApiInfoDef`**: 完全不映射,可从操作类型和参数推导。
 
 ---
 
-## 文件清单
+## 转换示例
 
-- **AFIREnums.td**: 所有枚举类型定义
-- **AFIRAttrs.td**: MLIR 属性定义文件
-- **ascendc_ir.proto**: AscGraph 主要结构定义
-- **ge_ir.proto**: 引用的属性组定义
-- **AFIRDialect.td**: 方言主文件
+### AscGraph Protobuf → AFIR MLIR
+
+**输入** (AscGraph Add 节点):
+```protobuf
+asc_node {
+  input_src { src_node_name: "Load_1" src_out_index: 0 }
+  input_src { src_node_name: "Broadcast_4" src_out_index: 0 }
+  outputs {
+    attr {
+      axis_ids: [0, 1]
+      repeats: ["20", "31"]
+      strides: ["31", "1"]
+      vectorized_axis: []
+      vectorized_strides: []
+      mem { tensor_id: -1 position: 2 }
+    }
+  }
+  attr {
+    name: "Add_5"
+    type: "Add"
+    sched { axis: [0, 1] loop_axis: -1 }
+    api { type: 1 compute_type: 3 unit: 5 }
+  }
+  ir_def {
+    input_names: ["x1", "x2"]
+    output_names: ["y"]
+    type: "Add"
+  }
+}
+```
+
+**输出** (AFIR MLIR):
+```mlir
+%result = afir.add %load_1, %broadcast_4 {
+  indexing_maps = [
+    affine_map<(d0, d1) -> (d0, d1)>,  // 从 axis_ids, repeats, strides 推导
+    affine_map<(d0, d1) -> (d0, d1)>
+  ],
+  loop_axis = -1,
+  outputs = [
+    #afir.asc_tensor<
+      vectorized_axis = [],
+      vectorized_strides = [],
+      tensor_id = -1,
+      reuse_id = -1,
+      position = VECTOR_OUT,
+      position_id = -1,
+      depth = none,
+      is_double_buffer = none
+    >
+  ]
+} : (tensor<20x31xf32>, tensor<20x31xf32>) -> tensor<20x31xf32>
+```
 
 ---
 
-## 下一步工作
+## 未映射的 AscGraph 结构
 
-1. ✅ 实现基本属性定义
-2. ⬜ 实现 Proto ↔ MLIR 的转换工具
-3. ⬜ 添加 verifier 验证属性的正确性
-4. ⬜ 实现缺失的属性（MemOptAttr 等）
-5. ⬜ 添加单元测试
+以下 protobuf 定义在 AFIR 中**完全移除**或**隐式推导**:
+
+### 完全移除
+
+| Protobuf 消息 | 原用途 | AFIR 处理方式 |
+|--------------|--------|--------------|
+| `MemAttrDef` | 内存分配属性 | 融合到 `AscTensorGroups` |
+| `MemQueueAttrDef` | 队列属性 | 融合到 `AscTensorGroups` |
+| `MemBufAttrDef` | 缓冲区属性 | 融合到 `AscTensorGroups` |
+| `MemOptAttrDef` | 内存优化属性 | 不映射 (优化pass处理) |
+| `SchedInfoDef` | 调度信息 | 部分映射到操作属性 |
+| `ApiInfoDef` | API调用信息 | 不映射 (从操作类型推导) |
+| `AscNodeAttrGroupsDef` | 节点属性组 | 拆解到操作参数 |
+| `AscInputSourceDef` | 输入源引用 | 映射为 SSA value |
+| `IrDef` | IR定义 | 用于类型推断,不保留 |
+
+### 隐式推导
+
+| 原 AscGraph 字段 | 推导来源 |
+|-----------------|----------|
+| `dtype` | MLIR 张量类型 (`tensor<*xf32>`) |
+| `axis_ids`, `repeats`, `strides` | `indexing_maps` (AffineMap) |
+| `exec_order` | MLIR 基本块内的拓扑序 |
+| `api.type`, `api.compute_type`, `api.unit` | 操作名称 (`afir.add` → Compute, Elewise, Vector) |
+
+---
+
+## 枚举映射对照表
+
+### Position (融合 AllocType)
+
+| AscGraph | AFIR | 值 |
+|----------|------|---|
+| Position.GM | Position.GM | 0 |
+| Position.VECTOR_IN | Position.VECTOR_IN | 1 |
+| Position.VECTOR_OUT | Position.VECTOR_OUT | 2 |
+| Position.VECTOR_CALC | Position.VECTOR_CALC | 3 |
+| AllocType.L1 | Position.L1 | 4 |
+| AllocType.L2 | Position.L2 | 5 |
+| (新增) | Position.L0A | 6 |
+| (新增) | Position.L0B | 7 |
+| (新增) | Position.L0C | 8 |
+
+### AxisType (无变化)
+
+| AscGraph | AFIR | 值 |
+|----------|------|---|
+| Original | Original | 0 |
+| BlockOuter | BlockOuter | 1 |
+| BlockInner | BlockInner | 2 |
+| TileOuter | TileOuter | 3 |
+| TileInner | TileInner | 4 |
+| Merged | Merged | 5 |
+| Invalid | Invalid | 6 |
+
+### AscGraphType (简化)
+
+| AscGraph | AFIR | 值 |
+|----------|------|---|
+| HintGraph | COMPUTE | 0 |
+| ImplGraph | Invalid | 1 |
+
+---
+
+## 设计考虑
+
+### 1. 为什么移除 DataType 枚举?
+
+**原因**:
+- MLIR 已有完善的类型系统,重复定义会增加维护负担
+- 类型推断(Type Inference)在 MLIR 中是标准流程
+- 使用内置类型可直接复用 MLIR 的类型验证和转换基础设施
+
+**代价**:
+- 特殊类型(如量化类型 `QINT8`)需要单独定义 MLIR 类型
+- 转换时需要显式映射 protobuf dtype 到 MLIR 类型
+
+### 2. 为什么融合 MemAttr, MemQueueAttr, MemBufAttr?
+
+**原因**:
+- 这三个属性在实际使用中高度关联,分离定义增加复杂度
+- 大部分字段(如 `name`, `buf_ids`)在编译流程中未使用
+- 简化后的属性足以支持内存分配和优化
+
+### 3. 为什么移除 SchedInfoDef 和 ApiInfoDef?
+
+**原因**:
+- `exec_order`: MLIR 基本块已保证拓扑序
+- `exec_condition`: 可在优化 Pass 中根据操作模式推导
+- `api.type/compute_type/unit`: 与操作类型一一对应,冗余
+
+---
+
+## 转换工具实现指南
+
+### 推荐转换流程
+
+```python
+def convert_ascgraph_to_afir(ascgraph: AscGraphDef) -> mlir.Module:
+    # 1. 创建 Module 并附加图属性
+    module = create_module_with_graph_attr(ascgraph.asc_graph_attr)
+
+    # 2. 构建节点依赖图
+    node_map = build_dependency_graph(ascgraph.asc_node)
+
+    # 3. 按拓扑序生成操作
+    for node in topological_sort(ascgraph.asc_node):
+        # 3.1 确定操作类型
+        op_type = map_node_type_to_afir_op(node.attr.type)
+
+        # 3.2 推断 MLIR 类型
+        result_type = infer_mlir_type(node.outputs[0].attr.dtype,
+                                       node.outputs[0].attr.axis_ids,
+                                       node.outputs[0].attr.repeats)
+
+        # 3.3 构建 indexing_maps
+        indexing_maps = build_affine_maps(node.outputs[0].attr.axis_ids,
+                                           node.outputs[0].attr.repeats,
+                                           node.outputs[0].attr.strides)
+
+        # 3.4 转换张量属性
+        outputs_attr = convert_tensor_attr(node.outputs[0].attr)
+
+        # 3.5 生成操作
+        create_afir_op(op_type,
+                       inputs=resolve_inputs(node.input_src, node_map),
+                       result_type=result_type,
+                       indexing_maps=indexing_maps,
+                       loop_axis=node.attr.sched.loop_axis,
+                       ir_attr_def=node.attr.ir_attr_def,
+                       tmp_buffers=node.attr.tmp_buffers,
+                       outputs=[outputs_attr])
+
+    return module
+```
+
+### 关键辅助函数
+
+#### 1. DataType → MLIR Type
+
+```python
+def map_dtype_to_mlir_type(dtype: int, shape: List[int]) -> str:
+    type_map = {
+        1: "f32", 2: "f16", 27: "bf16",
+        3: "i8", 4: "ui8", 7: "i32", 8: "i64",
+        11: "i1", 12: "f64"
+    }
+    elem_type = type_map.get(dtype, "f32")
+    if shape:
+        dims = "x".join(map(str, shape))
+        return f"tensor<{dims}x{elem_type}>"
+    else:
+        return f"tensor<*x{elem_type}>"  # 未知维度
+```
+
+#### 2. axis_ids/repeats/strides → AffineMap
+
+```python
+def build_affine_map(axis_ids: List[int], repeats: List[str], strides: List[str]) -> str:
+    # 示例: axis_ids=[0,1], repeats=["20","31"], strides=["31","1"]
+    # → affine_map<(d0, d1) -> (d0 * 31 + d1)>
+
+    # 简化版: 假设连续布局
+    if all(int(s) == 1 for s in strides[-1:]) and len(axis_ids) == len(repeats):
+        dims = ", ".join(f"d{i}" for i in range(len(axis_ids)))
+        return f"affine_map<({dims}) -> ({dims})>"
+
+    # 复杂情况需要解析 strides 和 repeats 表达式
+    ...
+```
+
+#### 3. 内存属性融合
+
+```python
+def convert_tensor_attr(attr: AscTensorAttrGroupsDef) -> dict:
+    # 融合 mem, que, buf 到单一属性
+    position = map_position(attr.mem.position if attr.mem else 0,
+                            attr.mem.alloc_type if attr.mem else 0)
+
+    return {
+        "vectorized_axis": attr.vectorized_axis,
+        "vectorized_strides": attr.vectorized_strides,
+        "tensor_id": attr.mem.tensor_id if attr.mem else -1,
+        "reuse_id": attr.mem.reuse_id if attr.mem else -1,
+        "position": position,
+        "position_id": attr.que.id if attr.que else (attr.buf.id if attr.buf else -1),
+        "depth": attr.que.depth if attr.que else None,
+        "is_double_buffer": attr.que.buf_num > 1 if attr.que else None
+    }
+
+def map_position(proto_position: int, alloc_type: int) -> str:
+    # Position 枚举融合逻辑
+    if alloc_type == 1: return "L1"
+    elif alloc_type == 2: return "L2"
+    elif proto_position == 0: return "GM"
+    elif proto_position == 1: return "VECTOR_IN"
+    elif proto_position == 2: return "VECTOR_OUT"
+    elif proto_position == 3: return "VECTOR_CALC"
+    else: return "GM"
+```
+
+---
+
+## 参考文件
+
+- **AFIR 方言定义**: `include/Dialect/AFIR/AFIRAttrs.td`, `AFIREnums.td`, `AFIROps.td`
+- **AscGraph Protobuf**: `graph_metadef/proto/ascendc_ir.proto`, `ge_ir.proto`
+- **转换工具**: `python/ascir-to-afir/ascir_to_afir.py`
+
+---
+
+## 版本历史
+
+- **v1.0 (2025-01)**: 初始 1:1 映射版本,保留所有 protobuf 结构
+- **v2.0 (2026-01)**: 抽象版本,融合内存属性,使用 MLIR 类型系统
+
+---
+
+## 附录: 完整映射表
+
+### Protobuf 消息 → AFIR 属性
+
+| Protobuf Message | AFIR Attribute | 状态 |
+|-----------------|----------------|------|
+| `AscGraphAttrGroupsDef` | `AscGraphAttrGroups` | ✅ 1:1 映射 (简化 type) |
+| `AxisDef` | `Axis` | ✅ 1:1 映射 (忽略 2 字段) |
+| `AscTensorAttrGroupsDef` | `AscTensorGroups` | ⚠️ 简化映射 |
+| `MemAttrDef` | (融合到 `AscTensorGroups`) | ⚠️ 部分映射 |
+| `MemQueueAttrDef` | (融合到 `AscTensorGroups`) | ⚠️ 部分映射 |
+| `MemBufAttrDef` | (融合到 `AscTensorGroups`) | ⚠️ 部分映射 |
+| `MemOptAttrDef` | - | ❌ 不映射 |
+| `TmpBufDescDef` | `TmpBufDesc` | ✅ 1:1 映射 |
+| `TmpBufferGroupDef` | - | ❌ 移除 (直接使用 TmpBufDesc 数组) |
+| `SchedInfoDef` | (拆解到操作属性) | ⚠️ 部分映射 |
+| `ApiInfoDef` | - | ❌ 不映射 |
+| `AscNodeAttrGroupsDef` | (拆解到操作属性) | ⚠️ 拆解 |
+| `AscInputSourceDef` | (SSA value 引用) | ✅ 隐式映射 |
+| `IrDef` | (类型推断) | ⚠️ 用于转换,不保留 |
+
+### Protobuf 字段状态图例
+- ✅ **1:1 映射**: 直接对应,无修改
+- ⚠️ **部分映射**: 简化或融合到其他属性
+- ❌ **不映射**: 移除或可推导
