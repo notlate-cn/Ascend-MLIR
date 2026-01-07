@@ -1,4 +1,4 @@
-//===----------------- ShapeHelper.hpp - help for shapes ---------------===//
+//===----------------- ShapeHelper.h - help for shapes ---------------===//
 //
 // Part of the Ascend-MLIR Project
 //

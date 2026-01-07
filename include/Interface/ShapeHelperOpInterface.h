@@ -181,7 +181,7 @@ struct AFIRUnimplementedOpShapeHelper : public AFIROpShapeHelper {
 // Type aliases for common ops
 //===----------------------------------------------------------------------===//
 
-// These are now defined in ShapeHelper.hpp
+// These are now defined in ShapeHelper.h
 
 }  // namespace afir
 }  // namespace mlir

@@ -6,7 +6,7 @@
 
 #include "Dialect/AFIR/AFIROps.h"
 #include "Dialect/AFIR/AFIRDialect.h"
-#include "Dialect/AFIR/ShapeHelper.hpp"
+#include "Dialect/AFIR/ShapeHelper.h"
 #include "Interface/ShapeHelperOpInterface.h"
 #include "Interface/ShapeInferenceOpInterface.h"
 #include "mlir/IR/Builders.h"

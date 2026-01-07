@@ -12,7 +12,7 @@
 #include "llvm/Support/Debug.h"
 
 #include "mlir/IR/BuiltinTypeInterfaces.h"
-#include "Dialect/AFIR/ShapeHelper.hpp"
+#include "Dialect/AFIR/ShapeHelper.h"
 
 #include <algorithm>
 

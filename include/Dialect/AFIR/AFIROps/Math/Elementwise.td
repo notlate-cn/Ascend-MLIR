@@ -12,9 +12,11 @@
 #define AFIR_ELEMENTWISE_OPS
 
 include "Dialect/AFIR/AFIRDialect.td"
+include "Dialect/AFIR/AFIRAttrs.td"
 include "Interface/ShapeHelperOpInterface.td"
 include "Interface/ShapeInferenceOpInterface.td"
 include "mlir/Interfaces/SideEffectInterfaces.td"
+include "mlir/IR/CommonTypeConstraints.td"
 include "Core/Types.td"
 
 //===----------------------------------------------------------------------===//
@@ -37,10 +39,16 @@ def AFIR_AddOp : AFIR_Op<"add", [
   }];
 
   let arguments = (ins
-    AnyTypeOf<[F16, F32, I16, I32]>:$lhs,
-    AnyTypeOf<[F16, F32, I16, I32]>:$rhs
+    TensorOf<[F16, F32, I16, I32]>:$lhs,
+    TensorOf<[F16, F32, I16, I32]>:$rhs,
+    AffineMapArrayAttr:$indexing_maps,
+    DefaultValuedAttr<I32Attr, "-1">:$loop_axis,
+    OptionalAttr<DictionaryAttr>:$ir_attr_def,
+    OptionalAttr<TmpBufDescArrayAttr>:$tmp_buffers,
+    AscTensorGroupsArrayAttr:$outputs
   );
-  let results = (outs AnyTypeOf<[F16, F32, I16, I32]>:$result);
+
+  let results = (outs TensorOf<[F16, F32, I16, I32]>:$result);
 
   let assemblyFormat = [{
     $lhs `,` $rhs attr-dict `:` `(` type($lhs) `,` type($rhs) `)` `->` type($result)
@@ -91,10 +99,11 @@ def AFIR_SubOp : AFIR_Op<"sub", [
   }];
 
   let arguments = (ins
-    AnyTypeOf<[F16, F32, I16, I32]>:$lhs,
-    AnyTypeOf<[F16, F32, I16, I32]>:$rhs
+    TensorOf<[F16, F32, I16, I32]>:$lhs,
+    TensorOf<[F16, F32, I16, I32]>:$rhs,
+    AffineMapArrayAttr:$indexing_maps
   );
-  let results = (outs AnyTypeOf<[F16, F32, I16, I32]>:$result);
+  let results = (outs TensorOf<[F16, F32, I16, I32]>:$result);
 
   let assemblyFormat = [{
     $lhs `,` $rhs attr-dict `:` `(` type($lhs) `,` type($rhs) `)` `->` type($result)
@@ -145,10 +154,11 @@ def AFIR_MulOp : AFIR_Op<"mul", [
   }];
 
   let arguments = (ins
-    AnyTypeOf<[F16, F32, I16, I32]>:$lhs,
-    AnyTypeOf<[F16, F32, I16, I32]>:$rhs
+    TensorOf<[F16, F32, I16, I32]>:$lhs,
+    TensorOf<[F16, F32, I16, I32]>:$rhs,
+    AffineMapArrayAttr:$indexing_maps
   );
-  let results = (outs AnyTypeOf<[F16, F32, I16, I32]>:$result);
+  let results = (outs TensorOf<[F16, F32, I16, I32]>:$result);
 
   let assemblyFormat = [{
     $lhs `,` $rhs attr-dict `:` `(` type($lhs) `,` type($rhs) `)` `->` type($result)
@@ -199,10 +209,11 @@ def AFIR_DivOp : AFIR_Op<"div", [
   }];
 
   let arguments = (ins
-    AnyTypeOf<[F16, F32]>:$lhs,
-    AnyTypeOf<[F16, F32]>:$rhs
+    TensorOf<[F16, F32]>:$lhs,
+    TensorOf<[F16, F32]>:$rhs,
+    AffineMapArrayAttr:$indexing_maps
   );
-  let results = (outs AnyTypeOf<[F16, F32]>:$result);
+  let results = (outs TensorOf<[F16, F32]>:$result);
 
   let assemblyFormat = [{
     $lhs `,` $rhs attr-dict `:` `(` type($lhs) `,` type($rhs) `)` `->` type($result)
