@@ -65,12 +65,17 @@ void AFIRDialect::printType(Type type, DialectAsmPrinter &printer) const {
 //===----------------------------------------------------------------------===//
 
 Attribute AFIRDialect::parseAttribute(DialectAsmParser &parser, Type type) const {
-  // Currently AFIR only has enum attributes which are parsed automatically
-  // When custom attributes are added, implement parsing logic here
+  StringRef attrType;
+  Attribute attr;
+  auto parseResult = generatedAttributeParser(parser, &attrType, type, attr);
+  if (parseResult.has_value() && succeeded(parseResult.value())) {
+    return attr;
+  }
   return Attribute();
 }
 
 void AFIRDialect::printAttribute(Attribute attr, DialectAsmPrinter &printer) const {
-  // Currently AFIR only has enum attributes which are printed automatically
-  // When custom attributes are added, implement printing logic here
+  if (failed(generatedAttributePrinter(attr, printer))) {
+    return;
+  }
 }
