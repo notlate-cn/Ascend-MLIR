@@ -42,10 +42,10 @@ def AFIR_AddOp : AFIR_Op<"add", [
     TensorOf<[F16, F32, I16, I32]>:$lhs,
     TensorOf<[F16, F32, I16, I32]>:$rhs,
     AffineMapArrayAttr:$indexing_maps,
-    DefaultValuedAttr<I32Attr, "-1">:$loop_axis,
-    OptionalAttr<DictionaryAttr>:$ir_attr_def,
-    OptionalAttr<TmpBufDescArrayAttr>:$tmp_buffers,
-    AscTensorGroupsArrayAttr:$outputs
+    DefaultValuedOptionalAttr<I32Attr, "-1">:$loop_axis,
+    DefaultValuedOptionalAttr<DictionaryAttr, "{}">:$ir_attr_def,
+    DefaultValuedOptionalAttr<TmpBufDescArrayAttr, "{}">:$tmp_buffers,
+    DefaultValuedOptionalAttr<AscTensorGroupsArrayAttr, "{}">:$outputs
   );
 
   let results = (outs TensorOf<[F16, F32, I16, I32]>:$result);

@@ -22,39 +22,37 @@ using namespace mlir::afir;
 
 namespace {
 
-//===----------------------------------------------------------------------===//
-// Elementwise Binary Operation Conversion Pattern
-//===----------------------------------------------------------------------===//
-
 template <typename AFIRBinaryOp, typename ASCBinaryOp>
-struct ConvertAFIRBinaryElementwiseOpToASCIR : public OpRewritePattern<AFIRBinaryOp> {
-  using OpRewritePattern<AFIRBinaryOp>::OpRewritePattern;
+struct ConvertAFIRBinaryElementwiseOpToASCIR : public ConversionPattern {
+  ConvertAFIRBinaryElementwiseOpToASCIR(TypeConverter &typeConverter, MLIRContext *context)
+      : ConversionPattern(typeConverter, AFIRBinaryOp::getOperationName(), 1, context) {}
 
-  LogicalResult matchAndRewrite(AFIRBinaryOp op, PatternRewriter &rewriter) const override {
-    auto resultType = op.getResult().getType();
+  LogicalResult matchAndRewrite(Operation *op, ArrayRef<Value> operands,
+                                ConversionPatternRewriter &rewriter) const override {
+    auto binaryOp = cast<AFIRBinaryOp>(op);
+    auto resultType = op->getResult(0).getType();
 
-    auto bufferTy = ascendc::TBufType::get(op.getContext(), ascendc::TPosition::VECCALC);
+    auto bufferTy = ascendc::TBufType::get(op->getContext(), ascendc::TPosition::VECCALC);
     auto shape = SmallVector<int64_t>(mlir::cast<ShapedType>(resultType).getShape());
-    Value tbuf1 = ::mlir::ascendc::TBufOp::create(rewriter, op.getLoc(), bufferTy);
+    Value tbuf = ::mlir::ascendc::TBufOp::create(rewriter, op->getLoc(), bufferTy);
     auto localTType = ascendc::LocalTensorType::get(shape, mlir::cast<ShapedType>(resultType).getElementType());
-    Value dst = ascendc::TBufGetTensorOp::create(rewriter, op.getLoc(), localTType, tbuf1);
+    Value dst = ascendc::TBufGetTensorOp::create(rewriter, op->getLoc(), localTType, tbuf);
 
-    ASCBinaryOp::create(rewriter, op.getLoc(), dst, op.getLhs(), op.getRhs());
+    Value lhs = operands[0];
+    Value rhs = operands[1];
+
+    ASCBinaryOp::create(rewriter, op->getLoc(), dst, lhs, rhs);
     rewriter.replaceOp(op, dst);
     return success();
   }
 };
 
-using ConvertAFIRAddOpToASCIR = ConvertAFIRBinaryElementwiseOpToASCIR<afir::AddOp, ascendc::AddL3Op>;
-using ConvertAFIRSubOpToASCIR = ConvertAFIRBinaryElementwiseOpToASCIR<afir::SubOp, ascendc::SubL3Op>;
-using ConvertAFIRMulOpToASCIR = ConvertAFIRBinaryElementwiseOpToASCIR<afir::MulOp, ascendc::MulL3Op>;
-using ConvertAFIRDivOpToASCIR = ConvertAFIRBinaryElementwiseOpToASCIR<afir::DivOp, ascendc::DivL3Op>;
-
 }  // namespace
 
-void mlir::afir::populateLoweringAFIRElementwiseOpToASCIRPattern(RewritePatternSet &patterns, MLIRContext *ctx) {
-  patterns.add<ConvertAFIRAddOpToASCIR>(ctx);
-  patterns.add<ConvertAFIRSubOpToASCIR>(ctx);
-  patterns.add<ConvertAFIRMulOpToASCIR>(ctx);
-  patterns.add<ConvertAFIRDivOpToASCIR>(ctx);
+void mlir::afir::populateLoweringAFIRElementwiseOpToASCIRPattern(RewritePatternSet &patterns, MLIRContext *ctx,
+                                                                  TypeConverter &typeConverter) {
+  patterns.add<ConvertAFIRBinaryElementwiseOpToASCIR<afir::AddOp, ascendc::AddL3Op>>(typeConverter, ctx);
+  patterns.add<ConvertAFIRBinaryElementwiseOpToASCIR<afir::SubOp, ascendc::SubL3Op>>(typeConverter, ctx);
+  patterns.add<ConvertAFIRBinaryElementwiseOpToASCIR<afir::MulOp, ascendc::MulL3Op>>(typeConverter, ctx);
+  patterns.add<ConvertAFIRBinaryElementwiseOpToASCIR<afir::DivOp, ascendc::DivL3Op>>(typeConverter, ctx);
 }

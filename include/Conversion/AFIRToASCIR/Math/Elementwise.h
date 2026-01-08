@@ -16,10 +16,12 @@ namespace mlir {
 
 class MLIRContext;
 class RewritePatternSet;
+class TypeConverter;
 
 namespace afir {
 
-void populateLoweringAFIRElementwiseOpToASCIRPattern(RewritePatternSet &patterns, MLIRContext *ctx);
+void populateLoweringAFIRElementwiseOpToASCIRPattern(RewritePatternSet &patterns, MLIRContext *ctx,
+                                                      TypeConverter &typeConverter);
 
 }  // namespace afir
 }  // namespace mlir
