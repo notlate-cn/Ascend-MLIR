@@ -13,9 +13,9 @@
 #ifndef AFIR_ATTRS
 #define AFIR_ATTRS
 
-include "Dialect/AFIR/AFIRBase.td"
+include "Dialect/AFIR/Base.td"
 include "mlir/IR/AttrTypeBase.td"
-include "Dialect/AFIR/AFIREnums.td"
+include "Dialect/AFIR/Enums.td"
 
 //===----------------------------------------------------------------------===//
 // Graph-Level Attributes (AscGraph Mapping)

@@ -21,7 +21,7 @@ class TypeConverter;
 namespace afir {
 
 void populateLoweringAFIRElementwiseOpToASCIRPattern(RewritePatternSet &patterns, MLIRContext *ctx,
-                                                      TypeConverter &typeConverter);
+                                                     TypeConverter &typeConverter);
 
 }  // namespace afir
 }  // namespace mlir

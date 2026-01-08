@@ -11,13 +11,12 @@
 #ifndef AFIR_ELEMENTWISE_OPS
 #define AFIR_ELEMENTWISE_OPS
 
-include "Dialect/AFIR/AFIRDialect.td"
-include "Dialect/AFIR/AFIRAttrs.td"
+include "Dialect/AFIR/Dialect.td"
+include "Dialect/AFIR/Attrs.td"
 include "Interface/ShapeHelperOpInterface.td"
 include "Interface/ShapeInferenceOpInterface.td"
 include "mlir/Interfaces/SideEffectInterfaces.td"
 include "mlir/IR/CommonTypeConstraints.td"
-include "Core/Types.td"
 
 //===----------------------------------------------------------------------===//
 // Add Operation

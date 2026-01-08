@@ -19,24 +19,21 @@
 #include "mlir/Support/LogicalResult.h"
 #include "mlir/IR/OpDefinition.h"
 #include "mlir/IR/Verifier.h"
-#include "Dialect/AFIR/AFIRDialect.h"
-#include "Dialect/AFIR/AFIROps.h"
+#include "Dialect/AFIR/Dialect.h"
+#include "Dialect/AFIR/Ops.h"
 
 using namespace mlir;
 using namespace mlir::afir;
 
-AffineMap createCustomIndexedIdentityMap(
-    MLIRContext *context,
-    ArrayRef<unsigned> usedDimIndices
-) {
+AffineMap createCustomIndexedIdentityMap(MLIRContext *context, ArrayRef<unsigned> usedDimIndices) {
   unsigned numUsedDims = usedDimIndices.size();
   unsigned maxDimIndex = *std::max_element(usedDimIndices.begin(), usedDimIndices.end());
-  
+
   SmallVector<AffineExpr, 4> resultExprs;
   for (unsigned i = 0; i < numUsedDims; ++i) {
     resultExprs.push_back(getAffineDimExpr(usedDimIndices[i], context));
   }
-  
+
   return AffineMap::get(maxDimIndex + 1, 0, resultExprs, context);
 }
 
@@ -62,11 +59,7 @@ int main() {
 
     auto funcType = builder.getFunctionType({tensorType, tensorType}, tensorType);
 
-    auto funcOp = builder.create<func::FuncOp>(
-      builder.getUnknownLoc(),
-      "elementwise_operations",
-      funcType
-    );
+    auto funcOp = builder.create<func::FuncOp>(builder.getUnknownLoc(), "elementwise_operations", funcType);
 
     auto *entryBlock = funcOp.addEntryBlock();
     builder.setInsertionPointToStart(entryBlock);
@@ -74,17 +67,16 @@ int main() {
     auto arg0 = entryBlock->getArgument(0);
     auto arg1 = entryBlock->getArgument(1);
 
-    auto outputsAttr = AscTensorGroupsAttr::get(
-      &context,
-      {1, 2},  // vectorized_axis
-      {builder.getI64IntegerAttr(4), builder.getI64IntegerAttr(8)},  // vectorized_strides
-      42,  // tensor_id
-      10,  // reuse_id
-      Position::VECTOR_IN,
-      5,   // position_id
-      2,   // depth
-      true  // is_double_buffer
-    );
+    auto outputsAttr =
+        AscTensorGroupsAttr::get(&context, {1, 2},                                              // vectorized_axis
+                                 {builder.getI64IntegerAttr(4), builder.getI64IntegerAttr(8)},  // vectorized_strides
+                                 42,                                                            // tensor_id
+                                 10,                                                            // reuse_id
+                                 Position::VECTOR_IN,
+                                 5,    // position_id
+                                 2,    // depth
+                                 true  // is_double_buffer
+        );
 
     auto outputsAttrArray = builder.getArrayAttr(outputsAttr);
 
@@ -101,76 +93,37 @@ int main() {
     llvm::outs() << "is_double_buffer: " << outputsAttr.getIsDoubleBuffer() << "\n";
     llvm::outs() << "========================\n\n";
 
-    auto irAttrDef = builder.getDictionaryAttr({
-      builder.getNamedAttr("compute_hint", builder.getI64IntegerAttr(1)),
-      builder.getNamedAttr("custom_option_1", builder.getI32IntegerAttr(100)),
-      builder.getNamedAttr("custom_option_2", builder.getStringAttr("example_value"))
-    });
+    auto irAttrDef =
+        builder.getDictionaryAttr({builder.getNamedAttr("compute_hint", builder.getI64IntegerAttr(1)),
+                                   builder.getNamedAttr("custom_option_1", builder.getI32IntegerAttr(100)),
+                                   builder.getNamedAttr("custom_option_2", builder.getStringAttr("example_value"))});
 
-    auto tmpBufDesc1 = TmpBufDescAttr::get(
-      &context,
-      builder.getStringAttr("(d0 * 128)"),
-      2
-    );
-    auto tmpBufDesc2 = TmpBufDescAttr::get(
-      &context,
-      builder.getStringAttr("(d0 * 64 + d1 * 8)"),
-      3
-    );
+    auto tmpBufDesc1 = TmpBufDescAttr::get(&context, builder.getStringAttr("(d0 * 128)"), 2);
+    auto tmpBufDesc2 = TmpBufDescAttr::get(&context, builder.getStringAttr("(d0 * 64 + d1 * 8)"), 3);
     auto tmpBuffersAttr = builder.getArrayAttr({tmpBufDesc1, tmpBufDesc2});
 
-    auto addOp = builder.create<AddOp>(
-      builder.getUnknownLoc(),
-      tensorType,
-      arg0,
-      arg1,
-      indexingMapsAttr,
-      builder.getI32IntegerAttr(1),
-      irAttrDef,
-      tmpBuffersAttr,
-      outputsAttrArray
-    );
+    auto addOp = builder.create<AddOp>(builder.getUnknownLoc(), tensorType, arg0, arg1, indexingMapsAttr,
+                                       builder.getI32IntegerAttr(1), irAttrDef, tmpBuffersAttr, outputsAttrArray);
 
-    auto subOpIrAttrDef = builder.getDictionaryAttr({
-      builder.getNamedAttr("compute_hint", builder.getI64IntegerAttr(2)),
-      builder.getNamedAttr("custom_option_1", builder.getI32IntegerAttr(200))
-    });
+    auto subOpIrAttrDef =
+        builder.getDictionaryAttr({builder.getNamedAttr("compute_hint", builder.getI64IntegerAttr(2)),
+                                   builder.getNamedAttr("custom_option_1", builder.getI32IntegerAttr(200))});
 
-    auto subOp = builder.create<SubOp>(
-      builder.getUnknownLoc(),
-      tensorType,
-      arg0,
-      arg1,
-      indexingMapsAttr
-    );
+    auto subOp = builder.create<SubOp>(builder.getUnknownLoc(), tensorType, arg0, arg1, indexingMapsAttr);
     subOp->setAttr("ir_attr_def", subOpIrAttrDef);
 
-    auto mulOpIrAttrDef = builder.getDictionaryAttr({
-      builder.getNamedAttr("compute_hint", builder.getI64IntegerAttr(3)),
-      builder.getNamedAttr("custom_option_1", builder.getI32IntegerAttr(300))
-    });
+    auto mulOpIrAttrDef =
+        builder.getDictionaryAttr({builder.getNamedAttr("compute_hint", builder.getI64IntegerAttr(3)),
+                                   builder.getNamedAttr("custom_option_1", builder.getI32IntegerAttr(300))});
 
-    auto mulOp = builder.create<MulOp>(
-      builder.getUnknownLoc(),
-      tensorType,
-      arg0,
-      arg1,
-      indexingMapsAttr
-    );
+    auto mulOp = builder.create<MulOp>(builder.getUnknownLoc(), tensorType, arg0, arg1, indexingMapsAttr);
     mulOp->setAttr("ir_attr_def", mulOpIrAttrDef);
 
-    auto divOpIrAttrDef = builder.getDictionaryAttr({
-      builder.getNamedAttr("compute_hint", builder.getI64IntegerAttr(4)),
-      builder.getNamedAttr("custom_option_1", builder.getI32IntegerAttr(400))
-    });
+    auto divOpIrAttrDef =
+        builder.getDictionaryAttr({builder.getNamedAttr("compute_hint", builder.getI64IntegerAttr(4)),
+                                   builder.getNamedAttr("custom_option_1", builder.getI32IntegerAttr(400))});
 
-    auto divOp = builder.create<DivOp>(
-      builder.getUnknownLoc(),
-      tensorType,
-      arg0,
-      arg1,
-      indexingMapsAttr
-    );
+    auto divOp = builder.create<DivOp>(builder.getUnknownLoc(), tensorType, arg0, arg1, indexingMapsAttr);
     divOp->setAttr("ir_attr_def", divOpIrAttrDef);
 
     builder.create<func::ReturnOp>(builder.getUnknownLoc(), divOp.getResult());

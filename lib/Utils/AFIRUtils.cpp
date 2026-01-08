@@ -5,7 +5,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "Utils/AFIRUtils.h"
-#include "Dialect/AFIR/AFIRDialect.h"
+#include "Dialect/AFIR/Dialect.h"
 
 namespace mlir {
 namespace afir {

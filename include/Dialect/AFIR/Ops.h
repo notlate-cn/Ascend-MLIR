@@ -7,7 +7,7 @@
 #ifndef MLIR_DIALECT_AFIR_AFIROPS_H
 #define MLIR_DIALECT_AFIR_AFIROPS_H
 
-#include "Dialect/AFIR/AFIRDialect.h"
+#include "Dialect/AFIR/Dialect.h"
 #include "Dialect/AFIR/ShapeHelper.h"
 #include "Interface/ShapeHelperOpInterface.h"
 #include "Interface/ShapeInferenceOpInterface.h"
@@ -20,6 +20,6 @@
 
 // Include operation definitions
 #define GET_OP_CLASSES
-#include "Dialect/AFIR/AFIROps.h.inc"
+#include "Dialect/AFIR/Ops.h.inc"
 
 #endif  // MLIR_DIALECT_AFIR_AFIROPS_H

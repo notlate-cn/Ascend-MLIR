@@ -11,7 +11,7 @@
 
 #include "Conversion/AFIRToASCIR/Math/Elementwise.h"
 #include "Conversion/AFIRToASCIR/DialectBuilder.h"
-#include "Dialect/AFIR/AFIROps.h"
+#include "Dialect/AFIR/Ops.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/PatternMatch.h"
 #include "mlir/Transforms/DialectConversion.h"
@@ -50,7 +50,7 @@ struct ConvertAFIRBinaryElementwiseOpToASCIR : public ConversionPattern {
 }  // namespace
 
 void mlir::afir::populateLoweringAFIRElementwiseOpToASCIRPattern(RewritePatternSet &patterns, MLIRContext *ctx,
-                                                                  TypeConverter &typeConverter) {
+                                                                 TypeConverter &typeConverter) {
   patterns.add<ConvertAFIRBinaryElementwiseOpToASCIR<afir::AddOp, ascendc::AddL3Op>>(typeConverter, ctx);
   patterns.add<ConvertAFIRBinaryElementwiseOpToASCIR<afir::SubOp, ascendc::SubL3Op>>(typeConverter, ctx);
   patterns.add<ConvertAFIRBinaryElementwiseOpToASCIR<afir::MulOp, ascendc::MulL3Op>>(typeConverter, ctx);

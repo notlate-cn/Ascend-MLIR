@@ -12,7 +12,7 @@
 #ifndef AFIR_ENUMS
 #define AFIR_ENUMS
 
-include "Dialect/AFIR/AFIRBase.td"
+include "Dialect/AFIR/Base.td"
 include "mlir/IR/EnumAttr.td"
 
 
