@@ -14,6 +14,8 @@ BUILD_DIR="${PROJECT_ROOT}/build"
 INSTALL_DIR="${PROJECT_ROOT}/install"
 LLVM_BUILD_DIR="${LLVM_BUILD_DIR:-${PROJECT_ROOT}/externals/llvm-project/build}"
 NUM_JOBS="${NUM_JOBS:-$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 4)}"
+COVERAGE="${COVERAGE:-false}"
+OUTPUT_DIR="${PROJECT_ROOT}/output"
 
 # Colors for output
 RED='\033[0;31m'
@@ -48,6 +50,7 @@ Options:
     --build-all         Build dependencies and project
     --build-tests       Build and run tests
     --clean             Clean build directory
+    --coverage          Enable code coverage collection
     --release           Build in Release mode (default)
     --debug             Build in Debug mode
     --llvm-build-dir    Path to LLVM build directory (default: externals/llvm-project/build)
@@ -59,6 +62,7 @@ Environment Variables:
     BUILD_DIR           Build directory path
     LLVM_BUILD_DIR      LLVM build directory path
     NUM_JOBS            Number of parallel jobs
+    COVERAGE            Enable code coverage collection (true/false)
 
 Examples:
     $0 --build-all                           # Build everything
@@ -66,6 +70,7 @@ Examples:
     $0 --build-project                       # Build Ascend-MLIR only
     $0 --llvm-build-dir /path/to/llvm/build  # Use external LLVM build
     $0 --clean --build-all                   # Clean and rebuild everything
+    $0 --build-tests --coverage              # Build and run tests with coverage
 EOF
 }
 
@@ -172,12 +177,107 @@ build_tests() {
     local start_time=$(date +%s)
     print_info "Building and running tests..."
 
+    mkdir -p "${BUILD_DIR}"
     cd "${BUILD_DIR}"
-    cmake --build . --target check-afir -j${NUM_JOBS}
+
+    if $COVERAGE; then
+        print_info "Building with coverage enabled..."
+        cmake -G Ninja "${PROJECT_ROOT}" \
+            -DCMAKE_BUILD_TYPE=${BUILD_TYPE} \
+            -DCMAKE_INSTALL_PREFIX="${INSTALL_DIR}" \
+            -DLLVM_BUILD_DIR="${LLVM_BUILD_DIR}" \
+            -DCMAKE_C_COMPILER="${LLVM_BUILD_DIR}/bin/clang" \
+            -DCMAKE_CXX_COMPILER="${LLVM_BUILD_DIR}/bin/clang++" \
+            -DCMAKE_C_FLAGS="-fprofile-instr-generate -fcoverage-mapping" \
+            -DCMAKE_CXX_FLAGS="-fprofile-instr-generate -fcoverage-mapping"
+
+        cmake --build . --target all -j${NUM_JOBS}
+        mkdir -p "${BUILD_DIR}/coverage"
+        
+        print_info "Cleaning old coverage data..."
+        find "${BUILD_DIR}" -name "*.profraw" -type f -delete 2>/dev/null || true
+        find "${BUILD_DIR}/coverage" -name "*.profdata" -type f -delete 2>/dev/null || true
+        
+        cmake --build . --target check-afir-coverage -j${NUM_JOBS}
+
+        collect_coverage
+    else
+        cmake --build . --target check-afir -j${NUM_JOBS}
+    fi
 
     local end_time=$(date +%s)
     local duration=$((end_time - start_time))
     print_info "Tests completed in ${duration}s ($(printf '%02d:%02d:%02d' $((duration/3600)) $((duration%3600/60)) $((duration%60))))"
+}
+
+collect_coverage() {
+    print_info "Collecting coverage data..."
+
+    local LLVM_COV="${LLVM_BUILD_DIR}/bin/llvm-cov"
+    local LLVM_PROFDATA="${LLVM_BUILD_DIR}/bin/llvm-profdata"
+    local COVERAGE_DIR="${BUILD_DIR}/coverage"
+    local BINARY="${BUILD_DIR}/bin/afir-opt"
+    local IGNORE_REGEX=".*externals.*|.*build/.*|.*test/.*|.*unittest.*"
+
+    if [ ! -f "$LLVM_COV" ] || [ ! -f "$LLVM_PROFDATA" ]; then
+        print_warn "llvm-cov or llvm-profdata not found in system LLVM"
+        return 0
+    fi
+
+    if [ ! -f "$BINARY" ]; then
+        print_warn "Binary not found: $BINARY"
+        return 0
+    fi
+
+    mkdir -p "${BUILD_DIR}"
+    cd "${BUILD_DIR}"
+    find coverage -name "*.profdata" -type f -delete 2>/dev/null || true
+    mkdir -p "$COVERAGE_DIR"
+
+    local PROFDATA_FILES=$(find . -name "*.profraw" 2>/dev/null)
+    if [ -z "$PROFDATA_FILES" ]; then
+        print_warn "No .profraw files found"
+        return 0
+    fi
+
+    print_info "Found $(echo "$PROFDATA_FILES" | wc -l) .profraw files"
+
+    print_info "Merging profile data..."
+    local valid_files=""
+    for profraw_file in $PROFDATA_FILES; do
+        if "$LLVM_PROFDATA" show "$profraw_file" >/dev/null 2>&1; then
+            valid_files="$valid_files $profraw_file"
+        fi
+    done
+
+    if [ -z "$valid_files" ]; then
+        print_warn "No valid .profraw files found"
+        return 0
+    fi
+
+    "$LLVM_PROFDATA" merge -sparse -output "${COVERAGE_DIR}/coverage.profdata" $valid_files
+
+    if [ ! -f "${COVERAGE_DIR}/coverage.profdata" ]; then
+        print_warn "Failed to merge profile data"
+        return 0
+    fi
+
+    print_info "Generating coverage report..."
+    local report_dir="${COVERAGE_DIR}/report"
+    mkdir -p "$report_dir"
+
+    "$LLVM_COV" show -format=html -output-dir="$report_dir" \
+        -instr-profile="${COVERAGE_DIR}/coverage.profdata" \
+        "$BINARY" \
+        -ignore-filename-regex="$IGNORE_REGEX"
+
+    "$LLVM_COV" report -instr-profile="${COVERAGE_DIR}/coverage.profdata" \
+        "$BINARY" \
+        -ignore-filename-regex="$IGNORE_REGEX" \
+        > "${COVERAGE_DIR}/summary.txt"
+
+    print_info "Coverage report generated at: ${report_dir}/index.html"
+    print_info "Coverage summary saved at: ${COVERAGE_DIR}/summary.txt"
 }
 
 clean_build() {
@@ -231,6 +331,10 @@ while [[ $# -gt 0 ]]; do
             ;;
         --clean)
             CLEAN=true
+            shift
+            ;;
+        --coverage)
+            COVERAGE=true
             shift
             ;;
         --release)

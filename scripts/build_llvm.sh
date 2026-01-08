@@ -35,7 +35,7 @@ cd "${LLVM_BUILD}"
 # Configure
 cmake -G Ninja ../llvm \
     -DCMAKE_BUILD_TYPE=${BUILD_TYPE} \
-    -DLLVM_ENABLE_PROJECTS="mlir" \
+    -DLLVM_ENABLE_PROJECTS="mlir;clang" \
     -DLLVM_TARGETS_TO_BUILD="host" \
     -DLLVM_ENABLE_ASSERTIONS=ON \
     -DLLVM_ENABLE_RTTI=ON \

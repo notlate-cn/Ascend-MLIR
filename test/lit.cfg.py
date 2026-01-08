@@ -48,6 +48,10 @@ config.test_exec_root = os.path.join(config.afir_obj_root, 'test')
 # Tweak the PATH to include the tools dir.
 llvm_config.with_environment('PATH', config.llvm_tools_dir, append_path=True)
 
+# Set up coverage profiling if enabled
+if 'LLVM_PROFILE_FILE' in os.environ:
+    llvm_config.with_environment('LLVM_PROFILE_FILE', os.environ['LLVM_PROFILE_FILE'], append_path=False)
+
 tool_dirs = [config.afir_tools_dir, config.llvm_tools_dir]
 tools = [
     'afir-opt',
