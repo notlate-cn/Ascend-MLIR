@@ -7,6 +7,7 @@
 #include "Conversion/AFIRToASCIR/AFIRToASCIR.h"
 #include "Conversion/AFIRToASCIR/Math/Elementwise.h"
 #include "Dialect/AFIR/AFIROps.h"
+#include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/Pass/Pass.h"
 #include "mlir/Transforms/DialectConversion.h"
@@ -14,6 +15,34 @@
 
 namespace mlir {
 namespace afir {
+
+namespace {
+
+struct FuncReturnOpTypeConversion : public OpConversionPattern<func::ReturnOp> {
+  using OpConversionPattern::OpConversionPattern;
+
+  LogicalResult matchAndRewrite(func::ReturnOp op, OpAdaptor adaptor,
+                                ConversionPatternRewriter &rewriter) const override {
+    rewriter.replaceOpWithNewOp<func::ReturnOp>(op, adaptor.getOperands());
+    return success();
+  }
+};
+
+}  // namespace
+
+class AFIRToASCIRTypeConverter : public TypeConverter {
+public:
+  AFIRToASCIRTypeConverter() {
+    addConversion([](Type type) -> std::optional<Type> {
+      if (auto tensorType = dyn_cast<TensorType>(type)) {
+        auto shape = tensorType.getShape();
+        auto elementType = tensorType.getElementType();
+        return ascendc::LocalTensorType::get(shape, elementType);
+      }
+      return type;
+    });
+  }
+};
 
 //===----------------------------------------------------------------------===//
 // Pass Implementation
@@ -40,8 +69,19 @@ struct ConvertAFIRToASCIRPass : public PassWrapper<ConvertAFIRToASCIRPass, Opera
     target.addIllegalDialect<AFIRDialect>();
     target.addLegalDialect<ascendc::AscendCDialect>();
 
+    AFIRToASCIRTypeConverter typeConverter;
+    target.addDynamicallyLegalOp<func::FuncOp>([&](func::FuncOp op) {
+      return typeConverter.isSignatureLegal(op.getFunctionType());
+    });
+    target.addDynamicallyLegalOp<func::ReturnOp>([&](func::ReturnOp op) {
+      return typeConverter.isLegal(op.getOperandTypes());
+    });
+
     RewritePatternSet patterns(context);
-    populateLoweringAFIRElementwiseOpToASCIRPattern(patterns, context);
+    populateLoweringAFIRElementwiseOpToASCIRPattern(patterns, context, typeConverter);
+    populateFunctionOpInterfaceTypeConversionPattern<func::FuncOp>(patterns, typeConverter);
+    populateAnyFunctionOpInterfaceTypeConversionPattern(patterns, typeConverter);
+    patterns.add<FuncReturnOpTypeConversion>(typeConverter, context);
 
     if (failed(applyPartialConversion(module, target, std::move(patterns)))) signalPassFailure();
   }
