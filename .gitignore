@@ -8,7 +8,7 @@
 
 # build files
 build/
-build-coverage/
+build-*/
 
 # tmp files
 __checked_files_list__

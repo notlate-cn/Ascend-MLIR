@@ -47,6 +47,7 @@ Options:
     --build-project     Build Ascend-MLIR project only
     --build-all         Build dependencies and project
     --build-tests       Build and run tests
+    --build-coverage    Build with coverage instrumentation and generate coverage report
     --clean             Clean build directory
     --release           Build in Release mode (default)
     --debug             Build in Debug mode
@@ -64,6 +65,8 @@ Examples:
     $0 --build-all                           # Build everything
     $0 --build-llvm                          # Build LLVM/MLIR only
     $0 --build-project                       # Build Ascend-MLIR only
+    $0 --build-tests                         # Build and run tests
+    $0 --build-coverage                      # Run test coverage analysis
     $0 --llvm-build-dir /path/to/llvm/build  # Use external LLVM build
     $0 --clean --build-all                   # Clean and rebuild everything
 EOF
@@ -180,6 +183,15 @@ build_tests() {
     print_info "Tests completed in ${duration}s ($(printf '%02d:%02d:%02d' $((duration/3600)) $((duration%3600/60)) $((duration%60))))"
 }
 
+build_coverage() {
+    print_info "Running test coverage analysis..."
+
+    # Call the dedicated coverage script with proper arguments
+    "${SCRIPT_DIR}/run_coverage.sh" \
+        --llvm-build-dir "${LLVM_BUILD_DIR}" \
+        --jobs "${NUM_JOBS}"
+}
+
 clean_build() {
     print_info "Cleaning build directory..."
     rm -rf "${BUILD_DIR}"
@@ -192,6 +204,7 @@ BUILD_STABLEHLO=false
 BUILD_PYASC=false
 BUILD_PROJECT=false
 BUILD_TESTS=false
+BUILD_COVERAGE=false
 CLEAN=false
 
 while [[ $# -gt 0 ]]; do
@@ -227,6 +240,10 @@ while [[ $# -gt 0 ]]; do
             ;;
         --build-tests)
             BUILD_TESTS=true
+            shift
+            ;;
+        --build-coverage)
+            BUILD_COVERAGE=true
             shift
             ;;
         --clean)
@@ -269,6 +286,7 @@ print_info "  Jobs:       ${NUM_JOBS}"
 
 if $CLEAN; then
     clean_build
+    exit 0
 fi
 
 # Initialize submodules if any build is requested
@@ -296,8 +314,12 @@ if $BUILD_TESTS; then
     build_tests
 fi
 
+if $BUILD_COVERAGE; then
+    build_coverage
+fi
+
 # If no options specified, show usage
-if ! $BUILD_LLVM && ! $BUILD_STABLEHLO && ! $BUILD_PYASC && ! $BUILD_PROJECT && ! $BUILD_TESTS && ! $CLEAN; then
+if ! $BUILD_LLVM && ! $BUILD_STABLEHLO && ! $BUILD_PYASC && ! $BUILD_PROJECT && ! $BUILD_TESTS && ! $BUILD_COVERAGE && ! $CLEAN; then
     print_warn "No build target specified."
     usage
 fi
