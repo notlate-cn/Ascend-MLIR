@@ -6,7 +6,7 @@
 
 #include "Conversion/AFIRToASCIR/AFIRToASCIR.h"
 #include "Conversion/AFIRToASCIR/Math/Elementwise.h"
-#include "Dialect/AFIR/AFIROps.h"
+#include "Dialect/AFIR/Ops.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/Pass/Pass.h"
@@ -31,7 +31,7 @@ struct FuncReturnOpTypeConversion : public OpConversionPattern<func::ReturnOp> {
 }  // namespace
 
 class AFIRToASCIRTypeConverter : public TypeConverter {
-public:
+ public:
   AFIRToASCIRTypeConverter() {
     addConversion([](Type type) -> std::optional<Type> {
       if (auto tensorType = dyn_cast<TensorType>(type)) {
@@ -70,12 +70,10 @@ struct ConvertAFIRToASCIRPass : public PassWrapper<ConvertAFIRToASCIRPass, Opera
     target.addLegalDialect<ascendc::AscendCDialect>();
 
     AFIRToASCIRTypeConverter typeConverter;
-    target.addDynamicallyLegalOp<func::FuncOp>([&](func::FuncOp op) {
-      return typeConverter.isSignatureLegal(op.getFunctionType());
-    });
-    target.addDynamicallyLegalOp<func::ReturnOp>([&](func::ReturnOp op) {
-      return typeConverter.isLegal(op.getOperandTypes());
-    });
+    target.addDynamicallyLegalOp<func::FuncOp>(
+        [&](func::FuncOp op) { return typeConverter.isSignatureLegal(op.getFunctionType()); });
+    target.addDynamicallyLegalOp<func::ReturnOp>(
+        [&](func::ReturnOp op) { return typeConverter.isLegal(op.getOperandTypes()); });
 
     RewritePatternSet patterns(context);
     populateLoweringAFIRElementwiseOpToASCIRPattern(patterns, context, typeConverter);

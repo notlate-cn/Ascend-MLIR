@@ -1,7 +1,7 @@
 add_mlir_dialect_library(AFIRDialect
-  AFIRDialect.cpp
-  AFIROps.cpp
-  AFIROps/Math/Elementwise.cpp
+  Dialect.cpp
+  Ops.cpp
+  Ops/Math/Elementwise.cpp
   ShapeHelper.cpp
 
   ADDITIONAL_HEADER_DIRS

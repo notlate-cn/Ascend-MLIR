@@ -13,9 +13,9 @@
 #define AFIR_DIALECT
 
 // Include base definitions (dialect, common classes, and fundamental enums)
-include "Dialect/AFIR/AFIRBase.td"
+include "Dialect/AFIR/Base.td"
 
 // Include attribute definitions (both operation-level and graph-level)
-include "Dialect/AFIR/AFIRAttrs.td"
+include "Dialect/AFIR/Attrs.td"
 
 #endif // AFIR_DIALECT

@@ -4,8 +4,8 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "Dialect/AFIR/AFIRDialect.h"
-#include "Dialect/AFIR/AFIROps.h"
+#include "Dialect/AFIR/Dialect.h"
+#include "Dialect/AFIR/Ops.h"
 #include "mlir/IR/DialectImplementation.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/OpImplementation.h"
@@ -20,26 +20,26 @@ using namespace mlir::afir;
 //===----------------------------------------------------------------------===//
 
 // Include generated dialect implementation
-#include "Dialect/AFIR/AFIRDialect.cpp.inc"
+#include "Dialect/AFIR/Dialect.cpp.inc"
 
 // Include generated enum definitions
-#include "Dialect/AFIR/AFIREnums.cpp.inc"
+#include "Dialect/AFIR/Enums.cpp.inc"
 
 // Include generated attribute definitions
 #define GET_ATTRDEF_CLASSES
-#include "Dialect/AFIR/AFIRAttrs.cpp.inc"
+#include "Dialect/AFIR/Attrs.cpp.inc"
 
 void AFIRDialect::initialize() {
   // Register attributes
   addAttributes<
 #define GET_ATTRDEF_LIST
-#include "Dialect/AFIR/AFIRAttrs.cpp.inc"
+#include "Dialect/AFIR/Attrs.cpp.inc"
       >();
 
   // Register operations
   addOperations<
 #define GET_OP_LIST
-#include "Dialect/AFIR/AFIROps.cpp.inc"
+#include "Dialect/AFIR/Ops.cpp.inc"
       >();
 }
 

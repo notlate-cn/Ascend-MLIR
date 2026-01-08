@@ -11,17 +11,16 @@
 #ifndef AFIR_OPS
 #define AFIR_OPS
 
-include "Dialect/AFIR/AFIRDialect.td"
+include "Dialect/AFIR/Dialect.td"
 include "Interface/ShapeHelperOpInterface.td"
 include "Interface/ShapeInferenceOpInterface.td"
 include "mlir/Interfaces/InferTypeOpInterface.td"
 include "mlir/Interfaces/SideEffectInterfaces.td"
-include "Core/Types.td"
 
 //===----------------------------------------------------------------------===//
 // Math Operations
 //===----------------------------------------------------------------------===//
 
-include "Dialect/AFIR/AFIROps/Math/Elementwise.td"
+include "Dialect/AFIR/Ops/Math/Elementwise.td"
 
 #endif // AFIR_OPS

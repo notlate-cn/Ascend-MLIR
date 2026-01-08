@@ -4,11 +4,11 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "Dialect/AFIR/AFIROps.h"
+#include "Dialect/AFIR/Ops.h"
 
 //===----------------------------------------------------------------------===//
 // TableGen'd op method definitions
 //===----------------------------------------------------------------------===//
 
 #define GET_OP_CLASSES
-#include "Dialect/AFIR/AFIROps.cpp.inc"
+#include "Dialect/AFIR/Ops.cpp.inc"

@@ -9,7 +9,7 @@
 #ifndef MLIR_DIALECT_AFIR_AFIRDIALECTBUILDER_H
 #define MLIR_DIALECT_AFIR_AFIRDIALECTBUILDER_H
 
-#include "Dialect/AFIR/AFIROps.h"
+#include "Dialect/AFIR/Ops.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/Location.h"
 #include "mlir/IR/Value.h"
