@@ -1,7 +1,6 @@
 add_mlir_dialect_library(AFIRDialect
   Dialect.cpp
-  Ops.cpp
-  Ops/Math/Elementwise.cpp
+  Ops/Basic/math.cpp
   ShapeHelper.cpp
 
   ADDITIONAL_HEADER_DIRS
@@ -11,7 +10,6 @@ add_mlir_dialect_library(AFIRDialect
   AFIRDialectIncGen
   AFIROpsIncGen
   AFIRShapeHelperOpInterfaceIncGen
-  AFIRElementwiseOpsIncGen
   MLIRAscIncGen
 
   LINK_LIBS PUBLIC

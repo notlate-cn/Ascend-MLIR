@@ -8,7 +8,7 @@
 func.func @test_binary_shape_helper(%arg0: tensor<2x3x4xf32>, %arg1: tensor<2x3x4xf32>) -> tensor<2x3x4xf32> {
   // Shape helper should infer output shape from inputs
   // CHECK: afir.add {{.*}} : (tensor<2x3x4xf32>, tensor<2x3x4xf32>) -> tensor<2x3x4xf32>
-  %0 = afir.add %arg0, %arg1 {indexing_maps = [#map, #map, #map], outputs = [#afir.asc_tensor<vectorized_axis = [0, 1, 2], vectorized_strides = [12, 4, 1], tensor_id = 0, reuse_id = -1, position = VECTOR_IN, position_id = 0, depth = 0, is_double_buffer = false>]} : (tensor<2x3x4xf32>, tensor<2x3x4xf32>) -> tensor<2x3x4xf32>
+  %0 = afir.add %arg0, %arg1 {indexing_maps = [#map, #map, #map], outputs = [#afir.asc_tensor<vectorized_axis = [0, 1, 2], vectorized_strides = [12, 4, 1], tensor_id = 0, reuse_id = -1, position = vector_in, position_id = 0, depth = 0, is_double_buffer = false>]} : (tensor<2x3x4xf32>, tensor<2x3x4xf32>) -> tensor<2x3x4xf32>
   return %0 : tensor<2x3x4xf32>
 }
 

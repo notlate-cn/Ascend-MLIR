@@ -1,4 +1,4 @@
-//===- AFIRAttrs.td - AFIR dialect attribute definitions --*- tablegen -*-===//
+//===- Attrs.td - AFIR attribute definitions ---------*- tablegen -*-===//
 //
 // Part of the Ascend-MLIR Project
 //
@@ -13,9 +13,9 @@
 #ifndef AFIR_ATTRS
 #define AFIR_ATTRS
 
-include "Dialect/AFIR/Base.td"
+include "Dialect/AFIR/Core/Base.td"
 include "mlir/IR/AttrTypeBase.td"
-include "Dialect/AFIR/Enums.td"
+include "Dialect/AFIR/Core/Enums.td"
 
 //===----------------------------------------------------------------------===//
 // Graph-Level Attributes (AscGraph Mapping)
@@ -26,7 +26,7 @@ include "Dialect/AFIR/Enums.td"
 //===----------------------------------------------------------------------===//
 
 // Maps from: ge.proto.AscTensorAttrGroupsDef
-def AFIR_AscTensorGroups : AFIR_Attr<"AscTensorGroups", "asc_tensor"> {
+def AscTensorGroupsAttr : AFIR_Attr<"AscTensorGroups", "asc_tensor"> {
   let summary = "Ascend tensor attribute groups";
   let description = [{
     Comprehensive tensor attributes including data type, axis information,
@@ -38,7 +38,7 @@ def AFIR_AscTensorGroups : AFIR_Attr<"AscTensorGroups", "asc_tensor"> {
     ArrayRefParameter<"Attribute", "array of vectorized stride expressions">:$vectorized_strides,
     "int64_t":$tensor_id,
     DefaultValuedParameter<"int64_t", "-1">:$reuse_id,
-    EnumParameter<AFIR_PositionEnum>:$position,
+    "::mlir::afir::Position":$position,
     "int64_t":$position_id,
     OptionalParameter<"uint32_t">:$depth,
     OptionalParameter<"bool">:$is_double_buffer
@@ -52,7 +52,7 @@ def AFIR_AscTensorGroups : AFIR_Attr<"AscTensorGroups", "asc_tensor"> {
 //===----------------------------------------------------------------------===//
 
 // Maps from: ge.proto.AxisDef
-def AFIR_Axis : AFIR_Attr<"Axis", "axis"> {
+def AxisAttr : AFIR_Attr<"Axis", "axis"> {
   let summary = "Axis definition for computational loops";
   let description = [{
     Defines an axis for loop-based computation including axis type, size,
@@ -62,9 +62,9 @@ def AFIR_Axis : AFIR_Attr<"Axis", "axis"> {
   let parameters = (ins
     DefaultValuedParameter<"int64_t", "-1">:$id,
     "StringAttr":$name,
-    "AxisTypeAttr":$axis_type,
+    "::mlir::afir::AxisType":$axis_type,
     DefaultValuedParameter<"bool", "false">:$bind_block,
-    "Attribute":$size,  // expression string
+    "Attribute":$size,
     OptionalParameter<"StringAttr">:$align,
     ArrayRefParameter<"int64_t">:$from,
     DefaultValuedParameter<"int64_t", "-1">:$split_pair_other_id
@@ -78,14 +78,14 @@ def AFIR_Axis : AFIR_Attr<"Axis", "axis"> {
 //===----------------------------------------------------------------------===//
 
 // Maps from: ge.proto.TmpBufDescDef
-def AFIR_TmpBufDesc : AFIR_Attr<"TmpBufDesc", "tmp_buf_desc"> {
+def TmpBufDescAttr : AFIR_Attr<"TmpBufDesc", "tmp_buf_desc"> {
   let summary = "Temporary buffer description";
   let description = [{
     Describes a temporary buffer including its size expression and lifetime axis.
   }];
 
   let parameters = (ins
-    "StringAttr":$size,  // expression string
+    "StringAttr":$size,
     DefaultValuedParameter<"int64_t", "-1">:$life_time_axis_id
   );
 
@@ -97,7 +97,7 @@ def AFIR_TmpBufDesc : AFIR_Attr<"TmpBufDesc", "tmp_buf_desc"> {
 //===----------------------------------------------------------------------===//
 
 // Maps from: ge.proto.AscGraphAttrGroupsDef
-def AFIR_AscGraphAttrGroups : AFIR_Attr<"AscGraphAttrGroups", "asc_graph"> {
+def AscGraphAttrGroupsAttr : AFIR_Attr<"AscGraphAttrGroups", "asc_graph"> {
   let summary = "Ascend graph attribute groups";
   let description = [{
     Graph-level attributes including tiling key, axis definitions,
@@ -107,7 +107,7 @@ def AFIR_AscGraphAttrGroups : AFIR_Attr<"AscGraphAttrGroups", "asc_graph"> {
   let parameters = (ins
     DefaultValuedParameter<"int64_t", "-1">:$tiling_key,
     ArrayRefParameter<"AxisAttr", "array of Axis">:$axis,
-    EnumParameter<AFIR_AscGraphTypeEnum>:$type,
+    "::mlir::afir::AscGraphType":$type,
     ArrayRefParameter<"Attribute", "array of size variable strings">:$size_var
   );
 
@@ -118,8 +118,8 @@ def AFIR_AscGraphAttrGroups : AFIR_Attr<"AscGraphAttrGroups", "asc_graph"> {
 // Array Attributes
 //===----------------------------------------------------------------------===//
 
-def TmpBufDescArrayAttr : TypedArrayAttrBase<AFIR_TmpBufDesc, "Array of TmpBufDesc attributes">;
+def TmpBufDescArrayAttr : TypedArrayAttrBase<TmpBufDescAttr, "Array of TmpBufDesc attributes">;
 
-def AscTensorGroupsArrayAttr : TypedArrayAttrBase<AFIR_AscTensorGroups, "Array of AscTensorGroups attributes">;
+def AscTensorGroupsArrayAttr : TypedArrayAttrBase<AscTensorGroupsAttr, "Array of AscTensorGroups attributes">;
 
 #endif // AFIR_ATTRS
