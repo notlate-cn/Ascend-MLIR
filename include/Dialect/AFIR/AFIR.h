@@ -16,9 +16,6 @@
 #include "mlir/Interfaces/SideEffectInterfaces.h"
 #include "mlir/Interfaces/InferTypeOpInterface.h"
 
-#include "Dialect/AFIR/ShapeHelper.h"
-#include "Interface/ShapeHelperOpInterface.h"
-#include "Interface/ShapeInferenceOpInterface.h"
 #include "ascir/Dialect/Asc/IR/Asc.h"
 
 // Include dialect definition

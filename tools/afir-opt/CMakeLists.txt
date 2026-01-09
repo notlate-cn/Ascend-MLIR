@@ -29,7 +29,6 @@ target_link_libraries(afir-opt
 
     AFIRDialect
     AFIRTransforms
-    AFIRInterface
     AFIRToASCIRConversion
     AFIRUtils
 )
