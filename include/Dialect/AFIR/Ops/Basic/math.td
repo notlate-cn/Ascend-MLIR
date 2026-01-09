@@ -1,32 +1,37 @@
-//===- Elementwise.td - AFIR elementwise operations --------*- tablegen -*-===//
+//===- math.td - AFIR math operations -------------------*- tablegen -*-===//
 //
 // Part of the Ascend-MLIR Project
 //
 //===----------------------------------------------------------------------===//
 //
-// This file defines the elementwise operations for the AFIR dialect.
+// This file defines the math operations for the AFIR dialect, organized into
+// three categories: unary, binary, and compare operations.
 //
 //===----------------------------------------------------------------------===//
 
-#ifndef AFIR_ELEMENTWISE_OPS
-#define AFIR_ELEMENTWISE_OPS
+#ifndef AFIR_MATH_OPS
+#define AFIR_MATH_OPS
 
 include "Dialect/AFIR/Dialect.td"
-include "Dialect/AFIR/Attrs.td"
+include "Dialect/AFIR/Base.td"
 include "Interface/ShapeHelperOpInterface.td"
 include "Interface/ShapeInferenceOpInterface.td"
 include "mlir/Interfaces/SideEffectInterfaces.td"
 include "mlir/IR/CommonTypeConstraints.td"
 
 //===----------------------------------------------------------------------===//
-// Add Operation
+// Unary Operations
 //===----------------------------------------------------------------------===//
 
-def AFIR_AddOp : AFIR_Op<"add", [
+//===----------------------------------------------------------------------===//
+// Binary Operations
+//===----------------------------------------------------------------------===//
+
+def AFIR_AddOp : AFIR_BinaryOp<"add", [
   Pure,
   DeclareOpInterfaceMethods<ShapeHelperOpInterface>,
   DeclareOpInterfaceMethods<ShapeInferenceOpInterface>
-]> {
+], [F16, F32, I16, I32]> {
   let summary = "Element-wise addition operation";
   let description = [{
     Performs element-wise addition of two tensors.
@@ -35,36 +40,6 @@ def AFIR_AddOp : AFIR_Op<"add", [
     ```mlir
     %result = afir.add %lhs, %rhs : (tensor<4x4xf32>, tensor<4x4xf32>) -> tensor<4x4xf32>
     ```
-  }];
-
-  let arguments = (ins
-    TensorOf<[F16, F32, I16, I32]>:$lhs,
-    TensorOf<[F16, F32, I16, I32]>:$rhs,
-    AffineMapArrayAttr:$indexing_maps,
-    DefaultValuedOptionalAttr<I32Attr, "-1">:$loop_axis,
-    DefaultValuedOptionalAttr<DictionaryAttr, "{}">:$ir_attr_def,
-    DefaultValuedOptionalAttr<TmpBufDescArrayAttr, "{}">:$tmp_buffers,
-    DefaultValuedOptionalAttr<AscTensorGroupsArrayAttr, "{}">:$outputs
-  );
-
-  let results = (outs TensorOf<[F16, F32, I16, I32]>:$result);
-
-  let assemblyFormat = [{
-    $lhs `,` $rhs attr-dict `:` `(` type($lhs) `,` type($rhs) `)` `->` type($result)
-  }];
-
-  let hasVerifier = 1;
-
-  let extraClassDeclaration = [{
-    static int getNumberOfOperands() {
-      return 2;
-    }
-    static int getNumberOfResults() {
-      return 1;
-    }
-    static bool isSupportVectorFunction() {
-      return true;
-    }
   }];
 
   let extraClassDefinition = [{
@@ -78,15 +53,11 @@ def AFIR_AddOp : AFIR_Op<"add", [
   }];
 }
 
-//===----------------------------------------------------------------------===//
-// Sub Operation
-//===----------------------------------------------------------------------===//
-
-def AFIR_SubOp : AFIR_Op<"sub", [
+def AFIR_SubOp : AFIR_BinaryOp<"sub", [
   Pure,
   DeclareOpInterfaceMethods<ShapeHelperOpInterface>,
   DeclareOpInterfaceMethods<ShapeInferenceOpInterface>
-]> {
+], [F16, F32, I16, I32]> {
   let summary = "Element-wise subtraction operation";
   let description = [{
     Performs element-wise subtraction of two tensors.
@@ -95,31 +66,6 @@ def AFIR_SubOp : AFIR_Op<"sub", [
     ```mlir
     %result = afir.sub %lhs, %rhs : (tensor<4x4xf32>, tensor<4x4xf32>) -> tensor<4x4xf32>
     ```
-  }];
-
-  let arguments = (ins
-    TensorOf<[F16, F32, I16, I32]>:$lhs,
-    TensorOf<[F16, F32, I16, I32]>:$rhs,
-    AffineMapArrayAttr:$indexing_maps
-  );
-  let results = (outs TensorOf<[F16, F32, I16, I32]>:$result);
-
-  let assemblyFormat = [{
-    $lhs `,` $rhs attr-dict `:` `(` type($lhs) `,` type($rhs) `)` `->` type($result)
-  }];
-
-  let hasVerifier = 1;
-
-  let extraClassDeclaration = [{
-    static int getNumberOfOperands() {
-      return 2;
-    }
-    static int getNumberOfResults() {
-      return 1;
-    }
-    static bool isSupportVectorFunction() {
-      return true;
-    }
   }];
 
   let extraClassDefinition = [{
@@ -133,15 +79,11 @@ def AFIR_SubOp : AFIR_Op<"sub", [
   }];
 }
 
-//===----------------------------------------------------------------------===//
-// Mul Operation
-//===----------------------------------------------------------------------===//
-
-def AFIR_MulOp : AFIR_Op<"mul", [
+def AFIR_MulOp : AFIR_BinaryOp<"mul", [
   Pure,
   DeclareOpInterfaceMethods<ShapeHelperOpInterface>,
   DeclareOpInterfaceMethods<ShapeInferenceOpInterface>
-]> {
+], [F16, F32, I16, I32]> {
   let summary = "Element-wise multiplication operation";
   let description = [{
     Performs element-wise multiplication of two tensors.
@@ -150,31 +92,6 @@ def AFIR_MulOp : AFIR_Op<"mul", [
     ```mlir
     %result = afir.mul %lhs, %rhs : (tensor<4x4xf32>, tensor<4x4xf32>) -> tensor<4x4xf32>
     ```
-  }];
-
-  let arguments = (ins
-    TensorOf<[F16, F32, I16, I32]>:$lhs,
-    TensorOf<[F16, F32, I16, I32]>:$rhs,
-    AffineMapArrayAttr:$indexing_maps
-  );
-  let results = (outs TensorOf<[F16, F32, I16, I32]>:$result);
-
-  let assemblyFormat = [{
-    $lhs `,` $rhs attr-dict `:` `(` type($lhs) `,` type($rhs) `)` `->` type($result)
-  }];
-
-  let hasVerifier = 1;
-
-  let extraClassDeclaration = [{
-    static int getNumberOfOperands() {
-      return 2;
-    }
-    static int getNumberOfResults() {
-      return 1;
-    }
-    static bool isSupportVectorFunction() {
-      return true;
-    }
   }];
 
   let extraClassDefinition = [{
@@ -188,15 +105,11 @@ def AFIR_MulOp : AFIR_Op<"mul", [
   }];
 }
 
-//===----------------------------------------------------------------------===//
-// Div Operation
-//===----------------------------------------------------------------------===//
-
-def AFIR_DivOp : AFIR_Op<"div", [
+def AFIR_DivOp : AFIR_BinaryOp<"div", [
   Pure,
   DeclareOpInterfaceMethods<ShapeHelperOpInterface>,
   DeclareOpInterfaceMethods<ShapeInferenceOpInterface>
-]> {
+], [F16, F32]> {
   let summary = "Element-wise division operation";
   let description = [{
     Performs element-wise division of two tensors.
@@ -205,31 +118,6 @@ def AFIR_DivOp : AFIR_Op<"div", [
     ```mlir
     %result = afir.div %lhs, %rhs : (tensor<4x4xf32>, tensor<4x4xf32>) -> tensor<4x4xf32>
     ```
-  }];
-
-  let arguments = (ins
-    TensorOf<[F16, F32]>:$lhs,
-    TensorOf<[F16, F32]>:$rhs,
-    AffineMapArrayAttr:$indexing_maps
-  );
-  let results = (outs TensorOf<[F16, F32]>:$result);
-
-  let assemblyFormat = [{
-    $lhs `,` $rhs attr-dict `:` `(` type($lhs) `,` type($rhs) `)` `->` type($result)
-  }];
-
-  let hasVerifier = 1;
-
-  let extraClassDeclaration = [{
-    static int getNumberOfOperands() {
-      return 2;
-    }
-    static int getNumberOfResults() {
-      return 1;
-    }
-    static bool isSupportVectorFunction() {
-      return false;
-    }
   }];
 
   let extraClassDefinition = [{
@@ -243,4 +131,8 @@ def AFIR_DivOp : AFIR_Op<"div", [
   }];
 }
 
-#endif // AFIR_ELEMENTWISE_OPS
+//===----------------------------------------------------------------------===//
+// Compare Operations
+//===----------------------------------------------------------------------===//
+
+#endif // AFIR_MATH_OPS

@@ -17,8 +17,7 @@
 #include "mlir/Pass/PassManager.h"
 #include "mlir/Pass/PassRegistry.h"
 #include "mlir/Tools/mlir-opt/MlirOptMain.h"
-#include "Dialect/AFIR/Dialect.h"
-#include "Dialect/AFIR/Ops.h"
+#include "Dialect/AFIR/AFIR.h"
 #include "Dialect/AFIR/Transforms/Passes.h"
 #include "Conversion/Passes.h"
 

@@ -4,7 +4,7 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "Dialect/AFIR/Ops.h"
+#include "Dialect/AFIR/AFIR.h"
 #include "Dialect/AFIR/Transforms/Passes.h"
 #include "Interface/ShapeHelperOpInterface.h"
 #include "Interface/ShapeInferenceOpInterface.h"

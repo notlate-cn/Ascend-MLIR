@@ -11,7 +11,7 @@
 
 #include "Conversion/AFIRToASCIR/Math/Elementwise.h"
 #include "Conversion/AFIRToASCIR/DialectBuilder.h"
-#include "Dialect/AFIR/Ops.h"
+#include "Dialect/AFIR/AFIR.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/PatternMatch.h"
 #include "mlir/Transforms/DialectConversion.h"
