@@ -13,8 +13,6 @@
 
 include "Dialect/AFIR/Dialect.td"
 include "Dialect/AFIR/Base.td"
-include "Interface/ShapeHelperOpInterface.td"
-include "Interface/ShapeInferenceOpInterface.td"
 include "mlir/Interfaces/InferTypeOpInterface.td"
 include "mlir/Interfaces/SideEffectInterfaces.td"
 

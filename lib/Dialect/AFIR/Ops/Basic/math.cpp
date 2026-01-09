@@ -5,9 +5,6 @@
 //===----------------------------------------------------------------------===//
 
 #include "Dialect/AFIR/AFIR.h"
-#include "Dialect/AFIR/ShapeHelper.h"
-#include "Interface/ShapeHelperOpInterface.h"
-#include "Interface/ShapeInferenceOpInterface.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/OpImplementation.h"
 
@@ -19,19 +16,6 @@ using namespace mlir::afir;
 //===----------------------------------------------------------------------===//
 
 namespace {
-
-static bool hasShapeAndRank(Value val) {
-  Type valType = val.getType();
-  ShapedType shapedType = mlir::dyn_cast<ShapedType>(valType);
-  return shapedType && shapedType.hasRank();
-}
-
-static bool hasShapeAndRank(Operation *op) {
-  int num = op->getNumOperands();
-  for (int i = 0; i < num; ++i)
-    if (!hasShapeAndRank(op->getOperand(i))) return false;
-  return true;
-}
 
 static LogicalResult verifyBinaryElementwiseOp(Operation *op) {
   auto lhsType = mlir::dyn_cast<ShapedType>(op->getOperand(0).getType());
@@ -56,15 +40,6 @@ static LogicalResult verifyBinaryElementwiseOp(Operation *op) {
   return success();
 }
 
-template <typename OpType>
-static LogicalResult inferShapesForBinaryElementwiseOp(OpType &op, Type elementType = nullptr) {
-  if (!hasShapeAndRank(op.getOperation())) return success();
-
-  if (!elementType) elementType = mlir::cast<ShapedType>(op.getLhs().getType()).getElementType();
-  AFIRBroadcastOpShapeHelper shapeHelper(op.getOperation(), {});
-  return shapeHelper.computeShapeAndUpdateType(elementType);
-}
-
 }  // namespace
 
 //===----------------------------------------------------------------------===//
@@ -75,20 +50,12 @@ LogicalResult AddOp::verify() {
   return verifyBinaryElementwiseOp(getOperation());
 }
 
-LogicalResult AddOp::inferShapes(std::function<void(mlir::Region &)> doShapeInference) {
-  return inferShapesForBinaryElementwiseOp<AddOp>(*this);
-}
-
 //===----------------------------------------------------------------------===//
 // SubOp
 //===----------------------------------------------------------------------===//
 
 LogicalResult SubOp::verify() {
   return verifyBinaryElementwiseOp(getOperation());
-}
-
-LogicalResult SubOp::inferShapes(std::function<void(mlir::Region &)> doShapeInference) {
-  return inferShapesForBinaryElementwiseOp<SubOp>(*this);
 }
 
 //===----------------------------------------------------------------------===//
@@ -99,18 +66,10 @@ LogicalResult MulOp::verify() {
   return verifyBinaryElementwiseOp(getOperation());
 }
 
-LogicalResult MulOp::inferShapes(std::function<void(mlir::Region &)> doShapeInference) {
-  return inferShapesForBinaryElementwiseOp<MulOp>(*this);
-}
-
 //===----------------------------------------------------------------------===//
 // DivOp
 //===----------------------------------------------------------------------===//
 
 LogicalResult DivOp::verify() {
   return verifyBinaryElementwiseOp(getOperation());
-}
-
-LogicalResult DivOp::inferShapes(std::function<void(mlir::Region &)> doShapeInference) {
-  return inferShapesForBinaryElementwiseOp<DivOp>(*this);
 }
