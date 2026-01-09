@@ -10,6 +10,6 @@ func.func @convert_add_basic(%arg0: tensor<4x4xf32>, %arg1: tensor<4x4xf32>) -> 
   // CHECK: %0 = ascendc.tbuf : <veccalc>
   // CHECK: %1 = ascendc.tbuf.get_tensor %0 : !ascendc.tbuf<veccalc>, !ascendc.local_tensor<4x4xf32>
   // CHECK: ascendc.add_l3 %1, %arg0, %arg1 : !ascendc.local_tensor<4x4xf32>, !ascendc.local_tensor<4x4xf32>, !ascendc.local_tensor<4x4xf32>
-  %0 = afir.add %arg0, %arg1 {indexing_maps = [#map, #map, #map], outputs = [#afir.asc_tensor<vectorized_axis = [0, 1], vectorized_strides = [4, 1], tensor_id = 0, reuse_id = -1, position = VECTOR_IN, position_id = 0, depth = 0, is_double_buffer = false>]} : (tensor<4x4xf32>, tensor<4x4xf32>) -> tensor<4x4xf32>
+  %0 = afir.add %arg0, %arg1 {indexing_maps = [#map, #map, #map], outputs = [#afir.asc_tensor<vectorized_axis = [0, 1], vectorized_strides = [4, 1], tensor_id = 0, reuse_id = -1, position = vector_in, position_id = 0, depth = 0, is_double_buffer = false>]} : (tensor<4x4xf32>, tensor<4x4xf32>) -> tensor<4x4xf32>
   return %0 : tensor<4x4xf32>
 }

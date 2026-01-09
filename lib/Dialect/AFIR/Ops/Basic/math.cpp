@@ -1,11 +1,10 @@
-//===- Elementwise.cpp - AFIR elementwise operation implementations -*- C++ -*-===//
+//===- math.cpp - AFIR math operation implementations -------*- C++ -*-===//
 //
 // Part of the Ascend-MLIR Project
 //
 //===----------------------------------------------------------------------===//
 
-#include "Dialect/AFIR/Ops.h"
-#include "Dialect/AFIR/Dialect.h"
+#include "Dialect/AFIR/AFIR.h"
 #include "Dialect/AFIR/ShapeHelper.h"
 #include "Interface/ShapeHelperOpInterface.h"
 #include "Interface/ShapeInferenceOpInterface.h"

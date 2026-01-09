@@ -6,7 +6,7 @@
 
 #include "Conversion/AFIRToASCIR/AFIRToASCIR.h"
 #include "Conversion/AFIRToASCIR/Math/Elementwise.h"
-#include "Dialect/AFIR/Ops.h"
+#include "Dialect/AFIR/AFIR.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/Pass/Pass.h"

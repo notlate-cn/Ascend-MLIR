@@ -4,8 +4,7 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "Dialect/AFIR/Dialect.h"
-#include "Dialect/AFIR/Ops.h"
+#include "Dialect/AFIR/AFIR.h"
 #include "mlir/IR/DialectImplementation.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/OpImplementation.h"
@@ -28,6 +27,10 @@ using namespace mlir::afir;
 // Include generated attribute definitions
 #define GET_ATTRDEF_CLASSES
 #include "Dialect/AFIR/Attrs.cpp.inc"
+
+// Include generated operation definitions
+#define GET_OP_CLASSES
+#include "Dialect/AFIR/Ops.cpp.inc"
 
 void AFIRDialect::initialize() {
   // Register attributes

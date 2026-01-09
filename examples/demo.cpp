@@ -19,8 +19,7 @@
 #include "mlir/Support/LogicalResult.h"
 #include "mlir/IR/OpDefinition.h"
 #include "mlir/IR/Verifier.h"
-#include "Dialect/AFIR/Dialect.h"
-#include "Dialect/AFIR/Ops.h"
+#include "Dialect/AFIR/AFIR.h"
 
 using namespace mlir;
 using namespace mlir::afir;
@@ -109,22 +108,22 @@ int main() {
         builder.getDictionaryAttr({builder.getNamedAttr("compute_hint", builder.getI64IntegerAttr(2)),
                                    builder.getNamedAttr("custom_option_1", builder.getI32IntegerAttr(200))});
 
-    auto subOp = builder.create<SubOp>(builder.getUnknownLoc(), tensorType, arg0, arg1, indexingMapsAttr);
-    subOp->setAttr("ir_attr_def", subOpIrAttrDef);
+    auto subOp = builder.create<SubOp>(builder.getUnknownLoc(), tensorType, arg0, arg1, indexingMapsAttr, nullptr,
+                                       subOpIrAttrDef, nullptr, nullptr);
 
     auto mulOpIrAttrDef =
         builder.getDictionaryAttr({builder.getNamedAttr("compute_hint", builder.getI64IntegerAttr(3)),
                                    builder.getNamedAttr("custom_option_1", builder.getI32IntegerAttr(300))});
 
-    auto mulOp = builder.create<MulOp>(builder.getUnknownLoc(), tensorType, arg0, arg1, indexingMapsAttr);
-    mulOp->setAttr("ir_attr_def", mulOpIrAttrDef);
+    auto mulOp = builder.create<MulOp>(builder.getUnknownLoc(), tensorType, arg0, arg1, indexingMapsAttr, nullptr,
+                                       mulOpIrAttrDef, nullptr, nullptr);
 
     auto divOpIrAttrDef =
         builder.getDictionaryAttr({builder.getNamedAttr("compute_hint", builder.getI64IntegerAttr(4)),
                                    builder.getNamedAttr("custom_option_1", builder.getI32IntegerAttr(400))});
 
-    auto divOp = builder.create<DivOp>(builder.getUnknownLoc(), tensorType, arg0, arg1, indexingMapsAttr);
-    divOp->setAttr("ir_attr_def", divOpIrAttrDef);
+    auto divOp = builder.create<DivOp>(builder.getUnknownLoc(), tensorType, arg0, arg1, indexingMapsAttr, nullptr,
+                                       divOpIrAttrDef, nullptr, nullptr);
 
     builder.create<func::ReturnOp>(builder.getUnknownLoc(), divOp.getResult());
   }
