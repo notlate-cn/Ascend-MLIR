@@ -17,6 +17,28 @@ using namespace mlir::afir;
 
 namespace {
 
+static LogicalResult verifyUnaryElementwiseOp(Operation *op) {
+  auto inputType = mlir::dyn_cast<ShapedType>(op->getOperand(0).getType());
+  auto resultType = mlir::dyn_cast<ShapedType>(op->getResult(0).getType());
+
+  if (!inputType || !resultType) return op->emitOpError("expected tensor operand and result");
+
+  if (inputType.hasRank() && resultType.hasRank()) {
+    if (inputType.getRank() != resultType.getRank()) return op->emitOpError("operand and result must have the same rank");
+
+    ArrayRef<int64_t> inputShape = inputType.getShape();
+    ArrayRef<int64_t> resultShape = resultType.getShape();
+
+    for (size_t i = 0; i < inputShape.size(); ++i) {
+      if (inputShape[i] != ShapedType::kDynamic && resultShape[i] != ShapedType::kDynamic && inputShape[i] != resultShape[i]) {
+        return op->emitOpError("operand and result must have compatible shapes");
+      }
+    }
+  }
+
+  return success();
+}
+
 static LogicalResult verifyBinaryElementwiseOp(Operation *op) {
   auto lhsType = mlir::dyn_cast<ShapedType>(op->getOperand(0).getType());
   auto rhsType = mlir::dyn_cast<ShapedType>(op->getOperand(1).getType());
@@ -43,33 +65,51 @@ static LogicalResult verifyBinaryElementwiseOp(Operation *op) {
 }  // namespace
 
 //===----------------------------------------------------------------------===//
-// AddOp
+// Unary Operations
 //===----------------------------------------------------------------------===//
 
-LogicalResult AddOp::verify() {
-  return verifyBinaryElementwiseOp(getOperation());
-}
+LogicalResult AbsOp::verify() { return verifyUnaryElementwiseOp(getOperation()); }
+LogicalResult ExpOp::verify() { return verifyUnaryElementwiseOp(getOperation()); }
+LogicalResult LnOp::verify() { return verifyUnaryElementwiseOp(getOperation()); }
+LogicalResult SqrtOp::verify() { return verifyUnaryElementwiseOp(getOperation()); }
+LogicalResult RsqrtOp::verify() { return verifyUnaryElementwiseOp(getOperation()); }
+LogicalResult ReciprocalOp::verify() { return verifyUnaryElementwiseOp(getOperation()); }
+LogicalResult ErfOp::verify() { return verifyUnaryElementwiseOp(getOperation()); }
+LogicalResult TanhOp::verify() { return verifyUnaryElementwiseOp(getOperation()); }
+LogicalResult ReluOp::verify() { return verifyUnaryElementwiseOp(getOperation()); }
+LogicalResult NegOp::verify() { return verifyUnaryElementwiseOp(getOperation()); }
+LogicalResult LogicalNotOp::verify() { return verifyUnaryElementwiseOp(getOperation()); }
+LogicalResult SigmoidOp::verify() { return verifyUnaryElementwiseOp(getOperation()); }
+LogicalResult IsnanOp::verify() { return verifyUnaryElementwiseOp(getOperation()); }
+LogicalResult IsFiniteOp::verify() { return verifyUnaryElementwiseOp(getOperation()); }
 
 //===----------------------------------------------------------------------===//
-// SubOp
+// Binary Operations
 //===----------------------------------------------------------------------===//
 
-LogicalResult SubOp::verify() {
-  return verifyBinaryElementwiseOp(getOperation());
-}
+LogicalResult AddOp::verify() { return verifyBinaryElementwiseOp(getOperation()); }
+LogicalResult SubOp::verify() { return verifyBinaryElementwiseOp(getOperation()); }
+LogicalResult MulOp::verify() { return verifyBinaryElementwiseOp(getOperation()); }
+LogicalResult DivOp::verify() { return verifyBinaryElementwiseOp(getOperation()); }
+LogicalResult MinimumOp::verify() { return verifyBinaryElementwiseOp(getOperation()); }
+LogicalResult MaximumOp::verify() { return verifyBinaryElementwiseOp(getOperation()); }
+LogicalResult TrueDivOp::verify() { return verifyBinaryElementwiseOp(getOperation()); }
+LogicalResult PowOp::verify() { return verifyBinaryElementwiseOp(getOperation()); }
+LogicalResult LeakyReluOp::verify() { return verifyBinaryElementwiseOp(getOperation()); }
+LogicalResult BitwiseAndOp::verify() { return verifyBinaryElementwiseOp(getOperation()); }
+LogicalResult FloorDivOp::verify() { return verifyBinaryElementwiseOp(getOperation()); }
+LogicalResult GeluOp::verify() { return verifyBinaryElementwiseOp(getOperation()); }
+LogicalResult SignOp::verify() { return verifyBinaryElementwiseOp(getOperation()); }
+LogicalResult LogicalOrOp::verify() { return verifyBinaryElementwiseOp(getOperation()); }
+LogicalResult LogicalAndOp::verify() { return verifyBinaryElementwiseOp(getOperation()); }
 
 //===----------------------------------------------------------------------===//
-// MulOp
+// Compare Operations
 //===----------------------------------------------------------------------===//
 
-LogicalResult MulOp::verify() {
-  return verifyBinaryElementwiseOp(getOperation());
-}
-
-//===----------------------------------------------------------------------===//
-// DivOp
-//===----------------------------------------------------------------------===//
-
-LogicalResult DivOp::verify() {
-  return verifyBinaryElementwiseOp(getOperation());
-}
+LogicalResult GeOp::verify() { return verifyBinaryElementwiseOp(getOperation()); }
+LogicalResult EqOp::verify() { return verifyBinaryElementwiseOp(getOperation()); }
+LogicalResult NeOp::verify() { return verifyBinaryElementwiseOp(getOperation()); }
+LogicalResult GtOp::verify() { return verifyBinaryElementwiseOp(getOperation()); }
+LogicalResult LeOp::verify() { return verifyBinaryElementwiseOp(getOperation()); }
+LogicalResult LtOp::verify() { return verifyBinaryElementwiseOp(getOperation()); }

@@ -38,6 +38,50 @@ def AFIR_PositionAttr : I32EnumAttr<"Position",
 }
 
 //===----------------------------------------------------------------------===//
+// Compute Unit Enumeration
+//===----------------------------------------------------------------------===//
+
+def AFIR_ComputeUnitAttr : I32EnumAttr<"ComputeUnit",
+    "Compute unit for node execution",
+    [
+      I32EnumAttrCase<"None", 0, "none">,
+      I32EnumAttrCase<"MTE1", 1, "mte1">,
+      I32EnumAttrCase<"MTE2", 2, "mte2">,
+      I32EnumAttrCase<"MTE3", 3, "mte3">,
+      I32EnumAttrCase<"Scalar", 4, "scalar">,
+      I32EnumAttrCase<"Vector", 5, "vector">,
+      I32EnumAttrCase<"Cube", 6, "cube">,
+      I32EnumAttrCase<"Invalid", 7, "invalid">
+    ]> {
+  let cppNamespace = "::mlir::afir";
+  let underlyingType = "uint8_t";
+}
+
+//===----------------------------------------------------------------------===//
+// Compute Type Enumeration
+//===----------------------------------------------------------------------===//
+
+def AFIR_ComputeTypeAttr : I32EnumAttr<"ComputeType",
+    "Compute type for node execution",
+    [
+      I32EnumAttrCase<"Load", 0, "load">,
+      I32EnumAttrCase<"Store", 1, "store">,
+      I32EnumAttrCase<"ReduceStore", 2, "reduce_store">,
+      I32EnumAttrCase<"Elementwise", 3, "elementwise">,
+      I32EnumAttrCase<"Broadcast", 4, "broadcast">,
+      I32EnumAttrCase<"Reduce", 5, "reduce">,
+      I32EnumAttrCase<"Transpose", 6, "transpose">,
+      I32EnumAttrCase<"Concat", 7, "concat">,
+      I32EnumAttrCase<"Gather", 8, "gather">,
+      I32EnumAttrCase<"Cube", 9, "cube">,
+      I32EnumAttrCase<"Split", 10, "split">,
+      I32EnumAttrCase<"Invalid", 11, "invalid">
+    ]> {
+  let cppNamespace = "::mlir::afir";
+  let underlyingType = "uint8_t";
+}
+
+//===----------------------------------------------------------------------===//
 // Axis Type Enumeration
 //===----------------------------------------------------------------------===//
 

@@ -36,7 +36,4 @@ add_mlir_doc(AFIRDialect AFIRDialect Dialects/ -gen-dialect-doc)
 add_mlir_doc(AFIRAttrs AFIRAttrs Dialects/ -gen-attrdef-doc)
 add_mlir_doc(AFIROps AFIROps Dialects/ -gen-op-doc)
 
-# Add Ops subdirectory
-add_subdirectory(Ops)
-
 add_subdirectory(Transforms)
