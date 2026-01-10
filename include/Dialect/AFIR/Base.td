@@ -1,14 +1,3 @@
-//===- Base.td - AFIR dialect base definitions --------*- tablegen -*-===//
-//
-// Part of the Ascend-MLIR Project
-//
-//===----------------------------------------------------------------------===//
-//
-// This file defines the base structures for AFIR operations, including
-// operation base classes and common templates.
-//
-//===----------------------------------------------------------------------===//
-
 #ifndef AFIR_BASE
 #define AFIR_BASE
 
@@ -18,7 +7,6 @@ include "Dialect/AFIR/Core/Attrs.td"
 //===----------------------------------------------------------------------===//
 // Common Attributes Mixin
 //===----------------------------------------------------------------------===//
-
 class AFIR_CommonAttrs {
   dag commonArgs = (ins
     AffineMapArrayAttr:$indexing_maps,
@@ -30,74 +18,133 @@ class AFIR_CommonAttrs {
 }
 
 //===----------------------------------------------------------------------===//
-// Base AFIR Operation Definition
+// Base AFIR Operation
 //===----------------------------------------------------------------------===//
-
 class AFIR_Op<string mnemonic, list<Trait> traits = []> :
-    Op<AFIR_Dialect, mnemonic, traits> {
+    Op<AFIR_Dialect, mnemonic, traits> {}
+
+//===----------------------------------------------------------------------===//
+// Base AFIR Operation with Counting and Compute Info
+//===----------------------------------------------------------------------===//
+class AFIR_BaseOp<string mnemonic,
+                          list<Trait> traits,
+                          int numOperands,
+                          int numResults = 1,
+                          string computeType = "Invalid",
+                          string computeUnit = "Invalid"> :
+    AFIR_Op<mnemonic, traits> {
+  let extraClassDeclaration = [{
+    static int getNumberOfOperands() { return }] # numOperands # [{; }
+    static int getNumberOfResults() { return }] # numResults # [{; }
+    static afir::ComputeType getComputeType() {
+      return afir::ComputeType::}] # computeType # [{;
+    }
+    static afir::ComputeUnit getComputeUnit() {
+      return afir::ComputeUnit::}] # computeUnit # [{;
+    }
+  }];
+  let hasVerifier = 1;
 }
 
 //===----------------------------------------------------------------------===//
-// Base AFIR Binary Operation
+// Unary Operations (从通用基类派生)
 //===----------------------------------------------------------------------===//
-
-class AFIR_BinaryOp<string mnemonic, list<Trait> traits = [], list<Type> types> :
-    AFIR_Op<mnemonic, traits>, AFIR_CommonAttrs {
+class AFIR_UnaryOpBase<string mnemonic, 
+                       list<Trait> traits,
+                       list<Type> inputTypes,
+                       list<Type> resultTypes,
+                       string computeType = "Invalid",
+                       string computeUnit = "Invalid"> :
+    AFIR_BaseOp<mnemonic, traits, 1, 1, computeType, computeUnit>, AFIR_CommonAttrs {
   let arguments = !con(
-    (ins
-      TensorOf<types>:$lhs,
-      TensorOf<types>:$rhs
+    (ins TensorOf<inputTypes>:$input),
+    commonArgs
+  );
+  let results = (outs TensorOf<resultTypes>:$result);
+  let assemblyFormat = [{
+    $input attr-dict `:` type($input) `->` type($result)
+  }];
+}
+
+class AFIR_UnaryOp<string mnemonic, 
+                    list<Trait> traits = [], 
+                    list<Type> types, 
+                    string computeType, 
+                    string computeUnit> :
+    AFIR_UnaryOpBase<mnemonic, traits, types, types, computeType, computeUnit>;
+
+//===----------------------------------------------------------------------===//
+// Binary Operations (从通用基类派生)
+//===----------------------------------------------------------------------===//
+class AFIR_BinaryOpBase<string mnemonic, 
+                        list<Trait> traits,
+                        list<Type> lhsTypes,
+                        list<Type> rhsTypes,
+                        list<Type> resultTypes,
+                        string computeType = "Invalid",
+                        string computeUnit = "Invalid"> :
+    AFIR_BaseOp<mnemonic, traits, 2, 1, computeType, computeUnit>, AFIR_CommonAttrs {
+  let arguments = !con(
+    (ins 
+      TensorOf<lhsTypes>:$lhs, 
+      TensorOf<rhsTypes>:$rhs
     ),
     commonArgs
   );
-
-  let results = (outs TensorOf<types>:$result);
-
+  let results = (outs TensorOf<resultTypes>:$result);
   let assemblyFormat = [{
     $lhs `,` $rhs attr-dict `:` `(` type($lhs) `,` type($rhs) `)` `->` type($result)
   }];
-
-  let hasVerifier = 1;
-
-  let extraClassDeclaration = [{
-    static int getNumberOfOperands() {
-      return 2;
-    }
-    static int getNumberOfResults() {
-      return 1;
-    }
-  }];
 }
 
-//===----------------------------------------------------------------------===//
-// Base AFIR Unary Operation
-//===----------------------------------------------------------------------===//
+class AFIR_BinaryOp<string mnemonic, 
+                    list<Trait> traits = [], 
+                    list<Type> types, 
+                    string computeType, 
+                    string computeUnit> :
+    AFIR_BinaryOpBase<mnemonic, traits, types, types, types, computeType, computeUnit>;
 
-class AFIR_UnaryOp<string mnemonic, list<Trait> traits = [], list<Type> types> :
-    AFIR_Op<mnemonic, traits>, AFIR_CommonAttrs {
+class AFIR_BinaryHomoOp<string mnemonic, 
+                        list<Trait> traits = [], 
+                        list<Type> inputTypes, 
+                        list<Type> resultTypes, 
+                        string computeType, 
+                        string computeUnit> :
+    AFIR_BinaryOpBase<mnemonic, traits, inputTypes, inputTypes, resultTypes, computeType, computeUnit>;
+
+//===----------------------------------------------------------------------===//
+// Ternary Operations (从通用基类派生)
+//===----------------------------------------------------------------------===//
+class AFIR_TernaryOpBase<string mnemonic, 
+                         list<Trait> traits,
+                         list<Type> input1Types,
+                         list<Type> input2Types,
+                         list<Type> input3Types,
+                         list<Type> resultTypes,
+                         string computeType = "Invalid",
+                         string computeUnit = "Invalid"> :
+    AFIR_BaseOp<mnemonic, traits, 3, 1, computeType, computeUnit>, AFIR_CommonAttrs {
   let arguments = !con(
-    (ins
-      TensorOf<types>:$input
+    (ins 
+      TensorOf<input1Types>:$input1,
+      TensorOf<input2Types>:$input2,
+      TensorOf<input3Types>:$input3
     ),
     commonArgs
   );
-
-  let results = (outs TensorOf<types>:$result);
-
+  let results = (outs TensorOf<resultTypes>:$result);
   let assemblyFormat = [{
-    $input attr-dict `:` `(` type($input) `)` `->` type($result)
-  }];
-
-  let hasVerifier = 1;
-
-  let extraClassDeclaration = [{
-    static int getNumberOfOperands() {
-      return 1;
-    }
-    static int getNumberOfResults() {
-      return 1;
-    }
+    $input1 `,` $input2 `,` $input3 attr-dict `:` 
+    `(` type($input1) `,` type($input2) `,` type($input3) `)` `->` type($result)
   }];
 }
+
+class AFIR_TernaryConditionOp<string mnemonic, 
+                              list<Trait> traits = [], 
+                              list<Type> conditionTypes,
+                              list<Type> types, 
+                              string computeType, 
+                              string computeUnit> :
+    AFIR_TernaryOpBase<mnemonic, traits, conditionTypes, types, types, types, computeType, computeUnit>;
 
 #endif // AFIR_BASE
