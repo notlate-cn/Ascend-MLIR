@@ -108,7 +108,7 @@ def AFIR_AxisTypeAttr : I32EnumAttr<"AxisType",
 def AFIR_AscGraphTypeAttr : I32EnumAttr<"AscGraphType",
     "Ascend graph type",
     [
-      I32EnumAttrCase<"COMPUTE", 0>,
+      I32EnumAttrCase<"Compute", 0>,
       I32EnumAttrCase<"Invalid", 1>
     ]> {
   let genSpecializedAttr = 0;

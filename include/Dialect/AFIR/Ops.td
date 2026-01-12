@@ -20,7 +20,13 @@ include "mlir/Interfaces/SideEffectInterfaces.td"
 // Basic Operations
 //===----------------------------------------------------------------------===//
 
+include "Dialect/AFIR/Ops/Basic/broadcast.td"
+include "Dialect/AFIR/Ops/Basic/cast.td"
+include "Dialect/AFIR/Ops/Basic/condition.td"
+include "Dialect/AFIR/Ops/Basic/data.td"
 include "Dialect/AFIR/Ops/Basic/math.td"
+
+include "Dialect/AFIR/Ops/Adv/concat.td"
 include "Dialect/AFIR/Ops/Adv/reduce.td"
 
 #endif // AFIR_OPS

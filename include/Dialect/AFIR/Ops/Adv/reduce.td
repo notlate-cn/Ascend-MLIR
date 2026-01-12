@@ -17,14 +17,22 @@ include "mlir/Interfaces/SideEffectInterfaces.td"
 include "mlir/IR/CommonTypeConstraints.td"
 
 class AFIR_UnaryReduceOp<string mnemonic, list<Trait> traits = [], list<Type> types> :
-    AFIR_UnaryOp<mnemonic, traits, types, "Reduce", "Vector">;
+    AFIR_UnaryOpBase<mnemonic, traits, types, types, "Reduce", "Vector", 1> {
+  let arguments = !con(
+    (ins 
+      TensorOf<types>:$input,
+      I32Attr:$axis
+    ),
+    commonArgs
+  );
+}
 
-def AFIR_MaxOp : AFIR_UnaryMathOp<"max", [Pure], [F16, F32]>;
-def AFIR_MinOp : AFIR_UnaryMathOp<"min", [Pure], [F16, F32]>;
-def AFIR_SumOp : AFIR_UnaryMathOp<"sum", [Pure], [I32, F32]>;
-def AFIR_MeanOp : AFIR_UnaryMathOp<"mean", [Pure], [F32]>;
-def AFIR_ProdOp : AFIR_UnaryMathOp<"prod", [Pure], [F32]>;
-def AFIR_AnyOp : AFIR_UnaryMathOp<"any", [Pure], [F32]>;
-def AFIR_AllOp : AFIR_UnaryMathOp<"all", [Pure], [F32]>;
+def AFIR_MaxOp : AFIR_UnaryReduceOp<"max", [Pure], [F16, F32]>;
+def AFIR_MinOp : AFIR_UnaryReduceOp<"min", [Pure], [F16, F32]>;
+def AFIR_SumOp : AFIR_UnaryReduceOp<"sum", [Pure], [I32, F32]>;
+def AFIR_MeanOp : AFIR_UnaryReduceOp<"mean", [Pure], [F32]>;
+def AFIR_ProdOp : AFIR_UnaryReduceOp<"prod", [Pure], [F32]>;
+def AFIR_AnyOp : AFIR_UnaryReduceOp<"any", [Pure], [F32]>;
+def AFIR_AllOp : AFIR_UnaryReduceOp<"all", [Pure], [F32]>;
 
 #endif // AFIR_REDUCE_OPS

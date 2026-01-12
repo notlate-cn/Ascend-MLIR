@@ -21,30 +21,55 @@ include "Dialect/AFIR/Core/Enums.td"
 // Graph-Level Attributes (AscGraph Mapping)
 //===----------------------------------------------------------------------===//
 
-//===----------------------------------------------------------------------===//
-// Tensor Attributes
-//===----------------------------------------------------------------------===//
+// Core/Attrs.td
 
-// Maps from: ge.proto.AscTensorAttrGroupsDef
+//===----------------------------------------------------------------------===//
+// Position Attributes
+//===----------------------------------------------------------------------===//
+def PositionConfigAttr : AFIR_Attr<"PositionConfig", "pos_config"> {
+  let summary = "Position configuration including location, depth and buffer mode";
+  
+  let parameters = (ins
+    "::mlir::afir::Position":$position,
+    DefaultValuedParameter<"uint32_t", "0">:$depth,
+    DefaultValuedParameter<"bool", "false">:$is_double_buffer
+  );
+  
+  // 子属性的 assembly format
+  let assemblyFormat = "`<`"
+    "$position"
+    "(`,` `depth` `=` $depth^)?"
+    "(`,` `is_double_buffer` `=` $is_double_buffer^)?"
+    "`>`";
+}
+
+//===----------------------------------------------------------------------===//
+// 主属性（使用位置配置子属性）
+//===----------------------------------------------------------------------===//
 def AscTensorGroupsAttr : AFIR_Attr<"AscTensorGroups", "asc_tensor"> {
   let summary = "Ascend tensor attribute groups";
   let description = [{
     Comprehensive tensor attributes including data type, axis information,
     memory layout (repeats, strides), vectorization info, and memory management.
   }];
-
+  
   let parameters = (ins
-    ArrayRefParameter<"int64_t">:$vectorized_axis,
-    ArrayRefParameter<"Attribute", "array of vectorized stride expressions">:$vectorized_strides,
+    OptionalArrayRefParameter<"int64_t">:$vectorized_axis,
+    OptionalArrayRefParameter<"Attribute", "array of vectorized stride expressions">:$vectorized_strides,
     "int64_t":$tensor_id,
     DefaultValuedParameter<"int64_t", "-1">:$reuse_id,
-    "::mlir::afir::Position":$position,
-    "int64_t":$position_id,
-    OptionalParameter<"uint32_t">:$depth,
-    OptionalParameter<"bool">:$is_double_buffer
+    "PositionConfigAttr":$position_config,
+    DefaultValuedParameter<"int64_t", "-1">:$position_id
   );
-
-  let assemblyFormat = "`<` `vectorized_axis` `=` `[` $vectorized_axis `]` `,` `vectorized_strides` `=` `[` $vectorized_strides `]` `,` `tensor_id` `=` $tensor_id `,` `reuse_id` `=` $reuse_id `,` `position` `=` $position `,` `position_id` `=` $position_id `,` `depth` `=` $depth `,` `is_double_buffer` `=` $is_double_buffer `>`";
+  
+  let assemblyFormat = "`<`"
+    "(`vectorized_axis` `=` `[` $vectorized_axis^ `]` `,`"
+    " `vectorized_strides` `=` `[` $vectorized_strides `]` `,`)? "
+    "`tensor_id` `=` $tensor_id `,`"
+    "(`reuse_id` `=` $reuse_id^ `,` )?"
+    "`position` `=` $position_config"  // 打印子属性
+    "(`,` `position_id` `=` $position_id^)?"
+    "`>`";
 }
 
 //===----------------------------------------------------------------------===//
@@ -64,13 +89,22 @@ def AxisAttr : AFIR_Attr<"Axis", "axis"> {
     "StringAttr":$name,
     "::mlir::afir::AxisType":$axis_type,
     DefaultValuedParameter<"bool", "false">:$bind_block,
-    "Attribute":$size,
+    "StringAttr":$size,
     OptionalParameter<"StringAttr">:$align,
-    ArrayRefParameter<"int64_t">:$from,
+    OptionalArrayRefParameter<"int64_t">:$from,
     DefaultValuedParameter<"int64_t", "-1">:$split_pair_other_id
   );
 
-  let assemblyFormat = "`<` struct(params) `>`";
+  let assemblyFormat = "`<`"
+    "`id` `=` $id `,`"
+    "`name` `=` $name `,`"
+    "`axis_type` `=` $axis_type `,`"
+    "(`bind_block` `=` $bind_block^ `,`)?"
+    "`size` `=` $size"
+    "(`,` `align` `=` $align^)?"
+    "(`,` `from` `=` `[` $from^ `]`)?"
+    "(`,` `split_pair_other_id` `=` $split_pair_other_id^)?"
+    "`>`";
 }
 
 //===----------------------------------------------------------------------===//
@@ -106,12 +140,17 @@ def AscGraphAttrGroupsAttr : AFIR_Attr<"AscGraphAttrGroups", "asc_graph"> {
 
   let parameters = (ins
     DefaultValuedParameter<"int64_t", "-1">:$tiling_key,
-    ArrayRefParameter<"AxisAttr", "array of Axis">:$axis,
+    ArrayRefParameter<"AxisAttr", "array of Axis">:$axes,
     "::mlir::afir::AscGraphType":$type,
-    ArrayRefParameter<"Attribute", "array of size variable strings">:$size_var
+    OptionalArrayRefParameter<"StringAttr", "array of size variable strings">:$size_var
   );
 
-  let assemblyFormat = "`<` struct(params) `>`";
+  let assemblyFormat = "`<`"
+    "(`tiling_key` `=` $tiling_key^ `,`)?"
+    "`axes` `=` `[` $axes `]` `,`"
+    "`type` `=` $type"
+    "(`,` `size_var` `=` `[` $size_var^ `]`)?"
+    "`>`";
 }
 
 //===----------------------------------------------------------------------===//

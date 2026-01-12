@@ -71,10 +71,8 @@ int main() {
                                  {builder.getI64IntegerAttr(4), builder.getI64IntegerAttr(8)},  // vectorized_strides
                                  42,                                                            // tensor_id
                                  10,                                                            // reuse_id
-                                 Position::VECTOR_IN,
-                                 5,    // position_id
-                                 2,    // depth
-                                 true  // is_double_buffer
+                                 PositionConfigAttr::get(&context, Position::VECTOR_IN, 2, true),
+                                 5  // position_id
         );
 
     auto outputsAttrArray = builder.getArrayAttr(outputsAttr);
@@ -88,8 +86,8 @@ int main() {
     llvm::outs() << "tensor_id: " << outputsAttr.getTensorId() << "\n";
     llvm::outs() << "reuse_id: " << outputsAttr.getReuseId() << "\n";
     llvm::outs() << "position_id: " << outputsAttr.getPositionId() << "\n";
-    llvm::outs() << "depth: " << outputsAttr.getDepth() << "\n";
-    llvm::outs() << "is_double_buffer: " << outputsAttr.getIsDoubleBuffer() << "\n";
+    llvm::outs() << "depth: " << outputsAttr.getPositionConfig().getDepth() << "\n";
+    llvm::outs() << "is_double_buffer: " << outputsAttr.getPositionConfig().getIsDoubleBuffer() << "\n";
     llvm::outs() << "========================\n\n";
 
     auto irAttrDef =
@@ -100,6 +98,21 @@ int main() {
     auto tmpBufDesc1 = TmpBufDescAttr::get(&context, builder.getStringAttr("(d0 * 128)"), 2);
     auto tmpBufDesc2 = TmpBufDescAttr::get(&context, builder.getStringAttr("(d0 * 64 + d1 * 8)"), 3);
     auto tmpBuffersAttr = builder.getArrayAttr({tmpBufDesc1, tmpBufDesc2});
+
+    llvm::outs() << "=== Debug AxisAttr ===\n";
+    auto axis1 = AxisAttr::get(&context, 0, builder.getStringAttr("z0"), AxisType::Original, false,
+                               builder.getStringAttr("20"), builder.getStringAttr("1"), {}, -1);
+    auto axis2 = AxisAttr::get(&context, 1, builder.getStringAttr("z1"), AxisType::Original, false,
+                               builder.getStringAttr("31"), builder.getStringAttr("1"), {}, -1);
+
+    auto axis1Attr = builder.getArrayAttr({axis1});
+    auto axis2Attr = builder.getArrayAttr({axis2});
+    auto graphAttr = AscGraphAttrGroupsAttr::get(&context, -1, {axis1, axis2}, AscGraphType::Compute, {});
+
+    llvm::outs() << "AxisAttr axis1: " << axis1 << "\n";
+    llvm::outs() << "AxisAttr axis2: " << axis2 << "\n";
+    llvm::outs() << "AscGraphAttrGroupsAttr: " << graphAttr << "\n";
+    llvm::outs() << "========================\n\n";
 
     auto addOp = builder.create<AddOp>(builder.getUnknownLoc(), tensorType, arg0, arg1, indexingMapsAttr,
                                        builder.getI32IntegerAttr(1), irAttrDef, tmpBuffersAttr, outputsAttrArray);

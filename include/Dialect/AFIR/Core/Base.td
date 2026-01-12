@@ -32,4 +32,11 @@ class AFIR_Attr<string name, string attrMnemonic, list<Trait> traits = []>
   let mnemonic = attrMnemonic;
 }
 
+//===----------------------------------------------------------------------===//
+// Add some types
+//===----------------------------------------------------------------------===//
+def I4 : I<4>;
+def SI4 : SI<4>;
+def UI4 : UI<4>;
+
 #endif // AFIR_CORE_BASE

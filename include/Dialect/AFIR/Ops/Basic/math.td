@@ -18,13 +18,16 @@ include "mlir/Interfaces/SideEffectInterfaces.td"
 include "mlir/IR/CommonTypeConstraints.td"
 
 class AFIR_UnaryMathOp<string mnemonic, list<Trait> traits = [], list<Type> types> :
-    AFIR_UnaryOp<mnemonic, traits, types, "Elementwise", "Vector">;
+    AFIR_UnaryOp<mnemonic, traits, types, "Elementwise", "Vector", 1>;
 
 class AFIR_BinaryMathOp<string mnemonic, list<Trait> traits = [], list<Type> types> :
-    AFIR_BinaryOp<mnemonic, traits, types, "Elementwise", "Vector">;
+    AFIR_BinaryOp<mnemonic, traits, types, "Elementwise", "Vector", 1>;
 
 class AFIR_BinaryHomoMathOp<string mnemonic, list<Trait> traits = [], list<Type> inputTypes, list<Type> resultTypes> :
-    AFIR_BinaryHomoOp<mnemonic, traits, inputTypes, resultTypes, "Elementwise", "Vector">;
+    AFIR_BinaryHomoOp<mnemonic, traits, inputTypes, resultTypes, "Elementwise", "Vector", 1>;
+
+class AFIR_TernaryMathOp<string mnemonic, list<Trait> traits = [], list<Type> types> :
+    AFIR_TernaryOp<mnemonic, traits, types, "Elementwise", "Vector", 1>;
 
 //===----------------------------------------------------------------------===//
 // Unary Operations
@@ -43,8 +46,18 @@ def AFIR_NegOp : AFIR_UnaryMathOp<"neg", [Pure], [I16, I32, F16, F32]>;
 def AFIR_SigmoidOp : AFIR_UnaryMathOp<"sigmoid", [Pure], [F16, F32]>;
 def AFIR_LogicalNotOp : AFIR_UnaryMathOp<"logical_not", [Pure], [UI8, I16, I32, F16, F32]>;
 
-def AFIR_IsnanOp : AFIR_UnaryOpBase<"isnan", [Pure], [F16, F32], [UI8], "Elementwise", "Vector">;
-def AFIR_IsFiniteOp : AFIR_UnaryOpBase<"isfinite", [Pure], [F16, F32], [UI8], "Elementwise", "Vector">;
+def AFIR_IsnanOp : AFIR_UnaryOpBase<"isnan", [Pure], [F16, F32], [UI8], "Elementwise", "Vector", 1>;
+def AFIR_IsFiniteOp : AFIR_UnaryOpBase<"isfinite", [Pure], [F16, F32], [UI8], "Elementwise", "Vector", 1>;
+
+def AFIR_LeakyReluOp : AFIR_UnaryMathOp<"leaky_relu", [Pure], [F16, F32]> {
+  let arguments = !con(
+    (ins 
+      TensorOf<[F16, F32]>:$input,
+      F32Attr:$negative_slop
+    ),
+    commonArgs
+  );
+}
 
 //===----------------------------------------------------------------------===//
 // Binary Operations
@@ -58,7 +71,6 @@ def AFIR_MinimumOp : AFIR_BinaryMathOp<"minimum", [Pure], [I16, I32, F16, F32]>;
 def AFIR_MaximumOp : AFIR_BinaryMathOp<"maximum", [Pure], [I16, I32, F16, F32]>;
 def AFIR_TrueDivOp : AFIR_BinaryMathOp<"truediv", [Pure], [F16, F32]>;
 def AFIR_PowOp : AFIR_BinaryMathOp<"pow", [Pure], [I32, F16, F32]>;
-def AFIR_LeakyReluOp : AFIR_BinaryMathOp<"leaky_relu", [Pure], [F16, F32]>;
 def AFIR_BitwiseAndOp : AFIR_BinaryMathOp<"bitwise_and", [Pure], [UI8, I16, UI16, I32]>;
 def AFIR_FloorDivOp : AFIR_BinaryMathOp<"floor_div", [Pure], [I16, I32]>;
 def AFIR_GeluOp : AFIR_BinaryMathOp<"gelu", [Pure], [F16, F32]>;
@@ -76,5 +88,10 @@ def AFIR_NeOp : AFIR_BinaryHomoMathOp<"ne", [Pure], [F16, F32, F64], [UI8]>;
 def AFIR_GtOp : AFIR_BinaryHomoMathOp<"gt", [Pure], [I32, F16, F32, I64], [UI8]>;
 def AFIR_LeOp : AFIR_BinaryHomoMathOp<"le", [Pure], [F16, F32, I64], [UI8]>;
 def AFIR_LtOp : AFIR_BinaryHomoMathOp<"lt", [Pure], [F16, F32], [UI8]>;
+
+//===----------------------------------------------------------------------===//
+// Ternary Operations
+//===----------------------------------------------------------------------===//
+def AFIR_ClipByValue : AFIR_TernaryMathOp<"clip_by_value", [Pure], [F16, F32]>;
 
 #endif // AFIR_MATH_OPS
