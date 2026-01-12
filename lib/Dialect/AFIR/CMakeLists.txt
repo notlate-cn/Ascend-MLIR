@@ -1,6 +1,12 @@
 add_mlir_dialect_library(AFIRDialect
   Dialect.cpp
   Ops/Basic/math.cpp
+  Ops/Basic/data.cpp
+  Ops/Basic/broadcast.cpp
+  Ops/Basic/condition.cpp
+  Ops/Basic/cast.cpp
+  Ops/Adv/concat.cpp
+  Ops/Adv/reduce.cpp
 
   ADDITIONAL_HEADER_DIRS
         ${CMAKE_SOURCE_DIR}/include/Dialect/AFIR
