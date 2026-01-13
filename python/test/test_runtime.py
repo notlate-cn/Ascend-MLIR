@@ -1,69 +1,29 @@
-import sys
+#!/usr/bin/env python3
+"""
+Ascend Runtime 端到端测试脚本
+
+完整的测试流程：
+1. 从 graph_txt 开始
+2. 使用 AscGen 生成源代码（tiling_def, host_tiling, op_kernel）
+3. 编译 tiling_def + host_tiling 为 .so，并获取 tiling 数据
+4. 使用 Bisheng 编译 device kernel
+5. Launch kernel 并验证结果
+
+注意：使用 os._exit() 避免 Python 清理时的段错误
+"""
 import os
-import ctypes
+import sys
+from codecs import ignore_errors
+from pathlib import Path
 
+# 设置环境（必须在导入其他模块前）
+os.environ["SOC_VERSION"] = "Ascend910B1"
 
-def verify_ascend_environment():
-    """验证 Ascend 环境变量和安装路径"""
-    print("=" * 60)
-    print("Ascend 环境初始化")
-    print("=" * 60)
+import numpy as np
+import torch
 
-    # 检查 ASCEND_INSTALL_PATH 环境变量
-    if 'ASCEND_INSTALL_PATH' not in os.environ:
-        print("❌ 错误: 环境变量 ASCEND_INSTALL_PATH 未设置")
-        print("请先执行: source env.sh")
-        sys.exit(1)
-
-    ascend_install_path = os.environ['ASCEND_INSTALL_PATH']
-    print(f"✅ ASCEND_INSTALL_PATH: {ascend_install_path}")
-
-    # 检查安装路径是否存在
-    if not os.path.exists(ascend_install_path):
-        print(f"❌ 错误: Ascend 安装路径不存在: {ascend_install_path}")
-        sys.exit(1)
-    print(f"✅ 安装路径存在")
-
-    return ascend_install_path
-
-
-def load_libgraph(ascend_install_path):
-    """加载 libgraph.so 动态库"""
-    libgraph_path = os.path.join(ascend_install_path, 'lib64/libgraph.so')
-
-    # 检查 libgraph.so 是否存在
-    if not os.path.exists(libgraph_path):
-        print(f"❌ 错误: libgraph.so 不存在: {libgraph_path}")
-        print("请检查 Ascend 安装是否完整")
-        sys.exit(1)
-
-    # 加载 libgraph.so
-    try:
-        ctypes.CDLL(libgraph_path, mode=ctypes.RTLD_GLOBAL)
-        print("✅ 成功加载 libgraph.so")
-    except OSError as e:
-        print(f"❌ 加载 libgraph.so 失败: {e}")
-        print(f"\n可能的原因：")
-        print(f"  1. CANN包安装失败，缺少依赖库（如 libplatform.so）")
-        print(f"  2. LD_LIBRARY_PATH 未正确设置，需要先执行: source env.sh")
-        print(f"\n当前 LD_LIBRARY_PATH:")
-        print(f"  {os.environ.get('LD_LIBRARY_PATH', '(未设置)')}")
-        sys.exit(1)
-    except Exception as e:
-        print(f"❌ 未知错误: {e}")
-        sys.exit(1)
-
-
-def import_autofuse_modules():
-    """导入 autofuse 相关模块"""
-    try:
-        from autofuse.pyautofuse import ascir, Autofuser, AutofuserOptions, Schedule, CodeGen
-        from autofuse import ascir_api
-        return ascir, Autofuser, AutofuserOptions
-    except ImportError as e:
-        print(f"❌ 导入 autofuse 模块失败: {e}")
-        sys.exit(1)
-
+# 添加 runtime 路径
+sys.path.insert(0, str(Path(__file__).parent.parent))
 
 def get_asc_graph_text():
     """获取 ascgraph 的文本定义"""
@@ -669,115 +629,202 @@ asc_node {
 graph_name: "HashCopyAscGraph"
 """
 
+# ================================================================
+# 端到端测试
+# ================================================================
 
-def deserialize_asc_graph(ascir, graph_text):
-    """反序列化 ascgraph 文本为图对象"""
-    graph = ascir.utils.deserialize("asc_graph", graph_text)
-    debug_str = ascir.utils.debug_str(graph)
+def test_end_to_end(graph_text, output_path='./'):
+    """端到端测试：从 graph 到 kernel 执行"""
+    print("=" * 70)
+    print("端到端测试：从 Graph 到 Kernel 执行")
+    print("=" * 70)
 
-    if debug_str:
-        print("✅ 反序列化 ascgraph 成功")
-        print()
-        print(debug_str)
-    else:
-        print("❌ 反序列化 ascgraph 失败")
-        sys.exit(1)
-
-    return graph
-
-
-def run_autofuse_pipeline(Autofuser, AutofuserOptions, graph):
-    """执行 autofuse 流程：schedule 和 codegen"""
-    print()
-    print("=" * 60)
-    print("开始执行 Autofuse 任务")
-    print("=" * 60 + "\n")
-
-    options = AutofuserOptions()
-    fuser = Autofuser(options)
-    sched_result = fuser.schedule(graph)
-    tiling_def, host_tiling, op_kernel = fuser.codegen(sched_result)
-
-    if tiling_def and host_tiling and op_kernel:
-        print("✅ 成功生成 tiling_def, host_tiling, op_kernel")
-    else:
-        print("❌ 生成 tiling_def, host_tiling, op_kernel 失败")
-        sys.exit(1)
-
-    return tiling_def, host_tiling, op_kernel
-
-
-def setup_cmake_environment(ascend_install_path):
-    """设置 CMake 编译环境变量"""
-    # CMake 需要找到 ASC 包的配置文件
-    cmake_prefix_path = os.path.join(ascend_install_path, 'lib64/cmake')
-    if not os.path.exists(cmake_prefix_path):
-        # 尝试备选路径
-        cmake_prefix_path = os.path.join(ascend_install_path, 'aarch64-linux/lib64/cmake')
-
-    if os.path.exists(cmake_prefix_path):
-        os.environ['CMAKE_PREFIX_PATH'] = cmake_prefix_path
-        print(f"✅ 设置 CMAKE_PREFIX_PATH: {cmake_prefix_path}")
-    else:
-        print(f"⚠️  警告: 找不到 CMake 配置目录，编译可能失败")
-        print(f"   尝试的路径: {cmake_prefix_path}")
-
-    # 设置 ASCEND_CANN_PACKAGE_PATH（CMake需要）
-    os.environ['ASCEND_CANN_PACKAGE_PATH'] = ascend_install_path
-    print(f"✅ 设置 ASCEND_CANN_PACKAGE_PATH: {ascend_install_path}")
-
-
-def run_jit_compile(tiling_def, host_tiling, op_kernel, graph_name="HashCopyAscGraph"):
-    """执行 JIT 编译，生成 .so 文件"""
-    from autofuse.compile_adapter import jit_compile
-
-    print("\n" + "=" * 60)
-    print("开始 JIT 编译")
-    print("=" * 60 + "\n")
-
-    compile_args = [
-        f"--graph_name={graph_name}",
-        f"--output_file=./{graph_name}.so",
-        "--output_path=./build-ascir",
-        "--force_unknown=True"
-    ]
-
-    try:
-        jit_compile(tiling_def, host_tiling, op_kernel, compile_args)
-        print("\n✅ JIT 编译成功！")
-        print(f"   输出文件: ./build-ascir/{graph_name}.so")
-    except Exception as e:
-        print(f"\n❌ JIT 编译失败: {e}")
-        import traceback
-        traceback.print_exc()
-        sys.exit(1)
-
-
-def main():
-    """主函数：协调整个工作流程"""
-    # 1. 验证 Ascend 环境
-    ascend_install_path = verify_ascend_environment()
-
-    # 2. 加载 libgraph.so
-    load_libgraph(ascend_install_path)
-
-    # 3. 导入 autofuse 模块
-    ascir, Autofuser, AutofuserOptions = import_autofuse_modules()
-
-    # 4. 获取并反序列化 ascgraph
-    graph_text = get_asc_graph_text()
-    graph = deserialize_asc_graph(ascir, graph_text)
-
-    # 5. 执行 autofuse 流程
-    tiling_def, host_tiling, op_kernel = run_autofuse_pipeline(
-        Autofuser, AutofuserOptions, graph
+    # 导入 runtime 库（在环境设置后）
+    from runtime import (
+        AscGen,
+        compile_kernel as compile_kernel_with_bisheng,
+        execute_kernel,
+        read_binary,
     )
 
-    # 6. 设置 CMake 环境
-    setup_cmake_environment(ascend_install_path)
+    # ============================================================
+    # 步骤 1: 读取 graph 文本
+    # ============================================================
+    print("\n[步骤 1] 读取 Graph 文本")
+    print(f"  ✅ Graph 读取成功: {len(graph_text)} 字符")
 
-    # 7. 执行 JIT 编译
-    run_jit_compile(tiling_def, host_tiling, op_kernel)
+    # ============================================================
+    # 步骤 2: 使用 AscGen 生成源代码
+    # ============================================================
+    print("\n[步骤 2] 使用 AscGen 生成源代码")
+    output_dir = Path(output_path)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    # 从 graph_text 中提取 graph_name（需要转换为 snake_case）
+    import re
+    match = re.search(r'graph_name:\s*"(\w+)"', graph_text)
+    if match:
+        original_name = match.group(1)
+        # 将 CamelCase 转换为 snake_case
+        graph_name = re.sub('([A-Z])', r'_\1', original_name).lower().lstrip('_')
+    else:
+        graph_name = "asc_graph"
+
+    try:
+        ascgen = AscGen()
+        host_file, device_file, host_tiling, tiling_def = ascgen.compile_graph(
+            graph_text, output_dir, graph_name
+        )
+        print(f"  ✅ 源代码生成成功:")
+        print(f"    host_file: {host_file}")
+        print(f"    device_file: {device_file}")
+        print(f"    host_tiling: {len(host_tiling)} 字符")
+        print(f"    tiling_def: {len(tiling_def)} 字符")
+    except Exception as e:
+        print(f"  ❌ 源代码生成失败: {e}")
+        import traceback
+        traceback.print_exc()
+        return False
+
+    # ============================================================
+    # 步骤 3: 编译 host_tiling 并获取 tiling 数据
+    # ============================================================
+    print("\n[步骤 3] 编译 host_tiling 并获取 tiling 数据")
+    print("  编译 tiling_def + host_tiling 为 .so，然后调用获取 tiling 数据...")
+    build_dir = output_dir / "build"
+    if build_dir.exists():
+        import shutil
+        shutil.rmtree(build_dir, ignore_errors=True)
+
+    try:
+        tiling_bytes = ascgen.calc_tiling_data(tiling_def, host_tiling, build_dir)
+        print(f"  ✅ Tiling 数据获取成功: {len(tiling_bytes)} bytes")
+    except Exception as e:
+        print(f"  ❌ 获取 Tiling 数据失败: {e}")
+        import traceback
+        traceback.print_exc()
+        return False
+
+    # ============================================================
+    # 步骤 4: 使用 Bisheng 编译 device kernel
+    # ============================================================
+    print("\n[步骤 4] 使用 Bisheng 编译 device kernel")
+    try:
+        binary_path = compile_kernel_with_bisheng(
+            src_file=device_file,
+            output_dir=build_dir,
+            kernel_name=graph_name
+        )
+        print(f"  ✅ Bisheng 编译成功: {binary_path}")
+    except Exception as e:
+        print(f"  ❌ Bisheng 编译失败: {e}")
+        import traceback
+        traceback.print_exc()
+        return False
+
+    # ============================================================
+    # 步骤 5: 准备测试数据
+    # ============================================================
+    print("\n[步骤 5] 准备测试数据")
+    torch.manual_seed(42)
+    input0 = torch.rand(20, 31, dtype=torch.float32)
+    input1 = torch.rand(1, 31, dtype=torch.float32)
+    broadcasted = input1.expand(20, 31)
+    add_result = input0 + broadcasted
+    mul_result = add_result * broadcasted
+    expected_output = add_result - mul_result
+    torch.save(input0, f'{output_dir}/{graph_name}_input0.pt')
+    torch.save(input1, f'{output_dir}/{graph_name}_input1.pt')
+    torch.save(expected_output, f'{output_dir}/{graph_name}_expected_output.pt')
+
+    print(f"    input0: {input0.shape}, {input0.dtype}")
+    print(f"    input1: {input1.shape}, {input1.dtype}")
+
+    # ============================================================
+    # 步骤 6: 读取 binary
+    # ============================================================
+    print("\n[步骤 6] 读取 ELF Binary")
+    if not os.path.exists(binary_path):
+        print(f"  ❌ Binary 文件不存在: {binary_path}")
+        return False
+
+    binary_data = read_binary(binary_path)
+    print(f"  ✅ Binary 读取成功: {len(binary_data)} bytes")
+
+    # ============================================================
+    # 步骤 7: 执行 Kernel
+    # ============================================================
+    print("\n[步骤 7] 执行 Kernel")
+    try:
+        outputs = execute_kernel(
+            binary_data=binary_data,
+            function_name=graph_name,
+            inputs=[input0.numpy(), input1.numpy()],
+            output_shapes=[(20, 31)],
+            tiling_data=tiling_bytes,
+            dtype=np.float32
+        )
+        output_array = outputs[0]
+        print(f"  ✅ Kernel 执行成功")
+    except Exception as e:
+        print(f"  ❌ Kernel 执行失败: {e}")
+        import traceback
+        traceback.print_exc()
+        return False
+
+    # ============================================================
+    # 步骤 8: 验证结果
+    # ============================================================
+    print("\n[步骤 8] 验证结果")
+    output_torch = torch.from_numpy(output_array)
+    abs_diff = torch.abs(output_torch - expected_output)
+    max_diff = torch.max(abs_diff).item()
+    mean_diff = torch.mean(abs_diff).item()
+
+    print(f"    最大绝对误差: {max_diff:.6e}")
+    print(f"    平均绝对误差: {mean_diff:.6e}")
+    print(f"\n    期望输出[0, :5]: {expected_output[0, :5]}")
+    print(f"    实际输出[0, :5]: {output_torch[0, :5]}")
+
+    is_close = torch.allclose(output_torch, expected_output, rtol=1e-5, atol=1e-5)
+
+    return is_close
+
+
+# ================================================================
+# 主函数
+# ================================================================
+
+def main():
+    """主测试函数"""
+    print("=" * 70)
+    print("Ascend Runtime 端到端测试")
+    print("=" * 70)
+    print(f"版本: 0.1.0")
+    print(f"Python: {sys.version}")
+    print()
+
+    try:
+        graph_text = get_asc_graph_text()
+        success = test_end_to_end(graph_text, output_path='./')
+
+        print("\n" + "=" * 70)
+        if success:
+            print("✅✅✅ 端到端测试通过！ ✅✅✅")
+        else:
+            print("❌❌❌ 端到端测试失败 ❌❌❌")
+        print("=" * 70)
+
+        os._exit(0 if success else 1)
+    except Exception as e:
+        print()
+        print("=" * 70)
+        print(f"❌ 测试异常: {e}")
+        print("=" * 70)
+        import traceback
+        traceback.print_exc()
+        os._exit(1)
+
 
 if __name__ == "__main__":
     main()
