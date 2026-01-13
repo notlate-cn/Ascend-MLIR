@@ -10,6 +10,11 @@
 # build files
 build/
 build-*/
+*.pt
+*.log
+*.toml
+*.dump
+core*
 
 # tmp files
 __checked_files_list__

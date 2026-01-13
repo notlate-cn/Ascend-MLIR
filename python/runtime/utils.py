@@ -24,7 +24,7 @@ def find_ascend_root() -> Path:
     # 检查 ASCEND_HOME_PATH 环境变量
     if 'ASCEND_HOME_PATH' not in os.environ:
         print("❌ 错误: 环境变量 ASCEND_HOME_PATH 未设置")
-        print("请先执行: source python/env.sh")
+        print("请先执行: source env.sh")
         sys.exit(1)
 
     ascend_home_path = os.environ['ASCEND_HOME_PATH']

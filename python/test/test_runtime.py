@@ -657,8 +657,11 @@ def test_end_to_end(graph_text, output_path='./'):
     # 步骤 2: 使用 AscGen 生成源代码
     # ============================================================
     print("\n[步骤 2] 使用 AscGen 生成源代码")
-    output_dir = Path(output_path)
-    output_dir.mkdir(parents=True, exist_ok=True)
+    build_dir = Path(output_path)
+    if build_dir.exists():
+        import shutil
+        shutil.rmtree(build_dir, ignore_errors=True)
+    build_dir.mkdir(parents=True, exist_ok=True)
 
     # 从 graph_text 中提取 graph_name（需要转换为 snake_case）
     import re
@@ -673,7 +676,7 @@ def test_end_to_end(graph_text, output_path='./'):
     try:
         ascgen = AscGen()
         host_file, device_file, host_tiling, tiling_def = ascgen.compile_graph(
-            graph_text, output_dir, graph_name
+            graph_text, build_dir, graph_name
         )
         print(f"  ✅ 源代码生成成功:")
         print(f"    host_file: {host_file}")
@@ -691,11 +694,6 @@ def test_end_to_end(graph_text, output_path='./'):
     # ============================================================
     print("\n[步骤 3] 编译 host_tiling 并获取 tiling 数据")
     print("  编译 tiling_def + host_tiling 为 .so，然后调用获取 tiling 数据...")
-    build_dir = output_dir / "build"
-    if build_dir.exists():
-        import shutil
-        shutil.rmtree(build_dir, ignore_errors=True)
-
     try:
         tiling_bytes = ascgen.calc_tiling_data(tiling_def, host_tiling, build_dir)
         print(f"  ✅ Tiling 数据获取成功: {len(tiling_bytes)} bytes")
@@ -733,9 +731,9 @@ def test_end_to_end(graph_text, output_path='./'):
     add_result = input0 + broadcasted
     mul_result = add_result * broadcasted
     expected_output = add_result - mul_result
-    torch.save(input0, f'{output_dir}/{graph_name}_input0.pt')
-    torch.save(input1, f'{output_dir}/{graph_name}_input1.pt')
-    torch.save(expected_output, f'{output_dir}/{graph_name}_expected_output.pt')
+    torch.save(input0, f'{build_dir}/{graph_name}_input0.pt')
+    torch.save(input1, f'{build_dir}/{graph_name}_input1.pt')
+    torch.save(expected_output, f'{build_dir}/{graph_name}_expected_output.pt')
 
     print(f"    input0: {input0.shape}, {input0.dtype}")
     print(f"    input1: {input1.shape}, {input1.dtype}")
@@ -806,7 +804,7 @@ def main():
 
     try:
         graph_text = get_asc_graph_text()
-        success = test_end_to_end(graph_text, output_path='./')
+        success = test_end_to_end(graph_text, output_path='./build')
 
         print("\n" + "=" * 70)
         if success:
