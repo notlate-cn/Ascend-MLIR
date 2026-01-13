@@ -122,21 +122,21 @@ int main() {
                                    builder.getNamedAttr("custom_option_1", builder.getI32IntegerAttr(200))});
 
     auto subOp = builder.create<SubOp>(builder.getUnknownLoc(), tensorType, arg0, arg1, indexingMapsAttr, nullptr,
-                                       subOpIrAttrDef, nullptr, nullptr);
+                                       subOpIrAttrDef, nullptr, outputsAttrArray);
 
     auto mulOpIrAttrDef =
         builder.getDictionaryAttr({builder.getNamedAttr("compute_hint", builder.getI64IntegerAttr(3)),
                                    builder.getNamedAttr("custom_option_1", builder.getI32IntegerAttr(300))});
 
     auto mulOp = builder.create<MulOp>(builder.getUnknownLoc(), tensorType, arg0, arg1, indexingMapsAttr, nullptr,
-                                       mulOpIrAttrDef, nullptr, nullptr);
+                                       mulOpIrAttrDef, nullptr, outputsAttrArray);
 
     auto divOpIrAttrDef =
         builder.getDictionaryAttr({builder.getNamedAttr("compute_hint", builder.getI64IntegerAttr(4)),
                                    builder.getNamedAttr("custom_option_1", builder.getI32IntegerAttr(400))});
 
     auto divOp = builder.create<DivOp>(builder.getUnknownLoc(), tensorType, arg0, arg1, indexingMapsAttr, nullptr,
-                                       divOpIrAttrDef, nullptr, nullptr);
+                                       divOpIrAttrDef, nullptr, outputsAttrArray);
 
     builder.create<func::ReturnOp>(builder.getUnknownLoc(), divOp.getResult());
   }

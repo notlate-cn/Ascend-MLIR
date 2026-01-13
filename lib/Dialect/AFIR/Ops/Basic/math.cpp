@@ -142,7 +142,7 @@ LogicalResult PowOp::verify() {
   return verifyBinaryElementwiseOp(getOperation());
 }
 LogicalResult LeakyReluOp::verify() {
-  return verifyBinaryElementwiseOp(getOperation());
+  return verifyUnaryElementwiseOp(getOperation());
 }
 LogicalResult BitwiseAndOp::verify() {
   return verifyBinaryElementwiseOp(getOperation());
