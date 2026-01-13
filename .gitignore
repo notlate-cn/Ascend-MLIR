@@ -1,6 +1,7 @@
 # ide files
 /.claude/
 /.idea/
+**/.idea/
 /.cache
 /.gitcode/docker
 /.gitcode/workflows/*.md
