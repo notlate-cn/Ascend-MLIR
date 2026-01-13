@@ -13,7 +13,7 @@ class AFIR_CommonAttrs {
     DefaultValuedOptionalAttr<I32Attr, "-1">:$loop_axis,
     DefaultValuedOptionalAttr<DictionaryAttr, "{}">:$ir_attr_def,
     OptionalAttr<TmpBufDescArrayAttr>:$tmp_buffers,
-    OptionalAttr<AscTensorGroupsArrayAttr>:$outputs
+    AscTensorGroupsArrayAttr:$outputs
   );
 }
 
