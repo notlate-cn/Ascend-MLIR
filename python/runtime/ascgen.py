@@ -21,6 +21,7 @@ from .utils import (
     setup_environment,
     logger,
     CompilerError,
+    ASCEND_A2,
 )
 
 
@@ -37,7 +38,7 @@ class AscGen:
 
     def __init__(self,
                  ascend_root: Optional[Path] = None,
-                 soc_version: str = "Ascend910B1"):
+                 soc_version: str = ASCEND_A2):
         """
         初始化源代码生成器
 
@@ -162,6 +163,8 @@ class AscGen:
         Returns:
             (host 源文件路径, device 源文件路径)
         """
+        TILING_DATA_HEADER_NAME = 'autofuse_tiling_data.h'
+
         # 创建子目录
         host_dir = output_dir / "host"
         device_dir = output_dir / "device"
@@ -171,14 +174,14 @@ class AscGen:
         # 保存 host tiling 源文件
         host_file = host_dir / f"{graph_name}_tiling.cpp"
         host_file.write_text(host_tiling, encoding="utf-8")
-        tiling_def_file = host_dir / "autofuse_tiling_data.h"
+        tiling_def_file = host_dir / TILING_DATA_HEADER_NAME
         tiling_def_file.write_text(tiling_def, encoding="utf-8")
         logger.info(f"Saved host tiling: {host_file}")
 
         # 保存 device kernel 源文件
         device_file = device_dir / f"{graph_name}_op_kernel.cpp"
         device_file.write_text(op_kernel, encoding="utf-8")
-        tiling_def_file = device_dir / "autofuse_tiling_data.h"
+        tiling_def_file = device_dir / TILING_DATA_HEADER_NAME
         tiling_def_file.write_text(tiling_def, encoding="utf-8")
         logger.info(f"Saved device kernel: {device_file}")
 
@@ -293,7 +296,7 @@ project(HostTiling LANGUAGES ASC CXX)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
-set(SOC_VERSION ascend910b1 CACHE STRING "system on chip type")
+set(SOC_VERSION {self.soc_version} CACHE STRING "system on chip type")
 set(ASCEND_CANN_PACKAGE_PATH "{self.ascend_root}" CACHE PATH "ASCEND CANN package installation directory")
 set(CMAKE_BUILD_TYPE "Release" CACHE STRING "Build type" FORCE)
 
@@ -651,7 +654,7 @@ def save_source_files(graph_text: str,
                       output_dir: Path,
                       graph_name: str = "kernel",
                       ascend_root: Optional[Path] = None,
-                      soc_version: str = "Ascend910B1") -> Tuple[Path, Path, str, str]:
+                      soc_version: str = ASCEND_A2) -> Tuple[Path, Path, str, str]:
     """
     从 AscendC graph 生成源代码文件（便捷函数）
 
@@ -680,7 +683,7 @@ def calc_tiling_data(
         tiling_def: str,
         host_tiling: str,
         ascend_root: Optional[Path] = None,
-        soc_version: str = "Ascend910B1",
+        soc_version: str = ASCEND_A2,
         build_dir: Optional[Path] = None,
 ) -> bytes:
     """

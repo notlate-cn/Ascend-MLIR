@@ -8,6 +8,9 @@ import sys
 from pathlib import Path
 from typing import Optional, List
 
+ASCEND_A2 = "Ascend910B1"
+ASCEND_A5 = "Ascend910_9599"
+ASCEND_HOME_PATH = "ASCEND_HOME_PATH"
 
 # ================================================================
 # 路径工具
@@ -22,25 +25,25 @@ def find_ascend_root() -> Path:
     """
 
     # 检查 ASCEND_HOME_PATH 环境变量
-    if 'ASCEND_HOME_PATH' not in os.environ:
-        print("❌ 错误: 环境变量 ASCEND_HOME_PATH 未设置")
+    if ASCEND_HOME_PATH not in os.environ:
+        print(f"❌ 错误: 环境变量 {ASCEND_HOME_PATH} 未设置")
         print("请先执行: source env.sh")
         sys.exit(1)
 
-    ascend_home_path = os.environ['ASCEND_HOME_PATH']
-    print(f"✅ ASCEND_HOME_PATH: {ascend_home_path}")
+    ascend_home_path = os.environ[ASCEND_HOME_PATH]
+    print(f"✅ {ASCEND_HOME_PATH}: {ascend_home_path}")
 
     # 检查安装路径是否存在
     if not os.path.exists(ascend_home_path):
         print(f"❌ 错误: Ascend 安装路径不存在: {ascend_home_path}")
         sys.exit(1)
-    print(f"✅ 安装路径存在")
+    print(f"✅ 安装路径存在：{ascend_home_path}")
 
     return Path(ascend_home_path)
 
 
 def find_runtime_library(ascend_root: Optional[Path] = None,
-                         soc_version: str = "Ascend910B1",
+                         soc_version: str = ASCEND_A2,
                          simulation_mode: bool = True) -> Optional[Path]:
     """
     查找 runtime 库路径
@@ -53,9 +56,10 @@ def find_runtime_library(ascend_root: Optional[Path] = None,
     Returns:
         runtime 库路径，如果未找到返回 None
     """
-    ascend_root = find_ascend_root()
+    if ascend_root is None:
+        ascend_root = find_ascend_root()
 
-    # 仿真模式优先使用 tools/simulator 下的库（与 pyasc 一致）
+    # 仿真模式优先使用 tools/simulator 下的库
     if simulation_mode:
         candidates = [
             f"tools/simulator/{soc_version}/lib/libruntime_camodel.so",
@@ -75,39 +79,12 @@ def find_runtime_library(ascend_root: Optional[Path] = None,
     return None
 
 
-def find_bisheng_compiler(ascend_root: Optional[Path] = None) -> Optional[Path]:
-    """
-    查找 bisheng 编译器路径
-
-    Args:
-        ascend_root: Ascend 根目录，如果为 None 则自动查找
-
-    Returns:
-        bisheng 编译器路径，如果未找到返回 None
-    """
-    ascend_root = find_ascend_root()
-
-    # 可能的路径
-    candidates = [
-        "toolchain/bisheng_compiler/bisheng",
-        "compiler/bisheng",
-        "bin/bisheng",
-    ]
-
-    for rel_path in candidates:
-        compiler_path = ascend_root / rel_path
-        if compiler_path.exists():
-            return compiler_path
-
-    return None
-
-
 # ================================================================
 # 环境设置
 # ================================================================
 
 def setup_environment(ascend_root: Optional[Path] = None,
-                      soc_version: str = "Ascend910B1",
+                      soc_version: str = ASCEND_A2,
                       simulation_mode: bool = True) -> bool:
     """
     设置 Ascend 运行环境
@@ -124,7 +101,7 @@ def setup_environment(ascend_root: Optional[Path] = None,
         ascend_root = find_ascend_root()
 
     # 设置环境变量
-    os.environ['ASCEND_HOME_PATH'] = str(ascend_root)
+    os.environ[ASCEND_HOME_PATH] = str(ascend_root)
     os.environ['SOC_VERSION'] = soc_version
 
     # 仿真模式相关环境变量

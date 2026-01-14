@@ -9,7 +9,6 @@ Ascend Kernel 执行器 (无 PyAsc 依赖)
 3. execute_kernel - 便捷的执行函数
 """
 import ctypes
-import os
 from pathlib import Path
 from typing import Optional, List, Tuple, Union
 
@@ -24,6 +23,7 @@ from .utils import (
     MemoryAllocationError,
     KernelLaunchError,
     InvalidBinaryError,
+    ASCEND_A2
 )
 
 
@@ -64,7 +64,7 @@ class AscendRuntime:
 
     def __init__(self,
                  ascend_root: Optional[Path] = None,
-                 soc_version: str = "Ascend910B1",
+                 soc_version: str = ASCEND_A2,
                  simulation_mode: bool = True):
         """
         初始化 Runtime
@@ -103,22 +103,22 @@ class AscendRuntime:
                 f"Cannot find libruntime_camodel.so for {self.soc_version}"
             )
 
-        # 对于 CPU 仿真模式，可能需要预加载驱动库
-        if self._simulation_mode:
-            simulator_lib_dir = runtime_path.parent
-            driver_libs = [
-                "libnpu_drv_camodel.so",
-                "libnpu_drv.so",
-            ]
-
-            for lib_name in driver_libs:
-                lib_path = simulator_lib_dir / lib_name
-                if lib_path.exists():
-                    try:
-                        logger.info(f"Preloading driver library: {lib_path}")
-                        ctypes.CDLL(str(lib_path), mode=ctypes.RTLD_GLOBAL)
-                    except Exception as e:
-                        logger.warning(f"Failed to preload {lib_name}: {e}")
+        # # 对于 CPU 仿真模式，需要预加载驱动库
+        # if self._simulation_mode:
+        #     simulator_lib_dir = runtime_path.parent
+        #     driver_libs = [
+        #         "libnpu_drv_camodel.so",
+        #         "libnpu_drv.so",
+        #     ]
+        #
+        #     for lib_name in driver_libs:
+        #         lib_path = simulator_lib_dir / lib_name
+        #         if lib_path.exists():
+        #             try:
+        #                 logger.info(f"Preloading driver library: {lib_path}")
+        #                 ctypes.CDLL(str(lib_path), mode=ctypes.RTLD_GLOBAL)
+        #             except Exception as e:
+        #                 logger.warning(f"Failed to preload {lib_name}: {e}")
 
         logger.info(f"Loading runtime: {runtime_path}")
         self.runtime = ctypes.CDLL(str(runtime_path), mode=ctypes.RTLD_GLOBAL)
@@ -464,7 +464,7 @@ class KernelExecutor:
 
     def __init__(self,
                  ascend_root: Optional[Path] = None,
-                 soc_version: str = "Ascend910B1",
+                 soc_version: str = ASCEND_A2,
                  device_id: int = 0,
                  simulation_mode: bool = True):
         """
@@ -576,7 +576,7 @@ def execute_kernel(binary_data: bytes,
                    output_shapes: List[Tuple[int, ...]],
                    tiling_data: Optional[bytes] = None,
                    ascend_root: Optional[Path] = None,
-                   soc_version: str = "Ascend910B1",
+                   soc_version: str = ASCEND_A2,
                    device_id: int = 0,
                    dtype: np.dtype = np.float32,
                    simulation_mode: bool = True) -> List[np.ndarray]:

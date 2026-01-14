@@ -7,18 +7,17 @@ Bisheng 编译器接口
 1. BishengCompiler - Bisheng 编译器封装类
 2. compile_kernel - 便捷的编译函数
 """
-import os
 import subprocess
 from pathlib import Path
 from typing import Optional, List
 
 from .utils import (
     find_ascend_root,
-    find_bisheng_compiler,
     setup_environment,
     logger,
     CompilerError,
     BinaryNotFoundError,
+    ASCEND_A2
 )
 
 
@@ -39,7 +38,7 @@ class BishengCompiler:
 
     def __init__(self,
                  ascend_root: Optional[Path] = None,
-                 soc_version: str = "Ascend910B1"):
+                 soc_version: str = ASCEND_A2):
         """
         初始化编译器
 
@@ -301,7 +300,7 @@ def compile_kernel(src_file: Path,
                    output_dir: Path,
                    kernel_name: str,
                    ascend_root: Optional[Path] = None,
-                   soc_version: str = "Ascend910B1",
+                   soc_version: str = ASCEND_A2,
                    arch: str = BishengCompiler.ARCH_VEC,
                    opt_level: int = 3,
                    verbose: bool = False) -> Path:
