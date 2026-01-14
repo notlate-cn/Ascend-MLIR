@@ -1,0 +1,600 @@
+asc_graph_attr {
+  tiling_key: -1
+  axis {
+    name: "z0"
+    size: "20"
+    align: "1"
+    allow_unaligned_tail: true
+  }
+  axis {
+    id: 1
+    name: "z1"
+    size: "31"
+    align: "1"
+    allow_unaligned_tail: true
+  }
+}
+asc_node {
+  outputs {
+    attr {
+      axis_ids: 0
+      axis_ids: 1
+      repeats: "20"
+      repeats: "31"
+      strides: "31"
+      strides: "1"
+      mem {
+        tensor_id: -1
+      }
+      que {
+        id: -1
+        depth: -1
+        buf_num: -1
+      }
+      buf {
+        id: -1
+      }
+      opt {
+        reuse_id: -1
+        ref_tensor: -1
+        merge_scope: -1
+      }
+    }
+  }
+  attr {
+    name: "HashCopyAscGraph/Data_0"
+    type: "Data"
+    sched {
+      axis: 0
+      axis: 1
+      loop_axis: -1
+    }
+    api {
+      compute_type: 11
+    }
+    ir_attr_def {
+      attr {
+        key: "index"
+        value {
+          i: 0
+        }
+      }
+    }
+  }
+  ir_def {
+    output_names: "y"
+    output_ir_type: 0
+    type: "Data"
+    output_nums: 1
+  }
+}
+asc_node {
+  input_src {
+    src_node_name: "HashCopyAscGraph/Data_0"
+  }
+  outputs {
+    attr {
+      axis_ids: 0
+      axis_ids: 1
+      repeats: "20"
+      repeats: "31"
+      strides: "31"
+      strides: "1"
+      mem {
+        tensor_id: -1
+      }
+      que {
+        id: -1
+        depth: -1
+        buf_num: -1
+      }
+      buf {
+        id: -1
+      }
+      opt {
+        reuse_id: -1
+        ref_tensor: -1
+        merge_scope: -1
+      }
+    }
+  }
+  attr {
+    name: "HashCopyAscGraph/Load_1"
+    type: "Load"
+    sched {
+      exec_order: 1
+      axis: 0
+      axis: 1
+      loop_axis: -1
+    }
+    api {
+      type: 1
+      unit: 2
+    }
+    ir_attr_def {
+      attr {
+        key: "offset"
+        value {
+          expression: "0"
+        }
+      }
+    }
+  }
+  ir_def {
+    input_names: "x"
+    output_names: "y"
+    input_ir_type: 0
+    output_ir_type: 0
+    type: "Load"
+    input_nums: 1
+    output_nums: 1
+  }
+}
+asc_node {
+  outputs {
+    attr {
+      axis_ids: 0
+      axis_ids: 1
+      repeats: "1"
+      repeats: "31"
+      strides: "0"
+      strides: "1"
+      mem {
+        tensor_id: -1
+      }
+      que {
+        id: -1
+        depth: -1
+        buf_num: -1
+      }
+      buf {
+        id: -1
+      }
+      opt {
+        reuse_id: -1
+        ref_tensor: -1
+        merge_scope: -1
+      }
+    }
+  }
+  attr {
+    name: "HashCopyAscGraph/Data_2"
+    type: "Data"
+    sched {
+      exec_order: 2
+      axis: 0
+      axis: 1
+      loop_axis: -1
+    }
+    api {
+      compute_type: 11
+    }
+    ir_attr_def {
+      attr {
+        key: "index"
+        value {
+          i: 1
+        }
+      }
+    }
+  }
+  ir_def {
+    output_names: "y"
+    output_ir_type: 0
+    type: "Data"
+    output_nums: 1
+  }
+}
+asc_node {
+  input_src {
+    src_node_name: "HashCopyAscGraph/Data_2"
+  }
+  outputs {
+    attr {
+      axis_ids: 0
+      axis_ids: 1
+      repeats: "1"
+      repeats: "31"
+      strides: "0"
+      strides: "1"
+      mem {
+        tensor_id: -1
+      }
+      que {
+        id: -1
+        depth: -1
+        buf_num: -1
+      }
+      buf {
+        id: -1
+      }
+      opt {
+        reuse_id: -1
+        ref_tensor: -1
+        merge_scope: -1
+      }
+    }
+  }
+  attr {
+    name: "HashCopyAscGraph/Load_3"
+    type: "Load"
+    sched {
+      exec_order: 3
+      axis: 0
+      axis: 1
+      loop_axis: -1
+    }
+    api {
+      type: 1
+      unit: 2
+    }
+    ir_attr_def {
+      attr {
+        key: "offset"
+        value {
+          expression: "0"
+        }
+      }
+    }
+  }
+  ir_def {
+    input_names: "x"
+    output_names: "y"
+    input_ir_type: 0
+    output_ir_type: 0
+    type: "Load"
+    input_nums: 1
+    output_nums: 1
+  }
+}
+asc_node {
+  input_src {
+    src_node_name: "HashCopyAscGraph/Load_3"
+  }
+  outputs {
+    attr {
+      axis_ids: 0
+      axis_ids: 1
+      repeats: "20"
+      repeats: "31"
+      strides: "31"
+      strides: "1"
+      mem {
+        tensor_id: -1
+      }
+      que {
+        id: -1
+        depth: -1
+        buf_num: -1
+      }
+      buf {
+        id: -1
+      }
+      opt {
+        reuse_id: -1
+        ref_tensor: -1
+        merge_scope: -1
+      }
+    }
+  }
+  attr {
+    name: "HashCopyAscGraph/Broadcast_4"
+    type: "Broadcast"
+    sched {
+      exec_order: -1
+      axis: 0
+      axis: 1
+      loop_axis: -1
+    }
+    api {
+      type: 2
+      compute_type: 11
+      unit: 7
+    }
+  }
+  ir_def {
+    input_names: "x"
+    output_names: "y"
+    input_ir_type: 0
+    output_ir_type: 0
+    type: "Broadcast"
+    input_nums: 1
+    output_nums: 1
+  }
+}
+asc_node {
+  input_src {
+    src_node_name: "HashCopyAscGraph/Load_1"
+  }
+  input_src {
+    src_node_name: "HashCopyAscGraph/Broadcast_4"
+  }
+  outputs {
+    attr {
+      axis_ids: 0
+      axis_ids: 1
+      repeats: "20"
+      repeats: "31"
+      strides: "31"
+      strides: "1"
+      mem {
+        tensor_id: -1
+      }
+      que {
+        id: -1
+        depth: -1
+        buf_num: -1
+      }
+      buf {
+        id: -1
+      }
+      opt {
+        reuse_id: -1
+        ref_tensor: -1
+        merge_scope: -1
+      }
+    }
+  }
+  attr {
+    name: "HashCopyAscGraph/Add_5"
+    type: "Add"
+    sched {
+      exec_order: 4
+      axis: 0
+      axis: 1
+      loop_axis: -1
+    }
+    api {
+      type: 1
+      compute_type: 3
+      unit: 5
+    }
+  }
+  ir_def {
+    input_names: "x1"
+    input_names: "x2"
+    output_names: "y"
+    input_ir_type: 0
+    input_ir_type: 0
+    output_ir_type: 0
+    type: "Add"
+    input_nums: 1
+    input_nums: 1
+    output_nums: 1
+  }
+}
+asc_node {
+  input_src {
+    src_node_name: "HashCopyAscGraph/Add_5"
+  }
+  input_src {
+    src_node_name: "HashCopyAscGraph/Broadcast_4"
+  }
+  outputs {
+    attr {
+      axis_ids: 0
+      axis_ids: 1
+      repeats: "20"
+      repeats: "31"
+      strides: "31"
+      strides: "1"
+      mem {
+        tensor_id: -1
+      }
+      que {
+        id: -1
+        depth: -1
+        buf_num: -1
+      }
+      buf {
+        id: -1
+      }
+      opt {
+        reuse_id: -1
+        ref_tensor: -1
+        merge_scope: -1
+      }
+    }
+  }
+  attr {
+    name: "HashCopyAscGraph/Mul_6"
+    type: "Mul"
+    sched {
+      exec_order: 5
+      axis: 0
+      axis: 1
+      loop_axis: -1
+    }
+    api {
+      type: 1
+      compute_type: 3
+      unit: 5
+    }
+  }
+  ir_def {
+    input_names: "x1"
+    input_names: "x2"
+    output_names: "y"
+    input_ir_type: 0
+    input_ir_type: 0
+    output_ir_type: 0
+    type: "Mul"
+    input_nums: 1
+    input_nums: 1
+    output_nums: 1
+  }
+}
+asc_node {
+  input_src {
+    src_node_name: "HashCopyAscGraph/Add_5"
+  }
+  input_src {
+    src_node_name: "HashCopyAscGraph/Mul_6"
+  }
+  outputs {
+    attr {
+      axis_ids: 0
+      axis_ids: 1
+      repeats: "20"
+      repeats: "31"
+      strides: "31"
+      strides: "1"
+      mem {
+        tensor_id: -1
+      }
+      que {
+        id: -1
+        depth: -1
+        buf_num: -1
+      }
+      buf {
+        id: -1
+      }
+      opt {
+        reuse_id: -1
+        ref_tensor: -1
+        merge_scope: -1
+      }
+    }
+  }
+  attr {
+    name: "HashCopyAscGraph/Sub_7"
+    type: "Sub"
+    sched {
+      exec_order: 6
+      axis: 0
+      axis: 1
+      loop_axis: -1
+    }
+    api {
+      type: 1
+      compute_type: 3
+      unit: 5
+    }
+  }
+  ir_def {
+    input_names: "x1"
+    input_names: "x2"
+    output_names: "y"
+    input_ir_type: 0
+    input_ir_type: 0
+    output_ir_type: 0
+    type: "Sub"
+    input_nums: 1
+    input_nums: 1
+    output_nums: 1
+  }
+}
+asc_node {
+  input_src {
+    src_node_name: "HashCopyAscGraph/Sub_7"
+  }
+  outputs {
+    attr {
+      axis_ids: 0
+      axis_ids: 1
+      repeats: "20"
+      repeats: "31"
+      strides: "31"
+      strides: "1"
+      mem {
+        tensor_id: -1
+      }
+      que {
+        id: -1
+        depth: -1
+        buf_num: -1
+      }
+      buf {
+        id: -1
+      }
+      opt {
+        reuse_id: -1
+        ref_tensor: -1
+        merge_scope: -1
+      }
+    }
+  }
+  attr {
+    name: "HashCopyAscGraph/Store_8"
+    type: "Store"
+    sched {
+      exec_order: 7
+      axis: 0
+      axis: 1
+      loop_axis: -1
+    }
+    api {
+      type: 1
+      compute_type: 1
+      unit: 2
+    }
+    ir_attr_def {
+    }
+  }
+  ir_def {
+    input_names: "x"
+    output_names: "y"
+    input_ir_type: 0
+    output_ir_type: 0
+    type: "Store"
+    input_nums: 1
+    output_nums: 1
+  }
+}
+asc_node {
+  input_src {
+    src_node_name: "HashCopyAscGraph/Store_8"
+  }
+  outputs {
+    attr {
+      mem {
+        tensor_id: -1
+      }
+      que {
+        id: -1
+        depth: -1
+        buf_num: -1
+      }
+      buf {
+        id: -1
+      }
+      opt {
+        reuse_id: -1
+        ref_tensor: -1
+        merge_scope: -1
+      }
+    }
+  }
+  attr {
+    name: "HashCopyAscGraph/Output_9"
+    type: "Output"
+    sched {
+      exec_order: 8
+      axis: 0
+      axis: 1
+      loop_axis: -1
+    }
+    api {
+      compute_type: 11
+    }
+    ir_attr_def {
+      attr {
+        key: "index"
+        value {
+          i: 0
+        }
+      }
+    }
+  }
+  ir_def {
+    input_names: "x"
+    output_names: "y"
+    input_ir_type: 0
+    output_ir_type: 0
+    type: "Output"
+    input_nums: 1
+    output_nums: 1
+  }
+}
+graph_name: "HashCopyAscGraph"
