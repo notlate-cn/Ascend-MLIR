@@ -73,18 +73,6 @@ func.func @test_cast_shape_mismatch(%arg0: tensor<4x4xf32>) -> tensor<2x4xf32> {
 // Verification Error Tests - Data Operations
 // ========================================================================
 
-func.func @test_output_rank_mismatch(%arg0: tensor<4x4xf32>) -> tensor<4xf32> {
-  // expected-error @+1 {{'afir.output' op operand and result must have the same rank}}
-  %0 = afir.output %arg0 {indexing_maps = [#map, #map1d], outputs = [#afir.asc_tensor<vectorized_axis = [0], vectorized_strides = [1], tensor_id = 0, reuse_id = -1, position = <vector_in, depth = 0, is_double_buffer = false>, position_id = 0>]} : tensor<4x4xf32> -> tensor<4xf32>
-  return %0 : tensor<4xf32>
-}
-
-func.func @test_output_shape_mismatch(%arg0: tensor<4x4xf32>) -> tensor<2x4xf32> {
-  // expected-error @+1 {{'afir.output' op operand and result must have compatible shapes}}
-  %0 = afir.output %arg0 {indexing_maps = [#map, #map], outputs = [#afir.asc_tensor<vectorized_axis = [0, 1], vectorized_strides = [2, 1], tensor_id = 0, reuse_id = -1, position = <vector_in, depth = 0, is_double_buffer = false>, position_id = 0>]} : tensor<4x4xf32> -> tensor<2x4xf32>
-  return %0 : tensor<2x4xf32>
-}
-
 func.func @test_load_rank_mismatch(%arg0: tensor<4x4xf32>) -> tensor<4xf32> {
   // expected-error @+1 {{'afir.load' op operand and result must have the same rank}}
   %0 = afir.load %arg0 {indexing_maps = [#map, #map1d], outputs = [#afir.asc_tensor<vectorized_axis = [0], vectorized_strides = [1], tensor_id = 0, reuse_id = -1, position = <vector_in, depth = 0, is_double_buffer = false>, position_id = 0>]} : tensor<4x4xf32> -> tensor<4xf32>

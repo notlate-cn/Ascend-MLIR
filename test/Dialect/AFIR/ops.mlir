@@ -285,18 +285,6 @@ func.func @test_index_expr() -> tensor<i32> {
   return %0 : tensor<i32>
 }
 
-// CHECK-LABEL: func.func @test_data
-func.func @test_data() -> tensor<4x4xf32> {
-  %0 = afir.data {indexing_maps = [], outputs = [#afir.asc_tensor<vectorized_axis = [0, 1], vectorized_strides = [4, 1], tensor_id = 0, reuse_id = -1, position = <vector_in, depth = 0, is_double_buffer = false>, position_id = 0>]} : tensor<4x4xf32>
-  return %0 : tensor<4x4xf32>
-}
-
-// CHECK-LABEL: func.func @test_output
-func.func @test_output(%arg0: tensor<4x4xf32>) -> tensor<4x4xf32> {
-  %0 = afir.output %arg0 {indexing_maps = [#map, #map], outputs = [#afir.asc_tensor<vectorized_axis = [0, 1], vectorized_strides = [4, 1], tensor_id = 0, reuse_id = -1, position = <vector_in, depth = 0, is_double_buffer = false>, position_id = 0>]} : tensor<4x4xf32> -> tensor<4x4xf32>
-  return %0 : tensor<4x4xf32>
-}
-
 // CHECK-LABEL: func.func @test_load
 func.func @test_load(%arg0: tensor<4x4xf32>) -> tensor<4x4xf32> {
   %0 = afir.load %arg0 {indexing_maps = [#map, #map], outputs = [#afir.asc_tensor<vectorized_axis = [0, 1], vectorized_strides = [4, 1], tensor_id = 0, reuse_id = -1, position = <vector_in, depth = 0, is_double_buffer = false>, position_id = 0>]} : tensor<4x4xf32> -> tensor<4x4xf32>
@@ -508,12 +496,6 @@ func.func @test_select_output_vector_out(%arg0: tensor<4x4xui8>, %arg1: tensor<4
 // CHECK-LABEL: func.func @test_where_output_vector_out
 func.func @test_where_output_vector_out(%arg0: tensor<4x4xui8>, %arg1: tensor<4x4xf32>, %arg2: tensor<4x4xf32>) -> tensor<4x4xf32> {
   %0 = afir.where %arg0, %arg1, %arg2 {indexing_maps = [#map, #map, #map, #map], outputs = [#afir.asc_tensor<vectorized_axis = [0, 1], vectorized_strides = [4, 1], tensor_id = 0, reuse_id = -1, position = <vector_out, depth = 0, is_double_buffer = false>, position_id = 0>]} : (tensor<4x4xui8>, tensor<4x4xf32>, tensor<4x4xf32>) -> tensor<4x4xf32>
-  return %0 : tensor<4x4xf32>
-}
-
-// CHECK-LABEL: func.func @test_output_op_vector_out
-func.func @test_output_op_vector_out(%arg0: tensor<4x4xf32>) -> tensor<4x4xf32> {
-  %0 = afir.output %arg0 {indexing_maps = [#map, #map], outputs = [#afir.asc_tensor<vectorized_axis = [0, 1], vectorized_strides = [4, 1], tensor_id = 0, reuse_id = -1, position = <vector_out, depth = 0, is_double_buffer = false>, position_id = 0>]} : tensor<4x4xf32> -> tensor<4x4xf32>
   return %0 : tensor<4x4xf32>
 }
 
