@@ -79,7 +79,6 @@ from . import ascgen
 from .utils import (
     find_ascend_root,
     find_runtime_library,
-    find_bisheng_compiler,
     setup_environment,
     logger,
     Logger,
@@ -180,7 +179,6 @@ __all__ = [
     # 工具
     "find_ascend_root",
     "find_runtime_library",
-    "find_bisheng_compiler",
     "setup_environment",
     "logger",
     "Logger",
