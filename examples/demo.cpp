@@ -101,9 +101,9 @@ int main() {
 
     llvm::outs() << "=== Debug AxisAttr ===\n";
     auto axis1 = AxisAttr::get(&context, 0, builder.getStringAttr("z0"), AxisType::Original, false,
-                               builder.getStringAttr("20"), builder.getStringAttr("1"), {}, -1);
+                               builder.getStringAttr("20"), builder.getStringAttr("1"), {});
     auto axis2 = AxisAttr::get(&context, 1, builder.getStringAttr("z1"), AxisType::Original, false,
-                               builder.getStringAttr("31"), builder.getStringAttr("1"), {}, -1);
+                               builder.getStringAttr("31"), builder.getStringAttr("1"), {});
 
     auto axis1Attr = builder.getArrayAttr({axis1});
     auto axis2Attr = builder.getArrayAttr({axis2});

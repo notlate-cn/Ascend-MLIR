@@ -91,8 +91,7 @@ def AxisAttr : AFIR_Attr<"Axis", "axis"> {
     DefaultValuedParameter<"bool", "false">:$bind_block,
     "StringAttr":$size,
     OptionalParameter<"StringAttr">:$align,
-    OptionalArrayRefParameter<"int64_t">:$from,
-    DefaultValuedParameter<"int64_t", "-1">:$split_pair_other_id
+    OptionalArrayRefParameter<"int64_t">:$from
   );
 
   let assemblyFormat = "`<`"
@@ -103,7 +102,6 @@ def AxisAttr : AFIR_Attr<"Axis", "axis"> {
     "`size` `=` $size"
     "(`,` `align` `=` $align^)?"
     "(`,` `from` `=` `[` $from^ `]`)?"
-    "(`,` `split_pair_other_id` `=` $split_pair_other_id^)?"
     "`>`";
 }
 
