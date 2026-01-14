@@ -79,12 +79,6 @@ LogicalResult ScalarOp::verify() {
 LogicalResult IndexExprOp::verify() {
   return verifyNullaryOp(getOperation());
 }
-LogicalResult DataOp::verify() {
-  return verifyNullaryOp(getOperation());
-}
-LogicalResult OutputOp::verify() {
-  return verifyUnaryOp(getOperation());
-}
 LogicalResult LoadOp::verify() {
   return verifyUnaryOp(getOperation());
 }

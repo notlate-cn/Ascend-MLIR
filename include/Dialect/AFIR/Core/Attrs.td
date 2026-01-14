@@ -152,6 +152,20 @@ def AscGraphAttrGroupsAttr : AFIR_Attr<"AscGraphAttrGroups", "asc_graph"> {
 }
 
 //===----------------------------------------------------------------------===//
+// Attributes for Data node and Output node
+//===----------------------------------------------------------------------===//
+
+def ScalarValueAttr : AFIR_Attr<"ScalarValue", "value"> {
+  let summary = "representing the value of scalar";
+
+  let parameters = (ins
+    "StringAttr":$value
+  );
+
+  let assemblyFormat = "`<` struct(params) `>`";
+}
+
+//===----------------------------------------------------------------------===//
 // Array Attributes
 //===----------------------------------------------------------------------===//
 

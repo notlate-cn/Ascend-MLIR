@@ -18,8 +18,6 @@ include "mlir/IR/CommonTypeConstraints.td"
 
 def AFIR_ScalarOp : AFIR_NullaryOpBase<"scalar", [Pure], [I8, UI8, I16, UI16, I32, UI32, I64, UI64, F16, F32], "Invalid", "Scalar", 1>;
 def AFIR_IndexExprOp : AFIR_NullaryOpBase<"index_expr", [Pure], [I8, UI8, I16, UI16, I32, UI32, I64, UI64, F16, F32], "Invalid", "Vector", 1>;
-def AFIR_DataOp : AFIR_NullaryOpBase<"data", [Pure], [I8, UI8, I16, UI16, I32, UI32, I64, UI64, F16, F32], "Invalid", "None", 1>;
-def AFIR_OutputOp : AFIR_UnaryOp<"output", [Pure], [I8, UI8, I16, UI16, I32, UI32, I64, UI64, F16, F32], "Invalid", "None", 1>;
 def AFIR_LoadOp : AFIR_UnaryOp<"load", [Pure], [I8, UI8, I16, UI16, I32, UI32, I64, F16, F32], "Load", "MTE2", 1>;
 def AFIR_StoreOp : AFIR_UnaryOp<"store", [Pure], [I8, UI8, I16, UI16, I32, UI32, I64, F16, F32], "Store", "MTE3", 1>;
 
