@@ -61,6 +61,7 @@ print(f"✅ Input data copied")
 
 print("\n[Step 9] Preparing tiling data...")
 import struct
+
 tiling_values = [1, 1, 1264, 0, 0, 31, 20, 0, 0, 128, 128, 128, 128, 0, 8192]
 tiling_bytes = b"".join(struct.pack("<I", v) for v in tiling_values)
 print(f"✅ Tiling data prepared: {len(tiling_bytes)} bytes")
@@ -68,7 +69,7 @@ print(f"✅ Tiling data prepared: {len(tiling_bytes)} bytes")
 print("\n[Step 10] Building args...")
 args = [input0_addr, input1_addr, output_addr, 0]
 for i in range(0, len(tiling_bytes), 8):
-    word = tiling_bytes[i:i+8]
+    word = tiling_bytes[i:i + 8]
     word = word + b'\x00' * (8 - len(word))
     val = int.from_bytes(word, 'little')
     args.append(val)
