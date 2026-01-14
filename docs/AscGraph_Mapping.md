@@ -62,10 +62,8 @@ AscGraph 的 `DataType` 枚举映射为 MLIR 内置类型:
 ```tablegen
 def AFIR_AscGraphAttrGroups : AFIR_Attr<"AscGraphAttrGroups", "asc_graph"> {
   let parameters = (ins
-    DefaultValuedParameter<"int64_t", "-1">:$tiling_key,        // from AscGraphAttrGroupsDef.tiling_key
-    ArrayRefParameter<"AxisAttr", "array of Axis">:$axis,      // from AscGraphAttrGroupsDef.axis[]
-    EnumParameter<AFIR_AscGraphTypeEnum>:$type,                // from AscGraphAttrGroupsDef.type
-    ArrayRefParameter<"Attribute", "array of strings">:$size_var // from AscGraphAttrGroupsDef.size_var[]
+    ArrayRefParameter<"AxisAttr", "array of Axis">:$axes,     // from AscGraphAttrGroupsDef.axis[] (重命名为 axes)
+    "::mlir::afir::AscGraphType":$type                        // from AscGraphAttrGroupsDef.type (简化)
   );
 }
 ```
@@ -100,10 +98,9 @@ def AFIR_Axis : AFIR_Attr<"Axis", "axis"> {
     "StringAttr":$name,                                       // from AxisDef.name
     "AxisTypeAttr":$axis_type,                                // from AxisDef.axis_type
     DefaultValuedParameter<"bool", "false">:$bind_block,      // from AxisDef.bind_block
-    "Attribute":$size,                                        // from AxisDef.size (expression string)
+    "StringAttr":$size,                                       // from AxisDef.size (expression string)
     OptionalParameter<"StringAttr">:$align,                   // from AxisDef.align
-    ArrayRefParameter<"int64_t">:$from,                       // from AxisDef.from[]
-    DefaultValuedParameter<"int64_t", "-1">:$split_pair_other_id // from AxisDef.split_pair_other_id
+    OptionalArrayRefParameter<"int64_t">:$from                // from AxisDef.from[]
   );
 }
 ```
@@ -118,13 +115,13 @@ message AxisDef {
   string size = 5;            // expression
   string align = 6;
   repeated int64 from = 7;
-  int64 split_pair_other_id = 8;
-  bool allow_oversize_axis = 9;      // ❌ 未映射
-  bool allow_unaligned_tail = 10;    // ❌ 未映射
+  int64 split_pair_other_id = 8;      // ❌ v2.0 已移除
+  bool allow_oversize_axis = 9;       // ❌ 未映射
+  bool allow_unaligned_tail = 10;     // ❌ 未映射
 }
 ```
 
-**未映射字段**: `allow_oversize_axis`, `allow_unaligned_tail` 在 AFIR 中省略。
+**未映射字段**: `split_pair_other_id` (v2.0已移除), `allow_oversize_axis`, `allow_unaligned_tail` 在 AFIR 中省略。
 
 ---
 
@@ -258,11 +255,12 @@ def AFIR_AddOp : AFIR_Op<"add", [Pure, ShapeHelperOpInterface, ShapeInferenceOpI
 | `Sub` | `afir.sub` | 同上 |
 | `Mul` | `afir.mul` | 同上 |
 | `Div` | `afir.div` | 同上 (仅支持 F16, F32) |
-| `Data` | `afir.data` | outputs → result type |
+| `Data` | **func.func 参数** | outputs → 参数类型 (v2.0) |
 | `Load` | `afir.load` | input_src → input, outputs → result |
 | `Store` | `afir.store` | input_src → value |
 | `Broadcast` | `afir.broadcast` | input_src → input, outputs → result |
-| `Output` | `afir.output` | input_src → input |
+| `Output` | **func.func 返回值** | input_src → return value (v2.0) |
+| `Scalar` | **func.func 参数 + 属性** | 通过 {afir.scalar_value="val"} 表达 (v2.0) |
 
 ### 节点属性组到操作参数的映射
 
@@ -299,6 +297,102 @@ message SchedInfoDef {
 ```
 
 **`ApiInfoDef`**: 完全不映射,可从操作类型和参数推导。
+
+---
+
+## Data/Output 节点特殊处理 (v2.0)
+
+从 v2.0 开始，AscGraph 的 Data 和 Output 节点不再映射为独立的 AFIR 操作，而是直接通过 func.func 的参数和返回值表达。
+
+### Data 节点 → 函数参数
+
+**转换规则**:
+1. 按 `ir_attr_def.attr["index"]` 的值对 Data 节点排序
+2. 每个 Data 节点映射为一个函数参数 `%arg{index}`
+3. 参数类型从 Data 节点的 `outputs[0].attr` 推导
+4. 后续引用该 Data 节点的操作直接使用对应的 `%arg{index}`
+
+**示例**:
+
+**AscGraph (输入)**:
+```protobuf
+asc_node {
+  outputs {
+    attr {
+      dtype: 1  // DT_FLOAT
+      axis_ids: [0, 1]
+      repeats: ["20", "31"]
+      strides: ["31", "1"]
+    }
+  }
+  attr {
+    name: "Data_0"
+    type: "Data"
+    ir_attr_def {
+      attr { key: "index" value { i: 0 } }
+    }
+  }
+}
+```
+
+**AFIR (输出)**:
+```mlir
+func.func @graph(%arg0: tensor<20x31xf32>) {
+  // Data_0 节点不生成操作，直接通过 %arg0 引用
+}
+```
+
+### Output 节点 → 返回值
+
+**转换规则**:
+1. Output 节点不生成独立操作
+2. 找到 Output 节点的 `input_src[0].src_node_name`
+3. 在函数末尾添加 `return %{该节点的SSA值}`
+
+**示例**:
+
+**AscGraph (输入)**:
+```protobuf
+asc_node {
+  input_src {
+    src_node_name: "Store_8"
+    src_out_index: 0
+  }
+  attr {
+    name: "Output_9"
+    type: "Output"
+    ir_attr_def {
+      attr { key: "index" value { i: 0 } }
+    }
+  }
+}
+```
+
+**AFIR (输出)**:
+```mlir
+func.func @graph(...) -> tensor<20x31xf32> {
+  ...
+  %8 = afir.store ...
+  return %8 : tensor<20x31xf32>
+}
+```
+
+### Scalar 参数处理
+
+**转换规则**:
+1. Scalar 节点映射为函数参数
+2. 使用 `afir.scalar_value` 属性标记标量值
+
+**示例**:
+
+**AFIR (输出)**:
+```mlir
+func.func @graph(%arg0: tensor<20x31xf32>,
+                 %arg1: tensor<1x31xf32>,
+                 %arg2: i64 {afir.scalar_value="333"}) -> tensor<20x31xf32> {
+  // %arg2 可在函数内作为标量使用
+}
+```
 
 ---
 
@@ -576,7 +670,12 @@ def map_position(proto_position: int, alloc_type: int) -> str:
 ## 版本历史
 
 - **v1.0 (2025-01)**: 初始 1:1 映射版本,保留所有 protobuf 结构
-- **v2.0 (2026-01)**: 抽象版本,融合内存属性,使用 MLIR 类型系统
+- **v2.0 (2026-01)**: 重大更新
+  - 删除 AxisAttr.split_pair_other_id 字段
+  - 移除 afir.data 和 afir.output 操作,改用 func.func 参数和返回值
+  - 新增 ScalarValueAttr 用于表达标量参数
+  - 简化 AscGraphAttrGroups:移除 tiling_key 和 size_var,将 axis 重命名为 axes
+  - 简化 Position 属性格式
 
 ---
 
