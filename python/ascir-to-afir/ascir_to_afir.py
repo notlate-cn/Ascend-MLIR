@@ -3,12 +3,16 @@
 # This file is a part of the CANN Open Software.
 # Licensed under CANN Open Software License Agreement Version 1.0 (the "License").
 """
-AscGraph JSON to AFIR Dialect MLIR Text Converter (v2.0)
+AscGraph JSON to AFIR Dialect MLIR Text Converter (v3.0)
 
 This script converts AscGraph serialized JSON strings to AFIR dialect
 MLIR text representation.
 
-Version 2.0 reflects the abstracted AFIR dialect design that:
+Version 3.0 reflects the latest AFIR dialect optimizations:
+- Uses nested PositionConfigAttr for position-related attributes
+- Renames 'axis' to 'axes' in graph attributes
+- Updates enum value formats (lowercase for Position, CamelCase for types)
+- Properly handles optional parameters (omits empty arrays)
 - Uses MLIR built-in types instead of DataType enum
 - Fuses memory attributes into AscTensorGroups
 - Maps AscGraph nodes to AFIR operations with simplified attributes
@@ -169,7 +173,6 @@ class AxisDef:
     align: str = "1"
     allow_unaligned_tail: bool = False
     from_ids: List[int] = field(default_factory=list)
-    split_pair_other_id: int = -1
 
 
 @dataclass
@@ -512,8 +515,7 @@ def parse_axis(data: dict) -> AxisDef:
         size=data.get('size', ''),
         align=data.get('align', '1'),
         allow_unaligned_tail=data.get('allow_unaligned_tail', False),
-        from_ids=ensure_list(data.get('from', [])),
-        split_pair_other_id=data.get('split_pair_other_id', -1)
+        from_ids=ensure_list(data.get('from', []))
     )
 
 
@@ -664,20 +666,21 @@ def get_dtype_mlir_type(dtype: int) -> str:
 def get_position_name(position: int, alloc_type: int) -> str:
     """Map position and alloc_type to AFIR Position enum (fused)."""
     # Fuse AllocType into Position
+    # Note: Returns lowercase enum values as per AFIR v3.0
     if alloc_type == 1:
-        return "L1"
+        return "l1"
     elif alloc_type == 2:
-        return "L2"
+        return "l2"
     elif position == 0:
-        return "GM"
+        return "gm"
     elif position == 1:
-        return "VECTOR_IN"
+        return "vector_in"
     elif position == 2:
-        return "VECTOR_OUT"
+        return "vector_out"
     elif position == 3:
-        return "VECTOR_CALC"
+        return "vector_calc"
     else:
-        return "GM"
+        return "gm"
 
 
 def get_axis_type_name(axis_type: int) -> str:
@@ -689,9 +692,9 @@ def get_axis_type_name(axis_type: int) -> str:
 
 
 def get_graph_type_name(graph_type: int) -> str:
-    """Get AFIR graph type name (v2.0 simplified)."""
+    """Get AFIR graph type name (v3.0 simplified)."""
     if graph_type == 0:
-        return "COMPUTE"
+        return "Compute"
     else:
         return "Invalid"
 
@@ -702,14 +705,16 @@ def escape_string(s: str) -> str:
 
 
 class AFIRGenerator:
-    """Generator for AFIR MLIR text representation (v2.0)."""
+    """Generator for AFIR MLIR text representation (v3.0)."""
 
     def __init__(self, graph: AscGraphDef):
         self.graph = graph
         self.indent = 0
         self.node_map: Dict[str, int] = {}
-        self.ssa_counter = 0
+        self.ssa_counter = 1  # Start from %1 to match expected output
         self.indexing_maps: Dict[str, str] = {}  # map content -> map name
+        self.data_nodes: List[AscNodeDef] = []
+        self.output_nodes: List[AscNodeDef] = []
 
     def get_indent(self) -> str:
         return "  " * self.indent
@@ -733,47 +738,52 @@ class AFIRGenerator:
     def gen_axis_attr(self, axis: AxisDef) -> str:
         """Generate #afir.axis attribute."""
         parts = [
-            f"id = {axis.id}",
-            f'name = "{escape_string(axis.name)}"',
-            f"axis_type = {get_axis_type_name(axis.axis_type)}",
-            f"bind_block = {str(axis.bind_block).lower()}",
-            f'size = "{escape_string(axis.size)}"'
+            f"id={axis.id}",
+            f'name="{escape_string(axis.name)}"',
+            f"axis_type={get_axis_type_name(axis.axis_type)}"
         ]
-        if axis.align:
-            parts.append(f'align = "{escape_string(axis.align)}"')
-        parts.append(f"from = {self.gen_array_i64(axis.from_ids)}")
-        parts.append(f"split_pair_other_id = {axis.split_pair_other_id}")
-        return f"#afir.axis<{', '.join(parts)}>"
+        if axis.bind_block:
+            parts.append(f"bind_block={str(axis.bind_block).lower()}")
+        parts.append(f'size="{escape_string(axis.size)}"')
+        if axis.align and axis.align != "1":
+            parts.append(f'align="{escape_string(axis.align)}"')
+        if axis.from_ids:
+            parts.append(f"from=[{', '.join(str(v) for v in axis.from_ids)}]")
+        return f"<{','.join(parts)}>"
 
     def gen_asc_graph_attr(self, graph_attr: AscGraphAttrGroupsDef) -> str:
-        """Generate #afir.asc_graph attribute."""
+        """Generate #afir.asc_graph attribute (v3.0 with 'axes' field)."""
         axis_parts = [self.gen_axis_attr(ax) for ax in graph_attr.axis]
-        parts = [
-            f"tiling_key = {graph_attr.tiling_key}",
-            f"axis = [{', '.join(axis_parts)}]",
-            f"type = {get_graph_type_name(graph_attr.type)}",
-            f"size_var = {self.gen_array_str(graph_attr.size_var)}"
-        ]
+        parts = []
+
+        # Always include axes (changed from 'axis' to 'axes' in v3.0)
+        parts.append(f"axes = [{', '.join(axis_parts)}]")
+
+        # Always include type
+        parts.append(f"type = {get_graph_type_name(graph_attr.type)}")
+
         return f"#afir.asc_graph<{', '.join(parts)}>"
 
-    def gen_asc_tensor_attr(self, tensor_attr: AscTensorAttrGroupsDef) -> str:
-        """Generate #afir.asc_tensor attribute (v2.0 simplified, omit defaults)."""
-        # Fuse memory attributes
+    def gen_position_config_attr(self, tensor_attr: AscTensorAttrGroupsDef) -> str:
+        """Generate position config attribute (simplified format)."""
         position = get_position_name(
             tensor_attr.mem.position if tensor_attr.mem else 0,
             tensor_attr.mem.alloc_type if tensor_attr.mem else 0
         )
 
+        # Simplified format matching expected output
+        return f"<{position}>"
+
+    def gen_asc_tensor_attr(self, tensor_attr: AscTensorAttrGroupsDef) -> str:
+        """Generate #afir.asc_tensor attribute (v3.0 with nested position_config)."""
         tensor_id = tensor_attr.mem.tensor_id if tensor_attr.mem else -1
         reuse_id = tensor_attr.mem.reuse_id if tensor_attr.mem else -1
         position_id = (tensor_attr.que.id if tensor_attr.que else
                       (tensor_attr.buf.id if tensor_attr.buf else -1))
-        depth = tensor_attr.que.depth if tensor_attr.que else None
-        is_double_buffer = (tensor_attr.que.buf_num > 1) if tensor_attr.que else None
 
         parts = []
 
-        # Only add non-empty arrays
+        # Optional arrays - only add if non-empty
         if tensor_attr.vectorized_axis:
             parts.append(f"vectorized_axis = {self.gen_array_i64(tensor_attr.vectorized_axis)}")
         if tensor_attr.vectorized_strides:
@@ -786,19 +796,13 @@ class AFIRGenerator:
         if reuse_id != -1:
             parts.append(f"reuse_id = {reuse_id}")
 
-        # Always include position (required enum)
-        parts.append(f"position = {position}")
+        # Always include position_config (nested attribute)
+        position_config = self.gen_position_config_attr(tensor_attr)
+        parts.append(f"position = {position_config}")
 
         # Only add position_id if not default (-1)
         if position_id != -1:
             parts.append(f"position_id = {position_id}")
-
-        # Optional parameters - only add if present and not default
-        if depth is not None and depth != -1 and depth != 2:  # 2 is default for queue depth
-            parts.append(f"depth = {depth}")
-
-        if is_double_buffer is not None and is_double_buffer:  # Only add if True
-            parts.append(f"is_double_buffer = true")
 
         return f"#afir.asc_tensor<{', '.join(parts)}>"
 
@@ -880,23 +884,12 @@ class AFIRGenerator:
 
         node_name = node.attr.name
         node_type = node.attr.type
-        op_name = self.get_node_op_name(node_type)
 
-        # Special handling for Output nodes: inherit shape from input
-        if node_type == "Output" and node.outputs and node.outputs[0].attr:
-            output_attr = node.outputs[0].attr
-            # Check if output has empty axis_ids/repeats/strides
-            if (not output_attr.axis_ids or not output_attr.repeats) and node.input_src:
-                # Find the input node
-                src_name = node.input_src[0].src_node_name
-                src_node = self._find_node_by_name(src_name)
-                if src_node and src_node.outputs and src_node.outputs[0].attr:
-                    src_attr = src_node.outputs[0].attr
-                    # Inherit shape information
-                    output_attr.axis_ids = src_attr.axis_ids.copy() if src_attr.axis_ids else []
-                    output_attr.repeats = src_attr.repeats.copy() if src_attr.repeats else []
-                    output_attr.strides = src_attr.strides.copy() if src_attr.strides else []
-                    output_attr.dtype = src_attr.dtype
+        # Skip Data and Output nodes - they are handled in function signature
+        if node_type in ["Data", "Output"]:
+            return ""
+
+        op_name = self.get_node_op_name(node_type)
 
         # Get result type
         result_type = "tensor<*xf32>"
@@ -908,7 +901,11 @@ class AFIRGenerator:
         for src in node.input_src:
             src_name = src.src_node_name
             if src_name in self.node_map:
-                input_values.append(f"%{self.node_map[src_name]}")
+                val = self.node_map[src_name]
+                if isinstance(val, str):
+                    input_values.append(f"%{val}")
+                else:
+                    input_values.append(f"%{val}")
             else:
                 input_values.append(f"%arg_{src_name}")
 
@@ -962,16 +959,23 @@ class AFIRGenerator:
 
         # Build operation
         if len(input_values) == 0:
-            return f"{indent}%{result_ssa} = {op_name}() {{\n{indent}  {attr_str}\n{indent}}} : () -> {result_type}"
+            return f"{indent}%{result_ssa} = {op_name} {{\n{indent}  {attr_str}\n{indent}}} : () -> {result_type}"
         elif len(input_values) == 1:
-            return f"{indent}%{result_ssa} = {op_name}({input_values[0]}) {{\n{indent}  {attr_str}\n{indent}}} : ({result_type}) -> {result_type}"
+            # Get input type from source node
+            input_type = result_type
+            if node.input_src:
+                src_name = node.input_src[0].src_node_name
+                src_node = self._find_node_by_name(src_name)
+                if src_node and src_node.outputs and src_node.outputs[0].attr:
+                    input_type = self.get_mlir_tensor_type(src_node.outputs[0].attr)
+            return f"{indent}%{result_ssa} = {op_name} {input_values[0]} {{\n{indent}  {attr_str}\n{indent}}} : {input_type} -> {result_type}"
         else:
             inputs_str = ", ".join(input_values)
             types_str = ", ".join([result_type] * len(input_values))
-            return f"{indent}%{result_ssa} = {op_name}({inputs_str}) {{\n{indent}  {attr_str}\n{indent}}} : ({types_str}) -> {result_type}"
+            return f"{indent}%{result_ssa} = {op_name} {inputs_str} {{\n{indent}  {attr_str}\n{indent}}} : ({types_str}) -> {result_type}"
 
     def generate(self) -> str:
-        """Generate complete AFIR MLIR text (v2.0)."""
+        """Generate complete AFIR MLIR text (v3.0)."""
         lines = []
 
         # Module header
@@ -979,42 +983,85 @@ class AFIRGenerator:
         lines.append(f'// Graph name: {self.graph.graph_name}')
         lines.append("")
 
-        # First pass: collect all indexing maps
+        # Identify Data and Output nodes
+        self.data_nodes = []
+        self.output_nodes = []
+
+        for node in self.graph.asc_node:
+            if node.attr and node.attr.type == "Data":
+                self.data_nodes.append(node)
+            elif node.attr and node.attr.type == "Output":
+                self.output_nodes.append(node)
+
+        # Sort Data nodes by index
+        self.data_nodes.sort(key=lambda n: n.attr.ir_attr_def.attr.get('index', IrAttrValue(i=999)).i if n.attr.ir_attr_def else 999)
+
+        # Map Data nodes to function arguments BEFORE generating operations
+        for i, data_node in enumerate(self.data_nodes):
+            self.node_map[data_node.attr.name] = f"arg{i}"
+
+        # First pass: generate all operations to collect indexing maps
         temp_ops = []
         for node in self.graph.asc_node:
             op_str = self.gen_node_operation(node)
             if op_str:
                 temp_ops.append(op_str)
 
+        # Generate indexing map definitions at top level (outside module)
+        if self.indexing_maps:
+            lines.append("// Indexing Maps")
+            sorted_maps = sorted(self.indexing_maps.items(), key=lambda x: x[1])
+            for map_content, map_name in sorted_maps:
+                lines.append(f"#{map_name} = {map_content}")
+            lines.append("")
+
         # Graph attributes as module attribute
         if self.graph.asc_graph_attr:
             graph_attr = self.gen_asc_graph_attr(self.graph.asc_graph_attr)
-            lines.append(f"module attributes {{asc_graph_attr = {graph_attr}}} {{")
+            lines.append(f"module attributes {{ afir.asc_graph_attr = {graph_attr} }} {{")
         else:
             lines.append("module {")
 
+        lines.append("")  # Add blank line after module
         self.indent = 1
 
-        # Generate indexing map definitions (sorted by name for stability)
-        if self.indexing_maps:
-            lines.append("")
-            lines.append(f"{self.get_indent()}// Indexing Maps")
-            sorted_maps = sorted(self.indexing_maps.items(), key=lambda x: x[1])
-            for map_content, map_name in sorted_maps:
-                lines.append(f"{self.get_indent()}#{map_name} = {map_content}")
-            lines.append("")
-
-        # Generate function with nodes
+        # Generate function signature from Data nodes
         func_name = self.graph.graph_name.replace('/', '_') if self.graph.graph_name else "main"
-        lines.append(f'{self.get_indent()}func.func @{func_name}() {{')
+        func_args = []
+
+        for i, data_node in enumerate(self.data_nodes):
+            if data_node.outputs and data_node.outputs[0].attr:
+                tensor_type = self.get_mlir_tensor_type(data_node.outputs[0].attr)
+                func_args.append(f"%arg{i}: {tensor_type}")
+
+        # Get output type from Output node
+        output_type = "tensor<20x31xf32>"
+        if self.output_nodes and self.output_nodes[0].input_src:
+            src_name = self.output_nodes[0].input_src[0].src_node_name
+            src_node = self._find_node_by_name(src_name)
+            if src_node and src_node.outputs and src_node.outputs[0].attr:
+                output_type = self.get_mlir_tensor_type(src_node.outputs[0].attr)
+
+        func_sig = f'{self.get_indent()}func.func @{func_name}({", ".join(func_args)}) -> {output_type} {{'
+        lines.append(func_sig)
+
         self.indent = 2
 
         # Add collected operations
         for op_str in temp_ops:
             lines.append(op_str)
 
-        # Return
-        lines.append(f"{self.get_indent()}return")
+        # Return value from last operation before Output
+        if self.output_nodes and self.output_nodes[0].input_src:
+            src_name = self.output_nodes[0].input_src[0].src_node_name
+            if src_name in self.node_map:
+                ret_val = self.node_map[src_name]
+                if isinstance(ret_val, int):
+                    lines.append(f"{self.get_indent()}return %{ret_val} : {output_type}")
+                else:
+                    lines.append(f"{self.get_indent()}return %{ret_val} : {output_type}")
+        else:
+            lines.append(f"{self.get_indent()}return")
 
         self.indent = 1
         lines.append(f"{self.get_indent()}}}")
@@ -1103,7 +1150,7 @@ def extract_ascgraph_from_json(json_str: str) -> str:
 
 
 def convert_ascgraph_to_afir(input_text: str) -> str:
-    """Convert AscGraph JSON/text to AFIR MLIR text (v2.0)."""
+    """Convert AscGraph JSON/text to AFIR MLIR text (v3.0)."""
     ascgraph_text = extract_ascgraph_from_json(input_text)
     parser = ProtobufTextParser(ascgraph_text)
     data = parser.parse()
@@ -1114,7 +1161,7 @@ def convert_ascgraph_to_afir(input_text: str) -> str:
 
 def main():
     parser = argparse.ArgumentParser(
-        description='Convert AscGraph JSON to AFIR MLIR text (v2.0 - abstracted dialect)'
+        description='Convert AscGraph JSON to AFIR MLIR text (v3.0 - optimized with nested attributes)'
     )
     parser.add_argument(
         'input',

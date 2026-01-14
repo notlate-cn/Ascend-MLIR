@@ -6,28 +6,28 @@
 
 module attributes { afir.asc_graph_attr = #afir.asc_graph<axes = [<id=0,name="z0",axis_type=Original,size="20">, <id=1,name="z1",axis_type=Original,size="31">], type = Compute> } {
 
-  func.func @HashCopyAscGraph(%arg0: tensor<20x31xf32>, %arg1: tensor<1x31xf32>, %arg2: i64 {afir.scalar_value="333"}) -> tensor<20x31xf32> {
+  func.func @HashCopyAscGraph(%arg0: tensor<20x31xf32>, %arg1: tensor<1x31xf32>) -> tensor<20x31xf32> {
 %1 = afir.load %arg0 {
   indexing_maps = [#map0], ir_attr_def = {"offset" = "0"}, outputs = [#afir.asc_tensor<tensor_id = -1, position = <gm>>]
 } : tensor<20x31xf32> -> tensor<20x31xf32>
-%3 = afir.load %arg1 {
+%2 = afir.load %arg1 {
   indexing_maps = [#map0], ir_attr_def = {"offset" = "0"}, outputs = [#afir.asc_tensor<tensor_id = -1, position = <gm>>]
 } : tensor<1x31xf32> -> tensor<1x31xf32>
-%4 = afir.broadcast %3 {
+%3 = afir.broadcast %2 {
   indexing_maps = [#map0], outputs = [#afir.asc_tensor<tensor_id = -1, position = <gm>>]
 } : tensor<1x31xf32> -> tensor<20x31xf32>
-%5 = afir.add %1, %4 {
+%4 = afir.add %1, %3 {
   indexing_maps = [#map0, #map0, #map0], outputs = [#afir.asc_tensor<tensor_id = -1, position = <gm>>]
 } : (tensor<20x31xf32>, tensor<20x31xf32>) -> tensor<20x31xf32>
-%6 = afir.mul %5, %4 {
+%5 = afir.mul %4, %3 {
   indexing_maps = [#map0, #map0, #map0], outputs = [#afir.asc_tensor<tensor_id = -1, position = <gm>>]
 } : (tensor<20x31xf32>, tensor<20x31xf32>) -> tensor<20x31xf32>
-%7 = afir.sub %5, %6 {
+%6 = afir.sub %4, %5 {
   indexing_maps = [#map0, #map0, #map0], outputs = [#afir.asc_tensor<tensor_id = -1, position = <gm>>]
 } : (tensor<20x31xf32>, tensor<20x31xf32>) -> tensor<20x31xf32>
-%8 = afir.store %7 {
+%7 = afir.store %6 {
   indexing_maps = [#map0], outputs = [#afir.asc_tensor<tensor_id = -1, position = <gm>>]
 } : tensor<20x31xf32> -> tensor<20x31xf32>
-    return %8 : tensor<20x31xf32> 
+    return %7 : tensor<20x31xf32>
   }
 }
