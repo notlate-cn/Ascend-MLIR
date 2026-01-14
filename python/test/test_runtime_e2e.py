@@ -13,6 +13,7 @@ Ascend Runtime 端到端测试脚本
 """
 import os
 import sys
+import argparse
 from pathlib import Path
 
 # 设置环境（必须在导入其他模块前）
@@ -23,611 +24,6 @@ import torch
 
 # 添加 runtime 路径
 sys.path.insert(0, str(Path(__file__).parent.parent))
-
-
-def get_asc_graph_text():
-    """获取 ascgraph 的文本定义"""
-    return """asc_graph_attr {
-  tiling_key: -1
-  axis {
-    name: "z0"
-    size: "20"
-    align: "1"
-    allow_unaligned_tail: true
-  }
-  axis {
-    id: 1
-    name: "z1"
-    size: "31"
-    align: "1"
-    allow_unaligned_tail: true
-  }
-}
-asc_node {
-  outputs {
-    attr {
-      axis_ids: 0
-      axis_ids: 1
-      repeats: "20"
-      repeats: "31"
-      strides: "31"
-      strides: "1"
-      mem {
-        tensor_id: -1
-      }
-      que {
-        id: -1
-        depth: -1
-        buf_num: -1
-      }
-      buf {
-        id: -1
-      }
-      opt {
-        reuse_id: -1
-        ref_tensor: -1
-        merge_scope: -1
-      }
-    }
-  }
-  attr {
-    name: "HashCopyAscGraph/Data_0"
-    type: "Data"
-    sched {
-      axis: 0
-      axis: 1
-      loop_axis: -1
-    }
-    api {
-      compute_type: 11
-    }
-    ir_attr_def {
-      attr {
-        key: "index"
-        value {
-          i: 0
-        }
-      }
-    }
-  }
-  ir_def {
-    output_names: "y"
-    output_ir_type: 0
-    type: "Data"
-    output_nums: 1
-  }
-}
-asc_node {
-  input_src {
-    src_node_name: "HashCopyAscGraph/Data_0"
-  }
-  outputs {
-    attr {
-      axis_ids: 0
-      axis_ids: 1
-      repeats: "20"
-      repeats: "31"
-      strides: "31"
-      strides: "1"
-      mem {
-        tensor_id: -1
-      }
-      que {
-        id: -1
-        depth: -1
-        buf_num: -1
-      }
-      buf {
-        id: -1
-      }
-      opt {
-        reuse_id: -1
-        ref_tensor: -1
-        merge_scope: -1
-      }
-    }
-  }
-  attr {
-    name: "HashCopyAscGraph/Load_1"
-    type: "Load"
-    sched {
-      exec_order: 1
-      axis: 0
-      axis: 1
-      loop_axis: -1
-    }
-    api {
-      type: 1
-      unit: 2
-    }
-    ir_attr_def {
-      attr {
-        key: "offset"
-        value {
-          expression: "0"
-        }
-      }
-    }
-  }
-  ir_def {
-    input_names: "x"
-    output_names: "y"
-    input_ir_type: 0
-    output_ir_type: 0
-    type: "Load"
-    input_nums: 1
-    output_nums: 1
-  }
-}
-asc_node {
-  outputs {
-    attr {
-      axis_ids: 0
-      axis_ids: 1
-      repeats: "1"
-      repeats: "31"
-      strides: "0"
-      strides: "1"
-      mem {
-        tensor_id: -1
-      }
-      que {
-        id: -1
-        depth: -1
-        buf_num: -1
-      }
-      buf {
-        id: -1
-      }
-      opt {
-        reuse_id: -1
-        ref_tensor: -1
-        merge_scope: -1
-      }
-    }
-  }
-  attr {
-    name: "HashCopyAscGraph/Data_2"
-    type: "Data"
-    sched {
-      exec_order: 2
-      axis: 0
-      axis: 1
-      loop_axis: -1
-    }
-    api {
-      compute_type: 11
-    }
-    ir_attr_def {
-      attr {
-        key: "index"
-        value {
-          i: 1
-        }
-      }
-    }
-  }
-  ir_def {
-    output_names: "y"
-    output_ir_type: 0
-    type: "Data"
-    output_nums: 1
-  }
-}
-asc_node {
-  input_src {
-    src_node_name: "HashCopyAscGraph/Data_2"
-  }
-  outputs {
-    attr {
-      axis_ids: 0
-      axis_ids: 1
-      repeats: "1"
-      repeats: "31"
-      strides: "0"
-      strides: "1"
-      mem {
-        tensor_id: -1
-      }
-      que {
-        id: -1
-        depth: -1
-        buf_num: -1
-      }
-      buf {
-        id: -1
-      }
-      opt {
-        reuse_id: -1
-        ref_tensor: -1
-        merge_scope: -1
-      }
-    }
-  }
-  attr {
-    name: "HashCopyAscGraph/Load_3"
-    type: "Load"
-    sched {
-      exec_order: 3
-      axis: 0
-      axis: 1
-      loop_axis: -1
-    }
-    api {
-      type: 1
-      unit: 2
-    }
-    ir_attr_def {
-      attr {
-        key: "offset"
-        value {
-          expression: "0"
-        }
-      }
-    }
-  }
-  ir_def {
-    input_names: "x"
-    output_names: "y"
-    input_ir_type: 0
-    output_ir_type: 0
-    type: "Load"
-    input_nums: 1
-    output_nums: 1
-  }
-}
-asc_node {
-  input_src {
-    src_node_name: "HashCopyAscGraph/Load_3"
-  }
-  outputs {
-    attr {
-      axis_ids: 0
-      axis_ids: 1
-      repeats: "20"
-      repeats: "31"
-      strides: "31"
-      strides: "1"
-      mem {
-        tensor_id: -1
-      }
-      que {
-        id: -1
-        depth: -1
-        buf_num: -1
-      }
-      buf {
-        id: -1
-      }
-      opt {
-        reuse_id: -1
-        ref_tensor: -1
-        merge_scope: -1
-      }
-    }
-  }
-  attr {
-    name: "HashCopyAscGraph/Broadcast_4"
-    type: "Broadcast"
-    sched {
-      exec_order: -1
-      axis: 0
-      axis: 1
-      loop_axis: -1
-    }
-    api {
-      type: 2
-      compute_type: 11
-      unit: 7
-    }
-  }
-  ir_def {
-    input_names: "x"
-    output_names: "y"
-    input_ir_type: 0
-    output_ir_type: 0
-    type: "Broadcast"
-    input_nums: 1
-    output_nums: 1
-  }
-}
-asc_node {
-  input_src {
-    src_node_name: "HashCopyAscGraph/Load_1"
-  }
-  input_src {
-    src_node_name: "HashCopyAscGraph/Broadcast_4"
-  }
-  outputs {
-    attr {
-      axis_ids: 0
-      axis_ids: 1
-      repeats: "20"
-      repeats: "31"
-      strides: "31"
-      strides: "1"
-      mem {
-        tensor_id: -1
-      }
-      que {
-        id: -1
-        depth: -1
-        buf_num: -1
-      }
-      buf {
-        id: -1
-      }
-      opt {
-        reuse_id: -1
-        ref_tensor: -1
-        merge_scope: -1
-      }
-    }
-  }
-  attr {
-    name: "HashCopyAscGraph/Add_5"
-    type: "Add"
-    sched {
-      exec_order: 4
-      axis: 0
-      axis: 1
-      loop_axis: -1
-    }
-    api {
-      type: 1
-      compute_type: 3
-      unit: 5
-    }
-  }
-  ir_def {
-    input_names: "x1"
-    input_names: "x2"
-    output_names: "y"
-    input_ir_type: 0
-    input_ir_type: 0
-    output_ir_type: 0
-    type: "Add"
-    input_nums: 1
-    input_nums: 1
-    output_nums: 1
-  }
-}
-asc_node {
-  input_src {
-    src_node_name: "HashCopyAscGraph/Add_5"
-  }
-  input_src {
-    src_node_name: "HashCopyAscGraph/Broadcast_4"
-  }
-  outputs {
-    attr {
-      axis_ids: 0
-      axis_ids: 1
-      repeats: "20"
-      repeats: "31"
-      strides: "31"
-      strides: "1"
-      mem {
-        tensor_id: -1
-      }
-      que {
-        id: -1
-        depth: -1
-        buf_num: -1
-      }
-      buf {
-        id: -1
-      }
-      opt {
-        reuse_id: -1
-        ref_tensor: -1
-        merge_scope: -1
-      }
-    }
-  }
-  attr {
-    name: "HashCopyAscGraph/Mul_6"
-    type: "Mul"
-    sched {
-      exec_order: 4
-      axis: 0
-      axis: 1
-      loop_axis: -1
-    }
-    api {
-      type: 1
-      compute_type: 3
-      unit: 5
-    }
-  }
-  ir_def {
-    input_names: "x1"
-    input_names: "x2"
-    output_names: "y"
-    input_ir_type: 0
-    input_ir_type: 0
-    output_ir_type: 0
-    type: "Mul"
-    input_nums: 1
-    input_nums: 1
-    output_nums: 1
-  }
-}
-asc_node {
-  input_src {
-    src_node_name: "HashCopyAscGraph/Add_5"
-  }
-  input_src {
-    src_node_name: "HashCopyAscGraph/Mul_6"
-  }
-  outputs {
-    attr {
-      axis_ids: 0
-      axis_ids: 1
-      repeats: "20"
-      repeats: "31"
-      strides: "31"
-      strides: "1"
-      mem {
-        tensor_id: -1
-      }
-      que {
-        id: -1
-        depth: -1
-        buf_num: -1
-      }
-      buf {
-        id: -1
-      }
-      opt {
-        reuse_id: -1
-        ref_tensor: -1
-        merge_scope: -1
-      }
-    }
-  }
-  attr {
-    name: "HashCopyAscGraph/Sub_7"
-    type: "Sub"
-    sched {
-      exec_order: 5
-      axis: 0
-      axis: 1
-      loop_axis: -1
-    }
-    api {
-      type: 1
-      compute_type: 3
-      unit: 5
-    }
-  }
-  ir_def {
-    input_names: "x1"
-    input_names: "x2"
-    output_names: "y"
-    input_ir_type: 0
-    input_ir_type: 0
-    output_ir_type: 0
-    type: "Sub"
-    input_nums: 1
-    input_nums: 1
-    output_nums: 1
-  }
-}
-asc_node {
-  input_src {
-    src_node_name: "HashCopyAscGraph/Sub_7"
-  }
-  outputs {
-    attr {
-      axis_ids: 0
-      axis_ids: 1
-      repeats: "20"
-      repeats: "31"
-      strides: "31"
-      strides: "1"
-      mem {
-        tensor_id: -1
-      }
-      que {
-        id: -1
-        depth: -1
-        buf_num: -1
-      }
-      buf {
-        id: -1
-      }
-      opt {
-        reuse_id: -1
-        ref_tensor: -1
-        merge_scope: -1
-      }
-    }
-  }
-  attr {
-    name: "HashCopyAscGraph/Store_8"
-    type: "Store"
-    sched {
-      exec_order: 6
-      axis: 0
-      axis: 1
-      loop_axis: -1
-    }
-    api {
-      type: 1
-      compute_type: 1
-      unit: 2
-    }
-    ir_attr_def {
-    }
-  }
-  ir_def {
-    input_names: "x"
-    output_names: "y"
-    input_ir_type: 0
-    output_ir_type: 0
-    type: "Store"
-    input_nums: 1
-    output_nums: 1
-  }
-}
-asc_node {
-  input_src {
-    src_node_name: "HashCopyAscGraph/Store_8"
-  }
-  outputs {
-    attr {
-      mem {
-        tensor_id: -1
-      }
-      que {
-        id: -1
-        depth: -1
-        buf_num: -1
-      }
-      buf {
-        id: -1
-      }
-      opt {
-        reuse_id: -1
-        ref_tensor: -1
-        merge_scope: -1
-      }
-    }
-  }
-  attr {
-    name: "HashCopyAscGraph/Output_9"
-    type: "Output"
-    sched {
-      exec_order: 7
-      axis: 0
-      axis: 1
-      loop_axis: -1
-    }
-    api {
-      compute_type: 11
-    }
-    ir_attr_def {
-      attr {
-        key: "index"
-        value {
-          i: 0
-        }
-      }
-    }
-  }
-  ir_def {
-    input_names: "x"
-    output_names: "y"
-    input_ir_type: 0
-    output_ir_type: 0
-    type: "Output"
-    input_nums: 1
-    output_nums: 1
-  }
-}
-graph_name: "HashCopyAscGraph"
-"""
 
 
 # ================================================================
@@ -796,16 +192,54 @@ def test_end_to_end(graph_text, output_path='./'):
 
 def main():
     """主测试函数"""
+    # 解析命令行参数
+    parser = argparse.ArgumentParser(
+        description='Ascend Runtime 端到端测试脚本',
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+示例:
+  # 从文件读取ascgraph
+  python test_runtime_e2e.py --input path/to/asc_graph.txt
+
+  # 指定输出目录
+  python test_runtime_e2e.py --input asc_graph.txt --output ./output
+        """
+    )
+    parser.add_argument(
+        '--input',
+        type=str,
+        help='AscGraph文本文件路径。如果不指定，使用内置的graph定义'
+    )
+    parser.add_argument(
+        '--output',
+        type=str,
+        default='./build',
+        help='输出目录路径 (默认: ./build)'
+    )
+
+    args = parser.parse_args()
+
     print("=" * 70)
     print("Ascend Runtime 端到端测试")
     print("=" * 70)
     print(f"版本: 0.1.0")
     print(f"Python: {sys.version}")
-    print()
+
+    if not args.input:
+        print("❌ --input为必填项：python test_runtime_e2e.py --input path/to/asc_graph.txt")
+        os._exit(1)
 
     try:
-        graph_text = get_asc_graph_text()
-        success = test_end_to_end(graph_text, output_path='./build')
+        # 读取或获取graph_text
+        print(f"📖 从文件读取AscGraph: {args.input}")
+        input_path = Path(args.input)
+        if not input_path.exists():
+            print(f"❌ 文件不存在: {args.input}")
+            os._exit(1)
+
+        with open(input_path, 'r', encoding='utf-8') as f:
+            graph_text = f.read()
+        success = test_end_to_end(graph_text, output_path=args.output)
 
         print("\n" + "=" * 70)
         if success:
