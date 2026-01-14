@@ -60,7 +60,7 @@ class AscendRuntime:
     # ELF Magic 值
     MAGIC_ELF_AIVEC = 0x41415246  # "BARF" - VectorCore kernel
     MAGIC_ELF_AICUBE = 0x41494343  # "AICC" - AiCore kernel
-    MAGIC_ELF_AICPU = 0x41415243   # "BARC" - AICPU kernel
+    MAGIC_ELF_AICPU = 0x41415243  # "BARC" - AICPU kernel
 
     def __init__(self,
                  ascend_root: Optional[Path] = None,
@@ -140,22 +140,22 @@ class AscendRuntime:
 
         # rtFunctionRegister
         self.runtime.rtFunctionRegister.argtypes = [
-            ctypes.c_void_p,   # binHandle
-            ctypes.c_void_p,   # stubFunc
-            ctypes.c_char_p,   # stubName
-            ctypes.c_void_p,   # kernelInfoExt
-            ctypes.c_uint32,   # funcMode
+            ctypes.c_void_p,  # binHandle
+            ctypes.c_void_p,  # stubFunc
+            ctypes.c_char_p,  # stubName
+            ctypes.c_void_p,  # kernelInfoExt
+            ctypes.c_uint32,  # funcMode
         ]
         self.runtime.rtFunctionRegister.restype = ctypes.c_int
 
         # rtKernelLaunch
         self.runtime.rtKernelLaunch.argtypes = [
-            ctypes.c_void_p,   # stubFunc
-            ctypes.c_uint32,   # blockDim
-            ctypes.c_void_p,   # args
-            ctypes.c_uint32,   # argsSize
-            ctypes.c_void_p,   # smDesc
-            ctypes.c_void_p,   # stream
+            ctypes.c_void_p,  # stubFunc
+            ctypes.c_uint32,  # blockDim
+            ctypes.c_void_p,  # args
+            ctypes.c_uint32,  # argsSize
+            ctypes.c_void_p,  # smDesc
+            ctypes.c_void_p,  # stream
         ]
         self.runtime.rtKernelLaunch.restype = ctypes.c_int
 
@@ -185,8 +185,8 @@ class AscendRuntime:
         # rtCtxCreate
         self.runtime.rtCtxCreate.argtypes = [
             ctypes.POINTER(ctypes.c_void_p),  # pctx
-            ctypes.c_uint32,                   # flags
-            ctypes.c_int32,                    # device
+            ctypes.c_uint32,  # flags
+            ctypes.c_int32,  # device
         ]
         self.runtime.rtCtxCreate.restype = ctypes.c_int
 
@@ -255,8 +255,8 @@ class AscendRuntime:
         ret = self.runtime.rtMalloc(
             ctypes.byref(c_memory_p),
             ctypes.c_uint64(size),
-            ctypes.c_uint32(0),      # RT_MEMORY_DEFAULT
-            ctypes.c_uint16(33),     # moduleId
+            ctypes.c_uint32(0),  # RT_MEMORY_DEFAULT
+            ctypes.c_uint16(33),  # moduleId
         )
 
         if ret != 0:
@@ -441,7 +441,7 @@ class AscendRuntime:
             ctypes.c_uint32(block_dim),
             ctypes.byref(args_array),
             ctypes.c_uint32(args_size),
-            ctypes.c_void_p(0),     # smDesc = NULL
+            ctypes.c_void_p(0),  # smDesc = NULL
             stream if stream is not None else ctypes.c_void_p(0),
         )
 
@@ -542,7 +542,7 @@ class KernelExecutor:
         # 添加 tiling data
         if tiling_data:
             for i in range(0, len(tiling_data), 8):
-                word = tiling_data[i:i+8]
+                word = tiling_data[i:i + 8]
                 # 填充到 8 字节
                 word = word + b'\x00' * (8 - len(word))
                 val = int.from_bytes(word, 'little')

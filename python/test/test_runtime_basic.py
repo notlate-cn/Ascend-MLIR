@@ -15,6 +15,7 @@ import numpy as np
 import torch
 import ctypes
 
+
 # ================================================================
 # DevBinary 结构体
 # ================================================================
@@ -176,21 +177,21 @@ def calculate_tiling():
     z0z1Tb_size = 20
 
     tiling_values = [
-        block_dim,   # block_dim
-        1,           # corenum
-        1264,        # ub_size
-        0,           # hbm_size
-        0,           # tiling_key
-        z1t_size,    # z1t_size
-        z0z1Tb_size, # z0z1Tb_size
-        0,           # z0t_size
-        0,           # z0Tb_size
-        128,         # q0_size
-        128,         # q1_size
-        128,         # q2_size
-        128,         # b0_size
-        0,           # b1_size
-        8192,        # tmp_tbuf_size
+        block_dim,  # block_dim
+        1,  # corenum
+        1264,  # ub_size
+        0,  # hbm_size
+        0,  # tiling_key
+        z1t_size,  # z1t_size
+        z0z1Tb_size,  # z0z1Tb_size
+        0,  # z0t_size
+        0,  # z0Tb_size
+        128,  # q0_size
+        128,  # q1_size
+        128,  # q2_size
+        128,  # b0_size
+        0,  # b1_size
+        8192,  # tmp_tbuf_size
     ]
 
     import struct
@@ -278,7 +279,7 @@ def run_test():
     print("\n[步骤 10] 构建参数")
     args_list = [input0_addr, input1_addr, output_addr, 0]
     for i in range(0, len(tiling_bytes), 8):
-        word = tiling_bytes[i:i+8]
+        word = tiling_bytes[i:i + 8]
         word = word + b'\\x00' * (8 - len(word))
         val = int.from_bytes(word, 'little')
         args_list.append(val)
@@ -346,5 +347,6 @@ if __name__ == "__main__":
         print(f"❌ 测试异常: {e}")
         print("=" * 70)
         import traceback
+
         traceback.print_exc()
         os._exit(1)

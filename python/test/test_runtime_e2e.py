@@ -13,7 +13,6 @@ Ascend Runtime 端到端测试脚本
 """
 import os
 import sys
-from codecs import ignore_errors
 from pathlib import Path
 
 # 设置环境（必须在导入其他模块前）
@@ -24,6 +23,7 @@ import torch
 
 # 添加 runtime 路径
 sys.path.insert(0, str(Path(__file__).parent.parent))
+
 
 def get_asc_graph_text():
     """获取 ascgraph 的文本定义"""
@@ -628,6 +628,7 @@ asc_node {
 }
 graph_name: "HashCopyAscGraph"
 """
+
 
 # ================================================================
 # 端到端测试
