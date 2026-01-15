@@ -10,7 +10,6 @@ from pathlib import Path
 import numpy as np
 import torch
 
-os.environ["ASCEND_HOME_PATH"] = "/home/niu/Ascend/latest"
 os.environ["SOC_VERSION"] = "Ascend910B1"
 
 # 添加 runtime 路径
