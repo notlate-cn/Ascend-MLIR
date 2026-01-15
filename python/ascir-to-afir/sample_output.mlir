@@ -1,38 +1,33 @@
-// AFIR Dialect representation of AscGraph
+// AFIR Dialect representation of AscGraph (v2.0)
 // Graph name: HashCopyAscGraph
 
-module attributes {asc_graph_attr = #afir.asc_graph<tiling_key = -1, axis = [#afir.axis<id = 0, name = "z0", axis_type = Original, bind_block = false, size = "20", align = "1", from = [], split_pair_other_id = -1>, #afir.axis<id = 1, name = "z1", axis_type = Original, bind_block = false, size = "31", align = "1", from = [], split_pair_other_id = -1>], type = HintGraph, size_var = []>} {
-  func.func @HashCopyAscGraph() {
-    %0 = "afir.data"() {{
-      node_attr = #afir.node<input_src = [], outputs = [#afir.asc_tensor<dtype = DT_UNDEFINED, axis_ids = [0, 1], repeats = ["20", "31"], strides = ["31", "1"], vectorized_axis = [], vectorized_strides = [], mem = #afir.mem<tensor_id = -1, alloc_type = GLOBAL, position = GM, hardware = GM, reuse_id = -1>, que = #afir.mem_queue<id = -1, depth = -1, buf_num = -1>, buf = #afir.mem_buf<id = -1>>], attr = #afir.asc_node<name = "HashCopyAscGraph/Data_0", type = "Data", sched = #afir.sched<exec_order = -1, axis = [0, 1], loop_axis = -1, exec_condition = NoCache>, api = #afir.api<type = Buffer, compute_type = Invalid, unit = NONE>, ir_attr_def = {"index" = 0 : i64}, tmp_buffers = []>, ir_def = #afir.ir_def<input_names = [], output_names = ["y"], input_ir_type = [], output_ir_type = [0], type = "Data", input_nums = [], output_nums = [1]>>
-    }}: () -> tensor<*xf32>
-    %1 = "afir.load"(%0) {{
-      node_attr = #afir.node<input_src = [#afir.input_src<src_node_name = "HashCopyAscGraph/Data_0", src_out_index = 0>], outputs = [#afir.asc_tensor<dtype = DT_UNDEFINED, axis_ids = [0, 1], repeats = ["20", "31"], strides = ["31", "1"], vectorized_axis = [], vectorized_strides = [], mem = #afir.mem<tensor_id = -1, alloc_type = GLOBAL, position = GM, hardware = GM, reuse_id = -1>, que = #afir.mem_queue<id = -1, depth = -1, buf_num = -1>, buf = #afir.mem_buf<id = -1>>], attr = #afir.asc_node<name = "HashCopyAscGraph/Load_1", type = "Load", sched = #afir.sched<exec_order = 1, axis = [0, 1], loop_axis = -1, exec_condition = NoCache>, api = #afir.api<type = Compute, compute_type = Invalid, unit = MTE2>, ir_attr_def = {"offset" = "0"}, tmp_buffers = []>, ir_def = #afir.ir_def<input_names = ["x"], output_names = ["y"], input_ir_type = [0], output_ir_type = [0], type = "Load", input_nums = [1], output_nums = [1]>>
-    }}: (tensor<*xf32>) -> tensor<*xf32>
-    %2 = "afir.data"() {{
-      node_attr = #afir.node<input_src = [], outputs = [#afir.asc_tensor<dtype = DT_UNDEFINED, axis_ids = [0, 1], repeats = ["1", "31"], strides = ["0", "1"], vectorized_axis = [], vectorized_strides = [], mem = #afir.mem<tensor_id = -1, alloc_type = GLOBAL, position = GM, hardware = GM, reuse_id = -1>, que = #afir.mem_queue<id = -1, depth = -1, buf_num = -1>, buf = #afir.mem_buf<id = -1>>], attr = #afir.asc_node<name = "HashCopyAscGraph/Data_2", type = "Data", sched = #afir.sched<exec_order = 2, axis = [0, 1], loop_axis = -1, exec_condition = NoCache>, api = #afir.api<type = Buffer, compute_type = Invalid, unit = NONE>, ir_attr_def = {"index" = 1 : i64}, tmp_buffers = []>, ir_def = #afir.ir_def<input_names = [], output_names = ["y"], input_ir_type = [], output_ir_type = [0], type = "Data", input_nums = [], output_nums = [1]>>
-    }}: () -> tensor<*xf32>
-    %3 = "afir.load"(%2) {{
-      node_attr = #afir.node<input_src = [#afir.input_src<src_node_name = "HashCopyAscGraph/Data_2", src_out_index = 0>], outputs = [#afir.asc_tensor<dtype = DT_UNDEFINED, axis_ids = [0, 1], repeats = ["1", "31"], strides = ["0", "1"], vectorized_axis = [], vectorized_strides = [], mem = #afir.mem<tensor_id = -1, alloc_type = GLOBAL, position = GM, hardware = GM, reuse_id = -1>, que = #afir.mem_queue<id = -1, depth = -1, buf_num = -1>, buf = #afir.mem_buf<id = -1>>], attr = #afir.asc_node<name = "HashCopyAscGraph/Load_3", type = "Load", sched = #afir.sched<exec_order = 3, axis = [0, 1], loop_axis = -1, exec_condition = NoCache>, api = #afir.api<type = Compute, compute_type = Invalid, unit = MTE2>, ir_attr_def = {"offset" = "0"}, tmp_buffers = []>, ir_def = #afir.ir_def<input_names = ["x"], output_names = ["y"], input_ir_type = [0], output_ir_type = [0], type = "Load", input_nums = [1], output_nums = [1]>>
-    }}: (tensor<*xf32>) -> tensor<*xf32>
-    %4 = "afir.broadcast"(%3) {{
-      node_attr = #afir.node<input_src = [#afir.input_src<src_node_name = "HashCopyAscGraph/Load_3", src_out_index = 0>], outputs = [#afir.asc_tensor<dtype = DT_UNDEFINED, axis_ids = [0, 1], repeats = ["20", "31"], strides = ["31", "1"], vectorized_axis = [], vectorized_strides = [], mem = #afir.mem<tensor_id = -1, alloc_type = GLOBAL, position = GM, hardware = GM, reuse_id = -1>, que = #afir.mem_queue<id = -1, depth = -1, buf_num = -1>, buf = #afir.mem_buf<id = -1>>], attr = #afir.asc_node<name = "HashCopyAscGraph/Broadcast_4", type = "Broadcast", sched = #afir.sched<exec_order = -1, axis = [0, 1], loop_axis = -1, exec_condition = NoCache>, api = #afir.api<type = Invalid, compute_type = Invalid, unit = Invalid>, ir_attr_def = {}, tmp_buffers = []>, ir_def = #afir.ir_def<input_names = ["x"], output_names = ["y"], input_ir_type = [0], output_ir_type = [0], type = "Broadcast", input_nums = [1], output_nums = [1]>>
-    }}: (tensor<*xf32>) -> tensor<*xf32>
-    %5 = "afir.add"(%1, %4) {{
-      node_attr = #afir.node<input_src = [#afir.input_src<src_node_name = "HashCopyAscGraph/Load_1", src_out_index = 0>, #afir.input_src<src_node_name = "HashCopyAscGraph/Broadcast_4", src_out_index = 0>], outputs = [#afir.asc_tensor<dtype = DT_UNDEFINED, axis_ids = [0, 1], repeats = ["20", "31"], strides = ["31", "1"], vectorized_axis = [], vectorized_strides = [], mem = #afir.mem<tensor_id = -1, alloc_type = GLOBAL, position = GM, hardware = GM, reuse_id = -1>, que = #afir.mem_queue<id = -1, depth = -1, buf_num = -1>, buf = #afir.mem_buf<id = -1>>], attr = #afir.asc_node<name = "HashCopyAscGraph/Add_5", type = "Add", sched = #afir.sched<exec_order = 4, axis = [0, 1], loop_axis = -1, exec_condition = NoCache>, api = #afir.api<type = Compute, compute_type = Elewise, unit = Vector>, ir_attr_def = {}, tmp_buffers = []>, ir_def = #afir.ir_def<input_names = ["x1", "x2"], output_names = ["y"], input_ir_type = [0, 0], output_ir_type = [0], type = "Add", input_nums = [1, 1], output_nums = [1]>>
-    }}: (tensor<*xf32>, tensor<*xf32>) -> tensor<*xf32>
-    %6 = "afir.mul"(%5, %4) {{
-      node_attr = #afir.node<input_src = [#afir.input_src<src_node_name = "HashCopyAscGraph/Add_5", src_out_index = 0>, #afir.input_src<src_node_name = "HashCopyAscGraph/Broadcast_4", src_out_index = 0>], outputs = [#afir.asc_tensor<dtype = DT_UNDEFINED, axis_ids = [0, 1], repeats = ["20", "31"], strides = ["31", "1"], vectorized_axis = [], vectorized_strides = [], mem = #afir.mem<tensor_id = -1, alloc_type = GLOBAL, position = GM, hardware = GM, reuse_id = -1>, que = #afir.mem_queue<id = -1, depth = -1, buf_num = -1>, buf = #afir.mem_buf<id = -1>>], attr = #afir.asc_node<name = "HashCopyAscGraph/Mul_6", type = "Mul", sched = #afir.sched<exec_order = 4, axis = [0, 1], loop_axis = -1, exec_condition = NoCache>, api = #afir.api<type = Compute, compute_type = Elewise, unit = Vector>, ir_attr_def = {}, tmp_buffers = []>, ir_def = #afir.ir_def<input_names = ["x1", "x2"], output_names = ["y"], input_ir_type = [0, 0], output_ir_type = [0], type = "Mul", input_nums = [1, 1], output_nums = [1]>>
-    }}: (tensor<*xf32>, tensor<*xf32>) -> tensor<*xf32>
-    %7 = "afir.sub"(%5, %6) {{
-      node_attr = #afir.node<input_src = [#afir.input_src<src_node_name = "HashCopyAscGraph/Add_5", src_out_index = 0>, #afir.input_src<src_node_name = "HashCopyAscGraph/Mul_6", src_out_index = 0>], outputs = [#afir.asc_tensor<dtype = DT_UNDEFINED, axis_ids = [0, 1], repeats = ["20", "31"], strides = ["31", "1"], vectorized_axis = [], vectorized_strides = [], mem = #afir.mem<tensor_id = -1, alloc_type = GLOBAL, position = GM, hardware = GM, reuse_id = -1>, que = #afir.mem_queue<id = -1, depth = -1, buf_num = -1>, buf = #afir.mem_buf<id = -1>>], attr = #afir.asc_node<name = "HashCopyAscGraph/Sub_7", type = "Sub", sched = #afir.sched<exec_order = 5, axis = [0, 1], loop_axis = -1, exec_condition = NoCache>, api = #afir.api<type = Compute, compute_type = Elewise, unit = Vector>, ir_attr_def = {}, tmp_buffers = []>, ir_def = #afir.ir_def<input_names = ["x1", "x2"], output_names = ["y"], input_ir_type = [0, 0], output_ir_type = [0], type = "Sub", input_nums = [1, 1], output_nums = [1]>>
-    }}: (tensor<*xf32>, tensor<*xf32>) -> tensor<*xf32>
-    %8 = "afir.store"(%7) {{
-      node_attr = #afir.node<input_src = [#afir.input_src<src_node_name = "HashCopyAscGraph/Sub_7", src_out_index = 0>], outputs = [#afir.asc_tensor<dtype = DT_UNDEFINED, axis_ids = [0, 1], repeats = ["20", "31"], strides = ["31", "1"], vectorized_axis = [], vectorized_strides = [], mem = #afir.mem<tensor_id = -1, alloc_type = GLOBAL, position = GM, hardware = GM, reuse_id = -1>, que = #afir.mem_queue<id = -1, depth = -1, buf_num = -1>, buf = #afir.mem_buf<id = -1>>], attr = #afir.asc_node<name = "HashCopyAscGraph/Store_8", type = "Store", sched = #afir.sched<exec_order = 6, axis = [0, 1], loop_axis = -1, exec_condition = NoCache>, api = #afir.api<type = Compute, compute_type = Store, unit = MTE2>, ir_attr_def = {}, tmp_buffers = []>, ir_def = #afir.ir_def<input_names = ["x"], output_names = ["y"], input_ir_type = [0], output_ir_type = [0], type = "Store", input_nums = [1], output_nums = [1]>>
-    }}: (tensor<*xf32>) -> tensor<*xf32>
-    %9 = "afir.output"(%8) {{
-      node_attr = #afir.node<input_src = [#afir.input_src<src_node_name = "HashCopyAscGraph/Store_8", src_out_index = 0>], outputs = [#afir.asc_tensor<dtype = DT_UNDEFINED, axis_ids = [], repeats = [], strides = [], vectorized_axis = [], vectorized_strides = [], mem = #afir.mem<tensor_id = -1, alloc_type = GLOBAL, position = GM, hardware = GM, reuse_id = -1>, que = #afir.mem_queue<id = -1, depth = -1, buf_num = -1>, buf = #afir.mem_buf<id = -1>>], attr = #afir.asc_node<name = "HashCopyAscGraph/Output_9", type = "Output", sched = #afir.sched<exec_order = 7, axis = [0, 1], loop_axis = -1, exec_condition = NoCache>, api = #afir.api<type = Buffer, compute_type = Invalid, unit = NONE>, ir_attr_def = {"index" = 0 : i64}, tmp_buffers = []>, ir_def = #afir.ir_def<input_names = ["x"], output_names = ["y"], input_ir_type = [0], output_ir_type = [0], type = "Output", input_nums = [1], output_nums = [1]>>
-    }}: (tensor<*xf32>) -> tensor<*xf32>
-    return
+// Indexing Maps
+#map0 = affine_map<(d0, d1) -> (d0, d1)>
+
+module attributes { afir.asc_graph_attr = #afir.asc_graph<axes = [<id=0,name="z0",axis_type=Original,size="20">, <id=1,name="z1",axis_type=Original,size="31">], type = Compute> } {
+
+  func.func @HashCopyAscGraph(%arg0: tensor<20x31xf32>, %arg1: tensor<1x31xf32>) -> tensor<20x31xf32> {
+%1 = afir.load %arg0 {
+  indexing_maps = [#map0], ir_attr_def = {"offset" = "0"}, outputs = [#afir.asc_tensor<tensor_id = -1, position = <gm>>]
+} : tensor<20x31xf32> -> tensor<20x31xf32>
+%2 = afir.load %arg1 {
+  indexing_maps = [#map0], ir_attr_def = {"offset" = "0"}, outputs = [#afir.asc_tensor<tensor_id = -1, position = <gm>>]
+} : tensor<1x31xf32> -> tensor<1x31xf32>
+%3 = afir.broadcast %2 {
+  indexing_maps = [#map0], outputs = [#afir.asc_tensor<tensor_id = -1, position = <gm>>]
+} : tensor<1x31xf32> -> tensor<20x31xf32>
+%4 = afir.add %1, %3 {
+  indexing_maps = [#map0, #map0, #map0], outputs = [#afir.asc_tensor<tensor_id = -1, position = <gm>>]
+} : (tensor<20x31xf32>, tensor<20x31xf32>) -> tensor<20x31xf32>
+%5 = afir.mul %4, %3 {
+  indexing_maps = [#map0, #map0, #map0], outputs = [#afir.asc_tensor<tensor_id = -1, position = <gm>>]
+} : (tensor<20x31xf32>, tensor<20x31xf32>) -> tensor<20x31xf32>
+%6 = afir.sub %4, %5 {
+  indexing_maps = [#map0, #map0, #map0], outputs = [#afir.asc_tensor<tensor_id = -1, position = <gm>>]
+} : (tensor<20x31xf32>, tensor<20x31xf32>) -> tensor<20x31xf32>
+%7 = afir.store %6 {
+  indexing_maps = [#map0], outputs = [#afir.asc_tensor<tensor_id = -1, position = <gm>>]
+} : tensor<20x31xf32> -> tensor<20x31xf32>
+    return %7 : tensor<20x31xf32>
   }
 }

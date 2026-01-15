@@ -1,8 +1,12 @@
 add_mlir_dialect_library(AFIRDialect
-  AFIRDialect.cpp
-  AFIROps.cpp
-  AFIROps/Math/Elementwise.cpp
-  ShapeHelper.cpp
+  Dialect.cpp
+  Ops/Basic/math.cpp
+  Ops/Basic/data.cpp
+  Ops/Basic/broadcast.cpp
+  Ops/Basic/condition.cpp
+  Ops/Basic/cast.cpp
+  Ops/Adv/concat.cpp
+  Ops/Adv/reduce.cpp
 
   ADDITIONAL_HEADER_DIRS
         ${CMAKE_SOURCE_DIR}/include/Dialect/AFIR
@@ -10,15 +14,12 @@ add_mlir_dialect_library(AFIRDialect
   DEPENDS
   AFIRDialectIncGen
   AFIROpsIncGen
-  AFIRShapeHelperOpInterfaceIncGen
-  AFIRElementwiseOpsIncGen
   MLIRAscIncGen
 
   LINK_LIBS PUBLIC
   MLIRIR
   MLIRSupport
   MLIRCastInterfaces
-  AFIRInterface
   MLIRAsc
   MLIRCastInterfaces
 )

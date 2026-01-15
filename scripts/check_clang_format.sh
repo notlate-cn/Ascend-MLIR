@@ -87,12 +87,12 @@ pushd "${CURRENT_PATH}"
 
     if [ "X${mode}" == "Xall" ]; then
       find . -type f \( -name "*.h" -o -name "*.hpp" -o -name "*.cpp" -o -name "*.cc" \) \
-        ! -path "./externals/*" ! -path "./.git/*" ! -path "./build/*" ! -path "./cmake-build-debug/*" > "${CHECK_LIST_FILE}" || true
+        ! -path "./externals/*" ! -path "./.git/*" ! -path "./build*/*" ! -path "./cmake-build-debug/*" > "${CHECK_LIST_FILE}" || true
     elif [ "X${mode}" == "Xchanged" ]; then
       # --diff-filter=ACMRTUXB will ignore deleted files in commit
-      git diff --diff-filter=ACMRTUXB --name-only | grep -v "^externals/" | grep "\.h$\|\.hpp$\|\.cpp$\|\.cc$" > "${CHECK_LIST_FILE}" || true
+      git diff --diff-filter=ACMRTUXB --name-only | grep -v "^externals/" | grep -v "^build" | grep "\.h$\|\.hpp$\|\.cpp$\|\.cc$" > "${CHECK_LIST_FILE}" || true
     else  # "X${mode}" == "Xlastcommit"
-      git diff --diff-filter=ACMRTUXB --name-only HEAD~ HEAD | grep -v "^externals/" | grep "\.h$\|\.hpp$\|\.cpp$\|\.cc$" > "${CHECK_LIST_FILE}" || true
+      git diff --diff-filter=ACMRTUXB --name-only HEAD~ HEAD | grep -v "^externals/" | grep -v "^build" | grep "\.h$\|\.hpp$\|\.cpp$\|\.cc$" > "${CHECK_LIST_FILE}" || true
     fi
 
     if [ "${format_only}" -eq 1 ]; then

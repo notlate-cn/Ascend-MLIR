@@ -1,6 +1,7 @@
 # ide files
 /.claude/
 /.idea/
+**/.idea/
 /.cache
 /.gitcode/docker
 /.gitcode/workflows/*.md
@@ -8,6 +9,12 @@
 
 # build files
 build/
+build-*/
+*.pt
+*.log
+*.toml
+*.dump
+core*
 
 # tmp files
 __checked_files_list__

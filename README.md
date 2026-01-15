@@ -211,6 +211,100 @@ cd build
 cmake --build . --target check-afir
 ```
 
+## Test Coverage
+
+Generate test coverage reports to analyze code coverage of the test suite.
+
+### Prerequisites
+
+Install lcov for coverage report generation:
+
+```bash
+# macOS
+brew install lcov
+
+# Ubuntu/Debian
+sudo apt-get install lcov
+
+# CentOS/RHEL
+sudo yum install lcov
+```
+
+Optional: Install lcov_cobertura for XML coverage reports:
+
+```bash
+pip install lcov_cobertura
+```
+
+### Quick Start
+
+Run the full coverage analysis:
+
+```bash
+# Using build.sh
+./scripts/build.sh --build-coverage
+
+# Or using the dedicated coverage script
+./scripts/run_coverage.sh
+```
+
+This will:
+1. Build the project with coverage instrumentation in `build-coverage/`
+2. Run the test suite to generate coverage data
+3. Generate coverage reports
+
+### Coverage Script Options
+
+```bash
+./scripts/run_coverage.sh [OPTIONS]
+
+Options:
+  --build-dir DIR         Coverage build directory (default: build-coverage)
+  --llvm-build-dir DIR    Path to LLVM build directory
+  --jobs N                Number of parallel jobs (default: auto)
+  --skip-build            Skip building, only generate coverage report
+  --skip-tests            Skip running tests, only collect existing coverage
+  --clean                 Clean coverage build directory before starting
+  --help                  Show help message
+```
+
+### Usage Examples
+
+```bash
+# Run full coverage analysis
+./scripts/run_coverage.sh
+
+# Clean and run coverage
+./scripts/run_coverage.sh --clean
+./scripts/run_coverage.sh
+
+# Only regenerate report from existing coverage data
+./scripts/run_coverage.sh --skip-build --skip-tests
+
+# Use custom LLVM build location
+./scripts/run_coverage.sh --llvm-build-dir /path/to/llvm/build
+
+# Specify number of parallel jobs
+./scripts/run_coverage.sh --jobs 8
+```
+
+### Viewing Coverage Reports
+
+After running the coverage script, reports are generated in `build-coverage/coverage/`:
+
+```bash
+# Open HTML report in browser
+open build-coverage/coverage/lcov_report/index.html
+
+# View coverage summary
+lcov --summary build-coverage/coverage/total.info --rc branch_coverage=1
+```
+
+Generated files:
+- **HTML Report**: `build-coverage/coverage/lcov_report/index.html` - Interactive coverage browser
+- **XML Report**: `build-coverage/coverage/lcov_report/coverage.xml` - Cobertura format (if lcov_cobertura is installed)
+- **Info File**: `build-coverage/coverage/total.info` - Raw coverage data
+
 ## Dependencies
 
 | Dependency | Version | Description |
