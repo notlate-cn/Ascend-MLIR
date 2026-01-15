@@ -72,16 +72,17 @@ def find_runtime_library(ascend_root: Optional[Path] = None,
     if ascend_root is None:
         ascend_root = find_ascend_root()
 
+    platform = get_platform()
     # 仿真模式优先使用 tools/simulator 下的库
     if simulation_mode:
         candidates = [
             f"tools/simulator/{soc_version}/lib/libruntime_camodel.so",
-            f"aarch64-linux/simulator/{soc_version}/lib/libruntime_camodel.so",
-            f"aarch64-linux/simulator/{soc_version}/lib/libruntime_cmodel.so",
+            f"{platform}-linux/simulator/{soc_version}/lib/libruntime_camodel.so",
+            f"{platform}-linux/simulator/{soc_version}/lib/libruntime_cmodel.so",
         ]
     else:
         candidates = [
-            f"aarch64-linux/lib64/libruntime.so",
+            f"{platform}-linux/lib64/libruntime.so",
         ]
 
     for rel_path in candidates:
@@ -125,18 +126,18 @@ def setup_environment(ascend_root: Optional[Path] = None,
     # 更新 LD_LIBRARY_PATH
     lib_paths = [
         ascend_root / 'lib64',
-        ascend_root / 'aarch64-linux' / 'lib64',
-        ascend_root / 'aarch64-linux' / 'devlib' / 'linux' / 'aarch64',
+        ascend_root / f'{platform}-linux' / 'lib64',
+        ascend_root / f'{platform}-linux' / 'devlib' / 'linux' / f'{platform}',
     ]
 
     # 添加 stub runtime 路径（用于无硬件环境）
-    stub_path = ascend_root / 'runtime/lib64/stub/linux/aarch64'
+    stub_path = ascend_root / f'runtime/lib64/stub/linux/{platform}'
     if stub_path.exists():
         lib_paths.append(stub_path)
 
     if soc_version:
         lib_paths.extend([
-            ascend_root / f'aarch64-linux/simulator/{soc_version}/lib',
+            ascend_root / f'{platform}-linux/simulator/{soc_version}/lib',
         ])
 
     current_ld = os.environ.get('LD_LIBRARY_PATH', '')

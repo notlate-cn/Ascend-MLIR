@@ -6,9 +6,15 @@ Ascend Runtime 库测试脚本
 """
 import os
 import sys
+from pathlib import Path
+
+# 添加 runtime 路径
+sys.path.insert(0, str(Path(__file__).parent.parent))
+from runtime.utils import (
+    find_runtime_library
+)
 
 # 设置环境（必须在其他导入前）
-os.environ["ASCEND_HOME_PATH"] = "/home/niu/Ascend/latest"
 os.environ["SOC_VERSION"] = "Ascend910B1"
 
 import numpy as np
@@ -35,7 +41,7 @@ class DevBinary(ctypes.Structure):
 
 class SimpleRuntime:
     def __init__(self):
-        self.runtime_path = "/home/niu/Ascend/latest/aarch64-linux/simulator/Ascend910B1/lib/libruntime_camodel.so"
+        self.runtime_path = find_runtime_library()
         self.runtime = ctypes.CDLL(self.runtime_path, mode=ctypes.RTLD_GLOBAL)
         self._setup_api()
 
