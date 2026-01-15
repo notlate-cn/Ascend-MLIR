@@ -79,13 +79,12 @@ set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
 
 # 添加子目录
 add_subdirectory(include/Dialect/AFIR)
-add_subdirectory(include/Interface)
 add_subdirectory(include/Conversion)
 add_subdirectory(lib/Dialect/AFIR)
-add_subdirectory(lib/Interface)
 add_subdirectory(lib/Conversion)
 add_subdirectory(lib/Utils)
 add_subdirectory(tools/afir-opt)
+add_subdirectory(examples)
 add_subdirectory(test)
 
 # 只构建必要的pyasc，注意需要先构建其tablegen

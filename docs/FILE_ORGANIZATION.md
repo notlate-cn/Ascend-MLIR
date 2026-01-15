@@ -10,7 +10,7 @@
                              │
                              ▼
                     ┌────────────────┐
-                    │  AFIRBase.td   │ ◄─── 基础层
+                    │  Base.td       │ ◄─── 基础层
                     │                │
                     │ - Dialect      │
                     │ - AFIR_Op      │
@@ -22,7 +22,7 @@
               │                            │
               ▼                            ▼
     ┌─────────────────┐          ┌──────────────────┐
-    │  AFIREnums.td   │          │  AFIRAttrs.td    │ ◄─── 定义层
+    │  Enums.td       │          │  Attrs.td        │ ◄─── 定义层
     │                 │          │                  │
     │ - DataType      │          │ - MemAttr        │
     │ - AllocType     │          │ - AxisAttr       │
@@ -39,7 +39,7 @@
               │    │
               ▼    ▼
     ┌──────────────────┐
-    │ AFIRDialect.td   │ ◄─── 入口层
+    │ Dialect.td       │ ◄─── 入口层
     │                  │
     │ - Include Base   │
     │ - Include Attrs  │
@@ -47,14 +47,14 @@
              │
              ▼
     ┌──────────────────┐
-    │   AFIROps.td     │ ◄─── 操作层
+    │ Ops.td           │ ◄─── 操作层
     │                  │
     │ - Include 子目录  │
     └────────┬─────────┘
              │
              ▼
     ┌──────────────────────────────┐
-    │  AFIROps/Math/Elementwise.td │ ◄─── 具体操作
+    │ Ops/Math/Elementwise.td      │ ◄─── 具体操作
     │                              │
     │ - AddOp, SubOp, MulOp, DivOp │
     └──────────────────────────────┘
@@ -77,7 +77,7 @@
 
 ## 文件详细说明
 
-### 1. AFIRBase.td
+### 1. Base.td
 **职责**：基础定义和通用组件
 
 **包含内容**：
@@ -93,11 +93,11 @@ include "mlir/IR/AttrTypeBase.td"
 include "mlir/IR/EnumAttr.td"
 ```
 
-**被依赖**：AFIREnums.td, AFIRAttrs.td
+**被依赖**：Enums.td, Attrs.td
 
 ---
 
-### 2. AFIREnums.td
+### 2. Enums.td
 **职责**：所有枚举类型定义
 
 **包含内容**：
@@ -117,18 +117,18 @@ include "mlir/IR/EnumAttr.td"
 
 **依赖**：
 ```tablegen
-include "Dialect/AFIR/AFIRBase.td"
+include "Dialect/AFIR/Base.td"
 include "mlir/IR/EnumAttr.td"
 ```
 
-**生成的 C++ 类型**（在 AFIREnums.h.inc 中）：
+**生成的 C++ 类型**（在 Enums.h.inc 中）：
 - `enum class DataType { ... }`
 - `class DataTypeAttr : public IntegerAttr { ... }`
 - 其他枚举类似...
 
 ---
 
-### 3. AFIRAttrs.td
+### 3. Attrs.td
 **职责**：所有 AttrDef 属性定义（图级属性）
 
 **包含内容**：
@@ -171,7 +171,7 @@ include "mlir/IR/EnumAttr.td"
 
 **依赖**：
 ```tablegen
-include "Dialect/AFIR/AFIRBase.td"
+include "Dialect/AFIR/Base.td"
 include "mlir/IR/AttrTypeBase.td"
 ```
 
@@ -179,25 +179,25 @@ include "mlir/IR/AttrTypeBase.td"
 
 ---
 
-### 4. AFIRDialect.td
+### 4. Dialect.td
 **职责**：方言入口文件
 
 **结构**：
 ```tablegen
-include "Dialect/AFIR/AFIRBase.td"    // 基础定义
-include "Dialect/AFIR/AFIRAttrs.td"   // 属性定义
+include "Dialect/AFIR/Base.td"    // 基础定义
+include "Dialect/AFIR/Attrs.td"   // 属性定义
 ```
 
 **说明**：这是使用 AFIR 方言时主要 include 的文件
 
 ---
 
-### 5. AFIROps.td
+### 5. Ops.td
 **职责**：操作定义入口
 
 **结构**：
 ```tablegen
-include "Dialect/AFIR/AFIRDialect.td"
+include "Dialect/AFIR/Dialect.td"
 include "Interface/ShapeHelperOpInterface.td"
 include "Interface/ShapeInferenceOpInterface.td"
 include "mlir/Interfaces/InferTypeOpInterface.td"
@@ -205,12 +205,12 @@ include "mlir/Interfaces/SideEffectInterfaces.td"
 include "Core/Types.td"
 
 // 包含具体操作定义
-include "Dialect/AFIR/AFIROps/Math/Elementwise.td"
+include "Dialect/AFIR/Ops/Math/Elementwise.td"
 ```
 
 ---
 
-### 6. AFIROps/Math/Elementwise.td
+### 6. Ops/Math/Elementwise.td
 **职责**：元素级数学操作
 
 **包含操作**：
@@ -230,20 +230,20 @@ include "Dialect/AFIR/AFIROps/Math/Elementwise.td"
 
 ## C++ 头文件包含顺序
 
-在 `AFIRDialect.h` 中，头文件必须按以下顺序包含：
+在 `Dialect.h` 中，头文件必须按以下顺序包含：
 
 ```cpp
 #include "mlir/IR/Dialect.h"
 
 // 1. 方言定义
-#include "Dialect/AFIR/AFIRDialect.h.inc"
+#include "Dialect/AFIR/Dialect.h.inc"
 
 // 2. 枚举定义（必须在属性之前！）
-#include "Dialect/AFIR/AFIREnums.h.inc"
+#include "Dialect/AFIR/Enums.h.inc"
 
 // 3. 属性定义
 #define GET_ATTRDEF_CLASSES
-#include "Dialect/AFIR/AFIRAttrs.h.inc"
+#include "Dialect/AFIR/Attrs.h.inc"
 ```
 
 ---
@@ -252,12 +252,12 @@ include "Dialect/AFIR/AFIROps/Math/Elementwise.td"
 
 | 文件 | 行数 | 主要内容 |
 |------|------|----------|
-| AFIRBase.td | 86 | 方言和基类定义 |
-| AFIREnums.td | 256 | 所有枚举定义 |
-| AFIRAttrs.td | 354 | 图级属性定义 |
-| AFIRDialect.td | 21 | 入口文件 |
-| AFIROps.td | 26 | 操作入口 |
-| AFIROps/Math/Elementwise.td | 188 | 元素级操作 |
+| Base.td | 86 | 方言和基类定义 |
+| Enums.td | 256 | 所有枚举定义 |
+| Attrs.td | 354 | 图级属性定义 |
+| Dialect.td | 21 | 入口文件 |
+| Ops.td | 26 | 操作入口 |
+| Ops/Math/Elementwise.td | 188 | 元素级操作 |
 | **总计** | **931** | |
 
 ---
@@ -266,23 +266,23 @@ include "Dialect/AFIR/AFIROps/Math/Elementwise.td"
 
 ```
 include/Dialect/AFIR/
-├── AFIRBase.td                    # 基础定义
-├── AFIREnums.td                   # 枚举定义
-├── AFIRAttrs.td                   # 属性定义
-├── AFIRDialect.td                 # 方言入口
-├── AFIROps.td                     # 操作入口
-├── AFIRDialect.h                  # C++ 头文件
-├── AFIROps.h                      # 操作 C++ 头文件
-├── AFIRDialectBuilder.h           # Builder 辅助类
-├── AFIROps/                       # 操作子目录
+├── Base.td                       # 基础定义
+├── Enums.td                      # 枚举定义
+├── Attrs.td                      # 属性定义
+├── Dialect.td                    # 方言入口
+├── Ops.td                        # 操作入口
+├── Dialect.h                     # C++ 头文件
+├── Ops.h                         # 操作 C++ 头文件
+├── DialectBuilder.h              # Builder 辅助类
+├── Ops/                          # 操作子目录
 │   └── Math/
-│       └── Elementwise.td         # 元素级操作
-├── Transforms/                    # 变换 Pass
+│       └── Elementwise.td        # 元素级操作
+├── Transforms/                   # 变换 Pass
 │   ├── Passes.td
 │   └── Passes.h
 ├── CMakeLists.txt
-├── FILE_ORGANIZATION.md           # 本文件
-└── ARCHITECTURE.md                # 架构设计文档
+├── FILE_ORGANIZATION.md          # 本文件
+└── ARCHITECTURE.md               # 架构设计文档
 ```
 
 ---
@@ -290,24 +290,24 @@ include/Dialect/AFIR/
 ## 维护指南
 
 ### 添加新的枚举：
-1. 在 `AFIREnums.td` 中定义枚举和 EnumAttr
+1. 在 `Enums.td` 中定义枚举和 EnumAttr
 2. 在 C++ 中通过生成的类名使用（如 `DataTypeAttr`）
 
 ### 添加新的属性：
-1. 在 `AFIRAttrs.td` 中使用 `AFIR_Attr<>` 定义
+1. 在 `Attrs.td` 中使用 `AFIR_Attr<>` 定义
 2. 枚举类型参数使用 C++ 类型名（不带 `AFIR_` 前缀）
 3. 示例：`"DataTypeAttr":$dtype`（而非 `AFIR_DataTypeAttr`）
 
 ### 添加新的操作：
-1. 在 `AFIROps/` 对应子目录中创建 .td 文件
-2. 在 `AFIROps.td` 中添加 include
+1. 在 `Ops/` 对应子目录中创建 .td 文件
+2. 在 `Ops.td` 中添加 include
 3. 实现必要的接口方法
 
 ### 常见问题：
 
 **Q: 为什么会出现 "redefinition of class" 错误？**
 
-A: 通常是因为 AFIRAttrs.td 错误地 include 了 AFIREnums.td。两者必须独立处理。
+A: 通常是因为 Attrs.td 错误地 include 了 Enums.td。两者必须独立处理。
 
 **Q: 为什么属性参数中枚举类型要用字符串形式？**
 

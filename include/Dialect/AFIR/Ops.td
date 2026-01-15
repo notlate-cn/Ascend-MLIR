@@ -1,0 +1,32 @@
+//===- AFIROps.td - AFIR operation definitions -------------*- tablegen -*-===//
+//
+// Part of the Ascend-MLIR Project
+//
+//===----------------------------------------------------------------------===//
+//
+// This file defines the operations for the AFIR dialect.
+//
+//===----------------------------------------------------------------------===//
+
+#ifndef AFIR_OPS
+#define AFIR_OPS
+
+include "Dialect/AFIR/Dialect.td"
+include "Dialect/AFIR/Base.td"
+include "mlir/Interfaces/InferTypeOpInterface.td"
+include "mlir/Interfaces/SideEffectInterfaces.td"
+
+//===----------------------------------------------------------------------===//
+// Basic Operations
+//===----------------------------------------------------------------------===//
+
+include "Dialect/AFIR/Ops/Basic/broadcast.td"
+include "Dialect/AFIR/Ops/Basic/cast.td"
+include "Dialect/AFIR/Ops/Basic/condition.td"
+include "Dialect/AFIR/Ops/Basic/data.td"
+include "Dialect/AFIR/Ops/Basic/math.td"
+
+include "Dialect/AFIR/Ops/Adv/concat.td"
+include "Dialect/AFIR/Ops/Adv/reduce.td"
+
+#endif // AFIR_OPS

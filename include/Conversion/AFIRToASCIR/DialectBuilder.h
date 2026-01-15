@@ -1,4 +1,4 @@
-//===- DialectBuilder.hpp - ASC-IR dialect builder -----------------*- C++ -*-===//
+//===- DialectBuilde.h - ASC-IR dialect builder -----------------*- C++ -*-===//
 //
 // Part of the Ascend-MLIR Project
 //
