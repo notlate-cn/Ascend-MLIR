@@ -7,6 +7,7 @@ import os
 import sys
 from pathlib import Path
 from typing import Optional, List
+import platform
 
 ASCEND_A2 = "Ascend910B1"
 ASCEND_A5 = "Ascend910_9599"
@@ -15,6 +16,18 @@ ASCEND_HOME_PATH = "ASCEND_HOME_PATH"
 # ================================================================
 # 路径工具
 # ================================================================
+
+
+def get_platform():
+    # 获取系统架构
+    arch = platform.machine()
+
+    # 根据架构选择正确的路径
+    if arch in ['aarch64', 'arm64']:
+        return 'aarch64'
+    if arch in ['x86_64', 'amd64']:
+        return 'x86_64'
+    raise ValueError(f"不支持的架构: {arch}")
 
 def find_ascend_root() -> Path:
     """

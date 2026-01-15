@@ -177,6 +177,7 @@ __all__ = [
     "__author__",
 
     # 工具
+    "get_platform",
     "find_ascend_root",
     "find_runtime_library",
     "setup_environment",

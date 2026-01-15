@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Optional, Tuple
 
 from .utils import (
+    get_platform,
     find_ascend_root,
     setup_environment,
     logger,
@@ -57,6 +58,7 @@ class AscGen:
 
         self.ascend_root = ascend_root
         self.soc_version = soc_version
+        self.platform = get_platform()
 
         # 加载 libgraph.so
         self._load_libgraph()
@@ -337,8 +339,8 @@ target_include_directories(host_tiling PRIVATE
     {self.ascend_root}/include/graph
     {self.ascend_root}/include/experiment
     {self.ascend_root}/pkg_inc/base
-    {self.ascend_root}/aarch64-linux/include
-    {self.ascend_root}/aarch64-linux/ascendc/include/highlevel_api/tiling/platform
+    {self.ascend_root}/{self.platform}-linux/include
+    {self.ascend_root}/{self.platform}-linux/ascendc/include/highlevel_api/tiling/platform
 )
 
 # 设置编译选项
@@ -384,8 +386,8 @@ target_include_directories(host_tiling PRIVATE
     ${{ASCEND_ROOT}}/include/graph
     ${{ASCEND_ROOT}}/include/experiment
     ${{ASCEND_ROOT}}/pkg_inc/base
-    ${{ASCEND_ROOT}}/aarch64-linux/include
-    ${{ASCEND_ROOT}}/aarch64-linux/ascendc/include/highlevel_api/tiling/platform
+    ${{ASCEND_ROOT}}/{self.platform}-linux/include
+    ${{ASCEND_ROOT}}/{self.platform}-linux/ascendc/include/highlevel_api/tiling/platform
 )
 
 # 链接必需的库

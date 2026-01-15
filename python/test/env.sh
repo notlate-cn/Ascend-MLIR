@@ -6,7 +6,7 @@ export ASCEND_DEVICE_ID=0
 # cann environment
 export ASCEND_HOME_PATH=~/Ascend/latest
 source ${ASCEND_HOME_PATH}/../set_env.sh
-export LD_LIBRARY_PATH=${ASCEND_HOME_PATH}/runtime/lib64/stub/linux/aarch64:${ASCEND_HOME_PATH}/aarch64-linux/simulator/${SOC_VERSION}/lib:$LD_LIBRARY_PATH
+export LD_LIBRARY_PATH=${ASCEND_HOME_PATH}/runtime/lib64/stub/linux/$(arch):${ASCEND_HOME_PATH}/$(arch)-linux/simulator/${SOC_VERSION}/lib:$LD_LIBRARY_PATH
 
 # autofuse
 export ASCEND_SLOG_PRINT_TO_STDOUT=1 # 0: 不打屏，1: 打屏
