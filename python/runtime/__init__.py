@@ -91,6 +91,8 @@ from .utils import (
     InvalidBinaryError,
     MemoryAllocationError,
     KernelLaunchError,
+    get_platform,
+    clean_dump,
 )
 
 # 编译器模块
@@ -184,6 +186,7 @@ __all__ = [
     "logger",
     "Logger",
     "ProgressBar",
+    "clean_dump",
 
     # 异常
     "AscendRuntimeError",

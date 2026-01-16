@@ -353,3 +353,15 @@ class MemoryAllocationError(ExecutorError):
 class KernelLaunchError(ExecutorError):
     """Kernel 启动异常"""
     pass
+
+
+def clean_dump():
+    """清理 CANN 仿真器生成的 core*.dump 文件"""
+    if os.environ.get("ASCEND_CLEAN_DUMP", "1") == "1":
+        patterns = ("*.dump", "*.toml", "*summary_log", "*vcd", "ffts*.log")
+        for p in patterns:
+            for f in Path(".").glob(p):
+                try:
+                    f.unlink()
+                except OSError:
+                    pass
