@@ -198,7 +198,18 @@ class AscendRuntime:
         self.runtime.rtCtxSetCurrent.argtypes = [ctypes.c_void_p]
         self.runtime.rtCtxSetCurrent.restype = ctypes.c_int
 
-        # rtCtxGetCurrentDefaultStream
+        # rtStreamCreate - 创建stream (不直接使用get_default_stream)
+        self.runtime.rtStreamCreate.argtypes = [
+            ctypes.POINTER(ctypes.c_void_p),
+            ctypes.c_int32,
+        ]
+        self.runtime.rtStreamCreate.restype = ctypes.c_int
+
+        # rtStreamDestroy - 销毁stream
+        self.runtime.rtStreamDestroy.argtypes = [ctypes.c_void_p]
+        self.runtime.rtStreamDestroy.restype = ctypes.c_int
+
+        # rtCtxGetCurrentDefaultStream (仅作为备用，通常不直接使用)
         self.runtime.rtCtxGetCurrentDefaultStream.argtypes = []
         self.runtime.rtCtxGetCurrentDefaultStream.restype = ctypes.c_void_p
 
@@ -405,9 +416,44 @@ class AscendRuntime:
     # Kernel 执行
     # ============================================================
 
+    def create_stream(self, priority: int = 0):
+        """
+        创建stream
+
+        Args:
+            priority: Stream 优先级
+
+        Returns:
+            Stream handle
+        """
+        stream_handle = ctypes.c_void_p()
+        ret = self.runtime.rtStreamCreate(
+            ctypes.byref(stream_handle),
+            ctypes.c_int32(priority),
+        )
+
+        if ret != 0:
+            raise ExecutorError(f"rtStreamCreate failed: {ret}")
+
+        return stream_handle
+
+    def destroy_stream(self, stream: ctypes.c_void_p):
+        """
+        销毁stream
+
+        Args:
+            stream: Stream handle
+        """
+        self.runtime.rtStreamDestroy(stream)
+
     def get_stream(self) -> ctypes.c_void_p:
-        """获取默认 stream"""
-        return self.runtime.rtCtxGetCurrentDefaultStream()
+        """
+        获取默认stream - 在仿真模式下使用create_stream替代
+
+        注意：rtCtxGetCurrentDefaultStream在某些情况下会段错误
+        使用create_stream创建新stream作为替代
+        """
+        return self.create_stream()
 
     def synchronize(self):
         """同步设备"""
