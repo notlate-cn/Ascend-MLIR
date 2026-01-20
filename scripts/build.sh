@@ -75,7 +75,14 @@ EOF
 init_submodules() {
     print_info "Initializing git submodules..."
     cd "${PROJECT_ROOT}"
-    git submodule update --init --recursive
+    
+    if [ "$1" = "stablehlo" ]; then
+        git submodule update --init --recursive -- externals/stablehlo
+    elif [ "$1" = "pyasc" ]; then
+        git submodule update --init --recursive -- externals/pyasc
+    else
+        git submodule update --init --recursive
+    fi
 }
 
 build_llvm() {
@@ -289,9 +296,12 @@ if $CLEAN; then
     exit 0
 fi
 
-# Initialize submodules if any build is requested
-if $BUILD_STABLEHLO || $BUILD_PYASC; then
+if $BUILD_STABLEHLO && $BUILD_PYASC; then
     init_submodules
+elif $BUILD_STABLEHLO; then
+    init_submodules stablehlo
+elif $BUILD_PYASC; then
+    init_submodules pyasc
 fi
 
 if $BUILD_LLVM; then
