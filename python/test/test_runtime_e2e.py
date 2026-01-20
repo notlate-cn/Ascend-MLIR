@@ -24,7 +24,14 @@ import torch
 
 # 添加 runtime 路径
 sys.path.insert(0, str(Path(__file__).parent.parent))
-
+# 导入 runtime 库（在环境设置后）
+from runtime import (
+    AscGen,
+    compile_kernel as compile_kernel_with_bisheng,
+    execute_kernel,
+    read_binary,
+)
+from runtime.utils import clean_dump
 
 # ================================================================
 # 端到端测试
@@ -35,14 +42,6 @@ def test_end_to_end(graph_text, output_path='./'):
     print("=" * 70)
     print("端到端测试：从 Graph 到 Kernel 执行")
     print("=" * 70)
-
-    # 导入 runtime 库（在环境设置后）
-    from runtime import (
-        AscGen,
-        compile_kernel as compile_kernel_with_bisheng,
-        execute_kernel,
-        read_binary,
-    )
 
     # ============================================================
     # 步骤 1: 读取 graph 文本
@@ -248,6 +247,9 @@ def main():
             print("❌❌❌ 端到端测试失败 ❌❌❌")
         print("=" * 70)
 
+        # 清理 camodel dump 文件
+        clean_dump()
+
         os._exit(0 if success else 1)
     except Exception as e:
         print()
@@ -256,6 +258,10 @@ def main():
         print("=" * 70)
         import traceback
         traceback.print_exc()
+
+        # 异常时也清理 dump 文件
+        clean_dump()
+
         os._exit(1)
 
 

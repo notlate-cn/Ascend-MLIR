@@ -19,6 +19,7 @@ core*
 # tmp files
 __checked_files_list__
 __code_format_check_result__
+python/runtime/__pycache__
 
 # third_party
 externals/llvm-project
