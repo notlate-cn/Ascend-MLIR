@@ -8,6 +8,7 @@
 #define AFIR_CONVERSION_PASSES
 
 #include "Conversion/AFIRToASCIR/AFIRToASCIR.h"
+#include "Conversion/AFIRToASCIRText/AFIRToASCIRText.h"
 #include "mlir/Pass/Pass.h"
 #include <memory>
 
