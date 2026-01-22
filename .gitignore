@@ -6,6 +6,7 @@
 /.gitcode/docker
 /.gitcode/workflows/*.md
 /.gitcode/workflows/ci-with-docker.yml
+/python/runtime/__pycache__
 
 # build files
 build/

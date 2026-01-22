@@ -12,6 +12,13 @@
 #include "mlir/Pass/Pass.h"
 #include "mlir/Transforms/DialectConversion.h"
 #include "ascir/Dialect/Asc/IR/Asc.h"
+#include "llvm/Support/raw_ostream.h"
+#include "llvm/Support/FileSystem.h"
+#include "llvm/Support/ToolOutputFile.h"
+
+#define GEN_PASS_DECL_CONVERTAFIRTOASCIRPASS
+#define GEN_PASS_DEF_CONVERTAFIRTOASCIRPASS
+#include "Conversion/Passes.h.inc"
 
 namespace mlir {
 namespace afir {
@@ -47,19 +54,9 @@ class AFIRToASCIRTypeConverter : public TypeConverter {
 //===----------------------------------------------------------------------===//
 // Pass Implementation
 //===----------------------------------------------------------------------===//
-struct ConvertAFIRToASCIRPass : public PassWrapper<ConvertAFIRToASCIRPass, OperationPass<ModuleOp>> {
-  MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(ConvertAFIRToASCIRPass)
-
-  StringRef getArgument() const override {
-    return "convert-afir-to-ascir";
-  }
-  StringRef getDescription() const override {
-    return "Convert AFIR dialect to ASC-IR dialect";
-  }
-
-  void getDependentDialects(DialectRegistry &registry) const override {
-    registry.insert<ascendc::AscendCDialect>();
-  }
+struct ConvertAFIRToASCIRPass : public ::impl::ConvertAFIRToASCIRPassBase<ConvertAFIRToASCIRPass> {
+  using Base = ::impl::ConvertAFIRToASCIRPassBase<ConvertAFIRToASCIRPass>;
+  using Base::Base;
 
   void runOnOperation() override {
     ModuleOp module = getOperation();
@@ -82,11 +79,30 @@ struct ConvertAFIRToASCIRPass : public PassWrapper<ConvertAFIRToASCIRPass, Opera
     patterns.add<FuncReturnOpTypeConversion>(typeConverter, context);
 
     if (failed(applyPartialConversion(module, target, std::move(patterns)))) signalPassFailure();
+
+    std::string ascirText;
+    llvm::raw_string_ostream os(ascirText);
+    module.print(os);
+    os.flush();
+
+    if (!ascirPath.empty()) {
+      std::error_code ec;
+      llvm::ToolOutputFile file(ascirPath, ec, llvm::sys::fs::OF_None);
+      if (ec) {
+        llvm::errs() << "Error opening file: " << ec.message() << "\n";
+        signalPassFailure();
+        return;
+      }
+      file.os() << ascirText;
+      file.keep();
+    } else {
+      llvm::errs() << ascirText;
+    }
   }
 };
 
 std::unique_ptr<Pass> createConvertAFIRToASCIRPass() {
-  return std::make_unique<ConvertAFIRToASCIRPass>();
+  return std::unique_ptr<Pass>(new ConvertAFIRToASCIRPass());
 }
 
 }  // namespace afir

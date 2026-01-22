@@ -1,1 +1,2 @@
 add_subdirectory(AFIRToASCIR)
+add_subdirectory(AFIRToASCIRText)
