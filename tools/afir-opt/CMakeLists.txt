@@ -30,6 +30,7 @@ target_link_libraries(afir-opt
     AFIRDialect
     AFIRTransforms
     AFIRToASCIRConversion
+    AFIRToASCIRTextConversion
     AFIRUtils
 )
 
