@@ -61,7 +61,7 @@ def AscTensorGroupsAttr : AFIR_Attr<"AscTensorGroups", "asc_tensor"> {
     "PositionConfigAttr":$position_config,
     DefaultValuedParameter<"int64_t", "-1">:$position_id
   );
-  
+
   let assemblyFormat = "`<`"
     "(`vectorized_axis` `=` `[` $vectorized_axis^ `]` `,`"
     " `vectorized_strides` `=` `[` $vectorized_strides `]` `,`)? "
@@ -171,6 +171,8 @@ def ScalarValueAttr : AFIR_Attr<"ScalarValue", "value"> {
 
 def TmpBufDescArrayAttr : TypedArrayAttrBase<TmpBufDescAttr, "Array of TmpBufDesc attributes">;
 
-def AscTensorGroupsArrayAttr : TypedArrayAttrBase<AscTensorGroupsAttr, "Array of AscTensorGroups attributes">;
+def AscTensorGroupsArrayAttr : TypedArrayAttrBase<AscTensorGroupsAttr, "Array of AscTensorGroups attributes"> {
+    let constBuilderCall = "::mlir::ArrayAttr::get($_builder.getContext(), {::mlir::afir::AscTensorGroupsAttr::get($_builder.getContext(), ::llvm::ArrayRef<int64_t>{}, ::llvm::ArrayRef<::mlir::Attribute>{}, -1, -1, ::mlir::afir::PositionConfigAttr::get($_builder.getContext(), $0, 0, false), -1)})";
+}
 
 #endif // AFIR_ATTRS

@@ -19,4 +19,13 @@ def AFIRCanonicalizePass : Pass<"afir-canonicalize", "mlir::ModuleOp"> {
   let dependentDialects = ["mlir::afir::AFIRDialect"];
 }
 
+def AFIRShapeInferencePass : Pass<"afir-shape-inference", "mlir::ModuleOp"> {
+  let summary = "Infer shapes for AFIR operations";
+  let description = [{
+    This pass infers and propagates shape information through AFIR operations.
+  }];
+  let constructor = "mlir::afir::createAFIRShapeInferencePass()";
+  let dependentDialects = ["mlir::afir::AFIRDialect"];
+}
+
 #endif // AFIR_TRANSFORMS_PASSES
