@@ -124,6 +124,8 @@ build_with_coverage() {
         -DLLVM_BUILD_DIR="${LLVM_BUILD_DIR}" \
         -DCMAKE_C_COMPILER="${CC_COMPILER}" \
         -DCMAKE_CXX_COMPILER="${CXX_COMPILER}" \
+        -DAFIR_ENABLE_BINDING_PYTHON=true \
+        -DPython3_EXECUTABLE="$(which python3)" \
         -DCMAKE_CXX_FLAGS="-fprofile-arcs -ftest-coverage" \
         -DCMAKE_C_FLAGS="-fprofile-arcs -ftest-coverage" \
         -DCMAKE_EXE_LINKER_FLAGS="-fprofile-arcs -ftest-coverage"

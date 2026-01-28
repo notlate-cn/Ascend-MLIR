@@ -55,7 +55,8 @@ static LogicalResult verifyBinaryElementwiseOp(Operation *op) {
     ArrayRef<int64_t> rhsShape = rhsType.getShape();
 
     for (size_t i = 0; i < lhsShape.size(); ++i) {
-      if (lhsShape[i] != ShapedType::kDynamic && rhsShape[i] != ShapedType::kDynamic && lhsShape[i] != rhsShape[i]) {
+      if (lhsShape[i] != ShapedType::kDynamic && rhsShape[i] != ShapedType::kDynamic && lhsShape[i] != 1 &&
+          rhsShape[i] != 1 && lhsShape[i] != rhsShape[i]) {
         return op->emitOpError("operands must have compatible shapes");
       }
     }
@@ -208,7 +209,7 @@ LogicalResult ClipByValue::verify() {
     ArrayRef<int64_t> minShape = minType.getShape();
     for (size_t i = 0; i < inputShape.size(); ++i) {
       if (inputShape[i] != ShapedType::kDynamic && minShape[i] != ShapedType::kDynamic &&
-          inputShape[i] != minShape[i]) {
+          inputShape[i] != minShape[i] && inputShape[i] != 1 && minShape[i] != 1) {
         return emitOpError("input and min must have compatible shapes");
       }
     }
@@ -222,7 +223,7 @@ LogicalResult ClipByValue::verify() {
     ArrayRef<int64_t> maxShape = maxType.getShape();
     for (size_t i = 0; i < inputShape.size(); ++i) {
       if (inputShape[i] != ShapedType::kDynamic && maxShape[i] != ShapedType::kDynamic &&
-          inputShape[i] != maxShape[i]) {
+          inputShape[i] != maxShape[i] && inputShape[i] != 1 && maxShape[i] != 1) {
         return emitOpError("input and max must have compatible shapes");
       }
     }
@@ -236,7 +237,7 @@ LogicalResult ClipByValue::verify() {
     ArrayRef<int64_t> resultShape = resultType.getShape();
     for (size_t i = 0; i < inputShape.size(); ++i) {
       if (inputShape[i] != ShapedType::kDynamic && resultShape[i] != ShapedType::kDynamic &&
-          inputShape[i] != resultShape[i]) {
+          inputShape[i] != resultShape[i] && inputShape[i] != 1 && resultShape[i] != 1) {
         return emitOpError("input and result must have compatible shapes");
       }
     }
@@ -244,3 +245,86 @@ LogicalResult ClipByValue::verify() {
 
   return success();
 }
+
+template <typename OPAdaptor>
+
+LogicalResult inferBroadCastReturnTypes(MLIRContext *context, std::optional<mlir::Location> location, OPAdaptor adaptor,
+                                        Type elementType, SmallVectorImpl<ShapedTypeComponents> &inferredReturnTypes) {
+  int64_t newShapeRank = -1;
+  for (auto oper : adaptor.getOperands()) {
+    if (auto opType = llvm::dyn_cast<RankedTensorType>(oper.getType())) {
+      if (newShapeRank == -1) {
+        newShapeRank = opType.getRank();
+      } else if (newShapeRank != opType.getRank()) {
+        return failure();
+      }
+    } else {
+      inferredReturnTypes.push_back(ShapedTypeComponents(elementType));
+      return success();
+    }
+  }
+  SmallVector<int64_t> newShape(newShapeRank, 1);
+
+  for (int j = 0; j < adaptor.getOperands().size(); j++) {
+    auto shape = llvm::dyn_cast<RankedTensorType>(adaptor.getOperands()[j].getType()).getShape();
+    for (size_t i = 0; i < newShapeRank; i++) {
+      if (shape[i] == 1) {
+        continue;
+      }
+      if (newShape[i] == ShapedType::kDynamic || newShape[i] == 1) {
+        newShape[i] = shape[i];
+      }
+      if (shape[i] == ShapedType::kDynamic) {
+        continue;
+      }
+      if (newShape[i] != shape[i]) {
+        return failure();
+      }
+    }
+  }
+  inferredReturnTypes.push_back(ShapedTypeComponents(newShape, elementType));
+  return success();
+}
+
+#define REGISTERBROADCASTINFER(OP)                                                                           \
+  LogicalResult OP::inferReturnTypeComponents(MLIRContext *context, ::std::optional<Location> location,      \
+                                              OP##Adaptor adaptor,                                           \
+                                              SmallVectorImpl<ShapedTypeComponents> &inferredReturnShapes) { \
+    TensorType tensorType = llvm::dyn_cast<TensorType>(adaptor.getOperands()[0].getType());                  \
+    if (!tensorType) {                                                                                       \
+      return failure();                                                                                      \
+    }                                                                                                        \
+    return inferBroadCastReturnTypes<OP##Adaptor>(context, location, adaptor, tensorType.getElementType(),   \
+                                                  inferredReturnShapes);                                     \
+  }
+
+REGISTERBROADCASTINFER(afir::AddOp)
+REGISTERBROADCASTINFER(afir::SubOp)
+REGISTERBROADCASTINFER(afir::MulOp)
+REGISTERBROADCASTINFER(afir::DivOp)
+REGISTERBROADCASTINFER(afir::MinimumOp)
+REGISTERBROADCASTINFER(afir::MaximumOp)
+REGISTERBROADCASTINFER(afir::TrueDivOp)
+REGISTERBROADCASTINFER(afir::PowOp)
+REGISTERBROADCASTINFER(afir::BitwiseAndOp)
+REGISTERBROADCASTINFER(afir::FloorDivOp)
+REGISTERBROADCASTINFER(afir::GeluOp)
+REGISTERBROADCASTINFER(afir::SignOp)
+REGISTERBROADCASTINFER(afir::ClipByValue)
+
+#define REGISTERBROADCASTLOGICALINFER(OP)                                                                       \
+  LogicalResult OP::inferReturnTypeComponents(MLIRContext *context, ::std::optional<Location> location,         \
+                                              OP##Adaptor adaptor,                                              \
+                                              SmallVectorImpl<ShapedTypeComponents> &inferredReturnShapes) {    \
+    return inferBroadCastReturnTypes<OP##Adaptor>(                                                              \
+        context, location, adaptor, IntegerType::get(context, 8, IntegerType::Unsigned), inferredReturnShapes); \
+  }
+
+REGISTERBROADCASTLOGICALINFER(afir::LogicalAndOp)
+REGISTERBROADCASTLOGICALINFER(afir::LogicalOrOp)
+REGISTERBROADCASTLOGICALINFER(afir::GeOp)
+REGISTERBROADCASTLOGICALINFER(afir::EqOp)
+REGISTERBROADCASTLOGICALINFER(afir::NeOp)
+REGISTERBROADCASTLOGICALINFER(afir::GtOp)
+REGISTERBROADCASTLOGICALINFER(afir::LeOp)
+REGISTERBROADCASTLOGICALINFER(afir::LtOp)

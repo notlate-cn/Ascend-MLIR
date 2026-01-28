@@ -21,7 +21,7 @@ config.name = 'AFIR'
 config.test_format = lit.formats.ShTest(not llvm_config.use_lit_shell)
 
 # suffixes: A list of file extensions to treat as test files.
-config.suffixes = ['.mlir']
+config.suffixes = ['.mlir', ".py"]
 
 # test_source_root: The root path where tests are located.
 config.test_source_root = os.path.dirname(__file__)
@@ -37,7 +37,7 @@ llvm_config.with_system_environment(['HOME', 'INCLUDE', 'LIB', 'TMP', 'TEMP'])
 llvm_config.use_default_substitutions()
 
 # excludes: A list of directories to exclude from the testsuite.
-config.excludes = ['CMakeLists.txt', 'README.txt', 'LICENSE.txt']
+config.excludes = ['CMakeLists.txt', 'README.txt', 'LICENSE.txt', 'lit.cfg.py']
 
 # test_source_root: The root path where tests are located.
 config.test_source_root = os.path.dirname(__file__)
@@ -47,6 +47,13 @@ config.test_exec_root = os.path.join(config.afir_obj_root, 'test')
 
 # Tweak the PATH to include the tools dir.
 llvm_config.with_environment('PATH', config.llvm_tools_dir, append_path=True)
+
+if config.enable_bindings_python:
+    llvm_config.with_environment(
+        "PYTHONPATH",
+        [os.path.join(config.afir_obj_root, "python_packages")],
+        append_path=True
+    )
 
 tool_dirs = [config.afir_tools_dir, config.llvm_tools_dir]
 tools = [
