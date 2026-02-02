@@ -16,6 +16,8 @@
 #include "llvm/Support/raw_ostream.h"
 #include "llvm/Support/Format.h"
 #include <algorithm>
+#include <sstream>
+#include <iomanip>
 
 #define GEN_PASS_DECL_CONVERTAFIRTOASCIRTEXTPASS
 #define GEN_PASS_DEF_CONVERTAFIRTOASCIRTEXTPASS
@@ -381,7 +383,12 @@ std::string AFIRToASCIRTextPass::generateNodeAttr(Operation *op, const std::stri
       if (auto affineMapAttr = dyn_cast<AffineMapAttr>(attr)) {
         auto affineMap = affineMapAttr.getValue();
         for (unsigned i = 0; i < affineMap.getNumResults(); i++) {
-          os << "      axis: " << i << "\n";
+          auto expr = affineMap.getResult(i);
+          if (auto dimExpr = dyn_cast<AffineDimExpr>(expr)) {
+            os << "      axis: " << dimExpr.getPosition() << "\n";
+          } else {
+            os << "      axis: " << i << "\n";
+          }
         }
         break;
       }
@@ -532,11 +539,31 @@ std::string AFIRToASCIRTextPass::generateIrAttrDef(Operation *op) {
     baseOpName = opName;
   }
 
-  bool needsEmptyIrAttrDef = (baseOpName == "load" || baseOpName == "store");
+  bool needsEmptyIrAttrDef = (baseOpName == "load" || baseOpName == "store" || baseOpName == "scalar");
   auto irAttrDefAttr = op->getAttrOfType<DictionaryAttr>("ir_attr_def");
 
   if (needsEmptyIrAttrDef || (irAttrDefAttr && !irAttrDefAttr.empty())) {
     os << "    ir_attr_def {\n";
+
+    if (baseOpName == "scalar") {
+      auto valueAttr = op->getAttr("value");
+      if (valueAttr) {
+        os << "      attr {\n";
+        os << "        key: \"value\"\n";
+        os << "        value {\n";
+
+        if (auto intAttr = dyn_cast<IntegerAttr>(valueAttr)) {
+          os << "          i: " << intAttr.getInt() << "\n";
+        } else if (auto floatAttr = dyn_cast<FloatAttr>(valueAttr)) {
+          std::ostringstream oss;
+          oss << std::scientific << std::setprecision(17) << floatAttr.getValueAsDouble();
+          os << "          s: \"" << oss.str() << "\"\n";
+        }
+
+        os << "        }\n";
+        os << "      }\n";
+      }
+    }
 
     if (irAttrDefAttr && !irAttrDefAttr.empty()) {
       for (auto attr : irAttrDefAttr) {
