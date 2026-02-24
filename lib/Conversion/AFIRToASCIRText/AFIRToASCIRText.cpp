@@ -379,8 +379,10 @@ std::string AFIRToASCIRTextPass::generateNodeAttr(Operation *op, const std::stri
 
   auto indexingMapsAttr = op->getAttrOfType<ArrayAttr>("indexing_maps");
   if (indexingMapsAttr) {
-    for (auto attr : indexingMapsAttr) {
-      if (auto affineMapAttr = dyn_cast<AffineMapAttr>(attr)) {
+    int numOperands = op->getNumOperands();
+    
+    if (numOperands < static_cast<int>(indexingMapsAttr.size())) {
+      if (auto affineMapAttr = dyn_cast<AffineMapAttr>(indexingMapsAttr[numOperands])) {
         auto affineMap = affineMapAttr.getValue();
         for (unsigned i = 0; i < affineMap.getNumResults(); i++) {
           auto expr = affineMap.getResult(i);
@@ -390,7 +392,6 @@ std::string AFIRToASCIRTextPass::generateNodeAttr(Operation *op, const std::stri
             os << "      axis: " << i << "\n";
           }
         }
-        break;
       }
     }
   }

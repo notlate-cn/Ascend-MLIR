@@ -15,8 +15,11 @@
 namespace mlir {
 namespace afir {
 
+#define GEN_PASS_DECL
 #define GEN_PASS_REGISTRATION
 #include "Conversion/Passes.h.inc"
+
+std::unique_ptr<Pass> createConvertAFIRToASCIRTextPass();
 
 }  // namespace afir
 }  // namespace mlir
