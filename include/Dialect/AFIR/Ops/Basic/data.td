@@ -16,6 +16,9 @@ include "Dialect/AFIR/Base.td"
 include "mlir/Interfaces/SideEffectInterfaces.td"
 include "mlir/IR/CommonTypeConstraints.td"
 
+include "mlir/IR/Interfaces.td"
+include "mlir/Interfaces/InferTypeOpInterface.td"
+
 def AFIR_ScalarOp : AFIR_NullaryOpBase<"scalar", [Pure], [I8, UI8, I16, UI16, I32, UI32, I64, UI64, F16, F32], "Invalid", "Scalar", 1> {
   let arguments = !con(
     (ins 

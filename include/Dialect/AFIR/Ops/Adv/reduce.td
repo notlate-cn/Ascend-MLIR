@@ -15,9 +15,11 @@ include "Dialect/AFIR/Dialect.td"
 include "Dialect/AFIR/Base.td"
 include "mlir/Interfaces/SideEffectInterfaces.td"
 include "mlir/IR/CommonTypeConstraints.td"
+include "mlir/IR/Interfaces.td"
+include "mlir/Interfaces/InferTypeOpInterface.td"
 
 class AFIR_UnaryReduceOp<string mnemonic, list<Trait> traits = [], list<Type> types> :
-    AFIR_UnaryOpBase<mnemonic, traits, types, types, "Reduce", "Vector", 1> {
+    AFIR_UnaryOpBase<mnemonic, traits # [InferTensorTypeAdaptor], types, types, "Reduce", "Vector", 1> {
   let arguments = !con(
     (ins 
       TensorOf<types>:$input,
@@ -25,6 +27,17 @@ class AFIR_UnaryReduceOp<string mnemonic, list<Trait> traits = [], list<Type> ty
     ),
     commonArgs
   );
+    let extraClassDeclaration = [{
+    /// Returns when two result types are compatible for this op; method used by
+    /// InferTypeOpInterface.
+    static bool isCompatibleReturnTypes(TypeRange l, TypeRange r);
+  }];
+  let extraClassDefinition = [{
+    bool $cppClass::isCompatibleReturnTypes(TypeRange l, TypeRange r) {
+      if (l.size() != r.size() || l.size() != 1) return false;
+      return succeeded(verifyCompatibleShape(l[0], r[0]));
+    }
+  }];
 }
 
 def AFIR_MaxOp : AFIR_UnaryReduceOp<"max", [Pure], [F16, F32]>;

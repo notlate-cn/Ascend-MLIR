@@ -1,5 +1,6 @@
 add_mlir_dialect_library(AFIRTransforms
   Canonicalize.cpp
+  AFIRInferShapes.cpp
 
   ADDITIONAL_HEADER_DIRS
         ${CMAKE_SOURCE_DIR}/include/Dialect/AFIR/Transforms
