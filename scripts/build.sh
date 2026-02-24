@@ -176,6 +176,8 @@ build_project() {
         cmake -G Ninja "${PROJECT_ROOT}" \
             -DCMAKE_BUILD_TYPE=${BUILD_TYPE} \
             -DCMAKE_INSTALL_PREFIX="${INSTALL_DIR}" \
+            -DAFIR_ENABLE_BINDING_PYTHON=true \
+            -DPython3_EXECUTABLE="$(which python3)" \
             -DLLVM_BUILD_DIR="${LLVM_BUILD_DIR}"
 
         cmake --build . --target all -j${NUM_JOBS}
