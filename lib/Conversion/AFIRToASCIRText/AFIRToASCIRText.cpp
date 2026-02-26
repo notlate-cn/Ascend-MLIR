@@ -451,6 +451,11 @@ std::string AFIRToASCIRTextPass::generateTensorAttr(Operation *op) {
     os << "  outputs {\n";
     os << "    attr {\n";
 
+    // Get element type for dtype
+    Type elementType = shapedType.getElementType();
+    int dtype = parseDataType(elementType);
+    os << "      dtype: " << dtype << "\n";
+
     for (int i = 0; i < rank; i++) {
       os << "      axis_ids: " << i << "\n";
     }
@@ -734,6 +739,13 @@ std::string AFIRToASCIRTextPass::generateDataNode(int nodeIndex, int argIndex, T
     os << "      axis_ids: 0\n";
     os << "      repeats: \"1\"\n";
     os << "      strides: \"1\"\n";
+  }
+
+  // Add dtype field
+  if (auto shapedType = dyn_cast<ShapedType>(argType)) {
+    Type elementType = shapedType.getElementType();
+    int dtype = parseDataType(elementType);
+    os << "      dtype: " << dtype << "\n";
   }
 
   os << "      mem {\n";
