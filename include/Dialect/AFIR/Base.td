@@ -9,11 +9,11 @@ include "Dialect/AFIR/Core/Attrs.td"
 //===----------------------------------------------------------------------===//
 class AFIR_CommonAttrs {
   dag commonArgs = (ins
-    AffineMapArrayAttr:$indexing_maps,
+    OptionalAttr<AffineMapArrayAttr>:$indexing_maps,
     DefaultValuedOptionalAttr<I32Attr, "-1">:$loop_axis,
     DefaultValuedOptionalAttr<DictionaryAttr, "{}">:$ir_attr_def,
     OptionalAttr<TmpBufDescArrayAttr>:$tmp_buffers,
-    AscTensorGroupsArrayAttr:$outputs
+    DefaultValuedAttr<AscTensorGroupsArrayAttr, "::mlir::afir::Position::GM">:$outputs
   );
 }
 

@@ -133,17 +133,34 @@ class SimpleRuntime:
         return name_void_ptr.value if ret == 0 else None
 
     def malloc(self, size):
+        # 参考pyasc实现，内存需要512字节对齐
+        real_size = size + 512
         c_memory_p = ctypes.c_void_p()
         ret = self.runtime.rtMalloc(
             ctypes.byref(c_memory_p),
-            ctypes.c_uint64(size),
+            ctypes.c_uint64(real_size),
             ctypes.c_uint32(0),
             ctypes.c_uint16(33),
         )
-        return c_memory_p.value if ret == 0 else None
+        if ret != 0:
+            return None
+        # 对齐到512字节边界
+        raw_addr = c_memory_p.value
+        # 512字节对齐：地址应该是512的整数倍
+        # 向上取整到下一个512的倍数
+        aligned_addr = ((raw_addr + 512 - 1) // 512) * 512
+        # 保存原始地址用于释放
+        if not hasattr(self, '_alloc_map'):
+            self._alloc_map = {}
+        self._alloc_map[aligned_addr] = raw_addr
+        # 调试输出
+        print(f"    [DEBUG malloc] size={size}, raw=0x{raw_addr:x}, aligned=0x{aligned_addr:x}, aligned%512={aligned_addr%512}")
+        return aligned_addr
 
     def free(self, ptr):
-        self.runtime.rtFree(ctypes.c_void_p(ptr))
+        # 获取原始地址用于释放
+        raw_addr = self._alloc_map.get(ptr, ptr)
+        self.runtime.rtFree(ctypes.c_void_p(raw_addr))
 
     def memcpy(self, dst, src, size, kind):
         return self.runtime.rtMemcpy(
@@ -265,16 +282,40 @@ def run_test():
     input0_addr = runtime.malloc(len(input0_bytes))
     input1_addr = runtime.malloc(len(input1_bytes))
     output_addr = runtime.malloc(len(output_bytes))
+    workspace_addr = runtime.malloc(8192)  # workspace是必需的
     print(f"  ✅ 内存分配成功")
 
-    # 步骤 8: 拷贝数据到设备
+    # 步骤 8: 拷贝数据到设备（使用分块拷贝）
     print("\n[步骤 8] 拷贝数据")
-    input0_ptr = (ctypes.c_char * len(input0_bytes)).from_buffer_copy(input0_bytes)
-    input1_ptr = (ctypes.c_char * len(input1_bytes)).from_buffer_copy(input1_bytes)
+    # 验证输入数据
+    import struct
+    first_val = struct.unpack('<f', input0_bytes[:4])[0]
+    print(f"    [DEBUG] input0[0] (host): {first_val}")
 
-    runtime.memcpy(input0_addr, ctypes.addressof(input0_ptr), len(input0_bytes), 1)
-    runtime.memcpy(input1_addr, ctypes.addressof(input1_ptr), len(input1_bytes), 1)
-    print(f"  ✅ 数据拷贝完成")
+    # 分块拷贝input0（256字节每块）
+    chunk_size = 256
+    for offset in range(0, len(input0_bytes), chunk_size):
+        chunk_bytes = min(chunk_size, len(input0_bytes) - offset)
+        chunk_ptr = (ctypes.c_char * chunk_bytes).from_buffer_copy(input0_bytes[offset:offset+chunk_bytes])
+        ret0 = runtime.memcpy(input0_addr + offset, ctypes.addressof(chunk_ptr), chunk_bytes, 1)
+
+    # 拷贝input1（小数据，直接拷贝）
+    input1_ptr = (ctypes.c_char * len(input1_bytes)).from_buffer_copy(input1_bytes)
+    ret1 = runtime.memcpy(input1_addr, ctypes.addressof(input1_ptr), len(input1_bytes), 1)
+    print(f"  ✅ 数据拷贝完成 (ret1={ret1})")
+
+    # 验证：手动将一些数据写入output地址，然后读回验证memcpy是否工作
+    test_pattern = struct.pack('<f', 123.456)
+    test_ptr = (ctypes.c_char * 4).from_buffer_copy(test_pattern)
+    runtime.memcpy(output_addr, ctypes.addressof(test_ptr), 4, 1)  # H2D
+    read_back = (ctypes.c_char * 4)()
+    runtime.memcpy(ctypes.addressof(read_back), output_addr, 4, 2)  # D2H
+    read_val = struct.unpack('<f', bytes(read_back))[0]
+    print(f"    [DEBUG] round-trip test: write=123.456, read={read_val}")
+    if abs(read_val - 123.456) < 0.001:
+        print(f"    [DEBUG] ✓ memcpy工作正常！")
+    else:
+        print(f"    [DEBUG] ✗ memcpy失败！")
 
     # 步骤 9: 计算 Tiling
     print("\n[步骤 9] 计算 Tiling")
@@ -283,7 +324,7 @@ def run_test():
 
     # 步骤 10: 构建参数
     print("\n[步骤 10] 构建参数")
-    args_list = [input0_addr, input1_addr, output_addr, 0]
+    args_list = [input0_addr, input1_addr, output_addr, workspace_addr]
     for i in range(0, len(tiling_bytes), 8):
         word = tiling_bytes[i:i + 8]
         word = word + b'\\x00' * (8 - len(word))
@@ -292,6 +333,9 @@ def run_test():
 
     args_array = (ctypes.c_uint64 * len(args_list))(*args_list)
     print(f"  ✅ 参数数量: {len(args_list)}")
+    # 打印前4个参数（地址参数）
+    for i in range(min(4, len(args_list))):
+        print(f"    args[{i}] = 0x{args_list[i]:016x}")
 
     # 步骤 11: 启动 Kernel
     print("\n[步骤 11] 启动 Kernel")
@@ -303,12 +347,53 @@ def run_test():
     runtime.synchronize()
     print(f"  ✅ 同步完成")
 
+    # 验证：检查kernel执行后output地址的内容
+    check_ptr = (ctypes.c_char * 4)()
+    runtime.memcpy(ctypes.addressof(check_ptr), output_addr, 4, 2)  # D2H
+    check_val = struct.unpack('<f', bytes(check_ptr))[0]
+    print(f"    [DEBUG] output[0] immediately after kernel: {check_val}")
+
     # 步骤 12: 拷贝输出
     print("\n[步骤 12] 拷贝输出")
-    output_buffer = (ctypes.c_char * len(output_bytes))()
-    runtime.memcpy(ctypes.addressof(output_buffer), output_addr, len(output_bytes), 2)
-    output_array = np.frombuffer(output_buffer, dtype=np.float32).reshape(20, 31)
-    print(f"  ✅ 输出拷贝完成")
+
+    # 再次验证output地址的内容（确保数据还在）
+    verify_ptr = (ctypes.c_char * 4)()
+    runtime.memcpy(ctypes.addressof(verify_ptr), output_addr, 4, 2)
+    verify_val = struct.unpack('<f', bytes(verify_ptr))[0]
+    print(f"    [DEBUG] output[0] before final copy: {verify_val}")
+
+    # 分块拷贝输出数据
+    # 使用与verify_ptr相同的方式：每个4字节单独分配缓冲区
+    print(f"    正在使用逐元素拷贝...")
+    output_list = []
+    for i in range(0, len(output_bytes), 4):
+        elem_ptr = (ctypes.c_char * 4)()
+        ret = runtime.memcpy(
+            ctypes.addressof(elem_ptr),
+            output_addr + i,
+            4,
+            2  # DEVICE_TO_HOST
+        )
+        if ret != 0:
+            print(f"    [DEBUG] Element {i//4} memcpy failed with ret={ret}")
+        output_list.append(bytes(elem_ptr))
+        # 验证前几个元素
+        if i == 0:
+            first_val = struct.unpack('<f', bytes(elem_ptr))[0]
+            print(f"    [DEBUG] Element 0: {first_val}, ret={ret}")
+        elif i == 4:
+            second_val = struct.unpack('<f', bytes(elem_ptr))[0]
+            print(f"    [DEBUG] Element 1: {second_val}, ret={ret}")
+        elif i == 620 - 4:  # 最后一个元素
+            last_val = struct.unpack('<f', bytes(elem_ptr))[0]
+            print(f"    [DEBUG] Element 619: {last_val}, ret={ret}")
+    output_buffer_bytes = b''.join(output_list)
+    print(f"  ✅ 输出拷贝完成 (逐元素拷贝, {len(output_list)} elements)")
+    # 转换为numpy array
+    output_array = np.frombuffer(output_buffer_bytes, dtype=np.float32).reshape(20, 31)
+
+    # 检查
+    print(f"    [DEBUG] output[0] (from d2h): {output_array[0, 0]}")
 
     # 步骤 13: 验证结果
     print("\n[步骤 13] 验证结果")
@@ -326,6 +411,7 @@ def run_test():
     runtime.free(input0_addr)
     runtime.free(input1_addr)
     runtime.free(output_addr)
+    runtime.free(workspace_addr)
 
     return is_close
 
@@ -346,6 +432,9 @@ if __name__ == "__main__":
             print("❌❌❌ 测试失败 ❌❌❌")
         print("=" * 70)
         # 立即退出，避免清理时的段错误
+        import sys
+        sys.stdout.flush()
+        sys.stderr.flush()
         os._exit(0 if success else 1)
     except Exception as e:
         print()
@@ -353,6 +442,9 @@ if __name__ == "__main__":
         print(f"❌ 测试异常: {e}")
         print("=" * 70)
         import traceback
+        import sys
 
         traceback.print_exc()
+        sys.stdout.flush()
+        sys.stderr.flush()
         os._exit(1)

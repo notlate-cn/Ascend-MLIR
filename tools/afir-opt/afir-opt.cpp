@@ -19,6 +19,7 @@
 #include "mlir/Tools/mlir-opt/MlirOptMain.h"
 #include "Dialect/AFIR/AFIR.h"
 #include "Dialect/AFIR/Transforms/Passes.h"
+#include "Dialect/AFIR/TransformOps/AFIRTransformOps.h"
 #include "Conversion/Passes.h"
 
 using namespace mlir;
@@ -30,6 +31,9 @@ int main(int argc, char **argv) {
   // Register AFIR dialect
   registry.insert<afir::AFIRDialect>();
   registry.insert<ascendc::AscendCDialect>();
+
+  // Register AFIR transform dialect extension
+  afir::registerTransformDialectExtension(registry);
 
   // Register all mlir extentions, including some interface and some ops in transform namespace
   registerAllExtensions(registry);
