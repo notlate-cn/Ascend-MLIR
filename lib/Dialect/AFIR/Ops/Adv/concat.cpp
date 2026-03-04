@@ -7,6 +7,7 @@
 #include "Dialect/AFIR/AFIR.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/OpImplementation.h"
+#include "mlir/IR/TypeUtilities.h"
 
 using namespace mlir;
 using namespace mlir::afir;
@@ -21,7 +22,6 @@ LogicalResult ConcatOp::verify() {
   }
 
   int64_t axis = getConcatAxisAttr().getInt();
-
   auto firstTensorType = llvm::dyn_cast<RankedTensorType>(getInputs()[0].getType());
   if (!firstTensorType) {
     return emitOpError("requires ranked tensor inputs");
@@ -73,9 +73,59 @@ LogicalResult ConcatOp::verify() {
   SmallVector<int64_t> expectedShape(referenceShape.begin(), referenceShape.end());
   expectedShape[axis] = concatDimSize;
 
-  if (resultType.getShape() != ArrayRef<int64_t>(expectedShape)) {
+  if (verifyCompatibleShape(expectedShape, resultType.getShape()).failed()) {
     return emitOpError("result shape mismatch");
   }
+  // if (resultType.getShape() != ArrayRef<int64_t>(expectedShape)) {
+  //   return emitOpError("result shape mismatch");
+  // }
 
+  return success();
+}
+
+LogicalResult ConcatOp::inferReturnTypeComponents(
+    mlir::MLIRContext *context, std::optional<mlir::Location> location, mlir::afir::ConcatOpAdaptor adaptor,
+    llvm::SmallVectorImpl<mlir::ShapedTypeComponents> &inferredReturnType) {
+  int64_t rank = -1;
+  for (auto oper : adaptor.getInputs()) {
+    if (auto opType = llvm::dyn_cast<RankedTensorType>(oper.getType())) {
+      if (rank == -1) {
+        rank = opType.getRank();
+      } else if (rank != opType.getRank()) {
+        return failure();
+      }
+    } else {
+      auto eleType = llvm::cast<UnrankedTensorType>(oper.getType()).getElementType();
+      inferredReturnType.push_back(ShapedTypeComponents(eleType));
+      return success();
+    }
+  }
+  auto axis = adaptor.getConcatAxis();
+  if (axis < 0 || axis >= rank) {
+    return failure();
+  }
+  SmallVector<int64_t> newShape(rank, 0);
+  for (size_t i = 0; i < adaptor.getInputs().size(); i++) {
+    auto shape = llvm::dyn_cast<RankedTensorType>(adaptor.getInputs()[i].getType()).getShape();
+    for (int j = 0; j < rank; j++) {
+      if (shape[j] == ShapedType::kDynamic) {
+        newShape[j] = ShapedType::kDynamic;
+      } else {
+        if (j != axis) {
+          if (newShape[j] == 0 || shape[j] == ShapedType::kDynamic) {
+            newShape[j] = shape[j];
+          } else if (newShape[j] != shape[j] && newShape[j] != ShapedType::kDynamic) {
+            return failure();
+          }
+        } else {
+          if (newShape[j] != ShapedType::kDynamic) {
+            newShape[j] += shape[j];
+          }
+        }
+      }
+    }
+  }
+  auto eleType = llvm::cast<RankedTensorType>(adaptor.getInputs()[0].getType()).getElementType();
+  inferredReturnType.push_back(ShapedTypeComponents(newShape, eleType));
   return success();
 }

@@ -39,4 +39,10 @@ def I4 : I<4>;
 def SI4 : SI<4>;
 def UI4 : UI<4>;
 
+//===----------------------------------------------------------------------===//
+// Attribute Definitions
+//===----------------------------------------------------------------------===//
+
+def F16Attr : FloatAttrBase<F16, "16-bit float attribute">;
+
 #endif // AFIR_CORE_BASE

@@ -16,18 +16,45 @@ include "Dialect/AFIR/Dialect.td"
 include "Dialect/AFIR/Base.td"
 include "mlir/Interfaces/SideEffectInterfaces.td"
 include "mlir/IR/CommonTypeConstraints.td"
+include "mlir/IR/Interfaces.td"
+include "mlir/Interfaces/InferTypeOpInterface.td"
+
 
 class AFIR_UnaryMathOp<string mnemonic, list<Trait> traits = [], list<Type> types> :
-    AFIR_UnaryOp<mnemonic, traits, types, "Elementwise", "Vector", 1>;
+    AFIR_UnaryOp<mnemonic, traits # [SameOperandsAndResultType], types, "Elementwise", "Vector", 1> {
+      let extraClassDeclaration = [{
+    /// Returns when two result types are compatible for this op; method used by
+    /// InferTypeOpInterface.
+    static bool isCompatibleReturnTypes(TypeRange l, TypeRange r);
+  }];
+  let extraClassDefinition = [{
+    bool $cppClass::isCompatibleReturnTypes(TypeRange l, TypeRange r) {
+      if (l.size() != r.size() || l.size() != 1) return false;
+      return succeeded(verifyCompatibleShape(l[0], r[0]));
+    }
+  }];
+    }
 
 class AFIR_BinaryMathOp<string mnemonic, list<Trait> traits = [], list<Type> types> :
-    AFIR_BinaryOp<mnemonic, traits, types, "Elementwise", "Vector", 1>;
+    AFIR_BinaryOp<mnemonic, traits # [InferTensorTypeAdaptor], types, "Elementwise", "Vector", 1> {
+      let extraClassDeclaration = [{
+    /// Returns when two result types are compatible for this op; method used by
+    /// InferTypeOpInterface.
+    static bool isCompatibleReturnTypes(TypeRange l, TypeRange r);
+  }];
+  let extraClassDefinition = [{
+    bool $cppClass::isCompatibleReturnTypes(TypeRange l, TypeRange r) {
+      if (l.size() != r.size() || l.size() != 1) return false;
+      return succeeded(verifyCompatibleShape(l[0], r[0]));
+    }
+  }];
+    }
 
 class AFIR_BinaryHomoMathOp<string mnemonic, list<Trait> traits = [], list<Type> inputTypes, list<Type> resultTypes> :
-    AFIR_BinaryHomoOp<mnemonic, traits, inputTypes, resultTypes, "Elementwise", "Vector", 1>;
+    AFIR_BinaryHomoOp<mnemonic, traits # [InferTensorTypeAdaptor], inputTypes, resultTypes, "Elementwise", "Vector", 1>;
 
 class AFIR_TernaryMathOp<string mnemonic, list<Trait> traits = [], list<Type> types> :
-    AFIR_TernaryOp<mnemonic, traits, types, "Elementwise", "Vector", 1>;
+    AFIR_TernaryOp<mnemonic, traits # [InferTensorTypeAdaptor], types, "Elementwise", "Vector", 1>;
 
 //===----------------------------------------------------------------------===//
 // Unary Operations
@@ -92,6 +119,18 @@ def AFIR_LtOp : AFIR_BinaryHomoMathOp<"lt", [Pure], [F16, F32], [UI8]>;
 //===----------------------------------------------------------------------===//
 // Ternary Operations
 //===----------------------------------------------------------------------===//
-def AFIR_ClipByValue : AFIR_TernaryMathOp<"clip_by_value", [Pure], [F16, F32]>;
+def AFIR_ClipByValue : AFIR_TernaryMathOp<"clip_by_value", [Pure], [F16, F32]> {
+        let extraClassDeclaration = [{
+    /// Returns when two result types are compatible for this op; method used by
+    /// InferTypeOpInterface.
+    static bool isCompatibleReturnTypes(TypeRange l, TypeRange r);
+  }];
+  let extraClassDefinition = [{
+    bool $cppClass::isCompatibleReturnTypes(TypeRange l, TypeRange r) {
+      if (l.size() != r.size() || l.size() != 1) return false;
+      return succeeded(verifyCompatibleShape(l[0], r[0]));
+    }
+  }];
+}
 
 #endif // AFIR_MATH_OPS

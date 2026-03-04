@@ -275,7 +275,7 @@ func.func @test_where(%arg0: tensor<4x4xui8>, %arg1: tensor<4x4xf32>, %arg2: ten
 
 // CHECK-LABEL: func.func @test_scalar
 func.func @test_scalar() -> tensor<f32> {
-  %0 = afir.scalar {indexing_maps = [], outputs = [#afir.asc_tensor<tensor_id = 0, reuse_id = -1, position = <vector_in, depth = 0, is_double_buffer = false>, position_id = 0>]} : tensor<f32>
+  %0 = afir.scalar {value = 1.0 : f32, indexing_maps = [], outputs = [#afir.asc_tensor<tensor_id = 0, reuse_id = -1, position = <vector_in, depth = 0, is_double_buffer = false>, position_id = 0>]} : tensor<f32>
   return %0 : tensor<f32>
 }
 

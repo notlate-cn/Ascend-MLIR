@@ -29,3 +29,4 @@ target_include_directories(AFIRDialect PRIVATE
 )
 
 add_subdirectory(Transforms)
+add_subdirectory(TransformOps)

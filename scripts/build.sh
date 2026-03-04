@@ -165,13 +165,23 @@ build_project() {
 
     print_info "Using LLVM from: ${LLVM_BUILD_DIR}"
 
-    # Pass LLVM_BUILD_DIR to cmake, it will automatically derive MLIR_DIR
-    cmake -G Ninja "${PROJECT_ROOT}" \
-        -DCMAKE_BUILD_TYPE=${BUILD_TYPE} \
-        -DCMAKE_INSTALL_PREFIX="${INSTALL_DIR}" \
-        -DLLVM_BUILD_DIR="${LLVM_BUILD_DIR}"
+    # Check if this is an incremental build (build.ninja exists)
+    if [ -f "build.ninja" ]; then
+        print_info "Incremental build detected (build.ninja exists)"
+        print_info "Skipping CMake configuration, running ninja directly..."
+        ninja -j${NUM_JOBS}
+    else
+        print_info "First-time build or CMake configuration needed"
+        # Pass LLVM_BUILD_DIR to cmake, it will automatically derive MLIR_DIR
+        cmake -G Ninja "${PROJECT_ROOT}" \
+            -DCMAKE_BUILD_TYPE=${BUILD_TYPE} \
+            -DCMAKE_INSTALL_PREFIX="${INSTALL_DIR}" \
+            -DAFIR_ENABLE_BINDING_PYTHON=true \
+            -DPython3_EXECUTABLE="$(which python3)" \
+            -DLLVM_BUILD_DIR="${LLVM_BUILD_DIR}"
 
-    cmake --build . --target all -j${NUM_JOBS}
+        cmake --build . --target all -j${NUM_JOBS}
+    fi
 
     local end_time=$(date +%s)
     local duration=$((end_time - start_time))
