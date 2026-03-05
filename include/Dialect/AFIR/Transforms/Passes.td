@@ -28,4 +28,14 @@ def AFIRShapeInferencePass : Pass<"afir-shape-inference", "mlir::ModuleOp"> {
   let dependentDialects = ["mlir::afir::AFIRDialect"];
 }
 
+def AFIRAddAxisPass : Pass<"afir-add-axis", "mlir::ModuleOp"> {
+  let summary = "Add Axis for AFIR operations";
+  let description = [{
+    This pass add axis fpr AFIR operations.
+  }];
+  let constructor = "mlir::afir::createAFIRAddAxisPass()";
+  let dependentDialects = ["mlir::afir::AFIRDialect"];
+}
+
+
 #endif // AFIR_TRANSFORMS_PASSES
