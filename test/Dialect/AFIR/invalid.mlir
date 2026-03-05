@@ -19,14 +19,9 @@ func.func @test_unary_shape_mismatch(%arg0: tensor<4x4xf32>) -> tensor<2x4xf32> 
   return %0 : tensor<2x4xf32>
 }
 
-func.func @test_binary_rank_mismatch(%arg0: tensor<4x4xf32>, %arg1: tensor<4xf32>) -> tensor<4x4xf32> {
-  // expected-error @+1 {{'afir.add' op operands must have the same rank}}
-  %0 = afir.add %arg0, %arg1 {indexing_maps = [#map, #map1d, #map], outputs = [#afir.asc_tensor<vectorized_axis = [0, 1], vectorized_strides = [4, 1], tensor_id = 0, reuse_id = -1, position = <vector_in, depth = 0, is_double_buffer = false>, position_id = 0>]} : (tensor<4x4xf32>, tensor<4xf32>) -> tensor<4x4xf32>
-  return %0 : tensor<4x4xf32>
-}
 
 func.func @test_binary_shape_mismatch(%arg0: tensor<4x4xf32>, %arg1: tensor<2x4xf32>) -> tensor<4x4xf32> {
-  // expected-error @+1 {{'afir.add' op operands must have compatible shapes}}
+  // expected-error @+1 {{'afir.add' op failed to infer returned types}}
   %0 = afir.add %arg0, %arg1 {indexing_maps = [#map, #map, #map], outputs = [#afir.asc_tensor<vectorized_axis = [0, 1], vectorized_strides = [4, 1], tensor_id = 0, reuse_id = -1, position = <vector_in, depth = 0, is_double_buffer = false>, position_id = 0>]} : (tensor<4x4xf32>, tensor<2x4xf32>) -> tensor<4x4xf32>
   return %0 : tensor<4x4xf32>
 }

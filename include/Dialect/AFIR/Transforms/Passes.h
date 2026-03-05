@@ -19,6 +19,8 @@ std::unique_ptr<Pass> createAFIRCanonicalizePass();
 // Shape inference pass
 std::unique_ptr<Pass> createAFIRShapeInferencePass();
 
+std::unique_ptr<Pass> createAFIRAddAxisPass();
+
 // Generate pass registration declarations
 #define GEN_PASS_REGISTRATION
 #include "Dialect/AFIR/Transforms/Passes.h.inc"
