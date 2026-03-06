@@ -1,0 +1,1 @@
+export PATH=$PATH:/home/niu/code/Ascend-MLIR/build/bin

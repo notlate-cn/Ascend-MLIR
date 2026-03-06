@@ -31,6 +31,8 @@ target_link_libraries(afir-opt
     AFIRTransforms
     AFIRToASCIRConversion
     AFIRToASCIRTextConversion
+    AscendCBufferPlacementConversion
+    LinalgToAscendCConversion
     AFIRUtils
 )
 

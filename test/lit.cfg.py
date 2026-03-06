@@ -49,11 +49,18 @@ config.test_exec_root = os.path.join(config.afir_obj_root, 'test')
 llvm_config.with_environment('PATH', config.llvm_tools_dir, append_path=True)
 
 if config.enable_bindings_python:
-    llvm_config.with_environment(
-        "PYTHONPATH",
-        [os.path.join(config.afir_obj_root, "python_packages")],
-        append_path=True
-    )
+    python_packages_dir = os.path.join(config.afir_obj_root, "python_packages")
+    if os.path.exists(python_packages_dir):
+        llvm_config.with_environment(
+            "PYTHONPATH",
+            [python_packages_dir],
+            append_path=True
+        )
+    else:
+        config.enable_bindings_python = "false"
+
+if not config.enable_bindings_python or config.enable_bindings_python == "false":
+    config.excludes.append('python')
 
 tool_dirs = [config.afir_tools_dir, config.llvm_tools_dir]
 tools = [

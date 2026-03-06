@@ -7,6 +7,7 @@
 /.gitcode/workflows/*.md
 /.gitcode/workflows/ci-with-docker.yml
 /python/runtime/__pycache__
+.DS_Store
 
 # build files
 build/
@@ -24,3 +25,4 @@ python/runtime/__pycache__
 
 # third_party
 externals/llvm-project
+/CLAUDE.md

@@ -1,2 +1,4 @@
 add_subdirectory(AFIRToASCIR)
 add_subdirectory(AFIRToASCIRText)
+add_subdirectory(AscendCBufferPlacement)
+add_subdirectory(LinalgToAscendC)
