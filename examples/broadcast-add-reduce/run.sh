@@ -96,19 +96,29 @@ echo "  [on-chip memory_space 标注]"
 grep -E "memory_space|: i32" "$DIR/step4_buffer_placement.mlir" | head -10 || \
   echo "  (注：本算子无 matmul，buffer placement 主要标注 VECIN/VECOUT)"
 
+# ── STAGE 5: Linalg → AscendC Compute ─────────────────────
+echo ""
+echo "[STAGE 5] Linalg → AscendC：--linalg-to-ascendc"
+echo "  输入: step4_buffer_placement.mlir"
+$AFIR_OPT \
+  --linalg-to-ascendc \
+  "$DIR/step4_buffer_placement.mlir" \
+  --canonicalize \
+  --cse \
+  -o "$DIR/step5_ascendc.mlir" 2>&1
+echo "  ✓ Linalg→AscendC 成功，输出: step5_ascendc.mlir"
+echo ""
+echo "  [生成的 AscendC ops]"
+grep -E "ascendc\.(broadcast|add_l2|reduce_sum_2d|data_copy)" "$DIR/step5_ascendc.mlir" | head -20 || \
+  echo "  (未找到 ascendc compute ops，请检查输出)"
+
 echo ""
 echo "========================================================"
 echo " 流水线完成！生成文件："
-echo "   step0_input.mlir.out       → 解析后 IR"
-echo "   step1_fused.mlir           → 融合后（3 generic → 1）"
-echo "   step2_tiled.mlir           → Tiling 后（TB/Tb 两级循环）"
-echo "   step3_bufferized.mlir      → Bufferize 后（memref）"
+echo "   step0_input_out.mlir        → 解析后 IR"
+echo "   step1_fused.mlir            → 融合后（3 generic → 1）"
+echo "   step2_tiled.mlir            → Tiling 后（TB/Tb 两级循环）"
+echo "   step3_bufferized.mlir       → Bufferize 后（memref）"
 echo "   step4_buffer_placement.mlir → on-chip 内存标注"
+echo "   step5_ascendc.mlir          → AscendC compute ops"
 echo "========================================================"
-echo ""
-echo " [说明] step1 融合结论："
-echo "   linalg-fuse-elementwise-ops 将 Broadcast+Add 的计算"
-echo "   内联进了 ReduceSum 的 body，生成单个 [parallel, reduction] generic："
-echo "     acc += A[d0] + B[d0,d1]"
-echo "   这比"分成两段Kernel"更优——避免了中间 D[M,N] 的 GM 写回读取。"
-echo "   这正是 AutoFuse 的最优融合情形：Reduce 能吃掉上游所有 Elementwise。"
