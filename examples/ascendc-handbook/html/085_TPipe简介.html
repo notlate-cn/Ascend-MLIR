@@ -1,0 +1,34 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>TPipe简介</title>
+    <style>
+        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; max-width: 900px; margin: 0 auto; padding: 20px; line-height: 1.6; }
+        pre { background: #f4f4f4; padding: 15px; overflow-x: auto; border-radius: 5px; }
+        code { background: #f4f4f4; padding: 2px 6px; border-radius: 3px; }
+        table { border-collapse: collapse; width: 100%; }
+        th, td { border: 1px solid #ddd; padding: 8px; text-align: left; }
+        th { background: #f4f4f4; }
+        img { max-width: 100%; }
+    </style>
+</head>
+<body>
+    <p><small>原始URL: <a href="https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_0108.html">https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_0108.html</a></small></p>
+    <hr>
+    <div data-v-03366c12="" class="the-article-body"><a name="ZH-CN_TOPIC_0000002520880454"></a><a name="ZH-CN_TOPIC_0000002520880454"></a>
+
+<h1 class="topictitle1">TPipe简介</h1>
+<div id="body0000002417498765"><p id="ZH-CN_TOPIC_0000002520880454__p139081957123516">TPipe用于统一管理Device端内存等资源，一个Kernel函数必须且只能初始化一个TPipe对象。其主要功能包括：</p>
+<ul id="ZH-CN_TOPIC_0000002520880454__ul69081557173515"><li id="ZH-CN_TOPIC_0000002520880454__li790905715356"><strong id="ZH-CN_TOPIC_0000002520880454__b15909357113513">内存资源管理</strong>：通过TPipe的InitBuffer接口，可以为TQue和TBuf分配内存，分别用于队列的内存初始化和临时变量内存的初始化。</li><li id="ZH-CN_TOPIC_0000002520880454__li1737619477361"><strong id="ZH-CN_TOPIC_0000002520880454__b19091857103515">同步事件管理</strong>：通过TPipe的AllocEventID、ReleaseEventID等接口，可以申请和释放事件ID，用于同步控制。</li></ul>
+</div>
+<div>
+<div class="familylinks">
+<div class="parentlink"><strong>父主题：</strong> <a href="atlasascendc_api_07_0108.html" data-outer="inner" class="document-anchor" data-href="atlasascendc_api_07_0108.html" data-doc="true" target="_self" data-multiple-screen="true">TPipe</a></div>
+</div>
+</div>
+
+</div>
+</body>
+</html>

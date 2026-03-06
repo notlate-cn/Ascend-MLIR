@@ -65,4 +65,72 @@ def ConvertAFIRToASCIRTextPass : Pass<"convert-afir-to-ascir-text", "mlir::Modul
   ];
 }
 
+//===----------------------------------------------------------------------===//
+// AscendC Buffer Placement
+//===----------------------------------------------------------------------===//
+
+def AscendCBufferPlacementPass : Pass<"ascendc-buffer-placement", "mlir::func::FuncOp"> {
+  let summary = "Annotate memref allocs with TPosition memory_space and insert explicit DataCopy/Fixpipe ops";
+  let description = [{
+    This pass implements Phase 1 of AscendC buffer placement:
+    - Annotates memref allocs with TPosition memory_space attributes
+    - Inserts explicit DataCopy/Fixpipe operations based on ascendc annotations
+    - Removes all ascendc.* annotations
+
+    TPosition values:
+    - GM (0): Global memory
+    - A1 (1), B1 (3): L1 buffers
+    - A2 (2), B2 (4): L0 buffers
+    - CO1 (7): Cube output buffer
+    - VECIN (9): Vector input buffer
+    - VECOUT (10): Vector output buffer
+    - VECCALC (11): Vector calculation buffer
+
+    The pass processes ascendc.prologue/epilogue annotations on scf.for loops
+    and ascendc.unit annotations to determine appropriate buffer placement.
+  }];
+  let constructor = "mlir::afir::createAscendCBufferPlacementPass()";
+  let dependentDialects = [
+    "mlir::ascendc::AscendCDialect",
+    "mlir::memref::MemRefDialect",
+    "mlir::arith::ArithDialect"
+  ];
+}
+
+
+//===----------------------------------------------------------------------===//
+// Linalg + memref.copy to AscendC Conversion (unified pass)
+//===----------------------------------------------------------------------===//
+
+def LinalgToAscendCPass : Pass<"linalg-to-ascendc", "mlir::func::FuncOp"> {
+  let summary = "Lower linalg compute ops and memref.copy to AscendC dialect ops";
+  let description = [{
+    Unified pass that lowers both linalg compute ops and memref.copy data-move
+    ops to AscendC dialect ops. A single TPipe and one TQueue per on-chip buffer
+    are created once per function; all ops share the same queue objects so data
+    flow is correctly connected.
+
+    Data-move lowering (memref.copy):
+      GM(0) → A1(1)/B1(3)  : alloc_tensor → data_copy_nd2nz → enque_tensor
+      GM(0) → VECIN(9)      : alloc_tensor → data_copy_l2    → enque_tensor
+      A1(1) → A2(2)         : deque → alloc → load_data_l0              → enque → free
+      B1(3) → B2(4)         : deque → alloc → load_data_with_transpose  → enque → free
+      CO1(7) → VECIN(9)     : deque → alloc → fixpipe                   → enque → free
+      VECOUT(10) → GM(0)    : deque → data_copy_l2 → free
+
+    Compute lowering (linalg ops):
+      linalg.matmul (A2/B2/CO1)       : deque A2+B2, alloc CO1 → mmad → enque CO1
+      linalg.fill (on-chip dst)        : alloc → duplicate_l2 → enque
+      linalg.elementwise add           : deque srcs, alloc dst → add_l2 → enque dst
+      linalg.elementwise max_signed    : deque srcs, alloc dst → max_l2 → enque dst
+  }];
+  let constructor = "mlir::afir::createLinalgToAscendCPass()";
+  let dependentDialects = [
+    "mlir::ascendc::AscendCDialect",
+    "mlir::memref::MemRefDialect",
+    "mlir::arith::ArithDialect",
+    "mlir::linalg::LinalgDialect"
+  ];
+}
+
 #endif // AFIR_CONVERSION_PASSES

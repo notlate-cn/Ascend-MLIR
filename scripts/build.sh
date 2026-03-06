@@ -182,6 +182,7 @@ build_project() {
 
         cmake --build . --target all -j${NUM_JOBS}
     fi
+    touch "${BUILD_DIR}/.last_build_time"
 
     local end_time=$(date +%s)
     local duration=$((end_time - start_time))
@@ -190,10 +191,30 @@ build_project() {
 
 build_tests() {
     local start_time=$(date +%s)
-    print_info "Building and running tests..."
 
+    # Check if sources have changed since last build via ninja dry-run
+    local needs_build=false
+    if [ ! -f "${BUILD_DIR}/build.ninja" ]; then
+        print_info "No previous build found, building first..."
+        needs_build=true
+    else
+        cd "${BUILD_DIR}"
+        if ! ninja -n all 2>&1 | grep -q "^ninja: no work to do\.$"; then
+            needs_build=true
+        fi
+    fi
+
+    if $needs_build; then
+        print_info "Source changes detected, building..."
+        cd "${BUILD_DIR}"
+        ninja -j${NUM_JOBS}
+    else
+        print_info "No source changes detected, skipping build."
+    fi
+
+    print_info "Running tests..."
     cd "${BUILD_DIR}"
-    cmake --build . --target check-afir -j${NUM_JOBS}
+    ninja check-afir -j${NUM_JOBS}
 
     local end_time=$(date +%s)
     local duration=$((end_time - start_time))
