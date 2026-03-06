@@ -19,6 +19,7 @@
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
+#include "mlir/IR/AffineMap.h"
 #include "mlir/IR/Builders.h"
 #include "llvm/Support/Debug.h"
 
@@ -171,6 +172,291 @@ LogicalResult convertCompute(func::FuncOp funcOp, AscendCBufferContext &ctx) {
     Value tensor = allocTensor(builder, loc, queue, elemType);
     return {tensor, forOp};
   };
+
+  // --- linalg.generic {iterator_types contains "reduction"} ---
+  //
+  // Generic lowering for reduction generics (e.g. broadcast+add+reducesum).
+  // The strategy follows the AscendNPU vector memory hierarchy:
+  //   GM → VECIN (via data_copy_l2)
+  //   VECIN → VECCALC (via broadcast_l2 / add_l2 / etc., inlined from body)
+  //   VECCALC → VECOUT (via reduce_sum_2d_l2 for reduction dims)
+  //   VECOUT → GM (via data_copy_l2, handled by data-move pass)
+  //
+  // Body inlining rules:
+  //   - Each input is classified by its indexing map:
+  //       * "broadcast" input: map results < loop dims (some dims absent) → broadcast_l2
+  //       * "full" input: map results == loop dims → direct copy into VECCALC via data_copy_l2
+  //   - GM inputs (memory_space == 0) are dynamically copied into a fresh VECCALC.
+  //   - VECIN inputs (memory_space == 9) that are broadcast get broadcast_l2'd into VECCALC.
+  //   - Body arith ops are walked in order; each arith.addf / arith.maxf maps to add_l2 / max_l2
+  //     operating on the accumulated VECCALC tensors.
+  //   - The final accumulated VECCALC (over parallel dims) is reduced via reduce_sum_2d_l2
+  //     with ReduceLayout::AR (A=parallel rows, R=reduction cols).
+  //
+  // Helper: return true when an AffineMap is a "broadcast" map for the given
+  // iterator rank — i.e., it projects away at least one dimension (a dim whose
+  // axis does not appear in the map's result expressions).
+  auto isBroadcastMap = [](AffineMap map, unsigned iterRank) -> bool {
+    if (map.getNumResults() >= iterRank)
+      return false;
+    return true;
+  };
+
+  // Helper: allocate a fresh on-chip VECCALC buffer matching the given dynamic
+  // sizes, insert tbuf + init_buffer, and return {tbufVal, localTensorVal}.
+  // On-chip buffers do not use memref.alloc; lifetime is managed by TPipe.
+  auto allocVeccalc =
+      [&](OpBuilder &b, Location loc, Type elemType,
+          SmallVector<Value> dynSizes) -> std::pair<Value, Value> {
+    Value tbuf = b.create<TBufOp>(loc, TBufType::get(mlirCtx, TPosition::VECCALC));
+    // Byte size = product(dynSizes) * elemBytes
+    Value totalElems;
+    for (Value s : dynSizes)
+      totalElems = totalElems ? b.create<arith::MulIOp>(loc, totalElems, s) : s;
+    if (!totalElems)
+      totalElems = b.create<arith::ConstantIndexOp>(loc, 1);
+    unsigned elemBytes = elemType.getIntOrFloatBitWidth() / 8;
+    Value byteSize = b.create<arith::MulIOp>(
+        loc, totalElems, b.create<arith::ConstantIndexOp>(loc, elemBytes));
+    b.create<TPipeInitBufferOp>(loc, ctx.pipe, tbuf, byteSize);
+
+    Value lt = b.create<TBufGetTensorOp>(
+        loc, LocalTensorType::get(elemType), tbuf, /*len=*/Value{});
+    return {tbuf, lt};
+  };
+
+  // Helper: get a runtime Value for dimension `dim` of a memref.
+  auto getDynDim = [&](OpBuilder &b, Location loc, Value memref,
+                        unsigned dim) -> Value {
+    auto mrt = cast<MemRefType>(memref.getType());
+    if (!ShapedType::isDynamic(mrt.getShape()[dim]))
+      return b.create<arith::ConstantIndexOp>(loc, mrt.getShape()[dim]);
+    return b.create<memref::DimOp>(loc, memref, dim);
+  };
+
+  SmallVector<linalg::GenericOp> genericOps;
+  funcOp.walk([&](linalg::GenericOp op) { genericOps.push_back(op); });
+
+  for (linalg::GenericOp genOp : genericOps) {
+    // Only handle generics that contain at least one reduction iterator.
+    auto iterTypes = genOp.getIteratorTypesArray();
+    bool hasReduction = llvm::any_of(iterTypes, [](utils::IteratorType t) {
+      return t == utils::IteratorType::reduction;
+    });
+    if (!hasReduction)
+      continue;
+
+    // Require exactly one init (output) for now.
+    if (genOp.getNumDpsInits() != 1)
+      continue;
+
+    unsigned numInputs = genOp.getNumDpsInputs();
+    unsigned iterRank  = iterTypes.size();
+    auto maps          = genOp.getIndexingMapsArray();
+    Value outMemref    = genOp.getDpsInitOperand(0)->get();
+    int64_t outMs      = getMemorySpace(outMemref.getType());
+    if (outMs <= 0)
+      continue; // output must be on-chip
+
+    Location loc = genOp.getLoc();
+    builder.setInsertionPoint(genOp);
+    Type elemType = cast<MemRefType>(outMemref.getType()).getElementType();
+
+    // ------------------------------------------------------------------
+    // Step 1: For each input, promote it to a VECCALC local_tensor.
+    //   - "broadcast" input (VECIN, ms==9): use broadcast_l2 to expand
+    //     the 1-D tile into the full 2-D iteration shape.
+    //   - "full" input (GM, ms==0): data_copy_l2 into a fresh VECCALC.
+    //   - "full" input (VECIN, ms==9): already a local_tensor; use readTensor.
+    // The result is a SmallVector of VECCALC local_tensors, one per input.
+    // ------------------------------------------------------------------
+
+    // Compute the parallel and reduction dim sizes from the output memref
+    // and the 2D input (if present).  We derive the full [M, N] iteration
+    // shape from the first "full" input (rank == iterRank).
+    SmallVector<Value> iterDimSizes(iterRank);
+    for (unsigned i = 0; i < numInputs; ++i) {
+      Value inMemref = genOp.getDpsInputOperand(i)->get();
+      AffineMap inMap = maps[i];
+      if (inMap.getNumResults() == iterRank) {
+        // Full map — use this operand to fill iterDimSizes.
+        auto mrt = cast<MemRefType>(inMemref.getType());
+        for (unsigned d = 0; d < iterRank; ++d)
+          iterDimSizes[d] = getDynDim(builder, loc, inMemref, d);
+        break;
+      }
+    }
+    // Fall back: fill remaining parallel dims from output (output only covers
+    // parallel dims, so only use it when the iterator type is parallel).
+    {
+      unsigned outDim = 0;
+      for (unsigned d = 0; d < iterRank; ++d) {
+        if (!iterDimSizes[d] && iterTypes[d] == utils::IteratorType::parallel)
+          iterDimSizes[d] = getDynDim(builder, loc, outMemref, outDim++);
+      }
+    }
+
+    // Collect parallel and reduction dim sizes.
+    SmallVector<Value> parallelDims, reductionDims;
+    for (unsigned d = 0; d < iterRank; ++d) {
+      if (iterTypes[d] == utils::IteratorType::parallel)
+        parallelDims.push_back(iterDimSizes[d]);
+      else
+        reductionDims.push_back(iterDimSizes[d]);
+    }
+
+    // Full shape = parallelDims ++ reductionDims (for 2D: [M, N]).
+    SmallVector<Value> fullShape;
+    llvm::append_range(fullShape, parallelDims);
+    llvm::append_range(fullShape, reductionDims);
+    Value totalElems;
+    for (Value s : fullShape)
+      totalElems = totalElems ? builder.create<arith::MulIOp>(loc, totalElems, s) : s;
+    if (!totalElems)
+      totalElems = builder.create<arith::ConstantIndexOp>(loc, 1);
+
+    // Build a VECCALC accumulator for the full shape.  This is the tensor
+    // that will hold the element-wise intermediate results before reduction.
+    auto [accumTbuf, accumLt] =
+        allocVeccalc(builder, loc, elemType, fullShape);
+
+    // Promote each input to a local_tensor of shape `fullShape`.
+    SmallVector<Value> inputLts(numInputs);
+    for (unsigned i = 0; i < numInputs; ++i) {
+      Value inMemref = genOp.getDpsInputOperand(i)->get();
+      AffineMap inMap = maps[i];
+      int64_t inMs    = getMemorySpace(inMemref.getType());
+      bool isBcast    = isBroadcastMap(inMap, iterRank);
+
+      if (isBcast && inMs == 9 /*VECIN*/) {
+        // broadcast_l2: expand the narrow VECIN tile into the full 2D VECCALC.
+        // src shape follows the map results; dst shape is fullShape.
+        // Determine src shape values from the operand's memref dims.
+        auto srcMrt = cast<MemRefType>(inMemref.getType());
+        unsigned srcRank = srcMrt.getRank();
+        // Build i32 shape arrays expected by broadcast_l2.
+        SmallVector<Value> dstShapeVals, srcShapeVals;
+        // dstShape = fullShape cast to i32
+        for (Value s : fullShape)
+          dstShapeVals.push_back(
+              builder.create<arith::IndexCastOp>(loc, builder.getI32Type(), s));
+        // srcShape: dims present in inMap result, others are 1.
+        // For a map (d0,d1)->(d0): srcShape=[M, 1] for 2D iteration.
+        unsigned srcDimIdx = 0;
+        for (unsigned d = 0; d < iterRank; ++d) {
+          // Check if dim d appears in inMap results.
+          bool inResult = false;
+          for (AffineExpr result : inMap.getResults()) {
+            if (auto dimExpr = dyn_cast<AffineDimExpr>(result))
+              if (dimExpr.getPosition() == d) { inResult = true; break; }
+          }
+          if (inResult && srcDimIdx < srcRank)
+            srcShapeVals.push_back(
+                builder.create<arith::IndexCastOp>(
+                    loc, builder.getI32Type(),
+                    getDynDim(builder, loc, inMemref, srcDimIdx++)));
+          else
+            srcShapeVals.push_back(
+                builder.create<arith::ConstantIntOp>(loc, builder.getI32Type(), 1));
+        }
+        Value srcLt = readTensor(builder, loc, inMemref);
+        auto [bcastTbuf, bcastLt] =
+            allocVeccalc(builder, loc, elemType, fullShape);
+        builder.create<BroadcastL2Op>(
+            loc, bcastLt, srcLt,
+            dstShapeVals, srcShapeVals,
+            builder.getI32IntegerAttr(static_cast<int32_t>(iterRank)));
+        inputLts[i] = bcastLt;
+      } else if (inMs == 0 /*GM*/) {
+        // data_copy_l2: GM subview → fresh VECCALC.
+        auto [copyTbuf, copyLt] =
+            allocVeccalc(builder, loc, elemType, fullShape);
+        Value srcGt = builder.create<GlobalTensorOp>(
+            loc, GlobalTensorType::get(elemType));
+        builder.create<GlobalTensorSetGlobalBufferOp>(loc, srcGt, inMemref,
+                                                       /*size=*/Value{});
+        builder.create<DataCopyL2Op>(loc, copyLt, srcGt, totalElems);
+        inputLts[i] = copyLt;
+      } else {
+        // Already VECIN or VECCALC — use readTensor as-is.
+        inputLts[i] = readTensor(builder, loc, inMemref);
+      }
+    }
+
+    // ------------------------------------------------------------------
+    // Step 2: Walk the body and inline each arith op onto VECCALC tensors.
+    //
+    // The body block args map to: [ins..., outs...].
+    // We maintain a map from block arg index → current VECCALC local_tensor.
+    // For each arith op, we emit the corresponding AscendC vector op and
+    // record the result local_tensor for the op's SSA result.
+    //
+    // Supported body ops:
+    //   arith.addf(x, y)  →  add_l2(accumLt, lt[x], lt[y], totalElems)
+    //   arith.maxf(x, y)  →  max_l2(accumLt, lt[x], lt[y], totalElems)
+    //   linalg.yield      →  (terminal, skipped)
+    //
+    // We use accumLt as the destination for all intermediate results
+    // (in-place style, reusing the single VECCALC buffer).
+    // ------------------------------------------------------------------
+    Block &bodyBlock = *genOp.getBody();
+    // bodyBlock.getArguments(): [in0, in1, ..., out0]
+    unsigned numBodyArgs = bodyBlock.getNumArguments();
+    SmallVector<Value> argToLt(numBodyArgs);
+    for (unsigned i = 0; i < numInputs; ++i)
+      argToLt[i] = inputLts[i];
+    // Output block arg starts life as accumLt (the running accumulator).
+    argToLt[numInputs] = accumLt;
+
+    // Walk body ops in order (excluding linalg.yield).
+    // Each arith op produces one SSA value; we map it to a VECCALC local_tensor.
+    // We reuse accumLt as the dst for all intermediate ops.
+    llvm::SmallDenseMap<Value, Value> valToLt;
+    for (auto &bodyOp : bodyBlock.without_terminator()) {
+      // Resolve an SSA value to its corresponding local_tensor.
+      auto resolve = [&](Value v) -> Value {
+        // Block argument?
+        if (auto ba = dyn_cast<BlockArgument>(v))
+          return argToLt[ba.getArgNumber()];
+        // Result of a previous body op?
+        auto it = valToLt.find(v);
+        if (it != valToLt.end()) return it->second;
+        return Value{};
+      };
+
+      if (auto addOp = dyn_cast<arith::AddFOp>(bodyOp)) {
+        Value lhs = resolve(addOp.getLhs());
+        Value rhs = resolve(addOp.getRhs());
+        if (!lhs || !rhs) continue;
+        builder.create<AddL2Op>(loc, accumLt, lhs, rhs, totalElems);
+        valToLt[addOp.getResult()] = accumLt;
+      } else if (auto maxOp = dyn_cast<arith::MaximumFOp>(bodyOp)) {
+        Value lhs = resolve(maxOp.getLhs());
+        Value rhs = resolve(maxOp.getRhs());
+        if (!lhs || !rhs) continue;
+        builder.create<MaxL2Op>(loc, accumLt, lhs, rhs, totalElems);
+        valToLt[maxOp.getResult()] = accumLt;
+      }
+      // Other arith ops can be added here as needed.
+    }
+
+    // ------------------------------------------------------------------
+    // Step 3: Reduce the accumulated VECCALC to the output VECOUT tensor.
+    //
+    // For a 2D iteration [parallel_dim, reduction_dim] with AR layout:
+    //   reduce_sum_2d_l2(vecoutLt, accumLt, AR, no_tmp)
+    // ------------------------------------------------------------------
+    Value vecoutLt = writeTensor(builder, loc, outMemref);
+    auto layoutAttr = ReduceLayoutAttr::get(mlirCtx, ReduceLayout::AR);
+    builder.create<ReduceSum2DL2Op>(loc, vecoutLt, accumLt, layoutAttr,
+                                     /*sharedTmpBuffer=*/Value{});
+
+    // Enqueue vecout if it has a queue (VECOUT path).
+    if (Value q = ctx.getQueue(outMemref))
+      builder.create<TQueBindEnqueTensorOp>(loc, q, vecoutLt);
+
+    genOp.erase();
+  }
 
   // --- linalg.matmul → mmad ---
   SmallVector<linalg::MatmulOp> matmulOps;
