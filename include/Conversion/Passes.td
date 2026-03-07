@@ -133,4 +133,63 @@ def LinalgToAscendCPass : Pass<"linalg-to-ascendc", "mlir::func::FuncOp"> {
   ];
 }
 
+
+//===----------------------------------------------------------------------===//
+// AscendC Parallelize
+//===----------------------------------------------------------------------===//
+
+def AscendCParallelizePass : Pass<"ascendc-parallelize", "mlir::func::FuncOp"> {
+  let summary = "Replace outermost parallel scf.for loops with ascendc.get_block_idx dispatch";
+  let description = [{
+    Converts the outermost two scf.for loops (TB_M × TB_N) that were annotated
+    with ascendc.parallel into multi-core AiCore dispatch using get_block_idx.
+
+    The 2D block index is linearized as: block_idx = i_TB_M * num_blocks_N + i_TB_N.
+    The pass emits:
+      %block_idx = ascendc.get_block_idx
+      %i_TB_M    = arith.divui  %block_idx, %num_blocks_N
+      %i_TB_N    = arith.remui  %block_idx, %num_blocks_N
+    and wraps the body in an scf.if guard for out-of-bounds blocks.
+
+    Options:
+      - core-num: total number of AiCores (default 20)
+  }];
+  let constructor = "mlir::afir::createAscendCParallelizePass()";
+  let dependentDialects = [
+    "mlir::ascendc::AscendCDialect",
+    "mlir::arith::ArithDialect",
+    "mlir::scf::SCFDialect",
+    "mlir::func::FuncDialect"
+  ];
+  let options = [
+    Option<"coreNum", "core-num", "int64_t", /*default=*/"20",
+           "Number of AiCores available for parallel dispatch">,
+  ];
+}
+
+//===----------------------------------------------------------------------===//
+// AscendC Prepare For Emit
+//===----------------------------------------------------------------------===//
+
+def AscendCPrepareForEmitPass : Pass<"ascendc-prepare-for-emit", "mlir::func::FuncOp"> {
+  let summary = "Prepare AscendC func signature and attributes for ascir-translate emission";
+  let description = [{
+    Transforms the function to match the AscendC C++ kernel interface expected
+    by ascir-translate:
+      1. Adds {ascendc.aicore, ascendc.global} attributes to the function.
+      2. Replaces strided memref args with flat memref<?, 22:i32> (GM memory_space=22).
+      3. Consolidates i64 tiling parameters into a TilingData struct arg read
+         from a GM pointer using emitasc.copy_struct.
+      4. Removes the function return value (kernels return void).
+  }];
+  let constructor = "mlir::afir::createAscendCPrepareForEmitPass()";
+  let dependentDialects = [
+    "mlir::ascendc::AscendCDialect",
+    "mlir::emitasc::EmitAscDialect",
+    "mlir::func::FuncDialect",
+    "mlir::arith::ArithDialect",
+    "mlir::memref::MemRefDialect"
+  ];
+}
+
 #endif // AFIR_CONVERSION_PASSES

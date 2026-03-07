@@ -149,6 +149,67 @@ grep -E "ascendc\.(mmad|add_l2|duplicate_l2|max_l2|data_copy|load_data)" \
   "$DIR/output_step4_lowering_to_asc.mlir" | head -20 || \
   echo "  (未找到 ascendc compute ops，请检查输出)"
 
+# ── STAGE 5: AscendC Parallelize ───────────────────────────
+echo ""
+echo "[STAGE 5] Parallelize：--ascendc-parallelize"
+echo "  输入: output_step4_lowering_to_asc.mlir"
+echo "  将最外两层 scf.for（TB_M × TB_N）转换为多核 AiCore 调度："
+echo "    %block_idx = ascendc.get_block_idx"
+echo "    %i         = arith.divui %block_idx, %num_blks_N  (× TB_M → row offset)"
+echo "    %j         = arith.remui %block_idx, %num_blks_N  (× TB_N → col offset)"
+echo "    scf.if (inbound)  ← 越界 block 直接跳过（guard）"
+$AFIR_OPT "$DIR/output_step4_lowering_to_asc.mlir" \
+  --ascendc-parallelize \
+  --canonicalize \
+  --cse \
+  -o "$DIR/output_step5_parallelize.mlir" 2>&1
+echo "  ✓ Parallelize 成功，输出: output_step5_parallelize.mlir"
+echo ""
+echo "  [get_block_idx + divui/remui]"
+grep -E "get_block_idx|divui|remui" "$DIR/output_step5_parallelize.mlir" | head -8 || \
+  echo "  (未找到多核调度 ops)"
+
+# ── STAGE 6: Prepare For Emit ──────────────────────────────
+echo ""
+echo "[STAGE 6] Prepare For Emit：--ascendc-prepare-for-emit"
+echo "  输入: output_step5_parallelize.mlir"
+echo "  转换规则："
+echo "    memref<?, strided<...>> 参数 → memref<?, 22>（__gm__ 指针）"
+echo "    i64 tiling 参数 → TilingData struct GM 指针"
+echo "    在函数入口插入 emitasc.copy_struct + emitasc.member_ref 解包字段"
+echo "    添加 {ascendc.aicore, ascendc.global} 属性"
+echo "    去除函数返回值（kernel 返回 void）"
+$AFIR_OPT "$DIR/output_step5_parallelize.mlir" \
+  --ascendc-prepare-for-emit \
+  --canonicalize \
+  --cse \
+  -o "$DIR/output_step6_kernel.mlir" 2>&1
+echo "  ✓ Prepare For Emit 成功，输出: output_step6_kernel.mlir"
+echo ""
+echo "  [函数签名 + 属性]"
+grep -E "func\.func|ascendc\.(aicore|global)|emitasc\.(copy_struct|member_ref|declare)" \
+  "$DIR/output_step6_kernel.mlir" | head -10 || \
+  echo "  (请检查输出)"
+
+# ── STAGE 7: AscendC C++ Code Generation ───────────────────
+echo ""
+echo "[STAGE 7] Codegen：ascir-translate -mlir-to-ascendc"
+echo "  输入: output_step6_kernel.mlir"
+echo "  输出: output_step7_kernel.cpp（AscendC C++ kernel 源码）"
+ASCIR_TRANSLATE="${ASCIR_TRANSLATE:-ascir-translate}"
+if command -v "$ASCIR_TRANSLATE" &>/dev/null; then
+  "$ASCIR_TRANSLATE" -mlir-to-ascendc \
+    "$DIR/output_step6_kernel.mlir" \
+    -o "$DIR/output_step7_kernel.cpp" 2>&1
+  echo "  ✓ Codegen 成功，输出: output_step7_kernel.cpp"
+  echo ""
+  echo "  [生成的 C++ kernel 头部]"
+  head -30 "$DIR/output_step7_kernel.cpp"
+else
+  echo "  (ascir-translate 未找到，跳过 Stage 7)"
+  echo "  若已构建 pyasc，请将 ascir-translate 加入 PATH 后重新运行。"
+fi
+
 echo ""
 echo "========================================================"
 echo " 流水线完成！生成文件："
@@ -156,4 +217,7 @@ echo "   output_step1_tile_and_fuse_3level.mlir → 3级 Tile+Fuse（linalg-on-t
 echo "   output_step2_bufferized.mlir           → Bufferize 后（memref）"
 echo "   output_step3_buffer_placement.mlir     → on-chip memory_space 标注 + memref.copy 占位"
 echo "   output_step4_lowering_to_asc.mlir      → AscendC compute ops + TQue/TPipe"
+echo "   output_step5_parallelize.mlir          → 多核 AiCore 调度（get_block_idx）"
+echo "   output_step6_kernel.mlir               → 完整 AscendC kernel IR（可直接送 ascir-translate）"
+echo "   output_step7_kernel.cpp                → AscendC C++ kernel 源码"
 echo "========================================================"

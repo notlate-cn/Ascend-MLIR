@@ -3,14 +3,14 @@
 #map2 = affine_map<(d0, d1) -> (d0, d1)>
 module attributes {transform.with_named_sequence} {
   func.func @broadcast_add_reducesum(%arg0: memref<?xf16>, %arg1: memref<?x?xf16>, %arg2: i64, %arg3: i64) -> memref<?xf16> {
+    %c1 = arith.constant 1 : index
+    %c0 = arith.constant 0 : index
+    %cst = arith.constant 0.000000e+00 : f16
     %0 = arith.index_cast %arg3 : i64 to index
     %1 = arith.index_cast %arg2 : i64 to index
-    %cst = arith.constant 0.000000e+00 : f16
-    %c0 = arith.constant 0 : index
     %dim = memref.dim %arg0, %c0 : memref<?xf16>
     %alloc = memref.alloc(%dim) {alignment = 64 : i64} : memref<?xf16>
     linalg.fill ins(%cst : f16) outs(%alloc : memref<?xf16>)
-    %c1 = arith.constant 1 : index
     %dim_0 = memref.dim %arg1, %c1 : memref<?x?xf16>
     %2 = scf.for %arg4 = %c0 to %dim step %1 iter_args(%arg5 = %alloc) -> (memref<?xf16>) {
       %3 = affine.min #map(%arg4)[%dim, %1]

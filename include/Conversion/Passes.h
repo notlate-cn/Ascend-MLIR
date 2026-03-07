@@ -11,6 +11,8 @@
 #include "Conversion/AFIRToASCIRText/AFIRToASCIRText.h"
 #include "Conversion/AscendCBufferPlacement/AscendCBufferPlacementPass.h"
 #include "Conversion/LinalgToAscendC/LinalgToAscendCPass.h"
+#include "Conversion/AscendCParallelize/AscendCParallelizePass.h"
+#include "Conversion/AscendCPrepareForEmit/AscendCPrepareForEmitPass.h"
 #include "mlir/Pass/Pass.h"
 #include <memory>
 
