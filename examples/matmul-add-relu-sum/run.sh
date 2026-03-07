@@ -181,6 +181,7 @@ echo "    添加 {ascendc.aicore, ascendc.global} 属性"
 echo "    去除函数返回值（kernel 返回 void）"
 $AFIR_OPT "$DIR/output_step5_parallelize.mlir" \
   --ascendc-prepare-for-emit \
+  --lower-affine \
   --canonicalize \
   --cse \
   -o "$DIR/output_step6_kernel.mlir" 2>&1
