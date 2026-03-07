@@ -182,6 +182,10 @@ build_project() {
 
         cmake --build . --target all -j${NUM_JOBS}
     fi
+
+    # Build ascir-translate (EXCLUDE_FROM_ALL, must be built explicitly)
+    print_info "Building ascir-translate..."
+    ninja -j${NUM_JOBS} ascir-translate
     touch "${BUILD_DIR}/.last_build_time"
 
     local end_time=$(date +%s)

@@ -99,6 +99,9 @@ add_subdirectory(${PYASC_DIR}/lib/TableGen EXCLUDE_FROM_ALL)
 add_subdirectory(${PYASC_DIR}/include EXCLUDE_FROM_ALL)
 add_subdirectory(${PYASC_DIR}/lib EXCLUDE_FROM_ALL)
 
+# 构建ascir-translate工具用于AscendC代码翻译
+add_subdirectory(${PYASC_DIR}/bin EXCLUDE_FROM_ALL)
+
 if(AFIR_ENABLE_BINDING_PYTHON)
   add_subdirectory(python)
 endif()
