@@ -4,7 +4,6 @@ module attributes {transform.with_named_sequence} {
   func.func @broadcast_add_reducesum(%arg0: memref<?xf16>, %arg1: memref<?x?xf16>, %arg2: i64, %arg3: i64) -> memref<?xf16> {
     %c1_i32 = arith.constant 1 : i32
     %c2 = arith.constant 2 : index
-    %cst = arith.constant 0.000000e+00 : f16
     %c0 = arith.constant 0 : index
     %c1 = arith.constant 1 : index
     %0 = ascendc.pipe
@@ -14,7 +13,6 @@ module attributes {transform.with_named_sequence} {
     %4 = arith.index_cast %arg2 : i64 to index
     %dim = memref.dim %arg0, %c0 : memref<?xf16>
     %alloc = memref.alloc(%dim) {alignment = 64 : i64} : memref<?xf16>
-    linalg.fill ins(%cst : f16) outs(%alloc : memref<?xf16>)
     %dim_0 = memref.dim %arg1, %c1 : memref<?x?xf16>
     %5 = ascendc.tbuf : <veccalc>
     %6 = ascendc.tbuf : <veccalc>
