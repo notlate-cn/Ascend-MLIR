@@ -1,4 +1,4 @@
-module attributes {transform.with_named_sequence} {
+module {
   func.func @broadcast_add_reducesum(%arg0: memref<?xf16>, %arg1: memref<?x?xf16>, %arg2: memref<?x!emitasc.py_struct<"TilingData", [i64, i64, i64, i64], ["TB_M", "TB_N", "dim_arg0_0", "dim_arg1_1"]>, 22 : i32>, %arg3: memref<?xf16, strided<[1], offset: ?>>) attributes {ascendc.aicore, ascendc.global} {
     %c0 = arith.constant 0 : index
     %c2 = arith.constant 2 : index
@@ -73,23 +73,6 @@ module attributes {transform.with_named_sequence} {
       }
     }
     return
-  }
-  transform.named_sequence @__transform_main(%arg0: !transform.any_op {transform.readonly}) {
-    %0 = transform.structured.match ops{["func.func"]} in %arg0 : (!transform.any_op) -> !transform.any_op
-    %transformed, %new_args:2 = transform.func.add_index_args %0, 2 : (!transform.any_op) -> (!transform.any_op, !transform.any_op, !transform.any_op)
-    %1 = transform.structured.match ops{["linalg.generic"]} in %transformed : (!transform.any_op) -> !transform.any_op
-    %tiled_linalg_op, %loops = transform.structured.tile_using_for %1 tile_sizes [%new_args#0, 0] : (!transform.any_op, !transform.any_op) -> (!transform.any_op, !transform.any_op)
-    %2 = transform.param.constant true -> !transform.any_param
-    transform.annotate %loops "ascendc.parallel" = %2 : !transform.any_op, !transform.any_param
-    %tiled_linalg_op_0, %loops_1 = transform.structured.tile_using_for %tiled_linalg_op tile_sizes [%new_args#1, 0] : (!transform.any_op, !transform.any_op) -> (!transform.any_op, !transform.any_op)
-    %3 = transform.param.constant "src:GM->VECIN" -> !transform.any_param
-    %4 = transform.param.constant "dst:VECOUT->GM" -> !transform.any_param
-    transform.annotate %loops_1 "ascendc.prologue" = %3 : !transform.any_op, !transform.any_param
-    transform.annotate %loops_1 "ascendc.epilogue" = %4 : !transform.any_op, !transform.any_param
-    %5 = transform.param.constant "AiCore.Vector" -> !transform.any_param
-    transform.annotate %tiled_linalg_op_0 "ascendc.unit" = %5 : !transform.any_op, !transform.any_param
-    transform.loop.hoist_loop_invariant_subsets %loops_1 : !transform.any_op
-    transform.yield 
   }
 }
 
