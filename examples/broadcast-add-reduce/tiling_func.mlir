@@ -1,87 +1,100 @@
 // ============================================================
-// tiling_func.mlir — Host-side tiling function for broadcast_add_reducesum
+// tiling_func.mlir — Host端分块函数
 //
-// Inputs:  %M  (rows, i64),  %N  (cols, i64)
-// Outputs: TilingData struct with fields:
-//            TB    — tile size along M for multi-core dispatch (level 1)
-//            Tb    — tile size along M per AiCore (level 2)
+// 功能：在Host CPU上计算分块参数(Tiling Parameters)
 //
-// This function runs on the host CPU to compute tiling parameters.
-// The inner algorithm is intentionally hardcoded (simplified from the
-// heuristic sketch in broadcast-add.mlir) to demonstrate the pipeline
-// structure.
+// 输入:
+//   %M (i64): 行数
+//   %N (i64): 列数
 //
-// The reduction axis (N) is NOT tiled — each AiCore processes a contiguous
-// slice of rows and reduces the full N columns in its inner loop.
+// 输出:
+//   TilingData 结构体，包含:
+//     - TB: 核间分块大小 (outer tile)
+//     - Tb: 核内分块大小 (inner tile per AiCore)
+//
+// 算法说明：
+//   - 归约轴(N)不做分块，每个AiCore处理完整的N列
+//   - 根据UB容量计算每核能处理的行数
+//   - 需要3个缓冲区：A切片、B矩阵块、结果
+//
+// 硬件假设：
+//   - CORE_NUM = 20 (AiCore数量)
+//   - UB_BYTES = 256KB (Unified Buffer容量)
+//   - ELEM_BYTES = 2 (f16 = 2字节)
 // ============================================================
 
-// TilingData layout (2 × i64 fields):
-//   [0] TB  — outer tile (inter-core dispatch)
-//   [1] Tb  — inner tile (per-core UB buffer)
+// TilingData结构体定义 (2个i64字段)
+//   [0] TB — 外层分块 (核间分发)
+//   [1] Tb — 内层分块 (每核UB缓冲区)
 !TilingData = !llvm.struct<"TilingData", (i64, i64)>
 
 module {
 
   // ----------------------------------------------------------
-  // @tiling_func: compute tiling parameters from runtime shape
+  // @tiling_func: 根据运行时形状计算分块参数
   // ----------------------------------------------------------
   func.func @tiling_func(%M: i64, %N: i64) -> !TilingData {
 
-    // ── Hardware constants ────────────────────────────────────
-    %CORE_NUM  = arith.constant 20     : i64   // AiCore count
-    %UB_BYTES  = arith.constant 262144 : i64   // 256 KB UB
-    %ELEM_BYTES = arith.constant 2     : i64   // f16 = 2 bytes
+    // ---- 硬件常量定义 ----
+    %CORE_NUM = arith.constant 20 : i64      // AiCore数量
+    %UB_BYTES = arith.constant 262144 : i64  // 256KB UB容量
+    %ELEM_BYTES = arith.constant 2 : i64     // f16 = 2字节
 
-    // ── Tb: rows that fit in UB for one row of B (Tb × N × f16) ─
-    // We need 3 buffers (src A slice, B tile, result): UB / (3 × N × 2).
-    // Clamp to at least 1.
-    %c1   = arith.constant 1 : i64
-    %c3   = arith.constant 3 : i64
-    %total_elems = arith.divsi %UB_BYTES, %ELEM_BYTES : i64   // 131072
-    %per_buf     = arith.divsi %total_elems, %c3 : i64        // 43690
-    // Rows = per_buf / N  (at least 1)
-    %rows_raw    = arith.divsi %per_buf, %N : i64
-    %rows_clamped = arith.maxsi %rows_raw, %c1 : i64
+    // ---- 计算Tb: 每核UB能容纳的行数 ----
+    // 公式: UB / (3 × N × 2)
+    // 需要3个缓冲区: A切片 + B矩阵块 + 结果
+    %const_1 = arith.constant 1 : i64
+    %const_3 = arith.constant 3 : i64
+
+    // 总元素数 = UB_BYTES / ELEM_BYTES = 131072
+    %total_elems = arith.divsi %UB_BYTES, %ELEM_BYTES : i64
+
+    // 每缓冲区元素数 = total_elems / 3 = 43690
+    %per_buf = arith.divsi %total_elems, %const_3 : i64
+
+    // 行数 = per_buf / N (至少1行)
+    %rows_raw = arith.divsi %per_buf, %N : i64
+    %rows_clamped = arith.maxsi %rows_raw, %const_1 : i64
     %Tb = %rows_clamped : i64
 
-    // ── TB: outer tile (one full AiCore workload) ─────────────
-    // Set TB = Tb so each dispatch iteration maps 1:1 with AiCore work.
+    // ---- 计算TB: 外层分块 ----
+    // 简化为: TB = Tb (每核处理一个Tb批次)
     %TB = %Tb : i64
 
-    // ── Pack into TilingData struct ───────────────────────────
-    %td0 = llvm.mlir.undef : !TilingData
-    %td1 = llvm.insertvalue %TB, %td0[0] : !TilingData
-    %td2 = llvm.insertvalue %Tb, %td1[1] : !TilingData
+    // ---- 打包到TilingData结构体 ----
+    %td_0 = llvm.mlir.undef : !TilingData
+    %td_1 = llvm.insertvalue %TB, %td_0[0] : !TilingData
+    %td_2 = llvm.insertvalue %Tb, %td_1[1] : !TilingData
 
-    return %td2 : !TilingData
+    return %td_2 : !TilingData
   }
 
   // ----------------------------------------------------------
-  // @runtime_dispatch: host-side launch entry point (conceptual)
+  // @runtime_dispatch: Host端调度入口 (概念性)
   // ----------------------------------------------------------
   func.func @runtime_dispatch(
-      %A:   memref<?xf16>,      // 1-D broadcast source (length M)
-      %B:   memref<?x?xf16>,   // 2-D input matrix (M × N)
-      %out: memref<?xf16>       // output reduction (length M)
+      %A: memref<?xf16>,      // 广播源 (长度M)
+      %B: memref<?x?xf16>,    // 输入矩阵 (M × N)
+      %out: memref<?xf16>     // 输出归约结果 (长度M)
   ) {
-    %c0 = arith.constant 0 : index
-    %c1 = arith.constant 1 : index
+    %idx_0 = arith.constant 0 : index
+    %idx_1 = arith.constant 1 : index
 
-    // ── Get runtime shapes ────────────────────────────────────
-    %M_idx = memref.dim %A, %c0 : memref<?xf16>
-    %N_idx = memref.dim %B, %c1 : memref<?x?xf16>
+    // ---- 获取运行时形状 ----
+    %M_idx = memref.dim %A, %idx_0 : memref<?xf16>
+    %N_idx = memref.dim %B, %idx_1 : memref<?x?xf16>
     %M = arith.index_cast %M_idx : index to i64
     %N = arith.index_cast %N_idx : index to i64
 
-    // ── Compute tiling parameters ─────────────────────────────
+    // ---- 计算分块参数 ----
     %tiling = func.call @tiling_func(%M, %N)
               : (i64, i64) -> !TilingData
 
-    // ── Unpack ────────────────────────────────────────────────
+    // ---- 解包 ----
     %TB = llvm.extractvalue %tiling[0] : !TilingData
     %Tb = llvm.extractvalue %tiling[1] : !TilingData
 
-    // ── Launch kernel (conceptual) ────────────────────────────
+    // ---- 内核启动 (概念性) ----
     // acl_launch_kernel("broadcast_add_reducesum", core_num,
     //                   A, B, out, &tiling_data)
 
