@@ -35,6 +35,8 @@
 
 #include "Conversion/AscendCPrepareForEmit/AscendCPrepareForEmitPass.h"
 
+#include "mlir/Dialect/Affine/IR/AffineOps.h"
+#include "mlir/Dialect/Affine/Utils.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
@@ -270,19 +272,86 @@ static LogicalResult prepareFunc(func::FuncOp func) {
     dimOp.erase();
   }
 
+  // ── 7a. Promote top-level GM memref.alloc to function arguments ─────────────
+  // Must run before 7b so that subview chains from the promoted arg are
+  // traversable when resolving set_global_buffer ops.
+  {
+    SmallVector<memref::AllocOp> gmAllocs;
+    for (Operation &op : entry.without_terminator()) {
+      auto allocOp = dyn_cast<memref::AllocOp>(&op);
+      if (!allocOp)
+        continue;
+      auto mrt = cast<MemRefType>(allocOp.getResult().getType());
+      if (mrt.getMemorySpaceAsInt() == 0)
+        gmAllocs.push_back(allocOp);
+    }
+    for (memref::AllocOp allocOp : gmAllocs) {
+      auto origTy = cast<MemRefType>(allocOp.getResult().getType());
+      SmallVector<int64_t> strides(origTy.getRank(), 1);
+      auto stridedLayout = StridedLayoutAttr::get(ctx, ShapedType::kDynamic, strides);
+      auto stridedTy = MemRefType::get(origTy.getShape(), origTy.getElementType(),
+                                        stridedLayout);
+      BlockArgument newArg = entry.addArgument(stridedTy, allocOp.getLoc());
+      OpBuilder b(allocOp);
+      Value casted = b.create<memref::CastOp>(allocOp.getLoc(), origTy, newArg);
+      allocOp.getResult().replaceAllUsesWith(casted);
+      allocOp.erase();
+    }
+  }
+
   // ── 7b. Replace subview+set_global_buffer with flat-pointer set_global_buffer
-  // Pattern: memref.subview %argX[row, col] [sizes] [1,1]
-  //          ascendc.global_tensor.set_global_buffer %gt, %subview
-  // → memref.cast %argX : strided → memref<?xElem, 22>
-  //   flat_offset = row * col_stride + col  (where col_stride = dim_argX_1)
-  //   ascendc.global_tensor.set_global_buffer %gt, %casted, flat_offset_i32
   //
-  // The flat memref<?xElem, 22> type expected by set_global_buffer:
+  // Handles two patterns:
+  //   2D: subview %argX[row, col] [s] [1,1]  → flat_offset = row*col_stride + col
+  //   1D: subview chain: subview(subview(argX, [off1]), [off2])
+  //                                          → flat_offset = off1 + off2 (additive)
+  //
+  // Output:
+  //   emitasc.reinterpret_cast %argX → memref<?xElem, 22>
+  //   ascendc.global_tensor.set_global_buffer %gt, %flat, flat_offset_i32
+  //
   Type i32Ty = IntegerType::get(ctx, 32);
+
+  // Helper: materialize an OpFoldResult as an index Value.
+  auto materializeOffset = [&](OpBuilder &b, Location loc,
+                                OpFoldResult ofr) -> Value {
+    if (auto attr = ofr.dyn_cast<Attribute>()) {
+      int64_t v = cast<IntegerAttr>(attr).getValue().getSExtValue();
+      return b.create<arith::ConstantIndexOp>(loc, v);
+    }
+    return ofr.get<Value>();
+  };
+
+  // Helper: walk up a chain of subview ops to find the root BlockArgument,
+  // accumulating a 1D flat offset along the way.  Returns null if the chain
+  // does not terminate at a BlockArgument, or if any subview has rank > 1
+  // and cannot be reduced to a 1D offset here (2D handled separately below).
+  auto resolveSubviewChain1D =
+      [&](memref::SubViewOp leaf, OpBuilder &b,
+          Location loc) -> std::pair<BlockArgument, Value> {
+    Value accOffset = b.create<arith::ConstantIndexOp>(loc, 0);
+    Value cur = leaf.getResult();
+    while (true) {
+      auto sv = cur.getDefiningOp<memref::SubViewOp>();
+      if (!sv)
+        return {BlockArgument{}, Value{}};
+      SmallVector<OpFoldResult> offs = sv.getMixedOffsets();
+      if (offs.size() != 1)
+        return {BlockArgument{}, Value{}}; // not 1D, give up
+      Value off = materializeOffset(b, loc, offs[0]);
+      accOffset = b.create<arith::AddIOp>(loc, accOffset, off);
+      Value src = sv.getSource();
+      // See through memref.cast to the underlying value.
+      if (auto castOp = src.getDefiningOp<memref::CastOp>())
+        src = castOp.getSource();
+      if (auto ba = dyn_cast<BlockArgument>(src))
+        return {ba, accOffset};
+      cur = src; // continue up the chain
+    }
+  };
+
   SmallVector<ascendc::GlobalTensorSetGlobalBufferOp> setGlobalBufferOps;
   func.walk([&](ascendc::GlobalTensorSetGlobalBufferOp op) {
-    // Only handle ops whose buffer operand comes from a memref.subview on a
-    // block argument (i.e. a GM tensor parameter).
     if (!isa<memref::SubViewOp>(op.getBuffer().getDefiningOp()))
       return;
     setGlobalBufferOps.push_back(op);
@@ -292,44 +361,68 @@ static LogicalResult prepareFunc(func::FuncOp func) {
     auto subview = sgbOp.getBuffer().getDefiningOp<memref::SubViewOp>();
     if (!subview)
       continue;
-    auto baseArg = dyn_cast<BlockArgument>(subview.getSource());
-    if (!baseArg)
-      continue;
-
-    // Collect dynamic offsets from the subview.
-    // getOffsets() returns a mix of static/dynamic; use getMixedOffsets().
-    SmallVector<OpFoldResult> mixedOffsets = subview.getMixedOffsets();
-    if (mixedOffsets.size() < 2)
-      continue;
 
     OpBuilder b(sgbOp);
     Location loc = sgbOp.getLoc();
 
-    // Build flat offset = offset[0] * col_stride + offset[1].
-    // col_stride = dim_argX_1 (number of columns), as i64 from TilingData.
-    Value colStrideI64 = getDimI64Value(baseArg.getArgNumber(), 1);
-    if (!colStrideI64)
-      continue;
-    Value colStride = b.create<arith::IndexCastOp>(loc, indexTy, colStrideI64);
+    BlockArgument baseArg;
+    Value flatOffset;
 
-    auto materializeOffset = [&](OpFoldResult ofr) -> Value {
-      if (auto attr = ofr.dyn_cast<Attribute>()) {
-        int64_t v = cast<IntegerAttr>(attr).getValue().getSExtValue();
-        return b.create<arith::ConstantIndexOp>(loc, v);
+    SmallVector<OpFoldResult> mixedOffsets = subview.getMixedOffsets();
+
+    if (mixedOffsets.size() >= 2) {
+      // ── 2D case: walk up a chain of 2D subviews to find the root BlockArg.
+      // Accumulate row/col offsets at each level; the base stride is taken
+      // from the root BlockArgument's dim-1 (column stride).
+      Value accRow = b.create<arith::ConstantIndexOp>(loc, 0);
+      Value accCol = b.create<arith::ConstantIndexOp>(loc, 0);
+      Value cur = subview.getResult();
+      bool ok = true;
+      while (true) {
+        auto sv = cur.getDefiningOp<memref::SubViewOp>();
+        if (!sv) {
+          ok = false;
+          break;
+        }
+        SmallVector<OpFoldResult> offs = sv.getMixedOffsets();
+        if (offs.size() < 2) {
+          ok = false;
+          break;
+        }
+        Value rowOff = materializeOffset(b, loc, offs[0]);
+        Value colOff = materializeOffset(b, loc, offs[1]);
+        accRow = b.create<arith::AddIOp>(loc, accRow, rowOff);
+        accCol = b.create<arith::AddIOp>(loc, accCol, colOff);
+        Value src = sv.getSource();
+        // See through memref.cast.
+        if (auto castOp = src.getDefiningOp<memref::CastOp>())
+          src = castOp.getSource();
+        if (auto ba = dyn_cast<BlockArgument>(src)) {
+          baseArg = ba;
+          break;
+        }
+        cur = src;
       }
-      return ofr.get<Value>();
-    };
+      if (!ok || !baseArg)
+        continue;
+      Value colStrideI64 = getDimI64Value(baseArg.getArgNumber(), 1);
+      if (!colStrideI64)
+        continue;
+      Value colStride = b.create<arith::IndexCastOp>(loc, indexTy, colStrideI64);
+      Value rowTimesStride = b.create<arith::MulIOp>(loc, accRow, colStride);
+      flatOffset = b.create<arith::AddIOp>(loc, rowTimesStride, accCol);
+    } else {
+      // ── 1D case: walk the subview chain ──────────────────────────────────
+      auto [ba, acc] = resolveSubviewChain1D(subview, b, loc);
+      if (!ba)
+        continue;
+      baseArg = ba;
+      flatOffset = acc;
+    }
 
-    Value row = materializeOffset(mixedOffsets[0]);
-    Value col = materializeOffset(mixedOffsets[1]);
-
-    Value rowTimesStride = b.create<arith::MulIOp>(loc, row, colStride);
-    Value flatOffset = b.create<arith::AddIOp>(loc, rowTimesStride, col);
     Value flatOffsetI32 = b.create<arith::IndexCastOp>(loc, i32Ty, flatOffset);
 
     // Cast base memref to flat GM pointer: memref<?xElem, 22>.
-    // Use emitasc.reinterpret_cast to bypass MLIR's cast compatibility check
-    // (strided 2D memref → flat 1D GM pointer is valid at C++ level).
     auto baseMemRefTy = cast<MemRefType>(baseArg.getType());
     Type elemTy = baseMemRefTy.getElementType();
     auto flatTy = MemRefType::get(
@@ -337,14 +430,24 @@ static LogicalResult prepareFunc(func::FuncOp func) {
         IntegerAttr::get(IntegerType::get(ctx, 32), kGMSpace));
     Value flatBase = b.create<emitasc::ReinterpretCastOp>(loc, flatTy, baseArg);
 
-    // Replace set_global_buffer with the flat+offset version.
     b.create<ascendc::GlobalTensorSetGlobalBufferOp>(
         loc, sgbOp.getTensor(), flatBase, flatOffsetI32);
     sgbOp.erase();
 
-    // Erase the now-unused subview if it has no other uses.
     if (subview.use_empty())
       subview.erase();
+  }
+
+  // Clean up any dead subview chains left over (e.g. outer subviews that
+  // became unused after the inner ones were replaced above).
+  {
+    SmallVector<memref::SubViewOp> deadSubviews;
+    func.walk([&](memref::SubViewOp sv) {
+      if (sv.use_empty())
+        deadSubviews.push_back(sv);
+    });
+    for (memref::SubViewOp sv : deadSubviews)
+      sv.erase();
   }
 
   // ── 8. Erase old i64 block args (reverse order) ─────────────────────────
@@ -374,7 +477,35 @@ static LogicalResult prepareFunc(func::FuncOp func) {
     }
   });
 
-  // ── 12. Declare TilingData struct at module level ─────────────────────────
+  // ── 12. Lower affine.min → arith.minsi ──────────────────────────────────
+  // ascir-translate does not support affine ops; lower them to arith here.
+  {
+    SmallVector<affine::AffineMinOp> minOps;
+    func.walk([&](affine::AffineMinOp op) { minOps.push_back(op); });
+    for (affine::AffineMinOp minOp : minOps) {
+      OpBuilder b(minOp);
+      Location loc = minOp.getLoc();
+      AffineMap map = minOp.getAffineMap();
+      ValueRange mapOperands = minOp.getOperands();
+
+      // Evaluate each result expression of the map.
+      SmallVector<Value> results;
+      for (AffineExpr expr : map.getResults()) {
+        // Expand the affine expression to arith ops.
+        Value val = mlir::affine::expandAffineExpr(b, loc, expr, mapOperands.take_front(map.getNumDims()),
+                                                   mapOperands.drop_front(map.getNumDims()));
+        results.push_back(val);
+      }
+      // Reduce to a single minimum.
+      Value minVal = results[0];
+      for (unsigned i = 1; i < results.size(); ++i)
+        minVal = b.create<arith::MinSIOp>(loc, minVal, results[i]);
+      minOp.getResult().replaceAllUsesWith(minVal);
+      minOp.erase();
+    }
+  }
+
+  // ── 13. Declare TilingData struct at module level ────────────────────────
   if (hasTilingData) {
     if (auto moduleOp = func->getParentOfType<ModuleOp>()) {
       OpBuilder modBuilder(ctx);

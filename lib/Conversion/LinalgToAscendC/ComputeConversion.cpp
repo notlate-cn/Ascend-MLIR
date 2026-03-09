@@ -615,10 +615,13 @@ LogicalResult convertCompute(func::FuncOp funcOp, AscendCBufferContext &ctx) {
 
   // --- linalg.fill → duplicate_l2 ---
   //
-  // Skipped cases:
-  //   ms=7 (CO1): mmad hardware zeroes CO1 automatically (cmatrixInitVal=false
-  //               default), so a separate duplicate_l2 is redundant and would
-  //               also cause a double-alloc on the CO1 queue.
+  // Erased cases (no AscendC op emitted):
+  //   ms=0  (GM):    fill initializes a GM accumulator that is fully overwritten
+  //                  by subsequent data_copy from on-chip; redundant after
+  //                  linalg.generic→reduce_sum_2d_l2 lowering.
+  //   ms=7  (CO1):   mmad hardware zeroes CO1 automatically (cmatrixInitVal=false
+  //                  default), so a separate duplicate_l2 is redundant and would
+  //                  also cause a double-alloc on the CO1 queue.
   //   ms=10 (VECOUT): max_l2 writes the output directly; a prior fill(0) is
   //                   redundant and causes a double-alloc on the VECOUT queue.
   SmallVector<linalg::FillOp> fillOps;
@@ -627,7 +630,11 @@ LogicalResult convertCompute(func::FuncOp funcOp, AscendCBufferContext &ctx) {
   for (linalg::FillOp fillOp : fillOps) {
     Value dst = fillOp.getOutputs()[0];
     int64_t ms = getMemorySpace(dst.getType());
-    if (ms <= 0) continue;
+    if (ms <= 0) {
+      // GM fill: fully overwritten by AscendC data_copy after reduce; erase.
+      fillOp.erase();
+      continue;
+    }
 
     // Skip fills that would cause a double-alloc or are otherwise redundant.
     if (ms == 7 || ms == 10) {

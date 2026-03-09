@@ -154,9 +154,15 @@ echo "  输入: step7_kernel.mlir"
 echo "  输出: step8_kernel.cpp（AscendC C++ kernel 源码）"
 ASCIR_TRANSLATE="${ASCIR_TRANSLATE:-ascir-translate}"
 if command -v "$ASCIR_TRANSLATE" &>/dev/null; then
-  "$ASCIR_TRANSLATE" -mlir-to-ascendc \
-    "$DIR/step7_kernel.mlir" \
-    -o "$DIR/step8_kernel.cpp" 2>&1
+  # ascir-translate 不支持 transform 方言，用 python 预处理去掉 transform.named_sequence
+  python3 -c "
+import re, sys
+content = open('$DIR/step7_kernel.mlir').read()
+content = content.replace('module attributes {transform.with_named_sequence}', 'module')
+content = re.sub(r'  transform\.named_sequence.*?^  \}\n', '', content, flags=re.DOTALL|re.MULTILINE)
+sys.stdout.write(content)
+" > "$DIR/step8_no_transform.mlir"
+  "$ASCIR_TRANSLATE" -mlir-to-ascendc "$DIR/step8_no_transform.mlir" -o "$DIR/step8_kernel.cpp" 2>&1
   echo "  ✓ Codegen 成功，输出: step8_kernel.cpp"
   echo ""
   echo "  [生成的 C++ kernel 头部]"

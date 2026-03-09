@@ -11,6 +11,8 @@ add_mlir_library(AscendCPrepareForEmitConversion
   AFIRDialect
   MLIRAsc
   MLIREmitAsc
+  MLIRAffineDialect
+  MLIRAffineUtils
   MLIRArithDialect
   MLIRFuncDialect
   MLIRMemRefDialect
