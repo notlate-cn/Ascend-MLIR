@@ -1,78 +1,246 @@
+// ============================================================
+// STAGE 8 (No Transform): 无 Transform 方言的内核 IR
+//
+// 这是 step7_kernel.mlir 的简化版本，移除了 Transform 调度脚本
+// 仅保留核心计算逻辑，用于展示最终内核代码结构
+//
+// 主要特点：
+//   - 纯计算逻辑，无调度注解
+//   - 展示 MLIR 到 AscendC 的映射关系
+//   - 作为最终 C++ 代码生成的中间表示
+//
+// 计算流程：
+//   1. 读取 TilingData
+//   2. 多核并行分发
+//   3. 数据搬运和计算
+//   4. 结果写回
+// ============================================================
+
 module {
-  func.func @broadcast_add_reducesum(%arg0: memref<?xf16>, %arg1: memref<?x?xf16>, %arg2: memref<?x!emitasc.py_struct<"TilingData", [i64, i64, i64, i64], ["TB_M", "TB_N", "dim_arg0_0", "dim_arg1_1"]>, 22 : i32>, %arg3: memref<?xf16, strided<[1], offset: ?>>) attributes {ascendc.aicore, ascendc.global} {
-    %c0 = arith.constant 0 : index
-    %c2 = arith.constant 2 : index
-    %c1_i32 = arith.constant 1 : i32
-    %0 = emitasc.copy_struct %arg2 : memref<?x!emitasc.py_struct<"TilingData", [i64, i64, i64, i64], ["TB_M", "TB_N", "dim_arg0_0", "dim_arg1_1"]>, 22 : i32>, !emitasc.py_struct<"TilingData", [i64, i64, i64, i64], ["TB_M", "TB_N", "dim_arg0_0", "dim_arg1_1"]>
-    %1 = emitasc.member %0 "TB_M" : !emitasc.py_struct<"TilingData", [i64, i64, i64, i64], ["TB_M", "TB_N", "dim_arg0_0", "dim_arg1_1"]>, i64
-    %2 = emitasc.member %0 "TB_N" : !emitasc.py_struct<"TilingData", [i64, i64, i64, i64], ["TB_M", "TB_N", "dim_arg0_0", "dim_arg1_1"]>, i64
-    %3 = emitasc.member %0 "dim_arg0_0" : !emitasc.py_struct<"TilingData", [i64, i64, i64, i64], ["TB_M", "TB_N", "dim_arg0_0", "dim_arg1_1"]>, i64
-    %4 = emitasc.member %0 "dim_arg1_1" : !emitasc.py_struct<"TilingData", [i64, i64, i64, i64], ["TB_M", "TB_N", "dim_arg0_0", "dim_arg1_1"]>, i64
-    %5 = ascendc.pipe
-    %6 = ascendc.queue : <vecin, 1>
-    %7 = ascendc.queue : <vecout, 1>
-    %8 = arith.index_cast %2 : i64 to index
-    %9 = arith.index_cast %1 : i64 to index
-    %10 = arith.index_cast %3 : i64 to index
-    %11 = arith.index_cast %4 : i64 to index
-    %12 = ascendc.tbuf : <veccalc>
-    %13 = ascendc.tbuf : <veccalc>
-    %14 = ascendc.tbuf : <veccalc>
-    %15 = ascendc.tbuf : <vecout>
-    %16 = ascendc.tbuf : <vecin>
-    %17 = ascendc.get_block_idx : index
-    %18 = arith.muli %17, %9 : index
-    %19 = arith.cmpi ult, %18, %10 : index
-    scf.if %19 {
-      %20 = arith.subi %10, %18 : index
-      %21 = arith.minsi %9, %20 : index
-      scf.for %arg4 = %c0 to %21 step %8 {
-        %22 = arith.subi %21, %arg4 : index
-        %23 = arith.minsi %22, %8 : index
-        %24 = arith.muli %23, %c2 : index
-        ascendc.pipe.init_buffer %5, %16, %24 : !ascendc.tbuf<vecin>, index
-        %25 = ascendc.que_bind.alloc_tensor %6 : !ascendc.queue<vecin, 1>, !ascendc.local_tensor<*xf16>
-        %26 = ascendc.global_tensor : !ascendc.global_tensor<*xf16>
-        %27 = arith.addi %arg4, %18 : index
-        %28 = arith.index_cast %27 : index to i32
-        %29 = emitasc.reinterpret_cast %arg0 : memref<?xf16> to memref<?xf16, 22 : i32>
-        ascendc.global_tensor.set_global_buffer %26, %29, %28 : !ascendc.global_tensor<*xf16>, memref<?xf16, 22 : i32>, i32
-        ascendc.data_copy_l2 %25, %26, %23 : !ascendc.local_tensor<*xf16>, !ascendc.global_tensor<*xf16>, index
-        ascendc.que_bind.enque_tensor %6, %25 : !ascendc.queue<vecin, 1>, !ascendc.local_tensor<*xf16>
-        %30 = ascendc.que_bind.deque_tensor %6 : !ascendc.queue<vecin, 1>, !ascendc.local_tensor<*xf16>
-        ascendc.pipe.init_buffer %5, %15, %24 : !ascendc.tbuf<vecout>, index
-        %31 = arith.muli %23, %11 : index
-        %32 = arith.muli %31, %c2 : index
-        ascendc.pipe.init_buffer %5, %14, %32 : !ascendc.tbuf<veccalc>, index
-        %33 = ascendc.tbuf.get_tensor %14 : !ascendc.tbuf<veccalc>, !ascendc.local_tensor<*xf16>
-        %34 = arith.index_cast %23 : index to i32
-        %35 = arith.index_cast %11 : index to i32
-        ascendc.pipe.init_buffer %5, %13, %32 : !ascendc.tbuf<veccalc>, index
-        %36 = ascendc.tbuf.get_tensor %13 : !ascendc.tbuf<veccalc>, !ascendc.local_tensor<*xf16>
-        ascendc.broadcast_l2 %36, %30, %34, %35, %34, %c1_i32 {constRank = 2 : i32, operandSegmentSizes = array<i32: 1, 1, 2, 2>} : !ascendc.local_tensor<*xf16>, !ascendc.local_tensor<*xf16>, i32, i32, i32, i32
-        ascendc.pipe.init_buffer %5, %12, %32 : !ascendc.tbuf<veccalc>, index
-        %37 = ascendc.tbuf.get_tensor %12 : !ascendc.tbuf<veccalc>, !ascendc.local_tensor<*xf16>
-        %38 = ascendc.global_tensor : !ascendc.global_tensor<*xf16>
-        %39 = arith.muli %27, %11 : index
-        %40 = arith.index_cast %39 : index to i32
-        %41 = emitasc.reinterpret_cast %arg1 : memref<?x?xf16> to memref<?xf16, 22 : i32>
-        ascendc.global_tensor.set_global_buffer %38, %41, %40 : !ascendc.global_tensor<*xf16>, memref<?xf16, 22 : i32>, i32
-        ascendc.data_copy_l2 %37, %38, %31 : !ascendc.local_tensor<*xf16>, !ascendc.global_tensor<*xf16>, index
-        ascendc.add_l2 %33, %36, %37, %31 : !ascendc.local_tensor<*xf16>, !ascendc.local_tensor<*xf16>, !ascendc.local_tensor<*xf16>, index
-        ascendc.add_l2 %33, %33, %33, %31 : !ascendc.local_tensor<*xf16>, !ascendc.local_tensor<*xf16>, !ascendc.local_tensor<*xf16>, index
-        %42 = ascendc.que_bind.alloc_tensor %7 : !ascendc.queue<vecout, 1>, !ascendc.local_tensor<*xf16>
-        ascendc.reduce_sum_2d_l2 %42, %33 {layout = 0 : i32} : !ascendc.local_tensor<*xf16>, !ascendc.local_tensor<*xf16>
-        ascendc.que_bind.enque_tensor %7, %42 : !ascendc.queue<vecout, 1>, !ascendc.local_tensor<*xf16>
-        %43 = ascendc.que_bind.deque_tensor %7 : !ascendc.queue<vecout, 1>, !ascendc.local_tensor<*xf16>
-        %44 = ascendc.global_tensor : !ascendc.global_tensor<*xf16>
-        %45 = emitasc.reinterpret_cast %arg3 : memref<?xf16, strided<[1], offset: ?>> to memref<?xf16, 22 : i32>
-        ascendc.global_tensor.set_global_buffer %44, %45, %28 : !ascendc.global_tensor<*xf16>, memref<?xf16, 22 : i32>, i32
-        ascendc.data_copy_l2 %44, %43, %23 : !ascendc.global_tensor<*xf16>, !ascendc.local_tensor<*xf16>, index
-        ascendc.que_bind.free_tensor %7, %43 : !ascendc.queue<vecout, 1>, !ascendc.local_tensor<*xf16>
-        ascendc.que_bind.free_tensor %6, %30 : !ascendc.queue<vecin, 1>, !ascendc.local_tensor<*xf16>
-      }
-    }
+  // 内核函数：广播加法归约
+  // 标记为 AiCore 内核函数
+  func.func @broadcast_add_reducesum(
+      // 输入 A [M] - GM
+      %input_a: memref<?xf16>,
+      // 输入 B [M,N] - GM
+      %input_b: memref<?x?xf16>,
+      // TilingData 结构体 - GM
+      %tiling_data: memref<?x!emitasc.py_struct<"TilingData",
+          [i64, i64, i64, i64],
+          ["TB_M", "TB_N", "dim_arg0_0", "dim_arg1_1"]>, 22 : i32>,
+      // 输出 - GM
+      %output: memref<?xf16, strided<[1], offset: ?>>
+  ) attributes {ascendc.aicore, ascendc.global} {
+
+    // 常量定义
+    %idx_0 = arith.constant 0 : index
+    %const_2 = arith.constant 2 : index
+    %const_1_i32 = arith.constant 1 : i32
+
+    // ---- 复制 TilingData 到本地 ----
+    %local_tiling = emitasc.copy_struct %tiling_data
+        : memref<?x!emitasc.py_struct<"TilingData",
+            [i64, i64, i64, i64],
+            ["TB_M", "TB_N", "dim_arg0_0", "dim_arg1_1"]>, 22 : i32>,
+          !emitasc.py_struct<"TilingData",
+            [i64, i64, i64, i64],
+            ["TB_M", "TB_N", "dim_arg0_0", "dim_arg1_1"]>
+
+    // ---- 解包 TilingData ----
+    %tb_m_val = emitasc.member %local_tiling "TB_M"
+        : !emitasc.py_struct<"TilingData",
+            [i64, i64, i64, i64],
+            ["TB_M", "TB_N", "dim_arg0_0", "dim_arg1_1"]>, i64
+    %tb_n_val = emitasc.member %local_tiling "TB_N"
+        : !emitasc.py_struct<"TilingData",
+            [i64, i64, i64, i64],
+            ["TB_M", "TB_N", "dim_arg0_0", "dim_arg1_1"]>, i64
+    %dim_m_val = emitasc.member %local_tiling "dim_arg0_0"
+        : !emitasc.py_struct<"TilingData",
+            [i64, i64, i64, i64],
+            ["TB_M", "TB_N", "dim_arg0_0", "dim_arg1_1"]>, i64
+    %dim_n_val = emitasc.member %local_tiling "dim_arg1_1"
+        : !emitasc.py_struct<"TilingData",
+            [i64, i64, i64, i64],
+            ["TB_M", "TB_N", "dim_arg0_0", "dim_arg1_1"]>, i64
+
+    // ---- 初始化 AscendC 运行时 ----
+    %pipe = ascendc.pipe
+    %queue_in = ascendc.queue : <vecin, 1>
+    %queue_out = ascendc.queue : <vecout, 1>
+
+    // 类型转换
+    %tb_n = arith.index_cast %tb_n_val : i64 to index
+    %tb_m = arith.index_cast %tb_m_val : i64 to index
+    %dim_m = arith.index_cast %dim_m_val : i64 to index
+    %dim_n = arith.index_cast %dim_n_val : i64 to index
+
+    // ---- 分配 TBUF 缓冲区 ----
+    %tbuf_calc_0 = ascendc.tbuf : <veccalc>
+    %tbuf_calc_1 = ascendc.tbuf : <veccalc>
+    %tbuf_calc_2 = ascendc.tbuf : <veccalc>
+    %tbuf_out = ascendc.tbuf : <vecout>
+    %tbuf_in = ascendc.tbuf : <vecin>
+
+    // ---- 获取当前核ID ----
+    %block_idx = ascendc.get_block_idx : index
+
+    // ---- 计算本核的起始偏移 ----
+    %block_offset = arith.muli %block_idx, %tb_m : index
+
+    // ---- 边界检查 ----
+    %is_in_bounds = arith.cmpi ult, %block_offset, %dim_m : index
+
+    scf.if %is_in_bounds {
+
+      // ---- 计算本核实际处理的行数 ----
+      %remaining_rows = arith.subi %dim_m, %block_offset : index
+      %actual_rows = arith.minsi %tb_m, %remaining_rows : index
+
+      // ---- 内层循环 ----
+      scf.for %inner_iv = %idx_0 to %actual_rows step %tb_n {
+
+        // 计算本批次实际处理的行数
+        %remaining_inner = arith.subi %actual_rows, %inner_iv : index
+        %inner_size = arith.minsi %remaining_inner, %tb_n : index
+
+        // ---- 计算缓冲区大小 ----
+        %buffer_size_in = arith.muli %inner_size, %const_2 : index
+
+        // ---- 初始化 VECIN 缓冲区 ----
+        ascendc.pipe.init_buffer %pipe, %tbuf_in, %buffer_size_in
+            : !ascendc.tbuf<vecin>, index
+
+        // ---- 分配本地张量 ----
+        %local_tensor_in = ascendc.que_bind.alloc_tensor %queue_in
+            : !ascendc.queue<vecin, 1>, !ascendc.local_tensor<*xf16>
+
+        // ---- 设置全局张量 ----
+        %global_tensor_a = ascendc.global_tensor : !ascendc.global_tensor<*xf16>
+
+        // 计算全局偏移
+        %global_offset = arith.addi %inner_iv, %block_offset : index
+        %global_offset_i32 = arith.index_cast %global_offset : index to i32
+
+        // 类型转换
+        %input_a_gm = emitasc.reinterpret_cast %input_a
+            : memref<?xf16> to memref<?xf16, 22 : i32>
+
+        ascendc.global_tensor.set_global_buffer %global_tensor_a, %input_a_gm, %global_offset_i32
+            : !ascendc.global_tensor<*xf16>, memref<?xf16, 22 : i32>, i32
+
+        // ---- 数据搬运：GM → VECIN ----
+        ascendc.data_copy_l2 %local_tensor_in, %global_tensor_a, %inner_size
+            : !ascendc.local_tensor<*xf16>, !ascendc.global_tensor<*xf16>, index
+
+        // ---- 入队/出队 ----
+        ascendc.que_bind.enque_tensor %queue_in, %local_tensor_in
+            : !ascendc.queue<vecin, 1>, !ascendc.local_tensor<*xf16>
+        %dequeued_in = ascendc.que_bind.deque_tensor %queue_in
+            : !ascendc.queue<vecin, 1>, !ascendc.local_tensor<*xf16>
+
+        // ---- 初始化 VECOUT 缓冲区 ----
+        ascendc.pipe.init_buffer %pipe, %tbuf_out, %buffer_size_in
+            : !ascendc.tbuf<vecout>, index
+
+        // ---- 计算 B 的缓冲区大小 ----
+        %b_total_size = arith.muli %inner_size, %dim_n : index
+        %buffer_size_b = arith.muli %b_total_size, %const_2 : index
+
+        // ---- 初始化 VECCALC 缓冲区 ----
+        ascendc.pipe.init_buffer %pipe, %tbuf_calc_2, %buffer_size_b
+            : !ascendc.tbuf<veccalc>, index
+        %local_calc_2 = ascendc.tbuf.get_tensor %tbuf_calc_2
+            : !ascendc.tbuf<veccalc>, !ascendc.local_tensor<*xf16>
+
+        // 转换索引为 i32
+        %inner_size_i32 = arith.index_cast %inner_size : index to i32
+        %dim_n_i32 = arith.index_cast %dim_n : index to i32
+
+        // ---- 初始化更多 VECCALC 缓冲区 ----
+        ascendc.pipe.init_buffer %pipe, %tbuf_calc_1, %buffer_size_b
+            : !ascendc.tbuf<veccalc>, index
+        %local_calc_1 = ascendc.tbuf.get_tensor %tbuf_calc_1
+            : !ascendc.tbuf<veccalc>, !ascendc.local_tensor<*xf16>
+
+        // ---- 广播 ----
+        ascendc.broadcast_l2 %local_calc_1, %dequeued_in,
+            %inner_size_i32, %dim_n_i32, %inner_size_i32, %const_1_i32
+            {constRank = 2 : i32, operandSegmentSizes = array<i32: 1, 1, 2, 2>}
+            : !ascendc.local_tensor<*xf16>, !ascendc.local_tensor<*xf16>,
+              i32, i32, i32, i32
+
+        // ---- 初始化最后一个 VECCALC 缓冲区 ----
+        ascendc.pipe.init_buffer %pipe, %tbuf_calc_0, %buffer_size_b
+            : !ascendc.tbuf<veccalc>, index
+        %local_calc_0 = ascendc.tbuf.get_tensor %tbuf_calc_0
+            : !ascendc.tbuf<veccalc>, !ascendc.local_tensor<*xf16>
+
+        // ---- 设置 B 的全局张量 ----
+        %global_tensor_b = ascendc.global_tensor : !ascendc.global_tensor<*xf16>
+
+        // 计算 B 的全局偏移
+        %b_offset = arith.muli %global_offset, %dim_n : index
+        %b_offset_i32 = arith.index_cast %b_offset : index to i32
+
+        // 类型转换
+        %input_b_gm = emitasc.reinterpret_cast %input_b
+            : memref<?x?xf16> to memref<?xf16, 22 : i32>
+
+        ascendc.global_tensor.set_global_buffer %global_tensor_b, %input_b_gm, %b_offset_i32
+            : !ascendc.global_tensor<*xf16>, memref<?xf16, 22 : i32>, i32
+
+        // ---- 数据搬运：B 从 GM → VECCALC ----
+        ascendc.data_copy_l2 %local_calc_0, %global_tensor_b, %b_total_size
+            : !ascendc.local_tensor<*xf16>, !ascendc.global_tensor<*xf16>, index
+
+        // ---- 向量加法 ----
+        ascendc.add_l2 %local_calc_2, %local_calc_1, %local_calc_0, %b_total_size
+            : !ascendc.local_tensor<*xf16>, !ascendc.local_tensor<*xf16>,
+              !ascendc.local_tensor<*xf16>, index
+
+        // ---- 累加 ----
+        ascendc.add_l2 %local_calc_2, %local_calc_2, %local_calc_2, %b_total_size
+            : !ascendc.local_tensor<*xf16>, !ascendc.local_tensor<*xf16>,
+              !ascendc.local_tensor<*xf16>, index
+
+        // ---- 分配输出本地张量 ----
+        %local_out = ascendc.que_bind.alloc_tensor %queue_out
+            : !ascendc.queue<vecout, 1>, !ascendc.local_tensor<*xf16>
+
+        // ---- 二维归约求和 ----
+        ascendc.reduce_sum_2d_l2 %local_out, %local_calc_2 {layout = 0 : i32}
+            : !ascendc.local_tensor<*xf16>, !ascendc.local_tensor<*xf16>
+
+        // ---- 入队/出队 ----
+        ascendc.que_bind.enque_tensor %queue_out, %local_out
+            : !ascendc.queue<vecout, 1>, !ascendc.local_tensor<*xf16>
+        %dequeued_out = ascendc.que_bind.deque_tensor %queue_out
+            : !ascendc.queue<vecout, 1>, !ascendc.local_tensor<*xf16>
+
+        // ---- 设置输出全局张量 ----
+        %global_tensor_out = ascendc.global_tensor : !ascendc.global_tensor<*xf16>
+
+        // 类型转换
+        %output_gm = emitasc.reinterpret_cast %output
+            : memref<?xf16, strided<[1], offset: ?>> to memref<?xf16, 22 : i32>
+
+        ascendc.global_tensor.set_global_buffer %global_tensor_out, %output_gm, %global_offset_i32
+            : !ascendc.global_tensor<*xf16>, memref<?xf16, 22 : i32>, i32
+
+        // ---- 数据写回：VECOUT → GM ----
+        ascendc.data_copy_l2 %global_tensor_out, %dequeued_out, %inner_size
+            : !ascendc.global_tensor<*xf16>, !ascendc.local_tensor<*xf16>, index
+
+        // ---- 释放张量 ----
+        ascendc.que_bind.free_tensor %queue_out, %dequeued_out
+            : !ascendc.queue<vecout, 1>, !ascendc.local_tensor<*xf16>
+        ascendc.que_bind.free_tensor %queue_in, %dequeued_in
+            : !ascendc.queue<vecin, 1>, !ascendc.local_tensor<*xf16>
+
+      } // 内层循环结束
+    } // scf.if 结束
+
     return
   }
 }
-
