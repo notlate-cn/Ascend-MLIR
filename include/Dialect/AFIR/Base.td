@@ -31,14 +31,20 @@ class AFIR_BaseOp<string mnemonic,
                           string computeType = "Invalid",
                           string computeUnit = "Invalid"> :
     AFIR_Op<mnemonic, traits> {
+  code getComputeInfoDecl = [{
+  static afir::ComputeType getComputeType();
+  static afir::ComputeUnit getComputeUnit();
+  }];
   code getComputeInfo = [{
-    afir::ComputeType getComputeType() {
+    afir::ComputeType $cppClass::getComputeType() {
       return afir::ComputeType::}] # computeType # [{;
     }
-    afir::ComputeUnit getComputeUnit() {
+    afir::ComputeUnit $cppClass::getComputeUnit() {
       return afir::ComputeUnit::}] # computeUnit # [{;
     }
   }];
+  let extraClassDeclaration = getComputeInfoDecl;
+  let extraClassDefinition = getComputeInfo;
   let hasVerifier = 1;
 }
 
@@ -53,12 +59,17 @@ class AFIR_NaryOp<string mnemonic,
                           string computeUnit = "Invalid",
                           bit finalize = 0> :
     AFIR_BaseOp<mnemonic, traits, computeType, computeUnit> {
+  code baseMethodDecl = [{
+  int getNumberOfOperands();
+  int getNumberOfResults();
+  }] # getComputeInfoDecl;
   code baseMethods = [{
-      int getNumberOfOperands() { return }] # numOperands # [{; }
-      int getNumberOfResults() { return }] # numResults # [{; }
+      int $cppClass::getNumberOfOperands() { return }] # numOperands # [{; }
+      int $cppClass::getNumberOfResults() { return }] # numResults # [{; }
     }] # getComputeInfo;
   let hasVerifier = 1;
-  let extraClassDeclaration = !if(finalize, baseMethods, "");
+  let extraClassDeclaration = !if(finalize, baseMethodDecl, "");
+  let extraClassDefinition = !if(finalize, baseMethods, "");
 }
 
 //===----------------------------------------------------------------------===//
@@ -207,13 +218,18 @@ class AFIR_VariadicOpBase<string mnemonic,
   let assemblyFormat = [{
     $inputs attr-dict `:` type($inputs) `->` type($result)
   }];
+  code baseMethodDecl = [{
+  int getNumberOfOperands();
+  int getNumberOfResults();
+  }] # getComputeInfoDecl;
   code baseMethods = [{
-      int getNumberOfOperands() { return getInputs().size(); }
-      int getNumberOfResults() { return 1; }
+      int $cppClass::getNumberOfOperands() { return getInputs().size(); }
+      int $cppClass::getNumberOfResults() { return 1; }
     }] # getComputeInfo;
 
   let hasVerifier = 1;
-  let extraClassDeclaration = !if(finalize, baseMethods, "");
+  let extraClassDeclaration = !if(finalize, baseMethodDecl, "");
+  let extraClassDefinition = !if(finalize, baseMethods, "");
 }
 
 class AFIR_VariadicOp<string mnemonic, 

@@ -82,7 +82,7 @@ AFIRToASCIRTextPass::OpInfo AFIRToASCIRTextPass::getOpInfo(StringRef opName) {
   static const llvm::StringMap<OpInfo> opInfoMap = {
       {"load", {1, 2, 11, false}},        {"store", {1, 2, 1, false}},      {"scalar", {1, 1, 11, false}},
       {"index_expr", {1, 1, 11, false}},  {"broadcast", {2, 7, 11, true}},  {"cast", {1, 5, 3, false}},
-      {"select", {1, 5, 3, false}},       {"where", {1, 5, 3, false}},      {"concat", {1, 5, 3, false}},
+      {"select", {1, 5, 3, false}},       {"where", {1, 5, 3, false}},      {"concat", {1, 5, 7, false}},
       {"max", {1, 5, 3, false}},          {"min", {1, 5, 3, false}},        {"sum", {1, 5, 3, false}},
       {"mean", {1, 5, 3, false}},         {"prod", {1, 5, 3, false}},       {"any", {1, 5, 3, false}},
       {"all", {1, 5, 3, false}},          {"abs", {1, 5, 3, false}},        {"exp", {1, 5, 3, false}},
@@ -380,7 +380,7 @@ std::string AFIRToASCIRTextPass::generateNodeAttr(Operation *op, const std::stri
   auto indexingMapsAttr = op->getAttrOfType<ArrayAttr>("indexing_maps");
   if (indexingMapsAttr) {
     int numOperands = op->getNumOperands();
-    
+
     if (numOperands < static_cast<int>(indexingMapsAttr.size())) {
       if (auto affineMapAttr = dyn_cast<AffineMapAttr>(indexingMapsAttr[numOperands])) {
         auto affineMap = affineMapAttr.getValue();
