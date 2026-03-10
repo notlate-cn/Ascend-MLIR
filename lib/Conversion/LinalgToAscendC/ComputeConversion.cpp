@@ -367,6 +367,47 @@ LogicalResult convertCompute(func::FuncOp funcOp, AscendCBufferContext &ctx) {
             dstShapeVals, srcShapeVals,
             builder.getI32IntegerAttr(static_cast<int32_t>(iterRank)));
         inputLts[i] = bcastLt;
+      } else if (isBcast && inMs == 0 /*GM*/) {
+        // broadcast from GM: copy the small src tensor into VECCALC first,
+        // then broadcast_l2 it into the full-shape VECCALC.
+        auto srcMrt = cast<MemRefType>(inMemref.getType());
+        unsigned srcRank = srcMrt.getRank();
+        SmallVector<Value> srcDims;
+        for (unsigned d = 0; d < srcRank; ++d)
+          srcDims.push_back(getDynDim(builder, loc, inMemref, d));
+        Value srcElemCount = builder.create<arith::ConstantIndexOp>(loc, 1);
+        for (Value d : srcDims)
+          srcElemCount = builder.create<arith::MulIOp>(loc, srcElemCount, d);
+        auto [srcTbuf, srcLt] = allocVeccalc(builder, loc, elemType, srcDims);
+        Value srcGt = builder.create<GlobalTensorOp>(
+            loc, GlobalTensorType::get(elemType));
+        builder.create<GlobalTensorSetGlobalBufferOp>(loc, srcGt, inMemref,
+                                                       /*size=*/Value{});
+        builder.create<DataCopyL2Op>(loc, srcLt, srcGt, srcElemCount);
+        SmallVector<Value> dstShapeVals, srcShapeVals;
+        for (Value s : fullShape)
+          dstShapeVals.push_back(
+              builder.create<arith::IndexCastOp>(loc, builder.getI32Type(), s));
+        unsigned srcDimIdx = 0;
+        for (unsigned d = 0; d < iterRank; ++d) {
+          bool inResult = false;
+          for (AffineExpr result : inMap.getResults())
+            if (auto dimExpr = dyn_cast<AffineDimExpr>(result))
+              if (dimExpr.getPosition() == d) { inResult = true; break; }
+          if (inResult && srcDimIdx < srcRank)
+            srcShapeVals.push_back(builder.create<arith::IndexCastOp>(
+                loc, builder.getI32Type(), srcDims[srcDimIdx++]));
+          else
+            srcShapeVals.push_back(
+                builder.create<arith::ConstantIntOp>(loc, builder.getI32Type(), 1));
+        }
+        auto [bcastTbuf, bcastLt] =
+            allocVeccalc(builder, loc, elemType, fullShape);
+        builder.create<BroadcastL2Op>(
+            loc, bcastLt, srcLt,
+            dstShapeVals, srcShapeVals,
+            builder.getI32IntegerAttr(static_cast<int32_t>(iterRank)));
+        inputLts[i] = bcastLt;
       } else if (inMs == 0 /*GM*/) {
         // data_copy_l2: GM subview → fresh VECCALC.
         auto [copyTbuf, copyLt] =
@@ -414,6 +455,8 @@ LogicalResult convertCompute(func::FuncOp funcOp, AscendCBufferContext &ctx) {
     llvm::SmallDenseMap<Value, Value> valToLt;
     for (auto &bodyOp : bodyBlock.without_terminator()) {
       // Resolve an SSA value to its corresponding local_tensor.
+      // Handles block args, prior body results, and scalar constants
+      // (via duplicate_l2 into a fresh VECCALC tensor).
       auto resolve = [&](Value v) -> Value {
         // Block argument?
         if (auto ba = dyn_cast<BlockArgument>(v))
@@ -421,6 +464,13 @@ LogicalResult convertCompute(func::FuncOp funcOp, AscendCBufferContext &ctx) {
         // Result of a previous body op?
         auto it = valToLt.find(v);
         if (it != valToLt.end()) return it->second;
+        // Scalar constant? Fill a fresh VECCALC with duplicate_l2.
+        if (auto constOp = v.getDefiningOp<arith::ConstantOp>()) {
+          auto [dupTbuf, dupLt] = allocVeccalc(builder, loc, elemType, fullShape);
+          builder.create<DuplicateL2Op>(loc, dupLt, constOp.getResult(), totalElems);
+          valToLt[v] = dupLt;
+          return dupLt;
+        }
         return Value{};
       };
 
@@ -570,6 +620,47 @@ LogicalResult convertCompute(func::FuncOp funcOp, AscendCBufferContext &ctx) {
             dstShapeVals, srcShapeVals,
             builder.getI32IntegerAttr(static_cast<int32_t>(iterRank)));
         inputLts[i] = bcastLt;
+      } else if (isBcast && inMs == 0 /*GM*/) {
+        // broadcast from GM: copy the small src tensor into VECCALC first,
+        // then broadcast_l2 it into the full-shape VECCALC.
+        auto srcMrt = cast<MemRefType>(inMemref.getType());
+        unsigned srcRank = srcMrt.getRank();
+        SmallVector<Value> srcDims;
+        for (unsigned d = 0; d < srcRank; ++d)
+          srcDims.push_back(getDynDim(builder, loc, inMemref, d));
+        Value srcElemCount = builder.create<arith::ConstantIndexOp>(loc, 1);
+        for (Value d : srcDims)
+          srcElemCount = builder.create<arith::MulIOp>(loc, srcElemCount, d);
+        auto [srcTbuf, srcLt] = allocVeccalc(builder, loc, elemType, srcDims);
+        Value srcGt = builder.create<GlobalTensorOp>(
+            loc, GlobalTensorType::get(elemType));
+        builder.create<GlobalTensorSetGlobalBufferOp>(loc, srcGt, inMemref,
+                                                       /*size=*/Value{});
+        builder.create<DataCopyL2Op>(loc, srcLt, srcGt, srcElemCount);
+        SmallVector<Value> dstShapeVals, srcShapeVals;
+        for (Value s : iterDimSizes)
+          dstShapeVals.push_back(
+              builder.create<arith::IndexCastOp>(loc, builder.getI32Type(), s));
+        unsigned srcDimIdx = 0;
+        for (unsigned d = 0; d < iterRank; ++d) {
+          bool inResult = false;
+          for (AffineExpr result : inMap.getResults())
+            if (auto dimExpr = dyn_cast<AffineDimExpr>(result))
+              if (dimExpr.getPosition() == d) { inResult = true; break; }
+          if (inResult && srcDimIdx < srcRank)
+            srcShapeVals.push_back(builder.create<arith::IndexCastOp>(
+                loc, builder.getI32Type(), srcDims[srcDimIdx++]));
+          else
+            srcShapeVals.push_back(
+                builder.create<arith::ConstantIntOp>(loc, builder.getI32Type(), 1));
+        }
+        auto [bcastTbuf, bcastLt] =
+            allocVeccalc(builder, loc, elemType, iterDimSizes);
+        builder.create<BroadcastL2Op>(
+            loc, bcastLt, srcLt,
+            dstShapeVals, srcShapeVals,
+            builder.getI32IntegerAttr(static_cast<int32_t>(iterRank)));
+        inputLts[i] = bcastLt;
       } else if (inMs == 0 /*GM*/) {
         auto [copyTbuf, copyLt] =
             allocVeccalc(builder, loc, elemType, iterDimSizes);
@@ -599,6 +690,13 @@ LogicalResult convertCompute(func::FuncOp funcOp, AscendCBufferContext &ctx) {
           return argToLt[ba.getArgNumber()];
         auto it = valToLt.find(v);
         if (it != valToLt.end()) return it->second;
+        // Scalar constant? Fill a fresh VECCALC with duplicate_l2.
+        if (auto constOp = v.getDefiningOp<arith::ConstantOp>()) {
+          auto [dupTbuf, dupLt] = allocVeccalc(builder, loc, elemType, iterDimSizes);
+          builder.create<DuplicateL2Op>(loc, dupLt, constOp.getResult(), totalElems);
+          valToLt[v] = dupLt;
+          return dupLt;
+        }
         return Value{};
       };
 
