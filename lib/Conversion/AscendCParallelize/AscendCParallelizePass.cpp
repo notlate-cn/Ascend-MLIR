@@ -52,16 +52,16 @@ namespace mlir::afir {
 // Helper: find the outermost two nested scf.for loops in a func
 //===----------------------------------------------------------------------===//
 
-/// Collect the single outermost scf.for in a func body (if any).
-static scf::ForOp findOutermostFor(func::FuncOp func) {
-  scf::ForOp result;
-  func.getBody().walk<WalkOrder::PreOrder>([&](scf::ForOp forOp) -> WalkResult {
-    if (!result) {
-      result = forOp;
-      return WalkResult::interrupt();
-    }
-    return WalkResult::advance();
-  });
+/// Collect all top-level scf.for loops directly in the function entry block
+/// (i.e. not nested inside another loop or region op).  These are the TB-level
+/// loops that each need to be parallelized independently.
+static SmallVector<scf::ForOp> findTopLevelFors(func::FuncOp func) {
+  SmallVector<scf::ForOp> result;
+  Block &entry = func.getBody().front();
+  for (Operation &op : entry.without_terminator()) {
+    if (auto forOp = dyn_cast<scf::ForOp>(&op))
+      result.push_back(forOp);
+  }
   return result;
 }
 
@@ -80,9 +80,8 @@ static scf::ForOp findOutermostFor(func::FuncOp func) {
 ///   %iVal      = arith.muli %block_idx, %STEP
 ///   %inBound   = arith.cmpi ult, %iVal, %UB
 ///   scf.if %inBound { <body with %i replaced by %iVal> }
-static LogicalResult parallelizeOuterLoops(func::FuncOp func,
-                                           OpBuilder &builder) {
-  scf::ForOp outerFor = findOutermostFor(func);
+static LogicalResult parallelizeOneLoop(scf::ForOp outerFor,
+                                        OpBuilder &builder) {
   if (!outerFor)
     return failure();
 
@@ -142,10 +141,19 @@ struct AscendCParallelizePass
   void runOnOperation() override {
     func::FuncOp func = getOperation();
     OpBuilder builder(func.getContext());
-    if (failed(parallelizeOuterLoops(func, builder))) {
-      // Not an error — func may not have parallel outer loops.
+    // Collect ALL top-level scf.for loops before modifying them (they will be
+    // erased one by one, so collecting first avoids iterator invalidation).
+    SmallVector<scf::ForOp> topFors = findTopLevelFors(func);
+    if (topFors.empty()) {
       LLVM_DEBUG(llvm::dbgs()
                  << "[ascendc-parallelize] No outer loops found to parallelize\n");
+      return;
+    }
+    for (scf::ForOp forOp : topFors) {
+      if (failed(parallelizeOneLoop(forOp, builder))) {
+        LLVM_DEBUG(llvm::dbgs()
+                   << "[ascendc-parallelize] Skipping loop (lb != 0)\n");
+      }
     }
   }
 };

@@ -14,8 +14,6 @@ xvm容器SSH连接方式：ssh xvm@orb
 ssh xvm@orb
 cd /home/niu/code/Ascend-MLIR
 ./scripts/build.sh --build-project --llvm-build-dir /home/niu/code/llvm-project/build
-source examples/matmul-add-relu-sum/env.sh
+source examples/env.sh
 afir-opt -h
 ```
-
-测试用例在 `examples/matmul-add-relu-sum/output_step2_canonicalize.mlir`，我希望将这个IR成功转换。

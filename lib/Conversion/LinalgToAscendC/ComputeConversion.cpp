@@ -430,6 +430,12 @@ LogicalResult convertCompute(func::FuncOp funcOp, AscendCBufferContext &ctx) {
         if (!lhs || !rhs) continue;
         builder.create<AddL2Op>(loc, accumLt, lhs, rhs, totalElems);
         valToLt[addOp.getResult()] = accumLt;
+      } else if (auto mulOp = dyn_cast<arith::MulFOp>(bodyOp)) {
+        Value lhs = resolve(mulOp.getLhs());
+        Value rhs = resolve(mulOp.getRhs());
+        if (!lhs || !rhs) continue;
+        builder.create<MulL2Op>(loc, accumLt, lhs, rhs, totalElems);
+        valToLt[mulOp.getResult()] = accumLt;
       } else if (auto maxOp = dyn_cast<arith::MaximumFOp>(bodyOp)) {
         Value lhs = resolve(maxOp.getLhs());
         Value rhs = resolve(maxOp.getRhs());
@@ -454,6 +460,192 @@ LogicalResult convertCompute(func::FuncOp funcOp, AscendCBufferContext &ctx) {
     // Enqueue vecout if it has a queue (VECOUT path).
     if (Value q = ctx.getQueue(outMemref))
       builder.create<TQueBindEnqueTensorOp>(loc, q, vecoutLt);
+
+    genOp.erase();
+  }
+
+  // --- linalg.generic {all-parallel, on-chip output} ---
+  //
+  // Pure-parallel generic lowering (e.g. broadcast+add, broadcast+mul).
+  // These have iterator_types = ["parallel", "parallel", ...] with no reduction.
+  //
+  // Strategy mirrors the reduction path (Steps 1-2) but skips Step 3:
+  //   GM/VECIN inputs → promote to VECCALC local_tensors (broadcast_l2 or copy)
+  //   Body arith ops → inline as AscendC vector ops on VECCALC accumulator
+  //   Final result   → write directly to VECOUT (writeTensor handles alloc)
+  //   Enqueue VECOUT for downstream data-move epilogue copy
+  //
+  // Concat semantics are implicitly handled: the VECOUT→GM copy op (inserted by
+  // AscendCBufferPlacement + DataMoveConversion) targets a memref subview of the
+  // output buffer with the correct byte offset, so Op1 and Op2 results land at
+  // the right positions in the concatenated output without any asc.concat op.
+  SmallVector<linalg::GenericOp> parallelGenericOps;
+  funcOp.walk([&](linalg::GenericOp op) {
+    auto iterTypes = op.getIteratorTypesArray();
+    bool allParallel = llvm::all_of(iterTypes, [](utils::IteratorType t) {
+      return t == utils::IteratorType::parallel;
+    });
+    if (allParallel && op.getNumDpsInits() == 1)
+      parallelGenericOps.push_back(op);
+  });
+
+  for (linalg::GenericOp genOp : parallelGenericOps) {
+    Value outMemref = genOp.getDpsInitOperand(0)->get();
+    int64_t outMs   = getMemorySpace(outMemref.getType());
+    if (outMs <= 0)
+      continue; // output must be on-chip (VECOUT or VECCALC)
+
+    unsigned numInputs = genOp.getNumDpsInputs();
+    auto iterTypes     = genOp.getIteratorTypesArray();
+    unsigned iterRank  = iterTypes.size();
+    auto maps          = genOp.getIndexingMapsArray();
+
+    Location loc = genOp.getLoc();
+    builder.setInsertionPoint(genOp);
+    Type elemType = cast<MemRefType>(outMemref.getType()).getElementType();
+
+    // ---- Compute iteration dim sizes from the first full-rank input ----
+    SmallVector<Value> iterDimSizes(iterRank);
+    for (unsigned i = 0; i < numInputs; ++i) {
+      Value inMemref = genOp.getDpsInputOperand(i)->get();
+      AffineMap inMap = maps[i];
+      if (inMap.getNumResults() == iterRank) {
+        for (unsigned d = 0; d < iterRank; ++d)
+          iterDimSizes[d] = getDynDim(builder, loc, inMemref, d);
+        break;
+      }
+    }
+    // Fall back: fill remaining dims from output (all parallel, same rank).
+    for (unsigned d = 0; d < iterRank; ++d)
+      if (!iterDimSizes[d])
+        iterDimSizes[d] = getDynDim(builder, loc, outMemref, d);
+
+    // totalElems = product of all iteration dims.
+    Value totalElems;
+    for (Value s : iterDimSizes)
+      totalElems =
+          totalElems ? builder.create<arith::MulIOp>(loc, totalElems, s) : s;
+    if (!totalElems)
+      totalElems = builder.create<arith::ConstantIndexOp>(loc, 1);
+
+    // Allocate the shared VECCALC accumulator for intermediate results.
+    auto [accumTbuf, accumLt] =
+        allocVeccalc(builder, loc, elemType, iterDimSizes);
+
+    // ---- Step 1: Promote each input to a VECCALC local_tensor ----
+    SmallVector<Value> inputLts(numInputs);
+    for (unsigned i = 0; i < numInputs; ++i) {
+      Value inMemref = genOp.getDpsInputOperand(i)->get();
+      AffineMap inMap = maps[i];
+      int64_t inMs    = getMemorySpace(inMemref.getType());
+      bool isBcast    = isBroadcastMap(inMap, iterRank);
+
+      if (isBcast && inMs == 9 /*VECIN*/) {
+        // broadcast_l2: expand narrow VECIN tile into full-shape VECCALC.
+        auto srcMrt = cast<MemRefType>(inMemref.getType());
+        unsigned srcRank = srcMrt.getRank();
+        SmallVector<Value> dstShapeVals, srcShapeVals;
+        for (Value s : iterDimSizes)
+          dstShapeVals.push_back(
+              builder.create<arith::IndexCastOp>(loc, builder.getI32Type(), s));
+        unsigned srcDimIdx = 0;
+        for (unsigned d = 0; d < iterRank; ++d) {
+          bool inResult = false;
+          for (AffineExpr result : inMap.getResults())
+            if (auto dimExpr = dyn_cast<AffineDimExpr>(result))
+              if (dimExpr.getPosition() == d) { inResult = true; break; }
+          if (inResult && srcDimIdx < srcRank)
+            srcShapeVals.push_back(builder.create<arith::IndexCastOp>(
+                loc, builder.getI32Type(),
+                getDynDim(builder, loc, inMemref, srcDimIdx++)));
+          else
+            srcShapeVals.push_back(
+                builder.create<arith::ConstantIntOp>(loc, builder.getI32Type(), 1));
+        }
+        Value srcLt = readTensor(builder, loc, inMemref);
+        auto [bcastTbuf, bcastLt] =
+            allocVeccalc(builder, loc, elemType, iterDimSizes);
+        builder.create<BroadcastL2Op>(
+            loc, bcastLt, srcLt,
+            dstShapeVals, srcShapeVals,
+            builder.getI32IntegerAttr(static_cast<int32_t>(iterRank)));
+        inputLts[i] = bcastLt;
+      } else if (inMs == 0 /*GM*/) {
+        auto [copyTbuf, copyLt] =
+            allocVeccalc(builder, loc, elemType, iterDimSizes);
+        Value srcGt = builder.create<GlobalTensorOp>(
+            loc, GlobalTensorType::get(elemType));
+        builder.create<GlobalTensorSetGlobalBufferOp>(loc, srcGt, inMemref,
+                                                       /*size=*/Value{});
+        builder.create<DataCopyL2Op>(loc, copyLt, srcGt, totalElems);
+        inputLts[i] = copyLt;
+      } else {
+        inputLts[i] = readTensor(builder, loc, inMemref);
+      }
+    }
+
+    // ---- Step 2: Walk body and inline arith ops onto VECCALC tensors ----
+    Block &bodyBlock = *genOp.getBody();
+    unsigned numBodyArgs = bodyBlock.getNumArguments();
+    SmallVector<Value> argToLt(numBodyArgs);
+    for (unsigned i = 0; i < numInputs; ++i)
+      argToLt[i] = inputLts[i];
+    argToLt[numInputs] = accumLt;
+
+    llvm::SmallDenseMap<Value, Value> valToLt;
+    for (auto &bodyOp : bodyBlock.without_terminator()) {
+      auto resolve = [&](Value v) -> Value {
+        if (auto ba = dyn_cast<BlockArgument>(v))
+          return argToLt[ba.getArgNumber()];
+        auto it = valToLt.find(v);
+        if (it != valToLt.end()) return it->second;
+        return Value{};
+      };
+
+      if (auto addOp = dyn_cast<arith::AddFOp>(bodyOp)) {
+        Value lhs = resolve(addOp.getLhs());
+        Value rhs = resolve(addOp.getRhs());
+        if (!lhs || !rhs) continue;
+        builder.create<AddL2Op>(loc, accumLt, lhs, rhs, totalElems);
+        valToLt[addOp.getResult()] = accumLt;
+      } else if (auto mulOp = dyn_cast<arith::MulFOp>(bodyOp)) {
+        Value lhs = resolve(mulOp.getLhs());
+        Value rhs = resolve(mulOp.getRhs());
+        if (!lhs || !rhs) continue;
+        builder.create<MulL2Op>(loc, accumLt, lhs, rhs, totalElems);
+        valToLt[mulOp.getResult()] = accumLt;
+      } else if (auto maxOp = dyn_cast<arith::MaximumFOp>(bodyOp)) {
+        Value lhs = resolve(maxOp.getLhs());
+        Value rhs = resolve(maxOp.getRhs());
+        if (!lhs || !rhs) continue;
+        builder.create<MaxL2Op>(loc, accumLt, lhs, rhs, totalElems);
+        valToLt[maxOp.getResult()] = accumLt;
+      }
+    }
+
+    // ---- Step 3: Write accumulator to output buffer ----
+    // No reduction needed (all-parallel). The compute result is in accumLt
+    // (a VECCALC tbuf). We need to deliver it to the output buffer:
+    //
+    //   VECOUT (ms=10): alloc from queue, use AddL2 to copy accumLt→vecoutLt
+    //                   (add_l2(dst, src, zero_tbuf, count) would need a zero
+    //                    tensor; instead use the queue alloc tensor directly and
+    //                    simply enqueue accumLt if the queue accepts VECCALC).
+    //                   Simplest: treat the VECCALC accumLt as the enqueue source
+    //                   and let the downstream DataMoveConversion handle writeback.
+    //   VECCALC (ms=11): accumLt already holds the result; no copy needed.
+    //
+    // Key insight: the epilogue memref.copy (VECOUT→GM) inserted by
+    // AscendCBufferPlacement is converted by DataMoveConversion into a
+    // data_copy_l2 with the correct subview offset, so the Concat position
+    // is preserved automatically. We just need to enqueue the result tensor.
+    if (Value q = ctx.getQueue(outMemref)) {
+      // The queue expects a local_tensor. Enqueue accumLt directly —
+      // the DataMoveConversion pass will deque it and issue the GM writeback.
+      builder.create<TQueBindEnqueTensorOp>(loc, q, accumLt);
+    }
+    // If outMemref has no queue (VECCALC alloc without a queue), the result
+    // already resides in the VECCALC tbuf and will be consumed by the next op.
 
     genOp.erase();
   }
@@ -536,6 +728,7 @@ LogicalResult convertCompute(func::FuncOp funcOp, AscendCBufferContext &ctx) {
   for (linalg::ElementwiseOp ewOp : ewOps) {
     auto kind = ewOp.getKind();
     if (kind != linalg::ElementwiseKind::add &&
+        kind != linalg::ElementwiseKind::mul &&
         kind != linalg::ElementwiseKind::max_signed)
       continue;
 
@@ -588,6 +781,8 @@ LogicalResult convertCompute(func::FuncOp funcOp, AscendCBufferContext &ctx) {
 
     if (kind == linalg::ElementwiseKind::add)
       builder.create<AddL2Op>(loc, writeTarget, localSrc0, localSrc1, count);
+    else if (kind == linalg::ElementwiseKind::mul)
+      builder.create<MulL2Op>(loc, writeTarget, localSrc0, localSrc1, count);
     else
       builder.create<MaxL2Op>(loc, writeTarget, localSrc0, localSrc1, count);
 

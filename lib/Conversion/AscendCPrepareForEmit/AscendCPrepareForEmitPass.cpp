@@ -138,20 +138,27 @@ static LogicalResult prepareFunc(func::FuncOp func) {
   // Also collect dim[1] (row stride = num columns) for every block argument
   // that appears as the base of a memref.subview feeding set_global_buffer.
   // These dims are needed to compute the flat offset for the GM pointer.
-  func.walk([&](memref::SubViewOp subview) {
-    auto baseArg = dyn_cast<BlockArgument>(subview.getSource());
-    if (!baseArg)
-      return;
-    // Only care about subviews that feed into set_global_buffer.
-    bool feedsSgb = llvm::any_of(subview->getUsers(), [](Operation *user) {
-      return user->getName().getStringRef() ==
-             "ascendc.global_tensor.set_global_buffer";
-    });
-    if (!feedsSgb)
-      return;
-    // Ensure dim[0] and dim[1] are both covered so flat offset can be computed.
-    addDimKey(baseArg.getArgNumber(), 0);
-    addDimKey(baseArg.getArgNumber(), 1);
+  // Walk the subview chain transitively (subview-of-subview, through casts)
+  // to find the root BlockArgument.
+  func.walk([&](ascendc::GlobalTensorSetGlobalBufferOp sgbOp) {
+    Value buf = sgbOp.getBuffer();
+    // Walk through subview/cast chain to find the root BlockArgument.
+    while (buf) {
+      if (auto ba = dyn_cast<BlockArgument>(buf)) {
+        addDimKey(ba.getArgNumber(), 0);
+        addDimKey(ba.getArgNumber(), 1);
+        break;
+      }
+      if (auto sv = buf.getDefiningOp<memref::SubViewOp>()) {
+        buf = sv.getSource();
+        continue;
+      }
+      if (auto castOp = buf.getDefiningOp<memref::CastOp>()) {
+        buf = castOp.getSource();
+        continue;
+      }
+      break; // unrecognized op, stop
+    }
   });
 
   // For any newly added dimKeys that don't have a corresponding memref.dim op
@@ -275,6 +282,11 @@ static LogicalResult prepareFunc(func::FuncOp func) {
   // ── 7a. Promote top-level GM memref.alloc to function arguments ─────────────
   // Must run before 7b so that subview chains from the promoted arg are
   // traversable when resolving set_global_buffer ops.
+  //
+  // Also captures (argNumber → dynamic dim sizes) so that 7b can compute flat
+  // offsets for subviews that reference the promoted args without needing a
+  // memref.dim op (which ascir-translate cannot emit).
+  DenseMap<unsigned, SmallVector<Value>> promotedArgDynSizes;
   {
     SmallVector<memref::AllocOp> gmAllocs;
     for (Operation &op : entry.without_terminator()) {
@@ -291,7 +303,10 @@ static LogicalResult prepareFunc(func::FuncOp func) {
       auto stridedLayout = StridedLayoutAttr::get(ctx, ShapedType::kDynamic, strides);
       auto stridedTy = MemRefType::get(origTy.getShape(), origTy.getElementType(),
                                         stridedLayout);
+      // Save dynamic sizes before erasing.
+      SmallVector<Value> dynSizes(allocOp.getDynamicSizes());
       BlockArgument newArg = entry.addArgument(stridedTy, allocOp.getLoc());
+      promotedArgDynSizes[newArg.getArgNumber()] = dynSizes;
       OpBuilder b(allocOp);
       Value casted = b.create<memref::CastOp>(allocOp.getLoc(), origTy, newArg);
       allocOp.getResult().replaceAllUsesWith(casted);
@@ -405,10 +420,19 @@ static LogicalResult prepareFunc(func::FuncOp func) {
       }
       if (!ok || !baseArg)
         continue;
-      Value colStrideI64 = getDimI64Value(baseArg.getArgNumber(), 1);
-      if (!colStrideI64)
-        continue;
-      Value colStride = b.create<arith::IndexCastOp>(loc, indexTy, colStrideI64);
+      // Get col stride: prefer pre-collected tiling field (cheaper), fall back
+      // to the dynamic size captured during alloc promotion in step 7a (needed
+      // for allocs promoted after the dim-collection phase, which have no
+      // corresponding tiling field).
+      Value colStride;
+      if (Value colStrideI64 = getDimI64Value(baseArg.getArgNumber(), 1)) {
+        colStride = b.create<arith::IndexCastOp>(loc, indexTy, colStrideI64);
+      } else {
+        auto dynIt = promotedArgDynSizes.find(baseArg.getArgNumber());
+        if (dynIt == promotedArgDynSizes.end() || dynIt->second.size() < 2)
+          continue;
+        colStride = dynIt->second[1]; // dynamic size for dim 1
+      }
       Value rowTimesStride = b.create<arith::MulIOp>(loc, accRow, colStride);
       flatOffset = b.create<arith::AddIOp>(loc, rowTimesStride, accCol);
     } else {
@@ -448,6 +472,152 @@ static LogicalResult prepareFunc(func::FuncOp func) {
     });
     for (memref::SubViewOp sv : deadSubviews)
       sv.erase();
+  }
+
+  // ── 7c. Convert remaining GM→GM memref.copy to flat-pointer memmove ─────
+  // These arise from concat insert_slice ops that bufferize to copies between
+  // GM allocs (now promoted to block args) and subviews of the output arg.
+  // AscendC has no GM→GM DataCopy primitive; we emit a verbatim memmove.
+  //
+  // Helper: walk a value up through subviews/casts to find the root
+  // BlockArgument and accumulate a flat element offset.
+  // Returns {BlockArgument, flat_index_offset} or {null, null} on failure.
+  auto resolveGMChain = [&](Value start, OpBuilder &b,
+                             Location loc) -> std::pair<BlockArgument, Value> {
+    Value cur = start;
+    Value acc = b.create<arith::ConstantIndexOp>(loc, 0);
+    // For 2D subviews we need col stride to convert (row,col) to flat offset.
+    // Accumulate row and col offsets separately when inside a 2D subview.
+    while (true) {
+      if (auto sv = cur.getDefiningOp<memref::SubViewOp>()) {
+        SmallVector<OpFoldResult> offs = sv.getMixedOffsets();
+        if (offs.size() == 1) {
+          acc = b.create<arith::AddIOp>(loc, acc, materializeOffset(b, loc, offs[0]));
+          cur = sv.getSource();
+          continue;
+        }
+        if (offs.size() >= 2) {
+          // 2D: flat_offset += row * col_stride + col
+          Value src = sv.getSource();
+          if (auto castOp = src.getDefiningOp<memref::CastOp>())
+            src = castOp.getSource();
+          auto ba = dyn_cast<BlockArgument>(src);
+          if (!ba)
+            return {BlockArgument{}, Value{}};
+          // Get col stride.
+          Value colStride;
+          if (Value ci64 = getDimI64Value(ba.getArgNumber(), 1)) {
+            colStride = b.create<arith::IndexCastOp>(loc, indexTy, ci64);
+          } else {
+            auto dynIt = promotedArgDynSizes.find(ba.getArgNumber());
+            if (dynIt == promotedArgDynSizes.end() || dynIt->second.size() < 2)
+              return {BlockArgument{}, Value{}};
+            colStride = dynIt->second[1];
+          }
+          Value row = materializeOffset(b, loc, offs[0]);
+          Value col = materializeOffset(b, loc, offs[1]);
+          Value rowFlat = b.create<arith::MulIOp>(loc, row, colStride);
+          Value flat2d = b.create<arith::AddIOp>(loc, rowFlat, col);
+          acc = b.create<arith::AddIOp>(loc, acc, flat2d);
+          return {ba, acc};
+        }
+        return {BlockArgument{}, Value{}}; // 0-D, unexpected
+      }
+      if (auto castOp = cur.getDefiningOp<memref::CastOp>()) {
+        cur = castOp.getSource();
+        continue;
+      }
+      if (auto ba = dyn_cast<BlockArgument>(cur))
+        return {ba, acc};
+      return {BlockArgument{}, Value{}};
+    }
+  };
+
+  {
+    SmallVector<memref::CopyOp> gmCopies;
+    func.walk([&](memref::CopyOp op) {
+      auto srcMs = cast<MemRefType>(op.getSource().getType()).getMemorySpaceAsInt();
+      auto dstMs = cast<MemRefType>(op.getTarget().getType()).getMemorySpaceAsInt();
+      if (srcMs == 0 && dstMs == 0)
+        gmCopies.push_back(op);
+    });
+    for (memref::CopyOp copyOp : gmCopies) {
+      OpBuilder b(copyOp);
+      Location loc = copyOp.getLoc();
+      Value src = copyOp.getSource();
+      Value dst = copyOp.getTarget();
+
+      auto [srcArg, srcOff] = resolveGMChain(src, b, loc);
+      auto [dstArg, dstOff] = resolveGMChain(dst, b, loc);
+
+      if (!srcArg || !dstArg) {
+        LLVM_DEBUG(llvm::dbgs() << "[prepare-emit] unresolved GM copy\n");
+        continue;
+      }
+
+      // Build flat GM pointer types (memory_space = kGMSpace = 22).
+      Type srcElem = cast<MemRefType>(srcArg.getType()).getElementType();
+      Type dstElem = cast<MemRefType>(dstArg.getType()).getElementType();
+      auto mkFlatTy = [&](Type elem) {
+        return MemRefType::get({ShapedType::kDynamic}, elem,
+            MemRefLayoutAttrInterface{},
+            IntegerAttr::get(IntegerType::get(ctx, 32), kGMSpace));
+      };
+
+      Value srcBase = b.create<emitasc::ReinterpretCastOp>(loc, mkFlatTy(srcElem), srcArg);
+      Value dstBase = b.create<emitasc::ReinterpretCastOp>(loc, mkFlatTy(dstElem), dstArg);
+
+      Value srcPtr = b.create<emitasc::PtrOffsetOp>(
+          loc, mkFlatTy(srcElem), srcBase,
+          /*staticOffset=*/IntegerAttr{}, /*dynamicOffset=*/srcOff);
+      Value dstPtr = b.create<emitasc::PtrOffsetOp>(
+          loc, mkFlatTy(dstElem), dstBase,
+          /*staticOffset=*/IntegerAttr{}, /*dynamicOffset=*/dstOff);
+
+      // Compute byte count: product of dynamic sizes from promotedArgDynSizes
+      // (src is a promoted alloc arg, so its sizes are known).
+      Value byteCount;
+      {
+        auto dynIt = promotedArgDynSizes.find(srcArg.getArgNumber());
+        if (dynIt != promotedArgDynSizes.end() && !dynIt->second.empty()) {
+          Value count = b.create<arith::ConstantIndexOp>(loc, 1);
+          for (Value sz : dynIt->second)
+            count = b.create<arith::MulIOp>(loc, count, sz);
+          int64_t elemBytes = srcElem.getIntOrFloatBitWidth() / 8;
+          Value elemSize = b.create<arith::ConstantIndexOp>(loc, elemBytes);
+          byteCount = b.create<arith::MulIOp>(loc, count, elemSize);
+        } else {
+          // Fall back: multiply shape dims from type (static only).
+          auto mrt = cast<MemRefType>(src.getType());
+          int64_t staticElems = 1;
+          bool allStatic = true;
+          for (int64_t d : mrt.getShape()) {
+            if (d == ShapedType::kDynamic) { allStatic = false; break; }
+            staticElems *= d;
+          }
+          if (!allStatic) {
+            LLVM_DEBUG(llvm::dbgs() << "[prepare-emit] dynamic GM copy size unknown\n");
+            continue;
+          }
+          int64_t bytes = staticElems * (srcElem.getIntOrFloatBitWidth() / 8);
+          byteCount = b.create<arith::ConstantIndexOp>(loc, bytes);
+        }
+      }
+
+      // Emit: memmove(dst_ptr, src_ptr, byte_count)
+      b.create<emitasc::VerbatimOp>(loc,
+          b.getStringAttr("memmove($1, $2, $3)"),
+          ValueRange{dstPtr, srcPtr, byteCount});
+      copyOp.erase();
+    }
+    // Clean up dead subviews/casts.
+    SmallVector<Operation *> dead;
+    func.walk([&](Operation *op) {
+      if (op->use_empty() && isa<memref::SubViewOp, memref::CastOp>(op))
+        dead.push_back(op);
+    });
+    for (Operation *op : dead)
+      op->erase();
   }
 
   // ── 8. Erase old i64 block args (reverse order) ─────────────────────────
