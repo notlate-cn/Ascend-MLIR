@@ -11,6 +11,12 @@
 #include <memory>
 
 namespace mlir {
+
+std::unique_ptr<Pass> createLinalgInferShapePass();
+
+std::unique_ptr<Pass> createLinalgMarkPass();
+
+std::unique_ptr<Pass> createLinalgAddBroadcastPass();
 namespace afir {
 
 // Canonicalization pass
