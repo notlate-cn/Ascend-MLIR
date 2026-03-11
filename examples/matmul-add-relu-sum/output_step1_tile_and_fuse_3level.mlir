@@ -76,7 +76,7 @@ module attributes {transform.with_named_sequence} {
         %n_outer_size = affine.min #tile_guard(%n_outer)[%dim_n, %tile_n_outer]
         %dim_k = tensor.dim %input_a, %idx_1 : tensor<?x?xf32>
 
-        // GM → L2 tile
+        // GM → L1 tile
         %a_outer = tensor.extract_slice %input_a[%m_outer, 0][%m_outer_size, %dim_k][1, 1]
                    : tensor<?x?xf32> to tensor<?x?xf32>
         %b_outer = tensor.extract_slice %input_b[0, %n_outer][%dim_k, %n_outer_size][1, 1]
