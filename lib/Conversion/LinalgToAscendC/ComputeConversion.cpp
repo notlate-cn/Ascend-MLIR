@@ -539,11 +539,55 @@ LogicalResult convertCompute(func::FuncOp funcOp, AscendCBufferContext &ctx) {
       parallelGenericOps.push_back(op);
   });
 
+  // Helper: detect a 2D transpose generic.
+  // Pattern: 1 input with permutation map (d0,d1)->(d1,d0), 1 output with
+  // identity map (d0,d1)->(d0,d1), body is a single linalg.yield of the input.
+  auto isTransposeGeneric = [](linalg::GenericOp op) -> bool {
+    if (op.getNumDpsInputs() != 1 || op.getNumDpsInits() != 1)
+      return false;
+    auto maps = op.getIndexingMapsArray();
+    if (maps.size() != 2)
+      return false;
+    AffineMap inMap = maps[0];
+    AffineMap outMap = maps[1];
+    unsigned rank = op.getIteratorTypesArray().size();
+    if (rank != 2)
+      return false;
+    // Output must be identity (d0,d1)->(d0,d1)
+    if (!outMap.isIdentity())
+      return false;
+    // Input must be permutation (d0,d1)->(d1,d0)
+    if (inMap.getNumResults() != 2)
+      return false;
+    auto r0 = dyn_cast<AffineDimExpr>(inMap.getResult(0));
+    auto r1 = dyn_cast<AffineDimExpr>(inMap.getResult(1));
+    if (!r0 || !r1)
+      return false;
+    return r0.getPosition() == 1 && r1.getPosition() == 0;
+  };
+
   for (linalg::GenericOp genOp : parallelGenericOps) {
     Value outMemref = genOp.getDpsInitOperand(0)->get();
     int64_t outMs   = getMemorySpace(outMemref.getType());
     if (outMs <= 0)
       continue; // output must be on-chip (VECOUT or VECCALC)
+
+    // ---- Transpose generic: emit ascendc.transpose ----
+    if (isTransposeGeneric(genOp)) {
+      Value inMemref = genOp.getDpsInputOperand(0)->get();
+      Location loc = genOp.getLoc();
+      builder.setInsertionPoint(genOp);
+
+      Value srcLt = readTensor(builder, loc, inMemref);
+      Value dstLt = writeTensor(builder, loc, outMemref);
+      builder.create<TransposeOp>(loc, dstLt, srcLt);
+
+      if (Value q = ctx.getQueue(outMemref))
+        builder.create<TQueBindEnqueTensorOp>(loc, q, dstLt);
+
+      genOp.erase();
+      continue;
+    }
 
     unsigned numInputs = genOp.getNumDpsInputs();
     auto iterTypes     = genOp.getIteratorTypesArray();

@@ -1,0 +1,178 @@
+extern "C"  __global__ __aicore__ void ewop_broadcast_transpose(half* v1, half* v2, half* v3, __gm__ TilingData* v4, half* v5, half* v6, half* v7) {
+  constexpr int32_t c0_i32 = 0;
+  half c0_f16 = 0.0e+00;
+  constexpr uint32_t c2_idx = 2;
+  constexpr int32_t c1_i32 = 1;
+  constexpr uint32_t c0_idx = 0;
+  TilingData v8;
+  for (size_t i = 0; i < sizeof(v8); i++) {
+    auto byte = reinterpret_cast<__gm__ uint8_t*>(v4)[i];
+    reinterpret_cast<uint8_t*>(&v8)[i] = byte;
+  };
+  int64_t v9 = v8.TB_M;
+  int64_t v10 = v8.TB_N;
+  int64_t v11 = v8.dim_arg0_0;
+  int64_t v12 = v8.dim_arg0_1;
+  int64_t v13 = v8.dim_arg1_0;
+  int64_t v14 = v8.dim_arg1_1;
+  int64_t v15 = v8.dim_arg2_0;
+  int64_t v16 = v8.dim_arg2_1;
+  AscendC::TPipe v17;
+  AscendC::TQue<AscendC::TPosition::VECIN, 1> v18;
+  AscendC::TQue<AscendC::TPosition::VECOUT, 1> v19;
+  AscendC::TQue<AscendC::TPosition::VECIN, 1> v20;
+  AscendC::TQue<AscendC::TPosition::VECOUT, 1> v21;
+  AscendC::TQue<AscendC::TPosition::VECIN, 1> v22;
+  AscendC::TQue<AscendC::TPosition::VECOUT, 1> v23;
+  uint32_t v24 = static_cast<uint32_t>(v10);
+  uint32_t v25 = static_cast<uint32_t>(v9);
+  uint32_t v26 = static_cast<uint32_t>(v11);
+  uint32_t v27 = static_cast<uint32_t>(v12);
+  AscendC::TBuf<AscendC::TPosition::VECCALC> v28;
+  AscendC::TBuf<AscendC::TPosition::VECCALC> v29;
+  AscendC::TBuf<AscendC::TPosition::VECCALC> v30;
+  AscendC::TBuf<AscendC::TPosition::VECCALC> v31;
+  AscendC::TBuf<AscendC::TPosition::VECOUT> v32;
+  AscendC::TBuf<AscendC::TPosition::VECIN> v33;
+  uint32_t v34 = static_cast<uint32_t>(AscendC::GetBlockIdx());
+  uint32_t v35 = v34 * v25;
+  bool v36 = v35 < v26;
+  if (v36) {
+    uint32_t v37 = v26 - v35;
+    uint32_t v38 = ((v25 < v37) ? (v25) : (v37));
+    for (uint32_t v39 = c0_idx; v39 < v38; v39 += v24) {
+      uint32_t v40 = v38 - v39;
+      uint32_t v41 = ((v40 < v24) ? (v40) : (v24));
+      uint32_t v42 = v41 * v27;
+      uint32_t v43 = v42 * c2_idx;
+      v17.InitBuffer(v33, v43);
+      AscendC::LocalTensor<half> v44 = v18.AllocTensor<half>();
+      AscendC::GlobalTensor<half> v45;
+      uint32_t v46 = v39 + v35;
+      uint32_t v47 = v46 * v27;
+      int32_t v48 = static_cast<int32_t>(v47);
+      __gm__ half* v49 = reinterpret_cast<__gm__ half*>(v1);
+      v45.SetGlobalBuffer(v49, v48);
+      AscendC::DataCopy(v44, v45, v42);
+      v18.EnQue(v44);
+      AscendC::LocalTensor<half> v50 = v18.DeQue<half>();
+      v17.InitBuffer(v32, v43);
+      v17.InitBuffer(v31, v43);
+      AscendC::LocalTensor<half> v51 = v31.Get<half>();
+      uint32_t v52 = v27 * c2_idx;
+      v17.InitBuffer(v30, v52);
+      AscendC::LocalTensor<half> v53 = v30.Get<half>();
+      AscendC::GlobalTensor<half> v54;
+      __gm__ half* v55 = reinterpret_cast<__gm__ half*>(v2);
+      v54.SetGlobalBuffer(v55, c0_i32);
+      AscendC::DataCopy(v53, v54, v27);
+      int32_t v56 = static_cast<int32_t>(v41);
+      int32_t v57 = static_cast<int32_t>(v27);
+      v17.InitBuffer(v29, v43);
+      AscendC::LocalTensor<half> v58 = v29.Get<half>();
+      AscendC::Broadcast<half, half, 2>(v58, v53, reinterpret_cast<uint64_t>(v56), reinterpret_cast<uint64_t>(c1_i32));
+      v17.InitBuffer(v28, v43);
+      AscendC::LocalTensor<half> v59 = v28.Get<half>();
+      AscendC::Duplicate(v59, c0_f16, v42);
+      AscendC::Max(v51, v50, v59, v42);
+      AscendC::Add(v51, v51, v58, v42);
+      v19.EnQue(v51);
+      AscendC::LocalTensor<half> v60 = v19.DeQue<half>();
+      AscendC::GlobalTensor<half> v61;
+      __gm__ half* v62 = reinterpret_cast<__gm__ half*>(v5);
+      v61.SetGlobalBuffer(v62, v48);
+      AscendC::DataCopy(v61, v60, v42);
+      v19.FreeTensor(v60);
+      v18.FreeTensor(v50);
+    }
+  }
+  AscendC::TBuf<AscendC::TPosition::VECCALC> v63;
+  AscendC::TBuf<AscendC::TPosition::VECOUT> v64;
+  AscendC::TBuf<AscendC::TPosition::VECIN> v65;
+  bool v66 = v35 < v27;
+  if (v66) {
+    uint32_t v67 = v27 - v35;
+    uint32_t v68 = ((v25 < v67) ? (v25) : (v67));
+    for (uint32_t v69 = c0_idx; v69 < v68; v69 += v24) {
+      uint32_t v70 = v68 - v69;
+      uint32_t v71 = ((v70 < v24) ? (v70) : (v24));
+      uint32_t v72 = v26 * v71;
+      uint32_t v73 = v72 * c2_idx;
+      v17.InitBuffer(v65, v73);
+      AscendC::LocalTensor<half> v74 = v20.AllocTensor<half>();
+      AscendC::GlobalTensor<half> v75;
+      uint32_t v76 = v69 + v35;
+      int32_t v77 = static_cast<int32_t>(v76);
+      __gm__ half* v78 = reinterpret_cast<__gm__ half*>(v5);
+      v75.SetGlobalBuffer(v78, v77);
+      AscendC::DataCopy(v74, v75, v72);
+      v20.EnQue(v74);
+      AscendC::LocalTensor<half> v79 = v20.DeQue<half>();
+      v17.InitBuffer(v64, v73);
+      v17.InitBuffer(v63, v73);
+      AscendC::LocalTensor<half> v80 = v63.Get<half>();
+      v21.EnQue(v80);
+      AscendC::LocalTensor<half> v81 = v21.DeQue<half>();
+      AscendC::GlobalTensor<half> v82;
+      uint32_t v83 = v76 * v26;
+      int32_t v84 = static_cast<int32_t>(v83);
+      __gm__ half* v85 = reinterpret_cast<__gm__ half*>(v7);
+      v82.SetGlobalBuffer(v85, v84);
+      AscendC::DataCopy(v82, v81, v72);
+      v21.FreeTensor(v81);
+      v20.FreeTensor(v79);
+    }
+  }
+  AscendC::TBuf<AscendC::TPosition::VECCALC> v86;
+  AscendC::TBuf<AscendC::TPosition::VECCALC> v87;
+  AscendC::TBuf<AscendC::TPosition::VECCALC> v88;
+  AscendC::TBuf<AscendC::TPosition::VECOUT> v89;
+  AscendC::TBuf<AscendC::TPosition::VECIN> v90;
+  if (v66) {
+    uint32_t v91 = v27 - v35;
+    uint32_t v92 = ((v25 < v91) ? (v25) : (v91));
+    for (uint32_t v93 = c0_idx; v93 < v92; v93 += v24) {
+      uint32_t v94 = v92 - v93;
+      uint32_t v95 = ((v94 < v24) ? (v94) : (v24));
+      uint32_t v96 = v95 * v26;
+      uint32_t v97 = v96 * c2_idx;
+      v17.InitBuffer(v90, v97);
+      AscendC::LocalTensor<half> v98 = v22.AllocTensor<half>();
+      AscendC::GlobalTensor<half> v99;
+      uint32_t v100 = v93 + v35;
+      uint32_t v101 = v100 * v26;
+      int32_t v102 = static_cast<int32_t>(v101);
+      __gm__ half* v103 = reinterpret_cast<__gm__ half*>(v7);
+      v99.SetGlobalBuffer(v103, v102);
+      AscendC::DataCopy(v98, v99, v96);
+      v22.EnQue(v98);
+      AscendC::LocalTensor<half> v104 = v22.DeQue<half>();
+      v17.InitBuffer(v89, v97);
+      v17.InitBuffer(v88, v97);
+      AscendC::LocalTensor<half> v105 = v88.Get<half>();
+      uint32_t v106 = v26 * c2_idx;
+      v17.InitBuffer(v87, v106);
+      AscendC::LocalTensor<half> v107 = v87.Get<half>();
+      AscendC::GlobalTensor<half> v108;
+      __gm__ half* v109 = reinterpret_cast<__gm__ half*>(v3);
+      v108.SetGlobalBuffer(v109, c0_i32);
+      AscendC::DataCopy(v107, v108, v26);
+      int32_t v110 = static_cast<int32_t>(v95);
+      int32_t v111 = static_cast<int32_t>(v26);
+      v17.InitBuffer(v86, v97);
+      AscendC::LocalTensor<half> v112 = v86.Get<half>();
+      AscendC::Broadcast<half, half, 2>(v112, v107, reinterpret_cast<uint64_t>(v110), reinterpret_cast<uint64_t>(c1_i32));
+      AscendC::Mul(v105, v104, v112, v96);
+      v23.EnQue(v105);
+      AscendC::LocalTensor<half> v113 = v23.DeQue<half>();
+      AscendC::GlobalTensor<half> v114;
+      __gm__ half* v115 = reinterpret_cast<__gm__ half*>(v6);
+      v114.SetGlobalBuffer(v115, v102);
+      AscendC::DataCopy(v114, v113, v96);
+      v23.FreeTensor(v113);
+      v22.FreeTensor(v104);
+    }
+  }
+  return;
+}
+
