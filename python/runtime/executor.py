@@ -251,21 +251,26 @@ class AscendRuntime:
 
     def malloc(self, size: int) -> int:
         """
-        分配设备内存
+        分配设备内存（512字节对齐）
 
         Args:
             size: 大小（字节）
 
         Returns:
-            设备内存地址
+            设备内存地址（已对齐）
 
         Raises:
             MemoryAllocationError: 内存分配失败
+
+        Note:
+            参考pyasc实现，内存需要512字节对齐
         """
+        # 多分配512字节用于对齐
+        real_size = size + 512
         c_memory_p = ctypes.c_void_p()
         ret = self.runtime.rtMalloc(
             ctypes.byref(c_memory_p),
-            ctypes.c_uint64(size),
+            ctypes.c_uint64(real_size),
             ctypes.c_uint32(0),  # RT_MEMORY_DEFAULT
             ctypes.c_uint16(33),  # moduleId
         )
@@ -273,16 +278,27 @@ class AscendRuntime:
         if ret != 0:
             raise MemoryAllocationError(f"rtMalloc failed: {ret}")
 
-        return c_memory_p.value
+        # 对齐到512字节边界
+        raw_addr = c_memory_p.value
+        aligned_addr = 512 * ((raw_addr + 512 - 1) // 512)
+
+        # 保存原始地址用于释放
+        if not hasattr(self, '_alloc_map'):
+            self._alloc_map = {}
+        self._alloc_map[aligned_addr] = raw_addr
+
+        return aligned_addr
 
     def free(self, ptr: int):
         """
         释放设备内存
 
         Args:
-            ptr: 设备内存地址
+            ptr: 设备内存地址（对齐后的地址）
         """
-        self.runtime.rtFree(ctypes.c_void_p(ptr))
+        # 获取原始地址用于释放
+        raw_addr = self._alloc_map.get(ptr, ptr)
+        self.runtime.rtFree(ctypes.c_void_p(raw_addr))
 
     def memcpy(self, dst: int, src: int, size: int, kind: int = 1):
         """
@@ -312,31 +328,59 @@ class AscendRuntime:
             raise ExecutorError(f"rtMemcpy failed: {ret}")
 
     def memcpy_h2d(self, dst: int, src: Union[bytes, np.ndarray], size: int):
-        """Host 到 Device 内存拷贝"""
+        """Host 到 Device 内存拷贝
+
+        Note:
+            对于大块数据，使用分块拷贝以避免rtMemcpy的问题
+            经测试，256字节的chunk size是安全的
+        """
         if isinstance(src, np.ndarray):
-            # 将 numpy 数组转换为 bytes，然后创建 ctypes buffer
+            # 将 numpy 数组转换为 bytes
             src_bytes = src.tobytes()
-            # 使用 create_string_buffer 而不是 from_buffer_copy，避免内存管理问题
-            src_ptr = ctypes.create_string_buffer(src_bytes, len(src_bytes))
-            self.memcpy(dst, ctypes.addressof(src_ptr), len(src_bytes), kind=1)
+
+            # 使用分块拷贝（每次最多256字节）
+            chunk_size = 256
+            for offset in range(0, len(src_bytes), chunk_size):
+                chunk_bytes = min(chunk_size, len(src_bytes) - offset)
+                src_ptr = (ctypes.c_char * chunk_bytes).from_buffer_copy(src_bytes[offset:offset+chunk_bytes])
+                self.memcpy(dst + offset, ctypes.addressof(src_ptr), chunk_bytes, kind=1)
         else:
             src_ptr = ctypes.create_string_buffer(src, size)
             self.memcpy(dst, ctypes.addressof(src_ptr), size, kind=1)
 
     def memcpy_d2h(self, dst: Union[np.ndarray, bytearray], src: int, size: int):
-        """Device 到 Host 内存拷贝"""
-        # 创建临时缓冲区接收数据
-        temp_buffer = (ctypes.c_char * size)()
-        self.memcpy(ctypes.addressof(temp_buffer), src, size, kind=2)
+        """
+        Device 到 Host 内存拷贝
+
+        Args:
+            dst: 目标缓冲区（numpy array 或 bytearray）
+            src: 源设备地址
+            size: 拷贝大小（字节）
+
+        Note:
+            对于大块数据，使用逐元素拷贝以避免rtMemcpy的问题
+            经测试，4字节的元素拷贝是安全的
+        """
+        import struct
+        output_list = []
+        for i in range(0, size, 4):
+            elem_ptr = (ctypes.c_char * 4)()
+            self.memcpy(
+                ctypes.addressof(elem_ptr),
+                src + i,
+                4,
+                kind=2
+            )
+            output_list.append(bytes(elem_ptr))
 
         if isinstance(dst, np.ndarray):
             # 拷贝到 numpy array
-            dst_bytes = bytes(temp_buffer)
+            dst_bytes = b''.join(output_list)
             dst_view = np.frombuffer(dst_bytes, dtype=dst.dtype).reshape(dst.shape)
             dst[:] = dst_view
         else:
             # 拷贝到 bytearray
-            dst[:] = bytearray(temp_buffer)
+            dst[:] = bytearray(b''.join(output_list))
 
     # ============================================================
     # Kernel 管理
@@ -579,11 +623,14 @@ class KernelExecutor:
             addr = self.runtime.malloc(out.nbytes)
             output_addrs.append(addr)
 
+        # 分配workspace内存
+        workspace_addr = self.runtime.malloc(8192)
+
         # 构建参数
         args = []
         args.extend(input_addrs)
         args.extend(output_addrs)
-        args.append(0)  # workspace
+        args.append(workspace_addr)  # workspace
 
         # 添加 tiling data
         if tiling_data:
@@ -608,6 +655,7 @@ class KernelExecutor:
         # 清理
         for addr in input_addrs + output_addrs:
             self.runtime.free(addr)
+        self.runtime.free(workspace_addr)
 
         return outputs
 
