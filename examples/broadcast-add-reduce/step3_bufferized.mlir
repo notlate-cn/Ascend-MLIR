@@ -28,7 +28,10 @@
 module attributes {transform.with_named_sequence} {
 
   // 主函数：缓冲区化后的广播加法归约
-  // 注意：所有 tensor 参数已变为 memref 参数
+  // 变化点1：所有 tensor 参数已变为 memref 参数。函数入参类型也变化，由 Pass的bufferize-function-boundaries=true 影响。
+  // 控制点1：function-boundary-type-conversion=identity-layout-map=true，函数入参保持简洁类型；完整携带layout的表示如下：
+  //    %arg0: memref<?xf16, strided<[?], offset: ?>>,
+  //    %arg1: memref<?x?xf16, strided<[?, ?], offset: ?>>
   func.func @broadcast_add_reducesum(
       %input_a: memref<?xf16>,       // 输入 A [M] - 全局内存
       %input_b: memref<?x?xf16>,     // 输入 B [M,N] - 全局内存
@@ -45,11 +48,11 @@ module attributes {transform.with_named_sequence} {
     %tb_inner_m = arith.index_cast %tb_inner_m_param : i64 to index
     %tb_m = arith.index_cast %tb_m_param : i64 to index
 
-    // 获取维度
+    // 变化点2：获取维度，由tensor.dim-->memref.dim
     %dim_m = memref.dim %input_a, %idx_0 : memref<?xf16>
     %dim_n = memref.dim %input_b, %idx_1 : memref<?x?xf16>
 
-    // 分配输出缓冲区 (GM)
+    // 变化点3：分配输出缓冲区 (GM)，由tensor.empty --> memref.alloc
     %output_buffer = memref.alloc(%dim_m) {alignment = 64 : i64} : memref<?xf16>
     // 初始化输出为0
     linalg.fill ins(%zero : f16) outs(%output_buffer : memref<?xf16>)
@@ -61,7 +64,7 @@ module attributes {transform.with_named_sequence} {
       // 计算实际分块大小
       %outer_size = affine.min #dynamic_bound(%outer_iv)[%dim_m, %tb_m]
 
-      // 创建子视图 (零拷贝切片)
+      // 变化点4：创建子视图 (零拷贝切片)，由tensor.extract_slice --> memref.subview
       %subview_a = memref.subview %input_a[%outer_iv] [%outer_size] [1]
                    : memref<?xf16> to memref<?xf16, strided<[1], offset: ?>>
       %subview_b = memref.subview %input_b[%outer_iv, 0] [%outer_size, %dim_n] [1, 1]
@@ -99,7 +102,8 @@ module attributes {transform.with_named_sequence} {
           linalg.yield %new_acc : f16
         }
 
-        // 写回结果 (memref.copy)
+        // 变化点5：写回结果 (memref.copy)，由 tensor.insert_slice --> memref.copy
+        // 但这个是冗余的操作（仔细看之前的图），后续会优化掉。
         memref.copy %inner_subview_acc, %inner_subview_acc
             : memref<?xf16, strided<[1], offset: ?>> to memref<?xf16, strided<[1], offset: ?>>
 
@@ -107,7 +111,7 @@ module attributes {transform.with_named_sequence} {
 
       } {ascendc.epilogue = "dst:VECOUT->GM", ascendc.prologue = "src:GM->VECIN"}
 
-      // 写回外层结果
+      // 变化点5：写回外层结果，同样由 tensor.insert_slice 变来。
       memref.copy %result_after_inner, %subview_acc
           : memref<?xf16, strided<[1], offset: ?>> to memref<?xf16, strided<[1], offset: ?>>
 
