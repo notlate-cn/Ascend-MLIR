@@ -100,6 +100,8 @@ module attributes {transform.with_named_sequence} {
                 !transform.any_op,
                 !transform.any_op)
 
+    transform.print {name = "-------------------------------- 完整原图 --------------------------------"}
+
     // ----------------------------------------------------------------
     // Step 3: 匹配原始 linalg ops（在任何 tiling 之前）
     // ----------------------------------------------------------------
@@ -159,6 +161,11 @@ module attributes {transform.with_named_sequence} {
                    !transform.any_op)
             -> (!transform.any_op, !transform.any_op, !transform.any_op)
 
+    transform.print {name = "-------------------------------- 首次切分后的 完整图 --------------------------------"}
+    transform.print %for_TB_M {name = "-------------------------------- 首次切 max 外层for TB_M --------------------------------"}: !transform.any_op
+    transform.print %for_TB_N {name = "-------------------------------- 首次切 max 外层for TB_N --------------------------------"}: !transform.any_op
+    transform.print %tiled_max_TB {name = "-------------------------------- 首次切 max 内层整体  --------------------------------"}: !transform.any_op
+
     // ----------------------------------------------------------------
     // Step 5: fuse add into for_TB_N
     // ----------------------------------------------------------------
@@ -166,6 +173,10 @@ module attributes {transform.with_named_sequence} {
         transform.structured.fuse_into_containing_op %add into %for_TB_N
             : (!transform.any_op, !transform.any_op)
             -> (!transform.any_op, !transform.any_op)
+
+    transform.print %for_TB_N {name = "-------------------------------- 把 add 融到 TB_N 循环  --------------------------------"}: !transform.any_op
+    transform.print %add_fused_TB {name = "-------------------------------- 融合后的 add 节点  --------------------------------"}: !transform.any_op
+
 
     // ----------------------------------------------------------------
     // Step 6: fuse matmul into for_TB_N
@@ -178,6 +189,13 @@ module attributes {transform.with_named_sequence} {
     %matmul_TB_split:3 = transform.split_handle %matmul_fused_TB
         : (!transform.any_op)
         -> (!transform.any_op, !transform.any_op, !transform.any_op)
+
+    transform.print %loop_matmul_TB {name = "-------------------------------- 把 matmul 融到 TB_N 循环  --------------------------------"}: !transform.any_op
+    transform.print %matmul_TB_split#0 {name = "-------------------------------- 融合后的 matmul 节点  --------------------------------"}: !transform.any_op
+//    transform.apply_patterns to %func_new {
+//        transform.apply_patterns.canonicalization
+//    } : !transform.any_op
+    transform.print {name = "-------------------------------- 首次切分+融合后的 完整图 --------------------------------"}
 
     // ★ 分核标注: for_TB_M / for_TB_N 共同构成分核空间
     //   AscendCBufferPlacementPass 识别这两层为分核边界
@@ -208,6 +226,13 @@ module attributes {transform.with_named_sequence} {
                    !transform.any_op)
             -> (!transform.any_op, !transform.any_op, !transform.any_op)
 
+
+    transform.print {name = "-------------------------------- 二次切分后的 完整图 --------------------------------"}
+    transform.print %for_Tb_M {name = "-------------------------------- 二次切 max 外层for Tb_M --------------------------------"}: !transform.any_op
+    transform.print %for_Tb_N {name = "-------------------------------- 二次切 max 外层for Tb_N --------------------------------"}: !transform.any_op
+    transform.print %tiled_max_Tb {name = "-------------------------------- 二次切 max 内层整体  --------------------------------"}: !transform.any_op
+
+
     // ----------------------------------------------------------------
     // Step 8: fuse add_fused_TB into for_Tb_N
     // ----------------------------------------------------------------
@@ -227,6 +252,11 @@ module attributes {transform.with_named_sequence} {
     %matmul_Tb_split:3 = transform.split_handle %matmul_fused_Tb
         : (!transform.any_op)
         -> (!transform.any_op, !transform.any_op, !transform.any_op)
+
+//    transform.apply_patterns to %func_new {
+//        transform.apply_patterns.canonicalization
+//    } : !transform.any_op
+    transform.print {name = "-------------------------------- 二次切分+融合后的 完整图 --------------------------------"}
 
     // ----------------------------------------------------------------
     // Step 10: tile matmul [0, 0, t_K] → for_K
@@ -255,17 +285,6 @@ module attributes {transform.with_named_sequence} {
         = %p_K_prologue : !transform.any_op, !transform.any_param
     transform.annotate %for_K "ascendc.epilogue"
         = %p_K_epilogue : !transform.any_op, !transform.any_param
-
-    // ----------------------------------------------------------------
-    // Step 11: hoist_loop_invariant_subsets
-    //   由内向外提升循环不变切片:
-    //   for_Tb_N: 提升不依赖 iv_Tb_N 的切片到 for_Tb_M 内
-    //   for_Tb_M: 继续提升不依赖 iv_Tb_M 的切片到 for_TB_N 内
-    // ----------------------------------------------------------------
-    transform.loop.hoist_loop_invariant_subsets %for_Tb_N
-        : !transform.any_op
-    transform.loop.hoist_loop_invariant_subsets %for_Tb_M
-        : !transform.any_op
 
     transform.yield
   }
