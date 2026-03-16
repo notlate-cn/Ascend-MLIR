@@ -79,12 +79,12 @@ module attributes {transform.with_named_sequence} {
                              : memref<?xf16, strided<[1], offset: ?>> to memref<?xf16, strided<[1], offset: ?>>
 
         // ---- 分配 UB 缓冲区 ----
-        // VECIN (memory_space = 9): 用于输入数据
-        %ub_buffer_a = memref.alloc(%inner_size) : memref<?xf16, 9 : i32>
-        // VECOUT (memory_space = 10): 用于输出数据
-        %ub_buffer_acc = memref.alloc(%inner_size) : memref<?xf16, 10 : i32>
+        // 变化点1：Pass自动推导
+        %ub_buffer_a = memref.alloc(%inner_size) : memref<?xf16, 9 : i32>  // VECIN (memory_space = 9): 用于输入数据
+        %ub_buffer_acc = memref.alloc(%inner_size) : memref<?xf16, 10 : i32> // VECOUT (memory_space = 10): 用于输出数据
 
         // ---- 数据搬运: GM → VECIN ----
+        // 变化点2：由for循环上的GM->VECIN生效
         memref.copy %inner_subview_a, %ub_buffer_a
             : memref<?xf16, strided<[1], offset: ?>> to memref<?xf16, 9 : i32>
 
@@ -107,10 +107,12 @@ module attributes {transform.with_named_sequence} {
         }
 
         // ---- 数据搬运: VECOUT → GM ----
+        // 变化点3：由for循环上的VECOUT->GM生效
         memref.copy %ub_buffer_acc, %inner_subview_acc
             : memref<?xf16, 10 : i32> to memref<?xf16, strided<[1], offset: ?>>
 
         // 释放 UB 缓冲区
+        // 变化点4：Pass自动推导
         memref.dealloc %ub_buffer_a : memref<?xf16, 9 : i32>
         memref.dealloc %ub_buffer_acc : memref<?xf16, 10 : i32>
 

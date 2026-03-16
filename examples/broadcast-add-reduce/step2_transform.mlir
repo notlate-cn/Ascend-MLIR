@@ -5,7 +5,7 @@
 //   - 输入: step1_fused.mlir 的单个 linalg.generic
 //   - 迭代器类型: ["parallel", "reduction"]
 //     * d0 = M (Parallel) - 可并行维度，用于核间分发
-//     * d1 = N (Reduction) - 归约维度，完整遍历
+//     * d1 = N (Reduction) - 归约维度，完整遍历，全载R轴
 //
 // Tiling 结构 (仅对 Parallel 轴 d0 进行三级切分):
 //   - TB 层: 核间并行，每核负责 TB_M 行 (标记 ascendc.parallel)
@@ -28,6 +28,15 @@ module attributes {transform.with_named_sequence} {
 
   // ==========================================================
   // 主计算函数: 广播加法归约
+  //   Data(d0, 1)    Data(d0, d1)
+  //      |               |
+  //      |              /
+  //  Brc(d0, d1)       /
+  //       \           /
+  //        \        /
+  //        Add(d0, d1)
+  //            |
+  //        Sum(d0, 1)
   // ==========================================================
   func.func @broadcast_add_reducesum(
       %input_a: tensor<?xf16>,      // 输入 A [M]
@@ -85,6 +94,8 @@ module attributes {transform.with_named_sequence} {
     %generic = transform.structured.match ops{["linalg.generic"]} in %func_new
         : (!transform.any_op) -> !transform.any_op
 
+    transform.print %generic {name = "--------------------------------  原始融合子图 --------------------------------"}: !transform.any_op
+
     // ---- Step 3: TB 层切分 (沿 d0=Parallel 轴，d1=Reduction 不切) ----
     // tile_sizes [%TB_M, 0]: 0 表示不切归约轴
     %tiled_tb, %loop_tb =
@@ -92,6 +103,9 @@ module attributes {transform.with_named_sequence} {
             tile_sizes [%tb_m_param, 0]
                 : (!transform.any_op, !transform.any_op)
             -> (!transform.any_op, !transform.any_op)
+
+    transform.print %loop_tb {name = "-------------------------------- 首次切出外层循环TB --------------------------------"}: !transform.any_op
+    transform.print %tiled_tb {name = "-------------------------------- 首次切分后的内层子图Tb --------------------------------"}: !transform.any_op
 
     // 标记 TB 循环为核间并行 (映射到 AiCore 的 BlockIdx)
     %true_param = transform.param.constant true -> !transform.any_param
@@ -104,6 +118,8 @@ module attributes {transform.with_named_sequence} {
             tile_sizes [%tb_inner_m_param, 0]
                 : (!transform.any_op, !transform.any_op)
             -> (!transform.any_op, !transform.any_op)
+    transform.print %loop_tb_inner {name = "-------------------------------- 二次切出循环Tb--------------------------------"}: !transform.any_op
+    transform.print %tiled_tb_inner {name = "-------------------------------- 二次切后的子图 --------------------------------"}: !transform.any_op
 
     // 标记 prologue (数据从 GM 搬运到 VECIN)
     %prologue_param = transform.param.constant
@@ -120,10 +136,6 @@ module attributes {transform.with_named_sequence} {
     %vector_unit_param = transform.param.constant "AiCore.Vector" -> !transform.any_param
     transform.annotate %tiled_tb_inner "ascendc.unit"
         = %vector_unit_param : !transform.any_op, !transform.any_param
-
-    // ---- Step 6: 提升循环不变切片 ----
-    // 将不依赖于 tb_inner 循环变量的 slice 提到 loop_tb 内
-    transform.loop.hoist_loop_invariant_subsets %loop_tb_inner : !transform.any_op
 
     transform.yield
   }
