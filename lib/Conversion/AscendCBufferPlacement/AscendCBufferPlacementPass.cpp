@@ -194,6 +194,13 @@ Value findUltimateSource(Value value) {
       continue;
     }
 
+    // If it's a cast operation, continue tracing through it
+    if (auto castOp = dyn_cast<memref::CastOp>(definingOp)) {
+      value = castOp.getSource();
+      depth++;
+      continue;
+    }
+
     // For other operations, we can't trace further
     break;
   }
@@ -236,6 +243,17 @@ void inferBufferPositions(func::FuncOp funcOp,
     Operation *definingOp = vectorSourceOp.getDefiningOp();
     if (!definingOp || !isa<memref::AllocOp>(definingOp))
       return;
+
+    // Skip allocs that are directly returned by the function (they are GM
+    // output buffers, not on-chip VECOUT/VECCALC buffers).  This can happen
+    // when fold-concat-alloc redirects linalg generics to write directly into
+    // the output alloc via a subview.
+    for (func::ReturnOp retOp : funcOp.getOps<func::ReturnOp>()) {
+      for (Value retVal : retOp.getOperands()) {
+        if (retVal == vectorSourceOp)
+          return;
+      }
+    }
 
     // Check if there are any subsequent Vector consumers (excluding op itself)
     bool hasVectorConsumer = false;

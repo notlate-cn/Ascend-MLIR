@@ -1,6 +1,7 @@
 add_subdirectory(AFIRToASCIR)
 add_subdirectory(AFIRToASCIRText)
 add_subdirectory(AscendCBufferPlacement)
+add_subdirectory(AscendCFoldConcatAlloc)
 add_subdirectory(LinalgToAscendC)
 add_subdirectory(AscendCParallelize)
 add_subdirectory(AscendCPrepareForEmit)
