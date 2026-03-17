@@ -66,6 +66,43 @@ def ConvertAFIRToASCIRTextPass : Pass<"convert-afir-to-ascir-text", "mlir::Modul
 }
 
 //===----------------------------------------------------------------------===//
+// AscendC Fold Concat Alloc
+//===----------------------------------------------------------------------===//
+
+def AscendCFoldConcatAllocPass : Pass<"ascendc-fold-concat-alloc", "mlir::func::FuncOp"> {
+  let summary = "Eliminate redundant GM→GM memref.copy ops introduced by tensor.concat bufferization";
+  let description = [{
+    After one-shot-bufferize of decomposed tensor.concat, the IR contains:
+
+      %alloc_c   = memref.alloc(%M, %N)        // Op1 result buffer
+      %alloc_d   = memref.alloc(%M, %N)        // Op2 result buffer
+      ... loops writing into %alloc_c / %alloc_d ...
+      %alloc_out = memref.alloc(%2M, %N)       // concat output
+      memref.copy %alloc_c → subview %alloc_out[0,0]
+      memref.copy %alloc_d → subview %alloc_out[M,0]
+      return %alloc_out
+
+    This pass detects the pattern and replaces each intermediate alloc with
+    the corresponding subview of the output alloc, eliminating the copies:
+
+      %alloc_out = memref.alloc(%2M, %N)
+      %sub0 = memref.subview %alloc_out[0,0][M,N]
+      %sub1 = memref.subview %alloc_out[M,0][M,N]
+      ... loops writing directly into %sub0 / %sub1 ...
+      return %alloc_out
+
+    The epilogue data_copy (VECOUT→GM) in each loop now writes directly to the
+    correct slice of %alloc_out, so no GM→GM memmove is needed.
+  }];
+  let constructor = "mlir::afir::createAscendCFoldConcatAllocPass()";
+  let dependentDialects = [
+    "mlir::func::FuncDialect",
+    "mlir::memref::MemRefDialect"
+  ];
+}
+
+
+//===----------------------------------------------------------------------===//
 // AscendC Buffer Placement
 //===----------------------------------------------------------------------===//
 

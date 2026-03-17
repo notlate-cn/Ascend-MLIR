@@ -1,11 +1,12 @@
-#map = affine_map<()[s0, s1, s2] -> (s1, s0 - s2)>
-#map1 = affine_map<(d0)[s0, s1] -> (-d0 + s0, s1)>
+#map = affine_map<()[s0] -> (s0 * 2)>
+#map1 = affine_map<()[s0, s1, s2] -> (s1, s0 - s2)>
+#map2 = affine_map<(d0)[s0, s1] -> (-d0 + s0, s1)>
 module attributes {transform.with_named_sequence} {
   func.func @ewop_broadcast_concat(%arg0: memref<?xf16>, %arg1: memref<?x?xf16>, %arg2: memref<?xf16>, %arg3: memref<?x?xf16>, %arg4: i64, %arg5: i64) -> memref<?x?xf16> {
     %c1_i32 = arith.constant 1 : i32
+    %c2 = arith.constant 2 : index
     %c0 = arith.constant 0 : index
     %c1 = arith.constant 1 : index
-    %c2 = arith.constant 2 : index
     %0 = ascendc.pipe
     %1 = ascendc.queue : <vecin, 1>
     %2 = ascendc.queue : <vecout, 1>
@@ -15,9 +16,10 @@ module attributes {transform.with_named_sequence} {
     %6 = arith.index_cast %arg4 : i64 to index
     %dim = memref.dim %arg0, %c0 : memref<?xf16>
     %dim_0 = memref.dim %arg1, %c1 : memref<?x?xf16>
-    %7 = arith.muli %dim, %c2 : index
+    %7 = affine.apply #map()[%dim]
     %alloc = memref.alloc(%7, %dim_0) {alignment = 64 : i64} : memref<?x?xf16>
-    %subview = memref.subview %alloc[0, 0] [%dim, %dim_0] [1, 1] : memref<?x?xf16> to memref<?x?xf16, strided<[?, 1]>>
+    %subview = memref.subview %alloc[%dim, 0] [%dim, %dim_0] [1, 1] : memref<?x?xf16> to memref<?x?xf16, strided<[?, 1], offset: ?>>
+    %subview_1 = memref.subview %alloc[0, 0] [%dim, %dim_0] [1, 1] : memref<?x?xf16> to memref<?x?xf16, strided<[?, 1]>>
     %8 = ascendc.tbuf : <veccalc>
     %9 = ascendc.tbuf : <veccalc>
     %10 = ascendc.tbuf : <veccalc>
@@ -27,12 +29,12 @@ module attributes {transform.with_named_sequence} {
     %14 = arith.muli %13, %6 : index
     %15 = arith.cmpi ult, %14, %dim : index
     scf.if %15 {
-      %22 = affine.min #map()[%dim, %6, %14]
+      %22 = affine.min #map1()[%dim, %6, %14]
       %subview_4 = memref.subview %arg0[%14] [%22] [1] : memref<?xf16> to memref<?xf16, strided<[1], offset: ?>>
       %subview_5 = memref.subview %arg1[%14, 0] [%22, %dim_0] [1, 1] : memref<?x?xf16> to memref<?x?xf16, strided<[?, 1], offset: ?>>
-      %subview_6 = memref.subview %subview[%14, 0] [%22, %dim_0] [1, 1] : memref<?x?xf16, strided<[?, 1]>> to memref<?x?xf16, strided<[?, 1], offset: ?>>
+      %subview_6 = memref.subview %subview_1[%14, 0] [%22, %dim_0] [1, 1] : memref<?x?xf16, strided<[?, 1]>> to memref<?x?xf16, strided<[?, 1], offset: ?>>
       scf.for %arg6 = %c0 to %22 step %5 {
-        %23 = affine.min #map1(%arg6)[%22, %5]
+        %23 = affine.min #map2(%arg6)[%22, %5]
         %subview_7 = memref.subview %subview_4[%arg6] [%23] [1] : memref<?xf16, strided<[1], offset: ?>> to memref<?xf16, strided<[1], offset: ?>>
         %24 = arith.muli %23, %c2 : index
         ascendc.pipe.init_buffer %0, %12, %24 : !ascendc.tbuf<vecin>, index
@@ -69,7 +71,6 @@ module attributes {transform.with_named_sequence} {
         ascendc.que_bind.free_tensor %1, %27 : !ascendc.queue<vecin, 1>, !ascendc.local_tensor<*xf16>
       }
     }
-    %subview_1 = memref.subview %alloc[%dim, 0] [%dim, %dim_0] [1, 1] : memref<?x?xf16> to memref<?x?xf16, strided<[?, 1], offset: ?>>
     %dim_2 = memref.dim %arg2, %c0 : memref<?xf16>
     %dim_3 = memref.dim %arg3, %c1 : memref<?x?xf16>
     %16 = ascendc.tbuf : <veccalc>
@@ -79,12 +80,12 @@ module attributes {transform.with_named_sequence} {
     %20 = ascendc.tbuf : <vecin>
     %21 = arith.cmpi ult, %14, %dim_2 : index
     scf.if %21 {
-      %22 = affine.min #map()[%dim_2, %6, %14]
+      %22 = affine.min #map1()[%dim_2, %6, %14]
       %subview_4 = memref.subview %arg2[%14] [%22] [1] : memref<?xf16> to memref<?xf16, strided<[1], offset: ?>>
       %subview_5 = memref.subview %arg3[%14, 0] [%22, %dim_3] [1, 1] : memref<?x?xf16> to memref<?x?xf16, strided<[?, 1], offset: ?>>
-      %subview_6 = memref.subview %subview_1[%14, 0] [%22, %dim_3] [1, 1] : memref<?x?xf16, strided<[?, 1], offset: ?>> to memref<?x?xf16, strided<[?, 1], offset: ?>>
+      %subview_6 = memref.subview %subview[%14, 0] [%22, %dim_3] [1, 1] : memref<?x?xf16, strided<[?, 1], offset: ?>> to memref<?x?xf16, strided<[?, 1], offset: ?>>
       scf.for %arg6 = %c0 to %22 step %5 {
-        %23 = affine.min #map1(%arg6)[%22, %5]
+        %23 = affine.min #map2(%arg6)[%22, %5]
         %subview_7 = memref.subview %subview_4[%arg6] [%23] [1] : memref<?xf16, strided<[1], offset: ?>> to memref<?xf16, strided<[1], offset: ?>>
         %24 = arith.muli %23, %c2 : index
         ascendc.pipe.init_buffer %0, %20, %24 : !ascendc.tbuf<vecin>, index
@@ -125,27 +126,25 @@ module attributes {transform.with_named_sequence} {
   }
   transform.named_sequence @__transform_main(%arg0: !transform.any_op {transform.readonly}) {
     %0 = transform.structured.match ops{["func.func"]} in %arg0 : (!transform.any_op) -> !transform.any_op
+    transform.apply_patterns to %0 {
+      transform.apply_patterns.tensor.decompose_concat
+    } : !transform.any_op
     %transformed, %new_args:2 = transform.func.add_index_args %0, 2 : (!transform.any_op) -> (!transform.any_op, !transform.any_op, !transform.any_op)
-    %1 = transform.structured.match ops{["linalg.generic"]} attributes {library_call = "broadcast_add"} in %transformed : (!transform.any_op) -> !transform.any_op
-    %2 = transform.structured.match ops{["linalg.generic"]} attributes {library_call = "broadcast_mul"} in %transformed : (!transform.any_op) -> !transform.any_op
-    %3 = transform.param.constant true -> !transform.any_param
-    %4 = transform.param.constant "src:GM->VECIN" -> !transform.any_param
-    %5 = transform.param.constant "dst:VECOUT->GM" -> !transform.any_param
-    %6 = transform.param.constant "AiCore.Vector" -> !transform.any_param
-    %tiled_linalg_op, %loops = transform.structured.tile_using_for %1 tile_sizes [%new_args#0, 0] : (!transform.any_op, !transform.any_op) -> (!transform.any_op, !transform.any_op)
-    transform.annotate %loops "ascendc.parallel" = %3 : !transform.any_op, !transform.any_param
-    %tiled_linalg_op_0, %loops_1 = transform.structured.tile_using_for %tiled_linalg_op tile_sizes [%new_args#1, 0] : (!transform.any_op, !transform.any_op) -> (!transform.any_op, !transform.any_op)
-    transform.annotate %loops_1 "ascendc.prologue" = %4 : !transform.any_op, !transform.any_param
-    transform.annotate %loops_1 "ascendc.epilogue" = %5 : !transform.any_op, !transform.any_param
-    transform.annotate %tiled_linalg_op_0 "ascendc.unit" = %6 : !transform.any_op, !transform.any_param
-    transform.loop.hoist_loop_invariant_subsets %loops_1 : !transform.any_op
-    %tiled_linalg_op_2, %loops_3 = transform.structured.tile_using_for %2 tile_sizes [%new_args#0, 0] : (!transform.any_op, !transform.any_op) -> (!transform.any_op, !transform.any_op)
-    transform.annotate %loops_3 "ascendc.parallel" = %3 : !transform.any_op, !transform.any_param
-    %tiled_linalg_op_4, %loops_5 = transform.structured.tile_using_for %tiled_linalg_op_2 tile_sizes [%new_args#1, 0] : (!transform.any_op, !transform.any_op) -> (!transform.any_op, !transform.any_op)
-    transform.annotate %loops_5 "ascendc.prologue" = %4 : !transform.any_op, !transform.any_param
-    transform.annotate %loops_5 "ascendc.epilogue" = %5 : !transform.any_op, !transform.any_param
-    transform.annotate %tiled_linalg_op_4 "ascendc.unit" = %6 : !transform.any_op, !transform.any_param
-    transform.loop.hoist_loop_invariant_subsets %loops_5 : !transform.any_op
+    %1 = transform.structured.match ops{["linalg.generic"]} in %transformed : (!transform.any_op) -> !transform.any_op
+    %2 = transform.param.constant true -> !transform.any_param
+    %3 = transform.param.constant "src:GM->VECIN" -> !transform.any_param
+    %4 = transform.param.constant "dst:VECOUT->GM" -> !transform.any_param
+    %5 = transform.param.constant "AiCore.Vector" -> !transform.any_param
+    transform.foreach %1 : !transform.any_op {
+    ^bb0(%arg1: !transform.any_op):
+      %tiled_linalg_op, %loops = transform.structured.tile_using_for %arg1 tile_sizes [%new_args#0, 0] : (!transform.any_op, !transform.any_op) -> (!transform.any_op, !transform.any_op)
+      transform.annotate %loops "ascendc.parallel" = %2 : !transform.any_op, !transform.any_param
+      %tiled_linalg_op_0, %loops_1 = transform.structured.tile_using_for %tiled_linalg_op tile_sizes [%new_args#1, 0] : (!transform.any_op, !transform.any_op) -> (!transform.any_op, !transform.any_op)
+      transform.annotate %loops_1 "ascendc.prologue" = %3 : !transform.any_op, !transform.any_param
+      transform.annotate %loops_1 "ascendc.epilogue" = %4 : !transform.any_op, !transform.any_param
+      transform.annotate %tiled_linalg_op_0 "ascendc.unit" = %5 : !transform.any_op, !transform.any_param
+      transform.loop.hoist_loop_invariant_subsets %loops_1 : !transform.any_op
+    }
     transform.yield 
   }
 }

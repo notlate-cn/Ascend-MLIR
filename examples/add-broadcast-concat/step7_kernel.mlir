@@ -138,27 +138,25 @@ module attributes {transform.with_named_sequence} {
   }
   transform.named_sequence @__transform_main(%arg0: !transform.any_op {transform.readonly}) {
     %0 = transform.structured.match ops{["func.func"]} in %arg0 : (!transform.any_op) -> !transform.any_op
+    transform.apply_patterns to %0 {
+      transform.apply_patterns.tensor.decompose_concat
+    } : !transform.any_op
     %transformed, %new_args:2 = transform.func.add_index_args %0, 2 : (!transform.any_op) -> (!transform.any_op, !transform.any_op, !transform.any_op)
-    %1 = transform.structured.match ops{["linalg.generic"]} attributes {library_call = "broadcast_add"} in %transformed : (!transform.any_op) -> !transform.any_op
-    %2 = transform.structured.match ops{["linalg.generic"]} attributes {library_call = "broadcast_mul"} in %transformed : (!transform.any_op) -> !transform.any_op
-    %3 = transform.param.constant true -> !transform.any_param
-    %4 = transform.param.constant "src:GM->VECIN" -> !transform.any_param
-    %5 = transform.param.constant "dst:VECOUT->GM" -> !transform.any_param
-    %6 = transform.param.constant "AiCore.Vector" -> !transform.any_param
-    %tiled_linalg_op, %loops = transform.structured.tile_using_for %1 tile_sizes [%new_args#0, 0] : (!transform.any_op, !transform.any_op) -> (!transform.any_op, !transform.any_op)
-    transform.annotate %loops "ascendc.parallel" = %3 : !transform.any_op, !transform.any_param
-    %tiled_linalg_op_0, %loops_1 = transform.structured.tile_using_for %tiled_linalg_op tile_sizes [%new_args#1, 0] : (!transform.any_op, !transform.any_op) -> (!transform.any_op, !transform.any_op)
-    transform.annotate %loops_1 "ascendc.prologue" = %4 : !transform.any_op, !transform.any_param
-    transform.annotate %loops_1 "ascendc.epilogue" = %5 : !transform.any_op, !transform.any_param
-    transform.annotate %tiled_linalg_op_0 "ascendc.unit" = %6 : !transform.any_op, !transform.any_param
-    transform.loop.hoist_loop_invariant_subsets %loops_1 : !transform.any_op
-    %tiled_linalg_op_2, %loops_3 = transform.structured.tile_using_for %2 tile_sizes [%new_args#0, 0] : (!transform.any_op, !transform.any_op) -> (!transform.any_op, !transform.any_op)
-    transform.annotate %loops_3 "ascendc.parallel" = %3 : !transform.any_op, !transform.any_param
-    %tiled_linalg_op_4, %loops_5 = transform.structured.tile_using_for %tiled_linalg_op_2 tile_sizes [%new_args#1, 0] : (!transform.any_op, !transform.any_op) -> (!transform.any_op, !transform.any_op)
-    transform.annotate %loops_5 "ascendc.prologue" = %4 : !transform.any_op, !transform.any_param
-    transform.annotate %loops_5 "ascendc.epilogue" = %5 : !transform.any_op, !transform.any_param
-    transform.annotate %tiled_linalg_op_4 "ascendc.unit" = %6 : !transform.any_op, !transform.any_param
-    transform.loop.hoist_loop_invariant_subsets %loops_5 : !transform.any_op
+    %1 = transform.structured.match ops{["linalg.generic"]} in %transformed : (!transform.any_op) -> !transform.any_op
+    %2 = transform.param.constant true -> !transform.any_param
+    %3 = transform.param.constant "src:GM->VECIN" -> !transform.any_param
+    %4 = transform.param.constant "dst:VECOUT->GM" -> !transform.any_param
+    %5 = transform.param.constant "AiCore.Vector" -> !transform.any_param
+    transform.foreach %1 : !transform.any_op {
+    ^bb0(%arg1: !transform.any_op):
+      %tiled_linalg_op, %loops = transform.structured.tile_using_for %arg1 tile_sizes [%new_args#0, 0] : (!transform.any_op, !transform.any_op) -> (!transform.any_op, !transform.any_op)
+      transform.annotate %loops "ascendc.parallel" = %2 : !transform.any_op, !transform.any_param
+      %tiled_linalg_op_0, %loops_1 = transform.structured.tile_using_for %tiled_linalg_op tile_sizes [%new_args#1, 0] : (!transform.any_op, !transform.any_op) -> (!transform.any_op, !transform.any_op)
+      transform.annotate %loops_1 "ascendc.prologue" = %3 : !transform.any_op, !transform.any_param
+      transform.annotate %loops_1 "ascendc.epilogue" = %4 : !transform.any_op, !transform.any_param
+      transform.annotate %tiled_linalg_op_0 "ascendc.unit" = %5 : !transform.any_op, !transform.any_param
+      transform.loop.hoist_loop_invariant_subsets %loops_1 : !transform.any_op
+    }
     transform.yield 
   }
 }

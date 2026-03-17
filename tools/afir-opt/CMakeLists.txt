@@ -32,6 +32,7 @@ target_link_libraries(afir-opt
     AFIRToASCIRConversion
     AFIRToASCIRTextConversion
     AscendCBufferPlacementConversion
+    AscendCFoldConcatAllocConversion
     LinalgToAscendCConversion
     AscendCParallelizeConversion
     AscendCPrepareForEmitConversion
