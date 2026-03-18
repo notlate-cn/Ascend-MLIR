@@ -1,6 +1,8 @@
 // lib/Runtime/SimValidator.cpp
 #include "Runtime/SimValidator.h"
 #include "llvm/Support/FileSystem.h"
+#include "llvm/Support/MemoryBuffer.h"
+#include "llvm/Support/Path.h"
 #include <cmath>
 #include <cstdint>
 #include <cstring>
@@ -38,6 +40,35 @@ static float toFloat(const void* base, size_t idx, DType dtype) {
   return 0.f;
 }
 
+// Parse cycle counts from simulator summary logs in the given directory.
+// Returns max "kernal total ticks" across all core*_summary_log files, or -1.
+static int64_t ParseCycleCounts(const std::string& sim_dir) {
+  int64_t max_ticks = -1;
+  std::error_code ec;
+  for (llvm::sys::fs::directory_iterator it(sim_dir, ec), end;
+       !ec && it != end; it.increment(ec)) {
+    llvm::StringRef name = llvm::sys::path::filename(it->path());
+    // Only process "core*_summary_log" files (not other *_summary_log files)
+    if (!name.starts_with("core") || !name.ends_with("_summary_log")) continue;
+    auto buf = llvm::MemoryBuffer::getFile(it->path());
+    if (!buf) continue;
+    llvm::StringRef content = (*buf)->getBuffer();
+    // Find "kernal total ticks : N"
+    llvm::SmallVector<llvm::StringRef> lines;
+    content.split(lines, '\n');
+    for (auto line : lines) {
+      line = line.trim();
+      if (!line.starts_with("kernal total ticks")) continue;
+      auto colon = line.rfind(':');
+      if (colon == llvm::StringRef::npos) continue;
+      int64_t ticks = 0;
+      if (line.substr(colon + 1).trim().getAsInteger(10, ticks)) continue;
+      if (ticks > max_ticks) max_ticks = ticks;
+    }
+  }
+  return max_ticks;
+}
+
 SimValidator::Result SimValidator::Validate(
     const std::string& kernel_src,
     const std::string& kernel_name,
@@ -72,6 +103,13 @@ SimValidator::Result SimValidator::Validate(
   if (auto err = executor.RunFile(*bin_or, kernel_name, args)) {
     r.error_msg = "Kernel run failed: " + llvm::toString(std::move(err));
     return r;
+  }
+
+  // Parse cycle count from simulator logs (cwd is the sim run directory)
+  {
+    llvm::SmallString<256> cwd;
+    llvm::sys::fs::current_path(cwd);
+    r.cycle_count = ParseCycleCounts(cwd.str().str());
   }
 
   // Compare outputs

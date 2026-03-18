@@ -15,6 +15,7 @@ public:
     bool        passed        = false;
     double      max_abs_diff  = 0.0;
     double      mean_abs_diff = 0.0;
+    int64_t     cycle_count   = -1;   // -1 = not available (real hw or log missing)
     std::string error_msg;
   };
 
