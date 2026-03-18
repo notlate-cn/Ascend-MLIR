@@ -6,16 +6,18 @@
 
 namespace mlir::runtime {
 
+struct CompilerConfig {
+  std::string soc_version = "Ascend910B1";
+  std::string arch        = "dav-c220-vec";
+  int         opt_level   = 3;
+  bool        verbose     = false;
+};
+
 class Compiler {
 public:
-  struct Config {
-    std::string soc_version = "Ascend910B1";
-    std::string arch        = "dav-c220-vec";
-    int         opt_level   = 3;
-    bool        verbose     = false;
-  };
+  using Config = CompilerConfig;
 
-  explicit Compiler(const Config& cfg = {});
+  explicit Compiler(const Config& cfg = Config{});
 
   // Compiles src_file → output_dir/kernel_name.bin; returns binary path.
   llvm::Expected<std::string> Compile(const std::string& src_file,
