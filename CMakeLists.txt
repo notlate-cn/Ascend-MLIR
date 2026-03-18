@@ -93,6 +93,7 @@ add_subdirectory(lib/Runtime)
 add_subdirectory(lib/Utils)
 add_subdirectory(tools/afir-opt)
 add_subdirectory(tools/sim-validator)
+add_subdirectory(tools/autotuner)
 add_subdirectory(examples)
 add_subdirectory(test)
 
