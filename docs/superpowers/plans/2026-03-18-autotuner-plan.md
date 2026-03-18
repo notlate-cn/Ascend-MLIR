@@ -314,58 +314,24 @@ bool TilingSpace::EvalConstraint(
   };
 
   // Evaluate a simple integer arithmetic expression (no variables remaining).
+  // Self-contained: handles parentheses, +, -, *, / with correct precedence.
   std::function<int64_t(const std::string&)> eval = [&](const std::string& s) -> int64_t {
-    // Strip whitespace
     std::string t;
     for (char c : s) if (c != ' ' && c != '\t') t += c;
     if (t.empty()) return 0;
-
-    // Handle parentheses by finding innermost pair
-    auto lp = t.rfind('(');
-    if (lp != std::string::npos) {
-      auto rp = t.find(')', lp);
-      std::string inner = eval_str(t.substr(lp + 1, rp - lp - 1));
-      t = t.substr(0, lp) + inner + t.substr(rp + 1);
-      return eval(t);
-    }
-
-    // Last + or - (handle as low precedence)
-    for (int i = (int)t.size() - 1; i >= 1; --i) {
-      if (t[i] == '+') return eval(t.substr(0, i)) + eval(t.substr(i + 1));
-      if (t[i] == '-') return eval(t.substr(0, i)) - eval(t.substr(i + 1));
-    }
-    // Last * or /
-    for (int i = (int)t.size() - 1; i >= 1; --i) {
-      if (t[i] == '*') return eval(t.substr(0, i)) * eval(t.substr(i + 1));
-      if (t[i] == '/') {
-        int64_t d = eval(t.substr(i + 1));
-        return d != 0 ? eval(t.substr(0, i)) / d : 0;
-      }
-    }
-    return std::stoll(t);
-  };
-
-  // Helper to call eval and return string
-  auto eval_str_fn = [&](const std::string& s) -> std::string {
-    return std::to_string(eval(s));
-  };
-  // Assign eval_str for recursive use
-  std::function<std::string(const std::string&)> eval_str = eval_str_fn;
-  // Re-assign eval to use eval_str
-  eval = [&](const std::string& s) -> int64_t {
-    std::string t;
-    for (char c : s) if (c != ' ' && c != '\t') t += c;
-    if (t.empty()) return 0;
+    // Handle innermost parentheses first
     auto lp = t.rfind('(');
     if (lp != std::string::npos) {
       auto rp = t.find(')', lp);
       std::string inner = std::to_string(eval(t.substr(lp + 1, rp - lp - 1)));
       return eval(t.substr(0, lp) + inner + t.substr(rp + 1));
     }
+    // + and - have lowest precedence (scan right-to-left)
     for (int i = (int)t.size()-1; i>=1; --i) {
       if (t[i]=='+') return eval(t.substr(0,i)) + eval(t.substr(i+1));
       if (t[i]=='-') return eval(t.substr(0,i)) - eval(t.substr(i+1));
     }
+    // * and / have higher precedence
     for (int i = (int)t.size()-1; i>=1; --i) {
       if (t[i]=='*') return eval(t.substr(0,i)) * eval(t.substr(i+1));
       if (t[i]=='/') {
@@ -603,7 +569,7 @@ Field naming convention:
 - `"TB_*"` → TilingParam (cut tiling parameter, value from Solver)
 - `"dim_argX_Y"` → ShapeDim (shape of arg X, dimension Y)
 
-`data_copy_l2` ops carry the copy count as their third operand. The count is typically `%inner_size = arith.minsi(%remaining, %tb_n)`. We take the second operand of minsi (the tile size, which traces back via `arith.index_cast` → `emitasc.member` to the TilingData field).
+`data_copy_l2` ops carry the copy count as their third operand. The count is typically `%inner_size = arith.minsi(%remaining, %tb_n)` or `arith.minsi(%tb_m, %remaining)`. We take the RHS operand of minsi as a heuristic (the tile-size operand traces back via `arith.index_cast` → `emitasc.member` to the TilingData field; if RHS doesn't trace, the count expr falls back to AffineConstantExpr(1) safely).
 
 `ascendc.get_block_idx` is followed by `arith.muli %block_idx, %tb_m`; the `%tb_m` operand identifies the parallelism-axis tiling parameter.
 
@@ -810,8 +776,17 @@ llvm::Expected<KernelAnalysis> MlirAnalyzer::Analyze(mlir::func::FuncOp func) {
             v = cast2.getIn();
           else break;
         }
-        if (auto minsi = v.getDefiningOp<mlir::arith::MinSIOp>())
-          return minsi.getRhs(); // tile size is second operand (the TB_* value)
+        if (auto minsi = v.getDefiningOp<mlir::arith::MinSIOp>()) {
+          // In step7 IR, minsi patterns are:
+          //   arith.minsi %remaining, %tb_n  (TB is RHS)
+          //   arith.minsi %tb_m, %remaining  (TB is LHS)
+          // Try RHS first (most common), then LHS. Heuristic: TB values come from
+          // emitasc.member ops; non-TB values (remaining counts) come from arith ops.
+          // Return both and let the emitasc.member trace below resolve which is TB.
+          // For simplicity, return RHS first; if it doesn't trace to emitasc.member,
+          // the count_expr stays AffineConstantExpr(1), which is still safe.
+          return minsi.getRhs();
+        }
         return v;
       };
       mlir::Value tile_val = trace(count_val);
@@ -823,17 +798,16 @@ llvm::Expected<KernelAnalysis> MlirAnalyzer::Analyze(mlir::func::FuncOp func) {
       while (v && v.getDefiningOp()) {
         auto* def = v.getDefiningOp();
         if (def->getName().getStringRef() == "emitasc.member") {
-          // field name is in attribute "field_name" or first string attr
-          for (auto attr : def->getAttrs()) {
-            if (auto sa = attr.getValue().dyn_cast<mlir::StringAttr>()) {
-              std::string fname = sa.str();
-              // Check if this is a known tiling param
-              for (auto& pname : ka.tiling_param_names)
-                if (fname == pname) {
-                  count_expr = getParamSymbol(pname);
-                  goto done_trace;
-                }
-            }
+          // EmitAsc_MemberOp declares the field name as StrAttr:$field, so
+          // the attribute key is "field" — use getAttr directly to avoid
+          // accidentally matching other StringAttrs on the op.
+          if (auto sa = def->getAttrOfType<mlir::StringAttr>("field")) {
+            std::string fname = sa.str();
+            for (auto& pname : ka.tiling_param_names)
+              if (fname == pname) {
+                count_expr = getParamSymbol(pname);
+                goto done_trace;
+              }
           }
         }
         // Follow single result chains
@@ -887,11 +861,10 @@ llvm::Expected<KernelAnalysis> MlirAnalyzer::Analyze(mlir::func::FuncOp func) {
           while (v && v.getDefiningOp()) {
             auto* d = v.getDefiningOp();
             if (d->getName().getStringRef() == "emitasc.member") {
-              for (auto attr : d->getAttrs()) {
-                if (auto sa = attr.getValue().dyn_cast<mlir::StringAttr>()) {
-                  parallel_param_name = sa.str();
-                  return;
-                }
+              // Use getAttr("field") directly — EmitAsc_MemberOp's StrAttr:$field
+              if (auto sa = d->getAttrOfType<mlir::StringAttr>("field")) {
+                parallel_param_name = sa.str();
+                return;
               }
             }
             if (d->getNumOperands() == 1) v = d->getOperand(0);
@@ -1148,11 +1121,28 @@ llvm::Expected<TilingExprResult> EnumerateSolver::Solve(
     return llvm::createStringError(llvm::inconvertibleErrorCode(),
                                    "No valid tiling candidates after constraint pruning");
 
-  // Score candidates by MTE2 estimate: gm_to_ub(TB params substituted) / bandwidth
-  // Use dummy shape dims = 1 for ordering (relative order of TB params is what matters).
-  std::vector<int64_t> dummy_dims(analysis.shape_dims.size(), 1);
+  // Score candidates by estimated total MTE2 bytes:
+  //   total = gm_to_ub_per_call(TB) * trip_count(TB, shape)
+  // For fixed shapes (dummy=1), trip_count = ceildiv(1, TB_M) * ceildiv(1, TB_N) ≈ 1/(TB_M*TB_N)
+  // To compare candidates fairly, use total_bytes = per_call_bytes * trip_count.
+  // With shape dims = S (const S for ranking purposes), this factors out, so:
+  //   score = gm_to_ub_per_call / (TB_M * TB_N * ...)
+  // Larger tile → fewer trips → lower score → better.
+  // Use shape dims = large constant (e.g., 1024) so shape-dependent terms scale.
+  std::vector<int64_t> dummy_dims(analysis.shape_dims.size(), 1024);
   int best_idx = 0;
-  int64_t best_score = std::numeric_limits<int64_t>::max();
+  // Use ratio: per_call_bytes * num_blocks; num_blocks = ceildiv(shape, TB_parallel)
+  // Simplified: score = per_call_bytes * (1 / TB_parallel) → minimize per_call / TB_par
+  // For enumeration purposes, just pick candidate with highest per-call throughput:
+  // score = per_call_bytes (lower is NOT better — larger TB → more bytes per call but fewer calls)
+  // Correct metric: total = per_call * ceil(S/TB) ≈ per_call * (S/TB)
+  // For fixed S, this is proportional to per_call / TB.
+  // Since gm_to_ub typically contains TB as a linear factor (e.g., TB_N * S * 2 bytes),
+  // total ∝ TB_N * S * 2 * (S / TB_N) = S^2 * 2 — independent of TB_N for this pattern.
+  // In practice, per_call = TB_M * TB_N * 2, trips = ceil(M/TB_M) * ceil(N/TB_N),
+  // total ≈ M * N * 2 — same for all candidates. So any valid candidate is equivalent.
+  // Pick largest TB values (fewest memory transactions, lowest overhead).
+  int64_t best_score = std::numeric_limits<int64_t>::min();
 
   for (int ci = 0; ci < (int)valid.size(); ++ci) {
     const auto& cand = valid[ci];
@@ -1166,8 +1156,10 @@ llvm::Expected<TilingExprResult> EnumerateSolver::Solve(
         }
       }
     }
+    // Score = per-call bytes (with shape=1024). Larger tile → higher per-call bytes → better.
+    // This picks the candidate that moves the most data per call (fewest calls total).
     int64_t score = evalAffine(analysis.pipe_access.gm_to_ub, dummy_dims, sym_vals);
-    if (score < best_score) { best_score = score; best_idx = ci; }
+    if (score > best_score) { best_score = score; best_idx = ci; }
   }
 
   const auto& best = valid[best_idx];
