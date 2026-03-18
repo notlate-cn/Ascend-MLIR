@@ -3,6 +3,7 @@
 #include "Runtime/SimValidator.h"
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/raw_ostream.h"
+#include <cstdlib>
 #include <cstring>
 #include <fstream>
 #include <sstream>
@@ -126,6 +127,12 @@ int main(int argc, char** argv) {
   if (!result.error_msg.empty())
     llvm::errs() << "Error: " << result.error_msg << "\n";
 
-  if (result.passed) { llvm::outs() << "PASS\n"; return 0; }
-  else               { llvm::outs() << "FAIL\n"; return 1; }
+  int exit_code = result.passed ? 0 : 1;
+  llvm::outs() << (result.passed ? "PASS\n" : "FAIL\n");
+  llvm::outs().flush();
+  llvm::errs().flush();
+  // Use _exit to skip C++ destructors and atexit handlers:
+  // libruntime_camodel simulator leaves background threads running after
+  // rtDeviceSynchronize; normal exit() races those threads and segfaults.
+  _Exit(exit_code);
 }
