@@ -15,8 +15,7 @@ static std::string getAscendHome() {
   return home ? home : "/usr/local/Ascend/ascend-toolkit/latest";
 }
 
-llvm::Error Compiler::RunProcess(const std::vector<std::string>& args,
-                                  const std::string& cwd) {
+llvm::Error Compiler::RunProcess(const std::vector<std::string>& args) {
   std::vector<llvm::StringRef> argv;
   argv.reserve(args.size());
   for (auto& a : args) argv.push_back(a);
@@ -52,6 +51,9 @@ llvm::Expected<std::string> Compiler::Compile(const std::string& src_file,
   // Get src directory and filename (bisheng requires cwd=src_dir, filename only)
   llvm::SmallString<256> src_path(src_file);
   llvm::sys::fs::make_absolute(src_path);
+  if (!llvm::sys::fs::exists(src_path))
+    return llvm::createStringError(llvm::inconvertibleErrorCode(),
+                                   "Source file not found: %s", src_path.c_str());
   std::string src_dir  = llvm::sys::path::parent_path(src_path).str();
   std::string src_name = llvm::sys::path::filename(src_path).str();
 
