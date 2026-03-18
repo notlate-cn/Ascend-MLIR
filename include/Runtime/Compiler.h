@@ -26,8 +26,7 @@ private:
   Config cfg_;
 
   // Run a subprocess synchronously; return non-success Error if exit code != 0.
-  llvm::Error RunProcess(const std::vector<std::string>& args,
-                         const std::string& cwd = "");
+  llvm::Error RunProcess(const std::vector<std::string>& args);
 };
 
 } // namespace mlir::runtime
