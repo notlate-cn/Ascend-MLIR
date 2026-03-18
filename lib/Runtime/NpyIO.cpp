@@ -74,6 +74,11 @@ llvm::Expected<NDArray> LoadNpy(const std::string& path) {
   arr.data = new uint8_t[nbytes];
   f.read(reinterpret_cast<char*>(arr.data),
          static_cast<std::streamsize>(nbytes));
+  if (f.gcount() != static_cast<std::streamsize>(nbytes)) {
+    delete[] static_cast<uint8_t*>(arr.data);
+    return llvm::createStringError(llvm::inconvertibleErrorCode(),
+                                   "Truncated data in: %s", path.c_str());
+  }
   return arr;
 }
 
