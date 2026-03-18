@@ -13,7 +13,9 @@ Executor::Executor(BackendMode mode) : mode_(mode) {}
 
 Executor::~Executor() {
   FreeAll();
-  if (lib_handle_) dlclose(lib_handle_);
+  // Intentionally skip dlclose: libruntime_camodel registers atexit/global
+  // destructors that run after dlclose, causing use-after-unload segfaults.
+  // The OS reclaims the mapping on process exit.
 }
 
 static std::string getLibPath() {
