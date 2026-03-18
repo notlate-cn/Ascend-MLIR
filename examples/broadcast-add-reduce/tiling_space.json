@@ -1,0 +1,28 @@
+{
+  "kernel": "broadcast_add_reducesum",
+  "soc": "Ascend910B1",
+  "tiling_params": [
+    {"name": "TB_M",       "type": "int64", "values": [16, 32],
+     "note": "TB_M must be >= 16 (DataCopy half min 16 elements)"},
+    {"name": "TB_N",       "type": "int64", "values": [16, 32]},
+    {"name": "dim_arg0_0", "type": "int64", "fixed": true, "note": "M total size"},
+    {"name": "dim_arg1_1", "type": "int64", "fixed": true, "note": "N total size"},
+    {"name": "dim_arg0_1", "type": "int64", "fixed": true, "note": "M (copy of dim_arg0_0)"},
+    {"name": "dim_arg1_0", "type": "int64", "fixed": true, "note": "N (copy of dim_arg1_1)"}
+  ],
+  "validated_config": {
+    "M": 32, "N": 32,
+    "TB_M": 16, "TB_N": 16,
+    "block_dim": 2,
+    "max_abs_diff": 0.0625,
+    "mean_abs_diff": 0.0086,
+    "status": "PASS"
+  },
+  "kernel_file": "step8_kernel-adjust.cpp",
+  "notes": [
+    "step8_kernel.cpp has compile errors (wrong AscendC API usage); use step8_kernel-adjust.cpp",
+    "TB_M >= 16 required due to DataCopy half minimum 16 elements (32B) constraint",
+    "N must be a multiple of 32 for DataCopy alignment",
+    "sim-validator env: ASCEND_HOME_PATH, LD_LIBRARY_PATH must include aarch64-linux/simulator/Ascend910B1/lib and aarch64-linux/lib64"
+  ]
+}

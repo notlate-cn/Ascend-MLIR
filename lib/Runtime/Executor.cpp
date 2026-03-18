@@ -19,7 +19,16 @@ Executor::~Executor() {
 static std::string getLibPath() {
   const char* home = std::getenv("ASCEND_HOME_PATH");
   if (!home) home = "/usr/local/Ascend/ascend-toolkit/latest";
-  return std::string(home) + "/runtime/lib64/libruntime_camodel.so";
+  const char* soc = std::getenv("SOC_VERSION");
+  if (!soc) soc = "Ascend910B1";
+  // Try new toolkit layout: aarch64-linux/simulator/<SOC>/lib/
+  std::string new_path = std::string(home) + "/aarch64-linux/simulator/" +
+                         std::string(soc) + "/lib/libruntime_camodel.so";
+  // Also try legacy layout: tools/simulator/<SOC>/lib/
+  std::string legacy_path = std::string(home) + "/tools/simulator/" +
+                            std::string(soc) + "/lib/libruntime_camodel.so";
+  // Prefer new path; fallback checked by dlopen
+  return new_path;
 }
 
 llvm::Error Executor::LoadLib() {

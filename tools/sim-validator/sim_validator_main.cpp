@@ -18,7 +18,7 @@ static cl::opt<std::string> TilingLayout("tiling-layout",
     cl::desc("Comma-separated types for --tiling-params: int64,int64,..."), cl::init(""));
 static cl::opt<std::string> TilingBin("tiling",        cl::desc("Pre-packed tiling .bin file"), cl::init(""));
 static cl::opt<std::string> Inputs("inputs",           cl::desc("Comma-separated input .npy files"), cl::Required);
-static cl::opt<std::string> Expected("expected",       cl::desc("Expected output .npy file"), cl::Required);
+static cl::opt<std::string> ExpectedFile("expected",       cl::desc("Expected output .npy file"), cl::Required);
 static cl::opt<int>         BlockDim("block-dim",      cl::desc("Number of AiCore blocks"), cl::init(1));
 static cl::opt<std::string> SocVersion("soc",          cl::desc("SoC version (default: Ascend910B1)"), cl::init("Ascend910B1"));
 
@@ -92,20 +92,22 @@ int main(int argc, char** argv) {
   }
 
   // Load expected
-  auto exp_or = LoadNpy(Expected);
+  auto exp_or = LoadNpy(ExpectedFile);
   if (!exp_or) {
     for (auto& inp : args.inputs) delete[] static_cast<uint8_t*>(inp.data);
     llvm::errs() << "Error loading expected: " << llvm::toString(exp_or.takeError()) << "\n";
     return 1;
   }
-  std::vector<NDArray> expected_arrs = {*exp_or};
+  NDArray exp_arr = *exp_or;
+  std::vector<NDArray> expected_arrs;
+  expected_arrs.push_back(exp_arr);
 
   // Pre-alloc output (same shape/dtype as expected); ownership stays in args.outputs
   NDArray out_buf;
   out_buf.shape = expected_arrs[0].shape;
   out_buf.dtype = expected_arrs[0].dtype;
   out_buf.data  = new uint8_t[out_buf.nbytes()]();
-  args.outputs  = {out_buf};
+  args.outputs.push_back(out_buf);
 
   Compiler::Config cc;
   cc.soc_version = SocVersion;

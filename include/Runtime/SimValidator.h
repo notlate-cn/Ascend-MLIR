@@ -24,7 +24,7 @@ public:
                   const std::vector<NDArray>& expected,
                   double                      atol = 1.0,
                   double                      rtol = 1e-2,
-                  const Compiler::Config&     compiler_cfg = {});
+                  const Compiler::Config&     compiler_cfg = Compiler::Config{});
 };
 
 } // namespace mlir::runtime
