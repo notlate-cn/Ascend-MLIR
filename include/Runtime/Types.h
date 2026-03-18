@@ -1,5 +1,6 @@
 // include/Runtime/Types.h
 #pragma once
+#include <cstddef>
 #include <cstdint>
 #include <cstring>
 #include <vector>
@@ -18,11 +19,13 @@ inline size_t dtypeBytes(DType d) {
 }
 
 struct NDArray {
+  // caller-owned; must be non-null when nbytes() > 0
   void*                data   = nullptr;
   std::vector<int64_t> shape;
   DType                dtype  = DType::F16;
 
   size_t numElements() const {
+    // empty shape → scalar (1 element)
     size_t n = 1;
     for (auto s : shape) n *= static_cast<size_t>(s);
     return n;
