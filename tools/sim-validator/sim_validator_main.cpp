@@ -30,13 +30,17 @@ static std::vector<std::string> splitComma(const std::string& s) {
   return parts;
 }
 
-static std::vector<uint8_t> buildTiling(const std::string& params,
-                                         const std::string& layout) {
-  std::vector<uint8_t> bytes;
+// Returns false and prints error on bad input; caller exits.
+static bool buildTiling(const std::string& params, const std::string& layout,
+                        std::vector<uint8_t>& bytes) {
   auto pvec = splitComma(params);
   auto lvec = splitComma(layout);
   for (size_t i = 0; i < pvec.size(); ++i) {
     auto eq = pvec[i].find('=');
+    if (eq == std::string::npos) {
+      llvm::errs() << "Error: --tiling-params token missing '=': " << pvec[i] << "\n";
+      return false;
+    }
     int64_t val = std::stoll(pvec[i].substr(eq + 1));
     std::string type = i < lvec.size() ? lvec[i] : "int64";
     if (type == "int64" || type == "int64_t") {
@@ -46,9 +50,13 @@ static std::vector<uint8_t> buildTiling(const std::string& params,
       int32_t v = static_cast<int32_t>(val);
       uint8_t buf[4]; std::memcpy(buf, &v, 4);
       bytes.insert(bytes.end(), buf, buf + 4);
+    } else {
+      llvm::errs() << "Error: unknown tiling type '" << type
+                   << "' (expected int64 or int32)\n";
+      return false;
     }
   }
-  return bytes;
+  return true;
 }
 
 int main(int argc, char** argv) {
@@ -61,7 +69,7 @@ int main(int argc, char** argv) {
     if (!f) { llvm::errs() << "Error: cannot open " << TilingBin << "\n"; return 1; }
     tiling.assign(std::istreambuf_iterator<char>(f), {});
   } else if (!TilingParams.empty()) {
-    tiling = buildTiling(TilingParams, TilingLayout);
+    if (!buildTiling(TilingParams, TilingLayout, tiling)) return 1;
   } else {
     llvm::errs() << "Error: provide --tiling or --tiling-params\n"; return 1;
   }
@@ -74,6 +82,8 @@ int main(int argc, char** argv) {
   for (auto& path : splitComma(Inputs)) {
     auto arr_or = LoadNpy(path);
     if (!arr_or) {
+      // Free already-loaded inputs before exiting
+      for (auto& inp : args.inputs) delete[] static_cast<uint8_t*>(inp.data);
       llvm::errs() << "Error loading input " << path << ": "
                    << llvm::toString(arr_or.takeError()) << "\n";
       return 1;
@@ -84,12 +94,13 @@ int main(int argc, char** argv) {
   // Load expected
   auto exp_or = LoadNpy(Expected);
   if (!exp_or) {
+    for (auto& inp : args.inputs) delete[] static_cast<uint8_t*>(inp.data);
     llvm::errs() << "Error loading expected: " << llvm::toString(exp_or.takeError()) << "\n";
     return 1;
   }
   std::vector<NDArray> expected_arrs = {*exp_or};
 
-  // Pre-alloc output (same shape/dtype as expected)
+  // Pre-alloc output (same shape/dtype as expected); ownership stays in args.outputs
   NDArray out_buf;
   out_buf.shape = expected_arrs[0].shape;
   out_buf.dtype = expected_arrs[0].dtype;
@@ -103,8 +114,8 @@ int main(int argc, char** argv) {
   auto result = validator.Validate(KernelSrc, KernelName, args, expected_arrs,
                                    /*atol=*/1.0, /*rtol=*/1e-2, cc);
 
-  // Free allocations
-  delete[] static_cast<uint8_t*>(out_buf.data);
+  // Free allocations — free through args.outputs[0] (authoritative owner), not out_buf alias
+  delete[] static_cast<uint8_t*>(args.outputs[0].data);
   for (auto& inp : args.inputs) delete[] static_cast<uint8_t*>(inp.data);
   delete[] static_cast<uint8_t*>(expected_arrs[0].data);
 

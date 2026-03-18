@@ -1,7 +1,6 @@
 // lib/Runtime/SimValidator.cpp
 #include "Runtime/SimValidator.h"
 #include "llvm/Support/FileSystem.h"
-#include <cassert>
 #include <cmath>
 #include <cstdint>
 #include <cstring>
@@ -76,8 +75,12 @@ SimValidator::Result SimValidator::Validate(
   }
 
   // Compare outputs
-  assert(args.outputs.size() == expected.size() &&
-         "outputs and expected must have same count");
+  if (args.outputs.size() != expected.size()) {
+    r.error_msg = "Output count mismatch: got " +
+                  std::to_string(args.outputs.size()) + ", expected " +
+                  std::to_string(expected.size());
+    return r;
+  }
 
   double sum_diff = 0.0, max_diff = 0.0;
   size_t total_elements = 0;
