@@ -22,6 +22,7 @@ The simulator writes these files in the run directory (e.g. `sim/`) when `ASCEND
 | `core{C}.veccore{V}.ccu.vec_issque.dump` | VEC (vector compute) | 1 |
 | `core{C}.veccore{V}.ccu.scalar_issque.dump` | SCALAR | 2 |
 | `core{C}_summary_log` | Total ticks per core | — |
+| `core{C}.cubecore{V}.ccu.*_issque.dump` | Cube core units (parsed same as veccore) | — |
 
 Each `*_issque.dump` line format:
 ```
@@ -428,7 +429,9 @@ int main(int argc, char** argv) {
     return 1;
   }
 
-  out << "{\n\"displayTimeUnit\": \"ns\",\n\"traceEvents\": [\n";
+  // Note: ts/dur are simulator cycle counts, not nanoseconds.
+  // displayTimeUnit is informational only in chrome://tracing Gantt view.
+  out << "{\n\"displayTimeUnit\": \"us\",\n\"traceEvents\": [\n";
   bool first = true;
   for (auto& e : all_events) emitEvent(out, e, first);
   out << "\n]\n}\n";
@@ -485,19 +488,28 @@ cd /home/niu/code/Ascend-MLIR/sim
 pipeline-analyzer --sim-dir . --output /tmp/trace.json --stalls
 ```
 
-Expected output:
+Expected output (approximate — actual core count depends on `--block-dim` used in step 1):
 ```
-Cores found: 2
-  core0.veccore0  total_cycles=11404
-    MTE2  instructions=16  active_cycles=<N>  efficiency=<N>%
-    VEC   instructions=<N>  active_cycles=<N>  efficiency=<N>%
-    MTE3  instructions=16  active_cycles=<N>  efficiency=<N>%
+Cores found: 4
+  core0.cubecore0  total_cycles=0
     ...
-  core0.veccore1  total_cycles=11413
+  core0.veccore0  total_cycles=11416
+    MTE2  instructions=<N>  active_cycles=<N>  efficiency=<N>%
+    VEC   instructions=<N>  active_cycles=<N>  efficiency=<N>%
+    MTE3  instructions=<N>  active_cycles=<N>  efficiency=<N>%
+    ...
+  core0.veccore1  total_cycles=11416
+    ...
+  core1.veccore0  total_cycles=0
     ...
 Wrote: /tmp/trace.json  (<N> events)
 Open in Chrome: chrome://tracing → Load → /tmp/trace.json
 ```
+
+Notes:
+- `cubecore` entries appear because `cubecore*.ccu.mte2_issque.dump` files exist in the sim dir — they are parsed correctly and appear as separate rows in chrome://tracing.
+- Cores without a `*_summary_log` (e.g. core1 when only `core0_summary_log` exists) will show `total_cycles=0` and `efficiency=0%`. This is correct behavior — efficiency computation requires total cycle count from summary logs.
+- Both `core0.veccore0` and `core0.veccore1` get the same `total_cycles` value (max across all `kernal total ticks` entries in `core0_summary_log`).
 
 - [ ] **Step 3: Verify JSON is valid and loadable**
 
