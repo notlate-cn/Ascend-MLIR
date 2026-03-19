@@ -37,15 +37,21 @@ static cl::opt<std::string> SocVersion("soc",
     cl::desc("SoC version (overrides JSON; default: Ascend910B1)"), cl::init(""));
 static cl::opt<double> Atol("atol", cl::desc("Absolute tolerance"), cl::init(1.0));
 static cl::opt<double> Rtol("rtol", cl::desc("Relative tolerance"), cl::init(1e-2));
-static cl::opt<bool>   EnableTrace("trace",
-    cl::desc("After search, call msopgen sim on best config to generate trace.json"),
-    cl::init(false));
-static cl::opt<std::string> MsopgenPath("msopgen",
-    cl::desc("Path to msopgen binary (default: auto-detect from ASCEND_HOME_PATH)"),
+// --sim-report=trace,codeline
+//   trace    : call msopgen sim → dump2trace_core*.json (chrome://tracing)
+//   codeline : add -reloc <.o>  → code_exe_prof.csv + instr_exe_prof.csv
+// Both can be combined: --sim-report=trace,codeline
+static cl::opt<std::string> SimReport("sim-report",
+    cl::desc("Comma-separated report types after search: trace (pipeline trace JSON), "
+             "codeline (source-line/instruction hotspot CSV via -reloc). "
+             "Example: --sim-report=trace,codeline"),
     cl::init(""));
-static cl::opt<std::string> TraceOutDir("trace-out",
-    cl::desc("Output directory for msopgen sim trace files (default: ./trace_output)"),
-    cl::init("trace_output"));
+static cl::opt<std::string> MsopgenPath("msopgen",
+    cl::desc("Path to msopgen executable (default: auto-detect from ASCEND_HOME_PATH)"),
+    cl::init(""));
+static cl::opt<std::string> SimReportOutDir("sim-report-out",
+    cl::desc("Output directory for sim-report files (default: ./sim_report)"),
+    cl::init("sim_report"));
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -232,7 +238,8 @@ static std::vector<SearchResult> runSearch(
     const std::string& soc,
     RunArgs& args_template,
     const std::vector<NDArray>& expected,
-    double atol, double rtol) {
+    double atol, double rtol,
+    std::string* out_binary_path = nullptr) {
 
   std::vector<TilingParam> search_vars;
   for (auto& p : ts.params)
@@ -263,6 +270,7 @@ static std::vector<SearchResult> runSearch(
     return results;
   }
   std::string binary_path = *bin_or;
+  if (out_binary_path) *out_binary_path = binary_path;
 
   // Initialize executor once and reuse across all configs.
   Executor executor;
@@ -553,8 +561,10 @@ int main(int argc, char** argv) {
   args_tmpl.outputs = {out_buf};
 
   llvm::outs() << "Searching " << ts.kernel_name << " on " << soc << "\n";
+  std::string best_binary_path;
   auto results = runSearch(ts, shape, kernel_path, soc,
-                            args_tmpl, expected_arrs, Atol, Rtol);
+                            args_tmpl, expected_arrs, Atol, Rtol,
+                            &best_binary_path);
 
   // Free allocations
   delete[] static_cast<uint8_t*>(out_buf.data);
@@ -586,8 +596,19 @@ int main(int argc, char** argv) {
 
   emitTilingFunc(OutputFile, ts, best, shape);
 
-  // ── Optional: generate instruction pipeline trace via msopgen sim ────────────
-  if (EnableTrace) {
+  // ── Optional: generate sim reports via msopgen sim ───────────────────────────
+  // --sim-report=trace,codeline
+  //   trace    : dump2trace_core*.json  (load in chrome://tracing)
+  //   codeline : code_exe_prof.csv + instr_exe_prof.csv (needs -reloc <.o>)
+  if (!SimReport.empty()) {
+    auto report_types = splitComma(SimReport);
+    bool want_trace    = false;
+    bool want_codeline = false;
+    for (auto& t : report_types) {
+      if (t == "trace")    want_trace    = true;
+      if (t == "codeline") want_codeline = true;
+    }
+
     // Locate msopgen: explicit flag > ASCEND_HOME_PATH > common install path
     std::string msopgen = MsopgenPath;
     if (msopgen.empty()) {
@@ -595,9 +616,9 @@ int main(int argc, char** argv) {
       if (!home) home = "/usr/local/Ascend/ascend-toolkit/latest";
       msopgen = std::string(home) + "/tools/msopgen";
     }
-    // Check executable exists
+
     if (!llvm::sys::fs::can_execute(msopgen)) {
-      llvm::errs() << "Warning: --trace requested but msopgen not found at: "
+      llvm::errs() << "Warning: --sim-report requested but msopgen not found at: "
                    << msopgen << "\n"
                    << "  Set ASCEND_HOME_PATH or use --msopgen=<path>\n";
     } else {
@@ -607,12 +628,25 @@ int main(int argc, char** argv) {
       std::string sim_dir = cwd.str().str();
 
       // Create output directory
-      llvm::SmallString<256> out_abs(TraceOutDir.getValue());
+      llvm::SmallString<256> out_abs(SimReportOutDir.getValue());
       llvm::sys::fs::make_absolute(out_abs);
       llvm::sys::fs::create_directories(out_abs);
 
-      // msopgen sim requires one call per (core, subcore) pair.
-      // Discover all core*/veccore* dump files in cwd.
+      // Derive .o path from .bin path (same build dir, same stem)
+      std::string obj_path;
+      if (want_codeline && !best_binary_path.empty()) {
+        obj_path = best_binary_path;
+        auto dot = obj_path.rfind(".bin");
+        if (dot != std::string::npos)
+          obj_path.replace(dot, 4, ".o");
+        if (!llvm::sys::fs::exists(obj_path)) {
+          llvm::errs() << "Warning: codeline requested but .o not found at: "
+                       << obj_path << "\n";
+          obj_path.clear();
+        }
+      }
+
+      // Discover all (core, subcore) pairs from *_issque.dump files in cwd
       struct CoreEntry { std::string core_id; std::string subcore_id; };
       std::vector<CoreEntry> cores;
       std::error_code ec;
@@ -626,9 +660,8 @@ int main(int argc, char** argv) {
         std::string label = fname.substr(0, ccu);  // e.g. "core0.veccore1"
         auto dot = label.find('.');
         if (dot == std::string::npos) continue;
-        std::string core_id    = label.substr(0, dot);    // "core0"
-        std::string subcore_id = label.substr(dot + 1);   // "veccore1"
-        // Deduplicate
+        std::string core_id    = label.substr(0, dot);
+        std::string subcore_id = label.substr(dot + 1);
         bool dup = false;
         for (auto& e : cores)
           if (e.core_id == core_id && e.subcore_id == subcore_id) { dup = true; break; }
@@ -636,17 +669,21 @@ int main(int argc, char** argv) {
       }
 
       if (cores.empty()) {
-        llvm::errs() << "Warning: --trace: no *_issque.dump files found in " << sim_dir
+        llvm::errs() << "Warning: --sim-report: no *_issque.dump files found in "
+                     << sim_dir
                      << ". Run autotuner from the simulation working directory.\n";
       } else {
-        llvm::outs() << "\nGenerating pipeline trace with msopgen sim ...\n";
+        llvm::outs() << "\nGenerating sim reports with msopgen sim ...\n";
         for (auto& c : cores) {
-          // msopgen sim -c core0 -d <sim_dir> -subc veccore0 -out <out>
+          // msopgen sim -c core0 -d <sim_dir> -subc veccore0 -out <out> [-reloc <.o>]
           std::string cmd = msopgen + " sim"
               + " -c " + c.core_id
               + " -d " + sim_dir
               + " -subc " + c.subcore_id
               + " -out " + out_abs.str().str();
+          if (want_codeline && !obj_path.empty())
+            cmd += " -reloc " + obj_path;
+
           llvm::outs() << "  " << c.core_id << "." << c.subcore_id << " ...";
           llvm::outs().flush();
           int rc = std::system(cmd.c_str());
@@ -655,8 +692,11 @@ int main(int argc, char** argv) {
           else
             llvm::outs() << " OK\n";
         }
-        llvm::outs() << "Trace files written to: " << out_abs.str() << "\n";
-        llvm::outs() << "  Load dump2trace_core*.json in chrome://tracing\n";
+        llvm::outs() << "Sim report files written to: " << out_abs.str() << "\n";
+        if (want_trace)
+          llvm::outs() << "  trace    : dump2trace_core*.json  → chrome://tracing\n";
+        if (want_codeline)
+          llvm::outs() << "  codeline : code_exe_prof.csv, instr_exe_prof.csv\n";
       }
     }
   }
