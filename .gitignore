@@ -27,3 +27,5 @@ python/runtime/__pycache__
 externals/llvm-project
 /CLAUDE.md
 /.serena
+opdev-handbook
+/sim/trace.json

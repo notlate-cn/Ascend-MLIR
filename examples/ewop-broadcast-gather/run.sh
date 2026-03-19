@@ -46,136 +46,150 @@ set -e
 DIR="$(cd "$(dirname "$0")" && pwd)"
 AFIR_OPT="${AFIR_OPT:-afir-opt}"
 
+# 解析参数
+VERBOSE=false
+for arg in "$@"; do
+  case $arg in
+    --log) VERBOSE=true ;;
+  esac
+done
+
+log() {
+  if $VERBOSE; then
+    echo "$@"
+  fi
+}
+
 echo "========================================================"
 echo " elementwise + broadcast + gather 编译流水线"
 echo "========================================================"
 
 # ── STAGE 0: 解析原始 IR ───────────────────────────────────
 echo ""
-echo "[STAGE 0] 解析 High-Level IR（gather + broadcast+add）"
-echo "  输入: step0_input.mlir"
-echo "  Pass: (仅解析，无变换)"
+echo "==================== [STAGE 0] 解析 High-Level IR（gather + broadcast+add）===================="
+log "  输入: step0_input.mlir"
+log "  Pass: (仅解析，无变换)"
 $AFIR_OPT "$DIR/step0_input.mlir" -o "$DIR/step0_input_out.mlir" 2>&1
-echo "  ✓ 解析成功，输出: step0_input_out.mlir"
-echo ""
-echo "  [计算图结构]"
-echo "    Op1 gather:        iterator = [Parallel, Parallel]  data[M,N] + indices[K] → gathered[M,K]"
-echo "    Op2 broadcast+add: iterator = [Parallel, Parallel]  gathered[M,K] + bias[M] → out[M,K]"
-echo "    → Op1 通过 library_call='gather_by_index' 标记 gather 语义"
-echo "    → Op2 复用现有 broadcast+addf → broadcast_l2 + add_l2 路径"
+log "  ✓ 解析成功，输出: step0_input_out.mlir"
+log ""
+log "  [计算图结构]"
+log "    Op1 gather:        iterator = [Parallel, Parallel]  data[M,N] + indices[K] → gathered[M,K]"
+log "    Op2 broadcast+add: iterator = [Parallel, Parallel]  gathered[M,K] + bias[M] → out[M,K]"
+log "    → Op1 通过 library_call='gather_by_index' 标记 gather 语义"
+log "    → Op2 复用现有 broadcast+addf → broadcast_l2 + add_l2 路径"
 
 # ── STAGE 1: 尝试融合 ─────────────────────────────────────
 echo ""
-echo "[STAGE 1] 融合：--linalg-fuse-elementwise-ops"
-echo "  注：Op1 和 Op2 输出独立（Op1 输出 gathered，Op2 输出 out），无法融合"
-echo "  此 pass 对本场景基本是 no-op，保留阶段以与其他示例保持一致"
+echo "==================== [STAGE 1] 融合：--linalg-fuse-elementwise-ops ===================="
+log "  注：Op1 和 Op2 输出独立（Op1 输出 gathered，Op2 输出 out），无法融合"
+log "  此 pass 对本场景基本是 no-op，保留阶段以与其他示例保持一致"
 $AFIR_OPT --linalg-fuse-elementwise-ops "$DIR/step0_input.mlir" \
   --canonicalize --cse \
   -o "$DIR/step1_fused.mlir" 2>&1
-echo "  ✓ 输出: step1_fused.mlir"
+log "  ✓ 输出: step1_fused.mlir"
 
 # ── STAGE 2: Transform Tiling ──────────────────────────────
 echo ""
-echo "[STAGE 2] Tiling：--transform-interpreter"
-echo "  输入: step2_transform.mlir（含 Transform 脚本）"
-echo "  策略: 对 Op1 和 Op2 分别沿 M 轴做两级切分 TB/Tb"
-echo "         K 轴不切，整 K 在 UB 内处理"
-echo "  注意: Gather 场景建议 Tb_M=1（每次处理一行，N 轴扫全部）"
+echo "==================== [STAGE 2] Tiling：--transform-interpreter ===================="
+log "  输入: step2_transform.mlir（含 Transform 脚本）"
+log "  策略: 对 Op1 和 Op2 分别沿 M 轴做两级切分 TB/Tb"
+log "         K 轴不切，整 K 在 UB 内处理"
+log "  注意: Gather 场景建议 Tb_M=1（每次处理一行，N 轴扫全部）"
 $AFIR_OPT --transform-interpreter "$DIR/step2_transform.mlir" \
   --canonicalize --cse \
   -o "$DIR/step2_tiled.mlir" 2>&1
-echo "  ✓ Tiling 成功，输出: step2_tiled.mlir"
-echo ""
-echo "  [循环结构]"
-grep -E "scf\.for|ascendc\." "$DIR/step2_tiled.mlir" | head -15
+log "  ✓ Tiling 成功，输出: step2_tiled.mlir"
+log ""
+log "  [循环结构]"
+log "$(grep -E "scf\.for|ascendc\." "$DIR/step2_tiled.mlir" | head -15)"
 
 # ── STAGE 3: Bufferize ─────────────────────────────────────
 echo ""
-echo "[STAGE 3] Bufferize：--one-shot-bufferize"
-echo "  输入: step2_tiled.mlir"
+echo "==================== [STAGE 3] Bufferize：--one-shot-bufferize ===================="
+log "  输入: step2_tiled.mlir"
 $AFIR_OPT \
   "--one-shot-bufferize=bufferize-function-boundaries=true allow-return-allocs-from-loops=true function-boundary-type-conversion=identity-layout-map" \
   "$DIR/step2_tiled.mlir" \
   --cse \
   -o "$DIR/step3_bufferized.mlir" 2>&1
-echo "  ✓ Bufferize 成功，输出: step3_bufferized.mlir"
-echo ""
-echo "  [ascendc.* attrs 是否保留在 scf.for 上]"
-grep "ascendc\." "$DIR/step3_bufferized.mlir" | grep -v "transform\." | head -10
-echo "  [memref.alloc 和 indices 处理]"
-grep "memref.alloc\|memref.copy" "$DIR/step3_bufferized.mlir" | head -8
+log "  ✓ Bufferize 成功，输出: step3_bufferized.mlir"
+log ""
+log "  [ascendc.* attrs 是否保留在 scf.for 上]"
+log "$(grep "ascendc\." "$DIR/step3_bufferized.mlir" | grep -v "transform\." | head -10)"
+log "  [memref.alloc 和 indices 处理]"
+log "$(grep "memref.alloc\|memref.copy" "$DIR/step3_bufferized.mlir" | head -8)"
 
 # ── STAGE 4: Buffer Placement ──────────────────────────────
 echo ""
-echo "[STAGE 4] Buffer Placement：--ascendc-buffer-placement"
-echo "  输入: step3_bufferized.mlir"
-echo "  推导规则："
-echo "    prologue src:GM->VECIN → VECIN(9) 标注"
-echo "    epilogue dst:VECOUT->GM → VECOUT(10) 标注"
-echo "    indices[K] (i32) 也被 prologue 搬入 VECIN（统一处理）"
+echo "==================== [STAGE 4] Buffer Placement：--ascendc-buffer-placement ===================="
+log "  输入: step3_bufferized.mlir"
+log "  推导规则："
+log "    prologue src:GM->VECIN → VECIN(9) 标注"
+log "    epilogue dst:VECOUT->GM → VECOUT(10) 标注"
+log "    indices[K] (i32) 也被 prologue 搬入 VECIN（统一处理）"
 $AFIR_OPT \
   --ascendc-buffer-placement \
   "$DIR/step3_bufferized.mlir" \
   -o "$DIR/step4_buffer_placement.mlir" 2>&1
-echo "  ✓ Buffer Placement 成功，输出: step4_buffer_placement.mlir"
-echo ""
-echo "  [on-chip memory_space 标注]"
-grep -E "[0-9]+ : i32" "$DIR/step4_buffer_placement.mlir" | head -10
-echo "  [memref.copy 占位搬运]"
-grep "memref.copy" "$DIR/step4_buffer_placement.mlir" | head -8
+log "  ✓ Buffer Placement 成功，输出: step4_buffer_placement.mlir"
+log ""
+log "  [on-chip memory_space 标注]"
+log "$(grep -E "[0-9]+ : i32" "$DIR/step4_buffer_placement.mlir" | head -10)"
+log "  [memref.copy 占位搬运]"
+log "$(grep "memref.copy" "$DIR/step4_buffer_placement.mlir" | head -8)"
 
 # ── STAGE 5: Linalg → AscendC Compute ─────────────────────
 echo ""
-echo "[STAGE 5] Linalg → AscendC：--linalg-to-ascendc"
-echo "  输入: step4_buffer_placement.mlir"
-echo "  转换规则："
-echo "    gather_by_index generic → gather_l2（逐行：data_row[N] + indices[K] → gathered_row[K]）"
-echo "    broadcast+addf generic → broadcast_l2 + add_l2"
-echo "    memref.copy GM→VECIN  → data_copy_l2"
-echo "    memref.copy VECOUT→GM → data_copy_l2"
+echo "==================== [STAGE 5] Linalg → AscendC：--linalg-to-ascendc ===================="
+log "  输入: step4_buffer_placement.mlir"
+log "  转换规则："
+log "    gather_by_index generic → gather_l2（逐行：data_row[N] + indices[K] → gathered_row[K]）"
+log "    broadcast+addf generic → broadcast_l2 + add_l2"
+log "    memref.copy GM→VECIN  → data_copy_l2"
+log "    memref.copy VECOUT→GM → data_copy_l2"
 $AFIR_OPT \
   --linalg-to-ascendc \
   "$DIR/step4_buffer_placement.mlir" \
   --canonicalize \
   --cse \
   -o "$DIR/step5_ascendc.mlir" 2>&1
-echo "  ✓ Linalg→AscendC 成功，输出: step5_ascendc.mlir"
-echo ""
-echo "  [生成的 AscendC ops]"
-grep -E "ascendc\.(gather_l2|broadcast_l2|add_l2|data_copy)" \
+log "  ✓ Linalg→AscendC 成功，输出: step5_ascendc.mlir"
+log ""
+log "  [生成的 AscendC ops]"
+log "$(grep -E "ascendc\.(gather_l2|broadcast_l2|add_l2|data_copy)" \
   "$DIR/step5_ascendc.mlir" | head -20 || \
-  echo "  (未找到 ascendc compute ops，请检查输出)"
+  echo "  (未找到 ascendc compute ops，请检查输出)")"
 
 # ── STAGE 6: AscendC Parallelize ───────────────────────────
 echo ""
-echo "[STAGE 6] Parallelize：--ascendc-parallelize"
-echo "  输入: step5_ascendc.mlir"
+echo "==================== [STAGE 6] Parallelize：--ascendc-parallelize ===================="
+log "  输入: step5_ascendc.mlir"
 $AFIR_OPT "$DIR/step5_ascendc.mlir" \
   --ascendc-parallelize \
   --canonicalize \
   --cse \
   -o "$DIR/step6_parallelize.mlir" 2>&1
-echo "  ✓ Parallelize 成功，输出: step6_parallelize.mlir"
-echo ""
-echo "  [get_block_idx dispatch]"
-grep -E "get_block_idx|muli.*block" "$DIR/step6_parallelize.mlir" | head -5
+log "  ✓ Parallelize 成功，输出: step6_parallelize.mlir"
+log ""
+log "  [get_block_idx dispatch]"
+log "$(grep -E "get_block_idx|muli.*block" "$DIR/step6_parallelize.mlir" | head -5)"
 
 # ── STAGE 7: Prepare For Emit ──────────────────────────────
 echo ""
-echo "[STAGE 7] Prepare For Emit：--ascendc-prepare-for-emit"
-echo "  输入: step6_parallelize.mlir"
+echo "==================== [STAGE 7] Prepare For Emit：--ascendc-prepare-for-emit ===================="
+log "  输入: step6_parallelize.mlir"
 $AFIR_OPT "$DIR/step6_parallelize.mlir" \
   --ascendc-prepare-for-emit \
   --canonicalize \
   --cse \
   -o "$DIR/step7_kernel.mlir" 2>&1
-echo "  ✓ Prepare For Emit 成功，输出: step7_kernel.mlir"
+log "  ✓ Prepare For Emit 成功，输出: step7_kernel.mlir"
 
 # ── STAGE 8: AscendC C++ Code Generation ───────────────────
 echo ""
-echo "[STAGE 8] Codegen：ascir-translate -mlir-to-ascendc"
-echo "  输入: step7_kernel.mlir"
-echo "  输出: step8_kernel.cpp（AscendC C++ kernel 源码）"
+echo "==================== [STAGE 8] Codegen：ascir-translate -mlir-to-ascendc ===================="
+log "  输入: step7_kernel.mlir"
+log "  输出: step8_kernel.cpp（AscendC C++ kernel 源码）"
 ASCIR_TRANSLATE="${ASCIR_TRANSLATE:-ascir-translate}"
 if command -v "$ASCIR_TRANSLATE" &>/dev/null; then
   python3 -c "
@@ -187,13 +201,13 @@ sys.stdout.write(content)
 " > "$DIR/step8_no_transform.mlir"
   "$ASCIR_TRANSLATE" -mlir-to-ascendc "$DIR/step8_no_transform.mlir" \
     -o "$DIR/step8_kernel.cpp" 2>&1
-  echo "  ✓ Codegen 成功，输出: step8_kernel.cpp"
-  echo ""
-  echo "  [生成的 C++ kernel 头部]"
-  head -40 "$DIR/step8_kernel.cpp"
+  log "  ✓ Codegen 成功，输出: step8_kernel.cpp"
+  log ""
+  log "  [生成的 C++ kernel 头部]"
+  log "$(head -40 "$DIR/step8_kernel.cpp")"
 else
-  echo "  (ascir-translate 未找到，跳过 Stage 8)"
-  echo "  若已构建 pyasc，请将 ascir-translate 加入 PATH 后重新运行。"
+  log "  (ascir-translate 未找到，跳过 Stage 8)"
+  log "  若已构建 pyasc，请将 ascir-translate 加入 PATH 后重新运行。"
 fi
 
 echo ""

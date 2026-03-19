@@ -1159,15 +1159,6 @@ git add examples/broadcast-add-reduce/tiling_space.json
 
 ---
 
-## Acceptance Criteria
-
-- `sim-validator` builds and `--help` runs without error
-- Running `sim-validator` on `broadcast-add-reduce/step8_kernel.cpp` with M=32, N=32 produces `PASS`
-- `max_abs_diff < 1.0` (f16 tolerance)
-- Results match `python3 examples/broadcast-add-reduce/test_e2e.py`
-
----
-
 ## 实现状态与使用方法（2026-03-19 更新）
 
 > 计划已全部实现，并在实现过程中做了若干架构调整，记录如下。
@@ -1189,13 +1180,13 @@ source /home/niu/code/Ascend-MLIR/examples/env.sh
 source /home/niu/code/Ascend-MLIR/python/test/env.sh   # 导出 libruntime_camodel.so 路径
 
 sim-validator \
-  --kernel   examples/broadcast-add-reduce/step8_kernel-adjust.cpp \
+  --kernel   /home/niu/code/Ascend-MLIR/examples/broadcast-add-reduce/step8_kernel-adjust.cpp \
   --name     broadcast_add_reducesum \
-  --tiling-params "TB_M=16,TB_N=4,dim_arg0_0=64,dim_arg1_1=64" \
+  --tiling-params "TB_M=16,TB_N=4,dim_arg0_0=32,dim_arg1_1=32" \
   --tiling-layout "int64,int64,int64,int64" \
-  --inputs   examples/broadcast-add-reduce/input_a.npy,examples/broadcast-add-reduce/input_b.npy \
-  --expected examples/broadcast-add-reduce/output_c.npy \
-  --block-dim 1 \
+  --inputs   /tmp/input_a.npy,/tmp/input_b.npy \
+  --expected /tmp/expected.npy \
+  --block-dim 2 \
   --soc Ascend910B1
 ```
 
@@ -1207,18 +1198,18 @@ source /home/niu/code/Ascend-MLIR/python/test/env.sh
 
 # 基本用法：全空间搜索，输出最优 tiling_func.cpp
 autotuner \
-  --space   examples/broadcast-add-reduce/tiling_space.json \
-  --shape   "M=64,N=64" \
-  --inputs  examples/broadcast-add-reduce/input_a.npy,examples/broadcast-add-reduce/input_b.npy \
-  --expected examples/broadcast-add-reduce/output_c.npy \
+  --space   /home/niu/code/Ascend-MLIR/examples/broadcast-add-reduce/tiling_space.json \
+  --shape   "M=32,N=32" \
+  --inputs  /tmp/input_a.npy,/tmp/input_b.npy \
+  --expected /tmp/expected.npy \
   --output  tiling_func.cpp
 
 # 附带流水图分析（需要先跑过一次，simulator dump 文件在 cwd）
 autotuner \
-  --space   examples/broadcast-add-reduce/tiling_space.json \
-  --shape   "M=64,N=64" \
-  --inputs  examples/broadcast-add-reduce/input_a.npy,examples/broadcast-add-reduce/input_b.npy \
-  --expected examples/broadcast-add-reduce/output_c.npy \
+  --space   /home/niu/code/Ascend-MLIR/examples/broadcast-add-reduce/tiling_space.json \
+  --shape   "M=32,N=32" \
+  --inputs  /tmp/input_a.npy,/tmp/input_b.npy \
+  --expected /tmp/expected.npy \
   --sim-report trace \
   --sim-report-out ./sim_report
 
