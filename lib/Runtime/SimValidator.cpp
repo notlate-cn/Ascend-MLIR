@@ -69,6 +69,40 @@ static int64_t ParseCycleCounts(const std::string& sim_dir) {
   return max_ticks;
 }
 
+// Helper shared by Validate and ValidateBinary: compare outputs and fill result.
+static SimValidator::Result compareOutputs(
+    RunArgs& args, const std::vector<NDArray>& expected,
+    double atol, double rtol) {
+  SimValidator::Result r;
+  if (args.outputs.size() != expected.size()) {
+    r.error_msg = "Output count mismatch: got " +
+                  std::to_string(args.outputs.size()) + ", expected " +
+                  std::to_string(expected.size());
+    return r;
+  }
+  double sum_diff = 0.0, max_diff = 0.0;
+  size_t total_elements = 0;
+  bool all_close = true;
+  for (size_t oi = 0; oi < args.outputs.size(); ++oi) {
+    const NDArray& act = args.outputs[oi];
+    const NDArray& exp = expected[oi];
+    size_t n = act.numElements();
+    total_elements += n;
+    for (size_t i = 0; i < n; ++i) {
+      double a = static_cast<double>(toFloat(act.data, i, act.dtype));
+      double e = static_cast<double>(toFloat(exp.data, i, exp.dtype));
+      double diff = std::abs(a - e);
+      sum_diff += diff;
+      if (diff > max_diff) max_diff = diff;
+      if (diff > atol + rtol * std::abs(e)) all_close = false;
+    }
+  }
+  r.max_abs_diff  = max_diff;
+  r.mean_abs_diff = total_elements > 0 ? sum_diff / static_cast<double>(total_elements) : 0.0;
+  r.passed        = all_close;
+  return r;
+}
+
 SimValidator::Result SimValidator::Validate(
     const std::string& kernel_src,
     const std::string& kernel_name,
@@ -112,36 +146,39 @@ SimValidator::Result SimValidator::Validate(
     r.cycle_count = ParseCycleCounts(cwd.str().str());
   }
 
-  // Compare outputs
-  if (args.outputs.size() != expected.size()) {
-    r.error_msg = "Output count mismatch: got " +
-                  std::to_string(args.outputs.size()) + ", expected " +
-                  std::to_string(expected.size());
+  Result cmp = compareOutputs(args, expected, atol, rtol);
+  r.max_abs_diff  = cmp.max_abs_diff;
+  r.mean_abs_diff = cmp.mean_abs_diff;
+  r.passed        = cmp.passed;
+  if (!cmp.error_msg.empty()) r.error_msg = cmp.error_msg;
+  return r;
+}
+
+SimValidator::Result SimValidator::ValidateBinary(
+    void* func_handle,
+    Executor& executor,
+    RunArgs& args,
+    const std::vector<NDArray>& expected,
+    double atol, double rtol) {
+
+  Result r;
+  if (auto err = executor.RunWithHandle(func_handle, args)) {
+    r.error_msg = "Kernel run failed: " + llvm::toString(std::move(err));
     return r;
   }
 
-  double sum_diff = 0.0, max_diff = 0.0;
-  size_t total_elements = 0;
-  bool all_close = true;
-
-  for (size_t oi = 0; oi < args.outputs.size(); ++oi) {
-    const NDArray& act = args.outputs[oi];
-    const NDArray& exp = expected[oi];
-    size_t n = act.numElements();
-    total_elements += n;
-    for (size_t i = 0; i < n; ++i) {
-      double a = static_cast<double>(toFloat(act.data, i, act.dtype));
-      double e = static_cast<double>(toFloat(exp.data, i, exp.dtype));
-      double diff = std::abs(a - e);
-      sum_diff += diff;
-      if (diff > max_diff) max_diff = diff;
-      if (diff > atol + rtol * std::abs(e)) all_close = false;
-    }
+  // Parse cycle count from simulator logs (cwd is the sim run directory)
+  {
+    llvm::SmallString<256> cwd;
+    llvm::sys::fs::current_path(cwd);
+    r.cycle_count = ParseCycleCounts(cwd.str().str());
   }
 
-  r.max_abs_diff  = max_diff;
-  r.mean_abs_diff = total_elements > 0 ? sum_diff / static_cast<double>(total_elements) : 0.0;
-  r.passed        = all_close;
+  Result cmp = compareOutputs(args, expected, atol, rtol);
+  r.max_abs_diff  = cmp.max_abs_diff;
+  r.mean_abs_diff = cmp.mean_abs_diff;
+  r.passed        = cmp.passed;
+  if (!cmp.error_msg.empty()) r.error_msg = cmp.error_msg;
   return r;
 }
 

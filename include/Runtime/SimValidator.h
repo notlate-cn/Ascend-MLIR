@@ -19,6 +19,7 @@ public:
     std::string error_msg;
   };
 
+  // Compile kernel_src, then run and compare against expected.
   Result Validate(const std::string&          kernel_src,
                   const std::string&          kernel_name,
                   RunArgs&                    args,
@@ -26,6 +27,16 @@ public:
                   double                      atol = 1.0,
                   double                      rtol = 1e-2,
                   const Compiler::Config&     compiler_cfg = Compiler::Config{});
+
+  // Run a pre-registered kernel (skip compilation and re-registration).
+  // Use Executor::RegisterBinary() once to get func_handle, then call this N
+  // times with different tiling configs using the same Executor.
+  Result ValidateBinary(void*                       func_handle,
+                        Executor&                   executor,
+                        RunArgs&                    args,
+                        const std::vector<NDArray>& expected,
+                        double                      atol,
+                        double                      rtol);
 };
 
 } // namespace mlir::runtime

@@ -3,6 +3,7 @@
 #include "llvm/Support/Error.h"
 #include "llvm/Support/MemoryBuffer.h"
 #include <algorithm>
+#include <atomic>
 #include <cstdlib>
 #include <cstring>
 #include <dlfcn.h>
@@ -13,6 +14,8 @@ Executor::Executor(BackendMode mode) : mode_(mode) {}
 
 Executor::~Executor() {
   FreeAll();
+  if (stream_ && rtStreamDestroy_) rtStreamDestroy_(stream_);
+  stream_ = nullptr;
   // Intentionally skip dlclose: libruntime_camodel registers atexit/global
   // destructors that run after dlclose, causing use-after-unload segfaults.
   // The OS reclaims the mapping on process exit.
@@ -56,6 +59,7 @@ llvm::Error Executor::LoadLib() {
   LOAD(rtStreamCreate);
   LOAD(rtStreamDestroy);
   LOAD(rtKernelLaunch);
+  LOAD(rtStreamSynchronize);
   LOAD(rtDeviceSynchronize);
 #undef LOAD
   return llvm::Error::success();
@@ -63,7 +67,18 @@ llvm::Error Executor::LoadLib() {
 
 llvm::Error Executor::Initialize(int device_id) {
   if (auto err = LoadLib()) return err;
-  rtSetDevice_(static_cast<int32_t>(device_id)); // ignore return in simulation
+  // rtSetDevice must be called exactly once per process: calling it again on an
+  // already-initialized simulator device causes rtFunctionRegister rc=507000.
+  static std::atomic<bool> device_initialized{false};
+  if (!device_initialized.exchange(true)) {
+    rtSetDevice_(static_cast<int32_t>(device_id));
+  }
+  // Create a single persistent stream. Re-using the same stream across all
+  // kernel launches avoids simulator issues where creating a new stream after
+  // destroying the previous one causes the second launch to hang (the simulator
+  // reuses stream IDs but loses internal completion state).
+  if (!stream_)
+    rtStreamCreate_(&stream_, 0);
   return llvm::Error::success();
 }
 
@@ -131,7 +146,12 @@ llvm::Error Executor::Run(const std::vector<uint8_t>& binary_data,
     return llvm::createStringError(llvm::inconvertibleErrorCode(),
                                    "rtDevBinaryRegister failed: rc=%d", rc);
 
-  // 2. Register function (name ptr used as stub, same as Python executor.py)
+  // 2. Register function.
+  // The simulator uses the stub pointer (args 2 & 4) as the function handle
+  // key for rtKernelLaunch. It must equal function_name.c_str() exactly.
+  // rc=507028 ("already registered") is safe to ignore when calling Run()
+  // multiple times with the same binary: the stub is already registered and
+  // the same fn_name_void pointer is still valid as the function handle.
   const char* fn_name      = function_name.c_str();
   void*       fn_name_void = const_cast<char*>(fn_name);
   rc = rtFunctionRegister_(bin_handle, fn_name_void, fn_name, fn_name_void, 0);
@@ -174,27 +194,22 @@ llvm::Error Executor::Run(const std::vector<uint8_t>& binary_data,
     launch_args.push_back(w);
   }
 
-  // 7. Create stream + launch
-  void* stream = nullptr;
-  rtStreamCreate_(&stream, 0);
-
+  // 7. Launch on persistent stream
   uint32_t args_size = static_cast<uint32_t>(launch_args.size() * sizeof(uint64_t));
   rc = rtKernelLaunch_(func_handle,
                         static_cast<uint32_t>(args.block_dim),
                         launch_args.data(),
                         args_size,
                         nullptr,
-                        stream);
+                        stream_);
   if (rc != 0) {
-    rtStreamDestroy_(stream);
     FreeAll();
     return llvm::createStringError(llvm::inconvertibleErrorCode(),
                                    "rtKernelLaunch failed: rc=%d", rc);
   }
 
-  // 8. Sync + destroy stream
-  rtDeviceSynchronize_();
-  rtStreamDestroy_(stream);
+  // 8. Sync on persistent stream
+  rtStreamSynchronize_(stream_);
 
   // 9. D2H outputs
   for (size_t i = 0; i < args.outputs.size(); ++i) {
@@ -219,6 +234,110 @@ llvm::Error Executor::RunFile(const std::string& binary_path,
   const uint8_t* data = reinterpret_cast<const uint8_t*>((*buf)->getBufferStart());
   std::vector<uint8_t> bytes(data, data + (*buf)->getBufferSize());
   return Run(bytes, function_name, args, magic);
+}
+
+llvm::Expected<void*> Executor::RegisterBinary(const std::string& binary_path,
+                                                const std::string& function_name,
+                                                uint32_t magic) {
+  auto buf = llvm::MemoryBuffer::getFile(binary_path, /*IsText=*/false);
+  if (!buf)
+    return llvm::createStringError(llvm::inconvertibleErrorCode(),
+                                   "Cannot read binary: %s", binary_path.c_str());
+
+  // Store binary bytes and function name in stable storage so their pointers
+  // remain valid for the lifetime of this Executor.
+  registered_binaries_.emplace_back(
+      reinterpret_cast<const uint8_t*>((*buf)->getBufferStart()),
+      reinterpret_cast<const uint8_t*>((*buf)->getBufferStart()) +
+          (*buf)->getBufferSize());
+  registered_names_.push_back(function_name);
+
+  const std::vector<uint8_t>& bytes = registered_binaries_.back();
+  const std::string& stable_name    = registered_names_.back();
+
+  DevBinary dev_bin;
+  dev_bin.magic   = magic;
+  dev_bin.version = 0;
+  dev_bin.data    = reinterpret_cast<const char*>(bytes.data());
+  dev_bin.length  = static_cast<uint64_t>(bytes.size());
+
+  void* bin_handle = nullptr;
+  int rc = rtDevBinaryRegister_(&dev_bin, &bin_handle);
+  if (rc != 0)
+    return llvm::createStringError(llvm::inconvertibleErrorCode(),
+                                   "rtDevBinaryRegister failed: rc=%d", rc);
+
+  const char* fn_name      = stable_name.c_str();
+  void*       fn_name_void = const_cast<char*>(fn_name);
+  rc = rtFunctionRegister_(bin_handle, fn_name_void, fn_name, fn_name_void, 0);
+  if (rc != 0)
+    return llvm::createStringError(llvm::inconvertibleErrorCode(),
+                                   "rtFunctionRegister failed: rc=%d", rc);
+
+  return fn_name_void;
+}
+
+llvm::Error Executor::RunWithHandle(void* func_handle, RunArgs& args) {
+  // 1. Alloc + H2D inputs
+  std::vector<void*> input_gm;
+  for (auto& inp : args.inputs) {
+    auto p = Alloc(inp.nbytes());
+    if (!p) { FreeAll(); return p.takeError(); }
+    input_gm.push_back(*p);
+    if (auto err = H2D(*p, inp.data, inp.nbytes())) { FreeAll(); return err; }
+  }
+
+  // 2. Alloc outputs
+  std::vector<void*> output_gm;
+  for (auto& out : args.outputs) {
+    auto p = Alloc(out.nbytes());
+    if (!p) { FreeAll(); return p.takeError(); }
+    output_gm.push_back(*p);
+  }
+
+  // 3. Alloc workspace
+  auto ws = Alloc(args.workspace_size);
+  if (!ws) { FreeAll(); return ws.takeError(); }
+
+  // 4. Build args: [input_addrs..., output_addrs..., workspace_addr, tiling...]
+  std::vector<uint64_t> launch_args;
+  for (auto* p : input_gm)  launch_args.push_back(reinterpret_cast<uint64_t>(p));
+  for (auto* p : output_gm) launch_args.push_back(reinterpret_cast<uint64_t>(p));
+  launch_args.push_back(reinterpret_cast<uint64_t>(*ws));
+
+  const auto& t = args.tiling;
+  for (size_t i = 0; i < t.size(); i += 8) {
+    uint64_t w = 0;
+    std::memcpy(&w, t.data() + i, std::min<size_t>(8, t.size() - i));
+    launch_args.push_back(w);
+  }
+
+  // 5. Launch on persistent stream
+  uint32_t args_size = static_cast<uint32_t>(launch_args.size() * sizeof(uint64_t));
+  int rc = rtKernelLaunch_(func_handle,
+                            static_cast<uint32_t>(args.block_dim),
+                            launch_args.data(),
+                            args_size,
+                            nullptr,
+                            stream_);
+  if (rc != 0) {
+    FreeAll();
+    return llvm::createStringError(llvm::inconvertibleErrorCode(),
+                                   "rtKernelLaunch failed: rc=%d", rc);
+  }
+
+  rtStreamSynchronize_(stream_);
+
+  // 6. D2H outputs
+  for (size_t i = 0; i < args.outputs.size(); ++i) {
+    if (auto err = D2H(args.outputs[i].data, output_gm[i],
+                       args.outputs[i].nbytes())) {
+      FreeAll(); return err;
+    }
+  }
+
+  FreeAll();
+  return llvm::Error::success();
 }
 
 } // namespace mlir::runtime
