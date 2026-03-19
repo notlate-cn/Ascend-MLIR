@@ -31,6 +31,16 @@ public:
 
   llvm::Error Initialize(int device_id = 0);
 
+  // Register a binary+function once; returns a stable function handle.
+  // Use with RunWithHandle() to execute the same kernel multiple times without
+  // re-registering (avoids simulator rc=507000 "already registered" errors).
+  llvm::Expected<void*> RegisterBinary(const std::string& binary_path,
+                                       const std::string& function_name,
+                                       uint32_t magic = MAGIC_ELF_AIVEC);
+
+  // Execute a previously registered kernel (skips registration).
+  llvm::Error RunWithHandle(void* func_handle, RunArgs& args);
+
   // binary_data: raw ELF bytes from .bin file
   llvm::Error Run(const std::vector<uint8_t>& binary_data,
                   const std::string& function_name,
@@ -46,6 +56,7 @@ public:
 private:
   BackendMode mode_;
   void*       lib_handle_ = nullptr;
+  void*       stream_     = nullptr;  // persistent stream, created once in Initialize
 
   // Runtime API function pointers (exact signatures from Python executor.py)
   int (*rtSetDevice_)(int32_t)                                           = nullptr;
@@ -57,12 +68,18 @@ private:
   int (*rtStreamCreate_)(void**, int32_t)                                 = nullptr;
   int (*rtStreamDestroy_)(void*)                                          = nullptr;
   int (*rtKernelLaunch_)(void*, uint32_t, void*, uint32_t, void*, void*) = nullptr;
+  int (*rtStreamSynchronize_)(void*)                                      = nullptr;
   int (*rtDeviceSynchronize_)()                                           = nullptr;
 
   llvm::Error LoadLib();
 
   struct AllocInfo { void* raw; void* aligned; };
   std::vector<AllocInfo> alloc_map_;
+
+  // Stable storage for registered binaries and names (pointers must outlive
+  // rtFunctionRegister since simulator holds them as function handles).
+  std::vector<std::vector<uint8_t>> registered_binaries_;
+  std::vector<std::string>          registered_names_;
 
   llvm::Expected<void*> Alloc(size_t nbytes);
   void FreeAll();

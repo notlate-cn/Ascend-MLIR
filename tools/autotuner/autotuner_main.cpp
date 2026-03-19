@@ -1,4 +1,6 @@
 // tools/autotuner/autotuner_main.cpp
+#include "Runtime/Compiler.h"
+#include "Runtime/Executor.h"
 #include "Runtime/NpyIO.h"
 #include "Runtime/SimValidator.h"
 #include "llvm/Support/CommandLine.h"
@@ -236,6 +238,44 @@ static std::vector<SearchResult> runSearch(
   Compiler::Config cc;
   cc.soc_version = soc;
 
+  // Compile kernel once — all configs share the same ELF binary (tiling is
+  // passed as kernel arguments, not compiled-in). Reusing the binary avoids
+  // re-registering the same binary in the simulator's internal registry, which
+  // causes rtFunctionRegister rc=507000 on the 2nd+ registration.
+  llvm::SmallString<256> build_dir;
+  if (llvm::sys::fs::createUniqueDirectory("autotuner_build", build_dir)) {
+    llvm::errs() << "Error: cannot create temp build dir\n";
+    return results;
+  }
+  Compiler compiler(cc);
+  auto bin_or = compiler.Compile(kernel_path, build_dir.str().str(), ts.kernel_name);
+  if (!bin_or) {
+    llvm::errs() << "Error: compile failed: " << llvm::toString(bin_or.takeError()) << "\n";
+    return results;
+  }
+  std::string binary_path = *bin_or;
+
+  // Initialize executor once and reuse across all configs.
+  Executor executor;
+  if (auto err = executor.Initialize()) {
+    llvm::errs() << "Error: executor init failed: " << llvm::toString(std::move(err)) << "\n";
+    return results;
+  }
+
+  // Register binary+function once — all configs use the same ELF binary
+  // (tiling is passed as kernel args, not compiled-in). Registering once
+  // avoids rc=507000 from the simulator when the same stub pointer is
+  // re-registered under a new binary handle on subsequent RunFile() calls.
+  auto handle_or = executor.RegisterBinary(binary_path, ts.kernel_name);
+  if (!handle_or) {
+    llvm::errs() << "Error: register binary failed: "
+                 << llvm::toString(handle_or.takeError()) << "\n";
+    return results;
+  }
+  void* func_handle = *handle_or;
+
+  SimValidator validator;
+
   for (int ci = 0; ci < total; ++ci) {
     std::map<std::string, int64_t> vars = shape;
     for (size_t si = 0; si < search_vars.size(); ++si)
@@ -287,9 +327,8 @@ static std::vector<SearchResult> runSearch(
     args.tiling    = packTiling(param_vals, param_types);
     args.block_dim = static_cast<int>(block_dim);
 
-    SimValidator validator;
-    auto res = validator.Validate(kernel_path, ts.kernel_name, args,
-                                   expected, atol, rtol, cc);
+    auto res = validator.ValidateBinary(func_handle, executor, args,
+                                        expected, atol, rtol);
 
     SearchResult sr;
     sr.config       = param_vals;
@@ -446,16 +485,24 @@ int main(int argc, char** argv) {
   }
   TilingSpace ts = std::move(*ts_or);
 
-  std::string kernel_path = KernelFile.empty() ? ts.kernel_file : KernelFile.getValue();
+  // --kernel overrides JSON kernel_file; relative paths are resolved differently:
+  //   kernel_file (from JSON) → relative to the JSON file's directory
+  //   --kernel (from CLI)     → relative to cwd (standard shell convention)
+  bool kernel_from_cli = !KernelFile.empty();
+  std::string kernel_path = kernel_from_cli ? KernelFile.getValue() : ts.kernel_file;
   if (kernel_path.empty()) {
     llvm::errs() << "Error: kernel file not specified (--kernel or kernel_file in JSON)\n";
     _Exit(1);
   }
   if (!llvm::sys::path::is_absolute(kernel_path)) {
-    llvm::SmallString<256> base(SpaceFile.getValue());
-    llvm::sys::path::remove_filename(base);
-    llvm::sys::path::append(base, kernel_path);
-    kernel_path = base.str().str();
+    if (!kernel_from_cli) {
+      // kernel_file in JSON: resolve relative to the JSON file's directory
+      llvm::SmallString<256> base(SpaceFile.getValue());
+      llvm::sys::path::remove_filename(base);
+      llvm::sys::path::append(base, kernel_path);
+      kernel_path = base.str().str();
+    }
+    // else: --kernel is relative to cwd — leave as-is (Compiler resolves via cwd)
   }
 
   std::string soc = SocVersion.empty() ? ts.soc : SocVersion.getValue();
