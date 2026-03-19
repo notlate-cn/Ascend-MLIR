@@ -1,0 +1,1934 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>AI-First 编译器开发实践</title>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/reveal.js@4.5.0/dist/reveal.css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/reveal.js@4.5.0/dist/theme/white.css">
+  <style>
+    :root {
+      --accent: #c07010;
+      --accent2: #0e7a74;
+      --user-bg: #deeaf8;
+      --ai-bg: #d4eee8;
+      --card-bg: #f5f7fa;
+      --border: #d0d8e4;
+      --text: #1a1a2e;
+      --text-muted: #4a5568;
+    }
+
+    .reveal {
+      font-family: "PingFang SC", "Microsoft YaHei", "Noto Sans CJK SC", sans-serif;
+      color: var(--text);
+    }
+
+    .reveal h1, .reveal h2, .reveal h3, .reveal h4 {
+      font-family: "PingFang SC", "Microsoft YaHei", sans-serif;
+      color: var(--text);
+      text-transform: none;
+      letter-spacing: -0.02em;
+    }
+
+    .reveal h2 {
+      color: var(--accent);
+      font-size: 1.4em;
+      margin-bottom: 0.5em;
+    }
+
+    .reveal h3 {
+      color: var(--accent2);
+      font-size: 1.1em;
+    }
+
+    .reveal section {
+      text-align: left;
+    }
+
+    .reveal .slides section {
+      padding: 0 20px;
+    }
+
+    /* Cards */
+    .card {
+      background: var(--card-bg);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 14px 16px;
+      margin: 8px 0;
+    }
+
+    .card-accent {
+      background: var(--card-bg);
+      border: 1px solid var(--border);
+      border-left: 4px solid var(--accent);
+      border-radius: 6px;
+      padding: 12px 16px;
+      margin: 8px 0;
+    }
+
+    .card-teal {
+      background: #f0faf9;
+      border: 1px solid #b2d8d6;
+      border-left: 4px solid var(--accent2);
+      border-radius: 6px;
+      padding: 12px 16px;
+      margin: 8px 0;
+    }
+
+    .card-red {
+      background: #fff5f5;
+      border: 1px solid #f5c6c6;
+      border-left: 4px solid #b02020;
+      border-radius: 6px;
+      padding: 12px 16px;
+      margin: 8px 0;
+    }
+
+    /* Insight box */
+    .insight {
+      background: #fff8e8;
+      border-left: 4px solid var(--accent);
+      border-radius: 6px;
+      padding: 12px 16px;
+      margin: 12px 0;
+      color: #7a4a00;
+      font-size: 0.85em;
+      line-height: 1.6;
+    }
+
+    .insight::before {
+      content: "💡 ";
+      font-style: normal;
+    }
+
+    /* Dialog */
+    .dialog-user {
+      background: var(--user-bg);
+      border-radius: 8px;
+      padding: 10px 14px;
+      margin: 6px 0;
+      font-size: 0.82em;
+      line-height: 1.6;
+      color: #1a2a4a;
+    }
+
+    .dialog-user::before {
+      content: "👤 用户：";
+      font-weight: bold;
+      color: #1a3a7a;
+    }
+
+    .dialog-ai {
+      background: var(--ai-bg);
+      border-radius: 8px;
+      padding: 10px 14px;
+      margin: 6px 0;
+      font-size: 0.82em;
+      line-height: 1.6;
+      color: #0d3028;
+    }
+
+    .dialog-ai::before {
+      content: "🤖 Claude：";
+      font-weight: bold;
+      color: #0e5040;
+    }
+
+    /* Code block */
+    .code-block {
+      background: #1e2030;
+      color: #cdd6f4;
+      border-radius: 8px;
+      padding: 12px 16px;
+      margin: 8px 0;
+      font-family: "JetBrains Mono", "Fira Code", "Cascadia Code", monospace;
+      font-size: 0.72em;
+      line-height: 1.6;
+      overflow-x: auto;
+      white-space: pre;
+    }
+
+    .code-block .kw   { color: #cba6f7; }
+    .code-block .fn   { color: #89b4fa; }
+    .code-block .str  { color: #a6e3a1; }
+    .code-block .cm   { color: #6c7086; }
+    .code-block .num  { color: #fab387; }
+    .code-block .tp   { color: #89dceb; }
+    .code-block .op   { color: #f38ba8; }
+    .code-block .ok   { color: #a6e3a1; }
+    .code-block .attr { color: #f9e2af; }
+
+    /* Pipeline step */
+    .pipeline-step {
+      border: 2px solid var(--accent2);
+      border-radius: 8px;
+      padding: 8px 12px;
+      margin: 4px 0;
+      background: #f0faf9;
+      font-size: 0.82em;
+      color: var(--text);
+    }
+
+    .pipeline-arrow {
+      text-align: center;
+      color: var(--accent2);
+      font-size: 1.2em;
+      margin: 2px 0;
+      line-height: 1;
+    }
+
+    /* Stat box */
+    .stat-box {
+      background: var(--card-bg);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 16px 12px;
+      text-align: center;
+    }
+
+    .stat-num {
+      color: var(--accent);
+      font-size: 2em;
+      font-weight: 700;
+      display: block;
+      line-height: 1.1;
+    }
+
+    .stat-label {
+      color: var(--text-muted);
+      font-size: 0.75em;
+      margin-top: 4px;
+    }
+
+    /* Grid layouts */
+    .two-col {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 16px;
+      margin: 8px 0;
+    }
+
+    .three-col {
+      display: grid;
+      grid-template-columns: 1fr 1fr 1fr;
+      gap: 14px;
+      margin: 8px 0;
+    }
+
+    .four-col {
+      display: grid;
+      grid-template-columns: 1fr 1fr 1fr 1fr;
+      gap: 12px;
+      margin: 8px 0;
+    }
+
+    /* Tag / badge */
+    .tag {
+      display: inline-block;
+      background: #eef2ff;
+      color: #3a4aaa;
+      border: 1px solid #c7d0f0;
+      border-radius: 4px;
+      padding: 2px 8px;
+      font-size: 0.72em;
+      margin: 2px;
+      font-weight: 500;
+    }
+
+    .tag-amber {
+      background: #fff3e0;
+      color: #8a4a00;
+      border-color: #f0c060;
+    }
+
+    .tag-teal {
+      background: #e0f7f4;
+      color: #0a5048;
+      border-color: #80cbc4;
+    }
+
+    /* Check / cross */
+    .check { color: #1a8050; font-weight: bold; }
+    .cross  { color: #b02020; font-weight: bold; }
+
+    /* List items */
+    .reveal ul {
+      margin-left: 1.2em;
+    }
+
+    .reveal ul li {
+      margin-bottom: 6px;
+      font-size: 0.88em;
+      line-height: 1.6;
+      color: var(--text);
+    }
+
+    .reveal ol li {
+      margin-bottom: 6px;
+      font-size: 0.86em;
+      line-height: 1.6;
+      color: var(--text);
+    }
+
+    /* Section title underline */
+    .section-title {
+      border-bottom: 3px solid var(--accent);
+      padding-bottom: 6px;
+      margin-bottom: 16px;
+    }
+
+    /* Table */
+    .reveal table {
+      font-size: 0.78em;
+      width: 100%;
+      border-collapse: collapse;
+    }
+
+    .reveal table th {
+      background: var(--accent2);
+      color: white;
+      padding: 7px 10px;
+      text-align: left;
+    }
+
+    .reveal table td {
+      padding: 6px 10px;
+      border-bottom: 1px solid var(--border);
+      color: var(--text);
+    }
+
+    .reveal table tr:nth-child(even) td {
+      background: #f8fafb;
+    }
+
+    /* Title slide specifics */
+    .title-main {
+      font-size: 1.8em;
+      font-weight: 700;
+      color: var(--text);
+      line-height: 1.2;
+      margin-bottom: 10px;
+    }
+
+    .title-sub {
+      font-size: 0.95em;
+      color: var(--text-muted);
+      margin-bottom: 20px;
+    }
+
+    .title-meta {
+      font-size: 0.78em;
+      color: var(--text-muted);
+      margin-top: 20px;
+    }
+
+    /* Mode box */
+    .mode-box {
+      background: var(--card-bg);
+      border: 2px solid var(--border);
+      border-radius: 10px;
+      padding: 14px;
+      text-align: center;
+    }
+
+    .mode-icon {
+      font-size: 2em;
+      display: block;
+      margin-bottom: 6px;
+    }
+
+    .mode-title {
+      font-weight: 700;
+      color: var(--accent);
+      font-size: 0.9em;
+      margin-bottom: 6px;
+    }
+
+    .mode-desc {
+      font-size: 0.75em;
+      color: var(--text-muted);
+      line-height: 1.5;
+      text-align: left;
+    }
+
+    /* Numbered bug item */
+    .bug-item {
+      display: flex;
+      align-items: flex-start;
+      gap: 12px;
+      padding: 8px 12px;
+      background: var(--card-bg);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      margin: 5px 0;
+      font-size: 0.82em;
+    }
+
+    .bug-num {
+      background: #b02020;
+      color: white;
+      border-radius: 50%;
+      width: 22px;
+      height: 22px;
+      min-width: 22px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-weight: 700;
+      font-size: 0.85em;
+    }
+
+    .bug-text {
+      flex: 1;
+      line-height: 1.5;
+      color: var(--text);
+    }
+
+    /* Cascade chain */
+    .cascade-step {
+      background: #fff0f0;
+      border: 1px solid #f5c6c6;
+      border-radius: 6px;
+      padding: 7px 12px;
+      font-size: 0.78em;
+      color: #6a1010;
+      margin: 2px 0;
+    }
+
+    .cascade-arrow {
+      text-align: center;
+      color: #b02020;
+      font-size: 1.1em;
+      line-height: 1;
+      margin: 1px 0;
+    }
+
+    /* Workflow diagram */
+    .workflow-step {
+      background: var(--accent2);
+      color: white;
+      border-radius: 6px;
+      padding: 7px 10px;
+      font-size: 0.72em;
+      text-align: center;
+      font-weight: 500;
+    }
+
+    .workflow-arrow {
+      text-align: center;
+      color: var(--accent2);
+      font-size: 1em;
+      line-height: 1.2;
+    }
+
+    /* Timeline */
+    .timeline {
+      display: flex;
+      align-items: center;
+      gap: 0;
+      margin: 14px 0;
+    }
+
+    .timeline-node {
+      background: var(--accent);
+      color: white;
+      border-radius: 20px;
+      padding: 6px 14px;
+      font-size: 0.72em;
+      white-space: nowrap;
+      font-weight: 600;
+    }
+
+    .timeline-line {
+      flex: 1;
+      height: 2px;
+      background: linear-gradient(to right, var(--accent), var(--accent2));
+    }
+
+    .timeline-label {
+      font-size: 0.65em;
+      color: var(--text-muted);
+      text-align: center;
+      margin-top: 3px;
+    }
+
+    /* Small label */
+    .label {
+      font-size: 0.72em;
+      font-weight: 700;
+      color: var(--accent2);
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      margin-bottom: 4px;
+    }
+
+    /* Suitable / not-suitable */
+    .fit-item {
+      padding: 7px 10px;
+      border-radius: 6px;
+      font-size: 0.82em;
+      margin: 4px 0;
+      line-height: 1.5;
+    }
+
+    .fit-yes {
+      background: #f0faf4;
+      border-left: 3px solid #1a8050;
+    }
+
+    .fit-no {
+      background: #fff5f5;
+      border-left: 3px solid #b02020;
+    }
+
+    /* Best practice */
+    .practice-item {
+      display: flex;
+      gap: 12px;
+      align-items: flex-start;
+      padding: 9px 12px;
+      background: var(--card-bg);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      margin: 5px 0;
+      font-size: 0.82em;
+    }
+
+    .practice-num {
+      background: var(--accent2);
+      color: white;
+      border-radius: 50%;
+      width: 24px;
+      height: 24px;
+      min-width: 24px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-weight: 700;
+      font-size: 0.85em;
+    }
+
+    /* Inline code in dialog */
+    .reveal .dialog-ai code,
+    .reveal .dialog-user code {
+      background: rgba(0,0,0,0.12);
+      border-radius: 3px;
+      padding: 1px 5px;
+      font-size: 0.88em;
+      color: inherit;
+    }
+
+    /* Small note */
+    .note {
+      font-size: 0.72em;
+      color: var(--text-muted);
+      font-style: italic;
+      margin-top: 6px;
+    }
+
+    .reveal .progress {
+      color: var(--accent);
+    }
+
+    .reveal .slide-number {
+      color: var(--text-muted);
+      background: rgba(255,255,255,0.8);
+      font-size: 0.7em;
+    }
+
+    /* inline code outside dialog */
+    .reveal code {
+      background: #eef0f4;
+      border-radius: 3px;
+      padding: 1px 5px;
+      font-size: 0.88em;
+      color: #2a3050;
+    }
+  </style>
+</head>
+<body>
+<div class="reveal">
+  <div class="slides">
+
+    <!-- ===== SLIDE 1: Title ===== -->
+    <section>
+      <div style="padding-top: 30px;">
+        <div class="title-main">AI-First 编译器开发实践</div>
+        <div class="title-sub">用 Claude Code 构建 Ascend MLIR 编译器的经验分享</div>
+        <div style="margin: 16px 0;">
+          <span class="tag tag-amber">MLIR/LLVM</span>
+          <span class="tag tag-amber">华为昇腾 NPU</span>
+          <span class="tag tag-amber">AscendC</span>
+          <span class="tag tag-amber">Claude Code</span>
+        </div>
+        <div style="margin-top: 24px; border-top: 2px solid var(--accent); padding-top: 16px;">
+          <div class="two-col" style="gap: 24px;">
+            <div class="card-teal">
+              <div class="label">项目</div>
+              <div style="font-size: 0.9em; color: var(--text); font-weight: 600;">Ascend-MLIR</div>
+              <div style="font-size: 0.78em; color: var(--text-muted);">linalg → AscendC 编译器后端</div>
+            </div>
+            <div class="card-accent">
+              <div class="label">周期</div>
+              <div style="font-size: 0.9em; color: var(--text); font-weight: 600;">2025.12 – 2026.03</div>
+              <div style="font-size: 0.78em; color: var(--text-muted);">约3个月，从零到端到端可用</div>
+            </div>
+          </div>
+        </div>
+        <div class="title-meta">全程 AI 协作 · 无先例参考 · 真实生产编译器项目</div>
+      </div>
+    </section>
+
+    <!-- ===== ENV SLIDE 1: AI环境配置概览 ===== -->
+    <section>
+      <h2 class="section-title">AI 开发环境配置</h2>
+      <div style="margin-bottom: 12px; font-size: 0.75em; color: var(--text-muted);">在介绍项目之前，先分享如何搭建一套高效、稳定的 AI 辅助开发环境</div>
+      <div class="two-col">
+        <div>
+          <div class="label">核心工具栈</div>
+          <div class="card card-accent" style="margin-bottom: 10px;">
+            <div style="font-size: 0.72em; line-height: 1.8;">
+              <div><span class="em">🤖 Claude Code (CC)</span> — 主力 AI 编程助手</div>
+              <div style="padding-left: 1em; color: var(--text-muted);">Sonnet 4.6 — 复杂任务（架构、调试、实现）</div>
+              <div style="padding-left: 1em; color: var(--text-muted);">GLM 4.7 — 简单任务（格式化、注释、重命名）</div>
+            </div>
+          </div>
+          <div class="card card-teal" style="margin-bottom: 10px;">
+            <div style="font-size: 0.72em; line-height: 1.8;">
+              <div><span class="em2">🔌 MCP 插件</span></div>
+              <div style="padding-left: 1em; color: var(--text-muted);">context7 — 实时文档检索</div>
+              <div style="padding-left: 1em; color: var(--text-muted);">serena — 本地代码语义检索</div>
+              <div style="padding-left: 1em; color: var(--text-muted);">firecrawl-mcp — 网络内容抓取</div>
+            </div>
+          </div>
+        </div>
+        <div>
+          <div class="label">配套能力</div>
+          <div class="card" style="margin-bottom: 10px; border-left: 4px solid #6030a0;">
+            <div style="font-size: 0.72em; line-height: 1.8;">
+              <div><span style="color: #6030a0; font-weight: 600;">🌐 API 代理</span> — CLIProxyApi 统一协议</div>
+              <div><span style="color: #6030a0; font-weight: 600;">📋 对话导出</span> — claude-code-log</div>
+              <div><span style="color: #6030a0; font-weight: 600;">🎮 Remote Control</span> — 远程会话共享</div>
+              <div><span style="color: #6030a0; font-weight: 600;">🛠️ Skill 系统</span> — 自定义复用提示词</div>
+            </div>
+          </div>
+          <div class="insight" style="margin-top: 8px;">
+            合适的工具组合是 AI-First 开发效率的基础，<span class="em">配置一次，长期受益</span>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ===== ENV SLIDE 2: API代理配置 ===== -->
+    <section>
+      <h2 class="section-title">API 代理配置：CLIProxyApi</h2>
+      <div style="margin-bottom: 10px; font-size: 0.75em; color: var(--text-muted);">
+        国内访问 Anthropic API 的稳定方案，同时兼容 OpenAI 协议，一个代理服务覆盖所有工具
+      </div>
+      <div class="two-col">
+        <div>
+          <div class="label">为什么需要代理</div>
+          <div class="card card-red" style="margin-bottom: 10px; font-size: 0.72em; line-height: 1.8;">
+            <div>❌ Anthropic 官方 API 国内访问不稳定</div>
+            <div>❌ 不同工具使用不同协议格式</div>
+            <div>❌ 多个 API Key 分散管理</div>
+            <div>❌ 流量监控和用量统计困难</div>
+          </div>
+          <div class="label">CLIProxyApi 特点</div>
+          <div class="card card-teal" style="font-size: 0.72em; line-height: 1.8;">
+            <div><span class="check">✓</span> 统一 Anthropic 协议 + OpenAI 协议</div>
+            <div><span class="check">✓</span> 简单部署，稳定可靠</div>
+            <div><span class="check">✓</span> 支持多模型路由</div>
+            <div><span class="check">✓</span> 可视化用量统计</div>
+          </div>
+        </div>
+        <div>
+          <div class="label">配置 Claude Code 使用代理</div>
+          <div class="code-block" style="font-size: 0.62em; margin-bottom: 10px;"><span class="cm"># 设置环境变量</span>
+<span class="kw">export</span> <span class="tp">ANTHROPIC_BASE_URL</span>=<span class="str">https://your-proxy.com</span>
+<span class="kw">export</span> <span class="tp">ANTHROPIC_API_KEY</span>=<span class="str">sk-your-key</span>
+
+<span class="cm"># 启动 Claude Code</span>
+<span class="fn">claude</span></div>
+          <div class="label">效果演示工具</div>
+          <div class="card card-accent" style="font-size: 0.72em;">
+            <div style="margin-bottom: 4px;"><span class="em">Cherry Studio</span> — 多模型 GUI 客户端</div>
+            <div style="color: var(--text-muted);">同一套代理配置，在 GUI 工具和 Claude Code CLI 之间无缝切换，验证代理是否正常工作</div>
+          </div>
+          <div style="margin-top: 8px; font-size: 0.65em; color: var(--text-muted);">
+            📖 参考：cnblogs.com/notlate-cn/p/19613288
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ===== ENV SLIDE 3: 模型选择策略 ===== -->
+    <section>
+      <h2 class="section-title">模型选择策略：按任务复杂度分配</h2>
+      <div style="margin-bottom: 12px; font-size: 0.75em; color: var(--text-muted);">
+        不同任务对模型能力的需求不同，合理分配可以在效率和成本之间取得平衡
+      </div>
+      <div class="two-col" style="margin-bottom: 12px;">
+        <div>
+          <div class="label" style="color: var(--accent);">Sonnet 4.6 — 复杂任务</div>
+          <div class="card card-accent" style="font-size: 0.72em; line-height: 1.9;">
+            <div>🏗️ 架构设计与方案规划</div>
+            <div>🐛 多文件跨 Pass Bug 追踪</div>
+            <div>⚙️ 新功能实现（Pass、Op、测试）</div>
+            <div>📖 阅读理解复杂代码（TableGen/C++）</div>
+            <div>🔍 IR dump 分析与语义推理</div>
+          </div>
+        </div>
+        <div>
+          <div class="label" style="color: var(--accent2);">GLM 4.7 — 简单任务</div>
+          <div class="card card-teal" style="font-size: 0.72em; line-height: 1.9;">
+            <div>📝 代码注释与文档补充</div>
+            <div>🔤 变量/函数重命名</div>
+            <div>🗂️ 文件移动与目录整理</div>
+            <div>✏️ Markdown 格式化</div>
+            <div>🔧 简单配置文件修改</div>
+          </div>
+        </div>
+      </div>
+      <div class="insight">
+        💡 经验规则：<span class="em">需要理解代码语义</span>的任务用 Sonnet 4.6；<span class="em2">机械性操作</span>用 GLM 4.7 节省 token 额度。本项目 90% 的核心工作由 Sonnet 4.6 完成。
+      </div>
+    </section>
+
+    <!-- ===== ENV SLIDE 4: 对话记录导出 + Remote Control ===== -->
+    <section>
+      <h2 class="section-title">对话记录导出 &amp; Remote Control</h2>
+      <div class="two-col">
+        <div>
+          <div class="label">📋 对话记录导出</div>
+          <div class="card card-teal" style="margin-bottom: 10px;">
+            <div style="font-size: 0.72em; line-height: 1.7;">
+              <div style="margin-bottom: 6px;">CC 的对话记录保存在本地 <code>~/.claude/projects/</code>，<br>原始格式为 JSONL，可用工具一键导出为可浏览的 HTML</div>
+              <div class="code-block" style="font-size: 0.9em; margin: 8px 0;"><span class="fn">uvx</span> claude-code-log@latest --open-browser</div>
+              <div style="color: var(--text-muted);">自动扫描所有会话，生成带时间线的 HTML 报告，在浏览器中浏览完整对话历史</div>
+            </div>
+          </div>
+          <div class="insight" style="font-size: 0.72em;">
+            本次 PPT 的案例内容，正是通过导出的 64 个对话会话分析提取的
+          </div>
+        </div>
+        <div>
+          <div class="label">🎮 Remote Control — 安全的远程会话共享</div>
+          <div class="card card-accent" style="margin-bottom: 10px;">
+            <div style="font-size: 0.72em; line-height: 1.7;">
+              <div style="margin-bottom: 6px;">CC 内置 Remote Control 能力，可以将当前终端会话<span class="em">实时共享</span>到浏览器端，支持远程协作和演示</div>
+              <div style="margin-bottom: 6px;"><span class="check">✓</span> 无需额外安装，CC 内置支持</div>
+              <div style="margin-bottom: 6px;"><span class="check">✓</span> 权限控制：只读查看 or 交互操作</div>
+              <div style="margin-bottom: 6px;"><span class="check">✓</span> 类似"安全版小龙虾"——远程桌面共享的 AI 版本</div>
+              <div class="code-block" style="font-size: 0.9em; margin-top: 8px;"><span class="cm"># 在 CC 中发起远程会话</span>
+<span class="fn">/remote-control</span></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ===== ENV SLIDE 5: MCP插件 + Skill系统 ===== -->
+    <section>
+      <h2 class="section-title">MCP 插件 &amp; Skill 系统</h2>
+      <div class="two-col">
+        <div>
+          <div class="label">MCP 插件：扩展 CC 的感知能力</div>
+          <div class="card card-teal" style="margin-bottom: 10px; font-size: 0.7em;">
+            <div style="display: grid; gap: 8px;">
+              <div>
+                <div style="font-weight: 600; color: var(--accent2);">📚 context7</div>
+                <div style="color: var(--text-muted); padding-left: 1em;">实时检索最新库文档，解决训练数据过期问题。<br>例：自动获取最新 MLIR API 文档</div>
+              </div>
+              <div>
+                <div style="font-weight: 600; color: var(--accent2);">🔍 serena</div>
+                <div style="color: var(--text-muted); padding-left: 1em;">本地代码语义检索，比 grep 更懂代码结构。<br>例：找到所有实现了某接口的 C++ 类</div>
+              </div>
+              <div>
+                <div style="font-weight: 600; color: var(--accent2);">🌐 firecrawl-mcp</div>
+                <div style="color: var(--text-muted); padding-left: 1em;">网络内容抓取与解析，突破知识截止日期。<br>例：抓取 AscendC 最新 API 文档页面</div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div>
+          <div class="label">Skill 系统：封装复用提示词</div>
+          <div class="card card-accent" style="margin-bottom: 10px; font-size: 0.7em;">
+            <div style="margin-bottom: 8px; color: var(--text-muted);">Skill 是存储在 <code>~/.claude/</code> 的自定义命令，用 <code>/skill-name</code> 触发，将复杂提示词一键复用</div>
+            <div style="display: grid; gap: 6px;">
+              <div><span style="font-weight: 600; color: var(--accent);">/code-reader-v2-cn</span> — 深度代码理解助手（中文）</div>
+              <div><span style="font-weight: 600; color: var(--accent);">/commit</span> — 规范化提交信息生成</div>
+              <div><span style="font-weight: 600; color: var(--accent);">/code-review</span> — PR 代码审查</div>
+            </div>
+          </div>
+          <div class="insight" style="font-size: 0.7em;">
+            💡 原则：<span class="em">插件不求多，求精准匹配需求</span>。过多插件会增加上下文噪音，反而降低质量
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ===== SLIDE 2: 项目背景 ===== -->
+    <section>
+      <h2 class="section-title">项目背景</h2>
+      <div class="two-col">
+        <div>
+          <div class="label">目标</div>
+          <div class="card-teal" style="margin-bottom: 10px;">
+            <ul style="margin: 0; padding-left: 1.2em;">
+              <li>将 linalg-on-tensor IR 编译到华为昇腾 NPU 的 AscendC 内核代码</li>
+              <li>支持矩阵乘、逐元素计算、广播、Gather 等融合算子</li>
+              <li>生成正确的片上内存分配（UB/L1/L0）</li>
+            </ul>
+          </div>
+          <div class="label">技术栈</div>
+          <div class="card-accent">
+            <ul style="margin: 0; padding-left: 1.2em;">
+              <li>LLVM/MLIR 21.1.8（核心基础设施）</li>
+              <li>StableHLO（输入方言）</li>
+              <li>PyAsc / AscendC 方言（输出目标）</li>
+              <li>C++17 + TableGen + Python 绑定</li>
+            </ul>
+          </div>
+        </div>
+        <div>
+          <div class="label">挑战</div>
+          <div class="card-red" style="margin-bottom: 10px;">
+            <ul style="margin: 0; padding-left: 1.2em;">
+              <li>新型 NPU，官方文档少，社区资料匮乏</li>
+              <li>需深度理解编译器内核（TableGen、Pass framework、MLIR 类型系统）</li>
+              <li>硬件 API 语义隐晦，错误难以调试</li>
+              <li>跨方言协作，约束分散在多个 .td 文件中</li>
+            </ul>
+          </div>
+          <div class="label">成果</div>
+          <div class="card-teal">
+            <div class="three-col" style="gap: 8px; margin: 0;">
+              <div style="text-align: center;">
+                <span style="font-size: 1.4em; font-weight: 700; color: var(--accent);">~20K</span>
+                <div style="font-size: 0.7em; color: var(--text-muted);">行代码</div>
+              </div>
+              <div style="text-align: center;">
+                <span style="font-size: 1.4em; font-weight: 700; color: var(--accent);">6+</span>
+                <div style="font-size: 0.7em; color: var(--text-muted);">端到端场景</div>
+              </div>
+              <div style="text-align: center;">
+                <span style="font-size: 1.4em; font-weight: 700; color: var(--accent);">全程</span>
+                <div style="font-size: 0.7em; color: var(--text-muted);">AI 协作</div>
+              </div>
+            </div>
+            <div style="font-size: 0.72em; color: var(--text-muted); margin-top: 6px;">C++ 9.1K · Python 8K · 测试代码 3K</div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ===== SLIDE 3: 什么是 AI-First ===== -->
+    <section>
+      <h2 class="section-title">什么是 AI-First 开发</h2>
+      <div class="two-col">
+        <div>
+          <div class="label" style="color: #b02020;">传统开发方式</div>
+          <div class="card-red">
+            <ul style="margin: 0; padding-left: 1.2em;">
+              <li>工程师读文档 → 理解 API → 写代码</li>
+              <li>遇到 Bug：加断点、printf、查 Stack Overflow</li>
+              <li>知识积累在工程师头脑中，会话间断层</li>
+              <li>AI 是"辅助工具"：偶尔问问，粘贴代码片段</li>
+              <li>工程师是"执行者"，决策和实现都在人脑</li>
+            </ul>
+          </div>
+        </div>
+        <div>
+          <div class="label" style="color: var(--accent2);">AI-First 方式</div>
+          <div class="card-teal">
+            <ul style="margin: 0; padding-left: 1.2em;">
+              <li>工程师描述<strong>意图</strong> → AI 读代码 → AI 生成实现</li>
+              <li>遇到 Bug：AI 在容器中执行测试 → 分析 IR 输出 → 定位根因</li>
+              <li>知识积累在 CLAUDE.md + Memory 系统中，永久保留</li>
+              <li>AI 是"协作者"：持有完整项目上下文，主动发现问题</li>
+              <li>工程师是"架构师 + 评审者"，聚焦高层决策</li>
+            </ul>
+          </div>
+        </div>
+      </div>
+      <div class="insight" style="margin-top: 16px;">
+        不是让 AI 替代工程师，而是让工程师用 AI 突破认知边界——在没有社区先例的领域，靠 AI 的代码推理能力快速建立认知
+      </div>
+    </section>
+
+    <!-- ===== SLIDE 4: 开发环境与工作流 ===== -->
+    <section>
+      <h2 class="section-title">开发环境与工作流</h2>
+      <div class="two-col" style="align-items: start;">
+        <div>
+          <div class="label">环境架构</div>
+          <div class="card-accent" style="margin-bottom: 10px;">
+            <ul style="margin: 0; padding-left: 1.2em;">
+              <li>本地 Mac 编写代码</li>
+              <li>通过 SSH 连接 OrbStack Docker 容器（<code>ssh xvm@orb</code>）</li>
+              <li>代码自动同步 Mac → 容器</li>
+              <li>AI 直接在容器中执行构建、测试命令</li>
+            </ul>
+          </div>
+          <div class="label">知识系统</div>
+          <div class="card-teal">
+            <div style="font-size: 0.82em; margin-bottom: 6px;"><strong>CLAUDE.md</strong> — 项目知识库（提交到代码仓）</div>
+            <div style="font-size: 0.72em; color: var(--text-muted); margin-bottom: 8px;">架构说明、Pass 设计、硬件 API 参考表、已知约束</div>
+            <div style="font-size: 0.82em; margin-bottom: 4px;"><strong>MEMORY.md</strong> — 跨会话记忆（自动维护）</div>
+            <div style="font-size: 0.72em; color: var(--text-muted);">Bug 修复记录、重要发现、已验证结论</div>
+          </div>
+        </div>
+        <div>
+          <div class="label">标准工作流</div>
+          <div style="margin-top: 4px;">
+            <div class="workflow-step">工程师描述意图</div>
+            <div class="workflow-arrow">↓</div>
+            <div class="workflow-step">AI 读取代码上下文（CLAUDE.md + 相关源文件）</div>
+            <div class="workflow-arrow">↓</div>
+            <div class="workflow-step">AI 生成实现（C++ / TableGen / MLIR）</div>
+            <div class="workflow-arrow">↓</div>
+            <div class="workflow-step">AI 在 Docker 容器中构建验证</div>
+            <div class="workflow-arrow">↓</div>
+            <div class="workflow-step">输出 IR / 错误信息</div>
+            <div class="workflow-arrow">↓</div>
+            <div class="workflow-step">AI 分析结果 → 迭代修复</div>
+            <div class="workflow-arrow">↓</div>
+            <div class="workflow-step">工程师确认 + 更新 MEMORY.md</div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ===== SLIDE 5: 编译流水线架构 ===== -->
+    <section>
+      <h2 class="section-title">编译流水线架构</h2>
+      <div style="font-size: 0.8em; color: var(--text-muted); margin-bottom: 10px;">整条架构由 AI 在单次会话中规划（2026-01）</div>
+      <div class="two-col" style="align-items: start; gap: 20px;">
+        <div>
+          <div class="label">流水线阶段</div>
+          <div class="pipeline-step"><strong>Step 0</strong>&nbsp; linalg-on-tensor 输入 IR</div>
+          <div class="pipeline-arrow">↓ tile + fuse</div>
+          <div class="pipeline-step"><strong>Step 1</strong>&nbsp; 分块后的 linalg 循环</div>
+          <div class="pipeline-arrow">↓ transform dialect 变换</div>
+          <div class="pipeline-step"><strong>Step 2</strong>&nbsp; transform 脚本驱动的变换</div>
+          <div class="pipeline-arrow">↓ one-shot-bufferize</div>
+          <div class="pipeline-step"><strong>Step 3</strong>&nbsp; memref-based IR（带 scf.for）</div>
+          <div class="pipeline-arrow">↓ ascendc-buffer-placement</div>
+          <div class="pipeline-step"><strong>Step 4</strong>&nbsp; 片上内存空间标注（TPosition）</div>
+          <div class="pipeline-arrow">↓ linalg-to-ascendc-compute</div>
+          <div class="pipeline-step"><strong>Step 5</strong>&nbsp; AscendC 向量/矩阵 Op</div>
+          <div class="pipeline-arrow">↓ prepare-for-emit + parallelize</div>
+          <div class="pipeline-step"><strong>Step 6-8</strong>&nbsp; 最终 C++ 内核代码</div>
+        </div>
+        <div>
+          <div class="label">两个关键 Pass</div>
+          <div class="card-accent" style="margin-bottom: 12px;">
+            <div style="font-weight: 700; color: var(--accent); margin-bottom: 6px;">AscendCBufferPlacementPass</div>
+            <div style="font-size: 0.8em; line-height: 1.6; color: var(--text);">
+              <span class="tag tag-amber" style="margin-left: 0;">--ascendc-buffer-placement</span><br>
+              推断每个 memref 的片上位置（TPosition）。通过循环注解（prologue/epilogue）识别计算区域，应用规则推断 CO1/VECIN/VECOUT/VECCALC，然后向 subview 传播，最后插入 memref.copy 占位符。
+            </div>
+          </div>
+          <div class="card-teal">
+            <div style="font-weight: 700; color: var(--accent2); margin-bottom: 6px;">LinalgToAscendCComputePass</div>
+            <div style="font-size: 0.8em; line-height: 1.6; color: var(--text);">
+              <span class="tag tag-teal" style="margin-left: 0;">--linalg-to-ascendc-compute</span><br>
+              将 linalg.generic / matmul / fill 转换为 AscendC 的 duplicate_l2 / add_l2 / max_l2 / gather_l2 等 Op，通过 <code>asc.tbuf.get_tensor</code> 桥接 memref 与 local_tensor 类型。
+            </div>
+          </div>
+          <div class="card" style="margin-top: 12px;">
+            <div style="font-size: 0.78em; color: var(--text-muted); line-height: 1.6;">
+              另有 <strong>AscendCPrepareForEmitPass</strong>（TilingData 生成、flat pointer 计算）和 <strong>AscendCParallelizePass</strong>（多核并行化）两个后处理 Pass。
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ===== SLIDE 6: 案例1 架构规划 ===== -->
+    <section>
+      <h2 class="section-title">案例1：流水线架构规划</h2>
+      <div class="two-col" style="align-items: start; gap: 16px;">
+        <div>
+          <div class="label">用户的原始请求</div>
+          <div class="dialog-user">
+            我需要把 linalg.matmul + linalg.add + linalg.max（relu）做成完整的 AscendC 内核。PyAsc 方言有哪些 Op 可以用？怎么映射？
+          </div>
+          <div class="dialog-ai">
+            从 PyAsc 的 TableGen 定义看，有以下核心 Op 可用，对应关系如下：
+          </div>
+          <div class="label" style="margin-top: 12px;">AI 推导的 Op 映射表</div>
+          <table>
+            <thead>
+              <tr><th>linalg op</th><th>条件</th><th>ascendc op</th></tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>linalg.fill</td>
+                <td>memory_space &gt; 0</td>
+                <td>duplicate_l2</td>
+              </tr>
+              <tr>
+                <td>linalg.matmul</td>
+                <td>A∈A2, B∈B2, C∈CO1</td>
+                <td>construct + set_tensor_a/b + iterate_all</td>
+              </tr>
+              <tr>
+                <td>linalg.elementwise add</td>
+                <td>dst memory_space &gt; 0</td>
+                <td>add_l2</td>
+              </tr>
+              <tr>
+                <td>linalg.elementwise max</td>
+                <td>dst &gt; 0, src1 是零填充</td>
+                <td>max_l2（ReLU 模式）</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <div>
+          <div class="label">AI 的关键分析</div>
+          <div class="card-teal" style="margin-bottom: 10px;">
+            <div style="font-size: 0.8em; line-height: 1.6; color: var(--text);">
+              <strong>memref → local_tensor 桥接</strong><br>
+              AscendC compute ops 需要 <code>!ascendc.local_tensor&lt;*xT&gt;</code> 类型，不能直接用 memref。对于 <code>memref&lt;..., pos:i32&gt;</code>，需要先生成：
+            </div>
+            <div class="code-block" style="margin-top: 8px; font-size: 0.65em;"><span class="kw">%tbuf</span>   = <span class="fn">asc.tbuf</span> : <span class="tp">!ascendc.tbuf&lt;pos&gt;</span>
+<span class="kw">%tensor</span> = <span class="fn">asc.tbuf.get_tensor</span> <span class="kw">%tbuf</span>
+    : <span class="tp">!ascendc.tbuf&lt;pos&gt;</span>, <span class="tp">!ascendc.local_tensor&lt;*xT&gt;</span></div>
+          </div>
+          <div class="card-accent">
+            <div style="font-size: 0.8em; line-height: 1.6; color: var(--text);">
+              <strong>矩阵乘需要 TQue 管理</strong><br>
+              matmul 的 construct/set_tensor/iterate_all 三步需要与 TQue 生命周期绑定，AI 建议将这部分推迟到 PrepareForEmit Pass 统一处理，不在 Compute Pass 中完成。
+            </div>
+          </div>
+          <div class="insight" style="margin-top: 10px;">
+            AI 无需运行任何代码，通过阅读 TableGen 定义推导硬件 API 的语义约束，建立完整的 Op 映射体系
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ===== SLIDE 7: 案例1续 ===== -->
+    <section>
+      <h2 class="section-title">案例1续：AI 主动发现潜在问题</h2>
+      <div class="label">真实对话片段（代码实现过程中 AI 的主动汇报）</div>
+      <div class="dialog-user" style="margin-bottom: 8px;">
+        （提出架构方案后，进行代码实现）好的，我们继续实现 matmul 的转换。
+      </div>
+      <div class="dialog-ai" style="margin-bottom: 8px;">
+        一个悬而未决的问题：<code>matmul.init</code> 需要 <code>AscendC_TCubeTiling</code> 参数，这是执行期运行时 tiling 信息，Step 6 处理不了。暂定 Step 6 只生成 <code>set_tensor_a/b + iterate_all</code>，<code>init/end</code> 留给 Step 5 结合 TQue 插入时一并处理。
+      </div>
+      <div class="dialog-ai" style="margin-bottom: 12px;">
+        另外发现：<code>MatmulConfigAttr::get</code> 需要 50 个参数，全是 null 的 <code>BoolAttr/IntegerAttr</code>。更简单的方案：跳过 <code>%mm</code> 的 SSA，改为直接生成 <code>set_tensor_a/b + iterate_all</code>，不传 <code>%mm</code>——这样避免了构造巨大 config 对象的问题。
+      </div>
+      <div class="two-col">
+        <div class="card-teal">
+          <div style="font-size: 0.82em; color: var(--text); line-height: 1.6;">
+            <strong>发现1：运行时参数问题</strong><br>
+            TCubeTiling 包含执行期 tiling 信息，静态 Pass 无法填充，需要拆分到不同阶段处理
+          </div>
+        </div>
+        <div class="card-accent">
+          <div style="font-size: 0.82em; color: var(--text); line-height: 1.6;">
+            <strong>发现2：API 复杂度问题</strong><br>
+            50 参数构造函数难以使用，AI 主动提出绕过方案，降低实现复杂度
+          </div>
+        </div>
+      </div>
+      <div class="insight">
+        AI 在翻阅实现细节时主动发现架构约束，并给出延迟处理方案——这是"协作者"而非"执行者"的体现
+      </div>
+    </section>
+
+    <!-- ===== SLIDE 8: 案例2 BufferPlacement ===== -->
+    <section>
+      <h2 class="section-title">案例2：单次会话实现完整编译 Pass</h2>
+      <div class="two-col" style="align-items: start; gap: 16px;">
+        <div>
+          <div class="label">Pass 功能</div>
+          <div class="card-teal" style="margin-bottom: 10px;">
+            <div style="font-size: 0.82em; line-height: 1.6; color: var(--text);">
+              推断 bufferized IR 中每个 memref 的片上位置（TPosition），将整数 memory_space 属性注入到 memref 类型中，为后续 AscendC Op 转换做准备。
+            </div>
+          </div>
+          <div class="label">关键挑战</div>
+          <div class="card-red">
+            <ul style="margin: 0; padding-left: 1.2em; font-size: 0.82em;">
+              <li>PyAsc TPosition 类型系统完全不透明</li>
+              <li>没有文档说明 memory_space 如何编码</li>
+              <li>测试框架的基础假设可能是错的</li>
+              <li>需要从 TableGen 源码推断正确格式</li>
+            </ul>
+          </div>
+        </div>
+        <div>
+          <div class="label">关键对话：发现根本性错误</div>
+          <div class="dialog-user">
+            测试期望 <code>#ascendc.gm</code> 格式，但 IR 里没有出现这个格式，输出的 memref 类型看起来很奇怪...
+          </div>
+          <div class="dialog-ai">
+            找到问题了。<code>TPositionAttr</code> 是 <code>I32EnumAttr</code>，<strong>不是 AttrDef</strong>，没有 mnemonic。测试用例里写的 <code>#ascendc.gm</code> 是完全错误的格式。<br><br>
+            memory_space=0 不打印（因为 0 是默认值，MLIR 约定省略），1 会打印为整数。所以 TPositionAttr 作为 memory_space 会被打印为整数。<br><br>
+            <strong>正确格式：</strong><code>memref&lt;4xf32, 1:i32&gt;</code>，而 GM 的 <code>memref&lt;4xf32&gt;</code> 省略不写。
+          </div>
+          <div class="insight" style="font-size: 0.78em; margin-top: 8px;">
+            这一个洞察消除了整个测试框架的根本性假设错误，避免了数天的无效调试
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ===== SLIDE 9: TPosition 表 ===== -->
+    <section>
+      <h2 class="section-title">案例2续：TPosition 编码表</h2>
+      <div style="font-size: 0.8em; color: var(--text-muted); margin-bottom: 12px;">
+        AI 从 PyAsc TableGen 源码中提取并整理的硬件内存空间参考表，已成为 CLAUDE.md 的核心文档
+      </div>
+      <table>
+        <thead>
+          <tr>
+            <th>TPosition</th>
+            <th>Value</th>
+            <th>memref 写法</th>
+            <th>片上位置</th>
+            <th>用途</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><strong>GM</strong></td>
+            <td>0</td>
+            <td><code>memref&lt;4xf32&gt;</code>（省略）</td>
+            <td>全局内存 (DDR)</td>
+            <td>函数参数、全局数据</td>
+          </tr>
+          <tr>
+            <td><strong>A1</strong></td>
+            <td>1</td>
+            <td><code>1:i32</code></td>
+            <td>L1 输入 A</td>
+            <td>矩阵乘 A 的 L1 缓冲</td>
+          </tr>
+          <tr>
+            <td><strong>A2</strong></td>
+            <td>2</td>
+            <td><code>2:i32</code></td>
+            <td>L0A</td>
+            <td>矩阵乘 A 的 L0 缓冲</td>
+          </tr>
+          <tr>
+            <td><strong>B1</strong></td>
+            <td>3</td>
+            <td><code>3:i32</code></td>
+            <td>L1 输入 B</td>
+            <td>矩阵乘 B 的 L1 缓冲</td>
+          </tr>
+          <tr>
+            <td><strong>B2</strong></td>
+            <td>4</td>
+            <td><code>4:i32</code></td>
+            <td>L0B</td>
+            <td>矩阵乘 B 的 L0 缓冲</td>
+          </tr>
+          <tr>
+            <td><strong>CO1</strong></td>
+            <td>7</td>
+            <td><code>7:i32</code></td>
+            <td>L0C 输出</td>
+            <td>矩阵乘结果输出</td>
+          </tr>
+          <tr>
+            <td><strong>VECIN</strong></td>
+            <td>9</td>
+            <td><code>9:i32</code></td>
+            <td>UB 向量输入</td>
+            <td>向量 Op 输入数据</td>
+          </tr>
+          <tr>
+            <td><strong>VECOUT</strong></td>
+            <td>10</td>
+            <td><code>10:i32</code></td>
+            <td>UB 向量输出</td>
+            <td>向量 Op 输出结果</td>
+          </tr>
+          <tr>
+            <td><strong>VECCALC</strong></td>
+            <td>11</td>
+            <td><code>11:i32</code></td>
+            <td>UB 向量计算</td>
+            <td>中间计算缓冲区</td>
+          </tr>
+        </tbody>
+      </table>
+      <div class="insight" style="margin-top: 12px;">
+        没有任何官方文档描述这张表。AI 通过阅读 <code>externals/pyasc/include/ascir/Dialect/Asc/IR/Types.td</code> 中的枚举定义推断出完整的整数编码规则，并解释了为何 GM=0 在 MLIR 打印时被省略。
+      </div>
+    </section>
+
+    <!-- ===== SLIDE 10: 案例3 5 bugs ===== -->
+    <section>
+      <h2 class="section-title">案例3：476 轮追踪 5 个级联 Bug</h2>
+      <div class="insight" style="margin-bottom: 12px;">
+        AI 通过 SSH 在 Docker 容器中执行构建，将 IR 输出与预期对比，逐步缩小问题范围
+      </div>
+      <div class="bug-item">
+        <div class="bug-num">1</div>
+        <div class="bug-text">
+          <strong>动态 alloc 缺少操作数</strong> —
+          <code>createLocalMemref</code> 创建带 <code>?</code> 维度的 memref 时未提供动态尺寸 Value，导致 verifier 拒绝 IR
+        </div>
+      </div>
+      <div class="bug-item">
+        <div class="bug-num">2</div>
+        <div class="bug-text">
+          <strong>posMap 键失效</strong> —
+          <code>updateAllocMemorySpace</code> 擦除旧 AllocOp 后，posMap 中的 Value 指针悬空，后续查找返回错误结果
+        </div>
+      </div>
+      <div class="bug-item">
+        <div class="bug-num">3</div>
+        <div class="bug-text">
+          <strong>subview 传播顺序问题</strong> —
+          CO1 alloc 在替换前已运行传播，导致其子 subview 未继承 memory_space，形成空洞
+        </div>
+      </div>
+      <div class="bug-item">
+        <div class="bug-num">4</div>
+        <div class="bug-text">
+          <strong>需两轮不动点迭代</strong> —
+          单次传播不足；必须在 <code>updateAllocMemorySpace</code> 之后再次运行 subview 传播
+        </div>
+      </div>
+      <div class="bug-item">
+        <div class="bug-num">5</div>
+        <div class="bug-text">
+          <strong>步骤执行顺序错误</strong> —
+          Step 7b 在 Step 8b（alloc 提升为函数参数）之前运行，resolver 找到 <code>%alloc</code> 而非 BlockArg，导致后续 set_global_buffer 未被替换
+        </div>
+      </div>
+      <div style="margin-top: 12px; text-align: center;">
+        <span class="check">✓</span>
+        <span style="font-size: 0.88em; color: var(--text-muted); margin-left: 8px;">8 种 TPosition 全部正确推断，所有测试通过</span>
+      </div>
+    </section>
+
+    <!-- ===== SLIDE 11: 案例3续 posMap ===== -->
+    <section>
+      <h2 class="section-title">案例3续：posMap 键失效的推理过程</h2>
+      <div class="label">AI 的代码逻辑推理（直接定位根因，无需运行调试器）</div>
+      <div class="code-block"><span class="cm">// Bug #2：updateAllocMemorySpace 中的 Value 生命周期问题</span>
+
+<span class="cm">// 原来的代码（有问题）：</span>
+<span class="kw">auto</span> newAlloc = rewriter.<span class="fn">create</span>&lt;<span class="tp">memref::AllocOp</span>&gt;(...);  <span class="cm">// 创建新 alloc</span>
+rewriter.<span class="fn">replaceOp</span>(oldAlloc, newAlloc);                  <span class="cm">// 删除旧 alloc</span>
+<span class="cm">// ❌ 此时 posMap[oldAlloc.getResult()] 的 key 已失效</span>
+<span class="cm">//    oldAlloc 已被 erase，Value 指向已释放内存</span>
+<span class="cm">//    后续通过 posMap 查找 newAlloc 的位置信息 → 找不到 → 返回默认 GM</span>
+
+<span class="cm">// 修复（在 replaceOp 之前更新 posMap）：</span>
+<span class="kw">auto</span> pos = posMap[oldAlloc.<span class="fn">getResult</span>()];     <span class="cm">// 先读出位置信息</span>
+<span class="kw">auto</span> newAlloc = rewriter.<span class="fn">create</span>&lt;<span class="tp">memref::AllocOp</span>&gt;(...);
+posMap[newAlloc.<span class="fn">getResult</span>()] = pos;           <span class="ok">// ✓ 先建立新映射</span>
+posMap.<span class="fn">erase</span>(oldAlloc.<span class="fn">getResult</span>());           <span class="ok">// ✓ 再删除旧映射</span>
+rewriter.<span class="fn">replaceOp</span>(oldAlloc, newAlloc);        <span class="ok">// ✓ 最后替换 Op</span></div>
+      <div class="two-col" style="margin-top: 12px;">
+        <div class="card-teal">
+          <div style="font-size: 0.82em; line-height: 1.6; color: var(--text);">
+            <strong>为什么难以调试</strong><br>
+            MLIR Value 是 C++ 指针包装，Op 被 erase 后内存可能被复用，posMap 查找可能返回随机结果而不是 crash
+          </div>
+        </div>
+        <div class="card-accent">
+          <div style="font-size: 0.82em; line-height: 1.6; color: var(--text);">
+            <strong>AI 的优势</strong><br>
+            通过代码逻辑推理直接定位，无需 gdb 断点或 AddressSanitizer，节省大量调试时间
+          </div>
+        </div>
+      </div>
+      <div class="insight" style="margin-top: 8px;">
+        这类 C++ 生命周期 / MLIR Value 失效问题极难用传统手段调试，AI 通过静态代码推理直接找到根因
+      </div>
+    </section>
+
+    <!-- ===== SLIDE 12: 案例4 级联失败 ===== -->
+    <section>
+      <h2 class="section-title">案例4：一个错误的步骤顺序，引发四层级联失败</h2>
+      <div class="two-col" style="align-items: start; gap: 20px;">
+        <div>
+          <div class="label">级联失败链</div>
+          <div class="cascade-step"><strong>根因：</strong>Step 7b 在 Step 8b 之前运行</div>
+          <div class="cascade-arrow">↓</div>
+          <div class="cascade-step">resolver 遇到 <code>%alloc</code>（非 BlockArg），返回 null</div>
+          <div class="cascade-arrow">↓</div>
+          <div class="cascade-step">arith offset ops 已被创建（dead code 残留）</div>
+          <div class="cascade-arrow">↓</div>
+          <div class="cascade-step">set_global_buffer 未被替换，仍在 IR 中</div>
+          <div class="cascade-arrow">↓</div>
+          <div class="cascade-step">subview 残留到 ascir-translate 阶段</div>
+          <div class="cascade-arrow">↓</div>
+          <div class="cascade-step">ascir-translate 遇到未知 Op，报错退出</div>
+        </div>
+        <div>
+          <div class="label">修复方案（交换两行顺序）</div>
+          <div class="code-block" style="font-size: 0.75em;"><span class="cm">// 修复前（顺序错误）：</span>
+<span class="fn">runStep7b</span>(func);  <span class="op">// ❌ subview → set_global_buffer</span>
+<span class="fn">runStep8b</span>(func);  <span class="op">// ❌ 提升 GM alloc 为函数参数</span>
+
+<span class="cm">// 修复后（交换顺序）：</span>
+<span class="fn">runStep8b</span>(func);  <span class="ok">// ✓ 先提升 GM alloc 为函数参数</span>
+<span class="fn">runStep7b</span>(func);  <span class="ok">// ✓ 再做 subview → set_global_buffer</span></div>
+          <div class="card-teal" style="margin-top: 12px;">
+            <div style="font-size: 0.82em; line-height: 1.6; color: var(--text);">
+              <strong>AI 的定位方法：差分分析</strong><br>
+              matmul 场景成功 vs broadcast 场景失败。对比两个场景的 IR 差异，发现 broadcast 多一个 alloc 需要被提升。由此推断是步骤顺序问题，而非代码逻辑错误。
+            </div>
+          </div>
+          <div class="insight" style="font-size: 0.78em; margin-top: 10px;">
+            AI 通过"差分分析"定位问题：对比成功/失败场景的差异，而不是直接看报错信息
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ===== SLIDE 13: 案例5 transform污染 ===== -->
+    <section>
+      <h2 class="section-title">案例5：AI 主动发现架构隐患（与当前 Bug 无关）</h2>
+      <div class="label">真实对话（AI 修完当前 Bug 后的主动汇报）</div>
+      <div class="dialog-user" style="margin-bottom: 8px;">
+        好的，测试通过了，我们继续下一个场景。
+      </div>
+      <div class="dialog-ai" style="margin-bottom: 12px;">
+        当前 Bug 已修复。但我注意到一个潜在的架构问题：<br><br>
+        <code>broadcast-add-reduce</code> 把 transform 序列和 func 放在<strong>同一个 module</strong> 里，<code>--transform-interpreter</code> 执行后 transform ops 仍然保留，会一直携带到 Stage7。ascir-translate 遇到未注册的 transform 方言就报错退出。<br><br>
+        <code>matmul</code> 成功是因为 transform 脚本是独立文件，执行后被消耗，不影响下游 Stage。<br><br>
+        建议：为每个 example 的 transform sequence 保持在独立文件中，或在 <code>run.sh</code> 中用 <code>--transform-interpreter</code> 消耗后明确清理。
+      </div>
+      <div class="two-col">
+        <div class="card-accent">
+          <div style="font-size: 0.82em; line-height: 1.6; color: var(--text);">
+            <strong>AI 做了什么</strong><br>
+            在处理当前任务时，AI 整体阅读了相关示例的代码结构，注意到两个 example 采用了不同的 transform 组织方式，主动识别出这种不一致带来的风险
+          </div>
+        </div>
+        <div class="card-teal">
+          <div style="font-size: 0.82em; line-height: 1.6; color: var(--text);">
+            <strong>工程师的处理</strong><br>
+            判断风险等级，将这条架构约束写入 CLAUDE.md 作为备注，后续所有新 example 都遵循"transform 独立文件"的规范
+          </div>
+        </div>
+      </div>
+      <div class="insight" style="margin-top: 12px;">
+        AI 不只处理当前任务，还在"阅读"整个代码库时积累理解，主动发现与当前 Bug 无关的架构风险——这是经验丰富的代码审查者的行为模式
+      </div>
+    </section>
+
+    <!-- ===== SLIDE 案例6: python/runtime ===== -->
+    <section>
+      <h2 class="section-title">案例6：从零构建 NPU Kernel 仿真执行流水线</h2>
+      <div style="margin-bottom: 10px; font-size: 0.72em; color: var(--text-muted);">
+        <strong>背景：</strong>已有 PyAsc 的 <code>asc.lib.runtime</code> 可以仿真执行 NPU Kernel，但依赖 PyAsc 内部机制。目标：为自己生成的 Kernel 实现一套<span class="em">完全独立</span>的仿真执行链路。
+      </div>
+      <div class="two-col">
+        <div>
+          <div class="label">用户的原始需求（Prompt 节选）</div>
+          <div class="dialog-user" style="margin-bottom: 8px;">
+            我现在想仿照 PyAsc 的 <code>asc.lib.runtime</code> 将我自己生成的 kernel 在 CPU 上进行仿真执行。<br><br>
+            已有三个变量：<br>
+            <code>tiling_def</code> — tiling data 的 C++ 结构体定义<br>
+            <code>host_tiling</code> — 在 host 上计算 tiling 参数的 C++ 代码<br>
+            <code>op_kernel</code> — 实际的 AscendC kernel C++ 代码<br><br>
+            请帮我处理，通过 <code>ssh xvm@orb</code> 连接到本机 Docker 环境实际调测。
+          </div>
+          <div class="label">最终实现：4 步完整流水线</div>
+          <div class="card card-teal" style="font-size: 0.68em; line-height: 1.9;">
+            <div><span class="em2">① 生成源码</span> — <code>ascgen.py</code> 调用 call_ascgen 生成三元组</div>
+            <div><span class="em2">② 编译 host tiling</span> — <code>compiler.py</code> 调用 g++ 动态编译 C++ tiling 代码，ctypes 加载 .so 计算出具体参数</div>
+            <div><span class="em2">③ 编译 device kernel</span> — <code>compiler.py</code> 调用 bisheng 编译器生成 ELF binary</div>
+            <div><span class="em2">④ 仿真执行</span> — <code>executor.py</code> 用 ctypes 直接调用 <code>libruntime_camodel.so</code>，无需 PyAsc</div>
+          </div>
+        </div>
+        <div>
+          <div class="label">AI 的关键贡献</div>
+          <div class="card card-accent" style="margin-bottom: 8px; font-size: 0.68em;">
+            <div style="font-weight: 600; margin-bottom: 4px;">逆向工程 PyAsc runtime 机制</div>
+            <div style="color: var(--text-muted); line-height: 1.6;">
+              读取 <code>externals/pyasc/python/asc/lib/runtime.py</code>，
+              提取 DevBinary 结构体布局、ELF Magic 值、rtSetDevice / rtDevBinaryRegister / rtKernelLaunch 调用序列，
+              用 ctypes 重新实现完整 API 封装
+            </div>
+          </div>
+          <div class="card card-accent" style="margin-bottom: 8px; font-size: 0.68em;">
+            <div style="font-weight: 600; margin-bottom: 4px;">动态编译 host tiling</div>
+            <div style="color: var(--text-muted); line-height: 1.6;">
+              host tiling 是 C++ 代码，AI 设计了"编译→加载→调用"三步方案：
+              g++ 编译为 .so，ctypes dlopen，调用导出函数返回 tiling struct，
+              解决了 Python 与 C++ 结构体之间的内存布局对齐问题
+            </div>
+          </div>
+          <div class="code-block" style="font-size: 0.6em;">
+<span class="cm"># executor.py 核心：直接调用 camodel 仿真</span>
+<span class="kw">class</span> <span class="tp">DevBinary</span>(ctypes.Structure):
+    _fields_ = [
+        (<span class="str">"magic"</span>,   ctypes.c_uint32),   <span class="cm"># ELF Magic</span>
+        (<span class="str">"version"</span>, ctypes.c_uint32),
+        (<span class="str">"data"</span>,    ctypes.c_char_p),   <span class="cm"># ELF binary</span>
+        (<span class="str">"length"</span>,  ctypes.c_uint64),
+    ]
+<span class="cm"># 加载 libruntime_camodel.so，无需 PyAsc 依赖</span>
+runtime = ctypes.CDLL(<span class="str">"libruntime_camodel.so"</span>)
+runtime.rtDevBinaryRegister(binary, handle)</div>
+        </div>
+      </div>
+      <div class="insight" style="margin-top: 8px;">
+        最终 <code>python/runtime/</code> 共 2351 行，实现了<span class="em">完全脱离 PyAsc</span> 的 Kernel 仿真执行能力。这是整个项目中系统工程复杂度最高的模块。
+      </div>
+    </section>
+
+    <!-- ===== SLIDE 案例7: PyAsc Op补全 ===== -->
+    <section>
+      <h2 class="section-title">案例7：批量补全 PyAsc 方言 Op 定义</h2>
+      <div style="margin-bottom: 10px; font-size: 0.72em; color: var(--text-muted);">
+        <strong>背景：</strong>PyAsc 方言的 Op 定义不完整，大量 AscendC API 没有对应的 TableGen 定义。需要从4个 C++ 头文件目录中提取所有 API，按规则补充到方言中。
+      </div>
+      <div class="two-col">
+        <div>
+          <div class="label">用户的 Prompt（节选）</div>
+          <div class="dialog-user" style="margin-bottom: 8px; font-size: 0.7em;">
+            请从以下4个目录中，帮我整理出所有 AscendC API，并补充到 PyAsc 的基础 Op 定义中：<br>
+            <code>v3101/.../ascendc/api/</code><br>
+            <code>v5102/.../ascendc/api_regbase/</code><br>
+            <code>v5102/.../ascendc/api_cube/</code><br>
+            <code>cann/.../asc/include/</code><br><br>
+            判断规则：<br>
+            • 函数带 <code>__aicore__ inline</code> 修饰<br>
+            • 入参含 <code>LocalTensor</code> 类型的 dst/src<br>
+            • 按 L0/L1/L2/L3 级别区分（由额外参数判断）<br>
+            • 已存在的跳过，不存在的新建文件补充
+          </div>
+          <div class="label">交付结果（单次 commit）</div>
+          <div class="card card-teal" style="font-size: 0.7em; line-height: 1.9;">
+            <div><code>OpVecActivationExt.td</code> — Gelu、Sigmoid、Silu、Swish、Softmax 等激活函数（89行）</div>
+            <div><code>OpVecBinaryExt.td</code> — 扩展二元运算（45行）</div>
+            <div><code>OpVecCastExt.td</code> — 类型转换扩展（42行）</div>
+            <div><code>OpVecCompareExt.td</code> — 比较运算扩展（44行）</div>
+            <div><code>OpVecDataMoveExt.td</code> — Broadcast 系列等数据移动（155行）</div>
+            <div><code>OpVecReduceExt.td</code> / <code>OpVecScalarExt.td</code> / <code>OpVecTernaryExt.td</code> / <code>OpVecUnaryExt.td</code></div>
+          </div>
+        </div>
+        <div>
+          <div class="label">AI 的工作方式</div>
+          <div class="card card-accent" style="margin-bottom: 8px; font-size: 0.7em; line-height: 1.6;">
+            <div style="font-weight: 600; margin-bottom: 4px;">① 扫描 + 分类（4个目录）</div>
+            <div style="color: var(--text-muted);">遍历所有 <code>__aicore__ inline</code> 函数，按参数特征识别 L0~L3 级别，与已有 Op 对比去重</div>
+          </div>
+          <div class="card card-accent" style="margin-bottom: 8px; font-size: 0.7em; line-height: 1.6;">
+            <div style="font-weight: 600; margin-bottom: 4px;">② 推断 TableGen 结构</div>
+            <div style="color: var(--text-muted);">参考已有 <code>OpVecBinary.td</code> 的模式，判断是否需要暴露模板参数，为每个 API 生成正确的 Op 定义</div>
+          </div>
+          <div class="code-block" style="font-size: 0.58em; margin-bottom: 8px;">
+<span class="cm">// AI 生成的 Op 定义示例（OpVecActivationExt.td）</span>
+<span class="kw">def</span> <span class="tp">AscendC_GeluOp</span> : <span class="fn">MathLibraryOp</span>&lt;<span class="str">"gelu"</span>, <span class="str">"Gelu"</span>,
+    [AttrSizedOperandSegments]&gt; {
+  <span class="kw">let</span> arguments = (ins
+    AscendC_LocalTensor:<span class="fn">$dst</span>, AnyType:<span class="fn">$src</span>,
+    Optional&lt;AnyType&gt;:<span class="fn">$sharedTmpBuffer</span>,
+    Optional&lt;AnyType&gt;:<span class="fn">$calCount</span>,
+    UnitAttr:<span class="fn">$highPrecision</span>,    <span class="cm">// L2精度选项</span>
+    UnitAttr:<span class="fn">$highPerformance</span>); <span class="cm">// L2性能选项</span>
+}</div>
+          <div class="card" style="border-left: 4px solid #6030a0; font-size: 0.68em;">
+            <div style="font-weight: 600; color: #6030a0;">9 文件 · 525 行 · 单次 commit</div>
+            <div style="color: var(--text-muted); margin-top: 4px;">从阅读 C++ 头文件到生成完整 TableGen Op 定义，AI 完成了机械但需要大量专业知识的覆盖工作</div>
+          </div>
+        </div>
+      </div>
+      <div class="insight" style="margin-top: 8px;">
+        这类任务的特点：<span class="em">规则明确</span>（L0~L3分级、参数映射）、<span class="em">体量大</span>（跨4个目录数十个头文件）、<span class="em">需要领域知识</span>（TableGen语法 + AscendC API语义）。
+        人工完成需数天，AI 单次会话完成。
+      </div>
+    </section>
+
+    <!-- ===== SLIDE 16: AI的三种模式 ===== -->
+    <section>
+      <h2 class="section-title">AI 的三种工作模式</h2>
+      <div class="three-col" style="margin-top: 12px;">
+        <div class="mode-box">
+          <span class="mode-icon">🔍</span>
+          <div class="mode-title">探索推理模式</div>
+          <div class="mode-desc">
+            当遇到不熟悉的 API 或 TableGen 定义时，AI 通过阅读源码推导语义——无需运行代码，通过静态分析建立理解。<br><br>
+            典型场景：TPositionAttr 编码发现、MatmulConfigAttr 参数分析、PyAsc Op 语义推断
+          </div>
+        </div>
+        <div class="mode-box">
+          <span class="mode-icon">🔧</span>
+          <div class="mode-title">执行验证模式</div>
+          <div class="mode-desc">
+            通过 SSH 在容器中执行构建和测试，获取真实的 IR 输出或错误信息，与预期对比后迭代修复。<br><br>
+            典型场景：5 个级联 Bug 的调试、BufferPlacement 测试验证、端到端流水线测试
+          </div>
+        </div>
+        <div class="mode-box">
+          <span class="mode-icon">🏗️</span>
+          <div class="mode-title">架构设计模式</div>
+          <div class="mode-desc">
+            基于对整个代码库的理解，提出系统性的设计方案或发现潜在的架构问题，主动指出风险和改进方向。<br><br>
+            典型场景：流水线架构规划、transform 污染发现、Concat/Gather 的无原语设计方案
+          </div>
+        </div>
+      </div>
+      <div class="insight" style="margin-top: 16px;">
+        三种模式往往在同一会话中交替出现——AI 会根据任务性质自动切换，而不需要工程师显式指定使用哪种方式
+      </div>
+      <div class="card" style="margin-top: 10px;">
+        <div style="font-size: 0.82em; color: var(--text-muted); line-height: 1.6;">
+          在整个项目中，<strong>探索推理</strong>用于理解新 API 和建立基础知识；<strong>执行验证</strong>用于 Debug 和正确性确认；<strong>架构设计</strong>用于处理复杂的系统性问题和新场景接入。
+        </div>
+      </div>
+    </section>
+
+    <!-- ===== SLIDE 17: Memory 系统 ===== -->
+    <section>
+      <h2 class="section-title">Memory 系统：让 AI 真正"了解"项目</h2>
+      <div class="two-col" style="align-items: start; gap: 16px;">
+        <div>
+          <div class="label">CLAUDE.md — 项目知识库</div>
+          <div class="card-accent" style="margin-bottom: 10px;">
+            <ul style="margin: 0; padding-left: 1.2em; font-size: 0.82em;">
+              <li>提交到代码仓，与代码同步版本</li>
+              <li>包含架构说明、Pass 设计规范</li>
+              <li>硬件 API 参考表（TPosition 编码等）</li>
+              <li>已知约束和注意事项</li>
+              <li>每次会话自动注入为上下文</li>
+            </ul>
+          </div>
+          <div class="label">MEMORY.md — 跨会话记忆</div>
+          <div class="card-teal">
+            <ul style="margin: 0; padding-left: 1.2em; font-size: 0.82em;">
+              <li>由 AI 自动维护，工程师确认</li>
+              <li>记录 Bug 修复过程和结论</li>
+              <li>保存重要的设计决策和原因</li>
+              <li>记录已验证的 API 使用方式</li>
+              <li>每次对话"站在之前的基础上"</li>
+            </ul>
+          </div>
+        </div>
+        <div>
+          <div class="label">MEMORY.md 真实内容片段</div>
+          <div class="code-block" style="font-size: 0.65em;"><span class="cm">## ewop-broadcast-split Example</span>
+<span class="cm">### Bugs fixed to enable ewop-broadcast-split</span>
+
+<span class="num">1</span>. `isBcast && inMs==<span class="num">0</span>(GM)` 新路径:
+   先 data_copy_l2 小 tensor，再 broadcast_l2 扩展
+   - 两处均需修改: reduction (~line <span class="num">370</span>), parallel (~line <span class="num">614</span>)
+
+<span class="num">2</span>. `resolve()` 新增常量处理:
+   `arith.ConstantOp` → `duplicate_l2` 填充 VECCALC
+   - 使用 `constOp.<span class="fn">getResult</span>()`（SSA Value）⚠️
+   - 不是 `constOp.<span class="fn">getValue</span>()`（Attribute）
+   - 两处均需修改: reduction (~line <span class="num">467</span>), parallel (~line <span class="num">693</span>)</div>
+          <div class="insight" style="font-size: 0.78em; margin-top: 10px;">
+            Memory 中记录了具体的行号和容易混淆的 API（getResult vs getValue），避免在下次类似场景中重蹈覆辙
+          </div>
+          <div class="card" style="margin-top: 10px; font-size: 0.78em; color: var(--text-muted); line-height: 1.6;">
+            与 ChatGPT/网页 Claude 的本质区别：后者每次对话都是全新开始，需要重新解释项目背景。Memory 系统让 AI 真正积累对项目的理解。
+          </div>
+        </div>
+      </div>
+    </section>
+
+<!--    &lt;!&ndash; ===== SLIDE 18: 数据统计 ===== &ndash;&gt;-->
+<!--    <section>-->
+<!--      <h2 class="section-title">项目数据统计</h2>-->
+<!--      <div class="four-col" style="margin-bottom: 14px;">-->
+<!--        <div class="stat-box">-->
+<!--          <span class="stat-num">64</span>-->
+<!--          <div class="stat-label">对话会话数</div>-->
+<!--        </div>-->
+<!--        <div class="stat-box">-->
+<!--          <span class="stat-num">~20K</span>-->
+<!--          <div class="stat-label">项目总代码行</div>-->
+<!--        </div>-->
+<!--        <div class="stat-box">-->
+<!--          <span class="stat-num">6+</span>-->
+<!--          <div class="stat-label">端到端场景</div>-->
+<!--        </div>-->
+<!--        <div class="stat-box">-->
+<!--          <span class="stat-num">750</span>-->
+<!--          <div class="stat-label">最长单会话轮数</div>-->
+<!--        </div>-->
+<!--      </div>-->
+<!--      <div class="four-col" style="margin-bottom: 14px;">-->
+<!--        <div class="stat-box">-->
+<!--          <span class="stat-num">~3月</span>-->
+<!--          <div class="stat-label">从零到完成</div>-->
+<!--        </div>-->
+<!--        <div class="stat-box">-->
+<!--          <span class="stat-num">8</span>-->
+<!--          <div class="stat-label">TPosition 全部正确</div>-->
+<!--        </div>-->
+<!--        <div class="stat-box">-->
+<!--          <span class="stat-num">5</span>-->
+<!--          <div class="stat-label">级联 Bug（单次定位）</div>-->
+<!--        </div>-->
+<!--        <div class="stat-box">-->
+<!--          <span class="stat-num">0</span>-->
+<!--          <div class="stat-label">外部文档参考</div>-->
+<!--        </div>-->
+<!--      </div>-->
+<!--      <div class="label">项目时间线</div>-->
+<!--      <div class="timeline">-->
+<!--        <div style="text-align:center;">-->
+<!--          <div class="timeline-node">2025-12</div>-->
+<!--          <div class="timeline-label">项目启动<br>基础架构</div>-->
+<!--        </div>-->
+<!--        <div class="timeline-line"></div>-->
+<!--        <div style="text-align:center;">-->
+<!--          <div class="timeline-node">2026-01</div>-->
+<!--          <div class="timeline-label">流水线架构<br>matmul 场景</div>-->
+<!--        </div>-->
+<!--        <div class="timeline-line"></div>-->
+<!--        <div style="text-align:center;">-->
+<!--          <div class="timeline-node">2026-02</div>-->
+<!--          <div class="timeline-label">BufferPlacement<br>向量 Op 场景</div>-->
+<!--        </div>-->
+<!--        <div class="timeline-line"></div>-->
+<!--        <div style="text-align:center;">-->
+<!--          <div class="timeline-node">2026-03</div>-->
+<!--          <div class="timeline-label">Gather / Concat<br>6 个场景完整</div>-->
+<!--        </div>-->
+<!--      </div>-->
+<!--      <div class="note" style="margin-top: 8px;">代码统计：C++ 9.1K · Python 8K · 测试代码 3K · 其他配置</div>-->
+<!--    </section>-->
+
+    <!-- ===== SLIDE 19: 震撼示例 ===== -->
+    <section>
+      <h2 class="section-title">一个令人印象深刻的真实对话</h2>
+      <div style="font-size: 0.8em; color: var(--text-muted); margin-bottom: 10px;">AI 不只生成代码，还能完整解释生成代码的语义正确性</div>
+      <div class="dialog-user" style="margin-bottom: 8px;">
+        Stage8 输出正确了！生成的 kernel 代码：
+        <div style="background:rgba(0,0,50,0.08);border-radius:4px;padding:6px 10px;margin-top:6px;font-family:monospace;font-size:0.88em;color:#1a1a2e;">
+          void broadcast_add_reducesum(half* v1, half* v2, __gm__ TilingData* v3, half* v4) {<br>
+          &nbsp;&nbsp;auto v32 = AscendC::GetBlockIdx();<br>
+          &nbsp;&nbsp;v59.SetGlobalBuffer(v6, v56);  // v56 = row * N
+        </div>
+        这个 offset 计算对吗？
+      </div>
+      <div class="dialog-ai">
+        是的，完全正确。<br><br>
+        <code>v56 = v43 * v26 = row * N</code>，这是 <code>output[row*N]</code> 的 flat index，即 <code>output[row, 0:N]</code>。<br><br>
+        Op2 写到 <code>v6 + v94*v26</code>，其中 <code>v94 = v77 + v25 = row + M</code>，所以 offset 是 <code>(row+M)*N = output[(M+row)*N]</code>，即 <code>output[M:2M, :]</code>。<br><br>
+        两个算子的输出在内存中直接相邻，Concat 语义自动正确，无需额外操作。
+      </div>
+      <div class="insight" style="margin-top: 10px;">
+        AI 持有整个编译过程的上下文：从原始 IR 的 tensor.insert_slice 语义，到 bufferization 的 subview offset，到 flat pointer 计算，到最终 C++ 代码的变量含义——形成了完整的端到端理解链
+      </div>
+    </section>
+
+    <!-- ===== SLIDE 20: 适合/不适合 ===== -->
+    <section>
+      <h2 class="section-title">适合与不适合 AI-First 的任务</h2>
+      <div class="two-col" style="align-items: start; gap: 16px;">
+        <div>
+          <div class="label" style="color: #1a8050;">适合 AI 的任务</div>
+          <div class="fit-item fit-yes">
+            <span class="check">✓</span> <strong>探索不熟悉的 API</strong> — 从 TableGen 定义推导语义，建立初始理解
+          </div>
+          <div class="fit-item fit-yes">
+            <span class="check">✓</span> <strong>实现有明确规范的 Pass</strong> — 把设计文档转为 C++ 实现
+          </div>
+          <div class="fit-item fit-yes">
+            <span class="check">✓</span> <strong>多文件数据流追踪</strong> — 跨 .cpp/.h/.td 文件的 Value 生命周期分析
+          </div>
+          <div class="fit-item fit-yes">
+            <span class="check">✓</span> <strong>C++ 生命周期 Bug</strong> — MLIR Value 失效、指针悬空等静态推理
+          </div>
+          <div class="fit-item fit-yes">
+            <span class="check">✓</span> <strong>级联失败根因分析</strong> — 从报错信息反推根本原因
+          </div>
+          <div class="fit-item fit-yes">
+            <span class="check">✓</span> <strong>测试用例编写</strong> — 根据 Pass 语义生成完整 FileCheck 测试
+          </div>
+        </div>
+        <div>
+          <div class="label" style="color: #b02020;">AI 独立完成较难的任务</div>
+          <div class="fit-item fit-no">
+            <span class="cross">✗</span> <strong>运行时硬件行为验证</strong> — 需要在真实 NPU 上执行，AI 无法模拟
+          </div>
+          <div class="fit-item fit-no">
+            <span class="cross">✗</span> <strong>性能调优</strong> — tiling 参数、内存访问模式需要实测数据
+          </div>
+          <div class="fit-item fit-no">
+            <span class="cross">✗</span> <strong>开放性需求澄清</strong> — "做一个好的编译器"需要工程师定义目标
+          </div>
+          <div class="fit-item fit-no">
+            <span class="cross">✗</span> <strong>前所未见的新型 Bug</strong> — 没有先例的错误模式，需要实验定位
+          </div>
+          <div class="insight" style="margin-top: 16px;">
+            最佳分工：工程师负责需求定义、架构方向和最终评审；AI 负责代码实现、API 探索和 Bug 推理
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ===== SLIDE 21: 最佳实践 ===== -->
+    <section>
+      <h2 class="section-title">最佳实践 6 条</h2>
+      <div class="practice-item">
+        <div class="practice-num">1</div>
+        <div>
+          <strong>维护 CLAUDE.md 作为"项目大脑"</strong><br>
+          <span style="color: var(--text-muted); font-size: 0.9em;">把架构决策、已知约束、硬件 API 参考表都写入 CLAUDE.md。AI 每次对话自动获得完整上下文，无需重复解释项目。</span>
+        </div>
+      </div>
+      <div class="practice-item">
+        <div class="practice-num">2</div>
+        <div>
+          <strong>让 AI 能执行，而不只是"建议"</strong><br>
+          <span style="color: var(--text-muted); font-size: 0.9em;">配置好 SSH 访问和构建环境，让 AI 直接运行测试获取真实输出。"AI 说这个方案可行" 远不如 "AI 运行后测试通过" 可信。</span>
+        </div>
+      </div>
+      <div class="practice-item">
+        <div class="practice-num">3</div>
+        <div>
+          <strong>把重要发现及时固化到 Memory</strong><br>
+          <span style="color: var(--text-muted); font-size: 0.9em;">每次 Bug 修复或重要发现后，更新 MEMORY.md。记录具体的函数名、行号、容易混淆的 API，避免下次重走弯路。</span>
+        </div>
+      </div>
+      <div class="practice-item">
+        <div class="practice-num">4</div>
+        <div>
+          <strong>用差分分析代替盲目调试</strong><br>
+          <span style="color: var(--text-muted); font-size: 0.9em;">遇到 Bug 时，找一个成功的对照案例。让 AI 对比成功/失败两个场景的差异，往往比直接看报错信息更快定位根因。</span>
+        </div>
+      </div>
+      <div class="practice-item">
+        <div class="practice-num">5</div>
+        <div>
+          <strong>接受 AI 的主动发现</strong><br>
+          <span style="color: var(--text-muted); font-size: 0.9em;">当 AI 在完成任务时"顺便"发现架构问题，不要认为是跑题。这往往是最有价值的输出。建立机制及时决策和记录。</span>
+        </div>
+      </div>
+      <div class="practice-item">
+        <div class="practice-num">6</div>
+        <div>
+          <strong>工程师聚焦高层意图，不要逐行指定实现</strong><br>
+          <span style="color: var(--text-muted); font-size: 0.9em;">描述"我需要把 linalg.generic 转换为 AscendC gather"比"在第 370 行添加一个 if 分支"更有效。给 AI 足够的设计空间，往往得到更简洁的方案。</span>
+        </div>
+      </div>
+    </section>
+
+    <!-- ===== SLIDE: 工程师如何验收AI结果 ===== -->
+    <section>
+      <h2 class="section-title">工程师如何验收 AI 的结果？</h2>
+      <div style="margin-bottom: 10px; font-size: 0.72em; color: var(--text-muted);">
+        AI 生成代码不等于正确代码。验收是 AI-First 工作流中<span class="em">工程师不可缺席</span>的环节，分为三个层次：
+      </div>
+      <div class="three-col" style="margin-bottom: 10px;">
+        <div class="card card-teal">
+          <div style="font-weight: 700; color: var(--accent2); margin-bottom: 6px; font-size: 0.8em;">① 编译验证（即时）</div>
+          <div style="font-size: 0.68em; line-height: 1.8; color: var(--text);">
+            <div>最基础的门槛：能否编译通过</div>
+            <div style="color: var(--text-muted); margin: 4px 0;">AI 生成 C++/TableGen 后，立即在 Docker 容器中执行构建，编译错误直接反馈给 AI 继续修正</div>
+            <div><span class="check">✓</span> 构建成功 = 语法正确</div>
+            <div><span class="cross">✗</span> 不代表语义正确</div>
+          </div>
+        </div>
+        <div class="card card-accent">
+          <div style="font-weight: 700; color: var(--accent); margin-bottom: 6px; font-size: 0.8em;">② IR 输出比对（核心）</div>
+          <div style="font-size: 0.68em; line-height: 1.8; color: var(--text);">
+            <div>本项目最主要的验收手段</div>
+            <div style="color: var(--text-muted); margin: 4px 0;">每个 Pass 运行后输出 MLIR IR，工程师<strong>人工阅读 IR</strong>，确认关键节点（memory_space、op 类型、索引映射）是否符合预期</div>
+            <div><span class="check">✓</span> IR 语义可直接阅读</div>
+            <div><span class="check">✓</span> 异常一眼可见</div>
+          </div>
+        </div>
+        <div class="card" style="border-left: 4px solid #6030a0;">
+          <div style="font-weight: 700; color: #6030a0; margin-bottom: 6px; font-size: 0.8em;">③ Lit 测试（回归保障）</div>
+          <div style="font-size: 0.68em; line-height: 1.8; color: var(--text);">
+            <div>使用 LLVM FileCheck 写断言</div>
+            <div style="color: var(--text-muted); margin: 4px 0;">每个新功能配套 <code>.mlir</code> 测试文件，用 <code>// CHECK:</code> 锁定关键输出，后续修改自动回归，防止 AI 改坏已有功能</div>
+            <div><span class="check">✓</span> 防止回归</div>
+            <div><span class="check">✓</span> AI 也能写测试</div>
+          </div>
+        </div>
+      </div>
+      <div class="label">真实验收流程示例</div>
+      <div style="display: grid; grid-template-columns: repeat(5, 1fr); gap: 6px; font-size: 0.65em; align-items: center;">
+        <div class="card" style="text-align: center; padding: 6px;">
+          <div style="font-size: 1.2em;">🤖</div>
+          <div style="font-weight: 600; color: var(--accent2);">AI 生成代码</div>
+          <div style="color: var(--text-muted);">Pass / Op / 测试</div>
+        </div>
+        <div style="text-align: center; color: var(--accent); font-size: 1.2em; font-weight: 700;">→</div>
+        <div class="card" style="text-align: center; padding: 6px;">
+          <div style="font-size: 1.2em;">🔨</div>
+          <div style="font-weight: 600; color: var(--accent);">编译 + 运行</div>
+          <div style="color: var(--text-muted);">docker 容器中</div>
+        </div>
+        <div style="text-align: center; color: var(--accent); font-size: 1.2em; font-weight: 700;">→</div>
+        <div class="card" style="text-align: center; padding: 6px;">
+          <div style="font-size: 1.2em;">👤</div>
+          <div style="font-weight: 600; color: #6030a0;">工程师读 IR</div>
+          <div style="color: var(--text-muted);">确认语义正确</div>
+        </div>
+      </div>
+      <div class="insight" style="margin-top: 10px;">
+        关键原则：<span class="em">AI 负责生成，工程师负责判断。</span>
+        IR 可读性是 MLIR 最大的优势之一——相比二进制或汇编，工程师能直接"看懂" AI 生成的中间结果，验收成本极低。
+      </div>
+    </section>
+
+    <!-- ===== SLIDE 23: Claude Code 独特能力 ===== -->
+    <section>
+      <h2 class="section-title">为什么是 Claude Code + Sonnet 4.6？</h2>
+      <div style="margin-bottom: 10px;">
+        <div class="card-accent" style="font-size: 0.78em; padding: 8px 14px; display: flex; align-items: center; gap: 10px;">
+          <span style="font-size: 1.4em;">🏆</span>
+          <div>市面上同类工具（OpenCode、Codex CLI、Cursor Agent 等）在<strong>工具层</strong>上功能接近，但 <span class="em">Sonnet 4.6 的模型能力</span>是当前公认最强的编程模型——更长的推理链、更准确的代码生成、更少的幻觉。<strong>工具 × 模型，缺一不可。</strong></div>
+        </div>
+      </div>
+      <div class="two-col" style="margin-bottom: 10px;">
+        <div>
+          <div class="label">Sonnet 4.6 的模型层优势</div>
+          <div class="card card-accent" style="font-size: 0.7em; line-height: 1.85;">
+            <div>🧠 <strong>超长上下文推理</strong> — 200K token 窗口，整个编译器 Pass 的代码一次性读完，无截断</div>
+            <div>🔬 <strong>深度语义理解</strong> — 读 TableGen 推断 C++ API 约束，读 IR dump 追踪数据流，不依赖文档</div>
+            <div>🎯 <strong>精确代码生成</strong> — 生成的 C++/TableGen/Python 极少出现语法错误，减少无效编译循环</div>
+            <div>🔗 <strong>多步推理链</strong> — 5个级联 Bug 的调试，每步推理基于上一步结论，不会在中途"断链"</div>
+          </div>
+        </div>
+        <div>
+          <div class="label">Claude Code 的工具层优势</div>
+          <div class="card card-teal" style="font-size: 0.7em; line-height: 1.85;">
+            <div>📁 <strong>原生文件系统访问</strong> — 直接读写项目文件，无需手动粘贴，模型始终看到最新代码</div>
+            <div>⚙️ <strong>直接执行命令</strong> — SSH 进容器构建、运行 lit 测试、查看 IR 输出，闭环在一个工具内</div>
+            <div>📚 <strong>CLAUDE.md 自动注入</strong> — 项目约定、硬件规格、已知 Bug 列表，每次会话自动加载</div>
+            <div>🧩 <strong>MCP 插件生态</strong> — serena 语义检索、firecrawl 文档抓取，感知能力可自由扩展</div>
+            <div>🎮 <strong>Remote Control</strong> — 会话共享、远程协作，超出传统 AI 助手边界</div>
+          </div>
+        </div>
+      </div>
+      <div class="label">与同类工具的核心差异</div>
+      <div style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 8px; font-size: 0.68em;">
+        <div class="card" style="border-left: 3px solid #b02020;">
+          <div style="font-weight: 700; color: #b02020; margin-bottom: 4px;">网页版 AI（ChatGPT/Claude.ai）</div>
+          <div style="color: var(--text-muted); line-height: 1.6;">每次手动粘贴代码 · 无法执行命令 · 会话结束即遗忘 · 适合一次性问答</div>
+        </div>
+        <div class="card" style="border-left: 3px solid #e8a020;">
+          <div style="font-weight: 700; color: #9a6000; margin-bottom: 4px;">同类 CLI 工具（OpenCode / Codex）</div>
+          <div style="color: var(--text-muted); line-height: 1.6;">工具能力接近 CC · 但模型能力弱于 Sonnet 4.6 · 无 Memory 系统 · 插件生态薄弱</div>
+        </div>
+        <div class="card" style="border-left: 4px solid var(--accent2);">
+          <div style="font-weight: 700; color: var(--accent2); margin-bottom: 4px;">Claude Code + Sonnet 4.6 ✓</div>
+          <div style="color: var(--text-muted); line-height: 1.6;">最强模型 + 完整工具链 + 持久记忆 + 可扩展插件 · 当前编程 AI 的天花板组合</div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ===== SLIDE 24: 总结 ===== -->
+    <section>
+      <h2 class="section-title">总结</h2>
+      <div class="two-col" style="align-items: start; gap: 16px; margin-bottom: 12px;">
+        <div>
+          <div class="label">我们做了什么</div>
+          <div class="card-teal" style="margin-bottom: 10px;">
+            <ul style="margin: 0; padding-left: 1.2em; font-size: 0.84em;">
+              <li>用 AI 全程协作，构建了一个完整的 MLIR 编译器后端</li>
+              <li>在文档不充分的情况下，通过 AI 推理掌握了 AscendC 的完整 API</li>
+              <li>通过15K+轮次，打通6个场景，最高单次修复了 5 个级联 Bug，最难实现 8 种 TPosition 正确推断和使用</li>
+              <li>建立了可复用的 AI 协作工作流（CLAUDE.md + Memory）</li>
+              <li>3 个月完成约 20K 行代码的端到端可用系统</li>
+            </ul>
+          </div>
+          <div class="label">关键经验</div>
+          <div class="card-accent">
+            <ul style="margin: 0; padding-left: 1.2em; font-size: 0.84em;">
+              <li>AI 最擅长的是"在陌生领域快速建立认知"</li>
+              <li>执行能力（能跑测试）比生成能力（能写代码）更关键</li>
+              <li>知识积累系统决定了 AI 协作的长期效率</li>
+              <li>工程师角色转变：实现者 → 架构师 + 评审者</li>
+            </ul>
+          </div>
+        </div>
+        <div>
+          <div class="label">对行业的启示</div>
+          <div class="card" style="margin-bottom: 10px;">
+            <ul style="margin: 0; padding-left: 1.2em; font-size: 0.84em; line-height: 1.8;">
+              <li>基础软件领域（编译器、OS、驱动）同样适合 AI 协作</li>
+              <li>"没有文档"不是阻碍，AI 可以从源码中提取文档</li>
+              <li>团队中最有价值的不是"写代码最快的人"，而是"最会提问的人"</li>
+            </ul>
+          </div>
+          <div class="insight" style="font-size: 0.84em;">
+            AI-First 不是"AI 替代工程师"，而是"工程师用 AI 成为 10 倍生产力的独立开发者"——在以前需要一个小团队才能做到的领域，一个工程师 + AI 可以独立完成
+          </div>
+          <div class="card-teal" style="margin-top: 10px;">
+            <div style="font-size: 0.82em; line-height: 1.6; color: var(--text);">
+              <strong>下一步</strong>：将 AI 协作工作流推广到更多编译器场景，探索 AI 在性能调优和硬件验证阶段的应用
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ===== SLIDE 25: Q&A ===== -->
+    <section>
+      <div style="text-align: center; padding-top: 40px;">
+        <div style="font-size: 3em; margin-bottom: 16px;">🙋</div>
+        <div style="font-size: 2em; font-weight: 700; color: var(--text); margin-bottom: 8px;">Q &amp; A</div>
+        <div style="font-size: 1em; color: var(--text-muted); margin-bottom: 32px;">欢迎提问和讨论</div>
+        <div style="border-top: 2px solid var(--border); padding-top: 24px; margin: 0 auto; max-width: 600px;">
+          <div class="two-col" style="gap: 20px;">
+            <div class="card-teal" style="text-align: left;">
+              <div style="font-size: 0.82em; font-weight: 700; color: var(--accent2); margin-bottom: 6px;">代码仓库</div>
+              <div style="font-size: 0.78em; color: var(--text);">Ascend-MLIR<br>
+              <span style="font-size:0.9em; color: var(--text-muted);">linalg → AscendC 编译器后端</span></div>
+            </div>
+            <div class="card-accent" style="text-align: left;">
+              <div style="font-size: 0.82em; font-weight: 700; color: var(--accent); margin-bottom: 6px;">工具</div>
+              <div style="font-size: 0.78em; color: var(--text);">Claude Code<br>
+              <span style="font-size:0.9em; color: var(--text-muted);">AI-First 编译器开发实践</span></div>
+            </div>
+          </div>
+        </div>
+        <div style="margin-top: 32px; font-size: 0.78em; color: var(--text-muted);">
+          <span class="tag tag-amber">MLIR/LLVM</span>
+          <span class="tag tag-amber">华为昇腾 NPU</span>
+          <span class="tag tag-amber">AscendC</span>
+          <span class="tag tag-amber">Claude Code</span>
+        </div>
+        <div style="margin-top: 16px; font-size: 0.72em; color: var(--text-muted);">2025.12 – 2026.03 · Ascend-MLIR Project</div>
+      </div>
+    </section>
+
+  </div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/reveal.js@4.5.0/dist/reveal.js"></script>
+<script>
+  Reveal.initialize({
+    hash: true,
+    slideNumber: true,
+    progress: true,
+    transition: 'fade',
+    transitionSpeed: 'fast',
+    center: false,
+    width: 1200,
+    height: 700,
+    margin: 0.04,
+    minScale: 0.5,
+    maxScale: 1.5,
+    controls: true,
+    controlsTutorial: false,
+    overview: true,
+    keyboard: true,
+    touch: true,
+  });
+</script>
+</body>
+</html>
