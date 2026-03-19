@@ -1092,9 +1092,9 @@ git commit -m "feat(runtime): add sim-validator CLI tool"
 ```bash
 ssh xvm@orb
 cd /home/niu/code/Ascend-MLIR
-source examples/env.sh
+cd sim
 # Wait 1 second for file sync after any local edits
-./scripts/build.sh --build-project
+../scripts/build.sh --build-project --llvm-build-dir ~/code/llvm-project/build
 ```
 
 Expected: clean build. Common fix: if `llvm::MemoryBuffer` not found, add `#include "llvm/Support/MemoryBuffer.h"`.
@@ -1119,9 +1119,10 @@ EOF
 - [ ] **Step 3: Run sim-validator**
 
 ```bash
-source examples/env.sh
+source ../python/test/env.sh
+source ../examples/env.sh
 sim-validator \
-  --kernel   examples/broadcast-add-reduce/step8_kernel.cpp \
+  --kernel   ../examples/broadcast-add-reduce/step8_kernel-adjust.cpp \
   --name     broadcast_add_reducesum \
   --tiling-params "TB_M=16,TB_N=4,dim_arg0_0=32,dim_arg1_1=32" \
   --tiling-layout "int64,int64,int64,int64" \
@@ -1138,16 +1139,7 @@ mean_abs_diff: <small value>
 PASS
 ```
 
-- [ ] **Step 4: Cross-check with Python test**
-
-```bash
-source python/test/env.sh
-python3 examples/broadcast-add-reduce/test_e2e.py
-```
-
-Expected: `✅✅✅ 端到端测试通过！` with similar max_abs_diff.
-
-- [ ] **Step 5: Add tiling_space.json (needed by AutoTuner plan)**
+- [ ] **Step 4: Add tiling_space.json (needed by AutoTuner plan)**
 
 ```bash
 cat > examples/broadcast-add-reduce/tiling_space.json << 'EOF'
@@ -1162,7 +1154,7 @@ cat > examples/broadcast-add-reduce/tiling_space.json << 'EOF'
 }
 EOF
 git add examples/broadcast-add-reduce/tiling_space.json
-git commit -m "chore: add tiling_space.json for broadcast-add-reduce"
+#git commit -m "chore: add tiling_space.json for broadcast-add-reduce"
 ```
 
 ---
@@ -1173,3 +1165,106 @@ git commit -m "chore: add tiling_space.json for broadcast-add-reduce"
 - Running `sim-validator` on `broadcast-add-reduce/step8_kernel.cpp` with M=32, N=32 produces `PASS`
 - `max_abs_diff < 1.0` (f16 tolerance)
 - Results match `python3 examples/broadcast-add-reduce/test_e2e.py`
+
+---
+
+## 实现状态与使用方法（2026-03-19 更新）
+
+> 计划已全部实现，并在实现过程中做了若干架构调整，记录如下。
+
+### 架构调整说明
+
+| 计划设计 | 实际实现 | 原因 |
+|---------|---------|------|
+| `Executor::Run()` 每次调用注册 binary + function | `RegisterBinary()` / `RunWithHandle()` 分离 | 模拟器禁止对同一 stub 指针重复注册（rc=507000）；编译一次、注册一次、多 config 复用 handle |
+| 每次 `Run()` 创建/销毁 stream | `Initialize()` 创建持久化 stream，`~Executor()` 销毁 | 模拟器在第 2+ 次 launch 时复用 stream ID 会丢失完成状态导致挂起 |
+| `SimValidator::Validate()` 内部自行编译+运行 | 新增 `SimValidator::ValidateBinary(func_handle, executor, args, expected, atol, rtol)` | autotuner 需要在搜索循环外编译一次，循环内只换 tiling args 反复跑 |
+| pipeline-analyzer 独立工具 | 删除，改为 autotuner `--sim-report` 选项调用 msopgen | `msopgen sim` 是 CANN 内置工具，功能完全覆盖；避免重复实现 |
+
+### sim-validator 使用
+
+```bash
+# 在 xvm 容器内
+source /home/niu/code/Ascend-MLIR/examples/env.sh
+source /home/niu/code/Ascend-MLIR/python/test/env.sh   # 导出 libruntime_camodel.so 路径
+
+sim-validator \
+  --kernel   examples/broadcast-add-reduce/step8_kernel-adjust.cpp \
+  --name     broadcast_add_reducesum \
+  --tiling-params "TB_M=16,TB_N=4,dim_arg0_0=64,dim_arg1_1=64" \
+  --tiling-layout "int64,int64,int64,int64" \
+  --inputs   examples/broadcast-add-reduce/input_a.npy,examples/broadcast-add-reduce/input_b.npy \
+  --expected examples/broadcast-add-reduce/output_c.npy \
+  --block-dim 1 \
+  --soc Ascend910B1
+```
+
+### autotuner 使用
+
+```bash
+source /home/niu/code/Ascend-MLIR/examples/env.sh
+source /home/niu/code/Ascend-MLIR/python/test/env.sh
+
+# 基本用法：全空间搜索，输出最优 tiling_func.cpp
+autotuner \
+  --space   examples/broadcast-add-reduce/tiling_space.json \
+  --shape   "M=64,N=64" \
+  --inputs  examples/broadcast-add-reduce/input_a.npy,examples/broadcast-add-reduce/input_b.npy \
+  --expected examples/broadcast-add-reduce/output_c.npy \
+  --output  tiling_func.cpp
+
+# 附带流水图分析（需要先跑过一次，simulator dump 文件在 cwd）
+autotuner \
+  --space   examples/broadcast-add-reduce/tiling_space.json \
+  --shape   "M=64,N=64" \
+  --inputs  examples/broadcast-add-reduce/input_a.npy,examples/broadcast-add-reduce/input_b.npy \
+  --expected examples/broadcast-add-reduce/output_c.npy \
+  --sim-report trace \
+  --sim-report-out ./sim_report
+
+# 同时生成流水图 + 代码行热点 CSV（需要 .o 文件与 .bin 同目录）
+autotuner ... --sim-report trace,codeline --sim-report-out ./sim_report
+```
+
+#### --sim-report 选项说明
+
+| 值 | 输出文件 | 工具 | 用途 |
+|----|---------|------|------|
+| `trace` | `dump2trace_core*.json` | msopgen sim | chrome://tracing 查看 PIPE 流水，识别 MTE2/VEC/Cube 瓶颈 |
+| `codeline` | `code_exe_prof.csv`<br>`instr_exe_prof.csv` | msopgen sim -reloc | 源码行级别热点分析；需 .o 文件（自动从 .bin 路径推导） |
+
+组合示例：`--sim-report trace,codeline`
+
+msopgen 路径优先级：`--msopgen` > 环境变量 `ASCEND_HOME_PATH/tools/msopgen` > `/usr/local/Ascend/ascend-toolkit/latest/tools/msopgen`
+
+### tiling_space.json 格式
+
+```json
+{
+  "kernel": "broadcast_add_reducesum",
+  "kernel_file": "step8_kernel-adjust.cpp",
+  "soc": "Ascend910B1",
+  "block_dim_expr": "ceil(M/TB_M)",
+  "tiling_params": [
+    {"name": "TB_M",       "min": 16, "max": 64, "step": 16},
+    {"name": "TB_N",       "min": 4,  "max": 64, "step": 4},
+    {"name": "dim_arg0_0", "fixed": true, "shape_key": "M"},
+    {"name": "dim_arg1_1", "fixed": true, "shape_key": "N"}
+  ]
+}
+```
+
+字段说明：
+- `fixed: true` + `shape_key`：从 `--shape` 取值，不搜索
+- `values: [...]`：枚举候选值（优先于 min/max/step）
+- `block_dim_expr`：支持 `ceil(X/Y)` 和 `X/Y`，变量从 `--shape` 和搜索变量取值
+
+### 环境依赖
+
+```bash
+# xvm 容器内需要的环境变量
+ASCEND_HOME_PATH=/usr/local/Ascend/ascend-toolkit/latest   # CANN 工具包路径
+# env.sh 会设置 LD_LIBRARY_PATH 包含 libruntime_camodel.so
+# python/test/env.sh 会设置模拟器 .so 路径
+ASCEND_CPU_SIMULATION=1   # 启用 CPU 仿真模式（自动由 env.sh 设置）
+```
