@@ -37,6 +37,15 @@ static cl::opt<std::string> SocVersion("soc",
     cl::desc("SoC version (overrides JSON; default: Ascend910B1)"), cl::init(""));
 static cl::opt<double> Atol("atol", cl::desc("Absolute tolerance"), cl::init(1.0));
 static cl::opt<double> Rtol("rtol", cl::desc("Relative tolerance"), cl::init(1e-2));
+static cl::opt<bool>   EnableTrace("trace",
+    cl::desc("After search, call msopgen sim on best config to generate trace.json"),
+    cl::init(false));
+static cl::opt<std::string> MsopgenPath("msopgen",
+    cl::desc("Path to msopgen binary (default: auto-detect from ASCEND_HOME_PATH)"),
+    cl::init(""));
+static cl::opt<std::string> TraceOutDir("trace-out",
+    cl::desc("Output directory for msopgen sim trace files (default: ./trace_output)"),
+    cl::init("trace_output"));
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -576,6 +585,81 @@ int main(int argc, char** argv) {
       llvm::outs() << "  " << kv.first << "=" << kv.second << "\n";
 
   emitTilingFunc(OutputFile, ts, best, shape);
+
+  // ── Optional: generate instruction pipeline trace via msopgen sim ────────────
+  if (EnableTrace) {
+    // Locate msopgen: explicit flag > ASCEND_HOME_PATH > common install path
+    std::string msopgen = MsopgenPath;
+    if (msopgen.empty()) {
+      const char* home = std::getenv("ASCEND_HOME_PATH");
+      if (!home) home = "/usr/local/Ascend/ascend-toolkit/latest";
+      msopgen = std::string(home) + "/tools/msopgen";
+    }
+    // Check executable exists
+    if (!llvm::sys::fs::can_execute(msopgen)) {
+      llvm::errs() << "Warning: --trace requested but msopgen not found at: "
+                   << msopgen << "\n"
+                   << "  Set ASCEND_HOME_PATH or use --msopgen=<path>\n";
+    } else {
+      // Determine sim run directory: cwd (simulator dumps land in cwd)
+      llvm::SmallString<256> cwd;
+      llvm::sys::fs::current_path(cwd);
+      std::string sim_dir = cwd.str().str();
+
+      // Create output directory
+      llvm::SmallString<256> out_abs(TraceOutDir.getValue());
+      llvm::sys::fs::make_absolute(out_abs);
+      llvm::sys::fs::create_directories(out_abs);
+
+      // msopgen sim requires one call per (core, subcore) pair.
+      // Discover all core*/veccore* dump files in cwd.
+      struct CoreEntry { std::string core_id; std::string subcore_id; };
+      std::vector<CoreEntry> cores;
+      std::error_code ec;
+      for (llvm::sys::fs::directory_iterator it(sim_dir, ec), end;
+           !ec && it != end; it.increment(ec)) {
+        std::string fname = llvm::sys::path::filename(it->path()).str();
+        // Match "core{N}.veccore{M}.ccu.*_issque.dump"
+        if (fname.find("_issque.dump") == std::string::npos) continue;
+        auto ccu = fname.find(".ccu.");
+        if (ccu == std::string::npos) continue;
+        std::string label = fname.substr(0, ccu);  // e.g. "core0.veccore1"
+        auto dot = label.find('.');
+        if (dot == std::string::npos) continue;
+        std::string core_id    = label.substr(0, dot);    // "core0"
+        std::string subcore_id = label.substr(dot + 1);   // "veccore1"
+        // Deduplicate
+        bool dup = false;
+        for (auto& e : cores)
+          if (e.core_id == core_id && e.subcore_id == subcore_id) { dup = true; break; }
+        if (!dup) cores.push_back({core_id, subcore_id});
+      }
+
+      if (cores.empty()) {
+        llvm::errs() << "Warning: --trace: no *_issque.dump files found in " << sim_dir
+                     << ". Run autotuner from the simulation working directory.\n";
+      } else {
+        llvm::outs() << "\nGenerating pipeline trace with msopgen sim ...\n";
+        for (auto& c : cores) {
+          // msopgen sim -c core0 -d <sim_dir> -subc veccore0 -out <out>
+          std::string cmd = msopgen + " sim"
+              + " -c " + c.core_id
+              + " -d " + sim_dir
+              + " -subc " + c.subcore_id
+              + " -out " + out_abs.str().str();
+          llvm::outs() << "  " << c.core_id << "." << c.subcore_id << " ...";
+          llvm::outs().flush();
+          int rc = std::system(cmd.c_str());
+          if (rc != 0)
+            llvm::outs() << " (exit " << rc << ")\n";
+          else
+            llvm::outs() << " OK\n";
+        }
+        llvm::outs() << "Trace files written to: " << out_abs.str() << "\n";
+        llvm::outs() << "  Load dump2trace_core*.json in chrome://tracing\n";
+      }
+    }
+  }
 
   llvm::outs().flush();
   llvm::errs().flush();
