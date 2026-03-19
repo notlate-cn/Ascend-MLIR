@@ -339,7 +339,7 @@ int main(int argc, char** argv) {
 
   // Note: ts/dur are simulator cycle counts, not nanoseconds.
   // displayTimeUnit is informational only in chrome://tracing Gantt view.
-  out << "{\n\"displayTimeUnit\": \"us\",\n\"traceEvents\": [\n";
+  out << "{\n\"displayTimeUnit\": \"ns\",\n\"traceEvents\": [\n";
   bool first = true;
   for (auto& e : all_events) emitEvent(out, e, first);
   out << "\n]\n}\n";
