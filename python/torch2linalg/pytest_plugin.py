@@ -7,7 +7,7 @@ pytest 集成：torch_e2e_test 装饰器
         class Model(torch.nn.Module):
             def forward(self, x):
                 return x.relu().sum(dim=1)
-        return Model(), [torch.randn(32, 64)]
+        return Model(), [torch.randn(32, 64, dtype=torch.float16)]
 """
 
 import os
@@ -18,8 +18,6 @@ import functools
 from pathlib import Path
 
 import torch
-import torch.nn as nn
-import numpy as np
 
 from .convert import torch_to_linalg
 
@@ -27,77 +25,38 @@ REPO_ROOT = Path(__file__).parent.parent.parent
 OUTPUT_ROOT = REPO_ROOT / "output" / "torch_e2e"
 
 
-def torch_e2e_test(
-    func=None,
-    *,
-    transform_mlir: str | Path | None = None,
-    tiling: dict | None = None,
-    kernel_cpp: str | Path | None = None,
-    rtol: float = 1e-2,
-    atol: float = 1.0,
-    dtype: torch.dtype = torch.float16,
-):
+def torch_e2e_test(func):
     """
     pytest 装饰器：定义一个 torch → NPU e2e 测试。
 
     被装饰函数应返回 (model, sample_inputs)。
-    装饰器负责执行完整 pipeline 并验证精度。
-
-    Args:
-        transform_mlir: Transform dialect 脚本路径（step2 tiling 用）
-        tiling: Tiling 参数，如 {"TB_M": 16, "TB_N": 4}
-        kernel_cpp: 跳过 MLIR pipeline，直接使用已有 C++ kernel
-        rtol/atol: 精度容忍度
-        dtype: 目标数据类型
+    装饰器执行完整 pipeline 并验证 kernel 生成成功。
     """
-    def decorator(fn):
-        @functools.wraps(fn)
-        def wrapper():
-            model, inputs = fn()
-            test_name = fn.__name__
-            work_dir = OUTPUT_ROOT / test_name
-            work_dir.mkdir(parents=True, exist_ok=True)
+    @functools.wraps(func)
+    def wrapper():
+        model, inputs = func()
+        test_name = func.__name__
+        work_dir = OUTPUT_ROOT / test_name
+        if work_dir.exists():
+            shutil.rmtree(work_dir)
+        work_dir.mkdir(parents=True, exist_ok=True)
 
-            # Stage 1: torch → linalg MLIR
-            linalg_path = work_dir / "step0_linalg.mlir"
-            print(f"\n[Stage 1] torch → linalg MLIR")
-            torch_to_linalg(model, inputs, output_path=linalg_path, dtype=dtype)
-            print(f"  输出: {linalg_path}")
+        # Stage 1: torch → linalg MLIR
+        linalg_path = work_dir / "step0_linalg.mlir"
+        print(f"\n[Stage 1] torch → linalg MLIR")
+        torch_to_linalg(model, inputs, output_path=linalg_path)
+        print(f"  输出: {linalg_path}")
 
-            # Stage 2: MLIR pipeline → C++ kernel
-            resolved_kernel_cpp = None
-            if kernel_cpp is not None:
-                resolved_kernel_cpp = Path(kernel_cpp)
-                if not resolved_kernel_cpp.is_absolute():
-                    resolved_kernel_cpp = REPO_ROOT / resolved_kernel_cpp
-                print(f"\n[Stage 2-8] 使用已有 kernel: {resolved_kernel_cpp}")
-            else:
-                print(f"\n[Stage 2-8] MLIR pipeline → C++ kernel")
-                if tiling:
-                    print(f"  tiling: {tiling}")
-                resolved_kernel_cpp = _run_mlir_pipeline(
-                    linalg_path, work_dir, transform_mlir, tiling
-                )
+        # Stage 2-8: MLIR pipeline → C++ kernel
+        print(f"\n[Stage 2-8] MLIR pipeline → C++ kernel")
+        resolved_kernel_cpp = _run_mlir_pipeline(linalg_path, work_dir)
 
-            # Stage 9: torch reference
-            print(f"\n[Stage 9] PyTorch reference 计算")
-            model_typed = model.to(dtype).eval()
-            inputs_typed = [x.to(dtype) for x in inputs]
-            with torch.no_grad():
-                expected = model_typed(*inputs_typed)
-            expected_np = expected.numpy()
-            print(f"  输出 shape: {expected_np.shape}, dtype: {expected_np.dtype}")
+        # 验证 C++ kernel 生成
+        assert resolved_kernel_cpp is not None and resolved_kernel_cpp.exists(), \
+            f"C++ kernel 生成失败: {resolved_kernel_cpp}"
+        print(f"\n  C++ kernel 生成成功: {resolved_kernel_cpp}")
 
-            # 验证 C++ kernel 生成
-            assert resolved_kernel_cpp is not None and resolved_kernel_cpp.exists(), \
-                f"C++ kernel 生成失败: {resolved_kernel_cpp}"
-            print(f"\n  C++ kernel 生成成功: {resolved_kernel_cpp}")
-
-        return wrapper
-
-    if func is not None:
-        return decorator(func)
-    return decorator
+    return wrapper
 
 
 # ================================================================
@@ -238,8 +197,6 @@ def _generate_transform_script(fused_path: Path, work_dir: Path) -> Path | None:
 def _run_mlir_pipeline(
     linalg_path: Path,
     work_dir: Path,
-    transform_mlir: str | Path | None,
-    tiling: dict | None = None,
 ) -> Path | None:
     """
     运行完整 MLIR pipeline（对应 run.sh stage 1-8）:
@@ -265,16 +222,7 @@ def _run_mlir_pipeline(
         return None
 
     # ── Stage 2: Tiling (Transform Interpreter) ──
-    if transform_mlir is not None:
-        # 用户提供的 transform 脚本
-        transform_path = Path(transform_mlir)
-        if not transform_path.is_absolute():
-            transform_path = REPO_ROOT / transform_path
-    elif tiling is not None:
-        # 从 tiling dict 自动生成 transform 脚本
-        transform_path = _generate_transform_script(step1, work_dir)
-    else:
-        transform_path = None
+    transform_path = _generate_transform_script(step1, work_dir)
 
     if transform_path is not None:
         step2 = work_dir / "step2_tiled.mlir"
@@ -284,7 +232,7 @@ def _run_mlir_pipeline(
                              afir_opt):
             return None
     else:
-        print(f"  [step2] 跳过（未提供 transform 脚本或 tiling 参数）")
+        print(f"  [step2] 跳过（无 parallel 维度，无法自动 tiling）")
         step2 = step1
 
     # ── Stage 3: Bufferize ──
