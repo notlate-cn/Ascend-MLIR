@@ -251,7 +251,7 @@ int main(int argc, char** argv) {
 
   // Read binary
   std::ifstream bf(bin_path, std::ios::binary);
-  if (!bf) { std::cerr << "Cannot open bin: " << bin_path << "\n"; return 4; }
+  if (!bf) { std::cerr << "Cannot open bin: " << bin_path << "\n"; freeArrays(); dlclose(lib); return 4; }
   std::vector<uint8_t> bin_data((std::istreambuf_iterator<char>(bf)), {});
 
   // Register binary + function
