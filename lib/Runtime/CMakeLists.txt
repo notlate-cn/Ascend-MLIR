@@ -2,6 +2,7 @@
 add_mlir_library(AscendCRuntime
   Compiler.cpp
   Executor.cpp
+  HostRunnerGen.cpp
   SimValidator.cpp
   NpyIO.cpp
 
