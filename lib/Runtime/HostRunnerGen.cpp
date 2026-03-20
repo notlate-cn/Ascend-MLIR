@@ -19,11 +19,22 @@ static uint32_t magicForType(const std::string& kernel_type) {
 //   magic_buf    : hex magic constant for DevBinary
 //   kernel_name  : function name string literal
 static std::string emitRunnerCpp(const HostRunnerGen::Config& cfg) {
+  // C1: escape helper for splicing into C++ string literals
+  auto escapeCppStr = [](const std::string& s) {
+    std::string out;
+    for (char c : s) {
+      if (c == '\\') out += "\\\\";
+      else if (c == '"') out += "\\\"";
+      else out += c;
+    }
+    return out;
+  };
+
   // Build push_back lines. Variable name in emitted code is "tiling_layout"
   // (matches the else-branch vector declaration in the emitted main()).
   std::string layout_init;
   for (size_t i = 0; i < cfg.tiling_layout.size(); ++i)
-    layout_init += "    tiling_layout.push_back(\"" + cfg.tiling_layout[i] + "\");\n";
+    layout_init += "    tiling_layout.push_back(\"" + escapeCppStr(cfg.tiling_layout[i]) + "\");\n";
 
   char magic_buf[32];
   std::snprintf(magic_buf, sizeof(magic_buf), "0x%08X",
@@ -144,6 +155,7 @@ static std::vector<uint8_t> buildTiling(const std::string& params,
   auto pvec = splitComma(params);
   for (size_t i = 0; i < pvec.size(); ++i) {
     auto eq = pvec[i].find('=');
+    if (eq == std::string::npos) continue; // I6: skip malformed entries
     int64_t val = std::stoll(pvec[i].substr(eq + 1));
     std::string type = i < layout.size() ? layout[i] : "int64";
     if (type == "int32" || type == "int32_t") {
@@ -203,17 +215,23 @@ int main(int argc, char** argv) {
   output.dtype = inputs[0].dtype;
   output.data  = new uint8_t[output.nbytes()]();
 
+  // C2/I1: Cleanup for host-side NDArray memory
+  auto freeArrays = [&]() {
+    for (auto& inp : inputs) { delete[] (uint8_t*)inp.data; inp.data = nullptr; }
+    delete[] (uint8_t*)output.data; output.data = nullptr;
+  };
+
   // dlopen camodel
   const char* home = std::getenv("ASCEND_HOME_PATH");
   std::string lib_path = std::string(home ? home :
       "/usr/local/Ascend/ascend-toolkit/latest")
       + "/runtime/lib64/libruntime_camodel.so";
   void* lib = dlopen(lib_path.c_str(), RTLD_LAZY | RTLD_GLOBAL);
-  if (!lib) { std::cerr << "dlopen failed: " << dlerror() << "\n"; return 3; }
+  if (!lib) { std::cerr << "dlopen failed: " << dlerror() << "\n"; freeArrays(); return 3; }
 
 #define LOAD(name, T) \
   auto name = reinterpret_cast<T>(dlsym(lib, #name)); \
-  if (!name) { std::cerr << "dlsym " #name " failed\n"; dlclose(lib); return 3; }
+  if (!name) { std::cerr << "dlsym " #name " failed\n"; freeArrays(); dlclose(lib); return 3; }
   LOAD(rtSetDevice,         int(*)(int32_t))
   LOAD(rtDevBinaryRegister, int(*)(const DevBinary*, void**))
   LOAD(rtFunctionRegister,  int(*)(void*, void*, const char*, void*, uint32_t))
@@ -226,7 +244,10 @@ int main(int argc, char** argv) {
   LOAD(rtDeviceSynchronize, int(*)())
 #undef LOAD
 
-  rtSetDevice(0);
+  // I2: Check rtSetDevice return value
+  if (rtSetDevice(0) != 0) {
+    std::cerr << "rtSetDevice failed\n"; freeArrays(); dlclose(lib); return 3;
+  }
 
   // Read binary
   std::ifstream bf(bin_path, std::ios::binary);
@@ -241,12 +262,12 @@ int main(int argc, char** argv) {
   dev_bin.length  = bin_data.size();
   void* bin_handle = nullptr;
   if (rtDevBinaryRegister(&dev_bin, &bin_handle) != 0) {
-    std::cerr << "rtDevBinaryRegister failed\n"; dlclose(lib); return 3;
+    std::cerr << "rtDevBinaryRegister failed\n"; freeArrays(); dlclose(lib); return 3;
   }
-  const char* fn_name = ")cpp") + cfg.kernel_name + R"cpp(";
+  const char* fn_name = ")cpp") + escapeCppStr(cfg.kernel_name) + R"cpp(";
   void* fn_ptr = const_cast<char*>(fn_name);
   if (rtFunctionRegister(bin_handle, fn_ptr, fn_name, fn_ptr, 0) != 0) {
-    std::cerr << "rtFunctionRegister failed\n"; dlclose(lib); return 3;
+    std::cerr << "rtFunctionRegister failed\n"; freeArrays(); dlclose(lib); return 3;
   }
 
   // Alloc helper: rtMalloc(n+512), align to 512 bytes, track raw ptr for rtFree
@@ -299,9 +320,14 @@ int main(int argc, char** argv) {
                           nullptr, stream);
   if (rc != 0) {
     std::cerr << "rtKernelLaunch failed: rc=" << rc << "\n";
-    rtStreamDestroy(stream); freeAll(); dlclose(lib); return 3;
+    rtStreamDestroy(stream); freeAll(); freeArrays(); dlclose(lib); return 3;
   }
-  rtDeviceSynchronize();
+
+  // I3: Check rtDeviceSynchronize return value
+  if (rtDeviceSynchronize() != 0) {
+    std::cerr << "rtDeviceSynchronize failed\n";
+    rtStreamDestroy(stream); freeAll(); freeArrays(); dlclose(lib); return 3;
+  }
   rtStreamDestroy(stream);
 
   // D2H output (4-byte chunks; safe due to +512 overalloc)
@@ -316,6 +342,7 @@ int main(int argc, char** argv) {
 
   freeAll();
   saveNpy(output_path, output);
+  freeArrays();
   dlclose(lib);
   return 0;
 }
@@ -357,9 +384,11 @@ llvm::Expected<std::string> HostRunnerGen::Generate(const Config& cfg,
   // Use 300 s timeout consistent with Compiler.cpp.
   // If g++ is not on PATH, the error message will read "g++: not found".
   // In that case, add g++ to PATH or set its full path in this command.
-  std::string cmd = "g++ -O2 -std=c++17 " + src_path + " -ldl -o " + exe_path;
+  // I4: Quote src_path and exe_path to handle spaces in paths
+  std::string cmd = "g++ -O2 -std=c++17 \"" + src_path + "\" -ldl -o \"" + exe_path + "\"";
   std::vector<std::string> args = {"/bin/sh", "-c", cmd};
   std::vector<llvm::StringRef> argv;
+  argv.reserve(args.size()); // M3: reserve capacity
   for (auto& a : args) argv.push_back(a);
 
   std::string err_msg;
