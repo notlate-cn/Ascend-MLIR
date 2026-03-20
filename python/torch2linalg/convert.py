@@ -16,23 +16,20 @@ def torch_to_linalg(
     model: nn.Module,
     sample_inputs: list[torch.Tensor],
     output_path: Optional[str | Path] = None,
-    dtype: torch.dtype = torch.float16,
 ) -> str:
     """
     将 PyTorch 模型转换为 linalg MLIR IR 文本。
 
     Args:
-        model: PyTorch 模型
-        sample_inputs: 示例输入张量（用于 tracing shape）
+        model: PyTorch 模型（调用方负责 dtype）
+        sample_inputs: 示例输入张量（调用方负责 dtype）
         output_path: 可选，输出 .mlir 文件路径
-        dtype: 目标数据类型，默认 float16
 
     Returns:
         linalg MLIR IR 文本
     """
-    # 转换 dtype
-    model = model.to(dtype).eval()
-    inputs = tuple(x.to(dtype) for x in sample_inputs)
+    model = model.eval()
+    inputs = tuple(sample_inputs)
 
     # torch-mlir: export + import → linalg
     module = export_and_import(model, *inputs, output_type=OutputType.LINALG_ON_TENSORS)
