@@ -256,16 +256,18 @@ int main(int argc, char** argv) {
 
   // Register binary + function
   DevBinary dev_bin;
-  dev_bin.magic   = )cpp") + std::string(magic_buf) + R"cpp(u;
-  dev_bin.version = 0;
+)cpp"
+    + "  dev_bin.magic   = " + std::string(magic_buf) + "u;\n"
+    + R"cpp(  dev_bin.version = 0;
   dev_bin.data    = (const char*)bin_data.data();
   dev_bin.length  = bin_data.size();
   void* bin_handle = nullptr;
   if (rtDevBinaryRegister(&dev_bin, &bin_handle) != 0) {
     std::cerr << "rtDevBinaryRegister failed\n"; freeArrays(); dlclose(lib); return 3;
   }
-  const char* fn_name = ")cpp") + escapeCppStr(cfg.kernel_name) + R"cpp(";
-  void* fn_ptr = const_cast<char*>(fn_name);
+)cpp"
+    + "  const char* fn_name = \"" + escapeCppStr(cfg.kernel_name) + "\";\n"
+    + R"cpp(  void* fn_ptr = const_cast<char*>(fn_name);
   if (rtFunctionRegister(bin_handle, fn_ptr, fn_name, fn_ptr, 0) != 0) {
     std::cerr << "rtFunctionRegister failed\n"; freeArrays(); dlclose(lib); return 3;
   }
