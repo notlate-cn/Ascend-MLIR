@@ -18,16 +18,16 @@ else
   exit 1
 fi
 
-# Test 2: --sim-report rejected (unknown option)
+# Test 2: --sim-report rejected as unknown option
 echo "--- Test 2: --sim-report rejected ---"
 set +e
-"$AUTOTUNER" --sim-report=trace --space /dev/null 2>/dev/null
+err=$("$AUTOTUNER" --sim-report=trace 2>&1)
 rc=$?
 set -e
-if [ "$rc" -ne 0 ]; then
+if [ "$rc" -ne 0 ] && echo "$err" | grep -q "sim-report"; then
   echo "PASS: --sim-report rejected (exit $rc)"
 else
-  echo "FAIL: --sim-report was accepted (expected rejection)"
+  echo "FAIL: expected --sim-report to be rejected with error mentioning 'sim-report', got: $err"
   exit 1
 fi
 
