@@ -65,6 +65,7 @@ if not config.enable_bindings_python or config.enable_bindings_python == "false"
 tool_dirs = [config.afir_tools_dir, config.llvm_tools_dir]
 tools = [
     'afir-opt',
+    'afir-translate',
     ToolSubst('%PYTHON', config.python_executable, unresolved='ignore'),
 ]
 
