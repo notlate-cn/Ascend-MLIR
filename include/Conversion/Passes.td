@@ -229,4 +229,26 @@ def AscendCPrepareForEmitPass : Pass<"ascendc-prepare-for-emit", "mlir::func::Fu
   ];
 }
 
+//===----------------------------------------------------------------------===//
+// CanonicalizeCannSignature
+//===----------------------------------------------------------------------===//
+
+def CanonicalizeCannSignaturePass : Pass<"canonicalize-cann-signature", "mlir::ModuleOp"> {
+  let summary = "Canonicalize aicore kernel signature to CANN calling convention";
+  let description = [{
+    Transforms func.func ops with {ascendc.aicore, ascendc.global} attributes from
+    PyAsc internal format (inputs..., tiling_memref, outputs...) to CANN standard:
+    (inputs..., outputs..., workspace:memref<ui8>, tiling:PyStructType).
+
+    Also:
+    - Removes the emitasc.copy_struct op (tiling is now by-value).
+    - Adds cann.num_inputs = N : i32 attribute to the function.
+  }];
+  let dependentDialects = [
+    "mlir::func::FuncDialect",
+    "mlir::emitasc::EmitAscDialect",
+    "mlir::memref::MemRefDialect"
+  ];
+}
+
 #endif // AFIR_CONVERSION_PASSES
