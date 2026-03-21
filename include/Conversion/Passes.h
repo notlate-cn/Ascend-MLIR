@@ -14,6 +14,7 @@
 #include "Conversion/LinalgToAscendC/LinalgToAscendCPass.h"
 #include "Conversion/AscendCParallelize/AscendCParallelizePass.h"
 #include "Conversion/AscendCPrepareForEmit/AscendCPrepareForEmitPass.h"
+#include "Conversion/CanonicalizeCannSignature/CanonicalizeCannSignaturePass.h"
 #include "mlir/Pass/Pass.h"
 #include <memory>
 
