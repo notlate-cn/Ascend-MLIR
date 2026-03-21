@@ -8,7 +8,7 @@ COMPILER=./build/bin/compiler
 # Test 1: binary exists and --help exits 0
 echo "--- Test 1: --help ---"
 set +e
-$COMPILER --help > /dev/null 2>&1
+"$COMPILER" --help > /dev/null 2>&1
 rc=$?
 set -e
 if [ "$rc" -eq 0 ]; then
@@ -21,7 +21,7 @@ fi
 # Test 2: missing --kernel file → exit 4 (input error: file not found)
 echo "--- Test 2: missing kernel file ---"
 set +e
-$COMPILER --kernel /nonexistent/kernel.cpp --output /tmp/compiler_test 2>/dev/null
+"$COMPILER" --kernel /nonexistent/kernel.cpp --output /tmp/compiler_test 2>/dev/null
 rc=$?
 set -e
 if [ "$rc" -eq 4 ]; then
@@ -35,8 +35,8 @@ fi
 echo "--- Test 3: --num-outputs 2 rejected ---"
 echo "// dummy" > /tmp/dummy_kernel.cpp
 set +e
-$COMPILER --kernel /tmp/dummy_kernel.cpp \
-          --output /tmp/compiler_test \
+"$COMPILER" --kernel /tmp/dummy_kernel.cpp \
+            --output /tmp/compiler_test \
           --num-outputs 2 2>/dev/null
 rc=$?
 set -e
