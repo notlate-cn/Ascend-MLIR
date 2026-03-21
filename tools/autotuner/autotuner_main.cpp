@@ -9,6 +9,7 @@
 #include "llvm/Support/MemoryBuffer.h"
 #include "llvm/Support/Path.h"
 #include "llvm/Support/raw_ostream.h"
+#include "Runtime/HostRunnerGen.h"
 #include <algorithm>
 #include <cmath>
 #include <cstdlib>
@@ -37,21 +38,15 @@ static cl::opt<std::string> SocVersion("soc",
     cl::desc("SoC version (overrides JSON; default: Ascend910B1)"), cl::init(""));
 static cl::opt<double> Atol("atol", cl::desc("Absolute tolerance"), cl::init(1.0));
 static cl::opt<double> Rtol("rtol", cl::desc("Relative tolerance"), cl::init(1e-2));
-// --sim-report=trace,codeline
-//   trace    : python3 msopgen sim → dump2trace_core*.json (chrome://tracing)
-//   codeline : add -reloc <.o>  → code_exe_prof.csv + instr_exe_prof.csv
-// Both can be combined: --sim-report=trace,codeline
-static cl::opt<std::string> SimReport("sim-report",
-    cl::desc("Comma-separated report types after search: trace (pipeline trace JSON), "
-             "codeline (source-line/instruction hotspot CSV via -reloc). "
-             "Example: --sim-report=trace,codeline"),
-    cl::init(""));
+static cl::opt<bool> PerfReport("perf-report",
+    cl::desc("Run msprof op simulator on best config after search (generates performance report)"),
+    cl::init(false));
 static cl::opt<std::string> MsprofPath("msprof",
-    cl::desc("Path to msopgen script (default: auto-detect from ASCEND_HOME_PATH/aarch64-linux/bin/msopgen)"),
+    cl::desc("Path to msprof binary (default: auto-detect from ASCEND_HOME_PATH/tools/profiler/bin/msprof)"),
     cl::init(""));
-static cl::opt<std::string> SimReportOutDir("sim-report-out",
-    cl::desc("Output directory for sim-report files (default: ./sim_report)"),
-    cl::init("sim_report"));
+static cl::opt<std::string> PerfReportOutDir("perf-report-out",
+    cl::desc("Output directory for perf-report files (default: ./perf_out)"),
+    cl::init("perf_out"));
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -598,111 +593,93 @@ int main(int argc, char** argv) {
 
   emitTilingFunc(OutputFile, ts, best, shape);
 
-  // ── Optional: generate sim reports via msopgen sim ──────────────────────────
-  // --sim-report=trace,codeline
-  //   trace    : dump2trace_core*.json (chrome://tracing)
-  //   codeline : add -reloc <.o> → code_exe_prof.csv + instr_exe_prof.csv
-  // msopgen is a Python script; invoked as: python3 <path/to/msopgen> sim ...
-  if (!SimReport.empty()) {
-    auto report_types = splitComma(SimReport);
-    bool want_trace    = false;
-    bool want_codeline = false;
-    for (auto& t : report_types) {
-      if (t == "trace")    want_trace    = true;
-      if (t == "codeline") want_codeline = true;
+  // ── Optional: perf report via msprof op simulator ───────────────────────────
+  if (PerfReport) {
+    // Step 1: generate runner executable via HostRunnerGen
+    HostRunnerGen::Config hcfg;
+    hcfg.kernel_name  = ts.kernel_name;
+    hcfg.kernel_type  = ts.kernel_type;
+    hcfg.soc_version  = soc;
+    hcfg.num_inputs   = static_cast<int>(splitComma(InputFiles).size());
+    hcfg.num_outputs  = 1;
+    for (auto& p : ts.params)
+      hcfg.tiling_layout.push_back(p.type);
+
+    // Use same build dir as the binary (derive from best_binary_path)
+    std::string runner_dir = best_binary_path.empty() ? "."
+        : llvm::sys::path::parent_path(best_binary_path).str();
+
+    HostRunnerGen gen;
+    auto runner_or = gen.Generate(hcfg, runner_dir);
+    if (!runner_or) {
+      llvm::errs() << "Warning: --perf-report: runner generation failed: "
+                   << llvm::toString(runner_or.takeError()) << "\n";
+      goto perf_done;
     }
+    // runner_path declared AFTER the goto above — no jump-over-initialization issue
+    {
+      std::string runner_path = *runner_or;
 
-    // Locate msopgen: explicit flag > ASCEND_HOME_PATH > common install path
-    std::string msopgen = MsprofPath;  // reuse --msprof flag for the path
-    if (msopgen.empty()) {
-      const char* home = std::getenv("ASCEND_HOME_PATH");
-      if (!home) home = "/usr/local/Ascend/ascend-toolkit/latest";
-      msopgen = std::string(home) + "/aarch64-linux/bin/msopgen";
-    }
+      // Step 2: build tiling_params and tiling_layout strings for runner CLI
+      std::string tiling_params_str;
+      for (size_t i = 0; i < best.config.size(); ++i) {
+        if (i) tiling_params_str += ",";
+        tiling_params_str += best.config[i].first + "=" +
+                             std::to_string(best.config[i].second);
+      }
+      std::string tiling_layout_str;
+      for (size_t i = 0; i < ts.params.size(); ++i) {
+        if (i) tiling_layout_str += ",";
+        tiling_layout_str += ts.params[i].type;
+      }
 
-    if (!llvm::sys::fs::exists(msopgen)) {
-      llvm::errs() << "Warning: --sim-report requested but msopgen not found at: "
-                   << msopgen << "\n"
-                   << "  Set ASCEND_HOME_PATH or use --msprof=<path>\n";
-    } else {
-      // Determine sim run directory: cwd (simulator dumps land in cwd)
-      llvm::SmallString<256> cwd;
-      llvm::sys::fs::current_path(cwd);
-      std::string sim_dir = cwd.str().str();
+      // Step 3: locate msprof binary
+      std::string msprof = MsprofPath;
+      if (msprof.empty()) {
+        const char* home = std::getenv("ASCEND_HOME_PATH");
+        if (!home) home = "/usr/local/Ascend/ascend-toolkit/latest";
+        msprof = std::string(home) + "/tools/profiler/bin/msprof";
+      }
+      if (!llvm::sys::fs::exists(msprof)) {
+        llvm::errs() << "Warning: --perf-report: msprof not found at: " << msprof << "\n"
+                     << "  Set ASCEND_HOME_PATH or use --msprof=<path>\n";
+        goto perf_done;
+      }
 
-      // Create output directory
-      llvm::SmallString<256> out_abs(SimReportOutDir.getValue());
+      // Step 4: create output dir and invoke msprof op simulator.
+      // msprof writes report files to cwd, so we cd into the output dir first.
+      llvm::SmallString<256> out_abs(PerfReportOutDir.getValue());
       llvm::sys::fs::make_absolute(out_abs);
       llvm::sys::fs::create_directories(out_abs);
 
-      // Derive .o path from .bin path (same build dir, same stem)
-      std::string obj_path;
-      if (want_codeline && !best_binary_path.empty()) {
-        obj_path = best_binary_path;
-        auto dot = obj_path.rfind(".bin");
-        if (dot != std::string::npos)
-          obj_path.replace(dot, 4, ".o");
-        if (!llvm::sys::fs::exists(obj_path)) {
-          llvm::errs() << "Warning: codeline requested but .o not found at: "
-                       << obj_path << "\n";
-          obj_path.clear();
-        }
-      }
+      // cd into output dir so msprof drops files there; use absolute paths for
+      // runner and bin so they resolve correctly from the new cwd.
+      llvm::SmallString<256> runner_abs(runner_path);
+      llvm::sys::fs::make_absolute(runner_abs);
+      llvm::SmallString<256> bin_abs(best_binary_path);
+      llvm::sys::fs::make_absolute(bin_abs);
 
-      // Discover all (core, subcore) pairs from *_issque.dump files in cwd
-      struct CoreEntry { std::string core_id; std::string subcore_id; };
-      std::vector<CoreEntry> cores;
-      std::error_code ec;
-      for (llvm::sys::fs::directory_iterator it(sim_dir, ec), end;
-           !ec && it != end; it.increment(ec)) {
-        std::string fname = llvm::sys::path::filename(it->path()).str();
-        // Match "core{N}.veccore{M}.ccu.*_issque.dump"
-        if (fname.find("_issque.dump") == std::string::npos) continue;
-        auto ccu = fname.find(".ccu.");
-        if (ccu == std::string::npos) continue;
-        std::string label = fname.substr(0, ccu);  // e.g. "core0.veccore1"
-        auto dot = label.find('.');
-        if (dot == std::string::npos) continue;
-        std::string core_id    = label.substr(0, dot);
-        std::string subcore_id = label.substr(dot + 1);
-        bool dup = false;
-        for (auto& e : cores)
-          if (e.core_id == core_id && e.subcore_id == subcore_id) { dup = true; break; }
-        if (!dup) cores.push_back({core_id, subcore_id});
-      }
+      std::string cmd = "cd \"" + out_abs.str().str() + "\" && "
+          + "\"" + msprof + "\""
+          + " op simulator --soc-version=" + soc
+          + " \"" + runner_abs.str().str() + "\""
+          + " --bin \"" + bin_abs.str().str() + "\""
+          + " --tiling-params \"" + tiling_params_str + "\""
+          + " --tiling-layout \"" + tiling_layout_str + "\""
+          + " --inputs " + InputFiles.getValue()
+          + " --output /dev/null"
+          + " --block-dim " + std::to_string(best.block_dim);
 
-      if (cores.empty()) {
-        llvm::errs() << "Warning: --sim-report: no *_issque.dump files found in "
-                     << sim_dir
-                     << ". Run autotuner from the simulation working directory.\n";
-      } else {
-        llvm::outs() << "\nGenerating sim reports with msopgen sim ...\n";
-        for (auto& c : cores) {
-          // python3 <msopgen> sim -c core0 -d <sim_dir> -subc veccore0 -out <out> [-reloc <.o>]
-          std::string cmd = "python3 " + msopgen + " sim"
-              + " -c " + c.core_id
-              + " -d " + sim_dir
-              + " -subc " + c.subcore_id
-              + " -out " + out_abs.str().str();
-          if (want_codeline && !obj_path.empty())
-            cmd += " -reloc " + obj_path;
-
-          llvm::outs() << "  " << c.core_id << "." << c.subcore_id << " ...";
-          llvm::outs().flush();
-          int rc = std::system(cmd.c_str());
-          if (rc != 0)
-            llvm::outs() << " (exit " << rc << ")\n";
-          else
-            llvm::outs() << " OK\n";
-        }
-        llvm::outs() << "Sim report files written to: " << out_abs.str() << "\n";
-        if (want_trace)
-          llvm::outs() << "  trace    : dump2trace_core*.json  → chrome://tracing\n";
-        if (want_codeline)
-          llvm::outs() << "  codeline : code_exe_prof.csv, instr_exe_prof.csv\n";
-      }
+      llvm::outs() << "\nRunning msprof op simulator ...\n  " << cmd << "\n";
+      llvm::outs().flush();
+      int rc = std::system(cmd.c_str());
+      if (rc != 0)
+        llvm::errs() << "Warning: msprof exited with code " << rc << "\n";
+      else
+        llvm::outs() << "Perf report written to: " << out_abs.str() << "\n";
     }
   }
+  perf_done:;
 
   llvm::outs().flush();
   llvm::errs().flush();
