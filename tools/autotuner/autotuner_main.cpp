@@ -38,7 +38,7 @@ static cl::opt<std::string> SocVersion("soc",
 static cl::opt<double> Atol("atol", cl::desc("Absolute tolerance"), cl::init(1.0));
 static cl::opt<double> Rtol("rtol", cl::desc("Relative tolerance"), cl::init(1e-2));
 // --sim-report=trace,codeline
-//   trace    : call msopgen sim → dump2trace_core*.json (chrome://tracing)
+//   trace    : python3 msopgen sim → dump2trace_core*.json (chrome://tracing)
 //   codeline : add -reloc <.o>  → code_exe_prof.csv + instr_exe_prof.csv
 // Both can be combined: --sim-report=trace,codeline
 static cl::opt<std::string> SimReport("sim-report",
@@ -46,8 +46,8 @@ static cl::opt<std::string> SimReport("sim-report",
              "codeline (source-line/instruction hotspot CSV via -reloc). "
              "Example: --sim-report=trace,codeline"),
     cl::init(""));
-static cl::opt<std::string> MsopgenPath("msopgen",
-    cl::desc("Path to msopgen executable (default: auto-detect from ASCEND_HOME_PATH)"),
+static cl::opt<std::string> MsprofPath("msprof",
+    cl::desc("Path to msopgen script (default: auto-detect from ASCEND_HOME_PATH/aarch64-linux/bin/msopgen)"),
     cl::init(""));
 static cl::opt<std::string> SimReportOutDir("sim-report-out",
     cl::desc("Output directory for sim-report files (default: ./sim_report)"),
@@ -145,6 +145,7 @@ struct TilingParam {
 struct TilingSpace {
   std::string kernel_name;
   std::string kernel_file;
+  std::string kernel_type = "vec";   // "vec" | "cube" | "mix"; default vec
   std::string soc;
   std::string block_dim_expr;
   std::vector<TilingParam> params;
@@ -169,6 +170,7 @@ static llvm::Expected<TilingSpace> loadTilingSpace(const std::string& path) {
   // getString returns std::optional<llvm::StringRef>
   if (auto v = obj->getString("kernel"))         ts.kernel_name    = v->str();
   if (auto v = obj->getString("kernel_file"))    ts.kernel_file    = v->str();
+  if (auto v = obj->getString("kernel_type"))    ts.kernel_type    = v->str();
   if (auto v = obj->getString("soc"))            ts.soc            = v->str();
   if (auto v = obj->getString("block_dim_expr")) ts.block_dim_expr = v->str();
 
@@ -596,10 +598,11 @@ int main(int argc, char** argv) {
 
   emitTilingFunc(OutputFile, ts, best, shape);
 
-  // ── Optional: generate sim reports via msopgen sim ───────────────────────────
+  // ── Optional: generate sim reports via msopgen sim ──────────────────────────
   // --sim-report=trace,codeline
-  //   trace    : dump2trace_core*.json  (load in chrome://tracing)
-  //   codeline : code_exe_prof.csv + instr_exe_prof.csv (needs -reloc <.o>)
+  //   trace    : dump2trace_core*.json (chrome://tracing)
+  //   codeline : add -reloc <.o> → code_exe_prof.csv + instr_exe_prof.csv
+  // msopgen is a Python script; invoked as: python3 <path/to/msopgen> sim ...
   if (!SimReport.empty()) {
     auto report_types = splitComma(SimReport);
     bool want_trace    = false;
@@ -610,17 +613,17 @@ int main(int argc, char** argv) {
     }
 
     // Locate msopgen: explicit flag > ASCEND_HOME_PATH > common install path
-    std::string msopgen = MsopgenPath;
+    std::string msopgen = MsprofPath;  // reuse --msprof flag for the path
     if (msopgen.empty()) {
       const char* home = std::getenv("ASCEND_HOME_PATH");
       if (!home) home = "/usr/local/Ascend/ascend-toolkit/latest";
-      msopgen = std::string(home) + "/tools/msopgen";
+      msopgen = std::string(home) + "/aarch64-linux/bin/msopgen";
     }
 
-    if (!llvm::sys::fs::can_execute(msopgen)) {
+    if (!llvm::sys::fs::exists(msopgen)) {
       llvm::errs() << "Warning: --sim-report requested but msopgen not found at: "
                    << msopgen << "\n"
-                   << "  Set ASCEND_HOME_PATH or use --msopgen=<path>\n";
+                   << "  Set ASCEND_HOME_PATH or use --msprof=<path>\n";
     } else {
       // Determine sim run directory: cwd (simulator dumps land in cwd)
       llvm::SmallString<256> cwd;
@@ -675,8 +678,8 @@ int main(int argc, char** argv) {
       } else {
         llvm::outs() << "\nGenerating sim reports with msopgen sim ...\n";
         for (auto& c : cores) {
-          // msopgen sim -c core0 -d <sim_dir> -subc veccore0 -out <out> [-reloc <.o>]
-          std::string cmd = msopgen + " sim"
+          // python3 <msopgen> sim -c core0 -d <sim_dir> -subc veccore0 -out <out> [-reloc <.o>]
+          std::string cmd = "python3 " + msopgen + " sim"
               + " -c " + c.core_id
               + " -d " + sim_dir
               + " -subc " + c.subcore_id
