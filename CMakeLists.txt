@@ -95,6 +95,7 @@ add_subdirectory(tools/afir-opt)
 add_subdirectory(tools/sim-validator)
 add_subdirectory(tools/autotuner)
 add_subdirectory(tools/compiler)
+add_subdirectory(tools/validator)
 add_subdirectory(examples)
 add_subdirectory(test)
 
