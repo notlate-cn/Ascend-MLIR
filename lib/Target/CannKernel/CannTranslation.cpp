@@ -145,16 +145,15 @@ LogicalResult mlir::translateToCannKernel(Operation *op, raw_ostream &os) {
       return failure();
   }
 
-  // Second pass: emit functions
+  // Second pass: emit aicore kernel functions only.
+  // Non-aicore ops (transform sequences, helper modules, etc.) are skipped —
+  // they are pipeline infrastructure, not C++ kernel code.
   for (Operation &child : moduleOp.getBody()->getOperations()) {
     auto funcOp = dyn_cast<func::FuncOp>(child);
-    if (funcOp && funcOp->hasAttr(ascendc::attr::global)) {
-      if (failed(printCannFuncOp(emitter, funcOp)))
-        return failure();
-    } else {
-      if (failed(emitOperation(emitter, child, /*trailingSemicolon=*/false)))
-        return failure();
-    }
+    if (!funcOp || !funcOp->hasAttr(ascendc::attr::global))
+      continue;
+    if (failed(printCannFuncOp(emitter, funcOp)))
+      return failure();
   }
 
   return success();
