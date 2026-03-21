@@ -666,7 +666,7 @@ int main(int argc, char** argv) {
           + " --bin \"" + bin_abs.str().str() + "\""
           + " --tiling-params \"" + tiling_params_str + "\""
           + " --tiling-layout \"" + tiling_layout_str + "\""
-          + " --inputs " + InputFiles.getValue()
+          + " --inputs \"" + InputFiles.getValue() + "\""
           + " --output /dev/null"
           + " --block-dim " + std::to_string(best.block_dim);
 
