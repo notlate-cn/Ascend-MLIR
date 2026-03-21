@@ -5,15 +5,10 @@
 //===----------------------------------------------------------------------===//
 
 #include "Target/CannKernel/CannTranslation.h"
+#include "Dialect/AFIR/TransformOps/AFIRTransformOps.h"
 #include "ascir/Dialect/Asc/IR/Asc.h"
 #include "ascir/Dialect/EmitAsc/IR/EmitAsc.h"
-#include "mlir/Dialect/Arith/IR/Arith.h"
-#include "mlir/Dialect/EmitC/IR/EmitC.h"
-#include "mlir/Dialect/Func/IR/FuncOps.h"
-#include "mlir/Dialect/LLVMIR/LLVMDialect.h"
-#include "mlir/Dialect/Math/IR/Math.h"
-#include "mlir/Dialect/MemRef/IR/MemRef.h"
-#include "mlir/Dialect/SCF/IR/SCF.h"
+#include "mlir/InitAllDialects.h"
 #include "mlir/InitAllTranslations.h"
 #include "mlir/Tools/mlir-translate/MlirTranslateMain.h"
 #include "mlir/Tools/mlir-translate/Translation.h"
@@ -29,10 +24,9 @@ int main(int argc, char **argv) {
         return translateToCannKernel(op, os);
       },
       [](DialectRegistry &registry) {
-        registry.insert<arith::ArithDialect, ascendc::AscendCDialect,
-                        emitasc::EmitAscDialect, emitc::EmitCDialect,
-                        func::FuncDialect, LLVM::LLVMDialect, math::MathDialect,
-                        memref::MemRefDialect, scf::SCFDialect>();
+        registerAllDialects(registry);
+        registry.insert<ascendc::AscendCDialect, emitasc::EmitAscDialect>();
+        afir::registerTransformDialectExtension(registry);
         ascendc::registerExternalModels(registry);
         emitasc::registerExternalModels(registry);
       });

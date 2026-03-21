@@ -13,13 +13,7 @@
 //
 //===----------------------------------------------------------------------===//
 
-// Declare the pass base template from the generated inc, within the correct namespace.
-#define GEN_PASS_DECL_CANONICALIZECANNSIGNATUREPASS
-#define GEN_PASS_DEF_CANONICALIZECANNSIGNATUREPASS
-#include "Conversion/Passes.h.inc"
-
 #include "Conversion/CanonicalizeCannSignature/CanonicalizeCannSignaturePass.h"
-
 #include "ascir/Dialect/Asc/Utils/Attributes.h"
 #include "ascir/Dialect/EmitAsc/IR/EmitAsc.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
@@ -27,7 +21,12 @@
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/PatternMatch.h"
+#include "mlir/Pass/Pass.h"
 #include "mlir/Transforms/DialectConversion.h"
+#include <memory>
+
+#define GEN_PASS_DEF_CANONICALIZECANNSIGNATUREPASS
+#include "Conversion/Passes.h.inc"
 
 using namespace mlir;
 
@@ -143,20 +142,35 @@ static LogicalResult canonicalizeFuncOp(func::FuncOp funcOp,
 } // namespace
 
 struct CanonicalizeCannSignaturePass
-    : public impl::CanonicalizeCannSignaturePassBase<
+    : public ::impl::CanonicalizeCannSignaturePassBase<
           CanonicalizeCannSignaturePass> {
-  using CanonicalizeCannSignaturePassBase::CanonicalizeCannSignaturePassBase;
+  using Base = ::impl::CanonicalizeCannSignaturePassBase<CanonicalizeCannSignaturePass>;
+  using Base::Base;
 
   void runOnOperation() override {
     ModuleOp module = getOperation();
     IRRewriter rewriter(module.getContext());
+
+    // Canonicalize aicore kernel signatures.
     WalkResult result = module.walk([&](func::FuncOp funcOp) {
       if (failed(canonicalizeFuncOp(funcOp, rewriter)))
         return WalkResult::interrupt();
       return WalkResult::advance();
     });
-    if (result.wasInterrupted())
+    if (result.wasInterrupted()) {
       signalPassFailure();
+      return;
+    }
+
+    // Erase non-func module-level ops (e.g., transform sequences) so that the
+    // output can be parsed by tools that don't register transform dialects.
+    SmallVector<Operation *> toErase;
+    for (Operation &child : module.getBody()->getOperations()) {
+      if (!isa<func::FuncOp>(child))
+        toErase.push_back(&child);
+    }
+    for (Operation *op : toErase)
+      rewriter.eraseOp(op);
   }
 };
 
