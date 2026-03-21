@@ -13,6 +13,11 @@
 //
 //===----------------------------------------------------------------------===//
 
+// Declare the pass base template from the generated inc, within the correct namespace.
+#define GEN_PASS_DECL_CANONICALIZECANNSIGNATUREPASS
+#define GEN_PASS_DEF_CANONICALIZECANNSIGNATUREPASS
+#include "Conversion/Passes.h.inc"
+
 #include "Conversion/CanonicalizeCannSignature/CanonicalizeCannSignaturePass.h"
 
 #include "ascir/Dialect/Asc/Utils/Attributes.h"
@@ -27,11 +32,6 @@
 using namespace mlir;
 
 namespace mlir::afir {
-
-// Declare the pass base template from the generated inc, within the correct namespace.
-#define GEN_PASS_DECL_CANONICALIZECANNSIGNATUREPASS
-#define GEN_PASS_DEF_CANONICALIZECANNSIGNATUREPASS
-#include "Conversion/Passes.h.inc"
 
 namespace {
 
@@ -64,7 +64,8 @@ static LogicalResult canonicalizeFuncOp(func::FuncOp funcOp,
 
   auto args = funcOp.getArguments();
   int tilingIdx = -1;
-  for (int i = 0, e = args.size(); i < e; ++i) {
+  int numArgs = static_cast<int>(args.size());
+  for (int i = 0; i < numArgs; ++i) {
     if (isTilingMemref(args[i].getType())) {
       if (tilingIdx != -1)
         return funcOp.emitOpError("has multiple tiling memref arguments");
@@ -117,6 +118,7 @@ static LogicalResult canonicalizeFuncOp(func::FuncOp funcOp,
   // Add workspace and tiling as new block args.
   BlockArgument wsArg =
       entryBlock.addArgument(workspaceType, funcOp.getLoc());
+  // workspace arg is required by the CANN ABI but unused in the kernel body.
   (void)wsArg;
   BlockArgument tilingArg =
       entryBlock.addArgument(tilingStructType, funcOp.getLoc());
@@ -126,6 +128,8 @@ static LogicalResult canonicalizeFuncOp(func::FuncOp funcOp,
   rewriter.eraseOp(copyOp);
 
   // Erase the old tiling memref arg (its only user was copy_struct, now erased).
+  // New args were appended at the tail; tilingIdx still refers to the
+  // original tiling memref arg position, which is unchanged.
   entryBlock.eraseArgument(tilingIdx);
 
   // Update function type and add cann.num_inputs attribute.
@@ -135,6 +139,8 @@ static LogicalResult canonicalizeFuncOp(func::FuncOp funcOp,
 
   return success();
 }
+
+} // namespace
 
 struct CanonicalizeCannSignaturePass
     : public impl::CanonicalizeCannSignaturePassBase<
@@ -154,6 +160,8 @@ struct CanonicalizeCannSignaturePass
   }
 };
 
-} // namespace
+std::unique_ptr<Pass> createCanonicalizeCannSignaturePass() {
+  return std::make_unique<CanonicalizeCannSignaturePass>();
+}
 
 } // namespace mlir::afir

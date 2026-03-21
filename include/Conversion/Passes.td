@@ -244,6 +244,7 @@ def CanonicalizeCannSignaturePass : Pass<"canonicalize-cann-signature", "mlir::M
     - Removes the emitasc.copy_struct op (tiling is now by-value).
     - Adds cann.num_inputs = N : i32 attribute to the function.
   }];
+  let constructor = "mlir::afir::createCanonicalizeCannSignaturePass()";
   let dependentDialects = [
     "mlir::func::FuncDialect",
     "mlir::emitasc::EmitAscDialect",
