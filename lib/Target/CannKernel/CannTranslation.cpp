@@ -53,26 +53,31 @@ static LogicalResult printCannFuncOp(CodeEmitter &emitter,
   CodeEmitter::Scope scope(emitter);
   auto &os = emitter.ostream();
 
-  // Read cann.num_inputs
-  auto numInputsAttr =
-      funcOp->getAttrOfType<IntegerAttr>("cann.num_inputs");
-  if (!numInputsAttr)
-    return funcOp.emitOpError("missing cann.num_inputs attribute");
-  int numInputs = (int)numInputsAttr.getInt();
+  // cann.num_inputs must be present (set by CanonicalizeCannSignaturePass).
+  if (!funcOp->hasAttr("cann.num_inputs"))
+    return funcOp.emitOpError("missing cann.num_inputs attribute; "
+                               "run --canonicalize-cann-signature first");
 
   auto args = funcOp.getArguments();
   int numArgs = (int)args.size();
 
-  // Last arg is tiling (PyStruct), second-to-last is workspace (memref<ui8>).
-  // [0..numInputs-1] = inputs, [numInputs..N-3] = outputs, [N-2] = workspace,
-  // [N-1] = tiling.
-  if (numArgs < 2)
-    return funcOp.emitOpError("CANN function must have at least 2 args");
+  // Layout: [0..N-3] = inputs+outputs (all GM_ADDR), [N-2] = workspace
+  // (memref<ui8>), [N-1] = tiling (!emitasc.py_struct).
+  if (numArgs < 4)
+    return funcOp.emitOpError(
+        "CANN function must have at least 4 args "
+        "(inputs, outputs, workspace, tiling)");
 
   BlockArgument tilingArg = args[numArgs - 1];
   auto tilingType = dyn_cast<emitasc::PyStructType>(tilingArg.getType());
   if (!tilingType)
     return funcOp.emitOpError("last argument must be !emitasc.py_struct");
+
+  // Validate workspace arg is memref<ui8>.
+  auto wsType = dyn_cast<MemRefType>(args[numArgs - 2].getType());
+  if (!wsType || !wsType.getElementType().isUnsignedInteger(8))
+    return funcOp.emitOpError(
+        "second-to-last argument must be memref<ui8> workspace");
 
   // Emit function header
   os << "extern \"C\" __global__ __aicore__ void " << funcOp.getName() << "(\n";
