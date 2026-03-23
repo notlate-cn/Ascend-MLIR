@@ -1094,7 +1094,7 @@ ssh xvm@orb
 cd /home/niu/code/Ascend-MLIR
 cd sim
 # Wait 1 second for file sync after any local edits
-../scripts/build.sh --build-project --llvm-build-dir ~/code/llvm-project/build
+bash /home/niu/code/Ascend-MLIR/scripts/build.sh --build-project --llvm-build-dir ~/code/llvm-project/llvm/build
 ```
 
 Expected: clean build. Common fix: if `llvm::MemoryBuffer` not found, add `#include "llvm/Support/MemoryBuffer.h"`.
@@ -1170,7 +1170,7 @@ git add examples/broadcast-add-reduce/tiling_space.json
 | `Executor::Run()` 每次调用注册 binary + function | `RegisterBinary()` / `RunWithHandle()` 分离 | 模拟器禁止对同一 stub 指针重复注册（rc=507000）；编译一次、注册一次、多 config 复用 handle |
 | 每次 `Run()` 创建/销毁 stream | `Initialize()` 创建持久化 stream，`~Executor()` 销毁 | 模拟器在第 2+ 次 launch 时复用 stream ID 会丢失完成状态导致挂起 |
 | `SimValidator::Validate()` 内部自行编译+运行 | 新增 `SimValidator::ValidateBinary(func_handle, executor, args, expected, atol, rtol)` | autotuner 需要在搜索循环外编译一次，循环内只换 tiling args 反复跑 |
-| pipeline-analyzer 独立工具 | 删除，改为 autotuner `--sim-report` 选项调用 msopgen | `msopgen sim` 是 CANN 内置工具，功能完全覆盖；避免重复实现 |
+| pipeline-analyzer 独立工具 | 删除，改为 autotuner `--sim-report` 选项调用 msopgen | `msopgen sim` 是 CANN 内置 Python 工具，功能完全覆盖；避免重复实现 |
 
 ### sim-validator 使用
 
@@ -1221,12 +1221,12 @@ autotuner ... --sim-report trace,codeline --sim-report-out ./sim_report
 
 | 值 | 输出文件 | 工具 | 用途 |
 |----|---------|------|------|
-| `trace` | `dump2trace_core*.json` | msopgen sim | chrome://tracing 查看 PIPE 流水，识别 MTE2/VEC/Cube 瓶颈 |
-| `codeline` | `code_exe_prof.csv`<br>`instr_exe_prof.csv` | msopgen sim -reloc | 源码行级别热点分析；需 .o 文件（自动从 .bin 路径推导） |
+| `trace` | `dump2trace_core*.json` | `python3 msopgen sim` | chrome://tracing 查看 PIPE 流水，识别 MTE2/VEC/Cube 瓶颈 |
+| `codeline` | `code_exe_prof.csv`<br>`instr_exe_prof.csv` | `python3 msopgen sim -reloc` | 源码行级别热点分析；需 .o 文件（自动从 .bin 路径推导） |
 
 组合示例：`--sim-report trace,codeline`
 
-msopgen 路径优先级：`--msopgen` > 环境变量 `ASCEND_HOME_PATH/tools/msopgen` > `/usr/local/Ascend/ascend-toolkit/latest/tools/msopgen`
+msopgen 路径优先级：`--msprof` > 环境变量 `ASCEND_HOME_PATH/aarch64-linux/bin/msopgen` > `/usr/local/Ascend/ascend-toolkit/latest/aarch64-linux/bin/msopgen`
 
 ### tiling_space.json 格式
 
