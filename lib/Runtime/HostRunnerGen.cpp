@@ -155,8 +155,10 @@ static std::vector<uint8_t> buildTiling(const std::string& params,
   auto pvec = splitComma(params);
   for (size_t i = 0; i < pvec.size(); ++i) {
     auto eq = pvec[i].find('=');
-    if (eq == std::string::npos) continue; // I6: skip malformed entries
-    int64_t val = std::stoll(pvec[i].substr(eq + 1));
+    // Accept both "key=value" and bare "value" formats.
+    int64_t val = (eq == std::string::npos)
+                      ? std::stoll(pvec[i])
+                      : std::stoll(pvec[i].substr(eq + 1));
     std::string type = i < layout.size() ? layout[i] : "int64";
     if (type == "int32" || type == "int32_t") {
       int32_t v = (int32_t)val; uint8_t buf[4];
@@ -221,12 +223,21 @@ int main(int argc, char** argv) {
     delete[] (uint8_t*)output.data; output.data = nullptr;
   };
 
-  // dlopen camodel
+  // dlopen camodel (try simulator layout first, then legacy)
   const char* home = std::getenv("ASCEND_HOME_PATH");
-  std::string lib_path = std::string(home ? home :
-      "/usr/local/Ascend/ascend-toolkit/latest")
-      + "/runtime/lib64/libruntime_camodel.so";
+  std::string home_str = home ? home : "/usr/local/Ascend/ascend-toolkit/latest";
+)cpp"
+    + "  std::string soc_ver = \"" + escapeCppStr(cfg.soc_version) + "\";\n"
+    + R"cpp(  std::string lib_path = home_str + "/aarch64-linux/simulator/" + soc_ver + "/lib/libruntime_camodel.so";
   void* lib = dlopen(lib_path.c_str(), RTLD_LAZY | RTLD_GLOBAL);
+  if (!lib) {
+    lib_path = home_str + "/tools/simulator/" + soc_ver + "/lib/libruntime_camodel.so";
+    lib = dlopen(lib_path.c_str(), RTLD_LAZY | RTLD_GLOBAL);
+  }
+  if (!lib) {
+    lib_path = home_str + "/runtime/lib64/libruntime_camodel.so";
+    lib = dlopen(lib_path.c_str(), RTLD_LAZY | RTLD_GLOBAL);
+  }
   if (!lib) { std::cerr << "dlopen failed: " << dlerror() << "\n"; freeArrays(); return 3; }
 
 #define LOAD(name, T) \
