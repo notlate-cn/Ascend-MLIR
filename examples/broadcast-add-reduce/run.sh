@@ -36,7 +36,7 @@ log() {
   fi
 }
 
-clear
+clear 2>/dev/null || true
 
 echo "========================================================"
 echo " broadcast + add + reducesum 编译流水线"
@@ -201,6 +201,62 @@ log ""
 log "  [生成的 C++ kernel 头部]"
 log "$(head -20 "$DIR/step8_kernel.cpp")"
 
+
+# ── STAGE 9: Compile AscendC kernel ────────────────────────────────────────
+echo ""
+echo "==================== [STAGE 9] Compile：bisheng C++ → .bin ===================="
+log "  输入: step8_kernel.cpp"
+log "  输出: build_e2e/broadcast_add_reducesum.bin"
+BUILD_DIR="$DIR/build_e2e"
+mkdir -p "$BUILD_DIR"
+# Use the Python runtime compiler helper
+PYTHON="${PYTHON:-python3}"
+"$PYTHON" -c "
+import sys, os
+sys.path.insert(0, '$(cd "$DIR/../.." && pwd)')
+from python.runtime.compiler import compile_kernel
+compile_kernel('$DIR/step8_kernel.cpp',
+               output_dir='$BUILD_DIR',
+               kernel_name='broadcast_add_reducesum')
+" 2>&1
+log "  ✓ Compile 成功，输出: $BUILD_DIR/broadcast_add_reducesum.bin"
+
+
+# ── STAGE 10: Run and verify ────────────────────────────────────────────────
+echo ""
+echo "==================== [STAGE 10] Run + Verify ===================="
+log "  使用参数：TB_M=16, TB_N=16, M=64, N=64, block-dim=4"
+RUNNER="$BUILD_DIR/runner"
+BIN="$BUILD_DIR/broadcast_add_reducesum.bin"
+OUTPUT_NPY="$BUILD_DIR/output.npy"
+
+if [ -f "$RUNNER" ] && [ -f "$BIN" ]; then
+  "$RUNNER" \
+    --bin "$BIN" \
+    --inputs "$DIR/input_a.npy,$DIR/input_b.npy" \
+    --output "$OUTPUT_NPY" \
+    --tiling-params '16,16,64,64,64,64' \
+    --block-dim 4 2>&1 | grep -v '^\[info\]\|^\[PEM_AIC_LOG\]\|^\[INFO\]\|^\[WARNING\]' || true
+
+  # Numerical verification
+  "$PYTHON" -c "
+import numpy as np, sys
+out = np.load('$OUTPUT_NPY').astype(float)
+ref = np.load('$DIR/output_c.npy').astype(float)
+max_err = np.max(np.abs(out - ref))
+print('  max abs error:', max_err)
+if np.allclose(out, ref, atol=1.0):
+    print('  ✓ PASS: 数值正确 (atol=1.0, float16 精度)')
+else:
+    print('  ✗ FAIL: 数值偏差过大')
+    print('  output[:8]:', out[:8])
+    print('  ref[:8]:', ref[:8])
+    sys.exit(1)
+"
+else
+  echo "  ⚠ runner or bin not found — skipping run"
+fi
+
 echo ""
 echo "========================================================"
 echo " 流水线完成！生成文件："
@@ -214,4 +270,5 @@ echo "   step6_parallelize.mlir      → 多核 AiCore 调度（get_block_idx）
 echo "   step7_kernel.mlir           → 完整 AscendC kernel IR"
 echo "   step7_cann.mlir             → CANN 标准签名 IR（去除 transform ops）"
 echo "   step8_kernel.cpp            → AscendC C++ kernel 源码"
+echo "   build_e2e/broadcast_add_reducesum.bin → 编译后二进制"
 echo "========================================================"

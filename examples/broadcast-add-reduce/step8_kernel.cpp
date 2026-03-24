@@ -1,216 +1,124 @@
-// ============================================================
-// STAGE 8: AscendC Kernel Code - 最终昇腾C内核代码
-//
-// 这是从 MLIR 降级生成的最终 AscendC C++ 内核代码
-// 可以直接编译并在昇腾 AI 处理器上执行
-//
-// 关键组件：
-//   - TPipe: 内存管道管理
-//   - TQue: 异步队列管理
-//   - TBuf: 片上缓冲区分配
-//   - GlobalTensor/LocalTensor: 全局/本地张量抽象
-//
-// 执行流程：
-//   1. 从 GM 读取 TilingData
-//   2. 获取当前核ID (GetBlockIdx)
-//   3. 计算本核的数据范围
-//   4. 循环处理数据：
-//      a. 数据搬运: GM → VECIN (DataCopy)
-//      b. 广播: VECIN → VECCALC (Broadcast)
-//      c. 计算: Add + ReduceSum
-//      d. 数据写回: VECOUT → GM
-//
-// 内存层级：
-//   - GM (__gm__): 全局内存
-//   - VECIN: 向量输入缓冲区
-//   - VECOUT: 向量输出缓冲区
-//   - VECCALC: 向量计算缓冲区
-// ============================================================
-
 #include "kernel_operator.h"
+#include "adv_api/broadcast/broadcast.h"
+#include "adv_api/reduce/reduce.h"
 
-// TilingData 结构体定义
-// 包含分块参数和维度信息
 struct TilingData {
-  int64_t TB_M;        // 核间分块大小 (M维度)
-  int64_t TB_N;        // 内层分块大小 (N维度)
-  int64_t dim_arg0_0;  // M维度总大小
-  int64_t dim_arg1_1;  // N维度总大小
+  int64_t TB_M;
+  int64_t TB_N;
+  int64_t dim_arg0_0;
+  int64_t dim_arg1_1;
+  int64_t dim_arg0_1;
+  int64_t dim_arg1_0;
 };
 
-// 内核函数：广播加法归约
-// 使用 extern "C" 防止名称修饰
-// __global__ __aicore__ 标记为昇腾内核函数
 extern "C" __global__ __aicore__ void broadcast_add_reducesum(
-    half* input_a,           // 输入 A [M] - GM
-    half* input_b,           // 输入 B [M,N] - GM
-    __gm__ TilingData* tiling_data_ptr,  // TilingData - GM
-    half* output             // 输出 [M] - GM
+  GM_ADDR v1,
+  GM_ADDR v2,
+  GM_ADDR v3,
+  GM_ADDR v4,
+  TilingData v5
 ) {
-  // ---- 常量定义 ----
-  constexpr uint32_t const_idx_0 = 0;    // 常量 0
-  constexpr uint32_t const_idx_2 = 2;    // 常量 2 (用于字节计算)
-  constexpr int32_t const_1_i32 = 1;     // 常量 1 (int32)
-
-  // ---- 从 GM 复制 TilingData 到本地 ----
-  TilingData local_tiling;
-  // 逐字节复制结构体
-  for (size_t i = 0; i < sizeof(local_tiling); i++) {
-    auto byte = reinterpret_cast<__gm__ uint8_t*>(tiling_data_ptr)[i];
-    reinterpret_cast<uint8_t*>(&local_tiling)[i] = byte;
+  half c0_f16 = 0.0e+00;
+  constexpr uint32_t c2_idx = 2;
+  constexpr int32_t c1_i32 = 1;
+  constexpr uint32_t c0_idx = 0;
+  int64_t v6 = v5.TB_M;
+  int64_t v7 = v5.TB_N;
+  int64_t v8 = v5.dim_arg0_0;
+  int64_t v9 = v5.dim_arg1_1;
+  int64_t v10 = v5.dim_arg0_1;
+  int64_t v11 = v5.dim_arg1_0;
+  AscendC::TPipe v12;
+  AscendC::TQue<AscendC::TPosition::VECIN, 1> v13;
+  AscendC::TQue<AscendC::TPosition::VECOUT, 1> v14;
+  uint32_t v15 = static_cast<uint32_t>(v7);
+  uint32_t v16 = static_cast<uint32_t>(v6);
+  uint32_t v17 = static_cast<uint32_t>(v8);
+  uint32_t v18 = static_cast<uint32_t>(v9);
+  AscendC::TBuf<AscendC::TPosition::VECCALC> v19;
+  AscendC::TQue<AscendC::TPosition::VECIN, 1> v20;
+  AscendC::TBuf<AscendC::TPosition::VECIN> v21;
+  AscendC::TBuf<AscendC::TPosition::VECCALC> v22;
+  AscendC::TBuf<AscendC::TPosition::VECCALC> v23;
+  AscendC::TBuf<AscendC::TPosition::VECOUT> v24;
+  AscendC::TBuf<AscendC::TPosition::VECIN> v25;
+  uint32_t v26 = static_cast<uint32_t>(AscendC::GetBlockIdx());
+  uint32_t v27 = v26 * v16;
+  bool v28 = v27 < v17;
+  if (v28) {
+    uint32_t v29 = v17 - v27;
+    uint32_t v30 = ((v16 < v29) ? (v16) : (v29));
+    for (uint32_t v31 = c0_idx; v31 < v30; v31 += v15) {
+      uint32_t v32 = v30 - v31;
+      uint32_t v33 = ((v32 < v15) ? (v32) : (v15));
+      uint32_t v34 = v33 * c2_idx;
+      v12.InitBuffer(v25, v34);
+      v12.InitBuffer(v13, c1_i32, v34);
+      AscendC::LocalTensor<half> v35 = v13.AllocTensor<half>();
+      AscendC::GlobalTensor<half> v36;
+      uint32_t v37 = v31 + v27;
+      int32_t v38 = static_cast<int32_t>(v37);
+      __gm__ half* v39 = reinterpret_cast<__gm__ half*>(v1);
+      v36.SetGlobalBuffer(v39 + v38);
+      AscendC::DataCopy(v35, v36, v33);
+      v13.EnQue(v35);
+      AscendC::LocalTensor<half> v40 = v13.DeQue<half>();
+      v12.InitBuffer(v24, v34);
+      v12.InitBuffer(v14, c1_i32, v34);
+      uint32_t v41 = v33 * v18;
+      uint32_t v42 = v41 * c2_idx;
+      v12.InitBuffer(v23, v42);
+      AscendC::LocalTensor<half> v43 = v23.Get<half>();
+      AscendC::Duplicate(v43, c0_f16, v41);
+      int32_t v44 = static_cast<int32_t>(v33);
+      int32_t v45 = static_cast<int32_t>(v18);
+      v12.InitBuffer(v22, v42);
+      AscendC::LocalTensor<half> v46 = v22.Get<half>();
+      {
+        uint32_t _afir_ds[2] = {(uint32_t)v44, (uint32_t)v45};
+        uint32_t _afir_ss[2] = {(uint32_t)v44, (uint32_t)c1_i32};
+        AscendC::Broadcast<half, 2, 1>(v46, v40, _afir_ds, _afir_ss);
+      };
+      AscendC::GlobalTensor<half> v47;
+      uint32_t v48 = v37 * v18;
+      int32_t v49 = static_cast<int32_t>(v48);
+      __gm__ half* v50 = reinterpret_cast<__gm__ half*>(v2);
+      v47.SetGlobalBuffer(v50 + v49);
+      v12.InitBuffer(v21, v42);
+      v12.InitBuffer(v20, c1_i32, v42);
+      AscendC::LocalTensor<half> v51 = v20.AllocTensor<half>();
+      AscendC::DataCopy(v51, v47, v41);
+      v20.EnQue(v51);
+      AscendC::LocalTensor<half> v52 = v20.DeQue<half>();
+      v12.InitBuffer(v19, v42);
+      AscendC::LocalTensor<half> v53 = v19.Get<half>();
+      AscendC::Add(v53, v46, v52, v41);
+      AscendC::Add(v43, v43, v53, v41);
+      AscendC::LocalTensor<half> v54 = v14.AllocTensor<half>();
+      {
+        uint32_t _afir_rows = (uint32_t)(v34 / sizeof(half));
+        uint32_t _afir_cols = (uint32_t)(v42 / v34);
+        AscendC::TBuf<AscendC::TPosition::VECCALC> _afir_tbuf_dst;
+        AscendC::TBuf<AscendC::TPosition::VECCALC> _afir_tbuf_ws;
+        v12.InitBuffer(_afir_tbuf_dst, 32);
+        v12.InitBuffer(_afir_tbuf_ws, 32);
+        AscendC::LocalTensor<half> _afir_scalar = _afir_tbuf_dst.Get<half>();
+        AscendC::LocalTensor<half> _afir_ws = _afir_tbuf_ws.Get<half>();
+        for (uint32_t _afir_r = 0; _afir_r < _afir_rows; _afir_r++) {
+          AscendC::ReduceSum<half>(_afir_scalar, v43[_afir_r * _afir_cols],
+                                  _afir_ws, (int32_t)_afir_cols);
+          v54.SetValue(_afir_r, _afir_scalar.GetValue(0));
+        }
+      };
+      v14.EnQue(v54);
+      AscendC::LocalTensor<half> v55 = v14.DeQue<half>();
+      AscendC::GlobalTensor<half> v56;
+      __gm__ half* v57 = reinterpret_cast<__gm__ half*>(v3);
+      v56.SetGlobalBuffer(v57 + v38);
+      AscendC::DataCopy(v56, v55, v33);
+      v14.FreeTensor(v55);
+      v13.FreeTensor(v40);
+    }
   }
-
-  // ---- 解包 TilingData ----
-  int64_t tb_m = local_tiling.TB_M;              // 核间分块大小
-  int64_t tb_n = local_tiling.TB_N;              // 内层分块大小
-  int64_t dim_m = local_tiling.dim_arg0_0;       // M维度总大小
-  int64_t dim_n = local_tiling.dim_arg1_1;       // N维度总大小
-
-  // ---- 初始化 AscendC 运行时对象 ----
-  // TPipe: 管理内存管道
-  AscendC::TPipe pipe;
-  // TQue<VECIN, 1>: 输入队列，深度为1
-  AscendC::TQue<AscendC::TPosition::VECIN, 1> queue_in;
-  // TQue<VECOUT, 1>: 输出队列，深度为1
-  AscendC::TQue<AscendC::TPosition::VECOUT, 1> queue_out;
-
-  // ---- 类型转换 ----
-  uint32_t tb_n_u32 = static_cast<uint32_t>(tb_n);
-  uint32_t tb_m_u32 = static_cast<uint32_t>(tb_m);
-  uint32_t dim_m_u32 = static_cast<uint32_t>(dim_m);
-  uint32_t dim_n_u32 = static_cast<uint32_t>(dim_n);
-
-  // ---- 分配 TBUF 缓冲区 ----
-  AscendC::TBuf<AscendC::TPosition::VECCALC> tbuf_calc_0;  // 计算缓冲区0
-  AscendC::TBuf<AscendC::TPosition::VECCALC> tbuf_calc_1;  // 计算缓冲区1
-  AscendC::TBuf<AscendC::TPosition::VECCALC> tbuf_calc_2;  // 计算缓冲区2
-  AscendC::TBuf<AscendC::TPosition::VECOUT> tbuf_out;      // 输出缓冲区
-  AscendC::TBuf<AscendC::TPosition::VECIN> tbuf_in;        // 输入缓冲区
-
-  // ---- 获取当前核ID ----
-  uint32_t block_idx = static_cast<uint32_t>(AscendC::GetBlockIdx());
-
-  // ---- 计算本核的起始偏移 ----
-  uint32_t block_offset = block_idx * tb_m_u32;
-
-  // ---- 边界检查 ----
-  bool is_in_bounds = block_offset < dim_m_u32;
-
-  if (is_in_bounds) {
-    // ---- 计算本核实际处理的行数 ----
-    uint32_t remaining_rows = dim_m_u32 - block_offset;
-    uint32_t actual_rows = (tb_m_u32 < remaining_rows) ? tb_m_u32 : remaining_rows;
-
-    // ---- 内层循环：沿 N 维度分块 ----
-    for (uint32_t inner_iv = const_idx_0; inner_iv < actual_rows; inner_iv += tb_n_u32) {
-      // 计算本批次实际处理的行数
-      uint32_t remaining_inner = actual_rows - inner_iv;
-      uint32_t inner_size = (remaining_inner < tb_n_u32) ? remaining_inner : tb_n_u32;
-
-      // ---- 计算缓冲区大小 ----
-      uint32_t buffer_size_in = inner_size * const_idx_2;  // ×2 因为 f16 = 2 bytes
-
-      // ---- 初始化 VECIN 缓冲区 ----
-      pipe.InitBuffer(tbuf_in, buffer_size_in);
-
-      // ---- 分配本地张量 ----
-      AscendC::LocalTensor<half> local_tensor_in = queue_in.AllocTensor<half>();
-
-      // ---- 设置全局张量 ----
-      AscendC::GlobalTensor<half> global_tensor_a;
-
-      // 计算全局偏移
-      uint32_t global_offset = inner_iv + block_offset;
-      int32_t global_offset_i32 = static_cast<int32_t>(global_offset);
-
-      // 设置全局缓冲区指针
-      __gm__ half* input_a_gm = reinterpret_cast<__gm__ half*>(input_a);
-      global_tensor_a.SetGlobalBuffer(input_a_gm, global_offset_i32);
-
-      // ---- 数据搬运：GM → VECIN ----
-      AscendC::DataCopy(local_tensor_in, global_tensor_a, inner_size);
-
-      // ---- 入队/出队 ----
-      queue_in.EnQue(local_tensor_in);
-      AscendC::LocalTensor<half> dequeued_in = queue_in.DeQue<half>();
-
-      // ---- 初始化 VECOUT 缓冲区 ----
-      pipe.InitBuffer(tbuf_out, buffer_size_in);
-
-      // ---- 计算 B 的缓冲区大小 ----
-      uint32_t b_total_size = inner_size * dim_n_u32;
-      uint32_t buffer_size_b = b_total_size * const_idx_2;
-
-      // ---- 初始化 VECCALC 缓冲区 ----
-      pipe.InitBuffer(tbuf_calc_2, buffer_size_b);
-      AscendC::LocalTensor<half> local_calc_2 = tbuf_calc_2.Get<half>();
-
-      // 转换索引为 i32
-      int32_t inner_size_i32 = static_cast<int32_t>(inner_size);
-      int32_t dim_n_i32 = static_cast<int32_t>(dim_n_u32);
-
-      // ---- 初始化更多 VECCALC 缓冲区 ----
-      pipe.InitBuffer(tbuf_calc_1, buffer_size_b);
-      AscendC::LocalTensor<half> local_calc_1 = tbuf_calc_1.Get<half>();
-
-      // ---- 广播：将一维输入广播到二维 ----
-      // 将 A [inner_size] 广播为 [inner_size, dim_n]
-      AscendC::Broadcast<half, half, 2>(
-          local_calc_1, dequeued_in,
-          reinterpret_cast<uint64_t>(inner_size_i32),
-          reinterpret_cast<uint64_t>(inner_size_i32));
-
-      // ---- 初始化最后一个 VECCALC 缓冲区 ----
-      pipe.InitBuffer(tbuf_calc_0, buffer_size_b);
-      AscendC::LocalTensor<half> local_calc_0 = tbuf_calc_0.Get<half>();
-
-      // ---- 设置 B 的全局张量 ----
-      AscendC::GlobalTensor<half> global_tensor_b;
-
-      // 计算 B 的全局偏移
-      uint32_t b_offset = global_offset * dim_n_u32;
-      int32_t b_offset_i32 = static_cast<int32_t>(b_offset);
-
-      // 设置全局缓冲区指针
-      __gm__ half* input_b_gm = reinterpret_cast<__gm__ half*>(input_b);
-      global_tensor_b.SetGlobalBuffer(input_b_gm, b_offset_i32);
-
-      // ---- 数据搬运：B 从 GM → VECCALC ----
-      AscendC::DataCopy(local_calc_0, global_tensor_b, b_total_size);
-
-      // ---- 向量加法：A + B ----
-      AscendC::Add(local_calc_2, local_calc_1, local_calc_0, b_total_size);
-
-      // ---- 累加 (用于归约) ----
-      AscendC::Add(local_calc_2, local_calc_2, local_calc_2, b_total_size);
-
-      // ---- 分配输出本地张量 ----
-      AscendC::LocalTensor<half> local_out = queue_out.AllocTensor<half>();
-
-      // ---- 二维归约求和 ----
-      // 将 [inner_size, dim_n] 归约为 [inner_size]
-      AscendC::ReduceSum<AscendC::ReduceLayout::AR>(local_out, local_calc_2);
-
-      // ---- 入队/出队 ----
-      queue_out.EnQue(local_out);
-      AscendC::LocalTensor<half> dequeued_out = queue_out.DeQue<half>();
-
-      // ---- 设置输出全局张量 ----
-      AscendC::GlobalTensor<half> global_tensor_out;
-
-      // 设置输出缓冲区指针
-      __gm__ half* output_gm = reinterpret_cast<__gm__ half*>(output);
-      global_tensor_out.SetGlobalBuffer(output_gm, global_offset_i32);
-
-      // ---- 数据写回：VECOUT → GM ----
-      AscendC::DataCopy(global_tensor_out, dequeued_out, inner_size);
-
-      // ---- 释放张量 ----
-      queue_out.FreeTensor(dequeued_out);
-      queue_in.FreeTensor(dequeued_in);
-
-    }  // 内层循环结束
-  }  // if (is_in_bounds) 结束
-
   return;
 }

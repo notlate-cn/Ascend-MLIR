@@ -108,6 +108,7 @@ class BishengCompiler:
             "-mllvm", "-cce-aicore-dcci-insert-for-scalar=false",
             "-I", str(self.tikcpp_path / "tikcfw"),
             "-I", str(self.tikcpp_path / "tikcfw" / "impl"),
+            "-I", str(self.tikcpp_path / "tikcfw" / "include"),
             "-I", str(self.tikcpp_path / "tikcfw" / "interface"),
             "-DASCENDC_DUMP=0",
             "-D__NPU_TILING__",

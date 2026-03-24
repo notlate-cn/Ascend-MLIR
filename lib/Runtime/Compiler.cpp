@@ -73,6 +73,7 @@ llvm::Expected<std::string> Compiler::Compile(const std::string& src_file,
       " -mllvm -cce-aicore-dcci-insert-for-scalar=false"
       " -I " + tikcpp + "/tikcfw"
       " -I " + tikcpp + "/tikcfw/impl"
+      " -I " + tikcpp + "/tikcfw/include"
       " -I " + tikcpp + "/tikcfw/interface"
       " -DASCENDC_DUMP=0"
       " -D__NPU_TILING__"
