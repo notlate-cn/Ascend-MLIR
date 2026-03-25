@@ -7,6 +7,7 @@
 #include "llvm/Support/raw_ostream.h"
 #include <cstdlib>
 #include <cstring>
+#include <iomanip>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -39,6 +40,52 @@ static cl::opt<double> Atol("atol",
     cl::desc("Absolute tolerance"), cl::init(1.0));
 static cl::opt<double> Rtol("rtol",
     cl::desc("Relative tolerance"), cl::init(1e-2));
+static cl::opt<std::string> DumpActual("dump-actual",
+    cl::desc("Write actual output values to text file"), cl::init(""));
+static cl::opt<std::string> DumpExpected("dump-expected",
+    cl::desc("Write expected output values to text file"), cl::init(""));
+static cl::opt<int> Precision("precision",
+    cl::desc("Decimal places for --dump-actual / --dump-expected (default: 4)"),
+    cl::init(4));
+
+static float toFloat(const void* base, size_t idx, DType dtype) {
+  switch (dtype) {
+    case DType::F16: {
+      uint16_t h;
+      std::memcpy(&h, static_cast<const uint8_t*>(base) + idx * 2, 2);
+      uint32_t sign = (h >> 15) & 1;
+      uint32_t exp  = (h >> 10) & 0x1f;
+      uint32_t frac = h & 0x3ff;
+      uint32_t f;
+      if (exp == 0)       f = (sign << 31) | (frac << 13);
+      else if (exp == 31) f = (sign << 31) | 0x7f800000u | (frac << 13);
+      else                f = (sign << 31) | ((exp + 112) << 23) | (frac << 13);
+      float result; std::memcpy(&result, &f, 4); return result;
+    }
+    case DType::F32: { float v; std::memcpy(&v, static_cast<const uint8_t*>(base) + idx * 4, 4); return v; }
+    case DType::INT32: { int32_t v; std::memcpy(&v, static_cast<const uint8_t*>(base) + idx * 4, 4); return static_cast<float>(v); }
+  }
+  return 0.f;
+}
+
+static void dumpArray(const NDArray& arr, const std::string& path, int prec) {
+  std::error_code ec;
+  llvm::raw_fd_ostream f(path, ec);
+  if (ec) { llvm::errs() << "Warning: cannot write " << path << ": " << ec.message() << "\n"; return; }
+  size_t n = arr.numElements();
+  // Header: shape
+  f << "# shape:";
+  for (auto d : arr.shape) f << " " << d;
+  f << "\n";
+  // Values: one per line, fixed decimal
+  std::ostringstream buf;
+  buf << std::fixed << std::setprecision(prec);
+  for (size_t i = 0; i < n; ++i) {
+    buf.str(""); buf.clear();
+    buf << std::fixed << std::setprecision(prec) << toFloat(arr.data, i, arr.dtype);
+    f << buf.str() << "\n";
+  }
+}
 
 static std::vector<std::string> splitComma(const std::string& s) {
   std::vector<std::string> parts;
@@ -118,7 +165,14 @@ int main(int argc, char** argv) {
     _Exit(4);
   }
   NDArray exp_arr = *exp_or;
-  std::vector<NDArray> expected_arrs = {exp_arr};
+  // Deep-copy expected data: simulator may overwrite the original buffer
+  // during Initialize/Run (simulator maps host memory as device memory).
+  NDArray exp_snapshot;
+  exp_snapshot.shape = exp_arr.shape;
+  exp_snapshot.dtype = exp_arr.dtype;
+  exp_snapshot.data  = new uint8_t[exp_arr.nbytes()]();
+  std::memcpy(exp_snapshot.data, exp_arr.data, exp_arr.nbytes());
+  std::vector<NDArray> expected_arrs = {exp_snapshot};
 
   // Pre-alloc output buffer (same shape/dtype as expected)
   NDArray out_buf;
@@ -126,6 +180,9 @@ int main(int argc, char** argv) {
   out_buf.dtype = exp_arr.dtype;
   out_buf.data  = new uint8_t[out_buf.nbytes()]();
   args.outputs.push_back(out_buf);
+
+  // Dump expected immediately after loading, before simulator touches memory
+  if (!DumpExpected.empty()) dumpArray(exp_arr, DumpExpected, Precision);
 
   // Map kernel_type → magic
   // "mix" uses MAGIC_ELF_AIVEC as conservative default (same as "vec")
@@ -159,10 +216,14 @@ int main(int argc, char** argv) {
   auto result = validator.ValidateBinary(*handle_or, executor, args,
                                          expected_arrs, Atol, Rtol);
 
+  // Dump actual immediately after run, before freeing host buffers
+  if (!DumpActual.empty()) dumpArray(args.outputs[0], DumpActual, Precision);
+
   // Free host-side allocations
   delete[] static_cast<uint8_t*>(args.outputs[0].data);
   for (auto& inp : args.inputs) delete[] static_cast<uint8_t*>(inp.data);
   delete[] static_cast<uint8_t*>(exp_arr.data);
+  delete[] static_cast<uint8_t*>(exp_snapshot.data);
 
   // Determine exit code.
   // error_msg non-empty → runtime error → exit 3 (no PASS/FAIL printed).
