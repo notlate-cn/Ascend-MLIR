@@ -62,23 +62,24 @@ llvm::Expected<NDArray> LoadNpy(const std::string& path) {
       return llvm::createStringError(llvm::inconvertibleErrorCode(),
                                      "Cannot parse dtype: %s", path.c_str());
     std::string descr = m[1].str();
-    if (descr == "<f2" || descr == "=f2") arr.dtype = DType::F16;
+    if      (descr == "<f2" || descr == "=f2") arr.dtype = DType::F16;
+    else if (descr == "<V2" || descr == "=V2") arr.dtype = DType::BF16; // numpy stores bf16 as void2
     else if (descr == "<f4" || descr == "=f4") arr.dtype = DType::F32;
+    else if (descr == "<i1" || descr == "=i1" ||
+             descr == "|i1")                   arr.dtype = DType::INT8;
     else if (descr == "<i4" || descr == "=i4") arr.dtype = DType::INT32;
+    else if (descr == "<i8" || descr == "=i8") arr.dtype = DType::INT64;
     else return llvm::createStringError(llvm::inconvertibleErrorCode(),
                                         "Unsupported dtype '%s': %s",
                                         descr.c_str(), path.c_str());
   }
 
-  size_t nbytes = arr.nbytes();
-  arr.data = new uint8_t[nbytes];
+  arr.allocate();
   f.read(reinterpret_cast<char*>(arr.data),
-         static_cast<std::streamsize>(nbytes));
-  if (f.gcount() != static_cast<std::streamsize>(nbytes)) {
-    delete[] static_cast<uint8_t*>(arr.data);
+         static_cast<std::streamsize>(arr.nbytes()));
+  if (f.gcount() != static_cast<std::streamsize>(arr.nbytes()))
     return llvm::createStringError(llvm::inconvertibleErrorCode(),
                                    "Truncated data in: %s", path.c_str());
-  }
   return arr;
 }
 
@@ -91,8 +92,11 @@ llvm::Error SaveNpy(const std::string& path, const NDArray& arr) {
   const char* descr = nullptr;
   switch (arr.dtype) {
     case DType::F16:   descr = "<f2"; break;
+    case DType::BF16:  descr = "<V2"; break;
     case DType::F32:   descr = "<f4"; break;
+    case DType::INT8:  descr = "|i1"; break;
     case DType::INT32: descr = "<i4"; break;
+    case DType::INT64: descr = "<i8"; break;
   }
   std::string shape_str = "(";
   for (size_t i = 0; i < arr.shape.size(); ++i) {

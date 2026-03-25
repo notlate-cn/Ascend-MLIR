@@ -22,12 +22,40 @@ g++ -std=c++17 \
 # Run test driver
 /tmp/test_runner_gen
 
-# Verify runner enforces --bin required
-echo "--- Testing --bin required ---"
+# Verify single-output runner enforces --bin required
+echo "--- Testing --bin required (single output) ---"
 if /tmp/runner_gen_test/runner --inputs /dev/null 2>&1 | grep -q "\-\-bin required"; then
-  echo "PASS: --bin required check"
+  echo "PASS: --bin required check (single output)"
 else
-  echo "FAIL: --bin required check"
+  echo "FAIL: --bin required check (single output)"
+  exit 1
+fi
+
+# Verify multi-output runner was generated and also enforces --bin required
+echo "--- Testing multi-output runner (num_outputs=2) ---"
+if [ -x /tmp/runner_gen_test2/runner ]; then
+  if /tmp/runner_gen_test2/runner --inputs /dev/null 2>&1 | grep -q "\-\-bin required"; then
+    echo "PASS: multi-output runner compiled and enforces --bin"
+  else
+    echo "FAIL: multi-output runner --bin check"
+    exit 1
+  fi
+else
+  echo "FAIL: multi-output runner not found at /tmp/runner_gen_test2/runner"
+  exit 1
+fi
+
+# Verify workspace_size runner was generated
+echo "--- Testing workspace_size=65536 runner ---"
+if [ -x /tmp/runner_gen_test4/runner ]; then
+  if grep -q "65536" /tmp/runner_gen_test4/runner.cpp; then
+    echo "PASS: workspace_size=65536 appears in runner.cpp"
+  else
+    echo "FAIL: workspace_size=65536 not in runner.cpp"
+    exit 1
+  fi
+else
+  echo "FAIL: workspace_size runner not found at /tmp/runner_gen_test4/runner"
   exit 1
 fi
 

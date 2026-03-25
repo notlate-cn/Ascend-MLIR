@@ -62,8 +62,16 @@ static float toFloat(const void* base, size_t idx, DType dtype) {
       else                f = (sign << 31) | ((exp + 112) << 23) | (frac << 13);
       float result; std::memcpy(&result, &f, 4); return result;
     }
+    case DType::BF16: {
+      uint16_t h;
+      std::memcpy(&h, static_cast<const uint8_t*>(base) + idx * 2, 2);
+      uint32_t f = static_cast<uint32_t>(h) << 16;
+      float result; std::memcpy(&result, &f, 4); return result;
+    }
     case DType::F32: { float v; std::memcpy(&v, static_cast<const uint8_t*>(base) + idx * 4, 4); return v; }
+    case DType::INT8: { int8_t v; std::memcpy(&v, static_cast<const uint8_t*>(base) + idx, 1); return static_cast<float>(v); }
     case DType::INT32: { int32_t v; std::memcpy(&v, static_cast<const uint8_t*>(base) + idx * 4, 4); return static_cast<float>(v); }
+    case DType::INT64: { int64_t v; std::memcpy(&v, static_cast<const uint8_t*>(base) + idx * 8, 8); return static_cast<float>(v); }
   }
   return 0.f;
 }
@@ -148,38 +156,37 @@ int main(int argc, char** argv) {
   for (auto& path : splitComma(Inputs)) {
     auto arr_or = LoadNpy(path);
     if (!arr_or) {
-      for (auto& inp : args.inputs) delete[] static_cast<uint8_t*>(inp.data);
       llvm::errs() << "Error loading input " << path << ": "
                    << llvm::toString(arr_or.takeError()) << "\n";
       _Exit(4);
     }
-    args.inputs.push_back(*arr_or);
+    args.inputs.push_back(std::move(*arr_or));
   }
 
   // Load expected output
   auto exp_or = LoadNpy(ExpectedFile);
   if (!exp_or) {
-    for (auto& inp : args.inputs) delete[] static_cast<uint8_t*>(inp.data);
     llvm::errs() << "Error loading expected: "
                  << llvm::toString(exp_or.takeError()) << "\n";
     _Exit(4);
   }
-  NDArray exp_arr = *exp_or;
+  NDArray exp_arr = std::move(*exp_or);
   // Deep-copy expected data: simulator may overwrite the original buffer
   // during Initialize/Run (simulator maps host memory as device memory).
   NDArray exp_snapshot;
   exp_snapshot.shape = exp_arr.shape;
   exp_snapshot.dtype = exp_arr.dtype;
-  exp_snapshot.data  = new uint8_t[exp_arr.nbytes()]();
+  exp_snapshot.allocate();
   std::memcpy(exp_snapshot.data, exp_arr.data, exp_arr.nbytes());
-  std::vector<NDArray> expected_arrs = {exp_snapshot};
+  std::vector<NDArray> expected_arrs;
+  expected_arrs.push_back(std::move(exp_snapshot));
 
   // Pre-alloc output buffer (same shape/dtype as expected)
   NDArray out_buf;
   out_buf.shape = exp_arr.shape;
   out_buf.dtype = exp_arr.dtype;
-  out_buf.data  = new uint8_t[out_buf.nbytes()]();
-  args.outputs.push_back(out_buf);
+  out_buf.allocate();
+  args.outputs.push_back(std::move(out_buf));
 
   // Dump expected immediately after loading, before simulator touches memory
   if (!DumpExpected.empty()) dumpArray(exp_arr, DumpExpected, Precision);
@@ -192,9 +199,6 @@ int main(int argc, char** argv) {
   // Initialize executor
   Executor executor(BackendMode::Simulation);
   if (auto err = executor.Initialize()) {
-    for (auto& inp : args.inputs) delete[] static_cast<uint8_t*>(inp.data);
-    delete[] static_cast<uint8_t*>(args.outputs[0].data);
-    delete[] static_cast<uint8_t*>(exp_arr.data);
     llvm::errs() << "Error: executor init failed: "
                  << llvm::toString(std::move(err)) << "\n";
     _Exit(3);
@@ -203,9 +207,6 @@ int main(int argc, char** argv) {
   // Register binary once
   auto handle_or = executor.RegisterBinary(BinFile, KernelName, magic);
   if (!handle_or) {
-    for (auto& inp : args.inputs) delete[] static_cast<uint8_t*>(inp.data);
-    delete[] static_cast<uint8_t*>(args.outputs[0].data);
-    delete[] static_cast<uint8_t*>(exp_arr.data);
     llvm::errs() << "Error: RegisterBinary failed: "
                  << llvm::toString(handle_or.takeError()) << "\n";
     _Exit(3);
@@ -216,14 +217,10 @@ int main(int argc, char** argv) {
   auto result = validator.ValidateBinary(*handle_or, executor, args,
                                          expected_arrs, Atol, Rtol);
 
-  // Dump actual immediately after run, before freeing host buffers
+  // Dump actual immediately after run, before buffers go out of scope
   if (!DumpActual.empty()) dumpArray(args.outputs[0], DumpActual, Precision);
 
-  // Free host-side allocations
-  delete[] static_cast<uint8_t*>(args.outputs[0].data);
-  for (auto& inp : args.inputs) delete[] static_cast<uint8_t*>(inp.data);
-  delete[] static_cast<uint8_t*>(exp_arr.data);
-  delete[] static_cast<uint8_t*>(exp_snapshot.data);
+  // NDArray RAII: owned_data freed automatically when args/exp_arr go out of scope.
 
   // Determine exit code.
   // error_msg non-empty → runtime error → exit 3 (no PASS/FAIL printed).
