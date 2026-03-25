@@ -14,6 +14,12 @@
 #include "mlir/Tools/mlir-translate/Translation.h"
 
 using namespace mlir;
+using namespace llvm;
+
+static cl::opt<std::string> TilingSpaceOut(
+    "tiling-space-out",
+    cl::desc("Write tiling_space.json skeleton to this path"),
+    cl::init(""));
 
 int main(int argc, char **argv) {
   registerAllTranslations();
@@ -21,7 +27,7 @@ int main(int argc, char **argv) {
   TranslateFromMLIRRegistration cannReg(
       "mlir-to-cann", "translate MLIR to CANN-standard AscendC kernel",
       [](Operation *op, raw_ostream &os) {
-        return translateToCannKernel(op, os);
+        return translateToCannKernel(op, os, TilingSpaceOut, "");
       },
       [](DialectRegistry &registry) {
         registerAllDialects(registry);
