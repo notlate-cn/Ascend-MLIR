@@ -12,6 +12,7 @@ PROJECT_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 BUILD_TYPE="${BUILD_TYPE:-Release}"
 BUILD_DIR="${PROJECT_ROOT}/build"
 INSTALL_DIR="${PROJECT_ROOT}/install"
+LLVM_BUILD_DIR="${LLVM_BUILD_DIR:-${PROJECT_ROOT}/externals/llvm-project/build}"
 NUM_JOBS="${NUM_JOBS:-$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 4)}"
 
 # Colors for output
