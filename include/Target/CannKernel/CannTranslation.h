@@ -14,7 +14,11 @@ namespace mlir {
 /// Translates a module containing CANN-signature aicore functions to C++.
 /// Expects func.func args in order: inputs, outputs, workspace:memref<ui8>,
 /// tiling:!emitasc.py_struct<...>, with cann.num_inputs attr.
-LogicalResult translateToCannKernel(Operation *op, raw_ostream &os);
+/// tilingSpaceOutPath: if non-empty, write tiling_space.json skeleton to this path.
+/// kernelFile: value for "kernel_file" field in the JSON (may be empty).
+LogicalResult translateToCannKernel(Operation *op, raw_ostream &os,
+                                    StringRef tilingSpaceOutPath = "",
+                                    StringRef kernelFile = "");
 } // namespace mlir
 
 #endif // AFIR_TARGET_CANNKERNEL_CANNTRANSLATION_H
