@@ -41,9 +41,9 @@ llvm::Expected<std::string> Compiler::Compile(const std::string& src_file,
   ::setenv("SOC_VERSION", cfg_.soc_version.c_str(), 1);
 
   std::string ascend_home = getAscendHome();
-  std::string bisheng     = ascend_home + "/compiler/ccec_compiler/bin/bisheng";
-  std::string lld         = ascend_home + "/compiler/ccec_compiler/bin/ld.lld";
-  std::string tikcpp      = ascend_home + "/compiler/tikcpp";
+  std::string bisheng     = ascend_home + "/toolkit/tools/ccec_compiler/bin/bisheng";
+  std::string lld         = ascend_home + "/toolkit/tools/ccec_compiler/bin/ld.lld";
+  std::string tikcpp      = ascend_home + "/toolkit/tools/tikcpp";
 
   std::string obj_file = output_dir + "/" + kernel_name + ".o";
   std::string bin_file = output_dir + "/" + kernel_name + ".bin";

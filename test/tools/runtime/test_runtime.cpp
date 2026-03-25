@@ -17,7 +17,7 @@
 //   - HostRunnerGen: tiling_layout compiled in
 //
 // Build (on xvm):
-//   cd /home/niu/code/Ascend-MLIR
+//   cd /path/to/Ascend-MLIR
 //   LLVM_BUILD=~/code/llvm-project/llvm/build
 //   cd build && cmake --build . --target AscendCRuntime -j4 && cd ..
 //   g++ -std=c++17 -I include/ -I $LLVM_BUILD/include \

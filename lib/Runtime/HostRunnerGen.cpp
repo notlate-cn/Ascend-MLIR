@@ -355,7 +355,15 @@ int main(int argc, char** argv) {
   std::string home_str = home ? home : "/usr/local/Ascend/ascend-toolkit/latest";
 )cpp"
     + "  std::string soc_ver = \"" + escapeCppStr(cfg.soc_version) + "\";\n"
-    + R"cpp(  std::string lib_path = home_str + "/aarch64-linux/simulator/" + soc_ver + "/lib/libruntime_camodel.so";
+    + R"cpp(
+#if defined(__x86_64__) || defined(_M_X64)
+  const char* cann_arch = "x86_64-linux";
+#elif defined(__aarch64__) || defined(_M_ARM64)
+  const char* cann_arch = "aarch64-linux";
+#else
+  const char* cann_arch = "aarch64-linux";  // default to ARM
+#endif
+  std::string lib_path = home_str + "/" + std::string(cann_arch) + "/simulator/" + soc_ver + "/lib/libruntime_camodel.so";
   void* lib = dlopen(lib_path.c_str(), RTLD_LAZY | RTLD_GLOBAL);
   if (!lib) {
     lib_path = home_str + "/tools/simulator/" + soc_ver + "/lib/libruntime_camodel.so";
