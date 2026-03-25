@@ -13,33 +13,140 @@ static uint32_t magicForType(const std::string& kernel_type) {
   return 0x41415246u; // "vec" and "mix" both use AIVEC
 }
 
-// Returns the complete runner.cpp source as a string.
-// Splice points:
-//   layout_init  : push_back lines for the default tiling_layout vector
-//   magic_buf    : hex magic constant for DevBinary
-//   kernel_name  : function name string literal
-static std::string emitRunnerCpp(const HostRunnerGen::Config& cfg) {
-  // C1: escape helper for splicing into C++ string literals
-  auto escapeCppStr = [](const std::string& s) {
-    std::string out;
-    for (char c : s) {
-      if (c == '\\') out += "\\\\";
-      else if (c == '"') out += "\\\"";
-      else out += c;
-    }
-    return out;
-  };
+static std::string escapeCppStr(const std::string& s) {
+  std::string out;
+  for (char c : s) {
+    if (c == '\\') out += "\\\\";
+    else if (c == '"') out += "\\\"";
+    else out += c;
+  }
+  return out;
+}
 
-  // Build push_back lines. Variable name in emitted code is "tiling_layout"
-  // (matches the else-branch vector declaration in the emitted main()).
+// Returns the complete runner.cpp source as a string.
+static std::string emitRunnerCpp(const HostRunnerGen::Config& cfg) {
+  int n_out = cfg.num_outputs;
+
+  // Build tiling layout push_back lines
   std::string layout_init;
   for (size_t i = 0; i < cfg.tiling_layout.size(); ++i)
-    layout_init += "    tiling_layout.push_back(\"" + escapeCppStr(cfg.tiling_layout[i]) + "\");\n";
+    layout_init += "    tiling_layout.push_back(\"" +
+                   escapeCppStr(cfg.tiling_layout[i]) + "\");\n";
 
   char magic_buf[32];
-  std::snprintf(magic_buf, sizeof(magic_buf), "0x%08X",
+  std::snprintf(magic_buf, sizeof(magic_buf), "0x%08Xu",
                 magicForType(cfg.kernel_type));
-  // Note: the 'u' unsigned suffix is appended by the raw string splice site below.
+
+  // Build per-output compiled-in dtype defaults
+  // dtype string → (npy descr, dtypeBytes, dtype enum int)
+  // enum: 0=f16, 1=bf16, 2=f32, 3=i8, 4=i32, 5=i64
+  auto dtypeEnum = [](const std::string& s) -> int {
+    if (s == "f16")  return 0;
+    if (s == "bf16") return 1;
+    if (s == "f32")  return 2;
+    if (s == "i8")   return 3;
+    if (s == "i32")  return 4;
+    if (s == "i64")  return 5;
+    return 0; // default f16
+  };
+
+  // Build compiled-in output dtype defaults string
+  std::string output_dtype_defaults;
+  for (int i = 0; i < n_out; ++i) {
+    std::string dt = (i < (int)cfg.output_dtypes.size())
+                         ? cfg.output_dtypes[i]
+                         : "f16";
+    output_dtype_defaults += "  output_dtypes_default.push_back(" +
+                             std::to_string(dtypeEnum(dt)) + "); // " + dt + "\n";
+  }
+
+  // Build output arg parsing (--outputN, --output-shapeN, --output-dtypeN)
+  std::string output_arg_decls;
+  for (int i = 0; i < n_out; ++i) {
+    std::string si = std::to_string(i);
+    output_arg_decls +=
+        "  std::string output_path_" + si + " = \"/dev/null\";\n"
+        "  std::string output_shape_str_" + si + ";\n"
+        "  int         output_dtype_" + si + " = -1; // -1 = use compiled-in default\n";
+  }
+  std::string output_arg_parsing;
+  for (int i = 0; i < n_out; ++i) {
+    std::string si = std::to_string(i);
+    output_arg_parsing +=
+        "    else if (a == \"--output" + si + "\")       output_path_" + si + "  = next();\n"
+        "    else if (a == \"--output-shape" + si + "\") output_shape_str_" + si + " = next();\n"
+        "    else if (a == \"--output-dtype" + si + "\") {\n"
+        "      std::string ds = next();\n"
+        "      if      (ds==\"f16\")  output_dtype_" + si + " = 0;\n"
+        "      else if (ds==\"bf16\") output_dtype_" + si + " = 1;\n"
+        "      else if (ds==\"f32\")  output_dtype_" + si + " = 2;\n"
+        "      else if (ds==\"i8\")   output_dtype_" + si + " = 3;\n"
+        "      else if (ds==\"i32\")  output_dtype_" + si + " = 4;\n"
+        "      else if (ds==\"i64\")  output_dtype_" + si + " = 5;\n"
+        "      else { std::cerr << \"Unknown dtype: \" << ds << \"\\n\"; return 4; }\n"
+        "    }\n";
+  }
+
+  // Build per-output NDArray alloc
+  std::string output_alloc;
+  for (int i = 0; i < n_out; ++i) {
+    std::string si = std::to_string(i);
+    output_alloc +=
+        "  NDArray output_" + si + ";\n"
+        "  {\n"
+        "    int dt = (output_dtype_" + si + " >= 0) ? output_dtype_" + si +
+        "               : output_dtypes_default[" + si + "];\n"
+        "    output_" + si + ".dtype = dt;\n"
+        "    if (!output_shape_str_" + si + ".empty()) {\n"
+        "      auto sp = splitComma(output_shape_str_" + si + ");\n"
+        "      for (auto& s : sp) if (!s.empty()) output_" + si + ".shape.push_back(std::stoll(s));\n"
+        "    } else {\n"
+        "      output_" + si + ".shape = inputs[0].shape;\n"
+        "    }\n"
+        "    output_" + si + ".data = new uint8_t[output_" + si + ".nbytes()]();\n"
+        "  }\n";
+  }
+
+  // Build free lambda body for outputs
+  std::string output_free;
+  for (int i = 0; i < n_out; ++i) {
+    std::string si = std::to_string(i);
+    output_free += "    delete[] (uint8_t*)output_" + si + ".data; output_" + si + ".data = nullptr;\n";
+  }
+
+  // Build out_ptrs push and workspace size
+  std::string out_ptrs_push;
+  for (int i = 0; i < n_out; ++i) {
+    std::string si = std::to_string(i);
+    out_ptrs_push += "  void* out_ptr_" + si + " = doAlloc(output_" + si + ".nbytes());\n"
+                     "  out_ptrs.push_back(out_ptr_" + si + ");\n";
+  }
+  std::string ws_size = std::to_string(cfg.workspace_size);
+
+  // Build D2H output loop
+  std::string d2h_outputs;
+  for (int i = 0; i < n_out; ++i) {
+    std::string si = std::to_string(i);
+    d2h_outputs +=
+        "  {\n"
+        "    const uint8_t* src_d = (const uint8_t*)out_ptr_" + si + ";\n"
+        "    uint8_t* dst_d = (uint8_t*)output_" + si + ".data;\n"
+        "    size_t nb = output_" + si + ".nbytes();\n"
+        "    for (size_t off = 0; off < nb; off += 4) {\n"
+        "      uint8_t buf[4] = {};\n"
+        "      rtMemcpy(buf, 4, src_d + off, 4, 2);\n"
+        "      size_t chunk = std::min<size_t>(4, nb - off);\n"
+        "      std::memcpy(dst_d + off, buf, chunk);\n"
+        "    }\n"
+        "  }\n";
+  }
+
+  // Build saveNpy calls
+  std::string save_outputs;
+  for (int i = 0; i < n_out; ++i) {
+    std::string si = std::to_string(i);
+    save_outputs += "  saveNpy(output_path_" + si + ", output_" + si + ");\n";
+  }
 
   // clang-format off
   return std::string(R"cpp(
@@ -57,19 +164,32 @@ static std::string emitRunnerCpp(const HostRunnerGen::Config& cfg) {
 #include <string>
 #include <vector>
 
+// ── dtype encoding: 0=f16 1=bf16 2=f32 3=i8 4=i32 5=i64 ─────────────────────
+
+static size_t dtypeBytes(int dt) {
+  switch (dt) {
+    case 0: return 2; // f16
+    case 1: return 2; // bf16
+    case 2: return 4; // f32
+    case 3: return 1; // i8
+    case 4: return 4; // i32
+    case 5: return 8; // i64
+  }
+  return 2;
+}
+
 // ── Minimal .npy I/O ──────────────────────────────────────────────────────────
 
 struct NDArray {
   void*                data  = nullptr;
   std::vector<int64_t> shape;
-  int                  dtype = 0; // 0=f16 1=f32 2=i32
+  int                  dtype = 0;
   size_t numElements() const {
     size_t n = 1;
     for (auto s : shape) n *= (size_t)s;
     return n;
   }
-  size_t dtypeBytes() const { return dtype == 0 ? 2 : 4; }
-  size_t nbytes()     const { return numElements() * dtypeBytes(); }
+  size_t nbytes() const { return numElements() * dtypeBytes(dtype); }
 };
 
 static bool loadNpy(const std::string& path, NDArray& arr) {
@@ -103,8 +223,11 @@ static bool loadNpy(const std::string& path, NDArray& arr) {
   }
   std::string descr = m[1].str();
   if      (descr=="<f2"||descr=="=f2") arr.dtype = 0;
-  else if (descr=="<f4"||descr=="=f4") arr.dtype = 1;
-  else if (descr=="<i4"||descr=="=i4") arr.dtype = 2;
+  else if (descr=="<V2"||descr=="=V2") arr.dtype = 1; // bf16
+  else if (descr=="<f4"||descr=="=f4") arr.dtype = 2;
+  else if (descr=="|i1"||descr=="<i1") arr.dtype = 3;
+  else if (descr=="<i4"||descr=="=i4") arr.dtype = 4;
+  else if (descr=="<i8"||descr=="=i8") arr.dtype = 5;
   else { std::cerr << "Unsupported dtype: " << descr << "\n"; return false; }
   arr.data = new uint8_t[arr.nbytes()];
   f.read((char*)arr.data, (std::streamsize)arr.nbytes());
@@ -115,7 +238,16 @@ static bool saveNpy(const std::string& path, const NDArray& arr) {
   if (path == "/dev/null") return true;
   std::ofstream f(path, std::ios::binary);
   if (!f) { std::cerr << "Cannot write: " << path << "\n"; return false; }
-  const char* descr = arr.dtype==0 ? "<f2" : (arr.dtype==1 ? "<f4" : "<i4");
+  const char* descr = nullptr;
+  switch (arr.dtype) {
+    case 0: descr = "<f2"; break;
+    case 1: descr = "<V2"; break;
+    case 2: descr = "<f4"; break;
+    case 3: descr = "|i1"; break;
+    case 4: descr = "<i4"; break;
+    case 5: descr = "<i8"; break;
+    default: descr = "<f2"; break;
+  }
   std::string shape_str = "(";
   for (size_t i = 0; i < arr.shape.size(); ++i) {
     shape_str += std::to_string(arr.shape[i]);
@@ -155,7 +287,6 @@ static std::vector<uint8_t> buildTiling(const std::string& params,
   auto pvec = splitComma(params);
   for (size_t i = 0; i < pvec.size(); ++i) {
     auto eq = pvec[i].find('=');
-    // Accept both "key=value" and bare "value" formats.
     int64_t val = (eq == std::string::npos)
                       ? std::stoll(pvec[i])
                       : std::stoll(pvec[i].substr(eq + 1));
@@ -174,10 +305,10 @@ static std::vector<uint8_t> buildTiling(const std::string& params,
 // ── Main ──────────────────────────────────────────────────────────────────────
 
 int main(int argc, char** argv) {
-  std::string bin_path, tiling_params, tiling_layout_str, inputs_str,
-              output_path = "/dev/null", output_shape_str;
+  std::string bin_path, tiling_params, tiling_layout_str, inputs_str;
   int block_dim = 1;
 
+)cpp") + output_arg_decls + R"cpp(
   for (int i = 1; i < argc; ++i) {
     std::string a = argv[i];
     auto next = [&]() -> std::string {
@@ -188,19 +319,20 @@ int main(int argc, char** argv) {
     else if (a == "--tiling-params") tiling_params     = next();
     else if (a == "--tiling-layout") tiling_layout_str = next();
     else if (a == "--inputs")        inputs_str        = next();
-    else if (a == "--output")        output_path       = next();
-    else if (a == "--output-shape")  output_shape_str  = next();
     else if (a == "--block-dim")     block_dim         = std::stoi(next());
-  }
+)cpp" + output_arg_parsing + R"cpp(  }
   if (bin_path.empty())  { std::cerr << "--bin required\n";    return 4; }
   if (inputs_str.empty()){ std::cerr << "--inputs required\n"; return 4; }
 
+  // Compiled-in output dtype defaults (can be overridden via --output-dtypeN)
+  std::vector<int> output_dtypes_default;
+)cpp" + output_dtype_defaults + R"cpp(
   // tiling layout: command-line overrides compiled-in default
   std::vector<std::string> tiling_layout;
   if (!tiling_layout_str.empty())
     tiling_layout = splitComma(tiling_layout_str);
   else {
-)cpp") + layout_init + R"cpp(  }
+)cpp" + layout_init + R"cpp(  }
 
   std::vector<uint8_t> tiling_bytes;
   if (!tiling_params.empty())
@@ -212,33 +344,13 @@ int main(int argc, char** argv) {
   for (size_t i = 0; i < input_paths.size(); ++i)
     if (!loadNpy(input_paths[i], inputs[i])) return 4;
 
-  // Allocate output (single output)
-  NDArray output;
-  if (!output_shape_str.empty()) {
-    // Parse --output-shape "64,64" → {64, 64}
-    auto shape_parts = splitComma(output_shape_str);
-    try {
-      for (auto& s : shape_parts) {
-        if (s.empty()) continue;
-        output.shape.push_back(std::stoll(s));
-      }
-    } catch (const std::exception& e) {
-      std::cerr << "Invalid --output-shape value: " << output_shape_str << "\n";
-      return 4;
-    }
-  } else {
-    output.shape = inputs[0].shape;
-  }
-  output.dtype = inputs[0].dtype;  // dtype mirrors inputs[0]; add --output-dtype if needed
-  output.data  = new uint8_t[output.nbytes()]();
-
-  // C2/I1: Cleanup for host-side NDArray memory
+  // Allocate outputs
+)cpp" + output_alloc + R"cpp(
   auto freeArrays = [&]() {
     for (auto& inp : inputs) { delete[] (uint8_t*)inp.data; inp.data = nullptr; }
-    delete[] (uint8_t*)output.data; output.data = nullptr;
-  };
+)cpp" + output_free + R"cpp(  };
 
-  // dlopen camodel (try simulator layout first, then legacy)
+  // dlopen camodel
   const char* home = std::getenv("ASCEND_HOME_PATH");
   std::string home_str = home ? home : "/usr/local/Ascend/ascend-toolkit/latest";
 )cpp"
@@ -270,7 +382,6 @@ int main(int argc, char** argv) {
   LOAD(rtDeviceSynchronize, int(*)())
 #undef LOAD
 
-  // I2: Check rtSetDevice return value
   if (rtSetDevice(0) != 0) {
     std::cerr << "rtSetDevice failed\n"; freeArrays(); dlclose(lib); return 3;
   }
@@ -283,7 +394,7 @@ int main(int argc, char** argv) {
   // Register binary + function
   DevBinary dev_bin;
 )cpp"
-    + "  dev_bin.magic   = " + std::string(magic_buf) + "u;\n"
+    + "  dev_bin.magic   = " + std::string(magic_buf) + ";\n"
     + R"cpp(  dev_bin.version = 0;
   dev_bin.data    = (const char*)bin_data.data();
   dev_bin.length  = bin_data.size();
@@ -298,7 +409,7 @@ int main(int argc, char** argv) {
     std::cerr << "rtFunctionRegister failed\n"; freeArrays(); dlclose(lib); return 3;
   }
 
-  // Alloc helper: rtMalloc(n+512), align to 512 bytes, track raw ptr for rtFree
+  // Alloc helper: rtMalloc(n+512), align to 512 bytes
   struct AllocRec { void* raw; void* aligned; };
   std::vector<AllocRec> allocs;
   auto doAlloc = [&](size_t n) -> void* {
@@ -313,21 +424,20 @@ int main(int argc, char** argv) {
     allocs.clear();
   };
 
-  // H2D inputs
+  // H2D inputs (4096-byte chunks)
   std::vector<void*> in_ptrs, out_ptrs;
   for (auto& inp : inputs) {
     void* p = doAlloc(inp.nbytes());
     in_ptrs.push_back(p);
     const uint8_t* src = (const uint8_t*)inp.data;
-    for (size_t off = 0; off < inp.nbytes(); off += 256) {
-      size_t chunk = std::min<size_t>(256, inp.nbytes() - off);
+    for (size_t off = 0; off < inp.nbytes(); off += 4096) {
+      size_t chunk = std::min<size_t>(4096, inp.nbytes() - off);
       rtMemcpy((uint8_t*)p + off, chunk, src + off, chunk, 1);
     }
   }
-  void* out_ptr = doAlloc(output.nbytes());
-  out_ptrs.push_back(out_ptr);
-  void* ws_ptr = doAlloc(8192);
-
+)cpp" + out_ptrs_push
+    + "  void* ws_ptr = doAlloc(" + ws_size + ");\n"
+    + R"cpp(
   // Build launch args: [inputs..., outputs..., workspace, tiling_words...]
   std::vector<uint64_t> launch_args;
   for (auto* p : in_ptrs)  launch_args.push_back((uint64_t)p);
@@ -350,27 +460,16 @@ int main(int argc, char** argv) {
     std::cerr << "rtKernelLaunch failed: rc=" << rc << "\n";
     rtStreamDestroy(stream); freeAll(); freeArrays(); dlclose(lib); return 3;
   }
-
-  // I3: Check rtDeviceSynchronize return value
   if (rtDeviceSynchronize() != 0) {
     std::cerr << "rtDeviceSynchronize failed\n";
     rtStreamDestroy(stream); freeAll(); freeArrays(); dlclose(lib); return 3;
   }
   rtStreamDestroy(stream);
 
-  // D2H output (4-byte chunks; safe due to +512 overalloc)
-  const uint8_t* src_d = (const uint8_t*)out_ptr;
-  uint8_t* dst_d = (uint8_t*)output.data;
-  for (size_t off = 0; off < output.nbytes(); off += 4) {
-    uint8_t buf[4] = {};
-    rtMemcpy(buf, 4, src_d + off, 4, 2);
-    size_t chunk = std::min<size_t>(4, output.nbytes() - off);
-    std::memcpy(dst_d + off, buf, chunk);
-  }
-
+  // D2H outputs (4-byte chunks)
+)cpp" + d2h_outputs + R"cpp(
   freeAll();
-  saveNpy(output_path, output);
-  freeArrays();
+)cpp" + save_outputs + R"cpp(  freeArrays();
   dlclose(lib);
   return 0;
 }
@@ -380,13 +479,6 @@ int main(int argc, char** argv) {
 
 llvm::Expected<std::string> HostRunnerGen::Generate(const Config& cfg,
                                                      const std::string& output_dir) {
-  // Guard: only num_outputs == 1 is supported
-  if (cfg.num_outputs != 1)
-    return llvm::createStringError(llvm::inconvertibleErrorCode(),
-                                   "HostRunnerGen: num_outputs=%d not supported "
-                                   "(only 1 is currently implemented)",
-                                   cfg.num_outputs);
-
   // Ensure output dir exists
   if (auto ec = llvm::sys::fs::create_directories(output_dir))
     return llvm::createStringError(ec, "Cannot create output dir: %s",
@@ -408,15 +500,11 @@ llvm::Expected<std::string> HostRunnerGen::Generate(const Config& cfg,
   if (cfg.verbose)
     llvm::errs() << "[HostRunnerGen] Written: " << src_path << "\n";
 
-  // Compile with g++ via /bin/sh -c (inherits PATH, which must include g++).
-  // Use 300 s timeout consistent with Compiler.cpp.
-  // If g++ is not on PATH, the error message will read "g++: not found".
-  // In that case, add g++ to PATH or set its full path in this command.
-  // I4: Quote src_path and exe_path to handle spaces in paths
+  // Compile with g++ via /bin/sh -c
   std::string cmd = "g++ -O2 -std=c++17 \"" + src_path + "\" -ldl -o \"" + exe_path + "\"";
   std::vector<std::string> args = {"/bin/sh", "-c", cmd};
   std::vector<llvm::StringRef> argv;
-  argv.reserve(args.size()); // M3: reserve capacity
+  argv.reserve(args.size());
   for (auto& a : args) argv.push_back(a);
 
   std::string err_msg;

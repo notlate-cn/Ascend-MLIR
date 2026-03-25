@@ -26,14 +26,33 @@ static float toFloat(const void* base, size_t idx, DType dtype) {
       std::memcpy(&result, &f, 4);
       return result;
     }
+    case DType::BF16: {
+      // bf16 is the upper 16 bits of float32; pad with 16 zero bits
+      uint16_t h;
+      std::memcpy(&h, static_cast<const uint8_t*>(base) + idx * 2, 2);
+      uint32_t f = static_cast<uint32_t>(h) << 16;
+      float result;
+      std::memcpy(&result, &f, 4);
+      return result;
+    }
     case DType::F32: {
       float v;
       std::memcpy(&v, static_cast<const uint8_t*>(base) + idx * 4, 4);
       return v;
     }
+    case DType::INT8: {
+      int8_t v;
+      std::memcpy(&v, static_cast<const uint8_t*>(base) + idx, 1);
+      return static_cast<float>(v);
+    }
     case DType::INT32: {
       int32_t v;
       std::memcpy(&v, static_cast<const uint8_t*>(base) + idx * 4, 4);
+      return static_cast<float>(v);
+    }
+    case DType::INT64: {
+      int64_t v;
+      std::memcpy(&v, static_cast<const uint8_t*>(base) + idx * 8, 8);
       return static_cast<float>(v);
     }
   }

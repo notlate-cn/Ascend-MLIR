@@ -101,10 +101,14 @@ void Executor::FreeAll() {
 }
 
 llvm::Error Executor::H2D(void* dst, const void* src, size_t n) {
+  // Use large chunks (up to 4096 bytes) to reduce rtMemcpy call overhead.
+  // The simulator handles arbitrary sizes; rtMalloc adds +512 overalloc so
+  // an aligned chunk never reads past the allocated region.
+  static constexpr size_t kH2DChunk = 4096;
   const uint8_t* s = static_cast<const uint8_t*>(src);
   uint8_t* d = static_cast<uint8_t*>(dst);
-  for (size_t off = 0; off < n; off += 256) {
-    size_t chunk = std::min<size_t>(256, n - off);
+  for (size_t off = 0; off < n; off += kH2DChunk) {
+    size_t chunk = std::min<size_t>(kH2DChunk, n - off);
     int rc = rtMemcpy_(d + off, chunk, s + off, chunk, /*H2D=*/1);
     if (rc != 0)
       return llvm::createStringError(llvm::inconvertibleErrorCode(),
@@ -114,16 +118,20 @@ llvm::Error Executor::H2D(void* dst, const void* src, size_t n) {
 }
 
 llvm::Error Executor::D2H(void* dst, const void* src, size_t n) {
-  // 4-byte chunks; safe because rtMalloc adds +512 overalloc
+  // Use 4-byte chunks for D2H: the simulator's camodel rtMemcpy in D2H
+  // direction is unreliable for large transfers (silently reads stale data
+  // beyond ~16 bytes in some SOC versions). 4-byte granularity is safe
+  // because rtMalloc adds +512 overalloc, so we never read past allocation.
   uint8_t* d = static_cast<uint8_t*>(dst);
   const uint8_t* s = static_cast<const uint8_t*>(src);
-  for (size_t off = 0; off < n; off += 4) {
-    uint8_t buf[4] = {};
-    int rc = rtMemcpy_(buf, 4, s + off, 4, /*D2H=*/2);
+  static constexpr size_t kD2HChunk = 4;
+  for (size_t off = 0; off < n; off += kD2HChunk) {
+    uint8_t buf[kD2HChunk] = {};
+    int rc = rtMemcpy_(buf, kD2HChunk, s + off, kD2HChunk, /*D2H=*/2);
     if (rc != 0)
       return llvm::createStringError(llvm::inconvertibleErrorCode(),
                                      "rtMemcpy D2H failed rc=%d at offset %zu", rc, off);
-    size_t chunk = std::min<size_t>(4, n - off);
+    size_t chunk = std::min<size_t>(kD2HChunk, n - off);
     std::memcpy(d + off, buf, chunk);
   }
   return llvm::Error::success();
