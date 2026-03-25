@@ -236,7 +236,11 @@ if [ -f "$BIN" ]; then
     --expected "$DIR/output_c.npy" \
     --tiling-params 'TB_M=16,TB_N=16,dim_arg0_0=64,dim_arg1_1=64,dim_arg0_1=64,dim_arg1_0=64' \
     --block-dim 4 \
-    --atol 1.0 \
+    --atol 1e-3 \
+    --rtol 1e-3 \
+    --dump-actual "$BUILD_DIR/actual.txt" \
+    --dump-expected "$BUILD_DIR/expected.txt" \
+    --precision 4 \
     2>&1 | grep -v '^\[info\]\|^\[PEM_AIC_LOG\]\|^\[INFO\]\|^\[WARNING\]' || true
 else
   echo "  ⚠ bin not found — skipping run"
