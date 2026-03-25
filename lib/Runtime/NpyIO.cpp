@@ -63,7 +63,7 @@ llvm::Expected<NDArray> LoadNpy(const std::string& path) {
                                      "Cannot parse dtype: %s", path.c_str());
     std::string descr = m[1].str();
     if      (descr == "<f2" || descr == "=f2") arr.dtype = DType::F16;
-    else if (descr == "<V2" || descr == "=V2") arr.dtype = DType::BF16; // numpy stores bf16 as void2
+    else if (descr == "<V2" || descr == "=V2" || descr == "|V2") arr.dtype = DType::BF16; // numpy stores bf16 as void2
     else if (descr == "<f4" || descr == "=f4") arr.dtype = DType::F32;
     else if (descr == "<i1" || descr == "=i1" ||
              descr == "|i1")                   arr.dtype = DType::INT8;
