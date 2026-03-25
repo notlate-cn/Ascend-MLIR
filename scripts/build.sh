@@ -12,7 +12,6 @@ PROJECT_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 BUILD_TYPE="${BUILD_TYPE:-Release}"
 BUILD_DIR="${PROJECT_ROOT}/build"
 INSTALL_DIR="${PROJECT_ROOT}/install"
-LLVM_BUILD_DIR="${LLVM_BUILD_DIR:-${PROJECT_ROOT}/externals/llvm-project/build}"
 NUM_JOBS="${NUM_JOBS:-$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 4)}"
 
 # Colors for output
@@ -31,6 +30,27 @@ print_warn() {
 
 print_error() {
     echo -e "${RED}[ERROR]${NC} $1"
+}
+
+# Check LLVM_BUILD_DIR exists and provide helpful error message
+check_llvm_build_dir() {
+    if [ ! -d "${LLVM_BUILD_DIR}" ]; then
+        print_error "LLVM build not found at: ${LLVM_BUILD_DIR}"
+        print_error "Solutions:"
+        print_error "  1. If LLVM is not built yet, run: $0 --build-llvm"
+        print_error "  2. If LLVM is already built elsewhere:"
+        print_error "     - Set environment variable: export LLVM_BUILD_DIR=<path>"
+        print_error "     - Or specify: $0 --llvm-build-dir <path>"
+        exit 1
+    fi
+
+    # Verify MLIR CMake directory exists
+    local mlir_cmake_dir="${LLVM_BUILD_DIR}/lib/cmake/mlir"
+    if [ ! -d "${mlir_cmake_dir}" ]; then
+        print_error "MLIR CMake config not found at: ${mlir_cmake_dir}"
+        print_error "Please ensure MLIR was built correctly (LLVM_ENABLE_PROJECTS must include mlir)"
+        exit 1
+    fi
 }
 
 usage() {
@@ -104,6 +124,9 @@ build_stablehlo() {
         exit 1
     fi
 
+    # Check LLVM build directory
+    check_llvm_build_dir
+
     # Derive MLIR_DIR from LLVM_BUILD_DIR
     local MLIR_CMAKE_DIR="${LLVM_BUILD_DIR}/lib/cmake/mlir"
 
@@ -146,19 +169,8 @@ build_project() {
     local start_time=$(date +%s)
     print_info "Building Ascend-MLIR..."
 
-    if [ ! -d "${LLVM_BUILD_DIR}" ]; then
-        print_error "LLVM build not found at: ${LLVM_BUILD_DIR}"
-        print_error "Please build LLVM first with --build-llvm or specify path with --llvm-build-dir"
-        exit 1
-    fi
-
-    # Verify LLVM build directory has the expected structure
-    local MLIR_CMAKE_DIR="${LLVM_BUILD_DIR}/lib/cmake/mlir"
-    if [ ! -d "${MLIR_CMAKE_DIR}" ]; then
-        print_error "MLIR CMake config not found at: ${MLIR_CMAKE_DIR}"
-        print_error "Please ensure MLIR was built correctly (LLVM_ENABLE_PROJECTS must include mlir)"
-        exit 1
-    fi
+    # Check LLVM build directory
+    check_llvm_build_dir
 
     mkdir -p "${BUILD_DIR}"
     cd "${BUILD_DIR}"
@@ -216,13 +228,44 @@ build_tests() {
         print_info "No source changes detected, skipping build."
     fi
 
-    print_info "Running tests..."
+    # Run lit-based MLIR tests
+    print_info "Running lit-based MLIR tests..."
     cd "${BUILD_DIR}"
     ninja check-afir -j${NUM_JOBS}
 
+    # Run tool integration tests
+    print_info "Running tool integration tests..."
+    local test_passed=0
+    local test_failed=0
+
+    # Export LLVM_BUILD_DIR for test scripts
+    export LLVM_BUILD_DIR
+
+    for test_script in test/tools/*/run_*.sh; do
+        if [ -f "$test_script" ]; then
+            local test_name=$(basename "$test_script")
+            print_info "Running $test_name..."
+            if bash "$test_script" > /tmp/${test_name}.log 2>&1; then
+                print_info "  ✓ $test_name PASSED"
+                ((test_passed++))
+            else
+                print_error "  ✗ $test_name FAILED"
+                print_error "    Log: /tmp/${test_name}.log"
+                cat /tmp/${test_name}.log | tail -20
+                ((test_failed++))
+            fi
+        fi
+    done
+
+    # Summary
     local end_time=$(date +%s)
     local duration=$((end_time - start_time))
     print_info "Tests completed in ${duration}s ($(printf '%02d:%02d:%02d' $((duration/3600)) $((duration%3600/60)) $((duration%60))))"
+    print_info "Tool tests: $test_passed passed, $test_failed failed"
+
+    if [ $test_failed -gt 0 ]; then
+        return 1
+    fi
 }
 
 build_coverage() {

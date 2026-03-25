@@ -26,8 +26,16 @@ static std::string getLibPath() {
   if (!home) home = "/usr/local/Ascend/ascend-toolkit/latest";
   const char* soc = std::getenv("SOC_VERSION");
   if (!soc) soc = "Ascend910B1";
-  // Try new toolkit layout: aarch64-linux/simulator/<SOC>/lib/
-  std::string new_path = std::string(home) + "/aarch64-linux/simulator/" +
+  // Detect CANN architecture directory at compile time
+#if defined(__x86_64__) || defined(_M_X64)
+  const char* cann_arch = "x86_64-linux";
+#elif defined(__aarch64__) || defined(_M_ARM64)
+  const char* cann_arch = "aarch64-linux";
+#else
+  const char* cann_arch = "aarch64-linux";  // default to ARM
+#endif
+  // Try new toolkit layout: <arch>/simulator/<SOC>/lib/
+  std::string new_path = std::string(home) + "/" + cann_arch + "/simulator/" +
                          std::string(soc) + "/lib/libruntime_camodel.so";
   // Also try legacy layout: tools/simulator/<SOC>/lib/
   std::string legacy_path = std::string(home) + "/tools/simulator/" +

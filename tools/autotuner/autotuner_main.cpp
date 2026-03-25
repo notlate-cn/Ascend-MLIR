@@ -337,11 +337,10 @@ static std::vector<SearchResult> runSearch(
     std::memset(args_template.outputs[0].data,
                 0, args_template.outputs[0].nbytes());
 
-    RunArgs args = args_template;
-    args.tiling    = packTiling(param_vals, param_types);
-    args.block_dim = static_cast<int>(block_dim);
+    args_template.tiling    = packTiling(param_vals, param_types);
+    args_template.block_dim = static_cast<int>(block_dim);
 
-    auto res = validator.ValidateBinary(func_handle, executor, args,
+    auto res = validator.ValidateBinary(func_handle, executor, args_template,
                                         expected, atol, rtol);
 
     SearchResult sr;
@@ -535,7 +534,7 @@ int main(int argc, char** argv) {
                    << llvm::toString(arr_or.takeError()) << "\n";
       _Exit(1);
     }
-    inputs.push_back(*arr_or);
+    inputs.push_back(std::move(*arr_or));
   }
 
   // Load expected
@@ -545,7 +544,8 @@ int main(int argc, char** argv) {
     llvm::errs() << "Error loading expected: " << llvm::toString(exp_or.takeError()) << "\n";
     _Exit(1);
   }
-  std::vector<NDArray> expected_arrs = {*exp_or};
+  std::vector<NDArray> expected_arrs;
+  expected_arrs.push_back(std::move(*exp_or));
 
   // Pre-alloc output buffer (shape/dtype from expected)
   NDArray out_buf;
@@ -554,8 +554,8 @@ int main(int argc, char** argv) {
   out_buf.data  = new uint8_t[out_buf.nbytes()]();
 
   RunArgs args_tmpl;
-  args_tmpl.inputs  = inputs;
-  args_tmpl.outputs = {out_buf};
+  args_tmpl.inputs  = std::move(inputs);
+  args_tmpl.outputs.push_back(std::move(out_buf));
 
   llvm::outs() << "Searching " << ts.kernel_name << " on " << soc << "\n";
   std::string best_binary_path;

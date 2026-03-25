@@ -1,9 +1,16 @@
 #!/usr/bin/env bash
 set -e
-cd /home/niu/code/Ascend-MLIR
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
+cd "$PROJECT_ROOT"
 source examples/env.sh
 
-LLVM_BUILD=~/code/llvm-project/llvm/build
+LLVM_BUILD="${LLVM_BUILD_DIR:-$PROJECT_ROOT/../llvm-project/llvm/build}"
+if [ ! -d "$LLVM_BUILD" ]; then
+  echo "Error: LLVM_BUILD directory not found: $LLVM_BUILD"
+  echo "Please set LLVM_BUILD_DIR environment variable"
+  exit 1
+fi
 
 # Build AscendCRuntime
 cd build && cmake --build . --target AscendCRuntime -j4 && cd ..
