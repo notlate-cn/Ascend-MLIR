@@ -68,11 +68,11 @@ func.func @copy_b1_to_b2() {
 }
 
 //===----------------------------------------------------------------------===//
-// Data-move: CO1 → VECIN (fixpipe)
+// Data-move: CO1 → VECIN (data_copy_co12dst)
 //===----------------------------------------------------------------------===//
 // CHECK-LABEL: func @copy_co1_to_vecin
-// CHECK: ascendc.construct !ascendc.fixpipe_params<f32>
-// CHECK: ascendc.fixpipe
+// CHECK: ascendc.construct !ascendc.data_copy_co12dst_params
+// CHECK: ascendc.data_copy_co12dst
 // CHECK-NOT: memref.copy
 func.func @copy_co1_to_vecin() {
   %src = memref.alloc() : memref<16x16xf32, 7 : i32>
