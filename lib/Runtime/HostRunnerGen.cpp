@@ -175,7 +175,7 @@ static std::vector<uint8_t> buildTiling(const std::string& params,
 
 int main(int argc, char** argv) {
   std::string bin_path, tiling_params, tiling_layout_str, inputs_str,
-              output_path = "/dev/null";
+              output_path = "/dev/null", output_shape_str;
   int block_dim = 1;
 
   for (int i = 1; i < argc; ++i) {
@@ -189,6 +189,7 @@ int main(int argc, char** argv) {
     else if (a == "--tiling-layout") tiling_layout_str = next();
     else if (a == "--inputs")        inputs_str        = next();
     else if (a == "--output")        output_path       = next();
+    else if (a == "--output-shape")  output_shape_str  = next();
     else if (a == "--block-dim")     block_dim         = std::stoi(next());
   }
   if (bin_path.empty())  { std::cerr << "--bin required\n";    return 4; }
@@ -211,10 +212,24 @@ int main(int argc, char** argv) {
   for (size_t i = 0; i < input_paths.size(); ++i)
     if (!loadNpy(input_paths[i], inputs[i])) return 4;
 
-  // Allocate output (single output; same shape/dtype as inputs[0])
+  // Allocate output (single output)
   NDArray output;
-  output.shape = inputs[0].shape;
-  output.dtype = inputs[0].dtype;
+  if (!output_shape_str.empty()) {
+    // Parse --output-shape "64,64" → {64, 64}
+    auto shape_parts = splitComma(output_shape_str);
+    try {
+      for (auto& s : shape_parts) {
+        if (s.empty()) continue;
+        output.shape.push_back(std::stoll(s));
+      }
+    } catch (const std::exception& e) {
+      std::cerr << "Invalid --output-shape value: " << output_shape_str << "\n";
+      return 4;
+    }
+  } else {
+    output.shape = inputs[0].shape;
+  }
+  output.dtype = inputs[0].dtype;  // dtype mirrors inputs[0]; add --output-dtype if needed
   output.data  = new uint8_t[output.nbytes()]();
 
   // C2/I1: Cleanup for host-side NDArray memory
