@@ -21,6 +21,8 @@
 set -e
 DIR="$(cd "$(dirname "$0")" && pwd)"
 AFIR_OPT="${AFIR_OPT:-afir-opt}"
+COMPILER="${COMPILER:-compiler}"
+PYTHON="${PYTHON:-python3}"
 
 # 解析参数
 VERBOSE=false
@@ -41,7 +43,6 @@ clear 2>/dev/null || true
 echo "========================================================"
 echo " broadcast + add + reducesum 编译流水线"
 echo "========================================================"
-
 
 # ── STAGE 0: 解析原始 IR ───────────────────────────────────
 echo ""
@@ -195,7 +196,9 @@ echo "==================== [STAGE 8] Codegen：afir-translate -mlir-to-cann ====
 log "  输入: step7_cann.mlir"
 log "  输出: step8_kernel.cpp（CANN 标准 C++ kernel）"
 AFIR_TRANSLATE="${AFIR_TRANSLATE:-afir-translate}"
-"$AFIR_TRANSLATE" -mlir-to-cann "$DIR/step7_cann.mlir" -o "$DIR/step8_kernel.cpp" 2>&1
+"$AFIR_TRANSLATE" -mlir-to-cann "$DIR/step7_cann.mlir" \
+  -o "$DIR/step8_kernel.cpp" \
+  --tiling-space-out "$DIR/step8_kernel.tiling_space.json" 2>&1
 log "  ✓ Codegen 成功，输出: step8_kernel.cpp"
 log ""
 log "  [生成的 C++ kernel 头部]"
@@ -208,17 +211,13 @@ echo "==================== [STAGE 9] Compile：bisheng C++ → .bin ============
 log "  输入: step8_kernel.cpp"
 log "  输出: build_e2e/broadcast_add_reducesum.bin"
 BUILD_DIR="$DIR/build_e2e"
+rm -fr "$BUILD_DIR"
 mkdir -p "$BUILD_DIR"
-# Use the Python runtime compiler helper
-PYTHON="${PYTHON:-python3}"
-"$PYTHON" -c "
-import sys, os
-sys.path.insert(0, '$(cd "$DIR/../.." && pwd)')
-from python.runtime.compiler import compile_kernel
-compile_kernel('$DIR/step8_kernel.cpp',
-               output_dir='$BUILD_DIR',
-               kernel_name='broadcast_add_reducesum')
-" 2>&1
+"$COMPILER" \
+  --kernel "$DIR/step8_kernel.cpp" \
+  --output "$BUILD_DIR" \
+  --name broadcast_add_reducesum \
+  --num-inputs 2 2>&1
 log "  ✓ Compile 成功，输出: $BUILD_DIR/broadcast_add_reducesum.bin"
 
 
@@ -230,13 +229,15 @@ RUNNER="$BUILD_DIR/runner"
 BIN="$BUILD_DIR/broadcast_add_reducesum.bin"
 OUTPUT_NPY="$BUILD_DIR/output.npy"
 
-if [ -f "$RUNNER" ] && [ -f "$BIN" ]; then
+if [ -f "$BIN" ] && [ -f "$RUNNER" ]; then
   "$RUNNER" \
     --bin "$BIN" \
     --inputs "$DIR/input_a.npy,$DIR/input_b.npy" \
     --output "$OUTPUT_NPY" \
     --tiling-params '16,16,64,64,64,64' \
-    --block-dim 4 2>&1 | grep -v '^\[info\]\|^\[PEM_AIC_LOG\]\|^\[INFO\]\|^\[WARNING\]' || true
+    --block-dim 4 \
+    --output-shape 64 \
+    2>&1 | grep -v '^\[info\]\|^\[PEM_AIC_LOG\]\|^\[INFO\]\|^\[WARNING\]' || true
 
   # Numerical verification
   "$PYTHON" -c "
@@ -254,7 +255,7 @@ else:
     sys.exit(1)
 "
 else
-  echo "  ⚠ runner or bin not found — skipping run"
+  echo "  ⚠ bin or runner not found — skipping run"
 fi
 
 echo ""
@@ -270,5 +271,6 @@ echo "   step6_parallelize.mlir      → 多核 AiCore 调度（get_block_idx）
 echo "   step7_kernel.mlir           → 完整 AscendC kernel IR"
 echo "   step7_cann.mlir             → CANN 标准签名 IR（去除 transform ops）"
 echo "   step8_kernel.cpp            → AscendC C++ kernel 源码"
+echo "   step8_kernel.tiling_space.json → tiling 参数空间骨架（JSON）"
 echo "   build_e2e/broadcast_add_reducesum.bin → 编译后二进制"
 echo "========================================================"
