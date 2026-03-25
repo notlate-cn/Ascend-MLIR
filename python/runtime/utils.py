@@ -55,6 +55,40 @@ def find_ascend_root() -> Path:
     return Path(ascend_home_path)
 
 
+def find_afirt_capi_lib() -> Path:
+    """
+    查找编译生成的 libAFIRRuntimeCAPI.so。
+
+    搜索顺序:
+    1. AFIRT_CAPI_LIB 环境变量（可指定完整路径）
+    2. 相对于本文件向上查找的 build 目录
+    """
+    # 1. 环境变量优先
+    env = os.environ.get("AFIRT_CAPI_LIB")
+    if env:
+        p = Path(env)
+        if p.exists():
+            return p
+        raise ImportError(f"AFIRT_CAPI_LIB set but file not found: {env}")
+
+    # 2. 从本文件向上搜索 build 目录
+    here = Path(__file__).resolve().parent
+    for ancestor in [here, here.parent, here.parent.parent]:
+        for build_name in ("build", "build-debug", "build-release"):
+            for rel in (
+                f"lib/libAFIRRuntimeCAPI.so",
+                f"lib/libAFIRRuntimeCAPI.dylib",
+            ):
+                candidate = ancestor / build_name / rel
+                if candidate.exists():
+                    return candidate
+
+    raise ImportError(
+        "Cannot find libAFIRRuntimeCAPI.so. "
+        "Build the project first, or set the AFIRT_CAPI_LIB environment variable."
+    )
+
+
 def find_runtime_library(ascend_root: Optional[Path] = None,
                          soc_version: str = ASCEND_A2,
                          simulation_mode: bool = True) -> Optional[Path]:
