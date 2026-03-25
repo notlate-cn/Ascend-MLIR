@@ -79,6 +79,7 @@ from . import ascgen
 from .utils import (
     find_ascend_root,
     find_runtime_library,
+    find_afirt_capi_lib,
     setup_environment,
     logger,
     Logger,
@@ -182,6 +183,7 @@ __all__ = [
     "get_platform",
     "find_ascend_root",
     "find_runtime_library",
+    "find_afirt_capi_lib",
     "setup_environment",
     "logger",
     "Logger",
