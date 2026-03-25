@@ -225,37 +225,21 @@ log "  ✓ Compile 成功，输出: $BUILD_DIR/broadcast_add_reducesum.bin"
 echo ""
 echo "==================== [STAGE 10] Run + Verify ===================="
 log "  使用参数：TB_M=16, TB_N=16, M=64, N=64, block-dim=4"
-RUNNER="$BUILD_DIR/runner"
+VALIDATOR="${VALIDATOR:-validator}"
 BIN="$BUILD_DIR/broadcast_add_reducesum.bin"
-OUTPUT_NPY="$BUILD_DIR/output.npy"
 
-if [ -f "$BIN" ] && [ -f "$RUNNER" ]; then
-  "$RUNNER" \
+if [ -f "$BIN" ]; then
+  "$VALIDATOR" \
     --bin "$BIN" \
+    --name broadcast_add_reducesum \
     --inputs "$DIR/input_a.npy,$DIR/input_b.npy" \
-    --output "$OUTPUT_NPY" \
-    --tiling-params '16,16,64,64,64,64' \
+    --expected "$DIR/output_c.npy" \
+    --tiling-params 'TB_M=16,TB_N=16,dim_arg0_0=64,dim_arg1_1=64,dim_arg0_1=64,dim_arg1_0=64' \
     --block-dim 4 \
-    --output-shape 64 \
+    --atol 1.0 \
     2>&1 | grep -v '^\[info\]\|^\[PEM_AIC_LOG\]\|^\[INFO\]\|^\[WARNING\]' || true
-
-  # Numerical verification
-  "$PYTHON" -c "
-import numpy as np, sys
-out = np.load('$OUTPUT_NPY').astype(float)
-ref = np.load('$DIR/output_c.npy').astype(float)
-max_err = np.max(np.abs(out - ref))
-print('  max abs error:', max_err)
-if np.allclose(out, ref, atol=1.0):
-    print('  ✓ PASS: 数值正确 (atol=1.0, float16 精度)')
-else:
-    print('  ✗ FAIL: 数值偏差过大')
-    print('  output[:8]:', out[:8])
-    print('  ref[:8]:', ref[:8])
-    sys.exit(1)
-"
 else
-  echo "  ⚠ bin or runner not found — skipping run"
+  echo "  ⚠ bin not found — skipping run"
 fi
 
 echo ""
