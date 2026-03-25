@@ -17,6 +17,7 @@ build-*/
 *.toml
 *.dump
 core*
+build_e2e
 
 # tmp files
 __checked_files_list__
