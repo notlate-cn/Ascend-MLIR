@@ -18,55 +18,65 @@ module attributes {transform.with_named_sequence} {
     %6 = ascendc.queue : <vecin, 1>
     %7 = ascendc.tbuf : <vecin>
     %8 = ascendc.tbuf : <veccalc>
-    %9 = ascendc.tbuf : <vecout>
-    %10 = ascendc.tbuf : <vecin>
-    %11 = ascendc.get_block_idx : index
-    %12 = arith.muli %11, %4 : index
-    %13 = arith.cmpi ult, %12, %dim_0 : index
-    scf.if %13 {
-      %14 = affine.min #map()[%dim_0, %4, %12]
+    %9 = ascendc.tbuf : <veccalc>
+    %10 = ascendc.tbuf : <veccalc>
+    %11 = ascendc.tbuf : <vecout>
+    %12 = ascendc.tbuf : <vecin>
+    %13 = ascendc.get_block_idx : index
+    %14 = arith.muli %13, %4 : index
+    %15 = arith.cmpi ult, %14, %dim_0 : index
+    scf.if %15 {
+      %16 = affine.min #map()[%dim_0, %4, %14]
       %subview = memref.subview %arg0[0, 0] [%dim, 1] [1, 1] : memref<?x1xf16> to memref<?x1xf16, strided<[1, 1]>>
-      %subview_1 = memref.subview %arg1[%12, 0] [%14, %dim] [1, 1] : memref<?x?xf16> to memref<?x?xf16, strided<[?, 1], offset: ?>>
-      %subview_2 = memref.subview %alloc[%12, 0] [%14, %dim] [1, 1] : memref<?x?xf16> to memref<?x?xf16, strided<[?, 1], offset: ?>>
-      scf.for %arg4 = %c0 to %14 step %3 {
-        %15 = affine.min #map1(%arg4)[%14, %3]
-        %16 = arith.muli %dim, %c2 : index
-        ascendc.pipe.init_buffer %0, %10, %16 : !ascendc.tbuf<vecin>, index
-        ascendc.pipe.init_queue %0, %1, %c1_i32, %16 : !ascendc.queue<vecin, 1>, i32, index
-        %17 = ascendc.que_bind.alloc_tensor %1 : !ascendc.queue<vecin, 1>, !ascendc.local_tensor<*xf16>
-        %18 = ascendc.global_tensor : !ascendc.global_tensor<*xf16>
-        ascendc.global_tensor.set_global_buffer %18, %subview : !ascendc.global_tensor<*xf16>, memref<?x1xf16, strided<[1, 1]>>
-        ascendc.data_copy_l2 %17, %18, %dim : !ascendc.local_tensor<*xf16>, !ascendc.global_tensor<*xf16>, index
-        ascendc.que_bind.enque_tensor %1, %17 : !ascendc.queue<vecin, 1>, !ascendc.local_tensor<*xf16>
-        %19 = ascendc.que_bind.deque_tensor %1 : !ascendc.queue<vecin, 1>, !ascendc.local_tensor<*xf16>
-        %subview_3 = memref.subview %subview_1[%arg4, 0] [%15, %dim] [1, 1] : memref<?x?xf16, strided<[?, 1], offset: ?>> to memref<?x?xf16, strided<[?, 1], offset: ?>>
-        %subview_4 = memref.subview %subview_2[%arg4, 0] [%15, %dim] [1, 1] : memref<?x?xf16, strided<[?, 1], offset: ?>> to memref<?x?xf16, strided<[?, 1], offset: ?>>
-        %20 = arith.muli %15, %dim : index
-        %21 = arith.muli %20, %c2 : index
-        ascendc.pipe.init_buffer %0, %9, %21 : !ascendc.tbuf<vecout>, index
-        ascendc.pipe.init_queue %0, %2, %c1_i32, %21 : !ascendc.queue<vecout, 1>, i32, index
-        ascendc.pipe.init_buffer %0, %8, %16 : !ascendc.tbuf<veccalc>, index
-        %22 = ascendc.tbuf.get_tensor %8 : !ascendc.tbuf<veccalc>, !ascendc.local_tensor<*xf16>
-        %23 = ascendc.global_tensor : !ascendc.global_tensor<*xf16>
-        ascendc.global_tensor.set_global_buffer %23, %subview_3 : !ascendc.global_tensor<*xf16>, memref<?x?xf16, strided<[?, 1], offset: ?>>
-        ascendc.pipe.init_buffer %0, %7, %16 : !ascendc.tbuf<vecin>, index
-        ascendc.pipe.init_queue %0, %6, %c1_i32, %16 : !ascendc.queue<vecin, 1>, i32, index
-        %24 = ascendc.que_bind.alloc_tensor %6 : !ascendc.queue<vecin, 1>, !ascendc.local_tensor<*xf16>
-        ascendc.data_copy_l2 %24, %23, %dim : !ascendc.local_tensor<*xf16>, !ascendc.global_tensor<*xf16>, index
-        ascendc.que_bind.enque_tensor %6, %24 : !ascendc.queue<vecin, 1>, !ascendc.local_tensor<*xf16>
-        %25 = ascendc.que_bind.deque_tensor %6 : !ascendc.queue<vecin, 1>, !ascendc.local_tensor<*xf16>
-        ascendc.pipe.init_buffer %0, %5, %16 : !ascendc.tbuf<veccalc>, index
-        %26 = ascendc.tbuf.get_tensor %5 : !ascendc.tbuf<veccalc>, !ascendc.local_tensor<*xf16>
-        ascendc.duplicate_l2 %26, %cst, %dim : !ascendc.local_tensor<*xf16>, f16, index
-        ascendc.max_l2 %22, %19, %26, %dim : !ascendc.local_tensor<*xf16>, !ascendc.local_tensor<*xf16>, !ascendc.local_tensor<*xf16>, index
-        ascendc.add_l2 %22, %22, %25, %dim : !ascendc.local_tensor<*xf16>, !ascendc.local_tensor<*xf16>, !ascendc.local_tensor<*xf16>, index
-        ascendc.que_bind.enque_tensor %2, %22 : !ascendc.queue<vecout, 1>, !ascendc.local_tensor<*xf16>
-        %27 = ascendc.que_bind.deque_tensor %2 : !ascendc.queue<vecout, 1>, !ascendc.local_tensor<*xf16>
-        %28 = ascendc.global_tensor : !ascendc.global_tensor<*xf16>
-        ascendc.global_tensor.set_global_buffer %28, %subview_4 : !ascendc.global_tensor<*xf16>, memref<?x?xf16, strided<[?, 1], offset: ?>>
-        ascendc.data_copy_l2 %28, %27, %20 : !ascendc.global_tensor<*xf16>, !ascendc.local_tensor<*xf16>, index
-        ascendc.que_bind.free_tensor %2, %27 : !ascendc.queue<vecout, 1>, !ascendc.local_tensor<*xf16>
-        ascendc.que_bind.free_tensor %1, %19 : !ascendc.queue<vecin, 1>, !ascendc.local_tensor<*xf16>
+      %subview_1 = memref.subview %arg1[%14, 0] [%16, %dim] [1, 1] : memref<?x?xf16> to memref<?x?xf16, strided<[?, 1], offset: ?>>
+      %subview_2 = memref.subview %alloc[%14, 0] [%16, %dim] [1, 1] : memref<?x?xf16> to memref<?x?xf16, strided<[?, 1], offset: ?>>
+      scf.for %arg4 = %c0 to %16 step %3 {
+        %17 = affine.min #map1(%arg4)[%16, %3]
+        %18 = arith.muli %dim, %c2 : index
+        ascendc.pipe.init_buffer %0, %12, %18 : !ascendc.tbuf<vecin>, index
+        ascendc.pipe.init_queue %0, %1, %c1_i32, %18 : !ascendc.queue<vecin, 1>, i32, index
+        %19 = ascendc.que_bind.alloc_tensor %1 : !ascendc.queue<vecin, 1>, !ascendc.local_tensor<*xf16>
+        %20 = ascendc.global_tensor : !ascendc.global_tensor<*xf16>
+        ascendc.global_tensor.set_global_buffer %20, %subview : !ascendc.global_tensor<*xf16>, memref<?x1xf16, strided<[1, 1]>>
+        ascendc.data_copy_l2 %19, %20, %dim : !ascendc.local_tensor<*xf16>, !ascendc.global_tensor<*xf16>, index
+        ascendc.que_bind.enque_tensor %1, %19 : !ascendc.queue<vecin, 1>, !ascendc.local_tensor<*xf16>
+        %21 = ascendc.que_bind.deque_tensor %1 : !ascendc.queue<vecin, 1>, !ascendc.local_tensor<*xf16>
+        %subview_3 = memref.subview %subview_1[%arg4, 0] [%17, %dim] [1, 1] : memref<?x?xf16, strided<[?, 1], offset: ?>> to memref<?x?xf16, strided<[?, 1], offset: ?>>
+        %subview_4 = memref.subview %subview_2[%arg4, 0] [%17, %dim] [1, 1] : memref<?x?xf16, strided<[?, 1], offset: ?>> to memref<?x?xf16, strided<[?, 1], offset: ?>>
+        %22 = arith.muli %17, %dim : index
+        %23 = arith.muli %22, %c2 : index
+        ascendc.pipe.init_buffer %0, %11, %23 : !ascendc.tbuf<vecout>, index
+        ascendc.pipe.init_queue %0, %2, %c1_i32, %23 : !ascendc.queue<vecout, 1>, i32, index
+        ascendc.pipe.init_buffer %0, %10, %23 : !ascendc.tbuf<veccalc>, index
+        %24 = ascendc.tbuf.get_tensor %10 : !ascendc.tbuf<veccalc>, !ascendc.local_tensor<*xf16>
+        %25 = arith.index_cast %dim : index to i32
+        %26 = arith.index_cast %17 : index to i32
+        ascendc.pipe.init_buffer %0, %9, %23 : !ascendc.tbuf<veccalc>, index
+        %27 = ascendc.tbuf.get_tensor %9 : !ascendc.tbuf<veccalc>, !ascendc.local_tensor<*xf16>
+        ascendc.broadcast_l2 %27, %21, %25, %26, %25, %c1_i32 {constRank = 2 : i32, operandSegmentSizes = array<i32: 1, 1, 2, 2>} : !ascendc.local_tensor<*xf16>, !ascendc.local_tensor<*xf16>, i32, i32, i32, i32
+        ascendc.pipe.init_buffer %0, %8, %23 : !ascendc.tbuf<veccalc>, index
+        %28 = ascendc.tbuf.get_tensor %8 : !ascendc.tbuf<veccalc>, !ascendc.local_tensor<*xf16>
+        ascendc.transpose %28, %27 : !ascendc.local_tensor<*xf16>, !ascendc.local_tensor<*xf16>
+        %29 = ascendc.global_tensor : !ascendc.global_tensor<*xf16>
+        ascendc.global_tensor.set_global_buffer %29, %subview_3 : !ascendc.global_tensor<*xf16>, memref<?x?xf16, strided<[?, 1], offset: ?>>
+        ascendc.pipe.init_buffer %0, %7, %23 : !ascendc.tbuf<vecin>, index
+        ascendc.pipe.init_queue %0, %6, %c1_i32, %23 : !ascendc.queue<vecin, 1>, i32, index
+        %30 = ascendc.que_bind.alloc_tensor %6 : !ascendc.queue<vecin, 1>, !ascendc.local_tensor<*xf16>
+        ascendc.data_copy_l2 %30, %29, %22 : !ascendc.local_tensor<*xf16>, !ascendc.global_tensor<*xf16>, index
+        ascendc.que_bind.enque_tensor %6, %30 : !ascendc.queue<vecin, 1>, !ascendc.local_tensor<*xf16>
+        %31 = ascendc.que_bind.deque_tensor %6 : !ascendc.queue<vecin, 1>, !ascendc.local_tensor<*xf16>
+        ascendc.pipe.init_buffer %0, %5, %23 : !ascendc.tbuf<veccalc>, index
+        %32 = ascendc.tbuf.get_tensor %5 : !ascendc.tbuf<veccalc>, !ascendc.local_tensor<*xf16>
+        ascendc.duplicate_l2 %32, %cst, %22 : !ascendc.local_tensor<*xf16>, f16, index
+        ascendc.max_l2 %24, %28, %32, %22 : !ascendc.local_tensor<*xf16>, !ascendc.local_tensor<*xf16>, !ascendc.local_tensor<*xf16>, index
+        ascendc.add_l2 %24, %24, %31, %22 : !ascendc.local_tensor<*xf16>, !ascendc.local_tensor<*xf16>, !ascendc.local_tensor<*xf16>, index
+        ascendc.que_bind.enque_tensor %2, %24 : !ascendc.queue<vecout, 1>, !ascendc.local_tensor<*xf16>
+        %33 = ascendc.que_bind.deque_tensor %2 : !ascendc.queue<vecout, 1>, !ascendc.local_tensor<*xf16>
+        %34 = ascendc.global_tensor : !ascendc.global_tensor<*xf16>
+        ascendc.global_tensor.set_global_buffer %34, %subview_4 : !ascendc.global_tensor<*xf16>, memref<?x?xf16, strided<[?, 1], offset: ?>>
+        ascendc.data_copy_l2 %34, %33, %22 : !ascendc.global_tensor<*xf16>, !ascendc.local_tensor<*xf16>, index
+        ascendc.que_bind.free_tensor %2, %33 : !ascendc.queue<vecout, 1>, !ascendc.local_tensor<*xf16>
+        ascendc.que_bind.free_tensor %1, %21 : !ascendc.queue<vecin, 1>, !ascendc.local_tensor<*xf16>
       }
     }
     return %alloc : memref<?x?xf16>
