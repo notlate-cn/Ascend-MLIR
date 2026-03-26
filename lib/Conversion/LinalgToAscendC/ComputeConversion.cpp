@@ -1065,7 +1065,8 @@ LogicalResult convertCompute(func::FuncOp funcOp, AscendCBufferContext &ctx) {
         builder.create<BroadcastL2Op>(
             loc, intermLt, srcVecinLt,
             bcastDstShape, bcastSrcShape,
-            builder.getI32IntegerAttr(static_cast<int32_t>(iterRank)));
+            builder.getI32IntegerAttr(
+                static_cast<int32_t>(intermediateShape.size())));
 
         // Step 3: Transpose intermediate shape to iteration-space order.
         auto [finalTbuf, finalLt] =
