@@ -765,6 +765,32 @@ LogicalResult convertCompute(func::FuncOp funcOp, AscendCBufferContext &ctx) {
         continue;
       }
 
+      // Find pre-gather op: parallel generic whose output memref == dataMemref
+      // (i.e., the op that wrote the data we're gathering from)
+      linalg::GenericOp preOp;
+      for (linalg::GenericOp candidate : parallelGenericOps) {
+        if (candidate == genOp) continue;
+        if (candidate->hasAttr("gather_dim") || candidate->hasAttr("embedding_dim")) continue;
+        if (candidate.getDpsInitOperand(0)->get() == dataMemref) {
+          preOp = candidate;
+          break;
+        }
+      }
+
+      // Find post-gather op: parallel generic that has outMemref as one of its inputs
+      linalg::GenericOp postOp;
+      for (linalg::GenericOp candidate : parallelGenericOps) {
+        if (candidate == genOp) continue;
+        if (candidate->hasAttr("gather_dim") || candidate->hasAttr("embedding_dim")) continue;
+        for (OpOperand *inp : candidate.getDpsInputOperands()) {
+          if (inp->get() == outMemref) {
+            postOp = candidate;
+            break;
+          }
+        }
+        if (postOp) break;
+      }
+
       auto outMrt  = cast<MemRefType>(outMemref.getType());
       Type elemType = outMrt.getElementType();
       Type i32Type  = builder.getI32Type();
@@ -856,20 +882,126 @@ LogicalResult convertCompute(func::FuncOp funcOp, AscendCBufferContext &ctx) {
                 /*len=*/Value{});
             b.create<DataCopyL2Op>(forLoc, dataRowLt, dataRowGt, dimN);
 
+            // Step 1b: If pre-op exists (e.g. relu), apply it on dataRowLt
+            Value processedRowLt = dataRowLt;
+            if (preOp) {
+              auto [procTbuf, procLt] = allocVeccalc(b, forLoc, elemType,
+                                                      SmallVector<Value>{dimN});
+              Value dimN_i32 = b.create<arith::IndexCastOp>(forLoc, b.getI32Type(), dimN);
+
+              Block &preBody = *preOp.getBody();
+              llvm::SmallDenseMap<Value, Value> preValToLt;
+
+              auto preResolve = [&](Value v) -> Value {
+                if (auto ba = dyn_cast<BlockArgument>(v)) {
+                  if (ba.getArgNumber() == 0) return dataRowLt;
+                  return procLt;
+                }
+                auto it = preValToLt.find(v);
+                if (it != preValToLt.end()) return it->second;
+                if (auto constOp = v.getDefiningOp<arith::ConstantOp>()) {
+                  auto [dupTbuf2, dupLt] = allocVeccalc(b, forLoc, elemType,
+                                                         SmallVector<Value>{dimN});
+                  b.create<DuplicateL2Op>(forLoc, dupLt, constOp.getResult(), dimN_i32);
+                  preValToLt[v] = dupLt;
+                  return dupLt;
+                }
+                return Value{};
+              };
+
+              for (auto &bodyOp : preBody.without_terminator()) {
+                if (auto maxOp = dyn_cast<arith::MaximumFOp>(bodyOp)) {
+                  Value lhs = preResolve(maxOp.getLhs()), rhs = preResolve(maxOp.getRhs());
+                  if (lhs && rhs) {
+                    b.create<MaxL2Op>(forLoc, procLt, lhs, rhs, dimN_i32);
+                    preValToLt[maxOp.getResult()] = procLt;
+                  }
+                } else if (auto addOp2 = dyn_cast<arith::AddFOp>(bodyOp)) {
+                  Value lhs = preResolve(addOp2.getLhs()), rhs = preResolve(addOp2.getRhs());
+                  if (lhs && rhs) {
+                    b.create<AddL2Op>(forLoc, procLt, lhs, rhs, dimN_i32);
+                    preValToLt[addOp2.getResult()] = procLt;
+                  }
+                } else if (auto mulOp2 = dyn_cast<arith::MulFOp>(bodyOp)) {
+                  Value lhs = preResolve(mulOp2.getLhs()), rhs = preResolve(mulOp2.getRhs());
+                  if (lhs && rhs) {
+                    b.create<MulL2Op>(forLoc, procLt, lhs, rhs, dimN_i32);
+                    preValToLt[mulOp2.getResult()] = procLt;
+                  }
+                }
+              }
+              processedRowLt = procLt;
+            }
+
             // Step 2: gather_l2(dst[K], src[N], indices, srcBase=0, count=K)
             Value dstByteOff =
                 b.create<arith::MulIOp>(forLoc, rowIdx, outBytesPerRow);
             Value dstRowLt = b.create<TBufGetWithOffsetOp>(
                 forLoc, LocalTensorType::get(elemType), outTbuf,
                 outBytesPerRow, dstByteOff);
-            b.create<GatherL2Op>(forLoc, dstRowLt, dataRowLt, indicesLt,
-                                 srcBaseAddr, dimK_i32);
+            Value gatheredRowLt = dstRowLt;
+            b.create<GatherL2Op>(forLoc, gatheredRowLt, processedRowLt,
+                                 indicesLt, srcBaseAddr, dimK_i32);
+
+            // Step 3: If post-op exists (e.g. add bias), apply it on gatheredRowLt
+            if (postOp) {
+              Value dimK_i32v = b.create<arith::IndexCastOp>(forLoc, b.getI32Type(), dimK);
+              Block &postBody = *postOp.getBody();
+              llvm::SmallDenseMap<Value, Value> postValToLt;
+
+              auto postResolve = [&](Value v) -> Value {
+                if (auto ba = dyn_cast<BlockArgument>(v)) {
+                  unsigned argNum = ba.getArgNumber();
+                  unsigned numIns = (unsigned)postOp.getNumDpsInputs();
+                  if (argNum >= numIns) return gatheredRowLt; // output init arg
+                  Value argMemref = postOp.getDpsInputOperand(argNum)->get();
+                  if (argMemref == outMemref) return gatheredRowLt;
+                  // Other inputs (bias, etc.) — read their tensor
+                  return readTensor(b, forLoc, argMemref);
+                }
+                auto it = postValToLt.find(v);
+                if (it != postValToLt.end()) return it->second;
+                if (auto constOp = v.getDefiningOp<arith::ConstantOp>()) {
+                  auto [dupTbuf3, dupLt] = allocVeccalc(b, forLoc, elemType,
+                                                         SmallVector<Value>{dimK});
+                  b.create<DuplicateL2Op>(forLoc, dupLt, constOp.getResult(), dimK_i32v);
+                  postValToLt[v] = dupLt;
+                  return dupLt;
+                }
+                return Value{};
+              };
+
+              for (auto &bodyOp : postBody.without_terminator()) {
+                if (auto addOp3 = dyn_cast<arith::AddFOp>(bodyOp)) {
+                  Value lhs = postResolve(addOp3.getLhs()), rhs = postResolve(addOp3.getRhs());
+                  if (lhs && rhs) {
+                    b.create<AddL2Op>(forLoc, gatheredRowLt, lhs, rhs, dimK_i32v);
+                    postValToLt[addOp3.getResult()] = gatheredRowLt;
+                  }
+                } else if (auto mulOp3 = dyn_cast<arith::MulFOp>(bodyOp)) {
+                  Value lhs = postResolve(mulOp3.getLhs()), rhs = postResolve(mulOp3.getRhs());
+                  if (lhs && rhs) {
+                    b.create<MulL2Op>(forLoc, gatheredRowLt, lhs, rhs, dimK_i32v);
+                    postValToLt[mulOp3.getResult()] = gatheredRowLt;
+                  }
+                } else if (auto maxOp3 = dyn_cast<arith::MaximumFOp>(bodyOp)) {
+                  Value lhs = postResolve(maxOp3.getLhs()), rhs = postResolve(maxOp3.getRhs());
+                  if (lhs && rhs) {
+                    b.create<MaxL2Op>(forLoc, gatheredRowLt, lhs, rhs, dimK_i32v);
+                    postValToLt[maxOp3.getResult()] = gatheredRowLt;
+                  }
+                }
+              }
+            }
+
             b.create<scf::YieldOp>(forLoc);
           });
 
       if (Value q = ctx.getQueue(outMemref))
         builder.create<TQueBindEnqueTensorOp>(loc, q, dstLt);
 
+      if (postOp) postOp.erase();
+      if (preOp) preOp.erase();
       genOp.erase();
       continue;
     }
