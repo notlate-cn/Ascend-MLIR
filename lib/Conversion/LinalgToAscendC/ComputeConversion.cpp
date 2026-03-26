@@ -193,6 +193,77 @@ LogicalResult convertCompute(func::FuncOp funcOp, AscendCBufferContext &ctx) {
   //   - The final accumulated VECCALC (over parallel dims) is reduced via reduce_sum_2d_l2
   //     with ReduceLayout::AR (A=parallel rows, R=reduction cols).
   //
+  // Analysis of a single input indexing map relative to the iteration space.
+  struct IndexingMapAnalysis {
+    enum class Kind {
+      Identity,           // (d0,d1)->(d0,d1): direct read
+      PureBroadcast,      // (d0,d1)->(d0): some dims absent, no reordering
+      PureTranspose,      // (d0,d1)->(d1,d0): all dims present, permuted
+      BroadcastTranspose, // (d0,d1)->(d1,0): constants + reordering
+    };
+    Kind kind;
+    SmallVector<int64_t> permutation;    // valid for PureTranspose, BroadcastTranspose
+    SmallVector<int64_t> broadcastDims;  // iteration dims absent from output
+  };
+
+  // Analyze an input indexing map to classify how the input is accessed
+  // relative to the iteration space of rank `iterRank`.
+  auto analyzeIndexingMap = [](AffineMap map,
+                                unsigned iterRank) -> IndexingMapAnalysis {
+    IndexingMapAnalysis result;
+
+    // Identity: fast path
+    if (map.isIdentity()) {
+      result.kind = IndexingMapAnalysis::Kind::Identity;
+      return result;
+    }
+
+    // Collect which iteration dims appear in the map results (as dim exprs)
+    // and which results are constants.
+    SmallVector<int64_t> presentDims;  // iteration dim positions that appear
+    bool hasConstant = false;
+    for (AffineExpr expr : map.getResults()) {
+      if (auto dimExpr = dyn_cast<AffineDimExpr>(expr)) {
+        presentDims.push_back(static_cast<int64_t>(dimExpr.getPosition()));
+      } else if (isa<AffineConstantExpr>(expr)) {
+        hasConstant = true;
+      } else {
+        // Non-trivial affine expression: not handled.
+        result.kind = IndexingMapAnalysis::Kind::Identity; // fallback: treat as identity
+        return result;
+      }
+    }
+
+    // Determine broadcast dims: iteration dims not in presentDims.
+    for (unsigned d = 0; d < iterRank; ++d) {
+      if (llvm::find(presentDims, static_cast<int64_t>(d)) == presentDims.end())
+        result.broadcastDims.push_back(d);
+    }
+
+    bool hasBroadcast = !result.broadcastDims.empty() || hasConstant;
+    bool hasTranspose = !llvm::is_sorted(presentDims);
+
+    if (hasConstant || (hasBroadcast && hasTranspose)) {
+      result.kind = IndexingMapAnalysis::Kind::BroadcastTranspose;
+      result.permutation.assign(presentDims.begin(), presentDims.end());
+      return result;
+    }
+
+    if (hasBroadcast) {
+      result.kind = IndexingMapAnalysis::Kind::PureBroadcast;
+      return result;
+    }
+
+    if (hasTranspose) {
+      result.kind = IndexingMapAnalysis::Kind::PureTranspose;
+      result.permutation.assign(presentDims.begin(), presentDims.end());
+      return result;
+    }
+
+    result.kind = IndexingMapAnalysis::Kind::Identity;
+    return result;
+  };
+
   // Helper: return true when an AffineMap is a "broadcast" map for the given
   // iterator rank — i.e., it projects away at least one dimension (a dim whose
   // axis does not appear in the map's result expressions).
@@ -599,31 +670,52 @@ LogicalResult convertCompute(func::FuncOp funcOp, AscendCBufferContext &ctx) {
       parallelGenericOps.push_back(op);
   });
 
-  // Helper: detect a 2D transpose generic.
-  // Pattern: 1 input with permutation map (d0,d1)->(d1,d0), 1 output with
-  // identity map (d0,d1)->(d0,d1), body is a single linalg.yield of the input.
+  // Helper: detect a standalone transpose generic (any rank).
+  // Pattern: 1 input with a non-identity permutation map, 1 output with identity
+  // map, body is a single linalg.yield of the input block argument (no computation).
   auto isTransposeGeneric = [](linalg::GenericOp op) -> bool {
     if (op.getNumDpsInputs() != 1 || op.getNumDpsInits() != 1)
       return false;
     auto maps = op.getIndexingMapsArray();
     if (maps.size() != 2)
       return false;
-    AffineMap inMap = maps[0];
+    AffineMap inMap  = maps[0];
     AffineMap outMap = maps[1];
-    unsigned rank = op.getIteratorTypesArray().size();
-    if (rank != 2)
+    unsigned rank    = op.getIteratorTypesArray().size();
+    if (rank == 0)
       return false;
-    // Output must be identity (d0,d1)->(d0,d1)
+    // Output must be identity
     if (!outMap.isIdentity())
       return false;
-    // Input must be permutation (d0,d1)->(d1,d0)
-    if (inMap.getNumResults() != 2)
+    // Input must have same rank as iteration space (no broadcast)
+    if (inMap.getNumResults() != rank)
       return false;
-    auto r0 = dyn_cast<AffineDimExpr>(inMap.getResult(0));
-    auto r1 = dyn_cast<AffineDimExpr>(inMap.getResult(1));
-    if (!r0 || !r1)
+    // All input map results must be distinct AffineDimExprs (no constants, no complex exprs)
+    SmallVector<int64_t> perm(rank, -1);
+    for (unsigned r = 0; r < rank; ++r) {
+      auto dimExpr = dyn_cast<AffineDimExpr>(inMap.getResult(r));
+      if (!dimExpr)
+        return false;
+      int64_t pos = static_cast<int64_t>(dimExpr.getPosition());
+      if (pos < 0 || pos >= static_cast<int64_t>(rank))
+        return false;
+      perm[r] = pos;
+    }
+    // Must be a non-identity permutation
+    bool isIdentityPerm = true;
+    for (unsigned r = 0; r < rank; ++r)
+      if (perm[r] != static_cast<int64_t>(r)) { isIdentityPerm = false; break; }
+    if (isIdentityPerm)
       return false;
-    return r0.getPosition() == 1 && r1.getPosition() == 0;
+    // Body must be yield-only (single linalg.yield yielding the input block arg)
+    Block &body = *op.getBody();
+    if (body.getOperations().size() != 1)
+      return false;
+    auto yieldOp = dyn_cast<linalg::YieldOp>(&body.front());
+    if (!yieldOp || yieldOp.getNumOperands() != 1)
+      return false;
+    auto ba = dyn_cast<BlockArgument>(yieldOp.getOperand(0));
+    return ba && ba.getArgNumber() == 0;
   };
 
   // Helper: detect a gather generic.
@@ -766,7 +858,9 @@ LogicalResult convertCompute(func::FuncOp funcOp, AscendCBufferContext &ctx) {
     for (unsigned i = 0; i < numInputs; ++i) {
       Value inMemref = genOp.getDpsInputOperand(i)->get();
       AffineMap inMap = maps[i];
-      if (inMap.getNumResults() == iterRank) {
+      bool allDimExprs = llvm::all_of(inMap.getResults(),
+          [](AffineExpr e) { return isa<AffineDimExpr>(e); });
+      if (inMap.getNumResults() == iterRank && allDimExprs) {
         for (unsigned d = 0; d < iterRank; ++d)
           iterDimSizes[d] = getDynDim(builder, loc, inMemref, d);
         break;
@@ -795,89 +889,179 @@ LogicalResult convertCompute(func::FuncOp funcOp, AscendCBufferContext &ctx) {
       Value inMemref = genOp.getDpsInputOperand(i)->get();
       AffineMap inMap = maps[i];
       int64_t inMs    = getMemorySpace(inMemref.getType());
-      bool isBcast    = isBroadcastMap(inMap, iterRank);
+      IndexingMapAnalysis analysis = analyzeIndexingMap(inMap, iterRank);
 
-      if (isBcast && inMs == 9 /*VECIN*/) {
-        // broadcast_l2: expand narrow VECIN tile into full-shape VECCALC.
-        auto srcMrt = cast<MemRefType>(inMemref.getType());
-        unsigned srcRank = srcMrt.getRank();
-        SmallVector<Value> dstShapeVals, srcShapeVals;
-        for (Value s : iterDimSizes)
-          dstShapeVals.push_back(
-              builder.create<arith::IndexCastOp>(loc, builder.getI32Type(), s));
-        unsigned srcDimIdx = 0;
-        for (unsigned d = 0; d < iterRank; ++d) {
-          bool inResult = false;
-          for (AffineExpr result : inMap.getResults())
-            if (auto dimExpr = dyn_cast<AffineDimExpr>(result))
-              if (dimExpr.getPosition() == d) { inResult = true; break; }
-          if (inResult && srcDimIdx < srcRank)
-            srcShapeVals.push_back(builder.create<arith::IndexCastOp>(
-                loc, builder.getI32Type(),
-                getDynDim(builder, loc, inMemref, srcDimIdx++)));
-          else
-            srcShapeVals.push_back(
-                builder.create<arith::ConstantIntOp>(loc, builder.getI32Type(), 1));
+      switch (analysis.kind) {
+      case IndexingMapAnalysis::Kind::Identity: {
+        if (inMs == 0 /*GM*/) {
+          // GM input at full rank: copy via VECIN TQue.
+          Value srcGt = builder.create<GlobalTensorOp>(
+              loc, GlobalTensorType::get(elemType));
+          builder.create<GlobalTensorSetGlobalBufferOp>(loc, srcGt, inMemref,
+                                                         /*size=*/Value{});
+          inputLts[i] =
+              copyGmToVecin(builder, loc, elemType, srcGt, totalElems);
+        } else {
+          inputLts[i] = readTensor(builder, loc, inMemref);
         }
-        Value srcLt = readTensor(builder, loc, inMemref);
-        auto [bcastTbuf, bcastLt] =
-            allocVeccalc(builder, loc, elemType, iterDimSizes);
-        builder.create<BroadcastL2Op>(
-            loc, bcastLt, srcLt,
-            dstShapeVals, srcShapeVals,
-            builder.getI32IntegerAttr(static_cast<int32_t>(iterRank)));
-        inputLts[i] = bcastLt;
-      } else if (isBcast && inMs == 0 /*GM*/) {
-        // broadcast from GM: copy via VECIN TQue first, then broadcast_l2.
+        break;
+      }
+      case IndexingMapAnalysis::Kind::PureBroadcast: {
         auto srcMrt = cast<MemRefType>(inMemref.getType());
         unsigned srcRank = srcMrt.getRank();
+        if (inMs == 9 /*VECIN*/) {
+          // broadcast_l2: expand narrow VECIN tile into full-shape VECCALC.
+          SmallVector<Value> dstShapeVals, srcShapeVals;
+          for (Value s : iterDimSizes)
+            dstShapeVals.push_back(
+                builder.create<arith::IndexCastOp>(loc, builder.getI32Type(), s));
+          unsigned srcDimIdx = 0;
+          for (unsigned d = 0; d < iterRank; ++d) {
+            bool inResult = false;
+            for (AffineExpr result : inMap.getResults())
+              if (auto dimExpr = dyn_cast<AffineDimExpr>(result))
+                if (dimExpr.getPosition() == d) { inResult = true; break; }
+            if (inResult && srcDimIdx < srcRank)
+              srcShapeVals.push_back(builder.create<arith::IndexCastOp>(
+                  loc, builder.getI32Type(),
+                  getDynDim(builder, loc, inMemref, srcDimIdx++)));
+            else
+              srcShapeVals.push_back(
+                  builder.create<arith::ConstantIntOp>(loc, builder.getI32Type(), 1));
+          }
+          Value srcLt = readTensor(builder, loc, inMemref);
+          auto [bcastTbuf, bcastLt] =
+              allocVeccalc(builder, loc, elemType, iterDimSizes);
+          builder.create<BroadcastL2Op>(
+              loc, bcastLt, srcLt,
+              dstShapeVals, srcShapeVals,
+              builder.getI32IntegerAttr(static_cast<int32_t>(iterRank)));
+          inputLts[i] = bcastLt;
+        } else {
+          // broadcast from GM: copy via VECIN TQue first, then broadcast_l2.
+          SmallVector<Value> srcDims;
+          for (unsigned d = 0; d < srcRank; ++d)
+            srcDims.push_back(getDynDim(builder, loc, inMemref, d));
+          Value srcElemCount = builder.create<arith::ConstantIndexOp>(loc, 1);
+          for (Value d : srcDims)
+            srcElemCount = builder.create<arith::MulIOp>(loc, srcElemCount, d);
+          Value srcGt = builder.create<GlobalTensorOp>(
+              loc, GlobalTensorType::get(elemType));
+          builder.create<GlobalTensorSetGlobalBufferOp>(loc, srcGt, inMemref,
+                                                         /*size=*/Value{});
+          Value srcLt =
+              copyGmToVecin(builder, loc, elemType, srcGt, srcElemCount);
+          SmallVector<Value> dstShapeVals, srcShapeVals;
+          for (Value s : iterDimSizes)
+            dstShapeVals.push_back(
+                builder.create<arith::IndexCastOp>(loc, builder.getI32Type(), s));
+          unsigned srcDimIdx = 0;
+          for (unsigned d = 0; d < iterRank; ++d) {
+            bool inResult = false;
+            for (AffineExpr result : inMap.getResults())
+              if (auto dimExpr = dyn_cast<AffineDimExpr>(result))
+                if (dimExpr.getPosition() == d) { inResult = true; break; }
+            if (inResult && srcDimIdx < srcRank)
+              srcShapeVals.push_back(builder.create<arith::IndexCastOp>(
+                  loc, builder.getI32Type(), srcDims[srcDimIdx++]));
+            else
+              srcShapeVals.push_back(
+                  builder.create<arith::ConstantIntOp>(loc, builder.getI32Type(), 1));
+          }
+          auto [bcastTbuf, bcastLt] =
+              allocVeccalc(builder, loc, elemType, iterDimSizes);
+          builder.create<BroadcastL2Op>(
+              loc, bcastLt, srcLt,
+              dstShapeVals, srcShapeVals,
+              builder.getI32IntegerAttr(static_cast<int32_t>(iterRank)));
+          inputLts[i] = bcastLt;
+        }
+        break;
+      }
+      case IndexingMapAnalysis::Kind::PureTranspose: {
+        // data_copy from GM into VECIN, then transpose to VECCALC.
         SmallVector<Value> srcDims;
-        for (unsigned d = 0; d < srcRank; ++d)
-          srcDims.push_back(getDynDim(builder, loc, inMemref, d));
+        for (int64_t permDim : analysis.permutation)
+          srcDims.push_back(iterDimSizes[static_cast<unsigned>(permDim)]);
         Value srcElemCount = builder.create<arith::ConstantIndexOp>(loc, 1);
         for (Value d : srcDims)
           srcElemCount = builder.create<arith::MulIOp>(loc, srcElemCount, d);
+
         Value srcGt = builder.create<GlobalTensorOp>(
             loc, GlobalTensorType::get(elemType));
         builder.create<GlobalTensorSetGlobalBufferOp>(loc, srcGt, inMemref,
                                                        /*size=*/Value{});
-        Value srcLt =
+        Value srcVecinLt =
             copyGmToVecin(builder, loc, elemType, srcGt, srcElemCount);
-        SmallVector<Value> dstShapeVals, srcShapeVals;
-        for (Value s : iterDimSizes)
-          dstShapeVals.push_back(
-              builder.create<arith::IndexCastOp>(loc, builder.getI32Type(), s));
-        unsigned srcDimIdx = 0;
-        for (unsigned d = 0; d < iterRank; ++d) {
-          bool inResult = false;
-          for (AffineExpr result : inMap.getResults())
-            if (auto dimExpr = dyn_cast<AffineDimExpr>(result))
-              if (dimExpr.getPosition() == d) { inResult = true; break; }
-          if (inResult && srcDimIdx < srcRank)
-            srcShapeVals.push_back(builder.create<arith::IndexCastOp>(
-                loc, builder.getI32Type(), srcDims[srcDimIdx++]));
-          else
-            srcShapeVals.push_back(
-                builder.create<arith::ConstantIntOp>(loc, builder.getI32Type(), 1));
-        }
-        auto [bcastTbuf, bcastLt] =
+
+        auto [transpTbuf, transpLt] =
             allocVeccalc(builder, loc, elemType, iterDimSizes);
-        builder.create<BroadcastL2Op>(
-            loc, bcastLt, srcLt,
-            dstShapeVals, srcShapeVals,
-            builder.getI32IntegerAttr(static_cast<int32_t>(iterRank)));
-        inputLts[i] = bcastLt;
-      } else if (inMs == 0 /*GM*/) {
-        // GM input at full rank: copy via VECIN TQue.
+        builder.create<TransposeOp>(loc, transpLt, srcVecinLt);
+        inputLts[i] = transpLt;
+        break;
+      }
+      case IndexingMapAnalysis::Kind::BroadcastTranspose: {
+        // Step 1: Copy actual input dims from GM into VECIN.
+        auto srcMrt = cast<MemRefType>(inMemref.getType());
+        unsigned srcRank = srcMrt.getRank();
+        SmallVector<Value> srcDimsVals;
+        for (unsigned d = 0; d < srcRank; ++d)
+          srcDimsVals.push_back(getDynDim(builder, loc, inMemref, d));
+        Value srcElemCount = builder.create<arith::ConstantIndexOp>(loc, 1);
+        for (Value d : srcDimsVals)
+          srcElemCount = builder.create<arith::MulIOp>(loc, srcElemCount, d);
+
         Value srcGt = builder.create<GlobalTensorOp>(
             loc, GlobalTensorType::get(elemType));
         builder.create<GlobalTensorSetGlobalBufferOp>(loc, srcGt, inMemref,
                                                        /*size=*/Value{});
-        inputLts[i] =
-            copyGmToVecin(builder, loc, elemType, srcGt, totalElems);
-      } else {
-        inputLts[i] = readTensor(builder, loc, inMemref);
+        Value srcVecinLt =
+            copyGmToVecin(builder, loc, elemType, srcGt, srcElemCount);
+
+        // Step 2: Build intermediate shape (map results order, filling constants
+        // with broadcast dim sizes) and broadcast into it.
+        SmallVector<Value> intermediateShape;
+        unsigned broadcastDimIdx = 0;
+        for (AffineExpr expr : inMap.getResults()) {
+          if (auto dimExpr = dyn_cast<AffineDimExpr>(expr)) {
+            intermediateShape.push_back(
+                iterDimSizes[static_cast<unsigned>(dimExpr.getPosition())]);
+          } else {
+            // Constant result: substitute the corresponding broadcast dim size.
+            if (broadcastDimIdx < analysis.broadcastDims.size())
+              intermediateShape.push_back(
+                  iterDimSizes[static_cast<unsigned>(
+                      analysis.broadcastDims[broadcastDimIdx++])]);
+            else
+              intermediateShape.push_back(
+                  builder.create<arith::ConstantIndexOp>(loc, 1));
+          }
+        }
+
+        // Build i32 shape args for broadcast_l2.
+        SmallVector<Value> bcastDstShape, bcastSrcShape;
+        for (Value s : intermediateShape)
+          bcastDstShape.push_back(
+              builder.create<arith::IndexCastOp>(loc, builder.getI32Type(), s));
+        for (unsigned d = 0; d < srcRank; ++d)
+          bcastSrcShape.push_back(builder.create<arith::IndexCastOp>(
+              loc, builder.getI32Type(), srcDimsVals[d]));
+
+        auto [intermTbuf, intermLt] =
+            allocVeccalc(builder, loc, elemType, intermediateShape);
+        builder.create<BroadcastL2Op>(
+            loc, intermLt, srcVecinLt,
+            bcastDstShape, bcastSrcShape,
+            builder.getI32IntegerAttr(static_cast<int32_t>(iterRank)));
+
+        // Step 3: Transpose intermediate shape to iteration-space order.
+        auto [finalTbuf, finalLt] =
+            allocVeccalc(builder, loc, elemType, iterDimSizes);
+        builder.create<TransposeOp>(loc, finalLt, intermLt);
+        inputLts[i] = finalLt;
+        break;
       }
+      } // end switch
     }
 
     // ---- Step 2: Walk body and inline arith ops onto VECCALC tensors ----
