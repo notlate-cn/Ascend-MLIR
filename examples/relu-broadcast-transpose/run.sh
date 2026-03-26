@@ -7,17 +7,14 @@
 #   bash examples/ewop-broadcast-transpose/run.sh
 #
 # 计算图：
-#   输入: A[M,N], bias[N], scale[M]
-#   Op1: relu(A[M,N]) + broadcast_col(bias[N]) → B[M,N]
-#        （逐元素 ReLU + 列方向广播加 bias）
-#   Op2: Transpose(B[M,N]) → C[N,M]
-#        （2D 转置，行列互换）
-#   Op3: C[N,M] * broadcast_col(scale[M]) → D[N,M]
-#        （逐元素乘 scale，scale[M] 沿 N 轴广播）
+#   输入: data0[m,1], data1[n,m]
+#   data0[m,1] -> relu -> transpose[1,0] -> broadcast dim[0]
+#                                              |
+#                          data1[n,m] -------> add -> out[n,m]
 #
-# Transpose 用 linalg.generic 表达：
-#   ins 的 indexing_map = (d0,d1) -> (d1,d0)，body 直接 yield
-#   → AscendC 转换：ascendc.transpose %dst, %src
+# 融合后单 linalg.generic，indexing_map:
+#   data0: (d0,d1)->(d1,0)  — 转置+广播
+#   data1: (d0,d1)->(d0,d1) — identity
 #
 # 与现有示例的统一之处：
 #   - 同一套 pass pipeline（tiling → bufferize → buffer-placement → linalg-to-ascendc）
@@ -27,16 +24,16 @@
 #
 # 各阶段说明：
 #   step0_input.mlir          原始 High-Level IR（linalg/tensor，完全符号化）
-#   step1_fused.mlir          --linalg-fuse-elementwise-ops（尝试融合）
+#   step0_input_out.mlir      --linalg-generalize-named-ops --linalg-fuse-elementwise-ops 结果
+#                             → 融合为单 linalg.generic（relu+transpose+broadcast+add）
+#   step1_fused.mlir          --canonicalize --cse（基于 step0_input_out.mlir）
 #   step2_tiled.mlir          --transform-interpreter tiling 结果
-#                             → Op1/Op2/Op3 各自 TB/Tb 两级循环
+#                             → 单 generic TB/Tb 两级循环
 #   step3_bufferized.mlir     --one-shot-bufferize 结果（tensor→memref）
 #   step4_buffer_placement.mlir  --ascendc-buffer-placement 结果
 #                             → 推导 on-chip memory_space（VECIN=9, VECOUT=10）
 #   step5_ascendc.mlir        --linalg-to-ascendc 结果
-#                             → Op1: broadcast_l2 + max_l2 + add_l2（relu+broadcast_col）
-#                             → Op2: ascendc.transpose（转置）
-#                             → Op3: broadcast_l2 + mul_l2（列广播乘 scale）
+#                             → data_copy_l2（GM→UB）+ relu + broadcast_l2 + add_l2
 #   step6_parallelize.mlir    --ascendc-parallelize（get_block_idx 单维调度）
 #   step7_kernel.mlir         --ascendc-prepare-for-emit（kernel IR）
 #   step8_kernel.cpp          ascir-translate -mlir-to-ascendc（C++ kernel）
@@ -68,34 +65,35 @@ echo "========================================================"
 echo ""
 echo "==================== [STAGE 0] 解析 High-Level IR（relu+broadcast_col+add, transpose, scale_mul）===================="
 log "  输入: step0_input.mlir"
-$AFIR_OPT "$DIR/step0_input.mlir" -o "$DIR/step0_input_out.mlir" 2>&1
-log "  ✓ 解析成功，输出: step0_input_out.mlir"
+$AFIR_OPT --linalg-generalize-named-ops \
+  --linalg-fuse-elementwise-ops \
+  --canonicalize --cse \
+  "$DIR/step0_input.mlir" \
+  -o "$DIR/step0_input_out.mlir" 2>&1
+log "  ✓ 融合成功，输出: step0_input_out.mlir"
 log ""
 log "  [计算图结构]"
-log "    Op1 relu_bias_add:  iterator = [Parallel, Parallel], d0=M, d1=N"
-log "         relu(A[M,N]) + broadcast_col(bias[N]) → B[M,N]"
-log "    Op2 transpose:      iterator = [Parallel, Parallel], d0=N, d1=M"
-log "         B[M,N] → C[N,M]（ins 访问 (d1,d0)，即 B[j,i]）"
-log "    Op3 scale_mul:      iterator = [Parallel, Parallel], d0=N, d1=M"
-log "         C[N,M] * broadcast_col(scale[M]) → D[N,M]"
+log "    融合后单 linalg.generic:"
+log "      data0: (d0,d1)->(d1,0)  — relu+转置+广播"
+log "      data1: (d0,d1)->(d0,d1) — identity"
+log "      out:   (d0,d1)->(d0,d1) — relu(data0[d1,0]) + data1[d0,d1]"
 
 # ── STAGE 1: 融合 ──────────────────────────────────────────
 echo ""
-echo "==================== [STAGE 1] 融合：--linalg-fuse-elementwise-ops ===================="
-log "  Op1 与 Op2/Op3 之间存在 transpose 依赖，通常无法融合"
-$AFIR_OPT --linalg-fuse-elementwise-ops "$DIR/step0_input.mlir" \
-  --canonicalize --cse \
+echo "==================== [STAGE 1] Canonicalize/CSE（基于已融合的 step0_input_out.mlir）===================="
+log "  已在 Stage 0 完成融合，此阶段仅做 canonicalize + cse 清理"
+$AFIR_OPT --canonicalize --cse "$DIR/step0_input_out.mlir" \
   -o "$DIR/step1_fused.mlir" 2>&1
 log "  ✓ 输出: step1_fused.mlir"
 log ""
-log "  [融合后 linalg.generic 数量]"
+log "  [linalg.generic 数量（应为 1）]"
 log "$(grep -c "linalg.generic" "$DIR/step1_fused.mlir" || echo "  0")"
 
 # ── STAGE 2: Transform Tiling ──────────────────────────────
 echo ""
 echo "==================== [STAGE 2] Tiling：--transform-interpreter ===================="
 log "  输入: step2_transform.mlir（含 Transform 脚本）"
-log "  策略: 对 Op1/Op2/Op3 分别沿第一轴（M 或 N）做两级切分 TB/Tb"
+log "  策略: 对融合后单 generic 沿第一轴（n）做两级切分 TB/Tb"
 $AFIR_OPT --transform-interpreter "$DIR/step2_transform.mlir" \
   --canonicalize --cse \
   -o "$DIR/step2_tiled.mlir" 2>&1
@@ -135,13 +133,11 @@ log "$(grep "memref.copy" "$DIR/step4_buffer_placement.mlir" | head -8)"
 # ── STAGE 5: Linalg → AscendC Compute ─────────────────────
 echo ""
 echo "==================== [STAGE 5] Linalg → AscendC：--linalg-to-ascendc ===================="
-log "  转换规则："
-log "    Op1 (relu+broadcast_col+add):"
-log "       → broadcast_l2（列广播 bias）+ duplicate_l2（zero）+ max_l2（relu）+ add_l2"
-log "    Op2 (transpose):"
-log "       → ascendc.transpose %dst, %src（检测到置换 indexing_map）"
-log "    Op3 (scale_mul):"
-log "       → broadcast_l2（列广播 scale）+ mul_l2"
+log "  转换规则（单 generic）："
+log "    data0 (GM, [m,1]) → data_copy_l2（GM→UB）"
+log "    relu: duplicate_l2（zero）+ max_l2"
+log "    broadcast_l2（转置+广播 data0[d1,0] → [n,m]）"
+log "    add_l2（broadcast 结果 + data1）"
 $AFIR_OPT \
   --linalg-to-ascendc \
   "$DIR/step4_buffer_placement.mlir" \
@@ -210,12 +206,12 @@ fi
 echo ""
 echo "========================================================"
 echo " 流水线完成！生成文件："
-echo "   step0_input_out.mlir        → 解析后 IR"
-echo "   step1_fused.mlir            → 融合尝试（transpose 阻断融合）"
-echo "   step2_tiled.mlir            → Tiling 后（Op1/Op2/Op3 各自 TB/Tb 两级循环）"
+echo "   step0_input_out.mlir        → generalize+fuse 后单 linalg.generic IR"
+echo "   step1_fused.mlir            → canonicalize+cse 清理后 IR"
+echo "   step2_tiled.mlir            → Tiling 后（单 generic TB/Tb 两级循环）"
 echo "   step3_bufferized.mlir       → Bufferize 后（memref）"
 echo "   step4_buffer_placement.mlir → on-chip 内存标注（VECIN/VECOUT）"
-echo "   step5_ascendc.mlir          → AscendC compute ops（含 ascendc.transpose）"
+echo "   step5_ascendc.mlir          → AscendC compute ops（data_copy+relu+broadcast+add）"
 echo "   step6_parallelize.mlir      → 多核 AiCore 调度（get_block_idx）"
 echo "   step7_kernel.mlir           → 完整 AscendC kernel IR"
 echo "   step8_kernel.cpp            → AscendC C++ kernel 源码"
