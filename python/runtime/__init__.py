@@ -117,6 +117,9 @@ from .executor import (
     execute_kernel,
 )
 
+# Tiling schema 模块
+from .tiling_schema import TilingSchema
+
 # ================================================================
 # 便捷函数
 # ================================================================
@@ -217,4 +220,7 @@ __all__ = [
     # 便捷函数
     "read_binary",
     "compile_kernel",
+
+    # Tiling schema
+    "TilingSchema",
 ]
