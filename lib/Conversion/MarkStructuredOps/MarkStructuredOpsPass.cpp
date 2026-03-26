@@ -6,6 +6,7 @@
 
 #include "Conversion/MarkStructuredOps/MarkStructuredOpsPass.h"
 
+#include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
 #include "mlir/IR/AffineMap.h"
@@ -33,8 +34,10 @@ struct MarkStructuredOpsPass
 //
 // Conditions (all must hold):
 //  1. Body contains at least one tensor.extract op.
-//  2. The tensor operand of extract is a block argument in ins (not captured).
-//  3. One other ins block arg is used as a dynamic index into the extract at
+//  2. The tensor operand of extract is either:
+//       (a) a block argument from ins, OR
+//       (b) a value captured from outside the body (e.g. another generic's result).
+//  3. One ins block arg is used as a dynamic index into the extract at
 //     exactly one dimension position.
 //  4. That indices ins has a lower-rank affine map (broadcast map).
 //  5. All other index operands of the extract come from linalg.index ops.
@@ -52,8 +55,9 @@ GatherInfo detectGather(linalg::GenericOp op) {
   GatherInfo info;
   unsigned iterRank = op.getIteratorTypesArray().size();
 
-  // Must have at least 2 ins (indices + data) and 1 out.
-  if (op.getNumDpsInputs() < 2 || op.getNumDpsInits() != 1)
+  // Must have at least 1 ins and 1 out.
+  // (data tensor may be captured externally rather than passed as an ins arg)
+  if (op.getNumDpsInputs() < 1 || op.getNumDpsInits() != 1)
     return info;
 
   // Condition 1: body contains tensor.extract.
@@ -65,25 +69,39 @@ GatherInfo detectGather(linalg::GenericOp op) {
   if (!extractOp)
     return info;
 
-  // Condition 2: extracted tensor is a block argument in ins (not captured).
-  auto dataBa = dyn_cast<BlockArgument>(extractOp.getTensor());
-  if (!dataBa || dataBa.getOwner() != op.getBody())
-    return info;
-  unsigned dataArgIdx = dataBa.getArgNumber();
-  if (dataArgIdx >= (unsigned)op.getNumDpsInputs())
-    return info;
+  // Condition 2: extracted tensor is either:
+  //   (a) a block argument in ins, OR
+  //   (b) a value captured from outside the linalg.generic body.
+  // In case (a), track its arg index so we don't confuse it with the indices
+  // block arg. In case (b), any block arg used as a dynamic index is the
+  // indices tensor.
+  int dataArgIdx = -1; // -1 means captured (case b)
+  if (auto dataBa = dyn_cast<BlockArgument>(extractOp.getTensor())) {
+    if (dataBa.getOwner() != op.getBody())
+      return info;
+    if ((int)dataBa.getArgNumber() >= op.getNumDpsInputs())
+      return info;
+    dataArgIdx = (int)dataBa.getArgNumber();
+  }
+  // (case b) captured tensor: getDefiningOp must exist or it's a func arg —
+  // both are fine; we just can't check further here.
 
   // Conditions 3 & 5: scan extract indices.
-  // Exactly one index must come from another ins block arg (indices tensor).
+  // Exactly one index must come from an ins block arg (the indices tensor).
   // All remaining indices must come from linalg.index ops.
   int indicesArgIdx = -1;
   int64_t dynamicDim = -1;
 
   for (auto [dimPos, idxVal] : llvm::enumerate(extractOp.getIndices())) {
-    if (auto ba = dyn_cast<BlockArgument>(idxVal)) {
+    // Peel through arith.index_cast to get the underlying value.
+    Value baseVal = idxVal;
+    if (auto castOp = idxVal.getDefiningOp<arith::IndexCastOp>())
+      baseVal = castOp.getIn();
+
+    if (auto ba = dyn_cast<BlockArgument>(baseVal)) {
       if (ba.getOwner() != op.getBody())
         return info;
-      if (ba.getArgNumber() == dataArgIdx)
+      if ((int)ba.getArgNumber() == dataArgIdx)
         return info;
       if ((int)ba.getArgNumber() >= op.getNumDpsInputs())
         return info;
@@ -91,7 +109,8 @@ GatherInfo detectGather(linalg::GenericOp op) {
         return info; // more than one dynamic dim — not simple gather
       indicesArgIdx = (int)ba.getArgNumber();
       dynamicDim = (int64_t)dimPos;
-    } else if (idxVal.getDefiningOp<linalg::IndexOp>()) {
+    } else if (baseVal.getDefiningOp<linalg::IndexOp>() ||
+               idxVal.getDefiningOp<linalg::IndexOp>()) {
       // Condition 5: OK
     } else {
       return info; // unexpected value source
