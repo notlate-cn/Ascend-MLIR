@@ -1006,22 +1006,30 @@ LogicalResult convertCompute(func::FuncOp funcOp, AscendCBufferContext &ctx) {
         break;
       }
       case IndexingMapAnalysis::Kind::BroadcastTranspose: {
-        // Step 1: Copy actual input dims from GM into VECIN.
+        // Step 1: Get the input as a local_tensor in VECIN.
+        // After buffer-placement, data0 may already be in VECIN (inMs==9) via
+        // a memref.copy placeholder; use readTensor directly. Otherwise copy
+        // from GM.
         auto srcMrt = cast<MemRefType>(inMemref.getType());
         unsigned srcRank = srcMrt.getRank();
         SmallVector<Value> srcDimsVals;
         for (unsigned d = 0; d < srcRank; ++d)
           srcDimsVals.push_back(getDynDim(builder, loc, inMemref, d));
-        Value srcElemCount = builder.create<arith::ConstantIndexOp>(loc, 1);
-        for (Value d : srcDimsVals)
-          srcElemCount = builder.create<arith::MulIOp>(loc, srcElemCount, d);
 
-        Value srcGt = builder.create<GlobalTensorOp>(
-            loc, GlobalTensorType::get(elemType));
-        builder.create<GlobalTensorSetGlobalBufferOp>(loc, srcGt, inMemref,
-                                                       /*size=*/Value{});
-        Value srcVecinLt =
-            copyGmToVecin(builder, loc, elemType, srcGt, srcElemCount);
+        Value srcVecinLt;
+        if (inMs == 9 /*VECIN*/) {
+          srcVecinLt = readTensor(builder, loc, inMemref);
+        } else {
+          Value srcElemCount = builder.create<arith::ConstantIndexOp>(loc, 1);
+          for (Value d : srcDimsVals)
+            srcElemCount = builder.create<arith::MulIOp>(loc, srcElemCount, d);
+          Value srcGt = builder.create<GlobalTensorOp>(
+              loc, GlobalTensorType::get(elemType));
+          builder.create<GlobalTensorSetGlobalBufferOp>(loc, srcGt, inMemref,
+                                                         /*size=*/Value{});
+          srcVecinLt =
+              copyGmToVecin(builder, loc, elemType, srcGt, srcElemCount);
+        }
 
         // Step 2: Build intermediate shape (map results order, filling constants
         // with broadcast dim sizes) and broadcast into it.
