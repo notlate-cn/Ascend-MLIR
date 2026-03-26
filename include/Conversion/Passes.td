@@ -252,4 +252,31 @@ def CanonicalizeCannSignaturePass : Pass<"canonicalize-cann-signature", "mlir::M
   ];
 }
 
+//===----------------------------------------------------------------------===//
+// MarkStructuredOps
+//===----------------------------------------------------------------------===//
+
+def MarkStructuredOpsPass : Pass<"mark-structured-ops", "mlir::func::FuncOp"> {
+  let summary = "Annotate structured linalg.generic ops with semantic attributes";
+  let description = [{
+    Detects structured patterns in linalg.generic ops and stamps semantic
+    attributes to guide downstream passes (Transform tiling, ComputeConversion).
+
+    Currently detected patterns:
+    - index_select (column gather): body has tensor.extract where the extracted
+      tensor is in ins, indexed by another ins block arg at one dimension, and
+      remaining indices come from linalg.index. Stamps {gather_dim = N : i64}.
+    - embedding (row gather): same five conditions, but indices indexing map
+      selects dimension 0. Stamps {embedding_dim = 0 : i64}.
+
+    Detection uses five structural conditions (see pass implementation).
+    Does not modify IR semantics — attribute-only annotation.
+  }];
+  let constructor = "mlir::afir::createMarkStructuredOpsPass()";
+  let dependentDialects = [
+    "mlir::linalg::LinalgDialect",
+    "mlir::tensor::TensorDialect"
+  ];
+}
+
 #endif // AFIR_CONVERSION_PASSES

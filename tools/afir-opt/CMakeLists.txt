@@ -37,6 +37,7 @@ target_link_libraries(afir-opt
     AscendCParallelizeConversion
     AscendCPrepareForEmitConversion
     CanonicalizeCannSignatureConversion
+    MarkStructuredOpsConversion
     MLIREmitAsc
     AFIRUtils
 )
