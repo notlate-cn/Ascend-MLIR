@@ -77,14 +77,16 @@ GatherInfo detectGather(linalg::GenericOp op) {
   // indices tensor.
   int dataArgIdx = -1; // -1 means captured (case b)
   if (auto dataBa = dyn_cast<BlockArgument>(extractOp.getTensor())) {
-    if (dataBa.getOwner() != op.getBody())
-      return info;
-    if ((int)dataBa.getArgNumber() >= op.getNumDpsInputs())
-      return info;
-    dataArgIdx = (int)dataBa.getArgNumber();
+    if (dataBa.getOwner() == op.getBody()) {
+      // Case (a): block arg inside the linalg body — must be an ins arg.
+      if ((int)dataBa.getArgNumber() >= op.getNumDpsInputs())
+        return info;
+      dataArgIdx = (int)dataBa.getArgNumber();
+    }
+    // else: case (b) — func arg or outer-block arg captured into the region.
   }
-  // (case b) captured tensor: getDefiningOp must exist or it's a func arg —
-  // both are fine; we just can't check further here.
+  // (case b) captured tensor: getDefiningOp may exist or it's a func/outer arg
+  // — both are fine; we just can't check further here.
 
   // Conditions 3 & 5: scan extract indices.
   // Exactly one index must come from an ins block arg (the indices tensor).
