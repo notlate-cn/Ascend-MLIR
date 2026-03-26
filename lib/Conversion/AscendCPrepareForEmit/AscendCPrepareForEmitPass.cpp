@@ -367,6 +367,8 @@ static LogicalResult prepareFunc(func::FuncOp func) {
 
   SmallVector<ascendc::GlobalTensorSetGlobalBufferOp> setGlobalBufferOps;
   func.walk([&](ascendc::GlobalTensorSetGlobalBufferOp op) {
+    if (!op.getBuffer().getDefiningOp())
+      return;
     if (!isa<memref::SubViewOp>(op.getBuffer().getDefiningOp()))
       return;
     setGlobalBufferOps.push_back(op);

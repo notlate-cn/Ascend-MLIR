@@ -15,6 +15,7 @@
 #include "Conversion/AscendCParallelize/AscendCParallelizePass.h"
 #include "Conversion/AscendCPrepareForEmit/AscendCPrepareForEmitPass.h"
 #include "Conversion/CanonicalizeCannSignature/CanonicalizeCannSignaturePass.h"
+#include "Conversion/FuseGatherElementwise/FuseGatherElementwisePass.h"
 #include "Conversion/MarkStructuredOps/MarkStructuredOpsPass.h"
 #include "mlir/Pass/Pass.h"
 #include <memory>
