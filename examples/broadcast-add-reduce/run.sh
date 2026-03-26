@@ -234,6 +234,7 @@ if [ -f "$BIN" ]; then
     --name broadcast_add_reducesum \
     --inputs "$DIR/input_a.npy,$DIR/input_b.npy" \
     --expected "$DIR/output_c.npy" \
+    --tiling-schema "$DIR/tiling_space.json" \
     --tiling-params 'TB_M=16,TB_N=16,dim_arg0_0=64,dim_arg1_1=64,dim_arg0_1=64,dim_arg1_0=64' \
     --block-dim 4 \
     --atol 1e-3 \
