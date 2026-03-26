@@ -723,17 +723,18 @@ LogicalResult convertCompute(func::FuncOp funcOp, AscendCBufferContext &ctx) {
     return ba && ba.getArgNumber() == 0;
   };
 
-  // Helper: detect a gather generic.
-  // Pattern: library_call = "gather_by_index",
-  //   2 inputs: indices[K] (col_broadcast_map, i32) and data[M, N] (full_access_map, f16)
-  //   1 output: gathered[M, K]  (full_access_map)
-  //   iterator_types = ["parallel", "parallel"]
-  auto isGatherGeneric = [](linalg::GenericOp op) -> bool {
-    auto libCall = op.getLibraryCall();
-    if (!libCall || libCall->empty())
-      return false;
-    return *libCall == "gather_by_index";
+  // Helper: detect index_select gather (column gather).
+  // Stamped by --mark-structured-ops: {gather_dim = N : i64} attribute.
+  auto isIndexSelectGeneric = [](linalg::GenericOp op) -> bool {
+    return op->hasAttr("gather_dim");
   };
+
+  // Helper: detect embedding gather (row gather).
+  // Stamped by --mark-structured-ops: {embedding_dim = N : i64} attribute.
+  auto isEmbeddingGeneric = [](linalg::GenericOp op) -> bool {
+    return op->hasAttr("embedding_dim");
+  };
+  (void)isEmbeddingGeneric; // reserved for future use
 
   for (linalg::GenericOp genOp : parallelGenericOps) {
     Value outMemref = genOp.getDpsInitOperand(0)->get();
@@ -741,86 +742,127 @@ LogicalResult convertCompute(func::FuncOp funcOp, AscendCBufferContext &ctx) {
     if (outMs <= 0)
       continue; // output must be on-chip (VECOUT or VECCALC)
 
-    // ---- Gather generic: emit gather_l2 row by row ----
-    // indices[K] (VECIN, i32) + data[Tb_M, N] (VECIN, f16) → gathered[Tb_M, K] (VECOUT)
-    // For each row i in 0..Tb_M: gather_l2(dst_row[K], src_row[N], indices[K], 0, K)
-    if (isGatherGeneric(genOp)) {
-      // ins[0] = indices (K elements, i32), ins[1] = data (Tb_M rows of N elements, f16)
+    // ---- Index-select gather: emit gather_l2 row by row ----
+    // New pattern: {gather_dim = 1} attribute, 1 input (indices),
+    // data accessed via memref.load in the body (captures a GM memref).
+    // For each row i in 0..Tb_M:
+    //   copy data row from GM → VECCALC
+    //   gather_l2(dst_row[K], src_row[N], indices[K], 0, K)
+    if (isIndexSelectGeneric(genOp)) {
       Value indicesMemref = genOp.getDpsInputOperand(0)->get();
-      Value dataMemref    = genOp.getDpsInputOperand(1)->get();
       Location loc = genOp.getLoc();
       builder.setInsertionPoint(genOp);
 
-      auto dataMrt = cast<MemRefType>(dataMemref.getType());
-      // Tb_M = dim[0] of data, N = dim[1] of data, K = dim[0] of indices
-      Value tbM   = getDynDim(builder, loc, dataMemref, 0); // Tb_M rows
-      Value dimN  = getDynDim(builder, loc, dataMemref, 1); // N elements per row
-      Value dimK  = getDynDim(builder, loc, indicesMemref, 0); // K gathered per row
+      // Find data memref from memref.load in the body (bufferized tensor.extract).
+      Value dataMemref;
+      genOp.getBody()->walk([&](memref::LoadOp loadOp) {
+        if (!dataMemref)
+          dataMemref = loadOp.getMemref();
+      });
+      if (!dataMemref) {
+        LLVM_DEBUG(llvm::dbgs()
+                   << "isIndexSelectGeneric: no memref.load found in body\n");
+        continue;
+      }
 
-      Type f16Type = dataMrt.getElementType();
-      Type i32Type = builder.getI32Type();
+      auto outMrt  = cast<MemRefType>(outMemref.getType());
+      Type elemType = outMrt.getElementType();
+      Type i32Type  = builder.getI32Type();
 
-      // Get indices as a local_tensor (i32).
+      // Tb_M = dim[0] of output, N = dim[1] of data, K = dim[1] of output
+      Value tbM  = getDynDim(builder, loc, outMemref, 0);
+      Value dimN = getDynDim(builder, loc, dataMemref, 1);
+      Value dimK = getDynDim(builder, loc, outMemref, 1);
+
+      unsigned elemBytes = elemType.getIntOrFloatBitWidth() / 8;
+
+      // Get indices as a local_tensor.
       // If indices are in VECIN (ms=9), deque from queue.
-      // If indices are in GM (ms=0, not yet copied), copy into VECCALC first.
+      // If indices are in GM (ms=0), copy into VECCALC first.
+      auto idxMrt = cast<MemRefType>(indicesMemref.getType());
+      Type idxElemType = idxMrt.getElementType();
+      Value idxCount = getDynDim(builder, loc, indicesMemref, 0);
       Value indicesLt;
       int64_t idxMs = getMemorySpace(indicesMemref.getType());
       if (idxMs == 9 /*VECIN*/ || idxMs == 11 /*VECCALC*/) {
         indicesLt = readTensor(builder, loc, indicesMemref);
       } else {
-        // GM: copy indices[K] into a fresh VECCALC buffer.
-        SmallVector<Value> idxDims = {dimK};
-        auto [idxTbuf, idxLt] = allocVeccalc(builder, loc, i32Type, idxDims);
+        // GM: copy indices into a fresh VECCALC buffer.
+        SmallVector<Value> idxDims = {idxCount};
+        auto [idxTbuf, idxLt] =
+            allocVeccalc(builder, loc, idxElemType, idxDims);
         Value idxGt = builder.create<GlobalTensorOp>(
-            loc, GlobalTensorType::get(i32Type));
+            loc, GlobalTensorType::get(idxElemType));
         builder.create<GlobalTensorSetGlobalBufferOp>(loc, idxGt, indicesMemref,
                                                        /*size=*/Value{});
-        builder.create<DataCopyL2Op>(loc, idxLt, idxGt, dimK);
+        builder.create<DataCopyL2Op>(loc, idxLt, idxGt, idxCount);
         indicesLt = idxLt;
       }
 
-      // Element counts for one row: N (data) and K (output)
-      Value dimK_i32 = builder.create<arith::IndexCastOp>(loc, i32Type, dimK);
-      Value srcBaseAddr = builder.create<arith::ConstantIntOp>(loc, i32Type, 0);
+      Value dimK_i32 =
+          builder.create<arith::IndexCastOp>(loc, i32Type, dimK);
+      Value srcBaseAddr =
+          builder.create<arith::ConstantIntOp>(loc, i32Type, 0);
 
-      // Byte strides for row slicing in VECIN/VECOUT buffers (f16 elements).
-      unsigned f16Bytes = 2; // f16 = 2 bytes
-
-      // Alloc the VECOUT output tensor (Tb_M * K elements).
+      // Alloc the VECOUT output tensor.
       Value dstLt = writeTensor(builder, loc, outMemref);
 
-      // Generate a scf.for loop over Tb_M rows.
-      // Each iteration: gather_l2(dstRow[K], srcRow[N], indicesLt[K], 0, K)
       Value zero = builder.create<arith::ConstantIndexOp>(loc, 0);
       Value one  = builder.create<arith::ConstantIndexOp>(loc, 1);
-      Value dataTbuf = ctx.getTBuf(dataMemref);
-      Value outTbuf  = ctx.getTBuf(outMemref);
+      Value outTbuf = ctx.getTBuf(outMemref);
 
-      // Byte sizes for a single row in data (N * f16Bytes) and output (K * f16Bytes)
-      Value dataBytesPerRow = builder.create<arith::MulIOp>(
-          loc, dimN,
-          builder.create<arith::ConstantIndexOp>(loc, f16Bytes));
-      Value outBytesPerRow = builder.create<arith::MulIOp>(
-          loc, dimK,
-          builder.create<arith::ConstantIndexOp>(loc, f16Bytes));
+      // Byte size for a single output row (K * elemBytes).
+      Value elemBytesVal =
+          builder.create<arith::ConstantIndexOp>(loc, elemBytes);
+      Value outBytesPerRow =
+          builder.create<arith::MulIOp>(loc, dimK, elemBytesVal);
+
+      // Collect enclosing scf.for induction variables to compute the global
+      // row offset into the data memref.  The generic sits inside nested
+      // tiling loops whose IVs sum to the tile origin in the data tensor.
+      SmallVector<Value> enclosingIVs;
+      for (Operation *p = genOp->getParentOp(); p; p = p->getParentOp())
+        if (auto f = dyn_cast<scf::ForOp>(p))
+          enclosingIVs.push_back(f.getInductionVar());
+
+      // Data is in GM: set up a GlobalTensor for row-by-row copy.
+      Value dataGt = builder.create<GlobalTensorOp>(
+          loc, GlobalTensorType::get(elemType));
+      builder.create<GlobalTensorSetGlobalBufferOp>(loc, dataGt, dataMemref,
+                                                     /*size=*/Value{});
+
+      // Allocate a VECCALC buffer for one data row (N elements).
+      SmallVector<Value> rowDims = {dimN};
+      auto [dataRowTbuf, dataRowLtInit] =
+          allocVeccalc(builder, loc, elemType, rowDims);
 
       builder.create<scf::ForOp>(
           loc, zero, tbM, one, ValueRange{},
           [&](OpBuilder &b, Location forLoc, Value rowIdx, ValueRange) {
-            // srcRow = data[rowIdx, 0..N-1] — slice from dataTbuf
-            Value srcByteOff = b.create<arith::MulIOp>(forLoc, rowIdx, dataBytesPerRow);
-            Value srcRowLt = b.create<TBufGetWithOffsetOp>(
-                forLoc, LocalTensorType::get(f16Type), dataTbuf,
-                dataBytesPerRow, srcByteOff);
+            // Global row = sum(enclosing IVs) + rowIdx (tile-local row)
+            Value globalRow = rowIdx;
+            for (Value iv : enclosingIVs)
+              globalRow = b.create<arith::AddIOp>(forLoc, globalRow, iv);
 
-            // dstRow = gathered[rowIdx, 0..K-1] — slice from outTbuf
-            Value dstByteOff = b.create<arith::MulIOp>(forLoc, rowIdx, outBytesPerRow);
+            // Step 1: Copy one data row from GM → VECCALC.
+            // Offset the GlobalTensor by globalRow * N elements, then DataCopy.
+            Value rowElemOff =
+                b.create<arith::MulIOp>(forLoc, globalRow, dimN);
+            Value dataRowGt = b.create<GlobalTensorBracketOp>(
+                forLoc, GlobalTensorType::get(elemType), dataGt,
+                rowElemOff);
+            Value dataRowLt = b.create<TBufGetTensorOp>(
+                forLoc, LocalTensorType::get(elemType), dataRowTbuf,
+                /*len=*/Value{});
+            b.create<DataCopyL2Op>(forLoc, dataRowLt, dataRowGt, dimN);
+
+            // Step 2: gather_l2(dst[K], src[N], indices, srcBase=0, count=K)
+            Value dstByteOff =
+                b.create<arith::MulIOp>(forLoc, rowIdx, outBytesPerRow);
             Value dstRowLt = b.create<TBufGetWithOffsetOp>(
-                forLoc, LocalTensorType::get(f16Type), outTbuf,
+                forLoc, LocalTensorType::get(elemType), outTbuf,
                 outBytesPerRow, dstByteOff);
-
-            // gather_l2(dst[K], src[N], srcOffset[K], srcBaseAddr=0, count=K)
-            b.create<GatherL2Op>(forLoc, dstRowLt, srcRowLt, indicesLt,
+            b.create<GatherL2Op>(forLoc, dstRowLt, dataRowLt, indicesLt,
                                  srcBaseAddr, dimK_i32);
             b.create<scf::YieldOp>(forLoc);
           });
