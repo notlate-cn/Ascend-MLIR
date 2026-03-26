@@ -253,6 +253,30 @@ def CanonicalizeCannSignaturePass : Pass<"canonicalize-cann-signature", "mlir::M
 }
 
 //===----------------------------------------------------------------------===//
+// FuseGatherElementwise
+//===----------------------------------------------------------------------===//
+
+def FuseGatherElementwisePass : Pass<"fuse-gather-elementwise", "mlir::func::FuncOp"> {
+  let summary = "Fuse elementwise ops into adjacent gather generics at tensor level";
+  let description = [{
+    Runs at tensor level (after --mark-structured-ops, before --transform-interpreter).
+    Detects chains of: pre-op (e.g. relu) -> gather (gather_dim/embedding_dim attr) -> post-op (e.g. add)
+    and fuses them into a single gather generic that inlines all ops in its body.
+
+    The fused op:
+      ins  = gather's ins + post-op's extra ins (excluding gather result)
+      outs = post-op's outs (or gather's outs if no post-op)
+      body = pre-op arith ops + tensor.extract + post-op arith ops
+  }];
+  let constructor = "mlir::afir::createFuseGatherElementwisePass()";
+  let dependentDialects = [
+    "mlir::linalg::LinalgDialect",
+    "mlir::tensor::TensorDialect",
+    "mlir::arith::ArithDialect"
+  ];
+}
+
+//===----------------------------------------------------------------------===//
 // MarkStructuredOps
 //===----------------------------------------------------------------------===//
 

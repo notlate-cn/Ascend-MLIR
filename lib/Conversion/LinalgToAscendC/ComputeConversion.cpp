@@ -943,7 +943,11 @@ LogicalResult convertCompute(func::FuncOp funcOp, AscendCBufferContext &ctx) {
             b.create<GatherL2Op>(forLoc, gatheredRowLt, processedRowLt,
                                  indicesLt, srcBaseAddr, dimK_i32);
 
-            // Step 3: If post-op exists (e.g. add bias), apply it on gatheredRowLt
+            // Step 3: If post-op exists (e.g. add bias), apply it on gatheredRowLt.
+            // If no post-op, walk the gather body itself for any arith ops that
+            // appear after the memref.load (from upstream fusion). This handles
+            // the case where relu + add were fused into the gather body by
+            // --fuse-gather-elementwise before bufferization.
             if (postOp) {
               Value dimK_i32v = b.create<arith::IndexCastOp>(forLoc, b.getI32Type(), dimK);
               Block &postBody = *postOp.getBody();
@@ -989,6 +993,99 @@ LogicalResult convertCompute(func::FuncOp funcOp, AscendCBufferContext &ctx) {
                   if (lhs && rhs) {
                     b.create<MaxL2Op>(forLoc, gatheredRowLt, lhs, rhs, dimK_i32v);
                     postValToLt[maxOp3.getResult()] = gatheredRowLt;
+                  }
+                }
+              }
+            } else {
+              // Walk the fused gather body for arith ops that appear after
+              // the memref.load (these were inlined by --fuse-gather-elementwise).
+              // Block args:
+              //   arg0 = indices element (i64, skip)
+              //   arg1..argN-2 = extra ins (bias etc.)
+              //   argN-1 = out init (skip, use gatheredRowLt instead)
+              Value dimK_i32v = b.create<arith::IndexCastOp>(forLoc, b.getI32Type(), dimK);
+              Block &gatherBody = *genOp.getBody();
+              unsigned numBodyIns = (unsigned)genOp.getNumDpsInputs();
+              llvm::SmallDenseMap<Value, Value> bodyValToLt;
+
+              // Helper: find the memref.load result in the body.
+              Value loadResult;
+              for (auto &op : gatherBody.without_terminator()) {
+                if (isa<memref::LoadOp>(op)) {
+                  loadResult = op.getResult(0);
+                  break;
+                }
+              }
+
+              auto bodyResolve = [&](Value v) -> Value {
+                // The "gathered row" value — the memref.load result maps to
+                // gatheredRowLt (post-gather result).
+                if (loadResult && v == loadResult) return gatheredRowLt;
+                auto it = bodyValToLt.find(v);
+                if (it != bodyValToLt.end()) return it->second;
+                if (auto ba = dyn_cast<BlockArgument>(v)) {
+                  unsigned argNum = ba.getArgNumber();
+                  if (argNum == 0) return Value{}; // indices arg, skip
+                  if (argNum >= numBodyIns) return gatheredRowLt; // out init
+                  // Extra ins (bias, etc.) at argNum=1..numBodyIns-1
+                  Value argMemref = genOp.getDpsInputOperand(argNum)->get();
+                  int64_t argMs = getMemorySpace(argMemref.getType());
+                  if (argMs > 0) {
+                    // On-chip: use readTensor directly.
+                    Value lt = readTensor(b, forLoc, argMemref);
+                    bodyValToLt[v] = lt;
+                    return lt;
+                  }
+                  // GM: copy to VECCALC for vector ops.
+                  Value argCount = getDynDim(b, forLoc, argMemref, 0);
+                  auto argMrt = cast<MemRefType>(argMemref.getType());
+                  Type argElem = argMrt.getElementType();
+                  auto [argTbuf, argLt] =
+                      allocVeccalc(b, forLoc, argElem, SmallVector<Value>{argCount});
+                  Value argGt = b.create<GlobalTensorOp>(forLoc, GlobalTensorType::get(argElem));
+                  b.create<GlobalTensorSetGlobalBufferOp>(forLoc, argGt, argMemref,
+                                                           /*size=*/Value{});
+                  b.create<DataCopyL2Op>(forLoc, argLt, argGt, argCount);
+                  bodyValToLt[v] = argLt;
+                  return argLt;
+                }
+                if (auto constOp = v.getDefiningOp<arith::ConstantOp>()) {
+                  auto [dupTbuf4, dupLt] = allocVeccalc(b, forLoc, elemType,
+                                                         SmallVector<Value>{dimK});
+                  b.create<DuplicateL2Op>(forLoc, dupLt, constOp.getResult(), dimK_i32v);
+                  bodyValToLt[v] = dupLt;
+                  return dupLt;
+                }
+                return Value{};
+              };
+
+              bool pastLoad = false;
+              for (auto &op : gatherBody.without_terminator()) {
+                if (isa<memref::LoadOp>(op)) {
+                  pastLoad = true;
+                  continue;
+                }
+                if (!pastLoad) continue;
+                if (auto addOp4 = dyn_cast<arith::AddFOp>(op)) {
+                  Value lhs = bodyResolve(addOp4.getLhs()),
+                        rhs = bodyResolve(addOp4.getRhs());
+                  if (lhs && rhs) {
+                    b.create<AddL2Op>(forLoc, gatheredRowLt, lhs, rhs, dimK_i32v);
+                    bodyValToLt[addOp4.getResult()] = gatheredRowLt;
+                  }
+                } else if (auto maxOp4 = dyn_cast<arith::MaximumFOp>(op)) {
+                  Value lhs = bodyResolve(maxOp4.getLhs()),
+                        rhs = bodyResolve(maxOp4.getRhs());
+                  if (lhs && rhs) {
+                    b.create<MaxL2Op>(forLoc, gatheredRowLt, lhs, rhs, dimK_i32v);
+                    bodyValToLt[maxOp4.getResult()] = gatheredRowLt;
+                  }
+                } else if (auto mulOp4 = dyn_cast<arith::MulFOp>(op)) {
+                  Value lhs = bodyResolve(mulOp4.getLhs()),
+                        rhs = bodyResolve(mulOp4.getRhs());
+                  if (lhs && rhs) {
+                    b.create<MulL2Op>(forLoc, gatheredRowLt, lhs, rhs, dimK_i32v);
+                    bodyValToLt[mulOp4.getResult()] = gatheredRowLt;
                   }
                 }
               }

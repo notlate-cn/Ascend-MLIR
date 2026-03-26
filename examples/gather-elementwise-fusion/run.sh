@@ -42,8 +42,17 @@ log "  [gather_dim]"
 log "$(grep 'gather_dim' "$DIR/step1_marked.mlir" || echo '  (not found)')"
 
 echo ""
+echo "==================== [STAGE 1.5] --fuse-gather-elementwise ===================="
+$AFIR_OPT --fuse-gather-elementwise \
+  "$DIR/step1_marked.mlir" \
+  -o "$DIR/step1b_fused.mlir"
+log "  ok: step1b_fused.mlir"
+log "  [fused gather body ops]"
+log "$(grep -A 20 'gather_dim' "$DIR/step1b_fused.mlir" || echo '  (not found)')"
+
+echo ""
 echo "==================== [STAGE 2] --transform-interpreter ===================="
-"$AFIR_OPT" "$DIR/step1_marked.mlir" \
+"$AFIR_OPT" "$DIR/step1b_fused.mlir" \
   "--transform-preload-library=transform-library-paths=$DIR/step2_transform.mlir" \
   "--transform-interpreter=entry-point=__transform_main" \
   --canonicalize --cse \

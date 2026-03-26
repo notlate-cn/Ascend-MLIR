@@ -1,20 +1,13 @@
 // ============================================================
 // STAGE 2: Transform Dialect Tiling
 //
-// Input: step1_marked.mlir (after --mark-structured-ops)
-//   Op2 (index_select) carries {gather_dim = 1 : i64}
+// Input: step1b_fused.mlir (after --mark-structured-ops + --fuse-gather-elementwise)
+//   Single fused gather generic carries {gather_dim = 1 : i64}
+//   with relu + add inlined in body.
 //
 // Tiling strategy:
-//   Op1 (relu): iterates [M, N] space
-//   Op2 (gather): iterates [M, K] space
-//   Op3 (add): iterates [M, K] space
-//
 //   d0 = M: two-level tile (TB inter-core, Tb intra-core)
-//   d1 = N or K: no tiling (full stays in UB)
-//
-//   All ops tiled with [TB_M, 0] then [Tb_M, 0]:
-//   d1 is left untouched (size 0 = no tile) regardless of whether
-//   it is N (Op1) or K (Op2/Op3).
+//   d1 = K: no tiling (full stays in UB)
 //
 // RUN: afir-opt --transform-interpreter %s --canonicalize --cse | FileCheck %s
 // CHECK: scf.for
@@ -40,40 +33,20 @@ module attributes {transform.with_named_sequence} {
     %dim_n = tensor.dim %data,    %c1 : tensor<?x?xf16>
     %dim_k = tensor.dim %indices, %c0 : tensor<?xi64>
 
-    %empty_relu = tensor.empty(%dim_m, %dim_n) : tensor<?x?xf16>
-    %relu_out = linalg.generic {
-      indexing_maps = [#full_map, #full_map],
-      iterator_types = ["parallel", "parallel"]
-    } ins(%data : tensor<?x?xf16>)
-      outs(%empty_relu : tensor<?x?xf16>) {
-    ^bb0(%in: f16, %out: f16):
-      %v = arith.maximumf %in, %zero : f16
-      linalg.yield %v : f16
-    } -> tensor<?x?xf16>
-
-    %empty_gathered = tensor.empty(%dim_m, %dim_k) : tensor<?x?xf16>
-    %gathered = linalg.generic {
-      indexing_maps = [#col_broadcast_map, #full_map],
-      iterator_types = ["parallel", "parallel"],
-      gather_dim = 1 : i64
-    } ins(%indices : tensor<?xi64>)
-      outs(%empty_gathered : tensor<?x?xf16>) {
-    ^bb0(%idx: i64, %out: f16):
-      %i = linalg.index 0 : index
-      %j = linalg.index 1 : index
-      %idx_cast = arith.index_cast %idx : i64 to index
-      %val = tensor.extract %relu_out[%i, %idx_cast] : tensor<?x?xf16>
-      linalg.yield %val : f16
-    } -> tensor<?x?xf16>
-
+    // Fused op: relu + index_select(dim=1) + add in one gather generic.
     %empty_out = tensor.empty(%dim_m, %dim_k) : tensor<?x?xf16>
     %out = linalg.generic {
-      indexing_maps = [#full_map, #col_broadcast_map, #full_map],
-      iterator_types = ["parallel", "parallel"]
-    } ins(%gathered, %bias : tensor<?x?xf16>, tensor<?xf16>)
+      indexing_maps = [#col_broadcast_map, #col_broadcast_map, #full_map],
+      iterator_types = ["parallel", "parallel"],
+      gather_dim = 1 : i64
+    } ins(%indices, %bias : tensor<?xi64>, tensor<?xf16>)
       outs(%empty_out : tensor<?x?xf16>) {
-    ^bb0(%g: f16, %b: f16, %o: f16):
-      %v = arith.addf %g, %b : f16
+    ^bb0(%idx: i64, %b: f16, %o: f16):
+      %i = linalg.index 0 : index
+      %idx_cast = arith.index_cast %idx : i64 to index
+      %raw = tensor.extract %data[%i, %idx_cast] : tensor<?x?xf16>
+      %relu = arith.maximumf %raw, %zero : f16
+      %v = arith.addf %relu, %b : f16
       linalg.yield %v : f16
     } -> tensor<?x?xf16>
 
