@@ -63,7 +63,7 @@ echo "========================================================"
 
 # ── STAGE 0: 解析原始 IR ───────────────────────────────────
 echo ""
-echo "==================== [STAGE 0] 解析 High-Level IR（relu+broadcast_col+add, transpose, scale_mul）===================="
+echo "==================== [STAGE 0] 解析 + 融合 High-Level IR（relu + transpose + broadcast + add）===================="
 log "  输入: step0_input.mlir"
 $AFIR_OPT --linalg-generalize-named-ops \
   --linalg-fuse-elementwise-ops \
