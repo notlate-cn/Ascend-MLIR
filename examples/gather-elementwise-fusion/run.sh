@@ -43,7 +43,9 @@ log "$(grep 'gather_dim' "$DIR/step1_marked.mlir" || echo '  (not found)')"
 
 echo ""
 echo "==================== [STAGE 2] --transform-interpreter ===================="
-$AFIR_OPT --transform-interpreter "$DIR/step2_transform.mlir" \
+"$AFIR_OPT" "$DIR/step1_marked.mlir" \
+  "--transform-preload-library=transform-library-paths=$DIR/step2_transform.mlir" \
+  "--transform-interpreter=entry-point=__transform_main" \
   --canonicalize --cse \
   -o "$DIR/step2_tiled.mlir"
 log "  ok: step2_tiled.mlir"
