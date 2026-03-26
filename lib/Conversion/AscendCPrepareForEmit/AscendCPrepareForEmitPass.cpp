@@ -145,8 +145,10 @@ static LogicalResult prepareFunc(func::FuncOp func) {
     // Walk through subview/cast chain to find the root BlockArgument.
     while (buf) {
       if (auto ba = dyn_cast<BlockArgument>(buf)) {
-        addDimKey(ba.getArgNumber(), 0);
-        addDimKey(ba.getArgNumber(), 1);
+        if (auto memTy = dyn_cast<MemRefType>(ba.getType())) {
+          for (int64_t d = 0; d < memTy.getRank(); ++d)
+            addDimKey(ba.getArgNumber(), d);
+        }
         break;
       }
       if (auto sv = buf.getDefiningOp<memref::SubViewOp>()) {

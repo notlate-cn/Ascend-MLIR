@@ -11,6 +11,5 @@ torch2linalg - 将 PyTorch 模型转换为 linalg MLIR IR
 """
 
 from .convert import torch_to_linalg
-from .pytest_plugin import torch_e2e_test
 
-__all__ = ["torch_to_linalg", "torch_e2e_test"]
+__all__ = ["torch_to_linalg"]
