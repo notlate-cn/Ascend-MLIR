@@ -6,6 +6,7 @@
 // CHECK-LABEL: func.func @test_index_select
 // CHECK: linalg.generic
 // CHECK-SAME: gather_dim = 1
+// CHECK-NOT: embedding_dim
 func.func @test_index_select(
     %data    : tensor<4x8xf16>,
     %indices : tensor<3xi64>
@@ -35,6 +36,7 @@ func.func @test_index_select(
 // CHECK-LABEL: func.func @test_embedding
 // CHECK: linalg.generic
 // CHECK-SAME: embedding_dim = 0
+// CHECK-NOT: gather_dim
 func.func @test_embedding(
     %weight  : tensor<16x8xf16>,
     %indices : tensor<4xi64>
