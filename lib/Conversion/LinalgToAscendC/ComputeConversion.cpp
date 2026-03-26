@@ -701,6 +701,11 @@ LogicalResult convertCompute(func::FuncOp funcOp, AscendCBufferContext &ctx) {
         return false;
       perm[r] = pos;
     }
+    // All positions must be distinct (no repeated dim in permutation)
+    llvm::SmallDenseSet<int64_t> seen;
+    for (unsigned r = 0; r < rank; ++r)
+      if (!seen.insert(perm[r]).second)
+        return false;
     // Must be a non-identity permutation
     bool isIdentityPerm = true;
     for (unsigned r = 0; r < rank; ++r)
