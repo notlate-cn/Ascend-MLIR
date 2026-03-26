@@ -2,12 +2,14 @@
 #include "Runtime/Executor.h"
 #include "Runtime/NpyIO.h"
 #include "Runtime/SimValidator.h"
+#include "Runtime/TilingSchema.h"
 #include "Runtime/Types.h"
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/raw_ostream.h"
 #include <cstdlib>
 #include <cstring>
 #include <iomanip>
+#include <map>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -28,6 +30,9 @@ static cl::opt<std::string> TilingParams("tiling-params",
     cl::init(""));
 static cl::opt<std::string> TilingLayout("tiling-layout",
     cl::desc("Comma-separated tiling param types: int64,int64,..."), cl::init(""));
+static cl::opt<std::string> TilingSchemaFile("tiling-schema",
+    cl::desc("Path to tiling_space.json; validates and packs --tiling-params by name"),
+    cl::init(""));
 static cl::opt<int> BlockDim("block-dim",
     cl::desc("Number of AiCore blocks"), cl::init(1));
 static cl::opt<std::string> KernelType("kernel-type",
@@ -145,7 +150,56 @@ int main(int argc, char** argv) {
   // Build tiling bytes
   std::vector<uint8_t> tiling;
   if (!TilingParams.empty()) {
-    if (!buildTiling(TilingParams, TilingLayout, tiling)) _Exit(4);
+    if (!TilingSchemaFile.empty()) {
+      // Schema-validated path: load schema, accept params in any order
+      auto schemaOrErr = mlir::runtime::TilingSchema::fromJson(TilingSchemaFile);
+      if (!schemaOrErr) {
+        llvm::errs() << "Error: --tiling-schema: "
+                     << llvm::toString(schemaOrErr.takeError()) << "\n";
+        _Exit(4);
+      }
+      // Parse KEY=VALUE params into a name->value map
+      auto pvec = splitComma(TilingParams);
+      std::map<std::string, int64_t> pmap;
+      for (auto& token : pvec) {
+        auto eq = token.find('=');
+        if (eq == std::string::npos) {
+          llvm::errs() << "Error: --tiling-params token missing '=': " << token << "\n";
+          _Exit(4);
+        }
+        pmap[token.substr(0, eq)] = std::stoll(token.substr(eq + 1));
+      }
+      // Reorder by schema field declaration order, check for missing fields
+      std::vector<std::pair<std::string, int64_t>> namedParams;
+      for (auto& field : schemaOrErr->fields()) {
+        auto it = pmap.find(field.name);
+        if (it == pmap.end()) {
+          llvm::errs() << "Error: --tiling-params missing field '" << field.name
+                       << "' required by schema\n";
+          _Exit(4);
+        }
+        namedParams.push_back({field.name, it->second});
+      }
+      // Warn about extra params not in schema
+      for (auto& kv : pmap) {
+        bool found = false;
+        for (auto& f : schemaOrErr->fields())
+          if (f.name == kv.first) { found = true; break; }
+        if (!found)
+          llvm::errs() << "Warning: --tiling-params field '" << kv.first
+                       << "' not in schema (ignored)\n";
+      }
+      auto bytesOrErr = schemaOrErr->pack(namedParams);
+      if (!bytesOrErr) {
+        llvm::errs() << "Error: tiling pack: "
+                     << llvm::toString(bytesOrErr.takeError()) << "\n";
+        _Exit(4);
+      }
+      tiling = std::move(*bytesOrErr);
+    } else {
+      // Legacy path: positional layout string
+      if (!buildTiling(TilingParams, TilingLayout, tiling)) _Exit(4);
+    }
   }
 
   // Load inputs
