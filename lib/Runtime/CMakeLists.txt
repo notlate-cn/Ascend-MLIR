@@ -5,6 +5,7 @@ add_mlir_library(AscendCRuntime
   HostRunnerGen.cpp
   SimValidator.cpp
   NpyIO.cpp
+  TilingSchema.cpp
 
   ADDITIONAL_HEADER_DIRS
   ${CMAKE_SOURCE_DIR}/include/Runtime
