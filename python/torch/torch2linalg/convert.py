@@ -15,7 +15,7 @@ from torch_mlir.fx import export_and_import, OutputType
 def torch_to_linalg(
     model: nn.Module,
     sample_inputs: list[torch.Tensor],
-    output_path: Optional[str | Path] = None,
+    dynamic_shapes: dict | None = None,
 ) -> str:
     """
     将 PyTorch 模型转换为 linalg MLIR IR 文本。
@@ -23,7 +23,7 @@ def torch_to_linalg(
     Args:
         model: PyTorch 模型（调用方负责 dtype）
         sample_inputs: 示例输入张量（调用方负责 dtype）
-        output_path: 可选，输出 .mlir 文件路径
+        dynamic_shapes: 可选，torch.export 的动态维度映射
 
     Returns:
         linalg MLIR IR 文本
@@ -32,13 +32,10 @@ def torch_to_linalg(
     inputs = tuple(sample_inputs)
 
     # torch-mlir: export + import → linalg
-    module = export_and_import(model, *inputs, output_type=OutputType.LINALG_ON_TENSORS)
+    kwargs = dict(output_type=OutputType.LINALG_ON_TENSORS)
+    if dynamic_shapes is not None:
+        kwargs["dynamic_shapes"] = dynamic_shapes
+    module = export_and_import(model, *inputs, func_name="kernel", **kwargs)
     mlir_text = module.operation.get_asm()
-
-    # 可选：写入文件
-    if output_path is not None:
-        output_path = Path(output_path)
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-        output_path.write_text(mlir_text)
 
     return mlir_text
