@@ -271,6 +271,23 @@ log ""
 log "  [生成的 C++ kernel 头部]"
 log "$(head -5 "$DIR/step8_kernel.cpp")"
 
+
+# ── STAGE 9: Compile AscendC kernel ──────────────────────────────────
+echo ""
+echo "==================== [STAGE 9] Compile：bisheng C++ → .bin ===================="
+log "  输入: step8_kernel.cpp"
+log "  输出: build_e2e/ewop_broadcast_concat.bin"
+COMPILER="${COMPILER:-compiler}"
+BUILD_DIR="$DIR/build_e2e"
+rm -fr "$BUILD_DIR"
+mkdir -p "$BUILD_DIR"
+"$COMPILER" \
+  --kernel "$DIR/step8_kernel.cpp" \
+  --output "$BUILD_DIR" \
+  --name ewop_broadcast_concat \
+  --num-inputs 4 2>&1
+log "  ✓ Compile 成功，输出: $BUILD_DIR/ewop_broadcast_concat.bin"
+
 echo ""
 echo "========================================================"
 echo " 流水线完成！生成文件："
