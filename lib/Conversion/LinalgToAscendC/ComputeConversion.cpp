@@ -1302,47 +1302,52 @@ LogicalResult convertCompute(func::FuncOp funcOp, AscendCBufferContext &ctx) {
               copyGmToVecin(builder, loc, elemType, srcGt, srcElemCount);
         }
 
-        // Step 2: Build intermediate shape (map results order, filling constants
-        // with broadcast dim sizes) and broadcast into it.
-        SmallVector<Value> intermediateShape;
-        unsigned broadcastDimIdx = 0;
-        for (AffineExpr expr : inMap.getResults()) {
+        // Step 2: Broadcast directly into iteration-space order [iterDimSizes]
+        // without a Transpose. AscendC::Transpose(dst, src) only works
+        // correctly for square matrices; non-square cases produce wrong results
+        // in the simulator. Instead, build dstShape = iterDimSizes and srcShape
+        // with broadcast dims set to 1 and present dims set to their sizes.
+        //
+        // Example: map (d0,d1)->(d1,0), iterDimSizes=[Tb_N, M], src=[M,1]
+        //   dstShape = [Tb_N, M]
+        //   srcShape = [1,    M]   (d0=broadcast→1, d1=present→M)
+        //   axis=0 (first src dim is 1, i.e. broadcast along first axis)
+        unsigned iterRank = iterDimSizes.size();
+        SmallVector<Value> bcastDstShape, bcastSrcShape;
+        for (unsigned d = 0; d < iterRank; ++d) {
+          bcastDstShape.push_back(builder.create<arith::IndexCastOp>(
+              loc, builder.getI32Type(), iterDimSizes[d]));
+        }
+        // srcShape: for each iteration dim, if it appears in presentDims of the
+        // map put the actual src size, otherwise put 1 (broadcast dim).
+        // We need to map iter-dim → src-dim via the src's indexing map results.
+        // Build a lookup: iter dim position → src dim index (or -1 if broadcast).
+        SmallVector<int64_t> iterDimToSrcDim(iterRank, -1);
+        for (unsigned r = 0; r < inMap.getNumResults(); ++r) {
+          AffineExpr expr = inMap.getResult(r);
           if (auto dimExpr = dyn_cast<AffineDimExpr>(expr)) {
-            intermediateShape.push_back(
-                iterDimSizes[static_cast<unsigned>(dimExpr.getPosition())]);
+            // iter dim dimExpr.getPosition() maps to src dimension r
+            iterDimToSrcDim[dimExpr.getPosition()] = static_cast<int64_t>(r);
+          }
+        }
+        for (unsigned d = 0; d < iterRank; ++d) {
+          int64_t srcDimIdx = iterDimToSrcDim[d];
+          if (srcDimIdx >= 0) {
+            bcastSrcShape.push_back(builder.create<arith::IndexCastOp>(
+                loc, builder.getI32Type(), srcDimsVals[srcDimIdx]));
           } else {
-            // Constant result: substitute the corresponding broadcast dim size.
-            if (broadcastDimIdx < analysis.broadcastDims.size())
-              intermediateShape.push_back(
-                  iterDimSizes[static_cast<unsigned>(
-                      analysis.broadcastDims[broadcastDimIdx++])]);
-            else
-              intermediateShape.push_back(
-                  builder.create<arith::ConstantIndexOp>(loc, 1));
+            bcastSrcShape.push_back(
+                builder.create<arith::ConstantOp>(
+                    loc, builder.getI32IntegerAttr(1)));
           }
         }
 
-        // Build i32 shape args for broadcast_l2.
-        SmallVector<Value> bcastDstShape, bcastSrcShape;
-        for (Value s : intermediateShape)
-          bcastDstShape.push_back(
-              builder.create<arith::IndexCastOp>(loc, builder.getI32Type(), s));
-        for (unsigned d = 0; d < srcRank; ++d)
-          bcastSrcShape.push_back(builder.create<arith::IndexCastOp>(
-              loc, builder.getI32Type(), srcDimsVals[d]));
-
-        auto [intermTbuf, intermLt] =
-            allocVeccalc(builder, loc, elemType, intermediateShape);
-        builder.create<BroadcastL2Op>(
-            loc, intermLt, srcVecinLt,
-            bcastDstShape, bcastSrcShape,
-            builder.getI32IntegerAttr(
-                static_cast<int32_t>(intermediateShape.size())));
-
-        // Step 3: Transpose intermediate shape to iteration-space order.
         auto [finalTbuf, finalLt] =
             allocVeccalc(builder, loc, elemType, iterDimSizes);
-        builder.create<TransposeOp>(loc, finalLt, intermLt);
+        builder.create<BroadcastL2Op>(
+            loc, finalLt, srcVecinLt,
+            bcastDstShape, bcastSrcShape,
+            builder.getI32IntegerAttr(static_cast<int32_t>(iterRank)));
         inputLts[i] = finalLt;
         break;
       }
