@@ -59,7 +59,8 @@
 #                             broadcast+mulf → broadcast_l2 + mul_l2
 #   step6_parallelize.mlir    --ascendc-parallelize（get_block_idx 单维调度）
 #   step7_kernel.mlir         --ascendc-prepare-for-emit（kernel IR）
-#   step8_kernel.cpp          ascir-translate -mlir-to-ascendc（C++ kernel）
+#   step7_cann.mlir           --canonicalize-cann-signature（CANN 标准签名）
+#   step8_kernel.cpp          afir-translate -mlir-to-cann（C++ kernel + tiling_space.json）
 # ============================================================
 
 set -e
