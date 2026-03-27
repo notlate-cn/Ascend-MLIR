@@ -13,8 +13,8 @@
     {
       "name": "TB_N",
       "type": "int64",
-      "fixed": true, "shape_key": "N",
-      "note": "N axis not tiled; TB_N == N"
+      "values": [16, 32],
+      "note": "N axis tile size; must divide N cleanly for DataCopy alignment"
     },
     {"name": "dim_arg0_0", "type": "int64", "fixed": true, "shape_key": "M"},
     {"name": "dim_arg1_1", "type": "int64", "fixed": true, "shape_key": "N"},
