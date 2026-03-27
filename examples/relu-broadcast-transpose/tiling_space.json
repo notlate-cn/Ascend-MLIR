@@ -1,0 +1,24 @@
+{
+  "kernel": "relu_transpose_broadcast_add",
+  "kernel_file": "step8_kernel.cpp",
+  "soc": "Ascend910B1",
+  "block_dim_expr": "ceil(N / TB_N)",
+  "tiling_params": [
+    {
+      "name": "TB_M",
+      "type": "int64",
+      "values": [640],
+      "note": "m-axis tile = full M (untiled); data0 has shape [M,1], processed whole in UB"
+    },
+    {
+      "name": "TB_N",
+      "type": "int64",
+      "min": 64, "max": 64, "step": 64,
+      "note": "n-axis TB block; N=500 not divisible by 64, last block=52 rows (tail block tested)"
+    },
+    {"name": "dim_arg0_0", "type": "int64", "fixed": true, "shape_key": "M"},
+    {"name": "dim_arg1_0", "type": "int64", "fixed": true, "shape_key": "N"},
+    {"name": "dim_arg0_1", "type": "int64", "fixed": true, "value": 1},
+    {"name": "dim_arg1_1", "type": "int64", "fixed": true, "shape_key": "M"}
+  ]
+}
