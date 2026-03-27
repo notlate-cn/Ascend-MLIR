@@ -293,7 +293,9 @@ log "  ✓ Compile 成功，输出: $BUILD_DIR/ewop_broadcast_concat.bin"
 # ── STAGE 10: Run and verify ──────────────────────────────────────────
 echo ""
 echo "==================== [STAGE 10] Run + Verify ===================="
-log "  使用参数：TB_M=16, TB_N=16, M=48, N=20, block-dim=3"
+log "  使用参数：TB_M=64, TB_N=192, M=640, N=500, block-dim=10"
+log "  UB 占用：2×Op×(TB_M×2 + 3×TB_M×TB_N×2) = 144KB ≈ 75% of 192KB"
+log "  内循环次数：ceil(500/192)=3，尾块 116 列（非32B对齐）"
 BIN="$BUILD_DIR/ewop_broadcast_concat.bin"
 
 if [ -f "$BIN" ]; then
@@ -303,8 +305,8 @@ if [ -f "$BIN" ]; then
     --inputs "$DIR/input_a.npy,$DIR/input_b.npy,$DIR/input_c.npy,$DIR/input_d.npy" \
     --expected "$DIR/output.npy" \
     --tiling-schema "$DIR/tiling_space.json" \
-    --tiling-params 'TB_M=16,TB_N=16,dim_arg0_0=48,dim_arg1_1=20,dim_arg2_0=48,dim_arg3_1=20,dim_arg0_1=20,dim_arg1_0=48,dim_arg2_1=20,dim_arg3_0=48' \
-    --block-dim 3 \
+    --tiling-params 'TB_M=64,TB_N=192,dim_arg0_0=640,dim_arg1_1=500,dim_arg2_0=640,dim_arg3_1=500,dim_arg0_1=500,dim_arg1_0=640,dim_arg2_1=500,dim_arg3_0=640' \
+    --block-dim 10 \
     --atol 1e-2 \
     --rtol 1e-2 \
     --dump-actual "$BUILD_DIR/actual.txt" \
