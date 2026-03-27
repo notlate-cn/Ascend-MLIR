@@ -288,6 +288,32 @@ mkdir -p "$BUILD_DIR"
   --num-inputs 4 2>&1
 log "  ✓ Compile 成功，输出: $BUILD_DIR/ewop_broadcast_concat.bin"
 
+# ── STAGE 10: Run and verify ──────────────────────────────────────────
+echo ""
+echo "==================== [STAGE 10] Run + Verify ===================="
+log "  使用参数：TB_M=16, TB_N=16, M=48, N=20, block-dim=3"
+VALIDATOR="${VALIDATOR:-validator}"
+BIN="$BUILD_DIR/ewop_broadcast_concat.bin"
+
+if [ -f "$BIN" ]; then
+  "$VALIDATOR" \
+    --bin "$BIN" \
+    --name ewop_broadcast_concat \
+    --inputs "$DIR/input_a.npy,$DIR/input_b.npy,$DIR/input_c.npy,$DIR/input_d.npy" \
+    --expected "$DIR/output.npy" \
+    --tiling-schema "$DIR/tiling_space.json" \
+    --tiling-params 'TB_M=16,TB_N=16,dim_arg0_0=48,dim_arg1_1=20,dim_arg2_0=48,dim_arg3_1=20,dim_arg0_1=20,dim_arg1_0=48,dim_arg2_1=20,dim_arg3_0=48' \
+    --block-dim 3 \
+    --atol 1e-2 \
+    --rtol 1e-2 \
+    --dump-actual "$BUILD_DIR/actual.txt" \
+    --dump-expected "$BUILD_DIR/expected.txt" \
+    --precision 4 \
+    2>&1 | grep -v '^\[info\]\|^\[PEM_AIC_LOG\]\|^\[INFO\]\|^\[WARNING\]' || true
+else
+  echo "  ⚠ bin not found — skipping run"
+fi
+
 echo ""
 echo "========================================================"
 echo " 流水线完成！生成文件："
@@ -302,4 +328,5 @@ echo "   step7_kernel.mlir           → 完整 AscendC kernel IR"
 echo "   step7_cann.mlir             → CANN 标准签名 IR（去除 transform ops）"
 echo "   step8_kernel.cpp            → AscendC C++ kernel 源码"
 echo "   tiling_space.json           → tiling 参数空间（JSON）"
+echo "   build_e2e/ewop_broadcast_concat.bin → 编译后二进制"
 echo "========================================================"
