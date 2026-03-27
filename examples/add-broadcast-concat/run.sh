@@ -243,30 +243,32 @@ log "$(grep -E "func\.func|ascendc\.(aicore|global)|emitasc\." \
   echo "  (请检查输出)")"
 
 
-# ── STAGE 8: AscendC C++ Code Generation ───────────────────
+# ── STAGE 7b: Canonicalize CANN signature ──────────────────
 echo ""
-echo "==================== [STAGE 8] Codegen：ascir-translate -mlir-to-ascendc ===================="
+echo "==================== [STAGE 7b] CANN Signature：--canonicalize-cann-signature ===================="
 log "  输入: step7_kernel.mlir"
-log "  输出: step8_kernel.cpp（AscendC C++ kernel 源码）"
-ASCIR_TRANSLATE="${ASCIR_TRANSLATE:-ascir-translate}"
-if command -v "$ASCIR_TRANSLATE" &>/dev/null; then
-  python3 -c "
-import re, sys
-content = open('$DIR/step7_kernel.mlir').read()
-content = content.replace('module attributes {transform.with_named_sequence}', 'module')
-content = re.sub(r'  transform\.named_sequence.*?^  \}\n', '', content, flags=re.DOTALL|re.MULTILINE)
-sys.stdout.write(content)
-" > "$DIR/step8_no_transform.mlir"
-  "$ASCIR_TRANSLATE" -mlir-to-ascendc "$DIR/step8_no_transform.mlir" \
-    -o "$DIR/step8_kernel.cpp" 2>&1
-  log "  ✓ Codegen 成功，输出: step8_kernel.cpp"
-  log ""
-  log "  [生成的 C++ kernel 头部]"
-  log "$(head -30 "$DIR/step8_kernel.cpp")"
-else
-  log "  (ascir-translate 未找到，跳过 Stage 8)"
-  log "  若已构建 pyasc，请将 ascir-translate 加入 PATH 后重新运行。"
-fi
+log "  输出: step7_cann.mlir（CANN 标准签名，去除 transform ops）"
+$AFIR_OPT --canonicalize-cann-signature \
+  "$DIR/step7_kernel.mlir" \
+  -o "$DIR/step7_cann.mlir" 2>&1
+log "  ✓ CANN 签名规范化成功，输出: step7_cann.mlir"
+log "$(grep -E 'func.func|cann.num_inputs|py_struct|memref<ui8>' "$DIR/step7_cann.mlir" | head -3)"
+
+
+# ── STAGE 8: AscendC C++ Code Generation (CANN standard) ───
+echo ""
+echo "==================== [STAGE 8] Codegen：afir-translate -mlir-to-cann ===================="
+log "  输入: step7_cann.mlir"
+log "  输出: step8_kernel.cpp（CANN 标准 C++ kernel）"
+AFIR_TRANSLATE="${AFIR_TRANSLATE:-afir-translate}"
+"$AFIR_TRANSLATE" -mlir-to-cann "$DIR/step7_cann.mlir" \
+  -o "$DIR/step8_kernel.cpp" \
+  --tiling-space-out "$DIR/tiling_space.json" 2>&1
+log "  ✓ Codegen 成功，输出: step8_kernel.cpp"
+log "  ✓ Tiling space 骨架: tiling_space.json"
+log ""
+log "  [生成的 C++ kernel 头部]"
+log "$(head -5 "$DIR/step8_kernel.cpp")"
 
 echo ""
 echo "========================================================"
@@ -279,5 +281,7 @@ echo "   step4_buffer_placement.mlir → on-chip 内存标注（VECIN/VECOUT）"
 echo "   step5_ascendc.mlir          → AscendC compute ops（broadcast_l2/add_l2/mul_l2）"
 echo "   step6_parallelize.mlir      → 多核 AiCore 调度（get_block_idx）"
 echo "   step7_kernel.mlir           → 完整 AscendC kernel IR"
+echo "   step7_cann.mlir             → CANN 标准签名 IR（去除 transform ops）"
 echo "   step8_kernel.cpp            → AscendC C++ kernel 源码"
+echo "   tiling_space.json           → tiling 参数空间（JSON）"
 echo "========================================================"
