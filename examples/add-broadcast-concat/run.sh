@@ -52,6 +52,7 @@
 #   step2_tiled.mlir          --transform-interpreter tiling 结果
 #                             decompose_concat → TB 层 / Tb 层 / 保留 N 轴
 #   step3_bufferized.mlir     --one-shot-bufferize 结果（tensor→memref）
+#                             --ascendc-fold-concat-alloc（GM→GM copy 消除，原地更新）
 #   step4_buffer_placement.mlir  --ascendc-buffer-placement 结果
 #                             推导 on-chip memory_space（VECIN=9, VECOUT=10）
 #   step5_ascendc.mlir        --linalg-to-ascendc 结果
@@ -66,6 +67,9 @@
 set -e
 DIR="$(cd "$(dirname "$0")" && pwd)"
 AFIR_OPT="${AFIR_OPT:-afir-opt}"
+AFIR_TRANSLATE="${AFIR_TRANSLATE:-afir-translate}"
+COMPILER="${COMPILER:-compiler}"
+VALIDATOR="${VALIDATOR:-validator}"
 
 # 解析参数
 VERBOSE=false
@@ -261,7 +265,6 @@ echo ""
 echo "==================== [STAGE 8] Codegen：afir-translate -mlir-to-cann ===================="
 log "  输入: step7_cann.mlir"
 log "  输出: step8_kernel.cpp（CANN 标准 C++ kernel）"
-AFIR_TRANSLATE="${AFIR_TRANSLATE:-afir-translate}"
 "$AFIR_TRANSLATE" -mlir-to-cann "$DIR/step7_cann.mlir" \
   -o "$DIR/step8_kernel.cpp" \
   --tiling-space-out "$DIR/tiling_space.json" 2>&1
@@ -277,7 +280,6 @@ echo ""
 echo "==================== [STAGE 9] Compile：bisheng C++ → .bin ===================="
 log "  输入: step8_kernel.cpp"
 log "  输出: build_e2e/ewop_broadcast_concat.bin"
-COMPILER="${COMPILER:-compiler}"
 BUILD_DIR="$DIR/build_e2e"
 rm -fr "$BUILD_DIR"
 mkdir -p "$BUILD_DIR"
@@ -292,7 +294,6 @@ log "  ✓ Compile 成功，输出: $BUILD_DIR/ewop_broadcast_concat.bin"
 echo ""
 echo "==================== [STAGE 10] Run + Verify ===================="
 log "  使用参数：TB_M=16, TB_N=16, M=48, N=20, block-dim=3"
-VALIDATOR="${VALIDATOR:-validator}"
 BIN="$BUILD_DIR/ewop_broadcast_concat.bin"
 
 if [ -f "$BIN" ]; then
