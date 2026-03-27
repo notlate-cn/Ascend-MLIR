@@ -938,7 +938,7 @@ In `examples/broadcast-add-reduce/tiling_space.json`, change `kernel_file`:
 "kernel_file": "step8_kernel.cpp",
 ```
 
-(was `step8_kernel-adjust.cpp`)
+(was `step8_kernel.cpp`)
 
 - [ ] **Step 6: Run autotuner to validate end-to-end**
 
@@ -1003,6 +1003,6 @@ git commit -m "feat(example): wire broadcast-add-reduce to CANN toolchain via ca
 
 - **`afir-translate` vs `afir-opt`**: `afir-opt` uses `MlirOptMain` which doesn't support `TranslateFromMLIRRegistration` (that requires `MlirTranslateMain`). Hence a new `afir-translate` binary mirrors the pattern of the existing `ascir-translate`.
 - **`lib/CMakeLists.txt`**: Check whether it already has `add_subdirectory(Target)`. If not, add it. If `lib/Target/` already exists for a different reason, integrate `CannKernel` into the existing `lib/Target/CMakeLists.txt`.
-- **`tiling_space.json`** for broadcast-add-reduce already has `"kernel_file": "step8_kernel-adjust.cpp"`. Update to `"step8_kernel.cpp"` after the pipeline generates the CANN-compliant version, or keep both files and point the autotuner at the new one during testing.
+- **`tiling_space.json`** for broadcast-add-reduce already has `"kernel_file": "step8_kernel.cpp"`. Update to `"step8_kernel.cpp"` after the pipeline generates the CANN-compliant version, or keep both files and point the autotuner at the new one during testing.
 - **`needsSemicolon`** is a template in `ascir/Target/Asc/Common.h:65` — include `Common.h` directly.
 - **Memory space 22** = `ascendc::AddressSpace::gm` (value 22 in the `AddressSpace` enum).

@@ -62,7 +62,7 @@
 #   step7_kernel.mlir         --ascendc-prepare-for-emit（kernel IR）
 #   step7_cann.mlir           --canonicalize-cann-signature（CANN 标准签名）
 #   step8_kernel.cpp          afir-translate -mlir-to-cann（C++ kernel）
-#   step8_kernel.tiling_space.json  afir-translate --tiling-space-out（自动生成骨架）
+#   tiling_space.json         手写维护（tiling 参数范围、block_dim_expr、note）
 # ============================================================
 
 set -e
@@ -272,10 +272,8 @@ echo "==================== [STAGE 8] Codegen：afir-translate -mlir-to-cann ====
 log "  输入: step7_cann.mlir"
 log "  输出: step8_kernel.cpp（CANN 标准 C++ kernel）"
 "$AFIR_TRANSLATE" -mlir-to-cann "$DIR/step7_cann.mlir" \
-  -o "$DIR/step8_kernel.cpp" \
-  --tiling-space-out "$DIR/step8_kernel.tiling_space.json" 2>&1
+  -o "$DIR/step8_kernel.cpp" 2>&1
 log "  ✓ Codegen 成功，输出: step8_kernel.cpp"
-log "  ✓ Tiling space 骨架: step8_kernel.tiling_space.json"
 log ""
 log "  [生成的 C++ kernel 头部]"
 log "$(head -5 "$DIR/step8_kernel.cpp")"
@@ -336,7 +334,6 @@ echo "   step6_parallelize.mlir      → 多核 AiCore 调度（get_block_idx）
 echo "   step7_kernel.mlir           → 完整 AscendC kernel IR"
 echo "   step7_cann.mlir             → CANN 标准签名 IR（去除 transform ops）"
 echo "   step8_kernel.cpp            → AscendC C++ kernel 源码"
-echo "   tiling_space.json           → tiling 参数空间（手工维护）"
-echo "   step8_kernel.tiling_space.json → tiling 参数空间骨架（自动生成）"
+echo "   tiling_space.json           → tiling 参数空间（手写维护）"
 echo "   build_e2e/ewop_broadcast_concat.bin → 编译后二进制"
 echo "========================================================"

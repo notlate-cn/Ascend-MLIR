@@ -1122,7 +1122,7 @@ EOF
 source ../python/test/env.sh
 source ../examples/env.sh
 sim-validator \
-  --kernel   ../examples/broadcast-add-reduce/step8_kernel-adjust.cpp \
+  --kernel   ../examples/broadcast-add-reduce/step8_kernel.cpp \
   --name     broadcast_add_reducesum \
   --tiling-params "TB_M=16,TB_N=4,dim_arg0_0=32,dim_arg1_1=32" \
   --tiling-layout "int64,int64,int64,int64" \
@@ -1180,7 +1180,7 @@ source /home/niu/code/Ascend-MLIR/examples/env.sh
 source /home/niu/code/Ascend-MLIR/python/test/env.sh   # 导出 libruntime_camodel.so 路径
 
 sim-validator \
-  --kernel   /home/niu/code/Ascend-MLIR/examples/broadcast-add-reduce/step8_kernel-adjust.cpp \
+  --kernel   /home/niu/code/Ascend-MLIR/examples/broadcast-add-reduce/step8_kernel.cpp \
   --name     broadcast_add_reducesum \
   --tiling-params "TB_M=16,TB_N=4,dim_arg0_0=32,dim_arg1_1=32" \
   --tiling-layout "int64,int64,int64,int64" \
@@ -1233,7 +1233,7 @@ msopgen 路径优先级：`--msprof` > 环境变量 `ASCEND_HOME_PATH/aarch64-li
 ```json
 {
   "kernel": "broadcast_add_reducesum",
-  "kernel_file": "step8_kernel-adjust.cpp",
+  "kernel_file": "step8_kernel.cpp",
   "soc": "Ascend910B1",
   "block_dim_expr": "ceil(M/TB_M)",
   "tiling_params": [

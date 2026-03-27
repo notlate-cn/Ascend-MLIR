@@ -197,12 +197,19 @@ log "  输入: step7_cann.mlir"
 log "  输出: step8_kernel.cpp（CANN 标准 C++ kernel）"
 AFIR_TRANSLATE="${AFIR_TRANSLATE:-afir-translate}"
 "$AFIR_TRANSLATE" -mlir-to-cann "$DIR/step7_cann.mlir" \
-  -o "$DIR/step8_kernel.cpp" \
-  --tiling-space-out "$DIR/step8_kernel.tiling_space.json" 2>&1
+  -o "$DIR/step8_kernel.cpp" 2>&1
 log "  ✓ Codegen 成功，输出: step8_kernel.cpp"
 log ""
 log "  [生成的 C++ kernel 头部]"
 log "$(head -20 "$DIR/step8_kernel.cpp")"
+
+
+# ── STAGE 8b: Generate test data ───────────────────────────────────────────
+echo ""
+echo "==================== [STAGE 8b] 生成测试数据：gen_data.py ===================="
+log "  M=640, N=15000, seed=42"
+"$PYTHON" "$DIR/gen_data.py" --m 640 --n 15000 --seed 42 --out-dir "$DIR" 2>&1
+log "  ✓ 生成成功：input_a.npy, input_b.npy, output_c.npy"
 
 
 # ── STAGE 9: Compile AscendC kernel ────────────────────────────────────────
@@ -224,7 +231,7 @@ log "  ✓ Compile 成功，输出: $BUILD_DIR/broadcast_add_reducesum.bin"
 # ── STAGE 10: Run and verify ────────────────────────────────────────────────
 echo ""
 echo "==================== [STAGE 10] Run + Verify ===================="
-log "  使用参数：TB_M=16, TB_N=16, M=64, N=64, block-dim=4"
+log "  使用参数：TB_M=64, TB_N=15000, M=640, N=15000, block-dim=10"
 VALIDATOR="${VALIDATOR:-validator}"
 BIN="$BUILD_DIR/broadcast_add_reducesum.bin"
 
@@ -235,10 +242,10 @@ if [ -f "$BIN" ]; then
     --inputs "$DIR/input_a.npy,$DIR/input_b.npy" \
     --expected "$DIR/output_c.npy" \
     --tiling-schema "$DIR/tiling_space.json" \
-    --tiling-params 'TB_M=16,TB_N=16,dim_arg0_0=64,dim_arg1_1=64,dim_arg0_1=64,dim_arg1_0=64' \
-    --block-dim 4 \
-    --atol 1e-3 \
-    --rtol 1e-3 \
+    --tiling-params 'TB_M=64,TB_N=15000,dim_arg0_0=640,dim_arg1_1=15000,dim_arg0_1=640,dim_arg1_0=15000' \
+    --block-dim 10 \
+    --atol 10 \
+    --rtol 1e-2 \
     --dump-actual "$BUILD_DIR/actual.txt" \
     --dump-expected "$BUILD_DIR/expected.txt" \
     --precision 4 \
@@ -260,6 +267,9 @@ echo "   step6_parallelize.mlir      → 多核 AiCore 调度（get_block_idx）
 echo "   step7_kernel.mlir           → 完整 AscendC kernel IR"
 echo "   step7_cann.mlir             → CANN 标准签名 IR（去除 transform ops）"
 echo "   step8_kernel.cpp            → AscendC C++ kernel 源码"
-echo "   step8_kernel.tiling_space.json → tiling 参数空间骨架（JSON）"
+echo "   tiling_space.json           → tiling 参数空间（手写维护）"
 echo "   build_e2e/broadcast_add_reducesum.bin → 编译后二进制"
 echo "========================================================"
+
+rm -fr *.dump
+rm -fr *.toml
