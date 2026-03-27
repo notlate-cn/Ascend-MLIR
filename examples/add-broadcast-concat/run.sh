@@ -90,6 +90,11 @@ echo " elementwise + broadcast + concat 编译流水线"
 echo "========================================================"
 
 
+# ── 生成测试数据 ────────────────────────────────────────────
+PYTHON="${PYTHON:-python3}"
+"$PYTHON" "$DIR/gen_inputs.py" --outdir "$DIR"
+
+
 # ── STAGE 0: 解析原始 IR ───────────────────────────────────
 echo ""
 echo "==================== [STAGE 0] 解析 High-Level IR（broadcast+add, broadcast+mul, concat）===================="
@@ -307,8 +312,8 @@ if [ -f "$BIN" ]; then
     --tiling-schema "$DIR/tiling_space.json" \
     --tiling-params 'TB_M=64,TB_N=192,dim_arg0_0=640,dim_arg1_1=500,dim_arg2_0=640,dim_arg3_1=500,dim_arg0_1=500,dim_arg1_0=640,dim_arg2_1=500,dim_arg3_0=640' \
     --block-dim 10 \
-    --atol 1e-2 \
-    --rtol 1e-2 \
+    --atol 1e-3 \
+    --rtol 1e-3 \
     --dump-actual "$BUILD_DIR/actual.txt" \
     --dump-expected "$BUILD_DIR/expected.txt" \
     --precision 4 \
