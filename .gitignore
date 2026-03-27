@@ -16,6 +16,9 @@ build-*/
 core*
 build_e2e
 
+# generated test data
+*.npy
+
 # tmp files
 __checked_files_list__
 __code_format_check_result__
