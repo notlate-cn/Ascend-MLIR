@@ -472,7 +472,7 @@ git commit -m "feat(pipeline-analyzer): add Chrome Trace JSON generator for sim 
 # In xvm sim/ dir with env set:
 cd /home/niu/code/Ascend-MLIR/sim
 sim-validator \
-  --kernel   ../examples/broadcast-add-reduce/step8_kernel-adjust.cpp \
+  --kernel   ../examples/broadcast-add-reduce/step8_kernel.cpp \
   --name     broadcast_add_reducesum \
   --tiling-params "TB_M=16,TB_N=16,dim_arg0_0=32,dim_arg1_1=32,dim_arg0_1=32,dim_arg1_0=32" \
   --tiling-layout "int64,int64,int64,int64,int64,int64" \
