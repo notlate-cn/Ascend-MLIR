@@ -1,68 +1,28 @@
 {
-  "block_dim_expr": "",
   "kernel": "ewop_broadcast_concat",
-  "kernel_file": "",
+  "kernel_file": "step8_kernel.cpp",
   "soc": "Ascend910B1",
+  "block_dim_expr": "ceil(M / TB_M)",
   "tiling_params": [
     {
-      "fixed": false,
       "name": "TB_M",
       "type": "int64",
-      "values": []
+      "min": 16, "max": 32, "step": 16,
+      "note": "Tiling rows per block; tail block may be smaller"
     },
     {
-      "fixed": false,
       "name": "TB_N",
       "type": "int64",
-      "values": []
+      "fixed": true, "shape_key": "N",
+      "note": "N axis not tiled; TB_N == N"
     },
-    {
-      "fixed": true,
-      "name": "dim_arg0_0",
-      "shape_key": "arg0_dim0",
-      "type": "int64"
-    },
-    {
-      "fixed": true,
-      "name": "dim_arg1_1",
-      "shape_key": "arg1_dim1",
-      "type": "int64"
-    },
-    {
-      "fixed": true,
-      "name": "dim_arg2_0",
-      "shape_key": "arg2_dim0",
-      "type": "int64"
-    },
-    {
-      "fixed": true,
-      "name": "dim_arg3_1",
-      "shape_key": "arg3_dim1",
-      "type": "int64"
-    },
-    {
-      "fixed": true,
-      "name": "dim_arg0_1",
-      "shape_key": "arg0_dim1",
-      "type": "int64"
-    },
-    {
-      "fixed": true,
-      "name": "dim_arg1_0",
-      "shape_key": "arg1_dim0",
-      "type": "int64"
-    },
-    {
-      "fixed": true,
-      "name": "dim_arg2_1",
-      "shape_key": "arg2_dim1",
-      "type": "int64"
-    },
-    {
-      "fixed": true,
-      "name": "dim_arg3_0",
-      "shape_key": "arg3_dim0",
-      "type": "int64"
-    }
+    {"name": "dim_arg0_0", "type": "int64", "fixed": true, "shape_key": "M"},
+    {"name": "dim_arg1_1", "type": "int64", "fixed": true, "shape_key": "N"},
+    {"name": "dim_arg2_0", "type": "int64", "fixed": true, "shape_key": "M"},
+    {"name": "dim_arg3_1", "type": "int64", "fixed": true, "shape_key": "N"},
+    {"name": "dim_arg0_1", "type": "int64", "fixed": true, "shape_key": "N"},
+    {"name": "dim_arg1_0", "type": "int64", "fixed": true, "shape_key": "M"},
+    {"name": "dim_arg2_1", "type": "int64", "fixed": true, "shape_key": "N"},
+    {"name": "dim_arg3_0", "type": "int64", "fixed": true, "shape_key": "M"}
   ]
 }
