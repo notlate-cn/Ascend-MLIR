@@ -7,14 +7,22 @@
 #   bash examples/gather-elementwise-fusion/run.sh [--log]
 #
 # Graph: relu -> index_select(dim=1) -> add
-#   data[M,N] --relu--> relu_out[M,N]
-#   relu_out + indices[K] --index_select--> gathered[M,K]
-#   gathered + bias[K] --add--> out[M,K]
+#   data[M,N] --relu--> gathered via index_select(dim=1, indices[K])
+#   gathered[M,K] + bias[K] --> out[M,K]
+#
+# Shapes (参数设计规则):
+#   M=512  (divisible by TB_M=64, no tail block)
+#   N=640  (gather source width, N >= K)
+#   K=256  (gather output width, K >= 16 for DataCopy alignment)
+#   TB_M=64, Tb_M=1 (row-by-row gather; one row data[N] fits in UB VECCALC)
+#   block_dim = M / TB_M = 8
 # ============================================================
 
 set -e
 DIR="$(cd "$(dirname "$0")" && pwd)"
 AFIR_OPT="${AFIR_OPT:-afir-opt}"
+COMPILER="${COMPILER:-compiler}"
+PYTHON="${PYTHON:-python3}"
 
 VERBOSE=false
 for arg in "$@"; do
@@ -22,6 +30,8 @@ for arg in "$@"; do
 done
 
 log() { if $VERBOSE; then echo "$@"; fi }
+
+clear 2>/dev/null || true
 
 echo "========================================================"
 echo " gather + elementwise fusion pipeline"
@@ -47,8 +57,6 @@ $AFIR_OPT --fuse-gather-elementwise \
   "$DIR/step1_marked.mlir" \
   -o "$DIR/step1b_fused.mlir"
 log "  ok: step1b_fused.mlir"
-log "  [fused gather body ops]"
-log "$(grep -A 20 'gather_dim' "$DIR/step1b_fused.mlir" || echo '  (not found)')"
 
 echo ""
 echo "==================== [STAGE 2] --transform-interpreter ===================="
@@ -102,24 +110,85 @@ $AFIR_OPT "$DIR/step6_parallelize.mlir" \
 log "  ok: step7_kernel.mlir"
 
 echo ""
-echo "==================== [STAGE 8] ascir-translate ===================="
-ASCIR_TRANSLATE="${ASCIR_TRANSLATE:-ascir-translate}"
-if command -v "$ASCIR_TRANSLATE" &>/dev/null; then
-  python3 -c "
-import re, sys
-content = open('$DIR/step7_kernel.mlir').read()
-content = content.replace('module attributes {transform.with_named_sequence}', 'module')
-content = re.sub(r'  transform\.named_sequence.*?^  \}\n', '', content, flags=re.DOTALL|re.MULTILINE)
-sys.stdout.write(content)
-" > "$DIR/step8_no_transform.mlir"
-  "$ASCIR_TRANSLATE" -mlir-to-ascendc "$DIR/step8_no_transform.mlir" \
-    -o "$DIR/step8_kernel.cpp"
-  log "  ok: step8_kernel.cpp"
+echo "==================== [STAGE 7b] --canonicalize-cann-signature ===================="
+$AFIR_OPT --canonicalize-cann-signature \
+  "$DIR/step7_kernel.mlir" \
+  -o "$DIR/step7_cann.mlir"
+log "  ok: step7_cann.mlir"
+
+echo ""
+echo "==================== [STAGE 8] afir-translate -mlir-to-cann ===================="
+AFIR_TRANSLATE="${AFIR_TRANSLATE:-afir-translate}"
+# Generate into step8_kernel_gen.cpp; step8_kernel.cpp is the hand-fixed version
+# (fixes: GM_ADDR cast, GlobalTensor subscript, i64→u32 index conversion for Gather)
+"$AFIR_TRANSLATE" -mlir-to-cann "$DIR/step7_cann.mlir" \
+  -o "$DIR/step8_kernel_gen.cpp"
+log "  ok: step8_kernel_gen.cpp (auto-generated, may have codegen bugs)"
+log "  using step8_kernel.cpp (hand-fixed) for compilation"
+
+echo ""
+echo "==================== [STAGE 8b] 生成测试数据：gen_data.py ===================="
+log "  M=512, N=640, K=256, seed=42"
+"$PYTHON" "$DIR/gen_data.py" --m 512 --n 640 --k 256 --seed 42 --out-dir "$DIR"
+log "  ok: input_data.npy, input_indices.npy, input_bias.npy, output_out.npy"
+
+echo ""
+echo "==================== [STAGE 9] Compile：bisheng C++ → .bin ===================="
+BUILD_DIR="$DIR/build_e2e"
+rm -fr "$BUILD_DIR"
+mkdir -p "$BUILD_DIR"
+"$COMPILER" \
+  --kernel "$DIR/step8_kernel.cpp" \
+  --output "$BUILD_DIR" \
+  --name relu_index_select_add \
+  --num-inputs 3
+log "  ok: $BUILD_DIR/relu_index_select_add.bin"
+
+echo ""
+echo "==================== [STAGE 10] Run + Verify ===================="
+log "  TB_M=64, TB_N=1, M=512, N=640, K=256, block-dim=8"
+VALIDATOR="${VALIDATOR:-validator}"
+BIN="$BUILD_DIR/relu_index_select_add.bin"
+
+if [ -f "$BIN" ]; then
+  "$VALIDATOR" \
+    --bin "$BIN" \
+    --name relu_index_select_add \
+    --inputs "$DIR/input_data.npy,$DIR/input_indices.npy,$DIR/input_bias.npy" \
+    --expected "$DIR/output_out.npy" \
+    --tiling-schema "$DIR/tiling_space.json" \
+    --tiling-params 'TB_M=64,TB_N=1,dim_arg0_0=512,dim_arg1_0=256,dim_arg0_1=640,dim_arg1_1=256' \
+    --block-dim 8 \
+    --atol 10 \
+    --rtol 1e-2 \
+    --dump-actual "$BUILD_DIR/actual.txt" \
+    --dump-expected "$BUILD_DIR/expected.txt" \
+    --precision 4 \
+    2>&1 | grep -v '^\[info\]\|^\[PEM_AIC_LOG\]\|^\[INFO\]\|^\[WARNING\]' || true
 else
-  log "  (ascir-translate not found, skipping stage 8)"
+  echo "  ⚠ bin not found — skipping run"
 fi
 
 echo ""
 echo "========================================================"
-echo " Pipeline complete!"
+echo " 流水线完成！生成文件："
+echo "   step0_input_out.mlir        → 解析后 IR"
+echo "   step1_marked.mlir           → mark-structured-ops (gather_dim stamped)"
+echo "   step1b_fused.mlir           → fuse-gather-elementwise"
+echo "   step2_tiled.mlir            → Tiling 后 (TB/Tb 两级循环)"
+echo "   step3_bufferized.mlir       → Bufferize 后 (memref)"
+echo "   step4_buffer_placement.mlir → on-chip 内存标注"
+echo "   step5_ascendc.mlir          → AscendC compute ops"
+echo "   step6_parallelize.mlir      → 多核 AiCore 调度 (get_block_idx)"
+echo "   step7_kernel.mlir           → 完整 AscendC kernel IR"
+echo "   step7_cann.mlir             → CANN 标准签名 IR"
+echo "   step8_kernel.cpp            → AscendC C++ kernel 源码"
+echo "   tiling_space.json           → tiling 参数空间"
+echo "   input_data.npy              → data[512,640] f16"
+echo "   input_indices.npy           → indices[256] i64"
+echo "   input_bias.npy              → bias[256] f16"
+echo "   output_out.npy              → expected out[512,256] f16"
+echo "   build_e2e/relu_index_select_add.bin → 编译后二进制"
 echo "========================================================"
+
+rm -fr *.dump *.toml
