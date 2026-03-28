@@ -7,10 +7,11 @@
 namespace mlir::runtime {
 
 struct CompilerConfig {
-  std::string soc_version = "Ascend910B1";
-  std::string arch        = "dav-c220-vec";
-  int         opt_level   = 3;
-  bool        verbose     = false;
+  std::string soc_version  = "Ascend910B1";
+  std::string arch         = "dav-c220-vec";
+  int         opt_level    = 3;
+  bool        verbose      = false;
+  std::string kernel_type  = "vec";   // "vec" | "cube" | "mix"
 };
 
 class Compiler {
