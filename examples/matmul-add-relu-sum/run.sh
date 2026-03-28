@@ -28,6 +28,18 @@
 set -e
 DIR="$(cd "$(dirname "$0")" && pwd)"
 AFIR_OPT="${AFIR_OPT:-afir-opt}"
+COMPILER="${COMPILER:-compiler}"
+VALIDATOR="${VALIDATOR:-validator}"
+
+M=512
+K=256
+N=640
+TB_M=128
+TB_N=128
+Tb_M=64
+Tb_N=128
+t_K=64
+BLOCK_DIM=20   # (M/TB_M) * (N/TB_N) = 4*5
 
 # 解析参数
 VERBOSE=false
@@ -215,33 +227,78 @@ log "$(grep -E "func\.func|ascendc\.(aicore|global)|emitasc\.(copy_struct|member
   echo "  (请检查输出)")"
 
 
-# ── STAGE 7: AscendC C++ Code Generation ───────────────────
+# ── STAGE 7: Canonicalize CANN Signature ───────────────────
 echo ""
-echo "==================== [STAGE 7] Codegen：ascir-translate -mlir-to-ascendc ===================="
+echo "==================== [STAGE 7] CANN Signature：--canonicalize-cann-signature ===================="
 log "  输入: output_step6_kernel.mlir"
+log "  输出: output_step7_cann.mlir（CANN 标准签名）"
+$AFIR_OPT --canonicalize-cann-signature \
+  "$DIR/output_step6_kernel.mlir" \
+  -o "$DIR/output_step7_cann.mlir" 2>&1
+log "  ✓ CANN 签名规范化成功，输出: output_step7_cann.mlir"
+
+# ── STAGE 7b: AscendC C++ Code Generation ──────────────────
+echo ""
+echo "==================== [STAGE 7b] Codegen：afir-translate -mlir-to-cann ===================="
+log "  输入: output_step7_cann.mlir"
 log "  输出: output_step7_kernel.cpp（AscendC C++ kernel 源码）"
-ASCIR_TRANSLATE="${ASCIR_TRANSLATE:-ascir-translate}"
-if command -v "$ASCIR_TRANSLATE" &>/dev/null; then
-  "$ASCIR_TRANSLATE" -mlir-to-ascendc \
-    "$DIR/output_step6_kernel.mlir" \
-    -o "$DIR/output_step7_kernel.cpp" 2>&1
-  log "  ✓ Codegen 成功，输出: output_step7_kernel.cpp"
-  log ""
-  log "  [生成的 C++ kernel 头部]"
-  log "$(head -30 "$DIR/output_step7_kernel.cpp")"
-else
-  log "  (ascir-translate 未找到，跳过 Stage 7)"
-  log "  若已构建 pyasc，请将 ascir-translate 加入 PATH 后重新运行。"
-fi
+AFIR_TRANSLATE="${AFIR_TRANSLATE:-afir-translate}"
+"$AFIR_TRANSLATE" -mlir-to-cann "$DIR/output_step7_cann.mlir" \
+  -o "$DIR/output_step7_kernel.cpp" 2>&1
+log "  ✓ Codegen 成功，输出: output_step7_kernel.cpp"
+log ""
+log "  [生成的 C++ kernel 头部]"
+log "$(head -30 "$DIR/output_step7_kernel.cpp")"
+
+# ── STAGE 8: Generate Test Data ────────────────────────────
+echo ""
+echo "==================== [STAGE 8] Generate Test Data ===================="
+DATA_DIR="$DIR/test_data"
+mkdir -p "$DATA_DIR"
+python3 "$DIR/gen_data.py" --M $M --K $K --N $N --out-dir "$DATA_DIR"
+echo "  ✓ test_data/ (input_a input_b input_bias output)"
+
+# ── STAGE 9: Compile AscendC Kernel ────────────────────────
+echo ""
+echo "==================== [STAGE 9] Compile ===================="
+BUILD_DIR="$DIR/build_e2e"
+rm -rf "$BUILD_DIR"
+mkdir -p "$BUILD_DIR"
+$COMPILER \
+  --kernel "$DIR/output_step7_kernel.cpp" \
+  --output "$BUILD_DIR" \
+  --name fc_relu \
+  --num-inputs 3 \
+  --num-outputs 1 2>&1
+echo "  ✓ $BUILD_DIR/fc_relu.bin"
+
+# ── STAGE 10: Run + Verify ─────────────────────────────────
+echo ""
+echo "==================== [STAGE 10] Run + Verify ===================="
+BIN="$BUILD_DIR/fc_relu.bin"
+
+TILING_PARAMS="TB_M=${TB_M},TB_N=${TB_N},Tb_M=${Tb_M},Tb_N=${Tb_N},t_K=${t_K},dim_arg0_0=${M},dim_arg0_1=${K},dim_arg1_0=${K},dim_arg1_1=${N},dim_arg2_0=${M},dim_arg2_1=${N},dim_arg3_0=${M},dim_arg3_1=${N}"
+
+$VALIDATOR \
+  --bin "$BIN" \
+  --name fc_relu \
+  --inputs "$DATA_DIR/input_a.npy,$DATA_DIR/input_b.npy,$DATA_DIR/input_bias.npy" \
+  --expected "$DATA_DIR/output.npy" \
+  --tiling-schema "$DIR/tiling_space.json" \
+  --tiling-params "$TILING_PARAMS" \
+  --block-dim $BLOCK_DIM \
+  --atol 1e-3 \
+  --rtol 1e-3 \
+  --dump-actual "$BUILD_DIR/actual.txt" \
+  --dump-expected "$BUILD_DIR/expected.txt" \
+  2>&1 | grep -v '^\[info\]\|^\[PEM_AIC_LOG\]\|^\[INFO\]\|^\[WARNING\]' || true
 
 echo ""
 echo "========================================================"
-echo " 流水线完成！生成文件："
-echo "   output_step1_tile_and_fuse_3level.mlir → 3级 Tile+Fuse（linalg-on-tensor）"
-echo "   output_step2_bufferized.mlir           → Bufferize 后（memref）"
-echo "   output_step3_buffer_placement.mlir     → on-chip memory_space 标注 + memref.copy 占位"
-echo "   output_step4_lowering_to_asc.mlir      → AscendC compute ops + TQue/TPipe"
-echo "   output_step5_parallelize.mlir          → 多核 AiCore 调度（get_block_idx）"
-echo "   output_step6_kernel.mlir               → 完整 AscendC kernel IR（可直接送 ascir-translate）"
-echo "   output_step7_kernel.cpp                → AscendC C++ kernel 源码"
+echo " 全流程完成！"
+echo " M=$M K=$K N=$N  TB_M=$TB_M TB_N=$TB_N Tb_M=${Tb_M} Tb_N=${Tb_N} t_K=${t_K}"
+echo " block_dim=$BLOCK_DIM  CPU 仿真精度验证 atol=1e-3 rtol=1e-3"
 echo "========================================================"
+
+rm -fr *.dump
+rm -fr *.toml
