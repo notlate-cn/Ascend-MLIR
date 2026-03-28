@@ -76,9 +76,10 @@ int main(int argc, char** argv) {
 
   // Step 1: compile kernel.cpp → .o + .bin
   Compiler::Config cc;
-  cc.soc_version = SocVersion;
-  cc.arch        = Arch;
-  cc.verbose     = Verbose;
+  cc.soc_version  = SocVersion;
+  cc.arch         = Arch;
+  cc.kernel_type  = KernelType;
+  cc.verbose      = Verbose;
 
   Compiler compiler(cc);
   auto bin_or = compiler.Compile(KernelFile, OutputDir, kernel_name);
