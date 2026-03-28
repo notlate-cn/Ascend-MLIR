@@ -12,7 +12,6 @@ Outputs:
 """
 import argparse
 import json
-import struct
 import sys
 
 # TCubeTiling field names in declaration order (int32_t each).
@@ -89,7 +88,7 @@ def make_schema(tiling: dict) -> dict:
 
 def make_tiling_params_str(tiling: dict) -> str:
     """Return comma-separated name=value string for --tiling-params."""
-    return ",".join(f"{k}={v}" for k, v in tiling.items())
+    return ",".join(f"{k}={tiling[k]}" for k in TCUBE_FIELDS)
 
 def main():
     ap = argparse.ArgumentParser()
