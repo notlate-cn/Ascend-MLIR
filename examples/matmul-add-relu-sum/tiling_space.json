@@ -34,10 +34,14 @@
       "min": 64, "max": 64, "step": 64,
       "note": "K tile for L0A/L0B; K=256 must be multiple of t_K=64"
     },
-    {"name": "dim_arg0_0", "type": "int64", "fixed": true, "shape_key": "M",
-     "note": "A.shape[0] = M"},
+    {"name": "dim_arg3_0", "type": "int64", "fixed": true, "shape_key": "M",
+     "note": "output.shape[0] = M"},
+    {"name": "dim_arg3_1", "type": "int64", "fixed": true, "shape_key": "N",
+     "note": "output.shape[1] = N"},
     {"name": "dim_arg0_1", "type": "int64", "fixed": true, "shape_key": "K",
      "note": "A.shape[1] = K"},
+    {"name": "dim_arg0_0", "type": "int64", "fixed": true, "shape_key": "M",
+     "note": "A.shape[0] = M"},
     {"name": "dim_arg1_0", "type": "int64", "fixed": true, "shape_key": "K",
      "note": "B.shape[0] = K"},
     {"name": "dim_arg1_1", "type": "int64", "fixed": true, "shape_key": "N",
@@ -45,11 +49,7 @@
     {"name": "dim_arg2_0", "type": "int64", "fixed": true, "shape_key": "M",
      "note": "bias.shape[0] = M"},
     {"name": "dim_arg2_1", "type": "int64", "fixed": true, "shape_key": "N",
-     "note": "bias.shape[1] = N"},
-    {"name": "dim_arg3_0", "type": "int64", "fixed": true, "shape_key": "M",
-     "note": "output.shape[0] = M"},
-    {"name": "dim_arg3_1", "type": "int64", "fixed": true, "shape_key": "N",
-     "note": "output.shape[1] = N"}
+     "note": "bias.shape[1] = N"}
   ],
   "shapes": {
     "M": 512,
