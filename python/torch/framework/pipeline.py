@@ -31,7 +31,8 @@ OUTPUT_ROOT = REPO_ROOT / "output" / "torch_e2e"
 # Public API: torch_e2e_test decorator
 # ================================================================
 
-def torch_e2e_test(func=None, *, verify_shapes: dict[str, int] | None = None):
+def torch_e2e_test(func=None, *, verify_shapes: dict[str, int] | None = None,
+                   use_inductor: bool = False):
     """
     pytest 装饰器：定义一个 torch → NPU e2e 测试。
 
@@ -39,8 +40,10 @@ def torch_e2e_test(func=None, *, verify_shapes: dict[str, int] | None = None):
     装饰器执行完整 pipeline 并验证数值正确性。
 
     Args:
-        verify_shapes: 验证阶段使用的具体维度大小，如 {"M": 64, "N": 128}。
-                       未指定的动态维度默认为 64。
+        verify_shapes:  验证阶段使用的具体维度大小，如 {"M": 64, "N": 128}。
+                        未指定的动态维度默认为 64。
+        use_inductor:   若 True，使用 inductor 融合替代 linalg-fuse-elementwise-ops，
+                        生成 inductor_linalg.mlir 并从 stage 2 接入 pipeline。
     """
     def decorator(fn):
         @functools.wraps(fn)
@@ -52,42 +55,55 @@ def torch_e2e_test(func=None, *, verify_shapes: dict[str, int] | None = None):
                 shutil.rmtree(work_dir)
             work_dir.mkdir(parents=True, exist_ok=True)
 
-            # ── 编译阶段：torch → linalg → kernel ──
+            if use_inductor:
+                # ── Inductor 路径：inductor 融合 → linalg MLIR → stage 2+ ──
+                import torch._dynamo
+                torch._dynamo.reset()
 
-            # 1. 构建 dynamic_shapes（torch.export 要求）
-            dim_pool = {}
-            shapes_list = []
-            has_dynamic = False
-            for spec in specs:
-                dims = spec.dynamic_dims(dim_pool)
-                if dims:
-                    has_dynamic = True
-                    shapes_list.append(dims)
-                else:
-                    shapes_list.append({})
-            dynamic_shapes = tuple(shapes_list) if has_dynamic else None
+                from inductor_backend import setup_inductor_backend, create_post_fusion_pass
+                post_fusion_pass = create_post_fusion_pass(str(work_dir), verbose=True)
+                setup_inductor_backend(post_fusion_pass=post_fusion_pass)
 
-            # 2. 生成 dummy tensor 用于 trace（值无所谓，只需 shape/dtype）
-            trace_inputs = [spec.make_sample() for spec in specs]
+                trace_inputs = [spec.make_sample() for spec in specs]
+                print(f"\n[Stage 0] inductor trace + fusion")
+                compiled = torch.compile(model, backend="inductor")
+                _ = compiled(*trace_inputs)
 
-            # 3. torch → linalg
-            print(f"\n[Stage 0] torch → linalg MLIR")
-            mlir_text = torch_to_linalg(model, trace_inputs, dynamic_shapes)
-            linalg_path = work_dir / "step0_linalg.mlir"
-            linalg_path.write_text(mlir_text)
-            print(f"  输出: {linalg_path}")
+                print(f"\n[Stage 2-8] MLIR pipeline (inductor path)")
+                assert _run_mlir_pipeline_from_inductor(work_dir), \
+                    "MLIR pipeline (inductor path) 失败"
 
-            # 4. MLIR pipeline (stage 0b-8)
-            print(f"\n[Stage 0b-8] MLIR pipeline")
-            assert _run_mlir_pipeline(work_dir), "MLIR pipeline 失败"
+            else:
+                # ── 原有路径（torch-mlir + linalg pipeline） ──
 
-            # ── 验证阶段：生成测试数据 → autotuner 验证 ──
+                # 1. 构建 dynamic_shapes
+                dim_pool = {}
+                shapes_list = []
+                has_dynamic = False
+                for spec in specs:
+                    dims = spec.dynamic_dims(dim_pool)
+                    if dims:
+                        has_dynamic = True
+                        shapes_list.append(dims)
+                    else:
+                        shapes_list.append({})
+                dynamic_shapes = tuple(shapes_list) if has_dynamic else None
 
-            # 5. 用 verify_shapes 实例化具体 tensor
+                trace_inputs = [spec.make_sample() for spec in specs]
+
+                print(f"\n[Stage 0] torch → linalg MLIR")
+                mlir_text = torch_to_linalg(model, trace_inputs, dynamic_shapes)
+                linalg_path = work_dir / "step0_linalg.mlir"
+                linalg_path.write_text(mlir_text)
+                print(f"  输出: {linalg_path}")
+
+                print(f"\n[Stage 0b-8] MLIR pipeline")
+                assert _run_mlir_pipeline(work_dir), "MLIR pipeline 失败"
+
+            # ── 验证阶段（两条路径共用） ──
             actual_shapes = verify_shapes or {}
             verify_inputs = [spec.make_sample(actual_shapes) for spec in specs]
 
-            # 6. PyTorch reference run → 存 npy
             print(f"\n[Stage 9] 生成 reference data")
             model_eval = model.eval()
             for i, tensor in enumerate(verify_inputs):
@@ -98,7 +114,6 @@ def torch_e2e_test(func=None, *, verify_shapes: dict[str, int] | None = None):
             print(f"  inputs: {[t.shape for t in verify_inputs]}")
             print(f"  expected: {expected.shape}")
 
-            # 7. Autotuner (compile + tune + verify)
             print(f"\n[Stage 10] Autotuner (compile + tune + verify)")
             tiling_space = work_dir / "step8_kernel.tiling_space.json"
             shape_str = _build_shape_str(tiling_space, verify_inputs)
@@ -419,6 +434,109 @@ def _run_mlir_pipeline(work_dir: Path) -> bool:
         print(f"  [step7c] 移除 cf.assert（动态 shape broadcast 检查）")
 
     # ── Stage 8: C++ Codegen (CANN standard) ──
+    afir_translate = _find_tool("afir-translate")
+    if afir_translate is None:
+        print(f"  [step8] afir-translate 不在 PATH 中，跳过 codegen")
+        return False
+
+    step8_cpp = work_dir / "step8_kernel.cpp"
+    step8_tiling = work_dir / "step8_kernel.tiling_space.json"
+    print(f"  [step8] afir-translate -mlir-to-cann")
+    cmd = [afir_translate, "-mlir-to-cann", str(step7b),
+           "-o", str(step8_cpp),
+           "--tiling-space-out", str(step8_tiling)]
+    proc = subprocess.run(cmd, capture_output=True, text=True)
+    if proc.returncode != 0:
+        print(f"  失败: afir-translate -mlir-to-cann")
+        print(f"  stderr: {proc.stderr[:500]}")
+        return False
+
+    print(f"  C++ kernel: {step8_cpp}")
+    print(f"  tiling space: {step8_tiling}")
+    return True
+
+
+# ================================================================
+# MLIR Pipeline (inductor path): stage 2-8
+# ================================================================
+
+def _run_mlir_pipeline_from_inductor(work_dir: Path) -> bool:
+    """
+    从 inductor 生成的 linalg MLIR 开始执行 pipeline（stage 2-8）。
+
+    跳过 stage 0 (torch-mlir)、0a、0b、1 (fuse-elementwise-ops)。
+    inductor 已完成融合，inductor_linalg.mlir 直接进入 tiling。
+    """
+    inductor_mlir = work_dir / "inductor_linalg.mlir"
+    assert inductor_mlir.exists(), f"缺少 {inductor_mlir}"
+
+    afir_opt = _find_tool("afir-opt")
+    if afir_opt is None:
+        print("  afir-opt 不在 PATH 中，跳过")
+        return False
+
+    # ── Stage 2: Tiling (Transform Interpreter) ──
+    transform_path = _generate_transform_script(inductor_mlir, work_dir)
+
+    if transform_path is not None:
+        step2 = work_dir / "step2_tiled.mlir"
+        print(f"  [step2] --transform-interpreter ({transform_path.name})")
+        if not _run_afir_opt(transform_path, step2,
+                             ["--transform-interpreter", "--canonicalize", "--cse"],
+                             afir_opt):
+            return False
+    else:
+        print(f"  [step2] 跳过（无 parallel 维度）")
+        step2 = inductor_mlir
+
+    # ── Stage 3: Bufferize ──
+    step3 = work_dir / "step3_bufferized.mlir"
+    bufferize_opts = ("--one-shot-bufferize="
+                      "bufferize-function-boundaries=true "
+                      "allow-return-allocs-from-loops=true "
+                      "function-boundary-type-conversion=identity-layout-map")
+    print(f"  [step3] --one-shot-bufferize")
+    if not _run_afir_opt(step2, step3, [bufferize_opts, "--cse"], afir_opt):
+        return False
+
+    # ── Stage 4: Buffer Placement ──
+    step4 = work_dir / "step4_buffer_placement.mlir"
+    print(f"  [step4] --ascendc-buffer-placement")
+    if not _run_afir_opt(step3, step4, ["--ascendc-buffer-placement"], afir_opt):
+        return False
+
+    # ── Stage 5: Linalg → AscendC ──
+    step5 = work_dir / "step5_ascendc.mlir"
+    print(f"  [step5] --linalg-to-ascendc")
+    if not _run_afir_opt(step4, step5,
+                         ["--linalg-to-ascendc", "--canonicalize", "--cse"],
+                         afir_opt):
+        return False
+
+    # ── Stage 6: Parallelize ──
+    step6 = work_dir / "step6_parallelize.mlir"
+    print(f"  [step6] --ascendc-parallelize")
+    if not _run_afir_opt(step5, step6,
+                         ["--ascendc-parallelize", "--canonicalize", "--cse"],
+                         afir_opt):
+        return False
+
+    # ── Stage 7: Prepare For Emit ──
+    step7 = work_dir / "step7_kernel.mlir"
+    print(f"  [step7] --ascendc-prepare-for-emit")
+    if not _run_afir_opt(step6, step7,
+                         ["--ascendc-prepare-for-emit", "--canonicalize", "--cse"],
+                         afir_opt):
+        return False
+
+    # ── Stage 7b: Canonicalize CANN Signature ──
+    step7b = work_dir / "step7_cann.mlir"
+    print(f"  [step7b] --canonicalize-cann-signature")
+    if not _run_afir_opt(step7, step7b,
+                         ["--canonicalize-cann-signature"], afir_opt):
+        return False
+
+    # ── Stage 8: C++ Codegen ──
     afir_translate = _find_tool("afir-translate")
     if afir_translate is None:
         print(f"  [step8] afir-translate 不在 PATH 中，跳过 codegen")
