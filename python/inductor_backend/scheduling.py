@@ -1,56 +1,53 @@
-from torch._inductor.codegen.simd import SIMDScheduling
-from torch._inductor.codegen.common import register_backend_for_device
+"""
+MLIRScheduling + setup_inductor_backend
+
+拦截方式：patch Scheduler._codegen，在融合完成后截获节点列表。
+
+原因：inductor 的 tensor 在 CPU 上时走 CppScheduling，注册 npu backend 无效。
+直接 patch Scheduler._codegen 可以跨设备类型拦截，不依赖特定 device 注册。
+"""
+
+import torch._inductor.scheduler as _sched_mod
+
+_post_fusion_hook = None  # 全局 hook，由 setup_inductor_backend 设置
+_orig_codegen = None       # 保存原始 _codegen 以便恢复
 
 
-class MLIRScheduling(SIMDScheduling):
+def _patched_codegen(scheduler_self, nodes):
     """
-    最小 backend，只为让 inductor 的融合逻辑跑起来。
-    can_fuse_vertical/horizontal 完全继承 SIMDScheduling。
-    codegen 相关方法空实现——我们在 post_fusion_pass 中自己处理。
+    替换 Scheduler._codegen，在融合完成后（节点已是 FusedSchedulerNode 或
+    SchedulerNode）调用我们的 post_fusion_hook，然后继续原始 codegen。
     """
-
-    def codegen_node(self, node):
-        pass
-
-    def codegen_template(self, *args, **kwargs):
-        pass
-
-    def codegen_node_schedule(self, *args, **kwargs):
-        pass
-
-    def define_kernel(self, src_code, node_schedule, kernel):
-        pass
-
-    def codegen_sync(self):
-        pass
-
-    def benchmark_fused_nodes(self, nodes):
-        return (0.0, "npu")
-
-    def flush(self):
-        pass
-
-    def ready_to_flush(self):
-        return False
+    global _post_fusion_hook, _orig_codegen
+    if _post_fusion_hook is not None:
+        try:
+            nodes = _post_fusion_hook(nodes)
+        except Exception as e:
+            import traceback
+            print(f"[MLIRBackend] post_fusion_hook failed: {e}")
+            traceback.print_exc()
+    return _orig_codegen(scheduler_self, nodes)
 
 
 def setup_inductor_backend(post_fusion_pass=None):
     """
-    注册 MLIRScheduling 为 inductor 的 npu backend。
+    安装 post-fusion hook，在 inductor 完成算子融合后截获节点列表。
 
-    register_backend_for_device 完整签名（torch 2.10+）：
-      device, device_scheduling, device_wrapper_codegen,
-      device_cpp_wrapper_codegen=None, device_fx_wrapper_codegen=None,
-      device_custom_pass=None, device_custom_config=None
+    不依赖特定 device 注册（npu/cpu 都有效）。
+    patch Scheduler._codegen，在那里节点已完成融合（FusedSchedulerNode 已生成）。
+
+    Args:
+        post_fusion_pass: 接收 list[BaseSchedulerNode] 的函数，必须返回该列表。
     """
-    from torch._inductor.codegen.wrapper import PythonWrapperCodegen
+    global _post_fusion_hook, _orig_codegen
 
-    register_backend_for_device(
-        device="npu",
-        device_scheduling=MLIRScheduling,
-        device_wrapper_codegen=PythonWrapperCodegen,
-    )
+    if _orig_codegen is None:
+        _orig_codegen = _sched_mod.Scheduler._codegen
+        _sched_mod.Scheduler._codegen = _patched_codegen
 
-    if post_fusion_pass is not None:
-        import torch._inductor.config
-        torch._inductor.config._post_fusion_custom_pass = post_fusion_pass
+    _post_fusion_hook = post_fusion_pass
+
+    # 必须禁用 fx graph cache，否则 _codegen 不会被调用
+    import torch._inductor.config as cfg
+    cfg.fx_graph_cache = False
+    cfg.fx_graph_remote_cache = False
