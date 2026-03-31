@@ -8,6 +8,10 @@ namespace mlir::runtime {
 namespace {
 
 static std::string getAscendHome() {
+  if (const char *home = std::getenv("ASCEND_HOME_PATH"))
+    return home;
+  if (const char *home = std::getenv("ASCEND_TOOLKIT_HOME"))
+    return home;
   if (const char *userHome = std::getenv("HOME")) {
     std::string latest = std::string(userHome) + "/Ascend/latest";
     if (llvm::sys::fs::exists(latest))
@@ -17,16 +21,6 @@ static std::string getAscendHome() {
     if (llvm::sys::fs::exists(toolkitLatest))
       return toolkitLatest;
   }
-  const char *home = std::getenv("ASCEND_HOME_PATH");
-  if (home)
-    return home;
-  if (const char *home2 = std::getenv("ASCEND_TOOLKIT_HOME"))
-    return home2;
-  if (llvm::sys::fs::exists(
-          "/home/niu/Ascend/20260323_newest-full/ascend-toolkit/latest"))
-    return "/home/niu/Ascend/20260323_newest-full/ascend-toolkit/latest";
-  if (llvm::sys::fs::exists("/home/niu/Ascend/20260323_newest-full/cann-9.0.0"))
-    return "/home/niu/Ascend/20260323_newest-full/cann-9.0.0";
   return "/usr/local/Ascend/ascend-toolkit/latest";
 }
 
