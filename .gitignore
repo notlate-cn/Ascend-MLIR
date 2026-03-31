@@ -28,3 +28,4 @@ __pycache__
 externals/llvm-project
 /CLAUDE.md
 /.serena
+/.worktrees/
