@@ -1,3 +1,6 @@
+# worktrees
+.worktrees/
+
 # ide files
 /.claude/
 /.idea/
