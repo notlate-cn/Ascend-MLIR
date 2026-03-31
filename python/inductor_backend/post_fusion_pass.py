@@ -12,13 +12,16 @@ def _extract_loops_from_node(node: BaseSchedulerNode):
     if isinstance(node, FusedSchedulerNode):
         for sub in node.get_nodes():
             buf = sub.node
-            data = buf.data
+            data = getattr(buf, 'data', None)
+            if data is None:
+                continue
             loops_info.append({
                 'node_type': type(data).__name__,
                 'node': data,
                 'scheduler_node': sub,
                 'ranges': data.ranges,
                 'reduction_ranges': getattr(data, 'reduction_ranges', []),
+
                 'inner_fn': data.inner_fn,
                 'dtype': data.dtype,
                 'device': data.get_device()
