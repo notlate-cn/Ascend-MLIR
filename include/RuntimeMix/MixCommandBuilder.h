@@ -18,6 +18,11 @@ std::vector<std::string> buildBishengCommand(const MixAnalyzedKernel &info,
                                              llvm::StringRef obj,
                                              MixCoreType coreType);
 
+std::vector<std::string>
+buildPreprocessedDeviceCompileCommand(llvm::StringRef src,
+                                      llvm::StringRef obj,
+                                      MixCoreType coreType);
+
 std::vector<std::string> buildLldRelocCommand(llvm::StringRef inputObj,
                                               llvm::StringRef outputObj);
 
@@ -54,6 +59,10 @@ buildUpdateHostStubCommand(llvm::StringRef codeDir, llvm::StringRef objDir,
                            llvm::StringRef lowerSocVersion,
                            llvm::StringRef targetName);
 
+std::vector<std::string>
+buildHostBishengCommand(llvm::StringRef src, llvm::StringRef obj,
+                        llvm::StringRef tripleChevronHeader);
+
 std::vector<std::string> buildHostStubCompileCommand(llvm::StringRef source,
                                                      llvm::StringRef object,
                                                      llvm::StringRef headerDir);
@@ -61,8 +70,28 @@ std::vector<std::string> buildHostStubCompileCommand(llvm::StringRef source,
 std::vector<std::string> buildPackCommand(llvm::StringRef hostStubObject,
                                           llvm::StringRef addDir);
 
+std::vector<std::string>
+buildRecompileBinaryCommand(llvm::StringRef rootDir, llvm::StringRef targetName,
+                            llvm::StringRef addDir);
+
 std::vector<std::string> buildHostSharedLinkCommand(llvm::StringRef hostStubObject,
                                                     llvm::StringRef outputSo,
                                                     llvm::StringRef socVersion);
+
+std::vector<std::string>
+buildHostRunnerCompileCommand(llvm::StringRef workDir,
+                              llvm::StringRef launcherDir,
+                              llvm::StringRef outIncludeDir,
+                              llvm::StringRef runnerMainPath,
+                              llvm::StringRef runnerTilingPath,
+                              llvm::StringRef runnerBinaryPath,
+                              llvm::StringRef kernelSoPath,
+                              llvm::StringRef runnerLib64,
+                              llvm::StringRef runnerSimLibDir,
+                              llvm::StringRef davSimLibDir,
+                              llvm::StringRef socVersion);
+
+std::string renderCommandForDebug(llvm::ArrayRef<std::string> args);
+std::string renderCommandForCompileCommands(llvm::ArrayRef<std::string> args);
 
 } // namespace mlir::runtime
