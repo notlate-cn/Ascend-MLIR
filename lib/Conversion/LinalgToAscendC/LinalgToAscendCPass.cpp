@@ -19,6 +19,7 @@
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
+#include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/PatternMatch.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
@@ -104,11 +105,31 @@ Value computeAllocByteCount(OpBuilder &b, Location loc,
   return b.create<arith::MulIOp>(loc, count, bytesPerElemVal);
 }
 
+/// Walk through subviews and scf.for iter_args to find the ultimate source.
+static Value resolveToAllocRoot(Value v) {
+  const int maxDepth = 20;
+  for (int i = 0; i < maxDepth; ++i) {
+    if (auto subview = v.getDefiningOp<memref::SubViewOp>()) {
+      v = subview.getSource();
+      continue;
+    }
+    if (auto blockArg = v.dyn_cast<BlockArgument>()) {
+      auto forOp = dyn_cast<scf::ForOp>(blockArg.getOwner()->getParentOp());
+      if (forOp && blockArg.getArgNumber() > 0) {
+        unsigned iterIdx = blockArg.getArgNumber() - 1;
+        if (iterIdx < forOp.getInitArgs().size()) {
+          v = forOp.getInitArgs()[iterIdx];
+          continue;
+        }
+      }
+    }
+    break;
+  }
+  return v;
+}
+
 Value AscendCBufferContext::getQueue(Value memref) const {
-  Value root = memref;
-  // Walk through subviews to find the defining alloc.
-  while (auto subview = root.getDefiningOp<memref::SubViewOp>())
-    root = subview.getSource();
+  Value root = resolveToAllocRoot(memref);
   auto it = allocToQueue.find(root);
   if (it != allocToQueue.end())
     return it->second;
@@ -116,9 +137,7 @@ Value AscendCBufferContext::getQueue(Value memref) const {
 }
 
 Value AscendCBufferContext::getTBuf(Value memref) const {
-  Value root = memref;
-  while (auto subview = root.getDefiningOp<memref::SubViewOp>())
-    root = subview.getSource();
+  Value root = resolveToAllocRoot(memref);
   auto it = allocToTBuf.find(root);
   if (it != allocToTBuf.end())
     return it->second;
@@ -126,9 +145,7 @@ Value AscendCBufferContext::getTBuf(Value memref) const {
 }
 
 Value AscendCBufferContext::getLiveTensor(Value memref) const {
-  Value root = memref;
-  while (auto subview = root.getDefiningOp<memref::SubViewOp>())
-    root = subview.getSource();
+  Value root = resolveToAllocRoot(memref);
   auto it = allocToLiveTensor.find(root);
   if (it != allocToLiveTensor.end())
     return it->second;

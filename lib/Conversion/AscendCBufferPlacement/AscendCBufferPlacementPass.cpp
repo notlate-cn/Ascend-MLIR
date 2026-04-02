@@ -1266,16 +1266,15 @@ void insertCopiesForLoop(scf::ForOp forOp,
       if (existingVecout)
         continue;
 
-      // Find the Vector generic inside forOp.
+      // Find the LAST Vector generic inside forOp (the one that writes to GM).
+      // When multiple vector generics are chained (e.g. add → leaky_relu),
+      // only the final one should be redirected to VECOUT; intermediate results
+      // use VECCALC buffers that are already allocated by Rule B.
       linalg::GenericOp vecGeneric;
       forOp.walk([&](linalg::GenericOp genericOp) {
-        if (vecGeneric)
-          return WalkResult::interrupt();
         auto unitAttr = genericOp->getAttrOfType<StringAttr>("ascendc.unit");
-        if (unitAttr && unitAttr.getValue() == "AiCore.Vector") {
-          vecGeneric = genericOp;
-          return WalkResult::interrupt();
-        }
+        if (unitAttr && unitAttr.getValue() == "AiCore.Vector")
+          vecGeneric = genericOp; // keep updating to get the last one
         return WalkResult::advance();
       });
       if (!vecGeneric)
