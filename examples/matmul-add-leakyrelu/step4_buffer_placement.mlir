@@ -86,26 +86,26 @@ module attributes {transform.with_named_sequence} {
             memref.copy %alloc_25, %alloc_31 : memref<?x?xf32, 7 : i32> to memref<?x?xf32, 9 : i32>
             %subview_32 = memref.subview %subview_14[%arg15] [%12] [1] : memref<?xf32, strided<[1], offset: ?>> to memref<?xf32, strided<[1], offset: ?>>
             %subview_33 = memref.subview %alloc_18[%arg13, %arg15] [%11, %12] [1, 1] : memref<?x?xf32, 11 : i32> to memref<?x?xf32, strided<[?, 1], offset: ?>, 11 : i32>
-            %c0_34 = arith.constant 0 : index
-            %dim_35 = memref.dim %subview_33, %c0_34 : memref<?x?xf32, strided<[?, 1], offset: ?>, 11 : i32>
-            %c1_36 = arith.constant 1 : index
-            %dim_37 = memref.dim %subview_33, %c1_36 : memref<?x?xf32, strided<[?, 1], offset: ?>, 11 : i32>
-            %alloc_38 = memref.alloc(%dim_35, %dim_37) : memref<?x?xf32, 10 : i32>
-            linalg.generic {indexing_maps = [#map1, #map2, #map1], iterator_types = ["parallel", "parallel"]} ins(%13, %subview_32 : memref<?x?xf32, 7 : i32>, memref<?xf32, strided<[1], offset: ?>>) outs(%alloc_38 : memref<?x?xf32, 10 : i32>) {
+            linalg.generic {indexing_maps = [#map1, #map2, #map1], iterator_types = ["parallel", "parallel"]} ins(%13, %subview_32 : memref<?x?xf32, 7 : i32>, memref<?xf32, strided<[1], offset: ?>>) outs(%subview_33 : memref<?x?xf32, strided<[?, 1], offset: ?>, 11 : i32>) {
             ^bb0(%in: f32, %in_40: f32, %out: f32):
               %14 = arith.addf %in, %in_40 : f32
               linalg.yield %14 : f32
             }
-            %subview_39 = memref.subview %arg16[%arg13, %arg15] [%11, %12] [1, 1] : memref<?x?xf32, strided<[?, 1], offset: ?>> to memref<?x?xf32, strided<[?, 1], offset: ?>>
-            linalg.generic {indexing_maps = [#map1, #map1], iterator_types = ["parallel", "parallel"]} ins(%subview_33 : memref<?x?xf32, strided<[?, 1], offset: ?>, 11 : i32>) outs(%subview_39 : memref<?x?xf32, strided<[?, 1], offset: ?>>) {
+            %subview_34 = memref.subview %arg16[%arg13, %arg15] [%11, %12] [1, 1] : memref<?x?xf32, strided<[?, 1], offset: ?>> to memref<?x?xf32, strided<[?, 1], offset: ?>>
+            %c0_35 = arith.constant 0 : index
+            %dim_36 = memref.dim %subview_34, %c0_35 : memref<?x?xf32, strided<[?, 1], offset: ?>>
+            %c1_37 = arith.constant 1 : index
+            %dim_38 = memref.dim %subview_34, %c1_37 : memref<?x?xf32, strided<[?, 1], offset: ?>>
+            %alloc_39 = memref.alloc(%dim_36, %dim_38) : memref<?x?xf32, 10 : i32>
+            linalg.generic {indexing_maps = [#map1, #map1], iterator_types = ["parallel", "parallel"]} ins(%subview_33 : memref<?x?xf32, strided<[?, 1], offset: ?>, 11 : i32>) outs(%alloc_39 : memref<?x?xf32, 10 : i32>) {
             ^bb0(%in: f32, %out: f32):
               %14 = arith.mulf %in, %cst : f32
               %15 = arith.maximumf %in, %14 : f32
               linalg.yield %15 : f32
             }
-            memref.copy %subview_39, %subview_39 : memref<?x?xf32, strided<[?, 1], offset: ?>> to memref<?x?xf32, strided<[?, 1], offset: ?>>
-            memref.copy %alloc_38, %subview_33 : memref<?x?xf32, 10 : i32> to memref<?x?xf32, strided<[?, 1], offset: ?>, 11 : i32>
-            memref.dealloc %alloc_38 : memref<?x?xf32, 10 : i32>
+            memref.copy %subview_34, %subview_34 : memref<?x?xf32, strided<[?, 1], offset: ?>> to memref<?x?xf32, strided<[?, 1], offset: ?>>
+            memref.copy %alloc_39, %subview_34 : memref<?x?xf32, 10 : i32> to memref<?x?xf32, strided<[?, 1], offset: ?>>
+            memref.dealloc %alloc_39 : memref<?x?xf32, 10 : i32>
             memref.dealloc %alloc_31 : memref<?x?xf32, 9 : i32>
             memref.dealloc %alloc_25 : memref<?x?xf32, 7 : i32>
             scf.yield %arg16 : memref<?x?xf32, strided<[?, 1], offset: ?>>
