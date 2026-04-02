@@ -281,7 +281,24 @@ static void fixBrokenOpEmitters(Operation *moduleOp) {
         }
       }
     }
-    tmpl += "  AscendC::Broadcast<half, " + std::to_string(rank) +
+    // Use actual element type of dst instead of hardcoded 'half'.
+    auto dstElemType =
+        cast<ascendc::LocalTensorType>(op.getDst().getType()).getElementType();
+    std::string elemTypeStr;
+    if (dstElemType.isF16())
+      elemTypeStr = "half";
+    else if (dstElemType.isF32())
+      elemTypeStr = "float";
+    else if (dstElemType.isF64())
+      elemTypeStr = "double";
+    else if (auto iType = dyn_cast<IntegerType>(dstElemType)) {
+      bool isUnsigned = iType.isUnsigned();
+      elemTypeStr = (isUnsigned ? "uint" : "int") +
+                    std::to_string(iType.getWidth()) + "_t";
+    } else {
+      elemTypeStr = "half"; // fallback
+    }
+    tmpl += "  AscendC::Broadcast<" + elemTypeStr + ", " + std::to_string(rank) +
             ", " + std::to_string(axis) + ">($0, $1, _afir_ds, _afir_ss);\n}";
 
     SmallVector<Value> args;

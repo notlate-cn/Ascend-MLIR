@@ -1,5 +1,5 @@
-#include "RuntimeMix/Executor.h"
-#include "RuntimeMix/Types.h"
+#include "Runtime/Executor.h"
+#include "Runtime/Types.h"
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/Error.h"
 #include "llvm/Support/FileSystem.h"
@@ -30,6 +30,10 @@ static llvm::cl::opt<std::string> OutputFile("output-file",
                                             llvm::cl::init(""));
 static llvm::cl::opt<std::string> SocVersion("soc",
                                              llvm::cl::init("Ascend910B1"));
+static llvm::cl::opt<bool> ForceDirectPacked(
+    "force-direct-packed",
+    llvm::cl::desc("Bypass mix_runner and validate through direct packed execution"),
+    llvm::cl::init(false));
 
 static llvm::Expected<std::vector<uint8_t>> readBinary(const std::string &path) {
   auto buf = llvm::MemoryBuffer::getFile(path, false);
@@ -71,7 +75,7 @@ static std::map<std::string, std::string> readManifest(const std::string &path) 
   content.split(lines, '\n');
   for (llvm::StringRef line : lines) {
     line = line.trim();
-    if (line.empty() || line.startswith("#"))
+    if (line.empty() || line.starts_with("#"))
       continue;
     auto eq = line.find('=');
     if (eq == llvm::StringRef::npos)
@@ -447,37 +451,12 @@ static llvm::Expected<NDArray> loadRawTensor(const std::string &path,
   return arr;
 }
 
-static uint8_t hexNibble(char c) {
-  if (c >= '0' && c <= '9')
-    return static_cast<uint8_t>(c - '0');
-  if (c >= 'a' && c <= 'f')
-    return static_cast<uint8_t>(10 + c - 'a');
-  if (c >= 'A' && c <= 'F')
-    return static_cast<uint8_t>(10 + c - 'A');
-  return 0;
-}
-
-static std::vector<uint8_t> buildBaremixTiling() {
-  static constexpr char kHex[] =
-      "709135b4aaaa0000d09a35b4aaaa0000709d35b4aaaa000020f830b4aaaa0000"
-      "c80000000000000080c7ffaaaaaa000000000000000000000000000000000000"
-      "00000000000000000000000000000000144f9200000000000000000000000000"
-      "0000000000000000000000000000000000000000000000000000000000000000"
-      "0000000000000000000000000000000000000000000000000000000000000000"
-      "00000000000000000000000000000000";
-  std::vector<uint8_t> bytes;
-  bytes.reserve((sizeof(kHex) - 1) / 2);
-  for (size_t i = 0; i + 1 < sizeof(kHex) - 1; i += 2)
-    bytes.push_back(static_cast<uint8_t>((hexNibble(kHex[i]) << 4) |
-                                         hexNibble(kHex[i + 1])));
-  return bytes;
-}
-
 static llvm::Expected<std::vector<uint8_t>>
-buildTilingFromAbi(const AbiMetadata &abi) {
-  if (abi.tilingMode == "fixed_bytes" &&
-      abi.tilingSource == "baremix_fixed_blob")
-    return buildBaremixTiling();
+buildTilingFromAbi(const AbiMetadata &abi, const std::string &artifactRoot) {
+  if (abi.tilingMode == "generated_file") {
+    const std::string tilingPath = resolvePath(artifactRoot, abi.tilingSource);
+    return readBinary(tilingPath);
+  }
   return llvm::createStringError(
       llvm::inconvertibleErrorCode(),
       "Unsupported ABI tiling description: mode=%s source=%s",
@@ -490,7 +469,8 @@ static llvm::Error runShell(const std::string &cmd) {
   for (const auto &a : args)
     argv.push_back(a);
   std::string err_msg;
-  int ret = llvm::sys::ExecuteAndWait(argv[0], argv, llvm::None, {}, 300, 0,
+  int ret =
+      llvm::sys::ExecuteAndWait(argv[0], argv, std::nullopt, {}, 300, 0,
                                       &err_msg);
   if (ret != 0)
     return llvm::createStringError(llvm::inconvertibleErrorCode(),
@@ -556,7 +536,7 @@ static llvm::Error runDirectValidator(const std::string &artifactRoot,
   RunArgs args;
   args.block_dim      = 1;
   args.workspace_size = abi.workspaceBytes;
-  auto tilingOr = buildTilingFromAbi(abi);
+  auto tilingOr = buildTilingFromAbi(abi, artifactRoot);
   if (!tilingOr)
     return tilingOr.takeError();
   args.tiling         = std::move(*tilingOr);
@@ -637,7 +617,8 @@ static llvm::Error runDirectValidatorChildProcess(const std::string &selfPath,
                                                   const std::string &inputDir,
                                                   const std::string &golden,
                                                   const std::string &outputPath,
-                                                  const std::string &socVersion) {
+                                                  const std::string &socVersion,
+                                                  bool forceDirectPacked) {
   std::string ascendHome;
   std::string ascendLib64;
   std::string simLibDir;
@@ -662,6 +643,8 @@ static llvm::Error runDirectValidatorChildProcess(const std::string &selfPath,
   cmd += " --golden " + shellQuote(golden);
   cmd += " --output-file " + shellQuote(outputPath);
   cmd += " --soc " + shellQuote(socVersion);
+  if (forceDirectPacked)
+    cmd += " --force-direct-packed";
   return runShell(cmd);
 }
 
@@ -711,9 +694,11 @@ int main(int argc, char **argv) {
     runnerPath = artifactRoot;
     llvm::sys::path::append(runnerPath, "bin", "mix_runner");
   }
-  const bool canUseRunner = llvm::sys::fs::exists(runnerPath);
-  // Runner-first is the default contract. The direct packed path is only
-  // allowed as a constrained fallback when no runner binary is available.
+  const bool canUseRunner = llvm::sys::fs::exists(runnerPath) &&
+                            !ForceDirectPacked;
+  // Runner-first is the default contract. The direct packed path remains
+  // available as a fallback or explicit comparison path when the artifact
+  // provides a kernel .so and ABI metadata.
   const bool canUseDirectPacked = !manifestKernelName.empty() &&
                                   !manifestKernelSo.empty() &&
                                   llvm::sys::fs::exists(manifestKernelSo) &&
@@ -722,14 +707,6 @@ int main(int argc, char **argv) {
       std::getenv("RUNTIMEMIX_DIRECT_CHILD") != nullptr;
 
   if (canUseDirectPacked) {
-    if (manifestKernelName != "baremix_custom") {
-      llvm::errs()
-          << "Error: runner-first validation only allows the direct packed "
-          << "fallback for baremix_custom (manifest kernel_name="
-          << manifestKernelName << ")\n";
-      return 4;
-    }
-
     std::vector<NDArray> inputs;
     for (const AbiTensorDesc &tensor : abi.inputs) {
       auto inputOr = loadRawTensor(buildInputPath(InputDir, tensor.file),
@@ -768,11 +745,16 @@ int main(int argc, char **argv) {
     if (!isDirectChild) {
       directErr = runDirectValidatorChildProcess(
           selfPath.str().str(), artifactRoot.str().str(), InputDir, Golden,
-          outputPath, SocVersion);
+          outputPath, SocVersion, ForceDirectPacked);
     } else {
       directErr = runDirectValidator(artifactRoot.str().str(), Golden,
                                      outputPath, SocVersion, abi, inputs, output,
                                      manifestKernelSo, manifestKernelName);
+      if (!directErr) {
+        llvm::outs().flush();
+        llvm::errs().flush();
+        _Exit(0);
+      }
     }
 
     if (directErr) {

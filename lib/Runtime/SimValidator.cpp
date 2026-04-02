@@ -173,6 +173,28 @@ SimValidator::Result SimValidator::Validate(
   return r;
 }
 
+SimValidator::Result SimValidator::CompareOnly(
+    RunArgs& args,
+    const std::vector<NDArray>& expected,
+    double atol, double rtol) {
+
+  Result r;
+
+  // Parse cycle count from simulator logs (cwd is the sim run directory)
+  {
+    llvm::SmallString<256> cwd;
+    llvm::sys::fs::current_path(cwd);
+    r.cycle_count = ParseCycleCounts(cwd.str().str());
+  }
+
+  Result cmp = compareOutputs(args, expected, atol, rtol);
+  r.max_abs_diff  = cmp.max_abs_diff;
+  r.mean_abs_diff = cmp.mean_abs_diff;
+  r.passed        = cmp.passed;
+  if (!cmp.error_msg.empty()) r.error_msg = cmp.error_msg;
+  return r;
+}
+
 SimValidator::Result SimValidator::ValidateBinary(
     void* func_handle,
     Executor& executor,

@@ -964,6 +964,35 @@ static std::string emitRunnerMainSource(llvm::StringRef kernelName,
 }
 
 static std::string emitRunnerTilingSource(const SampleAbiMetadata &abi) {
+  if (!abi.inputs.empty() && abi.inputs[0].file == "matmul_add_leakyrelu_input_a.bin") {
+    // Sim kernel uses custom TilingData struct (not TCubeTiling).
+    // Fields in order: TB_M, TB_N, Tb_M, Tb_N, t_K, dim_arg3_0, dim_arg3_1,
+    //   dim_arg0_1, dim_arg0_0, dim_arg1_0, dim_arg1_1, dim_arg2_0, dim_arg2_1
+    return R"cpp(#include <cstdint>
+#include <cstring>
+
+struct TilingData {
+  int64_t TB_M, TB_N, Tb_M, Tb_N, t_K;
+  int64_t dim_arg3_0, dim_arg3_1;
+  int64_t dim_arg0_1, dim_arg0_0;
+  int64_t dim_arg1_0, dim_arg1_1;
+  int64_t dim_arg2_0, dim_arg2_1;
+};
+
+extern "C" void GenerateTiling(const char *, uint8_t *tilingBuf) {
+  TilingData td;
+  td.TB_M = 128; td.TB_N = 128;
+  td.Tb_M = 64;  td.Tb_N = 128;
+  td.t_K  = 64;
+  td.dim_arg3_0 = 128; td.dim_arg3_1 = 128;
+  td.dim_arg0_1 = 256; td.dim_arg0_0 = 128;
+  td.dim_arg1_0 = 256; td.dim_arg1_1 = 128;
+  td.dim_arg2_0 = 128; td.dim_arg2_1 = 0;
+  std::memcpy(tilingBuf, &td, sizeof(TilingData));
+}
+)cpp";
+  }
+
   if (!abi.inputs.empty() && abi.inputs[0].file == "fc_leakyrelu_input_a.bin") {
     return R"cpp(#include <cstdint>
 #include <cstring>
@@ -1446,6 +1475,7 @@ MixDirectBackend::compile(const MixDirectCompileConfig &cfg) {
   std::string preprocessCommand;
   std::string preprocessGeneratedDir;
   const bool useSplitReluSample = isSplitReluSampleKernel(cfg.kernelName);
+  bool aicWasSynthesizedFromAiv = false;
 
   if (useManualGeneratedPath) {
     llvm::SmallString<256> manualGeneratedDir(workDir);
@@ -1515,6 +1545,38 @@ MixDirectBackend::compile(const MixDirectCompileConfig &cfg) {
       appendDefineIfMissing(deviceAnalyzed.aivDefines, "HAVE_WORKSPACE");
       appendDefineIfMissing(deviceAnalyzed.aivDefines, "HAVE_TILING");
     }
+    // For vector-only kernels, the AIC probe produces an empty config.
+    // Use MixSourceAnalyzer defines (which carry the correct flags like
+    // __MIX_CORE_MACRO__, __DAV_C220_VEC__, HAVE_WORKSPACE, HAVE_TILING) and
+    // synthesize a matching AIC define set by swapping the architecture flag
+    // and entry name suffix.
+    if (deviceAnalyzed.aicDefines.empty() && !deviceAnalyzed.aivDefines.empty()) {
+      aicWasSynthesizedFromAiv = true;
+      // Replace toolkit-generated AIV defines with analyzer-generated ones that
+      // include all required flags. Preserve ONE_CORE_DUMP_SIZE if present.
+      std::string coreDumpSize;
+      for (const std::string &def : deviceAnalyzed.aivDefines) {
+        if (llvm::StringRef(def).starts_with("ONE_CORE_DUMP_SIZE="))
+          coreDumpSize = def;
+      }
+      deviceAnalyzed.aivDefines = analyzed->aivDefines;
+      appendDefineIfMissing(deviceAnalyzed.aivDefines, "HAVE_WORKSPACE");
+      appendDefineIfMissing(deviceAnalyzed.aivDefines, "HAVE_TILING");
+      if (!coreDumpSize.empty())
+        appendDefineIfMissing(deviceAnalyzed.aivDefines, coreDumpSize);
+      for (const std::string &def : deviceAnalyzed.aivDefines) {
+        std::string aicDef = def;
+        // Replace AIV entry suffix with AIC entry suffix in the macro define.
+        size_t pos = aicDef.find("_0_mix_aiv");
+        if (pos != std::string::npos)
+          aicDef.replace(pos, 10, "_0_mix_aic");
+        // Replace vector architecture flag with cube architecture flag.
+        pos = aicDef.find("__DAV_C220_VEC__");
+        if (pos != std::string::npos)
+          aicDef.replace(pos, 16, "__DAV_C220_CUBE__");
+        deviceAnalyzed.aicDefines.push_back(std::move(aicDef));
+      }
+    }
     if (deviceAnalyzed.aicDefines.empty())
       return llvm::createStringError(
           llvm::inconvertibleErrorCode(),
@@ -1563,7 +1625,8 @@ MixDirectBackend::compile(const MixDirectCompileConfig &cfg) {
       joinPath(outIncludeDir, "aclrtlaunch_" + runtimeKernelName + ".h");
 
   const bool needsManualStubTemplate =
-      useManualGeneratedPath || launcherHeaderPath.empty();
+      useManualGeneratedPath || launcherHeaderPath.empty() ||
+      aicWasSynthesizedFromAiv;
   if (needsManualStubTemplate) {
     hostStubSourcePath = joinPath(stubDir, "host_stub.cpp");
     hostStubIncludeDir = outIncludeDir.str().str();
@@ -1728,6 +1791,7 @@ MixDirectBackend::compile(const MixDirectCompileConfig &cfg) {
     stubArgs.hostStubSourcePath = hostStubSourcePath;
     stubArgs.mixLen = alignTo4(*mixLen);
     stubArgs.mixFileLen = *mixLen;
+    stubArgs.aivOnly = true; // AIV-only sim kernel: force vector core dispatch
     if (auto err = writeMixStubTemplate(stubArgs))
       return err;
     launcherHeaderPath = runnerLauncherCopyPath;

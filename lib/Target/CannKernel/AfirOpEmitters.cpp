@@ -83,7 +83,13 @@ static LogicalResult emitBroadcastL2Op(CodeEmitter &emitter,
 
   // axis=0: broadcast the first (A) dimension.  This matches AR layout
   // (source has shape [1, N], destination [M, N]).
-  os << ascNamespace << "::Broadcast<half, " << rank << ", 0>("
+  // Use the actual element type of the dst tensor (not hardcoded 'half').
+  auto dstElemType =
+      cast<ascendc::LocalTensorType>(op.getDst().getType()).getElementType();
+  os << ascNamespace << "::Broadcast<";
+  if (failed(emitter.emitType(op.getLoc(), dstElemType)))
+    return failure();
+  os << ", " << rank << ", 0>("
      << emitter.getOrCreateName(op.getDst()) << ", "
      << emitter.getOrCreateName(op.getSrc()) << ", "
      << dstArrName << ", " << srcArrName << ")";
