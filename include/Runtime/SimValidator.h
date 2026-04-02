@@ -37,6 +37,14 @@ public:
                         const std::vector<NDArray>& expected,
                         double                      atol,
                         double                      rtol);
+
+  // Compare outputs after they have already been produced by a simulator-backed
+  // external run path, while still reusing validator diff and cycle-count
+  // reporting from the current working directory.
+  Result CompareOnly(RunArgs&                    args,
+                     const std::vector<NDArray>& expected,
+                     double                      atol,
+                     double                      rtol);
 };
 
 } // namespace mlir::runtime

@@ -9,16 +9,15 @@
 namespace mlir::runtime {
 
 enum class BackendMode {
-  Simulation,  // libruntime_camodel.so (CPU simulation)
-  RealDevice,  // reserved, not implemented
+  Simulation,
+  RealDevice,
 };
 
-// Mirrors Python DevBinary struct (field order MUST match runtime ABI)
 struct DevBinary {
-  uint32_t    magic;    // 0x41415246 for vec kernel
-  uint32_t    version;  // 0
-  const char* data;     // ELF bytes pointer
-  uint64_t    length;   // ELF byte count
+  uint32_t    magic;
+  uint32_t    version;
+  const char* data;
+  uint64_t    length;
 };
 
 class Executor {
@@ -31,34 +30,33 @@ public:
 
   llvm::Error Initialize(int device_id = 0);
 
-  // Register a binary+function once; returns a stable function handle.
-  // Use with RunWithHandle() to execute the same kernel multiple times without
-  // re-registering (avoids simulator rc=507000 "already registered" errors).
   llvm::Expected<void*> RegisterBinary(const std::string& binary_path,
                                        const std::string& function_name,
                                        uint32_t magic = MAGIC_ELF_AIVEC);
 
-  // Execute a previously registered kernel (skips registration).
   llvm::Error RunWithHandle(void* func_handle, RunArgs& args);
 
-  // binary_data: raw ELF bytes from .bin file
   llvm::Error Run(const std::vector<uint8_t>& binary_data,
                   const std::string& function_name,
                   RunArgs& args,
                   uint32_t magic = MAGIC_ELF_AIVEC);
 
-  // Convenience: read binary from file, then call Run
   llvm::Error RunFile(const std::string& binary_path,
                       const std::string& function_name,
                       RunArgs& args,
                       uint32_t magic = MAGIC_ELF_AIVEC);
 
+  llvm::Error RunPackedMixFile(const std::string& shared_lib_path,
+                               const std::string& kernel_name,
+                               RunArgs& args);
+
 private:
   BackendMode mode_;
   void*       lib_handle_ = nullptr;
-  void*       stream_     = nullptr;  // persistent stream, created once in Initialize
+  void*       acl_handle_ = nullptr;
+  void*       stream_     = nullptr;
+  int32_t     device_id_  = 0;
 
-  // Runtime API function pointers (exact signatures from Python executor.py)
   int (*rtSetDevice_)(int32_t)                                           = nullptr;
   int (*rtDevBinaryRegister_)(const DevBinary*, void**)                  = nullptr;
   int (*rtFunctionRegister_)(void*, void*, const char*, void*, uint32_t) = nullptr;
@@ -70,23 +68,32 @@ private:
   int (*rtKernelLaunch_)(void*, uint32_t, void*, uint32_t, void*, void*) = nullptr;
   int (*rtStreamSynchronize_)(void*)                                      = nullptr;
   int (*rtDeviceSynchronize_)()                                           = nullptr;
+  int (*aclInit_)(const char*)                                            = nullptr;
+  int (*aclFinalize_)()                                                   = nullptr;
+  int (*aclrtSetDevice_)(int32_t)                                         = nullptr;
+  int (*aclrtResetDevice_)(int32_t)                                       = nullptr;
+  int (*aclrtCreateStream_)(void**)                                       = nullptr;
+  int (*aclrtDestroyStream_)(void*)                                       = nullptr;
+  int (*aclrtMalloc_)(void**, uint64_t, uint32_t)                         = nullptr;
+  int (*aclrtFree_)(void*)                                                = nullptr;
+  int (*aclrtMallocHost_)(void**, uint64_t)                               = nullptr;
+  int (*aclrtFreeHost_)(void*)                                            = nullptr;
+  int (*aclrtMemcpy_)(void*, uint64_t, const void*, uint64_t, int32_t)    = nullptr;
+  int (*aclrtSynchronizeStream_)(void*)                                   = nullptr;
 
   llvm::Error LoadLib();
 
-  struct AllocInfo { void* raw; void* aligned; };
+  struct AllocInfo {
+    void* raw;
+    void* aligned;
+  };
   std::vector<AllocInfo> alloc_map_;
-
-  // Stable storage for registered binaries and names (pointers must outlive
-  // rtFunctionRegister since simulator holds them as function handles).
   std::vector<std::vector<uint8_t>> registered_binaries_;
   std::vector<std::string>          registered_names_;
 
   llvm::Expected<void*> Alloc(size_t nbytes);
   void FreeAll();
-
-  // H2D in 256-byte chunks (kind=1)
   llvm::Error H2D(void* dst, const void* src, size_t n);
-  // D2H in 4-byte chunks (kind=2); safe due to +512 overalloc
   llvm::Error D2H(void* dst, const void* src, size_t n);
 };
 
