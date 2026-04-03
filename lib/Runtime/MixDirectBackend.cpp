@@ -46,6 +46,30 @@ static llvm::Expected<std::string> readTextFileOrErr(llvm::StringRef path) {
   return (*bufferOr)->getBuffer().str();
 }
 
+static llvm::Expected<uint32_t> readBlockDimFromLaunchInfo(llvm::StringRef path) {
+  auto textOr = readTextFileOrErr(path);
+  if (!textOr)
+    return textOr.takeError();
+
+  llvm::SmallVector<llvm::StringRef> lines;
+  llvm::StringRef(*textOr).split(lines, '\n');
+  for (llvm::StringRef line : lines) {
+    line = line.trim();
+    if (!line.starts_with("block_dim="))
+      continue;
+    uint64_t value = 0;
+    if (line.drop_front(strlen("block_dim=")).getAsInteger(10, value))
+      return llvm::createStringError(llvm::inconvertibleErrorCode(),
+                                     "Invalid block_dim in launch info: %s",
+                                     path.str().c_str());
+    return static_cast<uint32_t>(value);
+  }
+
+  return llvm::createStringError(llvm::inconvertibleErrorCode(),
+                                 "Missing block_dim in launch info: %s",
+                                 path.str().c_str());
+}
+
 struct MixGeneratedConfig {
   std::vector<std::string> mixSources;
   llvm::StringMap<std::vector<std::string>> definitionsBySource;
@@ -731,6 +755,7 @@ struct SampleAbiMetadata {
   std::vector<SampleAbiTensorDesc> inputs;
   std::vector<SampleAbiTensorDesc> outputs;
   uint64_t workspaceBytes = 0;
+  uint32_t blockDim = 1;
   std::string workspaceMode;
   std::string tilingMode;
   std::string tilingSource;
@@ -863,40 +888,62 @@ static std::string emitRunnerMainSource(llvm::StringRef kernelName,
      << "#include <cstdlib>\n"
      << "#include <cstring>\n"
      << "#include <string>\n\n"
-     << "extern \"C\" void GenerateTiling(const char *socVersion, uint8_t *tilingBuf);\n\n"
+     << "extern \"C\" void GenerateTiling(const char *socVersion, uint8_t *tilingBuf);\n"
+     << "extern \"C\" uint32_t GetBlockDim(const char *socVersion);\n\n"
      << "int main(int argc, char *argv[]) {\n"
      << "  std::string inputDir = \"./input\";\n"
      << "  std::string outputFile = \"./output/" << output.file << "\";\n"
      << "  std::string emitTilingFile;\n"
+     << "  std::string emitLaunchInfoFile;\n"
      << "  for (int i = 1; i < argc; ++i) {\n"
      << "    std::string arg = argv[i];\n"
      << "    if (arg == \"--input-dir\" && i + 1 < argc) inputDir = argv[++i];\n"
      << "    else if (arg == \"--output-file\" && i + 1 < argc) outputFile = argv[++i];\n"
      << "    else if (arg == \"--emit-tiling-file\" && i + 1 < argc) emitTilingFile = argv[++i];\n"
+     << "    else if (arg == \"--emit-launch-info\" && i + 1 < argc) emitLaunchInfoFile = argv[++i];\n"
      << "  }\n\n"
      << "  const char *socVersion = SOC_VERSION;\n"
+     << "  auto ascendcPlatform = platform_ascendc::PlatformAscendCManager::GetInstance(socVersion);\n"
      << "  size_t aFileSize = " << getTensorBytes(inputA) << ";\n"
      << "  size_t bFileSize = " << getTensorBytes(inputB) << ";\n"
      << "  size_t cFileSize = " << getTensorBytes(output) << ";\n";
   if (bias)
     os << "  size_t biasFileSize = " << getTensorBytes(*bias) << ";\n";
-  os << "  size_t workspaceSize = "
+  os << "  size_t userWorkspaceSize = "
      << static_cast<unsigned long long>(abi.workspaceBytes) << ";\n"
+     << "  size_t systemWorkspaceSize = ascendcPlatform ? static_cast<size_t>(ascendcPlatform->GetLibApiWorkSpaceSize()) : 0;\n"
+     << "  size_t workspaceSize = userWorkspaceSize + systemWorkspaceSize;\n"
      << "  size_t tilingFileSize = sizeof(TCubeTiling);\n"
      << "  uint8_t *tilingBuf = static_cast<uint8_t *>(malloc(tilingFileSize));\n"
      << "  GenerateTiling(socVersion, tilingBuf);\n"
-     << "  if (!emitTilingFile.empty()) {\n"
-     << "    size_t lastSlash = emitTilingFile.find_last_of('/');\n"
+     << "  uint32_t blockDim = GetBlockDim(socVersion);\n"
+     << "  auto ensureParentDir = [&](const std::string& path) {\n"
+     << "    size_t lastSlash = path.find_last_of('/');\n"
      << "    if (lastSlash != std::string::npos) {\n"
-     << "      std::string outDir = emitTilingFile.substr(0, lastSlash);\n"
+     << "      std::string outDir = path.substr(0, lastSlash);\n"
      << "      std::string mkdirCmd = \"mkdir -p \" + outDir;\n"
      << "      (void)std::system(mkdirCmd.c_str());\n"
      << "    }\n"
-     << "    bool ok = WriteFile(emitTilingFile, tilingBuf, tilingFileSize);\n"
-     << "    free(tilingBuf);\n"
-     << "    return ok ? 0 : 5;\n"
+     << "  };\n"
+     << "  if (!emitTilingFile.empty()) {\n"
+     << "    ensureParentDir(emitTilingFile);\n"
+     << "    if (!WriteFile(emitTilingFile, tilingBuf, tilingFileSize)) {\n"
+     << "      free(tilingBuf);\n"
+     << "      return 5;\n"
+     << "    }\n"
      << "  }\n"
-     << "  uint32_t blockDim = 1;\n\n"
+     << "  if (!emitLaunchInfoFile.empty()) {\n"
+     << "    ensureParentDir(emitLaunchInfoFile);\n"
+     << "    std::string payload = std::string(\"block_dim=\") + std::to_string(blockDim) + \"\\n\";\n"
+     << "    if (!WriteFile(emitLaunchInfoFile, payload.data(), payload.size())) {\n"
+     << "      free(tilingBuf);\n"
+     << "      return 5;\n"
+     << "    }\n"
+     << "  }\n"
+     << "  if (!emitTilingFile.empty() || !emitLaunchInfoFile.empty()) {\n"
+     << "    free(tilingBuf);\n"
+     << "    return 0;\n"
+     << "  }\n\n"
      << "  CHECK_ACL(aclInit(nullptr));\n"
      << "  int32_t deviceId = 0;\n"
      << "  CHECK_ACL(aclrtSetDevice(deviceId));\n"
@@ -990,6 +1037,10 @@ extern "C" void GenerateTiling(const char *, uint8_t *tilingBuf) {
   td.dim_arg2_0 = 128; td.dim_arg2_1 = 0;
   std::memcpy(tilingBuf, &td, sizeof(TilingData));
 }
+
+extern "C" uint32_t GetBlockDim(const char *) {
+  return 1;
+}
 )cpp";
   }
 
@@ -997,15 +1048,20 @@ extern "C" void GenerateTiling(const char *, uint8_t *tilingBuf) {
     return R"cpp(#include <cstdint>
 #include <cstring>
 
+static constexpr int32_t kLeakyReluTiling[] = {
+    1, 128, 128, 256, 256, 128, 128, 256, 128, 128,
+    128, 2,   2,   1,   1,   1,   0,   0,   0,   131584,
+    65536, 0, 1,   1,   1,   1,   2,   2,   0,   0,
+    2,     2, 1,   0,   0,   0,   0,   0,   0,   0,
+    0,     0, 0,   0,   0,   0,   0,   0,   0,   0,
+};
+
 extern "C" void GenerateTiling(const char *, uint8_t *tilingBuf) {
-  static constexpr int32_t kLeakyReluTiling[] = {
-      1, 128, 128, 256, 256, 128, 128, 256, 128, 128,
-      128, 2,   2,   1,   1,   1,   0,   0,   0,   131584,
-      65536, 0, 1,   1,   1,   1,   2,   2,   0,   0,
-      2,     2, 1,   0,   0,   0,   0,   0,   0,   0,
-      0,     0, 0,   0,   0,   0,   0,   0,   0,   0,
-  };
   std::memcpy(tilingBuf, kLeakyReluTiling, sizeof(kLeakyReluTiling));
+}
+
+extern "C" uint32_t GetBlockDim(const char *) {
+  return static_cast<uint32_t>(kLeakyReluTiling[0]);
 }
 )cpp";
   }
@@ -1047,6 +1103,32 @@ extern "C" void GenerateTiling(const char *, uint8_t *tilingBuf) {
      << "  tilingApi.SetBufferSpace(-1, -1, -1);\n"
      << "  (void)tilingApi.GetTiling(tilingData);\n"
      << "  tilingData.SaveToBuffer(tilingBuf, tilingData.GetDataSize());\n"
+     << "}\n\n"
+     << "extern \"C\" uint32_t GetBlockDim(const char *socVersion) {\n"
+     << "  int M = " << m << ";\n"
+     << "  int N = " << n << ";\n"
+     << "  int K = " << k << ";\n"
+     << "  optiling::TCubeTiling tilingData;\n"
+     << "  auto ascendcPlatform = platform_ascendc::PlatformAscendCManager::GetInstance(socVersion);\n"
+     << "  MatmulApiTiling tilingApi(*ascendcPlatform);\n\n"
+     << "  tilingApi.SetAType(TPosition::GM, CubeFormat::ND, "
+     << getAclDataType(inputA.dtype).str() << ", false);\n"
+     << "  tilingApi.SetBType(TPosition::GM, CubeFormat::ND, "
+     << getAclDataType(inputB.dtype).str() << ", false);\n"
+     << "  tilingApi.SetCType(TPosition::GM, CubeFormat::ND, "
+     << getAclDataType(output.dtype).str() << ");\n";
+  if (hasBias) {
+    os << "  tilingApi.SetBiasType(TPosition::GM, CubeFormat::ND, "
+       << getAclDataType(abi.inputs[2].dtype).str() << ");\n";
+  }
+  os << "  tilingApi.SetOrgShape(M, N, K);\n"
+     << "  tilingApi.SetShape(M, N, K);\n"
+     << "  tilingApi.SetBias(" << (hasBias ? "true" : "false") << ");\n"
+     << "  tilingApi.SetTraverse(MatrixTraverse::FIRSTM);\n"
+     << "  tilingApi.SetFixSplit(M, N, -1);\n"
+     << "  tilingApi.SetBufferSpace(-1, -1, -1);\n"
+     << "  (void)tilingApi.GetTiling(tilingData);\n"
+     << "  return static_cast<uint32_t>(tilingData.usedCoreNum);\n"
      << "}\n";
   return os.str();
 }
@@ -1095,18 +1177,21 @@ static bool WriteFile(const std::string &filePath, const void *buffer, size_t si
 }
 
 static bool isManualGeneratedSampleKernel(llvm::StringRef kernelName) {
-  return kernelName == "fc_leakyrelu";
+  return false;
 }
 
 static bool isSplitReluSampleKernel(llvm::StringRef kernelName) {
   return kernelName == "fc_relu_split" || kernelName == "fc_relu_split_mix" ||
-         kernelName == "auto_gen_fc_relu_split_kernel";
+         kernelName == "auto_gen_fc_relu_split_kernel" ||
+         kernelName == "fc_leakyrelu" || kernelName == "fc_leakyrelu_mix" ||
+         kernelName == "auto_gen_fc_leakyrelu_kernel";
 }
 
 static std::string canonicalizeSampleRuntimeKernelName(
     llvm::StringRef kernelName) {
   if (isSplitReluSampleKernel(kernelName))
-    return "fc_relu_split";
+    return kernelName.contains("leakyrelu") ? "fc_leakyrelu"
+                                             : "fc_relu_split";
   return kernelName.str();
 }
 
@@ -1116,25 +1201,39 @@ static std::string emitPassthroughSource(llvm::StringRef sourcePath) {
 
 static std::string resolveSplitReluHostSourcePath(llvm::StringRef sourcePath) {
   llvm::SmallString<256> hostSource(sourcePath);
-  if (llvm::sys::path::filename(hostSource) != "fc_relu_split_wrapperless.cpp")
-    return sourcePath.str();
+  llvm::StringRef fileName = llvm::sys::path::filename(hostSource);
+  if (fileName == "fc_relu_split_wrapperless.cpp") {
+    llvm::sys::path::remove_filename(hostSource);
+    llvm::sys::path::append(hostSource, "fc_relu_split_mix.cpp");
+    return hostSource.str().str();
+  }
+  if (fileName == "fc_leakyrelu_wrapperless.cpp") {
+    llvm::sys::path::remove_filename(hostSource);
+    llvm::sys::path::append(hostSource, "fc_leakyrelu_mix.cpp");
+    return hostSource.str().str();
+  }
   llvm::sys::path::remove_filename(hostSource);
-  llvm::sys::path::append(hostSource, "fc_relu_split_mix.cpp");
-  return hostSource.str().str();
+  return sourcePath.str();
 }
 
 static llvm::Expected<std::string>
 materializeSplitReluCanonicalDeviceSource(llvm::StringRef workDir,
                                           llvm::StringRef sourcePath) {
-  if (llvm::sys::path::filename(sourcePath) !=
-      "auto_gen_fc_relu_split_wrapperless.cpp")
+  llvm::StringRef fileName = llvm::sys::path::filename(sourcePath);
+  llvm::StringRef canonicalFileName;
+  if (fileName == "auto_gen_fc_relu_split_wrapperless.cpp") {
+    canonicalFileName = "auto_gen_fc_relu_split.cpp";
+  } else if (fileName == "auto_gen_fc_leakyrelu_wrapperless.cpp") {
+    canonicalFileName = "auto_gen_fc_leakyrelu.cpp";
+  } else {
     return sourcePath.str();
+  }
   llvm::SmallString<256> canonicalDir(workDir);
   llvm::sys::path::append(canonicalDir, "generated_runtime");
   if (auto err = ensureDirectory(canonicalDir))
     return std::move(err);
   llvm::SmallString<256> canonicalPath(canonicalDir);
-  llvm::sys::path::append(canonicalPath, "auto_gen_fc_relu_split.cpp");
+  llvm::sys::path::append(canonicalPath, canonicalFileName);
   auto contentOr = readTextFileOrErr(sourcePath);
   if (!contentOr)
     return contentOr.takeError();
@@ -1249,6 +1348,8 @@ static llvm::Error writeDebugManifest(const MixAnalyzedKernel &analyzed,
   }
   manifest += std::string("abi_workspace_bytes=") +
               std::to_string(abi.workspaceBytes) + "\n";
+  manifest += std::string("abi_block_dim=") +
+              std::to_string(abi.blockDim) + "\n";
   manifest += std::string("abi_workspace_mode=") + abi.workspaceMode + "\n";
   manifest += std::string("abi_tiling_mode=") + abi.tilingMode + "\n";
   manifest += std::string("abi_tiling_source=") + abi.tilingSource + "\n";
@@ -1421,6 +1522,7 @@ MixDirectBackend::compile(const MixDirectCompileConfig &cfg) {
   const std::string runnerDataUtilsPath = joinPath(workDir, "data_utils.h");
   const std::string runnerBinaryPath = joinPath(outBinDir, "mix_runner");
   const std::string tilingArtifactPath = joinPath(outDir, "tiling.bin");
+  const std::string launchInfoPath = joinPath(outDir, "launch_info.txt");
   const std::string tilingArtifactSource = "out/tiling.bin";
 
   llvm::SmallString<256> preprocessProbeDir(workDir);
@@ -1638,13 +1740,15 @@ MixDirectBackend::compile(const MixDirectCompileConfig &cfg) {
   const std::vector<std::string> aicCmd =
       useOfficialPreprocessedCompile
           ? buildPreprocessedDeviceCompileCommand(generatedSourcePath, aicObj,
-                                                  MixCoreType::AIC)
+                                                  MixCoreType::AIC,
+                                                  deviceAnalyzed.aicDefines)
           : buildBishengCommand(deviceAnalyzed, generatedSourcePath, aicObj,
                                  MixCoreType::AIC);
   const std::vector<std::string> aivCmd =
       useOfficialPreprocessedCompile
           ? buildPreprocessedDeviceCompileCommand(generatedSourcePath, aivObj,
-                                                  MixCoreType::AIV)
+                                                  MixCoreType::AIV,
+                                                  deviceAnalyzed.aivDefines)
           : buildBishengCommand(deviceAnalyzed, generatedSourcePath, aivObj,
                                  MixCoreType::AIV);
   const std::vector<std::string> aicRelocCmd =
@@ -1791,7 +1895,7 @@ MixDirectBackend::compile(const MixDirectCompileConfig &cfg) {
     stubArgs.hostStubSourcePath = hostStubSourcePath;
     stubArgs.mixLen = alignTo4(*mixLen);
     stubArgs.mixFileLen = *mixLen;
-    stubArgs.aivOnly = true; // AIV-only sim kernel: force vector core dispatch
+    stubArgs.aivOnly = false;
     if (auto err = writeMixStubTemplate(stubArgs))
       return err;
     launcherHeaderPath = runnerLauncherCopyPath;
@@ -1864,7 +1968,7 @@ MixDirectBackend::compile(const MixDirectCompileConfig &cfg) {
                                      tilingArtifactSource);
   if (!abiOr)
     return abiOr.takeError();
-  const SampleAbiMetadata &abi = *abiOr;
+  SampleAbiMetadata abi = std::move(*abiOr);
   if (auto err = writeFileOrErr(runnerDataUtilsPath, emitRunnerDataUtilsHeader()))
     return err;
   if (auto err =
@@ -1903,11 +2007,13 @@ MixDirectBackend::compile(const MixDirectCompileConfig &cfg) {
       "/bin/bash",
       "-lc",
       "LD_LIBRARY_PATH='" + runnerLdLibraryPath + "' " + runnerBinaryPath +
-          " --emit-tiling-file " + tilingArtifactPath,
+          " --emit-tiling-file " + tilingArtifactPath +
+          " --emit-launch-info " + launchInfoPath,
   };
   const std::string tilingArtifactContext = makeStageContext({
       {"runner_binary", runnerBinaryPath},
       {"tiling_artifact", tilingArtifactPath},
+      {"launch_info", launchInfoPath},
       {"soc_version", cfg.socVersion},
   });
   if (auto err = runProcess(runnerCompileCmd, kStageBuildRunner,
@@ -1922,6 +2028,14 @@ MixDirectBackend::compile(const MixDirectCompileConfig &cfg) {
   if (auto err = ensureFileExists(tilingArtifactPath, kStageEmitTilingArtifact,
                                   tilingArtifactContext))
     return err;
+  if (auto err = ensureFileExists(launchInfoPath, kStageEmitTilingArtifact,
+                                  tilingArtifactContext))
+    return err;
+
+  auto blockDimOr = readBlockDimFromLaunchInfo(launchInfoPath);
+  if (!blockDimOr)
+    return blockDimOr.takeError();
+  abi.blockDim = *blockDimOr;
 
   if (auto err = writeTextFile(
           analysisPath,

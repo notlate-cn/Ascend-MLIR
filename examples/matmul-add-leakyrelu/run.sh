@@ -127,137 +127,104 @@ if [[ ! -x "${BOOTSTRAP_BUILD_DIR}/bin/mix-validator" ]] || \
     -o "${BOOTSTRAP_BUILD_DIR}/bin/mix-validator"
 fi
 
-# ── Stage 8b: Generate vector-only sim kernel ─────────────────────────────────
-# AIVEC sim cannot handle cube DMA (CO1→L1 via DataCopyCO12DstParams asserts
-# on this device).  Generate a functionally equivalent kernel using only
-# VECIN/VECOUT memory, implementing matmul via vector Mul+Add for simulation.
-echo "=== [STAGE 8b] Generate sim kernel ==="
-python3 - "$SCRIPT_DIR/step8_kernel_sim.cpp" <<'PYEOF'
+# ── Stage 8b: Materialize official-style mix kernel ───────────────────────────
+# Feed RuntimeMix the original __global__ kernel entry and let toolkit
+# preprocess/extract_host_stub generate the auto_gen wrapper and launcher.
+echo "=== [STAGE 8b] Generate official-style mix kernel ==="
+python3 - "$SCRIPT_DIR/fc_leakyrelu_official_style.cpp" <<'PYEOF'
 import sys
+from pathlib import Path
 
-out_path = sys.argv[1]
+out_path = Path(sys.argv[1])
+out_path.write_text("""#define __FC_LEAKYRELU_WRAPPERLESS_KERNEL_FUN_H__
 
-# Fixed parameters for this example
-M, K, N = 128, 256, 128
+#define ASCENDC_CUBE_ONLY
+#include "kernel_operator.h"
+#include "lib/matmul_intf.h"
 
-code = r"""#include "kernel_operator.h"
+using namespace AscendC;
+using namespace matmul;
 
-// Sim kernel: matmul(A[M,K], B[K,N]) + bias[N], leaky_relu(0.001)
-// Approach: load B into UB (TBuf VECIN = 64KB), process row by row.
-// For each output row m:
-//   load A[m,:] (K f16) into que_a, cast to f32
-//   for k in 0..K: get A[m,k] scalar, Muls(prod, b_f32_row_k, a_k), Add acc
-//   Add bias, leaky relu, store
-// B rows in UB: b_ub[k*N .. (k+1)*N-1] (half).
-// Cast B row k to f32 using separate TQue (DataCopy local-to-local not needed;
-// we use the UB buffer slices directly via Cast with offset LocalTensor).
-// M=128, K=256, N=128.
+__aicore__ inline void CopyTiling(TCubeTiling *tiling, GM_ADDR tilingGM)
+{
+    uint64_t *dst = reinterpret_cast<uint64_t *>(tiling);
+    auto tiling64 = reinterpret_cast<__gm__ uint64_t *>(tilingGM);
+    for (uint32_t i = 0; i < sizeof(TCubeTiling) / sizeof(uint64_t); ++i) {
+        dst[i] = tiling64[i];
+    }
+}
 
-extern "C" __global__ __aicore__ void matmul_add_leakyrelu(
-  GM_ADDR gm_a, GM_ADDR gm_b, GM_ADDR gm_bias, GM_ADDR gm_out,
-  GM_ADDR workspace, GM_ADDR tilingPtr
-) {
-  using namespace AscendC;
-  (void)workspace; (void)tilingPtr;
+extern "C" __global__ __aicore__ void fc_leakyrelu(
+    GM_ADDR a, GM_ADDR b, GM_ADDR bias,
+    GM_ADDR out, GM_ADDR workspace, GM_ADDR tilingGm)
+{
+    KERNEL_TASK_TYPE_DEFAULT(KERNEL_TYPE_MIX_AIC_1_2);
+    TPipe pipe;
+    (void)workspace;
 
-  constexpr uint32_t M = 128u, K = 256u, N = 128u;
+    TCubeTiling tiling;
+    CopyTiling(&tiling, tilingGm);
 
-  TPipe pipe;
-  // B entire matrix in VECIN: K*N f16 = 65536 B = 64KB
-  TBuf<TPosition::VECIN>   tbuf_b;    pipe.InitBuffer(tbuf_b,    K*N*2u);
-  // A row: K f16 = 512 B
-  TQue<TPosition::VECIN,1> que_a;     pipe.InitBuffer(que_a, 1,  K*2u);
-  // A row f32: K*4 B = 1024 B
-  TBuf<TPosition::VECCALC> tbuf_af32; pipe.InitBuffer(tbuf_af32, K*4u);
-  // B row f32: N*4 B = 512 B
-  TBuf<TPosition::VECCALC> tbuf_bf32; pipe.InitBuffer(tbuf_bf32, N*4u);
-  // product: N*4 B
-  TBuf<TPosition::VECCALC> tbuf_prod; pipe.InitBuffer(tbuf_prod, N*4u);
-  // accumulator: N*4 B
-  TBuf<TPosition::VECCALC> tbuf_acc;  pipe.InitBuffer(tbuf_acc,  N*4u);
-  // bias: N*4 B
-  TQue<TPosition::VECIN,1> que_bias;  pipe.InitBuffer(que_bias,1,N*4u);
-  // scaled: N*4 B
-  TBuf<TPosition::VECCALC> tbuf_sc;   pipe.InitBuffer(tbuf_sc,   N*4u);
-  // output row: N*4 B
-  TQue<TPosition::VECOUT,1> que_out;  pipe.InitBuffer(que_out,1, N*4u);
+    if ASCEND_IS_AIC {
+        Matmul<MatmulType<TPosition::GM, CubeFormat::ND, half>,
+               MatmulType<TPosition::GM, CubeFormat::ND, half>,
+               MatmulType<TPosition::VECIN, CubeFormat::ND, float>,
+               MatmulType<TPosition::GM, CubeFormat::ND, float>> mm;
 
-  __gm__ half*  pA = (__gm__ half*)gm_a;
-  __gm__ half*  pB = (__gm__ half*)gm_b;
-  __gm__ float* pC = (__gm__ float*)gm_bias;
-  __gm__ float* pO = (__gm__ float*)gm_out;
+        GlobalTensor<half> aGM, bGM;
+        GlobalTensor<float> cGM, biasGM;
+        aGM.SetGlobalBuffer(reinterpret_cast<__gm__ half *>(a), tiling.M * tiling.Ka);
+        bGM.SetGlobalBuffer(reinterpret_cast<__gm__ half *>(b), tiling.Kb * tiling.N);
+        cGM.SetGlobalBuffer(reinterpret_cast<__gm__ float *>(out), tiling.M * tiling.N);
+        biasGM.SetGlobalBuffer(reinterpret_cast<__gm__ float *>(bias), tiling.N);
 
-  // --- load B into UB ---
-  {
-    GlobalTensor<half> gb; gb.SetGlobalBuffer(pB);
-    DataCopy(tbuf_b.Get<half>(), gb, K*N);
-  }
-
-  // --- load bias into VECIN ---
-  LocalTensor<float> bias = que_bias.AllocTensor<float>();
-  { GlobalTensor<float> gc; gc.SetGlobalBuffer(pC); DataCopy(bias, gc, N); }
-  que_bias.EnQue(bias);
-  LocalTensor<float> biasv = que_bias.DeQue<float>();
-
-  // --- row loop ---
-  LocalTensor<half>  b_ub  = tbuf_b.Get<half>();
-  LocalTensor<float> a_f32 = tbuf_af32.Get<float>();
-  LocalTensor<float> b_f32 = tbuf_bf32.Get<float>();
-  LocalTensor<float> prod  = tbuf_prod.Get<float>();
-  LocalTensor<float> acc   = tbuf_acc.Get<float>();
-  LocalTensor<float> sc    = tbuf_sc.Get<float>();
-
-  for (uint32_t m = 0u; m < M; m++) {
-    // load A row
-    LocalTensor<half> a_h = que_a.AllocTensor<half>();
-    { GlobalTensor<half> ga; ga.SetGlobalBuffer(pA + m*K); DataCopy(a_h, ga, K); }
-    que_a.EnQue(a_h);
-    LocalTensor<half> ar = que_a.DeQue<half>();
-    Cast(a_f32, ar, RoundMode::CAST_NONE, K);
-    que_a.FreeTensor(ar);
-
-    // zero acc
-    Duplicate(acc, (float)0.f, N);
-
-    // k-loop: acc += A[m,k] * B[k,:]
-    for (uint32_t k = 0u; k < K; k++) {
-      // b_ub[k*N .. k*N+N-1] is B[k,:] in half
-      // Cast to f32 using offset LocalTensor
-      LocalTensor<half> bk = b_ub[k * N];
-      Cast(b_f32, bk, RoundMode::CAST_NONE, N);
-      float ak = a_f32.GetValue(k);
-      Muls(prod, b_f32, ak, N);
-      Add(acc, acc, prod, N);
+        REGIST_MATMUL_OBJ(&pipe, GetSysWorkSpacePtr(), mm, &tiling);
+        mm.SetTensorA(aGM);
+        mm.SetTensorB(bGM);
+        mm.SetBias(biasGM);
+        mm.template IterateAll(cGM);
+        mm.End();
+        CrossCoreSetFlag<0x2, PIPE_FIX>(3);
     }
 
-    // add bias, leaky relu
-    Add(acc, acc, biasv, N);
-    Muls(sc, acc, (float)0.001f, N);
-    LocalTensor<float> out = que_out.AllocTensor<float>();
-    Max(out, acc, sc, N);
-    que_out.EnQue(out);
+    if ASCEND_IS_AIV {
+        TQue<TPosition::VECIN, 1> reluInQueue;
+        TQue<TPosition::VECOUT, 1> reluOutQueue;
 
-    // store
-    LocalTensor<float> od = que_out.DeQue<float>();
-    { GlobalTensor<float> go; go.SetGlobalBuffer(pO + m*N); DataCopy(go, od, N); }
-    que_out.FreeTensor(od);
-  }
+        uint32_t count = (uint32_t)(tiling.singleCoreM * tiling.singleCoreN / 2);
+        GlobalTensor<float> cGM;
+        cGM.SetGlobalBuffer(reinterpret_cast<__gm__ float *>(out) + GetBlockIdx() * count);
 
-  que_bias.FreeTensor(biasv);
+        pipe.InitBuffer(reluInQueue, 1, count * sizeof(float));
+        pipe.InitBuffer(reluOutQueue, 1, count * sizeof(float));
+
+        CrossCoreWaitFlag(3);
+
+        LocalTensor<float> reluInLocal = reluInQueue.AllocTensor<float>();
+        DataCopy(reluInLocal, cGM, count);
+        reluInQueue.EnQue<float>(reluInLocal);
+
+        LocalTensor<float> inLocal = reluInQueue.DeQue<float>();
+        LocalTensor<float> outLocal = reluOutQueue.AllocTensor<float>();
+        LeakyRelu(outLocal, inLocal, (float)0.001f, count);
+        reluOutQueue.EnQue<float>(outLocal);
+        reluInQueue.FreeTensor(inLocal);
+
+        LocalTensor<float> finalLocal = reluOutQueue.DeQue<float>();
+        DataCopy(cGM, finalLocal, count);
+        reluOutQueue.FreeTensor(finalLocal);
+    }
 }
-"""
-
-with open(out_path, 'w') as f:
-    f.write(code)
-print(f"  step8_kernel_sim.cpp written")
+""")
+print("  fc_leakyrelu_official_style.cpp written")
 PYEOF
 
 # ── RuntimeMix compile ────────────────────────────────────────────────────────
 echo "=== [STAGE 9] RuntimeMix compile ==="
 rm -rf "${ARTIFACT_DIR}"
 "${BOOTSTRAP_BUILD_DIR}/bin/mix-compiler" \
-  --kernel "$SCRIPT_DIR/step8_kernel_sim.cpp" \
-  --name matmul_add_leakyrelu \
+  --kernel "$SCRIPT_DIR/fc_leakyrelu_official_style.cpp" \
+  --name fc_leakyrelu \
   --output "${ARTIFACT_DIR}" \
   --soc "${SOC_VERSION}"
 
@@ -282,11 +249,15 @@ for src, dst in [
     ("input_a.npy",    inp_dir / "matmul_add_leakyrelu_input_a.bin"),
     ("input_b.npy",    inp_dir / "matmul_add_leakyrelu_input_b.bin"),
     ("input_bias.npy", inp_dir / "matmul_add_leakyrelu_input_bias.bin"),
+    ("input_a.npy",    inp_dir / "fc_leakyrelu_input_a.bin"),
+    ("input_b.npy",    inp_dir / "fc_leakyrelu_input_b.bin"),
+    ("input_bias.npy", inp_dir / "fc_leakyrelu_input_bias.bin"),
 ]:
     np.load(npy_dir / src).tofile(dst)
 
 golden = np.load(npy_dir / "output.npy")
 golden.tofile(out_dir / "matmul_add_leakyrelu_output.bin")
+golden.tofile(out_dir / "fc_leakyrelu_output.bin")
 golden.tofile(out_dir / "golden.bin")
 PY
 
