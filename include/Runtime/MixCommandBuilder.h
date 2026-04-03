@@ -21,7 +21,8 @@ std::vector<std::string> buildBishengCommand(const MixAnalyzedKernel &info,
 std::vector<std::string>
 buildPreprocessedDeviceCompileCommand(llvm::StringRef src,
                                       llvm::StringRef obj,
-                                      MixCoreType coreType);
+                                      MixCoreType coreType,
+                                      llvm::ArrayRef<std::string> defs = {});
 
 std::vector<std::string> buildLldRelocCommand(llvm::StringRef inputObj,
                                               llvm::StringRef outputObj);

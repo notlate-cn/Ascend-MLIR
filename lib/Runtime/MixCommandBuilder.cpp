@@ -230,12 +230,14 @@ buildBishengCommand(const MixAnalyzedKernel &info, llvm::StringRef src,
 std::vector<std::string>
 buildPreprocessedDeviceCompileCommand(llvm::StringRef src,
                                       llvm::StringRef obj,
-                                      MixCoreType coreType) {
+                                      MixCoreType coreType,
+                                      llvm::ArrayRef<std::string> defs) {
   std::vector<std::string> args;
   args.push_back(getBishengPath());
   args.push_back("-DHAVE_TILING");
   args.push_back("-DHAVE_WORKSPACE");
   args.push_back("-DTILING_KEY_VAR=0");
+  appendDefines(args, defs);
   appendAscIncludes(args);
   appendTikcppIncludes(args);
   args.push_back("-g");
