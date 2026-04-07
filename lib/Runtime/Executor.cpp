@@ -8,6 +8,7 @@
 #include <cstring>
 #include <dlfcn.h>
 #include <sys/stat.h>
+#include <type_traits>
 
 namespace mlir::runtime {
 
@@ -285,30 +286,76 @@ llvm::Error Executor::RunPackedMixFile(const std::string& shared_lib_path,
 
   if (!acl_handle_) {
     std::string aclLib = getAclLibPath();
-    acl_handle_ = dlopen(aclLib.c_str(), RTLD_LAZY | RTLD_GLOBAL);
-    if (!acl_handle_)
+    void* new_acl_handle = dlopen(aclLib.c_str(), RTLD_LAZY | RTLD_GLOBAL);
+    if (!new_acl_handle)
       return llvm::createStringError(llvm::inconvertibleErrorCode(),
                                      "dlopen failed (%s): %s", aclLib.c_str(),
                                      dlerror());
 
-#define LOAD_ACL(name)                                                           \
-    name##_ = reinterpret_cast<decltype(name##_)>(dlsym(acl_handle_, #name));   \
-    if (!name##_)                                                                \
-      return llvm::createStringError(llvm::inconvertibleErrorCode(),            \
-                                     "dlsym " #name " failed: %s", dlerror())
-    LOAD_ACL(aclInit);
-    LOAD_ACL(aclFinalize);
-    LOAD_ACL(aclrtSetDevice);
-    LOAD_ACL(aclrtResetDevice);
-    LOAD_ACL(aclrtCreateStream);
-    LOAD_ACL(aclrtDestroyStream);
-    LOAD_ACL(aclrtMalloc);
-    LOAD_ACL(aclrtFree);
-    LOAD_ACL(aclrtMallocHost);
-    LOAD_ACL(aclrtFreeHost);
-    LOAD_ACL(aclrtMemcpy);
-    LOAD_ACL(aclrtSynchronizeStream);
-#undef LOAD_ACL
+    auto loadAclSymbol = [&](auto& fn, const char* symbol_name) -> llvm::Error {
+      fn = reinterpret_cast<std::remove_reference_t<decltype(fn)>>(
+          dlsym(new_acl_handle, symbol_name));
+      if (!fn) {
+        const char* err = dlerror();
+        dlclose(new_acl_handle);
+        return llvm::createStringError(llvm::inconvertibleErrorCode(),
+                                       "dlsym %s failed: %s", symbol_name,
+                                       err ? err : "unknown");
+      }
+      return llvm::Error::success();
+    };
+
+    decltype(aclInit_)                new_aclInit = nullptr;
+    decltype(aclFinalize_)            new_aclFinalize = nullptr;
+    decltype(aclrtSetDevice_)         new_aclrtSetDevice = nullptr;
+    decltype(aclrtResetDevice_)       new_aclrtResetDevice = nullptr;
+    decltype(aclrtCreateStream_)      new_aclrtCreateStream = nullptr;
+    decltype(aclrtDestroyStream_)     new_aclrtDestroyStream = nullptr;
+    decltype(aclrtMalloc_)            new_aclrtMalloc = nullptr;
+    decltype(aclrtFree_)              new_aclrtFree = nullptr;
+    decltype(aclrtMallocHost_)        new_aclrtMallocHost = nullptr;
+    decltype(aclrtFreeHost_)         new_aclrtFreeHost = nullptr;
+    decltype(aclrtMemcpy_)            new_aclrtMemcpy = nullptr;
+    decltype(aclrtSynchronizeStream_) new_aclrtSynchronizeStream = nullptr;
+    if (auto err = loadAclSymbol(new_aclInit, "aclInit"))
+      return err;
+    if (auto err = loadAclSymbol(new_aclFinalize, "aclFinalize"))
+      return err;
+    if (auto err = loadAclSymbol(new_aclrtSetDevice, "aclrtSetDevice"))
+      return err;
+    if (auto err = loadAclSymbol(new_aclrtResetDevice, "aclrtResetDevice"))
+      return err;
+    if (auto err = loadAclSymbol(new_aclrtCreateStream, "aclrtCreateStream"))
+      return err;
+    if (auto err = loadAclSymbol(new_aclrtDestroyStream, "aclrtDestroyStream"))
+      return err;
+    if (auto err = loadAclSymbol(new_aclrtMalloc, "aclrtMalloc"))
+      return err;
+    if (auto err = loadAclSymbol(new_aclrtFree, "aclrtFree"))
+      return err;
+    if (auto err = loadAclSymbol(new_aclrtMallocHost, "aclrtMallocHost"))
+      return err;
+    if (auto err = loadAclSymbol(new_aclrtFreeHost, "aclrtFreeHost"))
+      return err;
+    if (auto err = loadAclSymbol(new_aclrtMemcpy, "aclrtMemcpy"))
+      return err;
+    if (auto err = loadAclSymbol(new_aclrtSynchronizeStream,
+                                 "aclrtSynchronizeStream"))
+      return err;
+
+    acl_handle_             = new_acl_handle;
+    aclInit_                = new_aclInit;
+    aclFinalize_            = new_aclFinalize;
+    aclrtSetDevice_         = new_aclrtSetDevice;
+    aclrtResetDevice_       = new_aclrtResetDevice;
+    aclrtCreateStream_      = new_aclrtCreateStream;
+    aclrtDestroyStream_     = new_aclrtDestroyStream;
+    aclrtMalloc_            = new_aclrtMalloc;
+    aclrtFree_              = new_aclrtFree;
+    aclrtMallocHost_        = new_aclrtMallocHost;
+    aclrtFreeHost_          = new_aclrtFreeHost;
+    aclrtMemcpy_            = new_aclrtMemcpy;
+    aclrtSynchronizeStream_ = new_aclrtSynchronizeStream;
   }
 
   void* mix_lib = dlopen(shared_lib_path.c_str(), RTLD_NOW | RTLD_LOCAL);
