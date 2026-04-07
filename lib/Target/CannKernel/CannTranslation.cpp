@@ -96,6 +96,10 @@ struct MixPartitionSummary {
 };
 
 struct SupportedMixKernelConfig {
+  enum class TaskKind {
+    MixAic1To2,
+  };
+
   enum class EpilogueKind {
     Unknown,
     Relu,
@@ -103,11 +107,28 @@ struct SupportedMixKernelConfig {
   };
 
   bool hasBiasAdd = false;
+  TaskKind taskKind = TaskKind::MixAic1To2;
   EpilogueKind epilogueKind = EpilogueKind::Unknown;
   double leakyReluAlpha = 0.0;
   unsigned vectorTaskRatio = 2;
   unsigned crossCoreFlagId = 3;
 };
+
+static StringRef getMixTaskTypeSpelling(SupportedMixKernelConfig::TaskKind taskKind) {
+  switch (taskKind) {
+  case SupportedMixKernelConfig::TaskKind::MixAic1To2:
+    return "KERNEL_TYPE_MIX_AIC_1_2";
+  }
+  llvm_unreachable("unsupported mix task kind");
+}
+
+static unsigned getMixCrossCoreMode(SupportedMixKernelConfig::TaskKind taskKind) {
+  switch (taskKind) {
+  case SupportedMixKernelConfig::TaskKind::MixAic1To2:
+    return 0x2;
+  }
+  llvm_unreachable("unsupported mix task kind");
+}
 
 static MixPartitionKind getStoragePartitionForPosition(ascendc::TPosition position) {
   switch (position) {
@@ -431,7 +452,8 @@ static void emitSupportedMixKernel(raw_ostream &os, func::FuncOp funcOp,
      << "extern \"C\" __global__ __aicore__ void " << kernelName << "(\n"
      << "    GM_ADDR a, GM_ADDR b, GM_ADDR bias, GM_ADDR out, GM_ADDR workspace,\n"
      << "    GM_ADDR tilingGm) {\n"
-     << "  KERNEL_TASK_TYPE_DEFAULT(KERNEL_TYPE_MIX_AIC_1_2);\n"
+     << "  KERNEL_TASK_TYPE_DEFAULT("
+     << getMixTaskTypeSpelling(config.taskKind) << ");\n"
      << "  TPipe pipe;\n"
      << "  (void)workspace;\n\n"
      << "  TCubeTiling tiling;\n"
@@ -458,7 +480,9 @@ static void emitSupportedMixKernel(raw_ostream &os, func::FuncOp funcOp,
      << (config.hasBiasAdd ? "    mm.SetBias(biasGM);\n" : "")
      << "    mm.template IterateAll(cGM);\n"
      << "    mm.End();\n"
-     << "    CrossCoreSetFlag<0x2, PIPE_FIX>("
+     << "    CrossCoreSetFlag<0x"
+     << llvm::format_hex_no_prefix(getMixCrossCoreMode(config.taskKind), 1)
+     << ", PIPE_FIX>("
      << config.crossCoreFlagId << ");\n"
      << "  }\n\n"
      << "  if ASCEND_IS_AIV {\n"
