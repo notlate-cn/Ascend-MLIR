@@ -13,6 +13,8 @@
 // CHECK: if ASCEND_IS_AIC {
 // CHECK: REGIST_MATMUL_OBJ(&pipe, GetSysWorkSpacePtr(), mm, &tiling);
 // CHECK: mm.SetBias(biasGM);
+// CHECK: mm.template IterateAll(cGM);
+// CHECK: mm.End();
 // CHECK: CrossCoreSetFlag<0x2, PIPE_FIX>(3);
 // CHECK: if ASCEND_IS_AIV {
 // CHECK: uint32_t count = static_cast<uint32_t>(tiling.singleCoreM * tiling.singleCoreN / 2);
