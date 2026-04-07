@@ -26,7 +26,8 @@
 #include "llvm/Support/JSON.h"
 #include "llvm/Support/raw_ostream.h"
 
-#include <optional>
+#include <limits>
+#include <functional>
 #include <string>
 
 using namespace mlir;
@@ -103,6 +104,8 @@ struct MixBoundaryValue {
   Value value;
   MixPartitionKind producer;
   MixPartitionKind consumer;
+  Operation *producerOp = nullptr;
+  Operation *consumerOp = nullptr;
 };
 
 struct MixRegionPlan {
@@ -110,6 +113,8 @@ struct MixRegionPlan {
   SmallVector<Operation *> ops;
   SmallVector<MixBoundaryValue> inputs;
   SmallVector<MixBoundaryValue> outputs;
+  unsigned firstOpOrder = 0;
+  unsigned lastOpOrder = 0;
 };
 
 struct MixPartitionPlan {
@@ -119,12 +124,15 @@ struct MixPartitionPlan {
 
 enum class MixSingleChainFailureReason {
   MissingCubeRegion,
-  MultipleCubeRegions,
   MissingBoundaryRegion,
-  MultipleBoundaryRegions,
   MissingVectorRegion,
-  MultipleVectorRegions,
-  MissingBoundaryCrossing,
+  MissingCubeToBoundaryCrossing,
+  MultipleCubeToBoundaryCrossings,
+  MissingBoundaryToVectorCrossing,
+  MultipleBoundaryToVectorCrossings,
+  BoundaryChainNotLinear,
+  ExtraCubeOpsOutsideChain,
+  ExtraVectorOpsOutsideChain,
   InvalidOrdering,
 };
 
@@ -443,16 +451,19 @@ collectMixBoundaryValues(const MixPartitionSummary &summary) {
       buildMixPartitionMap(summary);
 
   auto recordCrossing = [&](Value value, MixPartitionKind producer,
-                            MixPartitionKind consumer) {
+                            MixPartitionKind consumer, Operation *producerOp,
+                            Operation *consumerOp) {
     if (producer == MixPartitionKind::Unknown ||
         consumer == MixPartitionKind::Unknown || producer == consumer)
       return;
     for (const MixBoundaryValue &existing : boundaryValues) {
       if (existing.value == value && existing.producer == producer &&
-          existing.consumer == consumer)
+          existing.consumer == consumer && existing.producerOp == producerOp &&
+          existing.consumerOp == consumerOp)
         return;
     }
-    boundaryValues.push_back({value, producer, consumer});
+    boundaryValues.push_back(
+        {value, producer, consumer, producerOp, consumerOp});
   };
 
   auto getPartitionForSummaryOp = [&](Operation *op) {
@@ -473,7 +484,7 @@ collectMixBoundaryValues(const MixPartitionSummary &summary) {
     for (Value result : op->getResults()) {
       for (Operation *user : result.getUsers())
         recordCrossing(result, MixPartitionKind::Cube,
-                       getConsumerPartition(user));
+                       getConsumerPartition(user), op, user);
     }
   }
 
@@ -483,13 +494,13 @@ collectMixBoundaryValues(const MixPartitionSummary &summary) {
       if (!defOp)
         continue;
       recordCrossing(operand, getPartitionForSummaryOp(defOp),
-                     MixPartitionKind::Boundary);
+                     MixPartitionKind::Boundary, defOp, op);
     }
 
     for (Value result : op->getResults()) {
       for (Operation *user : result.getUsers())
         recordCrossing(result, MixPartitionKind::Boundary,
-                       getConsumerPartition(user));
+                       getConsumerPartition(user), op, user);
     }
   }
 
@@ -499,7 +510,7 @@ collectMixBoundaryValues(const MixPartitionSummary &summary) {
       if (!defOp)
         continue;
       recordCrossing(operand, getPartitionForSummaryOp(defOp),
-                     MixPartitionKind::Vector);
+                     MixPartitionKind::Vector, defOp, op);
     }
   }
 
@@ -507,9 +518,12 @@ collectMixBoundaryValues(const MixPartitionSummary &summary) {
 }
 
 static MixPartitionPlan buildInitialMixPartitionPlan(
-    [[maybe_unused]] func::FuncOp funcOp, const MixPartitionSummary &summary) {
+    func::FuncOp funcOp, const MixPartitionSummary &summary) {
   MixPartitionPlan plan;
   SmallVector<MixBoundaryValue> boundaryValues = collectMixBoundaryValues(summary);
+  llvm::DenseMap<Operation *, unsigned> opOrder;
+  unsigned nextOrder = 0;
+  funcOp.walk([&](Operation *op) { opOrder[op] = nextOrder++; });
 
   auto addRegion = [&](MixPartitionKind kind,
                        ArrayRef<Operation *> ops) -> void {
@@ -518,6 +532,17 @@ static MixPartitionPlan buildInitialMixPartitionPlan(
     MixRegionPlan region;
     region.kind = kind;
     region.ops.append(ops.begin(), ops.end());
+    region.firstOpOrder = std::numeric_limits<unsigned>::max();
+    region.lastOpOrder = 0;
+    for (Operation *op : ops) {
+      auto it = opOrder.find(op);
+      if (it == opOrder.end())
+        continue;
+      region.firstOpOrder = std::min(region.firstOpOrder, it->second);
+      region.lastOpOrder = std::max(region.lastOpOrder, it->second);
+    }
+    if (region.firstOpOrder == std::numeric_limits<unsigned>::max())
+      region.firstOpOrder = 0;
     if (kind == MixPartitionKind::Boundary) {
       for (const MixBoundaryValue &boundaryValue : boundaryValues) {
         if (boundaryValue.consumer == MixPartitionKind::Boundary)
@@ -550,6 +575,159 @@ static bool hasFailureReason(ArrayRef<MixSingleChainFailureReason> reasons,
   return llvm::is_contained(reasons, reason);
 }
 
+static SmallVector<MixBoundaryValue>
+filterBoundaryValues(ArrayRef<MixBoundaryValue> values,
+                     MixPartitionKind producer, MixPartitionKind consumer) {
+  SmallVector<MixBoundaryValue> filtered;
+  for (const MixBoundaryValue &value : values) {
+    if (value.producer == producer && value.consumer == consumer)
+      filtered.push_back(value);
+  }
+  return filtered;
+}
+
+static llvm::DenseSet<Operation *>
+collectAncestorPartitionOps(Value seed,
+                            const llvm::DenseMap<Operation *, MixPartitionKind>
+                                &partitionMap,
+                            MixPartitionKind targetKind) {
+  llvm::DenseSet<Operation *> collected;
+  llvm::DenseSet<Operation *> visiting;
+
+  std::function<void(Value)> visitValue = [&](Value value) {
+    Operation *defOp = value.getDefiningOp();
+    if (!defOp || !visiting.insert(defOp).second)
+      return;
+    auto it = partitionMap.find(defOp);
+    if (it != partitionMap.end() && it->second == targetKind)
+      collected.insert(defOp);
+    for (Value operand : defOp->getOperands())
+      visitValue(operand);
+    visiting.erase(defOp);
+  };
+
+  visitValue(seed);
+  return collected;
+}
+
+static llvm::DenseSet<Operation *>
+collectDescendantPartitionOps(Value seed,
+                              const llvm::DenseMap<Operation *, MixPartitionKind>
+                                  &partitionMap,
+                              MixPartitionKind targetKind) {
+  llvm::DenseSet<Operation *> collected;
+  llvm::DenseSet<Value> visitingValues;
+
+  std::function<void(Value)> visitValue = [&](Value value) {
+    if (!visitingValues.insert(value).second)
+      return;
+    for (Operation *user : value.getUsers()) {
+      auto it = partitionMap.find(user);
+      if (it != partitionMap.end() && it->second == targetKind)
+        collected.insert(user);
+      for (Value result : user->getResults())
+        visitValue(result);
+    }
+    visitingValues.erase(value);
+  };
+
+  visitValue(seed);
+  return collected;
+}
+
+static void buildBoundaryRegionGraph(
+    ArrayRef<Operation *> boundaryOps,
+    const llvm::DenseMap<Operation *, MixPartitionKind> &partitionMap,
+    llvm::DenseMap<Operation *, SmallVector<Operation *>> &successors,
+    llvm::DenseMap<Operation *, SmallVector<Operation *>> &predecessors) {
+  llvm::DenseSet<Operation *> boundarySet;
+  for (Operation *op : boundaryOps)
+    boundarySet.insert(op);
+  for (Operation *op : boundaryOps) {
+    successors.try_emplace(op, SmallVector<Operation *>());
+    predecessors.try_emplace(op, SmallVector<Operation *>());
+  }
+
+  for (Operation *op : boundaryOps) {
+    for (Value result : op->getResults()) {
+      for (Operation *user : result.getUsers()) {
+        auto it = partitionMap.find(user);
+        if (it == partitionMap.end() || it->second != MixPartitionKind::Boundary ||
+            !boundarySet.contains(user))
+          continue;
+        successors[op].push_back(user);
+        predecessors[user].push_back(op);
+      }
+    }
+  }
+}
+
+static llvm::DenseSet<Operation *>
+collectReachableBoundaryOps(
+    Operation *start,
+    const llvm::DenseMap<Operation *, SmallVector<Operation *>> &adjacency) {
+  llvm::DenseSet<Operation *> reachable;
+  if (!start)
+    return reachable;
+
+  SmallVector<Operation *> worklist{start};
+  while (!worklist.empty()) {
+    Operation *op = worklist.pop_back_val();
+    if (!reachable.insert(op).second)
+      continue;
+    auto it = adjacency.find(op);
+    if (it == adjacency.end())
+      continue;
+    worklist.append(it->second.begin(), it->second.end());
+  }
+
+  return reachable;
+}
+
+static bool isLinearBoundaryChain(
+    Operation *start, Operation *end,
+    const llvm::DenseSet<Operation *> &pathOps,
+    const llvm::DenseMap<Operation *, SmallVector<Operation *>> &successors,
+    const llvm::DenseMap<Operation *, SmallVector<Operation *>> &predecessors) {
+  if (!start || !end || pathOps.empty() || !pathOps.contains(start) ||
+      !pathOps.contains(end))
+    return false;
+
+  for (Operation *op : pathOps) {
+    unsigned pathPredecessors = 0;
+    unsigned pathSuccessors = 0;
+
+    if (auto predIt = predecessors.find(op); predIt != predecessors.end()) {
+      for (Operation *pred : predIt->second)
+        pathPredecessors += pathOps.contains(pred);
+    }
+    if (auto succIt = successors.find(op); succIt != successors.end()) {
+      for (Operation *succ : succIt->second)
+        pathSuccessors += pathOps.contains(succ);
+    }
+
+    if (op == start && op == end) {
+      if (pathPredecessors != 0 || pathSuccessors != 0)
+        return false;
+      continue;
+    }
+    if (op == start) {
+      if (pathPredecessors != 0 || pathSuccessors != 1)
+        return false;
+      continue;
+    }
+    if (op == end) {
+      if (pathPredecessors != 1 || pathSuccessors != 0)
+        return false;
+      continue;
+    }
+    if (pathPredecessors != 1 || pathSuccessors != 1)
+      return false;
+  }
+
+  return true;
+}
+
 static MixSingleChainValidation
 validateSingleChainGenericMixPlan(const MixPartitionPlan &plan) {
   MixSingleChainValidation validation;
@@ -557,73 +735,98 @@ validateSingleChainGenericMixPlan(const MixPartitionPlan &plan) {
     if (!hasFailureReason(validation.failureReasons, reason))
       validation.failureReasons.push_back(reason);
   };
-
-  unsigned cubeCount = 0;
-  unsigned boundaryCount = 0;
-  unsigned vectorCount = 0;
-  const MixRegionPlan *boundaryRegion = nullptr;
-  std::optional<unsigned> cubeIndex;
-  std::optional<unsigned> boundaryIndex;
-  std::optional<unsigned> vectorIndex;
-
-  for (const auto &[index, region] : llvm::enumerate(plan.regions)) {
-    switch (region.kind) {
-    case MixPartitionKind::Cube:
-      ++cubeCount;
-      if (!cubeIndex)
-        cubeIndex = index;
-      break;
-    case MixPartitionKind::Boundary:
-      ++boundaryCount;
-      if (!boundaryRegion)
-        boundaryRegion = &region;
-      if (!boundaryIndex)
-        boundaryIndex = index;
-      break;
-    case MixPartitionKind::Vector:
-      ++vectorCount;
-      if (!vectorIndex)
-        vectorIndex = index;
-      break;
-    case MixPartitionKind::Unknown:
-      addFailureReason(MixSingleChainFailureReason::InvalidOrdering);
-      break;
+  auto findRegionOfKind = [&](MixPartitionKind kind) -> const MixRegionPlan * {
+    for (const MixRegionPlan &region : plan.regions) {
+      if (region.kind == kind)
+        return &region;
     }
-  }
+    return nullptr;
+  };
 
-  if (cubeCount == 0)
+  const MixRegionPlan *cubeRegion = findRegionOfKind(MixPartitionKind::Cube);
+  const MixRegionPlan *boundaryRegion =
+      findRegionOfKind(MixPartitionKind::Boundary);
+  const MixRegionPlan *vectorRegion = findRegionOfKind(MixPartitionKind::Vector);
+
+  if (!cubeRegion)
     addFailureReason(MixSingleChainFailureReason::MissingCubeRegion);
-  else if (cubeCount > 1)
-    addFailureReason(MixSingleChainFailureReason::MultipleCubeRegions);
-
-  if (boundaryCount == 0)
+  if (!boundaryRegion)
     addFailureReason(MixSingleChainFailureReason::MissingBoundaryRegion);
-  else if (boundaryCount > 1)
-    addFailureReason(MixSingleChainFailureReason::MultipleBoundaryRegions);
-
-  if (vectorCount == 0)
+  if (!vectorRegion)
     addFailureReason(MixSingleChainFailureReason::MissingVectorRegion);
-  else if (vectorCount > 1)
-    addFailureReason(MixSingleChainFailureReason::MultipleVectorRegions);
+  if (!validation.succeeded())
+    return validation;
 
-  if (cubeIndex && boundaryIndex && vectorIndex &&
-      !(*cubeIndex < *boundaryIndex && *boundaryIndex < *vectorIndex))
+  if (!(cubeRegion->lastOpOrder < boundaryRegion->firstOpOrder &&
+        boundaryRegion->lastOpOrder < vectorRegion->firstOpOrder))
     addFailureReason(MixSingleChainFailureReason::InvalidOrdering);
 
-  if (boundaryRegion) {
-    bool hasCubeToBoundaryCrossing = llvm::any_of(
-        boundaryRegion->inputs, [](const MixBoundaryValue &input) {
-          return input.producer == MixPartitionKind::Cube &&
-                 input.consumer == MixPartitionKind::Boundary;
-        });
-    bool hasBoundaryToVectorCrossing = llvm::any_of(
-        boundaryRegion->outputs, [](const MixBoundaryValue &output) {
-          return output.producer == MixPartitionKind::Boundary &&
-                 output.consumer == MixPartitionKind::Vector;
-        });
-    if (!hasCubeToBoundaryCrossing || !hasBoundaryToVectorCrossing)
-      addFailureReason(MixSingleChainFailureReason::MissingBoundaryCrossing);
+  SmallVector<MixBoundaryValue> cubeToBoundary =
+      filterBoundaryValues(boundaryRegion->inputs, MixPartitionKind::Cube,
+                           MixPartitionKind::Boundary);
+  SmallVector<MixBoundaryValue> boundaryToVector =
+      filterBoundaryValues(boundaryRegion->outputs, MixPartitionKind::Boundary,
+                           MixPartitionKind::Vector);
+
+  if (cubeToBoundary.empty())
+    addFailureReason(MixSingleChainFailureReason::MissingCubeToBoundaryCrossing);
+  else if (cubeToBoundary.size() != 1)
+    addFailureReason(
+        MixSingleChainFailureReason::MultipleCubeToBoundaryCrossings);
+
+  if (boundaryToVector.empty())
+    addFailureReason(
+        MixSingleChainFailureReason::MissingBoundaryToVectorCrossing);
+  else if (boundaryToVector.size() != 1)
+    addFailureReason(
+        MixSingleChainFailureReason::MultipleBoundaryToVectorCrossings);
+
+  if (!validation.succeeded())
+    return validation;
+
+  const MixBoundaryValue &inputCrossing = cubeToBoundary.front();
+  const MixBoundaryValue &outputCrossing = boundaryToVector.front();
+
+  MixPartitionSummary summary;
+  summary.cubeOps = cubeRegion->ops;
+  summary.boundaryOps = boundaryRegion->ops;
+  summary.vectorOps = vectorRegion->ops;
+  llvm::DenseMap<Operation *, MixPartitionKind> partitionMap =
+      buildMixPartitionMap(summary);
+
+  llvm::DenseMap<Operation *, SmallVector<Operation *>> boundarySuccessors;
+  llvm::DenseMap<Operation *, SmallVector<Operation *>> boundaryPredecessors;
+  buildBoundaryRegionGraph(boundaryRegion->ops, partitionMap, boundarySuccessors,
+                           boundaryPredecessors);
+
+  llvm::DenseSet<Operation *> forwardBoundaryOps =
+      collectReachableBoundaryOps(inputCrossing.consumerOp, boundarySuccessors);
+  llvm::DenseSet<Operation *> backwardBoundaryOps =
+      collectReachableBoundaryOps(outputCrossing.producerOp, boundaryPredecessors);
+  llvm::DenseSet<Operation *> boundaryPathOps;
+  for (Operation *op : forwardBoundaryOps) {
+    if (backwardBoundaryOps.contains(op))
+      boundaryPathOps.insert(op);
   }
+
+  if (!boundaryPathOps.size() ||
+      boundaryPathOps.size() != boundaryRegion->ops.size() ||
+      !isLinearBoundaryChain(inputCrossing.consumerOp, outputCrossing.producerOp,
+                             boundaryPathOps, boundarySuccessors,
+                             boundaryPredecessors))
+    addFailureReason(MixSingleChainFailureReason::BoundaryChainNotLinear);
+
+  llvm::DenseSet<Operation *> chainCubeOps =
+      collectAncestorPartitionOps(inputCrossing.value, partitionMap,
+                                  MixPartitionKind::Cube);
+  if (chainCubeOps.size() != cubeRegion->ops.size())
+    addFailureReason(MixSingleChainFailureReason::ExtraCubeOpsOutsideChain);
+
+  llvm::DenseSet<Operation *> chainVectorOps =
+      collectDescendantPartitionOps(outputCrossing.value, partitionMap,
+                                    MixPartitionKind::Vector);
+  if (chainVectorOps.size() != vectorRegion->ops.size())
+    addFailureReason(MixSingleChainFailureReason::ExtraVectorOpsOutsideChain);
 
   return validation;
 }
@@ -633,18 +836,24 @@ stringifyMixSingleChainFailureReason(MixSingleChainFailureReason reason) {
   switch (reason) {
   case MixSingleChainFailureReason::MissingCubeRegion:
     return "missing cube region";
-  case MixSingleChainFailureReason::MultipleCubeRegions:
-    return "multiple cube regions";
   case MixSingleChainFailureReason::MissingBoundaryRegion:
     return "missing boundary region";
-  case MixSingleChainFailureReason::MultipleBoundaryRegions:
-    return "multiple boundary regions";
   case MixSingleChainFailureReason::MissingVectorRegion:
     return "missing vector region";
-  case MixSingleChainFailureReason::MultipleVectorRegions:
-    return "multiple vector regions";
-  case MixSingleChainFailureReason::MissingBoundaryCrossing:
-    return "missing cube-to-boundary or boundary-to-vector crossing";
+  case MixSingleChainFailureReason::MissingCubeToBoundaryCrossing:
+    return "missing cube-to-boundary crossing";
+  case MixSingleChainFailureReason::MultipleCubeToBoundaryCrossings:
+    return "multiple cube-to-boundary crossings";
+  case MixSingleChainFailureReason::MissingBoundaryToVectorCrossing:
+    return "missing boundary-to-vector crossing";
+  case MixSingleChainFailureReason::MultipleBoundaryToVectorCrossings:
+    return "multiple boundary-to-vector crossings";
+  case MixSingleChainFailureReason::BoundaryChainNotLinear:
+    return "boundary region does not form one linear chain";
+  case MixSingleChainFailureReason::ExtraCubeOpsOutsideChain:
+    return "cube region contains ops outside the single executable chain";
+  case MixSingleChainFailureReason::ExtraVectorOpsOutsideChain:
+    return "vector region contains ops outside the single executable chain";
   case MixSingleChainFailureReason::InvalidOrdering:
     return "invalid region ordering";
   }
