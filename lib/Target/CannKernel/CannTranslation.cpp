@@ -18,6 +18,9 @@
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/IRMapping.h"
 #include "mlir/IR/PatternMatch.h"
+#include "llvm/ADT/DenseMap.h"
+#include "llvm/ADT/DenseSet.h"
+#include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/JSON.h"
 #include "llvm/Support/raw_ostream.h"
@@ -56,27 +59,182 @@ static func::FuncOp findPrimaryGlobalKernel(ModuleOp moduleOp) {
   return {};
 }
 
-static bool hasDescendantOpNamed(func::FuncOp funcOp, StringRef opName) {
-  bool found = false;
-  funcOp.walk([&](Operation *op) {
-    if (op->getName().getStringRef() == opName) {
-      found = true;
-      return WalkResult::interrupt();
-    }
-    return WalkResult::advance();
-  });
-  return found;
-}
-
 static bool isRankedMemrefOf(Type type, int64_t rank, Type elementType) {
   auto memrefType = dyn_cast<MemRefType>(type);
   return memrefType && memrefType.getRank() == rank &&
          memrefType.getElementType() == elementType;
 }
 
-static bool isSupportedMatmulBiasLeakyReluMix(func::FuncOp funcOp) {
-  if (getKernelKind(funcOp) != AscendCKernelKind::Mix)
+enum class MixPartitionKind {
+  Unknown,
+  Cube,
+  Vector,
+  Boundary,
+};
+
+static MixPartitionKind getExplicitMixPartition(Operation *op) {
+  auto unitAttr = op->getAttrOfType<StringAttr>("ascendc.unit");
+  if (!unitAttr)
+    return MixPartitionKind::Unknown;
+  StringRef unit = unitAttr.getValue();
+  if (unit == "AiCore.Cube")
+    return MixPartitionKind::Cube;
+  if (unit == "AiCore.Vector")
+    return MixPartitionKind::Vector;
+  return MixPartitionKind::Unknown;
+}
+
+struct MixPartitionSummary {
+  SmallVector<Operation *> cubeOps;
+  SmallVector<Operation *> vectorOps;
+  SmallVector<Operation *> boundaryOps;
+
+  bool hasCube() const { return !cubeOps.empty(); }
+  bool hasVector() const { return !vectorOps.empty(); }
+  bool hasBoundary() const { return !boundaryOps.empty(); }
+};
+
+static bool isKnownMixBoundaryOp(Operation *op) {
+  return op->getName().getStringRef() == "ascendc.data_copy_co12dst";
+}
+
+static bool valueOriginatesFromPartition(Value value, MixPartitionKind target,
+                                         llvm::DenseMap<Value, bool> &cache,
+                                         llvm::SmallPtrSetImpl<Operation *> &visiting);
+
+static bool opOriginatesFromPartition(Operation *op, MixPartitionKind target,
+                                      llvm::DenseMap<Value, bool> &cache,
+                                      llvm::SmallPtrSetImpl<Operation *> &visiting) {
+  MixPartitionKind explicitPartition = getExplicitMixPartition(op);
+  if (explicitPartition != MixPartitionKind::Unknown)
+    return explicitPartition == target;
+
+  if (!visiting.insert(op).second)
     return false;
+
+  bool matches = llvm::any_of(op->getOperands(), [&](Value operand) {
+    return valueOriginatesFromPartition(operand, target, cache, visiting);
+  });
+  visiting.erase(op);
+  return matches;
+}
+
+static bool valueOriginatesFromPartition(Value value, MixPartitionKind target,
+                                         llvm::DenseMap<Value, bool> &cache,
+                                         llvm::SmallPtrSetImpl<Operation *> &visiting) {
+  auto cached = cache.find(value);
+  if (cached != cache.end())
+    return cached->second;
+
+  auto defOp = value.getDefiningOp();
+  if (!defOp)
+    return cache[value] = false;
+  return cache[value] = opOriginatesFromPartition(defOp, target, cache, visiting);
+}
+
+static bool valueReachesPartition(Value value, MixPartitionKind target,
+                                  Operation *skipUser,
+                                  llvm::DenseMap<Value, bool> &cache,
+                                  llvm::DenseSet<Value> &visiting) {
+  auto cached = cache.find(value);
+  if (cached != cache.end())
+    return cached->second;
+
+  if (!visiting.insert(value).second)
+    return false;
+
+  bool reaches = false;
+  for (Operation *user : value.getUsers()) {
+    if (user == skipUser)
+      continue;
+    MixPartitionKind explicitPartition = getExplicitMixPartition(user);
+    if (explicitPartition == target) {
+      reaches = true;
+      break;
+    }
+    if (explicitPartition != MixPartitionKind::Unknown)
+      continue;
+    for (Value result : user->getResults()) {
+      if (valueReachesPartition(result, target, nullptr, cache, visiting)) {
+        reaches = true;
+        break;
+      }
+    }
+    if (reaches)
+      break;
+  }
+
+  visiting.erase(value);
+  cache[value] = reaches;
+  return reaches;
+}
+
+static MixPartitionSummary buildMixPartitionSummary(func::FuncOp funcOp) {
+  MixPartitionSummary summary;
+  llvm::DenseMap<Value, bool> originCubeCache;
+  llvm::DenseMap<Value, bool> originVectorCache;
+  llvm::DenseMap<Value, bool> reachCubeCache;
+  llvm::DenseMap<Value, bool> reachVectorCache;
+
+  funcOp.walk([&](Operation *op) {
+    MixPartitionKind explicitPartition = getExplicitMixPartition(op);
+    if (explicitPartition == MixPartitionKind::Cube) {
+      summary.cubeOps.push_back(op);
+      return;
+    }
+    if (explicitPartition == MixPartitionKind::Vector) {
+      summary.vectorOps.push_back(op);
+      return;
+    }
+
+    llvm::SmallPtrSet<Operation *, 16> originVisiting;
+    bool hasCubeFlowIn = llvm::any_of(op->getOperands(), [&](Value operand) {
+      return valueOriginatesFromPartition(operand, MixPartitionKind::Cube,
+                                         originCubeCache, originVisiting);
+    });
+    originVisiting.clear();
+    bool hasVectorFlowIn = llvm::any_of(op->getOperands(), [&](Value operand) {
+      return valueOriginatesFromPartition(operand, MixPartitionKind::Vector,
+                                         originVectorCache, originVisiting);
+    });
+
+    llvm::DenseSet<Value> reachVisiting;
+    bool hasCubeFlowOut = llvm::any_of(op->getResults(), [&](Value result) {
+      return valueReachesPartition(result, MixPartitionKind::Cube, nullptr,
+                                   reachCubeCache, reachVisiting);
+    });
+    reachVisiting.clear();
+    bool hasVectorFlowOut = llvm::any_of(op->getResults(), [&](Value result) {
+      return valueReachesPartition(result, MixPartitionKind::Vector, nullptr,
+                                   reachVectorCache, reachVisiting);
+    });
+
+    if (!hasCubeFlowOut) {
+      reachVisiting.clear();
+      hasCubeFlowOut = llvm::any_of(op->getOperands(), [&](Value operand) {
+        return valueReachesPartition(operand, MixPartitionKind::Cube, op,
+                                     reachCubeCache, reachVisiting);
+      });
+    }
+    if (!hasVectorFlowOut) {
+      reachVisiting.clear();
+      hasVectorFlowOut = llvm::any_of(op->getOperands(), [&](Value operand) {
+        return valueReachesPartition(operand, MixPartitionKind::Vector, op,
+                                     reachVectorCache, reachVisiting);
+      });
+    }
+
+    if (isKnownMixBoundaryOp(op) ||
+        (hasCubeFlowIn && hasVectorFlowOut) ||
+        (hasVectorFlowIn && hasCubeFlowOut))
+      summary.boundaryOps.push_back(op);
+  });
+
+  return summary;
+}
+
+static bool isSupportedCurrentMixEmission(func::FuncOp funcOp,
+                                          const MixPartitionSummary &summary) {
   auto numInputsAttr = funcOp->getAttrOfType<IntegerAttr>("cann.num_inputs");
   if (!numInputsAttr || numInputsAttr.getInt() != 4)
     return false;
@@ -106,11 +264,7 @@ static bool isSupportedMatmulBiasLeakyReluMix(func::FuncOp funcOp) {
   if (!isa<emitasc::PyStructType>(args[6].getType()))
     return false;
 
-  return hasDescendantOpNamed(funcOp, "ascendc.mmad") &&
-         (hasDescendantOpNamed(funcOp, "ascendc.broadcast_l2") ||
-          hasDescendantOpNamed(funcOp, "emitasc.verbatim")) &&
-         hasDescendantOpNamed(funcOp, "ascendc.mul_l2") &&
-         hasDescendantOpNamed(funcOp, "ascendc.max_l2");
+  return summary.hasCube() && summary.hasVector() && summary.hasBoundary();
 }
 
 static void emitSupportedMixKernel(raw_ostream &os, func::FuncOp funcOp) {
@@ -594,6 +748,8 @@ LogicalResult mlir::translateToCannKernel(Operation *op, raw_ostream &os,
   func::FuncOp primaryKernel = findPrimaryGlobalKernel(moduleOp);
   if (primaryKernel &&
       getKernelKind(primaryKernel) == AscendCKernelKind::Mix) {
+    MixPartitionSummary partitionSummary =
+        buildMixPartitionSummary(primaryKernel);
     auto args = primaryKernel.getArguments();
     if (!args.empty()) {
       auto tilingType = dyn_cast<emitasc::PyStructType>(args.back().getType());
@@ -602,9 +758,9 @@ LogicalResult mlir::translateToCannKernel(Operation *op, raw_ostream &os,
                             primaryKernel.getName(), tilingType);
     }
 
-    if (!isSupportedMatmulBiasLeakyReluMix(primaryKernel))
+    if (!isSupportedCurrentMixEmission(primaryKernel, partitionSummary))
       return primaryKernel.emitOpError(
-          "mix translation currently supports only the matmul+bias+leakyrelu kernel shape");
+          "mix translation requires a supported cube/vector partitioned kernel shape");
 
     emitSupportedMixKernel(os, primaryKernel);
     return success();
