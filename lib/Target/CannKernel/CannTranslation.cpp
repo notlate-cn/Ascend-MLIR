@@ -349,13 +349,20 @@ inferSupportedMixKernelConfig(func::FuncOp funcOp,
                               const MixPartitionSummary &summary) {
   SupportedMixKernelConfig config;
 
+  llvm::DenseSet<Value> vectorBroadcastDsts;
+  for (Operation *op : summary.vectorOps) {
+    auto broadcastOp = dyn_cast<ascendc::BroadcastL2Op>(op);
+    if (!broadcastOp)
+      continue;
+    vectorBroadcastDsts.insert(broadcastOp.getDst());
+  }
+
   for (Operation *op : summary.vectorOps) {
     auto addOp = dyn_cast<ascendc::AddL2Op>(op);
     if (!addOp)
       continue;
-    if (llvm::any_of(addOp->getOperands(), [](Value operand) {
-          return isa_and_nonnull<ascendc::BroadcastL2Op>(
-              operand.getDefiningOp());
+    if (llvm::any_of(addOp->getOperands(), [&](Value operand) {
+          return vectorBroadcastDsts.contains(operand);
         }))
       config.hasBiasAdd = true;
     if (config.hasBiasAdd)
