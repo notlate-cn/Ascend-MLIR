@@ -73,6 +73,7 @@ enum class MixPartitionKind {
   Boundary,
 };
 
+// Supported mix analysis helpers.
 static MixPartitionKind getExplicitMixPartition(Operation *op) {
   auto unitAttr = op->getAttrOfType<StringAttr>("ascendc.unit");
   if (!unitAttr)
@@ -373,6 +374,7 @@ static bool hasSupportedMixPartitions(const MixPartitionSummary &summary) {
   return summary.hasCube() && summary.hasVector() && summary.hasBoundary();
 }
 
+// Supported mix configuration inference.
 static bool isSupportedCurrentMixEmission(func::FuncOp funcOp,
                                           const MixPartitionSummary &summary) {
   if (!hasSupportedMixFunctionSignature(funcOp))
@@ -484,6 +486,7 @@ inferSupportedMixKernelConfig(func::FuncOp funcOp,
   return config;
 }
 
+// Supported mix emission helpers.
 static void emitSupportedMixVectorEpilogue(raw_ostream &os,
                                            const SupportedMixKernelConfig &config) {
   if (config.epilogueKind == SupportedMixKernelConfig::EpilogueKind::Relu) {
@@ -528,8 +531,7 @@ static void emitSupportedMixMatmulExecution(
 }
 
 static void emitSupportedMixCrossCoreSetFlag(
-    raw_ostream &os, const SupportedMixKernelConfig &config) {
-  MixTaskKindDescriptor desc = getMixTaskKindDescriptor(config.taskKind);
+    raw_ostream &os, const MixTaskKindDescriptor &desc) {
   os << "    CrossCoreSetFlag<0x"
      << llvm::format_hex_no_prefix(desc.crossCoreMode, 1)
      << ", PIPE_FIX>("
@@ -537,17 +539,16 @@ static void emitSupportedMixCrossCoreSetFlag(
 }
 
 static void emitSupportedMixVectorCountDecl(raw_ostream &os,
-                                            const SupportedMixKernelConfig &config) {
-  MixTaskKindDescriptor desc = getMixTaskKindDescriptor(config.taskKind);
+                                            const MixTaskKindDescriptor &desc) {
   os << "    uint32_t count = static_cast<uint32_t>(tiling.singleCoreM * tiling.singleCoreN / "
      << desc.vectorTaskRatio << ");\n";
 }
 
 static void emitSupportedMixAivQueueSetup(raw_ostream &os,
-                                          const SupportedMixKernelConfig &config) {
+                                          const MixTaskKindDescriptor &desc) {
   os << "    TQue<TPosition::VECIN, 1> reluInQueue;\n"
      << "    TQue<TPosition::VECOUT, 1> reluOutQueue;\n\n";
-  emitSupportedMixVectorCountDecl(os, config);
+  emitSupportedMixVectorCountDecl(os, desc);
   os << "    GlobalTensor<float> cGM;\n"
      << "    cGM.SetGlobalBuffer(reinterpret_cast<__gm__ float *>(out) + GetBlockIdx() * count, count);\n\n"
      << "    pipe.InitBuffer(reluInQueue, 1, count * sizeof(float));\n"
@@ -579,17 +580,17 @@ static void emitSupportedMixCubeRegion(raw_ostream &os,
 }
 
 static void emitSupportedMixBoundarySync(raw_ostream &os,
-                                         const SupportedMixKernelConfig &config) {
-  emitSupportedMixCrossCoreSetFlag(os, config);
+                                         const MixTaskKindDescriptor &desc) {
+  emitSupportedMixCrossCoreSetFlag(os, desc);
   os << "  }\n\n"
      << "  if ASCEND_IS_AIV {\n";
-  MixTaskKindDescriptor desc = getMixTaskKindDescriptor(config.taskKind);
   os << "    CrossCoreWaitFlag(" << desc.crossCoreFlagId << ");\n\n";
 }
 
 static void emitSupportedMixVectorRegion(raw_ostream &os,
-                                         const SupportedMixKernelConfig &config) {
-  emitSupportedMixAivQueueSetup(os, config);
+                                         const SupportedMixKernelConfig &config,
+                                         const MixTaskKindDescriptor &desc) {
+  emitSupportedMixAivQueueSetup(os, desc);
   emitSupportedMixAivInputCopy(os);
   emitSupportedMixVectorEpilogue(os, config);
   emitSupportedMixAivOutputCopy(os);
@@ -616,8 +617,7 @@ static void emitSupportedMixCopyTilingHelper(raw_ostream &os) {
 
 static void emitSupportedMixKernelSignature(raw_ostream &os,
                                             StringRef kernelName,
-                                            const SupportedMixKernelConfig &config) {
-  MixTaskKindDescriptor desc = getMixTaskKindDescriptor(config.taskKind);
+                                            const MixTaskKindDescriptor &desc) {
   os << "extern \"C\" __global__ __aicore__ void " << kernelName << "(\n"
      << "    GM_ADDR a, GM_ADDR b, GM_ADDR bias, GM_ADDR out, GM_ADDR workspace,\n"
      << "    GM_ADDR tilingGm) {\n"
@@ -629,18 +629,19 @@ static void emitSupportedMixKernelSignature(raw_ostream &os,
 }
 
 static void emitSupportedMixKernelPrologue(raw_ostream &os, StringRef kernelName,
-                                           const SupportedMixKernelConfig &config) {
+                                           const MixTaskKindDescriptor &desc) {
   emitSupportedMixIncludesAndNamespaces(os);
   emitSupportedMixCopyTilingHelper(os);
-  emitSupportedMixKernelSignature(os, kernelName, config);
+  emitSupportedMixKernelSignature(os, kernelName, desc);
 }
 
 static void emitSupportedMixKernel(raw_ostream &os, func::FuncOp funcOp,
                                    const SupportedMixKernelConfig &config) {
-  emitSupportedMixKernelPrologue(os, funcOp.getName(), config);
+  MixTaskKindDescriptor desc = getMixTaskKindDescriptor(config.taskKind);
+  emitSupportedMixKernelPrologue(os, funcOp.getName(), desc);
   emitSupportedMixCubeRegion(os, config);
-  emitSupportedMixBoundarySync(os, config);
-  emitSupportedMixVectorRegion(os, config);
+  emitSupportedMixBoundarySync(os, desc);
+  emitSupportedMixVectorRegion(os, config, desc);
   os << "}\n";
 }
 
