@@ -536,6 +536,42 @@ static void emitSupportedMixCrossCoreSetFlag(
      << desc.crossCoreFlagId << ");\n";
 }
 
+static void emitSupportedMixVectorCountDecl(raw_ostream &os,
+                                            const SupportedMixKernelConfig &config) {
+  MixTaskKindDescriptor desc = getMixTaskKindDescriptor(config.taskKind);
+  os << "    uint32_t count = static_cast<uint32_t>(tiling.singleCoreM * tiling.singleCoreN / "
+     << desc.vectorTaskRatio << ");\n";
+}
+
+static void emitSupportedMixAivQueueSetup(raw_ostream &os,
+                                          const SupportedMixKernelConfig &config) {
+  MixTaskKindDescriptor desc = getMixTaskKindDescriptor(config.taskKind);
+  os << "    TQue<TPosition::VECIN, 1> reluInQueue;\n"
+     << "    TQue<TPosition::VECOUT, 1> reluOutQueue;\n\n";
+  emitSupportedMixVectorCountDecl(os, config);
+  os << "    GlobalTensor<float> cGM;\n"
+     << "    cGM.SetGlobalBuffer(reinterpret_cast<__gm__ float *>(out) + GetBlockIdx() * count, count);\n\n"
+     << "    pipe.InitBuffer(reluInQueue, 1, count * sizeof(float));\n"
+     << "    pipe.InitBuffer(reluOutQueue, 1, count * sizeof(float));\n\n"
+     << "    CrossCoreWaitFlag(" << desc.crossCoreFlagId << ");\n\n";
+}
+
+static void emitSupportedMixAivInputCopy(raw_ostream &os) {
+  os << "    LocalTensor<float> reluInLocal = reluInQueue.AllocTensor<float>();\n"
+     << "    DataCopy(reluInLocal, cGM, count);\n"
+     << "    reluInQueue.EnQue<float>(reluInLocal);\n\n"
+     << "    LocalTensor<float> inLocal = reluInQueue.DeQue<float>();\n"
+     << "    LocalTensor<float> outLocal = reluOutQueue.AllocTensor<float>();\n";
+}
+
+static void emitSupportedMixAivOutputCopy(raw_ostream &os) {
+  os << "    reluOutQueue.EnQue<float>(outLocal);\n"
+     << "    reluInQueue.FreeTensor(inLocal);\n\n"
+     << "    LocalTensor<float> finalLocal = reluOutQueue.DeQue<float>();\n"
+     << "    DataCopy(cGM, finalLocal, count);\n"
+     << "    reluOutQueue.FreeTensor(finalLocal);\n";
+}
+
 static void emitSupportedMixAicRegion(raw_ostream &os,
                                       const SupportedMixKernelConfig &config) {
   os << "  if ASCEND_IS_AIC {\n";
@@ -548,42 +584,11 @@ static void emitSupportedMixAicRegion(raw_ostream &os,
 
 static void emitSupportedMixAivRegion(raw_ostream &os,
                                       const SupportedMixKernelConfig &config) {
-  auto emitVectorCountDecl = [&]() {
-    MixTaskKindDescriptor desc = getMixTaskKindDescriptor(config.taskKind);
-    os << "    uint32_t count = static_cast<uint32_t>(tiling.singleCoreM * tiling.singleCoreN / "
-       << desc.vectorTaskRatio << ");\n";
-  };
-  auto emitQueueSetup = [&]() {
-    MixTaskKindDescriptor desc = getMixTaskKindDescriptor(config.taskKind);
-    os << "    TQue<TPosition::VECIN, 1> reluInQueue;\n"
-       << "    TQue<TPosition::VECOUT, 1> reluOutQueue;\n\n";
-    emitVectorCountDecl();
-    os << "    GlobalTensor<float> cGM;\n"
-       << "    cGM.SetGlobalBuffer(reinterpret_cast<__gm__ float *>(out) + GetBlockIdx() * count, count);\n\n"
-       << "    pipe.InitBuffer(reluInQueue, 1, count * sizeof(float));\n"
-       << "    pipe.InitBuffer(reluOutQueue, 1, count * sizeof(float));\n\n"
-       << "    CrossCoreWaitFlag(" << desc.crossCoreFlagId << ");\n\n";
-  };
-  auto emitInputCopy = [&]() {
-    os << "    LocalTensor<float> reluInLocal = reluInQueue.AllocTensor<float>();\n"
-       << "    DataCopy(reluInLocal, cGM, count);\n"
-       << "    reluInQueue.EnQue<float>(reluInLocal);\n\n"
-       << "    LocalTensor<float> inLocal = reluInQueue.DeQue<float>();\n"
-       << "    LocalTensor<float> outLocal = reluOutQueue.AllocTensor<float>();\n";
-  };
-  auto emitOutputCopy = [&]() {
-    os << "    reluOutQueue.EnQue<float>(outLocal);\n"
-       << "    reluInQueue.FreeTensor(inLocal);\n\n"
-       << "    LocalTensor<float> finalLocal = reluOutQueue.DeQue<float>();\n"
-       << "    DataCopy(cGM, finalLocal, count);\n"
-       << "    reluOutQueue.FreeTensor(finalLocal);\n";
-  };
-
   os << "  if ASCEND_IS_AIV {\n";
-  emitQueueSetup();
-  emitInputCopy();
+  emitSupportedMixAivQueueSetup(os, config);
+  emitSupportedMixAivInputCopy(os);
   emitSupportedMixVectorEpilogue(os, config);
-  emitOutputCopy();
+  emitSupportedMixAivOutputCopy(os);
   os << "  }\n";
 }
 
