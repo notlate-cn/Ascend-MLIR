@@ -361,12 +361,16 @@ static bool hasSupportedMixFunctionSignature(func::FuncOp funcOp) {
   return isa<emitasc::PyStructType>(args[6].getType());
 }
 
+static bool hasSupportedMixPartitions(const MixPartitionSummary &summary) {
+  return summary.hasCube() && summary.hasVector() && summary.hasBoundary();
+}
+
 static bool isSupportedCurrentMixEmission(func::FuncOp funcOp,
                                           const MixPartitionSummary &summary) {
   if (!hasSupportedMixFunctionSignature(funcOp))
     return false;
 
-  return summary.hasCube() && summary.hasVector() && summary.hasBoundary();
+  return hasSupportedMixPartitions(summary);
 }
 
 static bool inferSupportedMixHasBiasAdd(const MixPartitionSummary &summary) {
