@@ -3,6 +3,9 @@
 
 // CHECK: #define __AFIR_RUNTIME_MIX_KERNEL_FUN_H__
 // CHECK: KERNEL_TASK_TYPE_DEFAULT(KERNEL_TYPE_MIX_AIC_1_2);
+// CHECK: CrossCoreSetFlag<0x2, PIPE_FIX>(3);
+// CHECK: uint32_t count = static_cast<uint32_t>(tiling.singleCoreM * tiling.singleCoreN / 2);
+// CHECK: CrossCoreWaitFlag(3);
 // CHECK-NOT: biasGM
 // CHECK-NOT: SetBias
 // CHECK: LeakyRelu(outLocal, inLocal, static_cast<float>(0.001000f), count);
