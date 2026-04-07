@@ -39,6 +39,10 @@ def main():
     np.save(out_dir / "input_b.npy",    B)
     np.save(out_dir / "input_bias.npy", bias)
     np.save(out_dir / "output.npy",     output)
+    np.save(out_dir / "input0.npy",     A)
+    np.save(out_dir / "input1.npy",     B)
+    np.save(out_dir / "input2.npy",     bias)
+    np.save(out_dir / "output0.npy",    output)
 
     print(f"input_a:    {A.shape} {A.dtype}")
     print(f"input_b:    {B.shape} {B.dtype}")

@@ -5,7 +5,9 @@ add_mlir_library(AscendCRuntime
   Executor.cpp
   HostRunnerGen.cpp
   MixCommandBuilder.cpp
+  MixAbiExtractor.cpp
   MixDirectBackend.cpp
+  MixAbi.cpp
   MixSourceAnalyzer.cpp
   MixStubTemplate.cpp
   SimValidator.cpp

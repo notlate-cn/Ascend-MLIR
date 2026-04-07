@@ -19,7 +19,7 @@ SOC_VERSION="${SOC_VERSION:-Ascend910B1}"
 LLVM_BUILD_DIR="${LLVM_BUILD_DIR:-/home/niu/code/llvm-project/llvm/build}"
 BOOTSTRAP_BUILD_DIR="${BOOTSTRAP_BUILD_DIR:-${REPO_ROOT}/build/runtime-mix-bootstrap}"
 ARTIFACT_DIR="${ARTIFACT_DIR:-${REPO_ROOT}/build/runtime-mix-matmul-add-leakyrelu}"
-DATA_DIR="${DATA_DIR:-${ARTIFACT_DIR}/testdata}"
+DATA_DIR="${DATA_DIR:-${REPO_ROOT}/build/runtime-mix-matmul-add-leakyrelu-data}"
 
 VERBOSE=false
 for arg in "$@"; do [[ $arg == "--log" ]] && VERBOSE=true; done
@@ -101,12 +101,19 @@ mkdir -p "${BOOTSTRAP_BUILD_DIR}/bin"
 LLVM_FLAGS="$("${LLVM_BUILD_DIR}/bin/llvm-config" --cxxflags --ldflags --libs support --system-libs)"
 
 if [[ ! -x "${BOOTSTRAP_BUILD_DIR}/bin/mix-compiler" ]] || \
+   [[ "${REPO_ROOT}/tools/mix-compiler/mix_compiler_main.cpp" -nt "${BOOTSTRAP_BUILD_DIR}/bin/mix-compiler" ]] || \
    [[ "${REPO_ROOT}/lib/Runtime/MixDirectBackend.cpp" -nt "${BOOTSTRAP_BUILD_DIR}/bin/mix-compiler" ]] || \
+   [[ "${REPO_ROOT}/lib/Runtime/MixAbi.cpp" -nt "${BOOTSTRAP_BUILD_DIR}/bin/mix-compiler" ]] || \
+   [[ "${REPO_ROOT}/lib/Runtime/NpyIO.cpp" -nt "${BOOTSTRAP_BUILD_DIR}/bin/mix-compiler" ]] || \
+   [[ "${REPO_ROOT}/lib/Runtime/MixAbiExtractor.cpp" -nt "${BOOTSTRAP_BUILD_DIR}/bin/mix-compiler" ]] || \
    [[ "${REPO_ROOT}/lib/Runtime/MixStubTemplate.cpp" -nt "${BOOTSTRAP_BUILD_DIR}/bin/mix-compiler" ]] || \
    [[ "${REPO_ROOT}/lib/Runtime/MixSourceAnalyzer.cpp" -nt "${BOOTSTRAP_BUILD_DIR}/bin/mix-compiler" ]]; then
   clang++ \
     "${REPO_ROOT}/tools/mix-compiler/mix_compiler_main.cpp" \
     "${REPO_ROOT}/lib/Runtime/MixDirectBackend.cpp" \
+    "${REPO_ROOT}/lib/Runtime/MixAbi.cpp" \
+    "${REPO_ROOT}/lib/Runtime/NpyIO.cpp" \
+    "${REPO_ROOT}/lib/Runtime/MixAbiExtractor.cpp" \
     "${REPO_ROOT}/lib/Runtime/MixCommandBuilder.cpp" \
     "${REPO_ROOT}/lib/Runtime/MixSourceAnalyzer.cpp" \
     "${REPO_ROOT}/lib/Runtime/MixStubTemplate.cpp" \
@@ -117,10 +124,13 @@ if [[ ! -x "${BOOTSTRAP_BUILD_DIR}/bin/mix-compiler" ]] || \
 fi
 
 if [[ ! -x "${BOOTSTRAP_BUILD_DIR}/bin/mix-validator" ]] || \
-   [[ "${REPO_ROOT}/lib/Runtime/Executor.cpp" -nt "${BOOTSTRAP_BUILD_DIR}/bin/mix-validator" ]]; then
+   [[ "${REPO_ROOT}/tools/mix-validator/mix_validator_main.cpp" -nt "${BOOTSTRAP_BUILD_DIR}/bin/mix-validator" ]] || \
+   [[ "${REPO_ROOT}/lib/Runtime/Executor.cpp" -nt "${BOOTSTRAP_BUILD_DIR}/bin/mix-validator" ]] || \
+   [[ "${REPO_ROOT}/lib/Runtime/MixAbi.cpp" -nt "${BOOTSTRAP_BUILD_DIR}/bin/mix-validator" ]]; then
   clang++ \
     "${REPO_ROOT}/tools/mix-validator/mix_validator_main.cpp" \
     "${REPO_ROOT}/lib/Runtime/Executor.cpp" \
+    "${REPO_ROOT}/lib/Runtime/MixAbi.cpp" \
     ${LLVM_FLAGS} \
     -std=c++17 \
     -I"${REPO_ROOT}/include" \
@@ -219,47 +229,89 @@ extern "C" __global__ __aicore__ void fc_leakyrelu(
 print("  fc_leakyrelu_official_style.cpp written")
 PYEOF
 
-# ── RuntimeMix compile ────────────────────────────────────────────────────────
-echo "=== [STAGE 9] RuntimeMix compile ==="
 rm -rf "${ARTIFACT_DIR}"
-"${BOOTSTRAP_BUILD_DIR}/bin/mix-compiler" \
-  --kernel "$SCRIPT_DIR/fc_leakyrelu_official_style.cpp" \
-  --name fc_leakyrelu \
-  --output "${ARTIFACT_DIR}" \
-  --soc "${SOC_VERSION}"
 
 # ── Generate test data ────────────────────────────────────────────────────────
-echo "=== [STAGE 10] Generate test data ==="
+echo "=== [STAGE 9] Generate test data ==="
 mkdir -p "${DATA_DIR}/input" "${DATA_DIR}/output" "${DATA_DIR}/npy"
 python3 "$SCRIPT_DIR/gen_data.py" \
   --M 128 --K 256 --N 128 --seed 42 \
   --out-dir "${DATA_DIR}/npy"
 
-python3 - "${DATA_DIR}" <<'PY'
+# ── RuntimeMix compile ────────────────────────────────────────────────────────
+echo "=== [STAGE 10] RuntimeMix compile ==="
+"${BOOTSTRAP_BUILD_DIR}/bin/mix-compiler" \
+  --kernel "$SCRIPT_DIR/fc_leakyrelu_official_style.cpp" \
+  --cann-mlir "$SCRIPT_DIR/step7_cann.mlir" \
+  --npy-dir "${DATA_DIR}/npy" \
+  --output "${ARTIFACT_DIR}" \
+  --soc "${SOC_VERSION}"
+
+read -r ACTUAL_OUTPUT_PATH GOLDEN_OUTPUT_PATH < <(python3 - "${DATA_DIR}" "${ARTIFACT_DIR}/out/manifest.txt" <<'PY'
 import sys
 from pathlib import Path
 import numpy as np
 
 data_dir = Path(sys.argv[1])
-npy_dir  = data_dir / "npy"
-inp_dir  = data_dir / "input"
-out_dir  = data_dir / "output"
+npy_dir = data_dir / "npy"
+inp_dir = data_dir / "input"
+out_dir = data_dir / "output"
+manifest_path = Path(sys.argv[2])
 
-for src, dst in [
-    ("input_a.npy",    inp_dir / "matmul_add_leakyrelu_input_a.bin"),
-    ("input_b.npy",    inp_dir / "matmul_add_leakyrelu_input_b.bin"),
-    ("input_bias.npy", inp_dir / "matmul_add_leakyrelu_input_bias.bin"),
-    ("input_a.npy",    inp_dir / "fc_leakyrelu_input_a.bin"),
-    ("input_b.npy",    inp_dir / "fc_leakyrelu_input_b.bin"),
-    ("input_bias.npy", inp_dir / "fc_leakyrelu_input_bias.bin"),
-]:
-    np.load(npy_dir / src).tofile(dst)
+def read_manifest(path):
+    manifest = {}
+    for raw in path.read_text().splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        manifest[key] = value
+    return manifest
 
-golden = np.load(npy_dir / "output.npy")
-golden.tofile(out_dir / "matmul_add_leakyrelu_output.bin")
-golden.tofile(out_dir / "fc_leakyrelu_output.bin")
-golden.tofile(out_dir / "golden.bin")
+manifest = read_manifest(manifest_path)
+inp_dir.mkdir(parents=True, exist_ok=True)
+out_dir.mkdir(parents=True, exist_ok=True)
+kernel_name = (manifest.get("abi_runtime_kernel_name") or
+               manifest.get("abi_logical_kernel_name") or
+               manifest.get("kernel_name") or
+               manifest.get("requested_kernel_name") or "")
+
+input_count = int(manifest["abi_input_count"])
+for idx in range(input_count):
+    name = manifest[f"abi_input{idx}_name"]
+    runtime_file = manifest.get(f"abi_input{idx}_file") or \
+        manifest.get(f"abi_input{idx}_runtime_file")
+    if not runtime_file and kernel_name:
+        runtime_file = f"{kernel_name}.{name}.input.bin"
+    if not runtime_file:
+        raise SystemExit(f"missing runtime file for input {idx}")
+    npy_path = npy_dir / f"{name}.npy"
+    if not npy_path.exists():
+        npy_path = npy_dir / f"input{idx}.npy"
+    np.load(npy_path).tofile(inp_dir / runtime_file)
+
+output_count = int(manifest["abi_output_count"])
+if output_count != 1:
+    raise SystemExit(f"expected one output, got {output_count}")
+output_name = manifest["abi_output0_name"]
+runtime_output = manifest.get("abi_output0_file") or \
+    manifest.get("abi_output0_runtime_file")
+golden_output = manifest.get("abi_output0_golden_file")
+if not runtime_output and kernel_name:
+    runtime_output = f"{kernel_name}.{output_name}.output.bin"
+if not golden_output and kernel_name:
+    golden_output = f"{kernel_name}.{output_name}.golden.bin"
+if not runtime_output:
+    raise SystemExit("missing runtime output file in manifest")
+if not golden_output:
+    raise SystemExit("missing golden output file in manifest")
+output_npy = npy_dir / f"{output_name}.npy"
+if not output_npy.exists():
+    output_npy = npy_dir / "output0.npy"
+np.load(output_npy).tofile(out_dir / golden_output)
+print((manifest_path.parent.parent / runtime_output).resolve(), (out_dir / golden_output).resolve())
 PY
+)
 
 # ── mix-validator simulation ──────────────────────────────────────────────────
 echo "=== [STAGE 11] mix-validator ==="
@@ -268,11 +320,10 @@ echo "=== [STAGE 11] mix-validator ==="
 "${BOOTSTRAP_BUILD_DIR}/bin/mix-validator" \
   --artifact-root "${ARTIFACT_DIR}" \
   --input-dir "${DATA_DIR}/input" \
-  --golden "${DATA_DIR}/output/golden.bin" \
-  --output-file "${DATA_DIR}/output/actual.bin" \
+  --golden "${GOLDEN_OUTPUT_PATH}" \
   --soc "${SOC_VERSION}"
 
-python3 - "${DATA_DIR}/output/golden.bin" "${DATA_DIR}/output/actual.bin" <<'PY'
+python3 - "${GOLDEN_OUTPUT_PATH}" "${ACTUAL_OUTPUT_PATH}" <<'PY'
 import sys
 import numpy as np
 
