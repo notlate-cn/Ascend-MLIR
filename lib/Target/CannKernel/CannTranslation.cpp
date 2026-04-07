@@ -528,9 +528,21 @@ static bool isSupportedCurrentMixEmission(func::FuncOp funcOp,
 static bool canLowerGenericMixPlan(const MixPartitionPlan &plan) {
   if (plan.regions.size() != 3)
     return false;
-  return plan.regions[0].kind == MixPartitionKind::Cube &&
-         plan.regions[1].kind == MixPartitionKind::Boundary &&
-         plan.regions[2].kind == MixPartitionKind::Vector;
+  const MixRegionPlan &cubeRegion = plan.regions[0];
+  const MixRegionPlan &boundaryRegion = plan.regions[1];
+  const MixRegionPlan &vectorRegion = plan.regions[2];
+  if (cubeRegion.kind != MixPartitionKind::Cube ||
+      boundaryRegion.kind != MixPartitionKind::Boundary ||
+      vectorRegion.kind != MixPartitionKind::Vector)
+    return false;
+  if (boundaryRegion.inputs.size() != 1 || boundaryRegion.outputs.size() != 1)
+    return false;
+  const MixBoundaryValue &input = boundaryRegion.inputs.front();
+  const MixBoundaryValue &output = boundaryRegion.outputs.front();
+  return input.producer == MixPartitionKind::Cube &&
+         input.consumer == MixPartitionKind::Boundary &&
+         output.producer == MixPartitionKind::Boundary &&
+         output.consumer == MixPartitionKind::Vector;
 }
 
 static bool canLowerLegacySupportedMix(func::FuncOp funcOp,
