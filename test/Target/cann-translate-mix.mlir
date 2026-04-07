@@ -1,4 +1,4 @@
-// RUN: afir-translate -mlir-to-cann %S/../../examples/matmul-add-leakyrelu/step7_cann.mlir | FileCheck %s
+// RUN: afir-translate -mlir-to-cann %S/cann-translate-mix-input.mlir | FileCheck %s
 
 // CHECK: #define __AFIR_RUNTIME_MIX_KERNEL_FUN_H__
 // CHECK: #define ASCENDC_CUBE_ONLY
