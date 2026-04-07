@@ -94,8 +94,71 @@ struct MixPartitionSummary {
   bool hasBoundary() const { return !boundaryOps.empty(); }
 };
 
-static bool isKnownMixBoundaryOp(Operation *op) {
-  return op->getName().getStringRef() == "ascendc.data_copy_co12dst";
+static MixPartitionKind getStoragePartitionForPosition(ascendc::TPosition position) {
+  switch (position) {
+  case ascendc::TPosition::A1:
+  case ascendc::TPosition::A2:
+  case ascendc::TPosition::B1:
+  case ascendc::TPosition::B2:
+  case ascendc::TPosition::CO1:
+    return MixPartitionKind::Cube;
+  case ascendc::TPosition::VECIN:
+  case ascendc::TPosition::VECCALC:
+  case ascendc::TPosition::VECOUT:
+    return MixPartitionKind::Vector;
+  default:
+    return MixPartitionKind::Unknown;
+  }
+}
+
+static MixPartitionKind getStoragePartitionFromQueueLikeType(Type type) {
+  if (auto queueType = dyn_cast<ascendc::QueueType>(type))
+    return getStoragePartitionForPosition(queueType.getPosition());
+  if (auto tbufType = dyn_cast<ascendc::TBufType>(type))
+    return getStoragePartitionForPosition(tbufType.getTPosition());
+  if (auto queBindType = dyn_cast<ascendc::QueBindType>(type)) {
+    MixPartitionKind src = getStoragePartitionForPosition(queBindType.getSrcPosition());
+    MixPartitionKind dst = getStoragePartitionForPosition(queBindType.getDstPosition());
+    if (src == dst)
+      return src;
+  }
+  return MixPartitionKind::Unknown;
+}
+
+static MixPartitionKind getTensorStoragePartition(Value value) {
+  if (auto direct = getStoragePartitionFromQueueLikeType(value.getType());
+      direct != MixPartitionKind::Unknown)
+    return direct;
+
+  Operation *defOp = value.getDefiningOp();
+  if (!defOp)
+    return MixPartitionKind::Unknown;
+
+  if (auto allocTensor = dyn_cast<ascendc::TQueBindAllocTensorOp>(defOp))
+    return getStoragePartitionFromQueueLikeType(allocTensor.getQueue().getType());
+  if (auto dequeTensor = dyn_cast<ascendc::TQueBindDequeTensorOp>(defOp))
+    return getStoragePartitionFromQueueLikeType(dequeTensor.getQueue().getType());
+  if (auto tbufTensor = dyn_cast<ascendc::TBufGetTensorOp>(defOp))
+    return getStoragePartitionFromQueueLikeType(tbufTensor.getBuffer().getType());
+
+  return MixPartitionKind::Unknown;
+}
+
+static bool touchesStoragePartitions(Operation *op, MixPartitionKind lhs,
+                                     MixPartitionKind rhs) {
+  bool touchesLhs = false;
+  bool touchesRhs = false;
+  for (Value operand : op->getOperands()) {
+    MixPartitionKind partition = getTensorStoragePartition(operand);
+    touchesLhs |= partition == lhs;
+    touchesRhs |= partition == rhs;
+  }
+  for (Value result : op->getResults()) {
+    MixPartitionKind partition = getTensorStoragePartition(result);
+    touchesLhs |= partition == lhs;
+    touchesRhs |= partition == rhs;
+  }
+  return touchesLhs && touchesRhs;
 }
 
 static bool valueOriginatesFromPartition(Value value, MixPartitionKind target,
@@ -224,7 +287,8 @@ static MixPartitionSummary buildMixPartitionSummary(func::FuncOp funcOp) {
       });
     }
 
-    if (isKnownMixBoundaryOp(op) ||
+    if (touchesStoragePartitions(op, MixPartitionKind::Cube,
+                                 MixPartitionKind::Vector) ||
         (hasCubeFlowIn && hasVectorFlowOut) ||
         (hasVectorFlowIn && hasCubeFlowOut))
       summary.boundaryOps.push_back(op);
