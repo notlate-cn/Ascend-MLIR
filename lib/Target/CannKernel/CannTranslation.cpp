@@ -374,6 +374,10 @@ static bool hasSupportedMixPartitions(const MixPartitionSummary &summary) {
   return summary.hasCube() && summary.hasVector() && summary.hasBoundary();
 }
 
+static void emitTilingSpaceJson(StringRef outPath, StringRef kernelFile,
+                                StringRef kernelName,
+                                emitasc::PyStructType tilingType);
+
 // Supported mix configuration inference.
 static bool isSupportedCurrentMixEmission(func::FuncOp funcOp,
                                           const MixPartitionSummary &summary) {
@@ -487,6 +491,23 @@ inferSupportedMixKernelConfig(func::FuncOp funcOp,
 }
 
 // Supported mix emission helpers.
+static void emitSupportedMixTilingSpaceJsonIfRequested(
+    func::FuncOp funcOp, StringRef tilingSpaceOutPath, StringRef kernelFile) {
+  if (tilingSpaceOutPath.empty())
+    return;
+
+  auto args = funcOp.getArguments();
+  if (args.empty())
+    return;
+
+  auto tilingType = dyn_cast<emitasc::PyStructType>(args.back().getType());
+  if (!tilingType)
+    return;
+
+  emitTilingSpaceJson(tilingSpaceOutPath, kernelFile, funcOp.getName(),
+                      tilingType);
+}
+
 static void emitSupportedMixVectorEpilogue(raw_ostream &os,
                                            const SupportedMixKernelConfig &config) {
   if (config.epilogueKind == SupportedMixKernelConfig::EpilogueKind::Relu) {
@@ -1058,26 +1079,21 @@ LogicalResult mlir::translateToCannKernel(Operation *op, raw_ostream &os,
   func::FuncOp primaryKernel = findPrimaryGlobalKernel(moduleOp);
   if (primaryKernel &&
       getKernelKind(primaryKernel) == AscendCKernelKind::Mix) {
-    MixPartitionSummary partitionSummary =
+    MixPartitionSummary mixPartitionSummary =
         buildMixPartitionSummary(primaryKernel);
-    auto args = primaryKernel.getArguments();
-    if (!args.empty()) {
-      auto tilingType = dyn_cast<emitasc::PyStructType>(args.back().getType());
-      if (tilingType && !tilingSpaceOutPath.empty())
-        emitTilingSpaceJson(tilingSpaceOutPath, kernelFile,
-                            primaryKernel.getName(), tilingType);
-    }
+    emitSupportedMixTilingSpaceJsonIfRequested(primaryKernel,
+                                               tilingSpaceOutPath, kernelFile);
 
-    if (!isSupportedCurrentMixEmission(primaryKernel, partitionSummary))
+    if (!isSupportedCurrentMixEmission(primaryKernel, mixPartitionSummary))
       return primaryKernel.emitOpError(
           "mix translation requires a supported cube/vector partitioned kernel shape");
 
-    FailureOr<SupportedMixKernelConfig> config =
-        inferSupportedMixKernelConfig(primaryKernel, partitionSummary);
-    if (failed(config))
+    FailureOr<SupportedMixKernelConfig> supportedMixConfig =
+        inferSupportedMixKernelConfig(primaryKernel, mixPartitionSummary);
+    if (failed(supportedMixConfig))
       return failure();
 
-    emitSupportedMixKernel(os, primaryKernel, *config);
+    emitSupportedMixKernel(os, primaryKernel, *supportedMixConfig);
     return success();
   }
 
