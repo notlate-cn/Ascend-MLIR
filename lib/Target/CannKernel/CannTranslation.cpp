@@ -374,11 +374,7 @@ static bool isSupportedCurrentMixEmission(func::FuncOp funcOp,
   return summary.hasCube() && summary.hasVector() && summary.hasBoundary();
 }
 
-static FailureOr<SupportedMixKernelConfig>
-inferSupportedMixKernelConfig(func::FuncOp funcOp,
-                              const MixPartitionSummary &summary) {
-  SupportedMixKernelConfig config;
-
+static bool inferSupportedMixHasBiasAdd(const MixPartitionSummary &summary) {
   llvm::DenseSet<Value> vectorBroadcastDsts;
   for (Operation *op : summary.vectorOps) {
     auto broadcastOp = dyn_cast<ascendc::BroadcastL2Op>(op);
@@ -394,18 +390,24 @@ inferSupportedMixKernelConfig(func::FuncOp funcOp,
     if (llvm::any_of(addOp->getOperands(), [&](Value operand) {
           return vectorBroadcastDsts.contains(operand);
         }))
-      config.hasBiasAdd = true;
-    if (config.hasBiasAdd)
-      break;
+      return true;
   }
+  return false;
+}
 
+static FailureOr<SupportedMixKernelConfig::EpilogueKind>
+inferSupportedMixEpilogueKind(func::FuncOp funcOp,
+                              const MixPartitionSummary &summary,
+                              double &leakyReluAlpha) {
   bool hasVectorMax =
       llvm::any_of(summary.vectorOps, [](Operation *op) {
         return isa<ascendc::MaxL2Op>(op);
       });
 
+  SupportedMixKernelConfig::EpilogueKind epilogueKind =
+      SupportedMixKernelConfig::EpilogueKind::Unknown;
   funcOp.walk([&](Operation *op) {
-    if (config.epilogueKind != SupportedMixKernelConfig::EpilogueKind::Unknown)
+    if (epilogueKind != SupportedMixKernelConfig::EpilogueKind::Unknown)
       return WalkResult::interrupt();
     auto dupOp = dyn_cast<ascendc::DuplicateL2Op>(op);
     if (!dupOp)
@@ -427,17 +429,30 @@ inferSupportedMixKernelConfig(func::FuncOp funcOp,
     auto floatAttr = dyn_cast<FloatAttr>(constOp.getValue());
     if (!floatAttr)
       return WalkResult::advance();
-    config.leakyReluAlpha = floatAttr.getValue().convertToDouble();
-    config.epilogueKind =
-        (config.leakyReluAlpha == 0.0)
+    leakyReluAlpha = floatAttr.getValue().convertToDouble();
+    epilogueKind =
+        (leakyReluAlpha == 0.0)
             ? SupportedMixKernelConfig::EpilogueKind::Relu
             : SupportedMixKernelConfig::EpilogueKind::LeakyRelu;
     return WalkResult::interrupt();
   });
 
-  if (config.epilogueKind == SupportedMixKernelConfig::EpilogueKind::Unknown)
+  if (epilogueKind == SupportedMixKernelConfig::EpilogueKind::Unknown)
     return funcOp.emitOpError(
         "supported mix translation requires vector-region relu-style epilogue");
+  return epilogueKind;
+}
+
+static FailureOr<SupportedMixKernelConfig>
+inferSupportedMixKernelConfig(func::FuncOp funcOp,
+                              const MixPartitionSummary &summary) {
+  SupportedMixKernelConfig config;
+  config.hasBiasAdd = inferSupportedMixHasBiasAdd(summary);
+  auto epilogueKind = inferSupportedMixEpilogueKind(
+      funcOp, summary, config.leakyReluAlpha);
+  if (failed(epilogueKind))
+    return failure();
+  config.epilogueKind = *epilogueKind;
   return config;
 }
 
