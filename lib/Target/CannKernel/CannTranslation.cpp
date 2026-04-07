@@ -139,6 +139,11 @@ enum class MixSingleChainFailureReason {
 
 struct MixSingleChainValidation {
   SmallVector<MixSingleChainFailureReason> failureReasons;
+  struct SelectedBoundaryCrossing {
+    MixBoundaryValue input;
+    MixBoundaryValue output;
+  };
+  std::optional<SelectedBoundaryCrossing> selectedBoundaryCrossing;
 
   bool succeeded() const { return failureReasons.empty(); }
 };
@@ -874,6 +879,9 @@ validateSingleChainGenericMixPlan(const MixPartitionPlan &plan) {
         continue;
 
       foundValidSingleChain = true;
+      validation.selectedBoundaryCrossing =
+          MixSingleChainValidation::SelectedBoundaryCrossing{inputCrossing,
+                                                            outputCrossing};
       break;
     }
     if (foundValidSingleChain)
@@ -1085,35 +1093,21 @@ buildSupportedMixBoundaryPayload(const MixBoundaryValue &input,
 }
 
 static SupportedMixBoundaryLayer
-buildSupportedMixBoundaryLayer(const MixPartitionPlan &plan) {
+buildSupportedMixBoundaryLayer(const MixPartitionPlan &plan,
+                               const MixBoundaryValue &input,
+                               const MixBoundaryValue &output) {
   const MixRegionPlan *boundaryRegion =
       findFirstMixRegionOfKind(plan.regions, MixPartitionKind::Boundary);
   if (!boundaryRegion)
     llvm_unreachable("supported mix emission requires a boundary region");
 
-  SmallVector<MixBoundaryValue> inputs =
-      filterBoundaryValues(boundaryRegion->inputs, MixPartitionKind::Cube,
-                           MixPartitionKind::Boundary);
-  SmallVector<MixBoundaryValue> outputs =
-      filterBoundaryValues(boundaryRegion->outputs, MixPartitionKind::Boundary,
-                           MixPartitionKind::Vector);
-
-  if (inputs.empty() || outputs.empty()) {
+  FailureOr<SupportedMixBoundaryPayload> payload =
+      buildSupportedMixBoundaryPayload(input, output, boundaryRegion->ops);
+  if (failed(payload))
     llvm_unreachable(
-        "supported mix boundary emission requires explicit boundary crossings");
-  }
+        "supported mix boundary emission requires explicit boundary transfer pattern");
 
-  for (const MixBoundaryValue &input : inputs) {
-    for (const MixBoundaryValue &output : outputs) {
-      FailureOr<SupportedMixBoundaryPayload> payload =
-          buildSupportedMixBoundaryPayload(input, output, boundaryRegion->ops);
-      if (succeeded(payload))
-        return {input, output, *payload};
-    }
-  }
-
-  llvm_unreachable(
-      "supported mix boundary emission requires explicit boundary transfer pattern");
+  return {input, output, *payload};
 }
 
 // Supported mix emission helpers.
@@ -1773,8 +1767,15 @@ LogicalResult mlir::translateToCannKernel(Operation *op, raw_ostream &os,
           inferSupportedMixKernelConfig(primaryKernel, mixPartitionSummary);
       if (failed(supportedMixConfig))
         return failure();
+      if (!singleChainValidation.selectedBoundaryCrossing)
+        return primaryKernel.emitOpError(
+            "mix translation found a valid single-chain cube/boundary/vector "
+            "plan, but did not retain the selected boundary crossings");
       SupportedMixBoundaryLayer boundaryLayer =
-          buildSupportedMixBoundaryLayer(mixPartitionPlan);
+          buildSupportedMixBoundaryLayer(
+              mixPartitionPlan,
+              singleChainValidation.selectedBoundaryCrossing->input,
+              singleChainValidation.selectedBoundaryCrossing->output);
       emitSupportedMixKernel(os, primaryKernel, mixPartitionPlan, boundaryLayer,
                              *supportedMixConfig);
       return success();
