@@ -266,6 +266,16 @@ static bool valueReachesPartition(Value value, MixPartitionKind target,
   return reaches;
 }
 
+static bool isBoundaryBetweenPartitions(Operation *op, bool hasCubeFlowIn,
+                                        bool hasVectorFlowIn,
+                                        bool hasCubeFlowOut,
+                                        bool hasVectorFlowOut) {
+  return touchesStoragePartitions(op, MixPartitionKind::Cube,
+                                  MixPartitionKind::Vector) ||
+         (hasCubeFlowIn && hasVectorFlowOut) ||
+         (hasVectorFlowIn && hasCubeFlowOut);
+}
+
 static MixPartitionSummary buildMixPartitionSummary(func::FuncOp funcOp) {
   MixPartitionSummary summary;
   llvm::DenseMap<Value, bool> originCubeCache;
@@ -321,10 +331,8 @@ static MixPartitionSummary buildMixPartitionSummary(func::FuncOp funcOp) {
       });
     }
 
-    if (touchesStoragePartitions(op, MixPartitionKind::Cube,
-                                 MixPartitionKind::Vector) ||
-        (hasCubeFlowIn && hasVectorFlowOut) ||
-        (hasVectorFlowIn && hasCubeFlowOut))
+    if (isBoundaryBetweenPartitions(op, hasCubeFlowIn, hasVectorFlowIn,
+                                    hasCubeFlowOut, hasVectorFlowOut))
       summary.boundaryOps.push_back(op);
   });
 
