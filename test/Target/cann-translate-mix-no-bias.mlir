@@ -11,6 +11,9 @@
 // CHECK-LABEL: extern "C" __global__ __aicore__ void
 // CHECK: KERNEL_TASK_TYPE_DEFAULT(KERNEL_TYPE_MIX_AIC_1_2);
 // CHECK: if ASCEND_IS_AIC {
+// CHECK-NOT: biasGM
+// CHECK-NOT: SetBias
+// CHECK-NOT: mm.SetBias(
 // CHECK: REGIST_MATMUL_OBJ(&pipe, GetSysWorkSpacePtr(), mm, &tiling);
 // CHECK: mm.template IterateAll(cGM);
 // CHECK: mm.End();
@@ -18,9 +21,6 @@
 // CHECK: if ASCEND_IS_AIV {
 // CHECK: uint32_t count = static_cast<uint32_t>(tiling.singleCoreM * tiling.singleCoreN / 2);
 // CHECK: CrossCoreWaitFlag(3);
-// CHECK-NOT: biasGM
-// CHECK-NOT: SetBias
-// CHECK-NOT: mm.SetBias(
 // CHECK: LeakyRelu(outLocal, inLocal, static_cast<float>(0.001000f), count);
 
 // This fixture keeps the same generic single-chain shell while confirming the
