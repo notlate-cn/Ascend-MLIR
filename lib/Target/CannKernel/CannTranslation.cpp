@@ -112,34 +112,18 @@ struct SupportedMixKernelConfig {
   double leakyReluAlpha = 0.0;
 };
 
-static StringRef getMixTaskTypeSpelling(SupportedMixKernelConfig::TaskKind taskKind) {
-  switch (taskKind) {
-  case SupportedMixKernelConfig::TaskKind::MixAic1To2:
-    return "KERNEL_TYPE_MIX_AIC_1_2";
-  }
-  llvm_unreachable("unsupported mix task kind");
-}
+struct MixTaskKindDescriptor {
+  StringRef taskTypeSpelling;
+  unsigned crossCoreMode;
+  unsigned vectorTaskRatio;
+  unsigned crossCoreFlagId;
+};
 
-static unsigned getMixCrossCoreMode(SupportedMixKernelConfig::TaskKind taskKind) {
+static MixTaskKindDescriptor
+getMixTaskKindDescriptor(SupportedMixKernelConfig::TaskKind taskKind) {
   switch (taskKind) {
   case SupportedMixKernelConfig::TaskKind::MixAic1To2:
-    return 0x2;
-  }
-  llvm_unreachable("unsupported mix task kind");
-}
-
-static unsigned getMixVectorTaskRatio(SupportedMixKernelConfig::TaskKind taskKind) {
-  switch (taskKind) {
-  case SupportedMixKernelConfig::TaskKind::MixAic1To2:
-    return 2;
-  }
-  llvm_unreachable("unsupported mix task kind");
-}
-
-static unsigned getMixCrossCoreFlagId(SupportedMixKernelConfig::TaskKind taskKind) {
-  switch (taskKind) {
-  case SupportedMixKernelConfig::TaskKind::MixAic1To2:
-    return 3;
+    return {"KERNEL_TYPE_MIX_AIC_1_2", 0x2, 2, 3};
   }
   llvm_unreachable("unsupported mix task kind");
 }
@@ -504,10 +488,11 @@ static void emitSupportedMixAicRegion(raw_ostream &os,
        << "    mm.End();\n";
   };
   auto emitCrossCoreSetFlag = [&]() {
+    MixTaskKindDescriptor desc = getMixTaskKindDescriptor(config.taskKind);
     os << "    CrossCoreSetFlag<0x"
-       << llvm::format_hex_no_prefix(getMixCrossCoreMode(config.taskKind), 1)
+       << llvm::format_hex_no_prefix(desc.crossCoreMode, 1)
        << ", PIPE_FIX>("
-       << getMixCrossCoreFlagId(config.taskKind) << ");\n";
+       << desc.crossCoreFlagId << ");\n";
   };
 
   os << "  if ASCEND_IS_AIC {\n";
@@ -521,10 +506,12 @@ static void emitSupportedMixAicRegion(raw_ostream &os,
 static void emitSupportedMixAivRegion(raw_ostream &os,
                                       const SupportedMixKernelConfig &config) {
   auto emitVectorCountDecl = [&]() {
+    MixTaskKindDescriptor desc = getMixTaskKindDescriptor(config.taskKind);
     os << "    uint32_t count = static_cast<uint32_t>(tiling.singleCoreM * tiling.singleCoreN / "
-       << getMixVectorTaskRatio(config.taskKind) << ");\n";
+       << desc.vectorTaskRatio << ");\n";
   };
   auto emitQueueSetup = [&]() {
+    MixTaskKindDescriptor desc = getMixTaskKindDescriptor(config.taskKind);
     os << "    TQue<TPosition::VECIN, 1> reluInQueue;\n"
        << "    TQue<TPosition::VECOUT, 1> reluOutQueue;\n\n";
     emitVectorCountDecl();
@@ -532,7 +519,7 @@ static void emitSupportedMixAivRegion(raw_ostream &os,
        << "    cGM.SetGlobalBuffer(reinterpret_cast<__gm__ float *>(out) + GetBlockIdx() * count, count);\n\n"
        << "    pipe.InitBuffer(reluInQueue, 1, count * sizeof(float));\n"
        << "    pipe.InitBuffer(reluOutQueue, 1, count * sizeof(float));\n\n"
-       << "    CrossCoreWaitFlag(" << getMixCrossCoreFlagId(config.taskKind) << ");\n\n";
+       << "    CrossCoreWaitFlag(" << desc.crossCoreFlagId << ");\n\n";
   };
   auto emitInputCopy = [&]() {
     os << "    LocalTensor<float> reluInLocal = reluInQueue.AllocTensor<float>();\n"
@@ -578,11 +565,11 @@ static void emitSupportedMixCopyTilingHelper(raw_ostream &os) {
 static void emitSupportedMixKernelSignature(raw_ostream &os,
                                             StringRef kernelName,
                                             const SupportedMixKernelConfig &config) {
+  MixTaskKindDescriptor desc = getMixTaskKindDescriptor(config.taskKind);
   os << "extern \"C\" __global__ __aicore__ void " << kernelName << "(\n"
      << "    GM_ADDR a, GM_ADDR b, GM_ADDR bias, GM_ADDR out, GM_ADDR workspace,\n"
      << "    GM_ADDR tilingGm) {\n"
-     << "  KERNEL_TASK_TYPE_DEFAULT("
-     << getMixTaskTypeSpelling(config.taskKind) << ");\n"
+     << "  KERNEL_TASK_TYPE_DEFAULT(" << desc.taskTypeSpelling << ");\n"
      << "  TPipe pipe;\n"
      << "  (void)workspace;\n\n"
      << "  TCubeTiling tiling;\n"
