@@ -501,11 +501,13 @@ void updateAllocMemorySpace(BufferPosMap &posMap, RewriterBase &rewriter) {
 
 namespace {
 
-/// Remove all ascendc.* annotations from operations.
+/// Remove transient ascendc.* annotations from operations.
 void clearAnnotations(func::FuncOp funcOp) {
   funcOp.walk([](Operation *op) {
     SmallVector<StringAttr> toRemove;
     for (NamedAttribute attr : op->getAttrs()) {
+      if (attr.getName().getValue() == "ascendc.kernel_kind")
+        continue;
       if (attr.getName().getValue().starts_with("ascendc.")) {
         toRemove.push_back(attr.getName());
       }

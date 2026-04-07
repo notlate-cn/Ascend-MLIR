@@ -1,5 +1,5 @@
 module attributes {transform.with_named_sequence} {
-  func.func @matmul_add_leakyrelu(%arg0: memref<?x?xf16>, %arg1: memref<?x?xf16>, %arg2: memref<?xf32>, %arg3: memref<?x?xf32>, %arg4: memref<?x!emitasc.py_struct<"TilingData", [i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64], ["TB_M", "TB_N", "Tb_M", "Tb_N", "t_K", "dim_arg3_0", "dim_arg3_1", "dim_arg0_1", "dim_arg0_0", "dim_arg1_0", "dim_arg1_1", "dim_arg2_0", "dim_arg2_1"]>, 22 : i32>, %arg5: memref<?x?xf32, strided<[1, 1], offset: ?>>) attributes {ascendc.aicore, ascendc.global} {
+  func.func @matmul_add_leakyrelu(%arg0: memref<?x?xf16>, %arg1: memref<?x?xf16>, %arg2: memref<?xf32>, %arg3: memref<?x?xf32>, %arg4: memref<?x!emitasc.py_struct<"TilingData", [i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64], ["TB_M", "TB_N", "Tb_M", "Tb_N", "t_K", "dim_arg3_0", "dim_arg3_1", "dim_arg0_1", "dim_arg0_0", "dim_arg1_0", "dim_arg1_1", "dim_arg2_0", "dim_arg2_1"]>, 22 : i32>, %arg5: memref<?x?xf32, strided<[1, 1], offset: ?>>) attributes {ascendc.aicore, ascendc.global, ascendc.kernel_kind = "mix"} {
     %cst = arith.constant 1.000000e-03 : f32
     %c2 = arith.constant 2 : index
     %c1_i32 = arith.constant 1 : i32
@@ -256,4 +256,3 @@ module attributes {transform.with_named_sequence} {
     transform.yield 
   }
 }
-

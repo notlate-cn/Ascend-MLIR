@@ -112,7 +112,7 @@ def AscendCBufferPlacementPass : Pass<"ascendc-buffer-placement", "mlir::func::F
     This pass implements Phase 1 of AscendC buffer placement:
     - Annotates memref allocs with TPosition memory_space attributes
     - Inserts explicit DataCopy/Fixpipe operations based on ascendc annotations
-    - Removes all ascendc.* annotations
+    - Removes transient ascendc.* annotations but preserves ascendc.kernel_kind
 
     TPosition values:
     - GM (0): Global memory
@@ -300,6 +300,25 @@ def MarkStructuredOpsPass : Pass<"mark-structured-ops", "mlir::func::FuncOp"> {
   let dependentDialects = [
     "mlir::linalg::LinalgDialect",
     "mlir::tensor::TensorDialect"
+  ];
+}
+
+def AnnotateAscendCKernelKindPass : Pass<"annotate-ascendc-kernel-kind", "mlir::func::FuncOp"> {
+  let summary = "Annotate func.func with ascendc.kernel_kind derived from ascendc.unit";
+  let description = [{
+    Scans descendant linalg ops for ascendc.unit and stamps the enclosing
+    function with ascendc.kernel_kind = vec|cube|mix.
+
+    - AiCore.Vector only -> vec
+    - AiCore.Cube only   -> cube
+    - both kinds present  -> mix
+
+    The attribute is function-level metadata and is preserved by later passes
+    that do not explicitly clear it.
+  }];
+  let constructor = "mlir::afir::createAnnotateAscendCKernelKindPass()";
+  let dependentDialects = [
+    "mlir::func::FuncDialect"
   ];
 }
 

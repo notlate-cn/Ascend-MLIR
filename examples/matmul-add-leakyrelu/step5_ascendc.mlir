@@ -1,6 +1,6 @@
 #map = affine_map<(d0)[s0, s1] -> (-d0 + s0, s1)>
 module attributes {transform.with_named_sequence} {
-  func.func @matmul_add_leakyrelu(%arg0: memref<?x?xf16>, %arg1: memref<?x?xf16>, %arg2: memref<?xf32>, %arg3: memref<?x?xf32>, %arg4: i64, %arg5: i64, %arg6: i64, %arg7: i64, %arg8: i64) -> memref<?x?xf32> {
+  func.func @matmul_add_leakyrelu(%arg0: memref<?x?xf16>, %arg1: memref<?x?xf16>, %arg2: memref<?xf32>, %arg3: memref<?x?xf32>, %arg4: i64, %arg5: i64, %arg6: i64, %arg7: i64, %arg8: i64) -> memref<?x?xf32> attributes {ascendc.kernel_kind = "mix"} {
     %true = arith.constant true
     %c1_i16 = arith.constant 1 : i16
     %c0_i8 = arith.constant 0 : i8
@@ -230,4 +230,3 @@ module attributes {transform.with_named_sequence} {
     transform.yield 
   }
 }
-
