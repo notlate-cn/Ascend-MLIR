@@ -96,8 +96,14 @@ struct MixPartitionSummary {
 };
 
 struct SupportedMixKernelConfig {
+  enum class EpilogueKind {
+    Unknown,
+    Relu,
+    LeakyRelu,
+  };
+
   bool hasBiasAdd = false;
-  bool hasLeakyRelu = false;
+  EpilogueKind epilogueKind = EpilogueKind::Unknown;
   double leakyReluAlpha = 0.0;
 };
 
@@ -350,7 +356,7 @@ inferSupportedMixKernelConfig(func::FuncOp funcOp,
   }
 
   funcOp.walk([&](Operation *op) {
-    if (config.hasLeakyRelu)
+    if (config.epilogueKind != SupportedMixKernelConfig::EpilogueKind::Unknown)
       return WalkResult::interrupt();
     auto dupOp = dyn_cast<ascendc::DuplicateL2Op>(op);
     if (!dupOp)
@@ -363,17 +369,20 @@ inferSupportedMixKernelConfig(func::FuncOp funcOp,
     auto floatAttr = dyn_cast<FloatAttr>(constOp.getValue());
     if (!floatAttr)
       return WalkResult::advance();
-    config.hasLeakyRelu = true;
     config.leakyReluAlpha = floatAttr.getValue().convertToDouble();
+    config.epilogueKind =
+        (config.leakyReluAlpha == 0.0)
+            ? SupportedMixKernelConfig::EpilogueKind::Relu
+            : SupportedMixKernelConfig::EpilogueKind::LeakyRelu;
     return WalkResult::interrupt();
   });
 
   if (!config.hasBiasAdd)
     return funcOp.emitOpError(
         "supported mix translation requires vector-region bias add");
-  if (!config.hasLeakyRelu)
+  if (config.epilogueKind == SupportedMixKernelConfig::EpilogueKind::Unknown)
     return funcOp.emitOpError(
-        "supported mix translation requires vector-region leaky relu epilogue");
+        "supported mix translation requires vector-region relu-style epilogue");
   return config;
 }
 
@@ -432,10 +441,15 @@ static void emitSupportedMixKernel(raw_ostream &os, func::FuncOp funcOp,
      << "    DataCopy(reluInLocal, cGM, count);\n"
      << "    reluInQueue.EnQue<float>(reluInLocal);\n\n"
      << "    LocalTensor<float> inLocal = reluInQueue.DeQue<float>();\n"
-     << "    LocalTensor<float> outLocal = reluOutQueue.AllocTensor<float>();\n"
-     << "    LeakyRelu(outLocal, inLocal, static_cast<float>("
-     << llvm::formatv("{0:F6}", config.leakyReluAlpha).str()
-     << "f), count);\n"
+     << "    LocalTensor<float> outLocal = reluOutQueue.AllocTensor<float>();\n";
+  if (config.epilogueKind == SupportedMixKernelConfig::EpilogueKind::Relu) {
+    os << "    Relu(outLocal, inLocal, count);\n";
+  } else {
+    os << "    LeakyRelu(outLocal, inLocal, static_cast<float>("
+       << llvm::formatv("{0:F6}", config.leakyReluAlpha).str()
+       << "f), count);\n";
+  }
+  os
      << "    reluOutQueue.EnQue<float>(outLocal);\n"
      << "    reluInQueue.FreeTensor(inLocal);\n\n"
      << "    LocalTensor<float> finalLocal = reluOutQueue.DeQue<float>();\n"
