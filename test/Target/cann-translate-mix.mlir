@@ -13,7 +13,10 @@
 // CHECK: if ASCEND_IS_AIC {
 // CHECK: REGIST_MATMUL_OBJ(&pipe, GetSysWorkSpacePtr(), mm, &tiling);
 // CHECK: mm.SetBias(biasGM);
+// CHECK: CrossCoreSetFlag<0x2, PIPE_FIX>(3);
 // CHECK: if ASCEND_IS_AIV {
+// CHECK: uint32_t count = static_cast<uint32_t>(tiling.singleCoreM * tiling.singleCoreN / 2);
+// CHECK: CrossCoreWaitFlag(3);
 // CHECK: LeakyRelu(outLocal, inLocal, static_cast<float>(0.001000f), count);
 
 // Intentionally empty: this test checks translation of the real mix example
