@@ -3,9 +3,10 @@
 Legend: `yes` = observed success, `no` = observed failure, `not run` = the step was not reached.
 
 Task 2 routing inspection on xvm (`2026-04-07`): all five `step7_cann.mlir` artifacts are still vector-classified on the inspected compute ops (`ascendc.unit = "AiCore.Vector"`), with no `ascendc.kernel_kind = "mix"` evidence in the checked files. The corresponding `step8_kernel.cpp` artifacts also contain no `KERNEL_TYPE_MIX`, `ASCEND_IS_AIC`, `ASCEND_IS_AIV`, `CrossCoreSetFlag`, or `CrossCoreWaitFlag` markers. This supports keeping the non-mix routing boundary unchanged; the only confirmed functional failure remains `broadcast-add-reduce` at `STAGE 5 --linalg-to-ascendc`.
+`lib/Target/CannKernel/CannTranslation.cpp` was left unchanged because this inspection did not prove any non-mix routing leakage into mix-specific lowering.
 
 Task 2 verification follow-up on xvm:
-- `cmake --build build --target afir-translate -j4` completed with `ninja: no work to do`.
+- `cmake --build build --target afir-translate -j4` was already up to date (`ninja: no work to do`).
 - `source examples/env.sh && bash examples/relu-broadcast-transpose/run.sh --log` reached Stage 10 and failed only at executor initialization with the known `libascend_hal.so` missing-library error.
 - `source examples/env.sh && bash examples/matmul-add-leakyrelu/run.sh --log` completed successfully, and the mix validator still passed with `PASS`.
 
