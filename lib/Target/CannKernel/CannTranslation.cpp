@@ -107,7 +107,7 @@ struct SupportedMixKernelConfig {
   };
 
   bool hasBiasAdd = false;
-  TaskKind taskKind = TaskKind::MixAic1To2;
+  TaskKind taskKind;
   EpilogueKind epilogueKind = EpilogueKind::Unknown;
   double leakyReluAlpha = 0.0;
 };
@@ -434,10 +434,19 @@ inferSupportedMixEpilogueKind(func::FuncOp funcOp,
   return epilogueKind;
 }
 
+static SupportedMixKernelConfig::TaskKind
+inferSupportedMixTaskKind(func::FuncOp funcOp,
+                          const MixPartitionSummary &summary) {
+  (void)funcOp;
+  (void)summary;
+  return SupportedMixKernelConfig::TaskKind::MixAic1To2;
+}
+
 static FailureOr<SupportedMixKernelConfig>
 inferSupportedMixKernelConfig(func::FuncOp funcOp,
                               const MixPartitionSummary &summary) {
   SupportedMixKernelConfig config;
+  config.taskKind = inferSupportedMixTaskKind(funcOp, summary);
   config.hasBiasAdd = inferSupportedMixHasBiasAdd(summary);
   auto epilogueKind = inferSupportedMixEpilogueKind(
       funcOp, summary, config.leakyReluAlpha);
