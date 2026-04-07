@@ -456,6 +456,17 @@ inferSupportedMixKernelConfig(func::FuncOp funcOp,
   return config;
 }
 
+static void emitSupportedMixVectorEpilogue(raw_ostream &os,
+                                           const SupportedMixKernelConfig &config) {
+  if (config.epilogueKind == SupportedMixKernelConfig::EpilogueKind::Relu) {
+    os << "    Relu(outLocal, inLocal, count);\n";
+    return;
+  }
+  os << "    LeakyRelu(outLocal, inLocal, static_cast<float>("
+     << llvm::formatv("{0:F6}", config.leakyReluAlpha).str()
+     << "f), count);\n";
+}
+
 static void emitSupportedMixAicRegion(raw_ostream &os,
                                       const SupportedMixKernelConfig &config) {
   auto emitMatmulObjectDecl = [&]() {
@@ -523,15 +534,6 @@ static void emitSupportedMixAivRegion(raw_ostream &os,
        << "    LocalTensor<float> inLocal = reluInQueue.DeQue<float>();\n"
        << "    LocalTensor<float> outLocal = reluOutQueue.AllocTensor<float>();\n";
   };
-  auto emitVectorEpilogue = [&]() {
-    if (config.epilogueKind == SupportedMixKernelConfig::EpilogueKind::Relu) {
-      os << "    Relu(outLocal, inLocal, count);\n";
-      return;
-    }
-    os << "    LeakyRelu(outLocal, inLocal, static_cast<float>("
-       << llvm::formatv("{0:F6}", config.leakyReluAlpha).str()
-       << "f), count);\n";
-  };
   auto emitOutputCopy = [&]() {
     os << "    reluOutQueue.EnQue<float>(outLocal);\n"
        << "    reluInQueue.FreeTensor(inLocal);\n\n"
@@ -543,7 +545,7 @@ static void emitSupportedMixAivRegion(raw_ostream &os,
   os << "  if ASCEND_IS_AIV {\n";
   emitQueueSetup();
   emitInputCopy();
-  emitVectorEpilogue();
+  emitSupportedMixVectorEpilogue(os, config);
   emitOutputCopy();
   os << "  }\n";
 }
