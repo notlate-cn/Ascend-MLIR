@@ -29,7 +29,7 @@ module attributes {transform.with_named_sequence} {
         %c0_9 = arith.constant 0 : index
         %dim_10 = memref.dim %subview_8, %c0_9 : memref<?xf16, strided<[1], offset: ?>>
         %alloc_11 = memref.alloc(%dim_10) : memref<?xf16, 10 : i32>
-        linalg.generic {indexing_maps = [#map1, #map2, #map1], iterator_types = ["parallel", "reduction"]} ins(%alloc_6, %subview_7 : memref<?xf16, 9 : i32>, memref<?x?xf16, strided<[?, 1], offset: ?>>) outs(%alloc_11 : memref<?xf16, 10 : i32>) {
+        linalg.generic {indexing_maps = [#map1, #map2, #map1], iterator_types = ["parallel", "reduction"]} ins(%alloc_6, %subview_7 : memref<?xf16, 9 : i32>, memref<?x?xf16, strided<[?, 1], offset: ?>>) outs(%alloc_11 : memref<?xf16, 10 : i32>) attrs =  {ascendc.unit = "AiCore.Vector"} {
         ^bb0(%in: f16, %in_12: f16, %out: f16):
           %6 = arith.addf %in, %in_12 : f16
           %7 = arith.addf %out, %6 : f16

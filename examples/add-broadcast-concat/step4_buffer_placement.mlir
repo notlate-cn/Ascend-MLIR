@@ -33,7 +33,7 @@ module attributes {transform.with_named_sequence} {
         %c1_15 = arith.constant 1 : index
         %dim_16 = memref.dim %subview_12, %c1_15 : memref<?x?xf16, strided<[?, 1], offset: ?>>
         %alloc_17 = memref.alloc(%dim_14, %dim_16) : memref<?x?xf16, 10 : i32>
-        linalg.generic {indexing_maps = [#map2, #map3, #map3], iterator_types = ["parallel", "parallel"]} ins(%alloc_10, %subview_11 : memref<?xf16, 9 : i32>, memref<?x?xf16, strided<[?, 1], offset: ?>>) outs(%alloc_17 : memref<?x?xf16, 10 : i32>) {
+        linalg.generic {indexing_maps = [#map2, #map3, #map3], iterator_types = ["parallel", "parallel"]} ins(%alloc_10, %subview_11 : memref<?xf16, 9 : i32>, memref<?x?xf16, strided<[?, 1], offset: ?>>) outs(%alloc_17 : memref<?x?xf16, 10 : i32>) attrs =  {ascendc.unit = "AiCore.Vector"} {
         ^bb0(%in: f16, %in_18: f16, %out: f16):
           %5 = arith.addf %in, %in_18 : f16
           linalg.yield %5 : f16
@@ -64,7 +64,7 @@ module attributes {transform.with_named_sequence} {
         %c1_15 = arith.constant 1 : index
         %dim_16 = memref.dim %subview_12, %c1_15 : memref<?x?xf16, strided<[?, 1], offset: ?>>
         %alloc_17 = memref.alloc(%dim_14, %dim_16) : memref<?x?xf16, 10 : i32>
-        linalg.generic {indexing_maps = [#map2, #map3, #map3], iterator_types = ["parallel", "parallel"]} ins(%alloc_10, %subview_11 : memref<?xf16, 9 : i32>, memref<?x?xf16, strided<[?, 1], offset: ?>>) outs(%alloc_17 : memref<?x?xf16, 10 : i32>) {
+        linalg.generic {indexing_maps = [#map2, #map3, #map3], iterator_types = ["parallel", "parallel"]} ins(%alloc_10, %subview_11 : memref<?xf16, 9 : i32>, memref<?x?xf16, strided<[?, 1], offset: ?>>) outs(%alloc_17 : memref<?x?xf16, 10 : i32>) attrs =  {ascendc.unit = "AiCore.Vector"} {
         ^bb0(%in: f16, %in_18: f16, %out: f16):
           %5 = arith.mulf %in, %in_18 : f16
           linalg.yield %5 : f16

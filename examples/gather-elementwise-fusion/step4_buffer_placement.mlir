@@ -30,7 +30,7 @@ module {
         %c1 = arith.constant 1 : index
         %dim_11 = memref.dim %subview_8, %c1 : memref<?x?xf16, strided<[?, 1], offset: ?>>
         %alloc_12 = memref.alloc(%dim_10, %dim_11) : memref<?x?xf16, 10 : i32>
-        linalg.generic {indexing_maps = [#map1, #map1, #map2], iterator_types = ["parallel", "parallel"]} ins(%alloc_6, %subview_7 : memref<?xi64, 9 : i32>, memref<?xf16, strided<[1]>>) outs(%alloc_12 : memref<?x?xf16, 10 : i32>) attrs =  {gather_dim = 1 : i64} {
+        linalg.generic {indexing_maps = [#map1, #map1, #map2], iterator_types = ["parallel", "parallel"]} ins(%alloc_6, %subview_7 : memref<?xi64, 9 : i32>, memref<?xf16, strided<[1]>>) outs(%alloc_12 : memref<?x?xf16, 10 : i32>) attrs =  {ascendc.unit = "AiCore.Vector", gather_dim = 1 : i64} {
         ^bb0(%in: i64, %in_13: f16, %out: f16):
           %6 = linalg.index 0 : index
           %7 = affine.apply #map3(%arg5, %arg7)[%6]
