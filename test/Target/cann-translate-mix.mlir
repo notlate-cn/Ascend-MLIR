@@ -14,7 +14,7 @@
 // CHECK: REGIST_MATMUL_OBJ(&pipe, GetSysWorkSpacePtr(), mm, &tiling);
 // CHECK: mm.SetBias(biasGM);
 // CHECK: if ASCEND_IS_AIV {
-// CHECK: LeakyRelu(outLocal, inLocal, static_cast<float>(0.001f), count);
+// CHECK: LeakyRelu(outLocal, inLocal, static_cast<float>(0.001000f), count);
 
 // Intentionally empty: this test checks translation of the real mix example
 // pipeline artifact instead of embedding a large step7_cann module inline.
