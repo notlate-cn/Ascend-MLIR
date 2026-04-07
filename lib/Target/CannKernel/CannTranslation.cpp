@@ -495,48 +495,54 @@ static void emitSupportedMixVectorEpilogue(raw_ostream &os,
      << "f), count);\n";
 }
 
+static void emitSupportedMixMatmulObjectDecl(raw_ostream &os) {
+  os << "    Matmul<MatmulType<TPosition::GM, CubeFormat::ND, half>,\n"
+     << "           MatmulType<TPosition::GM, CubeFormat::ND, half>,\n"
+     << "           MatmulType<TPosition::VECIN, CubeFormat::ND, float>,\n"
+     << "           MatmulType<TPosition::GM, CubeFormat::ND, float>> mm;\n\n";
+}
+
+static void emitSupportedMixAicGlobalTensorSetup(
+    raw_ostream &os, const SupportedMixKernelConfig &config) {
+  os << "    GlobalTensor<half> aGM, bGM;\n"
+     << "    GlobalTensor<float> cGM";
+  if (config.hasBiasAdd)
+    os << ", biasGM";
+  os << ";\n"
+     << "    aGM.SetGlobalBuffer(reinterpret_cast<__gm__ half *>(a), tiling.M * tiling.Ka);\n"
+     << "    bGM.SetGlobalBuffer(reinterpret_cast<__gm__ half *>(b), tiling.Kb * tiling.N);\n"
+     << "    cGM.SetGlobalBuffer(reinterpret_cast<__gm__ float *>(out), tiling.M * tiling.N);\n";
+  if (config.hasBiasAdd)
+    os << "    biasGM.SetGlobalBuffer(reinterpret_cast<__gm__ float *>(bias), tiling.N);\n";
+}
+
+static void emitSupportedMixMatmulExecution(
+    raw_ostream &os, const SupportedMixKernelConfig &config) {
+  os << "\n"
+     << "    REGIST_MATMUL_OBJ(&pipe, GetSysWorkSpacePtr(), mm, &tiling);\n"
+     << "    mm.SetTensorA(aGM);\n"
+     << "    mm.SetTensorB(bGM);\n"
+     << (config.hasBiasAdd ? "    mm.SetBias(biasGM);\n" : "")
+     << "    mm.template IterateAll(cGM);\n"
+     << "    mm.End();\n";
+}
+
+static void emitSupportedMixCrossCoreSetFlag(
+    raw_ostream &os, const SupportedMixKernelConfig &config) {
+  MixTaskKindDescriptor desc = getMixTaskKindDescriptor(config.taskKind);
+  os << "    CrossCoreSetFlag<0x"
+     << llvm::format_hex_no_prefix(desc.crossCoreMode, 1)
+     << ", PIPE_FIX>("
+     << desc.crossCoreFlagId << ");\n";
+}
+
 static void emitSupportedMixAicRegion(raw_ostream &os,
                                       const SupportedMixKernelConfig &config) {
-  auto emitMatmulObjectDecl = [&]() {
-    os << "    Matmul<MatmulType<TPosition::GM, CubeFormat::ND, half>,\n"
-       << "           MatmulType<TPosition::GM, CubeFormat::ND, half>,\n"
-       << "           MatmulType<TPosition::VECIN, CubeFormat::ND, float>,\n"
-       << "           MatmulType<TPosition::GM, CubeFormat::ND, float>> mm;\n\n";
-  };
-  auto emitGlobalTensorSetup = [&]() {
-    os << "    GlobalTensor<half> aGM, bGM;\n"
-       << "    GlobalTensor<float> cGM";
-    if (config.hasBiasAdd)
-      os << ", biasGM";
-    os << ";\n"
-       << "    aGM.SetGlobalBuffer(reinterpret_cast<__gm__ half *>(a), tiling.M * tiling.Ka);\n"
-       << "    bGM.SetGlobalBuffer(reinterpret_cast<__gm__ half *>(b), tiling.Kb * tiling.N);\n"
-       << "    cGM.SetGlobalBuffer(reinterpret_cast<__gm__ float *>(out), tiling.M * tiling.N);\n";
-    if (config.hasBiasAdd)
-      os << "    biasGM.SetGlobalBuffer(reinterpret_cast<__gm__ float *>(bias), tiling.N);\n";
-  };
-  auto emitMatmulExecution = [&]() {
-    os << "\n"
-       << "    REGIST_MATMUL_OBJ(&pipe, GetSysWorkSpacePtr(), mm, &tiling);\n"
-       << "    mm.SetTensorA(aGM);\n"
-       << "    mm.SetTensorB(bGM);\n"
-       << (config.hasBiasAdd ? "    mm.SetBias(biasGM);\n" : "")
-       << "    mm.template IterateAll(cGM);\n"
-       << "    mm.End();\n";
-  };
-  auto emitCrossCoreSetFlag = [&]() {
-    MixTaskKindDescriptor desc = getMixTaskKindDescriptor(config.taskKind);
-    os << "    CrossCoreSetFlag<0x"
-       << llvm::format_hex_no_prefix(desc.crossCoreMode, 1)
-       << ", PIPE_FIX>("
-       << desc.crossCoreFlagId << ");\n";
-  };
-
   os << "  if ASCEND_IS_AIC {\n";
-  emitMatmulObjectDecl();
-  emitGlobalTensorSetup();
-  emitMatmulExecution();
-  emitCrossCoreSetFlag();
+  emitSupportedMixMatmulObjectDecl(os);
+  emitSupportedMixAicGlobalTensorSetup(os, config);
+  emitSupportedMixMatmulExecution(os, config);
+  emitSupportedMixCrossCoreSetFlag(os, config);
   os << "  }\n\n";
 }
 
