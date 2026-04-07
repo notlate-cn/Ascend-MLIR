@@ -377,9 +377,6 @@ inferSupportedMixKernelConfig(func::FuncOp funcOp,
     return WalkResult::interrupt();
   });
 
-  if (!config.hasBiasAdd)
-    return funcOp.emitOpError(
-        "supported mix translation requires vector-region bias add");
   if (config.epilogueKind == SupportedMixKernelConfig::EpilogueKind::Unknown)
     return funcOp.emitOpError(
         "supported mix translation requires vector-region relu-style epilogue");
@@ -415,11 +412,16 @@ static void emitSupportedMixKernel(raw_ostream &os, func::FuncOp funcOp,
      << "           MatmulType<TPosition::VECIN, CubeFormat::ND, float>,\n"
      << "           MatmulType<TPosition::GM, CubeFormat::ND, float>> mm;\n\n"
      << "    GlobalTensor<half> aGM, bGM;\n"
-     << "    GlobalTensor<float> cGM, biasGM;\n"
+     << "    GlobalTensor<float> cGM";
+  if (config.hasBiasAdd)
+    os << ", biasGM";
+  os << ";\n"
      << "    aGM.SetGlobalBuffer(reinterpret_cast<__gm__ half *>(a), tiling.M * tiling.Ka);\n"
      << "    bGM.SetGlobalBuffer(reinterpret_cast<__gm__ half *>(b), tiling.Kb * tiling.N);\n"
-     << "    cGM.SetGlobalBuffer(reinterpret_cast<__gm__ float *>(out), tiling.M * tiling.N);\n"
-     << "    biasGM.SetGlobalBuffer(reinterpret_cast<__gm__ float *>(bias), tiling.N);\n\n"
+     << "    cGM.SetGlobalBuffer(reinterpret_cast<__gm__ float *>(out), tiling.M * tiling.N);\n";
+  if (config.hasBiasAdd)
+    os << "    biasGM.SetGlobalBuffer(reinterpret_cast<__gm__ float *>(bias), tiling.N);\n";
+  os << "\n"
      << "    REGIST_MATMUL_OBJ(&pipe, GetSysWorkSpacePtr(), mm, &tiling);\n"
      << "    mm.SetTensorA(aGM);\n"
      << "    mm.SetTensorB(bGM);\n"
