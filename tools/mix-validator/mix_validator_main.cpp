@@ -1,4 +1,5 @@
 #include "Runtime/Executor.h"
+#include "Runtime/MixAbi.h"
 #include "Runtime/Types.h"
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/Error.h"
@@ -21,11 +22,13 @@
 #include <vector>
 
 using namespace mlir::runtime;
+using AbiTensorDesc = MixAbiTensorDesc;
+using AbiMetadata = MixAbiMetadata;
 
 static llvm::cl::opt<std::string> ArtifactRoot("artifact-root",
                                                llvm::cl::Required);
 static llvm::cl::opt<std::string> InputDir("input-dir", llvm::cl::Required);
-static llvm::cl::opt<std::string> Golden("golden", llvm::cl::Required);
+static llvm::cl::opt<std::string> Golden("golden", llvm::cl::init(""));
 static llvm::cl::opt<std::string> OutputFile("output-file",
                                             llvm::cl::init(""));
 static llvm::cl::opt<std::string> SocVersion("soc",
@@ -83,170 +86,6 @@ static std::map<std::string, std::string> readManifest(const std::string &path) 
     out.emplace(line.substr(0, eq).str(), line.substr(eq + 1).str());
   }
   return out;
-}
-
-struct AbiTensorDesc {
-  std::string name;
-  std::string file;
-  DType dtype = DType::F16;
-  std::vector<int64_t> shape;
-};
-
-struct AbiMetadata {
-  std::vector<AbiTensorDesc> inputs;
-  std::vector<AbiTensorDesc> outputs;
-  size_t workspaceBytes = 0;
-  std::string workspaceMode;
-  std::string tilingMode;
-  std::string tilingSource;
-};
-
-static llvm::Expected<DType> parseDType(llvm::StringRef dtype) {
-  if (dtype == "f16")
-    return DType::F16;
-  if (dtype == "f32")
-    return DType::F32;
-  if (dtype == "bf16")
-    return DType::BF16;
-  if (dtype == "int8")
-    return DType::INT8;
-  if (dtype == "int32")
-    return DType::INT32;
-  if (dtype == "int64")
-    return DType::INT64;
-  return llvm::createStringError(llvm::inconvertibleErrorCode(),
-                                 "Unsupported ABI dtype: %s",
-                                 dtype.str().c_str());
-}
-
-static llvm::Expected<std::vector<int64_t>>
-parseShapeList(llvm::StringRef value) {
-  std::vector<int64_t> shape;
-  llvm::SmallVector<llvm::StringRef> dims;
-  value.split(dims, ',', -1, false);
-  for (llvm::StringRef dim : dims) {
-    int64_t parsed = 0;
-    if (dim.trim().getAsInteger(10, parsed))
-      return llvm::createStringError(llvm::inconvertibleErrorCode(),
-                                     "Invalid ABI shape dim: %s",
-                                     dim.str().c_str());
-    shape.push_back(parsed);
-  }
-  return shape;
-}
-
-static llvm::Expected<size_t> parseSizeValue(llvm::StringRef value,
-                                             llvm::StringRef field) {
-  uint64_t parsed = 0;
-  if (value.getAsInteger(10, parsed))
-    return llvm::createStringError(llvm::inconvertibleErrorCode(),
-                                   "Invalid %s: %s", field.str().c_str(),
-                                   value.str().c_str());
-  return static_cast<size_t>(parsed);
-}
-
-static llvm::Expected<AbiTensorDesc>
-parseAbiTensor(const std::map<std::string, std::string> &manifest,
-               llvm::StringRef prefix, size_t index) {
-  const std::string base = (prefix + std::to_string(index)).str();
-  auto getRequired = [&](llvm::StringRef suffix) -> llvm::Expected<std::string> {
-    const std::string key = base + suffix.str();
-    auto it = manifest.find(key);
-    if (it == manifest.end() || it->second.empty())
-      return llvm::createStringError(llvm::inconvertibleErrorCode(),
-                                     "Missing ABI manifest key: %s",
-                                     key.c_str());
-    return it->second;
-  };
-
-  AbiTensorDesc tensor;
-  auto nameOr = getRequired("_name");
-  if (!nameOr)
-    return nameOr.takeError();
-  tensor.name = *nameOr;
-  auto fileOr = getRequired("_file");
-  if (!fileOr)
-    return fileOr.takeError();
-  tensor.file = *fileOr;
-  auto dtypeOr = getRequired("_dtype");
-  if (!dtypeOr)
-    return dtypeOr.takeError();
-  auto parsedDType = parseDType(*dtypeOr);
-  if (!parsedDType)
-    return parsedDType.takeError();
-  tensor.dtype = *parsedDType;
-  auto shapeOr = getRequired("_shape");
-  if (!shapeOr)
-    return shapeOr.takeError();
-  auto parsedShape = parseShapeList(*shapeOr);
-  if (!parsedShape)
-    return parsedShape.takeError();
-  tensor.shape = std::move(*parsedShape);
-  return tensor;
-}
-
-static llvm::Expected<AbiMetadata>
-parseAbiMetadata(const std::map<std::string, std::string> &manifest) {
-  auto getRequired = [&](llvm::StringRef key) -> llvm::Expected<std::string> {
-    auto it = manifest.find(key.str());
-    if (it == manifest.end() || it->second.empty())
-      return llvm::createStringError(llvm::inconvertibleErrorCode(),
-                                     "Missing ABI manifest key: %s",
-                                     key.str().c_str());
-    return it->second;
-  };
-
-  AbiMetadata abi;
-  auto inputCountOr = getRequired("abi_input_count");
-  if (!inputCountOr)
-    return inputCountOr.takeError();
-  auto inputCount = parseSizeValue(*inputCountOr, "abi_input_count");
-  if (!inputCount)
-    return inputCount.takeError();
-  for (size_t i = 0; i < *inputCount; ++i) {
-    auto tensorOr = parseAbiTensor(manifest, "abi_input", i);
-    if (!tensorOr)
-      return tensorOr.takeError();
-    abi.inputs.push_back(std::move(*tensorOr));
-  }
-
-  auto outputCountOr = getRequired("abi_output_count");
-  if (!outputCountOr)
-    return outputCountOr.takeError();
-  auto outputCount = parseSizeValue(*outputCountOr, "abi_output_count");
-  if (!outputCount)
-    return outputCount.takeError();
-  for (size_t i = 0; i < *outputCount; ++i) {
-    auto tensorOr = parseAbiTensor(manifest, "abi_output", i);
-    if (!tensorOr)
-      return tensorOr.takeError();
-    abi.outputs.push_back(std::move(*tensorOr));
-  }
-
-  auto workspaceBytesOr = getRequired("abi_workspace_bytes");
-  if (!workspaceBytesOr)
-    return workspaceBytesOr.takeError();
-  auto workspaceBytes =
-      parseSizeValue(*workspaceBytesOr, "abi_workspace_bytes");
-  if (!workspaceBytes)
-    return workspaceBytes.takeError();
-  abi.workspaceBytes = *workspaceBytes;
-
-  auto workspaceModeOr = getRequired("abi_workspace_mode");
-  if (!workspaceModeOr)
-    return workspaceModeOr.takeError();
-  abi.workspaceMode = *workspaceModeOr;
-
-  auto tilingModeOr = getRequired("abi_tiling_mode");
-  if (!tilingModeOr)
-    return tilingModeOr.takeError();
-  abi.tilingMode = *tilingModeOr;
-
-  auto tilingSourceOr = getRequired("abi_tiling_source");
-  if (!tilingSourceOr)
-    return tilingSourceOr.takeError();
-  abi.tilingSource = *tilingSourceOr;
-  return abi;
 }
 
 static std::string resolvePath(const std::string &base, const std::string &path) {
@@ -490,6 +329,11 @@ static llvm::Error preloadSharedLibrary(const std::string &path) {
   return llvm::Error::success();
 }
 
+static void tryPreloadSharedLibrary(const std::string &path) {
+  if (auto err = preloadSharedLibrary(path))
+    llvm::errs() << "Warning: " << llvm::toString(std::move(err)) << "\n";
+}
+
 static llvm::Error runDirectValidator(const std::string &artifactRoot,
                                       const std::string &goldenPath,
                                       const std::string &outputPath,
@@ -499,12 +343,14 @@ static llvm::Error runDirectValidator(const std::string &artifactRoot,
                                       NDArray &outputArr,
                                       const std::string &kernelSoPath,
                                       const std::string &kernelName) {
+  llvm::errs() << "[direct] start\n";
   std::string ascendHome;
   std::string ascendLib64;
   std::string simLibDir;
   if (auto err = configureRuntimeEnv(socVersion, artifactRoot, kernelSoPath,
                                      &ascendHome, &ascendLib64, &simLibDir))
     return err;
+  llvm::errs() << "[direct] env configured\n";
   const std::vector<std::string> supportPreloads = {
       ascendLib64 + "/libc_sec.so",
       ascendLib64 + "/libmmpa.so",
@@ -515,7 +361,7 @@ static llvm::Error runDirectValidator(const std::string &artifactRoot,
   };
   for (const std::string &path : supportPreloads)
     if (llvm::sys::fs::exists(path))
-      (void)preloadSharedLibrary(path);
+      tryPreloadSharedLibrary(path);
 
   const std::vector<std::string> simPreloads = {
       simLibDir + "/libffts_model.so",
@@ -531,10 +377,11 @@ static llvm::Error runDirectValidator(const std::string &artifactRoot,
   };
   for (const std::string &path : simPreloads)
     if (llvm::sys::fs::exists(path))
-      (void)preloadSharedLibrary(path);
+      tryPreloadSharedLibrary(path);
+  llvm::errs() << "[direct] preload done\n";
 
   RunArgs args;
-  args.block_dim      = 1;
+  args.block_dim      = static_cast<int>(abi.blockDim);
   args.workspace_size = abi.workspaceBytes;
   auto tilingOr = buildTilingFromAbi(abi, artifactRoot);
   if (!tilingOr)
@@ -542,12 +389,15 @@ static llvm::Error runDirectValidator(const std::string &artifactRoot,
   args.tiling         = std::move(*tilingOr);
   args.inputs         = std::move(inputs);
   args.outputs.push_back(std::move(outputArr));
+  llvm::errs() << "[direct] args ready\n";
 
   Executor executor(BackendMode::Simulation);
   if (auto err = executor.Initialize())
     return err;
+  llvm::errs() << "[direct] executor initialized\n";
   if (auto err = executor.RunPackedMixFile(kernelSoPath, kernelName, args))
     return err;
+  llvm::errs() << "[direct] packed run returned\n";
 
   if (auto err = writeBinary(
           outputPath,
@@ -555,6 +405,7 @@ static llvm::Error runDirectValidator(const std::string &artifactRoot,
               reinterpret_cast<const uint8_t *>(args.outputs[0].data),
               args.outputs[0].nbytes())))
     return err;
+  llvm::errs() << "[direct] output written\n";
 
   auto actual = readBinary(outputPath);
   if (!actual)
@@ -600,54 +451,6 @@ static std::string buildInputPath(const std::string &inputDir,
   return path.str().str();
 }
 
-static std::string shellQuote(llvm::StringRef value) {
-  std::string quoted = "'";
-  for (char c : value) {
-    if (c == '\'')
-      quoted += "'\\''";
-    else
-      quoted.push_back(c);
-  }
-  quoted.push_back('\'');
-  return quoted;
-}
-
-static llvm::Error runDirectValidatorChildProcess(const std::string &selfPath,
-                                                  const std::string &artifactRoot,
-                                                  const std::string &inputDir,
-                                                  const std::string &golden,
-                                                  const std::string &outputPath,
-                                                  const std::string &socVersion,
-                                                  bool forceDirectPacked) {
-  std::string ascendHome;
-  std::string ascendLib64;
-  std::string simLibDir;
-  std::string davSimLibDir;
-  std::string deviceLibDir;
-  if (auto err = configureRuntimeEnv(socVersion, artifactRoot, "",
-                                     &ascendHome, &ascendLib64, &simLibDir,
-                                     &davSimLibDir, &deviceLibDir))
-    return err;
-  const std::string baseLdLibraryPath =
-      ascendLib64 + ":" + deviceLibDir + ":" + simLibDir + ":" + davSimLibDir;
-  std::string cmd;
-  cmd += "export RUNTIMEMIX_DIRECT_CHILD=1 ";
-  cmd += "ASCEND_HOME_PATH=" + shellQuote(ascendHome) + " ";
-  cmd += "ASCEND_TOOLKIT_HOME=" + shellQuote(ascendHome) + " ";
-  cmd += "SOC_VERSION=" + shellQuote(socVersion) + " ";
-  cmd += "LD_LIBRARY_PATH=" + shellQuote(baseLdLibraryPath) +
-         ":${LD_LIBRARY_PATH:-}; ";
-  cmd += shellQuote(selfPath);
-  cmd += " --artifact-root " + shellQuote(artifactRoot);
-  cmd += " --input-dir " + shellQuote(inputDir);
-  cmd += " --golden " + shellQuote(golden);
-  cmd += " --output-file " + shellQuote(outputPath);
-  cmd += " --soc " + shellQuote(socVersion);
-  if (forceDirectPacked)
-    cmd += " --force-direct-packed";
-  return runShell(cmd);
-}
-
 int main(int argc, char **argv) {
   llvm::cl::ParseCommandLineOptions(argc, argv, "RuntimeMix mix validator\n");
 
@@ -657,7 +460,7 @@ int main(int argc, char **argv) {
   llvm::sys::path::append(manifestPath, "out", "manifest.txt");
 
   const auto manifest = readManifest(manifestPath.str().str());
-  auto abiOr = parseAbiMetadata(manifest);
+  auto abiOr = parseMixAbiManifest(manifest);
   if (!abiOr) {
     llvm::errs() << "Error parsing ABI metadata: "
                  << llvm::toString(abiOr.takeError()) << "\n";
@@ -667,16 +470,30 @@ int main(int argc, char **argv) {
 
   std::string outputPath = OutputFile;
   if (outputPath.empty()) {
-    if (abi.outputs.empty() || abi.outputs[0].file.empty()) {
+    if (abi.outputs.empty() || abi.outputs[0].runtimeFile.empty()) {
       llvm::errs() << "Error: missing ABI output file name in manifest\n";
       return 4;
     }
-    const std::string outputName = abi.outputs[0].file;
+    const std::string outputName = abi.outputs[0].runtimeFile;
     outputPath = resolvePath(artifactRoot.str().str(), outputName);
   }
 
-  const std::string manifestKernelName =
-      manifest.count("kernel_name") ? manifest.at("kernel_name") : "";
+  std::string goldenPath = Golden;
+  if (goldenPath.empty()) {
+    if (abi.outputs.empty() || abi.outputs[0].name.empty()) {
+      llvm::errs() << "Error: missing ABI golden file name in manifest\n";
+      return 4;
+    }
+    const std::string goldenName =
+        !abi.outputs[0].goldenFile.empty()
+            ? abi.outputs[0].goldenFile
+            : buildCanonicalGoldenFileName(
+                  !abi.runtimeKernelName.empty() ? abi.runtimeKernelName
+                                                 : abi.logicalKernelName,
+                  abi.outputs[0].name);
+    goldenPath = resolvePath(artifactRoot.str().str(), goldenName);
+  }
+
   const std::string manifestKernelSo = resolvePath(
       artifactRoot.str().str(),
       manifest.count("kernel_so_path") ? manifest.at("kernel_so_path") : "");
@@ -699,27 +516,25 @@ int main(int argc, char **argv) {
   // Runner-first is the default contract. The direct packed path remains
   // available as a fallback or explicit comparison path when the artifact
   // provides a kernel .so and ABI metadata.
-  const bool canUseDirectPacked = !manifestKernelName.empty() &&
+  const bool canUseDirectPacked = !abi.runtimeKernelName.empty() &&
                                   !manifestKernelSo.empty() &&
                                   llvm::sys::fs::exists(manifestKernelSo) &&
                                   !canUseRunner;
-  const bool isDirectChild =
-      std::getenv("RUNTIMEMIX_DIRECT_CHILD") != nullptr;
 
   if (canUseDirectPacked) {
     std::vector<NDArray> inputs;
     for (const AbiTensorDesc &tensor : abi.inputs) {
-      auto inputOr = loadRawTensor(buildInputPath(InputDir, tensor.file),
+      auto inputOr = loadRawTensor(buildInputPath(InputDir, tensor.runtimeFile),
                                    tensor.shape, tensor.dtype);
       if (!inputOr) {
-        llvm::errs() << "Error loading input " << tensor.file << ": "
+        llvm::errs() << "Error loading input " << tensor.runtimeFile << ": "
                      << llvm::toString(inputOr.takeError()) << "\n";
         return 4;
       }
       inputs.push_back(std::move(*inputOr));
     }
 
-    auto goldenOr = readBinary(Golden);
+    auto goldenOr = readBinary(goldenPath);
     if (!goldenOr) {
       llvm::errs() << llvm::toString(goldenOr.takeError()) << "\n";
       return 4;
@@ -739,23 +554,9 @@ int main(int argc, char **argv) {
       return 4;
     }
 
-    llvm::SmallString<256> selfPath(argv[0]);
-    llvm::sys::fs::make_absolute(selfPath);
-    llvm::Error directErr = llvm::Error::success();
-    if (!isDirectChild) {
-      directErr = runDirectValidatorChildProcess(
-          selfPath.str().str(), artifactRoot.str().str(), InputDir, Golden,
-          outputPath, SocVersion, ForceDirectPacked);
-    } else {
-      directErr = runDirectValidator(artifactRoot.str().str(), Golden,
-                                     outputPath, SocVersion, abi, inputs, output,
-                                     manifestKernelSo, manifestKernelName);
-      if (!directErr) {
-        llvm::outs().flush();
-        llvm::errs().flush();
-        _Exit(0);
-      }
-    }
+    llvm::Error directErr = runDirectValidator(
+        artifactRoot.str().str(), goldenPath, outputPath, SocVersion, abi, inputs,
+        output, manifestKernelSo, abi.runtimeKernelName);
 
     if (directErr) {
       llvm::errs() << "Warning: constrained direct packed fallback failed: "
@@ -804,7 +605,7 @@ int main(int argc, char **argv) {
     llvm::errs() << llvm::toString(actual.takeError()) << "\n";
     return 2;
   }
-  auto golden = readBinary(Golden);
+  auto golden = readBinary(goldenPath);
   if (!golden) {
     llvm::errs() << llvm::toString(golden.takeError()) << "\n";
     return 2;

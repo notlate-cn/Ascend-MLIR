@@ -1,5 +1,8 @@
 #include "Runtime/MixDirectBackend.h"
 #include "Runtime/MixCommandBuilder.h"
+#include "Runtime/MixAbi.h"
+#include "Runtime/MixAbiExtractor.h"
+#include "Runtime/NpyIO.h"
 #include "Runtime/MixSourceAnalyzer.h"
 #include "Runtime/MixStubTemplate.h"
 #include "llvm/ADT/SmallString.h"
@@ -672,10 +675,9 @@ static bool WriteFile(const std::string &filePath, const void *buffer, size_t si
 )runner";
 }
 
-struct SampleAbiMetadata;
 static std::string emitRunnerMainSource(llvm::StringRef kernelName,
-                                        const SampleAbiMetadata &abi);
-static std::string emitRunnerTilingSource(const SampleAbiMetadata &abi);
+                                        const MixAbiMetadata &abi);
+static std::string emitRunnerTilingSource(const MixAbiMetadata &abi);
 
 static llvm::Error runProcess(const std::vector<std::string> &args,
                               llvm::StringRef stage,
@@ -744,110 +746,10 @@ buildFinalMergeCommand(llvm::StringRef aicObj, llvm::StringRef aivObj,
   return cmd;
 }
 
-struct SampleAbiTensorDesc {
-  std::string name;
-  std::string file;
-  std::string dtype;
-  std::vector<int64_t> shape;
-};
-
-struct SampleAbiMetadata {
-  std::vector<SampleAbiTensorDesc> inputs;
-  std::vector<SampleAbiTensorDesc> outputs;
-  uint64_t workspaceBytes = 0;
-  uint32_t blockDim = 1;
-  std::string workspaceMode;
-  std::string tilingMode;
-  std::string tilingSource;
-};
-
-static std::string joinShape(llvm::ArrayRef<int64_t> shape) {
-  std::string out;
-  llvm::raw_string_ostream os(out);
-  for (size_t i = 0; i < shape.size(); ++i) {
-    if (i)
-      os << ",";
-    os << shape[i];
-  }
-  os.flush();
-  return out;
-}
-
-static llvm::Expected<SampleAbiMetadata>
-buildCurrentSampleAbi(llvm::StringRef kernelName,
-                      llvm::StringRef tilingMode = "fixed_bytes",
-                      llvm::StringRef tilingSource = "baremix_fixed_blob") {
-  SampleAbiMetadata abi;
-  abi.workspaceBytes = 16777216ULL;
-  abi.workspaceMode = "fixed";
-  abi.tilingMode = tilingMode.str();
-  abi.tilingSource = tilingSource.str();
-
-  if (kernelName == "baremix_custom") {
-    abi.inputs = {
-        {"x1", "x1_gm.bin", "f16", {128, 256}},
-        {"x2", "x2_gm.bin", "f16", {256, 128}},
-        {"bias", "bias.bin", "f32", {128}},
-    };
-    abi.outputs = {
-        {"y", "output.bin", "f32", {128, 128}},
-    };
-    return abi;
-  }
-
-  if (kernelName == "fc_relu_split" || kernelName == "fc_relu_split_mix" ||
-      kernelName == "auto_gen_fc_relu_split_kernel") {
-    abi.inputs = {
-        {"input_a", "fc_relu_split_input_a.bin", "f16", {128, 64}},
-        {"input_b", "fc_relu_split_input_b.bin", "f16", {64, 128}},
-        {"input_bias", "fc_relu_split_input_bias.bin", "f32", {128}},
-    };
-    abi.outputs = {
-        {"output", "fc_relu_split_output.bin", "f32", {128, 128}},
-    };
-    return abi;
-  }
-
-  if (kernelName == "fc_leakyrelu_mix" || kernelName == "fc_leakyrelu" ||
-      kernelName == "auto_gen_fc_leakyrelu_kernel") {
-    abi.inputs = {
-        {"input_a", "fc_leakyrelu_input_a.bin", "f16", {128, 256}},
-        {"input_b", "fc_leakyrelu_input_b.bin", "f16", {256, 128}},
-        {"input_bias", "fc_leakyrelu_input_bias.bin", "f32", {128}},
-    };
-    abi.outputs = {
-        {"output", "fc_leakyrelu_output.bin", "f32", {128, 128}},
-    };
-    return abi;
-  }
-
-  if (kernelName == "matmul_add_leakyrelu" ||
-      kernelName == "auto_gen_matmul_add_leakyrelu_kernel") {
-    abi.inputs = {
-        {"input_a",    "matmul_add_leakyrelu_input_a.bin",    "f16", {128, 256}},
-        {"input_b",    "matmul_add_leakyrelu_input_b.bin",    "f16", {256, 128}},
-        {"input_bias", "matmul_add_leakyrelu_input_bias.bin", "f32", {128}},
-    };
-    abi.outputs = {
-        {"output", "matmul_add_leakyrelu_output.bin", "f32", {128, 128}},
-    };
-    return abi;
-  }
-
-  return llvm::createStringError(
-      llvm::inconvertibleErrorCode(),
-      "RuntimeMix direct backend does not have explicit ABI metadata for mix "
-      "sample kernel '%s' (supported: baremix_custom, fc_relu_split, "
-      "fc_relu_split_mix, auto_gen_fc_relu_split_kernel, fc_leakyrelu_mix, "
-      "fc_leakyrelu, auto_gen_fc_leakyrelu_kernel, matmul_add_leakyrelu, "
-      "auto_gen_matmul_add_leakyrelu_kernel)",
-      kernelName.str().c_str());
-}
-
-static uint64_t getElementBytes(llvm::StringRef dtype) {
-  if (dtype == "f16")
+static uint64_t getElementBytes(DType dtype) {
+  if (dtype == DType::F16)
     return sizeof(int16_t);
-  if (dtype == "f32")
+  if (dtype == DType::F32)
     return sizeof(float);
   return 0;
 }
@@ -859,24 +761,139 @@ static uint64_t getTensorElementCount(llvm::ArrayRef<int64_t> shape) {
   return count;
 }
 
-static uint64_t getTensorBytes(const SampleAbiTensorDesc &tensor) {
+static bool hasDynamicShape(llvm::ArrayRef<int64_t> shape) {
+  for (int64_t dim : shape)
+    if (dim < 0)
+      return true;
+  return false;
+}
+
+static llvm::Expected<size_t>
+findFirstDynamicTensorIndex(llvm::ArrayRef<MixAbiTensorDesc> tensors) {
+  for (size_t i = 0; i < tensors.size(); ++i)
+    if (hasDynamicShape(tensors[i].shape))
+      return i;
+  return llvm::createStringError(llvm::inconvertibleErrorCode(),
+                                 "no dynamic tensor shape found");
+}
+
+static uint64_t getTensorBytes(const MixAbiTensorDesc &tensor) {
   return getTensorElementCount(tensor.shape) * getElementBytes(tensor.dtype);
 }
 
-static llvm::StringRef getAclDataType(llvm::StringRef dtype) {
-  if (dtype == "f16")
+static llvm::StringRef getDTypeName(DType dtype) {
+  if (dtype == DType::F16)
+    return "f16";
+  if (dtype == DType::BF16)
+    return "bf16";
+  if (dtype == DType::F32)
+    return "f32";
+  if (dtype == DType::INT8)
+    return "int8";
+  if (dtype == DType::INT32)
+    return "int32";
+  if (dtype == DType::INT64)
+    return "int64";
+  return "unknown";
+}
+
+static std::string buildOrdinalTensorNpyName(bool isOutput, size_t index) {
+  return (llvm::Twine(isOutput ? "output" : "input") + llvm::Twine(index) +
+          ".npy")
+      .str();
+}
+
+static llvm::Expected<std::string>
+resolveTensorNpyPath(llvm::StringRef npyDir, const MixAbiTensorDesc &tensor,
+                     size_t index, bool isOutput) {
+  const std::string namedPath = joinPath(npyDir, tensor.name + ".npy");
+  if (llvm::sys::fs::exists(namedPath))
+    return namedPath;
+  const std::string ordinalPath =
+      joinPath(npyDir, buildOrdinalTensorNpyName(isOutput, index));
+  if (llvm::sys::fs::exists(ordinalPath))
+    return ordinalPath;
+  return llvm::createStringError(
+      llvm::inconvertibleErrorCode(),
+      "RuntimeMix cannot resolve concrete %s tensor shape for ABI tensor '%s': "
+      "expected either %s or %s",
+      isOutput ? "output" : "input", tensor.name.c_str(), namedPath.c_str(),
+      ordinalPath.c_str());
+}
+
+static llvm::Error reconcileTensorWithNpy(MixAbiTensorDesc &tensor,
+                                          llvm::StringRef npyPath) {
+  auto arrayOr = LoadNpy(npyPath.str());
+  if (!arrayOr)
+    return arrayOr.takeError();
+  if (arrayOr->dtype != tensor.dtype)
+    return llvm::createStringError(
+        llvm::inconvertibleErrorCode(),
+        "RuntimeMix ABI dtype mismatch for tensor '%s': MLIR expects %s but %s "
+        "contains %s",
+        tensor.name.c_str(), getDTypeName(tensor.dtype).str().c_str(),
+        npyPath.str().c_str(), getDTypeName(arrayOr->dtype).str().c_str());
+  if (!tensor.shape.empty() && tensor.shape.size() != arrayOr->shape.size())
+    return llvm::createStringError(
+        llvm::inconvertibleErrorCode(),
+        "RuntimeMix ABI rank mismatch for tensor '%s': MLIR rank=%zu but %s "
+        "rank=%zu",
+        tensor.name.c_str(), tensor.shape.size(), npyPath.str().c_str(),
+        arrayOr->shape.size());
+  if (tensor.shape.empty()) {
+    tensor.shape = arrayOr->shape;
+    return llvm::Error::success();
+  }
+  for (size_t i = 0; i < arrayOr->shape.size(); ++i) {
+    if (tensor.shape[i] >= 0 && tensor.shape[i] != arrayOr->shape[i])
+      return llvm::createStringError(
+          llvm::inconvertibleErrorCode(),
+          "RuntimeMix ABI shape mismatch for tensor '%s' dim %zu: MLIR expects "
+          "%lld but %s provides %lld",
+          tensor.name.c_str(), i, static_cast<long long>(tensor.shape[i]),
+          npyPath.str().c_str(), static_cast<long long>(arrayOr->shape[i]));
+    tensor.shape[i] = arrayOr->shape[i];
+  }
+  return llvm::Error::success();
+}
+
+static llvm::Error resolveDynamicShapesFromNpyDir(MixAbiMetadata &abi,
+                                                  llvm::StringRef npyDir) {
+  for (size_t i = 0; i < abi.inputs.size(); ++i) {
+    if (!hasDynamicShape(abi.inputs[i].shape))
+      continue;
+    auto npyPathOr = resolveTensorNpyPath(npyDir, abi.inputs[i], i, false);
+    if (!npyPathOr)
+      return npyPathOr.takeError();
+    if (auto err = reconcileTensorWithNpy(abi.inputs[i], *npyPathOr))
+      return err;
+  }
+  for (size_t i = 0; i < abi.outputs.size(); ++i) {
+    if (!hasDynamicShape(abi.outputs[i].shape))
+      continue;
+    auto npyPathOr = resolveTensorNpyPath(npyDir, abi.outputs[i], i, true);
+    if (!npyPathOr)
+      return npyPathOr.takeError();
+    if (auto err = reconcileTensorWithNpy(abi.outputs[i], *npyPathOr))
+      return err;
+  }
+  return llvm::Error::success();
+}
+
+static llvm::StringRef getAclDataType(DType dtype) {
+  if (dtype == DType::F16)
     return "DataType::DT_FLOAT16";
-  if (dtype == "f32")
+  if (dtype == DType::F32)
     return "DataType::DT_FLOAT";
   return "DataType::DT_UNDEFINED";
 }
 
 static std::string emitRunnerMainSource(llvm::StringRef kernelName,
-                                        const SampleAbiMetadata &abi) {
+                                        const MixAbiMetadata &abi) {
   const auto &inputA = abi.inputs[0];
   const auto &inputB = abi.inputs[1];
   const auto &output = abi.outputs[0];
-  const SampleAbiTensorDesc *bias =
+  const MixAbiTensorDesc *bias =
       abi.inputs.size() > 2 ? &abi.inputs[2] : nullptr;
   std::ostringstream os;
   os << "#include \"data_utils.h\"\n"
@@ -892,7 +909,7 @@ static std::string emitRunnerMainSource(llvm::StringRef kernelName,
      << "extern \"C\" uint32_t GetBlockDim(const char *socVersion);\n\n"
      << "int main(int argc, char *argv[]) {\n"
      << "  std::string inputDir = \"./input\";\n"
-     << "  std::string outputFile = \"./output/" << output.file << "\";\n"
+     << "  std::string outputFile = \"./output/" << output.runtimeFile << "\";\n"
      << "  std::string emitTilingFile;\n"
      << "  std::string emitLaunchInfoFile;\n"
      << "  for (int i = 1; i < argc; ++i) {\n"
@@ -963,12 +980,12 @@ static std::string emitRunnerMainSource(llvm::StringRef kernelName,
      << "  uint8_t *outputCHost = nullptr, *outputCDevice = nullptr;\n"
      << "  uint8_t *tilingHost = nullptr, *tilingDevice = nullptr;\n"
      << "  uint8_t *workspaceDevice = nullptr;\n\n"
-     << "  if (!readHostToDevice(inputDir + \"/" << inputA.file
+     << "  if (!readHostToDevice(inputDir + \"/" << inputA.runtimeFile
      << "\", aFileSize, &inputAHost, &inputADevice)) return 2;\n"
-     << "  if (!readHostToDevice(inputDir + \"/" << inputB.file
+     << "  if (!readHostToDevice(inputDir + \"/" << inputB.runtimeFile
      << "\", bFileSize, &inputBHost, &inputBDevice)) return 2;\n";
   if (bias) {
-    os << "  if (!readHostToDevice(inputDir + \"/" << bias->file
+    os << "  if (!readHostToDevice(inputDir + \"/" << bias->runtimeFile
        << "\", biasFileSize, &inputBiasHost, &inputBiasDevice)) return 2;\n\n";
   } else {
     os << "\n";
@@ -1010,62 +1027,7 @@ static std::string emitRunnerMainSource(llvm::StringRef kernelName,
   return os.str();
 }
 
-static std::string emitRunnerTilingSource(const SampleAbiMetadata &abi) {
-  if (!abi.inputs.empty() && abi.inputs[0].file == "matmul_add_leakyrelu_input_a.bin") {
-    // Sim kernel uses custom TilingData struct (not TCubeTiling).
-    // Fields in order: TB_M, TB_N, Tb_M, Tb_N, t_K, dim_arg3_0, dim_arg3_1,
-    //   dim_arg0_1, dim_arg0_0, dim_arg1_0, dim_arg1_1, dim_arg2_0, dim_arg2_1
-    return R"cpp(#include <cstdint>
-#include <cstring>
-
-struct TilingData {
-  int64_t TB_M, TB_N, Tb_M, Tb_N, t_K;
-  int64_t dim_arg3_0, dim_arg3_1;
-  int64_t dim_arg0_1, dim_arg0_0;
-  int64_t dim_arg1_0, dim_arg1_1;
-  int64_t dim_arg2_0, dim_arg2_1;
-};
-
-extern "C" void GenerateTiling(const char *, uint8_t *tilingBuf) {
-  TilingData td;
-  td.TB_M = 128; td.TB_N = 128;
-  td.Tb_M = 64;  td.Tb_N = 128;
-  td.t_K  = 64;
-  td.dim_arg3_0 = 128; td.dim_arg3_1 = 128;
-  td.dim_arg0_1 = 256; td.dim_arg0_0 = 128;
-  td.dim_arg1_0 = 256; td.dim_arg1_1 = 128;
-  td.dim_arg2_0 = 128; td.dim_arg2_1 = 0;
-  std::memcpy(tilingBuf, &td, sizeof(TilingData));
-}
-
-extern "C" uint32_t GetBlockDim(const char *) {
-  return 1;
-}
-)cpp";
-  }
-
-  if (!abi.inputs.empty() && abi.inputs[0].file == "fc_leakyrelu_input_a.bin") {
-    return R"cpp(#include <cstdint>
-#include <cstring>
-
-static constexpr int32_t kLeakyReluTiling[] = {
-    1, 128, 128, 256, 256, 128, 128, 256, 128, 128,
-    128, 2,   2,   1,   1,   1,   0,   0,   0,   131584,
-    65536, 0, 1,   1,   1,   1,   2,   2,   0,   0,
-    2,     2, 1,   0,   0,   0,   0,   0,   0,   0,
-    0,     0, 0,   0,   0,   0,   0,   0,   0,   0,
-};
-
-extern "C" void GenerateTiling(const char *, uint8_t *tilingBuf) {
-  std::memcpy(tilingBuf, kLeakyReluTiling, sizeof(kLeakyReluTiling));
-}
-
-extern "C" uint32_t GetBlockDim(const char *) {
-  return static_cast<uint32_t>(kLeakyReluTiling[0]);
-}
-)cpp";
-  }
-
+static std::string emitRunnerTilingSource(const MixAbiMetadata &abi) {
   const auto &inputA = abi.inputs[0];
   const auto &inputB = abi.inputs[1];
   const auto &output = abi.outputs[0];
@@ -1128,7 +1090,7 @@ extern "C" uint32_t GetBlockDim(const char *) {
      << "  tilingApi.SetFixSplit(M, N, -1);\n"
      << "  tilingApi.SetBufferSpace(-1, -1, -1);\n"
      << "  (void)tilingApi.GetTiling(tilingData);\n"
-     << "  return static_cast<uint32_t>(tilingData.usedCoreNum);\n"
+     << "  return static_cast<uint32_t>(tilingData.get_usedCoreNum());\n"
      << "}\n";
   return os.str();
 }
@@ -1180,51 +1142,46 @@ static bool isManualGeneratedSampleKernel(llvm::StringRef kernelName) {
   return false;
 }
 
-static bool isSplitReluSampleKernel(llvm::StringRef kernelName) {
-  return kernelName == "fc_relu_split" || kernelName == "fc_relu_split_mix" ||
-         kernelName == "auto_gen_fc_relu_split_kernel" ||
-         kernelName == "fc_leakyrelu" || kernelName == "fc_leakyrelu_mix" ||
-         kernelName == "auto_gen_fc_leakyrelu_kernel";
+static llvm::StringRef getFileStemRef(llvm::StringRef path) {
+  return llvm::sys::path::stem(path);
 }
 
-static std::string canonicalizeSampleRuntimeKernelName(
-    llvm::StringRef kernelName) {
-  if (isSplitReluSampleKernel(kernelName))
-    return kernelName.contains("leakyrelu") ? "fc_leakyrelu"
-                                             : "fc_relu_split";
-  return kernelName.str();
+static std::string deriveCanonicalRuntimeKernelName(
+    llvm::StringRef requestedKernelName) {
+  return normalizeMixKernelName(requestedKernelName);
 }
 
 static std::string emitPassthroughSource(llvm::StringRef sourcePath) {
   return "#include \"" + escapeForCxx(sourcePath.str()) + "\"\n";
 }
 
-static std::string resolveSplitReluHostSourcePath(llvm::StringRef sourcePath) {
+static bool requiresCompanionHostFlow(llvm::StringRef sourcePath) {
+  llvm::StringRef stem = getFileStemRef(sourcePath);
+  return stem.ends_with("_wrapperless") || stem.ends_with("_official_style");
+}
+
+static std::string resolveCompanionHostSourcePath(llvm::StringRef sourcePath) {
   llvm::SmallString<256> hostSource(sourcePath);
-  llvm::StringRef fileName = llvm::sys::path::filename(hostSource);
-  if (fileName == "fc_relu_split_wrapperless.cpp") {
+  llvm::StringRef stem = getFileStemRef(hostSource);
+  if (stem.ends_with("_wrapperless")) {
     llvm::sys::path::remove_filename(hostSource);
-    llvm::sys::path::append(hostSource, "fc_relu_split_mix.cpp");
-    return hostSource.str().str();
+    std::string companion = stem.drop_back(strlen("_wrapperless")).str() + "_mix.cpp";
+    llvm::sys::path::append(hostSource, companion);
+    if (llvm::sys::fs::exists(hostSource))
+      return hostSource.str().str();
   }
-  if (fileName == "fc_leakyrelu_wrapperless.cpp") {
-    llvm::sys::path::remove_filename(hostSource);
-    llvm::sys::path::append(hostSource, "fc_leakyrelu_mix.cpp");
-    return hostSource.str().str();
-  }
-  llvm::sys::path::remove_filename(hostSource);
   return sourcePath.str();
 }
 
 static llvm::Expected<std::string>
-materializeSplitReluCanonicalDeviceSource(llvm::StringRef workDir,
-                                          llvm::StringRef sourcePath) {
+materializeCanonicalGeneratedSource(llvm::StringRef workDir,
+                                    llvm::StringRef sourcePath) {
   llvm::StringRef fileName = llvm::sys::path::filename(sourcePath);
-  llvm::StringRef canonicalFileName;
-  if (fileName == "auto_gen_fc_relu_split_wrapperless.cpp") {
-    canonicalFileName = "auto_gen_fc_relu_split.cpp";
-  } else if (fileName == "auto_gen_fc_leakyrelu_wrapperless.cpp") {
-    canonicalFileName = "auto_gen_fc_leakyrelu.cpp";
+  std::string canonicalFileName = fileName.str();
+  const std::string wrapperlessSuffix = "_wrapperless.cpp";
+  if (llvm::StringRef(canonicalFileName).ends_with(wrapperlessSuffix)) {
+    canonicalFileName.resize(canonicalFileName.size() - wrapperlessSuffix.size());
+    canonicalFileName += ".cpp";
   } else {
     return sourcePath.str();
   }
@@ -1257,7 +1214,7 @@ static llvm::Error writeRecompileLinkFile(llvm::StringRef rootDir,
 
 static llvm::Error writeDebugManifest(const MixAnalyzedKernel &analyzed,
                                       llvm::StringRef runtimeKernelName,
-                                      const SampleAbiMetadata &abi,
+                                      const MixAbiMetadata &abi,
                                       llvm::StringRef sourcePath,
                                       llvm::StringRef hostSourcePath,
                                       llvm::StringRef preprocessCompileCommandsPath,
@@ -1320,43 +1277,10 @@ static llvm::Error writeDebugManifest(const MixAnalyzedKernel &analyzed,
   manifest += std::string("out_dir=") + outDir.str() + "\n";
   manifest += std::string("abi_kind=mix_gm_workspace_tiling\n");
   manifest += std::string("abi_metadata_path=") + manifestPath.str() + "\n";
-  manifest += std::string("abi_input_count=") +
-              std::to_string(abi.inputs.size()) + "\n";
-  for (size_t i = 0; i < abi.inputs.size(); ++i) {
-    const SampleAbiTensorDesc &tensor = abi.inputs[i];
-    manifest += std::string("abi_input") + std::to_string(i) + "_name=" +
-                tensor.name + "\n";
-    manifest += std::string("abi_input") + std::to_string(i) + "_file=" +
-                tensor.file + "\n";
-    manifest += std::string("abi_input") + std::to_string(i) + "_dtype=" +
-                tensor.dtype + "\n";
-    manifest += std::string("abi_input") + std::to_string(i) + "_shape=" +
-                joinShape(tensor.shape) + "\n";
-  }
-  manifest += std::string("abi_output_count=") +
-              std::to_string(abi.outputs.size()) + "\n";
-  for (size_t i = 0; i < abi.outputs.size(); ++i) {
-    const SampleAbiTensorDesc &tensor = abi.outputs[i];
-    manifest += std::string("abi_output") + std::to_string(i) + "_name=" +
-                tensor.name + "\n";
-    manifest += std::string("abi_output") + std::to_string(i) + "_file=" +
-                tensor.file + "\n";
-    manifest += std::string("abi_output") + std::to_string(i) + "_dtype=" +
-                tensor.dtype + "\n";
-    manifest += std::string("abi_output") + std::to_string(i) + "_shape=" +
-                joinShape(tensor.shape) + "\n";
-  }
-  manifest += std::string("abi_workspace_bytes=") +
-              std::to_string(abi.workspaceBytes) + "\n";
-  manifest += std::string("abi_block_dim=") +
-              std::to_string(abi.blockDim) + "\n";
-  manifest += std::string("abi_workspace_mode=") + abi.workspaceMode + "\n";
-  manifest += std::string("abi_tiling_mode=") + abi.tilingMode + "\n";
-  manifest += std::string("abi_tiling_source=") + abi.tilingSource + "\n";
-  manifest += std::string("abi_inputs=") + std::to_string(abi.inputs.size()) +
-              "\n";
-  manifest += std::string("abi_outputs=") + std::to_string(abi.outputs.size()) +
-              "\n";
+  auto abiManifestOr = serializeMixAbiManifest(abi);
+  if (!abiManifestOr)
+    return abiManifestOr.takeError();
+  manifest += *abiManifestOr;
   manifest += std::string("merge_obj_dir=") + mergeDir.str() + "\n";
   manifest += std::string("launcher_header_dir=") +
               launcherHeaderDir.str() + "\n";
@@ -1572,11 +1496,14 @@ MixDirectBackend::compile(const MixDirectCompileConfig &cfg) {
   std::string hostStubSourcePath;
   std::string hostStubIncludeDir;
   std::string preprocessIncludeDir;
-  std::string runtimeKernelName = cfg.kernelName;
   std::string preprocessCompileCommandsPath;
   std::string preprocessCommand;
   std::string preprocessGeneratedDir;
-  const bool useSplitReluSample = isSplitReluSampleKernel(cfg.kernelName);
+  const bool useCompanionHostArtifacts = requiresCompanionHostFlow(sourcePath);
+  std::string runtimeKernelName =
+      useCompanionHostArtifacts
+          ? deriveCanonicalRuntimeKernelName(cfg.kernelName)
+          : cfg.kernelName;
   bool aicWasSynthesizedFromAiv = false;
 
   if (useManualGeneratedPath) {
@@ -1637,12 +1564,12 @@ MixDirectBackend::compile(const MixDirectCompileConfig &cfg) {
       if (llvm::find(defs, needle.str()) == defs.end())
         defs.push_back(needle.str());
     };
-    if (deviceAnalyzed.aicDefines.empty() && useSplitReluSample) {
+    if (deviceAnalyzed.aicDefines.empty() && useCompanionHostArtifacts) {
       deviceAnalyzed.aicDefines = analyzed->aicDefines;
       appendDefineIfMissing(deviceAnalyzed.aicDefines, "HAVE_WORKSPACE");
       appendDefineIfMissing(deviceAnalyzed.aicDefines, "HAVE_TILING");
     }
-    if (deviceAnalyzed.aivDefines.empty() && useSplitReluSample) {
+    if (deviceAnalyzed.aivDefines.empty() && useCompanionHostArtifacts) {
       deviceAnalyzed.aivDefines = analyzed->aivDefines;
       appendDefineIfMissing(deviceAnalyzed.aivDefines, "HAVE_WORKSPACE");
       appendDefineIfMissing(deviceAnalyzed.aivDefines, "HAVE_TILING");
@@ -1694,7 +1621,7 @@ MixDirectBackend::compile(const MixDirectCompileConfig &cfg) {
     hostStubSourcePath = preprocessOr->hostStubPath;
     runtimeKernelName =
         preprocessOr->actualLauncherKernelName.empty()
-            ? cfg.kernelName
+            ? runtimeKernelName
             : preprocessOr->actualLauncherKernelName;
     hostStubIncludeDir = preprocessOr->includeDir;
     preprocessIncludeDir = preprocessOr->includeDir;
@@ -1703,25 +1630,24 @@ MixDirectBackend::compile(const MixDirectCompileConfig &cfg) {
     preprocessGeneratedDir = preprocessOr->generatedDir;
   }
 
-  if (useSplitReluSample) {
-    runtimeKernelName = canonicalizeSampleRuntimeKernelName(cfg.kernelName);
-    hostSourcePath = resolveSplitReluHostSourcePath(sourcePath);
+  if (useCompanionHostArtifacts) {
+    hostSourcePath = resolveCompanionHostSourcePath(sourcePath);
     auto canonicalDeviceSourceOr =
-        materializeSplitReluCanonicalDeviceSource(workDir, generatedSourcePath);
+        materializeCanonicalGeneratedSource(workDir, generatedSourcePath);
     if (!canonicalDeviceSourceOr)
       return canonicalDeviceSourceOr.takeError();
     generatedSourcePath = *canonicalDeviceSourceOr;
   }
 
-  const std::string hostBishengObjectPath = useSplitReluSample
+  const std::string hostBishengObjectPath = useCompanionHostArtifacts
                                                 ? getHostBishengObjectPath(
                                                       hostObjectsDir,
                                                       hostSourcePath)
                                                 : std::string{};
   const std::string recompileHostStubObjectPath =
-      useSplitReluSample ? joinPath(stubDir, "host_stub.cpp.o") : std::string{};
+      useCompanionHostArtifacts ? joinPath(stubDir, "host_stub.cpp.o") : std::string{};
   const std::string hostObjectDir =
-      useSplitReluSample ? hostDir.str().str() : std::string{};
+      useCompanionHostArtifacts ? hostDir.str().str() : std::string{};
 
   const std::string runnerLauncherCopyPath =
       joinPath(outIncludeDir, "aclrtlaunch_" + runtimeKernelName + ".h");
@@ -1736,7 +1662,7 @@ MixDirectBackend::compile(const MixDirectCompileConfig &cfg) {
   }
 
   const bool useOfficialPreprocessedCompile =
-      useSplitReluSample && !useManualGeneratedPath;
+      useCompanionHostArtifacts && !useManualGeneratedPath;
   const std::vector<std::string> aicCmd =
       useOfficialPreprocessedCompile
           ? buildPreprocessedDeviceCompileCommand(generatedSourcePath, aicObj,
@@ -1765,7 +1691,7 @@ MixDirectBackend::compile(const MixDirectCompileConfig &cfg) {
                                             : preprocessIncludeDir,
                "aclrtlaunch_triple_chevrons_func.h");
   const std::vector<std::string> hostBishengCmd =
-      useSplitReluSample
+      useCompanionHostArtifacts
           ? buildHostBishengCommand(hostSourcePath, hostBishengObjectPath,
                                     tripleChevronHeaderPath)
           : std::vector<std::string>{};
@@ -1775,7 +1701,7 @@ MixDirectBackend::compile(const MixDirectCompileConfig &cfg) {
       buildHostSharedLinkCommand(hostStubObjectPath, kernelSoPath,
                                  cfg.socVersion);
   const std::vector<std::string> recompileCmd =
-      useSplitReluSample
+      useCompanionHostArtifacts
           ? buildRecompileBinaryCommand(outputRoot, "ascendc_kernels_sim",
                                         hostDir)
           : std::vector<std::string>{};
@@ -1888,7 +1814,7 @@ MixDirectBackend::compile(const MixDirectCompileConfig &cfg) {
     MixStubTemplateArgs stubArgs;
     stubArgs.kernelName = runtimeKernelName;
     stubArgs.targetName =
-        useSplitReluSample ? "ascendc_kernels_sim" : runtimeKernelName;
+        useCompanionHostArtifacts ? "ascendc_kernels_sim" : runtimeKernelName;
     stubArgs.socVersion = cfg.socVersion;
     stubArgs.launcherSymbol = "aclrtlaunch_" + runtimeKernelName;
     stubArgs.launcherHeaderPath = runnerLauncherCopyPath;
@@ -1919,7 +1845,7 @@ MixDirectBackend::compile(const MixDirectCompileConfig &cfg) {
   if (auto err = ensureFileExists(hostStubObjectPath, kStageCompileHostStub,
                                   hostCompileContext))
     return err;
-  if (useSplitReluSample) {
+  if (useCompanionHostArtifacts) {
     if (auto err = ensureFileExists(tripleChevronHeaderPath,
                                     kStageCompileHostBisheng,
                                     hostBishengContext))
@@ -1943,7 +1869,7 @@ MixDirectBackend::compile(const MixDirectCompileConfig &cfg) {
   if (auto err = ensureFileExists(kernelSoPath, kStageLinkHostStub,
                                   hostLinkContext))
     return err;
-  if (useSplitReluSample) {
+  if (useCompanionHostArtifacts) {
     if (auto err = copyFileOrErr(hostStubObjectPath, recompileHostStubObjectPath))
       return err;
     std::vector<std::string> recompileLinkArgs = hostLinkCmd;
@@ -1964,11 +1890,49 @@ MixDirectBackend::compile(const MixDirectCompileConfig &cfg) {
       return err;
   }
 
-  auto abiOr = buildCurrentSampleAbi(cfg.kernelName, "generated_file",
-                                     tilingArtifactSource);
-  if (!abiOr)
-    return abiOr.takeError();
-  SampleAbiMetadata abi = std::move(*abiOr);
+  MixAbiMetadata abi;
+  if (cfg.cannMlirPath && !cfg.cannMlirPath->empty()) {
+    auto abiOr = extractMixAbiFromCannMlir(*cfg.cannMlirPath);
+    if (!abiOr)
+      return abiOr.takeError();
+    abi = std::move(*abiOr);
+    if (cfg.npyDir && !cfg.npyDir->empty()) {
+      if (auto err = resolveDynamicShapesFromNpyDir(abi, *cfg.npyDir))
+        return err;
+    }
+    if (auto inputIndexOr = findFirstDynamicTensorIndex(abi.inputs))
+      return llvm::createStringError(
+          llvm::inconvertibleErrorCode(),
+          "RuntimeMix MLIR ABI extraction from %s produced unresolved dynamic "
+          "input shape for tensor '%s'; pass --npy-dir with concrete IO data "
+          "to resolve dynamic extents",
+          cfg.cannMlirPath->c_str(), abi.inputs[*inputIndexOr].name.c_str());
+    else
+      llvm::consumeError(inputIndexOr.takeError());
+    if (auto outputIndexOr = findFirstDynamicTensorIndex(abi.outputs))
+      return llvm::createStringError(
+          llvm::inconvertibleErrorCode(),
+          "RuntimeMix MLIR ABI extraction from %s produced unresolved dynamic "
+          "output shape for tensor '%s'; pass --npy-dir with concrete IO data "
+          "to resolve dynamic extents",
+          cfg.cannMlirPath->c_str(), abi.outputs[*outputIndexOr].name.c_str());
+    else
+      llvm::consumeError(outputIndexOr.takeError());
+  } else {
+    return llvm::createStringError(
+        llvm::inconvertibleErrorCode(),
+        "RuntimeMix direct backend requires --cann-mlir to derive ABI and "
+        "canonical IO metadata for kernel '%s'",
+        cfg.kernelName.c_str());
+  }
+  if (abi.logicalKernelName.empty())
+    abi.logicalKernelName = runtimeKernelName;
+  abi.runtimeKernelName = runtimeKernelName;
+  if (abi.workspaceBytes == 0)
+    abi.workspaceBytes = 16777216ULL;
+  abi.workspaceMode = "fixed";
+  abi.tilingMode = "generated_file";
+  abi.tilingSource = tilingArtifactSource;
   if (auto err = writeFileOrErr(runnerDataUtilsPath, emitRunnerDataUtilsHeader()))
     return err;
   if (auto err =
