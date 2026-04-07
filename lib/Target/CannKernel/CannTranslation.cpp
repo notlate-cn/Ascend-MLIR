@@ -22,6 +22,7 @@
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/Support/FileSystem.h"
+#include "llvm/Support/FormatVariadic.h"
 #include "llvm/Support/JSON.h"
 #include "llvm/Support/raw_ostream.h"
 
@@ -92,6 +93,12 @@ struct MixPartitionSummary {
   bool hasCube() const { return !cubeOps.empty(); }
   bool hasVector() const { return !vectorOps.empty(); }
   bool hasBoundary() const { return !boundaryOps.empty(); }
+};
+
+struct SupportedMixKernelConfig {
+  bool hasBiasAdd = false;
+  bool hasLeakyRelu = false;
+  double leakyReluAlpha = 0.0;
 };
 
 static MixPartitionKind getStoragePartitionForPosition(ascendc::TPosition position) {
@@ -331,7 +338,47 @@ static bool isSupportedCurrentMixEmission(func::FuncOp funcOp,
   return summary.hasCube() && summary.hasVector() && summary.hasBoundary();
 }
 
-static void emitSupportedMixKernel(raw_ostream &os, func::FuncOp funcOp) {
+static FailureOr<SupportedMixKernelConfig>
+inferSupportedMixKernelConfig(func::FuncOp funcOp,
+                              const MixPartitionSummary &summary) {
+  SupportedMixKernelConfig config;
+
+  for (Operation *op : summary.vectorOps) {
+    if (isa<ascendc::BroadcastL2Op>(op))
+      config.hasBiasAdd = true;
+
+  }
+
+  funcOp.walk([&](Operation *op) {
+    if (config.hasLeakyRelu)
+      return WalkResult::interrupt();
+    auto dupOp = dyn_cast<ascendc::DuplicateL2Op>(op);
+    if (!dupOp)
+      return WalkResult::advance();
+    if (getTensorStoragePartition(dupOp.getDst()) != MixPartitionKind::Vector)
+      return WalkResult::advance();
+    auto constOp = dupOp.getScalar().getDefiningOp<arith::ConstantOp>();
+    if (!constOp)
+      return WalkResult::advance();
+    auto floatAttr = dyn_cast<FloatAttr>(constOp.getValue());
+    if (!floatAttr)
+      return WalkResult::advance();
+    config.hasLeakyRelu = true;
+    config.leakyReluAlpha = floatAttr.getValue().convertToDouble();
+    return WalkResult::interrupt();
+  });
+
+  if (!config.hasBiasAdd)
+    return funcOp.emitOpError(
+        "supported mix translation requires vector-region bias add");
+  if (!config.hasLeakyRelu)
+    return funcOp.emitOpError(
+        "supported mix translation requires vector-region leaky relu epilogue");
+  return config;
+}
+
+static void emitSupportedMixKernel(raw_ostream &os, func::FuncOp funcOp,
+                                   const SupportedMixKernelConfig &config) {
   StringRef kernelName = funcOp.getName();
   os << "#define __AFIR_RUNTIME_MIX_KERNEL_FUN_H__\n\n"
      << "#define ASCENDC_CUBE_ONLY\n"
@@ -367,7 +414,7 @@ static void emitSupportedMixKernel(raw_ostream &os, func::FuncOp funcOp) {
      << "    REGIST_MATMUL_OBJ(&pipe, GetSysWorkSpacePtr(), mm, &tiling);\n"
      << "    mm.SetTensorA(aGM);\n"
      << "    mm.SetTensorB(bGM);\n"
-     << "    mm.SetBias(biasGM);\n"
+     << (config.hasBiasAdd ? "    mm.SetBias(biasGM);\n" : "")
      << "    mm.template IterateAll(cGM);\n"
      << "    mm.End();\n"
      << "    CrossCoreSetFlag<0x2, PIPE_FIX>(3);\n"
@@ -386,7 +433,9 @@ static void emitSupportedMixKernel(raw_ostream &os, func::FuncOp funcOp) {
      << "    reluInQueue.EnQue<float>(reluInLocal);\n\n"
      << "    LocalTensor<float> inLocal = reluInQueue.DeQue<float>();\n"
      << "    LocalTensor<float> outLocal = reluOutQueue.AllocTensor<float>();\n"
-     << "    LeakyRelu(outLocal, inLocal, static_cast<float>(0.001f), count);\n"
+     << "    LeakyRelu(outLocal, inLocal, static_cast<float>("
+     << llvm::formatv("{0:F6}", config.leakyReluAlpha).str()
+     << "f), count);\n"
      << "    reluOutQueue.EnQue<float>(outLocal);\n"
      << "    reluInQueue.FreeTensor(inLocal);\n\n"
      << "    LocalTensor<float> finalLocal = reluOutQueue.DeQue<float>();\n"
@@ -806,9 +855,6 @@ LogicalResult mlir::translateToCannKernel(Operation *op, raw_ostream &os,
   if (!moduleOp)
     return op->emitOpError("expected a module op");
 
-  // Replace ops whose PyAsc emitters generate wrong C++ with verbatim.
-  fixBrokenOpEmitters(op);
-
   func::FuncOp primaryKernel = findPrimaryGlobalKernel(moduleOp);
   if (primaryKernel &&
       getKernelKind(primaryKernel) == AscendCKernelKind::Mix) {
@@ -826,9 +872,17 @@ LogicalResult mlir::translateToCannKernel(Operation *op, raw_ostream &os,
       return primaryKernel.emitOpError(
           "mix translation requires a supported cube/vector partitioned kernel shape");
 
-    emitSupportedMixKernel(os, primaryKernel);
+    FailureOr<SupportedMixKernelConfig> config =
+        inferSupportedMixKernelConfig(primaryKernel, partitionSummary);
+    if (failed(config))
+      return failure();
+
+    emitSupportedMixKernel(os, primaryKernel, *config);
     return success();
   }
+
+  // Replace ops whose PyAsc emitters generate wrong C++ with verbatim.
+  fixBrokenOpEmitters(op);
 
   CodeEmitter emitter(os);
   CodeEmitter::Scope scope(emitter);
