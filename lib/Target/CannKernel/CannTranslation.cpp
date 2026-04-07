@@ -545,15 +545,13 @@ static void emitSupportedMixVectorCountDecl(raw_ostream &os,
 
 static void emitSupportedMixAivQueueSetup(raw_ostream &os,
                                           const SupportedMixKernelConfig &config) {
-  MixTaskKindDescriptor desc = getMixTaskKindDescriptor(config.taskKind);
   os << "    TQue<TPosition::VECIN, 1> reluInQueue;\n"
      << "    TQue<TPosition::VECOUT, 1> reluOutQueue;\n\n";
   emitSupportedMixVectorCountDecl(os, config);
   os << "    GlobalTensor<float> cGM;\n"
      << "    cGM.SetGlobalBuffer(reinterpret_cast<__gm__ float *>(out) + GetBlockIdx() * count, count);\n\n"
      << "    pipe.InitBuffer(reluInQueue, 1, count * sizeof(float));\n"
-     << "    pipe.InitBuffer(reluOutQueue, 1, count * sizeof(float));\n\n"
-     << "    CrossCoreWaitFlag(" << desc.crossCoreFlagId << ");\n\n";
+     << "    pipe.InitBuffer(reluOutQueue, 1, count * sizeof(float));\n\n";
 }
 
 static void emitSupportedMixAivInputCopy(raw_ostream &os) {
@@ -572,19 +570,25 @@ static void emitSupportedMixAivOutputCopy(raw_ostream &os) {
      << "    reluOutQueue.FreeTensor(finalLocal);\n";
 }
 
-static void emitSupportedMixAicRegion(raw_ostream &os,
-                                      const SupportedMixKernelConfig &config) {
+static void emitSupportedMixCubeRegion(raw_ostream &os,
+                                       const SupportedMixKernelConfig &config) {
   os << "  if ASCEND_IS_AIC {\n";
   emitSupportedMixMatmulObjectDecl(os);
   emitSupportedMixAicGlobalTensorSetup(os, config);
   emitSupportedMixMatmulExecution(os, config);
-  emitSupportedMixCrossCoreSetFlag(os, config);
-  os << "  }\n\n";
 }
 
-static void emitSupportedMixAivRegion(raw_ostream &os,
-                                      const SupportedMixKernelConfig &config) {
-  os << "  if ASCEND_IS_AIV {\n";
+static void emitSupportedMixBoundarySync(raw_ostream &os,
+                                         const SupportedMixKernelConfig &config) {
+  emitSupportedMixCrossCoreSetFlag(os, config);
+  os << "  }\n\n"
+     << "  if ASCEND_IS_AIV {\n";
+  MixTaskKindDescriptor desc = getMixTaskKindDescriptor(config.taskKind);
+  os << "    CrossCoreWaitFlag(" << desc.crossCoreFlagId << ");\n\n";
+}
+
+static void emitSupportedMixVectorRegion(raw_ostream &os,
+                                         const SupportedMixKernelConfig &config) {
   emitSupportedMixAivQueueSetup(os, config);
   emitSupportedMixAivInputCopy(os);
   emitSupportedMixVectorEpilogue(os, config);
@@ -634,8 +638,9 @@ static void emitSupportedMixKernelPrologue(raw_ostream &os, StringRef kernelName
 static void emitSupportedMixKernel(raw_ostream &os, func::FuncOp funcOp,
                                    const SupportedMixKernelConfig &config) {
   emitSupportedMixKernelPrologue(os, funcOp.getName(), config);
-  emitSupportedMixAicRegion(os, config);
-  emitSupportedMixAivRegion(os, config);
+  emitSupportedMixCubeRegion(os, config);
+  emitSupportedMixBoundarySync(os, config);
+  emitSupportedMixVectorRegion(os, config);
   os << "}\n";
 }
 
