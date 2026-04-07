@@ -110,7 +110,6 @@ struct SupportedMixKernelConfig {
   TaskKind taskKind = TaskKind::MixAic1To2;
   EpilogueKind epilogueKind = EpilogueKind::Unknown;
   double leakyReluAlpha = 0.0;
-  unsigned crossCoreFlagId = 3;
 };
 
 static StringRef getMixTaskTypeSpelling(SupportedMixKernelConfig::TaskKind taskKind) {
@@ -133,6 +132,14 @@ static unsigned getMixVectorTaskRatio(SupportedMixKernelConfig::TaskKind taskKin
   switch (taskKind) {
   case SupportedMixKernelConfig::TaskKind::MixAic1To2:
     return 2;
+  }
+  llvm_unreachable("unsupported mix task kind");
+}
+
+static unsigned getMixCrossCoreFlagId(SupportedMixKernelConfig::TaskKind taskKind) {
+  switch (taskKind) {
+  case SupportedMixKernelConfig::TaskKind::MixAic1To2:
+    return 3;
   }
   llvm_unreachable("unsupported mix task kind");
 }
@@ -500,7 +507,7 @@ static void emitSupportedMixAicRegion(raw_ostream &os,
     os << "    CrossCoreSetFlag<0x"
        << llvm::format_hex_no_prefix(getMixCrossCoreMode(config.taskKind), 1)
        << ", PIPE_FIX>("
-       << config.crossCoreFlagId << ");\n";
+       << getMixCrossCoreFlagId(config.taskKind) << ");\n";
   };
 
   os << "  if ASCEND_IS_AIC {\n";
@@ -525,7 +532,7 @@ static void emitSupportedMixAivRegion(raw_ostream &os,
        << "    cGM.SetGlobalBuffer(reinterpret_cast<__gm__ float *>(out) + GetBlockIdx() * count, count);\n\n"
        << "    pipe.InitBuffer(reluInQueue, 1, count * sizeof(float));\n"
        << "    pipe.InitBuffer(reluOutQueue, 1, count * sizeof(float));\n\n"
-       << "    CrossCoreWaitFlag(" << config.crossCoreFlagId << ");\n\n";
+       << "    CrossCoreWaitFlag(" << getMixCrossCoreFlagId(config.taskKind) << ");\n\n";
   };
   auto emitInputCopy = [&]() {
     os << "    LocalTensor<float> reluInLocal = reluInQueue.AllocTensor<float>();\n"
