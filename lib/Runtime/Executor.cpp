@@ -92,20 +92,8 @@ llvm::Error Executor::LoadLib() {
                                    "dlopen failed (%s): %s", lib.c_str(),
                                    dlerror());
 
-  std::string aclLib = getAclLibPath();
-  acl_handle_ = dlopen(aclLib.c_str(), RTLD_LAZY | RTLD_GLOBAL);
-  if (!acl_handle_)
-    return llvm::createStringError(llvm::inconvertibleErrorCode(),
-                                   "dlopen failed (%s): %s", aclLib.c_str(),
-                                   dlerror());
-
 #define LOAD_RT(name)                                                            \
   name##_ = reinterpret_cast<decltype(name##_)>(dlsym(lib_handle_, #name));      \
-  if (!name##_)                                                                  \
-    return llvm::createStringError(llvm::inconvertibleErrorCode(),               \
-                                   "dlsym " #name " failed: %s", dlerror())
-#define LOAD_ACL(name)                                                           \
-  name##_ = reinterpret_cast<decltype(name##_)>(dlsym(acl_handle_, #name));      \
   if (!name##_)                                                                  \
     return llvm::createStringError(llvm::inconvertibleErrorCode(),               \
                                    "dlsym " #name " failed: %s", dlerror())
@@ -120,20 +108,7 @@ llvm::Error Executor::LoadLib() {
   LOAD_RT(rtKernelLaunch);
   LOAD_RT(rtStreamSynchronize);
   LOAD_RT(rtDeviceSynchronize);
-  LOAD_ACL(aclInit);
-  LOAD_ACL(aclFinalize);
-  LOAD_ACL(aclrtSetDevice);
-  LOAD_ACL(aclrtResetDevice);
-  LOAD_ACL(aclrtCreateStream);
-  LOAD_ACL(aclrtDestroyStream);
-  LOAD_ACL(aclrtMalloc);
-  LOAD_ACL(aclrtFree);
-  LOAD_ACL(aclrtMallocHost);
-  LOAD_ACL(aclrtFreeHost);
-  LOAD_ACL(aclrtMemcpy);
-  LOAD_ACL(aclrtSynchronizeStream);
 #undef LOAD_RT
-#undef LOAD_ACL
   return llvm::Error::success();
 }
 
@@ -302,13 +277,39 @@ llvm::Error Executor::RunFile(const std::string& binary_path,
 llvm::Error Executor::RunPackedMixFile(const std::string& shared_lib_path,
                                        const std::string& kernel_name,
                                        RunArgs& args) {
-  if (!lib_handle_ || !aclInit_ || !aclFinalize_ || !aclrtSetDevice_ ||
-      !aclrtResetDevice_ || !aclrtCreateStream_ || !aclrtDestroyStream_ ||
-      !aclrtMalloc_ || !aclrtFree_ || !aclrtMemcpy_ ||
-      !aclrtSynchronizeStream_)
+  if (!lib_handle_ || !rtSetDevice_ || !rtStreamCreate_ || !rtStreamDestroy_ ||
+      !rtMalloc_ || !rtFree_ || !rtMemcpy_ || !rtStreamSynchronize_)
     return llvm::createStringError(
         llvm::inconvertibleErrorCode(),
         "Executor::Initialize() must succeed before RunPackedMixFile()");
+
+  if (!acl_handle_) {
+    std::string aclLib = getAclLibPath();
+    acl_handle_ = dlopen(aclLib.c_str(), RTLD_LAZY | RTLD_GLOBAL);
+    if (!acl_handle_)
+      return llvm::createStringError(llvm::inconvertibleErrorCode(),
+                                     "dlopen failed (%s): %s", aclLib.c_str(),
+                                     dlerror());
+
+#define LOAD_ACL(name)                                                           \
+    name##_ = reinterpret_cast<decltype(name##_)>(dlsym(acl_handle_, #name));   \
+    if (!name##_)                                                                \
+      return llvm::createStringError(llvm::inconvertibleErrorCode(),            \
+                                     "dlsym " #name " failed: %s", dlerror())
+    LOAD_ACL(aclInit);
+    LOAD_ACL(aclFinalize);
+    LOAD_ACL(aclrtSetDevice);
+    LOAD_ACL(aclrtResetDevice);
+    LOAD_ACL(aclrtCreateStream);
+    LOAD_ACL(aclrtDestroyStream);
+    LOAD_ACL(aclrtMalloc);
+    LOAD_ACL(aclrtFree);
+    LOAD_ACL(aclrtMallocHost);
+    LOAD_ACL(aclrtFreeHost);
+    LOAD_ACL(aclrtMemcpy);
+    LOAD_ACL(aclrtSynchronizeStream);
+#undef LOAD_ACL
+  }
 
   void* mix_lib = dlopen(shared_lib_path.c_str(), RTLD_NOW | RTLD_LOCAL);
   if (!mix_lib)
