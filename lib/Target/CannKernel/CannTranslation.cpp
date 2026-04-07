@@ -381,7 +381,8 @@ static bool isSupportedCurrentMixEmission(func::FuncOp funcOp,
   return hasSupportedMixPartitions(summary);
 }
 
-static bool inferSupportedMixHasBiasAdd(const MixPartitionSummary &summary) {
+static llvm::DenseSet<Value>
+collectSupportedMixVectorBroadcastDsts(const MixPartitionSummary &summary) {
   llvm::DenseSet<Value> vectorBroadcastDsts;
   for (Operation *op : summary.vectorOps) {
     auto broadcastOp = dyn_cast<ascendc::BroadcastL2Op>(op);
@@ -389,7 +390,12 @@ static bool inferSupportedMixHasBiasAdd(const MixPartitionSummary &summary) {
       continue;
     vectorBroadcastDsts.insert(broadcastOp.getDst());
   }
+  return vectorBroadcastDsts;
+}
 
+static bool inferSupportedMixHasBiasAdd(const MixPartitionSummary &summary) {
+  llvm::DenseSet<Value> vectorBroadcastDsts =
+      collectSupportedMixVectorBroadcastDsts(summary);
   for (Operation *op : summary.vectorOps) {
     auto addOp = dyn_cast<ascendc::AddL2Op>(op);
     if (!addOp)
@@ -402,14 +408,23 @@ static bool inferSupportedMixHasBiasAdd(const MixPartitionSummary &summary) {
   return false;
 }
 
+static bool hasSupportedMixVectorMax(const MixPartitionSummary &summary) {
+  return llvm::any_of(summary.vectorOps, [](Operation *op) {
+    return isa<ascendc::MaxL2Op>(op);
+  });
+}
+
+static bool isSupportedMixVectorMulUser(Operation *user) {
+  auto mulOp = dyn_cast<ascendc::MulL2Op>(user);
+  return mulOp &&
+         getTensorStoragePartition(mulOp.getDst()) == MixPartitionKind::Vector;
+}
+
 static FailureOr<SupportedMixKernelConfig::EpilogueKind>
 inferSupportedMixEpilogueKind(func::FuncOp funcOp,
                               const MixPartitionSummary &summary,
                               double &leakyReluAlpha) {
-  bool hasVectorMax =
-      llvm::any_of(summary.vectorOps, [](Operation *op) {
-        return isa<ascendc::MaxL2Op>(op);
-      });
+  bool hasVectorMax = hasSupportedMixVectorMax(summary);
 
   SupportedMixKernelConfig::EpilogueKind epilogueKind =
       SupportedMixKernelConfig::EpilogueKind::Unknown;
@@ -423,11 +438,8 @@ inferSupportedMixEpilogueKind(func::FuncOp funcOp,
       return WalkResult::advance();
     if (!hasVectorMax)
       return WalkResult::advance();
-    bool usedByVectorMul = llvm::any_of(dupOp.getDst().getUsers(), [](Operation *user) {
-      auto mulOp = dyn_cast<ascendc::MulL2Op>(user);
-      return mulOp &&
-             getTensorStoragePartition(mulOp.getDst()) == MixPartitionKind::Vector;
-    });
+    bool usedByVectorMul =
+        llvm::any_of(dupOp.getDst().getUsers(), isSupportedMixVectorMulUser);
     if (!usedByVectorMul)
       return WalkResult::advance();
     auto constOp = dupOp.getScalar().getDefiningOp<arith::ConstantOp>();
