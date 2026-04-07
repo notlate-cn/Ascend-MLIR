@@ -506,6 +506,23 @@ static void emitSupportedMixAivRegion(raw_ostream &os,
     os << "    uint32_t count = static_cast<uint32_t>(tiling.singleCoreM * tiling.singleCoreN / "
        << getMixVectorTaskRatio(config.taskKind) << ");\n";
   };
+  auto emitQueueSetup = [&]() {
+    os << "    TQue<TPosition::VECIN, 1> reluInQueue;\n"
+       << "    TQue<TPosition::VECOUT, 1> reluOutQueue;\n\n";
+    emitVectorCountDecl();
+    os << "    GlobalTensor<float> cGM;\n"
+       << "    cGM.SetGlobalBuffer(reinterpret_cast<__gm__ float *>(out) + GetBlockIdx() * count, count);\n\n"
+       << "    pipe.InitBuffer(reluInQueue, 1, count * sizeof(float));\n"
+       << "    pipe.InitBuffer(reluOutQueue, 1, count * sizeof(float));\n\n"
+       << "    CrossCoreWaitFlag(" << config.crossCoreFlagId << ");\n\n";
+  };
+  auto emitInputCopy = [&]() {
+    os << "    LocalTensor<float> reluInLocal = reluInQueue.AllocTensor<float>();\n"
+       << "    DataCopy(reluInLocal, cGM, count);\n"
+       << "    reluInQueue.EnQue<float>(reluInLocal);\n\n"
+       << "    LocalTensor<float> inLocal = reluInQueue.DeQue<float>();\n"
+       << "    LocalTensor<float> outLocal = reluOutQueue.AllocTensor<float>();\n";
+  };
   auto emitVectorEpilogue = [&]() {
     if (config.epilogueKind == SupportedMixKernelConfig::EpilogueKind::Relu) {
       os << "    Relu(outLocal, inLocal, count);\n";
@@ -516,20 +533,9 @@ static void emitSupportedMixAivRegion(raw_ostream &os,
        << "f), count);\n";
   };
 
-  os << "  if ASCEND_IS_AIV {\n"
-     << "    TQue<TPosition::VECIN, 1> reluInQueue;\n"
-     << "    TQue<TPosition::VECOUT, 1> reluOutQueue;\n\n";
-  emitVectorCountDecl();
-  os << "    GlobalTensor<float> cGM;\n"
-     << "    cGM.SetGlobalBuffer(reinterpret_cast<__gm__ float *>(out) + GetBlockIdx() * count, count);\n\n"
-     << "    pipe.InitBuffer(reluInQueue, 1, count * sizeof(float));\n"
-     << "    pipe.InitBuffer(reluOutQueue, 1, count * sizeof(float));\n\n"
-     << "    CrossCoreWaitFlag(" << config.crossCoreFlagId << ");\n\n"
-     << "    LocalTensor<float> reluInLocal = reluInQueue.AllocTensor<float>();\n"
-     << "    DataCopy(reluInLocal, cGM, count);\n"
-     << "    reluInQueue.EnQue<float>(reluInLocal);\n\n"
-     << "    LocalTensor<float> inLocal = reluInQueue.DeQue<float>();\n"
-     << "    LocalTensor<float> outLocal = reluOutQueue.AllocTensor<float>();\n";
+  os << "  if ASCEND_IS_AIV {\n";
+  emitQueueSetup();
+  emitInputCopy();
   emitVectorEpilogue();
   os << "    reluOutQueue.EnQue<float>(outLocal);\n"
      << "    reluInQueue.FreeTensor(inLocal);\n\n"
