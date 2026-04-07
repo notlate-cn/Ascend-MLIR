@@ -31,3 +31,11 @@ Task 4 shared environment-contract assessment:
 Task 5 final verification:
 - `bash examples/matmul-add-leakyrelu/run.sh --log` on xvm completed successfully with `max_abs_diff=0`, `mean_abs_diff=0`, and `PASS`.
 - The five non-mix examples were rerun under `source examples/env.sh`; four passed end-to-end and `broadcast-add-reduce` remained a compile-stage failure only.
+
+## Recovery Summary
+
+- fixed shared translator routing: no
+- fixed shared runtime routing: yes
+- fixed shared environment contract: no
+- sample-specific patches introduced: no
+- mix regression check preserved: yes
