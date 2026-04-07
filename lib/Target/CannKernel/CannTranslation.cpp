@@ -26,6 +26,158 @@ using namespace mlir;
 
 namespace {
 
+enum class AscendCKernelKind {
+  Unknown,
+  Vec,
+  Cube,
+  Mix,
+};
+
+static AscendCKernelKind getKernelKind(func::FuncOp funcOp) {
+  auto kindAttr = funcOp->getAttrOfType<StringAttr>("ascendc.kernel_kind");
+  if (!kindAttr)
+    return AscendCKernelKind::Unknown;
+  StringRef kind = kindAttr.getValue();
+  if (kind == "vec")
+    return AscendCKernelKind::Vec;
+  if (kind == "cube")
+    return AscendCKernelKind::Cube;
+  if (kind == "mix")
+    return AscendCKernelKind::Mix;
+  return AscendCKernelKind::Unknown;
+}
+
+static func::FuncOp findPrimaryGlobalKernel(ModuleOp moduleOp) {
+  for (Operation &child : moduleOp.getBody()->getOperations()) {
+    auto funcOp = dyn_cast<func::FuncOp>(child);
+    if (funcOp && funcOp->hasAttr(ascendc::attr::global))
+      return funcOp;
+  }
+  return {};
+}
+
+static bool hasDescendantOpNamed(func::FuncOp funcOp, StringRef opName) {
+  bool found = false;
+  funcOp.walk([&](Operation *op) {
+    if (op->getName().getStringRef() == opName) {
+      found = true;
+      return WalkResult::interrupt();
+    }
+    return WalkResult::advance();
+  });
+  return found;
+}
+
+static bool isRankedMemrefOf(Type type, int64_t rank, Type elementType) {
+  auto memrefType = dyn_cast<MemRefType>(type);
+  return memrefType && memrefType.getRank() == rank &&
+         memrefType.getElementType() == elementType;
+}
+
+static bool isSupportedMatmulBiasLeakyReluMix(func::FuncOp funcOp) {
+  if (getKernelKind(funcOp) != AscendCKernelKind::Mix)
+    return false;
+  auto numInputsAttr = funcOp->getAttrOfType<IntegerAttr>("cann.num_inputs");
+  if (!numInputsAttr || numInputsAttr.getInt() != 4)
+    return false;
+
+  auto args = funcOp.getArguments();
+  if (args.size() != 7)
+    return false;
+
+  MLIRContext *ctx = funcOp.getContext();
+  Type f16 = Float16Type::get(ctx);
+  Type f32 = Float32Type::get(ctx);
+
+  if (!isRankedMemrefOf(args[0].getType(), 2, f16) ||
+      !isRankedMemrefOf(args[1].getType(), 2, f16) ||
+      !isRankedMemrefOf(args[2].getType(), 1, f32) ||
+      !isRankedMemrefOf(args[3].getType(), 2, f32))
+    return false;
+
+  auto outputType = dyn_cast<MemRefType>(args[4].getType());
+  if (!outputType || outputType.getRank() != 2 ||
+      outputType.getElementType() != f32)
+    return false;
+
+  auto workspaceType = dyn_cast<MemRefType>(args[5].getType());
+  if (!workspaceType || !workspaceType.getElementType().isUnsignedInteger(8))
+    return false;
+  if (!isa<emitasc::PyStructType>(args[6].getType()))
+    return false;
+
+  return hasDescendantOpNamed(funcOp, "ascendc.mmad") &&
+         (hasDescendantOpNamed(funcOp, "ascendc.broadcast_l2") ||
+          hasDescendantOpNamed(funcOp, "emitasc.verbatim")) &&
+         hasDescendantOpNamed(funcOp, "ascendc.mul_l2") &&
+         hasDescendantOpNamed(funcOp, "ascendc.max_l2");
+}
+
+static void emitSupportedMixKernel(raw_ostream &os, func::FuncOp funcOp) {
+  StringRef kernelName = funcOp.getName();
+  os << "#define __AFIR_RUNTIME_MIX_KERNEL_FUN_H__\n\n"
+     << "#define ASCENDC_CUBE_ONLY\n"
+     << "#include \"kernel_operator.h\"\n"
+     << "#include \"lib/matmul_intf.h\"\n\n"
+     << "using namespace AscendC;\n"
+     << "using namespace matmul;\n\n"
+     << "__aicore__ inline void CopyTiling(TCubeTiling *tiling, GM_ADDR tilingGM) {\n"
+     << "  uint64_t *dst = reinterpret_cast<uint64_t *>(tiling);\n"
+     << "  auto tiling64 = reinterpret_cast<__gm__ uint64_t *>(tilingGM);\n"
+     << "  for (uint32_t i = 0; i < sizeof(TCubeTiling) / sizeof(uint64_t); ++i)\n"
+     << "    dst[i] = tiling64[i];\n"
+     << "}\n\n"
+     << "extern \"C\" __global__ __aicore__ void " << kernelName << "(\n"
+     << "    GM_ADDR a, GM_ADDR b, GM_ADDR bias, GM_ADDR out, GM_ADDR workspace,\n"
+     << "    GM_ADDR tilingGm) {\n"
+     << "  KERNEL_TASK_TYPE_DEFAULT(KERNEL_TYPE_MIX_AIC_1_2);\n"
+     << "  TPipe pipe;\n"
+     << "  (void)workspace;\n\n"
+     << "  TCubeTiling tiling;\n"
+     << "  CopyTiling(&tiling, tilingGm);\n\n"
+     << "  if ASCEND_IS_AIC {\n"
+     << "    Matmul<MatmulType<TPosition::GM, CubeFormat::ND, half>,\n"
+     << "           MatmulType<TPosition::GM, CubeFormat::ND, half>,\n"
+     << "           MatmulType<TPosition::VECIN, CubeFormat::ND, float>,\n"
+     << "           MatmulType<TPosition::GM, CubeFormat::ND, float>> mm;\n\n"
+     << "    GlobalTensor<half> aGM, bGM;\n"
+     << "    GlobalTensor<float> cGM, biasGM;\n"
+     << "    aGM.SetGlobalBuffer(reinterpret_cast<__gm__ half *>(a), tiling.M * tiling.Ka);\n"
+     << "    bGM.SetGlobalBuffer(reinterpret_cast<__gm__ half *>(b), tiling.Kb * tiling.N);\n"
+     << "    cGM.SetGlobalBuffer(reinterpret_cast<__gm__ float *>(out), tiling.M * tiling.N);\n"
+     << "    biasGM.SetGlobalBuffer(reinterpret_cast<__gm__ float *>(bias), tiling.N);\n\n"
+     << "    REGIST_MATMUL_OBJ(&pipe, GetSysWorkSpacePtr(), mm, &tiling);\n"
+     << "    mm.SetTensorA(aGM);\n"
+     << "    mm.SetTensorB(bGM);\n"
+     << "    mm.SetBias(biasGM);\n"
+     << "    mm.template IterateAll(cGM);\n"
+     << "    mm.End();\n"
+     << "    CrossCoreSetFlag<0x2, PIPE_FIX>(3);\n"
+     << "  }\n\n"
+     << "  if ASCEND_IS_AIV {\n"
+     << "    TQue<TPosition::VECIN, 1> reluInQueue;\n"
+     << "    TQue<TPosition::VECOUT, 1> reluOutQueue;\n\n"
+     << "    uint32_t count = static_cast<uint32_t>(tiling.singleCoreM * tiling.singleCoreN / 2);\n"
+     << "    GlobalTensor<float> cGM;\n"
+     << "    cGM.SetGlobalBuffer(reinterpret_cast<__gm__ float *>(out) + GetBlockIdx() * count, count);\n\n"
+     << "    pipe.InitBuffer(reluInQueue, 1, count * sizeof(float));\n"
+     << "    pipe.InitBuffer(reluOutQueue, 1, count * sizeof(float));\n\n"
+     << "    CrossCoreWaitFlag(3);\n\n"
+     << "    LocalTensor<float> reluInLocal = reluInQueue.AllocTensor<float>();\n"
+     << "    DataCopy(reluInLocal, cGM, count);\n"
+     << "    reluInQueue.EnQue<float>(reluInLocal);\n\n"
+     << "    LocalTensor<float> inLocal = reluInQueue.DeQue<float>();\n"
+     << "    LocalTensor<float> outLocal = reluOutQueue.AllocTensor<float>();\n"
+     << "    LeakyRelu(outLocal, inLocal, static_cast<float>(0.001f), count);\n"
+     << "    reluOutQueue.EnQue<float>(outLocal);\n"
+     << "    reluInQueue.FreeTensor(inLocal);\n\n"
+     << "    LocalTensor<float> finalLocal = reluOutQueue.DeQue<float>();\n"
+     << "    DataCopy(cGM, finalLocal, count);\n"
+     << "    reluOutQueue.FreeTensor(finalLocal);\n"
+     << "  }\n"
+     << "}\n";
+}
+
 /// Emit the TilingData struct declaration from a PyStructType.
 static LogicalResult emitTilingStructDecl(CodeEmitter &emitter, Location loc,
                                           emitasc::PyStructType pyType) {
@@ -438,6 +590,25 @@ LogicalResult mlir::translateToCannKernel(Operation *op, raw_ostream &os,
 
   // Replace ops whose PyAsc emitters generate wrong C++ with verbatim.
   fixBrokenOpEmitters(op);
+
+  func::FuncOp primaryKernel = findPrimaryGlobalKernel(moduleOp);
+  if (primaryKernel &&
+      getKernelKind(primaryKernel) == AscendCKernelKind::Mix) {
+    auto args = primaryKernel.getArguments();
+    if (!args.empty()) {
+      auto tilingType = dyn_cast<emitasc::PyStructType>(args.back().getType());
+      if (tilingType && !tilingSpaceOutPath.empty())
+        emitTilingSpaceJson(tilingSpaceOutPath, kernelFile,
+                            primaryKernel.getName(), tilingType);
+    }
+
+    if (!isSupportedMatmulBiasLeakyReluMix(primaryKernel))
+      return primaryKernel.emitOpError(
+          "mix translation currently supports only the matmul+bias+leakyrelu kernel shape");
+
+    emitSupportedMixKernel(os, primaryKernel);
+    return success();
+  }
 
   CodeEmitter emitter(os);
   CodeEmitter::Scope scope(emitter);
