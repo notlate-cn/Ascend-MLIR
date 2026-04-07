@@ -623,7 +623,7 @@ LogicalResult convertCompute(func::FuncOp funcOp, AscendCBufferContext &ctx) {
         Value dst = chooseDst(addOp.getResult());
         auto addL2Op = builder.create<AddL2Op>(loc, dst, lhs, rhs, totalElems);
         copyAscendCUnitAttr(genOp.getOperation(), addL2Op.getOperation());
-        if (dst == accumLt) valToLt[addL2Op->getResult(0)] = accumLt;
+        if (dst == accumLt) valToLt[addOp.getResult()] = accumLt;
       } else if (auto mulOp = dyn_cast<arith::MulFOp>(bodyOp)) {
         Value lhs = resolve(mulOp.getLhs());
         Value rhs = resolve(mulOp.getRhs());

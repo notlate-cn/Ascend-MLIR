@@ -1,5 +1,8 @@
 // RUN: afir-opt %s --linalg-to-ascendc | FileCheck %s
 
+#map_par_reduce_lhs = affine_map<(d0, d1) -> (d0)>
+#map_par_reduce_rhs = affine_map<(d0, d1) -> (d0, d1)>
+
 //===----------------------------------------------------------------------===//
 // Data-move: GM → A1 (data_copy_nd2nz)
 //===----------------------------------------------------------------------===//
@@ -187,6 +190,31 @@ func.func @test_relu() {
   linalg.elementwise kind=#linalg.elementwise_kind<max_signed> {ascendc.unit = "AiCore.Vector"}
     ins(%src, %zero_buf : memref<32x32xf32, 11 : i32>, memref<32x32xf32, 9 : i32>)
     outs(%dst : memref<32x32xf32, 10 : i32>)
+  return
+}
+
+//===----------------------------------------------------------------------===//
+// Compute: linalg.generic {parallel, reduction} → add_l2 + reduce_sum_2d_l2
+// Regression: the yielded addf must map back to the accumulator SSA value
+// instead of reading a nonexistent AddL2Op result.
+//===----------------------------------------------------------------------===//
+// CHECK-LABEL: func @test_parallel_reduction_add
+// CHECK-NOT: linalg.generic
+// CHECK: ascendc.add_l2 {{.*}} {ascendc.unit = "AiCore.Vector"}
+// CHECK: ascendc.add_l2 {{.*}} {ascendc.unit = "AiCore.Vector"}
+// CHECK: ascendc.reduce_sum_2d_l2 {{.*}} {ascendc.unit = "AiCore.Vector"}
+func.func @test_parallel_reduction_add() {
+  %lhs = memref.alloc() : memref<8xf32, 9 : i32>
+  %rhs = memref.alloc() : memref<8x4xf32, 9 : i32>
+  %out = memref.alloc() : memref<8xf32, 10 : i32>
+  linalg.generic {indexing_maps = [#map_par_reduce_lhs, #map_par_reduce_rhs, #map_par_reduce_lhs], iterator_types = ["parallel", "reduction"], ascendc.unit = "AiCore.Vector"}
+    ins(%lhs, %rhs : memref<8xf32, 9 : i32>, memref<8x4xf32, 9 : i32>)
+    outs(%out : memref<8xf32, 10 : i32>) {
+  ^bb0(%in: f32, %in_0: f32, %acc: f32):
+    %sum = arith.addf %in, %in_0 : f32
+    %next = arith.addf %acc, %sum : f32
+    linalg.yield %next : f32
+  }
   return
 }
 
