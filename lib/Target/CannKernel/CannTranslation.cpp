@@ -473,22 +473,30 @@ static void emitSupportedMixAicRegion(raw_ostream &os,
      << "    cGM.SetGlobalBuffer(reinterpret_cast<__gm__ float *>(out), tiling.M * tiling.N);\n";
   if (config.hasBiasAdd)
     os << "    biasGM.SetGlobalBuffer(reinterpret_cast<__gm__ float *>(bias), tiling.N);\n";
+  auto emitCrossCoreSetFlag = [&]() {
+    os << "    CrossCoreSetFlag<0x"
+       << llvm::format_hex_no_prefix(getMixCrossCoreMode(config.taskKind), 1)
+       << ", PIPE_FIX>("
+       << config.crossCoreFlagId << ");\n";
+  };
+
   os << "\n"
      << "    REGIST_MATMUL_OBJ(&pipe, GetSysWorkSpacePtr(), mm, &tiling);\n"
      << "    mm.SetTensorA(aGM);\n"
      << "    mm.SetTensorB(bGM);\n"
      << (config.hasBiasAdd ? "    mm.SetBias(biasGM);\n" : "")
      << "    mm.template IterateAll(cGM);\n"
-     << "    mm.End();\n"
-     << "    CrossCoreSetFlag<0x"
-     << llvm::format_hex_no_prefix(getMixCrossCoreMode(config.taskKind), 1)
-     << ", PIPE_FIX>("
-     << config.crossCoreFlagId << ");\n"
-     << "  }\n\n";
+     << "    mm.End();\n";
+  emitCrossCoreSetFlag();
+  os << "  }\n\n";
 }
 
 static void emitSupportedMixAivRegion(raw_ostream &os,
                                       const SupportedMixKernelConfig &config) {
+  auto emitVectorCountDecl = [&]() {
+    os << "    uint32_t count = static_cast<uint32_t>(tiling.singleCoreM * tiling.singleCoreN / "
+       << getMixVectorTaskRatio(config.taskKind) << ");\n";
+  };
   auto emitVectorEpilogue = [&]() {
     if (config.epilogueKind == SupportedMixKernelConfig::EpilogueKind::Relu) {
       os << "    Relu(outLocal, inLocal, count);\n";
@@ -501,10 +509,9 @@ static void emitSupportedMixAivRegion(raw_ostream &os,
 
   os << "  if ASCEND_IS_AIV {\n"
      << "    TQue<TPosition::VECIN, 1> reluInQueue;\n"
-     << "    TQue<TPosition::VECOUT, 1> reluOutQueue;\n\n"
-     << "    uint32_t count = static_cast<uint32_t>(tiling.singleCoreM * tiling.singleCoreN / "
-     << getMixVectorTaskRatio(config.taskKind) << ");\n"
-     << "    GlobalTensor<float> cGM;\n"
+     << "    TQue<TPosition::VECOUT, 1> reluOutQueue;\n\n";
+  emitVectorCountDecl();
+  os << "    GlobalTensor<float> cGM;\n"
      << "    cGM.SetGlobalBuffer(reinterpret_cast<__gm__ float *>(out) + GetBlockIdx() * count, count);\n\n"
      << "    pipe.InitBuffer(reluInQueue, 1, count * sizeof(float));\n"
      << "    pipe.InitBuffer(reluOutQueue, 1, count * sizeof(float));\n\n"
