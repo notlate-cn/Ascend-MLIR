@@ -105,6 +105,8 @@ struct SupportedMixKernelConfig {
   bool hasBiasAdd = false;
   EpilogueKind epilogueKind = EpilogueKind::Unknown;
   double leakyReluAlpha = 0.0;
+  unsigned vectorTaskRatio = 2;
+  unsigned crossCoreFlagId = 3;
 };
 
 static MixPartitionKind getStoragePartitionForPosition(ascendc::TPosition position) {
@@ -456,17 +458,19 @@ static void emitSupportedMixKernel(raw_ostream &os, func::FuncOp funcOp,
      << (config.hasBiasAdd ? "    mm.SetBias(biasGM);\n" : "")
      << "    mm.template IterateAll(cGM);\n"
      << "    mm.End();\n"
-     << "    CrossCoreSetFlag<0x2, PIPE_FIX>(3);\n"
+     << "    CrossCoreSetFlag<0x2, PIPE_FIX>("
+     << config.crossCoreFlagId << ");\n"
      << "  }\n\n"
      << "  if ASCEND_IS_AIV {\n"
      << "    TQue<TPosition::VECIN, 1> reluInQueue;\n"
      << "    TQue<TPosition::VECOUT, 1> reluOutQueue;\n\n"
-     << "    uint32_t count = static_cast<uint32_t>(tiling.singleCoreM * tiling.singleCoreN / 2);\n"
+     << "    uint32_t count = static_cast<uint32_t>(tiling.singleCoreM * tiling.singleCoreN / "
+     << config.vectorTaskRatio << ");\n"
      << "    GlobalTensor<float> cGM;\n"
      << "    cGM.SetGlobalBuffer(reinterpret_cast<__gm__ float *>(out) + GetBlockIdx() * count, count);\n\n"
      << "    pipe.InitBuffer(reluInQueue, 1, count * sizeof(float));\n"
      << "    pipe.InitBuffer(reluOutQueue, 1, count * sizeof(float));\n\n"
-     << "    CrossCoreWaitFlag(3);\n\n"
+     << "    CrossCoreWaitFlag(" << config.crossCoreFlagId << ");\n\n"
      << "    LocalTensor<float> reluInLocal = reluInQueue.AllocTensor<float>();\n"
      << "    DataCopy(reluInLocal, cGM, count);\n"
      << "    reluInQueue.EnQue<float>(reluInLocal);\n\n"
