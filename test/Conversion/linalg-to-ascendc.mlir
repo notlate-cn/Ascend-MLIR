@@ -129,13 +129,13 @@ func.func @test_fill_gm(%alloc: memref<32x32xf32>) {
 // CHECK: ascendc.que_bind.deque_tensor
 // CHECK: ascendc.que_bind.alloc_tensor
 // CHECK: ascendc.construct !ascendc.mmad_params
-// CHECK: ascendc.mmad
+// CHECK: ascendc.mmad {{.*}} {ascendc.unit = "AiCore.Cube"}
 // CHECK: ascendc.que_bind.enque_tensor
 func.func @test_matmul() {
   %A2  = memref.alloc() : memref<32x64xf32, 2 : i32>
   %B2  = memref.alloc() : memref<64x32xf32, 4 : i32>
   %CO1 = memref.alloc() : memref<32x32xf32, 7 : i32>
-  linalg.matmul
+  linalg.matmul {ascendc.unit = "AiCore.Cube"}
     ins(%A2, %B2 : memref<32x64xf32, 2 : i32>, memref<64x32xf32, 4 : i32>)
     outs(%CO1 : memref<32x32xf32, 7 : i32>)
   return
@@ -159,12 +159,12 @@ func.func @test_matmul_no_convert(
 //===----------------------------------------------------------------------===//
 // CHECK-LABEL: func @test_add
 // CHECK-NOT: linalg.elementwise
-// CHECK: ascendc.add_l2
+// CHECK: ascendc.add_l2 {{.*}} {ascendc.unit = "AiCore.Vector"}
 func.func @test_add() {
   %src0 = memref.alloc() : memref<32x32xf32, 9 : i32>
   %src1 = memref.alloc() : memref<32x32xf32, 9 : i32>
   %dst  = memref.alloc() : memref<32x32xf32, 11 : i32>
-  linalg.elementwise kind=#linalg.elementwise_kind<add>
+  linalg.elementwise kind=#linalg.elementwise_kind<add> {ascendc.unit = "AiCore.Vector"}
     ins(%src0, %src1 : memref<32x32xf32, 9 : i32>, memref<32x32xf32, 9 : i32>)
     outs(%dst : memref<32x32xf32, 11 : i32>)
   return
@@ -177,14 +177,14 @@ func.func @test_add() {
 // CHECK-LABEL: func @test_relu
 // CHECK-NOT: linalg.elementwise
 // CHECK: ascendc.duplicate_l2
-// CHECK: ascendc.max_l2
+// CHECK: ascendc.max_l2 {{.*}} {ascendc.unit = "AiCore.Vector"}
 func.func @test_relu() {
   %src      = memref.alloc() : memref<32x32xf32, 11 : i32>
   %zero_buf = memref.alloc() : memref<32x32xf32, 9 : i32>
   %dst      = memref.alloc() : memref<32x32xf32, 10 : i32>
   %cst = arith.constant 0.0 : f32
   linalg.fill ins(%cst : f32) outs(%zero_buf : memref<32x32xf32, 9 : i32>)
-  linalg.elementwise kind=#linalg.elementwise_kind<max_signed>
+  linalg.elementwise kind=#linalg.elementwise_kind<max_signed> {ascendc.unit = "AiCore.Vector"}
     ins(%src, %zero_buf : memref<32x32xf32, 11 : i32>, memref<32x32xf32, 9 : i32>)
     outs(%dst : memref<32x32xf32, 10 : i32>)
   return
@@ -196,7 +196,7 @@ func.func @test_relu() {
 // CHECK-LABEL: func @test_single_pipe
 // CHECK:       [[PIPE:%.*]] = ascendc.pipe
 // CHECK:       ascendc.queue
-// CHECK:       ascendc.mmad
+// CHECK:       ascendc.mmad {{.*}} {ascendc.unit = "AiCore.Cube"}
 // CHECK-NOT:   ascendc.pipe
 func.func @test_single_pipe() {
   %a1  = memref.alloc() : memref<16x16xf32, 1 : i32>
