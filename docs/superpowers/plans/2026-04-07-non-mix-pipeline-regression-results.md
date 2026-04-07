@@ -16,6 +16,10 @@ Task 3 runtime separation inspection:
 - `lib/Runtime/Compiler.cpp` still distinguishes mix compilation only when `kernel_type == "mix"`, so the five non-mix examples remain on the plain `.bin` generation path.
 - Controller-side xvm rerun after the `Executor.cpp` boundary fix confirmed the effect: the four former environment-blocked examples now initialize the runtime, execute the plain path, and pass validation under their existing tolerances, while `broadcast-add-reduce` remains the lone compile-time failure at `STAGE 5 --linalg-to-ascendc`.
 
+Task 4 shared environment-contract assessment:
+- The earlier `libascend_hal.so` failure was an environment-only symptom at executor initialization, not a codegen regression. After the Task 3 runtime-boundary fix, the previously blocked examples now pass on xvm, so there is no remaining shared environment-script regression to repair in `examples/env.sh`.
+- No new shared `numpy`, `PATH`, or `LD_LIBRARY_PATH` breakage was observed in the rerun matrix. `broadcast-add-reduce` still fails earlier in the pipeline at `STAGE 5 --linalg-to-ascendc`, so it stays in the compile bucket.
+
 | Example | Expected Kind (Plan) | Last Good Stage | First Failing Stage | Compile | `.bin` Exists | Runtime Initialized | Accuracy | Root Cause Bucket | Notes |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | add-broadcast-concat | vec | PASS | none | yes | yes | yes | yes | n/a | xvm@orb / 2026-04-07 follow-up; simulator reached validation and passed with `max_abs_diff=0`, `mean_abs_diff=0`. |
