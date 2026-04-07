@@ -110,7 +110,6 @@ struct SupportedMixKernelConfig {
   TaskKind taskKind = TaskKind::MixAic1To2;
   EpilogueKind epilogueKind = EpilogueKind::Unknown;
   double leakyReluAlpha = 0.0;
-  unsigned vectorTaskRatio = 2;
   unsigned crossCoreFlagId = 3;
 };
 
@@ -126,6 +125,14 @@ static unsigned getMixCrossCoreMode(SupportedMixKernelConfig::TaskKind taskKind)
   switch (taskKind) {
   case SupportedMixKernelConfig::TaskKind::MixAic1To2:
     return 0x2;
+  }
+  llvm_unreachable("unsupported mix task kind");
+}
+
+static unsigned getMixVectorTaskRatio(SupportedMixKernelConfig::TaskKind taskKind) {
+  switch (taskKind) {
+  case SupportedMixKernelConfig::TaskKind::MixAic1To2:
+    return 2;
   }
   llvm_unreachable("unsupported mix task kind");
 }
@@ -489,7 +496,7 @@ static void emitSupportedMixKernel(raw_ostream &os, func::FuncOp funcOp,
      << "    TQue<TPosition::VECIN, 1> reluInQueue;\n"
      << "    TQue<TPosition::VECOUT, 1> reluOutQueue;\n\n"
      << "    uint32_t count = static_cast<uint32_t>(tiling.singleCoreM * tiling.singleCoreN / "
-     << config.vectorTaskRatio << ");\n"
+     << getMixVectorTaskRatio(config.taskKind) << ");\n"
      << "    GlobalTensor<float> cGM;\n"
      << "    cGM.SetGlobalBuffer(reinterpret_cast<__gm__ float *>(out) + GetBlockIdx() * count, count);\n\n"
      << "    pipe.InitBuffer(reluInQueue, 1, count * sizeof(float));\n"
