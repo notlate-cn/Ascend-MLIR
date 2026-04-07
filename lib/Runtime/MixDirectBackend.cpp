@@ -1155,12 +1155,18 @@ static std::string emitPassthroughSource(llvm::StringRef sourcePath) {
   return "#include \"" + escapeForCxx(sourcePath.str()) + "\"\n";
 }
 
-static bool requiresCompanionHostFlow(llvm::StringRef sourcePath) {
-  llvm::StringRef stem = getFileStemRef(sourcePath);
-  return stem.ends_with("_wrapperless") || stem.ends_with("_official_style");
+static bool sourceContainsGlobalKernel(llvm::StringRef sourcePath) {
+  auto contentOr = readTextFileOrErr(sourcePath);
+  if (!contentOr)
+    return false;
+  llvm::StringRef content = *contentOr;
+  return content.contains("__global__") &&
+         content.contains("KERNEL_TASK_TYPE_DEFAULT");
 }
 
 static std::string resolveCompanionHostSourcePath(llvm::StringRef sourcePath) {
+  if (sourceContainsGlobalKernel(sourcePath))
+    return sourcePath.str();
   llvm::SmallString<256> hostSource(sourcePath);
   llvm::StringRef stem = getFileStemRef(hostSource);
   if (stem.ends_with("_wrapperless")) {
@@ -1170,28 +1176,25 @@ static std::string resolveCompanionHostSourcePath(llvm::StringRef sourcePath) {
     if (llvm::sys::fs::exists(hostSource))
       return hostSource.str().str();
   }
-  return sourcePath.str();
+  return std::string();
 }
 
 static llvm::Expected<std::string>
 materializeCanonicalGeneratedSource(llvm::StringRef workDir,
-                                    llvm::StringRef sourcePath) {
-  llvm::StringRef fileName = llvm::sys::path::filename(sourcePath);
-  std::string canonicalFileName = fileName.str();
-  const std::string wrapperlessSuffix = "_wrapperless.cpp";
-  if (llvm::StringRef(canonicalFileName).ends_with(wrapperlessSuffix)) {
-    canonicalFileName.resize(canonicalFileName.size() - wrapperlessSuffix.size());
-    canonicalFileName += ".cpp";
-  } else {
-    return sourcePath.str();
-  }
+                                    llvm::StringRef generatedSourcePath,
+                                    llvm::StringRef hostSourcePath) {
+  llvm::StringRef generatedFileName =
+      llvm::sys::path::filename(generatedSourcePath);
+  llvm::StringRef hostFileName = llvm::sys::path::filename(hostSourcePath);
+  if (generatedFileName == hostFileName)
+    return generatedSourcePath.str();
   llvm::SmallString<256> canonicalDir(workDir);
   llvm::sys::path::append(canonicalDir, "generated_runtime");
   if (auto err = ensureDirectory(canonicalDir))
     return std::move(err);
   llvm::SmallString<256> canonicalPath(canonicalDir);
-  llvm::sys::path::append(canonicalPath, canonicalFileName);
-  auto contentOr = readTextFileOrErr(sourcePath);
+  llvm::sys::path::append(canonicalPath, hostFileName);
+  auto contentOr = readTextFileOrErr(generatedSourcePath);
   if (!contentOr)
     return contentOr.takeError();
   if (auto err = writeTextFile(canonicalPath, *contentOr))
@@ -1499,7 +1502,9 @@ MixDirectBackend::compile(const MixDirectCompileConfig &cfg) {
   std::string preprocessCompileCommandsPath;
   std::string preprocessCommand;
   std::string preprocessGeneratedDir;
-  const bool useCompanionHostArtifacts = requiresCompanionHostFlow(sourcePath);
+  const std::string companionHostSourcePath =
+      resolveCompanionHostSourcePath(sourcePath);
+  const bool useCompanionHostArtifacts = !companionHostSourcePath.empty();
   std::string runtimeKernelName =
       useCompanionHostArtifacts
           ? deriveCanonicalRuntimeKernelName(cfg.kernelName)
@@ -1631,9 +1636,10 @@ MixDirectBackend::compile(const MixDirectCompileConfig &cfg) {
   }
 
   if (useCompanionHostArtifacts) {
-    hostSourcePath = resolveCompanionHostSourcePath(sourcePath);
+    hostSourcePath = companionHostSourcePath;
     auto canonicalDeviceSourceOr =
-        materializeCanonicalGeneratedSource(workDir, generatedSourcePath);
+        materializeCanonicalGeneratedSource(workDir, generatedSourcePath,
+                                           hostSourcePath);
     if (!canonicalDeviceSourceOr)
       return canonicalDeviceSourceOr.takeError();
     generatedSourcePath = *canonicalDeviceSourceOr;
