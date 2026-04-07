@@ -38,6 +38,13 @@ LogicalResult convertCompute(func::FuncOp funcOp, AscendCBufferContext &ctx) {
   MLIRContext *mlirCtx = funcOp.getContext();
   OpBuilder builder(mlirCtx);
 
+  auto copyAscendCUnitAttr = [](Operation *src, Operation *dst) {
+    if (!src || !dst)
+      return;
+    if (auto unitAttr = src->getAttrOfType<StringAttr>("ascendc.unit"))
+      dst->setAttr("ascendc.unit", unitAttr);
+  };
+
   // Helper: get a local_tensor by deque from a queue.
   auto dequeTensor = [&](OpBuilder &b, Location loc, Value queue,
                          Type elemType) -> Value {
@@ -428,8 +435,10 @@ LogicalResult convertCompute(func::FuncOp funcOp, AscendCBufferContext &ctx) {
     else if (elemType.isF32())
       zeroVal = builder.create<arith::ConstantOp>(
           loc, builder.getF32FloatAttr(0.0f));
-    if (zeroVal)
-      builder.create<DuplicateL2Op>(loc, accumLt, zeroVal, totalElems);
+    if (zeroVal) {
+      auto zeroDup = builder.create<DuplicateL2Op>(loc, accumLt, zeroVal, totalElems);
+      copyAscendCUnitAttr(genOp.getOperation(), zeroDup.getOperation());
+    }
 
     // Promote each input to a local_tensor of shape `fullShape`.
     SmallVector<Value> inputLts(numInputs);
@@ -473,10 +482,11 @@ LogicalResult convertCompute(func::FuncOp funcOp, AscendCBufferContext &ctx) {
         Value srcLt = readTensor(builder, loc, inMemref);
         auto [bcastTbuf, bcastLt] =
             allocVeccalc(builder, loc, elemType, fullShape);
-        builder.create<BroadcastL2Op>(
+        auto bcastOp = builder.create<BroadcastL2Op>(
             loc, bcastLt, srcLt,
             dstShapeVals, srcShapeVals,
             builder.getI32IntegerAttr(static_cast<int32_t>(iterRank)));
+        copyAscendCUnitAttr(genOp.getOperation(), bcastOp.getOperation());
         inputLts[i] = bcastLt;
       } else if (isBcast && inMs == 0 /*GM*/) {
         // broadcast from GM: copy the small src tensor into VECIN via TQue
@@ -516,10 +526,11 @@ LogicalResult convertCompute(func::FuncOp funcOp, AscendCBufferContext &ctx) {
         }
         auto [bcastTbuf, bcastLt] =
             allocVeccalc(builder, loc, elemType, fullShape);
-        builder.create<BroadcastL2Op>(
+        auto bcastOp = builder.create<BroadcastL2Op>(
             loc, bcastLt, srcLt,
             dstShapeVals, srcShapeVals,
             builder.getI32IntegerAttr(static_cast<int32_t>(iterRank)));
+        copyAscendCUnitAttr(genOp.getOperation(), bcastOp.getOperation());
         inputLts[i] = bcastLt;
       } else if (inMs == 0 /*GM*/) {
         // GM input at full rank: copy via VECIN TQue (simulator requires
@@ -587,7 +598,8 @@ LogicalResult convertCompute(func::FuncOp funcOp, AscendCBufferContext &ctx) {
         // Scalar constant? Fill a fresh VECCALC with duplicate_l2.
         if (auto constOp = v.getDefiningOp<arith::ConstantOp>()) {
           auto [dupTbuf, dupLt] = allocVeccalc(builder, loc, elemType, fullShape);
-          builder.create<DuplicateL2Op>(loc, dupLt, constOp.getResult(), totalElems);
+          auto dupOp = builder.create<DuplicateL2Op>(loc, dupLt, constOp.getResult(), totalElems);
+          copyAscendCUnitAttr(genOp.getOperation(), dupOp.getOperation());
           valToLt[v] = dupLt;
           return dupLt;
         }
@@ -608,21 +620,24 @@ LogicalResult convertCompute(func::FuncOp funcOp, AscendCBufferContext &ctx) {
         Value rhs = resolve(addOp.getRhs());
         if (!lhs || !rhs) continue;
         Value dst = chooseDst(addOp.getResult());
-        builder.create<AddL2Op>(loc, dst, lhs, rhs, totalElems);
+        auto addOp = builder.create<AddL2Op>(loc, dst, lhs, rhs, totalElems);
+        copyAscendCUnitAttr(genOp.getOperation(), addOp.getOperation());
         if (dst == accumLt) valToLt[addOp.getResult()] = accumLt;
       } else if (auto mulOp = dyn_cast<arith::MulFOp>(bodyOp)) {
         Value lhs = resolve(mulOp.getLhs());
         Value rhs = resolve(mulOp.getRhs());
         if (!lhs || !rhs) continue;
         Value dst = chooseDst(mulOp.getResult());
-        builder.create<MulL2Op>(loc, dst, lhs, rhs, totalElems);
+        auto mulOp2 = builder.create<MulL2Op>(loc, dst, lhs, rhs, totalElems);
+        copyAscendCUnitAttr(genOp.getOperation(), mulOp2.getOperation());
         if (dst == accumLt) valToLt[mulOp.getResult()] = accumLt;
       } else if (auto maxOp = dyn_cast<arith::MaximumFOp>(bodyOp)) {
         Value lhs = resolve(maxOp.getLhs());
         Value rhs = resolve(maxOp.getRhs());
         if (!lhs || !rhs) continue;
         Value dst = chooseDst(maxOp.getResult());
-        builder.create<MaxL2Op>(loc, dst, lhs, rhs, totalElems);
+        auto maxOp2 = builder.create<MaxL2Op>(loc, dst, lhs, rhs, totalElems);
+        copyAscendCUnitAttr(genOp.getOperation(), maxOp2.getOperation());
         if (dst == accumLt) valToLt[maxOp.getResult()] = accumLt;
       }
       // Other arith ops can be added here as needed.
@@ -636,8 +651,9 @@ LogicalResult convertCompute(func::FuncOp funcOp, AscendCBufferContext &ctx) {
     // ------------------------------------------------------------------
     Value vecoutLt = writeTensor(builder, loc, outMemref);
     auto layoutAttr = ReduceLayoutAttr::get(mlirCtx, ReduceLayout::AR);
-    builder.create<ReduceSum2DL2Op>(loc, vecoutLt, accumLt, layoutAttr,
-                                     /*sharedTmpBuffer=*/Value{});
+    auto reduceOp = builder.create<ReduceSum2DL2Op>(loc, vecoutLt, accumLt, layoutAttr,
+                                                    /*sharedTmpBuffer=*/Value{});
+    copyAscendCUnitAttr(genOp.getOperation(), reduceOp.getOperation());
 
     // Enqueue vecout if it has a queue (VECOUT path).
     if (Value q = ctx.getQueue(outMemref))
@@ -903,7 +919,8 @@ LogicalResult convertCompute(func::FuncOp funcOp, AscendCBufferContext &ctx) {
                 if (auto constOp = v.getDefiningOp<arith::ConstantOp>()) {
                   auto [dupTbuf2, dupLt] = allocVeccalc(b, forLoc, elemType,
                                                          SmallVector<Value>{dimN});
-                  b.create<DuplicateL2Op>(forLoc, dupLt, constOp.getResult(), dimN_i32);
+                  auto dupOp2 = b.create<DuplicateL2Op>(forLoc, dupLt, constOp.getResult(), dimN_i32);
+                  copyAscendCUnitAttr(preOp.getOperation(), dupOp2.getOperation());
                   preValToLt[v] = dupLt;
                   return dupLt;
                 }
@@ -914,19 +931,22 @@ LogicalResult convertCompute(func::FuncOp funcOp, AscendCBufferContext &ctx) {
                 if (auto maxOp = dyn_cast<arith::MaximumFOp>(bodyOp)) {
                   Value lhs = preResolve(maxOp.getLhs()), rhs = preResolve(maxOp.getRhs());
                   if (lhs && rhs) {
-                    b.create<MaxL2Op>(forLoc, procLt, lhs, rhs, dimN_i32);
+                    auto maxOp2 = b.create<MaxL2Op>(forLoc, procLt, lhs, rhs, dimN_i32);
+                    copyAscendCUnitAttr(preOp.getOperation(), maxOp2.getOperation());
                     preValToLt[maxOp.getResult()] = procLt;
                   }
                 } else if (auto addOp2 = dyn_cast<arith::AddFOp>(bodyOp)) {
                   Value lhs = preResolve(addOp2.getLhs()), rhs = preResolve(addOp2.getRhs());
                   if (lhs && rhs) {
-                    b.create<AddL2Op>(forLoc, procLt, lhs, rhs, dimN_i32);
+                    auto addOp3 = b.create<AddL2Op>(forLoc, procLt, lhs, rhs, dimN_i32);
+                    copyAscendCUnitAttr(preOp.getOperation(), addOp3.getOperation());
                     preValToLt[addOp2.getResult()] = procLt;
                   }
                 } else if (auto mulOp2 = dyn_cast<arith::MulFOp>(bodyOp)) {
                   Value lhs = preResolve(mulOp2.getLhs()), rhs = preResolve(mulOp2.getRhs());
                   if (lhs && rhs) {
-                    b.create<MulL2Op>(forLoc, procLt, lhs, rhs, dimN_i32);
+                    auto mulOp3 = b.create<MulL2Op>(forLoc, procLt, lhs, rhs, dimN_i32);
+                    copyAscendCUnitAttr(preOp.getOperation(), mulOp3.getOperation());
                     preValToLt[mulOp2.getResult()] = procLt;
                   }
                 }
@@ -969,7 +989,8 @@ LogicalResult convertCompute(func::FuncOp funcOp, AscendCBufferContext &ctx) {
                 if (auto constOp = v.getDefiningOp<arith::ConstantOp>()) {
                   auto [dupTbuf3, dupLt] = allocVeccalc(b, forLoc, elemType,
                                                          SmallVector<Value>{dimK});
-                  b.create<DuplicateL2Op>(forLoc, dupLt, constOp.getResult(), dimK_i32v);
+                  auto dupOp3 = b.create<DuplicateL2Op>(forLoc, dupLt, constOp.getResult(), dimK_i32v);
+                  copyAscendCUnitAttr(postOp.getOperation(), dupOp3.getOperation());
                   postValToLt[v] = dupLt;
                   return dupLt;
                 }
@@ -980,19 +1001,22 @@ LogicalResult convertCompute(func::FuncOp funcOp, AscendCBufferContext &ctx) {
                 if (auto addOp3 = dyn_cast<arith::AddFOp>(bodyOp)) {
                   Value lhs = postResolve(addOp3.getLhs()), rhs = postResolve(addOp3.getRhs());
                   if (lhs && rhs) {
-                    b.create<AddL2Op>(forLoc, gatheredRowLt, lhs, rhs, dimK_i32v);
+                    auto addOp4 = b.create<AddL2Op>(forLoc, gatheredRowLt, lhs, rhs, dimK_i32v);
+                    copyAscendCUnitAttr(postOp.getOperation(), addOp4.getOperation());
                     postValToLt[addOp3.getResult()] = gatheredRowLt;
                   }
                 } else if (auto mulOp3 = dyn_cast<arith::MulFOp>(bodyOp)) {
                   Value lhs = postResolve(mulOp3.getLhs()), rhs = postResolve(mulOp3.getRhs());
                   if (lhs && rhs) {
-                    b.create<MulL2Op>(forLoc, gatheredRowLt, lhs, rhs, dimK_i32v);
+                    auto mulOp4 = b.create<MulL2Op>(forLoc, gatheredRowLt, lhs, rhs, dimK_i32v);
+                    copyAscendCUnitAttr(postOp.getOperation(), mulOp4.getOperation());
                     postValToLt[mulOp3.getResult()] = gatheredRowLt;
                   }
                 } else if (auto maxOp3 = dyn_cast<arith::MaximumFOp>(bodyOp)) {
                   Value lhs = postResolve(maxOp3.getLhs()), rhs = postResolve(maxOp3.getRhs());
                   if (lhs && rhs) {
-                    b.create<MaxL2Op>(forLoc, gatheredRowLt, lhs, rhs, dimK_i32v);
+                    auto maxOp4 = b.create<MaxL2Op>(forLoc, gatheredRowLt, lhs, rhs, dimK_i32v);
+                    copyAscendCUnitAttr(postOp.getOperation(), maxOp4.getOperation());
                     postValToLt[maxOp3.getResult()] = gatheredRowLt;
                   }
                 }
@@ -1053,7 +1077,8 @@ LogicalResult convertCompute(func::FuncOp funcOp, AscendCBufferContext &ctx) {
                 if (auto constOp = v.getDefiningOp<arith::ConstantOp>()) {
                   auto [dupTbuf4, dupLt] = allocVeccalc(b, forLoc, elemType,
                                                          SmallVector<Value>{dimK});
-                  b.create<DuplicateL2Op>(forLoc, dupLt, constOp.getResult(), dimK_i32v);
+                  auto dupOp4 = b.create<DuplicateL2Op>(forLoc, dupLt, constOp.getResult(), dimK_i32v);
+                  copyAscendCUnitAttr(genOp.getOperation(), dupOp4.getOperation());
                   bodyValToLt[v] = dupLt;
                   return dupLt;
                 }
@@ -1071,21 +1096,24 @@ LogicalResult convertCompute(func::FuncOp funcOp, AscendCBufferContext &ctx) {
                   Value lhs = bodyResolve(addOp4.getLhs()),
                         rhs = bodyResolve(addOp4.getRhs());
                   if (lhs && rhs) {
-                    b.create<AddL2Op>(forLoc, gatheredRowLt, lhs, rhs, dimK_i32v);
+                    auto addOp5 = b.create<AddL2Op>(forLoc, gatheredRowLt, lhs, rhs, dimK_i32v);
+                    copyAscendCUnitAttr(genOp.getOperation(), addOp5.getOperation());
                     bodyValToLt[addOp4.getResult()] = gatheredRowLt;
                   }
                 } else if (auto maxOp4 = dyn_cast<arith::MaximumFOp>(op)) {
                   Value lhs = bodyResolve(maxOp4.getLhs()),
                         rhs = bodyResolve(maxOp4.getRhs());
                   if (lhs && rhs) {
-                    b.create<MaxL2Op>(forLoc, gatheredRowLt, lhs, rhs, dimK_i32v);
+                    auto maxOp5 = b.create<MaxL2Op>(forLoc, gatheredRowLt, lhs, rhs, dimK_i32v);
+                    copyAscendCUnitAttr(genOp.getOperation(), maxOp5.getOperation());
                     bodyValToLt[maxOp4.getResult()] = gatheredRowLt;
                   }
                 } else if (auto mulOp4 = dyn_cast<arith::MulFOp>(op)) {
                   Value lhs = bodyResolve(mulOp4.getLhs()),
                         rhs = bodyResolve(mulOp4.getRhs());
                   if (lhs && rhs) {
-                    b.create<MulL2Op>(forLoc, gatheredRowLt, lhs, rhs, dimK_i32v);
+                    auto mulOp5 = b.create<MulL2Op>(forLoc, gatheredRowLt, lhs, rhs, dimK_i32v);
+                    copyAscendCUnitAttr(genOp.getOperation(), mulOp5.getOperation());
                     bodyValToLt[mulOp4.getResult()] = gatheredRowLt;
                   }
                 }
@@ -1209,10 +1237,11 @@ LogicalResult convertCompute(func::FuncOp funcOp, AscendCBufferContext &ctx) {
           Value srcLt = readTensor(builder, loc, inMemref);
           auto [bcastTbuf, bcastLt] =
               allocVeccalc(builder, loc, elemType, iterDimSizes);
-          builder.create<BroadcastL2Op>(
+          auto bcastOp = builder.create<BroadcastL2Op>(
               loc, bcastLt, srcLt,
               dstShapeVals, srcShapeVals,
               builder.getI32IntegerAttr(static_cast<int32_t>(iterRank)));
+          copyAscendCUnitAttr(genOp.getOperation(), bcastOp.getOperation());
           inputLts[i] = bcastLt;
         } else {
           // broadcast from GM: copy via VECIN TQue first, then broadcast_l2.
@@ -1247,10 +1276,11 @@ LogicalResult convertCompute(func::FuncOp funcOp, AscendCBufferContext &ctx) {
           }
           auto [bcastTbuf, bcastLt] =
               allocVeccalc(builder, loc, elemType, iterDimSizes);
-          builder.create<BroadcastL2Op>(
+          auto bcastOp = builder.create<BroadcastL2Op>(
               loc, bcastLt, srcLt,
               dstShapeVals, srcShapeVals,
               builder.getI32IntegerAttr(static_cast<int32_t>(iterRank)));
+          copyAscendCUnitAttr(genOp.getOperation(), bcastOp.getOperation());
           inputLts[i] = bcastLt;
         }
         break;
@@ -1273,7 +1303,8 @@ LogicalResult convertCompute(func::FuncOp funcOp, AscendCBufferContext &ctx) {
 
         auto [transpTbuf, transpLt] =
             allocVeccalc(builder, loc, elemType, iterDimSizes);
-        builder.create<TransposeOp>(loc, transpLt, srcVecinLt);
+        auto transposeOp = builder.create<TransposeOp>(loc, transpLt, srcVecinLt);
+        copyAscendCUnitAttr(genOp.getOperation(), transposeOp.getOperation());
         inputLts[i] = transpLt;
         break;
       }
@@ -1345,10 +1376,11 @@ LogicalResult convertCompute(func::FuncOp funcOp, AscendCBufferContext &ctx) {
 
         auto [finalTbuf, finalLt] =
             allocVeccalc(builder, loc, elemType, iterDimSizes);
-        builder.create<BroadcastL2Op>(
+        auto bcastOp = builder.create<BroadcastL2Op>(
             loc, finalLt, srcVecinLt,
             bcastDstShape, bcastSrcShape,
             builder.getI32IntegerAttr(static_cast<int32_t>(iterRank)));
+        copyAscendCUnitAttr(genOp.getOperation(), bcastOp.getOperation());
         inputLts[i] = finalLt;
         break;
       }
@@ -1373,7 +1405,8 @@ LogicalResult convertCompute(func::FuncOp funcOp, AscendCBufferContext &ctx) {
         // Scalar constant? Fill a fresh VECCALC with duplicate_l2.
         if (auto constOp = v.getDefiningOp<arith::ConstantOp>()) {
           auto [dupTbuf, dupLt] = allocVeccalc(builder, loc, elemType, iterDimSizes);
-          builder.create<DuplicateL2Op>(loc, dupLt, constOp.getResult(), totalElems);
+          auto dupOp = builder.create<DuplicateL2Op>(loc, dupLt, constOp.getResult(), totalElems);
+          copyAscendCUnitAttr(genOp.getOperation(), dupOp.getOperation());
           valToLt[v] = dupLt;
           return dupLt;
         }
@@ -1384,19 +1417,25 @@ LogicalResult convertCompute(func::FuncOp funcOp, AscendCBufferContext &ctx) {
         Value lhs = resolve(addOp.getLhs());
         Value rhs = resolve(addOp.getRhs());
         if (!lhs || !rhs) continue;
-        builder.create<AddL2Op>(loc, accumLt, lhs, rhs, totalElems);
+        auto addL2Op =
+            builder.create<AddL2Op>(loc, accumLt, lhs, rhs, totalElems);
+        copyAscendCUnitAttr(genOp.getOperation(), addL2Op.getOperation());
         valToLt[addOp.getResult()] = accumLt;
       } else if (auto mulOp = dyn_cast<arith::MulFOp>(bodyOp)) {
         Value lhs = resolve(mulOp.getLhs());
         Value rhs = resolve(mulOp.getRhs());
         if (!lhs || !rhs) continue;
-        builder.create<MulL2Op>(loc, accumLt, lhs, rhs, totalElems);
+        auto mulL2Op =
+            builder.create<MulL2Op>(loc, accumLt, lhs, rhs, totalElems);
+        copyAscendCUnitAttr(genOp.getOperation(), mulL2Op.getOperation());
         valToLt[mulOp.getResult()] = accumLt;
       } else if (auto maxOp = dyn_cast<arith::MaximumFOp>(bodyOp)) {
         Value lhs = resolve(maxOp.getLhs());
         Value rhs = resolve(maxOp.getRhs());
         if (!lhs || !rhs) continue;
-        builder.create<MaxL2Op>(loc, accumLt, lhs, rhs, totalElems);
+        auto maxL2Op =
+            builder.create<MaxL2Op>(loc, accumLt, lhs, rhs, totalElems);
+        copyAscendCUnitAttr(genOp.getOperation(), maxL2Op.getOperation());
         valToLt[maxOp.getResult()] = accumLt;
       }
     }
@@ -1489,7 +1528,8 @@ LogicalResult convertCompute(func::FuncOp funcOp, AscendCBufferContext &ctx) {
     Value mmadParams = builder.create<ConstructOp>(
         loc, MmadParamsType::get(mlirCtx), mmadOperands,
         builder.getTypeArrayAttr(mmadTypes));
-    builder.create<MmadOp>(loc, tensorC, tensorA, tensorB, mmadParams);
+    auto mmadOp = builder.create<MmadOp>(loc, tensorC, tensorA, tensorB, mmadParams);
+    copyAscendCUnitAttr(matmulOp.getOperation(), mmadOp.getOperation());
 
     if (cHoistFor) {
       OpBuilder::InsertionGuard guard(builder);
@@ -1561,12 +1601,19 @@ LogicalResult convertCompute(func::FuncOp funcOp, AscendCBufferContext &ctx) {
 
     Value count = computeElementCount(builder, loc, dst);
 
-    if (kind == linalg::ElementwiseKind::add)
-      builder.create<AddL2Op>(loc, writeTarget, localSrc0, localSrc1, count);
-    else if (kind == linalg::ElementwiseKind::mul)
-      builder.create<MulL2Op>(loc, writeTarget, localSrc0, localSrc1, count);
-    else
-      builder.create<MaxL2Op>(loc, writeTarget, localSrc0, localSrc1, count);
+    if (kind == linalg::ElementwiseKind::add) {
+      auto addOp =
+          builder.create<AddL2Op>(loc, writeTarget, localSrc0, localSrc1, count);
+      copyAscendCUnitAttr(ewOp.getOperation(), addOp.getOperation());
+    } else if (kind == linalg::ElementwiseKind::mul) {
+      auto mulOp =
+          builder.create<MulL2Op>(loc, writeTarget, localSrc0, localSrc1, count);
+      copyAscendCUnitAttr(ewOp.getOperation(), mulOp.getOperation());
+    } else {
+      auto maxOp =
+          builder.create<MaxL2Op>(loc, writeTarget, localSrc0, localSrc1, count);
+      copyAscendCUnitAttr(ewOp.getOperation(), maxOp.getOperation());
+    }
 
     if (Value q = ctx.getQueue(dst)) {
       if (dstHoistFor) {
@@ -1630,7 +1677,9 @@ LogicalResult convertCompute(func::FuncOp funcOp, AscendCBufferContext &ctx) {
 
     Value localDst = writeTensor(builder, loc, dst);
     Value count = computeElementCount(builder, loc, dst);
-    builder.create<DuplicateL2Op>(loc, localDst, fillOp.getInputs()[0], count);
+    auto dupOp =
+        builder.create<DuplicateL2Op>(loc, localDst, fillOp.getInputs()[0], count);
+    copyAscendCUnitAttr(fillOp.getOperation(), dupOp.getOperation());
 
     if (Value q = ctx.getQueue(dst))
       builder.create<TQueBindEnqueTensorOp>(loc, q, localDst);

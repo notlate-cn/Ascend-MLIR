@@ -506,6 +506,8 @@ void clearAnnotations(func::FuncOp funcOp) {
   funcOp.walk([](Operation *op) {
     SmallVector<StringAttr> toRemove;
     for (NamedAttribute attr : op->getAttrs()) {
+      if (attr.getName().getValue() == "ascendc.unit")
+        continue;
       if (attr.getName().getValue() == "ascendc.kernel_kind")
         continue;
       if (attr.getName().getValue().starts_with("ascendc.")) {
