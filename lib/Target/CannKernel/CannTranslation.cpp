@@ -458,21 +458,33 @@ inferSupportedMixKernelConfig(func::FuncOp funcOp,
 
 static void emitSupportedMixAicRegion(raw_ostream &os,
                                       const SupportedMixKernelConfig &config) {
-  os << "  if ASCEND_IS_AIC {\n"
-     << "    Matmul<MatmulType<TPosition::GM, CubeFormat::ND, half>,\n"
-     << "           MatmulType<TPosition::GM, CubeFormat::ND, half>,\n"
-     << "           MatmulType<TPosition::VECIN, CubeFormat::ND, float>,\n"
-     << "           MatmulType<TPosition::GM, CubeFormat::ND, float>> mm;\n\n"
-     << "    GlobalTensor<half> aGM, bGM;\n"
-     << "    GlobalTensor<float> cGM";
-  if (config.hasBiasAdd)
-    os << ", biasGM";
-  os << ";\n"
-     << "    aGM.SetGlobalBuffer(reinterpret_cast<__gm__ half *>(a), tiling.M * tiling.Ka);\n"
-     << "    bGM.SetGlobalBuffer(reinterpret_cast<__gm__ half *>(b), tiling.Kb * tiling.N);\n"
-     << "    cGM.SetGlobalBuffer(reinterpret_cast<__gm__ float *>(out), tiling.M * tiling.N);\n";
-  if (config.hasBiasAdd)
-    os << "    biasGM.SetGlobalBuffer(reinterpret_cast<__gm__ float *>(bias), tiling.N);\n";
+  auto emitMatmulObjectDecl = [&]() {
+    os << "    Matmul<MatmulType<TPosition::GM, CubeFormat::ND, half>,\n"
+       << "           MatmulType<TPosition::GM, CubeFormat::ND, half>,\n"
+       << "           MatmulType<TPosition::VECIN, CubeFormat::ND, float>,\n"
+       << "           MatmulType<TPosition::GM, CubeFormat::ND, float>> mm;\n\n";
+  };
+  auto emitGlobalTensorSetup = [&]() {
+    os << "    GlobalTensor<half> aGM, bGM;\n"
+       << "    GlobalTensor<float> cGM";
+    if (config.hasBiasAdd)
+      os << ", biasGM";
+    os << ";\n"
+       << "    aGM.SetGlobalBuffer(reinterpret_cast<__gm__ half *>(a), tiling.M * tiling.Ka);\n"
+       << "    bGM.SetGlobalBuffer(reinterpret_cast<__gm__ half *>(b), tiling.Kb * tiling.N);\n"
+       << "    cGM.SetGlobalBuffer(reinterpret_cast<__gm__ float *>(out), tiling.M * tiling.N);\n";
+    if (config.hasBiasAdd)
+      os << "    biasGM.SetGlobalBuffer(reinterpret_cast<__gm__ float *>(bias), tiling.N);\n";
+  };
+  auto emitMatmulExecution = [&]() {
+    os << "\n"
+       << "    REGIST_MATMUL_OBJ(&pipe, GetSysWorkSpacePtr(), mm, &tiling);\n"
+       << "    mm.SetTensorA(aGM);\n"
+       << "    mm.SetTensorB(bGM);\n"
+       << (config.hasBiasAdd ? "    mm.SetBias(biasGM);\n" : "")
+       << "    mm.template IterateAll(cGM);\n"
+       << "    mm.End();\n";
+  };
   auto emitCrossCoreSetFlag = [&]() {
     os << "    CrossCoreSetFlag<0x"
        << llvm::format_hex_no_prefix(getMixCrossCoreMode(config.taskKind), 1)
@@ -480,13 +492,10 @@ static void emitSupportedMixAicRegion(raw_ostream &os,
        << config.crossCoreFlagId << ");\n";
   };
 
-  os << "\n"
-     << "    REGIST_MATMUL_OBJ(&pipe, GetSysWorkSpacePtr(), mm, &tiling);\n"
-     << "    mm.SetTensorA(aGM);\n"
-     << "    mm.SetTensorB(bGM);\n"
-     << (config.hasBiasAdd ? "    mm.SetBias(biasGM);\n" : "")
-     << "    mm.template IterateAll(cGM);\n"
-     << "    mm.End();\n";
+  os << "  if ASCEND_IS_AIC {\n";
+  emitMatmulObjectDecl();
+  emitGlobalTensorSetup();
+  emitMatmulExecution();
   emitCrossCoreSetFlag();
   os << "  }\n\n";
 }
