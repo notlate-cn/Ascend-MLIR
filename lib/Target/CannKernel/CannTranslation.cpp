@@ -172,6 +172,19 @@ struct SupportedMixKernelConfig {
   double leakyReluAlpha = 0.0;
 };
 
+struct SupportedMixBoundaryLayer {
+  MixBoundaryValue input;
+  MixBoundaryValue output;
+};
+
+static SmallVector<MixBoundaryValue>
+filterBoundaryValues(ArrayRef<MixBoundaryValue> values,
+                     MixPartitionKind producer, MixPartitionKind consumer);
+
+static const MixRegionPlan *
+findFirstMixRegionOfKind(ArrayRef<MixRegionPlan> regions,
+                         MixPartitionKind kind);
+
 struct MixTaskKindDescriptor {
   StringRef taskTypeSpelling;
   unsigned crossCoreMode;
@@ -999,6 +1012,28 @@ inferSupportedMixKernelConfig(func::FuncOp funcOp,
   return config;
 }
 
+static SupportedMixBoundaryLayer
+buildSupportedMixBoundaryLayer(const MixPartitionPlan &plan) {
+  const MixRegionPlan *boundaryRegion =
+      findFirstMixRegionOfKind(plan.regions, MixPartitionKind::Boundary);
+  if (!boundaryRegion)
+    llvm_unreachable("supported mix emission requires a boundary region");
+
+  SmallVector<MixBoundaryValue> inputs =
+      filterBoundaryValues(boundaryRegion->inputs, MixPartitionKind::Cube,
+                           MixPartitionKind::Boundary);
+  SmallVector<MixBoundaryValue> outputs =
+      filterBoundaryValues(boundaryRegion->outputs, MixPartitionKind::Boundary,
+                           MixPartitionKind::Vector);
+
+  if (inputs.empty() || outputs.empty()) {
+    llvm_unreachable(
+        "supported mix boundary emission requires explicit boundary crossings");
+  }
+
+  return {inputs.front(), outputs.front()};
+}
+
 // Supported mix emission helpers.
 static void emitSupportedMixVectorEpilogue(raw_ostream &os,
                                            const SupportedMixKernelConfig &config) {
@@ -1057,8 +1092,15 @@ static void emitSupportedMixVectorCountDecl(raw_ostream &os,
      << desc.vectorTaskRatio << ");\n";
 }
 
-static void emitSupportedMixAivQueueSetup(raw_ostream &os,
-                                          const MixTaskKindDescriptor &desc) {
+static void emitSupportedMixBoundaryTransferSetup(
+    raw_ostream &os, const SupportedMixBoundaryLayer &layer,
+    const MixTaskKindDescriptor &desc) {
+  if (layer.input.producer != MixPartitionKind::Cube ||
+      layer.input.consumer != MixPartitionKind::Boundary ||
+      layer.output.producer != MixPartitionKind::Boundary ||
+      layer.output.consumer != MixPartitionKind::Vector) {
+    llvm_unreachable("unsupported supported-mix boundary layer shape");
+  }
   os << "    TQue<TPosition::VECIN, 1> reluInQueue;\n"
      << "    TQue<TPosition::VECOUT, 1> reluOutQueue;\n\n";
   emitSupportedMixVectorCountDecl(os, desc);
@@ -1068,7 +1110,12 @@ static void emitSupportedMixAivQueueSetup(raw_ostream &os,
      << "    pipe.InitBuffer(reluOutQueue, 1, count * sizeof(float));\n\n";
 }
 
-static void emitSupportedMixAivInputCopy(raw_ostream &os) {
+static void emitSupportedMixBoundaryInputTransfer(
+    raw_ostream &os, const MixBoundaryValue &input) {
+  if (input.producer != MixPartitionKind::Cube ||
+      input.consumer != MixPartitionKind::Boundary) {
+    llvm_unreachable("unsupported supported-mix boundary input transfer");
+  }
   os << "    LocalTensor<float> reluInLocal = reluInQueue.AllocTensor<float>();\n"
      << "    DataCopy(reluInLocal, cGM, count);\n"
      << "    reluInQueue.EnQue<float>(reluInLocal);\n\n"
@@ -1076,7 +1123,12 @@ static void emitSupportedMixAivInputCopy(raw_ostream &os) {
      << "    LocalTensor<float> outLocal = reluOutQueue.AllocTensor<float>();\n";
 }
 
-static void emitSupportedMixAivOutputCopy(raw_ostream &os) {
+static void emitSupportedMixBoundaryOutputTransfer(
+    raw_ostream &os, const MixBoundaryValue &output) {
+  if (output.producer != MixPartitionKind::Boundary ||
+      output.consumer != MixPartitionKind::Vector) {
+    llvm_unreachable("unsupported supported-mix boundary output transfer");
+  }
   os << "    reluOutQueue.EnQue<float>(outLocal);\n"
      << "    reluInQueue.FreeTensor(inLocal);\n\n"
      << "    LocalTensor<float> finalLocal = reluOutQueue.DeQue<float>();\n"
@@ -1104,26 +1156,26 @@ static void emitMixCubeRegion(raw_ostream &os, const MixRegionPlan &region,
   emitSupportedMixMatmulExecution(os, config);
 }
 
-static void emitMixBoundaryRegion(raw_ostream &os, const MixRegionPlan &region,
-                                  const SupportedMixKernelConfig &config,
-                                  const MixTaskKindDescriptor &desc) {
-  (void)region;
-  (void)config;
+template <typename EmitVectorBodyFn>
+static void emitMixBoundaryLayer(raw_ostream &os,
+                                 const SupportedMixBoundaryLayer &layer,
+                                 const MixTaskKindDescriptor &desc,
+                                 EmitVectorBodyFn emitVectorBody) {
   emitSupportedMixCrossCoreSetFlag(os, desc);
   os << "  }\n\n"
      << "  if ASCEND_IS_AIV {\n";
+  emitSupportedMixBoundaryTransferSetup(os, layer, desc);
   os << "    CrossCoreWaitFlag(" << desc.crossCoreFlagId << ");\n\n";
+  emitSupportedMixBoundaryInputTransfer(os, layer.input);
+  emitVectorBody();
+  emitSupportedMixBoundaryOutputTransfer(os, layer.output);
+  os << "  }\n";
 }
 
 static void emitMixVectorRegion(raw_ostream &os, const MixRegionPlan &region,
-                                const SupportedMixKernelConfig &config,
-                                const MixTaskKindDescriptor &desc) {
+                                const SupportedMixKernelConfig &config) {
   (void)region;
-  emitSupportedMixAivQueueSetup(os, desc);
-  emitSupportedMixAivInputCopy(os);
   emitSupportedMixVectorEpilogue(os, config);
-  emitSupportedMixAivOutputCopy(os);
-  os << "  }\n";
 }
 
 static void emitSupportedMixIncludesAndNamespaces(raw_ostream &os) {
@@ -1166,21 +1218,22 @@ static void emitSupportedMixKernelPrologue(raw_ostream &os, StringRef kernelName
 
 static void emitSupportedMixKernel(raw_ostream &os, func::FuncOp funcOp,
                                    const MixPartitionPlan &plan,
+                                   const SupportedMixBoundaryLayer &boundaryLayer,
                                    const SupportedMixKernelConfig &config) {
   MixTaskKindDescriptor desc = getMixTaskKindDescriptor(config.taskKind);
   emitSupportedMixKernelPrologue(os, funcOp.getName(), desc);
   const MixRegionPlan *cubeRegion =
       findFirstMixRegionOfKind(plan.regions, MixPartitionKind::Cube);
-  const MixRegionPlan *boundaryRegion = findFirstMixRegionOfKind(
-      plan.regions, MixPartitionKind::Boundary);
   const MixRegionPlan *vectorRegion =
       findFirstMixRegionOfKind(plan.regions, MixPartitionKind::Vector);
-  if (!cubeRegion || !boundaryRegion || !vectorRegion) {
-    llvm_unreachable("supported mix emission requires cube, boundary, and vector regions");
+  if (!cubeRegion || !vectorRegion) {
+    llvm_unreachable(
+        "supported mix emission requires cube and vector regions");
   }
   emitMixCubeRegion(os, *cubeRegion, config, desc);
-  emitMixBoundaryRegion(os, *boundaryRegion, config, desc);
-  emitMixVectorRegion(os, *vectorRegion, config, desc);
+  emitMixBoundaryLayer(os, boundaryLayer, desc, [&] {
+    emitMixVectorRegion(os, *vectorRegion, config);
+  });
   os << "}\n";
 }
 
@@ -1615,7 +1668,9 @@ LogicalResult mlir::translateToCannKernel(Operation *op, raw_ostream &os,
           inferSupportedMixKernelConfig(primaryKernel, mixPartitionSummary);
       if (failed(supportedMixConfig))
         return failure();
-      emitSupportedMixKernel(os, primaryKernel, mixPartitionPlan,
+      SupportedMixBoundaryLayer boundaryLayer =
+          buildSupportedMixBoundaryLayer(mixPartitionPlan);
+      emitSupportedMixKernel(os, primaryKernel, mixPartitionPlan, boundaryLayer,
                              *supportedMixConfig);
       return success();
     }
