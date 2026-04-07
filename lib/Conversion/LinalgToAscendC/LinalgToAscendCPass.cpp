@@ -113,7 +113,7 @@ static Value resolveToAllocRoot(Value v) {
       v = subview.getSource();
       continue;
     }
-    if (auto blockArg = v.dyn_cast<BlockArgument>()) {
+    if (auto blockArg = dyn_cast<BlockArgument>(v)) {
       auto forOp = dyn_cast<scf::ForOp>(blockArg.getOwner()->getParentOp());
       if (forOp && blockArg.getArgNumber() > 0) {
         unsigned iterIdx = blockArg.getArgNumber() - 1;
