@@ -64,6 +64,12 @@ static func::FuncOp findPrimaryGlobalKernel(ModuleOp moduleOp) {
   return {};
 }
 
+static bool isRankedMemrefOf(Type type, int64_t rank, Type elementType) {
+  auto memrefType = dyn_cast<MemRefType>(type);
+  return memrefType && memrefType.getRank() == rank &&
+         memrefType.getElementType() == elementType;
+}
+
 enum class MixPartitionKind {
   Unknown,
   Cube,
@@ -391,6 +397,36 @@ static MixPartitionSummary buildMixPartitionSummary(func::FuncOp funcOp) {
   });
 
   return summary;
+}
+
+static bool hasSupportedMixFunctionSignature(func::FuncOp funcOp) {
+  auto numInputsAttr = funcOp->getAttrOfType<IntegerAttr>("cann.num_inputs");
+  if (!numInputsAttr || numInputsAttr.getInt() != 4)
+    return false;
+
+  auto args = funcOp.getArguments();
+  if (args.size() != 7)
+    return false;
+
+  MLIRContext *ctx = funcOp.getContext();
+  Type f16 = Float16Type::get(ctx);
+  Type f32 = Float32Type::get(ctx);
+
+  if (!isRankedMemrefOf(args[0].getType(), 2, f16) ||
+      !isRankedMemrefOf(args[1].getType(), 2, f16) ||
+      !isRankedMemrefOf(args[2].getType(), 1, f32) ||
+      !isRankedMemrefOf(args[3].getType(), 2, f32))
+    return false;
+
+  auto outputType = dyn_cast<MemRefType>(args[4].getType());
+  if (!outputType || outputType.getRank() != 2 ||
+      outputType.getElementType() != f32)
+    return false;
+
+  auto workspaceType = dyn_cast<MemRefType>(args[5].getType());
+  if (!workspaceType || !workspaceType.getElementType().isUnsignedInteger(8))
+    return false;
+  return isa<emitasc::PyStructType>(args[6].getType());
 }
 
 static llvm::DenseMap<Operation *, MixPartitionKind>
@@ -1569,6 +1605,12 @@ LogicalResult mlir::translateToCannKernel(Operation *op, raw_ostream &os,
         validateSingleChainGenericMixPlan(mixPartitionPlan);
 
     if (singleChainValidation.succeeded()) {
+      if (!hasSupportedMixFunctionSignature(primaryKernel)) {
+        return primaryKernel.emitOpError(
+            "mix translation found a valid single-chain cube/boundary/vector "
+            "plan, but the current supported-mix emitter only accepts the "
+            "legacy ABI/signature");
+      }
       FailureOr<SupportedMixKernelConfig> supportedMixConfig =
           inferSupportedMixKernelConfig(primaryKernel, mixPartitionSummary);
       if (failed(supportedMixConfig))
