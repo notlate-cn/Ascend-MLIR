@@ -159,3 +159,22 @@ Summarize commands run, commit under test, and observed results.
 git add docs/superpowers/plans/2026-04-07-generic-mix-single-chain-plan.md
 git commit -m "Record generic mix single-chain xvm verification"
 ```
+
+**Verification record (xvm, 2026-04-07):**
+- Build:
+```bash
+ssh xvm@orb 'cd /home/niu/code/Ascend-MLIR && ./scripts/build.sh --build-project --llvm-build-dir /home/niu/code/llvm-project/build'
+```
+Completed successfully with exit 0; the incremental build rebuilt `libAFIRRuntimeCAPI.so`, `CannTranslation.cpp.o`, and `bin/afir-translate`.
+
+- Mix:
+```bash
+ssh xvm@orb 'cd /home/niu/code/Ascend-MLIR && bash -lc '\''source examples/env.sh && bash examples/matmul-add-leakyrelu/run.sh --log'\'''
+```
+Failed at Stage 8 with `generic single-chain analysis rejected plan because missing cube-to-boundary crossing, missing boundary-to-vector crossing`.
+
+- Non-mix:
+```bash
+ssh xvm@orb 'cd /home/niu/code/Ascend-MLIR && bash -lc '\''source examples/env.sh && bash examples/add-broadcast-concat/run.sh --log'\'''
+```
+Passed with `max_abs_diff: 0.000000e+00`, `mean_abs_diff: 0.000000e+00`, and `PASS`.
