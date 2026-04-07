@@ -26,6 +26,9 @@
 #include "llvm/Support/JSON.h"
 #include "llvm/Support/raw_ostream.h"
 
+#include <optional>
+#include <string>
+
 using namespace mlir;
 
 namespace {
@@ -112,6 +115,23 @@ struct MixRegionPlan {
 struct MixPartitionPlan {
   SmallVector<MixRegionPlan> regions;
   bool empty() const { return regions.empty(); }
+};
+
+enum class MixSingleChainFailureReason {
+  MissingCubeRegion,
+  MultipleCubeRegions,
+  MissingBoundaryRegion,
+  MultipleBoundaryRegions,
+  MissingVectorRegion,
+  MultipleVectorRegions,
+  MissingBoundaryCrossing,
+  InvalidOrdering,
+};
+
+struct MixSingleChainValidation {
+  SmallVector<MixSingleChainFailureReason> failureReasons;
+
+  bool succeeded() const { return failureReasons.empty(); }
 };
 
 static MixPartitionKind getStoragePartitionFromQueueLikeType(Type type);
@@ -525,24 +545,122 @@ static bool isSupportedCurrentMixEmission(func::FuncOp funcOp,
   return hasSupportedMixPartitions(summary);
 }
 
-static bool canLowerGenericMixPlan(const MixPartitionPlan &plan) {
-  if (plan.regions.size() != 3)
-    return false;
-  const MixRegionPlan &cubeRegion = plan.regions[0];
-  const MixRegionPlan &boundaryRegion = plan.regions[1];
-  const MixRegionPlan &vectorRegion = plan.regions[2];
-  if (cubeRegion.kind != MixPartitionKind::Cube ||
-      boundaryRegion.kind != MixPartitionKind::Boundary ||
-      vectorRegion.kind != MixPartitionKind::Vector)
-    return false;
-  if (boundaryRegion.inputs.size() != 1 || boundaryRegion.outputs.size() != 1)
-    return false;
-  const MixBoundaryValue &input = boundaryRegion.inputs.front();
-  const MixBoundaryValue &output = boundaryRegion.outputs.front();
-  return input.producer == MixPartitionKind::Cube &&
-         input.consumer == MixPartitionKind::Boundary &&
-         output.producer == MixPartitionKind::Boundary &&
-         output.consumer == MixPartitionKind::Vector;
+static bool hasFailureReason(ArrayRef<MixSingleChainFailureReason> reasons,
+                             MixSingleChainFailureReason reason) {
+  return llvm::is_contained(reasons, reason);
+}
+
+static MixSingleChainValidation
+validateSingleChainGenericMixPlan(const MixPartitionPlan &plan) {
+  MixSingleChainValidation validation;
+  auto addFailureReason = [&](MixSingleChainFailureReason reason) {
+    if (!hasFailureReason(validation.failureReasons, reason))
+      validation.failureReasons.push_back(reason);
+  };
+
+  unsigned cubeCount = 0;
+  unsigned boundaryCount = 0;
+  unsigned vectorCount = 0;
+  const MixRegionPlan *boundaryRegion = nullptr;
+  std::optional<unsigned> cubeIndex;
+  std::optional<unsigned> boundaryIndex;
+  std::optional<unsigned> vectorIndex;
+
+  for (const auto &[index, region] : llvm::enumerate(plan.regions)) {
+    switch (region.kind) {
+    case MixPartitionKind::Cube:
+      ++cubeCount;
+      if (!cubeIndex)
+        cubeIndex = index;
+      break;
+    case MixPartitionKind::Boundary:
+      ++boundaryCount;
+      if (!boundaryRegion)
+        boundaryRegion = &region;
+      if (!boundaryIndex)
+        boundaryIndex = index;
+      break;
+    case MixPartitionKind::Vector:
+      ++vectorCount;
+      if (!vectorIndex)
+        vectorIndex = index;
+      break;
+    case MixPartitionKind::Unknown:
+      addFailureReason(MixSingleChainFailureReason::InvalidOrdering);
+      break;
+    }
+  }
+
+  if (cubeCount == 0)
+    addFailureReason(MixSingleChainFailureReason::MissingCubeRegion);
+  else if (cubeCount > 1)
+    addFailureReason(MixSingleChainFailureReason::MultipleCubeRegions);
+
+  if (boundaryCount == 0)
+    addFailureReason(MixSingleChainFailureReason::MissingBoundaryRegion);
+  else if (boundaryCount > 1)
+    addFailureReason(MixSingleChainFailureReason::MultipleBoundaryRegions);
+
+  if (vectorCount == 0)
+    addFailureReason(MixSingleChainFailureReason::MissingVectorRegion);
+  else if (vectorCount > 1)
+    addFailureReason(MixSingleChainFailureReason::MultipleVectorRegions);
+
+  if (cubeIndex && boundaryIndex && vectorIndex &&
+      !(*cubeIndex < *boundaryIndex && *boundaryIndex < *vectorIndex))
+    addFailureReason(MixSingleChainFailureReason::InvalidOrdering);
+
+  if (boundaryRegion) {
+    bool hasCubeToBoundaryCrossing = llvm::any_of(
+        boundaryRegion->inputs, [](const MixBoundaryValue &input) {
+          return input.producer == MixPartitionKind::Cube &&
+                 input.consumer == MixPartitionKind::Boundary;
+        });
+    bool hasBoundaryToVectorCrossing = llvm::any_of(
+        boundaryRegion->outputs, [](const MixBoundaryValue &output) {
+          return output.producer == MixPartitionKind::Boundary &&
+                 output.consumer == MixPartitionKind::Vector;
+        });
+    if (!hasCubeToBoundaryCrossing || !hasBoundaryToVectorCrossing)
+      addFailureReason(MixSingleChainFailureReason::MissingBoundaryCrossing);
+  }
+
+  return validation;
+}
+
+static StringRef
+stringifyMixSingleChainFailureReason(MixSingleChainFailureReason reason) {
+  switch (reason) {
+  case MixSingleChainFailureReason::MissingCubeRegion:
+    return "missing cube region";
+  case MixSingleChainFailureReason::MultipleCubeRegions:
+    return "multiple cube regions";
+  case MixSingleChainFailureReason::MissingBoundaryRegion:
+    return "missing boundary region";
+  case MixSingleChainFailureReason::MultipleBoundaryRegions:
+    return "multiple boundary regions";
+  case MixSingleChainFailureReason::MissingVectorRegion:
+    return "missing vector region";
+  case MixSingleChainFailureReason::MultipleVectorRegions:
+    return "multiple vector regions";
+  case MixSingleChainFailureReason::MissingBoundaryCrossing:
+    return "missing cube-to-boundary or boundary-to-vector crossing";
+  case MixSingleChainFailureReason::InvalidOrdering:
+    return "invalid region ordering";
+  }
+  llvm_unreachable("unexpected single-chain failure reason");
+}
+
+static std::string
+describeMixSingleChainValidation(const MixSingleChainValidation &validation) {
+  SmallString<128> description;
+  llvm::raw_svector_ostream os(description);
+  for (const auto &[index, reason] : llvm::enumerate(validation.failureReasons)) {
+    if (index)
+      os << ", ";
+    os << stringifyMixSingleChainFailureReason(reason);
+  }
+  return std::string(description);
 }
 
 static bool canLowerLegacySupportedMix(func::FuncOp funcOp,
@@ -1255,8 +1373,10 @@ LogicalResult mlir::translateToCannKernel(Operation *op, raw_ostream &os,
         buildMixPartitionSummary(primaryKernel);
     MixPartitionPlan mixPartitionPlan =
         buildInitialMixPartitionPlan(primaryKernel, mixPartitionSummary);
+    MixSingleChainValidation singleChainValidation =
+        validateSingleChainGenericMixPlan(mixPartitionPlan);
 
-    if (canLowerGenericMixPlan(mixPartitionPlan)) {
+    if (singleChainValidation.succeeded()) {
       FailureOr<SupportedMixKernelConfig> supportedMixConfig =
           inferSupportedMixKernelConfig(primaryKernel, mixPartitionSummary);
       if (failed(supportedMixConfig))
@@ -1276,8 +1396,13 @@ LogicalResult mlir::translateToCannKernel(Operation *op, raw_ostream &os,
       return success();
     }
 
-    return primaryKernel.emitOpError(
-        "mix translation requires a supported cube/vector partitioned kernel shape");
+    return primaryKernel.emitOpError(Twine(
+        "mix translation requires a supported cube/vector partitioned kernel "
+        "shape; generic single-chain analysis rejected plan because ") +
+                                     (singleChainValidation.succeeded()
+                                          ? Twine("legacy lowering also failed")
+                                          : Twine(describeMixSingleChainValidation(
+                                                singleChainValidation))));
   }
 
   // Replace ops whose PyAsc emitters generate wrong C++ with verbatim.
