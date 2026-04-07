@@ -96,6 +96,24 @@ struct MixPartitionSummary {
   bool hasBoundary() const { return !boundaryOps.empty(); }
 };
 
+struct MixBoundaryValue {
+  Value value;
+  MixPartitionKind producer;
+  MixPartitionKind consumer;
+};
+
+struct MixRegionPlan {
+  MixPartitionKind kind = MixPartitionKind::Unknown;
+  SmallVector<Operation *> ops;
+  SmallVector<MixBoundaryValue> inputs;
+  SmallVector<MixBoundaryValue> outputs;
+};
+
+struct MixPartitionPlan {
+  SmallVector<MixRegionPlan> regions;
+  bool empty() const { return regions.empty(); }
+};
+
 struct SupportedMixKernelConfig {
   enum class TaskKind {
     MixAic1To2,
@@ -372,6 +390,27 @@ static bool hasSupportedMixFunctionSignature(func::FuncOp funcOp) {
 
 static bool hasSupportedMixPartitions(const MixPartitionSummary &summary) {
   return summary.hasCube() && summary.hasVector() && summary.hasBoundary();
+}
+
+static MixPartitionPlan buildInitialMixPartitionPlan(
+    [[maybe_unused]] func::FuncOp funcOp, const MixPartitionSummary &summary) {
+  MixPartitionPlan plan;
+
+  auto addRegion = [&](MixPartitionKind kind,
+                       ArrayRef<Operation *> ops) -> void {
+    if (ops.empty())
+      return;
+    MixRegionPlan region;
+    region.kind = kind;
+    region.ops.append(ops.begin(), ops.end());
+    plan.regions.push_back(std::move(region));
+  };
+
+  addRegion(MixPartitionKind::Cube, summary.cubeOps);
+  addRegion(MixPartitionKind::Boundary, summary.boundaryOps);
+  addRegion(MixPartitionKind::Vector, summary.vectorOps);
+
+  return plan;
 }
 
 // Supported mix configuration inference.
@@ -1060,6 +1099,9 @@ LogicalResult mlir::translateToCannKernel(Operation *op, raw_ostream &os,
       getKernelKind(primaryKernel) == AscendCKernelKind::Mix) {
     MixPartitionSummary mixPartitionSummary =
         buildMixPartitionSummary(primaryKernel);
+    MixPartitionPlan initialMixPartitionPlan =
+        buildInitialMixPartitionPlan(primaryKernel, mixPartitionSummary);
+    (void)initialMixPartitionPlan;
 
     if (!isSupportedCurrentMixEmission(primaryKernel, mixPartitionSummary))
       return primaryKernel.emitOpError(
