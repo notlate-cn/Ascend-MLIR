@@ -18,12 +18,16 @@ Task 3 runtime separation inspection:
 
 Task 4 shared environment-contract assessment:
 - The earlier `libascend_hal.so` failure was an environment-only symptom at executor initialization, not a codegen regression. After the Task 3 runtime-boundary fix, the previously blocked examples now pass on xvm, so there is no remaining shared environment-script regression to repair in `examples/env.sh`.
-- No new shared `numpy`, `PATH`, or `LD_LIBRARY_PATH` breakage was observed in the rerun matrix. `broadcast-add-reduce` still fails earlier in the pipeline at `STAGE 5 --linalg-to-ascendc`, so it stays in the compile bucket.
+- The final rerun matrix confirms the same boundary: `broadcast-add-reduce` still fails before runtime at `STAGE 5 --linalg-to-ascendc`, while the other four non-mix examples complete validation.
 
-| Example | Expected Kind (Plan) | Last Good Stage | First Failing Stage | Compile | `.bin` Exists | Runtime Initialized | Accuracy | Root Cause Bucket | Notes |
+| Example | Expected Kind (Plan) | Last Good Stage | First Failing Stage | Compile Status | Runtime Status | Accuracy Status | Final Root Cause | Issue State | Notes |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| add-broadcast-concat | vec | PASS | none | yes | yes | yes | yes | n/a | xvm@orb / 2026-04-07 follow-up; simulator reached validation and passed with `max_abs_diff=0`, `mean_abs_diff=0`. |
-| broadcast-add-reduce | vec | STAGE 4: Buffer Placement | STAGE 5: `--linalg-to-ascendc` reduction-generic lowering | no | no | no | not run | compile | xvm@orb / 2026-04-07; `/tmp/broadcast-add-reduce.log`; sig: `afir-opt --linalg-to-ascendc` aborts at `ComputeConversion.cpp:626`; reduction-generic failure, so no `.bin`. |
-| gather-elementwise-fusion | vec | PASS | none | yes | yes | yes | yes | n/a | xvm@orb / 2026-04-07 follow-up; simulator reached validation and passed under existing tolerances with `max_abs_diff=1.494141e+00`, `mean_abs_diff=4.083161e-01`. |
-| relu-broadcast-transpose | vec | PASS | none | yes | yes | yes | yes | n/a | xvm@orb / 2026-04-07 follow-up; simulator reached validation and passed with `max_abs_diff=0`, `mean_abs_diff=0`. |
-| split-relu-brc-add-mul | vec | PASS | none | yes | yes | yes | yes | n/a | xvm@orb / 2026-04-07 follow-up; simulator reached validation and passed under existing tolerances with `max_abs_diff=9.765625e-04`, `mean_abs_diff=2.629566e-05`. |
+| add-broadcast-concat | vec | PASS | none | pass | pass | pass | none | fixed | xvm@orb / 2026-04-07 rerun; validation passed with `max_abs_diff=0`, `mean_abs_diff=0`. |
+| broadcast-add-reduce | vec | STAGE 4: Buffer Placement | STAGE 5: `--linalg-to-ascendc` | fail | not run | not run | `afir-opt --linalg-to-ascendc` abort in `ComputeConversion.cpp:626` during reduction-generic lowering | remains codegen | xvm@orb / 2026-04-07 rerun; no `.bin` emitted. |
+| gather-elementwise-fusion | vec | PASS | none | pass | pass | pass | none | fixed | xvm@orb / 2026-04-07 rerun; validation passed with `max_abs_diff=1.494141e+00`, `mean_abs_diff=4.083161e-01`. |
+| relu-broadcast-transpose | vec | PASS | none | pass | pass | pass | none | fixed | xvm@orb / 2026-04-07 rerun; validation passed with `max_abs_diff=0`, `mean_abs_diff=0`. |
+| split-relu-brc-add-mul | vec | PASS | none | pass | pass | pass | none | fixed | xvm@orb / 2026-04-07 rerun; validation passed with `max_abs_diff=9.765625e-04`, `mean_abs_diff=2.629566e-05`. |
+
+Task 5 final verification:
+- `bash examples/matmul-add-leakyrelu/run.sh --log` on xvm completed successfully with `max_abs_diff=0`, `mean_abs_diff=0`, and `PASS`.
+- The five non-mix examples were rerun under `source examples/env.sh`; four passed end-to-end and `broadcast-add-reduce` remained a compile-stage failure only.
