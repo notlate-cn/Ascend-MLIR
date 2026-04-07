@@ -474,6 +474,16 @@ static void emitSupportedMixAicRegion(raw_ostream &os,
 
 static void emitSupportedMixAivRegion(raw_ostream &os,
                                       const SupportedMixKernelConfig &config) {
+  auto emitVectorEpilogue = [&]() {
+    if (config.epilogueKind == SupportedMixKernelConfig::EpilogueKind::Relu) {
+      os << "    Relu(outLocal, inLocal, count);\n";
+      return;
+    }
+    os << "    LeakyRelu(outLocal, inLocal, static_cast<float>("
+       << llvm::formatv("{0:F6}", config.leakyReluAlpha).str()
+       << "f), count);\n";
+  };
+
   os << "  if ASCEND_IS_AIV {\n"
      << "    TQue<TPosition::VECIN, 1> reluInQueue;\n"
      << "    TQue<TPosition::VECOUT, 1> reluOutQueue;\n\n"
@@ -489,13 +499,7 @@ static void emitSupportedMixAivRegion(raw_ostream &os,
      << "    reluInQueue.EnQue<float>(reluInLocal);\n\n"
      << "    LocalTensor<float> inLocal = reluInQueue.DeQue<float>();\n"
      << "    LocalTensor<float> outLocal = reluOutQueue.AllocTensor<float>();\n";
-  if (config.epilogueKind == SupportedMixKernelConfig::EpilogueKind::Relu) {
-    os << "    Relu(outLocal, inLocal, count);\n";
-  } else {
-    os << "    LeakyRelu(outLocal, inLocal, static_cast<float>("
-       << llvm::formatv("{0:F6}", config.leakyReluAlpha).str()
-       << "f), count);\n";
-  }
+  emitVectorEpilogue();
   os << "    reluOutQueue.EnQue<float>(outLocal);\n"
      << "    reluInQueue.FreeTensor(inLocal);\n\n"
      << "    LocalTensor<float> finalLocal = reluOutQueue.DeQue<float>();\n"
@@ -504,9 +508,8 @@ static void emitSupportedMixAivRegion(raw_ostream &os,
      << "  }\n";
 }
 
-static void emitSupportedMixKernel(raw_ostream &os, func::FuncOp funcOp,
-                                   const SupportedMixKernelConfig &config) {
-  StringRef kernelName = funcOp.getName();
+static void emitSupportedMixKernelPrologue(raw_ostream &os, StringRef kernelName,
+                                           const SupportedMixKernelConfig &config) {
   os << "#define __AFIR_RUNTIME_MIX_KERNEL_FUN_H__\n\n"
      << "#define ASCENDC_CUBE_ONLY\n"
      << "#include \"kernel_operator.h\"\n"
@@ -528,6 +531,11 @@ static void emitSupportedMixKernel(raw_ostream &os, func::FuncOp funcOp,
      << "  (void)workspace;\n\n"
      << "  TCubeTiling tiling;\n"
      << "  CopyTiling(&tiling, tilingGm);\n\n";
+}
+
+static void emitSupportedMixKernel(raw_ostream &os, func::FuncOp funcOp,
+                                   const SupportedMixKernelConfig &config) {
+  emitSupportedMixKernelPrologue(os, funcOp.getName(), config);
   emitSupportedMixAicRegion(os, config);
   emitSupportedMixAivRegion(os, config);
   os << "}\n";
