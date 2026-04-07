@@ -525,6 +525,19 @@ static bool isSupportedCurrentMixEmission(func::FuncOp funcOp,
   return hasSupportedMixPartitions(summary);
 }
 
+static bool canLowerGenericMixPlan(const MixPartitionPlan &plan) {
+  if (plan.regions.size() != 3)
+    return false;
+  return plan.regions[0].kind == MixPartitionKind::Cube &&
+         plan.regions[1].kind == MixPartitionKind::Boundary &&
+         plan.regions[2].kind == MixPartitionKind::Vector;
+}
+
+static bool canLowerLegacySupportedMix(func::FuncOp funcOp,
+                                       const MixPartitionSummary &summary) {
+  return isSupportedCurrentMixEmission(funcOp, summary);
+}
+
 static llvm::DenseSet<Value>
 collectSupportedMixVectorBroadcastDsts(const MixPartitionSummary &summary) {
   llvm::DenseSet<Value> vectorBroadcastDsts;
@@ -1231,18 +1244,28 @@ LogicalResult mlir::translateToCannKernel(Operation *op, raw_ostream &os,
     MixPartitionPlan mixPartitionPlan =
         buildInitialMixPartitionPlan(primaryKernel, mixPartitionSummary);
 
-    if (!isSupportedCurrentMixEmission(primaryKernel, mixPartitionSummary))
-      return primaryKernel.emitOpError(
-          "mix translation requires a supported cube/vector partitioned kernel shape");
+    if (canLowerGenericMixPlan(mixPartitionPlan)) {
+      FailureOr<SupportedMixKernelConfig> supportedMixConfig =
+          inferSupportedMixKernelConfig(primaryKernel, mixPartitionSummary);
+      if (failed(supportedMixConfig))
+        return failure();
+      emitSupportedMixKernel(os, primaryKernel, mixPartitionPlan,
+                             *supportedMixConfig);
+      return success();
+    }
 
-    FailureOr<SupportedMixKernelConfig> supportedMixConfig =
-        inferSupportedMixKernelConfig(primaryKernel, mixPartitionSummary);
-    if (failed(supportedMixConfig))
-      return failure();
+    if (canLowerLegacySupportedMix(primaryKernel, mixPartitionSummary)) {
+      FailureOr<SupportedMixKernelConfig> supportedMixConfig =
+          inferSupportedMixKernelConfig(primaryKernel, mixPartitionSummary);
+      if (failed(supportedMixConfig))
+        return failure();
+      emitSupportedMixKernel(os, primaryKernel, mixPartitionPlan,
+                             *supportedMixConfig);
+      return success();
+    }
 
-    emitSupportedMixKernel(os, primaryKernel, mixPartitionPlan,
-                           *supportedMixConfig);
-    return success();
+    return primaryKernel.emitOpError(
+        "mix translation requires a supported cube/vector partitioned kernel shape");
   }
 
   // Replace ops whose PyAsc emitters generate wrong C++ with verbatim.
