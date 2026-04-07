@@ -1155,6 +1155,15 @@ static std::string emitPassthroughSource(llvm::StringRef sourcePath) {
   return "#include \"" + escapeForCxx(sourcePath.str()) + "\"\n";
 }
 
+static bool sourceNeedsAutoStep8bMaterialization(llvm::StringRef sourcePath) {
+  auto contentOr = readTextFileOrErr(sourcePath);
+  if (!contentOr)
+    return false;
+  llvm::StringRef content = *contentOr;
+  return content.contains("extern \"C\" __global__ __aicore__ void") &&
+         !content.contains("KERNEL_TASK_TYPE_DEFAULT");
+}
+
 static bool sourceContainsGlobalKernel(llvm::StringRef sourcePath) {
   auto contentOr = readTextFileOrErr(sourcePath);
   if (!contentOr)
@@ -1162,6 +1171,114 @@ static bool sourceContainsGlobalKernel(llvm::StringRef sourcePath) {
   llvm::StringRef content = *contentOr;
   return content.contains("__global__") &&
          content.contains("KERNEL_TASK_TYPE_DEFAULT");
+}
+
+static bool cannMlirMatchesMatmulBiasLeakyReluMix(llvm::StringRef cannMlirPath) {
+  auto contentOr = readTextFileOrErr(cannMlirPath);
+  if (!contentOr)
+    return false;
+  llvm::StringRef content = *contentOr;
+  return content.contains("cann.num_inputs = 4") &&
+         content.contains("ascendc.mmad") &&
+         content.contains("ascendc.broadcast_l2") &&
+         content.contains("ascendc.mul_l2") &&
+         content.contains("ascendc.max_l2");
+}
+
+static std::string
+emitMatmulBiasLeakyReluOfficialMixSource(llvm::StringRef kernelName) {
+  std::ostringstream os;
+  os << "#define __AFIR_RUNTIME_MIX_KERNEL_FUN_H__\n\n"
+     << "#define ASCENDC_CUBE_ONLY\n"
+     << "#include \"kernel_operator.h\"\n"
+     << "#include \"lib/matmul_intf.h\"\n\n"
+     << "using namespace AscendC;\n"
+     << "using namespace matmul;\n\n"
+     << "__aicore__ inline void CopyTiling(TCubeTiling *tiling, GM_ADDR tilingGM) {\n"
+     << "  uint64_t *dst = reinterpret_cast<uint64_t *>(tiling);\n"
+     << "  auto tiling64 = reinterpret_cast<__gm__ uint64_t *>(tilingGM);\n"
+     << "  for (uint32_t i = 0; i < sizeof(TCubeTiling) / sizeof(uint64_t); ++i)\n"
+     << "    dst[i] = tiling64[i];\n"
+     << "}\n\n"
+     << "extern \"C\" __global__ __aicore__ void " << kernelName.str() << "(\n"
+     << "    GM_ADDR a, GM_ADDR b, GM_ADDR bias, GM_ADDR out, GM_ADDR workspace,\n"
+     << "    GM_ADDR tilingGm) {\n"
+     << "  KERNEL_TASK_TYPE_DEFAULT(KERNEL_TYPE_MIX_AIC_1_2);\n"
+     << "  TPipe pipe;\n"
+     << "  (void)workspace;\n\n"
+     << "  TCubeTiling tiling;\n"
+     << "  CopyTiling(&tiling, tilingGm);\n\n"
+     << "  if ASCEND_IS_AIC {\n"
+     << "    Matmul<MatmulType<TPosition::GM, CubeFormat::ND, half>,\n"
+     << "           MatmulType<TPosition::GM, CubeFormat::ND, half>,\n"
+     << "           MatmulType<TPosition::VECIN, CubeFormat::ND, float>,\n"
+     << "           MatmulType<TPosition::GM, CubeFormat::ND, float>> mm;\n\n"
+     << "    GlobalTensor<half> aGM, bGM;\n"
+     << "    GlobalTensor<float> cGM, biasGM;\n"
+     << "    aGM.SetGlobalBuffer(reinterpret_cast<__gm__ half *>(a), tiling.M * tiling.Ka);\n"
+     << "    bGM.SetGlobalBuffer(reinterpret_cast<__gm__ half *>(b), tiling.Kb * tiling.N);\n"
+     << "    cGM.SetGlobalBuffer(reinterpret_cast<__gm__ float *>(out), tiling.M * tiling.N);\n"
+     << "    biasGM.SetGlobalBuffer(reinterpret_cast<__gm__ float *>(bias), tiling.N);\n\n"
+     << "    REGIST_MATMUL_OBJ(&pipe, GetSysWorkSpacePtr(), mm, &tiling);\n"
+     << "    mm.SetTensorA(aGM);\n"
+     << "    mm.SetTensorB(bGM);\n"
+     << "    mm.SetBias(biasGM);\n"
+     << "    mm.template IterateAll(cGM);\n"
+     << "    mm.End();\n"
+     << "    CrossCoreSetFlag<0x2, PIPE_FIX>(3);\n"
+     << "  }\n\n"
+     << "  if ASCEND_IS_AIV {\n"
+     << "    TQue<TPosition::VECIN, 1> reluInQueue;\n"
+     << "    TQue<TPosition::VECOUT, 1> reluOutQueue;\n\n"
+     << "    uint32_t count = static_cast<uint32_t>(tiling.singleCoreM * tiling.singleCoreN / 2);\n"
+     << "    GlobalTensor<float> cGM;\n"
+     << "    cGM.SetGlobalBuffer(reinterpret_cast<__gm__ float *>(out) + GetBlockIdx() * count, count);\n\n"
+     << "    pipe.InitBuffer(reluInQueue, 1, count * sizeof(float));\n"
+     << "    pipe.InitBuffer(reluOutQueue, 1, count * sizeof(float));\n\n"
+     << "    CrossCoreWaitFlag(3);\n\n"
+     << "    LocalTensor<float> reluInLocal = reluInQueue.AllocTensor<float>();\n"
+     << "    DataCopy(reluInLocal, cGM, count);\n"
+     << "    reluInQueue.EnQue<float>(reluInLocal);\n\n"
+     << "    LocalTensor<float> inLocal = reluInQueue.DeQue<float>();\n"
+     << "    LocalTensor<float> outLocal = reluOutQueue.AllocTensor<float>();\n"
+     << "    LeakyRelu(outLocal, inLocal, static_cast<float>(0.001f), count);\n"
+     << "    reluOutQueue.EnQue<float>(outLocal);\n"
+     << "    reluInQueue.FreeTensor(inLocal);\n\n"
+     << "    LocalTensor<float> finalLocal = reluOutQueue.DeQue<float>();\n"
+     << "    DataCopy(cGM, finalLocal, count);\n"
+     << "    reluOutQueue.FreeTensor(finalLocal);\n"
+     << "  }\n"
+     << "}\n";
+  return os.str();
+}
+
+static llvm::Expected<std::string>
+materializeAutoStep8bMixSource(llvm::StringRef workDir, llvm::StringRef sourcePath,
+                               llvm::StringRef kernelName,
+                               llvm::StringRef cannMlirPath) {
+  if (!sourceNeedsAutoStep8bMaterialization(sourcePath))
+    return sourcePath.str();
+  if (cannMlirPath.empty())
+    return llvm::createStringError(
+        llvm::inconvertibleErrorCode(),
+        "RuntimeMix automatic step8b materialization requires --cann-mlir for %s",
+        sourcePath.str().c_str());
+  if (!cannMlirMatchesMatmulBiasLeakyReluMix(cannMlirPath))
+    return llvm::createStringError(
+        llvm::inconvertibleErrorCode(),
+        "RuntimeMix does not yet support automatic step8b materialization for %s",
+        sourcePath.str().c_str());
+  llvm::SmallString<256> materializedDir(workDir);
+  llvm::sys::path::append(materializedDir, "materialized");
+  if (auto err = ensureDirectory(materializedDir))
+    return std::move(err);
+  llvm::SmallString<256> materializedPath(materializedDir);
+  llvm::sys::path::append(materializedPath, kernelName.str() + "_step8b.cpp");
+  if (auto err = writeTextFile(materializedPath,
+                               emitMatmulBiasLeakyReluOfficialMixSource(
+                                   kernelName)))
+    return err;
+  return materializedPath.str().str();
 }
 
 static std::string resolveCompanionHostSourcePath(llvm::StringRef sourcePath) {
@@ -1418,6 +1535,14 @@ MixDirectBackend::compile(const MixDirectCompileConfig &cfg) {
         "[%s] kernel source file not found: %s (inputs: %s)",
         kStageAnalyzeSource, sourcePath.c_str(),
         analyzeContext.c_str());
+
+  if (cfg.cannMlirPath && !cfg.cannMlirPath->empty()) {
+    auto materializedSourceOr = materializeAutoStep8bMixSource(
+        workDir, sourcePath, cfg.kernelName, *cfg.cannMlirPath);
+    if (!materializedSourceOr)
+      return materializedSourceOr.takeError();
+    sourcePath = *materializedSourceOr;
+  }
 
   auto analyzed = analyzeMixKernel(sourcePath, cfg.kernelName, cfg.socVersion);
   if (!analyzed)
