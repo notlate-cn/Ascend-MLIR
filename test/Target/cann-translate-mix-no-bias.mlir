@@ -11,10 +11,10 @@
 // CHECK-LABEL: extern "C" __global__ __aicore__ void
 // CHECK: KERNEL_TASK_TYPE_DEFAULT(KERNEL_TYPE_MIX_AIC_1_2);
 // CHECK: if ASCEND_IS_AIC {
+// CHECK: REGIST_MATMUL_OBJ(&pipe, GetSysWorkSpacePtr(), mm, &tiling);
 // CHECK-NOT: biasGM
 // CHECK-NOT: SetBias
 // CHECK-NOT: mm.SetBias(
-// CHECK: REGIST_MATMUL_OBJ(&pipe, GetSysWorkSpacePtr(), mm, &tiling);
 // CHECK: mm.template IterateAll(cGM);
 // CHECK: mm.End();
 // CHECK: CrossCoreSetFlag<0x2, PIPE_FIX>(3);
