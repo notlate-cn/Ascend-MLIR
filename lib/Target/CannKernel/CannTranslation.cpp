@@ -331,8 +331,7 @@ static MixPartitionSummary buildMixPartitionSummary(func::FuncOp funcOp) {
   return summary;
 }
 
-static bool isSupportedCurrentMixEmission(func::FuncOp funcOp,
-                                          const MixPartitionSummary &summary) {
+static bool hasSupportedMixFunctionSignature(func::FuncOp funcOp) {
   auto numInputsAttr = funcOp->getAttrOfType<IntegerAttr>("cann.num_inputs");
   if (!numInputsAttr || numInputsAttr.getInt() != 4)
     return false;
@@ -359,7 +358,12 @@ static bool isSupportedCurrentMixEmission(func::FuncOp funcOp,
   auto workspaceType = dyn_cast<MemRefType>(args[5].getType());
   if (!workspaceType || !workspaceType.getElementType().isUnsignedInteger(8))
     return false;
-  if (!isa<emitasc::PyStructType>(args[6].getType()))
+  return isa<emitasc::PyStructType>(args[6].getType());
+}
+
+static bool isSupportedCurrentMixEmission(func::FuncOp funcOp,
+                                          const MixPartitionSummary &summary) {
+  if (!hasSupportedMixFunctionSignature(funcOp))
     return false;
 
   return summary.hasCube() && summary.hasVector() && summary.hasBoundary();
