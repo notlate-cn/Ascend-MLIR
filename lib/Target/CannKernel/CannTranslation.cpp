@@ -713,25 +713,41 @@ static void emitSupportedMixAivOutputCopy(raw_ostream &os) {
      << "    reluOutQueue.FreeTensor(finalLocal);\n";
 }
 
-static void emitSupportedMixCubeRegion(raw_ostream &os,
-                                       const SupportedMixKernelConfig &config) {
+static const MixRegionPlan *
+findFirstMixRegionOfKind(ArrayRef<MixRegionPlan> regions, MixPartitionKind kind) {
+  for (const MixRegionPlan &region : regions) {
+    if (region.kind == kind)
+      return &region;
+  }
+  return nullptr;
+}
+
+static void emitMixCubeRegion(raw_ostream &os, const MixRegionPlan &region,
+                              const SupportedMixKernelConfig &config,
+                              const MixTaskKindDescriptor &desc) {
+  (void)region;
+  (void)desc;
   os << "  if ASCEND_IS_AIC {\n";
   emitSupportedMixMatmulObjectDecl(os);
   emitSupportedMixAicGlobalTensorSetup(os, config);
   emitSupportedMixMatmulExecution(os, config);
 }
 
-static void emitSupportedMixBoundarySync(raw_ostream &os,
-                                         const MixTaskKindDescriptor &desc) {
+static void emitMixBoundaryRegion(raw_ostream &os, const MixRegionPlan &region,
+                                  const SupportedMixKernelConfig &config,
+                                  const MixTaskKindDescriptor &desc) {
+  (void)region;
+  (void)config;
   emitSupportedMixCrossCoreSetFlag(os, desc);
   os << "  }\n\n"
      << "  if ASCEND_IS_AIV {\n";
   os << "    CrossCoreWaitFlag(" << desc.crossCoreFlagId << ");\n\n";
 }
 
-static void emitSupportedMixVectorRegion(raw_ostream &os,
-                                         const SupportedMixKernelConfig &config,
-                                         const MixTaskKindDescriptor &desc) {
+static void emitMixVectorRegion(raw_ostream &os, const MixRegionPlan &region,
+                                const SupportedMixKernelConfig &config,
+                                const MixTaskKindDescriptor &desc) {
+  (void)region;
   emitSupportedMixAivQueueSetup(os, desc);
   emitSupportedMixAivInputCopy(os);
   emitSupportedMixVectorEpilogue(os, config);
@@ -778,12 +794,22 @@ static void emitSupportedMixKernelPrologue(raw_ostream &os, StringRef kernelName
 }
 
 static void emitSupportedMixKernel(raw_ostream &os, func::FuncOp funcOp,
+                                   const MixPartitionPlan &plan,
                                    const SupportedMixKernelConfig &config) {
   MixTaskKindDescriptor desc = getMixTaskKindDescriptor(config.taskKind);
   emitSupportedMixKernelPrologue(os, funcOp.getName(), desc);
-  emitSupportedMixCubeRegion(os, config);
-  emitSupportedMixBoundarySync(os, desc);
-  emitSupportedMixVectorRegion(os, config, desc);
+  const MixRegionPlan *cubeRegion =
+      findFirstMixRegionOfKind(plan.regions, MixPartitionKind::Cube);
+  const MixRegionPlan *boundaryRegion = findFirstMixRegionOfKind(
+      plan.regions, MixPartitionKind::Boundary);
+  const MixRegionPlan *vectorRegion =
+      findFirstMixRegionOfKind(plan.regions, MixPartitionKind::Vector);
+  if (!cubeRegion || !boundaryRegion || !vectorRegion) {
+    llvm_unreachable("supported mix emission requires cube, boundary, and vector regions");
+  }
+  emitMixCubeRegion(os, *cubeRegion, config, desc);
+  emitMixBoundaryRegion(os, *boundaryRegion, config, desc);
+  emitMixVectorRegion(os, *vectorRegion, config, desc);
   os << "}\n";
 }
 
@@ -1202,9 +1228,8 @@ LogicalResult mlir::translateToCannKernel(Operation *op, raw_ostream &os,
       getKernelKind(primaryKernel) == AscendCKernelKind::Mix) {
     MixPartitionSummary mixPartitionSummary =
         buildMixPartitionSummary(primaryKernel);
-    MixPartitionPlan initialMixPartitionPlan =
+    MixPartitionPlan mixPartitionPlan =
         buildInitialMixPartitionPlan(primaryKernel, mixPartitionSummary);
-    (void)initialMixPartitionPlan;
 
     if (!isSupportedCurrentMixEmission(primaryKernel, mixPartitionSummary))
       return primaryKernel.emitOpError(
@@ -1215,7 +1240,8 @@ LogicalResult mlir::translateToCannKernel(Operation *op, raw_ostream &os,
     if (failed(supportedMixConfig))
       return failure();
 
-    emitSupportedMixKernel(os, primaryKernel, *supportedMixConfig);
+    emitSupportedMixKernel(os, primaryKernel, mixPartitionPlan,
+                           *supportedMixConfig);
     return success();
   }
 
