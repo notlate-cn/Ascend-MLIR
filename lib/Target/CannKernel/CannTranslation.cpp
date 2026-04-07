@@ -1060,6 +1060,8 @@ buildSupportedMixBoundaryPayload(const MixBoundaryValue &input,
     auto copyOp = dyn_cast<ascendc::DataCopyCO12DstOp>(op);
     if (!copyOp)
       continue;
+    if (copyOp.getSrc() != input.value || copyOp.getDst() != output.value)
+      continue;
 
     Type srcElementType = getSupportedMixTensorElementType(copyOp.getSrc());
     Type dstElementType = getSupportedMixTensorElementType(copyOp.getDst());
@@ -1101,15 +1103,17 @@ buildSupportedMixBoundaryLayer(const MixPartitionPlan &plan) {
         "supported mix boundary emission requires explicit boundary crossings");
   }
 
-  FailureOr<SupportedMixBoundaryPayload> payload =
-      buildSupportedMixBoundaryPayload(inputs.front(), outputs.front(),
-                                      boundaryRegion->ops);
-  if (failed(payload)) {
-    llvm_unreachable(
-        "supported mix boundary emission requires explicit boundary transfer pattern");
+  for (const MixBoundaryValue &input : inputs) {
+    for (const MixBoundaryValue &output : outputs) {
+      FailureOr<SupportedMixBoundaryPayload> payload =
+          buildSupportedMixBoundaryPayload(input, output, boundaryRegion->ops);
+      if (succeeded(payload))
+        return {input, output, *payload};
+    }
   }
 
-  return {inputs.front(), outputs.front(), *payload};
+  llvm_unreachable(
+      "supported mix boundary emission requires explicit boundary transfer pattern");
 }
 
 // Supported mix emission helpers.
