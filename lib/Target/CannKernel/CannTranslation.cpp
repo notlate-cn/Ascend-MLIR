@@ -193,7 +193,12 @@ struct SupportedMixBoundaryLayer {
 
 struct GenericMixSingleChainEmissionPlan {
   const MixRegionPlan *cubeRegion = nullptr;
+  const MixRegionPlan *boundaryRegion = nullptr;
   const MixRegionPlan *vectorRegion = nullptr;
+  MixSingleChainValidation::SelectedBoundaryCrossing selectedBoundaryCrossing;
+};
+
+struct GenericMixSingleChainSupportedLowering {
   SupportedMixBoundaryLayer boundaryLayer;
   SupportedMixKernelConfig config;
 };
@@ -1119,16 +1124,14 @@ buildSupportedMixBoundaryPayload(const MixBoundaryValue &input,
 }
 
 static FailureOr<SupportedMixBoundaryLayer>
-buildSupportedMixBoundaryLayer(const MixPartitionPlan &plan,
+buildSupportedMixBoundaryLayer(ArrayRef<Operation *> boundaryOps,
                                const MixBoundaryValue &input,
                                const MixBoundaryValue &output) {
-  const MixRegionPlan *boundaryRegion =
-      findFirstMixRegionOfKind(plan.regions, MixPartitionKind::Boundary);
-  if (!boundaryRegion)
+  if (boundaryOps.empty())
     return failure();
 
   FailureOr<SupportedMixBoundaryPayload> payload =
-      buildSupportedMixBoundaryPayload(input, output, boundaryRegion->ops);
+      buildSupportedMixBoundaryPayload(input, output, boundaryOps);
   if (failed(payload))
     return failure();
 
@@ -1136,23 +1139,39 @@ buildSupportedMixBoundaryLayer(const MixPartitionPlan &plan,
 }
 
 static FailureOr<GenericMixSingleChainEmissionPlan>
-buildGenericMixSingleChainEmissionPlan(
-    func::FuncOp funcOp, const MixPartitionPlan &plan,
-    const MixPartitionSummary &summary,
-    const MixSingleChainValidation &validation) {
-  if (!hasSupportedMixFunctionSignature(funcOp))
-    return failure();
-
+buildGenericMixSingleChainEmissionPlan(func::FuncOp funcOp,
+                                       const MixPartitionPlan &plan,
+                                       const MixSingleChainValidation &validation) {
   const MixRegionPlan *cubeRegion =
       findFirstMixRegionOfKind(plan.regions, MixPartitionKind::Cube);
+  const MixRegionPlan *boundaryRegion =
+      findFirstMixRegionOfKind(plan.regions, MixPartitionKind::Boundary);
   const MixRegionPlan *vectorRegion =
       findFirstMixRegionOfKind(plan.regions, MixPartitionKind::Vector);
-  if (!cubeRegion ||
-      !findFirstMixRegionOfKind(plan.regions, MixPartitionKind::Boundary) ||
-      !vectorRegion ||
-      !validation.selectedBoundaryCrossing)
-    return failure();
+  if (!cubeRegion || !boundaryRegion || !vectorRegion)
+    return funcOp.emitOpError(
+        "mix translation found a valid single-chain plan, but generic "
+        "region-driven emission could not recover cube/boundary/vector regions");
+  if (!validation.selectedBoundaryCrossing)
+    return funcOp.emitOpError(
+        "mix translation found a valid single-chain plan, but generic "
+        "region-driven emission did not retain the selected boundary crossings");
 
+  return GenericMixSingleChainEmissionPlan{
+      cubeRegion, boundaryRegion, vectorRegion,
+      *validation.selectedBoundaryCrossing};
+}
+
+static FailureOr<GenericMixSingleChainSupportedLowering>
+lowerGenericMixSingleChainToSupportedMix(
+    func::FuncOp funcOp, const MixPartitionSummary &summary,
+    const GenericMixSingleChainEmissionPlan &emissionPlan) {
+  if (!hasSupportedMixFunctionSignature(funcOp)) {
+    return funcOp.emitOpError(
+        "mix translation found a valid single-chain plan, but lowering the "
+        "generic region-driven emission to the current supported shell "
+        "requires the legacy ABI/signature");
+  }
   FailureOr<SupportedMixKernelConfig> config =
       inferSupportedMixKernelConfig(funcOp, summary);
   if (failed(config))
@@ -1160,13 +1179,17 @@ buildGenericMixSingleChainEmissionPlan(
 
   FailureOr<SupportedMixBoundaryLayer> boundaryLayer =
       buildSupportedMixBoundaryLayer(
-          plan, validation.selectedBoundaryCrossing->input,
-          validation.selectedBoundaryCrossing->output);
-  if (failed(boundaryLayer))
-    return failure();
+          emissionPlan.boundaryRegion->ops,
+          emissionPlan.selectedBoundaryCrossing.input,
+          emissionPlan.selectedBoundaryCrossing.output);
+  if (failed(boundaryLayer)) {
+    return funcOp.emitOpError(
+        "mix translation found a valid single-chain plan, but lowering the "
+        "generic region-driven emission to the current supported shell could "
+        "not materialize the explicit boundary payload");
+  }
 
-  return GenericMixSingleChainEmissionPlan{cubeRegion, vectorRegion,
-                                           *boundaryLayer, *config};
+  return GenericMixSingleChainSupportedLowering{*boundaryLayer, *config};
 }
 
 // Supported mix emission helpers.
@@ -1234,19 +1257,22 @@ static void emitSupportedMixVectorCountDecl(raw_ostream &os,
 }
 
 static void emitSupportedMixBoundaryTransferSetup(
-    raw_ostream &os, SupportedMixBoundaryLayer &layer,
+    raw_ostream &os, const SupportedMixBoundaryLayer &layer,
     const MixTaskKindDescriptor &desc) {
+  auto inputEnqueue = layer.payload.inputEnqueue;
+  auto transferCopy = layer.payload.transferCopy;
+  auto outputAlloc = layer.payload.outputAlloc;
   StringRef elemType = getSupportedMixElementTypeSpelling(layer.payload.elementType);
   auto inputQueuePosition =
-      getQueueLikePosition(layer.payload.inputEnqueue.getQueue().getType());
+      getQueueLikePosition(inputEnqueue.getQueue().getType());
   auto outputQueuePosition =
-      getQueueLikePosition(layer.payload.outputAlloc.getQueue().getType());
+      getQueueLikePosition(outputAlloc.getQueue().getType());
   if (!inputQueuePosition || *inputQueuePosition != ascendc::TPosition::CO1 ||
       !outputQueuePosition || *outputQueuePosition != ascendc::TPosition::VECIN ||
-      layer.payload.inputEnqueue.getTensor() != layer.input.value ||
-      layer.payload.transferCopy.getSrc() != layer.input.value ||
-      layer.payload.transferCopy.getDst() != layer.output.value ||
-      layer.payload.outputAlloc.getTensor() != layer.output.value) {
+      inputEnqueue.getTensor() != layer.input.value ||
+      transferCopy.getSrc() != layer.input.value ||
+      transferCopy.getDst() != layer.output.value ||
+      outputAlloc.getTensor() != layer.output.value) {
     llvm_unreachable("unsupported supported-mix boundary payload");
   }
   os << "    TQue<TPosition::VECIN, 1> reluInQueue;\n"
@@ -1262,11 +1288,13 @@ static void emitSupportedMixBoundaryTransferSetup(
 }
 
 static void emitSupportedMixBoundaryInputTransfer(
-    raw_ostream &os, SupportedMixBoundaryLayer &layer) {
+    raw_ostream &os, const SupportedMixBoundaryLayer &layer) {
+  auto inputEnqueue = layer.payload.inputEnqueue;
+  auto transferCopy = layer.payload.transferCopy;
   StringRef elemType = getSupportedMixElementTypeSpelling(layer.payload.elementType);
-  if (layer.payload.inputEnqueue.getTensor() != layer.input.value ||
-      layer.payload.transferCopy.getSrc() != layer.input.value ||
-      layer.payload.transferCopy.getDst() != layer.output.value) {
+  if (inputEnqueue.getTensor() != layer.input.value ||
+      transferCopy.getSrc() != layer.input.value ||
+      transferCopy.getDst() != layer.output.value) {
     llvm_unreachable("unsupported supported-mix boundary input payload");
   }
   os << "    LocalTensor<" << elemType
@@ -1280,10 +1308,12 @@ static void emitSupportedMixBoundaryInputTransfer(
 }
 
 static void emitSupportedMixBoundaryOutputTransfer(
-    raw_ostream &os, SupportedMixBoundaryLayer &layer) {
+    raw_ostream &os, const SupportedMixBoundaryLayer &layer) {
+  auto transferCopy = layer.payload.transferCopy;
+  auto outputAlloc = layer.payload.outputAlloc;
   StringRef elemType = getSupportedMixElementTypeSpelling(layer.payload.elementType);
-  if (layer.payload.transferCopy.getDst() != layer.output.value ||
-      layer.payload.outputAlloc.getTensor() != layer.output.value) {
+  if (transferCopy.getDst() != layer.output.value ||
+      outputAlloc.getTensor() != layer.output.value) {
     llvm_unreachable("unsupported supported-mix boundary output payload");
   }
   os << "    reluOutQueue.EnQue<" << elemType << ">(outLocal);\n"
@@ -1316,7 +1346,7 @@ static void emitMixCubeRegion(raw_ostream &os, const MixRegionPlan &region,
 
 template <typename EmitVectorBodyFn>
 static void emitMixBoundaryLayer(raw_ostream &os,
-                                 SupportedMixBoundaryLayer &layer,
+                                 const SupportedMixBoundaryLayer &layer,
                                  const MixTaskKindDescriptor &desc,
                                  EmitVectorBodyFn emitVectorBody) {
   emitSupportedMixCrossCoreSetFlag(os, desc);
@@ -1367,53 +1397,27 @@ static void emitSupportedMixKernelSignature(raw_ostream &os,
      << "  CopyTiling(&tiling, tilingGm);\n\n";
 }
 
-static void emitSupportedMixKernelPrologue(raw_ostream &os, StringRef kernelName,
-                                           const MixTaskKindDescriptor &desc) {
+static void emitGenericMixKernelPrologue(raw_ostream &os, StringRef kernelName,
+                                         const MixTaskKindDescriptor &desc) {
   emitSupportedMixIncludesAndNamespaces(os);
   emitSupportedMixCopyTilingHelper(os);
   emitSupportedMixKernelSignature(os, kernelName, desc);
 }
 
-static void emitSupportedMixKernel(raw_ostream &os, func::FuncOp funcOp,
-                                   const MixPartitionPlan &plan,
-                                   SupportedMixBoundaryLayer &boundaryLayer,
-                                   const SupportedMixKernelConfig &config) {
-  MixTaskKindDescriptor desc = getMixTaskKindDescriptor(config.taskKind);
-  emitSupportedMixKernelPrologue(os, funcOp.getName(), desc);
-  const MixRegionPlan *cubeRegion =
-      findFirstMixRegionOfKind(plan.regions, MixPartitionKind::Cube);
-  const MixRegionPlan *vectorRegion =
-      findFirstMixRegionOfKind(plan.regions, MixPartitionKind::Vector);
-  if (!cubeRegion || !vectorRegion) {
-    llvm_unreachable(
-        "supported mix emission requires cube and vector regions");
-  }
-  emitMixCubeRegion(os, *cubeRegion, config, desc);
-  emitMixBoundaryLayer(os, boundaryLayer, desc, [&] {
-    emitMixVectorRegion(os, *vectorRegion, config);
-  });
-  os << "}\n";
-}
-
-static LogicalResult emitGenericMixSingleChainKernel(
-    raw_ostream &os, func::FuncOp funcOp, const MixPartitionPlan &plan,
-    const MixPartitionSummary &summary,
-    const MixSingleChainValidation &validation) {
-  FailureOr<GenericMixSingleChainEmissionPlan> emissionPlan =
-      buildGenericMixSingleChainEmissionPlan(funcOp, plan, summary, validation);
-  if (failed(emissionPlan))
-    return failure();
-
+static void emitGenericMixSingleChainKernel(
+    raw_ostream &os, func::FuncOp funcOp,
+    const GenericMixSingleChainEmissionPlan &emissionPlan,
+    const GenericMixSingleChainSupportedLowering &supportedLowering) {
   MixTaskKindDescriptor desc =
-      getMixTaskKindDescriptor(emissionPlan->config.taskKind);
-  emitSupportedMixKernelPrologue(os, funcOp.getName(), desc);
-  emitMixCubeRegion(os, *emissionPlan->cubeRegion, emissionPlan->config, desc);
-  emitMixBoundaryLayer(os, emissionPlan->boundaryLayer, desc, [&] {
-    emitMixVectorRegion(os, *emissionPlan->vectorRegion,
-                        emissionPlan->config);
+      getMixTaskKindDescriptor(supportedLowering.config.taskKind);
+  emitGenericMixKernelPrologue(os, funcOp.getName(), desc);
+  emitMixCubeRegion(os, *emissionPlan.cubeRegion, supportedLowering.config,
+                    desc);
+  emitMixBoundaryLayer(os, supportedLowering.boundaryLayer, desc, [&] {
+    emitMixVectorRegion(os, *emissionPlan.vectorRegion,
+                        supportedLowering.config);
   });
   os << "}\n";
-  return success();
 }
 
 /// Emit the TilingData struct declaration from a PyStructType.
@@ -1837,38 +1841,20 @@ LogicalResult mlir::translateToCannKernel(Operation *op, raw_ostream &os,
         validateSingleChainGenericMixPlan(mixPartitionPlan);
 
     if (singleChainValidation.succeeded()) {
-      if (succeeded(emitGenericMixSingleChainKernel(
-              os, primaryKernel, mixPartitionPlan, mixPartitionSummary,
-              singleChainValidation)))
-        return success();
-
-      if (!hasSupportedMixFunctionSignature(primaryKernel)) {
-        return primaryKernel.emitOpError(
-            "mix translation found a valid single-chain cube/boundary/vector "
-            "plan, but the current supported-mix emitter only accepts the "
-            "legacy ABI/signature");
-      }
-      FailureOr<SupportedMixKernelConfig> supportedMixConfig =
-          inferSupportedMixKernelConfig(primaryKernel, mixPartitionSummary);
-      if (failed(supportedMixConfig))
+      FailureOr<GenericMixSingleChainEmissionPlan> genericEmissionPlan =
+          buildGenericMixSingleChainEmissionPlan(primaryKernel,
+                                                mixPartitionPlan,
+                                                singleChainValidation);
+      if (failed(genericEmissionPlan))
         return failure();
-      if (!singleChainValidation.selectedBoundaryCrossing)
-        return primaryKernel.emitOpError(
-            "mix translation found a valid single-chain cube/boundary/vector "
-            "plan, but did not retain the selected boundary crossings");
-      FailureOr<SupportedMixBoundaryLayer> boundaryLayer =
-          buildSupportedMixBoundaryLayer(
-              mixPartitionPlan,
-              singleChainValidation.selectedBoundaryCrossing->input,
-              singleChainValidation.selectedBoundaryCrossing->output);
-      if (failed(boundaryLayer)) {
-        return primaryKernel.emitOpError(
-            "mix translation found a valid single-chain cube/boundary/vector "
-            "plan, but the selected boundary crossings do not have a supported "
-            "explicit boundary payload");
-      }
-      emitSupportedMixKernel(os, primaryKernel, mixPartitionPlan, *boundaryLayer,
-                             *supportedMixConfig);
+      FailureOr<GenericMixSingleChainSupportedLowering> supportedLowering =
+          lowerGenericMixSingleChainToSupportedMix(primaryKernel,
+                                                  mixPartitionSummary,
+                                                  *genericEmissionPlan);
+      if (failed(supportedLowering))
+        return failure();
+      emitGenericMixSingleChainKernel(os, primaryKernel, *genericEmissionPlan,
+                                      *supportedLowering);
       return success();
     }
 
