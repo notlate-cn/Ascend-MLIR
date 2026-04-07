@@ -116,20 +116,6 @@ struct MixPartitionPlan {
 
 static MixPartitionKind getStoragePartitionFromQueueLikeType(Type type);
 
-static MixPartitionKind getPartitionForSummaryOp(Operation *op,
-                                                 const MixPartitionSummary &summary) {
-  for (Operation *candidate : summary.cubeOps)
-    if (candidate == op)
-      return MixPartitionKind::Cube;
-  for (Operation *candidate : summary.boundaryOps)
-    if (candidate == op)
-      return MixPartitionKind::Boundary;
-  for (Operation *candidate : summary.vectorOps)
-    if (candidate == op)
-      return MixPartitionKind::Vector;
-  return MixPartitionKind::Unknown;
-}
-
 static MixPartitionKind inferPartitionForQueueLikeUser(Operation *user) {
   if (auto enqueTensor = dyn_cast<ascendc::TQueBindEnqueTensorOp>(user))
     return getStoragePartitionFromQueueLikeType(enqueTensor.getQueue().getType());
@@ -418,20 +404,46 @@ static bool hasSupportedMixPartitions(const MixPartitionSummary &summary) {
   return summary.hasCube() && summary.hasVector() && summary.hasBoundary();
 }
 
+static llvm::DenseMap<Operation *, MixPartitionKind>
+buildMixPartitionMap(const MixPartitionSummary &summary) {
+  llvm::DenseMap<Operation *, MixPartitionKind> partitionMap;
+  for (Operation *op : summary.cubeOps)
+    partitionMap.try_emplace(op, MixPartitionKind::Cube);
+  for (Operation *op : summary.boundaryOps)
+    partitionMap.try_emplace(op, MixPartitionKind::Boundary);
+  for (Operation *op : summary.vectorOps)
+    partitionMap.try_emplace(op, MixPartitionKind::Vector);
+  return partitionMap;
+}
+
 static SmallVector<MixBoundaryValue>
 collectMixBoundaryValues(const MixPartitionSummary &summary) {
   SmallVector<MixBoundaryValue> boundaryValues;
+  llvm::DenseMap<Operation *, MixPartitionKind> partitionMap =
+      buildMixPartitionMap(summary);
 
   auto recordCrossing = [&](Value value, MixPartitionKind producer,
                             MixPartitionKind consumer) {
     if (producer == MixPartitionKind::Unknown ||
         consumer == MixPartitionKind::Unknown || producer == consumer)
       return;
+    for (const MixBoundaryValue &existing : boundaryValues) {
+      if (existing.value == value && existing.producer == producer &&
+          existing.consumer == consumer)
+        return;
+    }
     boundaryValues.push_back({value, producer, consumer});
   };
 
+  auto getPartitionForSummaryOp = [&](Operation *op) {
+    auto it = partitionMap.find(op);
+    if (it != partitionMap.end())
+      return it->second;
+    return MixPartitionKind::Unknown;
+  };
+
   auto getConsumerPartition = [&](Operation *user) {
-    MixPartitionKind partition = getPartitionForSummaryOp(user, summary);
+    MixPartitionKind partition = getPartitionForSummaryOp(user);
     if (partition != MixPartitionKind::Unknown)
       return partition;
     return inferPartitionForQueueLikeUser(user);
@@ -450,7 +462,7 @@ collectMixBoundaryValues(const MixPartitionSummary &summary) {
       Operation *defOp = operand.getDefiningOp();
       if (!defOp)
         continue;
-      recordCrossing(operand, getPartitionForSummaryOp(defOp, summary),
+      recordCrossing(operand, getPartitionForSummaryOp(defOp),
                      MixPartitionKind::Boundary);
     }
 
@@ -466,7 +478,7 @@ collectMixBoundaryValues(const MixPartitionSummary &summary) {
       Operation *defOp = operand.getDefiningOp();
       if (!defOp)
         continue;
-      recordCrossing(operand, getPartitionForSummaryOp(defOp, summary),
+      recordCrossing(operand, getPartitionForSummaryOp(defOp),
                      MixPartitionKind::Vector);
     }
   }
