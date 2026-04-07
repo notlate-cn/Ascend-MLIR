@@ -9,7 +9,6 @@ module attributes {transform.with_named_sequence} {
     %false = arith.constant false
     %c0_i8 = arith.constant 0 : i8
     %c1_i16 = arith.constant 1 : i16
-    %true = arith.constant true
     %c0 = arith.constant 0 : index
     %0 = emitasc.copy_struct %arg4 : memref<?x!emitasc.py_struct<"TilingData", [i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64], ["TB_M", "TB_N", "Tb_M", "Tb_N", "t_K", "dim_arg3_0", "dim_arg3_1", "dim_arg0_1", "dim_arg0_0", "dim_arg1_0", "dim_arg1_1", "dim_arg2_0", "dim_arg2_1"]>, 22 : i32>, !emitasc.py_struct<"TilingData", [i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64], ["TB_M", "TB_N", "Tb_M", "Tb_N", "t_K", "dim_arg3_0", "dim_arg3_1", "dim_arg0_1", "dim_arg0_0", "dim_arg1_0", "dim_arg1_1", "dim_arg2_0", "dim_arg2_1"]>
     %1 = emitasc.member %0 "TB_M" : !emitasc.py_struct<"TilingData", [i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64], ["TB_M", "TB_N", "Tb_M", "Tb_N", "t_K", "dim_arg3_0", "dim_arg3_1", "dim_arg0_1", "dim_arg0_0", "dim_arg1_0", "dim_arg1_1", "dim_arg2_0", "dim_arg2_1"]>, i64
@@ -82,7 +81,7 @@ module attributes {transform.with_named_sequence} {
         %63 = arith.index_cast %51 : index to i16
         %64 = arith.index_cast %62 : index to i16
         %65 = arith.index_cast %54 : index to i16
-        %66 = ascendc.construct !ascendc.nd2nz_params(%63, %64, %63, %65, %63, %c0_i16, %63, %c0_i16) [i16, i16, i16, i16, i16, i16, i16, i16] : i16, i16, i16, i16, i16, i16, i16, i16
+        %66 = ascendc.construct !ascendc.nd2nz_params(%63, %64, %63, %65, %63, %c0_i16, %63, %c0_i16) [ui16, ui16, ui16, ui16, ui16, ui16, ui16, ui16] : i16, i16, i16, i16, i16, i16, i16, i16
         ascendc.data_copy_nd2nz %57, %58, %66 : !ascendc.local_tensor<*xf16>, !ascendc.global_tensor<*xf16>, !ascendc.nd2nz_params
         ascendc.que_bind.enque_tensor %15, %57 : !ascendc.queue<a1, 1>, !ascendc.local_tensor<*xf16>
         %67 = arith.muli %54, %53 : index
@@ -97,7 +96,7 @@ module attributes {transform.with_named_sequence} {
         %73 = arith.divui %53, %c16 : index
         %74 = arith.index_cast %73 : index to i16
         %75 = arith.index_cast %53 : index to i16
-        %76 = ascendc.construct !ascendc.nd2nz_params(%65, %74, %65, %75, %65, %c0_i16, %65, %c0_i16) [i16, i16, i16, i16, i16, i16, i16, i16] : i16, i16, i16, i16, i16, i16, i16, i16
+        %76 = ascendc.construct !ascendc.nd2nz_params(%65, %74, %65, %75, %65, %c0_i16, %65, %c0_i16) [ui16, ui16, ui16, ui16, ui16, ui16, ui16, ui16] : i16, i16, i16, i16, i16, i16, i16, i16
         ascendc.data_copy_nd2nz %69, %70, %76 : !ascendc.local_tensor<*xf16>, !ascendc.global_tensor<*xf16>, !ascendc.nd2nz_params
         ascendc.que_bind.enque_tensor %16, %69 : !ascendc.queue<b1, 1>, !ascendc.local_tensor<*xf16>
         %77 = arith.muli %53, %c4 : index
@@ -126,7 +125,7 @@ module attributes {transform.with_named_sequence} {
             %91 = arith.muli %90, %c4 : index
             ascendc.pipe.init_buffer %14, %42, %91 : !ascendc.tbuf<co1>, index
             ascendc.pipe.init_queue %14, %19, %c1_i32, %91 : !ascendc.queue<co1, 1>, i32, index
-            %92 = ascendc.que_bind.alloc_tensor %19 : !ascendc.queue<co1, 1>, !ascendc.local_tensor<*xf16>
+            %92 = ascendc.que_bind.alloc_tensor %19 : !ascendc.queue<co1, 1>, !ascendc.local_tensor<*xf32>
             scf.for %arg9 = %c0 to %54 step %24 {
               %117 = arith.subi %54, %arg9 : index
               %118 = arith.minsi %117, %24 : index
@@ -140,7 +139,7 @@ module attributes {transform.with_named_sequence} {
               %124 = arith.divui %118, %c16 : index
               %125 = arith.index_cast %124 : index to i64
               %126 = arith.trunci %125 : i64 to i8
-              %127 = ascendc.construct !ascendc.load_data_2d_params(%c0_i16, %126, %123, %c0_i16, %c0_i16, %false, %c0_i8) [i16, i8, i16, i16, i16, i1, i8] : i16, i8, i16, i16, i16, i1, i8
+              %127 = ascendc.construct !ascendc.load_data_2d_params(%c0_i16, %126, %123, %c0_i16, %c0_i16, %false, %c0_i8) [ui16, ui8, ui16, ui8, ui16, i1, ui8] : i16, i8, i16, i16, i16, i1, i8
               ascendc.load_data_l0 %121, %84, %127 : !ascendc.local_tensor<*xf16>, !ascendc.local_tensor<*xf16>, !ascendc.load_data_2d_params
               ascendc.que_bind.enque_tensor %20, %121 : !ascendc.queue<a2, 1>, !ascendc.local_tensor<*xf16>
               %128 = arith.muli %118, %89 : index
@@ -148,7 +147,7 @@ module attributes {transform.with_named_sequence} {
               ascendc.pipe.init_buffer %14, %40, %129 : !ascendc.tbuf<b2>, index
               ascendc.pipe.init_queue %14, %21, %c1_i32, %129 : !ascendc.queue<b2, 1>, i32, index
               %130 = ascendc.que_bind.alloc_tensor %21 : !ascendc.queue<b2, 1>, !ascendc.local_tensor<*xf16>
-              %131 = ascendc.construct !ascendc.load_data_2d_transpose_params(%c0_i16, %126, %c1_i16, %c0_i16, %c0_i16, %true, %c0_i8) [i16, i8, i16, i16, i16, i1, i8] : i16, i8, i16, i16, i16, i1, i8
+              %131 = ascendc.construct !ascendc.load_data_2d_transpose_params(%c0_i16, %126, %c1_i16, %c0_i16, %c0_i16, %c0_i8) [ui16, ui8, ui16, ui16, ui16, ui8] : i16, i8, i16, i16, i16, i8
               ascendc.load_data_with_transpose %130, %85, %131 : !ascendc.local_tensor<*xf16>, !ascendc.local_tensor<*xf16>, !ascendc.load_data_2d_transpose_params
               ascendc.que_bind.enque_tensor %21, %130 : !ascendc.queue<b2, 1>, !ascendc.local_tensor<*xf16>
               %132 = ascendc.que_bind.deque_tensor %20 : !ascendc.queue<a2, 1>, !ascendc.local_tensor<*xf16>
@@ -156,12 +155,12 @@ module attributes {transform.with_named_sequence} {
               %134 = arith.index_cast %87 : index to i16
               %135 = arith.index_cast %118 : index to i16
               %136 = arith.index_cast %89 : index to i16
-              %137 = ascendc.construct !ascendc.mmad_params(%134, %136, %135, %c0_i8, %c0_i8, %c0_i8) [i16, i16, i16, i8, i8, i8] : i16, i16, i16, i8, i8, i8
-              ascendc.mmad %92, %132, %133, %137 : !ascendc.local_tensor<*xf16>, !ascendc.local_tensor<*xf16>, !ascendc.local_tensor<*xf16>, !ascendc.mmad_params
+              %137 = ascendc.construct !ascendc.mmad_params(%134, %136, %135, %c0_i8, %c0_i8, %c0_i8) [ui16, ui16, ui16, ui8, ui8, ui8] : i16, i16, i16, i8, i8, i8
+              ascendc.mmad %92, %132, %133, %137 {ascendc.unit = "AiCore.Cube"} : !ascendc.local_tensor<*xf32>, !ascendc.local_tensor<*xf16>, !ascendc.local_tensor<*xf16>, !ascendc.mmad_params
               ascendc.que_bind.free_tensor %20, %132 : !ascendc.queue<a2, 1>, !ascendc.local_tensor<*xf16>
               ascendc.que_bind.free_tensor %21, %133 : !ascendc.queue<b2, 1>, !ascendc.local_tensor<*xf16>
             }
-            ascendc.que_bind.enque_tensor %19, %92 : !ascendc.queue<co1, 1>, !ascendc.local_tensor<*xf16>
+            ascendc.que_bind.enque_tensor %19, %92 : !ascendc.queue<co1, 1>, !ascendc.local_tensor<*xf32>
             ascendc.pipe.init_buffer %14, %39, %91 : !ascendc.tbuf<vecin>, index
             ascendc.pipe.init_queue %14, %22, %c1_i32, %91 : !ascendc.queue<vecin, 1>, i32, index
             %93 = ascendc.que_bind.deque_tensor %19 : !ascendc.queue<co1, 1>, !ascendc.local_tensor<*xf32>
@@ -188,8 +187,8 @@ module attributes {transform.with_named_sequence} {
             %105 = arith.index_cast %89 : index to i32
             ascendc.pipe.init_buffer %14, %34, %91 : !ascendc.tbuf<veccalc>, index
             %106 = ascendc.tbuf.get_tensor %34 : !ascendc.tbuf<veccalc>, !ascendc.local_tensor<*xf32>
-            ascendc.broadcast_l2 %106, %103, %104, %105, %c1_i32, %105 {constRank = 2 : i32, operandSegmentSizes = array<i32: 1, 1, 2, 2>} : !ascendc.local_tensor<*xf32>, !ascendc.local_tensor<*xf32>, i32, i32, i32, i32
-            ascendc.add_l2 %96, %97, %106, %90 : !ascendc.local_tensor<*xf32>, !ascendc.local_tensor<*xf32>, !ascendc.local_tensor<*xf32>, index
+            ascendc.broadcast_l2 %106, %103, %104, %105, %c1_i32, %105 {ascendc.unit = "AiCore.Vector", constRank = 2 : i32, operandSegmentSizes = array<i32: 1, 1, 2, 2>} : !ascendc.local_tensor<*xf32>, !ascendc.local_tensor<*xf32>, i32, i32, i32, i32
+            ascendc.add_l2 %96, %97, %106, %90 {ascendc.unit = "AiCore.Vector"} : !ascendc.local_tensor<*xf32>, !ascendc.local_tensor<*xf32>, !ascendc.local_tensor<*xf32>, index
             ascendc.que_bind.enque_tensor %18, %96 : !ascendc.queue<veccalc, 1>, !ascendc.local_tensor<*xf32>
             ascendc.pipe.init_buffer %14, %33, %91 : !ascendc.tbuf<vecout>, index
             ascendc.pipe.init_queue %14, %23, %c1_i32, %91 : !ascendc.queue<vecout, 1>, i32, index
@@ -198,9 +197,9 @@ module attributes {transform.with_named_sequence} {
             %108 = ascendc.que_bind.deque_tensor %18 : !ascendc.queue<veccalc, 1>, !ascendc.local_tensor<*xf32>
             ascendc.pipe.init_buffer %14, %31, %91 : !ascendc.tbuf<veccalc>, index
             %109 = ascendc.tbuf.get_tensor %31 : !ascendc.tbuf<veccalc>, !ascendc.local_tensor<*xf32>
-            ascendc.duplicate_l2 %109, %cst, %90 : !ascendc.local_tensor<*xf32>, f32, index
-            ascendc.mul_l2 %107, %108, %109, %90 : !ascendc.local_tensor<*xf32>, !ascendc.local_tensor<*xf32>, !ascendc.local_tensor<*xf32>, index
-            ascendc.max_l2 %107, %108, %107, %90 : !ascendc.local_tensor<*xf32>, !ascendc.local_tensor<*xf32>, !ascendc.local_tensor<*xf32>, index
+            ascendc.duplicate_l2 %109, %cst, %90 {ascendc.unit = "AiCore.Vector"} : !ascendc.local_tensor<*xf32>, f32, index
+            ascendc.mul_l2 %107, %108, %109, %90 {ascendc.unit = "AiCore.Vector"} : !ascendc.local_tensor<*xf32>, !ascendc.local_tensor<*xf32>, !ascendc.local_tensor<*xf32>, index
+            ascendc.max_l2 %107, %108, %107, %90 {ascendc.unit = "AiCore.Vector"} : !ascendc.local_tensor<*xf32>, !ascendc.local_tensor<*xf32>, !ascendc.local_tensor<*xf32>, index
             ascendc.que_bind.enque_tensor %23, %107 : !ascendc.queue<vecout, 1>, !ascendc.local_tensor<*xf32>
             %110 = ascendc.que_bind.deque_tensor %23 : !ascendc.queue<vecout, 1>, !ascendc.local_tensor<*xf32>
             %111 = ascendc.global_tensor : !ascendc.global_tensor<*xf32>
@@ -256,3 +255,4 @@ module attributes {transform.with_named_sequence} {
     transform.yield 
   }
 }
+

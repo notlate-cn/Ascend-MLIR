@@ -250,3 +250,6 @@ PY
 
 echo "artifact_dir=${ARTIFACT_DIR}"
 echo "data_dir=${DATA_DIR}"
+
+rm -fr *.dump
+rm -fr *.toml
