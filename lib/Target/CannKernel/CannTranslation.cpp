@@ -550,21 +550,28 @@ static void emitSupportedMixAivRegion(raw_ostream &os,
   os << "  }\n";
 }
 
-static void emitSupportedMixKernelPrologue(raw_ostream &os, StringRef kernelName,
-                                           const SupportedMixKernelConfig &config) {
+static void emitSupportedMixIncludesAndNamespaces(raw_ostream &os) {
   os << "#define __AFIR_RUNTIME_MIX_KERNEL_FUN_H__\n\n"
      << "#define ASCENDC_CUBE_ONLY\n"
      << "#include \"kernel_operator.h\"\n"
      << "#include \"lib/matmul_intf.h\"\n\n"
      << "using namespace AscendC;\n"
-     << "using namespace matmul;\n\n"
-     << "__aicore__ inline void CopyTiling(TCubeTiling *tiling, GM_ADDR tilingGM) {\n"
+     << "using namespace matmul;\n\n";
+}
+
+static void emitSupportedMixCopyTilingHelper(raw_ostream &os) {
+  os << "__aicore__ inline void CopyTiling(TCubeTiling *tiling, GM_ADDR tilingGM) {\n"
      << "  uint64_t *dst = reinterpret_cast<uint64_t *>(tiling);\n"
      << "  auto tiling64 = reinterpret_cast<__gm__ uint64_t *>(tilingGM);\n"
      << "  for (uint32_t i = 0; i < sizeof(TCubeTiling) / sizeof(uint64_t); ++i)\n"
      << "    dst[i] = tiling64[i];\n"
-     << "}\n\n"
-     << "extern \"C\" __global__ __aicore__ void " << kernelName << "(\n"
+     << "}\n\n";
+}
+
+static void emitSupportedMixKernelSignature(raw_ostream &os,
+                                            StringRef kernelName,
+                                            const SupportedMixKernelConfig &config) {
+  os << "extern \"C\" __global__ __aicore__ void " << kernelName << "(\n"
      << "    GM_ADDR a, GM_ADDR b, GM_ADDR bias, GM_ADDR out, GM_ADDR workspace,\n"
      << "    GM_ADDR tilingGm) {\n"
      << "  KERNEL_TASK_TYPE_DEFAULT("
@@ -573,6 +580,13 @@ static void emitSupportedMixKernelPrologue(raw_ostream &os, StringRef kernelName
      << "  (void)workspace;\n\n"
      << "  TCubeTiling tiling;\n"
      << "  CopyTiling(&tiling, tilingGm);\n\n";
+}
+
+static void emitSupportedMixKernelPrologue(raw_ostream &os, StringRef kernelName,
+                                           const SupportedMixKernelConfig &config) {
+  emitSupportedMixIncludesAndNamespaces(os);
+  emitSupportedMixCopyTilingHelper(os);
+  emitSupportedMixKernelSignature(os, kernelName, config);
 }
 
 static void emitSupportedMixKernel(raw_ostream &os, func::FuncOp funcOp,
