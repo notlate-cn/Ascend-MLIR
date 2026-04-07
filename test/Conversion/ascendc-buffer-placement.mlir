@@ -22,10 +22,12 @@ func.func @test_matmul_co1(%arg0: memref<128x256xf32>, %arg1: memref<256x128xf32
 
 // Test 3: Annotation cleanup - all ascendc.* attributes removed
 // CHECK-LABEL: func.func @test_annotation_cleanup(
+// CHECK-SAME: ascendc.kernel_kind = "cube"
 // CHECK-NOT: ascendc.prologue
 // CHECK-NOT: ascendc.epilogue
 // CHECK-NOT: ascendc.unit
-func.func @test_annotation_cleanup(%arg0: memref<128x128xf32>) {
+func.func @test_annotation_cleanup(%arg0: memref<128x128xf32>)
+    attributes {ascendc.kernel_kind = "cube"} {
   %c0 = arith.constant 0 : index
   %c1 = arith.constant 1 : index
   %c128 = arith.constant 128 : index
@@ -227,4 +229,3 @@ func.func @test_matmul_static(%arg0: memref<128x256xf32>, %arg1: memref<256x128x
       outs(%0 : memref<128x128xf32>)
   return
 }
-
