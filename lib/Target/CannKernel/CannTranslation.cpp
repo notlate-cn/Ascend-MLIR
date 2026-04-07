@@ -350,10 +350,22 @@ inferSupportedMixKernelConfig(func::FuncOp funcOp,
   SupportedMixKernelConfig config;
 
   for (Operation *op : summary.vectorOps) {
-    if (isa<ascendc::BroadcastL2Op>(op))
+    auto addOp = dyn_cast<ascendc::AddL2Op>(op);
+    if (!addOp)
+      continue;
+    if (llvm::any_of(addOp->getOperands(), [](Value operand) {
+          return isa_and_nonnull<ascendc::BroadcastL2Op>(
+              operand.getDefiningOp());
+        }))
       config.hasBiasAdd = true;
-
+    if (config.hasBiasAdd)
+      break;
   }
+
+  bool hasVectorMax =
+      llvm::any_of(summary.vectorOps, [](Operation *op) {
+        return isa<ascendc::MaxL2Op>(op);
+      });
 
   funcOp.walk([&](Operation *op) {
     if (config.epilogueKind != SupportedMixKernelConfig::EpilogueKind::Unknown)
@@ -362,6 +374,15 @@ inferSupportedMixKernelConfig(func::FuncOp funcOp,
     if (!dupOp)
       return WalkResult::advance();
     if (getTensorStoragePartition(dupOp.getDst()) != MixPartitionKind::Vector)
+      return WalkResult::advance();
+    if (!hasVectorMax)
+      return WalkResult::advance();
+    bool usedByVectorMul = llvm::any_of(dupOp.getDst().getUsers(), [](Operation *user) {
+      auto mulOp = dyn_cast<ascendc::MulL2Op>(user);
+      return mulOp &&
+             getTensorStoragePartition(mulOp.getDst()) == MixPartitionKind::Vector;
+    });
+    if (!usedByVectorMul)
       return WalkResult::advance();
     auto constOp = dupOp.getScalar().getDefiningOp<arith::ConstantOp>();
     if (!constOp)
