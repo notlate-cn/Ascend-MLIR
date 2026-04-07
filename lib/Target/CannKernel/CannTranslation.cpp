@@ -172,9 +172,19 @@ struct SupportedMixKernelConfig {
   double leakyReluAlpha = 0.0;
 };
 
+enum class SupportedMixBoundaryTransferKind {
+  Co1ToVecIn,
+};
+
+struct SupportedMixBoundaryTransfer {
+  SupportedMixBoundaryTransferKind kind;
+  Type elementType;
+};
+
 struct SupportedMixBoundaryLayer {
   MixBoundaryValue input;
   MixBoundaryValue output;
+  SupportedMixBoundaryTransfer transfer;
 };
 
 static SmallVector<MixBoundaryValue>
@@ -184,6 +194,8 @@ filterBoundaryValues(ArrayRef<MixBoundaryValue> values,
 static const MixRegionPlan *
 findFirstMixRegionOfKind(ArrayRef<MixRegionPlan> regions,
                          MixPartitionKind kind);
+
+static Type getSupportedMixTensorElementType(Value value);
 
 struct MixTaskKindDescriptor {
   StringRef taskTypeSpelling;
@@ -249,6 +261,15 @@ static MixPartitionKind getTensorStoragePartition(Value value) {
     return getStoragePartitionFromQueueLikeType(tbufTensor.getBuffer().getType());
 
   return MixPartitionKind::Unknown;
+}
+
+static std::optional<ascendc::TPosition>
+getQueueLikePosition(Type type) {
+  if (auto queueType = dyn_cast<ascendc::QueueType>(type))
+    return queueType.getPosition();
+  if (auto tbufType = dyn_cast<ascendc::TBufType>(type))
+    return tbufType.getTPosition();
+  return std::nullopt;
 }
 
 static bool touchesStoragePartitions(Operation *op, MixPartitionKind lhs,
@@ -574,6 +595,14 @@ static MixPartitionPlan buildInitialMixPartitionPlan(
 static bool hasFailureReason(ArrayRef<MixSingleChainFailureReason> reasons,
                              MixSingleChainFailureReason reason) {
   return llvm::is_contained(reasons, reason);
+}
+
+static Type getSupportedMixTensorElementType(Value value) {
+  if (auto localTensorType = dyn_cast<ascendc::LocalTensorType>(value.getType()))
+    return localTensorType.getElementType();
+  if (auto globalTensorType = dyn_cast<ascendc::GlobalTensorType>(value.getType()))
+    return globalTensorType.getElementType();
+  return Type();
 }
 
 static SmallVector<MixBoundaryValue>
@@ -1012,6 +1041,49 @@ inferSupportedMixKernelConfig(func::FuncOp funcOp,
   return config;
 }
 
+static FailureOr<SupportedMixBoundaryTransfer>
+inferSupportedMixBoundaryTransfer(const MixBoundaryValue &input,
+                                  const MixBoundaryValue &output,
+                                  ArrayRef<Operation *> boundaryOps) {
+  auto inputEnqueue = dyn_cast_or_null<ascendc::TQueBindEnqueTensorOp>(
+      input.consumerOp);
+  if (!inputEnqueue || inputEnqueue.getTensor() != input.value)
+    return failure();
+  auto inputQueuePosition = getQueueLikePosition(inputEnqueue.getQueue().getType());
+  if (!inputQueuePosition || *inputQueuePosition != ascendc::TPosition::CO1)
+    return failure();
+
+  Type inputElementType = getSupportedMixTensorElementType(input.value);
+  Type outputElementType = getSupportedMixTensorElementType(output.value);
+  if (!inputElementType || !outputElementType || inputElementType != outputElementType)
+    return failure();
+
+  for (Operation *op : boundaryOps) {
+    auto copyOp = dyn_cast<ascendc::DataCopyCO12DstOp>(op);
+    if (!copyOp)
+      continue;
+
+    Type srcElementType = getSupportedMixTensorElementType(copyOp.getSrc());
+    Type dstElementType = getSupportedMixTensorElementType(copyOp.getDst());
+    if (!srcElementType || !dstElementType || srcElementType != dstElementType ||
+        srcElementType != inputElementType)
+      continue;
+
+    Operation *dstDefOp = copyOp.getDst().getDefiningOp();
+    auto dstAlloc = dyn_cast_or_null<ascendc::TQueBindAllocTensorOp>(dstDefOp);
+    if (!dstAlloc)
+      continue;
+    auto dstQueuePosition = getQueueLikePosition(dstAlloc.getQueue().getType());
+    if (!dstQueuePosition || *dstQueuePosition != ascendc::TPosition::VECIN)
+      continue;
+
+    return SupportedMixBoundaryTransfer{
+        SupportedMixBoundaryTransferKind::Co1ToVecIn, inputElementType};
+  }
+
+  return failure();
+}
+
 static SupportedMixBoundaryLayer
 buildSupportedMixBoundaryLayer(const MixPartitionPlan &plan) {
   const MixRegionPlan *boundaryRegion =
@@ -1031,10 +1103,24 @@ buildSupportedMixBoundaryLayer(const MixPartitionPlan &plan) {
         "supported mix boundary emission requires explicit boundary crossings");
   }
 
-  return {inputs.front(), outputs.front()};
+  FailureOr<SupportedMixBoundaryTransfer> transfer =
+      inferSupportedMixBoundaryTransfer(inputs.front(), outputs.front(),
+                                       boundaryRegion->ops);
+  if (failed(transfer)) {
+    llvm_unreachable(
+        "supported mix boundary emission requires explicit boundary transfer pattern");
+  }
+
+  return {inputs.front(), outputs.front(), *transfer};
 }
 
 // Supported mix emission helpers.
+static StringRef getSupportedMixElementTypeSpelling(Type type) {
+  if (type.isF32())
+    return "float";
+  llvm_unreachable("unsupported supported-mix boundary element type");
+}
+
 static void emitSupportedMixVectorEpilogue(raw_ostream &os,
                                            const SupportedMixKernelConfig &config) {
   if (config.epilogueKind == SupportedMixKernelConfig::EpilogueKind::Relu) {
@@ -1093,47 +1179,58 @@ static void emitSupportedMixVectorCountDecl(raw_ostream &os,
 }
 
 static void emitSupportedMixBoundaryTransferSetup(
-    raw_ostream &os, const SupportedMixBoundaryLayer &layer,
+    raw_ostream &os, const SupportedMixBoundaryTransfer &transfer,
     const MixTaskKindDescriptor &desc) {
-  if (layer.input.producer != MixPartitionKind::Cube ||
-      layer.input.consumer != MixPartitionKind::Boundary ||
-      layer.output.producer != MixPartitionKind::Boundary ||
-      layer.output.consumer != MixPartitionKind::Vector) {
-    llvm_unreachable("unsupported supported-mix boundary layer shape");
+  StringRef elemType = getSupportedMixElementTypeSpelling(transfer.elementType);
+  switch (transfer.kind) {
+  case SupportedMixBoundaryTransferKind::Co1ToVecIn:
+    os << "    TQue<TPosition::VECIN, 1> reluInQueue;\n"
+       << "    TQue<TPosition::VECOUT, 1> reluOutQueue;\n\n";
+    emitSupportedMixVectorCountDecl(os, desc);
+    os << "    GlobalTensor<" << elemType << "> cGM;\n"
+       << "    cGM.SetGlobalBuffer(reinterpret_cast<__gm__ " << elemType
+       << " *>(out) + GetBlockIdx() * count, count);\n\n"
+       << "    pipe.InitBuffer(reluInQueue, 1, count * sizeof(" << elemType
+       << "));\n"
+       << "    pipe.InitBuffer(reluOutQueue, 1, count * sizeof(" << elemType
+       << "));\n\n";
+    return;
   }
-  os << "    TQue<TPosition::VECIN, 1> reluInQueue;\n"
-     << "    TQue<TPosition::VECOUT, 1> reluOutQueue;\n\n";
-  emitSupportedMixVectorCountDecl(os, desc);
-  os << "    GlobalTensor<float> cGM;\n"
-     << "    cGM.SetGlobalBuffer(reinterpret_cast<__gm__ float *>(out) + GetBlockIdx() * count, count);\n\n"
-     << "    pipe.InitBuffer(reluInQueue, 1, count * sizeof(float));\n"
-     << "    pipe.InitBuffer(reluOutQueue, 1, count * sizeof(float));\n\n";
+  llvm_unreachable("unsupported supported-mix boundary transfer");
 }
 
 static void emitSupportedMixBoundaryInputTransfer(
-    raw_ostream &os, const MixBoundaryValue &input) {
-  if (input.producer != MixPartitionKind::Cube ||
-      input.consumer != MixPartitionKind::Boundary) {
-    llvm_unreachable("unsupported supported-mix boundary input transfer");
+    raw_ostream &os, const SupportedMixBoundaryTransfer &transfer) {
+  StringRef elemType = getSupportedMixElementTypeSpelling(transfer.elementType);
+  switch (transfer.kind) {
+  case SupportedMixBoundaryTransferKind::Co1ToVecIn:
+    os << "    LocalTensor<" << elemType
+       << "> reluInLocal = reluInQueue.AllocTensor<" << elemType << ">();\n"
+       << "    DataCopy(reluInLocal, cGM, count);\n"
+       << "    reluInQueue.EnQue<" << elemType << ">(reluInLocal);\n\n"
+       << "    LocalTensor<" << elemType
+       << "> inLocal = reluInQueue.DeQue<" << elemType << ">();\n"
+       << "    LocalTensor<" << elemType
+       << "> outLocal = reluOutQueue.AllocTensor<" << elemType << ">();\n";
+    return;
   }
-  os << "    LocalTensor<float> reluInLocal = reluInQueue.AllocTensor<float>();\n"
-     << "    DataCopy(reluInLocal, cGM, count);\n"
-     << "    reluInQueue.EnQue<float>(reluInLocal);\n\n"
-     << "    LocalTensor<float> inLocal = reluInQueue.DeQue<float>();\n"
-     << "    LocalTensor<float> outLocal = reluOutQueue.AllocTensor<float>();\n";
+  llvm_unreachable("unsupported supported-mix boundary input transfer");
 }
 
 static void emitSupportedMixBoundaryOutputTransfer(
-    raw_ostream &os, const MixBoundaryValue &output) {
-  if (output.producer != MixPartitionKind::Boundary ||
-      output.consumer != MixPartitionKind::Vector) {
-    llvm_unreachable("unsupported supported-mix boundary output transfer");
+    raw_ostream &os, const SupportedMixBoundaryTransfer &transfer) {
+  StringRef elemType = getSupportedMixElementTypeSpelling(transfer.elementType);
+  switch (transfer.kind) {
+  case SupportedMixBoundaryTransferKind::Co1ToVecIn:
+    os << "    reluOutQueue.EnQue<" << elemType << ">(outLocal);\n"
+       << "    reluInQueue.FreeTensor(inLocal);\n\n"
+       << "    LocalTensor<" << elemType
+       << "> finalLocal = reluOutQueue.DeQue<" << elemType << ">();\n"
+       << "    DataCopy(cGM, finalLocal, count);\n"
+       << "    reluOutQueue.FreeTensor(finalLocal);\n";
+    return;
   }
-  os << "    reluOutQueue.EnQue<float>(outLocal);\n"
-     << "    reluInQueue.FreeTensor(inLocal);\n\n"
-     << "    LocalTensor<float> finalLocal = reluOutQueue.DeQue<float>();\n"
-     << "    DataCopy(cGM, finalLocal, count);\n"
-     << "    reluOutQueue.FreeTensor(finalLocal);\n";
+  llvm_unreachable("unsupported supported-mix boundary output transfer");
 }
 
 static const MixRegionPlan *
@@ -1164,11 +1261,11 @@ static void emitMixBoundaryLayer(raw_ostream &os,
   emitSupportedMixCrossCoreSetFlag(os, desc);
   os << "  }\n\n"
      << "  if ASCEND_IS_AIV {\n";
-  emitSupportedMixBoundaryTransferSetup(os, layer, desc);
+  emitSupportedMixBoundaryTransferSetup(os, layer.transfer, desc);
   os << "    CrossCoreWaitFlag(" << desc.crossCoreFlagId << ");\n\n";
-  emitSupportedMixBoundaryInputTransfer(os, layer.input);
+  emitSupportedMixBoundaryInputTransfer(os, layer.transfer);
   emitVectorBody();
-  emitSupportedMixBoundaryOutputTransfer(os, layer.output);
+  emitSupportedMixBoundaryOutputTransfer(os, layer.transfer);
   os << "  }\n";
 }
 
