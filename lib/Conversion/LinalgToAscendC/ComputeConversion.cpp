@@ -21,6 +21,7 @@
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/AffineMap.h"
 #include "mlir/IR/Builders.h"
+#include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "llvm/Support/Debug.h"
 
@@ -620,9 +621,9 @@ LogicalResult convertCompute(func::FuncOp funcOp, AscendCBufferContext &ctx) {
         Value rhs = resolve(addOp.getRhs());
         if (!lhs || !rhs) continue;
         Value dst = chooseDst(addOp.getResult());
-        auto addOp = builder.create<AddL2Op>(loc, dst, lhs, rhs, totalElems);
-        copyAscendCUnitAttr(genOp.getOperation(), addOp.getOperation());
-        if (dst == accumLt) valToLt[addOp.getResult()] = accumLt;
+        auto addL2Op = builder.create<AddL2Op>(loc, dst, lhs, rhs, totalElems);
+        copyAscendCUnitAttr(genOp.getOperation(), addL2Op.getOperation());
+        if (dst == accumLt) valToLt[addL2Op->getResult(0)] = accumLt;
       } else if (auto mulOp = dyn_cast<arith::MulFOp>(bodyOp)) {
         Value lhs = resolve(mulOp.getLhs());
         Value rhs = resolve(mulOp.getRhs());
