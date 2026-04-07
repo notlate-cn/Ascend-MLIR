@@ -149,7 +149,7 @@ python3 "$SCRIPT_DIR/gen_data.py" \
 # ── RuntimeMix compile ────────────────────────────────────────────────────────
 echo "=== [STAGE 10] RuntimeMix compile ==="
 "${BOOTSTRAP_BUILD_DIR}/bin/mix-compiler" \
-  --kernel "$SCRIPT_DIR/fc_leakyrelu_official_style.cpp" \
+  --kernel "$SCRIPT_DIR/step8_kernel.cpp" \
   --cann-mlir "$SCRIPT_DIR/step7_cann.mlir" \
   --npy-dir "${DATA_DIR}/npy" \
   --output "${ARTIFACT_DIR}" \
