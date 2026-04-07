@@ -131,6 +131,7 @@ enum class MixSingleChainFailureReason {
   MultipleVectorRegions,
   MissingCubeToBoundaryCrossing,
   MissingBoundaryToVectorCrossing,
+  MissingSupportedBoundaryPayload,
   BoundaryChainNotLinear,
   ExtraCubeOpsOutsideChain,
   ExtraVectorOpsOutsideChain,
@@ -839,6 +840,7 @@ validateSingleChainGenericMixPlan(const MixPartitionPlan &plan) {
   bool sawLinearBoundaryPath = false;
   bool sawFullCubeCoverage = false;
   bool sawFullVectorCoverage = false;
+  bool sawChainShapeWithUnsupportedPayload = false;
 
   for (const MixBoundaryValue &inputCrossing : cubeToBoundary) {
     for (const MixBoundaryValue &outputCrossing : boundaryToVector) {
@@ -878,6 +880,13 @@ validateSingleChainGenericMixPlan(const MixPartitionPlan &plan) {
       if (!hasFullVectorCoverage)
         continue;
 
+      sawChainShapeWithUnsupportedPayload = true;
+      FailureOr<SupportedMixBoundaryPayload> payload =
+          buildSupportedMixBoundaryPayload(inputCrossing, outputCrossing,
+                                           boundaryRegion->ops);
+      if (failed(payload))
+        continue;
+
       foundValidSingleChain = true;
       validation.selectedBoundaryCrossing =
           MixSingleChainValidation::SelectedBoundaryCrossing{inputCrossing,
@@ -891,6 +900,9 @@ validateSingleChainGenericMixPlan(const MixPartitionPlan &plan) {
   if (foundValidSingleChain)
     return validation;
 
+  if (sawChainShapeWithUnsupportedPayload)
+    addFailureReason(
+        MixSingleChainFailureReason::MissingSupportedBoundaryPayload);
   if (!sawLinearBoundaryPath)
     addFailureReason(MixSingleChainFailureReason::BoundaryChainNotLinear);
   if (!sawFullCubeCoverage)
@@ -920,6 +932,8 @@ stringifyMixSingleChainFailureReason(MixSingleChainFailureReason reason) {
     return "missing cube-to-boundary crossing";
   case MixSingleChainFailureReason::MissingBoundaryToVectorCrossing:
     return "missing boundary-to-vector crossing";
+  case MixSingleChainFailureReason::MissingSupportedBoundaryPayload:
+    return "boundary chain lacks a supported explicit boundary payload";
   case MixSingleChainFailureReason::BoundaryChainNotLinear:
     return "boundary region does not form one linear chain";
   case MixSingleChainFailureReason::ExtraCubeOpsOutsideChain:
@@ -1092,22 +1106,21 @@ buildSupportedMixBoundaryPayload(const MixBoundaryValue &input,
   return failure();
 }
 
-static SupportedMixBoundaryLayer
+static FailureOr<SupportedMixBoundaryLayer>
 buildSupportedMixBoundaryLayer(const MixPartitionPlan &plan,
                                const MixBoundaryValue &input,
                                const MixBoundaryValue &output) {
   const MixRegionPlan *boundaryRegion =
       findFirstMixRegionOfKind(plan.regions, MixPartitionKind::Boundary);
   if (!boundaryRegion)
-    llvm_unreachable("supported mix emission requires a boundary region");
+    return failure();
 
   FailureOr<SupportedMixBoundaryPayload> payload =
       buildSupportedMixBoundaryPayload(input, output, boundaryRegion->ops);
   if (failed(payload))
-    llvm_unreachable(
-        "supported mix boundary emission requires explicit boundary transfer pattern");
+    return failure();
 
-  return {input, output, *payload};
+  return SupportedMixBoundaryLayer{input, output, *payload};
 }
 
 // Supported mix emission helpers.
@@ -1771,12 +1784,18 @@ LogicalResult mlir::translateToCannKernel(Operation *op, raw_ostream &os,
         return primaryKernel.emitOpError(
             "mix translation found a valid single-chain cube/boundary/vector "
             "plan, but did not retain the selected boundary crossings");
-      SupportedMixBoundaryLayer boundaryLayer =
+      FailureOr<SupportedMixBoundaryLayer> boundaryLayer =
           buildSupportedMixBoundaryLayer(
               mixPartitionPlan,
               singleChainValidation.selectedBoundaryCrossing->input,
               singleChainValidation.selectedBoundaryCrossing->output);
-      emitSupportedMixKernel(os, primaryKernel, mixPartitionPlan, boundaryLayer,
+      if (failed(boundaryLayer)) {
+        return primaryKernel.emitOpError(
+            "mix translation found a valid single-chain cube/boundary/vector "
+            "plan, but the selected boundary crossings do not have a supported "
+            "explicit boundary payload");
+      }
+      emitSupportedMixKernel(os, primaryKernel, mixPartitionPlan, *boundaryLayer,
                              *supportedMixConfig);
       return success();
     }
