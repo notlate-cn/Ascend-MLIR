@@ -191,6 +191,13 @@ struct SupportedMixBoundaryLayer {
   SupportedMixBoundaryPayload payload;
 };
 
+struct GenericMixSingleChainEmissionPlan {
+  const MixRegionPlan *cubeRegion = nullptr;
+  const MixRegionPlan *vectorRegion = nullptr;
+  SupportedMixBoundaryLayer boundaryLayer;
+  SupportedMixKernelConfig config;
+};
+
 static SmallVector<MixBoundaryValue>
 filterBoundaryValues(ArrayRef<MixBoundaryValue> values,
                      MixPartitionKind producer, MixPartitionKind consumer);
@@ -200,6 +207,11 @@ findFirstMixRegionOfKind(ArrayRef<MixRegionPlan> regions,
                          MixPartitionKind kind);
 
 static Type getSupportedMixTensorElementType(Value value);
+
+static FailureOr<SupportedMixBoundaryPayload>
+buildSupportedMixBoundaryPayload(const MixBoundaryValue &input,
+                                 const MixBoundaryValue &output,
+                                 ArrayRef<Operation *> boundaryOps);
 
 struct MixTaskKindDescriptor {
   StringRef taskTypeSpelling;
@@ -1123,6 +1135,40 @@ buildSupportedMixBoundaryLayer(const MixPartitionPlan &plan,
   return SupportedMixBoundaryLayer{input, output, *payload};
 }
 
+static FailureOr<GenericMixSingleChainEmissionPlan>
+buildGenericMixSingleChainEmissionPlan(
+    func::FuncOp funcOp, const MixPartitionPlan &plan,
+    const MixPartitionSummary &summary,
+    const MixSingleChainValidation &validation) {
+  if (!hasSupportedMixFunctionSignature(funcOp))
+    return failure();
+
+  const MixRegionPlan *cubeRegion =
+      findFirstMixRegionOfKind(plan.regions, MixPartitionKind::Cube);
+  const MixRegionPlan *vectorRegion =
+      findFirstMixRegionOfKind(plan.regions, MixPartitionKind::Vector);
+  if (!cubeRegion ||
+      !findFirstMixRegionOfKind(plan.regions, MixPartitionKind::Boundary) ||
+      !vectorRegion ||
+      !validation.selectedBoundaryCrossing)
+    return failure();
+
+  FailureOr<SupportedMixKernelConfig> config =
+      inferSupportedMixKernelConfig(funcOp, summary);
+  if (failed(config))
+    return failure();
+
+  FailureOr<SupportedMixBoundaryLayer> boundaryLayer =
+      buildSupportedMixBoundaryLayer(
+          plan, validation.selectedBoundaryCrossing->input,
+          validation.selectedBoundaryCrossing->output);
+  if (failed(boundaryLayer))
+    return failure();
+
+  return GenericMixSingleChainEmissionPlan{cubeRegion, vectorRegion,
+                                           *boundaryLayer, *config};
+}
+
 // Supported mix emission helpers.
 static StringRef getSupportedMixElementTypeSpelling(Type type) {
   if (type.isF32())
@@ -1188,7 +1234,7 @@ static void emitSupportedMixVectorCountDecl(raw_ostream &os,
 }
 
 static void emitSupportedMixBoundaryTransferSetup(
-    raw_ostream &os, const SupportedMixBoundaryLayer &layer,
+    raw_ostream &os, SupportedMixBoundaryLayer &layer,
     const MixTaskKindDescriptor &desc) {
   StringRef elemType = getSupportedMixElementTypeSpelling(layer.payload.elementType);
   auto inputQueuePosition =
@@ -1216,7 +1262,7 @@ static void emitSupportedMixBoundaryTransferSetup(
 }
 
 static void emitSupportedMixBoundaryInputTransfer(
-    raw_ostream &os, const SupportedMixBoundaryLayer &layer) {
+    raw_ostream &os, SupportedMixBoundaryLayer &layer) {
   StringRef elemType = getSupportedMixElementTypeSpelling(layer.payload.elementType);
   if (layer.payload.inputEnqueue.getTensor() != layer.input.value ||
       layer.payload.transferCopy.getSrc() != layer.input.value ||
@@ -1234,7 +1280,7 @@ static void emitSupportedMixBoundaryInputTransfer(
 }
 
 static void emitSupportedMixBoundaryOutputTransfer(
-    raw_ostream &os, const SupportedMixBoundaryLayer &layer) {
+    raw_ostream &os, SupportedMixBoundaryLayer &layer) {
   StringRef elemType = getSupportedMixElementTypeSpelling(layer.payload.elementType);
   if (layer.payload.transferCopy.getDst() != layer.output.value ||
       layer.payload.outputAlloc.getTensor() != layer.output.value) {
@@ -1270,7 +1316,7 @@ static void emitMixCubeRegion(raw_ostream &os, const MixRegionPlan &region,
 
 template <typename EmitVectorBodyFn>
 static void emitMixBoundaryLayer(raw_ostream &os,
-                                 const SupportedMixBoundaryLayer &layer,
+                                 SupportedMixBoundaryLayer &layer,
                                  const MixTaskKindDescriptor &desc,
                                  EmitVectorBodyFn emitVectorBody) {
   emitSupportedMixCrossCoreSetFlag(os, desc);
@@ -1330,7 +1376,7 @@ static void emitSupportedMixKernelPrologue(raw_ostream &os, StringRef kernelName
 
 static void emitSupportedMixKernel(raw_ostream &os, func::FuncOp funcOp,
                                    const MixPartitionPlan &plan,
-                                   const SupportedMixBoundaryLayer &boundaryLayer,
+                                   SupportedMixBoundaryLayer &boundaryLayer,
                                    const SupportedMixKernelConfig &config) {
   MixTaskKindDescriptor desc = getMixTaskKindDescriptor(config.taskKind);
   emitSupportedMixKernelPrologue(os, funcOp.getName(), desc);
@@ -1347,6 +1393,27 @@ static void emitSupportedMixKernel(raw_ostream &os, func::FuncOp funcOp,
     emitMixVectorRegion(os, *vectorRegion, config);
   });
   os << "}\n";
+}
+
+static LogicalResult emitGenericMixSingleChainKernel(
+    raw_ostream &os, func::FuncOp funcOp, const MixPartitionPlan &plan,
+    const MixPartitionSummary &summary,
+    const MixSingleChainValidation &validation) {
+  FailureOr<GenericMixSingleChainEmissionPlan> emissionPlan =
+      buildGenericMixSingleChainEmissionPlan(funcOp, plan, summary, validation);
+  if (failed(emissionPlan))
+    return failure();
+
+  MixTaskKindDescriptor desc =
+      getMixTaskKindDescriptor(emissionPlan->config.taskKind);
+  emitSupportedMixKernelPrologue(os, funcOp.getName(), desc);
+  emitMixCubeRegion(os, *emissionPlan->cubeRegion, emissionPlan->config, desc);
+  emitMixBoundaryLayer(os, emissionPlan->boundaryLayer, desc, [&] {
+    emitMixVectorRegion(os, *emissionPlan->vectorRegion,
+                        emissionPlan->config);
+  });
+  os << "}\n";
+  return success();
 }
 
 /// Emit the TilingData struct declaration from a PyStructType.
@@ -1770,6 +1837,11 @@ LogicalResult mlir::translateToCannKernel(Operation *op, raw_ostream &os,
         validateSingleChainGenericMixPlan(mixPartitionPlan);
 
     if (singleChainValidation.succeeded()) {
+      if (succeeded(emitGenericMixSingleChainKernel(
+              os, primaryKernel, mixPartitionPlan, mixPartitionSummary,
+              singleChainValidation)))
+        return success();
+
       if (!hasSupportedMixFunctionSignature(primaryKernel)) {
         return primaryKernel.emitOpError(
             "mix translation found a valid single-chain cube/boundary/vector "
