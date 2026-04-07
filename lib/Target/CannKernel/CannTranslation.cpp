@@ -443,6 +443,67 @@ inferSupportedMixKernelConfig(func::FuncOp funcOp,
 
 static void emitSupportedMixKernel(raw_ostream &os, func::FuncOp funcOp,
                                    const SupportedMixKernelConfig &config) {
+  auto emitAicRegion = [&]() {
+    os << "  if ASCEND_IS_AIC {\n"
+       << "    Matmul<MatmulType<TPosition::GM, CubeFormat::ND, half>,\n"
+       << "           MatmulType<TPosition::GM, CubeFormat::ND, half>,\n"
+       << "           MatmulType<TPosition::VECIN, CubeFormat::ND, float>,\n"
+       << "           MatmulType<TPosition::GM, CubeFormat::ND, float>> mm;\n\n"
+       << "    GlobalTensor<half> aGM, bGM;\n"
+       << "    GlobalTensor<float> cGM";
+    if (config.hasBiasAdd)
+      os << ", biasGM";
+    os << ";\n"
+       << "    aGM.SetGlobalBuffer(reinterpret_cast<__gm__ half *>(a), tiling.M * tiling.Ka);\n"
+       << "    bGM.SetGlobalBuffer(reinterpret_cast<__gm__ half *>(b), tiling.Kb * tiling.N);\n"
+       << "    cGM.SetGlobalBuffer(reinterpret_cast<__gm__ float *>(out), tiling.M * tiling.N);\n";
+    if (config.hasBiasAdd)
+      os << "    biasGM.SetGlobalBuffer(reinterpret_cast<__gm__ float *>(bias), tiling.N);\n";
+    os << "\n"
+       << "    REGIST_MATMUL_OBJ(&pipe, GetSysWorkSpacePtr(), mm, &tiling);\n"
+       << "    mm.SetTensorA(aGM);\n"
+       << "    mm.SetTensorB(bGM);\n"
+       << (config.hasBiasAdd ? "    mm.SetBias(biasGM);\n" : "")
+       << "    mm.template IterateAll(cGM);\n"
+       << "    mm.End();\n"
+       << "    CrossCoreSetFlag<0x"
+       << llvm::format_hex_no_prefix(getMixCrossCoreMode(config.taskKind), 1)
+       << ", PIPE_FIX>("
+       << config.crossCoreFlagId << ");\n"
+       << "  }\n\n";
+  };
+
+  auto emitAivRegion = [&]() {
+    os << "  if ASCEND_IS_AIV {\n"
+       << "    TQue<TPosition::VECIN, 1> reluInQueue;\n"
+       << "    TQue<TPosition::VECOUT, 1> reluOutQueue;\n\n"
+       << "    uint32_t count = static_cast<uint32_t>(tiling.singleCoreM * tiling.singleCoreN / "
+       << getMixVectorTaskRatio(config.taskKind) << ");\n"
+       << "    GlobalTensor<float> cGM;\n"
+       << "    cGM.SetGlobalBuffer(reinterpret_cast<__gm__ float *>(out) + GetBlockIdx() * count, count);\n\n"
+       << "    pipe.InitBuffer(reluInQueue, 1, count * sizeof(float));\n"
+       << "    pipe.InitBuffer(reluOutQueue, 1, count * sizeof(float));\n\n"
+       << "    CrossCoreWaitFlag(" << config.crossCoreFlagId << ");\n\n"
+       << "    LocalTensor<float> reluInLocal = reluInQueue.AllocTensor<float>();\n"
+       << "    DataCopy(reluInLocal, cGM, count);\n"
+       << "    reluInQueue.EnQue<float>(reluInLocal);\n\n"
+       << "    LocalTensor<float> inLocal = reluInQueue.DeQue<float>();\n"
+       << "    LocalTensor<float> outLocal = reluOutQueue.AllocTensor<float>();\n";
+    if (config.epilogueKind == SupportedMixKernelConfig::EpilogueKind::Relu) {
+      os << "    Relu(outLocal, inLocal, count);\n";
+    } else {
+      os << "    LeakyRelu(outLocal, inLocal, static_cast<float>("
+         << llvm::formatv("{0:F6}", config.leakyReluAlpha).str()
+         << "f), count);\n";
+    }
+    os << "    reluOutQueue.EnQue<float>(outLocal);\n"
+       << "    reluInQueue.FreeTensor(inLocal);\n\n"
+       << "    LocalTensor<float> finalLocal = reluOutQueue.DeQue<float>();\n"
+       << "    DataCopy(cGM, finalLocal, count);\n"
+       << "    reluOutQueue.FreeTensor(finalLocal);\n"
+       << "  }\n";
+  };
+
   StringRef kernelName = funcOp.getName();
   os << "#define __AFIR_RUNTIME_MIX_KERNEL_FUN_H__\n\n"
      << "#define ASCENDC_CUBE_ONLY\n"
@@ -464,64 +525,10 @@ static void emitSupportedMixKernel(raw_ostream &os, func::FuncOp funcOp,
      << "  TPipe pipe;\n"
      << "  (void)workspace;\n\n"
      << "  TCubeTiling tiling;\n"
-     << "  CopyTiling(&tiling, tilingGm);\n\n"
-     << "  if ASCEND_IS_AIC {\n"
-     << "    Matmul<MatmulType<TPosition::GM, CubeFormat::ND, half>,\n"
-     << "           MatmulType<TPosition::GM, CubeFormat::ND, half>,\n"
-     << "           MatmulType<TPosition::VECIN, CubeFormat::ND, float>,\n"
-     << "           MatmulType<TPosition::GM, CubeFormat::ND, float>> mm;\n\n"
-     << "    GlobalTensor<half> aGM, bGM;\n"
-     << "    GlobalTensor<float> cGM";
-  if (config.hasBiasAdd)
-    os << ", biasGM";
-  os << ";\n"
-     << "    aGM.SetGlobalBuffer(reinterpret_cast<__gm__ half *>(a), tiling.M * tiling.Ka);\n"
-     << "    bGM.SetGlobalBuffer(reinterpret_cast<__gm__ half *>(b), tiling.Kb * tiling.N);\n"
-     << "    cGM.SetGlobalBuffer(reinterpret_cast<__gm__ float *>(out), tiling.M * tiling.N);\n";
-  if (config.hasBiasAdd)
-    os << "    biasGM.SetGlobalBuffer(reinterpret_cast<__gm__ float *>(bias), tiling.N);\n";
-  os << "\n"
-     << "    REGIST_MATMUL_OBJ(&pipe, GetSysWorkSpacePtr(), mm, &tiling);\n"
-     << "    mm.SetTensorA(aGM);\n"
-     << "    mm.SetTensorB(bGM);\n"
-     << (config.hasBiasAdd ? "    mm.SetBias(biasGM);\n" : "")
-     << "    mm.template IterateAll(cGM);\n"
-     << "    mm.End();\n"
-     << "    CrossCoreSetFlag<0x"
-     << llvm::format_hex_no_prefix(getMixCrossCoreMode(config.taskKind), 1)
-     << ", PIPE_FIX>("
-     << config.crossCoreFlagId << ");\n"
-     << "  }\n\n"
-     << "  if ASCEND_IS_AIV {\n"
-     << "    TQue<TPosition::VECIN, 1> reluInQueue;\n"
-     << "    TQue<TPosition::VECOUT, 1> reluOutQueue;\n\n"
-     << "    uint32_t count = static_cast<uint32_t>(tiling.singleCoreM * tiling.singleCoreN / "
-     << getMixVectorTaskRatio(config.taskKind) << ");\n"
-     << "    GlobalTensor<float> cGM;\n"
-     << "    cGM.SetGlobalBuffer(reinterpret_cast<__gm__ float *>(out) + GetBlockIdx() * count, count);\n\n"
-     << "    pipe.InitBuffer(reluInQueue, 1, count * sizeof(float));\n"
-     << "    pipe.InitBuffer(reluOutQueue, 1, count * sizeof(float));\n\n"
-     << "    CrossCoreWaitFlag(" << config.crossCoreFlagId << ");\n\n"
-     << "    LocalTensor<float> reluInLocal = reluInQueue.AllocTensor<float>();\n"
-     << "    DataCopy(reluInLocal, cGM, count);\n"
-     << "    reluInQueue.EnQue<float>(reluInLocal);\n\n"
-     << "    LocalTensor<float> inLocal = reluInQueue.DeQue<float>();\n"
-     << "    LocalTensor<float> outLocal = reluOutQueue.AllocTensor<float>();\n";
-  if (config.epilogueKind == SupportedMixKernelConfig::EpilogueKind::Relu) {
-    os << "    Relu(outLocal, inLocal, count);\n";
-  } else {
-    os << "    LeakyRelu(outLocal, inLocal, static_cast<float>("
-       << llvm::formatv("{0:F6}", config.leakyReluAlpha).str()
-       << "f), count);\n";
-  }
-  os
-     << "    reluOutQueue.EnQue<float>(outLocal);\n"
-     << "    reluInQueue.FreeTensor(inLocal);\n\n"
-     << "    LocalTensor<float> finalLocal = reluOutQueue.DeQue<float>();\n"
-     << "    DataCopy(cGM, finalLocal, count);\n"
-     << "    reluOutQueue.FreeTensor(finalLocal);\n"
-     << "  }\n"
-     << "}\n";
+     << "  CopyTiling(&tiling, tilingGm);\n\n";
+  emitAicRegion();
+  emitAivRegion();
+  os << "}\n";
 }
 
 /// Emit the TilingData struct declaration from a PyStructType.
