@@ -64,12 +64,6 @@ static func::FuncOp findPrimaryGlobalKernel(ModuleOp moduleOp) {
   return {};
 }
 
-static bool isRankedMemrefOf(Type type, int64_t rank, Type elementType) {
-  auto memrefType = dyn_cast<MemRefType>(type);
-  return memrefType && memrefType.getRank() == rank &&
-         memrefType.getElementType() == elementType;
-}
-
 enum class MixPartitionKind {
   Unknown,
   Cube,
@@ -124,12 +118,13 @@ struct MixPartitionPlan {
 
 enum class MixSingleChainFailureReason {
   MissingCubeRegion,
+  MultipleCubeRegions,
   MissingBoundaryRegion,
+  MultipleBoundaryRegions,
   MissingVectorRegion,
+  MultipleVectorRegions,
   MissingCubeToBoundaryCrossing,
-  MultipleCubeToBoundaryCrossings,
   MissingBoundaryToVectorCrossing,
-  MultipleBoundaryToVectorCrossings,
   BoundaryChainNotLinear,
   ExtraCubeOpsOutsideChain,
   ExtraVectorOpsOutsideChain,
@@ -398,40 +393,6 @@ static MixPartitionSummary buildMixPartitionSummary(func::FuncOp funcOp) {
   return summary;
 }
 
-static bool hasSupportedMixFunctionSignature(func::FuncOp funcOp) {
-  auto numInputsAttr = funcOp->getAttrOfType<IntegerAttr>("cann.num_inputs");
-  if (!numInputsAttr || numInputsAttr.getInt() != 4)
-    return false;
-
-  auto args = funcOp.getArguments();
-  if (args.size() != 7)
-    return false;
-
-  MLIRContext *ctx = funcOp.getContext();
-  Type f16 = Float16Type::get(ctx);
-  Type f32 = Float32Type::get(ctx);
-
-  if (!isRankedMemrefOf(args[0].getType(), 2, f16) ||
-      !isRankedMemrefOf(args[1].getType(), 2, f16) ||
-      !isRankedMemrefOf(args[2].getType(), 1, f32) ||
-      !isRankedMemrefOf(args[3].getType(), 2, f32))
-    return false;
-
-  auto outputType = dyn_cast<MemRefType>(args[4].getType());
-  if (!outputType || outputType.getRank() != 2 ||
-      outputType.getElementType() != f32)
-    return false;
-
-  auto workspaceType = dyn_cast<MemRefType>(args[5].getType());
-  if (!workspaceType || !workspaceType.getElementType().isUnsignedInteger(8))
-    return false;
-  return isa<emitasc::PyStructType>(args[6].getType());
-}
-
-static bool hasSupportedMixPartitions(const MixPartitionSummary &summary) {
-  return summary.hasCube() && summary.hasVector() && summary.hasBoundary();
-}
-
 static llvm::DenseMap<Operation *, MixPartitionKind>
 buildMixPartitionMap(const MixPartitionSummary &summary) {
   llvm::DenseMap<Operation *, MixPartitionKind> partitionMap;
@@ -559,15 +520,6 @@ static MixPartitionPlan buildInitialMixPartitionPlan(
   addRegion(MixPartitionKind::Vector, summary.vectorOps);
 
   return plan;
-}
-
-// Supported mix configuration inference.
-static bool isSupportedCurrentMixEmission(func::FuncOp funcOp,
-                                          const MixPartitionSummary &summary) {
-  if (!hasSupportedMixFunctionSignature(funcOp))
-    return false;
-
-  return hasSupportedMixPartitions(summary);
 }
 
 static bool hasFailureReason(ArrayRef<MixSingleChainFailureReason> reasons,
@@ -735,6 +687,11 @@ validateSingleChainGenericMixPlan(const MixPartitionPlan &plan) {
     if (!hasFailureReason(validation.failureReasons, reason))
       validation.failureReasons.push_back(reason);
   };
+  auto countRegionsOfKind = [&](MixPartitionKind kind) {
+    return llvm::count_if(plan.regions, [&](const MixRegionPlan &region) {
+      return region.kind == kind;
+    });
+  };
   auto findRegionOfKind = [&](MixPartitionKind kind) -> const MixRegionPlan * {
     for (const MixRegionPlan &region : plan.regions) {
       if (region.kind == kind)
@@ -747,13 +704,22 @@ validateSingleChainGenericMixPlan(const MixPartitionPlan &plan) {
   const MixRegionPlan *boundaryRegion =
       findRegionOfKind(MixPartitionKind::Boundary);
   const MixRegionPlan *vectorRegion = findRegionOfKind(MixPartitionKind::Vector);
+  unsigned cubeRegionCount = countRegionsOfKind(MixPartitionKind::Cube);
+  unsigned boundaryRegionCount = countRegionsOfKind(MixPartitionKind::Boundary);
+  unsigned vectorRegionCount = countRegionsOfKind(MixPartitionKind::Vector);
 
   if (!cubeRegion)
     addFailureReason(MixSingleChainFailureReason::MissingCubeRegion);
+  else if (cubeRegionCount != 1)
+    addFailureReason(MixSingleChainFailureReason::MultipleCubeRegions);
   if (!boundaryRegion)
     addFailureReason(MixSingleChainFailureReason::MissingBoundaryRegion);
+  else if (boundaryRegionCount != 1)
+    addFailureReason(MixSingleChainFailureReason::MultipleBoundaryRegions);
   if (!vectorRegion)
     addFailureReason(MixSingleChainFailureReason::MissingVectorRegion);
+  else if (vectorRegionCount != 1)
+    addFailureReason(MixSingleChainFailureReason::MultipleVectorRegions);
   if (!validation.succeeded())
     return validation;
 
@@ -770,22 +736,11 @@ validateSingleChainGenericMixPlan(const MixPartitionPlan &plan) {
 
   if (cubeToBoundary.empty())
     addFailureReason(MixSingleChainFailureReason::MissingCubeToBoundaryCrossing);
-  else if (cubeToBoundary.size() != 1)
-    addFailureReason(
-        MixSingleChainFailureReason::MultipleCubeToBoundaryCrossings);
-
   if (boundaryToVector.empty())
     addFailureReason(
         MixSingleChainFailureReason::MissingBoundaryToVectorCrossing);
-  else if (boundaryToVector.size() != 1)
-    addFailureReason(
-        MixSingleChainFailureReason::MultipleBoundaryToVectorCrossings);
-
   if (!validation.succeeded())
     return validation;
-
-  const MixBoundaryValue &inputCrossing = cubeToBoundary.front();
-  const MixBoundaryValue &outputCrossing = boundaryToVector.front();
 
   MixPartitionSummary summary;
   summary.cubeOps = cubeRegion->ops;
@@ -799,33 +754,64 @@ validateSingleChainGenericMixPlan(const MixPartitionPlan &plan) {
   buildBoundaryRegionGraph(boundaryRegion->ops, partitionMap, boundarySuccessors,
                            boundaryPredecessors);
 
-  llvm::DenseSet<Operation *> forwardBoundaryOps =
-      collectReachableBoundaryOps(inputCrossing.consumerOp, boundarySuccessors);
-  llvm::DenseSet<Operation *> backwardBoundaryOps =
-      collectReachableBoundaryOps(outputCrossing.producerOp, boundaryPredecessors);
-  llvm::DenseSet<Operation *> boundaryPathOps;
-  for (Operation *op : forwardBoundaryOps) {
-    if (backwardBoundaryOps.contains(op))
-      boundaryPathOps.insert(op);
+  bool foundValidSingleChain = false;
+  bool sawLinearBoundaryPath = false;
+  bool sawFullCubeCoverage = false;
+  bool sawFullVectorCoverage = false;
+
+  for (const MixBoundaryValue &inputCrossing : cubeToBoundary) {
+    for (const MixBoundaryValue &outputCrossing : boundaryToVector) {
+      llvm::DenseSet<Operation *> forwardBoundaryOps = collectReachableBoundaryOps(
+          inputCrossing.consumerOp, boundarySuccessors);
+      llvm::DenseSet<Operation *> backwardBoundaryOps = collectReachableBoundaryOps(
+          outputCrossing.producerOp, boundaryPredecessors);
+      llvm::DenseSet<Operation *> boundaryPathOps;
+      for (Operation *op : forwardBoundaryOps) {
+        if (backwardBoundaryOps.contains(op))
+          boundaryPathOps.insert(op);
+      }
+
+      bool hasLinearBoundaryPath =
+          boundaryPathOps.size() == boundaryRegion->ops.size() &&
+          isLinearBoundaryChain(inputCrossing.consumerOp, outputCrossing.producerOp,
+                                boundaryPathOps, boundarySuccessors,
+                                boundaryPredecessors);
+      sawLinearBoundaryPath |= hasLinearBoundaryPath;
+      if (!hasLinearBoundaryPath)
+        continue;
+
+      llvm::DenseSet<Operation *> chainCubeOps =
+          collectAncestorPartitionOps(inputCrossing.value, partitionMap,
+                                      MixPartitionKind::Cube);
+      bool hasFullCubeCoverage = chainCubeOps.size() == cubeRegion->ops.size();
+      sawFullCubeCoverage |= hasFullCubeCoverage;
+      if (!hasFullCubeCoverage)
+        continue;
+
+      llvm::DenseSet<Operation *> chainVectorOps =
+          collectDescendantPartitionOps(outputCrossing.value, partitionMap,
+                                        MixPartitionKind::Vector);
+      bool hasFullVectorCoverage =
+          chainVectorOps.size() == vectorRegion->ops.size();
+      sawFullVectorCoverage |= hasFullVectorCoverage;
+      if (!hasFullVectorCoverage)
+        continue;
+
+      foundValidSingleChain = true;
+      break;
+    }
+    if (foundValidSingleChain)
+      break;
   }
 
-  if (!boundaryPathOps.size() ||
-      boundaryPathOps.size() != boundaryRegion->ops.size() ||
-      !isLinearBoundaryChain(inputCrossing.consumerOp, outputCrossing.producerOp,
-                             boundaryPathOps, boundarySuccessors,
-                             boundaryPredecessors))
+  if (foundValidSingleChain)
+    return validation;
+
+  if (!sawLinearBoundaryPath)
     addFailureReason(MixSingleChainFailureReason::BoundaryChainNotLinear);
-
-  llvm::DenseSet<Operation *> chainCubeOps =
-      collectAncestorPartitionOps(inputCrossing.value, partitionMap,
-                                  MixPartitionKind::Cube);
-  if (chainCubeOps.size() != cubeRegion->ops.size())
+  if (!sawFullCubeCoverage)
     addFailureReason(MixSingleChainFailureReason::ExtraCubeOpsOutsideChain);
-
-  llvm::DenseSet<Operation *> chainVectorOps =
-      collectDescendantPartitionOps(outputCrossing.value, partitionMap,
-                                    MixPartitionKind::Vector);
-  if (chainVectorOps.size() != vectorRegion->ops.size())
+  if (!sawFullVectorCoverage)
     addFailureReason(MixSingleChainFailureReason::ExtraVectorOpsOutsideChain);
 
   return validation;
@@ -836,18 +822,20 @@ stringifyMixSingleChainFailureReason(MixSingleChainFailureReason reason) {
   switch (reason) {
   case MixSingleChainFailureReason::MissingCubeRegion:
     return "missing cube region";
+  case MixSingleChainFailureReason::MultipleCubeRegions:
+    return "multiple cube regions";
   case MixSingleChainFailureReason::MissingBoundaryRegion:
     return "missing boundary region";
+  case MixSingleChainFailureReason::MultipleBoundaryRegions:
+    return "multiple boundary regions";
   case MixSingleChainFailureReason::MissingVectorRegion:
     return "missing vector region";
+  case MixSingleChainFailureReason::MultipleVectorRegions:
+    return "multiple vector regions";
   case MixSingleChainFailureReason::MissingCubeToBoundaryCrossing:
     return "missing cube-to-boundary crossing";
-  case MixSingleChainFailureReason::MultipleCubeToBoundaryCrossings:
-    return "multiple cube-to-boundary crossings";
   case MixSingleChainFailureReason::MissingBoundaryToVectorCrossing:
     return "missing boundary-to-vector crossing";
-  case MixSingleChainFailureReason::MultipleBoundaryToVectorCrossings:
-    return "multiple boundary-to-vector crossings";
   case MixSingleChainFailureReason::BoundaryChainNotLinear:
     return "boundary region does not form one linear chain";
   case MixSingleChainFailureReason::ExtraCubeOpsOutsideChain:
@@ -870,11 +858,6 @@ describeMixSingleChainValidation(const MixSingleChainValidation &validation) {
     os << stringifyMixSingleChainFailureReason(reason);
   }
   return std::string(description);
-}
-
-static bool canLowerLegacySupportedMix(func::FuncOp funcOp,
-                                       const MixPartitionSummary &summary) {
-  return isSupportedCurrentMixEmission(funcOp, summary);
 }
 
 static llvm::DenseSet<Value>
@@ -1595,23 +1578,11 @@ LogicalResult mlir::translateToCannKernel(Operation *op, raw_ostream &os,
       return success();
     }
 
-    if (canLowerLegacySupportedMix(primaryKernel, mixPartitionSummary)) {
-      FailureOr<SupportedMixKernelConfig> supportedMixConfig =
-          inferSupportedMixKernelConfig(primaryKernel, mixPartitionSummary);
-      if (failed(supportedMixConfig))
-        return failure();
-      emitSupportedMixKernel(os, primaryKernel, mixPartitionPlan,
-                             *supportedMixConfig);
-      return success();
-    }
-
     return primaryKernel.emitOpError(Twine(
         "mix translation requires a supported cube/vector partitioned kernel "
         "shape; generic single-chain analysis rejected plan because ") +
-                                     (singleChainValidation.succeeded()
-                                          ? Twine("legacy lowering also failed")
-                                          : Twine(describeMixSingleChainValidation(
-                                                singleChainValidation))));
+                                     Twine(describeMixSingleChainValidation(
+                                         singleChainValidation)));
   }
 
   // Replace ops whose PyAsc emitters generate wrong C++ with verbatim.
