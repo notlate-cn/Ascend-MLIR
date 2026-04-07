@@ -532,17 +532,20 @@ static void emitSupportedMixAivRegion(raw_ostream &os,
        << llvm::formatv("{0:F6}", config.leakyReluAlpha).str()
        << "f), count);\n";
   };
+  auto emitOutputCopy = [&]() {
+    os << "    reluOutQueue.EnQue<float>(outLocal);\n"
+       << "    reluInQueue.FreeTensor(inLocal);\n\n"
+       << "    LocalTensor<float> finalLocal = reluOutQueue.DeQue<float>();\n"
+       << "    DataCopy(cGM, finalLocal, count);\n"
+       << "    reluOutQueue.FreeTensor(finalLocal);\n";
+  };
 
   os << "  if ASCEND_IS_AIV {\n";
   emitQueueSetup();
   emitInputCopy();
   emitVectorEpilogue();
-  os << "    reluOutQueue.EnQue<float>(outLocal);\n"
-     << "    reluInQueue.FreeTensor(inLocal);\n\n"
-     << "    LocalTensor<float> finalLocal = reluOutQueue.DeQue<float>();\n"
-     << "    DataCopy(cGM, finalLocal, count);\n"
-     << "    reluOutQueue.FreeTensor(finalLocal);\n"
-     << "  }\n";
+  emitOutputCopy();
+  os << "  }\n";
 }
 
 static void emitSupportedMixKernelPrologue(raw_ostream &os, StringRef kernelName,
