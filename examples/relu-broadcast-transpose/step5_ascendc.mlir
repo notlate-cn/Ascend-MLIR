@@ -48,7 +48,7 @@ module attributes {transform.with_named_sequence} {
         %22 = arith.index_cast %dim : index to i32
         ascendc.pipe.init_buffer %0, %8, %19 : !ascendc.tbuf<veccalc>, index
         %23 = ascendc.tbuf.get_tensor %8 : !ascendc.tbuf<veccalc>, !ascendc.local_tensor<*xf16>
-        ascendc.broadcast_l2 %23, %17, %21, %22, %c1_i32, %22 {constRank = 2 : i32, operandSegmentSizes = array<i32: 1, 1, 2, 2>} : !ascendc.local_tensor<*xf16>, !ascendc.local_tensor<*xf16>, i32, i32, i32, i32
+        ascendc.broadcast_l2 %23, %17, %21, %22, %c1_i32, %22 {ascendc.unit = "AiCore.Vector", constRank = 2 : i32, operandSegmentSizes = array<i32: 1, 1, 2, 2>} : !ascendc.local_tensor<*xf16>, !ascendc.local_tensor<*xf16>, i32, i32, i32, i32
         %24 = ascendc.global_tensor : !ascendc.global_tensor<*xf16>
         ascendc.global_tensor.set_global_buffer %24, %subview_3 : !ascendc.global_tensor<*xf16>, memref<?x?xf16, strided<[?, 1], offset: ?>>
         ascendc.pipe.init_buffer %0, %7, %19 : !ascendc.tbuf<vecin>, index
@@ -59,9 +59,9 @@ module attributes {transform.with_named_sequence} {
         %26 = ascendc.que_bind.deque_tensor %6 : !ascendc.queue<vecin, 1>, !ascendc.local_tensor<*xf16>
         ascendc.pipe.init_buffer %0, %5, %19 : !ascendc.tbuf<veccalc>, index
         %27 = ascendc.tbuf.get_tensor %5 : !ascendc.tbuf<veccalc>, !ascendc.local_tensor<*xf16>
-        ascendc.duplicate_l2 %27, %cst, %18 : !ascendc.local_tensor<*xf16>, f16, index
-        ascendc.max_l2 %20, %23, %27, %18 : !ascendc.local_tensor<*xf16>, !ascendc.local_tensor<*xf16>, !ascendc.local_tensor<*xf16>, index
-        ascendc.add_l2 %20, %20, %26, %18 : !ascendc.local_tensor<*xf16>, !ascendc.local_tensor<*xf16>, !ascendc.local_tensor<*xf16>, index
+        ascendc.duplicate_l2 %27, %cst, %18 {ascendc.unit = "AiCore.Vector"} : !ascendc.local_tensor<*xf16>, f16, index
+        ascendc.max_l2 %20, %23, %27, %18 {ascendc.unit = "AiCore.Vector"} : !ascendc.local_tensor<*xf16>, !ascendc.local_tensor<*xf16>, !ascendc.local_tensor<*xf16>, index
+        ascendc.add_l2 %20, %20, %26, %18 {ascendc.unit = "AiCore.Vector"} : !ascendc.local_tensor<*xf16>, !ascendc.local_tensor<*xf16>, !ascendc.local_tensor<*xf16>, index
         ascendc.que_bind.enque_tensor %2, %20 : !ascendc.queue<vecout, 1>, !ascendc.local_tensor<*xf16>
         %28 = ascendc.que_bind.deque_tensor %2 : !ascendc.queue<vecout, 1>, !ascendc.local_tensor<*xf16>
         %29 = ascendc.global_tensor : !ascendc.global_tensor<*xf16>

@@ -40,7 +40,7 @@ module attributes {transform.with_named_sequence} {
         %c1_18 = arith.constant 1 : index
         %dim_19 = memref.dim %subview_15, %c1_18 : memref<?x?xf16, strided<[?, 1], offset: ?>>
         %alloc_20 = memref.alloc(%dim_17, %dim_19) : memref<?x?xf16, 10 : i32>
-        linalg.generic {indexing_maps = [#map2, #map3, #map4, #map2], iterator_types = ["parallel", "parallel"]} ins(%alloc_13, %subview_14, %subview_6 : memref<?x?xf16, 9 : i32>, memref<?xf16, strided<[1], offset: ?>>, memref<?xf16, strided<[1]>>) outs(%alloc_20 : memref<?x?xf16, 10 : i32>) {
+        linalg.generic {indexing_maps = [#map2, #map3, #map4, #map2], iterator_types = ["parallel", "parallel"]} ins(%alloc_13, %subview_14, %subview_6 : memref<?x?xf16, 9 : i32>, memref<?xf16, strided<[1], offset: ?>>, memref<?xf16, strided<[1]>>) outs(%alloc_20 : memref<?x?xf16, 10 : i32>) attrs =  {ascendc.unit = "AiCore.Vector"} {
         ^bb0(%in: f16, %in_21: f16, %in_22: f16, %out: f16):
           %5 = arith.maximumf %in, %cst : f16
           %6 = arith.addf %5, %in_21 : f16
@@ -74,7 +74,7 @@ module attributes {transform.with_named_sequence} {
         %c1_18 = arith.constant 1 : index
         %dim_19 = memref.dim %subview_15, %c1_18 : memref<?x?xf16, strided<[?, 1], offset: ?>>
         %alloc_20 = memref.alloc(%dim_17, %dim_19) : memref<?x?xf16, 10 : i32>
-        linalg.generic {indexing_maps = [#map2, #map3, #map4, #map2], iterator_types = ["parallel", "parallel"]} ins(%alloc_13, %subview_14, %subview_6 : memref<?x?xf16, 9 : i32>, memref<?xf16, strided<[1], offset: ?>>, memref<?xf16, strided<[1]>>) outs(%alloc_20 : memref<?x?xf16, 10 : i32>) {
+        linalg.generic {indexing_maps = [#map2, #map3, #map4, #map2], iterator_types = ["parallel", "parallel"]} ins(%alloc_13, %subview_14, %subview_6 : memref<?x?xf16, 9 : i32>, memref<?xf16, strided<[1], offset: ?>>, memref<?xf16, strided<[1]>>) outs(%alloc_20 : memref<?x?xf16, 10 : i32>) attrs =  {ascendc.unit = "AiCore.Vector"} {
         ^bb0(%in: f16, %in_21: f16, %in_22: f16, %out: f16):
           %5 = arith.maximumf %in, %cst : f16
           %6 = arith.addf %5, %in_21 : f16

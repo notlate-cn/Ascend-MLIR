@@ -63,14 +63,14 @@ module {
           ascendc.gather_l2 %32, %30, %15, %c0_i32, %18 : !ascendc.local_tensor<*xf16>, !ascendc.local_tensor<*xf16>, !ascendc.local_tensor<*xi64>, i32, i32
           ascendc.pipe.init_buffer %0, %6, %20 : !ascendc.tbuf<veccalc>, index
           %33 = ascendc.tbuf.get_tensor %6 : !ascendc.tbuf<veccalc>, !ascendc.local_tensor<*xf16>
-          ascendc.duplicate_l2 %33, %cst, %18 : !ascendc.local_tensor<*xf16>, f16, i32
-          ascendc.max_l2 %32, %32, %33, %18 : !ascendc.local_tensor<*xf16>, !ascendc.local_tensor<*xf16>, !ascendc.local_tensor<*xf16>, i32
+          ascendc.duplicate_l2 %33, %cst, %18 {ascendc.unit = "AiCore.Vector"} : !ascendc.local_tensor<*xf16>, f16, i32
+          ascendc.max_l2 %32, %32, %33, %18 {ascendc.unit = "AiCore.Vector"} : !ascendc.local_tensor<*xf16>, !ascendc.local_tensor<*xf16>, !ascendc.local_tensor<*xf16>, i32
           ascendc.pipe.init_buffer %0, %5, %20 : !ascendc.tbuf<veccalc>, index
           %34 = ascendc.tbuf.get_tensor %5 : !ascendc.tbuf<veccalc>, !ascendc.local_tensor<*xf16>
           %35 = ascendc.global_tensor : !ascendc.global_tensor<*xf16>
           ascendc.global_tensor.set_global_buffer %35, %subview_1 : !ascendc.global_tensor<*xf16>, memref<?xf16, strided<[1]>>
           ascendc.data_copy_l2 %34, %35, %dim_0 : !ascendc.local_tensor<*xf16>, !ascendc.global_tensor<*xf16>, index
-          ascendc.add_l2 %32, %32, %34, %18 : !ascendc.local_tensor<*xf16>, !ascendc.local_tensor<*xf16>, !ascendc.local_tensor<*xf16>, i32
+          ascendc.add_l2 %32, %32, %34, %18 {ascendc.unit = "AiCore.Vector"} : !ascendc.local_tensor<*xf16>, !ascendc.local_tensor<*xf16>, !ascendc.local_tensor<*xf16>, i32
         }
         ascendc.que_bind.enque_tensor %2, %19 : !ascendc.queue<vecout, 1>, !ascendc.local_tensor<*xf16>
         %24 = ascendc.que_bind.deque_tensor %2 : !ascendc.queue<vecout, 1>, !ascendc.local_tensor<*xf16>
