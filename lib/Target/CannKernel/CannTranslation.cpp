@@ -707,6 +707,32 @@ collectDescendantPartitionOps(Value seed,
   return collected;
 }
 
+static llvm::DenseSet<Operation *>
+closePartitionOpsOverAncestors(
+    llvm::DenseSet<Operation *> seeds, ArrayRef<Operation *> partitionOps,
+    const llvm::DenseMap<Operation *, MixPartitionKind> &partitionMap,
+    MixPartitionKind targetKind) {
+  llvm::DenseSet<Operation *> partitionOpSet(partitionOps.begin(),
+                                             partitionOps.end());
+  SmallVector<Operation *> worklist(seeds.begin(), seeds.end());
+
+  while (!worklist.empty()) {
+    Operation *op = worklist.pop_back_val();
+    for (Value operand : op->getOperands()) {
+      Operation *defOp = operand.getDefiningOp();
+      if (!defOp)
+        continue;
+      auto it = partitionMap.find(defOp);
+      if (it == partitionMap.end() || it->second != targetKind ||
+          !partitionOpSet.contains(defOp) || !seeds.insert(defOp).second)
+        continue;
+      worklist.push_back(defOp);
+    }
+  }
+
+  return seeds;
+}
+
 static void buildBoundaryRegionGraph(
     ArrayRef<Operation *> boundaryOps,
     const llvm::DenseMap<Operation *, MixPartitionKind> &partitionMap,
@@ -880,7 +906,7 @@ validateSingleChainGenericMixPlan(const MixPartitionPlan &plan) {
   bool sawFullVectorCoverage = false;
   bool sawChainShapeWithUnsupportedPayload = false;
   std::optional<MixSingleChainValidation::SelectedBoundaryCrossing>
-      payloadBackedSingleChainCandidate;
+      payloadClosedVectorSingleChainCandidate;
 
   for (const MixBoundaryValue &inputCrossing : cubeToBoundary) {
     for (const MixBoundaryValue &outputCrossing : boundaryToVector) {
@@ -914,6 +940,11 @@ validateSingleChainGenericMixPlan(const MixPartitionPlan &plan) {
       llvm::DenseSet<Operation *> chainVectorOps =
           collectDescendantPartitionOps(outputCrossing.value, partitionMap,
                                         MixPartitionKind::Vector);
+      if (!chainVectorOps.empty()) {
+        chainVectorOps = closePartitionOpsOverAncestors(
+            std::move(chainVectorOps), vectorRegion->ops, partitionMap,
+            MixPartitionKind::Vector);
+      }
       bool hasFullVectorCoverage =
           chainVectorOps.size() == vectorRegion->ops.size();
       sawFullVectorCoverage |= hasFullVectorCoverage;
@@ -928,8 +959,8 @@ validateSingleChainGenericMixPlan(const MixPartitionPlan &plan) {
         }
 
       if (!hasFullVectorCoverage) {
-        if (!payloadBackedSingleChainCandidate) {
-          payloadBackedSingleChainCandidate =
+        if (!chainVectorOps.empty() && !payloadClosedVectorSingleChainCandidate) {
+          payloadClosedVectorSingleChainCandidate =
               MixSingleChainValidation::SelectedBoundaryCrossing{inputCrossing,
                                                                  outputCrossing};
         }
@@ -948,8 +979,8 @@ validateSingleChainGenericMixPlan(const MixPartitionPlan &plan) {
 
   if (foundValidSingleChain)
     return validation;
-  if (payloadBackedSingleChainCandidate) {
-    validation.selectedBoundaryCrossing = *payloadBackedSingleChainCandidate;
+  if (payloadClosedVectorSingleChainCandidate) {
+    validation.selectedBoundaryCrossing = *payloadClosedVectorSingleChainCandidate;
     return validation;
   }
 
