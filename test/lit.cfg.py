@@ -37,7 +37,17 @@ llvm_config.with_system_environment(['HOME', 'INCLUDE', 'LIB', 'TMP', 'TEMP'])
 llvm_config.use_default_substitutions()
 
 # excludes: A list of directories to exclude from the testsuite.
-config.excludes = ['CMakeLists.txt', 'README.txt', 'LICENSE.txt', 'lit.cfg.py', 'lit.site.cfg.py']
+config.excludes = [
+    'CMakeLists.txt',
+    'README.txt',
+    'LICENSE.txt',
+    'lit.cfg.py',
+    'lit.site.cfg.py',
+    'cann-translate-mix-input.mlir',
+    'cann-translate-mix-no-bias-input.mlir',
+    'cann-translate-mix-relu-input.mlir',
+    'cann-translate-mix-island-input.mlir',
+]
 
 # test_source_root: The root path where tests are located.
 config.test_source_root = os.path.dirname(__file__)

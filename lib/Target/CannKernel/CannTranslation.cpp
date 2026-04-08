@@ -786,10 +786,16 @@ static SmallVector<Value> collectSupportedMixVectorSeedValues(
   if (payloadSourcePartition == MixPartitionKind::Unknown)
     return seeds;
 
+  llvm::DenseMap<Value, bool> originCache;
+  llvm::SmallPtrSet<Operation *, 16> originVisiting;
   for (Operation *op : vectorOps) {
     for (Value operand : op->getOperands()) {
-      if (getTensorStoragePartition(operand) != payloadSourcePartition)
-        continue;
+      if (getTensorStoragePartition(operand) != payloadSourcePartition) {
+        originVisiting.clear();
+        if (!valueOriginatesFromPartition(operand, payloadSourcePartition,
+                                          originCache, originVisiting))
+          continue;
+      }
       if (!llvm::is_contained(seeds, operand))
         seeds.push_back(operand);
     }

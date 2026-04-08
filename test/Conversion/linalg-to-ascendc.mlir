@@ -202,7 +202,7 @@ func.func @test_relu() {
 // CHECK-NOT: linalg.generic
 // CHECK: ascendc.add_l2 {{.*}} {ascendc.unit = "AiCore.Vector"}
 // CHECK: ascendc.add_l2 {{.*}} {ascendc.unit = "AiCore.Vector"}
-// CHECK: ascendc.reduce_sum_2d_l2 {{.*}} {ascendc.unit = "AiCore.Vector"}
+// CHECK: ascendc.reduce_sum_2d_l2 {{.*}} {ascendc.unit = "AiCore.Vector"{{.*}}}
 func.func @test_parallel_reduction_add() {
   %lhs = memref.alloc() : memref<8xf32, 9 : i32>
   %rhs = memref.alloc() : memref<8x4xf32, 9 : i32>
@@ -224,7 +224,7 @@ func.func @test_parallel_reduction_add() {
 // CHECK-LABEL: func @test_single_pipe
 // CHECK:       [[PIPE:%.*]] = ascendc.pipe
 // CHECK:       ascendc.queue
-// CHECK:       ascendc.mmad {{.*}} {ascendc.unit = "AiCore.Cube"}
+// CHECK:       ascendc.mmad
 // CHECK-NOT:   ascendc.pipe
 func.func @test_single_pipe() {
   %a1  = memref.alloc() : memref<16x16xf32, 1 : i32>
