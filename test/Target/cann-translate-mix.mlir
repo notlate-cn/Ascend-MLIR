@@ -2,6 +2,10 @@
 
 // Expected shape: one cube region, one boundary transfer/synchronization layer,
 // and one vector region in a single chained mix lowering path.
+// The input fixture intentionally feeds the vector region from both:
+//   1. the cube->boundary payload selected by generic mix analysis, and
+//   2. a separate bias broadcast branch that merges at add_l2.
+// Generic single-chain validation must still accept this shape.
 // CHECK: #define __AFIR_RUNTIME_MIX_KERNEL_FUN_H__
 // CHECK: #define ASCENDC_CUBE_ONLY
 // CHECK: #include "kernel_operator.h"
@@ -22,6 +26,7 @@
 // CHECK: if ASCEND_IS_AIV {
 // CHECK: uint32_t count = static_cast<uint32_t>(tiling.singleCoreM * tiling.singleCoreN / 2);
 // CHECK: CrossCoreWaitFlag(3);
+// CHECK: DataCopy(reluInLocal, cGM, count);
 // CHECK: LeakyRelu(outLocal, inLocal, static_cast<float>(0.001000f), count);
 
 // This fixture locks the current generic single-chain translator shape for the
