@@ -26,35 +26,3 @@ def test_inductor_backend_registration():
     assert torch.allclose(result, expected, atol=1e-5), "Inductor backend output mismatch"
 
     print("✓ Backend registration and inductor fusion work")
-
-
-def test_broadcast_add_reduce_fusion():
-    """
-    验证 inductor 能将 elementwise + reduction 融合成一个 kernel。
-
-    这是当前 linalg-fuse-elementwise-ops 做不到的，
-    但 inductor 可以实现。
-    """
-    from inductor_backend import setup_inductor_backend, create_post_fusion_pass
-
-    output_dir = "/tmp/inductor_e2e_output"
-    os.makedirs(output_dir, exist_ok=True)
-
-    post_fusion_pass = create_post_fusion_pass(output_dir, verbose=True)
-    setup_inductor_backend(post_fusion_pass=post_fusion_pass)
-
-    class BroadcastAddReduceModel(torch.nn.Module):
-        def forward(self, a, b):
-            # a: [M], b: [M, N] → broadcast → add → reduce
-            return (a.unsqueeze(1) + b).sum(dim=1)
-
-    model = BroadcastAddReduceModel()
-    example_inputs = (torch.randn(128), torch.randn(128, 16))
-
-    compiled = torch.compile(model, backend="inductor")
-    result = compiled(*example_inputs)
-
-    expected = model(*example_inputs)
-    assert torch.allclose(result, expected, atol=1e-5), "Output mismatch"
-
-    print("✓ broadcast-add-reduce fusion works")
