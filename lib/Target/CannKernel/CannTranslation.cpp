@@ -879,6 +879,8 @@ validateSingleChainGenericMixPlan(const MixPartitionPlan &plan) {
   bool sawFullCubeCoverage = false;
   bool sawFullVectorCoverage = false;
   bool sawChainShapeWithUnsupportedPayload = false;
+  std::optional<MixSingleChainValidation::SelectedBoundaryCrossing>
+      payloadBackedSingleChainCandidate;
 
   for (const MixBoundaryValue &inputCrossing : cubeToBoundary) {
     for (const MixBoundaryValue &outputCrossing : boundaryToVector) {
@@ -915,15 +917,24 @@ validateSingleChainGenericMixPlan(const MixPartitionPlan &plan) {
       bool hasFullVectorCoverage =
           chainVectorOps.size() == vectorRegion->ops.size();
       sawFullVectorCoverage |= hasFullVectorCoverage;
-      if (!hasFullVectorCoverage)
-        continue;
-
-      sawChainShapeWithUnsupportedPayload = true;
       FailureOr<SupportedMixBoundaryPayload> payload =
           buildSupportedMixBoundaryPayload(inputCrossing, outputCrossing,
                                            boundaryRegion->ops);
       if (failed(payload))
+        {
+          if (hasFullVectorCoverage)
+            sawChainShapeWithUnsupportedPayload = true;
+          continue;
+        }
+
+      if (!hasFullVectorCoverage) {
+        if (!payloadBackedSingleChainCandidate) {
+          payloadBackedSingleChainCandidate =
+              MixSingleChainValidation::SelectedBoundaryCrossing{inputCrossing,
+                                                                 outputCrossing};
+        }
         continue;
+      }
 
       foundValidSingleChain = true;
       validation.selectedBoundaryCrossing =
@@ -937,6 +948,10 @@ validateSingleChainGenericMixPlan(const MixPartitionPlan &plan) {
 
   if (foundValidSingleChain)
     return validation;
+  if (payloadBackedSingleChainCandidate) {
+    validation.selectedBoundaryCrossing = *payloadBackedSingleChainCandidate;
+    return validation;
+  }
 
   if (sawChainShapeWithUnsupportedPayload)
     addFailureReason(
