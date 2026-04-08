@@ -213,6 +213,7 @@ enum class SupportedMixLoweringFailureReason {
   UnsupportedReluStyleEpilogue,
   MissingSelectedBoundaryCrossing,
   UnsupportedBoundaryPayload,
+  UnsupportedVectorOp,
 };
 
 static SmallVector<MixBoundaryValue>
@@ -238,6 +239,9 @@ static StringRef stringifyGenericMixSingleChainEmissionFailureReason(
 
 static StringRef stringifySupportedMixLoweringFailureReason(
     SupportedMixLoweringFailureReason reason);
+
+static Operation *findUnsupportedMixVectorRegionOp(
+    ArrayRef<Operation *> ops);
 
 struct MixTaskKindDescriptor {
   StringRef taskTypeSpelling;
@@ -1153,6 +1157,8 @@ static StringRef stringifySupportedMixLoweringFailureReason(
     return "the selected boundary crossings were not retained";
   case SupportedMixLoweringFailureReason::UnsupportedBoundaryPayload:
     return "the explicit boundary payload is unsupported";
+  case SupportedMixLoweringFailureReason::UnsupportedVectorOp:
+    return "unsupported vector op in single-chain mix emitter";
   }
   llvm_unreachable("unexpected supported mix lowering failure reason");
 }
@@ -1376,6 +1382,10 @@ lowerGenericMixSingleChainToSupportedMix(
     failureReason = SupportedMixLoweringFailureReason::UnsupportedLegacySignature;
     return failure();
   }
+  if (findUnsupportedMixVectorRegionOp(emissionPlan.vectorRegion->ops)) {
+    failureReason = SupportedMixLoweringFailureReason::UnsupportedVectorOp;
+    return failure();
+  }
   FailureOr<SupportedMixKernelConfig> config =
       inferSupportedMixKernelConfig(funcOp, summary);
   if (failed(config)) {
@@ -1406,6 +1416,12 @@ buildLegacySupportedMixLowering(const MixPartitionPlan &plan,
   (void)validation;
   if (!hasSupportedMixFunctionSignature(funcOp)) {
     failureReason = SupportedMixLoweringFailureReason::UnsupportedLegacySignature;
+    return failure();
+  }
+  const MixRegionPlan *vectorRegion =
+      findFirstMixRegionOfKind(plan.regions, MixPartitionKind::Vector);
+  if (vectorRegion && findUnsupportedMixVectorRegionOp(vectorRegion->ops)) {
+    failureReason = SupportedMixLoweringFailureReason::UnsupportedVectorOp;
     return failure();
   }
   FailureOr<SupportedMixKernelConfig> config =
@@ -1638,6 +1654,11 @@ static Operation *findFirstMixRegionOpMatching(ArrayRef<Operation *> ops,
   return nullptr;
 }
 
+static bool isSupportedMixVectorRegionOp(Operation *op) {
+  return isa<ascendc::BroadcastL2Op, ascendc::AddL2Op, ascendc::DuplicateL2Op,
+             ascendc::MulL2Op, ascendc::MaxL2Op, ascendc::DataCopyL2Op>(op);
+}
+
 static bool emitMixCubeRegionOpDispatch(raw_ostream &os, Operation *op,
                                         const SupportedMixKernelConfig &config) {
   if (!isa<ascendc::MmadOp>(op))
@@ -1737,8 +1758,7 @@ static void emitMixBoundaryRegionOutputOps(
 
 static bool emitMixVectorRegionOpDispatch(raw_ostream &os, Operation *op,
                                           const SupportedMixKernelConfig &config) {
-  if (!isa<ascendc::BroadcastL2Op, ascendc::AddL2Op, ascendc::DuplicateL2Op,
-           ascendc::MulL2Op, ascendc::MaxL2Op, ascendc::DataCopyL2Op>(op))
+  if (!isSupportedMixVectorRegionOp(op))
     return false;
 
   emitSupportedMixVectorEpilogue(os, config);
@@ -1749,20 +1769,22 @@ static void emitMixVectorRegionOps(raw_ostream &os, const MixRegionPlan &region,
                                    const SupportedMixKernelConfig &config) {
   if (region.kind != MixPartitionKind::Vector)
     llvm_unreachable("vector region emission received a non-vector region");
-  if (Operation *anchor = findFirstMixRegionOpMatching(region.ops,
-                                                       [](Operation *op) {
-                                                         return isa<ascendc::BroadcastL2Op,
-                                                                    ascendc::AddL2Op,
-                                                                    ascendc::DuplicateL2Op,
-                                                                    ascendc::MulL2Op,
-                                                                    ascendc::MaxL2Op,
-                                                                    ascendc::DataCopyL2Op>(op);
-                                                       })) {
-    (void)emitMixVectorRegionOpDispatch(os, anchor, config);
+  for (Operation *op : region.ops) {
+    if (!isSupportedMixVectorRegionOp(op))
+      continue;
+    (void)emitMixVectorRegionOpDispatch(os, op, config);
     return;
   }
 
   emitSupportedMixVectorEpilogue(os, config);
+}
+
+static Operation *findUnsupportedMixVectorRegionOp(ArrayRef<Operation *> ops) {
+  for (Operation *op : ops) {
+    if (!isSupportedMixVectorRegionOp(op))
+      return op;
+  }
+  return nullptr;
 }
 
 static void emitMixKernelShellBody(
