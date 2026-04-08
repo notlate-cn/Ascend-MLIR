@@ -157,6 +157,9 @@ module attributes {transform.with_named_sequence} {
               %135 = arith.index_cast %88 : index to i16
               %136 = ascendc.construct !ascendc.mmad_params(%133, %135, %134, %c0_i8, %c0_i8, %c0_i8) [i16, i16, i16, i8, i8, i8] : i16, i16, i16, i8, i8, i8
               ascendc.mmad %91, %131, %132, %136 {ascendc.unit = "AiCore.Cube"} : !ascendc.local_tensor<*xf16>, !ascendc.local_tensor<*xf16>, !ascendc.local_tensor<*xf16>, !ascendc.mmad_params
+              %137 = ascendc.que_bind.alloc_tensor %18 : !ascendc.queue<co1, 1>, !ascendc.local_tensor<*xf16>
+              ascendc.add_l2 %137, %131, %132, %89 {ascendc.unit = "AiCore.Cube"} : !ascendc.local_tensor<*xf16>, !ascendc.local_tensor<*xf16>, !ascendc.local_tensor<*xf16>, index
+              ascendc.que_bind.free_tensor %18, %137 : !ascendc.queue<co1, 1>, !ascendc.local_tensor<*xf16>
               ascendc.que_bind.free_tensor %19, %131 : !ascendc.queue<a2, 1>, !ascendc.local_tensor<*xf16>
               ascendc.que_bind.free_tensor %20, %132 : !ascendc.queue<b2, 1>, !ascendc.local_tensor<*xf16>
             }

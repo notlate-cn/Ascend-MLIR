@@ -1,4 +1,4 @@
-// Valid single-chain mix shape with an unsupported cube-region op.
+// Valid single-chain mix shape with unsupported cube-region ops on the chain.
 module attributes {transform.with_named_sequence} {
   func.func @matmul_add_leakyrelu(%arg0: memref<?x?xf16>, %arg1: memref<?x?xf16>, %arg2: memref<?xf32>, %arg3: memref<?x?xf32>, %arg4: memref<?x?xf32, strided<[1, 1], offset: ?>>, %arg5: memref<ui8>, %arg6: !emitasc.py_struct<"TilingData", [i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64], ["TB_M", "TB_N", "Tb_M", "Tb_N", "t_K", "dim_arg3_0", "dim_arg3_1", "dim_arg0_1", "dim_arg0_0", "dim_arg1_0", "dim_arg1_1", "dim_arg2_0", "dim_arg2_1"]>) attributes {ascendc.aicore, ascendc.global, ascendc.kernel_kind = "mix", cann.num_inputs = 4 : i32} {
     %cst = arith.constant 1.000000e-03 : f32
@@ -157,7 +157,10 @@ module attributes {transform.with_named_sequence} {
               %134 = arith.index_cast %117 : index to i16
               %135 = arith.index_cast %88 : index to i16
               %136 = ascendc.construct !ascendc.mmad_params(%133, %135, %134, %c0_i8, %c0_i8, %c0_i8) [i16, i16, i16, i8, i8, i8] : i16, i16, i16, i8, i8, i8
-              ascendc.add_l2 %91, %131, %132, %89 {ascendc.unit = "AiCore.Cube"} : !ascendc.local_tensor<*xf16>, !ascendc.local_tensor<*xf16>, !ascendc.local_tensor<*xf16>, index
+              %137 = ascendc.que_bind.alloc_tensor %18 : !ascendc.queue<co1, 1>, !ascendc.local_tensor<*xf16>
+              ascendc.add_l2 %137, %131, %132, %89 {ascendc.unit = "AiCore.Cube"} : !ascendc.local_tensor<*xf16>, !ascendc.local_tensor<*xf16>, !ascendc.local_tensor<*xf16>, index
+              ascendc.add_l2 %91, %137, %132, %89 {ascendc.unit = "AiCore.Cube"} : !ascendc.local_tensor<*xf16>, !ascendc.local_tensor<*xf16>, !ascendc.local_tensor<*xf16>, index
+              ascendc.que_bind.free_tensor %18, %137 : !ascendc.queue<co1, 1>, !ascendc.local_tensor<*xf16>
               ascendc.que_bind.free_tensor %19, %131 : !ascendc.queue<a2, 1>, !ascendc.local_tensor<*xf16>
               ascendc.que_bind.free_tensor %20, %132 : !ascendc.queue<b2, 1>, !ascendc.local_tensor<*xf16>
             }
