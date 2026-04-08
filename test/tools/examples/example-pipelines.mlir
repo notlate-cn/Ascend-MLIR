@@ -1,1 +1,1 @@
-// RUN: bash %S/run_example_pipelines.sh
+// RUN: bash %S/example_pipelines.sh
