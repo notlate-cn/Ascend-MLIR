@@ -213,6 +213,7 @@ enum class SupportedMixLoweringFailureReason {
   UnsupportedReluStyleEpilogue,
   MissingSelectedBoundaryCrossing,
   UnsupportedBoundaryPayload,
+  UnsupportedCubeOp,
   UnsupportedVectorOp,
 };
 
@@ -1157,6 +1158,8 @@ static StringRef stringifySupportedMixLoweringFailureReason(
     return "the selected boundary crossings were not retained";
   case SupportedMixLoweringFailureReason::UnsupportedBoundaryPayload:
     return "the explicit boundary payload is unsupported";
+  case SupportedMixLoweringFailureReason::UnsupportedCubeOp:
+    return "unsupported cube op in single-chain mix emitter";
   case SupportedMixLoweringFailureReason::UnsupportedVectorOp:
     return "unsupported vector op in single-chain mix emitter";
   }
@@ -1634,16 +1637,6 @@ findFirstMixRegionOfKind(ArrayRef<MixRegionPlan> regions, MixPartitionKind kind)
   return nullptr;
 }
 
-template <typename MatchFn>
-static Operation *findFirstMixRegionOpMatching(ArrayRef<Operation *> ops,
-                                               MatchFn &&match) {
-  for (Operation *op : ops) {
-    if (match(op))
-      return op;
-  }
-  return nullptr;
-}
-
 static bool isSupportedMixVectorRegionOp(Operation *op) {
   return isa<ascendc::BroadcastL2Op, ascendc::AddL2Op, ascendc::DuplicateL2Op,
              ascendc::MulL2Op, ascendc::MaxL2Op, ascendc::DataCopyL2Op>(op);
@@ -1660,24 +1653,32 @@ static bool emitMixCubeRegionOpDispatch(raw_ostream &os, Operation *op,
   return true;
 }
 
-// Task 1 keeps the supported mix body stable while shifting emission ownership
-// to region-local anchor selection. Later tasks can replace this anchor-driven
-// bridge with full per-op lowering.
-static void emitMixCubeRegionOps(raw_ostream &os, const MixRegionPlan &region,
-                                 const SupportedMixKernelConfig &config) {
+static bool emitMixCubeRegionOps(raw_ostream &os, const MixRegionPlan &region,
+                                 const SupportedMixKernelConfig &config,
+                                 SupportedMixLoweringFailureReason &failureReason) {
   if (region.kind != MixPartitionKind::Cube)
     llvm_unreachable("cube region emission received a non-cube region");
-  if (Operation *anchor = findFirstMixRegionOpMatching(region.ops,
-                                                       [](Operation *op) {
-                                                         return isa<ascendc::MmadOp>(op);
-                                                       })) {
-    (void)emitMixCubeRegionOpDispatch(os, anchor, config);
-    return;
+  Operation *supportedCubeOp = nullptr;
+  for (Operation *op : region.ops) {
+    if (!isa<ascendc::MmadOp>(op)) {
+      failureReason = SupportedMixLoweringFailureReason::UnsupportedCubeOp;
+      return false;
+    }
+    if (supportedCubeOp) {
+      failureReason = SupportedMixLoweringFailureReason::UnsupportedCubeOp;
+      return false;
+    }
+    supportedCubeOp = op;
   }
-
-  emitSupportedMixMatmulObjectDecl(os);
-  emitSupportedMixAicGlobalTensorSetup(os, config);
-  emitSupportedMixMatmulExecution(os, config);
+  if (!supportedCubeOp) {
+    failureReason = SupportedMixLoweringFailureReason::UnsupportedCubeOp;
+    return false;
+  }
+  if (!emitMixCubeRegionOpDispatch(os, supportedCubeOp, config)) {
+    failureReason = SupportedMixLoweringFailureReason::UnsupportedCubeOp;
+    return false;
+  }
+  return true;
 }
 
 static bool emitMixBoundaryRegionSetupOpDispatch(
@@ -1782,7 +1783,8 @@ static bool emitMixKernelShellBody(
     const MixTaskKindDescriptor &desc,
     SupportedMixLoweringFailureReason &failureReason) {
   os << "  if ASCEND_IS_AIC {\n";
-  emitMixCubeRegionOps(os, cubeRegion, config);
+  if (!emitMixCubeRegionOps(os, cubeRegion, config, failureReason))
+    return false;
   emitSupportedMixCrossCoreSetFlag(os, desc);
   os << "  }\n\n"
      << "  if ASCEND_IS_AIV {\n";
