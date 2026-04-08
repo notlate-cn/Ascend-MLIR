@@ -26,16 +26,16 @@ source examples/env.sh
 
 ```bash
 # 全部测试
-conda run -n torch-mlir python -m pytest tests/torch_e2e/ -v -s
+conda run -n torch-mlir python -m pytest examples/torch_e2e/ -v -s
 
 # 单个文件
-conda run -n torch-mlir python -m pytest tests/torch_e2e/test_elementwise.py -v -s
+conda run -n torch-mlir python -m pytest examples/torch_e2e/test_elementwise.py -v -s
 
 # 单个用例
-conda run -n torch-mlir python -m pytest tests/torch_e2e/test_elementwise.py::test_add -v -s
+conda run -n torch-mlir python -m pytest examples/torch_e2e/test_elementwise.py::test_add -v -s
 
 # 按关键词过滤
-conda run -n torch-mlir python -m pytest tests/torch_e2e/ -v -s -k "reduce"
+conda run -n torch-mlir python -m pytest examples/torch_e2e/ -v -s -k "reduce"
 ```
 
 ## 编写测试用例

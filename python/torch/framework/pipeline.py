@@ -473,9 +473,8 @@ def _run_autotuner(work_dir: Path, num_inputs: int, shape_str: str) -> bool:
     input_npys = ",".join(
         str(work_dir / f"input_{i}.npy") for i in range(num_inputs)
     )
-    build_dir = work_dir / "build_e2e"
-    build_dir.mkdir(parents=True, exist_ok=True)
-    actual_npy = build_dir / "actual.npy"
+    artifact_dir = work_dir / "build_e2e"
+    artifact_dir.mkdir(parents=True, exist_ok=True)
     cmd = [
         autotuner,
         "--space", str(work_dir / "step8_kernel.tiling_space.json"),
@@ -483,11 +482,8 @@ def _run_autotuner(work_dir: Path, num_inputs: int, shape_str: str) -> bool:
         "--inputs", input_npys,
         "--expected", str(expected_npy),
         "--shape", shape_str,
-        "--output", str(work_dir / "tiling_func.cpp"),
-        "--build-dir", str(build_dir),
-        "--dump-actual", str(actual_npy),
-        "--perf-report",
-        "--perf-report-out", str(work_dir / "perf_out"),
+        "--output", str(work_dir / "best_config.json"),
+        "--profile-out", str(work_dir / "perf_out"),
     ]
     print(f"  cmd: {' '.join(cmd)}")
     proc = subprocess.run(cmd, capture_output=True, text=True)
@@ -495,18 +491,13 @@ def _run_autotuner(work_dir: Path, num_inputs: int, shape_str: str) -> bool:
     # 清理模拟器 dump 文件
     _cleanup_sim_dumps()
 
-    # Always convert available npy to txt for inspection
-    _npy_to_txt(expected_npy, build_dir / "expected.txt")
-    if actual_npy.exists():
-        _npy_to_txt(actual_npy, build_dir / "actual.txt")
+    # Always convert expected to txt for inspection
+    _npy_to_txt(expected_npy, artifact_dir / "expected.txt")
 
     if proc.returncode != 0:
         print(f"  失败: autotuner (精度验证失败)")
         print(f"  stdout: {proc.stdout[-500:]}")
         print(f"  stderr: {proc.stderr[:500]}")
-        if actual_npy.exists():
-            print(f"  actual 数据已保存: {build_dir / 'actual.txt'}")
-            print(f"  expected 数据: {build_dir / 'expected.txt'}")
         return False
 
     print(f"  autotuner stdout:\n{proc.stdout[-300:]}")
