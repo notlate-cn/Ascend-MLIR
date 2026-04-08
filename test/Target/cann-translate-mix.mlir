@@ -5,6 +5,8 @@
 // The input fixture intentionally feeds the vector region from both:
 //   1. the cube->boundary payload selected by generic mix analysis, and
 //   2. a separate bias broadcast branch that merges at add_l2.
+// It also carries an unrelated off-chain cube-tagged op; current cube lowering
+// is expected to follow only the selected cube chain that feeds the boundary.
 // Generic single-chain validation must still accept this shape while the
 // vector region is walked op-by-op by the emitter.
 // CHECK: #define __AFIR_RUNTIME_MIX_KERNEL_FUN_H__
