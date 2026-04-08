@@ -1643,21 +1643,24 @@ static bool emitMixCubeRegionOpDispatch(raw_ostream &os, Operation *op,
   return true;
 }
 
+// Task 1 keeps the supported mix body stable while shifting emission ownership
+// to region-local anchor selection. Later tasks can replace this anchor-driven
+// bridge with full per-op lowering.
 static void emitMixCubeRegionOps(raw_ostream &os, const MixRegionPlan &region,
                                  const SupportedMixKernelConfig &config) {
   if (region.kind != MixPartitionKind::Cube)
     llvm_unreachable("cube region emission received a non-cube region");
-  if (!findFirstMixRegionOpMatching(region.ops, [](Operation *op) {
-        return isa<ascendc::MmadOp>(op);
-      }))
-    llvm_unreachable("supported mix cube region requires an mmad op");
-
-  bool emitted = false;
-  for (Operation *op : region.ops) {
-    if (emitted)
-      break;
-    emitted = emitMixCubeRegionOpDispatch(os, op, config);
+  if (Operation *anchor = findFirstMixRegionOpMatching(region.ops,
+                                                       [](Operation *op) {
+                                                         return isa<ascendc::MmadOp>(op);
+                                                       })) {
+    (void)emitMixCubeRegionOpDispatch(os, anchor, config);
+    return;
   }
+
+  emitSupportedMixMatmulObjectDecl(os);
+  emitSupportedMixAicGlobalTensorSetup(os, config);
+  emitSupportedMixMatmulExecution(os, config);
 }
 
 static bool emitMixBoundaryRegionSetupOpDispatch(
@@ -1674,50 +1677,68 @@ static void emitMixBoundaryRegionSetupOps(
     const SupportedMixBoundaryLayer &layer, const MixTaskKindDescriptor &desc) {
   if (region.kind != MixPartitionKind::Boundary)
     llvm_unreachable("boundary region setup received a non-boundary region");
-  if (!findFirstMixRegionOpMatching(region.ops, [](Operation *op) {
-        return isa<ascendc::DataCopyCO12DstOp>(op);
-      }))
-    llvm_unreachable(
-        "supported mix boundary region requires a data_copy_co12dst op");
-
-  bool emitted = false;
-  for (Operation *op : region.ops) {
-    if (emitted)
-      break;
-    emitted = emitMixBoundaryRegionSetupOpDispatch(os, op, layer, desc);
+  if (Operation *anchor = findFirstMixRegionOpMatching(region.ops,
+                                                       [](Operation *op) {
+                                                         return isa<ascendc::DataCopyCO12DstOp>(
+                                                             op);
+                                                       })) {
+    (void)emitMixBoundaryRegionSetupOpDispatch(os, anchor, layer, desc);
+    return;
   }
+
+  emitSupportedMixBoundaryTransferSetup(os, layer, desc);
 }
 
-template <typename EmitVectorBodyFn>
-static bool emitMixBoundaryRegionOpDispatch(raw_ostream &os, Operation *op,
-                                            const SupportedMixBoundaryLayer &layer,
-                                            EmitVectorBodyFn emitVectorBody) {
+static bool emitMixBoundaryRegionInputOpDispatch(
+    raw_ostream &os, Operation *op, const SupportedMixBoundaryLayer &layer) {
   if (!isa<ascendc::DataCopyCO12DstOp>(op))
     return false;
   emitSupportedMixBoundaryInputTransfer(os, layer);
-  emitVectorBody();
+  return true;
+}
+
+static void emitMixBoundaryRegionInputOps(raw_ostream &os,
+                                          const MixRegionPlan &region,
+                                          const SupportedMixBoundaryLayer &layer) {
+  if (region.kind != MixPartitionKind::Boundary)
+    llvm_unreachable(
+        "boundary region input emission received a non-boundary region");
+  if (Operation *anchor = findFirstMixRegionOpMatching(region.ops,
+                                                       [](Operation *op) {
+                                                         return isa<ascendc::DataCopyCO12DstOp>(
+                                                             op);
+                                                       })) {
+    (void)emitMixBoundaryRegionInputOpDispatch(os, anchor, layer);
+    return;
+  }
+
+  emitSupportedMixBoundaryInputTransfer(os, layer);
+}
+
+static bool emitMixBoundaryRegionOutputOpDispatch(
+    raw_ostream &os, Operation *op, const SupportedMixBoundaryLayer &layer) {
+  if (!isa<ascendc::DataCopyCO12DstOp>(op))
+    return false;
   emitSupportedMixBoundaryOutputTransfer(os, layer);
   return true;
 }
 
-template <typename EmitVectorBodyFn>
-static void emitMixBoundaryRegionOps(raw_ostream &os, const MixRegionPlan &region,
-                                     const SupportedMixBoundaryLayer &layer,
-                                     EmitVectorBodyFn emitVectorBody) {
+static void emitMixBoundaryRegionOutputOps(
+    raw_ostream &os, const MixRegionPlan &region,
+    const SupportedMixBoundaryLayer &layer) {
   if (region.kind != MixPartitionKind::Boundary)
-    llvm_unreachable("boundary region emission received a non-boundary region");
-  if (!findFirstMixRegionOpMatching(region.ops, [](Operation *op) {
-        return isa<ascendc::DataCopyCO12DstOp>(op);
-      }))
     llvm_unreachable(
-        "supported mix boundary region requires a data_copy_co12dst op");
-
-  bool emitted = false;
-  for (Operation *op : region.ops) {
-    if (emitted)
-      break;
-    emitted = emitMixBoundaryRegionOpDispatch(os, op, layer, emitVectorBody);
+        "boundary region output emission received a non-boundary region");
+  if (Operation *anchor = findFirstMixRegionOpMatching(region.ops,
+                                                       [](Operation *op) {
+                                                         return isa<ascendc::DataCopyCO12DstOp>(
+                                                             op);
+                                                       })) {
+    (void)emitMixBoundaryRegionOutputOpDispatch(os, anchor, layer);
+    return;
   }
+
+  emitSupportedMixBoundaryOutputTransfer(os, layer);
 }
 
 static bool emitMixVectorRegionOpDispatch(raw_ostream &os, Operation *op,
@@ -1734,23 +1755,23 @@ static void emitMixVectorRegionOps(raw_ostream &os, const MixRegionPlan &region,
                                    const SupportedMixKernelConfig &config) {
   if (region.kind != MixPartitionKind::Vector)
     llvm_unreachable("vector region emission received a non-vector region");
-  if (!findFirstMixRegionOpMatching(region.ops, [](Operation *op) {
-        return isa<ascendc::BroadcastL2Op, ascendc::AddL2Op,
-                   ascendc::DuplicateL2Op, ascendc::MulL2Op,
-                   ascendc::MaxL2Op, ascendc::DataCopyL2Op>(op);
-      }))
-    llvm_unreachable(
-        "supported mix vector region requires a recognized vector op");
-
-  bool emitted = false;
-  for (Operation *op : region.ops) {
-    if (emitted)
-      break;
-    emitted = emitMixVectorRegionOpDispatch(os, op, config);
+  if (Operation *anchor = findFirstMixRegionOpMatching(region.ops,
+                                                       [](Operation *op) {
+                                                         return isa<ascendc::BroadcastL2Op,
+                                                                    ascendc::AddL2Op,
+                                                                    ascendc::DuplicateL2Op,
+                                                                    ascendc::MulL2Op,
+                                                                    ascendc::MaxL2Op,
+                                                                    ascendc::DataCopyL2Op>(op);
+                                                       })) {
+    (void)emitMixVectorRegionOpDispatch(os, anchor, config);
+    return;
   }
+
+  emitSupportedMixVectorEpilogue(os, config);
 }
 
-static void emitSupportedMixKernelBody(
+static void emitMixKernelShellBody(
     raw_ostream &os, const MixRegionPlan &cubeRegion,
     const MixRegionPlan &boundaryRegion, const MixRegionPlan &vectorRegion,
     const SupportedMixBoundaryLayer &boundaryLayer,
@@ -1763,9 +1784,9 @@ static void emitSupportedMixKernelBody(
      << "  if ASCEND_IS_AIV {\n";
   emitMixBoundaryRegionSetupOps(os, boundaryRegion, boundaryLayer, desc);
   os << "    CrossCoreWaitFlag(" << desc.crossCoreFlagId << ");\n\n";
-  emitMixBoundaryRegionOps(os, boundaryRegion, boundaryLayer, [&] {
-    emitMixVectorRegionOps(os, vectorRegion, config);
-  });
+  emitMixBoundaryRegionInputOps(os, boundaryRegion, boundaryLayer);
+  emitMixVectorRegionOps(os, vectorRegion, config);
+  emitMixBoundaryRegionOutputOps(os, boundaryRegion, boundaryLayer);
   os << "  }\n";
 }
 
@@ -1826,8 +1847,8 @@ static void emitSupportedMixKernel(raw_ostream &os, func::FuncOp funcOp,
   if (!cubeRegion || !boundaryRegion || !vectorRegion)
     llvm_unreachable("supported mix emission requires cube, boundary, and "
                      "vector regions");
-  emitSupportedMixKernelBody(os, *cubeRegion, *boundaryRegion, *vectorRegion,
-                             boundaryLayer, config, desc);
+  emitMixKernelShellBody(os, *cubeRegion, *boundaryRegion, *vectorRegion,
+                         boundaryLayer, config, desc);
   emitSupportedMixKernelShellEpilogue(os);
 }
 
@@ -1838,7 +1859,7 @@ static void emitGenericMixSingleChainKernel(
   MixTaskKindDescriptor desc =
       getMixTaskKindDescriptor(supportedLowering.config.taskKind);
   emitSupportedMixKernelShellPrologue(os, funcOp.getName(), desc);
-  emitSupportedMixKernelBody(
+  emitMixKernelShellBody(
       os, *emissionPlan.cubeRegion, *emissionPlan.boundaryRegion,
       *emissionPlan.vectorRegion, supportedLowering.boundaryLayer,
       supportedLowering.config, desc);
