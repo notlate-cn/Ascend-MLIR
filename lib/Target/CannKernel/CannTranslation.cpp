@@ -1622,11 +1622,9 @@ findFirstMixRegionOfKind(ArrayRef<MixRegionPlan> regions, MixPartitionKind kind)
   return nullptr;
 }
 
-static void emitMixCubeRegion(raw_ostream &os, const MixRegionPlan &region,
-                              const SupportedMixKernelConfig &config,
-                              const MixTaskKindDescriptor &desc) {
+static void emitMixCubeRegionOps(raw_ostream &os, const MixRegionPlan &region,
+                                 const SupportedMixKernelConfig &config) {
   (void)region;
-  (void)desc;
   os << "  if ASCEND_IS_AIC {\n";
   emitSupportedMixMatmulObjectDecl(os);
   emitSupportedMixAicGlobalTensorSetup(os, config);
@@ -1634,10 +1632,12 @@ static void emitMixCubeRegion(raw_ostream &os, const MixRegionPlan &region,
 }
 
 template <typename EmitVectorBodyFn>
-static void emitMixBoundaryLayer(raw_ostream &os,
-                                 const SupportedMixBoundaryLayer &layer,
-                                 const MixTaskKindDescriptor &desc,
-                                 EmitVectorBodyFn emitVectorBody) {
+static void emitMixBoundaryRegionOps(raw_ostream &os,
+                                     const MixRegionPlan &region,
+                                     const SupportedMixBoundaryLayer &layer,
+                                     const MixTaskKindDescriptor &desc,
+                                     EmitVectorBodyFn emitVectorBody) {
+  (void)region;
   emitSupportedMixCrossCoreSetFlag(os, desc);
   os << "  }\n\n"
      << "  if ASCEND_IS_AIV {\n";
@@ -1649,8 +1649,9 @@ static void emitMixBoundaryLayer(raw_ostream &os,
   os << "  }\n";
 }
 
-static void emitMixVectorRegion(raw_ostream &os, const MixRegionPlan &region,
-                                const SupportedMixKernelConfig &config) {
+static void emitMixVectorRegionOps(raw_ostream &os,
+                                   const MixRegionPlan &region,
+                                   const SupportedMixKernelConfig &config) {
   (void)region;
   emitSupportedMixVectorEpilogue(os, config);
 }
@@ -1686,11 +1687,15 @@ static void emitSupportedMixKernelSignature(raw_ostream &os,
      << "  CopyTiling(&tiling, tilingGm);\n\n";
 }
 
-static void emitSupportedMixKernelPrologue(raw_ostream &os, StringRef kernelName,
-                                           const MixTaskKindDescriptor &desc) {
+static void emitSupportedMixKernelShellPrologue(
+    raw_ostream &os, StringRef kernelName, const MixTaskKindDescriptor &desc) {
   emitSupportedMixIncludesAndNamespaces(os);
   emitSupportedMixCopyTilingHelper(os);
   emitSupportedMixKernelSignature(os, kernelName, desc);
+}
+
+static void emitSupportedMixKernelShellEpilogue(raw_ostream &os) {
+  os << "}\n";
 }
 
 static void emitSupportedMixKernel(raw_ostream &os, func::FuncOp funcOp,
@@ -1698,26 +1703,22 @@ static void emitSupportedMixKernel(raw_ostream &os, func::FuncOp funcOp,
                                    const SupportedMixBoundaryLayer &boundaryLayer,
                                    const SupportedMixKernelConfig &config) {
   MixTaskKindDescriptor desc = getMixTaskKindDescriptor(config.taskKind);
-  emitSupportedMixKernelPrologue(os, funcOp.getName(), desc);
+  emitSupportedMixKernelShellPrologue(os, funcOp.getName(), desc);
   const MixRegionPlan *cubeRegion =
       findFirstMixRegionOfKind(plan.regions, MixPartitionKind::Cube);
+  const MixRegionPlan *boundaryRegion =
+      findFirstMixRegionOfKind(plan.regions, MixPartitionKind::Boundary);
   const MixRegionPlan *vectorRegion =
       findFirstMixRegionOfKind(plan.regions, MixPartitionKind::Vector);
-  if (!cubeRegion || !vectorRegion)
-    llvm_unreachable(
-        "supported mix emission requires cube and vector regions");
-  emitMixCubeRegion(os, *cubeRegion, config, desc);
-  emitMixBoundaryLayer(os, boundaryLayer, desc, [&] {
-    emitMixVectorRegion(os, *vectorRegion, config);
-  });
-  os << "}\n";
-}
-
-static void emitGenericMixKernelPrologue(raw_ostream &os, StringRef kernelName,
-                                         const MixTaskKindDescriptor &desc) {
-  emitSupportedMixIncludesAndNamespaces(os);
-  emitSupportedMixCopyTilingHelper(os);
-  emitSupportedMixKernelSignature(os, kernelName, desc);
+  if (!cubeRegion || !boundaryRegion || !vectorRegion)
+    llvm_unreachable("supported mix emission requires cube, boundary, and "
+                     "vector regions");
+  emitMixCubeRegionOps(os, *cubeRegion, config);
+  emitMixBoundaryRegionOps(
+      os, *boundaryRegion, boundaryLayer, desc, [&] {
+        emitMixVectorRegionOps(os, *vectorRegion, config);
+      });
+  emitSupportedMixKernelShellEpilogue(os);
 }
 
 static void emitGenericMixSingleChainKernel(
@@ -1726,14 +1727,14 @@ static void emitGenericMixSingleChainKernel(
     const GenericMixSingleChainSupportedLowering &supportedLowering) {
   MixTaskKindDescriptor desc =
       getMixTaskKindDescriptor(supportedLowering.config.taskKind);
-  emitGenericMixKernelPrologue(os, funcOp.getName(), desc);
-  emitMixCubeRegion(os, *emissionPlan.cubeRegion, supportedLowering.config,
-                    desc);
-  emitMixBoundaryLayer(os, supportedLowering.boundaryLayer, desc, [&] {
-    emitMixVectorRegion(os, *emissionPlan.vectorRegion,
-                        supportedLowering.config);
+  emitSupportedMixKernelShellPrologue(os, funcOp.getName(), desc);
+  emitMixCubeRegionOps(os, *emissionPlan.cubeRegion, supportedLowering.config);
+  emitMixBoundaryRegionOps(os, *emissionPlan.boundaryRegion,
+                           supportedLowering.boundaryLayer, desc, [&] {
+    emitMixVectorRegionOps(os, *emissionPlan.vectorRegion,
+                           supportedLowering.config);
   });
-  os << "}\n";
+  emitSupportedMixKernelShellEpilogue(os);
 }
 
 /// Emit the TilingData struct declaration from a PyStructType.
