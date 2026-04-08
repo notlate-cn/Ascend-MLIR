@@ -5,7 +5,8 @@
 // The input fixture intentionally feeds the vector region from both:
 //   1. the cube->boundary payload selected by generic mix analysis, and
 //   2. a separate bias broadcast branch that merges at add_l2.
-// Generic single-chain validation must still accept this shape.
+// Generic single-chain validation must still accept this shape while the
+// vector region is walked op-by-op by the emitter.
 // CHECK: #define __AFIR_RUNTIME_MIX_KERNEL_FUN_H__
 // CHECK: #define ASCENDC_CUBE_ONLY
 // CHECK: #include "kernel_operator.h"
