@@ -564,16 +564,36 @@ collectMixBoundaryValues(const MixPartitionSummary &summary) {
   for (Operation *op : summary.boundaryOps) {
     for (Value operand : op->getOperands()) {
       Operation *defOp = operand.getDefiningOp();
-      if (!defOp)
-        continue;
-      recordCrossing(operand, getPartitionForSummaryOp(defOp),
-                     MixPartitionKind::Boundary, defOp, op);
+      MixPartitionKind producer =
+          defOp ? getPartitionForSummaryOp(defOp) : MixPartitionKind::Unknown;
+      if (producer == MixPartitionKind::Unknown)
+        producer = getTensorStoragePartition(operand);
+      recordCrossing(operand, producer, MixPartitionKind::Boundary, defOp, op);
     }
 
     for (Value result : op->getResults()) {
       for (Operation *user : result.getUsers())
         recordCrossing(result, MixPartitionKind::Boundary,
                        getConsumerPartition(user), op, user);
+    }
+
+    if (auto copyOp = dyn_cast<ascendc::DataCopyCO12DstOp>(op)) {
+      Operation *inputProducerOp = copyOp.getSrc().getDefiningOp();
+      if (auto inputDeque =
+              dyn_cast_or_null<ascendc::TQueBindDequeTensorOp>(inputProducerOp)) {
+        for (Operation *queueUser : inputDeque.getQueue().getUsers()) {
+          auto enqueTensor = dyn_cast<ascendc::TQueBindEnqueTensorOp>(queueUser);
+          if (enqueTensor && enqueTensor.getQueue() == inputDeque.getQueue()) {
+            inputProducerOp = enqueTensor;
+            break;
+          }
+        }
+      }
+      recordCrossing(copyOp.getSrc(), getTensorStoragePartition(copyOp.getSrc()),
+                     MixPartitionKind::Boundary, inputProducerOp, op);
+      recordCrossing(copyOp.getDst(), MixPartitionKind::Boundary,
+                     getTensorStoragePartition(copyOp.getDst()), op,
+                     copyOp.getDst().getDefiningOp());
     }
   }
 
@@ -639,6 +659,14 @@ static bool hasFailureReason(ArrayRef<MixSingleChainFailureReason> reasons,
   return llvm::is_contained(reasons, reason);
 }
 
+static bool shouldAttemptLegacyFallbackAfterValidationFailure(
+    const MixSingleChainValidation &validation) {
+  return !hasFailureReason(validation.failureReasons,
+                           MixSingleChainFailureReason::ExtraCubeOpsOutsideChain) &&
+         !hasFailureReason(validation.failureReasons,
+                           MixSingleChainFailureReason::ExtraVectorOpsOutsideChain);
+}
+
 static Type getSupportedMixTensorElementType(Value value) {
   if (auto localTensorType = dyn_cast<ascendc::LocalTensorType>(value.getType()))
     return localTensorType.getElementType();
@@ -667,7 +695,26 @@ collectAncestorPartitionOps(Value seed,
   llvm::DenseSet<Operation *> visiting;
 
   std::function<void(Value)> visitValue = [&](Value value) {
+    for (const auto &entry : partitionMap) {
+      Operation *candidate = entry.first;
+      MixPartitionKind candidateKind = entry.second;
+      if (candidateKind != targetKind || candidate->getNumOperands() == 0)
+        continue;
+      if (candidate->getOperand(0) != value || !collected.insert(candidate).second)
+        continue;
+      for (Value operand : candidate->getOperands().drop_front())
+        visitValue(operand);
+    }
+
     Operation *defOp = value.getDefiningOp();
+    if (auto dequeTensor = dyn_cast_or_null<ascendc::TQueBindDequeTensorOp>(defOp)) {
+      for (Operation *queueUser : dequeTensor.getQueue().getUsers()) {
+        auto enqueTensor = dyn_cast<ascendc::TQueBindEnqueTensorOp>(queueUser);
+        if (!enqueTensor || enqueTensor.getQueue() != dequeTensor.getQueue())
+          continue;
+        visitValue(enqueTensor.getTensor());
+      }
+    }
     if (!defOp || !visiting.insert(defOp).second)
       return;
     auto it = partitionMap.find(defOp);
@@ -690,13 +737,37 @@ collectDescendantPartitionOps(Value seed,
   llvm::DenseSet<Operation *> collected;
   llvm::DenseSet<Value> visitingValues;
 
+  auto getPrimaryPartitionWriteTarget = [&](Operation *op) -> Value {
+    auto it = partitionMap.find(op);
+    if (it == partitionMap.end() || it->second != targetKind ||
+        op->getNumOperands() == 0)
+      return Value();
+    Value dst = op->getOperand(0);
+    return getTensorStoragePartition(dst) == targetKind ? dst : Value();
+  };
+
   std::function<void(Value)> visitValue = [&](Value value) {
     if (!visitingValues.insert(value).second)
       return;
     for (Operation *user : value.getUsers()) {
+      auto enqueTensor = dyn_cast<ascendc::TQueBindEnqueTensorOp>(user);
+      if (!enqueTensor || enqueTensor.getTensor() != value)
+        continue;
+      for (Operation *queueUser : enqueTensor.getQueue().getUsers()) {
+        auto dequeTensor = dyn_cast<ascendc::TQueBindDequeTensorOp>(queueUser);
+        if (!dequeTensor || dequeTensor.getQueue() != enqueTensor.getQueue())
+          continue;
+        visitValue(dequeTensor.getResult());
+      }
+    }
+    for (Operation *user : value.getUsers()) {
       auto it = partitionMap.find(user);
-      if (it != partitionMap.end() && it->second == targetKind)
+      if (it != partitionMap.end() && it->second == targetKind) {
         collected.insert(user);
+        if (Value written = getPrimaryPartitionWriteTarget(user);
+            written && written != value)
+          visitValue(written);
+      }
       for (Value result : user->getResults())
         visitValue(result);
     }
@@ -705,6 +776,25 @@ collectDescendantPartitionOps(Value seed,
 
   visitValue(seed);
   return collected;
+}
+
+static SmallVector<Value> collectSupportedMixVectorSeedValues(
+    SupportedMixBoundaryPayload &payload, ArrayRef<Operation *> vectorOps) {
+  SmallVector<Value> seeds;
+  MixPartitionKind payloadSourcePartition =
+      getTensorStoragePartition(payload.transferCopy.getSrc());
+  if (payloadSourcePartition == MixPartitionKind::Unknown)
+    return seeds;
+
+  for (Operation *op : vectorOps) {
+    for (Value operand : op->getOperands()) {
+      if (getTensorStoragePartition(operand) != payloadSourcePartition)
+        continue;
+      if (!llvm::is_contained(seeds, operand))
+        seeds.push_back(operand);
+    }
+  }
+  return seeds;
 }
 
 static llvm::DenseSet<Operation *>
@@ -719,6 +809,15 @@ closePartitionOpsOverAncestors(
   while (!worklist.empty()) {
     Operation *op = worklist.pop_back_val();
     for (Value operand : op->getOperands()) {
+      for (const auto &entry : partitionMap) {
+        Operation *candidate = entry.first;
+        MixPartitionKind candidateKind = entry.second;
+        if (candidateKind != targetKind || candidate->getNumOperands() == 0 ||
+            candidate->getOperand(0) != operand ||
+            !partitionOpSet.contains(candidate) || !seeds.insert(candidate).second)
+          continue;
+        worklist.push_back(candidate);
+      }
       Operation *defOp = operand.getDefiningOp();
       if (!defOp)
         continue;
@@ -905,8 +1004,6 @@ validateSingleChainGenericMixPlan(const MixPartitionPlan &plan) {
   bool sawFullCubeCoverage = false;
   bool sawFullVectorCoverage = false;
   bool sawChainShapeWithUnsupportedPayload = false;
-  std::optional<MixSingleChainValidation::SelectedBoundaryCrossing>
-      payloadClosedVectorSingleChainCandidate;
 
   for (const MixBoundaryValue &inputCrossing : cubeToBoundary) {
     for (const MixBoundaryValue &outputCrossing : boundaryToVector) {
@@ -937,9 +1034,21 @@ validateSingleChainGenericMixPlan(const MixPartitionPlan &plan) {
       if (!hasFullCubeCoverage)
         continue;
 
+      FailureOr<SupportedMixBoundaryPayload> payload =
+          buildSupportedMixBoundaryPayload(inputCrossing, outputCrossing,
+                                           boundaryRegion->ops);
       llvm::DenseSet<Operation *> chainVectorOps =
           collectDescendantPartitionOps(outputCrossing.value, partitionMap,
                                         MixPartitionKind::Vector);
+      if (succeeded(payload)) {
+        for (Value seedValue :
+             collectSupportedMixVectorSeedValues(*payload, vectorRegion->ops)) {
+          llvm::DenseSet<Operation *> seedOps =
+              collectDescendantPartitionOps(seedValue, partitionMap,
+                                            MixPartitionKind::Vector);
+          chainVectorOps.insert(seedOps.begin(), seedOps.end());
+        }
+      }
       if (!chainVectorOps.empty()) {
         chainVectorOps = closePartitionOpsOverAncestors(
             std::move(chainVectorOps), vectorRegion->ops, partitionMap,
@@ -948,24 +1057,14 @@ validateSingleChainGenericMixPlan(const MixPartitionPlan &plan) {
       bool hasFullVectorCoverage =
           chainVectorOps.size() == vectorRegion->ops.size();
       sawFullVectorCoverage |= hasFullVectorCoverage;
-      FailureOr<SupportedMixBoundaryPayload> payload =
-          buildSupportedMixBoundaryPayload(inputCrossing, outputCrossing,
-                                           boundaryRegion->ops);
       if (failed(payload))
         {
           if (hasFullVectorCoverage)
             sawChainShapeWithUnsupportedPayload = true;
           continue;
         }
-
-      if (!hasFullVectorCoverage) {
-        if (!chainVectorOps.empty() && !payloadClosedVectorSingleChainCandidate) {
-          payloadClosedVectorSingleChainCandidate =
-              MixSingleChainValidation::SelectedBoundaryCrossing{inputCrossing,
-                                                                 outputCrossing};
-        }
+      if (!hasFullVectorCoverage)
         continue;
-      }
 
       foundValidSingleChain = true;
       validation.selectedBoundaryCrossing =
@@ -979,10 +1078,6 @@ validateSingleChainGenericMixPlan(const MixPartitionPlan &plan) {
 
   if (foundValidSingleChain)
     return validation;
-  if (payloadClosedVectorSingleChainCandidate) {
-    validation.selectedBoundaryCrossing = *payloadClosedVectorSingleChainCandidate;
-    return validation;
-  }
 
   if (sawChainShapeWithUnsupportedPayload)
     addFailureReason(
@@ -1175,8 +1270,8 @@ buildSupportedMixBoundaryPayload(const MixBoundaryValue &input,
                                  const MixBoundaryValue &output,
                                  ArrayRef<Operation *> boundaryOps) {
   auto inputEnqueue = dyn_cast_or_null<ascendc::TQueBindEnqueTensorOp>(
-      input.consumerOp);
-  if (!inputEnqueue || inputEnqueue.getTensor() != input.value)
+      input.producerOp);
+  if (!inputEnqueue)
     return failure();
   auto inputQueuePosition = getQueueLikePosition(inputEnqueue.getQueue().getType());
   if (!inputQueuePosition || *inputQueuePosition != ascendc::TPosition::CO1)
@@ -1191,7 +1286,13 @@ buildSupportedMixBoundaryPayload(const MixBoundaryValue &input,
     auto copyOp = dyn_cast<ascendc::DataCopyCO12DstOp>(op);
     if (!copyOp)
       continue;
-    if (copyOp.getSrc() != input.value || copyOp.getDst() != output.value)
+    if (copyOp.getSrc() != input.value || copyOp.getDst() != output.value ||
+        copyOp.getOperation() != output.producerOp)
+      continue;
+
+    auto inputDeque =
+        dyn_cast_or_null<ascendc::TQueBindDequeTensorOp>(copyOp.getSrc().getDefiningOp());
+    if (!inputDeque || inputDeque.getQueue() != inputEnqueue.getQueue())
       continue;
 
     Type srcElementType = getSupportedMixTensorElementType(copyOp.getSrc());
@@ -2123,16 +2224,18 @@ LogicalResult mlir::translateToCannKernel(Operation *op, raw_ostream &os,
 
     SupportedMixLoweringFailureReason legacyFallbackFailureReason =
         SupportedMixLoweringFailureReason::UnsupportedLegacySignature;
-    FailureOr<GenericMixSingleChainSupportedLowering> legacyFallbackLowering =
-        buildLegacySupportedMixLowering(mixPartitionPlan, primaryKernel,
-                                        mixPartitionSummary,
-                                        singleChainValidation,
-                                        legacyFallbackFailureReason);
-    if (succeeded(legacyFallbackLowering)) {
-      emitSupportedMixKernel(os, primaryKernel, mixPartitionPlan,
-                             legacyFallbackLowering->boundaryLayer,
-                             legacyFallbackLowering->config);
-      return success();
+    if (shouldAttemptLegacyFallbackAfterValidationFailure(singleChainValidation)) {
+      FailureOr<GenericMixSingleChainSupportedLowering> legacyFallbackLowering =
+          buildLegacySupportedMixLowering(mixPartitionPlan, primaryKernel,
+                                          mixPartitionSummary,
+                                          singleChainValidation,
+                                          legacyFallbackFailureReason);
+      if (succeeded(legacyFallbackLowering)) {
+        emitSupportedMixKernel(os, primaryKernel, mixPartitionPlan,
+                               legacyFallbackLowering->boundaryLayer,
+                               legacyFallbackLowering->config);
+        return success();
+      }
     }
 
     return primaryKernel.emitOpError(Twine(
