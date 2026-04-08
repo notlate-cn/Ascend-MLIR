@@ -1613,6 +1613,14 @@ static void emitSupportedMixBoundaryOutputTransfer(
      << "    reluOutQueue.FreeTensor(finalLocal);\n";
 }
 
+static Operation *getSelectedMixBoundaryTransferCopyOp(
+    const SupportedMixBoundaryLayer &layer) {
+  // MLIR op wrappers only expose getOperation() on the mutable wrapper, but we
+  // only need the identity for routing.
+  return const_cast<SupportedMixBoundaryPayload &>(layer.payload)
+      .transferCopy.getOperation();
+}
+
 static const MixRegionPlan *
 findFirstMixRegionOfKind(ArrayRef<MixRegionPlan> regions, MixPartitionKind kind) {
   for (const MixRegionPlan &region : regions) {
@@ -1666,7 +1674,8 @@ static void emitMixCubeRegionOps(raw_ostream &os, const MixRegionPlan &region,
 static bool emitMixBoundaryRegionSetupOpDispatch(
     raw_ostream &os, Operation *op, const SupportedMixBoundaryLayer &layer,
     const MixTaskKindDescriptor &desc) {
-  if (!isa<ascendc::DataCopyCO12DstOp>(op))
+  if (op != getSelectedMixBoundaryTransferCopyOp(layer) ||
+      !isa<ascendc::DataCopyCO12DstOp>(op))
     return false;
   emitSupportedMixBoundaryTransferSetup(os, layer, desc);
   return true;
@@ -1677,21 +1686,17 @@ static void emitMixBoundaryRegionSetupOps(
     const SupportedMixBoundaryLayer &layer, const MixTaskKindDescriptor &desc) {
   if (region.kind != MixPartitionKind::Boundary)
     llvm_unreachable("boundary region setup received a non-boundary region");
-  if (Operation *anchor = findFirstMixRegionOpMatching(region.ops,
-                                                       [](Operation *op) {
-                                                         return isa<ascendc::DataCopyCO12DstOp>(
-                                                             op);
-                                                       })) {
-    (void)emitMixBoundaryRegionSetupOpDispatch(os, anchor, layer, desc);
-    return;
-  }
-
-  emitSupportedMixBoundaryTransferSetup(os, layer, desc);
+  bool emitted = false;
+  for (Operation *op : region.ops)
+    emitted |= emitMixBoundaryRegionSetupOpDispatch(os, op, layer, desc);
+  if (!emitted)
+    llvm_unreachable("selected boundary payload op is missing from the boundary region");
 }
 
 static bool emitMixBoundaryRegionInputOpDispatch(
     raw_ostream &os, Operation *op, const SupportedMixBoundaryLayer &layer) {
-  if (!isa<ascendc::DataCopyCO12DstOp>(op))
+  if (op != getSelectedMixBoundaryTransferCopyOp(layer) ||
+      !isa<ascendc::DataCopyCO12DstOp>(op))
     return false;
   emitSupportedMixBoundaryInputTransfer(os, layer);
   return true;
@@ -1703,21 +1708,17 @@ static void emitMixBoundaryRegionInputOps(raw_ostream &os,
   if (region.kind != MixPartitionKind::Boundary)
     llvm_unreachable(
         "boundary region input emission received a non-boundary region");
-  if (Operation *anchor = findFirstMixRegionOpMatching(region.ops,
-                                                       [](Operation *op) {
-                                                         return isa<ascendc::DataCopyCO12DstOp>(
-                                                             op);
-                                                       })) {
-    (void)emitMixBoundaryRegionInputOpDispatch(os, anchor, layer);
-    return;
-  }
-
-  emitSupportedMixBoundaryInputTransfer(os, layer);
+  bool emitted = false;
+  for (Operation *op : region.ops)
+    emitted |= emitMixBoundaryRegionInputOpDispatch(os, op, layer);
+  if (!emitted)
+    llvm_unreachable("selected boundary payload op is missing from the boundary region");
 }
 
 static bool emitMixBoundaryRegionOutputOpDispatch(
     raw_ostream &os, Operation *op, const SupportedMixBoundaryLayer &layer) {
-  if (!isa<ascendc::DataCopyCO12DstOp>(op))
+  if (op != getSelectedMixBoundaryTransferCopyOp(layer) ||
+      !isa<ascendc::DataCopyCO12DstOp>(op))
     return false;
   emitSupportedMixBoundaryOutputTransfer(os, layer);
   return true;
@@ -1729,16 +1730,11 @@ static void emitMixBoundaryRegionOutputOps(
   if (region.kind != MixPartitionKind::Boundary)
     llvm_unreachable(
         "boundary region output emission received a non-boundary region");
-  if (Operation *anchor = findFirstMixRegionOpMatching(region.ops,
-                                                       [](Operation *op) {
-                                                         return isa<ascendc::DataCopyCO12DstOp>(
-                                                             op);
-                                                       })) {
-    (void)emitMixBoundaryRegionOutputOpDispatch(os, anchor, layer);
-    return;
-  }
-
-  emitSupportedMixBoundaryOutputTransfer(os, layer);
+  bool emitted = false;
+  for (Operation *op : region.ops)
+    emitted |= emitMixBoundaryRegionOutputOpDispatch(os, op, layer);
+  if (!emitted)
+    llvm_unreachable("selected boundary payload op is missing from the boundary region");
 }
 
 static bool emitMixVectorRegionOpDispatch(raw_ostream &os, Operation *op,
