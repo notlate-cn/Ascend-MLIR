@@ -230,6 +230,9 @@ buildSupportedMixBoundaryPayload(const MixBoundaryValue &input,
                                  const MixBoundaryValue &output,
                                  ArrayRef<Operation *> boundaryOps);
 
+static FailureOr<SupportedMixBoundaryLayer>
+inferLegacySupportedMixBoundaryLayer(ArrayRef<Operation *> boundaryOps);
+
 static StringRef stringifyGenericMixSingleChainEmissionFailureReason(
     GenericMixSingleChainEmissionFailureReason reason);
 
@@ -1059,38 +1062,40 @@ static bool isSupportedMixVectorMulUser(Operation *user) {
 }
 
 static FailureOr<SupportedMixKernelConfig::EpilogueKind>
-inferSupportedMixEpilogueKind(const MixPartitionSummary &summary,
+inferSupportedMixEpilogueKind(func::FuncOp funcOp,
+                              const MixPartitionSummary &summary,
                               double &leakyReluAlpha) {
   bool hasVectorMax = hasSupportedMixVectorMax(summary);
 
   SupportedMixKernelConfig::EpilogueKind epilogueKind =
       SupportedMixKernelConfig::EpilogueKind::Unknown;
-  for (Operation *op : summary.vectorOps) {
+  funcOp.walk([&](Operation *op) {
     if (epilogueKind != SupportedMixKernelConfig::EpilogueKind::Unknown)
-      break;
+      return WalkResult::interrupt();
     auto dupOp = dyn_cast<ascendc::DuplicateL2Op>(op);
     if (!dupOp)
-      continue;
+      return WalkResult::advance();
     if (getTensorStoragePartition(dupOp.getDst()) != MixPartitionKind::Vector)
-      continue;
+      return WalkResult::advance();
     if (!hasVectorMax)
-      continue;
+      return WalkResult::advance();
     bool usedByVectorMul =
         llvm::any_of(dupOp.getDst().getUsers(), isSupportedMixVectorMulUser);
     if (!usedByVectorMul)
-      continue;
+      return WalkResult::advance();
     auto constOp = dupOp.getScalar().getDefiningOp<arith::ConstantOp>();
     if (!constOp)
-      continue;
+      return WalkResult::advance();
     auto floatAttr = dyn_cast<FloatAttr>(constOp.getValue());
     if (!floatAttr)
-      continue;
+      return WalkResult::advance();
     leakyReluAlpha = floatAttr.getValue().convertToDouble();
     epilogueKind =
         (leakyReluAlpha == 0.0)
             ? SupportedMixKernelConfig::EpilogueKind::Relu
             : SupportedMixKernelConfig::EpilogueKind::LeakyRelu;
-  }
+    return WalkResult::interrupt();
+  });
 
   if (epilogueKind == SupportedMixKernelConfig::EpilogueKind::Unknown)
     return failure();
@@ -1106,12 +1111,13 @@ inferSupportedMixTaskKind(func::FuncOp funcOp,
 }
 
 static FailureOr<SupportedMixKernelConfig>
-inferSupportedMixKernelConfig(const MixPartitionSummary &summary) {
+inferSupportedMixKernelConfig(func::FuncOp funcOp,
+                              const MixPartitionSummary &summary) {
   SupportedMixKernelConfig config;
-  config.taskKind = inferSupportedMixTaskKind({}, summary);
+  config.taskKind = inferSupportedMixTaskKind(funcOp, summary);
   config.hasBiasAdd = inferSupportedMixHasBiasAdd(summary);
   auto epilogueKind =
-      inferSupportedMixEpilogueKind(summary, config.leakyReluAlpha);
+      inferSupportedMixEpilogueKind(funcOp, summary, config.leakyReluAlpha);
   if (failed(epilogueKind))
     return failure();
   config.epilogueKind = *epilogueKind;
@@ -1217,7 +1223,8 @@ lowerGenericMixSingleChainToSupportedMix(
     failureReason = SupportedMixLoweringFailureReason::UnsupportedLegacySignature;
     return failure();
   }
-  FailureOr<SupportedMixKernelConfig> config = inferSupportedMixKernelConfig(summary);
+  FailureOr<SupportedMixKernelConfig> config =
+      inferSupportedMixKernelConfig(funcOp, summary);
   if (failed(config)) {
     failureReason =
         SupportedMixLoweringFailureReason::UnsupportedReluStyleEpilogue;
@@ -1243,19 +1250,16 @@ buildLegacySupportedMixLowering(const MixPartitionPlan &plan,
                                 const MixPartitionSummary &summary,
                                 const MixSingleChainValidation &validation,
                                 SupportedMixLoweringFailureReason &failureReason) {
+  (void)validation;
   if (!hasSupportedMixFunctionSignature(funcOp)) {
     failureReason = SupportedMixLoweringFailureReason::UnsupportedLegacySignature;
     return failure();
   }
-  FailureOr<SupportedMixKernelConfig> config = inferSupportedMixKernelConfig(summary);
+  FailureOr<SupportedMixKernelConfig> config =
+      inferSupportedMixKernelConfig(funcOp, summary);
   if (failed(config)) {
     failureReason =
         SupportedMixLoweringFailureReason::UnsupportedReluStyleEpilogue;
-    return failure();
-  }
-  if (!validation.selectedBoundaryCrossing) {
-    failureReason =
-        SupportedMixLoweringFailureReason::MissingSelectedBoundaryCrossing;
     return failure();
   }
   const MixRegionPlan *boundaryRegion =
@@ -1265,15 +1269,64 @@ buildLegacySupportedMixLowering(const MixPartitionPlan &plan,
     return failure();
   }
   FailureOr<SupportedMixBoundaryLayer> boundaryLayer =
-      buildSupportedMixBoundaryLayer(boundaryRegion->ops,
-                                     validation.selectedBoundaryCrossing->input,
-                                     validation.selectedBoundaryCrossing->output);
+      inferLegacySupportedMixBoundaryLayer(boundaryRegion->ops);
   if (failed(boundaryLayer)) {
     failureReason = SupportedMixLoweringFailureReason::UnsupportedBoundaryPayload;
     return failure();
   }
 
   return GenericMixSingleChainSupportedLowering{*boundaryLayer, *config};
+}
+
+static FailureOr<SupportedMixBoundaryLayer>
+inferLegacySupportedMixBoundaryLayer(ArrayRef<Operation *> boundaryOps) {
+  for (Operation *op : boundaryOps) {
+    auto copyOp = dyn_cast<ascendc::DataCopyCO12DstOp>(op);
+    if (!copyOp)
+      continue;
+
+    auto inputDeque =
+        dyn_cast_or_null<ascendc::TQueBindDequeTensorOp>(copyOp.getSrc().getDefiningOp());
+    if (!inputDeque)
+      continue;
+    auto inputQueuePosition = getQueueLikePosition(inputDeque.getQueue().getType());
+    if (!inputQueuePosition || *inputQueuePosition != ascendc::TPosition::CO1)
+      continue;
+
+    ascendc::TQueBindEnqueTensorOp inputEnqueue;
+    for (Operation *queueUser : inputDeque.getQueue().getUsers()) {
+      auto enqueTensor = dyn_cast<ascendc::TQueBindEnqueTensorOp>(queueUser);
+      if (enqueTensor && enqueTensor.getQueue() == inputDeque.getQueue()) {
+        inputEnqueue = enqueTensor;
+        break;
+      }
+    }
+    if (!inputEnqueue)
+      continue;
+
+    auto outputAlloc =
+        dyn_cast_or_null<ascendc::TQueBindAllocTensorOp>(copyOp.getDst().getDefiningOp());
+    if (!outputAlloc)
+      continue;
+    auto outputQueuePosition = getQueueLikePosition(outputAlloc.getQueue().getType());
+    if (!outputQueuePosition || *outputQueuePosition != ascendc::TPosition::VECIN)
+      continue;
+
+    Type srcElementType = getSupportedMixTensorElementType(copyOp.getSrc());
+    Type dstElementType = getSupportedMixTensorElementType(copyOp.getDst());
+    if (!srcElementType || !dstElementType || srcElementType != dstElementType)
+      continue;
+
+    SupportedMixBoundaryPayload payload{srcElementType, inputEnqueue, copyOp,
+                                        outputAlloc};
+    MixBoundaryValue input{copyOp.getSrc(), MixPartitionKind::Cube,
+                           MixPartitionKind::Boundary, inputEnqueue, copyOp};
+    MixBoundaryValue output{copyOp.getDst(), MixPartitionKind::Boundary,
+                            MixPartitionKind::Vector, copyOp, outputAlloc};
+    return SupportedMixBoundaryLayer{input, output, payload};
+  }
+
+  return failure();
 }
 
 // Supported mix emission helpers.
@@ -1353,10 +1406,7 @@ static void emitSupportedMixBoundaryTransferSetup(
       getQueueLikePosition(outputAlloc.getQueue().getType());
   if (!inputQueuePosition || *inputQueuePosition != ascendc::TPosition::CO1 ||
       !outputQueuePosition || *outputQueuePosition != ascendc::TPosition::VECIN ||
-      inputEnqueue.getTensor() != layer.input.value ||
-      transferCopy.getSrc() != layer.input.value ||
-      transferCopy.getDst() != layer.output.value ||
-      outputAlloc.getTensor() != layer.output.value) {
+      transferCopy.getSrc() == Value() || transferCopy.getDst() == Value()) {
     llvm_unreachable("unsupported supported-mix boundary payload");
   }
   os << "    TQue<TPosition::VECIN, 1> reluInQueue;\n"
@@ -1376,9 +1426,9 @@ static void emitSupportedMixBoundaryInputTransfer(
   auto inputEnqueue = layer.payload.inputEnqueue;
   auto transferCopy = layer.payload.transferCopy;
   StringRef elemType = getSupportedMixElementTypeSpelling(layer.payload.elementType);
-  if (inputEnqueue.getTensor() != layer.input.value ||
-      transferCopy.getSrc() != layer.input.value ||
-      transferCopy.getDst() != layer.output.value) {
+  auto inputQueuePosition = getQueueLikePosition(inputEnqueue.getQueue().getType());
+  if (!inputQueuePosition || *inputQueuePosition != ascendc::TPosition::CO1 ||
+      transferCopy.getSrc() == Value() || transferCopy.getDst() == Value()) {
     llvm_unreachable("unsupported supported-mix boundary input payload");
   }
   os << "    LocalTensor<" << elemType
@@ -1396,8 +1446,10 @@ static void emitSupportedMixBoundaryOutputTransfer(
   auto transferCopy = layer.payload.transferCopy;
   auto outputAlloc = layer.payload.outputAlloc;
   StringRef elemType = getSupportedMixElementTypeSpelling(layer.payload.elementType);
-  if (transferCopy.getDst() != layer.output.value ||
-      outputAlloc.getTensor() != layer.output.value) {
+  auto outputQueuePosition =
+      getQueueLikePosition(outputAlloc.getQueue().getType());
+  if (!outputQueuePosition || *outputQueuePosition != ascendc::TPosition::VECIN ||
+      transferCopy.getDst() == Value()) {
     llvm_unreachable("unsupported supported-mix boundary output payload");
   }
   os << "    reluOutQueue.EnQue<" << elemType << ">(outLocal);\n"
@@ -2023,11 +2075,29 @@ LogicalResult mlir::translateToCannKernel(Operation *op, raw_ostream &os,
               legacyFallbackFailureReason));
     }
 
+    SupportedMixLoweringFailureReason legacyFallbackFailureReason =
+        SupportedMixLoweringFailureReason::UnsupportedLegacySignature;
+    FailureOr<GenericMixSingleChainSupportedLowering> legacyFallbackLowering =
+        buildLegacySupportedMixLowering(mixPartitionPlan, primaryKernel,
+                                        mixPartitionSummary,
+                                        singleChainValidation,
+                                        legacyFallbackFailureReason);
+    if (succeeded(legacyFallbackLowering)) {
+      emitSupportedMixKernel(os, primaryKernel, mixPartitionPlan,
+                             legacyFallbackLowering->boundaryLayer,
+                             legacyFallbackLowering->config);
+      return success();
+    }
+
     return primaryKernel.emitOpError(Twine(
         "mix translation requires a supported cube/vector partitioned kernel "
         "shape; generic single-chain analysis rejected plan because ") +
                                      Twine(describeMixSingleChainValidation(
-                                         singleChainValidation)));
+                                         singleChainValidation)) +
+                                     Twine("; the retained supported-mix "
+                                           "fallback also failed because ") +
+                                     stringifySupportedMixLoweringFailureReason(
+                                         legacyFallbackFailureReason));
   }
 
   // Replace ops whose PyAsc emitters generate wrong C++ with verbatim.
