@@ -23,7 +23,7 @@
 // CHECK: uint32_t count = static_cast<uint32_t>(tiling.singleCoreM * tiling.singleCoreN / 2);
 // CHECK: CrossCoreWaitFlag(3);
 // CHECK: DataCopy(reluInLocal, cGM, count);
-// CHECK: const uint32_t vectorRegionOpCount = {{[0-9]+}};
+// CHECK: const uint32_t vectorRegionOpCount = 4;
 // CHECK: LeakyRelu(outLocal, inLocal, static_cast<float>(0.001000f), count);
 
 // This fixture keeps the same generic single-chain shell while confirming the
