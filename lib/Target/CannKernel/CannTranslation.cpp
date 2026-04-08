@@ -1382,10 +1382,6 @@ lowerGenericMixSingleChainToSupportedMix(
     failureReason = SupportedMixLoweringFailureReason::UnsupportedLegacySignature;
     return failure();
   }
-  if (findUnsupportedMixVectorRegionOp(emissionPlan.vectorRegion->ops)) {
-    failureReason = SupportedMixLoweringFailureReason::UnsupportedVectorOp;
-    return failure();
-  }
   FailureOr<SupportedMixKernelConfig> config =
       inferSupportedMixKernelConfig(funcOp, summary);
   if (failed(config)) {
@@ -1416,12 +1412,6 @@ buildLegacySupportedMixLowering(const MixPartitionPlan &plan,
   (void)validation;
   if (!hasSupportedMixFunctionSignature(funcOp)) {
     failureReason = SupportedMixLoweringFailureReason::UnsupportedLegacySignature;
-    return failure();
-  }
-  const MixRegionPlan *vectorRegion =
-      findFirstMixRegionOfKind(plan.regions, MixPartitionKind::Vector);
-  if (vectorRegion && findUnsupportedMixVectorRegionOp(vectorRegion->ops)) {
-    failureReason = SupportedMixLoweringFailureReason::UnsupportedVectorOp;
     return failure();
   }
   FailureOr<SupportedMixKernelConfig> config =
@@ -1756,27 +1746,24 @@ static void emitMixBoundaryRegionOutputOps(
     emitSupportedMixBoundaryOutputTransfer(os, layer);
 }
 
-static bool emitMixVectorRegionOpDispatch(raw_ostream &os, Operation *op,
-                                          const SupportedMixKernelConfig &config) {
-  if (!isSupportedMixVectorRegionOp(op))
-    return false;
-
-  emitSupportedMixVectorEpilogue(os, config);
-  return true;
-}
-
-static void emitMixVectorRegionOps(raw_ostream &os, const MixRegionPlan &region,
-                                   const SupportedMixKernelConfig &config) {
+static bool emitMixVectorRegionOps(raw_ostream &os, const MixRegionPlan &region,
+                                   const SupportedMixKernelConfig &config,
+                                   SupportedMixLoweringFailureReason &failureReason) {
   if (region.kind != MixPartitionKind::Vector)
     llvm_unreachable("vector region emission received a non-vector region");
-  for (Operation *op : region.ops) {
-    if (!isSupportedMixVectorRegionOp(op))
-      continue;
-    (void)emitMixVectorRegionOpDispatch(os, op, config);
-    return;
+  if (Operation *unsupportedOp = findUnsupportedMixVectorRegionOp(region.ops)) {
+    (void)unsupportedOp;
+    failureReason = SupportedMixLoweringFailureReason::UnsupportedVectorOp;
+    return false;
   }
 
+  unsigned supportedVectorOpCount =
+      llvm::count_if(region.ops, isSupportedMixVectorRegionOp);
+  os << "    const uint32_t vectorRegionOpCount = "
+     << supportedVectorOpCount << ";\n"
+     << "    (void)vectorRegionOpCount;\n";
   emitSupportedMixVectorEpilogue(os, config);
+  return true;
 }
 
 static Operation *findUnsupportedMixVectorRegionOp(ArrayRef<Operation *> ops) {
@@ -1787,12 +1774,13 @@ static Operation *findUnsupportedMixVectorRegionOp(ArrayRef<Operation *> ops) {
   return nullptr;
 }
 
-static void emitMixKernelShellBody(
+static bool emitMixKernelShellBody(
     raw_ostream &os, const MixRegionPlan &cubeRegion,
     const MixRegionPlan &boundaryRegion, const MixRegionPlan &vectorRegion,
     const SupportedMixBoundaryLayer &boundaryLayer,
     const SupportedMixKernelConfig &config,
-    const MixTaskKindDescriptor &desc) {
+    const MixTaskKindDescriptor &desc,
+    SupportedMixLoweringFailureReason &failureReason) {
   os << "  if ASCEND_IS_AIC {\n";
   emitMixCubeRegionOps(os, cubeRegion, config);
   emitSupportedMixCrossCoreSetFlag(os, desc);
@@ -1801,9 +1789,11 @@ static void emitMixKernelShellBody(
   emitMixBoundaryRegionSetupOps(os, boundaryRegion, boundaryLayer, desc);
   os << "    CrossCoreWaitFlag(" << desc.crossCoreFlagId << ");\n\n";
   emitMixBoundaryRegionInputOps(os, boundaryRegion, boundaryLayer);
-  emitMixVectorRegionOps(os, vectorRegion, config);
+  if (!emitMixVectorRegionOps(os, vectorRegion, config, failureReason))
+    return false;
   emitMixBoundaryRegionOutputOps(os, boundaryRegion, boundaryLayer);
   os << "  }\n";
+  return true;
 }
 
 static void emitSupportedMixIncludesAndNamespaces(raw_ostream &os) {
@@ -1848,10 +1838,11 @@ static void emitSupportedMixKernelShellEpilogue(raw_ostream &os) {
   os << "}\n";
 }
 
-static void emitSupportedMixKernel(raw_ostream &os, func::FuncOp funcOp,
+static bool emitSupportedMixKernel(raw_ostream &os, func::FuncOp funcOp,
                                    const MixPartitionPlan &plan,
                                    const SupportedMixBoundaryLayer &boundaryLayer,
-                                   const SupportedMixKernelConfig &config) {
+                                   const SupportedMixKernelConfig &config,
+                                   SupportedMixLoweringFailureReason &failureReason) {
   MixTaskKindDescriptor desc = getMixTaskKindDescriptor(config.taskKind);
   emitSupportedMixKernelShellPrologue(os, funcOp.getName(), desc);
   const MixRegionPlan *cubeRegion =
@@ -1863,23 +1854,28 @@ static void emitSupportedMixKernel(raw_ostream &os, func::FuncOp funcOp,
   if (!cubeRegion || !boundaryRegion || !vectorRegion)
     llvm_unreachable("supported mix emission requires cube, boundary, and "
                      "vector regions");
-  emitMixKernelShellBody(os, *cubeRegion, *boundaryRegion, *vectorRegion,
-                         boundaryLayer, config, desc);
+  if (!emitMixKernelShellBody(os, *cubeRegion, *boundaryRegion, *vectorRegion,
+                              boundaryLayer, config, desc, failureReason))
+    return false;
   emitSupportedMixKernelShellEpilogue(os);
+  return true;
 }
 
-static void emitGenericMixSingleChainKernel(
+static bool emitGenericMixSingleChainKernel(
     raw_ostream &os, func::FuncOp funcOp,
     const GenericMixSingleChainEmissionPlan &emissionPlan,
-    const GenericMixSingleChainSupportedLowering &supportedLowering) {
+    const GenericMixSingleChainSupportedLowering &supportedLowering,
+    SupportedMixLoweringFailureReason &failureReason) {
   MixTaskKindDescriptor desc =
       getMixTaskKindDescriptor(supportedLowering.config.taskKind);
   emitSupportedMixKernelShellPrologue(os, funcOp.getName(), desc);
-  emitMixKernelShellBody(
+  if (!emitMixKernelShellBody(
       os, *emissionPlan.cubeRegion, *emissionPlan.boundaryRegion,
       *emissionPlan.vectorRegion, supportedLowering.boundaryLayer,
-      supportedLowering.config, desc);
+      supportedLowering.config, desc, failureReason))
+    return false;
   emitSupportedMixKernelShellEpilogue(os);
+  return true;
 }
 
 /// Emit the TilingData struct declaration from a PyStructType.
@@ -2319,9 +2315,18 @@ LogicalResult mlir::translateToCannKernel(Operation *op, raw_ostream &os,
                                                     *genericEmissionPlan,
                                                     genericLoweringFailureReason);
         if (succeeded(supportedLowering)) {
-          emitGenericMixSingleChainKernel(os, primaryKernel, *genericEmissionPlan,
-                                          *supportedLowering);
-          return success();
+          SupportedMixLoweringFailureReason emissionFailureReason =
+              SupportedMixLoweringFailureReason::UnsupportedLegacySignature;
+          if (emitGenericMixSingleChainKernel(
+                  os, primaryKernel, *genericEmissionPlan, *supportedLowering,
+                  emissionFailureReason))
+            return success();
+          return primaryKernel.emitOpError(
+              Twine("mix translation found a valid single-chain cube/boundary/"
+                    "vector plan, but the generic primary route could not "
+                    "lower the current supported shell because ") +
+              stringifySupportedMixLoweringFailureReason(
+                  emissionFailureReason));
         }
 
         SupportedMixLoweringFailureReason legacyFallbackFailureReason =
@@ -2332,10 +2337,19 @@ LogicalResult mlir::translateToCannKernel(Operation *op, raw_ostream &os,
                                             singleChainValidation,
                                             legacyFallbackFailureReason);
         if (succeeded(legacyFallbackLowering)) {
-          emitSupportedMixKernel(os, primaryKernel, mixPartitionPlan,
-                                 legacyFallbackLowering->boundaryLayer,
-                                 legacyFallbackLowering->config);
-          return success();
+          SupportedMixLoweringFailureReason emissionFailureReason =
+              SupportedMixLoweringFailureReason::UnsupportedLegacySignature;
+          if (emitSupportedMixKernel(
+                  os, primaryKernel, mixPartitionPlan,
+                  legacyFallbackLowering->boundaryLayer,
+                  legacyFallbackLowering->config, emissionFailureReason))
+            return success();
+          return primaryKernel.emitOpError(
+              Twine("mix translation found a valid single-chain cube/boundary/"
+                    "vector plan, but the retained supported-mix fallback "
+                    "could not lower the current supported shell because ") +
+              stringifySupportedMixLoweringFailureReason(
+                  emissionFailureReason));
         }
 
         return primaryKernel.emitOpError(
@@ -2357,10 +2371,19 @@ LogicalResult mlir::translateToCannKernel(Operation *op, raw_ostream &os,
                                           singleChainValidation,
                                           legacyFallbackFailureReason);
       if (succeeded(legacyFallbackLowering)) {
-        emitSupportedMixKernel(os, primaryKernel, mixPartitionPlan,
-                               legacyFallbackLowering->boundaryLayer,
-                               legacyFallbackLowering->config);
-        return success();
+        SupportedMixLoweringFailureReason emissionFailureReason =
+            SupportedMixLoweringFailureReason::UnsupportedLegacySignature;
+        if (emitSupportedMixKernel(os, primaryKernel, mixPartitionPlan,
+                                   legacyFallbackLowering->boundaryLayer,
+                                   legacyFallbackLowering->config,
+                                   emissionFailureReason))
+          return success();
+        return primaryKernel.emitOpError(
+            Twine("mix translation found a valid single-chain cube/boundary/"
+                  "vector plan, but the retained supported-mix fallback "
+                  "could not lower the current supported shell because ") +
+            stringifySupportedMixLoweringFailureReason(
+                emissionFailureReason));
       }
 
       return primaryKernel.emitOpError(
@@ -2383,10 +2406,22 @@ LogicalResult mlir::translateToCannKernel(Operation *op, raw_ostream &os,
                                           singleChainValidation,
                                           legacyFallbackFailureReason);
       if (succeeded(legacyFallbackLowering)) {
-        emitSupportedMixKernel(os, primaryKernel, mixPartitionPlan,
-                               legacyFallbackLowering->boundaryLayer,
-                               legacyFallbackLowering->config);
-        return success();
+        SupportedMixLoweringFailureReason emissionFailureReason =
+            SupportedMixLoweringFailureReason::UnsupportedLegacySignature;
+        if (emitSupportedMixKernel(os, primaryKernel, mixPartitionPlan,
+                                   legacyFallbackLowering->boundaryLayer,
+                                   legacyFallbackLowering->config,
+                                   emissionFailureReason))
+          return success();
+        return primaryKernel.emitOpError(
+            Twine("mix translation requires a supported cube/vector "
+                  "partitioned kernel shape; generic single-chain analysis "
+                  "rejected plan because ") +
+            Twine(describeMixSingleChainValidation(singleChainValidation)) +
+            Twine("; the retained supported-mix fallback could not lower the "
+                  "current supported shell because ") +
+            stringifySupportedMixLoweringFailureReason(
+                emissionFailureReason));
       }
     }
 
