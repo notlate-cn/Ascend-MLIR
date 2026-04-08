@@ -12,10 +12,9 @@
 // CHECK: #include "lib/matmul_intf.h"
 // CHECK-NOT: struct TilingData {
 // CHECK: __aicore__ inline void CopyTiling(TCubeTiling *tiling, GM_ADDR tilingGM)
-// CHECK-LABEL: extern "C" __global__ __aicore__ void
-// CHECK-SAME: {{.*}}\(
-// CHECK-SAME: GM_ADDR a, GM_ADDR b, GM_ADDR bias, GM_ADDR out, GM_ADDR workspace,
-// CHECK-SAME: GM_ADDR tilingGm
+// CHECK-LABEL: extern "C" __global__ __aicore__ void matmul_add_leakyrelu(
+// CHECK: GM_ADDR a, GM_ADDR b, GM_ADDR bias, GM_ADDR out, GM_ADDR workspace,
+// CHECK: GM_ADDR tilingGm
 // CHECK: KERNEL_TASK_TYPE_DEFAULT(KERNEL_TYPE_MIX_AIC_1_2);
 // CHECK: if ASCEND_IS_AIC {
 // CHECK: REGIST_MATMUL_OBJ(&pipe, GetSysWorkSpacePtr(), mm, &tiling);
