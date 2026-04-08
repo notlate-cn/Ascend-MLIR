@@ -1615,10 +1615,8 @@ static void emitSupportedMixBoundaryOutputTransfer(
 
 static Operation *getSelectedMixBoundaryTransferCopyOp(
     const SupportedMixBoundaryLayer &layer) {
-  // MLIR op wrappers only expose getOperation() on the mutable wrapper, but we
-  // only need the identity for routing.
-  return const_cast<SupportedMixBoundaryPayload &>(layer.payload)
-      .transferCopy.getOperation();
+  ascendc::DataCopyCO12DstOp transferCopy = layer.payload.transferCopy;
+  return transferCopy.getOperation();
 }
 
 static const MixRegionPlan *
@@ -1690,7 +1688,7 @@ static void emitMixBoundaryRegionSetupOps(
   for (Operation *op : region.ops)
     emitted |= emitMixBoundaryRegionSetupOpDispatch(os, op, layer, desc);
   if (!emitted)
-    llvm_unreachable("selected boundary payload op is missing from the boundary region");
+    emitSupportedMixBoundaryTransferSetup(os, layer, desc);
 }
 
 static bool emitMixBoundaryRegionInputOpDispatch(
@@ -1712,7 +1710,7 @@ static void emitMixBoundaryRegionInputOps(raw_ostream &os,
   for (Operation *op : region.ops)
     emitted |= emitMixBoundaryRegionInputOpDispatch(os, op, layer);
   if (!emitted)
-    llvm_unreachable("selected boundary payload op is missing from the boundary region");
+    emitSupportedMixBoundaryInputTransfer(os, layer);
 }
 
 static bool emitMixBoundaryRegionOutputOpDispatch(
@@ -1734,7 +1732,7 @@ static void emitMixBoundaryRegionOutputOps(
   for (Operation *op : region.ops)
     emitted |= emitMixBoundaryRegionOutputOpDispatch(os, op, layer);
   if (!emitted)
-    llvm_unreachable("selected boundary payload op is missing from the boundary region");
+    emitSupportedMixBoundaryOutputTransfer(os, layer);
 }
 
 static bool emitMixVectorRegionOpDispatch(raw_ostream &os, Operation *op,
