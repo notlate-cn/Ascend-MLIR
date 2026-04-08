@@ -240,3 +240,21 @@ Append a short note to this plan documenting:
 git add docs/superpowers/plans/2026-04-08-generic-mix-single-chain-op-driven-plan.md
 git commit -m "Record op-driven mix emission verification"
 ```
+
+### Verification Note
+
+- 2026-04-08 xvm rebuild:
+  - `cmake --build build --target check-afir -j10`
+  - result: `Total Discovered Tests: 19`, `Passed: 19 (100.00%)`
+- 2026-04-08 xvm mix e2e:
+  - `bash -lc 'source examples/env.sh && bash examples/matmul-add-leakyrelu/run.sh --log'`
+  - result: `PASS`
+  - `max_abs_diff=0.000000e+00`
+  - `mean_abs_diff=0.000000e+00`
+- 2026-04-08 xvm full test entry:
+  - `bash scripts/build.sh --build-tests`
+  - result: exit code `0`
+  - lit suite passed; tool integration stage reported `0 passed, 0 failed`
+- Added unsupported-op negative coverage:
+  - `test/Target/cann-translate-mix-unsupported-vector.mlir`
+  - `test/Target/cann-translate-mix-unsupported-cube.mlir`
