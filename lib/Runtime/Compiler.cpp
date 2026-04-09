@@ -31,7 +31,8 @@ llvm::Error Compiler::RunProcess(const std::vector<std::string>& args) {
 llvm::Expected<std::string> Compiler::Compile(const std::string& src_file,
                                               const std::string& output_dir,
                                               const std::string& kernel_name) {
-  ::setenv("SOC_VERSION", cfg_.soc_version.c_str(), 1);
+  const std::string socVersion = resolveSocVersion(cfg_.soc_version, "Ascend910B1");
+  ::setenv("SOC_VERSION", socVersion.c_str(), 1);
 
   auto ascendHomeOr = requireAscendHome();
   if (!ascendHomeOr)

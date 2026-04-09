@@ -359,6 +359,7 @@ static void testPackedMixExecutorErrors() {
 
 static void testRuntimePathUtils() {
   llvm::outs() << "\n[Runtime path utils]\n";
+  const std::string testSoc = "TestSoc";
 
   {
     auto archDir = getHostCannArchDir("x86_64");
@@ -412,17 +413,36 @@ static void testRuntimePathUtils() {
   }
 
   {
+    auto soc = resolveSocVersionForTest("ExplicitSoc", "EnvSoc", "FallbackSoc");
+    EXPECT(soc == "ExplicitSoc",
+           "soc resolver prefers explicit value when it exists");
+  }
+
+  {
+    auto soc = resolveSocVersionForTest("", "EnvSoc", "FallbackSoc");
+    EXPECT(soc == "EnvSoc",
+           "soc resolver falls back to SOC_VERSION environment value");
+  }
+
+  {
+    auto soc = resolveSocVersionForTest("", "", "FallbackSoc");
+    EXPECT(soc == "FallbackSoc",
+           "soc resolver uses fallback when explicit and environment values are absent");
+  }
+
+  {
     const std::filesystem::path root = "/tmp/rt_path_utils_arch";
     std::filesystem::remove_all(root);
     std::filesystem::create_directories(root / "x86_64-linux/lib64");
     std::filesystem::create_directories(
-        root / "x86_64-linux/simulator/Ascend910B1/lib");
+        root / ("x86_64-linux/simulator/" + testSoc + "/lib"));
     std::filesystem::create_directories(
         root / "x86_64-linux/lib64/device/lib64");
     std::filesystem::create_directories(
         root / "x86_64-linux/simulator/custom_dav_variant/lib");
     std::ofstream(root / "x86_64-linux/lib64/libascendcl.so").put('\n');
-    std::ofstream(root / "x86_64-linux/simulator/Ascend910B1/lib/libruntime_camodel.so")
+    std::ofstream(root / ("x86_64-linux/simulator/" + testSoc +
+                           "/lib/libruntime_camodel.so"))
         .put('\n');
     std::ofstream(root / "x86_64-linux/lib64/device/lib64/libascend_hal.so")
         .put('\n');
@@ -436,8 +456,9 @@ static void testRuntimePathUtils() {
     EXPECT(findAscendAclLibPath(root.string(), "x86_64") ==
                (root / "x86_64-linux/lib64/libascendcl.so").string(),
            "path utils resolve x86_64 acl library path");
-    EXPECT(findAscendRuntimeCamodelPath(root.string(), "Ascend910B1", "x86_64") ==
-               (root / "x86_64-linux/simulator/Ascend910B1/lib/libruntime_camodel.so")
+    EXPECT(findAscendRuntimeCamodelPath(root.string(), testSoc, "x86_64") ==
+               (root / ("x86_64-linux/simulator/" + testSoc +
+                         "/lib/libruntime_camodel.so"))
                    .string(),
            "path utils resolve x86_64 simulator runtime path");
     EXPECT(findAscendDeviceLibDir(root.string(), "x86_64") ==

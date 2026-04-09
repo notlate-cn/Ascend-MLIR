@@ -15,7 +15,7 @@ public:
     //   "vec"  → 0x41415246 (MAGIC_ELF_AIVEC)
     //   "cube" → 0x41494343 (MAGIC_ELF_AICUBE)
     //   "mix"  → 0x41415246 (same as vec, conservative default)
-    std::string soc_version = "Ascend910B1";
+    std::string soc_version;
     int         num_inputs  = 1;
     int         num_outputs = 1;
     // Per-output dtype strings used by --output-dtype<N> flags in the runner.

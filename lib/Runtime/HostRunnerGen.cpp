@@ -921,6 +921,9 @@ int main(int argc, char** argv) {
 
 llvm::Expected<std::string> HostRunnerGen::Generate(const Config& cfg,
                                                      const std::string& output_dir) {
+  Config resolvedCfg = cfg;
+  resolvedCfg.soc_version = resolveSocVersion(cfg.soc_version, "Ascend910B1");
+
   // Ensure output dir exists
   if (auto ec = llvm::sys::fs::create_directories(output_dir))
     return llvm::createStringError(ec, "Cannot create output dir: %s",
@@ -936,10 +939,11 @@ llvm::Expected<std::string> HostRunnerGen::Generate(const Config& cfg,
       return llvm::createStringError(llvm::inconvertibleErrorCode(),
                                      "Cannot write runner.cpp to: %s",
                                      src_path.c_str());
-    f << (cfg.kernel_type == "mix" ? emitMixRunnerCpp(cfg) : emitRunnerCpp(cfg));
+    f << (resolvedCfg.kernel_type == "mix" ? emitMixRunnerCpp(resolvedCfg)
+                                           : emitRunnerCpp(resolvedCfg));
   }
 
-  if (cfg.verbose)
+  if (resolvedCfg.verbose)
     llvm::errs() << "[HostRunnerGen] Written: " << src_path << "\n";
 
   // Compile with g++ via /bin/sh -c

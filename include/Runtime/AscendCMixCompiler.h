@@ -9,7 +9,7 @@ namespace mlir::runtime {
 struct AscendCMixCompileConfig {
   std::string kernel_src;
   std::string kernel_name;
-  std::string soc_version = "Ascend910B1";
+  std::string soc_version;
   std::string output_dir;
   std::string ascend_cmake_dir;
 };
