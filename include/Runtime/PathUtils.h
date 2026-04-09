@@ -13,8 +13,14 @@ std::string getHostCannArchDir(llvm::StringRef machine);
 std::string findFirstExistingPath(llvm::ArrayRef<std::string> candidates);
 llvm::Expected<std::string> requireAscendHome();
 std::string findAscendHome();
+std::string findSocVersion();
+std::string resolveSocVersion(llvm::StringRef explicitSocVersion,
+                              llvm::StringRef fallbackSocVersion = "");
 std::string resolveAscendHomeForTest(llvm::StringRef ascendHomeEnv,
                                      llvm::StringRef toolkitHomeEnv);
+std::string resolveSocVersionForTest(llvm::StringRef explicitSocVersion,
+                                     llvm::StringRef envSocVersion,
+                                     llvm::StringRef fallbackSocVersion);
 
 std::string findAscendIncludeDir(llvm::StringRef ascendHome);
 std::string findAscendIncludeDir(llvm::StringRef ascendHome,

@@ -30,9 +30,8 @@ Executor::~Executor() {
 
 static std::string getLibPath() {
   const std::string home = findAscendHome();
-  const char* soc = std::getenv("SOC_VERSION");
-  if (!soc) soc = "Ascend910B1";
-  return findAscendRuntimeCamodelPath(home, soc);
+  return findAscendRuntimeCamodelPath(
+      home, resolveSocVersion("", "Ascend910B1"));
 }
 
 static std::string getAclLibPath() {

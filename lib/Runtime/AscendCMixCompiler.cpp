@@ -222,11 +222,12 @@ static std::string emitMainCpp(const std::string& kernel_name) {
 
 static std::string emitCMakeLists(const std::string& repo_root,
                                   const std::string& kernel_src,
-                                  const std::string&) {
+                                  const std::string& soc_version) {
   return "cmake_minimum_required(VERSION 3.16)\n"
          "project(runtime_mix_generated LANGUAGES CXX)\n\n"
          "set(RUN_MODE \"sim\" CACHE STRING \"sim only\")\n"
-         "set(SOC_VERSION \"Ascend910B1\" CACHE STRING \"system on chip type\")\n"
+         "set(SOC_VERSION \"" + escapeForCxx(soc_version) +
+         "\" CACHE STRING \"system on chip type\")\n"
          "set(ASCEND_CANN_PACKAGE_PATH \"$ENV{ASCEND_HOME_PATH}\" CACHE STRING \"ASCEND CANN package installation directory\")\n"
          "if(ASCEND_CANN_PACKAGE_PATH STREQUAL \"\" AND NOT \"$ENV{ASCEND_TOOLKIT_HOME}\" STREQUAL \"\")\n"
          "  set(ASCEND_CANN_PACKAGE_PATH \"$ENV{ASCEND_TOOLKIT_HOME}\" CACHE STRING \"ASCEND CANN package installation directory\" FORCE)\n"
@@ -381,9 +382,10 @@ AscendCMixCompiler::Compile(const AscendCMixCompileConfig& cfg) {
   std::string mainPath = (work_dir + "/main.cpp").str();
   std::string tilingPath = (work_dir + "/baremix_custom_tiling.cpp").str();
   std::string utilsPath = (work_dir + "/data_utils.h").str();
+  std::string soc = resolveSocVersion(cfg.soc_version, "Ascend910B1");
   if (auto err = writeFile(cmakePath, emitCMakeLists(repo_root.str().str(),
                                                      kernel_src_abs.str().str(),
-                                                     cfg.kernel_name)))
+                                                     soc)))
     return std::move(err);
   if (auto err = writeFile(mainPath, emitMainCpp(cfg.kernel_name)))
     return std::move(err);
@@ -392,7 +394,6 @@ AscendCMixCompiler::Compile(const AscendCMixCompileConfig& cfg) {
   if (auto err = writeFile(utilsPath, emitDataUtils()))
     return std::move(err);
 
-  std::string soc = cfg.soc_version.empty() ? "Ascend910B1" : cfg.soc_version;
   auto ascendHomeOr = requireAscendHome();
   if (!ascendHomeOr)
     return ascendHomeOr.takeError();

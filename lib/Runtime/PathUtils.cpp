@@ -143,6 +143,29 @@ std::string resolveAscendHomeForTest(llvm::StringRef ascendHomeEnv,
   return "";
 }
 
+std::string resolveSocVersionForTest(llvm::StringRef explicitSocVersion,
+                                     llvm::StringRef envSocVersion,
+                                     llvm::StringRef fallbackSocVersion) {
+  if (!explicitSocVersion.empty())
+    return explicitSocVersion.str();
+  if (!envSocVersion.empty())
+    return envSocVersion.str();
+  return fallbackSocVersion.str();
+}
+
+std::string findSocVersion() {
+  if (const char *socVersion = std::getenv("SOC_VERSION"))
+    if (*socVersion)
+      return socVersion;
+  return "";
+}
+
+std::string resolveSocVersion(llvm::StringRef explicitSocVersion,
+                              llvm::StringRef fallbackSocVersion) {
+  return resolveSocVersionForTest(explicitSocVersion, findSocVersion(),
+                                  fallbackSocVersion);
+}
+
 std::string findAscendHome() {
   if (const char *home = std::getenv("ASCEND_HOME_PATH"))
     if (*home)

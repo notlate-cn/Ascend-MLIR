@@ -1,6 +1,7 @@
 // tools/compiler/compiler_main.cpp
 #include "Runtime/Compiler.h"
 #include "Runtime/HostRunnerGen.h"
+#include "Runtime/PathUtils.h"
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/Path.h"
@@ -19,7 +20,7 @@ static cl::opt<std::string> OutputDir("output",
 static cl::opt<std::string> KernelName("name",
     cl::desc("Kernel name (default: stem of --kernel filename)"), cl::init(""));
 static cl::opt<std::string> SocVersion("soc",
-    cl::desc("SoC version (default: Ascend910B1)"), cl::init("Ascend910B1"));
+    cl::desc("SoC version (defaults to SOC_VERSION or Ascend910B1)"), cl::init(""));
 static cl::opt<std::string> Arch("arch",
     cl::desc("bisheng arch (default: dav-c220-vec)"), cl::init("dav-c220-vec"));
 static cl::opt<int> NumInputs("num-inputs",
@@ -75,8 +76,9 @@ int main(int argc, char** argv) {
   }
 
   // Step 1: compile kernel.cpp → .o + .bin
+  std::string resolvedSocVersion = resolveSocVersion(SocVersion, "Ascend910B1");
   Compiler::Config cc;
-  cc.soc_version  = SocVersion;
+  cc.soc_version  = resolvedSocVersion;
   cc.arch         = Arch;
   cc.kernel_type  = KernelType;
   cc.verbose      = Verbose;
@@ -94,7 +96,7 @@ int main(int argc, char** argv) {
   HostRunnerGen::Config hcfg;
   hcfg.kernel_name   = kernel_name;
   hcfg.kernel_type   = KernelType;
-  hcfg.soc_version   = SocVersion;
+  hcfg.soc_version   = resolvedSocVersion;
   hcfg.num_inputs    = NumInputs;
   hcfg.num_outputs   = NumOutputs;
   // splitComma("") → {""} which is wrong; guard for empty

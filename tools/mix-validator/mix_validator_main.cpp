@@ -33,7 +33,7 @@ static llvm::cl::opt<std::string> Golden("golden", llvm::cl::init(""));
 static llvm::cl::opt<std::string> OutputFile("output-file",
                                             llvm::cl::init(""));
 static llvm::cl::opt<std::string> SocVersion("soc",
-                                             llvm::cl::init("Ascend910B1"));
+                                             llvm::cl::init(""));
 static llvm::cl::opt<bool> ForceDirectPacked(
     "force-direct-packed",
     llvm::cl::desc("Bypass mix_runner and validate through direct packed execution"),
@@ -371,6 +371,8 @@ static std::string buildInputPath(const std::string &inputDir,
 
 int main(int argc, char **argv) {
   llvm::cl::ParseCommandLineOptions(argc, argv, "RuntimeMix mix validator\n");
+  const std::string resolvedSocVersion =
+      resolveSocVersion(SocVersion, "Ascend910B1");
 
   llvm::SmallString<256> artifactRoot(ArtifactRoot);
   llvm::sys::fs::make_absolute(artifactRoot);
@@ -473,8 +475,8 @@ int main(int argc, char **argv) {
     }
 
     llvm::Error directErr = runDirectValidator(
-        artifactRoot.str().str(), goldenPath, outputPath, SocVersion, abi, inputs,
-        output, manifestKernelSo, abi.runtimeKernelName);
+        artifactRoot.str().str(), goldenPath, outputPath, resolvedSocVersion,
+        abi, inputs, output, manifestKernelSo, abi.runtimeKernelName);
 
     if (directErr) {
       llvm::errs() << "Warning: constrained direct packed fallback failed: "
@@ -495,7 +497,7 @@ int main(int argc, char **argv) {
   std::string socSimLibDir;
   std::string davSimLibDir;
   std::string deviceLibDir;
-  if (auto err = configureRuntimeEnv(SocVersion, artifactRoot.str().str(), "",
+  if (auto err = configureRuntimeEnv(resolvedSocVersion, artifactRoot.str().str(), "",
                                      &ascendHome, &ascendLib64, &socSimLibDir,
                                      &davSimLibDir, &deviceLibDir)) {
     llvm::errs() << "Error: " << llvm::toString(std::move(err)) << "\n";
