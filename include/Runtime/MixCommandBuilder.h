@@ -77,7 +77,8 @@ buildRecompileBinaryCommand(llvm::StringRef rootDir, llvm::StringRef targetName,
 
 std::vector<std::string> buildHostSharedLinkCommand(llvm::StringRef hostStubObject,
                                                     llvm::StringRef outputSo,
-                                                    llvm::StringRef socVersion);
+                                                    llvm::StringRef socVersion,
+                                                    llvm::StringRef deviceLibDir);
 
 std::vector<std::string>
 buildHostRunnerCompileCommand(llvm::StringRef workDir,
@@ -90,6 +91,7 @@ buildHostRunnerCompileCommand(llvm::StringRef workDir,
                               llvm::StringRef runnerLib64,
                               llvm::StringRef runnerSimLibDir,
                               llvm::StringRef davSimLibDir,
+                              llvm::StringRef runnerDeviceLibDir,
                               llvm::StringRef socVersion);
 
 std::string renderCommandForDebug(llvm::ArrayRef<std::string> args);

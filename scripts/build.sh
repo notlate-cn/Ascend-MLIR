@@ -7,12 +7,13 @@ set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+source "${SCRIPT_DIR}/resolve_llvm_env.sh"
 
 # Default configuration
 BUILD_TYPE="${BUILD_TYPE:-Release}"
 BUILD_DIR="${PROJECT_ROOT}/build"
 INSTALL_DIR="${PROJECT_ROOT}/install"
-LLVM_BUILD_DIR="${LLVM_BUILD_DIR:-${PROJECT_ROOT}/externals/llvm-project/build}"
+LLVM_BUILD_DIR="$(resolve_llvm_build_dir || true)"
 NUM_JOBS="${NUM_JOBS:-$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 4)}"
 
 # Colors for output
@@ -35,8 +36,9 @@ print_error() {
 
 # Check LLVM_BUILD_DIR exists and provide helpful error message
 check_llvm_build_dir() {
-    if [ ! -d "${LLVM_BUILD_DIR}" ]; then
-        print_error "LLVM build not found at: ${LLVM_BUILD_DIR}"
+    LLVM_BUILD_DIR="$(require_llvm_build_dir || true)"
+    if [ -z "${LLVM_BUILD_DIR}" ]; then
+        print_error "LLVM build is not configured."
         print_error "Solutions:"
         print_error "  1. If LLVM is not built yet, run: $0 --build-llvm"
         print_error "  2. If LLVM is already built elsewhere:"

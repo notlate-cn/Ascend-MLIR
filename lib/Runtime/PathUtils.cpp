@@ -28,6 +28,24 @@ static std::vector<std::string> getHostCannArchCandidates() {
 #endif
 }
 
+static std::vector<std::string> getShortArchCandidates(llvm::StringRef machine) {
+  if (machine == "x86_64" || machine == "amd64")
+    return {"x86_64"};
+  if (machine == "aarch64" || machine == "arm64")
+    return {"aarch64", "arm64"};
+  return {};
+}
+
+static std::vector<std::string> getHostShortArchCandidates() {
+#if defined(__x86_64__) || defined(_M_X64)
+  return {"x86_64"};
+#elif defined(__aarch64__) || defined(_M_ARM64)
+  return {"aarch64", "arm64"};
+#else
+  return {};
+#endif
+}
+
 static std::string findUnderAscendHome(llvm::StringRef ascendHome,
                                        llvm::ArrayRef<std::string> suffixes) {
   std::vector<std::string> candidates;
@@ -208,11 +226,16 @@ std::string findAscendDeviceLibDir(llvm::StringRef ascendHome) {
 
 std::string findAscendDeviceLibDir(llvm::StringRef ascendHome,
                                    llvm::StringRef machine) {
-  return findUnderAscendHome(ascendHome,
-                             buildArchRelativeCandidates(
-                                 "/lib64/device/lib64", "/lib64/device/lib64",
-                                 machine.empty() ? std::nullopt
-                                                 : std::optional(machine)));
+  std::vector<std::string> candidates = buildArchRelativeCandidates(
+      "/lib64/device/lib64", "/lib64/device/lib64",
+      machine.empty() ? std::nullopt : std::optional(machine));
+  const std::vector<std::string> shortArchs =
+      machine.empty() ? getHostShortArchCandidates()
+                      : getShortArchCandidates(machine);
+  candidates.reserve(candidates.size() + shortArchs.size() + 1);
+  for (const std::string &archDir : shortArchs)
+    candidates.push_back("/devlib/linux/" + archDir);
+  return findUnderAscendHome(ascendHome, candidates);
 }
 
 std::string findAscendSimulatorLibDir(llvm::StringRef ascendHome,

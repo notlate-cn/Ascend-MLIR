@@ -1424,9 +1424,11 @@ MixDirectBackend::compile(const MixDirectCompileConfig &cfg) {
                                   hostStubIncludeDir);
   const std::vector<std::string> packCmd =
       buildPackCommand(hostStubObjectPath, mergeDir);
+  const std::string toolkitHomeForHostLink = getRunnerToolkitHome();
   const std::vector<std::string> hostLinkCmd =
       buildHostSharedLinkCommand(hostStubObjectPath, kernelSoPath,
-                                 cfg.socVersion);
+                                 cfg.socVersion,
+                                 getRunnerDeviceLibDir(toolkitHomeForHostLink));
 
   const std::string aicCompileContext = makeStageContext({
       {"kernel", cfg.kernelName},
@@ -1693,7 +1695,7 @@ MixDirectBackend::compile(const MixDirectCompileConfig &cfg) {
   const std::vector<std::string> runnerCompileCmd = buildHostRunnerCompileCommand(
       workDir, launcherDir, outIncludeDir, runnerMainPath, runnerTilingPath,
       runnerBinaryPath, kernelSoPath, runnerLib64, runnerSimLibDir,
-      davSimLibDir, cfg.socVersion);
+      davSimLibDir, runnerDeviceLibDir, cfg.socVersion);
   const std::string runnerBuildContext = makeStageContext({
       {"main_source", runnerMainPath},
       {"tiling_source", runnerTilingPath},
