@@ -8,6 +8,7 @@
 #
 # Dependencies: afir-opt, afir-translate, clang++, llvm-config, python3, numpy
 set -euo pipefail
+export ASCEND_DAV_SIM_VERSION=dav_3002
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
@@ -104,6 +105,7 @@ LLVM_FLAGS="$("${LLVM_BUILD_DIR}/bin/llvm-config" --cxxflags --ldflags --libs su
 if [[ ! -x "${BOOTSTRAP_BUILD_DIR}/bin/mix-compiler" ]] || \
    [[ "${REPO_ROOT}/tools/mix-compiler/mix_compiler_main.cpp" -nt "${BOOTSTRAP_BUILD_DIR}/bin/mix-compiler" ]] || \
    [[ "${REPO_ROOT}/lib/Runtime/MixDirectBackend.cpp" -nt "${BOOTSTRAP_BUILD_DIR}/bin/mix-compiler" ]] || \
+   [[ "${REPO_ROOT}/lib/Runtime/PathUtils.cpp" -nt "${BOOTSTRAP_BUILD_DIR}/bin/mix-compiler" ]] || \
    [[ "${REPO_ROOT}/lib/Runtime/MixAbi.cpp" -nt "${BOOTSTRAP_BUILD_DIR}/bin/mix-compiler" ]] || \
    [[ "${REPO_ROOT}/lib/Runtime/NpyIO.cpp" -nt "${BOOTSTRAP_BUILD_DIR}/bin/mix-compiler" ]] || \
    [[ "${REPO_ROOT}/lib/Runtime/MixAbiExtractor.cpp" -nt "${BOOTSTRAP_BUILD_DIR}/bin/mix-compiler" ]] || \
@@ -112,6 +114,7 @@ if [[ ! -x "${BOOTSTRAP_BUILD_DIR}/bin/mix-compiler" ]] || \
   clang++ \
     "${REPO_ROOT}/tools/mix-compiler/mix_compiler_main.cpp" \
     "${REPO_ROOT}/lib/Runtime/MixDirectBackend.cpp" \
+    "${REPO_ROOT}/lib/Runtime/PathUtils.cpp" \
     "${REPO_ROOT}/lib/Runtime/MixAbi.cpp" \
     "${REPO_ROOT}/lib/Runtime/NpyIO.cpp" \
     "${REPO_ROOT}/lib/Runtime/MixAbiExtractor.cpp" \
@@ -127,10 +130,12 @@ fi
 if [[ ! -x "${BOOTSTRAP_BUILD_DIR}/bin/mix-validator" ]] || \
    [[ "${REPO_ROOT}/tools/mix-validator/mix_validator_main.cpp" -nt "${BOOTSTRAP_BUILD_DIR}/bin/mix-validator" ]] || \
    [[ "${REPO_ROOT}/lib/Runtime/Executor.cpp" -nt "${BOOTSTRAP_BUILD_DIR}/bin/mix-validator" ]] || \
+   [[ "${REPO_ROOT}/lib/Runtime/PathUtils.cpp" -nt "${BOOTSTRAP_BUILD_DIR}/bin/mix-validator" ]] || \
    [[ "${REPO_ROOT}/lib/Runtime/MixAbi.cpp" -nt "${BOOTSTRAP_BUILD_DIR}/bin/mix-validator" ]]; then
   clang++ \
     "${REPO_ROOT}/tools/mix-validator/mix_validator_main.cpp" \
     "${REPO_ROOT}/lib/Runtime/Executor.cpp" \
+    "${REPO_ROOT}/lib/Runtime/PathUtils.cpp" \
     "${REPO_ROOT}/lib/Runtime/MixAbi.cpp" \
     ${LLVM_FLAGS} \
     -std=c++17 \

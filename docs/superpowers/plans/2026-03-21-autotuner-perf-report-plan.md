@@ -109,7 +109,7 @@ msprof op simulator --soc-version=Ascend910B1 \
 `msprof` binary path priority (spec §3.5):
 1. `--msprof` flag
 2. `$ASCEND_HOME_PATH/tools/profiler/bin/msprof`
-3. `/usr/local/Ascend/ascend-toolkit/latest/tools/profiler/bin/msprof`
+3. 若未设置环境变量，则报错并提示显式传入 `--msprof` 或设置 `ASCEND_HOME_PATH`/`ASCEND_TOOLKIT_HOME`
 
 Output directory: `--perf-report-out` (default `perf_out`). msprof writes files to cwd, so the implementation `cd`s into the output dir before invoking msprof (using absolute paths for runner and .bin). This ensures report files land in `--perf-report-out`.
 
@@ -324,7 +324,9 @@ Replace with:
       std::string msprof = MsprofPath;
       if (msprof.empty()) {
         const char* home = std::getenv("ASCEND_HOME_PATH");
-        if (!home) home = "/usr/local/Ascend/ascend-toolkit/latest";
+        if (!home || !*home) {
+          // fail with a clear "set ASCEND_HOME_PATH or ASCEND_TOOLKIT_HOME" error
+        }
         msprof = std::string(home) + "/tools/profiler/bin/msprof";
       }
       if (!llvm::sys::fs::exists(msprof)) {

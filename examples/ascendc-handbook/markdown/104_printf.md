@@ -67,7 +67,7 @@ fmt |  输入 |  格式控制字符串，包含两种类型的对象：普通字
         
         $bisheng -O2 foo.aicpu --cce-aicpu-L${INSTALL_DIR}/lib64/device/lib64 --cce-aicpu-laicpu_api -I${INSTALL_DIR}/include/ascendc/aicpu_api -c -o foo.aicpu.o
 
-${INSTALL_DIR}请替换为CANN软件安装后文件存储路径。以root用户安装为例，安装后文件默认存储路径为：/usr/local/Ascend/cann。
+${INSTALL_DIR}请替换为CANN软件安装后文件存储路径。请先设置 ASCEND_HOME_PATH 或 ASCEND_TOOLKIT_HOME，并将 ${INSTALL_DIR} 替换为对应环境变量的值，例如 /path/to/Ascend/ascend-toolkit/latest。
 
 
 

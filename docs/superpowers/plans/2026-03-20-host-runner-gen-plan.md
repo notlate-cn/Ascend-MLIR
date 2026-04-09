@@ -314,8 +314,7 @@ int main(int argc, char** argv) {
 
   // dlopen camodel
   const char* home = std::getenv("ASCEND_HOME_PATH");
-  std::string lib_path = std::string(home ? home :
-      "/usr/local/Ascend/ascend-toolkit/latest")
+  std::string lib_path = std::string(home)
       + "/runtime/lib64/libruntime_camodel.so";
   void* lib = dlopen(lib_path.c_str(), RTLD_LAZY | RTLD_GLOBAL);
   if (!lib) { std::cerr << "dlopen failed: " << dlerror() << "\n"; return 3; }

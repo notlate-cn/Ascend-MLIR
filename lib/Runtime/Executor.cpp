@@ -1,5 +1,6 @@
 // lib/Runtime/Executor.cpp
 #include "Runtime/Executor.h"
+#include "Runtime/PathUtils.h"
 #include "llvm/Support/Error.h"
 #include "llvm/Support/MemoryBuffer.h"
 #include <algorithm>
@@ -27,65 +28,24 @@ Executor::~Executor() {
   lib_handle_ = nullptr;
 }
 
-static std::string getAscendHomePath() {
-  const char* envs[] = {
-      std::getenv("ASCEND_HOME_PATH"),
-      std::getenv("ASCEND_TOOLKIT_HOME"),
-      "/home/niu/Ascend/latest",
-      "/usr/local/Ascend/latest",
-      "/usr/local/Ascend/ascend-toolkit/latest",
-  };
-  for (const char* home : envs) {
-    if (home && *home)
-      return home;
-  }
-  return "/usr/local/Ascend/ascend-toolkit/latest";
-}
-
 static std::string getLibPath() {
-  const std::string home = getAscendHomePath();
+  const std::string home = findAscendHome();
   const char* soc = std::getenv("SOC_VERSION");
   if (!soc) soc = "Ascend910B1";
-#if defined(__x86_64__) || defined(_M_X64)
-  const char* cann_arch = "x86_64-linux";
-#elif defined(__aarch64__) || defined(_M_ARM64)
-  const char* cann_arch = "aarch64-linux";
-#else
-  const char* cann_arch = "aarch64-linux";
-#endif
-  std::vector<std::string> candidates = {
-      home + "/" + cann_arch + "/simulator/" + std::string(soc) + "/lib/libruntime_camodel.so",
-      home + "/tools/simulator/" + std::string(soc) + "/lib/libruntime_camodel.so",
-      home + "/runtime/lib64/libruntime_camodel.so",
-  };
-  for (const auto& path : candidates) {
-    struct stat st;
-    if (::stat(path.c_str(), &st) == 0)
-      return path;
-  }
-  return candidates.front();
+  return findAscendRuntimeCamodelPath(home, soc);
 }
 
 static std::string getAclLibPath() {
-  const std::string home = getAscendHomePath();
-  // Try common paths for libascendcl.so
-  std::vector<std::string> candidates = {
-      home + "/lib64/libascendcl.so",
-      home + "/aarch64-linux/lib64/libascendcl.so",
-      home + "/x86_64-linux/lib64/libascendcl.so",
-  };
-  for (const auto& path : candidates) {
-    struct stat st;
-    if (::stat(path.c_str(), &st) == 0)
-      return path;
-  }
-  return home + "/lib64/libascendcl.so";
+  const std::string home = findAscendHome();
+  return findAscendAclLibPath(home);
 }
 
 llvm::Error Executor::LoadLib() {
   if (mode_ == BackendMode::RealDevice)
     return llvm::createStringError(llvm::inconvertibleErrorCode(),
                                    "RealDevice mode not implemented");
+  if (auto ascendHomeOr = requireAscendHome(); !ascendHomeOr)
+    return ascendHomeOr.takeError();
   std::string lib = getLibPath();
   lib_handle_ = dlopen(lib.c_str(), RTLD_LAZY | RTLD_GLOBAL);
   if (!lib_handle_)

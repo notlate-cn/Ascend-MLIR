@@ -17,7 +17,7 @@
 - Wait **1 second** after local edits before building in xvm
 - Run autotuner in xvm `sim/` dir with env set:
   ```bash
-  export ASCEND_HOME_PATH=/home/niu/Ascend/latest
+  export ASCEND_HOME_PATH=/path/to/Ascend/ascend-toolkit/latest
   export SOC_VERSION=Ascend910B1
   export ASCEND_CPU_SIMULATION=1
   export ASCEND_DEVICE_ID=0

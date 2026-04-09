@@ -156,7 +156,7 @@ Compiler::Compiler(const Config& cfg) : cfg_(cfg) {}
 
 static std::string getAscendHome() {
   const char* home = std::getenv("ASCEND_HOME_PATH");
-  return home ? home : "/usr/local/Ascend/ascend-toolkit/latest";
+  return home ? home : "";
 }
 
 llvm::Error Compiler::RunProcess(const std::vector<std::string>& args,
@@ -569,7 +569,9 @@ Executor::~Executor() {
 
 static std::string getLibPath() {
   const char* home = std::getenv("ASCEND_HOME_PATH");
-  if (!home) home = "/usr/local/Ascend/ascend-toolkit/latest";
+  if (!home || !*home) {
+    // fail with a clear "set ASCEND_HOME_PATH or ASCEND_TOOLKIT_HOME" error
+  }
   return std::string(home) + "/runtime/lib64/libruntime_camodel.so";
 }
 
@@ -1226,7 +1228,7 @@ autotuner ... --sim-report trace,codeline --sim-report-out ./sim_report
 
 组合示例：`--sim-report trace,codeline`
 
-msopgen 路径优先级：`--msprof` > 环境变量 `ASCEND_HOME_PATH/aarch64-linux/bin/msopgen` > `/usr/local/Ascend/ascend-toolkit/latest/aarch64-linux/bin/msopgen`
+msopgen 路径优先级：`--msprof` > 环境变量 `ASCEND_HOME_PATH/aarch64-linux/bin/msopgen` > `$ASCEND_HOME_PATH/<arch>/bin/msopgen`
 
 ### tiling_space.json 格式
 
@@ -1254,7 +1256,7 @@ msopgen 路径优先级：`--msprof` > 环境变量 `ASCEND_HOME_PATH/aarch64-li
 
 ```bash
 # xvm 容器内需要的环境变量
-ASCEND_HOME_PATH=/usr/local/Ascend/ascend-toolkit/latest   # CANN 工具包路径
+ASCEND_HOME_PATH=/path/to/Ascend/ascend-toolkit/latest   # CANN 工具包路径
 # env.sh 会设置 LD_LIBRARY_PATH 包含 libruntime_camodel.so
 # python/test/env.sh 会设置模拟器 .so 路径
 ASCEND_CPU_SIMULATION=1   # 启用 CPU 仿真模式（自动由 env.sh 设置）

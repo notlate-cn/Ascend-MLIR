@@ -3,6 +3,7 @@
 #include "Runtime/MixAbi.h"
 #include "Runtime/MixAbiExtractor.h"
 #include "Runtime/NpyIO.h"
+#include "Runtime/PathUtils.h"
 #include "Runtime/MixSourceAnalyzer.h"
 #include "Runtime/MixStubTemplate.h"
 #include "llvm/ADT/SmallString.h"
@@ -221,9 +222,6 @@ static std::string joinPath(llvm::StringRef base, llvm::StringRef leaf);
 static llvm::Error runProcess(const std::vector<std::string> &args,
                               llvm::StringRef stage,
                               llvm::StringRef context = {});
-static std::string getAscendHome();
-static std::string escapeForCxx(const std::string &s);
-
 static std::vector<std::string> splitDefinitions(llvm::StringRef raw) {
   std::vector<std::string> out;
   llvm::SmallVector<llvm::StringRef> pieces;
@@ -542,84 +540,21 @@ runPreprocessStage(llvm::StringRef workDir, llvm::StringRef sourcePath,
   return outputs;
 }
 
-static std::string escapeForCxx(const std::string &s) {
-  std::string out;
-  out.reserve(s.size());
-  for (char c : s) {
-    if (c == '\\' || c == '"')
-      out.push_back('\\');
-    out.push_back(c);
-  }
-  return out;
-}
-
-static std::string getHostCxxPath() {
-  const char *candidates[] = {
-      "/usr/bin/c++",
-      "/usr/bin/clang++",
-      "/bin/c++",
-      "/bin/clang++",
-  };
-  for (const char *candidate : candidates) {
-    if (llvm::sys::fs::exists(candidate))
-      return candidate;
-  }
-  return "/usr/bin/c++";
-}
-
 static std::string getRunnerToolkitHome() {
-  return getAscendHome();
+  return findAscendHome();
 }
 
 static std::string getRunnerLib64(const std::string &ascendHome) {
-  const std::string candidates[] = {
-      ascendHome + "/lib64",
-      ascendHome + "/aarch64-linux/lib64",
-      ascendHome + "/arm64-linux/lib64",
-  };
-  for (const std::string &candidate : candidates) {
-    if (llvm::sys::fs::exists(candidate + "/libplatform.so"))
-      return candidate;
-  }
-  return candidates[0];
+  return findAscendLib64Dir(ascendHome);
 }
 
 static std::string getRunnerSimLibDir(const std::string &ascendHome,
                                       llvm::StringRef socVersion) {
-  const std::string candidates[] = {
-      ascendHome + "/aarch64-linux/simulator/" + socVersion.str() + "/lib",
-      ascendHome + "/tools/simulator/" + socVersion.str() + "/lib",
-  };
-  for (const std::string &candidate : candidates) {
-    if (llvm::sys::fs::exists(candidate + "/libnpu_drv_camodel.so"))
-      return candidate;
-  }
-  return candidates[0];
-}
-
-static std::string getRunnerDavSimLibDir(const std::string &ascendHome) {
-  const std::string candidates[] = {
-      ascendHome + "/aarch64-linux/simulator/dav_3002/lib",
-      ascendHome + "/tools/simulator/dav_3002/lib",
-  };
-  for (const std::string &candidate : candidates) {
-    if (llvm::sys::fs::exists(candidate + "/libmodel_top.so"))
-      return candidate;
-  }
-  return candidates[0];
+  return findAscendSimulatorLibDir(ascendHome, socVersion);
 }
 
 static std::string getRunnerDeviceLibDir(const std::string &ascendHome) {
-  const std::string candidates[] = {
-      ascendHome + "/aarch64-linux/lib64/device/lib64",
-      ascendHome + "/arm64-linux/lib64/device/lib64",
-      ascendHome + "/lib64/device/lib64",
-  };
-  for (const std::string &candidate : candidates) {
-    if (llvm::sys::fs::exists(candidate + "/libascend_hal.so"))
-      return candidate;
-  }
-  return candidates[0];
+  return findAscendDeviceLibDir(ascendHome);
 }
 
 static llvm::Error writeFileOrErr(llvm::StringRef path, llvm::StringRef content) {
@@ -709,24 +644,6 @@ static std::string joinPath(llvm::StringRef base, llvm::StringRef leaf) {
   llvm::SmallString<256> joined(base);
   llvm::sys::path::append(joined, leaf);
   return joined.str().str();
-}
-
-static std::string getAscendHome() {
-  const char *home = std::getenv("ASCEND_HOME_PATH");
-  if (home)
-    return home;
-  if (const char *home2 = std::getenv("ASCEND_TOOLKIT_HOME"))
-    return home2;
-  if (const char *userHome = std::getenv("HOME")) {
-    std::string latest = std::string(userHome) + "/Ascend/latest";
-    if (llvm::sys::fs::exists(latest))
-      return latest;
-    std::string toolkitLatest =
-        std::string(userHome) + "/Ascend/ascend-toolkit/latest";
-    if (llvm::sys::fs::exists(toolkitLatest))
-      return toolkitLatest;
-  }
-  return "/usr/local/Ascend/ascend-toolkit/latest";
 }
 
 static std::vector<std::string>
@@ -1089,49 +1006,6 @@ static std::string emitRunnerTilingSource(const MixAbiMetadata &abi) {
   return os.str();
 }
 
-static std::string emitDataUtilsHeader() {
-  return R"cpp(#pragma once
-#include <fcntl.h>
-#include <sys/stat.h>
-#include <unistd.h>
-
-#include <cstdio>
-#include <fstream>
-#include <iostream>
-#include <string>
-
-#include "acl/acl.h"
-
-#define CHECK_ACL(x) do { aclError __ret = (x); if (__ret != ACL_ERROR_NONE) { \
-  std::cerr << __FILE__ << ":" << __LINE__ << " aclError:" << __ret << std::endl; \
-} } while (0)
-
-static bool ReadFile(const std::string &filePath, size_t &fileSize, void *buffer, size_t bufferSize) {
-  struct stat sBuf;
-  if (stat(filePath.data(), &sBuf) == -1) return false;
-  if (S_ISREG(sBuf.st_mode) == 0) return false;
-  std::ifstream file(filePath, std::ios::binary);
-  if (!file.is_open()) return false;
-  std::filebuf *buf = file.rdbuf();
-  size_t size = buf->pubseekoff(0, std::ios::end, std::ios::in);
-  if (size == 0 || size > bufferSize) return false;
-  buf->pubseekpos(0, std::ios::in);
-  buf->sgetn(static_cast<char *>(buffer), size);
-  fileSize = size;
-  return true;
-}
-
-static bool WriteFile(const std::string &filePath, const void *buffer, size_t size) {
-  if (buffer == nullptr) return false;
-  int fd = open(filePath.c_str(), O_RDWR | O_CREAT | O_TRUNC, S_IRUSR | S_IWUSR);
-  if (fd < 0) return false;
-  size_t writeSize = write(fd, buffer, size);
-  (void)close(fd);
-  return writeSize == size;
-}
-)cpp";
-}
-
 static llvm::Error writeRecompileLinkFile(llvm::StringRef rootDir,
                                           llvm::StringRef targetName,
                                           llvm::StringRef linkCommand) {
@@ -1273,6 +1147,8 @@ MixDirectBackend::compile(const MixDirectCompileConfig &cfg) {
   if (cfg.kernelName.empty())
     return llvm::createStringError(llvm::inconvertibleErrorCode(),
                                    "RuntimeMix direct backend requires a kernel name");
+  if (auto ascendHomeOr = requireAscendHome(); !ascendHomeOr)
+    return ascendHomeOr.takeError();
 
   llvm::SmallString<256> outputRoot(cfg.outputDir);
   if (auto ec = llvm::sys::fs::make_absolute(outputRoot))
@@ -1802,12 +1678,18 @@ MixDirectBackend::compile(const MixDirectCompileConfig &cfg) {
     return err;
 
   const std::string ascendHome = getRunnerToolkitHome();
+  auto davSimLibDirOr = requireAscendDavSimulatorLibDir(ascendHome);
+  if (!davSimLibDirOr)
+    return davSimLibDirOr.takeError();
   const std::string runnerLib64 = getRunnerLib64(ascendHome);
-  const std::string runnerAltLib64 = ascendHome + "/aarch64-linux/lib64";
+  const std::string hostCannArch = getHostCannArchDir();
+  const std::string runnerAltLib64 =
+      hostCannArch.empty() ? std::string()
+                           : ascendHome + "/" + hostCannArch + "/lib64";
   const std::string runnerDeviceLibDir = getRunnerDeviceLibDir(ascendHome);
   const std::string runnerSimLibDir =
       getRunnerSimLibDir(ascendHome, cfg.socVersion);
-  const std::string davSimLibDir = getRunnerDavSimLibDir(ascendHome);
+  const std::string davSimLibDir = *davSimLibDirOr;
   const std::vector<std::string> runnerCompileCmd = buildHostRunnerCompileCommand(
       workDir, launcherDir, outIncludeDir, runnerMainPath, runnerTilingPath,
       runnerBinaryPath, kernelSoPath, runnerLib64, runnerSimLibDir,

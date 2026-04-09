@@ -32,6 +32,7 @@
 #include "Runtime/Executor.h"
 #include "Runtime/HostRunnerGen.h"
 #include "Runtime/NpyIO.h"
+#include "Runtime/PathUtils.h"
 #include "Runtime/Types.h"
 #include "llvm/Support/raw_ostream.h"
 #include <cassert>
@@ -336,8 +337,10 @@ static void testCompilerMixArtifact() {
       "fc_relu");
   EXPECT((bool)out, "mix compiler returns an artifact path");
   if (out) {
-    EXPECT(out->find(".so") != std::string::npos,
-           "mix compiler returns packed shared library path");
+    EXPECT(out->find(".bin") != std::string::npos,
+           "mix compiler returns linked kernel binary path");
+    EXPECT(std::filesystem::exists(*out),
+           "mix compiler output artifact exists on disk");
   } else {
     llvm::consumeError(out.takeError());
   }
@@ -352,6 +355,143 @@ static void testPackedMixExecutorErrors() {
   auto err = ex.RunPackedMixFile("/tmp/missing.so", "fc_relu", args);
   EXPECT((bool)err, "missing packed mix library returns an error");
   if (err) llvm::consumeError(std::move(err));
+}
+
+static void testRuntimePathUtils() {
+  llvm::outs() << "\n[Runtime path utils]\n";
+
+  {
+    auto archDir = getHostCannArchDir("x86_64");
+    EXPECT(archDir == "x86_64-linux",
+           "x86_64 host arch maps to x86_64-linux");
+  }
+
+  {
+    auto archDir = getHostCannArchDir("amd64");
+    EXPECT(archDir == "x86_64-linux",
+           "amd64 host arch maps to x86_64-linux");
+  }
+
+  {
+    auto archDir = getHostCannArchDir("aarch64");
+    EXPECT(archDir == "aarch64-linux",
+           "aarch64 host arch maps to aarch64-linux");
+  }
+
+  {
+    auto archDir = getHostCannArchDir("arm64");
+    EXPECT(archDir == "aarch64-linux",
+           "arm64 host arch maps to aarch64-linux");
+  }
+
+  {
+    auto archDir = getHostCannArchDir("mips64");
+    EXPECT(archDir.empty(),
+           "unknown host arch does not silently default to ARM");
+  }
+
+  {
+    auto home = resolveAscendHomeForTest(
+        "/custom/ascend", "");
+    EXPECT(home == "/custom/ascend",
+           "resolver prefers ASCEND_HOME_PATH when it exists");
+  }
+
+  {
+    auto home = resolveAscendHomeForTest(
+        "", "/custom/toolkit");
+    EXPECT(home == "/custom/toolkit",
+           "resolver falls back to ASCEND_TOOLKIT_HOME");
+  }
+
+  {
+    auto home = resolveAscendHomeForTest(
+        "", "");
+    EXPECT(home.empty(),
+           "resolver requires environment variables");
+  }
+
+  {
+    const std::filesystem::path root = "/tmp/rt_path_utils_arch";
+    std::filesystem::remove_all(root);
+    std::filesystem::create_directories(root / "x86_64-linux/lib64");
+    std::filesystem::create_directories(
+        root / "x86_64-linux/simulator/Ascend910B1/lib");
+    std::filesystem::create_directories(
+        root / "x86_64-linux/lib64/device/lib64");
+    std::filesystem::create_directories(
+        root / "x86_64-linux/simulator/custom_dav_variant/lib");
+    std::ofstream(root / "x86_64-linux/lib64/libascendcl.so").put('\n');
+    std::ofstream(root / "x86_64-linux/simulator/Ascend910B1/lib/libruntime_camodel.so")
+        .put('\n');
+    std::ofstream(root / "x86_64-linux/lib64/device/lib64/libascend_hal.so")
+        .put('\n');
+    std::ofstream(root / "x86_64-linux/simulator/custom_dav_variant/lib/libmodel_top.so")
+        .put('\n');
+
+    EXPECT(findAscendAclLibPath(root.string(), "x86_64") ==
+               (root / "x86_64-linux/lib64/libascendcl.so").string(),
+           "path utils resolve x86_64 acl library path");
+    EXPECT(findAscendRuntimeCamodelPath(root.string(), "Ascend910B1", "x86_64") ==
+               (root / "x86_64-linux/simulator/Ascend910B1/lib/libruntime_camodel.so")
+                   .string(),
+           "path utils resolve x86_64 simulator runtime path");
+    EXPECT(findAscendDeviceLibDir(root.string(), "x86_64") ==
+               (root / "x86_64-linux/lib64/device/lib64").string(),
+           "path utils resolve x86_64 device lib directory");
+    EXPECT(findAscendDavSimulatorLibDir(root.string(), "x86_64") ==
+               (root / "x86_64-linux/simulator/custom_dav_variant/lib").string(),
+           "path utils discover DAV simulator directory without hardcoded product id");
+    auto requiredDav = requireAscendDavSimulatorLibDir(root.string(), "x86_64");
+    EXPECT(static_cast<bool>(requiredDav),
+           "path utils require a single DAV simulator directory");
+    if (requiredDav) {
+      EXPECT(*requiredDav ==
+                 (root / "x86_64-linux/simulator/custom_dav_variant/lib").string(),
+             "required DAV simulator directory matches discovered path");
+    } else {
+      llvm::consumeError(requiredDav.takeError());
+    }
+  }
+
+  {
+    const std::filesystem::path root = "/tmp/rt_path_utils_generic";
+    std::filesystem::remove_all(root);
+    std::filesystem::create_directories(root / "lib64");
+    std::ofstream(root / "lib64/libascendcl.so").put('\n');
+    EXPECT(findAscendAclLibPath(root.string()) ==
+               (root / "lib64/libascendcl.so").string(),
+           "path utils fall back to generic lib64 when arch dir is absent");
+  }
+
+  {
+    const std::filesystem::path root = "/tmp/rt_path_utils_dav_multi";
+    std::filesystem::remove_all(root);
+    std::filesystem::create_directories(root / "x86_64-linux/simulator/dav_a/lib");
+    std::filesystem::create_directories(root / "x86_64-linux/simulator/dav_b/lib");
+    std::ofstream(root / "x86_64-linux/simulator/dav_a/lib/libmodel_top.so")
+        .put('\n');
+    std::ofstream(root / "x86_64-linux/simulator/dav_b/lib/libmodel_top.so")
+        .put('\n');
+    auto requiredDav = requireAscendDavSimulatorLibDir(root.string(), "x86_64");
+    EXPECT(!requiredDav,
+           "path utils reject ambiguous DAV simulator directories without override");
+    if (!requiredDav)
+      llvm::consumeError(requiredDav.takeError());
+
+    ::setenv("ASCEND_DAV_SIM_VERSION", "dav_b", 1);
+    auto configuredDav = requireAscendDavSimulatorLibDir(root.string(), "x86_64");
+    EXPECT(static_cast<bool>(configuredDav),
+           "path utils accept ASCEND_DAV_SIM_VERSION override");
+    if (configuredDav) {
+      EXPECT(*configuredDav ==
+                 (root / "x86_64-linux/simulator/dav_b/lib").string(),
+             "configured DAV simulator override wins");
+    } else {
+      llvm::consumeError(configuredDav.takeError());
+    }
+    ::unsetenv("ASCEND_DAV_SIM_VERSION");
+  }
 }
 
 static void testHostRunnerGen() {
@@ -495,6 +635,7 @@ int main() {
   testNpyIOErrors();
   testCompilerMixArtifact();
   testPackedMixExecutorErrors();
+  testRuntimePathUtils();
   testHostRunnerGen();
 
   llvm::outs() << "\n========================================\n"

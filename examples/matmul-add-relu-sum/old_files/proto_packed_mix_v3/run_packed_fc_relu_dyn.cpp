@@ -17,7 +17,16 @@ static void trimNpy(std::vector<char>& v) {
 }
 
 int main() {
-  void* rt = dlopen("/home/niu/Ascend/latest/tools/simulator/Ascend910B1/lib/libruntime_camodel.so", RTLD_NOW | RTLD_GLOBAL);
+  const char* ascendHome = std::getenv("ASCEND_HOME_PATH");
+  if (!ascendHome || !*ascendHome)
+    ascendHome = std::getenv("ASCEND_TOOLKIT_HOME");
+  if (!ascendHome || !*ascendHome) {
+    std::cerr << "Set ASCEND_HOME_PATH or ASCEND_TOOLKIT_HOME before running this example\n";
+    return 2;
+  }
+  std::string runtimeLib =
+      std::string(ascendHome) + "/tools/simulator/Ascend910B1/lib/libruntime_camodel.so";
+  void* rt = dlopen(runtimeLib.c_str(), RTLD_NOW | RTLD_GLOBAL);
   if (!rt) {
     std::cerr << dlerror() << "\n";
     return 2;
