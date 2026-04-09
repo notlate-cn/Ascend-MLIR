@@ -22,12 +22,8 @@ add_mlir_library(AscendCRuntime
   LLVMSupport
 )
 
-set(ASCEND_CANN_ARCH "")
-if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|amd64)$")
-  set(ASCEND_CANN_ARCH "x86_64-linux")
-elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "^(aarch64|arm64)$")
-  set(ASCEND_CANN_ARCH "aarch64-linux")
-endif()
+include(${CMAKE_CURRENT_LIST_DIR}/AscendCannPaths.cmake)
+resolve_ascend_cann_arch_dir(ASCEND_CANN_ARCH)
 
 set(ASCEND_INCLUDE_DIRS
     $ENV{ASCEND_HOME_PATH}/include

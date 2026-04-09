@@ -428,6 +428,10 @@ static void testRuntimePathUtils() {
         .put('\n');
     std::ofstream(root / "x86_64-linux/simulator/custom_dav_variant/lib/libmodel_top.so")
         .put('\n');
+    const char *savedDavVersion = std::getenv("ASCEND_DAV_SIM_VERSION");
+    const std::string savedDavVersionValue =
+        savedDavVersion ? std::string(savedDavVersion) : std::string();
+    ::unsetenv("ASCEND_DAV_SIM_VERSION");
 
     EXPECT(findAscendAclLibPath(root.string(), "x86_64") ==
                (root / "x86_64-linux/lib64/libascendcl.so").string(),
@@ -452,6 +456,8 @@ static void testRuntimePathUtils() {
     } else {
       llvm::consumeError(requiredDav.takeError());
     }
+    if (savedDavVersion)
+      ::setenv("ASCEND_DAV_SIM_VERSION", savedDavVersionValue.c_str(), 1);
   }
 
   {
@@ -473,6 +479,10 @@ static void testRuntimePathUtils() {
         .put('\n');
     std::ofstream(root / "x86_64-linux/simulator/dav_b/lib/libmodel_top.so")
         .put('\n');
+    const char *savedDavVersion = std::getenv("ASCEND_DAV_SIM_VERSION");
+    const std::string savedDavVersionValue =
+        savedDavVersion ? std::string(savedDavVersion) : std::string();
+    ::unsetenv("ASCEND_DAV_SIM_VERSION");
     auto requiredDav = requireAscendDavSimulatorLibDir(root.string(), "x86_64");
     EXPECT(!requiredDav,
            "path utils reject ambiguous DAV simulator directories without override");
@@ -490,7 +500,10 @@ static void testRuntimePathUtils() {
     } else {
       llvm::consumeError(configuredDav.takeError());
     }
-    ::unsetenv("ASCEND_DAV_SIM_VERSION");
+    if (savedDavVersion)
+      ::setenv("ASCEND_DAV_SIM_VERSION", savedDavVersionValue.c_str(), 1);
+    else
+      ::unsetenv("ASCEND_DAV_SIM_VERSION");
   }
 }
 

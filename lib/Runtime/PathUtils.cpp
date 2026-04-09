@@ -55,38 +55,8 @@ buildArchRelativeCandidates(llvm::StringRef genericSuffix,
   return candidates;
 }
 
-static std::string findFirstExistingDavSimulatorDir(
-    llvm::ArrayRef<std::string> simulatorRoots) {
-  std::vector<std::string> matches;
-  for (const std::string &root : simulatorRoots) {
-    if (root.empty() || !llvm::sys::fs::is_directory(root))
-      continue;
-    std::error_code ec;
-    for (llvm::sys::fs::directory_iterator it(root, ec), end; !ec && it != end;
-         it.increment(ec)) {
-      if (!llvm::sys::fs::is_directory(it->path()))
-        continue;
-      const std::string candidate = (llvm::Twine(it->path()) + "/lib").str();
-      if (llvm::sys::fs::exists(
-              (llvm::Twine(candidate) + "/libmodel_top.so").str()))
-        matches.push_back(candidate);
-    }
-  }
-  if (matches.size() == 1)
-    return matches.front();
-  return std::string();
-}
-
-static std::vector<std::string> collectDavSimulatorLibDirMatches(
-    llvm::StringRef ascendHome, llvm::StringRef machine) {
-  std::vector<std::string> suffixes = buildArchRelativeCandidates(
-      "", "/simulator", machine.empty() ? std::nullopt : std::optional(machine));
-  std::vector<std::string> simulatorRoots;
-  simulatorRoots.reserve(suffixes.size() + 1);
-  for (const std::string &suffix : suffixes)
-    simulatorRoots.push_back((ascendHome + suffix).str());
-  simulatorRoots.push_back((ascendHome + "/tools/simulator").str());
-
+static std::vector<std::string>
+collectDavSimulatorLibDirMatches(llvm::ArrayRef<std::string> simulatorRoots) {
   std::vector<std::string> matches;
   for (const std::string &root : simulatorRoots) {
     if (root.empty() || !llvm::sys::fs::is_directory(root))
@@ -255,15 +225,12 @@ std::string findAscendDavSimulatorLibDir(llvm::StringRef ascendHome,
           resolveDavSimulatorLibDirFromEnv(ascendHome, machine);
       !configured.empty())
     return configured;
-  std::vector<std::string> matches =
-      collectDavSimulatorLibDirMatches(ascendHome, machine);
-  if (matches.size() == 1)
-    return matches.front();
   std::vector<std::string> simulatorRoots =
       getDavSimulatorRoots(ascendHome, machine);
-  std::string resolved = findFirstExistingDavSimulatorDir(simulatorRoots);
-  if (!resolved.empty())
-    return resolved;
+  std::vector<std::string> matches =
+      collectDavSimulatorLibDirMatches(simulatorRoots);
+  if (matches.size() == 1)
+    return matches.front();
   return simulatorRoots.front() + "/dav";
 }
 
@@ -287,7 +254,8 @@ requireAscendDavSimulatorLibDir(llvm::StringRef ascendHome,
         configuredVersion ? configuredVersion : "", ascendHome.str().c_str());
   }
   std::vector<std::string> matches =
-      collectDavSimulatorLibDirMatches(ascendHome, machine);
+      collectDavSimulatorLibDirMatches(
+          getDavSimulatorRoots(ascendHome, machine));
   if (matches.size() == 1)
     return matches.front();
   if (matches.empty())
