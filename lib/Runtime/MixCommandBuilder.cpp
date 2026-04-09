@@ -419,41 +419,47 @@ buildRecompileBinaryCommand(llvm::StringRef rootDir, llvm::StringRef targetName,
 
 std::vector<std::string> buildHostSharedLinkCommand(llvm::StringRef hostStubObject,
                                                     llvm::StringRef outputSo,
-                                                    llvm::StringRef socVersion) {
+                                                    llvm::StringRef socVersion,
+                                                    llvm::StringRef deviceLibDir) {
   std::string ascendHome = findAscendHome();
   std::string runnerLib64 = findAscendLib64Dir(ascendHome);
   std::string runnerSimLibDir = findAscendSimulatorLibDir(ascendHome, socVersion);
   std::string davSimLibDir = findAscendDavSimulatorLibDir(ascendHome);
-  return {getHostCxxPath(),
-          "-fPIC",
-          "-shared",
-          "-Wl,-rpath-link," + runnerLib64,
-          "-Wl,-rpath-link," + runnerSimLibDir,
-          "-Wl,-rpath-link," + davSimLibDir,
-          "-o",
-          outputSo.str(),
-          hostStubObject.str(),
-          "-L" + runnerSimLibDir,
-          "-L" + davSimLibDir,
-          "-L" + runnerLib64,
-          runnerLib64 + "/libascendc_runtime.a",
-          "-lascendcl",
-          "-ltiling_api",
-          "-lregister",
-          "-lplatform",
-          "-lascendalog",
-          "-lunified_dlog",
-          "-ldl",
-          "-lruntime_camodel",
-          "-lnpu_drv",
-          "-lstars",
-          "-lmodel_top",
-          "-lerror_manager",
-          "-lprofapi",
-          "-lge_common_base",
-          "-lmmpa",
-          "-lascend_dump",
-          "-lc_sec"};
+  std::vector<std::string> cmd = {getHostCxxPath(),
+                                  "-fPIC",
+                                  "-shared",
+                                  "-Wl,-rpath-link," + runnerLib64,
+                                  "-Wl,-rpath-link," + runnerSimLibDir,
+                                  "-Wl,-rpath-link," + davSimLibDir};
+  if (!deviceLibDir.empty())
+    cmd.push_back("-Wl,-rpath-link," + deviceLibDir.str());
+  cmd.push_back("-o");
+  cmd.push_back(outputSo.str());
+  cmd.push_back(hostStubObject.str());
+  cmd.push_back("-L" + runnerSimLibDir);
+  cmd.push_back("-L" + davSimLibDir);
+  cmd.push_back("-L" + runnerLib64);
+  if (!deviceLibDir.empty())
+    cmd.push_back("-L" + deviceLibDir.str());
+  cmd.push_back(runnerLib64 + "/libascendc_runtime.a");
+  cmd.push_back("-lascendcl");
+  cmd.push_back("-ltiling_api");
+  cmd.push_back("-lregister");
+  cmd.push_back("-lplatform");
+  cmd.push_back("-lascendalog");
+  cmd.push_back("-lunified_dlog");
+  cmd.push_back("-ldl");
+  cmd.push_back("-lruntime_camodel");
+  cmd.push_back("-lnpu_drv");
+  cmd.push_back("-lstars");
+  cmd.push_back("-lmodel_top");
+  cmd.push_back("-lerror_manager");
+  cmd.push_back("-lprofapi");
+  cmd.push_back("-lge_common_base");
+  cmd.push_back("-lmmpa");
+  cmd.push_back("-lascend_dump");
+  cmd.push_back("-lc_sec");
+  return cmd;
 }
 
 std::vector<std::string>
@@ -467,12 +473,13 @@ buildHostRunnerCompileCommand(llvm::StringRef workDir,
                               llvm::StringRef runnerLib64,
                               llvm::StringRef runnerSimLibDir,
                               llvm::StringRef davSimLibDir,
+                              llvm::StringRef runnerDeviceLibDir,
                               llvm::StringRef socVersion) {
   const std::string ascendHome = findAscendHome();
   const std::string includeDir = findAscendIncludeDir(ascendHome);
   const std::string tikcppDir = findAscendTikcppDir(ascendHome);
 
-  return {
+  std::vector<std::string> cmd = {
       getHostCxxPath(),
       "-g",
       "-O2",
@@ -495,40 +502,45 @@ buildHostRunnerCompileCommand(llvm::StringRef workDir,
       "-Wl,-rpath-link," + runnerLib64.str(),
       "-Wl,-rpath-link," + runnerSimLibDir.str(),
       "-Wl,-rpath-link," + davSimLibDir.str(),
-      "-pie",
-      "-Wl,-z,relro",
-      "-Wl,-z,now",
-      "-Wl,-z,noexecstack",
-      "-L" + runnerSimLibDir.str(),
-      "-L" + davSimLibDir.str(),
-      "-L" + runnerLib64.str(),
-      "-o",
-      runnerBinaryPath.str(),
-      kernelSoPath.str(),
-      "-ltiling_api",
-      "-lregister",
-      "-lplatform",
-      "-lascendalog",
-      "-lunified_dlog",
-      "-ldl",
-      "-lruntime_camodel",
-      "-lnpu_drv",
-      "-lstars",
-      "-lmodel_top",
-      "-lascendcl",
-      "-lerror_manager",
-      "-lprofapi",
-      "-lge_common_base",
-      "-lmmpa",
-      "-lascend_dump",
-      "-lc_sec",
-      "-lunified_dlog",
-      "-ldl",
-      "-lmmpa",
-      "-ldl",
-      "-lascend_dump",
-      "-lc_sec",
   };
+  if (!runnerDeviceLibDir.empty())
+    cmd.push_back("-Wl,-rpath-link," + runnerDeviceLibDir.str());
+  cmd.push_back("-pie");
+  cmd.push_back("-Wl,-z,relro");
+  cmd.push_back("-Wl,-z,now");
+  cmd.push_back("-Wl,-z,noexecstack");
+  cmd.push_back("-L" + runnerSimLibDir.str());
+  cmd.push_back("-L" + davSimLibDir.str());
+  cmd.push_back("-L" + runnerLib64.str());
+  if (!runnerDeviceLibDir.empty())
+    cmd.push_back("-L" + runnerDeviceLibDir.str());
+  cmd.push_back("-o");
+  cmd.push_back(runnerBinaryPath.str());
+  cmd.push_back(kernelSoPath.str());
+  cmd.push_back("-ltiling_api");
+  cmd.push_back("-lregister");
+  cmd.push_back("-lplatform");
+  cmd.push_back("-lascendalog");
+  cmd.push_back("-lunified_dlog");
+  cmd.push_back("-ldl");
+  cmd.push_back("-lruntime_camodel");
+  cmd.push_back("-lnpu_drv");
+  cmd.push_back("-lstars");
+  cmd.push_back("-lmodel_top");
+  cmd.push_back("-lascendcl");
+  cmd.push_back("-lerror_manager");
+  cmd.push_back("-lprofapi");
+  cmd.push_back("-lge_common_base");
+  cmd.push_back("-lmmpa");
+  cmd.push_back("-lascend_dump");
+  cmd.push_back("-lc_sec");
+  cmd.push_back("-lunified_dlog");
+  cmd.push_back("-ldl");
+  cmd.push_back("-lmmpa");
+  cmd.push_back("-ldl");
+  cmd.push_back("-lascend_dump");
+  cmd.push_back("-lc_sec");
+  return cmd;
 }
 
 } // namespace mlir::runtime

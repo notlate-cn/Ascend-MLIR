@@ -492,6 +492,16 @@ static void testRuntimePathUtils() {
   }
 
   {
+    const std::filesystem::path root = "/tmp/rt_path_utils_devlib";
+    std::filesystem::remove_all(root);
+    std::filesystem::create_directories(root / "devlib/linux/x86_64");
+    std::ofstream(root / "devlib/linux/x86_64/libascend_hal.so").put('\n');
+    EXPECT(findAscendDeviceLibDir(root.string(), "x86_64") ==
+               (root / "devlib/linux/x86_64").string(),
+           "path utils fall back to devlib linux x86_64 for device libs");
+  }
+
+  {
     const std::filesystem::path root = "/tmp/rt_path_utils_dav_multi";
     std::filesystem::remove_all(root);
     std::filesystem::create_directories(root / "x86_64-linux/simulator/dav_a/lib");

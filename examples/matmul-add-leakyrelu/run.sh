@@ -12,12 +12,12 @@ export ASCEND_DAV_SIM_VERSION=dav_3002
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
+source "${REPO_ROOT}/scripts/resolve_llvm_env.sh"
 
 AFIR_OPT="${AFIR_OPT:-afir-opt}"
 AFIR_TRANSLATE="${AFIR_TRANSLATE:-afir-translate}"
 
 SOC_VERSION="${SOC_VERSION:-Ascend910B1}"
-LLVM_BUILD_DIR="${LLVM_BUILD_DIR:-/home/niu/code/llvm-project/llvm/build}"
 BOOTSTRAP_BUILD_DIR="${BOOTSTRAP_BUILD_DIR:-${REPO_ROOT}/build/runtime-mix-bootstrap}"
 ARTIFACT_DIR="${ARTIFACT_DIR:-${REPO_ROOT}/build/runtime-mix-matmul-add-leakyrelu}"
 DATA_DIR="${DATA_DIR:-${REPO_ROOT}/build/runtime-mix-matmul-add-leakyrelu-data}"
@@ -25,6 +25,8 @@ DATA_DIR="${DATA_DIR:-${REPO_ROOT}/build/runtime-mix-matmul-add-leakyrelu-data}"
 VERBOSE=false
 for arg in "$@"; do [[ $arg == "--log" ]] && VERBOSE=true; done
 log() { $VERBOSE && echo "$@" || true; }
+
+LLVM_BUILD_DIR="$(resolve_llvm_build_dir || true)"
 
 echo "========================================================"
 echo " matmul + add(bias[N]) + leaky_relu AFIR pipeline"
@@ -94,8 +96,15 @@ log "  step8_kernel.cpp done"
 echo ""
 echo "=== Bootstrap RuntimeMix tools ==="
 
-if [[ ! -d "${LLVM_BUILD_DIR}" ]]; then
-  echo "LLVM build dir not found: ${LLVM_BUILD_DIR}" >&2
+if [[ -z "${LLVM_BUILD_DIR}" ]]; then
+  echo "Set LLVM_BUILD_DIR or provide an LLVM build with bin/llvm-config under:" >&2
+  echo "  ${REPO_ROOT}/externals/llvm-project/build" >&2
+  echo "  ${REPO_ROOT}/../llvm-project/llvm/build" >&2
+  exit 2
+fi
+
+if [[ ! -x "${LLVM_BUILD_DIR}/bin/llvm-config" ]]; then
+  echo "LLVM build dir is invalid (missing bin/llvm-config): ${LLVM_BUILD_DIR}" >&2
   exit 2
 fi
 
