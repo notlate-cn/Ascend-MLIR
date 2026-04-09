@@ -463,7 +463,7 @@ static void testRuntimePathUtils() {
            "path utils resolve x86_64 simulator runtime path");
     EXPECT(findAscendDeviceLibDir(root.string(), "x86_64") ==
                (root / "x86_64-linux/lib64/device/lib64").string(),
-           "path utils resolve x86_64 device lib directory");
+           "path utils resolve x86_64 device lib directory when it is the only candidate");
     EXPECT(findAscendDavSimulatorLibDir(root.string(), "x86_64") ==
                (root / "x86_64-linux/simulator/custom_dav_variant/lib").string(),
            "path utils discover DAV simulator directory without hardcoded product id");
@@ -499,6 +499,30 @@ static void testRuntimePathUtils() {
     EXPECT(findAscendDeviceLibDir(root.string(), "x86_64") ==
                (root / "devlib/linux/x86_64").string(),
            "path utils fall back to devlib linux x86_64 for device libs");
+  }
+
+  {
+    const std::filesystem::path root = "/tmp/rt_path_utils_devlib_preferred";
+    std::filesystem::remove_all(root);
+    std::filesystem::create_directories(root / "x86_64-linux/lib64/device/lib64");
+    std::filesystem::create_directories(root / "devlib/linux/x86_64");
+    std::ofstream(root / "x86_64-linux/lib64/device/lib64/libascend_hal.so").put('\n');
+    std::ofstream(root / "devlib/linux/x86_64/libascend_hal.so").put('\n');
+    EXPECT(findAscendDeviceLibDir(root.string(), "x86_64") ==
+               (root / "devlib/linux/x86_64").string(),
+           "path utils prefer host devlib linux x86_64 over device lib64 when both exist");
+  }
+
+  {
+    const std::filesystem::path root = "/tmp/rt_path_utils_devlib_aarch64";
+    std::filesystem::remove_all(root);
+    std::filesystem::create_directories(root / "aarch64-linux/lib64/device/lib64");
+    std::filesystem::create_directories(root / "devlib/linux/aarch64");
+    std::ofstream(root / "aarch64-linux/lib64/device/lib64/libascend_hal.so").put('\n');
+    std::ofstream(root / "devlib/linux/aarch64/libascend_hal.so").put('\n');
+    EXPECT(findAscendDeviceLibDir(root.string(), "aarch64") ==
+               (root / "aarch64-linux/lib64/device/lib64").string(),
+           "path utils keep device lib64 precedence for aarch64 when both candidates exist");
   }
 
   {
