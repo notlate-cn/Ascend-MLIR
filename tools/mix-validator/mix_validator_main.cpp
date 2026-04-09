@@ -145,10 +145,6 @@ static llvm::Error configureRuntimeEnv(const std::string &socVersion,
         llvm::inconvertibleErrorCode(),
         "Cannot find Ascend toolkit root; set ASCEND_HOME_PATH or "
         "ASCEND_TOOLKIT_HOME");
-  if (!hasAllFiles(ascendLib64, {"libplatform.so", "libunified_dlog.so"}))
-    return llvm::createStringError(
-        llvm::inconvertibleErrorCode(),
-        "Cannot find Ascend lib64 under %s", ascendHome.c_str());
   const std::string simLibDir = findAscendSimulatorLibDir(ascendHome, socVersion);
   if (!hasAllFiles(simLibDir, {"libruntime_camodel.so"}))
     return llvm::createStringError(
