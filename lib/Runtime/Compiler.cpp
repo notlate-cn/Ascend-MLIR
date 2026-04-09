@@ -1,5 +1,6 @@
 // lib/Runtime/Compiler.cpp
 #include "Runtime/Compiler.h"
+#include "Runtime/PathUtils.h"
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/Path.h"
 #include "llvm/Support/Program.h"
@@ -9,11 +10,6 @@
 namespace mlir::runtime {
 
 Compiler::Compiler(const Config& cfg) : cfg_(cfg) {}
-
-static std::string getAscendHome() {
-  const char* home = std::getenv("ASCEND_HOME_PATH");
-  return home ? home : "/usr/local/Ascend/ascend-toolkit/latest";
-}
 
 llvm::Error Compiler::RunProcess(const std::vector<std::string>& args) {
   std::vector<llvm::StringRef> argv;
@@ -37,10 +33,13 @@ llvm::Expected<std::string> Compiler::Compile(const std::string& src_file,
                                               const std::string& kernel_name) {
   ::setenv("SOC_VERSION", cfg_.soc_version.c_str(), 1);
 
-  std::string ascend_home = getAscendHome();
+  auto ascendHomeOr = requireAscendHome();
+  if (!ascendHomeOr)
+    return ascendHomeOr.takeError();
+  std::string ascend_home = *ascendHomeOr;
   std::string bisheng     = ascend_home + "/toolkit/tools/ccec_compiler/bin/bisheng";
   std::string lld         = ascend_home + "/toolkit/tools/ccec_compiler/bin/ld.lld";
-  std::string tikcpp      = ascend_home + "/toolkit/tools/tikcpp";
+  std::string tikcpp      = findAscendTikcppDir(ascend_home);
   std::string bin_file    = output_dir + "/" + kernel_name + ".bin";
 
   llvm::SmallString<256> src_path(src_file);

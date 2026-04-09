@@ -2,6 +2,7 @@
 #include "Runtime/Compiler.h"
 #include "Runtime/Executor.h"
 #include "Runtime/NpyIO.h"
+#include "Runtime/PathUtils.h"
 #include "Runtime/SimValidator.h"
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/FileSystem.h"
@@ -636,9 +637,13 @@ int main(int argc, char** argv) {
       // Step 3: locate msprof binary
       std::string msprof = MsprofPath;
       if (msprof.empty()) {
-        const char* home = std::getenv("ASCEND_HOME_PATH");
-        if (!home) home = "/usr/local/Ascend/ascend-toolkit/latest";
-        msprof = std::string(home) + "/tools/profiler/bin/msprof";
+        auto ascendHomeOr = requireAscendHome();
+        if (!ascendHomeOr) {
+          llvm::errs() << "Warning: --perf-report requires ASCEND_HOME_PATH or "
+                          "ASCEND_TOOLKIT_HOME, or pass --msprof=<path>\n";
+          goto perf_done;
+        }
+        msprof = *ascendHomeOr + "/tools/profiler/bin/msprof";
       }
       if (!llvm::sys::fs::exists(msprof)) {
         llvm::errs() << "Warning: --perf-report: msprof not found at: " << msprof << "\n"

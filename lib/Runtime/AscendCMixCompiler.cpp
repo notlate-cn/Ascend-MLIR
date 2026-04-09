@@ -1,5 +1,6 @@
 // lib/RuntimeMix/AscendCMixCompiler.cpp
 #include "Runtime/AscendCMixCompiler.h"
+#include "Runtime/PathUtils.h"
 #include "llvm/Support/Error.h"
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/FormatVariadic.h"
@@ -46,28 +47,6 @@ static llvm::Error writeFile(const std::string& path, const std::string& content
                                    "Cannot write file: %s", path.c_str());
   os << content;
   return llvm::Error::success();
-}
-
-static std::string getAscendHome() {
-  const char* home = std::getenv("ASCEND_HOME_PATH");
-  if (home)
-    return home;
-  if (const char* home2 = std::getenv("ASCEND_TOOLKIT_HOME"))
-    return home2;
-  if (llvm::sys::fs::exists("/home/niu/Ascend/latest"))
-    return "/home/niu/Ascend/latest";
-  if (llvm::sys::fs::exists("/home/niu/Ascend/ascend-toolkit/latest"))
-    return "/home/niu/Ascend/ascend-toolkit/latest";
-  if (const char* userHome = std::getenv("HOME")) {
-    std::string latest = std::string(userHome) + "/Ascend/latest";
-    if (llvm::sys::fs::exists(latest))
-      return latest;
-    std::string toolkitLatest =
-        std::string(userHome) + "/Ascend/ascend-toolkit/latest";
-    if (llvm::sys::fs::exists(toolkitLatest))
-      return toolkitLatest;
-  }
-  return "/usr/local/Ascend/ascend-toolkit/latest";
 }
 
 static std::string escapeForCxx(const std::string& s) {
@@ -248,16 +227,71 @@ static std::string emitCMakeLists(const std::string& repo_root,
          "project(runtime_mix_generated LANGUAGES CXX)\n\n"
          "set(RUN_MODE \"sim\" CACHE STRING \"sim only\")\n"
          "set(SOC_VERSION \"Ascend910B1\" CACHE STRING \"system on chip type\")\n"
-         "set(ASCEND_CANN_PACKAGE_PATH \"" + escapeForCxx(getAscendHome()) +
-         "\" CACHE STRING \"ASCEND CANN package installation directory\")\n\n"
+         "set(ASCEND_CANN_PACKAGE_PATH \"$ENV{ASCEND_HOME_PATH}\" CACHE STRING \"ASCEND CANN package installation directory\")\n"
+         "if(ASCEND_CANN_PACKAGE_PATH STREQUAL \"\" AND NOT \"$ENV{ASCEND_TOOLKIT_HOME}\" STREQUAL \"\")\n"
+         "  set(ASCEND_CANN_PACKAGE_PATH \"$ENV{ASCEND_TOOLKIT_HOME}\" CACHE STRING \"ASCEND CANN package installation directory\" FORCE)\n"
+         "endif()\n"
+         "if(ASCEND_CANN_PACKAGE_PATH STREQUAL \"\")\n"
+         "  message(FATAL_ERROR \"Set ASCEND_HOME_PATH or ASCEND_TOOLKIT_HOME before invoking the mix compiler\")\n"
+         "endif()\n\n"
          "if(NOT CMAKE_BUILD_TYPE)\n"
          "  set(CMAKE_BUILD_TYPE \"Debug\" CACHE STRING \"Build type Release/Debug (default Debug)\" FORCE)\n"
          "endif()\n"
          "if(CMAKE_INSTALL_PREFIX STREQUAL /usr/local)\n"
          "  set(CMAKE_INSTALL_PREFIX \"${CMAKE_CURRENT_LIST_DIR}/out\" CACHE STRING \"path for install()\" FORCE)\n"
          "endif()\n\n"
-         "set(SOC_SIM_LIB_DIR \"${ASCEND_CANN_PACKAGE_PATH}/tools/simulator/${SOC_VERSION}/lib\")\n"
-         "set(DAV_SIM_LIB_DIR \"${ASCEND_CANN_PACKAGE_PATH}/tools/simulator/dav_3002/lib\")\n\n"
+         "set(ASCEND_HOST_ARCH \"\")\n"
+         "if(CMAKE_SYSTEM_PROCESSOR MATCHES \"^(x86_64|amd64)$\")\n"
+         "  set(ASCEND_HOST_ARCH \"x86_64-linux\")\n"
+         "elseif(CMAKE_SYSTEM_PROCESSOR MATCHES \"^(aarch64|arm64)$\")\n"
+         "  set(ASCEND_HOST_ARCH \"aarch64-linux\")\n"
+         "endif()\n"
+         "set(SOC_SIM_LIB_DIR \"\")\n"
+         "set(DAV_SIM_LIB_DIR \"\")\n"
+         "if(NOT ASCEND_HOST_ARCH STREQUAL \"\")\n"
+         "  set(SOC_SIM_LIB_DIR \"${ASCEND_CANN_PACKAGE_PATH}/${ASCEND_HOST_ARCH}/simulator/${SOC_VERSION}/lib\")\n"
+         "endif()\n"
+         "set(_DAV_SIM_ROOTS \"${ASCEND_CANN_PACKAGE_PATH}/tools/simulator\")\n"
+         "if(NOT ASCEND_HOST_ARCH STREQUAL \"\")\n"
+         "  list(PREPEND _DAV_SIM_ROOTS \"${ASCEND_CANN_PACKAGE_PATH}/${ASCEND_HOST_ARCH}/simulator\")\n"
+         "endif()\n"
+         "if(NOT \"$ENV{ASCEND_DAV_SIM_VERSION}\" STREQUAL \"\")\n"
+         "  foreach(_dav_root IN LISTS _DAV_SIM_ROOTS)\n"
+         "    if(EXISTS \"${_dav_root}/$ENV{ASCEND_DAV_SIM_VERSION}/lib/libmodel_top.so\")\n"
+         "      set(DAV_SIM_LIB_DIR \"${_dav_root}/$ENV{ASCEND_DAV_SIM_VERSION}/lib\")\n"
+         "      break()\n"
+         "    endif()\n"
+         "  endforeach()\n"
+         "  if(DAV_SIM_LIB_DIR STREQUAL \"\")\n"
+         "    list(GET _DAV_SIM_ROOTS 0 _dav_preferred_root)\n"
+         "    set(DAV_SIM_LIB_DIR \"${_dav_preferred_root}/$ENV{ASCEND_DAV_SIM_VERSION}/lib\")\n"
+         "  endif()\n"
+         "endif()\n"
+         "if(DAV_SIM_LIB_DIR STREQUAL \"\")\n"
+         "  set(_DAV_SIM_MATCHES \"\")\n"
+         "  foreach(_dav_root IN LISTS _DAV_SIM_ROOTS)\n"
+         "    if(EXISTS \"${_dav_root}\")\n"
+         "      file(GLOB _dav_children LIST_DIRECTORIES true \"${_dav_root}/*\")\n"
+         "      foreach(_dav_child IN LISTS _dav_children)\n"
+         "        if(EXISTS \"${_dav_child}/lib/libmodel_top.so\")\n"
+         "          list(APPEND _DAV_SIM_MATCHES \"${_dav_child}/lib\")\n"
+         "        endif()\n"
+         "      endforeach()\n"
+         "    endif()\n"
+         "  endforeach()\n"
+         "  list(LENGTH _DAV_SIM_MATCHES _DAV_SIM_MATCH_COUNT)\n"
+         "  if(_DAV_SIM_MATCH_COUNT EQUAL 1)\n"
+         "    list(GET _DAV_SIM_MATCHES 0 DAV_SIM_LIB_DIR)\n"
+         "  elseif(_DAV_SIM_MATCH_COUNT GREATER 1)\n"
+         "    message(FATAL_ERROR \"Multiple DAV simulator lib directories found; set ASCEND_DAV_SIM_VERSION\")\n"
+         "  endif()\n"
+         "endif()\n"
+         "if(NOT EXISTS \"${SOC_SIM_LIB_DIR}/libruntime_camodel.so\")\n"
+         "  set(SOC_SIM_LIB_DIR \"${ASCEND_CANN_PACKAGE_PATH}/tools/simulator/${SOC_VERSION}/lib\")\n"
+         "endif()\n"
+         "if(NOT EXISTS \"${DAV_SIM_LIB_DIR}/libmodel_top.so\")\n"
+         "  message(FATAL_ERROR \"Cannot locate DAV simulator libs (missing libmodel_top.so) under ${ASCEND_CANN_PACKAGE_PATH}\")\n"
+         "endif()\n\n"
          "set(KERNEL_FILES \"" + escapeForCxx(kernel_src) + "\")\n"
          "include(\"" + escapeForCxx(repo_root) +
          "/examples/baremix-test/cmake/npu_lib.cmake\")\n\n"
@@ -362,7 +396,10 @@ AscendCMixCompiler::Compile(const AscendCMixCompileConfig& cfg) {
     return std::move(err);
 
   std::string soc = cfg.soc_version.empty() ? "Ascend910B1" : cfg.soc_version;
-  std::string ascendHome = getAscendHome();
+  auto ascendHomeOr = requireAscendHome();
+  if (!ascendHomeOr)
+    return ascendHomeOr.takeError();
+  std::string ascendHome = *ascendHomeOr;
   std::string envPrefix = llvm::formatv(
       "export ASCEND_HOME_PATH=\"{0}\" ASCEND_TOOLKIT_HOME=\"{0}\" && source \"{0}/bin/setenv.bash\" >/dev/null 2>&1 && ",
       ascendHome).str();

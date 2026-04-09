@@ -22,8 +22,20 @@ skip() {
   exit 0
 }
 
+echo "INFO: example pipeline test entry"
+
 if [[ ! -f "${REPO_ROOT}/examples/env.sh" ]]; then
   skip "examples/env.sh not found"
+fi
+
+if [[ ! -f "${REPO_ROOT}/scripts/resolve_ascend_env.sh" ]]; then
+  skip "scripts/resolve_ascend_env.sh not found"
+fi
+
+# shellcheck source=/dev/null
+source "${REPO_ROOT}/scripts/resolve_ascend_env.sh"
+if ! resolve_ascend_home >/dev/null 2>&1; then
+  skip "ASCEND_HOME_PATH or ASCEND_TOOLKIT_HOME is not configured"
 fi
 
 # shellcheck source=/dev/null
@@ -46,6 +58,8 @@ fi
 if ! python3 -c 'import numpy' >/dev/null 2>&1; then
   skip "python3 numpy module is unavailable"
 fi
+
+echo "INFO: executing ${#EXAMPLES[@]} example pipelines"
 
 workdir="$(mktemp -d "${TMPDIR:-/tmp}/afir-example-pipelines.XXXXXX")"
 trap 'rm -rf "${workdir}"' EXIT
@@ -100,4 +114,5 @@ if ((${#failures[@]} > 0)); then
   exit 1
 fi
 
+echo "EXECUTED: ${#EXAMPLES[@]} example pipelines"
 echo "ALL EXAMPLE PIPELINES PASSED"

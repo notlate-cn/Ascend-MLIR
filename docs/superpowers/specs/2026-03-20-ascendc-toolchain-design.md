@@ -250,7 +250,7 @@ msprof op \
                    --block-dim 2
 ```
 
-msprof 路径优先级：`--msprof` 参数 > 环境变量 `$ASCEND_HOME_PATH/tools/profiler/bin/msprof` > `/usr/local/Ascend/ascend-toolkit/latest/tools/profiler/bin/msprof`
+msprof 路径优先级：`--msprof` 参数 > 环境变量 `$ASCEND_HOME_PATH/tools/profiler/bin/msprof`
 
 ---
 

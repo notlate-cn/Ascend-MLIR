@@ -1,8 +1,14 @@
 #!/usr/bin/env bash
 set -euo pipefail
-source /home/niu/code/Ascend-MLIR/examples/env.sh
-export LD_LIBRARY_PATH=/home/niu/Ascend/latest/lib64:/home/niu/Ascend/latest/tools/simulator/Ascend910B1/lib:/home/niu/Ascend/20260323_newest/cann-9.0.0/aarch64-linux/lib64:/home/niu/Ascend/20260323_newest/cann-9.0.0/aarch64-linux/devlib:/home/niu/Ascend/20260323_newest/cann-9.0.0/aarch64-linux/lib64/device/lib64:/home/niu/Ascend/20260323_newest/cann-9.0.0/aarch64-linux/devlib/linux/aarch64:/home/niu/Ascend/20260323_newest/cann-9.0.0/aarch64-linux/simulator/dav_2201/lib:${LD_LIBRARY_PATH:-}
-ASCEND_HOME=${ASCEND_HOME_PATH:-/home/niu/Ascend/latest}
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="$(cd "${SCRIPT_DIR}/../../../.." && pwd)"
+source "${PROJECT_ROOT}/examples/env.sh"
+ASCEND_HOME="${ASCEND_HOME_PATH:-${ASCEND_TOOLKIT_HOME:-}}"
+if [[ -z "${ASCEND_HOME}" ]]; then
+  echo "Set ASCEND_HOME_PATH or ASCEND_TOOLKIT_HOME before running this example" >&2
+  exit 1
+fi
+export LD_LIBRARY_PATH="${ASCEND_HOME}/lib64:${ASCEND_HOME}/tools/simulator/Ascend910B1/lib:${ASCEND_HOME}/aarch64-linux/lib64:${ASCEND_HOME}/aarch64-linux/lib64/device/lib64:${ASCEND_HOME}/aarch64-linux/simulator/dav_2201/lib:${LD_LIBRARY_PATH:-}"
 BISHENG=${ASCEND_HOME}/toolkit/tools/ccec_compiler/bin/bisheng
 LLD=${ASCEND_HOME}/aarch64-linux/ccec_compiler/bin/ld.lld
 TIKCPP=${ASCEND_HOME}/toolkit/tools/tikcpp
@@ -88,7 +94,7 @@ int main(){
  CHECK_ACL(aclrtMemcpy(aDev, A.size(), aHost, A.size(), ACL_MEMCPY_HOST_TO_DEVICE)); CHECK_ACL(aclrtMemcpy(bDev, B.size(), bHost, B.size(), ACL_MEMCPY_HOST_TO_DEVICE)); CHECK_ACL(aclrtMemcpy(biasDev, Bias.size(), biasHost, Bias.size(), ACL_MEMCPY_HOST_TO_DEVICE)); CHECK_ACL(aclrtMemcpy(tilingDev, T.size(), tilingHost, T.size(), ACL_MEMCPY_HOST_TO_DEVICE));
  uint32_t rc=aclrtlaunch_fc_leakyrelu(1, stream, aDev, bDev, biasDev, outDev, workspaceDev, tilingDev); std::cout << "launch_rc=" << rc << "\n"; CHECK_ACL(aclrtSynchronizeStream(stream)); int d2h_rc=aclrtMemcpy(outHost,128*128*4,outDev,128*128*4,ACL_MEMCPY_DEVICE_TO_HOST); std::cout << "d2h_rc=" << d2h_rc << "\n"; float* out=(float*)outHost; std::cout << out[0] << " " << out[1] << " " << out[2] << " " << out[3] << "\n"; return 0; }
 CPP
-c++ -g -pie -Wl,-z,relro -Wl,-z,now -Wl,-z,noexecstack "$ROOT/host_main.cpp" -o "$ROOT/host_main" -I/home/niu/Ascend/20260323_newest/cann-9.0.0/aarch64-linux/include -L/home/niu/Ascend/latest/lib64 -L/home/niu/Ascend/latest/tools/simulator/Ascend910B1/lib -L/home/niu/Ascend/20260323_newest/cann-9.0.0/aarch64-linux/lib64 "$ROOT/out/lib${KERNEL}_packed.so" -ltiling_api -lregister -lplatform -lascendalog -lunified_dlog -ldl -lruntime_camodel -lnpu_drv -lascendcl -lregister -lplatform -lerror_manager -lprofapi -lge_common_base -lmmpa -lascend_dump -lc_sec -lunified_dlog -ldl
+c++ -g -pie -Wl,-z,relro -Wl,-z,now -Wl,-z,noexecstack "$ROOT/host_main.cpp" -o "$ROOT/host_main" -I"${ASCEND_HOME}/aarch64-linux/include" -L"${ASCEND_HOME}/lib64" -L"${ASCEND_HOME}/tools/simulator/Ascend910B1/lib" -L"${ASCEND_HOME}/aarch64-linux/lib64" "$ROOT/out/lib${KERNEL}_packed.so" -ltiling_api -lregister -lplatform -lascendalog -lunified_dlog -ldl -lruntime_camodel -lnpu_drv -lascendcl -lregister -lplatform -lerror_manager -lprofapi -lge_common_base -lmmpa -lascend_dump -lc_sec -lunified_dlog -ldl
 timeout 150 "$ROOT/host_main" > "$ROOT/host.log" 2>&1 || true
 echo "=== HOST LOG ==="
 tail -n 160 "$ROOT/host.log"

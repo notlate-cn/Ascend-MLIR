@@ -4,6 +4,7 @@ add_mlir_library(AscendCRuntime
   Compiler.cpp
   Executor.cpp
   HostRunnerGen.cpp
+  PathUtils.cpp
   MixCommandBuilder.cpp
   MixAbiExtractor.cpp
   MixDirectBackend.cpp
@@ -21,10 +22,23 @@ add_mlir_library(AscendCRuntime
   LLVMSupport
 )
 
-foreach(_dir
-    /home/niu/Ascend/latest/include
-    /usr/local/Ascend/latest/include
-    /usr/local/Ascend/ascend-toolkit/latest/include)
+set(ASCEND_CANN_ARCH "")
+if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|amd64)$")
+  set(ASCEND_CANN_ARCH "x86_64-linux")
+elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "^(aarch64|arm64)$")
+  set(ASCEND_CANN_ARCH "aarch64-linux")
+endif()
+
+set(ASCEND_INCLUDE_DIRS
+    $ENV{ASCEND_HOME_PATH}/include
+    $ENV{ASCEND_TOOLKIT_HOME}/include)
+if(NOT ASCEND_CANN_ARCH STREQUAL "")
+  list(APPEND ASCEND_INCLUDE_DIRS
+      $ENV{ASCEND_HOME_PATH}/${ASCEND_CANN_ARCH}/include
+      $ENV{ASCEND_TOOLKIT_HOME}/${ASCEND_CANN_ARCH}/include)
+endif()
+
+foreach(_dir ${ASCEND_INCLUDE_DIRS})
   if(EXISTS ${_dir})
     target_include_directories(AscendCRuntime PRIVATE ${_dir})
   endif()

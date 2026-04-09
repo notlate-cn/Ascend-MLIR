@@ -1,5 +1,6 @@
 #include "Runtime/Executor.h"
 #include "Runtime/MixAbi.h"
+#include "Runtime/PathUtils.h"
 #include "Runtime/Types.h"
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/Error.h"
@@ -103,96 +104,15 @@ static std::string resolvePath(const std::string &base, const std::string &path)
   return joined.str().str();
 }
 
-static std::string findAscendHome() {
-  auto hasRuntimeLibs = [](const std::string &root) {
-    if (root.empty())
-      return false;
-    const std::string libDirs[] = {
-        root + "/lib64",
-        root + "/aarch64-linux/lib64",
-        root + "/arm64-linux/lib64",
-    };
-    for (const std::string &libDir : libDirs) {
-      if (llvm::sys::fs::exists(libDir + "/libplatform.so") &&
-          llvm::sys::fs::exists(libDir + "/libunified_dlog.so") &&
-          llvm::sys::fs::exists(libDir + "/libmmpa.so") &&
-          llvm::sys::fs::exists(libDir + "/libc_sec.so"))
-        return true;
-    }
+static bool hasAllFiles(const std::string &dir,
+                        llvm::ArrayRef<llvm::StringRef> files) {
+  if (dir.empty())
     return false;
-  };
-  if (const char *ascendHome = std::getenv("ASCEND_HOME_PATH");
-      ascendHome && *ascendHome && hasRuntimeLibs(ascendHome))
-    return ascendHome;
-  if (const char *toolkitHome = std::getenv("ASCEND_TOOLKIT_HOME");
-      toolkitHome && *toolkitHome && hasRuntimeLibs(toolkitHome))
-    return toolkitHome;
-  if (const char *userHome = std::getenv("HOME")) {
-    const std::string latest = std::string(userHome) + "/Ascend/latest";
-    if (hasRuntimeLibs(latest))
-      return latest;
-    const std::string toolkitLatest =
-        std::string(userHome) + "/Ascend/ascend-toolkit/latest";
-    if (hasRuntimeLibs(toolkitLatest))
-      return toolkitLatest;
+  for (llvm::StringRef file : files) {
+    if (!llvm::sys::fs::exists((llvm::Twine(dir) + "/" + file).str()))
+      return false;
   }
-  const std::string sysDefault = "/usr/local/Ascend/ascend-toolkit/latest";
-  if (hasRuntimeLibs(sysDefault))
-    return sysDefault;
-  return "";
-}
-
-static std::string findAscendLib64(const std::string &ascendHome) {
-  const std::string candidates[] = {
-      ascendHome + "/lib64",
-      ascendHome + "/aarch64-linux/lib64",
-      ascendHome + "/arm64-linux/lib64",
-  };
-  for (const std::string &candidate : candidates) {
-    if (llvm::sys::fs::exists(candidate + "/libplatform.so") &&
-        llvm::sys::fs::exists(candidate + "/libunified_dlog.so"))
-      return candidate;
-  }
-  return "";
-}
-
-static std::string findSimulatorLibDir(const std::string &ascendHome,
-                                       const std::string &socVersion) {
-  const std::string candidates[] = {
-      ascendHome + "/aarch64-linux/simulator/" + socVersion + "/lib",
-      ascendHome + "/arm64-linux/simulator/" + socVersion + "/lib",
-      ascendHome + "/tools/simulator/" + socVersion + "/lib",
-  };
-  for (const std::string &candidate : candidates) {
-    if (llvm::sys::fs::exists(candidate + "/libruntime_camodel.so"))
-      return candidate;
-  }
-  return "";
-}
-
-static std::string findDavSimulatorLibDir(const std::string &ascendHome) {
-  const std::string candidates[] = {
-      ascendHome + "/aarch64-linux/simulator/dav_3002/lib",
-      ascendHome + "/arm64-linux/simulator/dav_3002/lib",
-      ascendHome + "/tools/simulator/dav_3002/lib",
-  };
-  for (const std::string &candidate : candidates) {
-    if (llvm::sys::fs::exists(candidate + "/libmodel_top.so"))
-      return candidate;
-  }
-  return "";
-}
-
-static std::string findDeviceLibDir(const std::string &ascendHome) {
-  const std::string candidates[] = {
-      ascendHome + "/aarch64-linux/lib64/device/lib64",
-      ascendHome + "/arm64-linux/lib64/device/lib64",
-  };
-  for (const std::string &candidate : candidates) {
-    if (llvm::sys::fs::exists(candidate))
-      return candidate;
-  }
-  return "";
+  return true;
 }
 
 static void prependEnvPath(const char *name, const std::string &prefix) {
@@ -216,29 +136,31 @@ static llvm::Error configureRuntimeEnv(const std::string &socVersion,
                                        std::string *davSimLibDirOut = nullptr,
                                        std::string *deviceLibDirOut = nullptr) {
   const std::string ascendHome = findAscendHome();
-  if (ascendHome.empty())
+  const std::string ascendLib64 = findAscendLib64Dir(ascendHome);
+  if (ascendHome.empty() ||
+      !hasAllFiles(ascendLib64,
+                   {"libplatform.so", "libunified_dlog.so", "libmmpa.so",
+                    "libc_sec.so"}))
     return llvm::createStringError(
         llvm::inconvertibleErrorCode(),
         "Cannot find Ascend toolkit root; set ASCEND_HOME_PATH or "
         "ASCEND_TOOLKIT_HOME");
-  const std::string ascendLib64 = findAscendLib64(ascendHome);
-  if (ascendLib64.empty())
+  if (!hasAllFiles(ascendLib64, {"libplatform.so", "libunified_dlog.so"}))
     return llvm::createStringError(
         llvm::inconvertibleErrorCode(),
         "Cannot find Ascend lib64 under %s", ascendHome.c_str());
-  const std::string simLibDir = findSimulatorLibDir(ascendHome, socVersion);
-  if (simLibDir.empty())
+  const std::string simLibDir = findAscendSimulatorLibDir(ascendHome, socVersion);
+  if (!hasAllFiles(simLibDir, {"libruntime_camodel.so"}))
     return llvm::createStringError(
         llvm::inconvertibleErrorCode(),
         "Cannot find simulator libs for %s under %s", socVersion.c_str(),
         ascendHome.c_str());
-  const std::string davSimLibDir = findDavSimulatorLibDir(ascendHome);
-  if (davSimLibDir.empty())
-    return llvm::createStringError(
-        llvm::inconvertibleErrorCode(),
-        "Cannot find dav_3002 simulator libs under %s", ascendHome.c_str());
-  const std::string deviceLibDir = findDeviceLibDir(ascendHome);
-  if (deviceLibDir.empty())
+  auto davSimLibDirOr = requireAscendDavSimulatorLibDir(ascendHome);
+  if (!davSimLibDirOr)
+    return davSimLibDirOr.takeError();
+  const std::string davSimLibDir = *davSimLibDirOr;
+  const std::string deviceLibDir = findAscendDeviceLibDir(ascendHome);
+  if (!llvm::sys::fs::exists(deviceLibDir))
     return llvm::createStringError(
         llvm::inconvertibleErrorCode(),
         "Cannot find device libs under %s", ascendHome.c_str());

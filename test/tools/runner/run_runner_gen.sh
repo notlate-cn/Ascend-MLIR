@@ -3,7 +3,14 @@ set -e
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 cd "$PROJECT_ROOT"
-source examples/env.sh
+source "${PROJECT_ROOT}/scripts/resolve_ascend_env.sh"
+
+ASCEND_HOME="$(resolve_ascend_home || true)"
+if [ -z "${ASCEND_HOME}" ]; then
+  echo "Error: set ASCEND_HOME_PATH or ASCEND_TOOLKIT_HOME before running runner tests"
+  exit 1
+fi
+export ASCEND_HOME_PATH="${ASCEND_HOME}"
 
 LLVM_BUILD="${LLVM_BUILD_DIR:-$PROJECT_ROOT/../llvm-project/llvm/build}"
 if [ ! -d "$LLVM_BUILD" ]; then
@@ -13,6 +20,7 @@ if [ ! -d "$LLVM_BUILD" ]; then
 fi
 
 # Build AscendCRuntime
+rm -f build/lib/libAscendCRuntime.a
 cd build && cmake --build . --target AscendCRuntime -j4 && cd ..
 
 # Compile test driver

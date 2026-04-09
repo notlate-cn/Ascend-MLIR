@@ -32,7 +32,24 @@ config.test_exec_root = os.path.join(config.afir_obj_root, 'test')
 config.substitutions.append(('%PATH%', config.environment['PATH']))
 config.substitutions.append(('%shlibext', config.llvm_shlib_ext))
 
-llvm_config.with_system_environment(['HOME', 'INCLUDE', 'LIB', 'TMP', 'TEMP'])
+llvm_config.with_system_environment([
+    'HOME',
+    'INCLUDE',
+    'LIB',
+    'TMP',
+    'TEMP',
+    'ASCEND_HOME_PATH',
+    'ASCEND_TOOLKIT_HOME',
+    'SOC_VERSION',
+    'ASCEND_CPU_SIMULATION',
+    'ASCEND_DEVICE_ID',
+    'LD_LIBRARY_PATH',
+    'PATH',
+])
+
+if (os.environ.get('ASCEND_HOME_PATH') or
+        os.environ.get('ASCEND_TOOLKIT_HOME')):
+    config.available_features.add('ascend_env')
 
 llvm_config.use_default_substitutions()
 

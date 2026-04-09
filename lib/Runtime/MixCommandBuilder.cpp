@@ -1,4 +1,5 @@
 #include "Runtime/MixCommandBuilder.h"
+#include "Runtime/PathUtils.h"
 #include <cstdlib>
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/Path.h"
@@ -6,23 +7,6 @@
 namespace mlir::runtime {
 
 namespace {
-
-static std::string getAscendHome() {
-  if (const char *home = std::getenv("ASCEND_HOME_PATH"))
-    return home;
-  if (const char *home = std::getenv("ASCEND_TOOLKIT_HOME"))
-    return home;
-  if (const char *userHome = std::getenv("HOME")) {
-    std::string latest = std::string(userHome) + "/Ascend/latest";
-    if (llvm::sys::fs::exists(latest))
-      return latest;
-    std::string toolkitLatest =
-        std::string(userHome) + "/Ascend/ascend-toolkit/latest";
-    if (llvm::sys::fs::exists(toolkitLatest))
-      return toolkitLatest;
-  }
-  return "/usr/local/Ascend/ascend-toolkit/latest";
-}
 
 struct MixToolkitPaths {
   std::string root;
@@ -35,11 +19,9 @@ struct MixToolkitPaths {
 };
 
 static MixToolkitPaths getToolkitPaths() {
-  std::string ascendHome = getAscendHome();
+  std::string ascendHome = findAscendHome();
   std::string root = ascendHome + "/toolkit/tools";
-  std::string tikcpp = ascendHome + "/aarch64-linux/tikcpp";
-  if (!llvm::sys::fs::exists(tikcpp))
-    tikcpp = root + "/tikcpp";
+  std::string tikcpp = findAscendTikcppDir(ascendHome);
   return {
       root,
       root + "/ccec_compiler/bin/bisheng",
@@ -47,7 +29,7 @@ static MixToolkitPaths getToolkitPaths() {
       ascendHome + "/compiler/tikcpp/ascendc_kernel_cmake/legacy_modules/util/ascendc_pack_kernel.sh",
       ascendHome + "/bin/ascendc_pack_kernel",
       tikcpp,
-      ascendHome + "/aarch64-linux/include",
+      findAscendIncludeDir(ascendHome),
   };
 }
 
@@ -72,12 +54,12 @@ static std::string getPackToolPath() {
 }
 
 static std::string getMergeObjScriptPath() {
-  return getAscendHome() +
+  return findAscendHome() +
          "/compiler/tikcpp/ascendc_kernel_cmake/legacy_modules/util/merge_obj.sh";
 }
 
 static std::string getMergeMixObjScriptPath() {
-  return getAscendHome() +
+  return findAscendHome() +
          "/compiler/tikcpp/ascendc_kernel_cmake/legacy_modules/util/merge_mix_obj.sh";
 }
 
@@ -96,24 +78,15 @@ static std::string getHostCxxPath() {
 }
 
 static std::string getAclIncludeDir() {
-  auto paths = getToolkitPaths();
-  if (llvm::sys::fs::exists(paths.includeDir))
-    return paths.includeDir;
-  std::string alt = getAscendHome() + "/include";
-  if (llvm::sys::fs::exists(alt))
-    return alt;
-  std::string armAlt = getAscendHome() + "/arm64-linux/include";
-  if (llvm::sys::fs::exists(armAlt))
-    return armAlt;
-  return paths.includeDir;
+  return getToolkitPaths().includeDir;
 }
 
 static std::string getAscRoot() {
-  return getAscendHome() + "/aarch64-linux/asc";
+  return findAscendAscDir(findAscendHome());
 }
 
 static std::string getVersionHeader() {
-  return getAscendHome() + "/include/version/asc_devkit_version.h";
+  return findAscendIncludeDir(findAscendHome()) + "/version/asc_devkit_version.h";
 }
 
 static std::string shellQuote(llvm::StringRef value) {
@@ -348,7 +321,7 @@ buildExtractHostStubCommand(llvm::StringRef preprocessedPath,
                             llvm::StringRef buildMode,
                             llvm::StringRef runMode) {
   std::vector<std::string> args = {
-      getAscendHome() +
+      findAscendHome() +
           "/compiler/tikcpp/ascendc_kernel_cmake/legacy_modules/util/"
           "extract_host_stub.py",
       preprocessedPath.str(),
@@ -376,7 +349,7 @@ std::vector<std::string>
 buildUpdateHostStubCommand(llvm::StringRef codeDir, llvm::StringRef objDir,
                            llvm::StringRef lowerSocVersion,
                            llvm::StringRef targetName) {
-  return {getAscendHome() +
+  return {findAscendHome() +
               "/compiler/tikcpp/ascendc_kernel_cmake/legacy_modules/util/"
               "update_host_stub.py",
           codeDir.str(), objDir.str(), lowerSocVersion.str(), targetName.str()};
@@ -432,7 +405,7 @@ buildRecompileBinaryCommand(llvm::StringRef rootDir, llvm::StringRef targetName,
                             llvm::StringRef addDir) {
   return {
       "/usr/bin/python3",
-      getAscendHome() +
+      findAscendHome() +
           "/compiler/tikcpp/ascendc_kernel_cmake/legacy_modules/util/"
           "recompile_binary.py",
       "--root-dir",
@@ -447,20 +420,23 @@ buildRecompileBinaryCommand(llvm::StringRef rootDir, llvm::StringRef targetName,
 std::vector<std::string> buildHostSharedLinkCommand(llvm::StringRef hostStubObject,
                                                     llvm::StringRef outputSo,
                                                     llvm::StringRef socVersion) {
-  std::string ascendHome = getAscendHome();
+  std::string ascendHome = findAscendHome();
+  std::string runnerLib64 = findAscendLib64Dir(ascendHome);
+  std::string runnerSimLibDir = findAscendSimulatorLibDir(ascendHome, socVersion);
+  std::string davSimLibDir = findAscendDavSimulatorLibDir(ascendHome);
   return {getHostCxxPath(),
           "-fPIC",
           "-shared",
-          "-Wl,-rpath-link," + ascendHome + "/lib64",
-          "-Wl,-rpath-link," + ascendHome + "/tools/simulator/" + socVersion.str() + "/lib",
-          "-Wl,-rpath-link," + ascendHome + "/tools/simulator/dav_3002/lib",
+          "-Wl,-rpath-link," + runnerLib64,
+          "-Wl,-rpath-link," + runnerSimLibDir,
+          "-Wl,-rpath-link," + davSimLibDir,
           "-o",
           outputSo.str(),
           hostStubObject.str(),
-          "-L" + ascendHome + "/tools/simulator/" + socVersion.str() + "/lib",
-          "-L" + ascendHome + "/tools/simulator/dav_3002/lib",
-          "-L" + ascendHome + "/lib64",
-          ascendHome + "/lib64/libascendc_runtime.a",
+          "-L" + runnerSimLibDir,
+          "-L" + davSimLibDir,
+          "-L" + runnerLib64,
+          runnerLib64 + "/libascendc_runtime.a",
           "-lascendcl",
           "-ltiling_api",
           "-lregister",
@@ -492,7 +468,9 @@ buildHostRunnerCompileCommand(llvm::StringRef workDir,
                               llvm::StringRef runnerSimLibDir,
                               llvm::StringRef davSimLibDir,
                               llvm::StringRef socVersion) {
-  const std::string ascendHome = getAscendHome();
+  const std::string ascendHome = findAscendHome();
+  const std::string includeDir = findAscendIncludeDir(ascendHome);
+  const std::string tikcppDir = findAscendTikcppDir(ascendHome);
 
   return {
       getHostCxxPath(),
@@ -510,8 +488,8 @@ buildHostRunnerCompileCommand(llvm::StringRef workDir,
       "-I" + workDir.str(),
       "-I" + launcherDir.str(),
       "-I" + outIncludeDir.str(),
-      "-I" + ascendHome + "/include",
-      "-I" + ascendHome + "/aarch64-linux/tikcpp/tikcfw",
+      "-I" + includeDir,
+      "-I" + tikcppDir + "/tikcfw",
       runnerMainPath.str(),
       runnerTilingPath.str(),
       "-Wl,-rpath-link," + runnerLib64.str(),
