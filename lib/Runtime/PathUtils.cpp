@@ -233,8 +233,13 @@ std::string findAscendDeviceLibDir(llvm::StringRef ascendHome,
       machine.empty() ? getHostShortArchCandidates()
                       : getShortArchCandidates(machine);
   candidates.reserve(candidates.size() + shortArchs.size() + 1);
-  for (const std::string &archDir : shortArchs)
-    candidates.push_back("/devlib/linux/" + archDir);
+  for (const std::string &archDir : shortArchs) {
+    std::string devlib = "/devlib/linux/" + archDir;
+    if (archDir == "x86_64")
+      candidates.insert(candidates.begin(), devlib);
+    else
+      candidates.push_back(std::move(devlib));
+  }
   return findUnderAscendHome(ascendHome, candidates);
 }
 
