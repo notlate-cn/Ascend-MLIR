@@ -29,3 +29,6 @@ externals/llvm-project
 /CLAUDE.md
 /.serena
 /.worktrees/
+
+examples/ascendc-handbook
+examples/dev-env.md
