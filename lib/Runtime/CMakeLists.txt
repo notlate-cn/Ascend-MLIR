@@ -5,6 +5,7 @@ add_mlir_library(AscendCRuntime
   Compiler.cpp
   Executor.cpp
   ExecutionBackend.cpp
+  ExecutionSession.cpp
   HostRunnerGen.cpp
   ProfileTrace.cpp
   ProfileUtils.cpp

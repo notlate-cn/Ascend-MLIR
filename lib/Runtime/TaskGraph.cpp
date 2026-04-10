@@ -26,6 +26,10 @@ llvm::Error TaskGraph::addTask(const RuntimeTask &task) {
   return llvm::Error::success();
 }
 
+llvm::Expected<std::vector<RuntimeTask>> TaskGraph::executionOrder() const {
+  return orderedTasks();
+}
+
 llvm::Expected<std::vector<RuntimeTask>> TaskGraph::orderedTasks() const {
   std::unordered_map<std::string, size_t> indexById;
   indexById.reserve(tasks_.size());

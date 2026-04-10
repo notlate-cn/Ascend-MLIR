@@ -15,6 +15,7 @@
 #include "Runtime/ProfileTrace.h"
 #include "Runtime/ProfileUtils.h"
 #include "Runtime/ExecutionBackend.h"
+#include "Runtime/ExecutionSession.h"
 #include "Runtime/NpuBackend.h"
 #include "Runtime/TaskGraph.h"
 #include "Runtime/ArtifactCompiler.h"
@@ -86,6 +87,34 @@ public:
 
   int invocations = 0;
   ExecutionRequest lastRequest;
+};
+
+class OrderedExecutionBackendDriver : public ExecutionBackendDriver {
+public:
+  llvm::Expected<ExecutionResult>
+  run(const ExecutionRequest &request) override {
+    seenTaskIds.push_back(request.task.taskId);
+    seenSessionIds.push_back(request.sessionId);
+    seenWorkingDirectories.push_back(request.workingDirectory);
+
+    ExecutionResult result;
+    result.taskId = request.task.taskId;
+    result.producedFiles.push_back(request.workingDirectory + "/" +
+                                   request.task.taskId + ".done");
+
+    ProfileTrace trace;
+    trace.sessionId = request.sessionId;
+    addProfileArtifact(trace, request.task.taskId,
+                       ExecutionBackendKind::Simulation,
+                       request.workingDirectory + "/" + request.task.taskId +
+                           ".profile.json");
+    result.profileTrace = std::move(trace);
+    return result;
+  }
+
+  std::vector<std::string> seenTaskIds;
+  std::vector<std::string> seenSessionIds;
+  std::vector<std::string> seenWorkingDirectories;
 };
 
 #define EXPECT(cond, msg)                                                     \
@@ -534,6 +563,141 @@ static void testBackendPreservesExistingProfileTrace() {
   }
 }
 
+static void testExecutionSessionPlansTopologicalOrder() {
+  TaskGraph graph;
+
+  RuntimeTask taskA;
+  taskA.taskId = "task_a";
+
+  RuntimeTask taskB;
+  taskB.taskId = "task_b";
+  taskB.dependencies = {"task_a"};
+
+  RuntimeTask taskC;
+  taskC.taskId = "task_c";
+  taskC.dependencies = {"task_b"};
+
+  auto addC = graph.addTask(taskC);
+  EXPECT(!addC, "execution session add task_c");
+  auto addA = graph.addTask(taskA);
+  EXPECT(!addA, "execution session add task_a");
+  auto addB = graph.addTask(taskB);
+  EXPECT(!addB, "execution session add task_b");
+
+  ExecutionSession session(ExecutionBackendKind::Simulation);
+  auto planOr = session.plan(graph);
+  EXPECT((bool)planOr, "execution session plan succeeds");
+  if (planOr) {
+    EXPECT(planOr->orderedTaskIds.size() == 3,
+           "execution session plan size");
+    EXPECT(planOr->orderedTaskIds[0] == "task_a",
+           "execution session plan first task");
+    EXPECT(planOr->orderedTaskIds[1] == "task_b",
+           "execution session plan second task");
+    EXPECT(planOr->orderedTaskIds[2] == "task_c",
+           "execution session plan third task");
+  }
+}
+
+static void testExecutionSessionRunsTasksInTopologicalOrder() {
+  TaskGraph graph;
+
+  RuntimeTask taskA;
+  taskA.taskId = "task_a";
+
+  RuntimeTask taskB;
+  taskB.taskId = "task_b";
+  taskB.dependencies = {"task_a"};
+
+  RuntimeTask taskC;
+  taskC.taskId = "task_c";
+  taskC.dependencies = {"task_b"};
+
+  auto addC = graph.addTask(taskC);
+  EXPECT(!addC, "execution session run add task_c");
+  auto addA = graph.addTask(taskA);
+  EXPECT(!addA, "execution session run add task_a");
+  auto addB = graph.addTask(taskB);
+  EXPECT(!addB, "execution session run add task_b");
+
+  auto executionOrderOr = graph.executionOrder();
+  EXPECT((bool)executionOrderOr, "task graph execution order succeeds");
+  if (executionOrderOr) {
+    EXPECT(executionOrderOr->size() == 3, "task graph execution order size");
+    EXPECT((*executionOrderOr)[0].taskId == "task_a",
+           "task graph execution order first task");
+    EXPECT((*executionOrderOr)[1].taskId == "task_b",
+           "task graph execution order second task");
+    EXPECT((*executionOrderOr)[2].taskId == "task_c",
+           "task graph execution order third task");
+  }
+
+  auto driver = std::make_shared<OrderedExecutionBackendDriver>();
+  OrderedExecutionBackendDriver *driverPtr = driver.get();
+  ExecutionSession session(ExecutionBackendKind::Simulation, driver);
+
+  auto traceOr = session.run(graph);
+  EXPECT((bool)traceOr, "execution session run succeeds");
+  if (traceOr) {
+    EXPECT(traceOr->events.size() == 3,
+           "execution session aggregates profile events");
+    EXPECT(traceOr->events[0].taskId == "task_a",
+           "execution session profile event order first");
+    EXPECT(traceOr->events[1].taskId == "task_b",
+           "execution session profile event order second");
+    EXPECT(traceOr->events[2].taskId == "task_c",
+           "execution session profile event order third");
+  }
+
+  EXPECT(driverPtr->seenTaskIds.size() == 3,
+         "execution session backend invocation count");
+  if (driverPtr->seenTaskIds.size() == 3) {
+    EXPECT(traceOr && traceOr->sessionId == driverPtr->seenSessionIds.front(),
+           "execution session trace keeps session id");
+    EXPECT(driverPtr->seenTaskIds[0] == "task_a",
+           "execution session backend sees first task");
+    EXPECT(driverPtr->seenTaskIds[1] == "task_b",
+           "execution session backend sees second task");
+    EXPECT(driverPtr->seenTaskIds[2] == "task_c",
+           "execution session backend sees third task");
+
+    EXPECT(driverPtr->seenSessionIds[0] == driverPtr->seenSessionIds[1] &&
+               driverPtr->seenSessionIds[1] == driverPtr->seenSessionIds[2],
+           "execution session reuses one session id");
+    EXPECT(driverPtr->seenWorkingDirectories[0] ==
+               driverPtr->seenWorkingDirectories[1] &&
+               driverPtr->seenWorkingDirectories[1] ==
+                   driverPtr->seenWorkingDirectories[2],
+           "execution session reuses one working directory");
+    EXPECT(std::filesystem::exists(driverPtr->seenWorkingDirectories[0]),
+           "execution session working directory exists");
+  }
+
+  auto secondTraceOr = session.run(graph);
+  EXPECT((bool)secondTraceOr, "execution session second run succeeds");
+  EXPECT(driverPtr->seenSessionIds.size() == 6,
+         "execution session second run adds three more invocations");
+  if (driverPtr->seenSessionIds.size() == 6) {
+    EXPECT(driverPtr->seenSessionIds[0] != driverPtr->seenSessionIds[3],
+           "execution session generates a fresh session id per run");
+    EXPECT(driverPtr->seenWorkingDirectories[0] !=
+               driverPtr->seenWorkingDirectories[3],
+           "execution session generates a fresh working directory per run");
+    EXPECT(driverPtr->seenSessionIds[3] == driverPtr->seenSessionIds[4] &&
+               driverPtr->seenSessionIds[4] == driverPtr->seenSessionIds[5],
+           "execution session second run reuses one session id");
+    EXPECT(driverPtr->seenWorkingDirectories[3] ==
+               driverPtr->seenWorkingDirectories[4] &&
+               driverPtr->seenWorkingDirectories[4] ==
+                   driverPtr->seenWorkingDirectories[5],
+           "execution session second run reuses one working directory");
+  }
+  if (traceOr && secondTraceOr) {
+    EXPECT(traceOr->sessionId != secondTraceOr->sessionId,
+           "execution session returns a fresh trace session id per run");
+  }
+}
+
 int main() {
   testTaskGraphBasics();
   testDuplicateTaskIds();
@@ -551,6 +715,8 @@ int main() {
   testAddProfileArtifactHelper();
   testBackendSurfacesProfileTrace();
   testBackendPreservesExistingProfileTrace();
+  testExecutionSessionPlansTopologicalOrder();
+  testExecutionSessionRunsTasksInTopologicalOrder();
 
   llvm::outs() << g_pass << " passed, " << g_fail << " failed\n";
   return g_fail ? 1 : 0;

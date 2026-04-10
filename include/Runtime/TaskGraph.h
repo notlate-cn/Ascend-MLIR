@@ -32,6 +32,7 @@ struct RuntimeTask {
 class TaskGraph {
 public:
   llvm::Error addTask(const RuntimeTask &task);
+  llvm::Expected<std::vector<RuntimeTask>> executionOrder() const;
   llvm::Expected<std::vector<RuntimeTask>> orderedTasks() const;
   llvm::Expected<std::vector<std::string>> topologicalOrder() const;
 
