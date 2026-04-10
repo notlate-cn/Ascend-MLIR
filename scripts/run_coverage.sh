@@ -10,10 +10,11 @@ set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+source "${SCRIPT_DIR}/resolve_llvm_env.sh"
 
 # Default configuration
 BUILD_DIR="${PROJECT_ROOT}/build-coverage"
-LLVM_BUILD_DIR="${LLVM_BUILD_DIR:-${PROJECT_ROOT}/externals/llvm-project/build}"
+LLVM_BUILD_DIR="$(resolve_llvm_build_dir || true)"
 NUM_JOBS="${NUM_JOBS:-$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 4)}"
 
 # Colors for output
@@ -87,8 +88,8 @@ check_lcov() {
 build_with_coverage() {
     print_section "Building Ascend-MLIR with Coverage Instrumentation"
 
-    if [ ! -d "${LLVM_BUILD_DIR}" ]; then
-        print_error "LLVM build not found at: ${LLVM_BUILD_DIR}"
+    LLVM_BUILD_DIR="$(require_llvm_build_dir || true)"
+    if [ -z "${LLVM_BUILD_DIR}" ]; then
         print_error "Please build LLVM first or specify path with --llvm-build-dir"
         exit 1
     fi

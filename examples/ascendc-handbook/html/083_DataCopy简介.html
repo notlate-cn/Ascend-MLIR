@@ -1,0 +1,116 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>DataCopy简介</title>
+    <style>
+        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; max-width: 900px; margin: 0 auto; padding: 20px; line-height: 1.6; }
+        pre { background: #f4f4f4; padding: 15px; overflow-x: auto; border-radius: 5px; }
+        code { background: #f4f4f4; padding: 2px 6px; border-radius: 3px; }
+        table { border-collapse: collapse; width: 100%; }
+        th, td { border: 1px solid #ddd; padding: 8px; text-align: left; }
+        th { background: #f4f4f4; }
+        img { max-width: 100%; }
+    </style>
+</head>
+<body>
+    <p><small>原始URL: <a href="https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_0101.html">https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_0101.html</a></small></p>
+    <hr>
+    <div data-v-03366c12="" class="the-article-body"><a name="ZH-CN_TOPIC_0000002552079845"></a><a name="ZH-CN_TOPIC_0000002552079845"></a>
+
+<h1 class="topictitle1">DataCopy简介</h1>
+<div id="body0000002417123961"><p id="ZH-CN_TOPIC_0000002552079845__p20251429798"><span>DataCopy系列接口提供全面的数据搬运功能，支持多种数据搬运场景，并可在搬运过程中实现随路格式转换和量化激活等操作。该接口支持Local Memory与Global Memory之间的数据搬运，以及Local Memory内部的数据搬运。</span></p>
+<p id="ZH-CN_TOPIC_0000002552079845__p185931718125115">下表展示了DataCopy各项功能的描述和其通路的支持情况。</p>
+
+<div class="tablenoborder"><div class="is-header-top document-table-container" id="ZH-CN_TOPIC_0000002552079845__table38301303189"><div class="table-title"><div class="table-expand-btn" uga-click-ele="true"><span class="table-expand-icon"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16"><path fill="none" stroke="currentcolor" stroke-linecap="round" d="M2 6V3a1 1 0 0 1 1-1h3m8 4V3a1 1 0 0 0-1-1h-3 0m-8 8v3a1 1 0 0 0 1 1h3m8-4v3a1 1 0 0 1-1 1h-3 0"></path></svg></span><span class="table-expand-label">展开</span></div></div><div class="table-body"><div class="table-scroller-wrapper"><table cellpadding="4" cellspacing="0" id="ZH-CN_TOPIC_0000002552079845__table38301303189" frame="border" border="1" rules="all" data-header="8" class="is-header-top"><thead align="left"><tr id="ZH-CN_TOPIC_0000002552079845__row3507155622811"><th align="center" class="cellrowborder is-top-col table-top-left-cell col-first col-index-0 table-header top-header" valign="top" id="mcps1.3.3.1.9.1.1" width="20%"><p id="ZH-CN_TOPIC_0000002552079845__p15507105619289">功能</p>
+</th>
+<th align="center" class="cellrowborder is-top-col col-index-1 table-header top-header" valign="top" id="mcps1.3.3.1.9.1.2" width="20%"><p id="ZH-CN_TOPIC_0000002552079845__p450715566283">描述</p>
+</th>
+<th align="center" class="cellrowborder is-top-col col-index-2 table-header top-header" colspan="2" valign="top" id="mcps1.3.3.1.9.1.3" width="20%"><p id="ZH-CN_TOPIC_0000002552079845__p11321143964118">Local Memory -&gt; Global Memory</p>
+</th>
+<th align="center" class="cellrowborder is-top-col col-index-4 table-header top-header" colspan="2" valign="top" id="mcps1.3.3.1.9.1.4" width="20%"><p id="ZH-CN_TOPIC_0000002552079845__p12456144213412">Global Memory -&gt; Local Memory</p>
+</th>
+<th align="center" class="cellrowborder is-top-col table-top-right-cell col-index-6 col-last table-header top-header" colspan="2" valign="top" id="mcps1.3.3.1.9.1.5" width="20%"><p id="ZH-CN_TOPIC_0000002552079845__p92331244154110">Local Memory -&gt; Local Memory</p>
+</th>
+</tr>
+</thead>
+<tbody><tr id="ZH-CN_TOPIC_0000002552079845__row1272474920205"><td class="cellrowborder col-first col-index-0" align="center" valign="top" headers="mcps1.3.3.1.9.1.1 "><p id="ZH-CN_TOPIC_0000002552079845__p17301775812"><a href="atlasascendc_api_07_0103.html" data-outer="inner" class="document-anchor" data-href="atlasascendc_api_07_0103.html" data-doc="true" target="_self" data-multiple-screen="true">基础数据搬运</a></p>
+</td>
+<td class="cellrowborder col-index-1" align="center" valign="top" headers="mcps1.3.3.1.9.1.2 "><p id="ZH-CN_TOPIC_0000002552079845__p37256491200"><span id="ZH-CN_TOPIC_0000002552079845__ph5281655142914">提供基础的数据搬运能力，数据在传输过程中保持原始格式和内容不变，支持连续和非连续的数据搬运。</span></p>
+</td>
+<td class="cellrowborder col-index-2" colspan="2" align="center" valign="top" headers="mcps1.3.3.1.9.1.3 "><p id="ZH-CN_TOPIC_0000002552079845__p1854115683315">√</p>
+</td>
+<td class="cellrowborder col-index-4" colspan="2" align="center" valign="top" headers="mcps1.3.3.1.9.1.4 "><p id="ZH-CN_TOPIC_0000002552079845__p13445193515">√</p>
+</td>
+<td class="cellrowborder col-index-6 col-last" colspan="2" align="center" valign="top" headers="mcps1.3.3.1.9.1.5 "><p id="ZH-CN_TOPIC_0000002552079845__p73610563511">√</p>
+</td>
+</tr>
+<tr id="ZH-CN_TOPIC_0000002552079845__row220181016240"><td class="cellrowborder col-first col-index-0" align="center" valign="top" headers="mcps1.3.3.1.9.1.1 "><p id="ZH-CN_TOPIC_0000002552079845__p48327011813"><a href="atlasascendc_api_07_0104.html" data-outer="inner" class="document-anchor" data-href="atlasascendc_api_07_0104.html" data-doc="true" target="_self" data-multiple-screen="true">增强数据搬运</a></p>
+</td>
+<td class="cellrowborder col-index-1" align="center" valign="top" headers="mcps1.3.3.1.9.1.2 "><p id="ZH-CN_TOPIC_0000002552079845__p15269162994511"><span id="ZH-CN_TOPIC_0000002552079845__ph65385444614">对数据搬运能力进行增强，相比于基础数据搬运接口，增加了CO1-&gt;CO2通路的随路计算。</span></p>
+</td>
+<td class="cellrowborder col-index-2" colspan="2" align="center" valign="top" headers="mcps1.3.3.1.9.1.3 "><p id="ZH-CN_TOPIC_0000002552079845__p753396133515">√</p>
+</td>
+<td class="cellrowborder col-index-4" colspan="2" align="center" valign="top" headers="mcps1.3.3.1.9.1.4 "><p id="ZH-CN_TOPIC_0000002552079845__p9534186193515">√</p>
+</td>
+<td class="cellrowborder col-index-6 col-last" colspan="2" align="center" valign="top" headers="mcps1.3.3.1.9.1.5 "><p id="ZH-CN_TOPIC_0000002552079845__p1253520613355">√</p>
+</td>
+</tr>
+<tr id="ZH-CN_TOPIC_0000002552079845__row173226882415"><td class="cellrowborder col-first col-index-0" align="center" valign="top" headers="mcps1.3.3.1.9.1.1 "><p id="ZH-CN_TOPIC_0000002552079845__p14832120181815"><a href="atlasascendc_api_07_0105.html" data-outer="inner" class="document-anchor" data-href="atlasascendc_api_07_0105.html" data-doc="true" target="_self" data-multiple-screen="true">切片数据搬运</a></p>
+</td>
+<td class="cellrowborder col-index-1" align="center" valign="top" headers="mcps1.3.3.1.9.1.2 "><p id="ZH-CN_TOPIC_0000002552079845__p19948143911820"><span id="ZH-CN_TOPIC_0000002552079845__ph1188502514571">支持数据的切片搬运，提取多维Tensor数据的子集进行搬运。</span></p>
+</td>
+<td class="cellrowborder col-index-2" colspan="2" align="center" valign="top" headers="mcps1.3.3.1.9.1.3 "><p id="ZH-CN_TOPIC_0000002552079845__p1350517207369">√</p>
+</td>
+<td class="cellrowborder col-index-4" colspan="2" align="center" valign="top" headers="mcps1.3.3.1.9.1.4 "><p id="ZH-CN_TOPIC_0000002552079845__p050692063612">√</p>
+</td>
+<td class="cellrowborder col-index-6 col-last" colspan="2" align="center" valign="top" headers="mcps1.3.3.1.9.1.5 "><p id="ZH-CN_TOPIC_0000002552079845__p35419619334">×</p>
+</td>
+</tr>
+<tr id="ZH-CN_TOPIC_0000002552079845__row103361763242"><td class="cellrowborder col-first col-index-0" align="center" valign="top" headers="mcps1.3.3.1.9.1.1 "><p id="ZH-CN_TOPIC_0000002552079845__p1902158683"><a href="atlasascendc_api_07_00127.html" data-outer="inner" class="document-anchor" data-href="atlasascendc_api_07_00127.html" data-doc="true" target="_self" data-multiple-screen="true">随路转换ND2NZ搬运</a></p>
+</td>
+<td class="cellrowborder col-index-1" align="center" valign="top" headers="mcps1.3.3.1.9.1.2 "><p id="ZH-CN_TOPIC_0000002552079845__p1695483941817"><span id="ZH-CN_TOPIC_0000002552079845__ph92961431014">支持在数据搬运时进行ND到NZ格式的转换。</span></p>
+</td>
+<td class="cellrowborder col-index-2" colspan="2" align="center" valign="top" headers="mcps1.3.3.1.9.1.3 "><p id="ZH-CN_TOPIC_0000002552079845__p1228215423615">×</p>
+</td>
+<td class="cellrowborder col-index-4" colspan="2" align="center" valign="top" headers="mcps1.3.3.1.9.1.4 "><p id="ZH-CN_TOPIC_0000002552079845__p1848012253617">√</p>
+</td>
+<td class="cellrowborder col-index-6 col-last" colspan="2" align="center" valign="top" headers="mcps1.3.3.1.9.1.5 "><p id="ZH-CN_TOPIC_0000002552079845__p8481522133617">√</p>
+</td>
+</tr>
+<tr id="ZH-CN_TOPIC_0000002552079845__row18403312418"><td class="cellrowborder col-first col-index-0" align="center" valign="top" headers="mcps1.3.3.1.9.1.1 "><p id="ZH-CN_TOPIC_0000002552079845__p226110614915"><a href="atlasascendc_api_07_00128.html" data-outer="inner" class="document-anchor" data-href="atlasascendc_api_07_00128.html" data-doc="true" target="_self" data-multiple-screen="true">随路转换NZ2ND搬运</a></p>
+</td>
+<td class="cellrowborder col-index-1" align="center" valign="top" headers="mcps1.3.3.1.9.1.2 "><p id="ZH-CN_TOPIC_0000002552079845__p1695443971810"><span id="ZH-CN_TOPIC_0000002552079845__ph997516715484">支持在数据搬运时进行NZ到ND格式的转换。</span></p>
+</td>
+<td class="cellrowborder col-index-2" colspan="2" align="center" valign="top" headers="mcps1.3.3.1.9.1.3 "><p id="ZH-CN_TOPIC_0000002552079845__p209841425143610">√</p>
+</td>
+<td class="cellrowborder col-index-4" colspan="2" align="center" valign="top" headers="mcps1.3.3.1.9.1.4 "><p id="ZH-CN_TOPIC_0000002552079845__p65417611332">×</p>
+</td>
+<td class="cellrowborder col-index-6 col-last" colspan="2" align="center" valign="top" headers="mcps1.3.3.1.9.1.5 "><p id="ZH-CN_TOPIC_0000002552079845__p165511012379">×</p>
+</td>
+</tr>
+<tr id="ZH-CN_TOPIC_0000002552079845__row17253142120252"><td class="cellrowborder col-first col-index-0 is-bottom-col table-bottom-left-cell" align="center" valign="top" headers="mcps1.3.3.1.9.1.1 "><p id="ZH-CN_TOPIC_0000002552079845__p3317192721517"><a href="atlasascendc_api_07_00130.html" data-outer="inner" class="document-anchor" data-href="atlasascendc_api_07_00130.html" data-doc="true" target="_self" data-multiple-screen="true">随路量化激活搬运</a></p>
+</td>
+<td class="cellrowborder col-index-1 is-bottom-col" align="center" valign="top" headers="mcps1.3.3.1.9.1.2 "><p id="ZH-CN_TOPIC_0000002552079845__p68258134271"><span id="ZH-CN_TOPIC_0000002552079845__ph1073053771815">支持在数据搬运过程中进行量化和Relu激活等操作，同时支持Local Memory到Global Memory通路NZ到ND格式的转换。</span></p>
+</td>
+<td class="cellrowborder col-index-2 is-bottom-col" colspan="2" align="center" valign="top" headers="mcps1.3.3.1.9.1.3 "><p id="ZH-CN_TOPIC_0000002552079845__p5911033183616">√</p>
+</td>
+<td class="cellrowborder col-index-4 is-bottom-col" colspan="2" align="center" valign="top" headers="mcps1.3.3.1.9.1.4 "><p id="ZH-CN_TOPIC_0000002552079845__p74967123714">×</p>
+</td>
+<td class="cellrowborder col-index-6 col-last is-bottom-col table-bottom-right-cell" colspan="2" align="center" valign="top" headers="mcps1.3.3.1.9.1.5 "><p id="ZH-CN_TOPIC_0000002552079845__p590783413615">√</p>
+</td>
+</tr>
+</tbody>
+</table></div><div class="custom-scrollbar doc-table-sticky-scroller" style="--display-x: none;--scroll-left: 0;--client-width: 1136;--scroll-width: 1136;--rail-width: 1136;--offset-left: 0;--container-width: 1136;--scroll-top: 0;--client-height: 598;--scroll-height: 598;--rail-height: 0;--offset-top: 0;--container-height: 598;"><div class="rail doc-table-sticky-scroller-rail"></div><div class="thumb doc-table-sticky-scroller-thumb"></div></div></div></div>
+</div>
+</div>
+<div>
+<div class="familylinks">
+<div class="parentlink"><strong>父主题：</strong> <a href="atlasascendc_api_07_0101.html" data-outer="inner" class="document-anchor" data-href="atlasascendc_api_07_0101.html" data-doc="true" target="_self" data-multiple-screen="true">DataCopy</a></div>
+</div>
+</div>
+
+</div>
+</body>
+</html>

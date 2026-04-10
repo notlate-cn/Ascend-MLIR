@@ -1,0 +1,1732 @@
+{
+  "download_time": "2026-03-04 11:39:05",
+  "total_pages": 345,
+  "start_url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_0003.html",
+  "pages": [
+    {
+      "index": 1,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_0003.html",
+      "title": "Ascend C API列表"
+    },
+    {
+      "index": 2,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_00002.html",
+      "title": "PrintTimeStamp"
+    },
+    {
+      "index": 3,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_00003.html",
+      "title": "REGISTER_TILING_DEFAULT"
+    },
+    {
+      "index": 4,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_00004.html",
+      "title": "REGISTER_TILING_FOR_TILINGKEY"
+    },
+    {
+      "index": 5,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_0006.html",
+      "title": "LocalTensor简介"
+    },
+    {
+      "index": 6,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_0007.html",
+      "title": "GlobalTensor简介"
+    },
+    {
+      "index": 7,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_00011.html",
+      "title": "模板参数定义"
+    },
+    {
+      "index": 8,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_0011.html",
+      "title": "TensorTrait简介"
+    },
+    {
+      "index": 9,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_0016.html",
+      "title": "GetBitCount"
+    },
+    {
+      "index": 10,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_0017.html",
+      "title": "CountLeadingZero"
+    },
+    {
+      "index": 11,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_0018.html",
+      "title": "Cast（float转half、int32_t）"
+    },
+    {
+      "index": 12,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_0019.html",
+      "title": "CountBitsCntSameAsSignBit"
+    },
+    {
+      "index": 13,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_0020.html",
+      "title": "GetSFFValue"
+    },
+    {
+      "index": 14,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_0021.html",
+      "title": "Cast（float转bfloat16_t）"
+    },
+    {
+      "index": 15,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_0022.html",
+      "title": "Cast（多类型转float）"
+    },
+    {
+      "index": 16,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_0025.html",
+      "title": "Exp"
+    },
+    {
+      "index": 17,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_0026.html",
+      "title": "Ln"
+    },
+    {
+      "index": 18,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_0027.html",
+      "title": "Abs"
+    },
+    {
+      "index": 19,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_0028.html",
+      "title": "Reciprocal"
+    },
+    {
+      "index": 20,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_0029.html",
+      "title": "Sqrt"
+    },
+    {
+      "index": 21,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_0030.html",
+      "title": "Rsqrt"
+    },
+    {
+      "index": 22,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_0031.html",
+      "title": "Not"
+    },
+    {
+      "index": 23,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_0032.html",
+      "title": "Relu"
+    },
+    {
+      "index": 24,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_0035.html",
+      "title": "Add"
+    },
+    {
+      "index": 25,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_0036.html",
+      "title": "Sub"
+    },
+    {
+      "index": 26,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_0037.html",
+      "title": "Mul"
+    },
+    {
+      "index": 27,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_0038.html",
+      "title": "Div"
+    },
+    {
+      "index": 28,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_0039.html",
+      "title": "Max"
+    },
+    {
+      "index": 29,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_0040.html",
+      "title": "Min"
+    },
+    {
+      "index": 30,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_0041.html",
+      "title": "And"
+    },
+    {
+      "index": 31,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_0042.html",
+      "title": "Or"
+    },
+    {
+      "index": 32,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_0043.html",
+      "title": "AddRelu"
+    },
+    {
+      "index": 33,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_0044.html",
+      "title": "AddReluCast"
+    },
+    {
+      "index": 34,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_0045.html",
+      "title": "AddDeqRelu"
+    },
+    {
+      "index": 35,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_0046.html",
+      "title": "SubRelu"
+    },
+    {
+      "index": 36,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_0047.html",
+      "title": "SubReluCast"
+    },
+    {
+      "index": 37,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_0048.html",
+      "title": "MulAddDst"
+    },
+    {
+      "index": 38,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_0049.html",
+      "title": "MulCast"
+    },
+    {
+      "index": 39,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_0050.html",
+      "title": "FusedMulAdd"
+    },
+    {
+      "index": 40,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_0051.html",
+      "title": "MulAddRelu"
+    },
+    {
+      "index": 41,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_0054.html",
+      "title": "Adds"
+    },
+    {
+      "index": 42,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_0055.html",
+      "title": "Muls"
+    },
+    {
+      "index": 43,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_0056.html",
+      "title": "Maxs"
+    },
+    {
+      "index": 44,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_00057.html",
+      "title": "ASCENDC_TPL_SEL_PARAM"
+    },
+    {
+      "index": 45,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_0057.html",
+      "title": "Mins"
+    },
+    {
+      "index": 46,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_0058.html",
+      "title": "ShiftLeft"
+    },
+    {
+      "index": 47,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_0059.html",
+      "title": "ShiftRight"
+    },
+    {
+      "index": 48,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_00060.html",
+      "title": "DEVICE_IMPL_OP_OPTILING"
+    },
+    {
+      "index": 49,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_0060.html",
+      "title": "LeakyRelu"
+    },
+    {
+      "index": 50,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_0063.html",
+      "title": "Axpy"
+    },
+    {
+      "index": 51,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_0066.html",
+      "title": "Compare"
+    },
+    {
+      "index": 52,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_0067.html",
+      "title": "Compare（结果存入寄存器）"
+    },
+    {
+      "index": 53,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_0068.html",
+      "title": "Compares"
+    },
+    {
+      "index": 54,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_0070.html",
+      "title": "Select"
+    },
+    {
+      "index": 55,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_0071.html",
+      "title": "GatherMask"
+    },
+    {
+      "index": 56,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_00071.html",
+      "title": "简介"
+    },
+    {
+      "index": 57,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_0073.html",
+      "title": "Cast"
+    },
+    {
+      "index": 58,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_0074.html",
+      "title": "CastDequant"
+    },
+    {
+      "index": 59,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_00076.html",
+      "title": "Layout简介"
+    },
+    {
+      "index": 60,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_0076.html",
+      "title": "ReduceMax"
+    },
+    {
+      "index": 61,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_0077.html",
+      "title": "ReduceMin"
+    },
+    {
+      "index": 62,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_0078.html",
+      "title": "ReduceSum"
+    },
+    {
+      "index": 63,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_0079.html",
+      "title": "WholeReduceMax"
+    },
+    {
+      "index": 64,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_0080.html",
+      "title": "WholeReduceMin"
+    },
+    {
+      "index": 65,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_0081.html",
+      "title": "WholeReduceSum"
+    },
+    {
+      "index": 66,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_0082.html",
+      "title": "BlockReduceMax"
+    },
+    {
+      "index": 67,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_0083.html",
+      "title": "BlockReduceMin"
+    },
+    {
+      "index": 68,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_0084.html",
+      "title": "BlockReduceSum"
+    },
+    {
+      "index": 69,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_0085.html",
+      "title": "PairReduceSum"
+    },
+    {
+      "index": 70,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_0086.html",
+      "title": "RepeatReduceSum"
+    },
+    {
+      "index": 71,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_00087.html",
+      "title": "SetNextTaskStart"
+    },
+    {
+      "index": 72,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_0088.html",
+      "title": "Duplicate"
+    },
+    {
+      "index": 73,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_00088.html",
+      "title": "WaitPreTaskEnd"
+    },
+    {
+      "index": 74,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_0089.html",
+      "title": "Brcb"
+    },
+    {
+      "index": 75,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_0090.html",
+      "title": "CreateVecIndex"
+    },
+    {
+      "index": 76,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_0092.html",
+      "title": "Gather"
+    },
+    {
+      "index": 77,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_0094.html",
+      "title": "SetMaskCount"
+    },
+    {
+      "index": 78,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_00094.html",
+      "title": "InitSocState"
+    },
+    {
+      "index": 79,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_0095.html",
+      "title": "SetMaskNorm"
+    },
+    {
+      "index": 80,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_0096.html",
+      "title": "SetVectorMask"
+    },
+    {
+      "index": 81,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_0097.html",
+      "title": "ResetMask"
+    },
+    {
+      "index": 82,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_0099.html",
+      "title": "SetDeqScale"
+    },
+    {
+      "index": 83,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_0101.html",
+      "title": "DataCopy简介"
+    },
+    {
+      "index": 84,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_0106.html",
+      "title": "Copy"
+    },
+    {
+      "index": 85,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_0108.html",
+      "title": "TPipe简介"
+    },
+    {
+      "index": 86,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_0120.html",
+      "title": "GetTPipePtr"
+    },
+    {
+      "index": 87,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_0121.html",
+      "title": "TBufPool简介"
+    },
+    {
+      "index": 88,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_00130.html",
+      "title": "随路量化激活搬运"
+    },
+    {
+      "index": 89,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_0136.html",
+      "title": "TQue简介"
+    },
+    {
+      "index": 90,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_00140.html",
+      "title": "GET_TILING_DATA_PTR_WITH_STRUCT"
+    },
+    {
+      "index": 91,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_00143.html",
+      "title": "Coordinate简介"
+    },
+    {
+      "index": 92,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_0146.html",
+      "title": "TQueBind简介"
+    },
+    {
+      "index": 93,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_00152.html",
+      "title": "ASC_CPU_LOG"
+    },
+    {
+      "index": 94,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_00154.html",
+      "title": "aclrtcCompileProg"
+    },
+    {
+      "index": 95,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_00155.html",
+      "title": "aclrtcCreateProg"
+    },
+    {
+      "index": 96,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_00156.html",
+      "title": "aclrtcDestroyProg"
+    },
+    {
+      "index": 97,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_00157.html",
+      "title": "aclrtcGetBinData"
+    },
+    {
+      "index": 98,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_00158.html",
+      "title": "aclrtcGetBinDataSize"
+    },
+    {
+      "index": 99,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_00159.html",
+      "title": "aclrtcGetCompileLogSize"
+    },
+    {
+      "index": 100,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_00160.html",
+      "title": "aclrtcGetCompileLog"
+    },
+    {
+      "index": 101,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_0160.html",
+      "title": "TBuf简介"
+    },
+    {
+      "index": 102,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_00163.html",
+      "title": "Async"
+    },
+    {
+      "index": 103,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_00164.html",
+      "title": "REGISTER_NONE_TILING"
+    },
+    {
+      "index": 104,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_00166.html",
+      "title": "printf"
+    },
+    {
+      "index": 105,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_0166.html",
+      "title": "InitSpmBuffer"
+    },
+    {
+      "index": 106,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_0167.html",
+      "title": "WriteSpmBuffer"
+    },
+    {
+      "index": 107,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_00167.html",
+      "title": "assert"
+    },
+    {
+      "index": 108,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_0168.html",
+      "title": "ReadSpmBuffer"
+    },
+    {
+      "index": 109,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_00168.html",
+      "title": "ascendc_assert"
+    },
+    {
+      "index": 110,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_0170.html",
+      "title": "GetSysWorkSpacePtr"
+    },
+    {
+      "index": 111,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_0171.html",
+      "title": "SetSysWorkSpace"
+    },
+    {
+      "index": 112,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_0172.html",
+      "title": "GetUserWorkspace"
+    },
+    {
+      "index": 113,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_0174.html",
+      "title": "TPosition"
+    },
+    {
+      "index": 114,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_0176.html",
+      "title": "DataCachePreload"
+    },
+    {
+      "index": 115,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_0177.html",
+      "title": "DataCacheCleanAndInvalid"
+    },
+    {
+      "index": 116,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_0178.html",
+      "title": "模板参数"
+    },
+    {
+      "index": 117,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_0184.html",
+      "title": "GetBlockNum"
+    },
+    {
+      "index": 118,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_0185.html",
+      "title": "GetBlockIdx"
+    },
+    {
+      "index": 119,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_0186.html",
+      "title": "GetDataBlockSizeInBytes"
+    },
+    {
+      "index": 120,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_0187.html",
+      "title": "GetArchVersion"
+    },
+    {
+      "index": 121,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_0188.html",
+      "title": "GetTaskRatio"
+    },
+    {
+      "index": 122,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_0192.html",
+      "title": "DumpTensor"
+    },
+    {
+      "index": 123,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_0193.html",
+      "title": "printf"
+    },
+    {
+      "index": 124,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_0194.html",
+      "title": "assert"
+    },
+    {
+      "index": 125,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_0195.html",
+      "title": "DumpAccChkPoint"
+    },
+    {
+      "index": 126,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_0196.html",
+      "title": "Trap"
+    },
+    {
+      "index": 127,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_00197.html",
+      "title": "SetMMColumnMajor"
+    },
+    {
+      "index": 128,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_0199.html",
+      "title": "Transpose"
+    },
+    {
+      "index": 129,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_0200.html",
+      "title": "TransDataTo5HD"
+    },
+    {
+      "index": 130,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_0202.html",
+      "title": "IBSet"
+    },
+    {
+      "index": 131,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_0203.html",
+      "title": "IBWait"
+    },
+    {
+      "index": 132,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_0204.html",
+      "title": "SyncAll"
+    },
+    {
+      "index": 133,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_0206.html",
+      "title": "InitDetermineComputeWorkspace"
+    },
+    {
+      "index": 134,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_0207.html",
+      "title": "WaitPreBlock"
+    },
+    {
+      "index": 135,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_0208.html",
+      "title": "NotifyNextBlock"
+    },
+    {
+      "index": 136,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_0210.html",
+      "title": "SetAtomicAdd"
+    },
+    {
+      "index": 137,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_0211.html",
+      "title": "SetAtomicType"
+    },
+    {
+      "index": 138,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_0212.html",
+      "title": "DisableDmaAtomic"
+    },
+    {
+      "index": 139,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_0214.html",
+      "title": "GET_TILING_DATA"
+    },
+    {
+      "index": 140,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_0215.html",
+      "title": "GET_TILING_DATA_WITH_STRUCT"
+    },
+    {
+      "index": 141,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_0216.html",
+      "title": "GET_TILING_DATA_MEMBER"
+    },
+    {
+      "index": 142,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_0217.html",
+      "title": "TILING_KEY_IS"
+    },
+    {
+      "index": 143,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_0218.html",
+      "title": "设置Kernel类型"
+    },
+    {
+      "index": 144,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_0221.html",
+      "title": "VectorPadding(ISASI)"
+    },
+    {
+      "index": 145,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_0222.html",
+      "title": "BilinearInterpolation(ISASI)"
+    },
+    {
+      "index": 146,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_0223.html",
+      "title": "GetCmpMask(ISASI)"
+    },
+    {
+      "index": 147,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_0224.html",
+      "title": "SetCmpMask(ISASI)"
+    },
+    {
+      "index": 148,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_0225.html",
+      "title": "GetReduceRepeatSumSpr(ISASI)"
+    },
+    {
+      "index": 149,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_0226.html",
+      "title": "GetReduceRepeatMaxMinSpr(ISASI)"
+    },
+    {
+      "index": 150,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_0227.html",
+      "title": "ProposalConcat"
+    },
+    {
+      "index": 151,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_0228.html",
+      "title": "ProposalExtract"
+    },
+    {
+      "index": 152,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_0229.html",
+      "title": "RpSort16"
+    },
+    {
+      "index": 153,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_0230.html",
+      "title": "MrgSort4"
+    },
+    {
+      "index": 154,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_0231.html",
+      "title": "Sort32"
+    },
+    {
+      "index": 155,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_0232.html",
+      "title": "MrgSort"
+    },
+    {
+      "index": 156,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_0233.html",
+      "title": "GetMrgSortResult"
+    },
+    {
+      "index": 157,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_0234.html",
+      "title": "Gatherb(ISASI)"
+    },
+    {
+      "index": 158,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_0235.html",
+      "title": "Scatter(ISASI)"
+    },
+    {
+      "index": 159,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_0237.html",
+      "title": "Fill"
+    },
+    {
+      "index": 160,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_0238.html",
+      "title": "Load2D"
+    },
+    {
+      "index": 161,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_0239.html",
+      "title": "LoadDataWithTranspose"
+    },
+    {
+      "index": 162,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_0240.html",
+      "title": "SetAippFunctions"
+    },
+    {
+      "index": 163,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_0241.html",
+      "title": "LoadImageToLocal"
+    },
+    {
+      "index": 164,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_0242.html",
+      "title": "LoadUnzipIndex"
+    },
+    {
+      "index": 165,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_0243.html",
+      "title": "LoadDataUnzip"
+    },
+    {
+      "index": 166,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_0244.html",
+      "title": "LoadDataWithSparse"
+    },
+    {
+      "index": 167,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_0245.html",
+      "title": "SetFmatrix"
+    },
+    {
+      "index": 168,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_0246.html",
+      "title": "SetLoadDataBoundary"
+    },
+    {
+      "index": 169,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_0247.html",
+      "title": "SetLoadDataRepeat"
+    },
+    {
+      "index": 170,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_0248.html",
+      "title": "SetLoadDataPaddingValue"
+    },
+    {
+      "index": 171,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_0249.html",
+      "title": "Mmad"
+    },
+    {
+      "index": 172,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_0250.html",
+      "title": "MmadWithSparse"
+    },
+    {
+      "index": 173,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_0251.html",
+      "title": "Fixpipe"
+    },
+    {
+      "index": 174,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_0252.html",
+      "title": "SetFixPipeConfig"
+    },
+    {
+      "index": 175,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_0253.html",
+      "title": "SetFixpipeNz2ndFlag"
+    },
+    {
+      "index": 176,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_0254.html",
+      "title": "SetFixpipePreQuantFlag"
+    },
+    {
+      "index": 177,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_0255.html",
+      "title": "SetFixPipeClipRelu"
+    },
+    {
+      "index": 178,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_0256.html",
+      "title": "SetFixPipeAddr"
+    },
+    {
+      "index": 179,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_0258.html",
+      "title": "SetHF32Mode"
+    },
+    {
+      "index": 180,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_0259.html",
+      "title": "SetHF32TransMode"
+    },
+    {
+      "index": 181,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_0260.html",
+      "title": "SetMMRowMajor"
+    },
+    {
+      "index": 182,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_0261.html",
+      "title": "CheckLocalMemoryIA(ISASI)"
+    },
+    {
+      "index": 183,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_0262.html",
+      "title": "Conv2D（废弃）"
+    },
+    {
+      "index": 184,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_0263.html",
+      "title": "Gemm（废弃）"
+    },
+    {
+      "index": 185,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_0265.html",
+      "title": "DataCopyPad(ISASI)"
+    },
+    {
+      "index": 186,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_0266.html",
+      "title": "SetPadValue(ISASI)"
+    },
+    {
+      "index": 187,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_0270.html",
+      "title": "SetFlag/WaitFlag(ISASI)"
+    },
+    {
+      "index": 188,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_0271.html",
+      "title": "PipeBarrier(ISASI)"
+    },
+    {
+      "index": 189,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_0272.html",
+      "title": "DataSyncBarrier(ISASI)"
+    },
+    {
+      "index": 190,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_0273.html",
+      "title": "CrossCoreSetFlag(ISASI)"
+    },
+    {
+      "index": 191,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_0274.html",
+      "title": "CrossCoreWaitFlag(ISASI)"
+    },
+    {
+      "index": 192,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_0276.html",
+      "title": "ICachePreLoad(ISASI)"
+    },
+    {
+      "index": 193,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_0277.html",
+      "title": "GetICachePreloadStatus(ISASI)"
+    },
+    {
+      "index": 194,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_0279.html",
+      "title": "GetProgramCounter(ISASI)"
+    },
+    {
+      "index": 195,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_0280.html",
+      "title": "GetSubBlockNum(ISASI)"
+    },
+    {
+      "index": 196,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_0281.html",
+      "title": "GetSubBlockIdx(ISASI)"
+    },
+    {
+      "index": 197,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_0282.html",
+      "title": "GetSystemCycle(ISASI)"
+    },
+    {
+      "index": 198,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_0284.html",
+      "title": "SetAtomicMax(ISASI)"
+    },
+    {
+      "index": 199,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_0285.html",
+      "title": "SetAtomicMin(ISASI)"
+    },
+    {
+      "index": 200,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_0286.html",
+      "title": "SetStoreAtomicConfig(ISASI)"
+    },
+    {
+      "index": 201,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_0287.html",
+      "title": "GetStoreAtomicConfig(ISASI)"
+    },
+    {
+      "index": 202,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_0289.html",
+      "title": "CubeResGroupHandle使用说明"
+    },
+    {
+      "index": 203,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_0301.html",
+      "title": "GroupBarrier使用说明"
+    },
+    {
+      "index": 204,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_0307.html",
+      "title": "构造函数与析构函数"
+    },
+    {
+      "index": 205,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_0492.html",
+      "title": "Tanh"
+    },
+    {
+      "index": 206,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_0496.html",
+      "title": "Asin"
+    },
+    {
+      "index": 207,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_0500.html",
+      "title": "Sin"
+    },
+    {
+      "index": 208,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_0504.html",
+      "title": "Acos"
+    },
+    {
+      "index": 209,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_0508.html",
+      "title": "Cos"
+    },
+    {
+      "index": 210,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_0512.html",
+      "title": "Log"
+    },
+    {
+      "index": 211,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_0516.html",
+      "title": "Atan"
+    },
+    {
+      "index": 212,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_0520.html",
+      "title": "Power"
+    },
+    {
+      "index": 213,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_0524.html",
+      "title": "Sinh"
+    },
+    {
+      "index": 214,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_0528.html",
+      "title": "Cosh"
+    },
+    {
+      "index": 215,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_0532.html",
+      "title": "Tan"
+    },
+    {
+      "index": 216,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_0536.html",
+      "title": "Trunc"
+    },
+    {
+      "index": 217,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_0540.html",
+      "title": "Frac"
+    },
+    {
+      "index": 218,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_0544.html",
+      "title": "Erf"
+    },
+    {
+      "index": 219,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_0548.html",
+      "title": "Erfc"
+    },
+    {
+      "index": 220,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_0552.html",
+      "title": "Sign"
+    },
+    {
+      "index": 221,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_0556.html",
+      "title": "Atanh"
+    },
+    {
+      "index": 222,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_0560.html",
+      "title": "Asinh"
+    },
+    {
+      "index": 223,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_0564.html",
+      "title": "Acosh"
+    },
+    {
+      "index": 224,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_0568.html",
+      "title": "Floor"
+    },
+    {
+      "index": 225,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_0572.html",
+      "title": "Ceil"
+    },
+    {
+      "index": 226,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_0576.html",
+      "title": "ClampMax"
+    },
+    {
+      "index": 227,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_0577.html",
+      "title": "ClampMin"
+    },
+    {
+      "index": 228,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_0581.html",
+      "title": "Round"
+    },
+    {
+      "index": 229,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_0585.html",
+      "title": "Axpy"
+    },
+    {
+      "index": 230,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_0589.html",
+      "title": "Exp"
+    },
+    {
+      "index": 231,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_0593.html",
+      "title": "Lgamma"
+    },
+    {
+      "index": 232,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_0597.html",
+      "title": "Digamma"
+    },
+    {
+      "index": 233,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_0601.html",
+      "title": "Xor"
+    },
+    {
+      "index": 234,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_0605.html",
+      "title": "CumSum"
+    },
+    {
+      "index": 235,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_0608.html",
+      "title": "Fmod"
+    },
+    {
+      "index": 236,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_0613.html",
+      "title": "Matmul使用说明"
+    },
+    {
+      "index": 237,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_0754.html",
+      "title": "SoftMax"
+    },
+    {
+      "index": 238,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_0755.html",
+      "title": "SimpleSoftMax"
+    },
+    {
+      "index": 239,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_0756.html",
+      "title": "SoftmaxFlash"
+    },
+    {
+      "index": 240,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_0757.html",
+      "title": "SoftmaxGrad"
+    },
+    {
+      "index": 241,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_0758.html",
+      "title": "SoftmaxFlashV2"
+    },
+    {
+      "index": 242,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_0759.html",
+      "title": "SoftmaxGradFront"
+    },
+    {
+      "index": 243,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_0760.html",
+      "title": "AdjustSoftMaxRes"
+    },
+    {
+      "index": 244,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_0768.html",
+      "title": "LogSoftMax"
+    },
+    {
+      "index": 245,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_0771.html",
+      "title": "Gelu"
+    },
+    {
+      "index": 246,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_0772.html",
+      "title": "FasterGelu"
+    },
+    {
+      "index": 247,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_0773.html",
+      "title": "FasterGeluV2"
+    },
+    {
+      "index": 248,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_0776.html",
+      "title": "SwiGLU"
+    },
+    {
+      "index": 249,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_0780.html",
+      "title": "Silu"
+    },
+    {
+      "index": 250,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_0783.html",
+      "title": "Swish"
+    },
+    {
+      "index": 251,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_0786.html",
+      "title": "GeGLU"
+    },
+    {
+      "index": 252,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_0790.html",
+      "title": "ReGlu"
+    },
+    {
+      "index": 253,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_0793.html",
+      "title": "Sigmoid"
+    },
+    {
+      "index": 254,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_0797.html",
+      "title": "LayerNorm"
+    },
+    {
+      "index": 255,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_0799.html",
+      "title": "LayerNormGradBeta"
+    },
+    {
+      "index": 256,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_0804.html",
+      "title": "RmsNorm"
+    },
+    {
+      "index": 257,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_0806.html",
+      "title": "BatchNorm"
+    },
+    {
+      "index": 258,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_0808.html",
+      "title": "DeepNorm"
+    },
+    {
+      "index": 259,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_0810.html",
+      "title": "Normalize"
+    },
+    {
+      "index": 260,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_0812.html",
+      "title": "WelfordUpdate"
+    },
+    {
+      "index": 261,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_0814.html",
+      "title": "WelfordFinalize"
+    },
+    {
+      "index": 262,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_0816.html",
+      "title": "GroupNorm"
+    },
+    {
+      "index": 263,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_0818.html",
+      "title": "AscendQuant"
+    },
+    {
+      "index": 264,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_0820.html",
+      "title": "AscendDequant"
+    },
+    {
+      "index": 265,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_0822.html",
+      "title": "AscendAntiQuant"
+    },
+    {
+      "index": 266,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_0826.html",
+      "title": "Sum"
+    },
+    {
+      "index": 267,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_0829.html",
+      "title": "Mean"
+    },
+    {
+      "index": 268,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_0833.html",
+      "title": "ReduceXorSum"
+    },
+    {
+      "index": 269,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_0836.html",
+      "title": "TopK"
+    },
+    {
+      "index": 270,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_0839.html",
+      "title": "Concat"
+    },
+    {
+      "index": 271,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_0841.html",
+      "title": "Extract"
+    },
+    {
+      "index": 272,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_0842.html",
+      "title": "Sort"
+    },
+    {
+      "index": 273,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_0847.html",
+      "title": "MrgSort"
+    },
+    {
+      "index": 274,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_0849.html",
+      "title": "Pad"
+    },
+    {
+      "index": 275,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_0851.html",
+      "title": "UnPad"
+    },
+    {
+      "index": 276,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_0853.html",
+      "title": "Broadcast"
+    },
+    {
+      "index": 277,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_0856.html",
+      "title": "Arange"
+    },
+    {
+      "index": 278,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_0859.html",
+      "title": "Select"
+    },
+    {
+      "index": 279,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_0862.html",
+      "title": "DropOut"
+    },
+    {
+      "index": 280,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_0865.html",
+      "title": "Transpose"
+    },
+    {
+      "index": 281,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_0867.html",
+      "title": "HCCL使用说明"
+    },
+    {
+      "index": 282,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_0891.html",
+      "title": "Fill"
+    },
+    {
+      "index": 283,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_0893.html",
+      "title": "Conv3DBackpropFilter使用说明"
+    },
+    {
+      "index": 284,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_0918.html",
+      "title": "Conv3DBackpropInput使用说明"
+    },
+    {
+      "index": 285,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_0945.html",
+      "title": "原型注册接口（OP_ADD）"
+    },
+    {
+      "index": 286,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_0946.html",
+      "title": "Input"
+    },
+    {
+      "index": 287,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_0957.html",
+      "title": "ParamType"
+    },
+    {
+      "index": 288,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_0976.html",
+      "title": "OpAttrDef"
+    },
+    {
+      "index": 289,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_0978.html",
+      "title": "SetTiling"
+    },
+    {
+      "index": 290,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_0988.html",
+      "title": "OpAICoreConfig构造函数"
+    },
+    {
+      "index": 291,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_0999.html",
+      "title": "OpMC2Def简介"
+    },
+    {
+      "index": 292,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_1005.html",
+      "title": "TilingData结构定义"
+    },
+    {
+      "index": 293,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_1006.html",
+      "title": "TilingData结构注册"
+    },
+    {
+      "index": 294,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_1007.html",
+      "title": "简介"
+    },
+    {
+      "index": 295,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_1026.html",
+      "title": "PlatformAscendC简介"
+    },
+    {
+      "index": 296,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_1039.html",
+      "title": "PlatformAscendCManager"
+    },
+    {
+      "index": 297,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_1207.html",
+      "title": "GmAlloc"
+    },
+    {
+      "index": 298,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_1208.html",
+      "title": "ICPU_RUN_KF"
+    },
+    {
+      "index": 299,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_1209.html",
+      "title": "ICPU_SET_TILING_KEY"
+    },
+    {
+      "index": 300,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_1210.html",
+      "title": "GmFree"
+    },
+    {
+      "index": 301,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_1211.html",
+      "title": "SetKernelMode"
+    },
+    {
+      "index": 302,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_1212.html",
+      "title": "TRACE_START"
+    },
+    {
+      "index": 303,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_1213.html",
+      "title": "TRACE_STOP"
+    },
+    {
+      "index": 304,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_1214.html",
+      "title": "MetricsProfStart"
+    },
+    {
+      "index": 305,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_1215.html",
+      "title": "MetricsProfStop"
+    },
+    {
+      "index": 306,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_10001.html",
+      "title": "SoftmaxFlashV3"
+    },
+    {
+      "index": 307,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_10005.html",
+      "title": "Conv3D使用说明"
+    },
+    {
+      "index": 308,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_10018.html",
+      "title": "ReduceSum"
+    },
+    {
+      "index": 309,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_10053.html",
+      "title": "max"
+    },
+    {
+      "index": 310,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_10054.html",
+      "title": "min"
+    },
+    {
+      "index": 311,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_10055.html",
+      "title": "ReduceMax"
+    },
+    {
+      "index": 312,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_10056.html",
+      "title": "ReduceMin"
+    },
+    {
+      "index": 313,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_10106.html",
+      "title": "integer_sequence"
+    },
+    {
+      "index": 314,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_10108.html",
+      "title": "tuple"
+    },
+    {
+      "index": 315,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_10109.html",
+      "title": "get"
+    },
+    {
+      "index": 316,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_10110.html",
+      "title": "make_tuple"
+    },
+    {
+      "index": 317,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_10114.html",
+      "title": "is_convertible"
+    },
+    {
+      "index": 318,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_10115.html",
+      "title": "is_base_of"
+    },
+    {
+      "index": 319,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_10116.html",
+      "title": "is_same"
+    },
+    {
+      "index": 320,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_10117.html",
+      "title": "enable_if"
+    },
+    {
+      "index": 321,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_10118.html",
+      "title": "conditional"
+    },
+    {
+      "index": 322,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_10142.html",
+      "title": "ReduceAny"
+    },
+    {
+      "index": 323,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_10145.html",
+      "title": "ReduceAll"
+    },
+    {
+      "index": 324,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_10150.html",
+      "title": "ReduceProd"
+    },
+    {
+      "index": 325,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_10157.html",
+      "title": "ReduceMean"
+    },
+    {
+      "index": 326,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_10181.html",
+      "title": "TransData"
+    },
+    {
+      "index": 327,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_10198.html",
+      "title": "integral_constant"
+    },
+    {
+      "index": 328,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_10430.html",
+      "title": "is_void"
+    },
+    {
+      "index": 329,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_10431.html",
+      "title": "is_integral"
+    },
+    {
+      "index": 330,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_10432.html",
+      "title": "is_floating_point"
+    },
+    {
+      "index": 331,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_10433.html",
+      "title": "is_array"
+    },
+    {
+      "index": 332,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_10434.html",
+      "title": "is_pointer"
+    },
+    {
+      "index": 333,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_10435.html",
+      "title": "is_reference"
+    },
+    {
+      "index": 334,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_10436.html",
+      "title": "is_const"
+    },
+    {
+      "index": 335,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_10437.html",
+      "title": "remove_const"
+    },
+    {
+      "index": 336,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_10438.html",
+      "title": "remove_volatile"
+    },
+    {
+      "index": 337,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_10439.html",
+      "title": "remove_cv"
+    },
+    {
+      "index": 338,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_10440.html",
+      "title": "remove_reference"
+    },
+    {
+      "index": 339,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_10441.html",
+      "title": "remove_pointer"
+    },
+    {
+      "index": 340,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_10442.html",
+      "title": "add_const"
+    },
+    {
+      "index": 341,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_10443.html",
+      "title": "add_volatile"
+    },
+    {
+      "index": 342,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_10444.html",
+      "title": "add_cv"
+    },
+    {
+      "index": 343,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_10445.html",
+      "title": "add_pointer"
+    },
+    {
+      "index": 344,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_10446.html",
+      "title": "add_lvalue_reference"
+    },
+    {
+      "index": 345,
+      "url": "https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_10447.html",
+      "title": "add_rvalue_reference"
+    }
+  ]
+}

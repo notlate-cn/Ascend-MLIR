@@ -21,6 +21,7 @@
 #include "Dialect/AFIR/Transforms/Passes.h"
 #include "Dialect/AFIR/TransformOps/AFIRTransformOps.h"
 #include "Conversion/Passes.h"
+#include "ascir/Dialect/EmitAsc/IR/EmitAsc.h"
 
 using namespace mlir;
 
@@ -31,6 +32,7 @@ int main(int argc, char **argv) {
   // Register AFIR dialect
   registry.insert<afir::AFIRDialect>();
   registry.insert<ascendc::AscendCDialect>();
+  registry.insert<emitasc::EmitAscDialect>();
 
   // Register AFIR transform dialect extension
   afir::registerTransformDialectExtension(registry);
