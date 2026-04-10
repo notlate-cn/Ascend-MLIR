@@ -4,6 +4,7 @@ add_mlir_library(AscendCRuntime
   Compiler.cpp
   Executor.cpp
   HostRunnerGen.cpp
+  ProfileTrace.cpp
   PathUtils.cpp
   MixCommandBuilder.cpp
   MixAbiExtractor.cpp
@@ -12,6 +13,7 @@ add_mlir_library(AscendCRuntime
   MixSourceAnalyzer.cpp
   MixStubTemplate.cpp
   SimValidator.cpp
+  TaskGraph.cpp
   NpyIO.cpp
   TilingSchema.cpp
 
