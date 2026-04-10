@@ -9,6 +9,14 @@
 
 #include "Conversion/AFIRToASCIR/AFIRToASCIR.h"
 #include "Conversion/AFIRToASCIRText/AFIRToASCIRText.h"
+#include "Conversion/AscendCBufferPlacement/AscendCBufferPlacementPass.h"
+#include "Conversion/AscendCFoldConcatAlloc/AscendCFoldConcatAllocPass.h"
+#include "Conversion/LinalgToAscendC/LinalgToAscendCPass.h"
+#include "Conversion/AscendCParallelize/AscendCParallelizePass.h"
+#include "Conversion/AscendCPrepareForEmit/AscendCPrepareForEmitPass.h"
+#include "Conversion/CanonicalizeCannSignature/CanonicalizeCannSignaturePass.h"
+#include "Conversion/FuseGatherElementwise/FuseGatherElementwisePass.h"
+#include "Conversion/MarkStructuredOps/MarkStructuredOpsPass.h"
 #include "mlir/Pass/Pass.h"
 #include <memory>
 
@@ -20,6 +28,7 @@ namespace afir {
 #include "Conversion/Passes.h.inc"
 
 std::unique_ptr<Pass> createConvertAFIRToASCIRTextPass();
+std::unique_ptr<Pass> createAscendCBufferPlacementPass();
 
 }  // namespace afir
 }  // namespace mlir
