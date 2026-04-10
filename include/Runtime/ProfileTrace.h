@@ -2,6 +2,7 @@
 #pragma once
 
 #include "Runtime/TaskGraph.h"
+#include "llvm/ADT/StringRef.h"
 
 #include <string>
 #include <vector>
@@ -18,6 +19,11 @@ struct ProfileEvent {
 struct ProfileTrace {
   std::string sessionId;
   std::vector<ProfileEvent> events;
+
+  void addEvent(ProfileEvent event);
+  void addProfileArtifact(llvm::StringRef taskId,
+                          ExecutionBackendKind backend,
+                          llvm::StringRef artifactPath);
 };
 
 } // namespace mlir::runtime

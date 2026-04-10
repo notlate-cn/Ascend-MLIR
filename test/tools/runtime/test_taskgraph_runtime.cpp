@@ -13,6 +13,7 @@
 //   /tmp/test_taskgraph_runtime
 
 #include "Runtime/ProfileTrace.h"
+#include "Runtime/ProfileUtils.h"
 #include "Runtime/ExecutionBackend.h"
 #include "Runtime/NpuBackend.h"
 #include "Runtime/TaskGraph.h"
@@ -40,6 +41,46 @@ public:
     ExecutionResult result;
     result.taskId = "driver:" + request.task.taskId;
     result.producedFiles.push_back(request.workingDirectory + "/done");
+    return result;
+  }
+
+  int invocations = 0;
+  ExecutionRequest lastRequest;
+};
+
+class ProfileArtifactBackendDriver : public ExecutionBackendDriver {
+public:
+  llvm::Expected<ExecutionResult>
+  run(const ExecutionRequest &request) override {
+    ++invocations;
+    lastRequest = request;
+    ExecutionResult result;
+    result.taskId = "driver:" + request.task.taskId;
+    result.producedFiles.push_back(request.workingDirectory + "/done");
+    result.producedFiles.push_back(
+        request.workingDirectory + "/opprof/simulator/trace.json");
+    ProfileTrace trace;
+    trace.sessionId = "driver-session";
+    addProfileArtifact(trace, "driver-task", ExecutionBackendKind::Simulation,
+                       "/tmp/existing/profile.json");
+    result.profileTrace = std::move(trace);
+    return result;
+  }
+
+  int invocations = 0;
+  ExecutionRequest lastRequest;
+};
+
+class SynthesizingProfileArtifactBackendDriver : public ExecutionBackendDriver {
+public:
+  llvm::Expected<ExecutionResult>
+  run(const ExecutionRequest &request) override {
+    ++invocations;
+    lastRequest = request;
+    ExecutionResult result;
+    result.taskId = "driver:" + request.task.taskId;
+    result.producedFiles.push_back(
+        request.workingDirectory + "/opprof/simulator/trace.json");
     return result;
   }
 
@@ -322,6 +363,7 @@ static void testBackendDelegatesToDriver() {
     return;
 
   ExecutionRequest request;
+  request.sessionId = "session-a";
   request.task.taskId = "task_a";
   request.workingDirectory = "/tmp/taskgraph-runtime";
 
@@ -332,6 +374,8 @@ static void testBackendDelegatesToDriver() {
            "simulation backend returns driver result");
     EXPECT(simResult->producedFiles.size() == 1,
            "simulation backend preserves produced files");
+    EXPECT(!(bool)simResult->profileTrace,
+           "non-profile files do not surface a profile trace");
   }
 
   auto npuResult = (*npuOr)->run(request);
@@ -343,6 +387,151 @@ static void testBackendDelegatesToDriver() {
   EXPECT(driver->invocations == 2, "shared driver sees both invocations");
   EXPECT(driver->lastRequest.task.taskId == "task_a",
          "driver receives the original request");
+}
+
+static void testSimulatorProfileNormalization() {
+  std::vector<std::string> producedFiles = {
+      "/tmp/taskgraph-runtime/done",
+      "/tmp/taskgraph-runtime/opprof/simulator/trace.json",
+      "/tmp/taskgraph-runtime/opprof/simulator/notes.txt"};
+
+  EXPECT(!isSimulatorProfileArtifact(producedFiles[0]),
+         "regular output is not treated as a simulator profile artifact");
+  EXPECT(isSimulatorProfileArtifact(producedFiles[1]),
+         "simulator trace is recognized as a profile artifact");
+  EXPECT(!isSimulatorProfileArtifact(producedFiles[2]),
+         "non-trace simulator file is ignored");
+  EXPECT(!isSimulatorProfileArtifact(
+             "/tmp/taskgraph-runtime/opprof/simulator/foo-trace.json"),
+         "near-match trace filename is ignored");
+  EXPECT(!isSimulatorProfileArtifact(
+             "/tmp/taskgraph-runtime/opprof/simulator/subdir/trace.json"),
+         "trace in subdirectory is ignored");
+
+  auto traceOr = normalizeSimulatorProfileTrace("sess0", "task0",
+                                                producedFiles);
+  EXPECT((bool)traceOr, "profile normalization finds simulator trace");
+  if (traceOr) {
+    EXPECT(traceOr->sessionId == "sess0",
+           "normalized trace keeps session id");
+    EXPECT(traceOr->events.size() == 1,
+           "normalized trace filters to profile artifacts only");
+    if (!traceOr->events.empty()) {
+      EXPECT(traceOr->events.front().taskId == "task0",
+             "normalized event keeps task mapping");
+      EXPECT(traceOr->events.front().backend ==
+                 ExecutionBackendKind::Simulation,
+             "normalized event keeps backend kind");
+      EXPECT(traceOr->events.front().artifact ==
+                 "/tmp/taskgraph-runtime/opprof/simulator/trace.json",
+             "normalized event stores profile artifact path");
+    }
+  }
+
+  std::vector<std::string> nonProfileFiles = {
+      "/tmp/taskgraph-runtime/done",
+      "/tmp/taskgraph-runtime/log.txt"};
+  auto emptyTraceOr = normalizeSimulatorProfileTrace("sess1", "task1",
+                                                     nonProfileFiles);
+  EXPECT(!(bool)emptyTraceOr,
+         "normalization returns no trace when no profile artifacts exist");
+}
+
+static void testAddProfileArtifactHelper() {
+  ProfileTrace trace;
+  trace.sessionId = "sess_helper";
+
+  addProfileArtifact(trace, "task_helper", ExecutionBackendKind::Simulation,
+                     "/tmp/taskgraph-runtime/opprof/simulator/helper.json");
+
+  EXPECT(trace.events.size() == 1,
+         "addProfileArtifact appends one profile event");
+  if (!trace.events.empty()) {
+    EXPECT(trace.events.front().taskId == "task_helper",
+           "addProfileArtifact preserves task id");
+    EXPECT(trace.events.front().backend == ExecutionBackendKind::Simulation,
+           "addProfileArtifact preserves backend");
+    EXPECT(trace.events.front().eventKind == "profile_artifact",
+           "addProfileArtifact sets profile artifact event kind");
+    EXPECT(trace.events.front().artifact ==
+               "/tmp/taskgraph-runtime/opprof/simulator/helper.json",
+           "addProfileArtifact preserves artifact path");
+  }
+}
+
+static void testBackendSurfacesProfileTrace() {
+  auto driver = std::make_shared<SynthesizingProfileArtifactBackendDriver>();
+  auto simOr = createExecutionBackend(ExecutionBackendKind::Simulation, driver);
+  EXPECT((bool)simOr, "simulation backend factory with profile driver succeeds");
+  if (!simOr)
+    return;
+
+  ExecutionRequest request;
+  request.sessionId = "session-profile";
+  request.task.taskId = "task_profile";
+  request.workingDirectory = "/tmp/taskgraph-runtime";
+
+  auto simResult = (*simOr)->run(request);
+  EXPECT((bool)simResult, "simulation backend run succeeds");
+  if (simResult) {
+    EXPECT(simResult->producedFiles.size() == 1,
+           "driver produced files are preserved");
+    EXPECT((bool)simResult->profileTrace,
+           "profile trace is synthesized");
+    if (simResult->profileTrace) {
+      EXPECT(simResult->profileTrace->sessionId == "session-profile",
+             "synthesized trace uses explicit session id");
+      EXPECT(simResult->profileTrace->events.size() == 1,
+             "synthesized trace contains one event");
+      if (!simResult->profileTrace->events.empty()) {
+        EXPECT(simResult->profileTrace->events.front().taskId ==
+                   "task_profile",
+               "synthesized trace event task id is correct");
+        EXPECT(simResult->profileTrace->events.front().backend ==
+                   ExecutionBackendKind::Simulation,
+               "synthesized trace event backend is correct");
+        EXPECT(simResult->profileTrace->events.front().eventKind ==
+                   "profile_artifact",
+               "synthesized trace event kind is correct");
+        EXPECT(simResult->profileTrace->events.front().artifact ==
+                   "/tmp/taskgraph-runtime/opprof/simulator/trace.json",
+               "synthesized trace artifact path is correct");
+      }
+    }
+  }
+}
+
+static void testBackendPreservesExistingProfileTrace() {
+  auto driver = std::make_shared<ProfileArtifactBackendDriver>();
+  auto simOr = createExecutionBackend(ExecutionBackendKind::Simulation, driver);
+  EXPECT((bool)simOr, "simulation backend factory with preserving driver succeeds");
+  if (!simOr)
+    return;
+
+  ExecutionRequest request;
+  request.sessionId = "session-existing";
+  request.task.taskId = "task_profile";
+  request.workingDirectory = "/tmp/taskgraph-runtime";
+
+  auto simResult = (*simOr)->run(request);
+  EXPECT((bool)simResult, "simulation backend run with existing trace succeeds");
+  if (simResult) {
+    EXPECT((bool)simResult->profileTrace,
+           "existing trace is preserved");
+    if (simResult->profileTrace) {
+      EXPECT(simResult->profileTrace->sessionId == "driver-session",
+             "existing trace session id is preserved");
+      EXPECT(simResult->profileTrace->events.size() == 1,
+             "existing trace event count is preserved");
+      if (!simResult->profileTrace->events.empty()) {
+        EXPECT(simResult->profileTrace->events.front().taskId == "driver-task",
+               "existing trace task id is preserved");
+        EXPECT(simResult->profileTrace->events.front().artifact ==
+                   "/tmp/existing/profile.json",
+               "existing trace artifact is preserved");
+      }
+    }
+  }
 }
 
 int main() {
@@ -358,6 +547,10 @@ int main() {
   testDefaultBackendRequiresDriver();
   testInvalidBackendSelection();
   testBackendDelegatesToDriver();
+  testSimulatorProfileNormalization();
+  testAddProfileArtifactHelper();
+  testBackendSurfacesProfileTrace();
+  testBackendPreservesExistingProfileTrace();
 
   llvm::outs() << g_pass << " passed, " << g_fail << " failed\n";
   return g_fail ? 1 : 0;

@@ -7,6 +7,7 @@ add_mlir_library(AscendCRuntime
   ExecutionBackend.cpp
   HostRunnerGen.cpp
   ProfileTrace.cpp
+  ProfileUtils.cpp
   PathUtils.cpp
   MixCommandBuilder.cpp
   MixAbiExtractor.cpp
