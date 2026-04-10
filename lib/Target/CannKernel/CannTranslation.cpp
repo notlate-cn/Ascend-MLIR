@@ -64,6 +64,37 @@ static func::FuncOp findPrimaryGlobalKernel(ModuleOp moduleOp) {
   return {};
 }
 
+static std::string getAscendCScalarTypeName(Type elemType) {
+  if (elemType.isF16())
+    return "half";
+  if (elemType.isF32())
+    return "float";
+  if (elemType.isF64())
+    return "double";
+  if (auto iType = dyn_cast<IntegerType>(elemType)) {
+    bool isUnsigned = iType.isUnsigned();
+    return (isUnsigned ? "uint" : "int") + std::to_string(iType.getWidth()) +
+           "_t";
+  }
+  return "half";
+}
+
+static Value peelSourceValue(Value value) {
+  if (!value)
+    return value;
+  if (auto castOp = value.getDefiningOp<emitasc::ReinterpretCastOp>())
+    return castOp.getOperand();
+  return value;
+}
+
+static Value peelIndexCast(Value value) {
+  if (!value)
+    return value;
+  if (auto castOp = value.getDefiningOp<arith::IndexCastOp>())
+    return castOp.getOperand();
+  return value;
+}
+
 static bool isRankedMemrefOf(Type type, int64_t rank, Type elementType) {
   auto memrefType = dyn_cast<MemRefType>(type);
   return memrefType && memrefType.getRank() == rank &&
@@ -2123,21 +2154,70 @@ static void fixBrokenOpEmitters(Operation *moduleOp) {
   // Fix: emit pointer arithmetic to bake the offset into the pointer:
   //   $tensor.SetGlobalBuffer($buffer_ptr + $offset);
   //
-  // When the offset is absent (op.getSize() is null), emit the 1-arg form.
+  // When the offset is absent (op.getSize() is null), emit the 1-arg form
+  // with an explicit GM pointer cast because GM_ADDR is emitted as uint8_t*.
   moduleOp->walk([&](ascendc::GlobalTensorSetGlobalBufferOp op) {
-    Value sizeVal = op.getSize();
-    if (!sizeVal)
-      return; // no offset — let PyAsc emit the 1-arg form unchanged
+    auto tensorType = dyn_cast<ascendc::GlobalTensorType>(op.getTensor().getType());
+    if (!tensorType)
+      return;
 
+    std::string elemTypeStr =
+        getAscendCScalarTypeName(tensorType.getElementType());
+    Value baseBuffer = peelSourceValue(op.getBuffer());
+    Value sizeVal = op.getSize();
     rewriter.setInsertionPoint(op);
     Location loc = op.getLoc();
-    // Verbatim: $0 = tensor, $1 = buffer_ptr (__gm__ half*), $2 = offset (i32)
-    // Emit: $0.SetGlobalBuffer($1 + $2);
+    if (!sizeVal) {
+      std::string tmpl =
+          "$0.SetGlobalBuffer(reinterpret_cast<__gm__ " + elemTypeStr +
+          "*>($1))";
+      rewriter.create<emitasc::VerbatimOp>(
+          loc, rewriter.getStringAttr(tmpl),
+          ValueRange({op.getTensor(), baseBuffer}));
+      rewriter.eraseOp(op);
+      return;
+    }
+
+    Value elemOffset = peelIndexCast(sizeVal);
+    std::string tmpl =
+        "$0.SetGlobalBuffer(reinterpret_cast<__gm__ " + elemTypeStr +
+        "*>($1) + $2)";
     rewriter.create<emitasc::VerbatimOp>(
-        loc,
-        rewriter.getStringAttr("$0.SetGlobalBuffer($1 + $2)"),
-        ValueRange({op.getTensor(), op.getBuffer(), sizeVal}));
+        loc, rewriter.getStringAttr(tmpl),
+        ValueRange({op.getTensor(), baseBuffer, elemOffset}));
     rewriter.eraseOp(op);
+  });
+
+  // DataCopyL2Op with GlobalTensorBracketOp source → verbatim
+  //
+  // PyAsc emits `GlobalTensor<T> row = base(offset);`, but AscendC's operator()
+  // returns an element pointer/value rather than a sliced GlobalTensor. Rebuild a
+  // temporary GlobalTensor from `GetPhyAddr(offset)` instead.
+  moduleOp->walk([&](ascendc::DataCopyL2Op op) {
+    auto bracketOp = op.getSrc().getDefiningOp<ascendc::GlobalTensorBracketOp>();
+    if (!bracketOp)
+      return;
+
+    auto tensorType =
+        dyn_cast<ascendc::GlobalTensorType>(bracketOp.getResult().getType());
+    if (!tensorType)
+      return;
+
+    std::string elemTypeStr =
+        getAscendCScalarTypeName(tensorType.getElementType());
+    rewriter.setInsertionPoint(op);
+    Location loc = op.getLoc();
+    std::string tmpl = "{\n";
+    tmpl += "  AscendC::GlobalTensor<" + elemTypeStr + "> _afir_gt;\n";
+    tmpl += "  _afir_gt.SetGlobalBuffer($1.GetPhyAddr($2));\n";
+    tmpl += "  AscendC::DataCopy($0, _afir_gt, $3);\n}";
+    rewriter.create<emitasc::VerbatimOp>(
+        loc, rewriter.getStringAttr(tmpl),
+        ValueRange({op.getDst(), bracketOp.getTensor(), bracketOp.getIndex(),
+                    op.getCalCount()}));
+    rewriter.eraseOp(op);
+    if (bracketOp->use_empty())
+      rewriter.eraseOp(bracketOp);
   });
 
   // BroadcastL2Op → verbatim
@@ -2178,20 +2258,7 @@ static void fixBrokenOpEmitters(Operation *moduleOp) {
     // Use actual element type of dst instead of hardcoded 'half'.
     auto dstElemType =
         cast<ascendc::LocalTensorType>(op.getDst().getType()).getElementType();
-    std::string elemTypeStr;
-    if (dstElemType.isF16())
-      elemTypeStr = "half";
-    else if (dstElemType.isF32())
-      elemTypeStr = "float";
-    else if (dstElemType.isF64())
-      elemTypeStr = "double";
-    else if (auto iType = dyn_cast<IntegerType>(dstElemType)) {
-      bool isUnsigned = iType.isUnsigned();
-      elemTypeStr = (isUnsigned ? "uint" : "int") +
-                    std::to_string(iType.getWidth()) + "_t";
-    } else {
-      elemTypeStr = "half"; // fallback
-    }
+    std::string elemTypeStr = getAscendCScalarTypeName(dstElemType);
     tmpl += "  AscendC::Broadcast<" + elemTypeStr + ", " + std::to_string(rank) +
             ", " + std::to_string(axis) + ">($0, $1, _afir_ds, _afir_ss);\n}";
 
@@ -2203,6 +2270,51 @@ static void fixBrokenOpEmitters(Operation *moduleOp) {
     for (Value v : op.getSrcShape())
       args.push_back(v);
 
+    rewriter.create<emitasc::VerbatimOp>(
+        loc, rewriter.getStringAttr(tmpl), ValueRange(args));
+    rewriter.eraseOp(op);
+  });
+
+  // GatherL2Op with i64 indices → verbatim
+  //
+  // AscendC::Gather requires LocalTensor<uint32_t> indices. Gather lowering
+  // currently feeds LocalTensor<int64_t> when the original indices memref is
+  // i64, so generate an explicit VECCALC staging buffer and cast loop.
+  moduleOp->walk([&](ascendc::GatherL2Op op) {
+    auto indicesType =
+        dyn_cast<ascendc::LocalTensorType>(op.getSrcOffset().getType());
+    if (!indicesType)
+      return;
+    auto idxElemType = dyn_cast<IntegerType>(indicesType.getElementType());
+    if (!idxElemType || idxElemType.getWidth() != 64)
+      return;
+
+    Value pipeVal;
+    if (auto funcOp = op->getParentOfType<func::FuncOp>()) {
+      funcOp.walk([&](ascendc::PipeOp pipeOp) {
+        pipeVal = pipeOp.getResult();
+        return WalkResult::interrupt();
+      });
+    }
+    if (!pipeVal)
+      return;
+
+    rewriter.setInsertionPoint(op);
+    Location loc = op.getLoc();
+    std::string tmpl = "{\n";
+    tmpl += "  AscendC::TBuf<AscendC::TPosition::VECCALC> _afir_idx32_tbuf;\n";
+    tmpl += "  $5.InitBuffer(_afir_idx32_tbuf, (uint32_t)$4 * sizeof(uint32_t));\n";
+    tmpl +=
+        "  AscendC::LocalTensor<uint32_t> _afir_idx32 = _afir_idx32_tbuf.Get<uint32_t>();\n";
+    tmpl +=
+        "  for (uint32_t _afir_i = 0; _afir_i < static_cast<uint32_t>($4); _afir_i++) {\n";
+    tmpl +=
+        "    _afir_idx32.SetValue(_afir_i, static_cast<uint32_t>($2.GetValue(_afir_i)));\n";
+    tmpl += "  }\n";
+    tmpl += "  AscendC::Gather($0, $1, _afir_idx32, $3, $4);\n}";
+
+    SmallVector<Value> args = {op.getDst(), op.getSrc(), op.getSrcOffset(),
+                               op.getSrcBaseAddr(), op.getCount(), pipeVal};
     rewriter.create<emitasc::VerbatimOp>(
         loc, rewriter.getStringAttr(tmpl), ValueRange(args));
     rewriter.eraseOp(op);

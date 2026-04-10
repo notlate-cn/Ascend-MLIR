@@ -17,25 +17,25 @@ require_tool() {
   command -v "$1" >/dev/null 2>&1
 }
 
-skip() {
-  echo "SKIP: $*"
-  exit 0
+fail() {
+  echo "FAIL: $*" >&2
+  exit 1
 }
 
 echo "INFO: example pipeline test entry"
 
 if [[ ! -f "${REPO_ROOT}/examples/env.sh" ]]; then
-  skip "examples/env.sh not found"
+  fail "examples/env.sh not found"
 fi
 
 if [[ ! -f "${REPO_ROOT}/scripts/resolve_ascend_env.sh" ]]; then
-  skip "scripts/resolve_ascend_env.sh not found"
+  fail "scripts/resolve_ascend_env.sh not found"
 fi
 
 # shellcheck source=/dev/null
 source "${REPO_ROOT}/scripts/resolve_ascend_env.sh"
 if ! resolve_ascend_home >/dev/null 2>&1; then
-  skip "ASCEND_HOME_PATH or ASCEND_TOOLKIT_HOME is not configured"
+  fail "Ascend environment is unavailable; run 'source ~/Ascend/latest/set_env.sh' or export ASCEND_HOME_PATH/ASCEND_TOOLKIT_HOME"
 fi
 
 # shellcheck source=/dev/null
@@ -43,20 +43,20 @@ source "${REPO_ROOT}/examples/env.sh"
 
 for tool in bash python3 afir-opt afir-translate; do
   if ! require_tool "${tool}"; then
-    skip "required tool '${tool}' is unavailable"
+    fail "required tool '${tool}' is unavailable"
   fi
 done
 
 if ! require_tool compiler; then
-  skip "compiler is unavailable"
+  fail "compiler is unavailable"
 fi
 
 if ! require_tool validator; then
-  skip "validator is unavailable"
+  fail "validator is unavailable"
 fi
 
 if ! python3 -c 'import numpy' >/dev/null 2>&1; then
-  skip "python3 numpy module is unavailable"
+  fail "python3 numpy module is unavailable"
 fi
 
 echo "INFO: executing ${#EXAMPLES[@]} example pipelines"

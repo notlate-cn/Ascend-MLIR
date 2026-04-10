@@ -119,12 +119,10 @@ log "  ok: step7_cann.mlir"
 echo ""
 echo "==================== [STAGE 8] afir-translate -mlir-to-cann ===================="
 AFIR_TRANSLATE="${AFIR_TRANSLATE:-afir-translate}"
-# Generate into step8_kernel_gen.cpp; step8_kernel.cpp is the hand-fixed version
-# (fixes: GM_ADDR cast, GlobalTensor subscript, i64→u32 index conversion for Gather)
+# Generate into step8_kernel_gen.cpp and compile it directly.
 "$AFIR_TRANSLATE" -mlir-to-cann "$DIR/step7_cann.mlir" \
   -o "$DIR/step8_kernel_gen.cpp"
-log "  ok: step8_kernel_gen.cpp (auto-generated, may have codegen bugs)"
-log "  using step8_kernel.cpp (hand-fixed) for compilation"
+log "  ok: step8_kernel_gen.cpp"
 
 echo ""
 echo "==================== [STAGE 8b] 生成测试数据：gen_data.py ===================="
@@ -138,7 +136,7 @@ BUILD_DIR="$DIR/build_e2e"
 rm -fr "$BUILD_DIR"
 mkdir -p "$BUILD_DIR"
 "$COMPILER" \
-  --kernel "$DIR/step8_kernel.cpp" \
+  --kernel "$DIR/step8_kernel_gen.cpp" \
   --output "$BUILD_DIR" \
   --name relu_index_select_add \
   --num-inputs 3
@@ -182,7 +180,7 @@ echo "   step5_ascendc.mlir          → AscendC compute ops"
 echo "   step6_parallelize.mlir      → 多核 AiCore 调度 (get_block_idx)"
 echo "   step7_kernel.mlir           → 完整 AscendC kernel IR"
 echo "   step7_cann.mlir             → CANN 标准签名 IR"
-echo "   step8_kernel.cpp            → AscendC C++ kernel 源码"
+echo "   step8_kernel_gen.cpp        → AscendC C++ kernel 源码"
 echo "   tiling_space.json           → tiling 参数空间"
 echo "   input_data.npy              → data[512,640] f16"
 echo "   input_indices.npy           → indices[256] i64"
