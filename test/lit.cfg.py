@@ -66,6 +66,7 @@ config.excludes = [
     'cann-translate-mix-island-input.mlir',
     'cann-translate-mix-unsupported-vector-input.mlir',
     'cann-translate-mix-unsupported-cube-input.mlir',
+    'cann-translate-gather-input.mlir',
 ]
 
 # test_source_root: The root path where tests are located.
