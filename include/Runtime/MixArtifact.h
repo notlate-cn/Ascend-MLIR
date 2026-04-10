@@ -1,5 +1,8 @@
-// include/RuntimeMix/MixArtifact.h
+// include/Runtime/MixArtifact.h
 #pragma once
+
+#include "Runtime/TaskGraph.h"
+
 #include <string>
 
 namespace mlir::runtime {
@@ -24,5 +27,10 @@ struct MixArtifact {
   // Optional: may remain empty until a backend emits a host stub source file.
   std::string host_stub_source_path;
 };
+
+KernelArtifact normalizeMixArtifact(const MixArtifact &artifact,
+                                    KernelKind kind = KernelKind::Mix,
+                                    MixResourceType mixResourceType =
+                                        MixResourceType::Unknown);
 
 } // namespace mlir::runtime
