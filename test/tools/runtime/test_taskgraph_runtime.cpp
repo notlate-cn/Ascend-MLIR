@@ -13,12 +13,16 @@
 //   /tmp/test_taskgraph_runtime
 
 #include "Runtime/ProfileTrace.h"
+#include "Runtime/ExecutionBackend.h"
+#include "Runtime/NpuBackend.h"
 #include "Runtime/TaskGraph.h"
 #include "Runtime/ArtifactCompiler.h"
+#include "Runtime/SimBackend.h"
 #include "llvm/Support/Error.h"
 #include "llvm/Support/raw_ostream.h"
 
 #include <filesystem>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -26,6 +30,22 @@ using namespace mlir::runtime;
 
 static int g_pass = 0;
 static int g_fail = 0;
+
+class RecordingBackendDriver : public ExecutionBackendDriver {
+public:
+  llvm::Expected<ExecutionResult>
+  run(const ExecutionRequest &request) override {
+    ++invocations;
+    lastRequest = request;
+    ExecutionResult result;
+    result.taskId = "driver:" + request.task.taskId;
+    result.producedFiles.push_back(request.workingDirectory + "/done");
+    return result;
+  }
+
+  int invocations = 0;
+  ExecutionRequest lastRequest;
+};
 
 #define EXPECT(cond, msg)                                                     \
   do {                                                                        \
@@ -241,6 +261,90 @@ static void testVecCompileCreatesOutputDir() {
          "prepareCompileOutputDir creates the directory");
 }
 
+static void testBackendSelection() {
+  auto driver = std::make_shared<RecordingBackendDriver>();
+  auto simOr = createExecutionBackend(ExecutionBackendKind::Simulation, driver);
+  auto npuOr = createExecutionBackend(ExecutionBackendKind::Npu, driver);
+  EXPECT((bool)simOr, "simulation backend factory succeeds");
+  EXPECT((bool)npuOr, "npu backend factory succeeds");
+  if (simOr)
+    EXPECT((*simOr)->kind() == ExecutionBackendKind::Simulation,
+           "simulation backend reports its kind");
+  if (npuOr)
+    EXPECT((*npuOr)->kind() == ExecutionBackendKind::Npu,
+           "npu backend reports its kind");
+
+  ExecutionRequest request;
+  request.task.taskId = "single";
+  request.task.artifact.kernelName = "mix_add";
+  request.task.artifact.kernelKind = KernelKind::Mix;
+  request.task.artifact.mixResourceType = MixResourceType::Mix1C1V;
+  request.workingDirectory = "/tmp/taskgraph-runtime";
+  EXPECT(request.task.taskId == "single", "execution request stores task");
+}
+
+static void testDefaultBackendRequiresDriver() {
+  auto simOr = createExecutionBackend(ExecutionBackendKind::Simulation);
+  auto npuOr = createExecutionBackend(ExecutionBackendKind::Npu);
+  EXPECT((bool)simOr, "simulation backend factory without driver succeeds");
+  EXPECT((bool)npuOr, "npu backend factory without driver succeeds");
+  if (!simOr || !npuOr)
+    return;
+
+  ExecutionRequest request;
+  request.task.taskId = "task_a";
+
+  auto simResult = (*simOr)->run(request);
+  EXPECT(!(bool)simResult, "simulation backend without driver fails");
+  if (!simResult)
+    llvm::consumeError(simResult.takeError());
+
+  auto npuResult = (*npuOr)->run(request);
+  EXPECT(!(bool)npuResult, "npu backend without driver fails");
+  if (!npuResult)
+    llvm::consumeError(npuResult.takeError());
+}
+
+static void testInvalidBackendSelection() {
+  auto bad = createExecutionBackend(static_cast<ExecutionBackendKind>(99));
+  EXPECT(!(bool)bad, "invalid backend selection is rejected");
+  if (!bad)
+    llvm::consumeError(bad.takeError());
+}
+
+static void testBackendDelegatesToDriver() {
+  auto driver = std::make_shared<RecordingBackendDriver>();
+  auto simOr = createExecutionBackend(ExecutionBackendKind::Simulation, driver);
+  auto npuOr = createExecutionBackend(ExecutionBackendKind::Npu, driver);
+  EXPECT((bool)simOr, "simulation backend factory with driver succeeds");
+  EXPECT((bool)npuOr, "npu backend factory with driver succeeds");
+  if (!simOr || !npuOr)
+    return;
+
+  ExecutionRequest request;
+  request.task.taskId = "task_a";
+  request.workingDirectory = "/tmp/taskgraph-runtime";
+
+  auto simResult = (*simOr)->run(request);
+  EXPECT((bool)simResult, "simulation backend delegates");
+  if (simResult) {
+    EXPECT(simResult->taskId == "driver:task_a",
+           "simulation backend returns driver result");
+    EXPECT(simResult->producedFiles.size() == 1,
+           "simulation backend preserves produced files");
+  }
+
+  auto npuResult = (*npuOr)->run(request);
+  EXPECT((bool)npuResult, "npu backend delegates");
+  if (npuResult)
+    EXPECT(npuResult->taskId == "driver:task_a",
+           "npu backend returns driver result");
+
+  EXPECT(driver->invocations == 2, "shared driver sees both invocations");
+  EXPECT(driver->lastRequest.task.taskId == "task_a",
+         "driver receives the original request");
+}
+
 int main() {
   testTaskGraphBasics();
   testDuplicateTaskIds();
@@ -250,6 +354,10 @@ int main() {
   testKernelArtifactNormalization();
   testArtifactCompilerRequestValidation();
   testVecCompileCreatesOutputDir();
+  testBackendSelection();
+  testDefaultBackendRequiresDriver();
+  testInvalidBackendSelection();
+  testBackendDelegatesToDriver();
 
   llvm::outs() << g_pass << " passed, " << g_fail << " failed\n";
   return g_fail ? 1 : 0;
