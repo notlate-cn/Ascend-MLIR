@@ -1,0 +1,24 @@
+{
+  "kernel": "broadcast_add_reducesum",
+  "kernel_file": "step8_kernel.cpp",
+  "soc": "Ascend910B1",
+  "block_dim_expr": "ceil(M / TB_M)",
+  "tiling_params": [
+    {
+      "name": "TB_M",
+      "type": "int64",
+      "min": 64, "max": 64, "step": 64,
+      "note": "M=640 must be TB_M multiple (no tail block); DataCopy half requires >= 16 elements"
+    },
+    {
+      "name": "TB_N",
+      "type": "int64",
+      "values": [15000],
+      "note": "Reduction kernel processes full row at once; TB_N=N kept for framework compat"
+    },
+    {"name": "dim_arg0_0", "type": "int64", "fixed": true, "shape_key": "M"},
+    {"name": "dim_arg1_1", "type": "int64", "fixed": true, "shape_key": "N"},
+    {"name": "dim_arg0_1", "type": "int64", "fixed": true, "shape_key": "M"},
+    {"name": "dim_arg1_0", "type": "int64", "fixed": true, "shape_key": "N"}
+  ]
+}

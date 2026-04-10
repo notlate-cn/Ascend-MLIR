@@ -22,12 +22,12 @@ include "mlir/Interfaces/InferTypeOpInterface.td"
 
 class AFIR_UnaryMathOp<string mnemonic, list<Trait> traits = [], list<Type> types> :
     AFIR_UnaryOp<mnemonic, traits # [SameOperandsAndResultType], types, "Elementwise", "Vector", 1> {
-      let extraClassDeclaration = [{
+  let extraClassDeclaration = baseMethodDecl # [{
     /// Returns when two result types are compatible for this op; method used by
     /// InferTypeOpInterface.
     static bool isCompatibleReturnTypes(TypeRange l, TypeRange r);
   }];
-  let extraClassDefinition = [{
+  let extraClassDefinition = baseMethods # [{
     bool $cppClass::isCompatibleReturnTypes(TypeRange l, TypeRange r) {
       if (l.size() != r.size() || l.size() != 1) return false;
       return succeeded(verifyCompatibleShape(l[0], r[0]));
@@ -37,12 +37,12 @@ class AFIR_UnaryMathOp<string mnemonic, list<Trait> traits = [], list<Type> type
 
 class AFIR_BinaryMathOp<string mnemonic, list<Trait> traits = [], list<Type> types> :
     AFIR_BinaryOp<mnemonic, traits # [InferTensorTypeAdaptor], types, "Elementwise", "Vector", 1> {
-      let extraClassDeclaration = [{
+  let extraClassDeclaration = baseMethodDecl # [{
     /// Returns when two result types are compatible for this op; method used by
     /// InferTypeOpInterface.
     static bool isCompatibleReturnTypes(TypeRange l, TypeRange r);
   }];
-  let extraClassDefinition = [{
+  let extraClassDefinition = baseMethods # [{
     bool $cppClass::isCompatibleReturnTypes(TypeRange l, TypeRange r) {
       if (l.size() != r.size() || l.size() != 1) return false;
       return succeeded(verifyCompatibleShape(l[0], r[0]));
@@ -120,12 +120,12 @@ def AFIR_LtOp : AFIR_BinaryHomoMathOp<"lt", [Pure], [F16, F32], [UI8]>;
 // Ternary Operations
 //===----------------------------------------------------------------------===//
 def AFIR_ClipByValue : AFIR_TernaryMathOp<"clip_by_value", [Pure], [F16, F32]> {
-        let extraClassDeclaration = [{
+  let extraClassDeclaration = baseMethodDecl # [{
     /// Returns when two result types are compatible for this op; method used by
     /// InferTypeOpInterface.
     static bool isCompatibleReturnTypes(TypeRange l, TypeRange r);
   }];
-  let extraClassDefinition = [{
+  let extraClassDefinition = baseMethods # [{
     bool $cppClass::isCompatibleReturnTypes(TypeRange l, TypeRange r) {
       if (l.size() != r.size() || l.size() != 1) return false;
       return succeeded(verifyCompatibleShape(l[0], r[0]));

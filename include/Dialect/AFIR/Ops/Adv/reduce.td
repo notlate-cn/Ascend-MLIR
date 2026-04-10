@@ -26,13 +26,13 @@ class AFIR_UnaryReduceOp<string mnemonic, list<Trait> traits = [], list<Type> ty
       I32Attr:$axis
     ),
     commonArgs
-  );
-    let extraClassDeclaration = [{
+  );  
+  let extraClassDeclaration = baseMethodDecl # [{
     /// Returns when two result types are compatible for this op; method used by
     /// InferTypeOpInterface.
     static bool isCompatibleReturnTypes(TypeRange l, TypeRange r);
   }];
-  let extraClassDefinition = [{
+  let extraClassDefinition = baseMethods # [{
     bool $cppClass::isCompatibleReturnTypes(TypeRange l, TypeRange r) {
       if (l.size() != r.size() || l.size() != 1) return false;
       return succeeded(verifyCompatibleShape(l[0], r[0]));

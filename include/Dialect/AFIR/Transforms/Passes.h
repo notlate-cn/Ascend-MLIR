@@ -11,6 +11,12 @@
 #include <memory>
 
 namespace mlir {
+
+std::unique_ptr<Pass> createLinalgInferShapePass();
+
+std::unique_ptr<Pass> createLinalgMarkPass();
+
+std::unique_ptr<Pass> createLinalgAddBroadcastPass();
 namespace afir {
 
 // Canonicalization pass
@@ -18,6 +24,8 @@ std::unique_ptr<Pass> createAFIRCanonicalizePass();
 
 // Shape inference pass
 std::unique_ptr<Pass> createAFIRShapeInferencePass();
+
+std::unique_ptr<Pass> createAFIRAddAxisPass();
 
 // Generate pass registration declarations
 #define GEN_PASS_REGISTRATION
