@@ -4,6 +4,7 @@ add_mlir_library(AscendCRuntime
   ArtifactCompiler.cpp
   Compiler.cpp
   Executor.cpp
+  ExecutionBackend.cpp
   HostRunnerGen.cpp
   ProfileTrace.cpp
   PathUtils.cpp
@@ -13,7 +14,9 @@ add_mlir_library(AscendCRuntime
   MixAbi.cpp
   MixSourceAnalyzer.cpp
   MixStubTemplate.cpp
+  NpuBackend.cpp
   SimValidator.cpp
+  SimBackend.cpp
   TaskGraph.cpp
   NpyIO.cpp
   TilingSchema.cpp
