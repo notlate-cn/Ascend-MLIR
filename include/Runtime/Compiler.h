@@ -1,6 +1,8 @@
-// include/Runtime/Compiler.h
 #pragma once
+
+#include "Runtime/TaskGraph.h"
 #include "llvm/Support/Error.h"
+
 #include <string>
 #include <vector>
 
@@ -33,5 +35,13 @@ private:
   // Run a subprocess synchronously; return non-success Error if exit code != 0.
   llvm::Error RunProcess(const std::vector<std::string>& args);
 };
+
+llvm::Error prepareCompileOutputDir(llvm::StringRef outputDir);
+
+KernelArtifact normalizeCompiledArtifact(llvm::StringRef binaryPath,
+                                         llvm::StringRef kernelName,
+                                         KernelKind kind,
+                                         llvm::StringRef socVersion,
+                                         llvm::StringRef artifactRoot);
 
 } // namespace mlir::runtime

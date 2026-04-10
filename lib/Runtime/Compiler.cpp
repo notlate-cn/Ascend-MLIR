@@ -6,10 +6,21 @@
 #include "llvm/Support/Program.h"
 #include "llvm/Support/raw_ostream.h"
 #include <cstdlib>
+#include <optional>
 
 namespace mlir::runtime {
 
 Compiler::Compiler(const Config& cfg) : cfg_(cfg) {}
+
+llvm::Error prepareCompileOutputDir(llvm::StringRef outputDir) {
+  if (outputDir.empty())
+    return llvm::createStringError(llvm::inconvertibleErrorCode(),
+                                   "Output directory is required");
+  if (auto ec = llvm::sys::fs::create_directories(outputDir))
+    return llvm::createStringError(ec, "Cannot create output directory: %s",
+                                   outputDir.str().c_str());
+  return llvm::Error::success();
+}
 
 llvm::Error Compiler::RunProcess(const std::vector<std::string>& args) {
   std::vector<llvm::StringRef> argv;
@@ -33,6 +44,9 @@ llvm::Expected<std::string> Compiler::Compile(const std::string& src_file,
                                               const std::string& kernel_name) {
   const std::string socVersion = resolveSocVersion(cfg_.soc_version, "Ascend910B1");
   ::setenv("SOC_VERSION", socVersion.c_str(), 1);
+
+  if (auto err = prepareCompileOutputDir(output_dir))
+    return std::move(err);
 
   auto ascendHomeOr = requireAscendHome();
   if (!ascendHomeOr)
@@ -108,6 +122,23 @@ llvm::Expected<std::string> Compiler::Compile(const std::string& src_file,
     return std::move(err);
 
   return bin_file;
+}
+
+KernelArtifact normalizeCompiledArtifact(llvm::StringRef binaryPath,
+                                         llvm::StringRef kernelName,
+                                         KernelKind kind,
+                                         llvm::StringRef socVersion,
+                                         llvm::StringRef artifactRoot) {
+  KernelArtifact artifact;
+  artifact.kernelName = kernelName.str();
+  artifact.kernelKind = kind;
+  artifact.mixResourceType =
+      kind == KernelKind::Mix ? MixResourceType::Mix1C1V
+                              : MixResourceType::Unknown;
+  artifact.socVersion = socVersion.str();
+  artifact.artifactRoot = artifactRoot.str();
+  artifact.deviceBinaryPath = binaryPath.str();
+  return artifact;
 }
 
 } // namespace mlir::runtime

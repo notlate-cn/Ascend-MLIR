@@ -14,9 +14,11 @@
 
 #include "Runtime/ProfileTrace.h"
 #include "Runtime/TaskGraph.h"
+#include "Runtime/ArtifactCompiler.h"
 #include "llvm/Support/Error.h"
 #include "llvm/Support/raw_ostream.h"
 
+#include <filesystem>
 #include <string>
 #include <vector>
 
@@ -148,12 +150,106 @@ static void testCycleDetection() {
     llvm::consumeError(orderOr.takeError());
 }
 
+static void testKernelArtifactNormalization() {
+  EXPECT(inferMixResourceTypeFromKernelKind(KernelKind::Mix) ==
+             MixResourceType::Mix1C1V,
+         "mix kernels default to Mix1C1V");
+  EXPECT(inferMixResourceTypeFromKernelKind(KernelKind::Vec) ==
+             MixResourceType::Unknown,
+         "non-mix kernels do not infer a mix resource type");
+
+  KernelArtifact vecArtifact =
+      normalizeCompiledArtifact("/tmp/demo_kernel.bin", "demo_kernel",
+                                KernelKind::Vec, "Ascend910B1",
+                                "/tmp/demo-out");
+  EXPECT(vecArtifact.kernelName == "demo_kernel",
+         "normalized vec artifact keeps kernel name");
+  EXPECT(vecArtifact.kernelKind == KernelKind::Vec,
+         "normalized vec artifact keeps kernel kind");
+  EXPECT(vecArtifact.deviceBinaryPath == "/tmp/demo_kernel.bin",
+         "normalized vec artifact stores device binary path");
+  EXPECT(vecArtifact.artifactRoot == "/tmp/demo-out",
+         "normalized vec artifact stores artifact root");
+
+  MixArtifact mixArtifact;
+  mixArtifact.kernel_name = "demo_kernel";
+  mixArtifact.soc_version = "Ascend910B1";
+  mixArtifact.work_dir = "/tmp/mix/work";
+  mixArtifact.kernel_so_path = "/tmp/mix/libdemo_kernel_packed.so";
+  mixArtifact.device_object_path = "/tmp/mix/device.o";
+  mixArtifact.manifest_path = "/tmp/mix/mix-artifact.txt";
+
+  KernelArtifact normalizedMix = normalizeMixArtifact(
+      mixArtifact, KernelKind::Mix, MixResourceType::Mix1C1V);
+  EXPECT(normalizedMix.kernelName == "demo_kernel",
+         "normalized mix artifact keeps kernel name");
+  EXPECT(normalizedMix.kernelKind == KernelKind::Mix,
+         "normalized mix artifact keeps kernel kind");
+  EXPECT(normalizedMix.mixResourceType == MixResourceType::Mix1C1V,
+         "normalized mix artifact keeps resource type");
+  EXPECT(normalizedMix.deviceBinaryPath == "/tmp/mix/device.o",
+         "normalized mix artifact stores device object path");
+  EXPECT(normalizedMix.packedSharedObjectPath ==
+             "/tmp/mix/libdemo_kernel_packed.so",
+         "normalized mix artifact stores packed shared object path");
+  EXPECT(normalizedMix.manifestPath == "/tmp/mix/mix-artifact.txt",
+         "normalized mix artifact stores manifest path");
+  EXPECT(normalizedMix.artifactRoot == "/tmp/mix",
+         "normalized mix artifact stores compile root, not work dir");
+}
+
+static void testArtifactCompilerRequestValidation() {
+  ArtifactCompiler compiler;
+
+  ArtifactCompileRequest missingSource;
+  missingSource.kernelName = "demo_kernel";
+  missingSource.outputDir = "/tmp/taskgraph-artifact-validation";
+  auto srcErr = compiler.compile(missingSource);
+  EXPECT(!(bool)srcErr, "missing source is rejected");
+  if (!srcErr)
+    llvm::consumeError(srcErr.takeError());
+
+  ArtifactCompileRequest missingOutputDir;
+  missingOutputDir.kernelSource = "/tmp/demo.cpp";
+  missingOutputDir.kernelName = "demo_kernel";
+  auto outErr = compiler.compile(missingOutputDir);
+  EXPECT(!(bool)outErr, "missing output dir is rejected");
+  if (!outErr)
+    llvm::consumeError(outErr.takeError());
+
+  ArtifactCompileRequest missingKernelName;
+  missingKernelName.kernelSource = "/tmp/demo.cpp";
+  missingKernelName.outputDir = "/tmp/taskgraph-artifact-validation";
+  auto nameErr = compiler.compile(missingKernelName);
+  EXPECT(!(bool)nameErr, "missing kernel name is rejected");
+  if (!nameErr)
+    llvm::consumeError(nameErr.takeError());
+}
+
+static void testVecCompileCreatesOutputDir() {
+  std::error_code ec;
+  const std::string outputDir = "/tmp/taskgraph-artifact-out-created";
+  std::filesystem::remove_all(outputDir, ec);
+  EXPECT(!std::filesystem::exists(outputDir),
+         "precondition: output dir does not exist");
+
+  auto dirErr = prepareCompileOutputDir(outputDir);
+  EXPECT(!dirErr, "prepareCompileOutputDir succeeds");
+  if (dirErr)
+    llvm::consumeError(std::move(dirErr));
+  EXPECT(std::filesystem::exists(outputDir),
+         "prepareCompileOutputDir creates the directory");
+}
+
 int main() {
   testTaskGraphBasics();
   testDuplicateTaskIds();
   testEmptyTaskId();
   testUnknownDependency();
   testCycleDetection();
+  testKernelArtifactNormalization();
+  testArtifactCompilerRequestValidation();
+  testVecCompileCreatesOutputDir();
 
   llvm::outs() << g_pass << " passed, " << g_fail << " failed\n";
   return g_fail ? 1 : 0;

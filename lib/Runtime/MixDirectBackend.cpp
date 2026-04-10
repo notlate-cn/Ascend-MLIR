@@ -1816,4 +1816,22 @@ MixDirectBackend::compile(const MixDirectCompileConfig &cfg) {
   return artifact;
 }
 
+KernelArtifact normalizeMixArtifact(const MixArtifact &artifact, KernelKind kind,
+                                    MixResourceType mixResourceType) {
+  KernelArtifact normalized;
+  normalized.kernelName = artifact.kernel_name;
+  normalized.kernelKind = kind;
+  normalized.mixResourceType = mixResourceType;
+  normalized.socVersion = artifact.soc_version;
+  normalized.artifactRoot = llvm::sys::path::parent_path(artifact.work_dir).str();
+  if (normalized.artifactRoot.empty())
+    normalized.artifactRoot = artifact.install_dir;
+  normalized.deviceBinaryPath = artifact.device_object_path.empty()
+                                    ? artifact.kernel_so_path
+                                    : artifact.device_object_path;
+  normalized.packedSharedObjectPath = artifact.kernel_so_path;
+  normalized.manifestPath = artifact.manifest_path;
+  return normalized;
+}
+
 } // namespace mlir::runtime

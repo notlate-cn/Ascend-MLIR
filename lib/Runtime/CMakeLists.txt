@@ -1,6 +1,7 @@
 # lib/Runtime/CMakeLists.txt
 add_mlir_library(AscendCRuntime
   AscendCMixCompiler.cpp
+  ArtifactCompiler.cpp
   Compiler.cpp
   Executor.cpp
   HostRunnerGen.cpp
