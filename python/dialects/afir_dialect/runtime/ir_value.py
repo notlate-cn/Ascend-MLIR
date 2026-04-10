@@ -9,7 +9,12 @@
 from __future__ import annotations
 
 import abc
-from typing import Any, NoReturn, Optional, Union, Self, TypeAlias
+from typing import Any, NoReturn, Optional, TypeAlias, TypeVar, Union
+
+try:
+    from typing import Self
+except ImportError:
+    Self = TypeVar("Self")
 
 from .dtype import DataType, KnownTypes as KT
 

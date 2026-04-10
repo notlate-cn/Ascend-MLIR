@@ -3,10 +3,8 @@
 /.idea/
 **/.idea/
 /.cache
-/.gitcode/docker
-/.gitcode/workflows/*.md
-/.gitcode/workflows/ci-with-docker.yml
-/python/runtime/__pycache__
+/.gitcode/*
+.DS_Store
 
 # build files
 build/
@@ -16,11 +14,18 @@ build-*/
 *.toml
 *.dump
 core*
+build_e2e
+
+# generated test data
+*.npy
 
 # tmp files
 __checked_files_list__
 __code_format_check_result__
-python/runtime/__pycache__
+__pycache__
 
 # third_party
 externals/llvm-project
+/CLAUDE.md
+/.serena
+/.worktrees/

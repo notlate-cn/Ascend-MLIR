@@ -1,0 +1,24 @@
+{
+  "kernel": "relu_transpose_broadcast_add",
+  "kernel_file": "step8_kernel.cpp",
+  "soc": "Ascend910B1",
+  "block_dim_expr": "ceil(N / TB_N)",
+  "tiling_params": [
+    {
+      "name": "TB_M",
+      "type": "int64",
+      "min": 64, "max": 64, "step": 64,
+      "note": "inter-core tile of N-axis; block_idx * TB_M < N=500; ceil(500/64)=8 blocks, last block=52 rows"
+    },
+    {
+      "name": "TB_N",
+      "type": "int64",
+      "values": [64],
+      "note": "intra-core UB batch tile of N-axis; TB_N=TB_M so inner loop runs once per block"
+    },
+    {"name": "dim_arg0_0", "type": "int64", "fixed": true, "shape_key": "M"},
+    {"name": "dim_arg1_0", "type": "int64", "fixed": true, "shape_key": "N"},
+    {"name": "dim_arg0_1", "type": "int64", "fixed": true, "value": 1},
+    {"name": "dim_arg1_1", "type": "int64", "fixed": true, "shape_key": "M"}
+  ]
+}

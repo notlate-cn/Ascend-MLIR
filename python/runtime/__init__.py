@@ -79,6 +79,7 @@ from . import ascgen
 from .utils import (
     find_ascend_root,
     find_runtime_library,
+    find_afirt_capi_lib,
     setup_environment,
     logger,
     Logger,
@@ -115,6 +116,9 @@ from .executor import (
     KernelExecutor,
     execute_kernel,
 )
+
+# Tiling schema 模块
+from .tiling_schema import TilingSchema
 
 # ================================================================
 # 便捷函数
@@ -182,6 +186,7 @@ __all__ = [
     "get_platform",
     "find_ascend_root",
     "find_runtime_library",
+    "find_afirt_capi_lib",
     "setup_environment",
     "logger",
     "Logger",
@@ -215,4 +220,7 @@ __all__ = [
     # 便捷函数
     "read_binary",
     "compile_kernel",
+
+    # Tiling schema
+    "TilingSchema",
 ]

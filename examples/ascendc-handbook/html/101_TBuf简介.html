@@ -1,0 +1,37 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>TBuf简介</title>
+    <style>
+        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; max-width: 900px; margin: 0 auto; padding: 20px; line-height: 1.6; }
+        pre { background: #f4f4f4; padding: 15px; overflow-x: auto; border-radius: 5px; }
+        code { background: #f4f4f4; padding: 2px 6px; border-radius: 3px; }
+        table { border-collapse: collapse; width: 100%; }
+        th, td { border: 1px solid #ddd; padding: 8px; text-align: left; }
+        th { background: #f4f4f4; }
+        img { max-width: 100%; }
+    </style>
+</head>
+<body>
+    <p><small>原始URL: <a href="https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_0160.html">https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/atlasascendc_api_07_0160.html</a></small></p>
+    <hr>
+    <div data-v-03366c12="" class="the-article-body"><a name="ZH-CN_TOPIC_0000002552080383"></a><a name="ZH-CN_TOPIC_0000002552080383"></a>
+
+<h1 class="topictitle1">TBuf简介</h1>
+<div id="body0000001645413417"><p id="ZH-CN_TOPIC_0000002552080383__p4873123111219">使用<span id="ZH-CN_TOPIC_0000002552080383__ph438819594207">Ascend C</span>编程的过程中，可能会用到一些临时变量。这些临时变量占用的内存可以使用TBuf数据结构来管理，存储位置通过模板参数来设置，可以设置为不同的<a href="atlasascendc_api_07_0174.html" data-outer="inner" class="document-anchor" data-href="atlasascendc_api_07_0174.html" data-doc="true" target="_self" data-multiple-screen="true">TPosition</a>逻辑位置。</p>
+<p id="ZH-CN_TOPIC_0000002552080383__p163454226104">TBuf继承自TQueBind父类，继承关系如下：</p>
+<p id="ZH-CN_TOPIC_0000002552080383__p161209311160"><span><div class="img-wrapper"><img class="eddx size-sm" id="ZH-CN_TOPIC_0000002552080383__image13678435181313" src="/doc_center/source/zh/CANNCommunityEdition/900beta1/API/ascendcopapi/figure/zh-cn_image_0000002521042638.png" data-outer="inner" style="cursor: zoom-in;"></div></span></p><p id="ZH-CN_TOPIC_0000002552080383__p1565311771">TBuf占用的存储空间通过TPipe进行管理，您可以通过<a href="atlasascendc_api_07_0110.html" data-outer="inner" class="document-anchor" data-href="atlasascendc_api_07_0110.html" data-doc="true" target="_self" data-multiple-screen="true">InitBuffer</a>接口为TBuf进行内存初始化操作，之后即可通过<a href="atlasascendc_api_07_0163.html" data-outer="inner" class="document-anchor" data-href="atlasascendc_api_07_0163.html" data-doc="true" target="_self" data-multiple-screen="true">Get</a>获取指定长度的Tensor参与计算。</p>
+<p id="ZH-CN_TOPIC_0000002552080383__p8601535289">使用<a href="atlasascendc_api_07_0110.html" data-outer="inner" class="document-anchor" data-href="atlasascendc_api_07_0110.html" data-doc="true" target="_self" data-multiple-screen="true">InitBuffer</a>为TBuf分配内存和为队列分配内存有以下差异：</p>
+<ul id="ZH-CN_TOPIC_0000002552080383__ul46114561082"><li id="ZH-CN_TOPIC_0000002552080383__li176117561984">为TBuf分配的内存空间只能参与计算，无法执行队列的入队出队操作。</li><li id="ZH-CN_TOPIC_0000002552080383__li15164820591">调用一次内存初始化接口，TPipe只会为TBuf分配一块内存，为队列可以通过参数设置申请多块内存。如果要使用多个临时变量，需要定义多个TBuf数据结构，对每个TBuf数据结构分别调用<a href="atlasascendc_api_07_0110.html" data-outer="inner" class="document-anchor" data-href="atlasascendc_api_07_0110.html" data-doc="true" target="_self" data-multiple-screen="true">InitBuffer</a>接口进行内存初始化。</li><li id="ZH-CN_TOPIC_0000002552080383__li1642166115215">TBuf获取的Tensor无需释放。</li></ul>
+</div>
+<div>
+<div class="familylinks">
+<div class="parentlink"><strong>父主题：</strong> <a href="atlasascendc_api_07_0160.html" data-outer="inner" class="document-anchor" data-href="atlasascendc_api_07_0160.html" data-doc="true" target="_self" data-multiple-screen="true">TBuf</a></div>
+</div>
+</div>
+
+</div>
+</body>
+</html>
