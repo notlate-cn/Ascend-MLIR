@@ -2,8 +2,10 @@
 #pragma once
 
 #include "Runtime/TaskGraph.h"
+#include "Runtime/ProfileTrace.h"
 #include "llvm/Support/Error.h"
 
+#include <optional>
 #include <memory>
 #include <string>
 #include <vector>
@@ -11,6 +13,7 @@
 namespace mlir::runtime {
 
 struct ExecutionRequest {
+  std::string sessionId;
   RuntimeTask task;
   std::string workingDirectory;
 };
@@ -18,6 +21,7 @@ struct ExecutionRequest {
 struct ExecutionResult {
   std::string taskId;
   std::vector<std::string> producedFiles;
+  std::optional<ProfileTrace> profileTrace;
 };
 
 class ExecutionBackendDriver {
