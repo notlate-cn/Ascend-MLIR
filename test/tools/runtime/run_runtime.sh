@@ -219,6 +219,8 @@ echo "--- Running test_taskgraph_runtime ---"
 "$TEST_TASKGRAPH_RUNTIME_BIN"
 echo "--- Running test_runtime ---"
 if "$TEST_RUNTIME_BIN"; then
+  echo "--- Running SimBackend smoke baseline ---"
+  bash test/tools/runtime/run_simbackend_smoke.sh
   exit 0
 else
   STATUS=$?
