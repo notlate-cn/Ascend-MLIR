@@ -3,6 +3,8 @@
 
 #include "llvm/Support/Error.h"
 
+#include <cstddef>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -11,6 +13,7 @@ namespace mlir::runtime {
 enum class KernelKind { Vec, Cube, Mix };
 enum class MixResourceType { Unknown, AIVOnly, AICOnly, Mix1C1V, Mix1C2V };
 enum class ExecutionBackendKind { Simulation, Npu };
+enum class BindingSourceKind { ExternalFile, TaskOutput };
 
 struct KernelArtifact {
   std::string kernelName;
@@ -23,10 +26,35 @@ struct KernelArtifact {
   std::string manifestPath;
 };
 
+struct TensorBinding {
+  std::string name;
+  BindingSourceKind sourceKind = BindingSourceKind::ExternalFile;
+  std::string path;
+  std::string upstreamTaskId;
+  std::string upstreamOutputName;
+};
+
+struct TilingBinding {
+  std::string schemaPath;
+  std::string params;
+  std::string binaryPath;
+};
+
+struct ExecutionInvocation {
+  std::vector<TensorBinding> inputs;
+  std::vector<TensorBinding> outputs;
+  std::vector<TensorBinding> expectedOutputs;
+  std::optional<TilingBinding> tiling;
+  int blockDim = 1;
+  size_t workspaceSize = 8192;
+  bool enableProfiling = false;
+};
+
 struct RuntimeTask {
   std::string taskId;
   KernelArtifact artifact;
   std::vector<std::string> dependencies;
+  ExecutionInvocation invocation;
 };
 
 class TaskGraph {

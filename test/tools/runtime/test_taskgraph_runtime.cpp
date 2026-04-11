@@ -14,6 +14,7 @@
 
 #include "Runtime/ProfileTrace.h"
 #include "Runtime/ProfileUtils.h"
+#include "Runtime/RunManifest.h"
 #include "Runtime/ExecutionBackend.h"
 #include "Runtime/ExecutionSession.h"
 #include "Runtime/NpuBackend.h"
@@ -24,6 +25,7 @@
 #include "llvm/Support/raw_ostream.h"
 
 #include <filesystem>
+#include <fstream>
 #include <memory>
 #include <string>
 #include <vector>
@@ -698,6 +700,120 @@ static void testExecutionSessionRunsTasksInTopologicalOrder() {
   }
 }
 
+static void testExecutionSessionCarriesInvocationBindings() {
+  RuntimeTask task;
+  task.taskId = "main";
+  task.invocation.blockDim = 8;
+  task.invocation.workspaceSize = 4096;
+
+  TensorBinding input;
+  input.name = "input0";
+  input.path = "/tmp/input0.npy";
+  task.invocation.inputs.push_back(input);
+
+  TensorBinding output;
+  output.name = "output0";
+  output.path = "/tmp/output0.npy";
+  task.invocation.outputs.push_back(output);
+
+  TaskGraph graph;
+  auto addTaskErr = graph.addTask(task);
+  EXPECT(!addTaskErr, "execution session invocation add task");
+
+  auto driver = std::make_shared<RecordingBackendDriver>();
+  RecordingBackendDriver *driverPtr = driver.get();
+  ExecutionSession session(ExecutionBackendKind::Simulation, driver);
+
+  auto traceOr = session.run(graph);
+  EXPECT((bool)traceOr, "execution session invocation run succeeds");
+  EXPECT(driverPtr->invocations == 1,
+         "execution session invocation backend invoked exactly once");
+  if (driverPtr->invocations == 1) {
+    EXPECT(driverPtr->lastRequest.task.invocation.blockDim == 8,
+           "execution session preserves invocation block dim");
+    EXPECT(driverPtr->lastRequest.task.invocation.workspaceSize == 4096,
+           "execution session preserves invocation workspace size");
+    EXPECT(driverPtr->lastRequest.task.invocation.inputs.size() == 1,
+           "execution session preserves invocation inputs");
+    EXPECT(driverPtr->lastRequest.task.invocation.outputs.size() == 1,
+           "execution session preserves invocation outputs");
+    if (driverPtr->lastRequest.task.invocation.inputs.size() == 1) {
+      EXPECT(driverPtr->lastRequest.task.invocation.inputs[0].name == "input0",
+             "execution session preserves invocation input name");
+      EXPECT(driverPtr->lastRequest.task.invocation.inputs[0].path ==
+                 "/tmp/input0.npy",
+             "execution session preserves invocation input path");
+    }
+    if (driverPtr->lastRequest.task.invocation.outputs.size() == 1) {
+      EXPECT(driverPtr->lastRequest.task.invocation.outputs[0].name ==
+                 "output0",
+             "execution session preserves invocation output name");
+      EXPECT(driverPtr->lastRequest.task.invocation.outputs[0].path ==
+                 "/tmp/output0.npy",
+             "execution session preserves invocation output path");
+    }
+  }
+}
+
+static void testRunManifestParsesVecSimulationSpec() {
+  const std::string manifestPath = "/tmp/runtime_run_manifest.json";
+  {
+    std::ofstream os(manifestPath);
+    os << R"JSON({
+  "task_id": "main",
+  "backend": "sim",
+  "artifact_root": "/tmp/artifact",
+  "inputs": [
+    { "name": "data0", "path": "/tmp/in0.npy" },
+    { "name": "data1", "path": "/tmp/in1.npy" }
+  ],
+  "outputs": [
+    { "name": "out", "path": "/tmp/actual.npy" }
+  ],
+  "expected_outputs": [
+    { "name": "out", "path": "/tmp/expected.npy" }
+  ],
+  "tiling": {
+    "schema": "/tmp/tiling_space.json",
+    "params": "TB_M=64,TB_N=64"
+  },
+  "block_dim": 8,
+  "workspace_size": 16384,
+  "profiling": true
+})JSON";
+  }
+
+  auto specOr = loadRunManifest(manifestPath);
+  EXPECT((bool)specOr, "run manifest parse succeeds");
+  if (specOr) {
+    EXPECT(specOr->taskId == "main", "run manifest task id");
+    EXPECT(specOr->backendKind == ExecutionBackendKind::Simulation,
+           "run manifest backend kind");
+    EXPECT(specOr->artifactRoot == "/tmp/artifact",
+           "run manifest artifact root");
+    EXPECT(specOr->invocation.inputs.size() == 2,
+           "run manifest input count");
+    EXPECT(specOr->invocation.outputs.size() == 1,
+           "run manifest output count");
+    EXPECT(specOr->invocation.expectedOutputs.size() == 1,
+           "run manifest expected output count");
+    EXPECT(specOr->invocation.blockDim == 8,
+           "run manifest block dim");
+    EXPECT(specOr->invocation.workspaceSize == 16384,
+           "run manifest workspace size");
+    EXPECT(specOr->invocation.enableProfiling,
+           "run manifest profiling flag");
+    EXPECT(specOr->invocation.tiling.has_value(),
+           "run manifest tiling present");
+    if (specOr->invocation.tiling) {
+      EXPECT(specOr->invocation.tiling->schemaPath == "/tmp/tiling_space.json",
+             "run manifest tiling schema path");
+      EXPECT(specOr->invocation.tiling->params == "TB_M=64,TB_N=64",
+             "run manifest tiling params");
+    }
+  }
+}
+
 int main() {
   testTaskGraphBasics();
   testDuplicateTaskIds();
@@ -717,6 +833,8 @@ int main() {
   testBackendPreservesExistingProfileTrace();
   testExecutionSessionPlansTopologicalOrder();
   testExecutionSessionRunsTasksInTopologicalOrder();
+  testExecutionSessionCarriesInvocationBindings();
+  testRunManifestParsesVecSimulationSpec();
 
   llvm::outs() << g_pass << " passed, " << g_fail << " failed\n";
   return g_fail ? 1 : 0;

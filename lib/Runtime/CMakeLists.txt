@@ -10,6 +10,7 @@ add_mlir_library(AscendCRuntime
   ProfileTrace.cpp
   ProfileUtils.cpp
   PathUtils.cpp
+  RunManifest.cpp
   MixCommandBuilder.cpp
   MixAbiExtractor.cpp
   MixDirectBackend.cpp
@@ -20,6 +21,7 @@ add_mlir_library(AscendCRuntime
   SimValidator.cpp
   SimBackend.cpp
   TaskGraph.cpp
+  TilingPack.cpp
   NpyIO.cpp
   TilingSchema.cpp
 

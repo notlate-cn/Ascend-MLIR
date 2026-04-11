@@ -16,6 +16,13 @@ namespace mlir::runtime {
 Executor::Executor(BackendMode mode) : mode_(mode) {}
 
 Executor::~Executor() {
+  // The simulator backend may keep worker threads running briefly after the
+  // foreground launch path returns. The existing validator uses _Exit() to
+  // bypass teardown entirely; mirror that stable behavior here by leaking the
+  // simulator runtime handles instead of unloading them while those threads may
+  // still be executing.
+  if (mode_ == BackendMode::Simulation)
+    return;
   FreeAll();
   if (stream_ && rtStreamDestroy_)
     rtStreamDestroy_(stream_);
