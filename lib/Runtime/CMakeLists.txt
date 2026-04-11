@@ -2,6 +2,7 @@
 add_mlir_library(AscendCRuntime
   AscendCMixCompiler.cpp
   ArtifactCompiler.cpp
+  CompatRuntime.cpp
   Compiler.cpp
   Executor.cpp
   ExecutionBackend.cpp

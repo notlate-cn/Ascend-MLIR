@@ -14,6 +14,7 @@
 
 #include "Runtime/ProfileTrace.h"
 #include "Runtime/ProfileUtils.h"
+#include "Runtime/CompatRuntime.h"
 #include "Runtime/RunManifest.h"
 #include "Runtime/ExecutionBackend.h"
 #include "Runtime/ExecutionSession.h"
@@ -397,6 +398,88 @@ static void testArtifactCompilerRequestValidation() {
   EXPECT(!(bool)nameErr, "missing kernel name is rejected");
   if (!nameErr)
     llvm::consumeError(nameErr.takeError());
+}
+
+static void testCompatCompileRequestPreservesFields() {
+  CompatCompileOptions options;
+  options.kernelSource = "/tmp/demo.cpp";
+  options.kernelName = "demo_kernel";
+  options.kernelKind = KernelKind::Mix;
+  options.socVersion = "Ascend910B1";
+  options.outputDir = "/tmp/taskgraph-compat-out";
+  options.cannMlirPath = "/tmp/cann/mlir";
+  options.npyDir = "/tmp/npy";
+
+  ArtifactCompileRequest request = buildCompatCompileRequest(options);
+  EXPECT(request.kernelSource == options.kernelSource,
+         "compat compile request preserves kernel source");
+  EXPECT(request.kernelName == options.kernelName,
+         "compat compile request preserves kernel name");
+  EXPECT(request.kernelKind == options.kernelKind,
+         "compat compile request preserves kernel kind");
+  EXPECT(request.socVersion == options.socVersion,
+         "compat compile request preserves soc version");
+  EXPECT(request.outputDir == options.outputDir,
+         "compat compile request preserves output dir");
+  EXPECT(request.cannMlirPath.has_value() &&
+             *request.cannMlirPath == *options.cannMlirPath,
+         "compat compile request preserves cann mlir path");
+  EXPECT(request.npyDir.has_value() && *request.npyDir == *options.npyDir,
+         "compat compile request preserves npy dir");
+}
+
+static void testCompatSingleTaskRunManifestBuildsOneTask() {
+  CompatSingleTaskManifestOptions options;
+  options.backendKind = ExecutionBackendKind::Npu;
+  options.taskId = "validator";
+  options.artifactRoot = "/tmp/artifact";
+  options.dependencies = {"producer"};
+  options.invocation.inputs = {
+      TensorBinding{.name = "data0", .path = "/tmp/in0.npy"},
+      TensorBinding{.name = "data1", .path = "/tmp/in1.npy"},
+  };
+  options.invocation.outputs = {
+      TensorBinding{.name = "out", .path = "/tmp/out.npy"},
+  };
+  options.invocation.expectedOutputs = {
+      TensorBinding{.name = "golden", .path = "/tmp/golden.npy"},
+  };
+  options.invocation.blockDim = 8;
+  options.invocation.workspaceSize = 16384;
+  options.invocation.enableProfiling = true;
+  options.invocation.atol = 2.5;
+  options.invocation.rtol = 0.05;
+
+  RunManifestSpec manifest = buildCompatSingleTaskRunManifest(options);
+  EXPECT(manifest.backendKind == options.backendKind,
+         "compat run manifest preserves backend kind");
+  EXPECT(manifest.tasks.size() == 1,
+         "compat run manifest builds one task");
+  if (manifest.tasks.size() == 1) {
+    const RunTaskSpec &task = manifest.tasks[0];
+    EXPECT(task.taskId == options.taskId,
+           "compat run manifest preserves task id");
+    EXPECT(task.artifactRoot == options.artifactRoot,
+           "compat run manifest preserves artifact root");
+    EXPECT(task.dependencies == options.dependencies,
+           "compat run manifest preserves dependencies");
+    EXPECT(task.invocation.inputs.size() == 2,
+           "compat run manifest preserves inputs");
+    EXPECT(task.invocation.outputs.size() == 1,
+           "compat run manifest preserves outputs");
+    EXPECT(task.invocation.expectedOutputs.size() == 1,
+           "compat run manifest preserves expected outputs");
+    EXPECT(task.invocation.blockDim == 8,
+           "compat run manifest preserves block dim");
+    EXPECT(task.invocation.workspaceSize == 16384,
+           "compat run manifest preserves workspace size");
+    EXPECT(task.invocation.enableProfiling,
+           "compat run manifest preserves profiling flag");
+    EXPECT(task.invocation.atol == 2.5,
+           "compat run manifest preserves atol");
+    EXPECT(task.invocation.rtol == 0.05,
+           "compat run manifest preserves rtol");
+  }
 }
 
 static void testVecCompileCreatesOutputDir() {
@@ -1438,6 +1521,8 @@ int main() {
   testCycleDetection();
   testKernelArtifactNormalization();
   testArtifactCompilerRequestValidation();
+  testCompatCompileRequestPreservesFields();
+  testCompatSingleTaskRunManifestBuildsOneTask();
   testVecCompileCreatesOutputDir();
   testBackendSelection();
   testDefaultBackendRequiresDriver();
