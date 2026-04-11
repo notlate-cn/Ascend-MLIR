@@ -474,6 +474,7 @@ git commit -m "refactor: route mix validator through execution session"
 - Modify: `examples/broadcast-add-reduce/run.sh`
 - Modify: `examples/gather-elementwise-fusion/run.sh`
 - Modify: `examples/split-relu-brc-add-mul/run.sh`
+- Modify: `tools/validator/validator_main.cpp`
 - Modify: `test/tools/runtime/run_simbackend_examples.sh`
 
 - [ ] **Step 1: Write the failing example regression expectation**
@@ -486,6 +487,17 @@ Add shell checks such as:
 grep -q "session.backend=sim" "$LOG_FILE"
 grep -q "session.result=success" "$LOG_FILE"
 ```
+
+If `validator` does not yet emit stable runtime-backed session markers, this
+task is allowed to make the smallest required change in:
+
+```cpp
+tools/validator/validator_main.cpp
+```
+
+to print stable success/error `session.*` lines so the example default path can
+be asserted without forcing the examples to switch to direct `runtime-session`
+invocation in this phase.
 
 - [ ] **Step 2: Run the example regression to verify current defaults are not yet using the new path**
 
