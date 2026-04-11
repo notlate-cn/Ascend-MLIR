@@ -3,6 +3,9 @@
 #include "Runtime/ArtifactCompiler.h"
 #include "Runtime/RunManifest.h"
 
+#include "llvm/ADT/StringRef.h"
+#include "llvm/Support/raw_ostream.h"
+
 #include <optional>
 
 namespace mlir::runtime {
@@ -37,5 +40,12 @@ struct CompatValidateOptions {
 
 llvm::Expected<RunManifestSpec>
 buildCompatSingleTaskRunManifest(const CompatValidateOptions &options);
+
+llvm::Expected<std::string>
+prepareValidatorTilingBinaryPath(llvm::StringRef tilingBinFile,
+                                 llvm::StringRef tilingSchemaFile,
+                                 llvm::StringRef tilingParams,
+                                 llvm::StringRef tilingLayout,
+                                 llvm::raw_ostream *warningStream = nullptr);
 
 } // namespace mlir::runtime
