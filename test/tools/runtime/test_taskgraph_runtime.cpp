@@ -1047,6 +1047,11 @@ static void testValidatorPreparesTilingBinaryPaths() {
     const std::vector<uint8_t> explicitBytes = {0x12, 0x34, 0x56, 0x78};
     os.write(reinterpret_cast<const char *>(explicitBytes.data()),
              explicitBytes.size());
+    os.flush();
+    EXPECT((bool)os, "compat validator relative tiling source flushes");
+    if (!os)
+      return;
+    os.close();
 
     auto explicitPathOr = prepareValidatorTilingBinaryPath(
         explicitSource.filename().string(), "", "", "");
