@@ -45,6 +45,7 @@ SUMMARY_RETRIES=()
 SUMMARY_OUTPUTS=()
 SUMMARY_PROFILES=()
 CURRENT_RETRIES=0
+LAST_PROFILE_PATH=""
 
 cleanup() {
   rm -rf "${ARTIFACT_ROOTS[@]:-}"
@@ -104,7 +105,9 @@ run_runtime_session_manifest() {
   local manifest="$1"
   local status=0
   CURRENT_RETRIES=0
+  LAST_PROFILE_PATH=""
   if "${RUNTIME_SESSION}" --run-manifest "${manifest}" --run >/tmp/runtime_simbackend_run.log 2>&1; then
+    LAST_PROFILE_PATH="$(sed -n 's/^session\\.profile\\[[0-9][0-9]*\\]=//p' /tmp/runtime_simbackend_run.log | head -n1)"
     return 0
   fi
   status=$?
@@ -115,6 +118,7 @@ run_runtime_session_manifest() {
   sleep 1
   CURRENT_RETRIES=1
   "${RUNTIME_SESSION}" --run-manifest "${manifest}" --run >/tmp/runtime_simbackend_run.log 2>&1
+  LAST_PROFILE_PATH="$(sed -n 's/^session\\.profile\\[[0-9][0-9]*\\]=//p' /tmp/runtime_simbackend_run.log | head -n1)"
 }
 
 record_summary() {
@@ -218,7 +222,7 @@ EOF
     "vec" \
     "${CURRENT_RETRIES}" \
     "${actual_output}" \
-    "${artifact_root}/profile"
+    "${LAST_PROFILE_PATH:-<none>}"
 }
 
 run_mix_example() {
@@ -282,6 +286,7 @@ EOF
   echo "--- SimBackend mix example: $(basename "${example_dir}") ---"
   local status=0
   CURRENT_RETRIES=0
+  LAST_PROFILE_PATH=""
   if ! ASCEND_DAV_SIM_VERSION="${dav_sim_version}" \
     LD_LIBRARY_PATH="${artifact_root}/out:${ascend_lib64}:${soc_sim_lib}:${dav_sim_lib}:${device_lib}${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}" \
     "${RUNTIME_SESSION}" --run-manifest "${manifest}" --run \
@@ -298,6 +303,7 @@ EOF
       "${RUNTIME_SESSION}" --run-manifest "${manifest}" --run \
       >/tmp/runtime_simbackend_run.log 2>&1
   fi
+  LAST_PROFILE_PATH="$(sed -n 's/^session\\.profile\\[[0-9][0-9]*\\]=//p' /tmp/runtime_simbackend_run.log | head -n1)"
   test -f "${actual_output}"
   compare_npy "${expected_path}" "${actual_output}" "${atol}" "${rtol}"
   record_summary \
@@ -305,7 +311,7 @@ EOF
     "mix" \
     "${CURRENT_RETRIES}" \
     "${actual_output}" \
-    "${artifact_root}/profile"
+    "${LAST_PROFILE_PATH:-<none>}"
 }
 
 if should_run_example "relu-broadcast-transpose"; then

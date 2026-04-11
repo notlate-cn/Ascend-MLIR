@@ -24,6 +24,7 @@ struct ProfileTrace {
   void addProfileArtifact(llvm::StringRef taskId,
                           ExecutionBackendKind backend,
                           llvm::StringRef artifactPath);
+  std::vector<std::string> profileArtifactPaths() const;
 };
 
 } // namespace mlir::runtime
