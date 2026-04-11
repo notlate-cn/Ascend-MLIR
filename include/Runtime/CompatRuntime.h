@@ -3,6 +3,8 @@
 #include "Runtime/ArtifactCompiler.h"
 #include "Runtime/RunManifest.h"
 
+#include <optional>
+
 namespace mlir::runtime {
 
 struct CompatCompileOptions {
@@ -15,7 +17,7 @@ struct CompatCompileOptions {
   bool verbose = false;
 };
 
-ArtifactCompileRequest
+llvm::Expected<ArtifactCompileRequest>
 buildCompatCompileRequest(const CompatCompileOptions &options);
 
 struct CompatValidateOptions {
@@ -26,12 +28,14 @@ struct CompatValidateOptions {
   std::string tilingSchemaPath;
   std::string tilingParams;
   std::string tilingBinaryPath;
+  std::optional<std::vector<int64_t>> actualOutputShape;
+  std::optional<DType> actualOutputDType;
   int blockDim = 1;
   double atol = 1.0;
   double rtol = 1e-2;
 };
 
-RunManifestSpec
+llvm::Expected<RunManifestSpec>
 buildCompatSingleTaskRunManifest(const CompatValidateOptions &options);
 
 } // namespace mlir::runtime

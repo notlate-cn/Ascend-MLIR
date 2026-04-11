@@ -410,7 +410,11 @@ static void testCompatCompileRequestPreservesFields() {
   options.kernelType = "mix";
   options.verbose = true;
 
-  ArtifactCompileRequest request = buildCompatCompileRequest(options);
+  auto requestOr = buildCompatCompileRequest(options);
+  EXPECT((bool)requestOr, "compat compile request builds");
+  if (!requestOr)
+    return;
+  ArtifactCompileRequest request = *requestOr;
   EXPECT(request.kernelSource == options.kernelSourcePath,
          "compat compile request preserves kernel source");
   EXPECT(request.kernelName == options.requestedKernelName,
@@ -421,26 +425,51 @@ static void testCompatCompileRequestPreservesFields() {
          "compat compile request preserves soc version");
   EXPECT(request.outputDir == options.outputRoot,
          "compat compile request preserves output dir");
-  EXPECT(options.verbose,
-         "compat compile options preserve verbose flag");
-  EXPECT(options.arch == "dav-c220-vec",
-         "compat compile options preserve arch");
+  EXPECT(request.arch == options.arch,
+         "compat compile request preserves arch");
+  EXPECT(request.verbose == options.verbose,
+         "compat compile request preserves verbose flag");
 }
 
-static void testCompatSingleTaskRunManifestBuildsOneTask() {
+static void testCompatCompileRequestRejectsUnknownKernelType() {
+  CompatCompileOptions options;
+  options.kernelSourcePath = "/tmp/demo.cpp";
+  options.outputRoot = "/tmp/taskgraph-compat-out";
+  options.requestedKernelName = "legacy_name";
+  options.socVersion = "Ascend910B1";
+  options.kernelType = "unsupported";
+
+  auto requestOr = buildCompatCompileRequest(options);
+  EXPECT(!(bool)requestOr, "compat compile request rejects unknown kernel type");
+  if (!requestOr)
+    llvm::consumeError(requestOr.takeError());
+}
+
+static void testCompatSingleTaskRunManifestBuildsExpectedBackedTask() {
   CompatValidateOptions options;
   options.artifactRoot = "/tmp/artifact";
   options.inputPaths = {"/tmp/in0.npy", "/tmp/in1.npy"};
   options.expectedOutputPath = "/tmp/golden.npy";
   options.actualOutputPath = "/tmp/out.npy";
-  options.tilingSchemaPath = "/tmp/tiling_space.json";
-  options.tilingParams = "TB_M=64,TB_N=64";
-  options.tilingBinaryPath = "/tmp/tiling.bin";
   options.blockDim = 8;
   options.atol = 2.5;
   options.rtol = 0.05;
 
-  RunManifestSpec manifest = buildCompatSingleTaskRunManifest(options);
+  NDArray expectedArray;
+  expectedArray.shape = {4, 8};
+  expectedArray.dtype = DType::F32;
+  expectedArray.allocate();
+  std::memset(expectedArray.data, 0, expectedArray.nbytes());
+  auto expectedWrite = SaveNpy(options.expectedOutputPath, expectedArray);
+  EXPECT(!expectedWrite, "compat expected-backed manifest writes fixture");
+  if (expectedWrite)
+    llvm::consumeError(std::move(expectedWrite));
+
+  auto manifestOr = buildCompatSingleTaskRunManifest(options);
+  EXPECT((bool)manifestOr, "compat expected-backed manifest builds");
+  if (!manifestOr)
+    return;
+  RunManifestSpec manifest = *manifestOr;
   EXPECT(manifest.backendKind == ExecutionBackendKind::Simulation,
          "compat run manifest uses simulation backend");
   EXPECT(manifest.tasks.size() == 1,
@@ -464,6 +493,20 @@ static void testCompatSingleTaskRunManifestBuildsOneTask() {
            "compat run manifest builds actual output binding");
     EXPECT(task.invocation.outputs[0].path == options.actualOutputPath,
            "compat run manifest preserves actual output path");
+    EXPECT(task.invocation.outputs[0].shape.has_value(),
+           "compat run manifest derives output shape from expected output");
+    EXPECT(task.invocation.outputs[0].dtype.has_value(),
+           "compat run manifest derives output dtype from expected output");
+    if (task.invocation.outputs[0].shape) {
+      EXPECT(task.invocation.outputs[0].shape->size() == 2 &&
+                 (*task.invocation.outputs[0].shape)[0] == 4 &&
+                 (*task.invocation.outputs[0].shape)[1] == 8,
+             "compat run manifest preserves expected output shape");
+    }
+    if (task.invocation.outputs[0].dtype) {
+      EXPECT(*task.invocation.outputs[0].dtype == DType::F32,
+             "compat run manifest preserves expected output dtype");
+    }
     EXPECT(task.invocation.expectedOutputs.size() == 1,
            "compat run manifest builds expected output binding");
     EXPECT(task.invocation.expectedOutputs[0].path == options.expectedOutputPath,
@@ -474,17 +517,79 @@ static void testCompatSingleTaskRunManifestBuildsOneTask() {
            "compat run manifest preserves atol");
     EXPECT(task.invocation.rtol == 0.05,
            "compat run manifest preserves rtol");
-    EXPECT(task.invocation.tiling.has_value(),
-           "compat run manifest preserves tiling");
-    if (task.invocation.tiling) {
-      EXPECT(task.invocation.tiling->schemaPath == options.tilingSchemaPath,
-             "compat run manifest preserves tiling schema path");
-      EXPECT(task.invocation.tiling->params == options.tilingParams,
-             "compat run manifest preserves tiling params");
-      EXPECT(task.invocation.tiling->binaryPath == options.tilingBinaryPath,
-             "compat run manifest preserves tiling binary path");
-    }
   }
+}
+
+static void testCompatSingleTaskRunManifestBuildsMetadataBackedTask() {
+  CompatValidateOptions options;
+  options.artifactRoot = "/tmp/artifact";
+  options.inputPaths = {"/tmp/in0.npy"};
+  options.actualOutputPath = "/tmp/out.npy";
+  options.actualOutputShape = std::vector<int64_t>{16};
+  options.actualOutputDType = DType::F16;
+  options.blockDim = 4;
+  options.atol = 1.5;
+  options.rtol = 0.02;
+
+  auto manifestOr = buildCompatSingleTaskRunManifest(options);
+  EXPECT((bool)manifestOr, "compat metadata-backed manifest builds");
+  if (!manifestOr)
+    return;
+  RunManifestSpec manifest = *manifestOr;
+  EXPECT(manifest.tasks.size() == 1,
+         "compat metadata-backed manifest builds one task");
+  if (manifest.tasks.size() == 1) {
+    const RunTaskSpec &task = manifest.tasks[0];
+    EXPECT(task.invocation.outputs.size() == 1,
+           "compat metadata-backed manifest builds actual output binding");
+    if (task.invocation.outputs.size() == 1) {
+      EXPECT(task.invocation.outputs[0].path == options.actualOutputPath,
+             "compat metadata-backed manifest preserves actual output path");
+      EXPECT(task.invocation.outputs[0].shape.has_value(),
+             "compat metadata-backed manifest preserves output shape");
+      EXPECT(task.invocation.outputs[0].dtype.has_value(),
+             "compat metadata-backed manifest preserves output dtype");
+      if (task.invocation.outputs[0].shape) {
+        EXPECT(task.invocation.outputs[0].shape->size() == 1 &&
+                   (*task.invocation.outputs[0].shape)[0] == 16,
+               "compat metadata-backed manifest preserves output shape value");
+      }
+      if (task.invocation.outputs[0].dtype) {
+        EXPECT(*task.invocation.outputs[0].dtype == DType::F16,
+               "compat metadata-backed manifest preserves output dtype value");
+      }
+    }
+    EXPECT(task.invocation.expectedOutputs.empty(),
+           "compat metadata-backed manifest omits expected outputs");
+    EXPECT(task.invocation.blockDim == 4,
+           "compat metadata-backed manifest preserves block dim");
+    EXPECT(task.invocation.atol == 1.5,
+           "compat metadata-backed manifest preserves atol");
+    EXPECT(task.invocation.rtol == 0.02,
+           "compat metadata-backed manifest preserves rtol");
+  }
+}
+
+static void testCompatSingleTaskRunManifestRejectsInvalidCombination() {
+  CompatValidateOptions expectedWithoutActual;
+  expectedWithoutActual.artifactRoot = "/tmp/artifact";
+  expectedWithoutActual.expectedOutputPath = "/tmp/golden.npy";
+  auto missingActualOr =
+      buildCompatSingleTaskRunManifest(expectedWithoutActual);
+  EXPECT(!(bool)missingActualOr,
+         "compat manifest rejects expected output without actual output");
+  if (!missingActualOr)
+    llvm::consumeError(missingActualOr.takeError());
+
+  CompatValidateOptions actualWithoutMetadata;
+  actualWithoutMetadata.artifactRoot = "/tmp/artifact";
+  actualWithoutMetadata.actualOutputPath = "/tmp/out.npy";
+  auto missingMetadataOr =
+      buildCompatSingleTaskRunManifest(actualWithoutMetadata);
+  EXPECT(!(bool)missingMetadataOr,
+         "compat manifest rejects actual output without metadata");
+  if (!missingMetadataOr)
+    llvm::consumeError(missingMetadataOr.takeError());
 }
 
 static void testVecCompileCreatesOutputDir() {
@@ -1527,7 +1632,10 @@ int main() {
   testKernelArtifactNormalization();
   testArtifactCompilerRequestValidation();
   testCompatCompileRequestPreservesFields();
-  testCompatSingleTaskRunManifestBuildsOneTask();
+  testCompatCompileRequestRejectsUnknownKernelType();
+  testCompatSingleTaskRunManifestBuildsExpectedBackedTask();
+  testCompatSingleTaskRunManifestBuildsMetadataBackedTask();
+  testCompatSingleTaskRunManifestRejectsInvalidCombination();
   testVecCompileCreatesOutputDir();
   testBackendSelection();
   testDefaultBackendRequiresDriver();
