@@ -50,6 +50,7 @@ RUN_STDERR=""
 TEST_RUNTIME_BIN="$(mktemp /tmp/test_runtime.XXXXXX)"
 TEST_TASKGRAPH_RUNTIME_BIN="$(mktemp /tmp/test_taskgraph_runtime.XXXXXX)"
 RUNTIME_SESSION_ARTIFACT_ROOT="$(mktemp -d)"
+RUNTIME_SESSION_SECOND_ARTIFACT_ROOT="$(mktemp -d)"
 RUNTIME_SESSION_RUN_MANIFEST="$(mktemp /tmp/runtime_session_run_manifest.XXXXXX.json)"
 RUNTIME_SESSION_ACTUAL_OUTPUT="$(mktemp /tmp/runtime_session_actual.XXXXXX.npy)"
 RUNTIME_SESSION_DAG_MANIFEST="$(mktemp /tmp/runtime_session_dag_manifest.XXXXXX.json)"
@@ -57,6 +58,7 @@ RUNTIME_SESSION_DAG_OUTPUT="$(mktemp /tmp/runtime_session_dag_actual.XXXXXX.npy)
 cleanup() {
   rm -rf "$FAKE_ARTIFACT_ROOT"
   rm -rf "$RUNTIME_SESSION_ARTIFACT_ROOT"
+  rm -rf "$RUNTIME_SESSION_SECOND_ARTIFACT_ROOT"
   rm -f "$INVALID_STDERR" "$RUN_STDERR" "$TEST_RUNTIME_BIN" \
         "$TEST_TASKGRAPH_RUNTIME_BIN" "$RUNTIME_SESSION_RUN_MANIFEST" \
         "$RUNTIME_SESSION_ACTUAL_OUTPUT" "$RUNTIME_SESSION_DAG_MANIFEST" \
@@ -99,6 +101,13 @@ build/bin/runtime-session \
   --output "${RUNTIME_SESSION_ARTIFACT_ROOT}" \
   >/tmp/runtime_session_compile.log 2>&1
 test -f "${RUNTIME_SESSION_ARTIFACT_ROOT}/out/manifest.txt"
+build/bin/runtime-session \
+  --kernel examples/relu-broadcast-transpose/step8_kernel.cpp \
+  --kernel-kind vec \
+  --name relu_transpose_broadcast_add \
+  --output "${RUNTIME_SESSION_SECOND_ARTIFACT_ROOT}" \
+  >/tmp/runtime_session_compile_consumer.log 2>&1
+test -f "${RUNTIME_SESSION_SECOND_ARTIFACT_ROOT}/out/manifest.txt"
 
 cat > "${RUNTIME_SESSION_RUN_MANIFEST}" <<EOF
 {
@@ -158,6 +167,7 @@ cat > "${RUNTIME_SESSION_DAG_MANIFEST}" <<EOF
     {
       "task_id": "consumer",
       "dependencies": ["producer"],
+      "artifact_root": "${RUNTIME_SESSION_SECOND_ARTIFACT_ROOT}",
       "inputs": [
         { "name": "data0", "path": "${PROJECT_ROOT}/examples/relu-broadcast-transpose/input_data0.npy" },
         { "name": "data1", "source": "task_output", "upstream_task": "producer", "upstream_output": "mid" }

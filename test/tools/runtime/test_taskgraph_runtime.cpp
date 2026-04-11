@@ -1085,6 +1085,51 @@ static void testRunManifestParsesDagSpec() {
   }
 }
 
+static void testRunManifestParsesDagArtifactRootOverride() {
+  const std::string manifestPath =
+      "/tmp/runtime_run_manifest_dag_override.json";
+  {
+    std::ofstream os(manifestPath);
+    os << R"JSON({
+  "backend": "sim",
+  "artifact_root": "/tmp/shared-artifact",
+  "tasks": [
+    {
+      "task_id": "producer",
+      "artifact_root": "/tmp/producer-artifact",
+      "outputs": [
+        { "name": "mid", "shape": [16], "dtype": "f16" }
+      ]
+    },
+    {
+      "task_id": "consumer",
+      "dependencies": ["producer"],
+      "artifact_root": "/tmp/consumer-artifact",
+      "inputs": [
+        { "name": "mid", "source": "task_output", "upstream_task": "producer", "upstream_output": "mid" }
+      ],
+      "outputs": [
+        { "name": "out", "shape": [16], "dtype": "f16" }
+      ]
+    }
+  ]
+})JSON";
+  }
+
+  auto specOr = loadRunManifest(manifestPath);
+  EXPECT((bool)specOr, "run manifest dag artifact-root override parses");
+  if (specOr) {
+    EXPECT(specOr->tasks.size() == 2,
+           "run manifest dag artifact-root override task count");
+    if (specOr->tasks.size() == 2) {
+      EXPECT(specOr->tasks[0].artifactRoot == "/tmp/producer-artifact",
+             "run manifest dag task 0 artifact root override");
+      EXPECT(specOr->tasks[1].artifactRoot == "/tmp/consumer-artifact",
+             "run manifest dag task 1 artifact root override");
+    }
+  }
+}
+
 int main() {
   testTaskGraphBasics();
   testDuplicateTaskIds();
@@ -1110,6 +1155,7 @@ int main() {
   testRunManifestParsesOutputMetadataWithoutExpectedOutputs();
   testRunManifestParsesTaskOutputBinding();
   testRunManifestParsesDagSpec();
+  testRunManifestParsesDagArtifactRootOverride();
 
   llvm::outs() << g_pass << " passed, " << g_fail << " failed\n";
   return g_fail ? 1 : 0;
