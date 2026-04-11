@@ -2,6 +2,7 @@
 #include "Runtime/SimBackend.h"
 #include "Runtime/Executor.h"
 #include "Runtime/NpyIO.h"
+#include "Runtime/PathUtils.h"
 #include "Runtime/ProfileUtils.h"
 #include "Runtime/SimValidator.h"
 #include "Runtime/TilingPack.h"
@@ -11,6 +12,7 @@
 #include "llvm/Support/FileSystem.h"
 
 #include <cstring>
+#include <cstdlib>
 #include <optional>
 #include <utility>
 
@@ -161,6 +163,44 @@ uint32_t magicForKernelKind(KernelKind kind) {
   return Executor::MAGIC_ELF_AIVEC;
 }
 
+void prependEnvPath(const char *name, const std::string &prefix) {
+  if (prefix.empty())
+    return;
+  const char *current = std::getenv(name);
+  std::string value = prefix;
+  if (current && *current) {
+    value.push_back(':');
+    value += current;
+  }
+  ::setenv(name, value.c_str(), 1);
+}
+
+llvm::Error configurePackedMixEnvironment(const KernelArtifact &artifact) {
+  const std::string ascendHome = findAscendHome();
+  if (ascendHome.empty())
+    return llvm::createStringError(
+        llvm::inconvertibleErrorCode(),
+        "Ascend toolkit root is not configured; set ASCEND_HOME_PATH or ASCEND_TOOLKIT_HOME");
+
+  const std::string resolvedSoc =
+      resolveSocVersion(artifact.socVersion, "Ascend910B1");
+  const std::string ascendLib64 = findAscendLib64Dir(ascendHome);
+  const std::string simLibDir =
+      findAscendSimulatorLibDir(ascendHome, resolvedSoc);
+  auto davSimLibDirOr = requireAscendDavSimulatorLibDir(ascendHome);
+  if (!davSimLibDirOr)
+    return davSimLibDirOr.takeError();
+  const std::string deviceLibDir = findAscendDeviceLibDir(ascendHome);
+
+  prependEnvPath("LD_LIBRARY_PATH", artifact.artifactRoot + "/out");
+  prependEnvPath("LD_LIBRARY_PATH", ascendLib64);
+  prependEnvPath("LD_LIBRARY_PATH", simLibDir);
+  prependEnvPath("LD_LIBRARY_PATH", *davSimLibDirOr);
+  prependEnvPath("LD_LIBRARY_PATH", deviceLibDir);
+
+  return llvm::Error::success();
+}
+
 llvm::Expected<ExecutionResult>
 runWithExecutor(const ExecutionRequest &request) {
   auto cwdGuardOr = WorkingDirectoryGuard::enter(request.workingDirectory);
@@ -173,6 +213,8 @@ runWithExecutor(const ExecutionRequest &request) {
           llvm::inconvertibleErrorCode(),
           "mix artifact is missing packed shared object path");
     }
+    if (auto err = configurePackedMixEnvironment(request.task.artifact))
+      return std::move(err);
   } else if (request.task.artifact.deviceBinaryPath.empty()) {
     return llvm::createStringError(llvm::inconvertibleErrorCode(),
                                    "artifact is missing device binary path");
@@ -212,7 +254,8 @@ runWithExecutor(const ExecutionRequest &request) {
   if (!expectedOutputsOr->empty()) {
     SimValidator validator;
     SimValidator::Result validation = validator.CompareOnly(
-        args, *expectedOutputsOr, /*atol=*/1.0, /*rtol=*/1e-2);
+        args, *expectedOutputsOr, request.task.invocation.atol,
+        request.task.invocation.rtol);
     if (!validation.error_msg.empty()) {
       return llvm::createStringError(llvm::inconvertibleErrorCode(), "%s",
                                      validation.error_msg.c_str());
