@@ -7,6 +7,7 @@
 #include "llvm/Support/Path.h"
 
 #include <filesystem>
+#include <map>
 #include <utility>
 
 namespace mlir::runtime {
@@ -17,6 +18,93 @@ struct SessionRuntimePaths {
   std::string sessionId;
   std::string workingDirectory;
 };
+
+using ProducedBindingMap = std::map<std::string, TensorBinding>;
+
+static std::string bindingKey(llvm::StringRef taskId, llvm::StringRef outputName) {
+  std::string key = taskId.str();
+  key += "::";
+  key += outputName.str();
+  return key;
+}
+
+static std::string defaultBindingName(size_t index) {
+  return "output" + std::to_string(index);
+}
+
+static std::string materializeOutputPath(llvm::StringRef workingDirectory,
+                                         llvm::StringRef taskId,
+                                         llvm::StringRef bindingName,
+                                         size_t index) {
+  llvm::SmallString<256> path(workingDirectory);
+  std::string fileName = taskId.str();
+  fileName += "__";
+  fileName += bindingName.empty() ? defaultBindingName(index) : bindingName.str();
+  fileName += ".npy";
+  llvm::sys::path::append(path, fileName);
+  return path.str().str();
+}
+
+static llvm::Expected<RuntimeTask>
+resolveTaskBindings(const RuntimeTask &task, llvm::StringRef workingDirectory,
+                    const ProducedBindingMap &producedBindings) {
+  RuntimeTask resolved = task;
+
+  for (TensorBinding &binding : resolved.invocation.inputs) {
+    if (binding.sourceKind == BindingSourceKind::ExternalFile) {
+      if (binding.path.empty()) {
+        return llvm::createStringError(llvm::inconvertibleErrorCode(),
+                                       "external input binding is missing path: %s",
+                                       binding.name.c_str());
+      }
+      continue;
+    }
+
+    if (binding.sourceKind != BindingSourceKind::TaskOutput) {
+      return llvm::createStringError(llvm::inconvertibleErrorCode(),
+                                     "unsupported input binding source for task %s",
+                                     task.taskId.c_str());
+    }
+
+    const std::string key =
+        bindingKey(binding.upstreamTaskId, binding.upstreamOutputName);
+    auto it = producedBindings.find(key);
+    if (it == producedBindings.end()) {
+      return llvm::createStringError(
+          llvm::inconvertibleErrorCode(),
+          "task input binding cannot resolve upstream output %s for task %s",
+          key.c_str(), task.taskId.c_str());
+    }
+
+    binding.sourceKind = BindingSourceKind::ExternalFile;
+    binding.path = it->second.path;
+    if (!binding.shape && it->second.shape)
+      binding.shape = it->second.shape;
+    if (!binding.dtype && it->second.dtype)
+      binding.dtype = it->second.dtype;
+  }
+
+  for (size_t index = 0; index < resolved.invocation.outputs.size(); ++index) {
+    TensorBinding &binding = resolved.invocation.outputs[index];
+    binding.sourceKind = BindingSourceKind::ExternalFile;
+    if (binding.path.empty()) {
+      binding.path = materializeOutputPath(workingDirectory, resolved.taskId,
+                                           binding.name, index);
+    }
+  }
+
+  return resolved;
+}
+
+static void recordProducedBindings(const RuntimeTask &task,
+                                   ProducedBindingMap &producedBindings) {
+  for (size_t index = 0; index < task.invocation.outputs.size(); ++index) {
+    TensorBinding binding = task.invocation.outputs[index];
+    if (binding.name.empty())
+      binding.name = defaultBindingName(index);
+    producedBindings[bindingKey(task.taskId, binding.name)] = std::move(binding);
+  }
+}
 
 static llvm::Expected<SessionRuntimePaths> prepareSessionRuntimePaths() {
   std::error_code tempDirError;
@@ -83,16 +171,24 @@ llvm::Expected<ProfileTrace> ExecutionSession::run(const TaskGraph &graph) {
   sessionTrace.sessionId = runtimePathsOr->sessionId;
   const std::string &workingDirectory = runtimePathsOr->workingDirectory;
   workingDirectories_.push_back(workingDirectory);
+  ProducedBindingMap producedBindings;
 
   for (const RuntimeTask &task : *orderedTasksOr) {
+    auto resolvedTaskOr =
+        resolveTaskBindings(task, workingDirectory, producedBindings);
+    if (!resolvedTaskOr)
+      return resolvedTaskOr.takeError();
+
     ExecutionRequest request;
     request.sessionId = sessionTrace.sessionId;
-    request.task = task;
+    request.task = std::move(*resolvedTaskOr);
     request.workingDirectory = workingDirectory;
 
     auto resultOr = backend.run(request);
     if (!resultOr)
       return resultOr.takeError();
+
+    recordProducedBindings(request.task, producedBindings);
 
     if (resultOr->profileTrace) {
       for (ProfileEvent event : resultOr->profileTrace->events)

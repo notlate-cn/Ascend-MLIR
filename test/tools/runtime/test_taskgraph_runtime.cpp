@@ -119,6 +119,21 @@ public:
   std::vector<std::string> seenWorkingDirectories;
 };
 
+class CapturingExecutionBackendDriver : public ExecutionBackendDriver {
+public:
+  llvm::Expected<ExecutionResult>
+  run(const ExecutionRequest &request) override {
+    requests.push_back(request);
+    ExecutionResult result;
+    result.taskId = request.task.taskId;
+    for (const TensorBinding &binding : request.task.invocation.outputs)
+      result.producedFiles.push_back(binding.path);
+    return result;
+  }
+
+  std::vector<ExecutionRequest> requests;
+};
+
 #define EXPECT(cond, msg)                                                     \
   do {                                                                        \
     if (cond) {                                                               \
@@ -773,6 +788,78 @@ static void testExecutionSessionCarriesInvocationBindings() {
   }
 }
 
+static void testExecutionSessionResolvesTaskOutputBindings() {
+  TaskGraph graph;
+
+  RuntimeTask producer;
+  producer.taskId = "producer";
+  TensorBinding produced;
+  produced.name = "mid";
+  produced.shape = std::vector<int64_t>{16};
+  produced.dtype = DType::F16;
+  producer.invocation.outputs.push_back(produced);
+
+  RuntimeTask consumer;
+  consumer.taskId = "consumer";
+  consumer.dependencies = {"producer"};
+  TensorBinding consumed;
+  consumed.name = "mid";
+  consumed.sourceKind = BindingSourceKind::TaskOutput;
+  consumed.upstreamTaskId = "producer";
+  consumed.upstreamOutputName = "mid";
+  consumer.invocation.inputs.push_back(consumed);
+  TensorBinding finalOutput;
+  finalOutput.name = "out";
+  finalOutput.shape = std::vector<int64_t>{16};
+  finalOutput.dtype = DType::F16;
+  consumer.invocation.outputs.push_back(finalOutput);
+
+  auto addProducer = graph.addTask(producer);
+  EXPECT(!addProducer, "task output binding add producer");
+  auto addConsumer = graph.addTask(consumer);
+  EXPECT(!addConsumer, "task output binding add consumer");
+
+  auto driver = std::make_shared<CapturingExecutionBackendDriver>();
+  CapturingExecutionBackendDriver *driverPtr = driver.get();
+  ExecutionSession session(ExecutionBackendKind::Simulation, driver);
+
+  auto traceOr = session.run(graph);
+  EXPECT((bool)traceOr, "task output binding run succeeds");
+  EXPECT(driverPtr->requests.size() == 2,
+         "task output binding invokes both tasks");
+  if (driverPtr->requests.size() == 2) {
+    const auto &producerRequest = driverPtr->requests[0];
+    const auto &consumerRequest = driverPtr->requests[1];
+    EXPECT(producerRequest.task.invocation.outputs.size() == 1,
+           "task output binding producer output count");
+    EXPECT(!producerRequest.task.invocation.outputs[0].path.empty(),
+           "task output binding producer output path is materialized");
+    EXPECT(consumerRequest.task.invocation.inputs.size() == 1,
+           "task output binding consumer input count");
+    EXPECT(consumerRequest.task.invocation.inputs[0].sourceKind ==
+               BindingSourceKind::ExternalFile,
+           "task output binding consumer input is resolved to external file");
+    EXPECT(consumerRequest.task.invocation.inputs[0].path ==
+               producerRequest.task.invocation.outputs[0].path,
+           "task output binding consumer reuses producer materialized path");
+    EXPECT(consumerRequest.task.invocation.inputs[0].shape.has_value(),
+           "task output binding propagates shape metadata");
+    EXPECT(consumerRequest.task.invocation.inputs[0].dtype.has_value(),
+           "task output binding propagates dtype metadata");
+    if (consumerRequest.task.invocation.inputs[0].shape) {
+      EXPECT(consumerRequest.task.invocation.inputs[0].shape->size() == 1 &&
+                 (*consumerRequest.task.invocation.inputs[0].shape)[0] == 16,
+             "task output binding propagated shape value");
+    }
+    if (consumerRequest.task.invocation.inputs[0].dtype) {
+      EXPECT(*consumerRequest.task.invocation.inputs[0].dtype == DType::F16,
+             "task output binding propagated dtype value");
+    }
+    EXPECT(!consumerRequest.task.invocation.outputs[0].path.empty(),
+           "task output binding downstream output path is materialized");
+  }
+}
+
 static void testRunManifestParsesVecSimulationSpec() {
   const std::string manifestPath = "/tmp/runtime_run_manifest.json";
   {
@@ -888,6 +975,47 @@ static void testRunManifestParsesOutputMetadataWithoutExpectedOutputs() {
   }
 }
 
+static void testRunManifestParsesTaskOutputBinding() {
+  const std::string manifestPath = "/tmp/runtime_run_manifest_task_output.json";
+  {
+    std::ofstream os(manifestPath);
+    os << R"JSON({
+  "task_id": "consumer",
+  "backend": "sim",
+  "artifact_root": "/tmp/artifact",
+  "inputs": [
+    {
+      "name": "mid",
+      "source": "task_output",
+      "upstream_task": "producer",
+      "upstream_output": "mid"
+    }
+  ],
+  "outputs": [
+    { "name": "out", "path": "/tmp/out.npy", "shape": [16], "dtype": "f16" }
+  ]
+})JSON";
+  }
+
+  auto specOr = loadRunManifest(manifestPath);
+  EXPECT((bool)specOr, "run manifest task output binding parses");
+  if (specOr) {
+    EXPECT(specOr->invocation.inputs.size() == 1,
+           "run manifest task output input count");
+    if (specOr->invocation.inputs.size() == 1) {
+      EXPECT(specOr->invocation.inputs[0].sourceKind ==
+                 BindingSourceKind::TaskOutput,
+             "run manifest task output source kind");
+      EXPECT(specOr->invocation.inputs[0].upstreamTaskId == "producer",
+             "run manifest task output upstream task");
+      EXPECT(specOr->invocation.inputs[0].upstreamOutputName == "mid",
+             "run manifest task output upstream output");
+      EXPECT(specOr->invocation.inputs[0].path.empty(),
+             "run manifest task output does not require path");
+    }
+  }
+}
+
 int main() {
   testTaskGraphBasics();
   testDuplicateTaskIds();
@@ -908,8 +1036,10 @@ int main() {
   testExecutionSessionPlansTopologicalOrder();
   testExecutionSessionRunsTasksInTopologicalOrder();
   testExecutionSessionCarriesInvocationBindings();
+  testExecutionSessionResolvesTaskOutputBindings();
   testRunManifestParsesVecSimulationSpec();
   testRunManifestParsesOutputMetadataWithoutExpectedOutputs();
+  testRunManifestParsesTaskOutputBinding();
 
   llvm::outs() << g_pass << " passed, " << g_fail << " failed\n";
   return g_fail ? 1 : 0;

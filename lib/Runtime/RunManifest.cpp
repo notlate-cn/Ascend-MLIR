@@ -76,12 +76,34 @@ llvm::Expected<TensorBinding> parseTensorBinding(const llvm::json::Object &obj) 
   auto nameOr = requireString(obj, "name");
   if (!nameOr)
     return nameOr.takeError();
-  auto pathOr = requireString(obj, "path");
-  if (!pathOr)
-    return pathOr.takeError();
   binding.name = *nameOr;
-  binding.path = *pathOr;
-  binding.sourceKind = BindingSourceKind::ExternalFile;
+
+  llvm::StringRef source = "external_file";
+  if (auto sourceValue = obj.getString("source"))
+    source = *sourceValue;
+
+  if (source == "external_file") {
+    auto pathOr = requireString(obj, "path");
+    if (!pathOr)
+      return pathOr.takeError();
+    binding.path = *pathOr;
+    binding.sourceKind = BindingSourceKind::ExternalFile;
+  } else if (source == "task_output") {
+    auto upstreamTaskOr = requireString(obj, "upstream_task");
+    if (!upstreamTaskOr)
+      return upstreamTaskOr.takeError();
+    auto upstreamOutputOr = requireString(obj, "upstream_output");
+    if (!upstreamOutputOr)
+      return upstreamOutputOr.takeError();
+    binding.sourceKind = BindingSourceKind::TaskOutput;
+    binding.upstreamTaskId = *upstreamTaskOr;
+    binding.upstreamOutputName = *upstreamOutputOr;
+  } else {
+    return llvm::createStringError(llvm::inconvertibleErrorCode(),
+                                   "unsupported tensor binding source: %s",
+                                   source.str().c_str());
+  }
+
   if (auto *shape = obj.getArray("shape")) {
     auto shapeOr = parseShape(*shape);
     if (!shapeOr)
