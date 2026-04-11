@@ -21,6 +21,12 @@ if [ -z "${ASCEND_HOME}" ]; then
 fi
 export ASCEND_HOME_PATH="${ASCEND_HOME}"
 source "${PROJECT_ROOT}/examples/env.sh" >/dev/null
+CANN_ARCH="${CANN_ARCH:-$(resolve_cann_arch_dir)}"
+SOC_VERSION="${SOC_VERSION:-Ascend910B1}"
+ASCEND_LIB64="${ASCEND_HOME_PATH}/${CANN_ARCH}/lib64"
+SOC_SIM_LIB="${ASCEND_HOME_PATH}/${CANN_ARCH}/simulator/${SOC_VERSION}/lib"
+DAV_SIM_LIB="${ASCEND_HOME_PATH}/${CANN_ARCH}/simulator/${SOC_VERSION}/lib/davinci"
+DEVICE_LIB="${ASCEND_HOME_PATH}/runtime/lib64/stub"
 
 LLVM_BUILD="$(require_llvm_build_dir || true)"
 if [ -z "$LLVM_BUILD" ]; then
