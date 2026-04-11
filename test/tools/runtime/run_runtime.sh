@@ -26,6 +26,7 @@ LLVM_BUILD="$(require_llvm_build_dir || true)"
 if [ -z "$LLVM_BUILD" ]; then
   exit 1
 fi
+LLVM_SOURCE_INCLUDE="$(cd "${LLVM_BUILD}/.." && pwd)/include"
 
 if [ -f build/CMakeCache.txt ]; then
   CACHE_SOURCE_DIR="$(sed -n 's/^CMAKE_HOME_DIRECTORY:INTERNAL=//p' build/CMakeCache.txt)"
@@ -145,7 +146,7 @@ build/bin/runtime-session \
   --run >/tmp/runtime_session_run.log 2>&1
 test -f "${RUNTIME_SESSION_ACTUAL_OUTPUT}"
 grep -q '^session.profile.session_id=' /tmp/runtime_session_run.log
-grep -q '^session.profile\[0\]=' /tmp/runtime_session_run.log
+grep -q '^session.profile.count=' /tmp/runtime_session_run.log
 
 echo "--- Checking runtime-session DAG simulation path ---"
 cat > "${RUNTIME_SESSION_DAG_MANIFEST}" <<EOF
@@ -201,7 +202,7 @@ build/bin/runtime-session \
   --run >/tmp/runtime_session_dag_run.log 2>&1
 test -f "${RUNTIME_SESSION_DAG_OUTPUT}"
 grep -q '^session.profile.session_id=' /tmp/runtime_session_dag_run.log
-grep -q '^session.profile\[0\]=' /tmp/runtime_session_dag_run.log
+grep -q '^session.profile.count=' /tmp/runtime_session_dag_run.log
 
 echo "--- Checking runtime-session NPU path reaches unified backend ---"
 cat > "${RUNTIME_SESSION_NPU_MANIFEST}" <<EOF
@@ -230,17 +231,19 @@ echo "--- Compiling runtime tests ---"
 g++ -std=c++17 \
     -I include/ \
     -I "$LLVM_BUILD/include" \
+    -I "$LLVM_SOURCE_INCLUDE" \
     test/tools/runtime/test_runtime.cpp \
     build/lib/libAscendCRuntime.a \
-    $("$LLVM_BUILD/bin/llvm-config" --ldflags --libs support) \
+    $("$LLVM_BUILD/bin/llvm-config" --ldflags --libs support --system-libs) \
     -ldl \
     -o "$TEST_RUNTIME_BIN"
 g++ -std=c++17 \
     -I include/ \
     -I "$LLVM_BUILD/include" \
+    -I "$LLVM_SOURCE_INCLUDE" \
     test/tools/runtime/test_taskgraph_runtime.cpp \
     build/lib/libAscendCRuntime.a \
-    $("$LLVM_BUILD/bin/llvm-config" --ldflags --libs support) \
+    $("$LLVM_BUILD/bin/llvm-config" --ldflags --libs support --system-libs) \
     -ldl \
     -o "$TEST_TASKGRAPH_RUNTIME_BIN"
 
