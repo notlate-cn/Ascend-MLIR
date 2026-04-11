@@ -126,6 +126,7 @@ ArtifactCompiler::compile(const ArtifactCompileRequest &req) const {
   cfg.soc_version = resolvedSoc;
   cfg.arch = req.arch.empty() ? defaultCompilerArch(req.kernelKind)
                               : req.arch;
+  cfg.opt_level = req.optLevel;
   cfg.kernel_type = req.kernelKind == KernelKind::Cube ? "cube" : "vec";
   cfg.verbose = req.verbose;
 
