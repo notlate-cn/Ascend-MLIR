@@ -928,6 +928,13 @@ static void testValidatorPreparesTilingBinaryPaths() {
            "compat validator legacy tiling bytes preserve packing");
   }
 
+  auto badLegacyPathOr = prepareValidatorTilingBinaryPath(
+      "", "", "TB_M=16,TB_N=4", "int64,float32");
+  EXPECT(!(bool)badLegacyPathOr,
+         "compat validator rejects unknown legacy tiling layout types");
+  if (!badLegacyPathOr)
+    llvm::consumeError(badLegacyPathOr.takeError());
+
   CompatValidateOptions options;
   options.artifactRoot = "/tmp/validator-artifact";
   options.inputPaths = {"/tmp/input0.npy"};
