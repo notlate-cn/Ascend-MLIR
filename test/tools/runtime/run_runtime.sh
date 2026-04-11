@@ -6,7 +6,7 @@
 # Usage:
 #   cd /path/to/Ascend-MLIR
 #   bash test/tools/runtime/run_runtime.sh
-set -e
+set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 cd "$PROJECT_ROOT"
@@ -25,10 +25,42 @@ if [ -z "$LLVM_BUILD" ]; then
   exit 1
 fi
 
-# Build AscendCRuntime
-echo "--- Building AscendCRuntime ---"
+# Build AscendCRuntime and runtime-session
+echo "--- Building AscendCRuntime and runtime-session ---"
 rm -f build/lib/libAscendCRuntime.a
-cd build && cmake --build . --target AscendCRuntime -j4 && cd ..
+cd build && cmake --build . --target AscendCRuntime runtime-session -j4 && cd ..
+
+echo "--- Checking runtime-session CLI ---"
+test -x build/bin/runtime-session
+build/bin/runtime-session --help | grep -q "task graph runtime"
+
+FAKE_ARTIFACT_ROOT="$(mktemp -d)"
+trap 'rm -rf "$FAKE_ARTIFACT_ROOT"' EXIT
+mkdir -p "${FAKE_ARTIFACT_ROOT}/out"
+cat > "${FAKE_ARTIFACT_ROOT}/out/manifest.txt" <<'EOF'
+kernel_name=fake_kernel
+soc_version=Ascend910B1
+EOF
+
+echo "--- Checking runtime-session planning path ---"
+PLAN_OUTPUT="$(build/bin/runtime-session --artifact-root "${FAKE_ARTIFACT_ROOT}")"
+printf '%s\n' "${PLAN_OUTPUT}" | grep -q "session.plan\[0\]=main"
+
+echo "--- Checking runtime-session negative paths ---"
+INVALID_STDERR="$(mktemp)"
+RUN_STDERR="$(mktemp)"
+trap 'rm -rf "$FAKE_ARTIFACT_ROOT"; rm -f "$INVALID_STDERR" "$RUN_STDERR"' EXIT
+if build/bin/runtime-session --artifact-root "${FAKE_ARTIFACT_ROOT}/missing" 2>"${INVALID_STDERR}"; then
+  echo "Error: invalid artifact root unexpectedly succeeded" >&2
+  exit 1
+fi
+grep -q "cannot access artifact root" "${INVALID_STDERR}"
+
+if build/bin/runtime-session --artifact-root "${FAKE_ARTIFACT_ROOT}" --run 2>"${RUN_STDERR}"; then
+  echo "Error: runtime-session --run unexpectedly succeeded" >&2
+  exit 1
+fi
+grep -q "task I/O binding is not implemented" "${RUN_STDERR}"
 
 # Compile test drivers
 echo "--- Compiling runtime tests ---"

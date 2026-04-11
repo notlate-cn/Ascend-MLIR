@@ -1,0 +1,8 @@
+add_subdirectory(afir-opt)
+add_subdirectory(afir-translate)
+add_subdirectory(autotuner)
+add_subdirectory(compiler)
+add_subdirectory(mix-compiler)
+add_subdirectory(mix-validator)
+add_subdirectory(runtime-session)
+add_subdirectory(validator)
