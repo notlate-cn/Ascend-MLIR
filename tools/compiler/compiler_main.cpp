@@ -104,6 +104,25 @@ int main(int argc, char** argv) {
     return 4;
   }
 
+  // Runner compatibility is still part of the CLI contract, so validate the
+  // runner-specific arguments before any artifact emission when we know we are
+  // going to attempt that compatibility path.
+  if (shouldAttemptLegacyRunnerCompatibility(compileOptions.kernelType)) {
+    if (NumInputs <= 0) {
+      llvm::errs() << "Error: --num-inputs must be >= 1\n";
+      return 4;
+    }
+    if (NumOutputs <= 0) {
+      llvm::errs() << "Error: --num-outputs must be >= 1\n";
+      return 4;
+    }
+    if (NumOutputs != 1) {
+      llvm::errs() << "Error: --num-outputs " << NumOutputs
+                   << " not supported (only 1 is implemented)\n";
+      return 4;
+    }
+  }
+
   ArtifactCompiler compiler;
   auto artifactOr = compiler.compile(*requestOr);
   if (!artifactOr) {
@@ -115,22 +134,6 @@ int main(int argc, char** argv) {
 
   if (!shouldAttemptLegacyRunnerCompatibility(KernelType.getValue()))
     return 0;
-
-  // Runner compatibility is still part of the CLI contract, so validate the
-  // runner-specific arguments only when we actually try to build that output.
-  if (NumInputs <= 0) {
-    llvm::errs() << "Error: --num-inputs must be >= 1\n";
-    return 4;
-  }
-  if (NumOutputs <= 0) {
-    llvm::errs() << "Error: --num-outputs must be >= 1\n";
-    return 4;
-  }
-  if (NumOutputs != 1) {
-    llvm::errs() << "Error: --num-outputs " << NumOutputs
-                 << " not supported (only 1 is implemented)\n";
-    return 4;
-  }
 
   HostRunnerGen::Config hcfg;
   hcfg.kernel_name = kernel_name;
