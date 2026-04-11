@@ -77,6 +77,30 @@ llvm::cl::opt<std::string> RunManifestPath(
     llvm::cl::desc("JSON manifest describing artifact root, bindings, and execution settings"),
     llvm::cl::init(""),
     llvm::cl::cat(RuntimeSessionCategory));
+llvm::cl::opt<std::string> TestingDriver(
+    "testing-driver",
+    llvm::cl::desc("Testing-only backend driver injection"),
+    llvm::cl::init(""),
+    llvm::cl::Hidden,
+    llvm::cl::cat(RuntimeSessionCategory));
+
+class SuccessfulNpuTestingDriver final : public ExecutionBackendDriver {
+public:
+  llvm::Expected<ExecutionResult>
+  run(const ExecutionRequest &request) override {
+    ExecutionResult result;
+    result.taskId = request.task.taskId;
+    for (const TensorBinding &binding : request.task.invocation.outputs)
+      result.producedFiles.push_back(binding.path);
+    ProfileTrace trace;
+    trace.sessionId = request.sessionId;
+    trace.addProfileArtifact(request.task.taskId, ExecutionBackendKind::Npu,
+                             request.workingDirectory + "/" +
+                                 request.task.taskId + ".npu-profile.json");
+    result.profileTrace = std::move(trace);
+    return result;
+  }
+};
 
 llvm::Expected<KernelKind> parseKernelKind(llvm::StringRef name) {
   if (name == "vec")
@@ -372,6 +396,22 @@ void printRunErrorSummary(ExecutionBackendKind backendKind,
   llvm::errs() << "session.error=" << detail << "\n";
 }
 
+llvm::Expected<std::shared_ptr<ExecutionBackendDriver>>
+createTestingDriver(ExecutionBackendKind backendKind) {
+  if (TestingDriver.empty())
+    return std::shared_ptr<ExecutionBackendDriver>{};
+  if (TestingDriver == "npu-success") {
+    if (backendKind != ExecutionBackendKind::Npu) {
+      return llvm::createStringError(llvm::inconvertibleErrorCode(),
+                                     "testing driver npu-success requires backend=npu");
+    }
+    return std::make_shared<SuccessfulNpuTestingDriver>();
+  }
+  return llvm::createStringError(llvm::inconvertibleErrorCode(),
+                                 "unsupported testing driver: %s",
+                                 TestingDriver.getValue().c_str());
+}
+
 void printProfileTraceSummary(const ProfileTrace &trace) {
   llvm::outs() << "session.profile.session_id=" << trace.sessionId << "\n";
   const std::vector<std::string> artifactPaths = trace.profileArtifactPaths();
@@ -416,7 +456,14 @@ int main(int argc, char **argv) {
     graph = std::move(*graphOr);
   }
 
-  ExecutionSession session(backendKind);
+  auto testingDriverOr = createTestingDriver(backendKind);
+  if (!testingDriverOr) {
+    llvm::errs() << "Error: " << llvm::toString(testingDriverOr.takeError())
+                 << "\n";
+    return 4;
+  }
+
+  ExecutionSession session(backendKind, *testingDriverOr);
   auto planOr = session.plan(*graph);
   if (!planOr) {
     llvm::errs() << "Error: " << llvm::toString(planOr.takeError()) << "\n";
@@ -427,7 +474,7 @@ int main(int argc, char **argv) {
   if (!RunSession)
     return 0;
 
-  ExecutionSession runSession(backendKind);
+  ExecutionSession runSession(backendKind, *testingDriverOr);
   auto traceOr = runSession.run(*graph);
   if (!traceOr) {
     const std::string message = llvm::toString(traceOr.takeError());

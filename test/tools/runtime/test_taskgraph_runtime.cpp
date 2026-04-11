@@ -156,6 +156,29 @@ public:
   std::vector<ExecutionRequest> requests;
 };
 
+class SuccessfulNpuBackendDriver : public ExecutionBackendDriver {
+public:
+  llvm::Expected<ExecutionResult>
+  run(const ExecutionRequest &request) override {
+    ++invocations;
+    lastRequest = request;
+    ExecutionResult result;
+    result.taskId = request.task.taskId;
+    for (const TensorBinding &binding : request.task.invocation.outputs)
+      result.producedFiles.push_back(binding.path);
+    ProfileTrace trace;
+    trace.sessionId = request.sessionId;
+    trace.addProfileArtifact(request.task.taskId, ExecutionBackendKind::Npu,
+                             request.workingDirectory + "/" +
+                                 request.task.taskId + ".npu-profile.json");
+    result.profileTrace = std::move(trace);
+    return result;
+  }
+
+  int invocations = 0;
+  ExecutionRequest lastRequest;
+};
+
 #define EXPECT(cond, msg)                                                     \
   do {                                                                        \
     if (cond) {                                                               \
@@ -558,6 +581,48 @@ static void testNpuBackendReachesRealDeviceModePath() {
     EXPECT(message.find("[npu:executor_initialize]") != std::string::npos,
            "npu backend reports executor initialize stage");
   }
+}
+
+static void testExecutionSessionSupportsNpuSuccessDriver() {
+  auto driver = std::make_shared<SuccessfulNpuBackendDriver>();
+  SuccessfulNpuBackendDriver *driverPtr = driver.get();
+  ExecutionSession session(ExecutionBackendKind::Npu, driver);
+
+  RuntimeTask task;
+  task.taskId = "npu_task";
+  task.artifact.kernelName = "npu_kernel";
+  task.artifact.kernelKind = KernelKind::Vec;
+  task.artifact.deviceBinaryPath = "/tmp/fake_npu_kernel.bin";
+  task.invocation.outputs.push_back(
+      TensorBinding{"out", BindingSourceKind::ExternalFile, "/tmp/npu_task.npy",
+                    "", "", std::vector<int64_t>{4}, DType::F16});
+
+  TaskGraph graph;
+  auto addErr = graph.addTask(task);
+  EXPECT(!addErr, "npu success driver graph add task");
+  if (addErr) {
+    llvm::consumeError(std::move(addErr));
+    return;
+  }
+
+  auto traceOr = session.run(graph);
+  EXPECT((bool)traceOr, "execution session runs with npu success driver");
+  if (traceOr) {
+    EXPECT(traceOr->events.size() == 1,
+           "npu success driver yields one profile event");
+    if (!traceOr->events.empty()) {
+      EXPECT(traceOr->events.front().backend == ExecutionBackendKind::Npu,
+             "npu success driver profile event backend");
+      EXPECT(traceOr->events.front().eventKind == "profile_artifact",
+             "npu success driver profile event kind");
+    }
+  } else {
+    llvm::consumeError(traceOr.takeError());
+  }
+
+  EXPECT(driverPtr->invocations == 1, "npu success driver invoked once");
+  EXPECT(driverPtr->lastRequest.task.taskId == "npu_task",
+         "npu success driver receives task");
 }
 
 static void testSimulatorProfileNormalization() {
@@ -1284,6 +1349,7 @@ int main() {
   testNpuBackendRejectsMissingDeviceBinaryPath();
   testNpuBackendRejectsMissingMixSharedObjectPath();
   testNpuBackendReachesRealDeviceModePath();
+  testExecutionSessionSupportsNpuSuccessDriver();
   testSimulatorProfileNormalization();
   testAddProfileArtifactHelper();
   testBackendSurfacesProfileTrace();

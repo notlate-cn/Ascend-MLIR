@@ -58,6 +58,8 @@ RUNTIME_SESSION_DAG_MANIFEST="$(mktemp /tmp/runtime_session_dag_manifest.XXXXXX.
 RUNTIME_SESSION_DAG_OUTPUT="$(mktemp /tmp/runtime_session_dag_actual.XXXXXX.npy)"
 RUNTIME_SESSION_NPU_MANIFEST="$(mktemp /tmp/runtime_session_npu_manifest.XXXXXX.json)"
 RUNTIME_SESSION_NPU_OUTPUT="$(mktemp /tmp/runtime_session_npu_actual.XXXXXX.npy)"
+RUNTIME_SESSION_NPU_SUCCESS_STDOUT="$(mktemp /tmp/runtime_session_npu_success.XXXXXX.log)"
+RUNTIME_SESSION_NPU_SUCCESS_STDERR="$(mktemp /tmp/runtime_session_npu_success_stderr.XXXXXX.log)"
 NPU_STDERR=""
 cleanup() {
   rm -rf "$FAKE_ARTIFACT_ROOT"
@@ -67,7 +69,8 @@ cleanup() {
         "$TEST_TASKGRAPH_RUNTIME_BIN" "$RUNTIME_SESSION_RUN_MANIFEST" \
         "$RUNTIME_SESSION_ACTUAL_OUTPUT" "$RUNTIME_SESSION_DAG_MANIFEST" \
         "$RUNTIME_SESSION_DAG_OUTPUT" "$RUNTIME_SESSION_NPU_MANIFEST" \
-        "$RUNTIME_SESSION_NPU_OUTPUT" "$NPU_STDERR"
+        "$RUNTIME_SESSION_NPU_OUTPUT" "$RUNTIME_SESSION_NPU_SUCCESS_STDOUT" \
+        "$RUNTIME_SESSION_NPU_SUCCESS_STDERR" "$NPU_STDERR"
 }
 trap cleanup EXIT
 mkdir -p "${FAKE_ARTIFACT_ROOT}/out"
@@ -227,6 +230,17 @@ fi
 grep -q '^session.backend=npu' "${NPU_STDERR}"
 grep -q '^session.result=error' "${NPU_STDERR}"
 grep -q '^session.error_stage=executor_initialize' "${NPU_STDERR}"
+
+echo "--- Checking runtime-session NPU mock success path ---"
+build/bin/runtime-session \
+  --run-manifest "${RUNTIME_SESSION_NPU_MANIFEST}" \
+  --testing-driver npu-success \
+  --run >"${RUNTIME_SESSION_NPU_SUCCESS_STDOUT}" 2>"${RUNTIME_SESSION_NPU_SUCCESS_STDERR}"
+grep -q '^session.backend=npu' "${RUNTIME_SESSION_NPU_SUCCESS_STDOUT}"
+grep -q '^session.result=success' "${RUNTIME_SESSION_NPU_SUCCESS_STDOUT}"
+grep -q '^session.profile.session_id=' "${RUNTIME_SESSION_NPU_SUCCESS_STDOUT}"
+grep -q '^session.profile.count=1' "${RUNTIME_SESSION_NPU_SUCCESS_STDOUT}"
+grep -q '^session.profile\[0\]=' "${RUNTIME_SESSION_NPU_SUCCESS_STDOUT}"
 
 # Compile test drivers
 echo "--- Compiling runtime tests ---"
