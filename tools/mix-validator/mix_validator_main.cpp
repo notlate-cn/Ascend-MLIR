@@ -370,7 +370,8 @@ static std::string buildInputPath(const std::string &inputDir,
 }
 
 int main(int argc, char **argv) {
-  llvm::cl::ParseCommandLineOptions(argc, argv, "RuntimeMix mix validator\n");
+  llvm::cl::ParseCommandLineOptions(
+      argc, argv, "RuntimeMix artifact validator for mix kernels\n");
   const std::string resolvedSocVersion =
       resolveSocVersion(SocVersion, "Ascend910B1");
 
