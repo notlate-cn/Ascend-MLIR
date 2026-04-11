@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
 # test/tools/runtime/run_runtime.sh
-# Builds and runs the lib/Runtime unit test suite.
+# Builds the project and runs the task-graph runtime verification flow.
 # Does NOT require a simulator or .bin file.
 #
 # Usage:
 #   cd /path/to/Ascend-MLIR
+#   export LLVM_BUILD_DIR=/path/to/llvm/build
 #   bash test/tools/runtime/run_runtime.sh
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -25,17 +26,33 @@ if [ -z "$LLVM_BUILD" ]; then
   exit 1
 fi
 
-# Build AscendCRuntime and runtime-session
-echo "--- Building AscendCRuntime and runtime-session ---"
-rm -f build/lib/libAscendCRuntime.a
-cd build && cmake --build . --target AscendCRuntime runtime-session -j4 && cd ..
+if [ -f build/CMakeCache.txt ]; then
+  CACHE_SOURCE_DIR="$(sed -n 's/^CMAKE_HOME_DIRECTORY:INTERNAL=//p' build/CMakeCache.txt)"
+  if [ -n "${CACHE_SOURCE_DIR}" ] && [ "${CACHE_SOURCE_DIR}" != "${PROJECT_ROOT}" ]; then
+    echo "Recreating build/ because CMake cache points to ${CACHE_SOURCE_DIR}"
+    rm -rf build
+  fi
+fi
+
+cmake -S . -B build -DLLVM_BUILD_DIR="$LLVM_BUILD"
+
+echo "--- Building focused runtime verification targets ---"
+cd build && cmake --build . --target AscendCRuntime runtime-session -j2 && cd ..
 
 echo "--- Checking runtime-session CLI ---"
 test -x build/bin/runtime-session
 build/bin/runtime-session --help | grep -q "task graph runtime"
 
 FAKE_ARTIFACT_ROOT="$(mktemp -d)"
-trap 'rm -rf "$FAKE_ARTIFACT_ROOT"' EXIT
+INVALID_STDERR=""
+RUN_STDERR=""
+TEST_RUNTIME_BIN="$(mktemp /tmp/test_runtime.XXXXXX)"
+TEST_TASKGRAPH_RUNTIME_BIN="$(mktemp /tmp/test_taskgraph_runtime.XXXXXX)"
+cleanup() {
+  rm -rf "$FAKE_ARTIFACT_ROOT"
+  rm -f "$INVALID_STDERR" "$RUN_STDERR" "$TEST_RUNTIME_BIN" "$TEST_TASKGRAPH_RUNTIME_BIN"
+}
+trap cleanup EXIT
 mkdir -p "${FAKE_ARTIFACT_ROOT}/out"
 cat > "${FAKE_ARTIFACT_ROOT}/out/manifest.txt" <<'EOF'
 kernel_name=fake_kernel
@@ -49,7 +66,6 @@ printf '%s\n' "${PLAN_OUTPUT}" | grep -q "session.plan\[0\]=main"
 echo "--- Checking runtime-session negative paths ---"
 INVALID_STDERR="$(mktemp)"
 RUN_STDERR="$(mktemp)"
-trap 'rm -rf "$FAKE_ARTIFACT_ROOT"; rm -f "$INVALID_STDERR" "$RUN_STDERR"' EXIT
 if build/bin/runtime-session --artifact-root "${FAKE_ARTIFACT_ROOT}/missing" 2>"${INVALID_STDERR}"; then
   echo "Error: invalid artifact root unexpectedly succeeded" >&2
   exit 1
@@ -71,7 +87,7 @@ g++ -std=c++17 \
     build/lib/libAscendCRuntime.a \
     $("$LLVM_BUILD/bin/llvm-config" --ldflags --libs support) \
     -ldl \
-    -o /tmp/test_runtime
+    -o "$TEST_RUNTIME_BIN"
 g++ -std=c++17 \
     -I include/ \
     -I "$LLVM_BUILD/include" \
@@ -79,10 +95,18 @@ g++ -std=c++17 \
     build/lib/libAscendCRuntime.a \
     $("$LLVM_BUILD/bin/llvm-config" --ldflags --libs support) \
     -ldl \
-    -o /tmp/test_taskgraph_runtime
+    -o "$TEST_TASKGRAPH_RUNTIME_BIN"
 
 # Run
 echo "--- Running test_taskgraph_runtime ---"
-/tmp/test_taskgraph_runtime
+"$TEST_TASKGRAPH_RUNTIME_BIN"
 echo "--- Running test_runtime ---"
-/tmp/test_runtime
+if "$TEST_RUNTIME_BIN"; then
+  exit 0
+else
+  STATUS=$?
+  if [ "$STATUS" -eq 139 ]; then
+    echo "Note: /tmp/test_runtime still segfaults in xvm after the task-graph runtime checks pass." >&2
+  fi
+  exit "$STATUS"
+fi
