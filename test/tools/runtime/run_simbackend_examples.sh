@@ -249,12 +249,16 @@ run_mix_example() {
 
   local artifact_root
   artifact_root="$(make_tmp_artifact_root)"
+  local example_log
+  example_log="$(make_tmp_log)"
   local manifest
   manifest="$(make_tmp_manifest)"
   local actual_output
   actual_output="$(make_tmp_output)"
 
-  bash "${example_dir}/run.sh" >/tmp/runtime_simbackend_mix_example.log 2>&1
+  bash "${example_dir}/run.sh" 2>&1 | tee "${example_log}"
+  grep -q '^session.backend=sim$' "${example_log}"
+  grep -q '^session.result=success$' "${example_log}"
 
   local dav_sim_version="${ASCEND_DAV_SIM_VERSION:-dav_3002}"
   local cann_arch

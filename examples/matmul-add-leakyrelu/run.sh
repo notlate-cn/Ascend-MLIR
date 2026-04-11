@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # examples/matmul-add-leakyrelu/run.sh
-# End-to-end pipeline: linalg IR -> AscendC kernel -> RuntimeMix mix validator
+# End-to-end pipeline: linalg IR -> AscendC kernel -> runtime-session mix validation
 #
 # Usage (on xvm):
 #   source examples/env.sh
@@ -92,7 +92,7 @@ $AFIR_TRANSLATE -mlir-to-cann \
   -o "$SCRIPT_DIR/step8_kernel.cpp"
 log "  step8_kernel.cpp done"
 
-# ── Bootstrap mix-compiler + mix-validator ───────────────────────────────────
+# ── Bootstrap mix-compiler + runtime-session ────────────────────────────────
 echo ""
 echo "=== Bootstrap RuntimeMix tools ==="
 
@@ -121,7 +121,7 @@ fi
 cmake -S "${REPO_ROOT}" -B "${BOOTSTRAP_BUILD_DIR}" \
   -DLLVM_BUILD_DIR="${LLVM_BUILD_DIR}" >/dev/null
 cmake --build "${BOOTSTRAP_BUILD_DIR}" \
-  --target mix-compiler mix-validator -j2 >/dev/null
+  --target mix-compiler runtime-session -j2 >/dev/null
 
 rm -rf "${ARTIFACT_DIR}"
 
@@ -141,16 +141,20 @@ echo "=== [STAGE 10] RuntimeMix compile ==="
   --output "${ARTIFACT_DIR}" \
   --soc "${SOC_VERSION}"
 
-read -r ACTUAL_OUTPUT_PATH GOLDEN_OUTPUT_PATH < <(python3 - "${DATA_DIR}" "${ARTIFACT_DIR}/out/manifest.txt" <<'PY'
+read -r RUN_MANIFEST_PATH ACTUAL_OUTPUT_PATH GOLDEN_OUTPUT_PATH < <(python3 - \
+  "${DATA_DIR}" "${ARTIFACT_DIR}" "${ARTIFACT_DIR}/out/manifest.txt" <<'PY'
+import json
 import sys
 from pathlib import Path
+
 import numpy as np
 
 data_dir = Path(sys.argv[1])
+artifact_dir = Path(sys.argv[2])
+manifest_path = Path(sys.argv[3])
 npy_dir = data_dir / "npy"
-inp_dir = data_dir / "input"
 out_dir = data_dir / "output"
-manifest_path = Path(sys.argv[2])
+out_dir.mkdir(parents=True, exist_ok=True)
 
 def read_manifest(path):
     manifest = {}
@@ -162,69 +166,108 @@ def read_manifest(path):
         manifest[key] = value
     return manifest
 
-manifest = read_manifest(manifest_path)
-inp_dir.mkdir(parents=True, exist_ok=True)
-out_dir.mkdir(parents=True, exist_ok=True)
-kernel_name = (manifest.get("abi_runtime_kernel_name") or
-               manifest.get("abi_logical_kernel_name") or
-               manifest.get("kernel_name") or
-               manifest.get("requested_kernel_name") or "")
+def runtime_dtype(dtype):
+    dtype = np.dtype(dtype)
+    if dtype == np.dtype(np.float16):
+        return "f16"
+    if dtype == np.dtype(np.float32):
+        return "f32"
+    if dtype == np.dtype(np.float64):
+        return "f64"
+    if dtype == np.dtype(np.int8):
+        return "int8"
+    if dtype == np.dtype(np.int32):
+        return "int32"
+    if dtype == np.dtype(np.int64):
+        return "int64"
+    raise SystemExit(f"unsupported runtime dtype: {dtype}")
 
+manifest = read_manifest(manifest_path)
 input_count = int(manifest["abi_input_count"])
+inputs = []
 for idx in range(input_count):
     name = manifest[f"abi_input{idx}_name"]
-    runtime_file = manifest.get(f"abi_input{idx}_file") or \
-        manifest.get(f"abi_input{idx}_runtime_file")
-    if not runtime_file and kernel_name:
-        runtime_file = f"{kernel_name}.{name}.input.bin"
-    if not runtime_file:
-        raise SystemExit(f"missing runtime file for input {idx}")
     npy_path = npy_dir / f"{name}.npy"
     if not npy_path.exists():
         npy_path = npy_dir / f"input{idx}.npy"
-    np.load(npy_path).tofile(inp_dir / runtime_file)
+    if not npy_path.exists():
+        raise SystemExit(f"missing input npy file for input {idx}")
+    inputs.append({
+        "name": name,
+        "path": str(npy_path.resolve()),
+    })
 
 output_count = int(manifest["abi_output_count"])
 if output_count != 1:
     raise SystemExit(f"expected one output, got {output_count}")
 output_name = manifest["abi_output0_name"]
-runtime_output = manifest.get("abi_output0_file") or \
-    manifest.get("abi_output0_runtime_file")
-golden_output = manifest.get("abi_output0_golden_file")
-if not runtime_output and kernel_name:
-    runtime_output = f"{kernel_name}.{output_name}.output.bin"
-if not golden_output and kernel_name:
-    golden_output = f"{kernel_name}.{output_name}.golden.bin"
-if not runtime_output:
-    raise SystemExit("missing runtime output file in manifest")
-if not golden_output:
-    raise SystemExit("missing golden output file in manifest")
 output_npy = npy_dir / f"{output_name}.npy"
 if not output_npy.exists():
     output_npy = npy_dir / "output0.npy"
-np.load(output_npy).tofile(out_dir / golden_output)
-print((manifest_path.parent.parent / runtime_output).resolve(), (out_dir / golden_output).resolve())
+if not output_npy.exists():
+    output_npy = npy_dir / "output.npy"
+if not output_npy.exists():
+    raise SystemExit("missing golden output npy file")
+golden = np.load(output_npy)
+
+actual_output = out_dir / "output.npy"
+run_manifest_path = data_dir / "runtime-manifest.json"
+run_manifest = {
+    "task_id": "main",
+    "backend": "sim",
+    "artifact_root": str(artifact_dir.resolve()),
+    "inputs": inputs,
+    "outputs": [
+        {
+            "name": output_name,
+            "path": str(actual_output.resolve()),
+            "shape": list(golden.shape),
+            "dtype": runtime_dtype(golden.dtype),
+        }
+    ],
+    "expected_outputs": [
+        {
+            "name": output_name,
+            "path": str(output_npy.resolve()),
+            "shape": list(golden.shape),
+            "dtype": runtime_dtype(golden.dtype),
+        }
+    ],
+    "tiling": {
+        "binary": str((artifact_dir / "out" / "tiling.bin").resolve()),
+    },
+    "block_dim": int(manifest.get("abi_block_dim", "1")),
+    "workspace_size": int(manifest.get("abi_workspace_bytes", "16777216")),
+    "profiling": True,
+    "atol": 1.0,
+    "rtol": 1e-2,
+}
+
+run_manifest_path.write_text(json.dumps(run_manifest, indent=2) + "\n")
+print(run_manifest_path.resolve(), actual_output.resolve(), output_npy.resolve())
 PY
 )
 
-# ── mix-validator simulation ──────────────────────────────────────────────────
-echo "=== [STAGE 11] mix-validator ==="
+# ── runtime-session simulation ────────────────────────────────────────────────
+echo "=== [STAGE 11] runtime-session ==="
 [[ -f "${ARTIFACT_DIR}/out/tiling.bin" ]]
 
-"${BOOTSTRAP_BUILD_DIR}/bin/mix-validator" \
-  --artifact-root "${ARTIFACT_DIR}" \
-  --input-dir "${DATA_DIR}/input" \
-  --golden "${GOLDEN_OUTPUT_PATH}" \
-  --soc "${SOC_VERSION}"
+ASCEND_DAV_SIM_VERSION="${ASCEND_DAV_SIM_VERSION}" \
+LD_LIBRARY_PATH="${ARTIFACT_DIR}/out:${LD_LIBRARY_PATH:-}" \
+  "${BOOTSTRAP_BUILD_DIR}/bin/runtime-session" \
+  --run-manifest "${RUN_MANIFEST_PATH}" \
+  --run
 
 python3 - "${GOLDEN_OUTPUT_PATH}" "${ACTUAL_OUTPUT_PATH}" <<'PY'
 import sys
 import numpy as np
 
-golden = np.fromfile(sys.argv[1], dtype=np.float32)
-actual = np.fromfile(sys.argv[2], dtype=np.float32)
+golden = np.load(sys.argv[1])
+actual = np.load(sys.argv[2])
 if golden.shape != actual.shape:
     raise SystemExit(f"shape mismatch: {actual.shape} vs {golden.shape}")
+if golden.dtype != actual.dtype:
+    raise SystemExit(f"dtype mismatch: {actual.dtype} vs {golden.dtype}")
 diff = np.abs(actual - golden)
 print(f"max_abs_diff={diff.max():.6e}")
 print(f"mean_abs_diff={diff.mean():.6e}")
