@@ -63,8 +63,8 @@ static void printArtifactSummary(const KernelArtifact &artifact) {
                  << "\n";
 }
 
-static bool needsLegacyRunnerCompatibility(const std::string &kernelType) {
-  return kernelType == "mix";
+static bool shouldAttemptLegacyRunnerCompatibility(const std::string &kernelType) {
+  return kernelType == "vec" || kernelType == "cube" || kernelType == "mix";
 }
 
 int main(int argc, char** argv) {
@@ -77,19 +77,6 @@ int main(int argc, char** argv) {
 
   if (kernel_name.empty()) {
     llvm::errs() << "Error: cannot derive kernel name from --kernel; use --name\n";
-    return 4;
-  }
-
-  // Validate numeric args
-  if (NumInputs <= 0) {
-    llvm::errs() << "Error: --num-inputs must be >= 1\n"; return 4;
-  }
-  if (NumOutputs <= 0) {
-    llvm::errs() << "Error: --num-outputs must be >= 1\n"; return 4;
-  }
-  if (NumOutputs != 1) {
-    llvm::errs() << "Error: --num-outputs " << NumOutputs
-                 << " not supported (only 1 is implemented)\n";
     return 4;
   }
 
@@ -126,8 +113,24 @@ int main(int argc, char** argv) {
   }
   printArtifactSummary(*artifactOr);
 
-  if (!needsLegacyRunnerCompatibility(KernelType.getValue()))
+  if (!shouldAttemptLegacyRunnerCompatibility(KernelType.getValue()))
     return 0;
+
+  // Runner compatibility is still part of the CLI contract, so validate the
+  // runner-specific arguments only when we actually try to build that output.
+  if (NumInputs <= 0) {
+    llvm::errs() << "Error: --num-inputs must be >= 1\n";
+    return 4;
+  }
+  if (NumOutputs <= 0) {
+    llvm::errs() << "Error: --num-outputs must be >= 1\n";
+    return 4;
+  }
+  if (NumOutputs != 1) {
+    llvm::errs() << "Error: --num-outputs " << NumOutputs
+                 << " not supported (only 1 is implemented)\n";
+    return 4;
+  }
 
   HostRunnerGen::Config hcfg;
   hcfg.kernel_name = kernel_name;
