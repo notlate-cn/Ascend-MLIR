@@ -1,16 +1,23 @@
 // tools/validator/validator_main.cpp
-#include "Runtime/Executor.h"
+#include "Runtime/CompatRuntime.h"
+#include "Runtime/ExecutionSession.h"
 #include "Runtime/NpyIO.h"
 #include "Runtime/SimValidator.h"
 #include "Runtime/TilingSchema.h"
-#include "Runtime/Types.h"
+#include "Runtime/TaskGraph.h"
+#include "llvm/ADT/ArrayRef.h"
+#include "llvm/ADT/SmallString.h"
 #include "llvm/Support/CommandLine.h"
+#include "llvm/Support/FileSystem.h"
+#include "llvm/Support/Path.h"
 #include "llvm/Support/raw_ostream.h"
 #include <cstdlib>
 #include <cstring>
 #include <fstream>
 #include <iomanip>
+#include <iterator>
 #include <map>
+#include <filesystem>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -141,6 +148,60 @@ static bool buildTiling(const std::string& params, const std::string& layout,
   return true;
 }
 
+static llvm::Expected<std::string>
+makeTemporaryPath(llvm::StringRef prefix, llvm::StringRef fileName) {
+  std::error_code ec;
+  const std::filesystem::path tempRoot = std::filesystem::temp_directory_path(ec);
+  if (ec) {
+    return llvm::createStringError(ec,
+                                   "cannot determine temp directory for validator");
+  }
+
+  llvm::SmallString<256> directoryPrefix(tempRoot.string());
+  llvm::sys::path::append(directoryPrefix, prefix);
+  llvm::SmallString<256> directory;
+  if (auto createDirError =
+          llvm::sys::fs::createUniqueDirectory(directoryPrefix, directory)) {
+    return llvm::createStringError(createDirError,
+                                   "cannot create temporary validator directory");
+  }
+
+  llvm::SmallString<256> filePath(directory);
+  llvm::sys::path::append(filePath, fileName);
+  return filePath.str().str();
+}
+
+static llvm::Expected<std::string>
+writeBinaryFile(llvm::StringRef path, llvm::ArrayRef<uint8_t> bytes) {
+  std::error_code ec;
+  llvm::raw_fd_ostream os(path, ec, llvm::sys::fs::OF_None);
+  if (ec) {
+    return llvm::createStringError(ec, "cannot open %s for writing", path.str().c_str());
+  }
+  os.write(reinterpret_cast<const char *>(bytes.data()), bytes.size());
+  os.close();
+  if (ec) {
+    return llvm::createStringError(ec, "cannot write %s", path.str().c_str());
+  }
+  return path.str();
+}
+
+static llvm::Expected<TaskGraph>
+buildTaskGraphFromManifest(const KernelArtifact &artifact,
+                           const RunManifestSpec &manifest) {
+  TaskGraph graph;
+  for (const RunTaskSpec &taskSpec : manifest.tasks) {
+    RuntimeTask task;
+    task.taskId = taskSpec.taskId;
+    task.artifact = artifact;
+    task.dependencies = taskSpec.dependencies;
+    task.invocation = taskSpec.invocation;
+    if (auto err = graph.addTask(task))
+      return std::move(err);
+  }
+  return graph;
+}
+
 int main(int argc, char** argv) {
   cl::ParseCommandLineOptions(argc, argv, "AscendC Kernel Validator\n");
 
@@ -153,32 +214,32 @@ int main(int argc, char** argv) {
     _Exit(4);
   }
 
-  // Build tiling bytes
-  std::vector<uint8_t> tiling;
+  std::string tilingBinaryPath = TilingBinFile;
   if (!TilingBinFile.empty()) {
     std::ifstream is(TilingBinFile, std::ios::binary);
     if (!is) {
       llvm::errs() << "Error: cannot open --tiling-bin " << TilingBinFile << "\n";
       _Exit(4);
     }
-    tiling.assign(std::istreambuf_iterator<char>(is), std::istreambuf_iterator<char>());
+    const std::vector<uint8_t> tilingBytes{
+        std::istreambuf_iterator<char>(is), std::istreambuf_iterator<char>()};
+    (void)tilingBytes;
     if (!is.good() && !is.eof()) {
       llvm::errs() << "Error: failed reading --tiling-bin " << TilingBinFile << "\n";
       _Exit(4);
     }
   } else if (!TilingParams.empty()) {
     if (!TilingSchemaFile.empty()) {
-      // Schema-validated path: load schema, accept params in any order
+      // Schema-validated path: load schema, accept params in any order.
       auto schemaOrErr = mlir::runtime::TilingSchema::fromJson(TilingSchemaFile);
       if (!schemaOrErr) {
         llvm::errs() << "Error: --tiling-schema: "
                      << llvm::toString(schemaOrErr.takeError()) << "\n";
         _Exit(4);
       }
-      // Parse KEY=VALUE params into a name->value map
       auto pvec = splitComma(TilingParams);
       std::map<std::string, int64_t> pmap;
-      for (auto& token : pvec) {
+      for (auto &token : pvec) {
         auto eq = token.find('=');
         if (eq == std::string::npos) {
           llvm::errs() << "Error: --tiling-params token missing '=': " << token << "\n";
@@ -186,9 +247,8 @@ int main(int argc, char** argv) {
         }
         pmap[token.substr(0, eq)] = std::stoll(token.substr(eq + 1));
       }
-      // Reorder by schema field declaration order, check for missing fields
       std::vector<std::pair<std::string, int64_t>> namedParams;
-      for (auto& field : schemaOrErr->fields()) {
+      for (auto &field : schemaOrErr->fields()) {
         auto it = pmap.find(field.name);
         if (it == pmap.end()) {
           llvm::errs() << "Error: --tiling-params missing field '" << field.name
@@ -197,10 +257,9 @@ int main(int argc, char** argv) {
         }
         namedParams.push_back({field.name, it->second});
       }
-      // Warn about extra params not in schema
-      for (auto& kv : pmap) {
+      for (auto &kv : pmap) {
         bool found = false;
-        for (auto& f : schemaOrErr->fields())
+        for (auto &f : schemaOrErr->fields())
           if (f.name == kv.first) { found = true; break; }
         if (!found)
           llvm::errs() << "Warning: --tiling-params field '" << kv.first
@@ -212,19 +271,27 @@ int main(int argc, char** argv) {
                      << llvm::toString(bytesOrErr.takeError()) << "\n";
         _Exit(4);
       }
-      tiling = std::move(*bytesOrErr);
     } else {
       // Legacy path: positional layout string
-      if (!buildTiling(TilingParams, TilingLayout, tiling)) _Exit(4);
+      std::vector<uint8_t> tilingBytes;
+      if (!buildTiling(TilingParams, TilingLayout, tilingBytes))
+        _Exit(4);
+      auto tilingPathOr = makeTemporaryPath("ascendc-validator-tiling", "tiling.bin");
+      if (!tilingPathOr) {
+        llvm::errs() << "Error: " << llvm::toString(tilingPathOr.takeError()) << "\n";
+        _Exit(4);
+      }
+      auto writtenOr = writeBinaryFile(*tilingPathOr, tilingBytes);
+      if (!writtenOr) {
+        llvm::errs() << "Error: " << llvm::toString(writtenOr.takeError()) << "\n";
+        _Exit(4);
+      }
+      tilingBinaryPath = *writtenOr;
     }
   }
 
   // Load inputs
-  RunArgs args;
-  args.tiling = tiling;
-  args.block_dim = BlockDim;
-  args.workspace_size = static_cast<size_t>(WorkspaceSize);
-
+  std::vector<std::string> inputPaths;
   for (auto& path : splitComma(Inputs)) {
     auto arr_or = LoadNpy(path);
     if (!arr_or) {
@@ -232,7 +299,7 @@ int main(int argc, char** argv) {
                    << llvm::toString(arr_or.takeError()) << "\n";
       _Exit(4);
     }
-    args.inputs.push_back(std::move(*arr_or));
+    inputPaths.push_back(path);
   }
 
   // Load expected output
@@ -243,8 +310,6 @@ int main(int argc, char** argv) {
     _Exit(4);
   }
   NDArray exp_arr = std::move(*exp_or);
-  // Deep-copy expected data: simulator may overwrite the original buffer
-  // during Initialize/Run (simulator maps host memory as device memory).
   NDArray exp_snapshot;
   exp_snapshot.shape = exp_arr.shape;
   exp_snapshot.dtype = exp_arr.dtype;
@@ -253,54 +318,86 @@ int main(int argc, char** argv) {
   std::vector<NDArray> expected_arrs;
   expected_arrs.push_back(std::move(exp_snapshot));
 
-  // Pre-alloc output buffer (same shape/dtype as expected)
-  NDArray out_buf;
-  out_buf.shape = exp_arr.shape;
-  out_buf.dtype = exp_arr.dtype;
-  out_buf.allocate();
-  args.outputs.push_back(std::move(out_buf));
-
   // Dump expected immediately after loading, before simulator touches memory
   if (!DumpExpected.empty()) dumpArray(exp_arr, DumpExpected, Precision);
 
-  // Initialize executor
-  Executor executor(BackendMode::Simulation);
-  if (auto err = executor.Initialize()) {
-    llvm::errs() << "Error: executor init failed: "
-                 << llvm::toString(std::move(err)) << "\n";
+  auto actualOutputPathOr = makeTemporaryPath("ascendc-validator-actual", "actual.npy");
+  if (!actualOutputPathOr) {
+    llvm::errs() << "Error: " << llvm::toString(actualOutputPathOr.takeError()) << "\n";
     _Exit(3);
   }
 
-  SimValidator validator;
-  SimValidator::Result result;
-  const bool isMix = (KernelType.getValue() == "mix");
-  if (isMix) {
-    if (auto err = executor.RunPackedMixFile(BinFile, KernelName, args)) {
-      llvm::errs() << "Error: RunPackedMixFile failed: "
-                   << llvm::toString(std::move(err)) << "\n";
-      _Exit(3);
-    }
-    result = validator.CompareOnly(args, expected_arrs, Atol, Rtol);
-  } else {
-    // Map kernel_type → magic
-    uint32_t magic = Executor::MAGIC_ELF_AIVEC;
-    if (KernelType.getValue() == "cube") magic = Executor::MAGIC_ELF_AICUBE;
+  CompatValidateOptions compatOptions;
+  compatOptions.artifactRoot = std::filesystem::absolute(
+      std::filesystem::path(BinFile.getValue())).parent_path().string();
+  compatOptions.inputPaths = inputPaths;
+  compatOptions.expectedOutputPath = "";
+  compatOptions.actualOutputPath = *actualOutputPathOr;
+  compatOptions.tilingSchemaPath = TilingSchemaFile;
+  compatOptions.tilingParams = TilingParams;
+  compatOptions.tilingBinaryPath = tilingBinaryPath;
+  compatOptions.actualOutputShape = exp_arr.shape;
+  compatOptions.actualOutputDType = exp_arr.dtype;
+  compatOptions.blockDim = BlockDim;
+  compatOptions.atol = Atol;
+  compatOptions.rtol = Rtol;
 
-    // Register binary once
-    auto handle_or = executor.RegisterBinary(BinFile, KernelName, magic);
-    if (!handle_or) {
-      llvm::errs() << "Error: RegisterBinary failed: "
-                   << llvm::toString(handle_or.takeError()) << "\n";
-      _Exit(3);
-    }
-
-    // Run and compare
-    result = validator.ValidateBinary(*handle_or, executor, args,
-                                      expected_arrs, Atol, Rtol);
+  auto manifestOr = buildCompatSingleTaskRunManifest(compatOptions);
+  if (!manifestOr) {
+    llvm::errs() << "Error: " << llvm::toString(manifestOr.takeError()) << "\n";
+    _Exit(4);
   }
 
-  // Dump actual immediately after run, before buffers go out of scope
-  if (!DumpActual.empty()) dumpArray(args.outputs[0], DumpActual, Precision);
+  RunManifestSpec manifest = *manifestOr;
+  if (manifest.tasks.empty()) {
+    llvm::errs() << "Error: runtime manifest did not contain any tasks\n";
+    _Exit(4);
+  }
+
+  manifest.tasks[0].invocation.workspaceSize =
+      static_cast<size_t>(WorkspaceSize);
+
+  KernelArtifact artifact;
+  artifact.kernelName = KernelName;
+  artifact.kernelKind = KernelType.getValue() == "mix"
+                             ? KernelKind::Mix
+                             : KernelType.getValue() == "cube"
+                                   ? KernelKind::Cube
+                                   : KernelKind::Vec;
+  artifact.artifactRoot = compatOptions.artifactRoot;
+  if (artifact.kernelKind == KernelKind::Mix)
+    artifact.packedSharedObjectPath = BinFile;
+  else
+    artifact.deviceBinaryPath = BinFile;
+
+  auto graphOr = buildTaskGraphFromManifest(artifact, manifest);
+  if (!graphOr) {
+    llvm::errs() << "Error: " << llvm::toString(graphOr.takeError()) << "\n";
+    _Exit(4);
+  }
+
+  ExecutionSession session(ExecutionBackendKind::Simulation);
+  auto traceOr = session.run(*graphOr);
+  if (!traceOr) {
+    llvm::errs() << "Error: " << llvm::toString(traceOr.takeError()) << "\n";
+    _Exit(3);
+  }
+
+  auto actualOr = LoadNpy(*actualOutputPathOr);
+  if (!actualOr) {
+    llvm::errs() << "Error loading actual output: "
+                 << llvm::toString(actualOr.takeError()) << "\n";
+    _Exit(3);
+  }
+
+  NDArray actual_arr = std::move(*actualOr);
+  if (!DumpActual.empty()) dumpArray(actual_arr, DumpActual, Precision);
+
+  RunArgs args;
+  args.outputs.push_back(std::move(actual_arr));
+
+  SimValidator validator;
+  SimValidator::Result result = validator.CompareOnly(args, expected_arrs, Atol, Rtol);
 
   // NDArray RAII: owned_data freed automatically when args/exp_arr go out of scope.
 
