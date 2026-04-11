@@ -320,6 +320,7 @@ if [ -f "$BIN" ]; then
     2>&1 | tee "$VALIDATION_LOG" | grep -v '^\[info\]\|^\[PEM_AIC_LOG\]\|^\[INFO\]\|^\[WARNING\]' || true
   grep -q '^session.backend=sim$' "$VALIDATION_LOG"
   grep -q '^session.result=success$' "$VALIDATION_LOG"
+  grep -q '^session.validation=pass$' "$VALIDATION_LOG"
 else
   echo "  ⚠ bin not found — skipping run"
 fi

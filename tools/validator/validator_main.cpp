@@ -287,6 +287,7 @@ int main(int argc, char** argv) {
 
   auto actualOr = LoadNpy(*actualOutputPathOr);
   if (!actualOr) {
+    emitValidatorRuntimeMarker(false);
     llvm::errs() << "Error loading actual output: "
                  << llvm::toString(actualOr.takeError()) << "\n";
     _Exit(3);
