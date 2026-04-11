@@ -56,6 +56,8 @@
 **Files:**
 - Create: `include/Runtime/CompatRuntime.h`
 - Create: `lib/Runtime/CompatRuntime.cpp`
+- Modify: `include/Runtime/ArtifactCompiler.h`
+- Modify: `lib/Runtime/ArtifactCompiler.cpp`
 - Modify: `lib/Runtime/CMakeLists.txt`
 - Test: `test/tools/runtime/test_taskgraph_runtime.cpp`
 
@@ -125,13 +127,17 @@ struct CompatValidateOptions {
   std::string tilingSchemaPath;
   std::string tilingParams;
   std::string tilingBinaryPath;
+  std::optional<std::vector<int64_t>> actualOutputShape;
+  std::optional<DType> actualOutputDType;
   int blockDim = 1;
   double atol = 1.0;
   double rtol = 1e-2;
 };
 
-ArtifactCompileRequest buildCompatCompileRequest(const CompatCompileOptions &);
-RunManifest buildCompatSingleTaskRunManifest(const CompatValidateOptions &);
+llvm::Expected<ArtifactCompileRequest>
+buildCompatCompileRequest(const CompatCompileOptions &);
+llvm::Expected<RunManifestSpec>
+buildCompatSingleTaskRunManifest(const CompatValidateOptions &);
 ```
 
 - [ ] **Step 4: Implement the helper definitions**
@@ -139,15 +145,23 @@ RunManifest buildCompatSingleTaskRunManifest(const CompatValidateOptions &);
 Create `lib/Runtime/CompatRuntime.cpp` with minimal conversion logic:
 
 ```cpp
-ArtifactCompileRequest buildCompatCompileRequest(
+llvm::Expected<ArtifactCompileRequest> buildCompatCompileRequest(
     const CompatCompileOptions &options) {
+  if (options.kernelType != "vec" && options.kernelType != "cube" &&
+      options.kernelType != "mix")
+    return llvm::createStringError(llvm::inconvertibleErrorCode(),
+                                   "unsupported kernel type: %s",
+                                   options.kernelType.c_str());
+
   ArtifactCompileRequest request;
-  request.kernelSourcePath = options.kernelSourcePath;
-  request.outputRoot = options.outputRoot;
-  request.requestedKernelName = options.requestedKernelName;
+  request.kernelSource = options.kernelSourcePath;
+  request.kernelName = options.requestedKernelName;
   request.socVersion = options.socVersion;
   request.arch = options.arch;
-  request.kernelType = options.kernelType;
+  request.kernelKind = options.kernelType == "cube" ? KernelKind::Cube
+                    : options.kernelType == "mix"  ? KernelKind::Mix
+                                                   : KernelKind::Vec;
+  request.outputDir = options.outputRoot;
   request.verbose = options.verbose;
   return request;
 }
@@ -156,27 +170,33 @@ ArtifactCompileRequest buildCompatCompileRequest(
 and
 
 ```cpp
-RunManifest buildCompatSingleTaskRunManifest(
+llvm::Expected<RunManifestSpec> buildCompatSingleTaskRunManifest(
     const CompatValidateOptions &options) {
-  RunManifest manifest;
-  manifest.artifactRoot = options.artifactRoot;
+  RunManifestSpec manifest;
+  manifest.backendKind = ExecutionBackendKind::Simulation;
 
-  RunTaskManifest task;
+  RunTaskSpec task;
   task.taskId = "main";
-  task.backend = "sim";
-  task.blockDim = options.blockDim;
-  task.atol = options.atol;
-  task.rtol = options.rtol;
-  for (const auto &inputPath : options.inputPaths)
-    task.inputs.push_back(TensorBinding::fromFile(inputPath));
-  if (!options.expectedOutputPath.empty())
-    task.expectedOutputs.push_back(TensorBinding::fromFile(
-        options.expectedOutputPath));
-
+  task.artifactRoot = options.artifactRoot;
+  task.invocation.blockDim = options.blockDim;
+  task.invocation.atol = options.atol;
+  task.invocation.rtol = options.rtol;
+  // Build file-backed input and output bindings here.
   manifest.tasks.push_back(std::move(task));
   return manifest;
 }
 ```
+
+If helper hardening reveals that `ArtifactCompileRequest` must carry `arch` and
+`verbose` to avoid dead compatibility fields, this task is allowed to make the
+smallest required changes in:
+
+```cpp
+include/Runtime/ArtifactCompiler.h
+lib/Runtime/ArtifactCompiler.cpp
+```
+
+That extension remains part of Task 1 rather than being deferred to Task 2.
 
 - [ ] **Step 5: Wire the helper into the runtime library**
 
@@ -205,6 +225,7 @@ Expected:
 
 ```bash
 git add include/Runtime/CompatRuntime.h lib/Runtime/CompatRuntime.cpp \
+  include/Runtime/ArtifactCompiler.h lib/Runtime/ArtifactCompiler.cpp \
   lib/Runtime/CMakeLists.txt test/tools/runtime/test_taskgraph_runtime.cpp
 git commit -m "feat: add runtime compatibility adapter helpers"
 ```
