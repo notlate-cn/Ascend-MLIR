@@ -714,6 +714,87 @@ static void testCompatSingleTaskRunManifestRejectsInvalidCombination() {
     llvm::consumeError(missingMetadataOr.takeError());
 }
 
+static void testCompatValidatorRoutesThroughExecutionSession() {
+  CompatValidateOptions options;
+  options.artifactRoot = "/tmp/validator-artifact";
+  options.inputPaths = {"/tmp/input0.npy", "/tmp/input1.npy"};
+  options.actualOutputPath = "/tmp/validator-actual.npy";
+  options.actualOutputShape = std::vector<int64_t>{4, 8};
+  options.actualOutputDType = DType::F32;
+  options.blockDim = 12;
+  options.atol = 1.25;
+  options.rtol = 0.03;
+
+  auto manifestOr = buildCompatSingleTaskRunManifest(options);
+  EXPECT((bool)manifestOr, "compat validator manifest builds for runtime session");
+  if (!manifestOr)
+    return;
+  EXPECT(manifestOr->tasks.size() == 1,
+         "compat validator manifest contains one task");
+  manifestOr->tasks[0].invocation.workspaceSize = 65536;
+
+  KernelArtifact artifact;
+  artifact.kernelName = "legacy_vec_name";
+  artifact.kernelKind = KernelKind::Vec;
+  artifact.artifactRoot = options.artifactRoot;
+  artifact.deviceBinaryPath = "/tmp/legacy_vec.bin";
+
+  TaskGraph graph;
+  RuntimeTask task;
+  task.taskId = manifestOr->tasks[0].taskId;
+  task.artifact = artifact;
+  task.invocation = manifestOr->tasks[0].invocation;
+  auto addErr = graph.addTask(task);
+  EXPECT(!addErr, "compat validator runtime graph adds task");
+  if (addErr) {
+    llvm::consumeError(std::move(addErr));
+    return;
+  }
+
+  auto driver = std::make_shared<RecordingBackendDriver>();
+  RecordingBackendDriver *driverPtr = driver.get();
+  ExecutionSession session(ExecutionBackendKind::Simulation, driver);
+  auto traceOr = session.run(graph);
+  EXPECT((bool)traceOr, "compat validator runtime session runs");
+  if (!traceOr) {
+    llvm::consumeError(traceOr.takeError());
+    return;
+  }
+
+  EXPECT(driverPtr->invocations == 1,
+         "compat validator runtime session invokes backend once");
+  if (driverPtr->invocations != 1)
+    return;
+
+  EXPECT(driverPtr->lastRequest.sessionId == traceOr->sessionId,
+         "compat validator runtime session reuses generated session id");
+  EXPECT(driverPtr->lastRequest.task.taskId == "main",
+         "compat validator runtime session preserves task id");
+  EXPECT(driverPtr->lastRequest.task.artifact.kernelName == "legacy_vec_name",
+         "compat validator runtime session preserves kernel name");
+  EXPECT(driverPtr->lastRequest.task.invocation.inputs.size() == 2,
+         "compat validator runtime session preserves input bindings");
+  EXPECT(driverPtr->lastRequest.task.invocation.outputs.size() == 1,
+         "compat validator runtime session preserves output binding");
+  if (driverPtr->lastRequest.task.invocation.outputs.size() == 1) {
+    EXPECT(driverPtr->lastRequest.task.invocation.outputs[0].path ==
+               options.actualOutputPath,
+           "compat validator runtime session preserves actual output path");
+    EXPECT(driverPtr->lastRequest.task.invocation.outputs[0].shape.has_value(),
+           "compat validator runtime session preserves output shape");
+    EXPECT(driverPtr->lastRequest.task.invocation.outputs[0].dtype.has_value(),
+           "compat validator runtime session preserves output dtype");
+  }
+  EXPECT(driverPtr->lastRequest.task.invocation.blockDim == 12,
+         "compat validator runtime session preserves block dim");
+  EXPECT(driverPtr->lastRequest.task.invocation.workspaceSize == 65536,
+         "compat validator runtime session preserves workspace size");
+  EXPECT(driverPtr->lastRequest.task.invocation.atol == 1.25,
+         "compat validator runtime session preserves atol");
+  EXPECT(driverPtr->lastRequest.task.invocation.rtol == 0.03,
+         "compat validator runtime session preserves rtol");
+}
+
 static void testVecCompileCreatesOutputDir() {
   std::error_code ec;
   const std::string outputDir = "/tmp/taskgraph-artifact-out-created";
@@ -1761,6 +1842,7 @@ int main() {
   testCompatSingleTaskRunManifestBuildsExpectedBackedTask();
   testCompatSingleTaskRunManifestBuildsMetadataBackedTask();
   testCompatSingleTaskRunManifestRejectsInvalidCombination();
+  testCompatValidatorRoutesThroughExecutionSession();
   testVecCompileCreatesOutputDir();
   testBackendSelection();
   testDefaultBackendRequiresDriver();
