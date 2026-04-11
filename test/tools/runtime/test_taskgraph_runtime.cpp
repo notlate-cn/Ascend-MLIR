@@ -494,9 +494,11 @@ static void testCompatCompilerCliPrintsNormalizedArtifactSummary() {
          "compat compiler prints normalized device binary path");
   EXPECT(output.find("Compiled:") == std::string::npos,
          "compat compiler no longer prints raw compiler result");
-  EXPECT(output.find("Warning: runner generation unavailable:") !=
+  EXPECT(output.find("Warning: runner generation unavailable:") ==
              std::string::npos,
-         "compat compiler reports runner generation as best-effort");
+         "compat compiler skips runner generation on the normal path");
+  EXPECT(output.find("runner=") == std::string::npos,
+         "compat compiler does not emit runner output on the normal path");
 }
 
 static void testCompatSingleTaskRunManifestBuildsExpectedBackedTask() {

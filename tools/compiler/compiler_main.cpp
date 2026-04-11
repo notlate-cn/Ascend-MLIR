@@ -63,6 +63,10 @@ static void printArtifactSummary(const KernelArtifact &artifact) {
                  << "\n";
 }
 
+static bool needsLegacyRunnerCompatibility(const std::string &kernelType) {
+  return kernelType == "mix";
+}
+
 int main(int argc, char** argv) {
   cl::ParseCommandLineOptions(argc, argv, "AscendC Kernel Compiler\n");
 
@@ -121,6 +125,9 @@ int main(int argc, char** argv) {
     return 2;
   }
   printArtifactSummary(*artifactOr);
+
+  if (!needsLegacyRunnerCompatibility(KernelType.getValue()))
+    return 0;
 
   HostRunnerGen::Config hcfg;
   hcfg.kernel_name = kernel_name;
