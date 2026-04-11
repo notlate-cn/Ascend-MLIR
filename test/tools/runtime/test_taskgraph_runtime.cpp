@@ -27,14 +27,11 @@
 #include "llvm/Support/Error.h"
 #include "llvm/Support/raw_ostream.h"
 
-#define main validator_main_main
-#include "../../../tools/validator/validator_main.cpp"
-#undef main
-
 #include <filesystem>
 #include <fstream>
 #include <cstring>
 #include <cstdlib>
+#include <iterator>
 #include <memory>
 #include <string>
 #include <vector>
@@ -895,12 +892,19 @@ static void testValidatorPreparesTilingBinaryPaths() {
   if (schemaPath.empty())
     return;
 
+  std::string warningText;
+  llvm::raw_string_ostream warningStream(warningText);
   auto schemaPathOr =
-      prepareValidatorTilingBinaryPath("", schemaPath, "TB_M=16,TB_N=4", "");
+      prepareValidatorTilingBinaryPath("", schemaPath,
+                                        "TB_M=16,TB_N=4,EXTRA=9", "",
+                                        &warningStream);
+  warningStream.flush();
   EXPECT((bool)schemaPathOr,
          "compat validator schema tiling path materializes");
   if (!schemaPathOr)
     return;
+  EXPECT(warningText.find("EXTRA") != std::string::npos,
+         "compat validator schema tiling path warns on extra params");
 
   auto schemaBytes = readBinaryFile(*schemaPathOr);
   EXPECT(schemaBytes.size() == 12,

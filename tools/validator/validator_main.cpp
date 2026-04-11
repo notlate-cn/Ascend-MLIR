@@ -3,9 +3,7 @@
 #include "Runtime/ExecutionSession.h"
 #include "Runtime/NpyIO.h"
 #include "Runtime/SimValidator.h"
-#include "Runtime/TilingSchema.h"
 #include "Runtime/TaskGraph.h"
-#include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/SmallString.h"
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/FileSystem.h"
@@ -15,8 +13,6 @@
 #include <cstring>
 #include <fstream>
 #include <iomanip>
-#include <iterator>
-#include <map>
 #include <filesystem>
 #include <sstream>
 #include <string>
@@ -121,33 +117,6 @@ static std::vector<std::string> splitComma(const std::string& s) {
   return parts;
 }
 
-static bool buildTiling(const std::string& params, const std::string& layout,
-                        std::vector<uint8_t>& bytes) {
-  auto pvec = splitComma(params);
-  auto lvec = splitComma(layout);
-  for (size_t i = 0; i < pvec.size(); ++i) {
-    auto eq = pvec[i].find('=');
-    if (eq == std::string::npos) {
-      llvm::errs() << "Error: --tiling-params token missing '=': " << pvec[i] << "\n";
-      return false;
-    }
-    int64_t val = std::stoll(pvec[i].substr(eq + 1));
-    std::string type = i < lvec.size() ? lvec[i] : "int64";
-    if (type == "int64" || type == "int64_t") {
-      uint8_t buf[8]; std::memcpy(buf, &val, 8);
-      bytes.insert(bytes.end(), buf, buf + 8);
-    } else if (type == "int32" || type == "int32_t") {
-      int32_t v = static_cast<int32_t>(val);
-      uint8_t buf[4]; std::memcpy(buf, &v, 4);
-      bytes.insert(bytes.end(), buf, buf + 4);
-    } else {
-      llvm::errs() << "Error: unknown tiling type '" << type << "'\n";
-      return false;
-    }
-  }
-  return true;
-}
-
 static llvm::Expected<std::string>
 makeTemporaryPath(llvm::StringRef prefix, llvm::StringRef fileName) {
   std::error_code ec;
@@ -169,113 +138,6 @@ makeTemporaryPath(llvm::StringRef prefix, llvm::StringRef fileName) {
   llvm::SmallString<256> filePath(directory);
   llvm::sys::path::append(filePath, fileName);
   return filePath.str().str();
-}
-
-static llvm::Expected<std::string>
-writeBinaryFile(llvm::StringRef path, llvm::ArrayRef<uint8_t> bytes) {
-  std::error_code ec;
-  llvm::raw_fd_ostream os(path, ec, llvm::sys::fs::OF_None);
-  if (ec) {
-    return llvm::createStringError(ec, "cannot open %s for writing", path.str().c_str());
-  }
-  os.write(reinterpret_cast<const char *>(bytes.data()), bytes.size());
-  os.close();
-  if (ec) {
-    return llvm::createStringError(ec, "cannot write %s", path.str().c_str());
-  }
-  return path.str();
-}
-
-static llvm::Expected<std::vector<uint8_t>>
-readBinaryFile(llvm::StringRef path) {
-  std::ifstream is(path.str(), std::ios::binary);
-  if (!is) {
-    return llvm::createStringError(llvm::inconvertibleErrorCode(),
-                                   "cannot open %s", path.str().c_str());
-  }
-  std::vector<uint8_t> bytes((std::istreambuf_iterator<char>(is)),
-                             std::istreambuf_iterator<char>());
-  if (!is.good() && !is.eof()) {
-    return llvm::createStringError(llvm::inconvertibleErrorCode(),
-                                   "failed reading %s", path.str().c_str());
-  }
-  return bytes;
-}
-
-llvm::Expected<std::string>
-prepareValidatorTilingBinaryPath(llvm::StringRef tilingBinFile,
-                                 llvm::StringRef tilingSchemaFile,
-                                 llvm::StringRef tilingParams,
-                                 llvm::StringRef tilingLayout) {
-  if (!tilingBinFile.empty()) {
-    auto bytesOr = readBinaryFile(tilingBinFile);
-    if (!bytesOr)
-      return bytesOr.takeError();
-    auto pathOr = makeTemporaryPath("ascendc-validator-tiling", "tiling.bin");
-    if (!pathOr)
-      return pathOr.takeError();
-    auto writtenOr = writeBinaryFile(*pathOr, *bytesOr);
-    if (!writtenOr)
-      return writtenOr.takeError();
-    return *writtenOr;
-  }
-
-  if (tilingParams.empty())
-    return std::string{};
-
-  if (!tilingSchemaFile.empty()) {
-    auto schemaOrErr = mlir::runtime::TilingSchema::fromJson(tilingSchemaFile);
-    if (!schemaOrErr)
-      return schemaOrErr.takeError();
-
-    auto pvec = splitComma(tilingParams.str());
-    std::map<std::string, int64_t> pmap;
-    for (auto &token : pvec) {
-      auto eq = token.find('=');
-      if (eq == std::string::npos) {
-        return llvm::createStringError(llvm::inconvertibleErrorCode(),
-                                       "tiling params token missing '=': %s",
-                                       token.c_str());
-      }
-      pmap[token.substr(0, eq)] = std::stoll(token.substr(eq + 1));
-    }
-
-    std::vector<std::pair<std::string, int64_t>> namedParams;
-    for (auto &field : schemaOrErr->fields()) {
-      auto it = pmap.find(field.name);
-      if (it == pmap.end()) {
-        return llvm::createStringError(
-            llvm::inconvertibleErrorCode(),
-            "tiling params missing field '%s' required by schema",
-            field.name.c_str());
-      }
-      namedParams.push_back({field.name, it->second});
-    }
-
-    auto bytesOrErr = schemaOrErr->pack(namedParams);
-    if (!bytesOrErr)
-      return bytesOrErr.takeError();
-
-    auto pathOr = makeTemporaryPath("ascendc-validator-tiling", "tiling.bin");
-    if (!pathOr)
-      return pathOr.takeError();
-    auto writtenOr = writeBinaryFile(*pathOr, *bytesOrErr);
-    if (!writtenOr)
-      return writtenOr.takeError();
-    return *writtenOr;
-  }
-
-  std::vector<uint8_t> tilingBytes;
-  if (!buildTiling(tilingParams.str(), tilingLayout.str(), tilingBytes))
-    return llvm::createStringError(llvm::inconvertibleErrorCode(),
-                                   "failed to build legacy tiling bytes");
-  auto pathOr = makeTemporaryPath("ascendc-validator-tiling", "tiling.bin");
-  if (!pathOr)
-    return pathOr.takeError();
-  auto writtenOr = writeBinaryFile(*pathOr, tilingBytes);
-  if (!writtenOr)
-    return writtenOr.takeError();
-  return *writtenOr;
 }
 
 static llvm::Expected<TaskGraph>
@@ -307,7 +169,8 @@ int main(int argc, char** argv) {
   }
 
   auto tilingBinaryPathOr = prepareValidatorTilingBinaryPath(
-      TilingBinFile, TilingSchemaFile, TilingParams, TilingLayout);
+      TilingBinFile, TilingSchemaFile, TilingParams, TilingLayout,
+      &llvm::errs());
   if (!tilingBinaryPathOr) {
     llvm::errs() << "Error: " << llvm::toString(tilingBinaryPathOr.takeError())
                  << "\n";
