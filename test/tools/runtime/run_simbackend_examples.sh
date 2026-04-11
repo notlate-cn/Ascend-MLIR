@@ -190,8 +190,8 @@ run_vec_example() {
   actual_output="$(make_tmp_output)"
 
   bash "${example_dir}/run.sh" 2>&1 | tee "${example_log}"
-  grep -q '^session.backend=sim' "${example_log}"
-  grep -q '^session.result=success' "${example_log}"
+  grep -q '^session.backend=sim$' "${example_log}"
+  grep -q '^session.result=success$' "${example_log}"
 
   "${RUNTIME_SESSION}" \
     --kernel "${example_dir}/${kernel_file}" \

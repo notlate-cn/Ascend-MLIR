@@ -190,8 +190,8 @@ $VALIDATOR \
   --dump-actual "$BUILD_DIR/actual.txt" \
   --dump-expected "$BUILD_DIR/expected.txt" \
   2>&1 | tee "$VALIDATION_LOG"
-grep -q '^session.backend=sim' "$VALIDATION_LOG"
-grep -q '^session.result=success' "$VALIDATION_LOG"
+grep -q '^session.backend=sim$' "$VALIDATION_LOG"
+grep -q '^session.result=success$' "$VALIDATION_LOG"
 
 echo ""
 echo "========================================================"

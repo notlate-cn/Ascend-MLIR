@@ -192,8 +192,8 @@ if [ -f "$BIN" ]; then
     --dump-expected "$BUILD_DIR/expected.txt" \
     --precision 4 \
     2>&1 | tee "$VALIDATION_LOG" | grep -v '^\[info\]\|^\[PEM_AIC_LOG\]\|^\[INFO\]\|^\[WARNING\]' || true
-  grep -q '^session.backend=sim' "$VALIDATION_LOG"
-  grep -q '^session.result=success' "$VALIDATION_LOG"
+  grep -q '^session.backend=sim$' "$VALIDATION_LOG"
+  grep -q '^session.result=success$' "$VALIDATION_LOG"
 else
   echo "  ⚠ bin not found — skipping run"
 fi
