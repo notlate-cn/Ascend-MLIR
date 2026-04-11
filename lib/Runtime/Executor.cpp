@@ -41,18 +41,40 @@ static std::string getLibPath() {
       home, resolveSocVersion("", "Ascend910B1"));
 }
 
+static std::string getRuntimeLibPath() {
+  const std::string home = findAscendHome();
+  return findAscendRuntimeLibPath(home);
+}
+
 static std::string getAclLibPath() {
   const std::string home = findAscendHome();
   return findAscendAclLibPath(home);
 }
 
+static void prependEnvPath(const char *name, const std::string &prefix) {
+  if (prefix.empty())
+    return;
+  const char *current = std::getenv(name);
+  std::string value = prefix;
+  if (current && *current) {
+    value.push_back(':');
+    value += current;
+  }
+  ::setenv(name, value.c_str(), 1);
+}
+
 llvm::Error Executor::LoadLib() {
-  if (mode_ == BackendMode::RealDevice)
-    return llvm::createStringError(llvm::inconvertibleErrorCode(),
-                                   "RealDevice mode not implemented");
-  if (auto ascendHomeOr = requireAscendHome(); !ascendHomeOr)
+  auto ascendHomeOr = requireAscendHome();
+  if (!ascendHomeOr)
     return ascendHomeOr.takeError();
-  std::string lib = getLibPath();
+  const std::string ascendHome = *ascendHomeOr;
+  const std::string ascendLib64 = findAscendLib64Dir(ascendHome);
+  const std::string deviceLibDir = findAscendDeviceLibDir(ascendHome);
+  prependEnvPath("LD_LIBRARY_PATH", ascendLib64);
+  prependEnvPath("LD_LIBRARY_PATH", deviceLibDir);
+
+  std::string lib =
+      mode_ == BackendMode::RealDevice ? getRuntimeLibPath() : getLibPath();
   lib_handle_ = dlopen(lib.c_str(), RTLD_LAZY | RTLD_GLOBAL);
   if (!lib_handle_)
     return llvm::createStringError(llvm::inconvertibleErrorCode(),

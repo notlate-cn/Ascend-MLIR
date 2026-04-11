@@ -6,6 +6,7 @@
 #include "Runtime/SimValidator.h"
 #include "Runtime/TilingPack.h"
 #include "llvm/Support/Error.h"
+#include "llvm/Support/FormatVariadic.h"
 
 #include <optional>
 #include <utility>
@@ -13,6 +14,16 @@
 namespace mlir::runtime {
 
 namespace {
+
+llvm::Error stageError(llvm::StringRef stage, llvm::StringRef message) {
+  return llvm::createStringError(llvm::inconvertibleErrorCode(),
+                                 "[npu:%s] %s", stage.str().c_str(),
+                                 message.str().c_str());
+}
+
+llvm::Error stageError(llvm::StringRef stage, llvm::Error error) {
+  return stageError(stage, llvm::toString(std::move(error)));
+}
 
 llvm::Expected<std::vector<NDArray>>
 loadExpectedOutputs(const ExecutionInvocation &invocation) {
@@ -136,40 +147,37 @@ uint32_t magicForKernelKind(KernelKind kind) {
 llvm::Expected<ExecutionResult> runWithExecutor(const ExecutionRequest &request) {
   if (request.task.artifact.kernelKind == KernelKind::Mix) {
     if (request.task.artifact.packedSharedObjectPath.empty()) {
-      return llvm::createStringError(
-          llvm::inconvertibleErrorCode(),
-          "mix artifact is missing packed shared object path");
+      return stageError("artifact", "mix artifact is missing packed shared object path");
     }
   } else if (request.task.artifact.deviceBinaryPath.empty()) {
-    return llvm::createStringError(llvm::inconvertibleErrorCode(),
-                                   "artifact is missing device binary path");
+    return stageError("artifact", "artifact is missing device binary path");
   }
 
   auto argsOr = buildRunArgs(request.task.invocation);
   if (!argsOr)
-    return argsOr.takeError();
+    return stageError("bindings", argsOr.takeError());
   RunArgs args = std::move(*argsOr);
 
   auto expectedOutputsOr = loadExpectedOutputs(request.task.invocation);
   if (!expectedOutputsOr)
-    return expectedOutputsOr.takeError();
+    return stageError("bindings", expectedOutputsOr.takeError());
 
   Executor executor(BackendMode::RealDevice);
   if (auto err = executor.Initialize())
-    return std::move(err);
+    return stageError("executor_initialize", std::move(err));
 
   if (request.task.artifact.kernelKind == KernelKind::Mix) {
     if (auto err = executor.RunPackedMixFile(
             request.task.artifact.packedSharedObjectPath,
             request.task.artifact.kernelName, args)) {
-      return std::move(err);
+      return stageError("kernel_launch", std::move(err));
     }
   } else {
     if (auto err = executor.RunFile(request.task.artifact.deviceBinaryPath,
                                     request.task.artifact.kernelName, args,
                                     magicForKernelKind(
                                         request.task.artifact.kernelKind))) {
-      return std::move(err);
+      return stageError("kernel_launch", std::move(err));
     }
   }
 
@@ -179,19 +187,21 @@ llvm::Expected<ExecutionResult> runWithExecutor(const ExecutionRequest &request)
         args, *expectedOutputsOr, request.task.invocation.atol,
         request.task.invocation.rtol);
     if (!validation.error_msg.empty()) {
-      return llvm::createStringError(llvm::inconvertibleErrorCode(), "%s",
-                                     validation.error_msg.c_str());
+      return stageError(
+          "validate",
+          llvm::formatv("{0}", validation.error_msg.c_str()).str());
     }
     if (!validation.passed) {
-      return llvm::createStringError(
-          llvm::inconvertibleErrorCode(),
-          "npu output mismatch: max_abs_diff=%f mean_abs_diff=%f",
-          validation.max_abs_diff, validation.mean_abs_diff);
+      return stageError(
+          "validate",
+          llvm::formatv("npu output mismatch: max_abs_diff={0:F} mean_abs_diff={1:F}",
+                        validation.max_abs_diff, validation.mean_abs_diff)
+              .str());
     }
   }
 
   if (auto err = writeActualOutputs(request.task.invocation, args))
-    return std::move(err);
+    return stageError("write_outputs", std::move(err));
 
   ExecutionResult result;
   result.taskId = request.task.taskId;

@@ -16,6 +16,7 @@
 #include <map>
 #include <optional>
 #include <string>
+#include <utility>
 
 namespace {
 
@@ -331,6 +332,46 @@ void printPlan(const SessionPlan &plan) {
                  << "\n";
 }
 
+void printProfileTraceSummary(const ProfileTrace &trace);
+
+llvm::StringRef backendName(ExecutionBackendKind backendKind) {
+  switch (backendKind) {
+  case ExecutionBackendKind::Simulation:
+    return "sim";
+  case ExecutionBackendKind::Npu:
+    return "npu";
+  }
+  return "unknown";
+}
+
+std::pair<std::string, std::string> parseErrorStage(llvm::StringRef message) {
+  if (!message.starts_with("[npu:"))
+    return {"", message.str()};
+  const size_t end = message.find(']');
+  if (end == llvm::StringRef::npos || end <= 5)
+    return {"", message.str()};
+  std::string stage = message.slice(5, end).str();
+  llvm::StringRef remainder = message.drop_front(end + 1).trim();
+  return {std::move(stage), remainder.str()};
+}
+
+void printRunSuccessSummary(ExecutionBackendKind backendKind,
+                            const ProfileTrace &trace) {
+  llvm::outs() << "session.backend=" << backendName(backendKind) << "\n";
+  llvm::outs() << "session.result=success\n";
+  printProfileTraceSummary(trace);
+}
+
+void printRunErrorSummary(ExecutionBackendKind backendKind,
+                          llvm::StringRef message) {
+  llvm::errs() << "session.backend=" << backendName(backendKind) << "\n";
+  llvm::errs() << "session.result=error\n";
+  auto [stage, detail] = parseErrorStage(message);
+  if (!stage.empty())
+    llvm::errs() << "session.error_stage=" << stage << "\n";
+  llvm::errs() << "session.error=" << detail << "\n";
+}
+
 void printProfileTraceSummary(const ProfileTrace &trace) {
   llvm::outs() << "session.profile.session_id=" << trace.sessionId << "\n";
   const std::vector<std::string> artifactPaths = trace.profileArtifactPaths();
@@ -389,10 +430,12 @@ int main(int argc, char **argv) {
   ExecutionSession runSession(backendKind);
   auto traceOr = runSession.run(*graph);
   if (!traceOr) {
-    llvm::errs() << "Error: " << llvm::toString(traceOr.takeError()) << "\n";
+    const std::string message = llvm::toString(traceOr.takeError());
+    printRunErrorSummary(backendKind, message);
+    llvm::errs() << "Error: " << message << "\n";
     return 2;
   }
-  printProfileTraceSummary(*traceOr);
+  printRunSuccessSummary(backendKind, *traceOr);
   if (backendKind == ExecutionBackendKind::Simulation) {
     llvm::outs().flush();
     llvm::errs().flush();

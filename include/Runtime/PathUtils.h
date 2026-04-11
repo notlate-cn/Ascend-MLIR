@@ -47,6 +47,9 @@ requireAscendDavSimulatorLibDir(llvm::StringRef ascendHome,
 std::string findAscendAclLibPath(llvm::StringRef ascendHome);
 std::string findAscendAclLibPath(llvm::StringRef ascendHome,
                                  llvm::StringRef machine);
+std::string findAscendRuntimeLibPath(llvm::StringRef ascendHome);
+std::string findAscendRuntimeLibPath(llvm::StringRef ascendHome,
+                                     llvm::StringRef machine);
 std::string findAscendRuntimeCamodelPath(llvm::StringRef ascendHome,
                                          llvm::StringRef socVersion);
 std::string findAscendRuntimeCamodelPath(llvm::StringRef ascendHome,

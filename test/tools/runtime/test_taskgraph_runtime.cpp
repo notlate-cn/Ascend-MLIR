@@ -496,8 +496,36 @@ static void testNpuBackendRejectsMissingDeviceBinaryPath() {
   EXPECT(!(bool)resultOr, "npu backend rejects missing device binary path");
   if (!resultOr) {
     const std::string message = llvm::toString(resultOr.takeError());
+    EXPECT(message.find("[npu:artifact]") != std::string::npos,
+           "npu backend reports artifact stage for missing device binary");
     EXPECT(message.find("artifact is missing device binary path") != std::string::npos,
            "npu backend reports missing device binary path");
+  }
+}
+
+static void testNpuBackendRejectsMissingMixSharedObjectPath() {
+  auto npuOr = createExecutionBackend(ExecutionBackendKind::Npu);
+  EXPECT((bool)npuOr, "npu backend factory without driver succeeds for mix validation");
+  if (!npuOr)
+    return;
+
+  ExecutionRequest request;
+  request.task.taskId = "task_npu_mix";
+  request.task.artifact.kernelName = "mix_kernel";
+  request.task.artifact.kernelKind = KernelKind::Mix;
+  request.task.invocation.outputs.push_back(
+      TensorBinding{"out", BindingSourceKind::ExternalFile, "/tmp/task_npu_mix.npy",
+                    "", "", std::vector<int64_t>{4}, DType::F16});
+
+  auto resultOr = (*npuOr)->run(request);
+  EXPECT(!(bool)resultOr, "npu backend rejects missing packed mix shared object");
+  if (!resultOr) {
+    const std::string message = llvm::toString(resultOr.takeError());
+    EXPECT(message.find("[npu:artifact]") != std::string::npos,
+           "npu backend reports artifact stage for missing mix shared object");
+    EXPECT(message.find("mix artifact is missing packed shared object path") !=
+               std::string::npos,
+           "npu backend reports missing packed mix shared object path");
   }
 }
 
@@ -527,8 +555,8 @@ static void testNpuBackendReachesRealDeviceModePath() {
   EXPECT(!(bool)resultOr, "npu backend without real device still fails explicitly");
   if (!resultOr) {
     const std::string message = llvm::toString(resultOr.takeError());
-    EXPECT(message.find("RealDevice mode not implemented") != std::string::npos,
-           "npu backend reaches executor real-device path");
+    EXPECT(message.find("[npu:executor_initialize]") != std::string::npos,
+           "npu backend reports executor initialize stage");
   }
 }
 
@@ -1254,6 +1282,7 @@ int main() {
   testInvalidBackendSelection();
   testBackendDelegatesToDriver();
   testNpuBackendRejectsMissingDeviceBinaryPath();
+  testNpuBackendRejectsMissingMixSharedObjectPath();
   testNpuBackendReachesRealDeviceModePath();
   testSimulatorProfileNormalization();
   testAddProfileArtifactHelper();
