@@ -3,32 +3,35 @@
 #include "Runtime/ArtifactCompiler.h"
 #include "Runtime/RunManifest.h"
 
-#include <optional>
-
 namespace mlir::runtime {
 
 struct CompatCompileOptions {
-  std::string kernelSource;
-  std::string kernelName;
-  KernelKind kernelKind = KernelKind::Vec;
+  std::string kernelSourcePath;
+  std::string outputRoot;
+  std::string requestedKernelName;
   std::string socVersion;
-  std::string outputDir;
-  std::optional<std::string> cannMlirPath;
-  std::optional<std::string> npyDir;
+  std::string arch = "dav-c220-vec";
+  std::string kernelType = "vec";
+  bool verbose = false;
 };
 
 ArtifactCompileRequest
 buildCompatCompileRequest(const CompatCompileOptions &options);
 
-struct CompatSingleTaskManifestOptions {
+struct CompatValidateOptions {
   std::string artifactRoot;
-  std::string taskId = "main";
-  ExecutionBackendKind backendKind = ExecutionBackendKind::Simulation;
-  std::vector<std::string> dependencies;
-  ExecutionInvocation invocation;
+  std::vector<std::string> inputPaths;
+  std::string expectedOutputPath;
+  std::string actualOutputPath;
+  std::string tilingSchemaPath;
+  std::string tilingParams;
+  std::string tilingBinaryPath;
+  int blockDim = 1;
+  double atol = 1.0;
+  double rtol = 1e-2;
 };
 
 RunManifestSpec
-buildCompatSingleTaskRunManifest(const CompatSingleTaskManifestOptions &options);
+buildCompatSingleTaskRunManifest(const CompatValidateOptions &options);
 
 } // namespace mlir::runtime

@@ -402,83 +402,88 @@ static void testArtifactCompilerRequestValidation() {
 
 static void testCompatCompileRequestPreservesFields() {
   CompatCompileOptions options;
-  options.kernelSource = "/tmp/demo.cpp";
-  options.kernelName = "demo_kernel";
-  options.kernelKind = KernelKind::Mix;
+  options.kernelSourcePath = "/tmp/demo.cpp";
+  options.outputRoot = "/tmp/taskgraph-compat-out";
+  options.requestedKernelName = "legacy_name";
   options.socVersion = "Ascend910B1";
-  options.outputDir = "/tmp/taskgraph-compat-out";
-  options.cannMlirPath = "/tmp/cann/mlir";
-  options.npyDir = "/tmp/npy";
+  options.arch = "dav-c220-vec";
+  options.kernelType = "mix";
+  options.verbose = true;
 
   ArtifactCompileRequest request = buildCompatCompileRequest(options);
-  EXPECT(request.kernelSource == options.kernelSource,
+  EXPECT(request.kernelSource == options.kernelSourcePath,
          "compat compile request preserves kernel source");
-  EXPECT(request.kernelName == options.kernelName,
+  EXPECT(request.kernelName == options.requestedKernelName,
          "compat compile request preserves kernel name");
-  EXPECT(request.kernelKind == options.kernelKind,
-         "compat compile request preserves kernel kind");
+  EXPECT(request.kernelKind == KernelKind::Mix,
+         "compat compile request maps kernel type to kernel kind");
   EXPECT(request.socVersion == options.socVersion,
          "compat compile request preserves soc version");
-  EXPECT(request.outputDir == options.outputDir,
+  EXPECT(request.outputDir == options.outputRoot,
          "compat compile request preserves output dir");
-  EXPECT(request.cannMlirPath.has_value() &&
-             *request.cannMlirPath == *options.cannMlirPath,
-         "compat compile request preserves cann mlir path");
-  EXPECT(request.npyDir.has_value() && *request.npyDir == *options.npyDir,
-         "compat compile request preserves npy dir");
+  EXPECT(options.verbose,
+         "compat compile options preserve verbose flag");
+  EXPECT(options.arch == "dav-c220-vec",
+         "compat compile options preserve arch");
 }
 
 static void testCompatSingleTaskRunManifestBuildsOneTask() {
-  CompatSingleTaskManifestOptions options;
-  options.backendKind = ExecutionBackendKind::Npu;
-  options.taskId = "validator";
+  CompatValidateOptions options;
   options.artifactRoot = "/tmp/artifact";
-  options.dependencies = {"producer"};
-  options.invocation.inputs = {
-      TensorBinding{.name = "data0", .path = "/tmp/in0.npy"},
-      TensorBinding{.name = "data1", .path = "/tmp/in1.npy"},
-  };
-  options.invocation.outputs = {
-      TensorBinding{.name = "out", .path = "/tmp/out.npy"},
-  };
-  options.invocation.expectedOutputs = {
-      TensorBinding{.name = "golden", .path = "/tmp/golden.npy"},
-  };
-  options.invocation.blockDim = 8;
-  options.invocation.workspaceSize = 16384;
-  options.invocation.enableProfiling = true;
-  options.invocation.atol = 2.5;
-  options.invocation.rtol = 0.05;
+  options.inputPaths = {"/tmp/in0.npy", "/tmp/in1.npy"};
+  options.expectedOutputPath = "/tmp/golden.npy";
+  options.actualOutputPath = "/tmp/out.npy";
+  options.tilingSchemaPath = "/tmp/tiling_space.json";
+  options.tilingParams = "TB_M=64,TB_N=64";
+  options.tilingBinaryPath = "/tmp/tiling.bin";
+  options.blockDim = 8;
+  options.atol = 2.5;
+  options.rtol = 0.05;
 
   RunManifestSpec manifest = buildCompatSingleTaskRunManifest(options);
-  EXPECT(manifest.backendKind == options.backendKind,
-         "compat run manifest preserves backend kind");
+  EXPECT(manifest.backendKind == ExecutionBackendKind::Simulation,
+         "compat run manifest uses simulation backend");
   EXPECT(manifest.tasks.size() == 1,
          "compat run manifest builds one task");
   if (manifest.tasks.size() == 1) {
     const RunTaskSpec &task = manifest.tasks[0];
-    EXPECT(task.taskId == options.taskId,
-           "compat run manifest preserves task id");
+    EXPECT(task.taskId == "main",
+           "compat run manifest synthesizes task id");
     EXPECT(task.artifactRoot == options.artifactRoot,
            "compat run manifest preserves artifact root");
-    EXPECT(task.dependencies == options.dependencies,
-           "compat run manifest preserves dependencies");
     EXPECT(task.invocation.inputs.size() == 2,
-           "compat run manifest preserves inputs");
+           "compat run manifest builds input bindings");
+    EXPECT(task.invocation.inputs[0].sourceKind ==
+               BindingSourceKind::ExternalFile,
+           "compat run manifest uses file-backed input bindings");
+    EXPECT(task.invocation.inputs[0].path == "/tmp/in0.npy",
+           "compat run manifest preserves first input path");
+    EXPECT(task.invocation.inputs[1].path == "/tmp/in1.npy",
+           "compat run manifest preserves second input path");
     EXPECT(task.invocation.outputs.size() == 1,
-           "compat run manifest preserves outputs");
+           "compat run manifest builds actual output binding");
+    EXPECT(task.invocation.outputs[0].path == options.actualOutputPath,
+           "compat run manifest preserves actual output path");
     EXPECT(task.invocation.expectedOutputs.size() == 1,
-           "compat run manifest preserves expected outputs");
+           "compat run manifest builds expected output binding");
+    EXPECT(task.invocation.expectedOutputs[0].path == options.expectedOutputPath,
+           "compat run manifest preserves expected output path");
     EXPECT(task.invocation.blockDim == 8,
            "compat run manifest preserves block dim");
-    EXPECT(task.invocation.workspaceSize == 16384,
-           "compat run manifest preserves workspace size");
-    EXPECT(task.invocation.enableProfiling,
-           "compat run manifest preserves profiling flag");
     EXPECT(task.invocation.atol == 2.5,
            "compat run manifest preserves atol");
     EXPECT(task.invocation.rtol == 0.05,
            "compat run manifest preserves rtol");
+    EXPECT(task.invocation.tiling.has_value(),
+           "compat run manifest preserves tiling");
+    if (task.invocation.tiling) {
+      EXPECT(task.invocation.tiling->schemaPath == options.tilingSchemaPath,
+             "compat run manifest preserves tiling schema path");
+      EXPECT(task.invocation.tiling->params == options.tilingParams,
+             "compat run manifest preserves tiling params");
+      EXPECT(task.invocation.tiling->binaryPath == options.tilingBinaryPath,
+             "compat run manifest preserves tiling binary path");
+    }
   }
 }
 
