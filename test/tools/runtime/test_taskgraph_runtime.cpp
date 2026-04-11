@@ -18,6 +18,7 @@
 #include "Runtime/ExecutionBackend.h"
 #include "Runtime/ExecutionSession.h"
 #include "Runtime/NpuBackend.h"
+#include "Runtime/NpyIO.h"
 #include "Runtime/TaskGraph.h"
 #include "Runtime/ArtifactCompiler.h"
 #include "Runtime/SimBackend.h"
@@ -26,6 +27,7 @@
 
 #include <filesystem>
 #include <fstream>
+#include <cstring>
 #include <memory>
 #include <string>
 #include <vector>
@@ -34,6 +36,26 @@ using namespace mlir::runtime;
 
 static int g_pass = 0;
 static int g_fail = 0;
+
+static std::string writeTempNpy(const std::string &stem,
+                                const std::vector<int64_t> &shape,
+                                DType dtype) {
+  std::filesystem::path path =
+      std::filesystem::temp_directory_path() / (stem + ".npy");
+  NDArray array;
+  array.shape = shape;
+  array.dtype = dtype;
+  array.allocate();
+  std::memset(array.data, 0, array.nbytes());
+  auto err = SaveNpy(path.string(), array);
+  if (err) {
+    llvm::errs() << "FAIL: cannot write temp npy " << path.string() << "\n";
+    llvm::consumeError(std::move(err));
+    ++g_fail;
+    return "";
+  }
+  return path.string();
+}
 
 class RecordingBackendDriver : public ExecutionBackendDriver {
 public:
@@ -454,6 +476,60 @@ static void testBackendDelegatesToDriver() {
   EXPECT(driver->invocations == 2, "shared driver sees both invocations");
   EXPECT(driver->lastRequest.task.taskId == "task_a",
          "driver receives the original request");
+}
+
+static void testNpuBackendRejectsMissingDeviceBinaryPath() {
+  auto npuOr = createExecutionBackend(ExecutionBackendKind::Npu);
+  EXPECT((bool)npuOr, "npu backend factory without driver succeeds for validation");
+  if (!npuOr)
+    return;
+
+  ExecutionRequest request;
+  request.task.taskId = "task_npu_vec";
+  request.task.artifact.kernelName = "vec_kernel";
+  request.task.artifact.kernelKind = KernelKind::Vec;
+  request.task.invocation.outputs.push_back(
+      TensorBinding{"out", BindingSourceKind::ExternalFile, "/tmp/task_npu_vec.npy",
+                    "", "", std::vector<int64_t>{4}, DType::F16});
+
+  auto resultOr = (*npuOr)->run(request);
+  EXPECT(!(bool)resultOr, "npu backend rejects missing device binary path");
+  if (!resultOr) {
+    const std::string message = llvm::toString(resultOr.takeError());
+    EXPECT(message.find("artifact is missing device binary path") != std::string::npos,
+           "npu backend reports missing device binary path");
+  }
+}
+
+static void testNpuBackendReachesRealDeviceModePath() {
+  auto npuOr = createExecutionBackend(ExecutionBackendKind::Npu);
+  EXPECT((bool)npuOr, "npu backend factory without driver succeeds for real-device path");
+  if (!npuOr)
+    return;
+
+  const std::string inputPath =
+      writeTempNpy("taskgraph-runtime-npu-input", {4}, DType::F16);
+  if (inputPath.empty())
+    return;
+
+  ExecutionRequest request;
+  request.task.taskId = "task_npu_real";
+  request.task.artifact.kernelName = "vec_kernel";
+  request.task.artifact.kernelKind = KernelKind::Vec;
+  request.task.artifact.deviceBinaryPath = "/tmp/fake_npu_kernel.bin";
+  request.task.invocation.inputs.push_back(
+      TensorBinding{"in", BindingSourceKind::ExternalFile, inputPath});
+  request.task.invocation.outputs.push_back(
+      TensorBinding{"out", BindingSourceKind::ExternalFile, "/tmp/task_npu_real.npy",
+                    "", "", std::vector<int64_t>{4}, DType::F16});
+
+  auto resultOr = (*npuOr)->run(request);
+  EXPECT(!(bool)resultOr, "npu backend without real device still fails explicitly");
+  if (!resultOr) {
+    const std::string message = llvm::toString(resultOr.takeError());
+    EXPECT(message.find("RealDevice mode not implemented") != std::string::npos,
+           "npu backend reaches executor real-device path");
+  }
 }
 
 static void testSimulatorProfileNormalization() {
@@ -1177,6 +1253,8 @@ int main() {
   testDefaultBackendRequiresDriver();
   testInvalidBackendSelection();
   testBackendDelegatesToDriver();
+  testNpuBackendRejectsMissingDeviceBinaryPath();
+  testNpuBackendReachesRealDeviceModePath();
   testSimulatorProfileNormalization();
   testAddProfileArtifactHelper();
   testBackendSurfacesProfileTrace();
