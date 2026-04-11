@@ -15,6 +15,7 @@
 #include "Runtime/ProfileTrace.h"
 #include "Runtime/ProfileUtils.h"
 #include "Runtime/CompatRuntime.h"
+#include "Runtime/MixAbi.h"
 #include "Runtime/RunManifest.h"
 #include "Runtime/ExecutionBackend.h"
 #include "Runtime/ExecutionSession.h"
@@ -407,6 +408,129 @@ static void testKernelArtifactNormalization() {
          "normalized mix artifact stores manifest path");
   EXPECT(normalizedMix.artifactRoot == "/tmp/mix",
          "normalized mix artifact stores compile root, not work dir");
+}
+
+static void testMixValidationCanBeRepresentedAsRuntimeTask() {
+  MixAbiMetadata abi;
+  abi.logicalKernelName = "mix_add";
+  abi.runtimeKernelName = "mix_add_runtime";
+  abi.workspaceBytes = 4096;
+  abi.blockDim = 8;
+  abi.tilingMode = "generated_file";
+  abi.tilingSource = "out/tiling.bin";
+  abi.inputs = {
+      {"lhs", buildCanonicalInputFileName(abi.runtimeKernelName, "lhs"), "",
+       DType::F16, {16}},
+      {"rhs", buildCanonicalInputFileName(abi.runtimeKernelName, "rhs"), "",
+       DType::F16, {16}},
+  };
+  abi.outputs = {
+      {"out", buildCanonicalOutputFileName(abi.runtimeKernelName, "out"),
+       buildCanonicalGoldenFileName(abi.runtimeKernelName, "out"), DType::F16,
+       {16}},
+  };
+
+  RunManifestSpec manifest;
+  manifest.backendKind = ExecutionBackendKind::Simulation;
+
+  RunTaskSpec task;
+  task.taskId = "main";
+  task.artifactRoot = "/tmp/mix-artifact";
+  TensorBinding lhsBinding;
+  lhsBinding.name = "lhs";
+  lhsBinding.sourceKind = BindingSourceKind::ExternalFile;
+  lhsBinding.path = "/tmp/input/" + abi.inputs[0].runtimeFile;
+  task.invocation.inputs.push_back(lhsBinding);
+
+  TensorBinding rhsBinding;
+  rhsBinding.name = "rhs";
+  rhsBinding.sourceKind = BindingSourceKind::ExternalFile;
+  rhsBinding.path = "/tmp/input/" + abi.inputs[1].runtimeFile;
+  task.invocation.inputs.push_back(rhsBinding);
+
+  TensorBinding outputBinding;
+  outputBinding.name = "out";
+  outputBinding.sourceKind = BindingSourceKind::ExternalFile;
+  outputBinding.path = "/tmp/mix-artifact/" + abi.outputs[0].runtimeFile;
+  outputBinding.shape = abi.outputs[0].shape;
+  outputBinding.dtype = abi.outputs[0].dtype;
+  task.invocation.outputs.push_back(outputBinding);
+
+  TilingBinding tilingBinding;
+  tilingBinding.binaryPath = "/tmp/mix-artifact/out/tiling.bin";
+  task.invocation.tiling = tilingBinding;
+  task.invocation.blockDim = abi.blockDim;
+  task.invocation.workspaceSize = abi.workspaceBytes;
+  manifest.tasks.push_back(task);
+
+  EXPECT(manifest.backendKind == ExecutionBackendKind::Simulation,
+         "mix validation manifest uses simulation backend");
+  EXPECT(manifest.tasks.size() == 1,
+         "mix validation manifest carries one runtime task");
+  if (manifest.tasks.size() != 1)
+    return;
+
+  const RunTaskSpec &taskSpec = manifest.tasks[0];
+  EXPECT(taskSpec.artifactRoot == "/tmp/mix-artifact",
+         "mix validation manifest preserves artifact root");
+  EXPECT(taskSpec.invocation.inputs.size() == 2,
+         "mix validation manifest preserves two inputs");
+  EXPECT(taskSpec.invocation.inputs[0].path ==
+             "/tmp/input/" + abi.inputs[0].runtimeFile,
+         "mix validation manifest preserves first input path");
+  EXPECT(taskSpec.invocation.outputs.size() == 1,
+         "mix validation manifest preserves one output");
+  EXPECT(taskSpec.invocation.outputs[0].path ==
+             "/tmp/mix-artifact/" + abi.outputs[0].runtimeFile,
+         "mix validation manifest preserves runtime output path");
+  EXPECT(taskSpec.invocation.tiling.has_value(),
+         "mix validation manifest carries tiling binding");
+  if (taskSpec.invocation.tiling) {
+    EXPECT(taskSpec.invocation.tiling->binaryPath ==
+               "/tmp/mix-artifact/out/tiling.bin",
+           "mix validation manifest preserves tiling bytes path");
+  }
+
+  KernelArtifact artifact;
+  artifact.kernelName = abi.runtimeKernelName;
+  artifact.kernelKind = KernelKind::Mix;
+  artifact.mixResourceType = MixResourceType::Mix1C1V;
+  artifact.socVersion = "Ascend910B1";
+  artifact.artifactRoot = taskSpec.artifactRoot;
+  artifact.manifestPath = "/tmp/mix-artifact/out/manifest.txt";
+  artifact.packedSharedObjectPath = "/tmp/mix/libmix_add_runtime_packed.so";
+  artifact.deviceBinaryPath = artifact.packedSharedObjectPath;
+
+  RuntimeTask runtimeTask;
+  runtimeTask.taskId = taskSpec.taskId;
+  runtimeTask.artifact = artifact;
+  runtimeTask.invocation = taskSpec.invocation;
+
+  TaskGraph graph;
+  auto addErr = graph.addTask(runtimeTask);
+  EXPECT(!addErr, "mix validation runtime graph adds task");
+  if (addErr) {
+    llvm::consumeError(std::move(addErr));
+    return;
+  }
+
+  auto orderedOr = graph.orderedTasks();
+  EXPECT((bool)orderedOr, "mix validation runtime graph orders task");
+  if (!orderedOr)
+    return;
+  EXPECT(orderedOr->size() == 1,
+         "mix validation runtime graph remains a single runtime task");
+  if (orderedOr->size() == 1) {
+    EXPECT((*orderedOr)[0].artifact.kernelKind == KernelKind::Mix,
+           "mix validation runtime task keeps mix kernel kind");
+    EXPECT((*orderedOr)[0].artifact.packedSharedObjectPath ==
+               "/tmp/mix/libmix_add_runtime_packed.so",
+           "mix validation runtime task keeps packed shared object path");
+    EXPECT((*orderedOr)[0].invocation.outputs[0].shape.has_value(),
+           "mix validation runtime task carries output shape metadata");
+    EXPECT((*orderedOr)[0].invocation.outputs[0].dtype.has_value(),
+           "mix validation runtime task carries output dtype metadata");
+  }
 }
 
 static void testArtifactCompilerRequestValidation() {
@@ -2182,6 +2306,7 @@ int main() {
   testUnknownDependency();
   testCycleDetection();
   testKernelArtifactNormalization();
+  testMixValidationCanBeRepresentedAsRuntimeTask();
   testArtifactCompilerRequestValidation();
   testCompatCompileRequestPreservesFields();
   testCompatCompileRequestRejectsUnknownKernelType();
