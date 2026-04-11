@@ -29,6 +29,24 @@ requireString(const llvm::json::Object &object, const char *fieldName) {
                                  fieldName);
 }
 
+llvm::Expected<std::vector<std::string>>
+parseStringArray(const llvm::json::Object &object, const char *fieldName) {
+  std::vector<std::string> values;
+  auto *array = object.getArray(fieldName);
+  if (!array)
+    return values;
+  values.reserve(array->size());
+  for (const llvm::json::Value &value : *array) {
+    auto string = value.getAsString();
+    if (!string)
+      return llvm::createStringError(llvm::inconvertibleErrorCode(),
+                                     "field must be an array of strings: %s",
+                                     fieldName);
+    values.push_back(string->str());
+  }
+  return values;
+}
+
 llvm::Expected<ExecutionBackendKind> parseBackendKind(llvm::StringRef value) {
   if (value == "sim" || value == "simulation")
     return ExecutionBackendKind::Simulation;
@@ -83,10 +101,8 @@ llvm::Expected<TensorBinding> parseTensorBinding(const llvm::json::Object &obj) 
     source = *sourceValue;
 
   if (source == "external_file") {
-    auto pathOr = requireString(obj, "path");
-    if (!pathOr)
-      return pathOr.takeError();
-    binding.path = *pathOr;
+    if (auto path = obj.getString("path"))
+      binding.path = path->str();
     binding.sourceKind = BindingSourceKind::ExternalFile;
   } else if (source == "task_output") {
     auto upstreamTaskOr = requireString(obj, "upstream_task");
@@ -156,6 +172,59 @@ parseTilingBinding(const llvm::json::Object &root) {
   return tiling;
 }
 
+llvm::Expected<RunTaskSpec>
+parseTaskSpec(const llvm::json::Object &root,
+              std::optional<llvm::StringRef> defaultArtifactRoot) {
+  RunTaskSpec spec;
+  auto taskIdOr = requireString(root, "task_id");
+  if (!taskIdOr)
+    return taskIdOr.takeError();
+  spec.taskId = *taskIdOr;
+
+  if (auto artifactRoot = root.getString("artifact_root")) {
+    spec.artifactRoot = artifactRoot->str();
+  } else if (defaultArtifactRoot) {
+    spec.artifactRoot = defaultArtifactRoot->str();
+  } else {
+    return llvm::createStringError(llvm::inconvertibleErrorCode(),
+                                   "missing required string field: artifact_root");
+  }
+
+  auto dependenciesOr = parseStringArray(root, "dependencies");
+  if (!dependenciesOr)
+    return dependenciesOr.takeError();
+  spec.dependencies = std::move(*dependenciesOr);
+
+  auto inputsOr = parseTensorBindings(root, "inputs");
+  if (!inputsOr)
+    return inputsOr.takeError();
+  spec.invocation.inputs = std::move(*inputsOr);
+
+  auto outputsOr = parseTensorBindings(root, "outputs");
+  if (!outputsOr)
+    return outputsOr.takeError();
+  spec.invocation.outputs = std::move(*outputsOr);
+
+  auto expectedOutputsOr = parseTensorBindings(root, "expected_outputs");
+  if (!expectedOutputsOr)
+    return expectedOutputsOr.takeError();
+  spec.invocation.expectedOutputs = std::move(*expectedOutputsOr);
+
+  auto tilingOr = parseTilingBinding(root);
+  if (!tilingOr)
+    return tilingOr.takeError();
+  spec.invocation.tiling = std::move(*tilingOr);
+
+  if (auto blockDim = root.getInteger("block_dim"))
+    spec.invocation.blockDim = static_cast<int>(*blockDim);
+  if (auto workspaceSize = root.getInteger("workspace_size"))
+    spec.invocation.workspaceSize = static_cast<size_t>(*workspaceSize);
+  if (auto profiling = root.getBoolean("profiling"))
+    spec.invocation.enableProfiling = *profiling;
+
+  return spec;
+}
+
 } // namespace
 
 llvm::Expected<RunManifestSpec> loadRunManifest(const std::string &path) {
@@ -178,16 +247,6 @@ llvm::Expected<RunManifestSpec> loadRunManifest(const std::string &path) {
                                    path.c_str());
 
   RunManifestSpec spec;
-  auto taskIdOr = requireString(*root, "task_id");
-  if (!taskIdOr)
-    return taskIdOr.takeError();
-  spec.taskId = *taskIdOr;
-
-  auto artifactRootOr = requireString(*root, "artifact_root");
-  if (!artifactRootOr)
-    return artifactRootOr.takeError();
-  spec.artifactRoot = *artifactRootOr;
-
   auto backendNameOr = requireString(*root, "backend");
   if (!backendNameOr)
     return backendNameOr.takeError();
@@ -196,32 +255,32 @@ llvm::Expected<RunManifestSpec> loadRunManifest(const std::string &path) {
     return backendKindOr.takeError();
   spec.backendKind = *backendKindOr;
 
-  auto inputsOr = parseTensorBindings(*root, "inputs");
-  if (!inputsOr)
-    return inputsOr.takeError();
-  spec.invocation.inputs = std::move(*inputsOr);
+  std::optional<llvm::StringRef> defaultArtifactRoot;
+  if (auto artifactRoot = root->getString("artifact_root"))
+    defaultArtifactRoot = *artifactRoot;
 
-  auto outputsOr = parseTensorBindings(*root, "outputs");
-  if (!outputsOr)
-    return outputsOr.takeError();
-  spec.invocation.outputs = std::move(*outputsOr);
+  if (auto *tasks = root->getArray("tasks")) {
+    spec.tasks.reserve(tasks->size());
+    for (const llvm::json::Value &value : *tasks) {
+      auto taskObjectOr = requireObject(&value, "tasks");
+      if (!taskObjectOr)
+        return taskObjectOr.takeError();
+      auto taskOr = parseTaskSpec(**taskObjectOr, defaultArtifactRoot);
+      if (!taskOr)
+        return taskOr.takeError();
+      spec.tasks.push_back(std::move(*taskOr));
+    }
+  } else {
+    auto taskOr = parseTaskSpec(*root, defaultArtifactRoot);
+    if (!taskOr)
+      return taskOr.takeError();
+    spec.tasks.push_back(std::move(*taskOr));
+  }
 
-  auto expectedOutputsOr = parseTensorBindings(*root, "expected_outputs");
-  if (!expectedOutputsOr)
-    return expectedOutputsOr.takeError();
-  spec.invocation.expectedOutputs = std::move(*expectedOutputsOr);
-
-  auto tilingOr = parseTilingBinding(*root);
-  if (!tilingOr)
-    return tilingOr.takeError();
-  spec.invocation.tiling = std::move(*tilingOr);
-
-  if (auto blockDim = root->getInteger("block_dim"))
-    spec.invocation.blockDim = static_cast<int>(*blockDim);
-  if (auto workspaceSize = root->getInteger("workspace_size"))
-    spec.invocation.workspaceSize = static_cast<size_t>(*workspaceSize);
-  if (auto profiling = root->getBoolean("profiling"))
-    spec.invocation.enableProfiling = *profiling;
+  if (spec.tasks.empty()) {
+    return llvm::createStringError(llvm::inconvertibleErrorCode(),
+                                   "run manifest must contain at least one task");
+  }
 
   return spec;
 }

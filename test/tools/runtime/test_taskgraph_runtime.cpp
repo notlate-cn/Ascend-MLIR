@@ -891,44 +891,49 @@ static void testRunManifestParsesVecSimulationSpec() {
   auto specOr = loadRunManifest(manifestPath);
   EXPECT((bool)specOr, "run manifest parse succeeds");
   if (specOr) {
-    EXPECT(specOr->taskId == "main", "run manifest task id");
     EXPECT(specOr->backendKind == ExecutionBackendKind::Simulation,
            "run manifest backend kind");
-    EXPECT(specOr->artifactRoot == "/tmp/artifact",
-           "run manifest artifact root");
-    EXPECT(specOr->invocation.inputs.size() == 2,
+    EXPECT(specOr->tasks.size() == 1,
+           "run manifest single-task compatibility preserves one task");
+    if (specOr->tasks.size() == 1) {
+      const RunTaskSpec &task = specOr->tasks[0];
+      EXPECT(task.taskId == "main", "run manifest task id");
+      EXPECT(task.artifactRoot == "/tmp/artifact",
+             "run manifest artifact root");
+      EXPECT(task.invocation.inputs.size() == 2,
            "run manifest input count");
-    EXPECT(specOr->invocation.outputs.size() == 1,
+      EXPECT(task.invocation.outputs.size() == 1,
            "run manifest output count");
-    EXPECT(specOr->invocation.expectedOutputs.size() == 1,
+      EXPECT(task.invocation.expectedOutputs.size() == 1,
            "run manifest expected output count");
-    EXPECT(specOr->invocation.blockDim == 8,
+      EXPECT(task.invocation.blockDim == 8,
            "run manifest block dim");
-    EXPECT(specOr->invocation.workspaceSize == 16384,
+      EXPECT(task.invocation.workspaceSize == 16384,
            "run manifest workspace size");
-    EXPECT(specOr->invocation.enableProfiling,
+      EXPECT(task.invocation.enableProfiling,
            "run manifest profiling flag");
-    EXPECT(specOr->invocation.tiling.has_value(),
+      EXPECT(task.invocation.tiling.has_value(),
            "run manifest tiling present");
-    EXPECT(specOr->invocation.outputs[0].shape.has_value(),
+      EXPECT(task.invocation.outputs[0].shape.has_value(),
            "run manifest output shape metadata present");
-    EXPECT(specOr->invocation.outputs[0].dtype.has_value(),
+      EXPECT(task.invocation.outputs[0].dtype.has_value(),
            "run manifest output dtype metadata present");
-    if (specOr->invocation.outputs[0].shape) {
-      EXPECT(specOr->invocation.outputs[0].shape->size() == 2 &&
-                 (*specOr->invocation.outputs[0].shape)[0] == 4 &&
-                 (*specOr->invocation.outputs[0].shape)[1] == 8,
+      if (task.invocation.outputs[0].shape) {
+        EXPECT(task.invocation.outputs[0].shape->size() == 2 &&
+                   (*task.invocation.outputs[0].shape)[0] == 4 &&
+                   (*task.invocation.outputs[0].shape)[1] == 8,
              "run manifest output shape metadata values");
-    }
-    if (specOr->invocation.outputs[0].dtype) {
-      EXPECT(*specOr->invocation.outputs[0].dtype == DType::F32,
+      }
+      if (task.invocation.outputs[0].dtype) {
+        EXPECT(*task.invocation.outputs[0].dtype == DType::F32,
              "run manifest output dtype metadata value");
-    }
-    if (specOr->invocation.tiling) {
-      EXPECT(specOr->invocation.tiling->schemaPath == "/tmp/tiling_space.json",
+      }
+      if (task.invocation.tiling) {
+        EXPECT(task.invocation.tiling->schemaPath == "/tmp/tiling_space.json",
              "run manifest tiling schema path");
-      EXPECT(specOr->invocation.tiling->params == "TB_M=64,TB_N=64",
+        EXPECT(task.invocation.tiling->params == "TB_M=64,TB_N=64",
              "run manifest tiling params");
+      }
     }
   }
 }
@@ -953,23 +958,28 @@ static void testRunManifestParsesOutputMetadataWithoutExpectedOutputs() {
   auto specOr = loadRunManifest(manifestPath);
   EXPECT((bool)specOr, "run manifest without expected outputs parses");
   if (specOr) {
-    EXPECT(specOr->invocation.expectedOutputs.empty(),
+    EXPECT(specOr->tasks.size() == 1,
+           "run manifest without expected outputs keeps one task");
+    if (specOr->tasks.size() == 1) {
+      const RunTaskSpec &task = specOr->tasks[0];
+      EXPECT(task.invocation.expectedOutputs.empty(),
            "run manifest without expected outputs leaves golden bindings empty");
-    EXPECT(specOr->invocation.outputs.size() == 1,
+      EXPECT(task.invocation.outputs.size() == 1,
            "run manifest without expected outputs keeps output bindings");
-    if (specOr->invocation.outputs.size() == 1) {
-      EXPECT(specOr->invocation.outputs[0].shape.has_value(),
+      if (task.invocation.outputs.size() == 1) {
+        EXPECT(task.invocation.outputs[0].shape.has_value(),
              "run manifest without expected outputs carries output shape");
-      EXPECT(specOr->invocation.outputs[0].dtype.has_value(),
+        EXPECT(task.invocation.outputs[0].dtype.has_value(),
              "run manifest without expected outputs carries output dtype");
-      if (specOr->invocation.outputs[0].shape) {
-        EXPECT(specOr->invocation.outputs[0].shape->size() == 1 &&
-                   (*specOr->invocation.outputs[0].shape)[0] == 32,
+        if (task.invocation.outputs[0].shape) {
+          EXPECT(task.invocation.outputs[0].shape->size() == 1 &&
+                     (*task.invocation.outputs[0].shape)[0] == 32,
                "run manifest without expected outputs shape value");
-      }
-      if (specOr->invocation.outputs[0].dtype) {
-        EXPECT(*specOr->invocation.outputs[0].dtype == DType::F16,
+        }
+        if (task.invocation.outputs[0].dtype) {
+          EXPECT(*task.invocation.outputs[0].dtype == DType::F16,
                "run manifest without expected outputs dtype value");
+        }
       }
     }
   }
@@ -1000,18 +1010,77 @@ static void testRunManifestParsesTaskOutputBinding() {
   auto specOr = loadRunManifest(manifestPath);
   EXPECT((bool)specOr, "run manifest task output binding parses");
   if (specOr) {
-    EXPECT(specOr->invocation.inputs.size() == 1,
+    EXPECT(specOr->tasks.size() == 1,
+           "run manifest task output keeps one task");
+    if (specOr->tasks.size() == 1) {
+      const RunTaskSpec &task = specOr->tasks[0];
+      EXPECT(task.invocation.inputs.size() == 1,
            "run manifest task output input count");
-    if (specOr->invocation.inputs.size() == 1) {
-      EXPECT(specOr->invocation.inputs[0].sourceKind ==
+      if (task.invocation.inputs.size() == 1) {
+        EXPECT(task.invocation.inputs[0].sourceKind ==
                  BindingSourceKind::TaskOutput,
              "run manifest task output source kind");
-      EXPECT(specOr->invocation.inputs[0].upstreamTaskId == "producer",
+        EXPECT(task.invocation.inputs[0].upstreamTaskId == "producer",
              "run manifest task output upstream task");
-      EXPECT(specOr->invocation.inputs[0].upstreamOutputName == "mid",
+        EXPECT(task.invocation.inputs[0].upstreamOutputName == "mid",
              "run manifest task output upstream output");
-      EXPECT(specOr->invocation.inputs[0].path.empty(),
+        EXPECT(task.invocation.inputs[0].path.empty(),
              "run manifest task output does not require path");
+      }
+    }
+  }
+}
+
+static void testRunManifestParsesDagSpec() {
+  const std::string manifestPath = "/tmp/runtime_run_manifest_dag.json";
+  {
+    std::ofstream os(manifestPath);
+    os << R"JSON({
+  "backend": "sim",
+  "artifact_root": "/tmp/shared-artifact",
+  "tasks": [
+    {
+      "task_id": "producer",
+      "inputs": [
+        { "name": "data0", "path": "/tmp/in0.npy" }
+      ],
+      "outputs": [
+        { "name": "mid", "shape": [16], "dtype": "f16", "path": "/tmp/mid.npy" }
+      ]
+    },
+    {
+      "task_id": "consumer",
+      "dependencies": ["producer"],
+      "inputs": [
+        { "name": "mid", "source": "task_output", "upstream_task": "producer", "upstream_output": "mid" }
+      ],
+      "outputs": [
+        { "name": "out", "shape": [16], "dtype": "f16", "path": "/tmp/out.npy" }
+      ]
+    }
+  ]
+})JSON";
+  }
+
+  auto specOr = loadRunManifest(manifestPath);
+  EXPECT((bool)specOr, "run manifest dag parses");
+  if (specOr) {
+    EXPECT(specOr->backendKind == ExecutionBackendKind::Simulation,
+           "run manifest dag backend kind");
+    EXPECT(specOr->tasks.size() == 2,
+           "run manifest dag task count");
+    if (specOr->tasks.size() == 2) {
+      EXPECT(specOr->tasks[0].artifactRoot == "/tmp/shared-artifact",
+             "run manifest dag task 0 inherits top-level artifact root");
+      EXPECT(specOr->tasks[1].artifactRoot == "/tmp/shared-artifact",
+             "run manifest dag task 1 inherits top-level artifact root");
+      EXPECT(specOr->tasks[1].dependencies.size() == 1 &&
+                 specOr->tasks[1].dependencies[0] == "producer",
+             "run manifest dag dependencies");
+      EXPECT(specOr->tasks[1].invocation.inputs.size() == 1 &&
+                 specOr->tasks[1].invocation.inputs[0].sourceKind ==
+                     BindingSourceKind::TaskOutput,
+             "run manifest dag task output input");
     }
   }
 }
@@ -1040,6 +1109,7 @@ int main() {
   testRunManifestParsesVecSimulationSpec();
   testRunManifestParsesOutputMetadataWithoutExpectedOutputs();
   testRunManifestParsesTaskOutputBinding();
+  testRunManifestParsesDagSpec();
 
   llvm::outs() << g_pass << " passed, " << g_fail << " failed\n";
   return g_fail ? 1 : 0;
