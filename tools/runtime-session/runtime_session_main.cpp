@@ -1,6 +1,7 @@
 #include "Runtime/ArtifactCompiler.h"
 #include "Runtime/ExecutionBackend.h"
 #include "Runtime/ExecutionSession.h"
+#include "Runtime/RunManifest.h"
 #include "Runtime/TaskGraph.h"
 #include "llvm/ADT/SmallString.h"
 #include "llvm/ADT/StringRef.h"
@@ -11,7 +12,9 @@
 #include "llvm/Support/Path.h"
 #include "llvm/Support/raw_ostream.h"
 
+#include <cstdlib>
 #include <map>
+#include <optional>
 #include <string>
 
 namespace {
@@ -68,6 +71,11 @@ llvm::cl::opt<std::string> NpyDir(
     llvm::cl::desc("Directory containing runtime .npy files for ABI shaping"),
     llvm::cl::init(""),
     llvm::cl::cat(RuntimeSessionCategory));
+llvm::cl::opt<std::string> RunManifestPath(
+    "run-manifest",
+    llvm::cl::desc("JSON manifest describing artifact root, bindings, and execution settings"),
+    llvm::cl::init(""),
+    llvm::cl::cat(RuntimeSessionCategory));
 
 llvm::Expected<KernelKind> parseKernelKind(llvm::StringRef name) {
   if (name == "vec")
@@ -79,6 +87,12 @@ llvm::Expected<KernelKind> parseKernelKind(llvm::StringRef name) {
   return llvm::createStringError(llvm::inconvertibleErrorCode(),
                                  "unsupported kernel kind: %s",
                                  name.str().c_str());
+}
+
+llvm::Expected<KernelKind> parseManifestKernelKind(llvm::StringRef name) {
+  if (name.empty())
+    return KernelKind::Mix;
+  return parseKernelKind(name);
 }
 
 std::string defaultKernelName(llvm::StringRef kernelFile,
@@ -187,7 +201,12 @@ llvm::Expected<KernelArtifact> loadArtifactFromRoot() {
 
   KernelArtifact artifact;
   artifact.kernelName = *kernelNameOr;
-  artifact.kernelKind = KernelKind::Mix;
+  auto kernelKindIt = manifest.find("kernel_kind");
+  auto parsedKernelKindOr = parseManifestKernelKind(
+      kernelKindIt != manifest.end() ? kernelKindIt->second : "");
+  if (!parsedKernelKindOr)
+    return parsedKernelKindOr.takeError();
+  artifact.kernelKind = *parsedKernelKindOr;
   artifact.mixResourceType = MixResourceType::Unknown;
   artifact.socVersion = *socVersionOr;
   artifact.artifactRoot = artifactRoot.str().str();
@@ -212,7 +231,11 @@ llvm::Expected<KernelArtifact> loadArtifactFromRoot() {
         resolveArtifactPath(artifact.artifactRoot, kernelSoIt->second);
 
   auto deviceObjectIt = manifest.find("device_object_path");
-  if (deviceObjectIt != manifest.end() && !deviceObjectIt->second.empty()) {
+  auto deviceBinaryIt = manifest.find("device_binary_path");
+  if (deviceBinaryIt != manifest.end() && !deviceBinaryIt->second.empty()) {
+    artifact.deviceBinaryPath =
+        resolveArtifactPath(artifact.artifactRoot, deviceBinaryIt->second);
+  } else if (deviceObjectIt != manifest.end() && !deviceObjectIt->second.empty()) {
     artifact.deviceBinaryPath =
         resolveArtifactPath(artifact.artifactRoot, deviceObjectIt->second);
   } else if (!artifact.packedSharedObjectPath.empty()) {
@@ -258,25 +281,38 @@ llvm::Expected<KernelArtifact> prepareArtifact() {
   return compiler.compile(request);
 }
 
-class UnsupportedRunDriver final : public ExecutionBackendDriver {
-public:
-  llvm::Expected<ExecutionResult>
-  run(const ExecutionRequest &request) override {
-    (void)request;
-    return llvm::createStringError(
-        llvm::inconvertibleErrorCode(),
-        "runtime-session --run is not supported yet: task I/O binding is not implemented");
-  }
-};
-
-llvm::Expected<TaskGraph> buildGraph(const KernelArtifact &artifact) {
+llvm::Expected<TaskGraph> buildGraph(const KernelArtifact &artifact,
+                                     const ExecutionInvocation *invocation = nullptr) {
   TaskGraph graph;
   RuntimeTask task;
   task.taskId = TaskId;
   task.artifact = artifact;
+  if (invocation)
+    task.invocation = *invocation;
   if (auto err = graph.addTask(task))
     return std::move(err);
   return graph;
+}
+
+llvm::Expected<std::pair<ExecutionBackendKind, TaskGraph>>
+prepareManifestGraph() {
+  auto runSpecOr = loadRunManifest(RunManifestPath);
+  if (!runSpecOr)
+    return runSpecOr.takeError();
+
+  ArtifactRoot = runSpecOr->artifactRoot;
+  auto artifactOr = loadArtifactFromRoot();
+  if (!artifactOr)
+    return artifactOr.takeError();
+
+  TaskGraph graph;
+  RuntimeTask task;
+  task.taskId = runSpecOr->taskId;
+  task.artifact = *artifactOr;
+  task.invocation = runSpecOr->invocation;
+  if (auto err = graph.addTask(task))
+    return std::move(err);
+  return std::make_pair(runSpecOr->backendKind, std::move(graph));
 }
 
 void printArtifactSummary(const KernelArtifact &artifact) {
@@ -301,21 +337,36 @@ int main(int argc, char **argv) {
       argc, argv,
       "task graph runtime planning CLI for artifacts and session plans, with a stubbed run path\n");
 
-  auto artifactOr = prepareArtifact();
-  if (!artifactOr) {
-    llvm::errs() << "Error: " << llvm::toString(artifactOr.takeError()) << "\n";
-    return 4;
+  ExecutionBackendKind backendKind = ExecutionBackendKind::Simulation;
+  std::optional<KernelArtifact> artifact;
+  std::optional<TaskGraph> graph;
+  if (!RunManifestPath.empty()) {
+    auto manifestGraphOr = prepareManifestGraph();
+    if (!manifestGraphOr) {
+      llvm::errs() << "Error: " << llvm::toString(manifestGraphOr.takeError())
+                   << "\n";
+      return 4;
+    }
+    backendKind = manifestGraphOr->first;
+    graph = std::move(manifestGraphOr->second);
+  } else {
+    auto artifactOr = prepareArtifact();
+    if (!artifactOr) {
+      llvm::errs() << "Error: " << llvm::toString(artifactOr.takeError()) << "\n";
+      return 4;
+    }
+    artifact = *artifactOr;
+    printArtifactSummary(*artifact);
+    auto graphOr = buildGraph(*artifact);
+    if (!graphOr) {
+      llvm::errs() << "Error: " << llvm::toString(graphOr.takeError()) << "\n";
+      return 4;
+    }
+    graph = std::move(*graphOr);
   }
-  printArtifactSummary(*artifactOr);
 
-  auto graphOr = buildGraph(*artifactOr);
-  if (!graphOr) {
-    llvm::errs() << "Error: " << llvm::toString(graphOr.takeError()) << "\n";
-    return 4;
-  }
-
-  ExecutionSession session(ExecutionBackendKind::Simulation);
-  auto planOr = session.plan(*graphOr);
+  ExecutionSession session(backendKind);
+  auto planOr = session.plan(*graph);
   if (!planOr) {
     llvm::errs() << "Error: " << llvm::toString(planOr.takeError()) << "\n";
     return 2;
@@ -325,12 +376,16 @@ int main(int argc, char **argv) {
   if (!RunSession)
     return 0;
 
-  auto driver = std::make_shared<UnsupportedRunDriver>();
-  ExecutionSession runSession(ExecutionBackendKind::Simulation, driver);
-  auto traceOr = runSession.run(*graphOr);
+  ExecutionSession runSession(backendKind);
+  auto traceOr = runSession.run(*graph);
   if (!traceOr) {
     llvm::errs() << "Error: " << llvm::toString(traceOr.takeError()) << "\n";
     return 2;
+  }
+  if (backendKind == ExecutionBackendKind::Simulation) {
+    llvm::outs().flush();
+    llvm::errs().flush();
+    _Exit(0);
   }
   return 0;
 }

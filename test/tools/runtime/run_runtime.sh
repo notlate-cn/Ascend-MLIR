@@ -20,6 +20,7 @@ if [ -z "${ASCEND_HOME}" ]; then
   exit 1
 fi
 export ASCEND_HOME_PATH="${ASCEND_HOME}"
+source "${PROJECT_ROOT}/examples/env.sh" >/dev/null
 
 LLVM_BUILD="$(require_llvm_build_dir || true)"
 if [ -z "$LLVM_BUILD" ]; then
@@ -37,7 +38,7 @@ fi
 cmake -S . -B build -DLLVM_BUILD_DIR="$LLVM_BUILD"
 
 echo "--- Building focused runtime verification targets ---"
-cd build && cmake --build . --target AscendCRuntime runtime-session -j2 && cd ..
+cd build && cmake --build . --target AscendCRuntime runtime-session afir-opt afir-translate compiler validator -j2 && cd ..
 
 echo "--- Checking runtime-session CLI ---"
 test -x build/bin/runtime-session
@@ -48,9 +49,15 @@ INVALID_STDERR=""
 RUN_STDERR=""
 TEST_RUNTIME_BIN="$(mktemp /tmp/test_runtime.XXXXXX)"
 TEST_TASKGRAPH_RUNTIME_BIN="$(mktemp /tmp/test_taskgraph_runtime.XXXXXX)"
+RUNTIME_SESSION_ARTIFACT_ROOT="$(mktemp -d)"
+RUNTIME_SESSION_RUN_MANIFEST="$(mktemp /tmp/runtime_session_run_manifest.XXXXXX.json)"
+RUNTIME_SESSION_ACTUAL_OUTPUT="$(mktemp /tmp/runtime_session_actual.XXXXXX.npy)"
 cleanup() {
   rm -rf "$FAKE_ARTIFACT_ROOT"
-  rm -f "$INVALID_STDERR" "$RUN_STDERR" "$TEST_RUNTIME_BIN" "$TEST_TASKGRAPH_RUNTIME_BIN"
+  rm -rf "$RUNTIME_SESSION_ARTIFACT_ROOT"
+  rm -f "$INVALID_STDERR" "$RUN_STDERR" "$TEST_RUNTIME_BIN" \
+        "$TEST_TASKGRAPH_RUNTIME_BIN" "$RUNTIME_SESSION_RUN_MANIFEST" \
+        "$RUNTIME_SESSION_ACTUAL_OUTPUT"
 }
 trap cleanup EXIT
 mkdir -p "${FAKE_ARTIFACT_ROOT}/out"
@@ -76,7 +83,47 @@ if build/bin/runtime-session --artifact-root "${FAKE_ARTIFACT_ROOT}" --run 2>"${
   echo "Error: runtime-session --run unexpectedly succeeded" >&2
   exit 1
 fi
-grep -q "task I/O binding is not implemented" "${RUN_STDERR}"
+grep -q "simulation path currently requires expected_outputs" "${RUN_STDERR}"
+
+echo "--- Checking runtime-session positive vec simulation path ---"
+bash examples/relu-broadcast-transpose/run.sh >/tmp/runtime_session_example.log 2>&1
+build/bin/runtime-session \
+  --kernel examples/relu-broadcast-transpose/step8_kernel.cpp \
+  --kernel-kind vec \
+  --name relu_transpose_broadcast_add \
+  --output "${RUNTIME_SESSION_ARTIFACT_ROOT}" \
+  >/tmp/runtime_session_compile.log 2>&1
+test -f "${RUNTIME_SESSION_ARTIFACT_ROOT}/out/manifest.txt"
+
+cat > "${RUNTIME_SESSION_RUN_MANIFEST}" <<EOF
+{
+  "task_id": "main",
+  "backend": "sim",
+  "artifact_root": "${RUNTIME_SESSION_ARTIFACT_ROOT}",
+  "inputs": [
+    { "name": "data0", "path": "${PROJECT_ROOT}/examples/relu-broadcast-transpose/input_data0.npy" },
+    { "name": "data1", "path": "${PROJECT_ROOT}/examples/relu-broadcast-transpose/input_data1.npy" }
+  ],
+  "outputs": [
+    { "name": "out", "path": "${RUNTIME_SESSION_ACTUAL_OUTPUT}" }
+  ],
+  "expected_outputs": [
+    { "name": "out", "path": "${PROJECT_ROOT}/examples/relu-broadcast-transpose/output_expected.npy" }
+  ],
+  "tiling": {
+    "schema": "${PROJECT_ROOT}/examples/relu-broadcast-transpose/tiling_space.json",
+    "params": "TB_M=64,TB_N=64,dim_arg0_0=640,dim_arg1_0=500,dim_arg0_1=1,dim_arg1_1=640"
+  },
+  "block_dim": 8,
+  "workspace_size": 16777216,
+  "profiling": true
+}
+EOF
+
+build/bin/runtime-session \
+  --run-manifest "${RUNTIME_SESSION_RUN_MANIFEST}" \
+  --run >/tmp/runtime_session_run.log 2>&1
+test -f "${RUNTIME_SESSION_ACTUAL_OUTPUT}"
 
 # Compile test drivers
 echo "--- Compiling runtime tests ---"

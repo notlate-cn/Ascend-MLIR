@@ -4,7 +4,11 @@
 #include "Runtime/MixDirectBackend.h"
 #include "Runtime/PathUtils.h"
 
+#include "llvm/ADT/SmallString.h"
 #include "llvm/Support/Error.h"
+#include "llvm/Support/FileSystem.h"
+#include "llvm/Support/Path.h"
+#include "llvm/Support/raw_ostream.h"
 
 namespace mlir::runtime {
 
@@ -19,6 +23,53 @@ static std::string defaultCompilerArch(KernelKind kind) {
     return "dav-c220-vec";
   }
   return "dav-c220-vec";
+}
+
+static llvm::StringRef kernelKindName(KernelKind kind) {
+  switch (kind) {
+  case KernelKind::Vec:
+    return "vec";
+  case KernelKind::Cube:
+    return "cube";
+  case KernelKind::Mix:
+    return "mix";
+  }
+  return "vec";
+}
+
+static llvm::Expected<std::string>
+writeArtifactManifest(llvm::StringRef artifactRoot, llvm::StringRef kernelName,
+                      KernelKind kernelKind, llvm::StringRef socVersion,
+                      llvm::StringRef deviceBinaryPath) {
+  llvm::SmallString<256> manifestDir(artifactRoot);
+  llvm::sys::path::append(manifestDir, "out");
+  if (auto ec = llvm::sys::fs::create_directories(manifestDir))
+    return llvm::createStringError(ec,
+                                   "cannot create artifact manifest directory");
+
+  llvm::SmallString<256> manifestPath(manifestDir);
+  llvm::sys::path::append(manifestPath, "manifest.txt");
+  std::error_code ec;
+  llvm::raw_fd_ostream os(manifestPath, ec);
+  if (ec)
+    return llvm::createStringError(ec, "cannot write artifact manifest");
+
+  llvm::SmallString<256> relativeBinary(deviceBinaryPath);
+  llvm::sys::path::remove_dots(relativeBinary, /*remove_dot_dot=*/true);
+  if (llvm::sys::path::is_absolute(relativeBinary)) {
+    llvm::StringRef relativeToRoot = relativeBinary;
+    if (relativeToRoot.consume_front(artifactRoot))
+      relativeBinary = relativeToRoot.ltrim("/").str();
+  }
+
+  os << "kernel_name=" << kernelName << "\n";
+  os << "soc_version=" << socVersion << "\n";
+  os << "kernel_kind=" << kernelKindName(kernelKind) << "\n";
+  os << "device_binary_path=" << relativeBinary << "\n";
+  os << "manifest_path=out/manifest.txt\n";
+  os.flush();
+
+  return manifestPath.str().str();
 }
 
 } // namespace
@@ -79,9 +130,15 @@ ArtifactCompiler::compile(const ArtifactCompileRequest &req) const {
                                    req.kernelName);
   if (!binaryOr)
     return binaryOr.takeError();
-
-  return normalizeCompiledArtifact(*binaryOr, req.kernelName, req.kernelKind,
-                                   resolvedSoc, req.outputDir);
+  KernelArtifact artifact = normalizeCompiledArtifact(
+      *binaryOr, req.kernelName, req.kernelKind, resolvedSoc, req.outputDir);
+  auto manifestPathOr = writeArtifactManifest(req.outputDir, req.kernelName,
+                                              req.kernelKind, resolvedSoc,
+                                              artifact.deviceBinaryPath);
+  if (!manifestPathOr)
+    return manifestPathOr.takeError();
+  artifact.manifestPath = *manifestPathOr;
+  return artifact;
 }
 
 } // namespace mlir::runtime
