@@ -39,6 +39,12 @@ SELECTED_EXAMPLES=("$@")
 ARTIFACT_ROOTS=()
 MANIFESTS=()
 OUTPUTS=()
+SUMMARY_NAMES=()
+SUMMARY_KINDS=()
+SUMMARY_RETRIES=()
+SUMMARY_OUTPUTS=()
+SUMMARY_PROFILES=()
+CURRENT_RETRIES=0
 
 cleanup() {
   rm -rf "${ARTIFACT_ROOTS[@]:-}"
@@ -97,6 +103,7 @@ PY
 run_runtime_session_manifest() {
   local manifest="$1"
   local status=0
+  CURRENT_RETRIES=0
   if "${RUNTIME_SESSION}" --run-manifest "${manifest}" --run >/tmp/runtime_simbackend_run.log 2>&1; then
     return 0
   fi
@@ -106,7 +113,34 @@ run_runtime_session_manifest() {
   fi
   echo "retrying runtime-session after simulator process exit ${status}" >&2
   sleep 1
+  CURRENT_RETRIES=1
   "${RUNTIME_SESSION}" --run-manifest "${manifest}" --run >/tmp/runtime_simbackend_run.log 2>&1
+}
+
+record_summary() {
+  local name="$1"
+  local kind="$2"
+  local retries="$3"
+  local output_path="$4"
+  local profile_path="$5"
+  SUMMARY_NAMES+=("${name}")
+  SUMMARY_KINDS+=("${kind}")
+  SUMMARY_RETRIES+=("${retries}")
+  SUMMARY_OUTPUTS+=("${output_path}")
+  SUMMARY_PROFILES+=("${profile_path}")
+}
+
+print_summary() {
+  local i
+  echo "--- SimBackend summary ---"
+  for ((i = 0; i < ${#SUMMARY_NAMES[@]}; ++i)); do
+    printf 'example=%s kind=%s status=pass retries=%s output=%s profile=%s\n' \
+      "${SUMMARY_NAMES[$i]}" \
+      "${SUMMARY_KINDS[$i]}" \
+      "${SUMMARY_RETRIES[$i]}" \
+      "${SUMMARY_OUTPUTS[$i]}" \
+      "${SUMMARY_PROFILES[$i]}"
+  done
 }
 
 should_run_example() {
@@ -179,6 +213,12 @@ EOF
   run_runtime_session_manifest "${manifest}"
   test -f "${actual_output}"
   compare_npy "${expected_path}" "${actual_output}" "${atol}" "${rtol}"
+  record_summary \
+    "$(basename "${example_dir}")" \
+    "vec" \
+    "${CURRENT_RETRIES}" \
+    "${actual_output}" \
+    "${artifact_root}/profile"
 }
 
 run_mix_example() {
@@ -241,6 +281,7 @@ EOF
 
   echo "--- SimBackend mix example: $(basename "${example_dir}") ---"
   local status=0
+  CURRENT_RETRIES=0
   if ! ASCEND_DAV_SIM_VERSION="${dav_sim_version}" \
     LD_LIBRARY_PATH="${artifact_root}/out:${ascend_lib64}:${soc_sim_lib}:${dav_sim_lib}:${device_lib}${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}" \
     "${RUNTIME_SESSION}" --run-manifest "${manifest}" --run \
@@ -251,6 +292,7 @@ EOF
     fi
     echo "retrying runtime-session mix run after simulator process exit ${status}" >&2
     sleep 1
+    CURRENT_RETRIES=1
     ASCEND_DAV_SIM_VERSION="${dav_sim_version}" \
     LD_LIBRARY_PATH="${artifact_root}/out:${ascend_lib64}:${soc_sim_lib}:${dav_sim_lib}:${device_lib}${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}" \
       "${RUNTIME_SESSION}" --run-manifest "${manifest}" --run \
@@ -258,6 +300,12 @@ EOF
   fi
   test -f "${actual_output}"
   compare_npy "${expected_path}" "${actual_output}" "${atol}" "${rtol}"
+  record_summary \
+    "$(basename "${example_dir}")" \
+    "mix" \
+    "${CURRENT_RETRIES}" \
+    "${actual_output}" \
+    "${artifact_root}/profile"
 }
 
 if should_run_example "relu-broadcast-transpose"; then
@@ -333,4 +381,5 @@ run_mix_example \
   "1.0" "1e-2"
 fi
 
+print_summary
 echo "SimBackend example baseline passed"
