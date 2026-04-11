@@ -156,9 +156,14 @@ buildTaskGraphFromManifest(const KernelArtifact &artifact,
   return graph;
 }
 
-static void emitValidatorSessionMarker(bool success) {
+static void emitValidatorRuntimeMarker(bool success) {
   llvm::outs() << "session.backend=sim\n"
                << "session.result=" << (success ? "success" : "error")
+               << "\n";
+}
+
+static void emitValidatorValidationMarker(bool passed) {
+  llvm::outs() << "session.validation=" << (passed ? "pass" : "fail")
                << "\n";
 }
 
@@ -273,7 +278,7 @@ int main(int argc, char** argv) {
   ExecutionSession session(ExecutionBackendKind::Simulation);
   auto traceOr = session.run(*graphOr);
   if (!traceOr) {
-    emitValidatorSessionMarker(false);
+    emitValidatorRuntimeMarker(false);
     llvm::errs() << "Error: " << llvm::toString(traceOr.takeError()) << "\n";
     llvm::outs().flush();
     llvm::errs().flush();
@@ -302,12 +307,13 @@ int main(int argc, char** argv) {
   // error_msg non-empty → runtime error → exit 3 (no PASS/FAIL printed).
   // Otherwise → accuracy result → exit 0 (PASS) or 1 (FAIL).
   int exit_code;
+  emitValidatorRuntimeMarker(true);
   if (!result.error_msg.empty()) {
-    emitValidatorSessionMarker(false);
+    emitValidatorValidationMarker(false);
     llvm::errs() << "Error: " << result.error_msg << "\n";
     exit_code = 3;
   } else {
-    emitValidatorSessionMarker(result.passed);
+    emitValidatorValidationMarker(result.passed);
     llvm::outs() << "max_abs_diff:  " << result.max_abs_diff  << "\n"
                  << "mean_abs_diff: " << result.mean_abs_diff << "\n";
     llvm::outs() << (result.passed ? "PASS\n" : "FAIL\n");
