@@ -101,6 +101,8 @@ ArtifactCompiler::compile(const ArtifactCompileRequest &req) const {
       resolveSocVersion(req.socVersion, "Ascend910B1");
 
   if (req.kernelKind == KernelKind::Mix) {
+    // The mix backend compiles both cube and vec variants internally, so the
+    // compatibility arch flag does not change this path.
     MixDirectCompileConfig cfg;
     cfg.kernelSrc = req.kernelSource;
     cfg.kernelName = req.kernelName;
@@ -122,8 +124,10 @@ ArtifactCompiler::compile(const ArtifactCompileRequest &req) const {
 
   CompilerConfig cfg;
   cfg.soc_version = resolvedSoc;
-  cfg.arch = defaultCompilerArch(req.kernelKind);
+  cfg.arch = req.arch.empty() ? defaultCompilerArch(req.kernelKind)
+                              : req.arch;
   cfg.kernel_type = req.kernelKind == KernelKind::Cube ? "cube" : "vec";
+  cfg.verbose = req.verbose;
 
   Compiler compiler(cfg);
   auto binaryOr = compiler.Compile(req.kernelSource, req.outputDir,

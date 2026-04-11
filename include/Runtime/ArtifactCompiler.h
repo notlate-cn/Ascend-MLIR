@@ -17,6 +17,8 @@ struct ArtifactCompileRequest {
   KernelKind kernelKind = KernelKind::Vec;
   std::string socVersion;
   std::string outputDir;
+  std::string arch;
+  bool verbose = false;
   std::optional<std::string> cannMlirPath;
   std::optional<std::string> npyDir;
 };
