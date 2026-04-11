@@ -714,6 +714,8 @@ static void testExecutionSessionCarriesInvocationBindings() {
   TensorBinding output;
   output.name = "output0";
   output.path = "/tmp/output0.npy";
+  output.shape = std::vector<int64_t>{4, 8};
+  output.dtype = DType::F32;
   task.invocation.outputs.push_back(output);
 
   TaskGraph graph;
@@ -751,6 +753,22 @@ static void testExecutionSessionCarriesInvocationBindings() {
       EXPECT(driverPtr->lastRequest.task.invocation.outputs[0].path ==
                  "/tmp/output0.npy",
              "execution session preserves invocation output path");
+      EXPECT(driverPtr->lastRequest.task.invocation.outputs[0].shape.has_value(),
+             "execution session preserves invocation output shape metadata");
+      EXPECT(driverPtr->lastRequest.task.invocation.outputs[0].dtype.has_value(),
+             "execution session preserves invocation output dtype metadata");
+      if (driverPtr->lastRequest.task.invocation.outputs[0].shape) {
+        EXPECT(driverPtr->lastRequest.task.invocation.outputs[0].shape->size() ==
+                   2 &&
+                   (*driverPtr->lastRequest.task.invocation.outputs[0].shape)[0] == 4 &&
+                   (*driverPtr->lastRequest.task.invocation.outputs[0].shape)[1] == 8,
+               "execution session preserves invocation output shape values");
+      }
+      if (driverPtr->lastRequest.task.invocation.outputs[0].dtype) {
+        EXPECT(*driverPtr->lastRequest.task.invocation.outputs[0].dtype ==
+                   DType::F32,
+               "execution session preserves invocation output dtype value");
+      }
     }
   }
 }
@@ -768,7 +786,7 @@ static void testRunManifestParsesVecSimulationSpec() {
     { "name": "data1", "path": "/tmp/in1.npy" }
   ],
   "outputs": [
-    { "name": "out", "path": "/tmp/actual.npy" }
+    { "name": "out", "path": "/tmp/actual.npy", "shape": [4, 8], "dtype": "f32" }
   ],
   "expected_outputs": [
     { "name": "out", "path": "/tmp/expected.npy" }
@@ -805,11 +823,67 @@ static void testRunManifestParsesVecSimulationSpec() {
            "run manifest profiling flag");
     EXPECT(specOr->invocation.tiling.has_value(),
            "run manifest tiling present");
+    EXPECT(specOr->invocation.outputs[0].shape.has_value(),
+           "run manifest output shape metadata present");
+    EXPECT(specOr->invocation.outputs[0].dtype.has_value(),
+           "run manifest output dtype metadata present");
+    if (specOr->invocation.outputs[0].shape) {
+      EXPECT(specOr->invocation.outputs[0].shape->size() == 2 &&
+                 (*specOr->invocation.outputs[0].shape)[0] == 4 &&
+                 (*specOr->invocation.outputs[0].shape)[1] == 8,
+             "run manifest output shape metadata values");
+    }
+    if (specOr->invocation.outputs[0].dtype) {
+      EXPECT(*specOr->invocation.outputs[0].dtype == DType::F32,
+             "run manifest output dtype metadata value");
+    }
     if (specOr->invocation.tiling) {
       EXPECT(specOr->invocation.tiling->schemaPath == "/tmp/tiling_space.json",
              "run manifest tiling schema path");
       EXPECT(specOr->invocation.tiling->params == "TB_M=64,TB_N=64",
              "run manifest tiling params");
+    }
+  }
+}
+
+static void testRunManifestParsesOutputMetadataWithoutExpectedOutputs() {
+  const std::string manifestPath = "/tmp/runtime_run_manifest_no_expected.json";
+  {
+    std::ofstream os(manifestPath);
+    os << R"JSON({
+  "task_id": "main",
+  "backend": "sim",
+  "artifact_root": "/tmp/artifact",
+  "inputs": [
+    { "name": "data0", "path": "/tmp/in0.npy" }
+  ],
+  "outputs": [
+    { "name": "out", "path": "/tmp/actual.npy", "shape": [32], "dtype": "f16" }
+  ]
+})JSON";
+  }
+
+  auto specOr = loadRunManifest(manifestPath);
+  EXPECT((bool)specOr, "run manifest without expected outputs parses");
+  if (specOr) {
+    EXPECT(specOr->invocation.expectedOutputs.empty(),
+           "run manifest without expected outputs leaves golden bindings empty");
+    EXPECT(specOr->invocation.outputs.size() == 1,
+           "run manifest without expected outputs keeps output bindings");
+    if (specOr->invocation.outputs.size() == 1) {
+      EXPECT(specOr->invocation.outputs[0].shape.has_value(),
+             "run manifest without expected outputs carries output shape");
+      EXPECT(specOr->invocation.outputs[0].dtype.has_value(),
+             "run manifest without expected outputs carries output dtype");
+      if (specOr->invocation.outputs[0].shape) {
+        EXPECT(specOr->invocation.outputs[0].shape->size() == 1 &&
+                   (*specOr->invocation.outputs[0].shape)[0] == 32,
+               "run manifest without expected outputs shape value");
+      }
+      if (specOr->invocation.outputs[0].dtype) {
+        EXPECT(*specOr->invocation.outputs[0].dtype == DType::F16,
+               "run manifest without expected outputs dtype value");
+      }
     }
   }
 }
@@ -835,6 +909,7 @@ int main() {
   testExecutionSessionRunsTasksInTopologicalOrder();
   testExecutionSessionCarriesInvocationBindings();
   testRunManifestParsesVecSimulationSpec();
+  testRunManifestParsesOutputMetadataWithoutExpectedOutputs();
 
   llvm::outs() << g_pass << " passed, " << g_fail << " failed\n";
   return g_fail ? 1 : 0;

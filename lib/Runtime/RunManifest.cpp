@@ -39,6 +39,38 @@ llvm::Expected<ExecutionBackendKind> parseBackendKind(llvm::StringRef value) {
                                  value.str().c_str());
 }
 
+llvm::Expected<DType> parseDType(llvm::StringRef value) {
+  if (value == "f16")
+    return DType::F16;
+  if (value == "bf16")
+    return DType::BF16;
+  if (value == "f32")
+    return DType::F32;
+  if (value == "int8")
+    return DType::INT8;
+  if (value == "int32")
+    return DType::INT32;
+  if (value == "int64")
+    return DType::INT64;
+  return llvm::createStringError(llvm::inconvertibleErrorCode(),
+                                 "unsupported tensor dtype: %s",
+                                 value.str().c_str());
+}
+
+llvm::Expected<std::vector<int64_t>>
+parseShape(const llvm::json::Array &array) {
+  std::vector<int64_t> shape;
+  shape.reserve(array.size());
+  for (const llvm::json::Value &value : array) {
+    auto integer = value.getAsInteger();
+    if (!integer)
+      return llvm::createStringError(llvm::inconvertibleErrorCode(),
+                                     "shape entries must be integers");
+    shape.push_back(static_cast<int64_t>(*integer));
+  }
+  return shape;
+}
+
 llvm::Expected<TensorBinding> parseTensorBinding(const llvm::json::Object &obj) {
   TensorBinding binding;
   auto nameOr = requireString(obj, "name");
@@ -50,6 +82,18 @@ llvm::Expected<TensorBinding> parseTensorBinding(const llvm::json::Object &obj) 
   binding.name = *nameOr;
   binding.path = *pathOr;
   binding.sourceKind = BindingSourceKind::ExternalFile;
+  if (auto *shape = obj.getArray("shape")) {
+    auto shapeOr = parseShape(*shape);
+    if (!shapeOr)
+      return shapeOr.takeError();
+    binding.shape = std::move(*shapeOr);
+  }
+  if (auto dtype = obj.getString("dtype")) {
+    auto dtypeOr = parseDType(*dtype);
+    if (!dtypeOr)
+      return dtypeOr.takeError();
+    binding.dtype = *dtypeOr;
+  }
   return binding;
 }
 
