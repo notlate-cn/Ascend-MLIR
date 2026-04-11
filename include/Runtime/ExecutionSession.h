@@ -12,6 +12,8 @@ namespace mlir::runtime {
 
 struct SessionPlan {
   std::vector<std::string> orderedTaskIds;
+  std::vector<std::string> readyTaskIds;
+  size_t blockedTaskCount = 0;
 };
 
 class ExecutionSession {
