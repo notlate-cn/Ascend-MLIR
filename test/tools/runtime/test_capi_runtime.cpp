@@ -180,6 +180,7 @@ int main() {
 
   std::fill(actual.begin(), actual.end(), 0);
   std::memset(errBuf, 0, sizeof(errBuf));
+  EXPECT(!binary.empty(), "compiled binary is readable");
   int runFileRc = afirt_executor_run_file(
       executor, binPath, "relu_transpose_broadcast_add", 2, inputPtrs,
       inputBytes, 1, outputPtrs, outputBytes, tilingOr->data(),
