@@ -331,6 +331,14 @@ void printPlan(const SessionPlan &plan) {
                  << "\n";
 }
 
+void printProfileTraceSummary(const ProfileTrace &trace) {
+  llvm::outs() << "session.profile.session_id=" << trace.sessionId << "\n";
+  const std::vector<std::string> artifactPaths = trace.profileArtifactPaths();
+  llvm::outs() << "session.profile.count=" << artifactPaths.size() << "\n";
+  for (size_t i = 0; i < artifactPaths.size(); ++i)
+    llvm::outs() << "session.profile[" << i << "]=" << artifactPaths[i] << "\n";
+}
+
 } // namespace
 
 int main(int argc, char **argv) {
@@ -384,6 +392,7 @@ int main(int argc, char **argv) {
     llvm::errs() << "Error: " << llvm::toString(traceOr.takeError()) << "\n";
     return 2;
   }
+  printProfileTraceSummary(*traceOr);
   if (backendKind == ExecutionBackendKind::Simulation) {
     llvm::outs().flush();
     llvm::errs().flush();

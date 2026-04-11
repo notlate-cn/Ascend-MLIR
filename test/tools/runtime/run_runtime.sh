@@ -140,6 +140,8 @@ build/bin/runtime-session \
   --run-manifest "${RUNTIME_SESSION_RUN_MANIFEST}" \
   --run >/tmp/runtime_session_run.log 2>&1
 test -f "${RUNTIME_SESSION_ACTUAL_OUTPUT}"
+grep -q '^session.profile.session_id=' /tmp/runtime_session_run.log
+grep -q '^session.profile\[0\]=' /tmp/runtime_session_run.log
 
 echo "--- Checking runtime-session DAG simulation path ---"
 cat > "${RUNTIME_SESSION_DAG_MANIFEST}" <<EOF
@@ -194,6 +196,8 @@ build/bin/runtime-session \
   --run-manifest "${RUNTIME_SESSION_DAG_MANIFEST}" \
   --run >/tmp/runtime_session_dag_run.log 2>&1
 test -f "${RUNTIME_SESSION_DAG_OUTPUT}"
+grep -q '^session.profile.session_id=' /tmp/runtime_session_dag_run.log
+grep -q '^session.profile\[0\]=' /tmp/runtime_session_dag_run.log
 
 # Compile test drivers
 echo "--- Compiling runtime tests ---"

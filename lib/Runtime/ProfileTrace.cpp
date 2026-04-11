@@ -16,4 +16,15 @@ void ProfileTrace::addProfileArtifact(llvm::StringRef taskId,
                         artifactPath.str()});
 }
 
+std::vector<std::string> ProfileTrace::profileArtifactPaths() const {
+  std::vector<std::string> artifacts;
+  artifacts.reserve(events.size());
+  for (const ProfileEvent &event : events) {
+    if (event.eventKind != "profile_artifact" || event.artifact.empty())
+      continue;
+    artifacts.push_back(event.artifact);
+  }
+  return artifacts;
+}
+
 } // namespace mlir::runtime

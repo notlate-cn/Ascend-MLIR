@@ -197,6 +197,27 @@ static void testTaskGraphBasics() {
   EXPECT(trace.events[0].taskId == "task_a", "profile event task id");
 }
 
+static void testProfileTraceCollectsArtifactPaths() {
+  ProfileTrace trace;
+  trace.sessionId = "sess1";
+  trace.addEvent(ProfileEvent{"task_a", ExecutionBackendKind::Simulation,
+                              "kernel_complete", "/tmp/not-a-profile"});
+  trace.addProfileArtifact("task_a", ExecutionBackendKind::Simulation,
+                           "/tmp/profile_a.json");
+  trace.addProfileArtifact("task_b", ExecutionBackendKind::Simulation,
+                           "/tmp/profile_b.json");
+
+  const std::vector<std::string> artifacts = trace.profileArtifactPaths();
+  EXPECT(artifacts.size() == 2,
+         "profile trace collects only profile artifact events");
+  if (artifacts.size() == 2) {
+    EXPECT(artifacts[0] == "/tmp/profile_a.json",
+           "profile trace preserves first artifact path");
+    EXPECT(artifacts[1] == "/tmp/profile_b.json",
+           "profile trace preserves second artifact path");
+  }
+}
+
 static void testDuplicateTaskIds() {
   TaskGraph graph;
   RuntimeTask task;
@@ -1144,6 +1165,7 @@ static void testRunManifestParsesDagArtifactRootOverride() {
 
 int main() {
   testTaskGraphBasics();
+  testProfileTraceCollectsArtifactPaths();
   testDuplicateTaskIds();
   testEmptyTaskId();
   testUnknownDependency();
