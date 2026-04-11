@@ -109,48 +109,19 @@ if [[ ! -x "${LLVM_BUILD_DIR}/bin/llvm-config" ]]; then
 fi
 
 mkdir -p "${BOOTSTRAP_BUILD_DIR}/bin"
-LLVM_FLAGS="$("${LLVM_BUILD_DIR}/bin/llvm-config" --cxxflags --ldflags --libs support --system-libs)"
-
-if [[ ! -x "${BOOTSTRAP_BUILD_DIR}/bin/mix-compiler" ]] || \
-   [[ "${REPO_ROOT}/tools/mix-compiler/mix_compiler_main.cpp" -nt "${BOOTSTRAP_BUILD_DIR}/bin/mix-compiler" ]] || \
-   [[ "${REPO_ROOT}/lib/Runtime/MixDirectBackend.cpp" -nt "${BOOTSTRAP_BUILD_DIR}/bin/mix-compiler" ]] || \
-   [[ "${REPO_ROOT}/lib/Runtime/PathUtils.cpp" -nt "${BOOTSTRAP_BUILD_DIR}/bin/mix-compiler" ]] || \
-   [[ "${REPO_ROOT}/lib/Runtime/MixAbi.cpp" -nt "${BOOTSTRAP_BUILD_DIR}/bin/mix-compiler" ]] || \
-   [[ "${REPO_ROOT}/lib/Runtime/NpyIO.cpp" -nt "${BOOTSTRAP_BUILD_DIR}/bin/mix-compiler" ]] || \
-   [[ "${REPO_ROOT}/lib/Runtime/MixAbiExtractor.cpp" -nt "${BOOTSTRAP_BUILD_DIR}/bin/mix-compiler" ]] || \
-   [[ "${REPO_ROOT}/lib/Runtime/MixStubTemplate.cpp" -nt "${BOOTSTRAP_BUILD_DIR}/bin/mix-compiler" ]] || \
-   [[ "${REPO_ROOT}/lib/Runtime/MixSourceAnalyzer.cpp" -nt "${BOOTSTRAP_BUILD_DIR}/bin/mix-compiler" ]]; then
-  clang++ \
-    "${REPO_ROOT}/tools/mix-compiler/mix_compiler_main.cpp" \
-    "${REPO_ROOT}/lib/Runtime/MixDirectBackend.cpp" \
-    "${REPO_ROOT}/lib/Runtime/PathUtils.cpp" \
-    "${REPO_ROOT}/lib/Runtime/MixAbi.cpp" \
-    "${REPO_ROOT}/lib/Runtime/NpyIO.cpp" \
-    "${REPO_ROOT}/lib/Runtime/MixAbiExtractor.cpp" \
-    "${REPO_ROOT}/lib/Runtime/MixCommandBuilder.cpp" \
-    "${REPO_ROOT}/lib/Runtime/MixSourceAnalyzer.cpp" \
-    "${REPO_ROOT}/lib/Runtime/MixStubTemplate.cpp" \
-    ${LLVM_FLAGS} \
-    -std=c++17 \
-    -I"${REPO_ROOT}/include" \
-    -o "${BOOTSTRAP_BUILD_DIR}/bin/mix-compiler"
+if [[ -f "${BOOTSTRAP_BUILD_DIR}/CMakeCache.txt" ]]; then
+  CACHE_SOURCE_DIR="$(sed -n 's/^CMAKE_HOME_DIRECTORY:INTERNAL=//p' \
+    "${BOOTSTRAP_BUILD_DIR}/CMakeCache.txt")"
+  if [[ -n "${CACHE_SOURCE_DIR}" && "${CACHE_SOURCE_DIR}" != "${REPO_ROOT}" ]]; then
+    rm -rf "${BOOTSTRAP_BUILD_DIR}"
+    mkdir -p "${BOOTSTRAP_BUILD_DIR}/bin"
+  fi
 fi
 
-if [[ ! -x "${BOOTSTRAP_BUILD_DIR}/bin/mix-validator" ]] || \
-   [[ "${REPO_ROOT}/tools/mix-validator/mix_validator_main.cpp" -nt "${BOOTSTRAP_BUILD_DIR}/bin/mix-validator" ]] || \
-   [[ "${REPO_ROOT}/lib/Runtime/Executor.cpp" -nt "${BOOTSTRAP_BUILD_DIR}/bin/mix-validator" ]] || \
-   [[ "${REPO_ROOT}/lib/Runtime/PathUtils.cpp" -nt "${BOOTSTRAP_BUILD_DIR}/bin/mix-validator" ]] || \
-   [[ "${REPO_ROOT}/lib/Runtime/MixAbi.cpp" -nt "${BOOTSTRAP_BUILD_DIR}/bin/mix-validator" ]]; then
-  clang++ \
-    "${REPO_ROOT}/tools/mix-validator/mix_validator_main.cpp" \
-    "${REPO_ROOT}/lib/Runtime/Executor.cpp" \
-    "${REPO_ROOT}/lib/Runtime/PathUtils.cpp" \
-    "${REPO_ROOT}/lib/Runtime/MixAbi.cpp" \
-    ${LLVM_FLAGS} \
-    -std=c++17 \
-    -I"${REPO_ROOT}/include" \
-    -o "${BOOTSTRAP_BUILD_DIR}/bin/mix-validator"
-fi
+cmake -S "${REPO_ROOT}" -B "${BOOTSTRAP_BUILD_DIR}" \
+  -DLLVM_BUILD_DIR="${LLVM_BUILD_DIR}" >/dev/null
+cmake --build "${BOOTSTRAP_BUILD_DIR}" \
+  --target mix-compiler mix-validator -j2 >/dev/null
 
 rm -rf "${ARTIFACT_DIR}"
 
