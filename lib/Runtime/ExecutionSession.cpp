@@ -7,8 +7,11 @@
 #include "llvm/Support/Path.h"
 
 #include <filesystem>
+#include <deque>
 #include <map>
+#include <set>
 #include <utility>
+#include <vector>
 
 namespace mlir::runtime {
 
@@ -17,6 +20,16 @@ namespace {
 struct SessionRuntimePaths {
   std::string sessionId;
   std::string workingDirectory;
+};
+
+struct SchedulerState {
+  std::vector<std::string> orderedTaskIds;
+  std::vector<std::string> readyTaskIds;
+  size_t blockedTaskCount = 0;
+  std::map<std::string, RuntimeTask> tasksById;
+  std::map<std::string, size_t> remainingDependencies;
+  std::map<std::string, std::vector<std::string>> dependents;
+  std::deque<std::string> readyQueue;
 };
 
 using ProducedBindingMap = std::map<std::string, TensorBinding>;
@@ -130,6 +143,41 @@ static llvm::Expected<SessionRuntimePaths> prepareSessionRuntimePaths() {
   };
 }
 
+static llvm::Expected<SchedulerState> buildSchedulerState(const TaskGraph &graph) {
+  auto orderedTasksOr = graph.executionOrder();
+  if (!orderedTasksOr)
+    return orderedTasksOr.takeError();
+
+  SchedulerState state;
+  state.orderedTaskIds.reserve(orderedTasksOr->size());
+
+  for (const RuntimeTask &task : *orderedTasksOr) {
+    state.orderedTaskIds.push_back(task.taskId);
+    state.tasksById.emplace(task.taskId, task);
+    state.remainingDependencies.emplace(task.taskId, task.dependencies.size());
+    for (const std::string &dependency : task.dependencies)
+      state.dependents[dependency].push_back(task.taskId);
+  }
+
+  for (const RuntimeTask &task : *orderedTasksOr) {
+    auto it = state.remainingDependencies.find(task.taskId);
+    if (it == state.remainingDependencies.end())
+      continue;
+    if (it->second == 0) {
+      state.readyTaskIds.push_back(task.taskId);
+      state.readyQueue.push_back(task.taskId);
+    } else {
+      ++state.blockedTaskCount;
+    }
+  }
+
+  return state;
+}
+
+static llvm::Error canScheduleTask(const RuntimeTask &) {
+  return llvm::Error::success();
+}
+
 } // namespace
 
 ExecutionSession::ExecutionSession(ExecutionBackendKind backendKind)
@@ -147,16 +195,19 @@ ExecutionSession::~ExecutionSession() {
 }
 
 llvm::Expected<SessionPlan> ExecutionSession::plan(const TaskGraph &graph) const {
-  auto orderOr = graph.topologicalOrder();
-  if (!orderOr)
-    return orderOr.takeError();
-  return SessionPlan{std::move(*orderOr)};
+  auto schedulerOr = buildSchedulerState(graph);
+  if (!schedulerOr)
+    return schedulerOr.takeError();
+  return SessionPlan{std::move(schedulerOr->orderedTaskIds),
+                     std::move(schedulerOr->readyTaskIds),
+                     schedulerOr->blockedTaskCount};
 }
 
 llvm::Expected<ProfileTrace> ExecutionSession::run(const TaskGraph &graph) {
-  auto orderedTasksOr = graph.executionOrder();
-  if (!orderedTasksOr)
-    return orderedTasksOr.takeError();
+  auto schedulerOr = buildSchedulerState(graph);
+  if (!schedulerOr)
+    return schedulerOr.takeError();
+  SchedulerState scheduler = std::move(*schedulerOr);
 
   auto backendOr = getOrCreateBackend();
   if (!backendOr)
@@ -172,8 +223,20 @@ llvm::Expected<ProfileTrace> ExecutionSession::run(const TaskGraph &graph) {
   const std::string &workingDirectory = runtimePathsOr->workingDirectory;
   workingDirectories_.push_back(workingDirectory);
   ProducedBindingMap producedBindings;
+  std::set<std::string> completedTasks;
 
-  for (const RuntimeTask &task : *orderedTasksOr) {
+  while (!scheduler.readyQueue.empty()) {
+    const std::string taskId = scheduler.readyQueue.front();
+    scheduler.readyQueue.pop_front();
+    auto taskIt = scheduler.tasksById.find(taskId);
+    if (taskIt == scheduler.tasksById.end()) {
+      return llvm::createStringError(llvm::inconvertibleErrorCode(),
+                                     "scheduler lost task definition for %s",
+                                     taskId.c_str());
+    }
+    const RuntimeTask &task = taskIt->second;
+    if (auto err = canScheduleTask(task))
+      return std::move(err);
     auto resolvedTaskOr =
         resolveTaskBindings(task, workingDirectory, producedBindings);
     if (!resolvedTaskOr)
@@ -189,11 +252,33 @@ llvm::Expected<ProfileTrace> ExecutionSession::run(const TaskGraph &graph) {
       return resultOr.takeError();
 
     recordProducedBindings(request.task, producedBindings);
+    completedTasks.insert(taskId);
 
     if (resultOr->profileTrace) {
       for (ProfileEvent event : resultOr->profileTrace->events)
         sessionTrace.addEvent(std::move(event));
     }
+
+    auto dependentsIt = scheduler.dependents.find(taskId);
+    if (dependentsIt == scheduler.dependents.end())
+      continue;
+    for (const std::string &dependentId : dependentsIt->second) {
+      auto depCountIt = scheduler.remainingDependencies.find(dependentId);
+      if (depCountIt == scheduler.remainingDependencies.end())
+        continue;
+      if (depCountIt->second == 0)
+        continue;
+      --depCountIt->second;
+      if (depCountIt->second == 0)
+        scheduler.readyQueue.push_back(dependentId);
+    }
+  }
+
+  if (completedTasks.size() != scheduler.orderedTaskIds.size()) {
+    return llvm::createStringError(
+        llvm::inconvertibleErrorCode(),
+        "scheduler terminated with %zu/%zu tasks completed",
+        completedTasks.size(), scheduler.orderedTaskIds.size());
   }
 
   return sessionTrace;

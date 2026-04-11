@@ -797,12 +797,51 @@ static void testExecutionSessionPlansTopologicalOrder() {
   if (planOr) {
     EXPECT(planOr->orderedTaskIds.size() == 3,
            "execution session plan size");
+    EXPECT(planOr->readyTaskIds.size() == 1,
+           "execution session plan ready task count");
+    EXPECT(planOr->blockedTaskCount == 2,
+           "execution session plan blocked task count");
     EXPECT(planOr->orderedTaskIds[0] == "task_a",
            "execution session plan first task");
     EXPECT(planOr->orderedTaskIds[1] == "task_b",
            "execution session plan second task");
     EXPECT(planOr->orderedTaskIds[2] == "task_c",
            "execution session plan third task");
+    EXPECT(planOr->readyTaskIds[0] == "task_a",
+           "execution session plan ready task");
+  }
+}
+
+static void testExecutionSessionPlanTracksMultipleReadyRoots() {
+  TaskGraph graph;
+
+  RuntimeTask taskA;
+  taskA.taskId = "task_a";
+  RuntimeTask taskB;
+  taskB.taskId = "task_b";
+  RuntimeTask taskC;
+  taskC.taskId = "task_c";
+  taskC.dependencies = {"task_a", "task_b"};
+
+  auto addA = graph.addTask(taskA);
+  EXPECT(!addA, "execution session multi-root add task_a");
+  auto addC = graph.addTask(taskC);
+  EXPECT(!addC, "execution session multi-root add task_c");
+  auto addB = graph.addTask(taskB);
+  EXPECT(!addB, "execution session multi-root add task_b");
+
+  ExecutionSession session(ExecutionBackendKind::Simulation);
+  auto planOr = session.plan(graph);
+  EXPECT((bool)planOr, "execution session multi-root plan succeeds");
+  if (planOr) {
+    EXPECT(planOr->readyTaskIds.size() == 2,
+           "execution session multi-root ready count");
+    EXPECT(planOr->blockedTaskCount == 1,
+           "execution session multi-root blocked count");
+    EXPECT(planOr->readyTaskIds[0] == "task_a",
+           "execution session multi-root first ready task");
+    EXPECT(planOr->readyTaskIds[1] == "task_b",
+           "execution session multi-root second ready task");
   }
 }
 
@@ -1053,6 +1092,64 @@ static void testExecutionSessionResolvesTaskOutputBindings() {
     }
     EXPECT(!consumerRequest.task.invocation.outputs[0].path.empty(),
            "task output binding downstream output path is materialized");
+  }
+}
+
+class RejectingTaskBDriver : public ExecutionBackendDriver {
+public:
+  llvm::Expected<ExecutionResult>
+  run(const ExecutionRequest &request) override {
+    seenTaskIds.push_back(request.task.taskId);
+    if (request.task.taskId == "task_b") {
+      return llvm::createStringError(llvm::inconvertibleErrorCode(),
+                                     "[test:gate] rejected task_b");
+    }
+    ExecutionResult result;
+    result.taskId = request.task.taskId;
+    return result;
+  }
+
+  std::vector<std::string> seenTaskIds;
+};
+
+static void testExecutionSessionStopsAtGateRejectedTask() {
+  TaskGraph graph;
+
+  RuntimeTask taskA;
+  taskA.taskId = "task_a";
+
+  RuntimeTask taskB;
+  taskB.taskId = "task_b";
+
+  RuntimeTask taskC;
+  taskC.taskId = "task_c";
+  taskC.dependencies = {"task_a"};
+
+  auto addA = graph.addTask(taskA);
+  EXPECT(!addA, "execution session gate add task_a");
+  auto addB = graph.addTask(taskB);
+  EXPECT(!addB, "execution session gate add task_b");
+  auto addC = graph.addTask(taskC);
+  EXPECT(!addC, "execution session gate add task_c");
+
+  auto driver = std::make_shared<RejectingTaskBDriver>();
+  RejectingTaskBDriver *driverPtr = driver.get();
+  ExecutionSession session(ExecutionBackendKind::Simulation, driver);
+
+  auto traceOr = session.run(graph);
+  EXPECT(!(bool)traceOr, "execution session gate rejection fails run");
+  if (!traceOr) {
+    const std::string message = llvm::toString(traceOr.takeError());
+    EXPECT(message.find("[test:gate] rejected task_b") != std::string::npos,
+           "execution session gate surfaces rejection message");
+  }
+  EXPECT(driverPtr->seenTaskIds.size() == 2,
+         "execution session gate stops after rejected ready task");
+  if (driverPtr->seenTaskIds.size() == 2) {
+    EXPECT(driverPtr->seenTaskIds[0] == "task_a",
+           "execution session gate runs first ready task");
+    EXPECT(driverPtr->seenTaskIds[1] == "task_b",
+           "execution session gate runs second ready task before stopping");
   }
 }
 
@@ -1355,9 +1452,11 @@ int main() {
   testBackendSurfacesProfileTrace();
   testBackendPreservesExistingProfileTrace();
   testExecutionSessionPlansTopologicalOrder();
+  testExecutionSessionPlanTracksMultipleReadyRoots();
   testExecutionSessionRunsTasksInTopologicalOrder();
   testExecutionSessionCarriesInvocationBindings();
   testExecutionSessionResolvesTaskOutputBindings();
+  testExecutionSessionStopsAtGateRejectedTask();
   testRunManifestParsesVecSimulationSpec();
   testRunManifestParsesOutputMetadataWithoutExpectedOutputs();
   testRunManifestParsesTaskOutputBinding();
