@@ -1,4 +1,5 @@
 #include "Runtime/ExecutionSession.h"
+#include "Runtime/ExecutionBackend.h"
 #include "Runtime/MixAbi.h"
 #include "Runtime/PathUtils.h"
 #include "Runtime/TaskGraph.h"
@@ -14,6 +15,7 @@
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
+#include <filesystem>
 #include <map>
 #include <string>
 #include <vector>
@@ -275,27 +277,20 @@ buildValidationTask(const std::string &artifactRoot,
   return task;
 }
 
-static llvm::Expected<TaskGraph>
-buildValidationGraph(const std::string &artifactRoot,
-                     const std::string &manifestPath,
-                     const std::string &kernelSoPath,
-                     const std::string &deviceBinaryPath,
-                     const std::string &kernelName,
-                     const std::string &socVersion,
-                     const AbiMetadata &abi,
-                     llvm::StringRef inputDir,
-                     llvm::StringRef outputPath,
-                     llvm::StringRef tilingBinaryPath) {
-  auto taskOr = buildValidationTask(artifactRoot, manifestPath, kernelSoPath,
-                                    deviceBinaryPath, kernelName, socVersion,
-                                    abi, inputDir, outputPath, tilingBinaryPath);
-  if (!taskOr)
-    return taskOr.takeError();
+static llvm::Error runDirectPackedValidation(const RuntimeTask &task) {
+  auto backendOr = createExecutionBackend(ExecutionBackendKind::Simulation);
+  if (!backendOr)
+    return backendOr.takeError();
 
-  TaskGraph graph;
-  if (auto err = graph.addTask(*taskOr))
-    return std::move(err);
-  return graph;
+  ExecutionRequest request;
+  request.sessionId = "mix-validator-direct";
+  request.task = task;
+  request.workingDirectory = std::filesystem::current_path().string();
+
+  auto resultOr = (*backendOr)->run(request);
+  if (!resultOr)
+    return resultOr.takeError();
+  return llvm::Error::success();
 }
 
 static llvm::Error compareOutputs(llvm::StringRef actualPath,
@@ -409,13 +404,26 @@ int main(int argc, char **argv) {
   const std::string kernelName =
       !abi.runtimeKernelName.empty() ? abi.runtimeKernelName
                                      : abi.logicalKernelName;
-  auto graphOr = buildValidationGraph(
-      artifactRoot.str().str(), manifestPath.str().str(), manifestKernelSo,
-      manifestDeviceBinary, kernelName, resolvedSocVersion, abi, InputDir,
-      outputPath, *manifestTilingOr);
-  if (!graphOr) {
+  const std::string tilingBinaryPath =
+      abi.tilingMode == "generated_file"
+          ? resolvePath(artifactRoot.str().str(), abi.tilingSource)
+          : std::string{};
+
+  auto taskOr = buildValidationTask(artifactRoot.str().str(),
+                                    manifestPath.str().str(), manifestKernelSo,
+                                    manifestDeviceBinary, kernelName,
+                                    resolvedSocVersion, abi, InputDir,
+                                    outputPath, tilingBinaryPath);
+  if (!taskOr) {
+    llvm::errs() << "Error building runtime task: "
+                 << llvm::toString(taskOr.takeError()) << "\n";
+    return 4;
+  }
+
+  TaskGraph graph;
+  if (auto err = graph.addTask(*taskOr)) {
     llvm::errs() << "Error building runtime task graph: "
-                 << llvm::toString(graphOr.takeError()) << "\n";
+                 << llvm::toString(std::move(err)) << "\n";
     return 4;
   }
 
@@ -429,11 +437,19 @@ int main(int argc, char **argv) {
     }
   }
 
-  ExecutionSession session(ExecutionBackendKind::Simulation);
-  auto traceOr = session.run(*graphOr);
-  if (!traceOr) {
-    llvm::errs() << "Error: " << llvm::toString(traceOr.takeError()) << "\n";
-    return 2;
+  if (ForceDirectPacked) {
+    if (auto err = runDirectPackedValidation(*taskOr)) {
+      llvm::errs() << "Error: " << llvm::toString(std::move(err)) << "\n";
+      return 2;
+    }
+  } else {
+    ExecutionSession session(ExecutionBackendKind::Simulation);
+    auto traceOr = session.run(graph);
+    if (!traceOr) {
+      llvm::errs() << "Error: " << llvm::toString(traceOr.takeError())
+                   << "\n";
+      return 2;
+    }
   }
 
   if (auto err = compareOutputs(outputPath, goldenPath)) {

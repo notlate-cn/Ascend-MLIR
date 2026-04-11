@@ -531,6 +531,61 @@ static void testMixValidationCanBeRepresentedAsRuntimeTask() {
     EXPECT((*orderedOr)[0].invocation.outputs[0].dtype.has_value(),
            "mix validation runtime task carries output dtype metadata");
   }
+
+  auto driver = std::make_shared<CapturingExecutionBackendDriver>();
+  CapturingExecutionBackendDriver *driverPtr = driver.get();
+  ExecutionSession session(ExecutionBackendKind::Simulation, driver);
+  auto traceOr = session.run(graph);
+  EXPECT((bool)traceOr, "mix validation runtime session runs");
+  if (!traceOr) {
+    llvm::consumeError(traceOr.takeError());
+    return;
+  }
+
+  EXPECT(driverPtr->requests.size() == 1,
+         "mix validation runtime session sends one backend request");
+  if (driverPtr->requests.size() != 1)
+    return;
+
+  const ExecutionRequest &request = driverPtr->requests[0];
+  EXPECT(request.sessionId == traceOr->sessionId,
+         "mix validation runtime session propagates session id");
+  EXPECT(request.task.taskId == "main",
+         "mix validation runtime session preserves task id");
+  EXPECT(request.task.artifact.kernelKind == KernelKind::Mix,
+         "mix validation runtime session preserves mix kernel kind");
+  EXPECT(request.task.artifact.artifactRoot == "/tmp/mix-artifact",
+         "mix validation runtime session preserves artifact root");
+  EXPECT(request.task.artifact.manifestPath ==
+             "/tmp/mix-artifact/out/manifest.txt",
+         "mix validation runtime session preserves manifest path");
+  EXPECT(request.task.artifact.packedSharedObjectPath ==
+             "/tmp/mix/libmix_add_runtime_packed.so",
+         "mix validation runtime session preserves packed shared object path");
+  EXPECT(request.task.invocation.inputs.size() == 2,
+         "mix validation runtime session preserves input count");
+  EXPECT(request.task.invocation.outputs.size() == 1,
+         "mix validation runtime session preserves output count");
+  if (request.task.invocation.outputs.size() == 1) {
+    EXPECT(request.task.invocation.outputs[0].path ==
+               "/tmp/mix-artifact/" + abi.outputs[0].runtimeFile,
+           "mix validation runtime session preserves output path");
+    EXPECT(request.task.invocation.outputs[0].shape.has_value(),
+           "mix validation runtime session preserves output shape metadata");
+    EXPECT(request.task.invocation.outputs[0].dtype.has_value(),
+           "mix validation runtime session preserves output dtype metadata");
+  }
+  EXPECT(request.task.invocation.tiling.has_value(),
+         "mix validation runtime session carries tiling binding");
+  if (request.task.invocation.tiling) {
+    EXPECT(request.task.invocation.tiling->binaryPath ==
+               "/tmp/mix-artifact/out/tiling.bin",
+           "mix validation runtime session preserves tiling bytes path");
+  }
+  EXPECT(request.task.invocation.blockDim == abi.blockDim,
+         "mix validation runtime session preserves block dim");
+  EXPECT(request.task.invocation.workspaceSize == abi.workspaceBytes,
+         "mix validation runtime session preserves workspace size");
 }
 
 static void testArtifactCompilerRequestValidation() {
