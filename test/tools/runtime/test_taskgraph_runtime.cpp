@@ -29,6 +29,7 @@
 #include <filesystem>
 #include <fstream>
 #include <cstring>
+#include <cstdlib>
 #include <memory>
 #include <string>
 #include <vector>
@@ -443,6 +444,55 @@ static void testCompatCompileRequestRejectsUnknownKernelType() {
   EXPECT(!(bool)requestOr, "compat compile request rejects unknown kernel type");
   if (!requestOr)
     llvm::consumeError(requestOr.takeError());
+}
+
+static std::string readFileContents(const std::string &path) {
+  std::ifstream is(path);
+  return std::string((std::istreambuf_iterator<char>(is)),
+                     std::istreambuf_iterator<char>());
+}
+
+static void testCompatCompilerCliPrintsNormalizedArtifactSummary() {
+  const std::filesystem::path outputDir =
+      std::filesystem::temp_directory_path() / "taskgraph-compat-cli-out";
+  const std::filesystem::path logPath =
+      std::filesystem::temp_directory_path() / "taskgraph-compat-cli.log";
+  std::error_code ec;
+  std::filesystem::remove_all(outputDir, ec);
+  std::filesystem::remove(logPath, ec);
+
+  const std::string kernelPath =
+      "examples/relu-broadcast-transpose/step8_kernel.cpp";
+  const std::string kernelName = "legacy_name";
+  const std::string command =
+      "build/bin/compiler --kernel '" + kernelPath + "' --output '" +
+      outputDir.string() + "' --name '" + kernelName +
+      "' --soc Ascend910B1 --arch dav-c220-vec --kernel-type vec "
+      "--num-inputs 1 --num-outputs 1 > '" + logPath.string() +
+      "' 2>&1";
+
+  const int rc = std::system(command.c_str());
+  EXPECT(rc == 0, "compat compiler CLI exits successfully");
+  if (rc != 0) {
+    llvm::errs() << readFileContents(logPath.string());
+    return;
+  }
+
+  const std::string output = readFileContents(logPath.string());
+  const std::string rootLine = "artifact.root=" + outputDir.string();
+  const std::string manifestLine =
+      "artifact.manifest=" + (outputDir / "out" / "manifest.txt").string();
+  const std::string binaryLine =
+      "artifact.binary=" + (outputDir / (kernelName + ".bin")).string();
+
+  EXPECT(output.find(rootLine) != std::string::npos,
+         "compat compiler prints normalized artifact root");
+  EXPECT(output.find(manifestLine) != std::string::npos,
+         "compat compiler prints normalized manifest path");
+  EXPECT(output.find(binaryLine) != std::string::npos,
+         "compat compiler prints normalized device binary path");
+  EXPECT(output.find("Compiled:") == std::string::npos,
+         "compat compiler no longer prints raw compiler result");
 }
 
 static void testCompatSingleTaskRunManifestBuildsExpectedBackedTask() {
@@ -1633,6 +1683,7 @@ int main() {
   testArtifactCompilerRequestValidation();
   testCompatCompileRequestPreservesFields();
   testCompatCompileRequestRejectsUnknownKernelType();
+  testCompatCompilerCliPrintsNormalizedArtifactSummary();
   testCompatSingleTaskRunManifestBuildsExpectedBackedTask();
   testCompatSingleTaskRunManifestBuildsMetadataBackedTask();
   testCompatSingleTaskRunManifestRejectsInvalidCombination();
