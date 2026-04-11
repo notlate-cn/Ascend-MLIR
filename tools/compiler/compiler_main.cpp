@@ -1,5 +1,6 @@
 // tools/compiler/compiler_main.cpp
-#include "Runtime/Compiler.h"
+#include "Runtime/ArtifactCompiler.h"
+#include "Runtime/CompatRuntime.h"
 #include "Runtime/HostRunnerGen.h"
 #include "Runtime/PathUtils.h"
 #include "llvm/Support/CommandLine.h"
@@ -43,6 +44,25 @@ static std::vector<std::string> splitComma(const std::string& s) {
   return parts;
 }
 
+static void printArtifactSummary(const KernelArtifact &artifact) {
+  llvm::outs() << "artifact.kernel_name=" << artifact.kernelName << "\n";
+  llvm::outs() << "artifact.root=" << artifact.artifactRoot << "\n";
+  llvm::outs() << "artifact.manifest=" << artifact.manifestPath << "\n";
+  if (!artifact.socVersion.empty())
+    llvm::outs() << "artifact.soc=" << artifact.socVersion << "\n";
+  if (!artifact.packedSharedObjectPath.empty()) {
+    llvm::outs() << "artifact.binary=" << artifact.packedSharedObjectPath
+                 << "\n";
+    llvm::outs() << "artifact.packed_shared_object="
+                 << artifact.packedSharedObjectPath << "\n";
+  } else if (!artifact.deviceBinaryPath.empty()) {
+    llvm::outs() << "artifact.binary=" << artifact.deviceBinaryPath << "\n";
+  }
+  if (!artifact.deviceBinaryPath.empty())
+    llvm::outs() << "artifact.device_binary=" << artifact.deviceBinaryPath
+                 << "\n";
+}
+
 int main(int argc, char** argv) {
   cl::ParseCommandLineOptions(argc, argv, "AscendC Kernel Compiler\n");
 
@@ -75,34 +95,42 @@ int main(int argc, char** argv) {
     return 4;
   }
 
-  // Step 1: compile kernel.cpp → .o + .bin
   std::string resolvedSocVersion = resolveSocVersion(SocVersion, "Ascend910B1");
-  Compiler::Config cc;
-  cc.soc_version  = resolvedSocVersion;
-  cc.arch         = Arch;
-  cc.kernel_type  = KernelType;
-  cc.verbose      = Verbose;
 
-  Compiler compiler(cc);
-  auto bin_or = compiler.Compile(KernelFile, OutputDir, kernel_name);
-  if (!bin_or) {
+  CompatCompileOptions compileOptions;
+  compileOptions.kernelSourcePath = KernelFile.getValue();
+  compileOptions.outputRoot = OutputDir.getValue();
+  compileOptions.requestedKernelName = kernel_name;
+  compileOptions.socVersion = resolvedSocVersion;
+  compileOptions.arch = Arch.getValue();
+  compileOptions.kernelType = KernelType.getValue();
+  compileOptions.verbose = Verbose.getValue();
+
+  auto requestOr = buildCompatCompileRequest(compileOptions);
+  if (!requestOr) {
+    llvm::errs() << "Error: " << llvm::toString(requestOr.takeError())
+                 << "\n";
+    return 4;
+  }
+
+  ArtifactCompiler compiler;
+  auto artifactOr = compiler.compile(*requestOr);
+  if (!artifactOr) {
     llvm::errs() << "Compilation error: "
-                 << llvm::toString(bin_or.takeError()) << "\n";
+                 << llvm::toString(artifactOr.takeError()) << "\n";
     return 2;
   }
-  llvm::outs() << "Compiled: " << *bin_or << "\n";
+  printArtifactSummary(*artifactOr);
 
-  // Step 2: generate runner executable
   HostRunnerGen::Config hcfg;
-  hcfg.kernel_name   = kernel_name;
-  hcfg.kernel_type   = KernelType;
-  hcfg.soc_version   = resolvedSocVersion;
-  hcfg.num_inputs    = NumInputs;
-  hcfg.num_outputs   = NumOutputs;
-  // splitComma("") → {""} which is wrong; guard for empty
+  hcfg.kernel_name = kernel_name;
+  hcfg.kernel_type = KernelType.getValue();
+  hcfg.soc_version = resolvedSocVersion;
+  hcfg.num_inputs = NumInputs;
+  hcfg.num_outputs = NumOutputs;
   if (!TilingLayout.getValue().empty())
     hcfg.tiling_layout = splitComma(TilingLayout);
-  hcfg.verbose       = Verbose;
+  hcfg.verbose = Verbose;
 
   HostRunnerGen gen;
   auto runner_or = gen.Generate(hcfg, OutputDir);
@@ -112,7 +140,7 @@ int main(int argc, char** argv) {
     // g++ compile failure → exit 2; unsupported config pre-validated above → won't reach here
     return 2;
   }
-  llvm::outs() << "Runner:   " << *runner_or << "\n";
+  llvm::outs() << "runner=" << *runner_or << "\n";
 
   return 0;
 }
