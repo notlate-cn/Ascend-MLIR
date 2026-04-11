@@ -64,6 +64,8 @@ mkdir -p "${FAKE_ARTIFACT_ROOT}/out"
 cat > "${FAKE_ARTIFACT_ROOT}/out/manifest.txt" <<'EOF'
 kernel_name=fake_kernel
 soc_version=Ascend910B1
+kernel_kind=vec
+device_binary_path=fake.bin
 EOF
 
 echo "--- Checking runtime-session planning path ---"
@@ -83,7 +85,7 @@ if build/bin/runtime-session --artifact-root "${FAKE_ARTIFACT_ROOT}" --run 2>"${
   echo "Error: runtime-session --run unexpectedly succeeded" >&2
   exit 1
 fi
-grep -q "simulation path currently requires expected_outputs" "${RUN_STDERR}"
+grep -q "simulation path requires at least one output binding" "${RUN_STDERR}"
 
 echo "--- Checking runtime-session positive vec simulation path ---"
 bash examples/relu-broadcast-transpose/run.sh >/tmp/runtime_session_example.log 2>&1
@@ -105,10 +107,12 @@ cat > "${RUNTIME_SESSION_RUN_MANIFEST}" <<EOF
     { "name": "data1", "path": "${PROJECT_ROOT}/examples/relu-broadcast-transpose/input_data1.npy" }
   ],
   "outputs": [
-    { "name": "out", "path": "${RUNTIME_SESSION_ACTUAL_OUTPUT}" }
-  ],
-  "expected_outputs": [
-    { "name": "out", "path": "${PROJECT_ROOT}/examples/relu-broadcast-transpose/output_expected.npy" }
+    {
+      "name": "out",
+      "path": "${RUNTIME_SESSION_ACTUAL_OUTPUT}",
+      "shape": [500, 640],
+      "dtype": "f16"
+    }
   ],
   "tiling": {
     "schema": "${PROJECT_ROOT}/examples/relu-broadcast-transpose/tiling_space.json",

@@ -1,6 +1,7 @@
 // include/Runtime/TaskGraph.h
 #pragma once
 
+#include "Runtime/Types.h"
 #include "llvm/Support/Error.h"
 
 #include <cstddef>
@@ -32,6 +33,8 @@ struct TensorBinding {
   std::string path;
   std::string upstreamTaskId;
   std::string upstreamOutputName;
+  std::optional<std::vector<int64_t>> shape;
+  std::optional<DType> dtype;
 };
 
 struct TilingBinding {

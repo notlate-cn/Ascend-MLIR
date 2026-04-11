@@ -80,6 +80,11 @@ llvm::Expected<RunArgs> buildRunArgs(const ExecutionInvocation &invocation) {
   args.block_dim = invocation.blockDim;
   args.workspace_size = invocation.workspaceSize;
 
+  if (invocation.outputs.empty()) {
+    return llvm::createStringError(llvm::inconvertibleErrorCode(),
+                                   "simulation path requires at least one output binding");
+  }
+
   auto tilingOr = packTilingBytes(invocation.tiling);
   if (!tilingOr)
     return tilingOr.takeError();
@@ -99,21 +104,36 @@ llvm::Expected<RunArgs> buildRunArgs(const ExecutionInvocation &invocation) {
   auto expectedOutputsOr = loadExpectedOutputs(invocation);
   if (!expectedOutputsOr)
     return expectedOutputsOr.takeError();
-  if (!invocation.outputs.empty() &&
+  if (!invocation.outputs.empty() && !expectedOutputsOr->empty() &&
       invocation.outputs.size() != expectedOutputsOr->size()) {
     return llvm::createStringError(llvm::inconvertibleErrorCode(),
                                    "output binding count does not match expected output count");
   }
-  if (expectedOutputsOr->empty()) {
-    return llvm::createStringError(
-        llvm::inconvertibleErrorCode(),
-        "simulation path currently requires expected_outputs to infer output buffers");
+
+  if (!expectedOutputsOr->empty()) {
+    for (const NDArray &expected : *expectedOutputsOr) {
+      NDArray output;
+      output.shape = expected.shape;
+      output.dtype = expected.dtype;
+      output.allocate();
+      args.outputs.push_back(std::move(output));
+    }
+    return args;
   }
 
-  for (const NDArray &expected : *expectedOutputsOr) {
+  for (const TensorBinding &binding : invocation.outputs) {
+    if (!binding.shape)
+      return llvm::createStringError(
+          llvm::inconvertibleErrorCode(),
+          "output binding is missing shape metadata: %s", binding.name.c_str());
+    if (!binding.dtype)
+      return llvm::createStringError(
+          llvm::inconvertibleErrorCode(),
+          "output binding is missing dtype metadata: %s", binding.name.c_str());
+
     NDArray output;
-    output.shape = expected.shape;
-    output.dtype = expected.dtype;
+    output.shape = *binding.shape;
+    output.dtype = *binding.dtype;
     output.allocate();
     args.outputs.push_back(std::move(output));
   }
@@ -147,6 +167,17 @@ runWithExecutor(const ExecutionRequest &request) {
   if (!cwdGuardOr)
     return cwdGuardOr.takeError();
 
+  if (request.task.artifact.kernelKind == KernelKind::Mix) {
+    if (request.task.artifact.packedSharedObjectPath.empty()) {
+      return llvm::createStringError(
+          llvm::inconvertibleErrorCode(),
+          "mix artifact is missing packed shared object path");
+    }
+  } else if (request.task.artifact.deviceBinaryPath.empty()) {
+    return llvm::createStringError(llvm::inconvertibleErrorCode(),
+                                   "artifact is missing device binary path");
+  }
+
   auto argsOr = buildRunArgs(request.task.invocation);
   if (!argsOr)
     return argsOr.takeError();
@@ -163,11 +194,6 @@ runWithExecutor(const ExecutionRequest &request) {
   if (request.task.artifact.kernelKind == KernelKind::Mix) {
     const std::string &sharedObjectPath =
         request.task.artifact.packedSharedObjectPath;
-    if (sharedObjectPath.empty()) {
-      return llvm::createStringError(
-          llvm::inconvertibleErrorCode(),
-          "mix artifact is missing packed shared object path");
-    }
     if (auto err = executor.RunPackedMixFile(sharedObjectPath,
                                              request.task.artifact.kernelName,
                                              args)) {
@@ -175,10 +201,6 @@ runWithExecutor(const ExecutionRequest &request) {
     }
   } else {
     const std::string &binaryPath = request.task.artifact.deviceBinaryPath;
-    if (binaryPath.empty()) {
-      return llvm::createStringError(llvm::inconvertibleErrorCode(),
-                                     "artifact is missing device binary path");
-    }
     if (auto err = executor.RunFile(binaryPath, request.task.artifact.kernelName,
                                     args,
                                     magicForKernelKind(
@@ -187,18 +209,20 @@ runWithExecutor(const ExecutionRequest &request) {
     }
   }
 
-  SimValidator validator;
-  SimValidator::Result validation = validator.CompareOnly(
-      args, *expectedOutputsOr, /*atol=*/1.0, /*rtol=*/1e-2);
-  if (!validation.error_msg.empty()) {
-    return llvm::createStringError(llvm::inconvertibleErrorCode(), "%s",
-                                   validation.error_msg.c_str());
-  }
-  if (!validation.passed) {
-    return llvm::createStringError(
-        llvm::inconvertibleErrorCode(),
-        "simulation output mismatch: max_abs_diff=%f mean_abs_diff=%f",
-        validation.max_abs_diff, validation.mean_abs_diff);
+  if (!expectedOutputsOr->empty()) {
+    SimValidator validator;
+    SimValidator::Result validation = validator.CompareOnly(
+        args, *expectedOutputsOr, /*atol=*/1.0, /*rtol=*/1e-2);
+    if (!validation.error_msg.empty()) {
+      return llvm::createStringError(llvm::inconvertibleErrorCode(), "%s",
+                                     validation.error_msg.c_str());
+    }
+    if (!validation.passed) {
+      return llvm::createStringError(
+          llvm::inconvertibleErrorCode(),
+          "simulation output mismatch: max_abs_diff=%f mean_abs_diff=%f",
+          validation.max_abs_diff, validation.mean_abs_diff);
+    }
   }
 
   if (auto err = writeActualOutputs(request.task.invocation, args))
