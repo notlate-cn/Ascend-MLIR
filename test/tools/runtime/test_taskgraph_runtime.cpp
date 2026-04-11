@@ -452,34 +452,36 @@ static std::string readFileContents(const std::string &path) {
                      std::istreambuf_iterator<char>());
 }
 
-static void testCompatCompilerCliPrintsNormalizedArtifactSummary() {
-  const std::filesystem::path outputDir =
-      std::filesystem::temp_directory_path() / "taskgraph-compat-cli-out";
-  const std::filesystem::path logPath =
-      std::filesystem::temp_directory_path() / "taskgraph-compat-cli.log";
+static std::string runCompatCompilerCli(const std::string &kernelType,
+                                        const std::string &kernelName,
+                                        const std::filesystem::path &outputDir,
+                                        const std::filesystem::path &logPath) {
   std::error_code ec;
   std::filesystem::remove_all(outputDir, ec);
   std::filesystem::remove(logPath, ec);
 
   const std::string kernelPath =
       "examples/relu-broadcast-transpose/step8_kernel.cpp";
-  const std::string kernelName = "legacy_name";
   const std::string command =
       "PATH=/nonexistent build/bin/compiler --kernel '" + kernelPath +
-      "' --output '" +
-      outputDir.string() + "' --name '" + kernelName +
-      "' --soc Ascend910B1 --arch dav-c220-vec --kernel-type vec "
-      "--num-inputs 1 --num-outputs 1 > '" + logPath.string() +
+      "' --output '" + outputDir.string() + "' --name '" + kernelName +
+      "' --soc Ascend910B1 --arch dav-c220-vec --kernel-type " + kernelType +
+      " --num-inputs 1 --num-outputs 1 > '" + logPath.string() +
       "' 2>&1";
 
   const int rc = std::system(command.c_str());
   EXPECT(rc == 0, "compat compiler CLI exits successfully");
   if (rc != 0) {
     llvm::errs() << readFileContents(logPath.string());
-    return;
+    return "";
   }
+  return readFileContents(logPath.string());
+}
 
-  const std::string output = readFileContents(logPath.string());
+static void checkCompatCompilerOutput(const std::string &output,
+                                      const std::filesystem::path &outputDir,
+                                      const std::string &kernelName,
+                                      bool expectRunnerUnavailableWarning) {
   const std::string rootLine = "artifact.root=" + outputDir.string();
   const std::string manifestLine =
       "artifact.manifest=" + (outputDir / "out" / "manifest.txt").string();
@@ -494,11 +496,45 @@ static void testCompatCompilerCliPrintsNormalizedArtifactSummary() {
          "compat compiler prints normalized device binary path");
   EXPECT(output.find("Compiled:") == std::string::npos,
          "compat compiler no longer prints raw compiler result");
-  EXPECT(output.find("Warning: runner generation unavailable:") ==
-             std::string::npos,
-         "compat compiler skips runner generation on the normal path");
   EXPECT(output.find("runner=") == std::string::npos,
-         "compat compiler does not emit runner output on the normal path");
+         "compat compiler does not emit runner output when unavailable");
+  if (expectRunnerUnavailableWarning) {
+    EXPECT(output.find("Warning: runner generation unavailable:") !=
+               std::string::npos,
+           "compat compiler reports runner generation failure explicitly");
+  } else {
+    EXPECT(output.find("Warning: runner generation unavailable:") ==
+               std::string::npos,
+           "compat compiler does not warn on preserved runner path");
+  }
+}
+
+static void testCompatCompilerVecPathPrintsNormalizedArtifactSummary() {
+  const std::filesystem::path outputDir =
+      std::filesystem::temp_directory_path() / "taskgraph-compat-cli-vec-out";
+  const std::filesystem::path logPath =
+      std::filesystem::temp_directory_path() / "taskgraph-compat-cli-vec.log";
+  const std::string kernelName = "legacy_vec_name";
+  const std::string output =
+      runCompatCompilerCli("vec", kernelName, outputDir, logPath);
+  if (output.empty())
+    return;
+  checkCompatCompilerOutput(output, outputDir, kernelName,
+                            /*expectRunnerUnavailableWarning=*/true);
+}
+
+static void testCompatCompilerCubePathKeepsRunnerCompatibility() {
+  const std::filesystem::path outputDir =
+      std::filesystem::temp_directory_path() / "taskgraph-compat-cli-cube-out";
+  const std::filesystem::path logPath =
+      std::filesystem::temp_directory_path() / "taskgraph-compat-cli-cube.log";
+  const std::string kernelName = "legacy_cube_name";
+  const std::string output =
+      runCompatCompilerCli("cube", kernelName, outputDir, logPath);
+  if (output.empty())
+    return;
+  checkCompatCompilerOutput(output, outputDir, kernelName,
+                            /*expectRunnerUnavailableWarning=*/true);
 }
 
 static void testCompatSingleTaskRunManifestBuildsExpectedBackedTask() {
@@ -1689,7 +1725,8 @@ int main() {
   testArtifactCompilerRequestValidation();
   testCompatCompileRequestPreservesFields();
   testCompatCompileRequestRejectsUnknownKernelType();
-  testCompatCompilerCliPrintsNormalizedArtifactSummary();
+  testCompatCompilerVecPathPrintsNormalizedArtifactSummary();
+  testCompatCompilerCubePathKeepsRunnerCompatibility();
   testCompatSingleTaskRunManifestBuildsExpectedBackedTask();
   testCompatSingleTaskRunManifestBuildsMetadataBackedTask();
   testCompatSingleTaskRunManifestRejectsInvalidCombination();
