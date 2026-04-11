@@ -122,57 +122,6 @@ static SimValidator::Result compareOutputs(
   return r;
 }
 
-SimValidator::Result SimValidator::Validate(
-    const std::string& kernel_src,
-    const std::string& kernel_name,
-    RunArgs& args,
-    const std::vector<NDArray>& expected,
-    double atol, double rtol,
-    const Compiler::Config& compiler_cfg) {
-
-  Result r;
-
-  // Create temp build dir
-  llvm::SmallString<256> build_dir;
-  if (llvm::sys::fs::createUniqueDirectory("sim_validator_build", build_dir)) {
-    r.error_msg = "Cannot create temp build dir";
-    return r;
-  }
-
-  // Compile kernel
-  Compiler compiler(compiler_cfg);
-  auto bin_or = compiler.Compile(kernel_src, build_dir.str().str(), kernel_name);
-  if (!bin_or) {
-    r.error_msg = "Compile failed: " + llvm::toString(bin_or.takeError());
-    return r;
-  }
-
-  // Execute kernel
-  Executor executor;
-  if (auto err = executor.Initialize()) {
-    r.error_msg = "Executor init failed: " + llvm::toString(std::move(err));
-    return r;
-  }
-  if (auto err = executor.RunFile(*bin_or, kernel_name, args)) {
-    r.error_msg = "Kernel run failed: " + llvm::toString(std::move(err));
-    return r;
-  }
-
-  // Parse cycle count from simulator logs (cwd is the sim run directory)
-  {
-    llvm::SmallString<256> cwd;
-    llvm::sys::fs::current_path(cwd);
-    r.cycle_count = ParseCycleCounts(cwd.str().str());
-  }
-
-  Result cmp = compareOutputs(args, expected, atol, rtol);
-  r.max_abs_diff  = cmp.max_abs_diff;
-  r.mean_abs_diff = cmp.mean_abs_diff;
-  r.passed        = cmp.passed;
-  if (!cmp.error_msg.empty()) r.error_msg = cmp.error_msg;
-  return r;
-}
-
 SimValidator::Result SimValidator::CompareOnly(
     RunArgs& args,
     const std::vector<NDArray>& expected,
