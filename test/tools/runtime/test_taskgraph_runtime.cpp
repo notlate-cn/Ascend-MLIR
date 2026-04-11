@@ -465,7 +465,8 @@ static void testCompatCompilerCliPrintsNormalizedArtifactSummary() {
       "examples/relu-broadcast-transpose/step8_kernel.cpp";
   const std::string kernelName = "legacy_name";
   const std::string command =
-      "build/bin/compiler --kernel '" + kernelPath + "' --output '" +
+      "PATH=/nonexistent build/bin/compiler --kernel '" + kernelPath +
+      "' --output '" +
       outputDir.string() + "' --name '" + kernelName +
       "' --soc Ascend910B1 --arch dav-c220-vec --kernel-type vec "
       "--num-inputs 1 --num-outputs 1 > '" + logPath.string() +
@@ -493,6 +494,9 @@ static void testCompatCompilerCliPrintsNormalizedArtifactSummary() {
          "compat compiler prints normalized device binary path");
   EXPECT(output.find("Compiled:") == std::string::npos,
          "compat compiler no longer prints raw compiler result");
+  EXPECT(output.find("Warning: runner generation unavailable:") !=
+             std::string::npos,
+         "compat compiler reports runner generation as best-effort");
 }
 
 static void testCompatSingleTaskRunManifestBuildsExpectedBackedTask() {
