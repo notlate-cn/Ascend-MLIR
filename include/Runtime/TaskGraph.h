@@ -51,6 +51,8 @@ struct ExecutionInvocation {
   int blockDim = 1;
   size_t workspaceSize = 8192;
   bool enableProfiling = false;
+  double atol = 1.0;
+  double rtol = 1e-2;
 };
 
 struct RuntimeTask {

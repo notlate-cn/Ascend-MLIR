@@ -720,6 +720,8 @@ static void testExecutionSessionCarriesInvocationBindings() {
   task.taskId = "main";
   task.invocation.blockDim = 8;
   task.invocation.workspaceSize = 4096;
+  task.invocation.atol = 3.5;
+  task.invocation.rtol = 0.125;
 
   TensorBinding input;
   input.name = "input0";
@@ -750,6 +752,10 @@ static void testExecutionSessionCarriesInvocationBindings() {
            "execution session preserves invocation block dim");
     EXPECT(driverPtr->lastRequest.task.invocation.workspaceSize == 4096,
            "execution session preserves invocation workspace size");
+    EXPECT(driverPtr->lastRequest.task.invocation.atol == 3.5,
+           "execution session preserves invocation atol");
+    EXPECT(driverPtr->lastRequest.task.invocation.rtol == 0.125,
+           "execution session preserves invocation rtol");
     EXPECT(driverPtr->lastRequest.task.invocation.inputs.size() == 1,
            "execution session preserves invocation inputs");
     EXPECT(driverPtr->lastRequest.task.invocation.outputs.size() == 1,
@@ -884,7 +890,9 @@ static void testRunManifestParsesVecSimulationSpec() {
   },
   "block_dim": 8,
   "workspace_size": 16384,
-  "profiling": true
+  "profiling": true,
+  "atol": 2.5,
+  "rtol": 0.05
 })JSON";
   }
 
@@ -911,7 +919,11 @@ static void testRunManifestParsesVecSimulationSpec() {
       EXPECT(task.invocation.workspaceSize == 16384,
            "run manifest workspace size");
       EXPECT(task.invocation.enableProfiling,
-           "run manifest profiling flag");
+             "run manifest profiling flag");
+      EXPECT(task.invocation.atol == 2.5,
+             "run manifest atol");
+      EXPECT(task.invocation.rtol == 0.05,
+             "run manifest rtol");
       EXPECT(task.invocation.tiling.has_value(),
            "run manifest tiling present");
       EXPECT(task.invocation.outputs[0].shape.has_value(),

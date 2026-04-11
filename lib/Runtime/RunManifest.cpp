@@ -221,6 +221,10 @@ parseTaskSpec(const llvm::json::Object &root,
     spec.invocation.workspaceSize = static_cast<size_t>(*workspaceSize);
   if (auto profiling = root.getBoolean("profiling"))
     spec.invocation.enableProfiling = *profiling;
+  if (auto atol = root.getNumber("atol"))
+    spec.invocation.atol = *atol;
+  if (auto rtol = root.getNumber("rtol"))
+    spec.invocation.rtol = *rtol;
 
   return spec;
 }
