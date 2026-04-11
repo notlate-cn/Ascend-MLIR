@@ -186,6 +186,18 @@ writeBinaryFile(llvm::StringRef path, llvm::ArrayRef<uint8_t> bytes) {
   return path.str();
 }
 
+static llvm::Expected<std::string>
+writeTemporaryBinaryFile(llvm::StringRef prefix, llvm::StringRef fileName,
+                         llvm::ArrayRef<uint8_t> bytes) {
+  auto pathOr = makeTemporaryPath(prefix, fileName);
+  if (!pathOr)
+    return pathOr.takeError();
+  auto writtenOr = writeBinaryFile(*pathOr, bytes);
+  if (!writtenOr)
+    return writtenOr.takeError();
+  return *writtenOr;
+}
+
 static llvm::Expected<TaskGraph>
 buildTaskGraphFromManifest(const KernelArtifact &artifact,
                            const RunManifestSpec &manifest) {
@@ -221,9 +233,6 @@ int main(int argc, char** argv) {
       llvm::errs() << "Error: cannot open --tiling-bin " << TilingBinFile << "\n";
       _Exit(4);
     }
-    const std::vector<uint8_t> tilingBytes{
-        std::istreambuf_iterator<char>(is), std::istreambuf_iterator<char>()};
-    (void)tilingBytes;
     if (!is.good() && !is.eof()) {
       llvm::errs() << "Error: failed reading --tiling-bin " << TilingBinFile << "\n";
       _Exit(4);
@@ -271,22 +280,25 @@ int main(int argc, char** argv) {
                      << llvm::toString(bytesOrErr.takeError()) << "\n";
         _Exit(4);
       }
+      auto tilingPathOr = writeTemporaryBinaryFile("ascendc-validator-tiling",
+                                                   "tiling.bin", *bytesOrErr);
+      if (!tilingPathOr) {
+        llvm::errs() << "Error: " << llvm::toString(tilingPathOr.takeError()) << "\n";
+        _Exit(4);
+      }
+      tilingBinaryPath = *tilingPathOr;
     } else {
       // Legacy path: positional layout string
       std::vector<uint8_t> tilingBytes;
       if (!buildTiling(TilingParams, TilingLayout, tilingBytes))
         _Exit(4);
-      auto tilingPathOr = makeTemporaryPath("ascendc-validator-tiling", "tiling.bin");
+      auto tilingPathOr = writeTemporaryBinaryFile("ascendc-validator-tiling",
+                                                   "tiling.bin", tilingBytes);
       if (!tilingPathOr) {
         llvm::errs() << "Error: " << llvm::toString(tilingPathOr.takeError()) << "\n";
         _Exit(4);
       }
-      auto writtenOr = writeBinaryFile(*tilingPathOr, tilingBytes);
-      if (!writtenOr) {
-        llvm::errs() << "Error: " << llvm::toString(writtenOr.takeError()) << "\n";
-        _Exit(4);
-      }
-      tilingBinaryPath = *writtenOr;
+      tilingBinaryPath = *tilingPathOr;
     }
   }
 

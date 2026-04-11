@@ -20,6 +20,7 @@
 #include "Runtime/ExecutionSession.h"
 #include "Runtime/NpuBackend.h"
 #include "Runtime/NpyIO.h"
+#include "Runtime/TilingSchema.h"
 #include "Runtime/TaskGraph.h"
 #include "Runtime/ArtifactCompiler.h"
 #include "Runtime/SimBackend.h"
@@ -56,6 +57,34 @@ static std::string writeTempNpy(const std::string &stem,
     ++g_fail;
     return "";
   }
+  return path.string();
+}
+
+static std::string writeTempTextFile(const std::string &stem,
+                                     const std::string &contents) {
+  std::filesystem::path path =
+      std::filesystem::temp_directory_path() / (stem + ".txt");
+  std::ofstream os(path);
+  if (!os) {
+    llvm::errs() << "FAIL: cannot write temp file " << path.string() << "\n";
+    ++g_fail;
+    return "";
+  }
+  os << contents;
+  return path.string();
+}
+
+static std::string writeTempBinaryFile(const std::string &stem,
+                                       const std::vector<uint8_t> &bytes) {
+  std::filesystem::path path =
+      std::filesystem::temp_directory_path() / (stem + ".bin");
+  std::ofstream os(path, std::ios::binary);
+  if (!os) {
+    llvm::errs() << "FAIL: cannot write temp binary file " << path.string() << "\n";
+    ++g_fail;
+    return "";
+  }
+  os.write(reinterpret_cast<const char *>(bytes.data()), bytes.size());
   return path.string();
 }
 
@@ -793,6 +822,165 @@ static void testCompatValidatorRoutesThroughExecutionSession() {
          "compat validator runtime session preserves atol");
   EXPECT(driverPtr->lastRequest.task.invocation.rtol == 0.03,
          "compat validator runtime session preserves rtol");
+}
+
+static void testCompatValidatorMaterializesTilingBindingForSession() {
+  const std::string schemaPath = writeTempTextFile(
+      "compat-validator-tiling-schema",
+      R"JSON({
+  "tiling_params": [
+    { "name": "TB_M", "type": "int64" },
+    { "name": "TB_N", "type": "int32" }
+  ]
+})JSON");
+  if (schemaPath.empty())
+    return;
+
+  auto schemaOr = TilingSchema::fromJson(schemaPath);
+  EXPECT((bool)schemaOr, "compat validator tiling schema parses");
+  if (!schemaOr)
+    return;
+
+  auto packedOr = schemaOr->pack({{"TB_M", 16}, {"TB_N", 4}});
+  EXPECT((bool)packedOr, "compat validator tiling schema packs params");
+  if (!packedOr)
+    return;
+
+  const std::string schemaTilingPath =
+      writeTempBinaryFile("compat-validator-schema-tiling", *packedOr);
+  if (schemaTilingPath.empty())
+    return;
+
+  const std::string inputPath =
+      writeTempNpy("compat-validator-tiling-input", {4}, DType::F32);
+  if (inputPath.empty())
+    return;
+
+  CompatValidateOptions schemaOptions;
+  schemaOptions.artifactRoot = "/tmp/validator-artifact";
+  schemaOptions.inputPaths = {inputPath};
+  schemaOptions.actualOutputPath = "/tmp/validator-schema-actual.npy";
+  schemaOptions.actualOutputShape = std::vector<int64_t>{4};
+  schemaOptions.actualOutputDType = DType::F32;
+  schemaOptions.tilingSchemaPath = schemaPath;
+  schemaOptions.tilingParams = "TB_M=16,TB_N=4";
+  schemaOptions.tilingBinaryPath = schemaTilingPath;
+
+  auto schemaManifestOr = buildCompatSingleTaskRunManifest(schemaOptions);
+  EXPECT((bool)schemaManifestOr, "compat validator schema manifest builds");
+  if (!schemaManifestOr)
+    return;
+
+  KernelArtifact schemaArtifact;
+  schemaArtifact.kernelName = "schema_kernel";
+  schemaArtifact.kernelKind = KernelKind::Vec;
+  schemaArtifact.artifactRoot = schemaOptions.artifactRoot;
+  schemaArtifact.deviceBinaryPath = "/tmp/schema-kernel.bin";
+
+  TaskGraph schemaGraph;
+  RuntimeTask schemaTask;
+  schemaTask.taskId = schemaManifestOr->tasks[0].taskId;
+  schemaTask.artifact = schemaArtifact;
+  schemaTask.invocation = schemaManifestOr->tasks[0].invocation;
+  auto schemaAddErr = schemaGraph.addTask(schemaTask);
+  EXPECT(!schemaAddErr, "compat validator schema graph adds task");
+  if (schemaAddErr) {
+    llvm::consumeError(std::move(schemaAddErr));
+    return;
+  }
+
+  auto schemaDriver = std::make_shared<RecordingBackendDriver>();
+  RecordingBackendDriver *schemaDriverPtr = schemaDriver.get();
+  ExecutionSession schemaSession(ExecutionBackendKind::Simulation,
+                                 schemaDriver);
+  auto schemaTraceOr = schemaSession.run(schemaGraph);
+  EXPECT((bool)schemaTraceOr, "compat validator schema session runs");
+  if (!schemaTraceOr) {
+    llvm::consumeError(schemaTraceOr.takeError());
+    return;
+  }
+
+  EXPECT(schemaDriverPtr->invocations == 1,
+         "compat validator schema session invokes backend once");
+  if (schemaDriverPtr->invocations == 1) {
+    EXPECT(schemaDriverPtr->lastRequest.task.invocation.tiling.has_value(),
+           "compat validator schema session preserves tiling binding");
+    if (schemaDriverPtr->lastRequest.task.invocation.tiling) {
+      EXPECT(!schemaDriverPtr->lastRequest.task.invocation.tiling->binaryPath.empty(),
+             "compat validator schema session keeps tiling bytes path");
+      EXPECT(schemaDriverPtr->lastRequest.task.invocation.tiling->binaryPath ==
+                 schemaTilingPath,
+             "compat validator schema session uses synthesized tiling file");
+      EXPECT(schemaDriverPtr->lastRequest.task.invocation.tiling->schemaPath ==
+                 schemaPath,
+             "compat validator schema session preserves schema metadata");
+      EXPECT(schemaDriverPtr->lastRequest.task.invocation.tiling->params ==
+                 "TB_M=16,TB_N=4",
+             "compat validator schema session preserves schema params");
+    }
+  }
+
+  const std::vector<uint8_t> legacyBytes = {0x10, 0x00, 0x00, 0x00,
+                                            0x04, 0x00, 0x00, 0x00};
+  const std::string legacyTilingPath =
+      writeTempBinaryFile("compat-validator-legacy-tiling", legacyBytes);
+  if (legacyTilingPath.empty())
+    return;
+
+  CompatValidateOptions legacyOptions;
+  legacyOptions.artifactRoot = "/tmp/validator-artifact";
+  legacyOptions.inputPaths = {inputPath};
+  legacyOptions.actualOutputPath = "/tmp/validator-legacy-actual.npy";
+  legacyOptions.actualOutputShape = std::vector<int64_t>{4};
+  legacyOptions.actualOutputDType = DType::F32;
+  legacyOptions.tilingBinaryPath = legacyTilingPath;
+
+  auto legacyManifestOr = buildCompatSingleTaskRunManifest(legacyOptions);
+  EXPECT((bool)legacyManifestOr, "compat validator legacy manifest builds");
+  if (!legacyManifestOr)
+    return;
+
+  KernelArtifact legacyArtifact;
+  legacyArtifact.kernelName = "legacy_kernel";
+  legacyArtifact.kernelKind = KernelKind::Vec;
+  legacyArtifact.artifactRoot = legacyOptions.artifactRoot;
+  legacyArtifact.deviceBinaryPath = "/tmp/legacy-kernel.bin";
+
+  TaskGraph legacyGraph;
+  RuntimeTask legacyTask;
+  legacyTask.taskId = legacyManifestOr->tasks[0].taskId;
+  legacyTask.artifact = legacyArtifact;
+  legacyTask.invocation = legacyManifestOr->tasks[0].invocation;
+  auto legacyAddErr = legacyGraph.addTask(legacyTask);
+  EXPECT(!legacyAddErr, "compat validator legacy graph adds task");
+  if (legacyAddErr) {
+    llvm::consumeError(std::move(legacyAddErr));
+    return;
+  }
+
+  auto legacyDriver = std::make_shared<RecordingBackendDriver>();
+  RecordingBackendDriver *legacyDriverPtr = legacyDriver.get();
+  ExecutionSession legacySession(ExecutionBackendKind::Simulation, legacyDriver);
+  auto legacyTraceOr = legacySession.run(legacyGraph);
+  EXPECT((bool)legacyTraceOr, "compat validator legacy session runs");
+  if (!legacyTraceOr) {
+    llvm::consumeError(legacyTraceOr.takeError());
+    return;
+  }
+
+  EXPECT(legacyDriverPtr->invocations == 1,
+         "compat validator legacy session invokes backend once");
+  if (legacyDriverPtr->invocations == 1) {
+    EXPECT(legacyDriverPtr->lastRequest.task.invocation.tiling.has_value(),
+           "compat validator legacy session preserves tiling binding");
+    if (legacyDriverPtr->lastRequest.task.invocation.tiling) {
+      EXPECT(!legacyDriverPtr->lastRequest.task.invocation.tiling->binaryPath.empty(),
+             "compat validator legacy session keeps tiling bytes path");
+      EXPECT(legacyDriverPtr->lastRequest.task.invocation.tiling->binaryPath ==
+                 legacyTilingPath,
+             "compat validator legacy session uses synthesized tiling file");
+    }
+  }
 }
 
 static void testVecCompileCreatesOutputDir() {
@@ -1843,6 +2031,7 @@ int main() {
   testCompatSingleTaskRunManifestBuildsMetadataBackedTask();
   testCompatSingleTaskRunManifestRejectsInvalidCombination();
   testCompatValidatorRoutesThroughExecutionSession();
+  testCompatValidatorMaterializesTilingBindingForSession();
   testVecCompileCreatesOutputDir();
   testBackendSelection();
   testDefaultBackendRequiresDriver();
