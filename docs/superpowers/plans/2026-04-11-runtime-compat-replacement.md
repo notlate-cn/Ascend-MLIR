@@ -283,16 +283,23 @@ Then print compatibility output using artifact fields instead of old `Compiler::
 
 - [ ] **Step 4: Preserve optional runner-generation compatibility**
 
-Keep the existing runner-generation path only if the requested kernel kind still needs it for old scripts:
+Keep the existing runner-generation path as compatibility output only. In this phase,
+it is acceptable to continue attempting runner generation for current CLI kernel kinds
+(`vec`, `cube`, and `mix`) while old scripts may still consume runner artifacts:
 
 ```cpp
-if (needsLegacyRunnerCompatibility(KernelType)) {
+if (shouldAttemptLegacyRunnerCompatibility(KernelType)) {
   auto runnerOr = generateLegacyRunnerCompatibility(...);
   ...
 }
 ```
 
-Do not let runner generation remain the main compile success criterion.
+Requirements:
+
+- runner generation must not remain the main compile success criterion
+- runner failure must degrade to warning/non-fatal compatibility output
+- runner-specific argument validation must happen before compile/artifact emission
+  on paths where runner compatibility is attempted
 
 - [ ] **Step 5: Run focused regression**
 
