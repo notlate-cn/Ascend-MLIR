@@ -461,6 +461,10 @@ static void testRuntimePathUtils() {
                          "/lib/libruntime_camodel.so"))
                    .string(),
            "path utils resolve x86_64 simulator runtime path");
+    std::ofstream(root / "x86_64-linux/lib64/libruntime.so").put('\n');
+    EXPECT(findAscendRuntimeLibPath(root.string(), "x86_64") ==
+               (root / "x86_64-linux/lib64/libruntime.so").string(),
+           "path utils resolve x86_64 real-device runtime path");
     EXPECT(findAscendDeviceLibDir(root.string(), "x86_64") ==
                (root / "x86_64-linux/lib64/device/lib64").string(),
            "path utils resolve x86_64 device lib directory when it is the only candidate");
@@ -486,9 +490,13 @@ static void testRuntimePathUtils() {
     std::filesystem::remove_all(root);
     std::filesystem::create_directories(root / "lib64");
     std::ofstream(root / "lib64/libascendcl.so").put('\n');
+    std::ofstream(root / "lib64/libruntime.so").put('\n');
     EXPECT(findAscendAclLibPath(root.string()) ==
                (root / "lib64/libascendcl.so").string(),
            "path utils fall back to generic lib64 when arch dir is absent");
+    EXPECT(findAscendRuntimeLibPath(root.string()) ==
+               (root / "lib64/libruntime.so").string(),
+           "path utils fall back to generic lib64 runtime when arch dir is absent");
   }
 
   {

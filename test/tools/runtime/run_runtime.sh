@@ -224,7 +224,9 @@ if build/bin/runtime-session --run-manifest "${RUNTIME_SESSION_NPU_MANIFEST}" --
   echo "Error: runtime-session npu path unexpectedly succeeded" >&2
   exit 1
 fi
-grep -q "RealDevice mode not implemented" "${NPU_STDERR}"
+grep -q '^session.backend=npu' "${NPU_STDERR}"
+grep -q '^session.result=error' "${NPU_STDERR}"
+grep -q '^session.error_stage=executor_initialize' "${NPU_STDERR}"
 
 # Compile test drivers
 echo "--- Compiling runtime tests ---"

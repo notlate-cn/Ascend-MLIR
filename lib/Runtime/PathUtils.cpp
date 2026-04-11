@@ -329,6 +329,15 @@ std::string findAscendAclLibPath(llvm::StringRef ascendHome,
   return findAscendLib64Dir(ascendHome, machine) + "/libascendcl.so";
 }
 
+std::string findAscendRuntimeLibPath(llvm::StringRef ascendHome) {
+  return findAscendRuntimeLibPath(ascendHome, "");
+}
+
+std::string findAscendRuntimeLibPath(llvm::StringRef ascendHome,
+                                     llvm::StringRef machine) {
+  return findAscendLib64Dir(ascendHome, machine) + "/libruntime.so";
+}
+
 std::string findAscendRuntimeCamodelPath(llvm::StringRef ascendHome,
                                          llvm::StringRef socVersion) {
   return findAscendRuntimeCamodelPath(ascendHome, socVersion, "");
