@@ -55,6 +55,9 @@ RUNTIME_SESSION_RUN_MANIFEST="$(mktemp /tmp/runtime_session_run_manifest.XXXXXX.
 RUNTIME_SESSION_ACTUAL_OUTPUT="$(mktemp /tmp/runtime_session_actual.XXXXXX.npy)"
 RUNTIME_SESSION_DAG_MANIFEST="$(mktemp /tmp/runtime_session_dag_manifest.XXXXXX.json)"
 RUNTIME_SESSION_DAG_OUTPUT="$(mktemp /tmp/runtime_session_dag_actual.XXXXXX.npy)"
+RUNTIME_SESSION_NPU_MANIFEST="$(mktemp /tmp/runtime_session_npu_manifest.XXXXXX.json)"
+RUNTIME_SESSION_NPU_OUTPUT="$(mktemp /tmp/runtime_session_npu_actual.XXXXXX.npy)"
+NPU_STDERR=""
 cleanup() {
   rm -rf "$FAKE_ARTIFACT_ROOT"
   rm -rf "$RUNTIME_SESSION_ARTIFACT_ROOT"
@@ -62,7 +65,8 @@ cleanup() {
   rm -f "$INVALID_STDERR" "$RUN_STDERR" "$TEST_RUNTIME_BIN" \
         "$TEST_TASKGRAPH_RUNTIME_BIN" "$RUNTIME_SESSION_RUN_MANIFEST" \
         "$RUNTIME_SESSION_ACTUAL_OUTPUT" "$RUNTIME_SESSION_DAG_MANIFEST" \
-        "$RUNTIME_SESSION_DAG_OUTPUT"
+        "$RUNTIME_SESSION_DAG_OUTPUT" "$RUNTIME_SESSION_NPU_MANIFEST" \
+        "$RUNTIME_SESSION_NPU_OUTPUT" "$NPU_STDERR"
 }
 trap cleanup EXIT
 mkdir -p "${FAKE_ARTIFACT_ROOT}/out"
@@ -198,6 +202,28 @@ build/bin/runtime-session \
 test -f "${RUNTIME_SESSION_DAG_OUTPUT}"
 grep -q '^session.profile.session_id=' /tmp/runtime_session_dag_run.log
 grep -q '^session.profile\[0\]=' /tmp/runtime_session_dag_run.log
+
+echo "--- Checking runtime-session NPU path reaches unified backend ---"
+cat > "${RUNTIME_SESSION_NPU_MANIFEST}" <<EOF
+{
+  "backend": "npu",
+  "artifact_root": "${FAKE_ARTIFACT_ROOT}",
+  "tasks": [
+    {
+      "task_id": "main",
+      "outputs": [
+        { "name": "out", "path": "${RUNTIME_SESSION_NPU_OUTPUT}", "shape": [4], "dtype": "f16" }
+      ]
+    }
+  ]
+}
+EOF
+NPU_STDERR="$(mktemp)"
+if build/bin/runtime-session --run-manifest "${RUNTIME_SESSION_NPU_MANIFEST}" --run 2>"${NPU_STDERR}"; then
+  echo "Error: runtime-session npu path unexpectedly succeeded" >&2
+  exit 1
+fi
+grep -q "RealDevice mode not implemented" "${NPU_STDERR}"
 
 # Compile test drivers
 echo "--- Compiling runtime tests ---"
