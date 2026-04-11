@@ -290,6 +290,8 @@ int main(int argc, char** argv) {
     emitValidatorRuntimeMarker(false);
     llvm::errs() << "Error loading actual output: "
                  << llvm::toString(actualOr.takeError()) << "\n";
+    llvm::outs().flush();
+    llvm::errs().flush();
     _Exit(3);
   }
 
