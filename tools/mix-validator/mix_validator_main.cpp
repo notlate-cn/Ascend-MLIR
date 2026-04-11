@@ -1,24 +1,20 @@
-#include "Runtime/Executor.h"
+#include "Runtime/ExecutionSession.h"
 #include "Runtime/MixAbi.h"
 #include "Runtime/PathUtils.h"
+#include "Runtime/TaskGraph.h"
 #include "Runtime/Types.h"
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/Error.h"
 #include "llvm/Support/FileSystem.h"
-#include "llvm/Support/FormatVariadic.h"
 #include "llvm/Support/MemoryBuffer.h"
 #include "llvm/Support/Path.h"
-#include "llvm/Support/Program.h"
 #include "llvm/Support/raw_ostream.h"
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
-#include <fstream>
-#include <dlfcn.h>
 #include <map>
-#include <optional>
 #include <string>
 #include <vector>
 
@@ -36,7 +32,8 @@ static llvm::cl::opt<std::string> SocVersion("soc",
                                              llvm::cl::init(""));
 static llvm::cl::opt<bool> ForceDirectPacked(
     "force-direct-packed",
-    llvm::cl::desc("Bypass mix_runner and validate through direct packed execution"),
+    llvm::cl::desc(
+        "Bypass runtime-session execution and validate through direct packed execution"),
     llvm::cl::init(false));
 
 static llvm::Expected<std::vector<uint8_t>> readBinary(const std::string &path) {
@@ -47,26 +44,6 @@ static llvm::Expected<std::vector<uint8_t>> readBinary(const std::string &path) 
   const auto *data =
       reinterpret_cast<const uint8_t *>((*buf)->getBufferStart());
   return std::vector<uint8_t>(data, data + (*buf)->getBufferSize());
-}
-
-static llvm::Error writeBinary(const std::string &path,
-                               llvm::ArrayRef<uint8_t> bytes) {
-  llvm::SmallString<256> dir(path);
-  llvm::sys::path::remove_filename(dir);
-  if (!dir.empty()) {
-    if (auto ec = llvm::sys::fs::create_directories(dir))
-      return llvm::createStringError(ec, "Cannot create directory: %s",
-                                     dir.c_str());
-  }
-  std::ofstream os(path, std::ios::binary);
-  if (!os)
-    return llvm::createStringError(llvm::inconvertibleErrorCode(),
-                                   "Cannot write file: %s", path.c_str());
-  os.write(reinterpret_cast<const char *>(bytes.data()), bytes.size());
-  if (!os)
-    return llvm::createStringError(llvm::inconvertibleErrorCode(),
-                                   "Failed to write file: %s", path.c_str());
-  return llvm::Error::success();
 }
 
 static std::map<std::string, std::string> readManifest(const std::string &path) {
@@ -220,122 +197,120 @@ buildTilingFromAbi(const AbiMetadata &abi, const std::string &artifactRoot) {
       abi.tilingMode.c_str(), abi.tilingSource.c_str());
 }
 
-static llvm::Error runShell(const std::string &cmd) {
-  std::vector<std::string> args = {"/bin/bash", "-lc", cmd};
-  std::vector<llvm::StringRef> argv;
-  for (const auto &a : args)
-    argv.push_back(a);
-  std::string err_msg;
-  int ret =
-      llvm::sys::ExecuteAndWait(argv[0], argv, std::nullopt, {}, 300, 0,
-                                      &err_msg);
-  if (ret != 0)
-    return llvm::createStringError(llvm::inconvertibleErrorCode(),
-                                   "Process failed (exit %d): %s", ret,
-                                   err_msg.c_str());
-  return llvm::Error::success();
+static std::string buildInputPath(const std::string &inputDir,
+                                  const std::string &name) {
+  llvm::SmallString<256> path(inputDir);
+  llvm::sys::path::append(path, name);
+  return path.str().str();
 }
 
-static llvm::Error preloadSharedLibrary(const std::string &path) {
-  if (path.empty())
-    return llvm::Error::success();
-  void *handle = dlopen(path.c_str(), RTLD_NOW | RTLD_GLOBAL);
-  if (!handle)
-    return llvm::createStringError(llvm::inconvertibleErrorCode(),
-                                   "dlopen failed (%s): %s", path.c_str(),
-                                   dlerror());
-  return llvm::Error::success();
+static llvm::Expected<RuntimeTask>
+buildValidationTask(const std::string &artifactRoot,
+                    const std::string &manifestPath,
+                    const std::string &kernelSoPath,
+                    const std::string &deviceBinaryPath,
+                    const std::string &kernelName,
+                    const std::string &socVersion,
+                    const AbiMetadata &abi,
+                    llvm::StringRef inputDir,
+                    llvm::StringRef outputPath,
+                    llvm::StringRef tilingBinaryPath) {
+  if (abi.outputs.empty() || abi.outputs[0].runtimeFile.empty()) {
+    return llvm::createStringError(
+        llvm::inconvertibleErrorCode(),
+        "missing ABI output metadata for mix validation");
+  }
+  if (abi.inputs.empty()) {
+    return llvm::createStringError(
+        llvm::inconvertibleErrorCode(),
+        "missing ABI input metadata for mix validation");
+  }
+
+  KernelArtifact artifact;
+  artifact.kernelName = kernelName;
+  artifact.kernelKind = KernelKind::Mix;
+  artifact.mixResourceType = MixResourceType::Unknown;
+  artifact.socVersion = socVersion;
+  artifact.artifactRoot = artifactRoot;
+  artifact.manifestPath = manifestPath;
+  const std::string packedSharedObjectPath =
+      !kernelSoPath.empty() ? kernelSoPath : deviceBinaryPath;
+  if (packedSharedObjectPath.empty()) {
+    return llvm::createStringError(
+        llvm::inconvertibleErrorCode(),
+        "mix artifact is missing packed shared object path");
+  }
+  artifact.packedSharedObjectPath = packedSharedObjectPath;
+  artifact.deviceBinaryPath = !deviceBinaryPath.empty() ? deviceBinaryPath
+                                                       : packedSharedObjectPath;
+
+  RuntimeTask task;
+  task.taskId = "main";
+  task.artifact = std::move(artifact);
+
+  for (const AbiTensorDesc &tensor : abi.inputs) {
+    TensorBinding binding;
+    binding.name = tensor.name;
+    binding.sourceKind = BindingSourceKind::ExternalFile;
+    binding.path = buildInputPath(inputDir.str(), tensor.runtimeFile);
+    task.invocation.inputs.push_back(std::move(binding));
+  }
+
+  TensorBinding output;
+  output.name = abi.outputs[0].name.empty() ? "out" : abi.outputs[0].name;
+  output.sourceKind = BindingSourceKind::ExternalFile;
+  output.path = outputPath.str();
+  output.shape = abi.outputs[0].shape;
+  output.dtype = abi.outputs[0].dtype;
+  task.invocation.outputs.push_back(std::move(output));
+
+  if (!tilingBinaryPath.empty()) {
+    TilingBinding tiling;
+    tiling.binaryPath = tilingBinaryPath.str();
+    task.invocation.tiling = std::move(tiling);
+  }
+
+  task.invocation.blockDim = static_cast<int>(abi.blockDim);
+  task.invocation.workspaceSize = abi.workspaceBytes;
+  return task;
 }
 
-static void tryPreloadSharedLibrary(const std::string &path) {
-  if (auto err = preloadSharedLibrary(path))
-    llvm::errs() << "Warning: " << llvm::toString(std::move(err)) << "\n";
+static llvm::Expected<TaskGraph>
+buildValidationGraph(const std::string &artifactRoot,
+                     const std::string &manifestPath,
+                     const std::string &kernelSoPath,
+                     const std::string &deviceBinaryPath,
+                     const std::string &kernelName,
+                     const std::string &socVersion,
+                     const AbiMetadata &abi,
+                     llvm::StringRef inputDir,
+                     llvm::StringRef outputPath,
+                     llvm::StringRef tilingBinaryPath) {
+  auto taskOr = buildValidationTask(artifactRoot, manifestPath, kernelSoPath,
+                                    deviceBinaryPath, kernelName, socVersion,
+                                    abi, inputDir, outputPath, tilingBinaryPath);
+  if (!taskOr)
+    return taskOr.takeError();
+
+  TaskGraph graph;
+  if (auto err = graph.addTask(*taskOr))
+    return std::move(err);
+  return graph;
 }
 
-static llvm::Error runDirectValidator(const std::string &artifactRoot,
-                                      const std::string &goldenPath,
-                                      const std::string &outputPath,
-                                      const std::string &socVersion,
-                                      const AbiMetadata &abi,
-                                      std::vector<NDArray> &inputs,
-                                      NDArray &outputArr,
-                                      const std::string &kernelSoPath,
-                                      const std::string &kernelName) {
-  llvm::errs() << "[direct] start\n";
-  std::string ascendHome;
-  std::string ascendLib64;
-  std::string simLibDir;
-  if (auto err = configureRuntimeEnv(socVersion, artifactRoot, kernelSoPath,
-                                     &ascendHome, &ascendLib64, &simLibDir))
-    return err;
-  llvm::errs() << "[direct] env configured\n";
-  const std::vector<std::string> supportPreloads = {
-      ascendLib64 + "/libc_sec.so",
-      ascendLib64 + "/libmmpa.so",
-      ascendLib64 + "/libascend_protobuf.so",
-      ascendLib64 + "/libunified_dlog.so",
-      ascendLib64 + "/libascend_watchdog.so",
-      ascendLib64 + "/libplatform.so",
-  };
-  for (const std::string &path : supportPreloads)
-    if (llvm::sys::fs::exists(path))
-      tryPreloadSharedLibrary(path);
-
-  const std::vector<std::string> simPreloads = {
-      simLibDir + "/libffts_model.so",
-      simLibDir + "/libstars.so",
-      simLibDir + "/libmodel_top.so",
-      simLibDir + "/libesl_top_wrapper.so",
-      simLibDir + "/libmcu_wrapper.so",
-      simLibDir + "/libmcu_loop.so",
-      simLibDir + "/libpem_davinci.so",
-      simLibDir + "/libnpu_drv.so",
-      simLibDir + "/libnpu_drv_camodel.so",
-      simLibDir + "/libruntime_camodel.so",
-  };
-  for (const std::string &path : simPreloads)
-    if (llvm::sys::fs::exists(path))
-      tryPreloadSharedLibrary(path);
-  llvm::errs() << "[direct] preload done\n";
-
-  RunArgs args;
-  args.block_dim      = static_cast<int>(abi.blockDim);
-  args.workspace_size = abi.workspaceBytes;
-  auto tilingOr = buildTilingFromAbi(abi, artifactRoot);
-  if (!tilingOr)
-    return tilingOr.takeError();
-  args.tiling         = std::move(*tilingOr);
-  args.inputs         = std::move(inputs);
-  args.outputs.push_back(std::move(outputArr));
-  llvm::errs() << "[direct] args ready\n";
-
-  Executor executor(BackendMode::Simulation);
-  if (auto err = executor.Initialize())
-    return err;
-  llvm::errs() << "[direct] executor initialized\n";
-  if (auto err = executor.RunPackedMixFile(kernelSoPath, kernelName, args))
-    return err;
-  llvm::errs() << "[direct] packed run returned\n";
-
-  if (auto err = writeBinary(
-          outputPath,
-          llvm::ArrayRef<uint8_t>(
-              reinterpret_cast<const uint8_t *>(args.outputs[0].data),
-              args.outputs[0].nbytes())))
-    return err;
-  llvm::errs() << "[direct] output written\n";
-
-  auto actual = readBinary(outputPath);
+static llvm::Error compareOutputs(llvm::StringRef actualPath,
+                                  llvm::StringRef goldenPath) {
+  auto actual = readBinary(actualPath.str());
   if (!actual)
     return actual.takeError();
-  auto golden = readBinary(goldenPath);
+  auto golden = readBinary(goldenPath.str());
   if (!golden)
     return golden.takeError();
   if (actual->size() != golden->size()) {
     llvm::errs() << "FAIL size mismatch: actual=" << actual->size()
                  << " golden=" << golden->size() << "\n";
     return llvm::createStringError(llvm::inconvertibleErrorCode(),
-                                   "Direct packed validator size mismatch");
+                                   "mix validator output size mismatch");
   }
 
   double maxAbsDiff = 0.0;
@@ -359,14 +334,7 @@ static llvm::Error runDirectValidator(const std::string &artifactRoot,
   return maxAbsDiff == 0.0
              ? llvm::Error::success()
              : llvm::createStringError(llvm::inconvertibleErrorCode(),
-                                       "Direct packed validator output mismatch");
-}
-
-static std::string buildInputPath(const std::string &inputDir,
-                                  const std::string &name) {
-  llvm::SmallString<256> path(inputDir);
-  llvm::sys::path::append(path, name);
-  return path.str().str();
+                                       "mix validator output mismatch");
 }
 
 int main(int argc, char **argv) {
@@ -374,6 +342,7 @@ int main(int argc, char **argv) {
       argc, argv, "RuntimeMix artifact validator for mix kernels\n");
   const std::string resolvedSocVersion =
       resolveSocVersion(SocVersion, "Ascend910B1");
+  (void)ForceDirectPacked;
 
   llvm::SmallString<256> artifactRoot(ArtifactRoot);
   llvm::sys::fs::make_absolute(artifactRoot);
@@ -389,6 +358,15 @@ int main(int argc, char **argv) {
   }
   const AbiMetadata abi = std::move(*abiOr);
 
+  const std::string manifestKernelSo = resolvePath(
+      artifactRoot.str().str(),
+      manifest.count("kernel_so_path") ? manifest.at("kernel_so_path") : "");
+  const std::string manifestDeviceBinary = resolvePath(
+      artifactRoot.str().str(),
+      manifest.count("device_binary_path")
+          ? manifest.at("device_binary_path")
+          : (manifest.count("device_object_path") ? manifest.at("device_object_path")
+                                                  : ""));
   std::string outputPath = OutputFile;
   if (outputPath.empty()) {
     if (abi.outputs.empty() || abi.outputs[0].runtimeFile.empty()) {
@@ -415,146 +393,52 @@ int main(int argc, char **argv) {
     goldenPath = resolvePath(artifactRoot.str().str(), goldenName);
   }
 
-  const std::string manifestKernelSo = resolvePath(
-      artifactRoot.str().str(),
-      manifest.count("kernel_so_path") ? manifest.at("kernel_so_path") : "");
-  const std::string manifestRunner = resolvePath(
-      artifactRoot.str().str(),
-      manifest.count("host_runner_path") ? manifest.at("host_runner_path")
-                                          : "");
-
-  llvm::SmallString<256> runnerPath(artifactRoot);
-  if (!manifestRunner.empty())
-    runnerPath = llvm::StringRef(manifestRunner);
-  else
-    llvm::sys::path::append(runnerPath, "out", "bin", "mix_runner");
-  if (!llvm::sys::fs::exists(runnerPath)) {
-    runnerPath = artifactRoot;
-    llvm::sys::path::append(runnerPath, "bin", "mix_runner");
-  }
-  const bool canUseRunner = llvm::sys::fs::exists(runnerPath) &&
-                            !ForceDirectPacked;
-  // Runner-first is the default contract. The direct packed path remains
-  // available as a fallback or explicit comparison path when the artifact
-  // provides a kernel .so and ABI metadata.
-  const bool canUseDirectPacked = !abi.runtimeKernelName.empty() &&
-                                  !manifestKernelSo.empty() &&
-                                  llvm::sys::fs::exists(manifestKernelSo) &&
-                                  !canUseRunner;
-
-  if (canUseDirectPacked) {
-    std::vector<NDArray> inputs;
-    for (const AbiTensorDesc &tensor : abi.inputs) {
-      auto inputOr = loadRawTensor(buildInputPath(InputDir, tensor.runtimeFile),
-                                   tensor.shape, tensor.dtype);
-      if (!inputOr) {
-        llvm::errs() << "Error loading input " << tensor.runtimeFile << ": "
-                     << llvm::toString(inputOr.takeError()) << "\n";
-        return 4;
-      }
-      inputs.push_back(std::move(*inputOr));
-    }
-
-    auto goldenOr = readBinary(goldenPath);
-    if (!goldenOr) {
-      llvm::errs() << llvm::toString(goldenOr.takeError()) << "\n";
-      return 4;
-    }
-    if (abi.outputs.size() != 1) {
-      llvm::errs() << "Error: direct packed fallback only supports a single "
-                      "output in the current ABI surface\n";
-      return 4;
-    }
-    NDArray output;
-    output.shape = abi.outputs[0].shape;
-    output.dtype = abi.outputs[0].dtype;
-    output.allocate();
-    if (output.nbytes() != goldenOr->size()) {
-      llvm::errs() << "Error: golden size mismatch, expected output bytes="
-                   << output.nbytes() << " got=" << goldenOr->size() << "\n";
-      return 4;
-    }
-
-    llvm::Error directErr = runDirectValidator(
-        artifactRoot.str().str(), goldenPath, outputPath, resolvedSocVersion,
-        abi, inputs, output, manifestKernelSo, abi.runtimeKernelName);
-
-    if (directErr) {
-      llvm::errs() << "Warning: constrained direct packed fallback failed: "
-                   << llvm::toString(std::move(directErr))
-                   << "\nContinuing with the runner-first path.\n";
-    } else {
-      return 0;
-    }
-  }
-
-  if (!canUseRunner) {
-    llvm::errs() << "Error: runner not found under " << artifactRoot << "\n";
-    return 4;
-  }
-
-  std::string ascendHome;
-  std::string ascendLib64;
-  std::string socSimLibDir;
-  std::string davSimLibDir;
-  std::string deviceLibDir;
-  if (auto err = configureRuntimeEnv(resolvedSocVersion, artifactRoot.str().str(), "",
-                                     &ascendHome, &ascendLib64, &socSimLibDir,
-                                     &davSimLibDir, &deviceLibDir)) {
+  if (auto err = configureRuntimeEnv(resolvedSocVersion, artifactRoot.str().str(),
+                                     manifestKernelSo)) {
     llvm::errs() << "Error: " << llvm::toString(std::move(err)) << "\n";
     return 4;
   }
-  llvm::SmallString<256> installDir(artifactRoot);
-  llvm::sys::path::append(installDir, "out");
-  if (!llvm::sys::fs::exists(installDir))
-    installDir = artifactRoot;
-  std::string cmd = llvm::formatv(
-      "source \"{0}/bin/setenv.bash\" >/dev/null 2>&1 && "
-      "export ASCEND_HOME_PATH=\"{0}\" ASCEND_TOOLKIT_HOME=\"{0}\" && "
-      "export LD_LIBRARY_PATH=\"{1}:{2}:{3}:{4}:{5}:$LD_LIBRARY_PATH\" && "
-      "\"{6}\" --input-dir \"{7}\" --output-file \"{8}\"",
-      ascendHome, installDir.str(), ascendLib64, socSimLibDir, davSimLibDir,
-      deviceLibDir, runnerPath.str(), InputDir, outputPath)
-                        .str();
-  if (auto err = runShell(cmd)) {
-    llvm::errs() << "Run error: " << llvm::toString(std::move(err)) << "\n";
+
+  auto manifestTilingOr = buildTilingFromAbi(abi, artifactRoot.str().str());
+  if (!manifestTilingOr) {
+    llvm::errs() << "Error loading tiling bytes: "
+                 << llvm::toString(manifestTilingOr.takeError()) << "\n";
+    return 4;
+  }
+
+  const std::string kernelName =
+      !abi.runtimeKernelName.empty() ? abi.runtimeKernelName
+                                     : abi.logicalKernelName;
+  auto graphOr = buildValidationGraph(
+      artifactRoot.str().str(), manifestPath.str().str(), manifestKernelSo,
+      manifestDeviceBinary, kernelName, resolvedSocVersion, abi, InputDir,
+      outputPath, *manifestTilingOr);
+  if (!graphOr) {
+    llvm::errs() << "Error building runtime task graph: "
+                 << llvm::toString(graphOr.takeError()) << "\n";
+    return 4;
+  }
+
+  for (const AbiTensorDesc &tensor : abi.inputs) {
+    auto inputOr = loadRawTensor(buildInputPath(InputDir, tensor.runtimeFile),
+                                 tensor.shape, tensor.dtype);
+    if (!inputOr) {
+      llvm::errs() << "Error loading input " << tensor.runtimeFile << ": "
+                   << llvm::toString(inputOr.takeError()) << "\n";
+      return 4;
+    }
+  }
+
+  ExecutionSession session(ExecutionBackendKind::Simulation);
+  auto traceOr = session.run(*graphOr);
+  if (!traceOr) {
+    llvm::errs() << "Error: " << llvm::toString(traceOr.takeError()) << "\n";
     return 2;
   }
 
-  auto actual = readBinary(outputPath);
-  if (!actual) {
-    llvm::errs() << llvm::toString(actual.takeError()) << "\n";
-    return 2;
-  }
-  auto golden = readBinary(goldenPath);
-  if (!golden) {
-    llvm::errs() << llvm::toString(golden.takeError()) << "\n";
-    return 2;
-  }
-  if (actual->size() != golden->size()) {
-    llvm::errs() << "FAIL size mismatch: actual=" << actual->size()
-                 << " golden=" << golden->size() << "\n";
+  if (auto err = compareOutputs(outputPath, goldenPath)) {
+    llvm::errs() << "Error: " << llvm::toString(std::move(err)) << "\n";
     return 1;
   }
-
-  double maxAbsDiff = 0.0;
-  double meanAbsDiff = 0.0;
-  size_t count = actual->size() / sizeof(float);
-  for (size_t i = 0; i < count; ++i) {
-    float a = 0.0f;
-    float g = 0.0f;
-    std::memcpy(&a, actual->data() + i * sizeof(float), sizeof(float));
-    std::memcpy(&g, golden->data() + i * sizeof(float), sizeof(float));
-    double diff = std::abs(static_cast<double>(a) - static_cast<double>(g));
-    maxAbsDiff = std::max(maxAbsDiff, diff);
-    meanAbsDiff += diff;
-  }
-  if (count > 0)
-    meanAbsDiff /= static_cast<double>(count);
-
-  bool passed = maxAbsDiff == 0.0;
-  llvm::outs() << "max_abs_diff=" << maxAbsDiff << "\n";
-  llvm::outs() << "mean_abs_diff=" << meanAbsDiff << "\n";
-  llvm::outs() << (passed ? "PASS" : "FAIL") << "\n";
-  return passed ? 0 : 1;
+  return 0;
 }
