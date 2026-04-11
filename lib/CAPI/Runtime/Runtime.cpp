@@ -11,6 +11,7 @@
 #include "Runtime/TilingPack.h"
 
 #include "llvm/ADT/ArrayRef.h"
+#include "llvm/ADT/SmallString.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/Support/Error.h"
 #include "llvm/Support/FileSystem.h"
@@ -21,6 +22,7 @@
 #include <fstream>
 #include <iterator>
 #include <cstring>
+#include <utility>
 
 using namespace mlir::runtime;
 
@@ -36,6 +38,9 @@ struct CApiExecutorHandle {
   int deviceId = 0;
   bool initialized = false;
 };
+
+static constexpr uint32_t kMagicAIVec = 0x41415246u;
+static constexpr uint32_t kMagicAICube = 0x41494343u;
 
 llvm::StringRef compatKernelTypeForArch(llvm::StringRef arch) {
   return arch.contains_insensitive("cube") ? "cube" : "vec";
@@ -106,9 +111,9 @@ llvm::Expected<std::vector<uint8_t>> readBinaryFile(llvm::StringRef path) {
 }
 
 llvm::Expected<std::string> kernelKindNameForMagic(uint32_t magic) {
-  if (magic == Executor::MAGIC_ELF_AIVEC)
+  if (magic == kMagicAIVec)
     return std::string("vec");
-  if (magic == Executor::MAGIC_ELF_AICUBE)
+  if (magic == kMagicAICube)
     return std::string("cube");
   return llvm::createStringError(llvm::inconvertibleErrorCode(),
                                  "unsupported kernel magic: 0x%08x", magic);
@@ -179,7 +184,8 @@ llvm::Error runWithExecutionSession(const std::string &binaryPath,
     return llvm::createStringError(llvm::inconvertibleErrorCode(),
                                    "invalid input/output binding counts");
   }
-  if (!input_ptrs || !input_bytes || !output_ptrs || !output_bytes) {
+  if ((num_inputs > 0 && (!input_ptrs || !input_bytes)) ||
+      !output_ptrs || !output_bytes) {
     return llvm::createStringError(llvm::inconvertibleErrorCode(),
                                    "input/output pointer arrays are required");
   }
@@ -351,69 +357,27 @@ int afirt_compiler_compile(AfirtCompiler compiler,
 // ============================================================
 
 AfirtExecutor afirt_executor_create() {
-  return reinterpret_cast<AfirtExecutor>(new Executor());
+  return reinterpret_cast<AfirtExecutor>(new CApiExecutorHandle());
 }
 
 void afirt_executor_destroy(AfirtExecutor executor) {
-  delete reinterpret_cast<Executor *>(executor);
+  delete reinterpret_cast<CApiExecutorHandle *>(executor);
 }
 
 int afirt_executor_initialize(AfirtExecutor executor, int device_id,
                               char *err_buf, size_t err_len) {
-  auto *e = reinterpret_cast<Executor *>(executor);
-  if (auto err = e->Initialize(device_id)) {
-    writeErr(err_buf, err_len, std::move(err));
+  auto *handle = reinterpret_cast<CApiExecutorHandle *>(executor);
+  if (!handle) {
+    writeErr(err_buf, err_len, "executor handle is null");
     return 1;
   }
+  if (device_id < 0) {
+    writeErr(err_buf, err_len, "device id must be non-negative");
+    return 1;
+  }
+  handle->deviceId = device_id;
+  handle->initialized = true;
   return 0;
-}
-
-// Choose dtype+shape so that numElements()*dtypeBytes() == bytes exactly.
-// Prefer F16 (2B), then INT32 (4B), then fall back to F16 with rounded-up
-// shape (the +512 overalloc in Alloc() absorbs any padding).
-static void fillArray(NDArray& arr, void* data, size_t bytes) {
-  arr.data = data;
-  if (bytes % 2 == 0) {
-    arr.dtype = DType::F16;
-    arr.shape = {static_cast<int64_t>(bytes / 2)};
-  } else if (bytes % 4 == 0) {
-    arr.dtype = DType::INT32;
-    arr.shape = {static_cast<int64_t>(bytes / 4)};
-  } else {
-    // Odd byte count: round up to nearest even; overalloc absorbs the extra byte
-    arr.dtype = DType::F16;
-    arr.shape = {static_cast<int64_t>((bytes + 1) / 2)};
-  }
-}
-
-// Build RunArgs from flat C arrays and call Executor::Run / RunFile.
-static RunArgs buildRunArgs(int            num_inputs,
-                            const void   **input_ptrs,
-                            const size_t  *input_bytes,
-                            int            num_outputs,
-                            void         **output_ptrs,
-                            const size_t  *output_bytes,
-                            const uint8_t *tiling_data, size_t tiling_len,
-                            int            block_dim) {
-  RunArgs args;
-  args.block_dim = block_dim;
-
-  for (int i = 0; i < num_inputs; ++i) {
-    NDArray arr;
-    fillArray(arr, const_cast<void *>(input_ptrs[i]), input_bytes[i]);
-    args.inputs.push_back(std::move(arr));
-  }
-
-  for (int i = 0; i < num_outputs; ++i) {
-    NDArray arr;
-    fillArray(arr, output_ptrs[i], output_bytes[i]);
-    args.outputs.push_back(std::move(arr));
-  }
-
-  if (tiling_data && tiling_len > 0)
-    args.tiling.assign(tiling_data, tiling_data + tiling_len);
-
-  return args;
 }
 
 int afirt_executor_run(AfirtExecutor  executor,
@@ -429,14 +393,35 @@ int afirt_executor_run(AfirtExecutor  executor,
                        int            block_dim,
                        uint32_t       magic,
                        char          *err_buf, size_t err_len) {
-  auto *e = reinterpret_cast<Executor *>(executor);
+  auto *handle = reinterpret_cast<CApiExecutorHandle *>(executor);
+  if (!handle || !handle->initialized) {
+    writeErr(err_buf, err_len, "executor has not been initialized");
+    return 1;
+  }
+  if (!binary_data || binary_len == 0) {
+    writeErr(err_buf, err_len, "binary data is required");
+    return 1;
+  }
 
-  std::vector<uint8_t> bin(binary_data, binary_data + binary_len);
-  RunArgs args = buildRunArgs(num_inputs, input_ptrs, input_bytes,
-                              num_outputs, output_ptrs, output_bytes,
-                              tiling_data, tiling_len, block_dim);
+  auto tempDirOr = makeTemporaryDirectory("afirt-runtime-bin");
+  if (!tempDirOr) {
+    writeErr(err_buf, err_len, tempDirOr.takeError());
+    return 1;
+  }
+  const std::string binaryPath = joinPath(*tempDirOr, "kernel.bin");
+  if (auto err = writeBinaryFile(
+          binaryPath, llvm::ArrayRef<uint8_t>(binary_data, binary_len))) {
+    writeErr(err_buf, err_len, std::move(err));
+    return 1;
+  }
 
-  if (auto err = e->Run(bin, function_name ? function_name : "", args, magic)) {
+  auto err = runWithExecutionSession(binaryPath,
+                                     function_name ? function_name : "",
+                                     magic, num_inputs, input_ptrs,
+                                     input_bytes, num_outputs, output_ptrs,
+                                     output_bytes, tiling_data, tiling_len,
+                                     block_dim, handle->deviceId);
+  if (err) {
     writeErr(err_buf, err_len, std::move(err));
     return 1;
   }
@@ -456,14 +441,28 @@ int afirt_executor_run_file(AfirtExecutor  executor,
                             int            block_dim,
                             uint32_t       magic,
                             char          *err_buf, size_t err_len) {
-  auto *e = reinterpret_cast<Executor *>(executor);
+  auto *handle = reinterpret_cast<CApiExecutorHandle *>(executor);
+  if (!handle || !handle->initialized) {
+    writeErr(err_buf, err_len, "executor has not been initialized");
+    return 1;
+  }
+  if (!binary_path || !*binary_path) {
+    writeErr(err_buf, err_len, "binary path is required");
+    return 1;
+  }
 
-  RunArgs args = buildRunArgs(num_inputs, input_ptrs, input_bytes,
-                              num_outputs, output_ptrs, output_bytes,
-                              tiling_data, tiling_len, block_dim);
+  auto bytesOr = readBinaryFile(binary_path);
+  if (!bytesOr) {
+    writeErr(err_buf, err_len, bytesOr.takeError());
+    return 1;
+  }
 
-  if (auto err = e->RunFile(binary_path ? binary_path : "",
-                            function_name ? function_name : "", args, magic)) {
+  auto err = runWithExecutionSession(binary_path, function_name ? function_name : "",
+                                     magic, num_inputs, input_ptrs,
+                                     input_bytes, num_outputs, output_ptrs,
+                                     output_bytes, tiling_data, tiling_len,
+                                     block_dim, handle->deviceId);
+  if (err) {
     writeErr(err_buf, err_len, std::move(err));
     return 1;
   }
