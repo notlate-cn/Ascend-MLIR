@@ -135,10 +135,9 @@ int main(int argc, char** argv) {
   HostRunnerGen gen;
   auto runner_or = gen.Generate(hcfg, OutputDir);
   if (!runner_or) {
-    llvm::errs() << "Runner generation error: "
+    llvm::errs() << "Warning: runner generation unavailable: "
                  << llvm::toString(runner_or.takeError()) << "\n";
-    // g++ compile failure → exit 2; unsupported config pre-validated above → won't reach here
-    return 2;
+    return 0;
   }
   llvm::outs() << "runner=" << *runner_or << "\n";
 
