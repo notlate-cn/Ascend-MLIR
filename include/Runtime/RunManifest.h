@@ -7,11 +7,16 @@
 
 namespace mlir::runtime {
 
-struct RunManifestSpec {
+struct RunTaskSpec {
   std::string taskId;
   std::string artifactRoot;
-  ExecutionBackendKind backendKind = ExecutionBackendKind::Simulation;
+  std::vector<std::string> dependencies;
   ExecutionInvocation invocation;
+};
+
+struct RunManifestSpec {
+  ExecutionBackendKind backendKind = ExecutionBackendKind::Simulation;
+  std::vector<RunTaskSpec> tasks;
 };
 
 llvm::Expected<RunManifestSpec> loadRunManifest(const std::string &path);

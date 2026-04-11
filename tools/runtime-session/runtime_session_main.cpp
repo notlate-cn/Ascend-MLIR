@@ -58,7 +58,7 @@ llvm::cl::opt<std::string> TaskId(
     llvm::cl::cat(RuntimeSessionCategory));
 llvm::cl::opt<bool> RunSession(
     "run",
-    llvm::cl::desc("Traverse ExecutionSession::run and return the current task I/O binding limitation"),
+    llvm::cl::desc("Execute the prepared task graph runtime session"),
     llvm::cl::init(false),
     llvm::cl::cat(RuntimeSessionCategory));
 llvm::cl::opt<std::string> CannMlir(
@@ -166,8 +166,8 @@ llvm::Expected<std::string> locateManifestPath(llvm::StringRef artifactRoot) {
       "artifact root does not contain a supported manifest (expected out/manifest.txt, mix-artifact.txt, or out/mix-artifact.txt)");
 }
 
-llvm::Expected<KernelArtifact> loadArtifactFromRoot() {
-  llvm::SmallString<256> artifactRoot(ArtifactRoot);
+llvm::Expected<KernelArtifact> loadArtifactFromRoot(llvm::StringRef artifactRootInput) {
+  llvm::SmallString<256> artifactRoot(artifactRootInput);
   llvm::sys::fs::make_absolute(artifactRoot);
 
   llvm::sys::fs::file_status status;
@@ -255,7 +255,7 @@ llvm::Expected<KernelArtifact> prepareArtifact() {
   }
 
   if (hasArtifactRoot)
-    return loadArtifactFromRoot();
+    return loadArtifactFromRoot(ArtifactRoot);
 
   auto kernelKindOr = parseKernelKind(KernelKindName);
   if (!kernelKindOr)
@@ -300,18 +300,20 @@ prepareManifestGraph() {
   if (!runSpecOr)
     return runSpecOr.takeError();
 
-  ArtifactRoot = runSpecOr->artifactRoot;
-  auto artifactOr = loadArtifactFromRoot();
-  if (!artifactOr)
-    return artifactOr.takeError();
-
   TaskGraph graph;
-  RuntimeTask task;
-  task.taskId = runSpecOr->taskId;
-  task.artifact = *artifactOr;
-  task.invocation = runSpecOr->invocation;
-  if (auto err = graph.addTask(task))
-    return std::move(err);
+  for (const RunTaskSpec &taskSpec : runSpecOr->tasks) {
+    auto artifactOr = loadArtifactFromRoot(taskSpec.artifactRoot);
+    if (!artifactOr)
+      return artifactOr.takeError();
+
+    RuntimeTask task;
+    task.taskId = taskSpec.taskId;
+    task.artifact = *artifactOr;
+    task.dependencies = taskSpec.dependencies;
+    task.invocation = taskSpec.invocation;
+    if (auto err = graph.addTask(task))
+      return std::move(err);
+  }
   return std::make_pair(runSpecOr->backendKind, std::move(graph));
 }
 
@@ -335,7 +337,7 @@ int main(int argc, char **argv) {
   llvm::cl::HideUnrelatedOptions(RuntimeSessionCategory);
   llvm::cl::ParseCommandLineOptions(
       argc, argv,
-      "task graph runtime planning CLI for artifacts and session plans, with a stubbed run path\n");
+      "task graph runtime planning and execution CLI for artifacts and session graphs\n");
 
   ExecutionBackendKind backendKind = ExecutionBackendKind::Simulation;
   std::optional<KernelArtifact> artifact;
