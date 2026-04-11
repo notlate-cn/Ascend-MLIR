@@ -44,12 +44,13 @@ SUMMARY_KINDS=()
 SUMMARY_RETRIES=()
 SUMMARY_OUTPUTS=()
 SUMMARY_PROFILES=()
+EXAMPLE_LOGS=()
 CURRENT_RETRIES=0
 LAST_PROFILE_PATH=""
 
 cleanup() {
   rm -rf "${ARTIFACT_ROOTS[@]:-}"
-  rm -f "${MANIFESTS[@]:-}" "${OUTPUTS[@]:-}"
+  rm -f "${MANIFESTS[@]:-}" "${OUTPUTS[@]:-}" "${EXAMPLE_LOGS[@]:-}"
 }
 trap cleanup EXIT
 
@@ -71,6 +72,13 @@ make_tmp_output() {
   local path
   path="$(mktemp /tmp/runtime-sim-output.XXXXXX.npy)"
   OUTPUTS+=("${path}")
+  printf '%s\n' "${path}"
+}
+
+make_tmp_log() {
+  local path
+  path="$(mktemp /tmp/runtime-sim-example.XXXXXX.log)"
+  EXAMPLE_LOGS+=("${path}")
   printf '%s\n' "${path}"
 }
 
@@ -174,12 +182,16 @@ run_vec_example() {
 
   local artifact_root
   artifact_root="$(make_tmp_artifact_root)"
+  local example_log
+  example_log="$(make_tmp_log)"
   local manifest
   manifest="$(make_tmp_manifest)"
   local actual_output
   actual_output="$(make_tmp_output)"
 
-  bash "${example_dir}/run.sh" >/tmp/runtime_simbackend_example.log 2>&1
+  bash "${example_dir}/run.sh" 2>&1 | tee "${example_log}"
+  grep -q '^session.backend=sim' "${example_log}"
+  grep -q '^session.result=success' "${example_log}"
 
   "${RUNTIME_SESSION}" \
     --kernel "${example_dir}/${kernel_file}" \

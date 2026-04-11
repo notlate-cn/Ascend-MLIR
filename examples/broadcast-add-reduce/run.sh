@@ -234,6 +234,7 @@ echo "==================== [STAGE 10] Run + Verify ===================="
 log "  使用参数：TB_M=64, TB_N=15000, M=640, N=15000, block-dim=10"
 VALIDATOR="${VALIDATOR:-validator}"
 BIN="$BUILD_DIR/broadcast_add_reducesum.bin"
+VALIDATION_LOG="$BUILD_DIR/runtime_session.log"
 
 if [ -f "$BIN" ]; then
   "$VALIDATOR" \
@@ -249,7 +250,9 @@ if [ -f "$BIN" ]; then
     --dump-actual "$BUILD_DIR/actual.txt" \
     --dump-expected "$BUILD_DIR/expected.txt" \
     --precision 4 \
-    2>&1 | grep -v '^\[info\]\|^\[PEM_AIC_LOG\]\|^\[INFO\]\|^\[WARNING\]' || true
+    2>&1 | tee "$VALIDATION_LOG" | grep -v '^\[info\]\|^\[PEM_AIC_LOG\]\|^\[INFO\]\|^\[WARNING\]' || true
+  grep -q '^session.backend=sim' "$VALIDATION_LOG"
+  grep -q '^session.result=success' "$VALIDATION_LOG"
 else
   echo "  ⚠ bin not found — skipping run"
 fi

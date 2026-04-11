@@ -172,6 +172,7 @@ echo "  ✓ $BUILD_DIR/ewop_broadcast_split.bin"
 echo ""
 echo "==================== [STAGE 10] Run + Verify ===================="
 BIN="$BUILD_DIR/ewop_broadcast_split.bin"
+VALIDATION_LOG="$BUILD_DIR/runtime_session.log"
 
 TILING_PARAMS="TB_M=${TB_M},TB_N=${TB_M},dim_arg0_1=${N},dim_arg1_0=${HM},dim_arg0_0=${M},dim_arg1_1=${HM},dim_arg3_0=${N},dim_arg3_1=${N},dim_arg2_0=${HM},dim_arg2_1=${HM},dim_arg4_0=${N},dim_arg4_1=${N}"
 # Note: N must be a multiple of 16 (AscendC DataCopy alignment for f16).
@@ -188,7 +189,9 @@ $VALIDATOR \
   --rtol 1e-2 \
   --dump-actual "$BUILD_DIR/actual.txt" \
   --dump-expected "$BUILD_DIR/expected.txt" \
-  2>&1
+  2>&1 | tee "$VALIDATION_LOG"
+grep -q '^session.backend=sim' "$VALIDATION_LOG"
+grep -q '^session.result=success' "$VALIDATION_LOG"
 
 echo ""
 echo "========================================================"

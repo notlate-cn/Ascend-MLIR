@@ -301,6 +301,7 @@ log "  使用参数：TB_M=64, TB_N=192, M=640, N=500, block-dim=10"
 log "  UB 占用：2×Op×(TB_M×2 + 3×TB_M×TB_N×2) = 144KB ≈ 75% of 192KB"
 log "  内循环次数：ceil(500/192)=3，尾块 116 列（非32B对齐）"
 BIN="$BUILD_DIR/ewop_broadcast_concat.bin"
+VALIDATION_LOG="$BUILD_DIR/runtime_session.log"
 
 if [ -f "$BIN" ]; then
   "$VALIDATOR" \
@@ -316,7 +317,9 @@ if [ -f "$BIN" ]; then
     --dump-actual "$BUILD_DIR/actual.txt" \
     --dump-expected "$BUILD_DIR/expected.txt" \
     --precision 4 \
-    2>&1 | grep -v '^\[info\]\|^\[PEM_AIC_LOG\]\|^\[INFO\]\|^\[WARNING\]' || true
+    2>&1 | tee "$VALIDATION_LOG" | grep -v '^\[info\]\|^\[PEM_AIC_LOG\]\|^\[INFO\]\|^\[WARNING\]' || true
+  grep -q '^session.backend=sim' "$VALIDATION_LOG"
+  grep -q '^session.result=success' "$VALIDATION_LOG"
 else
   echo "  ⚠ bin not found — skipping run"
 fi
