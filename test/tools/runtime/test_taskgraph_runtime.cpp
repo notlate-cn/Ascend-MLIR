@@ -452,10 +452,16 @@ static std::string readFileContents(const std::string &path) {
                      std::istreambuf_iterator<char>());
 }
 
-static std::string runCompatCompilerCli(const std::string &kernelType,
-                                        const std::string &kernelName,
-                                        const std::filesystem::path &outputDir,
-                                        const std::filesystem::path &logPath) {
+struct CompatCompilerCliResult {
+  int exitCode = -1;
+  std::string output;
+};
+
+static CompatCompilerCliResult
+runCompatCompilerCli(const std::string &kernelType, const std::string &kernelName,
+                     const std::filesystem::path &outputDir,
+                     const std::filesystem::path &logPath,
+                     const std::string &extraArgs = "") {
   std::error_code ec;
   std::filesystem::remove_all(outputDir, ec);
   std::filesystem::remove(logPath, ec);
@@ -466,16 +472,18 @@ static std::string runCompatCompilerCli(const std::string &kernelType,
       "PATH=/nonexistent build/bin/compiler --kernel '" + kernelPath +
       "' --output '" + outputDir.string() + "' --name '" + kernelName +
       "' --soc Ascend910B1 --arch dav-c220-vec --kernel-type " + kernelType +
-      " --num-inputs 1 --num-outputs 1 > '" + logPath.string() +
+      " --num-inputs 1 " + extraArgs + " > '" + logPath.string() +
       "' 2>&1";
 
-  const int rc = std::system(command.c_str());
-  EXPECT(rc == 0, "compat compiler CLI exits successfully");
-  if (rc != 0) {
+  CompatCompilerCliResult result;
+  result.exitCode = std::system(command.c_str());
+  if (result.exitCode != 0) {
     llvm::errs() << readFileContents(logPath.string());
-    return "";
+    result.output = readFileContents(logPath.string());
+    return result;
   }
-  return readFileContents(logPath.string());
+  result.output = readFileContents(logPath.string());
+  return result;
 }
 
 static void checkCompatCompilerOutput(const std::string &output,
@@ -515,11 +523,12 @@ static void testCompatCompilerVecPathPrintsNormalizedArtifactSummary() {
   const std::filesystem::path logPath =
       std::filesystem::temp_directory_path() / "taskgraph-compat-cli-vec.log";
   const std::string kernelName = "legacy_vec_name";
-  const std::string output =
-      runCompatCompilerCli("vec", kernelName, outputDir, logPath);
-  if (output.empty())
+  const auto result = runCompatCompilerCli(
+      "vec", kernelName, outputDir, logPath, "--num-outputs 1");
+  EXPECT(result.exitCode == 0, "compat compiler vec path exits successfully");
+  if (result.exitCode != 0)
     return;
-  checkCompatCompilerOutput(output, outputDir, kernelName,
+  checkCompatCompilerOutput(result.output, outputDir, kernelName,
                             /*expectRunnerUnavailableWarning=*/true);
 }
 
@@ -529,12 +538,33 @@ static void testCompatCompilerCubePathKeepsRunnerCompatibility() {
   const std::filesystem::path logPath =
       std::filesystem::temp_directory_path() / "taskgraph-compat-cli-cube.log";
   const std::string kernelName = "legacy_cube_name";
-  const std::string output =
-      runCompatCompilerCli("cube", kernelName, outputDir, logPath);
-  if (output.empty())
+  const auto result = runCompatCompilerCli(
+      "cube", kernelName, outputDir, logPath, "--num-outputs 1");
+  EXPECT(result.exitCode == 0, "compat compiler cube path exits successfully");
+  if (result.exitCode != 0)
     return;
-  checkCompatCompilerOutput(output, outputDir, kernelName,
+  checkCompatCompilerOutput(result.output, outputDir, kernelName,
                             /*expectRunnerUnavailableWarning=*/true);
+}
+
+static void testCompatCompilerRejectsInvalidRunnerArgsBeforeArtifactEmission() {
+  const std::filesystem::path outputDir =
+      std::filesystem::temp_directory_path() / "taskgraph-compat-cli-invalid-out";
+  const std::filesystem::path logPath =
+      std::filesystem::temp_directory_path() / "taskgraph-compat-cli-invalid.log";
+  const std::string kernelName = "legacy_vec_name";
+  const auto result = runCompatCompilerCli("vec", kernelName, outputDir,
+                                           logPath, "--num-outputs 2");
+  EXPECT(result.exitCode != 0,
+         "compat compiler rejects invalid runner args before success");
+  if (result.exitCode == 0)
+    return;
+  EXPECT(result.output.find("artifact.root=") == std::string::npos,
+         "compat compiler does not print artifact summary on invalid runner args");
+  EXPECT(result.output.find("artifact.manifest=") == std::string::npos,
+         "compat compiler does not print manifest on invalid runner args");
+  EXPECT(result.output.find("artifact.binary=") == std::string::npos,
+         "compat compiler does not print binary on invalid runner args");
 }
 
 static void testCompatSingleTaskRunManifestBuildsExpectedBackedTask() {
@@ -1727,6 +1757,7 @@ int main() {
   testCompatCompileRequestRejectsUnknownKernelType();
   testCompatCompilerVecPathPrintsNormalizedArtifactSummary();
   testCompatCompilerCubePathKeepsRunnerCompatibility();
+  testCompatCompilerRejectsInvalidRunnerArgsBeforeArtifactEmission();
   testCompatSingleTaskRunManifestBuildsExpectedBackedTask();
   testCompatSingleTaskRunManifestBuildsMetadataBackedTask();
   testCompatSingleTaskRunManifestRejectsInvalidCombination();
