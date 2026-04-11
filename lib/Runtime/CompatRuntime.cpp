@@ -98,15 +98,19 @@ buildLegacyTilingBytes(llvm::StringRef params, llvm::StringRef layout) {
     }
     int64_t value = std::stoll(pvec[i].substr(eq + 1));
     std::string type = i < lvec.size() ? lvec[i] : "int64";
-    if (type == "int32" || type == "int32_t") {
+    if (type == "int64" || type == "int64_t") {
+      uint8_t buf[8];
+      std::memcpy(buf, &value, 8);
+      bytes.insert(bytes.end(), buf, buf + 8);
+    } else if (type == "int32" || type == "int32_t") {
       int32_t narrowed = static_cast<int32_t>(value);
       uint8_t buf[4];
       std::memcpy(buf, &narrowed, 4);
       bytes.insert(bytes.end(), buf, buf + 4);
     } else {
-      uint8_t buf[8];
-      std::memcpy(buf, &value, 8);
-      bytes.insert(bytes.end(), buf, buf + 8);
+      return llvm::createStringError(llvm::inconvertibleErrorCode(),
+                                     "unknown tiling type: %s",
+                                     type.c_str());
     }
   }
   return bytes;
