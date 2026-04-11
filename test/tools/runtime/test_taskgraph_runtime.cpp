@@ -27,6 +27,10 @@
 #include "llvm/Support/Error.h"
 #include "llvm/Support/raw_ostream.h"
 
+#define main validator_main_main
+#include "../../../tools/validator/validator_main.cpp"
+#undef main
+
 #include <filesystem>
 #include <fstream>
 #include <cstring>
@@ -86,6 +90,12 @@ static std::string writeTempBinaryFile(const std::string &stem,
   }
   os.write(reinterpret_cast<const char *>(bytes.data()), bytes.size());
   return path.string();
+}
+
+static std::vector<uint8_t> readBinaryFile(const std::string &path) {
+  std::ifstream is(path, std::ios::binary);
+  return std::vector<uint8_t>((std::istreambuf_iterator<char>(is)),
+                              std::istreambuf_iterator<char>());
 }
 
 class RecordingBackendDriver : public ExecutionBackendDriver {
@@ -822,6 +832,146 @@ static void testCompatValidatorRoutesThroughExecutionSession() {
          "compat validator runtime session preserves atol");
   EXPECT(driverPtr->lastRequest.task.invocation.rtol == 0.03,
          "compat validator runtime session preserves rtol");
+}
+
+class ScopedCurrentPath {
+public:
+  explicit ScopedCurrentPath(const std::filesystem::path &path)
+      : previous_(std::filesystem::current_path()) {
+    std::filesystem::current_path(path);
+  }
+
+  ~ScopedCurrentPath() { std::filesystem::current_path(previous_); }
+
+  ScopedCurrentPath(const ScopedCurrentPath &) = delete;
+  ScopedCurrentPath &operator=(const ScopedCurrentPath &) = delete;
+
+private:
+  std::filesystem::path previous_;
+};
+
+static void testValidatorPreparesTilingBinaryPaths() {
+  const std::filesystem::path tempDir =
+      std::filesystem::temp_directory_path() / "compat-validator-tiling-paths";
+  std::error_code ec;
+  std::filesystem::remove_all(tempDir, ec);
+  std::filesystem::create_directories(tempDir, ec);
+  EXPECT(!ec, "compat validator test temp dir creates");
+  if (ec)
+    return;
+
+  const std::filesystem::path explicitSource =
+      tempDir / "validator-relative-tiling.bin";
+  {
+    ScopedCurrentPath cwdGuard(tempDir);
+    std::ofstream os(explicitSource.filename(), std::ios::binary);
+    EXPECT((bool)os, "compat validator relative tiling source opens");
+    if (!os)
+      return;
+    const std::vector<uint8_t> explicitBytes = {0x12, 0x34, 0x56, 0x78};
+    os.write(reinterpret_cast<const char *>(explicitBytes.data()),
+             explicitBytes.size());
+
+    auto explicitPathOr = prepareValidatorTilingBinaryPath(
+        explicitSource.filename().string(), "", "", "");
+    EXPECT((bool)explicitPathOr,
+           "compat validator explicit tiling path materializes");
+    if (!explicitPathOr)
+      return;
+    EXPECT(std::filesystem::path(*explicitPathOr).is_absolute(),
+           "compat validator explicit tiling path becomes absolute/materialized");
+    EXPECT(readBinaryFile(*explicitPathOr) == explicitBytes,
+           "compat validator explicit tiling bytes are copied");
+  }
+
+  const std::string schemaPath = writeTempTextFile(
+      "compat-validator-tiling-schema",
+      R"JSON({
+  "tiling_params": [
+    { "name": "TB_M", "type": "int64" },
+    { "name": "TB_N", "type": "int32" }
+  ]
+})JSON");
+  if (schemaPath.empty())
+    return;
+
+  auto schemaPathOr =
+      prepareValidatorTilingBinaryPath("", schemaPath, "TB_M=16,TB_N=4", "");
+  EXPECT((bool)schemaPathOr,
+         "compat validator schema tiling path materializes");
+  if (!schemaPathOr)
+    return;
+
+  auto schemaBytes = readBinaryFile(*schemaPathOr);
+  EXPECT(schemaBytes.size() == 12,
+         "compat validator schema tiling bytes have expected size");
+  if (schemaBytes.size() == 12) {
+    EXPECT(schemaBytes[0] == 0x10 && schemaBytes[8] == 0x04,
+           "compat validator schema tiling bytes preserve packing");
+  }
+
+  auto legacyPathOr =
+      prepareValidatorTilingBinaryPath("", "", "TB_M=16,TB_N=4", "int64,int32");
+  EXPECT((bool)legacyPathOr,
+         "compat validator legacy tiling path materializes");
+  if (!legacyPathOr)
+    return;
+  auto legacyBytes = readBinaryFile(*legacyPathOr);
+  EXPECT(legacyBytes.size() == 12,
+         "compat validator legacy tiling bytes have expected size");
+  if (legacyBytes.size() == 12) {
+    EXPECT(legacyBytes[0] == 0x10 && legacyBytes[8] == 0x04,
+           "compat validator legacy tiling bytes preserve packing");
+  }
+
+  CompatValidateOptions options;
+  options.artifactRoot = "/tmp/validator-artifact";
+  options.inputPaths = {"/tmp/input0.npy"};
+  options.actualOutputPath = "/tmp/validator-actual.npy";
+  options.actualOutputShape = std::vector<int64_t>{4};
+  options.actualOutputDType = DType::F32;
+  options.tilingBinaryPath = *legacyPathOr;
+
+  auto manifestOr = buildCompatSingleTaskRunManifest(options);
+  EXPECT((bool)manifestOr, "compat validator manifest builds with tiling path");
+  if (!manifestOr)
+    return;
+
+  KernelArtifact artifact;
+  artifact.kernelName = "legacy_vec_name";
+  artifact.kernelKind = KernelKind::Vec;
+  artifact.artifactRoot = options.artifactRoot;
+  artifact.deviceBinaryPath = "/tmp/legacy_vec.bin";
+
+  TaskGraph graph;
+  RuntimeTask task;
+  task.taskId = manifestOr->tasks[0].taskId;
+  task.artifact = artifact;
+  task.invocation = manifestOr->tasks[0].invocation;
+  auto addErr = graph.addTask(task);
+  EXPECT(!addErr, "compat validator manifest graph adds task");
+  if (addErr) {
+    llvm::consumeError(std::move(addErr));
+    return;
+  }
+
+  auto driver = std::make_shared<RecordingBackendDriver>();
+  RecordingBackendDriver *driverPtr = driver.get();
+  ExecutionSession session(ExecutionBackendKind::Simulation, driver);
+  auto traceOr = session.run(graph);
+  EXPECT((bool)traceOr, "compat validator session runs with tiling binding");
+  if (!traceOr) {
+    llvm::consumeError(traceOr.takeError());
+    return;
+  }
+
+  EXPECT(driverPtr->lastRequest.task.invocation.tiling.has_value(),
+         "compat validator session forwards tiling binding");
+  if (driverPtr->lastRequest.task.invocation.tiling) {
+    EXPECT(driverPtr->lastRequest.task.invocation.tiling->binaryPath ==
+               *legacyPathOr,
+           "compat validator session forwards materialized tiling path");
+  }
 }
 
 static void testCompatValidatorMaterializesTilingBindingForSession() {
@@ -2031,6 +2181,7 @@ int main() {
   testCompatSingleTaskRunManifestBuildsMetadataBackedTask();
   testCompatSingleTaskRunManifestRejectsInvalidCombination();
   testCompatValidatorRoutesThroughExecutionSession();
+  testValidatorPreparesTilingBinaryPaths();
   testCompatValidatorMaterializesTilingBindingForSession();
   testVecCompileCreatesOutputDir();
   testBackendSelection();
