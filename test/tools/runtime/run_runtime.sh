@@ -39,7 +39,7 @@ fi
 cmake -S . -B build -DLLVM_BUILD_DIR="$LLVM_BUILD"
 
 echo "--- Building focused runtime verification targets ---"
-cd build && cmake --build . --target AscendCRuntime runtime-session afir-opt afir-translate compiler validator -j2 && cd ..
+cd build && cmake --build . --target AscendCRuntime AFIRRuntimeCAPI runtime-session afir-opt afir-translate compiler validator -j2 && cd ..
 
 echo "--- Checking runtime-session CLI ---"
 test -x build/bin/runtime-session
@@ -50,6 +50,7 @@ INVALID_STDERR=""
 RUN_STDERR=""
 TEST_RUNTIME_BIN="$(mktemp /tmp/test_runtime.XXXXXX)"
 TEST_TASKGRAPH_RUNTIME_BIN="$(mktemp /tmp/test_taskgraph_runtime.XXXXXX)"
+TEST_CAPI_RUNTIME_BIN="$(mktemp /tmp/test_capi_runtime.XXXXXX)"
 RUNTIME_SESSION_ARTIFACT_ROOT="$(mktemp -d)"
 RUNTIME_SESSION_SECOND_ARTIFACT_ROOT="$(mktemp -d)"
 RUNTIME_SESSION_RUN_MANIFEST="$(mktemp /tmp/runtime_session_run_manifest.XXXXXX.json)"
@@ -66,7 +67,8 @@ cleanup() {
   rm -rf "$RUNTIME_SESSION_ARTIFACT_ROOT"
   rm -rf "$RUNTIME_SESSION_SECOND_ARTIFACT_ROOT"
   rm -f "$INVALID_STDERR" "$RUN_STDERR" "$TEST_RUNTIME_BIN" \
-        "$TEST_TASKGRAPH_RUNTIME_BIN" "$RUNTIME_SESSION_RUN_MANIFEST" \
+        "$TEST_TASKGRAPH_RUNTIME_BIN" "$TEST_CAPI_RUNTIME_BIN" \
+        "$RUNTIME_SESSION_RUN_MANIFEST" \
         "$RUNTIME_SESSION_ACTUAL_OUTPUT" "$RUNTIME_SESSION_DAG_MANIFEST" \
         "$RUNTIME_SESSION_DAG_OUTPUT" "$RUNTIME_SESSION_NPU_MANIFEST" \
         "$RUNTIME_SESSION_NPU_OUTPUT" "$RUNTIME_SESSION_NPU_SUCCESS_STDOUT" \
@@ -262,10 +264,22 @@ g++ -std=c++17 \
     $("$LLVM_BUILD/bin/llvm-config" --ldflags --libs support --system-libs) \
     -ldl \
     -o "$TEST_TASKGRAPH_RUNTIME_BIN"
+g++ -std=c++17 \
+    -I include/ \
+    -I "$LLVM_BUILD/include" \
+    -I "$LLVM_SOURCE_INCLUDE" \
+    test/tools/runtime/test_capi_runtime.cpp \
+    build/lib/libAFIRRuntimeCAPI.so \
+    $("$LLVM_BUILD/bin/llvm-config" --ldflags --libs support --system-libs) \
+    -ldl \
+    -o "$TEST_CAPI_RUNTIME_BIN"
 
 # Run
 echo "--- Running test_taskgraph_runtime ---"
 "$TEST_TASKGRAPH_RUNTIME_BIN"
+echo "--- Running test_capi_runtime ---"
+LD_LIBRARY_PATH="${PROJECT_ROOT}/build/lib:${ASCEND_LIB64}:${SOC_SIM_LIB}:${DAV_SIM_LIB}:${DEVICE_LIB}${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}" \
+  "$TEST_CAPI_RUNTIME_BIN"
 echo "--- Running test_runtime ---"
 if "$TEST_RUNTIME_BIN"; then
   echo "--- Running SimBackend smoke baseline ---"
