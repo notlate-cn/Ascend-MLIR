@@ -252,8 +252,19 @@ PY
 echo "=== [STAGE 11] runtime-session ==="
 [[ -f "${ARTIFACT_DIR}/out/tiling.bin" ]]
 
+CANN_ARCH="$(uname -m)"
+if [[ "${CANN_ARCH}" == "x86_64" ]]; then
+  CANN_ARCH="x86_64-linux"
+else
+  CANN_ARCH="aarch64-linux"
+fi
+ASCEND_LIB64="${ASCEND_HOME_PATH}/${CANN_ARCH}/lib64"
+SOC_SIM_LIB="${ASCEND_HOME_PATH}/${CANN_ARCH}/simulator/${SOC_VERSION}/lib"
+DAV_SIM_LIB="${ASCEND_HOME_PATH}/${CANN_ARCH}/simulator/${ASCEND_DAV_SIM_VERSION}/lib"
+DEVICE_LIB="${ASCEND_HOME_PATH}/${CANN_ARCH}/lib64/device/lib64"
+
 ASCEND_DAV_SIM_VERSION="${ASCEND_DAV_SIM_VERSION}" \
-LD_LIBRARY_PATH="${ARTIFACT_DIR}/out:${LD_LIBRARY_PATH:-}" \
+LD_LIBRARY_PATH="${ARTIFACT_DIR}/out:${ASCEND_LIB64}:${SOC_SIM_LIB}:${DAV_SIM_LIB}:${DEVICE_LIB}${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}" \
   "${BOOTSTRAP_BUILD_DIR}/bin/runtime-session" \
   --run-manifest "${RUN_MANIFEST_PATH}" \
   --run
