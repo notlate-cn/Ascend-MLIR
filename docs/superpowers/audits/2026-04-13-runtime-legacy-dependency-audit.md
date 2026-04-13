@@ -47,6 +47,7 @@ It covers direct includes, implementation dependencies, and test coverage that s
 | Consumer | File | Dependency Kind | Notes |
 |---|---|---|---|
 | Public shim | `include/Runtime/HostRunnerGen.h` | direct wrapper | Re-exports `Runtime/Legacy/HostRunnerGen.h`. |
+| Runtime build wiring | `lib/Runtime/CMakeLists.txt` | build-layer dependency | Still compiles `Legacy/HostRunnerGen.cpp` into the runtime library. |
 | Runtime unit test | `test/tools/runtime/test_runtime.cpp` | direct test consumer | Exercises generation, compiled runner behavior, and `--bin` enforcement. |
 | Runner generator test | `test/tools/runner/test_runner_gen.cpp` | direct test consumer | Generates runners for vec/cube/mix and checks emitted source behavior. |
 
@@ -63,8 +64,9 @@ It covers direct includes, implementation dependencies, and test coverage that s
 - `include/Runtime/Artifact/ArtifactCompiler.h`, `lib/Runtime/Artifact/ArtifactCompiler.cpp`, `tools/autotuner/autotuner_main.cpp`, and `lib/CAPI/Runtime/Runtime.cpp` all depend on `Legacy/Compiler` indirectly through `ArtifactCompiler`.
 - `lib/Runtime/Execution/SimBackend.cpp` and `lib/Runtime/Execution/NpuBackend.cpp` depend on `Legacy/Executor` directly for binary registration, launch, and magic selection.
 - `lib/Runtime/Execution/SimBackend.cpp` and `lib/Runtime/Execution/NpuBackend.cpp` depend on `Legacy/SimValidator` directly for output comparison after execution.
-- `test/tools/runtime/test_runtime.cpp` is the only runtime unit test file that still exercises `Legacy/Compiler`, `Legacy/Executor`, and `Legacy/HostRunnerGen` directly.
+- `test/tools/runtime/test_runtime.cpp` and `test/tools/runtime/test_taskgraph_runtime.cpp` still exercise `Legacy/Compiler` directly, while `test/tools/runtime/test_runtime.cpp` remains the runtime unit test file that directly exercises `Legacy/Executor` and `Legacy/HostRunnerGen`.
 - `test/tools/runner/test_runner_gen.cpp` is dedicated `Legacy/HostRunnerGen` coverage and does not touch the newer runtime session stack.
+- `lib/Runtime/CMakeLists.txt` still wires all five `Legacy/*` implementation units into the runtime library, including `Legacy/HostRunnerGen.cpp`.
 - `lib/CAPI/Runtime/Runtime.cpp` still routes compile-path compatibility through `Legacy/CompatRuntime` helpers before calling `ArtifactCompiler`.
 - `test/tools/runtime/test_taskgraph_runtime.cpp` is the main direct consumer of `Legacy/CompatRuntime` helpers and also checks that the compat layer maps into runtime-native request objects correctly.
 - `tools/autotuner/autotuner_main.cpp` no longer includes or directly orchestrates `Compiler`, `Executor`, `SimValidator`, or `HostRunnerGen`; its remaining `Legacy/Compiler` coupling is indirect through `ArtifactCompiler`.
@@ -85,7 +87,7 @@ It covers direct includes, implementation dependencies, and test coverage that s
 ### Bucket B: Candidate For Boundary Shrink
 
 - `Legacy/HostRunnerGen`
-  - Only referenced by `include/Runtime/HostRunnerGen.h`, `test/tools/runtime/test_runtime.cpp`, and `test/tools/runner/test_runner_gen.cpp`.
+  - Referenced by `include/Runtime/HostRunnerGen.h`, `lib/Runtime/CMakeLists.txt`, `test/tools/runtime/test_runtime.cpp`, and `test/tools/runner/test_runner_gen.cpp`.
   - No runtime-native execution path currently depends on it.
 - `Legacy/CompatRuntime`
   - Still used by `lib/CAPI/Runtime/Runtime.cpp` and `test/tools/runtime/test_taskgraph_runtime.cpp`.
@@ -101,4 +103,3 @@ It covers direct includes, implementation dependencies, and test coverage that s
 - Should `lib/CAPI/Runtime/Runtime.cpp` keep using `buildCompatCompileRequest()` and `buildCompatSingleTaskRunManifest()`, or should those compatibility helpers be replaced with direct runtime-native construction?
 - Do `test/tools/runtime/test_runtime.cpp` and `test/tools/runner/test_runner_gen.cpp` need to remain as explicit `Legacy/HostRunnerGen` coverage, or should they move to a runtime-native runner path first?
 - Is `include/Runtime/SimValidator.h` intended to remain a public shim after `Legacy/Executor` is no longer part of the validation API?
-
