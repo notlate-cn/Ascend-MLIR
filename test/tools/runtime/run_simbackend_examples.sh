@@ -115,7 +115,7 @@ run_runtime_session_manifest() {
   CURRENT_RETRIES=0
   LAST_PROFILE_PATH=""
   if "${RUNTIME_SESSION}" --run-manifest "${manifest}" --run >/tmp/runtime_simbackend_run.log 2>&1; then
-    LAST_PROFILE_PATH="$(sed -n 's/^session\\.profile\\[[0-9][0-9]*\\]=//p' /tmp/runtime_simbackend_run.log | head -n1)"
+    LAST_PROFILE_PATH="$(sed -n 's/^session\.profile\[[0-9][0-9]*\]=//p' /tmp/runtime_simbackend_run.log | head -n1)"
     return 0
   fi
   status=$?
@@ -126,7 +126,7 @@ run_runtime_session_manifest() {
   sleep 1
   CURRENT_RETRIES=1
   "${RUNTIME_SESSION}" --run-manifest "${manifest}" --run >/tmp/runtime_simbackend_run.log 2>&1
-  LAST_PROFILE_PATH="$(sed -n 's/^session\\.profile\\[[0-9][0-9]*\\]=//p' /tmp/runtime_simbackend_run.log | head -n1)"
+  LAST_PROFILE_PATH="$(sed -n 's/^session\.profile\[[0-9][0-9]*\]=//p' /tmp/runtime_simbackend_run.log | head -n1)"
 }
 
 record_summary() {
@@ -320,7 +320,7 @@ EOF
       "${RUNTIME_SESSION}" --run-manifest "${manifest}" --run \
       >/tmp/runtime_simbackend_run.log 2>&1
   fi
-  LAST_PROFILE_PATH="$(sed -n 's/^session\\.profile\\[[0-9][0-9]*\\]=//p' /tmp/runtime_simbackend_run.log | head -n1)"
+  LAST_PROFILE_PATH="$(sed -n 's/^session\.profile\[[0-9][0-9]*\]=//p' /tmp/runtime_simbackend_run.log | head -n1)"
   test -f "${actual_output}"
   compare_npy "${expected_path}" "${actual_output}" "${atol}" "${rtol}"
   record_summary \
