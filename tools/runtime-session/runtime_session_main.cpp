@@ -1,4 +1,4 @@
-#include "Runtime/Artifact/RuntimeSessionRequestBuilder.h"
+#include "Runtime/RuntimeSessionRequestBuilder.h"
 #include "Runtime/ExecutionBackend.h"
 #include "Runtime/ExecutionSession.h"
 #include "Runtime/ProfileUtils.h"
@@ -251,8 +251,15 @@ int main(int argc, char **argv) {
     backendKind = manifestGraphOr->first;
     graph = std::move(manifestGraphOr->second);
   } else {
+    const bool hasArtifactRoot = !ArtifactRoot.empty();
+    const bool hasKernelFile = !KernelFile.empty();
+    if (hasArtifactRoot == hasKernelFile) {
+      llvm::errs() << "Error: provide exactly one of --artifact-root or --kernel\n";
+      return 4;
+    }
+
     RuntimeSessionArtifactRequest request;
-    if (!ArtifactRoot.empty()) {
+    if (hasArtifactRoot) {
       request.artifactRoot = ArtifactRoot;
     } else {
       auto kernelKindOr = parseKernelKind(KernelKindName);
