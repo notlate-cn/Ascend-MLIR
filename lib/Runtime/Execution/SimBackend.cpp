@@ -496,13 +496,15 @@ SimBackend::run(const ExecutionRequest &request) {
   if (!resultOr)
     return resultOr.takeError();
 
-  const std::string &sessionId =
-      request.sessionId.empty() ? request.task.taskId : request.sessionId;
-  auto traceOr = normalizeSimulatorProfileTrace(sessionId,
-                                                request.task.taskId,
-                                                resultOr->producedFiles);
-  if (traceOr && !resultOr->profileTrace)
-    resultOr->profileTrace = std::move(*traceOr);
+  if (!resultOr->profileTrace) {
+    const std::string &sessionId =
+        request.sessionId.empty() ? request.task.taskId : request.sessionId;
+    auto traceOr = normalizeSimulatorProfileTrace(sessionId,
+                                                  request.task.taskId,
+                                                  resultOr->producedFiles);
+    if (traceOr)
+      resultOr->profileTrace = std::move(*traceOr);
+  }
 
   return resultOr;
 }

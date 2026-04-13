@@ -43,6 +43,39 @@ readProfileMetricsFromArtifact(llvm::StringRef path) {
   return {score, cycleCount};
 }
 
+static void writeJsonEscapedString(llvm::raw_ostream &os, llvm::StringRef value) {
+  os << '"';
+  for (char ch : value) {
+    switch (ch) {
+    case '\\':
+      os << "\\\\";
+      break;
+    case '"':
+      os << "\\\"";
+      break;
+    case '\b':
+      os << "\\b";
+      break;
+    case '\f':
+      os << "\\f";
+      break;
+    case '\n':
+      os << "\\n";
+      break;
+    case '\r':
+      os << "\\r";
+      break;
+    case '\t':
+      os << "\\t";
+      break;
+    default:
+      os << ch;
+      break;
+    }
+  }
+  os << '"';
+}
+
 std::optional<ProfileTrace>
 normalizeSimulatorProfileTrace(llvm::StringRef sessionId,
                                llvm::StringRef taskId,
@@ -224,31 +257,10 @@ retainProfileArtifactsForCli(const ProfileTrace &trace,
 
   int64_t totalScore = 0;
   int64_t totalCycleCount = 0;
-  llvm::json::Array tasksJson;
   for (const RetainedTaskSummary &task : taskSummaries) {
     totalScore += task.score;
     totalCycleCount += task.cycleCount;
-
-    llvm::json::Object taskObject;
-    taskObject["task_id"] = task.taskId;
-    taskObject["profile_path"] = task.profilePath;
-    taskObject["score"] = task.score;
-    taskObject["cycle_count"] = task.cycleCount;
-    tasksJson.emplace_back(std::move(taskObject));
   }
-
-  llvm::json::Object summaryObject;
-  summaryObject["schema_version"] = 1;
-  summaryObject["session_id"] = trace.sessionId;
-  summaryObject["backend"] =
-      backendName(summaryBackend.value_or(ExecutionBackendKind::Simulation)).str();
-  summaryObject["task_count"] = static_cast<int64_t>(taskSummaries.size());
-  summaryObject["successful_task_count"] =
-      static_cast<int64_t>(taskSummaries.size());
-  summaryObject["failed_task_count"] = 0;
-  summaryObject["tasks"] = std::move(tasksJson);
-  summaryObject["total_score"] = totalScore;
-  summaryObject["total_cycle_count"] = totalCycleCount;
 
   llvm::SmallString<256> summaryPath(
       retainedProfileSessionSummaryPath(destinationRoot, trace.sessionId));
@@ -260,9 +272,41 @@ retainProfileArtifactsForCli(const ProfileTrace &trace,
                                    "cannot write retained session summary: %s",
                                    summaryPath.str().str().c_str());
   }
-  summaryStream << llvm::formatv("{0:2}",
-                                 llvm::json::Value(std::move(summaryObject)))
-                << "\n";
+  summaryStream << "{\n";
+  summaryStream << "  \"schema_version\": 1,\n";
+  summaryStream << "  \"session_id\": ";
+  writeJsonEscapedString(summaryStream, trace.sessionId);
+  summaryStream << ",\n";
+  summaryStream << "  \"backend\": ";
+  writeJsonEscapedString(
+      summaryStream,
+      backendName(summaryBackend.value_or(ExecutionBackendKind::Simulation)));
+  summaryStream << ",\n";
+  summaryStream << "  \"task_count\": " << taskSummaries.size() << ",\n";
+  summaryStream << "  \"successful_task_count\": " << taskSummaries.size()
+                << ",\n";
+  summaryStream << "  \"failed_task_count\": 0,\n";
+  summaryStream << "  \"tasks\": [\n";
+  for (size_t index = 0; index < taskSummaries.size(); ++index) {
+    const RetainedTaskSummary &task = taskSummaries[index];
+    summaryStream << "    {\n";
+    summaryStream << "      \"task_id\": ";
+    writeJsonEscapedString(summaryStream, task.taskId);
+    summaryStream << ",\n";
+    summaryStream << "      \"profile_path\": ";
+    writeJsonEscapedString(summaryStream, task.profilePath);
+    summaryStream << ",\n";
+    summaryStream << "      \"score\": " << task.score << ",\n";
+    summaryStream << "      \"cycle_count\": " << task.cycleCount << "\n";
+    summaryStream << "    }";
+    if (index + 1 != taskSummaries.size())
+      summaryStream << ",";
+    summaryStream << "\n";
+  }
+  summaryStream << "  ],\n";
+  summaryStream << "  \"total_score\": " << totalScore << ",\n";
+  summaryStream << "  \"total_cycle_count\": " << totalCycleCount << "\n";
+  summaryStream << "}\n";
   summaryStream.flush();
   if (summaryStream.has_error()) {
     return llvm::createStringError(
