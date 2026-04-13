@@ -31,7 +31,8 @@ llvm::Expected<KernelKind> parseKernelKind(llvm::StringRef name) {
 
 llvm::Expected<KernelKind> parseManifestKernelKind(llvm::StringRef name) {
   if (name.empty())
-    return KernelKind::Mix;
+    return llvm::createStringError(llvm::inconvertibleErrorCode(),
+                                   "manifest is missing required field: kernel_kind");
   return parseKernelKind(name);
 }
 
@@ -161,12 +162,13 @@ loadArtifactFromRoot(llvm::StringRef artifactRootInput) {
   auto socVersionOr = requireManifestValue(manifest, "soc_version");
   if (!socVersionOr)
     return socVersionOr.takeError();
+  auto kernelKindOr = requireManifestValue(manifest, "kernel_kind");
+  if (!kernelKindOr)
+    return kernelKindOr.takeError();
 
   KernelArtifact artifact;
   artifact.kernelName = *kernelNameOr;
-  auto kernelKindIt = manifest.find("kernel_kind");
-  auto parsedKernelKindOr = parseManifestKernelKind(
-      kernelKindIt != manifest.end() ? kernelKindIt->second : "");
+  auto parsedKernelKindOr = parseManifestKernelKind(*kernelKindOr);
   if (!parsedKernelKindOr)
     return parsedKernelKindOr.takeError();
   artifact.kernelKind = *parsedKernelKindOr;
@@ -234,14 +236,19 @@ prepareRuntimeSessionArtifact(const RuntimeSessionArtifactRequest &request) {
   if (hasArtifactRoot)
     return loadArtifactFromRoot(request.artifactRoot);
 
-  auto kernelKindOr = parseKernelKind(request.kernelKind == KernelKind::Mix
-                                          ? "mix"
-                                          : request.kernelKind == KernelKind::Cube
-                                                ? "cube"
-                                                : "vec");
-  if (!kernelKindOr)
-    return kernelKindOr.takeError();
-  const KernelKind kernelKind = *kernelKindOr;
+  KernelKind kernelKind = KernelKind::Vec;
+  switch (request.kernelKind) {
+  case KernelKind::Vec:
+  case KernelKind::Cube:
+  case KernelKind::Mix:
+    kernelKind = request.kernelKind;
+    break;
+  default:
+    return llvm::createStringError(
+        llvm::inconvertibleErrorCode(),
+        "unsupported kernel kind: %d",
+        static_cast<int>(request.kernelKind));
+  }
 
   std::string effectiveKernelName = request.kernelName;
   if (effectiveKernelName.empty())
