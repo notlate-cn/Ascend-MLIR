@@ -572,15 +572,9 @@ static void testVecCubeArtifactBackendCompilesVecArtifact() {
   if (cleanup.path.empty())
     return;
 
-  const std::filesystem::path sourcePath = cleanup.path / "kernel.cpp";
-  {
-    std::ofstream os(sourcePath);
-    os << "int main() { return 0; }\n";
-  }
-
   ArtifactCompileRequest req;
-  req.kernelSource = sourcePath.string();
-  req.kernelName = "fake_vec";
+  req.kernelSource = "examples/relu-broadcast-transpose/step8_kernel.cpp";
+  req.kernelName = "relu_transpose_broadcast_add";
   req.kernelKind = KernelKind::Vec;
   req.outputDir = cleanup.path.string();
 
@@ -618,15 +612,9 @@ static void testVecCubeArtifactBackendCompilesCubeArtifact() {
   if (cleanup.path.empty())
     return;
 
-  const std::filesystem::path sourcePath = cleanup.path / "kernel.cpp";
-  {
-    std::ofstream os(sourcePath);
-    os << "int main() { return 0; }\n";
-  }
-
   ArtifactCompileRequest req;
-  req.kernelSource = sourcePath.string();
-  req.kernelName = "fake_cube";
+  req.kernelSource = "examples/matmul-add-leakyrelu/step8_kernel.cpp";
+  req.kernelName = "matmul_add_leakyrelu";
   req.kernelKind = KernelKind::Cube;
   req.outputDir = cleanup.path.string();
 
