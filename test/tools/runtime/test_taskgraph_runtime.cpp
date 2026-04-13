@@ -1529,6 +1529,47 @@ static void testSimulatorProfileNormalization() {
          "normalization returns no trace when no profile artifacts exist");
 }
 
+static void testSimulatorProfileNormalizationExtractsMetrics() {
+  const std::filesystem::path sourceRoot =
+      makeTempDir("profile-normalize-metrics-src");
+  std::filesystem::create_directories(sourceRoot / "opprof" / "simulator");
+
+  const std::filesystem::path tracePath =
+      sourceRoot / "opprof" / "simulator" / "trace.json";
+  {
+    std::ofstream os(tracePath);
+    os << R"({
+  "schema_version": 1,
+  "backend": "simulation",
+  "session_id": "sess-metrics",
+  "task_id": "task-metrics",
+  "score": 4242,
+  "cycle_count": 4242
+})";
+  }
+
+  std::vector<std::string> producedFiles = {tracePath.string()};
+  auto traceOr = normalizeSimulatorProfileTrace("sess-metrics", "task-metrics",
+                                                producedFiles);
+  EXPECT((bool)traceOr,
+         "profile normalization succeeds for schema v1 simulator trace");
+  if (traceOr) {
+    EXPECT(traceOr->events.size() == 1,
+           "profile normalization emits one event for schema v1 trace");
+    if (!traceOr->events.empty()) {
+      EXPECT(traceOr->events.front().score &&
+                 *traceOr->events.front().score == 4242,
+             "normalized simulator profile extracts score");
+      EXPECT(traceOr->events.front().cycleCount &&
+                 *traceOr->events.front().cycleCount == 4242,
+             "normalized simulator profile extracts cycle_count");
+    }
+  }
+
+  std::error_code ec;
+  std::filesystem::remove_all(sourceRoot, ec);
+}
+
 static void testAddProfileArtifactHelper() {
   ProfileTrace trace;
   trace.sessionId = "sess_helper";
@@ -2949,6 +2990,7 @@ int main() {
   testNpuBackendReachesRealDeviceModePath();
   testExecutionSessionSupportsNpuSuccessDriver();
   testSimulatorProfileNormalization();
+  testSimulatorProfileNormalizationExtractsMetrics();
   testAddProfileArtifactHelper();
   testRetainProfileArtifactsForCli();
   testRetainProfileArtifactsCreatesSessionSummary();
