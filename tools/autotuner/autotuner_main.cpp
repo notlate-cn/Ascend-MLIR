@@ -10,6 +10,9 @@
 #include "Runtime/RunManifest.h"
 #include "Runtime/SimValidator.h"
 #include "Runtime/TaskGraph.h"
+#include "llvm/ADT/SmallString.h"
+#include "llvm/ADT/StringRef.h"
+#include "llvm/Support/Error.h"
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/JSON.h"
@@ -39,11 +42,17 @@ static cl::opt<std::string> ExpectedFile("expected",
 static cl::opt<std::string> ShapeStr("shape",
     cl::desc("Comma-separated KEY=VALUE shape pairs: M=32,N=32"), cl::Required);
 static cl::opt<std::string> OutputFile("output",
-    cl::desc("Output tiling_func.cpp path"), cl::init("tiling_func.cpp"));
+    cl::desc("Best-config JSON output path"), cl::init("best_config.json"));
+static cl::opt<std::string> ArtifactRoot("artifact-root",
+    cl::desc("Existing artifact root to search without recompiling"), cl::init(""));
+static cl::opt<std::string> KernelKindName("kernel-kind",
+    cl::desc("Kernel kind when compiling: vec, cube, or mix"), cl::init("vec"));
 static cl::opt<std::string> SocVersion("soc",
     cl::desc("SoC version (overrides JSON; default: Ascend910B1)"), cl::init(""));
 static cl::opt<double> Atol("atol", cl::desc("Absolute tolerance"), cl::init(1.0));
 static cl::opt<double> Rtol("rtol", cl::desc("Relative tolerance"), cl::init(1e-2));
+static cl::opt<std::string> ProfileOutDir("profile-out",
+    cl::desc("Directory for retained profiling artifacts"), cl::init(""));
 static cl::opt<bool> PerfReport("perf-report",
     cl::desc("Run msprof op simulator on best config after search (generates performance report)"),
     cl::init(false));
@@ -131,6 +140,183 @@ static std::vector<uint8_t> packTiling(
     }
   }
   return bytes;
+}
+
+static llvm::StringRef kernelKindToString(KernelKind kind) {
+  switch (kind) {
+  case KernelKind::Vec:
+    return "vec";
+  case KernelKind::Cube:
+    return "cube";
+  case KernelKind::Mix:
+    return "mix";
+  }
+  return "vec";
+}
+
+static llvm::Expected<KernelKind> parseKernelKind(llvm::StringRef name) {
+  if (name == "vec")
+    return KernelKind::Vec;
+  if (name == "cube")
+    return KernelKind::Cube;
+  if (name == "mix")
+    return KernelKind::Mix;
+  return llvm::createStringError(llvm::inconvertibleErrorCode(),
+                                 "unsupported kernel kind: %s",
+                                 name.str().c_str());
+}
+
+static llvm::Expected<KernelKind> parseManifestKernelKind(llvm::StringRef name) {
+  if (name.empty())
+    return KernelKind::Mix;
+  return parseKernelKind(name);
+}
+
+static std::string defaultKernelName(llvm::StringRef kernelFile) {
+  if (kernelFile.empty())
+    return "";
+  return llvm::sys::path::stem(kernelFile).str();
+}
+
+static std::map<std::string, std::string> readManifest(const std::string &path) {
+  std::map<std::string, std::string> out;
+  auto bufferOr = llvm::MemoryBuffer::getFile(path, false);
+  if (!bufferOr)
+    return out;
+
+  llvm::SmallVector<llvm::StringRef> lines;
+  (*bufferOr)->getBuffer().split(lines, '\n');
+  for (llvm::StringRef line : lines) {
+    line = line.trim();
+    if (line.empty() || line.starts_with("#"))
+      continue;
+    size_t split = line.find('=');
+    if (split == llvm::StringRef::npos)
+      continue;
+    out.emplace(line.substr(0, split).str(), line.substr(split + 1).str());
+  }
+  return out;
+}
+
+static llvm::Expected<std::string> requireManifestValue(
+    const std::map<std::string, std::string> &manifest, llvm::StringRef key) {
+  auto it = manifest.find(key.str());
+  if (it == manifest.end() || it->second.empty()) {
+    return llvm::createStringError(llvm::inconvertibleErrorCode(),
+                                   "manifest is missing required field: %s",
+                                   key.str().c_str());
+  }
+  return it->second;
+}
+
+static std::string resolveArtifactPath(llvm::StringRef artifactRoot,
+                                       llvm::StringRef maybeRelativePath) {
+  if (maybeRelativePath.empty())
+    return "";
+  if (llvm::sys::path::is_absolute(maybeRelativePath))
+    return maybeRelativePath.str();
+
+  llvm::SmallString<256> resolved(artifactRoot);
+  llvm::sys::path::append(resolved, maybeRelativePath);
+  return resolved.str().str();
+}
+
+static llvm::Expected<std::string> locateManifestPath(llvm::StringRef artifactRoot) {
+  llvm::SmallVector<llvm::SmallString<256>, 3> candidates;
+  candidates.emplace_back(artifactRoot);
+  llvm::sys::path::append(candidates.back(), "out", "manifest.txt");
+  candidates.emplace_back(artifactRoot);
+  llvm::sys::path::append(candidates.back(), "mix-artifact.txt");
+  candidates.emplace_back(artifactRoot);
+  llvm::sys::path::append(candidates.back(), "out", "mix-artifact.txt");
+
+  for (const llvm::SmallString<256> &candidate : candidates) {
+    if (llvm::sys::fs::exists(candidate))
+      return candidate.str().str();
+  }
+
+  return llvm::createStringError(
+      llvm::inconvertibleErrorCode(),
+      "artifact root does not contain a supported manifest (expected out/manifest.txt, mix-artifact.txt, or out/mix-artifact.txt)");
+}
+
+static llvm::Expected<KernelArtifact> loadArtifactFromRoot(llvm::StringRef artifactRootInput) {
+  llvm::SmallString<256> artifactRoot(artifactRootInput);
+  llvm::sys::fs::make_absolute(artifactRoot);
+
+  llvm::sys::fs::file_status status;
+  if (auto ec = llvm::sys::fs::status(artifactRoot, status))
+    return llvm::createStringError(ec, "cannot access artifact root: %s",
+                                   artifactRoot.c_str());
+  if (!llvm::sys::fs::is_directory(status)) {
+    return llvm::createStringError(llvm::inconvertibleErrorCode(),
+                                   "artifact root is not a directory: %s",
+                                   artifactRoot.c_str());
+  }
+
+  auto manifestPathOr = locateManifestPath(artifactRoot.str());
+  if (!manifestPathOr)
+    return manifestPathOr.takeError();
+
+  const std::string manifestPath = *manifestPathOr;
+  const auto manifest = readManifest(manifestPath);
+  if (manifest.empty()) {
+    return llvm::createStringError(llvm::inconvertibleErrorCode(),
+                                   "manifest is empty or unreadable: %s",
+                                   manifestPath.c_str());
+  }
+
+  auto kernelNameOr = requireManifestValue(manifest, "kernel_name");
+  if (!kernelNameOr)
+    return kernelNameOr.takeError();
+  auto socVersionOr = requireManifestValue(manifest, "soc_version");
+  if (!socVersionOr)
+    return socVersionOr.takeError();
+
+  KernelArtifact artifact;
+  artifact.kernelName = *kernelNameOr;
+  auto kernelKindIt = manifest.find("kernel_kind");
+  auto parsedKernelKindOr = parseManifestKernelKind(
+      kernelKindIt != manifest.end() ? kernelKindIt->second : "");
+  if (!parsedKernelKindOr)
+    return parsedKernelKindOr.takeError();
+  artifact.kernelKind = *parsedKernelKindOr;
+  artifact.mixResourceType = MixResourceType::Unknown;
+  artifact.socVersion = *socVersionOr;
+  artifact.artifactRoot = artifactRoot.str().str();
+
+  auto manifestPathIt = manifest.find("manifest_path");
+  if (manifestPathIt != manifest.end() && !manifestPathIt->second.empty()) {
+    artifact.manifestPath =
+        resolveArtifactPath(artifact.artifactRoot, manifestPathIt->second);
+    if (!llvm::sys::fs::exists(artifact.manifestPath)) {
+      return llvm::createStringError(
+          llvm::inconvertibleErrorCode(),
+          "manifest_path from manifest does not exist: %s",
+          artifact.manifestPath.c_str());
+    }
+  } else {
+    artifact.manifestPath = manifestPath;
+  }
+
+  auto kernelSoIt = manifest.find("kernel_so_path");
+  if (kernelSoIt != manifest.end() && !kernelSoIt->second.empty())
+    artifact.packedSharedObjectPath =
+        resolveArtifactPath(artifact.artifactRoot, kernelSoIt->second);
+
+  auto deviceObjectIt = manifest.find("device_object_path");
+  auto deviceBinaryIt = manifest.find("device_binary_path");
+  if (deviceBinaryIt != manifest.end() && !deviceBinaryIt->second.empty()) {
+    artifact.deviceBinaryPath =
+        resolveArtifactPath(artifact.artifactRoot, deviceBinaryIt->second);
+  } else if (deviceObjectIt != manifest.end() && !deviceObjectIt->second.empty()) {
+    artifact.deviceBinaryPath =
+        resolveArtifactPath(artifact.artifactRoot, deviceObjectIt->second);
+  } else if (!artifact.packedSharedObjectPath.empty()) {
+    artifact.deviceBinaryPath = artifact.packedSharedObjectPath;
+  }
+
+  return artifact;
 }
 
 // ── Data structures ───────────────────────────────────────────────────────────
@@ -234,6 +420,102 @@ struct SearchResult {
   bool      passed       = false;
 };
 
+static llvm::Expected<KernelArtifact> prepareArtifact(const TilingSpace &space) {
+  if (!ArtifactRoot.empty())
+    return loadArtifactFromRoot(ArtifactRoot);
+
+  std::string kernelPath = !KernelFile.empty() ? KernelFile.getValue()
+                                               : space.kernel_file;
+  if (kernelPath.empty()) {
+    return llvm::createStringError(
+        llvm::inconvertibleErrorCode(),
+        "kernel file not specified (--kernel, --artifact-root, or kernel_file in JSON)");
+  }
+  if (KernelFile.empty() && !llvm::sys::path::is_absolute(kernelPath)) {
+    llvm::SmallString<256> base(SpaceFile.getValue());
+    llvm::sys::path::remove_filename(base);
+    llvm::sys::path::append(base, kernelPath);
+    kernelPath = base.str().str();
+  }
+
+  std::string kernelKindName =
+      KernelKindName.getNumOccurrences() > 0 ? KernelKindName.getValue()
+                                             : space.kernel_type;
+  if (kernelKindName.empty())
+    kernelKindName = "vec";
+  auto kernelKindOr = parseKernelKind(kernelKindName);
+  if (!kernelKindOr)
+    return kernelKindOr.takeError();
+
+  std::string soc = !SocVersion.empty() ? SocVersion.getValue() : space.soc;
+  if (soc.empty())
+    soc = "Ascend910B1";
+
+  std::string effectiveKernelName = space.kernel_name.empty()
+                                        ? defaultKernelName(kernelPath)
+                                        : space.kernel_name;
+  if (effectiveKernelName.empty()) {
+    return llvm::createStringError(llvm::inconvertibleErrorCode(),
+                                   "kernel name could not be derived");
+  }
+
+  llvm::SmallString<256> buildDir;
+  if (llvm::sys::fs::createUniqueDirectory("autotuner_build", buildDir)) {
+    return llvm::createStringError(llvm::inconvertibleErrorCode(),
+                                   "cannot create temp build dir");
+  }
+
+  ArtifactCompileRequest request;
+  request.kernelSource = kernelPath;
+  request.kernelName = effectiveKernelName;
+  request.kernelKind = *kernelKindOr;
+  request.socVersion = soc;
+  request.outputDir = buildDir.str().str();
+  ArtifactCompiler compiler;
+  return compiler.compile(request);
+}
+
+static llvm::Error writeBestConfigJson(const std::string &path,
+                                      const TilingSpace &space,
+                                      const KernelArtifact &artifact,
+                                      const SearchResult &best,
+                                      const std::map<std::string, int64_t> &shape) {
+  llvm::json::Object root;
+  root["kernel_name"] = artifact.kernelName;
+  root["kernel_type"] = std::string(kernelKindToString(artifact.kernelKind));
+  root["soc"] = artifact.socVersion;
+  root["artifact_root"] = artifact.artifactRoot;
+  root["manifest_path"] = artifact.manifestPath;
+  root["device_binary_path"] = artifact.deviceBinaryPath;
+  if (!ProfileOutDir.empty())
+    root["profile_out"] = ProfileOutDir.getValue();
+  root["block_dim"] = best.block_dim;
+  root["cycle_count"] = best.cycle_count;
+  root["score"] = best.cycle_count;
+  root["max_abs_diff"] = best.max_abs_diff;
+  root["passed"] = best.passed;
+  root["kernel_file"] = space.kernel_file;
+
+  llvm::json::Object config;
+  for (const auto &kv : best.config)
+    config[kv.first] = kv.second;
+  root["config"] = std::move(config);
+
+  llvm::json::Object shapeObj;
+  for (const auto &kv : shape)
+    shapeObj[kv.first] = kv.second;
+  root["shape"] = std::move(shapeObj);
+
+  std::error_code ec;
+  llvm::raw_fd_ostream os(path, ec);
+  if (ec)
+    return llvm::createStringError(ec, "cannot write best-config JSON");
+  llvm::json::OStream jos(os, /*IndentSize=*/2);
+  jos.value(llvm::json::Value(std::move(root)));
+  os << "\n";
+  return llvm::Error::success();
+}
+
 static void enumerateCombos(
     const std::vector<TilingParam>& search_vars,
     size_t idx,
@@ -252,8 +534,7 @@ static void enumerateCombos(
 static std::vector<SearchResult> runSearch(
     const TilingSpace& ts,
     const std::map<std::string, int64_t>& shape,
-    const std::string& kernel_path,
-    const std::string& soc,
+    const KernelArtifact& artifact,
     RunArgs& args_template,
     const std::vector<NDArray>& expected,
     double atol, double rtol,
@@ -269,25 +550,13 @@ static std::vector<SearchResult> runSearch(
 
   int total = static_cast<int>(combos.size());
   std::vector<SearchResult> results;
-  Compiler::Config cc;
-  cc.soc_version = soc;
-
-  // Compile kernel once — all configs share the same ELF binary (tiling is
-  // passed as kernel arguments, not compiled-in). Reusing the binary avoids
-  // re-registering the same binary in the simulator's internal registry, which
-  // causes rtFunctionRegister rc=507000 on the 2nd+ registration.
-  llvm::SmallString<256> build_dir;
-  if (llvm::sys::fs::createUniqueDirectory("autotuner_build", build_dir)) {
-    llvm::errs() << "Error: cannot create temp build dir\n";
+  std::string binary_path = !artifact.deviceBinaryPath.empty()
+                                ? artifact.deviceBinaryPath
+                                : artifact.packedSharedObjectPath;
+  if (binary_path.empty()) {
+    llvm::errs() << "Error: artifact does not contain a binary path\n";
     return results;
   }
-  Compiler compiler(cc);
-  auto bin_or = compiler.Compile(kernel_path, build_dir.str().str(), ts.kernel_name);
-  if (!bin_or) {
-    llvm::errs() << "Error: compile failed: " << llvm::toString(bin_or.takeError()) << "\n";
-    return results;
-  }
-  std::string binary_path = *bin_or;
   if (out_binary_path) *out_binary_path = binary_path;
 
   // Initialize executor once and reuse across all configs.
@@ -301,7 +570,10 @@ static std::vector<SearchResult> runSearch(
   // (tiling is passed as kernel args, not compiled-in). Registering once
   // avoids rc=507000 from the simulator when the same stub pointer is
   // re-registered under a new binary handle on subsequent RunFile() calls.
-  auto handle_or = executor.RegisterBinary(binary_path, ts.kernel_name);
+  auto handle_or = executor.RegisterBinary(binary_path,
+                                           artifact.kernelName.empty()
+                                               ? ts.kernel_name
+                                               : artifact.kernelName);
   if (!handle_or) {
     llvm::errs() << "Error: register binary failed: "
                  << llvm::toString(handle_or.takeError()) << "\n";
@@ -382,129 +654,6 @@ static std::vector<SearchResult> runSearch(
   return results;
 }
 
-// ── Code generator ────────────────────────────────────────────────────────────
-
-static void emitTilingFunc(
-    const std::string& out_path,
-    const TilingSpace& ts,
-    const SearchResult& best,
-    const std::map<std::string, int64_t>& /*shape*/) {
-
-  // Collect unique shape params (from fixed param shape_keys, in order)
-  std::vector<std::string> shape_params;
-  for (auto& p : ts.params)
-    if (p.fixed && !p.shape_key.empty()) {
-      bool found = false;
-      for (auto& s : shape_params) if (s == p.shape_key) { found = true; break; }
-      if (!found) shape_params.push_back(p.shape_key);
-    }
-
-  std::ofstream f(out_path);
-  if (!f) {
-    llvm::errs() << "Error: cannot write to " << out_path << "\n";
-    _Exit(1);
-  }
-
-  f << "// Auto-generated by autotuner\n";
-  f << "// kernel: " << ts.kernel_name << "  soc: " << ts.soc << "\n";
-  f << "// best config:";
-  for (auto& kv : best.config)
-    if (kv.first.compare(0, 4, "dim_") != 0) f << "  " << kv.first << "=" << kv.second;
-  f << "\n";
-  f << "// cycle_count=" << best.cycle_count
-    << "  max_abs_diff=" << best.max_abs_diff << "\n\n";
-
-  f << "#include <cstdint>\n\n";
-
-  // TilingData struct
-  f << "struct TilingData {\n";
-  for (auto& p : ts.params)
-    f << "  " << (p.type == "int32" ? "int32_t" : "int64_t")
-      << " " << p.name << ";\n";
-  f << "};\n\n";
-
-  // Shape param signature
-  std::string shape_sig;
-  for (size_t i = 0; i < shape_params.size(); ++i) {
-    if (i) shape_sig += ", ";
-    shape_sig += "int64_t " + shape_params[i];
-  }
-
-  // get_tiling()
-  f << "void get_tiling(" << shape_sig << ", TilingData* out) {\n";
-  for (auto& kv : best.config) {
-    bool is_fixed = false;
-    std::string sk;
-    for (auto& p : ts.params)
-      if (p.name == kv.first && p.fixed) { is_fixed = true; sk = p.shape_key; break; }
-    if (is_fixed)
-      f << "  out->" << kv.first << " = " << sk << ";\n";
-    else
-      f << "  out->" << kv.first << " = " << kv.second << ";\n";
-  }
-  f << "}\n\n";
-
-  // get_block_dim()
-  // Substitute search-var constants into block_dim_expr, then rewrite
-  // "ceil(A/B)" -> "(A + B - 1) / B" for correct integer ceiling.
-  // Sort substitution names longest-first to avoid partial matches
-  // (e.g. "TB_M" must be substituted before "M").
-  f << "int get_block_dim(" << shape_sig << ") {\n";
-  if (!ts.block_dim_expr.empty()) {
-    std::string expr = ts.block_dim_expr;
-    expr.erase(std::remove(expr.begin(), expr.end(), ' '), expr.end());
-
-    std::vector<std::pair<std::string, int64_t>> subst_list;
-    for (auto& kv : best.config) {
-      bool is_fixed = false;
-      for (auto& p : ts.params) if (p.name == kv.first && p.fixed) { is_fixed = true; break; }
-      if (!is_fixed) subst_list.push_back({kv.first, kv.second});
-    }
-    std::sort(subst_list.begin(), subst_list.end(),
-              [](const std::pair<std::string,int64_t>& a,
-                 const std::pair<std::string,int64_t>& b){
-                return a.first.size() > b.first.size();
-              });
-
-    for (auto& sv : subst_list) {
-      const std::string& from = sv.first;
-      std::string to = std::to_string(sv.second);
-      size_t pos = 0;
-      while ((pos = expr.find(from, pos)) != std::string::npos) {
-        bool pre_ok  = (pos == 0) || (!std::isalnum((unsigned char)expr[pos-1]) && expr[pos-1] != '_');
-        bool post_ok = (pos + from.size() >= expr.size()) ||
-                       (!std::isalnum((unsigned char)expr[pos+from.size()]) && expr[pos+from.size()] != '_');
-        if (pre_ok && post_ok) {
-          expr.replace(pos, from.size(), to);
-          pos += to.size();
-        } else {
-          pos += from.size();
-        }
-      }
-    }
-
-    // Rewrite "ceil(A/B)" -> "(A + B - 1) / B"
-    std::string emit_expr = expr;
-    if (expr.size() > 5 && expr.substr(0, 5) == "ceil(" && expr.back() == ')') {
-      std::string inner = expr.substr(5, expr.size() - 6);
-      auto slash = inner.find('/');
-      if (slash != std::string::npos) {
-        std::string lhs = inner.substr(0, slash);
-        std::string rhs = inner.substr(slash + 1);
-        emit_expr = "(" + lhs + " + " + rhs + " - 1) / " + rhs;
-      }
-    }
-
-    f << "  // block_dim_expr: " << ts.block_dim_expr << "\n";
-    f << "  return static_cast<int>(" << emit_expr << ");\n";
-  } else {
-    f << "  return " << best.block_dim << ";\n";
-  }
-  f << "}\n";
-
-  llvm::outs() << "Emitted: " << out_path << "\n";
-}
-
 // ── Main ──────────────────────────────────────────────────────────────────────
 
 int main(int argc, char** argv) {
@@ -519,29 +668,15 @@ int main(int argc, char** argv) {
   }
   TilingSpace ts = std::move(*ts_or);
 
-  // --kernel overrides JSON kernel_file; relative paths are resolved differently:
-  //   kernel_file (from JSON) → relative to the JSON file's directory
-  //   --kernel (from CLI)     → relative to cwd (standard shell convention)
-  bool kernel_from_cli = !KernelFile.empty();
-  std::string kernel_path = kernel_from_cli ? KernelFile.getValue() : ts.kernel_file;
-  if (kernel_path.empty()) {
-    llvm::errs() << "Error: kernel file not specified (--kernel or kernel_file in JSON)\n";
+  auto artifactOr = prepareArtifact(ts);
+  if (!artifactOr) {
+    llvm::errs() << "Error: " << llvm::toString(artifactOr.takeError()) << "\n";
     _Exit(1);
   }
-  if (!llvm::sys::path::is_absolute(kernel_path)) {
-    if (!kernel_from_cli) {
-      // kernel_file in JSON: resolve relative to the JSON file's directory
-      llvm::SmallString<256> base(SpaceFile.getValue());
-      llvm::sys::path::remove_filename(base);
-      llvm::sys::path::append(base, kernel_path);
-      kernel_path = base.str().str();
-    }
-    // else: --kernel is relative to cwd — leave as-is (Compiler resolves via cwd)
-  }
-
-  std::string soc = SocVersion.empty() ? ts.soc : SocVersion.getValue();
-  if (soc.empty()) soc = "Ascend910B1";
-  ts.soc = soc;
+  KernelArtifact artifact = std::move(*artifactOr);
+  ts.kernel_name = artifact.kernelName.empty() ? ts.kernel_name : artifact.kernelName;
+  ts.kernel_type = std::string(kernelKindToString(artifact.kernelKind));
+  ts.soc = artifact.socVersion;
 
   auto shape = parseKV(ShapeStr);
 
@@ -578,9 +713,9 @@ int main(int argc, char** argv) {
   args_tmpl.inputs  = std::move(inputs);
   args_tmpl.outputs.push_back(std::move(out_buf));
 
-  llvm::outs() << "Searching " << ts.kernel_name << " on " << soc << "\n";
+  llvm::outs() << "Searching " << ts.kernel_name << " on " << ts.soc << "\n";
   std::string best_binary_path;
-  auto results = runSearch(ts, shape, kernel_path, soc,
+  auto results = runSearch(ts, shape, artifact,
                             args_tmpl, expected_arrs, Atol, Rtol,
                             &best_binary_path);
 
@@ -612,7 +747,10 @@ int main(int argc, char** argv) {
     if (kv.first.compare(0, 4, "dim_") != 0)
       llvm::outs() << "  " << kv.first << "=" << kv.second << "\n";
 
-  emitTilingFunc(OutputFile, ts, best, shape);
+  if (auto err = writeBestConfigJson(OutputFile, ts, artifact, best, shape)) {
+    llvm::errs() << "Error: " << llvm::toString(std::move(err)) << "\n";
+    _Exit(1);
+  }
 
   // ── Optional: perf report via msprof op simulator ───────────────────────────
   if (PerfReport) {
@@ -620,7 +758,7 @@ int main(int argc, char** argv) {
     HostRunnerGen::Config hcfg;
     hcfg.kernel_name  = ts.kernel_name;
     hcfg.kernel_type  = ts.kernel_type;
-    hcfg.soc_version  = soc;
+    hcfg.soc_version  = ts.soc;
     hcfg.num_inputs   = static_cast<int>(splitComma(InputFiles).size());
     hcfg.num_outputs  = 1;
     for (auto& p : ts.params)
@@ -686,7 +824,7 @@ int main(int argc, char** argv) {
 
       std::string cmd = "cd \"" + out_abs.str().str() + "\" && "
           + "\"" + msprof + "\""
-          + " op simulator --soc-version=" + soc
+          + " op simulator --soc-version=" + ts.soc
           + " \"" + runner_abs.str().str() + "\""
           + " --bin \"" + bin_abs.str().str() + "\""
           + " --tiling-params \"" + tiling_params_str + "\""
