@@ -28,4 +28,10 @@ llvm::Expected<ProfileTrace>
 retainProfileArtifactsForCli(const ProfileTrace &trace,
                              llvm::StringRef destinationRoot);
 
+llvm::Error pruneRetainedProfileDirectories(llvm::StringRef root,
+                                            size_t keepCount);
+
+llvm::Error pruneRetainedProfileDirectoriesForTest(llvm::StringRef root,
+                                                   size_t keepCount);
+
 } // namespace mlir::runtime
