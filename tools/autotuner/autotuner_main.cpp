@@ -24,6 +24,7 @@
 #include <fstream>
 #include <filesystem>
 #include <map>
+#include <limits>
 #include <sstream>
 #include <unistd.h>
 
@@ -450,6 +451,79 @@ buildTilingBinding(const std::vector<uint8_t> &tilingBytes,
   return binding;
 }
 
+static bool isRuntimeScoreKey(llvm::StringRef key) {
+  return key == "cycle_count" || key == "kernel_cycle_count" ||
+         key == "total_cycles" || key == "cycles" || key == "cycle" ||
+         key == "total_ticks" || key == "kernel_total_ticks" ||
+         key == "kernal_total_ticks" || key == "ticks" ||
+         key == "duration" || key == "dur" ||
+         key == "task_duration" || key == "task_duration_us" ||
+         key == "task_duration_usec" || key == "elapsed_cycles" ||
+         key == "elapsed";
+}
+
+static void collectRuntimeScoreCandidates(const llvm::json::Value &value,
+                                         int64_t &bestScore,
+                                         bool &foundAny) {
+  if (const auto *object = value.getAsObject()) {
+    for (const auto &entry : *object) {
+      if (!isRuntimeScoreKey(entry.first))
+        continue;
+      if (auto number = entry.second.getAsInteger()) {
+        if (*number < 0)
+          continue;
+        foundAny = true;
+        bestScore = std::max(bestScore, *number);
+      }
+    }
+    for (const auto &entry : *object)
+      collectRuntimeScoreCandidates(entry.second, bestScore, foundAny);
+    return;
+  }
+
+  if (const auto *array = value.getAsArray()) {
+    for (const auto &element : *array)
+      collectRuntimeScoreCandidates(element, bestScore, foundAny);
+  }
+}
+
+static llvm::Expected<int64_t>
+extractRuntimeScore(const ProfileTrace &trace) {
+  const std::vector<std::string> artifactPaths = trace.profileArtifactPaths();
+  if (artifactPaths.empty()) {
+    return llvm::createStringError(
+        llvm::inconvertibleErrorCode(),
+        "runtime profiling did not produce a profile artifact");
+  }
+
+  const std::string profilePath = resolveAbsolutePath(artifactPaths.front());
+  auto bufferOr = llvm::MemoryBuffer::getFile(profilePath, false);
+  if (!bufferOr) {
+    return llvm::createStringError(
+        llvm::inconvertibleErrorCode(),
+        "cannot read runtime profile artifact: %s", profilePath.c_str());
+  }
+
+  auto parsedOr = llvm::json::parse((*bufferOr)->getBuffer());
+  if (!parsedOr) {
+    return llvm::createStringError(
+        llvm::inconvertibleErrorCode(),
+        "failed to parse runtime profile JSON: %s", profilePath.c_str());
+  }
+
+  int64_t bestScore = std::numeric_limits<int64_t>::min();
+  bool foundAny = false;
+  collectRuntimeScoreCandidates(*parsedOr, bestScore, foundAny);
+  if (!foundAny) {
+    return llvm::createStringError(
+        llvm::inconvertibleErrorCode(),
+        "runtime profile JSON does not contain a score-like integer field: %s",
+        profilePath.c_str());
+  }
+
+  return bestScore;
+}
+
 static llvm::Expected<TaskGraph>
 buildCandidateGraph(const KernelArtifact &artifact,
                     const SearchInputs &inputs,
@@ -806,8 +880,18 @@ static std::vector<SearchResult> runSearch(
       continue;
     }
 
+    auto scoreOr = extractRuntimeScore(*traceOr);
+    if (!scoreOr) {
+      llvm::outs() << " FAIL  "
+                   << llvm::toString(scoreOr.takeError()) << "\n";
+      llvm::outs().flush();
+      results.push_back(std::move(sr));
+      continue;
+    }
+
+    sr.cycle_count = *scoreOr;
     sr.passed = true;
-    llvm::outs() << " PASS\n";
+    llvm::outs() << " PASS score=" << sr.cycle_count << "\n";
     llvm::outs().flush();
     results.push_back(sr);
   }
