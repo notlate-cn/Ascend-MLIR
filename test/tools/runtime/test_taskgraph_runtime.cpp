@@ -1620,82 +1620,88 @@ prepareProfileSummaryRetentionFixture(ProfileTrace &trace,
   return destRoot / trace.sessionId;
 }
 
+struct ProfileSummaryRetentionFixture {
+  std::filesystem::path sourceRoot;
+  std::filesystem::path destRoot;
+  std::filesystem::path retainedSessionDir;
+  std::filesystem::path summaryPath;
+  std::filesystem::path mainPath;
+  std::filesystem::path consumerPath;
+};
+
+static ProfileSummaryRetentionFixture makeProfileSummaryRetentionFixture(
+    ProfileTrace &trace, llvm::StringRef stem) {
+  ProfileSummaryRetentionFixture fixture;
+  fixture.sourceRoot = makeTempDir((stem + "-src").str());
+  fixture.destRoot = makeTempDir((stem + "-dst").str());
+  fixture.retainedSessionDir =
+      prepareProfileSummaryRetentionFixture(trace, fixture.sourceRoot,
+                                            fixture.destRoot);
+  fixture.summaryPath = fixture.retainedSessionDir / "session_summary.json";
+  fixture.mainPath = fixture.retainedSessionDir / "tasks" / "main.json";
+  fixture.consumerPath = fixture.retainedSessionDir / "tasks" / "consumer.json";
+  return fixture;
+}
+
+static void cleanupProfileSummaryRetentionFixture(
+    const ProfileSummaryRetentionFixture &fixture) {
+  std::error_code ec;
+  std::filesystem::remove_all(fixture.sourceRoot, ec);
+  std::filesystem::remove_all(fixture.destRoot, ec);
+}
+
 static void testRetainProfileArtifactsCreatesSessionSummary() {
-  const std::filesystem::path sourceRoot =
-      makeTempDir("profile-retain-summary-src");
-  const std::filesystem::path destRoot =
-      makeTempDir("profile-retain-summary-dst");
-
   ProfileTrace trace;
-  const std::filesystem::path retainedSessionDir =
-      prepareProfileSummaryRetentionFixture(trace, sourceRoot, destRoot);
+  const ProfileSummaryRetentionFixture fixture =
+      makeProfileSummaryRetentionFixture(trace, "profile-retain-summary");
 
-  auto retainedOr = retainProfileArtifactsForCli(trace, destRoot.string());
+  auto retainedOr = retainProfileArtifactsForCli(trace, fixture.destRoot.string());
   EXPECT((bool)retainedOr,
          "retainProfileArtifactsForCli retains summary session artifacts");
   if (retainedOr) {
-    const std::filesystem::path summaryPath =
-        retainedSessionDir / "session_summary.json";
-    const std::filesystem::path retainedMainPath =
-        retainedSessionDir / "tasks" / "main.json";
-    const std::filesystem::path retainedConsumerPath =
-        retainedSessionDir / "tasks" / "consumer.json";
     const std::vector<std::string> artifacts =
         retainedOr->profileArtifactPaths();
 
-    EXPECT(std::filesystem::exists(summaryPath),
+    EXPECT(std::filesystem::exists(fixture.summaryPath),
            "retained profiles include session_summary.json");
-    EXPECT(std::filesystem::exists(retainedMainPath),
+    EXPECT(std::filesystem::exists(fixture.mainPath),
            "retained profiles include tasks/main.json");
-    EXPECT(std::filesystem::exists(retainedConsumerPath),
+    EXPECT(std::filesystem::exists(fixture.consumerPath),
            "retained profiles include tasks/consumer.json");
     EXPECT(artifacts.size() == 2,
            "retained trace keeps both profile artifact paths");
     if (artifacts.size() == 2) {
-      EXPECT(artifacts[0] == retainedMainPath.string(),
+      EXPECT(artifacts[0] == fixture.mainPath.string(),
              "retained trace points first artifact at tasks/main.json");
-      EXPECT(artifacts[1] == retainedConsumerPath.string(),
+      EXPECT(artifacts[1] == fixture.consumerPath.string(),
              "retained trace points second artifact at tasks/consumer.json");
     }
   }
 
-  std::error_code ec;
-  std::filesystem::remove_all(sourceRoot, ec);
-  std::filesystem::remove_all(destRoot, ec);
+  cleanupProfileSummaryRetentionFixture(fixture);
 }
 
 static void testRetainedSessionSummaryContents() {
-  const std::filesystem::path sourceRoot =
-      makeTempDir("profile-retain-summary-json-src");
-  const std::filesystem::path destRoot =
-      makeTempDir("profile-retain-summary-json-dst");
-
   ProfileTrace trace;
-  const std::filesystem::path retainedSessionDir =
-      prepareProfileSummaryRetentionFixture(trace, sourceRoot, destRoot);
+  const ProfileSummaryRetentionFixture fixture =
+      makeProfileSummaryRetentionFixture(trace, "profile-retain-summary-json");
 
-  auto retainedOr = retainProfileArtifactsForCli(trace, destRoot.string());
+  auto retainedOr = retainProfileArtifactsForCli(trace, fixture.destRoot.string());
   EXPECT((bool)retainedOr,
          "retainProfileArtifactsForCli retains summary json artifacts");
   if (retainedOr) {
-    const std::filesystem::path summaryPath =
-        retainedSessionDir / "session_summary.json";
-    EXPECT(std::filesystem::exists(summaryPath),
+    EXPECT(std::filesystem::exists(fixture.summaryPath),
            "retained session summary json exists");
-    if (!std::filesystem::exists(summaryPath)) {
-      std::error_code ec;
-      std::filesystem::remove_all(sourceRoot, ec);
-      std::filesystem::remove_all(destRoot, ec);
+    if (!std::filesystem::exists(fixture.summaryPath)) {
+      cleanupProfileSummaryRetentionFixture(fixture);
       return;
     }
 
-    const std::string summaryText = readTextFile(summaryPath.string());
+    const std::string summaryText = readTextFile(fixture.summaryPath.string());
     auto jsonOr = llvm::json::parse(summaryText);
     EXPECT((bool)jsonOr, "retained session summary parses as json");
     if (!jsonOr) {
-      std::error_code ec;
-      std::filesystem::remove_all(sourceRoot, ec);
-      std::filesystem::remove_all(destRoot, ec);
+      cleanupProfileSummaryRetentionFixture(fixture);
       llvm::consumeError(jsonOr.takeError());
       return;
     }
@@ -1705,15 +1711,24 @@ static void testRetainedSessionSummaryContents() {
     if (object) {
       auto schemaVersion = object->getInteger("schema_version");
       auto sessionId = object->getString("session_id");
+      auto backend = object->getString("backend");
       auto taskCount = object->getInteger("task_count");
+      auto successfulTaskCount = object->getInteger("successful_task_count");
+      auto failedTaskCount = object->getInteger("failed_task_count");
       auto totalScore = object->getInteger("total_score");
       auto totalCycleCount = object->getInteger("total_cycle_count");
       EXPECT(schemaVersion && *schemaVersion == 1,
              "retained session summary has schema_version=1");
       EXPECT(sessionId && *sessionId == "runtime-session--summary",
              "retained session summary preserves session_id");
+      EXPECT(backend && *backend == "simulation",
+             "retained session summary preserves backend");
       EXPECT(taskCount && *taskCount == 2,
              "retained session summary counts two tasks");
+      EXPECT(successfulTaskCount && *successfulTaskCount == 2,
+             "retained session summary counts successful tasks");
+      EXPECT(failedTaskCount && *failedTaskCount == 0,
+             "retained session summary counts failed tasks");
       EXPECT(totalScore && *totalScore == 30,
              "retained session summary totals score");
       EXPECT(totalCycleCount && *totalCycleCount == 30,
@@ -1724,19 +1739,20 @@ static void testRetainedSessionSummaryContents() {
              "retained session summary emits two task entries");
       if (tasks && tasks->size() == 2) {
         const auto *task0 = (*tasks)[0].getAsObject();
-        auto profilePath = task0 ? task0->getString("profile_path")
-                                 : std::optional<llvm::StringRef>();
-        EXPECT(profilePath &&
-                   *profilePath ==
-                       (retainedSessionDir / "tasks" / "main.json").string(),
+        auto profilePath0 = task0 ? task0->getString("profile_path")
+                                  : std::optional<llvm::StringRef>();
+        EXPECT(profilePath0 && *profilePath0 == fixture.mainPath.string(),
                "retained session summary task0 points to tasks/main.json");
+        const auto *task1 = (*tasks)[1].getAsObject();
+        auto profilePath1 = task1 ? task1->getString("profile_path")
+                                  : std::optional<llvm::StringRef>();
+        EXPECT(profilePath1 && *profilePath1 == fixture.consumerPath.string(),
+               "retained session summary task1 points to tasks/consumer.json");
       }
     }
   }
 
-  std::error_code ec;
-  std::filesystem::remove_all(sourceRoot, ec);
-  std::filesystem::remove_all(destRoot, ec);
+  cleanupProfileSummaryRetentionFixture(fixture);
 }
 
 static void testRetainProfileArtifactsPrunesOldSessions() {
