@@ -10,15 +10,29 @@
 #include "llvm/ADT/SmallString.h"
 #include "llvm/Support/Error.h"
 #include "llvm/Support/FileSystem.h"
+#include "llvm/Support/FormatVariadic.h"
 
 #include <cstring>
 #include <cstdlib>
 #include <optional>
+#include <type_traits>
 #include <utility>
 
 namespace mlir::runtime {
 
 namespace {
+
+template <typename ErrorT>
+llvm::Error stageError(llvm::StringRef stage, ErrorT &&errorLike) {
+  std::string detail;
+  if constexpr (std::is_same_v<std::decay_t<ErrorT>, llvm::Error>) {
+    detail = llvm::toString(std::forward<ErrorT>(errorLike));
+  } else {
+    detail = std::forward<ErrorT>(errorLike);
+  }
+  return llvm::createStringError(llvm::inconvertibleErrorCode(), "[sim:%s] %s",
+                                 stage.str().c_str(), detail.c_str());
+}
 
 class WorkingDirectoryGuard {
 public:
@@ -205,33 +219,31 @@ llvm::Expected<ExecutionResult>
 runWithExecutor(const ExecutionRequest &request) {
   auto cwdGuardOr = WorkingDirectoryGuard::enter(request.workingDirectory);
   if (!cwdGuardOr)
-    return cwdGuardOr.takeError();
+    return stageError("working_directory", cwdGuardOr.takeError());
 
   if (request.task.artifact.kernelKind == KernelKind::Mix) {
     if (request.task.artifact.packedSharedObjectPath.empty()) {
-      return llvm::createStringError(
-          llvm::inconvertibleErrorCode(),
-          "mix artifact is missing packed shared object path");
+      return stageError("artifact",
+                        "mix artifact is missing packed shared object path");
     }
     if (auto err = configurePackedMixEnvironment(request.task.artifact))
-      return std::move(err);
+      return stageError("artifact", std::move(err));
   } else if (request.task.artifact.deviceBinaryPath.empty()) {
-    return llvm::createStringError(llvm::inconvertibleErrorCode(),
-                                   "artifact is missing device binary path");
+    return stageError("artifact", "artifact is missing device binary path");
   }
 
   auto argsOr = buildRunArgs(request.task.invocation);
   if (!argsOr)
-    return argsOr.takeError();
+    return stageError("bindings", argsOr.takeError());
   RunArgs args = std::move(*argsOr);
 
   auto expectedOutputsOr = loadExpectedOutputs(request.task.invocation);
   if (!expectedOutputsOr)
-    return expectedOutputsOr.takeError();
+    return stageError("bindings", expectedOutputsOr.takeError());
 
   Executor executor(BackendMode::Simulation);
   if (auto err = executor.Initialize())
-    return std::move(err);
+    return stageError("executor_initialize", std::move(err));
 
   if (request.task.artifact.kernelKind == KernelKind::Mix) {
     const std::string &sharedObjectPath =
@@ -239,7 +251,7 @@ runWithExecutor(const ExecutionRequest &request) {
     if (auto err = executor.RunPackedMixFile(sharedObjectPath,
                                              request.task.artifact.kernelName,
                                              args)) {
-      return std::move(err);
+      return stageError("kernel_launch", std::move(err));
     }
   } else {
     const std::string &binaryPath = request.task.artifact.deviceBinaryPath;
@@ -247,7 +259,7 @@ runWithExecutor(const ExecutionRequest &request) {
                                     args,
                                     magicForKernelKind(
                                         request.task.artifact.kernelKind))) {
-      return std::move(err);
+      return stageError("kernel_launch", std::move(err));
     }
   }
 
@@ -257,19 +269,20 @@ runWithExecutor(const ExecutionRequest &request) {
         args, *expectedOutputsOr, request.task.invocation.atol,
         request.task.invocation.rtol);
     if (!validation.error_msg.empty()) {
-      return llvm::createStringError(llvm::inconvertibleErrorCode(), "%s",
-                                     validation.error_msg.c_str());
+      return stageError("validate", validation.error_msg);
     }
     if (!validation.passed) {
-      return llvm::createStringError(
-          llvm::inconvertibleErrorCode(),
-          "simulation output mismatch: max_abs_diff=%f mean_abs_diff=%f",
-          validation.max_abs_diff, validation.mean_abs_diff);
+      return stageError(
+          "validate",
+          llvm::formatv("simulation output mismatch: max_abs_diff={0:F} "
+                        "mean_abs_diff={1:F}",
+                        validation.max_abs_diff, validation.mean_abs_diff)
+              .str());
     }
   }
 
   if (auto err = writeActualOutputs(request.task.invocation, args))
-    return std::move(err);
+    return stageError("write_outputs", std::move(err));
 
   ExecutionResult result;
   result.taskId = request.task.taskId;
