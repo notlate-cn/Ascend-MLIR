@@ -134,12 +134,33 @@ python3 "$SCRIPT_DIR/gen_data.py" \
 
 # ── RuntimeMix compile ────────────────────────────────────────────────────────
 echo "=== [STAGE 10] RuntimeMix compile ==="
-"${BOOTSTRAP_BUILD_DIR}/bin/mix-compiler" \
+MIX_COMPILE_LOG="${ARTIFACT_DIR}.mix-compiler.log"
+if ! "${BOOTSTRAP_BUILD_DIR}/bin/mix-compiler" \
   --kernel "$SCRIPT_DIR/step8_kernel.cpp" \
   --cann-mlir "$SCRIPT_DIR/step7_cann.mlir" \
   --npy-dir "${DATA_DIR}/npy" \
   --output "${ARTIFACT_DIR}" \
-  --soc "${SOC_VERSION}"
+  --soc "${SOC_VERSION}" >"${MIX_COMPILE_LOG}" 2>&1; then
+  echo "FAIL: RuntimeMix compile failed" >&2
+  cat "${MIX_COMPILE_LOG}" >&2 || true
+  echo "--- mix compile diagnostics ---" >&2
+  echo "artifact_dir=${ARTIFACT_DIR}" >&2
+  echo "bootstrap_build_dir=${BOOTSTRAP_BUILD_DIR}" >&2
+  echo "working_dir=$(pwd)" >&2
+  for dir in \
+    "${ARTIFACT_DIR}" \
+    "${ARTIFACT_DIR}/work" \
+    "${ARTIFACT_DIR}/work/preprocess_probe" \
+    "${ARTIFACT_DIR}/host_dir" \
+    "${ARTIFACT_DIR}/out"; do
+    echo "--- ls ${dir} ---" >&2
+    ls -la "${dir}" >&2 || true
+  done
+  echo "--- recent files under artifact_dir ---" >&2
+  find "${ARTIFACT_DIR}" -maxdepth 4 -type f 2>/dev/null | sort | tail -n 80 >&2 || true
+  exit 2
+fi
+cat "${MIX_COMPILE_LOG}"
 
 read -r RUN_MANIFEST_PATH ACTUAL_OUTPUT_PATH GOLDEN_OUTPUT_PATH < <(python3 - \
   "${DATA_DIR}" "${ARTIFACT_DIR}" "${ARTIFACT_DIR}/out/manifest.txt" <<'PY'
