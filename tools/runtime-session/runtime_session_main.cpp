@@ -25,6 +25,8 @@ namespace {
 
 using namespace mlir::runtime;
 
+static constexpr size_t RetainedProfileSessionLimit = 20;
+
 llvm::cl::OptionCategory RuntimeSessionCategory("runtime-session options");
 
 llvm::cl::opt<std::string> ArtifactRoot(
@@ -544,6 +546,10 @@ int main(int argc, char **argv) {
       return 2;
     }
     trace = std::move(*retainedTraceOr);
+    if (auto pruneErr = pruneRetainedProfileDirectories(
+            std::filesystem::path(*retainRootOr).parent_path().string(),
+            RetainedProfileSessionLimit))
+      llvm::consumeError(std::move(pruneErr));
   }
   printRunSuccessSummary(backendKind, validationRan, trace);
   if (backendKind == ExecutionBackendKind::Simulation) {
