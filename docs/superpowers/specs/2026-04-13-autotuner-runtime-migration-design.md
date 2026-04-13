@@ -114,9 +114,15 @@ Autotuner no longer shells out to a separate profiler command.
 
 Instead:
 
-- runtime execution produces `ProfileTrace`
+- runtime execution must first be extended to produce real simulator profile
+  artifacts when `enableProfiling=true`
+- `SimBackend` must surface those artifacts into `ProfileTrace`
 - `ProfileTrace` exposes profile artifact paths
 - autotuner parses the simulator profiling artifact and extracts a stable score
+
+This is a required dependency, not an optional optimization. The current runtime
+only carries the `enableProfiling` flag through the object model; it does not
+yet guarantee real simulator profile artifact production on the sim path.
 
 This round standardizes on a single scalar objective:
 
@@ -159,6 +165,8 @@ Primary files expected to change:
 
 - `tools/autotuner/autotuner_main.cpp`
 - `tools/autotuner/CMakeLists.txt`
+- `lib/Runtime/SimBackend.cpp`
+- `lib/Runtime/Executor.cpp` if simulator profiling needs explicit runtime hook-up
 - `include/Runtime/ArtifactCompiler.h` only if an existing helper is missing
 - `include/Runtime/ProfileTrace.h` only if scoring utilities need a minimal accessor
 - `lib/Runtime/ProfileUtils.*` if a reusable profile-score parser belongs there
@@ -179,6 +187,7 @@ Required verification after implementation:
 3. Confirm:
    - best-config JSON is written
    - runtime validation is enforced
+   - runtime sim execution actually emits a profile artifact
    - runtime profiling artifacts are consumed for scoring
 4. Re-run:
    - `bash test/tools/runtime/run_runtime.sh`
