@@ -14,15 +14,12 @@
 #include "llvm/Support/Path.h"
 #include "llvm/Support/raw_ostream.h"
 #include <algorithm>
-#include <cmath>
 #include <cstdlib>
 #include <cstring>
-#include <fstream>
 #include <filesystem>
 #include <map>
 #include <limits>
 #include <sstream>
-#include <unistd.h>
 
 using namespace mlir::runtime;
 using namespace llvm;
