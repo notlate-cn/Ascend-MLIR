@@ -132,36 +132,64 @@ llvm::json::Array toJsonShape(llvm::ArrayRef<int64_t> shape) {
   return jsonShape;
 }
 
-llvm::json::Array
-buildProfileTensorArray(llvm::ArrayRef<TensorBinding> bindings) {
+llvm::Expected<llvm::json::Array>
+buildProfileTensorArray(llvm::ArrayRef<TensorBinding> bindings,
+                        llvm::ArrayRef<NDArray> arrays) {
+  if (bindings.size() != arrays.size()) {
+    return llvm::createStringError(
+        llvm::inconvertibleErrorCode(),
+        "profile tensor metadata count does not match runtime array count");
+  }
   llvm::json::Array tensors;
-  for (const TensorBinding &binding : bindings) {
+  for (size_t index = 0; index < bindings.size(); ++index) {
+    const TensorBinding &binding = bindings[index];
+    const NDArray &array = arrays[index];
     llvm::json::Object tensor;
     tensor["name"] = binding.name;
-    tensor["shape"] =
-        toJsonShape(binding.shape ? llvm::ArrayRef<int64_t>(*binding.shape)
-                                  : llvm::ArrayRef<int64_t>());
-    tensor["dtype"] = dtypeToShortName(binding.dtype.value_or(DType::F16));
+    tensor["shape"] = toJsonShape(array.shape);
+    tensor["dtype"] = dtypeToShortName(array.dtype);
     tensors.push_back(std::move(tensor));
   }
   return tensors;
 }
 
-llvm::json::Object
-buildProfileTilingObject(const std::optional<TilingBinding> &tiling) {
+llvm::Expected<llvm::json::Object>
+buildProfileTilingObject(const ExecutionRequest &request,
+                         llvm::ArrayRef<uint8_t> tilingBytes) {
   llvm::json::Object tilingObject;
+  const std::optional<TilingBinding> &tiling = request.task.invocation.tiling;
   tilingObject["present"] = static_cast<bool>(tiling);
-  tilingObject["binary_path"] = tiling ? tiling->binaryPath : "";
 
-  int64_t tilingBytes = 0;
-  if (tiling && !tiling->binaryPath.empty()) {
-    std::error_code ec;
-    uint64_t fileSize = 0;
-    ec = llvm::sys::fs::file_size(tiling->binaryPath, fileSize);
-    if (!ec)
-      tilingBytes = static_cast<int64_t>(fileSize);
+  std::string tilingPath;
+  if (tiling) {
+    if (!tiling->binaryPath.empty()) {
+      tilingPath = tiling->binaryPath;
+    } else {
+      llvm::SmallString<256> materializedPath(request.workingDirectory);
+      llvm::sys::path::append(materializedPath, "tiling.bin");
+      std::error_code ec;
+      llvm::raw_fd_ostream os(materializedPath, ec, llvm::sys::fs::OF_None);
+      if (ec) {
+        return llvm::createStringError(
+            ec, "cannot write simulator tiling artifact: %s",
+            materializedPath.c_str());
+      }
+      if (!tilingBytes.empty()) {
+        os.write(reinterpret_cast<const char *>(tilingBytes.data()),
+                 tilingBytes.size());
+      }
+      os.flush();
+      if (os.has_error()) {
+        return llvm::createStringError(
+            llvm::inconvertibleErrorCode(),
+            "failed to flush simulator tiling artifact: %s",
+            materializedPath.c_str());
+      }
+      tilingPath = materializedPath.str().str();
+    }
   }
-  tilingObject["bytes"] = tilingBytes;
+  tilingObject["binary_path"] = tilingPath;
+  tilingObject["bytes"] = static_cast<int64_t>(tilingBytes.size());
   return tilingObject;
 }
 
@@ -242,6 +270,7 @@ llvm::Error writeActualOutputs(const ExecutionInvocation &invocation,
 
 llvm::Expected<std::string>
 materializeSimulatorProfileArtifact(const ExecutionRequest &request,
+                                    const RunArgs &args,
                                     int64_t cycleCount) {
   llvm::SmallString<256> profileDir(request.workingDirectory);
   llvm::sys::path::append(profileDir, "opprof", "simulator");
@@ -262,16 +291,26 @@ materializeSimulatorProfileArtifact(const ExecutionRequest &request,
   root["kernel_kind"] = std::string(kernelKindToString(request.task.artifact.kernelKind));
   root["soc_version"] = request.task.artifact.socVersion;
   root["block_dim"] = request.task.invocation.blockDim;
-  root["workspace_size"] =
-      static_cast<int64_t>(request.task.invocation.workspaceSize);
+  root["workspace_size"] = static_cast<int64_t>(args.workspace_size);
   root["cycle_count"] = cycleCount;
   root["elapsed_us"] = cycleCount;
   root["score"] = cycleCount;
   root["validation_passed"] = true;
   root["artifact_root"] = request.task.artifact.artifactRoot;
-  root["inputs"] = buildProfileTensorArray(request.task.invocation.inputs);
-  root["outputs"] = buildProfileTensorArray(request.task.invocation.outputs);
-  root["tiling"] = buildProfileTilingObject(request.task.invocation.tiling);
+  auto inputsOr = buildProfileTensorArray(request.task.invocation.inputs,
+                                          args.inputs);
+  if (!inputsOr)
+    return inputsOr.takeError();
+  root["inputs"] = std::move(*inputsOr);
+  auto outputsOr = buildProfileTensorArray(request.task.invocation.outputs,
+                                           args.outputs);
+  if (!outputsOr)
+    return outputsOr.takeError();
+  root["outputs"] = std::move(*outputsOr);
+  auto tilingObjectOr = buildProfileTilingObject(request, args.tiling);
+  if (!tilingObjectOr)
+    return tilingObjectOr.takeError();
+  root["tiling"] = std::move(*tilingObjectOr);
 
   std::error_code ec;
   llvm::raw_fd_ostream os(profilePath, ec);
@@ -417,7 +456,7 @@ runWithExecutor(const ExecutionRequest &request) {
     auto elapsed = std::chrono::duration_cast<std::chrono::microseconds>(
         std::chrono::steady_clock::now() - runStart);
     auto profilePathOr =
-        materializeSimulatorProfileArtifact(request, elapsed.count());
+        materializeSimulatorProfileArtifact(request, args, elapsed.count());
     if (!profilePathOr)
       return stageError("profiling", profilePathOr.takeError());
     result.producedFiles.push_back(*profilePathOr);
@@ -430,7 +469,10 @@ runWithExecutor(const ExecutionRequest &request) {
 llvm::Expected<std::string>
 materializeSimulatorProfileArtifactForTest(const ExecutionRequest &request,
                                            int64_t cycleCount) {
-  return materializeSimulatorProfileArtifact(request, cycleCount);
+  auto argsOr = buildRunArgs(request.task.invocation);
+  if (!argsOr)
+    return argsOr.takeError();
+  return materializeSimulatorProfileArtifact(request, *argsOr, cycleCount);
 }
 
 SimBackend::SimBackend(std::shared_ptr<ExecutionBackendDriver> driver)
