@@ -20,7 +20,14 @@ It covers direct includes, implementation dependencies, and test coverage that s
 |---|---|---|---|
 | Public shim | `include/Runtime/Compiler.h` | direct wrapper | Re-exports `Runtime/Legacy/Compiler.h`. |
 | Artifact compiler API | `include/Runtime/Artifact/ArtifactCompiler.h` | direct wrapper | `ArtifactCompiler` is still typed against legacy compiler config/ABI. |
+| Runtime build wiring | `lib/Runtime/CMakeLists.txt` | build-layer dependency | Still compiles `Legacy/Compiler.cpp` into the runtime library. |
 | Artifact compiler implementation | `lib/Runtime/Artifact/ArtifactCompiler.cpp` | implementation dependency | Constructs `CompilerConfig`, instantiates `Compiler`, and calls `Compile()`. |
+| Mix compiler frontend | `tools/mix-compiler/mix_compiler_main.cpp` | frontend dependency | Builds a mix `ArtifactCompileRequest` and drives `ArtifactCompiler` directly. |
+| Runtime-session builder API | `include/Runtime/Artifact/RuntimeSessionRequestBuilder.h` | adapter dependency | Runtime-session request construction is still built on `ArtifactCompiler`. |
+| Runtime-session builder implementation | `lib/Runtime/Artifact/RuntimeSessionRequestBuilder.cpp` | implementation dependency | Converts runtime-session requests into `ArtifactCompileRequest` and calls `ArtifactCompiler`. |
+| Runtime-session frontend | `tools/runtime-session/runtime_session_main.cpp` | CLI dependency | Uses the runtime-session request builder, which still routes compile requests through `ArtifactCompiler`. |
+| C API smoke test | `test/tools/runtime/test_capi_runtime.cpp` | direct test consumer | Compiles an example kernel through the C API, which reaches `ArtifactCompiler`. |
+| C API runtime shim | `lib/CAPI/Runtime/Runtime.cpp` | adapter dependency | Calls `ArtifactCompiler` after building a compat compile request. |
 | Runtime unit test | `test/tools/runtime/test_runtime.cpp` | direct test consumer | Exercises `Compiler::Compile()` for mix artifact generation. |
 | Runtime helper test | `test/tools/runtime/test_taskgraph_runtime.cpp` | direct test consumer | Covers `normalizeCompiledArtifact()` and `prepareCompileOutputDir()`, both declared in `Legacy/Compiler.h`. |
 
@@ -64,7 +71,7 @@ It covers direct includes, implementation dependencies, and test coverage that s
 - `include/Runtime/Artifact/ArtifactCompiler.h`, `lib/Runtime/Artifact/ArtifactCompiler.cpp`, `tools/autotuner/autotuner_main.cpp`, and `lib/CAPI/Runtime/Runtime.cpp` all depend on `Legacy/Compiler` indirectly through `ArtifactCompiler`.
 - `lib/Runtime/Execution/SimBackend.cpp` and `lib/Runtime/Execution/NpuBackend.cpp` depend on `Legacy/Executor` directly for binary registration, launch, and magic selection.
 - `lib/Runtime/Execution/SimBackend.cpp` and `lib/Runtime/Execution/NpuBackend.cpp` depend on `Legacy/SimValidator` directly for output comparison after execution.
-- `test/tools/runtime/test_runtime.cpp` and `test/tools/runtime/test_taskgraph_runtime.cpp` still exercise `Legacy/Compiler` directly, while `test/tools/runtime/test_runtime.cpp` remains the runtime unit test file that directly exercises `Legacy/Executor` and `Legacy/HostRunnerGen`.
+- `test/tools/runtime/test_runtime.cpp` and `test/tools/runtime/test_taskgraph_runtime.cpp` still exercise `Legacy/Compiler`-backed helpers directly, while `test/tools/runtime/test_runtime.cpp` directly exercises `Legacy/Executor` and `Legacy/HostRunnerGen`.
 - `test/tools/runner/test_runner_gen.cpp` is dedicated `Legacy/HostRunnerGen` coverage and does not touch the newer runtime session stack.
 - `lib/Runtime/CMakeLists.txt` still wires all five `Legacy/*` implementation units into the runtime library, including `Legacy/HostRunnerGen.cpp`.
 - `lib/CAPI/Runtime/Runtime.cpp` still routes compile-path compatibility through `Legacy/CompatRuntime` helpers before calling `ArtifactCompiler`.
@@ -76,7 +83,8 @@ It covers direct includes, implementation dependencies, and test coverage that s
 ### Bucket A: Must Keep For Now
 
 - `Legacy/Compiler`
-  - Required by `include/Runtime/Artifact/ArtifactCompiler.h` and `lib/Runtime/Artifact/ArtifactCompiler.cpp`.
+  - Required by current frontends and adapters in `tools/mix-compiler/mix_compiler_main.cpp`, `tools/runtime-session/runtime_session_main.cpp`, `lib/Runtime/Artifact/RuntimeSessionRequestBuilder.cpp`, `lib/CAPI/Runtime/Runtime.cpp`, and `tools/autotuner/autotuner_main.cpp`, all of which still reach `ArtifactCompiler`.
+  - Required by `include/Runtime/Artifact/ArtifactCompiler.h`, `lib/Runtime/Artifact/ArtifactCompiler.cpp`, and `lib/Runtime/CMakeLists.txt`.
   - Still exercised directly by `test/tools/runtime/test_runtime.cpp` and `test/tools/runtime/test_taskgraph_runtime.cpp`.
 - `Legacy/Executor`
   - Required by `lib/Runtime/Execution/SimBackend.cpp` and `lib/Runtime/Execution/NpuBackend.cpp`.
