@@ -41,16 +41,21 @@ normalizeSimulatorProfileTrace(llvm::StringRef sessionId,
 
 ProfileEvent makeProfileArtifactEvent(llvm::StringRef taskId,
                                       ExecutionBackendKind backend,
-                                      llvm::StringRef artifactPath) {
+                                      llvm::StringRef artifactPath,
+                                      std::optional<int64_t> score,
+                                      std::optional<int64_t> cycleCount) {
   return ProfileEvent{taskId.str(), backend, "profile_artifact",
-                      artifactPath.str()};
+                      artifactPath.str(), score, cycleCount};
 }
 
 void addProfileArtifact(ProfileTrace &trace, llvm::StringRef taskId,
                         ExecutionBackendKind backend,
-                        llvm::StringRef artifactPath) {
+                        llvm::StringRef artifactPath,
+                        std::optional<int64_t> score,
+                        std::optional<int64_t> cycleCount) {
   trace.addEvent(
-      makeProfileArtifactEvent(taskId, backend, artifactPath));
+      makeProfileArtifactEvent(taskId, backend, artifactPath, score,
+                               cycleCount));
 }
 
 std::string retainedProfileSessionDirectory(llvm::StringRef destinationRoot,
@@ -173,16 +178,22 @@ retainProfileArtifactsForCli(const ProfileTrace &trace,
                                      retainedPath.str().str().c_str());
     }
 
-    auto metricsOr = parseRetainedTaskMetrics(event.taskId, retainedPath.str());
-    if (!metricsOr)
-      return metricsOr.takeError();
+    std::pair<int64_t, int64_t> metrics;
+    if (event.score && event.cycleCount) {
+      metrics = std::make_pair(*event.score, *event.cycleCount);
+    } else {
+      auto metricsOr = parseRetainedTaskMetrics(event.taskId, retainedPath.str());
+      if (!metricsOr)
+        return metricsOr.takeError();
+      metrics = *metricsOr;
+    }
 
     if (!summaryBackend)
       summaryBackend = event.backend;
 
     event.artifact = retainedPath.str().str();
     taskSummaries.push_back(
-        {event.taskId, event.artifact, metricsOr->first, metricsOr->second,
+        {event.taskId, event.artifact, metrics.first, metrics.second,
          event.backend});
   }
 

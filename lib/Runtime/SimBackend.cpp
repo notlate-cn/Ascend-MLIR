@@ -460,6 +460,12 @@ runWithExecutor(const ExecutionRequest &request) {
     if (!profilePathOr)
       return stageError("profiling", profilePathOr.takeError());
     result.producedFiles.push_back(*profilePathOr);
+    ProfileTrace trace;
+    trace.sessionId = request.sessionId;
+    trace.addProfileArtifact(request.task.taskId,
+                             ExecutionBackendKind::Simulation, *profilePathOr,
+                             elapsed.count(), elapsed.count());
+    result.profileTrace = std::move(trace);
   }
   return result;
 }
