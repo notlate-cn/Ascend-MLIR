@@ -477,17 +477,32 @@ void printProfileTraceSummary(const ProfileTrace &trace) {
 }
 
 llvm::Expected<std::string>
-prepareRetainedProfileRoot(llvm::StringRef sessionId) {
+retainedProfileBaseDirectory() {
   std::error_code tempDirError;
   const std::filesystem::path retainRoot =
       std::filesystem::temp_directory_path(tempDirError) /
-      "ascendc-runtime-profiles" / sessionId.str();
+      "ascendc-runtime-profiles";
   if (tempDirError) {
     return llvm::createStringError(
         tempDirError,
         "cannot determine temp directory for retained profile artifacts");
   }
 
+  if (auto ec = llvm::sys::fs::create_directories(retainRoot.string()))
+    return llvm::createStringError(ec,
+                                   "cannot create retained profile directory: %s",
+                                   retainRoot.string().c_str());
+  return retainRoot.string();
+}
+
+llvm::Expected<std::string>
+prepareRetainedProfileRoot(llvm::StringRef sessionId) {
+  auto baseDirOr = retainedProfileBaseDirectory();
+  if (!baseDirOr)
+    return baseDirOr.takeError();
+
+  const std::filesystem::path retainRoot =
+      std::filesystem::path(*baseDirOr) / sessionId.str();
   if (auto ec = llvm::sys::fs::create_directories(retainRoot.string()))
     return llvm::createStringError(ec,
                                    "cannot create retained profile directory: %s",
@@ -550,6 +565,21 @@ int main(int argc, char **argv) {
     return 0;
 
   const bool validationRan = graphRequestsValidation(*graph);
+  if (backendKind == ExecutionBackendKind::Simulation) {
+    auto retainBaseDirOr = retainedProfileBaseDirectory();
+    if (!retainBaseDirOr) {
+      const std::string message = llvm::toString(retainBaseDirOr.takeError());
+      printRunErrorSummary(backendKind, validationRan, message);
+      llvm::errs() << "Error: " << message << "\n";
+      return 2;
+    }
+    const size_t pruneKeepCount =
+        RetainedProfileSessionLimit > 0 ? RetainedProfileSessionLimit - 1 : 0;
+    if (auto pruneErr =
+            pruneRetainedProfileDirectories(*retainBaseDirOr, pruneKeepCount))
+      llvm::consumeError(std::move(pruneErr));
+  }
+
   auto runSession =
       std::make_unique<ExecutionSession>(backendKind, *testingDriverOr);
   auto traceOr = runSession->run(*graph);
@@ -579,10 +609,6 @@ int main(int argc, char **argv) {
       return 2;
     }
     trace = std::move(*retainedTraceOr);
-    if (auto pruneErr = pruneRetainedProfileDirectories(
-            std::filesystem::path(*retainRootOr).parent_path().string(),
-            RetainedProfileSessionLimit))
-      llvm::consumeError(std::move(pruneErr));
     retainedSummaryPath = retainedProfileSessionSummaryPath(
         retainedSessionDir.parent_path().string(), trace.sessionId);
   }
