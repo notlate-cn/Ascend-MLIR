@@ -242,7 +242,7 @@ static std::string emitCMakeLists(const std::string& repo_root,
          "  set(CMAKE_INSTALL_PREFIX \"${CMAKE_CURRENT_LIST_DIR}/out\" CACHE STRING \"path for install()\" FORCE)\n"
          "endif()\n\n"
          "include(\"" + escapeForCxx(repo_root) +
-         "/lib/Runtime/AscendCannPaths.cmake\")\n"
+         "/lib/Runtime/Mix/AscendCannPaths.cmake\")\n"
          "resolve_ascend_cann_arch_dir(ASCEND_HOST_ARCH)\n"
          "set(SOC_SIM_LIB_DIR \"\")\n"
          "set(DAV_SIM_LIB_DIR \"\")\n"
