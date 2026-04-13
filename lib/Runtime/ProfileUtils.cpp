@@ -4,7 +4,9 @@
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/Path.h"
 
+#include <algorithm>
 #include <filesystem>
+#include <vector>
 
 namespace mlir::runtime {
 
@@ -80,6 +82,75 @@ retainProfileArtifactsForCli(const ProfileTrace &trace,
   }
 
   return retained;
+}
+
+namespace {
+
+struct RetainedProfileDirectory {
+  std::string path;
+  std::filesystem::file_time_type mtime;
+};
+
+llvm::Error pruneRetainedProfileDirectoriesImpl(llvm::StringRef root,
+                                                size_t keepCount) {
+  const std::string rootPath = root.str();
+  std::error_code ec;
+  if (!std::filesystem::exists(rootPath, ec))
+    return llvm::Error::success();
+  if (ec)
+    return llvm::createStringError(ec,
+                                   "cannot inspect retained profile root: %s",
+                                   rootPath.c_str());
+
+  std::vector<RetainedProfileDirectory> directories;
+  for (const std::filesystem::directory_entry &entry :
+       std::filesystem::directory_iterator(rootPath, ec)) {
+    if (ec)
+      return llvm::createStringError(ec,
+                                     "cannot iterate retained profile root: %s",
+                                     rootPath.c_str());
+
+    std::error_code dirEc;
+    if (!entry.is_directory(dirEc) || dirEc)
+      continue;
+
+    std::error_code timeEc;
+    auto mtime = std::filesystem::last_write_time(entry.path(), timeEc);
+    if (timeEc)
+      mtime = std::filesystem::file_time_type::min();
+
+    directories.push_back({entry.path().string(), mtime});
+  }
+
+  if (directories.size() <= keepCount)
+    return llvm::Error::success();
+
+  std::sort(directories.begin(), directories.end(),
+            [](const RetainedProfileDirectory &lhs,
+               const RetainedProfileDirectory &rhs) {
+    if (lhs.mtime != rhs.mtime)
+      return lhs.mtime > rhs.mtime;
+    return lhs.path < rhs.path;
+  });
+
+  for (size_t index = keepCount; index < directories.size(); ++index) {
+    std::error_code removeEc;
+    (void)std::filesystem::remove_all(directories[index].path, removeEc);
+  }
+
+  return llvm::Error::success();
+}
+
+} // namespace
+
+llvm::Error pruneRetainedProfileDirectories(llvm::StringRef root,
+                                            size_t keepCount) {
+  return pruneRetainedProfileDirectoriesImpl(root, keepCount);
+}
+
+llvm::Error pruneRetainedProfileDirectoriesForTest(llvm::StringRef root,
+                                                   size_t keepCount) {
+  return pruneRetainedProfileDirectoriesImpl(root, keepCount);
 }
 
 } // namespace mlir::runtime
