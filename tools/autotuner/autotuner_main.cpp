@@ -711,11 +711,6 @@ static llvm::Error writeBestConfigJson(const std::string &path,
   root["device_binary_path"] = artifact.deviceBinaryPath;
   if (!ProfileOutDir.empty())
     root["profile_out"] = ProfileOutDir.getValue();
-  root["block_dim"] = best.block_dim;
-  root["cycle_count"] = best.cycle_count;
-  root["score"] = best.cycle_count;
-  root["max_abs_diff"] = best.max_abs_diff;
-  root["passed"] = best.passed;
   root["kernel_file"] = space.kernel_file;
 
   llvm::json::Object bestObject;
@@ -779,18 +774,6 @@ static std::vector<SearchResult> runSearch(
   int total = static_cast<int>(combos.size());
   std::vector<SearchResult> results;
   ExecutionSession session(ExecutionBackendKind::Simulation);
-  std::error_code tempDirError;
-  const std::filesystem::path retainedProfileRoot =
-      ProfileOutDir.empty()
-          ? (std::filesystem::temp_directory_path(tempDirError) /
-             "ascendc-runtime-profiles")
-          : std::filesystem::path(ProfileOutDir.getValue());
-  if (tempDirError) {
-    llvm::errs() << "Error: cannot determine retained profile root: "
-                 << tempDirError.message() << "\n";
-    return results;
-  }
-
   for (int ci = 0; ci < total; ++ci) {
     std::map<std::string, int64_t> vars = shape;
     for (size_t si = 0; si < search_vars.size(); ++si)
@@ -866,6 +849,10 @@ static std::vector<SearchResult> runSearch(
     }
 
     sr.candidate_dir = candidatePath.string();
+    const std::filesystem::path retainedProfileRoot =
+        ProfileOutDir.empty()
+            ? (candidatePath / "runtime-profile")
+            : std::filesystem::path(ProfileOutDir.getValue());
 
     CandidateExecutionSpec candidate;
     candidate.params = std::move(param_vals);
