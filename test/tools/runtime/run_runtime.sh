@@ -42,6 +42,14 @@ if [ -f build/CMakeCache.txt ]; then
   fi
 fi
 
+if [ -f build/compile_commands.json ]; then
+  if grep -Eq '/Library/Developer/CommandLineTools/SDKs/MacOSX\.sdk|-arch arm64' \
+      build/compile_commands.json; then
+    echo "Recreating build/ because compile_commands.json contains host-specific macOS toolchain paths"
+    rm -rf build
+  fi
+fi
+
 cmake -S . -B build -DLLVM_BUILD_DIR="$LLVM_BUILD"
 
 echo "--- Building focused runtime verification targets ---"
