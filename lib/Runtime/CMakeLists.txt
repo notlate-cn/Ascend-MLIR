@@ -1,30 +1,30 @@
 # lib/Runtime/CMakeLists.txt
 add_mlir_library(AscendCRuntime
-  AscendCMixCompiler.cpp
-  ArtifactCompiler.cpp
-  CompatRuntime.cpp
-  Compiler.cpp
-  Executor.cpp
-  ExecutionBackend.cpp
-  ExecutionSession.cpp
-  HostRunnerGen.cpp
-  ProfileTrace.cpp
-  ProfileUtils.cpp
-  PathUtils.cpp
-  RunManifest.cpp
-  MixCommandBuilder.cpp
-  MixAbiExtractor.cpp
-  MixDirectBackend.cpp
-  MixAbi.cpp
-  MixSourceAnalyzer.cpp
-  MixStubTemplate.cpp
-  NpuBackend.cpp
-  SimValidator.cpp
-  SimBackend.cpp
-  TaskGraph.cpp
-  TilingPack.cpp
-  NpyIO.cpp
-  TilingSchema.cpp
+  Artifact/ArtifactCompiler.cpp
+  Artifact/RunManifest.cpp
+  Execution/ExecutionBackend.cpp
+  Execution/ExecutionSession.cpp
+  Execution/NpuBackend.cpp
+  Execution/SimBackend.cpp
+  Execution/TaskGraph.cpp
+  Legacy/CompatRuntime.cpp
+  Legacy/Compiler.cpp
+  Legacy/Executor.cpp
+  Legacy/HostRunnerGen.cpp
+  Legacy/SimValidator.cpp
+  Mix/AscendCMixCompiler.cpp
+  Mix/MixAbi.cpp
+  Mix/MixAbiExtractor.cpp
+  Mix/MixCommandBuilder.cpp
+  Mix/MixDirectBackend.cpp
+  Mix/MixSourceAnalyzer.cpp
+  Mix/MixStubTemplate.cpp
+  Profile/ProfileTrace.cpp
+  Profile/ProfileUtils.cpp
+  Support/NpyIO.cpp
+  Support/PathUtils.cpp
+  Support/TilingPack.cpp
+  Support/TilingSchema.cpp
 
   ADDITIONAL_HEADER_DIRS
   ${CMAKE_SOURCE_DIR}/include/Runtime
@@ -33,7 +33,7 @@ add_mlir_library(AscendCRuntime
   LLVMSupport
 )
 
-include(${CMAKE_CURRENT_LIST_DIR}/AscendCannPaths.cmake)
+include(${CMAKE_CURRENT_LIST_DIR}/Mix/AscendCannPaths.cmake)
 resolve_ascend_cann_arch_dir(ASCEND_CANN_ARCH)
 
 set(ASCEND_INCLUDE_DIRS
