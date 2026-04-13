@@ -151,28 +151,10 @@ static llvm::Expected<KernelKind> parseKernelKind(llvm::StringRef name) {
                                  name.str().c_str());
 }
 
-static llvm::Expected<KernelKind> parseManifestKernelKind(llvm::StringRef name) {
-  if (name.empty())
-    return KernelKind::Mix;
-  return parseKernelKind(name);
-}
-
 static std::string defaultKernelName(llvm::StringRef kernelFile) {
   if (kernelFile.empty())
     return "";
   return llvm::sys::path::stem(kernelFile).str();
-}
-
-static std::string resolveArtifactPath(llvm::StringRef artifactRoot,
-                                       llvm::StringRef maybeRelativePath) {
-  if (maybeRelativePath.empty())
-    return "";
-  if (llvm::sys::path::is_absolute(maybeRelativePath))
-    return maybeRelativePath.str();
-
-  llvm::SmallString<256> resolved(artifactRoot);
-  llvm::sys::path::append(resolved, maybeRelativePath);
-  return resolved.str().str();
 }
 
 static std::string resolveAbsolutePath(llvm::StringRef path) {
