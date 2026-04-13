@@ -1,16 +1,18 @@
 // tools/autotuner/autotuner_main.cpp
-#include "Runtime/Compiler.h"
-#include "Runtime/Executor.h"
+#include "Runtime/ArtifactCompiler.h"
+#include "Runtime/ExecutionSession.h"
 #include "Runtime/NpyIO.h"
 #include "Runtime/PathUtils.h"
-#include "Runtime/SimValidator.h"
+#include "Runtime/ProfileTrace.h"
+#include "Runtime/ProfileUtils.h"
+#include "Runtime/RunManifest.h"
+#include "Runtime/TaskGraph.h"
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/JSON.h"
 #include "llvm/Support/MemoryBuffer.h"
 #include "llvm/Support/Path.h"
 #include "llvm/Support/raw_ostream.h"
-#include "Runtime/HostRunnerGen.h"
 #include <algorithm>
 #include <cmath>
 #include <cstdlib>
@@ -145,6 +147,21 @@ struct TilingSpace {
   std::string soc;
   std::string block_dim_expr;
   std::vector<TilingParam> params;
+};
+
+struct SearchInputs {
+  std::vector<std::string> inputFiles;
+  std::string expectedFile;
+  std::map<std::string, int64_t> shape;
+  double atol = 1.0;
+  double rtol = 1e-2;
+};
+
+struct CandidateExecutionSpec {
+  std::vector<std::pair<std::string, int64_t>> params;
+  int64_t blockDim = 1;
+  std::string actualOutputPath;
+  std::string profileOutputDir;
 };
 
 static llvm::Expected<TilingSpace> loadTilingSpace(const std::string& path) {
