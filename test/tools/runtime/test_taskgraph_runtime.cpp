@@ -25,6 +25,7 @@
 #include "Runtime/TilingSchema.h"
 #include "Runtime/TaskGraph.h"
 #include "Runtime/ArtifactCompiler.h"
+#include "Runtime/RuntimeSessionRequestBuilder.h"
 #include "Runtime/SimBackend.h"
 #include "llvm/Support/JSON.h"
 #include "llvm/Support/Error.h"
@@ -132,6 +133,27 @@ static std::filesystem::path makeTempDir(const std::string &stem) {
   static int uniqueCounter = 0;
   return std::filesystem::temp_directory_path() /
          (stem + "-" + std::to_string(++uniqueCounter));
+}
+
+static std::filesystem::path makeRuntimeSessionArtifactRoot(
+    const std::string &stem) {
+  std::filesystem::path root = makeTempDir(stem);
+  std::filesystem::create_directories(root / "out");
+
+  std::ofstream manifest(root / "out" / "manifest.txt");
+  if (!manifest) {
+    llvm::errs() << "FAIL: cannot write runtime session manifest "
+                 << (root / "out" / "manifest.txt").string() << "\n";
+    ++g_fail;
+    return {};
+  }
+
+  manifest << "kernel_name=fake_kernel\n";
+  manifest << "soc_version=Ascend910B1\n";
+  manifest << "kernel_kind=mix\n";
+  manifest << "mix_resource_type=mix_1c1v\n";
+  manifest << "device_binary_path=fake.bin\n";
+  return root;
 }
 
 class RecordingBackendDriver : public ExecutionBackendDriver {
@@ -457,6 +479,68 @@ static void testKernelArtifactNormalization() {
          "normalized mix artifact stores manifest path");
   EXPECT(normalizedMix.artifactRoot == "/tmp/mix",
          "normalized mix artifact stores compile root, not work dir");
+}
+
+static void testRuntimeSessionRequestBuilderLoadsArtifactFromRoot() {
+  const std::filesystem::path root =
+      makeRuntimeSessionArtifactRoot("runtime-session-builder-artifact");
+  EXPECT(!root.empty(), "runtime session builder fixture root created");
+  if (root.empty())
+    return;
+
+  auto artifactOr = loadRuntimeSessionArtifactFromRoot(root.string());
+  EXPECT((bool)artifactOr, "runtime session builder loads artifact root");
+  if (!artifactOr) {
+    llvm::consumeError(artifactOr.takeError());
+    return;
+  }
+
+  EXPECT(artifactOr->kernelName == "fake_kernel",
+         "runtime session builder loads kernel name from manifest root");
+  EXPECT(artifactOr->kernelKind == KernelKind::Mix,
+         "runtime session builder loads kernel kind from manifest root");
+  EXPECT(artifactOr->mixResourceType == MixResourceType::Mix1C1V,
+         "runtime session builder loads mix resource type from manifest root");
+  EXPECT(artifactOr->artifactRoot == root.string(),
+         "runtime session builder keeps artifact root");
+  EXPECT(artifactOr->manifestPath ==
+             (root / "out" / "manifest.txt").string(),
+         "runtime session builder keeps manifest path");
+}
+
+static void testRuntimeSessionRequestBuilderBuildsSingleTaskGraph() {
+  KernelArtifact artifact;
+  artifact.kernelName = "fake_kernel";
+  artifact.kernelKind = KernelKind::Mix;
+  artifact.mixResourceType = MixResourceType::Mix1C1V;
+  artifact.socVersion = "Ascend910B1";
+  artifact.artifactRoot = "/tmp/runtime-session-builder-artifact";
+  artifact.manifestPath = "/tmp/runtime-session-builder-artifact/out/manifest.txt";
+  artifact.deviceBinaryPath = "/tmp/runtime-session-builder-artifact/fake.bin";
+
+  auto graphOr = buildRuntimeSessionSingleTaskGraph(artifact, "main");
+  EXPECT((bool)graphOr, "runtime session builder creates a task graph");
+  if (!graphOr) {
+    llvm::consumeError(graphOr.takeError());
+    return;
+  }
+
+  auto orderedOr = graphOr->orderedTasks();
+  EXPECT((bool)orderedOr, "runtime session builder orders single task graph");
+  if (!orderedOr) {
+    llvm::consumeError(orderedOr.takeError());
+    return;
+  }
+
+  EXPECT(orderedOr->size() == 1,
+         "runtime session builder creates a single task graph");
+  if (orderedOr->size() == 1) {
+    EXPECT(orderedOr->front().taskId == "main",
+           "runtime session builder uses provided task id");
+    EXPECT(orderedOr->front().artifact.mixResourceType ==
+               MixResourceType::Mix1C1V,
+           "runtime session builder preserves mix resource type");
+  }
 }
 
 static void testMixValidationCanBeRepresentedAsRuntimeTask() {
