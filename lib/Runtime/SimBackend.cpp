@@ -95,6 +95,76 @@ loadExpectedOutputs(const ExecutionInvocation &invocation) {
   return expected;
 }
 
+llvm::StringRef kernelKindToString(KernelKind kind) {
+  switch (kind) {
+  case KernelKind::Vec:
+    return "vec";
+  case KernelKind::Cube:
+    return "cube";
+  case KernelKind::Mix:
+    return "mix";
+  }
+  return "vec";
+}
+
+llvm::StringRef dtypeToShortName(DType dtype) {
+  switch (dtype) {
+  case DType::F16:
+    return "f16";
+  case DType::BF16:
+    return "bf16";
+  case DType::F32:
+    return "f32";
+  case DType::INT8:
+    return "i8";
+  case DType::INT32:
+    return "i32";
+  case DType::INT64:
+    return "i64";
+  }
+  return "f16";
+}
+
+llvm::json::Array toJsonShape(llvm::ArrayRef<int64_t> shape) {
+  llvm::json::Array jsonShape;
+  for (int64_t dim : shape)
+    jsonShape.push_back(dim);
+  return jsonShape;
+}
+
+llvm::json::Array
+buildProfileTensorArray(llvm::ArrayRef<TensorBinding> bindings) {
+  llvm::json::Array tensors;
+  for (const TensorBinding &binding : bindings) {
+    llvm::json::Object tensor;
+    tensor["name"] = binding.name;
+    tensor["shape"] =
+        toJsonShape(binding.shape ? llvm::ArrayRef<int64_t>(*binding.shape)
+                                  : llvm::ArrayRef<int64_t>());
+    tensor["dtype"] = dtypeToShortName(binding.dtype.value_or(DType::F16));
+    tensors.push_back(std::move(tensor));
+  }
+  return tensors;
+}
+
+llvm::json::Object
+buildProfileTilingObject(const std::optional<TilingBinding> &tiling) {
+  llvm::json::Object tilingObject;
+  tilingObject["present"] = static_cast<bool>(tiling);
+  tilingObject["binary_path"] = tiling ? tiling->binaryPath : "";
+
+  int64_t tilingBytes = 0;
+  if (tiling && !tiling->binaryPath.empty()) {
+    std::error_code ec;
+    uint64_t fileSize = 0;
+    ec = llvm::sys::fs::file_size(tiling->binaryPath, fileSize);
+    if (!ec)
+      tilingBytes = static_cast<int64_t>(fileSize);
+  }
+  tilingObject["bytes"] = tilingBytes;
+  return tilingObject;
+}
+
 llvm::Expected<RunArgs> buildRunArgs(const ExecutionInvocation &invocation) {
   RunArgs args;
   args.block_dim = invocation.blockDim;
@@ -184,11 +254,24 @@ materializeSimulatorProfileArtifact(const ExecutionRequest &request,
   llvm::sys::path::append(profilePath, "trace.json");
 
   llvm::json::Object root;
+  root["schema_version"] = 1;
   root["backend"] = "simulation";
-  root["cycle_count"] = cycleCount;
-  root["elapsed"] = cycleCount;
-  root["score"] = cycleCount;
+  root["session_id"] = request.sessionId;
   root["task_id"] = request.task.taskId;
+  root["kernel_name"] = request.task.artifact.kernelName;
+  root["kernel_kind"] = std::string(kernelKindToString(request.task.artifact.kernelKind));
+  root["soc_version"] = request.task.artifact.socVersion;
+  root["block_dim"] = request.task.invocation.blockDim;
+  root["workspace_size"] =
+      static_cast<int64_t>(request.task.invocation.workspaceSize);
+  root["cycle_count"] = cycleCount;
+  root["elapsed_us"] = cycleCount;
+  root["score"] = cycleCount;
+  root["validation_passed"] = true;
+  root["artifact_root"] = request.task.artifact.artifactRoot;
+  root["inputs"] = buildProfileTensorArray(request.task.invocation.inputs);
+  root["outputs"] = buildProfileTensorArray(request.task.invocation.outputs);
+  root["tiling"] = buildProfileTilingObject(request.task.invocation.tiling);
 
   std::error_code ec;
   llvm::raw_fd_ostream os(profilePath, ec);
@@ -343,6 +426,12 @@ runWithExecutor(const ExecutionRequest &request) {
 }
 
 } // namespace
+
+llvm::Expected<std::string>
+materializeSimulatorProfileArtifactForTest(const ExecutionRequest &request,
+                                           int64_t cycleCount) {
+  return materializeSimulatorProfileArtifact(request, cycleCount);
+}
 
 SimBackend::SimBackend(std::shared_ptr<ExecutionBackendDriver> driver)
     : driver_(std::move(driver)) {}
