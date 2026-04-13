@@ -21,10 +21,12 @@
 #include "Runtime/ExecutionSession.h"
 #include "Runtime/NpuBackend.h"
 #include "Runtime/NpyIO.h"
+#include "Runtime/TilingPack.h"
 #include "Runtime/TilingSchema.h"
 #include "Runtime/TaskGraph.h"
 #include "Runtime/ArtifactCompiler.h"
 #include "Runtime/SimBackend.h"
+#include "llvm/Support/JSON.h"
 #include "llvm/Support/Error.h"
 #include "llvm/Support/raw_ostream.h"
 
@@ -38,6 +40,12 @@
 #include <vector>
 
 using namespace mlir::runtime;
+
+namespace mlir::runtime {
+llvm::Expected<std::string>
+materializeSimulatorProfileArtifactForTest(const ExecutionRequest &request,
+                                           int64_t cycleCount);
+}
 
 static int g_pass = 0;
 static int g_fail = 0;
@@ -94,6 +102,23 @@ static std::vector<uint8_t> readBinaryFile(const std::string &path) {
   std::ifstream is(path, std::ios::binary);
   return std::vector<uint8_t>((std::istreambuf_iterator<char>(is)),
                               std::istreambuf_iterator<char>());
+}
+
+static std::string readTextFile(const std::string &path) {
+  std::ifstream is(path);
+  if (!is) {
+    llvm::errs() << "FAIL: cannot read temp file " << path << "\n";
+    ++g_fail;
+    return "";
+  }
+  return std::string((std::istreambuf_iterator<char>(is)),
+                     std::istreambuf_iterator<char>());
+}
+
+static std::filesystem::path makeTempDir(const std::string &stem) {
+  static int uniqueCounter = 0;
+  return std::filesystem::temp_directory_path() /
+         (stem + "-" + std::to_string(++uniqueCounter));
 }
 
 class RecordingBackendDriver : public ExecutionBackendDriver {
@@ -1584,6 +1609,155 @@ static void testBackendPreservesExistingProfileTrace() {
   }
 }
 
+static void testSimulatorProfileSchemaV1Artifact() {
+  const std::filesystem::path runtimeDir = makeTempDir("taskgraph-profile-run");
+  std::filesystem::create_directories(runtimeDir);
+
+  const std::string tilingBinaryPath =
+      writeTempBinaryFile("taskgraph-profile-tiling",
+                          std::vector<uint8_t>{0x01, 0x02, 0x03, 0x04});
+  if (tilingBinaryPath.empty())
+    return;
+
+  ExecutionRequest request;
+  request.sessionId = "session-profile";
+  request.workingDirectory = runtimeDir.string();
+  request.task.taskId = "task0";
+  request.task.artifact.kernelName = "kernel0";
+  request.task.artifact.kernelKind = KernelKind::Vec;
+  request.task.artifact.socVersion = "Ascend910B1";
+  request.task.artifact.artifactRoot = "/tmp/artifact-root";
+  request.task.invocation.blockDim = 8;
+  request.task.invocation.workspaceSize = 8192;
+  request.task.invocation.enableProfiling = true;
+  request.task.invocation.inputs.push_back(TensorBinding{
+      "input0", BindingSourceKind::ExternalFile, "/tmp/input0.npy", "", "",
+      std::vector<int64_t>{640, 1}, DType::F16});
+  request.task.invocation.outputs.push_back(TensorBinding{
+      "output0", BindingSourceKind::ExternalFile, "/tmp/output0.npy", "", "",
+      std::vector<int64_t>{500, 640}, DType::F16});
+  request.task.invocation.tiling = TilingBinding{};
+  request.task.invocation.tiling->binaryPath = tilingBinaryPath;
+
+  auto profilePathOr =
+      materializeSimulatorProfileArtifactForTest(request, 1498485);
+  EXPECT((bool)profilePathOr, "sim profile artifact materialization succeeds");
+  if (!profilePathOr) {
+    llvm::consumeError(profilePathOr.takeError());
+    return;
+  }
+
+  const std::filesystem::path profilePath = *profilePathOr;
+
+  EXPECT(std::filesystem::exists(profilePath),
+         "sim profile trace artifact exists");
+
+  const std::string profileText = readTextFile(profilePath.string());
+  if (profileText.empty())
+    return;
+
+  auto jsonOr = llvm::json::parse(profileText);
+  EXPECT((bool)jsonOr, "sim profile trace parses as json");
+  if (!jsonOr) {
+    llvm::consumeError(jsonOr.takeError());
+    return;
+  }
+
+  const auto *object = jsonOr->getAsObject();
+  EXPECT(object != nullptr, "sim profile trace is a json object");
+  if (!object)
+    return;
+
+  EXPECT(object->getInteger("schema_version") &&
+             *object->getInteger("schema_version") == 1,
+         "sim profile trace has schema_version=1");
+  EXPECT(object->getString("backend") &&
+             *object->getString("backend") == "simulation",
+         "sim profile trace carries backend");
+  EXPECT(object->getString("session_id") &&
+             *object->getString("session_id") == "session-profile",
+         "sim profile trace carries session_id");
+  EXPECT(object->getString("task_id") &&
+             *object->getString("task_id") == "task0",
+         "sim profile trace carries task_id");
+  EXPECT(object->getString("kernel_name") &&
+             *object->getString("kernel_name") == "kernel0",
+         "sim profile trace carries kernel_name");
+  EXPECT(object->getString("kernel_kind") &&
+             *object->getString("kernel_kind") == "vec",
+         "sim profile trace carries kernel_kind");
+  EXPECT(object->getString("soc_version") &&
+             *object->getString("soc_version") == "Ascend910B1",
+         "sim profile trace carries soc_version");
+  EXPECT(object->getInteger("block_dim") &&
+             *object->getInteger("block_dim") == 8,
+         "sim profile trace carries block_dim");
+  EXPECT(object->getInteger("workspace_size") &&
+             *object->getInteger("workspace_size") == 8192,
+         "sim profile trace carries workspace_size");
+  EXPECT(object->getInteger("cycle_count") &&
+             *object->getInteger("cycle_count") == 1498485,
+         "sim profile trace carries cycle_count");
+  EXPECT(object->getInteger("elapsed_us") &&
+             *object->getInteger("elapsed_us") == 1498485,
+         "sim profile trace carries elapsed_us");
+  EXPECT(object->getInteger("score") &&
+             *object->getInteger("score") == 1498485,
+         "sim profile trace carries score");
+  EXPECT(object->getBoolean("validation_passed") &&
+             *object->getBoolean("validation_passed"),
+         "sim profile trace marks validation_passed");
+  EXPECT(object->getString("artifact_root") &&
+             *object->getString("artifact_root") == "/tmp/artifact-root",
+         "sim profile trace carries artifact_root");
+
+  auto *inputs = object->getArray("inputs");
+  EXPECT(inputs && inputs->size() == 1, "sim profile trace emits one input");
+  if (inputs && inputs->size() == 1) {
+    const auto *input0 = (*inputs)[0].getAsObject();
+    EXPECT(input0 && input0->getString("name") &&
+               *input0->getString("name") == "input0",
+           "sim profile trace input0 name");
+    EXPECT(input0 && input0->getString("dtype") &&
+               *input0->getString("dtype") == "f16",
+           "sim profile trace input0 dtype");
+    EXPECT(input0 && input0->getArray("shape") &&
+               input0->getArray("shape")->size() == 2,
+           "sim profile trace input0 shape");
+  }
+
+  auto *outputs = object->getArray("outputs");
+  EXPECT(outputs && outputs->size() == 1, "sim profile trace emits one output");
+  if (outputs && outputs->size() == 1) {
+    const auto *output0 = (*outputs)[0].getAsObject();
+    EXPECT(output0 && output0->getString("name") &&
+               *output0->getString("name") == "output0",
+           "sim profile trace output name");
+    EXPECT(output0 && output0->getString("dtype") &&
+               *output0->getString("dtype") == "f16",
+           "sim profile trace output dtype");
+    EXPECT(output0 && output0->getArray("shape") &&
+               output0->getArray("shape")->size() == 2,
+           "sim profile trace output shape");
+  }
+
+  const auto *tiling = object->getObject("tiling");
+  EXPECT(tiling != nullptr, "sim profile trace emits tiling object");
+  if (tiling) {
+    EXPECT(tiling->getBoolean("present") &&
+               *tiling->getBoolean("present"),
+           "sim profile trace marks tiling present");
+    EXPECT(tiling->getString("binary_path") &&
+               *tiling->getString("binary_path") == tilingBinaryPath,
+           "sim profile trace records tiling binary path");
+    const auto expectedTilingBytes =
+        static_cast<int64_t>(std::filesystem::file_size(tilingBinaryPath));
+    EXPECT(tiling->getInteger("bytes") &&
+               *tiling->getInteger("bytes") == expectedTilingBytes,
+           "sim profile trace records tiling byte size");
+  }
+}
+
 static void testExecutionSessionPlansTopologicalOrder() {
   TaskGraph graph;
 
@@ -2274,6 +2448,7 @@ int main() {
   testAddProfileArtifactHelper();
   testBackendSurfacesProfileTrace();
   testBackendPreservesExistingProfileTrace();
+  testSimulatorProfileSchemaV1Artifact();
   testExecutionSessionPlansTopologicalOrder();
   testExecutionSessionPlanTracksMultipleReadyRoots();
   testExecutionSessionRunsTasksInTopologicalOrder();
