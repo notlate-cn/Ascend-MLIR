@@ -18,7 +18,7 @@
 
 - [ ] **Step 1: Remove legacy runtime-centric includes and add runtime-native includes**
 
-Replace the top include block so `autotuner_main.cpp` no longer depends on:
+Add the runtime-native include block to `autotuner_main.cpp`:
 
 ```cpp
 #include "Runtime/Compiler.h"
@@ -26,8 +26,6 @@ Replace the top include block so `autotuner_main.cpp` no longer depends on:
 #include "Runtime/SimValidator.h"
 #include "Runtime/HostRunnerGen.h"
 ```
-
-and instead depends on:
 
 ```cpp
 #include "Runtime/ArtifactCompiler.h"
@@ -39,6 +37,15 @@ and instead depends on:
 #include "Runtime/NpyIO.h"
 #include "Runtime/PathUtils.h"
 ```
+
+Task 1 boundary:
+
+- keep any legacy include that is still required by the current pre-migration
+  code path to let `autotuner_main.cpp` continue compiling
+- only remove a legacy include in Task 1 if it is already unreferenced
+- physical removal of still-used `Compiler` / `Executor` / `SimValidator` /
+  `HostRunnerGen` includes belongs to later migration tasks once their usages
+  are deleted
 
 - [ ] **Step 2: Add small focused structs for the new autotuner flow**
 
