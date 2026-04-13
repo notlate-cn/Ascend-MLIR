@@ -306,6 +306,8 @@ echo "--- Running test_runtime ---"
 if "$TEST_RUNTIME_BIN"; then
   echo "--- Running SimBackend smoke baseline ---"
   bash test/tools/runtime/run_simbackend_smoke.sh
+  echo "--- Running repeated mix simulation baseline ---"
+  bash test/tools/runtime/run_mix_repeat.sh
   exit 0
 else
   STATUS=$?
