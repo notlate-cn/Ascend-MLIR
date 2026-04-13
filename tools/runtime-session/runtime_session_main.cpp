@@ -566,6 +566,9 @@ int main(int argc, char **argv) {
 
   const bool validationRan = graphRequestsValidation(*graph);
   if (backendKind == ExecutionBackendKind::Simulation) {
+    // Mix simulator teardown leaves the process heap fragile. Prune retained
+    // profile sessions before launching the run so post-run CLI cleanup only
+    // copies artifacts and exits.
     auto retainBaseDirOr = retainedProfileBaseDirectory();
     if (!retainBaseDirOr) {
       const std::string message = llvm::toString(retainBaseDirOr.takeError());
@@ -574,7 +577,7 @@ int main(int argc, char **argv) {
       return 2;
     }
     const size_t pruneKeepCount =
-        RetainedProfileSessionLimit > 0 ? RetainedProfileSessionLimit - 1 : 0;
+        retainedProfilePruneKeepCountForNewSession(RetainedProfileSessionLimit);
     if (auto pruneErr =
             pruneRetainedProfileDirectories(*retainBaseDirOr, pruneKeepCount))
       llvm::consumeError(std::move(pruneErr));

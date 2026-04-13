@@ -51,6 +51,7 @@ retainProfileArtifactsForCli(const ProfileTrace &trace,
                              llvm::StringRef destinationRoot);
 llvm::Error pruneRetainedProfileDirectoriesForTest(llvm::StringRef root,
                                                    size_t keepCount);
+size_t retainedProfilePruneKeepCountForNewSession(size_t sessionLimit);
 }
 
 static int g_pass = 0;
@@ -2001,6 +2002,15 @@ static void testRetainProfileArtifactsIgnoresNonDirectories() {
   std::filesystem::remove_all(retainRoot, ec);
 }
 
+static void testRetainedProfilePruneKeepCountForNewSession() {
+  EXPECT(retainedProfilePruneKeepCountForNewSession(0) == 0,
+         "pre-run retained profile pruning keeps zero directories when limit is zero");
+  EXPECT(retainedProfilePruneKeepCountForNewSession(1) == 0,
+         "pre-run retained profile pruning reserves one slot for the new session");
+  EXPECT(retainedProfilePruneKeepCountForNewSession(20) == 19,
+         "pre-run retained profile pruning keeps limit minus one existing sessions");
+}
+
 static void testBackendSurfacesProfileTrace() {
   auto driver = std::make_shared<SynthesizingProfileArtifactBackendDriver>();
   auto simOr = createExecutionBackend(ExecutionBackendKind::Simulation, driver);
@@ -3000,6 +3010,7 @@ int main() {
   testRetainProfileArtifactsFailsOnDuplicateTaskIds();
   testRetainProfileArtifactsPrunesOldSessions();
   testRetainProfileArtifactsIgnoresNonDirectories();
+  testRetainedProfilePruneKeepCountForNewSession();
   testBackendSurfacesProfileTrace();
   testBackendPreservesExistingProfileTrace();
   testSimulatorProfileSchemaV1Artifact();
