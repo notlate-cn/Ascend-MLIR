@@ -31,6 +31,7 @@
 #include "llvm/Support/raw_ostream.h"
 
 #include <filesystem>
+#include <chrono>
 #include <fstream>
 #include <cstring>
 #include <cstdlib>
@@ -48,6 +49,8 @@ materializeSimulatorProfileArtifactForTest(const ExecutionRequest &request,
 llvm::Expected<ProfileTrace>
 retainProfileArtifactsForCli(const ProfileTrace &trace,
                              llvm::StringRef destinationRoot);
+llvm::Error pruneRetainedProfileDirectoriesForTest(llvm::StringRef root,
+                                                   size_t keepCount);
 }
 
 static int g_pass = 0;
@@ -1578,6 +1581,56 @@ static void testRetainProfileArtifactsForCli() {
   std::filesystem::remove_all(destRoot, ec);
 }
 
+static void testRetainProfileArtifactsPrunesOldSessions() {
+  const std::filesystem::path retainRoot = makeTempDir("profile-retain-root");
+  std::filesystem::create_directories(retainRoot);
+
+  for (int i = 0; i < 3; ++i) {
+    const std::filesystem::path dir =
+        retainRoot / ("runtime-session--old" + std::to_string(i));
+    std::filesystem::create_directories(dir);
+    std::ofstream(dir / "trace.json") << i;
+    std::filesystem::last_write_time(
+        dir, std::filesystem::file_time_type::clock::now() +
+                 std::chrono::seconds(i));
+  }
+
+  auto err = pruneRetainedProfileDirectoriesForTest(retainRoot.string(), 2);
+  EXPECT(!err, "retention pruning succeeds");
+  if (err)
+    llvm::consumeError(std::move(err));
+
+  EXPECT(std::filesystem::exists(retainRoot / "runtime-session--old1"),
+         "retention keeps second-newest directory");
+  EXPECT(std::filesystem::exists(retainRoot / "runtime-session--old2"),
+         "retention keeps newest directory");
+  EXPECT(!std::filesystem::exists(retainRoot / "runtime-session--old0"),
+         "retention prunes oldest directory");
+
+  std::error_code ec;
+  std::filesystem::remove_all(retainRoot, ec);
+}
+
+static void testRetainProfileArtifactsIgnoresNonDirectories() {
+  const std::filesystem::path retainRoot = makeTempDir("profile-retain-files");
+  std::filesystem::create_directories(retainRoot);
+  std::ofstream(retainRoot / "README.txt") << "keep me";
+  std::filesystem::create_directories(retainRoot / "runtime-session--keep");
+
+  auto err = pruneRetainedProfileDirectoriesForTest(retainRoot.string(), 1);
+  EXPECT(!err, "retention pruning ignores non-directories");
+  if (err)
+    llvm::consumeError(std::move(err));
+
+  EXPECT(std::filesystem::exists(retainRoot / "README.txt"),
+         "retention does not touch non-directory files");
+  EXPECT(std::filesystem::exists(retainRoot / "runtime-session--keep"),
+         "retention keeps the single retained session directory");
+
+  std::error_code ec;
+  std::filesystem::remove_all(retainRoot, ec);
+}
+
 static void testBackendSurfacesProfileTrace() {
   auto driver = std::make_shared<SynthesizingProfileArtifactBackendDriver>();
   auto simOr = createExecutionBackend(ExecutionBackendKind::Simulation, driver);
@@ -2503,6 +2556,8 @@ int main() {
   testSimulatorProfileNormalization();
   testAddProfileArtifactHelper();
   testRetainProfileArtifactsForCli();
+  testRetainProfileArtifactsPrunesOldSessions();
+  testRetainProfileArtifactsIgnoresNonDirectories();
   testBackendSurfacesProfileTrace();
   testBackendPreservesExistingProfileTrace();
   testSimulatorProfileSchemaV1Artifact();
