@@ -2,6 +2,7 @@
 add_mlir_library(AscendCRuntime
   Artifact/ArtifactCompiler.cpp
   Artifact/RunManifest.cpp
+  Artifact/RuntimeSessionRequestBuilder.cpp
   Execution/ExecutionBackend.cpp
   Execution/ExecutionSession.cpp
   Execution/NpuBackend.cpp
