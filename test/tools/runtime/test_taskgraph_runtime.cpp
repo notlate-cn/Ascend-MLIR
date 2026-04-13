@@ -153,8 +153,31 @@ static std::filesystem::path makeRuntimeSessionArtifactRoot(
   manifest << "kernel_kind=mix\n";
   manifest << "mix_resource_type=mix_1c1v\n";
   manifest << "device_binary_path=fake.bin\n";
+
+  std::ofstream binary(root / "fake.bin", std::ios::binary);
+  if (!binary) {
+    llvm::errs() << "FAIL: cannot write runtime session binary "
+                 << (root / "fake.bin").string() << "\n";
+    ++g_fail;
+    return {};
+  }
+  binary.put('\0');
   return root;
 }
+
+struct RuntimeSessionTempRoot {
+  explicit RuntimeSessionTempRoot(std::filesystem::path p)
+      : path(std::move(p)) {}
+
+  ~RuntimeSessionTempRoot() {
+    if (path.empty())
+      return;
+    std::error_code ec;
+    std::filesystem::remove_all(path, ec);
+  }
+
+  std::filesystem::path path;
+};
 
 class RecordingBackendDriver : public ExecutionBackendDriver {
 public:
@@ -482,13 +505,14 @@ static void testKernelArtifactNormalization() {
 }
 
 static void testRuntimeSessionRequestBuilderLoadsArtifactFromRoot() {
-  const std::filesystem::path root =
+  const std::filesystem::path rootPath =
       makeRuntimeSessionArtifactRoot("runtime-session-builder-artifact");
-  EXPECT(!root.empty(), "runtime session builder fixture root created");
-  if (root.empty())
+  RuntimeSessionTempRoot cleanup(rootPath);
+  EXPECT(!cleanup.path.empty(), "runtime session builder fixture root created");
+  if (cleanup.path.empty())
     return;
 
-  auto artifactOr = loadRuntimeSessionArtifactFromRoot(root.string());
+  auto artifactOr = loadRuntimeSessionArtifactFromRoot(cleanup.path.string());
   EXPECT((bool)artifactOr, "runtime session builder loads artifact root");
   if (!artifactOr) {
     llvm::consumeError(artifactOr.takeError());
@@ -501,22 +525,30 @@ static void testRuntimeSessionRequestBuilderLoadsArtifactFromRoot() {
          "runtime session builder loads kernel kind from manifest root");
   EXPECT(artifactOr->mixResourceType == MixResourceType::Mix1C1V,
          "runtime session builder loads mix resource type from manifest root");
-  EXPECT(artifactOr->artifactRoot == root.string(),
+  EXPECT(artifactOr->artifactRoot == cleanup.path.string(),
          "runtime session builder keeps artifact root");
   EXPECT(artifactOr->manifestPath ==
-             (root / "out" / "manifest.txt").string(),
+             (cleanup.path / "out" / "manifest.txt").string(),
          "runtime session builder keeps manifest path");
 }
 
 static void testRuntimeSessionRequestBuilderBuildsSingleTaskGraph() {
+  const std::filesystem::path rootPath =
+      makeRuntimeSessionArtifactRoot("runtime-session-builder-graph");
+  RuntimeSessionTempRoot cleanup(rootPath);
+  EXPECT(!cleanup.path.empty(),
+         "runtime session builder graph fixture root created");
+  if (cleanup.path.empty())
+    return;
+
   KernelArtifact artifact;
   artifact.kernelName = "fake_kernel";
   artifact.kernelKind = KernelKind::Mix;
   artifact.mixResourceType = MixResourceType::Mix1C1V;
   artifact.socVersion = "Ascend910B1";
-  artifact.artifactRoot = "/tmp/runtime-session-builder-artifact";
-  artifact.manifestPath = "/tmp/runtime-session-builder-artifact/out/manifest.txt";
-  artifact.deviceBinaryPath = "/tmp/runtime-session-builder-artifact/fake.bin";
+  artifact.artifactRoot = cleanup.path.string();
+  artifact.manifestPath = (cleanup.path / "out" / "manifest.txt").string();
+  artifact.deviceBinaryPath = (cleanup.path / "fake.bin").string();
 
   auto graphOr = buildRuntimeSessionSingleTaskGraph(artifact, "main");
   EXPECT((bool)graphOr, "runtime session builder creates a task graph");
