@@ -9,6 +9,11 @@
 
 namespace mlir::runtime {
 
+struct RetainedProfileCliArtifacts {
+  ProfileTrace trace;
+  std::string summaryPath;
+};
+
 bool isSimulatorProfileArtifact(llvm::StringRef path);
 
 std::optional<ProfileTrace>
@@ -38,6 +43,10 @@ llvm::Expected<ProfileTrace>
 retainProfileArtifactsForCli(const ProfileTrace &trace,
                              llvm::StringRef destinationRoot);
 
+llvm::Expected<RetainedProfileCliArtifacts>
+retainProfileArtifactsForCliRun(const ProfileTrace &trace,
+                                llvm::StringRef destinationRoot);
+
 llvm::Error pruneRetainedProfileDirectories(llvm::StringRef root,
                                             size_t keepCount);
 
@@ -45,5 +54,9 @@ llvm::Error pruneRetainedProfileDirectoriesForTest(llvm::StringRef root,
                                                    size_t keepCount);
 
 size_t retainedProfilePruneKeepCountForNewSession(size_t sessionLimit);
+
+llvm::Expected<std::string>
+prepareRetainedProfileRunRootForCli(llvm::StringRef destinationRoot,
+                                    size_t sessionLimit);
 
 } // namespace mlir::runtime

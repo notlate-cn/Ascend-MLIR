@@ -495,21 +495,6 @@ retainedProfileBaseDirectory() {
   return retainRoot.string();
 }
 
-llvm::Expected<std::string>
-prepareRetainedProfileRoot(llvm::StringRef sessionId) {
-  auto baseDirOr = retainedProfileBaseDirectory();
-  if (!baseDirOr)
-    return baseDirOr.takeError();
-
-  const std::filesystem::path retainRoot =
-      std::filesystem::path(*baseDirOr) / sessionId.str();
-  if (auto ec = llvm::sys::fs::create_directories(retainRoot.string()))
-    return llvm::createStringError(ec,
-                                   "cannot create retained profile directory: %s",
-                                   retainRoot.string().c_str());
-  return retainRoot.string();
-}
-
 } // namespace
 
 int main(int argc, char **argv) {
@@ -576,11 +561,14 @@ int main(int argc, char **argv) {
       llvm::errs() << "Error: " << message << "\n";
       return 2;
     }
-    const size_t pruneKeepCount =
-        retainedProfilePruneKeepCountForNewSession(RetainedProfileSessionLimit);
-    if (auto pruneErr =
-            pruneRetainedProfileDirectories(*retainBaseDirOr, pruneKeepCount))
-      llvm::consumeError(std::move(pruneErr));
+    if (auto preparedOr = prepareRetainedProfileRunRootForCli(
+            *retainBaseDirOr, RetainedProfileSessionLimit);
+        !preparedOr) {
+      const std::string message = llvm::toString(preparedOr.takeError());
+      printRunErrorSummary(backendKind, validationRan, message);
+      llvm::errs() << "Error: " << message << "\n";
+      return 2;
+    }
   }
 
   auto runSession =
@@ -595,25 +583,23 @@ int main(int argc, char **argv) {
   ProfileTrace trace = std::move(*traceOr);
   std::string retainedSummaryPath;
   if (backendKind == ExecutionBackendKind::Simulation) {
-    auto retainRootOr = prepareRetainedProfileRoot(trace.sessionId);
-    if (!retainRootOr) {
-      const std::string message = llvm::toString(retainRootOr.takeError());
+    auto retainBaseDirOr = retainedProfileBaseDirectory();
+    if (!retainBaseDirOr) {
+      const std::string message = llvm::toString(retainBaseDirOr.takeError());
       printRunErrorSummary(backendKind, validationRan, message);
       llvm::errs() << "Error: " << message << "\n";
       return 2;
     }
-    const std::filesystem::path retainedSessionDir(*retainRootOr);
-    auto retainedTraceOr =
-        retainProfileArtifactsForCli(trace, retainedSessionDir.parent_path().string());
-    if (!retainedTraceOr) {
-      const std::string message = llvm::toString(retainedTraceOr.takeError());
+    auto retainedArtifactsOr =
+        retainProfileArtifactsForCliRun(trace, *retainBaseDirOr);
+    if (!retainedArtifactsOr) {
+      const std::string message = llvm::toString(retainedArtifactsOr.takeError());
       printRunErrorSummary(backendKind, validationRan, message);
       llvm::errs() << "Error: " << message << "\n";
       return 2;
     }
-    trace = std::move(*retainedTraceOr);
-    retainedSummaryPath = retainedProfileSessionSummaryPath(
-        retainedSessionDir.parent_path().string(), trace.sessionId);
+    trace = std::move(retainedArtifactsOr->trace);
+    retainedSummaryPath = std::move(retainedArtifactsOr->summaryPath);
   }
   printRunSuccessSummary(backendKind, validationRan, trace);
   if (!retainedSummaryPath.empty() &&
