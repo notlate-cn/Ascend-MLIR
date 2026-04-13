@@ -1,6 +1,7 @@
 # lib/Runtime/CMakeLists.txt
 add_mlir_library(AscendCRuntime
   Artifact/ArtifactCompiler.cpp
+  Artifact/VecCubeArtifactBackend.cpp
   Artifact/RunManifest.cpp
   Artifact/RuntimeSessionRequestBuilder.cpp
   Execution/ExecutionBackend.cpp
