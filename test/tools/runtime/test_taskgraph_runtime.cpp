@@ -25,6 +25,7 @@
 #include "Runtime/TilingSchema.h"
 #include "Runtime/TaskGraph.h"
 #include "Runtime/ArtifactCompiler.h"
+#include "Runtime/VecCubeArtifactBackend.h"
 #include "Runtime/RuntimeSessionRequestBuilder.h"
 #include "Runtime/SimBackend.h"
 #include "llvm/Support/JSON.h"
@@ -560,6 +561,92 @@ static void testKernelArtifactNormalization() {
          "normalized mix artifact stores manifest path");
   EXPECT(normalizedMix.artifactRoot == "/tmp/mix",
          "normalized mix artifact stores compile root, not work dir");
+}
+
+static void testVecCubeArtifactBackendCompilesVecArtifact() {
+  const std::filesystem::path rootPath = makeTempDir("vec-cube-backend-vec");
+  RuntimeSessionTempRoot cleanup(rootPath);
+  EXPECT(!cleanup.path.empty(), "vec cube backend vec fixture root created");
+  if (cleanup.path.empty())
+    return;
+
+  std::filesystem::create_directories(cleanup.path / "out");
+  const std::filesystem::path sourcePath = cleanup.path / "kernel.cpp";
+  {
+    std::ofstream os(sourcePath);
+    os << "int main() { return 0; }\n";
+  }
+
+  ArtifactCompileRequest req;
+  req.kernelSource = sourcePath.string();
+  req.kernelName = "fake_vec";
+  req.kernelKind = KernelKind::Vec;
+  req.outputDir = cleanup.path.string();
+
+  VecCubeArtifactBackend backend;
+  auto artifactOr = backend.compile(req, "Ascend910B1");
+  EXPECT((bool)artifactOr, "vec cube backend compiles vec request");
+  if (!artifactOr) {
+    llvm::consumeError(artifactOr.takeError());
+    return;
+  }
+
+  const std::filesystem::path expectedManifest =
+      cleanup.path / "out" / "manifest.txt";
+  EXPECT(artifactOr->kernelKind == KernelKind::Vec,
+         "vec cube backend preserves vec kernel kind");
+  EXPECT(artifactOr->mixResourceType == MixResourceType::Unknown,
+         "vec cube backend keeps vec mix resource unknown");
+  EXPECT(artifactOr->manifestPath == expectedManifest.string(),
+         "vec cube backend writes vec manifest under out/manifest.txt");
+  EXPECT(std::filesystem::exists(artifactOr->manifestPath),
+         "vec cube backend manifest file exists");
+  EXPECT(std::filesystem::path(artifactOr->manifestPath).parent_path().filename() ==
+             "out",
+         "vec cube backend manifest path parent directory is out");
+}
+
+static void testVecCubeArtifactBackendCompilesCubeArtifact() {
+  const std::filesystem::path rootPath = makeTempDir("vec-cube-backend-cube");
+  RuntimeSessionTempRoot cleanup(rootPath);
+  EXPECT(!cleanup.path.empty(), "vec cube backend cube fixture root created");
+  if (cleanup.path.empty())
+    return;
+
+  std::filesystem::create_directories(cleanup.path / "out");
+  const std::filesystem::path sourcePath = cleanup.path / "kernel.cpp";
+  {
+    std::ofstream os(sourcePath);
+    os << "int main() { return 0; }\n";
+  }
+
+  ArtifactCompileRequest req;
+  req.kernelSource = sourcePath.string();
+  req.kernelName = "fake_cube";
+  req.kernelKind = KernelKind::Cube;
+  req.outputDir = cleanup.path.string();
+
+  VecCubeArtifactBackend backend;
+  auto artifactOr = backend.compile(req, "Ascend910B1");
+  EXPECT((bool)artifactOr, "vec cube backend compiles cube request");
+  if (!artifactOr) {
+    llvm::consumeError(artifactOr.takeError());
+    return;
+  }
+
+  const std::filesystem::path expectedManifest =
+      cleanup.path / "out" / "manifest.txt";
+  EXPECT(artifactOr->kernelKind == KernelKind::Cube,
+         "vec cube backend preserves cube kernel kind");
+  EXPECT(artifactOr->mixResourceType == MixResourceType::Unknown,
+         "vec cube backend keeps cube mix resource unknown");
+  EXPECT(artifactOr->manifestPath == expectedManifest.string(),
+         "vec cube backend writes cube manifest under out/manifest.txt");
+  EXPECT(std::filesystem::exists(artifactOr->manifestPath),
+         "vec cube backend manifest file exists");
+  EXPECT(std::filesystem::path(artifactOr->manifestPath).parent_path().filename() ==
+             "out",
+         "vec cube backend manifest path parent directory is out");
 }
 
 static void testRuntimeSessionRequestBuilderLoadsMixArtifactFromRoot() {
@@ -3274,6 +3361,8 @@ int main() {
   testUnknownDependency();
   testCycleDetection();
   testKernelArtifactNormalization();
+  testVecCubeArtifactBackendCompilesVecArtifact();
+  testVecCubeArtifactBackendCompilesCubeArtifact();
   testRuntimeSessionRequestBuilderLoadsMixArtifactFromRoot();
   testRuntimeSessionRequestBuilderLoadsVecArtifactFromRoot();
   testRuntimeSessionRequestBuilderRejectsUnsupportedKernelKind();
