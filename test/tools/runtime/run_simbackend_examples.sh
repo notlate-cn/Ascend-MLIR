@@ -30,7 +30,7 @@ fi
 
 cmake -S . -B build -DLLVM_BUILD_DIR="${LLVM_BUILD}" >/dev/null
 cmake --build build \
-  --target runtime-session afir-opt afir-translate compiler validator mix-compiler mix-validator \
+  --target runtime-session afir-opt afir-translate mix-compiler \
   -j2 >/dev/null
 
 RUNTIME_SESSION="${PROJECT_ROOT}/build/bin/runtime-session"

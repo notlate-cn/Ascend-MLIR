@@ -26,8 +26,7 @@ set -e
 DIR="$(cd "$(dirname "$0")" && pwd)"
 AFIR_OPT="${AFIR_OPT:-afir-opt}"
 AFIR_TRANSLATE="${AFIR_TRANSLATE:-afir-translate}"
-COMPILER="${COMPILER:-compiler}"
-VALIDATOR="${VALIDATOR:-validator}"
+RUNTIME_SESSION="${RUNTIME_SESSION:-runtime-session}"
 
 M=640
 N=512
@@ -160,35 +159,58 @@ echo "==================== [STAGE 9] Compile ===================="
 BUILD_DIR="$DIR/build_e2e"
 rm -rf "$BUILD_DIR"
 mkdir -p "$BUILD_DIR"
-$COMPILER \
+ARTIFACT_ROOT="$BUILD_DIR/artifact"
+RUN_MANIFEST="$BUILD_DIR/run_manifest.json"
+ACTUAL_OUTPUT="$BUILD_DIR/output.npy"
+$RUNTIME_SESSION \
   --kernel "$DIR/step8_kernel.cpp" \
-  --output "$BUILD_DIR" \
+  --kernel-kind vec \
+  --output "$ARTIFACT_ROOT" \
   --name ewop_broadcast_split \
-  --num-inputs 5 \
-  --num-outputs 1 2>&1
-echo "  ✓ $BUILD_DIR/ewop_broadcast_split.bin"
+  2>&1
+echo "  ✓ $ARTIFACT_ROOT"
 
 # ── STAGE 10: Run + Verify ─────────────────────────────────
 echo ""
 echo "==================== [STAGE 10] Run + Verify ===================="
-BIN="$BUILD_DIR/ewop_broadcast_split.bin"
 VALIDATION_LOG="$BUILD_DIR/runtime_session.log"
 
 TILING_PARAMS="TB_M=${TB_M},TB_N=${TB_M},dim_arg0_1=${N},dim_arg1_0=${HM},dim_arg0_0=${M},dim_arg1_1=${HM},dim_arg3_0=${N},dim_arg3_1=${N},dim_arg2_0=${HM},dim_arg2_1=${HM},dim_arg4_0=${N},dim_arg4_1=${N}"
 # Note: N must be a multiple of 16 (AscendC DataCopy alignment for f16).
 
-$VALIDATOR \
-  --bin "$BIN" \
-  --name ewop_broadcast_split \
-  --inputs "$DATA_DIR/input_a.npy,$DATA_DIR/bias0.npy,$DATA_DIR/bias1.npy,$DATA_DIR/scale0.npy,$DATA_DIR/scale1.npy" \
-  --expected "$DATA_DIR/output.npy" \
-  --tiling-schema "$DIR/tiling_space.json" \
-  --tiling-params "$TILING_PARAMS" \
-  --block-dim $BLOCK_DIM \
-  --atol 1e-2 \
-  --rtol 1e-2 \
-  --dump-actual "$BUILD_DIR/actual.txt" \
-  --dump-expected "$BUILD_DIR/expected.txt" \
+cat > "$RUN_MANIFEST" <<EOF
+{
+  "task_id": "main",
+  "backend": "sim",
+  "artifact_root": "${ARTIFACT_ROOT}",
+  "inputs": [
+    { "name": "input_a", "path": "${DATA_DIR}/input_a.npy" },
+    { "name": "bias0", "path": "${DATA_DIR}/bias0.npy" },
+    { "name": "bias1", "path": "${DATA_DIR}/bias1.npy" },
+    { "name": "scale0", "path": "${DATA_DIR}/scale0.npy" },
+    { "name": "scale1", "path": "${DATA_DIR}/scale1.npy" }
+  ],
+  "outputs": [
+    { "name": "out", "path": "${ACTUAL_OUTPUT}" }
+  ],
+  "expected_outputs": [
+    { "name": "out", "path": "${DATA_DIR}/output.npy" }
+  ],
+  "tiling": {
+    "schema": "${DIR}/tiling_space.json",
+    "params": "${TILING_PARAMS}"
+  },
+  "block_dim": ${BLOCK_DIM},
+  "workspace_size": 16777216,
+  "profiling": true,
+  "atol": 1e-2,
+  "rtol": 1e-2
+}
+EOF
+
+$RUNTIME_SESSION \
+  --run-manifest "$RUN_MANIFEST" \
+  --run \
   2>&1 | tee "$VALIDATION_LOG"
 grep -q '^session.backend=sim$' "$VALIDATION_LOG"
 grep -q '^session.result=success$' "$VALIDATION_LOG"

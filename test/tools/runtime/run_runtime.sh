@@ -45,7 +45,7 @@ fi
 cmake -S . -B build -DLLVM_BUILD_DIR="$LLVM_BUILD"
 
 echo "--- Building focused runtime verification targets ---"
-cd build && cmake --build . --target AscendCRuntime AFIRRuntimeCAPI runtime-session afir-opt afir-translate compiler validator -j2 && cd ..
+cd build && cmake --build . --target AscendCRuntime AFIRRuntimeCAPI runtime-session afir-opt afir-translate -j2 && cd ..
 
 echo "--- Checking runtime-session CLI ---"
 test -x build/bin/runtime-session

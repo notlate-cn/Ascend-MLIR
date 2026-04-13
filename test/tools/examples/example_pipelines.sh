@@ -47,14 +47,6 @@ for tool in bash python3 afir-opt afir-translate; do
   fi
 done
 
-if ! require_tool compiler; then
-  fail "compiler is unavailable"
-fi
-
-if ! require_tool validator; then
-  fail "validator is unavailable"
-fi
-
 if ! python3 -c 'import numpy' >/dev/null 2>&1; then
   fail "python3 numpy module is unavailable"
 fi
@@ -85,19 +77,21 @@ run_example() {
     return
   fi
 
-  if ! grep -q '^PASS$' "${log_file}"; then
-    echo "FAIL [${name}] missing PASS marker"
-    tail -n 80 "${log_file}" || true
-    failures+=("${name}:pass-marker")
-    return
-  fi
-
   if [[ "${name}" == "matmul-add-leakyrelu" ]]; then
-    if ! grep -q 'max_abs_diff=0.000000e+00' "${log_file}" || \
+    if ! grep -q '^PASS$' "${log_file}" || \
+       ! grep -q 'max_abs_diff=0.000000e+00' "${log_file}" || \
        ! grep -q 'mean_abs_diff=0.000000e+00' "${log_file}"; then
-      echo "FAIL [${name}] missing zero-diff markers"
+      echo "FAIL [${name}] missing mix validation markers"
       tail -n 80 "${log_file}" || true
-      failures+=("${name}:zero-diff")
+      failures+=("${name}:mix-markers")
+      return
+    fi
+  else
+    if ! grep -q '^session.result=success$' "${log_file}" || \
+       ! grep -q '^session.validation=pass$' "${log_file}"; then
+      echo "FAIL [${name}] missing runtime-session success markers"
+      tail -n 80 "${log_file}" || true
+      failures+=("${name}:runtime-session-markers")
       return
     fi
   fi
