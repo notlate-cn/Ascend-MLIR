@@ -3,6 +3,7 @@
 #include "Runtime/ExecutionSession.h"
 #include "Runtime/NpyIO.h"
 #include "Runtime/ProfileTrace.h"
+#include "Runtime/ProfileUtils.h"
 #include "Runtime/TaskGraph.h"
 #include "llvm/ADT/SmallString.h"
 #include "llvm/ADT/StringRef.h"
@@ -636,6 +637,8 @@ struct SearchResult {
   int64_t   cycle_count  = -1;
   double    max_abs_diff = 0.0;
   bool      passed       = false;
+  std::string profile_path;
+  std::string session_summary_path;
   std::string candidate_dir;
 };
 
@@ -715,6 +718,15 @@ static llvm::Error writeBestConfigJson(const std::string &path,
   root["passed"] = best.passed;
   root["kernel_file"] = space.kernel_file;
 
+  llvm::json::Object bestObject;
+  bestObject["block_dim"] = best.block_dim;
+  bestObject["cycle_count"] = best.cycle_count;
+  bestObject["score"] = best.cycle_count;
+  bestObject["max_abs_diff"] = best.max_abs_diff;
+  bestObject["profile_path"] = best.profile_path;
+  bestObject["session_summary_path"] = best.session_summary_path;
+  root["best"] = std::move(bestObject);
+
   llvm::json::Object config;
   for (const auto &kv : best.config)
     config[kv.first] = kv.second;
@@ -767,6 +779,17 @@ static std::vector<SearchResult> runSearch(
   int total = static_cast<int>(combos.size());
   std::vector<SearchResult> results;
   ExecutionSession session(ExecutionBackendKind::Simulation);
+  std::error_code tempDirError;
+  const std::filesystem::path retainedProfileRoot =
+      ProfileOutDir.empty()
+          ? (std::filesystem::temp_directory_path(tempDirError) /
+             "ascendc-runtime-profiles")
+          : std::filesystem::path(ProfileOutDir.getValue());
+  if (tempDirError) {
+    llvm::errs() << "Error: cannot determine retained profile root: "
+                 << tempDirError.message() << "\n";
+    return results;
+  }
 
   for (int ci = 0; ci < total; ++ci) {
     std::map<std::string, int64_t> vars = shape;
@@ -880,8 +903,25 @@ static std::vector<SearchResult> runSearch(
       continue;
     }
 
+    auto retainedOr =
+        retainProfileArtifactsForCli(*traceOr, retainedProfileRoot.string());
+    if (!retainedOr) {
+      llvm::outs() << " FAIL  "
+                   << llvm::toString(retainedOr.takeError()) << "\n";
+      llvm::outs().flush();
+      results.push_back(std::move(sr));
+      continue;
+    }
+
     sr.cycle_count = *scoreOr;
     sr.passed = true;
+    const std::vector<std::string> retainedArtifacts =
+        retainedOr->profileArtifactPaths();
+    if (!retainedArtifacts.empty())
+      sr.profile_path = retainedArtifacts.front();
+    sr.session_summary_path =
+        retainedProfileSessionSummaryPath(retainedProfileRoot.string(),
+                                          retainedOr->sessionId);
     llvm::outs() << " PASS score=" << sr.cycle_count << "\n";
     llvm::outs().flush();
     results.push_back(sr);
