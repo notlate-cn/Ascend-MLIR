@@ -125,6 +125,31 @@ llvm::Expected<KernelKind> parseManifestKernelKind(llvm::StringRef name) {
   return parseKernelKind(name);
 }
 
+llvm::Expected<MixResourceType>
+parseManifestMixResourceType(llvm::StringRef name, KernelKind kind) {
+  if (name.empty()) {
+    if (kind == KernelKind::Mix)
+      return MixResourceType::Mix1C1V;
+    return MixResourceType::Unknown;
+  }
+
+  const std::string normalized = name.trim().lower();
+  if (normalized == "unknown")
+    return MixResourceType::Unknown;
+  if (normalized == "aiv_only" || normalized == "aivonly")
+    return MixResourceType::AIVOnly;
+  if (normalized == "aic_only" || normalized == "aiconly")
+    return MixResourceType::AICOnly;
+  if (normalized == "mix_1c1v" || normalized == "mix1c1v")
+    return MixResourceType::Mix1C1V;
+  if (normalized == "mix_1c2v" || normalized == "mix1c2v")
+    return MixResourceType::Mix1C2V;
+
+  return llvm::createStringError(llvm::inconvertibleErrorCode(),
+                                 "unsupported mix resource type in manifest: %s",
+                                 name.str().c_str());
+}
+
 std::string defaultKernelName(llvm::StringRef kernelFile,
                               llvm::StringRef artifactRoot) {
   if (!kernelFile.empty())
@@ -237,7 +262,13 @@ llvm::Expected<KernelArtifact> loadArtifactFromRoot(llvm::StringRef artifactRoot
   if (!parsedKernelKindOr)
     return parsedKernelKindOr.takeError();
   artifact.kernelKind = *parsedKernelKindOr;
-  artifact.mixResourceType = MixResourceType::Unknown;
+  auto mixResourceTypeIt = manifest.find("mix_resource_type");
+  auto parsedMixResourceTypeOr = parseManifestMixResourceType(
+      mixResourceTypeIt != manifest.end() ? mixResourceTypeIt->second : "",
+      artifact.kernelKind);
+  if (!parsedMixResourceTypeOr)
+    return parsedMixResourceTypeOr.takeError();
+  artifact.mixResourceType = *parsedMixResourceTypeOr;
   artifact.socVersion = *socVersionOr;
   artifact.artifactRoot = artifactRoot.str().str();
 

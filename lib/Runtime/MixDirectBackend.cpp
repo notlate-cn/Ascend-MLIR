@@ -1063,6 +1063,8 @@ static llvm::Error writeDebugManifest(const MixAnalyzedKernel &analyzed,
   manifest += std::string("kernel_name=") + runtimeKernelName.str() + "\n";
   manifest += std::string("requested_kernel_name=") + analyzed.kernelName + "\n";
   manifest += std::string("soc_version=") + analyzed.socVersion + "\n";
+  manifest += std::string("kernel_kind=mix\n");
+  manifest += std::string("mix_resource_type=mix_1c1v\n");
   manifest += std::string("source_path=") + sourcePath.str() + "\n";
   if (!hostSourcePath.empty())
     manifest += std::string("host_source_path=") + hostSourcePath.str() + "\n";
