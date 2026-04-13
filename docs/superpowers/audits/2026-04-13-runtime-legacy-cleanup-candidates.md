@@ -15,13 +15,14 @@
 
 - `Legacy/Compiler`
   - Required by `include/Runtime/Artifact/ArtifactCompiler.h` and `lib/Runtime/Artifact/ArtifactCompiler.cpp`.
-  - Still blocks autotuner indirectly through `ArtifactCompiler`.
+  - Still blocks autotuner indirectly for vec/cube source builds through `ArtifactCompiler`.
+  - Also remains on the cleanup-critical path until autotuner's local `--artifact-root` loader is normalized against the canonical runtime artifact loader.
 - `Legacy/Executor`
   - Required by `lib/Runtime/Execution/SimBackend.cpp` and `lib/Runtime/Execution/NpuBackend.cpp`.
-  - Still part of the runtime execution path that autotuner uses transitively through `ExecutionSession`.
+  - The direct legacy execution edges are in the backends; autotuner inherits them only transitively through runtime execution.
 - `Legacy/SimValidator`
   - Required by `lib/Runtime/Execution/SimBackend.cpp` and `lib/Runtime/Execution/NpuBackend.cpp`.
-  - Still part of the runtime execution and validation path that autotuner uses transitively through `ExecutionSession`.
+  - The direct validation seam is in the backends; autotuner inherits it only transitively through runtime execution.
 - `Legacy/CompatRuntime`
   - Still used by `lib/CAPI/Runtime/Runtime.cpp` and `test/tools/runtime/test_taskgraph_runtime.cpp`.
   - Must be migrated away from the compatibility adapter boundary before any cleanup attempt.
@@ -34,7 +35,8 @@
 
 ## Verification Requirements
 
-- Any change affecting `Legacy/Compiler` must rerun the autotuner xvm smoke path and confirm `ArtifactCompiler`-backed source builds still produce the same retained profile JSON and best-config summary.
+- Any change affecting `Legacy/Compiler` must rerun the autotuner xvm smoke path and confirm vec/cube `ArtifactCompiler`-backed source builds still produce the same retained profile JSON and best-config summary.
+- Any change affecting the autotuner `--artifact-root` path must verify mix artifact-root loads preserve `mix_resource_type` and do not regress task scheduling.
 - Any change affecting `Legacy/Executor` or `Legacy/SimValidator` must rerun `bash test/tools/runtime/run_runtime.sh` on xvm.
 - Any change affecting `Legacy/CompatRuntime` must rerun the runtime C API and taskgraph runtime coverage that depends on the compat adapter boundary.
 - Any proposed deletion of `Legacy/HostRunnerGen` must update or remove `test/tools/runtime/test_runtime.cpp` and `test/tools/runner/test_runner_gen.cpp` intentionally.
