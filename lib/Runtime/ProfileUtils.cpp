@@ -149,7 +149,7 @@ retainProfileArtifactsForCli(const ProfileTrace &trace,
 
     std::error_code copyError;
     std::filesystem::copy_file(sourcePath.str(), retainedPath.str().str(),
-                               std::filesystem::copy_options::none,
+                               std::filesystem::copy_options::overwrite_existing,
                                copyError);
     if (copyError) {
       return llvm::createStringError(copyError,
@@ -212,7 +212,20 @@ retainProfileArtifactsForCli(const ProfileTrace &trace,
   summaryStream << llvm::formatv("{0:2}",
                                  llvm::json::Value(std::move(summaryObject)))
                 << "\n";
+  summaryStream.flush();
+  if (summaryStream.has_error()) {
+    return llvm::createStringError(
+        llvm::inconvertibleErrorCode(),
+        "cannot flush retained session summary: %s",
+        summaryPath.str().str().c_str());
+  }
   summaryStream.close();
+  if (summaryStream.has_error()) {
+    return llvm::createStringError(
+        llvm::inconvertibleErrorCode(),
+        "cannot finalize retained session summary: %s",
+        summaryPath.str().str().c_str());
+  }
 
   return retained;
 }
