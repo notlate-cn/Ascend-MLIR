@@ -49,9 +49,15 @@ materializeSimulatorProfileArtifactForTest(const ExecutionRequest &request,
 llvm::Expected<ProfileTrace>
 retainProfileArtifactsForCli(const ProfileTrace &trace,
                              llvm::StringRef destinationRoot);
+llvm::Expected<RetainedProfileCliArtifacts>
+retainProfileArtifactsForCliRun(const ProfileTrace &trace,
+                                llvm::StringRef destinationRoot);
 llvm::Error pruneRetainedProfileDirectoriesForTest(llvm::StringRef root,
                                                    size_t keepCount);
 size_t retainedProfilePruneKeepCountForNewSession(size_t sessionLimit);
+llvm::Expected<std::string>
+prepareRetainedProfileRunRootForCli(llvm::StringRef destinationRoot,
+                                    size_t sessionLimit);
 }
 
 static int g_pass = 0;
@@ -2011,6 +2017,59 @@ static void testRetainedProfilePruneKeepCountForNewSession() {
          "pre-run retained profile pruning keeps limit minus one existing sessions");
 }
 
+static void testPrepareRetainedProfileRunRootForCliPrunesBeforeNewSession() {
+  const std::filesystem::path retainRoot =
+      makeTempDir("profile-retain-cli-prepare");
+  std::filesystem::create_directories(retainRoot);
+
+  for (int i = 0; i < 3; ++i) {
+    const std::filesystem::path dir =
+        retainRoot / ("runtime-session--old" + std::to_string(i));
+    std::filesystem::create_directories(dir);
+    std::ofstream(dir / "trace.json") << i;
+    std::filesystem::last_write_time(
+        dir, std::filesystem::file_time_type::clock::now() +
+                 std::chrono::seconds(i));
+  }
+
+  auto preparedOr = prepareRetainedProfileRunRootForCli(retainRoot.string(), 2);
+  EXPECT((bool)preparedOr,
+         "prepareRetainedProfileRunRootForCli succeeds");
+  if (preparedOr) {
+    EXPECT(*preparedOr == retainRoot.string(),
+           "prepareRetainedProfileRunRootForCli keeps the original retain root");
+    EXPECT(std::filesystem::exists(retainRoot / "runtime-session--old2"),
+           "prepareRetainedProfileRunRootForCli keeps the newest existing session");
+    EXPECT(!std::filesystem::exists(retainRoot / "runtime-session--old1"),
+           "prepareRetainedProfileRunRootForCli prunes sessions beyond the reserved slot");
+    EXPECT(!std::filesystem::exists(retainRoot / "runtime-session--old0"),
+           "prepareRetainedProfileRunRootForCli prunes the oldest session");
+  }
+
+  std::error_code ec;
+  std::filesystem::remove_all(retainRoot, ec);
+}
+
+static void testRetainProfileArtifactsForCliRunReturnsSummaryPath() {
+  ProfileTrace trace;
+  const ProfileSummaryRetentionFixture fixture =
+      makeProfileSummaryRetentionFixture(trace, "profile-retain-cli-run");
+
+  auto retainedOr = retainProfileArtifactsForCliRun(trace, fixture.destRoot.string());
+  EXPECT((bool)retainedOr,
+         "retainProfileArtifactsForCliRun succeeds");
+  if (retainedOr) {
+    EXPECT(retainedOr->summaryPath == fixture.summaryPath.string(),
+           "retainProfileArtifactsForCliRun returns retained session summary path");
+    EXPECT(std::filesystem::exists(retainedOr->summaryPath),
+           "retainProfileArtifactsForCliRun materializes summary path");
+    EXPECT(retainedOr->trace.profileArtifactPaths().size() == 2,
+           "retainProfileArtifactsForCliRun returns retained trace");
+  }
+
+  cleanupProfileSummaryRetentionFixture(fixture);
+}
+
 static void testBackendSurfacesProfileTrace() {
   auto driver = std::make_shared<SynthesizingProfileArtifactBackendDriver>();
   auto simOr = createExecutionBackend(ExecutionBackendKind::Simulation, driver);
@@ -3011,6 +3070,8 @@ int main() {
   testRetainProfileArtifactsPrunesOldSessions();
   testRetainProfileArtifactsIgnoresNonDirectories();
   testRetainedProfilePruneKeepCountForNewSession();
+  testPrepareRetainedProfileRunRootForCliPrunesBeforeNewSession();
+  testRetainProfileArtifactsForCliRunReturnsSummaryPath();
   testBackendSurfacesProfileTrace();
   testBackendPreservesExistingProfileTrace();
   testSimulatorProfileSchemaV1Artifact();

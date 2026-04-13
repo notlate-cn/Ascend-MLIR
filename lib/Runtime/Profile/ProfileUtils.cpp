@@ -325,6 +325,19 @@ retainProfileArtifactsForCli(const ProfileTrace &trace,
   return retained;
 }
 
+llvm::Expected<RetainedProfileCliArtifacts>
+retainProfileArtifactsForCliRun(const ProfileTrace &trace,
+                                llvm::StringRef destinationRoot) {
+  auto retainedTraceOr = retainProfileArtifactsForCli(trace, destinationRoot);
+  if (!retainedTraceOr)
+    return retainedTraceOr.takeError();
+
+  return RetainedProfileCliArtifacts{
+      std::move(*retainedTraceOr),
+      retainedProfileSessionSummaryPath(destinationRoot, trace.sessionId),
+  };
+}
+
 namespace {
 
 struct RetainedProfileDirectory {
@@ -396,6 +409,22 @@ llvm::Error pruneRetainedProfileDirectoriesForTest(llvm::StringRef root,
 
 size_t retainedProfilePruneKeepCountForNewSession(size_t sessionLimit) {
   return sessionLimit > 0 ? sessionLimit - 1 : 0;
+}
+
+llvm::Expected<std::string>
+prepareRetainedProfileRunRootForCli(llvm::StringRef destinationRoot,
+                                    size_t sessionLimit) {
+  if (auto ec = llvm::sys::fs::create_directories(destinationRoot))
+    return llvm::createStringError(
+        ec, "cannot create retained profile directory: %s",
+        destinationRoot.str().c_str());
+
+  if (auto pruneErr = pruneRetainedProfileDirectories(
+          destinationRoot,
+          retainedProfilePruneKeepCountForNewSession(sessionLimit)))
+    return std::move(pruneErr);
+
+  return destinationRoot.str();
 }
 
 } // namespace mlir::runtime
