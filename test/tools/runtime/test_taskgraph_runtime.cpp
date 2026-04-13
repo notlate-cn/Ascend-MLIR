@@ -226,6 +226,17 @@ public:
   std::vector<ExecutionRequest> requests;
 };
 
+static RuntimeTask makeGateTask(const std::string &taskId, KernelKind kind,
+                                MixResourceType mixType) {
+  RuntimeTask task;
+  task.taskId = taskId;
+  task.artifact.kernelName = taskId + "_kernel";
+  task.artifact.kernelKind = kind;
+  task.artifact.mixResourceType = mixType;
+  task.artifact.socVersion = "Ascend910B1";
+  return task;
+}
+
 class SuccessfulNpuBackendDriver : public ExecutionBackendDriver {
 public:
   llvm::Expected<ExecutionResult>
@@ -2250,6 +2261,70 @@ static void testExecutionSessionStopsAtGateRejectedTask() {
   }
 }
 
+static void testExecutionSessionRejectsUnknownMixResourceType() {
+  auto driver = std::make_shared<RecordingBackendDriver>();
+  RecordingBackendDriver *driverPtr = driver.get();
+  ExecutionSession session(ExecutionBackendKind::Simulation, driver);
+
+  TaskGraph graph;
+  auto addTaskErr = graph.addTask(
+      makeGateTask("mix_unknown", KernelKind::Mix, MixResourceType::Unknown));
+  EXPECT(!addTaskErr, "scheduler gate unknown mix add task");
+
+  auto traceOr = session.run(graph);
+  EXPECT(!(bool)traceOr, "scheduler gate rejects unknown mix resource type");
+  EXPECT(driverPtr->invocations == 0,
+         "scheduler gate does not invoke backend on rejection");
+  if (!traceOr) {
+    const std::string message = llvm::toString(traceOr.takeError());
+    EXPECT(message.find("unsupported mix resource type") != std::string::npos,
+           "scheduler gate error mentions unsupported mix resource type");
+    EXPECT(message.find("mix_unknown") != std::string::npos,
+           "scheduler gate error mentions task id");
+  }
+}
+
+static void testExecutionSessionAcceptsSupportedMixResourceTypes() {
+  auto driver = std::make_shared<RecordingBackendDriver>();
+  RecordingBackendDriver *driverPtr = driver.get();
+  ExecutionSession session(ExecutionBackendKind::Simulation, driver);
+
+  TaskGraph graph;
+  auto add1 = graph.addTask(
+      makeGateTask("mix_1c1v", KernelKind::Mix, MixResourceType::Mix1C1V));
+  EXPECT(!add1, "scheduler gate add mix_1c1v");
+  auto add2 = graph.addTask(
+      makeGateTask("mix_1c2v", KernelKind::Mix, MixResourceType::Mix1C2V));
+  EXPECT(!add2, "scheduler gate add mix_1c2v");
+
+  auto traceOr = session.run(graph);
+  EXPECT((bool)traceOr,
+         "scheduler gate accepts supported mix resource types");
+  EXPECT(driverPtr->invocations == 2,
+         "scheduler gate invokes backend for both supported mix tasks");
+}
+
+static void testExecutionSessionAcceptsVecAndCubeTasks() {
+  auto driver = std::make_shared<RecordingBackendDriver>();
+  RecordingBackendDriver *driverPtr = driver.get();
+  ExecutionSession session(ExecutionBackendKind::Simulation, driver);
+
+  TaskGraph graph;
+  auto addVec =
+      graph.addTask(makeGateTask("vec_task", KernelKind::Vec,
+                                 MixResourceType::Unknown));
+  EXPECT(!addVec, "scheduler gate add vec task");
+  auto addCube =
+      graph.addTask(makeGateTask("cube_task", KernelKind::Cube,
+                                 MixResourceType::Unknown));
+  EXPECT(!addCube, "scheduler gate add cube task");
+
+  auto traceOr = session.run(graph);
+  EXPECT((bool)traceOr, "scheduler gate accepts vec and cube tasks");
+  EXPECT(driverPtr->invocations == 2,
+         "scheduler gate invokes backend for vec and cube tasks");
+}
+
 static void testRunManifestParsesVecSimulationSpec() {
   const std::string manifestPath = "/tmp/runtime_run_manifest.json";
   {
@@ -2567,6 +2642,9 @@ int main() {
   testExecutionSessionCarriesInvocationBindings();
   testExecutionSessionResolvesTaskOutputBindings();
   testExecutionSessionStopsAtGateRejectedTask();
+  testExecutionSessionRejectsUnknownMixResourceType();
+  testExecutionSessionAcceptsSupportedMixResourceTypes();
+  testExecutionSessionAcceptsVecAndCubeTasks();
   testRunManifestParsesVecSimulationSpec();
   testRunManifestParsesOutputMetadataWithoutExpectedOutputs();
   testRunManifestParsesTaskOutputBinding();
