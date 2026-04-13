@@ -158,6 +158,10 @@ build/bin/runtime-session \
 test -f "${RUNTIME_SESSION_ACTUAL_OUTPUT}"
 grep -q '^session.profile.session_id=' /tmp/runtime_session_run.log
 grep -q '^session.profile.count=' /tmp/runtime_session_run.log
+grep -q '^session.profile.summary=' /tmp/runtime_session_run.log
+RUNTIME_SESSION_RUN_SUMMARY="$(sed -n 's/^session\.profile\.summary=//p' /tmp/runtime_session_run.log | head -n1)"
+test -f "${RUNTIME_SESSION_RUN_SUMMARY}"
+printf 'session.profile.summary=%s\n' "${RUNTIME_SESSION_RUN_SUMMARY}"
 
 echo "--- Checking runtime-session DAG simulation path ---"
 cat > "${RUNTIME_SESSION_DAG_MANIFEST}" <<EOF
@@ -214,6 +218,10 @@ build/bin/runtime-session \
 test -f "${RUNTIME_SESSION_DAG_OUTPUT}"
 grep -q '^session.profile.session_id=' /tmp/runtime_session_dag_run.log
 grep -q '^session.profile.count=' /tmp/runtime_session_dag_run.log
+grep -q '^session.profile.summary=' /tmp/runtime_session_dag_run.log
+RUNTIME_SESSION_DAG_SUMMARY="$(sed -n 's/^session\.profile\.summary=//p' /tmp/runtime_session_dag_run.log | head -n1)"
+test -f "${RUNTIME_SESSION_DAG_SUMMARY}"
+printf 'session.profile.summary=%s\n' "${RUNTIME_SESSION_DAG_SUMMARY}"
 
 echo "--- Checking runtime-session NPU path reaches unified backend ---"
 cat > "${RUNTIME_SESSION_NPU_MANIFEST}" <<EOF
