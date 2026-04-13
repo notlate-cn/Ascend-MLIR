@@ -165,6 +165,35 @@ static std::filesystem::path makeRuntimeSessionArtifactRoot(
   return root;
 }
 
+static std::filesystem::path makeRuntimeSessionVecArtifactRoot(
+    const std::string &stem) {
+  std::filesystem::path root = makeTempDir(stem);
+  std::filesystem::create_directories(root / "out");
+
+  std::ofstream manifest(root / "out" / "manifest.txt");
+  if (!manifest) {
+    llvm::errs() << "FAIL: cannot write runtime session manifest "
+                 << (root / "out" / "manifest.txt").string() << "\n";
+    ++g_fail;
+    return {};
+  }
+
+  manifest << "kernel_name=fake_vec\n";
+  manifest << "soc_version=Ascend910B1\n";
+  manifest << "kernel_kind=vec\n";
+  manifest << "device_binary_path=fake.bin\n";
+
+  std::ofstream binary(root / "fake.bin", std::ios::binary);
+  if (!binary) {
+    llvm::errs() << "FAIL: cannot write runtime session binary "
+                 << (root / "fake.bin").string() << "\n";
+    ++g_fail;
+    return {};
+  }
+  binary.put('\0');
+  return root;
+}
+
 static std::filesystem::path makeRuntimeSessionArtifactRootWithoutKernelKind(
     const std::string &stem) {
   std::filesystem::path root = makeTempDir(stem);
@@ -533,7 +562,7 @@ static void testKernelArtifactNormalization() {
          "normalized mix artifact stores compile root, not work dir");
 }
 
-static void testRuntimeSessionRequestBuilderLoadsArtifactFromRoot() {
+static void testRuntimeSessionRequestBuilderLoadsMixArtifactFromRoot() {
   const std::filesystem::path rootPath =
       makeRuntimeSessionArtifactRoot("runtime-session-builder-artifact");
   RuntimeSessionTempRoot cleanup(rootPath);
@@ -559,6 +588,29 @@ static void testRuntimeSessionRequestBuilderLoadsArtifactFromRoot() {
   EXPECT(artifactOr->manifestPath ==
              (cleanup.path / "out" / "manifest.txt").string(),
          "runtime session builder keeps manifest path");
+}
+
+static void testRuntimeSessionRequestBuilderLoadsVecArtifactFromRoot() {
+  const std::filesystem::path rootPath =
+      makeRuntimeSessionVecArtifactRoot("runtime-session-builder-vec");
+  RuntimeSessionTempRoot cleanup(rootPath);
+  EXPECT(!cleanup.path.empty(), "runtime session builder vec fixture root created");
+  if (cleanup.path.empty())
+    return;
+
+  auto artifactOr = loadRuntimeSessionArtifactFromRoot(cleanup.path.string());
+  EXPECT((bool)artifactOr, "runtime session builder loads vec artifact root");
+  if (!artifactOr) {
+    llvm::consumeError(artifactOr.takeError());
+    return;
+  }
+
+  EXPECT(artifactOr->kernelKind == KernelKind::Vec,
+         "runtime session builder preserves vec kernel kind");
+  EXPECT(artifactOr->mixResourceType == MixResourceType::Unknown,
+         "runtime session builder keeps vec mix resource type unknown");
+  EXPECT(artifactOr->artifactRoot == cleanup.path.string(),
+         "runtime session builder keeps vec artifact root");
 }
 
 static void testRuntimeSessionRequestBuilderRejectsUnsupportedKernelKind() {
@@ -3222,7 +3274,8 @@ int main() {
   testUnknownDependency();
   testCycleDetection();
   testKernelArtifactNormalization();
-  testRuntimeSessionRequestBuilderLoadsArtifactFromRoot();
+  testRuntimeSessionRequestBuilderLoadsMixArtifactFromRoot();
+  testRuntimeSessionRequestBuilderLoadsVecArtifactFromRoot();
   testRuntimeSessionRequestBuilderRejectsUnsupportedKernelKind();
   testRuntimeSessionRequestBuilderRejectsMissingKernelKind();
   testRuntimeSessionRequestBuilderBuildsSingleTaskGraph();
