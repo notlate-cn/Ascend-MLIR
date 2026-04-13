@@ -1,11 +1,16 @@
 // lib/Runtime/NpyIO.cpp
 #include "Runtime/NpyIO.h"
+#include "llvm/ADT/SmallString.h"
+#include "llvm/Support/FileSystem.h"
+#include "llvm/Support/Path.h"
 #include <cstdint>
 #include <cstring>
+#include <filesystem>
 #include <fstream>
 #include <regex>
 #include <sstream>
 #include <string>
+#include <unistd.h>
 
 namespace mlir::runtime {
 
@@ -84,10 +89,27 @@ llvm::Expected<NDArray> LoadNpy(const std::string& path) {
 }
 
 llvm::Error SaveNpy(const std::string& path, const NDArray& arr) {
-  std::ofstream f(path, std::ios::binary);
+  std::filesystem::path targetPath(path);
+  std::filesystem::path parentPath =
+      targetPath.has_parent_path() ? targetPath.parent_path()
+                                   : std::filesystem::current_path();
+
+  llvm::SmallString<256> tempPattern(parentPath.string());
+  llvm::sys::path::append(
+      tempPattern,
+      targetPath.filename().string() + ".%%%%%%%%.tmp");
+
+  int tempFd = -1;
+  llvm::SmallString<256> tempPath;
+  if (auto ec = llvm::sys::fs::createUniqueFile(tempPattern, tempFd, tempPath))
+    return llvm::createStringError(ec, "Cannot create temp npy file for: %s",
+                                   path.c_str());
+  ::close(tempFd);
+
+  std::ofstream f(tempPath.c_str(), std::ios::binary | std::ios::trunc);
   if (!f)
     return llvm::createStringError(llvm::inconvertibleErrorCode(),
-                                   "Cannot write: %s", path.c_str());
+                                   "Cannot write: %s", tempPath.c_str());
 
   const char* descr = nullptr;
   switch (arr.dtype) {
@@ -120,6 +142,24 @@ llvm::Error SaveNpy(const std::string& path, const NDArray& arr) {
   f.write(reinterpret_cast<char*>(&hlen), 2);
   f.write(dict.data(), dict.size());
   f.write(reinterpret_cast<const char*>(arr.data), arr.nbytes());
+  f.close();
+
+  if (!f)
+    return llvm::createStringError(llvm::inconvertibleErrorCode(),
+                                   "Cannot finalize temp npy file: %s",
+                                   tempPath.c_str());
+
+  std::error_code removeEc;
+  std::filesystem::remove(targetPath, removeEc);
+
+  std::error_code renameEc;
+  std::filesystem::rename(tempPath.c_str(), targetPath, renameEc);
+  if (renameEc) {
+    std::filesystem::remove(tempPath.c_str(), removeEc);
+    return llvm::createStringError(renameEc,
+                                   "Cannot replace npy output: %s",
+                                   path.c_str());
+  }
   return llvm::Error::success();
 }
 
