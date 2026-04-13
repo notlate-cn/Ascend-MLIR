@@ -1,12 +1,3 @@
 #pragma once
 
-#include "Runtime/MixAbi.h"
-#include "llvm/ADT/StringRef.h"
-#include "llvm/Support/Error.h"
-
-namespace mlir::runtime {
-
-llvm::Expected<MixAbiMetadata>
-extractMixAbiFromCannMlir(llvm::StringRef cannMlirPath);
-
-} // namespace mlir::runtime
+#include "Runtime/Mix/MixAbiExtractor.h"
