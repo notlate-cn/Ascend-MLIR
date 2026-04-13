@@ -53,12 +53,27 @@ void addProfileArtifact(ProfileTrace &trace, llvm::StringRef taskId,
       makeProfileArtifactEvent(taskId, backend, artifactPath));
 }
 
+std::string retainedProfileSessionDirectory(llvm::StringRef destinationRoot,
+                                            llvm::StringRef sessionId) {
+  llvm::SmallString<256> retainedSessionDir(destinationRoot);
+  llvm::sys::path::append(retainedSessionDir, sessionId);
+  return retainedSessionDir.str().str();
+}
+
+std::string retainedProfileSessionSummaryPath(llvm::StringRef destinationRoot,
+                                              llvm::StringRef sessionId) {
+  llvm::SmallString<256> summaryPath(
+      retainedProfileSessionDirectory(destinationRoot, sessionId));
+  llvm::sys::path::append(summaryPath, "session_summary.json");
+  return summaryPath.str().str();
+}
+
 llvm::Expected<ProfileTrace>
 retainProfileArtifactsForCli(const ProfileTrace &trace,
                              llvm::StringRef destinationRoot) {
   ProfileTrace retained = trace;
-  llvm::SmallString<256> retainedSessionDir(destinationRoot);
-  llvm::sys::path::append(retainedSessionDir, trace.sessionId);
+  llvm::SmallString<256> retainedSessionDir(
+      retainedProfileSessionDirectory(destinationRoot, trace.sessionId));
   llvm::SmallString<256> retainedTaskDir(retainedSessionDir);
   llvm::sys::path::append(retainedTaskDir, "tasks");
 
@@ -199,8 +214,8 @@ retainProfileArtifactsForCli(const ProfileTrace &trace,
   summaryObject["total_score"] = totalScore;
   summaryObject["total_cycle_count"] = totalCycleCount;
 
-  llvm::SmallString<256> summaryPath(retainedSessionDir);
-  llvm::sys::path::append(summaryPath, "session_summary.json");
+  llvm::SmallString<256> summaryPath(
+      retainedProfileSessionSummaryPath(destinationRoot, trace.sessionId));
   std::error_code writeError;
   llvm::raw_fd_ostream summaryStream(summaryPath, writeError,
                                      llvm::sys::fs::OF_Text);

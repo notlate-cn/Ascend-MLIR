@@ -583,7 +583,8 @@ int main(int argc, char **argv) {
             std::filesystem::path(*retainRootOr).parent_path().string(),
             RetainedProfileSessionLimit))
       llvm::consumeError(std::move(pruneErr));
-    retainedSummaryPath = (retainedSessionDir / "session_summary.json").string();
+    retainedSummaryPath = retainedProfileSessionSummaryPath(
+        retainedSessionDir.parent_path().string(), trace.sessionId);
   }
   printRunSuccessSummary(backendKind, validationRan, trace);
   if (!retainedSummaryPath.empty() &&
