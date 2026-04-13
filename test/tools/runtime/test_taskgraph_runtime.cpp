@@ -119,6 +119,8 @@ static std::vector<uint8_t> readBinaryFile(const std::string &path) {
                               std::istreambuf_iterator<char>());
 }
 
+static std::string readFileContents(const std::string &path);
+
 static std::string readTextFile(const std::string &path) {
   std::ifstream is(path);
   if (!is) {
@@ -570,7 +572,6 @@ static void testVecCubeArtifactBackendCompilesVecArtifact() {
   if (cleanup.path.empty())
     return;
 
-  std::filesystem::create_directories(cleanup.path / "out");
   const std::filesystem::path sourcePath = cleanup.path / "kernel.cpp";
   {
     std::ofstream os(sourcePath);
@@ -604,6 +605,10 @@ static void testVecCubeArtifactBackendCompilesVecArtifact() {
   EXPECT(std::filesystem::path(artifactOr->manifestPath).parent_path().filename() ==
              "out",
          "vec cube backend manifest path parent directory is out");
+  const std::string manifestContents =
+      readFileContents(artifactOr->manifestPath);
+  EXPECT(manifestContents.find("kernel_kind=vec") != std::string::npos,
+         "vec cube backend manifest records vec kernel kind");
 }
 
 static void testVecCubeArtifactBackendCompilesCubeArtifact() {
@@ -613,7 +618,6 @@ static void testVecCubeArtifactBackendCompilesCubeArtifact() {
   if (cleanup.path.empty())
     return;
 
-  std::filesystem::create_directories(cleanup.path / "out");
   const std::filesystem::path sourcePath = cleanup.path / "kernel.cpp";
   {
     std::ofstream os(sourcePath);
@@ -647,6 +651,10 @@ static void testVecCubeArtifactBackendCompilesCubeArtifact() {
   EXPECT(std::filesystem::path(artifactOr->manifestPath).parent_path().filename() ==
              "out",
          "vec cube backend manifest path parent directory is out");
+  const std::string manifestContents =
+      readFileContents(artifactOr->manifestPath);
+  EXPECT(manifestContents.find("kernel_kind=cube") != std::string::npos,
+         "vec cube backend manifest records cube kernel kind");
 }
 
 static void testRuntimeSessionRequestBuilderLoadsMixArtifactFromRoot() {
