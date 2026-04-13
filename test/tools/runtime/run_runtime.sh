@@ -61,6 +61,8 @@ build/bin/runtime-session --help | grep -q "task graph runtime"
 
 FAKE_ARTIFACT_ROOT="$(mktemp -d)"
 INVALID_STDERR=""
+CONFLICT_STDERR=""
+INVALID_KIND_STDERR=""
 RUN_STDERR=""
 TEST_RUNTIME_BIN="$(mktemp /tmp/test_runtime.XXXXXX)"
 TEST_TASKGRAPH_RUNTIME_BIN="$(mktemp /tmp/test_taskgraph_runtime.XXXXXX)"
@@ -81,6 +83,7 @@ cleanup() {
   rm -rf "$RUNTIME_SESSION_ARTIFACT_ROOT"
   rm -rf "$RUNTIME_SESSION_SECOND_ARTIFACT_ROOT"
   rm -f "$INVALID_STDERR" "$RUN_STDERR" "$TEST_RUNTIME_BIN" \
+        "$CONFLICT_STDERR" "$INVALID_KIND_STDERR" \
         "$TEST_TASKGRAPH_RUNTIME_BIN" "$TEST_CAPI_RUNTIME_BIN" \
         "$RUNTIME_SESSION_RUN_MANIFEST" \
         "$RUNTIME_SESSION_ACTUAL_OUTPUT" "$RUNTIME_SESSION_DAG_MANIFEST" \
@@ -109,6 +112,23 @@ if build/bin/runtime-session --artifact-root "${FAKE_ARTIFACT_ROOT}/missing" 2>"
   exit 1
 fi
 grep -q "cannot access artifact root" "${INVALID_STDERR}"
+
+CONFLICT_STDERR="$(mktemp)"
+if build/bin/runtime-session \
+    --artifact-root "${FAKE_ARTIFACT_ROOT}" \
+    --kernel examples/relu-broadcast-transpose/step8_kernel.cpp \
+    2>"${CONFLICT_STDERR}"; then
+  echo "Error: conflicting runtime-session inputs unexpectedly succeeded" >&2
+  exit 1
+fi
+grep -q "provide exactly one of --artifact-root or --kernel" "${CONFLICT_STDERR}"
+
+INVALID_KIND_STDERR="$(mktemp)"
+if build/bin/runtime-session --kernel-kind invalid 2>"${INVALID_KIND_STDERR}"; then
+  echo "Error: runtime-session invalid kernel-kind unexpectedly succeeded" >&2
+  exit 1
+fi
+grep -q "provide exactly one of --artifact-root or --kernel" "${INVALID_KIND_STDERR}"
 
 if build/bin/runtime-session --artifact-root "${FAKE_ARTIFACT_ROOT}" --run 2>"${RUN_STDERR}"; then
   echo "Error: runtime-session --run unexpectedly succeeded" >&2
