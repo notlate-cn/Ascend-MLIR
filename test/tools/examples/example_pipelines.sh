@@ -41,7 +41,7 @@ fi
 # shellcheck source=/dev/null
 source "${REPO_ROOT}/examples/env.sh"
 
-for tool in bash python3 afir-opt afir-translate; do
+for tool in bash python3 afir-opt afir-translate runtime-session mix-compiler; do
   if ! require_tool "${tool}"; then
     fail "required tool '${tool}' is unavailable"
   fi

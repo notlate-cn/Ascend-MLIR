@@ -369,28 +369,48 @@ llvm::StringRef backendName(ExecutionBackendKind backendKind) {
 }
 
 std::pair<std::string, std::string> parseErrorStage(llvm::StringRef message) {
-  if (!message.starts_with("[npu:"))
+  if (!message.starts_with("["))
     return {"", message.str()};
   const size_t end = message.find(']');
-  if (end == llvm::StringRef::npos || end <= 5)
+  if (end == llvm::StringRef::npos || end <= 1)
     return {"", message.str()};
-  std::string stage = message.slice(5, end).str();
+  llvm::StringRef prefix = message.slice(1, end);
+  const size_t split = prefix.find(':');
+  if (split == llvm::StringRef::npos || split + 1 >= prefix.size())
+    return {"", message.str()};
+  std::string stage = prefix.drop_front(split + 1).str();
   llvm::StringRef remainder = message.drop_front(end + 1).trim();
   return {std::move(stage), remainder.str()};
 }
 
+bool graphRequestsValidation(const TaskGraph &graph) {
+  auto tasksOr = graph.orderedTasks();
+  if (!tasksOr)
+    return false;
+  for (const RuntimeTask &task : *tasksOr) {
+    if (!task.invocation.expectedOutputs.empty())
+      return true;
+  }
+  return false;
+}
+
 void printRunSuccessSummary(ExecutionBackendKind backendKind,
+                            bool validationRan,
                             const ProfileTrace &trace) {
   llvm::outs() << "session.backend=" << backendName(backendKind) << "\n";
   llvm::outs() << "session.result=success\n";
+  if (validationRan)
+    llvm::outs() << "session.validation=pass\n";
   printProfileTraceSummary(trace);
 }
 
 void printRunErrorSummary(ExecutionBackendKind backendKind,
-                          llvm::StringRef message) {
+                          bool validationRan, llvm::StringRef message) {
   llvm::errs() << "session.backend=" << backendName(backendKind) << "\n";
   llvm::errs() << "session.result=error\n";
   auto [stage, detail] = parseErrorStage(message);
+  if (validationRan && stage == "validate")
+    llvm::errs() << "session.validation=fail\n";
   if (!stage.empty())
     llvm::errs() << "session.error_stage=" << stage << "\n";
   llvm::errs() << "session.error=" << detail << "\n";
@@ -474,15 +494,16 @@ int main(int argc, char **argv) {
   if (!RunSession)
     return 0;
 
+  const bool validationRan = graphRequestsValidation(*graph);
   ExecutionSession runSession(backendKind, *testingDriverOr);
   auto traceOr = runSession.run(*graph);
   if (!traceOr) {
     const std::string message = llvm::toString(traceOr.takeError());
-    printRunErrorSummary(backendKind, message);
+    printRunErrorSummary(backendKind, validationRan, message);
     llvm::errs() << "Error: " << message << "\n";
     return 2;
   }
-  printRunSuccessSummary(backendKind, *traceOr);
+  printRunSuccessSummary(backendKind, validationRan, *traceOr);
   if (backendKind == ExecutionBackendKind::Simulation) {
     llvm::outs().flush();
     llvm::errs().flush();
