@@ -495,6 +495,13 @@ extractRuntimeScore(const ProfileTrace &trace) {
         "failed to parse runtime profile JSON: %s", profilePath.c_str());
   }
 
+  if (const auto *object = parsedOr->getAsObject()) {
+    if (auto score = object->getInteger("score"))
+      return *score;
+    if (auto cycles = object->getInteger("cycle_count"))
+      return *cycles;
+  }
+
   int64_t bestScore = std::numeric_limits<int64_t>::min();
   bool foundAny = false;
   collectRuntimeScoreCandidates(*parsedOr, bestScore, foundAny);
