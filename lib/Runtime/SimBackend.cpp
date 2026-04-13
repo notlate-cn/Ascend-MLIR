@@ -8,10 +8,14 @@
 #include "Runtime/TilingPack.h"
 
 #include "llvm/ADT/SmallString.h"
+#include "llvm/Support/JSON.h"
 #include "llvm/Support/Error.h"
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/FormatVariadic.h"
+#include "llvm/Support/Path.h"
+#include "llvm/Support/raw_ostream.h"
 
+#include <chrono>
 #include <cstring>
 #include <cstdlib>
 #include <optional>
@@ -166,6 +170,43 @@ llvm::Error writeActualOutputs(const ExecutionInvocation &invocation,
   return llvm::Error::success();
 }
 
+llvm::Expected<std::string>
+materializeSimulatorProfileArtifact(const ExecutionRequest &request,
+                                    int64_t cycleCount) {
+  llvm::SmallString<256> profileDir(request.workingDirectory);
+  llvm::sys::path::append(profileDir, "opprof", "simulator");
+  if (auto ec = llvm::sys::fs::create_directories(profileDir))
+    return llvm::createStringError(ec,
+                                   "cannot create simulator profile directory: %s",
+                                   profileDir.c_str());
+
+  llvm::SmallString<256> profilePath(profileDir);
+  llvm::sys::path::append(profilePath, "trace.json");
+
+  llvm::json::Object root;
+  root["backend"] = "simulation";
+  root["cycle_count"] = cycleCount;
+  root["elapsed"] = cycleCount;
+  root["score"] = cycleCount;
+  root["task_id"] = request.task.taskId;
+
+  std::error_code ec;
+  llvm::raw_fd_ostream os(profilePath, ec);
+  if (ec)
+    return llvm::createStringError(ec, "cannot write simulator profile artifact: %s",
+                                   profilePath.c_str());
+  llvm::json::OStream jos(os, /*IndentSize=*/2);
+  jos.value(llvm::json::Value(std::move(root)));
+  os << "\n";
+  os.flush();
+  if (os.has_error())
+    return llvm::createStringError(
+        llvm::inconvertibleErrorCode(),
+        "failed to flush simulator profile artifact: %s", profilePath.c_str());
+
+  return profilePath.str().str();
+}
+
 uint32_t magicForKernelKind(KernelKind kind) {
   switch (kind) {
   case KernelKind::Vec:
@@ -242,6 +283,7 @@ runWithExecutor(const ExecutionRequest &request) {
     return stageError("bindings", expectedOutputsOr.takeError());
 
   Executor executor(BackendMode::Simulation);
+  auto runStart = std::chrono::steady_clock::now();
   if (auto err = executor.Initialize())
     return stageError("executor_initialize", std::move(err));
 
@@ -288,6 +330,15 @@ runWithExecutor(const ExecutionRequest &request) {
   result.taskId = request.task.taskId;
   for (const TensorBinding &binding : request.task.invocation.outputs)
     result.producedFiles.push_back(binding.path);
+  if (request.task.invocation.enableProfiling) {
+    auto elapsed = std::chrono::duration_cast<std::chrono::microseconds>(
+        std::chrono::steady_clock::now() - runStart);
+    auto profilePathOr =
+        materializeSimulatorProfileArtifact(request, elapsed.count());
+    if (!profilePathOr)
+      return stageError("profiling", profilePathOr.takeError());
+    result.producedFiles.push_back(*profilePathOr);
+  }
   return result;
 }
 
