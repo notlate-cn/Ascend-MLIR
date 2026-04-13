@@ -1,12 +1,8 @@
 // tools/autotuner/autotuner_main.cpp
 #include "Runtime/ArtifactCompiler.h"
 #include "Runtime/ExecutionSession.h"
-#include "Runtime/HostRunnerGen.h"
 #include "Runtime/NpyIO.h"
-#include "Runtime/PathUtils.h"
 #include "Runtime/ProfileTrace.h"
-#include "Runtime/ProfileUtils.h"
-#include "Runtime/RunManifest.h"
 #include "Runtime/TaskGraph.h"
 #include "llvm/ADT/SmallString.h"
 #include "llvm/ADT/StringRef.h"
@@ -53,15 +49,6 @@ static cl::opt<double> Atol("atol", cl::desc("Absolute tolerance"), cl::init(1.0
 static cl::opt<double> Rtol("rtol", cl::desc("Relative tolerance"), cl::init(1e-2));
 static cl::opt<std::string> ProfileOutDir("profile-out",
     cl::desc("Directory for retained profiling artifacts"), cl::init(""));
-static cl::opt<bool> PerfReport("perf-report",
-    cl::desc("Run msprof op simulator on best config after search (generates performance report)"),
-    cl::init(false));
-static cl::opt<std::string> MsprofPath("msprof",
-    cl::desc("Path to msprof binary (default: auto-detect from ASCEND_HOME_PATH/tools/profiler/bin/msprof)"),
-    cl::init(""));
-static cl::opt<std::string> PerfReportOutDir("perf-report-out",
-    cl::desc("Output directory for perf-report files (default: ./perf_out)"),
-    cl::init("perf_out"));
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -974,102 +961,6 @@ int main(int argc, char** argv) {
   }
 
   cleanupCandidateDirs(best.candidate_dir);
-
-  std::string best_binary_path = !artifact.deviceBinaryPath.empty()
-                                     ? artifact.deviceBinaryPath
-                                     : artifact.packedSharedObjectPath;
-
-  // ── Optional: perf report via msprof op simulator ───────────────────────────
-  if (PerfReport) {
-    // Step 1: generate runner executable via HostRunnerGen
-    HostRunnerGen::Config hcfg;
-    hcfg.kernel_name  = ts.kernel_name;
-    hcfg.kernel_type  = ts.kernel_type;
-    hcfg.soc_version  = ts.soc;
-    hcfg.num_inputs   = static_cast<int>(splitComma(InputFiles).size());
-    hcfg.num_outputs  = 1;
-    for (auto& p : ts.params)
-      hcfg.tiling_layout.push_back(p.type);
-
-    // Use same build dir as the binary (derive from best_binary_path)
-    std::string runner_dir = best_binary_path.empty() ? "."
-        : llvm::sys::path::parent_path(best_binary_path).str();
-
-    HostRunnerGen gen;
-    auto runner_or = gen.Generate(hcfg, runner_dir);
-    if (!runner_or) {
-      llvm::errs() << "Warning: --perf-report: runner generation failed: "
-                   << llvm::toString(runner_or.takeError()) << "\n";
-      goto perf_done;
-    }
-    // runner_path declared AFTER the goto above — no jump-over-initialization issue
-    {
-      std::string runner_path = *runner_or;
-
-      // Step 2: build tiling_params and tiling_layout strings for runner CLI
-      std::string tiling_params_str;
-      for (size_t i = 0; i < best.config.size(); ++i) {
-        if (i) tiling_params_str += ",";
-        tiling_params_str += best.config[i].first + "=" +
-                             std::to_string(best.config[i].second);
-      }
-      std::string tiling_layout_str;
-      for (size_t i = 0; i < ts.params.size(); ++i) {
-        if (i) tiling_layout_str += ",";
-        tiling_layout_str += ts.params[i].type;
-      }
-
-      // Step 3: locate msprof binary
-      std::string msprof = MsprofPath;
-      if (msprof.empty()) {
-        auto ascendHomeOr = requireAscendHome();
-        if (!ascendHomeOr) {
-          llvm::errs() << "Warning: --perf-report requires ASCEND_HOME_PATH or "
-                          "ASCEND_TOOLKIT_HOME, or pass --msprof=<path>\n";
-          goto perf_done;
-        }
-        msprof = *ascendHomeOr + "/tools/profiler/bin/msprof";
-      }
-      if (!llvm::sys::fs::exists(msprof)) {
-        llvm::errs() << "Warning: --perf-report: msprof not found at: " << msprof << "\n"
-                     << "  Set ASCEND_HOME_PATH or use --msprof=<path>\n";
-        goto perf_done;
-      }
-
-      // Step 4: create output dir and invoke msprof op simulator.
-      // msprof writes report files to cwd, so we cd into the output dir first.
-      llvm::SmallString<256> out_abs(PerfReportOutDir.getValue());
-      llvm::sys::fs::make_absolute(out_abs);
-      llvm::sys::fs::create_directories(out_abs);
-
-      // cd into output dir so msprof drops files there; use absolute paths for
-      // runner and bin so they resolve correctly from the new cwd.
-      llvm::SmallString<256> runner_abs(runner_path);
-      llvm::sys::fs::make_absolute(runner_abs);
-      llvm::SmallString<256> bin_abs(best_binary_path);
-      llvm::sys::fs::make_absolute(bin_abs);
-
-      std::string cmd = "cd \"" + out_abs.str().str() + "\" && "
-          + "\"" + msprof + "\""
-          + " op simulator --soc-version=" + ts.soc
-          + " \"" + runner_abs.str().str() + "\""
-          + " --bin \"" + bin_abs.str().str() + "\""
-          + " --tiling-params \"" + tiling_params_str + "\""
-          + " --tiling-layout \"" + tiling_layout_str + "\""
-          + " --inputs \"" + InputFiles.getValue() + "\""
-          + " --output /dev/null"
-          + " --block-dim " + std::to_string(best.block_dim);
-
-      llvm::outs() << "\nRunning msprof op simulator ...\n  " << cmd << "\n";
-      llvm::outs().flush();
-      int rc = std::system(cmd.c_str());
-      if (rc != 0)
-        llvm::errs() << "Warning: msprof exited with code " << rc << "\n";
-      else
-        llvm::outs() << "Perf report written to: " << out_abs.str() << "\n";
-    }
-  }
-  perf_done:;
 
   llvm::outs().flush();
   llvm::errs().flush();
