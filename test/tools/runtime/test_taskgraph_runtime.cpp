@@ -1739,13 +1739,13 @@ static void testRetainedSessionSummaryContents() {
              "retained session summary emits two task entries");
       if (tasks && tasks->size() == 2) {
         const auto *task0 = (*tasks)[0].getAsObject();
-        auto profilePath0 = task0 ? task0->getString("profile_path")
-                                  : std::optional<llvm::StringRef>();
+        auto profilePath0 =
+            task0 ? task0->getString("profile_path") : decltype(task0->getString("profile_path")){};
         EXPECT(profilePath0 && *profilePath0 == fixture.mainPath.string(),
                "retained session summary task0 points to tasks/main.json");
         const auto *task1 = (*tasks)[1].getAsObject();
-        auto profilePath1 = task1 ? task1->getString("profile_path")
-                                  : std::optional<llvm::StringRef>();
+        auto profilePath1 =
+            task1 ? task1->getString("profile_path") : decltype(task1->getString("profile_path")){};
         EXPECT(profilePath1 && *profilePath1 == fixture.consumerPath.string(),
                "retained session summary task1 points to tasks/consumer.json");
       }
@@ -1802,6 +1802,62 @@ static void testRetainedSessionSummaryFallsBackBetweenScoreAndCycleCount() {
                "retained session summary falls back missing score values");
         EXPECT(totalCycleCount && *totalCycleCount == 30,
                "retained session summary falls back missing cycle_count values");
+      }
+    } else {
+      llvm::consumeError(parsed.takeError());
+    }
+  }
+
+  std::error_code ec;
+  std::filesystem::remove_all(sourceRoot, ec);
+  std::filesystem::remove_all(destRoot, ec);
+}
+
+static void testRetainProfileArtifactsUsesEventMetricsWithoutParsingJson() {
+  const std::filesystem::path sourceRoot =
+      makeTempDir("profile-retain-summary-event-metrics-src");
+  const std::filesystem::path destRoot =
+      makeTempDir("profile-retain-summary-event-metrics-dst");
+  std::filesystem::create_directories(sourceRoot / "work");
+  std::filesystem::create_directories(destRoot);
+
+  const std::filesystem::path mainPath = sourceRoot / "work" / "main.json";
+  {
+    std::ofstream os(mainPath);
+    os << "this is not valid json";
+  }
+
+  ProfileTrace trace;
+  trace.sessionId = "runtime-session--summary-event-metrics";
+  trace.addEvent(ProfileEvent{
+      "main",
+      ExecutionBackendKind::Simulation,
+      "profile_artifact",
+      mainPath.string(),
+      77,
+      77,
+  });
+
+  const std::filesystem::path summaryPath =
+      destRoot / trace.sessionId / "session_summary.json";
+  auto retainedOr = retainProfileArtifactsForCli(trace, destRoot.string());
+  EXPECT((bool)retainedOr,
+         "retainProfileArtifactsForCli uses in-memory event metrics without reparsing task json");
+  if (retainedOr) {
+    auto parsed = llvm::json::parse(readTextFile(summaryPath.string()));
+    EXPECT((bool)parsed,
+           "retained session summary from event metrics parses as json");
+    if (parsed) {
+      const auto *object = parsed->getAsObject();
+      EXPECT(object != nullptr,
+             "retained session summary from event metrics is a json object");
+      if (object) {
+        auto totalScore = object->getInteger("total_score");
+        auto totalCycleCount = object->getInteger("total_cycle_count");
+        EXPECT(totalScore && *totalScore == 77,
+               "retained session summary uses score from event metrics");
+        EXPECT(totalCycleCount && *totalCycleCount == 77,
+               "retained session summary uses cycle_count from event metrics");
       }
     } else {
       llvm::consumeError(parsed.takeError());
@@ -2102,7 +2158,8 @@ static void testSimulatorProfileSchemaV1Artifact() {
            "sim profile trace input0 dtype");
     EXPECT(input0 && input0->getArray("shape") &&
                input0->getArray("shape")->size() == 2 &&
-               input0->getArray("shape")->front().getAsInteger() == 4,
+               input0->getArray("shape")->front().getAsInteger() &&
+               *input0->getArray("shape")->front().getAsInteger() == 4,
            "sim profile trace input0 shape");
   }
 
@@ -2118,7 +2175,8 @@ static void testSimulatorProfileSchemaV1Artifact() {
            "sim profile trace output dtype");
     EXPECT(output0 && output0->getArray("shape") &&
                output0->getArray("shape")->size() == 2 &&
-               output0->getArray("shape")->front().getAsInteger() == 2,
+               output0->getArray("shape")->front().getAsInteger() &&
+               *output0->getArray("shape")->front().getAsInteger() == 2,
            "sim profile trace output shape");
   }
 
@@ -2896,6 +2954,7 @@ int main() {
   testRetainProfileArtifactsCreatesSessionSummary();
   testRetainedSessionSummaryContents();
   testRetainedSessionSummaryFallsBackBetweenScoreAndCycleCount();
+  testRetainProfileArtifactsUsesEventMetricsWithoutParsingJson();
   testRetainProfileArtifactsFailsOnDuplicateTaskIds();
   testRetainProfileArtifactsPrunesOldSessions();
   testRetainProfileArtifactsIgnoresNonDirectories();

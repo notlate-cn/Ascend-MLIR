@@ -18,11 +18,15 @@ normalizeSimulatorProfileTrace(llvm::StringRef sessionId,
 
 ProfileEvent makeProfileArtifactEvent(llvm::StringRef taskId,
                                       ExecutionBackendKind backend,
-                                      llvm::StringRef artifactPath);
+                                      llvm::StringRef artifactPath,
+                                      std::optional<int64_t> score = std::nullopt,
+                                      std::optional<int64_t> cycleCount = std::nullopt);
 
 void addProfileArtifact(ProfileTrace &trace, llvm::StringRef taskId,
                         ExecutionBackendKind backend,
-                        llvm::StringRef artifactPath);
+                        llvm::StringRef artifactPath,
+                        std::optional<int64_t> score = std::nullopt,
+                        std::optional<int64_t> cycleCount = std::nullopt);
 
 std::string retainedProfileSessionDirectory(llvm::StringRef destinationRoot,
                                             llvm::StringRef sessionId);

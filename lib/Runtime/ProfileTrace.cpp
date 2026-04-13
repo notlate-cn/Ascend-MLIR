@@ -11,9 +11,11 @@ void ProfileTrace::addEvent(ProfileEvent event) {
 
 void ProfileTrace::addProfileArtifact(llvm::StringRef taskId,
                                       ExecutionBackendKind backend,
-                                      llvm::StringRef artifactPath) {
+                                      llvm::StringRef artifactPath,
+                                      std::optional<int64_t> score,
+                                      std::optional<int64_t> cycleCount) {
   addEvent(ProfileEvent{taskId.str(), backend, "profile_artifact",
-                        artifactPath.str()});
+                        artifactPath.str(), score, cycleCount});
 }
 
 std::vector<std::string> ProfileTrace::profileArtifactPaths() const {
