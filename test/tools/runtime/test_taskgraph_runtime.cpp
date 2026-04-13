@@ -3123,6 +3123,8 @@ int main() {
   testUnknownDependency();
   testCycleDetection();
   testKernelArtifactNormalization();
+  testRuntimeSessionRequestBuilderLoadsArtifactFromRoot();
+  testRuntimeSessionRequestBuilderBuildsSingleTaskGraph();
   testMixValidationCanBeRepresentedAsRuntimeTask();
   testArtifactCompilerRequestValidation();
   testCompatCompileRequestPreservesFields();
