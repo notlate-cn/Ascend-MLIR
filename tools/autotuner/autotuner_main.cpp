@@ -5,13 +5,13 @@
 #include "Runtime/ProfileTrace.h"
 #include "Runtime/ProfileUtils.h"
 #include "Runtime/TaskGraph.h"
+#include "Runtime/RuntimeSessionRequestBuilder.h"
 #include "llvm/ADT/SmallString.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/Support/Error.h"
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/JSON.h"
-#include "llvm/Support/MemoryBuffer.h"
 #include "llvm/Support/Path.h"
 #include "llvm/Support/raw_ostream.h"
 #include <algorithm>
@@ -163,37 +163,6 @@ static std::string defaultKernelName(llvm::StringRef kernelFile) {
   return llvm::sys::path::stem(kernelFile).str();
 }
 
-static std::map<std::string, std::string> readManifest(const std::string &path) {
-  std::map<std::string, std::string> out;
-  auto bufferOr = llvm::MemoryBuffer::getFile(path, false);
-  if (!bufferOr)
-    return out;
-
-  llvm::SmallVector<llvm::StringRef> lines;
-  (*bufferOr)->getBuffer().split(lines, '\n');
-  for (llvm::StringRef line : lines) {
-    line = line.trim();
-    if (line.empty() || line.starts_with("#"))
-      continue;
-    size_t split = line.find('=');
-    if (split == llvm::StringRef::npos)
-      continue;
-    out.emplace(line.substr(0, split).str(), line.substr(split + 1).str());
-  }
-  return out;
-}
-
-static llvm::Expected<std::string> requireManifestValue(
-    const std::map<std::string, std::string> &manifest, llvm::StringRef key) {
-  auto it = manifest.find(key.str());
-  if (it == manifest.end() || it->second.empty()) {
-    return llvm::createStringError(llvm::inconvertibleErrorCode(),
-                                   "manifest is missing required field: %s",
-                                   key.str().c_str());
-  }
-  return it->second;
-}
-
 static std::string resolveArtifactPath(llvm::StringRef artifactRoot,
                                        llvm::StringRef maybeRelativePath) {
   if (maybeRelativePath.empty())
@@ -212,104 +181,6 @@ static std::string resolveAbsolutePath(llvm::StringRef path) {
   llvm::SmallString<256> absolute(path);
   llvm::sys::fs::make_absolute(absolute);
   return absolute.str().str();
-}
-
-static llvm::Expected<std::string> locateManifestPath(llvm::StringRef artifactRoot) {
-  llvm::SmallVector<llvm::SmallString<256>, 3> candidates;
-  candidates.emplace_back(artifactRoot);
-  llvm::sys::path::append(candidates.back(), "out", "manifest.txt");
-  candidates.emplace_back(artifactRoot);
-  llvm::sys::path::append(candidates.back(), "mix-artifact.txt");
-  candidates.emplace_back(artifactRoot);
-  llvm::sys::path::append(candidates.back(), "out", "mix-artifact.txt");
-
-  for (const llvm::SmallString<256> &candidate : candidates) {
-    if (llvm::sys::fs::exists(candidate))
-      return candidate.str().str();
-  }
-
-  return llvm::createStringError(
-      llvm::inconvertibleErrorCode(),
-      "artifact root does not contain a supported manifest (expected out/manifest.txt, mix-artifact.txt, or out/mix-artifact.txt)");
-}
-
-static llvm::Expected<KernelArtifact> loadArtifactFromRoot(llvm::StringRef artifactRootInput) {
-  llvm::SmallString<256> artifactRoot(artifactRootInput);
-  llvm::sys::fs::make_absolute(artifactRoot);
-
-  llvm::sys::fs::file_status status;
-  if (auto ec = llvm::sys::fs::status(artifactRoot, status))
-    return llvm::createStringError(ec, "cannot access artifact root: %s",
-                                   artifactRoot.c_str());
-  if (!llvm::sys::fs::is_directory(status)) {
-    return llvm::createStringError(llvm::inconvertibleErrorCode(),
-                                   "artifact root is not a directory: %s",
-                                   artifactRoot.c_str());
-  }
-
-  auto manifestPathOr = locateManifestPath(artifactRoot.str());
-  if (!manifestPathOr)
-    return manifestPathOr.takeError();
-
-  const std::string manifestPath = *manifestPathOr;
-  const auto manifest = readManifest(manifestPath);
-  if (manifest.empty()) {
-    return llvm::createStringError(llvm::inconvertibleErrorCode(),
-                                   "manifest is empty or unreadable: %s",
-                                   manifestPath.c_str());
-  }
-
-  auto kernelNameOr = requireManifestValue(manifest, "kernel_name");
-  if (!kernelNameOr)
-    return kernelNameOr.takeError();
-  auto socVersionOr = requireManifestValue(manifest, "soc_version");
-  if (!socVersionOr)
-    return socVersionOr.takeError();
-
-  KernelArtifact artifact;
-  artifact.kernelName = *kernelNameOr;
-  auto kernelKindIt = manifest.find("kernel_kind");
-  auto parsedKernelKindOr = parseManifestKernelKind(
-      kernelKindIt != manifest.end() ? kernelKindIt->second : "");
-  if (!parsedKernelKindOr)
-    return parsedKernelKindOr.takeError();
-  artifact.kernelKind = *parsedKernelKindOr;
-  artifact.mixResourceType = MixResourceType::Unknown;
-  artifact.socVersion = *socVersionOr;
-  artifact.artifactRoot = artifactRoot.str().str();
-
-  auto manifestPathIt = manifest.find("manifest_path");
-  if (manifestPathIt != manifest.end() && !manifestPathIt->second.empty()) {
-    artifact.manifestPath =
-        resolveArtifactPath(artifact.artifactRoot, manifestPathIt->second);
-    if (!llvm::sys::fs::exists(artifact.manifestPath)) {
-      return llvm::createStringError(
-          llvm::inconvertibleErrorCode(),
-          "manifest_path from manifest does not exist: %s",
-          artifact.manifestPath.c_str());
-    }
-  } else {
-    artifact.manifestPath = manifestPath;
-  }
-
-  auto kernelSoIt = manifest.find("kernel_so_path");
-  if (kernelSoIt != manifest.end() && !kernelSoIt->second.empty())
-    artifact.packedSharedObjectPath =
-        resolveArtifactPath(artifact.artifactRoot, kernelSoIt->second);
-
-  auto deviceObjectIt = manifest.find("device_object_path");
-  auto deviceBinaryIt = manifest.find("device_binary_path");
-  if (deviceBinaryIt != manifest.end() && !deviceBinaryIt->second.empty()) {
-    artifact.deviceBinaryPath =
-        resolveArtifactPath(artifact.artifactRoot, deviceBinaryIt->second);
-  } else if (deviceObjectIt != manifest.end() && !deviceObjectIt->second.empty()) {
-    artifact.deviceBinaryPath =
-        resolveArtifactPath(artifact.artifactRoot, deviceObjectIt->second);
-  } else if (!artifact.packedSharedObjectPath.empty()) {
-    artifact.deviceBinaryPath = artifact.packedSharedObjectPath;
-  }
-
-  return artifact;
 }
 
 // ── Data structures ───────────────────────────────────────────────────────────
@@ -644,7 +515,7 @@ struct SearchResult {
 
 static llvm::Expected<KernelArtifact> prepareArtifact(const TilingSpace &space) {
   if (!ArtifactRoot.empty())
-    return loadArtifactFromRoot(ArtifactRoot);
+    return loadRuntimeSessionArtifactFromRoot(ArtifactRoot);
 
   std::string kernelPath = !KernelFile.empty() ? KernelFile.getValue()
                                                : space.kernel_file;
