@@ -1,14 +1,12 @@
 // tools/autotuner/autotuner_main.cpp
 #include "Runtime/ArtifactCompiler.h"
 #include "Runtime/ExecutionSession.h"
-#include "Runtime/Executor.h"
 #include "Runtime/HostRunnerGen.h"
 #include "Runtime/NpyIO.h"
 #include "Runtime/PathUtils.h"
 #include "Runtime/ProfileTrace.h"
 #include "Runtime/ProfileUtils.h"
 #include "Runtime/RunManifest.h"
-#include "Runtime/SimValidator.h"
 #include "Runtime/TaskGraph.h"
 #include "llvm/ADT/SmallString.h"
 #include "llvm/ADT/StringRef.h"
@@ -24,6 +22,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <fstream>
+#include <filesystem>
 #include <map>
 #include <sstream>
 #include <unistd.h>
@@ -221,6 +220,14 @@ static std::string resolveArtifactPath(llvm::StringRef artifactRoot,
   return resolved.str().str();
 }
 
+static std::string resolveAbsolutePath(llvm::StringRef path) {
+  if (path.empty())
+    return "";
+  llvm::SmallString<256> absolute(path);
+  llvm::sys::fs::make_absolute(absolute);
+  return absolute.str().str();
+}
+
 static llvm::Expected<std::string> locateManifestPath(llvm::StringRef artifactRoot) {
   llvm::SmallVector<llvm::SmallString<256>, 3> candidates;
   candidates.emplace_back(artifactRoot);
@@ -348,10 +355,149 @@ struct SearchInputs {
 
 struct CandidateExecutionSpec {
   std::vector<std::pair<std::string, int64_t>> params;
+  std::vector<std::string> paramTypes;
   int64_t blockDim = 1;
   std::string actualOutputPath;
   std::string profileOutputDir;
 };
+
+static llvm::Expected<std::vector<TensorBinding>>
+loadInputBindings(const std::vector<std::string> &inputFiles) {
+  std::vector<TensorBinding> bindings;
+  bindings.reserve(inputFiles.size());
+  for (size_t index = 0; index < inputFiles.size(); ++index) {
+    auto arrayOr = LoadNpy(inputFiles[index]);
+    if (!arrayOr)
+      return arrayOr.takeError();
+
+    TensorBinding binding;
+    binding.name = "input" + std::to_string(index);
+    binding.sourceKind = BindingSourceKind::ExternalFile;
+    binding.path = resolveAbsolutePath(inputFiles[index]);
+    binding.shape = arrayOr->shape;
+    binding.dtype = arrayOr->dtype;
+    bindings.push_back(std::move(binding));
+  }
+  return bindings;
+}
+
+static llvm::Expected<TensorBinding>
+buildOutputBinding(const std::string &expectedFile,
+                   const std::string &actualOutputPath) {
+  auto arrayOr = LoadNpy(expectedFile);
+  if (!arrayOr)
+    return arrayOr.takeError();
+
+  TensorBinding binding;
+  binding.name = "output";
+  binding.sourceKind = BindingSourceKind::ExternalFile;
+  binding.path = resolveAbsolutePath(actualOutputPath);
+  binding.shape = arrayOr->shape;
+  binding.dtype = arrayOr->dtype;
+  return binding;
+}
+
+static llvm::Expected<TensorBinding>
+buildExpectedOutputBinding(const std::string &expectedFile) {
+  auto arrayOr = LoadNpy(expectedFile);
+  if (!arrayOr)
+    return arrayOr.takeError();
+
+  TensorBinding binding;
+  binding.name = "expected_output";
+  binding.sourceKind = BindingSourceKind::ExternalFile;
+  binding.path = resolveAbsolutePath(expectedFile);
+  binding.shape = arrayOr->shape;
+  binding.dtype = arrayOr->dtype;
+  return binding;
+}
+
+static std::optional<TilingBinding>
+buildTilingBinding(const std::vector<uint8_t> &tilingBytes,
+                   llvm::StringRef workingDir) {
+  if (tilingBytes.empty())
+    return std::nullopt;
+  if (workingDir.empty())
+    return std::nullopt;
+
+  llvm::SmallString<256> tilingPath(workingDir);
+  llvm::sys::path::append(tilingPath, "tiling.bin");
+
+  if (auto ec = llvm::sys::fs::create_directories(workingDir)) {
+    llvm::errs() << "Warning: failed to create tiling directory "
+                 << workingDir << ": " << ec.message() << "\n";
+    return std::nullopt;
+  }
+
+  std::error_code ec;
+  llvm::raw_fd_ostream os(tilingPath, ec, llvm::sys::fs::OF_None);
+  if (ec) {
+    llvm::errs() << "Warning: failed to write tiling binary "
+                 << tilingPath << ": " << ec.message() << "\n";
+    return std::nullopt;
+  }
+  os.write(reinterpret_cast<const char *>(tilingBytes.data()),
+           static_cast<std::streamsize>(tilingBytes.size()));
+  os.flush();
+  if (os.has_error()) {
+    llvm::errs() << "Warning: failed to flush tiling binary "
+                 << tilingPath << "\n";
+    return std::nullopt;
+  }
+
+  TilingBinding binding;
+  binding.binaryPath = tilingPath.str().str();
+  return binding;
+}
+
+static llvm::Expected<TaskGraph>
+buildCandidateGraph(const KernelArtifact &artifact,
+                    const SearchInputs &inputs,
+                    const CandidateExecutionSpec &candidate) {
+  auto inputBindingsOr = loadInputBindings(inputs.inputFiles);
+  if (!inputBindingsOr)
+    return inputBindingsOr.takeError();
+
+  auto outputBindingOr =
+      buildOutputBinding(inputs.expectedFile, candidate.actualOutputPath);
+  if (!outputBindingOr)
+    return outputBindingOr.takeError();
+
+  auto expectedBindingOr = buildExpectedOutputBinding(inputs.expectedFile);
+  if (!expectedBindingOr)
+    return expectedBindingOr.takeError();
+
+  std::vector<uint8_t> tilingBytes =
+      packTiling(candidate.params, candidate.paramTypes);
+  std::optional<TilingBinding> tilingBinding;
+  if (!tilingBytes.empty()) {
+    tilingBinding = buildTilingBinding(tilingBytes, candidate.profileOutputDir);
+    if (!tilingBinding) {
+      return llvm::createStringError(
+          llvm::inconvertibleErrorCode(),
+          "failed to materialize candidate tiling binary in %s",
+          candidate.profileOutputDir.c_str());
+    }
+  }
+
+  RuntimeTask task;
+  task.taskId = "candidate";
+  task.artifact = artifact;
+  task.invocation.inputs = std::move(*inputBindingsOr);
+  task.invocation.outputs.push_back(std::move(*outputBindingOr));
+  task.invocation.expectedOutputs.push_back(std::move(*expectedBindingOr));
+  task.invocation.tiling = std::move(tilingBinding);
+  task.invocation.blockDim = static_cast<int>(candidate.blockDim);
+  task.invocation.workspaceSize = 8192;
+  task.invocation.enableProfiling = true;
+  task.invocation.atol = inputs.atol;
+  task.invocation.rtol = inputs.rtol;
+
+  TaskGraph graph;
+  if (auto err = graph.addTask(task))
+    return std::move(err);
+  return graph;
+}
 
 static llvm::Expected<TilingSpace> loadTilingSpace(const std::string& path) {
   auto buf = llvm::MemoryBuffer::getFile(path);
@@ -404,6 +550,13 @@ static llvm::Expected<TilingSpace> loadTilingSpace(const std::string& path) {
         if (st > 0)
           for (int64_t x = mn; x <= mx; x += st) p.values.push_back(x);
       }
+    } else {
+      if (auto v = po->getInteger("value"))
+        p.values.push_back(*v);
+      if (auto* arr = po->getArray("values")) {
+        for (auto& av : *arr)
+          if (auto iv = av.getAsInteger()) p.values.push_back(*iv);
+      }
     }
     ts.params.push_back(p);
   }
@@ -418,6 +571,7 @@ struct SearchResult {
   int64_t   cycle_count  = -1;
   double    max_abs_diff = 0.0;
   bool      passed       = false;
+  std::string candidate_dir;
 };
 
 static llvm::Expected<KernelArtifact> prepareArtifact(const TilingSpace &space) {
@@ -535,10 +689,7 @@ static std::vector<SearchResult> runSearch(
     const TilingSpace& ts,
     const std::map<std::string, int64_t>& shape,
     const KernelArtifact& artifact,
-    RunArgs& args_template,
-    const std::vector<NDArray>& expected,
-    double atol, double rtol,
-    std::string* out_binary_path = nullptr) {
+    const SearchInputs& searchInputs) {
 
   std::vector<TilingParam> search_vars;
   for (auto& p : ts.params)
@@ -550,38 +701,7 @@ static std::vector<SearchResult> runSearch(
 
   int total = static_cast<int>(combos.size());
   std::vector<SearchResult> results;
-  std::string binary_path = !artifact.deviceBinaryPath.empty()
-                                ? artifact.deviceBinaryPath
-                                : artifact.packedSharedObjectPath;
-  if (binary_path.empty()) {
-    llvm::errs() << "Error: artifact does not contain a binary path\n";
-    return results;
-  }
-  if (out_binary_path) *out_binary_path = binary_path;
-
-  // Initialize executor once and reuse across all configs.
-  Executor executor;
-  if (auto err = executor.Initialize()) {
-    llvm::errs() << "Error: executor init failed: " << llvm::toString(std::move(err)) << "\n";
-    return results;
-  }
-
-  // Register binary+function once — all configs use the same ELF binary
-  // (tiling is passed as kernel args, not compiled-in). Registering once
-  // avoids rc=507000 from the simulator when the same stub pointer is
-  // re-registered under a new binary handle on subsequent RunFile() calls.
-  auto handle_or = executor.RegisterBinary(binary_path,
-                                           artifact.kernelName.empty()
-                                               ? ts.kernel_name
-                                               : artifact.kernelName);
-  if (!handle_or) {
-    llvm::errs() << "Error: register binary failed: "
-                 << llvm::toString(handle_or.takeError()) << "\n";
-    return results;
-  }
-  void* func_handle = *handle_or;
-
-  SimValidator validator;
+  ExecutionSession session(ExecutionBackendKind::Simulation);
 
   for (int ci = 0; ci < total; ++ci) {
     std::map<std::string, int64_t> vars = shape;
@@ -594,20 +714,24 @@ static std::vector<SearchResult> runSearch(
     for (auto& p : ts.params) {
       int64_t val = 0;
       if (p.fixed) {
-        if (p.shape_key.empty()) {
+        if (!p.shape_key.empty()) {
+          auto it = shape.find(p.shape_key);
+          if (it == shape.end()) {
+            llvm::errs() << "Error: shape key '" << p.shape_key
+                         << "' not found in --shape (needed by param '"
+                         << p.name << "')\n";
+            param_error = true;
+            break;
+          }
+          val = it->second;
+        } else if (!p.values.empty()) {
+          val = p.values.front();
+        } else {
           llvm::errs() << "Error: fixed param '" << p.name
-                       << "' has no shape_key in tiling_space.json\n";
+                       << "' has no shape_key or value in tiling_space.json\n";
           param_error = true;
           break;
         }
-        auto it = shape.find(p.shape_key);
-        if (it == shape.end()) {
-          llvm::errs() << "Error: shape key '" << p.shape_key
-                       << "' not found in --shape (needed by param '" << p.name << "')\n";
-          param_error = true;
-          break;
-        }
-        val = it->second;
       } else {
         auto it = vars.find(p.name);
         val = it != vars.end() ? it->second : 0;
@@ -615,7 +739,8 @@ static std::vector<SearchResult> runSearch(
       param_vals.push_back({p.name, val});
       param_types.push_back(p.type);
     }
-    if (param_error) break;
+    if (param_error)
+      break;
 
     int64_t block_dim = ts.block_dim_expr.empty() ? 1
                         : evalBlockDimExpr(ts.block_dim_expr, vars);
@@ -627,28 +752,63 @@ static std::vector<SearchResult> runSearch(
     llvm::outs() << " block_dim=" << block_dim << " ...";
     llvm::outs().flush();
 
-    std::memset(args_template.outputs[0].data,
-                0, args_template.outputs[0].nbytes());
-
-    args_template.tiling    = packTiling(param_vals, param_types);
-    args_template.block_dim = static_cast<int>(block_dim);
-
-    auto res = validator.ValidateBinary(func_handle, executor, args_template,
-                                        expected, atol, rtol);
-
     SearchResult sr;
     sr.config       = param_vals;
     sr.block_dim    = block_dim;
-    sr.cycle_count  = res.cycle_count;
-    sr.max_abs_diff = res.max_abs_diff;
-    sr.passed       = res.passed;
+    sr.cycle_count  = 0;
+    sr.max_abs_diff = 0.0;
 
-    if (res.passed)
-      llvm::outs() << " PASS  cycles=" << res.cycle_count
-                   << " max_diff=" << res.max_abs_diff << "\n";
-    else
-      llvm::outs() << " FAIL  " << res.error_msg << "\n";
+    llvm::SmallString<256> candidateDir;
+    if (auto ec = llvm::sys::fs::createUniqueDirectory("autotuner_candidate", candidateDir)) {
+      llvm::outs() << " FAIL  cannot create candidate directory: "
+                   << ec.message() << "\n";
+      llvm::outs().flush();
+      results.push_back(std::move(sr));
+      continue;
+    }
+    std::filesystem::path candidatePath(candidateDir.str().str());
+    std::error_code absEc;
+    candidatePath = std::filesystem::absolute(candidatePath, absEc);
+    if (absEc) {
+      llvm::outs() << " FAIL  cannot resolve candidate directory: "
+                   << absEc.message() << "\n";
+      llvm::outs().flush();
+      results.push_back(std::move(sr));
+      continue;
+    }
 
+    sr.candidate_dir = candidatePath.string();
+
+    CandidateExecutionSpec candidate;
+    candidate.params = std::move(param_vals);
+    candidate.paramTypes = std::move(param_types);
+    candidate.blockDim = block_dim;
+    candidate.profileOutputDir = sr.candidate_dir;
+    candidate.actualOutputPath =
+        (candidatePath / "output.npy").string();
+
+    SearchInputs candidateInputs = searchInputs;
+    auto graphOr = buildCandidateGraph(artifact, candidateInputs, candidate);
+    if (!graphOr) {
+      llvm::outs() << " FAIL  "
+                   << llvm::toString(graphOr.takeError()) << "\n";
+      llvm::outs().flush();
+      results.push_back(std::move(sr));
+      continue;
+    }
+
+    auto traceOr = session.run(*graphOr);
+    if (!traceOr) {
+      llvm::outs() << " FAIL  "
+                   << llvm::toString(traceOr.takeError()) << "\n";
+      llvm::outs().flush();
+      results.push_back(std::move(sr));
+      continue;
+    }
+
+    sr.passed = true;
+    llvm::outs() << " PASS\n";
+    llvm::outs().flush();
     results.push_back(sr);
   }
   return results;
@@ -680,61 +840,37 @@ int main(int argc, char** argv) {
 
   auto shape = parseKV(ShapeStr);
 
-  // Load inputs
-  std::vector<NDArray> inputs;
-  for (auto& path : splitComma(InputFiles)) {
-    auto arr_or = LoadNpy(path);
-    if (!arr_or) {
-      for (auto& inp : inputs) delete[] static_cast<uint8_t*>(inp.data);
-      llvm::errs() << "Error loading " << path << ": "
-                   << llvm::toString(arr_or.takeError()) << "\n";
-      _Exit(1);
-    }
-    inputs.push_back(std::move(*arr_or));
-  }
-
-  // Load expected
-  auto exp_or = LoadNpy(ExpectedFile);
-  if (!exp_or) {
-    for (auto& inp : inputs) delete[] static_cast<uint8_t*>(inp.data);
-    llvm::errs() << "Error loading expected: " << llvm::toString(exp_or.takeError()) << "\n";
-    _Exit(1);
-  }
-  std::vector<NDArray> expected_arrs;
-  expected_arrs.push_back(std::move(*exp_or));
-
-  // Pre-alloc output buffer (shape/dtype from expected)
-  NDArray out_buf;
-  out_buf.shape = expected_arrs[0].shape;
-  out_buf.dtype = expected_arrs[0].dtype;
-  out_buf.data  = new uint8_t[out_buf.nbytes()]();
-
-  RunArgs args_tmpl;
-  args_tmpl.inputs  = std::move(inputs);
-  args_tmpl.outputs.push_back(std::move(out_buf));
+  SearchInputs searchInputs;
+  searchInputs.inputFiles = splitComma(InputFiles);
+  searchInputs.expectedFile = ExpectedFile;
+  searchInputs.shape = shape;
+  searchInputs.atol = Atol;
+  searchInputs.rtol = Rtol;
 
   llvm::outs() << "Searching " << ts.kernel_name << " on " << ts.soc << "\n";
-  std::string best_binary_path;
-  auto results = runSearch(ts, shape, artifact,
-                            args_tmpl, expected_arrs, Atol, Rtol,
-                            &best_binary_path);
-
-  // Free allocations
-  delete[] static_cast<uint8_t*>(out_buf.data);
-  for (auto& inp : inputs) delete[] static_cast<uint8_t*>(inp.data);
-  delete[] static_cast<uint8_t*>(expected_arrs[0].data);
+  auto results = runSearch(ts, shape, artifact, searchInputs);
 
   // Filter PASS results
   std::vector<SearchResult*> passed;
   for (auto& r : results) if (r.passed) passed.push_back(&r);
 
+  auto cleanupCandidateDirs = [&](llvm::StringRef keepDir = "") {
+    for (SearchResult &result : results) {
+      if (result.candidate_dir.empty() || result.candidate_dir == keepDir)
+        continue;
+      std::error_code ec;
+      std::filesystem::remove_all(result.candidate_dir, ec);
+    }
+  };
+
   if (passed.empty()) {
     llvm::errs() << "Error: no configuration passed validation\n";
+    cleanupCandidateDirs();
     _Exit(1);
   }
 
   // Sort by cycle_count ascending; -1 (unavailable) goes last
-  std::sort(passed.begin(), passed.end(), [](SearchResult* a, SearchResult* b) {
+  std::stable_sort(passed.begin(), passed.end(), [](SearchResult* a, SearchResult* b) {
     if (a->cycle_count < 0) return false;
     if (b->cycle_count < 0) return true;
     return a->cycle_count < b->cycle_count;
@@ -749,8 +885,15 @@ int main(int argc, char** argv) {
 
   if (auto err = writeBestConfigJson(OutputFile, ts, artifact, best, shape)) {
     llvm::errs() << "Error: " << llvm::toString(std::move(err)) << "\n";
+    cleanupCandidateDirs(best.candidate_dir);
     _Exit(1);
   }
+
+  cleanupCandidateDirs(best.candidate_dir);
+
+  std::string best_binary_path = !artifact.deviceBinaryPath.empty()
+                                     ? artifact.deviceBinaryPath
+                                     : artifact.packedSharedObjectPath;
 
   // ── Optional: perf report via msprof op simulator ───────────────────────────
   if (PerfReport) {
@@ -847,7 +990,7 @@ int main(int argc, char** argv) {
   llvm::outs().flush();
   llvm::errs().flush();
   // Use _Exit (not return/exit) to skip C++ destructors and atexit handlers:
-  // SimValidator invokes libruntime_camodel which leaves background simulator
-  // threads running; normal exit() races those threads and segfaults.
+  // runtime session teardown may leave simulator background threads active;
+  // normal exit() can race those threads and segfault.
   _Exit(0);
 }
