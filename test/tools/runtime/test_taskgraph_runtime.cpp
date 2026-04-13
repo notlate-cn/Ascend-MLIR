@@ -1613,10 +1613,13 @@ static void testSimulatorProfileSchemaV1Artifact() {
   const std::filesystem::path runtimeDir = makeTempDir("taskgraph-profile-run");
   std::filesystem::create_directories(runtimeDir);
 
-  const std::string tilingBinaryPath =
-      writeTempBinaryFile("taskgraph-profile-tiling",
-                          std::vector<uint8_t>{0x01, 0x02, 0x03, 0x04});
-  if (tilingBinaryPath.empty())
+  const std::string inputPath =
+      writeTempNpy("taskgraph-profile-input", {4, 2}, DType::F16);
+  if (inputPath.empty())
+    return;
+  const std::string expectedOutputPath =
+      writeTempNpy("taskgraph-profile-expected", {2, 4}, DType::F32);
+  if (expectedOutputPath.empty())
     return;
 
   ExecutionRequest request;
@@ -1631,13 +1634,19 @@ static void testSimulatorProfileSchemaV1Artifact() {
   request.task.invocation.workspaceSize = 8192;
   request.task.invocation.enableProfiling = true;
   request.task.invocation.inputs.push_back(TensorBinding{
-      "input0", BindingSourceKind::ExternalFile, "/tmp/input0.npy", "", "",
-      std::vector<int64_t>{640, 1}, DType::F16});
+      "input0", BindingSourceKind::ExternalFile, inputPath});
   request.task.invocation.outputs.push_back(TensorBinding{
-      "output0", BindingSourceKind::ExternalFile, "/tmp/output0.npy", "", "",
-      std::vector<int64_t>{500, 640}, DType::F16});
+      "output0", BindingSourceKind::ExternalFile,
+      (runtimeDir / "actual.npy").string()});
+  request.task.invocation.expectedOutputs.push_back(TensorBinding{
+      "output0", BindingSourceKind::ExternalFile, expectedOutputPath});
   request.task.invocation.tiling = TilingBinding{};
-  request.task.invocation.tiling->binaryPath = tilingBinaryPath;
+  request.task.invocation.tiling->schemaPath =
+      (std::filesystem::current_path() / "examples" /
+       "relu-broadcast-transpose" / "tiling_space.json")
+          .string();
+  request.task.invocation.tiling->params =
+      "TB_M=64,TB_N=64,dim_arg0_0=640,dim_arg1_0=500,dim_arg0_1=1,dim_arg1_1=640";
 
   auto profilePathOr =
       materializeSimulatorProfileArtifactForTest(request, 1498485);
@@ -1722,7 +1731,8 @@ static void testSimulatorProfileSchemaV1Artifact() {
                *input0->getString("dtype") == "f16",
            "sim profile trace input0 dtype");
     EXPECT(input0 && input0->getArray("shape") &&
-               input0->getArray("shape")->size() == 2,
+               input0->getArray("shape")->size() == 2 &&
+               input0->getArray("shape")->front().getAsInteger() == 4,
            "sim profile trace input0 shape");
   }
 
@@ -1734,10 +1744,11 @@ static void testSimulatorProfileSchemaV1Artifact() {
                *output0->getString("name") == "output0",
            "sim profile trace output name");
     EXPECT(output0 && output0->getString("dtype") &&
-               *output0->getString("dtype") == "f16",
+               *output0->getString("dtype") == "f32",
            "sim profile trace output dtype");
     EXPECT(output0 && output0->getArray("shape") &&
-               output0->getArray("shape")->size() == 2,
+               output0->getArray("shape")->size() == 2 &&
+               output0->getArray("shape")->front().getAsInteger() == 2,
            "sim profile trace output shape");
   }
 
@@ -1748,10 +1759,11 @@ static void testSimulatorProfileSchemaV1Artifact() {
                *tiling->getBoolean("present"),
            "sim profile trace marks tiling present");
     EXPECT(tiling->getString("binary_path") &&
-               *tiling->getString("binary_path") == tilingBinaryPath,
-           "sim profile trace records tiling binary path");
+               *tiling->getString("binary_path") ==
+                   (runtimeDir / "tiling.bin").string(),
+           "sim profile trace materializes tiling binary path");
     const auto expectedTilingBytes =
-        static_cast<int64_t>(std::filesystem::file_size(tilingBinaryPath));
+        static_cast<int64_t>(std::filesystem::file_size(runtimeDir / "tiling.bin"));
     EXPECT(tiling->getInteger("bytes") &&
                *tiling->getInteger("bytes") == expectedTilingBytes,
            "sim profile trace records tiling byte size");
