@@ -394,4 +394,8 @@ llvm::Error pruneRetainedProfileDirectoriesForTest(llvm::StringRef root,
   return pruneRetainedProfileDirectoriesImpl(root, keepCount);
 }
 
+size_t retainedProfilePruneKeepCountForNewSession(size_t sessionLimit) {
+  return sessionLimit > 0 ? sessionLimit - 1 : 0;
+}
+
 } // namespace mlir::runtime
