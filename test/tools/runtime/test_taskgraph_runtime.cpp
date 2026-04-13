@@ -165,6 +165,35 @@ static std::filesystem::path makeRuntimeSessionArtifactRoot(
   return root;
 }
 
+static std::filesystem::path makeRuntimeSessionArtifactRootWithoutKernelKind(
+    const std::string &stem) {
+  std::filesystem::path root = makeTempDir(stem);
+  std::filesystem::create_directories(root / "out");
+
+  std::ofstream manifest(root / "out" / "manifest.txt");
+  if (!manifest) {
+    llvm::errs() << "FAIL: cannot write runtime session manifest "
+                 << (root / "out" / "manifest.txt").string() << "\n";
+    ++g_fail;
+    return {};
+  }
+
+  manifest << "kernel_name=fake_kernel\n";
+  manifest << "soc_version=Ascend910B1\n";
+  manifest << "mix_resource_type=mix_1c1v\n";
+  manifest << "device_binary_path=fake.bin\n";
+
+  std::ofstream binary(root / "fake.bin", std::ios::binary);
+  if (!binary) {
+    llvm::errs() << "FAIL: cannot write runtime session binary "
+                 << (root / "fake.bin").string() << "\n";
+    ++g_fail;
+    return {};
+  }
+  binary.put('\0');
+  return root;
+}
+
 struct RuntimeSessionTempRoot {
   explicit RuntimeSessionTempRoot(std::filesystem::path p)
       : path(std::move(p)) {}
@@ -530,6 +559,44 @@ static void testRuntimeSessionRequestBuilderLoadsArtifactFromRoot() {
   EXPECT(artifactOr->manifestPath ==
              (cleanup.path / "out" / "manifest.txt").string(),
          "runtime session builder keeps manifest path");
+}
+
+static void testRuntimeSessionRequestBuilderRejectsUnsupportedKernelKind() {
+  RuntimeSessionArtifactRequest request;
+  request.kernelSource = "/tmp/runtime-session-builder-invalid.cpp";
+  request.kernelName = "invalid_kernel";
+  request.outputDir = "/tmp/runtime-session-builder-output";
+  request.socVersion = "Ascend910B1";
+  request.kernelKind = static_cast<KernelKind>(123);
+
+  auto artifactOr = prepareRuntimeSessionArtifact(request);
+  EXPECT(!artifactOr,
+         "runtime session builder rejects unsupported kernel kind values");
+  if (!artifactOr) {
+    std::string message = llvm::toString(artifactOr.takeError());
+    EXPECT(message.find("unsupported kernel kind") != std::string::npos,
+           "unsupported kernel kind failure reports a clear error");
+  }
+}
+
+static void testRuntimeSessionRequestBuilderRejectsMissingKernelKind() {
+  const std::filesystem::path rootPath =
+      makeRuntimeSessionArtifactRootWithoutKernelKind(
+          "runtime-session-builder-missing-kind");
+  RuntimeSessionTempRoot cleanup(rootPath);
+  EXPECT(!cleanup.path.empty(),
+         "runtime session builder missing-kind fixture root created");
+  if (cleanup.path.empty())
+    return;
+
+  auto artifactOr = loadRuntimeSessionArtifactFromRoot(cleanup.path.string());
+  EXPECT(!artifactOr, "runtime session builder rejects missing kernel_kind");
+  if (!artifactOr) {
+    std::string message = llvm::toString(artifactOr.takeError());
+    EXPECT(message.find("missing required field: kernel_kind") !=
+               std::string::npos,
+           "missing kernel_kind failure reports a clear error");
+  }
 }
 
 static void testRuntimeSessionRequestBuilderBuildsSingleTaskGraph() {
@@ -3156,6 +3223,8 @@ int main() {
   testCycleDetection();
   testKernelArtifactNormalization();
   testRuntimeSessionRequestBuilderLoadsArtifactFromRoot();
+  testRuntimeSessionRequestBuilderRejectsUnsupportedKernelKind();
+  testRuntimeSessionRequestBuilderRejectsMissingKernelKind();
   testRuntimeSessionRequestBuilderBuildsSingleTaskGraph();
   testMixValidationCanBeRepresentedAsRuntimeTask();
   testArtifactCompilerRequestValidation();
