@@ -36,6 +36,10 @@
 - Profiling/session-summary retention and mix-sim stability fixes are already landed and covered by focused runtime verification.
 - A follow-up spec for `autotuner + Legacy` audit is written:
   - [docs/superpowers/specs/2026-04-13-autotuner-legacy-cleanup-design.md](/Volumes/GM9/code/Codex-Ascend-MLIR/docs/superpowers/specs/2026-04-13-autotuner-legacy-cleanup-design.md)
+- Legacy cleanup audit artifacts now exist:
+  - [2026-04-13-runtime-legacy-dependency-audit.md](/Volumes/GM9/code/Codex-Ascend-MLIR/docs/superpowers/audits/2026-04-13-runtime-legacy-dependency-audit.md)
+  - [2026-04-13-autotuner-runtime-normalization-audit.md](/Volumes/GM9/code/Codex-Ascend-MLIR/docs/superpowers/audits/2026-04-13-autotuner-runtime-normalization-audit.md)
+  - [2026-04-13-runtime-legacy-cleanup-candidates.md](/Volumes/GM9/code/Codex-Ascend-MLIR/docs/superpowers/audits/2026-04-13-runtime-legacy-cleanup-candidates.md)
 
 ## Decisions
 
@@ -53,17 +57,11 @@
 
 ## TODO
 
-- Produce the implementation plan for:
-  - [docs/superpowers/specs/2026-04-13-autotuner-legacy-cleanup-design.md](/Volumes/GM9/code/Codex-Ascend-MLIR/docs/superpowers/specs/2026-04-13-autotuner-legacy-cleanup-design.md)
-- Audit all remaining references to:
-  - `Legacy/Compiler`
-  - `Legacy/Executor`
-  - `Legacy/SimValidator`
-  - `Legacy/HostRunnerGen`
-  - `Legacy/CompatRuntime`
-- Re-audit `tools/autotuner/autotuner_main.cpp` to determine whether it still blocks further `Legacy` cleanup.
-- Classify `Legacy` code into:
-  - must keep for now
-  - candidate for boundary shrink
-  - deletable after migration
-- After the audit, define the second-round cleanup sequence before deleting more runtime code.
+- Normalize the autotuner `--artifact-root` loader so it preserves `mix_resource_type` and uses the canonical runtime artifact semantics.
+- Decide whether `ArtifactCompiler` should be refactored or wrapped so vec/cube source builds no longer keep `Legacy/Compiler` on the cleanup-critical path.
+- Re-audit `SimBackend` and `NpuBackend` as the direct blockers for shrinking `Legacy/Executor` and `Legacy/SimValidator`.
+- Plan the second-round `Legacy` cleanup in risk-ordered slices:
+  - adapter boundary shrink first
+  - backend seam cleanup second
+  - deeper legacy implementation deletion last
+- Keep xvm focused runtime verification green while shrinking legacy dependencies.
