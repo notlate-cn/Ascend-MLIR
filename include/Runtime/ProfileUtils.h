@@ -3,6 +3,7 @@
 #include "Runtime/ProfileTrace.h"
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/StringRef.h"
+#include "llvm/Support/Error.h"
 
 #include <optional>
 
@@ -22,5 +23,9 @@ ProfileEvent makeProfileArtifactEvent(llvm::StringRef taskId,
 void addProfileArtifact(ProfileTrace &trace, llvm::StringRef taskId,
                         ExecutionBackendKind backend,
                         llvm::StringRef artifactPath);
+
+llvm::Expected<ProfileTrace>
+retainProfileArtifactsForCli(const ProfileTrace &trace,
+                             llvm::StringRef destinationRoot);
 
 } // namespace mlir::runtime

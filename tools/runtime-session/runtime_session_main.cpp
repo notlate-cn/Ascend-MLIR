@@ -1,6 +1,7 @@
 #include "Runtime/ArtifactCompiler.h"
 #include "Runtime/ExecutionBackend.h"
 #include "Runtime/ExecutionSession.h"
+#include "Runtime/ProfileUtils.h"
 #include "Runtime/RunManifest.h"
 #include "Runtime/TaskGraph.h"
 #include "llvm/ADT/SmallString.h"
@@ -13,7 +14,9 @@
 #include "llvm/Support/raw_ostream.h"
 
 #include <cstdlib>
+#include <filesystem>
 #include <map>
+#include <memory>
 #include <optional>
 #include <string>
 #include <utility>
@@ -440,6 +443,25 @@ void printProfileTraceSummary(const ProfileTrace &trace) {
     llvm::outs() << "session.profile[" << i << "]=" << artifactPaths[i] << "\n";
 }
 
+llvm::Expected<std::string>
+prepareRetainedProfileRoot(llvm::StringRef sessionId) {
+  std::error_code tempDirError;
+  const std::filesystem::path retainRoot =
+      std::filesystem::temp_directory_path(tempDirError) /
+      "ascendc-runtime-profiles" / sessionId.str();
+  if (tempDirError) {
+    return llvm::createStringError(
+        tempDirError,
+        "cannot determine temp directory for retained profile artifacts");
+  }
+
+  if (auto ec = llvm::sys::fs::create_directories(retainRoot.string()))
+    return llvm::createStringError(ec,
+                                   "cannot create retained profile directory: %s",
+                                   retainRoot.string().c_str());
+  return retainRoot.string();
+}
+
 } // namespace
 
 int main(int argc, char **argv) {
@@ -495,16 +517,37 @@ int main(int argc, char **argv) {
     return 0;
 
   const bool validationRan = graphRequestsValidation(*graph);
-  ExecutionSession runSession(backendKind, *testingDriverOr);
-  auto traceOr = runSession.run(*graph);
+  auto runSession =
+      std::make_unique<ExecutionSession>(backendKind, *testingDriverOr);
+  auto traceOr = runSession->run(*graph);
   if (!traceOr) {
     const std::string message = llvm::toString(traceOr.takeError());
     printRunErrorSummary(backendKind, validationRan, message);
     llvm::errs() << "Error: " << message << "\n";
     return 2;
   }
-  printRunSuccessSummary(backendKind, validationRan, *traceOr);
+  ProfileTrace trace = std::move(*traceOr);
   if (backendKind == ExecutionBackendKind::Simulation) {
+    auto retainRootOr = prepareRetainedProfileRoot(trace.sessionId);
+    if (!retainRootOr) {
+      const std::string message = llvm::toString(retainRootOr.takeError());
+      printRunErrorSummary(backendKind, validationRan, message);
+      llvm::errs() << "Error: " << message << "\n";
+      return 2;
+    }
+    auto retainedTraceOr =
+        retainProfileArtifactsForCli(trace, *retainRootOr);
+    if (!retainedTraceOr) {
+      const std::string message = llvm::toString(retainedTraceOr.takeError());
+      printRunErrorSummary(backendKind, validationRan, message);
+      llvm::errs() << "Error: " << message << "\n";
+      return 2;
+    }
+    trace = std::move(*retainedTraceOr);
+  }
+  printRunSuccessSummary(backendKind, validationRan, trace);
+  if (backendKind == ExecutionBackendKind::Simulation) {
+    runSession.reset();
     llvm::outs().flush();
     llvm::errs().flush();
     _Exit(0);
