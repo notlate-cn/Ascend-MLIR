@@ -455,8 +455,9 @@ runWithExecutor(const ExecutionRequest &request) {
   if (request.task.invocation.enableProfiling) {
     auto elapsed = std::chrono::duration_cast<std::chrono::microseconds>(
         std::chrono::steady_clock::now() - runStart);
+    const int64_t elapsedUs = elapsed.count();
     auto profilePathOr =
-        materializeSimulatorProfileArtifact(request, args, elapsed.count());
+        materializeSimulatorProfileArtifact(request, args, elapsedUs);
     if (!profilePathOr)
       return stageError("profiling", profilePathOr.takeError());
     result.producedFiles.push_back(*profilePathOr);
@@ -464,7 +465,7 @@ runWithExecutor(const ExecutionRequest &request) {
     trace.sessionId = request.sessionId;
     trace.addProfileArtifact(request.task.taskId,
                              ExecutionBackendKind::Simulation, *profilePathOr,
-                             elapsed.count(), elapsed.count());
+                             elapsedUs, elapsedUs);
     result.profileTrace = std::move(trace);
   }
   return result;

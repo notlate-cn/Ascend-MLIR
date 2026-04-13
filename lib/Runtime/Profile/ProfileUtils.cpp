@@ -20,6 +20,29 @@ bool isSimulatorProfileArtifact(llvm::StringRef path) {
   return path.ends_with("/opprof/simulator/trace.json");
 }
 
+static std::pair<std::optional<int64_t>, std::optional<int64_t>>
+readProfileMetricsFromArtifact(llvm::StringRef path) {
+  auto bufferOr = llvm::MemoryBuffer::getFile(path);
+  if (!bufferOr)
+    return {std::nullopt, std::nullopt};
+
+  auto parsedOr = llvm::json::parse(bufferOr.get()->getBuffer());
+  if (!parsedOr)
+    return {std::nullopt, std::nullopt};
+
+  const auto *object = parsedOr->getAsObject();
+  if (!object)
+    return {std::nullopt, std::nullopt};
+
+  std::optional<int64_t> score = object->getInteger("score");
+  std::optional<int64_t> cycleCount = object->getInteger("cycle_count");
+  if (!score && cycleCount)
+    score = cycleCount;
+  if (!cycleCount && score)
+    cycleCount = score;
+  return {score, cycleCount};
+}
+
 std::optional<ProfileTrace>
 normalizeSimulatorProfileTrace(llvm::StringRef sessionId,
                                llvm::StringRef taskId,
@@ -30,8 +53,10 @@ normalizeSimulatorProfileTrace(llvm::StringRef sessionId,
   for (const std::string &file : producedFiles) {
     if (!isSimulatorProfileArtifact(file))
       continue;
-    trace.addEvent(makeProfileArtifactEvent(taskId, ExecutionBackendKind::Simulation,
-                                            file));
+    auto [score, cycleCount] = readProfileMetricsFromArtifact(file);
+    trace.addEvent(makeProfileArtifactEvent(taskId,
+                                            ExecutionBackendKind::Simulation,
+                                            file, score, cycleCount));
   }
 
   if (trace.events.empty())
