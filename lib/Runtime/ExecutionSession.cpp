@@ -174,8 +174,50 @@ static llvm::Expected<SchedulerState> buildSchedulerState(const TaskGraph &graph
   return state;
 }
 
-static llvm::Error canScheduleTask(const RuntimeTask &) {
-  return llvm::Error::success();
+static const char *mixResourceTypeToString(MixResourceType type) {
+  switch (type) {
+  case MixResourceType::Unknown:
+    return "unknown";
+  case MixResourceType::AIVOnly:
+    return "aiv_only";
+  case MixResourceType::AICOnly:
+    return "aic_only";
+  case MixResourceType::Mix1C1V:
+    return "mix_1c1v";
+  case MixResourceType::Mix1C2V:
+    return "mix_1c2v";
+  }
+  return "unknown";
+}
+
+static llvm::Error canScheduleTask(const RuntimeTask &task) {
+  switch (task.artifact.kernelKind) {
+  case KernelKind::Vec:
+  case KernelKind::Cube:
+    return llvm::Error::success();
+  case KernelKind::Mix:
+    switch (task.artifact.mixResourceType) {
+    case MixResourceType::Mix1C1V:
+    case MixResourceType::Mix1C2V:
+      return llvm::Error::success();
+    case MixResourceType::Unknown:
+    case MixResourceType::AIVOnly:
+    case MixResourceType::AICOnly:
+      return llvm::createStringError(
+          llvm::inconvertibleErrorCode(),
+          "task %s requests unsupported mix resource type: %s",
+          task.taskId.c_str(),
+          mixResourceTypeToString(task.artifact.mixResourceType));
+    }
+    return llvm::createStringError(
+        llvm::inconvertibleErrorCode(),
+        "task %s requests unsupported mix resource type: %s",
+        task.taskId.c_str(),
+        mixResourceTypeToString(task.artifact.mixResourceType));
+  }
+  return llvm::createStringError(llvm::inconvertibleErrorCode(),
+                                 "task %s has unsupported kernel kind",
+                                 task.taskId.c_str());
 }
 
 } // namespace
