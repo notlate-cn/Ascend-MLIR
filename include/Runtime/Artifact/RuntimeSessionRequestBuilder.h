@@ -19,8 +19,8 @@ struct RuntimeSessionArtifactRequest {
   std::string kernelName;
   std::string outputDir;
   std::string socVersion;
-  std::string cannMlirPath;
-  std::string npyDir;
+  std::optional<std::string> cannMlirPath;
+  std::optional<std::string> npyDir;
   KernelKind kernelKind = KernelKind::Mix;
 };
 
