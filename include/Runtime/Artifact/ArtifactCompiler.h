@@ -1,8 +1,5 @@
 #pragma once
 
-#include "Runtime/Legacy/Compiler.h"
-#include "Runtime/Mix/MixArtifact.h"
-#include "Runtime/Mix/MixDirectBackend.h"
 #include "Runtime/Execution/TaskGraph.h"
 #include "llvm/Support/Error.h"
 
