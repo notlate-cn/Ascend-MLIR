@@ -30,7 +30,7 @@ Source scan used for this audit:
 | Autotuner-local `--artifact-root` loader does not normalize `mix_resource_type` | `tools/autotuner/autotuner_main.cpp` loads manifests via `locateManifestPath(...)` and `loadArtifactFromRoot(...)`, but sets `artifact.mixResourceType = MixResourceType::Unknown` instead of parsing a manifest field. `lib/Runtime/Artifact/RuntimeSessionRequestBuilder.cpp` parses `mix_resource_type` in the canonical runtime loader. `ExecutionSession::canScheduleTask(...)` rejects `KernelKind::Mix` tasks when the mix resource type is `Unknown`. | `--artifact-root` loads can misclassify mix artifacts and fail scheduling even when the runtime-native loader would preserve the mix resource type. This is an autotuner-owned seam that still needs normalization. |
 | `ArtifactCompiler` still depends on `Legacy/Compiler` for vec/cube source builds | `include/Runtime/Artifact/ArtifactCompiler.h` includes `Runtime/Legacy/Compiler.h`, and `lib/Runtime/Artifact/ArtifactCompiler.cpp` includes `Runtime/Compiler.h` before calling `Compiler::Compile(...)`. The same file routes `KernelKind::Mix` through `MixDirectBackend`. | Autotuner still inherits a legacy compile-path dependency for vec/cube source builds, but not for mix source builds. Because autotuner exposes `--kernel-kind mix`, the blocker is narrower than “all source builds.” |
 | Runtime library still compiles legacy execution units | `lib/Runtime/CMakeLists.txt` still builds `Legacy/CompatRuntime.cpp`, `Legacy/Compiler.cpp`, `Legacy/Executor.cpp`, `Legacy/HostRunnerGen.cpp`, and `Legacy/SimValidator.cpp`. | Autotuner is not the direct reason those units remain, but its runtime path still rides on the runtime library that contains them. |
-| Simulator execution still validates through legacy-backed backends | `ExecutionSession::run(...)` dispatches to `ExecutionBackend`, and `lib/Runtime/Execution/SimBackend.cpp` still includes `Runtime/Executor.h` and `Runtime/SimValidator.h`. | This is a backend-level dependency, not an autotuner-specific one, but it means autotuner simulation still depends on legacy execution internals transitively. |
+| Simulator execution still validates through legacy-backed backends | `ExecutionSession::run(...)` dispatches to `ExecutionBackend` as an orchestration layer. The direct legacy edges live in `lib/Runtime/Execution/SimBackend.cpp` and `lib/Runtime/Execution/NpuBackend.cpp`, which still include `Runtime/Executor.h` and `Runtime/SimValidator.h`. | Autotuner simulation still depends on legacy execution internals transitively, but the actual legacy coupling is in the backends, not in `ExecutionSession`. |
 
 ## Does Autotuner Still Block Legacy Cleanup?
 
@@ -45,7 +45,7 @@ The remaining autotuner-specific blockers are narrower than the original audit s
 
 That means autotuner still indirectly blocks `Legacy/Compiler` removal for vec/cube source builds, and it still needs a manifest-loading normalization pass before mix artifact-root loads are fully safe.
 
-Autotuner does not appear to block `Legacy/HostRunnerGen` cleanup directly. It also does not own the `Legacy/Executor` or `Legacy/SimValidator` seams; those remain coupled through `ExecutionSession` and `SimBackend`, so they should be audited and removed on their own track.
+Autotuner does not appear to block `Legacy/HostRunnerGen` cleanup directly. It also does not own the `Legacy/Executor` or `Legacy/SimValidator` seams; the direct legacy edges are in `SimBackend` and `NpuBackend`, while `ExecutionSession` is only the dispatcher/orchestration layer.
 
 ## Follow-Up Tasks
 
