@@ -45,6 +45,9 @@ namespace mlir::runtime {
 llvm::Expected<std::string>
 materializeSimulatorProfileArtifactForTest(const ExecutionRequest &request,
                                            int64_t cycleCount);
+llvm::Expected<ProfileTrace>
+retainProfileArtifactsForCli(const ProfileTrace &trace,
+                             llvm::StringRef destinationRoot);
 }
 
 static int g_pass = 0;
@@ -1534,6 +1537,47 @@ static void testAddProfileArtifactHelper() {
   }
 }
 
+static void testRetainProfileArtifactsForCli() {
+  const std::filesystem::path sourceRoot = makeTempDir("profile-retain-src");
+  const std::filesystem::path destRoot = makeTempDir("profile-retain-dst");
+  std::filesystem::create_directories(sourceRoot / "opprof" / "simulator");
+  std::filesystem::create_directories(destRoot);
+
+  const std::filesystem::path tracePath =
+      sourceRoot / "opprof" / "simulator" / "trace.json";
+  {
+    std::ofstream os(tracePath);
+    os << "{\"score\": 123}";
+  }
+
+  ProfileTrace trace;
+  trace.sessionId = "sess-retain";
+  addProfileArtifact(trace, "task_main", ExecutionBackendKind::Simulation,
+                     tracePath.string());
+
+  auto retainedOr = retainProfileArtifactsForCli(trace, destRoot.string());
+  EXPECT((bool)retainedOr,
+         "retainProfileArtifactsForCli copies simulator profile artifacts");
+  if (retainedOr) {
+    const std::vector<std::string> artifacts =
+        retainedOr->profileArtifactPaths();
+    EXPECT(artifacts.size() == 1,
+           "retained trace keeps exactly one profile artifact");
+    if (!artifacts.empty()) {
+      EXPECT(artifacts.front() != tracePath.string(),
+             "retained trace rewrites artifact path away from session dir");
+      EXPECT(std::filesystem::exists(artifacts.front()),
+             "retained trace points to a copied profile artifact");
+      EXPECT(readTextFile(artifacts.front()) == "{\"score\": 123}",
+             "retained profile artifact preserves contents");
+    }
+  }
+
+  std::error_code ec;
+  std::filesystem::remove_all(sourceRoot, ec);
+  std::filesystem::remove_all(destRoot, ec);
+}
+
 static void testBackendSurfacesProfileTrace() {
   auto driver = std::make_shared<SynthesizingProfileArtifactBackendDriver>();
   auto simOr = createExecutionBackend(ExecutionBackendKind::Simulation, driver);
@@ -2458,6 +2502,7 @@ int main() {
   testExecutionSessionSupportsNpuSuccessDriver();
   testSimulatorProfileNormalization();
   testAddProfileArtifactHelper();
+  testRetainProfileArtifactsForCli();
   testBackendSurfacesProfileTrace();
   testBackendPreservesExistingProfileTrace();
   testSimulatorProfileSchemaV1Artifact();
