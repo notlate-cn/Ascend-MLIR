@@ -44,9 +44,11 @@ SUMMARY_KINDS=()
 SUMMARY_RETRIES=()
 SUMMARY_OUTPUTS=()
 SUMMARY_PROFILES=()
+SUMMARY_SUMMARIES=()
 EXAMPLE_LOGS=()
 CURRENT_RETRIES=0
 LAST_PROFILE_PATH=""
+LAST_SUMMARY_PATH=""
 
 cleanup() {
   rm -rf "${ARTIFACT_ROOTS[@]:-}"
@@ -114,8 +116,11 @@ run_runtime_session_manifest() {
   local status=0
   CURRENT_RETRIES=0
   LAST_PROFILE_PATH=""
+  LAST_SUMMARY_PATH=""
   if "${RUNTIME_SESSION}" --run-manifest "${manifest}" --run >/tmp/runtime_simbackend_run.log 2>&1; then
     LAST_PROFILE_PATH="$(sed -n 's/^session\.profile\[[0-9][0-9]*\]=//p' /tmp/runtime_simbackend_run.log | head -n1)"
+    LAST_SUMMARY_PATH="$(sed -n 's/^session\.profile\.summary=//p' /tmp/runtime_simbackend_run.log | head -n1)"
+    test -f "${LAST_SUMMARY_PATH}"
     return 0
   fi
   status=$?
@@ -127,6 +132,8 @@ run_runtime_session_manifest() {
   CURRENT_RETRIES=1
   "${RUNTIME_SESSION}" --run-manifest "${manifest}" --run >/tmp/runtime_simbackend_run.log 2>&1
   LAST_PROFILE_PATH="$(sed -n 's/^session\.profile\[[0-9][0-9]*\]=//p' /tmp/runtime_simbackend_run.log | head -n1)"
+  LAST_SUMMARY_PATH="$(sed -n 's/^session\.profile\.summary=//p' /tmp/runtime_simbackend_run.log | head -n1)"
+  test -f "${LAST_SUMMARY_PATH}"
 }
 
 record_summary() {
@@ -135,23 +142,26 @@ record_summary() {
   local retries="$3"
   local output_path="$4"
   local profile_path="$5"
+  local summary_path="$6"
   SUMMARY_NAMES+=("${name}")
   SUMMARY_KINDS+=("${kind}")
   SUMMARY_RETRIES+=("${retries}")
   SUMMARY_OUTPUTS+=("${output_path}")
   SUMMARY_PROFILES+=("${profile_path}")
+  SUMMARY_SUMMARIES+=("${summary_path}")
 }
 
 print_summary() {
   local i
   echo "--- SimBackend summary ---"
   for ((i = 0; i < ${#SUMMARY_NAMES[@]}; ++i)); do
-    printf 'example=%s kind=%s status=pass retries=%s output=%s profile=%s\n' \
+    printf 'example=%s kind=%s status=pass retries=%s output=%s profile=%s summary=%s\n' \
       "${SUMMARY_NAMES[$i]}" \
       "${SUMMARY_KINDS[$i]}" \
       "${SUMMARY_RETRIES[$i]}" \
       "${SUMMARY_OUTPUTS[$i]}" \
-      "${SUMMARY_PROFILES[$i]}"
+      "${SUMMARY_PROFILES[$i]}" \
+      "${SUMMARY_SUMMARIES[$i]}"
   done
 }
 
@@ -235,7 +245,8 @@ EOF
     "vec" \
     "${CURRENT_RETRIES}" \
     "${actual_output}" \
-    "${LAST_PROFILE_PATH:-<none>}"
+    "${LAST_PROFILE_PATH:-<none>}" \
+    "${LAST_SUMMARY_PATH:-<none>}"
 }
 
 run_mix_example() {
@@ -321,6 +332,8 @@ EOF
       >/tmp/runtime_simbackend_run.log 2>&1
   fi
   LAST_PROFILE_PATH="$(sed -n 's/^session\.profile\[[0-9][0-9]*\]=//p' /tmp/runtime_simbackend_run.log | head -n1)"
+  LAST_SUMMARY_PATH="$(sed -n 's/^session\.profile\.summary=//p' /tmp/runtime_simbackend_run.log | head -n1)"
+  test -f "${LAST_SUMMARY_PATH}"
   test -f "${actual_output}"
   compare_npy "${expected_path}" "${actual_output}" "${atol}" "${rtol}"
   record_summary \
@@ -328,7 +341,8 @@ EOF
     "mix" \
     "${CURRENT_RETRIES}" \
     "${actual_output}" \
-    "${LAST_PROFILE_PATH:-<none>}"
+    "${LAST_PROFILE_PATH:-<none>}" \
+    "${LAST_SUMMARY_PATH:-<none>}"
 }
 
 if should_run_example "relu-broadcast-transpose"; then

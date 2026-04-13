@@ -560,6 +560,7 @@ int main(int argc, char **argv) {
     return 2;
   }
   ProfileTrace trace = std::move(*traceOr);
+  std::string retainedSummaryPath;
   if (backendKind == ExecutionBackendKind::Simulation) {
     auto retainRootOr = prepareRetainedProfileRoot(trace.sessionId);
     if (!retainRootOr) {
@@ -568,8 +569,9 @@ int main(int argc, char **argv) {
       llvm::errs() << "Error: " << message << "\n";
       return 2;
     }
+    const std::filesystem::path retainedSessionDir(*retainRootOr);
     auto retainedTraceOr =
-        retainProfileArtifactsForCli(trace, *retainRootOr);
+        retainProfileArtifactsForCli(trace, retainedSessionDir.parent_path().string());
     if (!retainedTraceOr) {
       const std::string message = llvm::toString(retainedTraceOr.takeError());
       printRunErrorSummary(backendKind, validationRan, message);
@@ -581,8 +583,12 @@ int main(int argc, char **argv) {
             std::filesystem::path(*retainRootOr).parent_path().string(),
             RetainedProfileSessionLimit))
       llvm::consumeError(std::move(pruneErr));
+    retainedSummaryPath = (retainedSessionDir / "session_summary.json").string();
   }
   printRunSuccessSummary(backendKind, validationRan, trace);
+  if (!retainedSummaryPath.empty() &&
+      std::filesystem::exists(retainedSummaryPath))
+    llvm::outs() << "session.profile.summary=" << retainedSummaryPath << "\n";
   if (backendKind == ExecutionBackendKind::Simulation) {
     runSession.reset();
     llvm::outs().flush();
