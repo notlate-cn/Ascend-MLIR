@@ -1,0 +1,49 @@
+# Autotuner Runtime Normalization Audit
+
+## Scope
+
+This audit covers `tools/autotuner/autotuner_main.cpp` against the current runtime stack. It records what is already runtime-native, what still reaches legacy implementation code indirectly, and whether autotuner is still a blocker for further `Legacy` cleanup.
+
+Source scan used for this audit:
+- `tools/autotuner/autotuner_main.cpp`
+- `include/Runtime/Artifact/ArtifactCompiler.h`
+- `lib/Runtime/Artifact/ArtifactCompiler.cpp`
+- `include/Runtime/ExecutionSession.h`
+- `lib/Runtime/Execution/ExecutionSession.cpp`
+- `include/Runtime/TaskGraph.h`
+- `include/Runtime/Profile/ProfileUtils.h`
+- `lib/Runtime/Profile/ProfileUtils.cpp`
+
+## Current Runtime-Native Pieces
+
+- Autotuner now builds candidate work around runtime abstractions, not legacy tool flow. It includes `Runtime/ArtifactCompiler.h`, `Runtime/ExecutionSession.h`, `Runtime/ProfileTrace.h`, `Runtime/ProfileUtils.h`, and `Runtime/TaskGraph.h` directly in `tools/autotuner/autotuner_main.cpp`.
+- Artifact preparation is routed through `ArtifactCompiler` in `prepareArtifact(...)`, and the autotuner no longer orchestrates compile steps itself. The tool either loads an existing artifact root or asks the runtime library to produce a `KernelArtifact`.
+- Candidate execution is runtime-session based. `runSearch(...)` constructs a `TaskGraph`, creates `ExecutionSession(ExecutionBackendKind::Simulation)`, runs each candidate through `session.run(*graphOr)`, and consumes the returned `ProfileTrace`.
+- Score extraction is runtime-profile based. `extractRuntimeScore(...)` reads `trace.profileArtifactPaths()`, parses the retained runtime profile JSON, and looks for score-like fields such as `score` and `cycle_count`.
+- Profile retention is also runtime-native. Successful candidates call `retainProfileArtifactsForCli(...)` and record both the retained profile path and `session_summary_path` in the final JSON output.
+- The tool’s request assembly uses runtime task structures. `buildCandidateGraph(...)` fills `RuntimeTask`, `ExecutionInvocation`, `TensorBinding`, and `TilingBinding` rather than any legacy CLI-specific execution payload.
+
+## Remaining Legacy-Coupled Seams
+
+| Seam | Evidence | Effect |
+|---|---|---|
+| `ArtifactCompiler` still depends on `Legacy/Compiler` | `include/Runtime/Artifact/ArtifactCompiler.h` includes `Runtime/Legacy/Compiler.h`, and `lib/Runtime/Artifact/ArtifactCompiler.cpp` includes `Runtime/Compiler.h` before calling `Compiler::Compile(...)`. | Autotuner still inherits a legacy compile-path dependency whenever `--kernel` or an equivalent source-based artifact build is used. |
+| Runtime library still compiles legacy execution units | `lib/Runtime/CMakeLists.txt` still builds `Legacy/CompatRuntime.cpp`, `Legacy/Compiler.cpp`, `Legacy/Executor.cpp`, `Legacy/HostRunnerGen.cpp`, and `Legacy/SimValidator.cpp`. | Autotuner is not the direct reason those units remain, but its runtime path still rides on the runtime library that contains them. |
+| Simulator execution still validates through legacy-backed backends | `ExecutionSession::run(...)` dispatches to `ExecutionBackend`, and `lib/Runtime/Execution/SimBackend.cpp` still includes `Runtime/Executor.h` and `Runtime/SimValidator.h`. | This is a backend-level dependency, not an autotuner-specific one, but it means autotuner simulation still depends on legacy execution internals transitively. |
+
+## Does Autotuner Still Block Legacy Cleanup?
+
+Partially, but only in one narrow way.
+
+Autotuner itself no longer directly depends on `Compiler`, `Executor`, `SimValidator`, `HostRunnerGen`, `msprof`, or `perf-report`. The current source scan did not find those references in `tools/autotuner/autotuner_main.cpp`, and the tool now uses `ArtifactCompiler`, `ExecutionSession`, `TaskGraph`, and runtime profile retention helpers instead.
+
+The remaining autotuner-specific blocker is the compile path through `ArtifactCompiler`, which still reaches `Legacy/Compiler`. That means autotuner still indirectly blocks `Legacy/Compiler` removal until artifact compilation is reworked.
+
+Autotuner does not appear to block `Legacy/HostRunnerGen` cleanup directly. It also does not own the `Legacy/Executor` or `Legacy/SimValidator` seams; those remain coupled through `ExecutionSession` and `SimBackend`, so they should be audited and removed on their own track.
+
+## Follow-Up Tasks
+
+- Narrow `ArtifactCompiler` so the autotuner compile path no longer requires `Legacy/Compiler`, or introduce a runtime-native compile path for autotuner source builds.
+- Keep `Legacy/HostRunnerGen` cleanup separate from autotuner work unless a new source scan shows a direct autotuner reference.
+- Re-audit `SimBackend` and `ExecutionSession` as the next blockers for `Legacy/Executor` and `Legacy/SimValidator`; autotuner only inherits those dependencies transitively today.
+- If `ArtifactCompiler` is refactored, rerun the autotuner xvm smoke path and confirm that `--kernel` and `--artifact-root` still produce the same retained profile JSON and best-config summary.
