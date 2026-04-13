@@ -24,6 +24,12 @@ void addProfileArtifact(ProfileTrace &trace, llvm::StringRef taskId,
                         ExecutionBackendKind backend,
                         llvm::StringRef artifactPath);
 
+std::string retainedProfileSessionDirectory(llvm::StringRef destinationRoot,
+                                            llvm::StringRef sessionId);
+
+std::string retainedProfileSessionSummaryPath(llvm::StringRef destinationRoot,
+                                              llvm::StringRef sessionId);
+
 llvm::Expected<ProfileTrace>
 retainProfileArtifactsForCli(const ProfileTrace &trace,
                              llvm::StringRef destinationRoot);
