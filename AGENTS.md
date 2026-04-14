@@ -7,8 +7,8 @@
   - CPU simulation execution with profiling
   - NPU execution path wiring
   - task-graph-based execution and future multi-task scheduling
-- Remove architecture drift between old runtime entry points and the new runtime stack.
-- Continue shrinking direct dependence on `lib/Runtime/Legacy` without breaking xvm verification.
+- Keep runtime entry points aligned with the runtime-native stack.
+- Keep xvm verification green while continuing runtime-native consolidation.
 
 ## Progress
 
@@ -34,9 +34,9 @@
   - conflicting `--artifact-root` / `--kernel`
   - invalid `--kernel-kind` with missing kernel input
 - Profiling/session-summary retention and mix-sim stability fixes are already landed and covered by focused runtime verification.
-- A follow-up spec for `autotuner + Legacy` audit is written:
+- A follow-up spec for `autotuner + legacy` audit is written:
   - [docs/superpowers/specs/2026-04-13-autotuner-legacy-cleanup-design.md](/Volumes/GM9/code/Codex-Ascend-MLIR/docs/superpowers/specs/2026-04-13-autotuner-legacy-cleanup-design.md)
-- Legacy cleanup audit artifacts now exist:
+- Historical legacy-cleanup audit artifacts now exist:
   - [2026-04-13-runtime-legacy-dependency-audit.md](/Volumes/GM9/code/Codex-Ascend-MLIR/docs/superpowers/audits/2026-04-13-runtime-legacy-dependency-audit.md)
   - [2026-04-13-autotuner-runtime-normalization-audit.md](/Volumes/GM9/code/Codex-Ascend-MLIR/docs/superpowers/audits/2026-04-13-autotuner-runtime-normalization-audit.md)
   - [2026-04-13-runtime-legacy-cleanup-candidates.md](/Volumes/GM9/code/Codex-Ascend-MLIR/docs/superpowers/audits/2026-04-13-runtime-legacy-cleanup-candidates.md)
@@ -63,6 +63,7 @@
 - `Legacy/HostRunnerGen`, its public shim, and its dedicated tests have now been deleted.
 - `Legacy/CompatRuntime` and its public shim have now been deleted; C API request assembly is now direct and runtime-native.
 - `Legacy/Compiler` and its public shim have now been deleted; the final retained legacy mix compile test has been removed.
+- The `include/Runtime/Legacy` and `lib/Runtime/Legacy` directories no longer contain active implementation units.
 - Fresh xvm verification after the vec/cube backend cutover passes:
   - `test_taskgraph_runtime`: `523 passed, 0 failed`
   - `test_capi_runtime`: `15 passed, 0 failed`
@@ -104,5 +105,8 @@
 
 ## TODO
 
-- Decide the first post-`Legacy` cleanup slice now that the retained legacy implementation units have been removed.
-- Keep xvm focused runtime verification green while shrinking legacy dependencies.
+- Tighten runtime-native boundaries after legacy deletion:
+  - `runtime-session` / C API request assembly and summary boundaries
+  - execution/profile contract cleanup
+  - task-graph / scheduler evolution
+- Keep xvm focused runtime verification green while changing runtime-native internals.
