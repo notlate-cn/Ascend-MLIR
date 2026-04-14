@@ -4,6 +4,7 @@ add_mlir_library(AscendCRuntime
   Artifact/VecCubeArtifactBackend.cpp
   Artifact/RunManifest.cpp
   Artifact/RuntimeSessionRequestBuilder.cpp
+  Execution/DefaultExecutionRunner.cpp
   Execution/ExecutionBackend.cpp
   Execution/OutputComparator.cpp
   Execution/ExecutionSession.cpp
