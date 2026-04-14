@@ -1,6 +1,5 @@
 #include "Runtime/Execution/DefaultExecutionRunner.h"
-
-#include "Runtime/Executor.h"
+#include "Runtime/Execution/NativeExecutionRunner.h"
 
 #include "llvm/Support/Error.h"
 
@@ -10,41 +9,27 @@ namespace mlir::runtime {
 
 namespace {
 
-BackendMode toLegacyBackendMode(ExecutionRunnerMode mode) {
-  switch (mode) {
-  case ExecutionRunnerMode::Simulation:
-    return BackendMode::Simulation;
-  case ExecutionRunnerMode::RealDevice:
-    return BackendMode::RealDevice;
-  }
-  return BackendMode::Simulation;
-}
-
 class DefaultExecutionRunner final : public ExecutionRunner {
 public:
-  explicit DefaultExecutionRunner(ExecutionRunnerMode mode)
-      : mode_(mode), executor_(toLegacyBackendMode(mode)) {}
+  explicit DefaultExecutionRunner(ExecutionRunnerMode mode) : runner_(mode) {}
 
-  ExecutionRunnerMode mode() const override { return mode_; }
+  ExecutionRunnerMode mode() const override { return runner_.mode(); }
 
   llvm::Error initialize(int deviceId = 0) override {
-    return executor_.Initialize(deviceId);
+    return runner_.initialize(deviceId);
   }
 
   llvm::Error runFile(const FileExecutionLaunch &launch, RunArgs &args) override {
-    return executor_.RunFile(launch.binaryPath, launch.kernelName, args,
-                             launch.magic);
+    return runner_.runFile(launch, args);
   }
 
   llvm::Error runPackedMixFile(const PackedMixExecutionLaunch &launch,
                                RunArgs &args) override {
-    return executor_.RunPackedMixFile(launch.sharedLibraryPath,
-                                      launch.kernelName, args);
+    return runner_.runPackedMixFile(launch, args);
   }
 
 private:
-  ExecutionRunnerMode mode_;
-  Executor executor_;
+  NativeExecutionRunner runner_;
 };
 
 } // namespace
