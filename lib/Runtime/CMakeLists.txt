@@ -9,6 +9,7 @@ add_mlir_library(AscendCRuntime
   Execution/OutputComparator.cpp
   Execution/ExecutionSession.cpp
   Execution/NpuBackend.cpp
+  Execution/NativeExecutionRunner.cpp
   Execution/SimBackend.cpp
   Execution/TaskGraph.cpp
   Legacy/CompatRuntime.cpp

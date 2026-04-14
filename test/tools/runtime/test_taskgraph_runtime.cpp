@@ -21,6 +21,7 @@
 #include "Runtime/ExecutionBackend.h"
 #include "Runtime/Execution/DefaultExecutionRunner.h"
 #include "Runtime/Execution/ExecutionRunner.h"
+#include "Runtime/Execution/NativeExecutionRunner.h"
 #include "Runtime/ExecutionSession.h"
 #include "Runtime/NpuBackend.h"
 #include "Runtime/NpyIO.h"
@@ -1150,6 +1151,13 @@ static void testExecutionRunnerContractSupportsPackedMixLaunches() {
          "execution runner fake keeps packed mix library path");
   EXPECT(runner.lastPackedMixLaunch.kernelName == "fake_mix_kernel",
          "execution runner fake keeps packed mix kernel name");
+}
+
+static void testNativeExecutionRunnerCompileCoverage() {
+  NativeExecutionRunner runner(ExecutionRunnerMode::Simulation);
+
+  EXPECT(runner.mode() == ExecutionRunnerMode::Simulation,
+         "native execution runner preserves construction mode");
 }
 
 static void testSimulationBackendReportsMissingVecBinaryLaunchFailure() {
@@ -3622,6 +3630,7 @@ int main() {
   testExecutionRunnerContractSupportsSimulationAndRealDeviceModes();
   testExecutionRunnerContractSupportsFileLaunches();
   testExecutionRunnerContractSupportsPackedMixLaunches();
+  testNativeExecutionRunnerCompileCoverage();
   testSimulationBackendReportsMissingVecBinaryLaunchFailure();
   testArtifactCompilerRequestValidation();
   testCompatCompileRequestPreservesFields();
