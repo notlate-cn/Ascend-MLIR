@@ -180,8 +180,8 @@ EOF
 
 "$RUNTIME_SESSION" \
   --run-manifest "$RUN_MANIFEST" \
-  --run \
-  2>&1 | tee "$VALIDATION_LOG" | grep -v '^\[info\]\|^\[PEM_AIC_LOG\]\|^\[INFO\]\|^\[WARNING\]' || true
+  --run >"$VALIDATION_LOG" 2>&1
+grep -v '^\[info\]\|^\[PEM_AIC_LOG\]\|^\[INFO\]\|^\[WARNING\]' "$VALIDATION_LOG" || true
 grep -q '^session.backend=sim$' "$VALIDATION_LOG"
 grep -q '^session.result=success$' "$VALIDATION_LOG"
 grep -q '^session.validation=pass$' "$VALIDATION_LOG"
