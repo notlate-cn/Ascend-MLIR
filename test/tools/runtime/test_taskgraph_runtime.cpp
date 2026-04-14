@@ -1025,6 +1025,19 @@ static void testOutputComparatorMismatchReturnsDetailedFailure() {
 }
 
 static void testOutputComparatorStructuralMismatchReturnsError() {
+  NDArray actualCountMismatch = makeF32Array({2}, {1.0f, 2.0f});
+  std::vector<NDArray> countActuals;
+  countActuals.push_back(std::move(actualCountMismatch));
+  std::vector<NDArray> countExpecteds;
+  auto countOr = compareRuntimeOutputs(countActuals, countExpecteds, 0.0, 0.0);
+  EXPECT(!countOr,
+         "output comparator rejects mismatched output counts with llvm::Error");
+  if (!countOr) {
+    std::string message = llvm::toString(countOr.takeError());
+    EXPECT(!message.empty(),
+           "output comparator count mismatch returns a diagnostic");
+  }
+
   NDArray actualShapeMismatch = makeF32Array({2}, {1.0f, 2.0f});
   NDArray expectedShapeMismatch = makeF32Array({1, 2}, {1.0f, 2.0f});
   std::vector<NDArray> shapeActuals;
