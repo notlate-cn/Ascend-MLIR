@@ -1,6 +1,6 @@
 // lib/Runtime/SimBackend.cpp
 #include "Runtime/SimBackend.h"
-#include "Runtime/Executor.h"
+#include "Runtime/Execution/DefaultExecutionRunner.h"
 #include "Runtime/NpyIO.h"
 #include "Runtime/OutputComparator.h"
 #include "Runtime/PathUtils.h"
@@ -25,6 +25,9 @@
 namespace mlir::runtime {
 
 namespace {
+
+constexpr uint32_t kMagicElfAiVec = 0x41415246u;
+constexpr uint32_t kMagicElfAiCube = 0x41494343u;
 
 template <typename ErrorT>
 llvm::Error stageError(llvm::StringRef stage, ErrorT &&errorLike) {
@@ -333,11 +336,11 @@ uint32_t magicForKernelKind(KernelKind kind) {
   switch (kind) {
   case KernelKind::Vec:
   case KernelKind::Mix:
-    return Executor::MAGIC_ELF_AIVEC;
+    return kMagicElfAiVec;
   case KernelKind::Cube:
-    return Executor::MAGIC_ELF_AICUBE;
+    return kMagicElfAiCube;
   }
-  return Executor::MAGIC_ELF_AIVEC;
+  return kMagicElfAiVec;
 }
 
 void prependEnvPath(const char *name, const std::string &prefix) {
@@ -404,25 +407,27 @@ runWithExecutor(const ExecutionRequest &request) {
   if (!expectedOutputsOr)
     return stageError("bindings", expectedOutputsOr.takeError());
 
-  Executor executor(BackendMode::Simulation);
+  auto runnerOr = createDefaultExecutionRunner(ExecutionRunnerMode::Simulation);
+  if (!runnerOr)
+    return stageError("executor_initialize", runnerOr.takeError());
+  std::unique_ptr<ExecutionRunner> runner = std::move(*runnerOr);
   auto runStart = std::chrono::steady_clock::now();
-  if (auto err = executor.Initialize())
+  if (auto err = runner->initialize())
     return stageError("executor_initialize", std::move(err));
 
   if (request.task.artifact.kernelKind == KernelKind::Mix) {
-    const std::string &sharedObjectPath =
-        request.task.artifact.packedSharedObjectPath;
-    if (auto err = executor.RunPackedMixFile(sharedObjectPath,
-                                             request.task.artifact.kernelName,
-                                             args)) {
+    PackedMixExecutionLaunch launch;
+    launch.sharedLibraryPath = request.task.artifact.packedSharedObjectPath;
+    launch.kernelName = request.task.artifact.kernelName;
+    if (auto err = runner->runPackedMixFile(launch, args)) {
       return stageError("kernel_launch", std::move(err));
     }
   } else {
-    const std::string &binaryPath = request.task.artifact.deviceBinaryPath;
-    if (auto err = executor.RunFile(binaryPath, request.task.artifact.kernelName,
-                                    args,
-                                    magicForKernelKind(
-                                        request.task.artifact.kernelKind))) {
+    FileExecutionLaunch launch;
+    launch.binaryPath = request.task.artifact.deviceBinaryPath;
+    launch.kernelName = request.task.artifact.kernelName;
+    launch.magic = magicForKernelKind(request.task.artifact.kernelKind);
+    if (auto err = runner->runFile(launch, args)) {
       return stageError("kernel_launch", std::move(err));
     }
   }
