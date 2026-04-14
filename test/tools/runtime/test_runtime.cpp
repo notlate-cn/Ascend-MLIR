@@ -1,7 +1,9 @@
 // test/tools/runtime/test_runtime.cpp
 //
 // Unit tests for lib/Runtime: Types, NpyIO, HostRunnerGen.
-// Does NOT require a simulator or .bin file.
+// Most coverage does not require a simulator or .bin file; the retained legacy
+// executor smoke path is xvm/Ascend-environment-specific and self-skips when
+// that environment is unavailable.
 //
 // Covers:
 //   - DType byte sizes (including new BF16, INT8, INT64)
@@ -35,6 +37,7 @@
 #include "Runtime/PathUtils.h"
 #include "Runtime/Types.h"
 #include "llvm/Support/raw_ostream.h"
+#include <algorithm>
 #include <cassert>
 #include <cmath>
 #include <cstring>
@@ -44,11 +47,17 @@
 #include <string>
 #include <vector>
 
+#ifndef _WIN32
+#include <sys/wait.h>
+#include <unistd.h>
+#endif
+
 using namespace mlir::runtime;
 
 // ── helpers ──────────────────────────────────────────────────────────────────
 
 static int g_pass = 0, g_fail = 0;
+static std::string g_executable_path;
 
 #define EXPECT(cond, msg)                                              \
   do {                                                                 \
@@ -351,15 +360,115 @@ static void testCompilerMixArtifact() {
   std::filesystem::remove_all(buildDir);
 }
 
-static void testPackedMixExecutorErrors() {
-  llvm::outs() << "\n[Packed mix executor]\n";
+static void testLegacyExecutorRetainedPackedMixErrors() {
+  llvm::outs() << "\n[Legacy Executor retained packed mix error path]\n";
 
+#ifdef _WIN32
+  EXPECT(true, "legacy-only packed mix retained path is covered on xvm");
+#else
+  const std::string ascendHome = findAscendHome();
+  const std::string socVersion = findSocVersion();
+  if (ascendHome.empty() || socVersion.empty()) {
+    EXPECT(true,
+           "legacy-only retained executor probe is skipped when Ascend runtime env is unavailable");
+    return;
+  }
+
+  std::filesystem::path buildDir = std::filesystem::temp_directory_path() /
+                                   ("test_runtime_legacy_executor-" +
+                                    std::to_string(::getpid()));
+  std::filesystem::remove_all(buildDir);
+  std::filesystem::create_directories(buildDir);
+  std::filesystem::path errorPath = buildDir / "error.txt";
+  std::filesystem::path missingSoPath = buildDir / "missing-packed.so";
+
+  pid_t pid = fork();
+  EXPECT(pid >= 0, "fork for retained legacy executor path succeeds");
+  if (pid < 0) {
+    std::filesystem::remove_all(buildDir);
+    return;
+  }
+
+  if (pid == 0) {
+    if (!ascendHome.empty() && !socVersion.empty()) {
+      std::vector<std::string> ldParts;
+      ldParts.push_back(findAscendLib64Dir(ascendHome));
+      ldParts.push_back(findAscendSimulatorLibDir(ascendHome, socVersion));
+      ldParts.push_back(findAscendDeviceLibDir(ascendHome));
+      if (const char *existing = std::getenv("LD_LIBRARY_PATH");
+          existing && *existing)
+        ldParts.push_back(existing);
+
+      std::string ldLibraryPath;
+      for (const std::string &part : ldParts) {
+        if (part.empty())
+          continue;
+        if (!ldLibraryPath.empty())
+          ldLibraryPath.append(":");
+        ldLibraryPath.append(part);
+      }
+      if (!ldLibraryPath.empty())
+        setenv("LD_LIBRARY_PATH", ldLibraryPath.c_str(), 1);
+    }
+    setenv("TEST_RUNTIME_LEGACY_ERROR_PATH", errorPath.c_str(), 1);
+    setenv("TEST_RUNTIME_LEGACY_MISSING_SO_PATH", missingSoPath.c_str(), 1);
+    char *const probeArgv[] = {
+        const_cast<char *>(g_executable_path.c_str()),
+        const_cast<char *>("--legacy-executor-probe"), nullptr};
+    execvp(probeArgv[0], probeArgv);
+    std::_Exit(127);
+  }
+
+  int status = 0;
+  EXPECT(waitpid(pid, &status, 0) == pid,
+         "waitpid for retained legacy executor path succeeds");
+  EXPECT(WIFEXITED(status), "retained legacy executor child exits cleanly");
+
+  std::ifstream is(errorPath);
+  std::string message((std::istreambuf_iterator<char>(is)),
+                      std::istreambuf_iterator<char>());
+  EXPECT(!message.empty(),
+         "legacy-only executor path still returns an error for missing packed mix library");
+  EXPECT(message.find("dlopen packed mix failed") != std::string::npos,
+         "legacy-only executor error keeps the missing packed mix dlopen diagnostic");
+  std::filesystem::remove_all(buildDir);
+#endif
+}
+
+static int maybeRunLegacyExecutorProbe(int argc, char **argv) {
+#ifdef _WIN32
+  (void)argc;
+  (void)argv;
+  return -1;
+#else
+  if (argc != 2 || std::string(argv[1]) != "--legacy-executor-probe")
+    return -1;
+
+  const char *errorPath = std::getenv("TEST_RUNTIME_LEGACY_ERROR_PATH");
+  const char *missingSoPath = std::getenv("TEST_RUNTIME_LEGACY_MISSING_SO_PATH");
+  if (!errorPath || !missingSoPath)
+    return 2;
+
+  std::ofstream os(errorPath);
   Executor ex(BackendMode::Simulation);
   RunArgs args;
   args.block_dim = 1;
-  auto err = ex.RunPackedMixFile("/tmp/missing.so", "fc_relu", args);
-  EXPECT((bool)err, "missing packed mix library returns an error");
-  if (err) llvm::consumeError(std::move(err));
+
+  auto initErr = ex.Initialize(0);
+  if (initErr) {
+    os << llvm::toString(std::move(initErr));
+    os.flush();
+    std::_Exit(0);
+  }
+
+  auto err = ex.RunPackedMixFile(missingSoPath, "fc_relu", args);
+  if (err)
+    os << llvm::toString(std::move(err));
+  else
+    os << "unexpected-success";
+  os.flush();
+  std::_Exit(0);
+#endif
 }
 
 static void testRuntimePathUtils() {
@@ -709,13 +818,16 @@ static void testHostRunnerGen() {
 
 // ── main ─────────────────────────────────────────────────────────────────────
 
-int main() {
+int main(int argc, char **argv) {
+  g_executable_path = argv[0];
+  if (int probeRc = maybeRunLegacyExecutorProbe(argc, argv); probeRc >= 0)
+    return probeRc;
   testDtypeSizes();
   testNDArrayRAII();
   testNpyIORoundTrip();
   testNpyIOErrors();
   testCompilerMixArtifact();
-  testPackedMixExecutorErrors();
+  testLegacyExecutorRetainedPackedMixErrors();
   testRuntimePathUtils();
   testHostRunnerGen();
 
