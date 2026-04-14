@@ -60,6 +60,7 @@
 - `Legacy/Executor` and its public shim have been deleted after the runtime-native execution runner cutover.
 - The default runtime execution path is now fully runtime-native through `NativeExecutionRunner`.
 - `Legacy/SimValidator` has been removed after the runtime-native output comparator cutover left it with no remaining in-repo consumers.
+- `Legacy/HostRunnerGen`, its public shim, and its dedicated tests have now been deleted.
 - `Legacy/Compiler` is no longer on the main runtime compile path; its remaining runtime-owned surface is now limited to an explicit legacy mix compile test.
 - Fresh xvm verification after the vec/cube backend cutover passes:
   - `test_taskgraph_runtime`: `523 passed, 0 failed`
@@ -100,6 +101,5 @@
 
 - Plan the second-round `Legacy` cleanup in risk-ordered slices:
   - retained compiler/compat surface cleanup first
-  - host-runner retained surface second
   - deeper legacy implementation deletion last
 - Keep xvm focused runtime verification green while shrinking legacy dependencies.

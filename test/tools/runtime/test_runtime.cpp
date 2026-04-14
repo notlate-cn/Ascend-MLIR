@@ -1,6 +1,6 @@
 // test/tools/runtime/test_runtime.cpp
 //
-// Unit tests for lib/Runtime: Types, NpyIO, HostRunnerGen.
+// Unit tests for lib/Runtime: Types, NpyIO.
 // Most coverage does not require a simulator or .bin file; the runtime-native
 // packed mix error path is xvm/Ascend-environment-specific and self-skips when
 // that environment is unavailable.
@@ -11,12 +11,6 @@
 //   - NpyIO round-trip for all supported dtypes (F16, BF16, F32, INT8, INT32, INT64)
 //   - NpyIO error: unsupported dtype
 //   - NpyIO error: truncated file
-//   - HostRunnerGen: single output
-//   - HostRunnerGen: multiple outputs (num_outputs=2, 3)
-//   - HostRunnerGen: per-output dtype defaults & override
-//   - HostRunnerGen: workspace_size propagated to runner.cpp
-//   - HostRunnerGen: --bin required enforced at runtime
-//   - HostRunnerGen: tiling_layout compiled in
 //
 // Build (on xvm):
 //   cd /path/to/Ascend-MLIR
@@ -32,7 +26,6 @@
 
 #include "Runtime/Compiler.h"
 #include "Runtime/Execution/NativeExecutionRunner.h"
-#include "Runtime/HostRunnerGen.h"
 #include "Runtime/NpyIO.h"
 #include "Runtime/PathUtils.h"
 #include "Runtime/Types.h"
@@ -639,138 +632,6 @@ static void testRuntimePathUtils() {
   }
 }
 
-static void testHostRunnerGen() {
-  llvm::outs() << "\n[HostRunnerGen]\n";
-
-  HostRunnerGen gen;
-  HostRunnerGen::Config cfg;
-  cfg.kernel_name = "test_kernel";
-  cfg.kernel_type = "vec";
-  cfg.soc_version = "Ascend910B1";
-  cfg.num_inputs  = 2;
-  cfg.verbose     = false;
-
-  // Test: single output (default)
-  {
-    cfg.num_outputs   = 1;
-    cfg.output_dtypes = {};
-    cfg.tiling_layout = {"int64", "int64"};
-    cfg.workspace_size = 8192;
-    auto r = gen.Generate(cfg, "/tmp/rt_runner_test1");
-    EXPECT((bool)r, "Generate num_outputs=1 succeeds");
-    if (r) {
-      EXPECT(!r->empty(), "Generate: runner path non-empty");
-      // Runner must enforce --bin
-      std::string out;
-      FILE* p = popen((*r + " --inputs /dev/null 2>&1").c_str(), "r");
-      if (p) {
-        char buf[256]; while (fgets(buf, sizeof(buf), p)) out += buf;
-        pclose(p);
-      }
-      EXPECT(out.find("--bin required") != std::string::npos,
-             "runner enforces --bin required");
-      // runner.cpp must contain output0 arg
-      std::ifstream src("/tmp/rt_runner_test1/runner.cpp");
-      std::string src_content((std::istreambuf_iterator<char>(src)), {});
-      EXPECT(src_content.find("--output0") != std::string::npos,
-             "runner.cpp has --output0 arg");
-    }
-  }
-
-  // Test: multi-output num_outputs=2, mixed dtypes
-  {
-    cfg.num_outputs   = 2;
-    cfg.output_dtypes = {"f16", "f32"};
-    cfg.workspace_size = 8192;
-    auto r = gen.Generate(cfg, "/tmp/rt_runner_test2");
-    EXPECT((bool)r, "Generate num_outputs=2 succeeds");
-    if (r) {
-      std::ifstream src("/tmp/rt_runner_test2/runner.cpp");
-      std::string s((std::istreambuf_iterator<char>(src)), {});
-      EXPECT(s.find("--output0") != std::string::npos, "runner.cpp has --output0");
-      EXPECT(s.find("--output1") != std::string::npos, "runner.cpp has --output1");
-      EXPECT(s.find("--output-dtype0") != std::string::npos,
-             "runner.cpp has --output-dtype0");
-      EXPECT(s.find("--output-dtype1") != std::string::npos,
-             "runner.cpp has --output-dtype1");
-      // dtype index 0=f16, 2=f32; defaults should appear in output_dtypes_default block
-      EXPECT(s.find("output_dtypes_default.push_back(0)") != std::string::npos,
-             "runner.cpp default dtype[0] = 0 (f16)");
-      EXPECT(s.find("output_dtypes_default.push_back(2)") != std::string::npos,
-             "runner.cpp default dtype[1] = 2 (f32)");
-    }
-  }
-
-  // Test: num_outputs=3, output_dtypes shorter than num_outputs → rest default to f16
-  {
-    cfg.num_outputs   = 3;
-    cfg.output_dtypes = {"f32"};  // only index 0; 1 and 2 should default to f16 (0)
-    auto r = gen.Generate(cfg, "/tmp/rt_runner_test3");
-    EXPECT((bool)r, "Generate num_outputs=3 partial dtypes succeeds");
-    if (r) {
-      std::ifstream src("/tmp/rt_runner_test3/runner.cpp");
-      std::string s((std::istreambuf_iterator<char>(src)), {});
-      EXPECT(s.find("--output2") != std::string::npos, "runner.cpp has --output2");
-      // Three dtype defaults: f32(2), f16(0), f16(0)
-      size_t p0 = s.find("output_dtypes_default.push_back(2)");  // f32
-      size_t p1 = s.find("output_dtypes_default.push_back(0)");  // first f16
-      EXPECT(p0 != std::string::npos, "runner.cpp default dtype[0] = 2 (f32)");
-      EXPECT(p1 != std::string::npos && p1 > p0,
-             "runner.cpp default dtype[1] = 0 (f16, after f32)");
-    }
-  }
-
-  // Test: workspace_size propagated
-  {
-    cfg.num_outputs    = 1;
-    cfg.output_dtypes  = {};
-    cfg.workspace_size = 131072;
-    auto r = gen.Generate(cfg, "/tmp/rt_runner_test4");
-    EXPECT((bool)r, "Generate workspace_size=131072 succeeds");
-    if (r) {
-      std::ifstream src("/tmp/rt_runner_test4/runner.cpp");
-      std::string s((std::istreambuf_iterator<char>(src)), {});
-      EXPECT(s.find("131072") != std::string::npos,
-             "runner.cpp contains workspace_size=131072");
-    }
-  }
-
-  // Test: tiling_layout compiled in
-  {
-    cfg.num_outputs   = 1;
-    cfg.output_dtypes = {};
-    cfg.workspace_size = 8192;
-    cfg.tiling_layout = {"int32", "int64", "int32"};
-    auto r = gen.Generate(cfg, "/tmp/rt_runner_test5");
-    EXPECT((bool)r, "Generate tiling_layout succeeds");
-    if (r) {
-      std::ifstream src("/tmp/rt_runner_test5/runner.cpp");
-      std::string s((std::istreambuf_iterator<char>(src)), {});
-      EXPECT(s.find("\"int32\"") != std::string::npos,
-             "runner.cpp contains compiled-in tiling type int32");
-      EXPECT(s.find("\"int64\"") != std::string::npos,
-             "runner.cpp contains compiled-in tiling type int64");
-    }
-  }
-
-  // Test: cube kernel type → correct magic
-  {
-    cfg.kernel_type   = "cube";
-    cfg.num_outputs   = 1;
-    cfg.output_dtypes = {};
-    cfg.tiling_layout = {};
-    auto r = gen.Generate(cfg, "/tmp/rt_runner_test6");
-    EXPECT((bool)r, "Generate cube kernel succeeds");
-    if (r) {
-      std::ifstream src("/tmp/rt_runner_test6/runner.cpp");
-      std::string s((std::istreambuf_iterator<char>(src)), {});
-      EXPECT(s.find("0x41494343") != std::string::npos,
-             "runner.cpp cube magic = 0x41494343");
-    }
-    cfg.kernel_type = "vec";  // restore
-  }
-}
-
 // ── main ─────────────────────────────────────────────────────────────────────
 
 int main(int argc, char **argv) {
@@ -783,7 +644,6 @@ int main(int argc, char **argv) {
   testCompilerMixArtifact();
   testRuntimeNativePackedMixErrors();
   testRuntimePathUtils();
-  testHostRunnerGen();
 
   llvm::outs() << "\n========================================\n"
                << "Results: " << g_pass << " passed, " << g_fail << " failed\n"

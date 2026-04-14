@@ -55,6 +55,10 @@ It covers direct includes, implementation dependencies, and test coverage that s
 
 ### Legacy/HostRunnerGen
 
+> Update (2026-04-14): `Legacy/HostRunnerGen`, its public shim, and its
+> dedicated tests have now been removed. This section is retained as historical
+> audit context for the pre-deletion state.
+
 | Consumer | File | Dependency Kind | Notes |
 |---|---|---|---|
 | Public shim | `include/Runtime/HostRunnerGen.h` | direct wrapper | Re-exports `Runtime/Legacy/HostRunnerGen.h`. |
@@ -75,9 +79,8 @@ It covers direct includes, implementation dependencies, and test coverage that s
 - `include/Runtime/Artifact/ArtifactCompiler.h`, `lib/Runtime/Artifact/ArtifactCompiler.cpp`, `tools/autotuner/autotuner_main.cpp`, and `lib/CAPI/Runtime/Runtime.cpp` all depend on `Legacy/Compiler` indirectly through `ArtifactCompiler`.
 - `lib/Runtime/Execution/SimBackend.cpp` and `lib/Runtime/Execution/NpuBackend.cpp` depend on `Legacy/Executor` directly for binary registration, launch, and magic selection.
 - `lib/Runtime/Execution/SimBackend.cpp` and `lib/Runtime/Execution/NpuBackend.cpp` depend on `Legacy/SimValidator` directly for output comparison after execution.
-- `test/tools/runtime/test_runtime.cpp` and `test/tools/runtime/test_taskgraph_runtime.cpp` still exercise `Legacy/Compiler`-backed helpers directly, while `test/tools/runtime/test_runtime.cpp` directly exercises `Legacy/Executor` and `Legacy/HostRunnerGen`.
-- `test/tools/runner/test_runner_gen.cpp` is dedicated `Legacy/HostRunnerGen` coverage and does not touch the newer runtime session stack.
-- `lib/Runtime/CMakeLists.txt` still wires all five `Legacy/*` implementation units into the runtime library, including `Legacy/HostRunnerGen.cpp`.
+- `test/tools/runtime/test_runtime.cpp` and `test/tools/runtime/test_taskgraph_runtime.cpp` still exercise `Legacy/Compiler`-backed helpers directly; `Legacy/Executor` and `Legacy/HostRunnerGen` are now historical, not current, test dependencies.
+- `lib/Runtime/CMakeLists.txt` no longer wires `Legacy/HostRunnerGen.cpp` into the runtime library.
 - `lib/CAPI/Runtime/Runtime.cpp` still routes compile-path compatibility through `Legacy/CompatRuntime` helpers before calling `ArtifactCompiler`.
 - `test/tools/runtime/test_taskgraph_runtime.cpp` is the main direct consumer of `Legacy/CompatRuntime` helpers and also checks that the compat layer maps into runtime-native request objects correctly.
 - `tools/autotuner/autotuner_main.cpp` no longer includes or directly orchestrates `Compiler`, `Executor`, `SimValidator`, or `HostRunnerGen`; its remaining `Legacy/Compiler` coupling is indirect through `ArtifactCompiler`.
@@ -98,9 +101,6 @@ It covers direct includes, implementation dependencies, and test coverage that s
 
 ### Bucket B: Candidate For Boundary Shrink
 
-- `Legacy/HostRunnerGen`
-  - Referenced by `include/Runtime/HostRunnerGen.h`, `lib/Runtime/CMakeLists.txt`, `test/tools/runtime/test_runtime.cpp`, and `test/tools/runner/test_runner_gen.cpp`.
-  - No runtime-native execution path currently depends on it.
 - `Legacy/CompatRuntime`
   - Still used by `lib/CAPI/Runtime/Runtime.cpp` and `test/tools/runtime/test_taskgraph_runtime.cpp`.
   - Already sits at the adapter boundary, so it is a shrink candidate before deeper legacy deletion.
@@ -113,5 +113,4 @@ It covers direct includes, implementation dependencies, and test coverage that s
 
 - Can `tools/autotuner/autotuner_main.cpp` stay fully on `ArtifactCompiler` and `ExecutionSession`, or will it need a new runtime-native builder once `Legacy/Compiler` is removed?
 - Should `lib/CAPI/Runtime/Runtime.cpp` keep using `buildCompatCompileRequest()` and `buildCompatSingleTaskRunManifest()`, or should those compatibility helpers be replaced with direct runtime-native construction?
-- Do `test/tools/runtime/test_runtime.cpp` and `test/tools/runner/test_runner_gen.cpp` need to remain as explicit `Legacy/HostRunnerGen` coverage, or should they move to a runtime-native runner path first?
 - Is `include/Runtime/SimValidator.h` intended to remain a public shim after `Legacy/Executor` is no longer part of the validation API?
