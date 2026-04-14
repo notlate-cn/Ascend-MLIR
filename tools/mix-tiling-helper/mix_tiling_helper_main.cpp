@@ -20,6 +20,11 @@ using namespace matmul_tiling;
 
 namespace {
 
+// Current scope is intentionally narrow: this helper replaces the old
+// per-kernel runner only for the existing 2D matmul-based mix path.
+// TODO: Generalize the input contract before using this helper for broader
+// mix kernels (batch matmul, transpose/layout variants, non-matmul mix).
+
 llvm::cl::opt<std::string> KernelName("name", llvm::cl::Required);
 llvm::cl::opt<std::string> SocVersion("soc", llvm::cl::init("Ascend910B1"));
 llvm::cl::opt<std::string> AShape("a-shape", llvm::cl::Required);
