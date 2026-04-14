@@ -9,20 +9,18 @@
 
 ## Safe Now
 
-- none
+- `Legacy/Executor`
+  - No longer directly required by `lib/Runtime/Execution/SimBackend.cpp` or `lib/Runtime/Execution/NpuBackend.cpp`.
+  - The runtime execution seam now sits behind `DefaultExecutionRunner`, so any next cleanup step should start from the adapter boundary rather than the backends.
+- `Legacy/SimValidator`
+  - No longer directly required by `lib/Runtime/Execution/SimBackend.cpp` or `lib/Runtime/Execution/NpuBackend.cpp`.
+  - The compare-only validation seam has already moved to the runtime-native output comparator.
 
 ## Needs Migration First
 
 - `Legacy/Compiler`
-  - Required by `include/Runtime/Artifact/ArtifactCompiler.h` and `lib/Runtime/Artifact/ArtifactCompiler.cpp`.
-  - Still blocks autotuner indirectly for vec/cube source builds through `ArtifactCompiler`.
-  - Also remains on the cleanup-critical path until autotuner's local `--artifact-root` loader is normalized against the canonical runtime artifact loader.
-- `Legacy/Executor`
-  - Required by `lib/Runtime/Execution/SimBackend.cpp` and `lib/Runtime/Execution/NpuBackend.cpp`.
-  - The direct legacy execution edges are in the backends; autotuner inherits them only transitively through runtime execution.
-- `Legacy/SimValidator`
-  - Required by `lib/Runtime/Execution/SimBackend.cpp` and `lib/Runtime/Execution/NpuBackend.cpp`.
-  - The direct validation seam is in the backends; autotuner inherits it only transitively through runtime execution.
+  - No longer blocks `ArtifactCompiler`; vec/cube source builds now route through `VecCubeArtifactBackend`.
+  - Remaining cleanup status must now be driven by non-`ArtifactCompiler` consumers and whether they justify one more extraction pass or a much smaller retained legacy surface.
 - `Legacy/CompatRuntime`
   - Still used by `lib/CAPI/Runtime/Runtime.cpp` and `test/tools/runtime/test_taskgraph_runtime.cpp`.
   - Must be migrated away from the compatibility adapter boundary before any cleanup attempt.
