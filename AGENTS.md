@@ -9,6 +9,9 @@
   - task-graph-based execution and future multi-task scheduling
 - Keep runtime entry points aligned with the runtime-native stack.
 - Keep xvm verification green while continuing runtime-native consolidation.
+- Close the original runtime task by reducing remaining work to:
+  - NPU real-device validation
+  - post-baseline runtime-native enhancement work
 
 ## Progress
 
@@ -71,12 +74,18 @@
   - compile request assembly
   - single-task run preparation
   - run-result summary interpretation
+- Against the original runtime task, the current completion state is:
+  - AscendC kernel compilation: done
+  - CPU simulation execution with profiling: done
+  - NPU execution path wiring: done in code, pending real-device validation
 - Fresh xvm verification after the frontend-core cutover includes:
   - runtime-only rebuild of `AscendCRuntime`, `AFIRRuntimeCAPI`, and `runtime-session`: pass
   - `test_taskgraph_runtime`: `478 passed, 0 failed`
   - `test_capi_runtime`: `15 passed, 0 failed`
   - `test_runtime`: `79 passed, 0 failed`
   - `run_simbackend_smoke.sh`: pass
+- The six example pipelines remain the practical CPU-simulation acceptance baseline.
+- The main remaining gap for the original task is not architecture anymore; it is lack of NPU hardware validation.
 - Fresh xvm verification after the vec/cube backend cutover passes:
   - `test_taskgraph_runtime`: `523 passed, 0 failed`
   - `test_capi_runtime`: `15 passed, 0 failed`
@@ -106,6 +115,7 @@
 - Keep request-building logic in the runtime library, not in CLI `main.cpp`.
 - Preserve CLI behavior while refactoring internals; do not accept silent semantic drift.
 - Use xvm as the authoritative verification environment.
+- Treat xvm as the authoritative development verification environment, but do not count it as NPU real-device completion.
 - Treat `Legacy/` as mixed-status implementation code, not as uniformly dead code.
 - Do not preserve runner compatibility outputs in the new vec/cube runtime-native compile path.
 - Treat verification-owned test include fixes as acceptable when removing transitive legacy includes exposes hidden test coupling.
@@ -118,7 +128,8 @@
 
 ## TODO
 
-- Tighten runtime-native boundaries after legacy deletion:
+- Finish the original task with NPU real-device validation when hardware is available.
+- After that, continue runtime-native enhancement work in this order:
   - execution/profile contract cleanup
   - task-graph / scheduler evolution
 - Keep xvm focused runtime verification green while changing runtime-native internals.
