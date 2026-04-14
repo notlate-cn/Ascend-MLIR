@@ -4,6 +4,7 @@
 #include "Runtime/Profile/ProfileUtils.h"
 
 #include "llvm/ADT/StringRef.h"
+#include "llvm/Support/FileSystem.h"
 #include "llvm/Support/Error.h"
 
 namespace mlir::runtime {
@@ -159,6 +160,27 @@ FrontendRunSummary executeFrontendPreparedRun(ExecutionSession &session,
 
   return summarizeFrontendRunSuccess(prepared.backendKind, validationRan, trace,
                                      retainedSummaryPath);
+}
+
+size_t runtimeSessionWorkdirPruneKeepCountForNewRun(size_t sessionLimit) {
+  return sessionLimit > 0 ? sessionLimit - 1 : 0;
+}
+
+llvm::Expected<std::string>
+prepareRuntimeSessionWorkdirRootForCli(llvm::StringRef destinationRoot,
+                                       size_t sessionLimit) {
+  if (auto ec = llvm::sys::fs::create_directories(destinationRoot))
+    return llvm::createStringError(
+        ec, "cannot create runtime session directory: %s",
+        destinationRoot.str().c_str());
+
+  if (auto pruneErr =
+          pruneRetainedProfileDirectories(destinationRoot,
+                                          runtimeSessionWorkdirPruneKeepCountForNewRun(
+                                              sessionLimit)))
+    return std::move(pruneErr);
+
+  return destinationRoot.str();
 }
 
 } // namespace mlir::runtime

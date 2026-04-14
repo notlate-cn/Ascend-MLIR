@@ -2213,6 +2213,49 @@ static void testPrepareRetainedProfileRunRootForCliPrunesBeforeNewSession() {
   std::filesystem::remove_all(retainRoot, ec);
 }
 
+static void testRuntimeSessionWorkdirPruneKeepCountForNewRun() {
+  EXPECT(runtimeSessionWorkdirPruneKeepCountForNewRun(0) == 0,
+         "pre-run runtime session pruning keeps zero directories when limit is zero");
+  EXPECT(runtimeSessionWorkdirPruneKeepCountForNewRun(1) == 0,
+         "pre-run runtime session pruning reserves one slot for the new session");
+  EXPECT(runtimeSessionWorkdirPruneKeepCountForNewRun(20) == 19,
+         "pre-run runtime session pruning keeps limit minus one existing sessions");
+}
+
+static void testPrepareRuntimeSessionWorkdirRootForCliPrunesBeforeNewRun() {
+  const std::filesystem::path retainRoot =
+      makeTempDir("runtime-session-workdir-prepare");
+  std::filesystem::create_directories(retainRoot);
+
+  for (int i = 0; i < 3; ++i) {
+    const std::filesystem::path dir =
+        retainRoot / ("runtime-session--old" + std::to_string(i));
+    std::filesystem::create_directories(dir);
+    std::ofstream(dir / "trace.txt") << i;
+    std::filesystem::last_write_time(
+        dir, std::filesystem::file_time_type::clock::now() +
+                 std::chrono::seconds(i));
+  }
+
+  auto preparedOr =
+      prepareRuntimeSessionWorkdirRootForCli(retainRoot.string(), 2);
+  EXPECT((bool)preparedOr,
+         "prepareRuntimeSessionWorkdirRootForCli succeeds");
+  if (preparedOr) {
+    EXPECT(*preparedOr == retainRoot.string(),
+           "prepareRuntimeSessionWorkdirRootForCli keeps the original root");
+    EXPECT(std::filesystem::exists(retainRoot / "runtime-session--old2"),
+           "prepareRuntimeSessionWorkdirRootForCli keeps the newest existing session");
+    EXPECT(!std::filesystem::exists(retainRoot / "runtime-session--old1"),
+           "prepareRuntimeSessionWorkdirRootForCli prunes sessions beyond the reserved slot");
+    EXPECT(!std::filesystem::exists(retainRoot / "runtime-session--old0"),
+           "prepareRuntimeSessionWorkdirRootForCli prunes the oldest session");
+  }
+
+  std::error_code ec;
+  std::filesystem::remove_all(retainRoot, ec);
+}
+
 static void testRetainProfileArtifactsForCliRunReturnsSummaryPath() {
   ProfileTrace trace;
   const ProfileSummaryRetentionFixture fixture =
@@ -3243,6 +3286,8 @@ int main() {
   testRetainProfileArtifactsIgnoresNonDirectories();
   testRetainedProfilePruneKeepCountForNewSession();
   testPrepareRetainedProfileRunRootForCliPrunesBeforeNewSession();
+  testRuntimeSessionWorkdirPruneKeepCountForNewRun();
+  testPrepareRuntimeSessionWorkdirRootForCliPrunesBeforeNewRun();
   testRetainProfileArtifactsForCliRunReturnsSummaryPath();
   testBackendSurfacesProfileTrace();
   testBackendPreservesExistingProfileTrace();
