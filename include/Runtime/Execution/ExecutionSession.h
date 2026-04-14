@@ -25,6 +25,7 @@ public:
 
   llvm::Expected<SessionPlan> plan(const TaskGraph &graph) const;
   llvm::Expected<ProfileTrace> run(const TaskGraph &graph);
+  void releaseWorkingDirectoriesForProcessExit();
 
 private:
   llvm::Expected<ExecutionBackend &> getOrCreateBackend();
