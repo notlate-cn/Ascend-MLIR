@@ -82,4 +82,10 @@ FrontendRunSummary executeFrontendPreparedRun(ExecutionSession &session,
                                               const FrontendPreparedRun &prepared,
                                               const FrontendRunOptions &options = {});
 
+size_t runtimeSessionWorkdirPruneKeepCountForNewRun(size_t sessionLimit);
+
+llvm::Expected<std::string>
+prepareRuntimeSessionWorkdirRootForCli(llvm::StringRef destinationRoot,
+                                       size_t sessionLimit);
+
 } // namespace mlir::runtime

@@ -21,6 +21,7 @@ namespace {
 using namespace mlir::runtime;
 
 static constexpr size_t RetainedProfileSessionLimit = 20;
+static constexpr size_t RuntimeSessionWorkdirLimit = 20;
 
 llvm::cl::OptionCategory RuntimeSessionCategory("runtime-session options");
 
@@ -213,6 +214,18 @@ llvm::Expected<std::string> retainedProfileBaseDirectory() {
   return retainRoot.string();
 }
 
+llvm::Expected<std::string> runtimeSessionWorkdirBaseDirectory() {
+  std::error_code tempDirError;
+  const std::filesystem::path sessionRoot =
+      std::filesystem::temp_directory_path(tempDirError) / "ascendc-runtime";
+  if (tempDirError) {
+    return llvm::createStringError(
+        tempDirError, "cannot determine temp directory for runtime sessions");
+  }
+
+  return sessionRoot.string();
+}
+
 } // namespace
 
 int main(int argc, char **argv) {
@@ -306,6 +319,25 @@ int main(int argc, char **argv) {
       std::make_unique<ExecutionSession>(backendKind, *testingDriverOr);
   FrontendRunOptions runOptions;
   if (backendKind == ExecutionBackendKind::Simulation) {
+    auto sessionRootOr = runtimeSessionWorkdirBaseDirectory();
+    if (!sessionRootOr) {
+      FrontendRunSummary summary = summarizeFrontendRunError(
+          backendKind, validationRan, llvm::toString(sessionRootOr.takeError()));
+      printRunErrorSummary(summary);
+      llvm::errs() << "Error: " << summary.rawErrorMessage << "\n";
+      return 2;
+    }
+    if (auto preparedSessionRootOr = prepareRuntimeSessionWorkdirRootForCli(
+            *sessionRootOr, RuntimeSessionWorkdirLimit);
+        !preparedSessionRootOr) {
+      FrontendRunSummary summary =
+          summarizeFrontendRunError(backendKind, validationRan,
+                                    llvm::toString(preparedSessionRootOr.takeError()));
+      printRunErrorSummary(summary);
+      llvm::errs() << "Error: " << summary.rawErrorMessage << "\n";
+      return 2;
+    }
+
     auto retainBaseDirOr = retainedProfileBaseDirectory();
     if (!retainBaseDirOr) {
       FrontendRunSummary summary = summarizeFrontendRunError(
@@ -332,7 +364,6 @@ int main(int argc, char **argv) {
 
   printRunSuccessSummary(summary);
   if (backendKind == ExecutionBackendKind::Simulation) {
-    runSession.reset();
     llvm::outs().flush();
     llvm::errs().flush();
     _Exit(0);
