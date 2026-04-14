@@ -28,6 +28,7 @@
 #include "Runtime/TilingSchema.h"
 #include "Runtime/TaskGraph.h"
 #include "Runtime/ArtifactCompiler.h"
+#include "Runtime/Execution/RuntimeFrontendCore.h"
 #include "Runtime/VecCubeArtifactBackend.h"
 #include "Runtime/RuntimeSessionRequestBuilder.h"
 #include "Runtime/SimBackend.h"
@@ -1220,6 +1221,117 @@ static void testArtifactCompilerRequestValidation() {
   EXPECT(!(bool)nameErr, "missing kernel name is rejected");
   if (!nameErr)
     llvm::consumeError(nameErr.takeError());
+}
+
+static void testFrontendCompileRequestBuilderPreservesFields() {
+  FrontendCompileInput input;
+  input.kernelSource = "/tmp/frontend-kernel.cpp";
+  input.outputDir = "/tmp/frontend-out";
+  input.kernelName = "frontend_kernel";
+  input.socVersion = "Ascend910B1";
+  input.arch = "dav-c220-vec";
+  input.kernelKind = KernelKind::Vec;
+  input.optLevel = 2;
+  input.cannMlirPath = "/tmp/step7_cann.mlir";
+  input.npyDir = "/tmp/npy-dir";
+
+  auto requestOr = buildFrontendCompileRequest(input);
+  EXPECT((bool)requestOr, "frontend compile request builds");
+  if (!requestOr)
+    return;
+
+  EXPECT(requestOr->kernelSource == input.kernelSource,
+         "frontend compile request preserves kernel source");
+  EXPECT(requestOr->outputDir == input.outputDir,
+         "frontend compile request preserves output dir");
+  EXPECT(requestOr->kernelName == input.kernelName,
+         "frontend compile request preserves kernel name");
+  EXPECT(requestOr->socVersion == input.socVersion,
+         "frontend compile request preserves soc version");
+  EXPECT(requestOr->arch == input.arch,
+         "frontend compile request preserves arch");
+  EXPECT(requestOr->kernelKind == KernelKind::Vec,
+         "frontend compile request preserves kernel kind");
+  EXPECT(requestOr->optLevel == 2,
+         "frontend compile request preserves opt level");
+  EXPECT(requestOr->cannMlirPath && *requestOr->cannMlirPath == "/tmp/step7_cann.mlir",
+         "frontend compile request preserves cann mlir path");
+  EXPECT(requestOr->npyDir && *requestOr->npyDir == "/tmp/npy-dir",
+         "frontend compile request preserves npy dir");
+}
+
+static void testFrontendSingleTaskRunPreparationAndSummary() {
+  KernelArtifact artifact;
+  artifact.kernelName = "frontend_vec";
+  artifact.kernelKind = KernelKind::Vec;
+  artifact.artifactRoot = "/tmp/frontend-artifact";
+  artifact.deviceBinaryPath = "/tmp/frontend-artifact/frontend_vec.bin";
+
+  ExecutionInvocation invocation;
+  invocation.blockDim = 8;
+  invocation.atol = 1.5;
+  invocation.rtol = 0.05;
+  invocation.outputs.push_back(TensorBinding{
+      "out", BindingSourceKind::ExternalFile, "/tmp/frontend-out.npy", "", "",
+      std::vector<int64_t>{4}, DType::F16});
+  invocation.expectedOutputs.push_back(TensorBinding{
+      "out", BindingSourceKind::ExternalFile, "/tmp/frontend-golden.npy", "",
+      "", std::vector<int64_t>{4}, DType::F16});
+
+  FrontendSingleTaskRunRequest request;
+  request.backendKind = ExecutionBackendKind::Simulation;
+  request.taskId = "main";
+  request.artifact = artifact;
+  request.invocation = invocation;
+
+  auto preparedOr = prepareFrontendSingleTaskRun(request);
+  EXPECT((bool)preparedOr, "frontend single-task run prepares");
+  if (!preparedOr)
+    return;
+
+  EXPECT(preparedOr->backendKind == ExecutionBackendKind::Simulation,
+         "frontend single-task run preserves backend");
+  auto tasksOr = preparedOr->graph.orderedTasks();
+  EXPECT((bool)tasksOr, "frontend single-task run graph orders tasks");
+  if (!tasksOr || tasksOr->size() != 1)
+    return;
+  EXPECT((*tasksOr)[0].taskId == "main",
+         "frontend single-task run preserves task id");
+  EXPECT((*tasksOr)[0].artifact.kernelName == "frontend_vec",
+         "frontend single-task run preserves artifact");
+  EXPECT((*tasksOr)[0].invocation.outputs.size() == 1,
+         "frontend single-task run preserves outputs");
+  EXPECT((*tasksOr)[0].invocation.expectedOutputs.size() == 1,
+         "frontend single-task run preserves expected outputs");
+
+  ProfileTrace trace;
+  trace.sessionId = "session-frontend";
+  trace.addProfileArtifact("main", ExecutionBackendKind::Simulation,
+                           "/tmp/frontend-profile.json");
+
+  FrontendRunSummary successSummary = summarizeFrontendRunSuccess(
+      ExecutionBackendKind::Simulation, /*validationRan=*/true, trace,
+      "/tmp/session_summary.json");
+  EXPECT(successSummary.success,
+         "frontend run summary marks success");
+  EXPECT(successSummary.validationStatus == FrontendValidationStatus::Passed,
+         "frontend run summary marks validation pass");
+  EXPECT(successSummary.profileTrace.profileArtifactPaths().size() == 1,
+         "frontend run summary preserves profile artifacts");
+  EXPECT(successSummary.retainedSummaryPath == "/tmp/session_summary.json",
+         "frontend run summary preserves retained summary path");
+
+  FrontendRunSummary errorSummary = summarizeFrontendRunError(
+      ExecutionBackendKind::Simulation, /*validationRan=*/true,
+      "[sim:validate] simulation output mismatch: expected 1 got 2");
+  EXPECT(!errorSummary.success,
+         "frontend run summary marks error");
+  EXPECT(errorSummary.validationStatus == FrontendValidationStatus::Failed,
+         "frontend run summary marks validation failure");
+  EXPECT(errorSummary.errorStage == "validate",
+         "frontend run summary extracts error stage");
+  EXPECT(errorSummary.errorMessage == "simulation output mismatch: expected 1 got 2",
+         "frontend run summary strips stage prefix");
 }
 
 static std::string readFileContents(const std::string &path) {
@@ -3007,6 +3119,8 @@ int main() {
   testNativeExecutionRunnerCompileCoverage();
   testSimulationBackendReportsMissingVecBinaryLaunchFailure();
   testArtifactCompilerRequestValidation();
+  testFrontendCompileRequestBuilderPreservesFields();
+  testFrontendSingleTaskRunPreparationAndSummary();
   testBackendSelection();
   testDefaultBackendRequiresDriver();
   testInvalidBackendSelection();

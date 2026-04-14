@@ -64,6 +64,19 @@
 - `Legacy/CompatRuntime` and its public shim have now been deleted; C API request assembly is now direct and runtime-native.
 - `Legacy/Compiler` and its public shim have now been deleted; the final retained legacy mix compile test has been removed.
 - The `include/Runtime/Legacy` and `lib/Runtime/Legacy` directories no longer contain active implementation units.
+- A shared runtime-native frontend core now exists in:
+  - [include/Runtime/Execution/RuntimeFrontendCore.h](/Volumes/GM9/code/Codex-Ascend-MLIR/include/Runtime/Execution/RuntimeFrontendCore.h)
+  - [lib/Runtime/Execution/RuntimeFrontendCore.cpp](/Volumes/GM9/code/Codex-Ascend-MLIR/lib/Runtime/Execution/RuntimeFrontendCore.cpp)
+- `runtime-session` and the C API now both consume shared frontend-core helpers for:
+  - compile request assembly
+  - single-task run preparation
+  - run-result summary interpretation
+- Fresh xvm verification after the frontend-core cutover includes:
+  - runtime-only rebuild of `AscendCRuntime`, `AFIRRuntimeCAPI`, and `runtime-session`: pass
+  - `test_taskgraph_runtime`: `478 passed, 0 failed`
+  - `test_capi_runtime`: `15 passed, 0 failed`
+  - `test_runtime`: `79 passed, 0 failed`
+  - `run_simbackend_smoke.sh`: pass
 - Fresh xvm verification after the vec/cube backend cutover passes:
   - `test_taskgraph_runtime`: `523 passed, 0 failed`
   - `test_capi_runtime`: `15 passed, 0 failed`
@@ -106,7 +119,6 @@
 ## TODO
 
 - Tighten runtime-native boundaries after legacy deletion:
-  - `runtime-session` / C API request assembly and summary boundaries
   - execution/profile contract cleanup
   - task-graph / scheduler evolution
 - Keep xvm focused runtime verification green while changing runtime-native internals.

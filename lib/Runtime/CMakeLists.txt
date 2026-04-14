@@ -7,6 +7,7 @@ add_mlir_library(AscendCRuntime
   Execution/DefaultExecutionRunner.cpp
   Execution/ExecutionBackend.cpp
   Execution/OutputComparator.cpp
+  Execution/RuntimeFrontendCore.cpp
   Execution/ExecutionSession.cpp
   Execution/NpuBackend.cpp
   Execution/NativeExecutionRunner.cpp
@@ -28,6 +29,8 @@ add_mlir_library(AscendCRuntime
 
   ADDITIONAL_HEADER_DIRS
   ${CMAKE_SOURCE_DIR}/include/Runtime
+
+  PARTIAL_SOURCES_INTENDED
 
   LINK_LIBS PUBLIC
   LLVMSupport
