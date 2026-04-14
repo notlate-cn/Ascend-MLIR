@@ -30,6 +30,7 @@
 #include "Runtime/VecCubeArtifactBackend.h"
 #include "Runtime/RuntimeSessionRequestBuilder.h"
 #include "Runtime/SimBackend.h"
+#include "Runtime/OutputComparator.h"
 #include "llvm/Support/JSON.h"
 #include "llvm/Support/Error.h"
 #include "llvm/Support/raw_ostream.h"
@@ -132,6 +133,26 @@ static std::string readTextFile(const std::string &path) {
   }
   return std::string((std::istreambuf_iterator<char>(is)),
                      std::istreambuf_iterator<char>());
+}
+
+static NDArray makeArray(std::vector<int64_t> shape, DType dtype,
+                         std::vector<uint8_t> bytes) {
+  NDArray array;
+  array.shape = std::move(shape);
+  array.dtype = dtype;
+  array.allocate();
+  std::memcpy(array.data, bytes.data(), bytes.size());
+  return array;
+}
+
+static NDArray makeF32Array(std::vector<int64_t> shape,
+                            std::vector<float> values) {
+  NDArray array;
+  array.shape = std::move(shape);
+  array.dtype = DType::F32;
+  array.allocate();
+  std::memcpy(array.data, values.data(), values.size() * sizeof(float));
+  return array;
 }
 
 static std::filesystem::path makeTempDir(const std::string &stem) {
@@ -955,6 +976,85 @@ static void testMixValidationCanBeRepresentedAsRuntimeTask() {
          "mix validation runtime session preserves block dim");
   EXPECT(request.task.invocation.workspaceSize == abi.workspaceBytes,
          "mix validation runtime session preserves workspace size");
+}
+
+static void testOutputComparatorExactMatchPasses() {
+  NDArray actual = makeF32Array({2}, {1.0f, 2.0f});
+  NDArray expected = makeF32Array({2}, {1.0f, 2.0f});
+  std::vector<NDArray> actuals;
+  actuals.push_back(std::move(actual));
+  std::vector<NDArray> expecteds;
+  expecteds.push_back(std::move(expected));
+
+  auto resultOr = compareRuntimeOutputs(actuals, expecteds, 0.0, 0.0);
+  EXPECT((bool)resultOr, "output comparator returns a result for exact match");
+  if (!resultOr)
+    return;
+
+  EXPECT(resultOr->passed, "output comparator marks exact match as passing");
+  EXPECT(resultOr->maxAbsDiff == 0.0,
+         "output comparator reports zero max abs diff for exact match");
+  EXPECT(resultOr->meanAbsDiff == 0.0,
+         "output comparator reports zero mean abs diff for exact match");
+  EXPECT(resultOr->errorMessage.empty(),
+         "output comparator leaves error message empty for exact match");
+}
+
+static void testOutputComparatorMismatchReturnsDetailedFailure() {
+  NDArray actual = makeF32Array({2}, {1.0f, 2.25f});
+  NDArray expected = makeF32Array({2}, {1.0f, 2.0f});
+  std::vector<NDArray> actuals;
+  actuals.push_back(std::move(actual));
+  std::vector<NDArray> expecteds;
+  expecteds.push_back(std::move(expected));
+
+  auto resultOr = compareRuntimeOutputs(actuals, expecteds, 1e-4, 1e-4);
+  EXPECT((bool)resultOr,
+         "output comparator returns a result for numeric mismatch");
+  if (!resultOr)
+    return;
+
+  EXPECT(!resultOr->passed,
+         "output comparator marks a clear mismatch as failing");
+  EXPECT(resultOr->maxAbsDiff > 0.0,
+         "output comparator reports non-zero max abs diff for mismatch");
+  EXPECT(resultOr->meanAbsDiff > 0.0,
+         "output comparator reports non-zero mean abs diff for mismatch");
+  EXPECT(!resultOr->errorMessage.empty(),
+         "output comparator returns a non-empty error message for mismatch");
+}
+
+static void testOutputComparatorStructuralMismatchReturnsError() {
+  NDArray actualShapeMismatch = makeF32Array({2}, {1.0f, 2.0f});
+  NDArray expectedShapeMismatch = makeF32Array({1, 2}, {1.0f, 2.0f});
+  std::vector<NDArray> shapeActuals;
+  shapeActuals.push_back(std::move(actualShapeMismatch));
+  std::vector<NDArray> shapeExpecteds;
+  shapeExpecteds.push_back(std::move(expectedShapeMismatch));
+  auto shapeOr = compareRuntimeOutputs(shapeActuals, shapeExpecteds, 0.0, 0.0);
+  EXPECT(!shapeOr,
+         "output comparator rejects mismatched shapes with llvm::Error");
+  if (!shapeOr) {
+    std::string message = llvm::toString(shapeOr.takeError());
+    EXPECT(!message.empty(),
+           "output comparator shape mismatch returns a diagnostic");
+  }
+
+  NDArray actualDtypeMismatch = makeF32Array({2}, {1.0f, 2.0f});
+  NDArray expectedDtypeMismatch = makeArray({2}, DType::INT32,
+                                            {1, 0, 0, 0, 2, 0, 0, 0});
+  std::vector<NDArray> dtypeActuals;
+  dtypeActuals.push_back(std::move(actualDtypeMismatch));
+  std::vector<NDArray> dtypeExpecteds;
+  dtypeExpecteds.push_back(std::move(expectedDtypeMismatch));
+  auto dtypeOr = compareRuntimeOutputs(dtypeActuals, dtypeExpecteds, 0.0, 0.0);
+  EXPECT(!dtypeOr,
+         "output comparator rejects mismatched dtypes with llvm::Error");
+  if (!dtypeOr) {
+    std::string message = llvm::toString(dtypeOr.takeError());
+    EXPECT(!message.empty(),
+           "output comparator dtype mismatch returns a diagnostic");
+  }
 }
 
 static void testArtifactCompilerRequestValidation() {
@@ -3367,6 +3467,9 @@ int main() {
   testRuntimeSessionRequestBuilderRejectsMissingKernelKind();
   testRuntimeSessionRequestBuilderBuildsSingleTaskGraph();
   testMixValidationCanBeRepresentedAsRuntimeTask();
+  testOutputComparatorExactMatchPasses();
+  testOutputComparatorMismatchReturnsDetailedFailure();
+  testOutputComparatorStructuralMismatchReturnsError();
   testArtifactCompilerRequestValidation();
   testCompatCompileRequestPreservesFields();
   testCompatCompileRequestRejectsUnknownKernelType();
