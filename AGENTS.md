@@ -83,7 +83,7 @@
 ## TODO
 
 - Plan the second-round `Legacy` cleanup in risk-ordered slices:
-  - retained compiler/compatibility surface cleanup first
+  - retained `Legacy/SimValidator` / compatibility surface cleanup first
   - adapter-boundary cleanup second
   - deeper legacy implementation deletion last
 - Keep xvm focused runtime verification green while shrinking legacy dependencies.
