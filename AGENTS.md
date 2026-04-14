@@ -48,6 +48,12 @@
 - `ArtifactCompiler` now dispatches:
   - `mix` -> `MixDirectBackend`
   - `vec/cube` -> `VecCubeArtifactBackend`
+- A runtime-native execution runner seam now exists:
+  - [include/Runtime/Execution/ExecutionRunner.h](/Volumes/GM9/code/Codex-Ascend-MLIR/include/Runtime/Execution/ExecutionRunner.h)
+  - [include/Runtime/Execution/DefaultExecutionRunner.h](/Volumes/GM9/code/Codex-Ascend-MLIR/include/Runtime/Execution/DefaultExecutionRunner.h)
+  - [lib/Runtime/Execution/DefaultExecutionRunner.cpp](/Volumes/GM9/code/Codex-Ascend-MLIR/lib/Runtime/Execution/DefaultExecutionRunner.cpp)
+- `SimBackend` and `NpuBackend` no longer directly include `Runtime/Executor.h`.
+- `Legacy/Executor` is now behind `DefaultExecutionRunner` instead of being a direct runtime-backend dependency.
 - Fresh xvm verification after the vec/cube backend cutover passes:
   - `test_taskgraph_runtime`: `523 passed, 0 failed`
   - `test_capi_runtime`: `15 passed, 0 failed`
@@ -55,6 +61,7 @@
   - focused vec/mix smoke: pass
   - repeated mix simulation baseline: pass
 - Fresh xvm autotuner vec smoke also passes after the compile-path cutover, with non-zero `score` / `cycle_count`.
+- Fresh xvm autotuner vec smoke also passes after the execution-runner adapter cutover, with non-zero `score` / `cycle_count`.
 
 ## Decisions
 
@@ -75,10 +82,11 @@
 ## TODO
 
 - Re-audit `SimBackend` and `NpuBackend` as the direct blockers for shrinking `Legacy/Executor` and `Legacy/SimValidator`.
+- Reclassify the legacy cleanup candidate audit after:
+  - `ArtifactCompiler -> Legacy/Compiler` seam removal
+  - `SimBackend/NpuBackend -> Legacy/Executor` seam removal
 - Decide whether the remaining `Legacy/Compiler` file can now be reduced to only non-`ArtifactCompiler` consumers or needs one more extraction pass.
-- Reclassify the legacy cleanup candidate audit after the `ArtifactCompiler -> Legacy/Compiler` seam removal.
 - Plan the second-round `Legacy` cleanup in risk-ordered slices:
-  - backend seam cleanup first (`SimBackend` / `NpuBackend`)
-  - remaining compiler-surface shrink second
+  - remaining compiler-surface shrink first
   - deeper legacy implementation deletion last
 - Keep xvm focused runtime verification green while shrinking legacy dependencies.
