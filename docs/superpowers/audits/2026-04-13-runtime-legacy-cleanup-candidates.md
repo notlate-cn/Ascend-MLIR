@@ -21,7 +21,7 @@
 - `Legacy/Compiler`
   - No longer blocks `ArtifactCompiler`; vec/cube source builds now route through `VecCubeArtifactBackend`.
   - The remaining direct runtime-owned surface has been reduced to an explicit legacy mix compile test in `test/tools/runtime/test_runtime.cpp`, plus the retained implementation file itself.
-  - The next cleanup decision is whether that test should remain as explicit retained legacy coverage or be replaced by a self-contained runtime-native mix compile fixture.
+  - Treat it as a retained compatibility unit until a self-contained runtime-native mix compile fixture exists.
 - `Legacy/CompatRuntime`
   - Still used by `lib/CAPI/Runtime/Runtime.cpp` and `test/tools/runtime/test_taskgraph_runtime.cpp`.
   - Must be migrated away from the compatibility adapter boundary before any cleanup attempt.

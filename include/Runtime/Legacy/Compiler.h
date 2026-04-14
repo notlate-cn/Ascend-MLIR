@@ -22,9 +22,12 @@ public:
 
   explicit Compiler(const Config& cfg = Config{});
 
-  // Compiles src_file into a runtime-consumable artifact.
+  // Retained legacy compile entry point kept only for compatibility coverage
+  // and residual non-runtime-native consumers.
+  //
+  // Compiles src_file into a low-level runtime-consumable artifact path.
   // - vec/cube: returns output_dir/kernel_name.bin
-  // - mix: returns output_dir/lib<kernel_name>_packed.so
+  // - mix: returns a linked device binary path under output_dir
   llvm::Expected<std::string> Compile(const std::string& src_file,
                                       const std::string& output_dir,
                                       const std::string& kernel_name);
@@ -36,8 +39,11 @@ private:
   llvm::Error RunProcess(const std::vector<std::string>& args);
 };
 
+// Retained legacy helper used by the legacy Compiler implementation.
 llvm::Error prepareCompileOutputDir(llvm::StringRef outputDir);
 
+// Retained normalization helper used by legacy-oriented tests and compile
+// compatibility paths.
 KernelArtifact normalizeCompiledArtifact(llvm::StringRef binaryPath,
                                          llvm::StringRef kernelName,
                                          KernelKind kind,
