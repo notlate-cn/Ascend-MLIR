@@ -40,6 +40,21 @@
   - [2026-04-13-runtime-legacy-dependency-audit.md](/Volumes/GM9/code/Codex-Ascend-MLIR/docs/superpowers/audits/2026-04-13-runtime-legacy-dependency-audit.md)
   - [2026-04-13-autotuner-runtime-normalization-audit.md](/Volumes/GM9/code/Codex-Ascend-MLIR/docs/superpowers/audits/2026-04-13-autotuner-runtime-normalization-audit.md)
   - [2026-04-13-runtime-legacy-cleanup-candidates.md](/Volumes/GM9/code/Codex-Ascend-MLIR/docs/superpowers/audits/2026-04-13-runtime-legacy-cleanup-candidates.md)
+- `autotuner --artifact-root` now uses the canonical runtime artifact loader instead of a local manifest parser.
+- `ArtifactCompiler` no longer depends on `Legacy/Compiler` for `vec` / `cube` builds.
+- A runtime-native vec/cube compile path now exists in:
+  - [include/Runtime/Artifact/VecCubeArtifactBackend.h](/Volumes/GM9/code/Codex-Ascend-MLIR/include/Runtime/Artifact/VecCubeArtifactBackend.h)
+  - [lib/Runtime/Artifact/VecCubeArtifactBackend.cpp](/Volumes/GM9/code/Codex-Ascend-MLIR/lib/Runtime/Artifact/VecCubeArtifactBackend.cpp)
+- `ArtifactCompiler` now dispatches:
+  - `mix` -> `MixDirectBackend`
+  - `vec/cube` -> `VecCubeArtifactBackend`
+- Fresh xvm verification after the vec/cube backend cutover passes:
+  - `test_taskgraph_runtime`: `523 passed, 0 failed`
+  - `test_capi_runtime`: `15 passed, 0 failed`
+  - `test_runtime`: `104 passed, 0 failed`
+  - focused vec/mix smoke: pass
+  - repeated mix simulation baseline: pass
+- Fresh xvm autotuner vec smoke also passes after the compile-path cutover, with non-zero `score` / `cycle_count`.
 
 ## Decisions
 
@@ -48,6 +63,8 @@
 - Preserve CLI behavior while refactoring internals; do not accept silent semantic drift.
 - Use xvm as the authoritative verification environment.
 - Treat `Legacy/` as mixed-status implementation code, not as uniformly dead code.
+- Do not preserve runner compatibility outputs in the new vec/cube runtime-native compile path.
+- Treat verification-owned test include fixes as acceptable when removing transitive legacy includes exposes hidden test coupling.
 - Do not delete more `Legacy` code until:
   - dependency audit is complete
   - `autotuner` is re-audited against current runtime-native flows
@@ -57,11 +74,11 @@
 
 ## TODO
 
-- Normalize the autotuner `--artifact-root` loader so it preserves `mix_resource_type` and uses the canonical runtime artifact semantics.
-- Decide whether `ArtifactCompiler` should be refactored or wrapped so vec/cube source builds no longer keep `Legacy/Compiler` on the cleanup-critical path.
 - Re-audit `SimBackend` and `NpuBackend` as the direct blockers for shrinking `Legacy/Executor` and `Legacy/SimValidator`.
+- Decide whether the remaining `Legacy/Compiler` file can now be reduced to only non-`ArtifactCompiler` consumers or needs one more extraction pass.
+- Reclassify the legacy cleanup candidate audit after the `ArtifactCompiler -> Legacy/Compiler` seam removal.
 - Plan the second-round `Legacy` cleanup in risk-ordered slices:
-  - adapter boundary shrink first
-  - backend seam cleanup second
+  - backend seam cleanup first (`SimBackend` / `NpuBackend`)
+  - remaining compiler-surface shrink second
   - deeper legacy implementation deletion last
 - Keep xvm focused runtime verification green while shrinking legacy dependencies.
