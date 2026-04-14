@@ -2,9 +2,9 @@
 #include "Runtime/SimBackend.h"
 #include "Runtime/Executor.h"
 #include "Runtime/NpyIO.h"
+#include "Runtime/OutputComparator.h"
 #include "Runtime/PathUtils.h"
 #include "Runtime/ProfileUtils.h"
-#include "Runtime/SimValidator.h"
 #include "Runtime/TilingPack.h"
 
 #include "llvm/ADT/SmallString.h"
@@ -428,19 +428,20 @@ runWithExecutor(const ExecutionRequest &request) {
   }
 
   if (!expectedOutputsOr->empty()) {
-    SimValidator validator;
-    SimValidator::Result validation = validator.CompareOnly(
-        args, *expectedOutputsOr, request.task.invocation.atol,
-        request.task.invocation.rtol);
-    if (!validation.error_msg.empty()) {
-      return stageError("validate", validation.error_msg);
+    auto validationOr =
+        compareRuntimeOutputs(args.outputs, *expectedOutputsOr,
+                              request.task.invocation.atol,
+                              request.task.invocation.rtol);
+    if (!validationOr) {
+      return stageError("validate", validationOr.takeError());
     }
+    const OutputComparisonResult &validation = *validationOr;
     if (!validation.passed) {
       return stageError(
           "validate",
           llvm::formatv("simulation output mismatch: max_abs_diff={0:F} "
                         "mean_abs_diff={1:F}",
-                        validation.max_abs_diff, validation.mean_abs_diff)
+                        validation.maxAbsDiff, validation.meanAbsDiff)
               .str());
     }
   }
