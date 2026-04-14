@@ -39,6 +39,9 @@
   - shared stale-build detection and configure retry
   - per-slice build helpers for runtime core, example toolchain, and `mix-compiler`
 - The repeated mix simulation baseline is part of focused verification and currently passes.
+- Simulation success paths now explicitly handle process-exit cleanup:
+  - `runtime-session` releases `ExecutionSession` workdir cleanup responsibility before `_Exit(0)` on successful sim runs
+  - example pipelines no longer stream `runtime-session` output through live `tee | grep` filters on critical sim steps; they write the validation log first and print filtered output afterward
 - CLI regression coverage has been added for:
   - conflicting `--artifact-root` / `--kernel`
   - invalid `--kernel-kind` with missing kernel input
@@ -129,6 +132,10 @@
   - `bash test/tools/runtime/run_simbackend_smoke.sh`: pass
   - `run_runtime.sh` now reuses the shared helper and no longer rebuilds `afir-opt` / `afir-translate` / `mix-compiler` in the initial runtime-core build step
   - repeated mix simulation baseline remains part of the default runtime verification path and passes
+- Fresh xvm full CPU-simulation regression now passes:
+  - `bash test/tools/runtime/run_simbackend_examples.sh`: `RC=0`
+  - `bash test/tools/examples/example_pipelines.sh`: `RC=0`
+  - all 6 example pipelines pass end-to-end
 
 ## Decisions
 
@@ -146,10 +153,15 @@
   - cleanup candidates are grouped by prerequisite and risk
 - Keep the untracked planning note below untouched:
   - `docs/superpowers/plans/2026-04-10-runtime-taskgraph-mix.md`
+- Treat the following as the authoritative CPU-simulation regression baselines:
+  - `test/tools/runtime/run_runtime.sh`
+  - `test/tools/runtime/run_simbackend_examples.sh`
+  - `test/tools/examples/example_pipelines.sh`
 
 ## TODO
 
 - Finish the original task with NPU real-device validation when hardware is available.
 - After that, continue runtime-native enhancement work in this order:
+  - execution/profile contract polish
   - task-graph / scheduler evolution
 - Keep xvm focused runtime verification green while changing runtime-native internals.
