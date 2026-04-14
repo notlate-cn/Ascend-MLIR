@@ -20,6 +20,8 @@
 #include "Runtime/MixArtifact.h"
 #include "Runtime/RunManifest.h"
 #include "Runtime/ExecutionBackend.h"
+#include "Runtime/Execution/DefaultExecutionRunner.h"
+#include "Runtime/Execution/ExecutionRunner.h"
 #include "Runtime/ExecutionSession.h"
 #include "Runtime/NpuBackend.h"
 #include "Runtime/NpyIO.h"
@@ -154,6 +156,42 @@ static NDArray makeF32Array(std::vector<int64_t> shape,
   std::memcpy(array.data, values.data(), values.size() * sizeof(float));
   return array;
 }
+
+class FakeExecutionRunner final : public ExecutionRunner {
+public:
+  explicit FakeExecutionRunner(ExecutionRunnerMode mode) : mode_(mode) {}
+
+  ExecutionRunnerMode mode() const override { return mode_; }
+
+  llvm::Error initialize(int deviceId = 0) override {
+    initializeCalled = true;
+    lastDeviceId = deviceId;
+    return llvm::Error::success();
+  }
+
+  llvm::Error runFile(const FileExecutionLaunch &launch, RunArgs &) override {
+    runFileCalled = true;
+    lastFileLaunch = launch;
+    return llvm::Error::success();
+  }
+
+  llvm::Error runPackedMixFile(const PackedMixExecutionLaunch &launch,
+                               RunArgs &) override {
+    runPackedMixCalled = true;
+    lastPackedMixLaunch = launch;
+    return llvm::Error::success();
+  }
+
+  bool initializeCalled = false;
+  bool runFileCalled = false;
+  bool runPackedMixCalled = false;
+  int lastDeviceId = -1;
+  FileExecutionLaunch lastFileLaunch;
+  PackedMixExecutionLaunch lastPackedMixLaunch;
+
+private:
+  ExecutionRunnerMode mode_;
+};
 
 static std::filesystem::path makeTempDir(const std::string &stem) {
   static int uniqueCounter = 0;
@@ -1068,6 +1106,59 @@ static void testOutputComparatorStructuralMismatchReturnsError() {
     EXPECT(!message.empty(),
            "output comparator dtype mismatch returns a diagnostic");
   }
+}
+
+static void testExecutionRunnerContractSupportsSimulationAndRealDeviceModes() {
+  FakeExecutionRunner simRunner(ExecutionRunnerMode::Simulation);
+  FakeExecutionRunner npuRunner(ExecutionRunnerMode::RealDevice);
+
+  EXPECT(simRunner.mode() == ExecutionRunnerMode::Simulation,
+         "execution runner contract preserves simulation mode");
+  EXPECT(npuRunner.mode() == ExecutionRunnerMode::RealDevice,
+         "execution runner contract preserves real-device mode");
+
+  EXPECT(!simRunner.initialize(3),
+         "execution runner fake initialize succeeds for simulation mode");
+  EXPECT(simRunner.initializeCalled && simRunner.lastDeviceId == 3,
+         "execution runner fake records initialize device id");
+}
+
+static void testExecutionRunnerContractSupportsFileLaunches() {
+  FakeExecutionRunner runner(ExecutionRunnerMode::Simulation);
+  RunArgs args;
+  FileExecutionLaunch launch;
+  launch.binaryPath = "/tmp/fake.bin";
+  launch.kernelName = "fake_kernel";
+  launch.magic = 0x41415246u;
+
+  EXPECT(!runner.runFile(launch, args),
+         "execution runner contract accepts vec or cube file launch");
+  EXPECT(runner.runFileCalled,
+         "execution runner fake records file launch invocation");
+  EXPECT(runner.lastFileLaunch.binaryPath == "/tmp/fake.bin",
+         "execution runner fake keeps file launch binary path");
+  EXPECT(runner.lastFileLaunch.kernelName == "fake_kernel",
+         "execution runner fake keeps file launch kernel name");
+  EXPECT(runner.lastFileLaunch.magic == 0x41415246u,
+         "execution runner fake keeps file launch magic");
+}
+
+static void testExecutionRunnerContractSupportsPackedMixLaunches() {
+  FakeExecutionRunner runner(ExecutionRunnerMode::Simulation);
+  RunArgs args;
+  PackedMixExecutionLaunch launch;
+  launch.sharedLibraryPath = "/tmp/libfake_packed.so";
+  launch.kernelName = "fake_mix_kernel";
+
+  EXPECT(!runner.runPackedMixFile(launch, args),
+         "execution runner contract accepts packed mix launch");
+  EXPECT(runner.runPackedMixCalled,
+         "execution runner fake records packed mix launch invocation");
+  EXPECT(runner.lastPackedMixLaunch.sharedLibraryPath ==
+             "/tmp/libfake_packed.so",
+         "execution runner fake keeps packed mix library path");
+  EXPECT(runner.lastPackedMixLaunch.kernelName == "fake_mix_kernel",
+         "execution runner fake keeps packed mix kernel name");
 }
 
 static void testArtifactCompilerRequestValidation() {
@@ -3483,6 +3574,9 @@ int main() {
   testOutputComparatorExactMatchPasses();
   testOutputComparatorMismatchReturnsDetailedFailure();
   testOutputComparatorStructuralMismatchReturnsError();
+  testExecutionRunnerContractSupportsSimulationAndRealDeviceModes();
+  testExecutionRunnerContractSupportsFileLaunches();
+  testExecutionRunnerContractSupportsPackedMixLaunches();
   testArtifactCompilerRequestValidation();
   testCompatCompileRequestPreservesFields();
   testCompatCompileRequestRejectsUnknownKernelType();
