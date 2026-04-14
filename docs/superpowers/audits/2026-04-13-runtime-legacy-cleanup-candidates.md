@@ -28,9 +28,7 @@
 
 ## Do Not Touch Yet
 
-- `Legacy/HostRunnerGen`
-  - Still has direct test coverage in `test/tools/runtime/test_runtime.cpp` and `test/tools/runner/test_runner_gen.cpp`.
-  - Still has specialized workflow references and no runtime-native execution path depends on it yet.
+- none currently
 
 ## Verification Requirements
 
@@ -39,7 +37,6 @@
 - Any change affecting the runtime-native execution substrate must rerun `bash test/tools/runtime/run_runtime.sh` on xvm.
 - Any change affecting the runtime-native comparator or any deletion of the legacy validator files must rerun `bash test/tools/runtime/run_runtime.sh` on xvm.
 - Any change affecting `Legacy/CompatRuntime` must rerun the runtime C API and taskgraph runtime coverage that depends on the compat adapter boundary.
-- Any proposed deletion of `Legacy/HostRunnerGen` must update or remove `test/tools/runtime/test_runtime.cpp` and `test/tools/runner/test_runner_gen.cpp` intentionally.
 - No cleanup step is complete until the relevant audit entry has a matching source reference and a verified follow-up path.
 
 ## Next-Step Guidance
@@ -47,5 +44,6 @@
 - The next cleanup slice should start from the retained compatibility files that still sit outside the runtime-native stack, not from runtime backend seams that have already been cut over.
 - `Legacy/Executor` is no longer an active cleanup target because the file and shim have been deleted.
 - `Legacy/SimValidator` can be removed directly because there are no surviving non-backend consumers left.
+- `Legacy/HostRunnerGen` is no longer an active cleanup target because the file, shim, and dedicated tests have been deleted.
 - `Legacy/Compiler` should now be treated as a small retained-surface decision, not as a main runtime migration blocker.
 - Deeper physical deletion should wait until the remaining compatibility boundary and retained compiler test surface are re-audited against current consumers.
