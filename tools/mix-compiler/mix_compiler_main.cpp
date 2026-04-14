@@ -1,10 +1,29 @@
 #include "Runtime/ArtifactCompiler.h"
 #include "Runtime/MixAbiExtractor.h"
+#include "llvm/ADT/SmallString.h"
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/Error.h"
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/Path.h"
 #include "llvm/Support/raw_ostream.h"
+
+#include <cstdlib>
+
+namespace {
+
+void configureSiblingMixTilingHelperPath(const char *argv0) {
+  if (std::getenv("AFIR_MIX_TILING_HELPER") || !argv0 || !*argv0)
+    return;
+  llvm::SmallString<256> helperPath(argv0);
+  llvm::sys::fs::make_absolute(helperPath);
+  llvm::SmallString<256> parentPath =
+      llvm::sys::path::parent_path(llvm::StringRef(helperPath));
+  helperPath = parentPath;
+  llvm::sys::path::append(helperPath, "mix-tiling-helper");
+  setenv("AFIR_MIX_TILING_HELPER", helperPath.c_str(), /*overwrite=*/0);
+}
+
+} // namespace
 
 static llvm::cl::opt<std::string> KernelFile("kernel", llvm::cl::Required);
 static llvm::cl::opt<std::string> OutputDir("output", llvm::cl::init("./build/mix"));
@@ -20,6 +39,7 @@ static llvm::cl::opt<std::string> NpyDir(
 static llvm::cl::opt<std::string> SocVersion("soc", llvm::cl::init("Ascend910B1"));
 
 int main(int argc, char** argv) {
+  configureSiblingMixTilingHelperPath(argv[0]);
   llvm::cl::ParseCommandLineOptions(argc, argv,
                                     "RuntimeMix artifact compiler for mix kernels\n");
 

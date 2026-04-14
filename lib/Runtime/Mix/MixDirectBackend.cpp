@@ -540,6 +540,12 @@ runPreprocessStage(llvm::StringRef workDir, llvm::StringRef sourcePath,
   return outputs;
 }
 
+static bool useLegacyMixRunner() {
+  if (const char *value = std::getenv("AFIR_MIX_USE_LEGACY_RUNNER"))
+    return *value != '\0' && std::strcmp(value, "0") != 0;
+  return false;
+}
+
 static std::string getRunnerToolkitHome() {
   return findAscendHome();
 }
@@ -964,10 +970,9 @@ static std::string emitRunnerTilingSource(const MixAbiMetadata &abi) {
      << getAclDataType(inputB.dtype).str() << ", false);\n"
      << "  tilingApi.SetCType(TPosition::GM, CubeFormat::ND, "
      << getAclDataType(output.dtype).str() << ");\n";
-  if (hasBias) {
+  if (hasBias)
     os << "  tilingApi.SetBiasType(TPosition::GM, CubeFormat::ND, "
        << getAclDataType(abi.inputs[2].dtype).str() << ");\n";
-  }
   os << "  tilingApi.SetOrgShape(M, N, K);\n"
      << "  tilingApi.SetShape(M, N, K);\n"
      << "  tilingApi.SetBias(" << (hasBias ? "true" : "false") << ");\n"
@@ -990,10 +995,9 @@ static std::string emitRunnerTilingSource(const MixAbiMetadata &abi) {
      << getAclDataType(inputB.dtype).str() << ", false);\n"
      << "  tilingApi.SetCType(TPosition::GM, CubeFormat::ND, "
      << getAclDataType(output.dtype).str() << ");\n";
-  if (hasBias) {
+  if (hasBias)
     os << "  tilingApi.SetBiasType(TPosition::GM, CubeFormat::ND, "
        << getAclDataType(abi.inputs[2].dtype).str() << ");\n";
-  }
   os << "  tilingApi.SetOrgShape(M, N, K);\n"
      << "  tilingApi.SetShape(M, N, K);\n"
      << "  tilingApi.SetBias(" << (hasBias ? "true" : "false") << ");\n"
@@ -1426,11 +1430,10 @@ MixDirectBackend::compile(const MixDirectCompileConfig &cfg) {
                                   hostStubIncludeDir);
   const std::vector<std::string> packCmd =
       buildPackCommand(hostStubObjectPath, mergeDir);
-  const std::string toolkitHomeForHostLink = getRunnerToolkitHome();
   const std::vector<std::string> hostLinkCmd =
       buildHostSharedLinkCommand(hostStubObjectPath, kernelSoPath,
                                  cfg.socVersion,
-                                 getRunnerDeviceLibDir(toolkitHomeForHostLink));
+                                 findAscendDeviceLibDir(findAscendHome()));
 
   const std::string aicCompileContext = makeStageContext({
       {"kernel", cfg.kernelName},
@@ -1672,65 +1675,84 @@ MixDirectBackend::compile(const MixDirectCompileConfig &cfg) {
   abi.workspaceMode = "fixed";
   abi.tilingMode = "generated_file";
   abi.tilingSource = tilingArtifactSource;
-  if (auto err = writeFileOrErr(runnerDataUtilsPath, emitRunnerDataUtilsHeader()))
-    return err;
-  if (auto err =
-          writeFileOrErr(runnerMainPath,
-                         emitRunnerMainSource(runtimeKernelName, abi)))
-    return err;
-  if (auto err = writeFileOrErr(runnerTilingPath, emitRunnerTilingSource(abi)))
-    return err;
+  const bool useLegacyRunner = useLegacyMixRunner();
+  std::vector<std::string> tilingEmitCmd;
+  std::vector<std::string> runnerCompileCmd;
+  std::string runnerMainSourcePath;
+  std::string runnerBinaryOutputPath;
+  if (useLegacyRunner) {
+    if (auto err =
+            writeFileOrErr(runnerDataUtilsPath, emitRunnerDataUtilsHeader()))
+      return err;
+    if (auto err = writeFileOrErr(
+            runnerMainPath, emitRunnerMainSource(runtimeKernelName, abi)))
+      return err;
+    if (auto err =
+            writeFileOrErr(runnerTilingPath, emitRunnerTilingSource(abi)))
+      return err;
 
-  const std::string ascendHome = getRunnerToolkitHome();
-  auto davSimLibDirOr = requireAscendDavSimulatorLibDir(ascendHome);
-  if (!davSimLibDirOr)
-    return davSimLibDirOr.takeError();
-  const std::string runnerLib64 = getRunnerLib64(ascendHome);
-  const std::string hostCannArch = getHostCannArchDir();
-  const std::string runnerAltLib64 =
-      hostCannArch.empty() ? std::string()
-                           : ascendHome + "/" + hostCannArch + "/lib64";
-  const std::string runnerDeviceLibDir = getRunnerDeviceLibDir(ascendHome);
-  const std::string runnerSimLibDir =
-      getRunnerSimLibDir(ascendHome, cfg.socVersion);
-  const std::string davSimLibDir = *davSimLibDirOr;
-  const std::vector<std::string> runnerCompileCmd = buildHostRunnerCompileCommand(
-      workDir, launcherDir, outIncludeDir, runnerMainPath, runnerTilingPath,
-      runnerBinaryPath, kernelSoPath, runnerLib64, runnerSimLibDir,
-      davSimLibDir, runnerDeviceLibDir, cfg.socVersion);
-  const std::string runnerBuildContext = makeStageContext({
-      {"main_source", runnerMainPath},
-      {"tiling_source", runnerTilingPath},
-      {"kernel_so", kernelSoPath},
-      {"runner_binary", runnerBinaryPath},
-      {"soc_version", cfg.socVersion},
-  });
-  std::string runnerLdLibraryPath = runnerLib64;
-  if (runnerAltLib64 != runnerLib64)
-    runnerLdLibraryPath += ":" + runnerAltLib64;
-  if (!runnerDeviceLibDir.empty())
-    runnerLdLibraryPath += ":" + runnerDeviceLibDir;
-  runnerLdLibraryPath += ":" + runnerSimLibDir + ":" + davSimLibDir +
-                         ":${LD_LIBRARY_PATH:-}";
-  const std::vector<std::string> tilingEmitCmd = {
-      "/bin/bash",
-      "-lc",
-      "LD_LIBRARY_PATH='" + runnerLdLibraryPath + "' " + runnerBinaryPath +
-          " --emit-tiling-file " + tilingArtifactPath +
-          " --emit-launch-info " + launchInfoPath,
-  };
+    const std::string ascendHome = getRunnerToolkitHome();
+    auto davSimLibDirOr = requireAscendDavSimulatorLibDir(ascendHome);
+    if (!davSimLibDirOr)
+      return davSimLibDirOr.takeError();
+    const std::string runnerLib64 = getRunnerLib64(ascendHome);
+    const std::string hostCannArch = getHostCannArchDir();
+    const std::string runnerAltLib64 =
+        hostCannArch.empty() ? std::string()
+                             : ascendHome + "/" + hostCannArch + "/lib64";
+    const std::string runnerDeviceLibDir = getRunnerDeviceLibDir(ascendHome);
+    const std::string runnerSimLibDir =
+        getRunnerSimLibDir(ascendHome, cfg.socVersion);
+    const std::string davSimLibDir = *davSimLibDirOr;
+    runnerCompileCmd = buildHostRunnerCompileCommand(
+        workDir, launcherDir, outIncludeDir, runnerMainPath, runnerTilingPath,
+        runnerBinaryPath, kernelSoPath, runnerLib64, runnerSimLibDir,
+        davSimLibDir, runnerDeviceLibDir, cfg.socVersion);
+    const std::string runnerBuildContext = makeStageContext({
+        {"main_source", runnerMainPath},
+        {"tiling_source", runnerTilingPath},
+        {"kernel_so", kernelSoPath},
+        {"runner_binary", runnerBinaryPath},
+        {"soc_version", cfg.socVersion},
+    });
+    std::string runnerLdLibraryPath = runnerLib64;
+    if (runnerAltLib64 != runnerLib64)
+      runnerLdLibraryPath += ":" + runnerAltLib64;
+    if (!runnerDeviceLibDir.empty())
+      runnerLdLibraryPath += ":" + runnerDeviceLibDir;
+    runnerLdLibraryPath += ":" + runnerSimLibDir + ":" + davSimLibDir +
+                           ":${LD_LIBRARY_PATH:-}";
+    tilingEmitCmd = {
+        "/bin/bash",
+        "-lc",
+        "LD_LIBRARY_PATH='" + runnerLdLibraryPath + "' " + runnerBinaryPath +
+            " --emit-tiling-file " + tilingArtifactPath +
+            " --emit-launch-info " + launchInfoPath,
+    };
+    if (auto err = runProcess(runnerCompileCmd, kStageBuildRunner,
+                              runnerBuildContext))
+      return err;
+    if (auto err = ensureFileExists(runnerBinaryPath, kStageBuildRunner,
+                                    runnerBuildContext))
+      return err;
+    runnerMainSourcePath = runnerMainPath;
+    runnerBinaryOutputPath = runnerBinaryPath;
+  } else {
+    tilingEmitCmd = buildMixTilingHelperCommand(
+        runtimeKernelName, cfg.socVersion, abi.inputs[0].shape,
+        abi.inputs[0].dtype, abi.inputs[1].shape, abi.inputs[1].dtype,
+        abi.outputs[0].shape, abi.outputs[0].dtype,
+        abi.inputs.size() > 2 ? std::optional<DType>(abi.inputs[2].dtype)
+                              : std::nullopt,
+        tilingArtifactPath, launchInfoPath);
+  }
   const std::string tilingArtifactContext = makeStageContext({
-      {"runner_binary", runnerBinaryPath},
+      {useLegacyRunner ? "runner_binary" : "helper", tilingEmitCmd.front()},
       {"tiling_artifact", tilingArtifactPath},
       {"launch_info", launchInfoPath},
+      {"kernel", runtimeKernelName},
       {"soc_version", cfg.socVersion},
   });
-  if (auto err = runProcess(runnerCompileCmd, kStageBuildRunner,
-                            runnerBuildContext))
-    return err;
-  if (auto err = ensureFileExists(runnerBinaryPath, kStageBuildRunner,
-                                  runnerBuildContext))
-    return err;
   if (auto err =
           runProcess(tilingEmitCmd, kStageEmitTilingArtifact, tilingArtifactContext))
     return err;
@@ -1783,7 +1805,7 @@ MixDirectBackend::compile(const MixDirectCompileConfig &cfg) {
                                     outIncludeDir.str(),
                                     hostStubSourcePath, hostStubObjectPath,
                                     kernelSoPath, mixFlagPath,
-                                    runnerMainPath, runnerBinaryPath,
+                                    runnerMainSourcePath, runnerBinaryOutputPath,
                                     aicObj, aivObj,
                                     aicRelocObj, aivRelocObj, mergedDeviceObj,
                                     renderCommandForDebug(aicCmd),
@@ -1798,7 +1820,9 @@ MixDirectBackend::compile(const MixDirectCompileConfig &cfg) {
                                     renderCommandForDebug(packCmd),
                                     renderCommandForDebug(hostLinkCmd),
                                     renderCommandForDebug(recompileCmd),
-                                    renderCommandForDebug(runnerCompileCmd),
+                                    renderCommandForDebug(useLegacyRunner
+                                                              ? runnerCompileCmd
+                                                              : tilingEmitCmd),
                                     manifestPath))
     return err;
 
@@ -1810,7 +1834,7 @@ MixDirectBackend::compile(const MixDirectCompileConfig &cfg) {
   artifact.install_dir = outDir.str().str();
   artifact.kernel_so_path = kernelSoPath;
   artifact.launcher_header_dir = outIncludeDir.str().str();
-  artifact.host_runner_path = runnerBinaryPath;
+  artifact.host_runner_path = runnerBinaryOutputPath;
   artifact.host_stub_source_path = hostStubSourcePath;
   artifact.device_object_path = mergedDeviceObj;
   artifact.manifest_path = manifestPath;

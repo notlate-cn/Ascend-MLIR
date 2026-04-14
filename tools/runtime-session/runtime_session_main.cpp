@@ -2,10 +2,12 @@
 #include "Runtime/RuntimeFrontendCore.h"
 #include "Runtime/ExecutionBackend.h"
 #include "Runtime/ExecutionSession.h"
+#include "llvm/ADT/SmallString.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/Error.h"
 #include "llvm/Support/FileSystem.h"
+#include "llvm/Support/Path.h"
 #include "llvm/Support/raw_ostream.h"
 
 #include <cstdlib>
@@ -22,6 +24,18 @@ using namespace mlir::runtime;
 
 static constexpr size_t RetainedProfileSessionLimit = 20;
 static constexpr size_t RuntimeSessionWorkdirLimit = 20;
+
+void configureSiblingMixTilingHelperPath(const char *argv0) {
+  if (std::getenv("AFIR_MIX_TILING_HELPER") || !argv0 || !*argv0)
+    return;
+  llvm::SmallString<256> helperPath(argv0);
+  llvm::sys::fs::make_absolute(helperPath);
+  llvm::SmallString<256> parentPath =
+      llvm::sys::path::parent_path(llvm::StringRef(helperPath));
+  helperPath = parentPath;
+  llvm::sys::path::append(helperPath, "mix-tiling-helper");
+  setenv("AFIR_MIX_TILING_HELPER", helperPath.c_str(), /*overwrite=*/0);
+}
 
 llvm::cl::OptionCategory RuntimeSessionCategory("runtime-session options");
 
@@ -229,6 +243,7 @@ llvm::Expected<std::string> runtimeSessionWorkdirBaseDirectory() {
 } // namespace
 
 int main(int argc, char **argv) {
+  configureSiblingMixTilingHelperPath(argv[0]);
   llvm::cl::HideUnrelatedOptions(RuntimeSessionCategory);
   llvm::cl::ParseCommandLineOptions(
       argc, argv,
