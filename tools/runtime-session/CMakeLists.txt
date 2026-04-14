@@ -11,3 +11,5 @@ target_link_libraries(runtime-session PRIVATE
 target_include_directories(runtime-session PRIVATE
   ${CMAKE_SOURCE_DIR}/include
 )
+
+add_dependencies(runtime-session mix-tiling-helper)

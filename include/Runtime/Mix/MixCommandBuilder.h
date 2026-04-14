@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Runtime/Mix/MixSourceAnalyzer.h"
+#include "Runtime/Support/Types.h"
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/StringRef.h"
 #include <string>
@@ -93,6 +94,19 @@ buildHostRunnerCompileCommand(llvm::StringRef workDir,
                               llvm::StringRef davSimLibDir,
                               llvm::StringRef runnerDeviceLibDir,
                               llvm::StringRef socVersion);
+
+std::vector<std::string>
+buildMixTilingHelperCommand(llvm::StringRef kernelName,
+                            llvm::StringRef socVersion,
+                            llvm::ArrayRef<int64_t> inputAShape,
+                            DType inputADType,
+                            llvm::ArrayRef<int64_t> inputBShape,
+                            DType inputBDType,
+                            llvm::ArrayRef<int64_t> outputShape,
+                            DType outputDType,
+                            const std::optional<DType> &biasDType,
+                            llvm::StringRef tilingOutputPath,
+                            llvm::StringRef launchInfoOutputPath);
 
 std::string renderCommandForDebug(llvm::ArrayRef<std::string> args);
 std::string renderCommandForCompileCommands(llvm::ArrayRef<std::string> args);

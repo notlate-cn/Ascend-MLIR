@@ -3,6 +3,7 @@
 #include <cstdlib>
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/Path.h"
+#include "llvm/Support/raw_ostream.h"
 
 namespace mlir::runtime {
 
@@ -81,6 +82,13 @@ static std::string getAclIncludeDir() {
   return getToolkitPaths().includeDir;
 }
 
+static std::string getMixTilingHelperPath() {
+  if (const char *configured = std::getenv("AFIR_MIX_TILING_HELPER"))
+    if (*configured)
+      return configured;
+  return "mix-tiling-helper";
+}
+
 static std::string getAscRoot() {
   return findAscendAscDir(findAscendHome());
 }
@@ -99,6 +107,31 @@ static std::string shellQuote(llvm::StringRef value) {
   }
   quoted.push_back('\'');
   return quoted;
+}
+
+static llvm::StringRef getTilingHelperDTypeName(DType dtype) {
+  switch (dtype) {
+  case DType::F16:
+    return "f16";
+  case DType::BF16:
+    return "bf16";
+  case DType::F32:
+    return "f32";
+  default:
+    return "unsupported";
+  }
+}
+
+static std::string joinShape(llvm::ArrayRef<int64_t> shape) {
+  std::string out;
+  llvm::raw_string_ostream os(out);
+  for (size_t i = 0; i < shape.size(); ++i) {
+    if (i)
+      os << ",";
+    os << shape[i];
+  }
+  os.flush();
+  return out;
 }
 
 static std::string getArchForCore(MixCoreType coreType) {
@@ -540,6 +573,38 @@ buildHostRunnerCompileCommand(llvm::StringRef workDir,
   cmd.push_back("-ldl");
   cmd.push_back("-lascend_dump");
   cmd.push_back("-lc_sec");
+  return cmd;
+}
+
+std::vector<std::string>
+buildMixTilingHelperCommand(llvm::StringRef kernelName,
+                            llvm::StringRef socVersion,
+                            llvm::ArrayRef<int64_t> inputAShape,
+                            DType inputADType,
+                            llvm::ArrayRef<int64_t> inputBShape,
+                            DType inputBDType,
+                            llvm::ArrayRef<int64_t> outputShape,
+                            DType outputDType,
+                            const std::optional<DType> &biasDType,
+                            llvm::StringRef tilingOutputPath,
+                            llvm::StringRef launchInfoOutputPath) {
+  std::vector<std::string> cmd = {
+      getMixTilingHelperPath(),
+      "--name", kernelName.str(),
+      "--soc", socVersion.str(),
+      "--a-shape", joinShape(inputAShape),
+      "--a-dtype", getTilingHelperDTypeName(inputADType).str(),
+      "--b-shape", joinShape(inputBShape),
+      "--b-dtype", getTilingHelperDTypeName(inputBDType).str(),
+      "--c-shape", joinShape(outputShape),
+      "--c-dtype", getTilingHelperDTypeName(outputDType).str(),
+      "--tiling-out", tilingOutputPath.str(),
+      "--launch-info-out", launchInfoOutputPath.str(),
+  };
+  if (biasDType) {
+    cmd.push_back("--bias-dtype");
+    cmd.push_back(getTilingHelperDTypeName(*biasDType).str());
+  }
   return cmd;
 }
 
