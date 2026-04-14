@@ -81,10 +81,6 @@
 
 ## TODO
 
-- Reclassify the legacy cleanup candidate audit after:
-  - `ArtifactCompiler -> Legacy/Compiler` seam removal
-  - `SimBackend/NpuBackend -> Legacy/Executor` seam removal
-- Reclassify the remaining `Legacy/SimValidator` status now that the direct runtime backend seam is already gone.
 - Decide whether the remaining `Legacy/Compiler` file can now be reduced to only non-`ArtifactCompiler` consumers or needs one more extraction pass.
 - Plan the second-round `Legacy` cleanup in risk-ordered slices:
   - remaining compiler-surface shrink first
