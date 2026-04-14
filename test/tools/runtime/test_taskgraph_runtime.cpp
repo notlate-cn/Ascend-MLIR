@@ -46,6 +46,11 @@
 #include <string>
 #include <vector>
 
+#ifndef _WIN32
+#include <sys/wait.h>
+#include <unistd.h>
+#endif
+
 using namespace mlir::runtime;
 
 namespace mlir::runtime {
@@ -1145,6 +1150,75 @@ static void testExecutionRunnerContractSupportsPackedMixLaunches() {
          "execution runner fake keeps packed mix library path");
   EXPECT(runner.lastPackedMixLaunch.kernelName == "fake_mix_kernel",
          "execution runner fake keeps packed mix kernel name");
+}
+
+static void testSimulationBackendReportsMissingVecBinaryLaunchFailure() {
+#ifdef _WIN32
+  EXPECT(true, "missing vec binary launch-failure contract is covered on xvm");
+#else
+  std::filesystem::path workingDir =
+      makeTempDir("taskgraph-runtime-sim-launch-failure");
+  std::filesystem::create_directories(workingDir);
+  std::filesystem::path outputPath = workingDir / "out.npy";
+  std::filesystem::path errorPath = workingDir / "error.txt";
+  std::filesystem::path missingBinaryPath =
+      workingDir / "definitely-missing.vec.bin";
+
+  pid_t pid = fork();
+  EXPECT(pid >= 0, "fork for simulation launch-failure contract succeeds");
+  if (pid < 0) {
+    std::filesystem::remove_all(workingDir);
+    return;
+  }
+
+  if (pid == 0) {
+    auto simOr = createExecutionBackend(ExecutionBackendKind::Simulation);
+    if (!simOr) {
+      std::ofstream os(errorPath);
+      os << llvm::toString(simOr.takeError());
+      os.flush();
+      std::_Exit(0);
+    }
+
+    ExecutionRequest request;
+    request.workingDirectory = workingDir.string();
+    request.task.taskId = "task_sim_vec_missing_binary";
+    request.task.artifact.kernelName = "vec_kernel";
+    request.task.artifact.kernelKind = KernelKind::Vec;
+    request.task.artifact.deviceBinaryPath = missingBinaryPath.string();
+    TensorBinding output;
+    output.name = "out";
+    output.sourceKind = BindingSourceKind::ExternalFile;
+    output.path = outputPath.string();
+    output.shape = std::vector<int64_t>{1};
+    output.dtype = DType::F32;
+    request.task.invocation.outputs.push_back(output);
+
+    auto resultOr = (*simOr)->run(request);
+    std::ofstream os(errorPath);
+    if (resultOr) {
+      os << "unexpected-success";
+    } else {
+      os << llvm::toString(resultOr.takeError());
+    }
+    os.flush();
+    std::_Exit(0);
+  }
+
+  int status = 0;
+  EXPECT(waitpid(pid, &status, 0) == pid,
+         "waitpid for simulation launch-failure contract succeeds");
+  EXPECT(WIFEXITED(status), "simulation launch-failure child exits cleanly");
+
+  std::ifstream is(errorPath);
+  std::string message((std::istreambuf_iterator<char>(is)),
+                      std::istreambuf_iterator<char>());
+  EXPECT(!message.empty(),
+         "simulation launch-failure contract records an error message");
+  EXPECT(message.find("[sim:kernel_launch]") != std::string::npos,
+         "simulation backend preserves kernel_launch stage for missing vec binary");
+  std::filesystem::remove_all(workingDir);
+#endif
 }
 
 static void testArtifactCompilerRequestValidation() {
@@ -3548,6 +3622,7 @@ int main() {
   testExecutionRunnerContractSupportsSimulationAndRealDeviceModes();
   testExecutionRunnerContractSupportsFileLaunches();
   testExecutionRunnerContractSupportsPackedMixLaunches();
+  testSimulationBackendReportsMissingVecBinaryLaunchFailure();
   testArtifactCompilerRequestValidation();
   testCompatCompileRequestPreservesFields();
   testCompatCompileRequestRejectsUnknownKernelType();
