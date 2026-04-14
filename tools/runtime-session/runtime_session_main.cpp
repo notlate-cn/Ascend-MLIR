@@ -1,4 +1,5 @@
 #include "Runtime/RuntimeSessionRequestBuilder.h"
+#include "Runtime/RuntimeFrontendCore.h"
 #include "Runtime/ExecutionBackend.h"
 #include "Runtime/ExecutionSession.h"
 #include "Runtime/ProfileUtils.h"
@@ -140,21 +141,6 @@ llvm::StringRef backendName(ExecutionBackendKind backendKind) {
   return "unknown";
 }
 
-std::pair<std::string, std::string> parseErrorStage(llvm::StringRef message) {
-  if (!message.starts_with("["))
-    return {"", message.str()};
-  const size_t end = message.find(']');
-  if (end == llvm::StringRef::npos || end <= 1)
-    return {"", message.str()};
-  llvm::StringRef prefix = message.slice(1, end);
-  const size_t split = prefix.find(':');
-  if (split == llvm::StringRef::npos || split + 1 >= prefix.size())
-    return {"", message.str()};
-  std::string stage = prefix.drop_front(split + 1).str();
-  llvm::StringRef remainder = message.drop_front(end + 1).trim();
-  return {std::move(stage), remainder.str()};
-}
-
 bool graphRequestsValidation(const TaskGraph &graph) {
   auto tasksOr = graph.orderedTasks();
   if (!tasksOr)
@@ -169,23 +155,28 @@ bool graphRequestsValidation(const TaskGraph &graph) {
 void printRunSuccessSummary(ExecutionBackendKind backendKind,
                             bool validationRan,
                             const ProfileTrace &trace) {
-  llvm::outs() << "session.backend=" << backendName(backendKind) << "\n";
+  FrontendRunSummary summary =
+      summarizeFrontendRunSuccess(backendKind, validationRan, trace);
+  llvm::outs() << "session.backend=" << backendName(summary.backendKind)
+               << "\n";
   llvm::outs() << "session.result=success\n";
-  if (validationRan)
+  if (summary.validationStatus == FrontendValidationStatus::Passed)
     llvm::outs() << "session.validation=pass\n";
-  printProfileTraceSummary(trace);
+  printProfileTraceSummary(summary.profileTrace);
 }
 
 void printRunErrorSummary(ExecutionBackendKind backendKind,
                           bool validationRan, llvm::StringRef message) {
-  llvm::errs() << "session.backend=" << backendName(backendKind) << "\n";
+  FrontendRunSummary summary =
+      summarizeFrontendRunError(backendKind, validationRan, message);
+  llvm::errs() << "session.backend=" << backendName(summary.backendKind)
+               << "\n";
   llvm::errs() << "session.result=error\n";
-  auto [stage, detail] = parseErrorStage(message);
-  if (validationRan && stage == "validate")
+  if (summary.validationStatus == FrontendValidationStatus::Failed)
     llvm::errs() << "session.validation=fail\n";
-  if (!stage.empty())
-    llvm::errs() << "session.error_stage=" << stage << "\n";
-  llvm::errs() << "session.error=" << detail << "\n";
+  if (!summary.errorStage.empty())
+    llvm::errs() << "session.error_stage=" << summary.errorStage << "\n";
+  llvm::errs() << "session.error=" << summary.errorMessage << "\n";
 }
 
 llvm::Expected<std::shared_ptr<ExecutionBackendDriver>>
@@ -286,12 +277,18 @@ int main(int argc, char **argv) {
     }
     artifact = *artifactOr;
     printArtifactSummary(*artifact);
-    auto graphOr = buildRuntimeSessionSingleTaskGraph(*artifact, TaskId);
-    if (!graphOr) {
-      llvm::errs() << "Error: " << llvm::toString(graphOr.takeError()) << "\n";
+    FrontendSingleTaskRunRequest runRequest;
+    runRequest.backendKind = backendKind;
+    runRequest.taskId = TaskId;
+    runRequest.artifact = *artifact;
+    auto preparedRunOr = prepareFrontendSingleTaskRun(runRequest);
+    if (!preparedRunOr) {
+      llvm::errs() << "Error: " << llvm::toString(preparedRunOr.takeError())
+                   << "\n";
       return 4;
     }
-    graph = std::move(*graphOr);
+    backendKind = preparedRunOr->backendKind;
+    graph = std::move(preparedRunOr->graph);
   }
 
   auto testingDriverOr = createTestingDriver(backendKind);

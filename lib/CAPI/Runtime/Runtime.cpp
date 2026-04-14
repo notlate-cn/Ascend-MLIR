@@ -4,6 +4,7 @@
 #include "CAPI/Runtime.h"
 #include "Runtime/ArtifactCompiler.h"
 #include "Runtime/ExecutionSession.h"
+#include "Runtime/RuntimeFrontendCore.h"
 #include "Runtime/NpyIO.h"
 #include "Runtime/Types.h"
 #include "Runtime/TaskGraph.h"
@@ -109,11 +110,11 @@ llvm::Expected<std::vector<uint8_t>> readBinaryFile(llvm::StringRef path) {
   return bytes;
 }
 
-llvm::Expected<std::string> kernelKindNameForMagic(uint32_t magic) {
+llvm::Expected<KernelKind> kernelKindForMagic(uint32_t magic) {
   if (magic == kMagicAIVec)
-    return std::string("vec");
+    return KernelKind::Vec;
   if (magic == kMagicAICube)
-    return std::string("cube");
+    return KernelKind::Cube;
   return llvm::createStringError(llvm::inconvertibleErrorCode(),
                                  "unsupported kernel magic: 0x%08x", magic);
 }
@@ -205,7 +206,7 @@ llvm::Error runWithExecutionSession(const std::string &binaryPath,
     std::string path;
   } cleanup(tempDir);
 
-  auto kernelKindOr = kernelKindNameForMagic(magic);
+  auto kernelKindOr = kernelKindForMagic(magic);
   if (!kernelKindOr)
     return kernelKindOr.takeError();
 
@@ -213,20 +214,19 @@ llvm::Error runWithExecutionSession(const std::string &binaryPath,
   if (!tilingPathOr)
     return tilingPathOr.takeError();
 
-  TaskGraph graph;
-  RuntimeTask task;
-  task.taskId = "main";
-  task.artifact.kernelName = functionName;
-  task.artifact.kernelKind =
-      *kernelKindOr == "cube" ? KernelKind::Cube : KernelKind::Vec;
-  task.artifact.artifactRoot = tempDir;
-  task.artifact.deviceBinaryPath = binaryPath;
-  task.invocation.blockDim = block_dim;
+  KernelArtifact artifact;
+  artifact.kernelName = functionName;
+  artifact.kernelKind = *kernelKindOr;
+  artifact.artifactRoot = tempDir;
+  artifact.deviceBinaryPath = binaryPath;
+
+  ExecutionInvocation invocation;
+  invocation.blockDim = block_dim;
 
   if (!tilingPathOr->empty()) {
     TilingBinding tiling;
     tiling.binaryPath = *tilingPathOr;
-    task.invocation.tiling = std::move(tiling);
+    invocation.tiling = std::move(tiling);
   }
 
   for (int i = 0; i < num_inputs; ++i) {
@@ -237,7 +237,7 @@ llvm::Error runWithExecutionSession(const std::string &binaryPath,
     if (auto err = materializeInputNpy(binding.path, input_ptrs[i],
                                        input_bytes[i]))
       return err;
-    task.invocation.inputs.push_back(std::move(binding));
+    invocation.inputs.push_back(std::move(binding));
   }
 
   for (int i = 0; i < num_outputs; ++i) {
@@ -249,19 +249,26 @@ llvm::Error runWithExecutionSession(const std::string &binaryPath,
     fillArray(shapeProbe, nullptr, output_bytes[i]);
     binding.shape = shapeProbe.shape;
     binding.dtype = shapeProbe.dtype;
-    task.invocation.outputs.push_back(std::move(binding));
+    invocation.outputs.push_back(std::move(binding));
   }
 
-  if (auto err = graph.addTask(task))
-    return err;
+  FrontendSingleTaskRunRequest request;
+  request.backendKind = ExecutionBackendKind::Simulation;
+  request.taskId = "main";
+  request.artifact = artifact;
+  request.invocation = std::move(invocation);
 
-  ExecutionSession session(ExecutionBackendKind::Simulation);
-  auto traceOr = session.run(graph);
+  auto preparedRunOr = prepareFrontendSingleTaskRun(request);
+  if (!preparedRunOr)
+    return preparedRunOr.takeError();
+
+  ExecutionSession session(preparedRunOr->backendKind);
+  auto traceOr = session.run(preparedRunOr->graph);
   if (!traceOr)
     return traceOr.takeError();
 
   for (int i = 0; i < num_outputs; ++i) {
-    if (auto err = loadOutputNpy(task.invocation.outputs[i].path,
+    if (auto err = loadOutputNpy(request.invocation.outputs[i].path,
                                  output_ptrs[i], output_bytes[i]))
       return err;
   }
@@ -321,19 +328,25 @@ int afirt_compiler_compile(AfirtCompiler compiler,
     return 1;
   }
 
-  ArtifactCompileRequest request;
-  request.kernelSource = src_file ? src_file : "";
-  request.outputDir = output_dir ? output_dir : "";
-  request.kernelName = kernel_name ? kernel_name : "";
-  request.socVersion = handle->socVersion;
-  request.arch = handle->arch;
-  request.kernelKind =
+  FrontendCompileInput input;
+  input.kernelSource = src_file ? src_file : "";
+  input.outputDir = output_dir ? output_dir : "";
+  input.kernelName = kernel_name ? kernel_name : "";
+  input.socVersion = handle->socVersion;
+  input.arch = handle->arch;
+  input.kernelKind =
       compatKernelTypeForArch(handle->arch) == "cube" ? KernelKind::Cube
                                                        : KernelKind::Vec;
-  request.optLevel = handle->optLevel;
+  input.optLevel = handle->optLevel;
+
+  auto requestOr = buildFrontendCompileRequest(input);
+  if (!requestOr) {
+    writeErr(out_bin_path, buf_len, requestOr.takeError());
+    return 1;
+  }
 
   ArtifactCompiler artifactCompiler;
-  auto artifactOr = artifactCompiler.compile(request);
+  auto artifactOr = artifactCompiler.compile(*requestOr);
   if (!artifactOr) {
     writeErr(out_bin_path, buf_len, artifactOr.takeError());
     return 1;
