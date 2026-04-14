@@ -9,19 +9,18 @@
 
 ## Safe Now
 
-- none
-
-## Needs Migration First
-
-- `Legacy/Compiler`
-  - No longer blocks `ArtifactCompiler`; vec/cube source builds now route through `VecCubeArtifactBackend`.
-  - Remaining cleanup status must now be driven by non-`ArtifactCompiler` consumers and whether they justify one more extraction pass or a much smaller retained legacy surface.
 - `Legacy/Executor`
   - No longer directly required by `lib/Runtime/Execution/SimBackend.cpp` or `lib/Runtime/Execution/NpuBackend.cpp`.
   - The runtime execution seam now sits behind `DefaultExecutionRunner`, so the next cleanup step should start from the adapter boundary rather than the backends.
 - `Legacy/SimValidator`
   - No longer directly required by `lib/Runtime/Execution/SimBackend.cpp` or `lib/Runtime/Execution/NpuBackend.cpp`.
   - The compare-only validation seam has already moved to the runtime-native output comparator.
+
+## Needs Migration First
+
+- `Legacy/Compiler`
+  - No longer blocks `ArtifactCompiler`; vec/cube source builds now route through `VecCubeArtifactBackend`.
+  - Remaining cleanup status must now be driven by non-`ArtifactCompiler` consumers and whether they justify one more extraction pass or a much smaller retained legacy surface.
 - `Legacy/CompatRuntime`
   - Still used by `lib/CAPI/Runtime/Runtime.cpp` and `test/tools/runtime/test_taskgraph_runtime.cpp`.
   - Must be migrated away from the compatibility adapter boundary before any cleanup attempt.
