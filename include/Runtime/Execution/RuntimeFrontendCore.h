@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Runtime/Artifact/ArtifactCompiler.h"
+#include "Runtime/Execution/ExecutionSession.h"
 #include "Runtime/Execution/TaskGraph.h"
 #include "Runtime/Profile/ProfileTrace.h"
 
@@ -9,6 +10,7 @@
 
 #include <optional>
 #include <string>
+#include <vector>
 
 namespace mlir::runtime {
 
@@ -55,7 +57,9 @@ struct FrontendRunSummary {
   FrontendValidationStatus validationStatus = FrontendValidationStatus::NotRun;
   std::string errorStage;
   std::string errorMessage;
+  std::string rawErrorMessage;
   ProfileTrace profileTrace;
+  std::vector<std::string> profileArtifactPaths;
   std::string retainedSummaryPath;
 };
 
@@ -67,5 +71,15 @@ FrontendRunSummary summarizeFrontendRunSuccess(ExecutionBackendKind backendKind,
 FrontendRunSummary summarizeFrontendRunError(ExecutionBackendKind backendKind,
                                             bool validationRan,
                                             llvm::StringRef message);
+
+struct FrontendRunOptions {
+  bool retainSimulationProfiles = false;
+  std::string retainedProfileRoot;
+  size_t retainedProfileSessionLimit = 0;
+};
+
+FrontendRunSummary executeFrontendPreparedRun(ExecutionSession &session,
+                                              const FrontendPreparedRun &prepared,
+                                              const FrontendRunOptions &options = {});
 
 } // namespace mlir::runtime

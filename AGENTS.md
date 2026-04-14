@@ -73,7 +73,11 @@
 - `runtime-session` and the C API now both consume shared frontend-core helpers for:
   - compile request assembly
   - single-task run preparation
-  - run-result summary interpretation
+  - normalized run execution and summary interpretation
+- Execution/profile contract cleanup is now closed:
+  - retained profile handling is normalized through the frontend core
+  - `runtime-session` prints profile artifact paths and retained session summaries from the shared result contract
+  - the C API now executes through the same normalized frontend run path instead of interpreting raw execution outcomes separately
 - Against the original runtime task, the current completion state is:
   - AscendC kernel compilation: done
   - CPU simulation execution with profiling: done
@@ -108,6 +112,12 @@
   - `test_taskgraph_runtime`: `453 passed, 0 failed`
   - `test_capi_runtime`: `15 passed, 0 failed`
   - `test_runtime`: `86 passed, 0 failed`
+- Fresh xvm verification after execution/profile contract cleanup includes:
+  - runtime-only rebuild of `AscendCRuntime`, `AFIRRuntimeCAPI`, and `runtime-session`: pass
+  - `test_taskgraph_runtime`: `493 passed, 0 failed`
+  - `test_capi_runtime`: `15 passed, 0 failed`
+  - `test_runtime`: `79 passed, 0 failed`
+  - `run_simbackend_smoke.sh`: pass
 
 ## Decisions
 
@@ -130,6 +140,6 @@
 
 - Finish the original task with NPU real-device validation when hardware is available.
 - After that, continue runtime-native enhancement work in this order:
-  - execution/profile contract cleanup
+  - xvm default-verification noise cleanup
   - task-graph / scheduler evolution
 - Keep xvm focused runtime verification green while changing runtime-native internals.

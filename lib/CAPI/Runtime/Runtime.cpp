@@ -263,9 +263,12 @@ llvm::Error runWithExecutionSession(const std::string &binaryPath,
     return preparedRunOr.takeError();
 
   ExecutionSession session(preparedRunOr->backendKind);
-  auto traceOr = session.run(preparedRunOr->graph);
-  if (!traceOr)
-    return traceOr.takeError();
+  FrontendRunSummary summary =
+      executeFrontendPreparedRun(session, *preparedRunOr);
+  if (!summary.success) {
+    return llvm::createStringError(llvm::inconvertibleErrorCode(), "%s",
+                                   summary.rawErrorMessage.c_str());
+  }
 
   for (int i = 0; i < num_outputs; ++i) {
     if (auto err = loadOutputNpy(request.invocation.outputs[i].path,

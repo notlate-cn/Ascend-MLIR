@@ -2,7 +2,6 @@
 #include "Runtime/RuntimeFrontendCore.h"
 #include "Runtime/ExecutionBackend.h"
 #include "Runtime/ExecutionSession.h"
-#include "Runtime/ProfileUtils.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/Error.h"
@@ -129,8 +128,6 @@ void printPlan(const SessionPlan &plan) {
                  << "\n";
 }
 
-void printProfileTraceSummary(const ProfileTrace &trace);
-
 llvm::StringRef backendName(ExecutionBackendKind backendKind) {
   switch (backendKind) {
   case ExecutionBackendKind::Simulation:
@@ -152,23 +149,26 @@ bool graphRequestsValidation(const TaskGraph &graph) {
   return false;
 }
 
-void printRunSuccessSummary(ExecutionBackendKind backendKind,
-                            bool validationRan,
-                            const ProfileTrace &trace) {
-  FrontendRunSummary summary =
-      summarizeFrontendRunSuccess(backendKind, validationRan, trace);
+void printRunSuccessSummary(const FrontendRunSummary &summary) {
   llvm::outs() << "session.backend=" << backendName(summary.backendKind)
                << "\n";
   llvm::outs() << "session.result=success\n";
   if (summary.validationStatus == FrontendValidationStatus::Passed)
     llvm::outs() << "session.validation=pass\n";
-  printProfileTraceSummary(summary.profileTrace);
+  llvm::outs() << "session.profile.session_id=" << summary.profileTrace.sessionId
+               << "\n";
+  llvm::outs() << "session.profile.count=" << summary.profileArtifactPaths.size()
+               << "\n";
+  for (size_t i = 0; i < summary.profileArtifactPaths.size(); ++i)
+    llvm::outs() << "session.profile[" << i << "]="
+                 << summary.profileArtifactPaths[i] << "\n";
+  if (!summary.retainedSummaryPath.empty() &&
+      std::filesystem::exists(summary.retainedSummaryPath))
+    llvm::outs() << "session.profile.summary=" << summary.retainedSummaryPath
+                 << "\n";
 }
 
-void printRunErrorSummary(ExecutionBackendKind backendKind,
-                          bool validationRan, llvm::StringRef message) {
-  FrontendRunSummary summary =
-      summarizeFrontendRunError(backendKind, validationRan, message);
+void printRunErrorSummary(const FrontendRunSummary &summary) {
   llvm::errs() << "session.backend=" << backendName(summary.backendKind)
                << "\n";
   llvm::errs() << "session.result=error\n";
@@ -193,14 +193,6 @@ createTestingDriver(ExecutionBackendKind backendKind) {
   return llvm::createStringError(llvm::inconvertibleErrorCode(),
                                  "unsupported testing driver: %s",
                                  TestingDriver.getValue().c_str());
-}
-
-void printProfileTraceSummary(const ProfileTrace &trace) {
-  llvm::outs() << "session.profile.session_id=" << trace.sessionId << "\n";
-  const std::vector<std::string> artifactPaths = trace.profileArtifactPaths();
-  llvm::outs() << "session.profile.count=" << artifactPaths.size() << "\n";
-  for (size_t i = 0; i < artifactPaths.size(); ++i)
-    llvm::outs() << "session.profile[" << i << "]=" << artifactPaths[i] << "\n";
 }
 
 llvm::Expected<std::string> retainedProfileBaseDirectory() {
@@ -310,61 +302,35 @@ int main(int argc, char **argv) {
     return 0;
 
   const bool validationRan = graphRequestsValidation(*graph);
-  if (backendKind == ExecutionBackendKind::Simulation) {
-    // Mix simulator teardown leaves the process heap fragile. Prune retained
-    // profile sessions before launching the run so post-run CLI cleanup only
-    // copies artifacts and exits.
-    auto retainBaseDirOr = retainedProfileBaseDirectory();
-    if (!retainBaseDirOr) {
-      const std::string message = llvm::toString(retainBaseDirOr.takeError());
-      printRunErrorSummary(backendKind, validationRan, message);
-      llvm::errs() << "Error: " << message << "\n";
-      return 2;
-    }
-    if (auto preparedOr = prepareRetainedProfileRunRootForCli(
-            *retainBaseDirOr, RetainedProfileSessionLimit);
-        !preparedOr) {
-      const std::string message = llvm::toString(preparedOr.takeError());
-      printRunErrorSummary(backendKind, validationRan, message);
-      llvm::errs() << "Error: " << message << "\n";
-      return 2;
-    }
-  }
-
   auto runSession =
       std::make_unique<ExecutionSession>(backendKind, *testingDriverOr);
-  auto traceOr = runSession->run(*graph);
-  if (!traceOr) {
-    const std::string message = llvm::toString(traceOr.takeError());
-    printRunErrorSummary(backendKind, validationRan, message);
-    llvm::errs() << "Error: " << message << "\n";
-    return 2;
-  }
-  ProfileTrace trace = std::move(*traceOr);
-  std::string retainedSummaryPath;
+  FrontendRunOptions runOptions;
   if (backendKind == ExecutionBackendKind::Simulation) {
     auto retainBaseDirOr = retainedProfileBaseDirectory();
     if (!retainBaseDirOr) {
-      const std::string message = llvm::toString(retainBaseDirOr.takeError());
-      printRunErrorSummary(backendKind, validationRan, message);
-      llvm::errs() << "Error: " << message << "\n";
+      FrontendRunSummary summary = summarizeFrontendRunError(
+          backendKind, validationRan, llvm::toString(retainBaseDirOr.takeError()));
+      printRunErrorSummary(summary);
+      llvm::errs() << "Error: " << summary.rawErrorMessage << "\n";
       return 2;
     }
-    auto retainedArtifactsOr =
-        retainProfileArtifactsForCliRun(trace, *retainBaseDirOr);
-    if (!retainedArtifactsOr) {
-      const std::string message = llvm::toString(retainedArtifactsOr.takeError());
-      printRunErrorSummary(backendKind, validationRan, message);
-      llvm::errs() << "Error: " << message << "\n";
-      return 2;
-    }
-    trace = std::move(retainedArtifactsOr->trace);
-    retainedSummaryPath = std::move(retainedArtifactsOr->summaryPath);
+    runOptions.retainSimulationProfiles = true;
+    runOptions.retainedProfileRoot = *retainBaseDirOr;
+    runOptions.retainedProfileSessionLimit = RetainedProfileSessionLimit;
   }
-  printRunSuccessSummary(backendKind, validationRan, trace);
-  if (!retainedSummaryPath.empty() &&
-      std::filesystem::exists(retainedSummaryPath))
-    llvm::outs() << "session.profile.summary=" << retainedSummaryPath << "\n";
+
+  FrontendPreparedRun prepared;
+  prepared.backendKind = backendKind;
+  prepared.graph = std::move(*graph);
+  FrontendRunSummary summary =
+      executeFrontendPreparedRun(*runSession, prepared, runOptions);
+  if (!summary.success) {
+    printRunErrorSummary(summary);
+    llvm::errs() << "Error: " << summary.rawErrorMessage << "\n";
+    return 2;
+  }
+
+  printRunSuccessSummary(summary);
   if (backendKind == ExecutionBackendKind::Simulation) {
     runSession.reset();
     llvm::outs().flush();
