@@ -15,7 +15,6 @@
 #include "Runtime/ProfileTrace.h"
 #include "Runtime/ProfileUtils.h"
 #include "Runtime/CompatRuntime.h"
-#include "Runtime/Compiler.h"
 #include "Runtime/MixAbi.h"
 #include "Runtime/MixArtifact.h"
 #include "Runtime/RunManifest.h"
@@ -585,19 +584,6 @@ static void testKernelArtifactNormalization() {
   EXPECT(inferMixResourceTypeFromKernelKind(KernelKind::Vec) ==
              MixResourceType::Unknown,
          "non-mix kernels do not infer a mix resource type");
-
-  KernelArtifact vecArtifact =
-      normalizeCompiledArtifact("/tmp/demo_kernel.bin", "demo_kernel",
-                                KernelKind::Vec, "Ascend910B1",
-                                "/tmp/demo-out");
-  EXPECT(vecArtifact.kernelName == "demo_kernel",
-         "normalized vec artifact keeps kernel name");
-  EXPECT(vecArtifact.kernelKind == KernelKind::Vec,
-         "normalized vec artifact keeps kernel kind");
-  EXPECT(vecArtifact.deviceBinaryPath == "/tmp/demo_kernel.bin",
-         "normalized vec artifact stores device binary path");
-  EXPECT(vecArtifact.artifactRoot == "/tmp/demo-out",
-         "normalized vec artifact stores artifact root");
 
   MixArtifact mixArtifact;
   mixArtifact.kernel_name = "demo_kernel";
@@ -1784,21 +1770,6 @@ static void testCompatValidatorMaterializesTilingBindingForSession() {
              "compat validator legacy session uses synthesized tiling file");
     }
   }
-}
-
-static void testVecCompileCreatesOutputDir() {
-  std::error_code ec;
-  const std::string outputDir = "/tmp/taskgraph-artifact-out-created";
-  std::filesystem::remove_all(outputDir, ec);
-  EXPECT(!std::filesystem::exists(outputDir),
-         "precondition: output dir does not exist");
-
-  auto dirErr = prepareCompileOutputDir(outputDir);
-  EXPECT(!dirErr, "prepareCompileOutputDir succeeds");
-  if (dirErr)
-    llvm::consumeError(std::move(dirErr));
-  EXPECT(std::filesystem::exists(outputDir),
-         "prepareCompileOutputDir creates the directory");
 }
 
 static void testBackendSelection() {
@@ -3586,7 +3557,6 @@ int main() {
   testCompatValidatorRoutesThroughExecutionSession();
   testValidatorPreparesTilingBinaryPaths();
   testCompatValidatorMaterializesTilingBindingForSession();
-  testVecCompileCreatesOutputDir();
   testBackendSelection();
   testDefaultBackendRequiresDriver();
   testInvalidBackendSelection();

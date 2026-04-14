@@ -1,5 +1,6 @@
 // include/CAPI/Runtime.h
-// C API for mlir::runtime::{Compiler, Executor} — callable from Python ctypes.
+// C API for runtime-native compile/execute entry points — callable from Python
+// ctypes.
 #pragma once
 
 #include <stddef.h>
@@ -20,7 +21,8 @@ typedef struct AfirtExecutor_s *AfirtExecutor;
 // Compiler API
 // ============================================================
 
-// Create a Compiler.  soc_version / arch / opt_level mirror CompilerConfig.
+// Create a compile handle. soc_version / arch / opt_level mirror the runtime
+// compile request surface.
 // arch: "dav-c220-vec" or "dav-c220-cube"
 // Returns NULL on failure; caller owns the handle.
 AfirtCompiler afirt_compiler_create(const char *soc_version,
@@ -44,7 +46,7 @@ int afirt_compiler_compile(AfirtCompiler compiler,
 // Executor API
 // ============================================================
 
-// Create an Executor (simulation mode).
+// Create an execution handle (simulation mode).
 // Returns NULL on failure.
 AfirtExecutor afirt_executor_create();
 void          afirt_executor_destroy(AfirtExecutor executor);

@@ -321,7 +321,14 @@ static void testNpyIOErrors() {
 }
 
 static void testCompilerMixArtifact() {
-  llvm::outs() << "\n[Compiler mix artifact]\n";
+  llvm::outs() << "\n[Legacy Compiler mix artifact]\n";
+
+  const std::filesystem::path fixturePath =
+      std::filesystem::path(__FILE__).parent_path() / "mix_stub_fixture.cpp";
+  const std::filesystem::path buildDir =
+      std::filesystem::temp_directory_path() / "rt_mix_fixture_build";
+  std::filesystem::remove_all(buildDir);
+  std::filesystem::create_directories(buildDir);
 
   Compiler::Config cfg;
   cfg.kernel_type = "mix";
@@ -329,21 +336,19 @@ static void testCompilerMixArtifact() {
   cfg.verbose = false;
 
   Compiler compiler(cfg);
-  const std::string buildDir = "/tmp/rt_mix_fixture_build";
-  std::filesystem::create_directories(buildDir);
-  auto out = compiler.Compile(
-      "/Volumes/GM9/code/Ascend-MLIR/test/tools/runtime/mix_stub_fixture.cpp",
-      buildDir,
-      "fc_relu");
-  EXPECT((bool)out, "mix compiler returns an artifact path");
-  if (out) {
-    EXPECT(out->find(".bin") != std::string::npos,
-           "mix compiler returns linked kernel binary path");
-    EXPECT(std::filesystem::exists(*out),
-           "mix compiler output artifact exists on disk");
+  auto artifactPathOr =
+      compiler.Compile(fixturePath.string(), buildDir.string(), "fc_relu");
+  EXPECT((bool)artifactPathOr, "legacy mix compiler returns an artifact path");
+  if (artifactPathOr) {
+    EXPECT(artifactPathOr->find(".bin") != std::string::npos,
+           "legacy mix compiler returns linked kernel binary path");
+    EXPECT(std::filesystem::exists(*artifactPathOr),
+           "legacy mix compiler output artifact exists on disk");
   } else {
-    llvm::consumeError(out.takeError());
+    llvm::consumeError(artifactPathOr.takeError());
   }
+
+  std::filesystem::remove_all(buildDir);
 }
 
 static void testPackedMixExecutorErrors() {

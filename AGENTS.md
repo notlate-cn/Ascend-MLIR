@@ -54,6 +54,7 @@
   - [lib/Runtime/Execution/DefaultExecutionRunner.cpp](/Volumes/GM9/code/Codex-Ascend-MLIR/lib/Runtime/Execution/DefaultExecutionRunner.cpp)
 - `SimBackend` and `NpuBackend` no longer directly include `Runtime/Executor.h`.
 - `Legacy/Executor` is now behind `DefaultExecutionRunner` instead of being a direct runtime-backend dependency.
+- `Legacy/Compiler` is no longer on the main runtime compile path; its remaining runtime-owned surface is now limited to an explicit legacy mix compile test.
 - Fresh xvm verification after the vec/cube backend cutover passes:
   - `test_taskgraph_runtime`: `523 passed, 0 failed`
   - `test_capi_runtime`: `15 passed, 0 failed`
@@ -81,9 +82,8 @@
 
 ## TODO
 
-- Decide whether the remaining `Legacy/Compiler` file can now be reduced to only non-`ArtifactCompiler` consumers or needs one more extraction pass.
 - Plan the second-round `Legacy` cleanup in risk-ordered slices:
-  - remaining compiler-surface shrink first
+  - retained compiler/compatibility surface cleanup first
   - adapter-boundary cleanup second
   - deeper legacy implementation deletion last
 - Keep xvm focused runtime verification green while shrinking legacy dependencies.

@@ -1,5 +1,5 @@
-// Minimal mix fixture source used only to verify that Compiler::Compile()
-// returns a packed .so path for kernel_type=mix.
+// Minimal mix fixture source used only to verify the retained legacy Compiler
+// mix compile path.
 #include "kernel_operator.h"
 
 extern "C" __global__ __aicore__ void auto_gen_fc_relu_kernel(
