@@ -236,6 +236,10 @@ ExecutionSession::~ExecutionSession() {
   }
 }
 
+void ExecutionSession::releaseWorkingDirectoriesForProcessExit() {
+  workingDirectories_.clear();
+}
+
 llvm::Expected<SessionPlan> ExecutionSession::plan(const TaskGraph &graph) const {
   auto schedulerOr = buildSchedulerState(graph);
   if (!schedulerOr)

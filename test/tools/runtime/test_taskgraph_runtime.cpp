@@ -2688,6 +2688,42 @@ static void testExecutionSessionRunsTasksInTopologicalOrder() {
   }
 }
 
+static void testExecutionSessionCanReleaseWorkingDirectoriesForProcessExit() {
+  TaskGraph graph;
+
+  RuntimeTask task;
+  task.taskId = "task_release";
+
+  auto addTaskErr = graph.addTask(task);
+  EXPECT(!addTaskErr, "execution session release add task");
+
+  auto driver = std::make_shared<OrderedExecutionBackendDriver>();
+  OrderedExecutionBackendDriver *driverPtr = driver.get();
+  auto session =
+      std::make_unique<ExecutionSession>(ExecutionBackendKind::Simulation, driver);
+
+  auto traceOr = session->run(graph);
+  EXPECT((bool)traceOr, "execution session release run succeeds");
+  if (!(bool)traceOr || driverPtr->seenWorkingDirectories.empty()) {
+    if (!traceOr)
+      llvm::consumeError(traceOr.takeError());
+    return;
+  }
+
+  const std::string workingDirectory = driverPtr->seenWorkingDirectories.front();
+  EXPECT(std::filesystem::exists(workingDirectory),
+         "execution session release sees existing working directory");
+
+  session->releaseWorkingDirectoriesForProcessExit();
+  session.reset();
+
+  EXPECT(std::filesystem::exists(workingDirectory),
+         "execution session release skips destructor cleanup for process-exit path");
+
+  std::error_code ec;
+  std::filesystem::remove_all(workingDirectory, ec);
+}
+
 static void testExecutionSessionCarriesInvocationBindings() {
   RuntimeTask task;
   task.taskId = "main";
@@ -3295,6 +3331,7 @@ int main() {
   testExecutionSessionPlansTopologicalOrder();
   testExecutionSessionPlanTracksMultipleReadyRoots();
   testExecutionSessionRunsTasksInTopologicalOrder();
+  testExecutionSessionCanReleaseWorkingDirectoriesForProcessExit();
   testExecutionSessionCarriesInvocationBindings();
   testExecutionSessionResolvesTaskOutputBindings();
   testExecutionSessionStopsAtGateRejectedTask();

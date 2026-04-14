@@ -364,6 +364,8 @@ int main(int argc, char **argv) {
 
   printRunSuccessSummary(summary);
   if (backendKind == ExecutionBackendKind::Simulation) {
+    runSession->releaseWorkingDirectoriesForProcessExit();
+    runSession.reset();
     llvm::outs().flush();
     llvm::errs().flush();
     _Exit(0);
