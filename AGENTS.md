@@ -57,7 +57,8 @@
   - [lib/Runtime/Execution/NativeExecutionRunner.cpp](/Volumes/GM9/code/Codex-Ascend-MLIR/lib/Runtime/Execution/NativeExecutionRunner.cpp)
 - `SimBackend` and `NpuBackend` no longer directly include `Runtime/Executor.h`.
 - `DefaultExecutionRunner` now delegates to `NativeExecutionRunner` instead of constructing `Legacy/Executor`.
-- `Legacy/Executor` has exited the default runtime execution path and remains only as a retained compatibility unit.
+- `Legacy/Executor` and its public shim have been deleted after the runtime-native execution runner cutover.
+- The default runtime execution path is now fully runtime-native through `NativeExecutionRunner`.
 - `Legacy/SimValidator` has been removed after the runtime-native output comparator cutover left it with no remaining in-repo consumers.
 - `Legacy/Compiler` is no longer on the main runtime compile path; its remaining runtime-owned surface is now limited to an explicit legacy mix compile test.
 - Fresh xvm verification after the vec/cube backend cutover passes:
@@ -71,6 +72,12 @@
 - Fresh xvm verification after the native execution-runner cutover currently includes:
   - runtime-only rebuild of `AscendCRuntime`, `runtime-session`, and `autotuner`: pass
   - autotuner vec smoke: pass, non-zero `score` / `cycle_count`
+  - repeated mix simulation baseline: pass
+- Fresh xvm verification after deleting `Legacy/Executor` includes:
+  - `test_taskgraph_runtime`: `551 passed, 0 failed`
+  - `test_capi_runtime`: `15 passed, 0 failed`
+  - `test_runtime`: `108 passed, 0 failed`
+  - focused vec/mix smoke: pass
   - repeated mix simulation baseline: pass
 
 ## Decisions
@@ -92,7 +99,7 @@
 ## TODO
 
 - Plan the second-round `Legacy` cleanup in risk-ordered slices:
-  - retained compatibility surface cleanup first
-  - retained executor surface cleanup second
+  - retained compiler/compat surface cleanup first
+  - host-runner retained surface second
   - deeper legacy implementation deletion last
 - Keep xvm focused runtime verification green while shrinking legacy dependencies.

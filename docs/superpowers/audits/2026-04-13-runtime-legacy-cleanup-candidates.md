@@ -10,8 +10,8 @@
 ## Safe Now
 
 - `Legacy/Executor`
-  - No longer directly required by `lib/Runtime/Execution/SimBackend.cpp`, `lib/Runtime/Execution/NpuBackend.cpp`, or `lib/Runtime/Execution/DefaultExecutionRunner.cpp`.
-  - The default runtime execution path now delegates to `NativeExecutionRunner`; the remaining in-repo consumer is the explicit retained legacy executor probe in `test/tools/runtime/test_runtime.cpp`, plus the implementation file itself.
+  - Deleted after the runtime-native execution runner cutover.
+  - Remaining execution cleanup work should focus on retained compatibility files, not executor seams.
 - `Legacy/SimValidator`
   - No longer has any remaining in-repo consumers after the runtime-native output comparator cutover.
   - The retained legacy validator file and shim can be removed without touching runtime backend behavior.
@@ -36,7 +36,7 @@
 
 - Any change affecting the remaining `Legacy/Compiler` surface must rerun the autotuner xvm smoke path and confirm vec/cube `VecCubeArtifactBackend`-backed source builds still produce the same retained profile JSON and best-config summary.
 - Any change affecting the autotuner `--artifact-root` path must verify mix artifact-root loads preserve `mix_resource_type` and do not regress task scheduling.
-- Any change affecting the retained executor surface or the runtime-native execution substrate must rerun `bash test/tools/runtime/run_runtime.sh` on xvm.
+- Any change affecting the runtime-native execution substrate must rerun `bash test/tools/runtime/run_runtime.sh` on xvm.
 - Any change affecting the runtime-native comparator or any deletion of the legacy validator files must rerun `bash test/tools/runtime/run_runtime.sh` on xvm.
 - Any change affecting `Legacy/CompatRuntime` must rerun the runtime C API and taskgraph runtime coverage that depends on the compat adapter boundary.
 - Any proposed deletion of `Legacy/HostRunnerGen` must update or remove `test/tools/runtime/test_runtime.cpp` and `test/tools/runner/test_runner_gen.cpp` intentionally.
@@ -45,7 +45,7 @@
 ## Next-Step Guidance
 
 - The next cleanup slice should start from the retained compatibility files that still sit outside the runtime-native stack, not from runtime backend seams that have already been cut over.
-- `Legacy/Executor` should now be treated as a retained compatibility unit rather than an active backend seam.
+- `Legacy/Executor` is no longer an active cleanup target because the file and shim have been deleted.
 - `Legacy/SimValidator` can be removed directly because there are no surviving non-backend consumers left.
 - `Legacy/Compiler` should now be treated as a small retained-surface decision, not as a main runtime migration blocker.
 - Deeper physical deletion should wait until the remaining compatibility boundary and retained compiler test surface are re-audited against current consumers.

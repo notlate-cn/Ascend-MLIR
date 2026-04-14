@@ -33,6 +33,10 @@ It covers direct includes, implementation dependencies, and test coverage that s
 
 ### Legacy/Executor
 
+> Update (2026-04-14): `Legacy/Executor` and its public shim have now been
+> removed. This section is retained as historical audit context for the
+> pre-deletion state.
+
 | Consumer | File | Dependency Kind | Notes |
 |---|---|---|---|
 | Public shim | `include/Runtime/Executor.h` | direct wrapper | Re-exports `Runtime/Legacy/Executor.h`. |
