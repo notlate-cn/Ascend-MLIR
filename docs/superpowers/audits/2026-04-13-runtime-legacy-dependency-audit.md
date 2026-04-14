@@ -68,6 +68,10 @@ It covers direct includes, implementation dependencies, and test coverage that s
 
 ### Legacy/CompatRuntime
 
+> Update (2026-04-14): `Legacy/CompatRuntime` and its public shim have now
+> been removed. This section is retained as historical audit context for the
+> pre-deletion state.
+
 | Consumer | File | Dependency Kind | Notes |
 |---|---|---|---|
 | Public shim | `include/Runtime/CompatRuntime.h` | direct wrapper | Re-exports `Runtime/Legacy/CompatRuntime.h`. |
@@ -81,8 +85,8 @@ It covers direct includes, implementation dependencies, and test coverage that s
 - `lib/Runtime/Execution/SimBackend.cpp` and `lib/Runtime/Execution/NpuBackend.cpp` depend on `Legacy/SimValidator` directly for output comparison after execution.
 - `test/tools/runtime/test_runtime.cpp` and `test/tools/runtime/test_taskgraph_runtime.cpp` still exercise `Legacy/Compiler`-backed helpers directly; `Legacy/Executor` and `Legacy/HostRunnerGen` are now historical, not current, test dependencies.
 - `lib/Runtime/CMakeLists.txt` no longer wires `Legacy/HostRunnerGen.cpp` into the runtime library.
-- `lib/CAPI/Runtime/Runtime.cpp` still routes compile-path compatibility through `Legacy/CompatRuntime` helpers before calling `ArtifactCompiler`.
-- `test/tools/runtime/test_taskgraph_runtime.cpp` is the main direct consumer of `Legacy/CompatRuntime` helpers and also checks that the compat layer maps into runtime-native request objects correctly.
+- `lib/CAPI/Runtime/Runtime.cpp` no longer routes compile-path compatibility through `Legacy/CompatRuntime`; it now constructs runtime-native requests directly.
+- `test/tools/runtime/test_taskgraph_runtime.cpp` no longer depends on `Legacy/CompatRuntime` helper coverage.
 - `tools/autotuner/autotuner_main.cpp` no longer includes or directly orchestrates `Compiler`, `Executor`, `SimValidator`, or `HostRunnerGen`; its remaining `Legacy/Compiler` coupling is indirect through `ArtifactCompiler`.
 
 ## Bucket Classification
@@ -101,16 +105,12 @@ It covers direct includes, implementation dependencies, and test coverage that s
 
 ### Bucket B: Candidate For Boundary Shrink
 
-- `Legacy/CompatRuntime`
-  - Still used by `lib/CAPI/Runtime/Runtime.cpp` and `test/tools/runtime/test_taskgraph_runtime.cpp`.
-  - Already sits at the adapter boundary, so it is a shrink candidate before deeper legacy deletion.
-
 ### Bucket C: Delete After Migration
 
-- none yet
+- `Legacy/CompatRuntime`
+  - Migration is complete; the file and shim have now been removed.
 
 ## Open Questions
 
 - Can `tools/autotuner/autotuner_main.cpp` stay fully on `ArtifactCompiler` and `ExecutionSession`, or will it need a new runtime-native builder once `Legacy/Compiler` is removed?
-- Should `lib/CAPI/Runtime/Runtime.cpp` keep using `buildCompatCompileRequest()` and `buildCompatSingleTaskRunManifest()`, or should those compatibility helpers be replaced with direct runtime-native construction?
 - Is `include/Runtime/SimValidator.h` intended to remain a public shim after `Legacy/Executor` is no longer part of the validation API?
