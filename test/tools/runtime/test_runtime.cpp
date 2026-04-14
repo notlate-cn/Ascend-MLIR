@@ -24,7 +24,6 @@
 //       -ldl -o /tmp/test_runtime
 //   /tmp/test_runtime
 
-#include "Runtime/Compiler.h"
 #include "Runtime/Execution/NativeExecutionRunner.h"
 #include "Runtime/NpyIO.h"
 #include "Runtime/PathUtils.h"
@@ -320,37 +319,6 @@ static void testNpyIOErrors() {
   }
 }
 
-static void testCompilerMixArtifact() {
-  llvm::outs() << "\n[Legacy Compiler mix artifact]\n";
-
-  const std::filesystem::path fixturePath =
-      std::filesystem::path(__FILE__).parent_path() / "mix_stub_fixture.cpp";
-  const std::filesystem::path buildDir =
-      std::filesystem::temp_directory_path() / "rt_mix_fixture_build";
-  std::filesystem::remove_all(buildDir);
-  std::filesystem::create_directories(buildDir);
-
-  Compiler::Config cfg;
-  cfg.kernel_type = "mix";
-  cfg.soc_version = "Ascend910B1";
-  cfg.verbose = false;
-
-  Compiler compiler(cfg);
-  auto artifactPathOr =
-      compiler.Compile(fixturePath.string(), buildDir.string(), "fc_relu");
-  EXPECT((bool)artifactPathOr, "legacy mix compiler returns an artifact path");
-  if (artifactPathOr) {
-    EXPECT(artifactPathOr->find(".bin") != std::string::npos,
-           "legacy mix compiler returns linked kernel binary path");
-    EXPECT(std::filesystem::exists(*artifactPathOr),
-           "legacy mix compiler output artifact exists on disk");
-  } else {
-    llvm::consumeError(artifactPathOr.takeError());
-  }
-
-  std::filesystem::remove_all(buildDir);
-}
-
 static void testRuntimeNativePackedMixErrors() {
   llvm::outs() << "\n[Runtime-native packed mix error path]\n";
 
@@ -641,7 +609,6 @@ int main(int argc, char **argv) {
   testNDArrayRAII();
   testNpyIORoundTrip();
   testNpyIOErrors();
-  testCompilerMixArtifact();
   testRuntimeNativePackedMixErrors();
   testRuntimePathUtils();
 

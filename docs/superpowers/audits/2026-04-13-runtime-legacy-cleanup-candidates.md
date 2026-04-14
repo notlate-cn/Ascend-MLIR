@@ -15,13 +15,13 @@
 - `Legacy/SimValidator`
   - No longer has any remaining in-repo consumers after the runtime-native output comparator cutover.
   - The retained legacy validator file and shim can be removed without touching runtime backend behavior.
+- `Legacy/Compiler`
+  - Deleted after the runtime-native vec/cube compile cutover and removal of the final retained legacy mix compile test.
+  - No longer participates in the runtime library build, public headers, or focused runtime verification.
 
 ## Needs Migration First
 
-- `Legacy/Compiler`
-  - No longer blocks `ArtifactCompiler`; vec/cube source builds now route through `VecCubeArtifactBackend`.
-  - The remaining direct runtime-owned surface has been reduced to an explicit legacy mix compile test in `test/tools/runtime/test_runtime.cpp`, plus the retained implementation file itself.
-  - Treat it as a retained compatibility unit until a self-contained runtime-native mix compile fixture exists.
+- none currently
 
 ## Do Not Touch Yet
 
@@ -42,5 +42,5 @@
 - `Legacy/SimValidator` can be removed directly because there are no surviving non-backend consumers left.
 - `Legacy/HostRunnerGen` is no longer an active cleanup target because the file, shim, and dedicated tests have been deleted.
 - `Legacy/CompatRuntime` is no longer an active cleanup target because the file, shim, and compat helper coverage have been deleted.
-- `Legacy/Compiler` should now be treated as a small retained-surface decision, not as a main runtime migration blocker.
-- Deeper physical deletion should wait until the remaining compatibility boundary and retained compiler test surface are re-audited against current consumers.
+- `Legacy/Compiler` is no longer an active cleanup target because the file, shim, and final retained test coverage have been deleted.
+- Deeper physical deletion is no longer blocked by the major retained legacy implementation units; follow-up work should move to post-legacy cleanup and runtime-native consolidation.

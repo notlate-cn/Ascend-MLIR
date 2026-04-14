@@ -62,7 +62,7 @@
 - `Legacy/SimValidator` has been removed after the runtime-native output comparator cutover left it with no remaining in-repo consumers.
 - `Legacy/HostRunnerGen`, its public shim, and its dedicated tests have now been deleted.
 - `Legacy/CompatRuntime` and its public shim have now been deleted; C API request assembly is now direct and runtime-native.
-- `Legacy/Compiler` is no longer on the main runtime compile path; its remaining runtime-owned surface is now limited to an explicit legacy mix compile test.
+- `Legacy/Compiler` and its public shim have now been deleted; the final retained legacy mix compile test has been removed.
 - Fresh xvm verification after the vec/cube backend cutover passes:
   - `test_taskgraph_runtime`: `523 passed, 0 failed`
   - `test_capi_runtime`: `15 passed, 0 failed`
@@ -81,6 +81,10 @@
   - `test_runtime`: `108 passed, 0 failed`
   - focused vec/mix smoke: pass
   - repeated mix simulation baseline: pass
+- Fresh xvm runtime-focused verification after deleting `Legacy/Compiler` includes:
+  - `test_taskgraph_runtime`: `453 passed, 0 failed`
+  - `test_capi_runtime`: `15 passed, 0 failed`
+  - `test_runtime`: `86 passed, 0 failed`
 
 ## Decisions
 
@@ -100,7 +104,5 @@
 
 ## TODO
 
-- Plan the second-round `Legacy` cleanup in risk-ordered slices:
-  - retained compiler surface cleanup first
-  - deeper legacy implementation deletion last
+- Decide the first post-`Legacy` cleanup slice now that the retained legacy implementation units have been removed.
 - Keep xvm focused runtime verification green while shrinking legacy dependencies.

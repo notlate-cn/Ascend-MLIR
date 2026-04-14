@@ -16,6 +16,10 @@ It covers direct includes, implementation dependencies, and test coverage that s
 
 ### Legacy/Compiler
 
+> Update (2026-04-14): `Legacy/Compiler` and its public shim have now been
+> removed. This section is retained as historical audit context for the
+> pre-deletion state.
+
 | Consumer | File | Dependency Kind | Notes |
 |---|---|---|---|
 | Public shim | `include/Runtime/Compiler.h` | direct wrapper | Re-exports `Runtime/Legacy/Compiler.h`. |
@@ -80,11 +84,10 @@ It covers direct includes, implementation dependencies, and test coverage that s
 
 ## By Consumer
 
-- `include/Runtime/Artifact/ArtifactCompiler.h`, `lib/Runtime/Artifact/ArtifactCompiler.cpp`, `tools/autotuner/autotuner_main.cpp`, and `lib/CAPI/Runtime/Runtime.cpp` all depend on `Legacy/Compiler` indirectly through `ArtifactCompiler`.
-- `lib/Runtime/Execution/SimBackend.cpp` and `lib/Runtime/Execution/NpuBackend.cpp` depend on `Legacy/Executor` directly for binary registration, launch, and magic selection.
-- `lib/Runtime/Execution/SimBackend.cpp` and `lib/Runtime/Execution/NpuBackend.cpp` depend on `Legacy/SimValidator` directly for output comparison after execution.
-- `test/tools/runtime/test_runtime.cpp` and `test/tools/runtime/test_taskgraph_runtime.cpp` still exercise `Legacy/Compiler`-backed helpers directly; `Legacy/Executor` and `Legacy/HostRunnerGen` are now historical, not current, test dependencies.
-- `lib/Runtime/CMakeLists.txt` no longer wires `Legacy/HostRunnerGen.cpp` into the runtime library.
+- `include/Runtime/Artifact/ArtifactCompiler.h`, `lib/Runtime/Artifact/ArtifactCompiler.cpp`, `tools/autotuner/autotuner_main.cpp`, and `lib/CAPI/Runtime/Runtime.cpp` no longer depend on `Legacy/Compiler`; any compile-path coupling there is now historical, not current.
+- `lib/Runtime/Execution/SimBackend.cpp` and `lib/Runtime/Execution/NpuBackend.cpp` no longer depend on `Legacy/Executor` or `Legacy/SimValidator`; those seams are now historical, not current.
+- `test/tools/runtime/test_runtime.cpp` and `test/tools/runtime/test_taskgraph_runtime.cpp` no longer exercise `Legacy/Compiler`-backed helpers directly; `Legacy/Compiler`, `Legacy/Executor`, and `Legacy/HostRunnerGen` are now historical, not current, test dependencies.
+- `lib/Runtime/CMakeLists.txt` no longer wires any deleted legacy implementation unit into the runtime library.
 - `lib/CAPI/Runtime/Runtime.cpp` no longer routes compile-path compatibility through `Legacy/CompatRuntime`; it now constructs runtime-native requests directly.
 - `test/tools/runtime/test_taskgraph_runtime.cpp` no longer depends on `Legacy/CompatRuntime` helper coverage.
 - `tools/autotuner/autotuner_main.cpp` no longer includes or directly orchestrates `Compiler`, `Executor`, `SimValidator`, or `HostRunnerGen`; its remaining `Legacy/Compiler` coupling is indirect through `ArtifactCompiler`.
@@ -93,24 +96,25 @@ It covers direct includes, implementation dependencies, and test coverage that s
 
 ### Bucket A: Must Keep For Now
 
-- `Legacy/Compiler`
-  - Required by current frontends and adapters in `tools/mix-compiler/mix_compiler_main.cpp`, `tools/runtime-session/runtime_session_main.cpp`, `lib/Runtime/Artifact/RuntimeSessionRequestBuilder.cpp`, `lib/CAPI/Runtime/Runtime.cpp`, and `tools/autotuner/autotuner_main.cpp`, all of which still reach `ArtifactCompiler`.
-  - Required by `include/Runtime/Artifact/ArtifactCompiler.h`, `lib/Runtime/Artifact/ArtifactCompiler.cpp`, and `lib/Runtime/CMakeLists.txt`.
-  - Still exercised directly by `test/tools/runtime/test_runtime.cpp` and `test/tools/runtime/test_taskgraph_runtime.cpp`.
-- `Legacy/Executor`
-  - Required by `lib/Runtime/Execution/SimBackend.cpp` and `lib/Runtime/Execution/NpuBackend.cpp`.
-  - Still exposed through `include/Runtime/SimValidator.h`.
-- `Legacy/SimValidator`
-  - Required by `lib/Runtime/Execution/SimBackend.cpp` and `lib/Runtime/Execution/NpuBackend.cpp`.
+- none currently
 
 ### Bucket B: Candidate For Boundary Shrink
 
+- none currently
+
 ### Bucket C: Delete After Migration
 
+- `Legacy/Executor`
+  - Migration is complete; the file and shim have now been removed.
+- `Legacy/SimValidator`
+  - Migration is complete; the file and shim have now been removed.
+- `Legacy/HostRunnerGen`
+  - Migration is complete; the file, shim, and dedicated tests have now been removed.
+- `Legacy/Compiler`
+  - Migration is complete; the file, shim, and final retained test coverage have now been removed.
 - `Legacy/CompatRuntime`
   - Migration is complete; the file and shim have now been removed.
 
 ## Open Questions
 
-- Can `tools/autotuner/autotuner_main.cpp` stay fully on `ArtifactCompiler` and `ExecutionSession`, or will it need a new runtime-native builder once `Legacy/Compiler` is removed?
-- Is `include/Runtime/SimValidator.h` intended to remain a public shim after `Legacy/Executor` is no longer part of the validation API?
+- none currently
