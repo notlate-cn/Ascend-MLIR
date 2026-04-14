@@ -1,5 +1,9 @@
 # Runtime Legacy Dependency Audit
 
+> Historical note: this audit records the pre-deletion dependency picture and
+> the transition status of the old `Legacy` units. It should no longer be read
+> as an active blocker list for current runtime work.
+
 ## Scope
 
 This audit records concrete current references to the legacy runtime units below, based on `rg` inventory plus source inspection:
@@ -10,7 +14,7 @@ This audit records concrete current references to the legacy runtime units below
 - `Legacy/HostRunnerGen`
 - `Legacy/CompatRuntime`
 
-It covers direct includes, implementation dependencies, and test coverage that still keeps the legacy surface alive. It does not change behavior or propose deletions.
+It covers direct includes, implementation dependencies, and test coverage that kept the legacy surface alive during migration. It does not change behavior or propose deletions.
 
 ## Direct References
 
@@ -117,4 +121,4 @@ It covers direct includes, implementation dependencies, and test coverage that s
 
 ## Open Questions
 
-- none currently
+- none currently; active planning should now focus on runtime-native boundaries rather than legacy dependency removal.

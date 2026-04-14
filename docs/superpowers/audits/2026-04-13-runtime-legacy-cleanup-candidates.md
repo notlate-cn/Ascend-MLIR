@@ -1,5 +1,10 @@
 # Runtime Legacy Cleanup Candidates
 
+> Historical note: this document now serves primarily as a record of the
+> legacy-cleanup sequence. The major legacy implementation units have already
+> been removed, so active planning should now be framed in runtime-native
+> terms rather than as additional legacy deletion work.
+
 ## Preconditions
 
 - The dependency inventory in `docs/superpowers/audits/2026-04-13-runtime-legacy-dependency-audit.md` is the source of truth for legacy references.
@@ -7,7 +12,7 @@
 - Cleanup candidates are classified from current source evidence only; this document does not propose code changes or deletions by itself.
 - Any deletion candidate still needs the relevant runtime verification path on xvm before removal is attempted.
 
-## Safe Now
+## Completed Cleanup
 
 - `Legacy/Executor`
   - Deleted after the runtime-native execution runner cutover.
@@ -19,11 +24,11 @@
   - Deleted after the runtime-native vec/cube compile cutover and removal of the final retained legacy mix compile test.
   - No longer participates in the runtime library build, public headers, or focused runtime verification.
 
-## Needs Migration First
+## Migration-Blocked Candidates
 
 - none currently
 
-## Do Not Touch Yet
+## Deferred / Not Applicable
 
 - none currently
 
@@ -35,12 +40,11 @@
 - Any change affecting the runtime-native comparator or any deletion of the legacy validator files must rerun `bash test/tools/runtime/run_runtime.sh` on xvm.
 - No cleanup step is complete until the relevant audit entry has a matching source reference and a verified follow-up path.
 
-## Next-Step Guidance
+## Post-Legacy Guidance
 
-- The next cleanup slice should start from the retained compatibility files that still sit outside the runtime-native stack, not from runtime backend seams that have already been cut over.
-- `Legacy/Executor` is no longer an active cleanup target because the file and shim have been deleted.
-- `Legacy/SimValidator` can be removed directly because there are no surviving non-backend consumers left.
-- `Legacy/HostRunnerGen` is no longer an active cleanup target because the file, shim, and dedicated tests have been deleted.
-- `Legacy/CompatRuntime` is no longer an active cleanup target because the file, shim, and compat helper coverage have been deleted.
-- `Legacy/Compiler` is no longer an active cleanup target because the file, shim, and final retained test coverage have been deleted.
-- Deeper physical deletion is no longer blocked by the major retained legacy implementation units; follow-up work should move to post-legacy cleanup and runtime-native consolidation.
+- Legacy deletion is no longer the main runtime workstream.
+- Follow-up work should move to runtime-native consolidation:
+  - `runtime-session` / C API boundary cleanup
+  - execution/profile contract tightening
+  - task-graph / scheduler evolution
+  - focused xvm verification maintenance

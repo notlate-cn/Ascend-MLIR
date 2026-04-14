@@ -48,3 +48,4 @@ Autotuner did not block `Legacy/HostRunnerGen` cleanup directly, and that unit h
 
 - Normalize the autotuner `--artifact-root` loader so it preserves `mix_resource_type` from the manifest instead of hardcoding `Unknown`.
 - Rerun the autotuner xvm smoke path after any artifact-loading change and confirm that `--kernel` and `--artifact-root` still produce the same retained profile JSON and best-config summary.
+- Treat further work here as runtime-native normalization, not legacy cleanup.
