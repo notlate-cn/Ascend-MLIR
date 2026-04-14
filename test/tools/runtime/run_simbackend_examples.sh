@@ -2,36 +2,12 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
-cd "$PROJECT_ROOT"
-
-source "${PROJECT_ROOT}/scripts/resolve_ascend_env.sh"
-source "${PROJECT_ROOT}/scripts/resolve_llvm_env.sh"
-
-ASCEND_HOME="$(resolve_ascend_home || true)"
-if [ -z "${ASCEND_HOME}" ]; then
-  echo "Error: set ASCEND_HOME_PATH or ASCEND_TOOLKIT_HOME before running SimBackend example tests"
-  exit 1
-fi
-export ASCEND_HOME_PATH="${ASCEND_HOME}"
-source "${PROJECT_ROOT}/examples/env.sh" >/dev/null
-
-LLVM_BUILD="$(require_llvm_build_dir || true)"
-if [ -z "${LLVM_BUILD}" ]; then
-  exit 1
-fi
-
-if [ -f build/CMakeCache.txt ]; then
-  CACHE_SOURCE_DIR="$(sed -n 's/^CMAKE_HOME_DIRECTORY:INTERNAL=//p' build/CMakeCache.txt)"
-  if [ -n "${CACHE_SOURCE_DIR}" ] && [ "${CACHE_SOURCE_DIR}" != "${PROJECT_ROOT}" ]; then
-    rm -rf build
-  fi
-fi
-
-cmake -S . -B build -DLLVM_BUILD_DIR="${LLVM_BUILD}" >/dev/null
-cmake --build build \
-  --target runtime-session afir-opt afir-translate mix-compiler \
-  -j2 >/dev/null
+source "${SCRIPT_DIR}/runtime_verify_env.sh"
+runtime_verify_setup_env
+runtime_verify_prepare_build_dir
+runtime_verify_build_runtime_core
+runtime_verify_build_example_toolchain
+runtime_verify_build_mix_compiler
 
 RUNTIME_SESSION="${PROJECT_ROOT}/build/bin/runtime-session"
 SELECTED_EXAMPLES=("$@")
@@ -271,14 +247,7 @@ run_mix_example() {
   grep -q '^session.backend=sim$' "${example_log}"
   grep -q '^session.result=success$' "${example_log}"
 
-  local dav_sim_version="${ASCEND_DAV_SIM_VERSION:-dav_3002}"
-  local cann_arch
-  cann_arch="$(resolve_cann_arch_dir)"
-  local ascend_lib64="${ASCEND_HOME_PATH}/${cann_arch}/lib64"
-  local soc_sim_lib="${ASCEND_HOME_PATH}/${cann_arch}/simulator/Ascend910B1/lib"
-  local dav_sim_lib="${ASCEND_HOME_PATH}/${cann_arch}/simulator/${dav_sim_version}/lib"
-  local device_lib="${ASCEND_HOME_PATH}/${cann_arch}/lib64/device/lib64"
-  ASCEND_DAV_SIM_VERSION="${dav_sim_version}" "${RUNTIME_SESSION}" \
+  ASCEND_DAV_SIM_VERSION="${DAV_SIM_VERSION}" "${RUNTIME_SESSION}" \
     --kernel "${example_dir}/step8_kernel.cpp" \
     --kernel-kind mix \
     --name "${kernel_name}" \
@@ -315,8 +284,8 @@ EOF
   local status=0
   CURRENT_RETRIES=0
   LAST_PROFILE_PATH=""
-  if ! ASCEND_DAV_SIM_VERSION="${dav_sim_version}" \
-    LD_LIBRARY_PATH="${artifact_root}/out:${ascend_lib64}:${soc_sim_lib}:${dav_sim_lib}:${device_lib}${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}" \
+  if ! ASCEND_DAV_SIM_VERSION="${DAV_SIM_VERSION}" \
+    LD_LIBRARY_PATH="$(runtime_verify_mix_ld_library_path "${artifact_root}")" \
     "${RUNTIME_SESSION}" --run-manifest "${manifest}" --run \
     >/tmp/runtime_simbackend_run.log 2>&1; then
     status=$?
@@ -326,8 +295,8 @@ EOF
     echo "retrying runtime-session mix run after simulator process exit ${status}" >&2
     sleep 1
     CURRENT_RETRIES=1
-    ASCEND_DAV_SIM_VERSION="${dav_sim_version}" \
-    LD_LIBRARY_PATH="${artifact_root}/out:${ascend_lib64}:${soc_sim_lib}:${dav_sim_lib}:${device_lib}${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}" \
+    ASCEND_DAV_SIM_VERSION="${DAV_SIM_VERSION}" \
+    LD_LIBRARY_PATH="$(runtime_verify_mix_ld_library_path "${artifact_root}")" \
       "${RUNTIME_SESSION}" --run-manifest "${manifest}" --run \
       >/tmp/runtime_simbackend_run.log 2>&1
   fi

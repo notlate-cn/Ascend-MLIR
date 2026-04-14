@@ -9,51 +9,12 @@
 #   bash test/tools/runtime/run_runtime.sh
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
-cd "$PROJECT_ROOT"
-source "${PROJECT_ROOT}/scripts/resolve_ascend_env.sh"
-source "${PROJECT_ROOT}/scripts/resolve_llvm_env.sh"
-
-ASCEND_HOME="$(resolve_ascend_home || true)"
-if [ -z "${ASCEND_HOME}" ]; then
-  echo "Error: set ASCEND_HOME_PATH or ASCEND_TOOLKIT_HOME before running runtime tests"
-  exit 1
-fi
-export ASCEND_HOME_PATH="${ASCEND_HOME}"
-source "${PROJECT_ROOT}/examples/env.sh" >/dev/null
-CANN_ARCH="${CANN_ARCH:-$(resolve_cann_arch_dir)}"
-SOC_VERSION="${SOC_VERSION:-Ascend910B1}"
-ASCEND_LIB64="${ASCEND_HOME_PATH}/${CANN_ARCH}/lib64"
-SOC_SIM_LIB="${ASCEND_HOME_PATH}/${CANN_ARCH}/simulator/${SOC_VERSION}/lib"
-DAV_SIM_LIB="${ASCEND_HOME_PATH}/${CANN_ARCH}/simulator/${SOC_VERSION}/lib/davinci"
-DEVICE_LIB="${ASCEND_HOME_PATH}/runtime/lib64/stub"
-
-LLVM_BUILD="$(require_llvm_build_dir || true)"
-if [ -z "$LLVM_BUILD" ]; then
-  exit 1
-fi
-LLVM_SOURCE_INCLUDE="$(cd "${LLVM_BUILD}/.." && pwd)/include"
-
-if [ -f build/CMakeCache.txt ]; then
-  CACHE_SOURCE_DIR="$(sed -n 's/^CMAKE_HOME_DIRECTORY:INTERNAL=//p' build/CMakeCache.txt)"
-  if [ -n "${CACHE_SOURCE_DIR}" ] && [ "${CACHE_SOURCE_DIR}" != "${PROJECT_ROOT}" ]; then
-    echo "Recreating build/ because CMake cache points to ${CACHE_SOURCE_DIR}"
-    rm -rf build
-  fi
-fi
-
-if [ -f build/compile_commands.json ]; then
-  if grep -Eq '/Library/Developer/CommandLineTools/SDKs/MacOSX\.sdk|-arch arm64' \
-      build/compile_commands.json; then
-    echo "Recreating build/ because compile_commands.json contains host-specific macOS toolchain paths"
-    rm -rf build
-  fi
-fi
-
-cmake -S . -B build -DLLVM_BUILD_DIR="$LLVM_BUILD"
+source "${SCRIPT_DIR}/runtime_verify_env.sh"
+runtime_verify_setup_env
+runtime_verify_prepare_build_dir
 
 echo "--- Building focused runtime verification targets ---"
-cd build && cmake --build . --target AscendCRuntime AFIRRuntimeCAPI runtime-session afir-opt afir-translate -j2 && cd ..
+runtime_verify_build_runtime_core
 
 echo "--- Checking runtime-session CLI ---"
 test -x build/bin/runtime-session
@@ -137,6 +98,7 @@ fi
 grep -q "simulation path requires at least one output binding" "${RUN_STDERR}"
 
 echo "--- Checking runtime-session positive vec simulation path ---"
+runtime_verify_build_example_toolchain
 bash examples/relu-broadcast-transpose/run.sh >/tmp/runtime_session_example.log 2>&1
 build/bin/runtime-session \
   --kernel examples/relu-broadcast-transpose/step8_kernel.cpp \
@@ -320,11 +282,14 @@ g++ -std=c++17 \
 echo "--- Running test_taskgraph_runtime ---"
 "$TEST_TASKGRAPH_RUNTIME_BIN"
 echo "--- Running test_capi_runtime ---"
-LD_LIBRARY_PATH="${PROJECT_ROOT}/build/lib:${ASCEND_LIB64}:${SOC_SIM_LIB}:${DAV_SIM_LIB}:${DEVICE_LIB}${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}" \
+LD_LIBRARY_PATH="$(runtime_verify_runtime_ld_library_path)" \
   "$TEST_CAPI_RUNTIME_BIN"
 echo "--- Running test_runtime ---"
 if "$TEST_RUNTIME_BIN"; then
   echo "--- Running SimBackend smoke baseline ---"
+  export RUNTIME_VERIFY_RUNTIME_CORE_READY=1
+  export RUNTIME_VERIFY_EXAMPLE_TOOLCHAIN_READY=1
+  export RUNTIME_VERIFY_MIX_COMPILER_READY=1
   bash test/tools/runtime/run_simbackend_smoke.sh
   echo "--- Running repeated mix simulation baseline ---"
   bash test/tools/runtime/run_mix_repeat.sh
