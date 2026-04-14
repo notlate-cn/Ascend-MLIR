@@ -3,7 +3,6 @@
 
 #include "CAPI/Runtime.h"
 #include "Runtime/ArtifactCompiler.h"
-#include "Runtime/CompatRuntime.h"
 #include "Runtime/ExecutionSession.h"
 #include "Runtime/NpyIO.h"
 #include "Runtime/Types.h"
@@ -322,23 +321,19 @@ int afirt_compiler_compile(AfirtCompiler compiler,
     return 1;
   }
 
-  CompatCompileOptions options;
-  options.kernelSourcePath = src_file ? src_file : "";
-  options.outputRoot = output_dir ? output_dir : "";
-  options.requestedKernelName = kernel_name ? kernel_name : "";
-  options.socVersion = handle->socVersion;
-  options.arch = handle->arch;
-  options.kernelType = compatKernelTypeForArch(handle->arch).str();
-
-  auto requestOr = buildCompatCompileRequest(options);
-  if (!requestOr) {
-    writeErr(out_bin_path, buf_len, requestOr.takeError());
-    return 1;
-  }
-  requestOr->optLevel = handle->optLevel;
+  ArtifactCompileRequest request;
+  request.kernelSource = src_file ? src_file : "";
+  request.outputDir = output_dir ? output_dir : "";
+  request.kernelName = kernel_name ? kernel_name : "";
+  request.socVersion = handle->socVersion;
+  request.arch = handle->arch;
+  request.kernelKind =
+      compatKernelTypeForArch(handle->arch) == "cube" ? KernelKind::Cube
+                                                       : KernelKind::Vec;
+  request.optLevel = handle->optLevel;
 
   ArtifactCompiler artifactCompiler;
-  auto artifactOr = artifactCompiler.compile(*requestOr);
+  auto artifactOr = artifactCompiler.compile(request);
   if (!artifactOr) {
     writeErr(out_bin_path, buf_len, artifactOr.takeError());
     return 1;

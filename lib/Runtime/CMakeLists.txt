@@ -12,7 +12,6 @@ add_mlir_library(AscendCRuntime
   Execution/NativeExecutionRunner.cpp
   Execution/SimBackend.cpp
   Execution/TaskGraph.cpp
-  Legacy/CompatRuntime.cpp
   Legacy/Compiler.cpp
   Mix/AscendCMixCompiler.cpp
   Mix/MixAbi.cpp

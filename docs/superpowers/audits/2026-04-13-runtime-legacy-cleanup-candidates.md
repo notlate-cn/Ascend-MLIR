@@ -22,9 +22,6 @@
   - No longer blocks `ArtifactCompiler`; vec/cube source builds now route through `VecCubeArtifactBackend`.
   - The remaining direct runtime-owned surface has been reduced to an explicit legacy mix compile test in `test/tools/runtime/test_runtime.cpp`, plus the retained implementation file itself.
   - Treat it as a retained compatibility unit until a self-contained runtime-native mix compile fixture exists.
-- `Legacy/CompatRuntime`
-  - Still used by `lib/CAPI/Runtime/Runtime.cpp` and `test/tools/runtime/test_taskgraph_runtime.cpp`.
-  - Must be migrated away from the compatibility adapter boundary before any cleanup attempt.
 
 ## Do Not Touch Yet
 
@@ -36,7 +33,6 @@
 - Any change affecting the autotuner `--artifact-root` path must verify mix artifact-root loads preserve `mix_resource_type` and do not regress task scheduling.
 - Any change affecting the runtime-native execution substrate must rerun `bash test/tools/runtime/run_runtime.sh` on xvm.
 - Any change affecting the runtime-native comparator or any deletion of the legacy validator files must rerun `bash test/tools/runtime/run_runtime.sh` on xvm.
-- Any change affecting `Legacy/CompatRuntime` must rerun the runtime C API and taskgraph runtime coverage that depends on the compat adapter boundary.
 - No cleanup step is complete until the relevant audit entry has a matching source reference and a verified follow-up path.
 
 ## Next-Step Guidance
@@ -45,5 +41,6 @@
 - `Legacy/Executor` is no longer an active cleanup target because the file and shim have been deleted.
 - `Legacy/SimValidator` can be removed directly because there are no surviving non-backend consumers left.
 - `Legacy/HostRunnerGen` is no longer an active cleanup target because the file, shim, and dedicated tests have been deleted.
+- `Legacy/CompatRuntime` is no longer an active cleanup target because the file, shim, and compat helper coverage have been deleted.
 - `Legacy/Compiler` should now be treated as a small retained-surface decision, not as a main runtime migration blocker.
 - Deeper physical deletion should wait until the remaining compatibility boundary and retained compiler test surface are re-audited against current consumers.
