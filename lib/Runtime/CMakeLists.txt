@@ -15,7 +15,6 @@ add_mlir_library(AscendCRuntime
   Legacy/Compiler.cpp
   Legacy/Executor.cpp
   Legacy/HostRunnerGen.cpp
-  Legacy/SimValidator.cpp
   Mix/AscendCMixCompiler.cpp
   Mix/MixAbi.cpp
   Mix/MixAbiExtractor.cpp
