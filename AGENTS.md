@@ -32,6 +32,12 @@
   - execution orchestration
 - Focused runtime verification currently passes on xvm through:
   - [test/tools/runtime/run_runtime.sh](/Volumes/GM9/code/Codex-Ascend-MLIR/test/tools/runtime/run_runtime.sh)
+- xvm default runtime verification now uses a shared shell helper:
+  - [test/tools/runtime/runtime_verify_env.sh](/Volumes/GM9/code/Codex-Ascend-MLIR/test/tools/runtime/runtime_verify_env.sh)
+  - shared Ascend/LLVM env setup
+  - shared runtime test library path assembly
+  - shared stale-build detection and configure retry
+  - per-slice build helpers for runtime core, example toolchain, and `mix-compiler`
 - The repeated mix simulation baseline is part of focused verification and currently passes.
 - CLI regression coverage has been added for:
   - conflicting `--artifact-root` / `--kernel`
@@ -118,6 +124,11 @@
   - `test_capi_runtime`: `15 passed, 0 failed`
   - `test_runtime`: `79 passed, 0 failed`
   - `run_simbackend_smoke.sh`: pass
+- Fresh xvm verification after default-verification cleanup includes:
+  - `bash test/tools/runtime/run_runtime.sh`: pass (`RC=0`)
+  - `bash test/tools/runtime/run_simbackend_smoke.sh`: pass
+  - `run_runtime.sh` now reuses the shared helper and no longer rebuilds `afir-opt` / `afir-translate` / `mix-compiler` in the initial runtime-core build step
+  - repeated mix simulation baseline remains part of the default runtime verification path and passes
 
 ## Decisions
 
@@ -140,6 +151,5 @@
 
 - Finish the original task with NPU real-device validation when hardware is available.
 - After that, continue runtime-native enhancement work in this order:
-  - xvm default-verification noise cleanup
   - task-graph / scheduler evolution
 - Keep xvm focused runtime verification green while changing runtime-native internals.
