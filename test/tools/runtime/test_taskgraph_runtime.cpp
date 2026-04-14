@@ -356,6 +356,20 @@ public:
   std::vector<std::string> seenWorkingDirectories;
 };
 
+class FailingExecutionBackendDriver : public ExecutionBackendDriver {
+public:
+  explicit FailingExecutionBackendDriver(std::string message)
+      : message(std::move(message)) {}
+
+  llvm::Expected<ExecutionResult>
+  run(const ExecutionRequest &) override {
+    return llvm::createStringError(llvm::inconvertibleErrorCode(), "%s",
+                                   message.c_str());
+  }
+
+  std::string message;
+};
+
 class CapturingExecutionBackendDriver : public ExecutionBackendDriver {
 public:
   llvm::Expected<ExecutionResult>
@@ -1318,6 +1332,10 @@ static void testFrontendSingleTaskRunPreparationAndSummary() {
          "frontend run summary marks validation pass");
   EXPECT(successSummary.profileTrace.profileArtifactPaths().size() == 1,
          "frontend run summary preserves profile artifacts");
+  EXPECT(successSummary.profileArtifactPaths.size() == 1,
+         "frontend run summary surfaces artifact path list");
+  EXPECT(successSummary.profileArtifactPaths[0] == "/tmp/frontend-profile.json",
+         "frontend run summary preserves surfaced artifact path");
   EXPECT(successSummary.retainedSummaryPath == "/tmp/session_summary.json",
          "frontend run summary preserves retained summary path");
 
@@ -1328,10 +1346,92 @@ static void testFrontendSingleTaskRunPreparationAndSummary() {
          "frontend run summary marks error");
   EXPECT(errorSummary.validationStatus == FrontendValidationStatus::Failed,
          "frontend run summary marks validation failure");
+  EXPECT(errorSummary.rawErrorMessage ==
+             "[sim:validate] simulation output mismatch: expected 1 got 2",
+         "frontend run summary preserves raw error message");
   EXPECT(errorSummary.errorStage == "validate",
          "frontend run summary extracts error stage");
   EXPECT(errorSummary.errorMessage == "simulation output mismatch: expected 1 got 2",
          "frontend run summary strips stage prefix");
+
+  FrontendRunSummary nonValidationError = summarizeFrontendRunError(
+      ExecutionBackendKind::Simulation, /*validationRan=*/false,
+      "[sim:kernel_launch] launch failed");
+  EXPECT(nonValidationError.validationStatus ==
+             FrontendValidationStatus::NotRun,
+         "frontend run summary leaves validation unset when validation did not run");
+}
+
+static void testFrontendRunExecutionUsesNormalizedContract() {
+  KernelArtifact artifact;
+  artifact.kernelName = "frontend_vec";
+  artifact.kernelKind = KernelKind::Vec;
+  artifact.deviceBinaryPath = "/tmp/frontend.bin";
+
+  TensorBinding output;
+  output.name = "out";
+  output.path = "/tmp/frontend-out.npy";
+
+  ExecutionInvocation invocation;
+  invocation.outputs.push_back(output);
+  invocation.expectedOutputs.push_back(output);
+
+  FrontendSingleTaskRunRequest request;
+  request.backendKind = ExecutionBackendKind::Simulation;
+  request.taskId = "main";
+  request.artifact = artifact;
+  request.invocation = invocation;
+
+  auto preparedOr = prepareFrontendSingleTaskRun(request);
+  EXPECT((bool)preparedOr, "frontend execute contract prepares graph");
+  if (!preparedOr)
+    return;
+
+  auto successDriver = std::make_shared<OrderedExecutionBackendDriver>();
+  ExecutionSession successSession(ExecutionBackendKind::Simulation, successDriver);
+  FrontendRunSummary successSummary =
+      executeFrontendPreparedRun(successSession, *preparedOr);
+  EXPECT(successSummary.success,
+         "frontend execute contract marks successful run");
+  EXPECT(successSummary.validationStatus == FrontendValidationStatus::Passed,
+         "frontend execute contract preserves validation pass");
+  EXPECT(successSummary.profileArtifactPaths.size() == 1,
+         "frontend execute contract surfaces trace artifact path");
+  if (!successSummary.profileArtifactPaths.empty()) {
+    EXPECT(successSummary.profileArtifactPaths[0].find(".profile.json") !=
+               std::string::npos,
+           "frontend execute contract forwards profile path from trace");
+  }
+
+  auto failingDriver = std::make_shared<FailingExecutionBackendDriver>(
+      "[sim:validate] simulation output mismatch");
+  ExecutionSession failingSession(ExecutionBackendKind::Simulation, failingDriver);
+  FrontendRunSummary failureSummary =
+      executeFrontendPreparedRun(failingSession, *preparedOr);
+  EXPECT(!failureSummary.success,
+         "frontend execute contract marks failed run");
+  EXPECT(failureSummary.validationStatus == FrontendValidationStatus::Failed,
+         "frontend execute contract marks validation failure");
+  EXPECT(failureSummary.errorStage == "validate",
+         "frontend execute contract extracts error stage");
+  EXPECT(failureSummary.rawErrorMessage ==
+             "[sim:validate] simulation output mismatch",
+         "frontend execute contract preserves raw error");
+
+  FrontendSingleTaskRunRequest noValidationRequest = request;
+  noValidationRequest.invocation.expectedOutputs.clear();
+  auto noValidationPreparedOr = prepareFrontendSingleTaskRun(noValidationRequest);
+  EXPECT((bool)noValidationPreparedOr,
+         "frontend execute contract prepares non-validating graph");
+  if (!noValidationPreparedOr)
+    return;
+  ExecutionSession noValidationSession(ExecutionBackendKind::Simulation,
+                                       successDriver);
+  FrontendRunSummary noValidationSummary =
+      executeFrontendPreparedRun(noValidationSession, *noValidationPreparedOr);
+  EXPECT(noValidationSummary.validationStatus ==
+             FrontendValidationStatus::NotRun,
+         "frontend execute contract leaves validation unset when no golden outputs exist");
 }
 
 static std::string readFileContents(const std::string &path) {
@@ -3121,6 +3221,7 @@ int main() {
   testArtifactCompilerRequestValidation();
   testFrontendCompileRequestBuilderPreservesFields();
   testFrontendSingleTaskRunPreparationAndSummary();
+  testFrontendRunExecutionUsesNormalizedContract();
   testBackendSelection();
   testDefaultBackendRequiresDriver();
   testInvalidBackendSelection();

@@ -1,6 +1,7 @@
 #include "Runtime/Execution/RuntimeFrontendCore.h"
 
 #include "Runtime/Artifact/RuntimeSessionRequestBuilder.h"
+#include "Runtime/Profile/ProfileUtils.h"
 
 #include "llvm/ADT/StringRef.h"
 #include "llvm/Support/Error.h"
@@ -73,6 +74,17 @@ std::pair<std::string, std::string> parseErrorStage(llvm::StringRef message) {
   return {std::move(stage), remainder.str()};
 }
 
+bool graphRequestsValidation(const TaskGraph &graph) {
+  auto tasksOr = graph.orderedTasks();
+  if (!tasksOr)
+    return false;
+  for (const RuntimeTask &task : *tasksOr) {
+    if (!task.invocation.expectedOutputs.empty())
+      return true;
+  }
+  return false;
+}
+
 } // namespace
 
 FrontendRunSummary summarizeFrontendRunSuccess(ExecutionBackendKind backendKind,
@@ -85,6 +97,7 @@ FrontendRunSummary summarizeFrontendRunSuccess(ExecutionBackendKind backendKind,
   summary.validationStatus = validationRan ? FrontendValidationStatus::Passed
                                            : FrontendValidationStatus::NotRun;
   summary.profileTrace = trace;
+  summary.profileArtifactPaths = trace.profileArtifactPaths();
   summary.retainedSummaryPath = retainedSummaryPath.str();
   return summary;
 }
@@ -95,12 +108,57 @@ FrontendRunSummary summarizeFrontendRunError(ExecutionBackendKind backendKind,
   FrontendRunSummary summary;
   summary.backendKind = backendKind;
   summary.success = false;
+  summary.rawErrorMessage = message.str();
   auto [stage, detail] = parseErrorStage(message);
   summary.errorStage = std::move(stage);
   summary.errorMessage = std::move(detail);
   if (validationRan && summary.errorStage == "validate")
     summary.validationStatus = FrontendValidationStatus::Failed;
   return summary;
+}
+
+FrontendRunSummary executeFrontendPreparedRun(ExecutionSession &session,
+                                              const FrontendPreparedRun &prepared,
+                                              const FrontendRunOptions &options) {
+  const bool validationRan = graphRequestsValidation(prepared.graph);
+
+  if (prepared.backendKind == ExecutionBackendKind::Simulation &&
+      options.retainSimulationProfiles) {
+    if (options.retainedProfileRoot.empty()) {
+      return summarizeFrontendRunError(
+          prepared.backendKind, validationRan,
+          "retained profile root is required when simulation profile retention is enabled");
+    }
+    if (auto preparedOr = prepareRetainedProfileRunRootForCli(
+            options.retainedProfileRoot, options.retainedProfileSessionLimit);
+        !preparedOr) {
+      return summarizeFrontendRunError(prepared.backendKind, validationRan,
+                                       llvm::toString(preparedOr.takeError()));
+    }
+  }
+
+  auto traceOr = session.run(prepared.graph);
+  if (!traceOr) {
+    return summarizeFrontendRunError(prepared.backendKind, validationRan,
+                                     llvm::toString(traceOr.takeError()));
+  }
+
+  ProfileTrace trace = std::move(*traceOr);
+  std::string retainedSummaryPath;
+  if (prepared.backendKind == ExecutionBackendKind::Simulation &&
+      options.retainSimulationProfiles) {
+    auto retainedOr =
+        retainProfileArtifactsForCliRun(trace, options.retainedProfileRoot);
+    if (!retainedOr) {
+      return summarizeFrontendRunError(prepared.backendKind, validationRan,
+                                       llvm::toString(retainedOr.takeError()));
+    }
+    trace = std::move(retainedOr->trace);
+    retainedSummaryPath = std::move(retainedOr->summaryPath);
+  }
+
+  return summarizeFrontendRunSuccess(prepared.backendKind, validationRan, trace,
+                                     retainedSummaryPath);
 }
 
 } // namespace mlir::runtime
