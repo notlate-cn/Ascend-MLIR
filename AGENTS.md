@@ -52,8 +52,12 @@
   - [include/Runtime/Execution/ExecutionRunner.h](/Volumes/GM9/code/Codex-Ascend-MLIR/include/Runtime/Execution/ExecutionRunner.h)
   - [include/Runtime/Execution/DefaultExecutionRunner.h](/Volumes/GM9/code/Codex-Ascend-MLIR/include/Runtime/Execution/DefaultExecutionRunner.h)
   - [lib/Runtime/Execution/DefaultExecutionRunner.cpp](/Volumes/GM9/code/Codex-Ascend-MLIR/lib/Runtime/Execution/DefaultExecutionRunner.cpp)
+- A runtime-native execution substrate now exists in:
+  - [include/Runtime/Execution/NativeExecutionRunner.h](/Volumes/GM9/code/Codex-Ascend-MLIR/include/Runtime/Execution/NativeExecutionRunner.h)
+  - [lib/Runtime/Execution/NativeExecutionRunner.cpp](/Volumes/GM9/code/Codex-Ascend-MLIR/lib/Runtime/Execution/NativeExecutionRunner.cpp)
 - `SimBackend` and `NpuBackend` no longer directly include `Runtime/Executor.h`.
-- `Legacy/Executor` is now behind `DefaultExecutionRunner` instead of being a direct runtime-backend dependency.
+- `DefaultExecutionRunner` now delegates to `NativeExecutionRunner` instead of constructing `Legacy/Executor`.
+- `Legacy/Executor` has exited the default runtime execution path and remains only as a retained compatibility unit.
 - `Legacy/SimValidator` has been removed after the runtime-native output comparator cutover left it with no remaining in-repo consumers.
 - `Legacy/Compiler` is no longer on the main runtime compile path; its remaining runtime-owned surface is now limited to an explicit legacy mix compile test.
 - Fresh xvm verification after the vec/cube backend cutover passes:
@@ -64,6 +68,10 @@
   - repeated mix simulation baseline: pass
 - Fresh xvm autotuner vec smoke also passes after the compile-path cutover, with non-zero `score` / `cycle_count`.
 - Fresh xvm autotuner vec smoke also passes after the execution-runner adapter cutover, with non-zero `score` / `cycle_count`.
+- Fresh xvm verification after the native execution-runner cutover currently includes:
+  - runtime-only rebuild of `AscendCRuntime`, `runtime-session`, and `autotuner`: pass
+  - autotuner vec smoke: pass, non-zero `score` / `cycle_count`
+  - repeated mix simulation baseline: pass
 
 ## Decisions
 
@@ -85,6 +93,6 @@
 
 - Plan the second-round `Legacy` cleanup in risk-ordered slices:
   - retained compatibility surface cleanup first
-  - adapter-boundary cleanup second
+  - retained executor surface cleanup second
   - deeper legacy implementation deletion last
 - Keep xvm focused runtime verification green while shrinking legacy dependencies.
