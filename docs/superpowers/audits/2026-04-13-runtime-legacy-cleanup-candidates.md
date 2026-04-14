@@ -20,7 +20,8 @@
 
 - `Legacy/Compiler`
   - No longer blocks `ArtifactCompiler`; vec/cube source builds now route through `VecCubeArtifactBackend`.
-  - Remaining cleanup status must now be driven by non-`ArtifactCompiler` consumers and whether they justify one more extraction pass or a much smaller retained legacy surface.
+  - The remaining direct runtime-owned surface has been reduced to an explicit legacy mix compile test in `test/tools/runtime/test_runtime.cpp`, plus the retained implementation file itself.
+  - The next cleanup decision is whether that test should remain as explicit retained legacy coverage or be replaced by a self-contained runtime-native mix compile fixture.
 - `Legacy/CompatRuntime`
   - Still used by `lib/CAPI/Runtime/Runtime.cpp` and `test/tools/runtime/test_taskgraph_runtime.cpp`.
   - Must be migrated away from the compatibility adapter boundary before any cleanup attempt.
@@ -43,7 +44,8 @@
 
 ## Next-Step Guidance
 
-- The next cleanup slice should start from the remaining compiler-facing surface, not from runtime backend seams that have already been pushed behind adapters.
+- The next cleanup slice should start from the retained compatibility files that still sit outside the runtime-native stack, not from runtime backend seams that have already been pushed behind adapters.
 - `Legacy/Executor` cleanup should now proceed from the `DefaultExecutionRunner` boundary rather than from `SimBackend` or `NpuBackend`.
 - `Legacy/SimValidator` cleanup should now proceed from any surviving non-backend consumers, because the direct runtime backend seam is already gone.
-- Deeper physical deletion should wait until the remaining compiler surface and compatibility boundary are re-audited against current consumers.
+- `Legacy/Compiler` should now be treated as a small retained-surface decision, not as a main runtime migration blocker.
+- Deeper physical deletion should wait until the remaining compatibility boundary and retained compiler test surface are re-audited against current consumers.
