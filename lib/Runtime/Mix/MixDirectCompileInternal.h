@@ -35,6 +35,11 @@ struct MixPreprocessOutputs {
   std::string aivConfigPath;
 };
 
+enum class MixDirectContractMode {
+  LegacyPreprocess,
+  DirectSource,
+};
+
 struct MixCompileLayout {
   std::string outputRoot;
   std::string workDir;
@@ -74,6 +79,7 @@ struct MixCompileLayout {
 };
 
 struct MixDirectCompileContract {
+  MixDirectContractMode mode = MixDirectContractMode::LegacyPreprocess;
   MixPreprocessOutputs preprocess;
   MixCompileLayout layout;
   std::string generatedSourceName;
@@ -242,6 +248,10 @@ llvm::Expected<MixDirectCompileContract> loadMixDirectCompileContract(
     const MixCompileLayout &layout, llvm::StringRef sourcePath,
     llvm::StringRef kernelName, llvm::StringRef socVersion,
     const MixAnalyzedKernel &analyzed);
+
+llvm::Expected<MixDirectCompileContract> buildMixDirectSourceCompileContract(
+    const MixCompileLayout &layout, llvm::StringRef sourcePath,
+    llvm::StringRef kernelName, const MixAnalyzedKernel &analyzed);
 
 llvm::Expected<MixCompileLayout>
 buildMixDirectCompileLayout(llvm::StringRef outputDir,
