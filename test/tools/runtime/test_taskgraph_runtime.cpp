@@ -1541,6 +1541,7 @@ static void testMixValidationCanBeRepresentedAsRuntimeTask() {
   artifact.artifactRoot = taskSpec.artifactRoot;
   artifact.manifestPath = "/tmp/mix-artifact/out/manifest.txt";
   artifact.sharedLibraryPath = "/tmp/mix/libmix_add_runtime_packed.so";
+  artifact.sharedLibrarySymbol = "aclrtlaunch_mix_add_runtime";
   artifact.deviceBinaryPath = artifact.sharedLibraryPath;
 
   RuntimeTask runtimeTask;
@@ -1568,6 +1569,9 @@ static void testMixValidationCanBeRepresentedAsRuntimeTask() {
     EXPECT((*orderedOr)[0].artifact.sharedLibraryPath ==
                "/tmp/mix/libmix_add_runtime_packed.so",
            "mix validation runtime task keeps shared library path");
+    EXPECT((*orderedOr)[0].artifact.sharedLibrarySymbol ==
+               "aclrtlaunch_mix_add_runtime",
+           "mix validation runtime task keeps shared library symbol");
     EXPECT((*orderedOr)[0].invocation.outputs[0].shape.has_value(),
            "mix validation runtime task carries output shape metadata");
     EXPECT((*orderedOr)[0].invocation.outputs[0].dtype.has_value(),
@@ -1604,6 +1608,9 @@ static void testMixValidationCanBeRepresentedAsRuntimeTask() {
   EXPECT(request.task.artifact.sharedLibraryPath ==
              "/tmp/mix/libmix_add_runtime_packed.so",
          "mix validation runtime session preserves shared library path");
+  EXPECT(request.task.artifact.sharedLibrarySymbol ==
+             "aclrtlaunch_mix_add_runtime",
+         "mix validation runtime session preserves shared library symbol");
   EXPECT(request.task.invocation.inputs.size() == 2,
          "mix validation runtime session preserves input count");
   EXPECT(request.task.invocation.outputs.size() == 1,
