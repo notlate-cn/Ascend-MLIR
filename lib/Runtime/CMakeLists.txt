@@ -24,6 +24,7 @@ add_mlir_library(AscendCRuntime
   Mix/MixLegacyCompilePipeline.cpp
   Mix/MixLegacyCompileSupport.cpp
   Mix/MixLegacyPreprocess.cpp
+  Mix/MixLegacyRuntimeAbi.cpp
   Mix/MixLegacyRuntimeArtifacts.cpp
   Mix/MixSourceAnalyzer.cpp
   Mix/MixStubTemplate.cpp
