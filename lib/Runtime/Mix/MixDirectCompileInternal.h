@@ -70,7 +70,7 @@ struct MixCompileLayout {
   std::string aivProbeObject;
 };
 
-struct MixLegacyCompileContract {
+struct MixDirectCompileContract {
   MixPreprocessOutputs preprocess;
   MixCompileLayout layout;
   std::string generatedSourceName;
@@ -81,7 +81,7 @@ struct MixLegacyCompileContract {
   bool synthesizedAicFromAiv = false;
 };
 
-struct MixLegacyBuildOutputs {
+struct MixDirectBuildOutputs {
   std::string runtimeKernelName;
   std::string generatedSourcePath;
   std::string hostSourcePath;
@@ -105,7 +105,7 @@ struct MixLegacyBuildOutputs {
   std::string recompileCommand;
 };
 
-struct MixLegacyTilingOutputs {
+struct MixDirectTilingOutputs {
   bool usedLegacyRunner = false;
   uint32_t blockDim = 0;
   std::string tilingArtifactPath;
@@ -116,15 +116,15 @@ struct MixLegacyTilingOutputs {
   std::string tilingEmitCommand;
 };
 
-struct MixLegacyCompileOutputs {
-  MixLegacyCompileContract contract;
-  MixLegacyBuildOutputs build;
+struct MixDirectCompileOutputs {
+  MixDirectCompileContract contract;
+  MixDirectBuildOutputs build;
   MixAbiMetadata abi;
-  MixLegacyTilingOutputs tiling;
+  MixDirectTilingOutputs tiling;
   std::string metadataPath;
 };
 
-struct MixLegacyDebugManifestInputs {
+struct MixDirectDebugManifestInputs {
   const MixAnalyzedKernel *analyzed = nullptr;
   const MixAbiMetadata *abi = nullptr;
   std::string runtimeKernelName;
@@ -190,33 +190,33 @@ llvm::Expected<MixGeneratedConfig>
 parseMixGeneratedConfig(llvm::StringRef path);
 
 llvm::Expected<MixPreprocessOutputs>
-runLegacyMixPreprocessStage(llvm::StringRef workDir, llvm::StringRef sourcePath,
+runMixDirectPreprocessStage(llvm::StringRef workDir, llvm::StringRef sourcePath,
                             llvm::StringRef kernelName,
                             llvm::StringRef socVersion,
                             llvm::StringRef aivProbeObject,
                             llvm::StringRef aicProbeObject);
 
-llvm::Expected<MixLegacyCompileContract> loadLegacyMixCompileContract(
+llvm::Expected<MixDirectCompileContract> loadMixDirectCompileContract(
     const MixCompileLayout &layout, llvm::StringRef sourcePath,
     llvm::StringRef kernelName, llvm::StringRef socVersion,
     const MixAnalyzedKernel &analyzed);
 
 llvm::Expected<MixCompileLayout>
-buildLegacyMixCompileLayout(llvm::StringRef outputDir,
+buildMixDirectCompileLayout(llvm::StringRef outputDir,
                             llvm::StringRef kernelName);
 
-llvm::Expected<MixLegacyBuildOutputs>
-executeLegacyMixBinaryBuild(const MixLegacyCompileContract &contract,
+llvm::Expected<MixDirectBuildOutputs>
+executeMixDirectBinaryBuild(const MixDirectCompileContract &contract,
                             llvm::StringRef sourcePath,
                             llvm::StringRef requestedKernelName,
                             llvm::StringRef socVersion);
 
 llvm::Expected<MixAbiMetadata>
-loadLegacyMixRuntimeAbi(llvm::StringRef cannMlirPath, llvm::StringRef npyDir,
+loadMixDirectRuntimeAbi(llvm::StringRef cannMlirPath, llvm::StringRef npyDir,
                         llvm::StringRef runtimeKernelName);
 
 llvm::Expected<std::string>
-writeLegacyMixCompileMetadataFile(llvm::StringRef metadataPath,
+writeMixDirectCompileMetadataFile(llvm::StringRef metadataPath,
                                   llvm::StringRef runtimeKernelName,
                                   llvm::StringRef socVersion,
                                   llvm::StringRef mixKernelType,
@@ -231,16 +231,16 @@ writeLegacyMixCompileMetadataFile(llvm::StringRef metadataPath,
                                   bool useLegacyRunner);
 
 llvm::Error
-writeLegacyMixDebugManifest(const MixLegacyDebugManifestInputs &inputs);
+writeMixDirectDebugManifest(const MixDirectDebugManifestInputs &inputs);
 
-llvm::Expected<MixLegacyTilingOutputs>
-executeLegacyMixTilingStage(const MixCompileLayout &layout,
+llvm::Expected<MixDirectTilingOutputs>
+executeMixDirectTilingStage(const MixCompileLayout &layout,
                             llvm::StringRef runtimeKernelName,
                             llvm::StringRef socVersion,
                             const MixAbiMetadata &abi);
 
-llvm::Expected<MixLegacyCompileOutputs>
-executeLegacyMixCompilePipeline(const MixCompileLayout &layout,
+llvm::Expected<MixDirectCompileOutputs>
+executeMixDirectCompilePipeline(const MixCompileLayout &layout,
                                 llvm::StringRef sourcePath,
                                 llvm::StringRef requestedKernelName,
                                 llvm::StringRef cannMlirPath,
@@ -249,9 +249,9 @@ executeLegacyMixCompilePipeline(const MixCompileLayout &layout,
                                 const MixAnalyzedKernel &analyzed);
 
 llvm::Expected<MixArtifact>
-finalizeLegacyMixArtifact(const MixCompileLayout &layout,
+finalizeMixDirectArtifact(const MixCompileLayout &layout,
                           llvm::StringRef sourcePath,
                           const MixAnalyzedKernel &analyzed,
-                          const MixLegacyCompileOutputs &compile);
+                          const MixDirectCompileOutputs &compile);
 
 } // namespace mlir::runtime

@@ -7,7 +7,7 @@
 namespace mlir::runtime {
 
 llvm::Expected<MixCompileLayout>
-buildLegacyMixCompileLayout(llvm::StringRef outputDir,
+buildMixDirectCompileLayout(llvm::StringRef outputDir,
                             llvm::StringRef kernelName) {
   llvm::SmallString<256> outputRoot(outputDir);
   llvm::sys::fs::make_absolute(outputRoot);

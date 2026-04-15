@@ -66,13 +66,13 @@ static llvm::Error writeRecompileLinkFile(llvm::StringRef rootDir,
 
 } // namespace
 
-llvm::Expected<MixLegacyBuildOutputs>
-executeLegacyMixBinaryBuild(const MixLegacyCompileContract &contract,
+llvm::Expected<MixDirectBuildOutputs>
+executeMixDirectBinaryBuild(const MixDirectCompileContract &contract,
                             llvm::StringRef sourcePath,
                             llvm::StringRef requestedKernelName,
                             llvm::StringRef socVersion) {
   const MixCompileLayout &layout = contract.layout;
-  MixLegacyBuildOutputs outputs;
+  MixDirectBuildOutputs outputs;
   outputs.runtimeKernelName = contract.runtimeKernelName;
   outputs.generatedSourcePath = contract.generatedSourcePath;
   outputs.hostSourcePath = sourcePath.str();
