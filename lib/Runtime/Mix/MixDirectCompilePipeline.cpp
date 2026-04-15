@@ -68,8 +68,6 @@ writeMixDirectDebugManifest(const MixDirectDebugManifestInputs &inputs) {
   manifest += std::string("merge_obj_dir=") + inputs.mergeDir + "\n";
   manifest += std::string("launcher_header_dir=") + inputs.launcherHeaderDir +
               "\n";
-  manifest +=
-      std::string("host_runner_path=") + inputs.runnerBinaryPath + "\n";
   manifest += std::string("manifest_path=") + inputs.manifestPath + "\n";
   if (!inputs.metadataPath.empty())
     manifest += std::string("metadata_path=") + inputs.metadataPath + "\n";
@@ -85,15 +83,10 @@ writeMixDirectDebugManifest(const MixDirectDebugManifestInputs &inputs) {
         std::string("host_stub_source_path=") + inputs.hostStubSourcePath + "\n";
   manifest += std::string("host_stub_object_path=") + inputs.hostStubObjectPath +
               "\n";
-  if (!inputs.hostBishengObjectPath.empty())
-    manifest += std::string("host_bisheng_object=") +
-                inputs.hostBishengObjectPath + "\n";
   if (!inputs.hostObjectDir.empty())
     manifest += std::string("host_object_dir=") + inputs.hostObjectDir + "\n";
   manifest += std::string("kernel_so_path=") + inputs.kernelSoPath + "\n";
   manifest += std::string("mix_build_flag=") + inputs.mixFlagPath + "\n";
-  manifest +=
-      std::string("host_runner_source_path=") + inputs.runnerSourcePath + "\n";
   manifest += std::string("aic_object=") + inputs.aicObj + "\n";
   manifest += std::string("aiv_object=") + inputs.aivObj + "\n";
   manifest += std::string("aic_reloc_object=") + inputs.aicRelocObj + "\n";
@@ -104,13 +97,9 @@ writeMixDirectDebugManifest(const MixDirectDebugManifestInputs &inputs) {
   manifest += std::string("lld_reloc_aiv=") + inputs.aivRelocCmd + "\n";
   manifest += std::string("lld_merge=") + inputs.mergeCmd + "\n";
   manifest += std::string("host_compile_cmd=") + inputs.hostCompileCmd + "\n";
-  if (!inputs.hostBishengCmd.empty())
-    manifest += std::string("host_bisheng_cmd=") + inputs.hostBishengCmd + "\n";
   manifest += std::string("pack_cmd=") + inputs.packCmd + "\n";
   manifest += std::string("host_link_cmd=") + inputs.linkCmd + "\n";
-  if (!inputs.recompileCmd.empty())
-    manifest += std::string("recompile_cmd=") + inputs.recompileCmd + "\n";
-  manifest += std::string("host_runner_compile_cmd=") +
+  manifest += std::string("tiling_helper_cmd=") +
               inputs.runnerCompileCmd + "\n";
   if (!inputs.mergedDeviceObj.empty())
     manifest +=
@@ -170,7 +159,7 @@ executeMixDirectCompilePipeline(const MixCompileLayout &layout,
         outputs.contract.aicDefinitions, outputs.contract.aivDefinitions,
         layout.mergedDeviceObj, layout.kernelSoPath,
         outputs.tiling.tilingArtifactPath, outputs.tiling.launchInfoPath,
-        outputs.abi, outputs.tiling.usedLegacyRunner);
+        outputs.abi);
     if (!metadataPathOr)
       return metadataPathOr.takeError();
     outputs.metadataPath = *metadataPathOr;
@@ -234,8 +223,6 @@ finalizeMixDirectArtifact(const MixCompileLayout &layout,
   debugInputs.hostStubObjectPath = layout.hostStubObjectPath;
   debugInputs.kernelSoPath = layout.kernelSoPath;
   debugInputs.mixFlagPath = layout.mixFlagPath;
-  debugInputs.runnerSourcePath = compile.tiling.runnerSourcePath;
-  debugInputs.runnerBinaryPath = compile.tiling.runnerBinaryPath;
   debugInputs.aicObj = layout.aicObj;
   debugInputs.aivObj = layout.aivObj;
   debugInputs.aicRelocObj = layout.aicRelocObj;
@@ -247,12 +234,9 @@ finalizeMixDirectArtifact(const MixCompileLayout &layout,
   debugInputs.aivRelocCmd = compile.build.aivRelocCommand;
   debugInputs.mergeCmd = compile.build.mergeCommand;
   debugInputs.hostCompileCmd = compile.build.hostCompileCommand;
-  debugInputs.hostBishengObjectPath = compile.build.hostBishengObjectPath;
-  debugInputs.hostBishengCmd = compile.build.hostBishengCommand;
   debugInputs.hostObjectDir = compile.build.hostObjectDir;
   debugInputs.packCmd = compile.build.packCommand;
   debugInputs.linkCmd = compile.build.hostLinkCommand;
-  debugInputs.recompileCmd = compile.build.recompileCommand;
   debugInputs.runnerCompileCmd = compile.tiling.runnerCompileCommand;
   debugInputs.metadataPath = compile.metadataPath;
   debugInputs.manifestPath = layout.manifestPath;
@@ -267,7 +251,6 @@ finalizeMixDirectArtifact(const MixCompileLayout &layout,
   artifact.install_dir = layout.outDir;
   artifact.kernel_so_path = layout.kernelSoPath;
   artifact.launcher_header_dir = layout.outIncludeDir;
-  artifact.host_runner_path = compile.tiling.runnerBinaryPath;
   artifact.host_stub_source_path = compile.build.hostStubSourcePath;
   artifact.device_object_path = layout.mergedDeviceObj;
   artifact.manifest_path = layout.manifestPath;

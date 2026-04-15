@@ -39,6 +39,12 @@ if grep -R -n "configurePackedMixEnvironment" include/Runtime lib/Runtime; then
   echo "Error: packed mix simulator env helper must not remain" >&2
   exit 1
 fi
+if grep -R -n -E \
+    "ASCEND_MIX_CONTRACT_MODE|AFIR_MIX_USE_LEGACY_RUNNER|legacy-preprocess|legacy_runner|build_legacy_tiling_runner" \
+    include/Runtime lib/Runtime tools test/tools/runtime/test_*.cpp; then
+  echo "Error: legacy mix compile switches must not remain in active runtime surfaces" >&2
+  exit 1
+fi
 
 FAKE_ARTIFACT_ROOT="$(mktemp -d)"
 INVALID_STDERR=""

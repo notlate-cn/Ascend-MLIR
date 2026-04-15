@@ -267,7 +267,7 @@ git commit -m "docs: close dynamic library artifact contract audit"
 ## Final Acceptance
 
 - `bash test/tools/runtime/run_runtime.sh` -> pass on xvm.
-- `RUNS=3 bash test/tools/runtime/run_mix_compile_timing_compare.sh` -> reports direct-source and legacy-preprocess timing.
+- `RUNS=3 bash test/tools/runtime/run_mix_compile_timing_compare.sh` -> reports direct-source timing.
 - `rg -n "runPackedMixFile|PackedMixExecutionLaunch" include/Runtime lib/Runtime test/tools/runtime/test_*.cpp` -> no matches.
 - `rg -n "packedSharedObjectPath" include/Runtime/Execution lib/Runtime/Execution lib/CAPI/Runtime` -> no matches.
 - `rg -n "aclrtlaunch_" lib/Runtime/Execution` -> no matches.
@@ -276,4 +276,3 @@ git commit -m "docs: close dynamic library artifact contract audit"
 ## Execution Choice
 
 Recommended: execute inline in this session with `executing-plans`, because the tasks are sequential and touch shared runtime files.
-

@@ -217,8 +217,7 @@ writeMixDirectCompileMetadataFile(llvm::StringRef metadataPath,
                                   llvm::StringRef packedSharedObjectPath,
                                   llvm::StringRef tilingFilePath,
                                   llvm::StringRef launchInfoFilePath,
-                                  const MixAbiMetadata &abi,
-                                  bool useLegacyRunner) {
+                                  const MixAbiMetadata &abi) {
   MixCompileMetadata metadata;
   metadata.schemaVersion = 1;
   metadata.kernelKind = "mix";
@@ -258,9 +257,8 @@ writeMixDirectCompileMetadataFile(llvm::StringRef metadataPath,
   metadata.abi.outputs.reserve(abi.outputs.size());
   for (const auto &tensor : abi.outputs)
     metadata.abi.outputs.push_back(makeMetadataTensorDesc(tensor));
-  metadata.hostLaunch.mode = useLegacyRunner ? "legacy_runner" : "helper";
-  metadata.hostLaunch.helperKind =
-      useLegacyRunner ? "mix_runner" : "mix-tiling-helper";
+  metadata.hostLaunch.mode = "helper";
+  metadata.hostLaunch.helperKind = "mix-tiling-helper";
   metadata.hostLaunch.helperInputsJson = "{}";
 
   auto jsonOr = serializeMixCompileMetadataJson(metadata);

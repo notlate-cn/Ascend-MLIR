@@ -5,7 +5,6 @@
 #include "Runtime/Mix/MixSourceAnalyzer.h"
 
 #include "llvm/ADT/ArrayRef.h"
-#include "llvm/ADT/StringMap.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/Support/Error.h"
 
@@ -16,11 +15,6 @@
 #include <vector>
 
 namespace mlir::runtime {
-
-struct MixGeneratedConfig {
-  std::vector<std::string> mixSources;
-  llvm::StringMap<std::vector<std::string>> definitionsBySource;
-};
 
 struct MixPreprocessOutputs {
   std::string preprocessedSourcePath;
@@ -36,7 +30,6 @@ struct MixPreprocessOutputs {
 };
 
 enum class MixDirectContractMode {
-  LegacyPreprocess,
   DirectSource,
 };
 
@@ -67,19 +60,12 @@ struct MixCompileLayout {
   std::string hostStubObjectPath;
   std::string kernelSoPath;
   std::string mixFlagPath;
-  std::string runnerMainPath;
-  std::string runnerTilingPath;
-  std::string runnerDataUtilsPath;
-  std::string runnerBinaryPath;
   std::string tilingArtifactPath;
   std::string launchInfoPath;
-  std::string preprocessProbeDir;
-  std::string aicProbeObject;
-  std::string aivProbeObject;
 };
 
 struct MixDirectCompileContract {
-  MixDirectContractMode mode = MixDirectContractMode::LegacyPreprocess;
+  MixDirectContractMode mode = MixDirectContractMode::DirectSource;
   MixPreprocessOutputs preprocess;
   MixCompileLayout layout;
   std::string generatedSourceName;
@@ -105,7 +91,6 @@ struct MixDirectBuildOutputs {
   std::string preprocessCompileCommandsPath;
   std::string preprocessCommand;
   std::string preprocessGeneratedDir;
-  std::string hostBishengObjectPath;
   std::string hostObjectDir;
   std::string aicCompileCommand;
   std::string aivCompileCommand;
@@ -113,20 +98,15 @@ struct MixDirectBuildOutputs {
   std::string aivRelocCommand;
   std::string mergeCommand;
   std::string hostCompileCommand;
-  std::string hostBishengCommand;
   std::string packCommand;
   std::string hostLinkCommand;
-  std::string recompileCommand;
   std::vector<MixDirectTimingEntry> timings;
 };
 
 struct MixDirectTilingOutputs {
-  bool usedLegacyRunner = false;
   uint32_t blockDim = 0;
   std::string tilingArtifactPath;
   std::string launchInfoPath;
-  std::string runnerSourcePath;
-  std::string runnerBinaryPath;
   std::string runnerCompileCommand;
   std::string tilingEmitCommand;
   std::vector<MixDirectTimingEntry> timings;
@@ -162,8 +142,6 @@ struct MixDirectDebugManifestInputs {
   std::string hostStubObjectPath;
   std::string kernelSoPath;
   std::string mixFlagPath;
-  std::string runnerSourcePath;
-  std::string runnerBinaryPath;
   std::string aicObj;
   std::string aivObj;
   std::string aicRelocObj;
@@ -175,12 +153,9 @@ struct MixDirectDebugManifestInputs {
   std::string aivRelocCmd;
   std::string mergeCmd;
   std::string hostCompileCmd;
-  std::string hostBishengObjectPath;
-  std::string hostBishengCmd;
   std::string hostObjectDir;
   std::string packCmd;
   std::string linkCmd;
-  std::string recompileCmd;
   std::string runnerCompileCmd;
   std::string metadataPath;
   std::string manifestPath;
@@ -234,16 +209,6 @@ llvm::Error
 writeMixDirectTimingFile(llvm::StringRef path,
                          llvm::ArrayRef<MixDirectTimingEntry> entries);
 
-llvm::Expected<MixGeneratedConfig>
-parseMixGeneratedConfig(llvm::StringRef path);
-
-llvm::Expected<MixPreprocessOutputs>
-runMixDirectPreprocessStage(llvm::StringRef workDir, llvm::StringRef sourcePath,
-                            llvm::StringRef kernelName,
-                            llvm::StringRef socVersion,
-                            llvm::StringRef aivProbeObject,
-                            llvm::StringRef aicProbeObject);
-
 llvm::Expected<MixDirectCompileContract> loadMixDirectCompileContract(
     const MixCompileLayout &layout, llvm::StringRef sourcePath,
     llvm::StringRef kernelName, llvm::StringRef socVersion,
@@ -284,8 +249,7 @@ writeMixDirectCompileMetadataFile(llvm::StringRef metadataPath,
                                   llvm::StringRef packedSharedObjectPath,
                                   llvm::StringRef tilingFilePath,
                                   llvm::StringRef launchInfoFilePath,
-                                  const MixAbiMetadata &abi,
-                                  bool useLegacyRunner);
+                                  const MixAbiMetadata &abi);
 
 llvm::Error
 writeMixDirectDebugManifest(const MixDirectDebugManifestInputs &inputs);

@@ -35,15 +35,13 @@ buildMixDirectCompileLayout(llvm::StringRef outputDir,
   llvm::sys::path::append(aicMergeDir, "aic_merge");
   llvm::SmallString<256> aivMergeDir(workDir);
   llvm::sys::path::append(aivMergeDir, "aiv_merge");
-  llvm::SmallString<256> preprocessProbeDir(workDir);
-  llvm::sys::path::append(preprocessProbeDir, "preprocess_probe");
 
   for (llvm::StringRef dir : {outputRoot.str(), workDir.str(), objectDir.str(),
                               outDir.str(), outBinDir.str(),
                               outIncludeDir.str(), mergeDir.str(),
                               launcherDir.str(), stubDir.str(), hostDir.str(),
                               hostObjectsDir.str(), aicMergeDir.str(),
-                              aivMergeDir.str(), preprocessProbeDir.str()}) {
+                              aivMergeDir.str()}) {
     if (auto err = ensureDirectory(dir))
       return std::move(err);
   }
@@ -78,18 +76,8 @@ buildMixDirectCompileLayout(llvm::StringRef outputDir,
   layout.kernelSoPath =
       joinPath(layout.outDir, "lib" + kernelName.str() + "_packed.so");
   layout.mixFlagPath = joinPath(layout.mergeDir, "mix_build.flag");
-  layout.runnerMainPath = joinPath(layout.workDir, "main.cpp");
-  layout.runnerTilingPath =
-      joinPath(layout.workDir, kernelName.str() + "_tiling.cpp");
-  layout.runnerDataUtilsPath = joinPath(layout.workDir, "data_utils.h");
-  layout.runnerBinaryPath = joinPath(layout.outBinDir, "mix_runner");
   layout.tilingArtifactPath = joinPath(layout.outDir, "tiling.bin");
   layout.launchInfoPath = joinPath(layout.outDir, "launch_info.txt");
-  layout.preprocessProbeDir = preprocessProbeDir.str().str();
-  layout.aicProbeObject =
-      joinPath(layout.preprocessProbeDir, kernelName.str() + "_aic_probe.o");
-  layout.aivProbeObject =
-      joinPath(layout.preprocessProbeDir, kernelName.str() + "_aiv_probe.o");
   return layout;
 }
 

@@ -9,7 +9,7 @@
 ## Complexity Sources
 
 - `Artifact`: compile request, manifest, artifact loading, vec/cube and mix backend dispatch.
-- `Mix`: AscendC source analysis, direct-source compile, tiling artifact emission, host stub generation, legacy fallback.
+- `Mix`: AscendC source analysis, direct-source compile, tiling artifact emission, host stub generation.
 - `Execution`: SIM/NPU runners, task graph, output comparison, profile retention.
 - `Frontend`: CLI and C API request assembly through `RuntimeFrontendCore`.
 

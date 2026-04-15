@@ -73,9 +73,6 @@ llvm::Expected<std::string> writeMixDirectSourceStubSummaryForTest(
 llvm::Expected<std::string> buildMixDirectDefaultContractSummaryForTest(
     llvm::StringRef outputRoot, llvm::StringRef sourcePath,
     llvm::StringRef kernelName, llvm::StringRef socVersion);
-llvm::Expected<std::string> buildMixDirectSourceBuildPlanSummaryForTest(
-    llvm::StringRef outputRoot, llvm::StringRef sourcePath,
-    llvm::StringRef kernelName, llvm::StringRef socVersion);
 llvm::Expected<std::string>
 materializeSimulatorProfileArtifactForTest(const ExecutionRequest &request,
                                            int64_t cycleCount);
@@ -4180,47 +4177,6 @@ static void testMixDirectDefaultContractUsesDirectSource() {
   std::filesystem::remove_all(root);
 }
 
-static void testMixDirectSourceBuildPlanSkipsLegacyHostRecompile() {
-  const std::filesystem::path root = makeTempDir("mix-direct-build-plan");
-  std::filesystem::create_directories(root);
-  const std::filesystem::path source = root / "kernel.cpp";
-  {
-    std::ofstream os(source);
-    os << "extern \"C\" __global__ __aicore__ void mix_kernel() {}\n";
-  }
-
-  auto summaryOr = buildMixDirectSourceBuildPlanSummaryForTest(
-      root.string(), source.string(), "mix_kernel", "Ascend910B");
-  EXPECT((bool)summaryOr, "mix direct-source build plan summary builds");
-  if (!summaryOr) {
-    llvm::consumeError(summaryOr.takeError());
-    std::filesystem::remove_all(root);
-    return;
-  }
-
-  auto parsedOr = llvm::json::parse(*summaryOr);
-  EXPECT((bool)parsedOr, "mix direct-source build plan summary parses");
-  if (!parsedOr) {
-    llvm::consumeError(parsedOr.takeError());
-    std::filesystem::remove_all(root);
-    return;
-  }
-  const auto *rootObj = parsedOr->getAsObject();
-  EXPECT(rootObj != nullptr, "mix direct-source build plan summary root is object");
-  if (!rootObj) {
-    std::filesystem::remove_all(root);
-    return;
-  }
-  EXPECT(rootObj->getBoolean("requires_host_bisheng") &&
-             !*rootObj->getBoolean("requires_host_bisheng"),
-         "mix direct-source build plan skips host bisheng compile");
-  EXPECT(rootObj->getBoolean("requires_recompile") &&
-             !*rootObj->getBoolean("requires_recompile"),
-         "mix direct-source build plan skips recompile binary");
-
-  std::filesystem::remove_all(root);
-}
-
 int main() {
   testTaskGraphBasics();
   testProfileTraceCollectsArtifactPaths();
@@ -4245,7 +4201,6 @@ int main() {
   testMixDirectSourceContractSummary();
   testMixDirectSourceStubSummary();
   testMixDirectDefaultContractUsesDirectSource();
-  testMixDirectSourceBuildPlanSkipsLegacyHostRecompile();
   testRuntimeSessionRequestBuilderBuildsSingleTaskGraph();
   testMixValidationCanBeRepresentedAsRuntimeTask();
   testOutputComparatorExactMatchPasses();
