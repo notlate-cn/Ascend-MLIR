@@ -64,6 +64,9 @@ runProcessesInParallelForTest(
 llvm::Expected<std::string>
 serializeMixDirectTimingForTest(
     llvm::ArrayRef<std::tuple<std::string, uint64_t>> entries);
+llvm::Expected<std::string> buildMixDirectSourceContractSummaryForTest(
+    llvm::StringRef outputRoot, llvm::StringRef sourcePath,
+    llvm::StringRef kernelName, llvm::StringRef socVersion);
 llvm::Expected<std::string>
 materializeSimulatorProfileArtifactForTest(const ExecutionRequest &request,
                                            int64_t cycleCount);
@@ -3973,6 +3976,88 @@ static void testMixDirectTimingSerialization() {
   }
 }
 
+static bool jsonArrayContainsString(const llvm::json::Array *array,
+                                    llvm::StringRef expected) {
+  if (!array)
+    return false;
+  for (const llvm::json::Value &value : *array) {
+    if (auto item = value.getAsString(); item && *item == expected)
+      return true;
+  }
+  return false;
+}
+
+static void testMixDirectSourceContractSummary() {
+  const std::filesystem::path root = makeTempDir("mix-direct-contract");
+  std::filesystem::create_directories(root);
+  const std::filesystem::path source = root / "kernel.cpp";
+  {
+    std::ofstream os(source);
+    os << "extern \"C\" __global__ __aicore__ void mix_kernel() {}\n";
+  }
+
+  auto summaryOr = buildMixDirectSourceContractSummaryForTest(
+      root.string(), source.string(), "mix_kernel", "Ascend910B");
+  EXPECT((bool)summaryOr, "mix direct-source contract summary builds");
+  if (!summaryOr) {
+    llvm::consumeError(summaryOr.takeError());
+    std::filesystem::remove_all(root);
+    return;
+  }
+
+  auto parsedOr = llvm::json::parse(*summaryOr);
+  EXPECT((bool)parsedOr, "mix direct-source contract summary parses");
+  if (!parsedOr) {
+    llvm::consumeError(parsedOr.takeError());
+    std::filesystem::remove_all(root);
+    return;
+  }
+
+  const auto *rootObj = parsedOr->getAsObject();
+  EXPECT(rootObj != nullptr, "mix direct-source summary root is object");
+  if (!rootObj) {
+    std::filesystem::remove_all(root);
+    return;
+  }
+
+  EXPECT(rootObj->getString("contract_mode") &&
+             *rootObj->getString("contract_mode") == "direct-source",
+         "mix direct-source summary records contract mode");
+  EXPECT(rootObj->getString("runtime_kernel_name") &&
+             *rootObj->getString("runtime_kernel_name") == "mix_kernel",
+         "mix direct-source summary records runtime kernel name");
+  EXPECT(rootObj->getString("generated_source_path") &&
+             *rootObj->getString("generated_source_path") == source.string(),
+         "mix direct-source summary uses original source as generated source");
+  EXPECT(rootObj->getString("host_stub_source_path") &&
+             rootObj->getString("host_stub_source_path")->ends_with(
+                 "/stub/host_stub.cpp"),
+         "mix direct-source summary records manual host stub path");
+  EXPECT(rootObj->getString("host_stub_include_dir") &&
+             rootObj->getString("host_stub_include_dir")
+                 ->ends_with("/out/include/ascendc_kernels_sim"),
+         "mix direct-source summary records manual host include dir");
+
+  const auto *aicDefs = rootObj->getArray("aic_definitions");
+  const auto *aivDefs = rootObj->getArray("aiv_definitions");
+  EXPECT(jsonArrayContainsString(aicDefs, "__MIX_CORE_MACRO__=1"),
+         "mix direct-source AIC defs include mix macro");
+  EXPECT(jsonArrayContainsString(aicDefs, "__DAV_C220_CUBE__"),
+         "mix direct-source AIC defs include cube arch macro");
+  EXPECT(jsonArrayContainsString(aicDefs, "HAVE_WORKSPACE"),
+         "mix direct-source AIC defs include workspace macro");
+  EXPECT(jsonArrayContainsString(aicDefs, "HAVE_TILING"),
+         "mix direct-source AIC defs include tiling macro");
+  EXPECT(jsonArrayContainsString(aivDefs, "__DAV_C220_VEC__"),
+         "mix direct-source AIV defs include vector arch macro");
+  EXPECT(jsonArrayContainsString(aivDefs, "HAVE_WORKSPACE"),
+         "mix direct-source AIV defs include workspace macro");
+  EXPECT(jsonArrayContainsString(aivDefs, "HAVE_TILING"),
+         "mix direct-source AIV defs include tiling macro");
+
+  std::filesystem::remove_all(root);
+}
+
 int main() {
   testTaskGraphBasics();
   testProfileTraceCollectsArtifactPaths();
@@ -3994,6 +4079,7 @@ int main() {
   testRuntimeSessionRequestBuilderRejectsMissingKernelKind();
   testMixDirectParallelProcessRunnerRunsIndependentCommands();
   testMixDirectTimingSerialization();
+  testMixDirectSourceContractSummary();
   testRuntimeSessionRequestBuilderBuildsSingleTaskGraph();
   testMixValidationCanBeRepresentedAsRuntimeTask();
   testOutputComparatorExactMatchPasses();

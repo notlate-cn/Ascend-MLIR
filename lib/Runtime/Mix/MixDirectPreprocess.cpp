@@ -106,6 +106,18 @@ static void appendDefineIfMissing(std::vector<std::string> &defs,
     defs.push_back(needle.str());
 }
 
+static void addDirectSourceRequiredDefines(std::vector<std::string> &defs) {
+  appendDefineIfMissing(defs, "HAVE_WORKSPACE");
+  appendDefineIfMissing(defs, "HAVE_TILING");
+}
+
+static llvm::json::Array toJsonStringArray(llvm::ArrayRef<std::string> values) {
+  llvm::json::Array array;
+  for (const std::string &value : values)
+    array.push_back(value);
+  return array;
+}
+
 static llvm::Error runMixDirectProbeStage(const MixCompileLayout &layout,
                                           llvm::StringRef sourcePath,
                                           llvm::StringRef kernelName,
@@ -206,6 +218,35 @@ deriveLauncherKernelName(llvm::StringRef launcherHeaderPath) {
 }
 
 } // namespace
+
+llvm::Expected<MixDirectCompileContract> buildMixDirectSourceCompileContract(
+    const MixCompileLayout &layout, llvm::StringRef sourcePath,
+    llvm::StringRef kernelName, const MixAnalyzedKernel &analyzed) {
+  if (sourcePath.empty())
+    return llvm::createStringError(llvm::inconvertibleErrorCode(),
+                                   "direct-source mix contract requires source path");
+  if (kernelName.empty())
+    return llvm::createStringError(llvm::inconvertibleErrorCode(),
+                                   "direct-source mix contract requires kernel name");
+
+  MixDirectCompileContract contract;
+  contract.mode = MixDirectContractMode::DirectSource;
+  contract.layout = layout;
+  contract.generatedSourceName = llvm::sys::path::filename(sourcePath).str();
+  contract.generatedSourcePath = sourcePath.str();
+  contract.runtimeKernelName = kernelName.str();
+  contract.aicDefinitions = analyzed.aicDefines;
+  contract.aivDefinitions = analyzed.aivDefines;
+  addDirectSourceRequiredDefines(contract.aicDefinitions);
+  addDirectSourceRequiredDefines(contract.aivDefinitions);
+
+  contract.preprocess.hostStubPath = joinPath(layout.stubDir, "host_stub.cpp");
+  contract.preprocess.includeDir = layout.outIncludeDir;
+  contract.preprocess.actualLauncherKernelName = kernelName.str();
+  contract.preprocess.preprocessCommand = "direct-source";
+  contract.preprocess.generatedDir = layout.workDir;
+  return contract;
+}
 
 llvm::Expected<MixGeneratedConfig>
 parseMixGeneratedConfig(llvm::StringRef path) {
@@ -445,6 +486,7 @@ llvm::Expected<MixDirectCompileContract> loadMixDirectCompileContract(
     return generatedSourceOr.takeError();
 
   MixDirectCompileContract contract;
+  contract.mode = MixDirectContractMode::LegacyPreprocess;
   contract.preprocess = *preprocessOr;
   contract.layout = layout;
   contract.generatedSourceName = *generatedSourceOr;
@@ -499,6 +541,37 @@ llvm::Expected<MixDirectCompileContract> loadMixDirectCompileContract(
           ? kernelName.str()
           : preprocessOr->actualLauncherKernelName;
   return contract;
+}
+
+llvm::Expected<std::string> buildMixDirectSourceContractSummaryForTest(
+    llvm::StringRef outputRoot, llvm::StringRef sourcePath,
+    llvm::StringRef kernelName, llvm::StringRef socVersion) {
+  auto layoutOr = buildMixDirectCompileLayout(outputRoot, kernelName);
+  if (!layoutOr)
+    return layoutOr.takeError();
+  auto analyzedOr = analyzeMixKernel(sourcePath, kernelName, socVersion);
+  if (!analyzedOr)
+    return analyzedOr.takeError();
+  auto contractOr = buildMixDirectSourceCompileContract(
+      *layoutOr, sourcePath, kernelName, *analyzedOr);
+  if (!contractOr)
+    return contractOr.takeError();
+
+  llvm::json::Object root;
+  root["contract_mode"] = "direct-source";
+  root["runtime_kernel_name"] = contractOr->runtimeKernelName;
+  root["generated_source_path"] = contractOr->generatedSourcePath;
+  root["host_stub_source_path"] = contractOr->preprocess.hostStubPath;
+  root["host_stub_include_dir"] = contractOr->preprocess.includeDir;
+  root["aic_definitions"] = toJsonStringArray(contractOr->aicDefinitions);
+  root["aiv_definitions"] = toJsonStringArray(contractOr->aivDefinitions);
+
+  std::string out;
+  llvm::raw_string_ostream os(out);
+  os << llvm::formatv("{0:2}", llvm::json::Value(std::move(root)));
+  os.flush();
+  out.push_back('\n');
+  return out;
 }
 
 } // namespace mlir::runtime
