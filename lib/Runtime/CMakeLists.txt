@@ -32,6 +32,7 @@ add_mlir_library(AscendCRuntime
   Profile/ProfileUtils.cpp
   Support/NpyIO.cpp
   Support/PathUtils.cpp
+  Support/ToolDiscovery.cpp
   Support/TilingPack.cpp
   Support/TilingSchema.cpp
 
