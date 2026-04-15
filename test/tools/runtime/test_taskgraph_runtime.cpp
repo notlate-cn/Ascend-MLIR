@@ -278,6 +278,142 @@ static std::filesystem::path makeRuntimeSessionArtifactRootWithMetadata(
   return root;
 }
 
+static std::filesystem::path makeRuntimeSessionMixArtifactRootWithAbiDefaults(
+    const std::string &stem, bool writeMetadataFile) {
+  std::filesystem::path root = makeTempDir(stem);
+  std::filesystem::create_directories(root / "out");
+
+  std::ofstream manifest(root / "out" / "manifest.txt");
+  if (!manifest) {
+    llvm::errs() << "FAIL: cannot write mix artifact manifest "
+                 << (root / "out" / "manifest.txt").string() << "\n";
+    ++g_fail;
+    return {};
+  }
+
+  manifest << "kernel_name=fake_kernel\n";
+  manifest << "requested_kernel_name=fake_kernel\n";
+  manifest << "soc_version=Ascend910B1\n";
+  manifest << "kernel_kind=mix\n";
+  manifest << "mix_resource_type=mix_1c1v\n";
+  manifest << "device_binary_path=fake.bin\n";
+  manifest << "abi_input_count=2\n";
+  manifest << "abi_input0_name=lhs\n";
+  manifest << "abi_input0_file=fake_kernel.lhs.input.bin\n";
+  manifest << "abi_input0_dtype=f16\n";
+  manifest << "abi_input0_shape=16,16\n";
+  manifest << "abi_input1_name=rhs\n";
+  manifest << "abi_input1_file=fake_kernel.rhs.input.bin\n";
+  manifest << "abi_input1_dtype=f16\n";
+  manifest << "abi_input1_shape=16,16\n";
+  manifest << "abi_output_count=1\n";
+  manifest << "abi_output0_name=out\n";
+  manifest << "abi_output0_file=fake_kernel.out.output.bin\n";
+  manifest << "abi_output0_dtype=f16\n";
+  manifest << "abi_output0_shape=16,16\n";
+  manifest << "abi_output0_golden_file=fake_kernel.out.golden.bin\n";
+  manifest << "abi_workspace_bytes=2048\n";
+  manifest << "abi_block_dim=3\n";
+  manifest << "abi_workspace_mode=fixed\n";
+  manifest << "abi_tiling_mode=generated_file\n";
+  manifest << "abi_tiling_source=out/legacy_tiling.bin\n";
+  manifest << "abi_launcher_symbol=aclrtlaunch_fake_kernel_legacy\n";
+  manifest << "abi_aic_entry=fake_kernel_legacy_aic\n";
+  manifest << "abi_aiv_entry=fake_kernel_legacy_aiv\n";
+  if (writeMetadataFile)
+    manifest << "metadata_path=out/mix_metadata.json\n";
+
+  std::ofstream binary(root / "fake.bin", std::ios::binary);
+  if (!binary) {
+    llvm::errs() << "FAIL: cannot write mix artifact binary "
+                 << (root / "fake.bin").string() << "\n";
+    ++g_fail;
+    return {};
+  }
+  binary.put('\0');
+
+  std::ofstream legacyTiling(root / "out" / "legacy_tiling.bin",
+                             std::ios::binary);
+  if (!legacyTiling) {
+    llvm::errs() << "FAIL: cannot write legacy tiling binary "
+                 << (root / "out" / "legacy_tiling.bin").string() << "\n";
+    ++g_fail;
+    return {};
+  }
+  legacyTiling.put('\0');
+
+  if (writeMetadataFile) {
+    std::ofstream tiling(root / "out" / "tiling.bin", std::ios::binary);
+    if (!tiling) {
+      llvm::errs() << "FAIL: cannot write metadata tiling binary "
+                   << (root / "out" / "tiling.bin").string() << "\n";
+      ++g_fail;
+      return {};
+    }
+    tiling.put('\1');
+
+    std::ofstream launchInfo(root / "out" / "launch_info.txt");
+    if (!launchInfo) {
+      llvm::errs() << "FAIL: cannot write metadata launch info "
+                   << (root / "out" / "launch_info.txt").string() << "\n";
+      ++g_fail;
+      return {};
+    }
+    launchInfo << "block_dim=8\n";
+
+    std::ofstream metadata(root / "out" / "mix_metadata.json");
+    if (!metadata) {
+      llvm::errs() << "FAIL: cannot write mix metadata "
+                   << (root / "out" / "mix_metadata.json").string() << "\n";
+      ++g_fail;
+      return {};
+    }
+    metadata << "{\n"
+             << "  \"schema_version\": 1,\n"
+             << "  \"kernel_kind\": \"mix\",\n"
+             << "  \"kernel_name\": \"fake_kernel\",\n"
+             << "  \"runtime_kernel_name\": \"fake_kernel\",\n"
+             << "  \"soc_version\": \"Ascend910B1\",\n"
+             << "  \"mix_kernel_type\": \"mix_1c1v\",\n"
+             << "  \"launcher_symbol\": \"aclrtlaunch_fake_kernel\",\n"
+             << "  \"entries\": { \"aic\": \"fake_kernel_0_mix_aic\", \"aiv\": \"fake_kernel_0_mix_aiv\" },\n"
+             << "  \"generated\": { \"source_path\": \"work/generated/auto_gen_fake_kernel.cpp\" },\n"
+             << "  \"device_compile\": {\n"
+             << "    \"aic_arch\": \"dav-c220-cube\",\n"
+             << "    \"aiv_arch\": \"dav-c220-vec\",\n"
+             << "    \"aic_definitions\": [],\n"
+             << "    \"aiv_definitions\": []\n"
+             << "  },\n"
+             << "  \"artifacts\": {\n"
+             << "    \"device_object_path\": \"out/device.o\",\n"
+             << "    \"packed_shared_object_path\": \"out/libfake_kernel_packed.so\",\n"
+             << "    \"tiling_file_path\": \"out/tiling.bin\",\n"
+             << "    \"launch_info_file_path\": \"out/launch_info.txt\"\n"
+             << "  },\n"
+             << "  \"abi\": {\n"
+             << "    \"workspace_mode\": \"fixed\",\n"
+             << "    \"workspace_bytes\": 16777216,\n"
+             << "    \"tiling_mode\": \"generated_file\",\n"
+             << "    \"tiling_source\": \"out/tiling.bin\",\n"
+             << "    \"inputs\": [\n"
+             << "      { \"name\": \"lhs\", \"dtype\": \"f32\", \"shape\": [4, 8], \"runtime_file\": \"fake_kernel.lhs.input.bin\" },\n"
+             << "      { \"name\": \"rhs\", \"dtype\": \"f32\", \"shape\": [8, 4], \"runtime_file\": \"fake_kernel.rhs.input.bin\" }\n"
+             << "    ],\n"
+             << "    \"outputs\": [\n"
+             << "      { \"name\": \"out\", \"dtype\": \"f32\", \"shape\": [4, 8], \"runtime_file\": \"fake_kernel.out.output.bin\" }\n"
+             << "    ]\n"
+             << "  },\n"
+             << "  \"host_launch\": {\n"
+             << "    \"mode\": \"helper\",\n"
+             << "    \"helper_kind\": \"mix-tiling-helper\",\n"
+             << "    \"helper_inputs\": {}\n"
+             << "  }\n"
+             << "}\n";
+  }
+
+  return root;
+}
+
 static std::filesystem::path makeRuntimeSessionVecArtifactRoot(
     const std::string &stem) {
   std::filesystem::path root = makeTempDir(stem);
@@ -825,6 +961,182 @@ static void testRuntimeSessionRequestBuilderRejectsMissingMixArtifactMetadata() 
          "runtime session builder rejects advertised missing metadata path");
   if (!artifactOr)
     llvm::consumeError(artifactOr.takeError());
+}
+
+static void testPrepareRuntimeSessionGraphUsesMixMetadataDefaults() {
+  const std::filesystem::path rootPath =
+      makeRuntimeSessionMixArtifactRootWithAbiDefaults(
+          "runtime-session-builder-mix-metadata-defaults", true);
+  RuntimeSessionTempRoot cleanup(rootPath);
+  EXPECT(!cleanup.path.empty(),
+         "runtime session builder mix metadata-default fixture root created");
+  if (cleanup.path.empty())
+    return;
+
+  const std::filesystem::path manifestPath =
+      makeTempDir("runtime-session-builder-mix-metadata-run-manifest") /
+      "run-manifest.json";
+  std::filesystem::create_directories(manifestPath.parent_path());
+  {
+    std::ofstream os(manifestPath);
+    os << "{\n"
+       << "  \"task_id\": \"main\",\n"
+       << "  \"backend\": \"sim\",\n"
+       << "  \"artifact_root\": \"" << cleanup.path.string() << "\",\n"
+       << "  \"inputs\": [\n"
+       << "    { \"name\": \"lhs\", \"path\": \"/tmp/lhs.npy\" },\n"
+       << "    { \"name\": \"rhs\", \"path\": \"/tmp/rhs.npy\" }\n"
+       << "  ],\n"
+       << "  \"outputs\": [\n"
+       << "    { \"name\": \"out\", \"path\": \"/tmp/out.npy\" }\n"
+       << "  ]\n"
+       << "}\n";
+  }
+
+  auto graphOr = prepareRuntimeSessionGraphFromManifest(manifestPath.string());
+  EXPECT((bool)graphOr,
+         "runtime session builder applies mix metadata defaults");
+  if (!graphOr) {
+    llvm::consumeError(graphOr.takeError());
+    return;
+  }
+
+  auto orderedOr = graphOr->second.orderedTasks();
+  EXPECT((bool)orderedOr,
+         "runtime session builder orders mix metadata-default graph");
+  if (!orderedOr) {
+    llvm::consumeError(orderedOr.takeError());
+    return;
+  }
+  EXPECT(orderedOr->size() == 1,
+         "runtime session builder metadata-default graph has one task");
+  if (orderedOr->size() != 1)
+    return;
+
+  const RuntimeTask &task = orderedOr->front();
+  EXPECT(task.invocation.blockDim == 8,
+         "runtime session builder prefers metadata block dim");
+  EXPECT(task.invocation.workspaceSize == 16777216,
+         "runtime session builder prefers metadata workspace size");
+  EXPECT(task.invocation.tiling.has_value(),
+         "runtime session builder materializes metadata tiling binding");
+  if (task.invocation.tiling) {
+    EXPECT(task.invocation.tiling->binaryPath ==
+               (cleanup.path / "out" / "tiling.bin").string(),
+           "runtime session builder prefers metadata tiling path");
+  }
+  EXPECT(task.invocation.outputs.size() == 1,
+         "runtime session builder keeps metadata-default output count");
+  if (task.invocation.outputs.size() == 1) {
+    EXPECT(task.invocation.outputs[0].shape.has_value(),
+           "runtime session builder fills output shape from metadata");
+    EXPECT(task.invocation.outputs[0].dtype.has_value(),
+           "runtime session builder fills output dtype from metadata");
+    if (task.invocation.outputs[0].shape) {
+      EXPECT(task.invocation.outputs[0].shape->size() == 2 &&
+                 (*task.invocation.outputs[0].shape)[0] == 4 &&
+                 (*task.invocation.outputs[0].shape)[1] == 8,
+             "runtime session builder prefers metadata output shape");
+    }
+    if (task.invocation.outputs[0].dtype) {
+      EXPECT(*task.invocation.outputs[0].dtype == DType::F32,
+             "runtime session builder prefers metadata output dtype");
+    }
+  }
+  EXPECT(task.invocation.inputs.size() == 2,
+         "runtime session builder keeps metadata-default input count");
+  if (task.invocation.inputs.size() == 2) {
+    EXPECT(task.invocation.inputs[0].shape.has_value(),
+           "runtime session builder fills input shape from metadata");
+    EXPECT(task.invocation.inputs[0].dtype.has_value(),
+           "runtime session builder fills input dtype from metadata");
+    if (task.invocation.inputs[0].dtype) {
+      EXPECT(*task.invocation.inputs[0].dtype == DType::F32,
+             "runtime session builder prefers metadata input dtype");
+    }
+  }
+}
+
+static void testPrepareRuntimeSessionGraphFallsBackToManifestAbiDefaults() {
+  const std::filesystem::path rootPath =
+      makeRuntimeSessionMixArtifactRootWithAbiDefaults(
+          "runtime-session-builder-mix-manifest-defaults", false);
+  RuntimeSessionTempRoot cleanup(rootPath);
+  EXPECT(!cleanup.path.empty(),
+         "runtime session builder mix manifest-default fixture root created");
+  if (cleanup.path.empty())
+    return;
+
+  const std::filesystem::path manifestPath =
+      makeTempDir("runtime-session-builder-mix-manifest-run-manifest") /
+      "run-manifest.json";
+  std::filesystem::create_directories(manifestPath.parent_path());
+  {
+    std::ofstream os(manifestPath);
+    os << "{\n"
+       << "  \"task_id\": \"main\",\n"
+       << "  \"backend\": \"sim\",\n"
+       << "  \"artifact_root\": \"" << cleanup.path.string() << "\",\n"
+       << "  \"inputs\": [\n"
+       << "    { \"name\": \"lhs\", \"path\": \"/tmp/lhs.npy\" },\n"
+       << "    { \"name\": \"rhs\", \"path\": \"/tmp/rhs.npy\" }\n"
+       << "  ],\n"
+       << "  \"outputs\": [\n"
+       << "    { \"name\": \"out\", \"path\": \"/tmp/out.npy\" }\n"
+       << "  ]\n"
+       << "}\n";
+  }
+
+  auto graphOr = prepareRuntimeSessionGraphFromManifest(manifestPath.string());
+  EXPECT((bool)graphOr,
+         "runtime session builder falls back to manifest ABI defaults");
+  if (!graphOr) {
+    llvm::consumeError(graphOr.takeError());
+    return;
+  }
+
+  auto orderedOr = graphOr->second.orderedTasks();
+  EXPECT((bool)orderedOr,
+         "runtime session builder orders mix manifest-default graph");
+  if (!orderedOr) {
+    llvm::consumeError(orderedOr.takeError());
+    return;
+  }
+  EXPECT(orderedOr->size() == 1,
+         "runtime session builder manifest-default graph has one task");
+  if (orderedOr->size() != 1)
+    return;
+
+  const RuntimeTask &task = orderedOr->front();
+  EXPECT(task.invocation.blockDim == 3,
+         "runtime session builder falls back to manifest block dim");
+  EXPECT(task.invocation.workspaceSize == 2048,
+         "runtime session builder falls back to manifest workspace size");
+  EXPECT(task.invocation.tiling.has_value(),
+         "runtime session builder materializes manifest tiling binding");
+  if (task.invocation.tiling) {
+    EXPECT(task.invocation.tiling->binaryPath ==
+               (cleanup.path / "out" / "legacy_tiling.bin").string(),
+           "runtime session builder falls back to manifest tiling path");
+  }
+  EXPECT(task.invocation.outputs.size() == 1,
+         "runtime session builder keeps manifest-default output count");
+  if (task.invocation.outputs.size() == 1) {
+    EXPECT(task.invocation.outputs[0].shape.has_value(),
+           "runtime session builder fills output shape from manifest ABI");
+    EXPECT(task.invocation.outputs[0].dtype.has_value(),
+           "runtime session builder fills output dtype from manifest ABI");
+    if (task.invocation.outputs[0].shape) {
+      EXPECT(task.invocation.outputs[0].shape->size() == 2 &&
+                 (*task.invocation.outputs[0].shape)[0] == 16 &&
+                 (*task.invocation.outputs[0].shape)[1] == 16,
+             "runtime session builder falls back to manifest output shape");
+    }
+    if (task.invocation.outputs[0].dtype) {
+      EXPECT(*task.invocation.outputs[0].dtype == DType::F16,
+             "runtime session builder falls back to manifest output dtype");
+    }
+  }
 }
 
 static void testRuntimeSessionRequestBuilderLoadsVecArtifactFromRoot() {
@@ -3407,6 +3719,8 @@ int main() {
   testRuntimeSessionRequestBuilderLoadsMixArtifactFromRoot();
   testRuntimeSessionRequestBuilderLoadsMixArtifactMetadataPath();
   testRuntimeSessionRequestBuilderRejectsMissingMixArtifactMetadata();
+  testPrepareRuntimeSessionGraphUsesMixMetadataDefaults();
+  testPrepareRuntimeSessionGraphFallsBackToManifestAbiDefaults();
   testRuntimeSessionRequestBuilderLoadsVecArtifactFromRoot();
   testRuntimeSessionRequestBuilderRejectsUnsupportedKernelKind();
   testRuntimeSessionRequestBuilderRejectsMissingKernelKind();
