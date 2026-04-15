@@ -191,6 +191,12 @@ static std::string resolveGeneratedSourcePath(llvm::StringRef generatedDir,
   return joinPath(generatedDir, sourceName);
 }
 
+static void appendDefineIfMissing(std::vector<std::string> &defs,
+                                  llvm::StringRef needle) {
+  if (llvm::find(defs, needle.str()) == defs.end())
+    defs.push_back(needle.str());
+}
+
 static llvm::Error writeCompileCommandsJson(llvm::StringRef path,
                                             llvm::StringRef directory,
                                             llvm::StringRef command,
@@ -481,7 +487,8 @@ runLegacyMixPreprocessStage(llvm::StringRef workDir, llvm::StringRef sourcePath,
 llvm::Expected<MixLegacyCompileContract> loadLegacyMixCompileContract(
     llvm::StringRef workDir, llvm::StringRef sourcePath,
     llvm::StringRef kernelName, llvm::StringRef socVersion,
-    llvm::StringRef aivProbeObject, llvm::StringRef aicProbeObject) {
+    llvm::StringRef aivProbeObject, llvm::StringRef aicProbeObject,
+    const MixAnalyzedKernel &analyzed) {
   auto preprocessOr =
       runLegacyMixPreprocessStage(workDir, sourcePath, kernelName, socVersion,
                                   aivProbeObject, aicProbeObject);
@@ -515,6 +522,39 @@ llvm::Expected<MixLegacyCompileContract> loadLegacyMixCompileContract(
       definitionsForSource(*aicConfigOr, *generatedSourceOr);
   contract.aivDefinitions =
       definitionsForSource(*aivConfigOr, *generatedSourceOr);
+  if (contract.aicDefinitions.empty() && !contract.aivDefinitions.empty()) {
+    contract.synthesizedAicFromAiv = true;
+    std::string coreDumpSize;
+    for (const std::string &def : contract.aivDefinitions) {
+      if (llvm::StringRef(def).starts_with("ONE_CORE_DUMP_SIZE="))
+        coreDumpSize = def;
+    }
+    contract.aivDefinitions = analyzed.aivDefines;
+    appendDefineIfMissing(contract.aivDefinitions, "HAVE_WORKSPACE");
+    appendDefineIfMissing(contract.aivDefinitions, "HAVE_TILING");
+    if (!coreDumpSize.empty())
+      appendDefineIfMissing(contract.aivDefinitions, coreDumpSize);
+    for (const std::string &def : contract.aivDefinitions) {
+      std::string aicDef = def;
+      size_t pos = aicDef.find("_0_mix_aiv");
+      if (pos != std::string::npos)
+        aicDef.replace(pos, 10, "_0_mix_aic");
+      pos = aicDef.find("__DAV_C220_VEC__");
+      if (pos != std::string::npos)
+        aicDef.replace(pos, 16, "__DAV_C220_CUBE__");
+      contract.aicDefinitions.push_back(std::move(aicDef));
+    }
+  }
+  if (contract.aicDefinitions.empty())
+    return llvm::createStringError(
+        llvm::inconvertibleErrorCode(),
+        "[%s] generated AIC config did not provide compile definitions for %s",
+        kStagePreprocessSource, contract.generatedSourceName.c_str());
+  if (contract.aivDefinitions.empty())
+    return llvm::createStringError(
+        llvm::inconvertibleErrorCode(),
+        "[%s] generated AIV config did not provide compile definitions for %s",
+        kStagePreprocessSource, contract.generatedSourceName.c_str());
   contract.runtimeKernelName =
       preprocessOr->actualLauncherKernelName.empty()
           ? kernelName.str()
