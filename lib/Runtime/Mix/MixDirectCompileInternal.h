@@ -4,6 +4,7 @@
 #include "Runtime/Mix/MixArtifact.h"
 #include "Runtime/Mix/MixSourceAnalyzer.h"
 
+#include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/StringMap.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/Support/Error.h"
@@ -169,6 +170,12 @@ struct MixDirectDebugManifestInputs {
   std::string manifestPath;
 };
 
+struct MixDirectProcessCommand {
+  std::vector<std::string> args;
+  std::string stage;
+  std::string context;
+};
+
 llvm::Error writeTextFile(llvm::StringRef path, llvm::StringRef content);
 
 llvm::Expected<std::string> readTextFileOrErr(llvm::StringRef path);
@@ -185,6 +192,9 @@ std::string makeStageContext(
 
 llvm::Error runProcess(const std::vector<std::string> &args,
                        llvm::StringRef stage, llvm::StringRef context = {});
+
+llvm::Error
+runProcessesInParallel(llvm::ArrayRef<MixDirectProcessCommand> commands);
 
 llvm::Expected<MixGeneratedConfig>
 parseMixGeneratedConfig(llvm::StringRef path);

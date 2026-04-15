@@ -190,22 +190,24 @@ executeMixDirectBinaryBuild(const MixDirectCompileContract &contract,
       buildRecompileBinaryCommand(layout.outputRoot, "ascendc_kernels_sim",
                                   layout.hostDir);
 
-  if (auto err = runProcess(aicCmd, kStageCompileAic, aicCompileContext))
+  if (auto err = runProcessesInParallel({
+          {aicCmd, kStageCompileAic, aicCompileContext},
+          {aivCmd, kStageCompileAiv, aivCompileContext},
+      }))
     return std::move(err);
   if (auto err =
           ensureFileExists(layout.aicObj, kStageCompileAic, aicCompileContext))
     return std::move(err);
-  if (auto err = runProcess(aivCmd, kStageCompileAiv, aivCompileContext))
-    return std::move(err);
   if (auto err =
           ensureFileExists(layout.aivObj, kStageCompileAiv, aivCompileContext))
     return std::move(err);
-  if (auto err = runProcess(aicRelocCmd, kStageMergeAic, aicMergeContext))
+  if (auto err = runProcessesInParallel({
+          {aicRelocCmd, kStageMergeAic, aicMergeContext},
+          {aivRelocCmd, kStageMergeAiv, aivMergeContext},
+      }))
     return std::move(err);
   if (auto err =
           ensureFileExists(layout.aicRelocObj, kStageMergeAic, aicMergeContext))
-    return std::move(err);
-  if (auto err = runProcess(aivRelocCmd, kStageMergeAiv, aivMergeContext))
     return std::move(err);
   if (auto err =
           ensureFileExists(layout.aivRelocObj, kStageMergeAiv, aivMergeContext))

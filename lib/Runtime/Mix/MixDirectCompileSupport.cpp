@@ -11,8 +11,10 @@
 #include "llvm/Support/raw_ostream.h"
 
 #include <fstream>
+#include <future>
 #include <initializer_list>
 #include <optional>
+#include <tuple>
 #include <utility>
 
 namespace mlir::runtime {
@@ -111,6 +113,36 @@ llvm::Error runProcess(const std::vector<std::string> &args,
       stage.str().c_str(), program.c_str(), context.empty() ? "" : " inputs: ",
       context.empty() ? "" : contextText.c_str(), ret, errMsg.c_str(),
       renderedCommand.c_str());
+}
+
+llvm::Error
+runProcessesInParallel(llvm::ArrayRef<MixDirectProcessCommand> commands) {
+  std::vector<std::future<llvm::Error>> futures;
+  futures.reserve(commands.size());
+  for (const MixDirectProcessCommand &command : commands) {
+    futures.push_back(std::async(std::launch::async, [command]() {
+      return runProcess(command.args, command.stage, command.context);
+    }));
+  }
+
+  llvm::Error joined = llvm::Error::success();
+  for (auto &future : futures)
+    joined = llvm::joinErrors(std::move(joined), future.get());
+  return joined;
+}
+
+llvm::Error
+runProcessesInParallelForTest(
+    llvm::ArrayRef<std::tuple<std::vector<std::string>, std::string,
+                              std::string>>
+        commands) {
+  std::vector<MixDirectProcessCommand> processCommands;
+  processCommands.reserve(commands.size());
+  for (const auto &command : commands) {
+    processCommands.push_back(
+        {std::get<0>(command), std::get<1>(command), std::get<2>(command)});
+  }
+  return runProcessesInParallel(processCommands);
 }
 
 } // namespace mlir::runtime
