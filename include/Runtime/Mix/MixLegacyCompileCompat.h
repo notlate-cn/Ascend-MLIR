@@ -77,6 +77,30 @@ struct MixLegacyCompileContract {
   bool synthesizedAicFromAiv = false;
 };
 
+struct MixLegacyBuildOutputs {
+  std::string runtimeKernelName;
+  std::string generatedSourcePath;
+  std::string hostSourcePath;
+  std::string hostStubSourcePath;
+  std::string hostStubIncludeDir;
+  std::string preprocessIncludeDir;
+  std::string preprocessCompileCommandsPath;
+  std::string preprocessCommand;
+  std::string preprocessGeneratedDir;
+  std::string hostBishengObjectPath;
+  std::string hostObjectDir;
+  std::string aicCompileCommand;
+  std::string aivCompileCommand;
+  std::string aicRelocCommand;
+  std::string aivRelocCommand;
+  std::string mergeCommand;
+  std::string hostCompileCommand;
+  std::string hostBishengCommand;
+  std::string packCommand;
+  std::string hostLinkCommand;
+  std::string recompileCommand;
+};
+
 llvm::Expected<MixGeneratedConfig>
 parseMixGeneratedConfig(llvm::StringRef path);
 
@@ -94,5 +118,11 @@ llvm::Expected<MixLegacyCompileContract> loadLegacyMixCompileContract(
 
 llvm::Expected<MixCompileLayout>
 buildLegacyMixCompileLayout(llvm::StringRef outputDir, llvm::StringRef kernelName);
+
+llvm::Expected<MixLegacyBuildOutputs>
+executeLegacyMixBinaryBuild(const MixLegacyCompileContract &contract,
+                            llvm::StringRef sourcePath,
+                            llvm::StringRef requestedKernelName,
+                            llvm::StringRef socVersion);
 
 } // namespace mlir::runtime
