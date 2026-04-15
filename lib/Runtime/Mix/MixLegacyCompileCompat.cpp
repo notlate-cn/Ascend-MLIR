@@ -3,11 +3,13 @@
 #include "Runtime/Mix/MixCompileMetadata.h"
 #include "Runtime/Mix/MixAbiExtractor.h"
 #include "Runtime/MixCommandBuilder.h"
+#include "Runtime/Mix/MixSourceAnalyzer.h"
 #include "Runtime/Mix/MixStubTemplate.h"
 #include "Runtime/NpyIO.h"
 #include "Runtime/Support/PathUtils.h"
 #include "llvm/ADT/SmallString.h"
 #include "llvm/ADT/SmallVector.h"
+#include "llvm/ADT/StringMap.h"
 #include "llvm/Support/Error.h"
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/FormatVariadic.h"
@@ -48,6 +50,160 @@ static constexpr const char *kStageRecompile = "recompile packed binary";
 static constexpr const char *kStageBuildRunner = "build host runner";
 static constexpr const char *kStageEmitTilingArtifact = "emit tiling artifact";
 static constexpr const char *kStageAnalyzeSource = "analyze source";
+
+struct MixGeneratedConfig {
+  std::vector<std::string> mixSources;
+  llvm::StringMap<std::vector<std::string>> definitionsBySource;
+};
+
+struct MixPreprocessOutputs {
+  std::string preprocessedSourcePath;
+  std::string compileCommandsPath;
+  std::string preprocessCommand;
+  std::string generatedDir;
+  std::string includeDir;
+  std::string hostStubPath;
+  std::string launcherHeaderPath;
+  std::string actualLauncherKernelName;
+  std::string aicConfigPath;
+  std::string aivConfigPath;
+};
+
+struct MixCompileLayout {
+  std::string outputRoot;
+  std::string workDir;
+  std::string objectDir;
+  std::string outDir;
+  std::string outBinDir;
+  std::string outIncludeDir;
+  std::string mergeDir;
+  std::string launcherDir;
+  std::string stubDir;
+  std::string hostDir;
+  std::string hostObjectsDir;
+  std::string aicMergeDir;
+  std::string aivMergeDir;
+  std::string aicObj;
+  std::string aivObj;
+  std::string aicRelocObj;
+  std::string aivRelocObj;
+  std::string mergedDeviceObj;
+  std::string manifestPath;
+  std::string metadataPath;
+  std::string analysisPath;
+  std::string mergeDeviceObj;
+  std::string hostStubObjectPath;
+  std::string kernelSoPath;
+  std::string mixFlagPath;
+  std::string runnerMainPath;
+  std::string runnerTilingPath;
+  std::string runnerDataUtilsPath;
+  std::string runnerBinaryPath;
+  std::string tilingArtifactPath;
+  std::string launchInfoPath;
+  std::string preprocessProbeDir;
+  std::string aicProbeObject;
+  std::string aivProbeObject;
+};
+
+struct MixLegacyCompileContract {
+  MixPreprocessOutputs preprocess;
+  MixCompileLayout layout;
+  std::string generatedSourceName;
+  std::string generatedSourcePath;
+  std::string runtimeKernelName;
+  std::vector<std::string> aicDefinitions;
+  std::vector<std::string> aivDefinitions;
+  bool synthesizedAicFromAiv = false;
+};
+
+struct MixLegacyBuildOutputs {
+  std::string runtimeKernelName;
+  std::string generatedSourcePath;
+  std::string hostSourcePath;
+  std::string hostStubSourcePath;
+  std::string hostStubIncludeDir;
+  std::string preprocessIncludeDir;
+  std::string preprocessCompileCommandsPath;
+  std::string preprocessCommand;
+  std::string preprocessGeneratedDir;
+  std::string hostBishengObjectPath;
+  std::string hostObjectDir;
+  std::string aicCompileCommand;
+  std::string aivCompileCommand;
+  std::string aicRelocCommand;
+  std::string aivRelocCommand;
+  std::string mergeCommand;
+  std::string hostCompileCommand;
+  std::string hostBishengCommand;
+  std::string packCommand;
+  std::string hostLinkCommand;
+  std::string recompileCommand;
+};
+
+struct MixLegacyTilingOutputs {
+  bool usedLegacyRunner = false;
+  uint32_t blockDim = 0;
+  std::string tilingArtifactPath;
+  std::string launchInfoPath;
+  std::string runnerSourcePath;
+  std::string runnerBinaryPath;
+  std::string runnerCompileCommand;
+  std::string tilingEmitCommand;
+};
+
+struct MixLegacyCompileOutputs {
+  MixLegacyCompileContract contract;
+  MixLegacyBuildOutputs build;
+  MixAbiMetadata abi;
+  MixLegacyTilingOutputs tiling;
+  std::string metadataPath;
+};
+
+struct MixLegacyDebugManifestInputs {
+  const MixAnalyzedKernel *analyzed = nullptr;
+  const MixAbiMetadata *abi = nullptr;
+  std::string runtimeKernelName;
+  std::string sourcePath;
+  std::string hostSourcePath;
+  std::string preprocessCompileCommandsPath;
+  std::string preprocessCommand;
+  std::string preprocessGeneratedDir;
+  std::string generatedSourcePath;
+  std::string aicDefinitions;
+  std::string aivDefinitions;
+  std::string workDir;
+  std::string objectDir;
+  std::string outDir;
+  std::string mergeDir;
+  std::string launcherHeaderDir;
+  std::string hostStubSourcePath;
+  std::string hostStubObjectPath;
+  std::string kernelSoPath;
+  std::string mixFlagPath;
+  std::string runnerSourcePath;
+  std::string runnerBinaryPath;
+  std::string aicObj;
+  std::string aivObj;
+  std::string aicRelocObj;
+  std::string aivRelocObj;
+  std::string mergedDeviceObj;
+  std::string aicCompileCmd;
+  std::string aivCompileCmd;
+  std::string aicRelocCmd;
+  std::string aivRelocCmd;
+  std::string mergeCmd;
+  std::string hostCompileCmd;
+  std::string hostBishengObjectPath;
+  std::string hostBishengCmd;
+  std::string hostObjectDir;
+  std::string packCmd;
+  std::string linkCmd;
+  std::string recompileCmd;
+  std::string runnerCompileCmd;
+  std::string metadataPath;
+  std::string manifestPath;
+};
 
 static llvm::Error writeTextFile(llvm::StringRef path,
                                  llvm::StringRef content) {
@@ -850,6 +1006,12 @@ deriveLauncherKernelName(llvm::StringRef launcherHeaderPath) {
 }
 
 } // namespace
+
+llvm::Expected<MixCompileLayout>
+buildLegacyMixCompileLayout(llvm::StringRef outputDir,
+                            llvm::StringRef kernelName);
+llvm::Error writeLegacyMixDebugManifest(
+    const MixLegacyDebugManifestInputs &inputs);
 
 llvm::Expected<MixGeneratedConfig>
 parseMixGeneratedConfig(llvm::StringRef path) {
