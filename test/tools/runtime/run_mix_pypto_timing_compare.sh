@@ -109,7 +109,7 @@ def main():
     parser.add_argument("--k", type=int, default=256)
     parser.add_argument("--n", type=int, default=128)
     args = parser.parse_args()
-    run("pypto_compile_only_private", compile_only, args)
+    run("pypto_frontend_compile_private", compile_only, args)
     run("pypto_compile_and_sim_public", compile_and_sim, args)
 
 
