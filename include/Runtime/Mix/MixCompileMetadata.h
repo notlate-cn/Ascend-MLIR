@@ -38,6 +38,7 @@ struct MixCompileMetadataTensorDesc {
   std::string dtype;
   std::vector<int64_t> shape;
   std::string runtimeFile;
+  std::string goldenFile;
 };
 
 struct MixCompileMetadataAbi {
@@ -45,6 +46,10 @@ struct MixCompileMetadataAbi {
   uint64_t workspaceBytes = 0;
   std::string tilingMode;
   std::string tilingSource;
+  uint64_t workspaceArgIndex = 0;
+  bool hasWorkspaceArgIndex = false;
+  uint64_t tilingArgIndex = 0;
+  bool hasTilingArgIndex = false;
   std::vector<MixCompileMetadataTensorDesc> inputs;
   std::vector<MixCompileMetadataTensorDesc> outputs;
 };

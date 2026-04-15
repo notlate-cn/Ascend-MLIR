@@ -1151,6 +1151,7 @@ makeMetadataTensorDesc(const MixAbiTensorDesc &tensor) {
   out.dtype = getDTypeName(tensor.dtype).str();
   out.shape = tensor.shape;
   out.runtimeFile = tensor.runtimeFile;
+  out.goldenFile = tensor.goldenFile;
   return out;
 }
 
@@ -1193,6 +1194,14 @@ writeMixCompileMetadataFile(llvm::StringRef metadataPath,
   metadata.abi.workspaceBytes = abi.workspaceBytes;
   metadata.abi.tilingMode = abi.tilingMode;
   metadata.abi.tilingSource = abi.tilingSource;
+  if (abi.workspaceArgIndex) {
+    metadata.abi.workspaceArgIndex = *abi.workspaceArgIndex;
+    metadata.abi.hasWorkspaceArgIndex = true;
+  }
+  if (abi.tilingArgIndex) {
+    metadata.abi.tilingArgIndex = *abi.tilingArgIndex;
+    metadata.abi.hasTilingArgIndex = true;
+  }
   metadata.abi.inputs.reserve(abi.inputs.size());
   for (const auto &tensor : abi.inputs)
     metadata.abi.inputs.push_back(makeMetadataTensorDesc(tensor));

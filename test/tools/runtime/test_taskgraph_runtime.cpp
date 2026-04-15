@@ -395,12 +395,14 @@ static std::filesystem::path makeRuntimeSessionMixArtifactRootWithAbiDefaults(
              << "    \"workspace_bytes\": 16777216,\n"
              << "    \"tiling_mode\": \"generated_file\",\n"
              << "    \"tiling_source\": \"out/tiling.bin\",\n"
+             << "    \"workspace_arg_index\": 5,\n"
+             << "    \"tiling_arg_index\": 6,\n"
              << "    \"inputs\": [\n"
              << "      { \"name\": \"lhs\", \"dtype\": \"f32\", \"shape\": [4, 8], \"runtime_file\": \"fake_kernel.lhs.input.bin\" },\n"
              << "      { \"name\": \"rhs\", \"dtype\": \"f32\", \"shape\": [8, 4], \"runtime_file\": \"fake_kernel.rhs.input.bin\" }\n"
              << "    ],\n"
              << "    \"outputs\": [\n"
-             << "      { \"name\": \"out\", \"dtype\": \"f32\", \"shape\": [4, 8], \"runtime_file\": \"fake_kernel.out.output.bin\" }\n"
+             << "      { \"name\": \"out\", \"dtype\": \"f32\", \"shape\": [4, 8], \"runtime_file\": \"fake_kernel.out.output.bin\", \"golden_file\": \"fake_kernel.out.golden.bin\" }\n"
              << "    ]\n"
              << "  },\n"
              << "  \"host_launch\": {\n"
@@ -989,6 +991,9 @@ static void testPrepareRuntimeSessionGraphUsesMixMetadataDefaults() {
        << "  ],\n"
        << "  \"outputs\": [\n"
        << "    { \"name\": \"out\", \"path\": \"/tmp/out.npy\" }\n"
+       << "  ],\n"
+       << "  \"expected_outputs\": [\n"
+       << "    { \"name\": \"out\", \"path\": \"/tmp/out.golden.npy\" }\n"
        << "  ]\n"
        << "}\n";
   }
@@ -1041,6 +1046,18 @@ static void testPrepareRuntimeSessionGraphUsesMixMetadataDefaults() {
     if (task.invocation.outputs[0].dtype) {
       EXPECT(*task.invocation.outputs[0].dtype == DType::F32,
              "runtime session builder prefers metadata output dtype");
+    }
+  }
+  EXPECT(task.invocation.expectedOutputs.size() == 1,
+         "runtime session builder keeps metadata-default expected output count");
+  if (task.invocation.expectedOutputs.size() == 1) {
+    EXPECT(task.invocation.expectedOutputs[0].shape.has_value(),
+           "runtime session builder fills expected output shape from metadata");
+    EXPECT(task.invocation.expectedOutputs[0].dtype.has_value(),
+           "runtime session builder fills expected output dtype from metadata");
+    if (task.invocation.expectedOutputs[0].dtype) {
+      EXPECT(*task.invocation.expectedOutputs[0].dtype == DType::F32,
+             "runtime session builder prefers metadata expected output dtype");
     }
   }
   EXPECT(task.invocation.inputs.size() == 2,

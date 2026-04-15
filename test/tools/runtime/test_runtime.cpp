@@ -633,8 +633,18 @@ static void testMixCompileMetadataSchema() {
     "workspace_bytes": 16777216,
     "tiling_mode": "generated_file",
     "tiling_source": "out/tiling.bin",
+    "workspace_arg_index": 3,
+    "tiling_arg_index": 4,
     "inputs": [],
-    "outputs": []
+    "outputs": [
+      {
+        "name": "out",
+        "dtype": "f32",
+        "shape": [4, 8],
+        "runtime_file": "k.out.output.bin",
+        "golden_file": "k.out.golden.bin"
+      }
+    ]
   },
   "host_launch": {
     "mode": "helper",
@@ -654,6 +664,16 @@ static void testMixCompileMetadataSchema() {
              "MixCompileMetadata keeps runtime_kernel_name");
       EXPECT(metadataOr->mixKernelType == "mix_aic_1_2",
              "MixCompileMetadata keeps mix_kernel_type");
+      EXPECT(metadataOr->abi.hasWorkspaceArgIndex &&
+                 metadataOr->abi.workspaceArgIndex == 3,
+             "MixCompileMetadata keeps workspace_arg_index");
+      EXPECT(metadataOr->abi.hasTilingArgIndex &&
+                 metadataOr->abi.tilingArgIndex == 4,
+             "MixCompileMetadata keeps tiling_arg_index");
+      EXPECT(metadataOr->abi.outputs.size() == 1 &&
+                 metadataOr->abi.outputs[0].goldenFile ==
+                     "k.out.golden.bin",
+             "MixCompileMetadata keeps output golden_file");
       auto roundTripOr = serializeMixCompileMetadataJson(*metadataOr);
       EXPECT(static_cast<bool>(roundTripOr),
              "MixCompileMetadata serializes");
