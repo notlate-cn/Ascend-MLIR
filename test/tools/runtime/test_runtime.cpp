@@ -29,6 +29,7 @@
 #include "Runtime/MixCompileMetadata.h"
 #include "Runtime/NpyIO.h"
 #include "Runtime/PathUtils.h"
+#include "Runtime/ToolDiscovery.h"
 #include "Runtime/Types.h"
 #include "llvm/Support/raw_ostream.h"
 #include <algorithm>
@@ -602,6 +603,50 @@ static void testRuntimePathUtils() {
   }
 }
 
+static void testRuntimeToolDiscovery() {
+  llvm::outs() << "\n[Runtime tool discovery]\n";
+
+  {
+    const std::string resolved =
+        resolveSiblingToolPathForExecutable("/tmp/runtime/bin/runtime-session",
+                                            "mix-tiling-helper");
+    EXPECT(resolved == "/tmp/runtime/bin/mix-tiling-helper",
+           "tool discovery resolves sibling helper next to executable");
+  }
+
+  {
+    const std::string resolved =
+        resolveSiblingToolPathForExecutable("", "mix-tiling-helper");
+    EXPECT(resolved.empty(),
+           "tool discovery returns empty path for empty executable");
+  }
+
+  {
+    const char *envName = "AFIR_TOOL_DISCOVERY_TEST_HELPER";
+    const char *saved = std::getenv(envName);
+    const std::string savedValue = saved ? std::string(saved) : std::string();
+    ::unsetenv(envName);
+    configureSiblingToolPathEnv(envName, "/tmp/runtime/bin/runtime-session",
+                                "mix-tiling-helper");
+    const char *configured = std::getenv(envName);
+    EXPECT(configured && std::string(configured) ==
+                             "/tmp/runtime/bin/mix-tiling-helper",
+           "tool discovery configures helper env when unset");
+
+    ::setenv(envName, "/already/configured", 1);
+    configureSiblingToolPathEnv(envName, "/tmp/runtime/bin/runtime-session",
+                                "mix-tiling-helper");
+    configured = std::getenv(envName);
+    EXPECT(configured && std::string(configured) == "/already/configured",
+           "tool discovery does not overwrite existing helper env");
+
+    if (saved)
+      ::setenv(envName, savedValue.c_str(), 1);
+    else
+      ::unsetenv(envName);
+  }
+}
+
 static void testMixCompileMetadataSchema() {
   llvm::outs() << "\n[MixCompileMetadata schema]\n";
 
@@ -875,6 +920,7 @@ int main(int argc, char **argv) {
   testNpyIOErrors();
   testRuntimeNativePackedMixErrors();
   testRuntimePathUtils();
+  testRuntimeToolDiscovery();
   testMixCompileMetadataSchema();
   testMixAbiManifestCompatibilityBoundary();
   testMixAbiManifestSerializationDropsLegacyLaunchFields();

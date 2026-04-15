@@ -10,7 +10,7 @@
 
 | Object | Current Surface | Classification | Result |
 | --- | --- | --- | --- |
-| `runtime-session` | parses `--kernel-kind=mix`; sets sibling `mix-tiling-helper` env path | watch | CLI still has one helper-discovery detail |
+| `runtime-session` | parses `--kernel-kind=mix`; configures sibling `mix-tiling-helper` through `Runtime/ToolDiscovery` | acceptable | helper discovery is runtime support, not local CLI logic |
 | C API | selects compiled artifact path; materializes user tiling bytes | acceptable | no mix staging dependency |
 | `autotuner` | accepts `kernel-kind=mix`; packs tiling candidates | acceptable | no direct mix backend internals |
 | `RuntimeSessionRequestBuilder` | loads mix metadata and applies `blockDim` / `tiling.bin` defaults | acceptable | artifact contract boundary |
@@ -26,6 +26,5 @@
 
 ## Next Work
 
-- Move `runtime-session` helper discovery behind runtime support if more helper tools appear.
 - Design a generic dynamic-library artifact launch interface before changing `ExecutionRunner`.
 - Keep timing-stage names internal to diagnostics; callers should not parse them for behavior.
