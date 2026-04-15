@@ -253,6 +253,11 @@ llvm::Expected<MixDirectCompileContract> buildMixDirectSourceCompileContract(
     const MixCompileLayout &layout, llvm::StringRef sourcePath,
     llvm::StringRef kernelName, const MixAnalyzedKernel &analyzed);
 
+llvm::Expected<std::pair<std::string, std::string>>
+writeMixDirectManualHostStub(const MixDirectCompileContract &contract,
+                             llvm::StringRef socVersion, uint64_t mixFileLen,
+                             bool aivOnly);
+
 llvm::Expected<MixCompileLayout>
 buildMixDirectCompileLayout(llvm::StringRef outputDir,
                             llvm::StringRef kernelName);

@@ -7,7 +7,10 @@
 #include "llvm/ADT/SmallString.h"
 #include "llvm/Support/Error.h"
 #include "llvm/Support/FileSystem.h"
+#include "llvm/Support/FormatVariadic.h"
+#include "llvm/Support/JSON.h"
 #include "llvm/Support/Path.h"
+#include "llvm/Support/raw_ostream.h"
 
 namespace mlir::runtime {
 namespace {
@@ -65,6 +68,39 @@ static llvm::Error writeRecompileLinkFile(llvm::StringRef rootDir,
 }
 
 } // namespace
+
+llvm::Expected<std::pair<std::string, std::string>>
+writeMixDirectManualHostStub(const MixDirectCompileContract &contract,
+                             llvm::StringRef socVersion, uint64_t mixFileLen,
+                             bool aivOnly) {
+  if (contract.runtimeKernelName.empty())
+    return llvm::createStringError(
+        llvm::inconvertibleErrorCode(),
+        "manual mix host stub requires runtime kernel name");
+  if (mixFileLen == 0)
+    return llvm::createStringError(llvm::inconvertibleErrorCode(),
+                                   "manual mix host stub requires non-empty mix object");
+
+  const MixCompileLayout &layout = contract.layout;
+  const std::string hostStubSourcePath = joinPath(layout.stubDir, "host_stub.cpp");
+  const std::string launcherHeaderPath =
+      joinPath(layout.outIncludeDir,
+               "aclrtlaunch_" + contract.runtimeKernelName + ".h");
+
+  MixStubTemplateArgs stubArgs;
+  stubArgs.kernelName = contract.runtimeKernelName;
+  stubArgs.targetName = "ascendc_kernels_sim";
+  stubArgs.socVersion = socVersion.str();
+  stubArgs.launcherSymbol = "aclrtlaunch_" + contract.runtimeKernelName;
+  stubArgs.launcherHeaderPath = launcherHeaderPath;
+  stubArgs.hostStubSourcePath = hostStubSourcePath;
+  stubArgs.mixLen = alignTo4(mixFileLen);
+  stubArgs.mixFileLen = mixFileLen;
+  stubArgs.aivOnly = aivOnly;
+  if (auto err = writeMixStubTemplate(stubArgs))
+    return std::move(err);
+  return std::make_pair(hostStubSourcePath, launcherHeaderPath);
+}
 
 llvm::Expected<MixDirectBuildOutputs>
 executeMixDirectBinaryBuild(const MixDirectCompileContract &contract,
@@ -241,19 +277,13 @@ executeMixDirectBinaryBuild(const MixDirectCompileContract &contract,
 
   if (needsManualStubTemplate) {
     MixDirectStageTimer timer("write_manual_host_stub", outputs.timings);
-    MixStubTemplateArgs stubArgs;
-    stubArgs.kernelName = outputs.runtimeKernelName;
-    stubArgs.targetName = "ascendc_kernels_sim";
-    stubArgs.socVersion = socVersion.str();
-    stubArgs.launcherSymbol = "aclrtlaunch_" + outputs.runtimeKernelName;
-    stubArgs.launcherHeaderPath = runnerLauncherCopyPath;
-    stubArgs.hostStubSourcePath = outputs.hostStubSourcePath;
-    stubArgs.mixLen = alignTo4(mixFileLen);
-    stubArgs.mixFileLen = mixFileLen;
-    stubArgs.aivOnly = false;
-    if (auto err = writeMixStubTemplate(stubArgs))
-      return std::move(err);
-    launcherHeaderPath = runnerLauncherCopyPath;
+    auto stubPathsOr =
+        writeMixDirectManualHostStub(contract, socVersion, mixFileLen, false);
+    if (!stubPathsOr)
+      return stubPathsOr.takeError();
+    outputs.hostStubSourcePath = stubPathsOr->first;
+    outputs.hostStubIncludeDir = layout.outIncludeDir;
+    launcherHeaderPath = stubPathsOr->second;
   } else {
     const std::string lowerSocVersion = llvm::StringRef(socVersion).lower();
     const std::vector<std::string> finalizeHostStubCmd =
@@ -363,6 +393,37 @@ executeMixDirectBinaryBuild(const MixDirectCompileContract &contract,
   outputs.hostLinkCommand = renderCommandForDebug(hostLinkCmd);
   outputs.recompileCommand = renderCommandForDebug(recompileCmd);
   return outputs;
+}
+
+llvm::Expected<std::string> writeMixDirectSourceStubSummaryForTest(
+    llvm::StringRef outputRoot, llvm::StringRef sourcePath,
+    llvm::StringRef kernelName, llvm::StringRef socVersion,
+    uint64_t mixFileLen) {
+  auto layoutOr = buildMixDirectCompileLayout(outputRoot, kernelName);
+  if (!layoutOr)
+    return layoutOr.takeError();
+  auto analyzedOr = analyzeMixKernel(sourcePath, kernelName, socVersion);
+  if (!analyzedOr)
+    return analyzedOr.takeError();
+  auto contractOr = buildMixDirectSourceCompileContract(
+      *layoutOr, sourcePath, kernelName, *analyzedOr);
+  if (!contractOr)
+    return contractOr.takeError();
+  auto stubPathsOr =
+      writeMixDirectManualHostStub(*contractOr, socVersion, mixFileLen, false);
+  if (!stubPathsOr)
+    return stubPathsOr.takeError();
+
+  llvm::json::Object root;
+  root["host_stub_source_path"] = stubPathsOr->first;
+  root["launcher_header_path"] = stubPathsOr->second;
+
+  std::string out;
+  llvm::raw_string_ostream os(out);
+  os << llvm::formatv("{0:2}", llvm::json::Value(std::move(root)));
+  os.flush();
+  out.push_back('\n');
+  return out;
 }
 
 } // namespace mlir::runtime
