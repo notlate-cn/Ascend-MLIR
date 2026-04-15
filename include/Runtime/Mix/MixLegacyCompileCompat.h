@@ -27,6 +27,15 @@ struct MixPreprocessOutputs {
   std::string aivConfigPath;
 };
 
+struct MixLegacyCompileContract {
+  MixPreprocessOutputs preprocess;
+  std::string generatedSourceName;
+  std::string generatedSourcePath;
+  std::string runtimeKernelName;
+  std::vector<std::string> aicDefinitions;
+  std::vector<std::string> aivDefinitions;
+};
+
 llvm::Expected<MixGeneratedConfig>
 parseMixGeneratedConfig(llvm::StringRef path);
 
@@ -36,5 +45,10 @@ runLegacyMixPreprocessStage(llvm::StringRef workDir, llvm::StringRef sourcePath,
                             llvm::StringRef socVersion,
                             llvm::StringRef aivProbeObject,
                             llvm::StringRef aicProbeObject);
+
+llvm::Expected<MixLegacyCompileContract> loadLegacyMixCompileContract(
+    llvm::StringRef workDir, llvm::StringRef sourcePath,
+    llvm::StringRef kernelName, llvm::StringRef socVersion,
+    llvm::StringRef aivProbeObject, llvm::StringRef aicProbeObject);
 
 } // namespace mlir::runtime

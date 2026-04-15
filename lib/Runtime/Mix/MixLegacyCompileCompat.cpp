@@ -12,6 +12,7 @@
 #include "llvm/Support/Program.h"
 #include "llvm/Support/raw_ostream.h"
 
+#include <algorithm>
 #include <cstring>
 #include <fstream>
 #include <initializer_list>
@@ -125,6 +126,69 @@ static std::vector<std::string> splitDefinitions(llvm::StringRef raw) {
       out.push_back(piece.str());
   }
   return out;
+}
+
+static std::vector<std::string>
+collectConfigSources(const MixGeneratedConfig &config) {
+  std::vector<std::string> sources;
+  for (const std::string &source : config.mixSources) {
+    if (!source.empty() &&
+        std::find(sources.begin(), sources.end(), source) == sources.end())
+      sources.push_back(source);
+  }
+  if (sources.empty()) {
+    for (const auto &entry : config.definitionsBySource) {
+      const std::string source = entry.getKey().str();
+      if (!source.empty() &&
+          std::find(sources.begin(), sources.end(), source) == sources.end())
+        sources.push_back(source);
+    }
+  }
+  return sources;
+}
+
+static llvm::Expected<std::string>
+findOnlyMixSourceOrErr(const MixGeneratedConfig &aicConfig,
+                       const MixGeneratedConfig &aivConfig) {
+  std::vector<std::string> sources = collectConfigSources(aicConfig);
+  for (const std::string &source : collectConfigSources(aivConfig)) {
+    if (std::find(sources.begin(), sources.end(), source) == sources.end())
+      sources.push_back(source);
+  }
+  if (sources.empty())
+    return llvm::createStringError(
+        llvm::inconvertibleErrorCode(),
+        "Generated baremix config did not list any MIX_SOURCES entry");
+  if (sources.size() != 1)
+    return llvm::createStringError(
+        llvm::inconvertibleErrorCode(),
+        "RuntimeMix direct backend only supports a single generated source in "
+        "this stage, but found %zu",
+        sources.size());
+  return sources.front();
+}
+
+static std::vector<std::string>
+definitionsForSource(const MixGeneratedConfig &config,
+                     llvm::StringRef sourcePath) {
+  const std::string exactKey = sourcePath.str();
+  if (auto it = config.definitionsBySource.find(exactKey);
+      it != config.definitionsBySource.end())
+    return it->second;
+
+  const std::string fileName = llvm::sys::path::filename(sourcePath).str();
+  if (auto it = config.definitionsBySource.find(fileName);
+      it != config.definitionsBySource.end())
+    return it->second;
+
+  return {};
+}
+
+static std::string resolveGeneratedSourcePath(llvm::StringRef generatedDir,
+                                              llvm::StringRef sourceName) {
+  if (llvm::sys::path::is_absolute(sourceName))
+    return sourceName.str();
+  return joinPath(generatedDir, sourceName);
 }
 
 static llvm::Error writeCompileCommandsJson(llvm::StringRef path,
@@ -412,6 +476,50 @@ runLegacyMixPreprocessStage(llvm::StringRef workDir, llvm::StringRef sourcePath,
   }
 
   return outputs;
+}
+
+llvm::Expected<MixLegacyCompileContract> loadLegacyMixCompileContract(
+    llvm::StringRef workDir, llvm::StringRef sourcePath,
+    llvm::StringRef kernelName, llvm::StringRef socVersion,
+    llvm::StringRef aivProbeObject, llvm::StringRef aicProbeObject) {
+  auto preprocessOr =
+      runLegacyMixPreprocessStage(workDir, sourcePath, kernelName, socVersion,
+                                  aivProbeObject, aicProbeObject);
+  if (!preprocessOr)
+    return preprocessOr.takeError();
+
+  auto aicConfigOr = parseMixGeneratedConfig(preprocessOr->aicConfigPath);
+  if (!aicConfigOr)
+    return aicConfigOr.takeError();
+  auto aivConfigOr = parseMixGeneratedConfig(preprocessOr->aivConfigPath);
+  if (!aivConfigOr)
+    return aivConfigOr.takeError();
+
+  auto generatedSourceOr = findOnlyMixSourceOrErr(*aicConfigOr, *aivConfigOr);
+  if (!generatedSourceOr)
+    return generatedSourceOr.takeError();
+
+  MixLegacyCompileContract contract;
+  contract.preprocess = *preprocessOr;
+  contract.generatedSourceName = *generatedSourceOr;
+  contract.generatedSourcePath = resolveGeneratedSourcePath(
+      preprocessOr->generatedDir, *generatedSourceOr);
+  if (!llvm::sys::fs::exists(contract.generatedSourcePath))
+    return llvm::createStringError(
+        llvm::inconvertibleErrorCode(),
+        "[%s] generated mix source file not found: %s (kernel=%s)",
+        kStagePreprocessSource, contract.generatedSourcePath.c_str(),
+        kernelName.str().c_str());
+
+  contract.aicDefinitions =
+      definitionsForSource(*aicConfigOr, *generatedSourceOr);
+  contract.aivDefinitions =
+      definitionsForSource(*aivConfigOr, *generatedSourceOr);
+  contract.runtimeKernelName =
+      preprocessOr->actualLauncherKernelName.empty()
+          ? kernelName.str()
+          : preprocessOr->actualLauncherKernelName;
+  return contract;
 }
 
 } // namespace mlir::runtime
