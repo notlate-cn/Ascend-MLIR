@@ -1033,63 +1033,15 @@ MixDirectBackend::compile(const MixDirectCompileConfig &cfg) {
   std::string preprocessGeneratedDir;
   std::string hostSourcePath = sourcePath.str().str();
   std::string runtimeKernelName = cfg.kernelName;
-  bool aicWasSynthesizedFromAiv = false;
   auto compatOr = loadLegacyMixCompileContract(
       workDir, sourcePath, cfg.kernelName, cfg.socVersion, aivProbeObject,
-      aicProbeObject);
+      aicProbeObject, *analyzed);
   if (!compatOr)
     return compatOr.takeError();
 
   generatedSourcePath = compatOr->generatedSourcePath;
   deviceAnalyzed.aicDefines = compatOr->aicDefinitions;
   deviceAnalyzed.aivDefines = compatOr->aivDefinitions;
-  auto appendDefineIfMissing = [](std::vector<std::string> &defs,
-                                  llvm::StringRef needle) {
-    if (llvm::find(defs, needle.str()) == defs.end())
-      defs.push_back(needle.str());
-  };
-  // For vector-only kernels, the AIC probe produces an empty config.
-  // Use MixSourceAnalyzer defines (which carry the correct flags like
-  // __MIX_CORE_MACRO__, __DAV_C220_VEC__, HAVE_WORKSPACE, HAVE_TILING) and
-  // synthesize a matching AIC define set by swapping the architecture flag
-  // and entry name suffix.
-  if (deviceAnalyzed.aicDefines.empty() && !deviceAnalyzed.aivDefines.empty()) {
-    aicWasSynthesizedFromAiv = true;
-    // Replace toolkit-generated AIV defines with analyzer-generated ones that
-    // include all required flags. Preserve ONE_CORE_DUMP_SIZE if present.
-    std::string coreDumpSize;
-    for (const std::string &def : deviceAnalyzed.aivDefines) {
-      if (llvm::StringRef(def).starts_with("ONE_CORE_DUMP_SIZE="))
-        coreDumpSize = def;
-    }
-    deviceAnalyzed.aivDefines = analyzed->aivDefines;
-    appendDefineIfMissing(deviceAnalyzed.aivDefines, "HAVE_WORKSPACE");
-    appendDefineIfMissing(deviceAnalyzed.aivDefines, "HAVE_TILING");
-    if (!coreDumpSize.empty())
-      appendDefineIfMissing(deviceAnalyzed.aivDefines, coreDumpSize);
-    for (const std::string &def : deviceAnalyzed.aivDefines) {
-      std::string aicDef = def;
-      // Replace AIV entry suffix with AIC entry suffix in the macro define.
-      size_t pos = aicDef.find("_0_mix_aiv");
-      if (pos != std::string::npos)
-        aicDef.replace(pos, 10, "_0_mix_aic");
-      // Replace vector architecture flag with cube architecture flag.
-      pos = aicDef.find("__DAV_C220_VEC__");
-      if (pos != std::string::npos)
-        aicDef.replace(pos, 16, "__DAV_C220_CUBE__");
-      deviceAnalyzed.aicDefines.push_back(std::move(aicDef));
-    }
-  }
-  if (deviceAnalyzed.aicDefines.empty())
-    return llvm::createStringError(
-        llvm::inconvertibleErrorCode(),
-        "[%s] generated AIC config did not provide compile definitions for %s",
-        kStagePreprocessSource, compatOr->generatedSourceName.c_str());
-  if (deviceAnalyzed.aivDefines.empty())
-    return llvm::createStringError(
-        llvm::inconvertibleErrorCode(),
-        "[%s] generated AIV config did not provide compile definitions for %s",
-        kStagePreprocessSource, compatOr->generatedSourceName.c_str());
 
   launcherHeaderPath = compatOr->preprocess.launcherHeaderPath;
   hostStubSourcePath = compatOr->preprocess.hostStubPath;
@@ -1104,7 +1056,7 @@ MixDirectBackend::compile(const MixDirectCompileConfig &cfg) {
       joinPath(outIncludeDir, "aclrtlaunch_" + runtimeKernelName + ".h");
 
   const bool needsManualStubTemplate =
-      launcherHeaderPath.empty() || aicWasSynthesizedFromAiv;
+      launcherHeaderPath.empty() || compatOr->synthesizedAicFromAiv;
   if (needsManualStubTemplate) {
     hostStubSourcePath = joinPath(stubDir, "host_stub.cpp");
     hostStubIncludeDir = outIncludeDir.str().str();

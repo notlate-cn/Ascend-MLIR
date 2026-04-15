@@ -1,5 +1,7 @@
 #pragma once
 
+#include "Runtime/Mix/MixSourceAnalyzer.h"
+
 #include "llvm/ADT/StringMap.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/Support/Error.h"
@@ -34,6 +36,7 @@ struct MixLegacyCompileContract {
   std::string runtimeKernelName;
   std::vector<std::string> aicDefinitions;
   std::vector<std::string> aivDefinitions;
+  bool synthesizedAicFromAiv = false;
 };
 
 llvm::Expected<MixGeneratedConfig>
@@ -49,6 +52,7 @@ runLegacyMixPreprocessStage(llvm::StringRef workDir, llvm::StringRef sourcePath,
 llvm::Expected<MixLegacyCompileContract> loadLegacyMixCompileContract(
     llvm::StringRef workDir, llvm::StringRef sourcePath,
     llvm::StringRef kernelName, llvm::StringRef socVersion,
-    llvm::StringRef aivProbeObject, llvm::StringRef aicProbeObject);
+    llvm::StringRef aivProbeObject, llvm::StringRef aicProbeObject,
+    const MixAnalyzedKernel &analyzed);
 
 } // namespace mlir::runtime
