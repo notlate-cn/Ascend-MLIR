@@ -416,6 +416,108 @@ static std::filesystem::path makeRuntimeSessionMixArtifactRootWithAbiDefaults(
   return root;
 }
 
+static std::filesystem::path
+makeRuntimeSessionMetadataOnlyMixArtifactRoot(const std::string &stem) {
+  std::filesystem::path root = makeTempDir(stem);
+  std::filesystem::create_directories(root / "out");
+
+  std::ofstream manifest(root / "out" / "manifest.txt");
+  if (!manifest) {
+    llvm::errs() << "FAIL: cannot write metadata-only mix artifact manifest "
+                 << (root / "out" / "manifest.txt").string() << "\n";
+    ++g_fail;
+    return {};
+  }
+
+  manifest << "kernel_name=fake_kernel\n";
+  manifest << "requested_kernel_name=fake_kernel\n";
+  manifest << "soc_version=Ascend910B1\n";
+  manifest << "kernel_kind=mix\n";
+  manifest << "mix_resource_type=mix_1c1v\n";
+  manifest << "device_binary_path=fake.bin\n";
+  manifest << "metadata_path=out/mix_metadata.json\n";
+
+  std::ofstream binary(root / "fake.bin", std::ios::binary);
+  if (!binary) {
+    llvm::errs() << "FAIL: cannot write metadata-only mix artifact binary "
+                 << (root / "fake.bin").string() << "\n";
+    ++g_fail;
+    return {};
+  }
+  binary.put('\0');
+
+  std::ofstream tiling(root / "out" / "tiling.bin", std::ios::binary);
+  if (!tiling) {
+    llvm::errs() << "FAIL: cannot write metadata-only tiling binary "
+                 << (root / "out" / "tiling.bin").string() << "\n";
+    ++g_fail;
+    return {};
+  }
+  tiling.put('\1');
+
+  std::ofstream launchInfo(root / "out" / "launch_info.txt");
+  if (!launchInfo) {
+    llvm::errs() << "FAIL: cannot write metadata-only launch info "
+                 << (root / "out" / "launch_info.txt").string() << "\n";
+    ++g_fail;
+    return {};
+  }
+  launchInfo << "block_dim=11\n";
+
+  std::ofstream metadata(root / "out" / "mix_metadata.json");
+  if (!metadata) {
+    llvm::errs() << "FAIL: cannot write metadata-only mix metadata "
+                 << (root / "out" / "mix_metadata.json").string() << "\n";
+    ++g_fail;
+    return {};
+  }
+  metadata << "{\n"
+           << "  \"schema_version\": 1,\n"
+           << "  \"kernel_kind\": \"mix\",\n"
+           << "  \"kernel_name\": \"fake_kernel\",\n"
+           << "  \"runtime_kernel_name\": \"fake_kernel\",\n"
+           << "  \"soc_version\": \"Ascend910B1\",\n"
+           << "  \"mix_kernel_type\": \"mix_1c1v\",\n"
+           << "  \"launcher_symbol\": \"aclrtlaunch_fake_kernel\",\n"
+           << "  \"entries\": { \"aic\": \"fake_kernel_0_mix_aic\", \"aiv\": \"fake_kernel_0_mix_aiv\" },\n"
+           << "  \"generated\": { \"source_path\": \"work/generated/auto_gen_fake_kernel.cpp\" },\n"
+           << "  \"device_compile\": {\n"
+           << "    \"aic_arch\": \"dav-c220-cube\",\n"
+           << "    \"aiv_arch\": \"dav-c220-vec\",\n"
+           << "    \"aic_definitions\": [],\n"
+           << "    \"aiv_definitions\": []\n"
+           << "  },\n"
+           << "  \"artifacts\": {\n"
+           << "    \"device_object_path\": \"out/device.o\",\n"
+           << "    \"packed_shared_object_path\": \"out/libfake_kernel_packed.so\",\n"
+           << "    \"tiling_file_path\": \"out/tiling.bin\",\n"
+           << "    \"launch_info_file_path\": \"out/launch_info.txt\"\n"
+           << "  },\n"
+           << "  \"abi\": {\n"
+           << "    \"workspace_mode\": \"fixed\",\n"
+           << "    \"workspace_bytes\": 4096,\n"
+           << "    \"tiling_mode\": \"generated_file\",\n"
+           << "    \"tiling_source\": \"out/tiling.bin\",\n"
+           << "    \"workspace_arg_index\": 5,\n"
+           << "    \"tiling_arg_index\": 6,\n"
+           << "    \"inputs\": [\n"
+           << "      { \"name\": \"lhs\", \"dtype\": \"f32\", \"shape\": [2, 3], \"runtime_file\": \"fake_kernel.lhs.input.bin\" },\n"
+           << "      { \"name\": \"rhs\", \"dtype\": \"f32\", \"shape\": [3, 4], \"runtime_file\": \"fake_kernel.rhs.input.bin\" }\n"
+           << "    ],\n"
+           << "    \"outputs\": [\n"
+           << "      { \"name\": \"out\", \"dtype\": \"f32\", \"shape\": [2, 4], \"runtime_file\": \"fake_kernel.out.output.bin\", \"golden_file\": \"fake_kernel.out.golden.bin\" }\n"
+           << "    ]\n"
+           << "  },\n"
+           << "  \"host_launch\": {\n"
+           << "    \"mode\": \"helper\",\n"
+           << "    \"helper_kind\": \"mix-tiling-helper\",\n"
+           << "    \"helper_inputs\": {}\n"
+           << "  }\n"
+           << "}\n";
+
+  return root;
+}
+
 static std::filesystem::path makeRuntimeSessionVecArtifactRoot(
     const std::string &stem) {
   std::filesystem::path root = makeTempDir(stem);
@@ -1153,6 +1255,71 @@ static void testPrepareRuntimeSessionGraphFallsBackToManifestAbiDefaults() {
       EXPECT(*task.invocation.outputs[0].dtype == DType::F16,
              "runtime session builder falls back to manifest output dtype");
     }
+  }
+}
+
+static void testPrepareRuntimeSessionGraphAcceptsMetadataOnlyMixArtifact() {
+  const std::filesystem::path rootPath =
+      makeRuntimeSessionMetadataOnlyMixArtifactRoot(
+          "runtime-session-builder-mix-metadata-only");
+  RuntimeSessionTempRoot cleanup(rootPath);
+  EXPECT(!cleanup.path.empty(),
+         "runtime session builder metadata-only fixture root created");
+  if (cleanup.path.empty())
+    return;
+
+  const std::filesystem::path manifestPath =
+      makeTempDir("runtime-session-builder-mix-metadata-only-run-manifest") /
+      "run-manifest.json";
+  std::filesystem::create_directories(manifestPath.parent_path());
+  {
+    std::ofstream os(manifestPath);
+    os << "{\n"
+       << "  \"task_id\": \"main\",\n"
+       << "  \"backend\": \"sim\",\n"
+       << "  \"artifact_root\": \"" << cleanup.path.string() << "\",\n"
+       << "  \"inputs\": [\n"
+       << "    { \"name\": \"lhs\", \"path\": \"/tmp/lhs.npy\" },\n"
+       << "    { \"name\": \"rhs\", \"path\": \"/tmp/rhs.npy\" }\n"
+       << "  ],\n"
+       << "  \"outputs\": [\n"
+       << "    { \"name\": \"out\", \"path\": \"/tmp/out.npy\" }\n"
+       << "  ]\n"
+       << "}\n";
+  }
+
+  auto graphOr = prepareRuntimeSessionGraphFromManifest(manifestPath.string());
+  EXPECT((bool)graphOr,
+         "runtime session builder accepts metadata-only mix artifact");
+  if (!graphOr) {
+    llvm::consumeError(graphOr.takeError());
+    return;
+  }
+
+  auto orderedOr = graphOr->second.orderedTasks();
+  EXPECT((bool)orderedOr,
+         "runtime session builder orders metadata-only mix graph");
+  if (!orderedOr) {
+    llvm::consumeError(orderedOr.takeError());
+    return;
+  }
+  EXPECT(orderedOr->size() == 1,
+         "runtime session builder metadata-only graph has one task");
+  if (orderedOr->size() != 1)
+    return;
+
+  const RuntimeTask &task = orderedOr->front();
+  EXPECT(task.invocation.blockDim == 11,
+         "runtime session builder derives block dim from metadata-only artifact");
+  EXPECT(task.invocation.workspaceSize == 4096,
+         "runtime session builder derives workspace size from metadata-only artifact");
+  EXPECT(task.invocation.tiling.has_value(),
+         "runtime session builder derives tiling from metadata-only artifact");
+  if (task.invocation.outputs.size() == 1) {
+    EXPECT(task.invocation.outputs[0].shape.has_value(),
+           "runtime session builder derives output shape from metadata-only artifact");
+    EXPECT(task.invocation.outputs[0].dtype.has_value(),
+           "runtime session builder derives output dtype from metadata-only artifact");
   }
 }
 
@@ -3738,6 +3905,7 @@ int main() {
   testRuntimeSessionRequestBuilderRejectsMissingMixArtifactMetadata();
   testPrepareRuntimeSessionGraphUsesMixMetadataDefaults();
   testPrepareRuntimeSessionGraphFallsBackToManifestAbiDefaults();
+  testPrepareRuntimeSessionGraphAcceptsMetadataOnlyMixArtifact();
   testRuntimeSessionRequestBuilderLoadsVecArtifactFromRoot();
   testRuntimeSessionRequestBuilderRejectsUnsupportedKernelKind();
   testRuntimeSessionRequestBuilderRejectsMissingKernelKind();
