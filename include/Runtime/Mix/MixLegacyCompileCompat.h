@@ -29,8 +29,46 @@ struct MixPreprocessOutputs {
   std::string aivConfigPath;
 };
 
+struct MixCompileLayout {
+  std::string outputRoot;
+  std::string workDir;
+  std::string objectDir;
+  std::string outDir;
+  std::string outBinDir;
+  std::string outIncludeDir;
+  std::string mergeDir;
+  std::string launcherDir;
+  std::string stubDir;
+  std::string hostDir;
+  std::string hostObjectsDir;
+  std::string aicMergeDir;
+  std::string aivMergeDir;
+  std::string aicObj;
+  std::string aivObj;
+  std::string aicRelocObj;
+  std::string aivRelocObj;
+  std::string mergedDeviceObj;
+  std::string manifestPath;
+  std::string metadataPath;
+  std::string analysisPath;
+  std::string mergeDeviceObj;
+  std::string hostStubObjectPath;
+  std::string kernelSoPath;
+  std::string mixFlagPath;
+  std::string runnerMainPath;
+  std::string runnerTilingPath;
+  std::string runnerDataUtilsPath;
+  std::string runnerBinaryPath;
+  std::string tilingArtifactPath;
+  std::string launchInfoPath;
+  std::string preprocessProbeDir;
+  std::string aicProbeObject;
+  std::string aivProbeObject;
+};
+
 struct MixLegacyCompileContract {
   MixPreprocessOutputs preprocess;
+  MixCompileLayout layout;
   std::string generatedSourceName;
   std::string generatedSourcePath;
   std::string runtimeKernelName;
@@ -54,5 +92,8 @@ llvm::Expected<MixLegacyCompileContract> loadLegacyMixCompileContract(
     llvm::StringRef kernelName, llvm::StringRef socVersion,
     llvm::StringRef aivProbeObject, llvm::StringRef aicProbeObject,
     const MixAnalyzedKernel &analyzed);
+
+llvm::Expected<MixCompileLayout>
+buildLegacyMixCompileLayout(llvm::StringRef outputDir, llvm::StringRef kernelName);
 
 } // namespace mlir::runtime
