@@ -1,4 +1,4 @@
-#include "MixLegacyCompileCompatInternal.h"
+#include "MixDirectCompileInternal.h"
 
 #include "Runtime/MixCommandBuilder.h"
 
