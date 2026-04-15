@@ -19,10 +19,6 @@ struct MixArtifact {
   std::string host_runner_path;
   std::string manifest_path;
   std::string metadata_path;
-  // Detailed ABI metadata currently lives in the manifest file.
-  // Keep this explicit so consumers know where the baremix ABI contract is
-  // recorded.
-  std::string abi_metadata_path;
   // Optional: may remain empty until a backend produces a merged device object.
   std::string device_object_path;
   // Optional: may remain empty until a backend emits a host stub source file.

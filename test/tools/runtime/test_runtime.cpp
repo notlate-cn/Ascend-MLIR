@@ -25,6 +25,7 @@
 //   /tmp/test_runtime
 
 #include "Runtime/Execution/NativeExecutionRunner.h"
+#include "Runtime/MixAbi.h"
 #include "Runtime/MixCompileMetadata.h"
 #include "Runtime/NpyIO.h"
 #include "Runtime/PathUtils.h"
@@ -730,6 +731,70 @@ static void testMixCompileMetadataSchema() {
   }
 }
 
+static void testMixAbiManifestCompatibilityBoundary() {
+  llvm::outs() << "\n[MixAbi manifest compatibility boundary]\n";
+
+  {
+    std::map<std::string, std::string> manifest = {
+        {"kernel_name", "fake_kernel"},
+        {"requested_kernel_name", "fake_kernel"},
+        {"abi_input_count", "0"},
+        {"abi_output_count", "0"},
+        {"abi_workspace_bytes", "1024"},
+        {"abi_block_dim", "4"},
+        {"abi_workspace_mode", "fixed"},
+        {"abi_tiling_mode", "generated_file"},
+        {"abi_tiling_source", "out/tiling.bin"},
+        {"abi_launcher_symbol", "aclrtlaunch_fake_kernel_abi"},
+        {"abi_aic_entry", "fake_kernel_abi_aic"},
+        {"abi_aiv_entry", "fake_kernel_abi_aiv"},
+    };
+    auto abiOr = parseMixAbiManifest(manifest);
+    EXPECT(static_cast<bool>(abiOr),
+           "MixAbi parser accepts abi_* launch fields");
+    if (abiOr) {
+      EXPECT(abiOr->launcherSymbol == "aclrtlaunch_fake_kernel_abi",
+             "MixAbi parser keeps abi launcher symbol");
+      EXPECT(abiOr->aicEntry == "fake_kernel_abi_aic",
+             "MixAbi parser keeps abi aic entry");
+      EXPECT(abiOr->aivEntry == "fake_kernel_abi_aiv",
+             "MixAbi parser keeps abi aiv entry");
+    } else {
+      llvm::consumeError(abiOr.takeError());
+    }
+  }
+
+  {
+    std::map<std::string, std::string> manifest = {
+        {"kernel_name", "fake_kernel"},
+        {"requested_kernel_name", "fake_kernel"},
+        {"abi_input_count", "0"},
+        {"abi_output_count", "0"},
+        {"abi_workspace_bytes", "1024"},
+        {"abi_block_dim", "4"},
+        {"abi_workspace_mode", "fixed"},
+        {"abi_tiling_mode", "generated_file"},
+        {"abi_tiling_source", "out/tiling.bin"},
+        {"launcher_symbol", "aclrtlaunch_fake_kernel_plain"},
+        {"aic_entry", "fake_kernel_plain_aic"},
+        {"aiv_entry", "fake_kernel_plain_aiv"},
+    };
+    auto abiOr = parseMixAbiManifest(manifest);
+    EXPECT(static_cast<bool>(abiOr),
+           "MixAbi parser still accepts legacy abi manifest without launch metadata");
+    if (abiOr) {
+      EXPECT(abiOr->launcherSymbol.empty(),
+             "MixAbi parser ignores plain launcher_symbol");
+      EXPECT(abiOr->aicEntry.empty(),
+             "MixAbi parser ignores plain aic_entry");
+      EXPECT(abiOr->aivEntry.empty(),
+             "MixAbi parser ignores plain aiv_entry");
+    } else {
+      llvm::consumeError(abiOr.takeError());
+    }
+  }
+}
+
 // ── main ─────────────────────────────────────────────────────────────────────
 
 int main(int argc, char **argv) {
@@ -742,6 +807,7 @@ int main(int argc, char **argv) {
   testRuntimeNativePackedMixErrors();
   testRuntimePathUtils();
   testMixCompileMetadataSchema();
+  testMixAbiManifestCompatibilityBoundary();
 
   llvm::outs() << "\n========================================\n"
                << "Results: " << g_pass << " passed, " << g_fail << " failed\n"

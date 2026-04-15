@@ -386,18 +386,12 @@ parseMixAbiManifest(const std::map<std::string, std::string> &manifest) {
 
   if (auto value = getOptionalManifestValue(manifest, "abi_launcher_symbol"))
     abi.launcherSymbol = *value;
-  else if (auto legacy = getOptionalManifestValue(manifest, "launcher_symbol"))
-    abi.launcherSymbol = *legacy;
 
   if (auto value = getOptionalManifestValue(manifest, "abi_aic_entry"))
     abi.aicEntry = *value;
-  else if (auto legacy = getOptionalManifestValue(manifest, "aic_entry"))
-    abi.aicEntry = *legacy;
 
   if (auto value = getOptionalManifestValue(manifest, "abi_aiv_entry"))
     abi.aivEntry = *value;
-  else if (auto legacy = getOptionalManifestValue(manifest, "aiv_entry"))
-    abi.aivEntry = *legacy;
 
   return abi;
 }
