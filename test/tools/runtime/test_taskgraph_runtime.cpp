@@ -67,6 +67,9 @@ serializeMixDirectTimingForTest(
 llvm::Expected<std::string> buildMixDirectSourceContractSummaryForTest(
     llvm::StringRef outputRoot, llvm::StringRef sourcePath,
     llvm::StringRef kernelName, llvm::StringRef socVersion);
+llvm::Expected<std::string> writeMixDirectSourceStubSummaryForTest(
+    llvm::StringRef outputRoot, llvm::StringRef sourcePath,
+    llvm::StringRef kernelName, llvm::StringRef socVersion, uint64_t mixFileLen);
 llvm::Expected<std::string>
 materializeSimulatorProfileArtifactForTest(const ExecutionRequest &request,
                                            int64_t cycleCount);
@@ -4058,6 +4061,61 @@ static void testMixDirectSourceContractSummary() {
   std::filesystem::remove_all(root);
 }
 
+static void testMixDirectSourceStubSummary() {
+  const std::filesystem::path root = makeTempDir("mix-direct-stub");
+  std::filesystem::create_directories(root);
+  const std::filesystem::path source = root / "kernel.cpp";
+  {
+    std::ofstream os(source);
+    os << "extern \"C\" __global__ __aicore__ void mix_kernel() {}\n";
+  }
+
+  auto summaryOr = writeMixDirectSourceStubSummaryForTest(
+      root.string(), source.string(), "mix_kernel", "Ascend910B", 17);
+  EXPECT((bool)summaryOr, "mix direct-source stub summary builds");
+  if (!summaryOr) {
+    llvm::consumeError(summaryOr.takeError());
+    std::filesystem::remove_all(root);
+    return;
+  }
+
+  auto parsedOr = llvm::json::parse(*summaryOr);
+  EXPECT((bool)parsedOr, "mix direct-source stub summary parses");
+  if (!parsedOr) {
+    llvm::consumeError(parsedOr.takeError());
+    std::filesystem::remove_all(root);
+    return;
+  }
+
+  const auto *rootObj = parsedOr->getAsObject();
+  EXPECT(rootObj != nullptr, "mix direct-source stub summary root is object");
+  if (!rootObj) {
+    std::filesystem::remove_all(root);
+    return;
+  }
+
+  auto hostStub = rootObj->getString("host_stub_source_path");
+  auto launcherHeader = rootObj->getString("launcher_header_path");
+  EXPECT(hostStub && std::filesystem::exists(hostStub->str()),
+         "mix direct-source stub writer creates host stub source");
+  EXPECT(launcherHeader && std::filesystem::exists(launcherHeader->str()),
+         "mix direct-source stub writer creates launcher header");
+  if (hostStub) {
+    const std::string stubText = readTextFile(hostStub->str());
+    EXPECT(stubText.find("{1, 1, 0, 20, 17") != std::string::npos,
+           "mix direct-source stub writer records aligned and raw mix length");
+    EXPECT(stubText.find("aclrtlaunch_mix_kernel") != std::string::npos,
+           "mix direct-source stub writer records launcher symbol");
+  }
+  if (launcherHeader) {
+    const std::string headerText = readTextFile(launcherHeader->str());
+    EXPECT(headerText.find("aclrtlaunch_mix_kernel") != std::string::npos,
+           "mix direct-source stub writer records launcher declaration");
+  }
+
+  std::filesystem::remove_all(root);
+}
+
 int main() {
   testTaskGraphBasics();
   testProfileTraceCollectsArtifactPaths();
@@ -4080,6 +4138,7 @@ int main() {
   testMixDirectParallelProcessRunnerRunsIndependentCommands();
   testMixDirectTimingSerialization();
   testMixDirectSourceContractSummary();
+  testMixDirectSourceStubSummary();
   testRuntimeSessionRequestBuilderBuildsSingleTaskGraph();
   testMixValidationCanBeRepresentedAsRuntimeTask();
   testOutputComparatorExactMatchPasses();
