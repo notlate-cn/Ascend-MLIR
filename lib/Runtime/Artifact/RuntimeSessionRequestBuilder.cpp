@@ -441,12 +441,21 @@ loadArtifactFromRoot(llvm::StringRef artifactRootInput) {
     if (artifact.kernelKind == KernelKind::Mix) {
       if (auto err = validateMixMetadataPath(artifact.metadataPath))
         return std::move(err);
+      auto metadataOr = loadValidatedMixMetadata(artifact.metadataPath);
+      if (!metadataOr)
+        return metadataOr.takeError();
+      artifact.sharedLibrarySymbol = metadataOr->launcherSymbol;
     } else if (!llvm::sys::fs::exists(artifact.metadataPath)) {
       return llvm::createStringError(
           llvm::inconvertibleErrorCode(),
           "metadata_path from manifest does not exist: %s",
           artifact.metadataPath.c_str());
     }
+  }
+
+  if (artifact.kernelKind == KernelKind::Mix &&
+      artifact.sharedLibrarySymbol.empty()) {
+    artifact.sharedLibrarySymbol = "aclrtlaunch_" + artifact.kernelName;
   }
 
   return artifact;

@@ -1071,6 +1071,8 @@ static void testRuntimeSessionRequestBuilderLoadsMixArtifactMetadataPath() {
   EXPECT(artifactOr->metadataPath ==
              (cleanup.path / "out" / "mix_metadata.json").string(),
          "runtime session builder keeps metadata path");
+  EXPECT(artifactOr->sharedLibrarySymbol == "aclrtlaunch_fake_kernel",
+         "runtime session builder keeps mix metadata launcher symbol");
 }
 
 static void testRuntimeSessionRequestBuilderRejectsMissingMixArtifactMetadata() {
