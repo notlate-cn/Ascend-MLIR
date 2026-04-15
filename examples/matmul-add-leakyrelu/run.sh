@@ -187,6 +187,44 @@ def read_manifest(path):
         manifest[key] = value
     return manifest
 
+def load_mix_abi(artifact_dir, manifest):
+    metadata_path = manifest.get("metadata_path")
+    if metadata_path:
+        metadata_file = Path(metadata_path)
+        if not metadata_file.is_absolute():
+            metadata_file = (artifact_dir / metadata_path).resolve()
+        metadata = json.loads(metadata_file.read_text())
+        abi = metadata["abi"]
+        return {
+            "inputs": abi["inputs"],
+            "outputs": abi["outputs"],
+            "workspace_bytes": int(abi["workspace_bytes"]),
+            "block_dim": int(
+                Path(
+                    metadata["artifacts"]["launch_info_file_path"]
+                    if Path(metadata["artifacts"]["launch_info_file_path"]).is_absolute()
+                    else artifact_dir / metadata["artifacts"]["launch_info_file_path"]
+                ).read_text().split("block_dim=", 1)[1].splitlines()[0]
+            ),
+        }
+
+    inputs = []
+    for idx in range(int(manifest["abi_input_count"])):
+        inputs.append({
+            "name": manifest[f"abi_input{idx}_name"],
+        })
+    outputs = []
+    for idx in range(int(manifest["abi_output_count"])):
+        outputs.append({
+            "name": manifest[f"abi_output{idx}_name"],
+        })
+    return {
+        "inputs": inputs,
+        "outputs": outputs,
+        "workspace_bytes": int(manifest.get("abi_workspace_bytes", "16777216")),
+        "block_dim": int(manifest.get("abi_block_dim", "1")),
+    }
+
 def runtime_dtype(dtype):
     dtype = np.dtype(dtype)
     if dtype == np.dtype(np.float16):
@@ -204,10 +242,11 @@ def runtime_dtype(dtype):
     raise SystemExit(f"unsupported runtime dtype: {dtype}")
 
 manifest = read_manifest(manifest_path)
-input_count = int(manifest["abi_input_count"])
+mix_abi = load_mix_abi(artifact_dir, manifest)
+input_count = len(mix_abi["inputs"])
 inputs = []
 for idx in range(input_count):
-    name = manifest[f"abi_input{idx}_name"]
+    name = mix_abi["inputs"][idx]["name"]
     npy_path = npy_dir / f"{name}.npy"
     if not npy_path.exists():
         npy_path = npy_dir / f"input{idx}.npy"
@@ -218,10 +257,10 @@ for idx in range(input_count):
         "path": str(npy_path.resolve()),
     })
 
-output_count = int(manifest["abi_output_count"])
+output_count = len(mix_abi["outputs"])
 if output_count != 1:
     raise SystemExit(f"expected one output, got {output_count}")
-output_name = manifest["abi_output0_name"]
+output_name = mix_abi["outputs"][0]["name"]
 output_npy = npy_dir / f"{output_name}.npy"
 if not output_npy.exists():
     output_npy = npy_dir / "output0.npy"
@@ -257,8 +296,8 @@ run_manifest = {
     "tiling": {
         "binary": str((artifact_dir / "out" / "tiling.bin").resolve()),
     },
-    "block_dim": int(manifest.get("abi_block_dim", "1")),
-    "workspace_size": int(manifest.get("abi_workspace_bytes", "16777216")),
+    "block_dim": mix_abi["block_dim"],
+    "workspace_size": mix_abi["workspace_bytes"],
     "profiling": True,
     "atol": 1.0,
     "rtol": 1e-2,
