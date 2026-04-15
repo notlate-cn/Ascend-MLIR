@@ -1,13 +1,13 @@
 #include "Runtime/MixDirectBackend.h"
 
-#include "Runtime/Mix/MixLegacyCompileCompat.h"
+#include "Runtime/Mix/MixDirectCompilePipeline.h"
 #include "llvm/Support/Path.h"
 
 namespace mlir::runtime {
 
 llvm::Expected<MixArtifact>
 MixDirectBackend::compile(const MixDirectCompileConfig &cfg) {
-  return executeLegacyMixDirectCompile(
+  return executeMixDirectCompile(
       cfg.outputDir, cfg.kernelSrc, cfg.kernelName,
       cfg.cannMlirPath ? llvm::StringRef(*cfg.cannMlirPath) : llvm::StringRef(),
       cfg.npyDir ? llvm::StringRef(*cfg.npyDir) : llvm::StringRef(),

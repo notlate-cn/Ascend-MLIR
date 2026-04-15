@@ -19,13 +19,13 @@ add_mlir_library(AscendCRuntime
   Mix/MixCompileMetadata.cpp
   Mix/MixCommandBuilder.cpp
   Mix/MixDirectBackend.cpp
-  Mix/MixLegacyBinaryBuild.cpp
-  Mix/MixLegacyCompileLayout.cpp
-  Mix/MixLegacyCompilePipeline.cpp
-  Mix/MixLegacyCompileSupport.cpp
-  Mix/MixLegacyPreprocess.cpp
-  Mix/MixLegacyRuntimeAbi.cpp
-  Mix/MixLegacyRuntimeArtifacts.cpp
+  Mix/MixDirectBinaryBuild.cpp
+  Mix/MixDirectCompileLayout.cpp
+  Mix/MixDirectCompilePipeline.cpp
+  Mix/MixDirectCompileSupport.cpp
+  Mix/MixDirectPreprocess.cpp
+  Mix/MixDirectRuntimeAbi.cpp
+  Mix/MixDirectTilingArtifacts.cpp
   Mix/MixSourceAnalyzer.cpp
   Mix/MixStubTemplate.cpp
   Profile/ProfileTrace.cpp

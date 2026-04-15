@@ -1,4 +1,4 @@
-#include "MixLegacyCompileCompatInternal.h"
+#include "MixDirectCompileInternal.h"
 
 #include "Runtime/Mix/MixAbiExtractor.h"
 #include "Runtime/Mix/MixCompileMetadata.h"

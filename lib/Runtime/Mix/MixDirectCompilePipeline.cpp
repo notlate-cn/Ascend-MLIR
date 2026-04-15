@@ -1,5 +1,5 @@
-#include "Runtime/Mix/MixLegacyCompileCompat.h"
-#include "MixLegacyCompileCompatInternal.h"
+#include "Runtime/Mix/MixDirectCompilePipeline.h"
+#include "MixDirectCompileInternal.h"
 
 #include "Runtime/Mix/MixSourceAnalyzer.h"
 #include "Runtime/Support/PathUtils.h"
@@ -251,12 +251,10 @@ finalizeLegacyMixArtifact(const MixCompileLayout &layout,
 }
 
 llvm::Expected<MixArtifact>
-executeLegacyMixDirectCompile(llvm::StringRef outputDir,
-                              llvm::StringRef kernelSrc,
-                              llvm::StringRef kernelName,
-                              llvm::StringRef cannMlirPath,
-                              llvm::StringRef npyDir,
-                              llvm::StringRef socVersion) {
+executeMixDirectCompile(llvm::StringRef outputDir, llvm::StringRef kernelSrc,
+                        llvm::StringRef kernelName,
+                        llvm::StringRef cannMlirPath, llvm::StringRef npyDir,
+                        llvm::StringRef socVersion) {
   if (outputDir.empty())
     return llvm::createStringError(
         llvm::inconvertibleErrorCode(),

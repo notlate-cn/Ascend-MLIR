@@ -1,4 +1,4 @@
-#include "MixLegacyCompileCompatInternal.h"
+#include "MixDirectCompileInternal.h"
 
 #include "llvm/Support/Error.h"
 #include "llvm/Support/FileSystem.h"
