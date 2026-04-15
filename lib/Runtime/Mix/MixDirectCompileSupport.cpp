@@ -8,8 +8,11 @@
 #include "llvm/Support/MemoryBuffer.h"
 #include "llvm/Support/Path.h"
 #include "llvm/Support/Program.h"
+#include "llvm/Support/FormatVariadic.h"
+#include "llvm/Support/JSON.h"
 #include "llvm/Support/raw_ostream.h"
 
+#include <chrono>
 #include <fstream>
 #include <future>
 #include <initializer_list>
@@ -18,6 +21,20 @@
 #include <utility>
 
 namespace mlir::runtime {
+
+MixDirectStageTimer::MixDirectStageTimer(
+    llvm::StringRef name, std::vector<MixDirectTimingEntry> &entries)
+    : name(name.str()), entries(entries),
+      start(std::chrono::steady_clock::now()) {}
+
+MixDirectStageTimer::~MixDirectStageTimer() {
+  const auto elapsed =
+      std::chrono::duration_cast<std::chrono::microseconds>(
+          std::chrono::steady_clock::now() - start)
+          .count();
+  entries.push_back(
+      {name, static_cast<uint64_t>(elapsed < 0 ? 0 : elapsed)});
+}
 
 llvm::Error writeTextFile(llvm::StringRef path, llvm::StringRef content) {
   std::ofstream os(path.str(), std::ios::binary);
@@ -143,6 +160,49 @@ runProcessesInParallelForTest(
         {std::get<0>(command), std::get<1>(command), std::get<2>(command)});
   }
   return runProcessesInParallel(processCommands);
+}
+
+llvm::Expected<std::string>
+serializeMixDirectTimingJson(llvm::ArrayRef<MixDirectTimingEntry> entries) {
+  llvm::json::Object root;
+  root["schema_version"] = 1;
+  uint64_t totalUs = 0;
+  llvm::json::Array stages;
+  for (const MixDirectTimingEntry &entry : entries) {
+    totalUs += entry.elapsedUs;
+    llvm::json::Object stage;
+    stage["name"] = entry.name;
+    stage["elapsed_us"] = static_cast<int64_t>(entry.elapsedUs);
+    stages.push_back(std::move(stage));
+  }
+  root["total_elapsed_us"] = static_cast<int64_t>(totalUs);
+  root["stages"] = std::move(stages);
+
+  std::string out;
+  llvm::raw_string_ostream os(out);
+  os << llvm::formatv("{0:2}", llvm::json::Value(std::move(root)));
+  os.flush();
+  out.push_back('\n');
+  return out;
+}
+
+llvm::Error
+writeMixDirectTimingFile(llvm::StringRef path,
+                         llvm::ArrayRef<MixDirectTimingEntry> entries) {
+  auto jsonOr = serializeMixDirectTimingJson(entries);
+  if (!jsonOr)
+    return jsonOr.takeError();
+  return writeTextFile(path, *jsonOr);
+}
+
+llvm::Expected<std::string>
+serializeMixDirectTimingForTest(
+    llvm::ArrayRef<std::tuple<std::string, uint64_t>> entries) {
+  std::vector<MixDirectTimingEntry> timingEntries;
+  timingEntries.reserve(entries.size());
+  for (const auto &entry : entries)
+    timingEntries.push_back({std::get<0>(entry), std::get<1>(entry)});
+  return serializeMixDirectTimingJson(timingEntries);
 }
 
 } // namespace mlir::runtime

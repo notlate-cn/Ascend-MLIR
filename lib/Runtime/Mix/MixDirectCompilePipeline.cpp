@@ -73,6 +73,13 @@ writeMixDirectDebugManifest(const MixDirectDebugManifestInputs &inputs) {
   manifest += std::string("manifest_path=") + inputs.manifestPath + "\n";
   if (!inputs.metadataPath.empty())
     manifest += std::string("metadata_path=") + inputs.metadataPath + "\n";
+  if (!inputs.manifestPath.empty()) {
+    llvm::SmallString<256> timingPath(
+        llvm::sys::path::parent_path(inputs.manifestPath));
+    llvm::sys::path::append(timingPath, "compile_timing.json");
+    manifest +=
+        std::string("compile_timing_path=") + timingPath.str().str() + "\n";
+  }
   if (!inputs.hostStubSourcePath.empty())
     manifest +=
         std::string("host_stub_source_path=") + inputs.hostStubSourcePath + "\n";
@@ -120,41 +127,59 @@ executeMixDirectCompilePipeline(const MixCompileLayout &layout,
                                 llvm::StringRef socVersion,
                                 const MixAnalyzedKernel &analyzed) {
   MixDirectCompileOutputs outputs;
-  auto contractOr = loadMixDirectCompileContract(
-      layout, sourcePath, requestedKernelName, socVersion, analyzed);
-  if (!contractOr)
-    return contractOr.takeError();
-  outputs.contract = std::move(*contractOr);
+  {
+    MixDirectStageTimer timer("preprocess_contract", outputs.timings);
+    auto contractOr = loadMixDirectCompileContract(
+        layout, sourcePath, requestedKernelName, socVersion, analyzed);
+    if (!contractOr)
+      return contractOr.takeError();
+    outputs.contract = std::move(*contractOr);
+  }
 
   auto buildOr = executeMixDirectBinaryBuild(outputs.contract, sourcePath,
                                              requestedKernelName, socVersion);
   if (!buildOr)
     return buildOr.takeError();
   outputs.build = std::move(*buildOr);
+  outputs.timings.insert(outputs.timings.end(), outputs.build.timings.begin(),
+                         outputs.build.timings.end());
 
-  auto abiOr = loadMixDirectRuntimeAbi(cannMlirPath, npyDir,
-                                       outputs.build.runtimeKernelName);
-  if (!abiOr)
-    return abiOr.takeError();
-  outputs.abi = std::move(*abiOr);
+  {
+    MixDirectStageTimer timer("load_runtime_abi", outputs.timings);
+    auto abiOr = loadMixDirectRuntimeAbi(cannMlirPath, npyDir,
+                                         outputs.build.runtimeKernelName);
+    if (!abiOr)
+      return abiOr.takeError();
+    outputs.abi = std::move(*abiOr);
+  }
 
   auto tilingOr = executeMixDirectTilingStage(
       layout, outputs.build.runtimeKernelName, socVersion, outputs.abi);
   if (!tilingOr)
     return tilingOr.takeError();
   outputs.tiling = std::move(*tilingOr);
+  outputs.timings.insert(outputs.timings.end(), outputs.tiling.timings.begin(),
+                         outputs.tiling.timings.end());
   outputs.abi.blockDim = outputs.tiling.blockDim;
 
-  auto metadataPathOr = writeMixDirectCompileMetadataFile(
-      layout.metadataPath, outputs.build.runtimeKernelName, socVersion,
-      "mix_1c1v", outputs.contract.generatedSourcePath,
-      outputs.contract.aicDefinitions, outputs.contract.aivDefinitions,
-      layout.mergedDeviceObj, layout.kernelSoPath,
-      outputs.tiling.tilingArtifactPath, outputs.tiling.launchInfoPath,
-      outputs.abi, outputs.tiling.usedLegacyRunner);
-  if (!metadataPathOr)
-    return metadataPathOr.takeError();
-  outputs.metadataPath = *metadataPathOr;
+  {
+    MixDirectStageTimer timer("write_metadata", outputs.timings);
+    auto metadataPathOr = writeMixDirectCompileMetadataFile(
+        layout.metadataPath, outputs.build.runtimeKernelName, socVersion,
+        "mix_1c1v", outputs.contract.generatedSourcePath,
+        outputs.contract.aicDefinitions, outputs.contract.aivDefinitions,
+        layout.mergedDeviceObj, layout.kernelSoPath,
+        outputs.tiling.tilingArtifactPath, outputs.tiling.launchInfoPath,
+        outputs.abi, outputs.tiling.usedLegacyRunner);
+    if (!metadataPathOr)
+      return metadataPathOr.takeError();
+    outputs.metadataPath = *metadataPathOr;
+  }
+  {
+    MixDirectStageTimer timer("write_timing_file", outputs.timings);
+    if (auto err = writeMixDirectTimingFile(layout.timingPath, outputs.timings))
+      return std::move(err);
+  }
   return outputs;
 }
 

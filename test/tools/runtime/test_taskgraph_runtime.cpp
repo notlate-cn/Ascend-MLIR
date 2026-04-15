@@ -62,6 +62,9 @@ runProcessesInParallelForTest(
                               std::string>>
         commands);
 llvm::Expected<std::string>
+serializeMixDirectTimingForTest(
+    llvm::ArrayRef<std::tuple<std::string, uint64_t>> entries);
+llvm::Expected<std::string>
 materializeSimulatorProfileArtifactForTest(const ExecutionRequest &request,
                                            int64_t cycleCount);
 llvm::Expected<ProfileTrace>
@@ -3929,6 +3932,47 @@ static void testMixDirectParallelProcessRunnerRunsIndependentCommands() {
   std::filesystem::remove(markerB);
 }
 
+static void testMixDirectTimingSerialization() {
+  auto jsonOr = serializeMixDirectTimingForTest({
+      {"preprocess", 1200},
+      {"device_compile_parallel", 3400},
+  });
+  EXPECT((bool)jsonOr, "mix direct timing serialization succeeds");
+  if (!jsonOr) {
+    llvm::consumeError(jsonOr.takeError());
+    return;
+  }
+
+  auto parsedOr = llvm::json::parse(*jsonOr);
+  EXPECT((bool)parsedOr, "mix direct timing JSON parses");
+  if (!parsedOr) {
+    llvm::consumeError(parsedOr.takeError());
+    return;
+  }
+  const auto *root = parsedOr->getAsObject();
+  EXPECT(root != nullptr, "mix direct timing JSON root is object");
+  if (!root)
+    return;
+  EXPECT(root->getInteger("schema_version") &&
+             *root->getInteger("schema_version") == 1,
+         "mix direct timing JSON records schema version");
+  EXPECT(root->getInteger("total_elapsed_us") &&
+             *root->getInteger("total_elapsed_us") == 4600,
+         "mix direct timing JSON records total elapsed time");
+  const auto *stages = root->getArray("stages");
+  EXPECT(stages && stages->size() == 2,
+         "mix direct timing JSON records stage entries");
+  if (stages && stages->size() == 2) {
+    const auto *first = (*stages)[0].getAsObject();
+    EXPECT(first && first->getString("name") &&
+               *first->getString("name") == "preprocess",
+           "mix direct timing JSON records stage name");
+    EXPECT(first && first->getInteger("elapsed_us") &&
+               *first->getInteger("elapsed_us") == 1200,
+           "mix direct timing JSON records stage elapsed time");
+  }
+}
+
 int main() {
   testTaskGraphBasics();
   testProfileTraceCollectsArtifactPaths();
@@ -3949,6 +3993,7 @@ int main() {
   testRuntimeSessionRequestBuilderRejectsUnsupportedKernelKind();
   testRuntimeSessionRequestBuilderRejectsMissingKernelKind();
   testMixDirectParallelProcessRunnerRunsIndependentCommands();
+  testMixDirectTimingSerialization();
   testRuntimeSessionRequestBuilderBuildsSingleTaskGraph();
   testMixValidationCanBeRepresentedAsRuntimeTask();
   testOutputComparatorExactMatchPasses();
