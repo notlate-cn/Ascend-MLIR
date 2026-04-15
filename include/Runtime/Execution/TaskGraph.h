@@ -24,6 +24,7 @@ struct KernelArtifact {
   std::string artifactRoot;
   std::string deviceBinaryPath;
   std::string sharedLibraryPath;
+  std::string sharedLibrarySymbol;
   std::string manifestPath;
   std::string metadataPath;
 };
