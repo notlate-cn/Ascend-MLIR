@@ -659,7 +659,7 @@ llvm::Error NativeExecutionRunner::runDynamicLibraryArtifact(
   if (launchRc != 0) {
     cleanup();
     return llvm::createStringError(llvm::inconvertibleErrorCode(),
-                                   "packed mix launch failed: rc=%u",
+                                   "dynamic library artifact launch failed: rc=%u",
                                    launchRc);
   }
 
@@ -685,14 +685,6 @@ llvm::Error NativeExecutionRunner::runDynamicLibraryArtifact(
 
   cleanup();
   return llvm::Error::success();
-}
-
-llvm::Error NativeExecutionRunner::runPackedMixFile(
-    const PackedMixExecutionLaunch &launch, RunArgs &args) {
-  DynamicLibraryExecutionLaunch dynamicLaunch;
-  dynamicLaunch.sharedLibraryPath = launch.sharedLibraryPath;
-  dynamicLaunch.symbolName = "aclrtlaunch_" + launch.kernelName;
-  return runDynamicLibraryArtifact(dynamicLaunch, args);
 }
 
 } // namespace mlir::runtime

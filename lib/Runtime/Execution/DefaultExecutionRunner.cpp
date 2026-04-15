@@ -29,11 +29,6 @@ public:
     return runner_.runDynamicLibraryArtifact(launch, args);
   }
 
-  llvm::Error runPackedMixFile(const PackedMixExecutionLaunch &launch,
-                               RunArgs &args) override {
-    return runner_.runPackedMixFile(launch, args);
-  }
-
 private:
   NativeExecutionRunner runner_;
 };
