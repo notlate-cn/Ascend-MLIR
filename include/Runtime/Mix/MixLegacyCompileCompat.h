@@ -102,6 +102,17 @@ struct MixLegacyBuildOutputs {
   std::string recompileCommand;
 };
 
+struct MixLegacyTilingOutputs {
+  bool usedLegacyRunner = false;
+  uint32_t blockDim = 0;
+  std::string tilingArtifactPath;
+  std::string launchInfoPath;
+  std::string runnerSourcePath;
+  std::string runnerBinaryPath;
+  std::string runnerCompileCommand;
+  std::string tilingEmitCommand;
+};
+
 struct MixLegacyDebugManifestInputs {
   const MixAnalyzedKernel *analyzed = nullptr;
   const MixAbiMetadata *abi = nullptr;
@@ -188,5 +199,11 @@ writeLegacyMixCompileMetadataFile(llvm::StringRef metadataPath,
 
 llvm::Error
 writeLegacyMixDebugManifest(const MixLegacyDebugManifestInputs &inputs);
+
+llvm::Expected<MixLegacyTilingOutputs>
+executeLegacyMixTilingStage(const MixCompileLayout &layout,
+                            llvm::StringRef runtimeKernelName,
+                            llvm::StringRef socVersion,
+                            const MixAbiMetadata &abi);
 
 } // namespace mlir::runtime
