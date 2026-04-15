@@ -795,6 +795,37 @@ static void testMixAbiManifestCompatibilityBoundary() {
   }
 }
 
+static void testMixAbiManifestSerializationDropsLegacyLaunchFields() {
+  llvm::outs() << "\n[MixAbi manifest serialization drops legacy launch fields]\n";
+
+  MixAbiMetadata abi;
+  abi.logicalKernelName = "fake_kernel";
+  abi.runtimeKernelName = "fake_kernel";
+  abi.workspaceBytes = 1024;
+  abi.blockDim = 4;
+  abi.workspaceMode = "fixed";
+  abi.tilingMode = "generated_file";
+  abi.tilingSource = "out/tiling.bin";
+  abi.launcherSymbol = "aclrtlaunch_fake_kernel";
+  abi.aicEntry = "fake_kernel_aic";
+  abi.aivEntry = "fake_kernel_aiv";
+
+  auto manifestOr = serializeMixAbiManifest(abi);
+  EXPECT(static_cast<bool>(manifestOr),
+         "MixAbi manifest serialization succeeds without legacy launch fields");
+  if (!manifestOr) {
+    llvm::consumeError(manifestOr.takeError());
+    return;
+  }
+
+  EXPECT(manifestOr->find("abi_launcher_symbol=") == std::string::npos,
+         "MixAbi manifest omits abi_launcher_symbol");
+  EXPECT(manifestOr->find("abi_aic_entry=") == std::string::npos,
+         "MixAbi manifest omits abi_aic_entry");
+  EXPECT(manifestOr->find("abi_aiv_entry=") == std::string::npos,
+         "MixAbi manifest omits abi_aiv_entry");
+}
+
 // ── main ─────────────────────────────────────────────────────────────────────
 
 int main(int argc, char **argv) {
@@ -808,6 +839,7 @@ int main(int argc, char **argv) {
   testRuntimePathUtils();
   testMixCompileMetadataSchema();
   testMixAbiManifestCompatibilityBoundary();
+  testMixAbiManifestSerializationDropsLegacyLaunchFields();
 
   llvm::outs() << "\n========================================\n"
                << "Results: " << g_pass << " passed, " << g_fail << " failed\n"
