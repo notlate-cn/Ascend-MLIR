@@ -190,42 +190,57 @@ executeMixDirectBinaryBuild(const MixDirectCompileContract &contract,
       buildRecompileBinaryCommand(layout.outputRoot, "ascendc_kernels_sim",
                                   layout.hostDir);
 
-  if (auto err = runProcessesInParallel({
-          {aicCmd, kStageCompileAic, aicCompileContext},
-          {aivCmd, kStageCompileAiv, aivCompileContext},
-      }))
-    return std::move(err);
+  {
+    MixDirectStageTimer timer("device_compile_parallel", outputs.timings);
+    if (auto err = runProcessesInParallel({
+            {aicCmd, kStageCompileAic, aicCompileContext},
+            {aivCmd, kStageCompileAiv, aivCompileContext},
+        }))
+      return std::move(err);
+  }
   if (auto err =
           ensureFileExists(layout.aicObj, kStageCompileAic, aicCompileContext))
     return std::move(err);
   if (auto err =
           ensureFileExists(layout.aivObj, kStageCompileAiv, aivCompileContext))
     return std::move(err);
-  if (auto err = runProcessesInParallel({
-          {aicRelocCmd, kStageMergeAic, aicMergeContext},
-          {aivRelocCmd, kStageMergeAiv, aivMergeContext},
-      }))
-    return std::move(err);
+  {
+    MixDirectStageTimer timer("device_reloc_parallel", outputs.timings);
+    if (auto err = runProcessesInParallel({
+            {aicRelocCmd, kStageMergeAic, aicMergeContext},
+            {aivRelocCmd, kStageMergeAiv, aivMergeContext},
+        }))
+      return std::move(err);
+  }
   if (auto err =
           ensureFileExists(layout.aicRelocObj, kStageMergeAic, aicMergeContext))
     return std::move(err);
   if (auto err =
           ensureFileExists(layout.aivRelocObj, kStageMergeAiv, aivMergeContext))
     return std::move(err);
-  if (auto err = runProcess(mergeCmd, kStageMergeDevice, mergeContext))
-    return std::move(err);
+  {
+    MixDirectStageTimer timer("merge_device_objects", outputs.timings);
+    if (auto err = runProcess(mergeCmd, kStageMergeDevice, mergeContext))
+      return std::move(err);
+  }
   if (auto err = ensureFileExists(layout.mergeDeviceObj, kStageMergeDevice,
                                   mergeContext))
     return std::move(err);
-  if (auto err = copyFileOrErr(layout.mergeDeviceObj, layout.mergedDeviceObj))
-    return std::move(err);
-  auto mixLen = getFileSizeOrErr(layout.mergedDeviceObj);
-  if (!mixLen)
-    return mixLen.takeError();
-  if (auto err = writeTextFile(layout.mixFlagPath, ""))
-    return std::move(err);
+  uint64_t mixFileLen = 0;
+  {
+    MixDirectStageTimer timer("finalize_device_object", outputs.timings);
+    if (auto err = copyFileOrErr(layout.mergeDeviceObj, layout.mergedDeviceObj))
+      return std::move(err);
+    auto mixLen = getFileSizeOrErr(layout.mergedDeviceObj);
+    if (!mixLen)
+      return mixLen.takeError();
+    mixFileLen = *mixLen;
+    if (auto err = writeTextFile(layout.mixFlagPath, ""))
+      return std::move(err);
+  }
 
   if (needsManualStubTemplate) {
+    MixDirectStageTimer timer("write_manual_host_stub", outputs.timings);
     MixStubTemplateArgs stubArgs;
     stubArgs.kernelName = outputs.runtimeKernelName;
     stubArgs.targetName = "ascendc_kernels_sim";
@@ -233,8 +248,8 @@ executeMixDirectBinaryBuild(const MixDirectCompileContract &contract,
     stubArgs.launcherSymbol = "aclrtlaunch_" + outputs.runtimeKernelName;
     stubArgs.launcherHeaderPath = runnerLauncherCopyPath;
     stubArgs.hostStubSourcePath = outputs.hostStubSourcePath;
-    stubArgs.mixLen = alignTo4(*mixLen);
-    stubArgs.mixFileLen = *mixLen;
+    stubArgs.mixLen = alignTo4(mixFileLen);
+    stubArgs.mixFileLen = mixFileLen;
     stubArgs.aivOnly = false;
     if (auto err = writeMixStubTemplate(stubArgs))
       return std::move(err);
@@ -245,16 +260,22 @@ executeMixDirectBinaryBuild(const MixDirectCompileContract &contract,
         buildUpdateHostStubCommand(outputs.preprocessGeneratedDir,
                                    layout.mergeDir, lowerSocVersion,
                                    "ascendc_kernels_sim");
-    if (auto err = runProcess(finalizeHostStubCmd, kStageFinalizeHostStub,
-                              finalizeContext))
-      return std::move(err);
-    if (auto err = copyFileOrErr(launcherHeaderPath, runnerLauncherCopyPath))
-      return std::move(err);
+    {
+      MixDirectStageTimer timer("finalize_host_stub", outputs.timings);
+      if (auto err = runProcess(finalizeHostStubCmd, kStageFinalizeHostStub,
+                                finalizeContext))
+        return std::move(err);
+      if (auto err = copyFileOrErr(launcherHeaderPath, runnerLauncherCopyPath))
+        return std::move(err);
+    }
   }
 
-  if (auto err =
-          runProcess(hostCompileCmd, kStageCompileHostStub, hostCompileContext))
-    return std::move(err);
+  {
+    MixDirectStageTimer timer("compile_host_stub", outputs.timings);
+    if (auto err = runProcess(hostCompileCmd, kStageCompileHostStub,
+                              hostCompileContext))
+      return std::move(err);
+  }
   if (auto err = ensureFileExists(layout.hostStubObjectPath,
                                   kStageCompileHostStub, hostCompileContext))
     return std::move(err);
@@ -268,49 +289,63 @@ executeMixDirectBinaryBuild(const MixDirectCompileContract &contract,
                                   kStageCompileHostBisheng,
                                   hostBishengContext))
     return std::move(err);
-  if (auto err =
-          runProcess(hostBishengCmd, kStageCompileHostBisheng,
-                     hostBishengContext))
-    return std::move(err);
+  {
+    MixDirectStageTimer timer("compile_host_bisheng", outputs.timings);
+    if (auto err = runProcess(hostBishengCmd, kStageCompileHostBisheng,
+                              hostBishengContext))
+      return std::move(err);
+  }
   if (auto err = ensureFileExists(outputs.hostBishengObjectPath,
                                   kStageCompileHostBisheng,
                                   hostBishengContext))
     return std::move(err);
-  if (auto err = runProcess(packCmd, kStagePack, packContext))
-    return std::move(err);
+  {
+    MixDirectStageTimer timer("pack_mix_kernel", outputs.timings);
+    if (auto err = runProcess(packCmd, kStagePack, packContext))
+      return std::move(err);
+  }
   if (auto err =
           ensureFileExists(layout.hostStubObjectPath, kStagePack, packContext))
     return std::move(err);
-  if (auto err = runProcess(hostLinkCmd, kStageLinkHostStub, hostLinkContext))
-    return std::move(err);
+  {
+    MixDirectStageTimer timer("link_host_runner_library", outputs.timings);
+    if (auto err = runProcess(hostLinkCmd, kStageLinkHostStub, hostLinkContext))
+      return std::move(err);
+  }
   if (auto err = ensureFileExists(layout.kernelSoPath, kStageLinkHostStub,
                                   hostLinkContext))
     return std::move(err);
 
-  const std::string recompileHostStubObjectPath =
-      joinPath(layout.stubDir, "host_stub.cpp.o");
-  if (auto err =
-          copyFileOrErr(layout.hostStubObjectPath, recompileHostStubObjectPath))
-    return std::move(err);
-  std::vector<std::string> recompileLinkArgs = hostLinkCmd;
-  for (std::string &arg : recompileLinkArgs) {
-    if (arg == layout.hostStubObjectPath)
-      arg = recompileHostStubObjectPath;
+  {
+    MixDirectStageTimer timer("prepare_recompile_link_file", outputs.timings);
+    const std::string recompileHostStubObjectPath =
+        joinPath(layout.stubDir, "host_stub.cpp.o");
+    if (auto err = copyFileOrErr(layout.hostStubObjectPath,
+                                 recompileHostStubObjectPath))
+      return std::move(err);
+    std::vector<std::string> recompileLinkArgs = hostLinkCmd;
+    for (std::string &arg : recompileLinkArgs) {
+      if (arg == layout.hostStubObjectPath)
+        arg = recompileHostStubObjectPath;
+    }
+    const std::string recompileLinkCmd =
+        renderCommandForCompileCommands(recompileLinkArgs);
+    if (auto err = writeRecompileLinkFile(layout.outputRoot,
+                                          "ascendc_kernels_sim",
+                                          recompileLinkCmd))
+      return std::move(err);
   }
-  const std::string recompileLinkCmd =
-      renderCommandForCompileCommands(recompileLinkArgs);
-  if (auto err = writeRecompileLinkFile(layout.outputRoot,
-                                        "ascendc_kernels_sim",
-                                        recompileLinkCmd))
-    return std::move(err);
   const std::string recompileContext = makeStageContext({
       {"root_dir", layout.outputRoot},
       {"target_name", "ascendc_kernels_sim"},
       {"add_dir", layout.hostDir},
       {"kernel", requestedKernelName},
   });
-  if (auto err = runProcess(recompileCmd, kStageRecompile, recompileContext))
-    return std::move(err);
+  {
+    MixDirectStageTimer timer("recompile_packed_binary", outputs.timings);
+    if (auto err = runProcess(recompileCmd, kStageRecompile, recompileContext))
+      return std::move(err);
+  }
   const std::string recompiledKernelSoPath =
       joinPath(layout.outDir, "lib" + outputs.runtimeKernelName + "_packed.so");
   if (auto err = ensureFileExists(recompiledKernelSoPath, kStageRecompile,

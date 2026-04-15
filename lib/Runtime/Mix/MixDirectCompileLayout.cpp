@@ -71,6 +71,7 @@ buildMixDirectCompileLayout(llvm::StringRef outputDir,
   layout.mergedDeviceObj = joinPath(layout.outDir, "device.o");
   layout.manifestPath = joinPath(layout.outDir, "manifest.txt");
   layout.metadataPath = joinPath(layout.outDir, "mix_metadata.json");
+  layout.timingPath = joinPath(layout.outDir, "compile_timing.json");
   layout.analysisPath = joinPath(layout.workDir, "analysis.txt");
   layout.mergeDeviceObj = joinPath(layout.mergeDir, "device.o");
   layout.hostStubObjectPath = joinPath(layout.stubDir, "host_stub.o");

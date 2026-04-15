@@ -9,6 +9,7 @@
 #include "llvm/ADT/StringRef.h"
 #include "llvm/Support/Error.h"
 
+#include <chrono>
 #include <initializer_list>
 #include <string>
 #include <utility>
@@ -55,6 +56,7 @@ struct MixCompileLayout {
   std::string mergedDeviceObj;
   std::string manifestPath;
   std::string metadataPath;
+  std::string timingPath;
   std::string analysisPath;
   std::string mergeDeviceObj;
   std::string hostStubObjectPath;
@@ -82,6 +84,11 @@ struct MixDirectCompileContract {
   bool synthesizedAicFromAiv = false;
 };
 
+struct MixDirectTimingEntry {
+  std::string name;
+  uint64_t elapsedUs = 0;
+};
+
 struct MixDirectBuildOutputs {
   std::string runtimeKernelName;
   std::string generatedSourcePath;
@@ -104,6 +111,7 @@ struct MixDirectBuildOutputs {
   std::string packCommand;
   std::string hostLinkCommand;
   std::string recompileCommand;
+  std::vector<MixDirectTimingEntry> timings;
 };
 
 struct MixDirectTilingOutputs {
@@ -115,6 +123,7 @@ struct MixDirectTilingOutputs {
   std::string runnerBinaryPath;
   std::string runnerCompileCommand;
   std::string tilingEmitCommand;
+  std::vector<MixDirectTimingEntry> timings;
 };
 
 struct MixDirectCompileOutputs {
@@ -123,6 +132,7 @@ struct MixDirectCompileOutputs {
   MixAbiMetadata abi;
   MixDirectTilingOutputs tiling;
   std::string metadataPath;
+  std::vector<MixDirectTimingEntry> timings;
 };
 
 struct MixDirectDebugManifestInputs {
@@ -176,6 +186,21 @@ struct MixDirectProcessCommand {
   std::string context;
 };
 
+class MixDirectStageTimer {
+public:
+  MixDirectStageTimer(llvm::StringRef name,
+                      std::vector<MixDirectTimingEntry> &entries);
+  ~MixDirectStageTimer();
+
+  MixDirectStageTimer(const MixDirectStageTimer &) = delete;
+  MixDirectStageTimer &operator=(const MixDirectStageTimer &) = delete;
+
+private:
+  std::string name;
+  std::vector<MixDirectTimingEntry> &entries;
+  std::chrono::steady_clock::time_point start;
+};
+
 llvm::Error writeTextFile(llvm::StringRef path, llvm::StringRef content);
 
 llvm::Expected<std::string> readTextFileOrErr(llvm::StringRef path);
@@ -195,6 +220,13 @@ llvm::Error runProcess(const std::vector<std::string> &args,
 
 llvm::Error
 runProcessesInParallel(llvm::ArrayRef<MixDirectProcessCommand> commands);
+
+llvm::Expected<std::string>
+serializeMixDirectTimingJson(llvm::ArrayRef<MixDirectTimingEntry> entries);
+
+llvm::Error
+writeMixDirectTimingFile(llvm::StringRef path,
+                         llvm::ArrayRef<MixDirectTimingEntry> entries);
 
 llvm::Expected<MixGeneratedConfig>
 parseMixGeneratedConfig(llvm::StringRef path);

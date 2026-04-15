@@ -397,9 +397,12 @@ executeMixDirectTilingStage(const MixCompileLayout &layout,
                          layout.runnerBinaryPath + " --emit-tiling-file " +
                          layout.tilingArtifactPath + " --emit-launch-info " +
                          layout.launchInfoPath};
-    if (auto err =
-            runProcess(runnerCompileCmd, kStageBuildRunner, runnerBuildContext))
-      return std::move(err);
+    {
+      MixDirectStageTimer timer("build_legacy_tiling_runner", outputs.timings);
+      if (auto err = runProcess(runnerCompileCmd, kStageBuildRunner,
+                                runnerBuildContext))
+        return std::move(err);
+    }
     if (auto err = ensureFileExists(layout.runnerBinaryPath, kStageBuildRunner,
                                     runnerBuildContext))
       return std::move(err);
@@ -425,9 +428,12 @@ executeMixDirectTilingStage(const MixCompileLayout &layout,
       {"kernel", runtimeKernelName},
       {"soc_version", socVersion},
   });
-  if (auto err = runProcess(tilingEmitCmd, kStageEmitTilingArtifact,
-                            tilingArtifactContext))
-    return std::move(err);
+  {
+    MixDirectStageTimer timer("emit_tiling_artifact", outputs.timings);
+    if (auto err = runProcess(tilingEmitCmd, kStageEmitTilingArtifact,
+                              tilingArtifactContext))
+      return std::move(err);
+  }
   if (auto err = ensureFileExists(layout.tilingArtifactPath,
                                   kStageEmitTilingArtifact,
                                   tilingArtifactContext))
