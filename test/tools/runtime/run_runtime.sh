@@ -31,6 +31,10 @@ if grep -R -n "packedSharedObjectPath" \
   echo "Error: execution layer must consume generic shared-library artifact paths" >&2
   exit 1
 fi
+if grep -R -n "aclrtlaunch_" lib/Runtime/Execution; then
+  echo "Error: execution layer must consume artifact-provided launch symbols" >&2
+  exit 1
+fi
 
 FAKE_ARTIFACT_ROOT="$(mktemp -d)"
 INVALID_STDERR=""
