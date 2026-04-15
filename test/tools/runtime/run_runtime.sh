@@ -35,6 +35,10 @@ if grep -R -n "aclrtlaunch_" lib/Runtime/Execution; then
   echo "Error: execution layer must consume artifact-provided launch symbols" >&2
   exit 1
 fi
+if grep -R -n "configurePackedMixEnvironment" include/Runtime lib/Runtime; then
+  echo "Error: packed mix simulator env helper must not remain" >&2
+  exit 1
+fi
 
 FAKE_ARTIFACT_ROOT="$(mktemp -d)"
 INVALID_STDERR=""
