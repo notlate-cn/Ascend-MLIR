@@ -54,16 +54,6 @@ static std::string getPackToolPath() {
   return getToolkitPaths().packTool;
 }
 
-static std::string getMergeObjScriptPath() {
-  return findAscendHome() +
-         "/compiler/tikcpp/ascendc_kernel_cmake/legacy_modules/util/merge_obj.sh";
-}
-
-static std::string getMergeMixObjScriptPath() {
-  return findAscendHome() +
-         "/compiler/tikcpp/ascendc_kernel_cmake/legacy_modules/util/merge_mix_obj.sh";
-}
-
 static std::string getHostCxxPath() {
   const char *candidates[] = {
       "/usr/bin/c++",
@@ -144,17 +134,6 @@ static std::string getArchForCore(MixCoreType coreType) {
   return "dav-c220-vec";
 }
 
-static llvm::ArrayRef<std::string>
-getDefinesForCore(const MixAnalyzedKernel &info, MixCoreType coreType) {
-  switch (coreType) {
-  case MixCoreType::AIC:
-    return info.aicDefines;
-  case MixCoreType::AIV:
-    return info.aivDefines;
-  }
-  return info.aivDefines;
-}
-
 static void appendDefines(std::vector<std::string> &args,
                           llvm::ArrayRef<std::string> defs) {
   for (const std::string &def : defs)
@@ -201,36 +180,6 @@ std::string renderCommandForDebug(llvm::ArrayRef<std::string> args) {
     out += shellQuote(args[i]);
   }
   return out;
-}
-
-std::string renderCommandForCompileCommands(llvm::ArrayRef<std::string> args) {
-  std::string out;
-  for (size_t i = 0; i < args.size(); ++i) {
-    if (i)
-      out.push_back(' ');
-    const llvm::StringRef arg = args[i];
-    if (arg.contains(' ') || arg.contains('\t') || arg.contains('\'') ||
-        arg.contains('"'))
-      out += shellQuote(arg);
-    else
-      out += arg;
-  }
-  return out;
-}
-
-std::vector<std::string>
-buildBishengCommand(const MixAnalyzedKernel &info, llvm::StringRef src,
-                    llvm::StringRef obj, MixCoreType coreType) {
-  std::vector<std::string> args;
-  args.push_back(getBishengPath());
-  args.insert(args.end(), info.commonFlags.begin(), info.commonFlags.end());
-  args.push_back("--cce-aicore-arch=" + getArchForCore(coreType));
-  appendTikcppIncludes(args);
-  appendDefines(args, getDefinesForCore(info, coreType));
-  args.push_back(src.str());
-  args.push_back("-o");
-  args.push_back(obj.str());
-  return args;
 }
 
 std::vector<std::string>
@@ -286,140 +235,6 @@ std::vector<std::string> buildLldMergeCommand(llvm::StringRef aicObj,
           aicObj.str(), aivObj.str(), "-o", outputObj.str()};
 }
 
-std::vector<std::string> buildDeviceMergeCommand(llvm::StringRef inputObj,
-                                                 llvm::StringRef outputDir,
-                                                 llvm::StringRef outputName,
-                                                 llvm::StringRef flagPath,
-                                                 llvm::StringRef buildType) {
-  return {"/bin/bash", getMergeObjScriptPath(), "-l", getLldPath(), "-o",
-          outputDir.str(), "-t", buildType.str(), "-n", outputName.str(), "-f",
-          flagPath.str(), inputObj.str()};
-}
-
-std::vector<std::string> buildMixFinalMergeCommand(llvm::StringRef aicDir,
-                                                   llvm::StringRef aivDir,
-                                                   llvm::StringRef outputDir,
-                                                   llvm::StringRef buildType) {
-  return {"/bin/bash", getMergeMixObjScriptPath(), "-l", getLldPath(), "-o",
-          outputDir.str(), "--aic-dir", aicDir.str(), "--aiv-dir", aivDir.str(),
-          "--build-type", buildType.str()};
-}
-
-std::vector<std::string>
-buildPreprocessCommand(llvm::StringRef src, llvm::StringRef outputPath) {
-  std::vector<std::string> args;
-  args.push_back(getBishengPath());
-  args.push_back("-DHAVE_TILING");
-  args.push_back("-DHAVE_WORKSPACE");
-  args.push_back("-DTILING_KEY_VAR=0");
-  args.push_back("-D__CHECK_FEATURE_AT_PRECOMPILE");
-  appendAscIncludes(args);
-  appendTikcppIncludes(args);
-  args.push_back("-g");
-  args.push_back("-E");
-  args.push_back("-includestdio.h");
-  args.push_back("--cce-aicore-arch=dav-c220-vec");
-  args.push_back("--cce-aicore-only");
-  args.push_back("--cce-auto-sync");
-  args.push_back("-mllvm");
-  args.push_back("-cce-aicore-stack-size=0x8000");
-  args.push_back("-mllvm");
-  args.push_back("-cce-aicore-function-stack-size=0x8000");
-  args.push_back("-mllvm");
-  args.push_back("-cce-aicore-record-overflow=true");
-  args.push_back("-mllvm");
-  args.push_back("-cce-aicore-addr-transform");
-  args.push_back("-mllvm");
-  args.push_back("-cce-aicore-dcci-insert-for-scalar=false");
-  args.push_back("-O3");
-  args.push_back("-std=c++17");
-  args.push_back("--cce-aicore-lang");
-  args.push_back("-include");
-  args.push_back(getVersionHeader());
-  args.push_back("--cce-disable-kernel-global-attr-check");
-  args.push_back("-o");
-  args.push_back(outputPath.str());
-  args.push_back("-c");
-  args.push_back(src.str());
-  return args;
-}
-
-std::vector<std::string>
-buildExtractHostStubCommand(llvm::StringRef preprocessedPath,
-                            llvm::StringRef dstDir,
-                            llvm::StringRef headerDir,
-                            llvm::ArrayRef<std::string> aivObjects,
-                            llvm::ArrayRef<std::string> aicObjects,
-                            llvm::StringRef compileCommandsPath,
-                            llvm::StringRef buildMode,
-                            llvm::StringRef runMode) {
-  std::vector<std::string> args = {
-      findAscendHome() +
-          "/compiler/tikcpp/ascendc_kernel_cmake/legacy_modules/util/"
-          "extract_host_stub.py",
-      preprocessedPath.str(),
-      "--dynamic-mode",
-      "-d",
-      dstDir.str(),
-      "-hd",
-      headerDir.str(),
-      "--compile-commands",
-      compileCommandsPath.str(),
-      "--generate-definition",
-      "--build-mode",
-      buildMode.str(),
-      "--run-mode",
-      runMode.str(),
-  };
-  args.push_back("--aiv-o");
-  args.insert(args.end(), aivObjects.begin(), aivObjects.end());
-  args.push_back("--aic-o");
-  args.insert(args.end(), aicObjects.begin(), aicObjects.end());
-  return args;
-}
-
-std::vector<std::string>
-buildUpdateHostStubCommand(llvm::StringRef codeDir, llvm::StringRef objDir,
-                           llvm::StringRef lowerSocVersion,
-                           llvm::StringRef targetName) {
-  return {findAscendHome() +
-              "/compiler/tikcpp/ascendc_kernel_cmake/legacy_modules/util/"
-              "update_host_stub.py",
-          codeDir.str(), objDir.str(), lowerSocVersion.str(), targetName.str()};
-}
-
-std::vector<std::string>
-buildHostBishengCommand(llvm::StringRef src, llvm::StringRef obj,
-                        llvm::StringRef tripleChevronHeader) {
-  std::vector<std::string> args;
-  args.push_back(getBishengPath());
-  args.push_back("-DTILING_KEY_VAR=0");
-  appendAscIncludes(args);
-  args.push_back("-I");
-  args.push_back(getTikcppRoot() + "/tikcfw");
-  args.push_back("-I");
-  args.push_back(getTikcppRoot() + "/tikcfw/interface");
-  args.push_back("-I");
-  args.push_back(getTikcppRoot() + "/tikcfw/impl");
-  args.push_back("-g");
-  args.push_back("-include");
-  args.push_back(tripleChevronHeader.str());
-  args.push_back("-O3");
-  args.push_back("-std=c++17");
-  args.push_back("--cce-aicore-lang");
-  args.push_back("-include");
-  args.push_back(getVersionHeader());
-  args.push_back("-fPIC");
-  args.push_back("--cce-host-only");
-  args.push_back("-fcce-kernel-launch-custom");
-  args.push_back("-DONE_CORE_DUMP_SIZE=1048576");
-  args.push_back("-o");
-  args.push_back(obj.str());
-  args.push_back("-c");
-  args.push_back(src.str());
-  return args;
-}
-
 std::vector<std::string>
 buildHostStubCompileCommand(llvm::StringRef source, llvm::StringRef object,
                             llvm::StringRef headerDir) {
@@ -431,23 +246,6 @@ std::vector<std::string> buildPackCommand(llvm::StringRef hostStubObject,
                                           llvm::StringRef addDir) {
   return {"/bin/bash", getPackScriptPath(), "--pack_tool", getPackToolPath(),
           "--elf_in", hostStubObject.str(), "--add_dir", addDir.str()};
-}
-
-std::vector<std::string>
-buildRecompileBinaryCommand(llvm::StringRef rootDir, llvm::StringRef targetName,
-                            llvm::StringRef addDir) {
-  return {
-      "/usr/bin/python3",
-      findAscendHome() +
-          "/compiler/tikcpp/ascendc_kernel_cmake/legacy_modules/util/"
-          "recompile_binary.py",
-      "--root-dir",
-      rootDir.str(),
-      "--target-name",
-      targetName.str(),
-      "--add-dir",
-      addDir.str(),
-  };
 }
 
 std::vector<std::string> buildHostSharedLinkCommand(llvm::StringRef hostStubObject,
@@ -490,87 +288,6 @@ std::vector<std::string> buildHostSharedLinkCommand(llvm::StringRef hostStubObje
   cmd.push_back("-lprofapi");
   cmd.push_back("-lge_common_base");
   cmd.push_back("-lmmpa");
-  cmd.push_back("-lascend_dump");
-  cmd.push_back("-lc_sec");
-  return cmd;
-}
-
-std::vector<std::string>
-buildHostRunnerCompileCommand(llvm::StringRef workDir,
-                              llvm::StringRef launcherDir,
-                              llvm::StringRef outIncludeDir,
-                              llvm::StringRef runnerMainPath,
-                              llvm::StringRef runnerTilingPath,
-                              llvm::StringRef runnerBinaryPath,
-                              llvm::StringRef kernelSoPath,
-                              llvm::StringRef runnerLib64,
-                              llvm::StringRef runnerSimLibDir,
-                              llvm::StringRef davSimLibDir,
-                              llvm::StringRef runnerDeviceLibDir,
-                              llvm::StringRef socVersion) {
-  const std::string ascendHome = findAscendHome();
-  const std::string includeDir = findAscendIncludeDir(ascendHome);
-  const std::string tikcppDir = findAscendTikcppDir(ascendHome);
-
-  std::vector<std::string> cmd = {
-      getHostCxxPath(),
-      "-g",
-      "-O2",
-      "-std=c++17",
-      "-DSOC_VERSION=\"" + socVersion.str() + "\"",
-      "-D_GLIBCXX_USE_CXX11_ABI=0",
-      "-Wall",
-      "-Werror",
-      "-fPIC",
-      "-O0",
-      "-fvisibility-inlines-hidden",
-      "-fstack-protector-all",
-      "-I" + workDir.str(),
-      "-I" + launcherDir.str(),
-      "-I" + outIncludeDir.str(),
-      "-I" + includeDir,
-      "-I" + tikcppDir + "/tikcfw",
-      runnerMainPath.str(),
-      runnerTilingPath.str(),
-      "-Wl,-rpath-link," + runnerLib64.str(),
-      "-Wl,-rpath-link," + runnerSimLibDir.str(),
-      "-Wl,-rpath-link," + davSimLibDir.str(),
-  };
-  if (!runnerDeviceLibDir.empty())
-    cmd.push_back("-Wl,-rpath-link," + runnerDeviceLibDir.str());
-  cmd.push_back("-pie");
-  cmd.push_back("-Wl,-z,relro");
-  cmd.push_back("-Wl,-z,now");
-  cmd.push_back("-Wl,-z,noexecstack");
-  cmd.push_back("-L" + runnerSimLibDir.str());
-  cmd.push_back("-L" + davSimLibDir.str());
-  cmd.push_back("-L" + runnerLib64.str());
-  if (!runnerDeviceLibDir.empty())
-    cmd.push_back("-L" + runnerDeviceLibDir.str());
-  cmd.push_back("-o");
-  cmd.push_back(runnerBinaryPath.str());
-  cmd.push_back(kernelSoPath.str());
-  cmd.push_back("-ltiling_api");
-  cmd.push_back("-lregister");
-  cmd.push_back("-lplatform");
-  cmd.push_back("-lascendalog");
-  cmd.push_back("-lunified_dlog");
-  cmd.push_back("-ldl");
-  cmd.push_back("-lruntime_camodel");
-  cmd.push_back("-lnpu_drv");
-  cmd.push_back("-lstars");
-  cmd.push_back("-lmodel_top");
-  cmd.push_back("-lascendcl");
-  cmd.push_back("-lerror_manager");
-  cmd.push_back("-lprofapi");
-  cmd.push_back("-lge_common_base");
-  cmd.push_back("-lmmpa");
-  cmd.push_back("-lascend_dump");
-  cmd.push_back("-lc_sec");
-  cmd.push_back("-lunified_dlog");
-  cmd.push_back("-ldl");
-  cmd.push_back("-lmmpa");
-  cmd.push_back("-ldl");
   cmd.push_back("-lascend_dump");
   cmd.push_back("-lc_sec");
   return cmd;

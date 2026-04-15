@@ -3,7 +3,7 @@
 ## Scope
 
 - Object: runtime-native mix compile path.
-- Semantics: direct-source is the default runtime artifact builder; legacy-preprocess is fallback.
+- Semantics: direct-source is the only runtime artifact builder.
 - Result: callers consume compiled artifacts, not mix internals.
 
 ## Inputs
@@ -27,7 +27,7 @@
 ## Current Boundary
 
 - `ArtifactCompiler` dispatches `mix` to `MixDirectBackend`.
-- `MixDirectBackend` owns direct-source and fallback-mode selection.
+- `MixDirectBackend` owns direct-source artifact construction.
 - `MixDirectCompilePipeline` owns staged compilation.
 - `RuntimeFrontendCore`, `runtime-session`, C API, and execution backends should consume compiled artifact results only.
 
@@ -35,4 +35,4 @@
 
 - Do not leak mix preprocessing details into CLI, C API, or execution runners.
 - Do not compare PyPTO frontend-only timing with full runtime artifact compile timing.
-- Keep legacy-preprocess callable only as fallback while direct-source remains default.
+- Do not reintroduce legacy-preprocess fallback.
