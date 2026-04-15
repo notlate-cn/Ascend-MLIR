@@ -1089,11 +1089,13 @@ static llvm::Error writeDebugManifest(const MixAnalyzedKernel &analyzed,
   manifest += std::string("install_dir=") + outDir.str() + "\n";
   manifest += std::string("object_dir=") + objectDir.str() + "\n";
   manifest += std::string("out_dir=") + outDir.str() + "\n";
-  manifest += std::string("abi_kind=mix_gm_workspace_tiling\n");
-  auto abiManifestOr = serializeMixAbiManifest(abi);
-  if (!abiManifestOr)
-    return abiManifestOr.takeError();
-  manifest += *abiManifestOr;
+  if (metadataPath.empty()) {
+    manifest += std::string("abi_kind=mix_gm_workspace_tiling\n");
+    auto abiManifestOr = serializeMixAbiManifest(abi);
+    if (!abiManifestOr)
+      return abiManifestOr.takeError();
+    manifest += *abiManifestOr;
+  }
   manifest += std::string("merge_obj_dir=") + mergeDir.str() + "\n";
   manifest += std::string("launcher_header_dir=") +
               launcherHeaderDir.str() + "\n";

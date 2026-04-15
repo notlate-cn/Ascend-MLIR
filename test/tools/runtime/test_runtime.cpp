@@ -826,6 +826,44 @@ static void testMixAbiManifestSerializationDropsLegacyLaunchFields() {
          "MixAbi manifest omits abi_aiv_entry");
 }
 
+static void testMixAbiManifestSerializationRetainsLegacyIoContract() {
+  llvm::outs() << "\n[MixAbi manifest serialization retains legacy io contract]\n";
+
+  MixAbiMetadata abi;
+  abi.logicalKernelName = "fake_kernel";
+  abi.runtimeKernelName = "fake_kernel";
+  abi.workspaceBytes = 1024;
+  abi.blockDim = 4;
+  abi.workspaceMode = "fixed";
+  abi.tilingMode = "generated_file";
+  abi.tilingSource = "out/tiling.bin";
+  abi.inputs = {
+      {"lhs", "fake_kernel.lhs.input.bin", "", DType::F16, {4, 8}},
+      {"rhs", "fake_kernel.rhs.input.bin", "", DType::F16, {8, 4}},
+  };
+  abi.outputs = {
+      {"out", "fake_kernel.out.output.bin", "fake_kernel.out.golden.bin",
+       DType::F32, {4, 4}},
+  };
+
+  auto manifestOr = serializeMixAbiManifest(abi);
+  EXPECT(static_cast<bool>(manifestOr),
+         "MixAbi manifest serialization succeeds with legacy io contract");
+  if (!manifestOr) {
+    llvm::consumeError(manifestOr.takeError());
+    return;
+  }
+
+  EXPECT(manifestOr->find("abi_input_count=2") != std::string::npos,
+         "MixAbi manifest still keeps abi_input_count");
+  EXPECT(manifestOr->find("abi_output_count=1") != std::string::npos,
+         "MixAbi manifest still keeps abi_output_count");
+  EXPECT(manifestOr->find("abi_workspace_bytes=1024") != std::string::npos,
+         "MixAbi manifest still keeps abi_workspace_bytes");
+  EXPECT(manifestOr->find("abi_tiling_source=out/tiling.bin") != std::string::npos,
+         "MixAbi manifest still keeps abi_tiling_source");
+}
+
 // ── main ─────────────────────────────────────────────────────────────────────
 
 int main(int argc, char **argv) {
@@ -840,6 +878,7 @@ int main(int argc, char **argv) {
   testMixCompileMetadataSchema();
   testMixAbiManifestCompatibilityBoundary();
   testMixAbiManifestSerializationDropsLegacyLaunchFields();
+  testMixAbiManifestSerializationRetainsLegacyIoContract();
 
   llvm::outs() << "\n========================================\n"
                << "Results: " << g_pass << " passed, " << g_fail << " failed\n"
