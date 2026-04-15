@@ -102,6 +102,51 @@ struct MixLegacyBuildOutputs {
   std::string recompileCommand;
 };
 
+struct MixLegacyDebugManifestInputs {
+  const MixAnalyzedKernel *analyzed = nullptr;
+  const MixAbiMetadata *abi = nullptr;
+  std::string runtimeKernelName;
+  std::string sourcePath;
+  std::string hostSourcePath;
+  std::string preprocessCompileCommandsPath;
+  std::string preprocessCommand;
+  std::string preprocessGeneratedDir;
+  std::string generatedSourcePath;
+  std::string aicDefinitions;
+  std::string aivDefinitions;
+  std::string workDir;
+  std::string objectDir;
+  std::string outDir;
+  std::string mergeDir;
+  std::string launcherHeaderDir;
+  std::string hostStubSourcePath;
+  std::string hostStubObjectPath;
+  std::string kernelSoPath;
+  std::string mixFlagPath;
+  std::string runnerSourcePath;
+  std::string runnerBinaryPath;
+  std::string aicObj;
+  std::string aivObj;
+  std::string aicRelocObj;
+  std::string aivRelocObj;
+  std::string mergedDeviceObj;
+  std::string aicCompileCmd;
+  std::string aivCompileCmd;
+  std::string aicRelocCmd;
+  std::string aivRelocCmd;
+  std::string mergeCmd;
+  std::string hostCompileCmd;
+  std::string hostBishengObjectPath;
+  std::string hostBishengCmd;
+  std::string hostObjectDir;
+  std::string packCmd;
+  std::string linkCmd;
+  std::string recompileCmd;
+  std::string runnerCompileCmd;
+  std::string metadataPath;
+  std::string manifestPath;
+};
+
 llvm::Expected<MixGeneratedConfig>
 parseMixGeneratedConfig(llvm::StringRef path);
 
@@ -140,5 +185,8 @@ writeLegacyMixCompileMetadataFile(llvm::StringRef metadataPath,
                                   llvm::StringRef launchInfoFilePath,
                                   const MixAbiMetadata &abi,
                                   bool useLegacyRunner);
+
+llvm::Error
+writeLegacyMixDebugManifest(const MixLegacyDebugManifestInputs &inputs);
 
 } // namespace mlir::runtime

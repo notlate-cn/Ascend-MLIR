@@ -585,124 +585,6 @@ static std::string emitRunnerTilingSource(const MixAbiMetadata &abi) {
   return os.str();
 }
 
-static llvm::Error writeDebugManifest(const MixAnalyzedKernel &analyzed,
-                                      llvm::StringRef runtimeKernelName,
-                                      const MixAbiMetadata &abi,
-                                      llvm::StringRef sourcePath,
-                                      llvm::StringRef hostSourcePath,
-                                      llvm::StringRef preprocessCompileCommandsPath,
-                                      llvm::StringRef preprocessCommand,
-                                      llvm::StringRef preprocessGeneratedDir,
-                                      llvm::StringRef generatedSourcePath,
-                                      llvm::StringRef aicDefinitions,
-                                      llvm::StringRef aivDefinitions,
-                                      llvm::StringRef workDir,
-                                      llvm::StringRef objectDir,
-                                      llvm::StringRef outDir,
-                                      llvm::StringRef mergeDir,
-                                      llvm::StringRef launcherHeaderDir,
-                                      llvm::StringRef hostStubSourcePath,
-                                      llvm::StringRef hostStubObjectPath,
-                                      llvm::StringRef kernelSoPath,
-                                      llvm::StringRef mixFlagPath,
-                                      llvm::StringRef runnerSourcePath,
-                                      llvm::StringRef runnerBinaryPath,
-                                      llvm::StringRef aicObj,
-                                      llvm::StringRef aivObj,
-                                      llvm::StringRef aicRelocObj,
-                                      llvm::StringRef aivRelocObj,
-                                      llvm::StringRef mergedDeviceObj,
-                                      llvm::StringRef aicCompileCmd,
-                                      llvm::StringRef aivCompileCmd,
-                                      llvm::StringRef aicRelocCmd,
-                                      llvm::StringRef aivRelocCmd,
-                                      llvm::StringRef mergeCmd,
-                                      llvm::StringRef hostCompileCmd,
-                                      llvm::StringRef hostBishengObjectPath,
-                                      llvm::StringRef hostBishengCmd,
-                                      llvm::StringRef hostObjectDir,
-                                      llvm::StringRef packCmd,
-                                      llvm::StringRef linkCmd,
-                                      llvm::StringRef recompileCmd,
-                                      llvm::StringRef runnerCompileCmd,
-                                      llvm::StringRef metadataPath,
-                                      llvm::StringRef manifestPath) {
-  std::string manifest;
-  manifest += std::string("kernel_name=") + runtimeKernelName.str() + "\n";
-  manifest += std::string("requested_kernel_name=") + analyzed.kernelName + "\n";
-  manifest += std::string("soc_version=") + analyzed.socVersion + "\n";
-  manifest += std::string("kernel_kind=mix\n");
-  manifest += std::string("mix_resource_type=mix_1c1v\n");
-  manifest += std::string("source_path=") + sourcePath.str() + "\n";
-  if (!hostSourcePath.empty())
-    manifest += std::string("host_source_path=") + hostSourcePath.str() + "\n";
-  manifest += std::string("preprocess_compile_commands=") +
-              preprocessCompileCommandsPath.str() + "\n";
-  manifest += std::string("preprocess_command=") + preprocessCommand.str() +
-              "\n";
-  manifest += std::string("preprocess_generated_dir=") +
-              preprocessGeneratedDir.str() + "\n";
-  manifest += std::string("generated_source_path=") + generatedSourcePath.str() +
-              "\n";
-  manifest += std::string("aic_definitions=") + aicDefinitions.str() + "\n";
-  manifest += std::string("aiv_definitions=") + aivDefinitions.str() + "\n";
-  manifest += std::string("work_dir=") + workDir.str() + "\n";
-  manifest += std::string("build_dir=") + objectDir.str() + "\n";
-  manifest += std::string("install_dir=") + outDir.str() + "\n";
-  manifest += std::string("object_dir=") + objectDir.str() + "\n";
-  manifest += std::string("out_dir=") + outDir.str() + "\n";
-  if (metadataPath.empty()) {
-    manifest += std::string("abi_kind=mix_gm_workspace_tiling\n");
-    auto abiManifestOr = serializeMixAbiManifest(abi);
-    if (!abiManifestOr)
-      return abiManifestOr.takeError();
-    manifest += *abiManifestOr;
-  }
-  manifest += std::string("merge_obj_dir=") + mergeDir.str() + "\n";
-  manifest += std::string("launcher_header_dir=") +
-              launcherHeaderDir.str() + "\n";
-  manifest += std::string("host_runner_path=") + runnerBinaryPath.str() + "\n";
-  manifest += std::string("manifest_path=") + manifestPath.str() + "\n";
-  if (!metadataPath.empty())
-    manifest += std::string("metadata_path=") + metadataPath.str() + "\n";
-  if (!hostStubSourcePath.empty())
-    manifest += std::string("host_stub_source_path=") +
-                hostStubSourcePath.str() + "\n";
-  manifest += std::string("host_stub_object_path=") + hostStubObjectPath.str() +
-              "\n";
-  if (!hostBishengObjectPath.empty())
-    manifest += std::string("host_bisheng_object=") +
-                hostBishengObjectPath.str() + "\n";
-  if (!hostObjectDir.empty())
-    manifest += std::string("host_object_dir=") + hostObjectDir.str() + "\n";
-  manifest += std::string("kernel_so_path=") + kernelSoPath.str() + "\n";
-  manifest += std::string("mix_build_flag=") + mixFlagPath.str() + "\n";
-  manifest += std::string("host_runner_source_path=") +
-              runnerSourcePath.str() + "\n";
-  manifest += std::string("aic_object=") + aicObj.str() + "\n";
-  manifest += std::string("aiv_object=") + aivObj.str() + "\n";
-  manifest += std::string("aic_reloc_object=") + aicRelocObj.str() + "\n";
-  manifest += std::string("aiv_reloc_object=") + aivRelocObj.str() + "\n";
-  manifest += std::string("bisheng_aic=") + aicCompileCmd.str() + "\n";
-  manifest += std::string("bisheng_aiv=") + aivCompileCmd.str() + "\n";
-  manifest += std::string("lld_reloc_aic=") + aicRelocCmd.str() + "\n";
-  manifest += std::string("lld_reloc_aiv=") + aivRelocCmd.str() + "\n";
-  manifest += std::string("lld_merge=") + mergeCmd.str() + "\n";
-  manifest += std::string("host_compile_cmd=") + hostCompileCmd.str() + "\n";
-  if (!hostBishengCmd.empty())
-    manifest += std::string("host_bisheng_cmd=") + hostBishengCmd.str() + "\n";
-  manifest += std::string("pack_cmd=") + packCmd.str() + "\n";
-  manifest += std::string("host_link_cmd=") + linkCmd.str() + "\n";
-  if (!recompileCmd.empty())
-    manifest += std::string("recompile_cmd=") + recompileCmd.str() + "\n";
-  manifest += std::string("host_runner_compile_cmd=") + runnerCompileCmd.str() +
-              "\n";
-  if (!mergedDeviceObj.empty())
-    manifest += std::string("device_object_path=") + mergedDeviceObj.str() +
-                "\n";
-  return writeTextFile(manifestPath, manifest);
-}
-
 } // namespace
 
 llvm::Expected<MixArtifact>
@@ -969,39 +851,52 @@ MixDirectBackend::compile(const MixDirectCompileConfig &cfg) {
               std::string("device_object=") + mergedDeviceObj + "\n"))
     return err;
 
-  if (auto err = writeDebugManifest(*analyzed, runtimeKernelName, abi, sourcePath,
-                                    buildOr->hostSourcePath,
-                                    preprocessCompileCommandsPath,
-                                    preprocessCommand,
-                                    preprocessGeneratedDir,
-                                    generatedSourcePath,
-                                    joinDefinitions(deviceAnalyzed.aicDefines),
-                                    joinDefinitions(deviceAnalyzed.aivDefines),
-                                    layout.workDir, layout.objectDir,
-                                    layout.outDir, layout.mergeDir,
-                                    layout.outIncludeDir,
-                                    hostStubSourcePath, hostStubObjectPath,
-                                    kernelSoPath, mixFlagPath,
-                                    runnerMainSourcePath, runnerBinaryOutputPath,
-                                    aicObj, aivObj,
-                                    aicRelocObj, aivRelocObj, mergedDeviceObj,
-                                    buildOr->aicCompileCommand,
-                                    buildOr->aivCompileCommand,
-                                    buildOr->aicRelocCommand,
-                                    buildOr->aivRelocCommand,
-                                    buildOr->mergeCommand,
-                                    buildOr->hostCompileCommand,
-                                    buildOr->hostBishengObjectPath,
-                                    buildOr->hostBishengCommand,
-                                    buildOr->hostObjectDir,
-                                    buildOr->packCommand,
-                                    buildOr->hostLinkCommand,
-                                    buildOr->recompileCommand,
-                                    renderCommandForDebug(useLegacyRunner
-                                                              ? runnerCompileCmd
-                                                              : tilingEmitCmd),
-                                    *metadataPathOr,
-                                    manifestPath))
+  MixLegacyDebugManifestInputs debugInputs;
+  debugInputs.analyzed = &*analyzed;
+  debugInputs.abi = &abi;
+  debugInputs.runtimeKernelName = runtimeKernelName;
+  debugInputs.sourcePath = sourcePath.str().str();
+  debugInputs.hostSourcePath = buildOr->hostSourcePath;
+  debugInputs.preprocessCompileCommandsPath = preprocessCompileCommandsPath;
+  debugInputs.preprocessCommand = preprocessCommand;
+  debugInputs.preprocessGeneratedDir = preprocessGeneratedDir;
+  debugInputs.generatedSourcePath = generatedSourcePath;
+  debugInputs.aicDefinitions = joinDefinitions(deviceAnalyzed.aicDefines);
+  debugInputs.aivDefinitions = joinDefinitions(deviceAnalyzed.aivDefines);
+  debugInputs.workDir = layout.workDir;
+  debugInputs.objectDir = layout.objectDir;
+  debugInputs.outDir = layout.outDir;
+  debugInputs.mergeDir = layout.mergeDir;
+  debugInputs.launcherHeaderDir = layout.outIncludeDir;
+  debugInputs.hostStubSourcePath = hostStubSourcePath;
+  debugInputs.hostStubObjectPath = hostStubObjectPath;
+  debugInputs.kernelSoPath = kernelSoPath;
+  debugInputs.mixFlagPath = mixFlagPath;
+  debugInputs.runnerSourcePath = runnerMainSourcePath;
+  debugInputs.runnerBinaryPath = runnerBinaryOutputPath;
+  debugInputs.aicObj = aicObj;
+  debugInputs.aivObj = aivObj;
+  debugInputs.aicRelocObj = aicRelocObj;
+  debugInputs.aivRelocObj = aivRelocObj;
+  debugInputs.mergedDeviceObj = mergedDeviceObj;
+  debugInputs.aicCompileCmd = buildOr->aicCompileCommand;
+  debugInputs.aivCompileCmd = buildOr->aivCompileCommand;
+  debugInputs.aicRelocCmd = buildOr->aicRelocCommand;
+  debugInputs.aivRelocCmd = buildOr->aivRelocCommand;
+  debugInputs.mergeCmd = buildOr->mergeCommand;
+  debugInputs.hostCompileCmd = buildOr->hostCompileCommand;
+  debugInputs.hostBishengObjectPath = buildOr->hostBishengObjectPath;
+  debugInputs.hostBishengCmd = buildOr->hostBishengCommand;
+  debugInputs.hostObjectDir = buildOr->hostObjectDir;
+  debugInputs.packCmd = buildOr->packCommand;
+  debugInputs.linkCmd = buildOr->hostLinkCommand;
+  debugInputs.recompileCmd = buildOr->recompileCommand;
+  debugInputs.runnerCompileCmd = renderCommandForDebug(useLegacyRunner
+                                                           ? runnerCompileCmd
+                                                           : tilingEmitCmd);
+  debugInputs.metadataPath = *metadataPathOr;
+  debugInputs.manifestPath = manifestPath;
+  if (auto err = writeLegacyMixDebugManifest(debugInputs))
     return err;
 
   MixArtifact artifact;
