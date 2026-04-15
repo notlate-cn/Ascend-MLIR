@@ -113,6 +113,14 @@ struct MixLegacyTilingOutputs {
   std::string tilingEmitCommand;
 };
 
+struct MixLegacyCompileOutputs {
+  MixLegacyCompileContract contract;
+  MixLegacyBuildOutputs build;
+  MixAbiMetadata abi;
+  MixLegacyTilingOutputs tiling;
+  std::string metadataPath;
+};
+
 struct MixLegacyDebugManifestInputs {
   const MixAnalyzedKernel *analyzed = nullptr;
   const MixAbiMetadata *abi = nullptr;
@@ -210,5 +218,14 @@ executeLegacyMixTilingStage(const MixCompileLayout &layout,
                             llvm::StringRef runtimeKernelName,
                             llvm::StringRef socVersion,
                             const MixAbiMetadata &abi);
+
+llvm::Expected<MixLegacyCompileOutputs>
+executeLegacyMixCompilePipeline(const MixCompileLayout &layout,
+                                llvm::StringRef sourcePath,
+                                llvm::StringRef requestedKernelName,
+                                llvm::StringRef cannMlirPath,
+                                llvm::StringRef npyDir,
+                                llvm::StringRef socVersion,
+                                const MixAnalyzedKernel &analyzed);
 
 } // namespace mlir::runtime

@@ -1628,6 +1628,53 @@ executeLegacyMixTilingStage(const MixCompileLayout &layout,
   return outputs;
 }
 
+llvm::Expected<MixLegacyCompileOutputs>
+executeLegacyMixCompilePipeline(const MixCompileLayout &layout,
+                                llvm::StringRef sourcePath,
+                                llvm::StringRef requestedKernelName,
+                                llvm::StringRef cannMlirPath,
+                                llvm::StringRef npyDir,
+                                llvm::StringRef socVersion,
+                                const MixAnalyzedKernel &analyzed) {
+  MixLegacyCompileOutputs outputs;
+  auto contractOr = loadLegacyMixCompileContract(
+      layout, sourcePath, requestedKernelName, socVersion, analyzed);
+  if (!contractOr)
+    return contractOr.takeError();
+  outputs.contract = std::move(*contractOr);
+
+  auto buildOr = executeLegacyMixBinaryBuild(outputs.contract, sourcePath,
+                                             requestedKernelName, socVersion);
+  if (!buildOr)
+    return buildOr.takeError();
+  outputs.build = std::move(*buildOr);
+
+  auto abiOr =
+      loadLegacyMixRuntimeAbi(cannMlirPath, npyDir, outputs.build.runtimeKernelName);
+  if (!abiOr)
+    return abiOr.takeError();
+  outputs.abi = std::move(*abiOr);
+
+  auto tilingOr = executeLegacyMixTilingStage(layout, outputs.build.runtimeKernelName,
+                                              socVersion, outputs.abi);
+  if (!tilingOr)
+    return tilingOr.takeError();
+  outputs.tiling = std::move(*tilingOr);
+  outputs.abi.blockDim = outputs.tiling.blockDim;
+
+  auto metadataPathOr = writeLegacyMixCompileMetadataFile(
+      layout.metadataPath, outputs.build.runtimeKernelName, socVersion,
+      "mix_1c1v", outputs.contract.generatedSourcePath,
+      outputs.contract.aicDefinitions, outputs.contract.aivDefinitions,
+      layout.mergedDeviceObj, layout.kernelSoPath,
+      outputs.tiling.tilingArtifactPath, outputs.tiling.launchInfoPath,
+      outputs.abi, outputs.tiling.usedLegacyRunner);
+  if (!metadataPathOr)
+    return metadataPathOr.takeError();
+  outputs.metadataPath = *metadataPathOr;
+  return outputs;
+}
+
 llvm::Error
 writeLegacyMixDebugManifest(const MixLegacyDebugManifestInputs &inputs) {
   if (!inputs.analyzed || !inputs.abi)

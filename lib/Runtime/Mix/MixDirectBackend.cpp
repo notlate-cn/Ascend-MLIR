@@ -110,60 +110,32 @@ MixDirectBackend::compile(const MixDirectCompileConfig &cfg) {
                                    analysisError.c_str());
   }
 
-  auto compatOr = loadLegacyMixCompileContract(
-      layout, sourcePath, cfg.kernelName, cfg.socVersion, *analyzed);
-  if (!compatOr)
-    return compatOr.takeError();
-
-  MixAnalyzedKernel deviceAnalyzed = *analyzed;
-  deviceAnalyzed.aicDefines = compatOr->aicDefinitions;
-  deviceAnalyzed.aivDefines = compatOr->aivDefinitions;
-
-  auto buildOr = executeLegacyMixBinaryBuild(*compatOr, sourcePath,
-                                             cfg.kernelName, cfg.socVersion);
-  if (!buildOr)
-    return buildOr.takeError();
-
-  auto abiOr = loadLegacyMixRuntimeAbi(
+  auto compileOr = executeLegacyMixCompilePipeline(
+      layout, sourcePath, cfg.kernelName,
       cfg.cannMlirPath ? llvm::StringRef(*cfg.cannMlirPath) : llvm::StringRef(),
       cfg.npyDir ? llvm::StringRef(*cfg.npyDir) : llvm::StringRef(),
-      buildOr->runtimeKernelName);
-  if (!abiOr)
-    return abiOr.takeError();
-  MixAbiMetadata abi = std::move(*abiOr);
-
-  auto tilingOr = executeLegacyMixTilingStage(layout, buildOr->runtimeKernelName,
-                                              cfg.socVersion, abi);
-  if (!tilingOr)
-    return tilingOr.takeError();
-  abi.blockDim = tilingOr->blockDim;
-
-  auto metadataPathOr = writeLegacyMixCompileMetadataFile(
-      layout.metadataPath, buildOr->runtimeKernelName, cfg.socVersion,
-      "mix_1c1v", compatOr->generatedSourcePath, deviceAnalyzed.aicDefines,
-      deviceAnalyzed.aivDefines, layout.mergedDeviceObj, layout.kernelSoPath,
-      tilingOr->tilingArtifactPath, tilingOr->launchInfoPath, abi,
-      tilingOr->usedLegacyRunner);
-  if (!metadataPathOr)
-    return metadataPathOr.takeError();
+      cfg.socVersion, *analyzed);
+  if (!compileOr)
+    return compileOr.takeError();
+  const MixLegacyCompileOutputs &compile = *compileOr;
 
   if (auto err = writeTextFile(
           layout.analysisPath,
-          std::string("kernel_name=") + buildOr->runtimeKernelName + "\n" +
+          std::string("kernel_name=") + compile.build.runtimeKernelName + "\n" +
               std::string("requested_kernel_name=") + analyzed->kernelName +
               "\n" +
               std::string("soc_version=") + analyzed->socVersion + "\n" +
               std::string("source_path=") + sourcePath.str().str() + "\n" +
-              (buildOr->hostSourcePath.empty()
+              (compile.build.hostSourcePath.empty()
                    ? std::string{}
                    : std::string("host_source_path=") +
-                         buildOr->hostSourcePath + "\n") +
+                         compile.build.hostSourcePath + "\n") +
               std::string("generated_source_path=") +
-              compatOr->generatedSourcePath + "\n" +
+              compile.contract.generatedSourcePath + "\n" +
               std::string("aic_definitions=") +
-              joinDefinitions(deviceAnalyzed.aicDefines) + "\n" +
+              joinDefinitions(compile.contract.aicDefinitions) + "\n" +
               std::string("aiv_definitions=") +
-              joinDefinitions(deviceAnalyzed.aivDefines) + "\n" +
+              joinDefinitions(compile.contract.aivDefinitions) + "\n" +
               std::string("aic_object=") + layout.aicObj + "\n" +
               std::string("aiv_object=") + layout.aivObj + "\n" +
               std::string("aic_reloc_object=") + layout.aicRelocObj + "\n" +
@@ -173,64 +145,64 @@ MixDirectBackend::compile(const MixDirectCompileConfig &cfg) {
 
   MixLegacyDebugManifestInputs debugInputs;
   debugInputs.analyzed = &*analyzed;
-  debugInputs.abi = &abi;
-  debugInputs.runtimeKernelName = buildOr->runtimeKernelName;
+  debugInputs.abi = &compile.abi;
+  debugInputs.runtimeKernelName = compile.build.runtimeKernelName;
   debugInputs.sourcePath = sourcePath.str().str();
-  debugInputs.hostSourcePath = buildOr->hostSourcePath;
+  debugInputs.hostSourcePath = compile.build.hostSourcePath;
   debugInputs.preprocessCompileCommandsPath =
-      buildOr->preprocessCompileCommandsPath;
-  debugInputs.preprocessCommand = buildOr->preprocessCommand;
-  debugInputs.preprocessGeneratedDir = buildOr->preprocessGeneratedDir;
-  debugInputs.generatedSourcePath = compatOr->generatedSourcePath;
-  debugInputs.aicDefinitions = joinDefinitions(deviceAnalyzed.aicDefines);
-  debugInputs.aivDefinitions = joinDefinitions(deviceAnalyzed.aivDefines);
+      compile.build.preprocessCompileCommandsPath;
+  debugInputs.preprocessCommand = compile.build.preprocessCommand;
+  debugInputs.preprocessGeneratedDir = compile.build.preprocessGeneratedDir;
+  debugInputs.generatedSourcePath = compile.contract.generatedSourcePath;
+  debugInputs.aicDefinitions = joinDefinitions(compile.contract.aicDefinitions);
+  debugInputs.aivDefinitions = joinDefinitions(compile.contract.aivDefinitions);
   debugInputs.workDir = layout.workDir;
   debugInputs.objectDir = layout.objectDir;
   debugInputs.outDir = layout.outDir;
   debugInputs.mergeDir = layout.mergeDir;
   debugInputs.launcherHeaderDir = layout.outIncludeDir;
-  debugInputs.hostStubSourcePath = buildOr->hostStubSourcePath;
+  debugInputs.hostStubSourcePath = compile.build.hostStubSourcePath;
   debugInputs.hostStubObjectPath = layout.hostStubObjectPath;
   debugInputs.kernelSoPath = layout.kernelSoPath;
   debugInputs.mixFlagPath = layout.mixFlagPath;
-  debugInputs.runnerSourcePath = tilingOr->runnerSourcePath;
-  debugInputs.runnerBinaryPath = tilingOr->runnerBinaryPath;
+  debugInputs.runnerSourcePath = compile.tiling.runnerSourcePath;
+  debugInputs.runnerBinaryPath = compile.tiling.runnerBinaryPath;
   debugInputs.aicObj = layout.aicObj;
   debugInputs.aivObj = layout.aivObj;
   debugInputs.aicRelocObj = layout.aicRelocObj;
   debugInputs.aivRelocObj = layout.aivRelocObj;
   debugInputs.mergedDeviceObj = layout.mergedDeviceObj;
-  debugInputs.aicCompileCmd = buildOr->aicCompileCommand;
-  debugInputs.aivCompileCmd = buildOr->aivCompileCommand;
-  debugInputs.aicRelocCmd = buildOr->aicRelocCommand;
-  debugInputs.aivRelocCmd = buildOr->aivRelocCommand;
-  debugInputs.mergeCmd = buildOr->mergeCommand;
-  debugInputs.hostCompileCmd = buildOr->hostCompileCommand;
-  debugInputs.hostBishengObjectPath = buildOr->hostBishengObjectPath;
-  debugInputs.hostBishengCmd = buildOr->hostBishengCommand;
-  debugInputs.hostObjectDir = buildOr->hostObjectDir;
-  debugInputs.packCmd = buildOr->packCommand;
-  debugInputs.linkCmd = buildOr->hostLinkCommand;
-  debugInputs.recompileCmd = buildOr->recompileCommand;
-  debugInputs.runnerCompileCmd = tilingOr->runnerCompileCommand;
-  debugInputs.metadataPath = *metadataPathOr;
+  debugInputs.aicCompileCmd = compile.build.aicCompileCommand;
+  debugInputs.aivCompileCmd = compile.build.aivCompileCommand;
+  debugInputs.aicRelocCmd = compile.build.aicRelocCommand;
+  debugInputs.aivRelocCmd = compile.build.aivRelocCommand;
+  debugInputs.mergeCmd = compile.build.mergeCommand;
+  debugInputs.hostCompileCmd = compile.build.hostCompileCommand;
+  debugInputs.hostBishengObjectPath = compile.build.hostBishengObjectPath;
+  debugInputs.hostBishengCmd = compile.build.hostBishengCommand;
+  debugInputs.hostObjectDir = compile.build.hostObjectDir;
+  debugInputs.packCmd = compile.build.packCommand;
+  debugInputs.linkCmd = compile.build.hostLinkCommand;
+  debugInputs.recompileCmd = compile.build.recompileCommand;
+  debugInputs.runnerCompileCmd = compile.tiling.runnerCompileCommand;
+  debugInputs.metadataPath = compile.metadataPath;
   debugInputs.manifestPath = layout.manifestPath;
   if (auto err = writeLegacyMixDebugManifest(debugInputs))
     return err;
 
   MixArtifact artifact;
-  artifact.kernel_name = buildOr->runtimeKernelName;
+  artifact.kernel_name = compile.build.runtimeKernelName;
   artifact.soc_version = analyzed->socVersion;
   artifact.work_dir = layout.workDir;
   artifact.build_dir = layout.objectDir;
   artifact.install_dir = layout.outDir;
   artifact.kernel_so_path = layout.kernelSoPath;
   artifact.launcher_header_dir = layout.outIncludeDir;
-  artifact.host_runner_path = tilingOr->runnerBinaryPath;
-  artifact.host_stub_source_path = buildOr->hostStubSourcePath;
+  artifact.host_runner_path = compile.tiling.runnerBinaryPath;
+  artifact.host_stub_source_path = compile.build.hostStubSourcePath;
   artifact.device_object_path = layout.mergedDeviceObj;
   artifact.manifest_path = layout.manifestPath;
-  artifact.metadata_path = *metadataPathOr;
+  artifact.metadata_path = compile.metadataPath;
   return artifact;
 }
 
