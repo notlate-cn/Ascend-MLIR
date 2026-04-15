@@ -2,8 +2,8 @@
 //
 // Unit tests for lib/Runtime: Types, NpyIO.
 // Most coverage does not require a simulator or .bin file; the runtime-native
-// packed mix error path is xvm/Ascend-environment-specific and self-skips when
-// that environment is unavailable.
+// dynamic-library artifact error path is xvm/Ascend-environment-specific and
+// self-skips when that environment is unavailable.
 //
 // Covers:
 //   - DType byte sizes (including new BF16, INT8, INT64)
@@ -322,17 +322,18 @@ static void testNpyIOErrors() {
   }
 }
 
-static void testRuntimeNativePackedMixErrors() {
-  llvm::outs() << "\n[Runtime-native packed mix error path]\n";
+static void testRuntimeNativeDynamicLibraryArtifactErrors() {
+  llvm::outs() << "\n[Runtime-native dynamic-library artifact error path]\n";
 
 #ifdef _WIN32
-  EXPECT(true, "runtime-native packed mix error path is covered on xvm");
+  EXPECT(true,
+         "runtime-native dynamic-library artifact error path is covered on xvm");
 #else
   const std::string ascendHome = findAscendHome();
   const std::string socVersion = findSocVersion();
   if (ascendHome.empty() || socVersion.empty()) {
     EXPECT(true,
-           "runtime-native packed mix error path is skipped when Ascend runtime env is unavailable");
+           "runtime-native dynamic-library artifact error path is skipped when Ascend runtime env is unavailable");
     return;
   }
 
@@ -344,7 +345,8 @@ static void testRuntimeNativePackedMixErrors() {
 
   const std::filesystem::path errorPath = buildDir / "error.txt";
   pid_t pid = fork();
-  EXPECT(pid >= 0, "fork for runtime-native packed mix error path succeeds");
+  EXPECT(pid >= 0,
+         "fork for runtime-native dynamic-library artifact error path succeeds");
   if (pid < 0) {
     std::filesystem::remove_all(buildDir);
     return;
@@ -362,8 +364,9 @@ static void testRuntimeNativePackedMixErrors() {
 
     RunArgs args;
     args.block_dim = 1;
-    PackedMixExecutionLaunch launch{missingSoPath.string(), "fc_relu"};
-    auto err = runner.runPackedMixFile(launch, args);
+    DynamicLibraryExecutionLaunch launch{missingSoPath.string(),
+                                         "aclrtlaunch_fc_relu"};
+    auto err = runner.runDynamicLibraryArtifact(launch, args);
     if (err)
       os << llvm::toString(std::move(err));
     else
@@ -374,17 +377,17 @@ static void testRuntimeNativePackedMixErrors() {
 
   int status = 0;
   EXPECT(waitpid(pid, &status, 0) == pid,
-         "waitpid for runtime-native packed mix error path succeeds");
+         "waitpid for runtime-native dynamic-library artifact error path succeeds");
   EXPECT(WIFEXITED(status),
-         "runtime-native packed mix error child exits cleanly");
+         "runtime-native dynamic-library artifact error child exits cleanly");
 
   std::ifstream is(errorPath);
   std::string message((std::istreambuf_iterator<char>(is)),
                       std::istreambuf_iterator<char>());
   EXPECT(!message.empty(),
-         "runtime-native packed mix path returns an error for missing shared library");
+         "runtime-native dynamic-library artifact path returns an error for missing shared library");
   EXPECT(message.find("dlopen") != std::string::npos,
-         "runtime-native packed mix error keeps a dlopen failure diagnostic");
+         "runtime-native dynamic-library artifact error keeps a dlopen failure diagnostic");
 
   std::filesystem::remove_all(buildDir);
 #endif
@@ -918,7 +921,7 @@ int main(int argc, char **argv) {
   testNDArrayRAII();
   testNpyIORoundTrip();
   testNpyIOErrors();
-  testRuntimeNativePackedMixErrors();
+  testRuntimeNativeDynamicLibraryArtifactErrors();
   testRuntimePathUtils();
   testRuntimeToolDiscovery();
   testMixCompileMetadataSchema();

@@ -19,11 +19,6 @@ struct FileExecutionLaunch {
   uint32_t magic = 0;
 };
 
-struct PackedMixExecutionLaunch {
-  std::string sharedLibraryPath;
-  std::string kernelName;
-};
-
 struct DynamicLibraryExecutionLaunch {
   std::string sharedLibraryPath;
   std::string symbolName;
@@ -40,8 +35,6 @@ public:
   virtual llvm::Error
   runDynamicLibraryArtifact(const DynamicLibraryExecutionLaunch &launch,
                             RunArgs &args) = 0;
-  virtual llvm::Error runPackedMixFile(const PackedMixExecutionLaunch &launch,
-                                       RunArgs &args) = 0;
 };
 
 } // namespace mlir::runtime

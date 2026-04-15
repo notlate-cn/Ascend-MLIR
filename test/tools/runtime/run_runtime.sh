@@ -20,6 +20,13 @@ echo "--- Checking runtime-session CLI ---"
 test -x build/bin/runtime-session
 build/bin/runtime-session --help | grep -q "task graph runtime"
 
+echo "--- Checking runtime execution runner API surface ---"
+if grep -R -n -E "runPackedMixFile|PackedMixExecutionLaunch" \
+    include/Runtime lib/Runtime test/tools/runtime/test_*.cpp; then
+  echo "Error: packed mix runner API must not remain in active runtime surfaces" >&2
+  exit 1
+fi
+
 FAKE_ARTIFACT_ROOT="$(mktemp -d)"
 INVALID_STDERR=""
 CONFLICT_STDERR=""

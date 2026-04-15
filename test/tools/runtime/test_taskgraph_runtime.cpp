@@ -174,21 +174,12 @@ public:
     return llvm::Error::success();
   }
 
-  llvm::Error runPackedMixFile(const PackedMixExecutionLaunch &launch,
-                               RunArgs &) override {
-    runPackedMixCalled = true;
-    lastPackedMixLaunch = launch;
-    return llvm::Error::success();
-  }
-
   bool initializeCalled = false;
   bool runFileCalled = false;
   bool runDynamicLibraryCalled = false;
-  bool runPackedMixCalled = false;
   int lastDeviceId = -1;
   FileExecutionLaunch lastFileLaunch;
   DynamicLibraryExecutionLaunch lastDynamicLibraryLaunch;
-  PackedMixExecutionLaunch lastPackedMixLaunch;
 
 private:
   ExecutionRunnerMode mode_;
@@ -2215,14 +2206,15 @@ static void testNpuBackendRejectsMissingMixSharedObjectPath() {
                     "", "", std::vector<int64_t>{4}, DType::F16});
 
   auto resultOr = (*npuOr)->run(request);
-  EXPECT(!(bool)resultOr, "npu backend rejects missing packed mix shared object");
+  EXPECT(!(bool)resultOr,
+         "npu backend rejects missing dynamic-library shared object");
   if (!resultOr) {
     const std::string message = llvm::toString(resultOr.takeError());
     EXPECT(message.find("[npu:artifact]") != std::string::npos,
            "npu backend reports artifact stage for missing mix shared object");
     EXPECT(message.find("mix artifact is missing packed shared object path") !=
                std::string::npos,
-           "npu backend reports missing packed mix shared object path");
+           "npu backend reports missing dynamic-library shared object path");
   }
 }
 

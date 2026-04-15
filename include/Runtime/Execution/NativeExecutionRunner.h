@@ -23,8 +23,6 @@ public:
   llvm::Error
   runDynamicLibraryArtifact(const DynamicLibraryExecutionLaunch &launch,
                             RunArgs &args);
-  llvm::Error runPackedMixFile(const PackedMixExecutionLaunch &launch,
-                               RunArgs &args);
 
 private:
   llvm::Error loadRuntimeLibraries();
