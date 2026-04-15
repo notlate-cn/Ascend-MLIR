@@ -106,7 +106,7 @@ static void appendDefineIfMissing(std::vector<std::string> &defs,
     defs.push_back(needle.str());
 }
 
-static llvm::Error runLegacyMixProbeStage(const MixCompileLayout &layout,
+static llvm::Error runMixDirectProbeStage(const MixCompileLayout &layout,
                                           llvm::StringRef sourcePath,
                                           llvm::StringRef kernelName,
                                           const MixAnalyzedKernel &analyzed) {
@@ -307,7 +307,7 @@ parseMixGeneratedConfig(llvm::StringRef path) {
 }
 
 llvm::Expected<MixPreprocessOutputs>
-runLegacyMixPreprocessStage(llvm::StringRef workDir, llvm::StringRef sourcePath,
+runMixDirectPreprocessStage(llvm::StringRef workDir, llvm::StringRef sourcePath,
                             llvm::StringRef kernelName,
                             llvm::StringRef socVersion,
                             llvm::StringRef aivProbeObject,
@@ -420,14 +420,14 @@ runLegacyMixPreprocessStage(llvm::StringRef workDir, llvm::StringRef sourcePath,
   return outputs;
 }
 
-llvm::Expected<MixLegacyCompileContract> loadLegacyMixCompileContract(
+llvm::Expected<MixDirectCompileContract> loadMixDirectCompileContract(
     const MixCompileLayout &layout, llvm::StringRef sourcePath,
     llvm::StringRef kernelName, llvm::StringRef socVersion,
     const MixAnalyzedKernel &analyzed) {
-  if (auto err = runLegacyMixProbeStage(layout, sourcePath, kernelName, analyzed))
+  if (auto err = runMixDirectProbeStage(layout, sourcePath, kernelName, analyzed))
     return std::move(err);
   auto preprocessOr =
-      runLegacyMixPreprocessStage(layout.workDir, sourcePath, kernelName,
+      runMixDirectPreprocessStage(layout.workDir, sourcePath, kernelName,
                                   socVersion, layout.aivProbeObject,
                                   layout.aicProbeObject);
   if (!preprocessOr)
@@ -444,7 +444,7 @@ llvm::Expected<MixLegacyCompileContract> loadLegacyMixCompileContract(
   if (!generatedSourceOr)
     return generatedSourceOr.takeError();
 
-  MixLegacyCompileContract contract;
+  MixDirectCompileContract contract;
   contract.preprocess = *preprocessOr;
   contract.layout = layout;
   contract.generatedSourceName = *generatedSourceOr;

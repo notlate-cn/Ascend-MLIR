@@ -149,7 +149,7 @@ makeMetadataTensorDesc(const MixAbiTensorDesc &tensor) {
 } // namespace
 
 llvm::Expected<MixAbiMetadata>
-loadLegacyMixRuntimeAbi(llvm::StringRef cannMlirPath, llvm::StringRef npyDir,
+loadMixDirectRuntimeAbi(llvm::StringRef cannMlirPath, llvm::StringRef npyDir,
                         llvm::StringRef runtimeKernelName) {
   if (cannMlirPath.empty())
     return llvm::createStringError(
@@ -206,7 +206,7 @@ loadLegacyMixRuntimeAbi(llvm::StringRef cannMlirPath, llvm::StringRef npyDir,
 }
 
 llvm::Expected<std::string>
-writeLegacyMixCompileMetadataFile(llvm::StringRef metadataPath,
+writeMixDirectCompileMetadataFile(llvm::StringRef metadataPath,
                                   llvm::StringRef runtimeKernelName,
                                   llvm::StringRef socVersion,
                                   llvm::StringRef mixKernelType,

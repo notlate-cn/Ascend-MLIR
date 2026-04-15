@@ -28,7 +28,7 @@ static std::string joinDefinitions(llvm::ArrayRef<std::string> defs) {
 } // namespace
 
 llvm::Error
-writeLegacyMixDebugManifest(const MixLegacyDebugManifestInputs &inputs) {
+writeMixDirectDebugManifest(const MixDirectDebugManifestInputs &inputs) {
   if (!inputs.analyzed || !inputs.abi)
     return llvm::createStringError(llvm::inconvertibleErrorCode(),
                                    "debug manifest requires analyzed kernel and ABI");
@@ -111,41 +111,41 @@ writeLegacyMixDebugManifest(const MixLegacyDebugManifestInputs &inputs) {
   return writeTextFile(inputs.manifestPath, manifest);
 }
 
-llvm::Expected<MixLegacyCompileOutputs>
-executeLegacyMixCompilePipeline(const MixCompileLayout &layout,
+llvm::Expected<MixDirectCompileOutputs>
+executeMixDirectCompilePipeline(const MixCompileLayout &layout,
                                 llvm::StringRef sourcePath,
                                 llvm::StringRef requestedKernelName,
                                 llvm::StringRef cannMlirPath,
                                 llvm::StringRef npyDir,
                                 llvm::StringRef socVersion,
                                 const MixAnalyzedKernel &analyzed) {
-  MixLegacyCompileOutputs outputs;
-  auto contractOr = loadLegacyMixCompileContract(
+  MixDirectCompileOutputs outputs;
+  auto contractOr = loadMixDirectCompileContract(
       layout, sourcePath, requestedKernelName, socVersion, analyzed);
   if (!contractOr)
     return contractOr.takeError();
   outputs.contract = std::move(*contractOr);
 
-  auto buildOr = executeLegacyMixBinaryBuild(outputs.contract, sourcePath,
+  auto buildOr = executeMixDirectBinaryBuild(outputs.contract, sourcePath,
                                              requestedKernelName, socVersion);
   if (!buildOr)
     return buildOr.takeError();
   outputs.build = std::move(*buildOr);
 
-  auto abiOr = loadLegacyMixRuntimeAbi(cannMlirPath, npyDir,
+  auto abiOr = loadMixDirectRuntimeAbi(cannMlirPath, npyDir,
                                        outputs.build.runtimeKernelName);
   if (!abiOr)
     return abiOr.takeError();
   outputs.abi = std::move(*abiOr);
 
-  auto tilingOr = executeLegacyMixTilingStage(
+  auto tilingOr = executeMixDirectTilingStage(
       layout, outputs.build.runtimeKernelName, socVersion, outputs.abi);
   if (!tilingOr)
     return tilingOr.takeError();
   outputs.tiling = std::move(*tilingOr);
   outputs.abi.blockDim = outputs.tiling.blockDim;
 
-  auto metadataPathOr = writeLegacyMixCompileMetadataFile(
+  auto metadataPathOr = writeMixDirectCompileMetadataFile(
       layout.metadataPath, outputs.build.runtimeKernelName, socVersion,
       "mix_1c1v", outputs.contract.generatedSourcePath,
       outputs.contract.aicDefinitions, outputs.contract.aivDefinitions,
@@ -159,10 +159,10 @@ executeLegacyMixCompilePipeline(const MixCompileLayout &layout,
 }
 
 llvm::Expected<MixArtifact>
-finalizeLegacyMixArtifact(const MixCompileLayout &layout,
+finalizeMixDirectArtifact(const MixCompileLayout &layout,
                           llvm::StringRef sourcePath,
                           const MixAnalyzedKernel &analyzed,
-                          const MixLegacyCompileOutputs &compile) {
+                          const MixDirectCompileOutputs &compile) {
   if (auto err = writeTextFile(
           layout.analysisPath,
           std::string("kernel_name=") + compile.build.runtimeKernelName + "\n" +
@@ -187,7 +187,7 @@ finalizeLegacyMixArtifact(const MixCompileLayout &layout,
               std::string("device_object=") + layout.mergedDeviceObj + "\n"))
     return std::move(err);
 
-  MixLegacyDebugManifestInputs debugInputs;
+  MixDirectDebugManifestInputs debugInputs;
   debugInputs.analyzed = &analyzed;
   debugInputs.abi = &compile.abi;
   debugInputs.runtimeKernelName = compile.build.runtimeKernelName;
@@ -231,7 +231,7 @@ finalizeLegacyMixArtifact(const MixCompileLayout &layout,
   debugInputs.runnerCompileCmd = compile.tiling.runnerCompileCommand;
   debugInputs.metadataPath = compile.metadataPath;
   debugInputs.manifestPath = layout.manifestPath;
-  if (auto err = writeLegacyMixDebugManifest(debugInputs))
+  if (auto err = writeMixDirectDebugManifest(debugInputs))
     return std::move(err);
 
   MixArtifact artifact;
@@ -270,7 +270,7 @@ executeMixDirectCompile(llvm::StringRef outputDir, llvm::StringRef kernelSrc,
   if (auto ascendHomeOr = requireAscendHome(); !ascendHomeOr)
     return ascendHomeOr.takeError();
 
-  auto layoutOr = buildLegacyMixCompileLayout(outputDir, kernelName);
+  auto layoutOr = buildMixDirectCompileLayout(outputDir, kernelName);
   if (!layoutOr)
     return layoutOr.takeError();
   const MixCompileLayout &layout = *layoutOr;
@@ -300,12 +300,12 @@ executeMixDirectCompile(llvm::StringRef outputDir, llvm::StringRef kernelSrc,
                                    analysisError.c_str());
   }
 
-  auto compileOr = executeLegacyMixCompilePipeline(
+  auto compileOr = executeMixDirectCompilePipeline(
       layout, sourcePath, kernelName, cannMlirPath, npyDir, socVersion,
       *analyzed);
   if (!compileOr)
     return compileOr.takeError();
-  return finalizeLegacyMixArtifact(layout, sourcePath, *analyzed, *compileOr);
+  return finalizeMixDirectArtifact(layout, sourcePath, *analyzed, *compileOr);
 }
 
 } // namespace mlir::runtime

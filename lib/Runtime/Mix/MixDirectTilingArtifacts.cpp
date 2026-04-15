@@ -336,12 +336,12 @@ static std::string emitRunnerTilingSource(const MixAbiMetadata &abi) {
 
 } // namespace
 
-llvm::Expected<MixLegacyTilingOutputs>
-executeLegacyMixTilingStage(const MixCompileLayout &layout,
+llvm::Expected<MixDirectTilingOutputs>
+executeMixDirectTilingStage(const MixCompileLayout &layout,
                             llvm::StringRef runtimeKernelName,
                             llvm::StringRef socVersion,
                             const MixAbiMetadata &abi) {
-  MixLegacyTilingOutputs outputs;
+  MixDirectTilingOutputs outputs;
   outputs.usedLegacyRunner = useLegacyMixRunner();
   outputs.tilingArtifactPath = layout.tilingArtifactPath;
   outputs.launchInfoPath = layout.launchInfoPath;
