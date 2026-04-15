@@ -45,6 +45,7 @@
 #include <iterator>
 #include <memory>
 #include <string>
+#include <tuple>
 #include <vector>
 
 #ifndef _WIN32
@@ -55,6 +56,11 @@
 using namespace mlir::runtime;
 
 namespace mlir::runtime {
+llvm::Error
+runProcessesInParallelForTest(
+    llvm::ArrayRef<std::tuple<std::vector<std::string>, std::string,
+                              std::string>>
+        commands);
 llvm::Expected<std::string>
 materializeSimulatorProfileArtifactForTest(const ExecutionRequest &request,
                                            int64_t cycleCount);
@@ -3890,6 +3896,39 @@ static void testRunManifestParsesDagArtifactRootOverride() {
   }
 }
 
+static void testMixDirectParallelProcessRunnerRunsIndependentCommands() {
+  const std::filesystem::path markerA =
+      std::filesystem::temp_directory_path() / "runtime_parallel_a.marker";
+  const std::filesystem::path markerB =
+      std::filesystem::temp_directory_path() / "runtime_parallel_b.marker";
+  std::filesystem::remove(markerA);
+  std::filesystem::remove(markerB);
+
+  const auto start = std::chrono::steady_clock::now();
+  auto err = runProcessesInParallelForTest({
+      {std::vector<std::string>{"/bin/sh", "-c",
+                                "sleep 1; printf a > " + markerA.string()},
+       "parallel marker A", "marker=" + markerA.string()},
+      {std::vector<std::string>{"/bin/sh", "-c",
+                                "sleep 1; printf b > " + markerB.string()},
+       "parallel marker B", "marker=" + markerB.string()},
+  });
+  const auto elapsedMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+                             std::chrono::steady_clock::now() - start)
+                             .count();
+  EXPECT(!err, "mix direct parallel runner succeeds for independent commands");
+  if (err)
+    llvm::consumeError(std::move(err));
+  EXPECT(elapsedMs < 1900,
+         "mix direct parallel runner does not execute independent commands serially");
+  EXPECT(std::filesystem::exists(markerA),
+         "mix direct parallel runner creates first marker");
+  EXPECT(std::filesystem::exists(markerB),
+         "mix direct parallel runner creates second marker");
+  std::filesystem::remove(markerA);
+  std::filesystem::remove(markerB);
+}
+
 int main() {
   testTaskGraphBasics();
   testProfileTraceCollectsArtifactPaths();
@@ -3909,6 +3948,7 @@ int main() {
   testRuntimeSessionRequestBuilderLoadsVecArtifactFromRoot();
   testRuntimeSessionRequestBuilderRejectsUnsupportedKernelKind();
   testRuntimeSessionRequestBuilderRejectsMissingKernelKind();
+  testMixDirectParallelProcessRunnerRunsIndependentCommands();
   testRuntimeSessionRequestBuilderBuildsSingleTaskGraph();
   testMixValidationCanBeRepresentedAsRuntimeTask();
   testOutputComparatorExactMatchPasses();
