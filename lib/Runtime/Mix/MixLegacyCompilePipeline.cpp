@@ -62,6 +62,90 @@ static std::string joinDefinitions(llvm::ArrayRef<std::string> defs) {
 
 } // namespace
 
+llvm::Error
+writeLegacyMixDebugManifest(const MixLegacyDebugManifestInputs &inputs) {
+  if (!inputs.analyzed || !inputs.abi)
+    return llvm::createStringError(llvm::inconvertibleErrorCode(),
+                                   "debug manifest requires analyzed kernel and ABI");
+
+  std::string manifest;
+  manifest += std::string("kernel_name=") + inputs.runtimeKernelName + "\n";
+  manifest +=
+      std::string("requested_kernel_name=") + inputs.analyzed->kernelName + "\n";
+  manifest += std::string("soc_version=") + inputs.analyzed->socVersion + "\n";
+  manifest += std::string("kernel_kind=mix\n");
+  manifest += std::string("mix_resource_type=mix_1c1v\n");
+  manifest += std::string("source_path=") + inputs.sourcePath + "\n";
+  if (!inputs.hostSourcePath.empty())
+    manifest += std::string("host_source_path=") + inputs.hostSourcePath + "\n";
+  manifest += std::string("preprocess_compile_commands=") +
+              inputs.preprocessCompileCommandsPath + "\n";
+  manifest +=
+      std::string("preprocess_command=") + inputs.preprocessCommand + "\n";
+  manifest += std::string("preprocess_generated_dir=") +
+              inputs.preprocessGeneratedDir + "\n";
+  manifest +=
+      std::string("generated_source_path=") + inputs.generatedSourcePath + "\n";
+  manifest += std::string("aic_definitions=") + inputs.aicDefinitions + "\n";
+  manifest += std::string("aiv_definitions=") + inputs.aivDefinitions + "\n";
+  manifest += std::string("work_dir=") + inputs.workDir + "\n";
+  manifest += std::string("build_dir=") + inputs.objectDir + "\n";
+  manifest += std::string("install_dir=") + inputs.outDir + "\n";
+  manifest += std::string("object_dir=") + inputs.objectDir + "\n";
+  manifest += std::string("out_dir=") + inputs.outDir + "\n";
+  if (inputs.metadataPath.empty()) {
+    manifest += std::string("abi_kind=mix_gm_workspace_tiling\n");
+    auto abiManifestOr = serializeMixAbiManifest(*inputs.abi);
+    if (!abiManifestOr)
+      return abiManifestOr.takeError();
+    manifest += *abiManifestOr;
+  }
+  manifest += std::string("merge_obj_dir=") + inputs.mergeDir + "\n";
+  manifest += std::string("launcher_header_dir=") + inputs.launcherHeaderDir +
+              "\n";
+  manifest +=
+      std::string("host_runner_path=") + inputs.runnerBinaryPath + "\n";
+  manifest += std::string("manifest_path=") + inputs.manifestPath + "\n";
+  if (!inputs.metadataPath.empty())
+    manifest += std::string("metadata_path=") + inputs.metadataPath + "\n";
+  if (!inputs.hostStubSourcePath.empty())
+    manifest +=
+        std::string("host_stub_source_path=") + inputs.hostStubSourcePath + "\n";
+  manifest += std::string("host_stub_object_path=") + inputs.hostStubObjectPath +
+              "\n";
+  if (!inputs.hostBishengObjectPath.empty())
+    manifest += std::string("host_bisheng_object=") +
+                inputs.hostBishengObjectPath + "\n";
+  if (!inputs.hostObjectDir.empty())
+    manifest += std::string("host_object_dir=") + inputs.hostObjectDir + "\n";
+  manifest += std::string("kernel_so_path=") + inputs.kernelSoPath + "\n";
+  manifest += std::string("mix_build_flag=") + inputs.mixFlagPath + "\n";
+  manifest +=
+      std::string("host_runner_source_path=") + inputs.runnerSourcePath + "\n";
+  manifest += std::string("aic_object=") + inputs.aicObj + "\n";
+  manifest += std::string("aiv_object=") + inputs.aivObj + "\n";
+  manifest += std::string("aic_reloc_object=") + inputs.aicRelocObj + "\n";
+  manifest += std::string("aiv_reloc_object=") + inputs.aivRelocObj + "\n";
+  manifest += std::string("bisheng_aic=") + inputs.aicCompileCmd + "\n";
+  manifest += std::string("bisheng_aiv=") + inputs.aivCompileCmd + "\n";
+  manifest += std::string("lld_reloc_aic=") + inputs.aicRelocCmd + "\n";
+  manifest += std::string("lld_reloc_aiv=") + inputs.aivRelocCmd + "\n";
+  manifest += std::string("lld_merge=") + inputs.mergeCmd + "\n";
+  manifest += std::string("host_compile_cmd=") + inputs.hostCompileCmd + "\n";
+  if (!inputs.hostBishengCmd.empty())
+    manifest += std::string("host_bisheng_cmd=") + inputs.hostBishengCmd + "\n";
+  manifest += std::string("pack_cmd=") + inputs.packCmd + "\n";
+  manifest += std::string("host_link_cmd=") + inputs.linkCmd + "\n";
+  if (!inputs.recompileCmd.empty())
+    manifest += std::string("recompile_cmd=") + inputs.recompileCmd + "\n";
+  manifest += std::string("host_runner_compile_cmd=") +
+              inputs.runnerCompileCmd + "\n";
+  if (!inputs.mergedDeviceObj.empty())
+    manifest +=
+        std::string("device_object_path=") + inputs.mergedDeviceObj + "\n";
+  return writeTextFile(inputs.manifestPath, manifest);
+}
+
 llvm::Expected<MixLegacyCompileOutputs>
 executeLegacyMixCompilePipeline(const MixCompileLayout &layout,
                                 llvm::StringRef sourcePath,
