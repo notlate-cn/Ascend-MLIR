@@ -419,7 +419,7 @@ loadArtifactFromRoot(llvm::StringRef artifactRootInput) {
 
   auto kernelSoIt = manifest.find("kernel_so_path");
   if (kernelSoIt != manifest.end() && !kernelSoIt->second.empty())
-    artifact.packedSharedObjectPath =
+    artifact.sharedLibraryPath =
         resolveArtifactPath(artifact.artifactRoot, kernelSoIt->second);
 
   auto deviceObjectIt = manifest.find("device_object_path");
@@ -430,8 +430,8 @@ loadArtifactFromRoot(llvm::StringRef artifactRootInput) {
   } else if (deviceObjectIt != manifest.end() && !deviceObjectIt->second.empty()) {
     artifact.deviceBinaryPath =
         resolveArtifactPath(artifact.artifactRoot, deviceObjectIt->second);
-  } else if (!artifact.packedSharedObjectPath.empty()) {
-    artifact.deviceBinaryPath = artifact.packedSharedObjectPath;
+  } else if (!artifact.sharedLibraryPath.empty()) {
+    artifact.deviceBinaryPath = artifact.sharedLibraryPath;
   }
 
   auto metadataPathIt = manifest.find("metadata_path");

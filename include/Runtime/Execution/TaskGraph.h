@@ -23,7 +23,7 @@ struct KernelArtifact {
   std::string socVersion;
   std::string artifactRoot;
   std::string deviceBinaryPath;
-  std::string packedSharedObjectPath;
+  std::string sharedLibraryPath;
   std::string manifestPath;
   std::string metadataPath;
 };

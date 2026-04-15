@@ -388,9 +388,9 @@ runWithExecutor(const ExecutionRequest &request) {
     return stageError("working_directory", cwdGuardOr.takeError());
 
   if (request.task.artifact.kernelKind == KernelKind::Mix) {
-    if (request.task.artifact.packedSharedObjectPath.empty()) {
+    if (request.task.artifact.sharedLibraryPath.empty()) {
       return stageError("artifact",
-                        "mix artifact is missing packed shared object path");
+                        "mix artifact is missing shared library path");
     }
     if (auto err = configurePackedMixEnvironment(request.task.artifact))
       return stageError("artifact", std::move(err));
@@ -417,7 +417,7 @@ runWithExecutor(const ExecutionRequest &request) {
 
   if (request.task.artifact.kernelKind == KernelKind::Mix) {
     DynamicLibraryExecutionLaunch launch;
-    launch.sharedLibraryPath = request.task.artifact.packedSharedObjectPath;
+    launch.sharedLibraryPath = request.task.artifact.sharedLibraryPath;
     launch.symbolName = "aclrtlaunch_" + request.task.artifact.kernelName;
     if (auto err = runner->runDynamicLibraryArtifact(launch, args)) {
       return stageError("kernel_launch", std::move(err));
