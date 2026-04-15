@@ -1,5 +1,6 @@
 #include "Runtime/Mix/MixLegacyCompileCompat.h"
 
+#include "Runtime/Mix/MixCompileMetadata.h"
 #include "Runtime/MixCommandBuilder.h"
 #include "Runtime/Mix/MixStubTemplate.h"
 #include "Runtime/Support/PathUtils.h"
@@ -272,6 +273,36 @@ static uint64_t alignTo4(uint64_t size) {
   return (size + 3ULL) & ~3ULL;
 }
 
+static llvm::StringRef getDTypeName(DType dtype) {
+  switch (dtype) {
+  case DType::F16:
+    return "f16";
+  case DType::BF16:
+    return "bf16";
+  case DType::F32:
+    return "f32";
+  case DType::INT8:
+    return "int8";
+  case DType::INT32:
+    return "int32";
+  case DType::INT64:
+    return "int64";
+  default:
+    return "unknown";
+  }
+}
+
+static MixCompileMetadataTensorDesc
+makeMetadataTensorDesc(const MixAbiTensorDesc &tensor) {
+  MixCompileMetadataTensorDesc out;
+  out.name = tensor.name;
+  out.dtype = getDTypeName(tensor.dtype).str();
+  out.shape = tensor.shape;
+  out.runtimeFile = tensor.runtimeFile;
+  out.goldenFile = tensor.goldenFile;
+  return out;
+}
+
 static llvm::Error writeRecompileLinkFile(llvm::StringRef rootDir,
                                           llvm::StringRef targetName,
                                           llvm::StringRef linkCommand) {
@@ -283,6 +314,7 @@ static llvm::Error writeRecompileLinkFile(llvm::StringRef rootDir,
   llvm::sys::path::append(linkPath, "link.txt");
   return writeTextFile(linkPath, linkCommand.str() + "\n");
 }
+
 
 static llvm::Error writeCompileCommandsJson(llvm::StringRef path,
                                             llvm::StringRef directory,
@@ -908,6 +940,72 @@ executeLegacyMixBinaryBuild(const MixLegacyCompileContract &contract,
   outputs.hostLinkCommand = renderCommandForDebug(hostLinkCmd);
   outputs.recompileCommand = renderCommandForDebug(recompileCmd);
   return outputs;
+}
+
+llvm::Expected<std::string>
+writeLegacyMixCompileMetadataFile(llvm::StringRef metadataPath,
+                                  llvm::StringRef runtimeKernelName,
+                                  llvm::StringRef socVersion,
+                                  llvm::StringRef mixKernelType,
+                                  llvm::StringRef generatedSourcePath,
+                                  llvm::ArrayRef<std::string> aicDefinitions,
+                                  llvm::ArrayRef<std::string> aivDefinitions,
+                                  llvm::StringRef deviceObjectPath,
+                                  llvm::StringRef packedSharedObjectPath,
+                                  llvm::StringRef tilingFilePath,
+                                  llvm::StringRef launchInfoFilePath,
+                                  const MixAbiMetadata &abi,
+                                  bool useLegacyRunner) {
+  MixCompileMetadata metadata;
+  metadata.schemaVersion = 1;
+  metadata.kernelKind = "mix";
+  metadata.kernelName = runtimeKernelName.str();
+  metadata.runtimeKernelName = runtimeKernelName.str();
+  metadata.socVersion = socVersion.str();
+  metadata.mixKernelType = mixKernelType.str();
+  metadata.launcherSymbol = abi.launcherSymbol;
+  metadata.entries.aic = abi.aicEntry;
+  metadata.entries.aiv = abi.aivEntry;
+  metadata.generated.sourcePath = generatedSourcePath.str();
+  metadata.deviceCompile.aicArch = "dav-c220-cube";
+  metadata.deviceCompile.aivArch = "dav-c220-vec";
+  metadata.deviceCompile.aicDefinitions.assign(aicDefinitions.begin(),
+                                               aicDefinitions.end());
+  metadata.deviceCompile.aivDefinitions.assign(aivDefinitions.begin(),
+                                               aivDefinitions.end());
+  metadata.artifacts.deviceObjectPath = deviceObjectPath.str();
+  metadata.artifacts.packedSharedObjectPath = packedSharedObjectPath.str();
+  metadata.artifacts.tilingFilePath = tilingFilePath.str();
+  metadata.artifacts.launchInfoFilePath = launchInfoFilePath.str();
+  metadata.abi.workspaceMode = abi.workspaceMode;
+  metadata.abi.workspaceBytes = abi.workspaceBytes;
+  metadata.abi.tilingMode = abi.tilingMode;
+  metadata.abi.tilingSource = abi.tilingSource;
+  if (abi.workspaceArgIndex) {
+    metadata.abi.workspaceArgIndex = *abi.workspaceArgIndex;
+    metadata.abi.hasWorkspaceArgIndex = true;
+  }
+  if (abi.tilingArgIndex) {
+    metadata.abi.tilingArgIndex = *abi.tilingArgIndex;
+    metadata.abi.hasTilingArgIndex = true;
+  }
+  metadata.abi.inputs.reserve(abi.inputs.size());
+  for (const auto &tensor : abi.inputs)
+    metadata.abi.inputs.push_back(makeMetadataTensorDesc(tensor));
+  metadata.abi.outputs.reserve(abi.outputs.size());
+  for (const auto &tensor : abi.outputs)
+    metadata.abi.outputs.push_back(makeMetadataTensorDesc(tensor));
+  metadata.hostLaunch.mode = useLegacyRunner ? "legacy_runner" : "helper";
+  metadata.hostLaunch.helperKind =
+      useLegacyRunner ? "mix_runner" : "mix-tiling-helper";
+  metadata.hostLaunch.helperInputsJson = "{}";
+
+  auto jsonOr = serializeMixCompileMetadataJson(metadata);
+  if (!jsonOr)
+    return jsonOr.takeError();
+  if (auto err = writeTextFile(metadataPath, *jsonOr))
+    return std::move(err);
+  return metadataPath.str();
 }
 
 llvm::Expected<MixCompileLayout>

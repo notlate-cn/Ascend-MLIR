@@ -1,5 +1,6 @@
 #pragma once
 
+#include "Runtime/Mix/MixAbi.h"
 #include "Runtime/Mix/MixSourceAnalyzer.h"
 
 #include "llvm/ADT/StringMap.h"
@@ -124,5 +125,20 @@ executeLegacyMixBinaryBuild(const MixLegacyCompileContract &contract,
                             llvm::StringRef sourcePath,
                             llvm::StringRef requestedKernelName,
                             llvm::StringRef socVersion);
+
+llvm::Expected<std::string>
+writeLegacyMixCompileMetadataFile(llvm::StringRef metadataPath,
+                                  llvm::StringRef runtimeKernelName,
+                                  llvm::StringRef socVersion,
+                                  llvm::StringRef mixKernelType,
+                                  llvm::StringRef generatedSourcePath,
+                                  llvm::ArrayRef<std::string> aicDefinitions,
+                                  llvm::ArrayRef<std::string> aivDefinitions,
+                                  llvm::StringRef deviceObjectPath,
+                                  llvm::StringRef packedSharedObjectPath,
+                                  llvm::StringRef tilingFilePath,
+                                  llvm::StringRef launchInfoFilePath,
+                                  const MixAbiMetadata &abi,
+                                  bool useLegacyRunner);
 
 } // namespace mlir::runtime
