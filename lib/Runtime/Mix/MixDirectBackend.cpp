@@ -29,6 +29,8 @@ KernelArtifact normalizeMixArtifact(const MixArtifact &artifact, KernelKind kind
                                     ? artifact.kernel_so_path
                                     : artifact.device_object_path;
   normalized.sharedLibraryPath = artifact.kernel_so_path;
+  normalized.sharedLibrarySymbol =
+      artifact.kernel_name.empty() ? "" : "aclrtlaunch_" + artifact.kernel_name;
   normalized.manifestPath = artifact.manifest_path;
   normalized.metadataPath = artifact.metadata_path;
   return normalized;

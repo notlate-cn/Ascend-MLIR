@@ -932,6 +932,8 @@ static void testKernelArtifactNormalization() {
   EXPECT(normalizedMix.sharedLibraryPath ==
              "/tmp/mix/libdemo_kernel_packed.so",
          "normalized mix artifact stores shared library path");
+  EXPECT(normalizedMix.sharedLibrarySymbol == "aclrtlaunch_demo_kernel",
+         "normalized mix artifact stores shared library symbol");
   EXPECT(normalizedMix.manifestPath == "/tmp/mix/mix-artifact.txt",
          "normalized mix artifact stores manifest path");
   EXPECT(normalizedMix.metadataPath == "/tmp/mix/out/mix_metadata.json",
