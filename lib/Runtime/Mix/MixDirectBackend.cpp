@@ -77,8 +77,6 @@ static llvm::Expected<uint32_t> readBlockDimFromLaunchInfo(llvm::StringRef path)
 }
 
 static constexpr const char *kStageAnalyzeSource = "analyze source";
-static constexpr const char *kStageAicPreprocessProbe = "AIC preprocess probe";
-static constexpr const char *kStageAivPreprocessProbe = "AIV preprocess probe";
 static constexpr const char *kStagePreprocessSource = "preprocess source";
 static constexpr const char *kStageExtractHostStub = "extract host stub";
 static constexpr const char *kStageFinalizeHostStub = "finalize host stub";
@@ -929,35 +927,6 @@ MixDirectBackend::compile(const MixDirectCompileConfig &cfg) {
   const std::string &launchInfoPath = layout.launchInfoPath;
   const std::string tilingArtifactSource = "out/tiling.bin";
 
-  const std::vector<std::string> aicProbeCmd =
-      buildBishengCommand(*analyzed, sourcePath, layout.aicProbeObject,
-                          MixCoreType::AIC);
-  const std::vector<std::string> aivProbeCmd =
-      buildBishengCommand(*analyzed, sourcePath, layout.aivProbeObject,
-                          MixCoreType::AIV);
-  const std::string aicProbeContext = makeStageContext({
-      {"kernel", cfg.kernelName},
-      {"source", sourcePath},
-      {"output", layout.aicProbeObject},
-  });
-  const std::string aivProbeContext = makeStageContext({
-      {"kernel", cfg.kernelName},
-      {"source", sourcePath},
-      {"output", layout.aivProbeObject},
-  });
-  if (auto err =
-          runProcess(aicProbeCmd, kStageAicPreprocessProbe, aicProbeContext))
-    return err;
-  if (auto err = ensureFileExists(layout.aicProbeObject, kStageAicPreprocessProbe,
-                                  aicProbeContext))
-    return err;
-  if (auto err =
-          runProcess(aivProbeCmd, kStageAivPreprocessProbe, aivProbeContext))
-    return err;
-  if (auto err = ensureFileExists(layout.aivProbeObject, kStageAivPreprocessProbe,
-                                  aivProbeContext))
-    return err;
-
   MixAnalyzedKernel deviceAnalyzed = *analyzed;
   std::string generatedSourcePath;
   std::string launcherHeaderPath;
@@ -970,8 +939,7 @@ MixDirectBackend::compile(const MixDirectCompileConfig &cfg) {
   std::string hostSourcePath = sourcePath.str().str();
   std::string runtimeKernelName = cfg.kernelName;
   auto compatOr = loadLegacyMixCompileContract(
-      layout.workDir, sourcePath, cfg.kernelName, cfg.socVersion,
-      layout.aivProbeObject, layout.aicProbeObject, *analyzed);
+      layout, sourcePath, cfg.kernelName, cfg.socVersion, *analyzed);
   if (!compatOr)
     return compatOr.takeError();
 

@@ -88,9 +88,8 @@ runLegacyMixPreprocessStage(llvm::StringRef workDir, llvm::StringRef sourcePath,
                             llvm::StringRef aicProbeObject);
 
 llvm::Expected<MixLegacyCompileContract> loadLegacyMixCompileContract(
-    llvm::StringRef workDir, llvm::StringRef sourcePath,
+    const MixCompileLayout &layout, llvm::StringRef sourcePath,
     llvm::StringRef kernelName, llvm::StringRef socVersion,
-    llvm::StringRef aivProbeObject, llvm::StringRef aicProbeObject,
     const MixAnalyzedKernel &analyzed);
 
 llvm::Expected<MixCompileLayout>

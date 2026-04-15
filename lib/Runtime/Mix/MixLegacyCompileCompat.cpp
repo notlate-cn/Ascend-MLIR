@@ -23,6 +23,8 @@ namespace mlir::runtime {
 
 namespace {
 
+static constexpr const char *kStageAicPreprocessProbe = "AIC preprocess probe";
+static constexpr const char *kStageAivPreprocessProbe = "AIV preprocess probe";
 static constexpr const char *kStagePreprocessSource = "preprocess source";
 static constexpr const char *kStageExtractHostStub = "extract host stub";
 static constexpr const char *kStageFinalizeHostStub = "finalize host stub";
@@ -195,6 +197,37 @@ static void appendDefineIfMissing(std::vector<std::string> &defs,
                                   llvm::StringRef needle) {
   if (llvm::find(defs, needle.str()) == defs.end())
     defs.push_back(needle.str());
+}
+
+static llvm::Error runLegacyMixProbeStage(const MixCompileLayout &layout,
+                                          llvm::StringRef sourcePath,
+                                          llvm::StringRef kernelName,
+                                          const MixAnalyzedKernel &analyzed) {
+  const std::vector<std::string> aicProbeCmd = buildBishengCommand(
+      analyzed, sourcePath, layout.aicProbeObject, MixCoreType::AIC);
+  const std::vector<std::string> aivProbeCmd = buildBishengCommand(
+      analyzed, sourcePath, layout.aivProbeObject, MixCoreType::AIV);
+  const std::string aicProbeContext = makeStageContext({
+      {"kernel", kernelName},
+      {"source", sourcePath},
+      {"output", layout.aicProbeObject},
+  });
+  const std::string aivProbeContext = makeStageContext({
+      {"kernel", kernelName},
+      {"source", sourcePath},
+      {"output", layout.aivProbeObject},
+  });
+  if (auto err =
+          runProcess(aicProbeCmd, kStageAicPreprocessProbe, aicProbeContext))
+    return err;
+  if (auto err = ensureFileExists(layout.aicProbeObject, kStageAicPreprocessProbe,
+                                  aicProbeContext))
+    return err;
+  if (auto err =
+          runProcess(aivProbeCmd, kStageAivPreprocessProbe, aivProbeContext))
+    return err;
+  return ensureFileExists(layout.aivProbeObject, kStageAivPreprocessProbe,
+                          aivProbeContext);
 }
 
 static llvm::Error writeCompileCommandsJson(llvm::StringRef path,
@@ -485,13 +518,15 @@ runLegacyMixPreprocessStage(llvm::StringRef workDir, llvm::StringRef sourcePath,
 }
 
 llvm::Expected<MixLegacyCompileContract> loadLegacyMixCompileContract(
-    llvm::StringRef workDir, llvm::StringRef sourcePath,
+    const MixCompileLayout &layout, llvm::StringRef sourcePath,
     llvm::StringRef kernelName, llvm::StringRef socVersion,
-    llvm::StringRef aivProbeObject, llvm::StringRef aicProbeObject,
     const MixAnalyzedKernel &analyzed) {
+  if (auto err = runLegacyMixProbeStage(layout, sourcePath, kernelName, analyzed))
+    return std::move(err);
   auto preprocessOr =
-      runLegacyMixPreprocessStage(workDir, sourcePath, kernelName, socVersion,
-                                  aivProbeObject, aicProbeObject);
+      runLegacyMixPreprocessStage(layout.workDir, sourcePath, kernelName,
+                                  socVersion, layout.aivProbeObject,
+                                  layout.aicProbeObject);
   if (!preprocessOr)
     return preprocessOr.takeError();
 
@@ -508,6 +543,7 @@ llvm::Expected<MixLegacyCompileContract> loadLegacyMixCompileContract(
 
   MixLegacyCompileContract contract;
   contract.preprocess = *preprocessOr;
+  contract.layout = layout;
   contract.generatedSourceName = *generatedSourceOr;
   contract.generatedSourcePath = resolveGeneratedSourcePath(
       preprocessOr->generatedDir, *generatedSourceOr);
