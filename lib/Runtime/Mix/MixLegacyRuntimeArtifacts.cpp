@@ -1,4 +1,3 @@
-#include "Runtime/Mix/MixLegacyCompileCompat.h"
 #include "MixLegacyCompileCompatInternal.h"
 
 #include "Runtime/Mix/MixCompileMetadata.h"
