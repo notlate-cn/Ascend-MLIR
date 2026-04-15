@@ -276,12 +276,6 @@ serializeMixAbiManifest(const MixAbiMetadata &abi) {
     appendSizeLine(out, "abi_workspace_arg_index", *abi.workspaceArgIndex);
   if (abi.tilingArgIndex)
     appendSizeLine(out, "abi_tiling_arg_index", *abi.tilingArgIndex);
-  if (!abi.launcherSymbol.empty())
-    appendLine(out, "abi_launcher_symbol", abi.launcherSymbol);
-  if (!abi.aicEntry.empty())
-    appendLine(out, "abi_aic_entry", abi.aicEntry);
-  if (!abi.aivEntry.empty())
-    appendLine(out, "abi_aiv_entry", abi.aivEntry);
   return out;
 }
 
