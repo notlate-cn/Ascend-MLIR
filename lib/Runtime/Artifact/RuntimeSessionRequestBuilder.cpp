@@ -1,6 +1,7 @@
 #include "Runtime/Artifact/RuntimeSessionRequestBuilder.h"
 
 #include "Runtime/Artifact/RunManifest.h"
+#include "Runtime/MixAbi.h"
 #include "Runtime/MixCompileMetadata.h"
 
 #include "llvm/ADT/SmallString.h"
@@ -11,6 +12,7 @@
 #include "llvm/Support/Path.h"
 
 #include <map>
+#include <optional>
 #include <string>
 #include <utility>
 
@@ -35,6 +37,24 @@ llvm::Expected<KernelKind> parseManifestKernelKind(llvm::StringRef name) {
     return llvm::createStringError(llvm::inconvertibleErrorCode(),
                                    "manifest is missing required field: kernel_kind");
   return parseKernelKind(name);
+}
+
+llvm::Expected<DType> parseDType(llvm::StringRef value) {
+  if (value == "f16")
+    return DType::F16;
+  if (value == "bf16")
+    return DType::BF16;
+  if (value == "f32")
+    return DType::F32;
+  if (value == "int8")
+    return DType::INT8;
+  if (value == "int32")
+    return DType::INT32;
+  if (value == "int64")
+    return DType::INT64;
+  return llvm::createStringError(llvm::inconvertibleErrorCode(),
+                                 "unsupported tensor dtype: %s",
+                                 value.str().c_str());
 }
 
 llvm::Expected<MixResourceType>
@@ -86,6 +106,32 @@ std::map<std::string, std::string> readManifest(const std::string &path) {
     out.emplace(line.substr(0, split).str(), line.substr(split + 1).str());
   }
   return out;
+}
+
+llvm::Expected<uint32_t> readBlockDimFromLaunchInfo(llvm::StringRef path) {
+  auto bufferOr = llvm::MemoryBuffer::getFile(path, false);
+  if (!bufferOr)
+    return llvm::createStringError(bufferOr.getError(),
+                                   "cannot read launch info file: %s",
+                                   path.str().c_str());
+
+  llvm::SmallVector<llvm::StringRef> lines;
+  (*bufferOr)->getBuffer().split(lines, '\n');
+  for (llvm::StringRef line : lines) {
+    line = line.trim();
+    if (!line.starts_with("block_dim="))
+      continue;
+    uint64_t value = 0;
+    if (line.drop_front(strlen("block_dim=")).getAsInteger(10, value))
+      return llvm::createStringError(llvm::inconvertibleErrorCode(),
+                                     "invalid block_dim in launch info: %s",
+                                     path.str().c_str());
+    return static_cast<uint32_t>(value);
+  }
+
+  return llvm::createStringError(llvm::inconvertibleErrorCode(),
+                                 "missing block_dim in launch info: %s",
+                                 path.str().c_str());
 }
 
 llvm::Expected<std::string> requireManifestValue(
@@ -153,6 +199,158 @@ llvm::Error validateMixMetadataPath(llvm::StringRef metadataPath) {
         diagnostic.c_str());
   }
   return llvm::Error::success();
+}
+
+llvm::Expected<MixCompileMetadata>
+loadValidatedMixMetadata(llvm::StringRef metadataPath) {
+  auto bufferOr = llvm::MemoryBuffer::getFile(metadataPath, false);
+  if (!bufferOr) {
+    return llvm::createStringError(bufferOr.getError(),
+                                   "cannot read mix metadata file: %s",
+                                   metadataPath.str().c_str());
+  }
+  return parseMixCompileMetadataJson((*bufferOr)->getBuffer());
+}
+
+MixAbiTensorDesc toMixAbiTensorDesc(const MixCompileMetadataTensorDesc &tensor) {
+  MixAbiTensorDesc out;
+  out.name = tensor.name;
+  out.runtimeFile = tensor.runtimeFile;
+  out.shape = tensor.shape;
+  auto dtypeOr = parseDType(tensor.dtype);
+  if (dtypeOr)
+    out.dtype = *dtypeOr;
+  else
+    llvm::consumeError(dtypeOr.takeError());
+  return out;
+}
+
+llvm::Expected<MixAbiMetadata>
+buildMixAbiFromMetadata(const MixCompileMetadata &metadata,
+                        llvm::StringRef artifactRoot,
+                        const std::map<std::string, std::string> &manifest) {
+  MixAbiMetadata abi;
+  abi.logicalKernelName = metadata.kernelName;
+  abi.runtimeKernelName = metadata.runtimeKernelName;
+  abi.workspaceMode = metadata.abi.workspaceMode;
+  abi.workspaceBytes = static_cast<size_t>(metadata.abi.workspaceBytes);
+  abi.tilingMode = metadata.abi.tilingMode;
+  abi.tilingSource = metadata.abi.tilingSource;
+  abi.launcherSymbol = metadata.launcherSymbol;
+  abi.aicEntry = metadata.entries.aic;
+  abi.aivEntry = metadata.entries.aiv;
+
+  abi.inputs.reserve(metadata.abi.inputs.size());
+  for (const auto &tensor : metadata.abi.inputs) {
+    auto parsedDTypeOr = parseDType(tensor.dtype);
+    if (!parsedDTypeOr)
+      return parsedDTypeOr.takeError();
+    MixAbiTensorDesc desc = toMixAbiTensorDesc(tensor);
+    desc.dtype = *parsedDTypeOr;
+    abi.inputs.push_back(std::move(desc));
+  }
+  abi.outputs.reserve(metadata.abi.outputs.size());
+  for (const auto &tensor : metadata.abi.outputs) {
+    auto parsedDTypeOr = parseDType(tensor.dtype);
+    if (!parsedDTypeOr)
+      return parsedDTypeOr.takeError();
+    MixAbiTensorDesc desc = toMixAbiTensorDesc(tensor);
+    desc.dtype = *parsedDTypeOr;
+    abi.outputs.push_back(std::move(desc));
+  }
+
+  llvm::StringRef launchInfoPath = metadata.artifacts.launchInfoFilePath;
+  if (!launchInfoPath.empty()) {
+    const std::string resolvedLaunchInfo =
+        resolveArtifactPath(artifactRoot, launchInfoPath);
+    auto blockDimOr = readBlockDimFromLaunchInfo(resolvedLaunchInfo);
+    if (!blockDimOr)
+      return blockDimOr.takeError();
+    abi.blockDim = *blockDimOr;
+  } else if (auto it = manifest.find("abi_block_dim");
+             it != manifest.end() && !it->second.empty()) {
+    uint64_t blockDim = 0;
+    if (llvm::StringRef(it->second).getAsInteger(10, blockDim))
+      return llvm::createStringError(llvm::inconvertibleErrorCode(),
+                                     "invalid abi_block_dim in manifest: %s",
+                                     it->second.c_str());
+    abi.blockDim = static_cast<uint32_t>(blockDim);
+  }
+
+  return abi;
+}
+
+llvm::Expected<MixAbiMetadata>
+loadMixAbiForArtifact(const KernelArtifact &artifact) {
+  const auto manifest = readManifest(artifact.manifestPath);
+  if (manifest.empty()) {
+    return llvm::createStringError(llvm::inconvertibleErrorCode(),
+                                   "manifest is empty or unreadable: %s",
+                                   artifact.manifestPath.c_str());
+  }
+
+  if (!artifact.metadataPath.empty()) {
+    auto metadataOr = loadValidatedMixMetadata(artifact.metadataPath);
+    if (!metadataOr)
+      return metadataOr.takeError();
+    return buildMixAbiFromMetadata(*metadataOr, artifact.artifactRoot, manifest);
+  }
+
+  return parseMixAbiManifest(manifest);
+}
+
+void enrichBindingFromAbi(TensorBinding &binding,
+                          llvm::ArrayRef<MixAbiTensorDesc> tensors) {
+  for (const MixAbiTensorDesc &tensor : tensors) {
+    if (tensor.name != binding.name)
+      continue;
+    if (!binding.shape)
+      binding.shape = tensor.shape;
+    if (!binding.dtype)
+      binding.dtype = tensor.dtype;
+    break;
+  }
+}
+
+void applyMixArtifactInvocationDefaults(const KernelArtifact &artifact,
+                                        ExecutionInvocation &invocation) {
+  if (artifact.kernelKind != KernelKind::Mix)
+    return;
+
+  auto abiOr = loadMixAbiForArtifact(artifact);
+  if (!abiOr) {
+    llvm::consumeError(abiOr.takeError());
+    return;
+  }
+  const MixAbiMetadata &abi = *abiOr;
+
+  if (invocation.blockDim == 1 && abi.blockDim != 0)
+    invocation.blockDim = static_cast<int>(abi.blockDim);
+  if (invocation.workspaceSize == 8192 && abi.workspaceBytes != 0)
+    invocation.workspaceSize = abi.workspaceBytes;
+
+  for (TensorBinding &binding : invocation.inputs)
+    enrichBindingFromAbi(binding, abi.inputs);
+  for (TensorBinding &binding : invocation.outputs)
+    enrichBindingFromAbi(binding, abi.outputs);
+  for (TensorBinding &binding : invocation.expectedOutputs)
+    enrichBindingFromAbi(binding, abi.outputs);
+
+  if (!invocation.tiling.has_value()) {
+    if (abi.tilingMode == "generated_file" && !abi.tilingSource.empty()) {
+      TilingBinding tiling;
+      tiling.binaryPath = resolveArtifactPath(artifact.artifactRoot,
+                                             abi.tilingSource);
+      invocation.tiling = std::move(tiling);
+    }
+    return;
+  }
+
+  if (invocation.tiling->binaryPath.empty() && invocation.tiling->schemaPath.empty() &&
+      abi.tilingMode == "generated_file" && !abi.tilingSource.empty()) {
+    invocation.tiling->binaryPath =
+        resolveArtifactPath(artifact.artifactRoot, abi.tilingSource);
+  }
 }
 
 llvm::Expected<KernelArtifact>
@@ -317,6 +515,7 @@ buildRuntimeSessionSingleTaskGraph(const KernelArtifact &artifact,
   RuntimeTask task;
   task.taskId = taskId.str();
   task.artifact = artifact;
+  applyMixArtifactInvocationDefaults(task.artifact, task.invocation);
   if (auto err = graph.addTask(task))
     return std::move(err);
   return graph;
@@ -339,6 +538,7 @@ prepareRuntimeSessionGraphFromManifest(llvm::StringRef runManifestPath) {
     task.artifact = *artifactOr;
     task.dependencies = taskSpec.dependencies;
     task.invocation = taskSpec.invocation;
+    applyMixArtifactInvocationDefaults(task.artifact, task.invocation);
     if (auto err = graph.addTask(task))
       return std::move(err);
   }
