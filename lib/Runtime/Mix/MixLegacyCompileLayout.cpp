@@ -1,28 +1,10 @@
 #include "MixLegacyCompileCompatInternal.h"
 
-#include "llvm/ADT/SmallString.h"
 #include "llvm/Support/Error.h"
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/Path.h"
 
 namespace mlir::runtime {
-
-namespace {
-
-static llvm::Error ensureDirectory(llvm::StringRef path) {
-  if (auto ec = llvm::sys::fs::create_directories(path))
-    return llvm::createStringError(ec, "Cannot create directory: %s",
-                                   path.str().c_str());
-  return llvm::Error::success();
-}
-
-static std::string joinPath(llvm::StringRef base, llvm::StringRef leaf) {
-  llvm::SmallString<256> joined(base);
-  llvm::sys::path::append(joined, leaf);
-  return joined.str().str();
-}
-
-} // namespace
 
 llvm::Expected<MixCompileLayout>
 buildLegacyMixCompileLayout(llvm::StringRef outputDir,

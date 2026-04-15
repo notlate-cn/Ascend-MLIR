@@ -8,7 +8,9 @@
 #include "llvm/ADT/StringRef.h"
 #include "llvm/Support/Error.h"
 
+#include <initializer_list>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace mlir::runtime {
@@ -166,6 +168,23 @@ struct MixLegacyDebugManifestInputs {
   std::string metadataPath;
   std::string manifestPath;
 };
+
+llvm::Error writeTextFile(llvm::StringRef path, llvm::StringRef content);
+
+llvm::Expected<std::string> readTextFileOrErr(llvm::StringRef path);
+
+llvm::Error ensureDirectory(llvm::StringRef path);
+
+llvm::Error ensureFileExists(llvm::StringRef path, llvm::StringRef stage,
+                             llvm::StringRef context = {});
+
+std::string joinPath(llvm::StringRef base, llvm::StringRef leaf);
+
+std::string makeStageContext(
+    std::initializer_list<std::pair<llvm::StringRef, llvm::StringRef>> fields);
+
+llvm::Error runProcess(const std::vector<std::string> &args,
+                       llvm::StringRef stage, llvm::StringRef context = {});
 
 llvm::Expected<MixGeneratedConfig>
 parseMixGeneratedConfig(llvm::StringRef path);
