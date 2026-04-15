@@ -2,7 +2,6 @@
 #include "Runtime/MixCommandBuilder.h"
 #include "Runtime/MixAbi.h"
 #include "Runtime/MixAbiExtractor.h"
-#include "Runtime/MixCompileMetadata.h"
 #include "Runtime/Mix/MixLegacyCompileCompat.h"
 #include "Runtime/NpyIO.h"
 #include "Runtime/PathUtils.h"
@@ -95,13 +94,6 @@ static std::string makeStageContext(
   }
   os.flush();
   return out;
-}
-
-static llvm::Error ensureDirectory(llvm::StringRef path) {
-  if (auto ec = llvm::sys::fs::create_directories(path))
-    return llvm::createStringError(ec, "Cannot create directory: %s",
-                                   path.str().c_str());
-  return llvm::Error::success();
 }
 
 static llvm::Error ensureFileExists(llvm::StringRef path, llvm::StringRef stage,
@@ -711,99 +703,6 @@ static llvm::Error writeDebugManifest(const MixAnalyzedKernel &analyzed,
   return writeTextFile(manifestPath, manifest);
 }
 
-static MixCompileMetadataTensorDesc
-makeMetadataTensorDesc(const MixAbiTensorDesc &tensor) {
-  MixCompileMetadataTensorDesc out;
-  out.name = tensor.name;
-  out.dtype = getDTypeName(tensor.dtype).str();
-  out.shape = tensor.shape;
-  out.runtimeFile = tensor.runtimeFile;
-  out.goldenFile = tensor.goldenFile;
-  return out;
-}
-
-static llvm::Expected<std::string>
-writeMixCompileMetadataFile(llvm::StringRef metadataPath,
-                            llvm::StringRef runtimeKernelName,
-                            llvm::StringRef socVersion,
-                            llvm::StringRef mixKernelType,
-                            llvm::StringRef generatedSourcePath,
-                            llvm::ArrayRef<std::string> aicDefinitions,
-                            llvm::ArrayRef<std::string> aivDefinitions,
-                            llvm::StringRef deviceObjectPath,
-                            llvm::StringRef packedSharedObjectPath,
-                            llvm::StringRef tilingFilePath,
-                            llvm::StringRef launchInfoFilePath,
-                            const MixAbiMetadata &abi,
-                            bool useLegacyRunner) {
-  MixCompileMetadata metadata;
-  metadata.schemaVersion = 1;
-  metadata.kernelKind = "mix";
-  metadata.kernelName = runtimeKernelName.str();
-  metadata.runtimeKernelName = runtimeKernelName.str();
-  metadata.socVersion = socVersion.str();
-  metadata.mixKernelType = mixKernelType.str();
-  metadata.launcherSymbol = abi.launcherSymbol;
-  metadata.entries.aic = abi.aicEntry;
-  metadata.entries.aiv = abi.aivEntry;
-  metadata.generated.sourcePath = generatedSourcePath.str();
-  metadata.deviceCompile.aicArch = "dav-c220-cube";
-  metadata.deviceCompile.aivArch = "dav-c220-vec";
-  metadata.deviceCompile.aicDefinitions.assign(aicDefinitions.begin(),
-                                               aicDefinitions.end());
-  metadata.deviceCompile.aivDefinitions.assign(aivDefinitions.begin(),
-                                               aivDefinitions.end());
-  metadata.artifacts.deviceObjectPath = deviceObjectPath.str();
-  metadata.artifacts.packedSharedObjectPath = packedSharedObjectPath.str();
-  metadata.artifacts.tilingFilePath = tilingFilePath.str();
-  metadata.artifacts.launchInfoFilePath = launchInfoFilePath.str();
-  metadata.abi.workspaceMode = abi.workspaceMode;
-  metadata.abi.workspaceBytes = abi.workspaceBytes;
-  metadata.abi.tilingMode = abi.tilingMode;
-  metadata.abi.tilingSource = abi.tilingSource;
-  if (abi.workspaceArgIndex) {
-    metadata.abi.workspaceArgIndex = *abi.workspaceArgIndex;
-    metadata.abi.hasWorkspaceArgIndex = true;
-  }
-  if (abi.tilingArgIndex) {
-    metadata.abi.tilingArgIndex = *abi.tilingArgIndex;
-    metadata.abi.hasTilingArgIndex = true;
-  }
-  metadata.abi.inputs.reserve(abi.inputs.size());
-  for (const auto &tensor : abi.inputs)
-    metadata.abi.inputs.push_back(makeMetadataTensorDesc(tensor));
-  metadata.abi.outputs.reserve(abi.outputs.size());
-  for (const auto &tensor : abi.outputs)
-    metadata.abi.outputs.push_back(makeMetadataTensorDesc(tensor));
-  metadata.hostLaunch.mode = useLegacyRunner ? "legacy_runner" : "helper";
-  metadata.hostLaunch.helperKind =
-      useLegacyRunner ? "mix_runner" : "mix-tiling-helper";
-  metadata.hostLaunch.helperInputsJson = "{}";
-
-  auto jsonOr = serializeMixCompileMetadataJson(metadata);
-  if (!jsonOr)
-    return jsonOr.takeError();
-  if (auto err = writeTextFile(metadataPath, *jsonOr))
-    return std::move(err);
-  return metadataPath.str();
-}
-
-static const char *mixResourceTypeToMetadataString(MixResourceType type) {
-  switch (type) {
-  case MixResourceType::Unknown:
-    return "unknown";
-  case MixResourceType::AIVOnly:
-    return "aiv_only";
-  case MixResourceType::AICOnly:
-    return "aic_only";
-  case MixResourceType::Mix1C1V:
-    return "mix_1c1v";
-  case MixResourceType::Mix1C2V:
-    return "mix_1c2v";
-  }
-  return "unknown";
-}
-
 } // namespace
 
 llvm::Expected<MixArtifact>
@@ -1040,12 +939,11 @@ MixDirectBackend::compile(const MixDirectCompileConfig &cfg) {
     return blockDimOr.takeError();
   abi.blockDim = *blockDimOr;
 
-  auto metadataPathOr = writeMixCompileMetadataFile(
+  auto metadataPathOr = writeLegacyMixCompileMetadataFile(
       metadataPath, runtimeKernelName, cfg.socVersion,
-      mixResourceTypeToMetadataString(MixResourceType::Mix1C1V),
-      generatedSourcePath, deviceAnalyzed.aicDefines, deviceAnalyzed.aivDefines,
-      mergedDeviceObj, kernelSoPath, tilingArtifactPath, launchInfoPath, abi,
-      useLegacyRunner);
+      "mix_1c1v", generatedSourcePath, deviceAnalyzed.aicDefines,
+      deviceAnalyzed.aivDefines, mergedDeviceObj, kernelSoPath,
+      tilingArtifactPath, launchInfoPath, abi, useLegacyRunner);
   if (!metadataPathOr)
     return metadataPathOr.takeError();
 
