@@ -929,9 +929,9 @@ static void testKernelArtifactNormalization() {
          "normalized mix artifact keeps resource type");
   EXPECT(normalizedMix.deviceBinaryPath == "/tmp/mix/device.o",
          "normalized mix artifact stores device object path");
-  EXPECT(normalizedMix.packedSharedObjectPath ==
+  EXPECT(normalizedMix.sharedLibraryPath ==
              "/tmp/mix/libdemo_kernel_packed.so",
-         "normalized mix artifact stores packed shared object path");
+         "normalized mix artifact stores shared library path");
   EXPECT(normalizedMix.manifestPath == "/tmp/mix/mix-artifact.txt",
          "normalized mix artifact stores manifest path");
   EXPECT(normalizedMix.metadataPath == "/tmp/mix/out/mix_metadata.json",
@@ -1536,8 +1536,8 @@ static void testMixValidationCanBeRepresentedAsRuntimeTask() {
   artifact.socVersion = "Ascend910B1";
   artifact.artifactRoot = taskSpec.artifactRoot;
   artifact.manifestPath = "/tmp/mix-artifact/out/manifest.txt";
-  artifact.packedSharedObjectPath = "/tmp/mix/libmix_add_runtime_packed.so";
-  artifact.deviceBinaryPath = artifact.packedSharedObjectPath;
+  artifact.sharedLibraryPath = "/tmp/mix/libmix_add_runtime_packed.so";
+  artifact.deviceBinaryPath = artifact.sharedLibraryPath;
 
   RuntimeTask runtimeTask;
   runtimeTask.taskId = taskSpec.taskId;
@@ -1561,9 +1561,9 @@ static void testMixValidationCanBeRepresentedAsRuntimeTask() {
   if (orderedOr->size() == 1) {
     EXPECT((*orderedOr)[0].artifact.kernelKind == KernelKind::Mix,
            "mix validation runtime task keeps mix kernel kind");
-    EXPECT((*orderedOr)[0].artifact.packedSharedObjectPath ==
+    EXPECT((*orderedOr)[0].artifact.sharedLibraryPath ==
                "/tmp/mix/libmix_add_runtime_packed.so",
-           "mix validation runtime task keeps packed shared object path");
+           "mix validation runtime task keeps shared library path");
     EXPECT((*orderedOr)[0].invocation.outputs[0].shape.has_value(),
            "mix validation runtime task carries output shape metadata");
     EXPECT((*orderedOr)[0].invocation.outputs[0].dtype.has_value(),
@@ -1597,9 +1597,9 @@ static void testMixValidationCanBeRepresentedAsRuntimeTask() {
   EXPECT(request.task.artifact.manifestPath ==
              "/tmp/mix-artifact/out/manifest.txt",
          "mix validation runtime session preserves manifest path");
-  EXPECT(request.task.artifact.packedSharedObjectPath ==
+  EXPECT(request.task.artifact.sharedLibraryPath ==
              "/tmp/mix/libmix_add_runtime_packed.so",
-         "mix validation runtime session preserves packed shared object path");
+         "mix validation runtime session preserves shared library path");
   EXPECT(request.task.invocation.inputs.size() == 2,
          "mix validation runtime session preserves input count");
   EXPECT(request.task.invocation.outputs.size() == 1,
@@ -2212,7 +2212,7 @@ static void testNpuBackendRejectsMissingMixSharedObjectPath() {
     const std::string message = llvm::toString(resultOr.takeError());
     EXPECT(message.find("[npu:artifact]") != std::string::npos,
            "npu backend reports artifact stage for missing mix shared object");
-    EXPECT(message.find("mix artifact is missing packed shared object path") !=
+    EXPECT(message.find("mix artifact is missing shared library path") !=
                std::string::npos,
            "npu backend reports missing dynamic-library shared object path");
   }

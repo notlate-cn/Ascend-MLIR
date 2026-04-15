@@ -28,7 +28,7 @@ KernelArtifact normalizeMixArtifact(const MixArtifact &artifact, KernelKind kind
   normalized.deviceBinaryPath = artifact.device_object_path.empty()
                                     ? artifact.kernel_so_path
                                     : artifact.device_object_path;
-  normalized.packedSharedObjectPath = artifact.kernel_so_path;
+  normalized.sharedLibraryPath = artifact.kernel_so_path;
   normalized.manifestPath = artifact.manifest_path;
   normalized.metadataPath = artifact.metadata_path;
   return normalized;

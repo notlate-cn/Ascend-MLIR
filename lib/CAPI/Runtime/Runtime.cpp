@@ -49,8 +49,8 @@ llvm::StringRef compatKernelTypeForArch(llvm::StringRef arch) {
 std::string selectCompiledArtifactPath(const KernelArtifact &artifact) {
   if (!artifact.deviceBinaryPath.empty())
     return artifact.deviceBinaryPath;
-  if (!artifact.packedSharedObjectPath.empty())
-    return artifact.packedSharedObjectPath;
+  if (!artifact.sharedLibraryPath.empty())
+    return artifact.sharedLibraryPath;
   return artifact.artifactRoot;
 }
 

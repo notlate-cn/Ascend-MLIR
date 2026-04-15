@@ -26,6 +26,11 @@ if grep -R -n -E "runPackedMixFile|PackedMixExecutionLaunch" \
   echo "Error: packed mix runner API must not remain in active runtime surfaces" >&2
   exit 1
 fi
+if grep -R -n "packedSharedObjectPath" \
+    include/Runtime/Execution lib/Runtime/Execution lib/CAPI/Runtime; then
+  echo "Error: execution layer must consume generic shared-library artifact paths" >&2
+  exit 1
+fi
 
 FAKE_ARTIFACT_ROOT="$(mktemp -d)"
 INVALID_STDERR=""

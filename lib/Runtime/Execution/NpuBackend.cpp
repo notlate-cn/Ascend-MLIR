@@ -149,8 +149,9 @@ uint32_t magicForKernelKind(KernelKind kind) {
 
 llvm::Expected<ExecutionResult> runWithExecutor(const ExecutionRequest &request) {
   if (request.task.artifact.kernelKind == KernelKind::Mix) {
-    if (request.task.artifact.packedSharedObjectPath.empty()) {
-      return stageError("artifact", "mix artifact is missing packed shared object path");
+    if (request.task.artifact.sharedLibraryPath.empty()) {
+      return stageError("artifact",
+                        "mix artifact is missing shared library path");
     }
   } else if (request.task.artifact.deviceBinaryPath.empty()) {
     return stageError("artifact", "artifact is missing device binary path");
@@ -174,7 +175,7 @@ llvm::Expected<ExecutionResult> runWithExecutor(const ExecutionRequest &request)
 
   if (request.task.artifact.kernelKind == KernelKind::Mix) {
     DynamicLibraryExecutionLaunch launch;
-    launch.sharedLibraryPath = request.task.artifact.packedSharedObjectPath;
+    launch.sharedLibraryPath = request.task.artifact.sharedLibraryPath;
     launch.symbolName = "aclrtlaunch_" + request.task.artifact.kernelName;
     if (auto err = runner->runDynamicLibraryArtifact(launch, args)) {
       return stageError("kernel_launch", std::move(err));

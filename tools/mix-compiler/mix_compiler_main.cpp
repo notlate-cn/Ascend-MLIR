@@ -81,8 +81,8 @@ int main(int argc, char** argv) {
   llvm::outs() << "kernel_kind=mix\n";
   if (!artifact.deviceBinaryPath.empty())
     llvm::outs() << "device_binary=" << artifact.deviceBinaryPath << "\n";
-  if (!artifact.packedSharedObjectPath.empty())
+  if (!artifact.sharedLibraryPath.empty())
     llvm::outs() << "packed_shared_object="
-                 << artifact.packedSharedObjectPath << "\n";
+                 << artifact.sharedLibraryPath << "\n";
   return 0;
 }
