@@ -200,6 +200,84 @@ static std::filesystem::path makeRuntimeSessionArtifactRoot(
   return root;
 }
 
+static std::filesystem::path makeRuntimeSessionArtifactRootWithMetadata(
+    const std::string &stem, bool writeMetadataFile) {
+  std::filesystem::path root = makeTempDir(stem);
+  std::filesystem::create_directories(root / "out");
+
+  std::ofstream manifest(root / "out" / "manifest.txt");
+  if (!manifest) {
+    llvm::errs() << "FAIL: cannot write runtime session manifest "
+                 << (root / "out" / "manifest.txt").string() << "\n";
+    ++g_fail;
+    return {};
+  }
+
+  manifest << "kernel_name=fake_kernel\n";
+  manifest << "soc_version=Ascend910B1\n";
+  manifest << "kernel_kind=mix\n";
+  manifest << "mix_resource_type=mix_1c1v\n";
+  manifest << "device_binary_path=fake.bin\n";
+  manifest << "metadata_path=out/mix_metadata.json\n";
+
+  std::ofstream binary(root / "fake.bin", std::ios::binary);
+  if (!binary) {
+    llvm::errs() << "FAIL: cannot write runtime session binary "
+                 << (root / "fake.bin").string() << "\n";
+    ++g_fail;
+    return {};
+  }
+  binary.put('\0');
+
+  if (writeMetadataFile) {
+    std::ofstream metadata(root / "out" / "mix_metadata.json");
+    if (!metadata) {
+      llvm::errs() << "FAIL: cannot write runtime session metadata "
+                   << (root / "out" / "mix_metadata.json").string() << "\n";
+      ++g_fail;
+      return {};
+    }
+    metadata << "{\n"
+             << "  \"schema_version\": 1,\n"
+             << "  \"kernel_kind\": \"mix\",\n"
+             << "  \"kernel_name\": \"fake_kernel\",\n"
+             << "  \"runtime_kernel_name\": \"fake_kernel\",\n"
+             << "  \"soc_version\": \"Ascend910B1\",\n"
+             << "  \"mix_kernel_type\": \"mix_aic_1_2\",\n"
+             << "  \"launcher_symbol\": \"aclrtlaunch_fake_kernel\",\n"
+             << "  \"entries\": { \"aic\": \"fake_kernel_0_mix_aic\", \"aiv\": \"fake_kernel_0_mix_aiv\" },\n"
+             << "  \"generated\": { \"source_path\": \"work/generated/auto_gen_fake_kernel.cpp\" },\n"
+             << "  \"device_compile\": {\n"
+             << "    \"aic_arch\": \"dav-c220-cube\",\n"
+             << "    \"aiv_arch\": \"dav-c220-vec\",\n"
+             << "    \"aic_definitions\": [],\n"
+             << "    \"aiv_definitions\": []\n"
+             << "  },\n"
+             << "  \"artifacts\": {\n"
+             << "    \"device_object_path\": \"out/device.o\",\n"
+             << "    \"packed_shared_object_path\": \"out/libfake_kernel_packed.so\",\n"
+             << "    \"tiling_file_path\": \"out/tiling.bin\",\n"
+             << "    \"launch_info_file_path\": \"out/launch_info.txt\"\n"
+             << "  },\n"
+             << "  \"abi\": {\n"
+             << "    \"workspace_mode\": \"fixed\",\n"
+             << "    \"workspace_bytes\": 16777216,\n"
+             << "    \"tiling_mode\": \"generated_file\",\n"
+             << "    \"tiling_source\": \"out/tiling.bin\",\n"
+             << "    \"inputs\": [],\n"
+             << "    \"outputs\": []\n"
+             << "  },\n"
+             << "  \"host_launch\": {\n"
+             << "    \"mode\": \"helper\",\n"
+             << "    \"helper_kind\": \"mix-tiling-helper\",\n"
+             << "    \"helper_inputs\": {}\n"
+             << "  }\n"
+             << "}\n";
+  }
+
+  return root;
+}
+
 static std::filesystem::path makeRuntimeSessionVecArtifactRoot(
     const std::string &stem) {
   std::filesystem::path root = makeTempDir(stem);
@@ -578,6 +656,7 @@ static void testKernelArtifactNormalization() {
   mixArtifact.kernel_so_path = "/tmp/mix/libdemo_kernel_packed.so";
   mixArtifact.device_object_path = "/tmp/mix/device.o";
   mixArtifact.manifest_path = "/tmp/mix/mix-artifact.txt";
+  mixArtifact.metadata_path = "/tmp/mix/out/mix_metadata.json";
 
   KernelArtifact normalizedMix = normalizeMixArtifact(
       mixArtifact, KernelKind::Mix, MixResourceType::Mix1C1V);
@@ -594,6 +673,8 @@ static void testKernelArtifactNormalization() {
          "normalized mix artifact stores packed shared object path");
   EXPECT(normalizedMix.manifestPath == "/tmp/mix/mix-artifact.txt",
          "normalized mix artifact stores manifest path");
+  EXPECT(normalizedMix.metadataPath == "/tmp/mix/out/mix_metadata.json",
+         "normalized mix artifact stores metadata path");
   EXPECT(normalizedMix.artifactRoot == "/tmp/mix",
          "normalized mix artifact stores compile root, not work dir");
 }
@@ -704,6 +785,46 @@ static void testRuntimeSessionRequestBuilderLoadsMixArtifactFromRoot() {
   EXPECT(artifactOr->manifestPath ==
              (cleanup.path / "out" / "manifest.txt").string(),
          "runtime session builder keeps manifest path");
+}
+
+static void testRuntimeSessionRequestBuilderLoadsMixArtifactMetadataPath() {
+  const std::filesystem::path rootPath =
+      makeRuntimeSessionArtifactRootWithMetadata(
+          "runtime-session-builder-artifact-metadata", true);
+  RuntimeSessionTempRoot cleanup(rootPath);
+  EXPECT(!cleanup.path.empty(),
+         "runtime session builder metadata fixture root created");
+  if (cleanup.path.empty())
+    return;
+
+  auto artifactOr = loadRuntimeSessionArtifactFromRoot(cleanup.path.string());
+  EXPECT((bool)artifactOr,
+         "runtime session builder loads artifact root with metadata");
+  if (!artifactOr) {
+    llvm::consumeError(artifactOr.takeError());
+    return;
+  }
+
+  EXPECT(artifactOr->metadataPath ==
+             (cleanup.path / "out" / "mix_metadata.json").string(),
+         "runtime session builder keeps metadata path");
+}
+
+static void testRuntimeSessionRequestBuilderRejectsMissingMixArtifactMetadata() {
+  const std::filesystem::path rootPath =
+      makeRuntimeSessionArtifactRootWithMetadata(
+          "runtime-session-builder-artifact-metadata-missing", false);
+  RuntimeSessionTempRoot cleanup(rootPath);
+  EXPECT(!cleanup.path.empty(),
+         "runtime session builder missing metadata fixture root created");
+  if (cleanup.path.empty())
+    return;
+
+  auto artifactOr = loadRuntimeSessionArtifactFromRoot(cleanup.path.string());
+  EXPECT(!(bool)artifactOr,
+         "runtime session builder rejects advertised missing metadata path");
+  if (!artifactOr)
+    llvm::consumeError(artifactOr.takeError());
 }
 
 static void testRuntimeSessionRequestBuilderLoadsVecArtifactFromRoot() {
@@ -3284,6 +3405,8 @@ int main() {
   testVecCubeArtifactBackendCompilesVecArtifact();
   testVecCubeArtifactBackendCompilesCubeArtifact();
   testRuntimeSessionRequestBuilderLoadsMixArtifactFromRoot();
+  testRuntimeSessionRequestBuilderLoadsMixArtifactMetadataPath();
+  testRuntimeSessionRequestBuilderRejectsMissingMixArtifactMetadata();
   testRuntimeSessionRequestBuilderLoadsVecArtifactFromRoot();
   testRuntimeSessionRequestBuilderRejectsUnsupportedKernelKind();
   testRuntimeSessionRequestBuilderRejectsMissingKernelKind();

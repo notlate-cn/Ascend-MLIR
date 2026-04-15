@@ -16,6 +16,7 @@ add_mlir_library(AscendCRuntime
   Mix/AscendCMixCompiler.cpp
   Mix/MixAbi.cpp
   Mix/MixAbiExtractor.cpp
+  Mix/MixCompileMetadata.cpp
   Mix/MixCommandBuilder.cpp
   Mix/MixDirectBackend.cpp
   Mix/MixSourceAnalyzer.cpp

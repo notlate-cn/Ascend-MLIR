@@ -2,6 +2,7 @@
 #include "Runtime/MixCommandBuilder.h"
 #include "Runtime/MixAbi.h"
 #include "Runtime/MixAbiExtractor.h"
+#include "Runtime/MixCompileMetadata.h"
 #include "Runtime/NpyIO.h"
 #include "Runtime/PathUtils.h"
 #include "Runtime/MixSourceAnalyzer.h"
@@ -1062,6 +1063,7 @@ static llvm::Error writeDebugManifest(const MixAnalyzedKernel &analyzed,
                                       llvm::StringRef linkCmd,
                                       llvm::StringRef recompileCmd,
                                       llvm::StringRef runnerCompileCmd,
+                                      llvm::StringRef metadataPath,
                                       llvm::StringRef manifestPath) {
   std::string manifest;
   manifest += std::string("kernel_name=") + runtimeKernelName.str() + "\n";
@@ -1098,6 +1100,8 @@ static llvm::Error writeDebugManifest(const MixAnalyzedKernel &analyzed,
               launcherHeaderDir.str() + "\n";
   manifest += std::string("host_runner_path=") + runnerBinaryPath.str() + "\n";
   manifest += std::string("manifest_path=") + manifestPath.str() + "\n";
+  if (!metadataPath.empty())
+    manifest += std::string("metadata_path=") + metadataPath.str() + "\n";
   if (!hostStubSourcePath.empty())
     manifest += std::string("host_stub_source_path=") +
                 hostStubSourcePath.str() + "\n";
@@ -1138,6 +1142,90 @@ static llvm::Error writeDebugManifest(const MixAnalyzedKernel &analyzed,
     manifest += std::string("device_object_path=") + mergedDeviceObj.str() +
                 "\n";
   return writeTextFile(manifestPath, manifest);
+}
+
+static MixCompileMetadataTensorDesc
+makeMetadataTensorDesc(const MixAbiTensorDesc &tensor) {
+  MixCompileMetadataTensorDesc out;
+  out.name = tensor.name;
+  out.dtype = getDTypeName(tensor.dtype).str();
+  out.shape = tensor.shape;
+  out.runtimeFile = tensor.runtimeFile;
+  return out;
+}
+
+static llvm::Expected<std::string>
+writeMixCompileMetadataFile(llvm::StringRef metadataPath,
+                            llvm::StringRef runtimeKernelName,
+                            llvm::StringRef socVersion,
+                            llvm::StringRef mixKernelType,
+                            llvm::StringRef generatedSourcePath,
+                            llvm::ArrayRef<std::string> aicDefinitions,
+                            llvm::ArrayRef<std::string> aivDefinitions,
+                            llvm::StringRef deviceObjectPath,
+                            llvm::StringRef packedSharedObjectPath,
+                            llvm::StringRef tilingFilePath,
+                            llvm::StringRef launchInfoFilePath,
+                            const MixAbiMetadata &abi,
+                            bool useLegacyRunner) {
+  MixCompileMetadata metadata;
+  metadata.schemaVersion = 1;
+  metadata.kernelKind = "mix";
+  metadata.kernelName = runtimeKernelName.str();
+  metadata.runtimeKernelName = runtimeKernelName.str();
+  metadata.socVersion = socVersion.str();
+  metadata.mixKernelType = mixKernelType.str();
+  metadata.launcherSymbol = abi.launcherSymbol;
+  metadata.entries.aic = abi.aicEntry;
+  metadata.entries.aiv = abi.aivEntry;
+  metadata.generated.sourcePath = generatedSourcePath.str();
+  metadata.deviceCompile.aicArch = "dav-c220-cube";
+  metadata.deviceCompile.aivArch = "dav-c220-vec";
+  metadata.deviceCompile.aicDefinitions.assign(aicDefinitions.begin(),
+                                               aicDefinitions.end());
+  metadata.deviceCompile.aivDefinitions.assign(aivDefinitions.begin(),
+                                               aivDefinitions.end());
+  metadata.artifacts.deviceObjectPath = deviceObjectPath.str();
+  metadata.artifacts.packedSharedObjectPath = packedSharedObjectPath.str();
+  metadata.artifacts.tilingFilePath = tilingFilePath.str();
+  metadata.artifacts.launchInfoFilePath = launchInfoFilePath.str();
+  metadata.abi.workspaceMode = abi.workspaceMode;
+  metadata.abi.workspaceBytes = abi.workspaceBytes;
+  metadata.abi.tilingMode = abi.tilingMode;
+  metadata.abi.tilingSource = abi.tilingSource;
+  metadata.abi.inputs.reserve(abi.inputs.size());
+  for (const auto &tensor : abi.inputs)
+    metadata.abi.inputs.push_back(makeMetadataTensorDesc(tensor));
+  metadata.abi.outputs.reserve(abi.outputs.size());
+  for (const auto &tensor : abi.outputs)
+    metadata.abi.outputs.push_back(makeMetadataTensorDesc(tensor));
+  metadata.hostLaunch.mode = useLegacyRunner ? "legacy_runner" : "helper";
+  metadata.hostLaunch.helperKind =
+      useLegacyRunner ? "mix_runner" : "mix-tiling-helper";
+  metadata.hostLaunch.helperInputsJson = "{}";
+
+  auto jsonOr = serializeMixCompileMetadataJson(metadata);
+  if (!jsonOr)
+    return jsonOr.takeError();
+  if (auto err = writeTextFile(metadataPath, *jsonOr))
+    return std::move(err);
+  return metadataPath.str();
+}
+
+static const char *mixResourceTypeToMetadataString(MixResourceType type) {
+  switch (type) {
+  case MixResourceType::Unknown:
+    return "unknown";
+  case MixResourceType::AIVOnly:
+    return "aiv_only";
+  case MixResourceType::AICOnly:
+    return "aic_only";
+  case MixResourceType::Mix1C1V:
+    return "mix_1c1v";
+  case MixResourceType::Mix1C2V:
+    return "mix_1c2v";
+  }
+  return "unknown";
 }
 
 } // namespace
@@ -1248,6 +1336,7 @@ MixDirectBackend::compile(const MixDirectCompileConfig &cfg) {
       joinPath(objectDir, cfg.kernelName + "_aiv.reloc.o");
   const std::string mergedDeviceObj = joinPath(outDir, "device.o");
   const std::string manifestPath = joinPath(outDir, "manifest.txt");
+  const std::string metadataPath = joinPath(outDir, "mix_metadata.json");
   const std::string analysisPath = joinPath(workDir, "analysis.txt");
   const std::string mergeDeviceObj = joinPath(mergeDir, "device.o");
   const std::string hostStubObjectPath = joinPath(stubDir, "host_stub.o");
@@ -1670,6 +1759,12 @@ MixDirectBackend::compile(const MixDirectCompileConfig &cfg) {
   if (abi.logicalKernelName.empty())
     abi.logicalKernelName = runtimeKernelName;
   abi.runtimeKernelName = runtimeKernelName;
+  if (abi.launcherSymbol.empty())
+    abi.launcherSymbol = "aclrtlaunch_" + runtimeKernelName;
+  if (abi.aicEntry.empty())
+    abi.aicEntry = runtimeKernelName + "_0_mix_aic";
+  if (abi.aivEntry.empty())
+    abi.aivEntry = runtimeKernelName + "_0_mix_aiv";
   if (abi.workspaceBytes == 0)
     abi.workspaceBytes = 16777216ULL;
   abi.workspaceMode = "fixed";
@@ -1768,6 +1863,15 @@ MixDirectBackend::compile(const MixDirectCompileConfig &cfg) {
     return blockDimOr.takeError();
   abi.blockDim = *blockDimOr;
 
+  auto metadataPathOr = writeMixCompileMetadataFile(
+      metadataPath, runtimeKernelName, cfg.socVersion,
+      mixResourceTypeToMetadataString(MixResourceType::Mix1C1V),
+      generatedSourcePath, deviceAnalyzed.aicDefines, deviceAnalyzed.aivDefines,
+      mergedDeviceObj, kernelSoPath, tilingArtifactPath, launchInfoPath, abi,
+      useLegacyRunner);
+  if (!metadataPathOr)
+    return metadataPathOr.takeError();
+
   if (auto err = writeTextFile(
           analysisPath,
           std::string("kernel_name=") + runtimeKernelName + "\n" +
@@ -1823,6 +1927,7 @@ MixDirectBackend::compile(const MixDirectCompileConfig &cfg) {
                                     renderCommandForDebug(useLegacyRunner
                                                               ? runnerCompileCmd
                                                               : tilingEmitCmd),
+                                    *metadataPathOr,
                                     manifestPath))
     return err;
 
@@ -1838,6 +1943,7 @@ MixDirectBackend::compile(const MixDirectCompileConfig &cfg) {
   artifact.host_stub_source_path = hostStubSourcePath;
   artifact.device_object_path = mergedDeviceObj;
   artifact.manifest_path = manifestPath;
+  artifact.metadata_path = *metadataPathOr;
   artifact.abi_metadata_path = manifestPath;
   return artifact;
 }
@@ -1857,6 +1963,7 @@ KernelArtifact normalizeMixArtifact(const MixArtifact &artifact, KernelKind kind
                                     : artifact.device_object_path;
   normalized.packedSharedObjectPath = artifact.kernel_so_path;
   normalized.manifestPath = artifact.manifest_path;
+  normalized.metadataPath = artifact.metadata_path;
   return normalized;
 }
 

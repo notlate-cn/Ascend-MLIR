@@ -18,6 +18,7 @@ struct MixArtifact {
   std::string launcher_header_dir;
   std::string host_runner_path;
   std::string manifest_path;
+  std::string metadata_path;
   // Detailed ABI metadata currently lives in the manifest file.
   // Keep this explicit so consumers know where the baremix ABI contract is
   // recorded.

@@ -1,6 +1,7 @@
 #include "Runtime/Artifact/RuntimeSessionRequestBuilder.h"
 
 #include "Runtime/Artifact/RunManifest.h"
+#include "Runtime/MixCompileMetadata.h"
 
 #include "llvm/ADT/SmallString.h"
 #include "llvm/ADT/StringRef.h"
@@ -129,6 +130,31 @@ llvm::Expected<std::string> locateManifestPath(llvm::StringRef artifactRoot) {
       "artifact root does not contain a supported manifest (expected out/manifest.txt, mix-artifact.txt, or out/mix-artifact.txt)");
 }
 
+llvm::Error validateMixMetadataPath(llvm::StringRef metadataPath) {
+  if (!llvm::sys::fs::exists(metadataPath)) {
+    return llvm::createStringError(llvm::inconvertibleErrorCode(),
+                                   "metadata_path from manifest does not exist: %s",
+                                   metadataPath.str().c_str());
+  }
+
+  auto bufferOr = llvm::MemoryBuffer::getFile(metadataPath, false);
+  if (!bufferOr) {
+    return llvm::createStringError(bufferOr.getError(),
+                                   "cannot read mix metadata file: %s",
+                                   metadataPath.str().c_str());
+  }
+
+  auto metadataOr = parseMixCompileMetadataJson((*bufferOr)->getBuffer());
+  if (!metadataOr) {
+    const std::string diagnostic = llvm::toString(metadataOr.takeError());
+    return llvm::createStringError(
+        llvm::inconvertibleErrorCode(),
+        "invalid mix metadata file %s: %s", metadataPath.str().c_str(),
+        diagnostic.c_str());
+  }
+  return llvm::Error::success();
+}
+
 llvm::Expected<KernelArtifact>
 loadArtifactFromRoot(llvm::StringRef artifactRootInput) {
   llvm::SmallString<256> artifactRoot(artifactRootInput);
@@ -211,6 +237,21 @@ loadArtifactFromRoot(llvm::StringRef artifactRootInput) {
         resolveArtifactPath(artifact.artifactRoot, deviceObjectIt->second);
   } else if (!artifact.packedSharedObjectPath.empty()) {
     artifact.deviceBinaryPath = artifact.packedSharedObjectPath;
+  }
+
+  auto metadataPathIt = manifest.find("metadata_path");
+  if (metadataPathIt != manifest.end() && !metadataPathIt->second.empty()) {
+    artifact.metadataPath =
+        resolveArtifactPath(artifact.artifactRoot, metadataPathIt->second);
+    if (artifact.kernelKind == KernelKind::Mix) {
+      if (auto err = validateMixMetadataPath(artifact.metadataPath))
+        return std::move(err);
+    } else if (!llvm::sys::fs::exists(artifact.metadataPath)) {
+      return llvm::createStringError(
+          llvm::inconvertibleErrorCode(),
+          "metadata_path from manifest does not exist: %s",
+          artifact.metadataPath.c_str());
+    }
   }
 
   return artifact;
