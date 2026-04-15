@@ -20,6 +20,9 @@ public:
 
   llvm::Error initialize(int deviceId = 0);
   llvm::Error runFile(const FileExecutionLaunch &launch, RunArgs &args);
+  llvm::Error
+  runDynamicLibraryArtifact(const DynamicLibraryExecutionLaunch &launch,
+                            RunArgs &args);
   llvm::Error runPackedMixFile(const PackedMixExecutionLaunch &launch,
                                RunArgs &args);
 

@@ -413,8 +413,8 @@ llvm::Error NativeExecutionRunner::runFile(const FileExecutionLaunch &launch,
   return runBinary(bytes, launch.kernelName, args, launch.magic);
 }
 
-llvm::Error NativeExecutionRunner::runPackedMixFile(
-    const PackedMixExecutionLaunch &launch, RunArgs &args) {
+llvm::Error NativeExecutionRunner::runDynamicLibraryArtifact(
+    const DynamicLibraryExecutionLaunch &launch, RunArgs &args) {
   if (auto err = initialize())
     return err;
 
@@ -423,7 +423,7 @@ llvm::Error NativeExecutionRunner::runPackedMixFile(
     return llvm::createStringError(
         llvm::inconvertibleErrorCode(),
         "NativeExecutionRunner::initialize() must succeed before "
-        "runPackedMixFile()");
+        "runDynamicLibraryArtifact()");
 
   if (!aclHandle_) {
     const std::string aclLib = getAclLibPath();
@@ -499,24 +499,25 @@ llvm::Error NativeExecutionRunner::runPackedMixFile(
     aclrtSynchronizeStream_ = newAclrtSynchronizeStream;
   }
 
-  void *mixLib = dlopen(launch.sharedLibraryPath.c_str(), RTLD_NOW | RTLD_LOCAL);
-  if (!mixLib)
+  void *dynamicLib =
+      dlopen(launch.sharedLibraryPath.c_str(), RTLD_NOW | RTLD_LOCAL);
+  if (!dynamicLib)
     return llvm::createStringError(llvm::inconvertibleErrorCode(),
-                                   "dlopen packed mix failed (%s): %s",
+                                   "dlopen dynamic library artifact failed (%s): %s",
                                    launch.sharedLibraryPath.c_str(), dlerror());
 
-  std::string launchName = "aclrtlaunch_" + launch.kernelName;
   using LaunchFnMax =
       uint32_t (*)(uint32_t, void *, void *, void *, void *, void *, void *,
                    void *, void *, void *, void *, void *, void *, void *,
                    void *, void *, void *, void *);
   auto *launchFn =
-      reinterpret_cast<LaunchFnMax>(dlsym(mixLib, launchName.c_str()));
+      reinterpret_cast<LaunchFnMax>(dlsym(dynamicLib, launch.symbolName.c_str()));
   if (!launchFn) {
     const char *err = dlerror();
-    dlclose(mixLib);
+    dlclose(dynamicLib);
     return llvm::createStringError(llvm::inconvertibleErrorCode(),
-                                   "dlsym %s failed: %s", launchName.c_str(),
+                                   "dlsym %s failed: %s",
+                                   launch.symbolName.c_str(),
                                    err ? err : "unknown");
   }
 
@@ -540,12 +541,12 @@ llvm::Error NativeExecutionRunner::runPackedMixFile(
       (void)aclrtResetDevice_(deviceId_);
     if (aclInitialized)
       (void)aclFinalize_();
-    dlclose(mixLib);
+    dlclose(dynamicLib);
   };
 
   int rc = aclInit_(nullptr);
   if (rc != 0) {
-    dlclose(mixLib);
+    dlclose(dynamicLib);
     return llvm::createStringError(llvm::inconvertibleErrorCode(),
                                    "aclInit failed: rc=%d", rc);
   }
@@ -684,6 +685,14 @@ llvm::Error NativeExecutionRunner::runPackedMixFile(
 
   cleanup();
   return llvm::Error::success();
+}
+
+llvm::Error NativeExecutionRunner::runPackedMixFile(
+    const PackedMixExecutionLaunch &launch, RunArgs &args) {
+  DynamicLibraryExecutionLaunch dynamicLaunch;
+  dynamicLaunch.sharedLibraryPath = launch.sharedLibraryPath;
+  dynamicLaunch.symbolName = "aclrtlaunch_" + launch.kernelName;
+  return runDynamicLibraryArtifact(dynamicLaunch, args);
 }
 
 } // namespace mlir::runtime
