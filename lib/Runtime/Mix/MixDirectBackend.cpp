@@ -157,69 +157,6 @@ static llvm::Error runProcess(const std::vector<std::string> &args,
                               llvm::StringRef stage,
                               llvm::StringRef context = {});
 
-static std::vector<std::string>
-collectConfigSources(const MixGeneratedConfig &config) {
-  std::vector<std::string> sources;
-  for (const std::string &source : config.mixSources) {
-    if (!source.empty() &&
-        std::find(sources.begin(), sources.end(), source) == sources.end())
-      sources.push_back(source);
-  }
-  if (sources.empty()) {
-    for (const auto &entry : config.definitionsBySource) {
-      const std::string source = entry.getKey().str();
-      if (!source.empty() &&
-          std::find(sources.begin(), sources.end(), source) == sources.end())
-        sources.push_back(source);
-    }
-  }
-  return sources;
-}
-
-static llvm::Expected<std::string>
-findOnlyMixSourceOrErr(const MixGeneratedConfig &aicConfig,
-                       const MixGeneratedConfig &aivConfig) {
-  std::vector<std::string> sources = collectConfigSources(aicConfig);
-  for (const std::string &source : collectConfigSources(aivConfig)) {
-    if (std::find(sources.begin(), sources.end(), source) == sources.end())
-      sources.push_back(source);
-  }
-  if (sources.empty())
-    return llvm::createStringError(
-        llvm::inconvertibleErrorCode(),
-        "Generated baremix config did not list any MIX_SOURCES entry");
-  if (sources.size() != 1)
-    return llvm::createStringError(
-        llvm::inconvertibleErrorCode(),
-        "RuntimeMix direct backend only supports a single generated source in "
-        "this stage, but found %zu",
-        sources.size());
-  return sources.front();
-}
-
-static std::vector<std::string>
-definitionsForSource(const MixGeneratedConfig &config,
-                     llvm::StringRef sourcePath) {
-  const std::string exactKey = sourcePath.str();
-  if (auto it = config.definitionsBySource.find(exactKey);
-      it != config.definitionsBySource.end())
-    return it->second;
-
-  const std::string fileName = llvm::sys::path::filename(sourcePath).str();
-  if (auto it = config.definitionsBySource.find(fileName);
-      it != config.definitionsBySource.end())
-    return it->second;
-
-  return {};
-}
-
-static std::string resolveGeneratedSourcePath(llvm::StringRef generatedDir,
-                                              llvm::StringRef sourceName) {
-  if (llvm::sys::path::is_absolute(sourceName))
-    return sourceName.str();
-  return joinPath(generatedDir, sourceName);
-}
-
 static std::string joinDefinitions(llvm::ArrayRef<std::string> defs) {
   std::string out;
   for (size_t i = 0; i < defs.size(); ++i) {
@@ -1097,34 +1034,15 @@ MixDirectBackend::compile(const MixDirectCompileConfig &cfg) {
   std::string hostSourcePath = sourcePath.str().str();
   std::string runtimeKernelName = cfg.kernelName;
   bool aicWasSynthesizedFromAiv = false;
-  auto preprocessOr = runLegacyMixPreprocessStage(
+  auto compatOr = loadLegacyMixCompileContract(
       workDir, sourcePath, cfg.kernelName, cfg.socVersion, aivProbeObject,
       aicProbeObject);
-  if (!preprocessOr)
-    return preprocessOr.takeError();
-  auto aicConfigOr = parseMixGeneratedConfig(preprocessOr->aicConfigPath);
-  if (!aicConfigOr)
-    return aicConfigOr.takeError();
-  auto aivConfigOr = parseMixGeneratedConfig(preprocessOr->aivConfigPath);
-  if (!aivConfigOr)
-    return aivConfigOr.takeError();
-  auto generatedSourceOr = findOnlyMixSourceOrErr(*aicConfigOr, *aivConfigOr);
-  if (!generatedSourceOr)
-    return generatedSourceOr.takeError();
+  if (!compatOr)
+    return compatOr.takeError();
 
-  generatedSourcePath =
-      resolveGeneratedSourcePath(preprocessOr->generatedDir, *generatedSourceOr);
-  if (!llvm::sys::fs::exists(generatedSourcePath))
-    return llvm::createStringError(
-        llvm::inconvertibleErrorCode(),
-        "[%s] generated mix source file not found: %s (kernel=%s)",
-        kStagePreprocessSource, generatedSourcePath.c_str(),
-        cfg.kernelName.c_str());
-
-  deviceAnalyzed.aicDefines =
-      definitionsForSource(*aicConfigOr, *generatedSourceOr);
-  deviceAnalyzed.aivDefines =
-      definitionsForSource(*aivConfigOr, *generatedSourceOr);
+  generatedSourcePath = compatOr->generatedSourcePath;
+  deviceAnalyzed.aicDefines = compatOr->aicDefinitions;
+  deviceAnalyzed.aivDefines = compatOr->aivDefinitions;
   auto appendDefineIfMissing = [](std::vector<std::string> &defs,
                                   llvm::StringRef needle) {
     if (llvm::find(defs, needle.str()) == defs.end())
@@ -1166,24 +1084,21 @@ MixDirectBackend::compile(const MixDirectCompileConfig &cfg) {
     return llvm::createStringError(
         llvm::inconvertibleErrorCode(),
         "[%s] generated AIC config did not provide compile definitions for %s",
-        kStagePreprocessSource, generatedSourceOr->c_str());
+        kStagePreprocessSource, compatOr->generatedSourceName.c_str());
   if (deviceAnalyzed.aivDefines.empty())
     return llvm::createStringError(
         llvm::inconvertibleErrorCode(),
         "[%s] generated AIV config did not provide compile definitions for %s",
-        kStagePreprocessSource, generatedSourceOr->c_str());
+        kStagePreprocessSource, compatOr->generatedSourceName.c_str());
 
-  launcherHeaderPath = preprocessOr->launcherHeaderPath;
-  hostStubSourcePath = preprocessOr->hostStubPath;
-  runtimeKernelName =
-      preprocessOr->actualLauncherKernelName.empty()
-          ? runtimeKernelName
-          : preprocessOr->actualLauncherKernelName;
-  hostStubIncludeDir = preprocessOr->includeDir;
-  preprocessIncludeDir = preprocessOr->includeDir;
-  preprocessCompileCommandsPath = preprocessOr->compileCommandsPath;
-  preprocessCommand = preprocessOr->preprocessCommand;
-  preprocessGeneratedDir = preprocessOr->generatedDir;
+  launcherHeaderPath = compatOr->preprocess.launcherHeaderPath;
+  hostStubSourcePath = compatOr->preprocess.hostStubPath;
+  runtimeKernelName = compatOr->runtimeKernelName;
+  hostStubIncludeDir = compatOr->preprocess.includeDir;
+  preprocessIncludeDir = compatOr->preprocess.includeDir;
+  preprocessCompileCommandsPath = compatOr->preprocess.compileCommandsPath;
+  preprocessCommand = compatOr->preprocess.preprocessCommand;
+  preprocessGeneratedDir = compatOr->preprocess.generatedDir;
 
   const std::string runnerLauncherCopyPath =
       joinPath(outIncludeDir, "aclrtlaunch_" + runtimeKernelName + ".h");
