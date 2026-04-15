@@ -25,6 +25,7 @@
 //   /tmp/test_runtime
 
 #include "Runtime/Execution/NativeExecutionRunner.h"
+#include "Runtime/MixCompileMetadata.h"
 #include "Runtime/NpyIO.h"
 #include "Runtime/PathUtils.h"
 #include "Runtime/Types.h"
@@ -600,6 +601,115 @@ static void testRuntimePathUtils() {
   }
 }
 
+static void testMixCompileMetadataSchema() {
+  llvm::outs() << "\n[MixCompileMetadata schema]\n";
+
+  {
+    const char *json = R"json(
+{
+  "schema_version": 1,
+  "kernel_kind": "mix",
+  "kernel_name": "k",
+  "runtime_kernel_name": "k",
+  "soc_version": "Ascend910B1",
+  "mix_kernel_type": "mix_aic_1_2",
+  "launcher_symbol": "aclrtlaunch_k",
+  "entries": { "aic": "k_0_mix_aic", "aiv": "k_0_mix_aiv" },
+  "generated": { "source_path": "work/generated/auto_gen_k.cpp" },
+  "device_compile": {
+    "aic_arch": "dav-c220-cube",
+    "aiv_arch": "dav-c220-vec",
+    "aic_definitions": [],
+    "aiv_definitions": []
+  },
+  "artifacts": {
+    "device_object_path": "out/device.o",
+    "packed_shared_object_path": "out/libk_packed.so",
+    "tiling_file_path": "out/tiling.bin",
+    "launch_info_file_path": "out/launch_info.txt"
+  },
+  "abi": {
+    "workspace_mode": "fixed",
+    "workspace_bytes": 16777216,
+    "tiling_mode": "generated_file",
+    "tiling_source": "out/tiling.bin",
+    "inputs": [],
+    "outputs": []
+  },
+  "host_launch": {
+    "mode": "helper",
+    "helper_kind": "mix-tiling-helper",
+    "helper_inputs": {}
+  },
+  "ignored_optional_field": "ignored"
+}
+)json";
+    auto metadataOr = parseMixCompileMetadataJson(json);
+    EXPECT(static_cast<bool>(metadataOr),
+           "MixCompileMetadata parses required schema");
+    if (metadataOr) {
+      EXPECT(metadataOr->kernelName == "k",
+             "MixCompileMetadata keeps kernel_name");
+      EXPECT(metadataOr->runtimeKernelName == "k",
+             "MixCompileMetadata keeps runtime_kernel_name");
+      EXPECT(metadataOr->mixKernelType == "mix_aic_1_2",
+             "MixCompileMetadata keeps mix_kernel_type");
+      auto roundTripOr = serializeMixCompileMetadataJson(*metadataOr);
+      EXPECT(static_cast<bool>(roundTripOr),
+             "MixCompileMetadata serializes");
+      if (!roundTripOr)
+        llvm::consumeError(roundTripOr.takeError());
+    } else {
+      llvm::consumeError(metadataOr.takeError());
+    }
+  }
+
+  {
+    const char *json = R"json(
+{
+  "schema_version": 1,
+  "kernel_kind": "mix",
+  "runtime_kernel_name": "k",
+  "soc_version": "Ascend910B1",
+  "mix_kernel_type": "mix_aic_1_2",
+  "launcher_symbol": "aclrtlaunch_k",
+  "entries": { "aic": "k_0_mix_aic", "aiv": "k_0_mix_aiv" },
+  "generated": { "source_path": "work/generated/auto_gen_k.cpp" },
+  "device_compile": {
+    "aic_arch": "dav-c220-cube",
+    "aiv_arch": "dav-c220-vec",
+    "aic_definitions": [],
+    "aiv_definitions": []
+  },
+  "artifacts": {
+    "device_object_path": "out/device.o",
+    "packed_shared_object_path": "out/libk_packed.so",
+    "tiling_file_path": "out/tiling.bin",
+    "launch_info_file_path": "out/launch_info.txt"
+  },
+  "abi": {
+    "workspace_mode": "fixed",
+    "workspace_bytes": 16777216,
+    "tiling_mode": "generated_file",
+    "tiling_source": "out/tiling.bin",
+    "inputs": [],
+    "outputs": []
+  },
+  "host_launch": {
+    "mode": "helper",
+    "helper_kind": "mix-tiling-helper",
+    "helper_inputs": {}
+  }
+}
+)json";
+    auto metadataOr = parseMixCompileMetadataJson(json);
+    EXPECT(!metadataOr,
+           "MixCompileMetadata rejects missing required kernel_name");
+    if (!metadataOr)
+      llvm::consumeError(metadataOr.takeError());
+  }
+}
+
 // ── main ─────────────────────────────────────────────────────────────────────
 
 int main(int argc, char **argv) {
@@ -611,6 +721,7 @@ int main(int argc, char **argv) {
   testNpyIOErrors();
   testRuntimeNativePackedMixErrors();
   testRuntimePathUtils();
+  testMixCompileMetadataSchema();
 
   llvm::outs() << "\n========================================\n"
                << "Results: " << g_pass << " passed, " << g_fail << " failed\n"

@@ -25,6 +25,7 @@ struct KernelArtifact {
   std::string deviceBinaryPath;
   std::string packedSharedObjectPath;
   std::string manifestPath;
+  std::string metadataPath;
 };
 
 struct TensorBinding {
