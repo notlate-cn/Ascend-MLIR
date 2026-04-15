@@ -1,16 +1,12 @@
 #include "Runtime/MixDirectBackend.h"
 
 #include "Runtime/MixAbi.h"
-#include "Runtime/MixAbiExtractor.h"
 #include "Runtime/Mix/MixLegacyCompileCompat.h"
 #include "Runtime/MixSourceAnalyzer.h"
-#include "Runtime/NpyIO.h"
 #include "Runtime/Support/PathUtils.h"
 #include "llvm/ADT/SmallString.h"
-#include "llvm/ADT/SmallVector.h"
 #include "llvm/Support/Error.h"
 #include "llvm/Support/FileSystem.h"
-#include "llvm/Support/MemoryBuffer.h"
 #include "llvm/Support/Path.h"
 #include "llvm/Support/raw_ostream.h"
 
@@ -62,72 +58,6 @@ static std::string joinDefinitions(llvm::ArrayRef<std::string> defs) {
     out += defs[i];
   }
   return out;
-}
-
-static llvm::Expected<NDArray> loadNpyTensor(llvm::StringRef path) {
-  return LoadNpy(path.str());
-}
-
-static llvm::Error resolveDynamicShapesFromNpyDir(MixAbiMetadata &abi,
-                                                  llvm::StringRef npyDir) {
-  auto resolveOne = [&](MixAbiTensorDesc &tensor, llvm::StringRef fileName) -> llvm::Error {
-    bool needsResolution = false;
-    for (int64_t dim : tensor.shape) {
-      if (dim < 0) {
-        needsResolution = true;
-        break;
-      }
-    }
-    if (!needsResolution)
-      return llvm::Error::success();
-
-    llvm::SmallString<256> npyPath(npyDir);
-    llvm::sys::path::append(npyPath, fileName);
-    auto arrayOr = loadNpyTensor(npyPath);
-    if (!arrayOr)
-      return arrayOr.takeError();
-    tensor.shape = arrayOr->shape;
-    if (tensor.runtimeFile.empty())
-      tensor.runtimeFile = fileName.str();
-    if (tensor.goldenFile.empty())
-      tensor.goldenFile = fileName.str();
-    if (tensor.dtype != arrayOr->dtype)
-      return llvm::createStringError(
-          llvm::inconvertibleErrorCode(),
-          "RuntimeMix ABI tensor '%s' dtype from MLIR does not match NPY payload",
-          tensor.name.c_str());
-    return llvm::Error::success();
-  };
-
-  for (auto &tensor : abi.inputs) {
-    std::string fileName = tensor.runtimeFile.empty()
-                               ? buildCanonicalInputFileName(abi.logicalKernelName,
-                                                             tensor.name)
-                               : tensor.runtimeFile;
-    if (auto err = resolveOne(tensor, fileName))
-      return err;
-  }
-  for (auto &tensor : abi.outputs) {
-    std::string fileName = tensor.goldenFile.empty()
-                               ? buildCanonicalGoldenFileName(
-                                     abi.logicalKernelName, tensor.name)
-                               : tensor.goldenFile;
-    if (auto err = resolveOne(tensor, fileName))
-      return err;
-  }
-  return llvm::Error::success();
-}
-
-static llvm::Expected<size_t>
-findFirstDynamicTensorIndex(llvm::ArrayRef<MixAbiTensorDesc> tensors) {
-  for (size_t i = 0; i < tensors.size(); ++i) {
-    for (int64_t dim : tensors[i].shape) {
-      if (dim < 0)
-        return i;
-    }
-  }
-  return llvm::createStringError(llvm::inconvertibleErrorCode(),
-                                 "no dynamic tensor found");
 }
 
 } // namespace
@@ -194,57 +124,13 @@ MixDirectBackend::compile(const MixDirectCompileConfig &cfg) {
   if (!buildOr)
     return buildOr.takeError();
 
-  MixAbiMetadata abi;
-  if (cfg.cannMlirPath && !cfg.cannMlirPath->empty()) {
-    auto abiOr = extractMixAbiFromCannMlir(*cfg.cannMlirPath);
-    if (!abiOr)
-      return abiOr.takeError();
-    abi = std::move(*abiOr);
-    if (cfg.npyDir && !cfg.npyDir->empty()) {
-      if (auto err = resolveDynamicShapesFromNpyDir(abi, *cfg.npyDir))
-        return err;
-    }
-    if (auto inputIndexOr = findFirstDynamicTensorIndex(abi.inputs))
-      return llvm::createStringError(
-          llvm::inconvertibleErrorCode(),
-          "RuntimeMix MLIR ABI extraction from %s produced unresolved dynamic "
-          "input shape for tensor '%s'; pass --npy-dir with concrete IO data "
-          "to resolve dynamic extents",
-          cfg.cannMlirPath->c_str(), abi.inputs[*inputIndexOr].name.c_str());
-    else
-      llvm::consumeError(inputIndexOr.takeError());
-    if (auto outputIndexOr = findFirstDynamicTensorIndex(abi.outputs))
-      return llvm::createStringError(
-          llvm::inconvertibleErrorCode(),
-          "RuntimeMix MLIR ABI extraction from %s produced unresolved dynamic "
-          "output shape for tensor '%s'; pass --npy-dir with concrete IO data "
-          "to resolve dynamic extents",
-          cfg.cannMlirPath->c_str(), abi.outputs[*outputIndexOr].name.c_str());
-    else
-      llvm::consumeError(outputIndexOr.takeError());
-  } else {
-    return llvm::createStringError(
-        llvm::inconvertibleErrorCode(),
-        "RuntimeMix direct backend requires --cann-mlir to derive ABI and "
-        "canonical IO metadata for kernel '%s'",
-        cfg.kernelName.c_str());
-  }
-
-  const std::string tilingArtifactSource = "out/tiling.bin";
-  if (abi.logicalKernelName.empty())
-    abi.logicalKernelName = buildOr->runtimeKernelName;
-  abi.runtimeKernelName = buildOr->runtimeKernelName;
-  if (abi.launcherSymbol.empty())
-    abi.launcherSymbol = "aclrtlaunch_" + buildOr->runtimeKernelName;
-  if (abi.aicEntry.empty())
-    abi.aicEntry = buildOr->runtimeKernelName + "_0_mix_aic";
-  if (abi.aivEntry.empty())
-    abi.aivEntry = buildOr->runtimeKernelName + "_0_mix_aiv";
-  if (abi.workspaceBytes == 0)
-    abi.workspaceBytes = 16777216ULL;
-  abi.workspaceMode = "fixed";
-  abi.tilingMode = "generated_file";
-  abi.tilingSource = tilingArtifactSource;
+  auto abiOr = loadLegacyMixRuntimeAbi(
+      cfg.cannMlirPath ? llvm::StringRef(*cfg.cannMlirPath) : llvm::StringRef(),
+      cfg.npyDir ? llvm::StringRef(*cfg.npyDir) : llvm::StringRef(),
+      buildOr->runtimeKernelName);
+  if (!abiOr)
+    return abiOr.takeError();
+  MixAbiMetadata abi = std::move(*abiOr);
 
   auto tilingOr = executeLegacyMixTilingStage(layout, buildOr->runtimeKernelName,
                                               cfg.socVersion, abi);

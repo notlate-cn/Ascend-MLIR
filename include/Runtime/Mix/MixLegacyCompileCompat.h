@@ -182,6 +182,11 @@ executeLegacyMixBinaryBuild(const MixLegacyCompileContract &contract,
                             llvm::StringRef requestedKernelName,
                             llvm::StringRef socVersion);
 
+llvm::Expected<MixAbiMetadata>
+loadLegacyMixRuntimeAbi(llvm::StringRef cannMlirPath,
+                        llvm::StringRef npyDir,
+                        llvm::StringRef runtimeKernelName);
+
 llvm::Expected<std::string>
 writeLegacyMixCompileMetadataFile(llvm::StringRef metadataPath,
                                   llvm::StringRef runtimeKernelName,
