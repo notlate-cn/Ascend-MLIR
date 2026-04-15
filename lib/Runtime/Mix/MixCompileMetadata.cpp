@@ -98,6 +98,8 @@ parseTensorArray(const llvm::json::Object &object, const char *fieldName) {
     if (!runtimeFileOr)
       return runtimeFileOr.takeError();
     tensor.runtimeFile = *runtimeFileOr;
+    if (auto goldenFile = (*tensorObjectOr)->getString("golden_file"))
+      tensor.goldenFile = goldenFile->str();
     auto shapeOr = parseShapeArray(**tensorObjectOr, "shape");
     if (!shapeOr)
       return shapeOr.takeError();
@@ -130,6 +132,8 @@ toJsonTensorArray(llvm::ArrayRef<MixCompileMetadataTensorDesc> tensors) {
     object["dtype"] = tensor.dtype;
     object["shape"] = toJsonShape(tensor.shape);
     object["runtime_file"] = tensor.runtimeFile;
+    if (!tensor.goldenFile.empty())
+      object["golden_file"] = tensor.goldenFile;
     array.push_back(std::move(object));
   }
   return array;
@@ -271,6 +275,14 @@ parseMixCompileMetadataJson(llvm::StringRef jsonText) {
   if (!tilingSourceOr)
     return tilingSourceOr.takeError();
   metadata.abi.tilingSource = *tilingSourceOr;
+  if (auto workspaceArgIndex = (*abiOr)->getInteger("workspace_arg_index")) {
+    metadata.abi.workspaceArgIndex = static_cast<uint64_t>(*workspaceArgIndex);
+    metadata.abi.hasWorkspaceArgIndex = true;
+  }
+  if (auto tilingArgIndex = (*abiOr)->getInteger("tiling_arg_index")) {
+    metadata.abi.tilingArgIndex = static_cast<uint64_t>(*tilingArgIndex);
+    metadata.abi.hasTilingArgIndex = true;
+  }
   auto inputsOr = parseTensorArray(**abiOr, "inputs");
   if (!inputsOr)
     return inputsOr.takeError();
@@ -347,6 +359,12 @@ serializeMixCompileMetadataJson(const MixCompileMetadata &metadata) {
   abi["workspace_bytes"] = static_cast<int64_t>(metadata.abi.workspaceBytes);
   abi["tiling_mode"] = metadata.abi.tilingMode;
   abi["tiling_source"] = metadata.abi.tilingSource;
+  if (metadata.abi.hasWorkspaceArgIndex)
+    abi["workspace_arg_index"] =
+        static_cast<int64_t>(metadata.abi.workspaceArgIndex);
+  if (metadata.abi.hasTilingArgIndex)
+    abi["tiling_arg_index"] =
+        static_cast<int64_t>(metadata.abi.tilingArgIndex);
   abi["inputs"] = toJsonTensorArray(metadata.abi.inputs);
   abi["outputs"] = toJsonTensorArray(metadata.abi.outputs);
   root["abi"] = std::move(abi);

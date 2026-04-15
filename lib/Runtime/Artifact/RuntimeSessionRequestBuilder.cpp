@@ -216,6 +216,7 @@ MixAbiTensorDesc toMixAbiTensorDesc(const MixCompileMetadataTensorDesc &tensor) 
   MixAbiTensorDesc out;
   out.name = tensor.name;
   out.runtimeFile = tensor.runtimeFile;
+  out.goldenFile = tensor.goldenFile;
   out.shape = tensor.shape;
   auto dtypeOr = parseDType(tensor.dtype);
   if (dtypeOr)
@@ -227,8 +228,7 @@ MixAbiTensorDesc toMixAbiTensorDesc(const MixCompileMetadataTensorDesc &tensor) 
 
 llvm::Expected<MixAbiMetadata>
 buildMixAbiFromMetadata(const MixCompileMetadata &metadata,
-                        llvm::StringRef artifactRoot,
-                        const std::map<std::string, std::string> &manifest) {
+                        llvm::StringRef artifactRoot) {
   MixAbiMetadata abi;
   abi.logicalKernelName = metadata.kernelName;
   abi.runtimeKernelName = metadata.runtimeKernelName;
@@ -236,6 +236,11 @@ buildMixAbiFromMetadata(const MixCompileMetadata &metadata,
   abi.workspaceBytes = static_cast<size_t>(metadata.abi.workspaceBytes);
   abi.tilingMode = metadata.abi.tilingMode;
   abi.tilingSource = metadata.abi.tilingSource;
+  if (metadata.abi.hasWorkspaceArgIndex)
+    abi.workspaceArgIndex =
+        static_cast<size_t>(metadata.abi.workspaceArgIndex);
+  if (metadata.abi.hasTilingArgIndex)
+    abi.tilingArgIndex = static_cast<size_t>(metadata.abi.tilingArgIndex);
   abi.launcherSymbol = metadata.launcherSymbol;
   abi.aicEntry = metadata.entries.aic;
   abi.aivEntry = metadata.entries.aiv;
@@ -267,14 +272,6 @@ buildMixAbiFromMetadata(const MixCompileMetadata &metadata,
     if (!blockDimOr)
       return blockDimOr.takeError();
     abi.blockDim = *blockDimOr;
-  } else if (auto it = manifest.find("abi_block_dim");
-             it != manifest.end() && !it->second.empty()) {
-    uint64_t blockDim = 0;
-    if (llvm::StringRef(it->second).getAsInteger(10, blockDim))
-      return llvm::createStringError(llvm::inconvertibleErrorCode(),
-                                     "invalid abi_block_dim in manifest: %s",
-                                     it->second.c_str());
-    abi.blockDim = static_cast<uint32_t>(blockDim);
   }
 
   return abi;
@@ -293,7 +290,7 @@ loadMixAbiForArtifact(const KernelArtifact &artifact) {
     auto metadataOr = loadValidatedMixMetadata(artifact.metadataPath);
     if (!metadataOr)
       return metadataOr.takeError();
-    return buildMixAbiFromMetadata(*metadataOr, artifact.artifactRoot, manifest);
+    return buildMixAbiFromMetadata(*metadataOr, artifact.artifactRoot);
   }
 
   return parseMixAbiManifest(manifest);
