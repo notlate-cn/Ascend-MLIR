@@ -20,6 +20,7 @@ add_mlir_library(AscendCRuntime
   Mix/MixCommandBuilder.cpp
   Mix/MixDirectBackend.cpp
   Mix/MixLegacyCompileCompat.cpp
+  Mix/MixLegacyCompilePipeline.cpp
   Mix/MixSourceAnalyzer.cpp
   Mix/MixStubTemplate.cpp
   Profile/ProfileTrace.cpp
