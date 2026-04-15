@@ -235,4 +235,12 @@ finalizeLegacyMixArtifact(const MixCompileLayout &layout,
                           const MixAnalyzedKernel &analyzed,
                           const MixLegacyCompileOutputs &compile);
 
+llvm::Expected<MixArtifact>
+executeLegacyMixDirectCompile(llvm::StringRef outputDir,
+                              llvm::StringRef kernelSrc,
+                              llvm::StringRef kernelName,
+                              llvm::StringRef cannMlirPath,
+                              llvm::StringRef npyDir,
+                              llvm::StringRef socVersion);
+
 } // namespace mlir::runtime

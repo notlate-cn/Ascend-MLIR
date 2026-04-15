@@ -47,6 +47,7 @@ static constexpr const char *kStageLinkHostStub = "link host runner library";
 static constexpr const char *kStageRecompile = "recompile packed binary";
 static constexpr const char *kStageBuildRunner = "build host runner";
 static constexpr const char *kStageEmitTilingArtifact = "emit tiling artifact";
+static constexpr const char *kStageAnalyzeSource = "analyze source";
 
 static llvm::Error writeTextFile(llvm::StringRef path,
                                  llvm::StringRef content) {
@@ -1775,6 +1776,66 @@ finalizeLegacyMixArtifact(const MixCompileLayout &layout,
   artifact.manifest_path = layout.manifestPath;
   artifact.metadata_path = compile.metadataPath;
   return artifact;
+}
+
+llvm::Expected<MixArtifact>
+executeLegacyMixDirectCompile(llvm::StringRef outputDir,
+                              llvm::StringRef kernelSrc,
+                              llvm::StringRef kernelName,
+                              llvm::StringRef cannMlirPath,
+                              llvm::StringRef npyDir,
+                              llvm::StringRef socVersion) {
+  if (outputDir.empty())
+    return llvm::createStringError(
+        llvm::inconvertibleErrorCode(),
+        "RuntimeMix direct backend requires an output directory");
+  if (kernelSrc.empty())
+    return llvm::createStringError(
+        llvm::inconvertibleErrorCode(),
+        "RuntimeMix direct backend requires a kernel source path");
+  if (kernelName.empty())
+    return llvm::createStringError(
+        llvm::inconvertibleErrorCode(),
+        "RuntimeMix direct backend requires a kernel name");
+  if (auto ascendHomeOr = requireAscendHome(); !ascendHomeOr)
+    return ascendHomeOr.takeError();
+
+  auto layoutOr = buildLegacyMixCompileLayout(outputDir, kernelName);
+  if (!layoutOr)
+    return layoutOr.takeError();
+  const MixCompileLayout &layout = *layoutOr;
+
+  const std::string analyzeContext = makeStageContext({
+      {"kernel", kernelName},
+      {"source", kernelSrc},
+      {"soc_version", socVersion},
+  });
+  llvm::SmallString<256> sourcePath(kernelSrc);
+  if (auto ec = llvm::sys::fs::make_absolute(sourcePath))
+    return llvm::createStringError(
+        ec, "[%s] cannot resolve kernel source path: %s (inputs: %s)",
+        kStageAnalyzeSource, kernelSrc.str().c_str(), analyzeContext.c_str());
+  if (!llvm::sys::fs::exists(sourcePath))
+    return llvm::createStringError(
+        llvm::inconvertibleErrorCode(),
+        "[%s] kernel source file not found: %s (inputs: %s)",
+        kStageAnalyzeSource, sourcePath.c_str(), analyzeContext.c_str());
+
+  auto analyzed = analyzeMixKernel(sourcePath, kernelName, socVersion);
+  if (!analyzed) {
+    const std::string analysisError = llvm::toString(analyzed.takeError());
+    return llvm::createStringError(llvm::inconvertibleErrorCode(),
+                                   "[%s] inputs: %s: %s",
+                                   kStageAnalyzeSource, analyzeContext.c_str(),
+                                   analysisError.c_str());
+  }
+
+  auto compileOr = executeLegacyMixCompilePipeline(
+      layout, sourcePath, kernelName, cannMlirPath, npyDir, socVersion,
+      *analyzed);
+  if (!compileOr)
+    return compileOr.takeError();
+  return finalizeLegacyMixArtifact(layout, sourcePath, *analyzed, *compileOr);
 }
 
 llvm::Error
