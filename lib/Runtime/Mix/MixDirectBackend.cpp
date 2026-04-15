@@ -1,83 +1,41 @@
 #include "Runtime/MixDirectBackend.h"
-#include "Runtime/MixCommandBuilder.h"
+
 #include "Runtime/MixAbi.h"
 #include "Runtime/MixAbiExtractor.h"
 #include "Runtime/Mix/MixLegacyCompileCompat.h"
-#include "Runtime/NpyIO.h"
-#include "Runtime/PathUtils.h"
 #include "Runtime/MixSourceAnalyzer.h"
-#include "Runtime/MixStubTemplate.h"
+#include "Runtime/NpyIO.h"
+#include "Runtime/Support/PathUtils.h"
 #include "llvm/ADT/SmallString.h"
 #include "llvm/ADT/SmallVector.h"
-#include "llvm/ADT/StringMap.h"
 #include "llvm/Support/Error.h"
 #include "llvm/Support/FileSystem.h"
-#include "llvm/Support/FormatVariadic.h"
-#include "llvm/Support/JSON.h"
 #include "llvm/Support/MemoryBuffer.h"
 #include "llvm/Support/Path.h"
-#include "llvm/Support/Program.h"
 #include "llvm/Support/raw_ostream.h"
-#include <algorithm>
-#include <cstdlib>
-#include <cstring>
+
 #include <fstream>
 #include <initializer_list>
-#include <optional>
-#include <sstream>
-#include <utility>
 
 namespace mlir::runtime {
 
 namespace {
 
+static constexpr const char *kStageAnalyzeSource = "analyze source";
+
 static llvm::Error writeTextFile(llvm::StringRef path, llvm::StringRef content) {
   std::ofstream os(path.str(), std::ios::binary);
   if (!os)
     return llvm::createStringError(llvm::inconvertibleErrorCode(),
-                                   "Cannot write file: %s", path.str().c_str());
+                                   "Cannot write file: %s",
+                                   path.str().c_str());
   os << content.str();
   if (!os)
     return llvm::createStringError(llvm::inconvertibleErrorCode(),
-                                   "Failed to write file: %s", path.str().c_str());
+                                   "Failed to write file: %s",
+                                   path.str().c_str());
   return llvm::Error::success();
 }
-
-static llvm::Expected<std::string> readTextFileOrErr(llvm::StringRef path) {
-  auto bufferOr = llvm::MemoryBuffer::getFile(path);
-  if (!bufferOr)
-    return llvm::createStringError(bufferOr.getError(),
-                                   "Cannot read file: %s", path.str().c_str());
-  return (*bufferOr)->getBuffer().str();
-}
-
-static llvm::Expected<uint32_t> readBlockDimFromLaunchInfo(llvm::StringRef path) {
-  auto textOr = readTextFileOrErr(path);
-  if (!textOr)
-    return textOr.takeError();
-
-  llvm::SmallVector<llvm::StringRef> lines;
-  llvm::StringRef(*textOr).split(lines, '\n');
-  for (llvm::StringRef line : lines) {
-    line = line.trim();
-    if (!line.starts_with("block_dim="))
-      continue;
-    uint64_t value = 0;
-    if (line.drop_front(strlen("block_dim=")).getAsInteger(10, value))
-      return llvm::createStringError(llvm::inconvertibleErrorCode(),
-                                     "Invalid block_dim in launch info: %s",
-                                     path.str().c_str());
-    return static_cast<uint32_t>(value);
-  }
-
-  return llvm::createStringError(llvm::inconvertibleErrorCode(),
-                                 "Missing block_dim in launch info: %s",
-                                 path.str().c_str());
-}
-
-static constexpr const char *kStageAnalyzeSource = "analyze source";
-static constexpr const char *kStageBuildRunner = "build host runner";
-static constexpr const char *kStageEmitTilingArtifact = "emit tiling artifact";
 
 static std::string makeStageContext(
     std::initializer_list<std::pair<llvm::StringRef, llvm::StringRef>> fields) {
@@ -96,26 +54,6 @@ static std::string makeStageContext(
   return out;
 }
 
-static llvm::Error ensureFileExists(llvm::StringRef path, llvm::StringRef stage,
-                                    llvm::StringRef context = {}) {
-  if (!llvm::sys::fs::exists(path))
-  {
-    const std::string contextText = context.str();
-    return llvm::createStringError(
-        llvm::inconvertibleErrorCode(),
-        "[%s] completed but did not create expected file: %s%s%s",
-        stage.str().c_str(), path.str().c_str(), context.empty() ? "" : " (",
-        context.empty() ? "" : contextText.c_str(),
-        context.empty() ? "" : ")");
-  }
-  return llvm::Error::success();
-}
-
-static std::string joinPath(llvm::StringRef base, llvm::StringRef leaf);
-static llvm::Error runProcess(const std::vector<std::string> &args,
-                              llvm::StringRef stage,
-                              llvm::StringRef context = {});
-
 static std::string joinDefinitions(llvm::ArrayRef<std::string> defs) {
   std::string out;
   for (size_t i = 0; i < defs.size(); ++i) {
@@ -126,463 +64,70 @@ static std::string joinDefinitions(llvm::ArrayRef<std::string> defs) {
   return out;
 }
 
-static bool useLegacyMixRunner() {
-  if (const char *value = std::getenv("AFIR_MIX_USE_LEGACY_RUNNER"))
-    return *value != '\0' && std::strcmp(value, "0") != 0;
-  return false;
-}
-
-static std::string getRunnerToolkitHome() {
-  return findAscendHome();
-}
-
-static std::string getRunnerLib64(const std::string &ascendHome) {
-  return findAscendLib64Dir(ascendHome);
-}
-
-static std::string getRunnerSimLibDir(const std::string &ascendHome,
-                                      llvm::StringRef socVersion) {
-  return findAscendSimulatorLibDir(ascendHome, socVersion);
-}
-
-static std::string getRunnerDeviceLibDir(const std::string &ascendHome) {
-  return findAscendDeviceLibDir(ascendHome);
-}
-
-static llvm::Error writeFileOrErr(llvm::StringRef path, llvm::StringRef content) {
-  return writeTextFile(path, content);
-}
-
-static std::string emitRunnerDataUtilsHeader() {
-  return R"runner(#pragma once
-#include <fcntl.h>
-#include <sys/stat.h>
-#include <unistd.h>
-
-#include <cstdio>
-#include <fstream>
-#include <iostream>
-#include <string>
-
-#include "acl/acl.h"
-
-#define CHECK_ACL(x) do { aclError __ret = (x); if (__ret != ACL_ERROR_NONE) { \
-  std::cerr << __FILE__ << ":" << __LINE__ << " aclError:" << __ret << std::endl; \
-} } while (0)
-
-static bool ReadFile(const std::string &filePath, size_t &fileSize, void *buffer, size_t bufferSize) {
-  struct stat sBuf;
-  if (stat(filePath.data(), &sBuf) == -1) return false;
-  if (S_ISREG(sBuf.st_mode) == 0) return false;
-  std::ifstream file(filePath, std::ios::binary);
-  if (!file.is_open()) return false;
-  std::filebuf *buf = file.rdbuf();
-  size_t size = buf->pubseekoff(0, std::ios::end, std::ios::in);
-  if (size == 0 || size > bufferSize) return false;
-  buf->pubseekpos(0, std::ios::in);
-  buf->sgetn(static_cast<char *>(buffer), size);
-  fileSize = size;
-  return true;
-}
-
-static bool WriteFile(const std::string &filePath, const void *buffer, size_t size) {
-  if (buffer == nullptr) return false;
-  int fd = open(filePath.c_str(), O_RDWR | O_CREAT | O_TRUNC, S_IRUSR | S_IWUSR);
-  if (fd < 0) return false;
-  size_t writeSize = write(fd, buffer, size);
-  (void)close(fd);
-  return writeSize == size;
-}
-)runner";
-}
-
-static std::string emitRunnerMainSource(llvm::StringRef kernelName,
-                                        const MixAbiMetadata &abi);
-static std::string emitRunnerTilingSource(const MixAbiMetadata &abi);
-
-static llvm::Error runProcess(const std::vector<std::string> &args,
-                              llvm::StringRef stage,
-                              llvm::StringRef context) {
-  if (args.empty())
-    return llvm::createStringError(llvm::inconvertibleErrorCode(),
-                                   "[%s] received an empty command",
-                                   stage.str().c_str());
-
-  std::vector<llvm::StringRef> argv;
-  argv.reserve(args.size());
-  for (const auto &arg : args)
-    argv.push_back(arg);
-
-  std::string errMsg;
-  std::optional<llvm::StringRef> redirects[3];
-  int ret = llvm::sys::ExecuteAndWait(argv[0], argv, std::nullopt, redirects,
-                                      300, 0, &errMsg);
-  if (ret != 0) {
-    const std::string program = argv[0].str();
-    const std::string contextText = context.str();
-    std::string renderedCommand = renderCommandForDebug(args);
-    return llvm::createStringError(
-        llvm::inconvertibleErrorCode(),
-        "[%s] program=%s%s%s failed (exit %d): %s\n  command: %s",
-        stage.str().c_str(), program.c_str(),
-        context.empty() ? "" : " inputs: ",
-        context.empty() ? "" : contextText.c_str(), ret, errMsg.c_str(),
-        renderedCommand.c_str());
-  }
-  return llvm::Error::success();
-}
-
-static std::string joinPath(llvm::StringRef base, llvm::StringRef leaf) {
-  llvm::SmallString<256> joined(base);
-  llvm::sys::path::append(joined, leaf);
-  return joined.str().str();
-}
-
-static uint64_t getElementBytes(DType dtype) {
-  if (dtype == DType::F16)
-    return sizeof(int16_t);
-  if (dtype == DType::F32)
-    return sizeof(float);
-  return 0;
-}
-
-static uint64_t getTensorElementCount(llvm::ArrayRef<int64_t> shape) {
-  uint64_t count = 1;
-  for (int64_t dim : shape)
-    count *= static_cast<uint64_t>(dim);
-  return count;
-}
-
-static bool hasDynamicShape(llvm::ArrayRef<int64_t> shape) {
-  for (int64_t dim : shape)
-    if (dim < 0)
-      return true;
-  return false;
-}
-
-static llvm::Expected<size_t>
-findFirstDynamicTensorIndex(llvm::ArrayRef<MixAbiTensorDesc> tensors) {
-  for (size_t i = 0; i < tensors.size(); ++i)
-    if (hasDynamicShape(tensors[i].shape))
-      return i;
-  return llvm::createStringError(llvm::inconvertibleErrorCode(),
-                                 "no dynamic tensor shape found");
-}
-
-static uint64_t getTensorBytes(const MixAbiTensorDesc &tensor) {
-  return getTensorElementCount(tensor.shape) * getElementBytes(tensor.dtype);
-}
-
-static llvm::StringRef getDTypeName(DType dtype) {
-  if (dtype == DType::F16)
-    return "f16";
-  if (dtype == DType::BF16)
-    return "bf16";
-  if (dtype == DType::F32)
-    return "f32";
-  if (dtype == DType::INT8)
-    return "int8";
-  if (dtype == DType::INT32)
-    return "int32";
-  if (dtype == DType::INT64)
-    return "int64";
-  return "unknown";
-}
-
-static std::string buildOrdinalTensorNpyName(bool isOutput, size_t index) {
-  return (llvm::Twine(isOutput ? "output" : "input") + llvm::Twine(index) +
-          ".npy")
-      .str();
-}
-
-static llvm::Expected<std::string>
-resolveTensorNpyPath(llvm::StringRef npyDir, const MixAbiTensorDesc &tensor,
-                     size_t index, bool isOutput) {
-  const std::string namedPath = joinPath(npyDir, tensor.name + ".npy");
-  if (llvm::sys::fs::exists(namedPath))
-    return namedPath;
-  const std::string ordinalPath =
-      joinPath(npyDir, buildOrdinalTensorNpyName(isOutput, index));
-  if (llvm::sys::fs::exists(ordinalPath))
-    return ordinalPath;
-  return llvm::createStringError(
-      llvm::inconvertibleErrorCode(),
-      "RuntimeMix cannot resolve concrete %s tensor shape for ABI tensor '%s': "
-      "expected either %s or %s",
-      isOutput ? "output" : "input", tensor.name.c_str(), namedPath.c_str(),
-      ordinalPath.c_str());
-}
-
-static llvm::Error reconcileTensorWithNpy(MixAbiTensorDesc &tensor,
-                                          llvm::StringRef npyPath) {
-  auto arrayOr = LoadNpy(npyPath.str());
-  if (!arrayOr)
-    return arrayOr.takeError();
-  if (arrayOr->dtype != tensor.dtype)
-    return llvm::createStringError(
-        llvm::inconvertibleErrorCode(),
-        "RuntimeMix ABI dtype mismatch for tensor '%s': MLIR expects %s but %s "
-        "contains %s",
-        tensor.name.c_str(), getDTypeName(tensor.dtype).str().c_str(),
-        npyPath.str().c_str(), getDTypeName(arrayOr->dtype).str().c_str());
-  if (!tensor.shape.empty() && tensor.shape.size() != arrayOr->shape.size())
-    return llvm::createStringError(
-        llvm::inconvertibleErrorCode(),
-        "RuntimeMix ABI rank mismatch for tensor '%s': MLIR rank=%zu but %s "
-        "rank=%zu",
-        tensor.name.c_str(), tensor.shape.size(), npyPath.str().c_str(),
-        arrayOr->shape.size());
-  if (tensor.shape.empty()) {
-    tensor.shape = arrayOr->shape;
-    return llvm::Error::success();
-  }
-  for (size_t i = 0; i < arrayOr->shape.size(); ++i) {
-    if (tensor.shape[i] >= 0 && tensor.shape[i] != arrayOr->shape[i])
-      return llvm::createStringError(
-          llvm::inconvertibleErrorCode(),
-          "RuntimeMix ABI shape mismatch for tensor '%s' dim %zu: MLIR expects "
-          "%lld but %s provides %lld",
-          tensor.name.c_str(), i, static_cast<long long>(tensor.shape[i]),
-          npyPath.str().c_str(), static_cast<long long>(arrayOr->shape[i]));
-    tensor.shape[i] = arrayOr->shape[i];
-  }
-  return llvm::Error::success();
+static llvm::Expected<NDArray> loadNpyTensor(llvm::StringRef path) {
+  return LoadNpy(path.str());
 }
 
 static llvm::Error resolveDynamicShapesFromNpyDir(MixAbiMetadata &abi,
                                                   llvm::StringRef npyDir) {
-  for (size_t i = 0; i < abi.inputs.size(); ++i) {
-    if (!hasDynamicShape(abi.inputs[i].shape))
-      continue;
-    auto npyPathOr = resolveTensorNpyPath(npyDir, abi.inputs[i], i, false);
-    if (!npyPathOr)
-      return npyPathOr.takeError();
-    if (auto err = reconcileTensorWithNpy(abi.inputs[i], *npyPathOr))
+  auto resolveOne = [&](MixAbiTensorDesc &tensor, llvm::StringRef fileName) -> llvm::Error {
+    bool needsResolution = false;
+    for (int64_t dim : tensor.shape) {
+      if (dim < 0) {
+        needsResolution = true;
+        break;
+      }
+    }
+    if (!needsResolution)
+      return llvm::Error::success();
+
+    llvm::SmallString<256> npyPath(npyDir);
+    llvm::sys::path::append(npyPath, fileName);
+    auto arrayOr = loadNpyTensor(npyPath);
+    if (!arrayOr)
+      return arrayOr.takeError();
+    tensor.shape = arrayOr->shape;
+    if (tensor.runtimeFile.empty())
+      tensor.runtimeFile = fileName.str();
+    if (tensor.goldenFile.empty())
+      tensor.goldenFile = fileName.str();
+    if (tensor.dtype != arrayOr->dtype)
+      return llvm::createStringError(
+          llvm::inconvertibleErrorCode(),
+          "RuntimeMix ABI tensor '%s' dtype from MLIR does not match NPY payload",
+          tensor.name.c_str());
+    return llvm::Error::success();
+  };
+
+  for (auto &tensor : abi.inputs) {
+    std::string fileName = tensor.runtimeFile.empty()
+                               ? buildCanonicalInputFileName(abi.logicalKernelName,
+                                                             tensor.name)
+                               : tensor.runtimeFile;
+    if (auto err = resolveOne(tensor, fileName))
       return err;
   }
-  for (size_t i = 0; i < abi.outputs.size(); ++i) {
-    if (!hasDynamicShape(abi.outputs[i].shape))
-      continue;
-    auto npyPathOr = resolveTensorNpyPath(npyDir, abi.outputs[i], i, true);
-    if (!npyPathOr)
-      return npyPathOr.takeError();
-    if (auto err = reconcileTensorWithNpy(abi.outputs[i], *npyPathOr))
+  for (auto &tensor : abi.outputs) {
+    std::string fileName = tensor.goldenFile.empty()
+                               ? buildCanonicalGoldenFileName(
+                                     abi.logicalKernelName, tensor.name)
+                               : tensor.goldenFile;
+    if (auto err = resolveOne(tensor, fileName))
       return err;
   }
   return llvm::Error::success();
 }
 
-static llvm::StringRef getAclDataType(DType dtype) {
-  if (dtype == DType::F16)
-    return "DataType::DT_FLOAT16";
-  if (dtype == DType::F32)
-    return "DataType::DT_FLOAT";
-  return "DataType::DT_UNDEFINED";
-}
-
-static std::string emitRunnerMainSource(llvm::StringRef kernelName,
-                                        const MixAbiMetadata &abi) {
-  const auto &inputA = abi.inputs[0];
-  const auto &inputB = abi.inputs[1];
-  const auto &output = abi.outputs[0];
-  const MixAbiTensorDesc *bias =
-      abi.inputs.size() > 2 ? &abi.inputs[2] : nullptr;
-  std::ostringstream os;
-  os << "#include \"data_utils.h\"\n"
-     << "#include \"kernel_tiling/kernel_tiling.h\"\n"
-     << "#include \"tiling/platform/platform_ascendc.h\"\n"
-     << "#include \"acl/acl.h\"\n"
-     << "#include \"aclrtlaunch_" << kernelName.str() << ".h\"\n"
-     << "#include <cstdint>\n"
-     << "#include <cstdlib>\n"
-     << "#include <cstring>\n"
-     << "#include <string>\n\n"
-     << "extern \"C\" void GenerateTiling(const char *socVersion, uint8_t *tilingBuf);\n"
-     << "extern \"C\" uint32_t GetBlockDim(const char *socVersion);\n\n"
-     << "int main(int argc, char *argv[]) {\n"
-     << "  std::string inputDir = \"./input\";\n"
-     << "  std::string outputFile = \"./output/" << output.runtimeFile << "\";\n"
-     << "  std::string emitTilingFile;\n"
-     << "  std::string emitLaunchInfoFile;\n"
-     << "  for (int i = 1; i < argc; ++i) {\n"
-     << "    std::string arg = argv[i];\n"
-     << "    if (arg == \"--input-dir\" && i + 1 < argc) inputDir = argv[++i];\n"
-     << "    else if (arg == \"--output-file\" && i + 1 < argc) outputFile = argv[++i];\n"
-     << "    else if (arg == \"--emit-tiling-file\" && i + 1 < argc) emitTilingFile = argv[++i];\n"
-     << "    else if (arg == \"--emit-launch-info\" && i + 1 < argc) emitLaunchInfoFile = argv[++i];\n"
-     << "  }\n\n"
-     << "  const char *socVersion = SOC_VERSION;\n"
-     << "  auto ascendcPlatform = platform_ascendc::PlatformAscendCManager::GetInstance(socVersion);\n"
-     << "  size_t aFileSize = " << getTensorBytes(inputA) << ";\n"
-     << "  size_t bFileSize = " << getTensorBytes(inputB) << ";\n"
-     << "  size_t cFileSize = " << getTensorBytes(output) << ";\n";
-  if (bias)
-    os << "  size_t biasFileSize = " << getTensorBytes(*bias) << ";\n";
-  os << "  size_t userWorkspaceSize = "
-     << static_cast<unsigned long long>(abi.workspaceBytes) << ";\n"
-     << "  size_t systemWorkspaceSize = ascendcPlatform ? static_cast<size_t>(ascendcPlatform->GetLibApiWorkSpaceSize()) : 0;\n"
-     << "  size_t workspaceSize = userWorkspaceSize + systemWorkspaceSize;\n"
-     << "  size_t tilingFileSize = sizeof(TCubeTiling);\n"
-     << "  uint8_t *tilingBuf = static_cast<uint8_t *>(malloc(tilingFileSize));\n"
-     << "  GenerateTiling(socVersion, tilingBuf);\n"
-     << "  uint32_t blockDim = GetBlockDim(socVersion);\n"
-     << "  auto ensureParentDir = [&](const std::string& path) {\n"
-     << "    size_t lastSlash = path.find_last_of('/');\n"
-     << "    if (lastSlash != std::string::npos) {\n"
-     << "      std::string outDir = path.substr(0, lastSlash);\n"
-     << "      std::string mkdirCmd = \"mkdir -p \" + outDir;\n"
-     << "      (void)std::system(mkdirCmd.c_str());\n"
-     << "    }\n"
-     << "  };\n"
-     << "  if (!emitTilingFile.empty()) {\n"
-     << "    ensureParentDir(emitTilingFile);\n"
-     << "    if (!WriteFile(emitTilingFile, tilingBuf, tilingFileSize)) {\n"
-     << "      free(tilingBuf);\n"
-     << "      return 5;\n"
-     << "    }\n"
-     << "  }\n"
-     << "  if (!emitLaunchInfoFile.empty()) {\n"
-     << "    ensureParentDir(emitLaunchInfoFile);\n"
-     << "    std::string payload = std::string(\"block_dim=\") + std::to_string(blockDim) + \"\\n\";\n"
-     << "    if (!WriteFile(emitLaunchInfoFile, payload.data(), payload.size())) {\n"
-     << "      free(tilingBuf);\n"
-     << "      return 5;\n"
-     << "    }\n"
-     << "  }\n"
-     << "  if (!emitTilingFile.empty() || !emitLaunchInfoFile.empty()) {\n"
-     << "    free(tilingBuf);\n"
-     << "    return 0;\n"
-     << "  }\n\n"
-     << "  CHECK_ACL(aclInit(nullptr));\n"
-     << "  int32_t deviceId = 0;\n"
-     << "  CHECK_ACL(aclrtSetDevice(deviceId));\n"
-     << "  aclrtStream stream = nullptr;\n"
-     << "  CHECK_ACL(aclrtCreateStream(&stream));\n\n"
-     << "  auto readHostToDevice = [&](const std::string& path, size_t bytes, uint8_t** host, uint8_t** device) {\n"
-     << "    size_t fileSize = 0;\n"
-     << "    CHECK_ACL(aclrtMallocHost(reinterpret_cast<void **>(host), bytes));\n"
-     << "    CHECK_ACL(aclrtMalloc(reinterpret_cast<void **>(device), bytes, ACL_MEM_MALLOC_HUGE_FIRST));\n"
-     << "    if (!ReadFile(path, fileSize, *host, bytes)) return false;\n"
-     << "    CHECK_ACL(aclrtMemcpy(*device, bytes, *host, bytes, ACL_MEMCPY_HOST_TO_DEVICE));\n"
-     << "    return true;\n"
-     << "  };\n\n"
-     << "  uint8_t *inputAHost = nullptr, *inputADevice = nullptr;\n"
-     << "  uint8_t *inputBHost = nullptr, *inputBDevice = nullptr;\n"
-     << "  uint8_t *inputBiasHost = nullptr, *inputBiasDevice = nullptr;\n"
-     << "  uint8_t *outputCHost = nullptr, *outputCDevice = nullptr;\n"
-     << "  uint8_t *tilingHost = nullptr, *tilingDevice = nullptr;\n"
-     << "  uint8_t *workspaceDevice = nullptr;\n\n"
-     << "  if (!readHostToDevice(inputDir + \"/" << inputA.runtimeFile
-     << "\", aFileSize, &inputAHost, &inputADevice)) return 2;\n"
-     << "  if (!readHostToDevice(inputDir + \"/" << inputB.runtimeFile
-     << "\", bFileSize, &inputBHost, &inputBDevice)) return 2;\n";
-  if (bias) {
-    os << "  if (!readHostToDevice(inputDir + \"/" << bias->runtimeFile
-       << "\", biasFileSize, &inputBiasHost, &inputBiasDevice)) return 2;\n\n";
-  } else {
-    os << "\n";
+static llvm::Expected<size_t>
+findFirstDynamicTensorIndex(llvm::ArrayRef<MixAbiTensorDesc> tensors) {
+  for (size_t i = 0; i < tensors.size(); ++i) {
+    for (int64_t dim : tensors[i].shape) {
+      if (dim < 0)
+        return i;
+    }
   }
-  os << "  CHECK_ACL(aclrtMallocHost(reinterpret_cast<void **>(&outputCHost), cFileSize));\n"
-     << "  CHECK_ACL(aclrtMalloc(reinterpret_cast<void **>(&outputCDevice), cFileSize, ACL_MEM_MALLOC_HUGE_FIRST));\n"
-     << "  CHECK_ACL(aclrtMallocHost(reinterpret_cast<void **>(&tilingHost), tilingFileSize));\n"
-     << "  CHECK_ACL(aclrtMalloc(reinterpret_cast<void **>(&tilingDevice), tilingFileSize, ACL_MEM_MALLOC_HUGE_FIRST));\n"
-     << "  CHECK_ACL(aclrtMemcpy(tilingHost, tilingFileSize, tilingBuf, tilingFileSize, ACL_MEMCPY_HOST_TO_HOST));\n"
-     << "  CHECK_ACL(aclrtMemcpy(tilingDevice, tilingFileSize, tilingHost, tilingFileSize, ACL_MEMCPY_HOST_TO_DEVICE));\n"
-     << "  CHECK_ACL(aclrtMalloc(reinterpret_cast<void **>(&workspaceDevice), workspaceSize, ACL_MEM_MALLOC_HUGE_FIRST));\n\n"
-     << "  ACLRT_LAUNCH_KERNEL(" << kernelName.str() << ")(blockDim, stream, inputADevice, inputBDevice, inputBiasDevice, outputCDevice, workspaceDevice, tilingDevice);\n"
-     << "  CHECK_ACL(aclrtSynchronizeStream(stream));\n"
-     << "  CHECK_ACL(aclrtMemcpy(outputCHost, cFileSize, outputCDevice, cFileSize, ACL_MEMCPY_DEVICE_TO_HOST));\n\n"
-     << "  size_t lastSlash = outputFile.find_last_of('/');\n"
-     << "  if (lastSlash != std::string::npos) {\n"
-     << "    std::string outDir = outputFile.substr(0, lastSlash);\n"
-     << "    std::string mkdirCmd = \"mkdir -p \" + outDir;\n"
-     << "    (void)std::system(mkdirCmd.c_str());\n"
-     << "  }\n"
-     << "  if (!WriteFile(outputFile, outputCHost, cFileSize)) return 3;\n\n"
-     << "  CHECK_ACL(aclrtFree(inputADevice));\n"
-     << "  CHECK_ACL(aclrtFreeHost(inputAHost));\n"
-     << "  CHECK_ACL(aclrtFree(inputBDevice));\n"
-     << "  CHECK_ACL(aclrtFreeHost(inputBHost));\n"
-     << "  CHECK_ACL(aclrtFree(outputCDevice));\n"
-     << "  CHECK_ACL(aclrtFreeHost(outputCHost));\n"
-     << "  CHECK_ACL(aclrtFree(inputBiasDevice));\n"
-     << "  CHECK_ACL(aclrtFreeHost(inputBiasHost));\n"
-     << "  CHECK_ACL(aclrtFree(tilingDevice));\n"
-     << "  CHECK_ACL(aclrtFreeHost(tilingHost));\n"
-     << "  CHECK_ACL(aclrtFree(workspaceDevice));\n"
-     << "  CHECK_ACL(aclrtDestroyStream(stream));\n"
-     << "  CHECK_ACL(aclrtResetDevice(deviceId));\n"
-     << "  CHECK_ACL(aclFinalize());\n"
-     << "  free(tilingBuf);\n"
-     << "  return 0;\n"
-     << "}\n";
-  return os.str();
-}
-
-static std::string emitRunnerTilingSource(const MixAbiMetadata &abi) {
-  const auto &inputA = abi.inputs[0];
-  const auto &inputB = abi.inputs[1];
-  const auto &output = abi.outputs[0];
-  const bool hasBias = abi.inputs.size() > 2;
-  const int64_t m = output.shape[0];
-  const int64_t n = output.shape[1];
-  const int64_t k = inputA.shape[1];
-  std::ostringstream os;
-  os << "#include <cstdint>\n"
-     << "#include \"tiling/tiling_api.h\"\n"
-     << "#include \"tiling/platform/platform_ascendc.h\"\n\n"
-     << "using namespace matmul_tiling;\n\n"
-     << "extern \"C\" void GenerateTiling(const char *socVersion, uint8_t *tilingBuf) {\n"
-     << "  int M = " << m << ";\n"
-     << "  int N = " << n << ";\n"
-     << "  int K = " << k << ";\n"
-     << "  optiling::TCubeTiling tilingData;\n"
-     << "  auto ascendcPlatform = platform_ascendc::PlatformAscendCManager::GetInstance(socVersion);\n"
-     << "  MatmulApiTiling tilingApi(*ascendcPlatform);\n\n"
-     << "  tilingApi.SetAType(TPosition::GM, CubeFormat::ND, "
-     << getAclDataType(inputA.dtype).str() << ", false);\n"
-     << "  tilingApi.SetBType(TPosition::GM, CubeFormat::ND, "
-     << getAclDataType(inputB.dtype).str() << ", false);\n"
-     << "  tilingApi.SetCType(TPosition::GM, CubeFormat::ND, "
-     << getAclDataType(output.dtype).str() << ");\n";
-  if (hasBias)
-    os << "  tilingApi.SetBiasType(TPosition::GM, CubeFormat::ND, "
-       << getAclDataType(abi.inputs[2].dtype).str() << ");\n";
-  os << "  tilingApi.SetOrgShape(M, N, K);\n"
-     << "  tilingApi.SetShape(M, N, K);\n"
-     << "  tilingApi.SetBias(" << (hasBias ? "true" : "false") << ");\n"
-     << "  tilingApi.SetTraverse(MatrixTraverse::FIRSTM);\n"
-     << "  tilingApi.SetFixSplit(M, N, -1);\n"
-     << "  tilingApi.SetBufferSpace(-1, -1, -1);\n"
-     << "  (void)tilingApi.GetTiling(tilingData);\n"
-     << "  tilingData.SaveToBuffer(tilingBuf, tilingData.GetDataSize());\n"
-     << "}\n\n"
-     << "extern \"C\" uint32_t GetBlockDim(const char *socVersion) {\n"
-     << "  int M = " << m << ";\n"
-     << "  int N = " << n << ";\n"
-     << "  int K = " << k << ";\n"
-     << "  optiling::TCubeTiling tilingData;\n"
-     << "  auto ascendcPlatform = platform_ascendc::PlatformAscendCManager::GetInstance(socVersion);\n"
-     << "  MatmulApiTiling tilingApi(*ascendcPlatform);\n\n"
-     << "  tilingApi.SetAType(TPosition::GM, CubeFormat::ND, "
-     << getAclDataType(inputA.dtype).str() << ", false);\n"
-     << "  tilingApi.SetBType(TPosition::GM, CubeFormat::ND, "
-     << getAclDataType(inputB.dtype).str() << ", false);\n"
-     << "  tilingApi.SetCType(TPosition::GM, CubeFormat::ND, "
-     << getAclDataType(output.dtype).str() << ");\n";
-  if (hasBias)
-    os << "  tilingApi.SetBiasType(TPosition::GM, CubeFormat::ND, "
-       << getAclDataType(abi.inputs[2].dtype).str() << ");\n";
-  os << "  tilingApi.SetOrgShape(M, N, K);\n"
-     << "  tilingApi.SetShape(M, N, K);\n"
-     << "  tilingApi.SetBias(" << (hasBias ? "true" : "false") << ");\n"
-     << "  tilingApi.SetTraverse(MatrixTraverse::FIRSTM);\n"
-     << "  tilingApi.SetFixSplit(M, N, -1);\n"
-     << "  tilingApi.SetBufferSpace(-1, -1, -1);\n"
-     << "  (void)tilingApi.GetTiling(tilingData);\n"
-     << "  return static_cast<uint32_t>(tilingData.get_usedCoreNum());\n"
-     << "}\n";
-  return os.str();
+  return llvm::createStringError(llvm::inconvertibleErrorCode(),
+                                 "no dynamic tensor found");
 }
 
 } // namespace
@@ -590,14 +135,17 @@ static std::string emitRunnerTilingSource(const MixAbiMetadata &abi) {
 llvm::Expected<MixArtifact>
 MixDirectBackend::compile(const MixDirectCompileConfig &cfg) {
   if (cfg.outputDir.empty())
-    return llvm::createStringError(llvm::inconvertibleErrorCode(),
-                                   "RuntimeMix direct backend requires an output directory");
+    return llvm::createStringError(
+        llvm::inconvertibleErrorCode(),
+        "RuntimeMix direct backend requires an output directory");
   if (cfg.kernelSrc.empty())
-    return llvm::createStringError(llvm::inconvertibleErrorCode(),
-                                   "RuntimeMix direct backend requires a kernel source path");
+    return llvm::createStringError(
+        llvm::inconvertibleErrorCode(),
+        "RuntimeMix direct backend requires a kernel source path");
   if (cfg.kernelName.empty())
-    return llvm::createStringError(llvm::inconvertibleErrorCode(),
-                                   "RuntimeMix direct backend requires a kernel name");
+    return llvm::createStringError(
+        llvm::inconvertibleErrorCode(),
+        "RuntimeMix direct backend requires a kernel name");
   if (auto ascendHomeOr = requireAscendHome(); !ascendHomeOr)
     return ascendHomeOr.takeError();
 
@@ -615,68 +163,36 @@ MixDirectBackend::compile(const MixDirectCompileConfig &cfg) {
   if (auto ec = llvm::sys::fs::make_absolute(sourcePath))
     return llvm::createStringError(
         ec, "[%s] cannot resolve kernel source path: %s (inputs: %s)",
-        kStageAnalyzeSource, cfg.kernelSrc.c_str(),
-        analyzeContext.c_str());
+        kStageAnalyzeSource, cfg.kernelSrc.c_str(), analyzeContext.c_str());
   if (!llvm::sys::fs::exists(sourcePath))
     return llvm::createStringError(
         llvm::inconvertibleErrorCode(),
         "[%s] kernel source file not found: %s (inputs: %s)",
-        kStageAnalyzeSource, sourcePath.c_str(),
-        analyzeContext.c_str());
+        kStageAnalyzeSource, sourcePath.c_str(), analyzeContext.c_str());
 
   auto analyzed = analyzeMixKernel(sourcePath, cfg.kernelName, cfg.socVersion);
-  if (!analyzed)
-  {
+  if (!analyzed) {
     const std::string analysisError = llvm::toString(analyzed.takeError());
-    return llvm::createStringError(
-        llvm::inconvertibleErrorCode(),
-        "[%s] inputs: %s: %s", kStageAnalyzeSource,
-        analyzeContext.c_str(), analysisError.c_str());
+    return llvm::createStringError(llvm::inconvertibleErrorCode(),
+                                   "[%s] inputs: %s: %s",
+                                   kStageAnalyzeSource,
+                                   analyzeContext.c_str(),
+                                   analysisError.c_str());
   }
 
-  const std::string &aicObj = layout.aicObj;
-  const std::string &aivObj = layout.aivObj;
-  const std::string &aicRelocObj = layout.aicRelocObj;
-  const std::string &aivRelocObj = layout.aivRelocObj;
-  const std::string &mergedDeviceObj = layout.mergedDeviceObj;
-  const std::string &manifestPath = layout.manifestPath;
-  const std::string &metadataPath = layout.metadataPath;
-  const std::string &analysisPath = layout.analysisPath;
-  const std::string &hostStubObjectPath = layout.hostStubObjectPath;
-  const std::string &kernelSoPath = layout.kernelSoPath;
-  const std::string &mixFlagPath = layout.mixFlagPath;
-  const std::string &runnerMainPath = layout.runnerMainPath;
-  const std::string &runnerTilingPath = layout.runnerTilingPath;
-  const std::string &runnerDataUtilsPath = layout.runnerDataUtilsPath;
-  const std::string &runnerBinaryPath = layout.runnerBinaryPath;
-  const std::string &tilingArtifactPath = layout.tilingArtifactPath;
-  const std::string &launchInfoPath = layout.launchInfoPath;
-  const std::string tilingArtifactSource = "out/tiling.bin";
-
-  MixAnalyzedKernel deviceAnalyzed = *analyzed;
-  std::string generatedSourcePath;
-  std::string hostStubSourcePath;
-  std::string preprocessCompileCommandsPath;
-  std::string preprocessCommand;
-  std::string preprocessGeneratedDir;
-  std::string runtimeKernelName = cfg.kernelName;
   auto compatOr = loadLegacyMixCompileContract(
       layout, sourcePath, cfg.kernelName, cfg.socVersion, *analyzed);
   if (!compatOr)
     return compatOr.takeError();
 
-  generatedSourcePath = compatOr->generatedSourcePath;
+  MixAnalyzedKernel deviceAnalyzed = *analyzed;
   deviceAnalyzed.aicDefines = compatOr->aicDefinitions;
   deviceAnalyzed.aivDefines = compatOr->aivDefinitions;
-  runtimeKernelName = compatOr->runtimeKernelName;
-  auto buildOr = executeLegacyMixBinaryBuild(*compatOr, sourcePath, cfg.kernelName,
-                                             cfg.socVersion);
+
+  auto buildOr = executeLegacyMixBinaryBuild(*compatOr, sourcePath,
+                                             cfg.kernelName, cfg.socVersion);
   if (!buildOr)
     return buildOr.takeError();
-  hostStubSourcePath = buildOr->hostStubSourcePath;
-  preprocessCompileCommandsPath = buildOr->preprocessCompileCommandsPath;
-  preprocessCommand = buildOr->preprocessCommand;
-  preprocessGeneratedDir = buildOr->preprocessGeneratedDir;
 
   MixAbiMetadata abi;
   if (cfg.cannMlirPath && !cfg.cannMlirPath->empty()) {
@@ -713,154 +229,73 @@ MixDirectBackend::compile(const MixDirectCompileConfig &cfg) {
         "canonical IO metadata for kernel '%s'",
         cfg.kernelName.c_str());
   }
+
+  const std::string tilingArtifactSource = "out/tiling.bin";
   if (abi.logicalKernelName.empty())
-    abi.logicalKernelName = runtimeKernelName;
-  abi.runtimeKernelName = runtimeKernelName;
+    abi.logicalKernelName = buildOr->runtimeKernelName;
+  abi.runtimeKernelName = buildOr->runtimeKernelName;
   if (abi.launcherSymbol.empty())
-    abi.launcherSymbol = "aclrtlaunch_" + runtimeKernelName;
+    abi.launcherSymbol = "aclrtlaunch_" + buildOr->runtimeKernelName;
   if (abi.aicEntry.empty())
-    abi.aicEntry = runtimeKernelName + "_0_mix_aic";
+    abi.aicEntry = buildOr->runtimeKernelName + "_0_mix_aic";
   if (abi.aivEntry.empty())
-    abi.aivEntry = runtimeKernelName + "_0_mix_aiv";
+    abi.aivEntry = buildOr->runtimeKernelName + "_0_mix_aiv";
   if (abi.workspaceBytes == 0)
     abi.workspaceBytes = 16777216ULL;
   abi.workspaceMode = "fixed";
   abi.tilingMode = "generated_file";
   abi.tilingSource = tilingArtifactSource;
-  const bool useLegacyRunner = useLegacyMixRunner();
-  std::vector<std::string> tilingEmitCmd;
-  std::vector<std::string> runnerCompileCmd;
-  std::string runnerMainSourcePath;
-  std::string runnerBinaryOutputPath;
-  if (useLegacyRunner) {
-    if (auto err =
-            writeFileOrErr(runnerDataUtilsPath, emitRunnerDataUtilsHeader()))
-      return err;
-    if (auto err = writeFileOrErr(
-            runnerMainPath, emitRunnerMainSource(runtimeKernelName, abi)))
-      return err;
-    if (auto err =
-            writeFileOrErr(runnerTilingPath, emitRunnerTilingSource(abi)))
-      return err;
 
-    const std::string ascendHome = getRunnerToolkitHome();
-    auto davSimLibDirOr = requireAscendDavSimulatorLibDir(ascendHome);
-    if (!davSimLibDirOr)
-      return davSimLibDirOr.takeError();
-    const std::string runnerLib64 = getRunnerLib64(ascendHome);
-    const std::string hostCannArch = getHostCannArchDir();
-    const std::string runnerAltLib64 =
-        hostCannArch.empty() ? std::string()
-                             : ascendHome + "/" + hostCannArch + "/lib64";
-    const std::string runnerDeviceLibDir = getRunnerDeviceLibDir(ascendHome);
-    const std::string runnerSimLibDir =
-        getRunnerSimLibDir(ascendHome, cfg.socVersion);
-    const std::string davSimLibDir = *davSimLibDirOr;
-        runnerCompileCmd = buildHostRunnerCompileCommand(
-        layout.workDir, layout.launcherDir, layout.outIncludeDir,
-        runnerMainPath, runnerTilingPath,
-        runnerBinaryPath, kernelSoPath, runnerLib64, runnerSimLibDir,
-        davSimLibDir, runnerDeviceLibDir, cfg.socVersion);
-    const std::string runnerBuildContext = makeStageContext({
-        {"main_source", runnerMainPath},
-        {"tiling_source", runnerTilingPath},
-        {"kernel_so", kernelSoPath},
-        {"runner_binary", runnerBinaryPath},
-        {"soc_version", cfg.socVersion},
-    });
-    std::string runnerLdLibraryPath = runnerLib64;
-    if (runnerAltLib64 != runnerLib64)
-      runnerLdLibraryPath += ":" + runnerAltLib64;
-    if (!runnerDeviceLibDir.empty())
-      runnerLdLibraryPath += ":" + runnerDeviceLibDir;
-    runnerLdLibraryPath += ":" + runnerSimLibDir + ":" + davSimLibDir +
-                           ":${LD_LIBRARY_PATH:-}";
-    tilingEmitCmd = {
-        "/bin/bash",
-        "-lc",
-        "LD_LIBRARY_PATH='" + runnerLdLibraryPath + "' " + runnerBinaryPath +
-            " --emit-tiling-file " + tilingArtifactPath +
-            " --emit-launch-info " + launchInfoPath,
-    };
-    if (auto err = runProcess(runnerCompileCmd, kStageBuildRunner,
-                              runnerBuildContext))
-      return err;
-    if (auto err = ensureFileExists(runnerBinaryPath, kStageBuildRunner,
-                                    runnerBuildContext))
-      return err;
-    runnerMainSourcePath = runnerMainPath;
-    runnerBinaryOutputPath = runnerBinaryPath;
-  } else {
-    tilingEmitCmd = buildMixTilingHelperCommand(
-        runtimeKernelName, cfg.socVersion, abi.inputs[0].shape,
-        abi.inputs[0].dtype, abi.inputs[1].shape, abi.inputs[1].dtype,
-        abi.outputs[0].shape, abi.outputs[0].dtype,
-        abi.inputs.size() > 2 ? std::optional<DType>(abi.inputs[2].dtype)
-                              : std::nullopt,
-        tilingArtifactPath, launchInfoPath);
-  }
-  const std::string tilingArtifactContext = makeStageContext({
-      {useLegacyRunner ? "runner_binary" : "helper", tilingEmitCmd.front()},
-      {"tiling_artifact", tilingArtifactPath},
-      {"launch_info", launchInfoPath},
-      {"kernel", runtimeKernelName},
-      {"soc_version", cfg.socVersion},
-  });
-  if (auto err =
-          runProcess(tilingEmitCmd, kStageEmitTilingArtifact, tilingArtifactContext))
-    return err;
-  if (auto err = ensureFileExists(tilingArtifactPath, kStageEmitTilingArtifact,
-                                  tilingArtifactContext))
-    return err;
-  if (auto err = ensureFileExists(launchInfoPath, kStageEmitTilingArtifact,
-                                  tilingArtifactContext))
-    return err;
-
-  auto blockDimOr = readBlockDimFromLaunchInfo(launchInfoPath);
-  if (!blockDimOr)
-    return blockDimOr.takeError();
-  abi.blockDim = *blockDimOr;
+  auto tilingOr = executeLegacyMixTilingStage(layout, buildOr->runtimeKernelName,
+                                              cfg.socVersion, abi);
+  if (!tilingOr)
+    return tilingOr.takeError();
+  abi.blockDim = tilingOr->blockDim;
 
   auto metadataPathOr = writeLegacyMixCompileMetadataFile(
-      metadataPath, runtimeKernelName, cfg.socVersion,
-      "mix_1c1v", generatedSourcePath, deviceAnalyzed.aicDefines,
-      deviceAnalyzed.aivDefines, mergedDeviceObj, kernelSoPath,
-      tilingArtifactPath, launchInfoPath, abi, useLegacyRunner);
+      layout.metadataPath, buildOr->runtimeKernelName, cfg.socVersion,
+      "mix_1c1v", compatOr->generatedSourcePath, deviceAnalyzed.aicDefines,
+      deviceAnalyzed.aivDefines, layout.mergedDeviceObj, layout.kernelSoPath,
+      tilingOr->tilingArtifactPath, tilingOr->launchInfoPath, abi,
+      tilingOr->usedLegacyRunner);
   if (!metadataPathOr)
     return metadataPathOr.takeError();
 
   if (auto err = writeTextFile(
-          analysisPath,
-          std::string("kernel_name=") + runtimeKernelName + "\n" +
+          layout.analysisPath,
+          std::string("kernel_name=") + buildOr->runtimeKernelName + "\n" +
               std::string("requested_kernel_name=") + analyzed->kernelName +
               "\n" +
               std::string("soc_version=") + analyzed->socVersion + "\n" +
               std::string("source_path=") + sourcePath.str().str() + "\n" +
-              (buildOr->hostSourcePath.empty() ? std::string{}
-                                      : std::string("host_source_path=") +
-                                            buildOr->hostSourcePath + "\n") +
-              std::string("generated_source_path=") + generatedSourcePath + "\n" +
+              (buildOr->hostSourcePath.empty()
+                   ? std::string{}
+                   : std::string("host_source_path=") +
+                         buildOr->hostSourcePath + "\n") +
+              std::string("generated_source_path=") +
+              compatOr->generatedSourcePath + "\n" +
               std::string("aic_definitions=") +
               joinDefinitions(deviceAnalyzed.aicDefines) + "\n" +
               std::string("aiv_definitions=") +
               joinDefinitions(deviceAnalyzed.aivDefines) + "\n" +
-              std::string("aic_object=") + aicObj + "\n" +
-              std::string("aiv_object=") + aivObj + "\n" +
-              std::string("aic_reloc_object=") + aicRelocObj + "\n" +
-              std::string("aiv_reloc_object=") + aivRelocObj + "\n" +
-              std::string("device_object=") + mergedDeviceObj + "\n"))
+              std::string("aic_object=") + layout.aicObj + "\n" +
+              std::string("aiv_object=") + layout.aivObj + "\n" +
+              std::string("aic_reloc_object=") + layout.aicRelocObj + "\n" +
+              std::string("aiv_reloc_object=") + layout.aivRelocObj + "\n" +
+              std::string("device_object=") + layout.mergedDeviceObj + "\n"))
     return err;
 
   MixLegacyDebugManifestInputs debugInputs;
   debugInputs.analyzed = &*analyzed;
   debugInputs.abi = &abi;
-  debugInputs.runtimeKernelName = runtimeKernelName;
+  debugInputs.runtimeKernelName = buildOr->runtimeKernelName;
   debugInputs.sourcePath = sourcePath.str().str();
   debugInputs.hostSourcePath = buildOr->hostSourcePath;
-  debugInputs.preprocessCompileCommandsPath = preprocessCompileCommandsPath;
-  debugInputs.preprocessCommand = preprocessCommand;
-  debugInputs.preprocessGeneratedDir = preprocessGeneratedDir;
-  debugInputs.generatedSourcePath = generatedSourcePath;
+  debugInputs.preprocessCompileCommandsPath =
+      buildOr->preprocessCompileCommandsPath;
+  debugInputs.preprocessCommand = buildOr->preprocessCommand;
+  debugInputs.preprocessGeneratedDir = buildOr->preprocessGeneratedDir;
+  debugInputs.generatedSourcePath = compatOr->generatedSourcePath;
   debugInputs.aicDefinitions = joinDefinitions(deviceAnalyzed.aicDefines);
   debugInputs.aivDefinitions = joinDefinitions(deviceAnalyzed.aivDefines);
   debugInputs.workDir = layout.workDir;
@@ -868,17 +303,17 @@ MixDirectBackend::compile(const MixDirectCompileConfig &cfg) {
   debugInputs.outDir = layout.outDir;
   debugInputs.mergeDir = layout.mergeDir;
   debugInputs.launcherHeaderDir = layout.outIncludeDir;
-  debugInputs.hostStubSourcePath = hostStubSourcePath;
-  debugInputs.hostStubObjectPath = hostStubObjectPath;
-  debugInputs.kernelSoPath = kernelSoPath;
-  debugInputs.mixFlagPath = mixFlagPath;
-  debugInputs.runnerSourcePath = runnerMainSourcePath;
-  debugInputs.runnerBinaryPath = runnerBinaryOutputPath;
-  debugInputs.aicObj = aicObj;
-  debugInputs.aivObj = aivObj;
-  debugInputs.aicRelocObj = aicRelocObj;
-  debugInputs.aivRelocObj = aivRelocObj;
-  debugInputs.mergedDeviceObj = mergedDeviceObj;
+  debugInputs.hostStubSourcePath = buildOr->hostStubSourcePath;
+  debugInputs.hostStubObjectPath = layout.hostStubObjectPath;
+  debugInputs.kernelSoPath = layout.kernelSoPath;
+  debugInputs.mixFlagPath = layout.mixFlagPath;
+  debugInputs.runnerSourcePath = tilingOr->runnerSourcePath;
+  debugInputs.runnerBinaryPath = tilingOr->runnerBinaryPath;
+  debugInputs.aicObj = layout.aicObj;
+  debugInputs.aivObj = layout.aivObj;
+  debugInputs.aicRelocObj = layout.aicRelocObj;
+  debugInputs.aivRelocObj = layout.aivRelocObj;
+  debugInputs.mergedDeviceObj = layout.mergedDeviceObj;
   debugInputs.aicCompileCmd = buildOr->aicCompileCommand;
   debugInputs.aivCompileCmd = buildOr->aivCompileCommand;
   debugInputs.aicRelocCmd = buildOr->aicRelocCommand;
@@ -891,26 +326,24 @@ MixDirectBackend::compile(const MixDirectCompileConfig &cfg) {
   debugInputs.packCmd = buildOr->packCommand;
   debugInputs.linkCmd = buildOr->hostLinkCommand;
   debugInputs.recompileCmd = buildOr->recompileCommand;
-  debugInputs.runnerCompileCmd = renderCommandForDebug(useLegacyRunner
-                                                           ? runnerCompileCmd
-                                                           : tilingEmitCmd);
+  debugInputs.runnerCompileCmd = tilingOr->runnerCompileCommand;
   debugInputs.metadataPath = *metadataPathOr;
-  debugInputs.manifestPath = manifestPath;
+  debugInputs.manifestPath = layout.manifestPath;
   if (auto err = writeLegacyMixDebugManifest(debugInputs))
     return err;
 
   MixArtifact artifact;
-  artifact.kernel_name = runtimeKernelName;
+  artifact.kernel_name = buildOr->runtimeKernelName;
   artifact.soc_version = analyzed->socVersion;
   artifact.work_dir = layout.workDir;
   artifact.build_dir = layout.objectDir;
   artifact.install_dir = layout.outDir;
-  artifact.kernel_so_path = kernelSoPath;
+  artifact.kernel_so_path = layout.kernelSoPath;
   artifact.launcher_header_dir = layout.outIncludeDir;
-  artifact.host_runner_path = runnerBinaryOutputPath;
-  artifact.host_stub_source_path = hostStubSourcePath;
-  artifact.device_object_path = mergedDeviceObj;
-  artifact.manifest_path = manifestPath;
+  artifact.host_runner_path = tilingOr->runnerBinaryPath;
+  artifact.host_stub_source_path = buildOr->hostStubSourcePath;
+  artifact.device_object_path = layout.mergedDeviceObj;
+  artifact.manifest_path = layout.manifestPath;
   artifact.metadata_path = *metadataPathOr;
   return artifact;
 }
@@ -922,7 +355,8 @@ KernelArtifact normalizeMixArtifact(const MixArtifact &artifact, KernelKind kind
   normalized.kernelKind = kind;
   normalized.mixResourceType = mixResourceType;
   normalized.socVersion = artifact.soc_version;
-  normalized.artifactRoot = llvm::sys::path::parent_path(artifact.work_dir).str();
+  normalized.artifactRoot =
+      llvm::sys::path::parent_path(artifact.work_dir).str();
   if (normalized.artifactRoot.empty())
     normalized.artifactRoot = artifact.install_dir;
   normalized.deviceBinaryPath = artifact.device_object_path.empty()
