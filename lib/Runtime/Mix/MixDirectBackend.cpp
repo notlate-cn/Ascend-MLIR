@@ -1090,7 +1090,6 @@ static llvm::Error writeDebugManifest(const MixAnalyzedKernel &analyzed,
   manifest += std::string("object_dir=") + objectDir.str() + "\n";
   manifest += std::string("out_dir=") + outDir.str() + "\n";
   manifest += std::string("abi_kind=mix_gm_workspace_tiling\n");
-  manifest += std::string("abi_metadata_path=") + manifestPath.str() + "\n";
   auto abiManifestOr = serializeMixAbiManifest(abi);
   if (!abiManifestOr)
     return abiManifestOr.takeError();
@@ -1116,10 +1115,6 @@ static llvm::Error writeDebugManifest(const MixAnalyzedKernel &analyzed,
   manifest += std::string("mix_build_flag=") + mixFlagPath.str() + "\n";
   manifest += std::string("host_runner_source_path=") +
               runnerSourcePath.str() + "\n";
-  manifest += std::string("launcher_symbol=aclrtlaunch_") +
-              runtimeKernelName.str() + "\n";
-  manifest += std::string("aic_entry=") + analyzed.aicEntry + "\n";
-  manifest += std::string("aiv_entry=") + analyzed.aivEntry + "\n";
   manifest += std::string("aic_object=") + aicObj.str() + "\n";
   manifest += std::string("aiv_object=") + aivObj.str() + "\n";
   manifest += std::string("aic_reloc_object=") + aicRelocObj.str() + "\n";
@@ -1896,9 +1891,6 @@ MixDirectBackend::compile(const MixDirectCompileConfig &cfg) {
               joinDefinitions(deviceAnalyzed.aicDefines) + "\n" +
               std::string("aiv_definitions=") +
               joinDefinitions(deviceAnalyzed.aivDefines) + "\n" +
-              std::string("launcher_symbol=aclrtlaunch_") + runtimeKernelName +
-              "\n" + std::string("aic_entry=") + analyzed->aicEntry + "\n" +
-              std::string("aiv_entry=") + analyzed->aivEntry + "\n" +
               std::string("aic_object=") + aicObj + "\n" +
               std::string("aiv_object=") + aivObj + "\n" +
               std::string("aic_reloc_object=") + aicRelocObj + "\n" +
@@ -1953,7 +1945,6 @@ MixDirectBackend::compile(const MixDirectCompileConfig &cfg) {
   artifact.device_object_path = mergedDeviceObj;
   artifact.manifest_path = manifestPath;
   artifact.metadata_path = *metadataPathOr;
-  artifact.abi_metadata_path = manifestPath;
   return artifact;
 }
 
