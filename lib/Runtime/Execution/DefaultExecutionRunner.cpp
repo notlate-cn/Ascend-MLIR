@@ -23,6 +23,12 @@ public:
     return runner_.runFile(launch, args);
   }
 
+  llvm::Error
+  runDynamicLibraryArtifact(const DynamicLibraryExecutionLaunch &launch,
+                            RunArgs &args) override {
+    return runner_.runDynamicLibraryArtifact(launch, args);
+  }
+
   llvm::Error runPackedMixFile(const PackedMixExecutionLaunch &launch,
                                RunArgs &args) override {
     return runner_.runPackedMixFile(launch, args);

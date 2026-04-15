@@ -167,6 +167,13 @@ public:
     return llvm::Error::success();
   }
 
+  llvm::Error runDynamicLibraryArtifact(
+      const DynamicLibraryExecutionLaunch &launch, RunArgs &) override {
+    runDynamicLibraryCalled = true;
+    lastDynamicLibraryLaunch = launch;
+    return llvm::Error::success();
+  }
+
   llvm::Error runPackedMixFile(const PackedMixExecutionLaunch &launch,
                                RunArgs &) override {
     runPackedMixCalled = true;
@@ -176,9 +183,11 @@ public:
 
   bool initializeCalled = false;
   bool runFileCalled = false;
+  bool runDynamicLibraryCalled = false;
   bool runPackedMixCalled = false;
   int lastDeviceId = -1;
   FileExecutionLaunch lastFileLaunch;
+  DynamicLibraryExecutionLaunch lastDynamicLibraryLaunch;
   PackedMixExecutionLaunch lastPackedMixLaunch;
 
 private:
@@ -1756,19 +1765,20 @@ static void testExecutionRunnerContractSupportsFileLaunches() {
 static void testExecutionRunnerContractSupportsPackedMixLaunches() {
   FakeExecutionRunner runner(ExecutionRunnerMode::Simulation);
   RunArgs args;
-  PackedMixExecutionLaunch launch;
+  DynamicLibraryExecutionLaunch launch;
   launch.sharedLibraryPath = "/tmp/libfake_packed.so";
-  launch.kernelName = "fake_mix_kernel";
+  launch.symbolName = "aclrtlaunch_fake_mix_kernel";
 
-  EXPECT(!runner.runPackedMixFile(launch, args),
-         "execution runner contract accepts packed mix launch");
-  EXPECT(runner.runPackedMixCalled,
-         "execution runner fake records packed mix launch invocation");
-  EXPECT(runner.lastPackedMixLaunch.sharedLibraryPath ==
+  EXPECT(!runner.runDynamicLibraryArtifact(launch, args),
+         "execution runner contract accepts dynamic-library artifact launch");
+  EXPECT(runner.runDynamicLibraryCalled,
+         "execution runner fake records dynamic-library launch invocation");
+  EXPECT(runner.lastDynamicLibraryLaunch.sharedLibraryPath ==
              "/tmp/libfake_packed.so",
-         "execution runner fake keeps packed mix library path");
-  EXPECT(runner.lastPackedMixLaunch.kernelName == "fake_mix_kernel",
-         "execution runner fake keeps packed mix kernel name");
+         "execution runner fake keeps dynamic-library path");
+  EXPECT(runner.lastDynamicLibraryLaunch.symbolName ==
+             "aclrtlaunch_fake_mix_kernel",
+         "execution runner fake keeps dynamic-library symbol name");
 }
 
 static void testNativeExecutionRunnerCompileCoverage() {

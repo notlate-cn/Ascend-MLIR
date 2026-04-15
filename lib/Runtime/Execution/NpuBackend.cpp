@@ -173,10 +173,10 @@ llvm::Expected<ExecutionResult> runWithExecutor(const ExecutionRequest &request)
     return stageError("executor_initialize", std::move(err));
 
   if (request.task.artifact.kernelKind == KernelKind::Mix) {
-    PackedMixExecutionLaunch launch;
+    DynamicLibraryExecutionLaunch launch;
     launch.sharedLibraryPath = request.task.artifact.packedSharedObjectPath;
-    launch.kernelName = request.task.artifact.kernelName;
-    if (auto err = runner->runPackedMixFile(launch, args)) {
+    launch.symbolName = "aclrtlaunch_" + request.task.artifact.kernelName;
+    if (auto err = runner->runDynamicLibraryArtifact(launch, args)) {
       return stageError("kernel_launch", std::move(err));
     }
   } else {

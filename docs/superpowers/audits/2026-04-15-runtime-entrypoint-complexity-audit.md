@@ -14,17 +14,18 @@
 | C API | selects compiled artifact path; materializes user tiling bytes | acceptable | no mix staging dependency |
 | `autotuner` | accepts `kernel-kind=mix`; packs tiling candidates | acceptable | no direct mix backend internals |
 | `RuntimeSessionRequestBuilder` | loads mix metadata and applies `blockDim` / `tiling.bin` defaults | acceptable | artifact contract boundary |
-| `SimBackend` / `NpuBackend` | branch on mix artifact and call packed mix runner | watch | execution still exposes packed mix launch seam |
-| `ExecutionRunner` | has `runPackedMixFile` API | follow-up | mix-specific runner seam remains visible |
+| `SimBackend` / `NpuBackend` | branch on mix artifact and call generic dynamic-library runner | acceptable | mix artifact maps to shared object plus launch symbol |
+| `ExecutionRunner` | has `runDynamicLibraryArtifact` API; keeps `runPackedMixFile` compatibility wrapper | watch | active seam is generic; old API can be deleted after external compatibility audit |
 
 ## Decision
 
 - Keep `RuntimeSessionRequestBuilder` as the boundary for mix metadata to invocation defaults.
 - Keep `ArtifactCompiler` as the boundary for mix vs vec/cube compile dispatch.
 - Do not move mix staging into CLI, C API, autotuner, or execution summary code.
-- Defer `ExecutionRunner::runPackedMixFile` cleanup until packed mix launch can be represented as a generic artifact launch.
+- Treat `runDynamicLibraryArtifact` as the runtime-native shared-library launch seam.
+- Retain `runPackedMixFile` only as a compatibility wrapper until external consumers are audited.
 
 ## Next Work
 
-- Design a generic dynamic-library artifact launch interface before changing `ExecutionRunner`.
+- Audit external consumers of `runPackedMixFile`; delete the compatibility wrapper if none remain.
 - Keep timing-stage names internal to diagnostics; callers should not parse them for behavior.

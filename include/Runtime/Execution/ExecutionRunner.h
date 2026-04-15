@@ -24,6 +24,11 @@ struct PackedMixExecutionLaunch {
   std::string kernelName;
 };
 
+struct DynamicLibraryExecutionLaunch {
+  std::string sharedLibraryPath;
+  std::string symbolName;
+};
+
 class ExecutionRunner {
 public:
   virtual ~ExecutionRunner() = default;
@@ -32,6 +37,9 @@ public:
   virtual llvm::Error initialize(int deviceId = 0) = 0;
   virtual llvm::Error runFile(const FileExecutionLaunch &launch,
                               RunArgs &args) = 0;
+  virtual llvm::Error
+  runDynamicLibraryArtifact(const DynamicLibraryExecutionLaunch &launch,
+                            RunArgs &args) = 0;
   virtual llvm::Error runPackedMixFile(const PackedMixExecutionLaunch &launch,
                                        RunArgs &args) = 0;
 };
