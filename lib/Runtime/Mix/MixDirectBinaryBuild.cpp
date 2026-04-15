@@ -55,6 +55,11 @@ static llvm::Expected<uint64_t> getFileSizeOrErr(llvm::StringRef path) {
 
 static uint64_t alignTo4(uint64_t size) { return (size + 3ULL) & ~3ULL; }
 
+static bool
+requiresLegacyHostBishengAndRecompile(const MixDirectCompileContract &contract) {
+  return contract.mode != MixDirectContractMode::DirectSource;
+}
+
 static llvm::Error writeRecompileLinkFile(llvm::StringRef rootDir,
                                           llvm::StringRef targetName,
                                           llvm::StringRef linkCommand) {
@@ -225,6 +230,8 @@ executeMixDirectBinaryBuild(const MixDirectCompileContract &contract,
   const std::vector<std::string> recompileCmd =
       buildRecompileBinaryCommand(layout.outputRoot, "ascendc_kernels_sim",
                                   layout.hostDir);
+  const bool requiresLegacyHostRecompile =
+      requiresLegacyHostBishengAndRecompile(contract);
 
   {
     MixDirectStageTimer timer("device_compile_parallel", outputs.timings);
@@ -309,26 +316,28 @@ executeMixDirectBinaryBuild(const MixDirectCompileContract &contract,
   if (auto err = ensureFileExists(layout.hostStubObjectPath,
                                   kStageCompileHostStub, hostCompileContext))
     return std::move(err);
-  const std::string hostBishengContext = makeStageContext({
-      {"source", outputs.hostSourcePath},
-      {"output", outputs.hostBishengObjectPath},
-      {"triple_chevron_header", tripleChevronHeaderPath},
-      {"kernel", requestedKernelName},
-  });
-  if (auto err = ensureFileExists(tripleChevronHeaderPath,
-                                  kStageCompileHostBisheng,
-                                  hostBishengContext))
-    return std::move(err);
-  {
-    MixDirectStageTimer timer("compile_host_bisheng", outputs.timings);
-    if (auto err = runProcess(hostBishengCmd, kStageCompileHostBisheng,
-                              hostBishengContext))
+  if (requiresLegacyHostRecompile) {
+    const std::string hostBishengContext = makeStageContext({
+        {"source", outputs.hostSourcePath},
+        {"output", outputs.hostBishengObjectPath},
+        {"triple_chevron_header", tripleChevronHeaderPath},
+        {"kernel", requestedKernelName},
+    });
+    if (auto err = ensureFileExists(tripleChevronHeaderPath,
+                                    kStageCompileHostBisheng,
+                                    hostBishengContext))
+      return std::move(err);
+    {
+      MixDirectStageTimer timer("compile_host_bisheng", outputs.timings);
+      if (auto err = runProcess(hostBishengCmd, kStageCompileHostBisheng,
+                                hostBishengContext))
+        return std::move(err);
+    }
+    if (auto err = ensureFileExists(outputs.hostBishengObjectPath,
+                                    kStageCompileHostBisheng,
+                                    hostBishengContext))
       return std::move(err);
   }
-  if (auto err = ensureFileExists(outputs.hostBishengObjectPath,
-                                  kStageCompileHostBisheng,
-                                  hostBishengContext))
-    return std::move(err);
   {
     MixDirectStageTimer timer("pack_mix_kernel", outputs.timings);
     if (auto err = runProcess(packCmd, kStagePack, packContext))
@@ -346,41 +355,44 @@ executeMixDirectBinaryBuild(const MixDirectCompileContract &contract,
                                   hostLinkContext))
     return std::move(err);
 
-  {
-    MixDirectStageTimer timer("prepare_recompile_link_file", outputs.timings);
-    const std::string recompileHostStubObjectPath =
-        joinPath(layout.stubDir, "host_stub.cpp.o");
-    if (auto err = copyFileOrErr(layout.hostStubObjectPath,
-                                 recompileHostStubObjectPath))
-      return std::move(err);
-    std::vector<std::string> recompileLinkArgs = hostLinkCmd;
-    for (std::string &arg : recompileLinkArgs) {
-      if (arg == layout.hostStubObjectPath)
-        arg = recompileHostStubObjectPath;
+  if (requiresLegacyHostRecompile) {
+    {
+      MixDirectStageTimer timer("prepare_recompile_link_file", outputs.timings);
+      const std::string recompileHostStubObjectPath =
+          joinPath(layout.stubDir, "host_stub.cpp.o");
+      if (auto err = copyFileOrErr(layout.hostStubObjectPath,
+                                   recompileHostStubObjectPath))
+        return std::move(err);
+      std::vector<std::string> recompileLinkArgs = hostLinkCmd;
+      for (std::string &arg : recompileLinkArgs) {
+        if (arg == layout.hostStubObjectPath)
+          arg = recompileHostStubObjectPath;
+      }
+      const std::string recompileLinkCmd =
+          renderCommandForCompileCommands(recompileLinkArgs);
+      if (auto err = writeRecompileLinkFile(layout.outputRoot,
+                                            "ascendc_kernels_sim",
+                                            recompileLinkCmd))
+        return std::move(err);
     }
-    const std::string recompileLinkCmd =
-        renderCommandForCompileCommands(recompileLinkArgs);
-    if (auto err = writeRecompileLinkFile(layout.outputRoot,
-                                          "ascendc_kernels_sim",
-                                          recompileLinkCmd))
+    const std::string recompileContext = makeStageContext({
+        {"root_dir", layout.outputRoot},
+        {"target_name", "ascendc_kernels_sim"},
+        {"add_dir", layout.hostDir},
+        {"kernel", requestedKernelName},
+    });
+    {
+      MixDirectStageTimer timer("recompile_packed_binary", outputs.timings);
+      if (auto err =
+              runProcess(recompileCmd, kStageRecompile, recompileContext))
+        return std::move(err);
+    }
+    const std::string recompiledKernelSoPath = joinPath(
+        layout.outDir, "lib" + outputs.runtimeKernelName + "_packed.so");
+    if (auto err = ensureFileExists(recompiledKernelSoPath, kStageRecompile,
+                                    recompileContext))
       return std::move(err);
   }
-  const std::string recompileContext = makeStageContext({
-      {"root_dir", layout.outputRoot},
-      {"target_name", "ascendc_kernels_sim"},
-      {"add_dir", layout.hostDir},
-      {"kernel", requestedKernelName},
-  });
-  {
-    MixDirectStageTimer timer("recompile_packed_binary", outputs.timings);
-    if (auto err = runProcess(recompileCmd, kStageRecompile, recompileContext))
-      return std::move(err);
-  }
-  const std::string recompiledKernelSoPath =
-      joinPath(layout.outDir, "lib" + outputs.runtimeKernelName + "_packed.so");
-  if (auto err = ensureFileExists(recompiledKernelSoPath, kStageRecompile,
-                                  recompileContext))
-    return std::move(err);
 
   outputs.aicCompileCommand = renderCommandForDebug(aicCmd);
   outputs.aivCompileCommand = renderCommandForDebug(aivCmd);
@@ -388,11 +400,41 @@ executeMixDirectBinaryBuild(const MixDirectCompileContract &contract,
   outputs.aivRelocCommand = renderCommandForDebug(aivRelocCmd);
   outputs.mergeCommand = renderCommandForDebug(mergeCmd);
   outputs.hostCompileCommand = renderCommandForDebug(hostCompileCmd);
-  outputs.hostBishengCommand = renderCommandForDebug(hostBishengCmd);
+  outputs.hostBishengCommand =
+      requiresLegacyHostRecompile ? renderCommandForDebug(hostBishengCmd) : "";
   outputs.packCommand = renderCommandForDebug(packCmd);
   outputs.hostLinkCommand = renderCommandForDebug(hostLinkCmd);
-  outputs.recompileCommand = renderCommandForDebug(recompileCmd);
+  outputs.recompileCommand =
+      requiresLegacyHostRecompile ? renderCommandForDebug(recompileCmd) : "";
   return outputs;
+}
+
+llvm::Expected<std::string> buildMixDirectSourceBuildPlanSummaryForTest(
+    llvm::StringRef outputRoot, llvm::StringRef sourcePath,
+    llvm::StringRef kernelName, llvm::StringRef socVersion) {
+  auto layoutOr = buildMixDirectCompileLayout(outputRoot, kernelName);
+  if (!layoutOr)
+    return layoutOr.takeError();
+  auto analyzedOr = analyzeMixKernel(sourcePath, kernelName, socVersion);
+  if (!analyzedOr)
+    return analyzedOr.takeError();
+  auto contractOr = buildMixDirectSourceCompileContract(
+      *layoutOr, sourcePath, kernelName, *analyzedOr);
+  if (!contractOr)
+    return contractOr.takeError();
+
+  const bool requiresLegacyHostRecompile =
+      requiresLegacyHostBishengAndRecompile(*contractOr);
+  llvm::json::Object root;
+  root["requires_host_bisheng"] = requiresLegacyHostRecompile;
+  root["requires_recompile"] = requiresLegacyHostRecompile;
+
+  std::string out;
+  llvm::raw_string_ostream os(out);
+  os << llvm::formatv("{0:2}", llvm::json::Value(std::move(root)));
+  os.flush();
+  out.push_back('\n');
+  return out;
 }
 
 llvm::Expected<std::string> writeMixDirectSourceStubSummaryForTest(

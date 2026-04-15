@@ -70,6 +70,12 @@ llvm::Expected<std::string> buildMixDirectSourceContractSummaryForTest(
 llvm::Expected<std::string> writeMixDirectSourceStubSummaryForTest(
     llvm::StringRef outputRoot, llvm::StringRef sourcePath,
     llvm::StringRef kernelName, llvm::StringRef socVersion, uint64_t mixFileLen);
+llvm::Expected<std::string> buildMixDirectDefaultContractSummaryForTest(
+    llvm::StringRef outputRoot, llvm::StringRef sourcePath,
+    llvm::StringRef kernelName, llvm::StringRef socVersion);
+llvm::Expected<std::string> buildMixDirectSourceBuildPlanSummaryForTest(
+    llvm::StringRef outputRoot, llvm::StringRef sourcePath,
+    llvm::StringRef kernelName, llvm::StringRef socVersion);
 llvm::Expected<std::string>
 materializeSimulatorProfileArtifactForTest(const ExecutionRequest &request,
                                            int64_t cycleCount);
@@ -4029,9 +4035,17 @@ static void testMixDirectSourceContractSummary() {
   EXPECT(rootObj->getString("runtime_kernel_name") &&
              *rootObj->getString("runtime_kernel_name") == "mix_kernel",
          "mix direct-source summary records runtime kernel name");
-  EXPECT(rootObj->getString("generated_source_path") &&
-             *rootObj->getString("generated_source_path") == source.string(),
-         "mix direct-source summary uses original source as generated source");
+  auto generatedSource = rootObj->getString("generated_source_path");
+  EXPECT(generatedSource &&
+             generatedSource->ends_with("/work/generated/auto_gen_kernel.cpp"),
+         "mix direct-source summary records generated wrapper source");
+  if (generatedSource) {
+    const std::string wrapperText = readTextFile(generatedSource->str());
+    EXPECT(wrapperText.find("mix_kernel_origin") != std::string::npos,
+           "mix direct-source wrapper calls renamed origin kernel");
+    EXPECT(wrapperText.find("ffts_addr") != std::string::npos,
+           "mix direct-source wrapper exposes ffts argument");
+  }
   EXPECT(rootObj->getString("host_stub_source_path") &&
              rootObj->getString("host_stub_source_path")->ends_with(
                  "/stub/host_stub.cpp"),
@@ -4045,18 +4059,10 @@ static void testMixDirectSourceContractSummary() {
   const auto *aivDefs = rootObj->getArray("aiv_definitions");
   EXPECT(jsonArrayContainsString(aicDefs, "__MIX_CORE_MACRO__=1"),
          "mix direct-source AIC defs include mix macro");
-  EXPECT(jsonArrayContainsString(aicDefs, "__DAV_C220_CUBE__"),
-         "mix direct-source AIC defs include cube arch macro");
-  EXPECT(jsonArrayContainsString(aicDefs, "HAVE_WORKSPACE"),
-         "mix direct-source AIC defs include workspace macro");
-  EXPECT(jsonArrayContainsString(aicDefs, "HAVE_TILING"),
-         "mix direct-source AIC defs include tiling macro");
-  EXPECT(jsonArrayContainsString(aivDefs, "__DAV_C220_VEC__"),
-         "mix direct-source AIV defs include vector arch macro");
-  EXPECT(jsonArrayContainsString(aivDefs, "HAVE_WORKSPACE"),
-         "mix direct-source AIV defs include workspace macro");
-  EXPECT(jsonArrayContainsString(aivDefs, "HAVE_TILING"),
-         "mix direct-source AIV defs include tiling macro");
+  EXPECT(jsonArrayContainsString(aicDefs, "ONE_CORE_DUMP_SIZE=1048576"),
+         "mix direct-source AIC defs include dump size macro");
+  EXPECT(jsonArrayContainsString(aivDefs, "ONE_CORE_DUMP_SIZE=1048576"),
+         "mix direct-source AIV defs include dump size macro");
 
   std::filesystem::remove_all(root);
 }
@@ -4116,6 +4122,92 @@ static void testMixDirectSourceStubSummary() {
   std::filesystem::remove_all(root);
 }
 
+static void testMixDirectDefaultContractUsesDirectSource() {
+  const std::filesystem::path root = makeTempDir("mix-default-contract");
+  std::filesystem::create_directories(root);
+  const std::filesystem::path source = root / "kernel.cpp";
+  {
+    std::ofstream os(source);
+    os << "extern \"C\" __global__ __aicore__ void mix_kernel() {}\n";
+  }
+
+  auto summaryOr = buildMixDirectDefaultContractSummaryForTest(
+      root.string(), source.string(), "mix_kernel", "Ascend910B");
+  EXPECT((bool)summaryOr, "mix default contract summary builds");
+  if (!summaryOr) {
+    llvm::consumeError(summaryOr.takeError());
+    std::filesystem::remove_all(root);
+    return;
+  }
+
+  auto parsedOr = llvm::json::parse(*summaryOr);
+  EXPECT((bool)parsedOr, "mix default contract summary parses");
+  if (!parsedOr) {
+    llvm::consumeError(parsedOr.takeError());
+    std::filesystem::remove_all(root);
+    return;
+  }
+  const auto *rootObj = parsedOr->getAsObject();
+  EXPECT(rootObj != nullptr, "mix default contract summary root is object");
+  if (!rootObj) {
+    std::filesystem::remove_all(root);
+    return;
+  }
+  EXPECT(rootObj->getString("contract_mode") &&
+             *rootObj->getString("contract_mode") == "direct-source",
+         "mix default contract uses direct-source mode");
+  EXPECT(rootObj->getString("preprocess_command") &&
+             *rootObj->getString("preprocess_command") == "direct-source",
+         "mix default contract does not require preprocess command");
+  EXPECT(rootObj->getString("generated_source_path") &&
+             rootObj->getString("generated_source_path")
+                 ->ends_with("/work/generated/auto_gen_kernel.cpp"),
+         "mix default contract uses generated wrapper source path");
+
+  std::filesystem::remove_all(root);
+}
+
+static void testMixDirectSourceBuildPlanSkipsLegacyHostRecompile() {
+  const std::filesystem::path root = makeTempDir("mix-direct-build-plan");
+  std::filesystem::create_directories(root);
+  const std::filesystem::path source = root / "kernel.cpp";
+  {
+    std::ofstream os(source);
+    os << "extern \"C\" __global__ __aicore__ void mix_kernel() {}\n";
+  }
+
+  auto summaryOr = buildMixDirectSourceBuildPlanSummaryForTest(
+      root.string(), source.string(), "mix_kernel", "Ascend910B");
+  EXPECT((bool)summaryOr, "mix direct-source build plan summary builds");
+  if (!summaryOr) {
+    llvm::consumeError(summaryOr.takeError());
+    std::filesystem::remove_all(root);
+    return;
+  }
+
+  auto parsedOr = llvm::json::parse(*summaryOr);
+  EXPECT((bool)parsedOr, "mix direct-source build plan summary parses");
+  if (!parsedOr) {
+    llvm::consumeError(parsedOr.takeError());
+    std::filesystem::remove_all(root);
+    return;
+  }
+  const auto *rootObj = parsedOr->getAsObject();
+  EXPECT(rootObj != nullptr, "mix direct-source build plan summary root is object");
+  if (!rootObj) {
+    std::filesystem::remove_all(root);
+    return;
+  }
+  EXPECT(rootObj->getBoolean("requires_host_bisheng") &&
+             !*rootObj->getBoolean("requires_host_bisheng"),
+         "mix direct-source build plan skips host bisheng compile");
+  EXPECT(rootObj->getBoolean("requires_recompile") &&
+             !*rootObj->getBoolean("requires_recompile"),
+         "mix direct-source build plan skips recompile binary");
+
+  std::filesystem::remove_all(root);
+}
+
 int main() {
   testTaskGraphBasics();
   testProfileTraceCollectsArtifactPaths();
@@ -4139,6 +4231,8 @@ int main() {
   testMixDirectTimingSerialization();
   testMixDirectSourceContractSummary();
   testMixDirectSourceStubSummary();
+  testMixDirectDefaultContractUsesDirectSource();
+  testMixDirectSourceBuildPlanSkipsLegacyHostRecompile();
   testRuntimeSessionRequestBuilderBuildsSingleTaskGraph();
   testMixValidationCanBeRepresentedAsRuntimeTask();
   testOutputComparatorExactMatchPasses();
