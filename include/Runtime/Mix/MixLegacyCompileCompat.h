@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Runtime/Mix/MixAbi.h"
+#include "Runtime/Mix/MixArtifact.h"
 #include "Runtime/Mix/MixSourceAnalyzer.h"
 
 #include "llvm/ADT/StringMap.h"
@@ -227,5 +228,11 @@ executeLegacyMixCompilePipeline(const MixCompileLayout &layout,
                                 llvm::StringRef npyDir,
                                 llvm::StringRef socVersion,
                                 const MixAnalyzedKernel &analyzed);
+
+llvm::Expected<MixArtifact>
+finalizeLegacyMixArtifact(const MixCompileLayout &layout,
+                          llvm::StringRef sourcePath,
+                          const MixAnalyzedKernel &analyzed,
+                          const MixLegacyCompileOutputs &compile);
 
 } // namespace mlir::runtime
