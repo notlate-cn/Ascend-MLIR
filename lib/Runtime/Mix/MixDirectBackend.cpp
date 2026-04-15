@@ -876,61 +876,10 @@ MixDirectBackend::compile(const MixDirectCompileConfig &cfg) {
   if (auto ascendHomeOr = requireAscendHome(); !ascendHomeOr)
     return ascendHomeOr.takeError();
 
-  llvm::SmallString<256> outputRoot(cfg.outputDir);
-  if (auto ec = llvm::sys::fs::make_absolute(outputRoot))
-    return llvm::createStringError(ec, "Cannot resolve output directory: %s",
-                                   cfg.outputDir.c_str());
-
-  llvm::SmallString<256> workDir(outputRoot);
-  llvm::sys::path::append(workDir, "work");
-  llvm::SmallString<256> objectDir(outputRoot);
-  llvm::sys::path::append(objectDir, "objects");
-  llvm::SmallString<256> outDir(outputRoot);
-  llvm::sys::path::append(outDir, "out");
-  llvm::SmallString<256> outBinDir(outDir);
-  llvm::sys::path::append(outBinDir, "bin");
-  llvm::SmallString<256> outIncludeDir(outDir);
-  llvm::sys::path::append(outIncludeDir, "include");
-  llvm::sys::path::append(outIncludeDir, "ascendc_kernels_sim");
-  llvm::SmallString<256> mergeDir(workDir);
-  llvm::sys::path::append(mergeDir, "merge_obj");
-  llvm::SmallString<256> launcherDir(workDir);
-  llvm::sys::path::append(launcherDir, "launcher");
-  llvm::SmallString<256> stubDir(workDir);
-  llvm::sys::path::append(stubDir, "stub");
-  llvm::SmallString<256> hostDir(outputRoot);
-  llvm::sys::path::append(hostDir, "host_dir");
-  llvm::SmallString<256> hostObjectsDir(hostDir);
-  llvm::sys::path::append(hostObjectsDir, "objects-Debug", "host_bisheng_obj");
-  llvm::SmallString<256> aicMergeDir(workDir);
-  llvm::sys::path::append(aicMergeDir, "aic_merge");
-  llvm::SmallString<256> aivMergeDir(workDir);
-  llvm::sys::path::append(aivMergeDir, "aiv_merge");
-
-  if (auto err = ensureDirectory(outputRoot))
-    return err;
-  if (auto err = ensureDirectory(workDir))
-    return err;
-  if (auto err = ensureDirectory(objectDir))
-    return err;
-  if (auto err = ensureDirectory(outDir))
-    return err;
-  if (auto err = ensureDirectory(outBinDir))
-    return err;
-  if (auto err = ensureDirectory(outIncludeDir))
-    return err;
-  if (auto err = ensureDirectory(mergeDir))
-    return err;
-  if (auto err = ensureDirectory(launcherDir))
-    return err;
-  if (auto err = ensureDirectory(stubDir))
-    return err;
-  if (auto err = ensureDirectory(hostObjectsDir))
-    return err;
-  if (auto err = ensureDirectory(aicMergeDir))
-    return err;
-  if (auto err = ensureDirectory(aivMergeDir))
-    return err;
+  auto layoutOr = buildLegacyMixCompileLayout(cfg.outputDir, cfg.kernelName);
+  if (!layoutOr)
+    return layoutOr.takeError();
+  const MixCompileLayout &layout = *layoutOr;
 
   const std::string analyzeContext = makeStageContext({
       {"kernel", cfg.kernelName},
@@ -960,65 +909,52 @@ MixDirectBackend::compile(const MixDirectCompileConfig &cfg) {
         analyzeContext.c_str(), analysisError.c_str());
   }
 
-  const std::string aicObj = joinPath(objectDir, cfg.kernelName + "_aic.o");
-  const std::string aivObj = joinPath(objectDir, cfg.kernelName + "_aiv.o");
-  const std::string aicRelocObj =
-      joinPath(objectDir, cfg.kernelName + "_aic.reloc.o");
-  const std::string aivRelocObj =
-      joinPath(objectDir, cfg.kernelName + "_aiv.reloc.o");
-  const std::string mergedDeviceObj = joinPath(outDir, "device.o");
-  const std::string manifestPath = joinPath(outDir, "manifest.txt");
-  const std::string metadataPath = joinPath(outDir, "mix_metadata.json");
-  const std::string analysisPath = joinPath(workDir, "analysis.txt");
-  const std::string mergeDeviceObj = joinPath(mergeDir, "device.o");
-  const std::string hostStubObjectPath = joinPath(stubDir, "host_stub.o");
-  const std::string kernelSoPath =
-      joinPath(outDir, "lib" + cfg.kernelName + "_packed.so");
-  const std::string mixFlagPath = joinPath(mergeDir, "mix_build.flag");
-  const std::string runnerMainPath = joinPath(workDir, "main.cpp");
-  const std::string runnerTilingPath =
-      joinPath(workDir, cfg.kernelName + "_tiling.cpp");
-  const std::string runnerDataUtilsPath = joinPath(workDir, "data_utils.h");
-  const std::string runnerBinaryPath = joinPath(outBinDir, "mix_runner");
-  const std::string tilingArtifactPath = joinPath(outDir, "tiling.bin");
-  const std::string launchInfoPath = joinPath(outDir, "launch_info.txt");
+  const std::string &aicObj = layout.aicObj;
+  const std::string &aivObj = layout.aivObj;
+  const std::string &aicRelocObj = layout.aicRelocObj;
+  const std::string &aivRelocObj = layout.aivRelocObj;
+  const std::string &mergedDeviceObj = layout.mergedDeviceObj;
+  const std::string &manifestPath = layout.manifestPath;
+  const std::string &metadataPath = layout.metadataPath;
+  const std::string &analysisPath = layout.analysisPath;
+  const std::string &mergeDeviceObj = layout.mergeDeviceObj;
+  const std::string &hostStubObjectPath = layout.hostStubObjectPath;
+  const std::string &kernelSoPath = layout.kernelSoPath;
+  const std::string &mixFlagPath = layout.mixFlagPath;
+  const std::string &runnerMainPath = layout.runnerMainPath;
+  const std::string &runnerTilingPath = layout.runnerTilingPath;
+  const std::string &runnerDataUtilsPath = layout.runnerDataUtilsPath;
+  const std::string &runnerBinaryPath = layout.runnerBinaryPath;
+  const std::string &tilingArtifactPath = layout.tilingArtifactPath;
+  const std::string &launchInfoPath = layout.launchInfoPath;
   const std::string tilingArtifactSource = "out/tiling.bin";
 
-  llvm::SmallString<256> preprocessProbeDir(workDir);
-  llvm::sys::path::append(preprocessProbeDir, "preprocess_probe");
-  if (auto err = ensureDirectory(preprocessProbeDir))
-    return err;
-  const std::string aicProbeObject =
-      joinPath(preprocessProbeDir, cfg.kernelName + "_aic_probe.o");
-  const std::string aivProbeObject =
-      joinPath(preprocessProbeDir, cfg.kernelName + "_aiv_probe.o");
-
   const std::vector<std::string> aicProbeCmd =
-      buildBishengCommand(*analyzed, sourcePath, aicProbeObject,
+      buildBishengCommand(*analyzed, sourcePath, layout.aicProbeObject,
                           MixCoreType::AIC);
   const std::vector<std::string> aivProbeCmd =
-      buildBishengCommand(*analyzed, sourcePath, aivProbeObject,
+      buildBishengCommand(*analyzed, sourcePath, layout.aivProbeObject,
                           MixCoreType::AIV);
   const std::string aicProbeContext = makeStageContext({
       {"kernel", cfg.kernelName},
       {"source", sourcePath},
-      {"output", aicProbeObject},
+      {"output", layout.aicProbeObject},
   });
   const std::string aivProbeContext = makeStageContext({
       {"kernel", cfg.kernelName},
       {"source", sourcePath},
-      {"output", aivProbeObject},
+      {"output", layout.aivProbeObject},
   });
   if (auto err =
           runProcess(aicProbeCmd, kStageAicPreprocessProbe, aicProbeContext))
     return err;
-  if (auto err = ensureFileExists(aicProbeObject, kStageAicPreprocessProbe,
+  if (auto err = ensureFileExists(layout.aicProbeObject, kStageAicPreprocessProbe,
                                   aicProbeContext))
     return err;
   if (auto err =
           runProcess(aivProbeCmd, kStageAivPreprocessProbe, aivProbeContext))
     return err;
-  if (auto err = ensureFileExists(aivProbeObject, kStageAivPreprocessProbe,
+  if (auto err = ensureFileExists(layout.aivProbeObject, kStageAivPreprocessProbe,
                                   aivProbeContext))
     return err;
 
@@ -1034,8 +970,8 @@ MixDirectBackend::compile(const MixDirectCompileConfig &cfg) {
   std::string hostSourcePath = sourcePath.str().str();
   std::string runtimeKernelName = cfg.kernelName;
   auto compatOr = loadLegacyMixCompileContract(
-      workDir, sourcePath, cfg.kernelName, cfg.socVersion, aivProbeObject,
-      aicProbeObject, *analyzed);
+      layout.workDir, sourcePath, cfg.kernelName, cfg.socVersion,
+      layout.aivProbeObject, layout.aicProbeObject, *analyzed);
   if (!compatOr)
     return compatOr.takeError();
 
@@ -1053,13 +989,13 @@ MixDirectBackend::compile(const MixDirectCompileConfig &cfg) {
   preprocessGeneratedDir = compatOr->preprocess.generatedDir;
 
   const std::string runnerLauncherCopyPath =
-      joinPath(outIncludeDir, "aclrtlaunch_" + runtimeKernelName + ".h");
+      joinPath(layout.outIncludeDir, "aclrtlaunch_" + runtimeKernelName + ".h");
 
   const bool needsManualStubTemplate =
       launcherHeaderPath.empty() || compatOr->synthesizedAicFromAiv;
   if (needsManualStubTemplate) {
-    hostStubSourcePath = joinPath(stubDir, "host_stub.cpp");
-    hostStubIncludeDir = outIncludeDir.str().str();
+    hostStubSourcePath = joinPath(layout.stubDir, "host_stub.cpp");
+    hostStubIncludeDir = layout.outIncludeDir;
     launcherHeaderPath = runnerLauncherCopyPath;
   }
   const std::vector<std::string> aicCmd =
@@ -1080,7 +1016,7 @@ MixDirectBackend::compile(const MixDirectCompileConfig &cfg) {
       buildHostStubCompileCommand(hostStubSourcePath, hostStubObjectPath,
                                   hostStubIncludeDir);
   const std::vector<std::string> packCmd =
-      buildPackCommand(hostStubObjectPath, mergeDir);
+      buildPackCommand(hostStubObjectPath, layout.mergeDir);
   const std::vector<std::string> hostLinkCmd =
       buildHostSharedLinkCommand(hostStubObjectPath, kernelSoPath,
                                  cfg.socVersion,
@@ -1118,7 +1054,7 @@ MixDirectBackend::compile(const MixDirectCompileConfig &cfg) {
   });
   const std::string finalizeContext = makeStageContext({
       {"generated_dir", preprocessGeneratedDir},
-      {"merge_dir", mergeDir},
+      {"merge_dir", layout.mergeDir},
       {"soc_version", cfg.socVersion},
       {"target", "ascendc_kernels_sim"},
   });
@@ -1130,7 +1066,7 @@ MixDirectBackend::compile(const MixDirectCompileConfig &cfg) {
   });
   const std::string packContext = makeStageContext({
       {"input", hostStubObjectPath},
-      {"add_dir", mergeDir},
+      {"add_dir", layout.mergeDir},
       {"kernel", cfg.kernelName},
   });
   const std::string hostLinkContext = makeStageContext({
@@ -1144,14 +1080,15 @@ MixDirectBackend::compile(const MixDirectCompileConfig &cfg) {
                                             : preprocessIncludeDir,
                "aclrtlaunch_triple_chevrons_func.h");
   const std::string hostBishengObjectPath =
-      joinPath(hostObjectsDir,
+      joinPath(layout.hostObjectsDir,
                llvm::sys::path::filename(hostSourcePath).str() + ".o");
-  const std::string hostObjectDir = hostDir.str().str();
+  const std::string hostObjectDir = layout.hostDir;
   const std::vector<std::string> hostBishengCmd =
       buildHostBishengCommand(hostSourcePath, hostBishengObjectPath,
                               tripleChevronHeaderPath);
   const std::vector<std::string> recompileCmd =
-      buildRecompileBinaryCommand(outputRoot, "ascendc_kernels_sim", hostDir);
+      buildRecompileBinaryCommand(layout.outputRoot, "ascendc_kernels_sim",
+                                  layout.hostDir);
 
   if (auto err = runProcess(aicCmd, kStageCompileAic, aicCompileContext))
     return err;
@@ -1208,7 +1145,7 @@ MixDirectBackend::compile(const MixDirectCompileConfig &cfg) {
   } else {
     const std::string lowerSocVersion = llvm::StringRef(cfg.socVersion).lower();
     const std::vector<std::string> finalizeHostStubCmd =
-        buildUpdateHostStubCommand(preprocessGeneratedDir, mergeDir,
+        buildUpdateHostStubCommand(preprocessGeneratedDir, layout.mergeDir,
                                    lowerSocVersion, "ascendc_kernels_sim");
     if (auto err = runProcess(finalizeHostStubCmd, kStageFinalizeHostStub,
                               finalizeContext))
@@ -1256,7 +1193,7 @@ MixDirectBackend::compile(const MixDirectCompileConfig &cfg) {
     return err;
 
   const std::string recompileHostStubObjectPath =
-      joinPath(stubDir, "host_stub.cpp.o");
+      joinPath(layout.stubDir, "host_stub.cpp.o");
   if (auto err = copyFileOrErr(hostStubObjectPath, recompileHostStubObjectPath))
     return err;
   std::vector<std::string> recompileLinkArgs = hostLinkCmd;
@@ -1266,19 +1203,19 @@ MixDirectBackend::compile(const MixDirectCompileConfig &cfg) {
   }
   const std::string recompileLinkCmd =
       renderCommandForCompileCommands(recompileLinkArgs);
-  if (auto err = writeRecompileLinkFile(outputRoot, "ascendc_kernels_sim",
+  if (auto err = writeRecompileLinkFile(layout.outputRoot, "ascendc_kernels_sim",
                                         recompileLinkCmd))
     return err;
   const std::string recompileContext = makeStageContext({
-      {"root_dir", outputRoot.str()},
+      {"root_dir", layout.outputRoot},
       {"target_name", "ascendc_kernels_sim"},
-      {"add_dir", hostDir.str()},
+      {"add_dir", layout.hostDir},
       {"kernel", cfg.kernelName},
   });
   if (auto err = runProcess(recompileCmd, kStageRecompile, recompileContext))
     return err;
   const std::string recompiledKernelSoPath =
-      joinPath(outDir, "lib" + runtimeKernelName + "_packed.so");
+      joinPath(layout.outDir, "lib" + runtimeKernelName + "_packed.so");
   if (auto err = ensureFileExists(recompiledKernelSoPath, kStageRecompile,
                                   recompileContext))
     return err;
@@ -1361,8 +1298,9 @@ MixDirectBackend::compile(const MixDirectCompileConfig &cfg) {
     const std::string runnerSimLibDir =
         getRunnerSimLibDir(ascendHome, cfg.socVersion);
     const std::string davSimLibDir = *davSimLibDirOr;
-    runnerCompileCmd = buildHostRunnerCompileCommand(
-        workDir, launcherDir, outIncludeDir, runnerMainPath, runnerTilingPath,
+        runnerCompileCmd = buildHostRunnerCompileCommand(
+        layout.workDir, layout.launcherDir, layout.outIncludeDir,
+        runnerMainPath, runnerTilingPath,
         runnerBinaryPath, kernelSoPath, runnerLib64, runnerSimLibDir,
         davSimLibDir, runnerDeviceLibDir, cfg.socVersion);
     const std::string runnerBuildContext = makeStageContext({
@@ -1464,8 +1402,9 @@ MixDirectBackend::compile(const MixDirectCompileConfig &cfg) {
                                     generatedSourcePath,
                                     joinDefinitions(deviceAnalyzed.aicDefines),
                                     joinDefinitions(deviceAnalyzed.aivDefines),
-                                    workDir, objectDir, outDir, mergeDir,
-                                    outIncludeDir.str(),
+                                    layout.workDir, layout.objectDir,
+                                    layout.outDir, layout.mergeDir,
+                                    layout.outIncludeDir,
                                     hostStubSourcePath, hostStubObjectPath,
                                     kernelSoPath, mixFlagPath,
                                     runnerMainSourcePath, runnerBinaryOutputPath,
@@ -1493,11 +1432,11 @@ MixDirectBackend::compile(const MixDirectCompileConfig &cfg) {
   MixArtifact artifact;
   artifact.kernel_name = runtimeKernelName;
   artifact.soc_version = analyzed->socVersion;
-  artifact.work_dir = workDir.str().str();
-  artifact.build_dir = objectDir.str().str();
-  artifact.install_dir = outDir.str().str();
+  artifact.work_dir = layout.workDir;
+  artifact.build_dir = layout.objectDir;
+  artifact.install_dir = layout.outDir;
   artifact.kernel_so_path = kernelSoPath;
-  artifact.launcher_header_dir = outIncludeDir.str().str();
+  artifact.launcher_header_dir = layout.outIncludeDir;
   artifact.host_runner_path = runnerBinaryOutputPath;
   artifact.host_stub_source_path = hostStubSourcePath;
   artifact.device_object_path = mergedDeviceObj;
