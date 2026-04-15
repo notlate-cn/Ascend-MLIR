@@ -7,48 +7,13 @@
 #include "llvm/Support/Error.h"
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/Path.h"
-#include "llvm/Support/raw_ostream.h"
 
-#include <fstream>
-#include <initializer_list>
 
 namespace mlir::runtime {
 
 namespace {
 
 static constexpr const char *kStageAnalyzeSource = "analyze source";
-
-static llvm::Error writeTextFile(llvm::StringRef path,
-                                 llvm::StringRef content) {
-  std::ofstream os(path.str(), std::ios::binary);
-  if (!os)
-    return llvm::createStringError(llvm::inconvertibleErrorCode(),
-                                   "Cannot write file: %s",
-                                   path.str().c_str());
-  os << content.str();
-  if (!os)
-    return llvm::createStringError(llvm::inconvertibleErrorCode(),
-                                   "Failed to write file: %s",
-                                   path.str().c_str());
-  return llvm::Error::success();
-}
-
-static std::string makeStageContext(
-    std::initializer_list<std::pair<llvm::StringRef, llvm::StringRef>> fields) {
-  std::string out;
-  llvm::raw_string_ostream os(out);
-  bool first = true;
-  for (const auto &field : fields) {
-    if (field.second.empty())
-      continue;
-    if (!first)
-      os << ", ";
-    first = false;
-    os << field.first << "=" << field.second;
-  }
-  os.flush();
-  return out;
-}
 
 static std::string joinDefinitions(llvm::ArrayRef<std::string> defs) {
   std::string out;
