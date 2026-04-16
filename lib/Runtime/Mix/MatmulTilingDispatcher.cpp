@@ -6,30 +6,39 @@ namespace mlir::runtime {
 
 namespace {
 
-class MatmulTilingDispatchError final
-    : public llvm::ErrorInfo<MatmulTilingDispatchError> {
-public:
-  explicit MatmulTilingDispatchError(std::string message)
-      : message_(std::move(message)) {}
-
-  void log(llvm::raw_ostream &os) const override { os << message_; }
-
-  std::error_code convertToErrorCode() const override {
-    return std::make_error_code(std::errc::invalid_argument);
-  }
-
-  static char ID;
-
-private:
-  std::string message_;
-};
-
-char MatmulTilingDispatchError::ID = 0;
+static std::string errorMessage(llvm::Error err) {
+  std::string message;
+  llvm::handleAllErrors(std::move(err),
+                        [&](const llvm::ErrorInfoBase &info) {
+                          message = info.message();
+                        });
+  return message;
+}
 
 static llvm::Error makeUnsupportedRequestError(
     const MatmulTilingRequest &request) {
-  return llvm::make_error<MatmulTilingDispatchError>(
-      "no matmul tiling backend supports kernel " + request.kernelName);
+  return llvm::createStringError(
+      "no matmul tiling backend supports kernel %s", request.kernelName.c_str());
+}
+
+static llvm::Error makeNativeFailureError(const MatmulTilingBackend &nativeBackend,
+                                          const MatmulTilingBackend &apiBackend,
+                                          const MatmulTilingRequest &request,
+                                          llvm::StringRef nativeFailure,
+                                          llvm::StringRef apiFailure = {}) {
+  if (apiFailure.empty()) {
+    return llvm::createStringError(
+        "native matmul tiling backend %s claimed support for kernel %s but failed: %s; "
+        "api backend %s does not support the request",
+        nativeBackend.name().str().c_str(), request.kernelName.c_str(),
+        nativeFailure.str().c_str(), apiBackend.name().str().c_str());
+  }
+  return llvm::createStringError(
+      "native matmul tiling backend %s claimed support for kernel %s but failed: %s; "
+      "api backend %s also failed: %s",
+      nativeBackend.name().str().c_str(), request.kernelName.c_str(),
+      nativeFailure.str().c_str(), apiBackend.name().str().c_str(),
+      apiFailure.str().c_str());
 }
 
 } // namespace
@@ -42,7 +51,20 @@ dispatchMatmulTiling(const MatmulTilingRequest &request,
     auto nativeResult = nativeBackend.generate(request);
     if (nativeResult)
       return std::move(nativeResult);
-    llvm::consumeError(nativeResult.takeError());
+
+    std::string nativeFailure = errorMessage(nativeResult.takeError());
+    if (!apiBackend.supports(request)) {
+      return makeNativeFailureError(nativeBackend, apiBackend, request,
+                                    nativeFailure);
+    }
+
+    auto apiResult = apiBackend.generate(request);
+    if (apiResult)
+      return std::move(apiResult);
+
+    std::string apiFailure = errorMessage(apiResult.takeError());
+    return makeNativeFailureError(nativeBackend, apiBackend, request,
+                                  nativeFailure, apiFailure);
   }
 
   if (!apiBackend.supports(request)) {

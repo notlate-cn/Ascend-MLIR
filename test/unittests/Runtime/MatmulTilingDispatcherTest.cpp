@@ -41,21 +41,28 @@ public:
   llvm::StringRef name() const override { return backendName_; }
 
   bool supports(const MatmulTilingRequest &) const override {
+    ++supportsCalls_;
     return supported_;
   }
 
   llvm::Expected<MatmulTilingResult>
   generate(const MatmulTilingRequest &) const override {
+    ++generateCalls_;
     if (result_)
       return *result_;
     return llvm::make_error<FakeBackendError>(errorMessage_);
   }
+
+  unsigned supportsCalls() const { return supportsCalls_; }
+  unsigned generateCalls() const { return generateCalls_; }
 
 private:
   std::string backendName_;
   bool supported_;
   std::optional<MatmulTilingResult> result_;
   std::string errorMessage_;
+  mutable unsigned supportsCalls_ = 0;
+  mutable unsigned generateCalls_ = 0;
 };
 
 MatmulTilingResult makeResult(llvm::StringRef backendKind, uint32_t blockDim) {
@@ -81,6 +88,7 @@ TEST(MatmulTilingDispatcherTest, PrefersNativeBackendWhenItSucceeds) {
   ASSERT_TRUE(static_cast<bool>(result));
   EXPECT_EQ(result->backendKind, "native");
   EXPECT_EQ(result->blockDim, 8u);
+  EXPECT_EQ(api.generateCalls(), 0u);
 }
 
 TEST(MatmulTilingDispatcherTest, FallsBackToApiWhenNativeErrors) {
@@ -97,7 +105,7 @@ TEST(MatmulTilingDispatcherTest, FallsBackToApiWhenNativeErrors) {
   EXPECT_EQ(result->blockDim, 4u);
 }
 
-TEST(MatmulTilingDispatcherTest, ErrorsWhenApiDoesNotSupportRequest) {
+TEST(MatmulTilingDispatcherTest, PreservesNativeFailureWhenApiDoesNotSupportRequest) {
   MatmulTilingRequest request;
   request.kernelName = "matmul_bias_relu";
 
@@ -107,5 +115,33 @@ TEST(MatmulTilingDispatcherTest, ErrorsWhenApiDoesNotSupportRequest) {
   auto result = dispatchMatmulTiling(request, native, api);
 
   ASSERT_FALSE(static_cast<bool>(result));
-  llvm::consumeError(result.takeError());
+  std::string message;
+  llvm::handleAllErrors(std::move(result.takeError()),
+                        [&](const llvm::ErrorInfoBase &info) {
+                          message = info.message();
+                        });
+  EXPECT_NE(message.find("native backend native claimed support"), std::string::npos);
+  EXPECT_NE(message.find("native backend failed"), std::string::npos);
+  EXPECT_NE(message.find("api backend api does not support the request"), std::string::npos);
+}
+
+TEST(MatmulTilingDispatcherTest, PreservesNativeAndApiFailures) {
+  MatmulTilingRequest request;
+  request.kernelName = "matmul_bias_relu";
+
+  FakeBackend native("native", true, std::nullopt, "native backend failed");
+  FakeBackend api("api", true, std::nullopt, "api backend failed");
+
+  auto result = dispatchMatmulTiling(request, native, api);
+
+  ASSERT_FALSE(static_cast<bool>(result));
+  std::string message;
+  llvm::handleAllErrors(std::move(result.takeError()),
+                        [&](const llvm::ErrorInfoBase &info) {
+                          message = info.message();
+                        });
+  EXPECT_NE(message.find("native backend native claimed support"), std::string::npos);
+  EXPECT_NE(message.find("native backend failed"), std::string::npos);
+  EXPECT_NE(message.find("api backend api also failed"), std::string::npos);
+  EXPECT_NE(message.find("api backend failed"), std::string::npos);
 }
