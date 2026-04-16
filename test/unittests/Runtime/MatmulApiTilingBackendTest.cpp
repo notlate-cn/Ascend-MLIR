@@ -93,7 +93,14 @@ TEST(MatmulApiTilingBackendTest, RejectsOutOfRangeShapeForVendorApi) {
   MatmulApiTilingBackend backend;
   MatmulTilingRequest request = makeSupportedRequest();
   request.problem.M = static_cast<int64_t>(std::numeric_limits<int>::max()) + 1;
+  EXPECT_FALSE(backend.supports(request));
+  EXPECT_FALSE(static_cast<bool>(backend.generate(request)));
 
-  auto result = backend.generate(request);
-  ASSERT_FALSE(static_cast<bool>(result));
+  request.problem.M = 16;
+  request.problem.N = static_cast<int64_t>(std::numeric_limits<int>::max()) + 1;
+  EXPECT_FALSE(backend.supports(request));
+
+  request.problem.N = 32;
+  request.problem.K = static_cast<int64_t>(std::numeric_limits<int>::max()) + 1;
+  EXPECT_FALSE(backend.supports(request));
 }

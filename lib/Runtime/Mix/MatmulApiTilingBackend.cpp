@@ -111,7 +111,10 @@ static DType resolveBiasDType(const MatmulTilingRequest &request) {
 
 static bool supportsMatmulApiTilingRequest(const MatmulTilingRequest &request) {
   return isPositiveShape(request) && request.problem.batchShape.empty() &&
-         hasSupportedLayout(request) && hasSupportedDType(request);
+         hasSupportedLayout(request) && hasSupportedDType(request) &&
+         request.problem.M <= std::numeric_limits<int>::max() &&
+         request.problem.N <= std::numeric_limits<int>::max() &&
+         request.problem.K <= std::numeric_limits<int>::max();
 }
 
 static llvm::Expected<int> toVendorInt64RangeChecked(int64_t value,

@@ -69,6 +69,13 @@ buildMatmulApiTilingRequest(const MixTilingRequest &request) {
   return matmulRequest;
 }
 
+#if defined(MLIR_RUNTIME_ENABLE_MATMUL_MIX_ADAPTER_TEST_HOOKS)
+llvm::Expected<MatmulTilingRequest>
+buildMatmulApiTilingRequestForTest(const MixTilingRequest &request) {
+  return buildMatmulApiTilingRequest(request);
+}
+#endif
+
 class Matmul2DTilingStrategy final : public MixTilingStrategy {
 public:
   llvm::StringRef name() const override { return "matmul-2d"; }
