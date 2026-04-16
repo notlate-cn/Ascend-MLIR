@@ -41,6 +41,9 @@ struct MatmulScheduleHint {
   std::optional<int64_t> preferBlockDim;
   std::optional<bool> preferSplitK;
   std::optional<MatrixTraverseKind> preferTraverse;
+  std::optional<int64_t> preferTileM;
+  std::optional<int64_t> preferTileN;
+  std::optional<int64_t> preferTileK;
 };
 
 struct MatmulTilingRequest {

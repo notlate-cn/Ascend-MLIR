@@ -136,6 +136,14 @@ static DType resolveBiasDType(const MatmulTilingRequest &request) {
   return request.problem.biasDType.value_or(request.problem.dtypeC);
 }
 
+static int resolveFixSplitValue(std::optional<int64_t> value, int fallback) {
+  if (!value.has_value())
+    return fallback;
+  if (*value <= 0 || *value > static_cast<int64_t>(std::numeric_limits<int>::max()))
+    return fallback;
+  return static_cast<int>(*value);
+}
+
 static bool supportsMatmulApiTilingRequest(const MatmulTilingRequest &request) {
   return isPositiveShape(request) && hasSupportedBatchShape(request) &&
          hasSupportedLayout(request) && hasSupportedDType(request) &&
@@ -188,6 +196,9 @@ generateMatmulApiTilingImpl(const MatmulTilingRequest &request) {
   const int m = static_cast<int>(request.problem.M);
   const int n = static_cast<int>(request.problem.N);
   const int k = static_cast<int>(request.problem.K);
+  const int fixSplitM = resolveFixSplitValue(request.hints.preferTileM, m);
+  const int fixSplitN = resolveFixSplitValue(request.hints.preferTileN, n);
+  const int fixSplitK = resolveFixSplitValue(request.hints.preferTileK, -1);
 
   matmul_tiling::MatmulApiTiling tilingApi(*ascendcPlatform);
   tilingApi.SetAType(matmul_tiling::TPosition::GM,
@@ -211,7 +222,7 @@ generateMatmulApiTilingImpl(const MatmulTilingRequest &request) {
   }
   tilingApi.SetBias(request.problem.hasBias);
   tilingApi.SetTraverse(toMatmulTraverse(request.hints.preferTraverse));
-  tilingApi.SetFixSplit(m, n, -1);
+  tilingApi.SetFixSplit(fixSplitM, fixSplitN, fixSplitK);
   tilingApi.SetBufferSpace(-1, -1, -1);
 
   optiling::TCubeTiling tilingData;
@@ -233,6 +244,9 @@ generateMatmulApiTilingImpl(const MatmulTilingRequest &request) {
                      (request.problem.batchShape.empty()
                           ? std::string("none")
                           : std::to_string(request.problem.batchShape[0])) +
+                     " fix_split=" + std::to_string(fixSplitM) + "x" +
+                     std::to_string(fixSplitN) + "x" +
+                     std::to_string(fixSplitK) +
                      " bias=" + std::string(request.problem.hasBias ? "1" : "0") +
                      " bias_dtype=" +
                      (request.problem.hasBias
