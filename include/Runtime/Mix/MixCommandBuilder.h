@@ -48,6 +48,7 @@ buildMixTilingHelperCommand(llvm::StringRef kernelName,
                             llvm::ArrayRef<int64_t> outputShape,
                             DType outputDType,
                             const std::optional<DType> &biasDType,
+                            llvm::ArrayRef<int64_t> biasShape,
                             llvm::StringRef tilingOutputPath,
                             llvm::StringRef launchInfoOutputPath);
 

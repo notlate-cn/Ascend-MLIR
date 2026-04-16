@@ -74,6 +74,8 @@ executeExternalMixTilingHelper(const MixCompileLayout &layout,
       abi.outputs[0].dtype,
       abi.inputs.size() > 2 ? std::optional<DType>(abi.inputs[2].dtype)
                             : std::nullopt,
+      abi.inputs.size() > 2 ? abi.inputs[2].shape
+                            : llvm::ArrayRef<int64_t>(),
       layout.tilingArtifactPath, layout.launchInfoPath);
   outputs.runnerCompileCommand = renderCommandForDebug(tilingEmitCmd);
 

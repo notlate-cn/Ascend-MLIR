@@ -31,6 +31,10 @@ add_executable(MatmulApiTilingBackendTest
   MatmulApiTilingBackendTest.cpp
 )
 
+target_include_directories(MatmulApiTilingBackendTest PRIVATE
+  ${CMAKE_SOURCE_DIR}/lib/Runtime/Mix
+)
+
 target_link_libraries(MatmulApiTilingBackendTest PRIVATE
   RuntimeUnitTestSupport
   AscendCRuntime
@@ -40,6 +44,21 @@ add_dependencies(RuntimeUnitTests MatmulApiTilingBackendTest)
 
 add_test(NAME MatmulApiTilingBackendTest
   COMMAND $<TARGET_FILE:MatmulApiTilingBackendTest>
+)
+
+add_executable(MixCommandBuilderTest
+  MixCommandBuilderTest.cpp
+)
+
+target_link_libraries(MixCommandBuilderTest PRIVATE
+  RuntimeUnitTestSupport
+  AscendCRuntime
+)
+
+add_dependencies(RuntimeUnitTests MixCommandBuilderTest)
+
+add_test(NAME MixCommandBuilderTest
+  COMMAND $<TARGET_FILE:MixCommandBuilderTest>
 )
 
 add_executable(MixTilingGeneratorTest
