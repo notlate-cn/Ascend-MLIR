@@ -4,6 +4,9 @@
 
 namespace mlir::runtime {
 
+struct MixTilingRequest;
+
+MatmulTilingRequest buildMatmulApiTilingRequest(const MixTilingRequest &request);
 llvm::Expected<MatmulTilingResult>
 generateMatmulApiTiling(const MatmulTilingRequest &request);
 

@@ -1,4 +1,5 @@
 #include "Runtime/Mix/MatmulApiTilingBackend.h"
+#include "Runtime/Mix/MixTilingGenerator.h"
 
 #include "llvm/Support/Error.h"
 
@@ -23,6 +24,24 @@ static llvm::Expected<matmul_tiling::DataType> toMatmulDataType(DType dtype) {
     return llvm::createStringError(llvm::inconvertibleErrorCode(),
                                    "unsupported matmul api tiling dtype");
   }
+}
+
+static const char *toString(DType dtype) {
+  switch (dtype) {
+  case DType::F16:
+    return "F16";
+  case DType::BF16:
+    return "BF16";
+  case DType::F32:
+    return "F32";
+  case DType::INT8:
+    return "INT8";
+  case DType::INT32:
+    return "INT32";
+  case DType::INT64:
+    return "INT64";
+  }
+  return "unknown";
 }
 
 static bool isPositiveShape(const MatmulTilingRequest &request) {
@@ -50,7 +69,9 @@ static bool isSupportedDType(DType dtype) {
 static bool hasSupportedDType(const MatmulTilingRequest &request) {
   return isSupportedDType(request.problem.dtypeA) &&
          isSupportedDType(request.problem.dtypeB) &&
-         isSupportedDType(request.problem.dtypeC);
+         isSupportedDType(request.problem.dtypeC) &&
+         (!request.problem.hasBias || !request.problem.biasDType.has_value() ||
+          isSupportedDType(*request.problem.biasDType));
 }
 
 static const char *traverseToString(std::optional<MatrixTraverseKind> traverse) {
@@ -84,12 +105,39 @@ static std::string resolveSocVersion(const MatmulTilingRequest &request) {
   return "Ascend910B1";
 }
 
+static DType resolveBiasDType(const MatmulTilingRequest &request) {
+  return request.problem.biasDType.value_or(request.problem.dtypeC);
+}
+
 static bool supportsMatmulApiTilingRequest(const MatmulTilingRequest &request) {
   return isPositiveShape(request) && request.problem.batchShape.empty() &&
          hasSupportedLayout(request) && hasSupportedDType(request);
 }
 
 } // namespace
+
+MatmulTilingRequest
+buildMatmulApiTilingRequest(const MixTilingRequest &request) {
+  MatmulTilingRequest matmulRequest;
+  matmulRequest.kernelName = request.kernelName;
+  matmulRequest.problem.M = request.outputs[0].shape[0];
+  matmulRequest.problem.N = request.outputs[0].shape[1];
+  matmulRequest.problem.K = request.inputs[0].shape[1];
+  matmulRequest.problem.dtypeA = request.inputs[0].dtype;
+  matmulRequest.problem.dtypeB = request.inputs[1].dtype;
+  matmulRequest.problem.dtypeC = request.outputs[0].dtype;
+  if (request.inputs.size() > 2) {
+    matmulRequest.problem.hasBias = true;
+    matmulRequest.problem.biasDType = request.inputs[2].dtype;
+  }
+  matmulRequest.problem.transA = false;
+  matmulRequest.problem.transB = false;
+  matmulRequest.problem.layoutA = MatmulLayout::ND;
+  matmulRequest.problem.layoutB = MatmulLayout::ND;
+  matmulRequest.problem.layoutC = MatmulLayout::ND;
+  matmulRequest.hints.socVersion = request.socVersion;
+  return matmulRequest;
+}
 
 llvm::StringRef MatmulApiTilingBackend::name() const { return "matmul-api"; }
 
@@ -115,6 +163,9 @@ generateMatmulApiTiling(const MatmulTilingRequest &request) {
   auto cDTypeOr = toMatmulDataType(request.problem.dtypeC);
   if (!cDTypeOr)
     return cDTypeOr.takeError();
+  auto biasDTypeOr = toMatmulDataType(resolveBiasDType(request));
+  if (!biasDTypeOr)
+    return biasDTypeOr.takeError();
 
   const std::string socVersion = resolveSocVersion(request);
   auto *ascendcPlatform =
@@ -136,7 +187,7 @@ generateMatmulApiTiling(const MatmulTilingRequest &request) {
                      matmul_tiling::CubeFormat::ND, *cDTypeOr);
   if (request.problem.hasBias) {
     tilingApi.SetBiasType(matmul_tiling::TPosition::GM,
-                          matmul_tiling::CubeFormat::ND, *cDTypeOr);
+                          matmul_tiling::CubeFormat::ND, *biasDTypeOr);
   }
   tilingApi.SetOrgShape(static_cast<int>(request.problem.M),
                         static_cast<int>(request.problem.N),
@@ -161,7 +212,11 @@ generateMatmulApiTiling(const MatmulTilingRequest &request) {
   tilingData.SaveToBuffer(result.tilingData.data(), tilingData.GetDataSize());
   result.debugNote = "soc=" + socVersion + " traverse=" +
                      traverseToString(request.hints.preferTraverse) +
-                     " bias=" + std::string(request.problem.hasBias ? "1" : "0");
+                     " bias=" + std::string(request.problem.hasBias ? "1" : "0") +
+                     " bias_dtype=" +
+                     (request.problem.hasBias
+                          ? std::string(toString(resolveBiasDType(request)))
+                          : std::string("none"));
   return result;
 }
 
