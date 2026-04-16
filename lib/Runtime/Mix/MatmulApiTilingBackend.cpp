@@ -112,23 +112,9 @@ static DType resolveBiasDType(const MatmulTilingRequest &request) {
 static bool supportsMatmulApiTilingRequest(const MatmulTilingRequest &request) {
   return isPositiveShape(request) && request.problem.batchShape.empty() &&
          hasSupportedLayout(request) && hasSupportedDType(request) &&
-         request.problem.M <= std::numeric_limits<int>::max() &&
-         request.problem.N <= std::numeric_limits<int>::max() &&
-         request.problem.K <= std::numeric_limits<int>::max();
-}
-
-static llvm::Expected<int> toVendorInt64RangeChecked(int64_t value,
-                                                     llvm::StringRef name) {
-  if (value < std::numeric_limits<int>::min() ||
-      value > std::numeric_limits<int>::max()) {
-    const std::string nameStr = name.str();
-    const std::string valueStr = std::to_string(value);
-    return llvm::createStringError(
-        llvm::inconvertibleErrorCode(),
-        "matmul api tiling %s=%s is out of range for int", nameStr.c_str(),
-        valueStr.c_str());
-  }
-  return static_cast<int>(value);
+         request.problem.M <= static_cast<int64_t>(std::numeric_limits<int>::max()) &&
+         request.problem.N <= static_cast<int64_t>(std::numeric_limits<int>::max()) &&
+         request.problem.K <= static_cast<int64_t>(std::numeric_limits<int>::max());
 }
 
 static llvm::Expected<MatmulTilingResult>
@@ -166,15 +152,9 @@ generateMatmulApiTilingImpl(const MatmulTilingRequest &request) {
         "cannot initialize AscendC platform for soc %s", socVersion.c_str());
   }
 
-  auto mOr = toVendorInt64RangeChecked(request.problem.M, "M");
-  if (!mOr)
-    return mOr.takeError();
-  auto nOr = toVendorInt64RangeChecked(request.problem.N, "N");
-  if (!nOr)
-    return nOr.takeError();
-  auto kOr = toVendorInt64RangeChecked(request.problem.K, "K");
-  if (!kOr)
-    return kOr.takeError();
+  const int m = static_cast<int>(request.problem.M);
+  const int n = static_cast<int>(request.problem.N);
+  const int k = static_cast<int>(request.problem.K);
 
   matmul_tiling::MatmulApiTiling tilingApi(*ascendcPlatform);
   tilingApi.SetAType(matmul_tiling::TPosition::GM,
@@ -189,15 +169,19 @@ generateMatmulApiTilingImpl(const MatmulTilingRequest &request) {
     tilingApi.SetBiasType(matmul_tiling::TPosition::GM,
                           matmul_tiling::CubeFormat::ND, *biasDType);
   }
-  tilingApi.SetOrgShape(*mOr, *nOr, *kOr);
-  tilingApi.SetShape(*mOr, *nOr, *kOr);
+  tilingApi.SetOrgShape(m, n, k);
+  tilingApi.SetShape(m, n, k);
   tilingApi.SetBias(request.problem.hasBias);
   tilingApi.SetTraverse(toMatmulTraverse(request.hints.preferTraverse));
-  tilingApi.SetFixSplit(*mOr, *nOr, -1);
+  tilingApi.SetFixSplit(m, n, -1);
   tilingApi.SetBufferSpace(-1, -1, -1);
 
   optiling::TCubeTiling tilingData;
-  (void)tilingApi.GetTiling(tilingData);
+  if (tilingApi.GetTiling(tilingData) == -1) {
+    return llvm::createStringError(
+        llvm::inconvertibleErrorCode(),
+        "matmul api tiling failed for kernel %s", request.kernelName.c_str());
+  }
 
   MatmulTilingResult result;
   result.backendKind = "api";
