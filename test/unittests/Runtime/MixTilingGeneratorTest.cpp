@@ -89,6 +89,31 @@ MixTilingRequest makeRequestWithExplicitUnsupportedLayout() {
   return request;
 }
 
+MixTilingRequest makeExplicitBatchMatmulRequest() {
+  MixTilingRequest request;
+  request.kernelName = "batch_matmul";
+  request.socVersion = "Ascend910B1";
+  request.inputs = {
+      {DType::F16, {2, 16, 32}},
+      {DType::BF16, {2, 32, 64}},
+  };
+  request.outputs = {
+      {DType::F32, {2, 16, 64}},
+  };
+  request.matmul = MixAbiMatmulDesc{
+      "batch_matmul",
+      false,
+      false,
+      false,
+      "ND",
+      "ND",
+      "ND",
+      "None",
+      {2},
+  };
+  return request;
+}
+
 } // namespace
 
 TEST(MixTilingGeneratorTest, RejectsUnsupportedBiasDTypeThroughAdapter) {
@@ -147,5 +172,19 @@ TEST(MixTilingGeneratorTest, ExplicitUnsupportedLayoutOverridesLegacyGuess) {
                         });
   ASSERT_FALSE(messages.empty());
   EXPECT_NE(messages[0].find("no matmul tiling backend supports kernel"),
+            std::string::npos);
+}
+
+TEST(MixTilingGeneratorTest, ExplicitBatchMatmulGetsDedicatedUnsupportedError) {
+  auto result = generateMixTilingInProcess(makeExplicitBatchMatmulRequest());
+
+  ASSERT_FALSE(static_cast<bool>(result));
+  std::vector<std::string> messages;
+  llvm::handleAllErrors(result.takeError(),
+                        [&](const llvm::ErrorInfoBase &info) {
+                          messages.push_back(info.message());
+                        });
+  ASSERT_FALSE(messages.empty());
+  EXPECT_NE(messages[0].find("batch matmul mix tiling is not wired yet"),
             std::string::npos);
 }
