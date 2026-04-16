@@ -1,5 +1,5 @@
 #include "Runtime/Mix/MatmulApiTilingBackend.h"
-#include "Runtime/Mix/MatmulApiTilingBackendTestHooks.h"
+#include "MatmulApiTilingBackendTestHooks.h"
 
 #include "gtest/gtest.h"
 

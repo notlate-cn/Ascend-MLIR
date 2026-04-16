@@ -280,6 +280,7 @@ buildMixTilingHelperCommand(llvm::StringRef kernelName,
                             llvm::ArrayRef<int64_t> outputShape,
                             DType outputDType,
                             const std::optional<DType> &biasDType,
+                            llvm::ArrayRef<int64_t> biasShape,
                             llvm::StringRef tilingOutputPath,
                             llvm::StringRef launchInfoOutputPath) {
   std::vector<std::string> cmd = {
@@ -298,6 +299,10 @@ buildMixTilingHelperCommand(llvm::StringRef kernelName,
   if (biasDType) {
     cmd.push_back("--bias-dtype");
     cmd.push_back(getTilingHelperDTypeName(*biasDType).str());
+    if (!biasShape.empty()) {
+      cmd.push_back("--bias-shape");
+      cmd.push_back(joinShape(biasShape));
+    }
   }
   return cmd;
 }

@@ -21,6 +21,7 @@ llvm::cl::opt<std::string> BDType("b-dtype", llvm::cl::Required);
 llvm::cl::opt<std::string> CShape("c-shape", llvm::cl::Required);
 llvm::cl::opt<std::string> CDType("c-dtype", llvm::cl::Required);
 llvm::cl::opt<std::string> BiasDType("bias-dtype", llvm::cl::init(""));
+llvm::cl::opt<std::string> BiasShape("bias-shape", llvm::cl::init(""));
 llvm::cl::opt<std::string> TilingOut("tiling-out", llvm::cl::Required);
 llvm::cl::opt<std::string> LaunchInfoOut("launch-info-out", llvm::cl::Required);
 
@@ -73,6 +74,15 @@ int main(int argc, char **argv) {
     llvm::errs() << llvm::toString(cShapeOr.takeError()) << "\n";
     return 2;
   }
+  std::optional<std::vector<int64_t>> biasShapeOr;
+  if (!BiasShape.empty()) {
+    auto parsedBiasShapeOr = parseShape(BiasShape);
+    if (!parsedBiasShapeOr) {
+      llvm::errs() << llvm::toString(parsedBiasShapeOr.takeError()) << "\n";
+      return 2;
+    }
+    biasShapeOr = std::move(*parsedBiasShapeOr);
+  }
   if (aShapeOr->size() != 2 || bShapeOr->size() != 2 || cShapeOr->size() != 2) {
     llvm::errs() << "mix-tiling-helper currently expects 2D matmul shapes\n";
     return 2;
@@ -103,6 +113,20 @@ int main(int argc, char **argv) {
     }
     biasDTypeOr = *parsedBiasOr;
   }
+  if (biasShapeOr && !biasDTypeOr) {
+    llvm::errs() << "mix-tiling-helper bias shape requires bias dtype\n";
+    return 2;
+  }
+  if (biasDTypeOr) {
+    if (!biasShapeOr) {
+      llvm::errs() << "mix-tiling-helper bias dtype requires bias shape\n";
+      return 2;
+    }
+    if (biasShapeOr->size() != 1 || (*biasShapeOr)[0] != (*cShapeOr)[1]) {
+      llvm::errs() << "mix-tiling-helper bias shape must be a 1D vector with length N\n";
+      return 2;
+    }
+  }
 
   mlir::runtime::MixTilingRequest request;
   request.kernelName = KernelName;
@@ -110,7 +134,7 @@ int main(int argc, char **argv) {
   request.inputs.push_back({*aDTypeOr, *aShapeOr});
   request.inputs.push_back({*bDTypeOr, *bShapeOr});
   if (biasDTypeOr)
-    request.inputs.push_back({*biasDTypeOr, {}});
+    request.inputs.push_back({*biasDTypeOr, *biasShapeOr});
   request.outputs.push_back({*cDTypeOr, *cShapeOr});
 
   auto tilingOr = mlir::runtime::generateMixTilingInProcess(request);
