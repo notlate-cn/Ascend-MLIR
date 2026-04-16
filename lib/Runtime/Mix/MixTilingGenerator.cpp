@@ -30,6 +30,45 @@ static bool hasPositiveShape(llvm::ArrayRef<int64_t> shape) {
   return llvm::all_of(shape, [](int64_t dim) { return dim > 0; });
 }
 
+static llvm::Expected<MatmulTilingRequest>
+buildMatmulApiTilingRequest(const MixTilingRequest &request) {
+  if (request.inputs.size() < 2 || request.inputs.size() > 3 ||
+      request.outputs.size() != 1) {
+    return llvm::createStringError(
+        llvm::inconvertibleErrorCode(),
+        "invalid matmul mix request: expected 2 or 3 inputs and 1 output");
+  }
+  const auto &a = request.inputs[0].shape;
+  const auto &b = request.inputs[1].shape;
+  const auto &c = request.outputs[0].shape;
+  if (!isRank2(a) || !isRank2(b) || !isRank2(c) || !hasPositiveShape(a) ||
+      !hasPositiveShape(b) || !hasPositiveShape(c)) {
+    return llvm::createStringError(
+        llvm::inconvertibleErrorCode(),
+        "invalid matmul mix request: only positive rank-2 tensors are supported");
+  }
+
+  MatmulTilingRequest matmulRequest;
+  matmulRequest.kernelName = request.kernelName;
+  matmulRequest.problem.M = c[0];
+  matmulRequest.problem.N = c[1];
+  matmulRequest.problem.K = a[1];
+  matmulRequest.problem.dtypeA = request.inputs[0].dtype;
+  matmulRequest.problem.dtypeB = request.inputs[1].dtype;
+  matmulRequest.problem.dtypeC = request.outputs[0].dtype;
+  if (request.inputs.size() > 2) {
+    matmulRequest.problem.hasBias = true;
+    matmulRequest.problem.biasDType = request.inputs[2].dtype;
+  }
+  matmulRequest.problem.transA = false;
+  matmulRequest.problem.transB = false;
+  matmulRequest.problem.layoutA = MatmulLayout::ND;
+  matmulRequest.problem.layoutB = MatmulLayout::ND;
+  matmulRequest.problem.layoutC = MatmulLayout::ND;
+  matmulRequest.hints.socVersion = request.socVersion;
+  return matmulRequest;
+}
+
 class Matmul2DTilingStrategy final : public MixTilingStrategy {
 public:
   llvm::StringRef name() const override { return "matmul-2d"; }
@@ -50,7 +89,11 @@ public:
 
   llvm::Expected<MixTilingResult>
   generate(const MixTilingRequest &request) const override {
-    auto matmulRequest = buildMatmulApiTilingRequest(request);
+    auto matmulRequestOr = buildMatmulApiTilingRequest(request);
+    if (!matmulRequestOr)
+      return matmulRequestOr.takeError();
+
+    auto matmulRequest = *matmulRequestOr;
     auto resultOr = generateMatmulApiTiling(matmulRequest);
     if (!resultOr)
       return resultOr.takeError();

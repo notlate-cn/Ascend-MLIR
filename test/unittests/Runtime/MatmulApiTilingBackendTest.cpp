@@ -1,5 +1,4 @@
 #include "Runtime/Mix/MatmulApiTilingBackend.h"
-#include "Runtime/Mix/MixTilingGenerator.h"
 
 #include "gtest/gtest.h"
 
@@ -22,21 +21,6 @@ MatmulTilingRequest makeSupportedRequest() {
   request.problem.hasBias = true;
   request.hints.socVersion = "Ascend910B1";
   request.hints.preferTraverse = MatrixTraverseKind::FirstN;
-  return request;
-}
-
-MixTilingRequest makeMixRequestWithBias() {
-  MixTilingRequest request;
-  request.kernelName = "matmul_bias_relu";
-  request.socVersion = "Ascend910B1";
-  request.inputs = {
-      {DType::F16, {16, 64}},
-      {DType::BF16, {64, 32}},
-      {DType::BF16, {32}},
-  };
-  request.outputs = {
-      {DType::F32, {16, 32}},
-  };
   return request;
 }
 
@@ -78,12 +62,27 @@ TEST(MatmulApiTilingBackendTest, GeneratesApiTilingForSimpleRequest) {
   EXPECT_NE(result->debugNote.find("bias_dtype=BF16"), std::string::npos);
 }
 
-TEST(MatmulApiTilingBackendTest, MixConversionPreservesExplicitBiasDType) {
-  MixTilingRequest mixRequest = makeMixRequestWithBias();
+TEST(MatmulApiTilingBackendTest, RejectsUnsupportedExplicitBiasDType) {
+  MatmulApiTilingBackend backend;
+  MatmulTilingRequest request = makeSupportedRequest();
+  request.problem.biasDType = DType::INT8;
 
-  MatmulTilingRequest matmulRequest = buildMatmulApiTilingRequest(mixRequest);
+  EXPECT_FALSE(backend.supports(request));
+  auto result = backend.generate(request);
+  ASSERT_FALSE(static_cast<bool>(result));
+}
 
-  EXPECT_TRUE(matmulRequest.problem.biasDType.has_value());
-  EXPECT_EQ(*matmulRequest.problem.biasDType, DType::BF16);
-  EXPECT_TRUE(matmulRequest.problem.hasBias);
+TEST(MatmulApiTilingBackendTest, IgnoresBiasDTypeWhenBiasIsDisabled) {
+  MatmulApiTilingBackend backend;
+  MatmulTilingRequest request = makeSupportedRequest();
+  request.problem.hasBias = false;
+  request.problem.biasDType = DType::INT8;
+
+  EXPECT_TRUE(backend.supports(request));
+  auto result = backend.generate(request);
+
+  ASSERT_TRUE(static_cast<bool>(result));
+  EXPECT_EQ(result->backendKind, "api");
+  EXPECT_NE(result->debugNote.find("bias=0"), std::string::npos);
+  EXPECT_NE(result->debugNote.find("bias_dtype=none"), std::string::npos);
 }

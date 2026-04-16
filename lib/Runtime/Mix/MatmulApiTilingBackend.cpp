@@ -1,5 +1,4 @@
 #include "Runtime/Mix/MatmulApiTilingBackend.h"
-#include "Runtime/Mix/MixTilingGenerator.h"
 
 #include "llvm/Support/Error.h"
 
@@ -116,29 +115,6 @@ static bool supportsMatmulApiTilingRequest(const MatmulTilingRequest &request) {
 
 } // namespace
 
-MatmulTilingRequest
-buildMatmulApiTilingRequest(const MixTilingRequest &request) {
-  MatmulTilingRequest matmulRequest;
-  matmulRequest.kernelName = request.kernelName;
-  matmulRequest.problem.M = request.outputs[0].shape[0];
-  matmulRequest.problem.N = request.outputs[0].shape[1];
-  matmulRequest.problem.K = request.inputs[0].shape[1];
-  matmulRequest.problem.dtypeA = request.inputs[0].dtype;
-  matmulRequest.problem.dtypeB = request.inputs[1].dtype;
-  matmulRequest.problem.dtypeC = request.outputs[0].dtype;
-  if (request.inputs.size() > 2) {
-    matmulRequest.problem.hasBias = true;
-    matmulRequest.problem.biasDType = request.inputs[2].dtype;
-  }
-  matmulRequest.problem.transA = false;
-  matmulRequest.problem.transB = false;
-  matmulRequest.problem.layoutA = MatmulLayout::ND;
-  matmulRequest.problem.layoutB = MatmulLayout::ND;
-  matmulRequest.problem.layoutC = MatmulLayout::ND;
-  matmulRequest.hints.socVersion = request.socVersion;
-  return matmulRequest;
-}
-
 llvm::StringRef MatmulApiTilingBackend::name() const { return "matmul-api"; }
 
 bool MatmulApiTilingBackend::supports(const MatmulTilingRequest &request) const {
@@ -163,9 +139,13 @@ generateMatmulApiTiling(const MatmulTilingRequest &request) {
   auto cDTypeOr = toMatmulDataType(request.problem.dtypeC);
   if (!cDTypeOr)
     return cDTypeOr.takeError();
-  auto biasDTypeOr = toMatmulDataType(resolveBiasDType(request));
-  if (!biasDTypeOr)
-    return biasDTypeOr.takeError();
+  std::optional<matmul_tiling::DataType> biasDType;
+  if (request.problem.hasBias) {
+    auto biasDTypeOr = toMatmulDataType(resolveBiasDType(request));
+    if (!biasDTypeOr)
+      return biasDTypeOr.takeError();
+    biasDType = *biasDTypeOr;
+  }
 
   const std::string socVersion = resolveSocVersion(request);
   auto *ascendcPlatform =
@@ -185,9 +165,9 @@ generateMatmulApiTiling(const MatmulTilingRequest &request) {
                      request.problem.transB);
   tilingApi.SetCType(matmul_tiling::TPosition::GM,
                      matmul_tiling::CubeFormat::ND, *cDTypeOr);
-  if (request.problem.hasBias) {
+  if (biasDType) {
     tilingApi.SetBiasType(matmul_tiling::TPosition::GM,
-                          matmul_tiling::CubeFormat::ND, *biasDTypeOr);
+                          matmul_tiling::CubeFormat::ND, *biasDType);
   }
   tilingApi.SetOrgShape(static_cast<int>(request.problem.M),
                         static_cast<int>(request.problem.N),
