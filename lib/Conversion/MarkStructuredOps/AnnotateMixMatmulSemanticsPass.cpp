@@ -13,6 +13,7 @@
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/BuiltinTypes.h"
+#include "llvm/ADT/STLFunctionalExtras.h"
 
 #define GEN_PASS_DECL_ANNOTATEMIXMATMULSEMANTICSPASS
 #define GEN_PASS_DEF_ANNOTATEMIXMATMULSEMANTICSPASS
@@ -24,9 +25,25 @@ namespace mlir::afir {
 
 namespace {
 
-static bool isRankedMemRef(Value value, int64_t rank) {
+static MemRefType getRankedMemRefType(Value value, int64_t rank) {
   auto type = dyn_cast<MemRefType>(value.getType());
-  return type && type.hasRank() && type.getRank() == rank;
+  if (!type || !type.hasRank() || type.getRank() != rank)
+    return {};
+  return type;
+}
+
+static bool isRankedMemRef(Value value, int64_t rank) {
+  return static_cast<bool>(getRankedMemRefType(value, rank));
+}
+
+static bool isIdentity2DMemRef(Value value) {
+  auto type = getRankedMemRefType(value, 2);
+  return type && type.getLayout().isIdentity();
+}
+
+static bool hasUnitAttr(Operation *op, StringRef expected) {
+  auto unitAttr = op->getAttrOfType<StringAttr>("ascendc.unit");
+  return unitAttr && unitAttr.getValue() == expected;
 }
 
 static bool isParallelGeneric(linalg::GenericOp genericOp) {
@@ -38,7 +55,8 @@ static bool isParallelGeneric(linalg::GenericOp genericOp) {
 
 static bool isBiasAddGeneric(linalg::GenericOp genericOp) {
   if (genericOp.getNumDpsInputs() != 2 || genericOp.getNumDpsInits() != 1 ||
-      !isParallelGeneric(genericOp))
+      !isParallelGeneric(genericOp) ||
+      !hasUnitAttr(genericOp, "AiCore.Vector"))
     return false;
   if (!isRankedMemRef(genericOp.getDpsInputOperand(0)->get(), 2) ||
       !isRankedMemRef(genericOp.getDpsInputOperand(1)->get(), 1) ||
@@ -70,7 +88,8 @@ static bool isBiasAddGeneric(linalg::GenericOp genericOp) {
 
 static bool isLeakyReluGeneric(linalg::GenericOp genericOp) {
   if (genericOp.getNumDpsInputs() != 1 || genericOp.getNumDpsInits() != 1 ||
-      !isParallelGeneric(genericOp))
+      !isParallelGeneric(genericOp) ||
+      !hasUnitAttr(genericOp, "AiCore.Vector"))
     return false;
   if (!isRankedMemRef(genericOp.getDpsInputOperand(0)->get(), 2) ||
       !isRankedMemRef(genericOp.getDpsInitOperand(0)->get(), 2))
@@ -107,10 +126,25 @@ static bool isLeakyReluGeneric(linalg::GenericOp genericOp) {
          yieldOp.getOperand(0) == maxOp.getResult();
 }
 
-static bool isSimple2DMatmul(linalg::MatmulOp matmulOp) {
-  return isRankedMemRef(matmulOp.getDpsInputOperand(0)->get(), 2) &&
-         isRankedMemRef(matmulOp.getDpsInputOperand(1)->get(), 2) &&
-         isRankedMemRef(matmulOp.getDpsInitOperand(0)->get(), 2);
+static bool isSimple2DNdMatmul(linalg::MatmulOp matmulOp) {
+  return hasUnitAttr(matmulOp, "AiCore.Cube") &&
+         isIdentity2DMemRef(matmulOp.getDpsInputOperand(0)->get()) &&
+         isIdentity2DMemRef(matmulOp.getDpsInputOperand(1)->get()) &&
+         isIdentity2DMemRef(matmulOp.getDpsInitOperand(0)->get());
+}
+
+static linalg::GenericOp findUniqueChainedGeneric(Value current,
+                                                  ArrayRef<linalg::GenericOp> generics,
+                                                  function_ref<bool(linalg::GenericOp)> predicate) {
+  linalg::GenericOp matched;
+  for (linalg::GenericOp generic : generics) {
+    if (generic.getDpsInputOperand(0)->get() != current || !predicate(generic))
+      continue;
+    if (matched)
+      return {};
+    matched = generic;
+  }
+  return matched;
 }
 
 } // namespace
@@ -126,7 +160,7 @@ struct AnnotateMixMatmulSemanticsPass
   void runOnOperation() override {
     func::FuncOp funcOp = getOperation();
     auto kernelKind = funcOp->getAttrOfType<StringAttr>("ascendc.kernel_kind");
-    if (kernelKind && kernelKind.getValue() != "mix")
+    if (!kernelKind || kernelKind.getValue() != "mix")
       return;
     if (funcOp->hasAttr("abi_matmul_op_kind"))
       return;
@@ -142,15 +176,20 @@ struct AnnotateMixMatmulSemanticsPass
 
     if (matmuls.size() != 1)
       return;
-    if (!isSimple2DMatmul(matmuls.front()))
+    linalg::MatmulOp matmulOp = matmuls.front();
+    if (!isSimple2DNdMatmul(matmulOp))
       return;
 
-    bool hasBias = false;
-    bool hasLeakyRelu = false;
-    for (linalg::GenericOp generic : generics) {
-      hasBias = hasBias || isBiasAddGeneric(generic);
-      hasLeakyRelu = hasLeakyRelu || isLeakyReluGeneric(generic);
-    }
+    Value current = matmulOp.getDpsInitOperand(0)->get();
+    linalg::GenericOp biasGeneric =
+        findUniqueChainedGeneric(current, generics, isBiasAddGeneric);
+    bool hasBias = static_cast<bool>(biasGeneric);
+    if (biasGeneric)
+      current = biasGeneric.getDpsInitOperand(0)->get();
+
+    linalg::GenericOp leakyReluGeneric =
+        findUniqueChainedGeneric(current, generics, isLeakyReluGeneric);
+    bool hasLeakyRelu = static_cast<bool>(leakyReluGeneric);
 
     StringRef epilogueKind = "None";
     if (hasBias && hasLeakyRelu)

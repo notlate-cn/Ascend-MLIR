@@ -51,6 +51,7 @@ static MixTilingRequest buildTilingRequest(llvm::StringRef runtimeKernelName,
   request.outputs.reserve(abi.outputs.size());
   for (const MixAbiTensorDesc &output : abi.outputs)
     request.outputs.push_back({output.dtype, output.shape});
+  request.matmul = abi.matmul;
   return request;
 }
 

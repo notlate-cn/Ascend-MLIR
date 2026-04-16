@@ -9,9 +9,16 @@
 // CHECK: abi_matmul_op_kind = "matmul"
 // CHECK: abi_matmul_trans_a = false
 // CHECK: abi_matmul_trans_b = false
+// CHECK-LABEL: func.func @cube_only
+// CHECK-NOT: abi_matmul_
+// CHECK-LABEL: func.func @unrelated_generic
+// CHECK-NOT: abi_matmul_
+// CHECK-LABEL: func.func @non_identity_layout
+// CHECK-NOT: abi_matmul_
 
 #map = affine_map<(d0, d1) -> (d0, d1)>
 #map1 = affine_map<(d0, d1) -> (d1)>
+#layout = affine_map<(d0, d1) -> (d1, d0)>
 
 module {
   func.func @matmul_add_leakyrelu(%arg0: memref<?x?xf16>, %arg1: memref<?x?xf16>,
@@ -44,6 +51,50 @@ module {
         %relu = arith.maximumf %in, %scaled : f32
         linalg.yield %relu : f32
     }
+    return
+  }
+
+  func.func @cube_only(%arg0: memref<?x?xf16>, %arg1: memref<?x?xf16>,
+                       %arg2: memref<?x?xf32>) attributes {ascendc.kernel_kind = "cube"} {
+    linalg.matmul {ascendc.unit = "AiCore.Cube"}
+        ins(%arg0, %arg1 : memref<?x?xf16>, memref<?x?xf16>)
+        outs(%arg2 : memref<?x?xf32>)
+    return
+  }
+
+  func.func @unrelated_generic(%arg0: memref<?x?xf16>, %arg1: memref<?x?xf16>,
+                               %arg2: memref<?xf32>, %arg3: memref<?x?xf32>,
+                               %arg4: memref<?x?xf32>) attributes {ascendc.kernel_kind = "mix"} {
+    %cst = arith.constant 1.000000e-03 : f32
+    linalg.matmul {ascendc.unit = "AiCore.Cube"}
+        ins(%arg0, %arg1 : memref<?x?xf16>, memref<?x?xf16>)
+        outs(%arg3 : memref<?x?xf32>)
+    linalg.generic
+        {indexing_maps = [#map, #map1, #map], iterator_types = ["parallel", "parallel"]}
+        ins(%arg4, %arg2 : memref<?x?xf32>, memref<?xf32>)
+        outs(%arg3 : memref<?x?xf32>) attrs = {ascendc.unit = "AiCore.Vector"} {
+      ^bb0(%in: f32, %bias: f32, %out: f32):
+        %sum = arith.addf %in, %bias : f32
+        linalg.yield %sum : f32
+    }
+    linalg.generic
+        {indexing_maps = [#map, #map], iterator_types = ["parallel", "parallel"]}
+        ins(%arg3 : memref<?x?xf32>)
+        outs(%arg4 : memref<?x?xf32>) attrs = {ascendc.unit = "AiCore.Vector"} {
+      ^bb0(%in: f32, %out: f32):
+        %scaled = arith.mulf %in, %cst : f32
+        %relu = arith.maximumf %in, %scaled : f32
+        linalg.yield %relu : f32
+    }
+    return
+  }
+
+  func.func @non_identity_layout(%arg0: memref<?x?xf16, #layout>,
+                                 %arg1: memref<?x?xf16>,
+                                 %arg2: memref<?x?xf32>) attributes {ascendc.kernel_kind = "mix"} {
+    linalg.matmul {ascendc.unit = "AiCore.Cube"}
+        ins(%arg0, %arg1 : memref<?x?xf16, #layout>, memref<?x?xf16>)
+        outs(%arg2 : memref<?x?xf32>)
     return
   }
 }
