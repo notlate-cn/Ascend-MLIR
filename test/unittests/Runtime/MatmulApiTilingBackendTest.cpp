@@ -1,4 +1,5 @@
 #include "Runtime/Mix/MatmulApiTilingBackend.h"
+#include "Runtime/Mix/MixTilingGenerator.h"
 
 #include "gtest/gtest.h"
 
@@ -15,11 +16,27 @@ MatmulTilingRequest makeSupportedRequest() {
   request.problem.dtypeA = DType::F16;
   request.problem.dtypeB = DType::BF16;
   request.problem.dtypeC = DType::F32;
+  request.problem.biasDType = DType::BF16;
   request.problem.transA = true;
   request.problem.transB = false;
   request.problem.hasBias = true;
   request.hints.socVersion = "Ascend910B1";
   request.hints.preferTraverse = MatrixTraverseKind::FirstN;
+  return request;
+}
+
+MixTilingRequest makeMixRequestWithBias() {
+  MixTilingRequest request;
+  request.kernelName = "matmul_bias_relu";
+  request.socVersion = "Ascend910B1";
+  request.inputs = {
+      {DType::F16, {16, 64}},
+      {DType::BF16, {64, 32}},
+      {DType::BF16, {32}},
+  };
+  request.outputs = {
+      {DType::F32, {16, 32}},
+  };
   return request;
 }
 
@@ -58,4 +75,15 @@ TEST(MatmulApiTilingBackendTest, GeneratesApiTilingForSimpleRequest) {
   EXPECT_FALSE(result->tilingData.empty());
   EXPECT_NE(result->debugNote.find("soc=Ascend910B1"), std::string::npos);
   EXPECT_NE(result->debugNote.find("traverse=FIRSTN"), std::string::npos);
+  EXPECT_NE(result->debugNote.find("bias_dtype=BF16"), std::string::npos);
+}
+
+TEST(MatmulApiTilingBackendTest, MixConversionPreservesExplicitBiasDType) {
+  MixTilingRequest mixRequest = makeMixRequestWithBias();
+
+  MatmulTilingRequest matmulRequest = buildMatmulApiTilingRequest(mixRequest);
+
+  EXPECT_TRUE(matmulRequest.problem.biasDType.has_value());
+  EXPECT_EQ(*matmulRequest.problem.biasDType, DType::BF16);
+  EXPECT_TRUE(matmulRequest.problem.hasBias);
 }

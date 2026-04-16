@@ -21,6 +21,7 @@ struct MatmulProblemDesc {
   DType dtypeA = DType::F32;
   DType dtypeB = DType::F32;
   DType dtypeC = DType::F32;
+  std::optional<DType> biasDType;
   MatmulLayout layoutA = MatmulLayout::ND;
   MatmulLayout layoutB = MatmulLayout::ND;
   MatmulLayout layoutC = MatmulLayout::ND;

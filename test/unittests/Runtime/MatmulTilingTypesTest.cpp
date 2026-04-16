@@ -25,6 +25,7 @@ TEST(MatmulTilingTypesTest, DefaultRequestIsNativeFriendly) {
   EXPECT_EQ(request.problem.dtypeA, DType::F32);
   EXPECT_EQ(request.problem.dtypeB, DType::F32);
   EXPECT_EQ(request.problem.dtypeC, DType::F32);
+  EXPECT_FALSE(request.problem.biasDType.has_value());
   EXPECT_TRUE(request.hints.socVersion.empty());
   EXPECT_FALSE(request.hints.preferBlockDim.has_value());
   EXPECT_FALSE(request.hints.preferSplitK.has_value());

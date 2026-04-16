@@ -30,26 +30,6 @@ static bool hasPositiveShape(llvm::ArrayRef<int64_t> shape) {
   return llvm::all_of(shape, [](int64_t dim) { return dim > 0; });
 }
 
-static MatmulTilingRequest
-buildMatmulApiTilingRequest(const MixTilingRequest &request) {
-  MatmulTilingRequest matmulRequest;
-  matmulRequest.kernelName = request.kernelName;
-  matmulRequest.problem.M = request.outputs[0].shape[0];
-  matmulRequest.problem.N = request.outputs[0].shape[1];
-  matmulRequest.problem.K = request.inputs[0].shape[1];
-  matmulRequest.problem.dtypeA = request.inputs[0].dtype;
-  matmulRequest.problem.dtypeB = request.inputs[1].dtype;
-  matmulRequest.problem.dtypeC = request.outputs[0].dtype;
-  matmulRequest.problem.hasBias = request.inputs.size() > 2;
-  matmulRequest.problem.transA = false;
-  matmulRequest.problem.transB = false;
-  matmulRequest.problem.layoutA = MatmulLayout::ND;
-  matmulRequest.problem.layoutB = MatmulLayout::ND;
-  matmulRequest.problem.layoutC = MatmulLayout::ND;
-  matmulRequest.hints.socVersion = request.socVersion;
-  return matmulRequest;
-}
-
 class Matmul2DTilingStrategy final : public MixTilingStrategy {
 public:
   llvm::StringRef name() const override { return "matmul-2d"; }
