@@ -84,18 +84,22 @@ static std::string resolveSocVersion(const MatmulTilingRequest &request) {
   return "Ascend910B1";
 }
 
+static bool supportsMatmulApiTilingRequest(const MatmulTilingRequest &request) {
+  return isPositiveShape(request) && request.problem.batchShape.empty() &&
+         hasSupportedLayout(request) && hasSupportedDType(request);
+}
+
 } // namespace
 
 llvm::StringRef MatmulApiTilingBackend::name() const { return "matmul-api"; }
 
 bool MatmulApiTilingBackend::supports(const MatmulTilingRequest &request) const {
-  return isPositiveShape(request) && request.problem.batchShape.empty() &&
-         hasSupportedLayout(request) && hasSupportedDType(request);
+  return supportsMatmulApiTilingRequest(request);
 }
 
 llvm::Expected<MatmulTilingResult>
-MatmulApiTilingBackend::generate(const MatmulTilingRequest &request) const {
-  if (!supports(request)) {
+generateMatmulApiTiling(const MatmulTilingRequest &request) {
+  if (!supportsMatmulApiTilingRequest(request)) {
     return llvm::createStringError(
         llvm::inconvertibleErrorCode(),
         "unsupported matmul api tiling request for kernel %s",
@@ -151,7 +155,7 @@ MatmulApiTilingBackend::generate(const MatmulTilingRequest &request) const {
 
   MatmulTilingResult result;
   result.backendKind = "api";
-  result.strategyName = name().str();
+  result.strategyName = "matmul-api";
   result.blockDim = static_cast<uint32_t>(tilingData.get_usedCoreNum());
   result.tilingData.assign(sizeof(optiling::TCubeTiling), 0);
   tilingData.SaveToBuffer(result.tilingData.data(), tilingData.GetDataSize());
@@ -159,6 +163,11 @@ MatmulApiTilingBackend::generate(const MatmulTilingRequest &request) const {
                      traverseToString(request.hints.preferTraverse) +
                      " bias=" + std::string(request.problem.hasBias ? "1" : "0");
   return result;
+}
+
+llvm::Expected<MatmulTilingResult>
+MatmulApiTilingBackend::generate(const MatmulTilingRequest &request) const {
+  return generateMatmulApiTiling(request);
 }
 
 } // namespace mlir::runtime

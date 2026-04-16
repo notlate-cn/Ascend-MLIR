@@ -1,12 +1,10 @@
 #include "Runtime/Mix/MixTilingGenerator.h"
+#include "Runtime/Mix/MatmulApiTilingBackend.h"
 
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/Support/Error.h"
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/Path.h"
-
-#include "tiling/platform/platform_ascendc.h"
-#include "tiling/tiling_api.h"
 
 #include <fstream>
 #include <memory>
@@ -24,25 +22,32 @@ public:
   generate(const MixTilingRequest &request) const = 0;
 };
 
-static llvm::Expected<matmul_tiling::DataType>
-toMatmulDataType(DType dtype) {
-  switch (dtype) {
-  case DType::F16:
-    return matmul_tiling::DataType::DT_FLOAT16;
-  case DType::BF16:
-    return matmul_tiling::DataType::DT_BF16;
-  case DType::F32:
-    return matmul_tiling::DataType::DT_FLOAT;
-  default:
-    return llvm::createStringError(llvm::inconvertibleErrorCode(),
-                                   "unsupported mix tiling dtype");
-  }
-}
+static constexpr const char *kMatmul2DTilingStrategyName = "matmul-2d";
 
 static bool isRank2(llvm::ArrayRef<int64_t> shape) { return shape.size() == 2; }
 
 static bool hasPositiveShape(llvm::ArrayRef<int64_t> shape) {
   return llvm::all_of(shape, [](int64_t dim) { return dim > 0; });
+}
+
+static MatmulTilingRequest
+buildMatmulApiTilingRequest(const MixTilingRequest &request) {
+  MatmulTilingRequest matmulRequest;
+  matmulRequest.kernelName = request.kernelName;
+  matmulRequest.problem.M = request.outputs[0].shape[0];
+  matmulRequest.problem.N = request.outputs[0].shape[1];
+  matmulRequest.problem.K = request.inputs[0].shape[1];
+  matmulRequest.problem.dtypeA = request.inputs[0].dtype;
+  matmulRequest.problem.dtypeB = request.inputs[1].dtype;
+  matmulRequest.problem.dtypeC = request.outputs[0].dtype;
+  matmulRequest.problem.hasBias = request.inputs.size() > 2;
+  matmulRequest.problem.transA = false;
+  matmulRequest.problem.transB = false;
+  matmulRequest.problem.layoutA = MatmulLayout::ND;
+  matmulRequest.problem.layoutB = MatmulLayout::ND;
+  matmulRequest.problem.layoutC = MatmulLayout::ND;
+  matmulRequest.hints.socVersion = request.socVersion;
+  return matmulRequest;
 }
 
 class Matmul2DTilingStrategy final : public MixTilingStrategy {
@@ -65,67 +70,15 @@ public:
 
   llvm::Expected<MixTilingResult>
   generate(const MixTilingRequest &request) const override {
-    auto aDTypeOr = toMatmulDataType(request.inputs[0].dtype);
-    if (!aDTypeOr)
-      return aDTypeOr.takeError();
-    auto bDTypeOr = toMatmulDataType(request.inputs[1].dtype);
-    if (!bDTypeOr)
-      return bDTypeOr.takeError();
-    auto cDTypeOr = toMatmulDataType(request.outputs[0].dtype);
-    if (!cDTypeOr)
-      return cDTypeOr.takeError();
-
-    std::optional<matmul_tiling::DataType> biasDType;
-    if (request.inputs.size() > 2) {
-      auto biasDTypeOr = toMatmulDataType(request.inputs[2].dtype);
-      if (!biasDTypeOr)
-        return biasDTypeOr.takeError();
-      biasDType = *biasDTypeOr;
-    }
-
-    const std::string socVersion = request.socVersion.empty()
-                                       ? std::string("Ascend910B1")
-                                       : request.socVersion;
-    auto *ascendcPlatform =
-        platform_ascendc::PlatformAscendCManager::GetInstance(
-            socVersion.c_str());
-    if (!ascendcPlatform)
-      return llvm::createStringError(
-          llvm::inconvertibleErrorCode(),
-          "cannot initialize AscendC platform for soc %s", socVersion.c_str());
-
-    const auto &aShape = request.inputs[0].shape;
-    const auto &cShape = request.outputs[0].shape;
-    matmul_tiling::MatmulApiTiling tilingApi(*ascendcPlatform);
-    tilingApi.SetAType(matmul_tiling::TPosition::GM,
-                       matmul_tiling::CubeFormat::ND, *aDTypeOr, false);
-    tilingApi.SetBType(matmul_tiling::TPosition::GM,
-                       matmul_tiling::CubeFormat::ND, *bDTypeOr, false);
-    tilingApi.SetCType(matmul_tiling::TPosition::GM,
-                       matmul_tiling::CubeFormat::ND, *cDTypeOr);
-    if (biasDType)
-      tilingApi.SetBiasType(matmul_tiling::TPosition::GM,
-                            matmul_tiling::CubeFormat::ND, *biasDType);
-    tilingApi.SetOrgShape(static_cast<int>(cShape[0]),
-                          static_cast<int>(cShape[1]),
-                          static_cast<int>(aShape[1]));
-    tilingApi.SetShape(static_cast<int>(cShape[0]),
-                       static_cast<int>(cShape[1]),
-                       static_cast<int>(aShape[1]));
-    tilingApi.SetBias(biasDType.has_value());
-    tilingApi.SetTraverse(matmul_tiling::MatrixTraverse::FIRSTM);
-    tilingApi.SetFixSplit(static_cast<int>(cShape[0]),
-                          static_cast<int>(cShape[1]), -1);
-    tilingApi.SetBufferSpace(-1, -1, -1);
-
-    optiling::TCubeTiling tilingData;
-    (void)tilingApi.GetTiling(tilingData);
+    auto matmulRequest = buildMatmulApiTilingRequest(request);
+    auto resultOr = generateMatmulApiTiling(matmulRequest);
+    if (!resultOr)
+      return resultOr.takeError();
 
     MixTilingResult result;
-    result.strategyName = name().str();
-    result.blockDim = static_cast<uint32_t>(tilingData.get_usedCoreNum());
-    result.tilingData.assign(sizeof(optiling::TCubeTiling), 0);
-    tilingData.SaveToBuffer(result.tilingData.data(), tilingData.GetDataSize());
+    result.blockDim = resultOr->blockDim;
+    result.tilingData = resultOr->tilingData;
+    result.strategyName = kMatmul2DTilingStrategyName;
     return result;
   }
 };
