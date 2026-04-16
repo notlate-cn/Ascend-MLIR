@@ -26,7 +26,9 @@ struct MixTilingRequest {
 struct MixTilingResult {
   std::vector<uint8_t> tilingData;
   uint32_t blockDim = 0;
+  std::string backendKind;
   std::string strategyName;
+  std::string debugNote;
 };
 
 llvm::StringRef getDefaultMixTilingBackendName();

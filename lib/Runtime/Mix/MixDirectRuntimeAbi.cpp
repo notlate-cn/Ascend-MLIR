@@ -4,6 +4,7 @@
 #include "Runtime/Mix/MixCompileMetadata.h"
 #include "Runtime/NpyIO.h"
 
+#include "llvm/Support/JSON.h"
 #include "llvm/Support/Error.h"
 #include "llvm/Support/FileSystem.h"
 
@@ -215,8 +216,7 @@ writeMixDirectCompileMetadataFile(llvm::StringRef metadataPath,
                                   llvm::ArrayRef<std::string> aivDefinitions,
                                   llvm::StringRef deviceObjectPath,
                                   llvm::StringRef packedSharedObjectPath,
-                                  llvm::StringRef tilingFilePath,
-                                  llvm::StringRef launchInfoFilePath,
+                                  const MixDirectTilingOutputs &tiling,
                                   const MixAbiMetadata &abi) {
   MixCompileMetadata metadata;
   metadata.schemaVersion = 1;
@@ -237,8 +237,8 @@ writeMixDirectCompileMetadataFile(llvm::StringRef metadataPath,
                                                aivDefinitions.end());
   metadata.artifacts.deviceObjectPath = deviceObjectPath.str();
   metadata.artifacts.packedSharedObjectPath = packedSharedObjectPath.str();
-  metadata.artifacts.tilingFilePath = tilingFilePath.str();
-  metadata.artifacts.launchInfoFilePath = launchInfoFilePath.str();
+  metadata.artifacts.tilingFilePath = tiling.tilingArtifactPath;
+  metadata.artifacts.launchInfoFilePath = tiling.launchInfoPath;
   metadata.abi.workspaceMode = abi.workspaceMode;
   metadata.abi.workspaceBytes = abi.workspaceBytes;
   metadata.abi.tilingMode = abi.tilingMode;
@@ -257,9 +257,20 @@ writeMixDirectCompileMetadataFile(llvm::StringRef metadataPath,
   metadata.abi.outputs.reserve(abi.outputs.size());
   for (const auto &tensor : abi.outputs)
     metadata.abi.outputs.push_back(makeMetadataTensorDesc(tensor));
-  metadata.hostLaunch.mode = "runtime-native";
-  metadata.hostLaunch.helperKind = "in-process-mix-tiling";
-  metadata.hostLaunch.helperInputsJson = "{}";
+  metadata.hostLaunch.mode =
+      tiling.backendKind == "helper" ? "helper" : "runtime-native";
+  metadata.hostLaunch.helperKind =
+      tiling.backendKind == "helper" ? "mix-tiling-helper"
+                                     : "in-process-mix-tiling";
+  llvm::json::Object helperInputs;
+  if (!tiling.backendKind.empty())
+    helperInputs["tiling_backend"] = tiling.backendKind;
+  if (!tiling.strategyName.empty())
+    helperInputs["tiling_strategy"] = tiling.strategyName;
+  if (!tiling.debugNote.empty())
+    helperInputs["tiling_debug_note"] = tiling.debugNote;
+  metadata.hostLaunch.helperInputsJson =
+      llvm::formatv("{0:2}", llvm::json::Value(std::move(helperInputs))).str();
 
   auto jsonOr = serializeMixCompileMetadataJson(metadata);
   if (!jsonOr)

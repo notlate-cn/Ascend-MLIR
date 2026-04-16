@@ -99,7 +99,16 @@ writeMixDirectDebugManifest(const MixDirectDebugManifestInputs &inputs) {
   manifest += std::string("host_compile_cmd=") + inputs.hostCompileCmd + "\n";
   manifest += std::string("pack_cmd=") + inputs.packCmd + "\n";
   manifest += std::string("host_link_cmd=") + inputs.linkCmd + "\n";
-  manifest += std::string("tiling_backend=") + inputs.runnerCompileCmd + "\n";
+  if (!inputs.tilingBackendKind.empty())
+    manifest += std::string("tiling_backend=") + inputs.tilingBackendKind + "\n";
+  if (!inputs.tilingStrategyName.empty())
+    manifest +=
+        std::string("tiling_strategy=") + inputs.tilingStrategyName + "\n";
+  if (!inputs.tilingDebugNote.empty())
+    manifest +=
+        std::string("tiling_debug_note=") + inputs.tilingDebugNote + "\n";
+  manifest += std::string("tiling_compile_command=") + inputs.runnerCompileCmd +
+              "\n";
   manifest += std::string("tiling_helper_cmd=") +
               inputs.runnerCompileCmd + "\n";
   if (!inputs.mergedDeviceObj.empty())
@@ -158,8 +167,7 @@ executeMixDirectCompilePipeline(const MixCompileLayout &layout,
         layout.metadataPath, outputs.build.runtimeKernelName, socVersion,
         "mix_1c1v", outputs.contract.generatedSourcePath,
         outputs.contract.aicDefinitions, outputs.contract.aivDefinitions,
-        layout.mergedDeviceObj, layout.kernelSoPath,
-        outputs.tiling.tilingArtifactPath, outputs.tiling.launchInfoPath,
+        layout.mergedDeviceObj, layout.kernelSoPath, outputs.tiling,
         outputs.abi);
     if (!metadataPathOr)
       return metadataPathOr.takeError();
@@ -238,6 +246,9 @@ finalizeMixDirectArtifact(const MixCompileLayout &layout,
   debugInputs.hostObjectDir = compile.build.hostObjectDir;
   debugInputs.packCmd = compile.build.packCommand;
   debugInputs.linkCmd = compile.build.hostLinkCommand;
+  debugInputs.tilingBackendKind = compile.tiling.backendKind;
+  debugInputs.tilingStrategyName = compile.tiling.strategyName;
+  debugInputs.tilingDebugNote = compile.tiling.debugNote;
   debugInputs.runnerCompileCmd = compile.tiling.runnerCompileCommand;
   debugInputs.metadataPath = compile.metadataPath;
   debugInputs.manifestPath = layout.manifestPath;

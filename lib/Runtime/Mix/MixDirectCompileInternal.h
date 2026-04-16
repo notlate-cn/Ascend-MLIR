@@ -107,6 +107,9 @@ struct MixDirectTilingOutputs {
   uint32_t blockDim = 0;
   std::string tilingArtifactPath;
   std::string launchInfoPath;
+  std::string backendKind;
+  std::string strategyName;
+  std::string debugNote;
   std::string runnerCompileCommand;
   std::string tilingEmitCommand;
   std::vector<MixDirectTimingEntry> timings;
@@ -156,6 +159,9 @@ struct MixDirectDebugManifestInputs {
   std::string hostObjectDir;
   std::string packCmd;
   std::string linkCmd;
+  std::string tilingBackendKind;
+  std::string tilingStrategyName;
+  std::string tilingDebugNote;
   std::string runnerCompileCmd;
   std::string metadataPath;
   std::string manifestPath;
@@ -247,8 +253,7 @@ writeMixDirectCompileMetadataFile(llvm::StringRef metadataPath,
                                   llvm::ArrayRef<std::string> aivDefinitions,
                                   llvm::StringRef deviceObjectPath,
                                   llvm::StringRef packedSharedObjectPath,
-                                  llvm::StringRef tilingFilePath,
-                                  llvm::StringRef launchInfoFilePath,
+                                  const MixDirectTilingOutputs &tiling,
                                   const MixAbiMetadata &abi);
 
 llvm::Error

@@ -105,3 +105,18 @@ add_dependencies(RuntimeUnitTests MixAbiTest)
 add_test(NAME MixAbiTest
   COMMAND $<TARGET_FILE:MixAbiTest>
 )
+
+add_executable(MixDirectTilingArtifactsTest
+  MixDirectTilingArtifactsTest.cpp
+)
+
+target_link_libraries(MixDirectTilingArtifactsTest PRIVATE
+  RuntimeUnitTestSupport
+  AscendCRuntime
+)
+
+add_dependencies(RuntimeUnitTests MixDirectTilingArtifactsTest)
+
+add_test(NAME MixDirectTilingArtifactsTest
+  COMMAND $<TARGET_FILE:MixDirectTilingArtifactsTest>
+)
