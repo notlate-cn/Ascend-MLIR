@@ -20,6 +20,10 @@ public:
   static bool supports(const MatmulTilingRequest &request);
   static llvm::Expected<NativeMatmulPlan>
   buildPlan(const MatmulTilingRequest &request);
+  static MatmulTilingRequest applyPlan(const MatmulTilingRequest &request,
+                                       const NativeMatmulPlan &plan);
+  static std::string describePlanPrefix(const NativeMatmulPlan &plan);
+  static std::string describePlan(const NativeMatmulPlan &plan);
 };
 
 } // namespace mlir::runtime

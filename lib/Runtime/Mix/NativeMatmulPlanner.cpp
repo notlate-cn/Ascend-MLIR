@@ -90,4 +90,32 @@ NativeMatmulPlanner::buildPlan(const MatmulTilingRequest &request) {
   return plan;
 }
 
+MatmulTilingRequest
+NativeMatmulPlanner::applyPlan(const MatmulTilingRequest &request,
+                               const NativeMatmulPlan &plan) {
+  MatmulTilingRequest plannedRequest = request;
+  plannedRequest.hints.preferBlockDim = plan.blockDim;
+  plannedRequest.hints.preferSplitK = plan.splitKEnabled;
+  plannedRequest.hints.preferTraverse = plan.traverse;
+  plannedRequest.hints.preferTileM = plan.tileM;
+  plannedRequest.hints.preferTileN = plan.tileN;
+  plannedRequest.hints.preferTileK = plan.tileK;
+  return plannedRequest;
+}
+
+std::string NativeMatmulPlanner::describePlan(const NativeMatmulPlan &plan) {
+  const char *traverse =
+      plan.traverse == MatrixTraverseKind::FirstN ? "FIRSTN" : "FIRSTM";
+  return "planned_block_dim=" + std::to_string(plan.blockDim) +
+         " traverse=" + traverse + " split_k=" +
+         std::string(plan.splitKEnabled ? "1" : "0") + " fix_split=" +
+         std::to_string(plan.tileM) + "x" + std::to_string(plan.tileN) + "x" +
+         std::to_string(plan.tileK);
+}
+
+std::string NativeMatmulPlanner::describePlanPrefix(
+    const NativeMatmulPlan &plan) {
+  return "planned_block_dim=" + std::to_string(plan.blockDim);
+}
+
 } // namespace mlir::runtime

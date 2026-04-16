@@ -25,13 +25,8 @@ NativeMatmulTilingBackend::generate(const MatmulTilingRequest &request) const {
   if (!planOr)
     return planOr.takeError();
   const NativeMatmulPlan &plan = *planOr;
-  MatmulTilingRequest plannedRequest = request;
-  plannedRequest.hints.preferBlockDim = plan.blockDim;
-  plannedRequest.hints.preferSplitK = plan.splitKEnabled;
-  plannedRequest.hints.preferTraverse = plan.traverse;
-  plannedRequest.hints.preferTileM = plan.tileM;
-  plannedRequest.hints.preferTileN = plan.tileN;
-  plannedRequest.hints.preferTileK = plan.tileK;
+  MatmulTilingRequest plannedRequest =
+      NativeMatmulPlanner::applyPlan(request, plan);
 
   MatmulApiTilingBackend apiBackend;
   auto resultOr = apiBackend.generate(plannedRequest);
@@ -45,8 +40,8 @@ NativeMatmulTilingBackend::generate(const MatmulTilingRequest &request) const {
   resultOr->tileM = plan.tileM;
   resultOr->tileN = plan.tileN;
   resultOr->tileK = plan.tileK;
-  resultOr->debugNote = "planner=native materializer=api planned_block_dim=" +
-                        std::to_string(plan.blockDim) + " " +
+  resultOr->debugNote = "planner=native materializer=api " +
+                        NativeMatmulPlanner::describePlanPrefix(plan) + " " +
                         resultOr->debugNote;
   return resultOr;
 }

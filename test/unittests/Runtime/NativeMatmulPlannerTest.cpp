@@ -63,3 +63,40 @@ TEST(NativeMatmulPlannerTest, RejectsUnsupportedBatchRequest) {
   EXPECT_NE(llvm::toString(planOr.takeError()).find("does not support kernel"),
             std::string::npos);
 }
+
+TEST(NativeMatmulPlannerTest, AppliesPlanIntoMaterializationRequest) {
+  MatmulTilingRequest request = makeRequest();
+  auto planOr = NativeMatmulPlanner::buildPlan(request);
+
+  ASSERT_TRUE(static_cast<bool>(planOr));
+  MatmulTilingRequest plannedRequest =
+      NativeMatmulPlanner::applyPlan(request, *planOr);
+
+  EXPECT_EQ(plannedRequest.hints.preferTraverse, planOr->traverse);
+  ASSERT_TRUE(plannedRequest.hints.preferBlockDim.has_value());
+  EXPECT_EQ(*plannedRequest.hints.preferBlockDim, 4);
+  ASSERT_TRUE(plannedRequest.hints.preferSplitK.has_value());
+  EXPECT_TRUE(*plannedRequest.hints.preferSplitK);
+  ASSERT_TRUE(plannedRequest.hints.preferTileM.has_value());
+  EXPECT_EQ(*plannedRequest.hints.preferTileM, 64);
+  ASSERT_TRUE(plannedRequest.hints.preferTileN.has_value());
+  EXPECT_EQ(*plannedRequest.hints.preferTileN, 128);
+  ASSERT_TRUE(plannedRequest.hints.preferTileK.has_value());
+  EXPECT_EQ(*plannedRequest.hints.preferTileK, 64);
+}
+
+TEST(NativeMatmulPlannerTest, DescribesPlanDeterministically) {
+  NativeMatmulPlan plan;
+  plan.traverse = MatrixTraverseKind::FirstN;
+  plan.blockDim = 3;
+  plan.splitKEnabled = true;
+  plan.tileM = 32;
+  plan.tileN = 64;
+  plan.tileK = 128;
+
+  EXPECT_EQ(NativeMatmulPlanner::describePlan(plan),
+            "planned_block_dim=3 traverse=FIRSTN split_k=1 "
+            "fix_split=32x64x128");
+  EXPECT_EQ(NativeMatmulPlanner::describePlanPrefix(plan),
+            "planned_block_dim=3");
+}
