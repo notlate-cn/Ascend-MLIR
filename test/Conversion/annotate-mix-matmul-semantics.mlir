@@ -9,6 +9,24 @@
 // CHECK: abi_matmul_op_kind = "matmul"
 // CHECK: abi_matmul_trans_a = false
 // CHECK: abi_matmul_trans_b = false
+// CHECK-LABEL: func.func @matmul_transpose_b
+// CHECK: abi_matmul_epilogue_kind = "None"
+// CHECK: abi_matmul_has_bias = false
+// CHECK: abi_matmul_layout_a = "ND"
+// CHECK: abi_matmul_layout_b = "ND"
+// CHECK: abi_matmul_layout_c = "ND"
+// CHECK: abi_matmul_op_kind = "matmul"
+// CHECK: abi_matmul_trans_a = false
+// CHECK: abi_matmul_trans_b = true
+// CHECK-LABEL: func.func @matmul_transpose_a
+// CHECK: abi_matmul_epilogue_kind = "None"
+// CHECK: abi_matmul_has_bias = false
+// CHECK: abi_matmul_layout_a = "ND"
+// CHECK: abi_matmul_layout_b = "ND"
+// CHECK: abi_matmul_layout_c = "ND"
+// CHECK: abi_matmul_op_kind = "matmul"
+// CHECK: abi_matmul_trans_a = true
+// CHECK: abi_matmul_trans_b = false
 // CHECK-LABEL: func.func @cube_only
 // CHECK-NOT: abi_matmul_
 // CHECK-LABEL: func.func @unrelated_generic
@@ -51,6 +69,24 @@ module {
         %relu = arith.maximumf %in, %scaled : f32
         linalg.yield %relu : f32
     }
+    return
+  }
+
+  func.func @matmul_transpose_b(%arg0: memref<?x?xf16>, %arg1: memref<?x?xf16>,
+                                %arg2: memref<?x?xf32>)
+      attributes {ascendc.kernel_kind = "mix"} {
+    linalg.matmul_transpose_b {ascendc.unit = "AiCore.Cube"}
+        ins(%arg0, %arg1 : memref<?x?xf16>, memref<?x?xf16>)
+        outs(%arg2 : memref<?x?xf32>)
+    return
+  }
+
+  func.func @matmul_transpose_a(%arg0: memref<?x?xf16>, %arg1: memref<?x?xf16>,
+                                %arg2: memref<?x?xf32>)
+      attributes {ascendc.kernel_kind = "mix"} {
+    linalg.matmul_transpose_a {ascendc.unit = "AiCore.Cube"}
+        ins(%arg0, %arg1 : memref<?x?xf16>, memref<?x?xf16>)
+        outs(%arg2 : memref<?x?xf32>)
     return
   }
 
