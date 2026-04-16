@@ -18,6 +18,10 @@ if(NOT TARGET GTest::gtest_main AND NOT TARGET GTest::gtest)
   find_package(GTest CONFIG QUIET)
 endif()
 
+if(NOT TARGET GTest::gtest_main AND NOT TARGET GTest::gtest)
+  find_package(GTest QUIET)
+endif()
+
 if(TARGET GTest::gtest_main)
   add_library(RuntimeUnitTestSupport INTERFACE)
   target_link_libraries(RuntimeUnitTestSupport INTERFACE GTest::gtest_main)
