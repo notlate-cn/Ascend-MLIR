@@ -90,3 +90,18 @@ add_dependencies(RuntimeUnitTests NativeMatmulTilingBackendTest)
 add_test(NAME NativeMatmulTilingBackendTest
   COMMAND $<TARGET_FILE:NativeMatmulTilingBackendTest>
 )
+
+add_executable(MixAbiTest
+  MixAbiTest.cpp
+)
+
+target_link_libraries(MixAbiTest PRIVATE
+  RuntimeUnitTestSupport
+  AscendCRuntime
+)
+
+add_dependencies(RuntimeUnitTests MixAbiTest)
+
+add_test(NAME MixAbiTest
+  COMMAND $<TARGET_FILE:MixAbiTest>
+)
