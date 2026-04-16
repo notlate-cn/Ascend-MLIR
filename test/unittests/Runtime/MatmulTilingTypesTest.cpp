@@ -29,6 +29,9 @@ TEST(MatmulTilingTypesTest, DefaultRequestIsNativeFriendly) {
   EXPECT_TRUE(request.hints.socVersion.empty());
   EXPECT_FALSE(request.hints.preferBlockDim.has_value());
   EXPECT_FALSE(request.hints.preferSplitK.has_value());
+  EXPECT_FALSE(request.hints.preferTileM.has_value());
+  EXPECT_FALSE(request.hints.preferTileN.has_value());
+  EXPECT_FALSE(request.hints.preferTileK.has_value());
 
   MatmulTilingResult result;
   EXPECT_EQ(result.blockDim, 0u);

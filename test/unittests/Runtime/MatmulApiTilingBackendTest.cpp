@@ -95,6 +95,9 @@ TEST(MatmulApiTilingBackendTest, SupportsConservativeBatchSubset) {
 TEST(MatmulApiTilingBackendTest, GeneratesApiTilingForSimpleRequest) {
   MatmulApiTilingBackend backend;
   MatmulTilingRequest request = makeSupportedRequest();
+  request.hints.preferTileM = 16;
+  request.hints.preferTileN = 32;
+  request.hints.preferTileK = 64;
 
   auto result = backend.generate(request);
 
@@ -106,6 +109,7 @@ TEST(MatmulApiTilingBackendTest, GeneratesApiTilingForSimpleRequest) {
   EXPECT_NE(result->debugNote.find("soc=Ascend910B1"), std::string::npos);
   EXPECT_NE(result->debugNote.find("traverse=FIRSTN"), std::string::npos);
   EXPECT_NE(result->debugNote.find("bias_dtype=BF16"), std::string::npos);
+  EXPECT_NE(result->debugNote.find("fix_split=16x32x64"), std::string::npos);
 }
 
 TEST(MatmulApiTilingBackendTest, GeneratesApiTilingForBatchRequest) {

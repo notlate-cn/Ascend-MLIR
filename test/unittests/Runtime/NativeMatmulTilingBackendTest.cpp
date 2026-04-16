@@ -26,6 +26,16 @@ MatmulTilingRequest makeSupportedRequest() {
   return request;
 }
 
+static size_t countSubstring(std::string_view text, std::string_view needle) {
+  size_t count = 0;
+  size_t offset = 0;
+  while ((offset = text.find(needle, offset)) != std::string_view::npos) {
+    ++count;
+    offset += needle.size();
+  }
+  return count;
+}
+
 } // namespace
 
 TEST(NativeMatmulTilingBackendTest, IsNotSelectedForProductionRequests) {
@@ -51,6 +61,14 @@ TEST(NativeMatmulTilingBackendTest, GeneratesNativePlannedTiling) {
   EXPECT_EQ(result->strategyName, "native-matmul");
   EXPECT_GT(result->blockDim, 0u);
   EXPECT_FALSE(result->tilingData.empty());
+  EXPECT_TRUE(result->tileM.has_value());
+  EXPECT_TRUE(result->tileN.has_value());
+  EXPECT_TRUE(result->tileK.has_value());
+  EXPECT_EQ(*result->tileM, 16);
+  EXPECT_EQ(*result->tileN, 32);
+  EXPECT_EQ(*result->tileK, 32);
   EXPECT_NE(result->debugNote.find("planner=native"), std::string::npos);
   EXPECT_NE(result->debugNote.find("materializer=api"), std::string::npos);
+  EXPECT_NE(result->debugNote.find("fix_split=16x32x32"), std::string::npos);
+  EXPECT_EQ(countSubstring(result->debugNote, "fix_split="), 1u);
 }
