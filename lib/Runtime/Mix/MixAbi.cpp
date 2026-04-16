@@ -37,6 +37,18 @@ llvm::Expected<size_t> parseSizeValue(llvm::StringRef value,
   return static_cast<size_t>(parsed);
 }
 
+llvm::Expected<bool> parseBoolValue(llvm::StringRef value,
+                                    llvm::StringRef field) {
+  value = value.trim();
+  if (value == "0" || value.equals_insensitive("false"))
+    return false;
+  if (value == "1" || value.equals_insensitive("true"))
+    return true;
+  return llvm::createStringError(llvm::inconvertibleErrorCode(),
+                                 "Invalid %s: %s", field.str().c_str(),
+                                 value.str().c_str());
+}
+
 llvm::Expected<DType> parseDType(llvm::StringRef dtype) {
   if (dtype == "f16")
     return DType::F16;
@@ -276,6 +288,22 @@ serializeMixAbiManifest(const MixAbiMetadata &abi) {
     appendSizeLine(out, "abi_workspace_arg_index", *abi.workspaceArgIndex);
   if (abi.tilingArgIndex)
     appendSizeLine(out, "abi_tiling_arg_index", *abi.tilingArgIndex);
+  if (abi.matmul) {
+    appendLine(out, "abi_matmul_op_kind", abi.matmul->opKind);
+    appendLine(out, "abi_matmul_trans_a", abi.matmul->transA ? "1" : "0");
+    appendLine(out, "abi_matmul_trans_b", abi.matmul->transB ? "1" : "0");
+    appendLine(out, "abi_matmul_has_bias", abi.matmul->hasBias ? "1" : "0");
+    if (!abi.matmul->layoutA.empty())
+      appendLine(out, "abi_matmul_layout_a", abi.matmul->layoutA);
+    if (!abi.matmul->layoutB.empty())
+      appendLine(out, "abi_matmul_layout_b", abi.matmul->layoutB);
+    if (!abi.matmul->layoutC.empty())
+      appendLine(out, "abi_matmul_layout_c", abi.matmul->layoutC);
+    if (!abi.matmul->epilogueKind.empty())
+      appendLine(out, "abi_matmul_epilogue_kind", abi.matmul->epilogueKind);
+    if (!abi.matmul->batchShape.empty())
+      appendShapeLine(out, "abi_matmul_batch_shape", abi.matmul->batchShape);
+  }
   return out;
 }
 
@@ -386,6 +414,49 @@ parseMixAbiManifest(const std::map<std::string, std::string> &manifest) {
 
   if (auto value = getOptionalManifestValue(manifest, "abi_aiv_entry"))
     abi.aivEntry = *value;
+
+  if (auto value = getOptionalManifestValue(manifest, "abi_matmul_op_kind")) {
+    MixAbiMatmulDesc matmul;
+    matmul.opKind = *value;
+    if (auto boolValue =
+            getOptionalManifestValue(manifest, "abi_matmul_trans_a")) {
+      auto parsed = parseBoolValue(*boolValue, "abi_matmul_trans_a");
+      if (!parsed)
+        return parsed.takeError();
+      matmul.transA = *parsed;
+    }
+    if (auto boolValue =
+            getOptionalManifestValue(manifest, "abi_matmul_trans_b")) {
+      auto parsed = parseBoolValue(*boolValue, "abi_matmul_trans_b");
+      if (!parsed)
+        return parsed.takeError();
+      matmul.transB = *parsed;
+    }
+    if (auto boolValue =
+            getOptionalManifestValue(manifest, "abi_matmul_has_bias")) {
+      auto parsed = parseBoolValue(*boolValue, "abi_matmul_has_bias");
+      if (!parsed)
+        return parsed.takeError();
+      matmul.hasBias = *parsed;
+    }
+    if (auto layout = getOptionalManifestValue(manifest, "abi_matmul_layout_a"))
+      matmul.layoutA = *layout;
+    if (auto layout = getOptionalManifestValue(manifest, "abi_matmul_layout_b"))
+      matmul.layoutB = *layout;
+    if (auto layout = getOptionalManifestValue(manifest, "abi_matmul_layout_c"))
+      matmul.layoutC = *layout;
+    if (auto epilogue =
+            getOptionalManifestValue(manifest, "abi_matmul_epilogue_kind"))
+      matmul.epilogueKind = *epilogue;
+    if (auto batchShape =
+            getOptionalManifestValue(manifest, "abi_matmul_batch_shape")) {
+      auto parsed = parseShapeList(*batchShape);
+      if (!parsed)
+        return parsed.takeError();
+      matmul.batchShape = std::move(*parsed);
+    }
+    abi.matmul = std::move(matmul);
+  }
 
   return abi;
 }

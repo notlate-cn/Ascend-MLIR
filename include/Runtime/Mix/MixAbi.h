@@ -20,6 +20,18 @@ struct MixAbiTensorDesc {
   std::vector<int64_t> shape;
 };
 
+struct MixAbiMatmulDesc {
+  std::string opKind;
+  bool transA = false;
+  bool transB = false;
+  bool hasBias = false;
+  std::string layoutA;
+  std::string layoutB;
+  std::string layoutC;
+  std::string epilogueKind;
+  std::vector<int64_t> batchShape;
+};
+
 struct MixAbiMetadata {
   std::string logicalKernelName;
   std::string runtimeKernelName;
@@ -35,6 +47,7 @@ struct MixAbiMetadata {
   std::string launcherSymbol;
   std::string aicEntry;
   std::string aivEntry;
+  std::optional<MixAbiMatmulDesc> matmul;
 };
 
 std::string buildCanonicalInputFileName(llvm::StringRef kernelName,
