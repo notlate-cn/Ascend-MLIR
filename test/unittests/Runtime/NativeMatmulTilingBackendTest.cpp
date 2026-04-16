@@ -33,23 +33,24 @@ TEST(NativeMatmulTilingBackendTest, IsNotSelectedForProductionRequests) {
   MatmulTilingRequest request = makeSupportedRequest();
 
   EXPECT_EQ(backend.name(), "native");
+  EXPECT_TRUE(backend.supports(request));
+
+  request.problem.batchShape = {2};
   EXPECT_FALSE(backend.supports(request));
 }
 
-TEST(NativeMatmulTilingBackendTest, RejectsDirectGeneration) {
+TEST(NativeMatmulTilingBackendTest, GeneratesNativePlannedTiling) {
   NativeMatmulTilingBackend backend;
   MatmulTilingRequest request = makeSupportedRequest();
+  request.problem.transB = true;
 
   auto result = backend.generate(request);
 
-  ASSERT_FALSE(static_cast<bool>(result));
-  std::vector<std::string> messages;
-  llvm::handleAllErrors(result.takeError(),
-                        [&](const llvm::ErrorInfoBase &info) {
-                          messages.push_back(info.message());
-                        });
-  ASSERT_FALSE(messages.empty());
-  EXPECT_NE(messages[0].find(
-                "native matmul tiling backend is not available"),
-            std::string::npos);
+  ASSERT_TRUE(static_cast<bool>(result));
+  EXPECT_EQ(result->backendKind, "native");
+  EXPECT_EQ(result->strategyName, "native-matmul");
+  EXPECT_GT(result->blockDim, 0u);
+  EXPECT_FALSE(result->tilingData.empty());
+  EXPECT_NE(result->debugNote.find("planner=native"), std::string::npos);
+  EXPECT_NE(result->debugNote.find("materializer=api"), std::string::npos);
 }
