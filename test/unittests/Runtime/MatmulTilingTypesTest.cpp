@@ -38,6 +38,8 @@ TEST(MatmulTilingTypesTest, DefaultRequestIsNativeFriendly) {
   EXPECT_TRUE(result.backendKind.empty());
   EXPECT_TRUE(result.strategyName.empty());
   EXPECT_TRUE(result.tilingData.empty());
+  EXPECT_FALSE(result.plannedBlockDim.has_value());
+  EXPECT_FALSE(result.splitKEnabled.has_value());
   EXPECT_FALSE(result.tileM.has_value());
   EXPECT_FALSE(result.tileN.has_value());
   EXPECT_FALSE(result.tileK.has_value());

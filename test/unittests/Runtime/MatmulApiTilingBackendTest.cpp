@@ -95,9 +95,12 @@ TEST(MatmulApiTilingBackendTest, SupportsConservativeBatchSubset) {
 TEST(MatmulApiTilingBackendTest, GeneratesApiTilingForSimpleRequest) {
   MatmulApiTilingBackend backend;
   MatmulTilingRequest request = makeSupportedRequest();
+  request.problem.K = 128;
   request.hints.preferTileM = 16;
   request.hints.preferTileN = 32;
-  request.hints.preferTileK = 64;
+  request.hints.preferTileK = 32;
+  request.hints.preferBlockDim = 7;
+  request.hints.preferSplitK = true;
 
   auto result = backend.generate(request);
 
@@ -106,10 +109,16 @@ TEST(MatmulApiTilingBackendTest, GeneratesApiTilingForSimpleRequest) {
   EXPECT_EQ(result->strategyName, "matmul-api");
   EXPECT_GT(result->blockDim, 0u);
   EXPECT_FALSE(result->tilingData.empty());
+  ASSERT_TRUE(result->plannedBlockDim.has_value());
+  EXPECT_EQ(*result->plannedBlockDim, 7u);
+  ASSERT_TRUE(result->splitKEnabled.has_value());
+  EXPECT_TRUE(*result->splitKEnabled);
   EXPECT_NE(result->debugNote.find("soc=Ascend910B1"), std::string::npos);
   EXPECT_NE(result->debugNote.find("traverse=FIRSTN"), std::string::npos);
   EXPECT_NE(result->debugNote.find("bias_dtype=BF16"), std::string::npos);
-  EXPECT_NE(result->debugNote.find("fix_split=16x32x64"), std::string::npos);
+  EXPECT_NE(result->debugNote.find("requested_block_dim=7"), std::string::npos);
+  EXPECT_NE(result->debugNote.find("split_k=1"), std::string::npos);
+  EXPECT_NE(result->debugNote.find("fix_split=16x32x32"), std::string::npos);
 }
 
 TEST(MatmulApiTilingBackendTest, GeneratesApiTilingForBatchRequest) {

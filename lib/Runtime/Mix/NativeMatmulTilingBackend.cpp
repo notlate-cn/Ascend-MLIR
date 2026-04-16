@@ -10,6 +10,8 @@ namespace {
 
 struct NativeMatmulPlan {
   MatrixTraverseKind traverse = MatrixTraverseKind::FirstM;
+  uint32_t blockDim = 1;
+  bool splitKEnabled = false;
   int64_t tileM = 0;
   int64_t tileN = 0;
   int64_t tileK = 0;
@@ -38,6 +40,10 @@ static int64_t clampTile(int64_t value, int64_t floor, int64_t ceil) {
   return std::max(floor, std::min(value, ceil));
 }
 
+static int64_t ceilDiv(int64_t lhs, int64_t rhs) {
+  return (lhs + rhs - 1) / rhs;
+}
+
 static int64_t pickKTile(const MatmulTilingRequest &request) {
   const int64_t granularity =
       (request.problem.dtypeA == DType::F32 || request.problem.dtypeB == DType::F32)
@@ -63,6 +69,16 @@ static NativeMatmulPlan buildNativePlan(const MatmulTilingRequest &request) {
   const int64_t targetN = wideN ? 128 : 64;
   plan.tileM = clampTile(std::min(request.problem.M, targetM), 16, request.problem.M);
   plan.tileN = clampTile(std::min(request.problem.N, targetN), 16, request.problem.N);
+  plan.splitKEnabled = request.hints.preferSplitK.value_or(request.problem.K > plan.tileK);
+  if (!plan.splitKEnabled)
+    plan.tileK = request.problem.K;
+  if (request.hints.preferBlockDim.has_value() && *request.hints.preferBlockDim > 0) {
+    plan.blockDim = static_cast<uint32_t>(*request.hints.preferBlockDim);
+  } else {
+    const int64_t mTiles = ceilDiv(request.problem.M, plan.tileM);
+    const int64_t nTiles = ceilDiv(request.problem.N, plan.tileN);
+    plan.blockDim = static_cast<uint32_t>(std::max<int64_t>(1, mTiles * nTiles));
+  }
   return plan;
 }
 
@@ -86,6 +102,8 @@ NativeMatmulTilingBackend::generate(const MatmulTilingRequest &request) const {
 
   const NativeMatmulPlan plan = buildNativePlan(request);
   MatmulTilingRequest plannedRequest = request;
+  plannedRequest.hints.preferBlockDim = plan.blockDim;
+  plannedRequest.hints.preferSplitK = plan.splitKEnabled;
   plannedRequest.hints.preferTraverse = plan.traverse;
   plannedRequest.hints.preferTileM = plan.tileM;
   plannedRequest.hints.preferTileN = plan.tileN;
@@ -98,11 +116,14 @@ NativeMatmulTilingBackend::generate(const MatmulTilingRequest &request) const {
 
   resultOr->backendKind = "native";
   resultOr->strategyName = "native-matmul";
+  resultOr->plannedBlockDim = plan.blockDim;
+  resultOr->splitKEnabled = plan.splitKEnabled;
   resultOr->tileM = plan.tileM;
   resultOr->tileN = plan.tileN;
   resultOr->tileK = plan.tileK;
-  resultOr->debugNote =
-      "planner=native materializer=api " + resultOr->debugNote;
+  resultOr->debugNote = "planner=native materializer=api planned_block_dim=" +
+                        std::to_string(plan.blockDim) + " " +
+                        resultOr->debugNote;
   return resultOr;
 }
 

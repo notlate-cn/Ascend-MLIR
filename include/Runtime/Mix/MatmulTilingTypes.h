@@ -58,6 +58,8 @@ struct MatmulTilingResult {
   std::string strategyName;
   uint32_t blockDim = 0;
   std::vector<uint8_t> tilingData;
+  std::optional<uint32_t> plannedBlockDim;
+  std::optional<bool> splitKEnabled;
   std::optional<int64_t> tileM;
   std::optional<int64_t> tileN;
   std::optional<int64_t> tileK;

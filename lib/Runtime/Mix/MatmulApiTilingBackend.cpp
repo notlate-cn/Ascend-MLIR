@@ -144,6 +144,28 @@ static int resolveFixSplitValue(std::optional<int64_t> value, int fallback) {
   return static_cast<int>(*value);
 }
 
+static int resolveFixSplitKValue(const MatmulTilingRequest &request) {
+  if (request.hints.preferSplitK.has_value() && !*request.hints.preferSplitK)
+    return -1;
+  return resolveFixSplitValue(request.hints.preferTileK, -1);
+}
+
+static std::optional<uint32_t>
+resolveRequestedBlockDim(std::optional<int64_t> requested) {
+  if (!requested.has_value() || *requested <= 0 ||
+      *requested > static_cast<int64_t>(std::numeric_limits<uint32_t>::max()))
+    return std::nullopt;
+  return static_cast<uint32_t>(*requested);
+}
+
+static bool resolveSplitKEnabled(const MatmulTilingRequest &request,
+                                 int fixSplitK) {
+  if (request.hints.preferSplitK.has_value())
+    return *request.hints.preferSplitK;
+  return fixSplitK > 0 &&
+         fixSplitK < static_cast<int>(request.problem.K);
+}
+
 static bool supportsMatmulApiTilingRequest(const MatmulTilingRequest &request) {
   return isPositiveShape(request) && hasSupportedBatchShape(request) &&
          hasSupportedLayout(request) && hasSupportedDType(request) &&
@@ -198,7 +220,10 @@ generateMatmulApiTilingImpl(const MatmulTilingRequest &request) {
   const int k = static_cast<int>(request.problem.K);
   const int fixSplitM = resolveFixSplitValue(request.hints.preferTileM, m);
   const int fixSplitN = resolveFixSplitValue(request.hints.preferTileN, n);
-  const int fixSplitK = resolveFixSplitValue(request.hints.preferTileK, -1);
+  const int fixSplitK = resolveFixSplitKValue(request);
+  const std::optional<uint32_t> requestedBlockDim =
+      resolveRequestedBlockDim(request.hints.preferBlockDim);
+  const bool splitKEnabled = resolveSplitKEnabled(request, fixSplitK);
 
   matmul_tiling::MatmulApiTiling tilingApi(*ascendcPlatform);
   tilingApi.SetAType(matmul_tiling::TPosition::GM,
@@ -236,10 +261,17 @@ generateMatmulApiTilingImpl(const MatmulTilingRequest &request) {
   result.backendKind = "api";
   result.strategyName = "matmul-api";
   result.blockDim = static_cast<uint32_t>(tilingData.get_usedCoreNum());
+  result.plannedBlockDim = requestedBlockDim;
+  result.splitKEnabled = splitKEnabled;
   result.tilingData.resize(tilingData.GetDataSize());
   tilingData.SaveToBuffer(result.tilingData.data(), tilingData.GetDataSize());
   result.debugNote = "soc=" + socVersion + " traverse=" +
                      traverseToString(request.hints.preferTraverse) +
+                     " requested_block_dim=" +
+                     (requestedBlockDim.has_value()
+                          ? std::to_string(*requestedBlockDim)
+                          : std::string("none")) +
+                     " split_k=" + std::string(splitKEnabled ? "1" : "0") +
                      " batch=" +
                      (request.problem.batchShape.empty()
                           ? std::string("none")

@@ -61,6 +61,10 @@ TEST(NativeMatmulTilingBackendTest, GeneratesNativePlannedTiling) {
   EXPECT_EQ(result->strategyName, "native-matmul");
   EXPECT_GT(result->blockDim, 0u);
   EXPECT_FALSE(result->tilingData.empty());
+  ASSERT_TRUE(result->plannedBlockDim.has_value());
+  EXPECT_EQ(*result->plannedBlockDim, 1u);
+  ASSERT_TRUE(result->splitKEnabled.has_value());
+  EXPECT_TRUE(*result->splitKEnabled);
   EXPECT_TRUE(result->tileM.has_value());
   EXPECT_TRUE(result->tileN.has_value());
   EXPECT_TRUE(result->tileK.has_value());
@@ -69,6 +73,9 @@ TEST(NativeMatmulTilingBackendTest, GeneratesNativePlannedTiling) {
   EXPECT_EQ(*result->tileK, 32);
   EXPECT_NE(result->debugNote.find("planner=native"), std::string::npos);
   EXPECT_NE(result->debugNote.find("materializer=api"), std::string::npos);
+  EXPECT_NE(result->debugNote.find("planned_block_dim=1"), std::string::npos);
+  EXPECT_NE(result->debugNote.find("split_k=1"), std::string::npos);
+  EXPECT_EQ(countSubstring(result->debugNote, "split_k="), 1u);
   EXPECT_NE(result->debugNote.find("fix_split=16x32x32"), std::string::npos);
   EXPECT_EQ(countSubstring(result->debugNote, "fix_split="), 1u);
 }
