@@ -1,14 +1,21 @@
+get_filename_component(LLVM_PROJECT_DIR "${LLVM_BUILD_MAIN_SRC_DIR}/.." ABSOLUTE)
+set(GOOGLETEST_DIR "${LLVM_PROJECT_DIR}/third-party/unittest/googletest")
+
 add_executable(MatmulTilingTypesTest
   MatmulTilingTypesTest.cpp
-  ../gtest/gtest_main.cpp
+  ${GOOGLETEST_DIR}/src/gtest-all.cc
+  ${GOOGLETEST_DIR}/src/gtest_main.cc
 )
 
 target_include_directories(MatmulTilingTypesTest PRIVATE
-  ${CMAKE_CURRENT_SOURCE_DIR}/..
+  ${GOOGLETEST_DIR}/include
+  ${GOOGLETEST_DIR}
 )
 
-add_custom_target(RuntimeUnitTests)
-set_target_properties(RuntimeUnitTests PROPERTIES FOLDER "Tests")
+target_compile_definitions(MatmulTilingTypesTest PRIVATE
+  GTEST_NO_LLVM_SUPPORT=1
+)
+
 add_dependencies(RuntimeUnitTests MatmulTilingTypesTest)
 
 add_test(NAME MatmulTilingTypesTest
