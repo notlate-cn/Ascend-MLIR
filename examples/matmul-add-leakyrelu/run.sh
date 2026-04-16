@@ -162,12 +162,24 @@ if ! "${BOOTSTRAP_BUILD_DIR}/bin/mix-compiler" \
 fi
 cat "${MIX_COMPILE_LOG}"
 
-python3 - "${ARTIFACT_DIR}/out/compile_metadata.json" <<'PY'
+python3 - "${ARTIFACT_DIR}/out/manifest.txt" "${ARTIFACT_DIR}" <<'PY'
 import json
 import sys
 from pathlib import Path
 
-metadata = json.loads(Path(sys.argv[1]).read_text())
+manifest_path = Path(sys.argv[1])
+artifact_dir = Path(sys.argv[2])
+manifest = {}
+for raw in manifest_path.read_text().splitlines():
+    line = raw.strip()
+    if not line or "=" not in line:
+        continue
+    key, value = line.split("=", 1)
+    manifest[key] = value
+metadata_file = Path(manifest["metadata_path"])
+if not metadata_file.is_absolute():
+    metadata_file = (artifact_dir / metadata_file).resolve()
+metadata = json.loads(metadata_file.read_text())
 host_launch = metadata.get("host_launch", {})
 helper_inputs = host_launch.get("helper_inputs", {})
 print("=== [STAGE 10A] Tiling metadata ===")

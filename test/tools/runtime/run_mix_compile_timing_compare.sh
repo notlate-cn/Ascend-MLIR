@@ -35,7 +35,7 @@ run_one() {
   }
 
   RUN_INDEX="${index}" TIMING_PATH="${ARTIFACT_DIR}/out/compile_timing.json" \
-    METADATA_PATH="${ARTIFACT_DIR}/out/compile_metadata.json" \
+    MANIFEST_PATH="${ARTIFACT_DIR}/out/manifest.txt" ARTIFACT_DIR="${ARTIFACT_DIR}" \
     python3 - <<'PY' >>"${RESULTS}"
 import json
 import os
@@ -43,7 +43,16 @@ from pathlib import Path
 
 timing_path = Path(os.environ["TIMING_PATH"])
 timing = json.loads(timing_path.read_text())
-metadata_path = Path(os.environ["METADATA_PATH"])
+manifest = {}
+for raw in Path(os.environ["MANIFEST_PATH"]).read_text().splitlines():
+    line = raw.strip()
+    if not line or "=" not in line:
+        continue
+    key, value = line.split("=", 1)
+    manifest[key] = value
+metadata_path = Path(manifest["metadata_path"])
+if not metadata_path.is_absolute():
+    metadata_path = (Path(os.environ["ARTIFACT_DIR"]) / metadata_path).resolve()
 metadata = json.loads(metadata_path.read_text())
 helper_inputs = metadata.get("host_launch", {}).get("helper_inputs", {})
 print(json.dumps({
