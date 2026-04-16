@@ -16,6 +16,8 @@
 #include "llvm/ADT/STLFunctionalExtras.h"
 
 #include <optional>
+#include <string>
+#include <vector>
 
 #define GEN_PASS_DECL_ANNOTATEMIXMATMULSEMANTICSPASS
 #define GEN_PASS_DEF_ANNOTATEMIXMATMULSEMANTICSPASS
@@ -32,8 +34,10 @@ struct MatmulLikeOpInfo {
   Value rhs;
   Value out;
   Operation *op = nullptr;
+  std::string opKind = "matmul";
   bool transA = false;
   bool transB = false;
+  std::vector<int64_t> batchShape;
 };
 
 static MemRefType getRankedMemRefType(Value value, int64_t rank) {
@@ -52,6 +56,21 @@ static bool isIdentity2DMemRef(Value value) {
   return type && type.getLayout().isIdentity();
 }
 
+static bool isIdentity3DMemRef(Value value) {
+  auto type = getRankedMemRefType(value, 3);
+  return type && type.getLayout().isIdentity();
+}
+
+static std::optional<int64_t> getStaticBatchDim(Value value) {
+  auto type = getRankedMemRefType(value, 3);
+  if (!type)
+    return std::nullopt;
+  const int64_t batch = type.getShape().front();
+  if (batch == ShapedType::kDynamic || batch <= 0)
+    return std::nullopt;
+  return batch;
+}
+
 static bool hasUnitAttr(Operation *op, StringRef expected) {
   auto unitAttr = op->getAttrOfType<StringAttr>("ascendc.unit");
   return unitAttr && unitAttr.getValue() == expected;
@@ -64,8 +83,10 @@ static std::optional<MatmulLikeOpInfo> getMatmulLikeOpInfo(Operation *op) {
         matmul.getDpsInputOperand(1)->get(),
         matmul.getDpsInitOperand(0)->get(),
         matmul,
+        "matmul",
         false,
         false,
+        {},
     };
   }
   if (auto matmul = dyn_cast<linalg::MatmulTransposeAOp>(op)) {
@@ -74,8 +95,10 @@ static std::optional<MatmulLikeOpInfo> getMatmulLikeOpInfo(Operation *op) {
         matmul.getDpsInputOperand(1)->get(),
         matmul.getDpsInitOperand(0)->get(),
         matmul,
+        "matmul",
         true,
         false,
+        {},
     };
   }
   if (auto matmul = dyn_cast<linalg::MatmulTransposeBOp>(op)) {
@@ -84,8 +107,55 @@ static std::optional<MatmulLikeOpInfo> getMatmulLikeOpInfo(Operation *op) {
         matmul.getDpsInputOperand(1)->get(),
         matmul.getDpsInitOperand(0)->get(),
         matmul,
+        "matmul",
         false,
         true,
+        {},
+    };
+  }
+  if (auto matmul = dyn_cast<linalg::BatchMatmulOp>(op)) {
+    auto batch = getStaticBatchDim(matmul.getDpsInitOperand(0)->get());
+    if (!batch)
+      return std::nullopt;
+    return MatmulLikeOpInfo{
+        matmul.getDpsInputOperand(0)->get(),
+        matmul.getDpsInputOperand(1)->get(),
+        matmul.getDpsInitOperand(0)->get(),
+        matmul,
+        "batch_matmul",
+        false,
+        false,
+        {*batch},
+    };
+  }
+  if (auto matmul = dyn_cast<linalg::BatchMatmulTransposeAOp>(op)) {
+    auto batch = getStaticBatchDim(matmul.getDpsInitOperand(0)->get());
+    if (!batch)
+      return std::nullopt;
+    return MatmulLikeOpInfo{
+        matmul.getDpsInputOperand(0)->get(),
+        matmul.getDpsInputOperand(1)->get(),
+        matmul.getDpsInitOperand(0)->get(),
+        matmul,
+        "batch_matmul",
+        true,
+        false,
+        {*batch},
+    };
+  }
+  if (auto matmul = dyn_cast<linalg::BatchMatmulTransposeBOp>(op)) {
+    auto batch = getStaticBatchDim(matmul.getDpsInitOperand(0)->get());
+    if (!batch)
+      return std::nullopt;
+    return MatmulLikeOpInfo{
+        matmul.getDpsInputOperand(0)->get(),
+        matmul.getDpsInputOperand(1)->get(),
+        matmul.getDpsInitOperand(0)->get(),
+        matmul,
+        "batch_matmul",
+        false,
+        true,
+        {*batch},
     };
   }
   return std::nullopt;
@@ -172,8 +242,17 @@ static bool isLeakyReluGeneric(linalg::GenericOp genericOp) {
 }
 
 static bool isSimple2DNdMatmulLike(const MatmulLikeOpInfo &info) {
+  if (!info.batchShape.empty())
+    return false;
   return hasUnitAttr(info.op, "AiCore.Cube") && isIdentity2DMemRef(info.lhs) &&
          isIdentity2DMemRef(info.rhs) && isIdentity2DMemRef(info.out);
+}
+
+static bool isSimple3DNdBatchMatmulLike(const MatmulLikeOpInfo &info) {
+  if (info.batchShape.size() != 1)
+    return false;
+  return hasUnitAttr(info.op, "AiCore.Cube") && isIdentity3DMemRef(info.lhs) &&
+         isIdentity3DMemRef(info.rhs) && isIdentity3DMemRef(info.out);
 }
 
 static linalg::GenericOp findUniqueChainedGeneric(Value current,
@@ -220,7 +299,10 @@ struct AnnotateMixMatmulSemanticsPass
     if (matmuls.size() != 1)
       return;
     const MatmulLikeOpInfo &matmulOp = matmuls.front();
-    if (!isSimple2DNdMatmulLike(matmulOp))
+    if (!isSimple2DNdMatmulLike(matmulOp) &&
+        !isSimple3DNdBatchMatmulLike(matmulOp))
+      return;
+    if (!matmulOp.batchShape.empty() && !generics.empty())
       return;
 
     Value current = matmulOp.out;
@@ -243,7 +325,8 @@ struct AnnotateMixMatmulSemanticsPass
       return;
 
     MLIRContext *ctx = funcOp.getContext();
-    funcOp->setAttr("abi_matmul_op_kind", StringAttr::get(ctx, "matmul"));
+    funcOp->setAttr("abi_matmul_op_kind",
+                    StringAttr::get(ctx, matmulOp.opKind));
     funcOp->setAttr("abi_matmul_trans_a", BoolAttr::get(ctx, matmulOp.transA));
     funcOp->setAttr("abi_matmul_trans_b", BoolAttr::get(ctx, matmulOp.transB));
     funcOp->setAttr("abi_matmul_has_bias", BoolAttr::get(ctx, hasBias));
@@ -252,6 +335,9 @@ struct AnnotateMixMatmulSemanticsPass
     funcOp->setAttr("abi_matmul_layout_c", StringAttr::get(ctx, "ND"));
     funcOp->setAttr("abi_matmul_epilogue_kind",
                     StringAttr::get(ctx, epilogueKind));
+    if (!matmulOp.batchShape.empty())
+      funcOp->setAttr("abi_matmul_batch_shape",
+                      Builder(ctx).getI64ArrayAttr(matmulOp.batchShape));
   }
 };
 
