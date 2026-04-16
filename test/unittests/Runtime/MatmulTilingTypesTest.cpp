@@ -6,10 +6,13 @@ using namespace mlir::runtime;
 TEST(MatmulTilingTypesTest, DefaultRequestIsNativeFriendly) {
   MatmulTilingRequest request;
 
+  EXPECT_TRUE(request.kernelName.empty());
   EXPECT_EQ(request.problem.layoutA, MatmulLayout::ND);
   EXPECT_EQ(request.problem.layoutB, MatmulLayout::ND);
   EXPECT_EQ(request.problem.layoutC, MatmulLayout::ND);
   EXPECT_EQ(request.fusion.epilogue, EpilogueKind::None);
+  EXPECT_FALSE(request.fusion.preferFuseVectorEpilogue);
+  EXPECT_EQ(request.fusion.consumerAlignmentBytes, 0u);
   EXPECT_FALSE(request.hints.preferTraverse.has_value());
 
   EXPECT_TRUE(request.problem.batchShape.empty());
