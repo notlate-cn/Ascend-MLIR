@@ -26,3 +26,18 @@ add_dependencies(RuntimeUnitTests MatmulTilingDispatcherTest)
 add_test(NAME MatmulTilingDispatcherTest
   COMMAND $<TARGET_FILE:MatmulTilingDispatcherTest>
 )
+
+add_executable(MatmulApiTilingBackendTest
+  MatmulApiTilingBackendTest.cpp
+)
+
+target_link_libraries(MatmulApiTilingBackendTest PRIVATE
+  RuntimeUnitTestSupport
+  AscendCRuntime
+)
+
+add_dependencies(RuntimeUnitTests MatmulApiTilingBackendTest)
+
+add_test(NAME MatmulApiTilingBackendTest
+  COMMAND $<TARGET_FILE:MatmulApiTilingBackendTest>
+)
