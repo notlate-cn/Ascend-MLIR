@@ -24,8 +24,15 @@ add_lit_testsuites(AFIR ${CMAKE_CURRENT_SOURCE_DIR} DEPENDS ${AFIR_TEST_DEPENDS}
 
 add_subdirectory(unittests)
 
-add_custom_target(check-unittests)
-set_target_properties(check-unittests PROPERTIES FOLDER "Tests")
 if(TARGET RuntimeUnitTests)
+  add_custom_target(check-unittests
+    COMMAND ${CMAKE_CTEST_COMMAND} --output-on-failure -R "MatmulTilingTypesTest"
+    WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
+  )
   add_dependencies(check-unittests RuntimeUnitTests)
+else()
+  add_custom_target(check-unittests
+    COMMAND ${CMAKE_COMMAND} -E echo "Skipping runtime unit tests because googletest is unavailable."
+  )
 endif()
+set_target_properties(check-unittests PROPERTIES FOLDER "Tests")
