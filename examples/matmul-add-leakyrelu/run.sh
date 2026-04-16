@@ -46,10 +46,11 @@ echo "=== [STAGE 3] Bufferize ==="
 $AFIR_OPT \
   '--one-shot-bufferize=bufferize-function-boundaries=true allow-return-allocs-from-loops=true function-boundary-type-conversion=identity-layout-map' \
   "$SCRIPT_DIR/step2_tiled.mlir" \
+  --annotate-mix-matmul-semantics \
   --annotate-ascendc-kernel-kind \
   --cse \
   -o "$SCRIPT_DIR/step3_bufferized.mlir"
-log "  step3_bufferized.mlir done (kernel_kind annotated)"
+log "  step3_bufferized.mlir done (matmul semantics + kernel_kind annotated)"
 
 # ── STAGE 4: Buffer Placement ────────────────────────────────────────────────
 echo "=== [STAGE 4] Buffer Placement ==="
