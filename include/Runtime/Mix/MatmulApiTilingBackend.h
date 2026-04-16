@@ -4,6 +4,9 @@
 
 namespace mlir::runtime {
 
+llvm::Expected<MatmulTilingResult>
+generateMatmulApiTiling(const MatmulTilingRequest &request);
+
 class MatmulApiTilingBackend final : public MatmulTilingBackend {
 public:
   llvm::StringRef name() const override;
