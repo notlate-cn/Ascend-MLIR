@@ -35,6 +35,7 @@ run_one() {
   }
 
   RUN_INDEX="${index}" TIMING_PATH="${ARTIFACT_DIR}/out/compile_timing.json" \
+    METADATA_PATH="${ARTIFACT_DIR}/out/compile_metadata.json" \
     python3 - <<'PY' >>"${RESULTS}"
 import json
 import os
@@ -42,9 +43,16 @@ from pathlib import Path
 
 timing_path = Path(os.environ["TIMING_PATH"])
 timing = json.loads(timing_path.read_text())
+metadata_path = Path(os.environ["METADATA_PATH"])
+metadata = json.loads(metadata_path.read_text())
+helper_inputs = metadata.get("host_launch", {}).get("helper_inputs", {})
 print(json.dumps({
     "run": int(os.environ["RUN_INDEX"]),
     "total_us": int(timing["total_elapsed_us"]),
+    "tiling_backend": helper_inputs.get("tiling_backend", ""),
+    "tiling_strategy": helper_inputs.get("tiling_strategy", ""),
+    "host_launch_mode": metadata.get("host_launch", {}).get("mode", ""),
+    "host_launch_helper_kind": metadata.get("host_launch", {}).get("helper_kind", ""),
     "stages": {
         stage["name"]: int(stage["elapsed_us"])
         for stage in timing.get("stages", [])
@@ -67,16 +75,34 @@ from pathlib import Path
 rows = [json.loads(line) for line in Path(sys.argv[1]).read_text().splitlines()]
 totals = []
 stage_values = defaultdict(list)
+backend_values = []
+strategy_values = []
+mode_values = []
+helper_kind_values = []
 for row in rows:
     totals.append(row["total_us"])
+    backend_values.append(row.get("tiling_backend", ""))
+    strategy_values.append(row.get("tiling_strategy", ""))
+    mode_values.append(row.get("host_launch_mode", ""))
+    helper_kind_values.append(row.get("host_launch_helper_kind", ""))
     for name, elapsed in row["stages"].items():
         stage_values[name].append(elapsed)
 
 def mean_ms(values):
     return statistics.mean(values) / 1000.0
 
+def unique(values):
+    return sorted(set(values))
+
 print("mix_compile_timing")
 print(f"mode=direct-source runs={len(totals)} mean_ms={mean_ms(totals):.3f} min_ms={min(totals)/1000.0:.3f} max_ms={max(totals)/1000.0:.3f}")
+print(
+    "metadata "
+    f"tiling_backend={unique(backend_values)} "
+    f"tiling_strategy={unique(strategy_values)} "
+    f"host_launch_mode={unique(mode_values)} "
+    f"helper_kind={unique(helper_kind_values)}"
+)
 for name in sorted(stage_values):
     print(f"stage name={name} mean_ms={mean_ms(stage_values[name]):.3f}")
 PY
