@@ -87,6 +87,7 @@ foreach(_dir ${MIX_TILING_LINK_DIRS})
 endforeach()
 
 target_link_libraries(mix-tiling-helper PRIVATE
+  AscendCRuntime
   tiling_api
   register
   platform

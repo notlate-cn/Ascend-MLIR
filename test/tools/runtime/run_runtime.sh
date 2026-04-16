@@ -11,6 +11,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/runtime_verify_env.sh"
 runtime_verify_setup_env
+export LD_LIBRARY_PATH="$(runtime_verify_runtime_ld_library_path)"
 runtime_verify_prepare_build_dir
 
 echo "--- Building focused runtime verification targets ---"
@@ -282,6 +283,7 @@ g++ -std=c++17 \
     -I "$LLVM_SOURCE_INCLUDE" \
     test/tools/runtime/test_runtime.cpp \
     build/lib/libAscendCRuntime.a \
+    $(runtime_verify_cann_tiling_link_flags) \
     $("$LLVM_BUILD/bin/llvm-config" --ldflags --libs support --system-libs) \
     -ldl \
     -o "$TEST_RUNTIME_BIN"
@@ -291,6 +293,7 @@ g++ -std=c++17 \
     -I "$LLVM_SOURCE_INCLUDE" \
     test/tools/runtime/test_taskgraph_runtime.cpp \
     build/lib/libAscendCRuntime.a \
+    $(runtime_verify_cann_tiling_link_flags) \
     $("$LLVM_BUILD/bin/llvm-config" --ldflags --libs support --system-libs) \
     -ldl \
     -o "$TEST_TASKGRAPH_RUNTIME_BIN"

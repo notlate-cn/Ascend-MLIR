@@ -257,8 +257,8 @@ writeMixDirectCompileMetadataFile(llvm::StringRef metadataPath,
   metadata.abi.outputs.reserve(abi.outputs.size());
   for (const auto &tensor : abi.outputs)
     metadata.abi.outputs.push_back(makeMetadataTensorDesc(tensor));
-  metadata.hostLaunch.mode = "helper";
-  metadata.hostLaunch.helperKind = "mix-tiling-helper";
+  metadata.hostLaunch.mode = "runtime-native";
+  metadata.hostLaunch.helperKind = "in-process-mix-tiling";
   metadata.hostLaunch.helperInputsJson = "{}";
 
   auto jsonOr = serializeMixCompileMetadataJson(metadata);

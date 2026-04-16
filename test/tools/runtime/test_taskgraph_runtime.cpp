@@ -17,6 +17,7 @@
 #include "Runtime/MixAbi.h"
 #include "Runtime/MixArtifact.h"
 #include "Runtime/MixCommandBuilder.h"
+#include "Runtime/MixTilingGenerator.h"
 #include "Runtime/RunManifest.h"
 #include "Runtime/ExecutionBackend.h"
 #include "Runtime/Execution/DefaultExecutionRunner.h"
@@ -4053,6 +4054,11 @@ static void testMixDeviceCompileCommandUsesPyascStyleDefaults() {
          "mix device compile command follows pyasc tikcfw include surface");
 }
 
+static void testMixTilingDefaultsToInProcessBackend() {
+  EXPECT(getDefaultMixTilingBackendName() == "in-process",
+         "mix tiling defaults to in-process runtime backend");
+}
+
 static void testMixDirectSourceContractSummary() {
   const std::filesystem::path root = makeTempDir("mix-direct-contract");
   std::filesystem::create_directories(root);
@@ -4246,6 +4252,7 @@ int main() {
   testMixDirectParallelProcessRunnerRunsIndependentCommands();
   testMixDirectTimingSerialization();
   testMixDeviceCompileCommandUsesPyascStyleDefaults();
+  testMixTilingDefaultsToInProcessBackend();
   testMixDirectSourceContractSummary();
   testMixDirectSourceStubSummary();
   testMixDirectDefaultContractUsesDirectSource();

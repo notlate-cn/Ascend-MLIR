@@ -10,6 +10,7 @@ if [ "${1:-}" = "--runs" ]; then
 fi
 
 runtime_verify_setup_env
+export LD_LIBRARY_PATH="$(runtime_verify_runtime_ld_library_path)"
 runtime_verify_prepare_build_dir
 runtime_verify_build_runtime_core
 runtime_verify_build_example_toolchain

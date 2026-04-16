@@ -4,6 +4,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/runtime_verify_env.sh"
 runtime_verify_setup_env
+export LD_LIBRARY_PATH="$(runtime_verify_runtime_ld_library_path)"
 runtime_verify_prepare_build_dir
 runtime_verify_build_runtime_core
 runtime_verify_build_example_toolchain

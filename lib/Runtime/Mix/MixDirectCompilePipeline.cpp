@@ -99,6 +99,7 @@ writeMixDirectDebugManifest(const MixDirectDebugManifestInputs &inputs) {
   manifest += std::string("host_compile_cmd=") + inputs.hostCompileCmd + "\n";
   manifest += std::string("pack_cmd=") + inputs.packCmd + "\n";
   manifest += std::string("host_link_cmd=") + inputs.linkCmd + "\n";
+  manifest += std::string("tiling_backend=") + inputs.runnerCompileCmd + "\n";
   manifest += std::string("tiling_helper_cmd=") +
               inputs.runnerCompileCmd + "\n";
   if (!inputs.mergedDeviceObj.empty())
