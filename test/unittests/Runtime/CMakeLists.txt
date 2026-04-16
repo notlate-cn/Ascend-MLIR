@@ -46,6 +46,10 @@ add_executable(MixTilingGeneratorTest
   MixTilingGeneratorTest.cpp
 )
 
+target_compile_definitions(MixTilingGeneratorTest PRIVATE
+  MLIR_RUNTIME_ENABLE_MATMUL_MIX_ADAPTER_TEST_HOOKS=1
+)
+
 target_link_libraries(MixTilingGeneratorTest PRIVATE
   RuntimeUnitTestSupport
   AscendCRuntime
