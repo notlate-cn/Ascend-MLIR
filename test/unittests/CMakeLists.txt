@@ -51,16 +51,23 @@ elseif(DEFINED LLVM_BUILD_MAIN_SRC_DIR)
 
   if(NOT _runtime_gtest_dir STREQUAL "")
     find_package(Threads QUIET)
-    add_library(RuntimeUnitTestMain STATIC RuntimeUnitTestMain.cpp)
     add_library(RuntimeGTestMain STATIC
       "${_runtime_gtest_dir}/src/gtest-all.cc")
+    add_library(RuntimeUnitTestMain STATIC
+      "${_runtime_gtest_dir}/src/gtest_main.cc")
     target_include_directories(RuntimeGTestMain PUBLIC
+      "${_runtime_gtest_dir}/include"
+      "${_runtime_gtest_dir}")
+    target_include_directories(RuntimeUnitTestMain PUBLIC
       "${_runtime_gtest_dir}/include"
       "${_runtime_gtest_dir}")
     target_compile_definitions(RuntimeGTestMain PUBLIC
       GTEST_NO_LLVM_SUPPORT=1)
+    target_compile_definitions(RuntimeUnitTestMain PUBLIC
+      GTEST_NO_LLVM_SUPPORT=1)
     if(TARGET Threads::Threads)
       target_link_libraries(RuntimeGTestMain PUBLIC Threads::Threads)
+      target_link_libraries(RuntimeUnitTestMain PUBLIC Threads::Threads)
     endif()
     target_link_libraries(RuntimeUnitTestMain PUBLIC RuntimeGTestMain)
     add_library(RuntimeUnitTestSupport INTERFACE)
