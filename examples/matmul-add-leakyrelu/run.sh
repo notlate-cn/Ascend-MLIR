@@ -46,8 +46,8 @@ echo "=== [STAGE 3] Bufferize ==="
 $AFIR_OPT \
   '--one-shot-bufferize=bufferize-function-boundaries=true allow-return-allocs-from-loops=true function-boundary-type-conversion=identity-layout-map' \
   "$SCRIPT_DIR/step2_tiled.mlir" \
-  --annotate-mix-matmul-semantics \
   --annotate-ascendc-kernel-kind \
+  --annotate-mix-matmul-semantics \
   --cse \
   -o "$SCRIPT_DIR/step3_bufferized.mlir"
 log "  step3_bufferized.mlir done (matmul semantics + kernel_kind annotated)"

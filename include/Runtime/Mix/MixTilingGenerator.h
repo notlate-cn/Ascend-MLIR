@@ -1,11 +1,13 @@
 #pragma once
 
+#include "Runtime/Mix/MixAbi.h"
 #include "Runtime/Support/Types.h"
 
 #include "llvm/ADT/StringRef.h"
 #include "llvm/Support/Error.h"
 
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -21,6 +23,7 @@ struct MixTilingRequest {
   std::string socVersion;
   std::vector<MixTilingTensorDesc> inputs;
   std::vector<MixTilingTensorDesc> outputs;
+  std::optional<MixAbiMatmulDesc> matmul;
 };
 
 struct MixTilingResult {
