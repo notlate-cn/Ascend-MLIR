@@ -1,4 +1,5 @@
 #include "Runtime/Mix/MatmulApiTilingBackend.h"
+#include "Runtime/Mix/MatmulApiTilingBackendTestHooks.h"
 
 #include "gtest/gtest.h"
 
@@ -7,6 +8,22 @@
 using namespace mlir::runtime;
 
 namespace {
+
+int failGetTiling(matmul_tiling::MatmulApiTiling &,
+                  optiling::TCubeTiling &) {
+  return -1;
+}
+
+class ScopedMatmulApiTilingGetTilingHook {
+public:
+  explicit ScopedMatmulApiTilingGetTilingHook(MatmulApiTilingGetTilingHook hook) {
+    setMatmulApiTilingGetTilingForTest(hook);
+  }
+
+  ~ScopedMatmulApiTilingGetTilingHook() {
+    setMatmulApiTilingGetTilingForTest(nullptr);
+  }
+};
 
 MatmulTilingRequest makeSupportedRequest() {
   MatmulTilingRequest request;
@@ -103,4 +120,21 @@ TEST(MatmulApiTilingBackendTest, RejectsOutOfRangeShapeForVendorApi) {
   request.problem.N = 32;
   request.problem.K = static_cast<int64_t>(std::numeric_limits<int>::max()) + 1;
   EXPECT_FALSE(backend.supports(request));
+}
+
+TEST(MatmulApiTilingBackendTest, ReturnsErrorWhenVendorGetTilingFails) {
+  ScopedMatmulApiTilingGetTilingHook hook(&failGetTiling);
+  MatmulApiTilingBackend backend;
+  MatmulTilingRequest request = makeSupportedRequest();
+
+  auto result = backend.generate(request);
+  ASSERT_FALSE(static_cast<bool>(result));
+  std::vector<std::string> messages;
+  llvm::handleAllErrors(result.takeError(),
+                        [&](const llvm::ErrorInfoBase &info) {
+                          messages.push_back(info.message());
+                        });
+  ASSERT_FALSE(messages.empty());
+  EXPECT_NE(messages[0].find("matmul api tiling failed"),
+            std::string::npos);
 }
