@@ -16,6 +16,7 @@
 #include "Runtime/ProfileUtils.h"
 #include "Runtime/MixAbi.h"
 #include "Runtime/MixArtifact.h"
+#include "Runtime/MixCommandBuilder.h"
 #include "Runtime/RunManifest.h"
 #include "Runtime/ExecutionBackend.h"
 #include "Runtime/Execution/DefaultExecutionRunner.h"
@@ -4006,6 +4007,52 @@ static bool jsonArrayContainsString(const llvm::json::Array *array,
   return false;
 }
 
+static bool vectorContains(const std::vector<std::string> &values,
+                           llvm::StringRef expected) {
+  for (const std::string &value : values) {
+    if (value == expected)
+      return true;
+  }
+  return false;
+}
+
+static bool vectorContainsSubstring(const std::vector<std::string> &values,
+                                    llvm::StringRef expected) {
+  for (const std::string &value : values) {
+    if (llvm::StringRef(value).contains(expected))
+      return true;
+  }
+  return false;
+}
+
+static void testMixDeviceCompileCommandUsesPyascStyleDefaults() {
+  const std::vector<std::string> cmd = buildPreprocessedDeviceCompileCommand(
+      "/tmp/kernel.cce", "/tmp/kernel.o", MixCoreType::AIC,
+      {"auto_gen_mix_kernel=mix_kernel_0_mix_aic",
+       "ONE_CORE_DUMP_SIZE=1048576", "__MIX_CORE_MACRO__=1"});
+
+  EXPECT(vectorContains(cmd, "-x"),
+         "mix device compile command declares source language");
+  EXPECT(vectorContains(cmd, "cce"),
+         "mix device compile command uses cce source language");
+  EXPECT(!vectorContains(cmd, "-g"),
+         "mix device compile command does not enable debug info by default");
+  EXPECT(!vectorContains(cmd, "-cce-enable-mix"),
+         "mix device compile command keeps runtime-owned mix metadata contract");
+  EXPECT(vectorContains(cmd, "-api-deps-filter"),
+         "mix device compile command enables auto-sync API dependency filter");
+  EXPECT(vectorContains(cmd, "-cce-aicore-record-overflow=true"),
+         "mix device compile command preserves runtime overflow status support");
+  EXPECT(vectorContains(cmd, "-cce-aicore-addr-transform"),
+         "mix device compile command preserves runtime GM address transform support");
+  EXPECT(!vectorContainsSubstring(cmd, "/asc/impl/"),
+         "mix device compile command avoids broad asc impl include paths");
+  EXPECT(!vectorContainsSubstring(cmd, "/asc/include/"),
+         "mix device compile command avoids broad asc include paths");
+  EXPECT(!vectorContainsSubstring(cmd, "/tikcfw/include"),
+         "mix device compile command follows pyasc tikcfw include surface");
+}
+
 static void testMixDirectSourceContractSummary() {
   const std::filesystem::path root = makeTempDir("mix-direct-contract");
   std::filesystem::create_directories(root);
@@ -4198,6 +4245,7 @@ int main() {
   testRuntimeSessionRequestBuilderRejectsMissingKernelKind();
   testMixDirectParallelProcessRunnerRunsIndependentCommands();
   testMixDirectTimingSerialization();
+  testMixDeviceCompileCommandUsesPyascStyleDefaults();
   testMixDirectSourceContractSummary();
   testMixDirectSourceStubSummary();
   testMixDirectDefaultContractUsesDirectSource();

@@ -79,10 +79,6 @@ static std::string getMixTilingHelperPath() {
   return "mix-tiling-helper";
 }
 
-static std::string getAscRoot() {
-  return findAscendAscDir(findAscendHome());
-}
-
 static std::string getVersionHeader() {
   return findAscendIncludeDir(findAscendHome()) + "/version/asc_devkit_version.h";
 }
@@ -147,27 +143,7 @@ static void appendTikcppIncludes(std::vector<std::string> &args) {
   args.push_back("-I");
   args.push_back(tikcpp + "/tikcfw/impl");
   args.push_back("-I");
-  args.push_back(tikcpp + "/tikcfw/include");
-  args.push_back("-I");
   args.push_back(tikcpp + "/tikcfw/interface");
-}
-
-static void appendAscIncludes(std::vector<std::string> &args) {
-  const std::string asc = getAscRoot();
-  const char *suffixes[] = {
-      "/impl/adv_api",          "/impl/basic_api",
-      "/impl/c_api",            "/impl/basic_api/reg_compute",
-      "/impl/simt_api",         "/impl/utils",
-      "",                       "/include",
-      "/include/adv_api",       "/include/basic_api",
-      "/include/aicpu_api",     "/include/c_api",
-      "/include/basic_api/reg_compute",
-      "/include/simt_api",      "/include/utils",
-  };
-  for (const char *suffix : suffixes) {
-    args.push_back("-I");
-    args.push_back(asc + suffix);
-  }
 }
 
 } // namespace
@@ -189,17 +165,24 @@ buildPreprocessedDeviceCompileCommand(llvm::StringRef src,
                                       llvm::ArrayRef<std::string> defs) {
   std::vector<std::string> args;
   args.push_back(getBishengPath());
+  args.push_back("-c");
+  args.push_back("-x");
+  args.push_back("cce");
+  args.push_back("-O3");
+  args.push_back(src.str());
+  args.push_back("--cce-aicore-arch=" + getArchForCore(coreType));
+  args.push_back("--cce-aicore-only");
+  args.push_back("-o");
+  args.push_back(obj.str());
   args.push_back("-DHAVE_TILING");
   args.push_back("-DHAVE_WORKSPACE");
   args.push_back("-DTILING_KEY_VAR=0");
   appendDefines(args, defs);
-  appendAscIncludes(args);
   appendTikcppIncludes(args);
-  args.push_back("-g");
   args.push_back("--cce-disable-kernel-global-attr-check");
-  args.push_back("--cce-aicore-arch=" + getArchForCore(coreType));
-  args.push_back("--cce-aicore-only");
   args.push_back("--cce-auto-sync");
+  args.push_back("-mllvm");
+  args.push_back("-api-deps-filter");
   args.push_back("-mllvm");
   args.push_back("-cce-aicore-stack-size=0x8000");
   args.push_back("-mllvm");
@@ -210,15 +193,9 @@ buildPreprocessedDeviceCompileCommand(llvm::StringRef src,
   args.push_back("-cce-aicore-addr-transform");
   args.push_back("-mllvm");
   args.push_back("-cce-aicore-dcci-insert-for-scalar=false");
-  args.push_back("-O3");
   args.push_back("-std=c++17");
-  args.push_back("--cce-aicore-lang");
   args.push_back("-include");
   args.push_back(getVersionHeader());
-  args.push_back("-o");
-  args.push_back(obj.str());
-  args.push_back("-c");
-  args.push_back(src.str());
   return args;
 }
 
