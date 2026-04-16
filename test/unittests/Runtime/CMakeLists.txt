@@ -91,6 +91,21 @@ add_test(NAME NativeMatmulTilingBackendTest
   COMMAND $<TARGET_FILE:NativeMatmulTilingBackendTest>
 )
 
+add_executable(NativeMatmulPlannerTest
+  NativeMatmulPlannerTest.cpp
+)
+
+target_link_libraries(NativeMatmulPlannerTest PRIVATE
+  RuntimeUnitTestSupport
+  AscendCRuntime
+)
+
+add_dependencies(RuntimeUnitTests NativeMatmulPlannerTest)
+
+add_test(NAME NativeMatmulPlannerTest
+  COMMAND $<TARGET_FILE:NativeMatmulPlannerTest>
+)
+
 add_executable(MixAbiTest
   MixAbiTest.cpp
 )

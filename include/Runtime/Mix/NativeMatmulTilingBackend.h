@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Runtime/Mix/MatmulTilingBackend.h"
+#include "Runtime/Mix/NativeMatmulPlanner.h"
 
 namespace mlir::runtime {
 
@@ -13,4 +14,3 @@ public:
 };
 
 } // namespace mlir::runtime
-
