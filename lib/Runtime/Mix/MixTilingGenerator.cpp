@@ -93,8 +93,8 @@ public:
     if (!matmulRequestOr)
       return matmulRequestOr.takeError();
 
-    auto matmulRequest = *matmulRequestOr;
-    auto resultOr = generateMatmulApiTiling(matmulRequest);
+    MatmulApiTilingBackend backend;
+    auto resultOr = backend.generate(*matmulRequestOr);
     if (!resultOr)
       return resultOr.takeError();
 

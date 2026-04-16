@@ -5,6 +5,7 @@
 #include "tiling/platform/platform_ascendc.h"
 #include "tiling/tiling_api.h"
 
+#include <limits>
 #include <optional>
 #include <string>
 
@@ -113,16 +114,22 @@ static bool supportsMatmulApiTilingRequest(const MatmulTilingRequest &request) {
          hasSupportedLayout(request) && hasSupportedDType(request);
 }
 
-} // namespace
-
-llvm::StringRef MatmulApiTilingBackend::name() const { return "matmul-api"; }
-
-bool MatmulApiTilingBackend::supports(const MatmulTilingRequest &request) const {
-  return supportsMatmulApiTilingRequest(request);
+static llvm::Expected<int> toVendorInt64RangeChecked(int64_t value,
+                                                     llvm::StringRef name) {
+  if (value < std::numeric_limits<int>::min() ||
+      value > std::numeric_limits<int>::max()) {
+    const std::string nameStr = name.str();
+    const std::string valueStr = std::to_string(value);
+    return llvm::createStringError(
+        llvm::inconvertibleErrorCode(),
+        "matmul api tiling %s=%s is out of range for int", nameStr.c_str(),
+        valueStr.c_str());
+  }
+  return static_cast<int>(value);
 }
 
-llvm::Expected<MatmulTilingResult>
-generateMatmulApiTiling(const MatmulTilingRequest &request) {
+static llvm::Expected<MatmulTilingResult>
+generateMatmulApiTilingImpl(const MatmulTilingRequest &request) {
   if (!supportsMatmulApiTilingRequest(request)) {
     return llvm::createStringError(
         llvm::inconvertibleErrorCode(),
@@ -156,6 +163,16 @@ generateMatmulApiTiling(const MatmulTilingRequest &request) {
         "cannot initialize AscendC platform for soc %s", socVersion.c_str());
   }
 
+  auto mOr = toVendorInt64RangeChecked(request.problem.M, "M");
+  if (!mOr)
+    return mOr.takeError();
+  auto nOr = toVendorInt64RangeChecked(request.problem.N, "N");
+  if (!nOr)
+    return nOr.takeError();
+  auto kOr = toVendorInt64RangeChecked(request.problem.K, "K");
+  if (!kOr)
+    return kOr.takeError();
+
   matmul_tiling::MatmulApiTiling tilingApi(*ascendcPlatform);
   tilingApi.SetAType(matmul_tiling::TPosition::GM,
                      matmul_tiling::CubeFormat::ND, *aDTypeOr,
@@ -169,16 +186,11 @@ generateMatmulApiTiling(const MatmulTilingRequest &request) {
     tilingApi.SetBiasType(matmul_tiling::TPosition::GM,
                           matmul_tiling::CubeFormat::ND, *biasDType);
   }
-  tilingApi.SetOrgShape(static_cast<int>(request.problem.M),
-                        static_cast<int>(request.problem.N),
-                        static_cast<int>(request.problem.K));
-  tilingApi.SetShape(static_cast<int>(request.problem.M),
-                     static_cast<int>(request.problem.N),
-                     static_cast<int>(request.problem.K));
+  tilingApi.SetOrgShape(*mOr, *nOr, *kOr);
+  tilingApi.SetShape(*mOr, *nOr, *kOr);
   tilingApi.SetBias(request.problem.hasBias);
   tilingApi.SetTraverse(toMatmulTraverse(request.hints.preferTraverse));
-  tilingApi.SetFixSplit(static_cast<int>(request.problem.M),
-                        static_cast<int>(request.problem.N), -1);
+  tilingApi.SetFixSplit(*mOr, *nOr, -1);
   tilingApi.SetBufferSpace(-1, -1, -1);
 
   optiling::TCubeTiling tilingData;
@@ -188,7 +200,7 @@ generateMatmulApiTiling(const MatmulTilingRequest &request) {
   result.backendKind = "api";
   result.strategyName = "matmul-api";
   result.blockDim = static_cast<uint32_t>(tilingData.get_usedCoreNum());
-  result.tilingData.assign(sizeof(optiling::TCubeTiling), 0);
+  result.tilingData.resize(tilingData.GetDataSize());
   tilingData.SaveToBuffer(result.tilingData.data(), tilingData.GetDataSize());
   result.debugNote = "soc=" + socVersion + " traverse=" +
                      traverseToString(request.hints.preferTraverse) +
@@ -200,9 +212,17 @@ generateMatmulApiTiling(const MatmulTilingRequest &request) {
   return result;
 }
 
+} // namespace
+
+llvm::StringRef MatmulApiTilingBackend::name() const { return "matmul-api"; }
+
+bool MatmulApiTilingBackend::supports(const MatmulTilingRequest &request) const {
+  return supportsMatmulApiTilingRequest(request);
+}
+
 llvm::Expected<MatmulTilingResult>
 MatmulApiTilingBackend::generate(const MatmulTilingRequest &request) const {
-  return generateMatmulApiTiling(request);
+  return generateMatmulApiTilingImpl(request);
 }
 
 } // namespace mlir::runtime

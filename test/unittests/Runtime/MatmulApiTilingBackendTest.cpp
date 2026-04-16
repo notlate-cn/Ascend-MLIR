@@ -2,6 +2,8 @@
 
 #include "gtest/gtest.h"
 
+#include <limits>
+
 using namespace mlir::runtime;
 
 namespace {
@@ -85,4 +87,13 @@ TEST(MatmulApiTilingBackendTest, IgnoresBiasDTypeWhenBiasIsDisabled) {
   EXPECT_EQ(result->backendKind, "api");
   EXPECT_NE(result->debugNote.find("bias=0"), std::string::npos);
   EXPECT_NE(result->debugNote.find("bias_dtype=none"), std::string::npos);
+}
+
+TEST(MatmulApiTilingBackendTest, RejectsOutOfRangeShapeForVendorApi) {
+  MatmulApiTilingBackend backend;
+  MatmulTilingRequest request = makeSupportedRequest();
+  request.problem.M = static_cast<int64_t>(std::numeric_limits<int>::max()) + 1;
+
+  auto result = backend.generate(request);
+  ASSERT_FALSE(static_cast<bool>(result));
 }
