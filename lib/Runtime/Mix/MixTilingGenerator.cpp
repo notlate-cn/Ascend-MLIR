@@ -30,6 +30,11 @@ static bool hasPositiveShape(llvm::ArrayRef<int64_t> shape) {
   return llvm::all_of(shape, [](int64_t dim) { return dim > 0; });
 }
 
+static bool isValidBiasShape(llvm::ArrayRef<int64_t> biasShape,
+                             int64_t expectedN) {
+  return biasShape.size() == 1 && biasShape[0] == expectedN;
+}
+
 static llvm::Expected<MatmulTilingRequest>
 buildMatmulApiTilingRequest(const MixTilingRequest &request) {
   if (request.inputs.size() < 2 || request.inputs.size() > 3 ||
@@ -46,6 +51,12 @@ buildMatmulApiTilingRequest(const MixTilingRequest &request) {
     return llvm::createStringError(
         llvm::inconvertibleErrorCode(),
         "invalid matmul mix request: only positive rank-2 tensors are supported");
+  }
+  if (request.inputs.size() > 2 &&
+      !isValidBiasShape(request.inputs[2].shape, c[1])) {
+    return llvm::createStringError(
+        llvm::inconvertibleErrorCode(),
+        "invalid matmul mix request: bias must be a 1D vector with length N");
   }
 
   MatmulTilingRequest matmulRequest;

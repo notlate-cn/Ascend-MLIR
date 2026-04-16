@@ -1,4 +1,5 @@
 #include "Runtime/Mix/MatmulApiTilingBackend.h"
+#include "Runtime/Mix/MatmulApiTilingBackendTestHooks.h"
 
 #include "llvm/Support/Error.h"
 
@@ -11,6 +12,26 @@
 
 namespace mlir::runtime {
 namespace {
+using MatmulApiTilingGetTilingHook =
+    int (*)(matmul_tiling::MatmulApiTiling &, optiling::TCubeTiling &);
+
+MatmulApiTilingGetTilingHook &getMatmulApiTilingGetTilingHook() {
+  static MatmulApiTilingGetTilingHook hook = nullptr;
+  return hook;
+}
+
+int defaultGetTiling(matmul_tiling::MatmulApiTiling &tilingApi,
+                     optiling::TCubeTiling &tilingData) {
+  return tilingApi.GetTiling(tilingData);
+}
+
+int invokeGetTiling(matmul_tiling::MatmulApiTiling &tilingApi,
+                    optiling::TCubeTiling &tilingData) {
+  MatmulApiTilingGetTilingHook hook = getMatmulApiTilingGetTilingHook();
+  if (!hook)
+    hook = &defaultGetTiling;
+  return hook(tilingApi, tilingData);
+}
 
 static llvm::Expected<matmul_tiling::DataType> toMatmulDataType(DType dtype) {
   switch (dtype) {
@@ -177,7 +198,7 @@ generateMatmulApiTilingImpl(const MatmulTilingRequest &request) {
   tilingApi.SetBufferSpace(-1, -1, -1);
 
   optiling::TCubeTiling tilingData;
-  if (tilingApi.GetTiling(tilingData) == -1) {
+  if (invokeGetTiling(tilingApi, tilingData) == -1) {
     return llvm::createStringError(
         llvm::inconvertibleErrorCode(),
         "matmul api tiling failed for kernel %s", request.kernelName.c_str());
@@ -200,6 +221,10 @@ generateMatmulApiTilingImpl(const MatmulTilingRequest &request) {
 }
 
 } // namespace
+
+void setMatmulApiTilingGetTilingForTest(MatmulApiTilingGetTilingHook hook) {
+  getMatmulApiTilingGetTilingHook() = hook;
+}
 
 llvm::StringRef MatmulApiTilingBackend::name() const { return "matmul-api"; }
 
