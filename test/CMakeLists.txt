@@ -23,3 +23,9 @@ set_target_properties(check-afir PROPERTIES FOLDER "Tests")
 add_lit_testsuites(AFIR ${CMAKE_CURRENT_SOURCE_DIR} DEPENDS ${AFIR_TEST_DEPENDS})
 
 add_subdirectory(unittests)
+
+add_custom_target(check-unittests)
+set_target_properties(check-unittests PROPERTIES FOLDER "Tests")
+if(TARGET RuntimeUnitTests)
+  add_dependencies(check-unittests RuntimeUnitTests)
+endif()
