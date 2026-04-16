@@ -26,7 +26,7 @@ add_subdirectory(unittests)
 
 if(TARGET RuntimeUnitTests)
   add_custom_target(check-unittests
-    COMMAND ${CMAKE_CTEST_COMMAND} --output-on-failure -R "MatmulTilingTypesTest"
+    COMMAND ${CMAKE_CTEST_COMMAND} --output-on-failure -L "runtime-unittest"
     WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
   )
   add_dependencies(check-unittests RuntimeUnitTests)

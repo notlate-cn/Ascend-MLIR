@@ -14,6 +14,10 @@ endfunction()
 set(_runtime_unittest_support_ready OFF)
 set(_runtime_gtest_dir "")
 
+set_directory_properties(PROPERTIES
+  LABELS "runtime-unittest"
+)
+
 if(NOT TARGET GTest::gtest_main AND NOT TARGET GTest::gtest)
   find_package(GTest CONFIG QUIET)
 endif()
