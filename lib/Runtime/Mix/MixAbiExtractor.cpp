@@ -4,6 +4,7 @@
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/MemoryBuffer.h"
 #include <cstring>
+#include <map>
 
 namespace mlir::runtime {
 
@@ -205,6 +206,223 @@ static bool isTensorArgReferencedInBody(llvm::StringRef bodyText,
   return false;
 }
 
+static llvm::Expected<std::string>
+parseQuotedStringAttr(llvm::StringRef value, llvm::StringRef field,
+                      llvm::StringRef path) {
+  value = value.trim();
+  if (value.size() < 2 || !value.starts_with("\"") || !value.ends_with("\""))
+    return llvm::createStringError(
+        llvm::inconvertibleErrorCode(),
+        "Cannot extract mix ABI from %s: invalid %s '%s'",
+        path.str().c_str(), field.str().c_str(), value.str().c_str());
+  return value.drop_front().drop_back().str();
+}
+
+static llvm::Expected<bool> parseBoolAttr(llvm::StringRef value,
+                                          llvm::StringRef field,
+                                          llvm::StringRef path) {
+  value = value.trim();
+  if (value == "true" || value == "1")
+    return true;
+  if (value == "false" || value == "0")
+    return false;
+  return llvm::createStringError(
+      llvm::inconvertibleErrorCode(),
+      "Cannot extract mix ABI from %s: invalid %s '%s'",
+      path.str().c_str(), field.str().c_str(), value.str().c_str());
+}
+
+static llvm::Expected<std::vector<int64_t>>
+parseIntListAttr(llvm::StringRef value, llvm::StringRef field,
+                 llvm::StringRef path) {
+  value = value.trim();
+  if (!value.starts_with("[") || !value.ends_with("]"))
+    return llvm::createStringError(
+        llvm::inconvertibleErrorCode(),
+        "Cannot extract mix ABI from %s: invalid %s '%s'",
+        path.str().c_str(), field.str().c_str(), value.str().c_str());
+  value = value.drop_front().drop_back().trim();
+  std::vector<int64_t> dims;
+  if (value.empty())
+    return dims;
+  for (llvm::StringRef dim : splitTopLevelList(value)) {
+    auto parsed = parseUnsigned(dim.trim(), field, path);
+    if (!parsed)
+      return parsed.takeError();
+    dims.push_back(static_cast<int64_t>(*parsed));
+  }
+  return dims;
+}
+
+static llvm::Expected<llvm::StringRef>
+extractFunctionAttributeBlock(llvm::StringRef tail, llvm::StringRef path) {
+  size_t attrsPos = tail.find("attributes");
+  if (attrsPos == llvm::StringRef::npos)
+    return llvm::StringRef();
+  llvm::StringRef attrsTail = tail.drop_front(attrsPos + strlen("attributes"));
+  size_t openPos = attrsTail.find('{');
+  if (openPos == llvm::StringRef::npos)
+    return llvm::createStringError(
+        llvm::inconvertibleErrorCode(),
+        "Cannot extract mix ABI from %s: malformed function attributes block",
+        path.str().c_str());
+  attrsTail = attrsTail.drop_front(openPos + 1);
+  int braceDepth = 1;
+  bool inString = false;
+  for (size_t i = 0; i < attrsTail.size(); ++i) {
+    char c = attrsTail[i];
+    if (c == '"' && (i == 0 || attrsTail[i - 1] != '\\')) {
+      inString = !inString;
+      continue;
+    }
+    if (inString)
+      continue;
+    if (c == '{') {
+      ++braceDepth;
+      continue;
+    }
+    if (c == '}') {
+      --braceDepth;
+      if (braceDepth == 0)
+        return attrsTail.take_front(i);
+    }
+  }
+  return llvm::createStringError(
+      llvm::inconvertibleErrorCode(),
+      "Cannot extract mix ABI from %s: unterminated function attributes block",
+      path.str().c_str());
+}
+
+static llvm::Expected<std::optional<MixAbiMatmulDesc>>
+parseStableMatmulDesc(llvm::StringRef tail, llvm::StringRef path) {
+  auto attrsOr = extractFunctionAttributeBlock(tail, path);
+  if (!attrsOr)
+    return attrsOr.takeError();
+  llvm::StringRef attrs = *attrsOr;
+  if (attrs.empty())
+    return std::nullopt;
+
+  std::map<std::string, llvm::StringRef> parsedAttrs;
+  for (llvm::StringRef attrSpec : splitTopLevelList(attrs)) {
+    attrSpec = attrSpec.trim();
+    if (attrSpec.empty())
+      continue;
+    size_t equalPos = attrSpec.find('=');
+    if (equalPos == llvm::StringRef::npos)
+      continue;
+    llvm::StringRef key = attrSpec.take_front(equalPos).trim();
+    llvm::StringRef value = attrSpec.drop_front(equalPos + 1).trim();
+    size_t colonPos = value.rfind(':');
+    if (colonPos != llvm::StringRef::npos &&
+        value.take_front(colonPos).trim().ends_with("]")) {
+      value = value.take_front(colonPos).trim();
+    }
+    parsedAttrs[key.str()] = value;
+  }
+
+  auto getAttr = [&](llvm::StringRef key) -> std::optional<llvm::StringRef> {
+    auto it = parsedAttrs.find(key.str());
+    if (it == parsedAttrs.end())
+      return std::nullopt;
+    return it->second;
+  };
+  auto getRequiredAttr = [&](llvm::StringRef key)
+      -> llvm::Expected<llvm::StringRef> {
+    auto value = getAttr(key);
+    if (!value)
+      return llvm::createStringError(
+          llvm::inconvertibleErrorCode(),
+          "Cannot extract mix ABI from %s: missing required stable matmul "
+          "attribute '%s'",
+          path.str().c_str(), key.str().c_str());
+    return *value;
+  };
+
+  auto opKindAttr = getAttr("abi_matmul_op_kind");
+  if (!opKindAttr)
+    return std::nullopt;
+
+  MixAbiMatmulDesc desc;
+  auto opKindOr =
+      parseQuotedStringAttr(*opKindAttr, "abi_matmul_op_kind", path);
+  if (!opKindOr)
+    return opKindOr.takeError();
+  desc.opKind = *opKindOr;
+
+  auto transAOr = getRequiredAttr("abi_matmul_trans_a");
+  if (!transAOr)
+    return transAOr.takeError();
+  auto transAParsed =
+      parseBoolAttr(*transAOr, "abi_matmul_trans_a", path);
+  if (!transAParsed)
+    return transAParsed.takeError();
+  desc.transA = *transAParsed;
+
+  auto transBOr = getRequiredAttr("abi_matmul_trans_b");
+  if (!transBOr)
+    return transBOr.takeError();
+  auto transBParsed =
+      parseBoolAttr(*transBOr, "abi_matmul_trans_b", path);
+  if (!transBParsed)
+    return transBParsed.takeError();
+  desc.transB = *transBParsed;
+
+  auto hasBiasOr = getRequiredAttr("abi_matmul_has_bias");
+  if (!hasBiasOr)
+    return hasBiasOr.takeError();
+  auto hasBiasParsed =
+      parseBoolAttr(*hasBiasOr, "abi_matmul_has_bias", path);
+  if (!hasBiasParsed)
+    return hasBiasParsed.takeError();
+  desc.hasBias = *hasBiasParsed;
+
+  auto layoutAOr = getRequiredAttr("abi_matmul_layout_a");
+  if (!layoutAOr)
+    return layoutAOr.takeError();
+  auto layoutAParsed =
+      parseQuotedStringAttr(*layoutAOr, "abi_matmul_layout_a", path);
+  if (!layoutAParsed)
+    return layoutAParsed.takeError();
+  desc.layoutA = *layoutAParsed;
+
+  auto layoutBOr = getRequiredAttr("abi_matmul_layout_b");
+  if (!layoutBOr)
+    return layoutBOr.takeError();
+  auto layoutBParsed =
+      parseQuotedStringAttr(*layoutBOr, "abi_matmul_layout_b", path);
+  if (!layoutBParsed)
+    return layoutBParsed.takeError();
+  desc.layoutB = *layoutBParsed;
+
+  auto layoutCOr = getRequiredAttr("abi_matmul_layout_c");
+  if (!layoutCOr)
+    return layoutCOr.takeError();
+  auto layoutCParsed =
+      parseQuotedStringAttr(*layoutCOr, "abi_matmul_layout_c", path);
+  if (!layoutCParsed)
+    return layoutCParsed.takeError();
+  desc.layoutC = *layoutCParsed;
+
+  auto epilogueOr = getRequiredAttr("abi_matmul_epilogue_kind");
+  if (!epilogueOr)
+    return epilogueOr.takeError();
+  auto epilogueParsed =
+      parseQuotedStringAttr(*epilogueOr, "abi_matmul_epilogue_kind", path);
+  if (!epilogueParsed)
+    return epilogueParsed.takeError();
+  desc.epilogueKind = *epilogueParsed;
+
+  if (auto batchShape = getAttr("abi_matmul_batch_shape")) {
+    auto parsedBatchShape =
+        parseIntListAttr(*batchShape, "abi_matmul_batch_shape", path);
+    if (!parsedBatchShape)
+      return parsedBatchShape.takeError();
+    desc.batchShape = std::move(*parsedBatchShape);
+  }
+
+  return desc;
+}
+
 } // namespace
 
 llvm::Expected<MixAbiMetadata>
@@ -312,6 +530,10 @@ extractMixAbiFromCannMlir(llvm::StringRef cannMlirPath) {
   abi.workspaceMode = "fixed";
   abi.tilingMode = "generated_file";
   abi.tilingSource = "out/tiling.bin";
+  auto matmulOr = parseStableMatmulDesc(tail, cannMlirPath);
+  if (!matmulOr)
+    return matmulOr.takeError();
+  abi.matmul = std::move(*matmulOr);
 
   if (parsedArgs.size() < 2)
     return llvm::createStringError(
