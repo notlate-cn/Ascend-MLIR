@@ -25,6 +25,7 @@ public:
 };
 
 static constexpr const char *kMatmul2DTilingStrategyName = "matmul-2d";
+static constexpr const char *kBatchMatmulTilingStrategyName = "batch-matmul";
 
 static bool isRank2(llvm::ArrayRef<int64_t> shape) { return shape.size() == 2; }
 
@@ -233,9 +234,27 @@ public:
   }
 };
 
+class BatchMatmulTilingStrategy final : public MixTilingStrategy {
+public:
+  llvm::StringRef name() const override { return kBatchMatmulTilingStrategyName; }
+
+  bool matches(const MixTilingRequest &request) const override {
+    return request.matmul && request.matmul->opKind == "batch_matmul";
+  }
+
+  llvm::Expected<MixTilingResult>
+  generate(const MixTilingRequest &request) const override {
+    return llvm::createStringError(
+        llvm::inconvertibleErrorCode(),
+        "batch matmul mix tiling is not wired yet for kernel %s",
+        request.kernelName.c_str());
+  }
+};
+
 static llvm::ArrayRef<std::unique_ptr<MixTilingStrategy>> getStrategies() {
   static std::vector<std::unique_ptr<MixTilingStrategy>> strategies = [] {
     std::vector<std::unique_ptr<MixTilingStrategy>> out;
+    out.push_back(std::make_unique<BatchMatmulTilingStrategy>());
     out.push_back(std::make_unique<Matmul2DTilingStrategy>());
     return out;
   }();
