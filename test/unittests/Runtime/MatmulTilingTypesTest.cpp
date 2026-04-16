@@ -19,9 +19,9 @@ TEST(MatmulTilingTypesTest, DefaultRequestIsNativeFriendly) {
   EXPECT_EQ(request.problem.M, 0);
   EXPECT_EQ(request.problem.N, 0);
   EXPECT_EQ(request.problem.K, 0);
-  EXPECT_TRUE(request.problem.dtypeA == DType::F32);
-  EXPECT_TRUE(request.problem.dtypeB == DType::F32);
-  EXPECT_TRUE(request.problem.dtypeC == DType::F32);
+  EXPECT_EQ(request.problem.dtypeA, DType::F32);
+  EXPECT_EQ(request.problem.dtypeB, DType::F32);
+  EXPECT_EQ(request.problem.dtypeC, DType::F32);
   EXPECT_TRUE(request.hints.socVersion.empty());
   EXPECT_FALSE(request.hints.preferBlockDim.has_value());
   EXPECT_FALSE(request.hints.preferSplitK.has_value());
