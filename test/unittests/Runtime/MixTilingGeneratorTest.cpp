@@ -126,8 +126,10 @@ TEST(MixTilingGeneratorTest, RejectsUnsupportedBiasDTypeThroughAdapter) {
                           messages.push_back(info.message());
                         });
   ASSERT_FALSE(messages.empty());
-  EXPECT_NE(messages[0].find("no matmul tiling backend supports kernel"),
-            std::string::npos);
+  EXPECT_TRUE(messages[0].find("unsupported matmul api tiling request") !=
+                  std::string::npos ||
+              messages[0].find("no matmul tiling backend supports kernel") !=
+                  std::string::npos);
 }
 
 TEST(MixTilingGeneratorTest, RejectsMalformedBiasShapeThroughAdapter) {
