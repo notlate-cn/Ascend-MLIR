@@ -18,6 +18,7 @@ add_executable(MatmulTilingDispatcherTest
 
 target_link_libraries(MatmulTilingDispatcherTest PRIVATE
   RuntimeUnitTestSupport
+  AscendCRuntime
 )
 
 add_dependencies(RuntimeUnitTests MatmulTilingDispatcherTest)
