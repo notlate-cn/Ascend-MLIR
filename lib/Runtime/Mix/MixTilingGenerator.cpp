@@ -114,9 +114,11 @@ public:
       return resultOr.takeError();
 
     MixTilingResult result;
+    result.backendKind = resultOr->backendKind;
     result.strategyName = kMatmul2DTilingStrategyName;
     result.blockDim = resultOr->blockDim;
     result.tilingData = resultOr->tilingData;
+    result.debugNote = resultOr->debugNote;
     return result;
   }
 };

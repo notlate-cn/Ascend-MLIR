@@ -67,6 +67,8 @@ executeExternalMixTilingHelper(const MixCompileLayout &layout,
   MixDirectTilingOutputs outputs;
   outputs.tilingArtifactPath = layout.tilingArtifactPath;
   outputs.launchInfoPath = layout.launchInfoPath;
+  outputs.backendKind = "helper";
+  outputs.strategyName = "mix-tiling-helper";
 
   std::vector<std::string> tilingEmitCmd = buildMixTilingHelperCommand(
       runtimeKernelName, socVersion, abi.inputs[0].shape, abi.inputs[0].dtype,
@@ -74,8 +76,8 @@ executeExternalMixTilingHelper(const MixCompileLayout &layout,
       abi.outputs[0].dtype,
       abi.inputs.size() > 2 ? std::optional<DType>(abi.inputs[2].dtype)
                             : std::nullopt,
-      abi.inputs.size() > 2 ? abi.inputs[2].shape
-                            : llvm::ArrayRef<int64_t>(),
+      abi.inputs.size() > 2 ? llvm::ArrayRef<int64_t>(abi.inputs[2].shape)
+                            : llvm::ArrayRef<int64_t>{},
       layout.tilingArtifactPath, layout.launchInfoPath);
   outputs.runnerCompileCommand = renderCommandForDebug(tilingEmitCmd);
 
@@ -119,6 +121,7 @@ executeMixDirectTilingStage(const MixCompileLayout &layout,
   MixDirectTilingOutputs outputs;
   outputs.tilingArtifactPath = layout.tilingArtifactPath;
   outputs.launchInfoPath = layout.launchInfoPath;
+  outputs.backendKind = "in-process";
   outputs.runnerCompileCommand = getDefaultMixTilingBackendName().str();
   outputs.tilingEmitCommand = getDefaultMixTilingBackendName().str();
 
@@ -139,6 +142,9 @@ executeMixDirectTilingStage(const MixCompileLayout &layout,
                                             socVersion, abi);
     }
     outputs.blockDim = tilingOr->blockDim;
+    outputs.backendKind = tilingOr->backendKind;
+    outputs.strategyName = tilingOr->strategyName;
+    outputs.debugNote = tilingOr->debugNote;
     outputs.runnerCompileCommand =
         (llvm::Twine(getDefaultMixTilingBackendName()) + ":" +
          tilingOr->strategyName)
