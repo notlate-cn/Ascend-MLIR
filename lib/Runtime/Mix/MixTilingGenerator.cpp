@@ -28,6 +28,7 @@ static constexpr const char *kMatmul2DTilingStrategyName = "matmul-2d";
 static constexpr const char *kBatchMatmulTilingStrategyName = "batch-matmul";
 
 static bool isRank2(llvm::ArrayRef<int64_t> shape) { return shape.size() == 2; }
+static bool isRank3(llvm::ArrayRef<int64_t> shape) { return shape.size() == 3; }
 
 static bool hasPositiveShape(llvm::ArrayRef<int64_t> shape) {
   return llvm::all_of(shape, [](int64_t dim) { return dim > 0; });
@@ -67,7 +68,8 @@ parseEpilogueKind(llvm::StringRef epilogueKind) {
 static llvm::Expected<MatmulTilingRequest>
 buildExplicitMatmulTilingRequest(const MixTilingRequest &request,
                                  const MixAbiMatmulDesc &matmul) {
-  if (matmul.opKind != "matmul") {
+  const bool isBatchMatmul = matmul.opKind == "batch_matmul";
+  if (matmul.opKind != "matmul" && !isBatchMatmul) {
     return llvm::createStringError(llvm::inconvertibleErrorCode(),
                                    "unsupported mix matmul op kind: %s",
                                    matmul.opKind.c_str());
@@ -82,21 +84,51 @@ buildExplicitMatmulTilingRequest(const MixTilingRequest &request,
   const auto &a = request.inputs[0].shape;
   const auto &b = request.inputs[1].shape;
   const auto &c = request.outputs[0].shape;
-  if (!isRank2(a) || !isRank2(b) || !isRank2(c) || !hasPositiveShape(a) ||
-      !hasPositiveShape(b) || !hasPositiveShape(c) || !matmul.batchShape.empty()) {
-    return llvm::createStringError(
-        llvm::inconvertibleErrorCode(),
-        "invalid explicit matmul mix request: only positive rank-2 tensors without batch are supported");
+  int64_t derivedM = 0;
+  int64_t derivedN = 0;
+  int64_t derivedKFromA = 0;
+  int64_t derivedKFromB = 0;
+  if (isBatchMatmul) {
+    if (!isRank3(a) || !isRank3(b) || !isRank3(c) || !hasPositiveShape(a) ||
+        !hasPositiveShape(b) || !hasPositiveShape(c) ||
+        matmul.batchShape.size() != 1 || a[0] != matmul.batchShape[0] ||
+        b[0] != matmul.batchShape[0] || c[0] != matmul.batchShape[0]) {
+      return llvm::createStringError(
+          llvm::inconvertibleErrorCode(),
+          "invalid explicit batch matmul mix request: only positive rank-3 tensors with a single static batch dim are supported");
+    }
+    derivedM = matmul.transA ? a[2] : a[1];
+    derivedKFromA = matmul.transA ? a[1] : a[2];
+    derivedN = matmul.transB ? b[1] : b[2];
+    derivedKFromB = matmul.transB ? b[2] : b[1];
+    if (c[1] != derivedM || c[2] != derivedN) {
+      return llvm::createStringError(
+          llvm::inconvertibleErrorCode(),
+          "invalid explicit batch matmul mix request: shapes do not match annotated matmul semantics");
+    }
+  } else {
+    if (!isRank2(a) || !isRank2(b) || !isRank2(c) || !hasPositiveShape(a) ||
+        !hasPositiveShape(b) || !hasPositiveShape(c) ||
+        !matmul.batchShape.empty()) {
+      return llvm::createStringError(
+          llvm::inconvertibleErrorCode(),
+          "invalid explicit matmul mix request: only positive rank-2 tensors without batch are supported");
+    }
+    derivedM = matmul.transA ? a[1] : a[0];
+    derivedKFromA = matmul.transA ? a[0] : a[1];
+    derivedN = matmul.transB ? b[0] : b[1];
+    derivedKFromB = matmul.transB ? b[1] : b[0];
+    if (c[0] != derivedM || c[1] != derivedN) {
+      return llvm::createStringError(
+          llvm::inconvertibleErrorCode(),
+          "invalid explicit matmul mix request: shapes do not match annotated matmul semantics");
+    }
   }
-
-  const int64_t derivedM = matmul.transA ? a[1] : a[0];
-  const int64_t derivedKFromA = matmul.transA ? a[0] : a[1];
-  const int64_t derivedN = matmul.transB ? b[0] : b[1];
-  const int64_t derivedKFromB = matmul.transB ? b[1] : b[0];
-  if (derivedKFromA != derivedKFromB || c[0] != derivedM || c[1] != derivedN) {
+  if (derivedKFromA != derivedKFromB) {
     return llvm::createStringError(
         llvm::inconvertibleErrorCode(),
-        "invalid explicit matmul mix request: shapes do not match annotated matmul semantics");
+        "invalid explicit %s mix request: shapes do not match annotated matmul semantics",
+        isBatchMatmul ? "batch matmul" : "matmul");
   }
   if (matmul.hasBias) {
     if (request.inputs.size() < 3 ||
@@ -125,6 +157,7 @@ buildExplicitMatmulTilingRequest(const MixTilingRequest &request,
   matmulRequest.problem.M = derivedM;
   matmulRequest.problem.N = derivedN;
   matmulRequest.problem.K = derivedKFromA;
+  matmulRequest.problem.batchShape = matmul.batchShape;
   matmulRequest.problem.dtypeA = request.inputs[0].dtype;
   matmulRequest.problem.dtypeB = request.inputs[1].dtype;
   matmulRequest.problem.dtypeC = request.outputs[0].dtype;
@@ -244,10 +277,24 @@ public:
 
   llvm::Expected<MixTilingResult>
   generate(const MixTilingRequest &request) const override {
-    return llvm::createStringError(
-        llvm::inconvertibleErrorCode(),
-        "batch matmul mix tiling is not wired yet for kernel %s",
-        request.kernelName.c_str());
+    auto matmulRequestOr = buildMatmulTilingRequest(request);
+    if (!matmulRequestOr)
+      return matmulRequestOr.takeError();
+
+    NativeMatmulTilingBackend nativeBackend;
+    MatmulApiTilingBackend apiBackend;
+    auto resultOr = dispatchMatmulTiling(*matmulRequestOr, nativeBackend,
+                                         apiBackend);
+    if (!resultOr)
+      return resultOr.takeError();
+
+    MixTilingResult result;
+    result.backendKind = resultOr->backendKind;
+    result.strategyName = kBatchMatmulTilingStrategyName;
+    result.blockDim = resultOr->blockDim;
+    result.tilingData = resultOr->tilingData;
+    result.debugNote = resultOr->debugNote;
+    return result;
   }
 };
 
