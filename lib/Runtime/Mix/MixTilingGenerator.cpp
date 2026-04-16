@@ -1,5 +1,7 @@
 #include "Runtime/Mix/MixTilingGenerator.h"
+#include "Runtime/Mix/MatmulTilingDispatcher.h"
 #include "Runtime/Mix/MatmulApiTilingBackend.h"
+#include "Runtime/Mix/NativeMatmulTilingBackend.h"
 
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/Support/Error.h"
@@ -36,7 +38,7 @@ static bool isValidBiasShape(llvm::ArrayRef<int64_t> biasShape,
 }
 
 static llvm::Expected<MatmulTilingRequest>
-buildMatmulApiTilingRequest(const MixTilingRequest &request) {
+buildMatmulTilingRequest(const MixTilingRequest &request) {
   if (request.inputs.size() < 2 || request.inputs.size() > 3 ||
       request.outputs.size() != 1) {
     return llvm::createStringError(
@@ -100,19 +102,21 @@ public:
 
   llvm::Expected<MixTilingResult>
   generate(const MixTilingRequest &request) const override {
-    auto matmulRequestOr = buildMatmulApiTilingRequest(request);
+    auto matmulRequestOr = buildMatmulTilingRequest(request);
     if (!matmulRequestOr)
       return matmulRequestOr.takeError();
 
-    MatmulApiTilingBackend backend;
-    auto resultOr = backend.generate(*matmulRequestOr);
+    NativeMatmulTilingBackend nativeBackend;
+    MatmulApiTilingBackend apiBackend;
+    auto resultOr = dispatchMatmulTiling(*matmulRequestOr, nativeBackend,
+                                         apiBackend);
     if (!resultOr)
       return resultOr.takeError();
 
     MixTilingResult result;
+    result.strategyName = kMatmul2DTilingStrategyName;
     result.blockDim = resultOr->blockDim;
     result.tilingData = resultOr->tilingData;
-    result.strategyName = kMatmul2DTilingStrategyName;
     return result;
   }
 };

@@ -29,6 +29,7 @@ add_mlir_library(AscendCRuntime
   Mix/MixDirectTilingArtifacts.cpp
   Mix/MatmulApiTilingBackend.cpp
   Mix/MatmulTilingDispatcher.cpp
+  Mix/NativeMatmulTilingBackend.cpp
   Mix/MixTilingGenerator.cpp
   Mix/MixSourceAnalyzer.cpp
   Mix/MixStubTemplate.cpp

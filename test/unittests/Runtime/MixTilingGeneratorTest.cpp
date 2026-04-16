@@ -26,6 +26,21 @@ MixTilingRequest makeRequestWithUnsupportedBiasDType() {
   return request;
 }
 
+MixTilingRequest makeSupportedMatmulRequest() {
+  MixTilingRequest request;
+  request.kernelName = "matmul_bias_relu";
+  request.socVersion = "Ascend910B1";
+  request.inputs = {
+      {DType::F16, {16, 32}},
+      {DType::BF16, {32, 64}},
+      {DType::F32, {64}},
+  };
+  request.outputs = {
+      {DType::F32, {16, 64}},
+  };
+  return request;
+}
+
 MixTilingRequest makeRequestWithMalformedBiasShape() {
   MixTilingRequest request = makeRequestWithUnsupportedBiasDType();
   request.inputs[2].dtype = DType::BF16;
@@ -45,7 +60,7 @@ TEST(MixTilingGeneratorTest, RejectsUnsupportedBiasDTypeThroughAdapter) {
                           messages.push_back(info.message());
                         });
   ASSERT_FALSE(messages.empty());
-  EXPECT_NE(messages[0].find("unsupported matmul api tiling request"),
+  EXPECT_NE(messages[0].find("no matmul tiling backend supports kernel"),
             std::string::npos);
 }
 
@@ -61,4 +76,12 @@ TEST(MixTilingGeneratorTest, RejectsMalformedBiasShapeThroughAdapter) {
   ASSERT_FALSE(messages.empty());
   EXPECT_NE(messages[0].find("bias must be a 1D vector with length N"),
             std::string::npos);
+}
+
+TEST(MixTilingGeneratorTest, RoutesSupportedMatmulThroughDispatcherFallback) {
+  auto result = generateMixTilingInProcess(makeSupportedMatmulRequest());
+
+  ASSERT_TRUE(static_cast<bool>(result));
+  EXPECT_EQ(result->strategyName, "matmul-2d");
+  EXPECT_FALSE(result->tilingData.empty());
 }

@@ -75,3 +75,18 @@ add_dependencies(RuntimeUnitTests MixTilingGeneratorTest)
 add_test(NAME MixTilingGeneratorTest
   COMMAND $<TARGET_FILE:MixTilingGeneratorTest>
 )
+
+add_executable(NativeMatmulTilingBackendTest
+  NativeMatmulTilingBackendTest.cpp
+)
+
+target_link_libraries(NativeMatmulTilingBackendTest PRIVATE
+  RuntimeUnitTestSupport
+  AscendCRuntime
+)
+
+add_dependencies(RuntimeUnitTests NativeMatmulTilingBackendTest)
+
+add_test(NAME NativeMatmulTilingBackendTest
+  COMMAND $<TARGET_FILE:NativeMatmulTilingBackendTest>
+)
