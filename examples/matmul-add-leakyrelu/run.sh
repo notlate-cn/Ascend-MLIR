@@ -162,7 +162,24 @@ if ! "${BOOTSTRAP_BUILD_DIR}/bin/mix-compiler" \
 fi
 cat "${MIX_COMPILE_LOG}"
 
-read -r RUN_MANIFEST_PATH ACTUAL_OUTPUT_PATH GOLDEN_OUTPUT_PATH < <(python3 - \
+python3 - "${ARTIFACT_DIR}/out/compile_metadata.json" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+metadata = json.loads(Path(sys.argv[1]).read_text())
+host_launch = metadata.get("host_launch", {})
+helper_inputs = host_launch.get("helper_inputs", {})
+print("=== [STAGE 10A] Tiling metadata ===")
+print(f"  host_launch.mode        : {host_launch.get('mode', '')}")
+print(f"  host_launch.helper_kind : {host_launch.get('helper_kind', '')}")
+print(f"  tiling_backend          : {helper_inputs.get('tiling_backend', '')}")
+print(f"  tiling_strategy         : {helper_inputs.get('tiling_strategy', '')}")
+if helper_inputs.get("tiling_debug_note"):
+    print(f"  tiling_debug_note       : {helper_inputs['tiling_debug_note']}")
+PY
+
+mapfile -t RUN_PATHS < <(python3 - \
   "${DATA_DIR}" "${ARTIFACT_DIR}" "${ARTIFACT_DIR}/out/manifest.txt" <<'PY'
 import json
 import sys
@@ -304,9 +321,18 @@ run_manifest = {
 }
 
 run_manifest_path.write_text(json.dumps(run_manifest, indent=2) + "\n")
-print(run_manifest_path.resolve(), actual_output.resolve(), output_npy.resolve())
+print(run_manifest_path.resolve())
+print(actual_output.resolve())
+print(output_npy.resolve())
 PY
 )
+if [[ "${#RUN_PATHS[@]}" -ne 3 ]]; then
+  echo "FAIL: expected 3 generated runtime paths, got ${#RUN_PATHS[@]}" >&2
+  exit 2
+fi
+RUN_MANIFEST_PATH="${RUN_PATHS[0]}"
+ACTUAL_OUTPUT_PATH="${RUN_PATHS[1]}"
+GOLDEN_OUTPUT_PATH="${RUN_PATHS[2]}"
 
 # ── runtime-session simulation ────────────────────────────────────────────────
 echo "=== [STAGE 11] runtime-session ==="
