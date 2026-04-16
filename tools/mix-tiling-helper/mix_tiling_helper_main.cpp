@@ -1,29 +1,16 @@
+#include "Runtime/Mix/MixTilingGenerator.h"
+
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/Error.h"
-#include "llvm/Support/FileSystem.h"
-#include "llvm/Support/Path.h"
 #include "llvm/Support/raw_ostream.h"
 
-#include "tiling/platform/platform_ascendc.h"
-#include "tiling/tiling_api.h"
-
-#include <cstdint>
-#include <fstream>
 #include <optional>
-#include <sstream>
 #include <string>
 #include <vector>
 
-using namespace matmul_tiling;
-
 namespace {
-
-// Current scope is intentionally narrow: this helper replaces the old
-// per-kernel runner only for the existing 2D matmul-based mix path.
-// TODO: Generalize the input contract before using this helper for broader
-// mix kernels (batch matmul, transpose/layout variants, non-matmul mix).
 
 llvm::cl::opt<std::string> KernelName("name", llvm::cl::Required);
 llvm::cl::opt<std::string> SocVersion("soc", llvm::cl::init("Ascend910B1"));
@@ -53,55 +40,16 @@ llvm::Expected<std::vector<int64_t>> parseShape(llvm::StringRef raw) {
   return shape;
 }
 
-llvm::Expected<DataType> parseAclDataType(llvm::StringRef raw) {
+llvm::Expected<mlir::runtime::DType> parseRuntimeDType(llvm::StringRef raw) {
   if (raw == "f16")
-    return DataType::DT_FLOAT16;
+    return mlir::runtime::DType::F16;
   if (raw == "bf16")
-    return DataType::DT_BF16;
+    return mlir::runtime::DType::BF16;
   if (raw == "f32")
-    return DataType::DT_FLOAT;
+    return mlir::runtime::DType::F32;
   return llvm::createStringError(llvm::inconvertibleErrorCode(),
                                  "unsupported helper dtype: %s",
                                  raw.str().c_str());
-}
-
-llvm::Error writeBinaryFile(llvm::StringRef path, const void *data, size_t size) {
-  std::ofstream os(path.str(), std::ios::binary);
-  if (!os)
-    return llvm::createStringError(llvm::inconvertibleErrorCode(),
-                                   "cannot open output file: %s",
-                                   path.str().c_str());
-  os.write(static_cast<const char *>(data), static_cast<std::streamsize>(size));
-  if (!os)
-    return llvm::createStringError(llvm::inconvertibleErrorCode(),
-                                   "cannot write output file: %s",
-                                   path.str().c_str());
-  return llvm::Error::success();
-}
-
-llvm::Error writeTextFile(llvm::StringRef path, llvm::StringRef content) {
-  std::ofstream os(path.str(), std::ios::binary);
-  if (!os)
-    return llvm::createStringError(llvm::inconvertibleErrorCode(),
-                                   "cannot open output file: %s",
-                                   path.str().c_str());
-  os << content.str();
-  if (!os)
-    return llvm::createStringError(llvm::inconvertibleErrorCode(),
-                                   "cannot write output file: %s",
-                                   path.str().c_str());
-  return llvm::Error::success();
-}
-
-llvm::Error ensureParentDirectory(llvm::StringRef path) {
-  llvm::SmallString<256> parent =
-      llvm::sys::path::parent_path(llvm::StringRef(path));
-  if (parent.empty())
-    return llvm::Error::success();
-  if (auto ec = llvm::sys::fs::create_directories(parent))
-    return llvm::createStringError(ec, "cannot create parent directory for %s",
-                                   path.str().c_str());
-  return llvm::Error::success();
 }
 
 } // namespace
@@ -130,25 +78,25 @@ int main(int argc, char **argv) {
     return 2;
   }
 
-  auto aDTypeOr = parseAclDataType(ADType);
+  auto aDTypeOr = parseRuntimeDType(ADType);
   if (!aDTypeOr) {
     llvm::errs() << llvm::toString(aDTypeOr.takeError()) << "\n";
     return 2;
   }
-  auto bDTypeOr = parseAclDataType(BDType);
+  auto bDTypeOr = parseRuntimeDType(BDType);
   if (!bDTypeOr) {
     llvm::errs() << llvm::toString(bDTypeOr.takeError()) << "\n";
     return 2;
   }
-  auto cDTypeOr = parseAclDataType(CDType);
+  auto cDTypeOr = parseRuntimeDType(CDType);
   if (!cDTypeOr) {
     llvm::errs() << llvm::toString(cDTypeOr.takeError()) << "\n";
     return 2;
   }
 
-  std::optional<DataType> biasDTypeOr;
+  std::optional<mlir::runtime::DType> biasDTypeOr;
   if (!BiasDType.empty()) {
-    auto parsedBiasOr = parseAclDataType(BiasDType);
+    auto parsedBiasOr = parseRuntimeDType(BiasDType);
     if (!parsedBiasOr) {
       llvm::errs() << llvm::toString(parsedBiasOr.takeError()) << "\n";
       return 2;
@@ -156,55 +104,23 @@ int main(int argc, char **argv) {
     biasDTypeOr = *parsedBiasOr;
   }
 
-  auto *ascendcPlatform =
-      platform_ascendc::PlatformAscendCManager::GetInstance(SocVersion.c_str());
-  if (!ascendcPlatform) {
-    llvm::errs() << "cannot initialize AscendC platform for soc "
-                 << SocVersion << "\n";
-    return 2;
-  }
-
-  MatmulApiTiling tilingApi(*ascendcPlatform);
-  tilingApi.SetAType(TPosition::GM, CubeFormat::ND, *aDTypeOr, false);
-  tilingApi.SetBType(TPosition::GM, CubeFormat::ND, *bDTypeOr, false);
-  tilingApi.SetCType(TPosition::GM, CubeFormat::ND, *cDTypeOr);
+  mlir::runtime::MixTilingRequest request;
+  request.kernelName = KernelName;
+  request.socVersion = SocVersion;
+  request.inputs.push_back({*aDTypeOr, *aShapeOr});
+  request.inputs.push_back({*bDTypeOr, *bShapeOr});
   if (biasDTypeOr)
-    tilingApi.SetBiasType(TPosition::GM, CubeFormat::ND, *biasDTypeOr);
-  tilingApi.SetOrgShape(static_cast<int>((*cShapeOr)[0]),
-                        static_cast<int>((*cShapeOr)[1]),
-                        static_cast<int>((*aShapeOr)[1]));
-  tilingApi.SetShape(static_cast<int>((*cShapeOr)[0]),
-                     static_cast<int>((*cShapeOr)[1]),
-                     static_cast<int>((*aShapeOr)[1]));
-  tilingApi.SetBias(biasDTypeOr.has_value());
-  tilingApi.SetTraverse(MatrixTraverse::FIRSTM);
-  tilingApi.SetFixSplit(static_cast<int>((*cShapeOr)[0]),
-                        static_cast<int>((*cShapeOr)[1]), -1);
-  tilingApi.SetBufferSpace(-1, -1, -1);
+    request.inputs.push_back({*biasDTypeOr, {}});
+  request.outputs.push_back({*cDTypeOr, *cShapeOr});
 
-  optiling::TCubeTiling tilingData;
-  (void)tilingApi.GetTiling(tilingData);
-
-  if (auto err = ensureParentDirectory(TilingOut)) {
-    llvm::errs() << llvm::toString(std::move(err)) << "\n";
+  auto tilingOr = mlir::runtime::generateMixTilingInProcess(request);
+  if (!tilingOr) {
+    llvm::errs() << llvm::toString(tilingOr.takeError()) << "\n";
     return 2;
   }
-  if (auto err = ensureParentDirectory(LaunchInfoOut)) {
-    llvm::errs() << llvm::toString(std::move(err)) << "\n";
-    return 2;
-  }
-
-  std::vector<uint8_t> tilingBuffer(sizeof(optiling::TCubeTiling), 0);
-  tilingData.SaveToBuffer(tilingBuffer.data(), tilingData.GetDataSize());
   if (auto err =
-          writeBinaryFile(TilingOut, tilingBuffer.data(), tilingBuffer.size())) {
-    llvm::errs() << llvm::toString(std::move(err)) << "\n";
-    return 2;
-  }
-
-  std::string launchInfo =
-      ("block_dim=" + std::to_string(tilingData.get_usedCoreNum()) + "\n");
-  if (auto err = writeTextFile(LaunchInfoOut, launchInfo)) {
+          mlir::runtime::writeMixTilingArtifacts(*tilingOr, TilingOut,
+                                                 LaunchInfoOut)) {
     llvm::errs() << llvm::toString(std::move(err)) << "\n";
     return 2;
   }

@@ -27,6 +27,7 @@ add_mlir_library(AscendCRuntime
   Mix/MixDirectPreprocess.cpp
   Mix/MixDirectRuntimeAbi.cpp
   Mix/MixDirectTilingArtifacts.cpp
+  Mix/MixTilingGenerator.cpp
   Mix/MixSourceAnalyzer.cpp
   Mix/MixStubTemplate.cpp
   Profile/ProfileTrace.cpp
@@ -49,13 +50,30 @@ add_mlir_library(AscendCRuntime
 include(${CMAKE_CURRENT_LIST_DIR}/Mix/AscendCannPaths.cmake)
 resolve_ascend_cann_arch_dir(ASCEND_CANN_ARCH)
 
+set(ASCEND_RUNTIME_SOC_VERSION "$ENV{SOC_VERSION}")
+if(ASCEND_RUNTIME_SOC_VERSION STREQUAL "")
+  set(ASCEND_RUNTIME_SOC_VERSION "Ascend910B1")
+endif()
+
 set(ASCEND_INCLUDE_DIRS
     $ENV{ASCEND_HOME_PATH}/include
     $ENV{ASCEND_TOOLKIT_HOME}/include)
 if(NOT ASCEND_CANN_ARCH STREQUAL "")
   list(APPEND ASCEND_INCLUDE_DIRS
       $ENV{ASCEND_HOME_PATH}/${ASCEND_CANN_ARCH}/include
-      $ENV{ASCEND_TOOLKIT_HOME}/${ASCEND_CANN_ARCH}/include)
+      $ENV{ASCEND_TOOLKIT_HOME}/${ASCEND_CANN_ARCH}/include
+      $ENV{ASCEND_HOME_PATH}/${ASCEND_CANN_ARCH}/asc/include
+      $ENV{ASCEND_TOOLKIT_HOME}/${ASCEND_CANN_ARCH}/asc/include
+      $ENV{ASCEND_HOME_PATH}/${ASCEND_CANN_ARCH}/ascendc/include
+      $ENV{ASCEND_TOOLKIT_HOME}/${ASCEND_CANN_ARCH}/ascendc/include
+      $ENV{ASCEND_HOME_PATH}/${ASCEND_CANN_ARCH}/include/ascendc/host_api
+      $ENV{ASCEND_TOOLKIT_HOME}/${ASCEND_CANN_ARCH}/include/ascendc/host_api
+      $ENV{ASCEND_HOME_PATH}/${ASCEND_CANN_ARCH}/tikcpp
+      $ENV{ASCEND_TOOLKIT_HOME}/${ASCEND_CANN_ARCH}/tikcpp
+      $ENV{ASCEND_HOME_PATH}/${ASCEND_CANN_ARCH}/tikcpp/tikcfw
+      $ENV{ASCEND_TOOLKIT_HOME}/${ASCEND_CANN_ARCH}/tikcpp/tikcfw
+      $ENV{ASCEND_HOME_PATH}/${ASCEND_CANN_ARCH}/tikcpp/tikcfw/include
+      $ENV{ASCEND_TOOLKIT_HOME}/${ASCEND_CANN_ARCH}/tikcpp/tikcfw/include)
 endif()
 
 foreach(_dir ${ASCEND_INCLUDE_DIRS})
@@ -64,6 +82,39 @@ foreach(_dir ${ASCEND_INCLUDE_DIRS})
   endif()
 endforeach()
 
-target_link_libraries(AscendCRuntime PRIVATE
+set(ASCEND_LINK_DIRS)
+if(NOT ASCEND_CANN_ARCH STREQUAL "")
+  list(APPEND ASCEND_LINK_DIRS
+      $ENV{ASCEND_HOME_PATH}/${ASCEND_CANN_ARCH}/lib64
+      $ENV{ASCEND_TOOLKIT_HOME}/${ASCEND_CANN_ARCH}/lib64
+      $ENV{ASCEND_HOME_PATH}/${ASCEND_CANN_ARCH}/simulator/${ASCEND_RUNTIME_SOC_VERSION}/lib
+      $ENV{ASCEND_TOOLKIT_HOME}/${ASCEND_CANN_ARCH}/simulator/${ASCEND_RUNTIME_SOC_VERSION}/lib
+      $ENV{ASCEND_HOME_PATH}/${ASCEND_CANN_ARCH}/lib64/device/lib64
+      $ENV{ASCEND_TOOLKIT_HOME}/${ASCEND_CANN_ARCH}/lib64/device/lib64)
+endif()
+
+foreach(_dir ${ASCEND_LINK_DIRS})
+  if(EXISTS ${_dir})
+    target_link_directories(AscendCRuntime PUBLIC ${_dir})
+  endif()
+endforeach()
+
+target_link_libraries(AscendCRuntime PUBLIC
+  tiling_api
+  register
+  platform
+  ascendalog
+  unified_dlog
+  runtime_camodel
+  npu_drv
+  stars
+  model_top
+  ascendcl
+  error_manager
+  profapi
+  ge_common_base
+  ascend_dump
+  mmpa
+  c_sec
   ${CMAKE_DL_LIBS}
 )

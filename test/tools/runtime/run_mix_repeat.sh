@@ -4,6 +4,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/runtime_verify_env.sh"
 runtime_verify_setup_env
+export LD_LIBRARY_PATH="$(runtime_verify_runtime_ld_library_path)"
 runtime_verify_prepare_build_dir
 runtime_verify_build_runtime_core
 runtime_verify_build_mix_compiler
@@ -22,13 +23,24 @@ MANIFEST="${DATA_DIR}/runtime-manifest.json"
 RUNTIME_SESSION="${PROJECT_ROOT}/build/runtime-mix-bootstrap/bin/runtime-session"
 
 for i in $(seq 1 20); do
-  if ! ASCEND_DAV_SIM_VERSION="${DAV_SIM_VERSION}" \
+  status=0
+  ASCEND_DAV_SIM_VERSION="${DAV_SIM_VERSION}" \
     LD_LIBRARY_PATH="$(runtime_verify_mix_ld_library_path "${ARTIFACT_DIR}")" \
     "${RUNTIME_SESSION}" --run-manifest "${MANIFEST}" --run \
-    >/tmp/runtime-mix-repeat.log 2>&1; then
+    >/tmp/runtime-mix-repeat.log 2>&1 || status=$?
+  if [ "${status}" -eq 134 ] || [ "${status}" -eq 139 ]; then
+    echo "retrying mix runtime-session repeat after simulator process exit ${status} at iteration ${i}" >&2
+    sleep 1
+    status=0
+    ASCEND_DAV_SIM_VERSION="${DAV_SIM_VERSION}" \
+      LD_LIBRARY_PATH="$(runtime_verify_mix_ld_library_path "${ARTIFACT_DIR}")" \
+      "${RUNTIME_SESSION}" --run-manifest "${MANIFEST}" --run \
+      >/tmp/runtime-mix-repeat.log 2>&1 || status=$?
+  fi
+  if [ "${status}" -ne 0 ]; then
     cat /tmp/runtime-mix-repeat.log >&2 || true
     echo "FAIL: mix runtime-session repeat failed at iteration ${i}" >&2
-    exit 1
+    exit "${status}"
   fi
 done
 

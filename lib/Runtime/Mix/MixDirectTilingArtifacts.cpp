@@ -1,5 +1,6 @@
 #include "MixDirectCompileInternal.h"
 
+#include "Runtime/Mix/MixTilingGenerator.h"
 #include "Runtime/MixCommandBuilder.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/Support/Error.h"
@@ -38,13 +39,31 @@ static llvm::Expected<uint32_t> readBlockDimFromLaunchInfo(llvm::StringRef path)
                                  path.str().c_str());
 }
 
-} // namespace
+static MixTilingRequest buildTilingRequest(llvm::StringRef runtimeKernelName,
+                                           llvm::StringRef socVersion,
+                                           const MixAbiMetadata &abi) {
+  MixTilingRequest request;
+  request.kernelName = runtimeKernelName.str();
+  request.socVersion = socVersion.str();
+  request.inputs.reserve(abi.inputs.size());
+  for (const MixAbiTensorDesc &input : abi.inputs)
+    request.inputs.push_back({input.dtype, input.shape});
+  request.outputs.reserve(abi.outputs.size());
+  for (const MixAbiTensorDesc &output : abi.outputs)
+    request.outputs.push_back({output.dtype, output.shape});
+  return request;
+}
 
-llvm::Expected<MixDirectTilingOutputs>
-executeMixDirectTilingStage(const MixCompileLayout &layout,
-                            llvm::StringRef runtimeKernelName,
-                            llvm::StringRef socVersion,
-                            const MixAbiMetadata &abi) {
+static llvm::Expected<MixDirectTilingOutputs>
+executeExternalMixTilingHelper(const MixCompileLayout &layout,
+                               llvm::StringRef runtimeKernelName,
+                               llvm::StringRef socVersion,
+                               const MixAbiMetadata &abi) {
+  if (abi.inputs.size() < 2 || abi.outputs.empty())
+    return llvm::createStringError(
+        llvm::inconvertibleErrorCode(),
+        "external mix tiling helper requires at least 2 inputs and 1 output");
+
   MixDirectTilingOutputs outputs;
   outputs.tilingArtifactPath = layout.tilingArtifactPath;
   outputs.launchInfoPath = layout.launchInfoPath;
@@ -85,6 +104,57 @@ executeMixDirectTilingStage(const MixCompileLayout &layout,
     return blockDimOr.takeError();
   outputs.blockDim = *blockDimOr;
   outputs.tilingEmitCommand = renderCommandForDebug(tilingEmitCmd);
+  return outputs;
+}
+
+} // namespace
+
+llvm::Expected<MixDirectTilingOutputs>
+executeMixDirectTilingStage(const MixCompileLayout &layout,
+                            llvm::StringRef runtimeKernelName,
+                            llvm::StringRef socVersion,
+                            const MixAbiMetadata &abi) {
+  MixDirectTilingOutputs outputs;
+  outputs.tilingArtifactPath = layout.tilingArtifactPath;
+  outputs.launchInfoPath = layout.launchInfoPath;
+  outputs.runnerCompileCommand = getDefaultMixTilingBackendName().str();
+  outputs.tilingEmitCommand = getDefaultMixTilingBackendName().str();
+
+  const std::string tilingArtifactContext = makeStageContext({
+      {"backend", getDefaultMixTilingBackendName()},
+      {"tiling_artifact", layout.tilingArtifactPath},
+      {"launch_info", layout.launchInfoPath},
+      {"kernel", runtimeKernelName},
+      {"soc_version", socVersion},
+  });
+  {
+    MixDirectStageTimer timer("emit_tiling_artifact", outputs.timings);
+    auto tilingOr = generateMixTilingInProcess(
+        buildTilingRequest(runtimeKernelName, socVersion, abi));
+    if (!tilingOr) {
+      llvm::consumeError(tilingOr.takeError());
+      return executeExternalMixTilingHelper(layout, runtimeKernelName,
+                                            socVersion, abi);
+    }
+    outputs.blockDim = tilingOr->blockDim;
+    outputs.runnerCompileCommand =
+        (llvm::Twine(getDefaultMixTilingBackendName()) + ":" +
+         tilingOr->strategyName)
+            .str();
+    outputs.tilingEmitCommand = outputs.runnerCompileCommand;
+    if (auto err = writeMixTilingArtifacts(*tilingOr, layout.tilingArtifactPath,
+                                           layout.launchInfoPath))
+      return std::move(err);
+  }
+  if (auto err = ensureFileExists(layout.tilingArtifactPath,
+                                  kStageEmitTilingArtifact,
+                                  tilingArtifactContext))
+    return std::move(err);
+  if (auto err = ensureFileExists(layout.launchInfoPath,
+                                  kStageEmitTilingArtifact,
+                                  tilingArtifactContext))
+    return std::move(err);
+
   return outputs;
 }
 

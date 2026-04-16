@@ -118,6 +118,10 @@ runtime_verify_runtime_ld_library_path() {
   printf '%s\n' "${PROJECT_ROOT}/build/lib:${LLVM_BUILD}/lib:${ASCEND_LIB64}:${SOC_SIM_LIB}:${DAV_SIM_LIB}:${DEVICE_STUB_LIB}:${DEVICE_LIB64}${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
 }
 
+runtime_verify_cann_tiling_link_flags() {
+  printf '%s\n' "-L${ASCEND_LIB64} -L${SOC_SIM_LIB} -L${DEVICE_LIB64} -ltiling_api -lregister -lplatform -lascendalog -lunified_dlog -lruntime_camodel -lnpu_drv -lstars -lmodel_top -lascendcl -lerror_manager -lprofapi -lge_common_base -lascend_dump -lmmpa -lc_sec"
+}
+
 runtime_verify_mix_ld_library_path() {
   local artifact_root="$1"
   printf '%s\n' "${artifact_root}/out:$(runtime_verify_runtime_ld_library_path)"
