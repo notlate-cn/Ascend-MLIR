@@ -175,16 +175,11 @@ TEST(MixTilingGeneratorTest, ExplicitUnsupportedLayoutOverridesLegacyGuess) {
             std::string::npos);
 }
 
-TEST(MixTilingGeneratorTest, ExplicitBatchMatmulGetsDedicatedUnsupportedError) {
+TEST(MixTilingGeneratorTest, ExplicitBatchMatmulRoutesThroughBatchStrategy) {
   auto result = generateMixTilingInProcess(makeExplicitBatchMatmulRequest());
 
-  ASSERT_FALSE(static_cast<bool>(result));
-  std::vector<std::string> messages;
-  llvm::handleAllErrors(result.takeError(),
-                        [&](const llvm::ErrorInfoBase &info) {
-                          messages.push_back(info.message());
-                        });
-  ASSERT_FALSE(messages.empty());
-  EXPECT_NE(messages[0].find("batch matmul mix tiling is not wired yet"),
-            std::string::npos);
+  ASSERT_TRUE(static_cast<bool>(result));
+  EXPECT_EQ(result->strategyName, "batch-matmul");
+  EXPECT_FALSE(result->tilingData.empty());
+  EXPECT_NE(result->debugNote.find("batch=2"), std::string::npos);
 }

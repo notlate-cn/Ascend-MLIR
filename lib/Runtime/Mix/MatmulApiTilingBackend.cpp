@@ -95,6 +95,12 @@ static bool hasSupportedDType(const MatmulTilingRequest &request) {
           isSupportedDType(*request.problem.biasDType));
 }
 
+static bool hasSupportedBatchShape(const MatmulTilingRequest &request) {
+  if (request.problem.batchShape.empty())
+    return true;
+  return request.problem.batchShape.size() == 1 && request.problem.batchShape[0] > 0;
+}
+
 static const char *traverseToString(std::optional<MatrixTraverseKind> traverse) {
   if (!traverse.has_value())
     return "FIRSTM";
@@ -131,11 +137,17 @@ static DType resolveBiasDType(const MatmulTilingRequest &request) {
 }
 
 static bool supportsMatmulApiTilingRequest(const MatmulTilingRequest &request) {
-  return isPositiveShape(request) && request.problem.batchShape.empty() &&
+  return isPositiveShape(request) && hasSupportedBatchShape(request) &&
          hasSupportedLayout(request) && hasSupportedDType(request) &&
+         (!request.problem.hasBias || request.problem.batchShape.empty()) &&
+         (request.problem.batchShape.empty() ||
+          request.fusion.epilogue == EpilogueKind::None) &&
          request.problem.M <= static_cast<int64_t>(std::numeric_limits<int>::max()) &&
          request.problem.N <= static_cast<int64_t>(std::numeric_limits<int>::max()) &&
-         request.problem.K <= static_cast<int64_t>(std::numeric_limits<int>::max());
+         request.problem.K <= static_cast<int64_t>(std::numeric_limits<int>::max()) &&
+         (request.problem.batchShape.empty() ||
+          request.problem.batchShape[0] <=
+              static_cast<int64_t>(std::numeric_limits<int>::max()));
 }
 
 static llvm::Expected<MatmulTilingResult>
@@ -192,6 +204,11 @@ generateMatmulApiTilingImpl(const MatmulTilingRequest &request) {
   }
   tilingApi.SetOrgShape(m, n, k);
   tilingApi.SetShape(m, n, k);
+  if (!request.problem.batchShape.empty()) {
+    const int batch = static_cast<int>(request.problem.batchShape[0]);
+    tilingApi.SetBatchInfoForNormal(batch, batch, m, n, k);
+    tilingApi.SetBatchNum(batch);
+  }
   tilingApi.SetBias(request.problem.hasBias);
   tilingApi.SetTraverse(toMatmulTraverse(request.hints.preferTraverse));
   tilingApi.SetFixSplit(m, n, -1);
@@ -212,6 +229,10 @@ generateMatmulApiTilingImpl(const MatmulTilingRequest &request) {
   tilingData.SaveToBuffer(result.tilingData.data(), tilingData.GetDataSize());
   result.debugNote = "soc=" + socVersion + " traverse=" +
                      traverseToString(request.hints.preferTraverse) +
+                     " batch=" +
+                     (request.problem.batchShape.empty()
+                          ? std::string("none")
+                          : std::to_string(request.problem.batchShape[0])) +
                      " bias=" + std::string(request.problem.hasBias ? "1" : "0") +
                      " bias_dtype=" +
                      (request.problem.hasBias
