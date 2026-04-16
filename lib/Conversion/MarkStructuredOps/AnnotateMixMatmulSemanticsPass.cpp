@@ -15,6 +15,8 @@
 #include "mlir/IR/BuiltinTypes.h"
 #include "llvm/ADT/STLFunctionalExtras.h"
 
+#include <optional>
+
 #define GEN_PASS_DECL_ANNOTATEMIXMATMULSEMANTICSPASS
 #define GEN_PASS_DEF_ANNOTATEMIXMATMULSEMANTICSPASS
 #include "Conversion/Passes.h.inc"
@@ -24,6 +26,15 @@ using namespace mlir;
 namespace mlir::afir {
 
 namespace {
+
+struct MatmulLikeOpInfo {
+  Value lhs;
+  Value rhs;
+  Value out;
+  Operation *op = nullptr;
+  bool transA = false;
+  bool transB = false;
+};
 
 static MemRefType getRankedMemRefType(Value value, int64_t rank) {
   auto type = dyn_cast<MemRefType>(value.getType());
@@ -44,6 +55,40 @@ static bool isIdentity2DMemRef(Value value) {
 static bool hasUnitAttr(Operation *op, StringRef expected) {
   auto unitAttr = op->getAttrOfType<StringAttr>("ascendc.unit");
   return unitAttr && unitAttr.getValue() == expected;
+}
+
+static std::optional<MatmulLikeOpInfo> getMatmulLikeOpInfo(Operation *op) {
+  if (auto matmul = dyn_cast<linalg::MatmulOp>(op)) {
+    return MatmulLikeOpInfo{
+        matmul.getDpsInputOperand(0)->get(),
+        matmul.getDpsInputOperand(1)->get(),
+        matmul.getDpsInitOperand(0)->get(),
+        matmul,
+        false,
+        false,
+    };
+  }
+  if (auto matmul = dyn_cast<linalg::MatmulTransposeAOp>(op)) {
+    return MatmulLikeOpInfo{
+        matmul.getDpsInputOperand(0)->get(),
+        matmul.getDpsInputOperand(1)->get(),
+        matmul.getDpsInitOperand(0)->get(),
+        matmul,
+        true,
+        false,
+    };
+  }
+  if (auto matmul = dyn_cast<linalg::MatmulTransposeBOp>(op)) {
+    return MatmulLikeOpInfo{
+        matmul.getDpsInputOperand(0)->get(),
+        matmul.getDpsInputOperand(1)->get(),
+        matmul.getDpsInitOperand(0)->get(),
+        matmul,
+        false,
+        true,
+    };
+  }
+  return std::nullopt;
 }
 
 static bool isParallelGeneric(linalg::GenericOp genericOp) {
@@ -126,11 +171,9 @@ static bool isLeakyReluGeneric(linalg::GenericOp genericOp) {
          yieldOp.getOperand(0) == maxOp.getResult();
 }
 
-static bool isSimple2DNdMatmul(linalg::MatmulOp matmulOp) {
-  return hasUnitAttr(matmulOp, "AiCore.Cube") &&
-         isIdentity2DMemRef(matmulOp.getDpsInputOperand(0)->get()) &&
-         isIdentity2DMemRef(matmulOp.getDpsInputOperand(1)->get()) &&
-         isIdentity2DMemRef(matmulOp.getDpsInitOperand(0)->get());
+static bool isSimple2DNdMatmulLike(const MatmulLikeOpInfo &info) {
+  return hasUnitAttr(info.op, "AiCore.Cube") && isIdentity2DMemRef(info.lhs) &&
+         isIdentity2DMemRef(info.rhs) && isIdentity2DMemRef(info.out);
 }
 
 static linalg::GenericOp findUniqueChainedGeneric(Value current,
@@ -165,22 +208,22 @@ struct AnnotateMixMatmulSemanticsPass
     if (funcOp->hasAttr("abi_matmul_op_kind"))
       return;
 
-    SmallVector<linalg::MatmulOp> matmuls;
+    SmallVector<MatmulLikeOpInfo> matmuls;
     SmallVector<linalg::GenericOp> generics;
     funcOp.walk([&](Operation *op) {
-      if (auto matmul = dyn_cast<linalg::MatmulOp>(op))
-        matmuls.push_back(matmul);
+      if (auto matmul = getMatmulLikeOpInfo(op))
+        matmuls.push_back(*matmul);
       else if (auto generic = dyn_cast<linalg::GenericOp>(op))
         generics.push_back(generic);
     });
 
     if (matmuls.size() != 1)
       return;
-    linalg::MatmulOp matmulOp = matmuls.front();
-    if (!isSimple2DNdMatmul(matmulOp))
+    const MatmulLikeOpInfo &matmulOp = matmuls.front();
+    if (!isSimple2DNdMatmulLike(matmulOp))
       return;
 
-    Value current = matmulOp.getDpsInitOperand(0)->get();
+    Value current = matmulOp.out;
     linalg::GenericOp biasGeneric =
         findUniqueChainedGeneric(current, generics, isBiasAddGeneric);
     bool hasBias = static_cast<bool>(biasGeneric);
@@ -201,8 +244,8 @@ struct AnnotateMixMatmulSemanticsPass
 
     MLIRContext *ctx = funcOp.getContext();
     funcOp->setAttr("abi_matmul_op_kind", StringAttr::get(ctx, "matmul"));
-    funcOp->setAttr("abi_matmul_trans_a", BoolAttr::get(ctx, false));
-    funcOp->setAttr("abi_matmul_trans_b", BoolAttr::get(ctx, false));
+    funcOp->setAttr("abi_matmul_trans_a", BoolAttr::get(ctx, matmulOp.transA));
+    funcOp->setAttr("abi_matmul_trans_b", BoolAttr::get(ctx, matmulOp.transB));
     funcOp->setAttr("abi_matmul_has_bias", BoolAttr::get(ctx, hasBias));
     funcOp->setAttr("abi_matmul_layout_a", StringAttr::get(ctx, "ND"));
     funcOp->setAttr("abi_matmul_layout_b", StringAttr::get(ctx, "ND"));
