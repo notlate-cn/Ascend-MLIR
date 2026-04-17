@@ -3,8 +3,10 @@
 #include "Runtime/ExecutionBackend.h"
 
 #include <cstddef>
+#include <cstdint>
 #include <optional>
 #include <string>
+#include <unordered_map>
 
 namespace mlir::runtime {
 
@@ -12,10 +14,10 @@ struct TaskResourceRequirement {
   ExecutionBackendKind backendKind = ExecutionBackendKind::Simulation;
   size_t workspaceBytes = 0;
   bool requiresSerializedLaunch = false;
-  bool exclusiveDeviceAccess = false;
 };
 
 struct ResourceReservation {
+  uint64_t reservationId = 0;
   std::string sessionId;
   std::string taskId;
   ExecutionBackendKind backendKind = ExecutionBackendKind::Simulation;
@@ -37,9 +39,20 @@ public:
   void release(const ResourceReservation &reservation);
 
 private:
-  size_t availableSimDispatchLanes_ = 1;
-  size_t availableDeviceSlots_ = 1;
-  size_t availableWorkspaceBytes_ = 0;
+  struct ActiveReservation {
+    size_t workspaceBytes = 0;
+    bool holdsSerializedLaunchLane = false;
+    bool holdsDeviceSlot = false;
+  };
+
+  size_t configuredSimDispatchLanes_ = 1;
+  size_t configuredDeviceSlots_ = 1;
+  size_t configuredWorkspaceBudget_ = 0;
+  size_t reservedSimDispatchLanes_ = 0;
+  size_t reservedDeviceSlots_ = 0;
+  size_t reservedWorkspaceBytes_ = 0;
+  uint64_t nextReservationId_ = 1;
+  std::unordered_map<uint64_t, ActiveReservation> activeReservations_;
 };
 
 } // namespace mlir::runtime

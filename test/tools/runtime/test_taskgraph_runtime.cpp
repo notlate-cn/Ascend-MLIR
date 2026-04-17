@@ -4075,6 +4075,72 @@ static void testResourceSchedulerReservesAndReleasesSlots() {
   EXPECT(third.has_value(), "reservation succeeds after release");
 }
 
+static void testResourceSchedulerIgnoresForgedRelease() {
+  ResourceScheduler scheduler;
+  scheduler.configureWorkspaceBudget(512);
+
+  ResourceReservation forged;
+  forged.reservationId = 99;
+  forged.workspaceBytes = 512;
+  scheduler.release(forged);
+
+  TaskResourceRequirement req;
+  req.backendKind = ExecutionBackendKind::Simulation;
+  req.workspaceBytes = 512;
+
+  auto first = scheduler.tryReserve("session0", "task0", req);
+  EXPECT(first.has_value(), "forged release does not mint workspace");
+
+  auto second = scheduler.tryReserve("session1", "task1", req);
+  EXPECT(!second.has_value(),
+         "forged release leaves only the configured workspace budget");
+}
+
+static void testResourceSchedulerRejectsDoubleRelease() {
+  ResourceScheduler scheduler;
+  scheduler.configureWorkspaceBudget(512);
+
+  TaskResourceRequirement req;
+  req.backendKind = ExecutionBackendKind::Simulation;
+  req.workspaceBytes = 512;
+
+  auto first = scheduler.tryReserve("session0", "task0", req);
+  EXPECT(first.has_value(), "initial reservation succeeds");
+
+  scheduler.release(*first);
+  scheduler.release(*first);
+
+  auto second = scheduler.tryReserve("session1", "task1", req);
+  EXPECT(second.has_value(), "double release does not block the next reserve");
+
+  auto third = scheduler.tryReserve("session2", "task2", req);
+  EXPECT(!third.has_value(),
+         "double release does not mint extra workspace capacity");
+}
+
+static void testResourceSchedulerPreservesOutstandingReservationsAcrossReconfigure() {
+  ResourceScheduler scheduler;
+  scheduler.configureWorkspaceBudget(1024);
+
+  TaskResourceRequirement req;
+  req.backendKind = ExecutionBackendKind::Simulation;
+  req.workspaceBytes = 512;
+
+  auto first = scheduler.tryReserve("session0", "task0", req);
+  EXPECT(first.has_value(), "reservation succeeds before reconfigure");
+
+  scheduler.configureWorkspaceBudget(512);
+
+  auto second = scheduler.tryReserve("session1", "task1", req);
+  EXPECT(!second.has_value(),
+         "reconfigure keeps outstanding reservation accounted for");
+
+  scheduler.release(*first);
+  auto third = scheduler.tryReserve("session2", "task2", req);
+  EXPECT(third.has_value(),
+         "release after reconfigure restores the configured budget");
+}
+
 static void testRunManifestParsesVecSimulationSpec() {
   const std::string manifestPath = "/tmp/runtime_run_manifest.json";
   {
