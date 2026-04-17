@@ -6,6 +6,7 @@ add_mlir_library(AscendCRuntime
   Artifact/RuntimeSessionRequestBuilder.cpp
   Execution/DefaultExecutionRunner.cpp
   Execution/DynamicLibraryArtifactEnv.cpp
+  Execution/BackendCapabilities.cpp
   Execution/ExecutionBackend.cpp
   Execution/OutputComparator.cpp
   Execution/RuntimeFrontendCore.cpp

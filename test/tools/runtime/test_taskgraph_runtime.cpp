@@ -22,6 +22,7 @@
 #include "Runtime/ExecutionBackend.h"
 #include "Runtime/Execution/DefaultExecutionRunner.h"
 #include "Runtime/Execution/ExecutionRunner.h"
+#include "Runtime/Execution/BackendCapabilities.h"
 #include "Runtime/Execution/NativeExecutionRunner.h"
 #include "Runtime/ExecutionSession.h"
 #include "Runtime/NpuBackend.h"
@@ -2232,6 +2233,30 @@ static void testDefaultBackendRequiresDriver() {
   EXPECT(!(bool)npuResult, "npu backend without driver fails");
   if (!npuResult)
     llvm::consumeError(npuResult.takeError());
+}
+
+static void testBackendCapabilitiesExposeSimAndNpuContracts() {
+  auto simOr = createExecutionBackend(ExecutionBackendKind::Simulation);
+  EXPECT((bool)simOr, "simulation backend creation succeeds");
+
+  auto npuOr = createExecutionBackend(ExecutionBackendKind::Npu);
+  EXPECT((bool)npuOr, "npu backend creation succeeds");
+
+  if (simOr) {
+    const BackendCapabilities caps = (*simOr)->capabilities();
+    EXPECT(caps.supportsConcurrentDispatch,
+           "sim backend advertises concurrent dispatch");
+    EXPECT(caps.requiresSerializedLaunch,
+           "sim backend advertises serialized launch");
+  }
+
+  if (npuOr) {
+    const BackendCapabilities caps = (*npuOr)->capabilities();
+    EXPECT(!caps.requiresSerializedLaunch,
+           "npu backend does not force simulator launch serialization");
+    EXPECT(caps.maxConcurrentTasks >= 1,
+           "npu backend advertises at least one runnable task");
+  }
 }
 
 static void testInvalidBackendSelection() {
@@ -4519,6 +4544,7 @@ int main() {
   testFrontendRunExecutionUsesNormalizedContract();
   testBackendSelection();
   testDefaultBackendRequiresDriver();
+  testBackendCapabilitiesExposeSimAndNpuContracts();
   testInvalidBackendSelection();
   testBackendDelegatesToDriver();
   testNpuBackendRejectsMissingDeviceBinaryPath();

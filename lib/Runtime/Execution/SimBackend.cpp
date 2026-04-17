@@ -503,6 +503,16 @@ ExecutionBackendKind SimBackend::kind() const {
   return ExecutionBackendKind::Simulation;
 }
 
+BackendCapabilities SimBackend::capabilities() const {
+  BackendCapabilities caps;
+  caps.supportsConcurrentDispatch = true;
+  caps.supportsConcurrentExecution = false;
+  caps.requiresSerializedLaunch = true;
+  caps.maxConcurrentTasks = 1024;
+  caps.maxConcurrentStreams = 1;
+  return caps;
+}
+
 bool SimBackend::allowsConcurrentTaskDispatch() const {
   return driver_ ? driver_->allowsConcurrentTaskDispatch() : true;
 }
