@@ -4225,7 +4225,7 @@ static void testGlobalSchedulerTracksTwoIndependentSessions() {
 
 static void testExecutionSessionSubmitsThroughGlobalScheduler() {
   ExecutionSession sessionA(ExecutionBackendKind::Simulation);
-  ExecutionSession sessionB(ExecutionBackendKind::Simulation);
+  ExecutionSession sessionB(ExecutionBackendKind::Npu);
 
   TaskGraph graphA;
   RuntimeTask taskA;
