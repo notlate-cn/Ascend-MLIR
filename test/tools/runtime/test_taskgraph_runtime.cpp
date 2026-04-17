@@ -2261,13 +2261,13 @@ static void testBackendCapabilitiesExposeSimAndNpuContracts() {
 
   if (npuOr) {
     const BackendCapabilities caps = (*npuOr)->capabilities();
-    EXPECT(caps.supportsConcurrentDispatch,
-           "npu backend advertises concurrent dispatch");
+    EXPECT(!caps.supportsConcurrentDispatch,
+           "npu backend stays conservative about concurrent dispatch");
     EXPECT((*npuOr)->allowsConcurrentTaskDispatch() ==
                caps.supportsConcurrentDispatch,
            "npu backend dispatchability is derived from capabilities");
-    EXPECT(caps.supportsConcurrentExecution,
-           "npu backend advertises concurrent execution");
+    EXPECT(!caps.supportsConcurrentExecution,
+           "npu backend stays conservative about concurrent execution");
     EXPECT(!caps.requiresSerializedLaunch,
            "npu backend does not force simulator launch serialization");
     EXPECT(caps.maxConcurrentTasks == 1,

@@ -233,8 +233,8 @@ ExecutionBackendKind NpuBackend::kind() const {
 
 BackendCapabilities NpuBackend::capabilities() const {
   BackendCapabilities caps;
-  caps.supportsConcurrentDispatch = true;
-  caps.supportsConcurrentExecution = true;
+  caps.supportsConcurrentDispatch = false;
+  caps.supportsConcurrentExecution = false;
   caps.requiresSerializedLaunch = false;
   caps.maxConcurrentTasks = 1;
   caps.maxConcurrentStreams = 1;
