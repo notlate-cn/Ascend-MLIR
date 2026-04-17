@@ -2,6 +2,31 @@
 
 namespace mlir::runtime {
 
+size_t ResourceScheduler::ReservationKeyHash::operator()(
+    const ReservationKey &key) const {
+  size_t hash = std::hash<std::string>{}(key.sessionId);
+  hash ^= std::hash<std::string>{}(key.taskId) + 0x9e3779b9 + (hash << 6) +
+          (hash >> 2);
+  hash ^= std::hash<int>{}(static_cast<int>(key.backendKind)) + 0x9e3779b9 +
+          (hash << 6) + (hash >> 2);
+  hash ^= std::hash<size_t>{}(key.workspaceBytes) + 0x9e3779b9 + (hash << 6) +
+          (hash >> 2);
+  hash ^= std::hash<bool>{}(key.holdsSerializedLaunchLane) + 0x9e3779b9 +
+          (hash << 6) + (hash >> 2);
+  hash ^= std::hash<bool>{}(key.holdsDeviceSlot) + 0x9e3779b9 + (hash << 6) +
+          (hash >> 2);
+  return hash;
+}
+
+bool ResourceScheduler::ReservationKeyEq::operator()(
+    const ReservationKey &lhs, const ReservationKey &rhs) const {
+  return lhs.sessionId == rhs.sessionId && lhs.taskId == rhs.taskId &&
+         lhs.backendKind == rhs.backendKind &&
+         lhs.workspaceBytes == rhs.workspaceBytes &&
+         lhs.holdsSerializedLaunchLane == rhs.holdsSerializedLaunchLane &&
+         lhs.holdsDeviceSlot == rhs.holdsDeviceSlot;
+}
+
 void ResourceScheduler::configureSimDispatchLanes(size_t count) {
   configuredSimDispatchLanes_ = count;
 }
@@ -33,14 +58,18 @@ ResourceScheduler::tryReserve(const std::string &sessionId,
   }
 
   bool holdsDeviceSlot = false;
+  size_t deviceSlotsToReserve = 0;
   if (requirement.backendKind == ExecutionBackendKind::Npu) {
-    if (configuredDeviceSlots_ <= reservedDeviceSlots_)
+    deviceSlotsToReserve = requirement.exclusiveDeviceAccess
+                               ? configuredDeviceSlots_
+                               : 1;
+    if (deviceSlotsToReserve == 0 ||
+        configuredDeviceSlots_ < reservedDeviceSlots_ + deviceSlotsToReserve)
       return std::nullopt;
     holdsDeviceSlot = true;
   }
 
   ResourceReservation reservation;
-  reservation.reservationId = nextReservationId_++;
   reservation.sessionId = sessionId;
   reservation.taskId = taskId;
   reservation.backendKind = requirement.backendKind;
@@ -48,29 +77,39 @@ ResourceScheduler::tryReserve(const std::string &sessionId,
   reservation.holdsSerializedLaunchLane = holdsSerializedLaunchLane;
   reservation.holdsDeviceSlot = holdsDeviceSlot;
 
+  ReservationKey key{reservation.sessionId, reservation.taskId,
+                     reservation.backendKind, reservation.workspaceBytes,
+                     reservation.holdsSerializedLaunchLane,
+                     reservation.holdsDeviceSlot};
   activeReservations_.emplace(
-      reservation.reservationId,
-      ActiveReservation{requirement.workspaceBytes, holdsSerializedLaunchLane,
-                        holdsDeviceSlot});
+      std::move(key),
+      ActiveReservation{requirement.workspaceBytes, deviceSlotsToReserve,
+                        holdsSerializedLaunchLane, holdsDeviceSlot});
   reservedWorkspaceBytes_ += requirement.workspaceBytes;
   if (holdsSerializedLaunchLane)
     ++reservedSimDispatchLanes_;
-  if (holdsDeviceSlot)
-    ++reservedDeviceSlots_;
+  reservedDeviceSlots_ += deviceSlotsToReserve;
   return reservation;
 }
 
 void ResourceScheduler::release(const ResourceReservation &reservation) {
-  auto it = activeReservations_.find(reservation.reservationId);
-  if (it == activeReservations_.end())
+  ReservationKey key{reservation.sessionId, reservation.taskId,
+                     reservation.backendKind, reservation.workspaceBytes,
+                     reservation.holdsSerializedLaunchLane,
+                     reservation.holdsDeviceSlot};
+  auto range = activeReservations_.equal_range(key);
+  if (range.first == range.second)
     return;
 
-  reservedWorkspaceBytes_ -= it->second.workspaceBytes;
-  if (it->second.holdsSerializedLaunchLane)
-    --reservedSimDispatchLanes_;
-  if (it->second.holdsDeviceSlot)
-    --reservedDeviceSlots_;
+  auto it = range.first;
+  const ActiveReservation active = it->second;
   activeReservations_.erase(it);
+
+  reservedWorkspaceBytes_ -= active.workspaceBytes;
+  if (active.holdsSerializedLaunchLane)
+    --reservedSimDispatchLanes_;
+  if (active.holdsDeviceSlot)
+    reservedDeviceSlots_ -= active.deviceSlots;
 }
 
 } // namespace mlir::runtime

@@ -4080,7 +4080,9 @@ static void testResourceSchedulerIgnoresForgedRelease() {
   scheduler.configureWorkspaceBudget(512);
 
   ResourceReservation forged;
-  forged.reservationId = 99;
+  forged.sessionId = "ghost";
+  forged.taskId = "ghost";
+  forged.backendKind = ExecutionBackendKind::Simulation;
   forged.workspaceBytes = 512;
   scheduler.release(forged);
 
@@ -4116,6 +4118,33 @@ static void testResourceSchedulerRejectsDoubleRelease() {
   auto third = scheduler.tryReserve("session2", "task2", req);
   EXPECT(!third.has_value(),
          "double release does not mint extra workspace capacity");
+}
+
+static void testResourceSchedulerHonorsExclusiveDeviceAccess() {
+  ResourceScheduler scheduler;
+  scheduler.configureDeviceSlots(2);
+  scheduler.configureWorkspaceBudget(1024);
+
+  TaskResourceRequirement exclusiveReq;
+  exclusiveReq.backendKind = ExecutionBackendKind::Npu;
+  exclusiveReq.workspaceBytes = 256;
+  exclusiveReq.exclusiveDeviceAccess = true;
+
+  auto exclusive = scheduler.tryReserve("session0", "task0", exclusiveReq);
+  EXPECT(exclusive.has_value(), "exclusive NPU reservation succeeds");
+
+  TaskResourceRequirement normalReq;
+  normalReq.backendKind = ExecutionBackendKind::Npu;
+  normalReq.workspaceBytes = 256;
+
+  auto blocked = scheduler.tryReserve("session1", "task1", normalReq);
+  EXPECT(!blocked.has_value(),
+         "exclusive NPU reservation blocks other device reservations");
+
+  scheduler.release(*exclusive);
+  auto afterRelease = scheduler.tryReserve("session1", "task1", normalReq);
+  EXPECT(afterRelease.has_value(),
+         "device reservation succeeds after exclusive release");
 }
 
 static void testResourceSchedulerPreservesOutstandingReservationsAcrossReconfigure() {
@@ -4809,6 +4838,10 @@ int main() {
   testExecutionSessionAcceptsVecAndCubeTasks();
   testResourceSchedulerReservesAndReleasesSlots();
   testRunManifestParsesVecSimulationSpec();
+  testResourceSchedulerIgnoresForgedRelease();
+  testResourceSchedulerRejectsDoubleRelease();
+  testResourceSchedulerHonorsExclusiveDeviceAccess();
+  testResourceSchedulerPreservesOutstandingReservationsAcrossReconfigure();
   testRunManifestParsesOutputMetadataWithoutExpectedOutputs();
   testRunManifestParsesTaskOutputBinding();
   testRunManifestParsesDagSpec();
