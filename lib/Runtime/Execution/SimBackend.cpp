@@ -464,6 +464,10 @@ runWithExecutor(const ExecutionRequest &request) {
   result.taskId = request.task.taskId;
   for (const TensorBinding &binding : request.task.invocation.outputs)
     result.producedFiles.push_back(binding.path);
+  ProfileTrace runtimeTrace;
+  runtimeTrace.sessionId = request.sessionId;
+  runtimeTrace.setAttribute("simulator_launch_model", "dispatch_thread");
+  runtimeTrace.addCounter("serialized_launch_count", 1);
   if (request.task.invocation.enableProfiling) {
     auto elapsed = std::chrono::duration_cast<std::chrono::microseconds>(
         std::chrono::steady_clock::now() - runStart);
@@ -473,13 +477,11 @@ runWithExecutor(const ExecutionRequest &request) {
     if (!profilePathOr)
       return stageError("profiling", profilePathOr.takeError());
     result.producedFiles.push_back(*profilePathOr);
-    ProfileTrace trace;
-    trace.sessionId = request.sessionId;
-    trace.addProfileArtifact(request.task.taskId,
-                             ExecutionBackendKind::Simulation, *profilePathOr,
-                             elapsedUs, elapsedUs);
-    result.profileTrace = std::move(trace);
+    runtimeTrace.addProfileArtifact(request.task.taskId,
+                                    ExecutionBackendKind::Simulation,
+                                    *profilePathOr, elapsedUs, elapsedUs);
   }
+  result.profileTrace = std::move(runtimeTrace);
   return result;
 }
 

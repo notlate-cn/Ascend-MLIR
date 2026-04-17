@@ -2647,6 +2647,10 @@ static void testRetainedSessionSummaryContents() {
   ProfileTrace trace;
   const ProfileSummaryRetentionFixture fixture =
       makeProfileSummaryRetentionFixture(trace, "profile-retain-summary-json");
+  trace.setAttribute("scheduler_mode", "concurrent");
+  trace.setAttribute("simulator_launch_model", "dispatch_thread");
+  trace.addCounter("frontier_count", 2);
+  trace.addCounter("serialized_launch_count", 2);
 
   auto retainedOr = retainProfileArtifactsForCli(trace, fixture.destRoot.string());
   EXPECT((bool)retainedOr,
@@ -2710,6 +2714,36 @@ static void testRetainedSessionSummaryContents() {
             task1 ? task1->getString("profile_path") : decltype(task1->getString("profile_path")){};
         EXPECT(profilePath1 && *profilePath1 == fixture.consumerPath.string(),
                "retained session summary task1 points to tasks/consumer.json");
+      }
+
+      const auto *runtime = object->getObject("runtime");
+      EXPECT(runtime != nullptr,
+             "retained session summary emits runtime metadata");
+      if (runtime) {
+        const auto *attributes = runtime->getObject("attributes");
+        const auto *counters = runtime->getObject("counters");
+        EXPECT(attributes != nullptr,
+               "retained session summary emits runtime attributes");
+        EXPECT(counters != nullptr,
+               "retained session summary emits runtime counters");
+        if (attributes) {
+          auto schedulerMode = attributes->getString("scheduler_mode");
+          auto launchModel =
+              attributes->getString("simulator_launch_model");
+          EXPECT(schedulerMode && *schedulerMode == "concurrent",
+                 "retained session summary keeps scheduler_mode");
+          EXPECT(launchModel && *launchModel == "dispatch_thread",
+                 "retained session summary keeps simulator launch model");
+        }
+        if (counters) {
+          auto frontierCount = counters->getInteger("frontier_count");
+          auto launchCount =
+              counters->getInteger("serialized_launch_count");
+          EXPECT(frontierCount && *frontierCount == 2,
+                 "retained session summary keeps frontier count");
+          EXPECT(launchCount && *launchCount == 2,
+                 "retained session summary keeps serialized launch count");
+        }
       }
     }
   }

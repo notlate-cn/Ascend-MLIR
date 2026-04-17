@@ -266,6 +266,9 @@ llvm::Expected<ProfileTrace> ExecutionSession::run(const TaskGraph &graph) {
 
   ProfileTrace sessionTrace;
   sessionTrace.sessionId = runtimePathsOr->sessionId;
+  sessionTrace.setAttribute("scheduler_mode", "serial");
+  sessionTrace.addCounter("planned_task_count",
+                          static_cast<int64_t>(scheduler.orderedTaskIds.size()));
   const std::string &workingDirectory = runtimePathsOr->workingDirectory;
   workingDirectories_.push_back(workingDirectory);
   ProducedBindingMap producedBindings;
@@ -280,10 +283,15 @@ llvm::Expected<ProfileTrace> ExecutionSession::run(const TaskGraph &graph) {
       scheduler.orderedTaskIds.size() > 1;
 
   if (enableConcurrentDispatch) {
+    sessionTrace.setAttribute("scheduler_mode", "concurrent");
+    sessionTrace.addCounter("frontier_count", 1);
+    sessionTrace.counters["max_frontier_width"] =
+        static_cast<int64_t>(scheduler.readyQueue.size());
     std::mutex schedulerMutex;
     std::condition_variable schedulerCv;
     bool failed = false;
     size_t inFlightTasks = 0;
+    size_t maxInFlightTasks = 0;
     std::string firstErrorMessage;
     std::deque<std::string> nextReadyQueue;
 
@@ -345,6 +353,10 @@ llvm::Expected<ProfileTrace> ExecutionSession::run(const TaskGraph &graph) {
             if (inFlightTasks == 0) {
               if (!nextReadyQueue.empty()) {
                 scheduler.readyQueue.swap(nextReadyQueue);
+                sessionTrace.addCounter("frontier_count", 1);
+                sessionTrace.counters["max_frontier_width"] = std::max(
+                    sessionTrace.counters["max_frontier_width"],
+                    static_cast<int64_t>(scheduler.readyQueue.size()));
                 schedulerCv.notify_all();
                 continue;
               }
@@ -385,6 +397,7 @@ llvm::Expected<ProfileTrace> ExecutionSession::run(const TaskGraph &graph) {
           request.task = std::move(*resolvedTaskOr);
           request.workingDirectory = workingDirectory;
           ++inFlightTasks;
+          maxInFlightTasks = std::max(maxInFlightTasks, inFlightTasks);
         }
 
         auto resultOr = workerBackend->run(request);
@@ -408,8 +421,7 @@ llvm::Expected<ProfileTrace> ExecutionSession::run(const TaskGraph &graph) {
           completedTasks.insert(taskId);
 
           if (resultOr->profileTrace) {
-            for (ProfileEvent event : resultOr->profileTrace->events)
-              sessionTrace.addEvent(std::move(event));
+            sessionTrace.merge(*resultOr->profileTrace);
           }
 
           if (!failed) {
@@ -430,8 +442,13 @@ llvm::Expected<ProfileTrace> ExecutionSession::run(const TaskGraph &graph) {
           }
 
           if (!failed && inFlightTasks == 0 && scheduler.readyQueue.empty() &&
-              !nextReadyQueue.empty())
+              !nextReadyQueue.empty()) {
             scheduler.readyQueue.swap(nextReadyQueue);
+            sessionTrace.addCounter("frontier_count", 1);
+            sessionTrace.counters["max_frontier_width"] = std::max(
+                sessionTrace.counters["max_frontier_width"],
+                static_cast<int64_t>(scheduler.readyQueue.size()));
+          }
 
           schedulerCv.notify_all();
         }
@@ -443,6 +460,8 @@ llvm::Expected<ProfileTrace> ExecutionSession::run(const TaskGraph &graph) {
     for (std::thread &thread : workers)
       thread.join();
 
+    sessionTrace.counters["max_in_flight_tasks"] =
+        static_cast<int64_t>(maxInFlightTasks);
     if (failed)
       return llvm::createStringError(llvm::inconvertibleErrorCode(), "%s",
                                      firstErrorMessage.c_str());
@@ -477,8 +496,7 @@ llvm::Expected<ProfileTrace> ExecutionSession::run(const TaskGraph &graph) {
       completedTasks.insert(taskId);
 
       if (resultOr->profileTrace) {
-        for (ProfileEvent event : resultOr->profileTrace->events)
-          sessionTrace.addEvent(std::move(event));
+        sessionTrace.merge(*resultOr->profileTrace);
       }
 
       auto dependentsIt = scheduler.dependents.find(taskId);

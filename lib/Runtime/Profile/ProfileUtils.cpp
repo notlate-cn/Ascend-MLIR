@@ -304,6 +304,31 @@ retainProfileArtifactsForCli(const ProfileTrace &trace,
     summaryStream << "\n";
   }
   summaryStream << "  ],\n";
+  summaryStream << "  \"runtime\": {\n";
+  summaryStream << "    \"attributes\": {\n";
+  for (auto it = retained.attributes.begin(); it != retained.attributes.end();
+       ++it) {
+    summaryStream << "      ";
+    writeJsonEscapedString(summaryStream, it->first);
+    summaryStream << ": ";
+    writeJsonEscapedString(summaryStream, it->second);
+    if (std::next(it) != retained.attributes.end())
+      summaryStream << ",";
+    summaryStream << "\n";
+  }
+  summaryStream << "    },\n";
+  summaryStream << "    \"counters\": {\n";
+  for (auto it = retained.counters.begin(); it != retained.counters.end();
+       ++it) {
+    summaryStream << "      ";
+    writeJsonEscapedString(summaryStream, it->first);
+    summaryStream << ": " << it->second;
+    if (std::next(it) != retained.counters.end())
+      summaryStream << ",";
+    summaryStream << "\n";
+  }
+  summaryStream << "    }\n";
+  summaryStream << "  },\n";
   summaryStream << "  \"total_score\": " << totalScore << ",\n";
   summaryStream << "  \"total_cycle_count\": " << totalCycleCount << "\n";
   summaryStream << "}\n";
