@@ -1,6 +1,7 @@
 // include/Runtime/ExecutionBackend.h
 #pragma once
 
+#include "Runtime/Execution/BackendCapabilities.h"
 #include "Runtime/Execution/TaskGraph.h"
 #include "Runtime/Profile/ProfileTrace.h"
 #include "llvm/Support/Error.h"
@@ -37,7 +38,10 @@ public:
   virtual ~ExecutionBackend() = default;
 
   virtual ExecutionBackendKind kind() const = 0;
-  virtual bool allowsConcurrentTaskDispatch() const { return false; }
+  virtual BackendCapabilities capabilities() const = 0;
+  virtual bool allowsConcurrentTaskDispatch() const {
+    return capabilities().supportsConcurrentDispatch;
+  }
   virtual llvm::Expected<ExecutionResult>
   run(const ExecutionRequest &request) = 0;
 };

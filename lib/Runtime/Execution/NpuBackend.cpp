@@ -231,6 +231,16 @@ ExecutionBackendKind NpuBackend::kind() const {
   return ExecutionBackendKind::Npu;
 }
 
+BackendCapabilities NpuBackend::capabilities() const {
+  BackendCapabilities caps;
+  caps.supportsConcurrentDispatch = true;
+  caps.supportsConcurrentExecution = true;
+  caps.requiresSerializedLaunch = false;
+  caps.maxConcurrentTasks = 1;
+  caps.maxConcurrentStreams = 1;
+  return caps;
+}
+
 bool NpuBackend::allowsConcurrentTaskDispatch() const { return false; }
 
 llvm::Expected<ExecutionResult>
