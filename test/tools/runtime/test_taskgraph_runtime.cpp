@@ -3509,6 +3509,44 @@ static void testExecutionSessionRunsReadyRootsConcurrently() {
   }
 }
 
+static void testExecutionSessionCanForceSerialSchedulerViaEnv() {
+  TaskGraph graph;
+
+  RuntimeTask taskA;
+  taskA.taskId = "task_a";
+
+  RuntimeTask taskB;
+  taskB.taskId = "task_b";
+
+  RuntimeTask taskJoin;
+  taskJoin.taskId = "task_join";
+  taskJoin.dependencies = {"task_a", "task_b"};
+
+  auto addA = graph.addTask(taskA);
+  EXPECT(!addA, "execution session serial override add task_a");
+  auto addJoin = graph.addTask(taskJoin);
+  EXPECT(!addJoin, "execution session serial override add task_join");
+  auto addB = graph.addTask(taskB);
+  EXPECT(!addB, "execution session serial override add task_b");
+
+  auto driver = std::make_shared<ConcurrentRootOverlapBackendDriver>();
+  ConcurrentRootOverlapBackendDriver *driverPtr = driver.get();
+  ExecutionSession session(ExecutionBackendKind::Simulation, driver);
+
+  setenv("ASCEND_RUNTIME_FORCE_SERIAL_SCHEDULER", "1", /*overwrite=*/1);
+  auto traceOr = session.run(graph);
+  unsetenv("ASCEND_RUNTIME_FORCE_SERIAL_SCHEDULER");
+
+  EXPECT((bool)traceOr, "execution session serial override run succeeds");
+  EXPECT(driverPtr->maxRunning.load() == 1,
+         "execution session serial override disables concurrent root overlap");
+  if (traceOr) {
+    auto it = traceOr->attributes.find("scheduler_mode");
+    EXPECT(it != traceOr->attributes.end() && it->second == "serial",
+           "execution session serial override reports serial scheduler mode");
+  }
+}
+
 static void testExecutionSessionFailureStopsJoinAfterConcurrentRootFailure() {
   TaskGraph graph;
 
@@ -4510,6 +4548,7 @@ int main() {
   testExecutionSessionPlanTracksMultipleReadyRoots();
   testExecutionSessionRunsTasksInTopologicalOrder();
   testExecutionSessionRunsReadyRootsConcurrently();
+  testExecutionSessionCanForceSerialSchedulerViaEnv();
   testExecutionSessionFailureStopsJoinAfterConcurrentRootFailure();
   testExecutionSessionCanReleaseWorkingDirectoriesForProcessExit();
   testExecutionSessionCarriesInvocationBindings();
