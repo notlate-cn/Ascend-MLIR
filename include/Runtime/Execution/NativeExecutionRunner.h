@@ -5,6 +5,7 @@
 
 #include <cstdint>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 namespace mlir::runtime {
@@ -81,6 +82,7 @@ private:
   std::vector<AllocInfo> allocMap_;
   std::vector<std::vector<uint8_t>> registeredBinaries_;
   std::vector<std::string> registeredNames_;
+  std::unordered_map<std::string, void *> registeredFunctionHandles_;
 };
 
 } // namespace mlir::runtime

@@ -49,6 +49,15 @@ static void prependEnvPath(const char *name, const std::string &prefix) {
   ::setenv(name, value.c_str(), 1);
 }
 
+static std::string buildRegisteredFunctionKey(const FileExecutionLaunch &launch) {
+  std::string key = launch.binaryPath;
+  key.push_back('\n');
+  key += launch.kernelName;
+  key.push_back('\n');
+  key += std::to_string(launch.magic);
+  return key;
+}
+
 } // namespace
 
 NativeExecutionRunner::NativeExecutionRunner(ExecutionRunnerMode mode)
@@ -405,16 +414,16 @@ llvm::Error NativeExecutionRunner::runFile(const FileExecutionLaunch &launch,
   if (auto err = initialize())
     return err;
 
-  auto buf = llvm::MemoryBuffer::getFile(launch.binaryPath, /*IsText=*/false);
-  if (!buf)
-    return llvm::createStringError(llvm::inconvertibleErrorCode(),
-                                   "Cannot read binary: %s",
-                                   launch.binaryPath.c_str());
-
-  const uint8_t *data =
-      reinterpret_cast<const uint8_t *>((*buf)->getBufferStart());
-  std::vector<uint8_t> bytes(data, data + (*buf)->getBufferSize());
-  return runBinary(bytes, launch.kernelName, args, launch.magic);
+  const std::string key = buildRegisteredFunctionKey(launch);
+  auto handleIt = registeredFunctionHandles_.find(key);
+  if (handleIt == registeredFunctionHandles_.end()) {
+    auto handleOr =
+        registerBinary(launch.binaryPath, launch.kernelName, launch.magic);
+    if (!handleOr)
+      return handleOr.takeError();
+    handleIt = registeredFunctionHandles_.emplace(key, *handleOr).first;
+  }
+  return runWithHandle(handleIt->second, args);
 }
 
 llvm::Error NativeExecutionRunner::runDynamicLibraryArtifact(
