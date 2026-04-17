@@ -9,11 +9,13 @@
 
 #include <algorithm>
 #include <condition_variable>
+#include <cstdlib>
 #include <filesystem>
 #include <deque>
 #include <map>
 #include <mutex>
 #include <set>
+#include <string_view>
 #include <thread>
 #include <utility>
 #include <vector>
@@ -38,6 +40,13 @@ struct SchedulerState {
 };
 
 using ProducedBindingMap = std::map<std::string, TensorBinding>;
+
+static bool forceSerialSchedulerFromEnv() {
+  const char *value = std::getenv("ASCEND_RUNTIME_FORCE_SERIAL_SCHEDULER");
+  if (!value)
+    return false;
+  return value[0] != '\0' && std::string_view(value) != "0";
+}
 
 static std::string bindingKey(llvm::StringRef taskId, llvm::StringRef outputName) {
   std::string key = taskId.str();
@@ -279,6 +288,7 @@ llvm::Expected<ProfileTrace> ExecutionSession::run(const TaskGraph &graph) {
     return backendOr.takeError();
   ExecutionBackend &backend = *backendOr;
   const bool enableConcurrentDispatch =
+      !forceSerialSchedulerFromEnv() &&
       backend.allowsConcurrentTaskDispatch() &&
       scheduler.orderedTaskIds.size() > 1;
 
