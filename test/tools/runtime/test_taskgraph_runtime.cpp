@@ -21,6 +21,7 @@
 #include "Runtime/RunManifest.h"
 #include "Runtime/ExecutionBackend.h"
 #include "Runtime/Execution/DefaultExecutionRunner.h"
+#include "Runtime/Execution/GlobalScheduler.h"
 #include "Runtime/Execution/ExecutionRunner.h"
 #include "Runtime/Execution/BackendCapabilities.h"
 #include "Runtime/Execution/NativeExecutionRunner.h"
@@ -4190,6 +4191,38 @@ static void testResourceSchedulerPreservesOutstandingReservationsAcrossReconfigu
          "release after reconfigure restores the configured budget");
 }
 
+static void testGlobalSchedulerTracksTwoIndependentSessions() {
+  GlobalScheduler scheduler;
+
+  TaskGraph graphA;
+  RuntimeTask taskA;
+  taskA.taskId = "a0";
+  EXPECT(!graphA.addTask(taskA), "graphA add task");
+
+  TaskGraph graphB;
+  RuntimeTask taskB;
+  taskB.taskId = "b0";
+  EXPECT(!graphB.addTask(taskB), "graphB add task");
+
+  auto sessionAOr = scheduler.submit(ExecutionBackendKind::Simulation, graphA);
+  auto sessionBOr = scheduler.submit(ExecutionBackendKind::Simulation, graphB);
+
+  EXPECT((bool)sessionAOr, "submit session A succeeds");
+  EXPECT((bool)sessionBOr, "submit session B succeeds");
+  if (sessionAOr && sessionBOr) {
+    EXPECT(sessionAOr->sessionId() != sessionBOr->sessionId(),
+           "global scheduler assigns distinct session ids");
+    EXPECT(scheduler.sessionCount() == 2,
+           "global scheduler tracks both sessions");
+  }
+
+  TaskGraph emptyGraph;
+  auto emptyOr = scheduler.submit(ExecutionBackendKind::Simulation, emptyGraph);
+  EXPECT(!emptyOr, "empty graph is rejected");
+  if (!emptyOr)
+    llvm::consumeError(emptyOr.takeError());
+}
+
 static void testRunManifestParsesVecSimulationSpec() {
   const std::string manifestPath = "/tmp/runtime_run_manifest.json";
   {
@@ -4857,6 +4890,7 @@ int main() {
   testExecutionSessionAcceptsSupportedMixResourceTypes();
   testExecutionSessionAcceptsVecAndCubeTasks();
   testResourceSchedulerReservesAndReleasesSlots();
+  testGlobalSchedulerTracksTwoIndependentSessions();
   testRunManifestParsesVecSimulationSpec();
   testResourceSchedulerIgnoresForgedRelease();
   testResourceSchedulerHandlesIdenticalPublicReservationsIndependently();
