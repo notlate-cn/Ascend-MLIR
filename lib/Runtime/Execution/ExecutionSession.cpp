@@ -3,13 +3,18 @@
 
 #include "llvm/ADT/SmallString.h"
 #include "llvm/ADT/StringRef.h"
+#include "llvm/Support/Error.h"
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/Path.h"
 
+#include <algorithm>
+#include <condition_variable>
 #include <filesystem>
 #include <deque>
 #include <map>
+#include <mutex>
 #include <set>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -255,11 +260,6 @@ llvm::Expected<ProfileTrace> ExecutionSession::run(const TaskGraph &graph) {
     return schedulerOr.takeError();
   SchedulerState scheduler = std::move(*schedulerOr);
 
-  auto backendOr = getOrCreateBackend();
-  if (!backendOr)
-    return backendOr.takeError();
-  ExecutionBackend &backend = *backendOr;
-
   auto runtimePathsOr = prepareSessionRuntimePaths();
   if (!runtimePathsOr)
     return runtimePathsOr.takeError();
@@ -271,52 +271,211 @@ llvm::Expected<ProfileTrace> ExecutionSession::run(const TaskGraph &graph) {
   ProducedBindingMap producedBindings;
   std::set<std::string> completedTasks;
 
-  while (!scheduler.readyQueue.empty()) {
-    const std::string taskId = scheduler.readyQueue.front();
-    scheduler.readyQueue.pop_front();
-    auto taskIt = scheduler.tasksById.find(taskId);
-    if (taskIt == scheduler.tasksById.end()) {
-      return llvm::createStringError(llvm::inconvertibleErrorCode(),
-                                     "scheduler lost task definition for %s",
-                                     taskId.c_str());
-    }
-    const RuntimeTask &task = taskIt->second;
-    if (auto err = canScheduleTask(task))
-      return std::move(err);
-    auto resolvedTaskOr =
-        resolveTaskBindings(task, workingDirectory, producedBindings);
-    if (!resolvedTaskOr)
-      return resolvedTaskOr.takeError();
+  if (backendKind_ == ExecutionBackendKind::Simulation && driver_) {
+    std::mutex schedulerMutex;
+    std::condition_variable schedulerCv;
+    bool failed = false;
+    size_t inFlightTasks = 0;
+    std::string firstErrorMessage;
+    std::deque<std::string> nextReadyQueue;
 
-    ExecutionRequest request;
-    request.sessionId = sessionTrace.sessionId;
-    request.task = std::move(*resolvedTaskOr);
-    request.workingDirectory = workingDirectory;
+    const unsigned concurrencyHint = std::thread::hardware_concurrency();
+    const size_t workerCount =
+        std::max<size_t>(1, std::min<size_t>(
+                                scheduler.orderedTaskIds.size(),
+                                concurrencyHint == 0 ? 4 : concurrencyHint));
+    std::vector<std::thread> workers;
+    workers.reserve(workerCount);
 
-    auto resultOr = backend.run(request);
-    if (!resultOr)
-      return resultOr.takeError();
+    auto worker = [&]() {
+      auto backendOr = createExecutionBackend(backendKind_, driver_);
+      if (!backendOr) {
+        std::lock_guard<std::mutex> lock(schedulerMutex);
+        if (!failed) {
+          failed = true;
+          firstErrorMessage = llvm::toString(backendOr.takeError());
+        } else {
+          llvm::consumeError(backendOr.takeError());
+        }
+        schedulerCv.notify_all();
+        return;
+      }
 
-    recordProducedBindings(request.task, producedBindings);
-    completedTasks.insert(taskId);
+      ExecutionBackend &backend = **backendOr;
+      while (true) {
+        ExecutionRequest request;
+        std::string taskId;
 
-    if (resultOr->profileTrace) {
-      for (ProfileEvent event : resultOr->profileTrace->events)
-        sessionTrace.addEvent(std::move(event));
-    }
+        {
+          std::unique_lock<std::mutex> lock(schedulerMutex);
+          schedulerCv.wait(lock, [&] {
+            return failed || !scheduler.readyQueue.empty() || inFlightTasks == 0;
+          });
 
-    auto dependentsIt = scheduler.dependents.find(taskId);
-    if (dependentsIt == scheduler.dependents.end())
-      continue;
-    for (const std::string &dependentId : dependentsIt->second) {
-      auto depCountIt = scheduler.remainingDependencies.find(dependentId);
-      if (depCountIt == scheduler.remainingDependencies.end())
+          if (failed) {
+            if (inFlightTasks == 0)
+              return;
+            continue;
+          }
+
+          if (scheduler.readyQueue.empty()) {
+            if (inFlightTasks == 0) {
+              if (!nextReadyQueue.empty()) {
+                scheduler.readyQueue.swap(nextReadyQueue);
+                schedulerCv.notify_all();
+                continue;
+              }
+              return;
+            }
+            continue;
+          }
+
+          taskId = scheduler.readyQueue.front();
+          scheduler.readyQueue.pop_front();
+
+          auto taskIt = scheduler.tasksById.find(taskId);
+          if (taskIt == scheduler.tasksById.end()) {
+            failed = true;
+            firstErrorMessage =
+                "scheduler lost task definition for " + taskId;
+            schedulerCv.notify_all();
+            continue;
+          }
+
+          if (auto err = canScheduleTask(taskIt->second)) {
+            failed = true;
+            firstErrorMessage = llvm::toString(std::move(err));
+            schedulerCv.notify_all();
+            continue;
+          }
+
+          auto resolvedTaskOr = resolveTaskBindings(taskIt->second, workingDirectory,
+                                                    producedBindings);
+          if (!resolvedTaskOr) {
+            failed = true;
+            firstErrorMessage = llvm::toString(resolvedTaskOr.takeError());
+            schedulerCv.notify_all();
+            continue;
+          }
+
+          request.sessionId = sessionTrace.sessionId;
+          request.task = std::move(*resolvedTaskOr);
+          request.workingDirectory = workingDirectory;
+          ++inFlightTasks;
+        }
+
+        auto resultOr = backend.run(request);
+
+        {
+          std::lock_guard<std::mutex> lock(schedulerMutex);
+          --inFlightTasks;
+
+          if (!resultOr) {
+            if (!failed) {
+              failed = true;
+              firstErrorMessage = llvm::toString(resultOr.takeError());
+            } else {
+              llvm::consumeError(resultOr.takeError());
+            }
+            schedulerCv.notify_all();
+            continue;
+          }
+
+          recordProducedBindings(request.task, producedBindings);
+          completedTasks.insert(taskId);
+
+          if (resultOr->profileTrace) {
+            for (ProfileEvent event : resultOr->profileTrace->events)
+              sessionTrace.addEvent(std::move(event));
+          }
+
+          if (!failed) {
+            auto dependentsIt = scheduler.dependents.find(taskId);
+            if (dependentsIt != scheduler.dependents.end()) {
+              for (const std::string &dependentId : dependentsIt->second) {
+                auto depCountIt =
+                    scheduler.remainingDependencies.find(dependentId);
+                if (depCountIt == scheduler.remainingDependencies.end())
+                  continue;
+                if (depCountIt->second == 0)
+                  continue;
+                --depCountIt->second;
+                if (depCountIt->second == 0)
+                  nextReadyQueue.push_back(dependentId);
+              }
+            }
+          }
+
+          if (!failed && inFlightTasks == 0 && scheduler.readyQueue.empty() &&
+              !nextReadyQueue.empty())
+            scheduler.readyQueue.swap(nextReadyQueue);
+
+          schedulerCv.notify_all();
+        }
+      }
+    };
+
+    for (size_t i = 0; i < workerCount; ++i)
+      workers.emplace_back(worker);
+    for (std::thread &thread : workers)
+      thread.join();
+
+    if (failed)
+      return llvm::createStringError(llvm::inconvertibleErrorCode(), "%s",
+                                     firstErrorMessage.c_str());
+  } else {
+    auto backendOr = getOrCreateBackend();
+    if (!backendOr)
+      return backendOr.takeError();
+    ExecutionBackend &backend = *backendOr;
+
+    while (!scheduler.readyQueue.empty()) {
+      const std::string taskId = scheduler.readyQueue.front();
+      scheduler.readyQueue.pop_front();
+      auto taskIt = scheduler.tasksById.find(taskId);
+      if (taskIt == scheduler.tasksById.end()) {
+        return llvm::createStringError(llvm::inconvertibleErrorCode(),
+                                       "scheduler lost task definition for %s",
+                                       taskId.c_str());
+      }
+      const RuntimeTask &task = taskIt->second;
+      if (auto err = canScheduleTask(task))
+        return std::move(err);
+      auto resolvedTaskOr =
+          resolveTaskBindings(task, workingDirectory, producedBindings);
+      if (!resolvedTaskOr)
+        return resolvedTaskOr.takeError();
+
+      ExecutionRequest request;
+      request.sessionId = sessionTrace.sessionId;
+      request.task = std::move(*resolvedTaskOr);
+      request.workingDirectory = workingDirectory;
+
+      auto resultOr = backend.run(request);
+      if (!resultOr)
+        return resultOr.takeError();
+
+      recordProducedBindings(request.task, producedBindings);
+      completedTasks.insert(taskId);
+
+      if (resultOr->profileTrace) {
+        for (ProfileEvent event : resultOr->profileTrace->events)
+          sessionTrace.addEvent(std::move(event));
+      }
+
+      auto dependentsIt = scheduler.dependents.find(taskId);
+      if (dependentsIt == scheduler.dependents.end())
         continue;
-      if (depCountIt->second == 0)
-        continue;
-      --depCountIt->second;
-      if (depCountIt->second == 0)
-        scheduler.readyQueue.push_back(dependentId);
+      for (const std::string &dependentId : dependentsIt->second) {
+        auto depCountIt = scheduler.remainingDependencies.find(dependentId);
+        if (depCountIt == scheduler.remainingDependencies.end())
+          continue;
+        if (depCountIt->second == 0)
+          continue;
+        --depCountIt->second;
+        if (depCountIt->second == 0)
+          scheduler.readyQueue.push_back(dependentId);
+      }
     }
   }
 

@@ -41,12 +41,16 @@
 
 #include <filesystem>
 #include <chrono>
+#include <condition_variable>
 #include <fstream>
+#include <atomic>
 #include <cstring>
 #include <cstdlib>
 #include <iterator>
+#include <mutex>
 #include <memory>
 #include <string>
+#include <thread>
 #include <tuple>
 #include <vector>
 
@@ -692,6 +696,88 @@ public:
   std::vector<std::string> seenTaskIds;
   std::vector<std::string> seenSessionIds;
   std::vector<std::string> seenWorkingDirectories;
+};
+
+class ConcurrentRootOverlapBackendDriver : public ExecutionBackendDriver {
+public:
+  llvm::Expected<ExecutionResult>
+  run(const ExecutionRequest &request) override {
+    {
+      std::lock_guard<std::mutex> lock(mu);
+      seenTaskIds.push_back(request.task.taskId);
+    }
+
+    const int runningNow = ++runningCount;
+    int observedMax = maxRunning.load();
+    while (runningNow > observedMax &&
+           !maxRunning.compare_exchange_weak(observedMax, runningNow)) {
+    }
+
+    if (request.task.taskId == "task_a" || request.task.taskId == "task_b")
+      std::this_thread::sleep_for(std::chrono::milliseconds(120));
+
+    --runningCount;
+
+    ExecutionResult result;
+    result.taskId = request.task.taskId;
+    return result;
+  }
+
+  std::atomic<int> runningCount{0};
+  std::atomic<int> maxRunning{0};
+  std::mutex mu;
+  std::vector<std::string> seenTaskIds;
+};
+
+class ConcurrentFailureStopsJoinBackendDriver : public ExecutionBackendDriver {
+public:
+  llvm::Expected<ExecutionResult>
+  run(const ExecutionRequest &request) override {
+    {
+      std::lock_guard<std::mutex> lock(mu);
+      seenTaskIds.push_back(request.task.taskId);
+    }
+
+    if (request.task.taskId == "task_a") {
+      {
+        std::lock_guard<std::mutex> lock(mu);
+        taskAStarted = true;
+      }
+      cv.notify_all();
+
+      std::unique_lock<std::mutex> lock(mu);
+      if (!cv.wait_for(lock, std::chrono::milliseconds(200),
+                       [&] { return taskBFailed; })) {
+        taskATimedOutWaitingForFailure = true;
+      }
+
+      ExecutionResult result;
+      result.taskId = request.task.taskId;
+      return result;
+    }
+
+    if (request.task.taskId == "task_b") {
+      std::unique_lock<std::mutex> lock(mu);
+      cv.wait_for(lock, std::chrono::milliseconds(200),
+                  [&] { return taskAStarted; });
+      taskBFailed = true;
+      lock.unlock();
+      cv.notify_all();
+      return llvm::createStringError(llvm::inconvertibleErrorCode(),
+                                     "[test:concurrent] rejected task_b");
+    }
+
+    ExecutionResult result;
+    result.taskId = request.task.taskId;
+    return result;
+  }
+
+  std::mutex mu;
+  std::condition_variable cv;
+  bool taskAStarted = false;
+  bool taskBFailed = false;
+  bool taskATimedOutWaitingForFailure = false;
+  std::vector<std::string> seenTaskIds;
 };
 
 class FailingExecutionBackendDriver : public ExecutionBackendDriver {
@@ -3338,6 +3424,80 @@ static void testExecutionSessionRunsTasksInTopologicalOrder() {
   }
 }
 
+static void testExecutionSessionRunsReadyRootsConcurrently() {
+  TaskGraph graph;
+
+  RuntimeTask taskA;
+  taskA.taskId = "task_a";
+
+  RuntimeTask taskB;
+  taskB.taskId = "task_b";
+
+  RuntimeTask taskJoin;
+  taskJoin.taskId = "task_join";
+  taskJoin.dependencies = {"task_a", "task_b"};
+
+  auto addA = graph.addTask(taskA);
+  EXPECT(!addA, "execution session concurrent add task_a");
+  auto addJoin = graph.addTask(taskJoin);
+  EXPECT(!addJoin, "execution session concurrent add task_join");
+  auto addB = graph.addTask(taskB);
+  EXPECT(!addB, "execution session concurrent add task_b");
+
+  auto driver = std::make_shared<ConcurrentRootOverlapBackendDriver>();
+  ConcurrentRootOverlapBackendDriver *driverPtr = driver.get();
+  ExecutionSession session(ExecutionBackendKind::Simulation, driver);
+
+  auto traceOr = session.run(graph);
+  EXPECT((bool)traceOr, "execution session concurrent run succeeds");
+  EXPECT(driverPtr->maxRunning.load() >= 2,
+         "execution session overlaps ready root simulation tasks");
+  EXPECT(driverPtr->seenTaskIds.size() == 3,
+         "execution session concurrent backend invocation count");
+  if (driverPtr->seenTaskIds.size() == 3) {
+    EXPECT(driverPtr->seenTaskIds[2] == "task_join",
+           "execution session concurrent join task runs after roots");
+  }
+}
+
+static void testExecutionSessionFailureStopsJoinAfterConcurrentRootFailure() {
+  TaskGraph graph;
+
+  RuntimeTask taskA;
+  taskA.taskId = "task_a";
+
+  RuntimeTask taskB;
+  taskB.taskId = "task_b";
+
+  RuntimeTask taskJoin;
+  taskJoin.taskId = "task_join";
+  taskJoin.dependencies = {"task_a", "task_b"};
+
+  auto addA = graph.addTask(taskA);
+  EXPECT(!addA, "execution session concurrent failure add task_a");
+  auto addJoin = graph.addTask(taskJoin);
+  EXPECT(!addJoin, "execution session concurrent failure add task_join");
+  auto addB = graph.addTask(taskB);
+  EXPECT(!addB, "execution session concurrent failure add task_b");
+
+  auto driver = std::make_shared<ConcurrentFailureStopsJoinBackendDriver>();
+  ConcurrentFailureStopsJoinBackendDriver *driverPtr = driver.get();
+  ExecutionSession session(ExecutionBackendKind::Simulation, driver);
+
+  auto traceOr = session.run(graph);
+  EXPECT(!(bool)traceOr, "execution session concurrent failure rejects run");
+  if (!traceOr) {
+    const std::string message = llvm::toString(traceOr.takeError());
+    EXPECT(message.find("[test:concurrent] rejected task_b") !=
+               std::string::npos,
+           "execution session concurrent failure surfaces rejection");
+  }
+  EXPECT(!driverPtr->taskATimedOutWaitingForFailure,
+         "execution session concurrent failure lets sibling fail while task_a is in flight");
+  EXPECT(driverPtr->seenTaskIds.size() == 2,
+         "execution session concurrent failure does not dispatch join task");
+}
+
 static void testExecutionSessionCanReleaseWorkingDirectoriesForProcessExit() {
   TaskGraph graph;
 
@@ -4300,6 +4460,8 @@ int main() {
   testExecutionSessionPlansTopologicalOrder();
   testExecutionSessionPlanTracksMultipleReadyRoots();
   testExecutionSessionRunsTasksInTopologicalOrder();
+  testExecutionSessionRunsReadyRootsConcurrently();
+  testExecutionSessionFailureStopsJoinAfterConcurrentRootFailure();
   testExecutionSessionCanReleaseWorkingDirectoriesForProcessExit();
   testExecutionSessionCarriesInvocationBindings();
   testExecutionSessionResolvesTaskOutputBindings();
