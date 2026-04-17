@@ -701,7 +701,15 @@ public:
 
 class ConcurrentRootOverlapBackendDriver : public ExecutionBackendDriver {
 public:
-  bool allowsConcurrentTaskDispatch() const override { return true; }
+  BackendCapabilities capabilities() const override {
+    BackendCapabilities caps;
+    caps.supportsConcurrentDispatch = true;
+    caps.supportsConcurrentExecution = false;
+    caps.requiresSerializedLaunch = false;
+    caps.maxConcurrentTasks = 2;
+    caps.maxConcurrentStreams = 1;
+    return caps;
+  }
 
   llvm::Expected<ExecutionResult>
   run(const ExecutionRequest &request) override {
@@ -734,7 +742,15 @@ public:
 
 class ConcurrentFailureStopsJoinBackendDriver : public ExecutionBackendDriver {
 public:
-  bool allowsConcurrentTaskDispatch() const override { return true; }
+  BackendCapabilities capabilities() const override {
+    BackendCapabilities caps;
+    caps.supportsConcurrentDispatch = true;
+    caps.supportsConcurrentExecution = false;
+    caps.requiresSerializedLaunch = false;
+    caps.maxConcurrentTasks = 2;
+    caps.maxConcurrentStreams = 1;
+    return caps;
+  }
 
   llvm::Expected<ExecutionResult>
   run(const ExecutionRequest &request) override {
@@ -2275,6 +2291,57 @@ static void testBackendCapabilitiesExposeSimAndNpuContracts() {
     EXPECT(caps.maxConcurrentStreams == 1,
            "npu backend advertises a single stream");
   }
+}
+
+static void testBackendCapabilitiesFollowInjectedDriverContract() {
+  class CapabilityAwareSimDriver final : public ExecutionBackendDriver {
+  public:
+    BackendCapabilities capabilities() const override {
+      BackendCapabilities caps;
+      caps.supportsConcurrentDispatch = true;
+      caps.supportsConcurrentExecution = true;
+      caps.requiresSerializedLaunch = false;
+      caps.maxConcurrentTasks = 7;
+      caps.maxConcurrentStreams = 3;
+      return caps;
+    }
+
+    llvm::Expected<ExecutionResult>
+    run(const ExecutionRequest &request) override {
+      ExecutionResult result;
+      result.taskId = request.task.taskId;
+      return result;
+    }
+  };
+
+  auto driver = std::make_shared<CapabilityAwareSimDriver>();
+  auto simOr = createExecutionBackend(ExecutionBackendKind::Simulation, driver);
+  EXPECT((bool)simOr, "driver-backed simulation backend creation succeeds");
+  if (!simOr)
+    return;
+
+  const BackendCapabilities driverCaps = driver->capabilities();
+  EXPECT(driver->allowsConcurrentTaskDispatch() ==
+             driverCaps.supportsConcurrentDispatch,
+         "driver dispatchability derives from driver capabilities");
+
+  const BackendCapabilities backendCaps = (*simOr)->capabilities();
+  EXPECT(backendCaps.supportsConcurrentDispatch ==
+             driverCaps.supportsConcurrentDispatch,
+         "driver-backed simulation backend mirrors driver concurrent dispatch");
+  EXPECT(backendCaps.supportsConcurrentExecution ==
+             driverCaps.supportsConcurrentExecution,
+         "driver-backed simulation backend mirrors driver concurrent execution");
+  EXPECT(backendCaps.requiresSerializedLaunch ==
+             driverCaps.requiresSerializedLaunch,
+         "driver-backed simulation backend mirrors driver serialized launch");
+  EXPECT(backendCaps.maxConcurrentTasks == driverCaps.maxConcurrentTasks,
+         "driver-backed simulation backend mirrors driver task capacity");
+  EXPECT(backendCaps.maxConcurrentStreams == driverCaps.maxConcurrentStreams,
+         "driver-backed simulation backend mirrors driver stream capacity");
+  EXPECT((*simOr)->allowsConcurrentTaskDispatch() ==
+             backendCaps.supportsConcurrentDispatch,
+         "driver-backed simulation dispatchability stays coherent");
 }
 
 static void testInvalidBackendSelection() {
@@ -4563,6 +4630,7 @@ int main() {
   testBackendSelection();
   testDefaultBackendRequiresDriver();
   testBackendCapabilitiesExposeSimAndNpuContracts();
+  testBackendCapabilitiesFollowInjectedDriverContract();
   testInvalidBackendSelection();
   testBackendDelegatesToDriver();
   testNpuBackendRejectsMissingDeviceBinaryPath();
