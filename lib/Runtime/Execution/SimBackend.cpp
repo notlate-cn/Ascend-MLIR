@@ -53,9 +53,15 @@ public:
     return queue;
   }
 
-  std::optional<std::string> run(std::function<std::optional<std::string>()> fn) {
-    auto task = std::make_shared<std::packaged_task<std::optional<std::string>()>>(
-        std::move(fn));
+  std::optional<std::string>
+  run(std::function<std::optional<std::string>(ExecutionRunner &)> fn) {
+    auto task = std::make_shared<
+        std::packaged_task<std::optional<std::string>()>>([this, fn = std::move(fn)]() mutable {
+      auto runnerOr = getOrCreateRunner();
+      if (!runnerOr)
+        return std::optional<std::string>(llvm::toString(runnerOr.takeError()));
+      return fn(**runnerOr);
+    });
     auto future = task->get_future();
     {
       std::lock_guard<std::mutex> lock(mu_);
@@ -84,8 +90,10 @@ private:
       {
         std::unique_lock<std::mutex> lock(mu_);
         cv_.wait(lock, [&] { return stopping_ || !workQueue_.empty(); });
-        if (stopping_ && workQueue_.empty())
+        if (stopping_ && workQueue_.empty()) {
+          runner_.reset();
           return;
+        }
         work = std::move(workQueue_.front());
         workQueue_.pop_front();
       }
@@ -93,11 +101,26 @@ private:
     }
   }
 
+  llvm::Expected<ExecutionRunner *> getOrCreateRunner() {
+    if (!runner_) {
+      auto runnerOr = createDefaultExecutionRunner(ExecutionRunnerMode::Simulation);
+      if (!runnerOr)
+        return runnerOr.takeError();
+      runner_ = std::move(*runnerOr);
+      if (auto err = runner_->initialize()) {
+        runner_.reset();
+        return std::move(err);
+      }
+    }
+    return runner_.get();
+  }
+
   std::mutex mu_;
   std::condition_variable cv_;
   std::deque<std::function<void()>> workQueue_;
   bool stopping_ = false;
   std::thread worker_;
+  std::unique_ptr<ExecutionRunner> runner_;
 };
 
 llvm::Expected<std::vector<NDArray>>
@@ -387,33 +410,26 @@ runWithExecutor(const ExecutionRequest &request) {
 
   auto runStart = std::chrono::steady_clock::now();
 
-  auto launchError = SimulatorDispatchQueue::instance().run([&]() -> std::optional<std::string> {
+  auto launchError = SimulatorDispatchQueue::instance().run(
+      [&](ExecutionRunner &runner) -> std::optional<std::string> {
     if (request.task.artifact.kernelKind == KernelKind::Mix) {
       if (auto err = configureDynamicLibraryArtifactSimulationEnv(
               request.task.artifact))
         return llvm::toString(stageError("artifact", std::move(err)));
     }
 
-    auto runnerOr = createDefaultExecutionRunner(ExecutionRunnerMode::Simulation);
-    if (!runnerOr)
-      return llvm::toString(stageError("executor_initialize", runnerOr.takeError()));
-    std::unique_ptr<ExecutionRunner> runner = std::move(*runnerOr);
-
-    if (auto err = runner->initialize())
-      return llvm::toString(stageError("executor_initialize", std::move(err)));
-
     if (request.task.artifact.kernelKind == KernelKind::Mix) {
       DynamicLibraryExecutionLaunch launch;
       launch.sharedLibraryPath = request.task.artifact.sharedLibraryPath;
       launch.symbolName = request.task.artifact.sharedLibrarySymbol;
-      if (auto err = runner->runDynamicLibraryArtifact(launch, args))
+      if (auto err = runner.runDynamicLibraryArtifact(launch, args))
         return llvm::toString(stageError("kernel_launch", std::move(err)));
     } else {
       FileExecutionLaunch launch;
       launch.binaryPath = request.task.artifact.deviceBinaryPath;
       launch.kernelName = request.task.artifact.kernelName;
       launch.magic = magicForKernelKind(request.task.artifact.kernelKind);
-      if (auto err = runner->runFile(launch, args))
+      if (auto err = runner.runFile(launch, args))
         return llvm::toString(stageError("kernel_launch", std::move(err)));
     }
     return std::nullopt;
