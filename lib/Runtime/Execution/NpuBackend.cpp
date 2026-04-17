@@ -241,8 +241,6 @@ BackendCapabilities NpuBackend::capabilities() const {
   return caps;
 }
 
-bool NpuBackend::allowsConcurrentTaskDispatch() const { return false; }
-
 llvm::Expected<ExecutionResult>
 NpuBackend::run(const ExecutionRequest &request) {
   if (driver_)

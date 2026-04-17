@@ -2246,16 +2246,34 @@ static void testBackendCapabilitiesExposeSimAndNpuContracts() {
     const BackendCapabilities caps = (*simOr)->capabilities();
     EXPECT(caps.supportsConcurrentDispatch,
            "sim backend advertises concurrent dispatch");
+    EXPECT((*simOr)->allowsConcurrentTaskDispatch() ==
+               caps.supportsConcurrentDispatch,
+           "sim backend dispatchability is derived from capabilities");
+    EXPECT(!caps.supportsConcurrentExecution,
+           "sim backend advertises non-concurrent execution");
     EXPECT(caps.requiresSerializedLaunch,
            "sim backend advertises serialized launch");
+    EXPECT(caps.maxConcurrentTasks == 1024,
+           "sim backend advertises the expected task capacity");
+    EXPECT(caps.maxConcurrentStreams == 1,
+           "sim backend advertises a single stream");
   }
 
   if (npuOr) {
     const BackendCapabilities caps = (*npuOr)->capabilities();
+    EXPECT(caps.supportsConcurrentDispatch,
+           "npu backend advertises concurrent dispatch");
+    EXPECT((*npuOr)->allowsConcurrentTaskDispatch() ==
+               caps.supportsConcurrentDispatch,
+           "npu backend dispatchability is derived from capabilities");
+    EXPECT(caps.supportsConcurrentExecution,
+           "npu backend advertises concurrent execution");
     EXPECT(!caps.requiresSerializedLaunch,
            "npu backend does not force simulator launch serialization");
-    EXPECT(caps.maxConcurrentTasks >= 1,
-           "npu backend advertises at least one runnable task");
+    EXPECT(caps.maxConcurrentTasks == 1,
+           "npu backend advertises the expected task capacity");
+    EXPECT(caps.maxConcurrentStreams == 1,
+           "npu backend advertises a single stream");
   }
 }
 
