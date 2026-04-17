@@ -10,6 +10,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <dlfcn.h>
+#include <mutex>
 #include <type_traits>
 
 namespace mlir::runtime {
@@ -75,8 +76,11 @@ llvm::Error NativeExecutionRunner::loadRuntimeLibraries() {
     return ascendHomeOr.takeError();
 
   const std::string ascendHome = *ascendHomeOr;
-  prependEnvPath("LD_LIBRARY_PATH", findAscendLib64Dir(ascendHome));
-  prependEnvPath("LD_LIBRARY_PATH", findAscendDeviceLibDir(ascendHome));
+  static std::once_flag runtimeEnvOnce;
+  std::call_once(runtimeEnvOnce, [&] {
+    prependEnvPath("LD_LIBRARY_PATH", findAscendLib64Dir(ascendHome));
+    prependEnvPath("LD_LIBRARY_PATH", findAscendDeviceLibDir(ascendHome));
+  });
 
   const std::string runtimeLib = getRuntimeLibPath(mode_);
   libHandle_ = dlopen(runtimeLib.c_str(), RTLD_LAZY | RTLD_GLOBAL);
