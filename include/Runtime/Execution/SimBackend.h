@@ -13,7 +13,6 @@ public:
 
   ExecutionBackendKind kind() const override;
   BackendCapabilities capabilities() const override;
-  bool allowsConcurrentTaskDispatch() const override;
   llvm::Expected<ExecutionResult> run(const ExecutionRequest &request) override;
 
 private:
