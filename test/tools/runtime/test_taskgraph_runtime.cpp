@@ -4079,29 +4079,6 @@ static void testResourceSchedulerIgnoresForgedRelease() {
   ResourceScheduler scheduler;
   scheduler.configureWorkspaceBudget(512);
 
-  ResourceReservation forged;
-  forged.sessionId = "ghost";
-  forged.taskId = "ghost";
-  forged.backendKind = ExecutionBackendKind::Simulation;
-  forged.workspaceBytes = 512;
-  scheduler.release(forged);
-
-  TaskResourceRequirement req;
-  req.backendKind = ExecutionBackendKind::Simulation;
-  req.workspaceBytes = 512;
-
-  auto first = scheduler.tryReserve("session0", "task0", req);
-  EXPECT(first.has_value(), "forged release does not mint workspace");
-
-  auto second = scheduler.tryReserve("session1", "task1", req);
-  EXPECT(!second.has_value(),
-         "forged release leaves only the configured workspace budget");
-}
-
-static void testResourceSchedulerRejectsDoubleRelease() {
-  ResourceScheduler scheduler;
-  scheduler.configureWorkspaceBudget(512);
-
   TaskResourceRequirement req;
   req.backendKind = ExecutionBackendKind::Simulation;
   req.workspaceBytes = 512;
@@ -4109,15 +4086,49 @@ static void testResourceSchedulerRejectsDoubleRelease() {
   auto first = scheduler.tryReserve("session0", "task0", req);
   EXPECT(first.has_value(), "initial reservation succeeds");
 
-  scheduler.release(*first);
-  scheduler.release(*first);
+  ResourceReservation forged;
+  forged.sessionId = first->sessionId;
+  forged.taskId = first->taskId;
+  forged.backendKind = first->backendKind;
+  forged.workspaceBytes = first->workspaceBytes;
+  forged.holdsSerializedLaunchLane = first->holdsSerializedLaunchLane;
+  forged.holdsDeviceSlot = first->holdsDeviceSlot;
+  scheduler.release(forged);
 
   auto second = scheduler.tryReserve("session1", "task1", req);
-  EXPECT(second.has_value(), "double release does not block the next reserve");
+  EXPECT(!second.has_value(),
+         "forged public tuple does not release live reservation");
 
-  auto third = scheduler.tryReserve("session2", "task2", req);
-  EXPECT(!third.has_value(),
-         "double release does not mint extra workspace capacity");
+  scheduler.release(*first);
+  auto third = scheduler.tryReserve("session1", "task1", req);
+  EXPECT(third.has_value(), "issued reservation releases normally");
+}
+
+static void testResourceSchedulerHandlesIdenticalPublicReservationsIndependently() {
+  ResourceScheduler scheduler;
+  scheduler.configureWorkspaceBudget(1024);
+
+  TaskResourceRequirement req;
+  req.backendKind = ExecutionBackendKind::Simulation;
+  req.workspaceBytes = 512;
+
+  auto first = scheduler.tryReserve("session0", "task0", req);
+  EXPECT(first.has_value(),
+         "first reservation with public tuple succeeds");
+  auto second = scheduler.tryReserve("session0", "task0", req);
+  EXPECT(second.has_value(),
+         "second reservation with identical public tuple succeeds");
+
+  scheduler.release(*first);
+  scheduler.release(*first);
+
+  auto third = scheduler.tryReserve("session0", "task0", req);
+  EXPECT(third.has_value(),
+         "stale copy release does not disturb a same-tuple live reservation");
+
+  auto fourth = scheduler.tryReserve("session0", "task0", req);
+  EXPECT(!fourth.has_value(),
+         "same-tuple live reservation still consumes the remaining budget");
 }
 
 static void testResourceSchedulerHonorsExclusiveDeviceAccess() {
@@ -4133,13 +4144,22 @@ static void testResourceSchedulerHonorsExclusiveDeviceAccess() {
   auto exclusive = scheduler.tryReserve("session0", "task0", exclusiveReq);
   EXPECT(exclusive.has_value(), "exclusive NPU reservation succeeds");
 
+  ResourceReservation forged;
+  forged.sessionId = exclusive->sessionId;
+  forged.taskId = exclusive->taskId;
+  forged.backendKind = exclusive->backendKind;
+  forged.workspaceBytes = exclusive->workspaceBytes;
+  forged.holdsSerializedLaunchLane = exclusive->holdsSerializedLaunchLane;
+  forged.holdsDeviceSlot = exclusive->holdsDeviceSlot;
+  scheduler.release(forged);
+
   TaskResourceRequirement normalReq;
   normalReq.backendKind = ExecutionBackendKind::Npu;
   normalReq.workspaceBytes = 256;
 
   auto blocked = scheduler.tryReserve("session1", "task1", normalReq);
   EXPECT(!blocked.has_value(),
-         "exclusive NPU reservation blocks other device reservations");
+         "forged release does not free exclusive NPU reservation");
 
   scheduler.release(*exclusive);
   auto afterRelease = scheduler.tryReserve("session1", "task1", normalReq);
@@ -4839,7 +4859,7 @@ int main() {
   testResourceSchedulerReservesAndReleasesSlots();
   testRunManifestParsesVecSimulationSpec();
   testResourceSchedulerIgnoresForgedRelease();
-  testResourceSchedulerRejectsDoubleRelease();
+  testResourceSchedulerHandlesIdenticalPublicReservationsIndependently();
   testResourceSchedulerHonorsExclusiveDeviceAccess();
   testResourceSchedulerPreservesOutstandingReservationsAcrossReconfigure();
   testRunManifestParsesOutputMetadataWithoutExpectedOutputs();

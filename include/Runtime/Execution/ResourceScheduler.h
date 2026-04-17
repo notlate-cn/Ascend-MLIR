@@ -24,6 +24,10 @@ struct ResourceReservation {
   size_t workspaceBytes = 0;
   bool holdsSerializedLaunchLane = false;
   bool holdsDeviceSlot = false;
+
+private:
+  friend class ResourceScheduler;
+  uint64_t token_ = 0;
 };
 
 class ResourceScheduler {
@@ -39,25 +43,10 @@ public:
   void release(const ResourceReservation &reservation);
 
 private:
-  struct ReservationKey {
+  struct ActiveReservation {
     std::string sessionId;
     std::string taskId;
     ExecutionBackendKind backendKind = ExecutionBackendKind::Simulation;
-    size_t workspaceBytes = 0;
-    bool holdsSerializedLaunchLane = false;
-    bool holdsDeviceSlot = false;
-  };
-
-  struct ReservationKeyHash {
-    size_t operator()(const ReservationKey &key) const;
-  };
-
-  struct ReservationKeyEq {
-    bool operator()(const ReservationKey &lhs,
-                    const ReservationKey &rhs) const;
-  };
-
-  struct ActiveReservation {
     size_t workspaceBytes = 0;
     size_t deviceSlots = 0;
     bool holdsSerializedLaunchLane = false;
@@ -70,8 +59,8 @@ private:
   size_t reservedSimDispatchLanes_ = 0;
   size_t reservedDeviceSlots_ = 0;
   size_t reservedWorkspaceBytes_ = 0;
-  std::unordered_multimap<ReservationKey, ActiveReservation, ReservationKeyHash,
-                          ReservationKeyEq>
+  uint64_t nextReservationToken_ = 1;
+  std::unordered_map<uint64_t, ActiveReservation>
       activeReservations_;
 };
 
