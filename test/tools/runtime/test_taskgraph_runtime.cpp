@@ -4223,6 +4223,36 @@ static void testGlobalSchedulerTracksTwoIndependentSessions() {
     llvm::consumeError(emptyOr.takeError());
 }
 
+static void testExecutionSessionSubmitsThroughGlobalScheduler() {
+  ExecutionSession sessionA(ExecutionBackendKind::Simulation);
+  ExecutionSession sessionB(ExecutionBackendKind::Simulation);
+
+  TaskGraph graphA;
+  RuntimeTask taskA;
+  taskA.taskId = "submit_a";
+  EXPECT(!graphA.addTask(taskA), "graphA add task");
+
+  TaskGraph graphB;
+  RuntimeTask taskB;
+  taskB.taskId = "submit_b";
+  EXPECT(!graphB.addTask(taskB), "graphB add task");
+
+  auto sessionAOr = sessionA.submit(graphA);
+  auto sessionBOr = sessionB.submit(graphB);
+  EXPECT((bool)sessionAOr, "submit session A succeeds");
+  EXPECT((bool)sessionBOr, "submit session B succeeds");
+  if (sessionAOr && sessionBOr) {
+    EXPECT(sessionAOr->sessionId() != sessionBOr->sessionId(),
+           "execution sessions share the global scheduler");
+  }
+
+  TaskGraph emptyGraph;
+  auto emptyOr = sessionA.submit(emptyGraph);
+  EXPECT(!emptyOr, "empty graph is rejected");
+  if (!emptyOr)
+    llvm::consumeError(emptyOr.takeError());
+}
+
 static void testRunManifestParsesVecSimulationSpec() {
   const std::string manifestPath = "/tmp/runtime_run_manifest.json";
   {
@@ -4883,6 +4913,7 @@ int main() {
   testExecutionSessionCanForceSerialSchedulerViaEnv();
   testExecutionSessionFailureStopsJoinAfterConcurrentRootFailure();
   testExecutionSessionCanReleaseWorkingDirectoriesForProcessExit();
+  testExecutionSessionSubmitsThroughGlobalScheduler();
   testExecutionSessionCarriesInvocationBindings();
   testExecutionSessionResolvesTaskOutputBindings();
   testExecutionSessionStopsAtGateRejectedTask();

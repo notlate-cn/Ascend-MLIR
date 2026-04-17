@@ -2,6 +2,7 @@
 #pragma once
 
 #include "Runtime/Execution/ExecutionBackend.h"
+#include "Runtime/Execution/GlobalScheduler.h"
 #include "llvm/Support/Error.h"
 
 #include <memory>
@@ -23,11 +24,14 @@ public:
                    std::shared_ptr<ExecutionBackendDriver> driver);
   ~ExecutionSession();
 
+  llvm::Expected<SessionHandle> submit(const TaskGraph &graph);
   llvm::Expected<SessionPlan> plan(const TaskGraph &graph) const;
   llvm::Expected<ProfileTrace> run(const TaskGraph &graph);
   void releaseWorkingDirectoriesForProcessExit();
 
 private:
+  static GlobalScheduler &globalScheduler();
+
   llvm::Expected<ExecutionBackend &> getOrCreateBackend();
 
   ExecutionBackendKind backendKind_;
