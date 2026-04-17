@@ -232,6 +232,13 @@ ExecutionBackendKind NpuBackend::kind() const {
 }
 
 BackendCapabilities NpuBackend::capabilities() const {
+  if (driver_) {
+    BackendCapabilities caps = driver_->capabilities();
+    caps.supportsConcurrentDispatch = false;
+    caps.supportsConcurrentExecution = false;
+    return caps;
+  }
+
   BackendCapabilities caps;
   caps.supportsConcurrentDispatch = false;
   caps.supportsConcurrentExecution = false;

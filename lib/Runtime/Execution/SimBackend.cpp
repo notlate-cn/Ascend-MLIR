@@ -504,9 +504,11 @@ ExecutionBackendKind SimBackend::kind() const {
 }
 
 BackendCapabilities SimBackend::capabilities() const {
+  if (driver_)
+    return driver_->capabilities();
+
   BackendCapabilities caps;
-  caps.supportsConcurrentDispatch =
-      driver_ ? driver_->allowsConcurrentTaskDispatch() : true;
+  caps.supportsConcurrentDispatch = true;
   caps.supportsConcurrentExecution = false;
   caps.requiresSerializedLaunch = true;
   caps.maxConcurrentTasks = 1024;

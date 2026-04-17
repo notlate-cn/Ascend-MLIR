@@ -28,7 +28,10 @@ struct ExecutionResult {
 class ExecutionBackendDriver {
 public:
   virtual ~ExecutionBackendDriver() = default;
-  virtual bool allowsConcurrentTaskDispatch() const { return false; }
+  virtual BackendCapabilities capabilities() const { return {}; }
+  virtual bool allowsConcurrentTaskDispatch() const {
+    return capabilities().supportsConcurrentDispatch;
+  }
   virtual llvm::Expected<ExecutionResult>
   run(const ExecutionRequest &request) = 0;
 };
