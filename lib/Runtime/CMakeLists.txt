@@ -11,9 +11,11 @@ add_mlir_library(AscendCRuntime
   Execution/OutputComparator.cpp
   Execution/RuntimeFrontendCore.cpp
   Execution/ExecutionSession.cpp
+  Execution/GlobalScheduler.cpp
   Execution/NpuBackend.cpp
   Execution/NativeExecutionRunner.cpp
   Execution/ResourceScheduler.cpp
+  Execution/SessionHandle.cpp
   Execution/SimBackend.cpp
   Execution/TaskGraph.cpp
   Mix/AscendCMixCompiler.cpp
