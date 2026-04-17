@@ -700,6 +700,8 @@ public:
 
 class ConcurrentRootOverlapBackendDriver : public ExecutionBackendDriver {
 public:
+  bool allowsConcurrentTaskDispatch() const override { return true; }
+
   llvm::Expected<ExecutionResult>
   run(const ExecutionRequest &request) override {
     {
@@ -731,6 +733,8 @@ public:
 
 class ConcurrentFailureStopsJoinBackendDriver : public ExecutionBackendDriver {
 public:
+  bool allowsConcurrentTaskDispatch() const override { return true; }
+
   llvm::Expected<ExecutionResult>
   run(const ExecutionRequest &request) override {
     {
@@ -2184,9 +2188,15 @@ static void testBackendSelection() {
   if (simOr)
     EXPECT((*simOr)->kind() == ExecutionBackendKind::Simulation,
            "simulation backend reports its kind");
+  if (simOr)
+    EXPECT(!(*simOr)->allowsConcurrentTaskDispatch(),
+           "simulation backend with default driver stays serial by default");
   if (npuOr)
     EXPECT((*npuOr)->kind() == ExecutionBackendKind::Npu,
            "npu backend reports its kind");
+  if (npuOr)
+    EXPECT(!(*npuOr)->allowsConcurrentTaskDispatch(),
+           "npu backend stays serial");
 
   ExecutionRequest request;
   request.task.taskId = "single";
@@ -2204,6 +2214,11 @@ static void testDefaultBackendRequiresDriver() {
   EXPECT((bool)npuOr, "npu backend factory without driver succeeds");
   if (!simOr || !npuOr)
     return;
+
+  EXPECT((*simOr)->allowsConcurrentTaskDispatch(),
+         "real simulation backend opts into concurrent task dispatch");
+  EXPECT(!(*npuOr)->allowsConcurrentTaskDispatch(),
+         "real npu backend stays serial");
 
   ExecutionRequest request;
   request.task.taskId = "task_a";

@@ -27,6 +27,7 @@ struct ExecutionResult {
 class ExecutionBackendDriver {
 public:
   virtual ~ExecutionBackendDriver() = default;
+  virtual bool allowsConcurrentTaskDispatch() const { return false; }
   virtual llvm::Expected<ExecutionResult>
   run(const ExecutionRequest &request) = 0;
 };
@@ -36,6 +37,7 @@ public:
   virtual ~ExecutionBackend() = default;
 
   virtual ExecutionBackendKind kind() const = 0;
+  virtual bool allowsConcurrentTaskDispatch() const { return false; }
   virtual llvm::Expected<ExecutionResult>
   run(const ExecutionRequest &request) = 0;
 };

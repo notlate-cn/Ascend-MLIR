@@ -17,6 +17,7 @@
 
 #include <chrono>
 #include <cstring>
+#include <mutex>
 #include <optional>
 #include <type_traits>
 #include <utility>
@@ -40,46 +41,10 @@ llvm::Error stageError(llvm::StringRef stage, ErrorT &&errorLike) {
                                  stage.str().c_str(), detail.c_str());
 }
 
-class WorkingDirectoryGuard {
-public:
-  static llvm::Expected<WorkingDirectoryGuard>
-  enter(const std::string &newWorkingDirectory) {
-    llvm::SmallString<256> previousDirectory;
-    if (auto ec = llvm::sys::fs::current_path(previousDirectory))
-      return llvm::createStringError(ec, "cannot read current working directory");
-    if (auto ec = llvm::sys::fs::set_current_path(newWorkingDirectory))
-      return llvm::createStringError(ec, "cannot enter working directory: %s",
-                                     newWorkingDirectory.c_str());
-    return WorkingDirectoryGuard(previousDirectory.str().str());
-  }
-
-  ~WorkingDirectoryGuard() {
-    if (!previousDirectory_.empty())
-      (void)llvm::sys::fs::set_current_path(previousDirectory_);
-  }
-
-  WorkingDirectoryGuard(WorkingDirectoryGuard &&other) noexcept
-      : previousDirectory_(std::move(other.previousDirectory_)) {
-    other.previousDirectory_.clear();
-  }
-
-  WorkingDirectoryGuard &operator=(WorkingDirectoryGuard &&other) noexcept {
-    if (this != &other) {
-      previousDirectory_ = std::move(other.previousDirectory_);
-      other.previousDirectory_.clear();
-    }
-    return *this;
-  }
-
-  WorkingDirectoryGuard(const WorkingDirectoryGuard &) = delete;
-  WorkingDirectoryGuard &operator=(const WorkingDirectoryGuard &) = delete;
-
-private:
-  explicit WorkingDirectoryGuard(std::string previousDirectory)
-      : previousDirectory_(std::move(previousDirectory)) {}
-
-  std::string previousDirectory_;
-};
+std::mutex &simulatorExecutionGate() {
+  static std::mutex gate;
+  return gate;
+}
 
 llvm::Expected<std::vector<NDArray>>
 loadExpectedOutputs(const ExecutionInvocation &invocation) {
@@ -344,9 +309,7 @@ uint32_t magicForKernelKind(KernelKind kind) {
 
 llvm::Expected<ExecutionResult>
 runWithExecutor(const ExecutionRequest &request) {
-  auto cwdGuardOr = WorkingDirectoryGuard::enter(request.workingDirectory);
-  if (!cwdGuardOr)
-    return stageError("working_directory", cwdGuardOr.takeError());
+  std::lock_guard<std::mutex> guard(simulatorExecutionGate());
 
   if (request.task.artifact.kernelKind == KernelKind::Mix) {
     if (request.task.artifact.sharedLibraryPath.empty()) {
@@ -459,6 +422,10 @@ SimBackend::SimBackend(std::shared_ptr<ExecutionBackendDriver> driver)
 
 ExecutionBackendKind SimBackend::kind() const {
   return ExecutionBackendKind::Simulation;
+}
+
+bool SimBackend::allowsConcurrentTaskDispatch() const {
+  return driver_ ? driver_->allowsConcurrentTaskDispatch() : true;
 }
 
 llvm::Expected<ExecutionResult>

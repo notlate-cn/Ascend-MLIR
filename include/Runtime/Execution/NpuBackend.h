@@ -12,6 +12,7 @@ public:
   explicit NpuBackend(std::shared_ptr<ExecutionBackendDriver> driver = {});
 
   ExecutionBackendKind kind() const override;
+  bool allowsConcurrentTaskDispatch() const override;
   llvm::Expected<ExecutionResult> run(const ExecutionRequest &request) override;
 
 private:

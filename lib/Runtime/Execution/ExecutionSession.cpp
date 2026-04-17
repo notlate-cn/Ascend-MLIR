@@ -271,7 +271,15 @@ llvm::Expected<ProfileTrace> ExecutionSession::run(const TaskGraph &graph) {
   ProducedBindingMap producedBindings;
   std::set<std::string> completedTasks;
 
-  if (backendKind_ == ExecutionBackendKind::Simulation && driver_) {
+  auto backendOr = getOrCreateBackend();
+  if (!backendOr)
+    return backendOr.takeError();
+  ExecutionBackend &backend = *backendOr;
+  const bool enableConcurrentDispatch =
+      backend.allowsConcurrentTaskDispatch() &&
+      scheduler.orderedTaskIds.size() > 1;
+
+  if (enableConcurrentDispatch) {
     std::mutex schedulerMutex;
     std::condition_variable schedulerCv;
     bool failed = false;
@@ -288,20 +296,35 @@ llvm::Expected<ProfileTrace> ExecutionSession::run(const TaskGraph &graph) {
     workers.reserve(workerCount);
 
     auto worker = [&]() {
-      auto backendOr = createExecutionBackend(backendKind_, driver_);
-      if (!backendOr) {
+      ExecutionBackend *workerBackend = &backend;
+      std::unique_ptr<ExecutionBackend> ownedBackend;
+      if (driver_) {
+        auto ownedBackendOr = createExecutionBackend(backendKind_, driver_);
+        if (!ownedBackendOr) {
+          std::lock_guard<std::mutex> lock(schedulerMutex);
+          if (!failed) {
+            failed = true;
+            firstErrorMessage = llvm::toString(ownedBackendOr.takeError());
+          } else {
+            llvm::consumeError(ownedBackendOr.takeError());
+          }
+          schedulerCv.notify_all();
+          return;
+        }
+        ownedBackend = std::move(*ownedBackendOr);
+        workerBackend = ownedBackend.get();
+      }
+
+      if (!workerBackend) {
         std::lock_guard<std::mutex> lock(schedulerMutex);
         if (!failed) {
           failed = true;
-          firstErrorMessage = llvm::toString(backendOr.takeError());
-        } else {
-          llvm::consumeError(backendOr.takeError());
+          firstErrorMessage = "scheduler failed to create worker backend";
         }
         schedulerCv.notify_all();
         return;
       }
 
-      ExecutionBackend &backend = **backendOr;
       while (true) {
         ExecutionRequest request;
         std::string taskId;
@@ -364,7 +387,7 @@ llvm::Expected<ProfileTrace> ExecutionSession::run(const TaskGraph &graph) {
           ++inFlightTasks;
         }
 
-        auto resultOr = backend.run(request);
+        auto resultOr = workerBackend->run(request);
 
         {
           std::lock_guard<std::mutex> lock(schedulerMutex);
@@ -424,11 +447,6 @@ llvm::Expected<ProfileTrace> ExecutionSession::run(const TaskGraph &graph) {
       return llvm::createStringError(llvm::inconvertibleErrorCode(), "%s",
                                      firstErrorMessage.c_str());
   } else {
-    auto backendOr = getOrCreateBackend();
-    if (!backendOr)
-      return backendOr.takeError();
-    ExecutionBackend &backend = *backendOr;
-
     while (!scheduler.readyQueue.empty()) {
       const std::string taskId = scheduler.readyQueue.front();
       scheduler.readyQueue.pop_front();
