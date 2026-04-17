@@ -2344,6 +2344,53 @@ static void testBackendCapabilitiesFollowInjectedDriverContract() {
          "driver-backed simulation dispatchability stays coherent");
 }
 
+static void testBackendCapabilitiesConstrainDriverBackedNpuContract() {
+  class CapabilityAwareNpuDriver final : public ExecutionBackendDriver {
+  public:
+    BackendCapabilities capabilities() const override {
+      BackendCapabilities caps;
+      caps.supportsConcurrentDispatch = true;
+      caps.supportsConcurrentExecution = true;
+      caps.requiresSerializedLaunch = true;
+      caps.maxConcurrentTasks = 7;
+      caps.maxConcurrentStreams = 3;
+      return caps;
+    }
+
+    llvm::Expected<ExecutionResult>
+    run(const ExecutionRequest &request) override {
+      ExecutionResult result;
+      result.taskId = request.task.taskId;
+      return result;
+    }
+  };
+
+  auto driver = std::make_shared<CapabilityAwareNpuDriver>();
+  auto npuOr = createExecutionBackend(ExecutionBackendKind::Npu, driver);
+  EXPECT((bool)npuOr, "driver-backed npu backend creation succeeds");
+  if (!npuOr)
+    return;
+
+  const BackendCapabilities driverCaps = driver->capabilities();
+  EXPECT(driver->allowsConcurrentTaskDispatch() ==
+             driverCaps.supportsConcurrentDispatch,
+         "npu driver dispatchability derives from driver capabilities");
+
+  const BackendCapabilities backendCaps = (*npuOr)->capabilities();
+  EXPECT(!backendCaps.supportsConcurrentDispatch,
+         "driver-backed npu backend stays conservative about dispatch");
+  EXPECT(!backendCaps.supportsConcurrentExecution,
+         "driver-backed npu backend stays conservative about execution");
+  EXPECT(!(*npuOr)->allowsConcurrentTaskDispatch(),
+         "driver-backed npu backend dispatchability stays conservative");
+  EXPECT(backendCaps.maxConcurrentTasks == 1,
+         "driver-backed npu backend clamps task capacity");
+  EXPECT(backendCaps.maxConcurrentStreams == 1,
+         "driver-backed npu backend clamps stream capacity");
+  EXPECT(backendCaps.requiresSerializedLaunch == driverCaps.requiresSerializedLaunch,
+         "driver-backed npu backend preserves non-concurrency capability fields");
+}
+
 static void testInvalidBackendSelection() {
   auto bad = createExecutionBackend(static_cast<ExecutionBackendKind>(99));
   EXPECT(!(bool)bad, "invalid backend selection is rejected");
@@ -4631,6 +4678,7 @@ int main() {
   testDefaultBackendRequiresDriver();
   testBackendCapabilitiesExposeSimAndNpuContracts();
   testBackendCapabilitiesFollowInjectedDriverContract();
+  testBackendCapabilitiesConstrainDriverBackedNpuContract();
   testInvalidBackendSelection();
   testBackendDelegatesToDriver();
   testNpuBackendRejectsMissingDeviceBinaryPath();

@@ -236,6 +236,8 @@ BackendCapabilities NpuBackend::capabilities() const {
     BackendCapabilities caps = driver_->capabilities();
     caps.supportsConcurrentDispatch = false;
     caps.supportsConcurrentExecution = false;
+    caps.maxConcurrentTasks = 1;
+    caps.maxConcurrentStreams = 1;
     return caps;
   }
 
