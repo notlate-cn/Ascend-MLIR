@@ -169,6 +169,10 @@ void printRunSuccessSummary(const FrontendRunSummary &summary) {
       std::filesystem::exists(summary.retainedSummaryPath))
     llvm::outs() << "session.profile.summary=" << summary.retainedSummaryPath
                  << "\n";
+  for (const auto &[key, value] : summary.profileTrace.attributes)
+    llvm::outs() << "session.runtime.attribute." << key << "=" << value << "\n";
+  for (const auto &[key, value] : summary.profileTrace.counters)
+    llvm::outs() << "session.runtime.counter." << key << "=" << value << "\n";
 }
 
 void printRunErrorSummary(const FrontendRunSummary &summary) {
