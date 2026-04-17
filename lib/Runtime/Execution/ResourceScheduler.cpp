@@ -2,31 +2,6 @@
 
 namespace mlir::runtime {
 
-size_t ResourceScheduler::ReservationKeyHash::operator()(
-    const ReservationKey &key) const {
-  size_t hash = std::hash<std::string>{}(key.sessionId);
-  hash ^= std::hash<std::string>{}(key.taskId) + 0x9e3779b9 + (hash << 6) +
-          (hash >> 2);
-  hash ^= std::hash<int>{}(static_cast<int>(key.backendKind)) + 0x9e3779b9 +
-          (hash << 6) + (hash >> 2);
-  hash ^= std::hash<size_t>{}(key.workspaceBytes) + 0x9e3779b9 + (hash << 6) +
-          (hash >> 2);
-  hash ^= std::hash<bool>{}(key.holdsSerializedLaunchLane) + 0x9e3779b9 +
-          (hash << 6) + (hash >> 2);
-  hash ^= std::hash<bool>{}(key.holdsDeviceSlot) + 0x9e3779b9 + (hash << 6) +
-          (hash >> 2);
-  return hash;
-}
-
-bool ResourceScheduler::ReservationKeyEq::operator()(
-    const ReservationKey &lhs, const ReservationKey &rhs) const {
-  return lhs.sessionId == rhs.sessionId && lhs.taskId == rhs.taskId &&
-         lhs.backendKind == rhs.backendKind &&
-         lhs.workspaceBytes == rhs.workspaceBytes &&
-         lhs.holdsSerializedLaunchLane == rhs.holdsSerializedLaunchLane &&
-         lhs.holdsDeviceSlot == rhs.holdsDeviceSlot;
-}
-
 void ResourceScheduler::configureSimDispatchLanes(size_t count) {
   configuredSimDispatchLanes_ = count;
 }
@@ -76,15 +51,16 @@ ResourceScheduler::tryReserve(const std::string &sessionId,
   reservation.workspaceBytes = requirement.workspaceBytes;
   reservation.holdsSerializedLaunchLane = holdsSerializedLaunchLane;
   reservation.holdsDeviceSlot = holdsDeviceSlot;
+  reservation.token_ = nextReservationToken_++;
 
-  ReservationKey key{reservation.sessionId, reservation.taskId,
-                     reservation.backendKind, reservation.workspaceBytes,
-                     reservation.holdsSerializedLaunchLane,
-                     reservation.holdsDeviceSlot};
-  activeReservations_.emplace(
-      std::move(key),
-      ActiveReservation{requirement.workspaceBytes, deviceSlotsToReserve,
-                        holdsSerializedLaunchLane, holdsDeviceSlot});
+  activeReservations_.emplace(reservation.token_,
+                              ActiveReservation{reservation.sessionId,
+                                                reservation.taskId,
+                                                reservation.backendKind,
+                                                reservation.workspaceBytes,
+                                                deviceSlotsToReserve,
+                                                holdsSerializedLaunchLane,
+                                                holdsDeviceSlot});
   reservedWorkspaceBytes_ += requirement.workspaceBytes;
   if (holdsSerializedLaunchLane)
     ++reservedSimDispatchLanes_;
@@ -93,16 +69,20 @@ ResourceScheduler::tryReserve(const std::string &sessionId,
 }
 
 void ResourceScheduler::release(const ResourceReservation &reservation) {
-  ReservationKey key{reservation.sessionId, reservation.taskId,
-                     reservation.backendKind, reservation.workspaceBytes,
-                     reservation.holdsSerializedLaunchLane,
-                     reservation.holdsDeviceSlot};
-  auto range = activeReservations_.equal_range(key);
-  if (range.first == range.second)
+  auto it = activeReservations_.find(reservation.token_);
+  if (it == activeReservations_.end())
     return;
 
-  auto it = range.first;
   const ActiveReservation active = it->second;
+  if (active.sessionId != reservation.sessionId ||
+      active.taskId != reservation.taskId ||
+      active.backendKind != reservation.backendKind ||
+      active.workspaceBytes != reservation.workspaceBytes ||
+      active.holdsSerializedLaunchLane != reservation.holdsSerializedLaunchLane ||
+      active.holdsDeviceSlot != reservation.holdsDeviceSlot) {
+    return;
+  }
+
   activeReservations_.erase(it);
 
   reservedWorkspaceBytes_ -= active.workspaceBytes;
