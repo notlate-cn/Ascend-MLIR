@@ -135,6 +135,27 @@ TEST(MatmulApiTilingBackendTest, GeneratesApiTilingForBatchRequest) {
   EXPECT_NE(result->debugNote.find("batch=2"), std::string::npos);
 }
 
+TEST(MatmulApiTilingBackendTest, DisablesSplitKWhenExplicitlyRequested) {
+  MatmulApiTilingBackend backend;
+  MatmulTilingRequest request = makeSupportedRequest();
+  request.problem.K = 128;
+  request.hints.preferTileM = 16;
+  request.hints.preferTileN = 32;
+  request.hints.preferTileK = 32;
+  request.hints.preferSplitK = false;
+
+  auto result = backend.generate(request);
+
+  ASSERT_TRUE(static_cast<bool>(result));
+  ASSERT_TRUE(result->splitKEnabled.has_value());
+  EXPECT_FALSE(*result->splitKEnabled);
+  EXPECT_FALSE(result->plannedBlockDim.has_value());
+  EXPECT_NE(result->debugNote.find("requested_block_dim=none"),
+            std::string::npos);
+  EXPECT_NE(result->debugNote.find("split_k=0"), std::string::npos);
+  EXPECT_NE(result->debugNote.find("fix_split=16x32x-1"), std::string::npos);
+}
+
 TEST(MatmulApiTilingBackendTest, RejectsUnsupportedExplicitBiasDType) {
   MatmulApiTilingBackend backend;
   MatmulTilingRequest request = makeSupportedRequest();
