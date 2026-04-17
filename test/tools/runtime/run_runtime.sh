@@ -187,13 +187,30 @@ cat > "${RUNTIME_SESSION_DAG_MANIFEST}" <<EOF
   "artifact_root": "${RUNTIME_SESSION_ARTIFACT_ROOT}",
   "tasks": [
     {
-      "task_id": "producer",
+      "task_id": "producer_a",
       "inputs": [
         { "name": "data0", "path": "${PROJECT_ROOT}/examples/relu-broadcast-transpose/input_data0.npy" },
         { "name": "data1", "path": "${PROJECT_ROOT}/examples/relu-broadcast-transpose/input_data1.npy" }
       ],
       "outputs": [
-        { "name": "mid", "shape": [500, 640], "dtype": "f16" }
+        { "name": "mid_a", "shape": [500, 640], "dtype": "f16" }
+      ],
+      "tiling": {
+        "schema": "${PROJECT_ROOT}/examples/relu-broadcast-transpose/tiling_space.json",
+        "params": "TB_M=64,TB_N=64,dim_arg0_0=640,dim_arg1_0=500,dim_arg0_1=1,dim_arg1_1=640"
+      },
+      "block_dim": 8,
+      "workspace_size": 16777216,
+      "profiling": true
+    },
+    {
+      "task_id": "producer_b",
+      "inputs": [
+        { "name": "data0", "path": "${PROJECT_ROOT}/examples/relu-broadcast-transpose/input_data0.npy" },
+        { "name": "data1", "path": "${PROJECT_ROOT}/examples/relu-broadcast-transpose/input_data1.npy" }
+      ],
+      "outputs": [
+        { "name": "mid_b", "shape": [500, 640], "dtype": "f16" }
       ],
       "tiling": {
         "schema": "${PROJECT_ROOT}/examples/relu-broadcast-transpose/tiling_space.json",
@@ -205,11 +222,11 @@ cat > "${RUNTIME_SESSION_DAG_MANIFEST}" <<EOF
     },
     {
       "task_id": "consumer",
-      "dependencies": ["producer"],
+      "dependencies": ["producer_a", "producer_b"],
       "artifact_root": "${RUNTIME_SESSION_SECOND_ARTIFACT_ROOT}",
       "inputs": [
         { "name": "data0", "path": "${PROJECT_ROOT}/examples/relu-broadcast-transpose/input_data0.npy" },
-        { "name": "data1", "source": "task_output", "upstream_task": "producer", "upstream_output": "mid" }
+        { "name": "data1", "source": "task_output", "upstream_task": "producer_a", "upstream_output": "mid_a" }
       ],
       "outputs": [
         { "name": "out", "path": "${RUNTIME_SESSION_DAG_OUTPUT}", "shape": [500, 640], "dtype": "f16" }
@@ -227,14 +244,16 @@ cat > "${RUNTIME_SESSION_DAG_MANIFEST}" <<EOF
 EOF
 
 PLAN_OUTPUT="$(build/bin/runtime-session --run-manifest "${RUNTIME_SESSION_DAG_MANIFEST}")"
-printf '%s\n' "${PLAN_OUTPUT}" | grep -q "session.plan\\[0\\]=producer"
-printf '%s\n' "${PLAN_OUTPUT}" | grep -q "session.plan\\[1\\]=consumer"
+printf '%s\n' "${PLAN_OUTPUT}" | grep -q "session.plan\\[0\\]=producer_a"
+printf '%s\n' "${PLAN_OUTPUT}" | grep -q "session.plan\\[1\\]=producer_b"
+printf '%s\n' "${PLAN_OUTPUT}" | grep -q "session.plan\\[2\\]=consumer"
 build/bin/runtime-session \
   --run-manifest "${RUNTIME_SESSION_DAG_MANIFEST}" \
   --run >/tmp/runtime_session_dag_run.log 2>&1
 test -f "${RUNTIME_SESSION_DAG_OUTPUT}"
 grep -q '^session.profile.session_id=' /tmp/runtime_session_dag_run.log
 grep -q '^session.profile.count=' /tmp/runtime_session_dag_run.log
+grep -q '^session.profile.count=3$' /tmp/runtime_session_dag_run.log
 grep -q '^session.profile.summary=' /tmp/runtime_session_dag_run.log
 RUNTIME_SESSION_DAG_SUMMARY="$(sed -n 's/^session\.profile\.summary=//p' /tmp/runtime_session_dag_run.log | head -n1)"
 test -f "${RUNTIME_SESSION_DAG_SUMMARY}"

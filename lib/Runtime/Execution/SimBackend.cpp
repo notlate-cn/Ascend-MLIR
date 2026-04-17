@@ -16,9 +16,14 @@
 #include "llvm/Support/raw_ostream.h"
 
 #include <chrono>
+#include <condition_variable>
+#include <functional>
+#include <future>
 #include <cstring>
+#include <deque>
 #include <mutex>
 #include <optional>
+#include <thread>
 #include <type_traits>
 #include <utility>
 
@@ -41,10 +46,59 @@ llvm::Error stageError(llvm::StringRef stage, ErrorT &&errorLike) {
                                  stage.str().c_str(), detail.c_str());
 }
 
-std::mutex &simulatorExecutionGate() {
-  static std::mutex gate;
-  return gate;
-}
+class SimulatorDispatchQueue {
+public:
+  static SimulatorDispatchQueue &instance() {
+    static SimulatorDispatchQueue queue;
+    return queue;
+  }
+
+  std::optional<std::string> run(std::function<std::optional<std::string>()> fn) {
+    auto task = std::make_shared<std::packaged_task<std::optional<std::string>()>>(
+        std::move(fn));
+    auto future = task->get_future();
+    {
+      std::lock_guard<std::mutex> lock(mu_);
+      workQueue_.push_back([task]() mutable { (*task)(); });
+    }
+    cv_.notify_one();
+    return future.get();
+  }
+
+private:
+  SimulatorDispatchQueue() : worker_([this] { workerLoop(); }) {}
+
+  ~SimulatorDispatchQueue() {
+    {
+      std::lock_guard<std::mutex> lock(mu_);
+      stopping_ = true;
+    }
+    cv_.notify_one();
+    if (worker_.joinable())
+      worker_.join();
+  }
+
+  void workerLoop() {
+    while (true) {
+      std::function<void()> work;
+      {
+        std::unique_lock<std::mutex> lock(mu_);
+        cv_.wait(lock, [&] { return stopping_ || !workQueue_.empty(); });
+        if (stopping_ && workQueue_.empty())
+          return;
+        work = std::move(workQueue_.front());
+        workQueue_.pop_front();
+      }
+      work();
+    }
+  }
+
+  std::mutex mu_;
+  std::condition_variable cv_;
+  std::deque<std::function<void()>> workQueue_;
+  bool stopping_ = false;
+  std::thread worker_;
+};
 
 llvm::Expected<std::vector<NDArray>>
 loadExpectedOutputs(const ExecutionInvocation &invocation) {
@@ -309,8 +363,6 @@ uint32_t magicForKernelKind(KernelKind kind) {
 
 llvm::Expected<ExecutionResult>
 runWithExecutor(const ExecutionRequest &request) {
-  std::lock_guard<std::mutex> guard(simulatorExecutionGate());
-
   if (request.task.artifact.kernelKind == KernelKind::Mix) {
     if (request.task.artifact.sharedLibraryPath.empty()) {
       return stageError("artifact",
@@ -320,9 +372,6 @@ runWithExecutor(const ExecutionRequest &request) {
       return stageError("artifact",
                         "mix artifact is missing shared library symbol");
     }
-    if (auto err = configureDynamicLibraryArtifactSimulationEnv(
-            request.task.artifact))
-      return stageError("artifact", std::move(err));
   } else if (request.task.artifact.deviceBinaryPath.empty()) {
     return stageError("artifact", "artifact is missing device binary path");
   }
@@ -336,30 +385,42 @@ runWithExecutor(const ExecutionRequest &request) {
   if (!expectedOutputsOr)
     return stageError("bindings", expectedOutputsOr.takeError());
 
-  auto runnerOr = createDefaultExecutionRunner(ExecutionRunnerMode::Simulation);
-  if (!runnerOr)
-    return stageError("executor_initialize", runnerOr.takeError());
-  std::unique_ptr<ExecutionRunner> runner = std::move(*runnerOr);
   auto runStart = std::chrono::steady_clock::now();
-  if (auto err = runner->initialize())
-    return stageError("executor_initialize", std::move(err));
 
-  if (request.task.artifact.kernelKind == KernelKind::Mix) {
-    DynamicLibraryExecutionLaunch launch;
-    launch.sharedLibraryPath = request.task.artifact.sharedLibraryPath;
-    launch.symbolName = request.task.artifact.sharedLibrarySymbol;
-    if (auto err = runner->runDynamicLibraryArtifact(launch, args)) {
-      return stageError("kernel_launch", std::move(err));
+  auto launchError = SimulatorDispatchQueue::instance().run([&]() -> std::optional<std::string> {
+    if (request.task.artifact.kernelKind == KernelKind::Mix) {
+      if (auto err = configureDynamicLibraryArtifactSimulationEnv(
+              request.task.artifact))
+        return llvm::toString(stageError("artifact", std::move(err)));
     }
-  } else {
-    FileExecutionLaunch launch;
-    launch.binaryPath = request.task.artifact.deviceBinaryPath;
-    launch.kernelName = request.task.artifact.kernelName;
-    launch.magic = magicForKernelKind(request.task.artifact.kernelKind);
-    if (auto err = runner->runFile(launch, args)) {
-      return stageError("kernel_launch", std::move(err));
+
+    auto runnerOr = createDefaultExecutionRunner(ExecutionRunnerMode::Simulation);
+    if (!runnerOr)
+      return llvm::toString(stageError("executor_initialize", runnerOr.takeError()));
+    std::unique_ptr<ExecutionRunner> runner = std::move(*runnerOr);
+
+    if (auto err = runner->initialize())
+      return llvm::toString(stageError("executor_initialize", std::move(err)));
+
+    if (request.task.artifact.kernelKind == KernelKind::Mix) {
+      DynamicLibraryExecutionLaunch launch;
+      launch.sharedLibraryPath = request.task.artifact.sharedLibraryPath;
+      launch.symbolName = request.task.artifact.sharedLibrarySymbol;
+      if (auto err = runner->runDynamicLibraryArtifact(launch, args))
+        return llvm::toString(stageError("kernel_launch", std::move(err)));
+    } else {
+      FileExecutionLaunch launch;
+      launch.binaryPath = request.task.artifact.deviceBinaryPath;
+      launch.kernelName = request.task.artifact.kernelName;
+      launch.magic = magicForKernelKind(request.task.artifact.kernelKind);
+      if (auto err = runner->runFile(launch, args))
+        return llvm::toString(stageError("kernel_launch", std::move(err)));
     }
-  }
+    return std::nullopt;
+  });
+  if (launchError)
+    return llvm::createStringError(llvm::inconvertibleErrorCode(), "%s",
+                                   launchError->c_str());
 
   if (!expectedOutputsOr->empty()) {
     auto validationOr =
