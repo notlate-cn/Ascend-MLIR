@@ -15,6 +15,22 @@ namespace {
 using MatmulApiTilingGetTilingHook =
     int (*)(matmul_tiling::MatmulApiTiling &, optiling::TCubeTiling &);
 
+struct MatmulApiMaterializationConfig {
+  std::string socVersion;
+  int m = 0;
+  int n = 0;
+  int k = 0;
+  int fixSplitM = -1;
+  int fixSplitN = -1;
+  int fixSplitK = -1;
+  std::optional<uint32_t> requestedBlockDim;
+  bool splitKEnabled = false;
+  std::optional<matmul_tiling::DataType> aDType;
+  std::optional<matmul_tiling::DataType> bDType;
+  std::optional<matmul_tiling::DataType> cDType;
+  std::optional<matmul_tiling::DataType> biasDType;
+};
+
 MatmulApiTilingGetTilingHook &getMatmulApiTilingGetTilingHook() {
   static MatmulApiTilingGetTilingHook hook = nullptr;
   return hook;
@@ -180,6 +196,43 @@ static bool supportsMatmulApiTilingRequest(const MatmulTilingRequest &request) {
               static_cast<int64_t>(std::numeric_limits<int>::max()));
 }
 
+static llvm::Expected<MatmulApiMaterializationConfig>
+buildMaterializationConfig(const MatmulTilingRequest &request) {
+  MatmulApiMaterializationConfig config;
+
+  auto aDTypeOr = toMatmulDataType(request.problem.dtypeA);
+  if (!aDTypeOr)
+    return aDTypeOr.takeError();
+  config.aDType = *aDTypeOr;
+  auto bDTypeOr = toMatmulDataType(request.problem.dtypeB);
+  if (!bDTypeOr)
+    return bDTypeOr.takeError();
+  config.bDType = *bDTypeOr;
+  auto cDTypeOr = toMatmulDataType(request.problem.dtypeC);
+  if (!cDTypeOr)
+    return cDTypeOr.takeError();
+  config.cDType = *cDTypeOr;
+  if (request.problem.hasBias) {
+    auto biasDTypeOr = toMatmulDataType(resolveBiasDType(request));
+    if (!biasDTypeOr)
+      return biasDTypeOr.takeError();
+    config.biasDType = *biasDTypeOr;
+  }
+
+  config.socVersion = resolveSocVersion(request);
+  config.m = static_cast<int>(request.problem.M);
+  config.n = static_cast<int>(request.problem.N);
+  config.k = static_cast<int>(request.problem.K);
+  config.fixSplitM = resolveFixSplitValue(request.hints.preferTileM, config.m);
+  config.fixSplitN = resolveFixSplitValue(request.hints.preferTileN, config.n);
+  config.fixSplitK = resolveFixSplitKValue(request);
+  config.requestedBlockDim =
+      resolveRequestedBlockDim(request.hints.preferBlockDim);
+  config.splitKEnabled = resolveSplitKEnabled(request, config.fixSplitK);
+
+  return config;
+}
+
 static llvm::Expected<MatmulTilingResult>
 generateMatmulApiTilingImpl(const MatmulTilingRequest &request) {
   if (!supportsMatmulApiTilingRequest(request)) {
@@ -189,65 +242,44 @@ generateMatmulApiTilingImpl(const MatmulTilingRequest &request) {
         request.kernelName.c_str());
   }
 
-  auto aDTypeOr = toMatmulDataType(request.problem.dtypeA);
-  if (!aDTypeOr)
-    return aDTypeOr.takeError();
-  auto bDTypeOr = toMatmulDataType(request.problem.dtypeB);
-  if (!bDTypeOr)
-    return bDTypeOr.takeError();
-  auto cDTypeOr = toMatmulDataType(request.problem.dtypeC);
-  if (!cDTypeOr)
-    return cDTypeOr.takeError();
-  std::optional<matmul_tiling::DataType> biasDType;
-  if (request.problem.hasBias) {
-    auto biasDTypeOr = toMatmulDataType(resolveBiasDType(request));
-    if (!biasDTypeOr)
-      return biasDTypeOr.takeError();
-    biasDType = *biasDTypeOr;
-  }
+  auto configOr = buildMaterializationConfig(request);
+  if (!configOr)
+    return configOr.takeError();
+  const MatmulApiMaterializationConfig &config = *configOr;
 
-  const std::string socVersion = resolveSocVersion(request);
   auto *ascendcPlatform =
-      platform_ascendc::PlatformAscendCManager::GetInstance(socVersion.c_str());
+      platform_ascendc::PlatformAscendCManager::GetInstance(
+          config.socVersion.c_str());
   if (!ascendcPlatform) {
     return llvm::createStringError(
         llvm::inconvertibleErrorCode(),
-        "cannot initialize AscendC platform for soc %s", socVersion.c_str());
+        "cannot initialize AscendC platform for soc %s",
+        config.socVersion.c_str());
   }
-
-  const int m = static_cast<int>(request.problem.M);
-  const int n = static_cast<int>(request.problem.N);
-  const int k = static_cast<int>(request.problem.K);
-  const int fixSplitM = resolveFixSplitValue(request.hints.preferTileM, m);
-  const int fixSplitN = resolveFixSplitValue(request.hints.preferTileN, n);
-  const int fixSplitK = resolveFixSplitKValue(request);
-  const std::optional<uint32_t> requestedBlockDim =
-      resolveRequestedBlockDim(request.hints.preferBlockDim);
-  const bool splitKEnabled = resolveSplitKEnabled(request, fixSplitK);
 
   matmul_tiling::MatmulApiTiling tilingApi(*ascendcPlatform);
   tilingApi.SetAType(matmul_tiling::TPosition::GM,
-                     matmul_tiling::CubeFormat::ND, *aDTypeOr,
+                     matmul_tiling::CubeFormat::ND, *config.aDType,
                      request.problem.transA);
   tilingApi.SetBType(matmul_tiling::TPosition::GM,
-                     matmul_tiling::CubeFormat::ND, *bDTypeOr,
+                     matmul_tiling::CubeFormat::ND, *config.bDType,
                      request.problem.transB);
   tilingApi.SetCType(matmul_tiling::TPosition::GM,
-                     matmul_tiling::CubeFormat::ND, *cDTypeOr);
-  if (biasDType) {
+                     matmul_tiling::CubeFormat::ND, *config.cDType);
+  if (config.biasDType) {
     tilingApi.SetBiasType(matmul_tiling::TPosition::GM,
-                          matmul_tiling::CubeFormat::ND, *biasDType);
+                          matmul_tiling::CubeFormat::ND, *config.biasDType);
   }
-  tilingApi.SetOrgShape(m, n, k);
-  tilingApi.SetShape(m, n, k);
+  tilingApi.SetOrgShape(config.m, config.n, config.k);
+  tilingApi.SetShape(config.m, config.n, config.k);
   if (!request.problem.batchShape.empty()) {
     const int batch = static_cast<int>(request.problem.batchShape[0]);
-    tilingApi.SetBatchInfoForNormal(batch, batch, m, n, k);
+    tilingApi.SetBatchInfoForNormal(batch, batch, config.m, config.n, config.k);
     tilingApi.SetBatchNum(batch);
   }
   tilingApi.SetBias(request.problem.hasBias);
   tilingApi.SetTraverse(toMatmulTraverse(request.hints.preferTraverse));
-  tilingApi.SetFixSplit(fixSplitM, fixSplitN, fixSplitK);
+  tilingApi.SetFixSplit(config.fixSplitM, config.fixSplitN, config.fixSplitK);
   tilingApi.SetBufferSpace(-1, -1, -1);
 
   optiling::TCubeTiling tilingData;
@@ -261,24 +293,25 @@ generateMatmulApiTilingImpl(const MatmulTilingRequest &request) {
   result.backendKind = "api";
   result.strategyName = "matmul-api";
   result.blockDim = static_cast<uint32_t>(tilingData.get_usedCoreNum());
-  result.plannedBlockDim = requestedBlockDim;
-  result.splitKEnabled = splitKEnabled;
+  result.plannedBlockDim = config.requestedBlockDim;
+  result.splitKEnabled = config.splitKEnabled;
   result.tilingData.resize(tilingData.GetDataSize());
   tilingData.SaveToBuffer(result.tilingData.data(), tilingData.GetDataSize());
-  result.debugNote = "soc=" + socVersion + " traverse=" +
+  result.debugNote = "soc=" + config.socVersion + " traverse=" +
                      traverseToString(request.hints.preferTraverse) +
                      " requested_block_dim=" +
-                     (requestedBlockDim.has_value()
-                          ? std::to_string(*requestedBlockDim)
+                     (config.requestedBlockDim.has_value()
+                          ? std::to_string(*config.requestedBlockDim)
                           : std::string("none")) +
-                     " split_k=" + std::string(splitKEnabled ? "1" : "0") +
+                     " split_k=" +
+                     std::string(config.splitKEnabled ? "1" : "0") +
                      " batch=" +
                      (request.problem.batchShape.empty()
                           ? std::string("none")
                           : std::to_string(request.problem.batchShape[0])) +
-                     " fix_split=" + std::to_string(fixSplitM) + "x" +
-                     std::to_string(fixSplitN) + "x" +
-                     std::to_string(fixSplitK) +
+                     " fix_split=" + std::to_string(config.fixSplitM) + "x" +
+                     std::to_string(config.fixSplitN) + "x" +
+                     std::to_string(config.fixSplitK) +
                      " bias=" + std::string(request.problem.hasBias ? "1" : "0") +
                      " bias_dtype=" +
                      (request.problem.hasBias
