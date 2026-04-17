@@ -24,6 +24,7 @@
 #include "Runtime/Execution/ExecutionRunner.h"
 #include "Runtime/Execution/BackendCapabilities.h"
 #include "Runtime/Execution/NativeExecutionRunner.h"
+#include "Runtime/Execution/ResourceScheduler.h"
 #include "Runtime/ExecutionSession.h"
 #include "Runtime/NpuBackend.h"
 #include "Runtime/NpyIO.h"
@@ -4051,6 +4052,29 @@ static void testExecutionSessionAcceptsVecAndCubeTasks() {
          "scheduler gate invokes backend for vec and cube tasks");
 }
 
+static void testResourceSchedulerReservesAndReleasesSlots() {
+  ResourceScheduler scheduler;
+  scheduler.configureSimDispatchLanes(1);
+  scheduler.configureDeviceSlots(1);
+  scheduler.configureWorkspaceBudget(1024);
+
+  TaskResourceRequirement simReq;
+  simReq.backendKind = ExecutionBackendKind::Simulation;
+  simReq.workspaceBytes = 512;
+  simReq.requiresSerializedLaunch = true;
+
+  auto first = scheduler.tryReserve("session0", "task0", simReq);
+  EXPECT(first.has_value(), "first sim reservation succeeds");
+
+  auto second = scheduler.tryReserve("session1", "task1", simReq);
+  EXPECT(!second.has_value(),
+         "second sim reservation blocks when only one lane exists");
+
+  scheduler.release(*first);
+  auto third = scheduler.tryReserve("session1", "task1", simReq);
+  EXPECT(third.has_value(), "reservation succeeds after release");
+}
+
 static void testRunManifestParsesVecSimulationSpec() {
   const std::string manifestPath = "/tmp/runtime_run_manifest.json";
   {
@@ -4717,6 +4741,7 @@ int main() {
   testExecutionSessionRejectsUnknownMixResourceType();
   testExecutionSessionAcceptsSupportedMixResourceTypes();
   testExecutionSessionAcceptsVecAndCubeTasks();
+  testResourceSchedulerReservesAndReleasesSlots();
   testRunManifestParsesVecSimulationSpec();
   testRunManifestParsesOutputMetadataWithoutExpectedOutputs();
   testRunManifestParsesTaskOutputBinding();
