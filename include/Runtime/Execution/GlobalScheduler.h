@@ -6,6 +6,7 @@
 
 #include <cstddef>
 #include <map>
+#include <mutex>
 #include <string>
 
 namespace mlir::runtime {
@@ -15,11 +16,12 @@ public:
   llvm::Expected<SessionHandle> submit(ExecutionBackendKind backendKind,
                                        const TaskGraph &graph);
 
-  size_t sessionCount() const { return sessions_.size(); }
+  size_t sessionCount() const;
 
 private:
   size_t nextSessionOrdinal_ = 0;
   std::map<std::string, ExecutionBackendKind> sessions_;
+  mutable std::mutex mutex_;
 };
 
 } // namespace mlir::runtime
