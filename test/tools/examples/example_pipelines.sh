@@ -13,6 +13,11 @@ EXAMPLES=(
   "matmul-add-leakyrelu"
 )
 
+SMOKE_EXAMPLES=(
+  "add-broadcast-concat"
+  "broadcast-add-reduce"
+)
+
 require_tool() {
   command -v "$1" >/dev/null 2>&1
 }
@@ -101,7 +106,24 @@ run_example() {
   echo "PASS [${name}]"
 }
 
+echo "INFO: executing focused cross-session runtime-session smoke"
+for example in "${SMOKE_EXAMPLES[@]}"; do
+  run_example "${example}"
+done
+echo "PASS [cross-session smoke]"
+
+echo "INFO: executing remaining example pipelines"
 for example in "${EXAMPLES[@]}"; do
+  skip=0
+  for smoke_example in "${SMOKE_EXAMPLES[@]}"; do
+    if [[ "${example}" == "${smoke_example}" ]]; then
+      skip=1
+      break
+    fi
+  done
+  if ((skip)); then
+    continue
+  fi
   run_example "${example}"
 done
 
