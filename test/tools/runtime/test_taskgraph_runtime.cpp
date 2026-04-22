@@ -2369,7 +2369,7 @@ static void testBackendCapabilitiesExposeDriverBackedNpuSchedulerContract() {
     BackendCapabilities capabilities() const override {
       BackendCapabilities caps;
       caps.supportsConcurrentDispatch = true;
-      caps.supportsConcurrentExecution = true;
+      caps.supportsConcurrentExecution = false;
       caps.requiresSerializedLaunch = true;
       caps.maxConcurrentTasks = 7;
       caps.maxConcurrentStreams = 3;
@@ -2398,8 +2398,9 @@ static void testBackendCapabilitiesExposeDriverBackedNpuSchedulerContract() {
   const BackendCapabilities backendCaps = (*npuOr)->capabilities();
   EXPECT(backendCaps.supportsConcurrentDispatch,
          "driver-backed npu backend advertises scheduler dispatch");
-  EXPECT(backendCaps.supportsConcurrentExecution,
-         "driver-backed npu backend advertises scheduler execution");
+  EXPECT(backendCaps.supportsConcurrentExecution ==
+             driverCaps.supportsConcurrentExecution,
+         "driver-backed npu backend preserves driver execution capability");
   EXPECT((*npuOr)->allowsConcurrentTaskDispatch() ==
              backendCaps.supportsConcurrentDispatch,
          "driver-backed npu backend dispatchability stays coherent");
@@ -2410,6 +2411,84 @@ static void testBackendCapabilitiesExposeDriverBackedNpuSchedulerContract() {
          "driver-backed npu backend preserves task capacity");
   EXPECT(backendCaps.maxConcurrentStreams == driverCaps.maxConcurrentStreams,
          "driver-backed npu backend preserves stream capacity");
+}
+
+static void testExecutionSessionKeepsNpuRunsSerial() {
+  class ConcurrentNpuBackendDriver final : public ExecutionBackendDriver {
+  public:
+    BackendCapabilities capabilities() const override {
+      BackendCapabilities caps;
+      caps.supportsConcurrentDispatch = true;
+      caps.supportsConcurrentExecution = true;
+      caps.requiresSerializedLaunch = false;
+      caps.maxConcurrentTasks = 2;
+      caps.maxConcurrentStreams = 1;
+      return caps;
+    }
+
+    llvm::Expected<ExecutionResult>
+    run(const ExecutionRequest &request) override {
+      {
+        std::lock_guard<std::mutex> lock(mu);
+        seenTaskIds.push_back(request.task.taskId);
+      }
+
+      const int runningNow = ++runningCount;
+      int observedMax = maxRunning.load();
+      while (runningNow > observedMax &&
+             !maxRunning.compare_exchange_weak(observedMax, runningNow)) {
+      }
+
+      if (request.task.taskId == "task_a" || request.task.taskId == "task_b")
+        std::this_thread::sleep_for(std::chrono::milliseconds(80));
+
+      --runningCount;
+
+      ExecutionResult result;
+      result.taskId = request.task.taskId;
+      return result;
+    }
+
+    std::atomic<int> runningCount{0};
+    std::atomic<int> maxRunning{0};
+    std::mutex mu;
+    std::vector<std::string> seenTaskIds;
+  };
+
+  TaskGraph graph;
+  RuntimeTask taskA;
+  taskA.taskId = "task_a";
+  RuntimeTask taskB;
+  taskB.taskId = "task_b";
+  RuntimeTask taskJoin;
+  taskJoin.taskId = "task_join";
+  taskJoin.dependencies = {"task_a", "task_b"};
+
+  auto addA = graph.addTask(taskA);
+  EXPECT(!addA, "npu serial session add task_a");
+  auto addJoin = graph.addTask(taskJoin);
+  EXPECT(!addJoin, "npu serial session add task_join");
+  auto addB = graph.addTask(taskB);
+  EXPECT(!addB, "npu serial session add task_b");
+
+  auto driver = std::make_shared<ConcurrentNpuBackendDriver>();
+  ConcurrentNpuBackendDriver *driverPtr = driver.get();
+  ExecutionSession session(ExecutionBackendKind::Npu, driver);
+
+  auto traceOr = session.run(graph);
+  EXPECT((bool)traceOr, "npu execution session serial run succeeds");
+  EXPECT(driverPtr->maxRunning.load() == 1,
+         "npu execution session stays on the serial path");
+  EXPECT(driverPtr->seenTaskIds.size() == 3,
+         "npu execution session still runs all tasks");
+  if (traceOr) {
+    auto mode = traceOr->attributes.find("scheduler_mode");
+    EXPECT(mode != traceOr->attributes.end(),
+           "npu execution session records scheduler mode");
+    if (mode != traceOr->attributes.end())
+      EXPECT(mode->second == "serial",
+             "npu execution session remains serial");
+  }
 }
 
 static void testInvalidBackendSelection() {
@@ -4930,6 +5009,7 @@ int main() {
   testNpuBackendRejectsMissingMixSharedObjectPath();
   testNpuBackendReachesRealDeviceModePath();
   testExecutionSessionSupportsNpuSuccessDriver();
+  testExecutionSessionKeepsNpuRunsSerial();
   testSimulatorProfileNormalization();
   testSimulatorProfileNormalizationExtractsMetrics();
   testAddProfileArtifactHelper();
