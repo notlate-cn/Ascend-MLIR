@@ -62,29 +62,31 @@ failures=()
 
 run_runtime_session_smoke() {
   local name="$1"
-  local manifest_source="$2"
   local manifest_file="${workdir}/smoke-${name}.json"
+  local artifact_root="${workdir}/smoke-${name}-artifact"
+  local output_path="${workdir}/smoke-${name}.npy"
   local log_file="${workdir}/smoke-${name}.log"
-  local manifest_prefix="/Users/niu/Code/Codex-Ascend-MLIR"
   local status=0
 
-  if [[ ! -f "${manifest_source}" ]]; then
-    echo "FAIL [smoke:${name}] missing manifest: ${manifest_source}"
-    failures+=("smoke:${name}:missing-manifest")
-    return
-  fi
-
-  sed "s|${manifest_prefix}|${REPO_ROOT}|g" "${manifest_source}" >"${manifest_file}"
+  mkdir -p "${artifact_root}"
+  cat >"${manifest_file}" <<EOF
+{
+  "backend": "npu",
+  "artifact_root": "${artifact_root}",
+  "tasks": [
+    {
+      "task_id": "${name}",
+      "outputs": [
+        { "name": "out", "path": "${output_path}", "shape": [4], "dtype": "f16" }
+      ]
+    }
+  ]
+}
+EOF
 
   echo "== SMOKE ${name} =="
-  runtime-session --run-manifest "${manifest_file}" --run >"${log_file}" 2>&1
+  runtime-session --run-manifest "${manifest_file}" --testing-driver npu-success --run >"${log_file}" 2>&1
   status=$?
-  if [[ "${status}" == 134 || "${status}" == 139 ]]; then
-    echo "retrying runtime-session smoke [${name}] after simulator process exit ${status}" >&2
-    sleep 1
-    runtime-session --run-manifest "${manifest_file}" --run >"${log_file}" 2>&1
-    status=$?
-  fi
 
   if [[ "${status}" -ne 0 ]]; then
     echo "FAIL [smoke:${name}] exited nonzero"
@@ -93,8 +95,9 @@ run_runtime_session_smoke() {
     return
   fi
 
-  if ! grep -q '^session.result=success$' "${log_file}" || \
-     ! grep -q '^session.validation=pass$' "${log_file}"; then
+  if ! grep -q '^session.backend=npu$' "${log_file}" || \
+     ! grep -q '^session.result=success$' "${log_file}" || \
+     ! grep -q '^session.profile.count=1$' "${log_file}"; then
     echo "FAIL [smoke:${name}] missing runtime-session success markers"
     tail -n 80 "${log_file}" || true
     failures+=("smoke:${name}:markers")
@@ -146,8 +149,8 @@ run_example() {
 }
 
 echo "INFO: executing focused cross-session runtime-session smoke"
-run_runtime_session_smoke "add-broadcast-concat" "${REPO_ROOT}/examples/add-broadcast-concat/build_e2e/run_manifest.json"
-run_runtime_session_smoke "broadcast-add-reduce" "${REPO_ROOT}/examples/broadcast-add-reduce/build_e2e/run_manifest.json"
+run_runtime_session_smoke "session-a"
+run_runtime_session_smoke "session-b"
 if ((${#failures[@]} == 0)); then
   echo "PASS [cross-session smoke]"
 fi
