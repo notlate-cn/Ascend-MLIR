@@ -2,12 +2,15 @@
 
 #include "llvm/ADT/StringRef.h"
 
+#include <limits>
+
 namespace mlir::runtime {
 
 GlobalScheduler::GlobalScheduler() {
   resourceScheduler_.configureSimDispatchLanes(1);
   resourceScheduler_.configureDeviceSlots(1);
-  resourceScheduler_.configureWorkspaceBudget(1 << 20);
+  resourceScheduler_.configureWorkspaceBudget(
+      std::numeric_limits<size_t>::max());
 }
 
 size_t GlobalScheduler::sessionCount() const {
