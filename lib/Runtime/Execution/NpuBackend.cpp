@@ -232,17 +232,20 @@ ExecutionBackendKind NpuBackend::kind() const {
 }
 
 BackendCapabilities NpuBackend::capabilities() const {
-  BackendCapabilities caps =
-      driver_ ? driver_->capabilities() : BackendCapabilities{};
+  const std::optional<BackendCapabilities> driverCaps =
+      driver_ ? std::optional<BackendCapabilities>(driver_->capabilities())
+              : std::nullopt;
+  BackendCapabilities caps = driverCaps.value_or(BackendCapabilities{});
   caps.supportsConcurrentDispatch = true;
-  caps.supportsConcurrentExecution = true;
+  if (!driver_)
+    caps.supportsConcurrentExecution = true;
   caps.requiresSerializedLaunch = false;
   if (caps.maxConcurrentTasks == 0)
     caps.maxConcurrentTasks = 1;
   if (caps.maxConcurrentStreams == 0)
     caps.maxConcurrentStreams = 1;
-  if (driver_ && driver_->capabilities().requiresSerializedLaunch)
-    caps.requiresSerializedLaunch = true;
+  if (driverCaps)
+    caps.requiresSerializedLaunch = driverCaps->requiresSerializedLaunch;
   return caps;
 }
 

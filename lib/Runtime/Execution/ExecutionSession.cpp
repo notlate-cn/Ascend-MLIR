@@ -298,6 +298,9 @@ llvm::Expected<ProfileTrace> ExecutionSession::run(const TaskGraph &graph) {
   ExecutionBackend &backend = *backendOr;
   const bool enableConcurrentDispatch =
       !forceSerialSchedulerFromEnv() &&
+      // Task 6 only exposes the NPU scheduler contract; keep execution serial
+      // until the global scheduler/resource admission path consumes it.
+      backend.kind() != ExecutionBackendKind::Npu &&
       backend.allowsConcurrentTaskDispatch() &&
       scheduler.orderedTaskIds.size() > 1;
 
