@@ -305,6 +305,9 @@ llvm::Expected<ProfileTrace> ExecutionSession::run(const TaskGraph &graph) {
       scheduler.orderedTaskIds.size() > 1;
 
   if (enableConcurrentDispatch) {
+    sessionTrace.setAttribute("scheduler_scope", "global");
+    sessionTrace.addCounter("global_session_count", 1);
+    sessionTrace.addCounter("resource_wait_count", 0);
     sessionTrace.setAttribute("scheduler_mode", "concurrent");
     sessionTrace.addCounter("frontier_count", 1);
     sessionTrace.counters["max_frontier_width"] =

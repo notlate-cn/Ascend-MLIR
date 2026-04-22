@@ -2904,9 +2904,12 @@ static void testRetainedSessionSummaryContents() {
   ProfileTrace trace;
   const ProfileSummaryRetentionFixture fixture =
       makeProfileSummaryRetentionFixture(trace, "profile-retain-summary-json");
+  trace.setAttribute("scheduler_scope", "global");
   trace.setAttribute("scheduler_mode", "concurrent");
   trace.setAttribute("simulator_launch_model", "dispatch_thread");
+  trace.addCounter("global_session_count", 2);
   trace.addCounter("frontier_count", 2);
+  trace.addCounter("resource_wait_count", 1);
   trace.addCounter("serialized_launch_count", 2);
 
   auto retainedOr = retainProfileArtifactsForCli(trace, fixture.destRoot.string());
@@ -2984,20 +2987,29 @@ static void testRetainedSessionSummaryContents() {
         EXPECT(counters != nullptr,
                "retained session summary emits runtime counters");
         if (attributes) {
+          auto schedulerScope = attributes->getString("scheduler_scope");
           auto schedulerMode = attributes->getString("scheduler_mode");
           auto launchModel =
               attributes->getString("simulator_launch_model");
+          EXPECT(schedulerScope && *schedulerScope == "global",
+                 "retained session summary keeps scheduler scope");
           EXPECT(schedulerMode && *schedulerMode == "concurrent",
                  "retained session summary keeps scheduler_mode");
           EXPECT(launchModel && *launchModel == "dispatch_thread",
                  "retained session summary keeps simulator launch model");
         }
         if (counters) {
+          auto globalSessionCount = counters->getInteger("global_session_count");
           auto frontierCount = counters->getInteger("frontier_count");
+          auto resourceWaitCount = counters->getInteger("resource_wait_count");
           auto launchCount =
               counters->getInteger("serialized_launch_count");
+          EXPECT(globalSessionCount && *globalSessionCount == 2,
+                 "retained session summary keeps global session count");
           EXPECT(frontierCount && *frontierCount == 2,
                  "retained session summary keeps frontier count");
+          EXPECT(resourceWaitCount && *resourceWaitCount == 1,
+                 "retained session summary keeps resource wait count");
           EXPECT(launchCount && *launchCount == 2,
                  "retained session summary keeps serialized launch count");
         }

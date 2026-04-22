@@ -169,6 +169,7 @@ void printRunSuccessSummary(const FrontendRunSummary &summary) {
       std::filesystem::exists(summary.retainedSummaryPath))
     llvm::outs() << "session.profile.summary=" << summary.retainedSummaryPath
                  << "\n";
+  // Keep observability generic so new runtime attributes/counters flow through unchanged.
   for (const auto &[key, value] : summary.profileTrace.attributes)
     llvm::outs() << "session.runtime.attribute." << key << "=" << value << "\n";
   for (const auto &[key, value] : summary.profileTrace.counters)
