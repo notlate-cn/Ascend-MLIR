@@ -4223,6 +4223,31 @@ static void testGlobalSchedulerTracksTwoIndependentSessions() {
     llvm::consumeError(emptyOr.takeError());
 }
 
+static void testGlobalSchedulerBlocksSecondSessionOnSingleSimLane() {
+  GlobalScheduler scheduler;
+  scheduler.mutableResourceScheduler().configureSimDispatchLanes(1);
+  scheduler.mutableResourceScheduler().configureWorkspaceBudget(1 << 20);
+
+  TaskGraph graphA;
+  RuntimeTask taskA;
+  taskA.taskId = "a0";
+  EXPECT(!graphA.addTask(taskA), "graphA add task");
+
+  TaskGraph graphB;
+  RuntimeTask taskB;
+  taskB.taskId = "b0";
+  EXPECT(!graphB.addTask(taskB), "graphB add task");
+
+  auto sessionAOr = scheduler.submit(ExecutionBackendKind::Simulation, graphA);
+  auto sessionBOr = scheduler.submit(ExecutionBackendKind::Simulation, graphB);
+  EXPECT((bool)sessionAOr && (bool)sessionBOr,
+         "both submissions succeed before dispatch");
+  EXPECT(scheduler.taskCountInState(GlobalTaskRecord::State::Reserved) == 1,
+         "only one task is admitted into reserved state");
+  EXPECT(scheduler.taskCountInState(GlobalTaskRecord::State::Ready) == 1,
+         "the second task remains ready while the lane is occupied");
+}
+
 static void testExecutionSessionSubmitsThroughGlobalScheduler() {
   ExecutionSession sessionA(ExecutionBackendKind::Simulation);
   ExecutionSession sessionB(ExecutionBackendKind::Npu);
@@ -4922,6 +4947,7 @@ int main() {
   testExecutionSessionAcceptsVecAndCubeTasks();
   testResourceSchedulerReservesAndReleasesSlots();
   testGlobalSchedulerTracksTwoIndependentSessions();
+  testGlobalSchedulerBlocksSecondSessionOnSingleSimLane();
   testRunManifestParsesVecSimulationSpec();
   testResourceSchedulerIgnoresForgedRelease();
   testResourceSchedulerHandlesIdenticalPublicReservationsIndependently();
