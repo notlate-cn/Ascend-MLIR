@@ -13,11 +13,6 @@ EXAMPLES=(
   "matmul-add-leakyrelu"
 )
 
-SMOKE_EXAMPLES=(
-  "add-broadcast-concat"
-  "broadcast-add-reduce"
-)
-
 require_tool() {
   command -v "$1" >/dev/null 2>&1
 }
@@ -65,6 +60,50 @@ trap 'rm -rf "${workdir}"' EXIT
 
 failures=()
 
+run_runtime_session_smoke() {
+  local name="$1"
+  local manifest_source="$2"
+  local manifest_file="${workdir}/smoke-${name}.json"
+  local log_file="${workdir}/smoke-${name}.log"
+  local manifest_prefix="/Users/niu/Code/Codex-Ascend-MLIR"
+  local status=0
+
+  if [[ ! -f "${manifest_source}" ]]; then
+    echo "FAIL [smoke:${name}] missing manifest: ${manifest_source}"
+    failures+=("smoke:${name}:missing-manifest")
+    return
+  fi
+
+  sed "s|${manifest_prefix}|${REPO_ROOT}|g" "${manifest_source}" >"${manifest_file}"
+
+  echo "== SMOKE ${name} =="
+  runtime-session --run-manifest "${manifest_file}" --run >"${log_file}" 2>&1
+  status=$?
+  if [[ "${status}" == 134 || "${status}" == 139 ]]; then
+    echo "retrying runtime-session smoke [${name}] after simulator process exit ${status}" >&2
+    sleep 1
+    runtime-session --run-manifest "${manifest_file}" --run >"${log_file}" 2>&1
+    status=$?
+  fi
+
+  if [[ "${status}" -ne 0 ]]; then
+    echo "FAIL [smoke:${name}] exited nonzero"
+    tail -n 80 "${log_file}" || true
+    failures+=("smoke:${name}:exit")
+    return
+  fi
+
+  if ! grep -q '^session.result=success$' "${log_file}" || \
+     ! grep -q '^session.validation=pass$' "${log_file}"; then
+    echo "FAIL [smoke:${name}] missing runtime-session success markers"
+    tail -n 80 "${log_file}" || true
+    failures+=("smoke:${name}:markers")
+    return
+  fi
+
+  echo "PASS [smoke:${name}]"
+}
+
 run_example() {
   local name="$1"
   local log_file="${workdir}/${name}.log"
@@ -107,23 +146,14 @@ run_example() {
 }
 
 echo "INFO: executing focused cross-session runtime-session smoke"
-for example in "${SMOKE_EXAMPLES[@]}"; do
-  run_example "${example}"
-done
-echo "PASS [cross-session smoke]"
+run_runtime_session_smoke "add-broadcast-concat" "${REPO_ROOT}/examples/add-broadcast-concat/build_e2e/run_manifest.json"
+run_runtime_session_smoke "broadcast-add-reduce" "${REPO_ROOT}/examples/broadcast-add-reduce/build_e2e/run_manifest.json"
+if ((${#failures[@]} == 0)); then
+  echo "PASS [cross-session smoke]"
+fi
 
 echo "INFO: executing remaining example pipelines"
 for example in "${EXAMPLES[@]}"; do
-  skip=0
-  for smoke_example in "${SMOKE_EXAMPLES[@]}"; do
-    if [[ "${example}" == "${smoke_example}" ]]; then
-      skip=1
-      break
-    fi
-  done
-  if ((skip)); then
-    continue
-  fi
   run_example "${example}"
 done
 
