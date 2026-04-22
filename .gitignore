@@ -1,6 +1,7 @@
 # ide files
 /.claude/
 /.idea/
+/.vscode/
 **/.idea/
 /.cache
 /.gitcode/*
