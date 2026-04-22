@@ -45,7 +45,6 @@
 - The repeated mix simulation baseline is part of focused verification and currently passes.
 - Simulation success paths now explicitly handle process-exit cleanup:
   - `runtime-session` releases `ExecutionSession` workdir cleanup responsibility before `_Exit(0)` on successful sim runs
-  - example pipelines no longer stream `runtime-session` output through live `tee | grep` filters on critical sim steps; they write the validation log first and print filtered output afterward
 - CLI regression coverage has been added for:
   - conflicting `--artifact-root` / `--kernel`
   - invalid `--kernel-kind` with missing kernel input
