@@ -15,10 +15,6 @@ size_t GlobalScheduler::sessionCount() const {
   return sessions_.size();
 }
 
-ResourceScheduler &GlobalScheduler::mutableResourceScheduler() {
-  return resourceScheduler_;
-}
-
 void GlobalScheduler::configureResourceScheduler(size_t simDispatchLanes,
                                                  size_t deviceSlots,
                                                  size_t workspaceBudget) {
