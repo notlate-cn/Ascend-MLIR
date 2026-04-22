@@ -4,6 +4,12 @@
 
 namespace mlir::runtime {
 
+GlobalScheduler::GlobalScheduler() {
+  resourceScheduler_.configureSimDispatchLanes(1);
+  resourceScheduler_.configureDeviceSlots(1);
+  resourceScheduler_.configureWorkspaceBudget(1 << 20);
+}
+
 size_t GlobalScheduler::sessionCount() const {
   std::lock_guard<std::mutex> lock(mutex_);
   return sessions_.size();
@@ -11,6 +17,16 @@ size_t GlobalScheduler::sessionCount() const {
 
 ResourceScheduler &GlobalScheduler::mutableResourceScheduler() {
   return resourceScheduler_;
+}
+
+void GlobalScheduler::configureResourceScheduler(size_t simDispatchLanes,
+                                                 size_t deviceSlots,
+                                                 size_t workspaceBudget) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  resourceScheduler_.configureSimDispatchLanes(simDispatchLanes);
+  resourceScheduler_.configureDeviceSlots(deviceSlots);
+  resourceScheduler_.configureWorkspaceBudget(workspaceBudget);
+  tryReserveReadyTasks();
 }
 
 size_t GlobalScheduler::taskCountInState(GlobalTaskRecord::State state) const {

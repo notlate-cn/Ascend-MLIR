@@ -35,11 +35,15 @@ struct GlobalTaskRecord {
 
 class GlobalScheduler {
 public:
+  GlobalScheduler();
+
   llvm::Expected<SessionHandle> submit(ExecutionBackendKind backendKind,
                                        const TaskGraph &graph);
 
   size_t sessionCount() const;
   ResourceScheduler &mutableResourceScheduler();
+  void configureResourceScheduler(size_t simDispatchLanes, size_t deviceSlots,
+                                  size_t workspaceBudget);
   size_t taskCountInState(GlobalTaskRecord::State state) const;
 
 private:

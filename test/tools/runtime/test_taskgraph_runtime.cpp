@@ -4225,8 +4225,6 @@ static void testGlobalSchedulerTracksTwoIndependentSessions() {
 
 static void testGlobalSchedulerBlocksSecondSessionOnSingleSimLane() {
   GlobalScheduler scheduler;
-  scheduler.mutableResourceScheduler().configureSimDispatchLanes(1);
-  scheduler.mutableResourceScheduler().configureWorkspaceBudget(1 << 20);
 
   TaskGraph graphA;
   RuntimeTask taskA;
