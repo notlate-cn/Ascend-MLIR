@@ -2214,8 +2214,8 @@ static void testBackendSelection() {
     EXPECT((*npuOr)->kind() == ExecutionBackendKind::Npu,
            "npu backend reports its kind");
   if (npuOr)
-    EXPECT(!(*npuOr)->allowsConcurrentTaskDispatch(),
-           "npu backend stays serial");
+    EXPECT((*npuOr)->allowsConcurrentTaskDispatch(),
+           "npu backend advertises concurrent dispatchability");
 
   ExecutionRequest request;
   request.task.taskId = "single";
@@ -2236,8 +2236,8 @@ static void testDefaultBackendRequiresDriver() {
 
   EXPECT((*simOr)->allowsConcurrentTaskDispatch(),
          "real simulation backend opts into concurrent task dispatch");
-  EXPECT(!(*npuOr)->allowsConcurrentTaskDispatch(),
-         "real npu backend stays serial");
+  EXPECT((*npuOr)->allowsConcurrentTaskDispatch(),
+         "real npu backend allows concurrent dispatch");
 
   ExecutionRequest request;
   request.task.taskId = "task_a";
@@ -2281,16 +2281,17 @@ static void testBackendCapabilitiesExposeSimAndNpuContracts() {
     const BackendCapabilities caps = (*npuOr)->capabilities();
     EXPECT(caps.supportsConcurrentDispatch,
            "npu backend advertises scheduler-side concurrent dispatch");
-    EXPECT(!(*npuOr)->allowsConcurrentTaskDispatch(),
-           "npu backend keeps runtime dispatch serial");
-    EXPECT(!caps.supportsConcurrentExecution,
-           "npu backend stays conservative about concurrent execution");
+    EXPECT(caps.supportsConcurrentExecution,
+           "npu backend advertises scheduler-side concurrent execution");
+    EXPECT((*npuOr)->allowsConcurrentTaskDispatch() ==
+               caps.supportsConcurrentDispatch,
+           "npu backend dispatchability is derived from capabilities");
     EXPECT(!caps.requiresSerializedLaunch,
            "npu backend does not force simulator launch serialization");
-    EXPECT(caps.maxConcurrentTasks == 1,
-           "npu backend advertises the expected task capacity");
-    EXPECT(caps.maxConcurrentStreams == 1,
-           "npu backend advertises a single stream");
+    EXPECT(caps.maxConcurrentTasks >= 1,
+           "npu backend advertises at least one task slot");
+    EXPECT(caps.maxConcurrentStreams >= 1,
+           "npu backend advertises at least one stream slot");
   }
 }
 
@@ -2303,6 +2304,8 @@ static void testNpuBackendAdvertisesSchedulableMultiTaskContract() {
   const BackendCapabilities caps = (*npuOr)->capabilities();
   EXPECT(caps.supportsConcurrentDispatch,
          "npu backend allows scheduler-side concurrent dispatch");
+  EXPECT(caps.supportsConcurrentExecution,
+         "npu backend allows scheduler-side concurrent execution");
   EXPECT(caps.maxConcurrentTasks >= 1,
          "npu backend exposes at least one task slot");
   EXPECT(caps.maxConcurrentStreams >= 1,
@@ -2395,13 +2398,14 @@ static void testBackendCapabilitiesExposeDriverBackedNpuSchedulerContract() {
   const BackendCapabilities backendCaps = (*npuOr)->capabilities();
   EXPECT(backendCaps.supportsConcurrentDispatch,
          "driver-backed npu backend advertises scheduler dispatch");
-  EXPECT(backendCaps.supportsConcurrentExecution ==
-             driverCaps.supportsConcurrentExecution,
-         "driver-backed npu backend preserves driver execution capability");
-  EXPECT(!backendCaps.requiresSerializedLaunch,
-         "driver-backed npu backend no longer requires serialized launch");
-  EXPECT(!(*npuOr)->allowsConcurrentTaskDispatch(),
-         "driver-backed npu backend keeps runtime dispatch serial");
+  EXPECT(backendCaps.supportsConcurrentExecution,
+         "driver-backed npu backend advertises scheduler execution");
+  EXPECT((*npuOr)->allowsConcurrentTaskDispatch() ==
+             backendCaps.supportsConcurrentDispatch,
+         "driver-backed npu backend dispatchability stays coherent");
+  EXPECT(backendCaps.requiresSerializedLaunch ==
+             driverCaps.requiresSerializedLaunch,
+         "driver-backed npu backend preserves driver serialized launch");
   EXPECT(backendCaps.maxConcurrentTasks == driverCaps.maxConcurrentTasks,
          "driver-backed npu backend preserves task capacity");
   EXPECT(backendCaps.maxConcurrentStreams == driverCaps.maxConcurrentStreams,
