@@ -231,22 +231,23 @@ ExecutionBackendKind NpuBackend::kind() const {
   return ExecutionBackendKind::Npu;
 }
 
-BackendCapabilities NpuBackend::capabilities() const {
-  if (driver_) {
-    BackendCapabilities caps = driver_->capabilities();
-    caps.supportsConcurrentDispatch = false;
-    caps.supportsConcurrentExecution = false;
-    caps.maxConcurrentTasks = 1;
-    caps.maxConcurrentStreams = 1;
-    return caps;
-  }
+bool NpuBackend::allowsConcurrentTaskDispatch() const {
+  // Keep runtime routing serial for now; Task 6 only exposes the scheduler
+  // contract through capabilities().
+  return false;
+}
 
+BackendCapabilities NpuBackend::capabilities() const {
   BackendCapabilities caps;
-  caps.supportsConcurrentDispatch = false;
-  caps.supportsConcurrentExecution = false;
+  if (driver_)
+    caps = driver_->capabilities();
+
+  caps.supportsConcurrentDispatch = true;
   caps.requiresSerializedLaunch = false;
-  caps.maxConcurrentTasks = 1;
-  caps.maxConcurrentStreams = 1;
+  if (caps.maxConcurrentTasks == 0)
+    caps.maxConcurrentTasks = 1;
+  if (caps.maxConcurrentStreams == 0)
+    caps.maxConcurrentStreams = 1;
   return caps;
 }
 

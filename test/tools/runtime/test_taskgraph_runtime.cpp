@@ -2279,11 +2279,10 @@ static void testBackendCapabilitiesExposeSimAndNpuContracts() {
 
   if (npuOr) {
     const BackendCapabilities caps = (*npuOr)->capabilities();
-    EXPECT(!caps.supportsConcurrentDispatch,
-           "npu backend stays conservative about concurrent dispatch");
-    EXPECT((*npuOr)->allowsConcurrentTaskDispatch() ==
-               caps.supportsConcurrentDispatch,
-           "npu backend dispatchability is derived from capabilities");
+    EXPECT(caps.supportsConcurrentDispatch,
+           "npu backend advertises scheduler-side concurrent dispatch");
+    EXPECT(!(*npuOr)->allowsConcurrentTaskDispatch(),
+           "npu backend keeps runtime dispatch serial");
     EXPECT(!caps.supportsConcurrentExecution,
            "npu backend stays conservative about concurrent execution");
     EXPECT(!caps.requiresSerializedLaunch,
@@ -2293,6 +2292,21 @@ static void testBackendCapabilitiesExposeSimAndNpuContracts() {
     EXPECT(caps.maxConcurrentStreams == 1,
            "npu backend advertises a single stream");
   }
+}
+
+static void testNpuBackendAdvertisesSchedulableMultiTaskContract() {
+  auto npuOr = createExecutionBackend(ExecutionBackendKind::Npu);
+  EXPECT((bool)npuOr, "npu backend creation succeeds");
+  if (!npuOr)
+    return;
+
+  const BackendCapabilities caps = (*npuOr)->capabilities();
+  EXPECT(caps.supportsConcurrentDispatch,
+         "npu backend allows scheduler-side concurrent dispatch");
+  EXPECT(caps.maxConcurrentTasks >= 1,
+         "npu backend exposes at least one task slot");
+  EXPECT(caps.maxConcurrentStreams >= 1,
+         "npu backend exposes at least one stream slot");
 }
 
 static void testBackendCapabilitiesFollowInjectedDriverContract() {
@@ -2346,7 +2360,7 @@ static void testBackendCapabilitiesFollowInjectedDriverContract() {
          "driver-backed simulation dispatchability stays coherent");
 }
 
-static void testBackendCapabilitiesConstrainDriverBackedNpuContract() {
+static void testBackendCapabilitiesExposeDriverBackedNpuSchedulerContract() {
   class CapabilityAwareNpuDriver final : public ExecutionBackendDriver {
   public:
     BackendCapabilities capabilities() const override {
@@ -2379,18 +2393,19 @@ static void testBackendCapabilitiesConstrainDriverBackedNpuContract() {
          "npu driver dispatchability derives from driver capabilities");
 
   const BackendCapabilities backendCaps = (*npuOr)->capabilities();
-  EXPECT(!backendCaps.supportsConcurrentDispatch,
-         "driver-backed npu backend stays conservative about dispatch");
-  EXPECT(!backendCaps.supportsConcurrentExecution,
-         "driver-backed npu backend stays conservative about execution");
+  EXPECT(backendCaps.supportsConcurrentDispatch,
+         "driver-backed npu backend advertises scheduler dispatch");
+  EXPECT(backendCaps.supportsConcurrentExecution ==
+             driverCaps.supportsConcurrentExecution,
+         "driver-backed npu backend preserves driver execution capability");
+  EXPECT(!backendCaps.requiresSerializedLaunch,
+         "driver-backed npu backend no longer requires serialized launch");
   EXPECT(!(*npuOr)->allowsConcurrentTaskDispatch(),
-         "driver-backed npu backend dispatchability stays conservative");
-  EXPECT(backendCaps.maxConcurrentTasks == 1,
-         "driver-backed npu backend clamps task capacity");
-  EXPECT(backendCaps.maxConcurrentStreams == 1,
-         "driver-backed npu backend clamps stream capacity");
-  EXPECT(backendCaps.requiresSerializedLaunch == driverCaps.requiresSerializedLaunch,
-         "driver-backed npu backend preserves non-concurrency capability fields");
+         "driver-backed npu backend keeps runtime dispatch serial");
+  EXPECT(backendCaps.maxConcurrentTasks == driverCaps.maxConcurrentTasks,
+         "driver-backed npu backend preserves task capacity");
+  EXPECT(backendCaps.maxConcurrentStreams == driverCaps.maxConcurrentStreams,
+         "driver-backed npu backend preserves stream capacity");
 }
 
 static void testInvalidBackendSelection() {
@@ -4902,8 +4917,9 @@ int main() {
   testBackendSelection();
   testDefaultBackendRequiresDriver();
   testBackendCapabilitiesExposeSimAndNpuContracts();
+  testNpuBackendAdvertisesSchedulableMultiTaskContract();
   testBackendCapabilitiesFollowInjectedDriverContract();
-  testBackendCapabilitiesConstrainDriverBackedNpuContract();
+  testBackendCapabilitiesExposeDriverBackedNpuSchedulerContract();
   testInvalidBackendSelection();
   testBackendDelegatesToDriver();
   testNpuBackendRejectsMissingDeviceBinaryPath();
