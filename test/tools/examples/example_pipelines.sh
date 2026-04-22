@@ -85,10 +85,7 @@ run_runtime_session_smoke() {
 EOF
 
   echo "== SMOKE ${name} =="
-  runtime-session --run-manifest "${manifest_file}" --testing-driver npu-success --run >"${log_file}" 2>&1
-  status=$?
-
-  if [[ "${status}" -ne 0 ]]; then
+  if ! runtime-session --run-manifest "${manifest_file}" --testing-driver npu-success --run >"${log_file}" 2>&1; then
     echo "FAIL [smoke:${name}] exited nonzero"
     tail -n 80 "${log_file}" || true
     failures+=("smoke:${name}:exit")
