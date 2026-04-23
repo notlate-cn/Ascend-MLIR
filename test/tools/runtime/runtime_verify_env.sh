@@ -49,11 +49,18 @@ runtime_verify_setup_env() {
 }
 
 runtime_verify_prepare_build_dir() {
+  local cache_source_dir
+  local cache_generator
   if [ -f build/CMakeCache.txt ]; then
-    local cache_source_dir
     cache_source_dir="$(sed -n 's/^CMAKE_HOME_DIRECTORY:INTERNAL=//p' build/CMakeCache.txt)"
     if [ -n "${cache_source_dir}" ] && [ "${cache_source_dir}" != "${PROJECT_ROOT}" ]; then
       echo "Recreating build/ because CMake cache points to ${cache_source_dir}"
+      rm -rf build
+    fi
+
+    cache_generator="$(sed -n 's/^CMAKE_GENERATOR:INTERNAL=//p' build/CMakeCache.txt)"
+    if [ -n "${cache_generator}" ] && [ "${cache_generator}" != "Ninja" ]; then
+      echo "Recreating build/ because CMake cache uses generator ${cache_generator}"
       rm -rf build
     fi
   fi
@@ -66,13 +73,13 @@ runtime_verify_prepare_build_dir() {
     fi
   fi
 
-  if cmake -S . -B build -DLLVM_BUILD_DIR="${LLVM_BUILD}" >/dev/null 2>&1; then
+  if cmake -G Ninja -S . -B build -DLLVM_BUILD_DIR="${LLVM_BUILD}" >/dev/null 2>&1; then
     return 0
   fi
 
   echo "Recreating build/ because CMake configure failed"
   rm -rf build
-  cmake -S . -B build -DLLVM_BUILD_DIR="${LLVM_BUILD}" >/dev/null
+  cmake -G Ninja -S . -B build -DLLVM_BUILD_DIR="${LLVM_BUILD}" >/dev/null
 }
 
 runtime_verify_build_targets() {

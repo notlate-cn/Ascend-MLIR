@@ -8,6 +8,13 @@ set -e
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 source "${SCRIPT_DIR}/resolve_llvm_env.sh"
+source "${SCRIPT_DIR}/resolve_ascend_env.sh"
+
+ASCEND_HOME="$(resolve_ascend_home || true)"
+if [ -n "${ASCEND_HOME}" ]; then
+    export ASCEND_HOME_PATH="${ASCEND_HOME}"
+    export ASCEND_TOOLKIT_HOME="${ASCEND_HOME}"
+fi
 
 # Default configuration
 BUILD_TYPE="${BUILD_TYPE:-Release}"
@@ -180,21 +187,44 @@ build_project() {
 
     print_info "Using LLVM from: ${LLVM_BUILD_DIR}"
 
-    # Check if this is an incremental build (build.ninja exists)
-    if [ -f "build.ninja" ]; then
-        print_info "Incremental build detected (build.ninja exists)"
-        print_info "Skipping CMake configuration, running ninja directly..."
-        ninja -j${NUM_JOBS}
-    else
-        print_info "First-time build or CMake configuration needed"
-        # Pass LLVM_BUILD_DIR to cmake, it will automatically derive MLIR_DIR
+    configure_project() {
         cmake -G Ninja "${PROJECT_ROOT}" \
             -DCMAKE_BUILD_TYPE=${BUILD_TYPE} \
             -DCMAKE_INSTALL_PREFIX="${INSTALL_DIR}" \
             -DAFIR_ENABLE_BINDING_PYTHON=true \
             -DPython3_EXECUTABLE="$(which python3)" \
             -DLLVM_BUILD_DIR="${LLVM_BUILD_DIR}"
+    }
 
+    configure_project_with_retry() {
+        if configure_project; then
+            return 0
+        fi
+        print_warn "CMake configure failed; recreating build directory and retrying..."
+        cd "${PROJECT_ROOT}"
+        rm -rf "${BUILD_DIR}"
+        mkdir -p "${BUILD_DIR}"
+        cd "${BUILD_DIR}"
+        configure_project
+    }
+
+    # Check if this is an incremental build (build.ninja exists)
+    if [ -f "build.ninja" ]; then
+        print_info "Incremental build detected (build.ninja exists)"
+        print_info "Skipping CMake configuration, running ninja directly..."
+        if ! ninja -j${NUM_JOBS}; then
+            print_warn "Incremental build failed; recreating build directory and reconfiguring..."
+            cd "${PROJECT_ROOT}"
+            rm -rf "${BUILD_DIR}"
+            mkdir -p "${BUILD_DIR}"
+            cd "${BUILD_DIR}"
+            configure_project_with_retry
+            cmake --build . --target all -j${NUM_JOBS}
+        fi
+    else
+        print_info "First-time build or CMake configuration needed"
+        # Pass LLVM_BUILD_DIR to cmake, it will automatically derive MLIR_DIR
+        configure_project_with_retry
         cmake --build . --target all -j${NUM_JOBS}
     fi
 

@@ -125,6 +125,10 @@ add_executable(MixDirectTilingArtifactsTest
   MixDirectTilingArtifactsTest.cpp
 )
 
+target_include_directories(MixDirectTilingArtifactsTest PRIVATE
+  ${CMAKE_SOURCE_DIR}/lib/Runtime/Mix
+)
+
 target_link_libraries(MixDirectTilingArtifactsTest PRIVATE
   RuntimeUnitTestSupport
   AscendCRuntime

@@ -1,5 +1,5 @@
 #include "Runtime/MixCompileMetadata.h"
-#include "Runtime/Mix/MixDirectCompileInternal.h"
+#include "MixDirectCompileInternal.h"
 
 #include "gtest/gtest.h"
 
