@@ -86,6 +86,11 @@ private:
   size_t taskCountInStateLocked(GlobalTaskRecord::State state) const;
 
   size_t nextSessionOrdinal_ = 0;
+  int64_t resourceBlockedAdmissionCount_ = 0;
+  int64_t successfulReservationCount_ = 0;
+  int64_t failedTaskCount_ = 0;
+  int64_t completedTaskCount_ = 0;
+  int64_t releasedSessionCount_ = 0;
   std::map<std::string, GlobalSessionRecord> sessions_;
   std::map<std::string, GlobalTaskRecord> tasks_;
   ResourceScheduler resourceScheduler_;

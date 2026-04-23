@@ -81,6 +81,15 @@ SchedulerObservabilitySnapshot GlobalScheduler::observabilitySnapshot() const {
     ++resourceBlocked;
   }
   snapshot.counters["scheduler.admission.resource_blocked"] = resourceBlocked;
+  snapshot.counters["scheduler.admission.resource_blocked_total"] =
+      resourceBlockedAdmissionCount_;
+  snapshot.counters["scheduler.admission.reserved_total"] =
+      successfulReservationCount_;
+  snapshot.counters["scheduler.transition.completed"] =
+      completedTaskCount_;
+  snapshot.counters["scheduler.transition.failed"] = failedTaskCount_;
+  snapshot.counters["scheduler.transition.session_release"] =
+      releasedSessionCount_;
   return snapshot;
 }
 
@@ -139,9 +148,12 @@ void GlobalScheduler::tryReserveReadyTasksLocked() {
 
     auto reservationOr = resourceScheduler_.tryReserve(
         record.sessionId, record.taskId, record.resources);
-    if (!reservationOr)
+    if (!reservationOr) {
+      ++resourceBlockedAdmissionCount_;
       continue;
+    }
 
+    ++successfulReservationCount_;
     record.reservation = std::move(*reservationOr);
     record.state = GlobalTaskRecord::State::Reserved;
   }
@@ -275,6 +287,7 @@ llvm::Expected<size_t> GlobalScheduler::completeTask(llvm::StringRef sessionId,
     record->reservation.reset();
   }
   record->state = GlobalTaskRecord::State::Succeeded;
+  ++completedTaskCount_;
   ++sessionIt->second.completedTasks;
   if (sessionIt->second.runningTasks > 0)
     --sessionIt->second.runningTasks;
@@ -330,6 +343,7 @@ llvm::Error GlobalScheduler::failTask(llvm::StringRef sessionId,
     record->reservation.reset();
   }
   record->state = GlobalTaskRecord::State::Failed;
+  ++failedTaskCount_;
   sessionIt->second.failed = true;
   if (sessionIt->second.runningTasks > 0)
     --sessionIt->second.runningTasks;
@@ -341,6 +355,9 @@ llvm::Error GlobalScheduler::failTask(llvm::StringRef sessionId,
 
 void GlobalScheduler::releaseSession(llvm::StringRef sessionId) {
   std::lock_guard<std::mutex> lock(mutex_);
+  auto sessionIt = sessions_.find(sessionId.str());
+  if (sessionIt == sessions_.end())
+    return;
 
   for (auto it = tasks_.begin(); it != tasks_.end();) {
     GlobalTaskRecord &record = it->second;
@@ -353,7 +370,8 @@ void GlobalScheduler::releaseSession(llvm::StringRef sessionId) {
     it = tasks_.erase(it);
   }
 
-  sessions_.erase(sessionId.str());
+  ++releasedSessionCount_;
+  sessions_.erase(sessionIt);
   tryReserveReadyTasksLocked();
   schedulerCv_.notify_all();
 }

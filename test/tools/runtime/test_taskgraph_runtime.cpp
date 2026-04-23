@@ -4490,6 +4490,10 @@ static void testGlobalSchedulerReportsLifecycleCounters() {
          "scheduler snapshot counts ready tasks waiting on admission");
   EXPECT(stats.counters.at("scheduler.admission.resource_blocked") == 1,
          "scheduler snapshot counts resource-blocked admissions");
+  EXPECT(stats.counters.at("scheduler.admission.reserved_total") == 1,
+         "scheduler snapshot counts cumulative successful reservations");
+  EXPECT(stats.counters.at("scheduler.admission.resource_blocked_total") == 1,
+         "scheduler snapshot counts cumulative resource-blocked admissions");
 
   auto acquiredOr = scheduler.waitAndAcquireTask(sessionAOr->sessionId());
   EXPECT((bool)acquiredOr && acquiredOr->has_value(),
@@ -4531,6 +4535,53 @@ static void testGlobalSchedulerReportsLifecycleCounters() {
   EXPECT(postTransitionStats.counters.at(
              "scheduler.admission.resource_blocked") == 0,
          "scheduler snapshot clears resource-blocked count after completion");
+  EXPECT(postTransitionStats.counters.at("scheduler.admission.reserved_total") ==
+             2,
+         "scheduler snapshot accumulates successful reservations");
+  EXPECT(postTransitionStats.counters.at(
+             "scheduler.admission.resource_blocked_total") == 1,
+         "scheduler snapshot accumulates blocked admission attempts");
+  EXPECT(postTransitionStats.counters.at("scheduler.transition.completed") == 1,
+         "scheduler snapshot counts completed task transitions");
+}
+
+static void testGlobalSchedulerTracksReleaseAndFailureCounters() {
+  GlobalScheduler scheduler;
+  scheduler.configureResourceScheduler(/*simDispatchLanes=*/1, /*deviceSlots=*/1,
+                                      std::numeric_limits<size_t>::max());
+
+  TaskGraph graph;
+  RuntimeTask task;
+  task.taskId = "main";
+  EXPECT(!graph.addTask(task), "graph add task");
+
+  auto sessionOr = scheduler.submit(ExecutionBackendKind::Simulation, graph);
+  EXPECT((bool)sessionOr, "scheduler submission succeeds");
+  if (!sessionOr)
+    return;
+
+  auto acquiredOr = scheduler.waitAndAcquireTask(sessionOr->sessionId());
+  EXPECT((bool)acquiredOr && acquiredOr->has_value(),
+         "scheduler acquires the runnable task");
+  if (!acquiredOr || !acquiredOr->has_value())
+    return;
+
+  EXPECT(!scheduler.failTask(sessionOr->sessionId(), acquiredOr->value().taskId),
+         "scheduler failTask succeeds");
+
+  auto failedStats = scheduler.observabilitySnapshot();
+  EXPECT(failedStats.counters.at("scheduler.transition.failed") == 1,
+         "scheduler snapshot counts task failures");
+  EXPECT(failedStats.counters.at("scheduler.transition.session_release") == 0,
+         "scheduler snapshot does not count session release before release");
+
+  scheduler.releaseSession(sessionOr->sessionId());
+
+  auto releasedStats = scheduler.observabilitySnapshot();
+  EXPECT(releasedStats.counters.at("scheduler.transition.failed") == 1,
+         "scheduler snapshot preserves cumulative task failures");
+  EXPECT(releasedStats.counters.at("scheduler.transition.session_release") == 1,
+         "scheduler snapshot counts session release");
 }
 
 static void testGlobalSchedulerReleaseSessionRestoresAdmissionCapacity() {
@@ -5362,6 +5413,7 @@ int main() {
   testGlobalSchedulerTracksTwoIndependentSessions();
   testGlobalSchedulerBlocksSecondSessionOnSingleSimLane();
   testGlobalSchedulerReportsLifecycleCounters();
+  testGlobalSchedulerTracksReleaseAndFailureCounters();
   testGlobalSchedulerReleaseSessionRestoresAdmissionCapacity();
   testGlobalSchedulerOwnsWholeSubmittedDag();
   testGlobalSchedulerAdvancesDependentsAfterTaskCompletion();
