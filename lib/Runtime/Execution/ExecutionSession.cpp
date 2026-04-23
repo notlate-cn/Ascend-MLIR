@@ -260,7 +260,10 @@ GlobalScheduler &ExecutionSession::globalScheduler() {
 }
 
 llvm::Expected<SessionHandle> ExecutionSession::submit(const TaskGraph &graph) {
-  return globalScheduler().submit(backendKind_, graph);
+  auto backendOr = getOrCreateBackend();
+  if (!backendOr)
+    return backendOr.takeError();
+  return globalScheduler().submit(backendKind_, backendOr->capabilities(), graph);
 }
 
 llvm::Expected<SessionPlan> ExecutionSession::plan(const TaskGraph &graph) const {
@@ -296,34 +299,37 @@ llvm::Expected<ProfileTrace> ExecutionSession::run(const TaskGraph &graph) {
   if (!backendOr)
     return backendOr.takeError();
   ExecutionBackend &backend = *backendOr;
+  const BackendCapabilities backendCaps = backend.capabilities();
   const bool enableConcurrentDispatch =
       !forceSerialSchedulerFromEnv() &&
-      // Task 6 only exposes the NPU scheduler contract; keep execution serial
-      // until the global scheduler/resource admission path consumes it.
-      backend.kind() != ExecutionBackendKind::Npu &&
-      backend.allowsConcurrentTaskDispatch() &&
+      backendCaps.supportsConcurrentDispatch &&
       scheduler.orderedTaskIds.size() > 1;
 
   if (enableConcurrentDispatch) {
+    auto globalSessionOr =
+        globalScheduler().submit(backend.kind(), backendCaps, graph);
+    if (!globalSessionOr)
+      return globalSessionOr.takeError();
+    const std::string globalSessionId = globalSessionOr->sessionId();
+
     sessionTrace.setAttribute("scheduler_scope", "global");
-    sessionTrace.addCounter("global_session_count", 1);
-    sessionTrace.addCounter("resource_wait_count", 0);
     sessionTrace.setAttribute("scheduler_mode", "concurrent");
     sessionTrace.addCounter("frontier_count", 1);
     sessionTrace.counters["max_frontier_width"] =
         static_cast<int64_t>(scheduler.readyQueue.size());
-    std::mutex schedulerMutex;
-    std::condition_variable schedulerCv;
+    std::mutex sessionMutex;
     bool failed = false;
     size_t inFlightTasks = 0;
     size_t maxInFlightTasks = 0;
     std::string firstErrorMessage;
-    std::deque<std::string> nextReadyQueue;
 
     const unsigned concurrencyHint = std::thread::hardware_concurrency();
+    const size_t backendTaskCapacity =
+        backendCaps.maxConcurrentTasks == 0 ? 1 : backendCaps.maxConcurrentTasks;
     const size_t workerCount =
         std::max<size_t>(1, std::min<size_t>(
-                                scheduler.orderedTaskIds.size(),
+                                std::min<size_t>(scheduler.orderedTaskIds.size(),
+                                                 backendTaskCapacity),
                                 concurrencyHint == 0 ? 4 : concurrencyHint));
     std::vector<std::thread> workers;
     workers.reserve(workerCount);
@@ -334,14 +340,13 @@ llvm::Expected<ProfileTrace> ExecutionSession::run(const TaskGraph &graph) {
       if (driver_) {
         auto ownedBackendOr = createExecutionBackend(backendKind_, driver_);
         if (!ownedBackendOr) {
-          std::lock_guard<std::mutex> lock(schedulerMutex);
+          std::lock_guard<std::mutex> lock(sessionMutex);
           if (!failed) {
             failed = true;
             firstErrorMessage = llvm::toString(ownedBackendOr.takeError());
           } else {
             llvm::consumeError(ownedBackendOr.takeError());
           }
-          schedulerCv.notify_all();
           return;
         }
         ownedBackend = std::move(*ownedBackendOr);
@@ -349,133 +354,133 @@ llvm::Expected<ProfileTrace> ExecutionSession::run(const TaskGraph &graph) {
       }
 
       if (!workerBackend) {
-        std::lock_guard<std::mutex> lock(schedulerMutex);
+        std::lock_guard<std::mutex> lock(sessionMutex);
         if (!failed) {
           failed = true;
           firstErrorMessage = "scheduler failed to create worker backend";
         }
-        schedulerCv.notify_all();
         return;
       }
 
       while (true) {
         ExecutionRequest request;
-        std::string taskId;
-
+        RuntimeTask scheduledTask;
         {
-          std::unique_lock<std::mutex> lock(schedulerMutex);
-          schedulerCv.wait(lock, [&] {
-            return failed || !scheduler.readyQueue.empty() || inFlightTasks == 0;
-          });
-
-          if (failed) {
-            if (inFlightTasks == 0)
-              return;
-            continue;
+          auto scheduledTaskOr = globalScheduler().waitAndAcquireTask(globalSessionId);
+          if (!scheduledTaskOr) {
+            std::lock_guard<std::mutex> lock(sessionMutex);
+            if (!failed)
+              firstErrorMessage = llvm::toString(scheduledTaskOr.takeError());
+            else
+              llvm::consumeError(scheduledTaskOr.takeError());
+            failed = true;
+            return;
           }
+          if (!*scheduledTaskOr)
+            return;
+          scheduledTask = std::move(**scheduledTaskOr);
+        }
 
-          if (scheduler.readyQueue.empty()) {
-            if (inFlightTasks == 0) {
-              if (!nextReadyQueue.empty()) {
-                scheduler.readyQueue.swap(nextReadyQueue);
-                sessionTrace.addCounter("frontier_count", 1);
-                sessionTrace.counters["max_frontier_width"] = std::max(
-                    sessionTrace.counters["max_frontier_width"],
-                    static_cast<int64_t>(scheduler.readyQueue.size()));
-                schedulerCv.notify_all();
-                continue;
-              }
-              return;
+        bool prepared = false;
+        {
+          std::lock_guard<std::mutex> lock(sessionMutex);
+          if (auto err = canScheduleTask(scheduledTask)) {
+            if (!failed) {
+              failed = true;
+              firstErrorMessage = llvm::toString(std::move(err));
+            } else {
+              llvm::consumeError(std::move(err));
             }
-            continue;
+          } else {
+            auto resolvedTaskOr =
+                resolveTaskBindings(scheduledTask, workingDirectory, producedBindings);
+            if (!resolvedTaskOr) {
+              if (!failed) {
+                failed = true;
+                firstErrorMessage = llvm::toString(resolvedTaskOr.takeError());
+              } else {
+                llvm::consumeError(resolvedTaskOr.takeError());
+              }
+            } else {
+              request.sessionId = sessionTrace.sessionId;
+              request.task = std::move(*resolvedTaskOr);
+              request.workingDirectory = workingDirectory;
+              ++inFlightTasks;
+              maxInFlightTasks = std::max(maxInFlightTasks, inFlightTasks);
+              prepared = true;
+            }
           }
+        }
 
-          taskId = scheduler.readyQueue.front();
-          scheduler.readyQueue.pop_front();
-
-          auto taskIt = scheduler.tasksById.find(taskId);
-          if (taskIt == scheduler.tasksById.end()) {
-            failed = true;
-            firstErrorMessage =
-                "scheduler lost task definition for " + taskId;
-            schedulerCv.notify_all();
-            continue;
+        if (!prepared) {
+          llvm::Error failErr =
+              globalScheduler().failTask(globalSessionId, scheduledTask.taskId);
+          if (failErr) {
+            std::lock_guard<std::mutex> lock(sessionMutex);
+            if (!failed) {
+              failed = true;
+              firstErrorMessage = llvm::toString(std::move(failErr));
+            } else {
+              llvm::consumeError(std::move(failErr));
+            }
           }
-
-          if (auto err = canScheduleTask(taskIt->second)) {
-            failed = true;
-            firstErrorMessage = llvm::toString(std::move(err));
-            schedulerCv.notify_all();
-            continue;
-          }
-
-          auto resolvedTaskOr = resolveTaskBindings(taskIt->second, workingDirectory,
-                                                    producedBindings);
-          if (!resolvedTaskOr) {
-            failed = true;
-            firstErrorMessage = llvm::toString(resolvedTaskOr.takeError());
-            schedulerCv.notify_all();
-            continue;
-          }
-
-          request.sessionId = sessionTrace.sessionId;
-          request.task = std::move(*resolvedTaskOr);
-          request.workingDirectory = workingDirectory;
-          ++inFlightTasks;
-          maxInFlightTasks = std::max(maxInFlightTasks, inFlightTasks);
+          continue;
         }
 
         auto resultOr = workerBackend->run(request);
 
-        {
-          std::lock_guard<std::mutex> lock(schedulerMutex);
-          --inFlightTasks;
-
-          if (!resultOr) {
+        if (!resultOr) {
+          {
+            std::lock_guard<std::mutex> lock(sessionMutex);
+            if (inFlightTasks > 0)
+              --inFlightTasks;
             if (!failed) {
               failed = true;
               firstErrorMessage = llvm::toString(resultOr.takeError());
             } else {
               llvm::consumeError(resultOr.takeError());
             }
-            schedulerCv.notify_all();
-            continue;
           }
+          llvm::Error failErr =
+              globalScheduler().failTask(globalSessionId, request.task.taskId);
+          if (failErr) {
+            std::lock_guard<std::mutex> lock(sessionMutex);
+            if (firstErrorMessage.empty())
+              firstErrorMessage = llvm::toString(std::move(failErr));
+            else
+              llvm::consumeError(std::move(failErr));
+          }
+          continue;
+        }
 
+        {
+          std::lock_guard<std::mutex> lock(sessionMutex);
+          if (inFlightTasks > 0)
+            --inFlightTasks;
           recordProducedBindings(request.task, producedBindings);
-          completedTasks.insert(taskId);
+          completedTasks.insert(request.task.taskId);
 
-          if (resultOr->profileTrace) {
+          if (resultOr->profileTrace)
             sessionTrace.merge(*resultOr->profileTrace);
-          }
+        }
 
+        auto completedOr =
+            globalScheduler().completeTask(globalSessionId, request.task.taskId);
+        if (!completedOr) {
+          std::lock_guard<std::mutex> lock(sessionMutex);
           if (!failed) {
-            auto dependentsIt = scheduler.dependents.find(taskId);
-            if (dependentsIt != scheduler.dependents.end()) {
-              for (const std::string &dependentId : dependentsIt->second) {
-                auto depCountIt =
-                    scheduler.remainingDependencies.find(dependentId);
-                if (depCountIt == scheduler.remainingDependencies.end())
-                  continue;
-                if (depCountIt->second == 0)
-                  continue;
-                --depCountIt->second;
-                if (depCountIt->second == 0)
-                  nextReadyQueue.push_back(dependentId);
-              }
-            }
+            failed = true;
+            firstErrorMessage = llvm::toString(completedOr.takeError());
+          } else {
+            llvm::consumeError(completedOr.takeError());
           }
-
-          if (!failed && inFlightTasks == 0 && scheduler.readyQueue.empty() &&
-              !nextReadyQueue.empty()) {
-            scheduler.readyQueue.swap(nextReadyQueue);
-            sessionTrace.addCounter("frontier_count", 1);
-            sessionTrace.counters["max_frontier_width"] = std::max(
-                sessionTrace.counters["max_frontier_width"],
-                static_cast<int64_t>(scheduler.readyQueue.size()));
-          }
-
-          schedulerCv.notify_all();
+        } else if (*completedOr > 0) {
+          std::lock_guard<std::mutex> lock(sessionMutex);
+          sessionTrace.addCounter("frontier_count",
+                                  static_cast<int64_t>(*completedOr));
+          sessionTrace.counters["max_frontier_width"] = std::max(
+              sessionTrace.counters["max_frontier_width"],
+              static_cast<int64_t>(*completedOr));
         }
       }
     };
@@ -484,6 +489,8 @@ llvm::Expected<ProfileTrace> ExecutionSession::run(const TaskGraph &graph) {
       workers.emplace_back(worker);
     for (std::thread &thread : workers)
       thread.join();
+
+    globalScheduler().releaseSession(globalSessionId);
 
     sessionTrace.counters["max_in_flight_tasks"] =
         static_cast<int64_t>(maxInFlightTasks);

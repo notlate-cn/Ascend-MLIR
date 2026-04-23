@@ -236,7 +236,8 @@ BackendCapabilities NpuBackend::capabilities() const {
       driver_ ? std::optional<BackendCapabilities>(driver_->capabilities())
               : std::nullopt;
   BackendCapabilities caps = driverCaps.value_or(BackendCapabilities{});
-  caps.supportsConcurrentDispatch = true;
+  if (!driver_)
+    caps.supportsConcurrentDispatch = true;
   if (!driver_)
     caps.supportsConcurrentExecution = true;
   caps.requiresSerializedLaunch = false;

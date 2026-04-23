@@ -262,12 +262,10 @@ grep -q '^session.profile.summary=' /tmp/runtime_session_dag_run.log
 grep -q '^session.runtime.attribute.scheduler_scope=global$' /tmp/runtime_session_dag_run.log
 grep -q '^session.runtime.attribute.scheduler_mode=concurrent$' /tmp/runtime_session_dag_run.log
 grep -q '^session.runtime.attribute.simulator_launch_model=dispatch_thread$' /tmp/runtime_session_dag_run.log
-grep -q '^session.runtime.counter.global_session_count=1$' /tmp/runtime_session_dag_run.log
 grep -q '^session.runtime.counter.planned_task_count=3$' /tmp/runtime_session_dag_run.log
 grep -q '^session.runtime.counter.frontier_count=2$' /tmp/runtime_session_dag_run.log
 grep -q '^session.runtime.counter.max_frontier_width=2$' /tmp/runtime_session_dag_run.log
 grep -q '^session.runtime.counter.max_in_flight_tasks=2$' /tmp/runtime_session_dag_run.log
-grep -q '^session.runtime.counter.resource_wait_count=0$' /tmp/runtime_session_dag_run.log
 grep -q '^session.runtime.counter.serialized_launch_count=3$' /tmp/runtime_session_dag_run.log
 RUNTIME_SESSION_DAG_SUMMARY="$(sed -n 's/^session\.profile\.summary=//p' /tmp/runtime_session_dag_run.log | head -n1)"
 test -f "${RUNTIME_SESSION_DAG_SUMMARY}"

@@ -50,6 +50,7 @@
 #include <cstring>
 #include <cstdlib>
 #include <iterator>
+#include <limits>
 #include <mutex>
 #include <memory>
 #include <string>
@@ -2214,8 +2215,9 @@ static void testBackendSelection() {
     EXPECT((*npuOr)->kind() == ExecutionBackendKind::Npu,
            "npu backend reports its kind");
   if (npuOr)
-    EXPECT((*npuOr)->allowsConcurrentTaskDispatch(),
-           "npu backend advertises concurrent dispatchability");
+    EXPECT((*npuOr)->allowsConcurrentTaskDispatch() ==
+               driver->capabilities().supportsConcurrentDispatch,
+           "driver-backed npu dispatchability follows driver capabilities");
 
   ExecutionRequest request;
   request.task.taskId = "single";
@@ -2396,8 +2398,9 @@ static void testBackendCapabilitiesExposeDriverBackedNpuSchedulerContract() {
          "npu driver dispatchability derives from driver capabilities");
 
   const BackendCapabilities backendCaps = (*npuOr)->capabilities();
-  EXPECT(backendCaps.supportsConcurrentDispatch,
-         "driver-backed npu backend advertises scheduler dispatch");
+  EXPECT(backendCaps.supportsConcurrentDispatch ==
+             driverCaps.supportsConcurrentDispatch,
+         "driver-backed npu backend preserves driver dispatch capability");
   EXPECT(backendCaps.supportsConcurrentExecution ==
              driverCaps.supportsConcurrentExecution,
          "driver-backed npu backend preserves driver execution capability");
@@ -2413,7 +2416,7 @@ static void testBackendCapabilitiesExposeDriverBackedNpuSchedulerContract() {
          "driver-backed npu backend preserves stream capacity");
 }
 
-static void testExecutionSessionKeepsNpuRunsSerial() {
+static void testExecutionSessionRunsNpuRootsConcurrently() {
   class ConcurrentNpuBackendDriver final : public ExecutionBackendDriver {
   public:
     BackendCapabilities capabilities() const override {
@@ -2476,18 +2479,100 @@ static void testExecutionSessionKeepsNpuRunsSerial() {
   ExecutionSession session(ExecutionBackendKind::Npu, driver);
 
   auto traceOr = session.run(graph);
-  EXPECT((bool)traceOr, "npu execution session serial run succeeds");
-  EXPECT(driverPtr->maxRunning.load() == 1,
-         "npu execution session stays on the serial path");
+  EXPECT((bool)traceOr, "npu execution session concurrent run succeeds");
+  EXPECT(driverPtr->maxRunning.load() >= 2,
+         "npu execution session overlaps ready roots through global scheduler");
   EXPECT(driverPtr->seenTaskIds.size() == 3,
          "npu execution session still runs all tasks");
   if (traceOr) {
     auto mode = traceOr->attributes.find("scheduler_mode");
+    auto scope = traceOr->attributes.find("scheduler_scope");
     EXPECT(mode != traceOr->attributes.end(),
            "npu execution session records scheduler mode");
+    EXPECT(scope != traceOr->attributes.end(),
+           "npu execution session records scheduler scope");
     if (mode != traceOr->attributes.end())
-      EXPECT(mode->second == "serial",
-             "npu execution session remains serial");
+      EXPECT(mode->second == "concurrent",
+             "npu execution session uses concurrent scheduler mode");
+    if (scope != traceOr->attributes.end())
+      EXPECT(scope->second == "global",
+             "npu execution session uses global scheduler scope");
+  }
+}
+
+static void testExecutionSessionSerializesNpuRootsWhenDriverCapacityIsOne() {
+  class SerializedNpuBackendDriver final : public ExecutionBackendDriver {
+  public:
+    BackendCapabilities capabilities() const override {
+      BackendCapabilities caps;
+      caps.supportsConcurrentDispatch = true;
+      caps.supportsConcurrentExecution = false;
+      caps.requiresSerializedLaunch = true;
+      caps.maxConcurrentTasks = 1;
+      caps.maxConcurrentStreams = 1;
+      return caps;
+    }
+
+    llvm::Expected<ExecutionResult>
+    run(const ExecutionRequest &request) override {
+      {
+        std::lock_guard<std::mutex> lock(mu);
+        seenTaskIds.push_back(request.task.taskId);
+      }
+
+      const int runningNow = ++runningCount;
+      int observedMax = maxRunning.load();
+      while (runningNow > observedMax &&
+             !maxRunning.compare_exchange_weak(observedMax, runningNow)) {
+      }
+
+      if (request.task.taskId == "task_a" || request.task.taskId == "task_b")
+        std::this_thread::sleep_for(std::chrono::milliseconds(80));
+
+      --runningCount;
+
+      ExecutionResult result;
+      result.taskId = request.task.taskId;
+      return result;
+    }
+
+    std::atomic<int> runningCount{0};
+    std::atomic<int> maxRunning{0};
+    std::mutex mu;
+    std::vector<std::string> seenTaskIds;
+  };
+
+  TaskGraph graph;
+  RuntimeTask taskA;
+  taskA.taskId = "task_a";
+  RuntimeTask taskB;
+  taskB.taskId = "task_b";
+  RuntimeTask taskJoin;
+  taskJoin.taskId = "task_join";
+  taskJoin.dependencies = {"task_a", "task_b"};
+
+  auto addA = graph.addTask(taskA);
+  EXPECT(!addA, "serialized npu add task_a");
+  auto addJoin = graph.addTask(taskJoin);
+  EXPECT(!addJoin, "serialized npu add task_join");
+  auto addB = graph.addTask(taskB);
+  EXPECT(!addB, "serialized npu add task_b");
+
+  auto driver = std::make_shared<SerializedNpuBackendDriver>();
+  SerializedNpuBackendDriver *driverPtr = driver.get();
+  ExecutionSession session(ExecutionBackendKind::Npu, driver);
+
+  auto traceOr = session.run(graph);
+  EXPECT((bool)traceOr, "serialized npu execution succeeds");
+  EXPECT(driverPtr->maxRunning.load() == 1,
+         "npu execution stays serialized when driver capacity is one");
+  if (traceOr) {
+    auto scope = traceOr->attributes.find("scheduler_scope");
+    auto mode = traceOr->attributes.find("scheduler_mode");
+    EXPECT(scope != traceOr->attributes.end() && scope->second == "global",
+           "serialized npu path still uses global scheduler");
+    EXPECT(mode != traceOr->attributes.end() && mode->second == "concurrent",
+           "serialized npu path still reports global concurrent scheduler mode");
   }
 }
 
@@ -3776,6 +3861,18 @@ static void testExecutionSessionRunsReadyRootsConcurrently() {
     EXPECT(driverPtr->seenTaskIds[2] == "task_join",
            "execution session concurrent join task runs after roots");
   }
+  if (traceOr) {
+    auto scopeIt = traceOr->attributes.find("scheduler_scope");
+    EXPECT(scopeIt != traceOr->attributes.end() &&
+               scopeIt->second == "global",
+           "execution session concurrent run reports global scheduler scope");
+    EXPECT(traceOr->counters.find("global_session_count") ==
+               traceOr->counters.end(),
+           "execution session concurrent run does not report fake global session count");
+    EXPECT(traceOr->counters.find("resource_wait_count") ==
+               traceOr->counters.end(),
+           "execution session concurrent run does not report fake resource wait count");
+  }
 }
 
 static void testExecutionSessionCanForceSerialSchedulerViaEnv() {
@@ -4335,6 +4432,8 @@ static void testGlobalSchedulerTracksTwoIndependentSessions() {
 
 static void testGlobalSchedulerBlocksSecondSessionOnSingleSimLane() {
   GlobalScheduler scheduler;
+  scheduler.configureResourceScheduler(/*simDispatchLanes=*/1, /*deviceSlots=*/1,
+                                      std::numeric_limits<size_t>::max());
 
   TaskGraph graphA;
   RuntimeTask taskA;
@@ -4354,6 +4453,131 @@ static void testGlobalSchedulerBlocksSecondSessionOnSingleSimLane() {
          "only one task is admitted into reserved state");
   EXPECT(scheduler.taskCountInState(GlobalTaskRecord::State::Ready) == 1,
          "the second task remains ready while the lane is occupied");
+}
+
+static void testGlobalSchedulerReleaseSessionRestoresAdmissionCapacity() {
+  GlobalScheduler scheduler;
+  scheduler.configureResourceScheduler(/*simDispatchLanes=*/1, /*deviceSlots=*/1,
+                                      std::numeric_limits<size_t>::max());
+
+  TaskGraph graphA;
+  RuntimeTask taskA;
+  taskA.taskId = "a0";
+  EXPECT(!graphA.addTask(taskA), "graphA add task");
+
+  TaskGraph graphB;
+  RuntimeTask taskB;
+  taskB.taskId = "b0";
+  EXPECT(!graphB.addTask(taskB), "graphB add task");
+
+  auto sessionAOr = scheduler.submit(ExecutionBackendKind::Simulation, graphA);
+  auto sessionBOr = scheduler.submit(ExecutionBackendKind::Simulation, graphB);
+  EXPECT((bool)sessionAOr && (bool)sessionBOr,
+         "both submissions succeed before release");
+  EXPECT(scheduler.taskCountInState(GlobalTaskRecord::State::Reserved) == 1,
+         "one task is initially reserved");
+  EXPECT(scheduler.taskCountInState(GlobalTaskRecord::State::Ready) == 1,
+         "one task is initially waiting");
+
+  if (sessionAOr)
+    scheduler.releaseSession(sessionAOr->sessionId());
+
+  EXPECT(scheduler.sessionCount() == 1,
+         "releaseSession removes the released session");
+  EXPECT(scheduler.taskCountInState(GlobalTaskRecord::State::Reserved) == 1,
+         "releaseSession lets the waiting task consume the freed lane");
+  EXPECT(scheduler.taskCountInState(GlobalTaskRecord::State::Ready) == 0,
+         "releaseSession drains the waiting ready task when capacity returns");
+}
+
+static void testGlobalSchedulerOwnsWholeSubmittedDag() {
+  GlobalScheduler scheduler;
+  scheduler.configureResourceScheduler(/*simDispatchLanes=*/1, /*deviceSlots=*/1,
+                                      std::numeric_limits<size_t>::max());
+
+  TaskGraph graph;
+  RuntimeTask taskA;
+  taskA.taskId = "a0";
+  EXPECT(!graph.addTask(taskA), "graph add root a");
+
+  RuntimeTask taskJoin;
+  taskJoin.taskId = "join";
+  taskJoin.dependencies = {"a0", "b0"};
+  EXPECT(!graph.addTask(taskJoin), "graph add join");
+
+  RuntimeTask taskB;
+  taskB.taskId = "b0";
+  EXPECT(!graph.addTask(taskB), "graph add root b");
+
+  auto sessionOr = scheduler.submit(ExecutionBackendKind::Simulation, graph);
+  EXPECT((bool)sessionOr, "dag submit succeeds");
+  EXPECT(scheduler.taskCountInState(GlobalTaskRecord::State::Reserved) == 1,
+         "one ready root is admitted into reserved state");
+  EXPECT(scheduler.taskCountInState(GlobalTaskRecord::State::Ready) == 1,
+         "the other ready root remains ready when the lane is occupied");
+  EXPECT(scheduler.taskCountInState(GlobalTaskRecord::State::Submitted) == 1,
+         "non-root tasks remain tracked as submitted instead of being dropped");
+}
+
+static void testGlobalSchedulerAdvancesDependentsAfterTaskCompletion() {
+  GlobalScheduler scheduler;
+  scheduler.configureResourceScheduler(/*simDispatchLanes=*/2, /*deviceSlots=*/1,
+                                      std::numeric_limits<size_t>::max());
+
+  TaskGraph graph;
+  RuntimeTask taskA;
+  taskA.taskId = "a0";
+  EXPECT(!graph.addTask(taskA), "graph add root a");
+
+  RuntimeTask taskJoin;
+  taskJoin.taskId = "join";
+  taskJoin.dependencies = {"a0", "b0"};
+  EXPECT(!graph.addTask(taskJoin), "graph add join");
+
+  RuntimeTask taskB;
+  taskB.taskId = "b0";
+  EXPECT(!graph.addTask(taskB), "graph add root b");
+
+  auto sessionOr = scheduler.submit(ExecutionBackendKind::Simulation, graph);
+  EXPECT((bool)sessionOr, "dag submit succeeds");
+  if (!sessionOr)
+    return;
+
+  auto firstTaskOr = scheduler.waitAndAcquireTask(sessionOr->sessionId());
+  EXPECT((bool)firstTaskOr && firstTaskOr->has_value(),
+         "first ready root can be acquired");
+  auto secondTaskOr = scheduler.waitAndAcquireTask(sessionOr->sessionId());
+  EXPECT((bool)secondTaskOr && secondTaskOr->has_value(),
+         "second ready root can be acquired");
+  if (!firstTaskOr || !firstTaskOr->has_value() || !secondTaskOr ||
+      !secondTaskOr->has_value())
+    return;
+
+  auto firstCompleteOr =
+      scheduler.completeTask(sessionOr->sessionId(), firstTaskOr->value().taskId);
+  EXPECT((bool)firstCompleteOr,
+         "first root completion succeeds");
+  if (firstCompleteOr)
+    EXPECT(*firstCompleteOr == 0,
+           "first root completion does not unlock join yet");
+  EXPECT(scheduler.taskCountInState(GlobalTaskRecord::State::Submitted) == 1,
+         "join task stays submitted until all dependencies complete");
+
+  auto secondCompleteOr = scheduler.completeTask(sessionOr->sessionId(),
+                                                 secondTaskOr->value().taskId);
+  EXPECT((bool)secondCompleteOr,
+         "second root completion succeeds");
+  if (secondCompleteOr)
+    EXPECT(*secondCompleteOr == 1,
+           "second root completion unlocks one dependent join task");
+
+  auto joinTaskOr = scheduler.waitAndAcquireTask(sessionOr->sessionId());
+  EXPECT((bool)joinTaskOr && joinTaskOr->has_value(),
+         "join task becomes acquirable after both roots complete");
+  if (joinTaskOr && joinTaskOr->has_value()) {
+    EXPECT(joinTaskOr->value().taskId == "join",
+           "global scheduler promotes the dependent join task");
+  }
 }
 
 static void testExecutionSessionSubmitsThroughGlobalScheduler() {
@@ -5021,7 +5245,8 @@ int main() {
   testNpuBackendRejectsMissingMixSharedObjectPath();
   testNpuBackendReachesRealDeviceModePath();
   testExecutionSessionSupportsNpuSuccessDriver();
-  testExecutionSessionKeepsNpuRunsSerial();
+  testExecutionSessionRunsNpuRootsConcurrently();
+  testExecutionSessionSerializesNpuRootsWhenDriverCapacityIsOne();
   testSimulatorProfileNormalization();
   testSimulatorProfileNormalizationExtractsMetrics();
   testAddProfileArtifactHelper();
@@ -5058,6 +5283,9 @@ int main() {
   testResourceSchedulerReservesAndReleasesSlots();
   testGlobalSchedulerTracksTwoIndependentSessions();
   testGlobalSchedulerBlocksSecondSessionOnSingleSimLane();
+  testGlobalSchedulerReleaseSessionRestoresAdmissionCapacity();
+  testGlobalSchedulerOwnsWholeSubmittedDag();
+  testGlobalSchedulerAdvancesDependentsAfterTaskCompletion();
   testRunManifestParsesVecSimulationSpec();
   testResourceSchedulerIgnoresForgedRelease();
   testResourceSchedulerHandlesIdenticalPublicReservationsIndependently();
