@@ -9,6 +9,7 @@
 #include "llvm/Support/Error.h"
 
 #include <optional>
+#include <map>
 #include <string>
 #include <vector>
 
@@ -61,6 +62,8 @@ struct FrontendRunSummary {
   ProfileTrace profileTrace;
   std::vector<std::string> profileArtifactPaths;
   std::string retainedSummaryPath;
+  std::map<std::string, std::string> runtimeAttributes;
+  std::map<std::string, int64_t> runtimeCounters;
 };
 
 FrontendRunSummary summarizeFrontendRunSuccess(ExecutionBackendKind backendKind,

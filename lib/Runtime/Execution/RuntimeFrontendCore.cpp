@@ -100,6 +100,8 @@ FrontendRunSummary summarizeFrontendRunSuccess(ExecutionBackendKind backendKind,
   summary.profileTrace = trace;
   summary.profileArtifactPaths = trace.profileArtifactPaths();
   summary.retainedSummaryPath = retainedSummaryPath.str();
+  summary.runtimeAttributes = trace.attributes;
+  summary.runtimeCounters = trace.counters;
   return summary;
 }
 

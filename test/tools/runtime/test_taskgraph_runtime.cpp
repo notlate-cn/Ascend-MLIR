@@ -2081,6 +2081,8 @@ static void testFrontendSingleTaskRunPreparationAndSummary() {
   trace.sessionId = "session-frontend";
   trace.addProfileArtifact("main", ExecutionBackendKind::Simulation,
                            "/tmp/frontend-profile.json");
+  trace.setAttribute("scheduler_mode", "serial");
+  trace.addCounter("planned_task_count", 1);
 
   FrontendRunSummary successSummary = summarizeFrontendRunSuccess(
       ExecutionBackendKind::Simulation, /*validationRan=*/true, trace,
@@ -2097,6 +2099,19 @@ static void testFrontendSingleTaskRunPreparationAndSummary() {
          "frontend run summary preserves surfaced artifact path");
   EXPECT(successSummary.retainedSummaryPath == "/tmp/session_summary.json",
          "frontend run summary preserves retained summary path");
+  EXPECT(successSummary.runtimeAttributes.size() == 1,
+         "frontend run summary surfaces runtime attributes");
+  EXPECT(successSummary.runtimeCounters.size() == 1,
+         "frontend run summary surfaces runtime counters");
+  auto schedulerMode = successSummary.runtimeAttributes.find("scheduler_mode");
+  EXPECT(schedulerMode != successSummary.runtimeAttributes.end() &&
+             schedulerMode->second == "serial",
+         "frontend run summary preserves runtime attribute values");
+  auto plannedTaskCount =
+      successSummary.runtimeCounters.find("planned_task_count");
+  EXPECT(plannedTaskCount != successSummary.runtimeCounters.end() &&
+             plannedTaskCount->second == 1,
+         "frontend run summary preserves runtime counter values");
 
   FrontendRunSummary errorSummary = summarizeFrontendRunError(
       ExecutionBackendKind::Simulation, /*validationRan=*/true,
@@ -2161,6 +2176,15 @@ static void testFrontendRunExecutionUsesNormalizedContract() {
                std::string::npos,
            "frontend execute contract forwards profile path from trace");
   }
+  auto schedulerMode = successSummary.runtimeAttributes.find("scheduler_mode");
+  EXPECT(schedulerMode != successSummary.runtimeAttributes.end() &&
+             schedulerMode->second == "serial",
+         "frontend execute contract surfaces runtime attributes");
+  auto plannedTaskCount =
+      successSummary.runtimeCounters.find("planned_task_count");
+  EXPECT(plannedTaskCount != successSummary.runtimeCounters.end() &&
+             plannedTaskCount->second == 1,
+         "frontend execute contract surfaces runtime counters");
 
   auto failingDriver = std::make_shared<FailingExecutionBackendDriver>(
       "[sim:validate] simulation output mismatch");

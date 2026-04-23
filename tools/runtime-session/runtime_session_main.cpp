@@ -170,9 +170,9 @@ void printRunSuccessSummary(const FrontendRunSummary &summary) {
     llvm::outs() << "session.profile.summary=" << summary.retainedSummaryPath
                  << "\n";
   // Keep observability generic so new runtime attributes/counters flow through unchanged.
-  for (const auto &[key, value] : summary.profileTrace.attributes)
+  for (const auto &[key, value] : summary.runtimeAttributes)
     llvm::outs() << "session.runtime.attribute." << key << "=" << value << "\n";
-  for (const auto &[key, value] : summary.profileTrace.counters)
+  for (const auto &[key, value] : summary.runtimeCounters)
     llvm::outs() << "session.runtime.counter." << key << "=" << value << "\n";
 }
 
