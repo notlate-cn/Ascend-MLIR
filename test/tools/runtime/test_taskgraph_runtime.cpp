@@ -3827,6 +3827,43 @@ static void testExecutionSessionRunsTasksInTopologicalOrder() {
   }
 }
 
+static void testExecutionSessionMergesSchedulerObservabilityIntoTrace() {
+  TaskGraph graph;
+
+  RuntimeTask taskA;
+  taskA.taskId = "main0";
+  EXPECT(!graph.addTask(taskA), "graph add first task");
+
+  RuntimeTask taskB;
+  taskB.taskId = "main1";
+  EXPECT(!graph.addTask(taskB), "graph add second task");
+
+  auto driver = std::make_shared<OrderedExecutionBackendDriver>();
+  ExecutionSession session(ExecutionBackendKind::Simulation, driver);
+
+  auto traceOr = session.run(graph);
+  EXPECT((bool)traceOr, "session run succeeds");
+  if (!traceOr)
+    return;
+
+  auto policy = traceOr->attributes.find("scheduler_policy");
+  EXPECT(policy != traceOr->attributes.end() &&
+             policy->second == "global_string_key_order_baseline",
+         "session trace surfaces scheduler policy");
+  auto schedulerScope = traceOr->attributes.find("scheduler_scope");
+  EXPECT(schedulerScope != traceOr->attributes.end() &&
+             schedulerScope->second == "global",
+         "session trace exercises the global scheduler path");
+
+  auto sessionCount = traceOr->counters.find("scheduler.session_count");
+  EXPECT(sessionCount != traceOr->counters.end(),
+         "session trace surfaces scheduler snapshot counters");
+  if (sessionCount != traceOr->counters.end()) {
+    EXPECT(sessionCount->second >= 1,
+           "session trace preserves scheduler counter values");
+  }
+}
+
 static void testExecutionSessionRunsReadyRootsConcurrently() {
   TaskGraph graph;
 
@@ -5407,6 +5444,7 @@ int main() {
   testExecutionSessionPlansTopologicalOrder();
   testExecutionSessionPlanTracksMultipleReadyRoots();
   testExecutionSessionRunsTasksInTopologicalOrder();
+  testExecutionSessionMergesSchedulerObservabilityIntoTrace();
   testExecutionSessionRunsReadyRootsConcurrently();
   testExecutionSessionCanForceSerialSchedulerViaEnv();
   testExecutionSessionFailureStopsJoinAfterConcurrentRootFailure();

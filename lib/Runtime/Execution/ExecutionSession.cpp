@@ -188,6 +188,15 @@ static llvm::Expected<SchedulerState> buildSchedulerState(const TaskGraph &graph
   return state;
 }
 
+static void
+mergeSchedulerObservability(ProfileTrace &trace,
+                            const SchedulerObservabilitySnapshot &snapshot) {
+  for (const auto &[key, value] : snapshot.attributes)
+    trace.setAttribute(key, value);
+  for (const auto &[key, value] : snapshot.counters)
+    trace.addCounter(key, value);
+}
+
 static const char *mixResourceTypeToString(MixResourceType type) {
   switch (type) {
   case MixResourceType::Unknown:
@@ -304,6 +313,7 @@ llvm::Expected<ProfileTrace> ExecutionSession::run(const TaskGraph &graph) {
       !forceSerialSchedulerFromEnv() &&
       backendCaps.supportsConcurrentDispatch &&
       scheduler.orderedTaskIds.size() > 1;
+  std::optional<SchedulerObservabilitySnapshot> schedulerSnapshot;
 
   if (enableConcurrentDispatch) {
     auto globalSessionOr =
@@ -490,6 +500,7 @@ llvm::Expected<ProfileTrace> ExecutionSession::run(const TaskGraph &graph) {
     for (std::thread &thread : workers)
       thread.join();
 
+    schedulerSnapshot = globalScheduler().observabilitySnapshot();
     globalScheduler().releaseSession(globalSessionId);
 
     sessionTrace.counters["max_in_flight_tasks"] =
@@ -554,6 +565,10 @@ llvm::Expected<ProfileTrace> ExecutionSession::run(const TaskGraph &graph) {
         completedTasks.size(), scheduler.orderedTaskIds.size());
   }
 
+  mergeSchedulerObservability(
+      sessionTrace,
+      schedulerSnapshot.has_value() ? *schedulerSnapshot
+                                    : globalScheduler().observabilitySnapshot());
   return sessionTrace;
 }
 
