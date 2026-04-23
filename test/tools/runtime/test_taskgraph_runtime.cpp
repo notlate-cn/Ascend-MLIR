@@ -3862,7 +3862,7 @@ static void testExecutionSessionMergesSchedulerObservabilityIntoTrace() {
   taskB.taskId = "main1";
   EXPECT(!graph.addTask(taskB), "graph add second task");
 
-  auto driver = std::make_shared<OrderedExecutionBackendDriver>();
+  auto driver = std::make_shared<ConcurrentRootOverlapBackendDriver>();
   ExecutionSession session(ExecutionBackendKind::Simulation, driver);
 
   auto traceOr = session.run(graph);
