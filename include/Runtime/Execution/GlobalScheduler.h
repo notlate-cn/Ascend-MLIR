@@ -39,6 +39,7 @@ struct GlobalTaskRecord {
   std::vector<std::string> dependents;
   State state = State::Submitted;
   std::optional<ResourceReservation> reservation;
+  bool waitingOnResources = false;
 };
 
 struct SchedulerObservabilitySnapshot {

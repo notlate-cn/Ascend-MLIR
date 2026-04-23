@@ -149,11 +149,15 @@ void GlobalScheduler::tryReserveReadyTasksLocked() {
     auto reservationOr = resourceScheduler_.tryReserve(
         record.sessionId, record.taskId, record.resources);
     if (!reservationOr) {
-      ++resourceBlockedAdmissionCount_;
+      if (!record.waitingOnResources) {
+        ++resourceBlockedAdmissionCount_;
+        record.waitingOnResources = true;
+      }
       continue;
     }
 
     ++successfulReservationCount_;
+    record.waitingOnResources = false;
     record.reservation = std::move(*reservationOr);
     record.state = GlobalTaskRecord::State::Reserved;
   }

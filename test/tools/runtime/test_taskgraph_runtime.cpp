@@ -4495,6 +4495,15 @@ static void testGlobalSchedulerReportsLifecycleCounters() {
   EXPECT(stats.counters.at("scheduler.admission.resource_blocked_total") == 1,
          "scheduler snapshot counts cumulative resource-blocked admissions");
 
+  scheduler.configureResourceScheduler(/*simDispatchLanes=*/1, /*deviceSlots=*/1,
+                                      std::numeric_limits<size_t>::max());
+  auto retriedStats = scheduler.observabilitySnapshot();
+  EXPECT(retriedStats.counters.at("scheduler.admission.resource_blocked") == 1,
+         "scheduler snapshot keeps the ready task resource-blocked");
+  EXPECT(retriedStats.counters.at(
+             "scheduler.admission.resource_blocked_total") == 1,
+         "scheduler snapshot does not recount the same blocked task on retry");
+
   auto acquiredOr = scheduler.waitAndAcquireTask(sessionAOr->sessionId());
   EXPECT((bool)acquiredOr && acquiredOr->has_value(),
          "scheduler acquires the reserved task for lifecycle transition");
