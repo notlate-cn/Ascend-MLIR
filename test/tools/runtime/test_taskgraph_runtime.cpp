@@ -4455,6 +4455,84 @@ static void testGlobalSchedulerBlocksSecondSessionOnSingleSimLane() {
          "the second task remains ready while the lane is occupied");
 }
 
+static void testGlobalSchedulerReportsLifecycleCounters() {
+  GlobalScheduler scheduler;
+  scheduler.configureResourceScheduler(/*simDispatchLanes=*/1, /*deviceSlots=*/1,
+                                      std::numeric_limits<size_t>::max());
+
+  TaskGraph graphA;
+  RuntimeTask taskA;
+  taskA.taskId = "a0";
+  EXPECT(!graphA.addTask(taskA), "graphA add task");
+
+  TaskGraph graphB;
+  RuntimeTask taskB;
+  taskB.taskId = "b0";
+  EXPECT(!graphB.addTask(taskB), "graphB add task");
+
+  auto sessionAOr = scheduler.submit(ExecutionBackendKind::Simulation, graphA);
+  auto sessionBOr = scheduler.submit(ExecutionBackendKind::Simulation, graphB);
+  EXPECT((bool)sessionAOr && (bool)sessionBOr,
+         "both scheduler submissions succeed");
+  if (!sessionAOr || !sessionBOr)
+    return;
+
+  auto stats = scheduler.observabilitySnapshot();
+  auto schedulerPolicy = stats.attributes.find("scheduler_policy");
+  EXPECT(schedulerPolicy != stats.attributes.end() &&
+             !schedulerPolicy->second.empty(),
+         "scheduler snapshot reports a non-empty policy label");
+  EXPECT(stats.counters.at("scheduler.session_count") == 2,
+         "scheduler snapshot counts active sessions");
+  EXPECT(stats.counters.at("scheduler.task.reserved") == 1,
+         "scheduler snapshot counts reserved tasks");
+  EXPECT(stats.counters.at("scheduler.task.ready") == 1,
+         "scheduler snapshot counts ready tasks waiting on admission");
+  EXPECT(stats.counters.at("scheduler.admission.resource_blocked") == 1,
+         "scheduler snapshot counts resource-blocked admissions");
+
+  auto acquiredOr = scheduler.waitAndAcquireTask(sessionAOr->sessionId());
+  EXPECT((bool)acquiredOr && acquiredOr->has_value(),
+         "scheduler acquires the reserved task for lifecycle transition");
+  if (!acquiredOr || !acquiredOr->has_value())
+    return;
+
+  auto runningStats = scheduler.observabilitySnapshot();
+  EXPECT(runningStats.counters.at("scheduler.task.running") == 1,
+         "scheduler snapshot counts running tasks after acquisition");
+  EXPECT(runningStats.counters.at("scheduler.task.reserved") == 0,
+         "scheduler snapshot clears reserved count after acquisition");
+  EXPECT(runningStats.counters.at("scheduler.task.ready") == 1,
+         "scheduler snapshot keeps the waiting task ready while lane is busy");
+  EXPECT(runningStats.counters.at("scheduler.admission.resource_blocked") == 1,
+         "scheduler snapshot keeps the waiting task resource-blocked");
+
+  auto completedOr = scheduler.completeTask(sessionAOr->sessionId(),
+                                            acquiredOr->value().taskId);
+  EXPECT((bool)completedOr, "scheduler completes the acquired task");
+  if (!completedOr)
+    return;
+
+  auto postTransitionStats = scheduler.observabilitySnapshot();
+  auto postPolicy = postTransitionStats.attributes.find("scheduler_policy");
+  EXPECT(postPolicy != postTransitionStats.attributes.end() &&
+             !postPolicy->second.empty(),
+         "scheduler snapshot preserves a non-empty policy label");
+  EXPECT(postTransitionStats.counters.at("scheduler.session_count") == 2,
+         "scheduler snapshot keeps the active session count after completion");
+  EXPECT(postTransitionStats.counters.at("scheduler.task.succeeded") == 1,
+         "scheduler snapshot counts succeeded tasks after completion");
+  EXPECT(postTransitionStats.counters.at("scheduler.task.reserved") == 1,
+         "scheduler snapshot re-admits the waiting task after completion");
+  EXPECT(postTransitionStats.counters.at("scheduler.task.ready") == 0,
+         "scheduler snapshot drains ready tasks when capacity returns");
+  EXPECT(postTransitionStats.counters.at("scheduler.task.running") == 0,
+         "scheduler snapshot clears running count after completion");
+  EXPECT(postTransitionStats.counters.at(
+             "scheduler.admission.resource_blocked") == 0,
+         "scheduler snapshot clears resource-blocked count after completion");
+}
+
 static void testGlobalSchedulerReleaseSessionRestoresAdmissionCapacity() {
   GlobalScheduler scheduler;
   scheduler.configureResourceScheduler(/*simDispatchLanes=*/1, /*deviceSlots=*/1,
@@ -5283,6 +5361,7 @@ int main() {
   testResourceSchedulerReservesAndReleasesSlots();
   testGlobalSchedulerTracksTwoIndependentSessions();
   testGlobalSchedulerBlocksSecondSessionOnSingleSimLane();
+  testGlobalSchedulerReportsLifecycleCounters();
   testGlobalSchedulerReleaseSessionRestoresAdmissionCapacity();
   testGlobalSchedulerOwnsWholeSubmittedDag();
   testGlobalSchedulerAdvancesDependentsAfterTaskCompletion();
