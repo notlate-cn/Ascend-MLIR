@@ -9,6 +9,7 @@
 
 #include <cstddef>
 #include <condition_variable>
+#include <cstdint>
 #include <map>
 #include <memory>
 #include <optional>
@@ -40,6 +41,11 @@ struct GlobalTaskRecord {
   std::optional<ResourceReservation> reservation;
 };
 
+struct SchedulerObservabilitySnapshot {
+  std::map<std::string, std::string> attributes;
+  std::map<std::string, int64_t> counters;
+};
+
 class GlobalScheduler {
 public:
   GlobalScheduler();
@@ -60,6 +66,7 @@ public:
   void configureResourceScheduler(size_t simDispatchLanes, size_t deviceSlots,
                                   size_t workspaceBudget);
   size_t taskCountInState(GlobalTaskRecord::State state) const;
+  SchedulerObservabilitySnapshot observabilitySnapshot() const;
 
 private:
   struct GlobalSessionRecord {
@@ -76,6 +83,7 @@ private:
   void cancelPendingSessionTasksLocked(llvm::StringRef sessionId);
   GlobalTaskRecord *findTaskLocked(llvm::StringRef sessionId,
                                    llvm::StringRef taskId);
+  size_t taskCountInStateLocked(GlobalTaskRecord::State state) const;
 
   size_t nextSessionOrdinal_ = 0;
   std::map<std::string, GlobalSessionRecord> sessions_;

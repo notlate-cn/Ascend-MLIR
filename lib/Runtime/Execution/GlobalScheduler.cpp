@@ -31,12 +31,57 @@ void GlobalScheduler::configureResourceScheduler(size_t simDispatchLanes,
 
 size_t GlobalScheduler::taskCountInState(GlobalTaskRecord::State state) const {
   std::lock_guard<std::mutex> lock(mutex_);
+  return taskCountInStateLocked(state);
+}
+
+size_t GlobalScheduler::taskCountInStateLocked(
+    GlobalTaskRecord::State state) const {
   size_t count = 0;
   for (const auto &entry : tasks_) {
     if (entry.second.state == state)
       ++count;
   }
   return count;
+}
+
+SchedulerObservabilitySnapshot GlobalScheduler::observabilitySnapshot() const {
+  std::lock_guard<std::mutex> lock(mutex_);
+
+  SchedulerObservabilitySnapshot snapshot;
+  snapshot.attributes["scheduler_policy"] =
+      "global_string_key_order_baseline";
+  snapshot.attributes["resource_model_version"] = "v1";
+  snapshot.counters["scheduler.session_count"] =
+      static_cast<int64_t>(sessions_.size());
+  snapshot.counters["scheduler.task.submitted"] = static_cast<int64_t>(
+      taskCountInStateLocked(GlobalTaskRecord::State::Submitted));
+  snapshot.counters["scheduler.task.ready"] =
+      static_cast<int64_t>(taskCountInStateLocked(GlobalTaskRecord::State::Ready));
+  snapshot.counters["scheduler.task.reserved"] = static_cast<int64_t>(
+      taskCountInStateLocked(GlobalTaskRecord::State::Reserved));
+  snapshot.counters["scheduler.task.running"] = static_cast<int64_t>(
+      taskCountInStateLocked(GlobalTaskRecord::State::Running));
+  snapshot.counters["scheduler.task.succeeded"] = static_cast<int64_t>(
+      taskCountInStateLocked(GlobalTaskRecord::State::Succeeded));
+  snapshot.counters["scheduler.task.failed"] =
+      static_cast<int64_t>(taskCountInStateLocked(GlobalTaskRecord::State::Failed));
+  snapshot.counters["scheduler.task.cancelled"] = static_cast<int64_t>(
+      taskCountInStateLocked(GlobalTaskRecord::State::Cancelled));
+
+  int64_t resourceBlocked = 0;
+  for (const auto &entry : tasks_) {
+    const GlobalTaskRecord &record = entry.second;
+    if (record.state != GlobalTaskRecord::State::Ready)
+      continue;
+
+    auto sessionIt = sessions_.find(record.sessionId);
+    if (sessionIt == sessions_.end() || sessionIt->second.failed)
+      continue;
+
+    ++resourceBlocked;
+  }
+  snapshot.counters["scheduler.admission.resource_blocked"] = resourceBlocked;
+  return snapshot;
 }
 
 std::string GlobalScheduler::taskKey(llvm::StringRef sessionId,
