@@ -288,6 +288,38 @@ NPU 代码路径已接通。
 - CPU 仿真执行与 profiling：完成
 - NPU 执行路径接线：代码完成，待真机验证
 
+### 当前能力矩阵
+
+按当前代码与 xvm 验证结果，runtime 已稳定覆盖：
+
+- `runtime-session` 统一 compile/run CLI
+- C API 单 task compile/run
+- `vec/cube` runtime-native artifact compile
+- `mix` runtime-native compile 与 simulation run
+- single-task simulation
+- task-graph simulation
+- cross-session global scheduler admission
+- `resource admission`
+- `stream resource accounting`
+- `cross-session fairness`
+- `static session priority`
+- `session admission quota`
+- shared summary / retained profile observability
+
+当前仍未完成闭环的能力是：
+
+- NPU real-device validation
+
+### 当前非目标
+
+当前 runtime baseline 明确还不覆盖：
+
+- backend-specific scheduler policy branches
+- dynamic / weighted priority
+- tenant-wide quota 或 cluster-wide fairness
+- 用户可配置的 scheduler CLI / env policy surface
+- 将当前 xvm baseline 视为 NPU 真机完成
+
 ## 后续演进
 
 ### `NPU real-device validation`
@@ -316,6 +348,7 @@ NPU 代码路径已接通。
 - priority baseline 已支持 `static session priority`
 - 默认 policy 已通过内部 `GlobalSchedulerPolicy` 显式收口
 - 当前配置面仍然是 `runtime-internal / test-oriented`，不是用户 CLI 配置接口
+- lower-priority backfill 当前已验证覆盖 `quota-blocked` 场景；更广义的 resource-ineligible backfill 仍应视为后续增强点
 
 ### runtime-native mix tiling
 
