@@ -18,6 +18,18 @@ static int priorityRank(SessionPriorityClass priority) {
   return 1;
 }
 
+static llvm::StringRef priorityClassName(SessionPriorityClass priority) {
+  switch (priority) {
+  case SessionPriorityClass::Low:
+    return "low";
+  case SessionPriorityClass::Normal:
+    return "normal";
+  case SessionPriorityClass::High:
+    return "high";
+  }
+  return "normal";
+}
+
 GlobalScheduler::GlobalScheduler() {
   resourceScheduler_.configureSimDispatchLanes(1024);
   resourceScheduler_.configureDeviceSlots(1024);
@@ -45,6 +57,12 @@ void GlobalScheduler::configureResourceScheduler(size_t simDispatchLanes,
   schedulerCv_.notify_all();
 }
 
+void GlobalScheduler::configurePolicy(const GlobalSchedulerPolicy &policy) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  policy_ = policy;
+  schedulerCv_.notify_all();
+}
+
 size_t GlobalScheduler::taskCountInState(GlobalTaskRecord::State state) const {
   std::lock_guard<std::mutex> lock(mutex_);
   return taskCountInStateLocked(state);
@@ -69,6 +87,8 @@ SchedulerObservabilitySnapshot GlobalScheduler::observabilitySnapshot() const {
   snapshot.attributes["scheduler_fairness_policy"] = "session_round_robin";
   snapshot.attributes["scheduler_priority_policy"] = "static_session_priority";
   snapshot.attributes["scheduler_quota_policy"] = "session_admission_quota";
+  snapshot.attributes["scheduler_default_priority_class"] =
+      priorityClassName(policy_.defaultSessionScheduling.priorityClass).str();
   snapshot.attributes["resource_model_version"] = "v2";
   snapshot.attributes["scheduler_stream_model"] = "enabled";
   snapshot.counters["scheduler.session_count"] =
@@ -178,6 +198,8 @@ SchedulerObservabilitySnapshot GlobalScheduler::observabilitySnapshot() const {
   snapshot.counters["scheduler.priority.high_ready"] = highReady;
   snapshot.counters["scheduler.priority.normal_ready"] = normalReady;
   snapshot.counters["scheduler.priority.low_ready"] = lowReady;
+  snapshot.counters["scheduler.policy.default_max_admitted_tasks"] =
+      static_cast<int64_t>(policy_.defaultSessionScheduling.maxAdmittedTasks);
   snapshot.counters["scheduler.admission.reserved_total"] =
       successfulReservationCount_;
   snapshot.counters["scheduler.transition.completed"] =
@@ -347,8 +369,22 @@ void GlobalScheduler::tryReserveReadyTasksLocked() {
           break;
         }
       }
-      if (!hasReadyTask || quotaExhausted)
+      if (!hasReadyTask)
         continue;
+      if (quotaExhausted) {
+        for (auto &entry : tasks_) {
+          GlobalTaskRecord &record = entry.second;
+          if (record.sessionId != sessionOrder_[index] ||
+              record.state != GlobalTaskRecord::State::Ready) {
+            continue;
+          }
+          if (!record.waitingOnQuota) {
+            ++quotaBlockedAdmissionCount_;
+            record.waitingOnQuota = true;
+          }
+        }
+        continue;
+      }
       selectedPriority = std::max(
           selectedPriority,
           priorityRank(sessionIt->second.scheduling.priorityClass));
@@ -419,8 +455,7 @@ void GlobalScheduler::noteFairnessSessionRemovalLocked(llvm::StringRef sessionId
 
 llvm::Expected<SessionHandle>
 GlobalScheduler::submit(ExecutionBackendKind backendKind, const TaskGraph &graph) {
-  SessionSchedulingOptions scheduling;
-  return submit(backendKind, graph, scheduling);
+  return submit(backendKind, graph, policy_.defaultSessionScheduling);
 }
 
 llvm::Expected<SessionHandle>
@@ -447,8 +482,8 @@ llvm::Expected<SessionHandle>
 GlobalScheduler::submit(ExecutionBackendKind backendKind,
                         const BackendCapabilities &capabilities,
                         const TaskGraph &graph) {
-  SessionSchedulingOptions scheduling;
-  return submit(backendKind, capabilities, graph, scheduling);
+  return submit(backendKind, capabilities, graph,
+                policy_.defaultSessionScheduling);
 }
 
 llvm::Expected<SessionHandle>

@@ -25,9 +25,15 @@ enum class SessionPriorityClass {
   High,
 };
 
+struct GlobalSchedulerPolicy;
+
 struct SessionSchedulingOptions {
   SessionPriorityClass priorityClass = SessionPriorityClass::Normal;
   size_t maxAdmittedTasks = 0;
+};
+
+struct GlobalSchedulerPolicy {
+  SessionSchedulingOptions defaultSessionScheduling;
 };
 
 struct GlobalTaskRecord {
@@ -88,6 +94,7 @@ public:
   void configureResourceScheduler(size_t simDispatchLanes, size_t deviceSlots,
                                   size_t workspaceBudget,
                                   size_t streamCapacity = 0);
+  void configurePolicy(const GlobalSchedulerPolicy &policy);
   size_t taskCountInState(GlobalTaskRecord::State state) const;
   SchedulerObservabilitySnapshot observabilitySnapshot() const;
 
@@ -130,6 +137,7 @@ private:
   int64_t fairnessStarvationPreventedCount_ = 0;
   std::string lastAdmittedSessionId_;
   std::vector<std::string> sessionOrder_;
+  GlobalSchedulerPolicy policy_;
   std::map<std::string, GlobalSessionRecord> sessions_;
   std::map<std::string, GlobalTaskRecord> tasks_;
   ResourceScheduler resourceScheduler_;

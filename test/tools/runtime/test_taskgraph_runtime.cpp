@@ -4897,6 +4897,114 @@ static void testGlobalSchedulerPrefersHigherPrioritySessions() {
          "quota policy is exposed");
 }
 
+static void testGlobalSchedulerUsesConfiguredDefaultSessionScheduling() {
+  GlobalScheduler scheduler;
+  scheduler.configureResourceScheduler(/*simDispatchLanes=*/2, /*deviceSlots=*/2,
+                                      /*workspaceBudget=*/4096,
+                                      /*streamCapacity=*/2);
+
+  GlobalSchedulerPolicy policy;
+  policy.defaultSessionScheduling.priorityClass = SessionPriorityClass::High;
+  policy.defaultSessionScheduling.maxAdmittedTasks = 1;
+  scheduler.configurePolicy(policy);
+
+  BackendCapabilities caps;
+  caps.supportsConcurrentDispatch = true;
+  caps.supportsConcurrentExecution = true;
+  caps.maxConcurrentTasks = 4;
+  caps.maxConcurrentStreams = 2;
+
+  TaskGraph graphA;
+  RuntimeTask a0;
+  a0.taskId = "a0";
+  a0.invocation.workspaceSize = 16;
+  RuntimeTask a1;
+  a1.taskId = "a1";
+  a1.invocation.workspaceSize = 16;
+  EXPECT(!graphA.addTask(a0), "add a0");
+  EXPECT(!graphA.addTask(a1), "add a1");
+
+  TaskGraph graphB;
+  RuntimeTask b0;
+  b0.taskId = "b0";
+  b0.invocation.workspaceSize = 16;
+  EXPECT(!graphB.addTask(b0), "add b0");
+
+  auto sessionAOr =
+      scheduler.submit(ExecutionBackendKind::Simulation, caps, graphA);
+  auto sessionBOr =
+      scheduler.submit(ExecutionBackendKind::Simulation, caps, graphB);
+  EXPECT(static_cast<bool>(sessionAOr) && static_cast<bool>(sessionBOr),
+         "submissions succeed");
+  if (!sessionAOr || !sessionBOr)
+    return;
+
+  auto stats = scheduler.observabilitySnapshot();
+  EXPECT(stats.attributes.at("scheduler_default_priority_class") == "high",
+         "default priority class is exposed");
+  EXPECT(stats.counters.at("scheduler.policy.default_max_admitted_tasks") == 1,
+         "default quota is exposed");
+  EXPECT(stats.counters.at("scheduler.quota.blocked") == 1,
+         "default quota applies to default-submit sessions");
+}
+
+static void testGlobalSchedulerBackfillsWhenHighPriorityQuotaIsExhausted() {
+  GlobalScheduler scheduler;
+  scheduler.configureResourceScheduler(/*simDispatchLanes=*/2, /*deviceSlots=*/2,
+                                      /*workspaceBudget=*/4096,
+                                      /*streamCapacity=*/2);
+
+  BackendCapabilities caps;
+  caps.supportsConcurrentDispatch = true;
+  caps.supportsConcurrentExecution = true;
+  caps.maxConcurrentTasks = 4;
+  caps.maxConcurrentStreams = 2;
+
+  SessionSchedulingOptions highQuotaOne;
+  highQuotaOne.priorityClass = SessionPriorityClass::High;
+  highQuotaOne.maxAdmittedTasks = 1;
+
+  TaskGraph graphHigh;
+  RuntimeTask h0;
+  h0.taskId = "h0";
+  h0.invocation.workspaceSize = 16;
+  RuntimeTask h1;
+  h1.taskId = "h1";
+  h1.invocation.workspaceSize = 16;
+  EXPECT(!graphHigh.addTask(h0), "add h0");
+  EXPECT(!graphHigh.addTask(h1), "add h1");
+
+  TaskGraph graphLow;
+  RuntimeTask l0;
+  l0.taskId = "l0";
+  l0.invocation.workspaceSize = 16;
+  EXPECT(!graphLow.addTask(l0), "add l0");
+
+  auto highSessionOr = scheduler.submit(ExecutionBackendKind::Simulation, caps,
+                                        graphHigh, highQuotaOne);
+  auto lowSessionOr =
+      scheduler.submit(ExecutionBackendKind::Simulation, caps, graphLow);
+  EXPECT(static_cast<bool>(highSessionOr) && static_cast<bool>(lowSessionOr),
+         "submissions succeed");
+  if (!highSessionOr || !lowSessionOr)
+    return;
+
+  auto stats = scheduler.observabilitySnapshot();
+  EXPECT(stats.counters.at("scheduler.task.reserved") == 2,
+         "low-priority session backfills spare capacity");
+  EXPECT(stats.counters.at("scheduler.quota.blocked") == 1,
+         "second high-priority task is quota blocked");
+  EXPECT(stats.counters.at("scheduler.priority.high_ready") == 0,
+         "quota-exhausted high-priority session is not counted as ready-eligible");
+
+  auto highAcquire = scheduler.waitAndAcquireTask(highSessionOr->sessionId());
+  auto lowAcquire = scheduler.waitAndAcquireTask(lowSessionOr->sessionId());
+  EXPECT(static_cast<bool>(highAcquire) && highAcquire->has_value(),
+         "high-priority session acquires one task");
+  EXPECT(static_cast<bool>(lowAcquire) && lowAcquire->has_value(),
+         "lower-priority session backfills the second slot");
+}
+
 static void testGlobalSchedulerBlocksOnStreamCapacity() {
   GlobalScheduler scheduler;
   scheduler.configureResourceScheduler(/*simDispatchLanes=*/4, /*deviceSlots=*/4,
@@ -6093,6 +6201,8 @@ int main() {
   testGlobalSchedulerContinuesRoundRobinAcrossMultipleSessions();
   testGlobalSchedulerEnforcesSessionAdmissionQuota();
   testGlobalSchedulerPrefersHigherPrioritySessions();
+  testGlobalSchedulerUsesConfiguredDefaultSessionScheduling();
+  testGlobalSchedulerBackfillsWhenHighPriorityQuotaIsExhausted();
   testGlobalSchedulerBlocksOnStreamCapacity();
   testGlobalSchedulerReportsLifecycleCounters();
   testGlobalSchedulerTracksReleaseAndFailureCounters();
