@@ -148,6 +148,38 @@
 - Stream-level resource accounting is now part of the baseline resource model.
 - Current policy remains backend-agnostic: stream consumption is expressed through task resource requirements, not through per-backend scheduling policy branches.
 
+### scheduler baseline
+
+当前 `GlobalScheduler` 的 policy stack 已明确收口为：
+
+1. `resource admission`
+2. `stream resource accounting`
+3. `cross-session round-robin fairness`
+4. `static session priority`
+5. `session admission quota`
+6. `internal default policy selection`
+
+这组 baseline 的当前边界是：
+
+- fairness 只作用于 cross-session admission 顺序
+- session 内部 task 顺序仍保持稳定
+- priority 只在 ready-and-eligible session 之间生效
+- lower-priority session 允许在 higher-priority session quota-blocked 或不 eligible 时 backfill
+- 当前配置面仍然是 runtime-internal / test-oriented，不是用户 CLI 配置接口
+
+shared summary 当前稳定暴露：
+
+- `scheduler_policy=global_session_round_robin_baseline`
+- `scheduler_fairness_policy=session_round_robin`
+- `scheduler_priority_policy=static_session_priority`
+- `scheduler_quota_policy=session_admission_quota`
+- `scheduler_default_priority_class`
+- `scheduler.policy.default_max_admitted_tasks`
+
+更完整的当前状态审计见：
+
+- [2026-04-24-runtime-scheduler-policy-surface.md](/Volumes/GM9/code/Codex-Ascend-MLIR/docs/superpowers/audits/2026-04-24-runtime-scheduler-policy-surface.md)
+
 ### `BackendCapabilities`
 
 backend/driver 通过 `BackendCapabilities` 显式声明调度能力。
@@ -283,19 +315,6 @@ NPU 代码路径已接通。
 - priority baseline 已支持 static session priority
 - 默认 policy 已通过内部 `GlobalSchedulerPolicy` 显式收口
 - 当前配置面仍然是 runtime-internal / test-oriented，不是用户 CLI 配置接口
-
-当前 shared summary 已能直接暴露这组 policy baseline：
-
-- `scheduler_policy=global_session_round_robin_baseline`
-- `scheduler_fairness_policy=session_round_robin`
-- `scheduler_priority_policy=static_session_priority`
-- `scheduler_quota_policy=session_admission_quota`
-- `scheduler_default_priority_class`
-- `scheduler.policy.default_max_admitted_tasks`
-
-更完整的当前状态审计见：
-
-- [2026-04-24-runtime-scheduler-policy-surface.md](/Volumes/GM9/code/Codex-Ascend-MLIR/docs/superpowers/audits/2026-04-24-runtime-scheduler-policy-surface.md)
 
 ### runtime-native mix tiling
 
