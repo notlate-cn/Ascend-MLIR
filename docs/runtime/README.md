@@ -281,6 +281,8 @@ NPU 代码路径已接通。
 - session 内部 task 顺序仍保持稳定，不做额外 policy 分叉
 - quota baseline 已支持 session admission quota
 - priority baseline 已支持 static session priority
+- 默认 policy 已通过内部 `GlobalSchedulerPolicy` 显式收口
+- 当前配置面仍然是 runtime-internal / test-oriented，不是用户 CLI 配置接口
 
 ### runtime-native mix tiling
 
