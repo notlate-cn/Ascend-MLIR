@@ -182,7 +182,7 @@ Fresh xvm verification for the current policy surface passes:
 
 Focused runtime results currently include:
 
-- `test_taskgraph_runtime`: `945 passed, 0 failed`
+- `test_taskgraph_runtime`: `955 passed, 0 failed`
 - `test_capi_runtime`: `15 passed, 0 failed`
 - `test_runtime`: `113 passed, 0 failed`
 
