@@ -348,7 +348,7 @@ NPU 代码路径已接通。
 - priority baseline 已支持 `static session priority`
 - 默认 policy 已通过内部 `GlobalSchedulerPolicy` 显式收口
 - 当前配置面仍然是 `runtime-internal / test-oriented`，不是用户 CLI 配置接口
-- lower-priority backfill 当前已验证覆盖 `quota-blocked` 场景；更广义的 resource-ineligible backfill 仍应视为后续增强点
+- `lower-priority session` 当前已可在 `higher-priority session` 的 `quota-blocked` 和 `resource-blocked` 场景下 backfill
 
 ### runtime-native mix tiling
 
