@@ -19,6 +19,17 @@
 
 namespace mlir::runtime {
 
+enum class SessionPriorityClass {
+  Low,
+  Normal,
+  High,
+};
+
+struct SessionSchedulingOptions {
+  SessionPriorityClass priorityClass = SessionPriorityClass::Normal;
+  size_t maxAdmittedTasks = 0;
+};
+
 struct GlobalTaskRecord {
   enum class State {
     Submitted,
@@ -41,6 +52,7 @@ struct GlobalTaskRecord {
   std::optional<ResourceReservation> reservation;
   bool waitingOnResources = false;
   bool waitingOnStreamResources = false;
+  bool waitingOnQuota = false;
   ResourceBlockReason blockedReason = ResourceBlockReason::None;
 };
 
@@ -56,8 +68,15 @@ public:
   llvm::Expected<SessionHandle> submit(ExecutionBackendKind backendKind,
                                        const TaskGraph &graph);
   llvm::Expected<SessionHandle>
+  submit(ExecutionBackendKind backendKind, const TaskGraph &graph,
+         const SessionSchedulingOptions &scheduling);
+  llvm::Expected<SessionHandle>
   submit(ExecutionBackendKind backendKind,
          const BackendCapabilities &capabilities, const TaskGraph &graph);
+  llvm::Expected<SessionHandle>
+  submit(ExecutionBackendKind backendKind,
+         const BackendCapabilities &capabilities, const TaskGraph &graph,
+         const SessionSchedulingOptions &scheduling);
 
   llvm::Expected<std::optional<RuntimeTask>>
   waitAndAcquireTask(llvm::StringRef sessionId);
@@ -78,16 +97,21 @@ private:
     size_t totalTasks = 0;
     size_t completedTasks = 0;
     size_t runningTasks = 0;
+    size_t admittedTasks = 0;
+    SessionSchedulingOptions scheduling;
     bool failed = false;
   };
 
   static std::string taskKey(llvm::StringRef sessionId, llvm::StringRef taskId);
   void tryReserveReadyTasksLocked();
   bool tryReserveOneReadyTaskForSessionLocked(llvm::StringRef sessionId,
-                                              bool &sawReadyTask);
+                                              bool &sawReadyTask,
+                                              bool &quotaBlocked);
   bool sessionIsDrainedLocked(llvm::StringRef sessionId) const;
   void cancelPendingSessionTasksLocked(llvm::StringRef sessionId);
   void noteFairnessSessionRemovalLocked(llvm::StringRef sessionId);
+  void releaseReservationLocked(GlobalSessionRecord &session,
+                                GlobalTaskRecord &record);
   GlobalTaskRecord *findTaskLocked(llvm::StringRef sessionId,
                                    llvm::StringRef taskId);
   size_t taskCountInStateLocked(GlobalTaskRecord::State state) const;
@@ -99,6 +123,7 @@ private:
   int64_t failedTaskCount_ = 0;
   int64_t completedTaskCount_ = 0;
   int64_t releasedSessionCount_ = 0;
+  int64_t quotaBlockedAdmissionCount_ = 0;
   size_t fairnessCursor_ = 0;
   int64_t fairnessRotationCount_ = 0;
   int64_t fairnessSessionSkipCount_ = 0;

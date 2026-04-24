@@ -6,6 +6,18 @@
 
 namespace mlir::runtime {
 
+static int priorityRank(SessionPriorityClass priority) {
+  switch (priority) {
+  case SessionPriorityClass::Low:
+    return 0;
+  case SessionPriorityClass::Normal:
+    return 1;
+  case SessionPriorityClass::High:
+    return 2;
+  }
+  return 1;
+}
+
 GlobalScheduler::GlobalScheduler() {
   resourceScheduler_.configureSimDispatchLanes(1024);
   resourceScheduler_.configureDeviceSlots(1024);
@@ -55,6 +67,8 @@ SchedulerObservabilitySnapshot GlobalScheduler::observabilitySnapshot() const {
   snapshot.attributes["scheduler_policy"] =
       "global_session_round_robin_baseline";
   snapshot.attributes["scheduler_fairness_policy"] = "session_round_robin";
+  snapshot.attributes["scheduler_priority_policy"] = "static_session_priority";
+  snapshot.attributes["scheduler_quota_policy"] = "session_admission_quota";
   snapshot.attributes["resource_model_version"] = "v2";
   snapshot.attributes["scheduler_stream_model"] = "enabled";
   snapshot.counters["scheduler.session_count"] =
@@ -118,6 +132,52 @@ SchedulerObservabilitySnapshot GlobalScheduler::observabilitySnapshot() const {
   snapshot.counters["scheduler.admission.stream_blocked"] = streamBlocked;
   snapshot.counters["scheduler.admission.stream_blocked_total"] =
       streamBlockedAdmissionCount_;
+  int64_t quotaBlocked = 0;
+  int64_t highReady = 0;
+  int64_t normalReady = 0;
+  int64_t lowReady = 0;
+  for (const auto &sessionEntry : sessions_) {
+    const std::string &sessionId = sessionEntry.first;
+    const GlobalSessionRecord &session = sessionEntry.second;
+    if (session.failed)
+      continue;
+
+    bool hasReadyTask = false;
+    bool hasQuotaEligibleReadyTask = false;
+    for (const auto &taskEntry : tasks_) {
+      const GlobalTaskRecord &record = taskEntry.second;
+      if (record.sessionId != sessionId ||
+          record.state != GlobalTaskRecord::State::Ready)
+        continue;
+      hasReadyTask = true;
+      if (record.waitingOnQuota)
+        ++quotaBlocked;
+      if (session.scheduling.maxAdmittedTasks == 0 ||
+          session.admittedTasks < session.scheduling.maxAdmittedTasks) {
+        hasQuotaEligibleReadyTask = true;
+      }
+    }
+    if (!hasReadyTask || !hasQuotaEligibleReadyTask)
+      continue;
+
+    switch (session.scheduling.priorityClass) {
+    case SessionPriorityClass::High:
+      ++highReady;
+      break;
+    case SessionPriorityClass::Normal:
+      ++normalReady;
+      break;
+    case SessionPriorityClass::Low:
+      ++lowReady;
+      break;
+    }
+  }
+  snapshot.counters["scheduler.quota.blocked"] = quotaBlocked;
+  snapshot.counters["scheduler.quota.blocked_total"] =
+      quotaBlockedAdmissionCount_;
+  snapshot.counters["scheduler.priority.high_ready"] = highReady;
+  snapshot.counters["scheduler.priority.normal_ready"] = normalReady;
+  snapshot.counters["scheduler.priority.low_ready"] = lowReady;
   snapshot.counters["scheduler.admission.reserved_total"] =
       successfulReservationCount_;
   snapshot.counters["scheduler.transition.completed"] =
@@ -163,7 +223,20 @@ bool GlobalScheduler::sessionIsDrainedLocked(llvm::StringRef sessionId) const {
          (session.failed && session.runningTasks == 0);
 }
 
+void GlobalScheduler::releaseReservationLocked(GlobalSessionRecord &session,
+                                               GlobalTaskRecord &record) {
+  if (!record.reservation)
+    return;
+  resourceScheduler_.release(*record.reservation);
+  record.reservation.reset();
+  if (session.admittedTasks > 0)
+    --session.admittedTasks;
+}
+
 void GlobalScheduler::cancelPendingSessionTasksLocked(llvm::StringRef sessionId) {
+  auto sessionIt = sessions_.find(sessionId.str());
+  if (sessionIt == sessions_.end())
+    return;
   for (auto &entry : tasks_) {
     GlobalTaskRecord &record = entry.second;
     if (record.sessionId != sessionId)
@@ -173,23 +246,26 @@ void GlobalScheduler::cancelPendingSessionTasksLocked(llvm::StringRef sessionId)
         record.state == GlobalTaskRecord::State::Failed ||
         record.state == GlobalTaskRecord::State::Cancelled)
       continue;
-    if (record.reservation) {
-      resourceScheduler_.release(*record.reservation);
-      record.reservation.reset();
-    }
+    releaseReservationLocked(sessionIt->second, record);
     record.waitingOnResources = false;
     record.waitingOnStreamResources = false;
+    record.waitingOnQuota = false;
     record.blockedReason = ResourceBlockReason::None;
     record.state = GlobalTaskRecord::State::Cancelled;
   }
 }
 
 bool GlobalScheduler::tryReserveOneReadyTaskForSessionLocked(
-    llvm::StringRef sessionId, bool &sawReadyTask) {
+    llvm::StringRef sessionId, bool &sawReadyTask, bool &quotaBlocked) {
   sawReadyTask = false;
+  quotaBlocked = false;
   auto sessionIt = sessions_.find(sessionId.str());
   if (sessionIt == sessions_.end() || sessionIt->second.failed)
     return false;
+  const bool quotaExhausted =
+      sessionIt->second.scheduling.maxAdmittedTasks > 0 &&
+      sessionIt->second.admittedTasks >=
+          sessionIt->second.scheduling.maxAdmittedTasks;
 
   for (auto &entry : tasks_) {
     GlobalTaskRecord &record = entry.second;
@@ -199,6 +275,15 @@ bool GlobalScheduler::tryReserveOneReadyTaskForSessionLocked(
     }
 
     sawReadyTask = true;
+    if (quotaExhausted) {
+      if (!record.waitingOnQuota) {
+        ++quotaBlockedAdmissionCount_;
+        record.waitingOnQuota = true;
+      }
+      quotaBlocked = true;
+      continue;
+    }
+    record.waitingOnQuota = false;
 
     auto reservationOr = resourceScheduler_.tryReserve(
         record.sessionId, record.taskId, record.resources);
@@ -226,8 +311,10 @@ bool GlobalScheduler::tryReserveOneReadyTaskForSessionLocked(
     if (!lastAdmittedSessionId_.empty() && lastAdmittedSessionId_ != sessionId)
       ++fairnessStarvationPreventedCount_;
     lastAdmittedSessionId_ = sessionId.str();
+    ++sessionIt->second.admittedTasks;
     record.waitingOnResources = false;
     record.waitingOnStreamResources = false;
+    record.waitingOnQuota = false;
     record.blockedReason = ResourceBlockReason::None;
     record.reservation = std::move(*reservationOr);
     record.state = GlobalTaskRecord::State::Reserved;
@@ -241,20 +328,56 @@ void GlobalScheduler::tryReserveReadyTasksLocked() {
   while (!sessionOrder_.empty()) {
     const size_t sessionCount = sessionOrder_.size();
     const size_t start = fairnessCursor_ % sessionCount;
+    int selectedPriority = -1;
+    for (size_t offset = 0; offset < sessionCount; ++offset) {
+      const size_t index = (start + offset) % sessionCount;
+      auto sessionIt = sessions_.find(sessionOrder_[index]);
+      if (sessionIt == sessions_.end() || sessionIt->second.failed)
+        continue;
+      const bool quotaExhausted =
+          sessionIt->second.scheduling.maxAdmittedTasks > 0 &&
+          sessionIt->second.admittedTasks >=
+              sessionIt->second.scheduling.maxAdmittedTasks;
+      bool hasReadyTask = false;
+      for (const auto &entry : tasks_) {
+        const GlobalTaskRecord &record = entry.second;
+        if (record.sessionId == sessionOrder_[index] &&
+            record.state == GlobalTaskRecord::State::Ready) {
+          hasReadyTask = true;
+          break;
+        }
+      }
+      if (!hasReadyTask || quotaExhausted)
+        continue;
+      selectedPriority = std::max(
+          selectedPriority,
+          priorityRank(sessionIt->second.scheduling.priorityClass));
+    }
+    if (selectedPriority < 0)
+      break;
+
     bool admittedAny = false;
 
     for (size_t offset = 0; offset < sessionCount; ++offset) {
       const size_t index = (start + offset) % sessionCount;
       const std::string &sessionId = sessionOrder_[index];
+      auto sessionIt = sessions_.find(sessionId);
+      if (sessionIt == sessions_.end() || sessionIt->second.failed ||
+          priorityRank(sessionIt->second.scheduling.priorityClass) !=
+              selectedPriority) {
+        continue;
+      }
       bool sawReadyTask = false;
-      if (tryReserveOneReadyTaskForSessionLocked(sessionId, sawReadyTask)) {
+      bool quotaBlocked = false;
+      if (tryReserveOneReadyTaskForSessionLocked(sessionId, sawReadyTask,
+                                                 quotaBlocked)) {
         fairnessCursor_ =
             sessionOrder_.empty() ? 0 : ((index + 1) % sessionOrder_.size());
         ++fairnessRotationCount_;
         admittedAny = true;
         continue;
       }
-      if (sawReadyTask)
+      if (sawReadyTask || quotaBlocked)
         ++fairnessSessionSkipCount_;
     }
 
@@ -296,6 +419,13 @@ void GlobalScheduler::noteFairnessSessionRemovalLocked(llvm::StringRef sessionId
 
 llvm::Expected<SessionHandle>
 GlobalScheduler::submit(ExecutionBackendKind backendKind, const TaskGraph &graph) {
+  SessionSchedulingOptions scheduling;
+  return submit(backendKind, graph, scheduling);
+}
+
+llvm::Expected<SessionHandle>
+GlobalScheduler::submit(ExecutionBackendKind backendKind, const TaskGraph &graph,
+                        const SessionSchedulingOptions &scheduling) {
   BackendCapabilities caps;
   if (backendKind == ExecutionBackendKind::Simulation) {
     caps.supportsConcurrentDispatch = true;
@@ -310,13 +440,22 @@ GlobalScheduler::submit(ExecutionBackendKind backendKind, const TaskGraph &graph
     caps.maxConcurrentTasks = 1024;
     caps.maxConcurrentStreams = 1024;
   }
-  return submit(backendKind, caps, graph);
+  return submit(backendKind, caps, graph, scheduling);
 }
 
 llvm::Expected<SessionHandle>
 GlobalScheduler::submit(ExecutionBackendKind backendKind,
                         const BackendCapabilities &capabilities,
                         const TaskGraph &graph) {
+  SessionSchedulingOptions scheduling;
+  return submit(backendKind, capabilities, graph, scheduling);
+}
+
+llvm::Expected<SessionHandle>
+GlobalScheduler::submit(ExecutionBackendKind backendKind,
+                        const BackendCapabilities &capabilities,
+                        const TaskGraph &graph,
+                        const SessionSchedulingOptions &scheduling) {
   auto orderedOr = graph.orderedTasks();
   if (!orderedOr)
     return orderedOr.takeError();
@@ -331,6 +470,7 @@ GlobalScheduler::submit(ExecutionBackendKind backendKind,
   GlobalSessionRecord session;
   session.backendKind = backendKind;
   session.totalTasks = orderedOr->size();
+  session.scheduling = scheduling;
   sessions_.emplace(sessionId, std::move(session));
   sessionOrder_.push_back(sessionId);
   if (!lastAdmittedSessionId_.empty()) {
@@ -392,12 +532,13 @@ GlobalScheduler::waitAndAcquireTask(llvm::StringRef sessionId) {
     for (auto &entry : tasks_) {
       GlobalTaskRecord &record = entry.second;
       if (record.sessionId != sessionId ||
-          record.state != GlobalTaskRecord::State::Reserved) {
+      record.state != GlobalTaskRecord::State::Reserved) {
         continue;
       }
       record.state = GlobalTaskRecord::State::Running;
       record.waitingOnResources = false;
       record.waitingOnStreamResources = false;
+      record.waitingOnQuota = false;
       record.blockedReason = ResourceBlockReason::None;
       ++sessionIt->second.runningTasks;
       return std::optional<RuntimeTask>(record.task);
@@ -433,12 +574,10 @@ llvm::Expected<size_t> GlobalScheduler::completeTask(llvm::StringRef sessionId,
                                    taskId.str().c_str());
   }
 
-  if (record->reservation) {
-    resourceScheduler_.release(*record->reservation);
-    record->reservation.reset();
-  }
+  releaseReservationLocked(sessionIt->second, *record);
   record->waitingOnResources = false;
   record->waitingOnStreamResources = false;
+  record->waitingOnQuota = false;
   record->blockedReason = ResourceBlockReason::None;
   record->state = GlobalTaskRecord::State::Succeeded;
   ++completedTaskCount_;
@@ -461,6 +600,7 @@ llvm::Expected<size_t> GlobalScheduler::completeTask(llvm::StringRef sessionId,
         dependent->state = GlobalTaskRecord::State::Ready;
         dependent->waitingOnResources = false;
         dependent->waitingOnStreamResources = false;
+        dependent->waitingOnQuota = false;
         dependent->blockedReason = ResourceBlockReason::None;
         ++newlyReadyCount;
       }
@@ -495,12 +635,10 @@ llvm::Error GlobalScheduler::failTask(llvm::StringRef sessionId,
                                    taskId.str().c_str());
   }
 
-  if (record->reservation) {
-    resourceScheduler_.release(*record->reservation);
-    record->reservation.reset();
-  }
+  releaseReservationLocked(sessionIt->second, *record);
   record->waitingOnResources = false;
   record->waitingOnStreamResources = false;
+  record->waitingOnQuota = false;
   record->blockedReason = ResourceBlockReason::None;
   record->state = GlobalTaskRecord::State::Failed;
   ++failedTaskCount_;
@@ -525,10 +663,10 @@ void GlobalScheduler::releaseSession(llvm::StringRef sessionId) {
       ++it;
       continue;
     }
-    if (record.reservation)
-      resourceScheduler_.release(*record.reservation);
+    releaseReservationLocked(sessionIt->second, record);
     record.waitingOnResources = false;
     record.waitingOnStreamResources = false;
+    record.waitingOnQuota = false;
     record.blockedReason = ResourceBlockReason::None;
     it = tasks_.erase(it);
   }
