@@ -145,10 +145,11 @@
 
 当前 admission 规则是：只有依赖满足且资源满足时，任务才会进入可执行状态。
 
-- Stream-level resource accounting is now part of the baseline resource model.
-- Current policy remains backend-agnostic: stream consumption is expressed through task resource requirements, not through per-backend scheduling policy branches.
+- `stream-level resource accounting` 已经进入 baseline resource model
+- 当前 policy 仍然是 `backend-agnostic`
+- `stream` 消耗通过 task resource requirement 表达，而不是通过 per-backend policy 分叉表达
 
-### scheduler baseline
+### `scheduler baseline`
 
 当前 `GlobalScheduler` 的 policy stack 已明确收口为：
 
@@ -161,13 +162,13 @@
 
 这组 baseline 的当前边界是：
 
-- fairness 只作用于 cross-session admission 顺序
+- fairness 只作用于 `cross-session admission` 顺序
 - session 内部 task 顺序仍保持稳定
-- priority 只在 ready-and-eligible session 之间生效
-- lower-priority session 允许在 higher-priority session quota-blocked 或不 eligible 时 backfill
-- 当前配置面仍然是 runtime-internal / test-oriented，不是用户 CLI 配置接口
+- priority 只在 `ready-and-eligible session` 之间生效
+- `lower-priority session` 允许在 `higher-priority session` quota-blocked 或不 eligible 时 backfill
+- 当前配置面仍然是 `runtime-internal / test-oriented`，不是用户 CLI 配置接口
 
-shared summary 当前稳定暴露：
+`shared summary` 当前稳定暴露：
 
 - `scheduler_policy=global_session_round_robin_baseline`
 - `scheduler_fairness_policy=session_round_robin`
@@ -182,7 +183,7 @@ shared summary 当前稳定暴露：
 
 ### `BackendCapabilities`
 
-backend/driver 通过 `BackendCapabilities` 显式声明调度能力。
+`backend` / `driver` 通过 `BackendCapabilities` 显式声明调度能力。
 
 - `supportsConcurrentDispatch`
 - `supportsConcurrentExecution`
@@ -308,13 +309,13 @@ NPU 代码路径已接通。
 
 `GlobalScheduler` 现在已有 first-version cross-session fairness baseline。
 
-- 当前使用 session round-robin admission baseline
-- fairness 目前只作用于 cross-session admission 顺序
+- 当前使用 `session round-robin admission baseline`
+- fairness 只作用于 `cross-session admission` 顺序
 - session 内部 task 顺序仍保持稳定，不做额外 policy 分叉
-- quota baseline 已支持 session admission quota
-- priority baseline 已支持 static session priority
+- quota baseline 已支持 `session admission quota`
+- priority baseline 已支持 `static session priority`
 - 默认 policy 已通过内部 `GlobalSchedulerPolicy` 显式收口
-- 当前配置面仍然是 runtime-internal / test-oriented，不是用户 CLI 配置接口
+- 当前配置面仍然是 `runtime-internal / test-oriented`，不是用户 CLI 配置接口
 
 ### runtime-native mix tiling
 
