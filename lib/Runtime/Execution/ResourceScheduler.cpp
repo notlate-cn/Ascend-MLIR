@@ -1,5 +1,7 @@
 #include "Runtime/Execution/ResourceScheduler.h"
 
+#include <algorithm>
+
 namespace mlir::runtime {
 
 void ResourceScheduler::configureSimDispatchLanes(size_t count) {
@@ -14,21 +16,33 @@ void ResourceScheduler::configureWorkspaceBudget(size_t bytes) {
   configuredWorkspaceBudget_ = bytes;
 }
 
+void ResourceScheduler::configureStreamCapacity(size_t count) {
+  configuredStreamCapacity_ = count;
+}
+
 std::optional<ResourceReservation>
 ResourceScheduler::tryReserve(const std::string &sessionId,
                               const std::string &taskId,
                               const TaskResourceRequirement &requirement) {
-  if (configuredWorkspaceBudget_ < reservedWorkspaceBytes_)
+  lastBlockReason_ = ResourceBlockReason::None;
+
+  if (configuredWorkspaceBudget_ < reservedWorkspaceBytes_) {
+    lastBlockReason_ = ResourceBlockReason::Workspace;
     return std::nullopt;
+  }
   if (requirement.workspaceBytes >
-      (configuredWorkspaceBudget_ - reservedWorkspaceBytes_))
+      (configuredWorkspaceBudget_ - reservedWorkspaceBytes_)) {
+    lastBlockReason_ = ResourceBlockReason::Workspace;
     return std::nullopt;
+  }
 
   bool holdsSerializedLaunchLane = false;
   if (requirement.backendKind == ExecutionBackendKind::Simulation &&
       requirement.requiresSerializedLaunch) {
-    if (configuredSimDispatchLanes_ <= reservedSimDispatchLanes_)
+    if (configuredSimDispatchLanes_ <= reservedSimDispatchLanes_) {
+      lastBlockReason_ = ResourceBlockReason::SerializedLaunch;
       return std::nullopt;
+    }
     holdsSerializedLaunchLane = true;
   }
 
@@ -39,9 +53,33 @@ ResourceScheduler::tryReserve(const std::string &sessionId,
                                ? configuredDeviceSlots_
                                : 1;
     if (deviceSlotsToReserve == 0 ||
-        configuredDeviceSlots_ < reservedDeviceSlots_ + deviceSlotsToReserve)
+        configuredDeviceSlots_ < reservedDeviceSlots_ + deviceSlotsToReserve) {
+      lastBlockReason_ = ResourceBlockReason::DeviceCapacity;
       return std::nullopt;
+    }
     holdsDeviceSlot = true;
+  }
+
+  bool holdsStreamSlot = false;
+  size_t streamUnitsToReserve = requirement.requiresStream
+                                    ? std::max<size_t>(requirement.streamUnits, 1)
+                                    : 0;
+  if (streamUnitsToReserve > 0) {
+    if (requirement.exclusiveStreamAccess &&
+        (reservedStreamUnits_ > 0 || hasExclusiveStreamReservation_)) {
+      lastBlockReason_ = ResourceBlockReason::ExclusiveStreamConflict;
+      return std::nullopt;
+    }
+    if (!requirement.exclusiveStreamAccess && hasExclusiveStreamReservation_) {
+      lastBlockReason_ = ResourceBlockReason::ExclusiveStreamConflict;
+      return std::nullopt;
+    }
+    if (configuredStreamCapacity_ <
+        reservedStreamUnits_ + streamUnitsToReserve) {
+      lastBlockReason_ = ResourceBlockReason::StreamCapacity;
+      return std::nullopt;
+    }
+    holdsStreamSlot = true;
   }
 
   ResourceReservation reservation;
@@ -51,6 +89,8 @@ ResourceScheduler::tryReserve(const std::string &sessionId,
   reservation.workspaceBytes = requirement.workspaceBytes;
   reservation.holdsSerializedLaunchLane = holdsSerializedLaunchLane;
   reservation.holdsDeviceSlot = holdsDeviceSlot;
+  reservation.holdsStreamSlot = holdsStreamSlot;
+  reservation.reservedStreamUnits = streamUnitsToReserve;
   reservation.token_ = nextReservationToken_++;
 
   activeReservations_.emplace(reservation.token_,
@@ -60,11 +100,19 @@ ResourceScheduler::tryReserve(const std::string &sessionId,
                                                 reservation.workspaceBytes,
                                                 deviceSlotsToReserve,
                                                 holdsSerializedLaunchLane,
-                                                holdsDeviceSlot});
+                                                holdsDeviceSlot,
+                                                holdsStreamSlot,
+                                                streamUnitsToReserve,
+                                                requirement.exclusiveStreamAccess});
   reservedWorkspaceBytes_ += requirement.workspaceBytes;
   if (holdsSerializedLaunchLane)
     ++reservedSimDispatchLanes_;
   reservedDeviceSlots_ += deviceSlotsToReserve;
+  if (holdsStreamSlot) {
+    reservedStreamUnits_ += streamUnitsToReserve;
+    if (requirement.exclusiveStreamAccess)
+      hasExclusiveStreamReservation_ = true;
+  }
   return reservation;
 }
 
@@ -79,7 +127,9 @@ void ResourceScheduler::release(const ResourceReservation &reservation) {
       active.backendKind != reservation.backendKind ||
       active.workspaceBytes != reservation.workspaceBytes ||
       active.holdsSerializedLaunchLane != reservation.holdsSerializedLaunchLane ||
-      active.holdsDeviceSlot != reservation.holdsDeviceSlot) {
+      active.holdsDeviceSlot != reservation.holdsDeviceSlot ||
+      active.holdsStreamSlot != reservation.holdsStreamSlot ||
+      active.streamUnits != reservation.reservedStreamUnits) {
     return;
   }
 
@@ -90,6 +140,12 @@ void ResourceScheduler::release(const ResourceReservation &reservation) {
     --reservedSimDispatchLanes_;
   if (active.holdsDeviceSlot)
     reservedDeviceSlots_ -= active.deviceSlots;
+  if (active.holdsStreamSlot) {
+    reservedStreamUnits_ -= active.streamUnits;
+    if (active.exclusiveStreamAccess)
+      hasExclusiveStreamReservation_ = false;
+  }
+  lastBlockReason_ = ResourceBlockReason::None;
 }
 
 } // namespace mlir::runtime
