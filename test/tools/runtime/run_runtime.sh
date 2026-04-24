@@ -177,8 +177,10 @@ grep -q '^session.profile.session_id=' /tmp/runtime_session_run.log
 grep -q '^session.profile.count=' /tmp/runtime_session_run.log
 grep -q '^session.profile.summary=' /tmp/runtime_session_run.log
 grep -q '^session.runtime.attribute.scheduler_mode=serial$' /tmp/runtime_session_run.log
+grep -q '^session.runtime.attribute.scheduler_stream_model=enabled$' /tmp/runtime_session_run.log
 grep -q '^session.runtime.attribute.simulator_launch_model=dispatch_thread$' /tmp/runtime_session_run.log
 grep -q '^session.runtime.counter.planned_task_count=1$' /tmp/runtime_session_run.log
+grep -q '^session.runtime.counter.scheduler.stream.capacity_total=' /tmp/runtime_session_run.log
 grep -q '^session.runtime.counter.serialized_launch_count=1$' /tmp/runtime_session_run.log
 RUNTIME_SESSION_RUN_SUMMARY="$(sed -n 's/^session\.profile\.summary=//p' /tmp/runtime_session_run.log | head -n1)"
 test -f "${RUNTIME_SESSION_RUN_SUMMARY}"

@@ -3888,6 +3888,35 @@ static void testExecutionSessionMergesSchedulerObservabilityIntoTrace() {
   }
 }
 
+static void testExecutionSessionPublishesStreamObservability() {
+  TaskGraph graph;
+
+  RuntimeTask taskA;
+  taskA.taskId = "a";
+  EXPECT(!graph.addTask(taskA), "add task a");
+
+  RuntimeTask taskB;
+  taskB.taskId = "b";
+  EXPECT(!graph.addTask(taskB), "add task b");
+
+  auto driver = std::make_shared<ConcurrentRootOverlapBackendDriver>();
+  ExecutionSession session(ExecutionBackendKind::Simulation, driver);
+
+  auto traceOr = session.run(graph);
+  EXPECT(static_cast<bool>(traceOr), "session run succeeds");
+  if (!traceOr)
+    return;
+
+  FrontendRunSummary summary = summarizeFrontendRunSuccess(
+      ExecutionBackendKind::Simulation, /*validationRan=*/false, *traceOr);
+  auto streamModel = summary.runtimeAttributes.find("scheduler_stream_model");
+  EXPECT(streamModel != summary.runtimeAttributes.end() &&
+             streamModel->second == "enabled",
+         "frontend summary publishes stream model attribute");
+  EXPECT(summary.runtimeCounters.count("scheduler.stream.capacity_total") == 1,
+         "frontend summary publishes stream capacity counter");
+}
+
 static void testExecutionSessionRunsReadyRootsConcurrently() {
   TaskGraph graph;
 
@@ -5663,6 +5692,7 @@ int main() {
   testExecutionSessionPlanTracksMultipleReadyRoots();
   testExecutionSessionRunsTasksInTopologicalOrder();
   testExecutionSessionMergesSchedulerObservabilityIntoTrace();
+  testExecutionSessionPublishesStreamObservability();
   testExecutionSessionRunsReadyRootsConcurrently();
   testExecutionSessionCanForceSerialSchedulerViaEnv();
   testExecutionSessionFailureStopsJoinAfterConcurrentRootFailure();
