@@ -317,6 +317,7 @@ NPU 代码路径已接通。
 
 - [2026-04-24-runtime-npu-pre-device-audit.md](/Volumes/GM9/code/Codex-Ascend-MLIR/docs/superpowers/audits/2026-04-24-runtime-npu-pre-device-audit.md:1)
 - [NPU-REAL-DEVICE-VALIDATION.md](/Volumes/GM9/code/Codex-Ascend-MLIR/docs/runtime/NPU-REAL-DEVICE-VALIDATION.md:1)
+- `test/tools/runtime/prepare_npu_smoke_manifests.sh`
 
 ### 当前非目标
 

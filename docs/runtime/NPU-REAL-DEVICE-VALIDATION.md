@@ -79,6 +79,81 @@ For each real-device run, record:
 - `session.runtime.counter.*`
 - first failing stage if the run does not succeed
 
+## Repository-Owned Smoke Assets
+
+The repository now includes a manifest helper for two minimal NPU smoke cases:
+
+- `vec` smoke based on `examples/relu-broadcast-transpose`
+- `mix` smoke based on `examples/matmul-add-leakyrelu`
+
+Helper:
+
+```bash
+test/tools/runtime/prepare_npu_smoke_manifests.sh
+```
+
+### Vec Smoke
+
+1. Prepare or reuse the example artifact root:
+
+```bash
+bash examples/relu-broadcast-transpose/run.sh
+```
+
+2. Generate the NPU smoke manifest:
+
+```bash
+MANIFEST=/tmp/runtime-npu-vec-smoke.json
+ARTIFACT_ROOT=$PWD/examples/relu-broadcast-transpose/build_e2e/artifact
+OUTPUT=/tmp/runtime-npu-vec-output.npy
+
+bash test/tools/runtime/prepare_npu_smoke_manifests.sh vec \
+  "$MANIFEST" \
+  "$ARTIFACT_ROOT" \
+  "$PWD/examples/relu-broadcast-transpose/input_data0.npy" \
+  "$PWD/examples/relu-broadcast-transpose/input_data1.npy" \
+  "$OUTPUT" \
+  "$PWD/examples/relu-broadcast-transpose/output_expected.npy"
+```
+
+3. Run it:
+
+```bash
+build/bin/runtime-session --run-manifest "$MANIFEST" --run
+```
+
+### Mix Smoke
+
+1. Prepare or reuse the example artifact/data roots:
+
+```bash
+bash examples/matmul-add-leakyrelu/run.sh
+```
+
+2. Generate the NPU smoke manifest:
+
+```bash
+MANIFEST=/tmp/runtime-npu-mix-smoke.json
+ARTIFACT_ROOT=$PWD/build/runtime-mix-matmul-add-leakyrelu
+DATA_DIR=$PWD/build/runtime-mix-matmul-add-leakyrelu-data/npy
+OUTPUT=/tmp/runtime-npu-mix-output.npy
+
+bash test/tools/runtime/prepare_npu_smoke_manifests.sh mix \
+  "$MANIFEST" \
+  "$ARTIFACT_ROOT" \
+  "$DATA_DIR/input_a.npy" \
+  "$DATA_DIR/input_b.npy" \
+  "$DATA_DIR/input_bias.npy" \
+  "$OUTPUT" \
+  "$DATA_DIR/output.npy"
+```
+
+3. Run it:
+
+```bash
+build/bin/runtime-session --run-manifest "$MANIFEST" --run
+```
+
 ## Failure Triage
 
 Use this split when the first real-device failures appear:
