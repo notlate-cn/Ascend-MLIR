@@ -4436,6 +4436,36 @@ static void testResourceSchedulerHonorsExclusiveDeviceAccess() {
          "device reservation succeeds after exclusive release");
 }
 
+static void testResourceSchedulerReservesStreamCapacity() {
+  ResourceScheduler scheduler;
+  scheduler.configureSimDispatchLanes(4);
+  scheduler.configureDeviceSlots(4);
+  scheduler.configureWorkspaceBudget(1024);
+  scheduler.configureStreamCapacity(1);
+
+  TaskResourceRequirement req;
+  req.backendKind = ExecutionBackendKind::Simulation;
+  req.workspaceBytes = 16;
+  req.requiresStream = true;
+  req.streamUnits = 1;
+
+  auto first = scheduler.tryReserve("s0", "t0", req);
+  EXPECT(static_cast<bool>(first), "first stream reservation succeeds");
+  if (!first)
+    return;
+  EXPECT(first->holdsStreamSlot, "reservation records stream ownership");
+  EXPECT(first->reservedStreamUnits == 1,
+         "reservation records stream unit count");
+
+  auto second = scheduler.tryReserve("s1", "t1", req);
+  EXPECT(!second, "second reservation blocks when stream capacity is exhausted");
+
+  scheduler.release(*first);
+  auto third = scheduler.tryReserve("s2", "t2", req);
+  EXPECT(static_cast<bool>(third),
+         "stream capacity is returned after release");
+}
+
 static void testResourceSchedulerPreservesOutstandingReservationsAcrossReconfigure() {
   ResourceScheduler scheduler;
   scheduler.configureWorkspaceBudget(1024);
@@ -5492,6 +5522,7 @@ int main() {
   testResourceSchedulerIgnoresForgedRelease();
   testResourceSchedulerHandlesIdenticalPublicReservationsIndependently();
   testResourceSchedulerHonorsExclusiveDeviceAccess();
+  testResourceSchedulerReservesStreamCapacity();
   testResourceSchedulerPreservesOutstandingReservationsAcrossReconfigure();
   testRunManifestParsesOutputMetadataWithoutExpectedOutputs();
   testRunManifestParsesTaskOutputBinding();
