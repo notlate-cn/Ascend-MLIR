@@ -317,6 +317,9 @@ grep -q '^session.profile.session_id=' "${RUNTIME_SESSION_NPU_SUCCESS_STDOUT}"
 grep -q '^session.profile.count=1' "${RUNTIME_SESSION_NPU_SUCCESS_STDOUT}"
 grep -q '^session.profile\[0\]=' "${RUNTIME_SESSION_NPU_SUCCESS_STDOUT}"
 
+echo "--- Checking NPU smoke manifest helper assets ---"
+bash test/tools/runtime/test_prepare_npu_smoke_manifests.sh
+
 # Compile test drivers
 echo "--- Compiling runtime tests ---"
 g++ -std=c++17 \
