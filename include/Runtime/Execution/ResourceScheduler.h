@@ -51,6 +51,13 @@ public:
   void configureWorkspaceBudget(size_t bytes);
   void configureStreamCapacity(size_t count);
   ResourceBlockReason lastBlockReason() const { return lastBlockReason_; }
+  size_t configuredStreamCapacity() const { return configuredStreamCapacity_; }
+  size_t reservedStreamUnits() const { return reservedStreamUnits_; }
+  size_t availableStreamCapacity() const {
+    return configuredStreamCapacity_ >= reservedStreamUnits_
+               ? configuredStreamCapacity_ - reservedStreamUnits_
+               : 0;
+  }
 
   std::optional<ResourceReservation>
   tryReserve(const std::string &sessionId, const std::string &taskId,

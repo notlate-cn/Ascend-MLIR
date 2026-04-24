@@ -11,6 +11,7 @@ GlobalScheduler::GlobalScheduler() {
   resourceScheduler_.configureDeviceSlots(1024);
   resourceScheduler_.configureWorkspaceBudget(
       std::numeric_limits<size_t>::max());
+  resourceScheduler_.configureStreamCapacity(1024);
 }
 
 size_t GlobalScheduler::sessionCount() const {
@@ -20,11 +21,14 @@ size_t GlobalScheduler::sessionCount() const {
 
 void GlobalScheduler::configureResourceScheduler(size_t simDispatchLanes,
                                                  size_t deviceSlots,
-                                                 size_t workspaceBudget) {
+                                                 size_t workspaceBudget,
+                                                 size_t streamCapacity) {
   std::lock_guard<std::mutex> lock(mutex_);
   resourceScheduler_.configureSimDispatchLanes(simDispatchLanes);
   resourceScheduler_.configureDeviceSlots(deviceSlots);
   resourceScheduler_.configureWorkspaceBudget(workspaceBudget);
+  if (streamCapacity > 0)
+    resourceScheduler_.configureStreamCapacity(streamCapacity);
   tryReserveReadyTasksLocked();
   schedulerCv_.notify_all();
 }
@@ -50,7 +54,8 @@ SchedulerObservabilitySnapshot GlobalScheduler::observabilitySnapshot() const {
   SchedulerObservabilitySnapshot snapshot;
   snapshot.attributes["scheduler_policy"] =
       "global_string_key_order_baseline";
-  snapshot.attributes["resource_model_version"] = "v1";
+  snapshot.attributes["resource_model_version"] = "v2";
+  snapshot.attributes["scheduler_stream_model"] = "enabled";
   snapshot.counters["scheduler.session_count"] =
       static_cast<int64_t>(sessions_.size());
   snapshot.counters["scheduler.task.submitted"] = static_cast<int64_t>(
@@ -83,6 +88,29 @@ SchedulerObservabilitySnapshot GlobalScheduler::observabilitySnapshot() const {
   snapshot.counters["scheduler.admission.resource_blocked"] = resourceBlocked;
   snapshot.counters["scheduler.admission.resource_blocked_total"] =
       resourceBlockedAdmissionCount_;
+  int64_t streamBlocked = 0;
+  for (const auto &entry : tasks_) {
+    const GlobalTaskRecord &record = entry.second;
+    if (record.state != GlobalTaskRecord::State::Ready ||
+        !record.waitingOnStreamResources) {
+      continue;
+    }
+
+    auto sessionIt = sessions_.find(record.sessionId);
+    if (sessionIt == sessions_.end() || sessionIt->second.failed)
+      continue;
+
+    ++streamBlocked;
+  }
+  snapshot.counters["scheduler.stream.capacity_total"] =
+      static_cast<int64_t>(resourceScheduler_.configuredStreamCapacity());
+  snapshot.counters["scheduler.stream.capacity_available"] =
+      static_cast<int64_t>(resourceScheduler_.availableStreamCapacity());
+  snapshot.counters["scheduler.stream.reserved"] =
+      static_cast<int64_t>(resourceScheduler_.reservedStreamUnits());
+  snapshot.counters["scheduler.admission.stream_blocked"] = streamBlocked;
+  snapshot.counters["scheduler.admission.stream_blocked_total"] =
+      streamBlockedAdmissionCount_;
   snapshot.counters["scheduler.admission.reserved_total"] =
       successfulReservationCount_;
   snapshot.counters["scheduler.transition.completed"] =
@@ -149,15 +177,26 @@ void GlobalScheduler::tryReserveReadyTasksLocked() {
     auto reservationOr = resourceScheduler_.tryReserve(
         record.sessionId, record.taskId, record.resources);
     if (!reservationOr) {
+      const ResourceBlockReason blockReason = resourceScheduler_.lastBlockReason();
+      const bool blockedOnStream =
+          blockReason == ResourceBlockReason::StreamCapacity ||
+          blockReason == ResourceBlockReason::ExclusiveStreamConflict;
       if (!record.waitingOnResources) {
         ++resourceBlockedAdmissionCount_;
         record.waitingOnResources = true;
+      }
+      if (blockedOnStream && !record.waitingOnStreamResources) {
+        ++streamBlockedAdmissionCount_;
+        record.waitingOnStreamResources = true;
+      } else if (!blockedOnStream) {
+        record.waitingOnStreamResources = false;
       }
       continue;
     }
 
     ++successfulReservationCount_;
     record.waitingOnResources = false;
+    record.waitingOnStreamResources = false;
     record.reservation = std::move(*reservationOr);
     record.state = GlobalTaskRecord::State::Reserved;
   }
@@ -216,6 +255,10 @@ GlobalScheduler::submit(ExecutionBackendKind backendKind,
         backendKind == ExecutionBackendKind::Npu &&
         (!capabilities.supportsConcurrentExecution ||
          capabilities.maxConcurrentTasks <= 1);
+    record.resources.requiresStream = capabilities.maxConcurrentStreams > 0;
+    record.resources.streamUnits =
+        record.resources.requiresStream ? 1 : 0;
+    record.resources.exclusiveStreamAccess = false;
     record.remainingDependencies = task.dependencies.size();
     record.state = task.dependencies.empty() ? GlobalTaskRecord::State::Ready
                                              : GlobalTaskRecord::State::Submitted;

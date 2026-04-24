@@ -710,7 +710,7 @@ public:
     caps.supportsConcurrentExecution = false;
     caps.requiresSerializedLaunch = false;
     caps.maxConcurrentTasks = 2;
-    caps.maxConcurrentStreams = 1;
+    caps.maxConcurrentStreams = 2;
     return caps;
   }
 
@@ -751,7 +751,7 @@ public:
     caps.supportsConcurrentExecution = false;
     caps.requiresSerializedLaunch = false;
     caps.maxConcurrentTasks = 2;
-    caps.maxConcurrentStreams = 1;
+    caps.maxConcurrentStreams = 2;
     return caps;
   }
 
@@ -4559,7 +4559,8 @@ static void testGlobalSchedulerTracksTwoIndependentSessions() {
 static void testGlobalSchedulerBlocksSecondSessionOnSingleSimLane() {
   GlobalScheduler scheduler;
   scheduler.configureResourceScheduler(/*simDispatchLanes=*/1, /*deviceSlots=*/1,
-                                      std::numeric_limits<size_t>::max());
+                                      std::numeric_limits<size_t>::max(),
+                                      /*streamCapacity=*/1);
 
   TaskGraph graphA;
   RuntimeTask taskA;
@@ -4581,10 +4582,52 @@ static void testGlobalSchedulerBlocksSecondSessionOnSingleSimLane() {
          "the second task remains ready while the lane is occupied");
 }
 
+static void testGlobalSchedulerBlocksOnStreamCapacity() {
+  GlobalScheduler scheduler;
+  scheduler.configureResourceScheduler(/*simDispatchLanes=*/4, /*deviceSlots=*/4,
+                                      /*workspaceBudget=*/4096,
+                                      /*streamCapacity=*/1);
+
+  BackendCapabilities caps;
+  caps.supportsConcurrentDispatch = true;
+  caps.supportsConcurrentExecution = true;
+  caps.requiresSerializedLaunch = false;
+  caps.maxConcurrentTasks = 4;
+  caps.maxConcurrentStreams = 1;
+
+  TaskGraph graph;
+  RuntimeTask taskA;
+  taskA.taskId = "a";
+  taskA.invocation.workspaceSize = 16;
+  EXPECT(!graph.addTask(taskA), "add task a");
+
+  RuntimeTask taskB;
+  taskB.taskId = "b";
+  taskB.invocation.workspaceSize = 16;
+  EXPECT(!graph.addTask(taskB), "add task b");
+
+  auto sessionOr =
+      scheduler.submit(ExecutionBackendKind::Simulation, caps, graph);
+  EXPECT((bool)sessionOr, "submit succeeds");
+  if (!sessionOr)
+    return;
+
+  auto stats = scheduler.observabilitySnapshot();
+  EXPECT(stats.attributes.at("scheduler_stream_model") == "enabled",
+         "stream model attribute is reported");
+  EXPECT(stats.counters.at("scheduler.stream.capacity_total") == 1,
+         "stream capacity total is reported");
+  EXPECT(stats.counters.at("scheduler.stream.reserved") == 1,
+         "one task reserves the only stream slot");
+  EXPECT(stats.counters.at("scheduler.admission.stream_blocked") == 1,
+         "second ready task is blocked on stream capacity");
+}
+
 static void testGlobalSchedulerReportsLifecycleCounters() {
   GlobalScheduler scheduler;
   scheduler.configureResourceScheduler(/*simDispatchLanes=*/1, /*deviceSlots=*/1,
-                                      std::numeric_limits<size_t>::max());
+                                      std::numeric_limits<size_t>::max(),
+                                      /*streamCapacity=*/1);
 
   TaskGraph graphA;
   RuntimeTask taskA;
@@ -4622,7 +4665,8 @@ static void testGlobalSchedulerReportsLifecycleCounters() {
          "scheduler snapshot counts cumulative resource-blocked admissions");
 
   scheduler.configureResourceScheduler(/*simDispatchLanes=*/1, /*deviceSlots=*/1,
-                                      std::numeric_limits<size_t>::max());
+                                      std::numeric_limits<size_t>::max(),
+                                      /*streamCapacity=*/1);
   auto retriedStats = scheduler.observabilitySnapshot();
   EXPECT(retriedStats.counters.at("scheduler.admission.resource_blocked") == 1,
          "scheduler snapshot keeps the ready task resource-blocked");
@@ -4683,7 +4727,8 @@ static void testGlobalSchedulerReportsLifecycleCounters() {
 static void testGlobalSchedulerTracksReleaseAndFailureCounters() {
   GlobalScheduler scheduler;
   scheduler.configureResourceScheduler(/*simDispatchLanes=*/1, /*deviceSlots=*/1,
-                                      std::numeric_limits<size_t>::max());
+                                      std::numeric_limits<size_t>::max(),
+                                      /*streamCapacity=*/1);
 
   TaskGraph graph;
   RuntimeTask task;
@@ -4722,7 +4767,8 @@ static void testGlobalSchedulerTracksReleaseAndFailureCounters() {
 static void testGlobalSchedulerReleaseSessionRestoresAdmissionCapacity() {
   GlobalScheduler scheduler;
   scheduler.configureResourceScheduler(/*simDispatchLanes=*/1, /*deviceSlots=*/1,
-                                      std::numeric_limits<size_t>::max());
+                                      std::numeric_limits<size_t>::max(),
+                                      /*streamCapacity=*/1);
 
   TaskGraph graphA;
   RuntimeTask taskA;
@@ -4757,7 +4803,8 @@ static void testGlobalSchedulerReleaseSessionRestoresAdmissionCapacity() {
 static void testGlobalSchedulerOwnsWholeSubmittedDag() {
   GlobalScheduler scheduler;
   scheduler.configureResourceScheduler(/*simDispatchLanes=*/1, /*deviceSlots=*/1,
-                                      std::numeric_limits<size_t>::max());
+                                      std::numeric_limits<size_t>::max(),
+                                      /*streamCapacity=*/1);
 
   TaskGraph graph;
   RuntimeTask taskA;
@@ -4786,7 +4833,8 @@ static void testGlobalSchedulerOwnsWholeSubmittedDag() {
 static void testGlobalSchedulerAdvancesDependentsAfterTaskCompletion() {
   GlobalScheduler scheduler;
   scheduler.configureResourceScheduler(/*simDispatchLanes=*/2, /*deviceSlots=*/1,
-                                      std::numeric_limits<size_t>::max());
+                                      std::numeric_limits<size_t>::max(),
+                                      /*streamCapacity=*/2);
 
   TaskGraph graph;
   RuntimeTask taskA;
@@ -5548,6 +5596,7 @@ int main() {
   testResourceSchedulerReservesAndReleasesSlots();
   testGlobalSchedulerTracksTwoIndependentSessions();
   testGlobalSchedulerBlocksSecondSessionOnSingleSimLane();
+  testGlobalSchedulerBlocksOnStreamCapacity();
   testGlobalSchedulerReportsLifecycleCounters();
   testGlobalSchedulerTracksReleaseAndFailureCounters();
   testGlobalSchedulerReleaseSessionRestoresAdmissionCapacity();

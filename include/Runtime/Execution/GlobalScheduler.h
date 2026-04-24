@@ -40,6 +40,7 @@ struct GlobalTaskRecord {
   State state = State::Submitted;
   std::optional<ResourceReservation> reservation;
   bool waitingOnResources = false;
+  bool waitingOnStreamResources = false;
 };
 
 struct SchedulerObservabilitySnapshot {
@@ -65,7 +66,8 @@ public:
   void releaseSession(llvm::StringRef sessionId);
   size_t sessionCount() const;
   void configureResourceScheduler(size_t simDispatchLanes, size_t deviceSlots,
-                                  size_t workspaceBudget);
+                                  size_t workspaceBudget,
+                                  size_t streamCapacity = 0);
   size_t taskCountInState(GlobalTaskRecord::State state) const;
   SchedulerObservabilitySnapshot observabilitySnapshot() const;
 
@@ -88,6 +90,7 @@ private:
 
   size_t nextSessionOrdinal_ = 0;
   int64_t resourceBlockedAdmissionCount_ = 0;
+  int64_t streamBlockedAdmissionCount_ = 0;
   int64_t successfulReservationCount_ = 0;
   int64_t failedTaskCount_ = 0;
   int64_t completedTaskCount_ = 0;
