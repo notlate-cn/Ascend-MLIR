@@ -9,6 +9,7 @@ struct BackendCapabilities {
   bool supportsConcurrentExecution = false;
   bool requiresSerializedLaunch = false;
   size_t maxConcurrentTasks = 1;
+  // Zero means the backend did not advertise a stream-capacity contract.
   size_t maxConcurrentStreams = 1;
 };
 
