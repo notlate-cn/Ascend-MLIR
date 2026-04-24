@@ -4764,6 +4764,87 @@ static void testGlobalSchedulerTracksReleaseAndFailureCounters() {
          "scheduler snapshot counts session release");
 }
 
+static void testGlobalSchedulerReturnsStreamCapacityOnFailureAndRelease() {
+  GlobalScheduler scheduler;
+  scheduler.configureResourceScheduler(/*simDispatchLanes=*/4, /*deviceSlots=*/4,
+                                      /*workspaceBudget=*/4096,
+                                      /*streamCapacity=*/1);
+
+  BackendCapabilities caps;
+  caps.supportsConcurrentDispatch = true;
+  caps.supportsConcurrentExecution = true;
+  caps.maxConcurrentTasks = 2;
+  caps.maxConcurrentStreams = 1;
+
+  TaskGraph graph;
+  RuntimeTask mainTask;
+  mainTask.taskId = "main";
+  mainTask.invocation.workspaceSize = 16;
+  EXPECT(!graph.addTask(mainTask), "add task");
+
+  auto sessionOr =
+      scheduler.submit(ExecutionBackendKind::Simulation, caps, graph);
+  EXPECT(static_cast<bool>(sessionOr), "submit succeeds");
+  if (!sessionOr)
+    return;
+
+  TaskGraph waitingGraph;
+  RuntimeTask waitingTask;
+  waitingTask.taskId = "waiting";
+  waitingTask.invocation.workspaceSize = 16;
+  EXPECT(!waitingGraph.addTask(waitingTask), "add waiting task");
+
+  auto waitingSessionOr =
+      scheduler.submit(ExecutionBackendKind::Simulation, caps, waitingGraph);
+  EXPECT(static_cast<bool>(waitingSessionOr), "waiting submit succeeds");
+  if (!waitingSessionOr)
+    return;
+
+  auto blockedStats = scheduler.observabilitySnapshot();
+  EXPECT(blockedStats.counters.at("scheduler.stream.reserved") == 1,
+         "failed session holds the only stream slot before release");
+  EXPECT(blockedStats.counters.at("scheduler.admission.stream_blocked") == 1,
+         "waiting session is blocked on stream capacity");
+
+  auto acquiredOr = scheduler.waitAndAcquireTask(sessionOr->sessionId());
+  EXPECT(static_cast<bool>(acquiredOr) && acquiredOr->has_value(),
+         "task acquires successfully");
+  if (!acquiredOr || !acquiredOr->has_value())
+    return;
+
+  EXPECT(!scheduler.failTask(sessionOr->sessionId(), "main"),
+         "failTask succeeds");
+  scheduler.releaseSession(sessionOr->sessionId());
+
+  auto stats = scheduler.observabilitySnapshot();
+  EXPECT(stats.counters.at("scheduler.stream.reserved") == 1,
+         "released stream slot is immediately reused by the waiting session");
+  EXPECT(stats.counters.at("scheduler.stream.capacity_available") == 0,
+         "reused stream slot leaves no spare capacity");
+  EXPECT(stats.counters.at("scheduler.task.reserved") == 1,
+         "waiting task is admitted after failed session release");
+
+  auto waitingAcquireOr =
+      scheduler.waitAndAcquireTask(waitingSessionOr->sessionId());
+  EXPECT(static_cast<bool>(waitingAcquireOr) && waitingAcquireOr->has_value(),
+         "waiting session acquires after capacity returns");
+  if (!waitingAcquireOr || !waitingAcquireOr->has_value())
+    return;
+
+  auto completeWaitingOr =
+      scheduler.completeTask(waitingSessionOr->sessionId(), "waiting");
+  EXPECT(static_cast<bool>(completeWaitingOr), "waiting task completes");
+  if (!completeWaitingOr)
+    return;
+  scheduler.releaseSession(waitingSessionOr->sessionId());
+
+  auto drainedStats = scheduler.observabilitySnapshot();
+  EXPECT(drainedStats.counters.at("scheduler.stream.reserved") == 0,
+         "stream reservation count returns to zero after cleanup");
+  EXPECT(drainedStats.counters.at("scheduler.stream.capacity_available") == 1,
+         "stream capacity is fully returned after cleanup");
+}
+
 static void testGlobalSchedulerReleaseSessionRestoresAdmissionCapacity() {
   GlobalScheduler scheduler;
   scheduler.configureResourceScheduler(/*simDispatchLanes=*/1, /*deviceSlots=*/1,
@@ -5599,6 +5680,7 @@ int main() {
   testGlobalSchedulerBlocksOnStreamCapacity();
   testGlobalSchedulerReportsLifecycleCounters();
   testGlobalSchedulerTracksReleaseAndFailureCounters();
+  testGlobalSchedulerReturnsStreamCapacityOnFailureAndRelease();
   testGlobalSchedulerReleaseSessionRestoresAdmissionCapacity();
   testGlobalSchedulerOwnsWholeSubmittedDag();
   testGlobalSchedulerAdvancesDependentsAfterTaskCompletion();

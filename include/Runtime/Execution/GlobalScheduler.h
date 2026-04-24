@@ -41,6 +41,7 @@ struct GlobalTaskRecord {
   std::optional<ResourceReservation> reservation;
   bool waitingOnResources = false;
   bool waitingOnStreamResources = false;
+  ResourceBlockReason blockedReason = ResourceBlockReason::None;
 };
 
 struct SchedulerObservabilitySnapshot {

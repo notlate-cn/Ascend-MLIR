@@ -76,8 +76,11 @@ SchedulerObservabilitySnapshot GlobalScheduler::observabilitySnapshot() const {
   int64_t resourceBlocked = 0;
   for (const auto &entry : tasks_) {
     const GlobalTaskRecord &record = entry.second;
-    if (record.state != GlobalTaskRecord::State::Ready)
+    if (record.state != GlobalTaskRecord::State::Ready ||
+        !record.waitingOnResources ||
+        record.blockedReason == ResourceBlockReason::None) {
       continue;
+    }
 
     auto sessionIt = sessions_.find(record.sessionId);
     if (sessionIt == sessions_.end() || sessionIt->second.failed)
@@ -92,7 +95,10 @@ SchedulerObservabilitySnapshot GlobalScheduler::observabilitySnapshot() const {
   for (const auto &entry : tasks_) {
     const GlobalTaskRecord &record = entry.second;
     if (record.state != GlobalTaskRecord::State::Ready ||
-        !record.waitingOnStreamResources) {
+        !record.waitingOnResources ||
+        (record.blockedReason != ResourceBlockReason::StreamCapacity &&
+         record.blockedReason !=
+             ResourceBlockReason::ExclusiveStreamConflict)) {
       continue;
     }
 
@@ -160,6 +166,9 @@ void GlobalScheduler::cancelPendingSessionTasksLocked(llvm::StringRef sessionId)
       resourceScheduler_.release(*record.reservation);
       record.reservation.reset();
     }
+    record.waitingOnResources = false;
+    record.waitingOnStreamResources = false;
+    record.blockedReason = ResourceBlockReason::None;
     record.state = GlobalTaskRecord::State::Cancelled;
   }
 }
@@ -177,10 +186,12 @@ void GlobalScheduler::tryReserveReadyTasksLocked() {
     auto reservationOr = resourceScheduler_.tryReserve(
         record.sessionId, record.taskId, record.resources);
     if (!reservationOr) {
-      const ResourceBlockReason blockReason = resourceScheduler_.lastBlockReason();
+      const ResourceBlockReason blockReason =
+          resourceScheduler_.lastBlockReason();
       const bool blockedOnStream =
           blockReason == ResourceBlockReason::StreamCapacity ||
           blockReason == ResourceBlockReason::ExclusiveStreamConflict;
+      record.blockedReason = blockReason;
       if (!record.waitingOnResources) {
         ++resourceBlockedAdmissionCount_;
         record.waitingOnResources = true;
@@ -197,6 +208,7 @@ void GlobalScheduler::tryReserveReadyTasksLocked() {
     ++successfulReservationCount_;
     record.waitingOnResources = false;
     record.waitingOnStreamResources = false;
+    record.blockedReason = ResourceBlockReason::None;
     record.reservation = std::move(*reservationOr);
     record.state = GlobalTaskRecord::State::Reserved;
   }
@@ -295,6 +307,9 @@ GlobalScheduler::waitAndAcquireTask(llvm::StringRef sessionId) {
         continue;
       }
       record.state = GlobalTaskRecord::State::Running;
+      record.waitingOnResources = false;
+      record.waitingOnStreamResources = false;
+      record.blockedReason = ResourceBlockReason::None;
       ++sessionIt->second.runningTasks;
       return std::optional<RuntimeTask>(record.task);
     }
@@ -333,6 +348,9 @@ llvm::Expected<size_t> GlobalScheduler::completeTask(llvm::StringRef sessionId,
     resourceScheduler_.release(*record->reservation);
     record->reservation.reset();
   }
+  record->waitingOnResources = false;
+  record->waitingOnStreamResources = false;
+  record->blockedReason = ResourceBlockReason::None;
   record->state = GlobalTaskRecord::State::Succeeded;
   ++completedTaskCount_;
   ++sessionIt->second.completedTasks;
@@ -352,6 +370,9 @@ llvm::Expected<size_t> GlobalScheduler::completeTask(llvm::StringRef sessionId,
       --dependent->remainingDependencies;
       if (dependent->remainingDependencies == 0) {
         dependent->state = GlobalTaskRecord::State::Ready;
+        dependent->waitingOnResources = false;
+        dependent->waitingOnStreamResources = false;
+        dependent->blockedReason = ResourceBlockReason::None;
         ++newlyReadyCount;
       }
     }
@@ -389,6 +410,9 @@ llvm::Error GlobalScheduler::failTask(llvm::StringRef sessionId,
     resourceScheduler_.release(*record->reservation);
     record->reservation.reset();
   }
+  record->waitingOnResources = false;
+  record->waitingOnStreamResources = false;
+  record->blockedReason = ResourceBlockReason::None;
   record->state = GlobalTaskRecord::State::Failed;
   ++failedTaskCount_;
   sessionIt->second.failed = true;
@@ -414,6 +438,9 @@ void GlobalScheduler::releaseSession(llvm::StringRef sessionId) {
     }
     if (record.reservation)
       resourceScheduler_.release(*record.reservation);
+    record.waitingOnResources = false;
+    record.waitingOnStreamResources = false;
+    record.blockedReason = ResourceBlockReason::None;
     it = tasks_.erase(it);
   }
 
