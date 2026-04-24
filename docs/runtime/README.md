@@ -279,7 +279,8 @@ NPU 代码路径已接通。
 - 当前使用 session round-robin admission baseline
 - fairness 目前只作用于 cross-session admission 顺序
 - session 内部 task 顺序仍保持稳定，不做额外 policy 分叉
-- quota / priority 仍是这个 baseline 之上的后续工作
+- quota baseline 已支持 session admission quota
+- priority baseline 已支持 static session priority
 
 ### runtime-native mix tiling
 
