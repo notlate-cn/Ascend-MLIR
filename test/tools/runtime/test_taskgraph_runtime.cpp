@@ -4874,6 +4874,102 @@ static void testGlobalSchedulerReturnsStreamCapacityOnFailureAndRelease() {
          "stream capacity is fully returned after cleanup");
 }
 
+static void testGlobalSchedulerReleasesStreamBlockedDependent() {
+  GlobalScheduler scheduler;
+  scheduler.configureResourceScheduler(/*simDispatchLanes=*/4, /*deviceSlots=*/4,
+                                      /*workspaceBudget=*/4096,
+                                      /*streamCapacity=*/1);
+
+  BackendCapabilities caps;
+  caps.supportsConcurrentDispatch = true;
+  caps.supportsConcurrentExecution = true;
+  caps.maxConcurrentTasks = 3;
+  caps.maxConcurrentStreams = 1;
+
+  TaskGraph graph;
+  RuntimeTask producer;
+  producer.taskId = "a_producer";
+  producer.invocation.workspaceSize = 16;
+  EXPECT(!graph.addTask(producer), "add producer");
+
+  RuntimeTask peer;
+  peer.taskId = "b_peer";
+  peer.invocation.workspaceSize = 16;
+  EXPECT(!graph.addTask(peer), "add peer");
+
+  RuntimeTask consumer;
+  consumer.taskId = "c_consumer";
+  consumer.dependencies = {"a_producer"};
+  consumer.invocation.workspaceSize = 16;
+  EXPECT(!graph.addTask(consumer), "add consumer");
+
+  auto sessionOr =
+      scheduler.submit(ExecutionBackendKind::Simulation, caps, graph);
+  EXPECT(static_cast<bool>(sessionOr), "submit succeeds");
+  if (!sessionOr)
+    return;
+
+  auto producerOr = scheduler.waitAndAcquireTask(sessionOr->sessionId());
+  EXPECT(static_cast<bool>(producerOr) && producerOr->has_value(),
+         "producer acquires first");
+  if (!producerOr || !producerOr->has_value())
+    return;
+  EXPECT(producerOr->value().taskId == "a_producer",
+         "producer is the first runnable task");
+
+  auto producerCompleteOr =
+      scheduler.completeTask(sessionOr->sessionId(), "a_producer");
+  EXPECT(static_cast<bool>(producerCompleteOr), "producer completes");
+  if (!producerCompleteOr)
+    return;
+  EXPECT(*producerCompleteOr == 1,
+         "producer completion advances the dependent task");
+
+  auto blockedStats = scheduler.observabilitySnapshot();
+  EXPECT(blockedStats.counters.at("scheduler.task.reserved") == 1,
+         "peer consumes the returned stream slot");
+  EXPECT(blockedStats.counters.at("scheduler.task.ready") == 1,
+         "consumer remains ready while stream capacity is exhausted");
+  EXPECT(blockedStats.counters.at("scheduler.admission.stream_blocked") == 1,
+         "consumer is reported as stream blocked after dependency advance");
+  const int64_t blockedTotal =
+      blockedStats.counters.at("scheduler.admission.stream_blocked_total");
+  EXPECT(blockedTotal >= 2,
+         "stream-blocked total retains both initial and dependent contention");
+
+  auto peerOr = scheduler.waitAndAcquireTask(sessionOr->sessionId());
+  EXPECT(static_cast<bool>(peerOr) && peerOr->has_value(),
+         "peer acquires after producer completion");
+  if (!peerOr || !peerOr->has_value())
+    return;
+  EXPECT(peerOr->value().taskId == "b_peer",
+         "peer holds the only stream slot during contention");
+
+  auto peerCompleteOr = scheduler.completeTask(sessionOr->sessionId(), "b_peer");
+  EXPECT(static_cast<bool>(peerCompleteOr), "peer completes");
+  if (!peerCompleteOr)
+    return;
+
+  auto retriedStats = scheduler.observabilitySnapshot();
+  EXPECT(retriedStats.counters.at("scheduler.task.reserved") == 1,
+         "consumer is re-admitted after stream capacity returns");
+  EXPECT(retriedStats.counters.at("scheduler.task.ready") == 0,
+         "consumer leaves ready state after successful retry");
+  EXPECT(retriedStats.counters.at("scheduler.admission.stream_blocked") == 0,
+         "no task remains stream blocked after capacity returns");
+  EXPECT(retriedStats.counters.at("scheduler.admission.stream_blocked_total") ==
+             blockedTotal,
+         "stream-blocked total remains stable across retry");
+
+  auto consumerOr = scheduler.waitAndAcquireTask(sessionOr->sessionId());
+  EXPECT(static_cast<bool>(consumerOr) && consumerOr->has_value(),
+         "consumer acquires after retry");
+  if (!consumerOr || !consumerOr->has_value())
+    return;
+  EXPECT(consumerOr->value().taskId == "c_consumer",
+         "dependent task is retried and admitted");
+}
+
 static void testGlobalSchedulerReleaseSessionRestoresAdmissionCapacity() {
   GlobalScheduler scheduler;
   scheduler.configureResourceScheduler(/*simDispatchLanes=*/1, /*deviceSlots=*/1,
@@ -5711,6 +5807,7 @@ int main() {
   testGlobalSchedulerReportsLifecycleCounters();
   testGlobalSchedulerTracksReleaseAndFailureCounters();
   testGlobalSchedulerReturnsStreamCapacityOnFailureAndRelease();
+  testGlobalSchedulerReleasesStreamBlockedDependent();
   testGlobalSchedulerReleaseSessionRestoresAdmissionCapacity();
   testGlobalSchedulerOwnsWholeSubmittedDag();
   testGlobalSchedulerAdvancesDependentsAfterTaskCompletion();

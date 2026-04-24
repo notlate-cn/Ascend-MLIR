@@ -140,9 +140,13 @@
 - `workspaceBytes`
 - `requiresSerializedLaunch`
 - `exclusiveDeviceAccess`
+- `stream` 级资源占用
 - `backendKind`
 
 当前 admission 规则是：只有依赖满足且资源满足时，任务才会进入可执行状态。
+
+- Stream-level resource accounting is now part of the baseline resource model.
+- Current policy remains backend-agnostic: stream consumption is expressed through task resource requirements, not through per-backend scheduling policy branches.
 
 ### `BackendCapabilities`
 
