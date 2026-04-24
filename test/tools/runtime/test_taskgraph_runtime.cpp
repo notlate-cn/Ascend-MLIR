@@ -2790,6 +2790,37 @@ static void testNpuBackendRejectsExpectedOutputMetadataMismatch() {
   }
 }
 
+static void testNpuBackendRejectsExpectedOutputMissingPath() {
+  auto npuOr = createExecutionBackend(ExecutionBackendKind::Npu);
+  EXPECT((bool)npuOr,
+         "npu backend factory succeeds for expected output path validation");
+  if (!npuOr)
+    return;
+
+  ExecutionRequest request;
+  request.task.taskId = "task_npu_expected_missing_path";
+  request.task.artifact.kernelName = "vec_kernel";
+  request.task.artifact.kernelKind = KernelKind::Vec;
+  request.task.artifact.deviceBinaryPath = "/tmp/fake_npu_kernel.bin";
+  request.task.invocation.outputs.push_back(
+      TensorBinding{"out", BindingSourceKind::ExternalFile,
+                    "/tmp/task_npu_expected_missing_path.npy", "", "",
+                    std::vector<int64_t>{4}, DType::F16});
+  request.task.invocation.expectedOutputs.push_back(
+      TensorBinding{"out", BindingSourceKind::ExternalFile, ""});
+
+  auto resultOr = (*npuOr)->run(request);
+  EXPECT(!(bool)resultOr, "npu backend rejects expected output bindings without a path");
+  if (!resultOr) {
+    const std::string message = llvm::toString(resultOr.takeError());
+    EXPECT(message.find("[npu:bindings]") != std::string::npos,
+           "npu backend reports bindings stage for expected output path validation");
+    EXPECT(message.find("expected output binding is missing path") !=
+               std::string::npos,
+           "npu backend reports missing expected output path");
+  }
+}
+
 static void testNpuBackendDriverFailureIsStageWrapped() {
   auto driver =
       std::make_shared<FailingExecutionBackendDriver>("driver-backed npu failure");
@@ -2815,6 +2846,41 @@ static void testNpuBackendDriverFailureIsStageWrapped() {
            "driver-backed npu errors are stage wrapped");
     EXPECT(message.find("driver-backed npu failure") != std::string::npos,
            "driver-backed npu preserves driver error detail");
+  }
+}
+
+static void testDriverBackedNpuBackendRejectsExpectedOutputMissingPath() {
+  auto driver = std::make_shared<SuccessfulNpuBackendDriver>();
+  SuccessfulNpuBackendDriver *driverPtr = driver.get();
+  auto npuOr = createExecutionBackend(ExecutionBackendKind::Npu, driver);
+  EXPECT((bool)npuOr,
+         "driver-backed npu backend creation succeeds for expected output path validation");
+  if (!npuOr)
+    return;
+
+  ExecutionRequest request;
+  request.task.taskId = "task_npu_driver_expected_missing_path";
+  request.task.artifact.kernelName = "vec_kernel";
+  request.task.artifact.kernelKind = KernelKind::Vec;
+  request.task.invocation.outputs.push_back(
+      TensorBinding{"out", BindingSourceKind::ExternalFile,
+                    "/tmp/task_npu_driver_expected_missing_path.npy", "", "",
+                    std::vector<int64_t>{4}, DType::F16});
+  request.task.invocation.expectedOutputs.push_back(
+      TensorBinding{"out", BindingSourceKind::ExternalFile, ""});
+
+  auto resultOr = (*npuOr)->run(request);
+  EXPECT(!(bool)resultOr,
+         "driver-backed npu backend rejects expected output bindings without a path");
+  EXPECT(driverPtr->invocations == 0,
+         "driver-backed npu does not invoke driver when expected output binding path is missing");
+  if (!resultOr) {
+    const std::string message = llvm::toString(resultOr.takeError());
+    EXPECT(message.find("[npu:bindings]") != std::string::npos,
+           "driver-backed npu reports bindings stage for expected output path validation");
+    EXPECT(message.find("expected output binding is missing path") !=
+               std::string::npos,
+           "driver-backed npu reports missing expected output path");
   }
 }
 
@@ -6400,7 +6466,9 @@ int main() {
   testNpuBackendRejectsMissingMixSharedObjectPath();
   testNpuBackendReachesRealDeviceModePath();
   testNpuBackendRejectsExpectedOutputMetadataMismatch();
+  testNpuBackendRejectsExpectedOutputMissingPath();
   testNpuBackendDriverFailureIsStageWrapped();
+  testDriverBackedNpuBackendRejectsExpectedOutputMissingPath();
   testDriverBackedNpuBackendValidatesRuntimeBindings();
   testExecutionSessionSupportsNpuSuccessDriver();
   testExecutionSessionRunsNpuRootsConcurrently();
