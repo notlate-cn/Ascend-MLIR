@@ -28,23 +28,6 @@ llvm::Error stageError(llvm::StringRef stage, llvm::Error error) {
   return stageError(stage, llvm::toString(std::move(error)));
 }
 
-llvm::Expected<std::vector<NDArray>>
-loadExpectedOutputs(const ExecutionInvocation &invocation) {
-  std::vector<NDArray> expected;
-  for (const TensorBinding &binding : invocation.expectedOutputs) {
-    if (binding.sourceKind != BindingSourceKind::ExternalFile)
-      return llvm::createStringError(
-          llvm::inconvertibleErrorCode(),
-          "expected output binding must be an external file: %s",
-          binding.name.c_str());
-    auto arrayOr = LoadNpy(binding.path);
-    if (!arrayOr)
-      return arrayOr.takeError();
-    expected.push_back(std::move(*arrayOr));
-  }
-  return expected;
-}
-
 llvm::Error validateExternalFileBinding(llvm::StringRef role,
                                         const TensorBinding &binding) {
   if (binding.sourceKind != BindingSourceKind::ExternalFile) {
@@ -58,6 +41,20 @@ llvm::Error validateExternalFileBinding(llvm::StringRef role,
                                    role.str().c_str(), binding.name.c_str());
   }
   return llvm::Error::success();
+}
+
+llvm::Expected<std::vector<NDArray>>
+loadExpectedOutputs(const ExecutionInvocation &invocation) {
+  std::vector<NDArray> expected;
+  for (const TensorBinding &binding : invocation.expectedOutputs) {
+    if (auto err = validateExternalFileBinding("expected output", binding))
+      return std::move(err);
+    auto arrayOr = LoadNpy(binding.path);
+    if (!arrayOr)
+      return arrayOr.takeError();
+    expected.push_back(std::move(*arrayOr));
+  }
+  return expected;
 }
 
 llvm::Error validateOutputBindingAgainstExpected(const TensorBinding &binding,
@@ -77,6 +74,40 @@ llvm::Error validateOutputBindingAgainstExpected(const TensorBinding &binding,
         binding.name.c_str());
   }
   return llvm::Error::success();
+}
+
+llvm::Error validateOutputBindingWithoutExpected(const TensorBinding &binding) {
+  if (auto err = validateExternalFileBinding("output", binding))
+    return err;
+  if (!binding.shape) {
+    return llvm::createStringError(
+        llvm::inconvertibleErrorCode(),
+        "output binding is missing shape metadata: %s",
+        binding.name.c_str());
+  }
+  if (!binding.dtype) {
+    return llvm::createStringError(
+        llvm::inconvertibleErrorCode(),
+        "output binding is missing dtype metadata: %s",
+        binding.name.c_str());
+  }
+  return llvm::Error::success();
+}
+
+NDArray buildAllocatedOutputFromExpected(const NDArray &expected) {
+  NDArray output;
+  output.shape = expected.shape;
+  output.dtype = expected.dtype;
+  output.allocate();
+  return output;
+}
+
+NDArray buildAllocatedOutputFromBinding(const TensorBinding &binding) {
+  NDArray output;
+  output.shape = *binding.shape;
+  output.dtype = *binding.dtype;
+  output.allocate();
+  return output;
 }
 
 llvm::Expected<std::vector<NDArray>>
@@ -113,18 +144,8 @@ validateInvocationBindings(const ExecutionInvocation &invocation) {
   }
 
   for (const TensorBinding &binding : invocation.outputs) {
-    if (auto err = validateExternalFileBinding("output", binding))
+    if (auto err = validateOutputBindingWithoutExpected(binding))
       return llvm::Expected<std::vector<NDArray>>(std::move(err));
-    if (!binding.shape)
-      return llvm::createStringError(
-          llvm::inconvertibleErrorCode(),
-          "output binding is missing shape metadata: %s",
-          binding.name.c_str());
-    if (!binding.dtype)
-      return llvm::createStringError(
-          llvm::inconvertibleErrorCode(),
-          "output binding is missing dtype metadata: %s",
-          binding.name.c_str());
   }
 
   return std::move(*expectedOutputsOr);
@@ -151,21 +172,13 @@ buildRunArgs(const ExecutionInvocation &invocation,
 
   if (!expectedOutputs.empty()) {
     for (const NDArray &expected : expectedOutputs) {
-      NDArray output;
-      output.shape = expected.shape;
-      output.dtype = expected.dtype;
-      output.allocate();
-      args.outputs.push_back(std::move(output));
+      args.outputs.push_back(buildAllocatedOutputFromExpected(expected));
     }
     return args;
   }
 
   for (const TensorBinding &binding : invocation.outputs) {
-    NDArray output;
-    output.shape = *binding.shape;
-    output.dtype = *binding.dtype;
-    output.allocate();
-    args.outputs.push_back(std::move(output));
+    args.outputs.push_back(buildAllocatedOutputFromBinding(binding));
   }
 
   return args;
