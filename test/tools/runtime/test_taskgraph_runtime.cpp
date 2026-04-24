@@ -2485,11 +2485,21 @@ static void testExecutionSessionRunsNpuRootsConcurrently() {
   TaskGraph graph;
   RuntimeTask taskA;
   taskA.taskId = "task_a";
+  taskA.invocation.outputs.push_back(
+      TensorBinding{"out", BindingSourceKind::ExternalFile, "/tmp/task_a.npy",
+                    "", "", std::vector<int64_t>{4}, DType::F16});
   RuntimeTask taskB;
   taskB.taskId = "task_b";
+  taskB.invocation.outputs.push_back(
+      TensorBinding{"out", BindingSourceKind::ExternalFile, "/tmp/task_b.npy",
+                    "", "", std::vector<int64_t>{4}, DType::F16});
   RuntimeTask taskJoin;
   taskJoin.taskId = "task_join";
   taskJoin.dependencies = {"task_a", "task_b"};
+  taskJoin.invocation.outputs.push_back(
+      TensorBinding{"out", BindingSourceKind::ExternalFile,
+                    "/tmp/task_join.npy", "", "",
+                    std::vector<int64_t>{4}, DType::F16});
 
   auto addA = graph.addTask(taskA);
   EXPECT(!addA, "npu serial session add task_a");
@@ -2569,11 +2579,21 @@ static void testExecutionSessionSerializesNpuRootsWhenDriverCapacityIsOne() {
   TaskGraph graph;
   RuntimeTask taskA;
   taskA.taskId = "task_a";
+  taskA.invocation.outputs.push_back(
+      TensorBinding{"out", BindingSourceKind::ExternalFile, "/tmp/task_a.npy",
+                    "", "", std::vector<int64_t>{4}, DType::F16});
   RuntimeTask taskB;
   taskB.taskId = "task_b";
+  taskB.invocation.outputs.push_back(
+      TensorBinding{"out", BindingSourceKind::ExternalFile, "/tmp/task_b.npy",
+                    "", "", std::vector<int64_t>{4}, DType::F16});
   RuntimeTask taskJoin;
   taskJoin.taskId = "task_join";
   taskJoin.dependencies = {"task_a", "task_b"};
+  taskJoin.invocation.outputs.push_back(
+      TensorBinding{"out", BindingSourceKind::ExternalFile,
+                    "/tmp/task_join.npy", "", "",
+                    std::vector<int64_t>{4}, DType::F16});
 
   auto addA = graph.addTask(taskA);
   EXPECT(!addA, "serialized npu add task_a");
@@ -2632,6 +2652,9 @@ static void testBackendDelegatesToDriver() {
            "non-profile files do not surface a profile trace");
   }
 
+  request.task.invocation.outputs.push_back(
+      TensorBinding{"out", BindingSourceKind::ExternalFile, "/tmp/task_a.npy",
+                    "", "", std::vector<int64_t>{4}, DType::F16});
   auto npuResult = (*npuOr)->run(request);
   EXPECT((bool)npuResult, "npu backend delegates");
   if (npuResult)
@@ -2764,6 +2787,65 @@ static void testNpuBackendRejectsExpectedOutputMetadataMismatch() {
     EXPECT(message.find("output binding metadata does not match expected output") !=
                std::string::npos,
            "npu backend reports output/expected metadata mismatch");
+  }
+}
+
+static void testNpuBackendDriverFailureIsStageWrapped() {
+  auto driver =
+      std::make_shared<FailingExecutionBackendDriver>("driver-backed npu failure");
+  auto npuOr = createExecutionBackend(ExecutionBackendKind::Npu, driver);
+  EXPECT((bool)npuOr, "driver-backed npu backend creation succeeds");
+  if (!npuOr)
+    return;
+
+  ExecutionRequest request;
+  request.task.taskId = "task_npu_driver_failure";
+  request.task.artifact.kernelName = "vec_kernel";
+  request.task.artifact.kernelKind = KernelKind::Vec;
+  request.task.invocation.outputs.push_back(
+      TensorBinding{"out", BindingSourceKind::ExternalFile,
+                    "/tmp/task_npu_driver_failure.npy", "", "",
+                    std::vector<int64_t>{4}, DType::F16});
+
+  auto resultOr = (*npuOr)->run(request);
+  EXPECT(!(bool)resultOr, "driver-backed npu errors surface as failures");
+  if (!resultOr) {
+    const std::string message = llvm::toString(resultOr.takeError());
+    EXPECT(message.find("[npu:driver]") != std::string::npos,
+           "driver-backed npu errors are stage wrapped");
+    EXPECT(message.find("driver-backed npu failure") != std::string::npos,
+           "driver-backed npu preserves driver error detail");
+  }
+}
+
+static void testDriverBackedNpuBackendValidatesRuntimeBindings() {
+  auto driver = std::make_shared<SuccessfulNpuBackendDriver>();
+  SuccessfulNpuBackendDriver *driverPtr = driver.get();
+  auto npuOr = createExecutionBackend(ExecutionBackendKind::Npu, driver);
+  EXPECT((bool)npuOr, "driver-backed npu backend creation succeeds for binding validation");
+  if (!npuOr)
+    return;
+
+  ExecutionRequest request;
+  request.task.taskId = "task_npu_driver_binding_validation";
+  request.task.artifact.kernelName = "vec_kernel";
+  request.task.artifact.kernelKind = KernelKind::Vec;
+  request.task.invocation.outputs.push_back(
+      TensorBinding{"out", BindingSourceKind::ExternalFile,
+                    "/tmp/task_npu_driver_binding_validation.npy"});
+
+  auto resultOr = (*npuOr)->run(request);
+  EXPECT(!(bool)resultOr,
+         "driver-backed npu backend rejects malformed runtime-owned bindings");
+  EXPECT(driverPtr->invocations == 0,
+         "driver-backed npu does not invoke driver when runtime binding validation fails");
+  if (!resultOr) {
+    const std::string message = llvm::toString(resultOr.takeError());
+    EXPECT(message.find("[npu:bindings]") != std::string::npos,
+           "driver-backed npu binding failures are stage wrapped");
+    EXPECT(message.find("output binding is missing shape metadata") !=
+               std::string::npos,
+           "driver-backed npu reports missing output metadata");
   }
 }
 
@@ -6318,6 +6400,8 @@ int main() {
   testNpuBackendRejectsMissingMixSharedObjectPath();
   testNpuBackendReachesRealDeviceModePath();
   testNpuBackendRejectsExpectedOutputMetadataMismatch();
+  testNpuBackendDriverFailureIsStageWrapped();
+  testDriverBackedNpuBackendValidatesRuntimeBindings();
   testExecutionSessionSupportsNpuSuccessDriver();
   testExecutionSessionRunsNpuRootsConcurrently();
   testExecutionSessionSerializesNpuRootsWhenDriverCapacityIsOne();
