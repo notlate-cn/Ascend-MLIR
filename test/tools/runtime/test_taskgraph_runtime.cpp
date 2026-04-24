@@ -5005,6 +5005,78 @@ static void testGlobalSchedulerBackfillsWhenHighPriorityQuotaIsExhausted() {
          "lower-priority session backfills the second slot");
 }
 
+static void testGlobalSchedulerKeepsExplicitSchedulingOutsideDefaultPolicy() {
+  GlobalScheduler scheduler;
+  scheduler.configureResourceScheduler(/*simDispatchLanes=*/1, /*deviceSlots=*/1,
+                                      /*workspaceBudget=*/4096,
+                                      /*streamCapacity=*/1);
+
+  GlobalSchedulerPolicy policy;
+  policy.defaultSessionScheduling.priorityClass = SessionPriorityClass::High;
+  policy.defaultSessionScheduling.maxAdmittedTasks = 1;
+  scheduler.configurePolicy(policy);
+
+  BackendCapabilities caps;
+  caps.supportsConcurrentDispatch = true;
+  caps.supportsConcurrentExecution = true;
+  caps.maxConcurrentTasks = 4;
+  caps.maxConcurrentStreams = 1;
+
+  TaskGraph graphDefault;
+  RuntimeTask a0;
+  a0.taskId = "a0";
+  a0.invocation.workspaceSize = 16;
+  RuntimeTask a1;
+  a1.taskId = "a1";
+  a1.invocation.workspaceSize = 16;
+  EXPECT(!graphDefault.addTask(a0), "add a0");
+  EXPECT(!graphDefault.addTask(a1), "add a1");
+
+  SessionSchedulingOptions explicitLow;
+  explicitLow.priorityClass = SessionPriorityClass::Low;
+
+  TaskGraph graphExplicit;
+  RuntimeTask b0;
+  b0.taskId = "b0";
+  b0.invocation.workspaceSize = 16;
+  RuntimeTask b1;
+  b1.taskId = "b1";
+  b1.invocation.workspaceSize = 16;
+  EXPECT(!graphExplicit.addTask(b0), "add b0");
+  EXPECT(!graphExplicit.addTask(b1), "add b1");
+
+  auto defaultSessionOr =
+      scheduler.submit(ExecutionBackendKind::Simulation, caps, graphDefault);
+  auto explicitSessionOr = scheduler.submit(ExecutionBackendKind::Simulation,
+                                            caps, graphExplicit, explicitLow);
+  EXPECT(static_cast<bool>(defaultSessionOr) &&
+             static_cast<bool>(explicitSessionOr),
+         "submissions succeed");
+  if (!defaultSessionOr || !explicitSessionOr)
+    return;
+
+  auto firstDefault = scheduler.waitAndAcquireTask(defaultSessionOr->sessionId());
+  EXPECT(static_cast<bool>(firstDefault) && firstDefault->has_value(),
+         "default-policy high-priority session acquires first");
+  if (!firstDefault || !firstDefault->has_value())
+    return;
+  EXPECT(firstDefault->value().taskId == "a0", "default session gets a0 first");
+
+  auto completeA0 =
+      scheduler.completeTask(defaultSessionOr->sessionId(), "a0");
+  EXPECT(static_cast<bool>(completeA0), "complete a0");
+  if (!completeA0)
+    return;
+
+  auto secondDefault = scheduler.waitAndAcquireTask(defaultSessionOr->sessionId());
+  EXPECT(static_cast<bool>(secondDefault) && secondDefault->has_value(),
+         "explicit low-priority session is not promoted by default policy");
+  if (!secondDefault || !secondDefault->has_value())
+    return;
+  EXPECT(secondDefault->value().taskId == "a1",
+         "default session keeps the next high-priority turn");
+}
+
 static void testGlobalSchedulerBlocksOnStreamCapacity() {
   GlobalScheduler scheduler;
   scheduler.configureResourceScheduler(/*simDispatchLanes=*/4, /*deviceSlots=*/4,
@@ -6203,6 +6275,7 @@ int main() {
   testGlobalSchedulerPrefersHigherPrioritySessions();
   testGlobalSchedulerUsesConfiguredDefaultSessionScheduling();
   testGlobalSchedulerBackfillsWhenHighPriorityQuotaIsExhausted();
+  testGlobalSchedulerKeepsExplicitSchedulingOutsideDefaultPolicy();
   testGlobalSchedulerBlocksOnStreamCapacity();
   testGlobalSchedulerReportsLifecycleCounters();
   testGlobalSchedulerTracksReleaseAndFailureCounters();
