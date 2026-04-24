@@ -58,10 +58,12 @@ runtime_verify_prepare_build_dir() {
       rm -rf build
     fi
 
-    cache_generator="$(sed -n 's/^CMAKE_GENERATOR:INTERNAL=//p' build/CMakeCache.txt)"
-    if [ -n "${cache_generator}" ] && [ "${cache_generator}" != "Ninja" ]; then
-      echo "Recreating build/ because CMake cache uses generator ${cache_generator}"
-      rm -rf build
+    if [ -f build/CMakeCache.txt ]; then
+      cache_generator="$(sed -n 's/^CMAKE_GENERATOR:INTERNAL=//p' build/CMakeCache.txt)"
+      if [ -n "${cache_generator}" ] && [ "${cache_generator}" != "Ninja" ]; then
+        echo "Recreating build/ because CMake cache uses generator ${cache_generator}"
+        rm -rf build
+      fi
     fi
   fi
 
