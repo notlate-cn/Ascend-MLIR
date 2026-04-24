@@ -60,10 +60,13 @@ ResourceScheduler::tryReserve(const std::string &sessionId,
     holdsDeviceSlot = true;
   }
 
+  const bool requiresStreamReservation =
+      requirement.requiresStream || requirement.streamUnits > 0 ||
+      requirement.exclusiveStreamAccess;
   bool holdsStreamSlot = false;
-  size_t streamUnitsToReserve = requirement.requiresStream
-                                    ? std::max<size_t>(requirement.streamUnits, 1)
-                                    : 0;
+  size_t streamUnitsToReserve =
+      requiresStreamReservation ? std::max<size_t>(requirement.streamUnits, 1)
+                                : 0;
   if (streamUnitsToReserve > 0) {
     if (requirement.exclusiveStreamAccess &&
         (reservedStreamUnits_ > 0 || hasExclusiveStreamReservation_)) {

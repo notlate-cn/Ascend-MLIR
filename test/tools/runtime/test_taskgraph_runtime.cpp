@@ -4440,7 +4440,7 @@ static void testResourceSchedulerReservesStreamCapacity() {
   ResourceScheduler scheduler;
   scheduler.configureSimDispatchLanes(4);
   scheduler.configureDeviceSlots(4);
-  scheduler.configureWorkspaceBudget(1024);
+  scheduler.configureWorkspaceBudget(2048);
   scheduler.configureStreamCapacity(1);
 
   TaskResourceRequirement req;
@@ -4459,11 +4459,46 @@ static void testResourceSchedulerReservesStreamCapacity() {
 
   auto second = scheduler.tryReserve("s1", "t1", req);
   EXPECT(!second, "second reservation blocks when stream capacity is exhausted");
+  EXPECT(scheduler.lastBlockReason() == ResourceBlockReason::StreamCapacity,
+         "stream exhaustion records stream-capacity block reason");
 
   scheduler.release(*first);
   auto third = scheduler.tryReserve("s2", "t2", req);
   EXPECT(static_cast<bool>(third),
          "stream capacity is returned after release");
+  if (!third)
+    return;
+
+  TaskResourceRequirement normalizedReq;
+  normalizedReq.backendKind = ExecutionBackendKind::Simulation;
+  normalizedReq.workspaceBytes = 16;
+  normalizedReq.streamUnits = 0;
+  normalizedReq.exclusiveStreamAccess = true;
+
+  auto normalizedBlocked = scheduler.tryReserve("s3", "t3", normalizedReq);
+  EXPECT(!normalizedBlocked,
+         "exclusive stream request normalizes to a reserved stream slot");
+  EXPECT(scheduler.lastBlockReason() ==
+             ResourceBlockReason::ExclusiveStreamConflict,
+         "exclusive conflict records exclusive-stream block reason");
+
+  scheduler.release(*third);
+  auto normalized = scheduler.tryReserve("s4", "t4", normalizedReq);
+  EXPECT(static_cast<bool>(normalized),
+         "exclusive stream request succeeds after stream release");
+  if (!normalized)
+    return;
+  EXPECT(normalized->holdsStreamSlot,
+         "normalized exclusive request records stream ownership");
+  EXPECT(normalized->reservedStreamUnits == 1,
+         "zero-unit stream request normalizes to one reserved unit");
+
+  auto afterExclusive = scheduler.tryReserve("s5", "t5", req);
+  EXPECT(!afterExclusive,
+         "non-exclusive stream request blocks behind exclusive reservation");
+  EXPECT(scheduler.lastBlockReason() ==
+             ResourceBlockReason::ExclusiveStreamConflict,
+         "shared request behind exclusive reservation reports exclusive conflict");
 }
 
 static void testResourceSchedulerPreservesOutstandingReservationsAcrossReconfigure() {
