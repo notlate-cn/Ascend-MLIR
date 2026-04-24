@@ -83,8 +83,11 @@ private:
 
   static std::string taskKey(llvm::StringRef sessionId, llvm::StringRef taskId);
   void tryReserveReadyTasksLocked();
+  bool tryReserveOneReadyTaskForSessionLocked(llvm::StringRef sessionId,
+                                              bool &sawReadyTask);
   bool sessionIsDrainedLocked(llvm::StringRef sessionId) const;
   void cancelPendingSessionTasksLocked(llvm::StringRef sessionId);
+  void noteFairnessSessionRemovalLocked(llvm::StringRef sessionId);
   GlobalTaskRecord *findTaskLocked(llvm::StringRef sessionId,
                                    llvm::StringRef taskId);
   size_t taskCountInStateLocked(GlobalTaskRecord::State state) const;
@@ -96,6 +99,12 @@ private:
   int64_t failedTaskCount_ = 0;
   int64_t completedTaskCount_ = 0;
   int64_t releasedSessionCount_ = 0;
+  size_t fairnessCursor_ = 0;
+  int64_t fairnessRotationCount_ = 0;
+  int64_t fairnessSessionSkipCount_ = 0;
+  int64_t fairnessStarvationPreventedCount_ = 0;
+  std::string lastAdmittedSessionId_;
+  std::vector<std::string> sessionOrder_;
   std::map<std::string, GlobalSessionRecord> sessions_;
   std::map<std::string, GlobalTaskRecord> tasks_;
   ResourceScheduler resourceScheduler_;
