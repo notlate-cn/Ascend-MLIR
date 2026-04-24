@@ -210,6 +210,8 @@
 
 - bare NPU 按默认 capability 参与并发路径
 - driver-backed NPU 尊重 driver 自身 capability
+- bare 和 driver-backed NPU 现在都先执行 runtime-owned binding contract 校验
+- driver-backed failures 现在也有稳定的 `[npu:driver]` stage attribution
 - `maxConcurrentTasks == 1` 时仍走全局调度路径，但退化为单任务/独占设备语义
 - 真机仍待 real-device validation
 
@@ -278,6 +280,7 @@ xvm 是当前权威开发验证环境。当前 CPU 仿真基线包括：
 NPU 代码路径已接通。
 
 - scheduler contract 已落地
+- xvm 已验证 wiring、driver-path delegation、runtime-owned binding contract
 - 当前主要缺口只剩 real-device validation
 
 ### 原始 runtime 任务完成度
@@ -309,6 +312,11 @@ NPU 代码路径已接通。
 当前仍未完成闭环的能力是：
 
 - NPU real-device validation
+
+当前 NPU pre-device audit 与 bring-up runbook 见：
+
+- [2026-04-24-runtime-npu-pre-device-audit.md](/Volumes/GM9/code/Codex-Ascend-MLIR/docs/superpowers/audits/2026-04-24-runtime-npu-pre-device-audit.md:1)
+- [NPU-REAL-DEVICE-VALIDATION.md](/Volumes/GM9/code/Codex-Ascend-MLIR/docs/runtime/NPU-REAL-DEVICE-VALIDATION.md:1)
 
 ### 当前非目标
 
