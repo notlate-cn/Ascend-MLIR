@@ -3872,7 +3872,7 @@ static void testExecutionSessionMergesSchedulerObservabilityIntoTrace() {
 
   auto policy = traceOr->attributes.find("scheduler_policy");
   EXPECT(policy != traceOr->attributes.end() &&
-             policy->second == "global_string_key_order_baseline",
+             policy->second == "global_session_round_robin_baseline",
          "session trace surfaces scheduler policy");
   auto schedulerScope = traceOr->attributes.find("scheduler_scope");
   EXPECT(schedulerScope != traceOr->attributes.end() &&
@@ -4609,6 +4609,167 @@ static void testGlobalSchedulerBlocksSecondSessionOnSingleSimLane() {
          "only one task is admitted into reserved state");
   EXPECT(scheduler.taskCountInState(GlobalTaskRecord::State::Ready) == 1,
          "the second task remains ready while the lane is occupied");
+}
+
+static void testGlobalSchedulerRoundRobinsAcrossSessions() {
+  GlobalScheduler scheduler;
+  scheduler.configureResourceScheduler(/*simDispatchLanes=*/1, /*deviceSlots=*/1,
+                                      /*workspaceBudget=*/4096,
+                                      /*streamCapacity=*/1);
+
+  BackendCapabilities caps;
+  caps.supportsConcurrentDispatch = true;
+  caps.supportsConcurrentExecution = true;
+  caps.maxConcurrentTasks = 3;
+  caps.maxConcurrentStreams = 1;
+
+  TaskGraph graphA;
+  RuntimeTask a0;
+  a0.taskId = "a0";
+  a0.invocation.workspaceSize = 16;
+  RuntimeTask a1;
+  a1.taskId = "a1";
+  a1.invocation.workspaceSize = 16;
+  EXPECT(!graphA.addTask(a0), "add a0");
+  EXPECT(!graphA.addTask(a1), "add a1");
+
+  TaskGraph graphB;
+  RuntimeTask b0;
+  b0.taskId = "b0";
+  b0.invocation.workspaceSize = 16;
+  EXPECT(!graphB.addTask(b0), "add b0");
+
+  auto sessionAOr =
+      scheduler.submit(ExecutionBackendKind::Simulation, caps, graphA);
+  auto sessionBOr =
+      scheduler.submit(ExecutionBackendKind::Simulation, caps, graphB);
+  EXPECT(static_cast<bool>(sessionAOr) && static_cast<bool>(sessionBOr),
+         "both sessions submit");
+  if (!sessionAOr || !sessionBOr)
+    return;
+
+  auto firstA = scheduler.waitAndAcquireTask(sessionAOr->sessionId());
+  EXPECT(static_cast<bool>(firstA) && firstA->has_value(),
+         "session A acquires first task");
+  if (!firstA || !firstA->has_value())
+    return;
+  EXPECT(firstA->value().taskId == "a0", "session A gets its first root");
+
+  auto completeA0 = scheduler.completeTask(sessionAOr->sessionId(), "a0");
+  EXPECT(static_cast<bool>(completeA0), "complete a0");
+  if (!completeA0)
+    return;
+
+  auto firstB = scheduler.waitAndAcquireTask(sessionBOr->sessionId());
+  EXPECT(static_cast<bool>(firstB) && firstB->has_value(),
+         "session B is admitted before session A gets a second turn");
+  if (!firstB || !firstB->has_value())
+    return;
+  EXPECT(firstB->value().taskId == "b0",
+         "fairness gives session B the next turn");
+
+  auto stats = scheduler.observabilitySnapshot();
+  EXPECT(stats.attributes.at("scheduler_policy") ==
+             "global_session_round_robin_baseline",
+         "scheduler policy advertises round-robin baseline");
+  EXPECT(stats.attributes.at("scheduler_fairness_policy") ==
+             "session_round_robin",
+         "scheduler fairness policy is exposed");
+  EXPECT(stats.counters.at("scheduler.fairness.starvation_prevented_total") >= 1,
+         "cross-session turn-taking increments fairness counter");
+}
+
+static void testGlobalSchedulerContinuesRoundRobinAcrossMultipleSessions() {
+  GlobalScheduler scheduler;
+  scheduler.configureResourceScheduler(/*simDispatchLanes=*/1, /*deviceSlots=*/1,
+                                      /*workspaceBudget=*/4096,
+                                      /*streamCapacity=*/1);
+
+  BackendCapabilities caps;
+  caps.supportsConcurrentDispatch = true;
+  caps.supportsConcurrentExecution = true;
+  caps.maxConcurrentTasks = 4;
+  caps.maxConcurrentStreams = 1;
+
+  TaskGraph graphA;
+  RuntimeTask a0;
+  a0.taskId = "a0";
+  a0.invocation.workspaceSize = 16;
+  RuntimeTask a1;
+  a1.taskId = "a1";
+  a1.invocation.workspaceSize = 16;
+  EXPECT(!graphA.addTask(a0), "add a0");
+  EXPECT(!graphA.addTask(a1), "add a1");
+
+  TaskGraph graphB;
+  RuntimeTask b0;
+  b0.taskId = "b0";
+  b0.invocation.workspaceSize = 16;
+  EXPECT(!graphB.addTask(b0), "add b0");
+
+  TaskGraph graphC;
+  RuntimeTask c0;
+  c0.taskId = "c0";
+  c0.invocation.workspaceSize = 16;
+  EXPECT(!graphC.addTask(c0), "add c0");
+
+  auto sessionAOr =
+      scheduler.submit(ExecutionBackendKind::Simulation, caps, graphA);
+  auto sessionBOr =
+      scheduler.submit(ExecutionBackendKind::Simulation, caps, graphB);
+  auto sessionCOr =
+      scheduler.submit(ExecutionBackendKind::Simulation, caps, graphC);
+  EXPECT(static_cast<bool>(sessionAOr) && static_cast<bool>(sessionBOr) &&
+             static_cast<bool>(sessionCOr),
+         "submissions succeed");
+  if (!sessionAOr || !sessionBOr || !sessionCOr)
+    return;
+
+  auto acquiredA0 = scheduler.waitAndAcquireTask(sessionAOr->sessionId());
+  EXPECT(static_cast<bool>(acquiredA0) && acquiredA0->has_value(),
+         "session A acquires first task");
+  if (!acquiredA0 || !acquiredA0->has_value())
+    return;
+  EXPECT(acquiredA0->value().taskId == "a0", "session A gets a0 first");
+  auto completeA0 = scheduler.completeTask(sessionAOr->sessionId(), "a0");
+  EXPECT(static_cast<bool>(completeA0), "complete a0");
+  if (!completeA0)
+    return;
+
+  auto acquiredB0 = scheduler.waitAndAcquireTask(sessionBOr->sessionId());
+  EXPECT(static_cast<bool>(acquiredB0) && acquiredB0->has_value(),
+         "session B acquires second turn");
+  if (!acquiredB0 || !acquiredB0->has_value())
+    return;
+  EXPECT(acquiredB0->value().taskId == "b0", "session B gets b0 second");
+  auto completeB0 = scheduler.completeTask(sessionBOr->sessionId(), "b0");
+  EXPECT(static_cast<bool>(completeB0), "complete b0");
+  if (!completeB0)
+    return;
+
+  auto acquiredC0 = scheduler.waitAndAcquireTask(sessionCOr->sessionId());
+  EXPECT(static_cast<bool>(acquiredC0) && acquiredC0->has_value(),
+         "session C acquires third turn");
+  if (!acquiredC0 || !acquiredC0->has_value())
+    return;
+  EXPECT(acquiredC0->value().taskId == "c0", "session C gets c0 third");
+  auto completeC0 = scheduler.completeTask(sessionCOr->sessionId(), "c0");
+  EXPECT(static_cast<bool>(completeC0), "complete c0");
+  if (!completeC0)
+    return;
+
+  auto acquiredA1 = scheduler.waitAndAcquireTask(sessionAOr->sessionId());
+  EXPECT(static_cast<bool>(acquiredA1) && acquiredA1->has_value(),
+         "session A gets another turn after B and C");
+  if (!acquiredA1 || !acquiredA1->has_value())
+    return;
+  EXPECT(acquiredA1->value().taskId == "a1", "session A gets a1 last");
+
+  auto stats = scheduler.observabilitySnapshot();
+  EXPECT(stats.counters.at("scheduler.fairness.session_order_size") == 3,
+         "all sessions participate in fairness order");
+  EXPECT(stats.counters.at("scheduler.fairness.starvation_prevented_total") >= 3,
+         "round-robin across sessions increments fairness counter");
 }
 
 static void testGlobalSchedulerBlocksOnStreamCapacity() {
@@ -5803,6 +5964,8 @@ int main() {
   testResourceSchedulerReservesAndReleasesSlots();
   testGlobalSchedulerTracksTwoIndependentSessions();
   testGlobalSchedulerBlocksSecondSessionOnSingleSimLane();
+  testGlobalSchedulerRoundRobinsAcrossSessions();
+  testGlobalSchedulerContinuesRoundRobinAcrossMultipleSessions();
   testGlobalSchedulerBlocksOnStreamCapacity();
   testGlobalSchedulerReportsLifecycleCounters();
   testGlobalSchedulerTracksReleaseAndFailureCounters();

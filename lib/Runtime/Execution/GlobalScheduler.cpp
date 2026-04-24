@@ -53,7 +53,8 @@ SchedulerObservabilitySnapshot GlobalScheduler::observabilitySnapshot() const {
 
   SchedulerObservabilitySnapshot snapshot;
   snapshot.attributes["scheduler_policy"] =
-      "global_string_key_order_baseline";
+      "global_session_round_robin_baseline";
+  snapshot.attributes["scheduler_fairness_policy"] = "session_round_robin";
   snapshot.attributes["resource_model_version"] = "v2";
   snapshot.attributes["scheduler_stream_model"] = "enabled";
   snapshot.counters["scheduler.session_count"] =
@@ -124,6 +125,16 @@ SchedulerObservabilitySnapshot GlobalScheduler::observabilitySnapshot() const {
   snapshot.counters["scheduler.transition.failed"] = failedTaskCount_;
   snapshot.counters["scheduler.transition.session_release"] =
       releasedSessionCount_;
+  snapshot.counters["scheduler.fairness.cursor"] =
+      static_cast<int64_t>(fairnessCursor_);
+  snapshot.counters["scheduler.fairness.session_order_size"] =
+      static_cast<int64_t>(sessionOrder_.size());
+  snapshot.counters["scheduler.fairness.session_rotations_total"] =
+      fairnessRotationCount_;
+  snapshot.counters["scheduler.fairness.session_skips_total"] =
+      fairnessSessionSkipCount_;
+  snapshot.counters["scheduler.fairness.starvation_prevented_total"] =
+      fairnessStarvationPreventedCount_;
   return snapshot;
 }
 
@@ -173,15 +184,21 @@ void GlobalScheduler::cancelPendingSessionTasksLocked(llvm::StringRef sessionId)
   }
 }
 
-void GlobalScheduler::tryReserveReadyTasksLocked() {
+bool GlobalScheduler::tryReserveOneReadyTaskForSessionLocked(
+    llvm::StringRef sessionId, bool &sawReadyTask) {
+  sawReadyTask = false;
+  auto sessionIt = sessions_.find(sessionId.str());
+  if (sessionIt == sessions_.end() || sessionIt->second.failed)
+    return false;
+
   for (auto &entry : tasks_) {
     GlobalTaskRecord &record = entry.second;
-    if (record.state != GlobalTaskRecord::State::Ready)
+    if (record.sessionId != sessionId ||
+        record.state != GlobalTaskRecord::State::Ready) {
       continue;
+    }
 
-    auto sessionIt = sessions_.find(record.sessionId);
-    if (sessionIt == sessions_.end() || sessionIt->second.failed)
-      continue;
+    sawReadyTask = true;
 
     auto reservationOr = resourceScheduler_.tryReserve(
         record.sessionId, record.taskId, record.resources);
@@ -206,11 +223,74 @@ void GlobalScheduler::tryReserveReadyTasksLocked() {
     }
 
     ++successfulReservationCount_;
+    if (!lastAdmittedSessionId_.empty() && lastAdmittedSessionId_ != sessionId)
+      ++fairnessStarvationPreventedCount_;
+    lastAdmittedSessionId_ = sessionId.str();
     record.waitingOnResources = false;
     record.waitingOnStreamResources = false;
     record.blockedReason = ResourceBlockReason::None;
     record.reservation = std::move(*reservationOr);
     record.state = GlobalTaskRecord::State::Reserved;
+    return true;
+  }
+
+  return false;
+}
+
+void GlobalScheduler::tryReserveReadyTasksLocked() {
+  while (!sessionOrder_.empty()) {
+    const size_t sessionCount = sessionOrder_.size();
+    const size_t start = fairnessCursor_ % sessionCount;
+    bool admittedAny = false;
+
+    for (size_t offset = 0; offset < sessionCount; ++offset) {
+      const size_t index = (start + offset) % sessionCount;
+      const std::string &sessionId = sessionOrder_[index];
+      bool sawReadyTask = false;
+      if (tryReserveOneReadyTaskForSessionLocked(sessionId, sawReadyTask)) {
+        fairnessCursor_ =
+            sessionOrder_.empty() ? 0 : ((index + 1) % sessionOrder_.size());
+        ++fairnessRotationCount_;
+        admittedAny = true;
+        continue;
+      }
+      if (sawReadyTask)
+        ++fairnessSessionSkipCount_;
+    }
+
+    if (!admittedAny)
+      break;
+  }
+}
+
+void GlobalScheduler::noteFairnessSessionRemovalLocked(llvm::StringRef sessionId) {
+  const bool removedLastAdmitted = lastAdmittedSessionId_ == sessionId;
+  for (size_t index = 0; index < sessionOrder_.size(); ++index) {
+    if (sessionOrder_[index] != sessionId)
+      continue;
+
+    sessionOrder_.erase(sessionOrder_.begin() + index);
+    if (sessionOrder_.empty()) {
+      fairnessCursor_ = 0;
+      break;
+    }
+    if (index < fairnessCursor_)
+      --fairnessCursor_;
+    if (fairnessCursor_ >= sessionOrder_.size())
+      fairnessCursor_ %= sessionOrder_.size();
+    break;
+  }
+  if (removedLastAdmitted) {
+    lastAdmittedSessionId_.clear();
+    return;
+  }
+  if (!sessionOrder_.empty() && !lastAdmittedSessionId_.empty()) {
+    for (size_t index = 0; index < sessionOrder_.size(); ++index) {
+      if (sessionOrder_[index] != lastAdmittedSessionId_)
+        continue;
+      fairnessCursor_ = (index + 1) % sessionOrder_.size();
+      break;
+    }
   }
 }
 
@@ -252,6 +332,15 @@ GlobalScheduler::submit(ExecutionBackendKind backendKind,
   session.backendKind = backendKind;
   session.totalTasks = orderedOr->size();
   sessions_.emplace(sessionId, std::move(session));
+  sessionOrder_.push_back(sessionId);
+  if (!lastAdmittedSessionId_.empty()) {
+    for (size_t index = 0; index < sessionOrder_.size(); ++index) {
+      if (sessionOrder_[index] != lastAdmittedSessionId_)
+        continue;
+      fairnessCursor_ = (index + 1) % sessionOrder_.size();
+      break;
+    }
+  }
 
   for (const RuntimeTask &task : *orderedOr) {
     GlobalTaskRecord record;
@@ -445,6 +534,7 @@ void GlobalScheduler::releaseSession(llvm::StringRef sessionId) {
   }
 
   ++releasedSessionCount_;
+  noteFairnessSessionRemovalLocked(sessionId);
   sessions_.erase(sessionIt);
   tryReserveReadyTasksLocked();
   schedulerCv_.notify_all();
