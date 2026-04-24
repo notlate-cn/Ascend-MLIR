@@ -45,6 +45,33 @@ loadExpectedOutputs(const ExecutionInvocation &invocation) {
   return expected;
 }
 
+llvm::Error validateOutputBindingAgainstExpected(const TensorBinding &binding,
+                                                 const NDArray &expected) {
+  if (binding.sourceKind != BindingSourceKind::ExternalFile) {
+    return llvm::createStringError(
+        llvm::inconvertibleErrorCode(),
+        "output binding must be an external file: %s", binding.name.c_str());
+  }
+  if (binding.path.empty()) {
+    return llvm::createStringError(llvm::inconvertibleErrorCode(),
+                                   "output binding is missing path: %s",
+                                   binding.name.c_str());
+  }
+  if (binding.shape && *binding.shape != expected.shape) {
+    return llvm::createStringError(
+        llvm::inconvertibleErrorCode(),
+        "output binding metadata does not match expected output: %s shape",
+        binding.name.c_str());
+  }
+  if (binding.dtype && *binding.dtype != expected.dtype) {
+    return llvm::createStringError(
+        llvm::inconvertibleErrorCode(),
+        "output binding metadata does not match expected output: %s dtype",
+        binding.name.c_str());
+  }
+  return llvm::Error::success();
+}
+
 llvm::Expected<RunArgs> buildRunArgs(const ExecutionInvocation &invocation) {
   RunArgs args;
   args.block_dim = invocation.blockDim;
@@ -87,7 +114,12 @@ llvm::Expected<RunArgs> buildRunArgs(const ExecutionInvocation &invocation) {
   }
 
   if (!expectedOutputsOr->empty()) {
-    for (const NDArray &expected : *expectedOutputsOr) {
+    for (size_t index = 0; index < expectedOutputsOr->size(); ++index) {
+      if (auto err = validateOutputBindingAgainstExpected(
+              invocation.outputs[index], (*expectedOutputsOr)[index])) {
+        return std::move(err);
+      }
+      const NDArray &expected = (*expectedOutputsOr)[index];
       NDArray output;
       output.shape = expected.shape;
       output.dtype = expected.dtype;

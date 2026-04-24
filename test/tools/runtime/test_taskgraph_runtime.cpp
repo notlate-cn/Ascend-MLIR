@@ -2726,6 +2726,47 @@ static void testNpuBackendReachesRealDeviceModePath() {
   }
 }
 
+static void testNpuBackendRejectsExpectedOutputMetadataMismatch() {
+  auto npuOr = createExecutionBackend(ExecutionBackendKind::Npu);
+  EXPECT((bool)npuOr,
+         "npu backend factory succeeds for metadata mismatch validation");
+  if (!npuOr)
+    return;
+
+  const std::string inputPath =
+      writeTempNpy("taskgraph-runtime-npu-mismatch-input", {4}, DType::F16);
+  const std::string expectedPath =
+      writeTempNpy("taskgraph-runtime-npu-mismatch-expected", {4}, DType::F32);
+  if (inputPath.empty() || expectedPath.empty())
+    return;
+
+  ExecutionRequest request;
+  request.task.taskId = "task_npu_mismatch";
+  request.task.artifact.kernelName = "vec_kernel";
+  request.task.artifact.kernelKind = KernelKind::Vec;
+  request.task.artifact.deviceBinaryPath = "/tmp/fake_npu_kernel.bin";
+  request.task.invocation.inputs.push_back(
+      TensorBinding{"in", BindingSourceKind::ExternalFile, inputPath});
+  request.task.invocation.outputs.push_back(
+      TensorBinding{"out", BindingSourceKind::ExternalFile,
+                    "/tmp/task_npu_mismatch.npy", "", "",
+                    std::vector<int64_t>{8}, DType::F16});
+  request.task.invocation.expectedOutputs.push_back(
+      TensorBinding{"out", BindingSourceKind::ExternalFile, expectedPath});
+
+  auto resultOr = (*npuOr)->run(request);
+  EXPECT(!(bool)resultOr,
+         "npu backend rejects expected output metadata mismatches");
+  if (!resultOr) {
+    const std::string message = llvm::toString(resultOr.takeError());
+    EXPECT(message.find("[npu:bindings]") != std::string::npos,
+           "npu backend reports bindings stage for metadata mismatch");
+    EXPECT(message.find("output binding metadata does not match expected output") !=
+               std::string::npos,
+           "npu backend reports output/expected metadata mismatch");
+  }
+}
+
 static void testExecutionSessionSupportsNpuSuccessDriver() {
   auto driver = std::make_shared<SuccessfulNpuBackendDriver>();
   SuccessfulNpuBackendDriver *driverPtr = driver.get();
@@ -5005,6 +5046,54 @@ static void testGlobalSchedulerBackfillsWhenHighPriorityQuotaIsExhausted() {
          "lower-priority session backfills the second slot");
 }
 
+static void testGlobalSchedulerBackfillsWhenHighPriorityIsResourceBlocked() {
+  GlobalScheduler scheduler;
+  scheduler.configureResourceScheduler(/*simDispatchLanes=*/2, /*deviceSlots=*/2,
+                                      /*workspaceBudget=*/32,
+                                      /*streamCapacity=*/2);
+
+  BackendCapabilities caps;
+  caps.supportsConcurrentDispatch = true;
+  caps.supportsConcurrentExecution = true;
+  caps.maxConcurrentTasks = 4;
+  caps.maxConcurrentStreams = 2;
+
+  SessionSchedulingOptions highPriority;
+  highPriority.priorityClass = SessionPriorityClass::High;
+
+  TaskGraph graphHigh;
+  RuntimeTask h0;
+  h0.taskId = "h0";
+  h0.invocation.workspaceSize = 64;
+  EXPECT(!graphHigh.addTask(h0), "add resource-blocked h0");
+
+  TaskGraph graphLow;
+  RuntimeTask l0;
+  l0.taskId = "l0";
+  l0.invocation.workspaceSize = 16;
+  EXPECT(!graphLow.addTask(l0), "add low l0");
+
+  auto highSessionOr =
+      scheduler.submit(ExecutionBackendKind::Simulation, caps, graphHigh,
+                       highPriority);
+  auto lowSessionOr =
+      scheduler.submit(ExecutionBackendKind::Simulation, caps, graphLow);
+  EXPECT(static_cast<bool>(highSessionOr) && static_cast<bool>(lowSessionOr),
+         "submissions succeed");
+  if (!highSessionOr || !lowSessionOr)
+    return;
+
+  auto stats = scheduler.observabilitySnapshot();
+  EXPECT(stats.counters.at("scheduler.task.reserved") == 1,
+         "lower-priority session backfills when high-priority task is resource blocked");
+  EXPECT(stats.counters.at("scheduler.admission.resource_blocked") == 1,
+         "resource-blocked high-priority task is counted");
+
+  auto lowAcquire = scheduler.waitAndAcquireTask(lowSessionOr->sessionId());
+  EXPECT(static_cast<bool>(lowAcquire) && lowAcquire->has_value(),
+         "lower-priority session acquires backfilled slot");
+}
+
 static void testGlobalSchedulerKeepsExplicitSchedulingOutsideDefaultPolicy() {
   GlobalScheduler scheduler;
   scheduler.configureResourceScheduler(/*simDispatchLanes=*/1, /*deviceSlots=*/1,
@@ -6228,6 +6317,7 @@ int main() {
   testNpuBackendRejectsMissingDeviceBinaryPath();
   testNpuBackendRejectsMissingMixSharedObjectPath();
   testNpuBackendReachesRealDeviceModePath();
+  testNpuBackendRejectsExpectedOutputMetadataMismatch();
   testExecutionSessionSupportsNpuSuccessDriver();
   testExecutionSessionRunsNpuRootsConcurrently();
   testExecutionSessionSerializesNpuRootsWhenDriverCapacityIsOne();
@@ -6275,6 +6365,7 @@ int main() {
   testGlobalSchedulerPrefersHigherPrioritySessions();
   testGlobalSchedulerUsesConfiguredDefaultSessionScheduling();
   testGlobalSchedulerBackfillsWhenHighPriorityQuotaIsExhausted();
+  testGlobalSchedulerBackfillsWhenHighPriorityIsResourceBlocked();
   testGlobalSchedulerKeepsExplicitSchedulingOutsideDefaultPolicy();
   testGlobalSchedulerBlocksOnStreamCapacity();
   testGlobalSchedulerReportsLifecycleCounters();

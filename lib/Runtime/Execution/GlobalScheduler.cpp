@@ -396,7 +396,7 @@ void GlobalScheduler::tryReserveReadyTasksLocked() {
   while (!sessionOrder_.empty()) {
     const size_t sessionCount = sessionOrder_.size();
     const size_t start = fairnessCursor_ % sessionCount;
-    int selectedPriority = -1;
+    int highestReadyPriority = -1;
     for (size_t offset = 0; offset < sessionCount; ++offset) {
       const size_t index = (start + offset) % sessionCount;
       auto sessionIt = sessions_.find(sessionOrder_[index]);
@@ -410,36 +410,38 @@ void GlobalScheduler::tryReserveReadyTasksLocked() {
         markReadyTasksQuotaBlockedLocked(sessionOrder_[index]);
         continue;
       }
-      selectedPriority = std::max(
-          selectedPriority,
+      highestReadyPriority = std::max(
+          highestReadyPriority,
           priorityRank(sessionIt->second.scheduling.priorityClass));
     }
-    if (selectedPriority < 0)
+    if (highestReadyPriority < 0)
       break;
 
     bool admittedAny = false;
-
-    for (size_t offset = 0; offset < sessionCount; ++offset) {
-      const size_t index = (start + offset) % sessionCount;
-      const std::string &sessionId = sessionOrder_[index];
-      auto sessionIt = sessions_.find(sessionId);
-      if (sessionIt == sessions_.end() || sessionIt->second.failed ||
-          priorityRank(sessionIt->second.scheduling.priorityClass) !=
-              selectedPriority) {
-        continue;
+    for (int selectedPriority = highestReadyPriority;
+         selectedPriority >= 0 && !admittedAny; --selectedPriority) {
+      for (size_t offset = 0; offset < sessionCount; ++offset) {
+        const size_t index = (start + offset) % sessionCount;
+        const std::string &sessionId = sessionOrder_[index];
+        auto sessionIt = sessions_.find(sessionId);
+        if (sessionIt == sessions_.end() || sessionIt->second.failed ||
+            priorityRank(sessionIt->second.scheduling.priorityClass) !=
+                selectedPriority) {
+          continue;
+        }
+        bool sawReadyTask = false;
+        bool quotaBlocked = false;
+        if (tryReserveOneReadyTaskForSessionLocked(sessionId, sawReadyTask,
+                                                   quotaBlocked)) {
+          fairnessCursor_ =
+              sessionOrder_.empty() ? 0 : ((index + 1) % sessionOrder_.size());
+          ++fairnessRotationCount_;
+          admittedAny = true;
+          continue;
+        }
+        if (sawReadyTask || quotaBlocked)
+          ++fairnessSessionSkipCount_;
       }
-      bool sawReadyTask = false;
-      bool quotaBlocked = false;
-      if (tryReserveOneReadyTaskForSessionLocked(sessionId, sawReadyTask,
-                                                 quotaBlocked)) {
-        fairnessCursor_ =
-            sessionOrder_.empty() ? 0 : ((index + 1) % sessionOrder_.size());
-        ++fairnessRotationCount_;
-        admittedAny = true;
-        continue;
-      }
-      if (sawReadyTask || quotaBlocked)
-        ++fairnessSessionSkipCount_;
     }
 
     if (!admittedAny)
