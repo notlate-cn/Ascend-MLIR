@@ -284,6 +284,19 @@ NPU 代码路径已接通。
 - 默认 policy 已通过内部 `GlobalSchedulerPolicy` 显式收口
 - 当前配置面仍然是 runtime-internal / test-oriented，不是用户 CLI 配置接口
 
+当前 shared summary 已能直接暴露这组 policy baseline：
+
+- `scheduler_policy=global_session_round_robin_baseline`
+- `scheduler_fairness_policy=session_round_robin`
+- `scheduler_priority_policy=static_session_priority`
+- `scheduler_quota_policy=session_admission_quota`
+- `scheduler_default_priority_class`
+- `scheduler.policy.default_max_admitted_tasks`
+
+更完整的当前状态审计见：
+
+- [2026-04-24-runtime-scheduler-policy-surface.md](/Volumes/GM9/code/Codex-Ascend-MLIR/docs/superpowers/audits/2026-04-24-runtime-scheduler-policy-surface.md)
+
 ### runtime-native mix tiling
 
 matmul 方向继续增强，但保持通用性和兼容性。
