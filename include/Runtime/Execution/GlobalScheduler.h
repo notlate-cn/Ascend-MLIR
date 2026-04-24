@@ -99,6 +99,12 @@ public:
   SchedulerObservabilitySnapshot observabilitySnapshot() const;
 
 private:
+  struct SessionAdmissionState {
+    bool hasReadyTask = false;
+    bool hasQuotaEligibleReadyTask = false;
+    int64_t quotaBlockedReadyTasks = 0;
+  };
+
   struct GlobalSessionRecord {
     ExecutionBackendKind backendKind = ExecutionBackendKind::Simulation;
     size_t totalTasks = 0;
@@ -109,7 +115,14 @@ private:
     bool failed = false;
   };
 
+  static BackendCapabilities
+  defaultCapabilitiesForBackend(ExecutionBackendKind backendKind);
+  static void clearTaskAdmissionWaitStateLocked(GlobalTaskRecord &record);
   static std::string taskKey(llvm::StringRef sessionId, llvm::StringRef taskId);
+  bool sessionQuotaExhaustedLocked(const GlobalSessionRecord &session) const;
+  SessionAdmissionState
+  inspectSessionAdmissionLocked(llvm::StringRef sessionId) const;
+  void markReadyTasksQuotaBlockedLocked(llvm::StringRef sessionId);
   void tryReserveReadyTasksLocked();
   bool tryReserveOneReadyTaskForSessionLocked(llvm::StringRef sessionId,
                                               bool &sawReadyTask,
