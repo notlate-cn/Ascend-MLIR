@@ -16,10 +16,6 @@
 //           scale/bias (Case A) passed through unchanged — no collapse on them.
 //           tensor.expand_shape to restore return type tensor<4x8x16xf16>
 //
-// Emitted map aliases must include both the 2D identity and the broadcast map.
-// CHECK: #[[$MAP:.+]] = affine_map<(d0, d1) -> (d0, d1)>
-// CHECK: #[[$MAP1:.+]] = affine_map<(d0, d1) -> (d1)>
-// CHECK-LABEL: func.func @kernel_group0
 func.func @kernel_group0(
     %input: tensor<4x8x16xf16>,
     %scale: tensor<16xf16>,
@@ -41,12 +37,25 @@ func.func @kernel_group0(
   } -> tensor<4x8x16xf16>
   return %r : tensor<4x8x16xf16>
 }
-// After collapse: tensor.collapse_shape collapses d0*d1 = 4*8 = 32 (Case C: input)
+
+// Map aliases emitted for the 2D maps used in the collapsed generic.
+// CHECK: #[[$MAP:.+]] = affine_map<(d0, d1) -> (d0, d1)>
+// CHECK: #[[$MAP1:.+]] = affine_map<(d0, d1) -> (d1)>
+//
+// CHECK-LABEL: func.func @kernel_group0
+//
+// collapse_shape group: Case C input collapses d0*d1 = 4*8 = 32
 // CHECK: tensor.collapse_shape
 // CHECK-SAME: into tensor<32x16xf16>
-// linalg.generic present; scale/bias (Case A) not collapsed, passed directly
+//
+// scale and bias are Case A — no collapse applied to them
+// CHECK-NOT: tensor.collapse_shape{{.*}}tensor<16xf16>
+//
+// linalg.generic group: uses 2D maps after collapse; iterator_types drops d0 parallel
 // CHECK: linalg.generic
 // CHECK-SAME: [#[[$MAP]], #[[$MAP1]], #[[$MAP1]], #[[$MAP]]]
-// The return type is preserved via expand_shape
+// CHECK-SAME: iterator_types = ["parallel", "reduction"]
+//
+// expand_shape group: restores return type
 // CHECK: tensor.expand_shape
 // CHECK-SAME: into tensor<4x8x16xf16>
