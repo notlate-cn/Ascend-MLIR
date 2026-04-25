@@ -2,6 +2,7 @@
 #define ASCEND_MLIR_CONVERSION_VECTORPLAN_PASSES_H
 
 #include "mlir/Dialect/Func/IR/FuncOps.h"
+#include "mlir/IR/PatternMatch.h"
 #include "mlir/Pass/Pass.h"
 
 namespace mlir::afir {
@@ -10,6 +11,7 @@ std::unique_ptr<Pass> createVectorPlanGroupAnalysisPass();
 std::unique_ptr<Pass> createVectorPlanGroupOutlinePass();
 std::unique_ptr<Pass> createVectorPlanTileFusePass();
 std::unique_ptr<Pass> createVectorPlanBroadcastAbsorbPass();
+void populateBroadcastAbsorbPatterns(mlir::RewritePatternSet &patterns);
 
 void registerVectorPlanPipeline();
 
