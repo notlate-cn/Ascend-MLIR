@@ -4,6 +4,8 @@ add_mlir_library(MLIRVectorPlan
   GroupAnalysis/GroupAnalysisPass.cpp
   GroupOutline/GroupOutlinePass.cpp
   TileFuse/TileFusePass.cpp
+  TileFuse/BroadcastAbsorb.cpp
+  TileFuse/Collapse.cpp
   TileInfo/TilePlanToTileInfo.cpp
   Pipeline.cpp
 

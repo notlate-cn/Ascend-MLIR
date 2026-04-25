@@ -9,6 +9,7 @@ namespace mlir::afir {
 std::unique_ptr<Pass> createVectorPlanGroupAnalysisPass();
 std::unique_ptr<Pass> createVectorPlanGroupOutlinePass();
 std::unique_ptr<Pass> createVectorPlanTileFusePass();
+std::unique_ptr<Pass> createVectorPlanBroadcastAbsorbPass();
 
 void registerVectorPlanPipeline();
 

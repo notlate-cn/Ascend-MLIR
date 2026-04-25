@@ -421,4 +421,20 @@ def AclnnFinalizeDecl : Pass<"aclnn-finalize-decl", "mlir::ModuleOp"> {
   ];
 }
 
+//===----------------------------------------------------------------------===//
+// BroadcastAbsorb
+//===----------------------------------------------------------------------===//
+
+def VectorPlanBroadcastAbsorb : Pass<"vector-plan-broadcast-absorb", "mlir::func::FuncOp"> {
+  let summary = "Absorb linalg.broadcast into downstream linalg.generic indexing maps";
+  let description = [{
+    For each linalg.broadcast whose result is consumed by exactly one
+    linalg.generic, replaces the generic's operand with the broadcast's
+    original input and drops the broadcast dimensions from the operand's
+    indexing map. Broadcasts with other consumers are left unchanged.
+  }];
+  let constructor = "mlir::afir::createVectorPlanBroadcastAbsorbPass()";
+  let dependentDialects = ["mlir::linalg::LinalgDialect"];
+}
+
 #endif // AFIR_CONVERSION_PASSES

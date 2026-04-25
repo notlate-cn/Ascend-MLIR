@@ -31,6 +31,10 @@ struct CollapsedGroupInfo : GroupInfo {
   llvm::SmallVector<int>      axisMap;   // original axis idx -> collapsed axis idx; -1 if not collapsed
   bool                        hasB2      = false;
   bool                        noCollapse = false;
+  // Post-collapse broadcast axis indices (ascending). Filled by Phase 1 Collapse.
+  llvm::SmallVector<int>            broadcastAxes;
+  // Extent SSA values for broadcast axes (needed for dynamic shapes in Phase 2).
+  llvm::DenseMap<int, mlir::Value>  broadcastAxisExtents;
 };
 
 struct CubeGroupInfo : GroupInfo {
