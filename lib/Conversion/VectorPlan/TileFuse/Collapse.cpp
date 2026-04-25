@@ -60,12 +60,12 @@ findCandidateGroups(ArrayRef<AxisInfo> axes) {
   SmallVector<int> current;
   for (auto [i, ax] : llvm::enumerate(axes)) {
     if (!current.empty() && ax.role != axes[current.back()].role) {
-      if (current.size() > 1) groups.push_back(current);
+      if (current.size() >= 2) groups.push_back(current);
       current.clear();
     }
     current.push_back((int)i);
   }
-  if (current.size() > 1) groups.push_back(current);
+  if (current.size() >= 2) groups.push_back(current);
   return groups;
 }
 
@@ -300,9 +300,15 @@ static void applyIRTransform(OpBuilder &builder, GenericOp lop,
                              newGeneric.getRegion().begin());
 
   // Replace old results with expand_shape → restore original return types.
+  // Skip expand_shape for Class-A outputs (no G-axes collapsed) where
+  // the new result type already matches the original type.
   builder.setInsertionPointAfter(newGeneric);
   for (auto [oldRes, newRes, outMap] :
        llvm::zip(lop.getResults(), newGeneric.getResults(), outMaps)) {
+    if (newRes.getType() == oldRes.getType()) {
+      oldRes.replaceAllUsesWith(newRes);
+      continue;
+    }
     auto reassoc = buildReassociation(outMap, axisMap);
     auto origType = cast<RankedTensorType>(oldRes.getType());
     Value expanded = builder.create<tensor::ExpandShapeOp>(
@@ -349,7 +355,11 @@ CollapsedGroupInfo collapseGroup(OpBuilder &builder, func::FuncOp func) {
   for (auto &cand : candidates) {
     auto bcast  = computeBCast(cand, members, boundaryIn);
     auto pruned = pruneBCastAxes(cand, bcast);
-    if (!pruned.empty()) { chosenGroup = pruned.front(); chosenBCast = bcast; break; }
+    if (!pruned.empty()) {
+      chosenGroup = pruned.front();  // v1: collapse only the first valid sub-group
+      chosenBCast = bcast;
+      break;
+    }
   }
   if (chosenGroup.empty()) return result;
 
@@ -371,6 +381,9 @@ CollapsedGroupInfo collapseGroup(OpBuilder &builder, func::FuncOp func) {
   }
   llvm::sort(result.broadcastAxes);
 
+  // IR transformation (v1: single generic only; multi-op analysis is complete
+  // but transform is deferred — callers must not assume IR was collapsed for
+  // members.size() > 1).
   if (members.size() == 1)
     if (auto lop = dyn_cast<GenericOp>(members.front().getOperation()))
       applyIRTransform(builder, lop, chosenGroup, newAxisMap, numPost);

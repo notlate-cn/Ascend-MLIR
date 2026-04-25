@@ -26,3 +26,5 @@ func.func @kernel_group0(
 // d2 BCast → prune to [d0,d1] → collapse d0*d1 = 32
 // CHECK: tensor.collapse_shape
 // CHECK-SAME: into tensor<32x16xf16>
+// CHECK: tensor.expand_shape
+// CHECK-SAME: into tensor<4x8x16xf16>
