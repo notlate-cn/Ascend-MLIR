@@ -356,4 +356,69 @@ def AnnotateMixMatmulSemanticsPass : Pass<"annotate-mix-matmul-semantics", "mlir
   ];
 }
 
+//===----------------------------------------------------------------------===//
+// VectorPlan Passes
+//===----------------------------------------------------------------------===//
+
+def VectorPlanGroupAnalysis : Pass<"vector-plan-group-analysis", "mlir::func::FuncOp"> {
+  let summary = "Analyze linalg ops and annotate fusion groups";
+  let constructor = "mlir::afir::createVectorPlanGroupAnalysisPass()";
+  let options = [
+    Option<"enableReductionSplit",     "enable-reduction-split",      "bool",    "false", "">,
+    Option<"maxReduceEpilogueOps",     "max-reduce-epilogue-ops",     "int32_t", "3",     "">,
+    Option<"maxHorizontalExtraInputs", "max-horizontal-extra-inputs", "int32_t", "4",     "">,
+  ];
+  let dependentDialects = ["mlir::linalg::LinalgDialect", "mlir::func::FuncDialect"];
+}
+
+def VectorPlanGroupOutline : Pass<"vector-plan-group-outline", "mlir::ModuleOp"> {
+  let summary = "Outline annotated fusion groups into kernel funcs";
+  let constructor = "mlir::afir::createVectorPlanGroupOutlinePass()";
+  let options = [
+    Option<"kernelFuncPrefix", "kernel-func-prefix", "std::string", "\"kernel_group\"", "">,
+    Option<"outputDir",        "output-dir",         "std::string", "\"\"",             "">,
+  ];
+  let dependentDialects = ["mlir::func::FuncDialect", "mlir::linalg::LinalgDialect"];
+}
+
+def VectorPlanTileFuse : Pass<"vector-plan-tile-fuse", "mlir::func::FuncOp"> {
+  let summary = "Tile and fuse kernel group func";
+  let constructor = "mlir::afir::createVectorPlanTileFusePass()";
+  let options = [
+    Option<"enableCollapse",       "enable-collapse",        "bool",    "true",  "">,
+    Option<"enableReductionSplit", "enable-reduction-split", "bool",    "false", "">,
+    Option<"hwMatmulMAlign",       "hw-matmul-m-align",      "int64_t", "16",    "">,
+    Option<"hwMatmulNAlign",       "hw-matmul-n-align",      "int64_t", "16",    "">,
+    Option<"hwMatmulKAlign",       "hw-matmul-k-align",      "int64_t", "16",    "">,
+    Option<"l0aCapacityBytes",     "l0a-capacity-bytes",     "int64_t", "65536", "">,
+  ];
+  let dependentDialects = ["mlir::linalg::LinalgDialect", "mlir::scf::SCFDialect", "mlir::tensor::TensorDialect", "mlir::func::FuncDialect"];
+}
+
+//===----------------------------------------------------------------------===//
+// AclnnFinalizeDecl
+//===----------------------------------------------------------------------===//
+
+def AclnnFinalizeDecl : Pass<"aclnn-finalize-decl", "mlir::ModuleOp"> {
+  let summary = "Finalize aclnn func.func private declarations: replace aclnn.kind with aclnn.op + aclnn.layout";
+  let description = [{
+    Runs after vector-plan-group-outline. Scans func.func private declarations
+    that carry {aclnn.kind = "..."} and replaces that marker with the final
+    aclnn metadata attributes consumed by AclnnBackend:
+
+      aclnn.kind = "flash_attention"
+        ->  aclnn.op = "FlashAttentionScore", aclnn.layout = "BNSD"
+
+    aclnn.kind is removed after finalization. Unknown kind values trigger
+    signalPassFailure (fail-fast).
+
+    Registered kinds (Phase 1):
+      "flash_attention" -> FlashAttentionScore, BNSD
+  }];
+  let constructor = "mlir::afir::createAclnnFinalizeDeclPass()";
+  let dependentDialects = [
+    "mlir::func::FuncDialect"
+  ];
+}
+
 #endif // AFIR_CONVERSION_PASSES

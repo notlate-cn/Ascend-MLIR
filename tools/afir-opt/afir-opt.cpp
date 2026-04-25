@@ -47,5 +47,8 @@ int main(int argc, char **argv) {
   afir::registerAFIRPasses();
   afir::registerAFIRConversionPasses();
 
+  // Register VectorPlan compound pipeline (elewise-fusion → group-analysis → group-outline)
+  afir::registerVectorPlanPipeline();
+
   return asMainReturnCode(MlirOptMain(argc, argv, "AFIR optimizer driver\n", registry));
 }

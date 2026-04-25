@@ -140,3 +140,5 @@ else()
     ${CMAKE_DL_LIBS}
   )
 endif()
+
+add_subdirectory(AclnnBackend)
