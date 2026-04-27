@@ -122,9 +122,8 @@ static InputClass classifyInput(AffineMap map, ArrayRef<int> G) {
       if (gSet.count((int)d.getPosition()))
         presentInG.insert((int)d.getPosition());
   if (presentInG.empty()) return InputClass::A;
-  // After pruning, all G-axes should be present (no partial); assert that.
-  assert((int)presentInG.size() == (int)G.size() &&
-         "B1 must be pruned before classifyInput");
+  if ((int)presentInG.size() != (int)G.size())
+    return InputClass::B2;  // partial coverage (B1) → treat as B2 for safety
   // Check if G-axes appear in order in the map results.
   SmallVector<int> positions;
   for (int g : G)

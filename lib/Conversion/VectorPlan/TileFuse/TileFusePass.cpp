@@ -19,9 +19,6 @@ using namespace mlir::vector_plan;
 
 namespace mlir::afir {
 
-// Forward declaration from BroadcastAbsorb.cpp
-void populateBroadcastAbsorbPatterns(RewritePatternSet &patterns);
-
 namespace {
 struct VectorPlanTileFusePass
     : public ::impl::VectorPlanTileFuseBase<VectorPlanTileFusePass> {

@@ -28,7 +28,7 @@ struct GroupInfo {
 
 struct CollapsedGroupInfo : GroupInfo {
   llvm::SmallVector<AxisInfo> collapsedAxes;
-  llvm::SmallVector<int>      axisMap;   // original axis idx -> collapsed axis idx; -1 if not collapsed
+  llvm::SmallVector<int>      axisMap;   // original axis idx -> collapsed axis idx; -1 if absorbed
   bool                        hasB2      = false;
   bool                        noCollapse = false;
   // Post-collapse broadcast axis indices (ascending). Filled by Phase 1 Collapse.
