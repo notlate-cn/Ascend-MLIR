@@ -17,8 +17,24 @@ Value castToIndex(OpBuilder &b, Location loc, Value v) {
 
 Value getAxisExtentValue(OpBuilder &b, Location loc,
                           const CollapsedGroupInfo &info, int axisIdx) {
-  // TODO: implemented in Task 2
-  return b.create<arith::ConstantIndexOp>(loc, 0);
+  int64_t staticSize = info.collapsedAxes[axisIdx].staticSize;
+  if (staticSize != ShapedType::kDynamic)
+    return b.create<arith::ConstantIndexOp>(loc, staticSize);
+
+  // Dynamic: find first operand that has this axis in its indexing map.
+  for (linalg::LinalgOp op : info.topoMembers) {
+    auto maps     = op.getIndexingMapsArray();
+    auto operands = op->getOperands();
+    for (auto [operand, map] : llvm::zip(operands, maps)) {
+      if (!isa<RankedTensorType>(operand.getType())) continue;
+      for (auto [dimPos, expr] : llvm::enumerate(map.getResults())) {
+        auto d = dyn_cast<AffineDimExpr>(expr);
+        if (d && (int)d.getPosition() == axisIdx)
+          return b.create<tensor::DimOp>(loc, operand, (int64_t)dimPos);
+      }
+    }
+  }
+  llvm_unreachable("axis not found in any operand map");
 }
 
 } // namespace mlir::afir

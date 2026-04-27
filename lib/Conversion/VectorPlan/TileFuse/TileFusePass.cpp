@@ -1,4 +1,5 @@
 #include "Collapse.h"
+#include "TilePlanGen.h"
 #include "Conversion/VectorPlan/GroupInfo.h"
 #include "Conversion/VectorPlan/TilePlan.h"
 #include "Conversion/VectorPlan/VectorPlanPasses.h"
@@ -35,9 +36,14 @@ struct VectorPlanTileFusePass
 
     // Phase 1: Collapse — transforms IR, returns CollapsedGroupInfo for Phase 2/3.
     auto collapsedInfo = mlir::afir::collapseGroup(builder, func);
-    (void)collapsedInfo; // consumed by Phase 2/3 — TODO
+    if (collapsedInfo.topoMembers.empty()) return;
 
-    // Phase 2: TilePlanGen   — TODO
+    // Phase 2: TilePlanGen.
+    builder.setInsertionPointToStart(&func.getBody().front());
+    auto plan = genVectorTilePlan(func, collapsedInfo, builder, func.getLoc(),
+                                  enableReductionSplit, maxFullLoopIters);
+    (void)plan; // consumed by Phase 3 — TODO
+
     // Phase 3: LoopNestBuilder + GroupEmitter — TODO
   }
 };
