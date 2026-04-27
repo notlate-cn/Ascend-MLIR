@@ -1,6 +1,7 @@
 #pragma once
 #include "Conversion/VectorPlan/GroupInfo.h"
 #include "mlir/IR/OpDefinition.h"
+#include <string>
 
 namespace mlir::vector_plan {
 
@@ -14,8 +15,8 @@ enum class TileFieldKind : uint8_t {
 };
 
 struct TileParam {
-  llvm::StringRef name;
-  Value           ssa;
+  std::string  name;
+  Value        ssa;
   OpFoldResult    defaultValue;
   int32_t         axisIdx;
   TileLevel       level;

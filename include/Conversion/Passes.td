@@ -387,6 +387,8 @@ def VectorPlanTileFuse : Pass<"vector-plan-tile-fuse", "mlir::func::FuncOp"> {
   let options = [
     Option<"enableCollapse",       "enable-collapse",        "bool",    "true",  "">,
     Option<"enableReductionSplit", "enable-reduction-split", "bool",    "false", "">,
+    Option<"maxFullLoopIters",     "max-full-loop-iters",    "int64_t", "2048",
+           "BCast axes larger than this threshold escape to tileable Inner">,
     Option<"hwMatmulMAlign",       "hw-matmul-m-align",      "int64_t", "16",    "">,
     Option<"hwMatmulNAlign",       "hw-matmul-n-align",      "int64_t", "16",    "">,
     Option<"hwMatmulKAlign",       "hw-matmul-k-align",      "int64_t", "16",    "">,

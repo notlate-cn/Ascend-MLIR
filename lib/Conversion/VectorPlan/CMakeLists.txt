@@ -6,6 +6,11 @@ add_mlir_library(MLIRVectorPlan
   TileFuse/TileFusePass.cpp
   TileFuse/BroadcastAbsorb.cpp
   TileFuse/Collapse.cpp
+  TileFuse/TileFuseUtils.cpp
+  TileFuse/TilePlanGen.cpp
+  TileFuse/LoopNestBuilder.cpp
+  TileFuse/SliceComputer.cpp
+  TileFuse/GroupEmitter.cpp
   TileInfo/TilePlanToTileInfo.cpp
   Pipeline.cpp
 
