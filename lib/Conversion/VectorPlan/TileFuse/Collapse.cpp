@@ -387,6 +387,14 @@ CollapsedGroupInfo collapseGroup(OpBuilder &builder, func::FuncOp func) {
     if (auto lop = dyn_cast<GenericOp>(members.front().getOperation()))
       applyIRTransform(builder, lop, chosenGroup, newAxisMap, numPost);
 
+  // applyIRTransform erased the old generic and inserted a new one.
+  // Re-sync topoMembers and boundaryOut so Phase 3 sees valid ops/values.
+  if (members.size() == 1) {
+    result.topoMembers.clear();
+    func.walk([&](LinalgOp op) { result.topoMembers.push_back(op); });
+    result.boundaryOut = SmallVector<Value>(retOp.getOperands());
+  }
+
   return result;
 }
 

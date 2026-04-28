@@ -1,4 +1,7 @@
 #include "Collapse.h"
+#include "GroupEmitter.h"
+#include "LoopNestBuilder.h"
+#include "SliceComputer.h"
 #include "TilePlanGen.h"
 #include "Conversion/VectorPlan/GroupInfo.h"
 #include "Conversion/VectorPlan/TilePlan.h"
@@ -10,6 +13,7 @@
 #include "mlir/IR/PatternMatch.h"
 #include "mlir/Pass/Pass.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
+#include "llvm/ADT/DenseSet.h"
 
 #define GEN_PASS_DECL_VECTORPLANTILEFUSE
 #define GEN_PASS_DEF_VECTORPLANTILEFUSE
@@ -42,9 +46,35 @@ struct VectorPlanTileFusePass
     builder.setInsertionPointToStart(&func.getBody().front());
     auto plan = genVectorTilePlan(func, collapsedInfo, builder, func.getLoc(),
                                   enableReductionSplit, maxFullLoopIters);
-    (void)plan; // consumed by Phase 3 — TODO
 
-    // Phase 3: LoopNestBuilder + GroupEmitter — TODO
+    // Collect init tensors and original results BEFORE modification.
+    SmallVector<Value> originalResults;
+    SmallVector<Value> initTensors;
+    DenseSet<Value> seenInits;
+    for (linalg::LinalgOp op : collapsedInfo.topoMembers) {
+      for (Value r : op->getResults())
+        originalResults.push_back(r);
+      for (Value out : op.getDpsInits())
+        if (seenInits.insert(out).second)
+          initTensors.push_back(out);
+    }
+
+    // Phase 3a: LoopNestBuilder.
+    builder.setInsertionPoint(collapsedInfo.topoMembers.front());
+    auto loopNest =
+        buildLoopNest(builder, func.getLoc(), plan, initTensors);
+
+    // Phase 3b+c: GroupEmitter.
+    builder.setInsertionPointToEnd(loopNest.innermostBody);
+    auto loopResults =
+        emitGroup(builder, func.getLoc(), collapsedInfo, plan, loopNest);
+
+    // Replace original results with loop results and erase original ops.
+    for (auto [origRes, loopRes] :
+         llvm::zip(originalResults, loopResults))
+      origRes.replaceAllUsesWith(loopRes);
+    for (linalg::LinalgOp op : collapsedInfo.topoMembers)
+      op->erase();
   }
 };
 } // namespace

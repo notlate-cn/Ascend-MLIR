@@ -6,6 +6,14 @@
 // CHECK: func.func @pointwise(
 // CHECK-SAME: %[[XBLOCK:[^ ,)]*]]: index {vector_plan.default_tile_size = 128 : i64}
 // CHECK-SAME: %[[XBLOCK_SUB:[^ ,)]*]]: index {vector_plan.default_tile_size = 16 : i64}
+// CHECK: scf.for %[[OUTER:[^ ]*]] = %{{.*}} to %{{.*}} step %[[XBLOCK]]
+// CHECK: scf.for %[[INNER:[^ ]*]] = %{{.*}} to %[[XBLOCK]] step %[[XBLOCK_SUB]]
+// CHECK: arith.addi %[[OUTER]], %[[INNER]]
+// CHECK: tensor.extract_slice
+// CHECK: linalg.generic
+// CHECK: tensor.insert_slice
+// CHECK: scf.yield
+// CHECK: {ascendc.parallel}
 
 func.func @pointwise(%a: tensor<32768xf32>, %b: tensor<32768xf32>,
                      %c: tensor<32768xf32>) -> tensor<32768xf32> {
