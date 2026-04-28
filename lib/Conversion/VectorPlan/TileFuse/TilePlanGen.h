@@ -14,4 +14,11 @@ genVectorTilePlan(mlir::func::FuncOp func,
                   bool enableReductionSplit,
                   int64_t maxFullLoopIters);
 
+/// Write a `vector_plan.tiling_infos` entry for `func` to the parent ModuleOp.
+/// Must be called after genVectorTilePlan so all tiling args already exist on func.
+/// Only processes tileable params (those backed by a func BlockArgument).
+/// Full/fixed params (BCast Full, Reduction Full) are silently skipped.
+void emitTilingInfos(mlir::func::FuncOp func,
+                     const mlir::vector_plan::TilePlan &plan);
+
 } // namespace mlir::afir

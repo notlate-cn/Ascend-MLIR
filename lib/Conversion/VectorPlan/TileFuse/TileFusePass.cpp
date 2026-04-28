@@ -46,6 +46,8 @@ struct VectorPlanTileFusePass
     builder.setInsertionPointToStart(&func.getBody().front());
     auto plan = genVectorTilePlan(func, collapsedInfo, builder, func.getLoc(),
                                   enableReductionSplit, maxFullLoopIters);
+    // Emit tiling.infos module attribute (consumed by PrepareForEmit Phase B).
+    emitTilingInfos(func, plan);
 
     // Collect init tensors and original results BEFORE modification.
     SmallVector<Value> originalResults;
