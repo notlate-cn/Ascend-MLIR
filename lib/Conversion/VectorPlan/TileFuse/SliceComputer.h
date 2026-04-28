@@ -21,4 +21,13 @@ SliceParams computeSlice(mlir::AffineMap indexingMap,
                           mlir::OpBuilder &builder,
                           mlir::Location loc);
 
+/// Like computeSlice but uses outer IVs and outer (coarse) tile sizes.
+/// Used for hoisting BCast-independent extracts before BCast loops.
+SliceParams computeOuterSlice(mlir::AffineMap indexingMap,
+                               const llvm::DenseMap<int, mlir::Value> &outerLoopIVs,
+                               const mlir::vector_plan::TilePlan &plan,
+                               mlir::Value tensor,
+                               mlir::OpBuilder &builder,
+                               mlir::Location loc);
+
 } // namespace mlir::afir

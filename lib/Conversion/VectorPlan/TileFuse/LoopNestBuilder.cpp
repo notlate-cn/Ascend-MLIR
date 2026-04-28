@@ -41,6 +41,7 @@ LoopNestResult buildLoopNest(OpBuilder &builder, Location loc,
         Value ub = getAxisExtentValue(builder, loc, *plan.group, tp.axisIdx);
         auto forOp = emitFor(c0, ub, tp.ssa, /*isParallelOuter=*/true);
         outerIVs[tp.axisIdx] = forOp.getInductionVar();
+        result.outerLoopIVs[tp.axisIdx] = forOp.getInductionVar();
       }
 
   // 2. BCast Full loops (plan.full entries with AxisRole::Parallel).
@@ -50,6 +51,7 @@ LoopNestResult buildLoopNest(OpBuilder &builder, Location loc,
     auto forOp = emitFor(c0, ub, tp.ssa, /*isParallelOuter=*/false);
     result.bcastForOps.push_back(forOp);
     result.loopIVs[tp.axisIdx] = forOp.getInductionVar();
+    result.outerLoopIVs[tp.axisIdx] = forOp.getInductionVar();
   }
 
   // 3. Inner loops (TileLevel::Inner), sorted by axisIdx.
@@ -78,8 +80,10 @@ LoopNestResult buildLoopNest(OpBuilder &builder, Location loc,
       Value composed = builder.create<arith::AddIOp>(
           loc, outerIVs[tp->axisIdx], forOp.getInductionVar());
       result.loopIVs[tp->axisIdx] = composed;
+      // outerLoopIVs[axisIdx] already set to the outer IV above.
     } else {
       result.loopIVs[tp->axisIdx] = forOp.getInductionVar();
+      result.outerLoopIVs[tp->axisIdx] = forOp.getInductionVar();
     }
   }
 
