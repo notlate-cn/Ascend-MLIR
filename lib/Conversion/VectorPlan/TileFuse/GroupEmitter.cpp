@@ -1,5 +1,7 @@
 #include "GroupEmitter.h"
 #include "SliceComputer.h"
+#include "TileFuseUtils.h"
+#include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
@@ -38,10 +40,176 @@ static bool dominatesBlock(Value val, Block *targetBlock) {
 }
 
 
+static const TileParam *findReductionInner(const TilePlan &plan) {
+  for (auto &group : plan.tileable)
+    for (const auto &tp : group)
+      if (tp.level == TileLevel::Inner && tp.role == AxisRole::Reduction)
+        return &tp;
+  return nullptr;
+}
+
+static SmallVector<Value>
+emitGroupWithReductionSplit(OpBuilder &builder, Location loc,
+                             const CollapsedGroupInfo &info,
+                             const TilePlan &plan,
+                             LoopNestResult loopNest,
+                             const TileParam *rblockParam) {
+  assert(info.topoMembers.size() == 1 && "reduction split: single-op only");
+  LinalgOp op = info.topoMembers[0];
+
+  // The LoopNestBuilder placed RBLOCK as the innermost Inner loop. Detach it:
+  // its parent body becomes the new innermost (parallel) body.
+  assert(!loopNest.allForOps.empty());
+  scf::ForOp rblockFor = loopNest.allForOps.back();
+  // Defensive: the innermost for must be the reduction axis.
+  Value rblockIV = rblockFor.getInductionVar();
+  // Pop it.
+  loopNest.allForOps.pop_back();
+  // Parent body becomes the new innermost.
+  Block *parallelBody = nullptr;
+  SmallVector<Value> parallelIterArgs;
+  if (!loopNest.allForOps.empty()) {
+    scf::ForOp parent = loopNest.allForOps.back();
+    parallelBody = parent.getBody();
+    parallelIterArgs =
+        SmallVector<Value>(parent.getRegionIterArgs());
+  } else {
+    parallelBody = rblockFor->getBlock();
+    parallelIterArgs = SmallVector<Value>(loopNest.iterArgs);
+  }
+  // The rblockFor's iter_args used the parent's iter_args directly (since it
+  // was the innermost and the chain just forwarded). Take the iter args we
+  // need to write into.
+  // Move insertion point out of the doomed RBLOCK body before erasing.
+  builder.setInsertionPointToEnd(parallelBody);
+  // Erase the RBLOCK loop (its body is empty: LoopNestBuilder removed yield).
+  rblockFor->erase();
+
+  loopNest.innermostBody = parallelBody;
+  loopNest.iterArgs = parallelIterArgs;
+
+  // parallelIVs = loopNest.loopIVs minus the reduction axis IV (which was
+  // composed using rblockIV). We strip it and rebuild within RBLOCK below.
+  DenseMap<int, Value> parallelIVs;
+  for (auto &kv : loopNest.loopIVs)
+    if (kv.first != rblockParam->axisIdx)
+      parallelIVs[kv.first] = kv.second;
+
+  // Collect outs and map to iter args.
+  SmallVector<Value> allOuts;
+  DenseSet<Value> seenOuts;
+  for (Value out : op.getDpsInits())
+    if (seenOuts.insert(out).second)
+      allOuts.push_back(out);
+
+  builder.setInsertionPointToEnd(parallelBody);
+  Value c0 = builder.create<arith::ConstantIndexOp>(loc, 0);
+
+  auto maps     = op.getIndexingMapsArray();
+  int numInputs = op.getNumDpsInputs();
+
+  SmallVector<Value> yieldVals;
+  for (auto [origOut, iterArg] : llvm::zip(allOuts, parallelIterArgs)) {
+    // Find outMap for this init.
+    AffineMap outMap;
+    auto inits = op.getDpsInits();
+    for (auto [i, init] : llvm::enumerate(inits))
+      if (init == origOut) { outMap = maps[numInputs + (int)i]; break; }
+
+    // Slice params for output (only parallel IVs).
+    auto outSp = computeSlice(outMap, parallelIVs, plan, iterArg,
+                               builder, loc);
+
+    auto iterArgType = cast<RankedTensorType>(iterArg.getType());
+    Type elemTy = iterArgType.getElementType();
+
+    // Init accumulator: tensor.empty(sizes) + linalg.fill(0).
+    SmallVector<Value> dynSizes;
+    SmallVector<int64_t> staticShape;
+    for (OpFoldResult ofr : outSp.sizes) {
+      if (auto v = dyn_cast<Value>(ofr)) {
+        dynSizes.push_back(v);
+        staticShape.push_back(ShapedType::kDynamic);
+      } else {
+        auto attr = cast<IntegerAttr>(cast<Attribute>(ofr));
+        staticShape.push_back(attr.getInt());
+      }
+    }
+    Value accEmpty = builder.create<tensor::EmptyOp>(
+        loc, staticShape, elemTy, dynSizes);
+    Value zeroAttr = builder.create<arith::ConstantOp>(
+        loc, builder.getZeroAttr(elemTy));
+    Value accZero = builder.create<linalg::FillOp>(
+                        loc, ValueRange{zeroAttr}, ValueRange{accEmpty})
+                        .getResult(0);
+
+    // RBLOCK scf.for.
+    Value reductionExtent =
+        getAxisExtentValue(builder, loc, info, rblockParam->axisIdx);
+    auto rFor = builder.create<scf::ForOp>(
+        loc, c0, reductionExtent, rblockParam->ssa,
+        SmallVector<Value>{accZero});
+    // ForOp with iter_args does NOT auto-insert a yield (MLIR leaves it to the
+    // caller). Just point the builder at the end of the empty body.
+    builder.setInsertionPointToEnd(rFor.getBody());
+
+    // IVs inside RBLOCK.
+    DenseMap<int, Value> allIVs(parallelIVs);
+    allIVs[rblockParam->axisIdx] = rFor.getInductionVar();
+    (void)rblockIV;
+
+    SmallVector<Value> newOperands;
+    for (int idx = 0; idx < numInputs; ++idx) {
+      Value operand = op->getOperand(idx);
+      AffineMap m = maps[idx];
+      auto sp = computeSlice(m, allIVs, plan, operand, builder, loc);
+      auto slicedType = tensor::ExtractSliceOp::inferResultType(
+          cast<RankedTensorType>(operand.getType()),
+          sp.offsets, sp.sizes, sp.strides);
+      Value sliced = builder.create<tensor::ExtractSliceOp>(
+          loc, slicedType, operand, sp.offsets, sp.sizes, sp.strides);
+      newOperands.push_back(sliced);
+    }
+    // DPS init = RBLOCK iter arg accumulator.
+    Value accIter = rFor.getRegionIterArgs().front();
+    newOperands.push_back(accIter);
+
+    Operation *cloned = builder.clone(*op.getOperation());
+    for (auto [i, val] : llvm::enumerate(newOperands))
+      cloned->setOperand((unsigned)i, val);
+    cloned->getResult(0).setType(accIter.getType());
+
+    builder.create<scf::YieldOp>(loc, cloned->getResult(0));
+
+    // After RBLOCK: insert into iter arg.
+    builder.setInsertionPointAfter(rFor);
+    Value inserted = builder.create<tensor::InsertSliceOp>(
+        loc, rFor.getResult(0), iterArg,
+        outSp.offsets, outSp.sizes, outSp.strides);
+    yieldVals.push_back(inserted);
+  }
+
+  builder.create<scf::YieldOp>(loc, yieldVals);
+
+  // Propagate yields up.
+  for (int i = (int)loopNest.allForOps.size() - 2; i >= 0; --i) {
+    scf::ForOp inner = loopNest.allForOps[i + 1];
+    scf::ForOp outer = loopNest.allForOps[i];
+    builder.setInsertionPointToEnd(outer.getBody());
+    builder.create<scf::YieldOp>(loc, inner.getResults());
+  }
+
+  if (loopNest.allForOps.empty()) return yieldVals;
+  return SmallVector<Value>(loopNest.allForOps.front().getResults());
+}
+
 SmallVector<Value> emitGroup(OpBuilder &builder, Location loc,
                               const CollapsedGroupInfo &info,
                               const TilePlan &plan,
                               const LoopNestResult &loopNest) {
+  if (const TileParam *rblockParam = findReductionInner(plan))
+    return emitGroupWithReductionSplit(builder, loc, info, plan, loopNest,
+                                        rblockParam);
   // --- Collect boundary outs and map to iter args ---
   SmallVector<Value> allOuts;
   DenseSet<Value> seenOuts;
