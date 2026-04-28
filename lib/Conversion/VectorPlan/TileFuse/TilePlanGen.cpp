@@ -119,7 +119,7 @@ void emitTilingInfos(func::FuncOp func, const TilePlan &plan) {
   Type i64Ty = IntegerType::get(ctx, 64);
 
   SmallVector<Attribute> fields;
-  int abiIndex = 0;
+  int32_t abiIndex = 0;
 
   for (auto &group : plan.tileable) {
     for (const auto &tp : group) {
@@ -131,9 +131,10 @@ void emitTilingInfos(func::FuncOp func, const TilePlan &plan) {
               ba.getArgNumber(), "vector_plan.default_tile_size"))
         defaultVal = attr.getInt();
 
+      assert(ba.getArgNumber() <= (unsigned)INT32_MAX && "arg_index overflow");
       NamedAttrList fieldAttrs;
       fieldAttrs.append("abi_index",
-                        IntegerAttr::get(i32Ty, (int32_t)abiIndex));
+                        IntegerAttr::get(i32Ty, abiIndex));
       fieldAttrs.append("arg_index",
                         IntegerAttr::get(i32Ty, (int32_t)ba.getArgNumber()));
       fieldAttrs.append("default_value",
