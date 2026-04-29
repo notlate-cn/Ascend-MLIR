@@ -112,6 +112,17 @@ static LogicalResult parallelizeOneLoop(scf::ForOp outerFor,
   // Replace the outer loop IV with iVal before moving ops.
   outerFor.getInductionVar().replaceAllUsesWith(iVal);
 
+  // Handle iter_args: in the parallel model each block operates independently
+  // on the original init buffer — there is no cross-block accumulation.
+  // Replace iter-arg uses inside the body with the corresponding init values,
+  // and replace the loop results (used outside) with the same init values.
+  for (auto [iterArg, initVal] :
+       llvm::zip(outerFor.getRegionIterArgs(), outerFor.getInitArgs()))
+    iterArg.replaceAllUsesWith(initVal);
+  for (auto [result, initVal] :
+       llvm::zip(outerFor.getResults(), outerFor.getInitArgs()))
+    result.replaceAllUsesWith(initVal);
+
   // Create scf.if to guard the body.
   auto ifOp = builder.create<scf::IfOp>(loc, inBound, /*withElseRegion=*/false);
   Block *thenBlock = ifOp.thenBlock();
