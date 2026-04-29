@@ -1,0 +1,20 @@
+{
+  "backend": "npu",
+  "artifact_root": "@ARTIFACT_ROOT@",
+  "tasks": [
+    {
+      "task_id": "main",
+      "inputs": [
+        { "name": "lhs", "path": "@INPUT0@" },
+        { "name": "rhs", "path": "@INPUT1@" },
+        { "name": "bias", "path": "@INPUT2@" }
+      ],
+      "outputs": [
+        { "name": "out", "path": "@OUTPUT@" }
+      ],
+      "expected_outputs": [
+        { "name": "out", "path": "@EXPECTED@" }
+      ]
+    }
+  ]
+}

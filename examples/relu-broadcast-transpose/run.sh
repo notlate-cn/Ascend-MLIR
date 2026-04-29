@@ -39,8 +39,7 @@ DIR="$(cd "$(dirname "$0")" && pwd)"
 AFIR_OPT="${AFIR_OPT:-afir-opt}"
 AFIR_TRANSLATE="${AFIR_TRANSLATE:-afir-translate}"
 PYTHON="${PYTHON:-python3}"
-COMPILER="${COMPILER:-compiler}"
-VALIDATOR="${VALIDATOR:-validator}"
+RUNTIME_SESSION="${RUNTIME_SESSION:-runtime-session}"
 
 # 解析参数
 VERBOSE=false
@@ -159,41 +158,60 @@ log "  ✓ 生成成功：input_data0.npy, input_data1.npy, output_expected.npy"
 
 # ── STAGE 9: Compile AscendC kernel ────────────────────────
 echo ""
-echo "==================== [STAGE 9] Compile：bisheng C++ → .bin ===================="
+echo "==================== [STAGE 9] Compile：runtime-session ===================="
 BUILD_DIR="$DIR/build_e2e"
 rm -fr "$BUILD_DIR"
 mkdir -p "$BUILD_DIR"
-"$COMPILER" \
+ARTIFACT_ROOT="$BUILD_DIR/artifact"
+RUN_MANIFEST="$BUILD_DIR/run_manifest.json"
+ACTUAL_OUTPUT="$BUILD_DIR/output.npy"
+"$RUNTIME_SESSION" \
   --kernel "$DIR/step8_kernel.cpp" \
-  --output "$BUILD_DIR" \
+  --kernel-kind vec \
+  --output "$ARTIFACT_ROOT" \
   --name relu_transpose_broadcast_add \
-  --num-inputs 2 2>&1
-log "  ✓ Compile 成功，输出: $BUILD_DIR/relu_transpose_broadcast_add.bin"
+  2>&1
+log "  ✓ Compile 成功，输出: $ARTIFACT_ROOT"
 
 # ── STAGE 10: Run and verify ────────────────────────────────
 echo ""
 echo "==================== [STAGE 10] Run + Verify ===================="
 log "  使用参数：TB_M=64, TB_N=64, M=640, N=500, block-dim=8"
-BIN="$BUILD_DIR/relu_transpose_broadcast_add.bin"
+VALIDATION_LOG="$BUILD_DIR/runtime_session.log"
+cat > "$RUN_MANIFEST" <<EOF
+{
+  "task_id": "main",
+  "backend": "sim",
+  "artifact_root": "${ARTIFACT_ROOT}",
+  "inputs": [
+    { "name": "data0", "path": "${DIR}/input_data0.npy" },
+    { "name": "data1", "path": "${DIR}/input_data1.npy" }
+  ],
+  "outputs": [
+    { "name": "out", "path": "${ACTUAL_OUTPUT}" }
+  ],
+  "expected_outputs": [
+    { "name": "out", "path": "${DIR}/output_expected.npy" }
+  ],
+  "tiling": {
+    "schema": "${DIR}/tiling_space.json",
+    "params": "TB_M=64,TB_N=64,dim_arg0_0=640,dim_arg1_0=500,dim_arg0_1=1,dim_arg1_1=640"
+  },
+  "block_dim": 8,
+  "workspace_size": 16777216,
+  "profiling": true,
+  "atol": 1e-2,
+  "rtol": 1e-2
+}
+EOF
 
-if [ -f "$BIN" ]; then
-  "$VALIDATOR" \
-    --bin "$BIN" \
-    --name relu_transpose_broadcast_add \
-    --inputs "$DIR/input_data0.npy,$DIR/input_data1.npy" \
-    --expected "$DIR/output_expected.npy" \
-    --tiling-schema "$DIR/tiling_space.json" \
-    --tiling-params 'TB_M=64,TB_N=64,dim_arg0_0=640,dim_arg1_0=500,dim_arg0_1=1,dim_arg1_1=640' \
-    --block-dim 8 \
-    --atol 1e-2 \
-    --rtol 1e-2 \
-    --dump-actual "$BUILD_DIR/actual.txt" \
-    --dump-expected "$BUILD_DIR/expected.txt" \
-    --precision 4 \
-    2>&1 | grep -v '^\[info\]\|^\[PEM_AIC_LOG\]\|^\[INFO\]\|^\[WARNING\]' || true
-else
-  echo "  ⚠ bin not found — skipping run"
-fi
+"$RUNTIME_SESSION" \
+  --run-manifest "$RUN_MANIFEST" \
+  --run >"$VALIDATION_LOG" 2>&1
+grep -v '^\[info\]\|^\[PEM_AIC_LOG\]\|^\[INFO\]\|^\[WARNING\]' "$VALIDATION_LOG" || true
+grep -q '^session.backend=sim$' "$VALIDATION_LOG"
+grep -q '^session.result=success$' "$VALIDATION_LOG"
+grep -q '^session.validation=pass$' "$VALIDATION_LOG"
 
 echo ""
 echo "========================================================"
@@ -208,7 +226,8 @@ echo "   step6_parallelize.mlir      → 多核 AiCore 调度（get_block_idx）
 echo "   step7_kernel.mlir           → 完整 AscendC kernel IR"
 echo "   step7_cann.mlir             → CANN 标准签名 IR"
 echo "   step8_kernel.cpp            → AscendC C++ kernel 源码"
-echo "   build_e2e/relu_transpose_broadcast_add.bin → 编译后二进制"
+echo "   build_e2e/artifact               → runtime-session 编译产物"
+echo "   build_e2e/output.npy            → 仿真输出"
 echo "========================================================"
 
 rm -fr *.dump

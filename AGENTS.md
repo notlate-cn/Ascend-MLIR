@@ -1,0 +1,170 @@
+# AGENTS
+
+## Goal
+
+- Keep `lib/Runtime` as the single runtime center for:
+  - AscendC kernel compilation
+  - CPU simulation execution with profiling
+  - NPU execution path wiring
+  - task-graph-based execution and future multi-task scheduling
+- Keep runtime entry points aligned with the runtime-native stack.
+- Keep xvm verification green while continuing runtime-native consolidation.
+- Close the original runtime task by reducing remaining work to:
+  - NPU real-device validation
+  - post-baseline runtime-native enhancement work
+
+## Progress
+
+- Runtime architecture has been reorganized into:
+  - `Artifact/`
+  - `Execution/`
+  - `Profile/`
+  - `Mix/`
+  - `Support/`
+  - `Legacy/`
+- `runtime-session` is now the single general CLI entry point.
+- `GlobalScheduler` skeleton exists.
+- `ExecutionSession` is now a session facade over global scheduling.
+- first-version `ResourceScheduler` exists.
+- first-version `NpuBackend` multi-task scheduler contract exists.
+- The previous `runtime-session` local request assembly logic has been moved into:
+  - [include/Runtime/Artifact/RuntimeSessionRequestBuilder.h](/Volumes/GM9/code/Codex-Ascend-MLIR/include/Runtime/Artifact/RuntimeSessionRequestBuilder.h)
+  - [lib/Runtime/Artifact/RuntimeSessionRequestBuilder.cpp](/Volumes/GM9/code/Codex-Ascend-MLIR/lib/Runtime/Artifact/RuntimeSessionRequestBuilder.cpp)
+- `runtime_session_main.cpp` now keeps only:
+  - CLI parsing
+  - summary printing
+  - execution orchestration
+- Focused runtime verification currently passes on xvm through:
+  - [test/tools/runtime/run_runtime.sh](/Volumes/GM9/code/Codex-Ascend-MLIR/test/tools/runtime/run_runtime.sh)
+- xvm default runtime verification now uses a shared shell helper:
+  - [test/tools/runtime/runtime_verify_env.sh](/Volumes/GM9/code/Codex-Ascend-MLIR/test/tools/runtime/runtime_verify_env.sh)
+  - shared Ascend/LLVM env setup
+  - shared runtime test library path assembly
+  - shared stale-build detection and configure retry
+  - per-slice build helpers for runtime core, example toolchain, and `mix-compiler`
+- The repeated mix simulation baseline is part of focused verification and currently passes.
+- Simulation success paths now explicitly handle process-exit cleanup:
+  - `runtime-session` releases `ExecutionSession` workdir cleanup responsibility before `_Exit(0)` on successful sim runs
+- CLI regression coverage has been added for:
+  - conflicting `--artifact-root` / `--kernel`
+  - invalid `--kernel-kind` with missing kernel input
+- Profiling/session-summary retention and mix-sim stability fixes are already landed and covered by focused runtime verification.
+- A follow-up spec for `autotuner + legacy` audit is written:
+  - [docs/superpowers/specs/2026-04-13-autotuner-legacy-cleanup-design.md](/Volumes/GM9/code/Codex-Ascend-MLIR/docs/superpowers/specs/2026-04-13-autotuner-legacy-cleanup-design.md)
+- Historical legacy-cleanup audit artifacts now exist:
+  - [2026-04-13-runtime-legacy-dependency-audit.md](/Volumes/GM9/code/Codex-Ascend-MLIR/docs/superpowers/audits/2026-04-13-runtime-legacy-dependency-audit.md)
+  - [2026-04-13-autotuner-runtime-normalization-audit.md](/Volumes/GM9/code/Codex-Ascend-MLIR/docs/superpowers/audits/2026-04-13-autotuner-runtime-normalization-audit.md)
+  - [2026-04-13-runtime-legacy-cleanup-candidates.md](/Volumes/GM9/code/Codex-Ascend-MLIR/docs/superpowers/audits/2026-04-13-runtime-legacy-cleanup-candidates.md)
+- `autotuner --artifact-root` now uses the canonical runtime artifact loader instead of a local manifest parser.
+- `ArtifactCompiler` no longer depends on `Legacy/Compiler` for `vec` / `cube` builds.
+- A runtime-native vec/cube compile path now exists in:
+  - [include/Runtime/Artifact/VecCubeArtifactBackend.h](/Volumes/GM9/code/Codex-Ascend-MLIR/include/Runtime/Artifact/VecCubeArtifactBackend.h)
+  - [lib/Runtime/Artifact/VecCubeArtifactBackend.cpp](/Volumes/GM9/code/Codex-Ascend-MLIR/lib/Runtime/Artifact/VecCubeArtifactBackend.cpp)
+- `ArtifactCompiler` now dispatches:
+  - `mix` -> `MixDirectBackend`
+  - `vec/cube` -> `VecCubeArtifactBackend`
+- A runtime-native execution runner seam now exists:
+  - [include/Runtime/Execution/ExecutionRunner.h](/Volumes/GM9/code/Codex-Ascend-MLIR/include/Runtime/Execution/ExecutionRunner.h)
+  - [include/Runtime/Execution/DefaultExecutionRunner.h](/Volumes/GM9/code/Codex-Ascend-MLIR/include/Runtime/Execution/DefaultExecutionRunner.h)
+  - [lib/Runtime/Execution/DefaultExecutionRunner.cpp](/Volumes/GM9/code/Codex-Ascend-MLIR/lib/Runtime/Execution/DefaultExecutionRunner.cpp)
+- A runtime-native execution substrate now exists in:
+  - [include/Runtime/Execution/NativeExecutionRunner.h](/Volumes/GM9/code/Codex-Ascend-MLIR/include/Runtime/Execution/NativeExecutionRunner.h)
+  - [lib/Runtime/Execution/NativeExecutionRunner.cpp](/Volumes/GM9/code/Codex-Ascend-MLIR/lib/Runtime/Execution/NativeExecutionRunner.cpp)
+- `SimBackend` and `NpuBackend` no longer directly include `Runtime/Executor.h`.
+- `DefaultExecutionRunner` now delegates to `NativeExecutionRunner` instead of constructing `Legacy/Executor`.
+- `Legacy/Executor` and its public shim have been deleted after the runtime-native execution runner cutover.
+- The default runtime execution path is now fully runtime-native through `NativeExecutionRunner`.
+- `Legacy/SimValidator` has been removed after the runtime-native output comparator cutover left it with no remaining in-repo consumers.
+- `Legacy/HostRunnerGen`, its public shim, and its dedicated tests have now been deleted.
+- `Legacy/CompatRuntime` and its public shim have now been deleted; C API request assembly is now direct and runtime-native.
+- `Legacy/Compiler` and its public shim have now been deleted; the final retained legacy mix compile test has been removed.
+- The `include/Runtime/Legacy` and `lib/Runtime/Legacy` directories no longer contain active implementation units.
+- A shared runtime-native frontend core now exists in:
+  - [include/Runtime/Execution/RuntimeFrontendCore.h](/Volumes/GM9/code/Codex-Ascend-MLIR/include/Runtime/Execution/RuntimeFrontendCore.h)
+  - [lib/Runtime/Execution/RuntimeFrontendCore.cpp](/Volumes/GM9/code/Codex-Ascend-MLIR/lib/Runtime/Execution/RuntimeFrontendCore.cpp)
+- `runtime-session` and the C API now both consume shared frontend-core helpers for:
+  - compile request assembly
+  - single-task run preparation
+  - normalized run execution and summary interpretation
+- Execution/profile contract cleanup is now closed:
+  - retained profile handling is normalized through the frontend core
+  - `runtime-session` prints profile artifact paths and retained session summaries from the shared result contract
+  - the C API now executes through the same normalized frontend run path instead of interpreting raw execution outcomes separately
+- Against the original runtime task, the current completion state is:
+  - AscendC kernel compilation: done
+  - CPU simulation execution with profiling: done
+  - NPU execution path wiring: done in code, pending real-device validation
+- Fresh xvm verification after the frontend-core cutover includes:
+  - runtime-only rebuild of `AscendCRuntime`, `AFIRRuntimeCAPI`, and `runtime-session`: pass
+  - `test_taskgraph_runtime`: `478 passed, 0 failed`
+  - `test_capi_runtime`: `15 passed, 0 failed`
+  - `test_runtime`: `79 passed, 0 failed`
+  - `run_simbackend_smoke.sh`: pass
+- The six example pipelines remain the practical CPU-simulation acceptance baseline.
+- The main remaining gap for the original task is not architecture anymore; it is lack of NPU hardware validation.
+- Fresh xvm verification after the vec/cube backend cutover passes:
+  - `test_taskgraph_runtime`: `523 passed, 0 failed`
+  - `test_capi_runtime`: `15 passed, 0 failed`
+  - `test_runtime`: `104 passed, 0 failed`
+  - focused vec/mix smoke: pass
+  - repeated mix simulation baseline: pass
+- Fresh xvm autotuner vec smoke also passes after the compile-path cutover, with non-zero `score` / `cycle_count`.
+- Fresh xvm autotuner vec smoke also passes after the execution-runner adapter cutover, with non-zero `score` / `cycle_count`.
+- Fresh xvm verification after the native execution-runner cutover currently includes:
+  - runtime-only rebuild of `AscendCRuntime`, `runtime-session`, and `autotuner`: pass
+  - autotuner vec smoke: pass, non-zero `score` / `cycle_count`
+  - repeated mix simulation baseline: pass
+- Fresh xvm verification after deleting `Legacy/Executor` includes:
+  - `test_taskgraph_runtime`: `551 passed, 0 failed`
+  - `test_capi_runtime`: `15 passed, 0 failed`
+  - `test_runtime`: `108 passed, 0 failed`
+  - focused vec/mix smoke: pass
+  - repeated mix simulation baseline: pass
+- Fresh xvm runtime-focused verification after deleting `Legacy/Compiler` includes:
+  - `test_taskgraph_runtime`: `453 passed, 0 failed`
+  - `test_capi_runtime`: `15 passed, 0 failed`
+  - `test_runtime`: `86 passed, 0 failed`
+- Fresh xvm verification after execution/profile contract cleanup includes:
+  - runtime-only rebuild of `AscendCRuntime`, `AFIRRuntimeCAPI`, and `runtime-session`: pass
+  - `test_taskgraph_runtime`: `493 passed, 0 failed`
+  - `test_capi_runtime`: `15 passed, 0 failed`
+  - `test_runtime`: `79 passed, 0 failed`
+  - `run_simbackend_smoke.sh`: pass
+- Fresh xvm verification after default-verification cleanup includes:
+  - `bash test/tools/runtime/run_runtime.sh`: pass (`RC=0`)
+  - `bash test/tools/runtime/run_simbackend_smoke.sh`: pass
+  - `run_runtime.sh` now reuses the shared helper and no longer rebuilds `afir-opt` / `afir-translate` / `mix-compiler` in the initial runtime-core build step
+  - repeated mix simulation baseline remains part of the default runtime verification path and passes
+- Fresh xvm full CPU-simulation regression now passes:
+  - `bash test/tools/runtime/run_simbackend_examples.sh`: `RC=0`
+  - `bash test/tools/examples/example_pipelines.sh`: `RC=0`
+  - all 6 example pipelines pass end-to-end
+
+## Decisions
+
+- Treat `runtime-session` as the only general runtime CLI.
+- Keep request-building logic in the runtime library, not in CLI `main.cpp`.
+- Preserve CLI behavior while refactoring internals; do not accept silent semantic drift.
+- Use xvm as the authoritative verification environment.
+- Treat xvm as the authoritative development verification environment, but do not count it as NPU real-device completion.
+- Treat `Legacy/` as mixed-status implementation code, not as uniformly dead code.
+- Do not preserve runner compatibility outputs in the new vec/cube runtime-native compile path.
+- Treat verification-owned test include fixes as acceptable when removing transitive legacy includes exposes hidden test coupling.
+- Do not delete more `Legacy` code until:
+  - dependency audit is complete
+  - `autotuner` is re-audited against current runtime-native flows
+  - cleanup candidates are grouped by prerequisite and risk
+- Keep the untracked planning note below untouched:
+  - `docs/superpowers/plans/2026-04-10-runtime-taskgraph-mix.md`
+- Treat the following as the authoritative CPU-simulation regression baselines:
+  - `test/tools/runtime/run_runtime.sh`
+  - `test/tools/runtime/run_simbackend_examples.sh`
+  - `test/tools/examples/example_pipelines.sh`
+
+## TODO
+
+- Finish the original task with NPU real-device validation when hardware is available.
+- After that, continue runtime-native enhancement work in this order:
+  - execution/profile contract polish
+  - task-graph / scheduler evolution
+- Keep xvm focused runtime verification green while changing runtime-native internals.

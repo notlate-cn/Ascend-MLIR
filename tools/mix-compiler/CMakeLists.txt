@@ -11,3 +11,5 @@ target_link_libraries(mix-compiler PRIVATE
 target_include_directories(mix-compiler PRIVATE
   ${CMAKE_SOURCE_DIR}/include
 )
+
+add_dependencies(mix-compiler mix-tiling-helper)
