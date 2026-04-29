@@ -72,7 +72,7 @@ void registerVectorPlanPipeline() {
         pm.addPass(createCanonicalizerPass());
         pm.addPass(createCSEPass());
         pm.addNestedPass<func::FuncOp>(createAscendCPrepareForEmitPass());
-        pm.addNestedPass<func::FuncOp>(createCanonicalizeCannSignaturePass());
+        pm.addPass(createCanonicalizeCannSignaturePass());
       });
 }
 
