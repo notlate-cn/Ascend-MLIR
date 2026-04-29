@@ -46,6 +46,7 @@
 #include "mlir/IR/IRMapping.h"
 #include "mlir/IR/PatternMatch.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
+#include "llvm/ADT/BitVector.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/Support/Debug.h"
 
@@ -683,12 +684,20 @@ static LogicalResult prepareFunc(func::FuncOp func) {
   }
 
   // ── 8. Erase tiling block args (reverse order to keep indices stable) ────
-  SmallVector<unsigned> toErase;
-  for (BlockArgument arg : tilingArgs)
-    toErase.push_back(arg.getArgNumber());
-  llvm::sort(toErase, std::greater<unsigned>());
-  for (unsigned idx : toErase)
-    entry.eraseArgument(idx);
+  {
+    SmallVector<unsigned> toErase;
+    for (BlockArgument arg : tilingArgs)
+      toErase.push_back(arg.getArgNumber());
+    llvm::sort(toErase, std::greater<unsigned>());
+    for (unsigned idx : toErase)
+      entry.eraseArgument(idx);
+    // entry.eraseArgument does not update FuncOp::arg_attrs; clear it so the
+    // attribute count matches the new block arg count after step 9 rebuilds the
+    // function type. (TilePlanGen may have set vector_plan.default_tile_size on
+    // the now-erased tiling args.)
+    if (func->getAttr("arg_attrs"))
+      func->removeAttr("arg_attrs");
+  }
 
   // ── 9. Update function type ──────────────────────────────────────────────
   SmallVector<Type> newArgTypes;

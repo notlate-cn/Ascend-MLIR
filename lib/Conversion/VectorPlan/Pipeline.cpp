@@ -1,7 +1,14 @@
+#include "Conversion/AscendCBufferPlacement/AscendCBufferPlacementPass.h"
+#include "Conversion/AscendCParallelize/AscendCParallelizePass.h"
+#include "Conversion/AscendCPrepareForEmit/AscendCPrepareForEmitPass.h"
+#include "Conversion/CanonicalizeCannSignature/CanonicalizeCannSignaturePass.h"
+#include "Conversion/LinalgToAscendC/LinalgToAscendCPass.h"
+#include "Conversion/MarkStructuredOps/MarkStructuredOpsPass.h"
 #include "Conversion/VectorPlan/VectorPlanPasses.h"
 #include "mlir/Dialect/Linalg/Passes.h"
 #include "mlir/Pass/PassManager.h"
 #include "mlir/Pass/PassRegistry.h"
+#include "mlir/Transforms/Passes.h"
 
 using namespace mlir;
 
@@ -43,6 +50,30 @@ void registerVectorPlanPipeline() {
       "vector-plan",
       "VectorPlan pipeline: elewise-fusion → group-analysis → group-outline",
       buildVectorPlanPipeline);
+  PassPipelineRegistration<>(
+      "vector-plan-codegen",
+      "VectorPlan codegen: tile-fuse → bufferize → linalg-to-ascendc → "
+      "prepare-for-emit → canonicalize-cann-signature",
+      [](OpPassManager &pm) {
+        pm.addNestedPass<func::FuncOp>(createVectorPlanTileFusePass());
+        if (failed(parsePassPipeline(
+                "one-shot-bufferize{"
+                "bufferize-function-boundaries=true "
+                "allow-return-allocs-from-loops=true "
+                "function-boundary-type-conversion=identity-layout-map}",
+                pm)))
+          llvm::report_fatal_error(
+              "vector-plan-codegen: failed to add bufferize pass");
+        pm.addNestedPass<func::FuncOp>(createAnnotateAscendCKernelKindPass());
+        pm.addPass(createCSEPass());
+        pm.addNestedPass<func::FuncOp>(createAscendCBufferPlacementPass());
+        pm.addNestedPass<func::FuncOp>(createLinalgToAscendCPass());
+        pm.addNestedPass<func::FuncOp>(createAscendCParallelizePass());
+        pm.addPass(createCanonicalizerPass());
+        pm.addPass(createCSEPass());
+        pm.addNestedPass<func::FuncOp>(createAscendCPrepareForEmitPass());
+        pm.addNestedPass<func::FuncOp>(createCanonicalizeCannSignaturePass());
+      });
 }
 
 } // namespace mlir::afir
