@@ -68,6 +68,10 @@ void registerVectorPlanPipeline() {
         pm.addPass(createCSEPass());
         pm.addNestedPass<func::FuncOp>(createAscendCBufferPlacementPass());
         pm.addNestedPass<func::FuncOp>(createLinalgToAscendCPass());
+        // TODO: ascendc-parallelize currently crashes on outer scf.for loops
+        // with iter_args (produced by TileFuse for memref threading). Fix
+        // AscendCParallelizePass to replace the parallel loop with
+        // get_block_idx and yield the init value from iter_args unchanged.
         pm.addNestedPass<func::FuncOp>(createAscendCParallelizePass());
         pm.addPass(createCanonicalizerPass());
         pm.addPass(createCSEPass());

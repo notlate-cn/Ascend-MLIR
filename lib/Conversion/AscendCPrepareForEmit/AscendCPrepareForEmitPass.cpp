@@ -200,14 +200,16 @@ static LogicalResult prepareFunc(func::FuncOp func) {
     if (auto tilingInfosAttr =
             moduleOp->getAttrOfType<ArrayAttr>("vector_plan.tiling_infos")) {
       for (Attribute infoAttr : tilingInfosAttr) {
-        auto info = cast<DictionaryAttr>(infoAttr);
+        auto info = dyn_cast<DictionaryAttr>(infoAttr);
+        if (!info) continue;
         auto kid = dyn_cast_or_null<StringAttr>(info.get("kernel_id"));
         if (!kid || kid.getValue() != func.getName())
           continue;
         auto fieldsAttr = dyn_cast_or_null<ArrayAttr>(info.get("fields"));
         if (!fieldsAttr) break;
         for (Attribute fa : fieldsAttr) {
-          auto field = cast<DictionaryAttr>(fa);
+          auto field = dyn_cast<DictionaryAttr>(fa);
+          if (!field) continue;
           auto argIdxAttr = cast<IntegerAttr>(field.get("arg_index"));
           auto nameAttr   = cast<StringAttr>(field.get("name"));
           unsigned argIdx = (unsigned)argIdxAttr.getValue().getSExtValue();
@@ -280,6 +282,8 @@ static LogicalResult prepareFunc(func::FuncOp func) {
   }
 
   // ── 6. Replace tiling arg uses with tiling fields ────────────────────────
+  // Invariant: tilingArgs[i] ↔ tilingArgNames[i] ↔ tilingFieldVals[i].
+  assert(tilingArgs.empty() || hasTilingData);
   // Phase B args are index-typed: cast i64 member value → index before replace.
   for (unsigned i = 0; i < tilingArgs.size(); ++i) {
     Value fieldVal = tilingFieldVals[i]; // always i64 from emitasc.member
