@@ -2169,7 +2169,34 @@ static void fixBrokenOpEmitters(Operation *moduleOp) {
     Value sizeVal = op.getSize();
     rewriter.setInsertionPoint(op);
     Location loc = op.getLoc();
-    if (!sizeVal) {
+
+    // If baseBuffer comes from a memref.cast(memref.subview(base, [offset])),
+    // bake the subview offset into the pointer so the emitter sees only plain
+    // function-arg values that it already knows how to print.
+    Value subviewOffset;
+    if (auto castOp = baseBuffer.getDefiningOp<memref::CastOp>()) {
+      if (auto subviewOp =
+              castOp.getOperand().getDefiningOp<memref::SubViewOp>()) {
+        SmallVector<OpFoldResult> mixedOffsets = subviewOp.getMixedOffsets();
+        if (!mixedOffsets.empty()) {
+          if (auto dynOff = dyn_cast<Value>(mixedOffsets[0])) {
+            baseBuffer = subviewOp.getSource();
+            subviewOffset = dynOff;
+          } else if (auto attrOff = dyn_cast<Attribute>(mixedOffsets[0])) {
+            int64_t constOff = cast<IntegerAttr>(attrOff).getInt();
+            baseBuffer = subviewOp.getSource();
+            if (constOff != 0)
+              subviewOffset = rewriter.create<arith::ConstantIndexOp>(
+                  loc, constOff);
+          }
+        }
+      }
+    }
+
+    // Choose between 1-arg and 2-arg form based on whether we have an offset.
+    Value elemOffset = subviewOffset ? subviewOffset
+                                     : (sizeVal ? peelIndexCast(sizeVal) : Value{});
+    if (!elemOffset) {
       std::string tmpl =
           "$0.SetGlobalBuffer(reinterpret_cast<__gm__ " + elemTypeStr +
           "*>($1))";
@@ -2180,7 +2207,6 @@ static void fixBrokenOpEmitters(Operation *moduleOp) {
       return;
     }
 
-    Value elemOffset = peelIndexCast(sizeVal);
     std::string tmpl =
         "$0.SetGlobalBuffer(reinterpret_cast<__gm__ " + elemTypeStr +
         "*>($1) + $2)";
@@ -2482,6 +2508,23 @@ static void fixBrokenOpEmitters(Operation *moduleOp) {
         loc, rewriter.getStringAttr(tmpl), ValueRange(args));
     rewriter.eraseOp(op);
   });
+
+  // Erase dead memref.cast and memref.subview ops left behind by the
+  // SetGlobalBuffer subview-peeling above.  Collect in two passes so we
+  // erase cast before subview (cast's operand is the subview result).
+  SmallVector<Operation *> deadCasts, deadSubviews;
+  moduleOp->walk([&](memref::CastOp op) {
+    if (op.getResult().use_empty())
+      deadCasts.push_back(op);
+  });
+  for (Operation *op : deadCasts)
+    op->erase();
+  moduleOp->walk([&](memref::SubViewOp op) {
+    if (op.getResult().use_empty())
+      deadSubviews.push_back(op);
+  });
+  for (Operation *op : deadSubviews)
+    op->erase();
 }
 
 LogicalResult mlir::translateToCannKernel(Operation *op, raw_ostream &os,

@@ -66,6 +66,7 @@ void registerVectorPlanPipeline() {
               "vector-plan-codegen: failed to add bufferize pass");
         pm.addNestedPass<func::FuncOp>(createAnnotateAscendCKernelKindPass());
         pm.addPass(createCSEPass());
+        pm.addNestedPass<func::FuncOp>(createVectorPlanInsertTileBuffersPass());
         pm.addNestedPass<func::FuncOp>(createAscendCBufferPlacementPass());
         pm.addNestedPass<func::FuncOp>(createLinalgToAscendCPass());
         pm.addNestedPass<func::FuncOp>(createAscendCParallelizePass());

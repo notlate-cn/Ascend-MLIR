@@ -397,6 +397,29 @@ def VectorPlanTileFuse : Pass<"vector-plan-tile-fuse", "mlir::func::FuncOp"> {
   let dependentDialects = ["mlir::linalg::LinalgDialect", "mlir::scf::SCFDialect", "mlir::tensor::TensorDialect", "mlir::func::FuncDialect"];
 }
 
+def VectorPlanInsertTileBuffers : Pass<"vector-plan-insert-tile-buffers", "mlir::func::FuncOp"> {
+  let summary = "Promote inner-tile linalg.generic operands from GM to on-chip VECIN/VECOUT";
+  let description = [{
+    Runs after one-shot-bufferize and before ascendc-buffer-placement.
+
+    For each linalg.generic whose output memref is in global memory (memory_space=0):
+      - Allocates a VECIN (memory_space=9) buffer for each GM input and inserts
+        memref.copy(gm_input -> vecin_alloc) before the op.
+      - Allocates a VECOUT (memory_space=10) buffer for the output and inserts
+        memref.copy(vecout_alloc -> gm_output) after the op.
+      - Rewrites the generic to use the on-chip buffers.
+
+    After promotion, remaining GM->GM memref.copy ops (bufferization artifacts
+    from one-shot-bufferize's yield-copy lowering) are erased.
+  }];
+  let constructor = "mlir::afir::createVectorPlanInsertTileBuffersPass()";
+  let dependentDialects = [
+    "mlir::linalg::LinalgDialect",
+    "mlir::memref::MemRefDialect",
+    "mlir::arith::ArithDialect",
+  ];
+}
+
 //===----------------------------------------------------------------------===//
 // AclnnFinalizeDecl
 //===----------------------------------------------------------------------===//
