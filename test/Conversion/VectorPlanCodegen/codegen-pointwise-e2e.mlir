@@ -16,6 +16,10 @@
 // NOTE: --ascendc-parallelize is omitted because TileFuse emits outer scf.for
 // with iter_args (memref threading), which ascendc-parallelize does not yet
 // support. That pass expects a no-result parallel loop. Follow-up needed.
+// NOTE: This test spells out passes individually rather than invoking
+// --vector-plan-codegen, because the registered pipeline includes
+// --ascendc-parallelize which crashes on iter_args loops (see above).
+// TODO: Once parallelize supports iter_args, replace with --vector-plan-codegen.
 
 // CHECK: func.func @pointwise(
 // CHECK-SAME: ascendc.aicore

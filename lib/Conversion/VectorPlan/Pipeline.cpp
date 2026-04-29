@@ -53,7 +53,7 @@ void registerVectorPlanPipeline() {
   PassPipelineRegistration<>(
       "vector-plan-codegen",
       "VectorPlan codegen: tile-fuse → bufferize → linalg-to-ascendc → "
-      "prepare-for-emit → canonicalize-cann-signature",
+      "parallelize → prepare-for-emit → canonicalize-cann-signature",
       [](OpPassManager &pm) {
         pm.addNestedPass<func::FuncOp>(createVectorPlanTileFusePass());
         if (failed(parsePassPipeline(
