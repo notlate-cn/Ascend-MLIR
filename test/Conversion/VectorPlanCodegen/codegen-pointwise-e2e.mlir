@@ -7,6 +7,7 @@
 // RUN:   --linalg-to-ascendc \
 // RUN:   --canonicalize --cse \
 // RUN:   --ascendc-prepare-for-emit \
+// RUN:   --canonicalize-cann-signature \
 // RUN:   2>&1 | FileCheck %s
 //
 // VectorGroup end-to-end codegen: 1D pointwise through TileFuse -> codegen.
