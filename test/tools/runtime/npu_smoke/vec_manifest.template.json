@@ -1,0 +1,19 @@
+{
+  "backend": "npu",
+  "artifact_root": "@ARTIFACT_ROOT@",
+  "tasks": [
+    {
+      "task_id": "main",
+      "inputs": [
+        { "name": "data0", "path": "@INPUT0@" },
+        { "name": "data1", "path": "@INPUT1@" }
+      ],
+      "outputs": [
+        { "name": "out", "path": "@OUTPUT@" }
+      ],
+      "expected_outputs": [
+        { "name": "out", "path": "@EXPECTED@" }
+      ]
+    }
+  ]
+}

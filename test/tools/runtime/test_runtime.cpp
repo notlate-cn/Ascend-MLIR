@@ -1,7 +1,9 @@
 // test/tools/runtime/test_runtime.cpp
 //
-// Unit tests for lib/Runtime: Types, NpyIO, HostRunnerGen.
-// Does NOT require a simulator or .bin file.
+// Unit tests for lib/Runtime: Types, NpyIO.
+// Most coverage does not require a simulator or .bin file; the runtime-native
+// dynamic-library artifact error path is xvm/Ascend-environment-specific and
+// self-skips when that environment is unavailable.
 //
 // Covers:
 //   - DType byte sizes (including new BF16, INT8, INT64)
@@ -9,12 +11,6 @@
 //   - NpyIO round-trip for all supported dtypes (F16, BF16, F32, INT8, INT32, INT64)
 //   - NpyIO error: unsupported dtype
 //   - NpyIO error: truncated file
-//   - HostRunnerGen: single output
-//   - HostRunnerGen: multiple outputs (num_outputs=2, 3)
-//   - HostRunnerGen: per-output dtype defaults & override
-//   - HostRunnerGen: workspace_size propagated to runner.cpp
-//   - HostRunnerGen: --bin required enforced at runtime
-//   - HostRunnerGen: tiling_layout compiled in
 //
 // Build (on xvm):
 //   cd /path/to/Ascend-MLIR
@@ -28,13 +24,15 @@
 //       -ldl -o /tmp/test_runtime
 //   /tmp/test_runtime
 
-#include "Runtime/Compiler.h"
-#include "Runtime/Executor.h"
-#include "Runtime/HostRunnerGen.h"
+#include "Runtime/Execution/NativeExecutionRunner.h"
+#include "Runtime/MixAbi.h"
+#include "Runtime/MixCompileMetadata.h"
 #include "Runtime/NpyIO.h"
 #include "Runtime/PathUtils.h"
+#include "Runtime/ToolDiscovery.h"
 #include "Runtime/Types.h"
 #include "llvm/Support/raw_ostream.h"
+#include <algorithm>
 #include <cassert>
 #include <cmath>
 #include <cstring>
@@ -44,12 +42,16 @@
 #include <string>
 #include <vector>
 
+#ifndef _WIN32
+#include <sys/wait.h>
+#include <unistd.h>
+#endif
+
 using namespace mlir::runtime;
 
 // ── helpers ──────────────────────────────────────────────────────────────────
 
 static int g_pass = 0, g_fail = 0;
-
 #define EXPECT(cond, msg)                                              \
   do {                                                                 \
     if (cond) {                                                        \
@@ -320,41 +322,75 @@ static void testNpyIOErrors() {
   }
 }
 
-static void testCompilerMixArtifact() {
-  llvm::outs() << "\n[Compiler mix artifact]\n";
+static void testRuntimeNativeDynamicLibraryArtifactErrors() {
+  llvm::outs() << "\n[Runtime-native dynamic-library artifact error path]\n";
 
-  Compiler::Config cfg;
-  cfg.kernel_type = "mix";
-  cfg.soc_version = "Ascend910B1";
-  cfg.verbose = false;
-
-  Compiler compiler(cfg);
-  const std::string buildDir = "/tmp/rt_mix_fixture_build";
-  std::filesystem::create_directories(buildDir);
-  auto out = compiler.Compile(
-      "/Volumes/GM9/code/Ascend-MLIR/test/tools/runtime/mix_stub_fixture.cpp",
-      buildDir,
-      "fc_relu");
-  EXPECT((bool)out, "mix compiler returns an artifact path");
-  if (out) {
-    EXPECT(out->find(".bin") != std::string::npos,
-           "mix compiler returns linked kernel binary path");
-    EXPECT(std::filesystem::exists(*out),
-           "mix compiler output artifact exists on disk");
-  } else {
-    llvm::consumeError(out.takeError());
+#ifdef _WIN32
+  EXPECT(true,
+         "runtime-native dynamic-library artifact error path is covered on xvm");
+#else
+  const std::string ascendHome = findAscendHome();
+  const std::string socVersion = findSocVersion();
+  if (ascendHome.empty() || socVersion.empty()) {
+    EXPECT(true,
+           "runtime-native dynamic-library artifact error path is skipped when Ascend runtime env is unavailable");
+    return;
   }
-}
 
-static void testPackedMixExecutorErrors() {
-  llvm::outs() << "\n[Packed mix executor]\n";
+  std::filesystem::path buildDir = std::filesystem::temp_directory_path() /
+                                   "test_runtime_native_runner";
+  std::filesystem::remove_all(buildDir);
+  std::filesystem::create_directories(buildDir);
+  std::filesystem::path missingSoPath = buildDir / "missing-packed.so";
 
-  Executor ex(BackendMode::Simulation);
-  RunArgs args;
-  args.block_dim = 1;
-  auto err = ex.RunPackedMixFile("/tmp/missing.so", "fc_relu", args);
-  EXPECT((bool)err, "missing packed mix library returns an error");
-  if (err) llvm::consumeError(std::move(err));
+  const std::filesystem::path errorPath = buildDir / "error.txt";
+  pid_t pid = fork();
+  EXPECT(pid >= 0,
+         "fork for runtime-native dynamic-library artifact error path succeeds");
+  if (pid < 0) {
+    std::filesystem::remove_all(buildDir);
+    return;
+  }
+
+  if (pid == 0) {
+    std::ofstream os(errorPath);
+    NativeExecutionRunner runner(ExecutionRunnerMode::Simulation);
+    auto initErr = runner.initialize(0);
+    if (initErr) {
+      os << llvm::toString(std::move(initErr));
+      os.flush();
+      std::_Exit(0);
+    }
+
+    RunArgs args;
+    args.block_dim = 1;
+    DynamicLibraryExecutionLaunch launch{missingSoPath.string(),
+                                         "aclrtlaunch_fc_relu"};
+    auto err = runner.runDynamicLibraryArtifact(launch, args);
+    if (err)
+      os << llvm::toString(std::move(err));
+    else
+      os << "unexpected-success";
+    os.flush();
+    std::_Exit(0);
+  }
+
+  int status = 0;
+  EXPECT(waitpid(pid, &status, 0) == pid,
+         "waitpid for runtime-native dynamic-library artifact error path succeeds");
+  EXPECT(WIFEXITED(status),
+         "runtime-native dynamic-library artifact error child exits cleanly");
+
+  std::ifstream is(errorPath);
+  std::string message((std::istreambuf_iterator<char>(is)),
+                      std::istreambuf_iterator<char>());
+  EXPECT(!message.empty(),
+         "runtime-native dynamic-library artifact path returns an error for missing shared library");
+  EXPECT(message.find("dlopen") != std::string::npos,
+         "runtime-native dynamic-library artifact error keeps a dlopen failure diagnostic");
+
+  std::filesystem::remove_all(buildDir);
+#endif
 }
 
 static void testRuntimePathUtils() {
@@ -461,6 +497,10 @@ static void testRuntimePathUtils() {
                          "/lib/libruntime_camodel.so"))
                    .string(),
            "path utils resolve x86_64 simulator runtime path");
+    std::ofstream(root / "x86_64-linux/lib64/libruntime.so").put('\n');
+    EXPECT(findAscendRuntimeLibPath(root.string(), "x86_64") ==
+               (root / "x86_64-linux/lib64/libruntime.so").string(),
+           "path utils resolve x86_64 real-device runtime path");
     EXPECT(findAscendDeviceLibDir(root.string(), "x86_64") ==
                (root / "x86_64-linux/lib64/device/lib64").string(),
            "path utils resolve x86_64 device lib directory when it is the only candidate");
@@ -486,9 +526,13 @@ static void testRuntimePathUtils() {
     std::filesystem::remove_all(root);
     std::filesystem::create_directories(root / "lib64");
     std::ofstream(root / "lib64/libascendcl.so").put('\n');
+    std::ofstream(root / "lib64/libruntime.so").put('\n');
     EXPECT(findAscendAclLibPath(root.string()) ==
                (root / "lib64/libascendcl.so").string(),
            "path utils fall back to generic lib64 when arch dir is absent");
+    EXPECT(findAscendRuntimeLibPath(root.string()) ==
+               (root / "lib64/libruntime.so").string(),
+           "path utils fall back to generic lib64 runtime when arch dir is absent");
   }
 
   {
@@ -562,149 +606,328 @@ static void testRuntimePathUtils() {
   }
 }
 
-static void testHostRunnerGen() {
-  llvm::outs() << "\n[HostRunnerGen]\n";
+static void testRuntimeToolDiscovery() {
+  llvm::outs() << "\n[Runtime tool discovery]\n";
 
-  HostRunnerGen gen;
-  HostRunnerGen::Config cfg;
-  cfg.kernel_name = "test_kernel";
-  cfg.kernel_type = "vec";
-  cfg.soc_version = "Ascend910B1";
-  cfg.num_inputs  = 2;
-  cfg.verbose     = false;
-
-  // Test: single output (default)
   {
-    cfg.num_outputs   = 1;
-    cfg.output_dtypes = {};
-    cfg.tiling_layout = {"int64", "int64"};
-    cfg.workspace_size = 8192;
-    auto r = gen.Generate(cfg, "/tmp/rt_runner_test1");
-    EXPECT((bool)r, "Generate num_outputs=1 succeeds");
-    if (r) {
-      EXPECT(!r->empty(), "Generate: runner path non-empty");
-      // Runner must enforce --bin
-      std::string out;
-      FILE* p = popen((*r + " --inputs /dev/null 2>&1").c_str(), "r");
-      if (p) {
-        char buf[256]; while (fgets(buf, sizeof(buf), p)) out += buf;
-        pclose(p);
+    const std::string resolved =
+        resolveSiblingToolPathForExecutable("/tmp/runtime/bin/runtime-session",
+                                            "mix-tiling-helper");
+    EXPECT(resolved == "/tmp/runtime/bin/mix-tiling-helper",
+           "tool discovery resolves sibling helper next to executable");
+  }
+
+  {
+    const std::string resolved =
+        resolveSiblingToolPathForExecutable("", "mix-tiling-helper");
+    EXPECT(resolved.empty(),
+           "tool discovery returns empty path for empty executable");
+  }
+
+  {
+    const char *envName = "AFIR_TOOL_DISCOVERY_TEST_HELPER";
+    const char *saved = std::getenv(envName);
+    const std::string savedValue = saved ? std::string(saved) : std::string();
+    ::unsetenv(envName);
+    configureSiblingToolPathEnv(envName, "/tmp/runtime/bin/runtime-session",
+                                "mix-tiling-helper");
+    const char *configured = std::getenv(envName);
+    EXPECT(configured && std::string(configured) ==
+                             "/tmp/runtime/bin/mix-tiling-helper",
+           "tool discovery configures helper env when unset");
+
+    ::setenv(envName, "/already/configured", 1);
+    configureSiblingToolPathEnv(envName, "/tmp/runtime/bin/runtime-session",
+                                "mix-tiling-helper");
+    configured = std::getenv(envName);
+    EXPECT(configured && std::string(configured) == "/already/configured",
+           "tool discovery does not overwrite existing helper env");
+
+    if (saved)
+      ::setenv(envName, savedValue.c_str(), 1);
+    else
+      ::unsetenv(envName);
+  }
+}
+
+static void testMixCompileMetadataSchema() {
+  llvm::outs() << "\n[MixCompileMetadata schema]\n";
+
+  {
+    const char *json = R"json(
+{
+  "schema_version": 1,
+  "kernel_kind": "mix",
+  "kernel_name": "k",
+  "runtime_kernel_name": "k",
+  "soc_version": "Ascend910B1",
+  "mix_kernel_type": "mix_aic_1_2",
+  "launcher_symbol": "aclrtlaunch_k",
+  "entries": { "aic": "k_0_mix_aic", "aiv": "k_0_mix_aiv" },
+  "generated": { "source_path": "work/generated/auto_gen_k.cpp" },
+  "device_compile": {
+    "aic_arch": "dav-c220-cube",
+    "aiv_arch": "dav-c220-vec",
+    "aic_definitions": [],
+    "aiv_definitions": []
+  },
+  "artifacts": {
+    "device_object_path": "out/device.o",
+    "packed_shared_object_path": "out/libk_packed.so",
+    "tiling_file_path": "out/tiling.bin",
+    "launch_info_file_path": "out/launch_info.txt"
+  },
+  "abi": {
+    "workspace_mode": "fixed",
+    "workspace_bytes": 16777216,
+    "tiling_mode": "generated_file",
+    "tiling_source": "out/tiling.bin",
+    "workspace_arg_index": 3,
+    "tiling_arg_index": 4,
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "out",
+        "dtype": "f32",
+        "shape": [4, 8],
+        "runtime_file": "k.out.output.bin",
+        "golden_file": "k.out.golden.bin"
       }
-      EXPECT(out.find("--bin required") != std::string::npos,
-             "runner enforces --bin required");
-      // runner.cpp must contain output0 arg
-      std::ifstream src("/tmp/rt_runner_test1/runner.cpp");
-      std::string src_content((std::istreambuf_iterator<char>(src)), {});
-      EXPECT(src_content.find("--output0") != std::string::npos,
-             "runner.cpp has --output0 arg");
+    ]
+  },
+  "host_launch": {
+    "mode": "helper",
+    "helper_kind": "mix-tiling-helper",
+    "helper_inputs": {}
+  },
+  "ignored_optional_field": "ignored"
+}
+)json";
+    auto metadataOr = parseMixCompileMetadataJson(json);
+    EXPECT(static_cast<bool>(metadataOr),
+           "MixCompileMetadata parses required schema");
+    if (metadataOr) {
+      EXPECT(metadataOr->kernelName == "k",
+             "MixCompileMetadata keeps kernel_name");
+      EXPECT(metadataOr->runtimeKernelName == "k",
+             "MixCompileMetadata keeps runtime_kernel_name");
+      EXPECT(metadataOr->mixKernelType == "mix_aic_1_2",
+             "MixCompileMetadata keeps mix_kernel_type");
+      EXPECT(metadataOr->abi.hasWorkspaceArgIndex &&
+                 metadataOr->abi.workspaceArgIndex == 3,
+             "MixCompileMetadata keeps workspace_arg_index");
+      EXPECT(metadataOr->abi.hasTilingArgIndex &&
+                 metadataOr->abi.tilingArgIndex == 4,
+             "MixCompileMetadata keeps tiling_arg_index");
+      EXPECT(metadataOr->abi.outputs.size() == 1 &&
+                 metadataOr->abi.outputs[0].goldenFile ==
+                     "k.out.golden.bin",
+             "MixCompileMetadata keeps output golden_file");
+      auto roundTripOr = serializeMixCompileMetadataJson(*metadataOr);
+      EXPECT(static_cast<bool>(roundTripOr),
+             "MixCompileMetadata serializes");
+      if (!roundTripOr)
+        llvm::consumeError(roundTripOr.takeError());
+    } else {
+      llvm::consumeError(metadataOr.takeError());
     }
   }
 
-  // Test: multi-output num_outputs=2, mixed dtypes
   {
-    cfg.num_outputs   = 2;
-    cfg.output_dtypes = {"f16", "f32"};
-    cfg.workspace_size = 8192;
-    auto r = gen.Generate(cfg, "/tmp/rt_runner_test2");
-    EXPECT((bool)r, "Generate num_outputs=2 succeeds");
-    if (r) {
-      std::ifstream src("/tmp/rt_runner_test2/runner.cpp");
-      std::string s((std::istreambuf_iterator<char>(src)), {});
-      EXPECT(s.find("--output0") != std::string::npos, "runner.cpp has --output0");
-      EXPECT(s.find("--output1") != std::string::npos, "runner.cpp has --output1");
-      EXPECT(s.find("--output-dtype0") != std::string::npos,
-             "runner.cpp has --output-dtype0");
-      EXPECT(s.find("--output-dtype1") != std::string::npos,
-             "runner.cpp has --output-dtype1");
-      // dtype index 0=f16, 2=f32; defaults should appear in output_dtypes_default block
-      EXPECT(s.find("output_dtypes_default.push_back(0)") != std::string::npos,
-             "runner.cpp default dtype[0] = 0 (f16)");
-      EXPECT(s.find("output_dtypes_default.push_back(2)") != std::string::npos,
-             "runner.cpp default dtype[1] = 2 (f32)");
+    const char *json = R"json(
+{
+  "schema_version": 1,
+  "kernel_kind": "mix",
+  "runtime_kernel_name": "k",
+  "soc_version": "Ascend910B1",
+  "mix_kernel_type": "mix_aic_1_2",
+  "launcher_symbol": "aclrtlaunch_k",
+  "entries": { "aic": "k_0_mix_aic", "aiv": "k_0_mix_aiv" },
+  "generated": { "source_path": "work/generated/auto_gen_k.cpp" },
+  "device_compile": {
+    "aic_arch": "dav-c220-cube",
+    "aiv_arch": "dav-c220-vec",
+    "aic_definitions": [],
+    "aiv_definitions": []
+  },
+  "artifacts": {
+    "device_object_path": "out/device.o",
+    "packed_shared_object_path": "out/libk_packed.so",
+    "tiling_file_path": "out/tiling.bin",
+    "launch_info_file_path": "out/launch_info.txt"
+  },
+  "abi": {
+    "workspace_mode": "fixed",
+    "workspace_bytes": 16777216,
+    "tiling_mode": "generated_file",
+    "tiling_source": "out/tiling.bin",
+    "inputs": [],
+    "outputs": []
+  },
+  "host_launch": {
+    "mode": "helper",
+    "helper_kind": "mix-tiling-helper",
+    "helper_inputs": {}
+  }
+}
+)json";
+    auto metadataOr = parseMixCompileMetadataJson(json);
+    EXPECT(!metadataOr,
+           "MixCompileMetadata rejects missing required kernel_name");
+    if (!metadataOr)
+      llvm::consumeError(metadataOr.takeError());
+  }
+}
+
+static void testMixAbiManifestCompatibilityBoundary() {
+  llvm::outs() << "\n[MixAbi manifest compatibility boundary]\n";
+
+  {
+    std::map<std::string, std::string> manifest = {
+        {"kernel_name", "fake_kernel"},
+        {"requested_kernel_name", "fake_kernel"},
+        {"abi_input_count", "0"},
+        {"abi_output_count", "0"},
+        {"abi_workspace_bytes", "1024"},
+        {"abi_block_dim", "4"},
+        {"abi_workspace_mode", "fixed"},
+        {"abi_tiling_mode", "generated_file"},
+        {"abi_tiling_source", "out/tiling.bin"},
+        {"abi_launcher_symbol", "aclrtlaunch_fake_kernel_abi"},
+        {"abi_aic_entry", "fake_kernel_abi_aic"},
+        {"abi_aiv_entry", "fake_kernel_abi_aiv"},
+    };
+    auto abiOr = parseMixAbiManifest(manifest);
+    EXPECT(static_cast<bool>(abiOr),
+           "MixAbi parser accepts abi_* launch fields");
+    if (abiOr) {
+      EXPECT(abiOr->launcherSymbol == "aclrtlaunch_fake_kernel_abi",
+             "MixAbi parser keeps abi launcher symbol");
+      EXPECT(abiOr->aicEntry == "fake_kernel_abi_aic",
+             "MixAbi parser keeps abi aic entry");
+      EXPECT(abiOr->aivEntry == "fake_kernel_abi_aiv",
+             "MixAbi parser keeps abi aiv entry");
+    } else {
+      llvm::consumeError(abiOr.takeError());
     }
   }
 
-  // Test: num_outputs=3, output_dtypes shorter than num_outputs → rest default to f16
   {
-    cfg.num_outputs   = 3;
-    cfg.output_dtypes = {"f32"};  // only index 0; 1 and 2 should default to f16 (0)
-    auto r = gen.Generate(cfg, "/tmp/rt_runner_test3");
-    EXPECT((bool)r, "Generate num_outputs=3 partial dtypes succeeds");
-    if (r) {
-      std::ifstream src("/tmp/rt_runner_test3/runner.cpp");
-      std::string s((std::istreambuf_iterator<char>(src)), {});
-      EXPECT(s.find("--output2") != std::string::npos, "runner.cpp has --output2");
-      // Three dtype defaults: f32(2), f16(0), f16(0)
-      size_t p0 = s.find("output_dtypes_default.push_back(2)");  // f32
-      size_t p1 = s.find("output_dtypes_default.push_back(0)");  // first f16
-      EXPECT(p0 != std::string::npos, "runner.cpp default dtype[0] = 2 (f32)");
-      EXPECT(p1 != std::string::npos && p1 > p0,
-             "runner.cpp default dtype[1] = 0 (f16, after f32)");
+    std::map<std::string, std::string> manifest = {
+        {"kernel_name", "fake_kernel"},
+        {"requested_kernel_name", "fake_kernel"},
+        {"abi_input_count", "0"},
+        {"abi_output_count", "0"},
+        {"abi_workspace_bytes", "1024"},
+        {"abi_block_dim", "4"},
+        {"abi_workspace_mode", "fixed"},
+        {"abi_tiling_mode", "generated_file"},
+        {"abi_tiling_source", "out/tiling.bin"},
+        {"launcher_symbol", "aclrtlaunch_fake_kernel_plain"},
+        {"aic_entry", "fake_kernel_plain_aic"},
+        {"aiv_entry", "fake_kernel_plain_aiv"},
+    };
+    auto abiOr = parseMixAbiManifest(manifest);
+    EXPECT(static_cast<bool>(abiOr),
+           "MixAbi parser still accepts legacy abi manifest without launch metadata");
+    if (abiOr) {
+      EXPECT(abiOr->launcherSymbol.empty(),
+             "MixAbi parser ignores plain launcher_symbol");
+      EXPECT(abiOr->aicEntry.empty(),
+             "MixAbi parser ignores plain aic_entry");
+      EXPECT(abiOr->aivEntry.empty(),
+             "MixAbi parser ignores plain aiv_entry");
+    } else {
+      llvm::consumeError(abiOr.takeError());
     }
+  }
+}
+
+static void testMixAbiManifestSerializationDropsLegacyLaunchFields() {
+  llvm::outs() << "\n[MixAbi manifest serialization drops legacy launch fields]\n";
+
+  MixAbiMetadata abi;
+  abi.logicalKernelName = "fake_kernel";
+  abi.runtimeKernelName = "fake_kernel";
+  abi.workspaceBytes = 1024;
+  abi.blockDim = 4;
+  abi.workspaceMode = "fixed";
+  abi.tilingMode = "generated_file";
+  abi.tilingSource = "out/tiling.bin";
+  abi.launcherSymbol = "aclrtlaunch_fake_kernel";
+  abi.aicEntry = "fake_kernel_aic";
+  abi.aivEntry = "fake_kernel_aiv";
+
+  auto manifestOr = serializeMixAbiManifest(abi);
+  EXPECT(static_cast<bool>(manifestOr),
+         "MixAbi manifest serialization succeeds without legacy launch fields");
+  if (!manifestOr) {
+    llvm::consumeError(manifestOr.takeError());
+    return;
   }
 
-  // Test: workspace_size propagated
-  {
-    cfg.num_outputs    = 1;
-    cfg.output_dtypes  = {};
-    cfg.workspace_size = 131072;
-    auto r = gen.Generate(cfg, "/tmp/rt_runner_test4");
-    EXPECT((bool)r, "Generate workspace_size=131072 succeeds");
-    if (r) {
-      std::ifstream src("/tmp/rt_runner_test4/runner.cpp");
-      std::string s((std::istreambuf_iterator<char>(src)), {});
-      EXPECT(s.find("131072") != std::string::npos,
-             "runner.cpp contains workspace_size=131072");
-    }
+  EXPECT(manifestOr->find("abi_launcher_symbol=") == std::string::npos,
+         "MixAbi manifest omits abi_launcher_symbol");
+  EXPECT(manifestOr->find("abi_aic_entry=") == std::string::npos,
+         "MixAbi manifest omits abi_aic_entry");
+  EXPECT(manifestOr->find("abi_aiv_entry=") == std::string::npos,
+         "MixAbi manifest omits abi_aiv_entry");
+}
+
+static void testMixAbiManifestSerializationRetainsLegacyIoContract() {
+  llvm::outs() << "\n[MixAbi manifest serialization retains legacy io contract]\n";
+
+  MixAbiMetadata abi;
+  abi.logicalKernelName = "fake_kernel";
+  abi.runtimeKernelName = "fake_kernel";
+  abi.workspaceBytes = 1024;
+  abi.blockDim = 4;
+  abi.workspaceMode = "fixed";
+  abi.tilingMode = "generated_file";
+  abi.tilingSource = "out/tiling.bin";
+  abi.inputs = {
+      {"lhs", "fake_kernel.lhs.input.bin", "", DType::F16, {4, 8}},
+      {"rhs", "fake_kernel.rhs.input.bin", "", DType::F16, {8, 4}},
+  };
+  abi.outputs = {
+      {"out", "fake_kernel.out.output.bin", "fake_kernel.out.golden.bin",
+       DType::F32, {4, 4}},
+  };
+
+  auto manifestOr = serializeMixAbiManifest(abi);
+  EXPECT(static_cast<bool>(manifestOr),
+         "MixAbi manifest serialization succeeds with legacy io contract");
+  if (!manifestOr) {
+    llvm::consumeError(manifestOr.takeError());
+    return;
   }
 
-  // Test: tiling_layout compiled in
-  {
-    cfg.num_outputs   = 1;
-    cfg.output_dtypes = {};
-    cfg.workspace_size = 8192;
-    cfg.tiling_layout = {"int32", "int64", "int32"};
-    auto r = gen.Generate(cfg, "/tmp/rt_runner_test5");
-    EXPECT((bool)r, "Generate tiling_layout succeeds");
-    if (r) {
-      std::ifstream src("/tmp/rt_runner_test5/runner.cpp");
-      std::string s((std::istreambuf_iterator<char>(src)), {});
-      EXPECT(s.find("\"int32\"") != std::string::npos,
-             "runner.cpp contains compiled-in tiling type int32");
-      EXPECT(s.find("\"int64\"") != std::string::npos,
-             "runner.cpp contains compiled-in tiling type int64");
-    }
-  }
-
-  // Test: cube kernel type → correct magic
-  {
-    cfg.kernel_type   = "cube";
-    cfg.num_outputs   = 1;
-    cfg.output_dtypes = {};
-    cfg.tiling_layout = {};
-    auto r = gen.Generate(cfg, "/tmp/rt_runner_test6");
-    EXPECT((bool)r, "Generate cube kernel succeeds");
-    if (r) {
-      std::ifstream src("/tmp/rt_runner_test6/runner.cpp");
-      std::string s((std::istreambuf_iterator<char>(src)), {});
-      EXPECT(s.find("0x41494343") != std::string::npos,
-             "runner.cpp cube magic = 0x41494343");
-    }
-    cfg.kernel_type = "vec";  // restore
-  }
+  EXPECT(manifestOr->find("abi_input_count=2") != std::string::npos,
+         "MixAbi manifest still keeps abi_input_count");
+  EXPECT(manifestOr->find("abi_output_count=1") != std::string::npos,
+         "MixAbi manifest still keeps abi_output_count");
+  EXPECT(manifestOr->find("abi_workspace_bytes=1024") != std::string::npos,
+         "MixAbi manifest still keeps abi_workspace_bytes");
+  EXPECT(manifestOr->find("abi_tiling_source=out/tiling.bin") != std::string::npos,
+         "MixAbi manifest still keeps abi_tiling_source");
 }
 
 // ── main ─────────────────────────────────────────────────────────────────────
 
-int main() {
+int main(int argc, char **argv) {
+  (void)argc;
+  (void)argv;
   testDtypeSizes();
   testNDArrayRAII();
   testNpyIORoundTrip();
   testNpyIOErrors();
-  testCompilerMixArtifact();
-  testPackedMixExecutorErrors();
+  testRuntimeNativeDynamicLibraryArtifactErrors();
   testRuntimePathUtils();
-  testHostRunnerGen();
+  testRuntimeToolDiscovery();
+  testMixCompileMetadataSchema();
+  testMixAbiManifestCompatibilityBoundary();
+  testMixAbiManifestSerializationDropsLegacyLaunchFields();
+  testMixAbiManifestSerializationRetainsLegacyIoContract();
 
   llvm::outs() << "\n========================================\n"
                << "Results: " << g_pass << " passed, " << g_fail << " failed\n"
