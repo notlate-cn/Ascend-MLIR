@@ -211,6 +211,11 @@ static LogicalResult prepareFunc(func::FuncOp func) {
           auto argIdxAttr = cast<IntegerAttr>(field.get("arg_index"));
           auto nameAttr   = cast<StringAttr>(field.get("name"));
           unsigned argIdx = (unsigned)argIdxAttr.getValue().getSExtValue();
+          if (argIdx >= entry.getNumArguments()) {
+            func.emitError("vector_plan.tiling_infos arg_index ")
+                << argIdx << " out of range for func " << func.getName();
+            return failure();
+          }
           tilingArgs.push_back(cast<BlockArgument>(entry.getArgument(argIdx)));
           tilingArgNames.push_back(nameAttr.getValue().str());
         }
