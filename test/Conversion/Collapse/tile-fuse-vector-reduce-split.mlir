@@ -1,0 +1,33 @@
+// RUN: afir-opt %s "--vector-plan-tile-fuse=enable-reduction-split=true" 2>&1 | FileCheck %s
+//
+// Phase 4: reduction split with RBLOCK. d1 becomes RBLOCK_0 Inner parameter.
+// Expected: XBLOCK + XBLOCK_SUB + RBLOCK_0 func args.
+// Outer loop {ascendc.parallel}, inner parallel loop, linalg.fill, RBLOCK scf.for, insert_slice.
+
+// CHECK: func.func @reduce_split(
+// CHECK-SAME: %[[XBLOCK:[^ ,)]*]]: index {vector_plan.default_tile_size = 128 : i64}
+// CHECK-SAME: %[[XBLOCK_SUB:[^ ,)]*]]: index {vector_plan.default_tile_size = 16 : i64}
+// CHECK-SAME: %[[RBLOCK:[^ ,)]*]]: index {vector_plan.default_tile_size = 64 : i64}
+
+// CHECK: scf.for %{{.*}} = %{{.*}} to %{{.*}} step %[[XBLOCK]]
+// CHECK: scf.for %{{.*}} = %{{.*}} to %[[XBLOCK]] step %[[XBLOCK_SUB]]
+// CHECK: linalg.fill
+// CHECK: scf.for %{{.*}} = %{{.*}} to %{{.*}} step %[[RBLOCK]]
+// CHECK: linalg.generic
+// CHECK: tensor.insert_slice
+// CHECK: } {ascendc.parallel}
+
+func.func @reduce_split(%a: tensor<1024x512xf32>,
+                         %c: tensor<1024xf32>) -> tensor<1024xf32> {
+  %result = linalg.generic {
+    indexing_maps = [affine_map<(d0, d1) -> (d0, d1)>,
+                     affine_map<(d0, d1) -> (d0)>],
+    iterator_types = ["parallel", "reduction"]}
+    ins(%a : tensor<1024x512xf32>)
+    outs(%c : tensor<1024xf32>) {
+  ^bb0(%a0: f32, %acc: f32):
+    %add = arith.addf %a0, %acc : f32
+    linalg.yield %add : f32
+  } -> tensor<1024xf32>
+  return %result : tensor<1024xf32>
+}
