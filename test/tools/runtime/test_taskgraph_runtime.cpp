@@ -1,0 +1,6543 @@
+// test/tools/runtime/test_taskgraph_runtime.cpp
+//
+// Focused unit test for the runtime task graph / profile trace object model.
+//
+// Build (on xvm):
+//   cd /home/niu/code/Codex-Ascend-MLIR
+//   c++ -std=c++17 -I include -I /home/niu/code/llvm-project/build/include \
+//       -I /home/niu/code/llvm-project/llvm/include \
+//       test/tools/runtime/test_taskgraph_runtime.cpp \
+//       build/lib/libAscendCRuntime.a \
+//       $(/home/niu/code/llvm-project/build/bin/llvm-config --ldflags --libs support) \
+//       -ldl -o /tmp/test_taskgraph_runtime
+//   /tmp/test_taskgraph_runtime
+
+#include "Runtime/ProfileTrace.h"
+#include "Runtime/ProfileUtils.h"
+#include "Runtime/MixAbi.h"
+#include "Runtime/MixArtifact.h"
+#include "Runtime/MixCommandBuilder.h"
+#include "Runtime/MixTilingGenerator.h"
+#include "Runtime/RunManifest.h"
+#include "Runtime/ExecutionBackend.h"
+#include "Runtime/Execution/DefaultExecutionRunner.h"
+#include "Runtime/Execution/GlobalScheduler.h"
+#include "Runtime/Execution/ExecutionRunner.h"
+#include "Runtime/Execution/BackendCapabilities.h"
+#include "Runtime/Execution/NativeExecutionRunner.h"
+#include "Runtime/Execution/ResourceScheduler.h"
+#include "Runtime/ExecutionSession.h"
+#include "Runtime/NpuBackend.h"
+#include "Runtime/NpyIO.h"
+#include "Runtime/TilingPack.h"
+#include "Runtime/TilingSchema.h"
+#include "Runtime/TaskGraph.h"
+#include "Runtime/ArtifactCompiler.h"
+#include "Runtime/Execution/RuntimeFrontendCore.h"
+#include "Runtime/VecCubeArtifactBackend.h"
+#include "Runtime/RuntimeSessionRequestBuilder.h"
+#include "Runtime/SimBackend.h"
+#include "Runtime/OutputComparator.h"
+#include "llvm/Support/JSON.h"
+#include "llvm/Support/Error.h"
+#include "llvm/Support/raw_ostream.h"
+
+#include <filesystem>
+#include <chrono>
+#include <condition_variable>
+#include <fstream>
+#include <atomic>
+#include <cstring>
+#include <cstdlib>
+#include <iterator>
+#include <limits>
+#include <mutex>
+#include <memory>
+#include <string>
+#include <thread>
+#include <tuple>
+#include <vector>
+
+#ifndef _WIN32
+#include <sys/wait.h>
+#include <unistd.h>
+#endif
+
+using namespace mlir::runtime;
+
+namespace mlir::runtime {
+llvm::Error
+runProcessesInParallelForTest(
+    llvm::ArrayRef<std::tuple<std::vector<std::string>, std::string,
+                              std::string>>
+        commands);
+llvm::Expected<std::string>
+serializeMixDirectTimingForTest(
+    llvm::ArrayRef<std::tuple<std::string, uint64_t>> entries);
+llvm::Expected<std::string> buildMixDirectSourceContractSummaryForTest(
+    llvm::StringRef outputRoot, llvm::StringRef sourcePath,
+    llvm::StringRef kernelName, llvm::StringRef socVersion);
+llvm::Expected<std::string> writeMixDirectSourceStubSummaryForTest(
+    llvm::StringRef outputRoot, llvm::StringRef sourcePath,
+    llvm::StringRef kernelName, llvm::StringRef socVersion, uint64_t mixFileLen);
+llvm::Expected<std::string> buildMixDirectDefaultContractSummaryForTest(
+    llvm::StringRef outputRoot, llvm::StringRef sourcePath,
+    llvm::StringRef kernelName, llvm::StringRef socVersion);
+llvm::Expected<std::string>
+materializeSimulatorProfileArtifactForTest(const ExecutionRequest &request,
+                                           int64_t cycleCount);
+llvm::Expected<ProfileTrace>
+retainProfileArtifactsForCli(const ProfileTrace &trace,
+                             llvm::StringRef destinationRoot);
+llvm::Expected<RetainedProfileCliArtifacts>
+retainProfileArtifactsForCliRun(const ProfileTrace &trace,
+                                llvm::StringRef destinationRoot);
+llvm::Error pruneRetainedProfileDirectoriesForTest(llvm::StringRef root,
+                                                   size_t keepCount);
+size_t retainedProfilePruneKeepCountForNewSession(size_t sessionLimit);
+llvm::Expected<std::string>
+prepareRetainedProfileRunRootForCli(llvm::StringRef destinationRoot,
+                                    size_t sessionLimit);
+}
+
+static int g_pass = 0;
+static int g_fail = 0;
+
+static std::string writeTempNpy(const std::string &stem,
+                                const std::vector<int64_t> &shape,
+                                DType dtype) {
+  std::filesystem::path path =
+      std::filesystem::temp_directory_path() / (stem + ".npy");
+  NDArray array;
+  array.shape = shape;
+  array.dtype = dtype;
+  array.allocate();
+  std::memset(array.data, 0, array.nbytes());
+  auto err = SaveNpy(path.string(), array);
+  if (err) {
+    llvm::errs() << "FAIL: cannot write temp npy " << path.string() << "\n";
+    llvm::consumeError(std::move(err));
+    ++g_fail;
+    return "";
+  }
+  return path.string();
+}
+
+static std::string readFileContents(const std::string &path);
+
+static std::string readTextFile(const std::string &path) {
+  std::ifstream is(path);
+  if (!is) {
+    llvm::errs() << "FAIL: cannot read temp file " << path << "\n";
+    ++g_fail;
+    return "";
+  }
+  return std::string((std::istreambuf_iterator<char>(is)),
+                     std::istreambuf_iterator<char>());
+}
+
+static NDArray makeArray(std::vector<int64_t> shape, DType dtype,
+                         std::vector<uint8_t> bytes) {
+  NDArray array;
+  array.shape = std::move(shape);
+  array.dtype = dtype;
+  array.allocate();
+  std::memcpy(array.data, bytes.data(), bytes.size());
+  return array;
+}
+
+static NDArray makeF32Array(std::vector<int64_t> shape,
+                            std::vector<float> values) {
+  NDArray array;
+  array.shape = std::move(shape);
+  array.dtype = DType::F32;
+  array.allocate();
+  std::memcpy(array.data, values.data(), values.size() * sizeof(float));
+  return array;
+}
+
+class FakeExecutionRunner final : public ExecutionRunner {
+public:
+  explicit FakeExecutionRunner(ExecutionRunnerMode mode) : mode_(mode) {}
+
+  ExecutionRunnerMode mode() const override { return mode_; }
+
+  llvm::Error initialize(int deviceId = 0) override {
+    initializeCalled = true;
+    lastDeviceId = deviceId;
+    return llvm::Error::success();
+  }
+
+  llvm::Error runFile(const FileExecutionLaunch &launch, RunArgs &) override {
+    runFileCalled = true;
+    lastFileLaunch = launch;
+    return llvm::Error::success();
+  }
+
+  llvm::Error runDynamicLibraryArtifact(
+      const DynamicLibraryExecutionLaunch &launch, RunArgs &) override {
+    runDynamicLibraryCalled = true;
+    lastDynamicLibraryLaunch = launch;
+    return llvm::Error::success();
+  }
+
+  bool initializeCalled = false;
+  bool runFileCalled = false;
+  bool runDynamicLibraryCalled = false;
+  int lastDeviceId = -1;
+  FileExecutionLaunch lastFileLaunch;
+  DynamicLibraryExecutionLaunch lastDynamicLibraryLaunch;
+
+private:
+  ExecutionRunnerMode mode_;
+};
+
+static std::filesystem::path makeTempDir(const std::string &stem) {
+  static int uniqueCounter = 0;
+  return std::filesystem::temp_directory_path() /
+         (stem + "-" + std::to_string(++uniqueCounter));
+}
+
+static std::filesystem::path makeRuntimeSessionArtifactRoot(
+    const std::string &stem) {
+  std::filesystem::path root = makeTempDir(stem);
+  std::filesystem::create_directories(root / "out");
+
+  std::ofstream manifest(root / "out" / "manifest.txt");
+  if (!manifest) {
+    llvm::errs() << "FAIL: cannot write runtime session manifest "
+                 << (root / "out" / "manifest.txt").string() << "\n";
+    ++g_fail;
+    return {};
+  }
+
+  manifest << "kernel_name=fake_kernel\n";
+  manifest << "soc_version=Ascend910B1\n";
+  manifest << "kernel_kind=mix\n";
+  manifest << "mix_resource_type=mix_1c1v\n";
+  manifest << "device_binary_path=fake.bin\n";
+
+  std::ofstream binary(root / "fake.bin", std::ios::binary);
+  if (!binary) {
+    llvm::errs() << "FAIL: cannot write runtime session binary "
+                 << (root / "fake.bin").string() << "\n";
+    ++g_fail;
+    return {};
+  }
+  binary.put('\0');
+  return root;
+}
+
+static std::filesystem::path makeRuntimeSessionArtifactRootWithMetadata(
+    const std::string &stem, bool writeMetadataFile) {
+  std::filesystem::path root = makeTempDir(stem);
+  std::filesystem::create_directories(root / "out");
+
+  std::ofstream manifest(root / "out" / "manifest.txt");
+  if (!manifest) {
+    llvm::errs() << "FAIL: cannot write runtime session manifest "
+                 << (root / "out" / "manifest.txt").string() << "\n";
+    ++g_fail;
+    return {};
+  }
+
+  manifest << "kernel_name=fake_kernel\n";
+  manifest << "soc_version=Ascend910B1\n";
+  manifest << "kernel_kind=mix\n";
+  manifest << "mix_resource_type=mix_1c1v\n";
+  manifest << "device_binary_path=fake.bin\n";
+  manifest << "metadata_path=out/mix_metadata.json\n";
+
+  std::ofstream binary(root / "fake.bin", std::ios::binary);
+  if (!binary) {
+    llvm::errs() << "FAIL: cannot write runtime session binary "
+                 << (root / "fake.bin").string() << "\n";
+    ++g_fail;
+    return {};
+  }
+  binary.put('\0');
+
+  if (writeMetadataFile) {
+    std::ofstream metadata(root / "out" / "mix_metadata.json");
+    if (!metadata) {
+      llvm::errs() << "FAIL: cannot write runtime session metadata "
+                   << (root / "out" / "mix_metadata.json").string() << "\n";
+      ++g_fail;
+      return {};
+    }
+    metadata << "{\n"
+             << "  \"schema_version\": 1,\n"
+             << "  \"kernel_kind\": \"mix\",\n"
+             << "  \"kernel_name\": \"fake_kernel\",\n"
+             << "  \"runtime_kernel_name\": \"fake_kernel\",\n"
+             << "  \"soc_version\": \"Ascend910B1\",\n"
+             << "  \"mix_kernel_type\": \"mix_aic_1_2\",\n"
+             << "  \"launcher_symbol\": \"aclrtlaunch_fake_kernel\",\n"
+             << "  \"entries\": { \"aic\": \"fake_kernel_0_mix_aic\", \"aiv\": \"fake_kernel_0_mix_aiv\" },\n"
+             << "  \"generated\": { \"source_path\": \"work/generated/auto_gen_fake_kernel.cpp\" },\n"
+             << "  \"device_compile\": {\n"
+             << "    \"aic_arch\": \"dav-c220-cube\",\n"
+             << "    \"aiv_arch\": \"dav-c220-vec\",\n"
+             << "    \"aic_definitions\": [],\n"
+             << "    \"aiv_definitions\": []\n"
+             << "  },\n"
+             << "  \"artifacts\": {\n"
+             << "    \"device_object_path\": \"out/device.o\",\n"
+             << "    \"packed_shared_object_path\": \"out/libfake_kernel_packed.so\",\n"
+             << "    \"tiling_file_path\": \"out/tiling.bin\",\n"
+             << "    \"launch_info_file_path\": \"out/launch_info.txt\"\n"
+             << "  },\n"
+             << "  \"abi\": {\n"
+             << "    \"workspace_mode\": \"fixed\",\n"
+             << "    \"workspace_bytes\": 16777216,\n"
+             << "    \"tiling_mode\": \"generated_file\",\n"
+             << "    \"tiling_source\": \"out/tiling.bin\",\n"
+             << "    \"inputs\": [],\n"
+             << "    \"outputs\": []\n"
+             << "  },\n"
+             << "  \"host_launch\": {\n"
+             << "    \"mode\": \"helper\",\n"
+             << "    \"helper_kind\": \"mix-tiling-helper\",\n"
+             << "    \"helper_inputs\": {}\n"
+             << "  }\n"
+             << "}\n";
+  }
+
+  return root;
+}
+
+static std::filesystem::path makeRuntimeSessionMixArtifactRootWithAbiDefaults(
+    const std::string &stem, bool writeMetadataFile) {
+  std::filesystem::path root = makeTempDir(stem);
+  std::filesystem::create_directories(root / "out");
+
+  std::ofstream manifest(root / "out" / "manifest.txt");
+  if (!manifest) {
+    llvm::errs() << "FAIL: cannot write mix artifact manifest "
+                 << (root / "out" / "manifest.txt").string() << "\n";
+    ++g_fail;
+    return {};
+  }
+
+  manifest << "kernel_name=fake_kernel\n";
+  manifest << "requested_kernel_name=fake_kernel\n";
+  manifest << "soc_version=Ascend910B1\n";
+  manifest << "kernel_kind=mix\n";
+  manifest << "mix_resource_type=mix_1c1v\n";
+  manifest << "device_binary_path=fake.bin\n";
+  manifest << "abi_input_count=2\n";
+  manifest << "abi_input0_name=lhs\n";
+  manifest << "abi_input0_file=fake_kernel.lhs.input.bin\n";
+  manifest << "abi_input0_dtype=f16\n";
+  manifest << "abi_input0_shape=16,16\n";
+  manifest << "abi_input1_name=rhs\n";
+  manifest << "abi_input1_file=fake_kernel.rhs.input.bin\n";
+  manifest << "abi_input1_dtype=f16\n";
+  manifest << "abi_input1_shape=16,16\n";
+  manifest << "abi_output_count=1\n";
+  manifest << "abi_output0_name=out\n";
+  manifest << "abi_output0_file=fake_kernel.out.output.bin\n";
+  manifest << "abi_output0_dtype=f16\n";
+  manifest << "abi_output0_shape=16,16\n";
+  manifest << "abi_output0_golden_file=fake_kernel.out.golden.bin\n";
+  manifest << "abi_workspace_bytes=2048\n";
+  manifest << "abi_block_dim=3\n";
+  manifest << "abi_workspace_mode=fixed\n";
+  manifest << "abi_tiling_mode=generated_file\n";
+  manifest << "abi_tiling_source=out/legacy_tiling.bin\n";
+  manifest << "abi_launcher_symbol=aclrtlaunch_fake_kernel_legacy\n";
+  manifest << "abi_aic_entry=fake_kernel_legacy_aic\n";
+  manifest << "abi_aiv_entry=fake_kernel_legacy_aiv\n";
+  if (writeMetadataFile)
+    manifest << "metadata_path=out/mix_metadata.json\n";
+
+  std::ofstream binary(root / "fake.bin", std::ios::binary);
+  if (!binary) {
+    llvm::errs() << "FAIL: cannot write mix artifact binary "
+                 << (root / "fake.bin").string() << "\n";
+    ++g_fail;
+    return {};
+  }
+  binary.put('\0');
+
+  std::ofstream legacyTiling(root / "out" / "legacy_tiling.bin",
+                             std::ios::binary);
+  if (!legacyTiling) {
+    llvm::errs() << "FAIL: cannot write legacy tiling binary "
+                 << (root / "out" / "legacy_tiling.bin").string() << "\n";
+    ++g_fail;
+    return {};
+  }
+  legacyTiling.put('\0');
+
+  if (writeMetadataFile) {
+    std::ofstream tiling(root / "out" / "tiling.bin", std::ios::binary);
+    if (!tiling) {
+      llvm::errs() << "FAIL: cannot write metadata tiling binary "
+                   << (root / "out" / "tiling.bin").string() << "\n";
+      ++g_fail;
+      return {};
+    }
+    tiling.put('\1');
+
+    std::ofstream launchInfo(root / "out" / "launch_info.txt");
+    if (!launchInfo) {
+      llvm::errs() << "FAIL: cannot write metadata launch info "
+                   << (root / "out" / "launch_info.txt").string() << "\n";
+      ++g_fail;
+      return {};
+    }
+    launchInfo << "block_dim=8\n";
+
+    std::ofstream metadata(root / "out" / "mix_metadata.json");
+    if (!metadata) {
+      llvm::errs() << "FAIL: cannot write mix metadata "
+                   << (root / "out" / "mix_metadata.json").string() << "\n";
+      ++g_fail;
+      return {};
+    }
+    metadata << "{\n"
+             << "  \"schema_version\": 1,\n"
+             << "  \"kernel_kind\": \"mix\",\n"
+             << "  \"kernel_name\": \"fake_kernel\",\n"
+             << "  \"runtime_kernel_name\": \"fake_kernel\",\n"
+             << "  \"soc_version\": \"Ascend910B1\",\n"
+             << "  \"mix_kernel_type\": \"mix_1c1v\",\n"
+             << "  \"launcher_symbol\": \"aclrtlaunch_fake_kernel\",\n"
+             << "  \"entries\": { \"aic\": \"fake_kernel_0_mix_aic\", \"aiv\": \"fake_kernel_0_mix_aiv\" },\n"
+             << "  \"generated\": { \"source_path\": \"work/generated/auto_gen_fake_kernel.cpp\" },\n"
+             << "  \"device_compile\": {\n"
+             << "    \"aic_arch\": \"dav-c220-cube\",\n"
+             << "    \"aiv_arch\": \"dav-c220-vec\",\n"
+             << "    \"aic_definitions\": [],\n"
+             << "    \"aiv_definitions\": []\n"
+             << "  },\n"
+             << "  \"artifacts\": {\n"
+             << "    \"device_object_path\": \"out/device.o\",\n"
+             << "    \"packed_shared_object_path\": \"out/libfake_kernel_packed.so\",\n"
+             << "    \"tiling_file_path\": \"out/tiling.bin\",\n"
+             << "    \"launch_info_file_path\": \"out/launch_info.txt\"\n"
+             << "  },\n"
+             << "  \"abi\": {\n"
+             << "    \"workspace_mode\": \"fixed\",\n"
+             << "    \"workspace_bytes\": 16777216,\n"
+             << "    \"tiling_mode\": \"generated_file\",\n"
+             << "    \"tiling_source\": \"out/tiling.bin\",\n"
+             << "    \"workspace_arg_index\": 5,\n"
+             << "    \"tiling_arg_index\": 6,\n"
+             << "    \"inputs\": [\n"
+             << "      { \"name\": \"lhs\", \"dtype\": \"f32\", \"shape\": [4, 8], \"runtime_file\": \"fake_kernel.lhs.input.bin\" },\n"
+             << "      { \"name\": \"rhs\", \"dtype\": \"f32\", \"shape\": [8, 4], \"runtime_file\": \"fake_kernel.rhs.input.bin\" }\n"
+             << "    ],\n"
+             << "    \"outputs\": [\n"
+             << "      { \"name\": \"out\", \"dtype\": \"f32\", \"shape\": [4, 8], \"runtime_file\": \"fake_kernel.out.output.bin\", \"golden_file\": \"fake_kernel.out.golden.bin\" }\n"
+             << "    ]\n"
+             << "  },\n"
+             << "  \"host_launch\": {\n"
+             << "    \"mode\": \"helper\",\n"
+             << "    \"helper_kind\": \"mix-tiling-helper\",\n"
+             << "    \"helper_inputs\": {}\n"
+             << "  }\n"
+             << "}\n";
+  }
+
+  return root;
+}
+
+static std::filesystem::path
+makeRuntimeSessionMetadataOnlyMixArtifactRoot(const std::string &stem) {
+  std::filesystem::path root = makeTempDir(stem);
+  std::filesystem::create_directories(root / "out");
+
+  std::ofstream manifest(root / "out" / "manifest.txt");
+  if (!manifest) {
+    llvm::errs() << "FAIL: cannot write metadata-only mix artifact manifest "
+                 << (root / "out" / "manifest.txt").string() << "\n";
+    ++g_fail;
+    return {};
+  }
+
+  manifest << "kernel_name=fake_kernel\n";
+  manifest << "requested_kernel_name=fake_kernel\n";
+  manifest << "soc_version=Ascend910B1\n";
+  manifest << "kernel_kind=mix\n";
+  manifest << "mix_resource_type=mix_1c1v\n";
+  manifest << "device_binary_path=fake.bin\n";
+  manifest << "metadata_path=out/mix_metadata.json\n";
+
+  std::ofstream binary(root / "fake.bin", std::ios::binary);
+  if (!binary) {
+    llvm::errs() << "FAIL: cannot write metadata-only mix artifact binary "
+                 << (root / "fake.bin").string() << "\n";
+    ++g_fail;
+    return {};
+  }
+  binary.put('\0');
+
+  std::ofstream tiling(root / "out" / "tiling.bin", std::ios::binary);
+  if (!tiling) {
+    llvm::errs() << "FAIL: cannot write metadata-only tiling binary "
+                 << (root / "out" / "tiling.bin").string() << "\n";
+    ++g_fail;
+    return {};
+  }
+  tiling.put('\1');
+
+  std::ofstream launchInfo(root / "out" / "launch_info.txt");
+  if (!launchInfo) {
+    llvm::errs() << "FAIL: cannot write metadata-only launch info "
+                 << (root / "out" / "launch_info.txt").string() << "\n";
+    ++g_fail;
+    return {};
+  }
+  launchInfo << "block_dim=11\n";
+
+  std::ofstream metadata(root / "out" / "mix_metadata.json");
+  if (!metadata) {
+    llvm::errs() << "FAIL: cannot write metadata-only mix metadata "
+                 << (root / "out" / "mix_metadata.json").string() << "\n";
+    ++g_fail;
+    return {};
+  }
+  metadata << "{\n"
+           << "  \"schema_version\": 1,\n"
+           << "  \"kernel_kind\": \"mix\",\n"
+           << "  \"kernel_name\": \"fake_kernel\",\n"
+           << "  \"runtime_kernel_name\": \"fake_kernel\",\n"
+           << "  \"soc_version\": \"Ascend910B1\",\n"
+           << "  \"mix_kernel_type\": \"mix_1c1v\",\n"
+           << "  \"launcher_symbol\": \"aclrtlaunch_fake_kernel\",\n"
+           << "  \"entries\": { \"aic\": \"fake_kernel_0_mix_aic\", \"aiv\": \"fake_kernel_0_mix_aiv\" },\n"
+           << "  \"generated\": { \"source_path\": \"work/generated/auto_gen_fake_kernel.cpp\" },\n"
+           << "  \"device_compile\": {\n"
+           << "    \"aic_arch\": \"dav-c220-cube\",\n"
+           << "    \"aiv_arch\": \"dav-c220-vec\",\n"
+           << "    \"aic_definitions\": [],\n"
+           << "    \"aiv_definitions\": []\n"
+           << "  },\n"
+           << "  \"artifacts\": {\n"
+           << "    \"device_object_path\": \"out/device.o\",\n"
+           << "    \"packed_shared_object_path\": \"out/libfake_kernel_packed.so\",\n"
+           << "    \"tiling_file_path\": \"out/tiling.bin\",\n"
+           << "    \"launch_info_file_path\": \"out/launch_info.txt\"\n"
+           << "  },\n"
+           << "  \"abi\": {\n"
+           << "    \"workspace_mode\": \"fixed\",\n"
+           << "    \"workspace_bytes\": 4096,\n"
+           << "    \"tiling_mode\": \"generated_file\",\n"
+           << "    \"tiling_source\": \"out/tiling.bin\",\n"
+           << "    \"workspace_arg_index\": 5,\n"
+           << "    \"tiling_arg_index\": 6,\n"
+           << "    \"inputs\": [\n"
+           << "      { \"name\": \"lhs\", \"dtype\": \"f32\", \"shape\": [2, 3], \"runtime_file\": \"fake_kernel.lhs.input.bin\" },\n"
+           << "      { \"name\": \"rhs\", \"dtype\": \"f32\", \"shape\": [3, 4], \"runtime_file\": \"fake_kernel.rhs.input.bin\" }\n"
+           << "    ],\n"
+           << "    \"outputs\": [\n"
+           << "      { \"name\": \"out\", \"dtype\": \"f32\", \"shape\": [2, 4], \"runtime_file\": \"fake_kernel.out.output.bin\", \"golden_file\": \"fake_kernel.out.golden.bin\" }\n"
+           << "    ]\n"
+           << "  },\n"
+           << "  \"host_launch\": {\n"
+           << "    \"mode\": \"helper\",\n"
+           << "    \"helper_kind\": \"mix-tiling-helper\",\n"
+           << "    \"helper_inputs\": {}\n"
+           << "  }\n"
+           << "}\n";
+
+  return root;
+}
+
+static std::filesystem::path makeRuntimeSessionVecArtifactRoot(
+    const std::string &stem) {
+  std::filesystem::path root = makeTempDir(stem);
+  std::filesystem::create_directories(root / "out");
+
+  std::ofstream manifest(root / "out" / "manifest.txt");
+  if (!manifest) {
+    llvm::errs() << "FAIL: cannot write runtime session manifest "
+                 << (root / "out" / "manifest.txt").string() << "\n";
+    ++g_fail;
+    return {};
+  }
+
+  manifest << "kernel_name=fake_vec\n";
+  manifest << "soc_version=Ascend910B1\n";
+  manifest << "kernel_kind=vec\n";
+  manifest << "device_binary_path=fake.bin\n";
+
+  std::ofstream binary(root / "fake.bin", std::ios::binary);
+  if (!binary) {
+    llvm::errs() << "FAIL: cannot write runtime session binary "
+                 << (root / "fake.bin").string() << "\n";
+    ++g_fail;
+    return {};
+  }
+  binary.put('\0');
+  return root;
+}
+
+static std::filesystem::path makeRuntimeSessionArtifactRootWithoutKernelKind(
+    const std::string &stem) {
+  std::filesystem::path root = makeTempDir(stem);
+  std::filesystem::create_directories(root / "out");
+
+  std::ofstream manifest(root / "out" / "manifest.txt");
+  if (!manifest) {
+    llvm::errs() << "FAIL: cannot write runtime session manifest "
+                 << (root / "out" / "manifest.txt").string() << "\n";
+    ++g_fail;
+    return {};
+  }
+
+  manifest << "kernel_name=fake_kernel\n";
+  manifest << "soc_version=Ascend910B1\n";
+  manifest << "mix_resource_type=mix_1c1v\n";
+  manifest << "device_binary_path=fake.bin\n";
+
+  std::ofstream binary(root / "fake.bin", std::ios::binary);
+  if (!binary) {
+    llvm::errs() << "FAIL: cannot write runtime session binary "
+                 << (root / "fake.bin").string() << "\n";
+    ++g_fail;
+    return {};
+  }
+  binary.put('\0');
+  return root;
+}
+
+struct RuntimeSessionTempRoot {
+  explicit RuntimeSessionTempRoot(std::filesystem::path p)
+      : path(std::move(p)) {}
+
+  ~RuntimeSessionTempRoot() {
+    if (path.empty())
+      return;
+    std::error_code ec;
+    std::filesystem::remove_all(path, ec);
+  }
+
+  std::filesystem::path path;
+};
+
+class RecordingBackendDriver : public ExecutionBackendDriver {
+public:
+  llvm::Expected<ExecutionResult>
+  run(const ExecutionRequest &request) override {
+    ++invocations;
+    lastRequest = request;
+    ExecutionResult result;
+    result.taskId = "driver:" + request.task.taskId;
+    result.producedFiles.push_back(request.workingDirectory + "/done");
+    return result;
+  }
+
+  int invocations = 0;
+  ExecutionRequest lastRequest;
+};
+
+class ProfileArtifactBackendDriver : public ExecutionBackendDriver {
+public:
+  llvm::Expected<ExecutionResult>
+  run(const ExecutionRequest &request) override {
+    ++invocations;
+    lastRequest = request;
+    ExecutionResult result;
+    result.taskId = "driver:" + request.task.taskId;
+    result.producedFiles.push_back(request.workingDirectory + "/done");
+    result.producedFiles.push_back(
+        request.workingDirectory + "/opprof/simulator/trace.json");
+    ProfileTrace trace;
+    trace.sessionId = "driver-session";
+    addProfileArtifact(trace, "driver-task", ExecutionBackendKind::Simulation,
+                       "/tmp/existing/profile.json");
+    result.profileTrace = std::move(trace);
+    return result;
+  }
+
+  int invocations = 0;
+  ExecutionRequest lastRequest;
+};
+
+class SynthesizingProfileArtifactBackendDriver : public ExecutionBackendDriver {
+public:
+  llvm::Expected<ExecutionResult>
+  run(const ExecutionRequest &request) override {
+    ++invocations;
+    lastRequest = request;
+    ExecutionResult result;
+    result.taskId = "driver:" + request.task.taskId;
+    result.producedFiles.push_back(
+        request.workingDirectory + "/opprof/simulator/trace.json");
+    return result;
+  }
+
+  int invocations = 0;
+  ExecutionRequest lastRequest;
+};
+
+class OrderedExecutionBackendDriver : public ExecutionBackendDriver {
+public:
+  llvm::Expected<ExecutionResult>
+  run(const ExecutionRequest &request) override {
+    seenTaskIds.push_back(request.task.taskId);
+    seenSessionIds.push_back(request.sessionId);
+    seenWorkingDirectories.push_back(request.workingDirectory);
+
+    ExecutionResult result;
+    result.taskId = request.task.taskId;
+    result.producedFiles.push_back(request.workingDirectory + "/" +
+                                   request.task.taskId + ".done");
+
+    ProfileTrace trace;
+    trace.sessionId = request.sessionId;
+    addProfileArtifact(trace, request.task.taskId,
+                       ExecutionBackendKind::Simulation,
+                       request.workingDirectory + "/" + request.task.taskId +
+                           ".profile.json");
+    result.profileTrace = std::move(trace);
+    return result;
+  }
+
+  std::vector<std::string> seenTaskIds;
+  std::vector<std::string> seenSessionIds;
+  std::vector<std::string> seenWorkingDirectories;
+};
+
+class ConcurrentRootOverlapBackendDriver : public ExecutionBackendDriver {
+public:
+  BackendCapabilities capabilities() const override {
+    BackendCapabilities caps;
+    caps.supportsConcurrentDispatch = true;
+    caps.supportsConcurrentExecution = false;
+    caps.requiresSerializedLaunch = false;
+    caps.maxConcurrentTasks = 2;
+    caps.maxConcurrentStreams = 2;
+    return caps;
+  }
+
+  llvm::Expected<ExecutionResult>
+  run(const ExecutionRequest &request) override {
+    {
+      std::lock_guard<std::mutex> lock(mu);
+      seenTaskIds.push_back(request.task.taskId);
+    }
+
+    const int runningNow = ++runningCount;
+    int observedMax = maxRunning.load();
+    while (runningNow > observedMax &&
+           !maxRunning.compare_exchange_weak(observedMax, runningNow)) {
+    }
+
+    if (request.task.taskId == "task_a" || request.task.taskId == "task_b")
+      std::this_thread::sleep_for(std::chrono::milliseconds(120));
+
+    --runningCount;
+
+    ExecutionResult result;
+    result.taskId = request.task.taskId;
+    return result;
+  }
+
+  std::atomic<int> runningCount{0};
+  std::atomic<int> maxRunning{0};
+  std::mutex mu;
+  std::vector<std::string> seenTaskIds;
+};
+
+class ConcurrentFailureStopsJoinBackendDriver : public ExecutionBackendDriver {
+public:
+  BackendCapabilities capabilities() const override {
+    BackendCapabilities caps;
+    caps.supportsConcurrentDispatch = true;
+    caps.supportsConcurrentExecution = false;
+    caps.requiresSerializedLaunch = false;
+    caps.maxConcurrentTasks = 2;
+    caps.maxConcurrentStreams = 2;
+    return caps;
+  }
+
+  llvm::Expected<ExecutionResult>
+  run(const ExecutionRequest &request) override {
+    {
+      std::lock_guard<std::mutex> lock(mu);
+      seenTaskIds.push_back(request.task.taskId);
+    }
+
+    if (request.task.taskId == "task_a") {
+      {
+        std::lock_guard<std::mutex> lock(mu);
+        taskAStarted = true;
+      }
+      cv.notify_all();
+
+      std::unique_lock<std::mutex> lock(mu);
+      if (!cv.wait_for(lock, std::chrono::milliseconds(200),
+                       [&] { return taskBFailed; })) {
+        taskATimedOutWaitingForFailure = true;
+      }
+
+      ExecutionResult result;
+      result.taskId = request.task.taskId;
+      return result;
+    }
+
+    if (request.task.taskId == "task_b") {
+      std::unique_lock<std::mutex> lock(mu);
+      cv.wait_for(lock, std::chrono::milliseconds(200),
+                  [&] { return taskAStarted; });
+      taskBFailed = true;
+      lock.unlock();
+      cv.notify_all();
+      return llvm::createStringError(llvm::inconvertibleErrorCode(),
+                                     "[test:concurrent] rejected task_b");
+    }
+
+    ExecutionResult result;
+    result.taskId = request.task.taskId;
+    return result;
+  }
+
+  std::mutex mu;
+  std::condition_variable cv;
+  bool taskAStarted = false;
+  bool taskBFailed = false;
+  bool taskATimedOutWaitingForFailure = false;
+  std::vector<std::string> seenTaskIds;
+};
+
+class FailingExecutionBackendDriver : public ExecutionBackendDriver {
+public:
+  explicit FailingExecutionBackendDriver(std::string message)
+      : message(std::move(message)) {}
+
+  llvm::Expected<ExecutionResult>
+  run(const ExecutionRequest &) override {
+    return llvm::createStringError(llvm::inconvertibleErrorCode(), "%s",
+                                   message.c_str());
+  }
+
+  std::string message;
+};
+
+class CapturingExecutionBackendDriver : public ExecutionBackendDriver {
+public:
+  llvm::Expected<ExecutionResult>
+  run(const ExecutionRequest &request) override {
+    requests.push_back(request);
+    ExecutionResult result;
+    result.taskId = request.task.taskId;
+    for (const TensorBinding &binding : request.task.invocation.outputs)
+      result.producedFiles.push_back(binding.path);
+    return result;
+  }
+
+  std::vector<ExecutionRequest> requests;
+};
+
+static RuntimeTask makeGateTask(const std::string &taskId, KernelKind kind,
+                                MixResourceType mixType) {
+  RuntimeTask task;
+  task.taskId = taskId;
+  task.artifact.kernelName = taskId + "_kernel";
+  task.artifact.kernelKind = kind;
+  task.artifact.mixResourceType = mixType;
+  task.artifact.socVersion = "Ascend910B1";
+  return task;
+}
+
+class SuccessfulNpuBackendDriver : public ExecutionBackendDriver {
+public:
+  llvm::Expected<ExecutionResult>
+  run(const ExecutionRequest &request) override {
+    ++invocations;
+    lastRequest = request;
+    ExecutionResult result;
+    result.taskId = request.task.taskId;
+    for (const TensorBinding &binding : request.task.invocation.outputs)
+      result.producedFiles.push_back(binding.path);
+    ProfileTrace trace;
+    trace.sessionId = request.sessionId;
+    trace.addProfileArtifact(request.task.taskId, ExecutionBackendKind::Npu,
+                             request.workingDirectory + "/" +
+                                 request.task.taskId + ".npu-profile.json");
+    result.profileTrace = std::move(trace);
+    return result;
+  }
+
+  int invocations = 0;
+  ExecutionRequest lastRequest;
+};
+
+#define EXPECT(cond, msg)                                                     \
+  do {                                                                        \
+    if (cond) {                                                               \
+      ++g_pass;                                                               \
+    } else {                                                                  \
+      llvm::errs() << "FAIL: " << (msg) << "\n";                            \
+      ++g_fail;                                                               \
+    }                                                                         \
+  } while (0)
+
+static void testTaskGraphBasics() {
+  TaskGraph graph;
+
+  KernelArtifact artifact;
+  artifact.kernelName = "mix_add";
+  artifact.kernelKind = KernelKind::Mix;
+  artifact.mixResourceType = MixResourceType::Mix1C1V;
+
+  RuntimeTask taskA;
+  taskA.taskId = "task_a";
+  taskA.artifact = artifact;
+
+  RuntimeTask taskB;
+  taskB.taskId = "task_b";
+  taskB.artifact = artifact;
+  taskB.dependencies = {"task_a"};
+
+  auto addA = graph.addTask(taskA);
+  EXPECT(!addA, "add task_a");
+  auto addB = graph.addTask(taskB);
+  EXPECT(!addB, "add task_b");
+
+  auto orderedOr = graph.orderedTasks();
+  EXPECT((bool)orderedOr, "orderedTasks succeeds");
+  if (orderedOr) {
+    EXPECT(orderedOr->size() == 2, "orderedTasks size");
+    EXPECT((*orderedOr)[0].taskId == "task_a", "orderedTasks first task");
+    EXPECT((*orderedOr)[1].taskId == "task_b", "orderedTasks second task");
+    EXPECT((*orderedOr)[0].artifact.kernelName == "mix_add",
+           "orderedTasks preserves payload");
+  }
+
+  auto orderOr = graph.topologicalOrder();
+  EXPECT((bool)orderOr, "topologicalOrder succeeds");
+  if (orderOr) {
+    EXPECT(orderOr->size() == 2, "topologicalOrder size");
+    EXPECT((*orderOr)[0] == "task_a", "topologicalOrder first id");
+    EXPECT((*orderOr)[1] == "task_b", "topologicalOrder second id");
+  }
+
+  ProfileTrace trace;
+  trace.sessionId = "sess0";
+  ProfileEvent event;
+  event.taskId = "task_a";
+  event.backend = ExecutionBackendKind::Simulation;
+  event.eventKind = "kernel_complete";
+  event.artifact = "trace.json";
+  trace.events.push_back(event);
+  EXPECT(trace.sessionId == "sess0", "profile trace session id");
+  EXPECT(trace.events.size() == 1, "profile trace stores events");
+  EXPECT(trace.events[0].taskId == "task_a", "profile event task id");
+}
+
+static void testProfileTraceCollectsArtifactPaths() {
+  ProfileTrace trace;
+  trace.sessionId = "sess1";
+  trace.addEvent(ProfileEvent{"task_a", ExecutionBackendKind::Simulation,
+                              "kernel_complete", "/tmp/not-a-profile"});
+  trace.addProfileArtifact("task_a", ExecutionBackendKind::Simulation,
+                           "/tmp/profile_a.json");
+  trace.addProfileArtifact("task_b", ExecutionBackendKind::Simulation,
+                           "/tmp/profile_b.json");
+
+  const std::vector<std::string> artifacts = trace.profileArtifactPaths();
+  EXPECT(artifacts.size() == 2,
+         "profile trace collects only profile artifact events");
+  if (artifacts.size() == 2) {
+    EXPECT(artifacts[0] == "/tmp/profile_a.json",
+           "profile trace preserves first artifact path");
+    EXPECT(artifacts[1] == "/tmp/profile_b.json",
+           "profile trace preserves second artifact path");
+  }
+}
+
+static void testDuplicateTaskIds() {
+  TaskGraph graph;
+  RuntimeTask task;
+  task.taskId = "dup";
+
+  auto add1 = graph.addTask(task);
+  EXPECT(!add1, "first duplicate-test insert succeeds");
+  auto add2 = graph.addTask(task);
+  EXPECT((bool)add2, "duplicate task id rejected");
+  if (add2)
+    llvm::consumeError(std::move(add2));
+}
+
+static void testEmptyTaskId() {
+  TaskGraph graph;
+  RuntimeTask task;
+  task.taskId = "";
+
+  auto add = graph.addTask(task);
+  EXPECT((bool)add, "empty task id rejected");
+  if (add)
+    llvm::consumeError(std::move(add));
+}
+
+static void testUnknownDependency() {
+  TaskGraph graph;
+  RuntimeTask task;
+  task.taskId = "task_b";
+  task.dependencies = {"task_a"};
+
+  auto add = graph.addTask(task);
+  EXPECT(!add, "insert task with missing dependency");
+  auto orderOr = graph.topologicalOrder();
+  EXPECT(!(bool)orderOr, "unknown dependency rejected");
+  if (!orderOr)
+    llvm::consumeError(orderOr.takeError());
+}
+
+static void testCycleDetection() {
+  TaskGraph graph;
+
+  RuntimeTask taskA;
+  taskA.taskId = "task_a";
+  taskA.dependencies = {"task_b"};
+
+  RuntimeTask taskB;
+  taskB.taskId = "task_b";
+  taskB.dependencies = {"task_a"};
+
+  auto addA = graph.addTask(taskA);
+  EXPECT(!addA, "insert cycle task_a");
+  auto addB = graph.addTask(taskB);
+  EXPECT(!addB, "insert cycle task_b");
+
+  auto orderOr = graph.topologicalOrder();
+  EXPECT(!(bool)orderOr, "cycle rejected");
+  if (!orderOr)
+    llvm::consumeError(orderOr.takeError());
+}
+
+static void testKernelArtifactNormalization() {
+  EXPECT(inferMixResourceTypeFromKernelKind(KernelKind::Mix) ==
+             MixResourceType::Mix1C1V,
+         "mix kernels default to Mix1C1V");
+  EXPECT(inferMixResourceTypeFromKernelKind(KernelKind::Vec) ==
+             MixResourceType::Unknown,
+         "non-mix kernels do not infer a mix resource type");
+
+  MixArtifact mixArtifact;
+  mixArtifact.kernel_name = "demo_kernel";
+  mixArtifact.soc_version = "Ascend910B1";
+  mixArtifact.work_dir = "/tmp/mix/work";
+  mixArtifact.kernel_so_path = "/tmp/mix/libdemo_kernel_packed.so";
+  mixArtifact.device_object_path = "/tmp/mix/device.o";
+  mixArtifact.manifest_path = "/tmp/mix/mix-artifact.txt";
+  mixArtifact.metadata_path = "/tmp/mix/out/mix_metadata.json";
+
+  KernelArtifact normalizedMix = normalizeMixArtifact(
+      mixArtifact, KernelKind::Mix, MixResourceType::Mix1C1V);
+  EXPECT(normalizedMix.kernelName == "demo_kernel",
+         "normalized mix artifact keeps kernel name");
+  EXPECT(normalizedMix.kernelKind == KernelKind::Mix,
+         "normalized mix artifact keeps kernel kind");
+  EXPECT(normalizedMix.mixResourceType == MixResourceType::Mix1C1V,
+         "normalized mix artifact keeps resource type");
+  EXPECT(normalizedMix.deviceBinaryPath == "/tmp/mix/device.o",
+         "normalized mix artifact stores device object path");
+  EXPECT(normalizedMix.sharedLibraryPath ==
+             "/tmp/mix/libdemo_kernel_packed.so",
+         "normalized mix artifact stores shared library path");
+  EXPECT(normalizedMix.sharedLibrarySymbol == "aclrtlaunch_demo_kernel",
+         "normalized mix artifact stores shared library symbol");
+  EXPECT(normalizedMix.manifestPath == "/tmp/mix/mix-artifact.txt",
+         "normalized mix artifact stores manifest path");
+  EXPECT(normalizedMix.metadataPath == "/tmp/mix/out/mix_metadata.json",
+         "normalized mix artifact stores metadata path");
+  EXPECT(normalizedMix.artifactRoot == "/tmp/mix",
+         "normalized mix artifact stores compile root, not work dir");
+}
+
+static void testVecCubeArtifactBackendCompilesVecArtifact() {
+  const std::filesystem::path rootPath = makeTempDir("vec-cube-backend-vec");
+  RuntimeSessionTempRoot cleanup(rootPath);
+  EXPECT(!cleanup.path.empty(), "vec cube backend vec fixture root created");
+  if (cleanup.path.empty())
+    return;
+
+  ArtifactCompileRequest req;
+  req.kernelSource = "examples/relu-broadcast-transpose/step8_kernel.cpp";
+  req.kernelName = "relu_transpose_broadcast_add";
+  req.kernelKind = KernelKind::Vec;
+  req.outputDir = cleanup.path.string();
+
+  VecCubeArtifactBackend backend;
+  auto artifactOr = backend.compile(req, "Ascend910B1");
+  EXPECT((bool)artifactOr, "vec cube backend compiles vec request");
+  if (!artifactOr) {
+    llvm::consumeError(artifactOr.takeError());
+    return;
+  }
+
+  const std::filesystem::path expectedManifest =
+      cleanup.path / "out" / "manifest.txt";
+  EXPECT(artifactOr->kernelKind == KernelKind::Vec,
+         "vec cube backend preserves vec kernel kind");
+  EXPECT(artifactOr->mixResourceType == MixResourceType::Unknown,
+         "vec cube backend keeps vec mix resource unknown");
+  EXPECT(artifactOr->manifestPath == expectedManifest.string(),
+         "vec cube backend writes vec manifest under out/manifest.txt");
+  EXPECT(std::filesystem::exists(artifactOr->manifestPath),
+         "vec cube backend manifest file exists");
+  EXPECT(std::filesystem::path(artifactOr->manifestPath).parent_path().filename() ==
+             "out",
+         "vec cube backend manifest path parent directory is out");
+  const std::string manifestContents =
+      readFileContents(artifactOr->manifestPath);
+  EXPECT(manifestContents.find("kernel_kind=vec") != std::string::npos,
+         "vec cube backend manifest records vec kernel kind");
+}
+
+static void testVecCubeArtifactBackendCompilesCubeArtifact() {
+  const std::filesystem::path rootPath = makeTempDir("vec-cube-backend-cube");
+  RuntimeSessionTempRoot cleanup(rootPath);
+  EXPECT(!cleanup.path.empty(), "vec cube backend cube fixture root created");
+  if (cleanup.path.empty())
+    return;
+
+  ArtifactCompileRequest req;
+  req.kernelSource = "examples/matmul-add-leakyrelu/step8_kernel.cpp";
+  req.kernelName = "matmul_add_leakyrelu";
+  req.kernelKind = KernelKind::Cube;
+  req.outputDir = cleanup.path.string();
+
+  VecCubeArtifactBackend backend;
+  auto artifactOr = backend.compile(req, "Ascend910B1");
+  EXPECT((bool)artifactOr, "vec cube backend compiles cube request");
+  if (!artifactOr) {
+    llvm::consumeError(artifactOr.takeError());
+    return;
+  }
+
+  const std::filesystem::path expectedManifest =
+      cleanup.path / "out" / "manifest.txt";
+  EXPECT(artifactOr->kernelKind == KernelKind::Cube,
+         "vec cube backend preserves cube kernel kind");
+  EXPECT(artifactOr->mixResourceType == MixResourceType::Unknown,
+         "vec cube backend keeps cube mix resource unknown");
+  EXPECT(artifactOr->manifestPath == expectedManifest.string(),
+         "vec cube backend writes cube manifest under out/manifest.txt");
+  EXPECT(std::filesystem::exists(artifactOr->manifestPath),
+         "vec cube backend manifest file exists");
+  EXPECT(std::filesystem::path(artifactOr->manifestPath).parent_path().filename() ==
+             "out",
+         "vec cube backend manifest path parent directory is out");
+  const std::string manifestContents =
+      readFileContents(artifactOr->manifestPath);
+  EXPECT(manifestContents.find("kernel_kind=cube") != std::string::npos,
+         "vec cube backend manifest records cube kernel kind");
+}
+
+static void testRuntimeSessionRequestBuilderLoadsMixArtifactFromRoot() {
+  const std::filesystem::path rootPath =
+      makeRuntimeSessionArtifactRoot("runtime-session-builder-artifact");
+  RuntimeSessionTempRoot cleanup(rootPath);
+  EXPECT(!cleanup.path.empty(), "runtime session builder fixture root created");
+  if (cleanup.path.empty())
+    return;
+
+  auto artifactOr = loadRuntimeSessionArtifactFromRoot(cleanup.path.string());
+  EXPECT((bool)artifactOr, "runtime session builder loads artifact root");
+  if (!artifactOr) {
+    llvm::consumeError(artifactOr.takeError());
+    return;
+  }
+
+  EXPECT(artifactOr->kernelName == "fake_kernel",
+         "runtime session builder loads kernel name from manifest root");
+  EXPECT(artifactOr->kernelKind == KernelKind::Mix,
+         "runtime session builder loads kernel kind from manifest root");
+  EXPECT(artifactOr->mixResourceType == MixResourceType::Mix1C1V,
+         "runtime session builder loads mix resource type from manifest root");
+  EXPECT(artifactOr->artifactRoot == cleanup.path.string(),
+         "runtime session builder keeps artifact root");
+  EXPECT(artifactOr->manifestPath ==
+             (cleanup.path / "out" / "manifest.txt").string(),
+         "runtime session builder keeps manifest path");
+}
+
+static void testRuntimeSessionRequestBuilderLoadsMixArtifactMetadataPath() {
+  const std::filesystem::path rootPath =
+      makeRuntimeSessionArtifactRootWithMetadata(
+          "runtime-session-builder-artifact-metadata", true);
+  RuntimeSessionTempRoot cleanup(rootPath);
+  EXPECT(!cleanup.path.empty(),
+         "runtime session builder metadata fixture root created");
+  if (cleanup.path.empty())
+    return;
+
+  auto artifactOr = loadRuntimeSessionArtifactFromRoot(cleanup.path.string());
+  EXPECT((bool)artifactOr,
+         "runtime session builder loads artifact root with metadata");
+  if (!artifactOr) {
+    llvm::consumeError(artifactOr.takeError());
+    return;
+  }
+
+  EXPECT(artifactOr->metadataPath ==
+             (cleanup.path / "out" / "mix_metadata.json").string(),
+         "runtime session builder keeps metadata path");
+  EXPECT(artifactOr->sharedLibrarySymbol == "aclrtlaunch_fake_kernel",
+         "runtime session builder keeps mix metadata launcher symbol");
+}
+
+static void testRuntimeSessionRequestBuilderRejectsMissingMixArtifactMetadata() {
+  const std::filesystem::path rootPath =
+      makeRuntimeSessionArtifactRootWithMetadata(
+          "runtime-session-builder-artifact-metadata-missing", false);
+  RuntimeSessionTempRoot cleanup(rootPath);
+  EXPECT(!cleanup.path.empty(),
+         "runtime session builder missing metadata fixture root created");
+  if (cleanup.path.empty())
+    return;
+
+  auto artifactOr = loadRuntimeSessionArtifactFromRoot(cleanup.path.string());
+  EXPECT(!(bool)artifactOr,
+         "runtime session builder rejects advertised missing metadata path");
+  if (!artifactOr)
+    llvm::consumeError(artifactOr.takeError());
+}
+
+static void testPrepareRuntimeSessionGraphUsesMixMetadataDefaults() {
+  const std::filesystem::path rootPath =
+      makeRuntimeSessionMixArtifactRootWithAbiDefaults(
+          "runtime-session-builder-mix-metadata-defaults", true);
+  RuntimeSessionTempRoot cleanup(rootPath);
+  EXPECT(!cleanup.path.empty(),
+         "runtime session builder mix metadata-default fixture root created");
+  if (cleanup.path.empty())
+    return;
+
+  const std::filesystem::path manifestPath =
+      makeTempDir("runtime-session-builder-mix-metadata-run-manifest") /
+      "run-manifest.json";
+  std::filesystem::create_directories(manifestPath.parent_path());
+  {
+    std::ofstream os(manifestPath);
+    os << "{\n"
+       << "  \"task_id\": \"main\",\n"
+       << "  \"backend\": \"sim\",\n"
+       << "  \"artifact_root\": \"" << cleanup.path.string() << "\",\n"
+       << "  \"inputs\": [\n"
+       << "    { \"name\": \"lhs\", \"path\": \"/tmp/lhs.npy\" },\n"
+       << "    { \"name\": \"rhs\", \"path\": \"/tmp/rhs.npy\" }\n"
+       << "  ],\n"
+       << "  \"outputs\": [\n"
+       << "    { \"name\": \"out\", \"path\": \"/tmp/out.npy\" }\n"
+       << "  ],\n"
+       << "  \"expected_outputs\": [\n"
+       << "    { \"name\": \"out\", \"path\": \"/tmp/out.golden.npy\" }\n"
+       << "  ]\n"
+       << "}\n";
+  }
+
+  auto graphOr = prepareRuntimeSessionGraphFromManifest(manifestPath.string());
+  EXPECT((bool)graphOr,
+         "runtime session builder applies mix metadata defaults");
+  if (!graphOr) {
+    llvm::consumeError(graphOr.takeError());
+    return;
+  }
+
+  auto orderedOr = graphOr->second.orderedTasks();
+  EXPECT((bool)orderedOr,
+         "runtime session builder orders mix metadata-default graph");
+  if (!orderedOr) {
+    llvm::consumeError(orderedOr.takeError());
+    return;
+  }
+  EXPECT(orderedOr->size() == 1,
+         "runtime session builder metadata-default graph has one task");
+  if (orderedOr->size() != 1)
+    return;
+
+  const RuntimeTask &task = orderedOr->front();
+  EXPECT(task.invocation.blockDim == 8,
+         "runtime session builder prefers metadata block dim");
+  EXPECT(task.invocation.workspaceSize == 16777216,
+         "runtime session builder prefers metadata workspace size");
+  EXPECT(task.invocation.tiling.has_value(),
+         "runtime session builder materializes metadata tiling binding");
+  if (task.invocation.tiling) {
+    EXPECT(task.invocation.tiling->binaryPath ==
+               (cleanup.path / "out" / "tiling.bin").string(),
+           "runtime session builder prefers metadata tiling path");
+  }
+  EXPECT(task.invocation.outputs.size() == 1,
+         "runtime session builder keeps metadata-default output count");
+  if (task.invocation.outputs.size() == 1) {
+    EXPECT(task.invocation.outputs[0].shape.has_value(),
+           "runtime session builder fills output shape from metadata");
+    EXPECT(task.invocation.outputs[0].dtype.has_value(),
+           "runtime session builder fills output dtype from metadata");
+    if (task.invocation.outputs[0].shape) {
+      EXPECT(task.invocation.outputs[0].shape->size() == 2 &&
+                 (*task.invocation.outputs[0].shape)[0] == 4 &&
+                 (*task.invocation.outputs[0].shape)[1] == 8,
+             "runtime session builder prefers metadata output shape");
+    }
+    if (task.invocation.outputs[0].dtype) {
+      EXPECT(*task.invocation.outputs[0].dtype == DType::F32,
+             "runtime session builder prefers metadata output dtype");
+    }
+  }
+  EXPECT(task.invocation.expectedOutputs.size() == 1,
+         "runtime session builder keeps metadata-default expected output count");
+  if (task.invocation.expectedOutputs.size() == 1) {
+    EXPECT(task.invocation.expectedOutputs[0].shape.has_value(),
+           "runtime session builder fills expected output shape from metadata");
+    EXPECT(task.invocation.expectedOutputs[0].dtype.has_value(),
+           "runtime session builder fills expected output dtype from metadata");
+    if (task.invocation.expectedOutputs[0].dtype) {
+      EXPECT(*task.invocation.expectedOutputs[0].dtype == DType::F32,
+             "runtime session builder prefers metadata expected output dtype");
+    }
+  }
+  EXPECT(task.invocation.inputs.size() == 2,
+         "runtime session builder keeps metadata-default input count");
+  if (task.invocation.inputs.size() == 2) {
+    EXPECT(task.invocation.inputs[0].shape.has_value(),
+           "runtime session builder fills input shape from metadata");
+    EXPECT(task.invocation.inputs[0].dtype.has_value(),
+           "runtime session builder fills input dtype from metadata");
+    if (task.invocation.inputs[0].dtype) {
+      EXPECT(*task.invocation.inputs[0].dtype == DType::F32,
+             "runtime session builder prefers metadata input dtype");
+    }
+  }
+}
+
+static void testPrepareRuntimeSessionGraphFallsBackToManifestAbiDefaults() {
+  const std::filesystem::path rootPath =
+      makeRuntimeSessionMixArtifactRootWithAbiDefaults(
+          "runtime-session-builder-mix-manifest-defaults", false);
+  RuntimeSessionTempRoot cleanup(rootPath);
+  EXPECT(!cleanup.path.empty(),
+         "runtime session builder mix manifest-default fixture root created");
+  if (cleanup.path.empty())
+    return;
+
+  const std::filesystem::path manifestPath =
+      makeTempDir("runtime-session-builder-mix-manifest-run-manifest") /
+      "run-manifest.json";
+  std::filesystem::create_directories(manifestPath.parent_path());
+  {
+    std::ofstream os(manifestPath);
+    os << "{\n"
+       << "  \"task_id\": \"main\",\n"
+       << "  \"backend\": \"sim\",\n"
+       << "  \"artifact_root\": \"" << cleanup.path.string() << "\",\n"
+       << "  \"inputs\": [\n"
+       << "    { \"name\": \"lhs\", \"path\": \"/tmp/lhs.npy\" },\n"
+       << "    { \"name\": \"rhs\", \"path\": \"/tmp/rhs.npy\" }\n"
+       << "  ],\n"
+       << "  \"outputs\": [\n"
+       << "    { \"name\": \"out\", \"path\": \"/tmp/out.npy\" }\n"
+       << "  ]\n"
+       << "}\n";
+  }
+
+  auto graphOr = prepareRuntimeSessionGraphFromManifest(manifestPath.string());
+  EXPECT((bool)graphOr,
+         "runtime session builder falls back to manifest ABI defaults");
+  if (!graphOr) {
+    llvm::consumeError(graphOr.takeError());
+    return;
+  }
+
+  auto orderedOr = graphOr->second.orderedTasks();
+  EXPECT((bool)orderedOr,
+         "runtime session builder orders mix manifest-default graph");
+  if (!orderedOr) {
+    llvm::consumeError(orderedOr.takeError());
+    return;
+  }
+  EXPECT(orderedOr->size() == 1,
+         "runtime session builder manifest-default graph has one task");
+  if (orderedOr->size() != 1)
+    return;
+
+  const RuntimeTask &task = orderedOr->front();
+  EXPECT(task.invocation.blockDim == 3,
+         "runtime session builder falls back to manifest block dim");
+  EXPECT(task.invocation.workspaceSize == 2048,
+         "runtime session builder falls back to manifest workspace size");
+  EXPECT(task.invocation.tiling.has_value(),
+         "runtime session builder materializes manifest tiling binding");
+  if (task.invocation.tiling) {
+    EXPECT(task.invocation.tiling->binaryPath ==
+               (cleanup.path / "out" / "legacy_tiling.bin").string(),
+           "runtime session builder falls back to manifest tiling path");
+  }
+  EXPECT(task.invocation.outputs.size() == 1,
+         "runtime session builder keeps manifest-default output count");
+  if (task.invocation.outputs.size() == 1) {
+    EXPECT(task.invocation.outputs[0].shape.has_value(),
+           "runtime session builder fills output shape from manifest ABI");
+    EXPECT(task.invocation.outputs[0].dtype.has_value(),
+           "runtime session builder fills output dtype from manifest ABI");
+    if (task.invocation.outputs[0].shape) {
+      EXPECT(task.invocation.outputs[0].shape->size() == 2 &&
+                 (*task.invocation.outputs[0].shape)[0] == 16 &&
+                 (*task.invocation.outputs[0].shape)[1] == 16,
+             "runtime session builder falls back to manifest output shape");
+    }
+    if (task.invocation.outputs[0].dtype) {
+      EXPECT(*task.invocation.outputs[0].dtype == DType::F16,
+             "runtime session builder falls back to manifest output dtype");
+    }
+  }
+}
+
+static void testPrepareRuntimeSessionGraphAcceptsMetadataOnlyMixArtifact() {
+  const std::filesystem::path rootPath =
+      makeRuntimeSessionMetadataOnlyMixArtifactRoot(
+          "runtime-session-builder-mix-metadata-only");
+  RuntimeSessionTempRoot cleanup(rootPath);
+  EXPECT(!cleanup.path.empty(),
+         "runtime session builder metadata-only fixture root created");
+  if (cleanup.path.empty())
+    return;
+
+  const std::filesystem::path manifestPath =
+      makeTempDir("runtime-session-builder-mix-metadata-only-run-manifest") /
+      "run-manifest.json";
+  std::filesystem::create_directories(manifestPath.parent_path());
+  {
+    std::ofstream os(manifestPath);
+    os << "{\n"
+       << "  \"task_id\": \"main\",\n"
+       << "  \"backend\": \"sim\",\n"
+       << "  \"artifact_root\": \"" << cleanup.path.string() << "\",\n"
+       << "  \"inputs\": [\n"
+       << "    { \"name\": \"lhs\", \"path\": \"/tmp/lhs.npy\" },\n"
+       << "    { \"name\": \"rhs\", \"path\": \"/tmp/rhs.npy\" }\n"
+       << "  ],\n"
+       << "  \"outputs\": [\n"
+       << "    { \"name\": \"out\", \"path\": \"/tmp/out.npy\" }\n"
+       << "  ]\n"
+       << "}\n";
+  }
+
+  auto graphOr = prepareRuntimeSessionGraphFromManifest(manifestPath.string());
+  EXPECT((bool)graphOr,
+         "runtime session builder accepts metadata-only mix artifact");
+  if (!graphOr) {
+    llvm::consumeError(graphOr.takeError());
+    return;
+  }
+
+  auto orderedOr = graphOr->second.orderedTasks();
+  EXPECT((bool)orderedOr,
+         "runtime session builder orders metadata-only mix graph");
+  if (!orderedOr) {
+    llvm::consumeError(orderedOr.takeError());
+    return;
+  }
+  EXPECT(orderedOr->size() == 1,
+         "runtime session builder metadata-only graph has one task");
+  if (orderedOr->size() != 1)
+    return;
+
+  const RuntimeTask &task = orderedOr->front();
+  EXPECT(task.invocation.blockDim == 11,
+         "runtime session builder derives block dim from metadata-only artifact");
+  EXPECT(task.invocation.workspaceSize == 4096,
+         "runtime session builder derives workspace size from metadata-only artifact");
+  EXPECT(task.invocation.tiling.has_value(),
+         "runtime session builder derives tiling from metadata-only artifact");
+  if (task.invocation.outputs.size() == 1) {
+    EXPECT(task.invocation.outputs[0].shape.has_value(),
+           "runtime session builder derives output shape from metadata-only artifact");
+    EXPECT(task.invocation.outputs[0].dtype.has_value(),
+           "runtime session builder derives output dtype from metadata-only artifact");
+  }
+}
+
+static void testRuntimeSessionRequestBuilderLoadsVecArtifactFromRoot() {
+  const std::filesystem::path rootPath =
+      makeRuntimeSessionVecArtifactRoot("runtime-session-builder-vec");
+  RuntimeSessionTempRoot cleanup(rootPath);
+  EXPECT(!cleanup.path.empty(), "runtime session builder vec fixture root created");
+  if (cleanup.path.empty())
+    return;
+
+  auto artifactOr = loadRuntimeSessionArtifactFromRoot(cleanup.path.string());
+  EXPECT((bool)artifactOr, "runtime session builder loads vec artifact root");
+  if (!artifactOr) {
+    llvm::consumeError(artifactOr.takeError());
+    return;
+  }
+
+  EXPECT(artifactOr->kernelKind == KernelKind::Vec,
+         "runtime session builder preserves vec kernel kind");
+  EXPECT(artifactOr->mixResourceType == MixResourceType::Unknown,
+         "runtime session builder keeps vec mix resource type unknown");
+  EXPECT(artifactOr->artifactRoot == cleanup.path.string(),
+         "runtime session builder keeps vec artifact root");
+}
+
+static void testRuntimeSessionRequestBuilderRejectsUnsupportedKernelKind() {
+  RuntimeSessionArtifactRequest request;
+  request.kernelSource = "/tmp/runtime-session-builder-invalid.cpp";
+  request.kernelName = "invalid_kernel";
+  request.outputDir = "/tmp/runtime-session-builder-output";
+  request.socVersion = "Ascend910B1";
+  request.kernelKind = static_cast<KernelKind>(123);
+
+  auto artifactOr = prepareRuntimeSessionArtifact(request);
+  EXPECT(!artifactOr,
+         "runtime session builder rejects unsupported kernel kind values");
+  if (!artifactOr) {
+    std::string message = llvm::toString(artifactOr.takeError());
+    EXPECT(message.find("unsupported kernel kind") != std::string::npos,
+           "unsupported kernel kind failure reports a clear error");
+  }
+}
+
+static void testRuntimeSessionRequestBuilderRejectsMissingKernelKind() {
+  const std::filesystem::path rootPath =
+      makeRuntimeSessionArtifactRootWithoutKernelKind(
+          "runtime-session-builder-missing-kind");
+  RuntimeSessionTempRoot cleanup(rootPath);
+  EXPECT(!cleanup.path.empty(),
+         "runtime session builder missing-kind fixture root created");
+  if (cleanup.path.empty())
+    return;
+
+  auto artifactOr = loadRuntimeSessionArtifactFromRoot(cleanup.path.string());
+  EXPECT(!artifactOr, "runtime session builder rejects missing kernel_kind");
+  if (!artifactOr) {
+    std::string message = llvm::toString(artifactOr.takeError());
+    EXPECT(message.find("missing required field: kernel_kind") !=
+               std::string::npos,
+           "missing kernel_kind failure reports a clear error");
+  }
+}
+
+static void testRuntimeSessionRequestBuilderBuildsSingleTaskGraph() {
+  const std::filesystem::path rootPath =
+      makeRuntimeSessionArtifactRoot("runtime-session-builder-graph");
+  RuntimeSessionTempRoot cleanup(rootPath);
+  EXPECT(!cleanup.path.empty(),
+         "runtime session builder graph fixture root created");
+  if (cleanup.path.empty())
+    return;
+
+  KernelArtifact artifact;
+  artifact.kernelName = "fake_kernel";
+  artifact.kernelKind = KernelKind::Mix;
+  artifact.mixResourceType = MixResourceType::Mix1C1V;
+  artifact.socVersion = "Ascend910B1";
+  artifact.artifactRoot = cleanup.path.string();
+  artifact.manifestPath = (cleanup.path / "out" / "manifest.txt").string();
+  artifact.deviceBinaryPath = (cleanup.path / "fake.bin").string();
+
+  auto graphOr = buildRuntimeSessionSingleTaskGraph(artifact, "main");
+  EXPECT((bool)graphOr, "runtime session builder creates a task graph");
+  if (!graphOr) {
+    llvm::consumeError(graphOr.takeError());
+    return;
+  }
+
+  auto orderedOr = graphOr->orderedTasks();
+  EXPECT((bool)orderedOr, "runtime session builder orders single task graph");
+  if (!orderedOr) {
+    llvm::consumeError(orderedOr.takeError());
+    return;
+  }
+
+  EXPECT(orderedOr->size() == 1,
+         "runtime session builder creates a single task graph");
+  if (orderedOr->size() == 1) {
+    EXPECT(orderedOr->front().taskId == "main",
+           "runtime session builder uses provided task id");
+    EXPECT(orderedOr->front().artifact.mixResourceType ==
+               MixResourceType::Mix1C1V,
+           "runtime session builder preserves mix resource type");
+  }
+}
+
+static void testMixValidationCanBeRepresentedAsRuntimeTask() {
+  MixAbiMetadata abi;
+  abi.logicalKernelName = "mix_add";
+  abi.runtimeKernelName = "mix_add_runtime";
+  abi.workspaceBytes = 4096;
+  abi.blockDim = 8;
+  abi.tilingMode = "generated_file";
+  abi.tilingSource = "out/tiling.bin";
+  abi.inputs = {
+      {"lhs", buildCanonicalInputFileName(abi.runtimeKernelName, "lhs"), "",
+       DType::F16, {16}},
+      {"rhs", buildCanonicalInputFileName(abi.runtimeKernelName, "rhs"), "",
+       DType::F16, {16}},
+  };
+  abi.outputs = {
+      {"out", buildCanonicalOutputFileName(abi.runtimeKernelName, "out"),
+       buildCanonicalGoldenFileName(abi.runtimeKernelName, "out"), DType::F16,
+       {16}},
+  };
+
+  RunManifestSpec manifest;
+  manifest.backendKind = ExecutionBackendKind::Simulation;
+
+  RunTaskSpec task;
+  task.taskId = "main";
+  task.artifactRoot = "/tmp/mix-artifact";
+  TensorBinding lhsBinding;
+  lhsBinding.name = "lhs";
+  lhsBinding.sourceKind = BindingSourceKind::ExternalFile;
+  lhsBinding.path = "/tmp/input/" + abi.inputs[0].runtimeFile;
+  task.invocation.inputs.push_back(lhsBinding);
+
+  TensorBinding rhsBinding;
+  rhsBinding.name = "rhs";
+  rhsBinding.sourceKind = BindingSourceKind::ExternalFile;
+  rhsBinding.path = "/tmp/input/" + abi.inputs[1].runtimeFile;
+  task.invocation.inputs.push_back(rhsBinding);
+
+  TensorBinding outputBinding;
+  outputBinding.name = "out";
+  outputBinding.sourceKind = BindingSourceKind::ExternalFile;
+  outputBinding.path = "/tmp/mix-artifact/" + abi.outputs[0].runtimeFile;
+  outputBinding.shape = abi.outputs[0].shape;
+  outputBinding.dtype = abi.outputs[0].dtype;
+  task.invocation.outputs.push_back(outputBinding);
+
+  TilingBinding tilingBinding;
+  tilingBinding.binaryPath = "/tmp/mix-artifact/out/tiling.bin";
+  task.invocation.tiling = tilingBinding;
+  task.invocation.blockDim = abi.blockDim;
+  task.invocation.workspaceSize = abi.workspaceBytes;
+  manifest.tasks.push_back(task);
+
+  EXPECT(manifest.backendKind == ExecutionBackendKind::Simulation,
+         "mix validation manifest uses simulation backend");
+  EXPECT(manifest.tasks.size() == 1,
+         "mix validation manifest carries one runtime task");
+  if (manifest.tasks.size() != 1)
+    return;
+
+  const RunTaskSpec &taskSpec = manifest.tasks[0];
+  EXPECT(taskSpec.artifactRoot == "/tmp/mix-artifact",
+         "mix validation manifest preserves artifact root");
+  EXPECT(taskSpec.invocation.inputs.size() == 2,
+         "mix validation manifest preserves two inputs");
+  EXPECT(taskSpec.invocation.inputs[0].path ==
+             "/tmp/input/" + abi.inputs[0].runtimeFile,
+         "mix validation manifest preserves first input path");
+  EXPECT(taskSpec.invocation.outputs.size() == 1,
+         "mix validation manifest preserves one output");
+  EXPECT(taskSpec.invocation.outputs[0].path ==
+             "/tmp/mix-artifact/" + abi.outputs[0].runtimeFile,
+         "mix validation manifest preserves runtime output path");
+  EXPECT(taskSpec.invocation.tiling.has_value(),
+         "mix validation manifest carries tiling binding");
+  if (taskSpec.invocation.tiling) {
+    EXPECT(taskSpec.invocation.tiling->binaryPath ==
+               "/tmp/mix-artifact/out/tiling.bin",
+           "mix validation manifest preserves tiling bytes path");
+  }
+
+  KernelArtifact artifact;
+  artifact.kernelName = abi.runtimeKernelName;
+  artifact.kernelKind = KernelKind::Mix;
+  artifact.mixResourceType = MixResourceType::Mix1C1V;
+  artifact.socVersion = "Ascend910B1";
+  artifact.artifactRoot = taskSpec.artifactRoot;
+  artifact.manifestPath = "/tmp/mix-artifact/out/manifest.txt";
+  artifact.sharedLibraryPath = "/tmp/mix/libmix_add_runtime_packed.so";
+  artifact.sharedLibrarySymbol = "aclrtlaunch_mix_add_runtime";
+  artifact.deviceBinaryPath = artifact.sharedLibraryPath;
+
+  RuntimeTask runtimeTask;
+  runtimeTask.taskId = taskSpec.taskId;
+  runtimeTask.artifact = artifact;
+  runtimeTask.invocation = taskSpec.invocation;
+
+  TaskGraph graph;
+  auto addErr = graph.addTask(runtimeTask);
+  EXPECT(!addErr, "mix validation runtime graph adds task");
+  if (addErr) {
+    llvm::consumeError(std::move(addErr));
+    return;
+  }
+
+  auto orderedOr = graph.orderedTasks();
+  EXPECT((bool)orderedOr, "mix validation runtime graph orders task");
+  if (!orderedOr)
+    return;
+  EXPECT(orderedOr->size() == 1,
+         "mix validation runtime graph remains a single runtime task");
+  if (orderedOr->size() == 1) {
+    EXPECT((*orderedOr)[0].artifact.kernelKind == KernelKind::Mix,
+           "mix validation runtime task keeps mix kernel kind");
+    EXPECT((*orderedOr)[0].artifact.sharedLibraryPath ==
+               "/tmp/mix/libmix_add_runtime_packed.so",
+           "mix validation runtime task keeps shared library path");
+    EXPECT((*orderedOr)[0].artifact.sharedLibrarySymbol ==
+               "aclrtlaunch_mix_add_runtime",
+           "mix validation runtime task keeps shared library symbol");
+    EXPECT((*orderedOr)[0].invocation.outputs[0].shape.has_value(),
+           "mix validation runtime task carries output shape metadata");
+    EXPECT((*orderedOr)[0].invocation.outputs[0].dtype.has_value(),
+           "mix validation runtime task carries output dtype metadata");
+  }
+
+  auto driver = std::make_shared<CapturingExecutionBackendDriver>();
+  CapturingExecutionBackendDriver *driverPtr = driver.get();
+  ExecutionSession session(ExecutionBackendKind::Simulation, driver);
+  auto traceOr = session.run(graph);
+  EXPECT((bool)traceOr, "mix validation runtime session runs");
+  if (!traceOr) {
+    llvm::consumeError(traceOr.takeError());
+    return;
+  }
+
+  EXPECT(driverPtr->requests.size() == 1,
+         "mix validation runtime session sends one backend request");
+  if (driverPtr->requests.size() != 1)
+    return;
+
+  const ExecutionRequest &request = driverPtr->requests[0];
+  EXPECT(request.sessionId == traceOr->sessionId,
+         "mix validation runtime session propagates session id");
+  EXPECT(request.task.taskId == "main",
+         "mix validation runtime session preserves task id");
+  EXPECT(request.task.artifact.kernelKind == KernelKind::Mix,
+         "mix validation runtime session preserves mix kernel kind");
+  EXPECT(request.task.artifact.artifactRoot == "/tmp/mix-artifact",
+         "mix validation runtime session preserves artifact root");
+  EXPECT(request.task.artifact.manifestPath ==
+             "/tmp/mix-artifact/out/manifest.txt",
+         "mix validation runtime session preserves manifest path");
+  EXPECT(request.task.artifact.sharedLibraryPath ==
+             "/tmp/mix/libmix_add_runtime_packed.so",
+         "mix validation runtime session preserves shared library path");
+  EXPECT(request.task.artifact.sharedLibrarySymbol ==
+             "aclrtlaunch_mix_add_runtime",
+         "mix validation runtime session preserves shared library symbol");
+  EXPECT(request.task.invocation.inputs.size() == 2,
+         "mix validation runtime session preserves input count");
+  EXPECT(request.task.invocation.outputs.size() == 1,
+         "mix validation runtime session preserves output count");
+  if (request.task.invocation.outputs.size() == 1) {
+    EXPECT(request.task.invocation.outputs[0].path ==
+               "/tmp/mix-artifact/" + abi.outputs[0].runtimeFile,
+           "mix validation runtime session preserves output path");
+    EXPECT(request.task.invocation.outputs[0].shape.has_value(),
+           "mix validation runtime session preserves output shape metadata");
+    EXPECT(request.task.invocation.outputs[0].dtype.has_value(),
+           "mix validation runtime session preserves output dtype metadata");
+  }
+  EXPECT(request.task.invocation.tiling.has_value(),
+         "mix validation runtime session carries tiling binding");
+  if (request.task.invocation.tiling) {
+    EXPECT(request.task.invocation.tiling->binaryPath ==
+               "/tmp/mix-artifact/out/tiling.bin",
+           "mix validation runtime session preserves tiling bytes path");
+  }
+  EXPECT(request.task.invocation.blockDim == abi.blockDim,
+         "mix validation runtime session preserves block dim");
+  EXPECT(request.task.invocation.workspaceSize == abi.workspaceBytes,
+         "mix validation runtime session preserves workspace size");
+}
+
+static void testOutputComparatorExactMatchPasses() {
+  NDArray actual = makeF32Array({2}, {1.0f, 2.0f});
+  NDArray expected = makeF32Array({2}, {1.0f, 2.0f});
+  std::vector<NDArray> actuals;
+  actuals.push_back(std::move(actual));
+  std::vector<NDArray> expecteds;
+  expecteds.push_back(std::move(expected));
+
+  auto resultOr = compareRuntimeOutputs(actuals, expecteds, 0.0, 0.0);
+  EXPECT((bool)resultOr, "output comparator returns a result for exact match");
+  if (!resultOr)
+    return;
+
+  EXPECT(resultOr->passed, "output comparator marks exact match as passing");
+  EXPECT(resultOr->maxAbsDiff == 0.0,
+         "output comparator reports zero max abs diff for exact match");
+  EXPECT(resultOr->meanAbsDiff == 0.0,
+         "output comparator reports zero mean abs diff for exact match");
+  EXPECT(resultOr->errorMessage.empty(),
+         "output comparator leaves error message empty for exact match");
+}
+
+static void testOutputComparatorMismatchReturnsDetailedFailure() {
+  NDArray actual = makeF32Array({2}, {1.0f, 2.25f});
+  NDArray expected = makeF32Array({2}, {1.0f, 2.0f});
+  std::vector<NDArray> actuals;
+  actuals.push_back(std::move(actual));
+  std::vector<NDArray> expecteds;
+  expecteds.push_back(std::move(expected));
+
+  auto resultOr = compareRuntimeOutputs(actuals, expecteds, 1e-4, 1e-4);
+  EXPECT((bool)resultOr,
+         "output comparator returns a result for numeric mismatch");
+  if (!resultOr)
+    return;
+
+  EXPECT(!resultOr->passed,
+         "output comparator marks a clear mismatch as failing");
+  EXPECT(resultOr->maxAbsDiff > 0.0,
+         "output comparator reports non-zero max abs diff for mismatch");
+  EXPECT(resultOr->meanAbsDiff > 0.0,
+         "output comparator reports non-zero mean abs diff for mismatch");
+  EXPECT(!resultOr->errorMessage.empty(),
+         "output comparator returns a non-empty error message for mismatch");
+}
+
+static void testOutputComparatorStructuralMismatchReturnsError() {
+  NDArray actualCountMismatch = makeF32Array({2}, {1.0f, 2.0f});
+  std::vector<NDArray> countActuals;
+  countActuals.push_back(std::move(actualCountMismatch));
+  std::vector<NDArray> countExpecteds;
+  auto countOr = compareRuntimeOutputs(countActuals, countExpecteds, 0.0, 0.0);
+  EXPECT(!countOr,
+         "output comparator rejects mismatched output counts with llvm::Error");
+  if (!countOr) {
+    std::string message = llvm::toString(countOr.takeError());
+    EXPECT(!message.empty(),
+           "output comparator count mismatch returns a diagnostic");
+  }
+
+  NDArray actualShapeMismatch = makeF32Array({2}, {1.0f, 2.0f});
+  NDArray expectedShapeMismatch = makeF32Array({1, 2}, {1.0f, 2.0f});
+  std::vector<NDArray> shapeActuals;
+  shapeActuals.push_back(std::move(actualShapeMismatch));
+  std::vector<NDArray> shapeExpecteds;
+  shapeExpecteds.push_back(std::move(expectedShapeMismatch));
+  auto shapeOr = compareRuntimeOutputs(shapeActuals, shapeExpecteds, 0.0, 0.0);
+  EXPECT(!shapeOr,
+         "output comparator rejects mismatched shapes with llvm::Error");
+  if (!shapeOr) {
+    std::string message = llvm::toString(shapeOr.takeError());
+    EXPECT(!message.empty(),
+           "output comparator shape mismatch returns a diagnostic");
+  }
+
+  NDArray actualDtypeMismatch = makeF32Array({2}, {1.0f, 2.0f});
+  NDArray expectedDtypeMismatch = makeArray({2}, DType::INT32,
+                                            {1, 0, 0, 0, 2, 0, 0, 0});
+  std::vector<NDArray> dtypeActuals;
+  dtypeActuals.push_back(std::move(actualDtypeMismatch));
+  std::vector<NDArray> dtypeExpecteds;
+  dtypeExpecteds.push_back(std::move(expectedDtypeMismatch));
+  auto dtypeOr = compareRuntimeOutputs(dtypeActuals, dtypeExpecteds, 0.0, 0.0);
+  EXPECT(!dtypeOr,
+         "output comparator rejects mismatched dtypes with llvm::Error");
+  if (!dtypeOr) {
+    std::string message = llvm::toString(dtypeOr.takeError());
+    EXPECT(!message.empty(),
+           "output comparator dtype mismatch returns a diagnostic");
+  }
+}
+
+static void testExecutionRunnerContractSupportsSimulationAndRealDeviceModes() {
+  FakeExecutionRunner simRunner(ExecutionRunnerMode::Simulation);
+  FakeExecutionRunner npuRunner(ExecutionRunnerMode::RealDevice);
+
+  EXPECT(simRunner.mode() == ExecutionRunnerMode::Simulation,
+         "execution runner contract preserves simulation mode");
+  EXPECT(npuRunner.mode() == ExecutionRunnerMode::RealDevice,
+         "execution runner contract preserves real-device mode");
+
+  EXPECT(!simRunner.initialize(3),
+         "execution runner fake initialize succeeds for simulation mode");
+  EXPECT(simRunner.initializeCalled && simRunner.lastDeviceId == 3,
+         "execution runner fake records initialize device id");
+}
+
+static void testExecutionRunnerContractSupportsFileLaunches() {
+  FakeExecutionRunner runner(ExecutionRunnerMode::Simulation);
+  RunArgs args;
+  FileExecutionLaunch launch;
+  launch.binaryPath = "/tmp/fake.bin";
+  launch.kernelName = "fake_kernel";
+  launch.magic = 0x41415246u;
+
+  EXPECT(!runner.runFile(launch, args),
+         "execution runner contract accepts vec or cube file launch");
+  EXPECT(runner.runFileCalled,
+         "execution runner fake records file launch invocation");
+  EXPECT(runner.lastFileLaunch.binaryPath == "/tmp/fake.bin",
+         "execution runner fake keeps file launch binary path");
+  EXPECT(runner.lastFileLaunch.kernelName == "fake_kernel",
+         "execution runner fake keeps file launch kernel name");
+  EXPECT(runner.lastFileLaunch.magic == 0x41415246u,
+         "execution runner fake keeps file launch magic");
+}
+
+static void testExecutionRunnerContractSupportsPackedMixLaunches() {
+  FakeExecutionRunner runner(ExecutionRunnerMode::Simulation);
+  RunArgs args;
+  DynamicLibraryExecutionLaunch launch;
+  launch.sharedLibraryPath = "/tmp/libfake_packed.so";
+  launch.symbolName = "aclrtlaunch_fake_mix_kernel";
+
+  EXPECT(!runner.runDynamicLibraryArtifact(launch, args),
+         "execution runner contract accepts dynamic-library artifact launch");
+  EXPECT(runner.runDynamicLibraryCalled,
+         "execution runner fake records dynamic-library launch invocation");
+  EXPECT(runner.lastDynamicLibraryLaunch.sharedLibraryPath ==
+             "/tmp/libfake_packed.so",
+         "execution runner fake keeps dynamic-library path");
+  EXPECT(runner.lastDynamicLibraryLaunch.symbolName ==
+             "aclrtlaunch_fake_mix_kernel",
+         "execution runner fake keeps dynamic-library symbol name");
+}
+
+static void testNativeExecutionRunnerCompileCoverage() {
+  NativeExecutionRunner runner(ExecutionRunnerMode::Simulation);
+
+  EXPECT(runner.mode() == ExecutionRunnerMode::Simulation,
+         "native execution runner preserves construction mode");
+}
+
+static void testSimulationBackendReportsMissingVecBinaryLaunchFailure() {
+#ifdef _WIN32
+  EXPECT(true, "missing vec binary launch-failure contract is covered on xvm");
+#else
+  std::filesystem::path workingDir =
+      makeTempDir("taskgraph-runtime-sim-launch-failure");
+  std::filesystem::create_directories(workingDir);
+  std::filesystem::path outputPath = workingDir / "out.npy";
+  std::filesystem::path errorPath = workingDir / "error.txt";
+  std::filesystem::path missingBinaryPath =
+      workingDir / "definitely-missing.vec.bin";
+
+  pid_t pid = fork();
+  EXPECT(pid >= 0, "fork for simulation launch-failure contract succeeds");
+  if (pid < 0) {
+    std::filesystem::remove_all(workingDir);
+    return;
+  }
+
+  if (pid == 0) {
+    auto simOr = createExecutionBackend(ExecutionBackendKind::Simulation);
+    if (!simOr) {
+      std::ofstream os(errorPath);
+      os << llvm::toString(simOr.takeError());
+      os.flush();
+      std::_Exit(0);
+    }
+
+    ExecutionRequest request;
+    request.workingDirectory = workingDir.string();
+    request.task.taskId = "task_sim_vec_missing_binary";
+    request.task.artifact.kernelName = "vec_kernel";
+    request.task.artifact.kernelKind = KernelKind::Vec;
+    request.task.artifact.deviceBinaryPath = missingBinaryPath.string();
+    TensorBinding output;
+    output.name = "out";
+    output.sourceKind = BindingSourceKind::ExternalFile;
+    output.path = outputPath.string();
+    output.shape = std::vector<int64_t>{1};
+    output.dtype = DType::F32;
+    request.task.invocation.outputs.push_back(output);
+
+    auto resultOr = (*simOr)->run(request);
+    std::ofstream os(errorPath);
+    if (resultOr) {
+      os << "unexpected-success";
+    } else {
+      os << llvm::toString(resultOr.takeError());
+    }
+    os.flush();
+    std::_Exit(0);
+  }
+
+  int status = 0;
+  EXPECT(waitpid(pid, &status, 0) == pid,
+         "waitpid for simulation launch-failure contract succeeds");
+  EXPECT(WIFEXITED(status), "simulation launch-failure child exits cleanly");
+
+  std::ifstream is(errorPath);
+  std::string message((std::istreambuf_iterator<char>(is)),
+                      std::istreambuf_iterator<char>());
+  EXPECT(!message.empty(),
+         "simulation launch-failure contract records an error message");
+  EXPECT(message.find("[sim:kernel_launch]") != std::string::npos,
+         "simulation backend preserves kernel_launch stage for missing vec binary");
+  std::filesystem::remove_all(workingDir);
+#endif
+}
+
+static void testArtifactCompilerRequestValidation() {
+  ArtifactCompiler compiler;
+
+  ArtifactCompileRequest missingSource;
+  missingSource.kernelName = "demo_kernel";
+  missingSource.outputDir = "/tmp/taskgraph-artifact-validation";
+  auto srcErr = compiler.compile(missingSource);
+  EXPECT(!(bool)srcErr, "missing source is rejected");
+  if (!srcErr)
+    llvm::consumeError(srcErr.takeError());
+
+  ArtifactCompileRequest missingOutputDir;
+  missingOutputDir.kernelSource = "/tmp/demo.cpp";
+  missingOutputDir.kernelName = "demo_kernel";
+  auto outErr = compiler.compile(missingOutputDir);
+  EXPECT(!(bool)outErr, "missing output dir is rejected");
+  if (!outErr)
+    llvm::consumeError(outErr.takeError());
+
+  ArtifactCompileRequest missingKernelName;
+  missingKernelName.kernelSource = "/tmp/demo.cpp";
+  missingKernelName.outputDir = "/tmp/taskgraph-artifact-validation";
+  auto nameErr = compiler.compile(missingKernelName);
+  EXPECT(!(bool)nameErr, "missing kernel name is rejected");
+  if (!nameErr)
+    llvm::consumeError(nameErr.takeError());
+}
+
+static void testFrontendCompileRequestBuilderPreservesFields() {
+  FrontendCompileInput input;
+  input.kernelSource = "/tmp/frontend-kernel.cpp";
+  input.outputDir = "/tmp/frontend-out";
+  input.kernelName = "frontend_kernel";
+  input.socVersion = "Ascend910B1";
+  input.arch = "dav-c220-vec";
+  input.kernelKind = KernelKind::Vec;
+  input.optLevel = 2;
+  input.cannMlirPath = "/tmp/step7_cann.mlir";
+  input.npyDir = "/tmp/npy-dir";
+
+  auto requestOr = buildFrontendCompileRequest(input);
+  EXPECT((bool)requestOr, "frontend compile request builds");
+  if (!requestOr)
+    return;
+
+  EXPECT(requestOr->kernelSource == input.kernelSource,
+         "frontend compile request preserves kernel source");
+  EXPECT(requestOr->outputDir == input.outputDir,
+         "frontend compile request preserves output dir");
+  EXPECT(requestOr->kernelName == input.kernelName,
+         "frontend compile request preserves kernel name");
+  EXPECT(requestOr->socVersion == input.socVersion,
+         "frontend compile request preserves soc version");
+  EXPECT(requestOr->arch == input.arch,
+         "frontend compile request preserves arch");
+  EXPECT(requestOr->kernelKind == KernelKind::Vec,
+         "frontend compile request preserves kernel kind");
+  EXPECT(requestOr->optLevel == 2,
+         "frontend compile request preserves opt level");
+  EXPECT(requestOr->cannMlirPath && *requestOr->cannMlirPath == "/tmp/step7_cann.mlir",
+         "frontend compile request preserves cann mlir path");
+  EXPECT(requestOr->npyDir && *requestOr->npyDir == "/tmp/npy-dir",
+         "frontend compile request preserves npy dir");
+}
+
+static void testFrontendSingleTaskRunPreparationAndSummary() {
+  KernelArtifact artifact;
+  artifact.kernelName = "frontend_vec";
+  artifact.kernelKind = KernelKind::Vec;
+  artifact.artifactRoot = "/tmp/frontend-artifact";
+  artifact.deviceBinaryPath = "/tmp/frontend-artifact/frontend_vec.bin";
+
+  ExecutionInvocation invocation;
+  invocation.blockDim = 8;
+  invocation.atol = 1.5;
+  invocation.rtol = 0.05;
+  invocation.outputs.push_back(TensorBinding{
+      "out", BindingSourceKind::ExternalFile, "/tmp/frontend-out.npy", "", "",
+      std::vector<int64_t>{4}, DType::F16});
+  invocation.expectedOutputs.push_back(TensorBinding{
+      "out", BindingSourceKind::ExternalFile, "/tmp/frontend-golden.npy", "",
+      "", std::vector<int64_t>{4}, DType::F16});
+
+  FrontendSingleTaskRunRequest request;
+  request.backendKind = ExecutionBackendKind::Simulation;
+  request.taskId = "main";
+  request.artifact = artifact;
+  request.invocation = invocation;
+
+  auto preparedOr = prepareFrontendSingleTaskRun(request);
+  EXPECT((bool)preparedOr, "frontend single-task run prepares");
+  if (!preparedOr)
+    return;
+
+  EXPECT(preparedOr->backendKind == ExecutionBackendKind::Simulation,
+         "frontend single-task run preserves backend");
+  auto tasksOr = preparedOr->graph.orderedTasks();
+  EXPECT((bool)tasksOr, "frontend single-task run graph orders tasks");
+  if (!tasksOr || tasksOr->size() != 1)
+    return;
+  EXPECT((*tasksOr)[0].taskId == "main",
+         "frontend single-task run preserves task id");
+  EXPECT((*tasksOr)[0].artifact.kernelName == "frontend_vec",
+         "frontend single-task run preserves artifact");
+  EXPECT((*tasksOr)[0].invocation.outputs.size() == 1,
+         "frontend single-task run preserves outputs");
+  EXPECT((*tasksOr)[0].invocation.expectedOutputs.size() == 1,
+         "frontend single-task run preserves expected outputs");
+
+  ProfileTrace trace;
+  trace.sessionId = "session-frontend";
+  trace.addProfileArtifact("main", ExecutionBackendKind::Simulation,
+                           "/tmp/frontend-profile.json");
+  trace.setAttribute("scheduler_mode", "serial");
+  trace.addCounter("planned_task_count", 1);
+
+  FrontendRunSummary successSummary = summarizeFrontendRunSuccess(
+      ExecutionBackendKind::Simulation, /*validationRan=*/true, trace,
+      "/tmp/session_summary.json");
+  EXPECT(successSummary.success,
+         "frontend run summary marks success");
+  EXPECT(successSummary.validationStatus == FrontendValidationStatus::Passed,
+         "frontend run summary marks validation pass");
+  EXPECT(successSummary.profileTrace.profileArtifactPaths().size() == 1,
+         "frontend run summary preserves profile artifacts");
+  EXPECT(successSummary.profileArtifactPaths.size() == 1,
+         "frontend run summary surfaces artifact path list");
+  EXPECT(successSummary.profileArtifactPaths[0] == "/tmp/frontend-profile.json",
+         "frontend run summary preserves surfaced artifact path");
+  EXPECT(successSummary.retainedSummaryPath == "/tmp/session_summary.json",
+         "frontend run summary preserves retained summary path");
+  EXPECT(successSummary.runtimeAttributes.size() == 1,
+         "frontend run summary surfaces runtime attributes");
+  EXPECT(successSummary.runtimeCounters.size() == 1,
+         "frontend run summary surfaces runtime counters");
+  auto schedulerMode = successSummary.runtimeAttributes.find("scheduler_mode");
+  EXPECT(schedulerMode != successSummary.runtimeAttributes.end() &&
+             schedulerMode->second == "serial",
+         "frontend run summary preserves runtime attribute values");
+  auto plannedTaskCount =
+      successSummary.runtimeCounters.find("planned_task_count");
+  EXPECT(plannedTaskCount != successSummary.runtimeCounters.end() &&
+             plannedTaskCount->second == 1,
+         "frontend run summary preserves runtime counter values");
+
+  FrontendRunSummary errorSummary = summarizeFrontendRunError(
+      ExecutionBackendKind::Simulation, /*validationRan=*/true,
+      "[sim:validate] simulation output mismatch: expected 1 got 2");
+  EXPECT(!errorSummary.success,
+         "frontend run summary marks error");
+  EXPECT(errorSummary.validationStatus == FrontendValidationStatus::Failed,
+         "frontend run summary marks validation failure");
+  EXPECT(errorSummary.rawErrorMessage ==
+             "[sim:validate] simulation output mismatch: expected 1 got 2",
+         "frontend run summary preserves raw error message");
+  EXPECT(errorSummary.errorStage == "validate",
+         "frontend run summary extracts error stage");
+  EXPECT(errorSummary.errorMessage == "simulation output mismatch: expected 1 got 2",
+         "frontend run summary strips stage prefix");
+
+  FrontendRunSummary nonValidationError = summarizeFrontendRunError(
+      ExecutionBackendKind::Simulation, /*validationRan=*/false,
+      "[sim:kernel_launch] launch failed");
+  EXPECT(nonValidationError.validationStatus ==
+             FrontendValidationStatus::NotRun,
+         "frontend run summary leaves validation unset when validation did not run");
+}
+
+static void testFrontendRunExecutionUsesNormalizedContract() {
+  KernelArtifact artifact;
+  artifact.kernelName = "frontend_vec";
+  artifact.kernelKind = KernelKind::Vec;
+  artifact.deviceBinaryPath = "/tmp/frontend.bin";
+
+  TensorBinding output;
+  output.name = "out";
+  output.path = "/tmp/frontend-out.npy";
+
+  ExecutionInvocation invocation;
+  invocation.outputs.push_back(output);
+  invocation.expectedOutputs.push_back(output);
+
+  FrontendSingleTaskRunRequest request;
+  request.backendKind = ExecutionBackendKind::Simulation;
+  request.taskId = "main";
+  request.artifact = artifact;
+  request.invocation = invocation;
+
+  auto preparedOr = prepareFrontendSingleTaskRun(request);
+  EXPECT((bool)preparedOr, "frontend execute contract prepares graph");
+  if (!preparedOr)
+    return;
+
+  auto successDriver = std::make_shared<OrderedExecutionBackendDriver>();
+  ExecutionSession successSession(ExecutionBackendKind::Simulation, successDriver);
+  FrontendRunSummary successSummary =
+      executeFrontendPreparedRun(successSession, *preparedOr);
+  EXPECT(successSummary.success,
+         "frontend execute contract marks successful run");
+  EXPECT(successSummary.validationStatus == FrontendValidationStatus::Passed,
+         "frontend execute contract preserves validation pass");
+  EXPECT(successSummary.profileArtifactPaths.size() == 1,
+         "frontend execute contract surfaces trace artifact path");
+  if (!successSummary.profileArtifactPaths.empty()) {
+    EXPECT(successSummary.profileArtifactPaths[0].find(".profile.json") !=
+               std::string::npos,
+           "frontend execute contract forwards profile path from trace");
+  }
+  auto schedulerMode = successSummary.runtimeAttributes.find("scheduler_mode");
+  EXPECT(schedulerMode != successSummary.runtimeAttributes.end() &&
+             schedulerMode->second == "serial",
+         "frontend execute contract surfaces runtime attributes");
+  auto plannedTaskCount =
+      successSummary.runtimeCounters.find("planned_task_count");
+  EXPECT(plannedTaskCount != successSummary.runtimeCounters.end() &&
+             plannedTaskCount->second == 1,
+         "frontend execute contract surfaces runtime counters");
+
+  auto failingDriver = std::make_shared<FailingExecutionBackendDriver>(
+      "[sim:validate] simulation output mismatch");
+  ExecutionSession failingSession(ExecutionBackendKind::Simulation, failingDriver);
+  FrontendRunSummary failureSummary =
+      executeFrontendPreparedRun(failingSession, *preparedOr);
+  EXPECT(!failureSummary.success,
+         "frontend execute contract marks failed run");
+  EXPECT(failureSummary.validationStatus == FrontendValidationStatus::Failed,
+         "frontend execute contract marks validation failure");
+  EXPECT(failureSummary.errorStage == "validate",
+         "frontend execute contract extracts error stage");
+  EXPECT(failureSummary.rawErrorMessage ==
+             "[sim:validate] simulation output mismatch",
+         "frontend execute contract preserves raw error");
+
+  FrontendSingleTaskRunRequest noValidationRequest = request;
+  noValidationRequest.invocation.expectedOutputs.clear();
+  auto noValidationPreparedOr = prepareFrontendSingleTaskRun(noValidationRequest);
+  EXPECT((bool)noValidationPreparedOr,
+         "frontend execute contract prepares non-validating graph");
+  if (!noValidationPreparedOr)
+    return;
+  ExecutionSession noValidationSession(ExecutionBackendKind::Simulation,
+                                       successDriver);
+  FrontendRunSummary noValidationSummary =
+      executeFrontendPreparedRun(noValidationSession, *noValidationPreparedOr);
+  EXPECT(noValidationSummary.validationStatus ==
+             FrontendValidationStatus::NotRun,
+         "frontend execute contract leaves validation unset when no golden outputs exist");
+}
+
+static std::string readFileContents(const std::string &path) {
+  std::ifstream is(path);
+  return std::string((std::istreambuf_iterator<char>(is)),
+                     std::istreambuf_iterator<char>());
+}
+
+static void testBackendSelection() {
+  auto driver = std::make_shared<RecordingBackendDriver>();
+  auto simOr = createExecutionBackend(ExecutionBackendKind::Simulation, driver);
+  auto npuOr = createExecutionBackend(ExecutionBackendKind::Npu, driver);
+  EXPECT((bool)simOr, "simulation backend factory succeeds");
+  EXPECT((bool)npuOr, "npu backend factory succeeds");
+  if (simOr)
+    EXPECT((*simOr)->kind() == ExecutionBackendKind::Simulation,
+           "simulation backend reports its kind");
+  if (simOr)
+    EXPECT(!(*simOr)->allowsConcurrentTaskDispatch(),
+           "simulation backend with default driver stays serial by default");
+  if (npuOr)
+    EXPECT((*npuOr)->kind() == ExecutionBackendKind::Npu,
+           "npu backend reports its kind");
+  if (npuOr)
+    EXPECT((*npuOr)->allowsConcurrentTaskDispatch() ==
+               driver->capabilities().supportsConcurrentDispatch,
+           "driver-backed npu dispatchability follows driver capabilities");
+
+  ExecutionRequest request;
+  request.task.taskId = "single";
+  request.task.artifact.kernelName = "mix_add";
+  request.task.artifact.kernelKind = KernelKind::Mix;
+  request.task.artifact.mixResourceType = MixResourceType::Mix1C1V;
+  request.workingDirectory = "/tmp/taskgraph-runtime";
+  EXPECT(request.task.taskId == "single", "execution request stores task");
+}
+
+static void testDefaultBackendRequiresDriver() {
+  auto simOr = createExecutionBackend(ExecutionBackendKind::Simulation);
+  auto npuOr = createExecutionBackend(ExecutionBackendKind::Npu);
+  EXPECT((bool)simOr, "simulation backend factory without driver succeeds");
+  EXPECT((bool)npuOr, "npu backend factory without driver succeeds");
+  if (!simOr || !npuOr)
+    return;
+
+  EXPECT((*simOr)->allowsConcurrentTaskDispatch(),
+         "real simulation backend opts into concurrent task dispatch");
+  EXPECT((*npuOr)->allowsConcurrentTaskDispatch(),
+         "real npu backend allows concurrent dispatch");
+
+  ExecutionRequest request;
+  request.task.taskId = "task_a";
+
+  auto simResult = (*simOr)->run(request);
+  EXPECT(!(bool)simResult, "simulation backend without driver fails");
+  if (!simResult)
+    llvm::consumeError(simResult.takeError());
+
+  auto npuResult = (*npuOr)->run(request);
+  EXPECT(!(bool)npuResult, "npu backend without driver fails");
+  if (!npuResult)
+    llvm::consumeError(npuResult.takeError());
+}
+
+static void testBackendCapabilitiesExposeSimAndNpuContracts() {
+  auto simOr = createExecutionBackend(ExecutionBackendKind::Simulation);
+  EXPECT((bool)simOr, "simulation backend creation succeeds");
+
+  auto npuOr = createExecutionBackend(ExecutionBackendKind::Npu);
+  EXPECT((bool)npuOr, "npu backend creation succeeds");
+
+  if (simOr) {
+    const BackendCapabilities caps = (*simOr)->capabilities();
+    EXPECT(caps.supportsConcurrentDispatch,
+           "sim backend advertises concurrent dispatch");
+    EXPECT((*simOr)->allowsConcurrentTaskDispatch() ==
+               caps.supportsConcurrentDispatch,
+           "sim backend dispatchability is derived from capabilities");
+    EXPECT(!caps.supportsConcurrentExecution,
+           "sim backend advertises non-concurrent execution");
+    EXPECT(caps.requiresSerializedLaunch,
+           "sim backend advertises serialized launch");
+    EXPECT(caps.maxConcurrentTasks == 1024,
+           "sim backend advertises the expected task capacity");
+    EXPECT(caps.maxConcurrentStreams == 1,
+           "sim backend advertises a single stream");
+  }
+
+  if (npuOr) {
+    const BackendCapabilities caps = (*npuOr)->capabilities();
+    EXPECT(caps.supportsConcurrentDispatch,
+           "npu backend advertises scheduler-side concurrent dispatch");
+    EXPECT(caps.supportsConcurrentExecution,
+           "npu backend advertises scheduler-side concurrent execution");
+    EXPECT((*npuOr)->allowsConcurrentTaskDispatch() ==
+               caps.supportsConcurrentDispatch,
+           "npu backend dispatchability is derived from capabilities");
+    EXPECT(!caps.requiresSerializedLaunch,
+           "npu backend does not force simulator launch serialization");
+    EXPECT(caps.maxConcurrentTasks >= 1,
+           "npu backend advertises at least one task slot");
+    EXPECT(caps.maxConcurrentStreams >= 1,
+           "npu backend advertises at least one stream slot");
+  }
+}
+
+static void testNpuBackendAdvertisesSchedulableMultiTaskContract() {
+  auto npuOr = createExecutionBackend(ExecutionBackendKind::Npu);
+  EXPECT((bool)npuOr, "npu backend creation succeeds");
+  if (!npuOr)
+    return;
+
+  const BackendCapabilities caps = (*npuOr)->capabilities();
+  EXPECT(caps.supportsConcurrentDispatch,
+         "npu backend allows scheduler-side concurrent dispatch");
+  EXPECT(caps.supportsConcurrentExecution,
+         "npu backend allows scheduler-side concurrent execution");
+  EXPECT(caps.maxConcurrentTasks >= 1,
+         "npu backend exposes at least one task slot");
+  EXPECT(caps.maxConcurrentStreams >= 1,
+         "npu backend exposes at least one stream slot");
+}
+
+static void testBackendCapabilitiesFollowInjectedDriverContract() {
+  class CapabilityAwareSimDriver final : public ExecutionBackendDriver {
+  public:
+    BackendCapabilities capabilities() const override {
+      BackendCapabilities caps;
+      caps.supportsConcurrentDispatch = true;
+      caps.supportsConcurrentExecution = true;
+      caps.requiresSerializedLaunch = false;
+      caps.maxConcurrentTasks = 7;
+      caps.maxConcurrentStreams = 3;
+      return caps;
+    }
+
+    llvm::Expected<ExecutionResult>
+    run(const ExecutionRequest &request) override {
+      ExecutionResult result;
+      result.taskId = request.task.taskId;
+      return result;
+    }
+  };
+
+  auto driver = std::make_shared<CapabilityAwareSimDriver>();
+  auto simOr = createExecutionBackend(ExecutionBackendKind::Simulation, driver);
+  EXPECT((bool)simOr, "driver-backed simulation backend creation succeeds");
+  if (!simOr)
+    return;
+
+  const BackendCapabilities driverCaps = driver->capabilities();
+  EXPECT(driver->allowsConcurrentTaskDispatch() ==
+             driverCaps.supportsConcurrentDispatch,
+         "driver dispatchability derives from driver capabilities");
+
+  const BackendCapabilities backendCaps = (*simOr)->capabilities();
+  EXPECT(backendCaps.supportsConcurrentDispatch ==
+             driverCaps.supportsConcurrentDispatch,
+         "driver-backed simulation backend mirrors driver concurrent dispatch");
+  EXPECT(backendCaps.supportsConcurrentExecution ==
+             driverCaps.supportsConcurrentExecution,
+         "driver-backed simulation backend mirrors driver concurrent execution");
+  EXPECT(backendCaps.requiresSerializedLaunch ==
+             driverCaps.requiresSerializedLaunch,
+         "driver-backed simulation backend mirrors driver serialized launch");
+  EXPECT(backendCaps.maxConcurrentTasks == driverCaps.maxConcurrentTasks,
+         "driver-backed simulation backend mirrors driver task capacity");
+  EXPECT(backendCaps.maxConcurrentStreams == driverCaps.maxConcurrentStreams,
+         "driver-backed simulation backend mirrors driver stream capacity");
+  EXPECT((*simOr)->allowsConcurrentTaskDispatch() ==
+             backendCaps.supportsConcurrentDispatch,
+         "driver-backed simulation dispatchability stays coherent");
+}
+
+static void testBackendCapabilitiesExposeDriverBackedNpuSchedulerContract() {
+  class CapabilityAwareNpuDriver final : public ExecutionBackendDriver {
+  public:
+    BackendCapabilities capabilities() const override {
+      BackendCapabilities caps;
+      caps.supportsConcurrentDispatch = true;
+      caps.supportsConcurrentExecution = false;
+      caps.requiresSerializedLaunch = true;
+      caps.maxConcurrentTasks = 7;
+      caps.maxConcurrentStreams = 3;
+      return caps;
+    }
+
+    llvm::Expected<ExecutionResult>
+    run(const ExecutionRequest &request) override {
+      ExecutionResult result;
+      result.taskId = request.task.taskId;
+      return result;
+    }
+  };
+
+  auto driver = std::make_shared<CapabilityAwareNpuDriver>();
+  auto npuOr = createExecutionBackend(ExecutionBackendKind::Npu, driver);
+  EXPECT((bool)npuOr, "driver-backed npu backend creation succeeds");
+  if (!npuOr)
+    return;
+
+  const BackendCapabilities driverCaps = driver->capabilities();
+  EXPECT(driver->allowsConcurrentTaskDispatch() ==
+             driverCaps.supportsConcurrentDispatch,
+         "npu driver dispatchability derives from driver capabilities");
+
+  const BackendCapabilities backendCaps = (*npuOr)->capabilities();
+  EXPECT(backendCaps.supportsConcurrentDispatch ==
+             driverCaps.supportsConcurrentDispatch,
+         "driver-backed npu backend preserves driver dispatch capability");
+  EXPECT(backendCaps.supportsConcurrentExecution ==
+             driverCaps.supportsConcurrentExecution,
+         "driver-backed npu backend preserves driver execution capability");
+  EXPECT((*npuOr)->allowsConcurrentTaskDispatch() ==
+             backendCaps.supportsConcurrentDispatch,
+         "driver-backed npu backend dispatchability stays coherent");
+  EXPECT(backendCaps.requiresSerializedLaunch ==
+             driverCaps.requiresSerializedLaunch,
+         "driver-backed npu backend preserves driver serialized launch");
+  EXPECT(backendCaps.maxConcurrentTasks == driverCaps.maxConcurrentTasks,
+         "driver-backed npu backend preserves task capacity");
+  EXPECT(backendCaps.maxConcurrentStreams == driverCaps.maxConcurrentStreams,
+         "driver-backed npu backend preserves stream capacity");
+}
+
+static void testExecutionSessionRunsNpuRootsConcurrently() {
+  class ConcurrentNpuBackendDriver final : public ExecutionBackendDriver {
+  public:
+    BackendCapabilities capabilities() const override {
+      BackendCapabilities caps;
+      caps.supportsConcurrentDispatch = true;
+      caps.supportsConcurrentExecution = true;
+      caps.requiresSerializedLaunch = false;
+      caps.maxConcurrentTasks = 2;
+      caps.maxConcurrentStreams = 1;
+      return caps;
+    }
+
+    llvm::Expected<ExecutionResult>
+    run(const ExecutionRequest &request) override {
+      {
+        std::lock_guard<std::mutex> lock(mu);
+        seenTaskIds.push_back(request.task.taskId);
+      }
+
+      const int runningNow = ++runningCount;
+      int observedMax = maxRunning.load();
+      while (runningNow > observedMax &&
+             !maxRunning.compare_exchange_weak(observedMax, runningNow)) {
+      }
+
+      if (request.task.taskId == "task_a" || request.task.taskId == "task_b")
+        std::this_thread::sleep_for(std::chrono::milliseconds(80));
+
+      --runningCount;
+
+      ExecutionResult result;
+      result.taskId = request.task.taskId;
+      return result;
+    }
+
+    std::atomic<int> runningCount{0};
+    std::atomic<int> maxRunning{0};
+    std::mutex mu;
+    std::vector<std::string> seenTaskIds;
+  };
+
+  TaskGraph graph;
+  RuntimeTask taskA;
+  taskA.taskId = "task_a";
+  taskA.invocation.outputs.push_back(
+      TensorBinding{"out", BindingSourceKind::ExternalFile, "/tmp/task_a.npy",
+                    "", "", std::vector<int64_t>{4}, DType::F16});
+  RuntimeTask taskB;
+  taskB.taskId = "task_b";
+  taskB.invocation.outputs.push_back(
+      TensorBinding{"out", BindingSourceKind::ExternalFile, "/tmp/task_b.npy",
+                    "", "", std::vector<int64_t>{4}, DType::F16});
+  RuntimeTask taskJoin;
+  taskJoin.taskId = "task_join";
+  taskJoin.dependencies = {"task_a", "task_b"};
+  taskJoin.invocation.outputs.push_back(
+      TensorBinding{"out", BindingSourceKind::ExternalFile,
+                    "/tmp/task_join.npy", "", "",
+                    std::vector<int64_t>{4}, DType::F16});
+
+  auto addA = graph.addTask(taskA);
+  EXPECT(!addA, "npu serial session add task_a");
+  auto addJoin = graph.addTask(taskJoin);
+  EXPECT(!addJoin, "npu serial session add task_join");
+  auto addB = graph.addTask(taskB);
+  EXPECT(!addB, "npu serial session add task_b");
+
+  auto driver = std::make_shared<ConcurrentNpuBackendDriver>();
+  ConcurrentNpuBackendDriver *driverPtr = driver.get();
+  ExecutionSession session(ExecutionBackendKind::Npu, driver);
+
+  auto traceOr = session.run(graph);
+  EXPECT((bool)traceOr, "npu execution session concurrent run succeeds");
+  EXPECT(driverPtr->maxRunning.load() >= 2,
+         "npu execution session overlaps ready roots through global scheduler");
+  EXPECT(driverPtr->seenTaskIds.size() == 3,
+         "npu execution session still runs all tasks");
+  if (traceOr) {
+    auto mode = traceOr->attributes.find("scheduler_mode");
+    auto scope = traceOr->attributes.find("scheduler_scope");
+    EXPECT(mode != traceOr->attributes.end(),
+           "npu execution session records scheduler mode");
+    EXPECT(scope != traceOr->attributes.end(),
+           "npu execution session records scheduler scope");
+    if (mode != traceOr->attributes.end())
+      EXPECT(mode->second == "concurrent",
+             "npu execution session uses concurrent scheduler mode");
+    if (scope != traceOr->attributes.end())
+      EXPECT(scope->second == "global",
+             "npu execution session uses global scheduler scope");
+  }
+}
+
+static void testExecutionSessionSerializesNpuRootsWhenDriverCapacityIsOne() {
+  class SerializedNpuBackendDriver final : public ExecutionBackendDriver {
+  public:
+    BackendCapabilities capabilities() const override {
+      BackendCapabilities caps;
+      caps.supportsConcurrentDispatch = true;
+      caps.supportsConcurrentExecution = false;
+      caps.requiresSerializedLaunch = true;
+      caps.maxConcurrentTasks = 1;
+      caps.maxConcurrentStreams = 1;
+      return caps;
+    }
+
+    llvm::Expected<ExecutionResult>
+    run(const ExecutionRequest &request) override {
+      {
+        std::lock_guard<std::mutex> lock(mu);
+        seenTaskIds.push_back(request.task.taskId);
+      }
+
+      const int runningNow = ++runningCount;
+      int observedMax = maxRunning.load();
+      while (runningNow > observedMax &&
+             !maxRunning.compare_exchange_weak(observedMax, runningNow)) {
+      }
+
+      if (request.task.taskId == "task_a" || request.task.taskId == "task_b")
+        std::this_thread::sleep_for(std::chrono::milliseconds(80));
+
+      --runningCount;
+
+      ExecutionResult result;
+      result.taskId = request.task.taskId;
+      return result;
+    }
+
+    std::atomic<int> runningCount{0};
+    std::atomic<int> maxRunning{0};
+    std::mutex mu;
+    std::vector<std::string> seenTaskIds;
+  };
+
+  TaskGraph graph;
+  RuntimeTask taskA;
+  taskA.taskId = "task_a";
+  taskA.invocation.outputs.push_back(
+      TensorBinding{"out", BindingSourceKind::ExternalFile, "/tmp/task_a.npy",
+                    "", "", std::vector<int64_t>{4}, DType::F16});
+  RuntimeTask taskB;
+  taskB.taskId = "task_b";
+  taskB.invocation.outputs.push_back(
+      TensorBinding{"out", BindingSourceKind::ExternalFile, "/tmp/task_b.npy",
+                    "", "", std::vector<int64_t>{4}, DType::F16});
+  RuntimeTask taskJoin;
+  taskJoin.taskId = "task_join";
+  taskJoin.dependencies = {"task_a", "task_b"};
+  taskJoin.invocation.outputs.push_back(
+      TensorBinding{"out", BindingSourceKind::ExternalFile,
+                    "/tmp/task_join.npy", "", "",
+                    std::vector<int64_t>{4}, DType::F16});
+
+  auto addA = graph.addTask(taskA);
+  EXPECT(!addA, "serialized npu add task_a");
+  auto addJoin = graph.addTask(taskJoin);
+  EXPECT(!addJoin, "serialized npu add task_join");
+  auto addB = graph.addTask(taskB);
+  EXPECT(!addB, "serialized npu add task_b");
+
+  auto driver = std::make_shared<SerializedNpuBackendDriver>();
+  SerializedNpuBackendDriver *driverPtr = driver.get();
+  ExecutionSession session(ExecutionBackendKind::Npu, driver);
+
+  auto traceOr = session.run(graph);
+  EXPECT((bool)traceOr, "serialized npu execution succeeds");
+  EXPECT(driverPtr->maxRunning.load() == 1,
+         "npu execution stays serialized when driver capacity is one");
+  if (traceOr) {
+    auto scope = traceOr->attributes.find("scheduler_scope");
+    auto mode = traceOr->attributes.find("scheduler_mode");
+    EXPECT(scope != traceOr->attributes.end() && scope->second == "global",
+           "serialized npu path still uses global scheduler");
+    EXPECT(mode != traceOr->attributes.end() && mode->second == "concurrent",
+           "serialized npu path still reports global concurrent scheduler mode");
+  }
+}
+
+static void testInvalidBackendSelection() {
+  auto bad = createExecutionBackend(static_cast<ExecutionBackendKind>(99));
+  EXPECT(!(bool)bad, "invalid backend selection is rejected");
+  if (!bad)
+    llvm::consumeError(bad.takeError());
+}
+
+static void testBackendDelegatesToDriver() {
+  auto driver = std::make_shared<RecordingBackendDriver>();
+  auto simOr = createExecutionBackend(ExecutionBackendKind::Simulation, driver);
+  auto npuOr = createExecutionBackend(ExecutionBackendKind::Npu, driver);
+  EXPECT((bool)simOr, "simulation backend factory with driver succeeds");
+  EXPECT((bool)npuOr, "npu backend factory with driver succeeds");
+  if (!simOr || !npuOr)
+    return;
+
+  ExecutionRequest request;
+  request.sessionId = "session-a";
+  request.task.taskId = "task_a";
+  request.workingDirectory = "/tmp/taskgraph-runtime";
+
+  auto simResult = (*simOr)->run(request);
+  EXPECT((bool)simResult, "simulation backend delegates");
+  if (simResult) {
+    EXPECT(simResult->taskId == "driver:task_a",
+           "simulation backend returns driver result");
+    EXPECT(simResult->producedFiles.size() == 1,
+           "simulation backend preserves produced files");
+    EXPECT(!(bool)simResult->profileTrace,
+           "non-profile files do not surface a profile trace");
+  }
+
+  request.task.invocation.outputs.push_back(
+      TensorBinding{"out", BindingSourceKind::ExternalFile, "/tmp/task_a.npy",
+                    "", "", std::vector<int64_t>{4}, DType::F16});
+  auto npuResult = (*npuOr)->run(request);
+  EXPECT((bool)npuResult, "npu backend delegates");
+  if (npuResult)
+    EXPECT(npuResult->taskId == "driver:task_a",
+           "npu backend returns driver result");
+
+  EXPECT(driver->invocations == 2, "shared driver sees both invocations");
+  EXPECT(driver->lastRequest.task.taskId == "task_a",
+         "driver receives the original request");
+}
+
+static void testNpuBackendRejectsMissingDeviceBinaryPath() {
+  auto npuOr = createExecutionBackend(ExecutionBackendKind::Npu);
+  EXPECT((bool)npuOr, "npu backend factory without driver succeeds for validation");
+  if (!npuOr)
+    return;
+
+  ExecutionRequest request;
+  request.task.taskId = "task_npu_vec";
+  request.task.artifact.kernelName = "vec_kernel";
+  request.task.artifact.kernelKind = KernelKind::Vec;
+  request.task.invocation.outputs.push_back(
+      TensorBinding{"out", BindingSourceKind::ExternalFile, "/tmp/task_npu_vec.npy",
+                    "", "", std::vector<int64_t>{4}, DType::F16});
+
+  auto resultOr = (*npuOr)->run(request);
+  EXPECT(!(bool)resultOr, "npu backend rejects missing device binary path");
+  if (!resultOr) {
+    const std::string message = llvm::toString(resultOr.takeError());
+    EXPECT(message.find("[npu:artifact]") != std::string::npos,
+           "npu backend reports artifact stage for missing device binary");
+    EXPECT(message.find("artifact is missing device binary path") != std::string::npos,
+           "npu backend reports missing device binary path");
+  }
+}
+
+static void testNpuBackendRejectsMissingMixSharedObjectPath() {
+  auto npuOr = createExecutionBackend(ExecutionBackendKind::Npu);
+  EXPECT((bool)npuOr, "npu backend factory without driver succeeds for mix validation");
+  if (!npuOr)
+    return;
+
+  ExecutionRequest request;
+  request.task.taskId = "task_npu_mix";
+  request.task.artifact.kernelName = "mix_kernel";
+  request.task.artifact.kernelKind = KernelKind::Mix;
+  request.task.invocation.outputs.push_back(
+      TensorBinding{"out", BindingSourceKind::ExternalFile, "/tmp/task_npu_mix.npy",
+                    "", "", std::vector<int64_t>{4}, DType::F16});
+
+  auto resultOr = (*npuOr)->run(request);
+  EXPECT(!(bool)resultOr,
+         "npu backend rejects missing dynamic-library shared object");
+  if (!resultOr) {
+    const std::string message = llvm::toString(resultOr.takeError());
+    EXPECT(message.find("[npu:artifact]") != std::string::npos,
+           "npu backend reports artifact stage for missing mix shared object");
+    EXPECT(message.find("mix artifact is missing shared library path") !=
+               std::string::npos,
+           "npu backend reports missing dynamic-library shared object path");
+  }
+}
+
+static void testNpuBackendReachesRealDeviceModePath() {
+  auto npuOr = createExecutionBackend(ExecutionBackendKind::Npu);
+  EXPECT((bool)npuOr, "npu backend factory without driver succeeds for real-device path");
+  if (!npuOr)
+    return;
+
+  const std::string inputPath =
+      writeTempNpy("taskgraph-runtime-npu-input", {4}, DType::F16);
+  if (inputPath.empty())
+    return;
+
+  ExecutionRequest request;
+  request.task.taskId = "task_npu_real";
+  request.task.artifact.kernelName = "vec_kernel";
+  request.task.artifact.kernelKind = KernelKind::Vec;
+  request.task.artifact.deviceBinaryPath = "/tmp/fake_npu_kernel.bin";
+  request.task.invocation.inputs.push_back(
+      TensorBinding{"in", BindingSourceKind::ExternalFile, inputPath});
+  request.task.invocation.outputs.push_back(
+      TensorBinding{"out", BindingSourceKind::ExternalFile, "/tmp/task_npu_real.npy",
+                    "", "", std::vector<int64_t>{4}, DType::F16});
+
+  auto resultOr = (*npuOr)->run(request);
+  EXPECT(!(bool)resultOr, "npu backend without real device still fails explicitly");
+  if (!resultOr) {
+    const std::string message = llvm::toString(resultOr.takeError());
+    EXPECT(message.find("[npu:executor_initialize]") != std::string::npos,
+           "npu backend reports executor initialize stage");
+  }
+}
+
+static void testNpuBackendRejectsExpectedOutputMetadataMismatch() {
+  auto npuOr = createExecutionBackend(ExecutionBackendKind::Npu);
+  EXPECT((bool)npuOr,
+         "npu backend factory succeeds for metadata mismatch validation");
+  if (!npuOr)
+    return;
+
+  const std::string inputPath =
+      writeTempNpy("taskgraph-runtime-npu-mismatch-input", {4}, DType::F16);
+  const std::string expectedPath =
+      writeTempNpy("taskgraph-runtime-npu-mismatch-expected", {4}, DType::F32);
+  if (inputPath.empty() || expectedPath.empty())
+    return;
+
+  ExecutionRequest request;
+  request.task.taskId = "task_npu_mismatch";
+  request.task.artifact.kernelName = "vec_kernel";
+  request.task.artifact.kernelKind = KernelKind::Vec;
+  request.task.artifact.deviceBinaryPath = "/tmp/fake_npu_kernel.bin";
+  request.task.invocation.inputs.push_back(
+      TensorBinding{"in", BindingSourceKind::ExternalFile, inputPath});
+  request.task.invocation.outputs.push_back(
+      TensorBinding{"out", BindingSourceKind::ExternalFile,
+                    "/tmp/task_npu_mismatch.npy", "", "",
+                    std::vector<int64_t>{8}, DType::F16});
+  request.task.invocation.expectedOutputs.push_back(
+      TensorBinding{"out", BindingSourceKind::ExternalFile, expectedPath});
+
+  auto resultOr = (*npuOr)->run(request);
+  EXPECT(!(bool)resultOr,
+         "npu backend rejects expected output metadata mismatches");
+  if (!resultOr) {
+    const std::string message = llvm::toString(resultOr.takeError());
+    EXPECT(message.find("[npu:bindings]") != std::string::npos,
+           "npu backend reports bindings stage for metadata mismatch");
+    EXPECT(message.find("output binding metadata does not match expected output") !=
+               std::string::npos,
+           "npu backend reports output/expected metadata mismatch");
+  }
+}
+
+static void testNpuBackendRejectsExpectedOutputMissingPath() {
+  auto npuOr = createExecutionBackend(ExecutionBackendKind::Npu);
+  EXPECT((bool)npuOr,
+         "npu backend factory succeeds for expected output path validation");
+  if (!npuOr)
+    return;
+
+  ExecutionRequest request;
+  request.task.taskId = "task_npu_expected_missing_path";
+  request.task.artifact.kernelName = "vec_kernel";
+  request.task.artifact.kernelKind = KernelKind::Vec;
+  request.task.artifact.deviceBinaryPath = "/tmp/fake_npu_kernel.bin";
+  request.task.invocation.outputs.push_back(
+      TensorBinding{"out", BindingSourceKind::ExternalFile,
+                    "/tmp/task_npu_expected_missing_path.npy", "", "",
+                    std::vector<int64_t>{4}, DType::F16});
+  request.task.invocation.expectedOutputs.push_back(
+      TensorBinding{"out", BindingSourceKind::ExternalFile, ""});
+
+  auto resultOr = (*npuOr)->run(request);
+  EXPECT(!(bool)resultOr, "npu backend rejects expected output bindings without a path");
+  if (!resultOr) {
+    const std::string message = llvm::toString(resultOr.takeError());
+    EXPECT(message.find("[npu:bindings]") != std::string::npos,
+           "npu backend reports bindings stage for expected output path validation");
+    EXPECT(message.find("expected output binding is missing path") !=
+               std::string::npos,
+           "npu backend reports missing expected output path");
+  }
+}
+
+static void testNpuBackendDriverFailureIsStageWrapped() {
+  auto driver =
+      std::make_shared<FailingExecutionBackendDriver>("driver-backed npu failure");
+  auto npuOr = createExecutionBackend(ExecutionBackendKind::Npu, driver);
+  EXPECT((bool)npuOr, "driver-backed npu backend creation succeeds");
+  if (!npuOr)
+    return;
+
+  ExecutionRequest request;
+  request.task.taskId = "task_npu_driver_failure";
+  request.task.artifact.kernelName = "vec_kernel";
+  request.task.artifact.kernelKind = KernelKind::Vec;
+  request.task.invocation.outputs.push_back(
+      TensorBinding{"out", BindingSourceKind::ExternalFile,
+                    "/tmp/task_npu_driver_failure.npy", "", "",
+                    std::vector<int64_t>{4}, DType::F16});
+
+  auto resultOr = (*npuOr)->run(request);
+  EXPECT(!(bool)resultOr, "driver-backed npu errors surface as failures");
+  if (!resultOr) {
+    const std::string message = llvm::toString(resultOr.takeError());
+    EXPECT(message.find("[npu:driver]") != std::string::npos,
+           "driver-backed npu errors are stage wrapped");
+    EXPECT(message.find("driver-backed npu failure") != std::string::npos,
+           "driver-backed npu preserves driver error detail");
+  }
+}
+
+static void testDriverBackedNpuBackendRejectsExpectedOutputMissingPath() {
+  auto driver = std::make_shared<SuccessfulNpuBackendDriver>();
+  SuccessfulNpuBackendDriver *driverPtr = driver.get();
+  auto npuOr = createExecutionBackend(ExecutionBackendKind::Npu, driver);
+  EXPECT((bool)npuOr,
+         "driver-backed npu backend creation succeeds for expected output path validation");
+  if (!npuOr)
+    return;
+
+  ExecutionRequest request;
+  request.task.taskId = "task_npu_driver_expected_missing_path";
+  request.task.artifact.kernelName = "vec_kernel";
+  request.task.artifact.kernelKind = KernelKind::Vec;
+  request.task.invocation.outputs.push_back(
+      TensorBinding{"out", BindingSourceKind::ExternalFile,
+                    "/tmp/task_npu_driver_expected_missing_path.npy", "", "",
+                    std::vector<int64_t>{4}, DType::F16});
+  request.task.invocation.expectedOutputs.push_back(
+      TensorBinding{"out", BindingSourceKind::ExternalFile, ""});
+
+  auto resultOr = (*npuOr)->run(request);
+  EXPECT(!(bool)resultOr,
+         "driver-backed npu backend rejects expected output bindings without a path");
+  EXPECT(driverPtr->invocations == 0,
+         "driver-backed npu does not invoke driver when expected output binding path is missing");
+  if (!resultOr) {
+    const std::string message = llvm::toString(resultOr.takeError());
+    EXPECT(message.find("[npu:bindings]") != std::string::npos,
+           "driver-backed npu reports bindings stage for expected output path validation");
+    EXPECT(message.find("expected output binding is missing path") !=
+               std::string::npos,
+           "driver-backed npu reports missing expected output path");
+  }
+}
+
+static void testDriverBackedNpuBackendValidatesRuntimeBindings() {
+  auto driver = std::make_shared<SuccessfulNpuBackendDriver>();
+  SuccessfulNpuBackendDriver *driverPtr = driver.get();
+  auto npuOr = createExecutionBackend(ExecutionBackendKind::Npu, driver);
+  EXPECT((bool)npuOr, "driver-backed npu backend creation succeeds for binding validation");
+  if (!npuOr)
+    return;
+
+  ExecutionRequest request;
+  request.task.taskId = "task_npu_driver_binding_validation";
+  request.task.artifact.kernelName = "vec_kernel";
+  request.task.artifact.kernelKind = KernelKind::Vec;
+  request.task.invocation.outputs.push_back(
+      TensorBinding{"out", BindingSourceKind::ExternalFile,
+                    "/tmp/task_npu_driver_binding_validation.npy"});
+
+  auto resultOr = (*npuOr)->run(request);
+  EXPECT(!(bool)resultOr,
+         "driver-backed npu backend rejects malformed runtime-owned bindings");
+  EXPECT(driverPtr->invocations == 0,
+         "driver-backed npu does not invoke driver when runtime binding validation fails");
+  if (!resultOr) {
+    const std::string message = llvm::toString(resultOr.takeError());
+    EXPECT(message.find("[npu:bindings]") != std::string::npos,
+           "driver-backed npu binding failures are stage wrapped");
+    EXPECT(message.find("output binding is missing shape metadata") !=
+               std::string::npos,
+           "driver-backed npu reports missing output metadata");
+  }
+}
+
+static void testExecutionSessionSupportsNpuSuccessDriver() {
+  auto driver = std::make_shared<SuccessfulNpuBackendDriver>();
+  SuccessfulNpuBackendDriver *driverPtr = driver.get();
+  ExecutionSession session(ExecutionBackendKind::Npu, driver);
+
+  RuntimeTask task;
+  task.taskId = "npu_task";
+  task.artifact.kernelName = "npu_kernel";
+  task.artifact.kernelKind = KernelKind::Vec;
+  task.artifact.deviceBinaryPath = "/tmp/fake_npu_kernel.bin";
+  task.invocation.outputs.push_back(
+      TensorBinding{"out", BindingSourceKind::ExternalFile, "/tmp/npu_task.npy",
+                    "", "", std::vector<int64_t>{4}, DType::F16});
+
+  TaskGraph graph;
+  auto addErr = graph.addTask(task);
+  EXPECT(!addErr, "npu success driver graph add task");
+  if (addErr) {
+    llvm::consumeError(std::move(addErr));
+    return;
+  }
+
+  auto traceOr = session.run(graph);
+  EXPECT((bool)traceOr, "execution session runs with npu success driver");
+  if (traceOr) {
+    EXPECT(traceOr->events.size() == 1,
+           "npu success driver yields one profile event");
+    if (!traceOr->events.empty()) {
+      EXPECT(traceOr->events.front().backend == ExecutionBackendKind::Npu,
+             "npu success driver profile event backend");
+      EXPECT(traceOr->events.front().eventKind == "profile_artifact",
+             "npu success driver profile event kind");
+    }
+  } else {
+    llvm::consumeError(traceOr.takeError());
+  }
+
+  EXPECT(driverPtr->invocations == 1, "npu success driver invoked once");
+  EXPECT(driverPtr->lastRequest.task.taskId == "npu_task",
+         "npu success driver receives task");
+}
+
+static void testSimulatorProfileNormalization() {
+  std::vector<std::string> producedFiles = {
+      "/tmp/taskgraph-runtime/done",
+      "/tmp/taskgraph-runtime/opprof/simulator/trace.json",
+      "/tmp/taskgraph-runtime/opprof/simulator/notes.txt"};
+
+  EXPECT(!isSimulatorProfileArtifact(producedFiles[0]),
+         "regular output is not treated as a simulator profile artifact");
+  EXPECT(isSimulatorProfileArtifact(producedFiles[1]),
+         "simulator trace is recognized as a profile artifact");
+  EXPECT(!isSimulatorProfileArtifact(producedFiles[2]),
+         "non-trace simulator file is ignored");
+  EXPECT(!isSimulatorProfileArtifact(
+             "/tmp/taskgraph-runtime/opprof/simulator/foo-trace.json"),
+         "near-match trace filename is ignored");
+  EXPECT(!isSimulatorProfileArtifact(
+             "/tmp/taskgraph-runtime/opprof/simulator/subdir/trace.json"),
+         "trace in subdirectory is ignored");
+
+  auto traceOr = normalizeSimulatorProfileTrace("sess0", "task0",
+                                                producedFiles);
+  EXPECT((bool)traceOr, "profile normalization finds simulator trace");
+  if (traceOr) {
+    EXPECT(traceOr->sessionId == "sess0",
+           "normalized trace keeps session id");
+    EXPECT(traceOr->events.size() == 1,
+           "normalized trace filters to profile artifacts only");
+    if (!traceOr->events.empty()) {
+      EXPECT(traceOr->events.front().taskId == "task0",
+             "normalized event keeps task mapping");
+      EXPECT(traceOr->events.front().backend ==
+                 ExecutionBackendKind::Simulation,
+             "normalized event keeps backend kind");
+      EXPECT(traceOr->events.front().artifact ==
+                 "/tmp/taskgraph-runtime/opprof/simulator/trace.json",
+             "normalized event stores profile artifact path");
+    }
+  }
+
+  std::vector<std::string> nonProfileFiles = {
+      "/tmp/taskgraph-runtime/done",
+      "/tmp/taskgraph-runtime/log.txt"};
+  auto emptyTraceOr = normalizeSimulatorProfileTrace("sess1", "task1",
+                                                     nonProfileFiles);
+  EXPECT(!(bool)emptyTraceOr,
+         "normalization returns no trace when no profile artifacts exist");
+}
+
+static void testSimulatorProfileNormalizationExtractsMetrics() {
+  const std::filesystem::path sourceRoot =
+      makeTempDir("profile-normalize-metrics-src");
+  std::filesystem::create_directories(sourceRoot / "opprof" / "simulator");
+
+  const std::filesystem::path tracePath =
+      sourceRoot / "opprof" / "simulator" / "trace.json";
+  {
+    std::ofstream os(tracePath);
+    os << R"({
+  "schema_version": 1,
+  "backend": "simulation",
+  "session_id": "sess-metrics",
+  "task_id": "task-metrics",
+  "score": 4242,
+  "cycle_count": 4242
+})";
+  }
+
+  std::vector<std::string> producedFiles = {tracePath.string()};
+  auto traceOr = normalizeSimulatorProfileTrace("sess-metrics", "task-metrics",
+                                                producedFiles);
+  EXPECT((bool)traceOr,
+         "profile normalization succeeds for schema v1 simulator trace");
+  if (traceOr) {
+    EXPECT(traceOr->events.size() == 1,
+           "profile normalization emits one event for schema v1 trace");
+    if (!traceOr->events.empty()) {
+      EXPECT(traceOr->events.front().score &&
+                 *traceOr->events.front().score == 4242,
+             "normalized simulator profile extracts score");
+      EXPECT(traceOr->events.front().cycleCount &&
+                 *traceOr->events.front().cycleCount == 4242,
+             "normalized simulator profile extracts cycle_count");
+    }
+  }
+
+  std::error_code ec;
+  std::filesystem::remove_all(sourceRoot, ec);
+}
+
+static void testAddProfileArtifactHelper() {
+  ProfileTrace trace;
+  trace.sessionId = "sess_helper";
+
+  addProfileArtifact(trace, "task_helper", ExecutionBackendKind::Simulation,
+                     "/tmp/taskgraph-runtime/opprof/simulator/helper.json");
+
+  EXPECT(trace.events.size() == 1,
+         "addProfileArtifact appends one profile event");
+  if (!trace.events.empty()) {
+    EXPECT(trace.events.front().taskId == "task_helper",
+           "addProfileArtifact preserves task id");
+    EXPECT(trace.events.front().backend == ExecutionBackendKind::Simulation,
+           "addProfileArtifact preserves backend");
+    EXPECT(trace.events.front().eventKind == "profile_artifact",
+           "addProfileArtifact sets profile artifact event kind");
+    EXPECT(trace.events.front().artifact ==
+               "/tmp/taskgraph-runtime/opprof/simulator/helper.json",
+           "addProfileArtifact preserves artifact path");
+  }
+}
+
+static void testRetainProfileArtifactsForCli() {
+  const std::filesystem::path sourceRoot = makeTempDir("profile-retain-src");
+  const std::filesystem::path destRoot = makeTempDir("profile-retain-dst");
+  std::filesystem::create_directories(sourceRoot / "opprof" / "simulator");
+  std::filesystem::create_directories(destRoot);
+
+  const std::filesystem::path tracePath =
+      sourceRoot / "opprof" / "simulator" / "trace.json";
+  {
+    std::ofstream os(tracePath);
+    os << "{\"score\": 123}";
+  }
+
+  ProfileTrace trace;
+  trace.sessionId = "sess-retain";
+  addProfileArtifact(trace, "task_main", ExecutionBackendKind::Simulation,
+                     tracePath.string());
+
+  auto retainedOr = retainProfileArtifactsForCli(trace, destRoot.string());
+  EXPECT((bool)retainedOr,
+         "retainProfileArtifactsForCli copies simulator profile artifacts");
+  if (retainedOr) {
+    const std::vector<std::string> artifacts =
+        retainedOr->profileArtifactPaths();
+    EXPECT(artifacts.size() == 1,
+           "retained trace keeps exactly one profile artifact");
+    if (!artifacts.empty()) {
+      EXPECT(artifacts.front() != tracePath.string(),
+             "retained trace rewrites artifact path away from session dir");
+      EXPECT(std::filesystem::exists(artifacts.front()),
+             "retained trace points to a copied profile artifact");
+      EXPECT(readTextFile(artifacts.front()) == "{\"score\": 123}",
+             "retained profile artifact preserves contents");
+    }
+  }
+
+  std::error_code ec;
+  std::filesystem::remove_all(sourceRoot, ec);
+  std::filesystem::remove_all(destRoot, ec);
+}
+
+static std::filesystem::path
+prepareProfileSummaryRetentionFixture(ProfileTrace &trace,
+                                      const std::filesystem::path &sourceRoot,
+                                      const std::filesystem::path &destRoot) {
+  std::filesystem::create_directories(sourceRoot / "work");
+  std::filesystem::create_directories(destRoot);
+
+  const std::filesystem::path mainPath = sourceRoot / "work" / "main.json";
+  const std::filesystem::path consumerPath =
+      sourceRoot / "work" / "consumer.json";
+  {
+    std::ofstream os(mainPath);
+    os << R"({"score":10,"cycle_count":10})";
+  }
+  {
+    std::ofstream os(consumerPath);
+    os << R"({"score":20,"cycle_count":20})";
+  }
+
+  trace.sessionId = "runtime-session--summary";
+  addProfileArtifact(trace, "main", ExecutionBackendKind::Simulation,
+                     mainPath.string());
+  addProfileArtifact(trace, "consumer", ExecutionBackendKind::Simulation,
+                     consumerPath.string());
+
+  return destRoot / trace.sessionId;
+}
+
+struct ProfileSummaryRetentionFixture {
+  std::filesystem::path sourceRoot;
+  std::filesystem::path destRoot;
+  std::filesystem::path retainedSessionDir;
+  std::filesystem::path summaryPath;
+  std::filesystem::path mainPath;
+  std::filesystem::path consumerPath;
+};
+
+static ProfileSummaryRetentionFixture makeProfileSummaryRetentionFixture(
+    ProfileTrace &trace, llvm::StringRef stem) {
+  ProfileSummaryRetentionFixture fixture;
+  fixture.sourceRoot = makeTempDir((stem + "-src").str());
+  fixture.destRoot = makeTempDir((stem + "-dst").str());
+  fixture.retainedSessionDir =
+      prepareProfileSummaryRetentionFixture(trace, fixture.sourceRoot,
+                                            fixture.destRoot);
+  fixture.summaryPath = fixture.retainedSessionDir / "session_summary.json";
+  fixture.mainPath = fixture.retainedSessionDir / "tasks" / "main.json";
+  fixture.consumerPath = fixture.retainedSessionDir / "tasks" / "consumer.json";
+  return fixture;
+}
+
+static void cleanupProfileSummaryRetentionFixture(
+    const ProfileSummaryRetentionFixture &fixture) {
+  std::error_code ec;
+  std::filesystem::remove_all(fixture.sourceRoot, ec);
+  std::filesystem::remove_all(fixture.destRoot, ec);
+}
+
+static void testRetainProfileArtifactsCreatesSessionSummary() {
+  ProfileTrace trace;
+  const ProfileSummaryRetentionFixture fixture =
+      makeProfileSummaryRetentionFixture(trace, "profile-retain-summary");
+
+  auto retainedOr = retainProfileArtifactsForCli(trace, fixture.destRoot.string());
+  EXPECT((bool)retainedOr,
+         "retainProfileArtifactsForCli retains summary session artifacts");
+  if (retainedOr) {
+    const std::vector<std::string> artifacts =
+        retainedOr->profileArtifactPaths();
+
+    EXPECT(std::filesystem::exists(fixture.summaryPath),
+           "retained profiles include session_summary.json");
+    EXPECT(std::filesystem::exists(fixture.mainPath),
+           "retained profiles include tasks/main.json");
+    EXPECT(std::filesystem::exists(fixture.consumerPath),
+           "retained profiles include tasks/consumer.json");
+    EXPECT(artifacts.size() == 2,
+           "retained trace keeps both profile artifact paths");
+    if (artifacts.size() == 2) {
+      EXPECT(artifacts[0] == fixture.mainPath.string(),
+             "retained trace points first artifact at tasks/main.json");
+      EXPECT(artifacts[1] == fixture.consumerPath.string(),
+             "retained trace points second artifact at tasks/consumer.json");
+    }
+  }
+
+  cleanupProfileSummaryRetentionFixture(fixture);
+}
+
+static void testRetainedSessionSummaryContents() {
+  ProfileTrace trace;
+  const ProfileSummaryRetentionFixture fixture =
+      makeProfileSummaryRetentionFixture(trace, "profile-retain-summary-json");
+  trace.setAttribute("scheduler_scope", "global");
+  trace.setAttribute("scheduler_mode", "concurrent");
+  trace.setAttribute("simulator_launch_model", "dispatch_thread");
+  trace.addCounter("global_session_count", 2);
+  trace.addCounter("frontier_count", 2);
+  trace.addCounter("resource_wait_count", 1);
+  trace.addCounter("serialized_launch_count", 2);
+
+  auto retainedOr = retainProfileArtifactsForCli(trace, fixture.destRoot.string());
+  EXPECT((bool)retainedOr,
+         "retainProfileArtifactsForCli retains summary json artifacts");
+  if (retainedOr) {
+    EXPECT(std::filesystem::exists(fixture.summaryPath),
+           "retained session summary json exists");
+    if (!std::filesystem::exists(fixture.summaryPath)) {
+      cleanupProfileSummaryRetentionFixture(fixture);
+      return;
+    }
+
+    const std::string summaryText = readTextFile(fixture.summaryPath.string());
+    auto jsonOr = llvm::json::parse(summaryText);
+    EXPECT((bool)jsonOr, "retained session summary parses as json");
+    if (!jsonOr) {
+      cleanupProfileSummaryRetentionFixture(fixture);
+      llvm::consumeError(jsonOr.takeError());
+      return;
+    }
+
+    const auto *object = jsonOr->getAsObject();
+    EXPECT(object != nullptr, "retained session summary is a json object");
+    if (object) {
+      auto schemaVersion = object->getInteger("schema_version");
+      auto sessionId = object->getString("session_id");
+      auto backend = object->getString("backend");
+      auto taskCount = object->getInteger("task_count");
+      auto successfulTaskCount = object->getInteger("successful_task_count");
+      auto failedTaskCount = object->getInteger("failed_task_count");
+      auto totalScore = object->getInteger("total_score");
+      auto totalCycleCount = object->getInteger("total_cycle_count");
+      EXPECT(schemaVersion && *schemaVersion == 1,
+             "retained session summary has schema_version=1");
+      EXPECT(sessionId && *sessionId == "runtime-session--summary",
+             "retained session summary preserves session_id");
+      EXPECT(backend && *backend == "simulation",
+             "retained session summary preserves backend");
+      EXPECT(taskCount && *taskCount == 2,
+             "retained session summary counts two tasks");
+      EXPECT(successfulTaskCount && *successfulTaskCount == 2,
+             "retained session summary counts successful tasks");
+      EXPECT(failedTaskCount && *failedTaskCount == 0,
+             "retained session summary counts failed tasks");
+      EXPECT(totalScore && *totalScore == 30,
+             "retained session summary totals score");
+      EXPECT(totalCycleCount && *totalCycleCount == 30,
+             "retained session summary totals cycle count");
+
+      const auto *tasks = object->getArray("tasks");
+      EXPECT(tasks && tasks->size() == 2,
+             "retained session summary emits two task entries");
+      if (tasks && tasks->size() == 2) {
+        const auto *task0 = (*tasks)[0].getAsObject();
+        auto profilePath0 =
+            task0 ? task0->getString("profile_path") : decltype(task0->getString("profile_path")){};
+        EXPECT(profilePath0 && *profilePath0 == fixture.mainPath.string(),
+               "retained session summary task0 points to tasks/main.json");
+        const auto *task1 = (*tasks)[1].getAsObject();
+        auto profilePath1 =
+            task1 ? task1->getString("profile_path") : decltype(task1->getString("profile_path")){};
+        EXPECT(profilePath1 && *profilePath1 == fixture.consumerPath.string(),
+               "retained session summary task1 points to tasks/consumer.json");
+      }
+
+      const auto *runtime = object->getObject("runtime");
+      EXPECT(runtime != nullptr,
+             "retained session summary emits runtime metadata");
+      if (runtime) {
+        const auto *attributes = runtime->getObject("attributes");
+        const auto *counters = runtime->getObject("counters");
+        EXPECT(attributes != nullptr,
+               "retained session summary emits runtime attributes");
+        EXPECT(counters != nullptr,
+               "retained session summary emits runtime counters");
+        if (attributes) {
+          auto schedulerScope = attributes->getString("scheduler_scope");
+          auto schedulerMode = attributes->getString("scheduler_mode");
+          auto launchModel =
+              attributes->getString("simulator_launch_model");
+          EXPECT(schedulerScope && *schedulerScope == "global",
+                 "retained session summary keeps scheduler scope");
+          EXPECT(schedulerMode && *schedulerMode == "concurrent",
+                 "retained session summary keeps scheduler_mode");
+          EXPECT(launchModel && *launchModel == "dispatch_thread",
+                 "retained session summary keeps simulator launch model");
+        }
+        if (counters) {
+          auto globalSessionCount = counters->getInteger("global_session_count");
+          auto frontierCount = counters->getInteger("frontier_count");
+          auto resourceWaitCount = counters->getInteger("resource_wait_count");
+          auto launchCount =
+              counters->getInteger("serialized_launch_count");
+          EXPECT(globalSessionCount && *globalSessionCount == 2,
+                 "retained session summary keeps global session count");
+          EXPECT(frontierCount && *frontierCount == 2,
+                 "retained session summary keeps frontier count");
+          EXPECT(resourceWaitCount && *resourceWaitCount == 1,
+                 "retained session summary keeps resource wait count");
+          EXPECT(launchCount && *launchCount == 2,
+                 "retained session summary keeps serialized launch count");
+        }
+      }
+    }
+  }
+
+  cleanupProfileSummaryRetentionFixture(fixture);
+}
+
+static void testRetainedSessionSummaryFallsBackBetweenScoreAndCycleCount() {
+  ProfileTrace trace;
+  const std::filesystem::path sourceRoot =
+      makeTempDir("profile-retain-summary-fallback-src");
+  const std::filesystem::path destRoot =
+      makeTempDir("profile-retain-summary-fallback-dst");
+  std::filesystem::create_directories(sourceRoot / "work");
+  std::filesystem::create_directories(destRoot);
+
+  const std::filesystem::path mainPath = sourceRoot / "work" / "main.json";
+  const std::filesystem::path consumerPath =
+      sourceRoot / "work" / "consumer.json";
+  {
+    std::ofstream os(mainPath);
+    os << R"({"score":11})";
+  }
+  {
+    std::ofstream os(consumerPath);
+    os << R"({"cycle_count":19})";
+  }
+
+  trace.sessionId = "runtime-session--summary-fallback";
+  addProfileArtifact(trace, "main", ExecutionBackendKind::Simulation,
+                     mainPath.string());
+  addProfileArtifact(trace, "consumer", ExecutionBackendKind::Simulation,
+                     consumerPath.string());
+
+  const std::filesystem::path summaryPath =
+      destRoot / trace.sessionId / "session_summary.json";
+  auto retainedOr = retainProfileArtifactsForCli(trace, destRoot.string());
+  EXPECT((bool)retainedOr,
+         "retainProfileArtifactsForCli falls back between score and cycle_count");
+  if (retainedOr) {
+    auto parsed = llvm::json::parse(readTextFile(summaryPath.string()));
+    EXPECT((bool)parsed,
+           "retained session summary fallback fixture parses as json");
+    if (parsed) {
+      const auto *object = parsed->getAsObject();
+      EXPECT(object != nullptr,
+             "retained session summary fallback fixture is a json object");
+      if (object) {
+        auto totalScore = object->getInteger("total_score");
+        auto totalCycleCount = object->getInteger("total_cycle_count");
+        EXPECT(totalScore && *totalScore == 30,
+               "retained session summary falls back missing score values");
+        EXPECT(totalCycleCount && *totalCycleCount == 30,
+               "retained session summary falls back missing cycle_count values");
+      }
+    } else {
+      llvm::consumeError(parsed.takeError());
+    }
+  }
+
+  std::error_code ec;
+  std::filesystem::remove_all(sourceRoot, ec);
+  std::filesystem::remove_all(destRoot, ec);
+}
+
+static void testRetainProfileArtifactsUsesEventMetricsWithoutParsingJson() {
+  const std::filesystem::path sourceRoot =
+      makeTempDir("profile-retain-summary-event-metrics-src");
+  const std::filesystem::path destRoot =
+      makeTempDir("profile-retain-summary-event-metrics-dst");
+  std::filesystem::create_directories(sourceRoot / "work");
+  std::filesystem::create_directories(destRoot);
+
+  const std::filesystem::path mainPath = sourceRoot / "work" / "main.json";
+  {
+    std::ofstream os(mainPath);
+    os << "this is not valid json";
+  }
+
+  ProfileTrace trace;
+  trace.sessionId = "runtime-session--summary-event-metrics";
+  trace.addEvent(ProfileEvent{
+      "main",
+      ExecutionBackendKind::Simulation,
+      "profile_artifact",
+      mainPath.string(),
+      77,
+      77,
+  });
+
+  const std::filesystem::path summaryPath =
+      destRoot / trace.sessionId / "session_summary.json";
+  auto retainedOr = retainProfileArtifactsForCli(trace, destRoot.string());
+  EXPECT((bool)retainedOr,
+         "retainProfileArtifactsForCli uses in-memory event metrics without reparsing task json");
+  if (retainedOr) {
+    auto parsed = llvm::json::parse(readTextFile(summaryPath.string()));
+    EXPECT((bool)parsed,
+           "retained session summary from event metrics parses as json");
+    if (parsed) {
+      const auto *object = parsed->getAsObject();
+      EXPECT(object != nullptr,
+             "retained session summary from event metrics is a json object");
+      if (object) {
+        auto totalScore = object->getInteger("total_score");
+        auto totalCycleCount = object->getInteger("total_cycle_count");
+        EXPECT(totalScore && *totalScore == 77,
+               "retained session summary uses score from event metrics");
+        EXPECT(totalCycleCount && *totalCycleCount == 77,
+               "retained session summary uses cycle_count from event metrics");
+      }
+    } else {
+      llvm::consumeError(parsed.takeError());
+    }
+  }
+
+  std::error_code ec;
+  std::filesystem::remove_all(sourceRoot, ec);
+  std::filesystem::remove_all(destRoot, ec);
+}
+
+static void testRetainProfileArtifactsFailsOnDuplicateTaskIds() {
+  ProfileTrace trace;
+  const std::filesystem::path sourceRoot =
+      makeTempDir("profile-retain-summary-duplicate-src");
+  const std::filesystem::path destRoot =
+      makeTempDir("profile-retain-summary-duplicate-dst");
+  std::filesystem::create_directories(sourceRoot / "work");
+  std::filesystem::create_directories(destRoot);
+
+  const std::filesystem::path firstPath = sourceRoot / "work" / "first.json";
+  const std::filesystem::path secondPath = sourceRoot / "work" / "second.json";
+  {
+    std::ofstream os(firstPath);
+    os << R"({"score":1,"cycle_count":1})";
+  }
+  {
+    std::ofstream os(secondPath);
+    os << R"({"score":2,"cycle_count":2})";
+  }
+
+  trace.sessionId = "runtime-session--summary-duplicate";
+  addProfileArtifact(trace, "main", ExecutionBackendKind::Simulation,
+                     firstPath.string());
+  addProfileArtifact(trace, "main", ExecutionBackendKind::Simulation,
+                     secondPath.string());
+
+  auto retainedOr = retainProfileArtifactsForCli(trace, destRoot.string());
+  EXPECT(!retainedOr,
+         "retainProfileArtifactsForCli fails on duplicate retained task ids");
+  if (!retainedOr) {
+    std::string message = llvm::toString(retainedOr.takeError());
+    EXPECT(message.find("duplicate retained profile task id") !=
+               std::string::npos,
+           "duplicate retained task failure reports a clear error");
+  }
+
+  std::error_code ec;
+  std::filesystem::remove_all(sourceRoot, ec);
+  std::filesystem::remove_all(destRoot, ec);
+}
+
+static void testRetainProfileArtifactsPrunesOldSessions() {
+  const std::filesystem::path retainRoot = makeTempDir("profile-retain-root");
+  std::filesystem::create_directories(retainRoot);
+
+  for (int i = 0; i < 3; ++i) {
+    const std::filesystem::path dir =
+        retainRoot / ("runtime-session--old" + std::to_string(i));
+    std::filesystem::create_directories(dir);
+    std::ofstream(dir / "trace.json") << i;
+    std::filesystem::last_write_time(
+        dir, std::filesystem::file_time_type::clock::now() +
+                 std::chrono::seconds(i));
+  }
+
+  auto err = pruneRetainedProfileDirectoriesForTest(retainRoot.string(), 2);
+  EXPECT(!err, "retention pruning succeeds");
+  if (err)
+    llvm::consumeError(std::move(err));
+
+  EXPECT(std::filesystem::exists(retainRoot / "runtime-session--old1"),
+         "retention keeps second-newest directory");
+  EXPECT(std::filesystem::exists(retainRoot / "runtime-session--old2"),
+         "retention keeps newest directory");
+  EXPECT(!std::filesystem::exists(retainRoot / "runtime-session--old0"),
+         "retention prunes oldest directory");
+
+  std::error_code ec;
+  std::filesystem::remove_all(retainRoot, ec);
+}
+
+static void testRetainProfileArtifactsIgnoresNonDirectories() {
+  const std::filesystem::path retainRoot = makeTempDir("profile-retain-files");
+  std::filesystem::create_directories(retainRoot);
+  std::ofstream(retainRoot / "README.txt") << "keep me";
+  std::filesystem::create_directories(retainRoot / "runtime-session--keep");
+
+  auto err = pruneRetainedProfileDirectoriesForTest(retainRoot.string(), 1);
+  EXPECT(!err, "retention pruning ignores non-directories");
+  if (err)
+    llvm::consumeError(std::move(err));
+
+  EXPECT(std::filesystem::exists(retainRoot / "README.txt"),
+         "retention does not touch non-directory files");
+  EXPECT(std::filesystem::exists(retainRoot / "runtime-session--keep"),
+         "retention keeps the single retained session directory");
+
+  std::error_code ec;
+  std::filesystem::remove_all(retainRoot, ec);
+}
+
+static void testRetainedProfilePruneKeepCountForNewSession() {
+  EXPECT(retainedProfilePruneKeepCountForNewSession(0) == 0,
+         "pre-run retained profile pruning keeps zero directories when limit is zero");
+  EXPECT(retainedProfilePruneKeepCountForNewSession(1) == 0,
+         "pre-run retained profile pruning reserves one slot for the new session");
+  EXPECT(retainedProfilePruneKeepCountForNewSession(20) == 19,
+         "pre-run retained profile pruning keeps limit minus one existing sessions");
+}
+
+static void testPrepareRetainedProfileRunRootForCliPrunesBeforeNewSession() {
+  const std::filesystem::path retainRoot =
+      makeTempDir("profile-retain-cli-prepare");
+  std::filesystem::create_directories(retainRoot);
+
+  for (int i = 0; i < 3; ++i) {
+    const std::filesystem::path dir =
+        retainRoot / ("runtime-session--old" + std::to_string(i));
+    std::filesystem::create_directories(dir);
+    std::ofstream(dir / "trace.json") << i;
+    std::filesystem::last_write_time(
+        dir, std::filesystem::file_time_type::clock::now() +
+                 std::chrono::seconds(i));
+  }
+
+  auto preparedOr = prepareRetainedProfileRunRootForCli(retainRoot.string(), 2);
+  EXPECT((bool)preparedOr,
+         "prepareRetainedProfileRunRootForCli succeeds");
+  if (preparedOr) {
+    EXPECT(*preparedOr == retainRoot.string(),
+           "prepareRetainedProfileRunRootForCli keeps the original retain root");
+    EXPECT(std::filesystem::exists(retainRoot / "runtime-session--old2"),
+           "prepareRetainedProfileRunRootForCli keeps the newest existing session");
+    EXPECT(!std::filesystem::exists(retainRoot / "runtime-session--old1"),
+           "prepareRetainedProfileRunRootForCli prunes sessions beyond the reserved slot");
+    EXPECT(!std::filesystem::exists(retainRoot / "runtime-session--old0"),
+           "prepareRetainedProfileRunRootForCli prunes the oldest session");
+  }
+
+  std::error_code ec;
+  std::filesystem::remove_all(retainRoot, ec);
+}
+
+static void testRuntimeSessionWorkdirPruneKeepCountForNewRun() {
+  EXPECT(runtimeSessionWorkdirPruneKeepCountForNewRun(0) == 0,
+         "pre-run runtime session pruning keeps zero directories when limit is zero");
+  EXPECT(runtimeSessionWorkdirPruneKeepCountForNewRun(1) == 0,
+         "pre-run runtime session pruning reserves one slot for the new session");
+  EXPECT(runtimeSessionWorkdirPruneKeepCountForNewRun(20) == 19,
+         "pre-run runtime session pruning keeps limit minus one existing sessions");
+}
+
+static void testPrepareRuntimeSessionWorkdirRootForCliPrunesBeforeNewRun() {
+  const std::filesystem::path retainRoot =
+      makeTempDir("runtime-session-workdir-prepare");
+  std::filesystem::create_directories(retainRoot);
+
+  for (int i = 0; i < 3; ++i) {
+    const std::filesystem::path dir =
+        retainRoot / ("runtime-session--old" + std::to_string(i));
+    std::filesystem::create_directories(dir);
+    std::ofstream(dir / "trace.txt") << i;
+    std::filesystem::last_write_time(
+        dir, std::filesystem::file_time_type::clock::now() +
+                 std::chrono::seconds(i));
+  }
+
+  auto preparedOr =
+      prepareRuntimeSessionWorkdirRootForCli(retainRoot.string(), 2);
+  EXPECT((bool)preparedOr,
+         "prepareRuntimeSessionWorkdirRootForCli succeeds");
+  if (preparedOr) {
+    EXPECT(*preparedOr == retainRoot.string(),
+           "prepareRuntimeSessionWorkdirRootForCli keeps the original root");
+    EXPECT(std::filesystem::exists(retainRoot / "runtime-session--old2"),
+           "prepareRuntimeSessionWorkdirRootForCli keeps the newest existing session");
+    EXPECT(!std::filesystem::exists(retainRoot / "runtime-session--old1"),
+           "prepareRuntimeSessionWorkdirRootForCli prunes sessions beyond the reserved slot");
+    EXPECT(!std::filesystem::exists(retainRoot / "runtime-session--old0"),
+           "prepareRuntimeSessionWorkdirRootForCli prunes the oldest session");
+  }
+
+  std::error_code ec;
+  std::filesystem::remove_all(retainRoot, ec);
+}
+
+static void testRetainProfileArtifactsForCliRunReturnsSummaryPath() {
+  ProfileTrace trace;
+  const ProfileSummaryRetentionFixture fixture =
+      makeProfileSummaryRetentionFixture(trace, "profile-retain-cli-run");
+
+  auto retainedOr = retainProfileArtifactsForCliRun(trace, fixture.destRoot.string());
+  EXPECT((bool)retainedOr,
+         "retainProfileArtifactsForCliRun succeeds");
+  if (retainedOr) {
+    EXPECT(retainedOr->summaryPath == fixture.summaryPath.string(),
+           "retainProfileArtifactsForCliRun returns retained session summary path");
+    EXPECT(std::filesystem::exists(retainedOr->summaryPath),
+           "retainProfileArtifactsForCliRun materializes summary path");
+    EXPECT(retainedOr->trace.profileArtifactPaths().size() == 2,
+           "retainProfileArtifactsForCliRun returns retained trace");
+  }
+
+  cleanupProfileSummaryRetentionFixture(fixture);
+}
+
+static void testBackendSurfacesProfileTrace() {
+  auto driver = std::make_shared<SynthesizingProfileArtifactBackendDriver>();
+  auto simOr = createExecutionBackend(ExecutionBackendKind::Simulation, driver);
+  EXPECT((bool)simOr, "simulation backend factory with profile driver succeeds");
+  if (!simOr)
+    return;
+
+  ExecutionRequest request;
+  request.sessionId = "session-profile";
+  request.task.taskId = "task_profile";
+  request.workingDirectory = "/tmp/taskgraph-runtime";
+
+  auto simResult = (*simOr)->run(request);
+  EXPECT((bool)simResult, "simulation backend run succeeds");
+  if (simResult) {
+    EXPECT(simResult->producedFiles.size() == 1,
+           "driver produced files are preserved");
+    EXPECT((bool)simResult->profileTrace,
+           "profile trace is synthesized");
+    if (simResult->profileTrace) {
+      EXPECT(simResult->profileTrace->sessionId == "session-profile",
+             "synthesized trace uses explicit session id");
+      EXPECT(simResult->profileTrace->events.size() == 1,
+             "synthesized trace contains one event");
+      if (!simResult->profileTrace->events.empty()) {
+        EXPECT(simResult->profileTrace->events.front().taskId ==
+                   "task_profile",
+               "synthesized trace event task id is correct");
+        EXPECT(simResult->profileTrace->events.front().backend ==
+                   ExecutionBackendKind::Simulation,
+               "synthesized trace event backend is correct");
+        EXPECT(simResult->profileTrace->events.front().eventKind ==
+                   "profile_artifact",
+               "synthesized trace event kind is correct");
+        EXPECT(simResult->profileTrace->events.front().artifact ==
+                   "/tmp/taskgraph-runtime/opprof/simulator/trace.json",
+               "synthesized trace artifact path is correct");
+      }
+    }
+  }
+}
+
+static void testBackendPreservesExistingProfileTrace() {
+  auto driver = std::make_shared<ProfileArtifactBackendDriver>();
+  auto simOr = createExecutionBackend(ExecutionBackendKind::Simulation, driver);
+  EXPECT((bool)simOr, "simulation backend factory with preserving driver succeeds");
+  if (!simOr)
+    return;
+
+  ExecutionRequest request;
+  request.sessionId = "session-existing";
+  request.task.taskId = "task_profile";
+  request.workingDirectory = "/tmp/taskgraph-runtime";
+
+  auto simResult = (*simOr)->run(request);
+  EXPECT((bool)simResult, "simulation backend run with existing trace succeeds");
+  if (simResult) {
+    EXPECT((bool)simResult->profileTrace,
+           "existing trace is preserved");
+    if (simResult->profileTrace) {
+      EXPECT(simResult->profileTrace->sessionId == "driver-session",
+             "existing trace session id is preserved");
+      EXPECT(simResult->profileTrace->events.size() == 1,
+             "existing trace event count is preserved");
+      if (!simResult->profileTrace->events.empty()) {
+        EXPECT(simResult->profileTrace->events.front().taskId == "driver-task",
+               "existing trace task id is preserved");
+        EXPECT(simResult->profileTrace->events.front().artifact ==
+                   "/tmp/existing/profile.json",
+               "existing trace artifact is preserved");
+      }
+    }
+  }
+}
+
+static void testSimulatorProfileSchemaV1Artifact() {
+  const std::filesystem::path runtimeDir = makeTempDir("taskgraph-profile-run");
+  std::filesystem::create_directories(runtimeDir);
+
+  const std::string inputPath =
+      writeTempNpy("taskgraph-profile-input", {4, 2}, DType::F16);
+  if (inputPath.empty())
+    return;
+  const std::string expectedOutputPath =
+      writeTempNpy("taskgraph-profile-expected", {2, 4}, DType::F32);
+  if (expectedOutputPath.empty())
+    return;
+
+  ExecutionRequest request;
+  request.sessionId = "session-profile";
+  request.workingDirectory = runtimeDir.string();
+  request.task.taskId = "task0";
+  request.task.artifact.kernelName = "kernel0";
+  request.task.artifact.kernelKind = KernelKind::Vec;
+  request.task.artifact.socVersion = "Ascend910B1";
+  request.task.artifact.artifactRoot = "/tmp/artifact-root";
+  request.task.invocation.blockDim = 8;
+  request.task.invocation.workspaceSize = 8192;
+  request.task.invocation.enableProfiling = true;
+  request.task.invocation.inputs.push_back(TensorBinding{
+      "input0", BindingSourceKind::ExternalFile, inputPath});
+  request.task.invocation.outputs.push_back(TensorBinding{
+      "output0", BindingSourceKind::ExternalFile,
+      (runtimeDir / "actual.npy").string()});
+  request.task.invocation.expectedOutputs.push_back(TensorBinding{
+      "output0", BindingSourceKind::ExternalFile, expectedOutputPath});
+  request.task.invocation.tiling = TilingBinding{};
+  request.task.invocation.tiling->schemaPath =
+      (std::filesystem::current_path() / "examples" /
+       "relu-broadcast-transpose" / "tiling_space.json")
+          .string();
+  request.task.invocation.tiling->params =
+      "TB_M=64,TB_N=64,dim_arg0_0=640,dim_arg1_0=500,dim_arg0_1=1,dim_arg1_1=640";
+
+  auto profilePathOr =
+      materializeSimulatorProfileArtifactForTest(request, 1498485);
+  EXPECT((bool)profilePathOr, "sim profile artifact materialization succeeds");
+  if (!profilePathOr) {
+    llvm::consumeError(profilePathOr.takeError());
+    return;
+  }
+
+  const std::filesystem::path profilePath = *profilePathOr;
+
+  EXPECT(std::filesystem::exists(profilePath),
+         "sim profile trace artifact exists");
+
+  const std::string profileText = readTextFile(profilePath.string());
+  if (profileText.empty())
+    return;
+
+  auto jsonOr = llvm::json::parse(profileText);
+  EXPECT((bool)jsonOr, "sim profile trace parses as json");
+  if (!jsonOr) {
+    llvm::consumeError(jsonOr.takeError());
+    return;
+  }
+
+  const auto *object = jsonOr->getAsObject();
+  EXPECT(object != nullptr, "sim profile trace is a json object");
+  if (!object)
+    return;
+
+  EXPECT(object->getInteger("schema_version") &&
+             *object->getInteger("schema_version") == 1,
+         "sim profile trace has schema_version=1");
+  EXPECT(object->getString("backend") &&
+             *object->getString("backend") == "simulation",
+         "sim profile trace carries backend");
+  EXPECT(object->getString("session_id") &&
+             *object->getString("session_id") == "session-profile",
+         "sim profile trace carries session_id");
+  EXPECT(object->getString("task_id") &&
+             *object->getString("task_id") == "task0",
+         "sim profile trace carries task_id");
+  EXPECT(object->getString("kernel_name") &&
+             *object->getString("kernel_name") == "kernel0",
+         "sim profile trace carries kernel_name");
+  EXPECT(object->getString("kernel_kind") &&
+             *object->getString("kernel_kind") == "vec",
+         "sim profile trace carries kernel_kind");
+  EXPECT(object->getString("soc_version") &&
+             *object->getString("soc_version") == "Ascend910B1",
+         "sim profile trace carries soc_version");
+  EXPECT(object->getInteger("block_dim") &&
+             *object->getInteger("block_dim") == 8,
+         "sim profile trace carries block_dim");
+  EXPECT(object->getInteger("workspace_size") &&
+             *object->getInteger("workspace_size") == 8192,
+         "sim profile trace carries workspace_size");
+  EXPECT(object->getInteger("cycle_count") &&
+             *object->getInteger("cycle_count") == 1498485,
+         "sim profile trace carries cycle_count");
+  EXPECT(object->getInteger("elapsed_us") &&
+             *object->getInteger("elapsed_us") == 1498485,
+         "sim profile trace carries elapsed_us");
+  EXPECT(object->getInteger("score") &&
+             *object->getInteger("score") == 1498485,
+         "sim profile trace carries score");
+  EXPECT(object->getBoolean("validation_passed") &&
+             *object->getBoolean("validation_passed"),
+         "sim profile trace marks validation_passed");
+  EXPECT(object->getString("artifact_root") &&
+             *object->getString("artifact_root") == "/tmp/artifact-root",
+         "sim profile trace carries artifact_root");
+
+  auto *inputs = object->getArray("inputs");
+  EXPECT(inputs && inputs->size() == 1, "sim profile trace emits one input");
+  if (inputs && inputs->size() == 1) {
+    const auto *input0 = (*inputs)[0].getAsObject();
+    EXPECT(input0 && input0->getString("name") &&
+               *input0->getString("name") == "input0",
+           "sim profile trace input0 name");
+    EXPECT(input0 && input0->getString("dtype") &&
+               *input0->getString("dtype") == "f16",
+           "sim profile trace input0 dtype");
+    EXPECT(input0 && input0->getArray("shape") &&
+               input0->getArray("shape")->size() == 2 &&
+               input0->getArray("shape")->front().getAsInteger() &&
+               *input0->getArray("shape")->front().getAsInteger() == 4,
+           "sim profile trace input0 shape");
+  }
+
+  auto *outputs = object->getArray("outputs");
+  EXPECT(outputs && outputs->size() == 1, "sim profile trace emits one output");
+  if (outputs && outputs->size() == 1) {
+    const auto *output0 = (*outputs)[0].getAsObject();
+    EXPECT(output0 && output0->getString("name") &&
+               *output0->getString("name") == "output0",
+           "sim profile trace output name");
+    EXPECT(output0 && output0->getString("dtype") &&
+               *output0->getString("dtype") == "f32",
+           "sim profile trace output dtype");
+    EXPECT(output0 && output0->getArray("shape") &&
+               output0->getArray("shape")->size() == 2 &&
+               output0->getArray("shape")->front().getAsInteger() &&
+               *output0->getArray("shape")->front().getAsInteger() == 2,
+           "sim profile trace output shape");
+  }
+
+  const auto *tiling = object->getObject("tiling");
+  EXPECT(tiling != nullptr, "sim profile trace emits tiling object");
+  if (tiling) {
+    EXPECT(tiling->getBoolean("present") &&
+               *tiling->getBoolean("present"),
+           "sim profile trace marks tiling present");
+    EXPECT(tiling->getString("binary_path") &&
+               *tiling->getString("binary_path") ==
+                   (runtimeDir / "tiling.bin").string(),
+           "sim profile trace materializes tiling binary path");
+    const auto expectedTilingBytes =
+        static_cast<int64_t>(std::filesystem::file_size(runtimeDir / "tiling.bin"));
+    EXPECT(tiling->getInteger("bytes") &&
+               *tiling->getInteger("bytes") == expectedTilingBytes,
+           "sim profile trace records tiling byte size");
+  }
+}
+
+static void testExecutionSessionPlansTopologicalOrder() {
+  TaskGraph graph;
+
+  RuntimeTask taskA;
+  taskA.taskId = "task_a";
+
+  RuntimeTask taskB;
+  taskB.taskId = "task_b";
+  taskB.dependencies = {"task_a"};
+
+  RuntimeTask taskC;
+  taskC.taskId = "task_c";
+  taskC.dependencies = {"task_b"};
+
+  auto addC = graph.addTask(taskC);
+  EXPECT(!addC, "execution session add task_c");
+  auto addA = graph.addTask(taskA);
+  EXPECT(!addA, "execution session add task_a");
+  auto addB = graph.addTask(taskB);
+  EXPECT(!addB, "execution session add task_b");
+
+  ExecutionSession session(ExecutionBackendKind::Simulation);
+  auto planOr = session.plan(graph);
+  EXPECT((bool)planOr, "execution session plan succeeds");
+  if (planOr) {
+    EXPECT(planOr->orderedTaskIds.size() == 3,
+           "execution session plan size");
+    EXPECT(planOr->readyTaskIds.size() == 1,
+           "execution session plan ready task count");
+    EXPECT(planOr->blockedTaskCount == 2,
+           "execution session plan blocked task count");
+    EXPECT(planOr->orderedTaskIds[0] == "task_a",
+           "execution session plan first task");
+    EXPECT(planOr->orderedTaskIds[1] == "task_b",
+           "execution session plan second task");
+    EXPECT(planOr->orderedTaskIds[2] == "task_c",
+           "execution session plan third task");
+    EXPECT(planOr->readyTaskIds[0] == "task_a",
+           "execution session plan ready task");
+  }
+}
+
+static void testExecutionSessionPlanTracksMultipleReadyRoots() {
+  TaskGraph graph;
+
+  RuntimeTask taskA;
+  taskA.taskId = "task_a";
+  RuntimeTask taskB;
+  taskB.taskId = "task_b";
+  RuntimeTask taskC;
+  taskC.taskId = "task_c";
+  taskC.dependencies = {"task_a", "task_b"};
+
+  auto addA = graph.addTask(taskA);
+  EXPECT(!addA, "execution session multi-root add task_a");
+  auto addC = graph.addTask(taskC);
+  EXPECT(!addC, "execution session multi-root add task_c");
+  auto addB = graph.addTask(taskB);
+  EXPECT(!addB, "execution session multi-root add task_b");
+
+  ExecutionSession session(ExecutionBackendKind::Simulation);
+  auto planOr = session.plan(graph);
+  EXPECT((bool)planOr, "execution session multi-root plan succeeds");
+  if (planOr) {
+    EXPECT(planOr->readyTaskIds.size() == 2,
+           "execution session multi-root ready count");
+    EXPECT(planOr->blockedTaskCount == 1,
+           "execution session multi-root blocked count");
+    EXPECT(planOr->readyTaskIds[0] == "task_a",
+           "execution session multi-root first ready task");
+    EXPECT(planOr->readyTaskIds[1] == "task_b",
+           "execution session multi-root second ready task");
+  }
+}
+
+static void testExecutionSessionRunsTasksInTopologicalOrder() {
+  TaskGraph graph;
+
+  RuntimeTask taskA;
+  taskA.taskId = "task_a";
+
+  RuntimeTask taskB;
+  taskB.taskId = "task_b";
+  taskB.dependencies = {"task_a"};
+
+  RuntimeTask taskC;
+  taskC.taskId = "task_c";
+  taskC.dependencies = {"task_b"};
+
+  auto addC = graph.addTask(taskC);
+  EXPECT(!addC, "execution session run add task_c");
+  auto addA = graph.addTask(taskA);
+  EXPECT(!addA, "execution session run add task_a");
+  auto addB = graph.addTask(taskB);
+  EXPECT(!addB, "execution session run add task_b");
+
+  auto executionOrderOr = graph.executionOrder();
+  EXPECT((bool)executionOrderOr, "task graph execution order succeeds");
+  if (executionOrderOr) {
+    EXPECT(executionOrderOr->size() == 3, "task graph execution order size");
+    EXPECT((*executionOrderOr)[0].taskId == "task_a",
+           "task graph execution order first task");
+    EXPECT((*executionOrderOr)[1].taskId == "task_b",
+           "task graph execution order second task");
+    EXPECT((*executionOrderOr)[2].taskId == "task_c",
+           "task graph execution order third task");
+  }
+
+  auto driver = std::make_shared<OrderedExecutionBackendDriver>();
+  OrderedExecutionBackendDriver *driverPtr = driver.get();
+  ExecutionSession session(ExecutionBackendKind::Simulation, driver);
+
+  auto traceOr = session.run(graph);
+  EXPECT((bool)traceOr, "execution session run succeeds");
+  if (traceOr) {
+    EXPECT(traceOr->events.size() == 3,
+           "execution session aggregates profile events");
+    EXPECT(traceOr->events[0].taskId == "task_a",
+           "execution session profile event order first");
+    EXPECT(traceOr->events[1].taskId == "task_b",
+           "execution session profile event order second");
+    EXPECT(traceOr->events[2].taskId == "task_c",
+           "execution session profile event order third");
+  }
+
+  EXPECT(driverPtr->seenTaskIds.size() == 3,
+         "execution session backend invocation count");
+  if (driverPtr->seenTaskIds.size() == 3) {
+    EXPECT(traceOr && traceOr->sessionId == driverPtr->seenSessionIds.front(),
+           "execution session trace keeps session id");
+    EXPECT(driverPtr->seenTaskIds[0] == "task_a",
+           "execution session backend sees first task");
+    EXPECT(driverPtr->seenTaskIds[1] == "task_b",
+           "execution session backend sees second task");
+    EXPECT(driverPtr->seenTaskIds[2] == "task_c",
+           "execution session backend sees third task");
+
+    EXPECT(driverPtr->seenSessionIds[0] == driverPtr->seenSessionIds[1] &&
+               driverPtr->seenSessionIds[1] == driverPtr->seenSessionIds[2],
+           "execution session reuses one session id");
+    EXPECT(driverPtr->seenWorkingDirectories[0] ==
+               driverPtr->seenWorkingDirectories[1] &&
+               driverPtr->seenWorkingDirectories[1] ==
+                   driverPtr->seenWorkingDirectories[2],
+           "execution session reuses one working directory");
+    EXPECT(std::filesystem::exists(driverPtr->seenWorkingDirectories[0]),
+           "execution session working directory exists");
+  }
+
+  auto secondTraceOr = session.run(graph);
+  EXPECT((bool)secondTraceOr, "execution session second run succeeds");
+  EXPECT(driverPtr->seenSessionIds.size() == 6,
+         "execution session second run adds three more invocations");
+  if (driverPtr->seenSessionIds.size() == 6) {
+    EXPECT(driverPtr->seenSessionIds[0] != driverPtr->seenSessionIds[3],
+           "execution session generates a fresh session id per run");
+    EXPECT(driverPtr->seenWorkingDirectories[0] !=
+               driverPtr->seenWorkingDirectories[3],
+           "execution session generates a fresh working directory per run");
+    EXPECT(driverPtr->seenSessionIds[3] == driverPtr->seenSessionIds[4] &&
+               driverPtr->seenSessionIds[4] == driverPtr->seenSessionIds[5],
+           "execution session second run reuses one session id");
+    EXPECT(driverPtr->seenWorkingDirectories[3] ==
+               driverPtr->seenWorkingDirectories[4] &&
+               driverPtr->seenWorkingDirectories[4] ==
+                   driverPtr->seenWorkingDirectories[5],
+           "execution session second run reuses one working directory");
+  }
+  if (traceOr && secondTraceOr) {
+    EXPECT(traceOr->sessionId != secondTraceOr->sessionId,
+           "execution session returns a fresh trace session id per run");
+  }
+}
+
+static void testExecutionSessionMergesSchedulerObservabilityIntoTrace() {
+  TaskGraph graph;
+
+  RuntimeTask taskA;
+  taskA.taskId = "main0";
+  EXPECT(!graph.addTask(taskA), "graph add first task");
+
+  RuntimeTask taskB;
+  taskB.taskId = "main1";
+  EXPECT(!graph.addTask(taskB), "graph add second task");
+
+  auto driver = std::make_shared<ConcurrentRootOverlapBackendDriver>();
+  ExecutionSession session(ExecutionBackendKind::Simulation, driver);
+
+  auto traceOr = session.run(graph);
+  EXPECT((bool)traceOr, "session run succeeds");
+  if (!traceOr)
+    return;
+
+  auto policy = traceOr->attributes.find("scheduler_policy");
+  EXPECT(policy != traceOr->attributes.end() &&
+             policy->second == "global_session_round_robin_baseline",
+         "session trace surfaces scheduler policy");
+  auto schedulerScope = traceOr->attributes.find("scheduler_scope");
+  EXPECT(schedulerScope != traceOr->attributes.end() &&
+             schedulerScope->second == "global",
+         "session trace exercises the global scheduler path");
+
+  auto sessionCount = traceOr->counters.find("scheduler.session_count");
+  EXPECT(sessionCount != traceOr->counters.end(),
+         "session trace surfaces scheduler snapshot counters");
+  if (sessionCount != traceOr->counters.end()) {
+    EXPECT(sessionCount->second >= 1,
+           "session trace preserves scheduler counter values");
+  }
+}
+
+static void testExecutionSessionPublishesStreamObservability() {
+  TaskGraph graph;
+
+  RuntimeTask taskA;
+  taskA.taskId = "a";
+  EXPECT(!graph.addTask(taskA), "add task a");
+
+  RuntimeTask taskB;
+  taskB.taskId = "b";
+  EXPECT(!graph.addTask(taskB), "add task b");
+
+  auto driver = std::make_shared<ConcurrentRootOverlapBackendDriver>();
+  ExecutionSession session(ExecutionBackendKind::Simulation, driver);
+
+  auto traceOr = session.run(graph);
+  EXPECT(static_cast<bool>(traceOr), "session run succeeds");
+  if (!traceOr)
+    return;
+
+  FrontendRunSummary summary = summarizeFrontendRunSuccess(
+      ExecutionBackendKind::Simulation, /*validationRan=*/false, *traceOr);
+  auto streamModel = summary.runtimeAttributes.find("scheduler_stream_model");
+  EXPECT(streamModel != summary.runtimeAttributes.end() &&
+             streamModel->second == "enabled",
+         "frontend summary publishes stream model attribute");
+  EXPECT(summary.runtimeCounters.count("scheduler.stream.capacity_total") == 1,
+         "frontend summary publishes stream capacity counter");
+}
+
+static void testExecutionSessionRunsReadyRootsConcurrently() {
+  TaskGraph graph;
+
+  RuntimeTask taskA;
+  taskA.taskId = "task_a";
+
+  RuntimeTask taskB;
+  taskB.taskId = "task_b";
+
+  RuntimeTask taskJoin;
+  taskJoin.taskId = "task_join";
+  taskJoin.dependencies = {"task_a", "task_b"};
+
+  auto addA = graph.addTask(taskA);
+  EXPECT(!addA, "execution session concurrent add task_a");
+  auto addJoin = graph.addTask(taskJoin);
+  EXPECT(!addJoin, "execution session concurrent add task_join");
+  auto addB = graph.addTask(taskB);
+  EXPECT(!addB, "execution session concurrent add task_b");
+
+  auto driver = std::make_shared<ConcurrentRootOverlapBackendDriver>();
+  ConcurrentRootOverlapBackendDriver *driverPtr = driver.get();
+  ExecutionSession session(ExecutionBackendKind::Simulation, driver);
+
+  auto traceOr = session.run(graph);
+  EXPECT((bool)traceOr, "execution session concurrent run succeeds");
+  EXPECT(driverPtr->maxRunning.load() >= 2,
+         "execution session overlaps ready root simulation tasks");
+  EXPECT(driverPtr->seenTaskIds.size() == 3,
+         "execution session concurrent backend invocation count");
+  if (driverPtr->seenTaskIds.size() == 3) {
+    EXPECT(driverPtr->seenTaskIds[2] == "task_join",
+           "execution session concurrent join task runs after roots");
+  }
+  if (traceOr) {
+    auto scopeIt = traceOr->attributes.find("scheduler_scope");
+    EXPECT(scopeIt != traceOr->attributes.end() &&
+               scopeIt->second == "global",
+           "execution session concurrent run reports global scheduler scope");
+    EXPECT(traceOr->counters.find("global_session_count") ==
+               traceOr->counters.end(),
+           "execution session concurrent run does not report fake global session count");
+    EXPECT(traceOr->counters.find("resource_wait_count") ==
+               traceOr->counters.end(),
+           "execution session concurrent run does not report fake resource wait count");
+  }
+}
+
+static void testExecutionSessionCanForceSerialSchedulerViaEnv() {
+  TaskGraph graph;
+
+  RuntimeTask taskA;
+  taskA.taskId = "task_a";
+
+  RuntimeTask taskB;
+  taskB.taskId = "task_b";
+
+  RuntimeTask taskJoin;
+  taskJoin.taskId = "task_join";
+  taskJoin.dependencies = {"task_a", "task_b"};
+
+  auto addA = graph.addTask(taskA);
+  EXPECT(!addA, "execution session serial override add task_a");
+  auto addJoin = graph.addTask(taskJoin);
+  EXPECT(!addJoin, "execution session serial override add task_join");
+  auto addB = graph.addTask(taskB);
+  EXPECT(!addB, "execution session serial override add task_b");
+
+  auto driver = std::make_shared<ConcurrentRootOverlapBackendDriver>();
+  ConcurrentRootOverlapBackendDriver *driverPtr = driver.get();
+  ExecutionSession session(ExecutionBackendKind::Simulation, driver);
+
+  setenv("ASCEND_RUNTIME_FORCE_SERIAL_SCHEDULER", "1", /*overwrite=*/1);
+  auto traceOr = session.run(graph);
+  unsetenv("ASCEND_RUNTIME_FORCE_SERIAL_SCHEDULER");
+
+  EXPECT((bool)traceOr, "execution session serial override run succeeds");
+  EXPECT(driverPtr->maxRunning.load() == 1,
+         "execution session serial override disables concurrent root overlap");
+  if (traceOr) {
+    auto it = traceOr->attributes.find("scheduler_mode");
+    EXPECT(it != traceOr->attributes.end() && it->second == "serial",
+           "execution session serial override reports serial scheduler mode");
+  }
+}
+
+static void testExecutionSessionFailureStopsJoinAfterConcurrentRootFailure() {
+  TaskGraph graph;
+
+  RuntimeTask taskA;
+  taskA.taskId = "task_a";
+
+  RuntimeTask taskB;
+  taskB.taskId = "task_b";
+
+  RuntimeTask taskJoin;
+  taskJoin.taskId = "task_join";
+  taskJoin.dependencies = {"task_a", "task_b"};
+
+  auto addA = graph.addTask(taskA);
+  EXPECT(!addA, "execution session concurrent failure add task_a");
+  auto addJoin = graph.addTask(taskJoin);
+  EXPECT(!addJoin, "execution session concurrent failure add task_join");
+  auto addB = graph.addTask(taskB);
+  EXPECT(!addB, "execution session concurrent failure add task_b");
+
+  auto driver = std::make_shared<ConcurrentFailureStopsJoinBackendDriver>();
+  ConcurrentFailureStopsJoinBackendDriver *driverPtr = driver.get();
+  ExecutionSession session(ExecutionBackendKind::Simulation, driver);
+
+  auto traceOr = session.run(graph);
+  EXPECT(!(bool)traceOr, "execution session concurrent failure rejects run");
+  if (!traceOr) {
+    const std::string message = llvm::toString(traceOr.takeError());
+    EXPECT(message.find("[test:concurrent] rejected task_b") !=
+               std::string::npos,
+           "execution session concurrent failure surfaces rejection");
+  }
+  EXPECT(!driverPtr->taskATimedOutWaitingForFailure,
+         "execution session concurrent failure lets sibling fail while task_a is in flight");
+  EXPECT(driverPtr->seenTaskIds.size() == 2,
+         "execution session concurrent failure does not dispatch join task");
+}
+
+static void testExecutionSessionCanReleaseWorkingDirectoriesForProcessExit() {
+  TaskGraph graph;
+
+  RuntimeTask task;
+  task.taskId = "task_release";
+
+  auto addTaskErr = graph.addTask(task);
+  EXPECT(!addTaskErr, "execution session release add task");
+
+  auto driver = std::make_shared<OrderedExecutionBackendDriver>();
+  OrderedExecutionBackendDriver *driverPtr = driver.get();
+  auto session =
+      std::make_unique<ExecutionSession>(ExecutionBackendKind::Simulation, driver);
+
+  auto traceOr = session->run(graph);
+  EXPECT((bool)traceOr, "execution session release run succeeds");
+  if (!(bool)traceOr || driverPtr->seenWorkingDirectories.empty()) {
+    if (!traceOr)
+      llvm::consumeError(traceOr.takeError());
+    return;
+  }
+
+  const std::string workingDirectory = driverPtr->seenWorkingDirectories.front();
+  EXPECT(std::filesystem::exists(workingDirectory),
+         "execution session release sees existing working directory");
+
+  session->releaseWorkingDirectoriesForProcessExit();
+  session.reset();
+
+  EXPECT(std::filesystem::exists(workingDirectory),
+         "execution session release skips destructor cleanup for process-exit path");
+
+  std::error_code ec;
+  std::filesystem::remove_all(workingDirectory, ec);
+}
+
+static void testExecutionSessionCarriesInvocationBindings() {
+  RuntimeTask task;
+  task.taskId = "main";
+  task.invocation.blockDim = 8;
+  task.invocation.workspaceSize = 4096;
+  task.invocation.atol = 3.5;
+  task.invocation.rtol = 0.125;
+
+  TensorBinding input;
+  input.name = "input0";
+  input.path = "/tmp/input0.npy";
+  task.invocation.inputs.push_back(input);
+
+  TensorBinding output;
+  output.name = "output0";
+  output.path = "/tmp/output0.npy";
+  output.shape = std::vector<int64_t>{4, 8};
+  output.dtype = DType::F32;
+  task.invocation.outputs.push_back(output);
+
+  TaskGraph graph;
+  auto addTaskErr = graph.addTask(task);
+  EXPECT(!addTaskErr, "execution session invocation add task");
+
+  auto driver = std::make_shared<RecordingBackendDriver>();
+  RecordingBackendDriver *driverPtr = driver.get();
+  ExecutionSession session(ExecutionBackendKind::Simulation, driver);
+
+  auto traceOr = session.run(graph);
+  EXPECT((bool)traceOr, "execution session invocation run succeeds");
+  EXPECT(driverPtr->invocations == 1,
+         "execution session invocation backend invoked exactly once");
+  if (driverPtr->invocations == 1) {
+    EXPECT(driverPtr->lastRequest.task.invocation.blockDim == 8,
+           "execution session preserves invocation block dim");
+    EXPECT(driverPtr->lastRequest.task.invocation.workspaceSize == 4096,
+           "execution session preserves invocation workspace size");
+    EXPECT(driverPtr->lastRequest.task.invocation.atol == 3.5,
+           "execution session preserves invocation atol");
+    EXPECT(driverPtr->lastRequest.task.invocation.rtol == 0.125,
+           "execution session preserves invocation rtol");
+    EXPECT(driverPtr->lastRequest.task.invocation.inputs.size() == 1,
+           "execution session preserves invocation inputs");
+    EXPECT(driverPtr->lastRequest.task.invocation.outputs.size() == 1,
+           "execution session preserves invocation outputs");
+    if (driverPtr->lastRequest.task.invocation.inputs.size() == 1) {
+      EXPECT(driverPtr->lastRequest.task.invocation.inputs[0].name == "input0",
+             "execution session preserves invocation input name");
+      EXPECT(driverPtr->lastRequest.task.invocation.inputs[0].path ==
+                 "/tmp/input0.npy",
+             "execution session preserves invocation input path");
+    }
+    if (driverPtr->lastRequest.task.invocation.outputs.size() == 1) {
+      EXPECT(driverPtr->lastRequest.task.invocation.outputs[0].name ==
+                 "output0",
+             "execution session preserves invocation output name");
+      EXPECT(driverPtr->lastRequest.task.invocation.outputs[0].path ==
+                 "/tmp/output0.npy",
+             "execution session preserves invocation output path");
+      EXPECT(driverPtr->lastRequest.task.invocation.outputs[0].shape.has_value(),
+             "execution session preserves invocation output shape metadata");
+      EXPECT(driverPtr->lastRequest.task.invocation.outputs[0].dtype.has_value(),
+             "execution session preserves invocation output dtype metadata");
+      if (driverPtr->lastRequest.task.invocation.outputs[0].shape) {
+        EXPECT(driverPtr->lastRequest.task.invocation.outputs[0].shape->size() ==
+                   2 &&
+                   (*driverPtr->lastRequest.task.invocation.outputs[0].shape)[0] == 4 &&
+                   (*driverPtr->lastRequest.task.invocation.outputs[0].shape)[1] == 8,
+               "execution session preserves invocation output shape values");
+      }
+      if (driverPtr->lastRequest.task.invocation.outputs[0].dtype) {
+        EXPECT(*driverPtr->lastRequest.task.invocation.outputs[0].dtype ==
+                   DType::F32,
+               "execution session preserves invocation output dtype value");
+      }
+    }
+  }
+}
+
+static void testExecutionSessionResolvesTaskOutputBindings() {
+  TaskGraph graph;
+
+  RuntimeTask producer;
+  producer.taskId = "producer";
+  TensorBinding produced;
+  produced.name = "mid";
+  produced.shape = std::vector<int64_t>{16};
+  produced.dtype = DType::F16;
+  producer.invocation.outputs.push_back(produced);
+
+  RuntimeTask consumer;
+  consumer.taskId = "consumer";
+  consumer.dependencies = {"producer"};
+  TensorBinding consumed;
+  consumed.name = "mid";
+  consumed.sourceKind = BindingSourceKind::TaskOutput;
+  consumed.upstreamTaskId = "producer";
+  consumed.upstreamOutputName = "mid";
+  consumer.invocation.inputs.push_back(consumed);
+  TensorBinding finalOutput;
+  finalOutput.name = "out";
+  finalOutput.shape = std::vector<int64_t>{16};
+  finalOutput.dtype = DType::F16;
+  consumer.invocation.outputs.push_back(finalOutput);
+
+  auto addProducer = graph.addTask(producer);
+  EXPECT(!addProducer, "task output binding add producer");
+  auto addConsumer = graph.addTask(consumer);
+  EXPECT(!addConsumer, "task output binding add consumer");
+
+  auto driver = std::make_shared<CapturingExecutionBackendDriver>();
+  CapturingExecutionBackendDriver *driverPtr = driver.get();
+  ExecutionSession session(ExecutionBackendKind::Simulation, driver);
+
+  auto traceOr = session.run(graph);
+  EXPECT((bool)traceOr, "task output binding run succeeds");
+  EXPECT(driverPtr->requests.size() == 2,
+         "task output binding invokes both tasks");
+  if (driverPtr->requests.size() == 2) {
+    const auto &producerRequest = driverPtr->requests[0];
+    const auto &consumerRequest = driverPtr->requests[1];
+    EXPECT(producerRequest.task.invocation.outputs.size() == 1,
+           "task output binding producer output count");
+    EXPECT(!producerRequest.task.invocation.outputs[0].path.empty(),
+           "task output binding producer output path is materialized");
+    EXPECT(consumerRequest.task.invocation.inputs.size() == 1,
+           "task output binding consumer input count");
+    EXPECT(consumerRequest.task.invocation.inputs[0].sourceKind ==
+               BindingSourceKind::ExternalFile,
+           "task output binding consumer input is resolved to external file");
+    EXPECT(consumerRequest.task.invocation.inputs[0].path ==
+               producerRequest.task.invocation.outputs[0].path,
+           "task output binding consumer reuses producer materialized path");
+    EXPECT(consumerRequest.task.invocation.inputs[0].shape.has_value(),
+           "task output binding propagates shape metadata");
+    EXPECT(consumerRequest.task.invocation.inputs[0].dtype.has_value(),
+           "task output binding propagates dtype metadata");
+    if (consumerRequest.task.invocation.inputs[0].shape) {
+      EXPECT(consumerRequest.task.invocation.inputs[0].shape->size() == 1 &&
+                 (*consumerRequest.task.invocation.inputs[0].shape)[0] == 16,
+             "task output binding propagated shape value");
+    }
+    if (consumerRequest.task.invocation.inputs[0].dtype) {
+      EXPECT(*consumerRequest.task.invocation.inputs[0].dtype == DType::F16,
+             "task output binding propagated dtype value");
+    }
+    EXPECT(!consumerRequest.task.invocation.outputs[0].path.empty(),
+           "task output binding downstream output path is materialized");
+  }
+}
+
+class RejectingTaskBDriver : public ExecutionBackendDriver {
+public:
+  llvm::Expected<ExecutionResult>
+  run(const ExecutionRequest &request) override {
+    seenTaskIds.push_back(request.task.taskId);
+    if (request.task.taskId == "task_b") {
+      return llvm::createStringError(llvm::inconvertibleErrorCode(),
+                                     "[test:gate] rejected task_b");
+    }
+    ExecutionResult result;
+    result.taskId = request.task.taskId;
+    return result;
+  }
+
+  std::vector<std::string> seenTaskIds;
+};
+
+static void testExecutionSessionStopsAtGateRejectedTask() {
+  TaskGraph graph;
+
+  RuntimeTask taskA;
+  taskA.taskId = "task_a";
+
+  RuntimeTask taskB;
+  taskB.taskId = "task_b";
+
+  RuntimeTask taskC;
+  taskC.taskId = "task_c";
+  taskC.dependencies = {"task_a"};
+
+  auto addA = graph.addTask(taskA);
+  EXPECT(!addA, "execution session gate add task_a");
+  auto addB = graph.addTask(taskB);
+  EXPECT(!addB, "execution session gate add task_b");
+  auto addC = graph.addTask(taskC);
+  EXPECT(!addC, "execution session gate add task_c");
+
+  auto driver = std::make_shared<RejectingTaskBDriver>();
+  RejectingTaskBDriver *driverPtr = driver.get();
+  ExecutionSession session(ExecutionBackendKind::Simulation, driver);
+
+  auto traceOr = session.run(graph);
+  EXPECT(!(bool)traceOr, "execution session gate rejection fails run");
+  if (!traceOr) {
+    const std::string message = llvm::toString(traceOr.takeError());
+    EXPECT(message.find("[test:gate] rejected task_b") != std::string::npos,
+           "execution session gate surfaces rejection message");
+  }
+  EXPECT(driverPtr->seenTaskIds.size() == 2,
+         "execution session gate stops after rejected ready task");
+  if (driverPtr->seenTaskIds.size() == 2) {
+    EXPECT(driverPtr->seenTaskIds[0] == "task_a",
+           "execution session gate runs first ready task");
+    EXPECT(driverPtr->seenTaskIds[1] == "task_b",
+           "execution session gate runs second ready task before stopping");
+  }
+}
+
+static void testExecutionSessionRejectsUnknownMixResourceType() {
+  auto driver = std::make_shared<RecordingBackendDriver>();
+  RecordingBackendDriver *driverPtr = driver.get();
+  ExecutionSession session(ExecutionBackendKind::Simulation, driver);
+
+  TaskGraph graph;
+  auto addTaskErr = graph.addTask(
+      makeGateTask("mix_unknown", KernelKind::Mix, MixResourceType::Unknown));
+  EXPECT(!addTaskErr, "scheduler gate unknown mix add task");
+
+  auto traceOr = session.run(graph);
+  EXPECT(!(bool)traceOr, "scheduler gate rejects unknown mix resource type");
+  EXPECT(driverPtr->invocations == 0,
+         "scheduler gate does not invoke backend on rejection");
+  if (!traceOr) {
+    const std::string message = llvm::toString(traceOr.takeError());
+    EXPECT(message.find("unsupported mix resource type") != std::string::npos,
+           "scheduler gate error mentions unsupported mix resource type");
+    EXPECT(message.find("mix_unknown") != std::string::npos,
+           "scheduler gate error mentions task id");
+  }
+}
+
+static void testExecutionSessionAcceptsSupportedMixResourceTypes() {
+  auto driver = std::make_shared<RecordingBackendDriver>();
+  RecordingBackendDriver *driverPtr = driver.get();
+  ExecutionSession session(ExecutionBackendKind::Simulation, driver);
+
+  TaskGraph graph;
+  auto add1 = graph.addTask(
+      makeGateTask("mix_1c1v", KernelKind::Mix, MixResourceType::Mix1C1V));
+  EXPECT(!add1, "scheduler gate add mix_1c1v");
+  auto add2 = graph.addTask(
+      makeGateTask("mix_1c2v", KernelKind::Mix, MixResourceType::Mix1C2V));
+  EXPECT(!add2, "scheduler gate add mix_1c2v");
+
+  auto traceOr = session.run(graph);
+  EXPECT((bool)traceOr,
+         "scheduler gate accepts supported mix resource types");
+  EXPECT(driverPtr->invocations == 2,
+         "scheduler gate invokes backend for both supported mix tasks");
+}
+
+static void testExecutionSessionAcceptsVecAndCubeTasks() {
+  auto driver = std::make_shared<RecordingBackendDriver>();
+  RecordingBackendDriver *driverPtr = driver.get();
+  ExecutionSession session(ExecutionBackendKind::Simulation, driver);
+
+  TaskGraph graph;
+  auto addVec =
+      graph.addTask(makeGateTask("vec_task", KernelKind::Vec,
+                                 MixResourceType::Unknown));
+  EXPECT(!addVec, "scheduler gate add vec task");
+  auto addCube =
+      graph.addTask(makeGateTask("cube_task", KernelKind::Cube,
+                                 MixResourceType::Unknown));
+  EXPECT(!addCube, "scheduler gate add cube task");
+
+  auto traceOr = session.run(graph);
+  EXPECT((bool)traceOr, "scheduler gate accepts vec and cube tasks");
+  EXPECT(driverPtr->invocations == 2,
+         "scheduler gate invokes backend for vec and cube tasks");
+}
+
+static void testResourceSchedulerReservesAndReleasesSlots() {
+  ResourceScheduler scheduler;
+  scheduler.configureSimDispatchLanes(1);
+  scheduler.configureDeviceSlots(1);
+  scheduler.configureWorkspaceBudget(1024);
+
+  TaskResourceRequirement simReq;
+  simReq.backendKind = ExecutionBackendKind::Simulation;
+  simReq.workspaceBytes = 512;
+  simReq.requiresSerializedLaunch = true;
+
+  auto first = scheduler.tryReserve("session0", "task0", simReq);
+  EXPECT(first.has_value(), "first sim reservation succeeds");
+
+  auto second = scheduler.tryReserve("session1", "task1", simReq);
+  EXPECT(!second.has_value(),
+         "second sim reservation blocks when only one lane exists");
+
+  scheduler.release(*first);
+  auto third = scheduler.tryReserve("session1", "task1", simReq);
+  EXPECT(third.has_value(), "reservation succeeds after release");
+}
+
+static void testResourceSchedulerIgnoresForgedRelease() {
+  ResourceScheduler scheduler;
+  scheduler.configureWorkspaceBudget(512);
+
+  TaskResourceRequirement req;
+  req.backendKind = ExecutionBackendKind::Simulation;
+  req.workspaceBytes = 512;
+
+  auto first = scheduler.tryReserve("session0", "task0", req);
+  EXPECT(first.has_value(), "initial reservation succeeds");
+
+  ResourceReservation forged;
+  forged.sessionId = first->sessionId;
+  forged.taskId = first->taskId;
+  forged.backendKind = first->backendKind;
+  forged.workspaceBytes = first->workspaceBytes;
+  forged.holdsSerializedLaunchLane = first->holdsSerializedLaunchLane;
+  forged.holdsDeviceSlot = first->holdsDeviceSlot;
+  scheduler.release(forged);
+
+  auto second = scheduler.tryReserve("session1", "task1", req);
+  EXPECT(!second.has_value(),
+         "forged public tuple does not release live reservation");
+
+  scheduler.release(*first);
+  auto third = scheduler.tryReserve("session1", "task1", req);
+  EXPECT(third.has_value(), "issued reservation releases normally");
+}
+
+static void testResourceSchedulerHandlesIdenticalPublicReservationsIndependently() {
+  ResourceScheduler scheduler;
+  scheduler.configureWorkspaceBudget(1024);
+
+  TaskResourceRequirement req;
+  req.backendKind = ExecutionBackendKind::Simulation;
+  req.workspaceBytes = 512;
+
+  auto first = scheduler.tryReserve("session0", "task0", req);
+  EXPECT(first.has_value(),
+         "first reservation with public tuple succeeds");
+  auto second = scheduler.tryReserve("session0", "task0", req);
+  EXPECT(second.has_value(),
+         "second reservation with identical public tuple succeeds");
+
+  scheduler.release(*first);
+  scheduler.release(*first);
+
+  auto third = scheduler.tryReserve("session0", "task0", req);
+  EXPECT(third.has_value(),
+         "stale copy release does not disturb a same-tuple live reservation");
+
+  auto fourth = scheduler.tryReserve("session0", "task0", req);
+  EXPECT(!fourth.has_value(),
+         "same-tuple live reservation still consumes the remaining budget");
+}
+
+static void testResourceSchedulerHonorsExclusiveDeviceAccess() {
+  ResourceScheduler scheduler;
+  scheduler.configureDeviceSlots(2);
+  scheduler.configureWorkspaceBudget(1024);
+
+  TaskResourceRequirement exclusiveReq;
+  exclusiveReq.backendKind = ExecutionBackendKind::Npu;
+  exclusiveReq.workspaceBytes = 256;
+  exclusiveReq.exclusiveDeviceAccess = true;
+
+  auto exclusive = scheduler.tryReserve("session0", "task0", exclusiveReq);
+  EXPECT(exclusive.has_value(), "exclusive NPU reservation succeeds");
+
+  ResourceReservation forged;
+  forged.sessionId = exclusive->sessionId;
+  forged.taskId = exclusive->taskId;
+  forged.backendKind = exclusive->backendKind;
+  forged.workspaceBytes = exclusive->workspaceBytes;
+  forged.holdsSerializedLaunchLane = exclusive->holdsSerializedLaunchLane;
+  forged.holdsDeviceSlot = exclusive->holdsDeviceSlot;
+  scheduler.release(forged);
+
+  TaskResourceRequirement normalReq;
+  normalReq.backendKind = ExecutionBackendKind::Npu;
+  normalReq.workspaceBytes = 256;
+
+  auto blocked = scheduler.tryReserve("session1", "task1", normalReq);
+  EXPECT(!blocked.has_value(),
+         "forged release does not free exclusive NPU reservation");
+
+  scheduler.release(*exclusive);
+  auto afterRelease = scheduler.tryReserve("session1", "task1", normalReq);
+  EXPECT(afterRelease.has_value(),
+         "device reservation succeeds after exclusive release");
+}
+
+static void testResourceSchedulerReservesStreamCapacity() {
+  ResourceScheduler scheduler;
+  scheduler.configureSimDispatchLanes(4);
+  scheduler.configureDeviceSlots(4);
+  scheduler.configureWorkspaceBudget(2048);
+  scheduler.configureStreamCapacity(1);
+
+  TaskResourceRequirement req;
+  req.backendKind = ExecutionBackendKind::Simulation;
+  req.workspaceBytes = 16;
+  req.requiresStream = true;
+  req.streamUnits = 1;
+
+  auto first = scheduler.tryReserve("s0", "t0", req);
+  EXPECT(static_cast<bool>(first), "first stream reservation succeeds");
+  if (!first)
+    return;
+  EXPECT(first->holdsStreamSlot, "reservation records stream ownership");
+  EXPECT(first->reservedStreamUnits == 1,
+         "reservation records stream unit count");
+
+  auto second = scheduler.tryReserve("s1", "t1", req);
+  EXPECT(!second, "second reservation blocks when stream capacity is exhausted");
+  EXPECT(scheduler.lastBlockReason() == ResourceBlockReason::StreamCapacity,
+         "stream exhaustion records stream-capacity block reason");
+
+  scheduler.release(*first);
+  auto third = scheduler.tryReserve("s2", "t2", req);
+  EXPECT(static_cast<bool>(third),
+         "stream capacity is returned after release");
+  if (!third)
+    return;
+
+  TaskResourceRequirement normalizedReq;
+  normalizedReq.backendKind = ExecutionBackendKind::Simulation;
+  normalizedReq.workspaceBytes = 16;
+  normalizedReq.streamUnits = 0;
+  normalizedReq.exclusiveStreamAccess = true;
+
+  auto normalizedBlocked = scheduler.tryReserve("s3", "t3", normalizedReq);
+  EXPECT(!normalizedBlocked,
+         "exclusive stream request normalizes to a reserved stream slot");
+  EXPECT(scheduler.lastBlockReason() ==
+             ResourceBlockReason::ExclusiveStreamConflict,
+         "exclusive conflict records exclusive-stream block reason");
+
+  scheduler.release(*third);
+  auto normalized = scheduler.tryReserve("s4", "t4", normalizedReq);
+  EXPECT(static_cast<bool>(normalized),
+         "exclusive stream request succeeds after stream release");
+  if (!normalized)
+    return;
+  EXPECT(normalized->holdsStreamSlot,
+         "normalized exclusive request records stream ownership");
+  EXPECT(normalized->reservedStreamUnits == 1,
+         "zero-unit stream request normalizes to one reserved unit");
+
+  auto afterExclusive = scheduler.tryReserve("s5", "t5", req);
+  EXPECT(!afterExclusive,
+         "non-exclusive stream request blocks behind exclusive reservation");
+  EXPECT(scheduler.lastBlockReason() ==
+             ResourceBlockReason::ExclusiveStreamConflict,
+         "shared request behind exclusive reservation reports exclusive conflict");
+}
+
+static void testResourceSchedulerPreservesOutstandingReservationsAcrossReconfigure() {
+  ResourceScheduler scheduler;
+  scheduler.configureWorkspaceBudget(1024);
+
+  TaskResourceRequirement req;
+  req.backendKind = ExecutionBackendKind::Simulation;
+  req.workspaceBytes = 512;
+
+  auto first = scheduler.tryReserve("session0", "task0", req);
+  EXPECT(first.has_value(), "reservation succeeds before reconfigure");
+
+  scheduler.configureWorkspaceBudget(512);
+
+  auto second = scheduler.tryReserve("session1", "task1", req);
+  EXPECT(!second.has_value(),
+         "reconfigure keeps outstanding reservation accounted for");
+
+  scheduler.release(*first);
+  auto third = scheduler.tryReserve("session2", "task2", req);
+  EXPECT(third.has_value(),
+         "release after reconfigure restores the configured budget");
+}
+
+static void testGlobalSchedulerTracksTwoIndependentSessions() {
+  GlobalScheduler scheduler;
+
+  TaskGraph graphA;
+  RuntimeTask taskA;
+  taskA.taskId = "a0";
+  EXPECT(!graphA.addTask(taskA), "graphA add task");
+
+  TaskGraph graphB;
+  RuntimeTask taskB;
+  taskB.taskId = "b0";
+  EXPECT(!graphB.addTask(taskB), "graphB add task");
+
+  auto sessionAOr = scheduler.submit(ExecutionBackendKind::Simulation, graphA);
+  auto sessionBOr = scheduler.submit(ExecutionBackendKind::Simulation, graphB);
+
+  EXPECT((bool)sessionAOr, "submit session A succeeds");
+  EXPECT((bool)sessionBOr, "submit session B succeeds");
+  if (sessionAOr && sessionBOr) {
+    EXPECT(sessionAOr->sessionId() != sessionBOr->sessionId(),
+           "global scheduler assigns distinct session ids");
+    EXPECT(scheduler.sessionCount() == 2,
+           "global scheduler tracks both sessions");
+  }
+
+  TaskGraph emptyGraph;
+  auto emptyOr = scheduler.submit(ExecutionBackendKind::Simulation, emptyGraph);
+  EXPECT(!emptyOr, "empty graph is rejected");
+  if (!emptyOr)
+    llvm::consumeError(emptyOr.takeError());
+}
+
+static void testGlobalSchedulerBlocksSecondSessionOnSingleSimLane() {
+  GlobalScheduler scheduler;
+  scheduler.configureResourceScheduler(/*simDispatchLanes=*/1, /*deviceSlots=*/1,
+                                      std::numeric_limits<size_t>::max(),
+                                      /*streamCapacity=*/1);
+
+  TaskGraph graphA;
+  RuntimeTask taskA;
+  taskA.taskId = "a0";
+  EXPECT(!graphA.addTask(taskA), "graphA add task");
+
+  TaskGraph graphB;
+  RuntimeTask taskB;
+  taskB.taskId = "b0";
+  EXPECT(!graphB.addTask(taskB), "graphB add task");
+
+  auto sessionAOr = scheduler.submit(ExecutionBackendKind::Simulation, graphA);
+  auto sessionBOr = scheduler.submit(ExecutionBackendKind::Simulation, graphB);
+  EXPECT((bool)sessionAOr && (bool)sessionBOr,
+         "both submissions succeed before dispatch");
+  EXPECT(scheduler.taskCountInState(GlobalTaskRecord::State::Reserved) == 1,
+         "only one task is admitted into reserved state");
+  EXPECT(scheduler.taskCountInState(GlobalTaskRecord::State::Ready) == 1,
+         "the second task remains ready while the lane is occupied");
+}
+
+static void testGlobalSchedulerRoundRobinsAcrossSessions() {
+  GlobalScheduler scheduler;
+  scheduler.configureResourceScheduler(/*simDispatchLanes=*/1, /*deviceSlots=*/1,
+                                      /*workspaceBudget=*/4096,
+                                      /*streamCapacity=*/1);
+
+  BackendCapabilities caps;
+  caps.supportsConcurrentDispatch = true;
+  caps.supportsConcurrentExecution = true;
+  caps.maxConcurrentTasks = 3;
+  caps.maxConcurrentStreams = 1;
+
+  TaskGraph graphA;
+  RuntimeTask a0;
+  a0.taskId = "a0";
+  a0.invocation.workspaceSize = 16;
+  RuntimeTask a1;
+  a1.taskId = "a1";
+  a1.invocation.workspaceSize = 16;
+  EXPECT(!graphA.addTask(a0), "add a0");
+  EXPECT(!graphA.addTask(a1), "add a1");
+
+  TaskGraph graphB;
+  RuntimeTask b0;
+  b0.taskId = "b0";
+  b0.invocation.workspaceSize = 16;
+  EXPECT(!graphB.addTask(b0), "add b0");
+
+  auto sessionAOr =
+      scheduler.submit(ExecutionBackendKind::Simulation, caps, graphA);
+  auto sessionBOr =
+      scheduler.submit(ExecutionBackendKind::Simulation, caps, graphB);
+  EXPECT(static_cast<bool>(sessionAOr) && static_cast<bool>(sessionBOr),
+         "both sessions submit");
+  if (!sessionAOr || !sessionBOr)
+    return;
+
+  auto firstA = scheduler.waitAndAcquireTask(sessionAOr->sessionId());
+  EXPECT(static_cast<bool>(firstA) && firstA->has_value(),
+         "session A acquires first task");
+  if (!firstA || !firstA->has_value())
+    return;
+  EXPECT(firstA->value().taskId == "a0", "session A gets its first root");
+
+  auto completeA0 = scheduler.completeTask(sessionAOr->sessionId(), "a0");
+  EXPECT(static_cast<bool>(completeA0), "complete a0");
+  if (!completeA0)
+    return;
+
+  auto firstB = scheduler.waitAndAcquireTask(sessionBOr->sessionId());
+  EXPECT(static_cast<bool>(firstB) && firstB->has_value(),
+         "session B is admitted before session A gets a second turn");
+  if (!firstB || !firstB->has_value())
+    return;
+  EXPECT(firstB->value().taskId == "b0",
+         "fairness gives session B the next turn");
+
+  auto stats = scheduler.observabilitySnapshot();
+  EXPECT(stats.attributes.at("scheduler_policy") ==
+             "global_session_round_robin_baseline",
+         "scheduler policy advertises round-robin baseline");
+  EXPECT(stats.attributes.at("scheduler_fairness_policy") ==
+             "session_round_robin",
+         "scheduler fairness policy is exposed");
+  EXPECT(stats.counters.at("scheduler.fairness.starvation_prevented_total") >= 1,
+         "cross-session turn-taking increments fairness counter");
+}
+
+static void testGlobalSchedulerContinuesRoundRobinAcrossMultipleSessions() {
+  GlobalScheduler scheduler;
+  scheduler.configureResourceScheduler(/*simDispatchLanes=*/1, /*deviceSlots=*/1,
+                                      /*workspaceBudget=*/4096,
+                                      /*streamCapacity=*/1);
+
+  BackendCapabilities caps;
+  caps.supportsConcurrentDispatch = true;
+  caps.supportsConcurrentExecution = true;
+  caps.maxConcurrentTasks = 4;
+  caps.maxConcurrentStreams = 1;
+
+  TaskGraph graphA;
+  RuntimeTask a0;
+  a0.taskId = "a0";
+  a0.invocation.workspaceSize = 16;
+  RuntimeTask a1;
+  a1.taskId = "a1";
+  a1.invocation.workspaceSize = 16;
+  EXPECT(!graphA.addTask(a0), "add a0");
+  EXPECT(!graphA.addTask(a1), "add a1");
+
+  TaskGraph graphB;
+  RuntimeTask b0;
+  b0.taskId = "b0";
+  b0.invocation.workspaceSize = 16;
+  EXPECT(!graphB.addTask(b0), "add b0");
+
+  TaskGraph graphC;
+  RuntimeTask c0;
+  c0.taskId = "c0";
+  c0.invocation.workspaceSize = 16;
+  EXPECT(!graphC.addTask(c0), "add c0");
+
+  auto sessionAOr =
+      scheduler.submit(ExecutionBackendKind::Simulation, caps, graphA);
+  auto sessionBOr =
+      scheduler.submit(ExecutionBackendKind::Simulation, caps, graphB);
+  auto sessionCOr =
+      scheduler.submit(ExecutionBackendKind::Simulation, caps, graphC);
+  EXPECT(static_cast<bool>(sessionAOr) && static_cast<bool>(sessionBOr) &&
+             static_cast<bool>(sessionCOr),
+         "submissions succeed");
+  if (!sessionAOr || !sessionBOr || !sessionCOr)
+    return;
+
+  auto acquiredA0 = scheduler.waitAndAcquireTask(sessionAOr->sessionId());
+  EXPECT(static_cast<bool>(acquiredA0) && acquiredA0->has_value(),
+         "session A acquires first task");
+  if (!acquiredA0 || !acquiredA0->has_value())
+    return;
+  EXPECT(acquiredA0->value().taskId == "a0", "session A gets a0 first");
+  auto completeA0 = scheduler.completeTask(sessionAOr->sessionId(), "a0");
+  EXPECT(static_cast<bool>(completeA0), "complete a0");
+  if (!completeA0)
+    return;
+
+  auto acquiredB0 = scheduler.waitAndAcquireTask(sessionBOr->sessionId());
+  EXPECT(static_cast<bool>(acquiredB0) && acquiredB0->has_value(),
+         "session B acquires second turn");
+  if (!acquiredB0 || !acquiredB0->has_value())
+    return;
+  EXPECT(acquiredB0->value().taskId == "b0", "session B gets b0 second");
+  auto completeB0 = scheduler.completeTask(sessionBOr->sessionId(), "b0");
+  EXPECT(static_cast<bool>(completeB0), "complete b0");
+  if (!completeB0)
+    return;
+
+  auto acquiredC0 = scheduler.waitAndAcquireTask(sessionCOr->sessionId());
+  EXPECT(static_cast<bool>(acquiredC0) && acquiredC0->has_value(),
+         "session C acquires third turn");
+  if (!acquiredC0 || !acquiredC0->has_value())
+    return;
+  EXPECT(acquiredC0->value().taskId == "c0", "session C gets c0 third");
+  auto completeC0 = scheduler.completeTask(sessionCOr->sessionId(), "c0");
+  EXPECT(static_cast<bool>(completeC0), "complete c0");
+  if (!completeC0)
+    return;
+
+  auto acquiredA1 = scheduler.waitAndAcquireTask(sessionAOr->sessionId());
+  EXPECT(static_cast<bool>(acquiredA1) && acquiredA1->has_value(),
+         "session A gets another turn after B and C");
+  if (!acquiredA1 || !acquiredA1->has_value())
+    return;
+  EXPECT(acquiredA1->value().taskId == "a1", "session A gets a1 last");
+
+  auto stats = scheduler.observabilitySnapshot();
+  EXPECT(stats.counters.at("scheduler.fairness.session_order_size") == 3,
+         "all sessions participate in fairness order");
+  EXPECT(stats.counters.at("scheduler.fairness.starvation_prevented_total") >= 3,
+         "round-robin across sessions increments fairness counter");
+}
+
+static void testGlobalSchedulerEnforcesSessionAdmissionQuota() {
+  GlobalScheduler scheduler;
+  scheduler.configureResourceScheduler(/*simDispatchLanes=*/2, /*deviceSlots=*/2,
+                                      /*workspaceBudget=*/4096,
+                                      /*streamCapacity=*/2);
+
+  BackendCapabilities caps;
+  caps.supportsConcurrentDispatch = true;
+  caps.supportsConcurrentExecution = true;
+  caps.maxConcurrentTasks = 4;
+  caps.maxConcurrentStreams = 2;
+
+  SessionSchedulingOptions quotaOne;
+  quotaOne.maxAdmittedTasks = 1;
+
+  TaskGraph graphA;
+  RuntimeTask a0;
+  a0.taskId = "a0";
+  a0.invocation.workspaceSize = 16;
+  RuntimeTask a1;
+  a1.taskId = "a1";
+  a1.invocation.workspaceSize = 16;
+  EXPECT(!graphA.addTask(a0), "add a0");
+  EXPECT(!graphA.addTask(a1), "add a1");
+
+  TaskGraph graphB;
+  RuntimeTask b0;
+  b0.taskId = "b0";
+  b0.invocation.workspaceSize = 16;
+  EXPECT(!graphB.addTask(b0), "add b0");
+
+  auto sessionAOr =
+      scheduler.submit(ExecutionBackendKind::Simulation, caps, graphA, quotaOne);
+  auto sessionBOr =
+      scheduler.submit(ExecutionBackendKind::Simulation, caps, graphB);
+  EXPECT(static_cast<bool>(sessionAOr) && static_cast<bool>(sessionBOr),
+         "submissions succeed");
+  if (!sessionAOr || !sessionBOr)
+    return;
+
+  auto stats = scheduler.observabilitySnapshot();
+  EXPECT(stats.counters.at("scheduler.task.reserved") == 2,
+         "quota still leaves spare capacity for another session");
+  EXPECT(stats.counters.at("scheduler.quota.blocked") == 1,
+         "one ready task is blocked by quota");
+  EXPECT(stats.counters.at("scheduler.quota.blocked_total") >= 1,
+         "quota blocking is counted cumulatively");
+
+  auto sessionAAcquire = scheduler.waitAndAcquireTask(sessionAOr->sessionId());
+  auto sessionBAcquire = scheduler.waitAndAcquireTask(sessionBOr->sessionId());
+  EXPECT(static_cast<bool>(sessionAAcquire) && sessionAAcquire->has_value(),
+         "session A acquires one task under quota");
+  EXPECT(static_cast<bool>(sessionBAcquire) && sessionBAcquire->has_value(),
+         "session B uses the remaining capacity");
+}
+
+static void testGlobalSchedulerPrefersHigherPrioritySessions() {
+  GlobalScheduler scheduler;
+  scheduler.configureResourceScheduler(/*simDispatchLanes=*/1, /*deviceSlots=*/1,
+                                      /*workspaceBudget=*/4096,
+                                      /*streamCapacity=*/1);
+
+  BackendCapabilities caps;
+  caps.supportsConcurrentDispatch = true;
+  caps.supportsConcurrentExecution = true;
+  caps.maxConcurrentTasks = 4;
+  caps.maxConcurrentStreams = 1;
+
+  SessionSchedulingOptions highPriority;
+  highPriority.priorityClass = SessionPriorityClass::High;
+
+  TaskGraph graphLow;
+  RuntimeTask l0;
+  l0.taskId = "l0";
+  l0.invocation.workspaceSize = 16;
+  RuntimeTask l1;
+  l1.taskId = "l1";
+  l1.invocation.workspaceSize = 16;
+  EXPECT(!graphLow.addTask(l0), "add l0");
+  EXPECT(!graphLow.addTask(l1), "add l1");
+
+  TaskGraph graphHigh;
+  RuntimeTask h0;
+  h0.taskId = "h0";
+  h0.invocation.workspaceSize = 16;
+  EXPECT(!graphHigh.addTask(h0), "add h0");
+
+  auto lowSessionOr =
+      scheduler.submit(ExecutionBackendKind::Simulation, caps, graphLow);
+  auto highSessionOr =
+      scheduler.submit(ExecutionBackendKind::Simulation, caps, graphHigh,
+                       highPriority);
+  EXPECT(static_cast<bool>(lowSessionOr) && static_cast<bool>(highSessionOr),
+         "submissions succeed");
+  if (!lowSessionOr || !highSessionOr)
+    return;
+
+  auto lowFirst = scheduler.waitAndAcquireTask(lowSessionOr->sessionId());
+  EXPECT(static_cast<bool>(lowFirst) && lowFirst->has_value(),
+         "low session acquires first");
+  if (!lowFirst || !lowFirst->has_value())
+    return;
+  EXPECT(lowFirst->value().taskId == "l0", "low session gets initial turn");
+  auto completeLow0 = scheduler.completeTask(lowSessionOr->sessionId(), "l0");
+  EXPECT(static_cast<bool>(completeLow0), "complete l0");
+  if (!completeLow0)
+    return;
+
+  auto highNext = scheduler.waitAndAcquireTask(highSessionOr->sessionId());
+  EXPECT(static_cast<bool>(highNext) && highNext->has_value(),
+         "high priority session gets the next turn");
+  if (!highNext || !highNext->has_value())
+    return;
+  EXPECT(highNext->value().taskId == "h0",
+         "high priority preempts low session's second root");
+
+  auto stats = scheduler.observabilitySnapshot();
+  EXPECT(stats.attributes.at("scheduler_priority_policy") ==
+             "static_session_priority",
+         "priority policy is exposed");
+  EXPECT(stats.attributes.at("scheduler_quota_policy") ==
+             "session_admission_quota",
+         "quota policy is exposed");
+}
+
+static void testGlobalSchedulerUsesConfiguredDefaultSessionScheduling() {
+  GlobalScheduler scheduler;
+  scheduler.configureResourceScheduler(/*simDispatchLanes=*/2, /*deviceSlots=*/2,
+                                      /*workspaceBudget=*/4096,
+                                      /*streamCapacity=*/2);
+
+  GlobalSchedulerPolicy policy;
+  policy.defaultSessionScheduling.priorityClass = SessionPriorityClass::High;
+  policy.defaultSessionScheduling.maxAdmittedTasks = 1;
+  scheduler.configurePolicy(policy);
+
+  BackendCapabilities caps;
+  caps.supportsConcurrentDispatch = true;
+  caps.supportsConcurrentExecution = true;
+  caps.maxConcurrentTasks = 4;
+  caps.maxConcurrentStreams = 2;
+
+  TaskGraph graphA;
+  RuntimeTask a0;
+  a0.taskId = "a0";
+  a0.invocation.workspaceSize = 16;
+  RuntimeTask a1;
+  a1.taskId = "a1";
+  a1.invocation.workspaceSize = 16;
+  EXPECT(!graphA.addTask(a0), "add a0");
+  EXPECT(!graphA.addTask(a1), "add a1");
+
+  TaskGraph graphB;
+  RuntimeTask b0;
+  b0.taskId = "b0";
+  b0.invocation.workspaceSize = 16;
+  EXPECT(!graphB.addTask(b0), "add b0");
+
+  auto sessionAOr =
+      scheduler.submit(ExecutionBackendKind::Simulation, caps, graphA);
+  auto sessionBOr =
+      scheduler.submit(ExecutionBackendKind::Simulation, caps, graphB);
+  EXPECT(static_cast<bool>(sessionAOr) && static_cast<bool>(sessionBOr),
+         "submissions succeed");
+  if (!sessionAOr || !sessionBOr)
+    return;
+
+  auto stats = scheduler.observabilitySnapshot();
+  EXPECT(stats.attributes.at("scheduler_default_priority_class") == "high",
+         "default priority class is exposed");
+  EXPECT(stats.counters.at("scheduler.policy.default_max_admitted_tasks") == 1,
+         "default quota is exposed");
+  EXPECT(stats.counters.at("scheduler.quota.blocked") == 1,
+         "default quota applies to default-submit sessions");
+}
+
+static void testGlobalSchedulerBackfillsWhenHighPriorityQuotaIsExhausted() {
+  GlobalScheduler scheduler;
+  scheduler.configureResourceScheduler(/*simDispatchLanes=*/2, /*deviceSlots=*/2,
+                                      /*workspaceBudget=*/4096,
+                                      /*streamCapacity=*/2);
+
+  BackendCapabilities caps;
+  caps.supportsConcurrentDispatch = true;
+  caps.supportsConcurrentExecution = true;
+  caps.maxConcurrentTasks = 4;
+  caps.maxConcurrentStreams = 2;
+
+  SessionSchedulingOptions highQuotaOne;
+  highQuotaOne.priorityClass = SessionPriorityClass::High;
+  highQuotaOne.maxAdmittedTasks = 1;
+
+  TaskGraph graphHigh;
+  RuntimeTask h0;
+  h0.taskId = "h0";
+  h0.invocation.workspaceSize = 16;
+  RuntimeTask h1;
+  h1.taskId = "h1";
+  h1.invocation.workspaceSize = 16;
+  EXPECT(!graphHigh.addTask(h0), "add h0");
+  EXPECT(!graphHigh.addTask(h1), "add h1");
+
+  TaskGraph graphLow;
+  RuntimeTask l0;
+  l0.taskId = "l0";
+  l0.invocation.workspaceSize = 16;
+  EXPECT(!graphLow.addTask(l0), "add l0");
+
+  auto highSessionOr = scheduler.submit(ExecutionBackendKind::Simulation, caps,
+                                        graphHigh, highQuotaOne);
+  auto lowSessionOr =
+      scheduler.submit(ExecutionBackendKind::Simulation, caps, graphLow);
+  EXPECT(static_cast<bool>(highSessionOr) && static_cast<bool>(lowSessionOr),
+         "submissions succeed");
+  if (!highSessionOr || !lowSessionOr)
+    return;
+
+  auto stats = scheduler.observabilitySnapshot();
+  EXPECT(stats.counters.at("scheduler.task.reserved") == 2,
+         "low-priority session backfills spare capacity");
+  EXPECT(stats.counters.at("scheduler.quota.blocked") == 1,
+         "second high-priority task is quota blocked");
+  EXPECT(stats.counters.at("scheduler.priority.high_ready") == 0,
+         "quota-exhausted high-priority session is not counted as ready-eligible");
+
+  auto highAcquire = scheduler.waitAndAcquireTask(highSessionOr->sessionId());
+  auto lowAcquire = scheduler.waitAndAcquireTask(lowSessionOr->sessionId());
+  EXPECT(static_cast<bool>(highAcquire) && highAcquire->has_value(),
+         "high-priority session acquires one task");
+  EXPECT(static_cast<bool>(lowAcquire) && lowAcquire->has_value(),
+         "lower-priority session backfills the second slot");
+}
+
+static void testGlobalSchedulerBackfillsWhenHighPriorityIsResourceBlocked() {
+  GlobalScheduler scheduler;
+  scheduler.configureResourceScheduler(/*simDispatchLanes=*/2, /*deviceSlots=*/2,
+                                      /*workspaceBudget=*/32,
+                                      /*streamCapacity=*/2);
+
+  BackendCapabilities caps;
+  caps.supportsConcurrentDispatch = true;
+  caps.supportsConcurrentExecution = true;
+  caps.maxConcurrentTasks = 4;
+  caps.maxConcurrentStreams = 2;
+
+  SessionSchedulingOptions highPriority;
+  highPriority.priorityClass = SessionPriorityClass::High;
+
+  TaskGraph graphHigh;
+  RuntimeTask h0;
+  h0.taskId = "h0";
+  h0.invocation.workspaceSize = 64;
+  EXPECT(!graphHigh.addTask(h0), "add resource-blocked h0");
+
+  TaskGraph graphLow;
+  RuntimeTask l0;
+  l0.taskId = "l0";
+  l0.invocation.workspaceSize = 16;
+  EXPECT(!graphLow.addTask(l0), "add low l0");
+
+  auto highSessionOr =
+      scheduler.submit(ExecutionBackendKind::Simulation, caps, graphHigh,
+                       highPriority);
+  auto lowSessionOr =
+      scheduler.submit(ExecutionBackendKind::Simulation, caps, graphLow);
+  EXPECT(static_cast<bool>(highSessionOr) && static_cast<bool>(lowSessionOr),
+         "submissions succeed");
+  if (!highSessionOr || !lowSessionOr)
+    return;
+
+  auto stats = scheduler.observabilitySnapshot();
+  EXPECT(stats.counters.at("scheduler.task.reserved") == 1,
+         "lower-priority session backfills when high-priority task is resource blocked");
+  EXPECT(stats.counters.at("scheduler.admission.resource_blocked") == 1,
+         "resource-blocked high-priority task is counted");
+
+  auto lowAcquire = scheduler.waitAndAcquireTask(lowSessionOr->sessionId());
+  EXPECT(static_cast<bool>(lowAcquire) && lowAcquire->has_value(),
+         "lower-priority session acquires backfilled slot");
+}
+
+static void testGlobalSchedulerKeepsExplicitSchedulingOutsideDefaultPolicy() {
+  GlobalScheduler scheduler;
+  scheduler.configureResourceScheduler(/*simDispatchLanes=*/1, /*deviceSlots=*/1,
+                                      /*workspaceBudget=*/4096,
+                                      /*streamCapacity=*/1);
+
+  GlobalSchedulerPolicy policy;
+  policy.defaultSessionScheduling.priorityClass = SessionPriorityClass::High;
+  policy.defaultSessionScheduling.maxAdmittedTasks = 1;
+  scheduler.configurePolicy(policy);
+
+  BackendCapabilities caps;
+  caps.supportsConcurrentDispatch = true;
+  caps.supportsConcurrentExecution = true;
+  caps.maxConcurrentTasks = 4;
+  caps.maxConcurrentStreams = 1;
+
+  TaskGraph graphDefault;
+  RuntimeTask a0;
+  a0.taskId = "a0";
+  a0.invocation.workspaceSize = 16;
+  RuntimeTask a1;
+  a1.taskId = "a1";
+  a1.invocation.workspaceSize = 16;
+  EXPECT(!graphDefault.addTask(a0), "add a0");
+  EXPECT(!graphDefault.addTask(a1), "add a1");
+
+  SessionSchedulingOptions explicitLow;
+  explicitLow.priorityClass = SessionPriorityClass::Low;
+
+  TaskGraph graphExplicit;
+  RuntimeTask b0;
+  b0.taskId = "b0";
+  b0.invocation.workspaceSize = 16;
+  RuntimeTask b1;
+  b1.taskId = "b1";
+  b1.invocation.workspaceSize = 16;
+  EXPECT(!graphExplicit.addTask(b0), "add b0");
+  EXPECT(!graphExplicit.addTask(b1), "add b1");
+
+  auto defaultSessionOr =
+      scheduler.submit(ExecutionBackendKind::Simulation, caps, graphDefault);
+  auto explicitSessionOr = scheduler.submit(ExecutionBackendKind::Simulation,
+                                            caps, graphExplicit, explicitLow);
+  EXPECT(static_cast<bool>(defaultSessionOr) &&
+             static_cast<bool>(explicitSessionOr),
+         "submissions succeed");
+  if (!defaultSessionOr || !explicitSessionOr)
+    return;
+
+  auto firstDefault = scheduler.waitAndAcquireTask(defaultSessionOr->sessionId());
+  EXPECT(static_cast<bool>(firstDefault) && firstDefault->has_value(),
+         "default-policy high-priority session acquires first");
+  if (!firstDefault || !firstDefault->has_value())
+    return;
+  EXPECT(firstDefault->value().taskId == "a0", "default session gets a0 first");
+
+  auto completeA0 =
+      scheduler.completeTask(defaultSessionOr->sessionId(), "a0");
+  EXPECT(static_cast<bool>(completeA0), "complete a0");
+  if (!completeA0)
+    return;
+
+  auto secondDefault = scheduler.waitAndAcquireTask(defaultSessionOr->sessionId());
+  EXPECT(static_cast<bool>(secondDefault) && secondDefault->has_value(),
+         "explicit low-priority session is not promoted by default policy");
+  if (!secondDefault || !secondDefault->has_value())
+    return;
+  EXPECT(secondDefault->value().taskId == "a1",
+         "default session keeps the next high-priority turn");
+}
+
+static void testGlobalSchedulerBlocksOnStreamCapacity() {
+  GlobalScheduler scheduler;
+  scheduler.configureResourceScheduler(/*simDispatchLanes=*/4, /*deviceSlots=*/4,
+                                      /*workspaceBudget=*/4096,
+                                      /*streamCapacity=*/1);
+
+  BackendCapabilities caps;
+  caps.supportsConcurrentDispatch = true;
+  caps.supportsConcurrentExecution = true;
+  caps.requiresSerializedLaunch = false;
+  caps.maxConcurrentTasks = 4;
+  caps.maxConcurrentStreams = 1;
+
+  TaskGraph graph;
+  RuntimeTask taskA;
+  taskA.taskId = "a";
+  taskA.invocation.workspaceSize = 16;
+  EXPECT(!graph.addTask(taskA), "add task a");
+
+  RuntimeTask taskB;
+  taskB.taskId = "b";
+  taskB.invocation.workspaceSize = 16;
+  EXPECT(!graph.addTask(taskB), "add task b");
+
+  auto sessionOr =
+      scheduler.submit(ExecutionBackendKind::Simulation, caps, graph);
+  EXPECT((bool)sessionOr, "submit succeeds");
+  if (!sessionOr)
+    return;
+
+  auto stats = scheduler.observabilitySnapshot();
+  EXPECT(stats.attributes.at("scheduler_stream_model") == "enabled",
+         "stream model attribute is reported");
+  EXPECT(stats.counters.at("scheduler.stream.capacity_total") == 1,
+         "stream capacity total is reported");
+  EXPECT(stats.counters.at("scheduler.stream.reserved") == 1,
+         "one task reserves the only stream slot");
+  EXPECT(stats.counters.at("scheduler.admission.stream_blocked") == 1,
+         "second ready task is blocked on stream capacity");
+}
+
+static void testGlobalSchedulerReportsLifecycleCounters() {
+  GlobalScheduler scheduler;
+  scheduler.configureResourceScheduler(/*simDispatchLanes=*/1, /*deviceSlots=*/1,
+                                      std::numeric_limits<size_t>::max(),
+                                      /*streamCapacity=*/1);
+
+  TaskGraph graphA;
+  RuntimeTask taskA;
+  taskA.taskId = "a0";
+  EXPECT(!graphA.addTask(taskA), "graphA add task");
+
+  TaskGraph graphB;
+  RuntimeTask taskB;
+  taskB.taskId = "b0";
+  EXPECT(!graphB.addTask(taskB), "graphB add task");
+
+  auto sessionAOr = scheduler.submit(ExecutionBackendKind::Simulation, graphA);
+  auto sessionBOr = scheduler.submit(ExecutionBackendKind::Simulation, graphB);
+  EXPECT((bool)sessionAOr && (bool)sessionBOr,
+         "both scheduler submissions succeed");
+  if (!sessionAOr || !sessionBOr)
+    return;
+
+  auto stats = scheduler.observabilitySnapshot();
+  auto schedulerPolicy = stats.attributes.find("scheduler_policy");
+  EXPECT(schedulerPolicy != stats.attributes.end() &&
+             !schedulerPolicy->second.empty(),
+         "scheduler snapshot reports a non-empty policy label");
+  EXPECT(stats.counters.at("scheduler.session_count") == 2,
+         "scheduler snapshot counts active sessions");
+  EXPECT(stats.counters.at("scheduler.task.reserved") == 1,
+         "scheduler snapshot counts reserved tasks");
+  EXPECT(stats.counters.at("scheduler.task.ready") == 1,
+         "scheduler snapshot counts ready tasks waiting on admission");
+  EXPECT(stats.counters.at("scheduler.admission.resource_blocked") == 1,
+         "scheduler snapshot counts resource-blocked admissions");
+  EXPECT(stats.counters.at("scheduler.admission.reserved_total") == 1,
+         "scheduler snapshot counts cumulative successful reservations");
+  EXPECT(stats.counters.at("scheduler.admission.resource_blocked_total") == 1,
+         "scheduler snapshot counts cumulative resource-blocked admissions");
+
+  scheduler.configureResourceScheduler(/*simDispatchLanes=*/1, /*deviceSlots=*/1,
+                                      std::numeric_limits<size_t>::max(),
+                                      /*streamCapacity=*/1);
+  auto retriedStats = scheduler.observabilitySnapshot();
+  EXPECT(retriedStats.counters.at("scheduler.admission.resource_blocked") == 1,
+         "scheduler snapshot keeps the ready task resource-blocked");
+  EXPECT(retriedStats.counters.at(
+             "scheduler.admission.resource_blocked_total") == 1,
+         "scheduler snapshot does not recount the same blocked task on retry");
+
+  auto acquiredOr = scheduler.waitAndAcquireTask(sessionAOr->sessionId());
+  EXPECT((bool)acquiredOr && acquiredOr->has_value(),
+         "scheduler acquires the reserved task for lifecycle transition");
+  if (!acquiredOr || !acquiredOr->has_value())
+    return;
+
+  auto runningStats = scheduler.observabilitySnapshot();
+  EXPECT(runningStats.counters.at("scheduler.task.running") == 1,
+         "scheduler snapshot counts running tasks after acquisition");
+  EXPECT(runningStats.counters.at("scheduler.task.reserved") == 0,
+         "scheduler snapshot clears reserved count after acquisition");
+  EXPECT(runningStats.counters.at("scheduler.task.ready") == 1,
+         "scheduler snapshot keeps the waiting task ready while lane is busy");
+  EXPECT(runningStats.counters.at("scheduler.admission.resource_blocked") == 1,
+         "scheduler snapshot keeps the waiting task resource-blocked");
+
+  auto completedOr = scheduler.completeTask(sessionAOr->sessionId(),
+                                            acquiredOr->value().taskId);
+  EXPECT((bool)completedOr, "scheduler completes the acquired task");
+  if (!completedOr)
+    return;
+
+  auto postTransitionStats = scheduler.observabilitySnapshot();
+  auto postPolicy = postTransitionStats.attributes.find("scheduler_policy");
+  EXPECT(postPolicy != postTransitionStats.attributes.end() &&
+             !postPolicy->second.empty(),
+         "scheduler snapshot preserves a non-empty policy label");
+  EXPECT(postTransitionStats.counters.at("scheduler.session_count") == 2,
+         "scheduler snapshot keeps the active session count after completion");
+  EXPECT(postTransitionStats.counters.at("scheduler.task.succeeded") == 1,
+         "scheduler snapshot counts succeeded tasks after completion");
+  EXPECT(postTransitionStats.counters.at("scheduler.task.reserved") == 1,
+         "scheduler snapshot re-admits the waiting task after completion");
+  EXPECT(postTransitionStats.counters.at("scheduler.task.ready") == 0,
+         "scheduler snapshot drains ready tasks when capacity returns");
+  EXPECT(postTransitionStats.counters.at("scheduler.task.running") == 0,
+         "scheduler snapshot clears running count after completion");
+  EXPECT(postTransitionStats.counters.at(
+             "scheduler.admission.resource_blocked") == 0,
+         "scheduler snapshot clears resource-blocked count after completion");
+  EXPECT(postTransitionStats.counters.at("scheduler.admission.reserved_total") ==
+             2,
+         "scheduler snapshot accumulates successful reservations");
+  EXPECT(postTransitionStats.counters.at(
+             "scheduler.admission.resource_blocked_total") == 1,
+         "scheduler snapshot accumulates blocked admission attempts");
+  EXPECT(postTransitionStats.counters.at("scheduler.transition.completed") == 1,
+         "scheduler snapshot counts completed task transitions");
+}
+
+static void testGlobalSchedulerTracksReleaseAndFailureCounters() {
+  GlobalScheduler scheduler;
+  scheduler.configureResourceScheduler(/*simDispatchLanes=*/1, /*deviceSlots=*/1,
+                                      std::numeric_limits<size_t>::max(),
+                                      /*streamCapacity=*/1);
+
+  TaskGraph graph;
+  RuntimeTask task;
+  task.taskId = "main";
+  EXPECT(!graph.addTask(task), "graph add task");
+
+  auto sessionOr = scheduler.submit(ExecutionBackendKind::Simulation, graph);
+  EXPECT((bool)sessionOr, "scheduler submission succeeds");
+  if (!sessionOr)
+    return;
+
+  auto acquiredOr = scheduler.waitAndAcquireTask(sessionOr->sessionId());
+  EXPECT((bool)acquiredOr && acquiredOr->has_value(),
+         "scheduler acquires the runnable task");
+  if (!acquiredOr || !acquiredOr->has_value())
+    return;
+
+  EXPECT(!scheduler.failTask(sessionOr->sessionId(), acquiredOr->value().taskId),
+         "scheduler failTask succeeds");
+
+  auto failedStats = scheduler.observabilitySnapshot();
+  EXPECT(failedStats.counters.at("scheduler.transition.failed") == 1,
+         "scheduler snapshot counts task failures");
+  EXPECT(failedStats.counters.at("scheduler.transition.session_release") == 0,
+         "scheduler snapshot does not count session release before release");
+
+  scheduler.releaseSession(sessionOr->sessionId());
+
+  auto releasedStats = scheduler.observabilitySnapshot();
+  EXPECT(releasedStats.counters.at("scheduler.transition.failed") == 1,
+         "scheduler snapshot preserves cumulative task failures");
+  EXPECT(releasedStats.counters.at("scheduler.transition.session_release") == 1,
+         "scheduler snapshot counts session release");
+}
+
+static void testGlobalSchedulerReturnsStreamCapacityOnFailureAndRelease() {
+  GlobalScheduler scheduler;
+  scheduler.configureResourceScheduler(/*simDispatchLanes=*/4, /*deviceSlots=*/4,
+                                      /*workspaceBudget=*/4096,
+                                      /*streamCapacity=*/1);
+
+  BackendCapabilities caps;
+  caps.supportsConcurrentDispatch = true;
+  caps.supportsConcurrentExecution = true;
+  caps.maxConcurrentTasks = 2;
+  caps.maxConcurrentStreams = 1;
+
+  TaskGraph graph;
+  RuntimeTask mainTask;
+  mainTask.taskId = "main";
+  mainTask.invocation.workspaceSize = 16;
+  EXPECT(!graph.addTask(mainTask), "add task");
+
+  auto sessionOr =
+      scheduler.submit(ExecutionBackendKind::Simulation, caps, graph);
+  EXPECT(static_cast<bool>(sessionOr), "submit succeeds");
+  if (!sessionOr)
+    return;
+
+  TaskGraph waitingGraph;
+  RuntimeTask waitingTask;
+  waitingTask.taskId = "waiting";
+  waitingTask.invocation.workspaceSize = 16;
+  EXPECT(!waitingGraph.addTask(waitingTask), "add waiting task");
+
+  auto waitingSessionOr =
+      scheduler.submit(ExecutionBackendKind::Simulation, caps, waitingGraph);
+  EXPECT(static_cast<bool>(waitingSessionOr), "waiting submit succeeds");
+  if (!waitingSessionOr)
+    return;
+
+  auto blockedStats = scheduler.observabilitySnapshot();
+  EXPECT(blockedStats.counters.at("scheduler.stream.reserved") == 1,
+         "failed session holds the only stream slot before release");
+  EXPECT(blockedStats.counters.at("scheduler.admission.stream_blocked") == 1,
+         "waiting session is blocked on stream capacity");
+
+  auto acquiredOr = scheduler.waitAndAcquireTask(sessionOr->sessionId());
+  EXPECT(static_cast<bool>(acquiredOr) && acquiredOr->has_value(),
+         "task acquires successfully");
+  if (!acquiredOr || !acquiredOr->has_value())
+    return;
+
+  EXPECT(!scheduler.failTask(sessionOr->sessionId(), "main"),
+         "failTask succeeds");
+  scheduler.releaseSession(sessionOr->sessionId());
+
+  auto stats = scheduler.observabilitySnapshot();
+  EXPECT(stats.counters.at("scheduler.stream.reserved") == 1,
+         "released stream slot is immediately reused by the waiting session");
+  EXPECT(stats.counters.at("scheduler.stream.capacity_available") == 0,
+         "reused stream slot leaves no spare capacity");
+  EXPECT(stats.counters.at("scheduler.task.reserved") == 1,
+         "waiting task is admitted after failed session release");
+
+  auto waitingAcquireOr =
+      scheduler.waitAndAcquireTask(waitingSessionOr->sessionId());
+  EXPECT(static_cast<bool>(waitingAcquireOr) && waitingAcquireOr->has_value(),
+         "waiting session acquires after capacity returns");
+  if (!waitingAcquireOr || !waitingAcquireOr->has_value())
+    return;
+
+  auto completeWaitingOr =
+      scheduler.completeTask(waitingSessionOr->sessionId(), "waiting");
+  EXPECT(static_cast<bool>(completeWaitingOr), "waiting task completes");
+  if (!completeWaitingOr)
+    return;
+  scheduler.releaseSession(waitingSessionOr->sessionId());
+
+  auto drainedStats = scheduler.observabilitySnapshot();
+  EXPECT(drainedStats.counters.at("scheduler.stream.reserved") == 0,
+         "stream reservation count returns to zero after cleanup");
+  EXPECT(drainedStats.counters.at("scheduler.stream.capacity_available") == 1,
+         "stream capacity is fully returned after cleanup");
+}
+
+static void testGlobalSchedulerReleasesStreamBlockedDependent() {
+  GlobalScheduler scheduler;
+  scheduler.configureResourceScheduler(/*simDispatchLanes=*/4, /*deviceSlots=*/4,
+                                      /*workspaceBudget=*/4096,
+                                      /*streamCapacity=*/1);
+
+  BackendCapabilities caps;
+  caps.supportsConcurrentDispatch = true;
+  caps.supportsConcurrentExecution = true;
+  caps.maxConcurrentTasks = 3;
+  caps.maxConcurrentStreams = 1;
+
+  TaskGraph graph;
+  RuntimeTask producer;
+  producer.taskId = "a_producer";
+  producer.invocation.workspaceSize = 16;
+  EXPECT(!graph.addTask(producer), "add producer");
+
+  RuntimeTask peer;
+  peer.taskId = "b_peer";
+  peer.invocation.workspaceSize = 16;
+  EXPECT(!graph.addTask(peer), "add peer");
+
+  RuntimeTask consumer;
+  consumer.taskId = "c_consumer";
+  consumer.dependencies = {"a_producer"};
+  consumer.invocation.workspaceSize = 16;
+  EXPECT(!graph.addTask(consumer), "add consumer");
+
+  auto sessionOr =
+      scheduler.submit(ExecutionBackendKind::Simulation, caps, graph);
+  EXPECT(static_cast<bool>(sessionOr), "submit succeeds");
+  if (!sessionOr)
+    return;
+
+  auto producerOr = scheduler.waitAndAcquireTask(sessionOr->sessionId());
+  EXPECT(static_cast<bool>(producerOr) && producerOr->has_value(),
+         "producer acquires first");
+  if (!producerOr || !producerOr->has_value())
+    return;
+  EXPECT(producerOr->value().taskId == "a_producer",
+         "producer is the first runnable task");
+
+  auto producerCompleteOr =
+      scheduler.completeTask(sessionOr->sessionId(), "a_producer");
+  EXPECT(static_cast<bool>(producerCompleteOr), "producer completes");
+  if (!producerCompleteOr)
+    return;
+  EXPECT(*producerCompleteOr == 1,
+         "producer completion advances the dependent task");
+
+  auto blockedStats = scheduler.observabilitySnapshot();
+  EXPECT(blockedStats.counters.at("scheduler.task.reserved") == 1,
+         "peer consumes the returned stream slot");
+  EXPECT(blockedStats.counters.at("scheduler.task.ready") == 1,
+         "consumer remains ready while stream capacity is exhausted");
+  EXPECT(blockedStats.counters.at("scheduler.admission.stream_blocked") == 1,
+         "consumer is reported as stream blocked after dependency advance");
+  const int64_t blockedTotal =
+      blockedStats.counters.at("scheduler.admission.stream_blocked_total");
+  EXPECT(blockedTotal >= 2,
+         "stream-blocked total retains both initial and dependent contention");
+
+  auto peerOr = scheduler.waitAndAcquireTask(sessionOr->sessionId());
+  EXPECT(static_cast<bool>(peerOr) && peerOr->has_value(),
+         "peer acquires after producer completion");
+  if (!peerOr || !peerOr->has_value())
+    return;
+  EXPECT(peerOr->value().taskId == "b_peer",
+         "peer holds the only stream slot during contention");
+
+  auto peerCompleteOr = scheduler.completeTask(sessionOr->sessionId(), "b_peer");
+  EXPECT(static_cast<bool>(peerCompleteOr), "peer completes");
+  if (!peerCompleteOr)
+    return;
+
+  auto retriedStats = scheduler.observabilitySnapshot();
+  EXPECT(retriedStats.counters.at("scheduler.task.reserved") == 1,
+         "consumer is re-admitted after stream capacity returns");
+  EXPECT(retriedStats.counters.at("scheduler.task.ready") == 0,
+         "consumer leaves ready state after successful retry");
+  EXPECT(retriedStats.counters.at("scheduler.admission.stream_blocked") == 0,
+         "no task remains stream blocked after capacity returns");
+  EXPECT(retriedStats.counters.at("scheduler.admission.stream_blocked_total") ==
+             blockedTotal,
+         "stream-blocked total remains stable across retry");
+
+  auto consumerOr = scheduler.waitAndAcquireTask(sessionOr->sessionId());
+  EXPECT(static_cast<bool>(consumerOr) && consumerOr->has_value(),
+         "consumer acquires after retry");
+  if (!consumerOr || !consumerOr->has_value())
+    return;
+  EXPECT(consumerOr->value().taskId == "c_consumer",
+         "dependent task is retried and admitted");
+}
+
+static void testGlobalSchedulerReleaseSessionRestoresAdmissionCapacity() {
+  GlobalScheduler scheduler;
+  scheduler.configureResourceScheduler(/*simDispatchLanes=*/1, /*deviceSlots=*/1,
+                                      std::numeric_limits<size_t>::max(),
+                                      /*streamCapacity=*/1);
+
+  TaskGraph graphA;
+  RuntimeTask taskA;
+  taskA.taskId = "a0";
+  EXPECT(!graphA.addTask(taskA), "graphA add task");
+
+  TaskGraph graphB;
+  RuntimeTask taskB;
+  taskB.taskId = "b0";
+  EXPECT(!graphB.addTask(taskB), "graphB add task");
+
+  auto sessionAOr = scheduler.submit(ExecutionBackendKind::Simulation, graphA);
+  auto sessionBOr = scheduler.submit(ExecutionBackendKind::Simulation, graphB);
+  EXPECT((bool)sessionAOr && (bool)sessionBOr,
+         "both submissions succeed before release");
+  EXPECT(scheduler.taskCountInState(GlobalTaskRecord::State::Reserved) == 1,
+         "one task is initially reserved");
+  EXPECT(scheduler.taskCountInState(GlobalTaskRecord::State::Ready) == 1,
+         "one task is initially waiting");
+
+  if (sessionAOr)
+    scheduler.releaseSession(sessionAOr->sessionId());
+
+  EXPECT(scheduler.sessionCount() == 1,
+         "releaseSession removes the released session");
+  EXPECT(scheduler.taskCountInState(GlobalTaskRecord::State::Reserved) == 1,
+         "releaseSession lets the waiting task consume the freed lane");
+  EXPECT(scheduler.taskCountInState(GlobalTaskRecord::State::Ready) == 0,
+         "releaseSession drains the waiting ready task when capacity returns");
+}
+
+static void testGlobalSchedulerOwnsWholeSubmittedDag() {
+  GlobalScheduler scheduler;
+  scheduler.configureResourceScheduler(/*simDispatchLanes=*/1, /*deviceSlots=*/1,
+                                      std::numeric_limits<size_t>::max(),
+                                      /*streamCapacity=*/1);
+
+  TaskGraph graph;
+  RuntimeTask taskA;
+  taskA.taskId = "a0";
+  EXPECT(!graph.addTask(taskA), "graph add root a");
+
+  RuntimeTask taskJoin;
+  taskJoin.taskId = "join";
+  taskJoin.dependencies = {"a0", "b0"};
+  EXPECT(!graph.addTask(taskJoin), "graph add join");
+
+  RuntimeTask taskB;
+  taskB.taskId = "b0";
+  EXPECT(!graph.addTask(taskB), "graph add root b");
+
+  auto sessionOr = scheduler.submit(ExecutionBackendKind::Simulation, graph);
+  EXPECT((bool)sessionOr, "dag submit succeeds");
+  EXPECT(scheduler.taskCountInState(GlobalTaskRecord::State::Reserved) == 1,
+         "one ready root is admitted into reserved state");
+  EXPECT(scheduler.taskCountInState(GlobalTaskRecord::State::Ready) == 1,
+         "the other ready root remains ready when the lane is occupied");
+  EXPECT(scheduler.taskCountInState(GlobalTaskRecord::State::Submitted) == 1,
+         "non-root tasks remain tracked as submitted instead of being dropped");
+}
+
+static void testGlobalSchedulerAdvancesDependentsAfterTaskCompletion() {
+  GlobalScheduler scheduler;
+  scheduler.configureResourceScheduler(/*simDispatchLanes=*/2, /*deviceSlots=*/1,
+                                      std::numeric_limits<size_t>::max(),
+                                      /*streamCapacity=*/2);
+
+  TaskGraph graph;
+  RuntimeTask taskA;
+  taskA.taskId = "a0";
+  EXPECT(!graph.addTask(taskA), "graph add root a");
+
+  RuntimeTask taskJoin;
+  taskJoin.taskId = "join";
+  taskJoin.dependencies = {"a0", "b0"};
+  EXPECT(!graph.addTask(taskJoin), "graph add join");
+
+  RuntimeTask taskB;
+  taskB.taskId = "b0";
+  EXPECT(!graph.addTask(taskB), "graph add root b");
+
+  auto sessionOr = scheduler.submit(ExecutionBackendKind::Simulation, graph);
+  EXPECT((bool)sessionOr, "dag submit succeeds");
+  if (!sessionOr)
+    return;
+
+  auto firstTaskOr = scheduler.waitAndAcquireTask(sessionOr->sessionId());
+  EXPECT((bool)firstTaskOr && firstTaskOr->has_value(),
+         "first ready root can be acquired");
+  auto secondTaskOr = scheduler.waitAndAcquireTask(sessionOr->sessionId());
+  EXPECT((bool)secondTaskOr && secondTaskOr->has_value(),
+         "second ready root can be acquired");
+  if (!firstTaskOr || !firstTaskOr->has_value() || !secondTaskOr ||
+      !secondTaskOr->has_value())
+    return;
+
+  auto firstCompleteOr =
+      scheduler.completeTask(sessionOr->sessionId(), firstTaskOr->value().taskId);
+  EXPECT((bool)firstCompleteOr,
+         "first root completion succeeds");
+  if (firstCompleteOr)
+    EXPECT(*firstCompleteOr == 0,
+           "first root completion does not unlock join yet");
+  EXPECT(scheduler.taskCountInState(GlobalTaskRecord::State::Submitted) == 1,
+         "join task stays submitted until all dependencies complete");
+
+  auto secondCompleteOr = scheduler.completeTask(sessionOr->sessionId(),
+                                                 secondTaskOr->value().taskId);
+  EXPECT((bool)secondCompleteOr,
+         "second root completion succeeds");
+  if (secondCompleteOr)
+    EXPECT(*secondCompleteOr == 1,
+           "second root completion unlocks one dependent join task");
+
+  auto joinTaskOr = scheduler.waitAndAcquireTask(sessionOr->sessionId());
+  EXPECT((bool)joinTaskOr && joinTaskOr->has_value(),
+         "join task becomes acquirable after both roots complete");
+  if (joinTaskOr && joinTaskOr->has_value()) {
+    EXPECT(joinTaskOr->value().taskId == "join",
+           "global scheduler promotes the dependent join task");
+  }
+}
+
+static void testExecutionSessionSubmitsThroughGlobalScheduler() {
+  ExecutionSession sessionA(ExecutionBackendKind::Simulation);
+  ExecutionSession sessionB(ExecutionBackendKind::Npu);
+
+  TaskGraph graphA;
+  RuntimeTask taskA;
+  taskA.taskId = "submit_a";
+  EXPECT(!graphA.addTask(taskA), "graphA add task");
+
+  TaskGraph graphB;
+  RuntimeTask taskB;
+  taskB.taskId = "submit_b";
+  EXPECT(!graphB.addTask(taskB), "graphB add task");
+
+  auto sessionAOr = sessionA.submit(graphA);
+  auto sessionBOr = sessionB.submit(graphB);
+  EXPECT((bool)sessionAOr, "submit session A succeeds");
+  EXPECT((bool)sessionBOr, "submit session B succeeds");
+  if (sessionAOr && sessionBOr) {
+    EXPECT(sessionAOr->sessionId() != sessionBOr->sessionId(),
+           "execution sessions share the global scheduler");
+  }
+
+  TaskGraph emptyGraph;
+  auto emptyOr = sessionA.submit(emptyGraph);
+  EXPECT(!emptyOr, "empty graph is rejected");
+  if (!emptyOr)
+    llvm::consumeError(emptyOr.takeError());
+}
+
+static void testRunManifestParsesVecSimulationSpec() {
+  const std::string manifestPath = "/tmp/runtime_run_manifest.json";
+  {
+    std::ofstream os(manifestPath);
+    os << R"JSON({
+  "task_id": "main",
+  "backend": "sim",
+  "artifact_root": "/tmp/artifact",
+  "inputs": [
+    { "name": "data0", "path": "/tmp/in0.npy" },
+    { "name": "data1", "path": "/tmp/in1.npy" }
+  ],
+  "outputs": [
+    { "name": "out", "path": "/tmp/actual.npy", "shape": [4, 8], "dtype": "f32" }
+  ],
+  "expected_outputs": [
+    { "name": "out", "path": "/tmp/expected.npy" }
+  ],
+  "tiling": {
+    "schema": "/tmp/tiling_space.json",
+    "params": "TB_M=64,TB_N=64"
+  },
+  "block_dim": 8,
+  "workspace_size": 16384,
+  "profiling": true,
+  "atol": 2.5,
+  "rtol": 0.05
+})JSON";
+  }
+
+  auto specOr = loadRunManifest(manifestPath);
+  EXPECT((bool)specOr, "run manifest parse succeeds");
+  if (specOr) {
+    EXPECT(specOr->backendKind == ExecutionBackendKind::Simulation,
+           "run manifest backend kind");
+    EXPECT(specOr->tasks.size() == 1,
+           "run manifest single-task compatibility preserves one task");
+    if (specOr->tasks.size() == 1) {
+      const RunTaskSpec &task = specOr->tasks[0];
+      EXPECT(task.taskId == "main", "run manifest task id");
+      EXPECT(task.artifactRoot == "/tmp/artifact",
+             "run manifest artifact root");
+      EXPECT(task.invocation.inputs.size() == 2,
+           "run manifest input count");
+      EXPECT(task.invocation.outputs.size() == 1,
+           "run manifest output count");
+      EXPECT(task.invocation.expectedOutputs.size() == 1,
+           "run manifest expected output count");
+      EXPECT(task.invocation.blockDim == 8,
+           "run manifest block dim");
+      EXPECT(task.invocation.workspaceSize == 16384,
+           "run manifest workspace size");
+      EXPECT(task.invocation.enableProfiling,
+             "run manifest profiling flag");
+      EXPECT(task.invocation.atol == 2.5,
+             "run manifest atol");
+      EXPECT(task.invocation.rtol == 0.05,
+             "run manifest rtol");
+      EXPECT(task.invocation.tiling.has_value(),
+           "run manifest tiling present");
+      EXPECT(task.invocation.outputs[0].shape.has_value(),
+           "run manifest output shape metadata present");
+      EXPECT(task.invocation.outputs[0].dtype.has_value(),
+           "run manifest output dtype metadata present");
+      if (task.invocation.outputs[0].shape) {
+        EXPECT(task.invocation.outputs[0].shape->size() == 2 &&
+                   (*task.invocation.outputs[0].shape)[0] == 4 &&
+                   (*task.invocation.outputs[0].shape)[1] == 8,
+             "run manifest output shape metadata values");
+      }
+      if (task.invocation.outputs[0].dtype) {
+        EXPECT(*task.invocation.outputs[0].dtype == DType::F32,
+             "run manifest output dtype metadata value");
+      }
+      if (task.invocation.tiling) {
+        EXPECT(task.invocation.tiling->schemaPath == "/tmp/tiling_space.json",
+             "run manifest tiling schema path");
+        EXPECT(task.invocation.tiling->params == "TB_M=64,TB_N=64",
+             "run manifest tiling params");
+      }
+    }
+  }
+}
+
+static void testRunManifestParsesOutputMetadataWithoutExpectedOutputs() {
+  const std::string manifestPath = "/tmp/runtime_run_manifest_no_expected.json";
+  {
+    std::ofstream os(manifestPath);
+    os << R"JSON({
+  "task_id": "main",
+  "backend": "sim",
+  "artifact_root": "/tmp/artifact",
+  "inputs": [
+    { "name": "data0", "path": "/tmp/in0.npy" }
+  ],
+  "outputs": [
+    { "name": "out", "path": "/tmp/actual.npy", "shape": [32], "dtype": "f16" }
+  ]
+})JSON";
+  }
+
+  auto specOr = loadRunManifest(manifestPath);
+  EXPECT((bool)specOr, "run manifest without expected outputs parses");
+  if (specOr) {
+    EXPECT(specOr->tasks.size() == 1,
+           "run manifest without expected outputs keeps one task");
+    if (specOr->tasks.size() == 1) {
+      const RunTaskSpec &task = specOr->tasks[0];
+      EXPECT(task.invocation.expectedOutputs.empty(),
+           "run manifest without expected outputs leaves golden bindings empty");
+      EXPECT(task.invocation.outputs.size() == 1,
+           "run manifest without expected outputs keeps output bindings");
+      if (task.invocation.outputs.size() == 1) {
+        EXPECT(task.invocation.outputs[0].shape.has_value(),
+             "run manifest without expected outputs carries output shape");
+        EXPECT(task.invocation.outputs[0].dtype.has_value(),
+             "run manifest without expected outputs carries output dtype");
+        if (task.invocation.outputs[0].shape) {
+          EXPECT(task.invocation.outputs[0].shape->size() == 1 &&
+                     (*task.invocation.outputs[0].shape)[0] == 32,
+               "run manifest without expected outputs shape value");
+        }
+        if (task.invocation.outputs[0].dtype) {
+          EXPECT(*task.invocation.outputs[0].dtype == DType::F16,
+               "run manifest without expected outputs dtype value");
+        }
+      }
+    }
+  }
+}
+
+static void testRunManifestParsesTaskOutputBinding() {
+  const std::string manifestPath = "/tmp/runtime_run_manifest_task_output.json";
+  {
+    std::ofstream os(manifestPath);
+    os << R"JSON({
+  "task_id": "consumer",
+  "backend": "sim",
+  "artifact_root": "/tmp/artifact",
+  "inputs": [
+    {
+      "name": "mid",
+      "source": "task_output",
+      "upstream_task": "producer",
+      "upstream_output": "mid"
+    }
+  ],
+  "outputs": [
+    { "name": "out", "path": "/tmp/out.npy", "shape": [16], "dtype": "f16" }
+  ]
+})JSON";
+  }
+
+  auto specOr = loadRunManifest(manifestPath);
+  EXPECT((bool)specOr, "run manifest task output binding parses");
+  if (specOr) {
+    EXPECT(specOr->tasks.size() == 1,
+           "run manifest task output keeps one task");
+    if (specOr->tasks.size() == 1) {
+      const RunTaskSpec &task = specOr->tasks[0];
+      EXPECT(task.invocation.inputs.size() == 1,
+           "run manifest task output input count");
+      if (task.invocation.inputs.size() == 1) {
+        EXPECT(task.invocation.inputs[0].sourceKind ==
+                 BindingSourceKind::TaskOutput,
+             "run manifest task output source kind");
+        EXPECT(task.invocation.inputs[0].upstreamTaskId == "producer",
+             "run manifest task output upstream task");
+        EXPECT(task.invocation.inputs[0].upstreamOutputName == "mid",
+             "run manifest task output upstream output");
+        EXPECT(task.invocation.inputs[0].path.empty(),
+             "run manifest task output does not require path");
+      }
+    }
+  }
+}
+
+static void testRunManifestParsesDagSpec() {
+  const std::string manifestPath = "/tmp/runtime_run_manifest_dag.json";
+  {
+    std::ofstream os(manifestPath);
+    os << R"JSON({
+  "backend": "sim",
+  "artifact_root": "/tmp/shared-artifact",
+  "tasks": [
+    {
+      "task_id": "producer",
+      "inputs": [
+        { "name": "data0", "path": "/tmp/in0.npy" }
+      ],
+      "outputs": [
+        { "name": "mid", "shape": [16], "dtype": "f16", "path": "/tmp/mid.npy" }
+      ]
+    },
+    {
+      "task_id": "consumer",
+      "dependencies": ["producer"],
+      "inputs": [
+        { "name": "mid", "source": "task_output", "upstream_task": "producer", "upstream_output": "mid" }
+      ],
+      "outputs": [
+        { "name": "out", "shape": [16], "dtype": "f16", "path": "/tmp/out.npy" }
+      ]
+    }
+  ]
+})JSON";
+  }
+
+  auto specOr = loadRunManifest(manifestPath);
+  EXPECT((bool)specOr, "run manifest dag parses");
+  if (specOr) {
+    EXPECT(specOr->backendKind == ExecutionBackendKind::Simulation,
+           "run manifest dag backend kind");
+    EXPECT(specOr->tasks.size() == 2,
+           "run manifest dag task count");
+    if (specOr->tasks.size() == 2) {
+      EXPECT(specOr->tasks[0].artifactRoot == "/tmp/shared-artifact",
+             "run manifest dag task 0 inherits top-level artifact root");
+      EXPECT(specOr->tasks[1].artifactRoot == "/tmp/shared-artifact",
+             "run manifest dag task 1 inherits top-level artifact root");
+      EXPECT(specOr->tasks[1].dependencies.size() == 1 &&
+                 specOr->tasks[1].dependencies[0] == "producer",
+             "run manifest dag dependencies");
+      EXPECT(specOr->tasks[1].invocation.inputs.size() == 1 &&
+                 specOr->tasks[1].invocation.inputs[0].sourceKind ==
+                     BindingSourceKind::TaskOutput,
+             "run manifest dag task output input");
+    }
+  }
+}
+
+static void testRunManifestParsesDagArtifactRootOverride() {
+  const std::string manifestPath =
+      "/tmp/runtime_run_manifest_dag_override.json";
+  {
+    std::ofstream os(manifestPath);
+    os << R"JSON({
+  "backend": "sim",
+  "artifact_root": "/tmp/shared-artifact",
+  "tasks": [
+    {
+      "task_id": "producer",
+      "artifact_root": "/tmp/producer-artifact",
+      "outputs": [
+        { "name": "mid", "shape": [16], "dtype": "f16" }
+      ]
+    },
+    {
+      "task_id": "consumer",
+      "dependencies": ["producer"],
+      "artifact_root": "/tmp/consumer-artifact",
+      "inputs": [
+        { "name": "mid", "source": "task_output", "upstream_task": "producer", "upstream_output": "mid" }
+      ],
+      "outputs": [
+        { "name": "out", "shape": [16], "dtype": "f16" }
+      ]
+    }
+  ]
+})JSON";
+  }
+
+  auto specOr = loadRunManifest(manifestPath);
+  EXPECT((bool)specOr, "run manifest dag artifact-root override parses");
+  if (specOr) {
+    EXPECT(specOr->tasks.size() == 2,
+           "run manifest dag artifact-root override task count");
+    if (specOr->tasks.size() == 2) {
+      EXPECT(specOr->tasks[0].artifactRoot == "/tmp/producer-artifact",
+             "run manifest dag task 0 artifact root override");
+      EXPECT(specOr->tasks[1].artifactRoot == "/tmp/consumer-artifact",
+             "run manifest dag task 1 artifact root override");
+    }
+  }
+}
+
+static void testMixDirectParallelProcessRunnerRunsIndependentCommands() {
+  const std::filesystem::path markerA =
+      std::filesystem::temp_directory_path() / "runtime_parallel_a.marker";
+  const std::filesystem::path markerB =
+      std::filesystem::temp_directory_path() / "runtime_parallel_b.marker";
+  std::filesystem::remove(markerA);
+  std::filesystem::remove(markerB);
+
+  const auto start = std::chrono::steady_clock::now();
+  auto err = runProcessesInParallelForTest({
+      {std::vector<std::string>{"/bin/sh", "-c",
+                                "sleep 1; printf a > " + markerA.string()},
+       "parallel marker A", "marker=" + markerA.string()},
+      {std::vector<std::string>{"/bin/sh", "-c",
+                                "sleep 1; printf b > " + markerB.string()},
+       "parallel marker B", "marker=" + markerB.string()},
+  });
+  const auto elapsedMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+                             std::chrono::steady_clock::now() - start)
+                             .count();
+  EXPECT(!err, "mix direct parallel runner succeeds for independent commands");
+  if (err)
+    llvm::consumeError(std::move(err));
+  EXPECT(elapsedMs < 1900,
+         "mix direct parallel runner does not execute independent commands serially");
+  EXPECT(std::filesystem::exists(markerA),
+         "mix direct parallel runner creates first marker");
+  EXPECT(std::filesystem::exists(markerB),
+         "mix direct parallel runner creates second marker");
+  std::filesystem::remove(markerA);
+  std::filesystem::remove(markerB);
+}
+
+static void testMixDirectTimingSerialization() {
+  auto jsonOr = serializeMixDirectTimingForTest({
+      {"preprocess", 1200},
+      {"device_compile_parallel", 3400},
+  });
+  EXPECT((bool)jsonOr, "mix direct timing serialization succeeds");
+  if (!jsonOr) {
+    llvm::consumeError(jsonOr.takeError());
+    return;
+  }
+
+  auto parsedOr = llvm::json::parse(*jsonOr);
+  EXPECT((bool)parsedOr, "mix direct timing JSON parses");
+  if (!parsedOr) {
+    llvm::consumeError(parsedOr.takeError());
+    return;
+  }
+  const auto *root = parsedOr->getAsObject();
+  EXPECT(root != nullptr, "mix direct timing JSON root is object");
+  if (!root)
+    return;
+  EXPECT(root->getInteger("schema_version") &&
+             *root->getInteger("schema_version") == 1,
+         "mix direct timing JSON records schema version");
+  EXPECT(root->getInteger("total_elapsed_us") &&
+             *root->getInteger("total_elapsed_us") == 4600,
+         "mix direct timing JSON records total elapsed time");
+  const auto *stages = root->getArray("stages");
+  EXPECT(stages && stages->size() == 2,
+         "mix direct timing JSON records stage entries");
+  if (stages && stages->size() == 2) {
+    const auto *first = (*stages)[0].getAsObject();
+    EXPECT(first && first->getString("name") &&
+               *first->getString("name") == "preprocess",
+           "mix direct timing JSON records stage name");
+    EXPECT(first && first->getInteger("elapsed_us") &&
+               *first->getInteger("elapsed_us") == 1200,
+           "mix direct timing JSON records stage elapsed time");
+  }
+}
+
+static bool jsonArrayContainsString(const llvm::json::Array *array,
+                                    llvm::StringRef expected) {
+  if (!array)
+    return false;
+  for (const llvm::json::Value &value : *array) {
+    if (auto item = value.getAsString(); item && *item == expected)
+      return true;
+  }
+  return false;
+}
+
+static bool vectorContains(const std::vector<std::string> &values,
+                           llvm::StringRef expected) {
+  for (const std::string &value : values) {
+    if (value == expected)
+      return true;
+  }
+  return false;
+}
+
+static bool vectorContainsSubstring(const std::vector<std::string> &values,
+                                    llvm::StringRef expected) {
+  for (const std::string &value : values) {
+    if (llvm::StringRef(value).contains(expected))
+      return true;
+  }
+  return false;
+}
+
+static void testMixDeviceCompileCommandUsesPyascStyleDefaults() {
+  const std::vector<std::string> cmd = buildPreprocessedDeviceCompileCommand(
+      "/tmp/kernel.cce", "/tmp/kernel.o", MixCoreType::AIC,
+      {"auto_gen_mix_kernel=mix_kernel_0_mix_aic",
+       "ONE_CORE_DUMP_SIZE=1048576", "__MIX_CORE_MACRO__=1"});
+
+  EXPECT(vectorContains(cmd, "-x"),
+         "mix device compile command declares source language");
+  EXPECT(vectorContains(cmd, "cce"),
+         "mix device compile command uses cce source language");
+  EXPECT(!vectorContains(cmd, "-g"),
+         "mix device compile command does not enable debug info by default");
+  EXPECT(!vectorContains(cmd, "-cce-enable-mix"),
+         "mix device compile command keeps runtime-owned mix metadata contract");
+  EXPECT(vectorContains(cmd, "-api-deps-filter"),
+         "mix device compile command enables auto-sync API dependency filter");
+  EXPECT(vectorContains(cmd, "-cce-aicore-record-overflow=true"),
+         "mix device compile command preserves runtime overflow status support");
+  EXPECT(vectorContains(cmd, "-cce-aicore-addr-transform"),
+         "mix device compile command preserves runtime GM address transform support");
+  EXPECT(!vectorContainsSubstring(cmd, "/asc/impl/"),
+         "mix device compile command avoids broad asc impl include paths");
+  EXPECT(!vectorContainsSubstring(cmd, "/asc/include/"),
+         "mix device compile command avoids broad asc include paths");
+  EXPECT(!vectorContainsSubstring(cmd, "/tikcfw/include"),
+         "mix device compile command follows pyasc tikcfw include surface");
+}
+
+static void testMixTilingDefaultsToInProcessBackend() {
+  EXPECT(getDefaultMixTilingBackendName() == "in-process",
+         "mix tiling defaults to in-process runtime backend");
+}
+
+static void testMixDirectSourceContractSummary() {
+  const std::filesystem::path root = makeTempDir("mix-direct-contract");
+  std::filesystem::create_directories(root);
+  const std::filesystem::path source = root / "kernel.cpp";
+  {
+    std::ofstream os(source);
+    os << "extern \"C\" __global__ __aicore__ void mix_kernel() {}\n";
+  }
+
+  auto summaryOr = buildMixDirectSourceContractSummaryForTest(
+      root.string(), source.string(), "mix_kernel", "Ascend910B");
+  EXPECT((bool)summaryOr, "mix direct-source contract summary builds");
+  if (!summaryOr) {
+    llvm::consumeError(summaryOr.takeError());
+    std::filesystem::remove_all(root);
+    return;
+  }
+
+  auto parsedOr = llvm::json::parse(*summaryOr);
+  EXPECT((bool)parsedOr, "mix direct-source contract summary parses");
+  if (!parsedOr) {
+    llvm::consumeError(parsedOr.takeError());
+    std::filesystem::remove_all(root);
+    return;
+  }
+
+  const auto *rootObj = parsedOr->getAsObject();
+  EXPECT(rootObj != nullptr, "mix direct-source summary root is object");
+  if (!rootObj) {
+    std::filesystem::remove_all(root);
+    return;
+  }
+
+  EXPECT(rootObj->getString("contract_mode") &&
+             *rootObj->getString("contract_mode") == "direct-source",
+         "mix direct-source summary records contract mode");
+  EXPECT(rootObj->getString("runtime_kernel_name") &&
+             *rootObj->getString("runtime_kernel_name") == "mix_kernel",
+         "mix direct-source summary records runtime kernel name");
+  auto generatedSource = rootObj->getString("generated_source_path");
+  EXPECT(generatedSource &&
+             generatedSource->ends_with("/work/generated/auto_gen_kernel.cpp"),
+         "mix direct-source summary records generated wrapper source");
+  if (generatedSource) {
+    const std::string wrapperText = readTextFile(generatedSource->str());
+    EXPECT(wrapperText.find("mix_kernel_origin") != std::string::npos,
+           "mix direct-source wrapper calls renamed origin kernel");
+    EXPECT(wrapperText.find("ffts_addr") != std::string::npos,
+           "mix direct-source wrapper exposes ffts argument");
+  }
+  EXPECT(rootObj->getString("host_stub_source_path") &&
+             rootObj->getString("host_stub_source_path")->ends_with(
+                 "/stub/host_stub.cpp"),
+         "mix direct-source summary records manual host stub path");
+  EXPECT(rootObj->getString("host_stub_include_dir") &&
+             rootObj->getString("host_stub_include_dir")
+                 ->ends_with("/out/include/ascendc_kernels_sim"),
+         "mix direct-source summary records manual host include dir");
+
+  const auto *aicDefs = rootObj->getArray("aic_definitions");
+  const auto *aivDefs = rootObj->getArray("aiv_definitions");
+  EXPECT(jsonArrayContainsString(aicDefs, "__MIX_CORE_MACRO__=1"),
+         "mix direct-source AIC defs include mix macro");
+  EXPECT(jsonArrayContainsString(aicDefs, "ONE_CORE_DUMP_SIZE=1048576"),
+         "mix direct-source AIC defs include dump size macro");
+  EXPECT(jsonArrayContainsString(aivDefs, "ONE_CORE_DUMP_SIZE=1048576"),
+         "mix direct-source AIV defs include dump size macro");
+
+  std::filesystem::remove_all(root);
+}
+
+static void testMixDirectSourceStubSummary() {
+  const std::filesystem::path root = makeTempDir("mix-direct-stub");
+  std::filesystem::create_directories(root);
+  const std::filesystem::path source = root / "kernel.cpp";
+  {
+    std::ofstream os(source);
+    os << "extern \"C\" __global__ __aicore__ void mix_kernel() {}\n";
+  }
+
+  auto summaryOr = writeMixDirectSourceStubSummaryForTest(
+      root.string(), source.string(), "mix_kernel", "Ascend910B", 17);
+  EXPECT((bool)summaryOr, "mix direct-source stub summary builds");
+  if (!summaryOr) {
+    llvm::consumeError(summaryOr.takeError());
+    std::filesystem::remove_all(root);
+    return;
+  }
+
+  auto parsedOr = llvm::json::parse(*summaryOr);
+  EXPECT((bool)parsedOr, "mix direct-source stub summary parses");
+  if (!parsedOr) {
+    llvm::consumeError(parsedOr.takeError());
+    std::filesystem::remove_all(root);
+    return;
+  }
+
+  const auto *rootObj = parsedOr->getAsObject();
+  EXPECT(rootObj != nullptr, "mix direct-source stub summary root is object");
+  if (!rootObj) {
+    std::filesystem::remove_all(root);
+    return;
+  }
+
+  auto hostStub = rootObj->getString("host_stub_source_path");
+  auto launcherHeader = rootObj->getString("launcher_header_path");
+  EXPECT(hostStub && std::filesystem::exists(hostStub->str()),
+         "mix direct-source stub writer creates host stub source");
+  EXPECT(launcherHeader && std::filesystem::exists(launcherHeader->str()),
+         "mix direct-source stub writer creates launcher header");
+  if (hostStub) {
+    const std::string stubText = readTextFile(hostStub->str());
+    EXPECT(stubText.find("{1, 1, 0, 20, 17") != std::string::npos,
+           "mix direct-source stub writer records aligned and raw mix length");
+    EXPECT(stubText.find("aclrtlaunch_mix_kernel") != std::string::npos,
+           "mix direct-source stub writer records launcher symbol");
+  }
+  if (launcherHeader) {
+    const std::string headerText = readTextFile(launcherHeader->str());
+    EXPECT(headerText.find("aclrtlaunch_mix_kernel") != std::string::npos,
+           "mix direct-source stub writer records launcher declaration");
+  }
+
+  std::filesystem::remove_all(root);
+}
+
+static void testMixDirectDefaultContractUsesDirectSource() {
+  const std::filesystem::path root = makeTempDir("mix-default-contract");
+  std::filesystem::create_directories(root);
+  const std::filesystem::path source = root / "kernel.cpp";
+  {
+    std::ofstream os(source);
+    os << "extern \"C\" __global__ __aicore__ void mix_kernel() {}\n";
+  }
+
+  auto summaryOr = buildMixDirectDefaultContractSummaryForTest(
+      root.string(), source.string(), "mix_kernel", "Ascend910B");
+  EXPECT((bool)summaryOr, "mix default contract summary builds");
+  if (!summaryOr) {
+    llvm::consumeError(summaryOr.takeError());
+    std::filesystem::remove_all(root);
+    return;
+  }
+
+  auto parsedOr = llvm::json::parse(*summaryOr);
+  EXPECT((bool)parsedOr, "mix default contract summary parses");
+  if (!parsedOr) {
+    llvm::consumeError(parsedOr.takeError());
+    std::filesystem::remove_all(root);
+    return;
+  }
+  const auto *rootObj = parsedOr->getAsObject();
+  EXPECT(rootObj != nullptr, "mix default contract summary root is object");
+  if (!rootObj) {
+    std::filesystem::remove_all(root);
+    return;
+  }
+  EXPECT(rootObj->getString("contract_mode") &&
+             *rootObj->getString("contract_mode") == "direct-source",
+         "mix default contract uses direct-source mode");
+  EXPECT(rootObj->getString("preprocess_command") &&
+             *rootObj->getString("preprocess_command") == "direct-source",
+         "mix default contract does not require preprocess command");
+  EXPECT(rootObj->getString("generated_source_path") &&
+             rootObj->getString("generated_source_path")
+                 ->ends_with("/work/generated/auto_gen_kernel.cpp"),
+         "mix default contract uses generated wrapper source path");
+
+  std::filesystem::remove_all(root);
+}
+
+int main() {
+  testTaskGraphBasics();
+  testProfileTraceCollectsArtifactPaths();
+  testDuplicateTaskIds();
+  testEmptyTaskId();
+  testUnknownDependency();
+  testCycleDetection();
+  testKernelArtifactNormalization();
+  testVecCubeArtifactBackendCompilesVecArtifact();
+  testVecCubeArtifactBackendCompilesCubeArtifact();
+  testRuntimeSessionRequestBuilderLoadsMixArtifactFromRoot();
+  testRuntimeSessionRequestBuilderLoadsMixArtifactMetadataPath();
+  testRuntimeSessionRequestBuilderRejectsMissingMixArtifactMetadata();
+  testPrepareRuntimeSessionGraphUsesMixMetadataDefaults();
+  testPrepareRuntimeSessionGraphFallsBackToManifestAbiDefaults();
+  testPrepareRuntimeSessionGraphAcceptsMetadataOnlyMixArtifact();
+  testRuntimeSessionRequestBuilderLoadsVecArtifactFromRoot();
+  testRuntimeSessionRequestBuilderRejectsUnsupportedKernelKind();
+  testRuntimeSessionRequestBuilderRejectsMissingKernelKind();
+  testMixDirectParallelProcessRunnerRunsIndependentCommands();
+  testMixDirectTimingSerialization();
+  testMixDeviceCompileCommandUsesPyascStyleDefaults();
+  testMixTilingDefaultsToInProcessBackend();
+  testMixDirectSourceContractSummary();
+  testMixDirectSourceStubSummary();
+  testMixDirectDefaultContractUsesDirectSource();
+  testRuntimeSessionRequestBuilderBuildsSingleTaskGraph();
+  testMixValidationCanBeRepresentedAsRuntimeTask();
+  testOutputComparatorExactMatchPasses();
+  testOutputComparatorMismatchReturnsDetailedFailure();
+  testOutputComparatorStructuralMismatchReturnsError();
+  testExecutionRunnerContractSupportsSimulationAndRealDeviceModes();
+  testExecutionRunnerContractSupportsFileLaunches();
+  testExecutionRunnerContractSupportsPackedMixLaunches();
+  testNativeExecutionRunnerCompileCoverage();
+  testSimulationBackendReportsMissingVecBinaryLaunchFailure();
+  testArtifactCompilerRequestValidation();
+  testFrontendCompileRequestBuilderPreservesFields();
+  testFrontendSingleTaskRunPreparationAndSummary();
+  testFrontendRunExecutionUsesNormalizedContract();
+  testBackendSelection();
+  testDefaultBackendRequiresDriver();
+  testBackendCapabilitiesExposeSimAndNpuContracts();
+  testNpuBackendAdvertisesSchedulableMultiTaskContract();
+  testBackendCapabilitiesFollowInjectedDriverContract();
+  testBackendCapabilitiesExposeDriverBackedNpuSchedulerContract();
+  testInvalidBackendSelection();
+  testBackendDelegatesToDriver();
+  testNpuBackendRejectsMissingDeviceBinaryPath();
+  testNpuBackendRejectsMissingMixSharedObjectPath();
+  testNpuBackendReachesRealDeviceModePath();
+  testNpuBackendRejectsExpectedOutputMetadataMismatch();
+  testNpuBackendRejectsExpectedOutputMissingPath();
+  testNpuBackendDriverFailureIsStageWrapped();
+  testDriverBackedNpuBackendRejectsExpectedOutputMissingPath();
+  testDriverBackedNpuBackendValidatesRuntimeBindings();
+  testExecutionSessionSupportsNpuSuccessDriver();
+  testExecutionSessionRunsNpuRootsConcurrently();
+  testExecutionSessionSerializesNpuRootsWhenDriverCapacityIsOne();
+  testSimulatorProfileNormalization();
+  testSimulatorProfileNormalizationExtractsMetrics();
+  testAddProfileArtifactHelper();
+  testRetainProfileArtifactsForCli();
+  testRetainProfileArtifactsCreatesSessionSummary();
+  testRetainedSessionSummaryContents();
+  testRetainedSessionSummaryFallsBackBetweenScoreAndCycleCount();
+  testRetainProfileArtifactsUsesEventMetricsWithoutParsingJson();
+  testRetainProfileArtifactsFailsOnDuplicateTaskIds();
+  testRetainProfileArtifactsPrunesOldSessions();
+  testRetainProfileArtifactsIgnoresNonDirectories();
+  testRetainedProfilePruneKeepCountForNewSession();
+  testPrepareRetainedProfileRunRootForCliPrunesBeforeNewSession();
+  testRuntimeSessionWorkdirPruneKeepCountForNewRun();
+  testPrepareRuntimeSessionWorkdirRootForCliPrunesBeforeNewRun();
+  testRetainProfileArtifactsForCliRunReturnsSummaryPath();
+  testBackendSurfacesProfileTrace();
+  testBackendPreservesExistingProfileTrace();
+  testSimulatorProfileSchemaV1Artifact();
+  testExecutionSessionPlansTopologicalOrder();
+  testExecutionSessionPlanTracksMultipleReadyRoots();
+  testExecutionSessionRunsTasksInTopologicalOrder();
+  testExecutionSessionMergesSchedulerObservabilityIntoTrace();
+  testExecutionSessionPublishesStreamObservability();
+  testExecutionSessionRunsReadyRootsConcurrently();
+  testExecutionSessionCanForceSerialSchedulerViaEnv();
+  testExecutionSessionFailureStopsJoinAfterConcurrentRootFailure();
+  testExecutionSessionCanReleaseWorkingDirectoriesForProcessExit();
+  testExecutionSessionSubmitsThroughGlobalScheduler();
+  testExecutionSessionCarriesInvocationBindings();
+  testExecutionSessionResolvesTaskOutputBindings();
+  testExecutionSessionStopsAtGateRejectedTask();
+  testExecutionSessionRejectsUnknownMixResourceType();
+  testExecutionSessionAcceptsSupportedMixResourceTypes();
+  testExecutionSessionAcceptsVecAndCubeTasks();
+  testResourceSchedulerReservesAndReleasesSlots();
+  testGlobalSchedulerTracksTwoIndependentSessions();
+  testGlobalSchedulerBlocksSecondSessionOnSingleSimLane();
+  testGlobalSchedulerRoundRobinsAcrossSessions();
+  testGlobalSchedulerContinuesRoundRobinAcrossMultipleSessions();
+  testGlobalSchedulerEnforcesSessionAdmissionQuota();
+  testGlobalSchedulerPrefersHigherPrioritySessions();
+  testGlobalSchedulerUsesConfiguredDefaultSessionScheduling();
+  testGlobalSchedulerBackfillsWhenHighPriorityQuotaIsExhausted();
+  testGlobalSchedulerBackfillsWhenHighPriorityIsResourceBlocked();
+  testGlobalSchedulerKeepsExplicitSchedulingOutsideDefaultPolicy();
+  testGlobalSchedulerBlocksOnStreamCapacity();
+  testGlobalSchedulerReportsLifecycleCounters();
+  testGlobalSchedulerTracksReleaseAndFailureCounters();
+  testGlobalSchedulerReturnsStreamCapacityOnFailureAndRelease();
+  testGlobalSchedulerReleasesStreamBlockedDependent();
+  testGlobalSchedulerReleaseSessionRestoresAdmissionCapacity();
+  testGlobalSchedulerOwnsWholeSubmittedDag();
+  testGlobalSchedulerAdvancesDependentsAfterTaskCompletion();
+  testRunManifestParsesVecSimulationSpec();
+  testResourceSchedulerIgnoresForgedRelease();
+  testResourceSchedulerHandlesIdenticalPublicReservationsIndependently();
+  testResourceSchedulerHonorsExclusiveDeviceAccess();
+  testResourceSchedulerReservesStreamCapacity();
+  testResourceSchedulerPreservesOutstandingReservationsAcrossReconfigure();
+  testRunManifestParsesOutputMetadataWithoutExpectedOutputs();
+  testRunManifestParsesTaskOutputBinding();
+  testRunManifestParsesDagSpec();
+  testRunManifestParsesDagArtifactRootOverride();
+
+  llvm::outs() << g_pass << " passed, " << g_fail << " failed\n";
+  return g_fail ? 1 : 0;
+}

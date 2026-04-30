@@ -69,8 +69,7 @@ set -e
 DIR="$(cd "$(dirname "$0")" && pwd)"
 AFIR_OPT="${AFIR_OPT:-afir-opt}"
 AFIR_TRANSLATE="${AFIR_TRANSLATE:-afir-translate}"
-COMPILER="${COMPILER:-compiler}"
-VALIDATOR="${VALIDATOR:-validator}"
+RUNTIME_SESSION="${RUNTIME_SESSION:-runtime-session}"
 
 # 解析参数
 VERBOSE=false
@@ -281,18 +280,22 @@ log "$(head -5 "$DIR/step8_kernel.cpp")"
 
 # ── STAGE 9: Compile AscendC kernel ──────────────────────────────────
 echo ""
-echo "==================== [STAGE 9] Compile：bisheng C++ → .bin ===================="
+echo "==================== [STAGE 9] Compile：runtime-session ===================="
 log "  输入: step8_kernel.cpp"
-log "  输出: build_e2e/ewop_broadcast_concat.bin"
+log "  输出: build_e2e/artifact"
 BUILD_DIR="$DIR/build_e2e"
 rm -fr "$BUILD_DIR"
 mkdir -p "$BUILD_DIR"
-"$COMPILER" \
+ARTIFACT_ROOT="$BUILD_DIR/artifact"
+RUN_MANIFEST="$BUILD_DIR/run_manifest.json"
+ACTUAL_OUTPUT="$BUILD_DIR/output.npy"
+"$RUNTIME_SESSION" \
   --kernel "$DIR/step8_kernel.cpp" \
-  --output "$BUILD_DIR" \
+  --kernel-kind vec \
+  --output "$ARTIFACT_ROOT" \
   --name ewop_broadcast_concat \
-  --num-inputs 4 2>&1
-log "  ✓ Compile 成功，输出: $BUILD_DIR/ewop_broadcast_concat.bin"
+  2>&1
+log "  ✓ Compile 成功，输出: $ARTIFACT_ROOT"
 
 # ── STAGE 10: Run and verify ──────────────────────────────────────────
 echo ""
@@ -300,26 +303,43 @@ echo "==================== [STAGE 10] Run + Verify ===================="
 log "  使用参数：TB_M=64, TB_N=192, M=640, N=500, block-dim=10"
 log "  UB 占用：2×Op×(TB_M×2 + 3×TB_M×TB_N×2) = 144KB ≈ 75% of 192KB"
 log "  内循环次数：ceil(500/192)=3，尾块 116 列（非32B对齐）"
-BIN="$BUILD_DIR/ewop_broadcast_concat.bin"
+VALIDATION_LOG="$BUILD_DIR/runtime_session.log"
+cat > "$RUN_MANIFEST" <<EOF
+{
+  "task_id": "main",
+  "backend": "sim",
+  "artifact_root": "${ARTIFACT_ROOT}",
+  "inputs": [
+    { "name": "a", "path": "${DIR}/input_a.npy" },
+    { "name": "b", "path": "${DIR}/input_b.npy" },
+    { "name": "c", "path": "${DIR}/input_c.npy" },
+    { "name": "d", "path": "${DIR}/input_d.npy" }
+  ],
+  "outputs": [
+    { "name": "out", "path": "${ACTUAL_OUTPUT}" }
+  ],
+  "expected_outputs": [
+    { "name": "out", "path": "${DIR}/output.npy" }
+  ],
+  "tiling": {
+    "schema": "${DIR}/tiling_space.json",
+    "params": "TB_M=64,TB_N=192,dim_arg0_0=640,dim_arg1_1=500,dim_arg2_0=640,dim_arg3_1=500,dim_arg0_1=500,dim_arg1_0=640,dim_arg2_1=500,dim_arg3_0=640"
+  },
+  "block_dim": 10,
+  "workspace_size": 16777216,
+  "profiling": true,
+  "atol": 1e-3,
+  "rtol": 1e-3
+}
+EOF
 
-if [ -f "$BIN" ]; then
-  "$VALIDATOR" \
-    --bin "$BIN" \
-    --name ewop_broadcast_concat \
-    --inputs "$DIR/input_a.npy,$DIR/input_b.npy,$DIR/input_c.npy,$DIR/input_d.npy" \
-    --expected "$DIR/output.npy" \
-    --tiling-schema "$DIR/tiling_space.json" \
-    --tiling-params 'TB_M=64,TB_N=192,dim_arg0_0=640,dim_arg1_1=500,dim_arg2_0=640,dim_arg3_1=500,dim_arg0_1=500,dim_arg1_0=640,dim_arg2_1=500,dim_arg3_0=640' \
-    --block-dim 10 \
-    --atol 1e-3 \
-    --rtol 1e-3 \
-    --dump-actual "$BUILD_DIR/actual.txt" \
-    --dump-expected "$BUILD_DIR/expected.txt" \
-    --precision 4 \
-    2>&1 | grep -v '^\[info\]\|^\[PEM_AIC_LOG\]\|^\[INFO\]\|^\[WARNING\]' || true
-else
-  echo "  ⚠ bin not found — skipping run"
-fi
+"$RUNTIME_SESSION" \
+  --run-manifest "$RUN_MANIFEST" \
+  --run >"$VALIDATION_LOG" 2>&1
+grep -v '^\[info\]\|^\[PEM_AIC_LOG\]\|^\[INFO\]\|^\[WARNING\]' "$VALIDATION_LOG" || true
+grep -q '^session.backend=sim$' "$VALIDATION_LOG"
+grep -q '^session.result=success$' "$VALIDATION_LOG"
+grep -q '^session.validation=pass$' "$VALIDATION_LOG"
 
 echo ""
 echo "========================================================"
@@ -335,5 +355,6 @@ echo "   step7_kernel.mlir           → 完整 AscendC kernel IR"
 echo "   step7_cann.mlir             → CANN 标准签名 IR（去除 transform ops）"
 echo "   step8_kernel.cpp            → AscendC C++ kernel 源码"
 echo "   tiling_space.json           → tiling 参数空间（手写维护）"
-echo "   build_e2e/ewop_broadcast_concat.bin → 编译后二进制"
+echo "   build_e2e/artifact               → runtime-session 编译产物"
+echo "   build_e2e/output.npy            → 仿真输出"
 echo "========================================================"

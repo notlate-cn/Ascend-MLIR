@@ -1,0 +1,329 @@
+// lib/Runtime/NpuBackend.cpp
+#include "Runtime/NpuBackend.h"
+
+#include "Runtime/Execution/DefaultExecutionRunner.h"
+#include "Runtime/NpyIO.h"
+#include "Runtime/OutputComparator.h"
+#include "Runtime/TilingPack.h"
+#include "llvm/Support/Error.h"
+#include "llvm/Support/FormatVariadic.h"
+
+#include <optional>
+#include <utility>
+
+namespace mlir::runtime {
+
+namespace {
+
+constexpr uint32_t kMagicElfAiVec = 0x41415246u;
+constexpr uint32_t kMagicElfAiCube = 0x41494343u;
+
+llvm::Error stageError(llvm::StringRef stage, llvm::StringRef message) {
+  return llvm::createStringError(llvm::inconvertibleErrorCode(),
+                                 "[npu:%s] %s", stage.str().c_str(),
+                                 message.str().c_str());
+}
+
+llvm::Error stageError(llvm::StringRef stage, llvm::Error error) {
+  return stageError(stage, llvm::toString(std::move(error)));
+}
+
+llvm::Error validateExternalFileBinding(llvm::StringRef role,
+                                        const TensorBinding &binding) {
+  if (binding.sourceKind != BindingSourceKind::ExternalFile) {
+    return llvm::createStringError(llvm::inconvertibleErrorCode(),
+                                   "%s binding must be an external file: %s",
+                                   role.str().c_str(), binding.name.c_str());
+  }
+  if (binding.path.empty()) {
+    return llvm::createStringError(llvm::inconvertibleErrorCode(),
+                                   "%s binding is missing path: %s",
+                                   role.str().c_str(), binding.name.c_str());
+  }
+  return llvm::Error::success();
+}
+
+llvm::Expected<std::vector<NDArray>>
+loadExpectedOutputs(const ExecutionInvocation &invocation) {
+  std::vector<NDArray> expected;
+  for (const TensorBinding &binding : invocation.expectedOutputs) {
+    if (auto err = validateExternalFileBinding("expected output", binding))
+      return std::move(err);
+    auto arrayOr = LoadNpy(binding.path);
+    if (!arrayOr)
+      return arrayOr.takeError();
+    expected.push_back(std::move(*arrayOr));
+  }
+  return expected;
+}
+
+llvm::Error validateOutputBindingAgainstExpected(const TensorBinding &binding,
+                                                 const NDArray &expected) {
+  if (auto err = validateExternalFileBinding("output", binding))
+    return err;
+  if (binding.shape && *binding.shape != expected.shape) {
+    return llvm::createStringError(
+        llvm::inconvertibleErrorCode(),
+        "output binding metadata does not match expected output: %s shape",
+        binding.name.c_str());
+  }
+  if (binding.dtype && *binding.dtype != expected.dtype) {
+    return llvm::createStringError(
+        llvm::inconvertibleErrorCode(),
+        "output binding metadata does not match expected output: %s dtype",
+        binding.name.c_str());
+  }
+  return llvm::Error::success();
+}
+
+llvm::Error validateOutputBindingWithoutExpected(const TensorBinding &binding) {
+  if (auto err = validateExternalFileBinding("output", binding))
+    return err;
+  if (!binding.shape) {
+    return llvm::createStringError(
+        llvm::inconvertibleErrorCode(),
+        "output binding is missing shape metadata: %s",
+        binding.name.c_str());
+  }
+  if (!binding.dtype) {
+    return llvm::createStringError(
+        llvm::inconvertibleErrorCode(),
+        "output binding is missing dtype metadata: %s",
+        binding.name.c_str());
+  }
+  return llvm::Error::success();
+}
+
+NDArray buildAllocatedOutputFromExpected(const NDArray &expected) {
+  NDArray output;
+  output.shape = expected.shape;
+  output.dtype = expected.dtype;
+  output.allocate();
+  return output;
+}
+
+NDArray buildAllocatedOutputFromBinding(const TensorBinding &binding) {
+  NDArray output;
+  output.shape = *binding.shape;
+  output.dtype = *binding.dtype;
+  output.allocate();
+  return output;
+}
+
+llvm::Expected<std::vector<NDArray>>
+validateInvocationBindings(const ExecutionInvocation &invocation) {
+  if (invocation.outputs.empty()) {
+    return llvm::createStringError(
+        llvm::inconvertibleErrorCode(),
+        "npu path requires at least one output binding");
+  }
+
+  for (const TensorBinding &binding : invocation.inputs) {
+    if (auto err = validateExternalFileBinding("input", binding))
+      return llvm::Expected<std::vector<NDArray>>(std::move(err));
+  }
+
+  auto expectedOutputsOr = loadExpectedOutputs(invocation);
+  if (!expectedOutputsOr)
+    return expectedOutputsOr.takeError();
+  if (!invocation.outputs.empty() && !expectedOutputsOr->empty() &&
+      invocation.outputs.size() != expectedOutputsOr->size()) {
+    return llvm::createStringError(
+        llvm::inconvertibleErrorCode(),
+        "output binding count does not match expected output count");
+  }
+
+  if (!expectedOutputsOr->empty()) {
+    for (size_t index = 0; index < expectedOutputsOr->size(); ++index) {
+      if (auto err = validateOutputBindingAgainstExpected(
+              invocation.outputs[index], (*expectedOutputsOr)[index])) {
+        return llvm::Expected<std::vector<NDArray>>(std::move(err));
+      }
+    }
+    return std::move(*expectedOutputsOr);
+  }
+
+  for (const TensorBinding &binding : invocation.outputs) {
+    if (auto err = validateOutputBindingWithoutExpected(binding))
+      return llvm::Expected<std::vector<NDArray>>(std::move(err));
+  }
+
+  return std::move(*expectedOutputsOr);
+}
+
+llvm::Expected<RunArgs>
+buildRunArgs(const ExecutionInvocation &invocation,
+             llvm::ArrayRef<NDArray> expectedOutputs) {
+  RunArgs args;
+  args.block_dim = invocation.blockDim;
+  args.workspace_size = invocation.workspaceSize;
+
+  auto tilingOr = packTilingBytes(invocation.tiling);
+  if (!tilingOr)
+    return tilingOr.takeError();
+  args.tiling = std::move(*tilingOr);
+
+  for (const TensorBinding &binding : invocation.inputs) {
+    auto arrayOr = LoadNpy(binding.path);
+    if (!arrayOr)
+      return arrayOr.takeError();
+    args.inputs.push_back(std::move(*arrayOr));
+  }
+
+  if (!expectedOutputs.empty()) {
+    for (const NDArray &expected : expectedOutputs) {
+      args.outputs.push_back(buildAllocatedOutputFromExpected(expected));
+    }
+    return args;
+  }
+
+  for (const TensorBinding &binding : invocation.outputs) {
+    args.outputs.push_back(buildAllocatedOutputFromBinding(binding));
+  }
+
+  return args;
+}
+
+llvm::Error writeActualOutputs(const ExecutionInvocation &invocation,
+                               const RunArgs &args) {
+  for (size_t index = 0; index < invocation.outputs.size(); ++index) {
+    if (auto err = SaveNpy(invocation.outputs[index].path, args.outputs[index]))
+      return err;
+  }
+  return llvm::Error::success();
+}
+
+uint32_t magicForKernelKind(KernelKind kind) {
+  switch (kind) {
+  case KernelKind::Vec:
+  case KernelKind::Mix:
+    return kMagicElfAiVec;
+  case KernelKind::Cube:
+    return kMagicElfAiCube;
+  }
+  return kMagicElfAiVec;
+}
+
+llvm::Expected<ExecutionResult> runWithExecutor(const ExecutionRequest &request) {
+  if (request.task.artifact.kernelKind == KernelKind::Mix) {
+    if (request.task.artifact.sharedLibraryPath.empty()) {
+      return stageError("artifact",
+                        "mix artifact is missing shared library path");
+    }
+    if (request.task.artifact.sharedLibrarySymbol.empty()) {
+      return stageError("artifact",
+                        "mix artifact is missing shared library symbol");
+    }
+  } else if (request.task.artifact.deviceBinaryPath.empty()) {
+    return stageError("artifact", "artifact is missing device binary path");
+  }
+
+  auto expectedOutputsOr = validateInvocationBindings(request.task.invocation);
+  if (!expectedOutputsOr)
+    return stageError("bindings", expectedOutputsOr.takeError());
+
+  auto argsOr = buildRunArgs(request.task.invocation, *expectedOutputsOr);
+  if (!argsOr)
+    return stageError("bindings", argsOr.takeError());
+  RunArgs args = std::move(*argsOr);
+
+  auto runnerOr = createDefaultExecutionRunner(ExecutionRunnerMode::RealDevice);
+  if (!runnerOr)
+    return stageError("executor_initialize", runnerOr.takeError());
+  std::unique_ptr<ExecutionRunner> runner = std::move(*runnerOr);
+  if (auto err = runner->initialize())
+    return stageError("executor_initialize", std::move(err));
+
+  if (request.task.artifact.kernelKind == KernelKind::Mix) {
+    DynamicLibraryExecutionLaunch launch;
+    launch.sharedLibraryPath = request.task.artifact.sharedLibraryPath;
+    launch.symbolName = request.task.artifact.sharedLibrarySymbol;
+    if (auto err = runner->runDynamicLibraryArtifact(launch, args)) {
+      return stageError("kernel_launch", std::move(err));
+    }
+  } else {
+    FileExecutionLaunch launch;
+    launch.binaryPath = request.task.artifact.deviceBinaryPath;
+    launch.kernelName = request.task.artifact.kernelName;
+    launch.magic = magicForKernelKind(request.task.artifact.kernelKind);
+    if (auto err = runner->runFile(launch, args)) {
+      return stageError("kernel_launch", std::move(err));
+    }
+  }
+
+  if (!expectedOutputsOr->empty()) {
+    auto validationOr =
+        compareRuntimeOutputs(args.outputs, *expectedOutputsOr,
+                              request.task.invocation.atol,
+                              request.task.invocation.rtol);
+    if (!validationOr) {
+      return stageError("validate", validationOr.takeError());
+    }
+    const OutputComparisonResult &validation = *validationOr;
+    if (!validation.passed) {
+      return stageError(
+          "validate",
+          llvm::formatv("npu output mismatch: max_abs_diff={0:F} mean_abs_diff={1:F}",
+                        validation.maxAbsDiff, validation.meanAbsDiff)
+              .str());
+    }
+  }
+
+  if (auto err = writeActualOutputs(request.task.invocation, args))
+    return stageError("write_outputs", std::move(err));
+
+  ExecutionResult result;
+  result.taskId = request.task.taskId;
+  for (const TensorBinding &binding : request.task.invocation.outputs)
+    result.producedFiles.push_back(binding.path);
+  return result;
+}
+
+llvm::Expected<ExecutionResult> runWithDriver(
+    const ExecutionRequest &request, ExecutionBackendDriver &driver) {
+  auto expectedOutputsOr = validateInvocationBindings(request.task.invocation);
+  if (!expectedOutputsOr)
+    return stageError("bindings", expectedOutputsOr.takeError());
+
+  auto resultOr = driver.run(request);
+  if (!resultOr)
+    return stageError("driver", resultOr.takeError());
+  return std::move(*resultOr);
+}
+
+} // namespace
+
+NpuBackend::NpuBackend(std::shared_ptr<ExecutionBackendDriver> driver)
+    : driver_(std::move(driver)) {}
+
+ExecutionBackendKind NpuBackend::kind() const {
+  return ExecutionBackendKind::Npu;
+}
+
+BackendCapabilities NpuBackend::capabilities() const {
+  const std::optional<BackendCapabilities> driverCaps =
+      driver_ ? std::optional<BackendCapabilities>(driver_->capabilities())
+              : std::nullopt;
+  BackendCapabilities caps = driverCaps.value_or(BackendCapabilities{});
+  if (!driver_)
+    caps.supportsConcurrentDispatch = true;
+  if (!driver_)
+    caps.supportsConcurrentExecution = true;
+  caps.requiresSerializedLaunch = false;
+  if (caps.maxConcurrentTasks == 0)
+    caps.maxConcurrentTasks = 1;
+  if (caps.maxConcurrentStreams == 0)
+    caps.maxConcurrentStreams = 1;
+  if (driverCaps)
+    caps.requiresSerializedLaunch = driverCaps->requiresSerializedLaunch;
+  return caps;
+}
+
+llvm::Expected<ExecutionResult>
+NpuBackend::run(const ExecutionRequest &request) {
+  if (driver_)
+    return runWithDriver(request, *driver_);
+  return runWithExecutor(request);
+}
+
+} // namespace mlir::runtime

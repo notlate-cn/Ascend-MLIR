@@ -92,12 +92,9 @@ add_subdirectory(lib/CAPI)
 add_subdirectory(lib/Runtime)
 add_subdirectory(lib/Utils)
 add_subdirectory(lib/Target)
-add_subdirectory(tools/afir-opt)
-add_subdirectory(tools/afir-translate)
-add_subdirectory(tools/autotuner)
-add_subdirectory(tools/compiler)
-add_subdirectory(tools/validator)
+add_subdirectory(tools)
 add_subdirectory(examples)
+enable_testing()
 add_subdirectory(test)
 
 # 只构建必要的pyasc，注意需要先构建其tablegen
@@ -112,6 +109,3 @@ if(AFIR_ENABLE_BINDING_PYTHON)
   add_subdirectory(python)
 endif()
 # add_subdirectory(python/src)
-
-# 测试配置
-enable_testing()

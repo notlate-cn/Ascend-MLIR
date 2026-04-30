@@ -21,7 +21,7 @@
 set -e
 DIR="$(cd "$(dirname "$0")" && pwd)"
 AFIR_OPT="${AFIR_OPT:-afir-opt}"
-COMPILER="${COMPILER:-compiler}"
+RUNTIME_SESSION="${RUNTIME_SESSION:-runtime-session}"
 PYTHON="${PYTHON:-python3}"
 
 # 解析参数
@@ -214,45 +214,63 @@ log "  ✓ 生成成功：input_a.npy, input_b.npy, output_c.npy"
 
 # ── STAGE 9: Compile AscendC kernel ────────────────────────────────────────
 echo ""
-echo "==================== [STAGE 9] Compile：bisheng C++ → .bin ===================="
+echo "==================== [STAGE 9] Compile：runtime-session ===================="
 log "  输入: step8_kernel.cpp"
-log "  输出: build_e2e/broadcast_add_reducesum.bin"
+log "  输出: build_e2e/artifact"
 BUILD_DIR="$DIR/build_e2e"
 rm -fr "$BUILD_DIR"
 mkdir -p "$BUILD_DIR"
-"$COMPILER" \
+ARTIFACT_ROOT="$BUILD_DIR/artifact"
+RUN_MANIFEST="$BUILD_DIR/run_manifest.json"
+ACTUAL_OUTPUT="$BUILD_DIR/output.npy"
+"$RUNTIME_SESSION" \
   --kernel "$DIR/step8_kernel.cpp" \
-  --output "$BUILD_DIR" \
+  --kernel-kind vec \
+  --output "$ARTIFACT_ROOT" \
   --name broadcast_add_reducesum \
-  --num-inputs 2 2>&1
-log "  ✓ Compile 成功，输出: $BUILD_DIR/broadcast_add_reducesum.bin"
+  2>&1
+log "  ✓ Compile 成功，输出: $ARTIFACT_ROOT"
 
 
 # ── STAGE 10: Run and verify ────────────────────────────────────────────────
 echo ""
 echo "==================== [STAGE 10] Run + Verify ===================="
 log "  使用参数：TB_M=64, TB_N=15000, M=640, N=15000, block-dim=10"
-VALIDATOR="${VALIDATOR:-validator}"
-BIN="$BUILD_DIR/broadcast_add_reducesum.bin"
+VALIDATION_LOG="$BUILD_DIR/runtime_session.log"
+cat > "$RUN_MANIFEST" <<EOF
+{
+  "task_id": "main",
+  "backend": "sim",
+  "artifact_root": "${ARTIFACT_ROOT}",
+  "inputs": [
+    { "name": "a", "path": "${DIR}/input_a.npy" },
+    { "name": "b", "path": "${DIR}/input_b.npy" }
+  ],
+  "outputs": [
+    { "name": "out", "path": "${ACTUAL_OUTPUT}" }
+  ],
+  "expected_outputs": [
+    { "name": "out", "path": "${DIR}/output_c.npy" }
+  ],
+  "tiling": {
+    "schema": "${DIR}/tiling_space.json",
+    "params": "TB_M=64,TB_N=15000,dim_arg0_0=640,dim_arg1_1=15000,dim_arg0_1=640,dim_arg1_0=15000"
+  },
+  "block_dim": 10,
+  "workspace_size": 16777216,
+  "profiling": true,
+  "atol": 10,
+  "rtol": 1e-2
+}
+EOF
 
-if [ -f "$BIN" ]; then
-  "$VALIDATOR" \
-    --bin "$BIN" \
-    --name broadcast_add_reducesum \
-    --inputs "$DIR/input_a.npy,$DIR/input_b.npy" \
-    --expected "$DIR/output_c.npy" \
-    --tiling-schema "$DIR/tiling_space.json" \
-    --tiling-params 'TB_M=64,TB_N=15000,dim_arg0_0=640,dim_arg1_1=15000,dim_arg0_1=640,dim_arg1_0=15000' \
-    --block-dim 10 \
-    --atol 10 \
-    --rtol 1e-2 \
-    --dump-actual "$BUILD_DIR/actual.txt" \
-    --dump-expected "$BUILD_DIR/expected.txt" \
-    --precision 4 \
-    2>&1 | grep -v '^\[info\]\|^\[PEM_AIC_LOG\]\|^\[INFO\]\|^\[WARNING\]' || true
-else
-  echo "  ⚠ bin not found — skipping run"
-fi
+"$RUNTIME_SESSION" \
+  --run-manifest "$RUN_MANIFEST" \
+  --run >"$VALIDATION_LOG" 2>&1
+grep -v '^\[info\]\|^\[PEM_AIC_LOG\]\|^\[INFO\]\|^\[WARNING\]' "$VALIDATION_LOG" || true
+grep -q '^session.backend=sim$' "$VALIDATION_LOG"
+grep -q '^session.result=success$' "$VALIDATION_LOG"
+grep -q '^session.validation=pass$' "$VALIDATION_LOG"
 
 echo ""
 echo "========================================================"
@@ -268,7 +286,8 @@ echo "   step7_kernel.mlir           → 完整 AscendC kernel IR"
 echo "   step7_cann.mlir             → CANN 标准签名 IR（去除 transform ops）"
 echo "   step8_kernel.cpp            → AscendC C++ kernel 源码"
 echo "   tiling_space.json           → tiling 参数空间（手写维护）"
-echo "   build_e2e/broadcast_add_reducesum.bin → 编译后二进制"
+echo "   build_e2e/artifact               → runtime-session 编译产物"
+echo "   build_e2e/output.npy            → 仿真输出"
 echo "========================================================"
 
 rm -fr *.dump

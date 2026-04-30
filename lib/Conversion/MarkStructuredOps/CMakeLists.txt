@@ -1,6 +1,7 @@
 add_mlir_library(MarkStructuredOpsConversion
   MarkStructuredOpsPass.cpp
   AnnotateAscendCKernelKindPass.cpp
+  AnnotateMixMatmulSemanticsPass.cpp
 
   ADDITIONAL_HEADER_DIRS
   ${CMAKE_SOURCE_DIR}/include/Conversion
@@ -10,7 +11,11 @@ add_mlir_library(MarkStructuredOpsConversion
 
   LINK_LIBS PUBLIC
   AFIRDialect
+  MLIRArithDialect
+  MLIRFuncDialect
   MLIRLinalgDialect
+  MLIRMemRefDialect
+  MLIRSCFDialect
   MLIRTensorDialect
   MLIRTransforms
 )

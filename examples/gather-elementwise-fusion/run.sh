@@ -21,7 +21,7 @@
 set -e
 DIR="$(cd "$(dirname "$0")" && pwd)"
 AFIR_OPT="${AFIR_OPT:-afir-opt}"
-COMPILER="${COMPILER:-compiler}"
+RUNTIME_SESSION="${RUNTIME_SESSION:-runtime-session}"
 PYTHON="${PYTHON:-python3}"
 
 VERBOSE=false
@@ -131,41 +131,60 @@ log "  M=512, N=640, K=256, seed=42"
 log "  ok: input_data.npy, input_indices.npy, input_bias.npy, output_out.npy"
 
 echo ""
-echo "==================== [STAGE 9] Compile：bisheng C++ → .bin ===================="
+echo "==================== [STAGE 9] Compile：runtime-session ===================="
 BUILD_DIR="$DIR/build_e2e"
 rm -fr "$BUILD_DIR"
 mkdir -p "$BUILD_DIR"
-"$COMPILER" \
+ARTIFACT_ROOT="$BUILD_DIR/artifact"
+RUN_MANIFEST="$BUILD_DIR/run_manifest.json"
+ACTUAL_OUTPUT="$BUILD_DIR/output.npy"
+"$RUNTIME_SESSION" \
   --kernel "$DIR/step8_kernel_gen.cpp" \
-  --output "$BUILD_DIR" \
+  --kernel-kind vec \
+  --output "$ARTIFACT_ROOT" \
   --name relu_index_select_add \
-  --num-inputs 3
-log "  ok: $BUILD_DIR/relu_index_select_add.bin"
+  2>&1
+log "  ok: $ARTIFACT_ROOT"
 
 echo ""
 echo "==================== [STAGE 10] Run + Verify ===================="
 log "  TB_M=64, TB_N=1, M=512, N=640, K=256, block-dim=8"
-VALIDATOR="${VALIDATOR:-validator}"
-BIN="$BUILD_DIR/relu_index_select_add.bin"
+VALIDATION_LOG="$BUILD_DIR/runtime_session.log"
+cat > "$RUN_MANIFEST" <<EOF
+{
+  "task_id": "main",
+  "backend": "sim",
+  "artifact_root": "${ARTIFACT_ROOT}",
+  "inputs": [
+    { "name": "data", "path": "${DIR}/input_data.npy" },
+    { "name": "indices", "path": "${DIR}/input_indices.npy" },
+    { "name": "bias", "path": "${DIR}/input_bias.npy" }
+  ],
+  "outputs": [
+    { "name": "out", "path": "${ACTUAL_OUTPUT}" }
+  ],
+  "expected_outputs": [
+    { "name": "out", "path": "${DIR}/output_out.npy" }
+  ],
+  "tiling": {
+    "schema": "${DIR}/tiling_space.json",
+    "params": "TB_M=64,TB_N=1,dim_arg0_0=512,dim_arg1_0=256,dim_arg0_1=640,dim_arg1_1=256"
+  },
+  "block_dim": 8,
+  "workspace_size": 16777216,
+  "profiling": true,
+  "atol": 10,
+  "rtol": 1e-2
+}
+EOF
 
-if [ -f "$BIN" ]; then
-  "$VALIDATOR" \
-    --bin "$BIN" \
-    --name relu_index_select_add \
-    --inputs "$DIR/input_data.npy,$DIR/input_indices.npy,$DIR/input_bias.npy" \
-    --expected "$DIR/output_out.npy" \
-    --tiling-schema "$DIR/tiling_space.json" \
-    --tiling-params 'TB_M=64,TB_N=1,dim_arg0_0=512,dim_arg1_0=256,dim_arg0_1=640,dim_arg1_1=256' \
-    --block-dim 8 \
-    --atol 10 \
-    --rtol 1e-2 \
-    --dump-actual "$BUILD_DIR/actual.txt" \
-    --dump-expected "$BUILD_DIR/expected.txt" \
-    --precision 4 \
-    2>&1 | grep -v '^\[info\]\|^\[PEM_AIC_LOG\]\|^\[INFO\]\|^\[WARNING\]' || true
-else
-  echo "  ⚠ bin not found — skipping run"
-fi
+"$RUNTIME_SESSION" \
+  --run-manifest "$RUN_MANIFEST" \
+  --run >"$VALIDATION_LOG" 2>&1
+grep -v '^\[info\]\|^\[PEM_AIC_LOG\]\|^\[INFO\]\|^\[WARNING\]' "$VALIDATION_LOG" || true
+grep -q '^session.backend=sim$' "$VALIDATION_LOG"
+grep -q '^session.result=success$' "$VALIDATION_LOG"
+grep -q '^session.validation=pass$' "$VALIDATION_LOG"
 
 echo ""
 echo "========================================================"
@@ -186,7 +205,8 @@ echo "   input_data.npy              → data[512,640] f16"
 echo "   input_indices.npy           → indices[256] i64"
 echo "   input_bias.npy              → bias[256] f16"
 echo "   output_out.npy              → expected out[512,256] f16"
-echo "   build_e2e/relu_index_select_add.bin → 编译后二进制"
+echo "   build_e2e/artifact               → runtime-session 编译产物"
+echo "   build_e2e/output.npy            → 仿真输出"
 echo "========================================================"
 
 rm -fr *.dump *.toml
