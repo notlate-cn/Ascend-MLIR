@@ -1,5 +1,8 @@
 add_mlir_library(AscendCPrepareForEmitConversion
   AscendCPrepareForEmitPass.cpp
+  FlattenGMPtrPass.cpp
+  PackTilingDataPass.cpp
+  FinalizeKernelPass.cpp
 
   ADDITIONAL_HEADER_DIRS
   ${CMAKE_SOURCE_DIR}/include/Conversion

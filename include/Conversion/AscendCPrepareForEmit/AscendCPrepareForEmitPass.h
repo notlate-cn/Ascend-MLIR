@@ -16,6 +16,9 @@ class Pass;
 namespace mlir::afir {
 
 std::unique_ptr<Pass> createAscendCPrepareForEmitPass();
+std::unique_ptr<Pass> createAscendCFlattenGMPtrPass();
+std::unique_ptr<Pass> createAscendCPackTilingDataPass();
+std::unique_ptr<Pass> createAscendCFinalizeKernelPass();
 
 }  // namespace mlir::afir
 

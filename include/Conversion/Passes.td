@@ -230,6 +230,76 @@ def AscendCPrepareForEmitPass : Pass<"ascendc-prepare-for-emit", "mlir::func::Fu
 }
 
 //===----------------------------------------------------------------------===//
+// AscendC Prepare For Emit — refactored sub-passes
+//===----------------------------------------------------------------------===//
+
+def AscendCFlattenGMPtrPass : Pass<"ascendc-flatten-gm-ptr", "mlir::func::FuncOp"> {
+  let summary = "Promote GM allocs to func args and flatten subview chains for set_global_buffer";
+  let description = [{
+    Runs before PackTilingData so memref.dim values are still available as
+    plain IR ops (not yet packed into TilingData).
+
+    Transformations:
+      1. Promote every top-level memref.alloc with memory_space=0 (GM) to a
+         new function block argument.
+      2. Replace each ascendc.global_tensor.set_global_buffer whose buffer is a
+         memref.subview chain with a flat-pointer + integer offset form using
+         emitasc.reinterpret_cast + emitasc.ptr_offset.
+      3. Replace GM->GM memref.copy ops with a verbatim memmove call.
+  }];
+  let constructor = "mlir::afir::createAscendCFlattenGMPtrPass()";
+  let dependentDialects = [
+    "mlir::ascendc::AscendCDialect",
+    "mlir::emitasc::EmitAscDialect",
+    "mlir::arith::ArithDialect",
+    "mlir::memref::MemRefDialect"
+  ];
+}
+
+def AscendCPackTilingDataPass : Pass<"ascendc-pack-tiling-data", "mlir::func::FuncOp"> {
+  let summary = "Pack index/i64 tiling args and memref.dim uses into a TilingData GM struct";
+  let description = [{
+    Reads vector_plan.tiling_infos on the parent ModuleOp to discover named
+    tiling parameters (e.g. XBLOCK, XBLOCK_SUB).  Fails if tiling_infos is
+    absent — no Phase A positional fallback.
+
+    Transformations:
+      1. Collect tiling arg names/indices from vector_plan.tiling_infos.
+      2. Scan for memref.dim %blockArg, %cI ops; each unique (arg, dim) pair
+         becomes a dim_argN_D field in TilingData.
+      3. Inject a new TilingData GM pointer block argument, emit
+         emitasc.copy_struct + emitasc.member to extract every field.
+      4. Replace all tiling arg uses and memref.dim uses with the extracted
+         values; erase the original args.
+      5. Emit emitasc.declare_py_struct at module scope.
+  }];
+  let constructor = "mlir::afir::createAscendCPackTilingDataPass()";
+  let dependentDialects = [
+    "mlir::ascendc::AscendCDialect",
+    "mlir::emitasc::EmitAscDialect",
+    "mlir::arith::ArithDialect",
+    "mlir::memref::MemRefDialect",
+    "mlir::func::FuncDialect"
+  ];
+}
+
+def AscendCFinalizeKernelPass : Pass<"ascendc-finalize-kernel", "mlir::func::FuncOp"> {
+  let summary = "Stamp kernel attributes, strip return values, lower affine.min";
+  let description = [{
+    Final cleanup before ascir-translate:
+      1. Set {ascendc.aicore, ascendc.global} attributes.
+      2. Replace func.return with operands by a void func.return.
+      3. Lower affine.min -> arith.minsi (ascir-translate has no affine support).
+  }];
+  let constructor = "mlir::afir::createAscendCFinalizeKernelPass()";
+  let dependentDialects = [
+    "mlir::affine::AffineDialect",
+    "mlir::arith::ArithDialect",
+    "mlir::func::FuncDialect"
+  ];
+}
+
+//===----------------------------------------------------------------------===//
 // CanonicalizeCannSignature
 //===----------------------------------------------------------------------===//
 
