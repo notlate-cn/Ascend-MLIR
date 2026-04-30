@@ -80,6 +80,7 @@ config.excludes = [
     'LICENSE.txt',
     'lit.cfg.py',
     'lit.site.cfg.py',
+    'pypto_mix_public_breakdown.py',
     'cann-translate-mix-input.mlir',
     'cann-translate-mix-no-bias-input.mlir',
     'cann-translate-mix-relu-input.mlir',

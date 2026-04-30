@@ -145,8 +145,10 @@ static LogicalResult prepareFunc(func::FuncOp func) {
     // Walk through subview/cast chain to find the root BlockArgument.
     while (buf) {
       if (auto ba = dyn_cast<BlockArgument>(buf)) {
-        addDimKey(ba.getArgNumber(), 0);
-        addDimKey(ba.getArgNumber(), 1);
+        if (auto memTy = dyn_cast<MemRefType>(ba.getType())) {
+          for (int64_t d = 0; d < memTy.getRank(); ++d)
+            addDimKey(ba.getArgNumber(), d);
+        }
         break;
       }
       if (auto sv = buf.getDefiningOp<memref::SubViewOp>()) {
@@ -299,7 +301,7 @@ static LogicalResult prepareFunc(func::FuncOp func) {
     }
     for (memref::AllocOp allocOp : gmAllocs) {
       auto origTy = cast<MemRefType>(allocOp.getResult().getType());
-      SmallVector<int64_t> strides(origTy.getRank(), 1);
+      SmallVector<int64_t> strides(origTy.getRank(), ShapedType::kDynamic);
       auto stridedLayout = StridedLayoutAttr::get(ctx, ShapedType::kDynamic, strides);
       auto stridedTy = MemRefType::get(origTy.getShape(), origTy.getElementType(),
                                         stridedLayout);
@@ -431,9 +433,18 @@ static LogicalResult prepareFunc(func::FuncOp func) {
         colStride = b.create<arith::IndexCastOp>(loc, indexTy, colStrideI64);
       } else {
         auto dynIt = promotedArgDynSizes.find(baseArg.getArgNumber());
-        if (dynIt == promotedArgDynSizes.end() || dynIt->second.size() < 2)
-          continue;
-        colStride = dynIt->second[1]; // dynamic size for dim 1
+        if (dynIt != promotedArgDynSizes.end() && dynIt->second.size() >= 2) {
+          colStride = dynIt->second[1];
+        } else {
+          // Fallback: read row stride from the subview's type directly.
+          auto svTy = cast<MemRefType>(subview.getResult().getType());
+          auto [typeStrides, typeOffset] = svTy.getStridesAndOffset();
+          if (!typeStrides.empty() && typeStrides[0] != ShapedType::kDynamic) {
+            colStride = b.create<arith::ConstantIndexOp>(loc, typeStrides[0]);
+          } else {
+            continue;
+          }
+        }
       }
       Value rowTimesStride = b.create<arith::MulIOp>(loc, accRow, colStride);
       flatOffset = b.create<arith::AddIOp>(loc, rowTimesStride, accCol);
@@ -512,9 +523,18 @@ static LogicalResult prepareFunc(func::FuncOp func) {
             colStride = b.create<arith::IndexCastOp>(loc, indexTy, ci64);
           } else {
             auto dynIt = promotedArgDynSizes.find(ba.getArgNumber());
-            if (dynIt == promotedArgDynSizes.end() || dynIt->second.size() < 2)
-              return {BlockArgument{}, Value{}};
-            colStride = dynIt->second[1];
+            if (dynIt != promotedArgDynSizes.end() && dynIt->second.size() >= 2) {
+              colStride = dynIt->second[1];
+            } else {
+              // Fallback: read row stride from the subview's type directly.
+              auto svTy = cast<MemRefType>(sv.getResult().getType());
+              auto [typeStrides, typeOffset] = svTy.getStridesAndOffset();
+              if (!typeStrides.empty() && typeStrides[0] != ShapedType::kDynamic) {
+                colStride = b.create<arith::ConstantIndexOp>(loc, typeStrides[0]);
+              } else {
+                return {BlockArgument{}, Value{}};
+              }
+            }
           }
           Value row = materializeOffset(b, loc, offs[0]);
           Value col = materializeOffset(b, loc, offs[1]);

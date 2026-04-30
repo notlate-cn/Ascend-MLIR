@@ -44,7 +44,7 @@ runtime_verify_setup_env() {
     return 1
   fi
   export LLVM_BUILD
-  LLVM_SOURCE_INCLUDE="$(cd "${LLVM_BUILD}/.." && pwd)/include"
+  LLVM_SOURCE_INCLUDE="$("${LLVM_BUILD}/bin/llvm-config" --includedir)"
   export LLVM_SOURCE_INCLUDE
 }
 
