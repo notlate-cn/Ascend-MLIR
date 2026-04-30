@@ -8,6 +8,7 @@
 
 # build files
 build/
+output/
 build-*/
 *.pt
 *.log

@@ -14,6 +14,7 @@ namespace mlir::afir {
 
 std::unique_ptr<Pass> createMarkStructuredOpsPass();
 std::unique_ptr<Pass> createAnnotateAscendCKernelKindPass();
+std::unique_ptr<Pass> createAnnotateMixMatmulSemanticsPass();
 
 }  // namespace mlir::afir
 

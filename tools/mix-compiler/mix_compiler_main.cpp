@@ -1,7 +1,9 @@
-#include "Runtime/MixDirectBackend.h"
-#include "Runtime/MixArtifact.h"
+#include "Runtime/ArtifactCompiler.h"
 #include "Runtime/MixAbiExtractor.h"
+#include "Runtime/ToolDiscovery.h"
+#include "llvm/ADT/SmallString.h"
 #include "llvm/Support/CommandLine.h"
+#include "llvm/Support/Error.h"
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/Path.h"
 #include "llvm/Support/raw_ostream.h"
@@ -20,8 +22,10 @@ static llvm::cl::opt<std::string> NpyDir(
 static llvm::cl::opt<std::string> SocVersion("soc", llvm::cl::init("Ascend910B1"));
 
 int main(int argc, char** argv) {
+  mlir::runtime::configureSiblingToolPathEnv("AFIR_MIX_TILING_HELPER", argv[0],
+                                             "mix-tiling-helper");
   llvm::cl::ParseCommandLineOptions(argc, argv,
-                                    "RuntimeMix AscendC mix compiler\n");
+                                    "RuntimeMix artifact compiler for mix kernels\n");
 
   if (CannMlir.empty()) {
     llvm::errs() << "Error: --cann-mlir is required so RuntimeMix can derive "
@@ -50,28 +54,35 @@ int main(int argc, char** argv) {
     return 4;
   }
 
-  mlir::runtime::MixDirectCompileConfig cfg;
-  cfg.kernelSrc = KernelFile;
-  cfg.kernelName = kernelName;
-  cfg.socVersion = SocVersion;
-  cfg.outputDir = OutputDir;
+  mlir::runtime::ArtifactCompileRequest req;
+  req.kernelSource = KernelFile;
+  req.kernelName = kernelName;
+  req.kernelKind = mlir::runtime::KernelKind::Mix;
+  req.socVersion = SocVersion;
+  req.outputDir = OutputDir;
   if (!CannMlir.empty())
-    cfg.cannMlirPath = CannMlir;
+    req.cannMlirPath = CannMlir;
   if (!NpyDir.empty())
-    cfg.npyDir = NpyDir;
+    req.npyDir = NpyDir;
 
-  mlir::runtime::MixDirectBackend backend;
-  auto artifact = backend.compile(cfg);
-  if (!artifact) {
-    llvm::errs() << "Compilation error: " << llvm::toString(artifact.takeError())
-                 << "\n";
+  mlir::runtime::ArtifactCompiler compiler;
+  auto artifactOr = compiler.compile(req);
+  if (!artifactOr) {
+    llvm::errs() << "Compilation error: "
+                 << llvm::toString(artifactOr.takeError()) << "\n";
     return 2;
   }
+  const mlir::runtime::KernelArtifact &artifact = *artifactOr;
 
-  llvm::outs() << "kernel_name=" << artifact->kernel_name << "\n";
-  llvm::outs() << "kernel_so=" << artifact->kernel_so_path << "\n";
-  llvm::outs() << "launcher_header_dir=" << artifact->launcher_header_dir << "\n";
-  llvm::outs() << "install_dir=" << artifact->install_dir << "\n";
-  llvm::outs() << "host_runner=" << artifact->host_runner_path << "\n";
+  llvm::outs() << "kernel_name=" << artifact.kernelName << "\n";
+  llvm::outs() << "artifact_root=" << artifact.artifactRoot << "\n";
+  llvm::outs() << "manifest_path=" << artifact.manifestPath << "\n";
+  llvm::outs() << "soc_version=" << artifact.socVersion << "\n";
+  llvm::outs() << "kernel_kind=mix\n";
+  if (!artifact.deviceBinaryPath.empty())
+    llvm::outs() << "device_binary=" << artifact.deviceBinaryPath << "\n";
+  if (!artifact.sharedLibraryPath.empty())
+    llvm::outs() << "packed_shared_object="
+                 << artifact.sharedLibraryPath << "\n";
   return 0;
 }

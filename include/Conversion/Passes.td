@@ -322,4 +322,38 @@ def AnnotateAscendCKernelKindPass : Pass<"annotate-ascendc-kernel-kind", "mlir::
   ];
 }
 
+def AnnotateMixMatmulSemanticsPass : Pass<"annotate-mix-matmul-semantics", "mlir::func::FuncOp"> {
+  let summary = "Annotate func.func with stable abi_matmul_* semantics for simple mix matmul patterns";
+  let description = [{
+    Scans bufferized mix matmul kernels while linalg.matmul and fused vector
+    epilogue ops are still present, then stamps stable function-level
+    abi_matmul_* attributes for downstream ABI extraction.
+
+    First-pass coverage:
+    - 2D linalg.matmul
+    - optional bias add epilogue
+    - optional leaky_relu epilogue
+
+    Emitted attributes:
+    - abi_matmul_op_kind = "matmul"
+    - abi_matmul_trans_a = false
+    - abi_matmul_trans_b = false
+    - abi_matmul_has_bias = true|false
+    - abi_matmul_layout_a = "ND"
+    - abi_matmul_layout_b = "ND"
+    - abi_matmul_layout_c = "ND"
+    - abi_matmul_epilogue_kind = "None" | "BiasAdd" | "BiasAddLeakyRelu"
+
+    The pass is conservative: unsupported patterns are left unannotated.
+  }];
+  let constructor = "mlir::afir::createAnnotateMixMatmulSemanticsPass()";
+  let dependentDialects = [
+    "mlir::func::FuncDialect",
+    "mlir::linalg::LinalgDialect",
+    "mlir::memref::MemRefDialect",
+    "mlir::arith::ArithDialect",
+    "mlir::scf::SCFDialect"
+  ];
+}
+
 #endif // AFIR_CONVERSION_PASSES

@@ -1,0 +1,187 @@
+#include "Runtime/Mix/MixTilingGenerator.h"
+
+#include "gtest/gtest.h"
+
+#include "llvm/Support/Error.h"
+
+#include <string>
+#include <vector>
+
+using namespace mlir::runtime;
+
+namespace {
+
+MixTilingRequest makeRequestWithUnsupportedBiasDType() {
+  MixTilingRequest request;
+  request.kernelName = "matmul_bias_relu";
+  request.socVersion = "Ascend910B1";
+  request.inputs = {
+      {DType::F16, {16, 64}},
+      {DType::BF16, {64, 32}},
+      {DType::INT8, {32}},
+  };
+  request.outputs = {
+      {DType::F32, {16, 32}},
+  };
+  return request;
+}
+
+MixTilingRequest makeSupportedMatmulRequest() {
+  MixTilingRequest request;
+  request.kernelName = "matmul_bias_relu";
+  request.socVersion = "Ascend910B1";
+  request.inputs = {
+      {DType::F16, {16, 32}},
+      {DType::BF16, {32, 64}},
+      {DType::F32, {64}},
+  };
+  request.outputs = {
+      {DType::F32, {16, 64}},
+  };
+  return request;
+}
+
+MixTilingRequest makeRequestWithMalformedBiasShape() {
+  MixTilingRequest request = makeRequestWithUnsupportedBiasDType();
+  request.inputs[2].dtype = DType::BF16;
+  request.inputs[2].shape = {1, 32};
+  return request;
+}
+
+MixTilingRequest makeRequestWithExplicitTransposedB() {
+  MixTilingRequest request;
+  request.kernelName = "matmul_transposed_b";
+  request.socVersion = "Ascend910B1";
+  request.inputs = {
+      {DType::F16, {16, 32}},
+      {DType::BF16, {64, 32}},
+  };
+  request.outputs = {
+      {DType::F32, {16, 64}},
+  };
+  request.matmul = MixAbiMatmulDesc{
+      "matmul",
+      false,
+      true,
+      false,
+      "ND",
+      "ND",
+      "ND",
+      "None",
+      {},
+  };
+  return request;
+}
+
+MixTilingRequest makeRequestWithExplicitUnsupportedLayout() {
+  MixTilingRequest request = makeSupportedMatmulRequest();
+  request.matmul = MixAbiMatmulDesc{
+      "matmul",
+      false,
+      false,
+      true,
+      "NZ",
+      "ND",
+      "ND",
+      "BiasAdd",
+      {},
+  };
+  return request;
+}
+
+MixTilingRequest makeExplicitBatchMatmulRequest() {
+  MixTilingRequest request;
+  request.kernelName = "batch_matmul";
+  request.socVersion = "Ascend910B1";
+  request.inputs = {
+      {DType::F16, {2, 16, 32}},
+      {DType::BF16, {2, 32, 64}},
+  };
+  request.outputs = {
+      {DType::F32, {2, 16, 64}},
+  };
+  request.matmul = MixAbiMatmulDesc{
+      "batch_matmul",
+      false,
+      false,
+      false,
+      "ND",
+      "ND",
+      "ND",
+      "None",
+      {2},
+  };
+  return request;
+}
+
+} // namespace
+
+TEST(MixTilingGeneratorTest, RejectsUnsupportedBiasDTypeThroughAdapter) {
+  auto result = generateMixTilingInProcess(makeRequestWithUnsupportedBiasDType());
+
+  ASSERT_FALSE(static_cast<bool>(result));
+  std::vector<std::string> messages;
+  llvm::handleAllErrors(result.takeError(),
+                        [&](const llvm::ErrorInfoBase &info) {
+                          messages.push_back(info.message());
+                        });
+  ASSERT_FALSE(messages.empty());
+  EXPECT_TRUE(messages[0].find("unsupported matmul api tiling request") !=
+                  std::string::npos ||
+              messages[0].find("no matmul tiling backend supports kernel") !=
+                  std::string::npos);
+}
+
+TEST(MixTilingGeneratorTest, RejectsMalformedBiasShapeThroughAdapter) {
+  auto result = generateMixTilingInProcess(makeRequestWithMalformedBiasShape());
+
+  ASSERT_FALSE(static_cast<bool>(result));
+  std::vector<std::string> messages;
+  llvm::handleAllErrors(result.takeError(),
+                        [&](const llvm::ErrorInfoBase &info) {
+                          messages.push_back(info.message());
+                        });
+  ASSERT_FALSE(messages.empty());
+  EXPECT_NE(messages[0].find("bias must be a 1D vector with length N"),
+            std::string::npos);
+}
+
+TEST(MixTilingGeneratorTest, RoutesSupportedMatmulThroughDispatcherFallback) {
+  auto result = generateMixTilingInProcess(makeSupportedMatmulRequest());
+
+  ASSERT_TRUE(static_cast<bool>(result));
+  EXPECT_EQ(result->strategyName, "matmul-2d");
+  EXPECT_FALSE(result->tilingData.empty());
+}
+
+TEST(MixTilingGeneratorTest, UsesExplicitMatmulSemanticsForTransposedB) {
+  auto result = generateMixTilingInProcess(makeRequestWithExplicitTransposedB());
+
+  ASSERT_TRUE(static_cast<bool>(result));
+  EXPECT_EQ(result->strategyName, "matmul-2d");
+  EXPECT_FALSE(result->tilingData.empty());
+}
+
+TEST(MixTilingGeneratorTest, ExplicitUnsupportedLayoutOverridesLegacyGuess) {
+  auto result =
+      generateMixTilingInProcess(makeRequestWithExplicitUnsupportedLayout());
+
+  ASSERT_FALSE(static_cast<bool>(result));
+  std::vector<std::string> messages;
+  llvm::handleAllErrors(result.takeError(),
+                        [&](const llvm::ErrorInfoBase &info) {
+                          messages.push_back(info.message());
+                        });
+  ASSERT_FALSE(messages.empty());
+  EXPECT_NE(messages[0].find("no matmul tiling backend supports kernel"),
+            std::string::npos);
+}
+
+TEST(MixTilingGeneratorTest, ExplicitBatchMatmulRoutesThroughBatchStrategy) {
+  auto result = generateMixTilingInProcess(makeExplicitBatchMatmulRequest());
+
+  ASSERT_TRUE(static_cast<bool>(result));
+  EXPECT_EQ(result->strategyName, "batch-matmul");
+  EXPECT_FALSE(result->tilingData.empty());
+  EXPECT_NE(result->debugNote.find("batch=2"), std::string::npos);
+}
