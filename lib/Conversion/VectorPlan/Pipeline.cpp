@@ -72,7 +72,10 @@ void registerVectorPlanPipeline() {
         pm.addNestedPass<func::FuncOp>(createAscendCParallelizePass());
         pm.addPass(createCanonicalizerPass());
         pm.addPass(createCSEPass());
-        pm.addNestedPass<func::FuncOp>(createAscendCPrepareForEmitPass());
+        pm.addNestedPass<func::FuncOp>(createAscendCFlattenGMPtrPass());
+        pm.addNestedPass<func::FuncOp>(createAscendCPackTilingDataPass());
+        pm.addNestedPass<func::FuncOp>(createAscendCFinalizeKernelPass());
+        pm.addPass(createCSEPass());
         pm.addPass(createCanonicalizeCannSignaturePass());
       });
 }
