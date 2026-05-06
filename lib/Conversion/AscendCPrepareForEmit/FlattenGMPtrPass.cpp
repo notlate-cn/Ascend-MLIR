@@ -33,29 +33,6 @@ static Value materializeOffset(OpBuilder &b, Location loc, OpFoldResult ofr) {
   return ofr.get<Value>();
 }
 
-// Walk a 1D subview chain to a root BlockArgument, accumulating flat offset.
-static std::pair<BlockArgument, Value>
-resolveSubviewChain1D(memref::SubViewOp leaf, OpBuilder &b, Location loc) {
-  Value accOffset = b.create<arith::ConstantIndexOp>(loc, 0);
-  Value cur = leaf.getResult();
-  while (true) {
-    auto sv = cur.getDefiningOp<memref::SubViewOp>();
-    if (!sv)
-      return {BlockArgument{}, Value{}};
-    SmallVector<OpFoldResult> offs = sv.getMixedOffsets();
-    if (offs.size() != 1)
-      return {BlockArgument{}, Value{}};
-    Value off = materializeOffset(b, loc, offs[0]);
-    accOffset = b.create<arith::AddIOp>(loc, accOffset, off);
-    Value src = sv.getSource();
-    if (auto castOp = src.getDefiningOp<memref::CastOp>())
-      src = castOp.getSource();
-    if (auto ba = dyn_cast<BlockArgument>(src))
-      return {ba, accOffset};
-    cur = src;
-  }
-}
-
 // Walk a value to its root BlockArgument + flat index offset.
 // For 2D subviews, uses memref.dim %base, 1 for the column stride.
 static std::pair<BlockArgument, Value>
@@ -163,50 +140,11 @@ static void flattenGMPtr(func::FuncOp func) {
     BlockArgument baseArg;
     Value flatOffset;
 
-    SmallVector<OpFoldResult> mixedOffsets = subview.getMixedOffsets();
-    if (mixedOffsets.size() >= 2) {
-      // 2D: accumulate row/col, use memref.dim %base, 1 for col stride.
-      Value accRow = b.create<arith::ConstantIndexOp>(loc, 0);
-      Value accCol = b.create<arith::ConstantIndexOp>(loc, 0);
-      Value cur = subview.getResult();
-      bool ok = true;
-      while (true) {
-        auto sv = cur.getDefiningOp<memref::SubViewOp>();
-        if (!sv) {
-          ok = false;
-          break;
-        }
-        SmallVector<OpFoldResult> offs = sv.getMixedOffsets();
-        if (offs.size() < 2) {
-          ok = false;
-          break;
-        }
-        accRow = b.create<arith::AddIOp>(loc, accRow,
-                                         materializeOffset(b, loc, offs[0]));
-        accCol = b.create<arith::AddIOp>(loc, accCol,
-                                         materializeOffset(b, loc, offs[1]));
-        Value src = sv.getSource();
-        if (auto castOp = src.getDefiningOp<memref::CastOp>())
-          src = castOp.getSource();
-        if (auto ba = dyn_cast<BlockArgument>(src)) {
-          baseArg = ba;
-          break;
-        }
-        cur = src;
-      }
-      if (!ok || !baseArg)
-        continue;
-      Value c1 = b.create<arith::ConstantIndexOp>(loc, 1);
-      Value colStride = b.create<memref::DimOp>(loc, baseArg, c1);
-      flatOffset = b.create<arith::AddIOp>(
-          loc, b.create<arith::MulIOp>(loc, accRow, colStride), accCol);
-    } else {
-      auto [ba, acc] = resolveSubviewChain1D(subview, b, loc);
-      if (!ba)
-        continue;
-      baseArg = ba;
-      flatOffset = acc;
-    }
+    auto [ba, acc] = resolveGMChain(subview.getResult(), b, loc);
+    if (!ba)
+      continue;
+    baseArg = ba;
+    flatOffset = acc;
 
     Value flatOffsetI32 = b.create<arith::IndexCastOp>(loc, i32Ty, flatOffset);
     Type elemTy = cast<MemRefType>(baseArg.getType()).getElementType();
@@ -218,15 +156,18 @@ static void flattenGMPtr(func::FuncOp func) {
       subview.erase();
   }
 
-  // Clean up dead subview/cast chains after 7b.
+  // Clean up dead subview/cast chains; repeat until stable.
   {
-    SmallVector<Operation *> dead;
-    func.walk([&](Operation *op) {
-      if (op->use_empty() && isa<memref::SubViewOp, memref::CastOp>(op))
-        dead.push_back(op);
-    });
-    for (Operation *op : dead)
-      op->erase();
+    bool changed = true;
+    while (changed) {
+      changed = false;
+      SmallVector<Operation *> dead;
+      func.walk([&](Operation *op) {
+        if (op->use_empty() && isa<memref::SubViewOp, memref::CastOp>(op))
+          dead.push_back(op);
+      });
+      for (Operation *op : dead) { op->erase(); changed = true; }
+    }
   }
 
   // ── 7c. GM→GM memref.copy → memmove ─────────────────────────────────────

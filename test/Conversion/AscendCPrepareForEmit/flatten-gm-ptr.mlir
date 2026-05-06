@@ -29,3 +29,33 @@ func.func @test_alloc_promoted() {
   %val = memref.load %alloc[%c0] : memref<16xf32>
   return
 }
+
+// 2D subview: flat offset = row * dim[1] + col.
+// CHECK-LABEL: func.func @test_2d
+// CHECK: memref.dim
+// CHECK: arith.muli
+// CHECK: arith.addi
+// CHECK: emitasc.reinterpret_cast
+// CHECK-NOT: memref.subview
+
+func.func @test_2d(%arg0: memref<32x32xf32>) {
+  %gt = ascendc.global_tensor : !ascendc.global_tensor<*xf32>
+  %c2 = arith.constant 2 : index
+  %c4 = arith.constant 4 : index
+  %sub = memref.subview %arg0[%c2, %c4][4, 4][1, 1]
+    : memref<32x32xf32> to memref<4x4xf32, strided<[32, 1], offset: ?>>
+  ascendc.global_tensor.set_global_buffer %gt, %sub
+    : !ascendc.global_tensor<*xf32>, memref<4x4xf32, strided<[32, 1], offset: ?>>
+  return
+}
+
+// GM->GM copy should become memmove.
+// CHECK-LABEL: func.func @test_gm_copy
+// CHECK: memmove
+// CHECK-NOT: memref.copy
+
+func.func @test_gm_copy(%arg0: memref<16xf32>) {
+  %alloc = memref.alloc() : memref<16xf32>
+  memref.copy %arg0, %alloc : memref<16xf32> to memref<16xf32>
+  return
+}
