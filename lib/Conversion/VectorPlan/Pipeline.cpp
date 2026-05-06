@@ -55,6 +55,7 @@ void registerVectorPlanPipeline() {
       "VectorPlan codegen: tile-fuse → bufferize → linalg-to-ascendc → "
       "parallelize → prepare-for-emit → canonicalize-cann-signature",
       [](OpPassManager &pm) {
+        pm.addNestedPass<func::FuncOp>(mlir::createLinalgGeneralizeNamedOpsPass());
         pm.addNestedPass<func::FuncOp>(createVectorPlanTileFusePass());
         if (failed(parsePassPipeline(
                 "one-shot-bufferize{"

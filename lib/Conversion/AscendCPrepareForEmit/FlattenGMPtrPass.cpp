@@ -234,12 +234,16 @@ static void flattenGMPtr(func::FuncOp func) {
       op->erase();
   }
 
-  // Update function type.
+  // Update function type and clear arg_attrs if new args were added (the
+  // entry.addArgument calls above do not update FuncOp::arg_attrs, so remove
+  // it to avoid a verifier mismatch when intermediate buffers are promoted).
   SmallVector<Type> newArgTypes;
   for (BlockArgument arg : entry.getArguments())
     newArgTypes.push_back(arg.getType());
   func.setFunctionType(FunctionType::get(ctx, newArgTypes,
                                          func.getFunctionType().getResults()));
+  if (!promotedArgDynSizes.empty() && func->getAttr("arg_attrs"))
+    func->removeAttr("arg_attrs");
 }
 
 struct AscendCFlattenGMPtrPass

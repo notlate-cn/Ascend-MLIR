@@ -62,6 +62,22 @@ struct VectorPlanTileFusePass
     }
 
     // Phase 3a: LoopNestBuilder.
+    // Ensure every initTensor's defining op precedes the first linalg op so
+    // that scf.for iter_args dominate the loop.  When ops between the first
+    // and last linalg op produce an initTensor (e.g. a tensor.empty inserted
+    // by linalg-generalize-named-ops between two named ops), move them before
+    // the first member.
+    {
+      Operation *insertBefore = collapsedInfo.topoMembers.front();
+      for (Value init : initTensors) {
+        Operation *defOp = init.getDefiningOp();
+        if (!defOp) continue; // block argument — always dominates
+        // Only move if defOp is in the same block and currently after insertBefore.
+        if (defOp->getBlock() != insertBefore->getBlock()) continue;
+        if (!insertBefore->isBeforeInBlock(defOp)) continue;
+        defOp->moveBefore(insertBefore);
+      }
+    }
     builder.setInsertionPoint(collapsedInfo.topoMembers.front());
     auto loopNest =
         buildLoopNest(builder, func.getLoc(), plan, initTensors);
