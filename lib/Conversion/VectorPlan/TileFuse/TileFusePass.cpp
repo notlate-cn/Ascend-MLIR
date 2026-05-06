@@ -75,6 +75,14 @@ struct VectorPlanTileFusePass
         // Only move if defOp is in the same block and currently after insertBefore.
         if (defOp->getBlock() != insertBefore->getBlock()) continue;
         if (!insertBefore->isBeforeInBlock(defOp)) continue;
+        // Safe to move shallowly: linalg-generalize-named-ops only inserts
+        // tensor.empty ops whose dynamic-size operands are already defined
+        // before the first linalg op (they come from tensor.dim at func entry).
+        assert(llvm::all_of(defOp->getOperands(), [&](Value v) {
+          Operation *vOp = v.getDefiningOp();
+          return !vOp || vOp->isBeforeInBlock(insertBefore);
+        }) && "TileFuse: defOp operand not yet defined before insertBefore; "
+             "need recursive hoist");
         defOp->moveBefore(insertBefore);
       }
     }

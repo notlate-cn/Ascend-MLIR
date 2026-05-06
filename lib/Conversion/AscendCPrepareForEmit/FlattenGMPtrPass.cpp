@@ -242,7 +242,7 @@ static void flattenGMPtr(func::FuncOp func) {
     newArgTypes.push_back(arg.getType());
   func.setFunctionType(FunctionType::get(ctx, newArgTypes,
                                          func.getFunctionType().getResults()));
-  if (!promotedArgDynSizes.empty() && func->getAttr("arg_attrs"))
+  if (!promotedArgDynSizes.empty())
     func->removeAttr("arg_attrs");
 }
 
