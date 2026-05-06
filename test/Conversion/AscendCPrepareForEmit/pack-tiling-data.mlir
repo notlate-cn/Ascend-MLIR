@@ -1,4 +1,5 @@
-// RUN: afir-opt %s --ascendc-pack-tiling-data 2>&1 | FileCheck %s
+// RUN: afir-opt %s --split-input-file --ascendc-pack-tiling-data 2>&1 | FileCheck %s
+// RUN: afir-opt %s --split-input-file --ascendc-pack-tiling-data 2>&1 | FileCheck %s --check-prefix=ERR
 //
 // Verify:
 //  - Tiling args replaced by emitasc.member reads
@@ -33,6 +34,17 @@ module attributes {
     %d0 = memref.dim %arg0, %c0 : memref<1024xf32>
     %d1 = memref.dim %arg1, %c0 : memref<1024xf32>
     %val = memref.load %arg0[%d0] : memref<1024xf32>
+    return
+  }
+}
+
+// -----
+
+// Verify that the pass emits an error when vector_plan.tiling_infos is absent.
+// ERR: PackTilingData: vector_plan.tiling_infos not found
+
+module {
+  func.func @no_tiling(%arg0: index) {
     return
   }
 }
