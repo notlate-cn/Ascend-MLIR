@@ -10,6 +10,55 @@
 include "mlir/Pass/PassBase.td"
 
 //===----------------------------------------------------------------------===//
+// Ascend MLIR V2 Pipeline Skeleton
+//===----------------------------------------------------------------------===//
+
+def AscendNormalizePass : Pass<"ascend-normalize", "mlir::ModuleOp"> {
+  let summary = "Normalize supported entry IR for the Ascend MLIR V2 pipeline";
+  let description = [{
+    Skeleton pass for the V2 Normalize stage. It preserves IR unchanged in this
+    MVP task and only emits an optional debug stage header.
+  }];
+  let constructor = "mlir::afir::createAscendNormalizePass()";
+  let options = [
+    Option<"debugStage", "debug-stage", "std::string", /*default=*/"\"none\"",
+           "V2 debug stage: none, normalize, kernelize, schedule, all">,
+    Option<"dumpReport", "dump-report", "bool", /*default=*/"false",
+           "Dump V2 analysis report to stderr">,
+  ];
+}
+
+def AscendKernelizePass : Pass<"ascend-kernelize", "mlir::ModuleOp"> {
+  let summary = "Build Ascend MLIR V2 kernel candidates";
+  let description = [{
+    Skeleton pass for the V2 Kernelize stage. It preserves IR unchanged in this
+    MVP task and only emits an optional debug stage header.
+  }];
+  let constructor = "mlir::afir::createAscendKernelizePass()";
+  let options = [
+    Option<"debugStage", "debug-stage", "std::string", /*default=*/"\"none\"",
+           "V2 debug stage: none, normalize, kernelize, schedule, all">,
+    Option<"dumpReport", "dump-report", "bool", /*default=*/"false",
+           "Dump V2 analysis report to stderr">,
+  ];
+}
+
+def AscendSchedulePass : Pass<"ascend-schedule", "mlir::ModuleOp"> {
+  let summary = "Construct Ascend MLIR V2 schedule decisions";
+  let description = [{
+    Skeleton pass for the V2 Schedule stage. It preserves IR unchanged in this
+    MVP task and only emits an optional debug stage header.
+  }];
+  let constructor = "mlir::afir::createAscendSchedulePass()";
+  let options = [
+    Option<"debugStage", "debug-stage", "std::string", /*default=*/"\"none\"",
+           "V2 debug stage: none, normalize, kernelize, schedule, all">,
+    Option<"dumpReport", "dump-report", "bool", /*default=*/"false",
+           "Dump V2 analysis report to stderr">,
+  ];
+}
+
+//===----------------------------------------------------------------------===//
 // StableHLO to AFIR Conversion
 //===----------------------------------------------------------------------===//
 
