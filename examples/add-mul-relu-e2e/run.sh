@@ -20,9 +20,11 @@ PYTHON="${PYTHON:-python3}"
 
 D0=4; D1=8; D2=32
 N=$((D0 * D1 * D2))
-XBLOCK=128
-XBLOCK_SUB=16
-BLOCK_DIM=$(( (N + XBLOCK - 1) / XBLOCK ))
+# XBLOCK tiles over the outer D0 dimension (not flat N).
+# BLOCK_DIM = ceil(D0 / XBLOCK).
+XBLOCK=${D0}
+XBLOCK_SUB=1
+BLOCK_DIM=1
 
 VERBOSE=false
 for arg in "$@"; do
@@ -81,24 +83,22 @@ echo ""
 echo "==================== [STAGE 3] Simulator Run + Verify ===================="
 log "  XBLOCK=$XBLOCK, XBLOCK_SUB=$XBLOCK_SUB, shape=${D0}x${D1}x${D2}=$N, block_dim=$BLOCK_DIM"
 VALIDATION_LOG="$BUILD_DIR/runtime_session.log"
+INTER1_OUT="$BUILD_DIR/inter1.npy"
+INTER2_OUT="$BUILD_DIR/inter2.npy"
 
-# Tiling params — names from auto-generated tiling_space.json (confirmed via afir-translate)
-# dim_arg{N}_0 = D0 (batch dim, shared across all tensors)
-# dim_arg{N}_1 = D1, dim_arg{N}_2 = D2 (inner dims, per-tensor)
-#
-# NOTE: dim_arg6_1 and dim_arg7_1 refer to intermediate workspace buffers (arg4/arg5 in the
-# kernel ABI) that were promoted to GM function arguments by FlattenGMPtrPass. These are
-# strided subview memrefs for the mul and add intermediate results respectively. Their D1
-# dimension equals D1 of the output tile. The simulator currently segfaults because the
-# runtime-session manifest only declares 3 inputs + 1 output and does not allocate the two
-# extra intermediate GM buffers. This is a known compiler limitation: intermediate tile
-# buffers should not be promoted to function arguments. Stage 1+2 are verified correct.
+# Tiling params — from auto-generated tiling_space.json
+# dim_arg{N}_k = dimension k of argN (using pre-PackTilingData arg numbering).
+# dim_arg6_{1,2} / dim_arg7_{1,2}: dimensions 1 and 2 of the intermediate strided
+#   buffers (arg6/arg7 before PackTilingData → arg4/arg5 in the final CANN ABI).
+# FlattenGMPtrPass uses both dim1 and dim2 to compute the correct row-major offset
+#   for 3D subviews: offset = row * D1 * D2.
 TILING_PARAMS="XBLOCK=${XBLOCK},XBLOCK_SUB=${XBLOCK_SUB}"
 TILING_PARAMS+=",dim_arg1_0=${D0}"
 TILING_PARAMS+=",dim_arg0_0=${D0},dim_arg0_1=${D1},dim_arg0_2=${D2}"
 TILING_PARAMS+=",dim_arg1_1=${D1},dim_arg1_2=${D2}"
 TILING_PARAMS+=",dim_arg2_1=${D1},dim_arg2_2=${D2}"
-TILING_PARAMS+=",dim_arg6_1=${D1},dim_arg7_1=${D1}"
+TILING_PARAMS+=",dim_arg6_1=${D1},dim_arg6_2=${D2}"
+TILING_PARAMS+=",dim_arg7_1=${D1},dim_arg7_2=${D2}"
 TILING_PARAMS+=",dim_arg3_1=${D1},dim_arg3_2=${D2}"
 
 cat > "$RUN_MANIFEST" <<EOF
@@ -112,10 +112,14 @@ cat > "$RUN_MANIFEST" <<EOF
     { "name": "c",   "path": "${DIR}/c.npy" }
   ],
   "outputs": [
-    { "name": "out", "path": "${ACTUAL_OUTPUT}" }
+    { "name": "out",   "path": "${ACTUAL_OUTPUT}" },
+    { "name": "inter1","path": "${INTER1_OUT}" },
+    { "name": "inter2","path": "${INTER2_OUT}" }
   ],
   "expected_outputs": [
-    { "name": "out", "path": "${DIR}/expected.npy" }
+    { "name": "out",   "path": "${DIR}/expected.npy" },
+    { "name": "inter1","path": "${DIR}/expected_inter1.npy" },
+    { "name": "inter2","path": "${DIR}/expected_inter2.npy" }
   ],
   "tiling": {
     "schema": "${DIR}/tiling_space.json",
@@ -129,19 +133,9 @@ cat > "$RUN_MANIFEST" <<EOF
 }
 EOF
 
-# Stage 3 known limitation: intermediate tile buffers (arg4/arg5 = mul and add scratch) were
-# promoted to GM function arguments by FlattenGMPtrPass. The simulator crashes because it
-# does not allocate those extra GM args. Fix requires FlattenGMPtrPass to skip non-user
-# buffers, or InsertTileBuffers to allocate them as workspace rather than function args.
-if ! "$RUNTIME_SESSION" \
-     --run-manifest "$RUN_MANIFEST" \
-     --run >"$VALIDATION_LOG" 2>&1; then
-  echo "  ⚠ Simulator run failed (see $VALIDATION_LOG)."
-  echo "    Root cause: intermediate tile buffers (mul/add scratch) were promoted to"
-  echo "    GM function args (arg4/arg5 in kernel ABI). The manifest omits them, causing"
-  echo "    the simulator to segfault. Stage 1+2 verified OK. Fix FlattenGMPtrPass."
-  exit 0
-fi
+"$RUNTIME_SESSION" \
+  --run-manifest "$RUN_MANIFEST" \
+  --run >"$VALIDATION_LOG" 2>&1
 grep -v '^\[info\]\|^\[PEM_AIC_LOG\]\|^\[INFO\]\|^\[WARNING\]' "$VALIDATION_LOG" || true
 grep -q '^session.backend=sim$' "$VALIDATION_LOG"
 grep -q '^session.result=success$' "$VALIDATION_LOG"

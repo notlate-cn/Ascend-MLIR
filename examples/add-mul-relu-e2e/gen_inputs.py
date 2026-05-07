@@ -27,13 +27,17 @@ def main():
     a = (rng.random(shape, dtype=np.float32) * 4 - 2).astype(np.float32)
     b = (rng.random(shape, dtype=np.float32) * 4 - 2).astype(np.float32)
     c = (rng.random(shape, dtype=np.float32) * 4 - 2).astype(np.float32)
-    expected = np.maximum(a + b * c, 0.0).astype(np.float32)
+    inter1 = (b * c).astype(np.float32)
+    inter2 = (a + inter1).astype(np.float32)
+    expected = np.maximum(inter2, 0.0).astype(np.float32)
 
     d = args.outdir
     np.save(os.path.join(d, "a.npy"), a)
     np.save(os.path.join(d, "b.npy"), b)
     np.save(os.path.join(d, "c.npy"), c)
     np.save(os.path.join(d, "expected.npy"), expected)
+    np.save(os.path.join(d, "expected_inter1.npy"), inter1)
+    np.save(os.path.join(d, "expected_inter2.npy"), inter2)
 
     total = args.d0 * args.d1 * args.d2
     print(f"shape={shape}, total={total}, seed={SEED}")

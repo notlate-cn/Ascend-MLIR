@@ -94,7 +94,31 @@ static LogicalResult canonicalizeFuncOp(func::FuncOp funcOp,
              << user->getName();
   }
 
-  int numInputs = tilingIdx;
+  // Promoted intermediate GM buffers have StridedLayoutAttr with dynamic offset.
+  // Count only real I/O memrefs (no strided dynamic offset) to determine inputs.
+  auto isRealIO = [](Type t) {
+    auto mrt = dyn_cast<MemRefType>(t);
+    if (!mrt)
+      return false;
+    auto strided = dyn_cast<StridedLayoutAttr>(mrt.getLayout());
+    return !(strided && ShapedType::isDynamic(strided.getOffset()));
+  };
+  int numRealBeforeTiling = 0;
+  for (int i = 0; i < tilingIdx; ++i)
+    if (isRealIO(args[i].getType()))
+      numRealBeforeTiling++;
+  int numRealAfterTiling = 0;
+  for (int i = tilingIdx + 1, e = static_cast<int>(args.size()); i < e; ++i)
+    if (isRealIO(args[i].getType()))
+      numRealAfterTiling++;
+  // When outputs appear after the tiling arg (PyAsc layout), all real args
+  // before tiling are inputs. When outputs appear before the tiling arg
+  // (bufferized layout with promoted intermediates), subtract 1 for the output.
+  int numInputs;
+  if (numRealAfterTiling > 0)
+    numInputs = numRealBeforeTiling;
+  else
+    numInputs = numRealBeforeTiling > 0 ? numRealBeforeTiling - 1 : tilingIdx;
   emitasc::PyStructType tilingStructType =
       getTilingStructType(args[tilingIdx].getType());
   MLIRContext *ctx = funcOp.getContext();

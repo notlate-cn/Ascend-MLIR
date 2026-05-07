@@ -55,12 +55,21 @@ resolveGMChain(Value start, OpBuilder &b, Location loc) {
         auto ba = dyn_cast<BlockArgument>(src);
         if (!ba)
           return {BlockArgument{}, Value{}};
-        Value c1 = b.create<arith::ConstantIndexOp>(loc, 1);
-        Value colStride = b.create<memref::DimOp>(loc, ba, c1);
-        Value row = materializeOffset(b, loc, offs[0]);
-        Value col = materializeOffset(b, loc, offs[1]);
-        Value flat = b.create<arith::AddIOp>(
-            loc, b.create<arith::MulIOp>(loc, row, colStride), col);
+        // Compute flat offset = sum_i(offs[i] * prod_{j=i+1..rank-1} dim(src, j)).
+        // This correctly handles tensors of any rank (2D, 3D, etc.).
+        int64_t rank = cast<MemRefType>(ba.getType()).getRank();
+        Value flat = b.create<arith::ConstantIndexOp>(loc, 0);
+        for (size_t i = 0; i < offs.size(); ++i) {
+          Value stride = b.create<arith::ConstantIndexOp>(loc, 1);
+          for (int64_t j = static_cast<int64_t>(i) + 1; j < rank; ++j) {
+            Value dimIdx = b.create<arith::ConstantIndexOp>(loc, j);
+            stride = b.create<arith::MulIOp>(
+                loc, stride, b.create<memref::DimOp>(loc, ba, dimIdx));
+          }
+          Value off = materializeOffset(b, loc, offs[i]);
+          flat = b.create<arith::AddIOp>(
+              loc, flat, b.create<arith::MulIOp>(loc, off, stride));
+        }
         acc = b.create<arith::AddIOp>(loc, acc, flat);
         return {ba, acc};
       }
