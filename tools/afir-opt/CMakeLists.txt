@@ -36,6 +36,7 @@ target_link_libraries(afir-opt
     LinalgToAscendCConversion
     AscendCParallelizeConversion
     AscendCPrepareForEmitConversion
+    AscendTargetProfile
     AscendV2Conversion
     CanonicalizeCannSignatureConversion
     FuseGatherElementwiseConversion

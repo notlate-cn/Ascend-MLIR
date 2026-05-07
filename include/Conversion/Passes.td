@@ -13,6 +13,22 @@ include "mlir/Pass/PassBase.td"
 // Ascend MLIR V2 Pipeline Skeleton
 //===----------------------------------------------------------------------===//
 
+def AscendPrintTargetProfilePass
+    : Pass<"ascend-print-target-profile", "mlir::ModuleOp"> {
+  let summary = "Load and print the Ascend CANN target profile";
+  let description = [{
+    Loads a CANN platform_config target profile and prints a stable MVP summary
+    for target model smoke tests and early V2 development.
+  }];
+  let constructor = "mlir::afir::createAscendPrintTargetProfilePass()";
+  let options = [
+    Option<"soc", "soc", "std::string", /*default=*/"\"Ascend910B2\"",
+           "CANN SoC version">,
+    Option<"cannRoot", "cann-root", "std::string", /*default=*/"\"\"",
+           "CANN root path">,
+  ];
+}
+
 def AscendNormalizePass : Pass<"ascend-normalize", "mlir::ModuleOp"> {
   let summary = "Normalize supported entry IR for the Ascend MLIR V2 pipeline";
   let description = [{
