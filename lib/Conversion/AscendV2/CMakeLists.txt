@@ -12,6 +12,7 @@ add_mlir_library(AscendV2Conversion
 
   LINK_LIBS PUBLIC
   MLIRIR
+  MLIRLinalgDialect
   MLIRPass
   MLIRSupport
 )
