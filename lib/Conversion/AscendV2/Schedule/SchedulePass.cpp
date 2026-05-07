@@ -72,7 +72,7 @@ std::string stringifyAttr(Attribute attr) {
   return std::string(storage.str());
 }
 
-std::string stringifyIteratorType(utils::IteratorType iteratorType) {
+std::string stringifyStructuredIteratorType(utils::IteratorType iteratorType) {
   if (iteratorType == utils::IteratorType::parallel)
     return "parallel";
   if (iteratorType == utils::IteratorType::reduction)
@@ -95,7 +95,8 @@ ScheduleProblem extractScheduleProblem(Operation *op, StringRef opRole) {
 
   if (auto linalgOp = dyn_cast<linalg::LinalgOp>(op)) {
     for (utils::IteratorType iteratorType : linalgOp.getIteratorTypesArray())
-      problem.iteratorTypes.push_back(stringifyIteratorType(iteratorType));
+      problem.iteratorTypes.push_back(
+          stringifyStructuredIteratorType(iteratorType));
     return problem;
   }
 

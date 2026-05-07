@@ -26,6 +26,8 @@
 namespace mlir {
 namespace afir {
 
+std::unique_ptr<Pass> createAscendPrintTargetProfilePass();
+
 #define GEN_PASS_DECL
 #define GEN_PASS_REGISTRATION
 #include "Conversion/Passes.h.inc"
