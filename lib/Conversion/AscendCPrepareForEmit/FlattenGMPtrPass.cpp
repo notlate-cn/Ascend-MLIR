@@ -56,6 +56,8 @@ resolveGMChain(Value start, OpBuilder &b, Location loc) {
         if (!ba)
           return {BlockArgument{}, Value{}};
         // Compute flat offset = sum_i(offs[i] * prod_{j=i+1..rank-1} dim(src, j)).
+        // offs.size() == rank invariant: InsertTileBuffers always generates
+        // full-rank subviews, so this formula is always complete.
         // This correctly handles tensors of any rank (2D, 3D, etc.).
         int64_t rank = cast<MemRefType>(ba.getType()).getRank();
         Value flat = b.create<arith::ConstantIndexOp>(loc, 0);

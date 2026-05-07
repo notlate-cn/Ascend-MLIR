@@ -32,6 +32,7 @@ def main():
     expected = np.maximum(inter2, 0.0).astype(np.float32)
 
     d = args.outdir
+    os.makedirs(d, exist_ok=True)
     np.save(os.path.join(d, "a.npy"), a)
     np.save(os.path.join(d, "b.npy"), b)
     np.save(os.path.join(d, "c.npy"), c)

@@ -114,6 +114,7 @@ static LogicalResult canonicalizeFuncOp(func::FuncOp funcOp,
   // When outputs appear after the tiling arg (PyAsc layout), all real args
   // before tiling are inputs. When outputs appear before the tiling arg
   // (bufferized layout with promoted intermediates), subtract 1 for the output.
+  // Assumes single output in the bufferized layout case.
   int numInputs;
   if (numRealAfterTiling > 0)
     numInputs = numRealBeforeTiling;

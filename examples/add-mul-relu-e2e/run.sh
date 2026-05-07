@@ -88,10 +88,13 @@ INTER2_OUT="$BUILD_DIR/inter2.npy"
 
 # Tiling params — from auto-generated tiling_space.json
 # dim_arg{N}_k = dimension k of argN (using pre-PackTilingData arg numbering).
-# dim_arg6_{1,2} / dim_arg7_{1,2}: dimensions 1 and 2 of the intermediate strided
-#   buffers (arg6/arg7 before PackTilingData → arg4/arg5 in the final CANN ABI).
-# FlattenGMPtrPass uses both dim1 and dim2 to compute the correct row-major offset
-#   for 3D subviews: offset = row * D1 * D2.
+# Arg layout before PackTilingData:
+#   arg0=a, arg1=b, arg2=c (real inputs)  arg3=out (real output)
+#   arg4=inter1, arg5=inter2 (promoted GM intermediates, strided layout)
+#   arg6/arg7: FlattenGMPtrPass promotes allocs later, shifting indices by 2.
+# dim_arg6_{1,2} / dim_arg7_{1,2}: D1 and D2 of the two promoted intermediates.
+# FlattenGMPtrPass uses both dim1 and dim2 to compute the correct row-major
+#   offset for 3D subviews: offset = row * D1 * D2.
 TILING_PARAMS="XBLOCK=${XBLOCK},XBLOCK_SUB=${XBLOCK_SUB}"
 TILING_PARAMS+=",dim_arg1_0=${D0}"
 TILING_PARAMS+=",dim_arg0_0=${D0},dim_arg0_1=${D1},dim_arg0_2=${D2}"

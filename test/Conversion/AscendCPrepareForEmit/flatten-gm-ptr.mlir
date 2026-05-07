@@ -49,6 +49,25 @@ func.func @test_2d(%arg0: memref<32x32xf32>) {
   return
 }
 
+// 3D subview: flat offset = row * dim[1] * dim[2] (general N-D row-major formula).
+// CHECK-LABEL: func.func @test_3d
+// CHECK: memref.dim
+// CHECK: arith.muli
+// CHECK: arith.addi
+// CHECK: emitasc.reinterpret_cast
+// CHECK-NOT: memref.subview
+
+func.func @test_3d(%arg0: memref<4x8x32xf32>) {
+  %gt = ascendc.global_tensor : !ascendc.global_tensor<*xf32>
+  %c1 = arith.constant 1 : index
+  %c0 = arith.constant 0 : index
+  %sub = memref.subview %arg0[%c1, %c0, %c0][1, 8, 32][1, 1, 1]
+    : memref<4x8x32xf32> to memref<1x8x32xf32, strided<[256, 32, 1], offset: ?>>
+  ascendc.global_tensor.set_global_buffer %gt, %sub
+    : !ascendc.global_tensor<*xf32>, memref<1x8x32xf32, strided<[256, 32, 1], offset: ?>>
+  return
+}
+
 // GM->GM copy should become memmove.
 // CHECK-LABEL: func.func @test_gm_copy
 // CHECK: memmove
