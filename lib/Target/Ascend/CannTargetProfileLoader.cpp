@@ -11,8 +11,10 @@
 #include "llvm/ADT/StringSet.h"
 #include "llvm/ADT/StringSwitch.h"
 #include "llvm/ADT/StringExtras.h"
+#include "llvm/ADT/STLExtras.h"
 #include "llvm/Support/MemoryBuffer.h"
 #include "llvm/Support/Path.h"
+#include <optional>
 #include <utility>
 
 using namespace mlir;
@@ -62,6 +64,28 @@ SmallVector<std::string> parseDtypes(StringRef value) {
       dtypes.push_back(token.str());
   }
   return dtypes;
+}
+
+std::optional<TargetIntrinsicInfo> parseIntrinsicEntry(StringRef key,
+                                                       StringRef value) {
+  TargetIntrinsicInfo intrinsic;
+  key = trim(key);
+  value = trim(value);
+
+  if (key.starts_with("Intrinsic_")) {
+    intrinsic.name = key.str();
+    intrinsic.dtypes = parseDtypes(value);
+    return intrinsic;
+  }
+
+  auto [name, dtypeList] = value.split('|');
+  name = trim(name);
+  if (!name.starts_with("Intrinsic_"))
+    return std::nullopt;
+
+  intrinsic.name = name.str();
+  intrinsic.dtypes = parseDtypes(dtypeList);
+  return intrinsic;
 }
 
 void parseIni(StringRef content, SectionMap &sections) {
@@ -161,14 +185,13 @@ FailureOr<TargetProfile> loadImpl(StringRef cannRoot, StringRef socVersion,
   auto dtypeSectionIt = sections.find("AICoreintrinsicDtypeMap");
   if (dtypeSectionIt != sections.end()) {
     for (const auto &entry : dtypeSectionIt->second) {
-      if (!entry.first().starts_with("Intrinsic_"))
+      std::optional<TargetIntrinsicInfo> parsed =
+          parseIntrinsicEntry(entry.first(), entry.second);
+      if (!parsed)
         continue;
-      if (!seenIntrinsics.insert(entry.first()).second)
+      if (!seenIntrinsics.insert(parsed->name).second)
         continue;
-      TargetIntrinsicInfo intrinsic;
-      intrinsic.name = entry.first().str();
-      intrinsic.dtypes = parseDtypes(entry.second);
-      profile.intrinsics.push_back(std::move(intrinsic));
+      profile.intrinsics.push_back(std::move(*parsed));
     }
   }
 
@@ -181,10 +204,14 @@ FailureOr<TargetProfile> loadImpl(StringRef cannRoot, StringRef socVersion,
         continue;
       TargetIntrinsicInfo intrinsic;
       intrinsic.name = entry.first().str();
-      intrinsic.dtypes = parseDtypes(entry.second);
       profile.intrinsics.push_back(std::move(intrinsic));
     }
   }
+
+  llvm::sort(profile.intrinsics, [](const TargetIntrinsicInfo &lhs,
+                                    const TargetIntrinsicInfo &rhs) {
+    return lhs.name < rhs.name;
+  });
 
   if (failed(verifyTargetProfile(profile, os)))
     return failure();
