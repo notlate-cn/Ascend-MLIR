@@ -7,7 +7,11 @@
 #include "Conversion/AscendV2/Normalize/NormalizePass.h"
 
 #include "Conversion/AscendV2/Debug/DebugOptions.h"
+#include "mlir/IR/Attributes.h"
 #include "mlir/IR/BuiltinOps.h"
+#include "mlir/IR/Operation.h"
+#include "mlir/IR/OperationSupport.h"
+#include "llvm/ADT/StringSwitch.h"
 #include "llvm/Support/raw_ostream.h"
 
 #define GEN_PASS_DECL_ASCENDNORMALIZEPASS
@@ -15,6 +19,21 @@
 #include "Conversion/Passes.h.inc"
 
 using namespace mlir;
+
+namespace {
+
+bool isAllowedInputDialect(StringRef dialectNamespace) {
+  return llvm::StringSwitch<bool>(dialectNamespace)
+      .Case("builtin", true)
+      .Case("func", true)
+      .Case("tensor", true)
+      .Case("linalg", true)
+      .Case("arith", true)
+      .Case("math", true)
+      .Default(false);
+}
+
+} // namespace
 
 namespace mlir::afir {
 
@@ -29,6 +48,28 @@ struct AscendNormalizePass
       ascend::v2::emitStageHeader(llvm::errs(),
                                   ascend::v2::DebugStage::Normalize,
                                   getArgument());
+
+    ModuleOp module = getOperation();
+    if (module
+            .walk([&](Operation *op) {
+              StringRef dialectNamespace =
+                  op->getName().getDialectNamespace();
+              if (isAllowedInputDialect(dialectNamespace))
+                return WalkResult::advance();
+
+              op->emitError() << "unsupported dialect before Kernelize";
+              return WalkResult::interrupt();
+            })
+            .wasInterrupted()) {
+      signalPassFailure();
+      return;
+    }
+
+    MLIRContext *context = module.getContext();
+    module.walk([&](Operation *op) {
+      if (op->getName().getStringRef() == "func.func")
+        op->setAttr("ascend.v2.normalized", BoolAttr::get(context, true));
+    });
   }
 };
 
