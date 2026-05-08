@@ -10,6 +10,7 @@
 #include "Conversion/AscendV2/Schedule/AxisCoalescer.h"
 #include "Conversion/AscendV2/Schedule/KernelPatternView.h"
 #include "Conversion/AscendV2/Schedule/ScheduleProblemBuilder.h"
+#include "Conversion/AscendV2/Schedule/ScheduleSearch.h"
 #include "Conversion/AscendV2/Schedule/ScheduleTypes.h"
 #include "Conversion/AscendV2/Schedule/TemplateRegistry.h"
 #include "mlir/IR/Attributes.h"
@@ -41,6 +42,12 @@ struct ScheduleReportEntry {
   std::string scheduleFamily;
   std::string scheduleTemplate;
   std::string decisionId;
+};
+
+struct ScheduleDebugEntry {
+  ScheduleProblem problem;
+  SmallVector<ScheduleTemplate> templateMatches;
+  ScheduleSearchResult searchResult;
 };
 
 void emitScheduleReport(ArrayRef<ScheduleReportEntry> entries,
@@ -79,8 +86,8 @@ struct AscendSchedulePass
 
     ModuleOp module = getOperation();
     MLIRContext *context = module.getContext();
-    std::vector<ScheduleProblem> scheduleProblemEntries;
-    SmallVector<SmallVector<ScheduleTemplate>> templateRegistryEntries;
+    ScheduleSearchOptions searchOptions;
+    std::vector<ScheduleDebugEntry> scheduleDebugEntries;
     SmallVector<ScheduleReportEntry> reportEntries;
     FailureOr<SmallVector<KernelPatternView>> patternViews =
         buildKernelPatternViews(module);
@@ -120,14 +127,29 @@ struct AscendSchedulePass
         signalPassFailure();
         return;
       }
-      const ScheduleTemplate &selectedTemplate = templateMatches.front();
+      ScheduleSearchResult searchResult = searchScheduleInstancesWithStats(
+          *scheduleProblem, templateMatches, searchOptions);
+      if (searchResult.keptInstances.empty()) {
+        if (const PatternOpView *primaryOpView =
+                selectDominantPrimaryOp(pattern)) {
+          primaryOpView->op->emitError()
+              << "no schedule instance for kernel "
+              << scheduleProblem->kernelId << " role "
+              << stringifyOpRole(scheduleProblem->dominantRole) << " rank "
+              << scheduleProblem->resultRank;
+        }
+        signalPassFailure();
+        return;
+      }
+      const ScheduleInstance &selectedInstance =
+          searchResult.keptInstances.front();
 
       std::string decisionId =
           (llvm::Twine("decision_") + llvm::Twine(nextDecisionId++)).str();
       StringAttr scheduleFamilyAttr =
-          StringAttr::get(context, selectedTemplate.family);
+          StringAttr::get(context, selectedInstance.tmpl.family);
       StringAttr scheduleTemplateAttr =
-          StringAttr::get(context, selectedTemplate.name);
+          StringAttr::get(context, selectedInstance.tmpl.name);
       StringAttr scheduleDecisionIdAttr = StringAttr::get(context, decisionId);
 
       for (const PatternOpView &opView : pattern.ops) {
@@ -139,22 +161,26 @@ struct AscendSchedulePass
 
       reportEntries.push_back(ScheduleReportEntry{
           scheduleProblem->dominantRole, scheduleProblem->resultRank,
-          scheduleProblem->resultShape, selectedTemplate.family,
-          selectedTemplate.name, decisionId});
-      templateRegistryEntries.push_back(std::move(templateMatches));
-      scheduleProblemEntries.push_back(std::move(*scheduleProblem));
+          scheduleProblem->resultShape, selectedInstance.tmpl.family,
+          selectedInstance.tmpl.name, decisionId});
+      scheduleDebugEntries.push_back(ScheduleDebugEntry{
+          std::move(*scheduleProblem), std::move(templateMatches),
+          std::move(searchResult)});
     }
 
     if (::mlir::ascend::v2::shouldDump(
             options, ::mlir::ascend::v2::DebugStage::Schedule)) {
       printKernelPatternViews(*patternViews, llvm::errs());
-      for (auto indexedProblem : llvm::enumerate(scheduleProblemEntries)) {
-        const ScheduleProblem &problem = indexedProblem.value();
+      for (const ScheduleDebugEntry &entry : scheduleDebugEntries) {
+        const ScheduleProblem &problem = entry.problem;
         printAxisCoalescingReport(problem.kernelId, problem.axes, llvm::errs());
         printScheduleProblemReport(problem, llvm::errs());
-        printTemplateRegistryReport(
-            problem.kernelId, templateRegistryEntries[indexedProblem.index()],
-            llvm::errs());
+        printTemplateRegistryReport(problem.kernelId, entry.templateMatches,
+                                    llvm::errs());
+        const ScheduleSearchResult &searchResult = entry.searchResult;
+        printScheduleSearchReport(problem.kernelId,
+                                  searchResult.generatedCount, searchOptions,
+                                  searchResult.keptInstances, llvm::errs());
       }
       emitScheduleReport(reportEntries, llvm::errs());
     }

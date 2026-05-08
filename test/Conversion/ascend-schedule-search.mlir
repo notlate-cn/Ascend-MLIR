@@ -1,0 +1,109 @@
+// RUN: afir-opt %s --ascend-normalize --ascend-kernelize --ascend-schedule='dump-report=true debug-stage=schedule' 2>&1 | FileCheck %s
+
+func.func @vector_rank2_a(%arg0: tensor<4x8xf16>,
+                          %arg1: tensor<4x8xf16>) -> tensor<4x8xf16> {
+  %empty = tensor.empty() : tensor<4x8xf16>
+  %out = linalg.generic {
+    indexing_maps = [
+      affine_map<(d0, d1) -> (d0, d1)>,
+      affine_map<(d0, d1) -> (d0, d1)>,
+      affine_map<(d0, d1) -> (d0, d1)>
+    ],
+    iterator_types = ["parallel", "parallel"]
+  } ins(%arg0, %arg1 : tensor<4x8xf16>, tensor<4x8xf16>)
+    outs(%empty : tensor<4x8xf16>) {
+  ^bb0(%x: f16, %y: f16, %o: f16):
+    %v = arith.addf %x, %y : f16
+    linalg.yield %v : f16
+  } -> tensor<4x8xf16>
+  return %out : tensor<4x8xf16>
+}
+
+func.func @vector_rank2_b(%arg0: tensor<4x8xf16>,
+                          %arg1: tensor<4x8xf16>) -> tensor<4x8xf16> {
+  %empty = tensor.empty() : tensor<4x8xf16>
+  %out = linalg.generic {
+    indexing_maps = [
+      affine_map<(d0, d1) -> (d0, d1)>,
+      affine_map<(d0, d1) -> (d0, d1)>,
+      affine_map<(d0, d1) -> (d0, d1)>
+    ],
+    iterator_types = ["parallel", "parallel"]
+  } ins(%arg0, %arg1 : tensor<4x8xf16>, tensor<4x8xf16>)
+    outs(%empty : tensor<4x8xf16>) {
+  ^bb0(%x: f16, %y: f16, %o: f16):
+    %v = arith.mulf %x, %y : f16
+    linalg.yield %v : f16
+  } -> tensor<4x8xf16>
+  return %out : tensor<4x8xf16>
+}
+
+func.func @reduction_split(%arg0: tensor<4x8xf16>) -> tensor<4xf16> {
+  %empty = tensor.empty() : tensor<4xf16>
+  %out = linalg.generic {
+    indexing_maps = [
+      affine_map<(d0, d1) -> (d0, d1)>,
+      affine_map<(d0, d1) -> (d0)>
+    ],
+    iterator_types = ["parallel", "reduction"]
+  } ins(%arg0 : tensor<4x8xf16>)
+    outs(%empty : tensor<4xf16>) {
+  ^bb0(%x: f16, %acc: f16):
+    %v = arith.addf %acc, %x : f16
+    linalg.yield %v : f16
+  } -> tensor<4xf16>
+  return %out : tensor<4xf16>
+}
+
+func.func @dynamic_vector(%arg0: tensor<?x8xf16>,
+                          %arg1: tensor<?x8xf16>) -> tensor<?x8xf16> {
+  %c0 = arith.constant 0 : index
+  %d0 = tensor.dim %arg0, %c0 : tensor<?x8xf16>
+  %empty = tensor.empty(%d0) : tensor<?x8xf16>
+  %out = linalg.generic {
+    indexing_maps = [
+      affine_map<(d0, d1) -> (d0, d1)>,
+      affine_map<(d0, d1) -> (d0, d1)>,
+      affine_map<(d0, d1) -> (d0, d1)>
+    ],
+    iterator_types = ["parallel", "parallel"]
+  } ins(%arg0, %arg1 : tensor<?x8xf16>, tensor<?x8xf16>)
+    outs(%empty : tensor<?x8xf16>) {
+  ^bb0(%x: f16, %y: f16, %o: f16):
+    %v = arith.addf %x, %y : f16
+    linalg.yield %v : f16
+  } -> tensor<?x8xf16>
+  return %out : tensor<?x8xf16>
+}
+
+// CHECK: ScheduleSearch:
+// CHECK-NEXT:   kernel = kernel_0
+// CHECK-NEXT:   generated = 2
+// CHECK-NEXT:   kept = 2
+// CHECK-NEXT:   compile_time_top_k = 4
+// CHECK-NEXT:   instance = kernel_0.vector_static_2d.0
+// CHECK-NEXT:   instance = kernel_0.vector_static_2d.1
+// CHECK: ScheduleSearch:
+// CHECK-NEXT:   kernel = kernel_1
+// CHECK-NEXT:   generated = 2
+// CHECK-NEXT:   kept = 2
+// CHECK-NEXT:   compile_time_top_k = 4
+// CHECK-NEXT:   instance = kernel_1.vector_static_2d.0
+// CHECK-NEXT:   instance = kernel_1.vector_static_2d.1
+// CHECK: ScheduleSearch:
+// CHECK-NEXT:   kernel = kernel_2
+// CHECK-NEXT:   generated = 2
+// CHECK-NEXT:   kept = 2
+// CHECK-NEXT:   compile_time_top_k = 4
+// CHECK-NEXT:   instance = kernel_2.reduction_static.0
+// CHECK-NEXT:   instance = kernel_2.reduction_static.1
+// CHECK: ScheduleSearch:
+// CHECK-NEXT:   kernel = kernel_3
+// CHECK-NEXT:   generated = 2
+// CHECK-NEXT:   kept = 2
+// CHECK-NEXT:   compile_time_top_k = 4
+// CHECK-NEXT:   instance = kernel_3.vector_static_2d.0
+// CHECK-NEXT:   instance = kernel_3.vector_static_2d.1
+// CHECK: schedule_family = "vector_static_2d"
+// CHECK: schedule_template = "single_tile_per_block"
+// CHECK: ascend.v2.schedule.family = "vector_static_2d"

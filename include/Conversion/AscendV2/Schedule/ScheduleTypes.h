@@ -105,6 +105,22 @@ struct ScheduleTemplate {
   unsigned priority = 0;
 };
 
+struct TileShape {
+  SmallVector<int64_t> tileSizes;
+};
+
+struct ScheduleInstance {
+  std::string instanceId;
+  ScheduleTemplate tmpl;
+  TileShape tileShape;
+  int64_t estimatedCost = 0;
+  SmallVector<std::string> reasonKinds;
+};
+
+struct ScheduleSearchOptions {
+  unsigned compileTimeTopK = 4;
+};
+
 inline OpRole parseOpRole(llvm::StringRef value) {
   return llvm::StringSwitch<OpRole>(value)
       .Case("cube", OpRole::Cube)
