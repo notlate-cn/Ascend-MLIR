@@ -8,6 +8,7 @@
 
 #include "Conversion/AscendV2/Debug/DebugOptions.h"
 #include "Conversion/AscendV2/Kernelize/DependencyAnalysis.h"
+#include "Conversion/AscendV2/Kernelize/FusionCandidateAnalysis.h"
 #include "Conversion/AscendV2/Kernelize/KernelizeTypes.h"
 #include "Conversion/AscendV2/Kernelize/OpRoleClassification.h"
 #include "Conversion/AscendV2/Kernelize/StructuralMarking.h"
@@ -127,6 +128,14 @@ struct AscendKernelizePass
     if (::mlir::ascend::v2::shouldDump(
             options, ::mlir::ascend::v2::DebugStage::Kernelize))
       emitOpRoleClassificationReport(llvm::errs(), *depResult, *roleMap);
+
+    KernelizeConfig config;
+    SmallVector<FusionCandidate> fusionCandidates =
+        FusionCandidateAnalyzer().analyze(*depResult, *roleMap, config);
+    if (::mlir::ascend::v2::shouldDump(
+            options, ::mlir::ascend::v2::DebugStage::Kernelize))
+      emitFusionCandidateReport(llvm::errs(), fusionCandidates,
+                                depResult->index);
 
     MLIRContext *context = module.getContext();
     SmallVector<KernelizeReportEntry> reportEntries;
