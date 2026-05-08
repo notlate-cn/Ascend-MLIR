@@ -9,6 +9,7 @@ add_mlir_library(AscendV2Conversion
   Kernelize/HorizontalFusionAnalysis.cpp
   Kernelize/KernelPattern.cpp
   Schedule/KernelPatternView.cpp
+  Schedule/TemplateRegistry.cpp
   Normalize/NormalizePass.cpp
   Kernelize/KernelizePass.cpp
   Kernelize/OpRoleClassification.cpp

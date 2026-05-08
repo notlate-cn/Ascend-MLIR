@@ -96,6 +96,15 @@ struct ScheduleProblem {
   SmallVector<std::string> shapeConstraints;
 };
 
+struct ScheduleTemplate {
+  std::string family;
+  std::string name;
+  SmallVector<std::string> tags;
+  unsigned minRank = 0;
+  unsigned maxRank = 0;
+  unsigned priority = 0;
+};
+
 inline OpRole parseOpRole(llvm::StringRef value) {
   return llvm::StringSwitch<OpRole>(value)
       .Case("cube", OpRole::Cube)
