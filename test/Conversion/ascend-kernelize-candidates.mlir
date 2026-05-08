@@ -36,6 +36,27 @@ func.func @elementwise_chain(%arg0: tensor<4x8xf16>,
   return %1 : tensor<4x8xf16>
 }
 
+func.func @unsupported_unknown(%arg0: tensor<11xf16>) -> tensor<4x8xf16> {
+  %empty = tensor.empty() : tensor<4x8xf16>
+  %0 = linalg.generic {
+    indexing_maps = [
+      affine_map<(d0, d1) -> (d0 + d1)>,
+      affine_map<(d0, d1) -> (d0, d1)>
+    ],
+    iterator_types = ["parallel", "parallel"]
+  } ins(%arg0 : tensor<11xf16>)
+    outs(%empty : tensor<4x8xf16>) {
+  ^bb0(%x: f16, %o: f16):
+    linalg.yield %x : f16
+  } -> tensor<4x8xf16>
+
+  return %0 : tensor<4x8xf16>
+}
+
+// CHECK: OpRoleClassification
+// CHECK: op_id = 2
+// CHECK-SAME: roles = ["Unsupported"]
+// CHECK-SAME: op_role = "unsupported"
 // CHECK: FusionCandidateAnalysis
 // CHECK: candidate_id = 0
 // CHECK-SAME: kind = "Fusion"
@@ -45,3 +66,5 @@ func.func @elementwise_chain(%arg0: tensor<4x8xf16>,
 // CHECK-SAME: closed = true
 // CHECK-SAME: benefit = 10
 // CHECK-SAME: families = ["vector"]
+// CHECK-NOT: primitive = "FallbackSingleOp"{{.*}}internal_ops = [2]
+// CHECK: Kernelize report
