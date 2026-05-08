@@ -159,6 +159,12 @@ MergedCandidate buildMergedCandidate(const FusionCandidate &lhs,
   sortUniqueOpsByOpId(merged.primaryOps, deps.index);
   sortUniqueOpsByOpId(merged.internalOps, deps.index);
 
+  if (merged.internalOps.size() == lhs.internalOps.size() ||
+      merged.internalOps.size() == rhs.internalOps.size()) {
+    merged.rejectionReason = "SubsumedCandidate";
+    return merged;
+  }
+
   if (merged.internalOps.size() > config.maxOpsPerCandidate) {
     merged.rejectionReason = "TooManyInternalOps";
     return merged;
