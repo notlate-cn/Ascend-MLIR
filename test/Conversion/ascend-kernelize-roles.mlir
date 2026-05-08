@@ -54,6 +54,22 @@ func.func @branch_merge(%a: tensor<16xf32>, %b: tensor<16xf32>,
   return %3 : tensor<16xf32>
 }
 
+func.func @reduction(%arg0: tensor<4x8xf32>) -> tensor<4xf32> {
+  %empty = tensor.empty() : tensor<4xf32>
+  %0 = linalg.generic {
+      indexing_maps = [
+        affine_map<(d0, d1) -> (d0, d1)>,
+        affine_map<(d0, d1) -> (d0)>],
+      iterator_types = ["parallel", "reduction"]}
+      ins(%arg0 : tensor<4x8xf32>)
+      outs(%empty : tensor<4xf32>) {
+    ^bb0(%x: f32, %acc: f32):
+      %sum = arith.addf %acc, %x : f32
+      linalg.yield %sum : f32
+    } -> tensor<4xf32>
+  return %0 : tensor<4xf32>
+}
+
 // CHECK: StructuralMarking
 // CHECK: op_id = 0
 // CHECK-SAME: branch_root = true
@@ -61,5 +77,14 @@ func.func @branch_merge(%a: tensor<16xf32>, %b: tensor<16xf32>,
 // CHECK: op_id = 3
 // CHECK-SAME: merge_root = true
 // CHECK-SAME: merge_group = 0
+// CHECK: OpRoleClassification
+// CHECK: op_id = 0
+// CHECK-SAME: roles = ["Primary", "Vector", "Injective", "Branch"]
+// CHECK-SAME: op_role = "vector"
+// CHECK: op_id = 3
+// CHECK-SAME: roles = ["Primary", "Vector", "Injective", "Merge"]
+// CHECK-SAME: op_role = "vector"
+// CHECK: roles = ["Primary", "Reduction"]
+// CHECK-SAME: op_role = "reduction"
 // CHECK-NOT: ascend.v2.branch_group = 99
 // CHECK-NOT: ascend.v2.merge_group = 88
