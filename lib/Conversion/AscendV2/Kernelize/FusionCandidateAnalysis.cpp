@@ -99,10 +99,7 @@ bool hasPrimaryFamily(ArrayRef<OpRole> roles, ScheduleContract &contract) {
 bool isFallbackEligible(ArrayRef<OpRole> roles) {
   if (roles.empty())
     return false;
-  if (!hasRole(roles, OpRole::Unsupported))
-    return true;
-  return hasRole(roles, OpRole::Cube) || hasRole(roles, OpRole::Reduction) ||
-         hasRole(roles, OpRole::Vector);
+  return !hasRole(roles, OpRole::Unsupported);
 }
 
 bool legalizeCandidate(FusionCandidate &candidate,
