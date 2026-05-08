@@ -4,6 +4,7 @@ add_mlir_library(AscendV2Conversion
   Schedule/ScheduleDecision.cpp
   Schedule/ScheduleProblemBuilder.cpp
   Schedule/ScheduleSearch.cpp
+  Schedule/StructuredLoweringDriver.cpp
   Kernelize/CandidateClosure.cpp
   Kernelize/CandidateMergeAnalysis.cpp
   Debug/DebugOptions.cpp

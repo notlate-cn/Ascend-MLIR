@@ -14,6 +14,7 @@
 #include "Conversion/AscendV2/Schedule/ScheduleProblemBuilder.h"
 #include "Conversion/AscendV2/Schedule/ScheduleSearch.h"
 #include "Conversion/AscendV2/Schedule/ScheduleTypes.h"
+#include "Conversion/AscendV2/Schedule/StructuredLoweringDriver.h"
 #include "Conversion/AscendV2/Schedule/TemplateRegistry.h"
 #include "mlir/IR/Attributes.h"
 #include "mlir/IR/BuiltinOps.h"
@@ -51,6 +52,7 @@ struct ScheduleDebugEntry {
   SmallVector<ScheduleTemplate> templateMatches;
   ScheduleSearchResult searchResult;
   ScheduleDecisionSet decisionSet;
+  StructuredLoweringReport structuredLoweringReport;
 };
 
 void emitScheduleReport(ArrayRef<ScheduleReportEntry> entries,
@@ -170,13 +172,22 @@ struct AscendSchedulePass
         op->setAttr(kScheduleRuntimeTopKAttr, runtimeTopKAttr);
       }
 
+      StructuredLoweringReport structuredLoweringReport;
+      if (failed(applyStructuredLoweringMarkers(pattern, *scheduleProblem,
+                                                decisionSet,
+                                                structuredLoweringReport))) {
+        signalPassFailure();
+        return;
+      }
+
       reportEntries.push_back(ScheduleReportEntry{
           scheduleProblem->dominantRole, scheduleProblem->resultRank,
           scheduleProblem->resultShape, selectedInstance.tmpl.family,
           selectedInstance.tmpl.name, selectedDecision.decisionId});
       scheduleDebugEntries.push_back(ScheduleDebugEntry{
           std::move(*scheduleProblem), std::move(templateMatches),
-          std::move(searchResult), std::move(decisionSet)});
+          std::move(searchResult), std::move(decisionSet),
+          std::move(structuredLoweringReport)});
     }
 
     if (::mlir::ascend::v2::shouldDump(
@@ -194,6 +205,8 @@ struct AscendSchedulePass
                                   searchResult.keptInstances, llvm::errs());
         printScheduleGuardsReport(problem, searchResult, llvm::errs());
         printScheduleDecisionSetReport(entry.decisionSet, llvm::errs());
+        printStructuredLoweringReport(entry.structuredLoweringReport,
+                                      llvm::errs());
       }
       printScheduleCacheReport(scheduleCacheModel, llvm::errs());
       emitScheduleReport(reportEntries, llvm::errs());
