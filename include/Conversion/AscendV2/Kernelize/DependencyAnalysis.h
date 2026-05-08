@@ -8,6 +8,7 @@
 #define ASCEND_MLIR_CONVERSION_ASCENDV2_KERNELIZE_DEPENDENCYANALYSIS_H
 
 #include "Conversion/AscendV2/Kernelize/KernelizeTypes.h"
+#include "mlir/IR/AffineMap.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/Operation.h"
 #include "mlir/Support/LLVM.h"
@@ -24,6 +25,7 @@ struct OpSemanticSummary {
   OperationId opId;
   AccessPatternKind accessPattern = AccessPatternKind::Unknown;
   SmallVector<StringRef> iteratorTypes;
+  SmallVector<AffineMap> indexingMaps;
   unsigned resultRank = 0;
   bool hasReductionIterator = false;
   bool hasOnlyParallelIterators = false;

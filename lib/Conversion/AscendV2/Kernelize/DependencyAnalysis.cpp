@@ -57,38 +57,70 @@ unsigned getFirstRankedTensorResultRank(Operation *op) {
   return 0;
 }
 
-bool isFullRankPermutationLike(AffineMap map, unsigned resultRank) {
-  return map.getNumResults() == resultRank && map.isProjectedPermutation();
-}
-
-enum class ParallelIndexingKind { Elementwise, Broadcast, Unknown };
-
-ParallelIndexingKind classifyParallelIndexing(Operation *op,
-                                              unsigned resultRank) {
+void populateIndexingMaps(Operation *op, OpSemanticSummary &summary) {
   auto indexingMaps = op->getAttrOfType<ArrayAttr>("indexing_maps");
   if (!indexingMaps)
-    return ParallelIndexingKind::Unknown;
+    return;
 
-  bool hasProjectedMap = false;
   for (Attribute attr : indexingMaps) {
     auto mapAttr = dyn_cast<AffineMapAttr>(attr);
     if (!mapAttr)
-      return ParallelIndexingKind::Unknown;
+      continue;
+    summary.indexingMaps.push_back(mapAttr.getValue());
+  }
+}
 
-    AffineMap map = mapAttr.getValue();
+bool isIdentityOnLeadingDims(AffineMap map) {
+  if (map.getNumResults() != map.getNumDims())
+    return false;
+
+  for (auto [index, expr] : llvm::enumerate(map.getResults())) {
+    auto dimExpr = dyn_cast<AffineDimExpr>(expr);
+    if (!dimExpr || dimExpr.getPosition() != index)
+      return false;
+  }
+  return true;
+}
+
+enum class ParallelIndexingKind {
+  Elementwise,
+  Broadcast,
+  LayoutTransform,
+  Unknown
+};
+
+ParallelIndexingKind
+classifyParallelIndexing(ArrayRef<AffineMap> indexingMaps,
+                         unsigned resultRank) {
+  if (indexingMaps.empty())
+    return ParallelIndexingKind::Unknown;
+
+  bool hasProjectedMap = false;
+  bool hasNonIdentityFullRankMap = false;
+  for (AffineMap map : indexingMaps) {
     if (!map.isProjectedPermutation())
       return ParallelIndexingKind::Unknown;
+
     if (map.getNumResults() > resultRank)
       return ParallelIndexingKind::Unknown;
+
     if (map.getNumResults() < resultRank) {
       hasProjectedMap = true;
       continue;
     }
-    if (!isFullRankPermutationLike(map, resultRank))
+
+    if (map.getNumResults() != resultRank)
       return ParallelIndexingKind::Unknown;
+
+    if (!isIdentityOnLeadingDims(map))
+      hasNonIdentityFullRankMap = true;
   }
-  return hasProjectedMap ? ParallelIndexingKind::Broadcast
-                         : ParallelIndexingKind::Elementwise;
+
+  if (hasProjectedMap)
+    return ParallelIndexingKind::Broadcast;
+  if (hasNonIdentityFullRankMap)
+    return ParallelIndexingKind::LayoutTransform;
+  return ParallelIndexingKind::Elementwise;
 }
 
 void populateIteratorSummary(Operation *op, OpSemanticSummary &summary,
@@ -122,6 +154,7 @@ OpSemanticSummary buildSemanticSummary(Operation *op, OperationId opId) {
   summary.op = op;
   summary.opId = opId;
   summary.resultRank = getFirstRankedTensorResultRank(op);
+  populateIndexingMaps(op, summary);
 
   StringRef opName = op->getName().getStringRef();
   if (opName == "linalg.matmul") {
@@ -153,12 +186,16 @@ OpSemanticSummary buildSemanticSummary(Operation *op, OperationId opId) {
   }
 
   if (summary.hasOnlyParallelIterators) {
-    switch (classifyParallelIndexing(op, summary.resultRank)) {
+    switch (classifyParallelIndexing(summary.indexingMaps,
+                                     summary.resultRank)) {
     case ParallelIndexingKind::Elementwise:
       summary.accessPattern = AccessPatternKind::Elementwise;
       break;
     case ParallelIndexingKind::Broadcast:
       summary.accessPattern = AccessPatternKind::Broadcast;
+      break;
+    case ParallelIndexingKind::LayoutTransform:
+      summary.accessPattern = AccessPatternKind::LayoutTransform;
       break;
     case ParallelIndexingKind::Unknown:
       summary.accessPattern = AccessPatternKind::Unknown;
