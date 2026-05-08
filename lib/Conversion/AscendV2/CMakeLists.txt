@@ -1,5 +1,6 @@
 add_mlir_library(AscendV2Conversion
   Schedule/AxisCoalescer.cpp
+  Schedule/ScheduleDecision.cpp
   Schedule/ScheduleProblemBuilder.cpp
   Schedule/ScheduleSearch.cpp
   Kernelize/CandidateClosure.cpp

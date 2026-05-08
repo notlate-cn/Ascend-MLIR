@@ -35,13 +35,15 @@ func.func @elementwise_chain(%arg0: tensor<64xf16>, %arg1: tensor<64xf16>,
   return %mul : tensor<64xf16>
 }
 
-// CHECK: SchedulePatternView:
-// CHECK: kernel = kernel_0
-// CHECK: ops = 2
-// CHECK: primary_ops = 1
-// CHECK: dominant_role = vector
+// CHECK: ScheduleDecisionSet:
+// CHECK-NEXT:   kernel = kernel_0
+// CHECK-NEXT:   decisions = 2
+// CHECK-NEXT:   runtime_top_k = 1
+// CHECK-NEXT:   selected = kernel_0.decision.0
+// CHECK: schedule_decision_id = "kernel_0.decision.0"
 // CHECK: linalg.generic
 // CHECK-SAME: ascend.v2.schedule.decision_id = "kernel_0.decision.0"
+// CHECK-SAME: ascend.v2.schedule.runtime_top_k = 1 : i64
 // CHECK: linalg.generic
 // CHECK-SAME: ascend.v2.schedule.decision_id = "kernel_0.decision.0"
-// CHECK: ascend.v2.schedule.family = "vector_static_1d"
+// CHECK-SAME: ascend.v2.schedule.runtime_top_k = 1 : i64
