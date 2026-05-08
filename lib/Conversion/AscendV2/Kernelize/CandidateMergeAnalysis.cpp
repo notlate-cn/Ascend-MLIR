@@ -8,7 +8,6 @@
 
 #include "Conversion/AscendV2/Kernelize/CandidateClosure.h"
 #include "mlir/IR/Operation.h"
-#include "mlir/IR/Value.h"
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/DenseSet.h"
@@ -55,15 +54,9 @@ std::optional<StringRef> resolveTableFamily(ArrayRef<StringRef> lhsFamilies,
   if (containsFamily(lhsFamilies, "vector") &&
       containsFamily(rhsFamilies, "reduction"))
     return StringRef("reduction");
-  if (containsFamily(lhsFamilies, "reduction") &&
-      containsFamily(rhsFamilies, "vector"))
-    return StringRef("reduction");
 
   if (containsFamily(lhsFamilies, "cube") &&
       containsFamily(rhsFamilies, "vector"))
-    return StringRef("cube");
-  if (containsFamily(lhsFamilies, "vector") &&
-      containsFamily(rhsFamilies, "cube"))
     return StringRef("cube");
 
   if (containsFamily(lhsFamilies, "vector") &&
@@ -110,32 +103,33 @@ buildCoveringCandidateIds(ArrayRef<const FusionCandidate *> legalCandidates) {
 
 SmallVector<CandidatePair>
 collectAdjacentCandidatePairs(
-    ArrayRef<const FusionCandidate *> legalCandidates,
+    const ProducerConsumerIndex &index,
     const DenseMap<Operation *, SmallVector<unsigned>> &coveringCandidateIds) {
   SmallVector<CandidatePair> pairs;
   DenseSet<uint64_t> seenPairs;
 
-  for (const FusionCandidate *candidate : legalCandidates) {
-    for (Operation *producer : candidate->internalOps) {
-      for (Value result : producer->getResults()) {
-        for (Operation *consumer : result.getUsers()) {
-          auto coveringIt = coveringCandidateIds.find(consumer);
-          if (coveringIt == coveringCandidateIds.end())
+  for (Operation *producer : index.orderedOps) {
+    auto producerCoveringIt = coveringCandidateIds.find(producer);
+    auto consumersIt = index.consumers.find(producer);
+    if (producerCoveringIt == coveringCandidateIds.end() ||
+        consumersIt == index.consumers.end())
+      continue;
+
+    for (Operation *consumer : consumersIt->second) {
+      auto consumerCoveringIt = coveringCandidateIds.find(consumer);
+      if (consumerCoveringIt == coveringCandidateIds.end())
+        continue;
+
+      for (unsigned producerCandidateId : producerCoveringIt->second) {
+        for (unsigned consumerCandidateId : consumerCoveringIt->second) {
+          if (producerCandidateId == consumerCandidateId)
             continue;
 
-          for (unsigned otherCandidateId : coveringIt->second) {
-            if (otherCandidateId == candidate->candidateId)
-              continue;
-
-            unsigned lhs =
-                std::min(candidate->candidateId, otherCandidateId);
-            unsigned rhs =
-                std::max(candidate->candidateId, otherCandidateId);
-            uint64_t packed = packPair(lhs, rhs);
-            if (!seenPairs.insert(packed).second)
-              continue;
-            pairs.push_back({lhs, rhs});
-          }
+          uint64_t packed =
+              packPair(producerCandidateId, consumerCandidateId);
+          if (!seenPairs.insert(packed).second)
+            continue;
+          pairs.push_back({producerCandidateId, consumerCandidateId});
         }
       }
     }
@@ -152,7 +146,6 @@ MergedCandidate buildMergedCandidate(const FusionCandidate &lhs,
   MergedCandidate merged;
   merged.sourceCandidateIds.push_back(lhs.candidateId);
   merged.sourceCandidateIds.push_back(rhs.candidateId);
-  sortUniqueCandidateIds(merged.sourceCandidateIds);
 
   for (const FusionCandidate *source : {&lhs, &rhs}) {
     merged.primaryOps.append(source->primaryOps.begin(),
@@ -241,7 +234,7 @@ CandidateMergeAnalyzer::analyze(ArrayRef<FusionCandidate> candidates,
   DenseMap<Operation *, SmallVector<unsigned>> coveringCandidateIds =
       buildCoveringCandidateIds(legalCandidates);
   SmallVector<CandidatePair> pairs =
-      collectAdjacentCandidatePairs(legalCandidates, coveringCandidateIds);
+      collectAdjacentCandidatePairs(deps.index, coveringCandidateIds);
 
   SmallVector<MergedCandidate> mergedCandidates;
   for (auto [lhsId, rhsId] : pairs) {
