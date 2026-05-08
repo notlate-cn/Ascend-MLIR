@@ -5,6 +5,7 @@
 - 详细规格入口：`docs/Ascend-MLIR-Detailed-Implementation-V2.zh.md`
 - 拆分规格：`docs/Ascend-MLIR-Detailed-Implementation-V2-1.zh.md` 到 `V2-9.zh.md`
 - 第一轮 MVP 计划：`docs/superpowers/plans/2026-05-07-ascend-mlir-v2-mvp.md`
+- Phase 1 Kernelize 计划：`docs/superpowers/plans/2026-05-08-ascend-mlir-v2-kernelize-candidates.md`
 
 ## 状态约定
 
@@ -22,7 +23,7 @@
 | 阶段 | 范围 | 状态 | 当前结论 |
 |---|---|---|---|
 | Phase 0 | V2 MVP 编译主干 | `Done` | Normalize -> Kernelize -> Schedule 纵向链路已打通 |
-| Phase 1 | Kernelize 完整候选分析 | `Planned` | 下一步优先项 |
+| Phase 1 | Kernelize 完整候选分析 | `Planned` | 计划已落地，等待执行 |
 | Phase 2 | Schedule 完整搜索与 guard/cache | `Planned` | 依赖 Phase 1 输出质量 |
 | Phase 3 | Realize plan objects | `Planned` | 依赖稳定 `ScheduleDecisionSet` |
 | Phase 4 | Target model 完整化 | `Planned` | 与 Phase 2/3 并行推进 |
@@ -98,9 +99,9 @@ cmake --build build-v2-verify --target check-afir -j10
 | `KernelPatternGraph` | `Planned` | 构建 kernel pattern graph | 输出 carried value / barrier 等边 |
 | `KernelPartitioner` 完整化 | `Planned` | 最终 kernel 划分 | 多 kernel pipeline smoke |
 
-建议单独计划文件：
+计划文件：
 
-- `docs/superpowers/plans/YYYY-MM-DD-ascend-mlir-v2-kernelize-candidates.md`
+- `docs/superpowers/plans/2026-05-08-ascend-mlir-v2-kernelize-candidates.md`
 
 ## Phase 2：Schedule 完整搜索
 
@@ -176,13 +177,17 @@ cmake --build build-v2-verify --target check-afir -j10
 
 ## 当前下一步
 
-下一步建议创建并执行 Phase 1 计划：
+下一步执行 Phase 1 计划：
 
 ```text
 Kernelize V2 完整候选分析
 ```
 
-第一批切分建议：
+执行入口：
+
+- `docs/superpowers/plans/2026-05-08-ascend-mlir-v2-kernelize-candidates.md`
+
+第一批切分：
 
 1. `DependencyAnalyzer` + `OpSemanticSummary`
 2. `StructuralMarker` + `OpRoleClassifier` 完整化
