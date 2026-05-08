@@ -1,5 +1,6 @@
 add_mlir_library(AscendV2Conversion
   Kernelize/CandidateClosure.cpp
+  Kernelize/CandidateMergeAnalysis.cpp
   Debug/DebugOptions.cpp
   Kernelize/DependencyAnalysis.cpp
   Kernelize/FusionCandidateAnalysis.cpp

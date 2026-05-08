@@ -7,6 +7,7 @@
 #include "Conversion/AscendV2/Kernelize/KernelizePass.h"
 
 #include "Conversion/AscendV2/Debug/DebugOptions.h"
+#include "Conversion/AscendV2/Kernelize/CandidateMergeAnalysis.h"
 #include "Conversion/AscendV2/Kernelize/DependencyAnalysis.h"
 #include "Conversion/AscendV2/Kernelize/FusionCandidateAnalysis.h"
 #include "Conversion/AscendV2/Kernelize/KernelizeTypes.h"
@@ -136,6 +137,13 @@ struct AscendKernelizePass
             options, ::mlir::ascend::v2::DebugStage::Kernelize))
       emitFusionCandidateReport(llvm::errs(), fusionCandidates,
                                 depResult->index);
+
+    SmallVector<MergedCandidate> mergedCandidates =
+        CandidateMergeAnalyzer().analyze(fusionCandidates, *depResult, config);
+    if (::mlir::ascend::v2::shouldDump(
+            options, ::mlir::ascend::v2::DebugStage::Kernelize))
+      emitCandidateMergeReport(llvm::errs(), mergedCandidates,
+                               depResult->index);
 
     MLIRContext *context = module.getContext();
     SmallVector<KernelizeReportEntry> reportEntries;
