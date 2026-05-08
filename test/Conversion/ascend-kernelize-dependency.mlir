@@ -79,6 +79,23 @@ func.func @transpose_indexing(%a: tensor<4x8xf32>, %c: tensor<8x4xf32>)
   return %0 : tensor<8x4xf32>
 }
 
+func.func @mixed_broadcast_transpose_indexing(%a: tensor<4x8xf32>,
+    %b: tensor<8xf32>, %c: tensor<8x4xf32>) -> tensor<8x4xf32> {
+  %0 = linalg.generic {
+      indexing_maps = [
+        affine_map<(d0, d1) -> (d1, d0)>,
+        affine_map<(d0, d1) -> (d0)>,
+        affine_map<(d0, d1) -> (d0, d1)>],
+      iterator_types = ["parallel", "parallel"]}
+      ins(%a, %b : tensor<4x8xf32>, tensor<8xf32>)
+      outs(%c : tensor<8x4xf32>) {
+    ^bb0(%x: f32, %y: f32, %out: f32):
+      %sum = arith.addf %x, %y : f32
+      linalg.yield %sum : f32
+    } -> tensor<8x4xf32>
+  return %0 : tensor<8x4xf32>
+}
+
 // CHECK: DependencyAnalysis
 // CHECK: op_id = 0
 // CHECK-SAME: op = "linalg.generic"
@@ -116,6 +133,13 @@ func.func @transpose_indexing(%a: tensor<4x8xf32>, %c: tensor<8x4xf32>)
 // CHECK-SAME: has_reduction = false
 // CHECK-SAME: only_parallel = true
 // CHECK: op_id = 5
+// CHECK-SAME: op = "linalg.generic"
+// CHECK-SAME: access = "LayoutTransform"
+// CHECK-SAME: result_rank = 2
+// CHECK-SAME: iterators = [parallel, parallel]
+// CHECK-SAME: has_reduction = false
+// CHECK-SAME: only_parallel = true
+// CHECK: op_id = 6
 // CHECK-SAME: op = "linalg.generic"
 // CHECK-SAME: access = "LayoutTransform"
 // CHECK-SAME: result_rank = 2

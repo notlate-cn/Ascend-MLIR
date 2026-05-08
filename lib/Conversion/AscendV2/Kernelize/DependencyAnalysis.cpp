@@ -116,10 +116,10 @@ classifyParallelIndexing(ArrayRef<AffineMap> indexingMaps,
       hasNonIdentityFullRankMap = true;
   }
 
-  if (hasProjectedMap)
-    return ParallelIndexingKind::Broadcast;
   if (hasNonIdentityFullRankMap)
     return ParallelIndexingKind::LayoutTransform;
+  if (hasProjectedMap)
+    return ParallelIndexingKind::Broadcast;
   return ParallelIndexingKind::Elementwise;
 }
 
