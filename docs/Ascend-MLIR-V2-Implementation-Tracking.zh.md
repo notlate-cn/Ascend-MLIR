@@ -23,8 +23,8 @@
 | 阶段 | 范围 | 状态 | 当前结论 |
 |---|---|---|---|
 | Phase 0 | V2 MVP 编译主干 | `Done` | Normalize -> Kernelize -> Schedule 纵向链路已打通 |
-| Phase 1 | Kernelize 完整候选分析 | `In Progress` | Task 7 水平融合分析已实现、已 review、xvm focused lit 通过 |
-| Phase 2 | Schedule 完整搜索与 guard/cache | `Planned` | 依赖 Phase 1 输出质量 |
+| Phase 1 | Kernelize 完整候选分析 | `Done` | Kernelize Phase 1 候选分析与 pattern partition 路径已完成并验证 |
+| Phase 2 | Schedule 完整搜索与 guard/cache | `Planned` | 下一阶段进入 Schedule full search |
 | Phase 3 | Realize plan objects | `Planned` | 依赖稳定 `ScheduleDecisionSet` |
 | Phase 4 | Target model 完整化 | `Planned` | 与 Phase 2/3 并行推进 |
 | Phase 5 | Translate / runtime artifact 对接 | `Planned` | 依赖 Realize 和 ABI 设计稳定 |
@@ -87,17 +87,17 @@ cmake --build build-v2-verify --target check-afir -j10
 
 | 任务 | 状态 | 说明 | 验收 |
 |---|---|---|---|
-| `DependencyAnalyzer` | `Planned` | 构建 producer/consumer/use-def 索引 | 覆盖简单链、分支、共享输入 |
-| `OpSemanticSummary` | `Planned` | 统一 op 语义摘要 cache | debug report 可输出每个 op 摘要 |
-| `StructuralMarker` | `Planned` | 标记 gather/broadcast/reduction/matmul 等结构 | lit 覆盖结构标记 |
-| `OpRoleClassifier` 完整化 | `Planned` | 从 MVP role 扩展到主/辅角色分类 | vector/reduction/cube/gather 等覆盖 |
-| primitive seed / expand | `Planned` | primitive 驱动候选生成 | 候选含 primaryOps/primitives |
-| legality / profitability | `Planned` | 三阶段早剪枝 | report 输出过滤原因 |
-| `CandidateClosure` | `Planned` | 闭包计算与合法性判断 | 覆盖跨 producer/consumer 场景 |
-| candidate merge | `Planned` | 单主角色候选合并 | 稳定排序和 tie-break |
-| horizontal fusion | `Planned` | 水平融合候选 | 独立 lit 覆盖 |
-| `KernelPatternGraph` | `Planned` | 构建 kernel pattern graph | 输出 carried value / barrier 等边 |
-| `KernelPartitioner` 完整化 | `Planned` | 最终 kernel 划分 | 多 kernel pipeline smoke |
+| `DependencyAnalyzer` | `Done` | 构建 producer/consumer/use-def 索引 | 覆盖简单链、分支、共享输入 |
+| `OpSemanticSummary` | `Done` | 统一 op 语义摘要 cache | debug report 可输出每个 op 摘要 |
+| `StructuralMarker` | `Done` | 标记 gather/broadcast/reduction/matmul 等结构 | lit 覆盖结构标记 |
+| `OpRoleClassifier` 完整化 | `Done` | 从 MVP role 扩展到主/辅角色分类 | vector/reduction/cube/gather 等覆盖 |
+| primitive seed / expand | `Done` | primitive 驱动候选生成 | 候选含 primaryOps/primitives |
+| legality / profitability | `Done` | 三阶段早剪枝 | report 输出过滤原因 |
+| `CandidateClosure` | `Done` | 闭包计算与合法性判断 | 覆盖跨 producer/consumer 场景 |
+| candidate merge | `Done` | 单主角色候选合并 | 稳定排序和 tie-break |
+| horizontal fusion | `Done` | 水平融合候选 | 独立 lit 覆盖 |
+| `KernelPatternGraph` | `Done` | 构建 kernel pattern graph | 输出 carried value / barrier 等边 |
+| `KernelPartitioner` 完整化 | `Done` | 最终 kernel 划分 | 多 kernel pipeline smoke |
 
 计划文件：
 
@@ -114,6 +114,39 @@ cmake --build build-v2-verify --target check-afir -j10
 | Task 5: Primitive Candidate Analysis and CandidateClosure | `Done` | `28970ee` / `cf95af4` / `d25f4dc` | `git diff --check` passed；xvm `ascend-kernelize-candidates.mlir`、`ascend-kernelize-roles.mlir`、`ascend-kernelize-dependency.mlir`、`ascend-kernelize-mvp.mlir`、`ascend-v2-pipeline-mvp.mlir` 5/5 passed |
 | Task 6: Candidate Merge Analysis | `Done` | `4f8d11c` / `c0879fe` / `64762fe` | `git diff --check` passed；xvm `ascend-kernelize-merge-horizontal.mlir`、`ascend-kernelize-candidates.mlir`、`ascend-kernelize-roles.mlir`、`ascend-kernelize-dependency.mlir`、`ascend-kernelize-mvp.mlir`、`ascend-v2-pipeline-mvp.mlir` 6/6 passed |
 | Task 7: Horizontal Fusion Analysis | `Done` | `29e4c92` / `fe55c2b` | `git diff --check` passed；xvm `ascend-kernelize-merge-horizontal.mlir`、`ascend-kernelize-candidates.mlir`、`ascend-kernelize-roles.mlir`、`ascend-kernelize-dependency.mlir`、`ascend-kernelize-mvp.mlir`、`ascend-v2-pipeline-mvp.mlir` 6/6 passed；本轮 horizontal source 允许 closed single-primary fallback candidates；共享输入按 DPS inputs ∩ closure external inputs，互不可达使用 raw SSA reachability 保守检查 |
+| Task 8: KernelPattern Graph and Partitioner | `Done` | `279040d` | `git diff --check` passed；xvm focused lit 7/7 passed |
+
+### Phase 1 验证记录
+
+验证环境同 Phase 0：
+
+- 主机：只做代码开发与 static check
+- xvm/docker：编译与测试
+- 同步路径：`/home/niu/code/Ascend-MLIR`
+- 实际可用 LLVM build：`/home/niu/code/llvm-project/llvm/build`
+
+已执行：
+
+```bash
+git diff --check
+
+ssh xvm@orb 'cd /home/niu/code/Ascend-MLIR && cmake --build build-v2-verify --target afir-opt -j10 && /home/niu/code/llvm-project/llvm/build/bin/llvm-lit -v build-v2-verify/test/Conversion/ascend-kernelize-dependency.mlir build-v2-verify/test/Conversion/ascend-kernelize-roles.mlir build-v2-verify/test/Conversion/ascend-kernelize-candidates.mlir build-v2-verify/test/Conversion/ascend-kernelize-merge-horizontal.mlir build-v2-verify/test/Conversion/ascend-kernelize-patterns.mlir build-v2-verify/test/Conversion/ascend-kernelize-mvp.mlir build-v2-verify/test/Conversion/ascend-v2-pipeline-mvp.mlir'
+
+ssh xvm@orb 'cd /home/niu/code/Ascend-MLIR && cmake --build build-v2-verify --target check-afir -j10'
+```
+
+结果：
+
+| 命令 | 结果 |
+|---|---|
+| `git diff --check` | passed |
+| `afir-opt` build + Phase 1 focused lit | 7 discovered, 7 passed |
+| `check-afir` | 35 discovered, 32 passed, 3 unsupported |
+
+提交范围：
+
+- Phase 1 实现：`bb7a9c0` through `279040d`
+- Phase 1 跟踪文档：`8450631`、`8fc44d1`、`44ad7ec`、`d5ae92a`、`0c6e243`、`3c7968b`、`91b6e89`，以及本验证提交
 
 ## Phase 2：Schedule 完整搜索
 
@@ -189,24 +222,23 @@ cmake --build build-v2-verify --target check-afir -j10
 
 ## 当前下一步
 
-下一步执行 Phase 1 计划：
+下一步执行 Phase 2 计划：
 
 ```text
-Kernelize V2 完整候选分析
+Schedule V2 完整搜索与 guard/cache
 ```
 
 执行入口：
 
-- `docs/superpowers/plans/2026-05-08-ascend-mlir-v2-kernelize-candidates.md`
+- Phase 2 Schedule full search 计划文档
 
 第一批切分：
 
-1. `DependencyAnalyzer` + `OpSemanticSummary`
-2. `StructuralMarker` + `OpRoleClassifier` 完整化
-3. primitive seed / expand / legality
-4. `CandidateClosure`
-5. candidate merge + stable ordering
-6. `KernelPatternGraph`
-7. `KernelPartitioner` 完整化
-
-完成 Phase 1 后，再进入 Schedule 完整搜索。
+1. `AxisCoalescer`
+2. `ScheduleProblemBuilder`
+3. `TemplateRegistry`
+4. `ScheduleSearch`
+5. guard 生成
+6. cache 建模
+7. `ScheduleDecisionSet`
+8. structured lowering
