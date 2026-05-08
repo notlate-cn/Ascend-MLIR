@@ -9,6 +9,7 @@
 #include "Conversion/AscendV2/Debug/DebugOptions.h"
 #include "Conversion/AscendV2/Schedule/AxisCoalescer.h"
 #include "Conversion/AscendV2/Schedule/KernelPatternView.h"
+#include "Conversion/AscendV2/Schedule/ScheduleCache.h"
 #include "Conversion/AscendV2/Schedule/ScheduleDecision.h"
 #include "Conversion/AscendV2/Schedule/ScheduleProblemBuilder.h"
 #include "Conversion/AscendV2/Schedule/ScheduleSearch.h"
@@ -89,6 +90,7 @@ struct AscendSchedulePass
     ModuleOp module = getOperation();
     MLIRContext *context = module.getContext();
     ScheduleSearchOptions searchOptions;
+    ScheduleCacheModel scheduleCacheModel;
     std::vector<ScheduleDebugEntry> scheduleDebugEntries;
     SmallVector<ScheduleReportEntry> reportEntries;
     FailureOr<SmallVector<KernelPatternView>> patternViews =
@@ -116,6 +118,7 @@ struct AscendSchedulePass
       SmallVector<ScheduleTemplate> templateMatches =
           matchScheduleTemplates(*scheduleProblem);
       if (templateMatches.empty()) {
+        scheduleCacheModel.recordNegativeCacheEntry();
         if (const PatternOpView *primaryOpView =
                 selectDominantPrimaryOp(pattern)) {
           primaryOpView->op->emitError()
@@ -129,6 +132,8 @@ struct AscendSchedulePass
       }
       ScheduleSearchResult searchResult = searchScheduleInstancesWithStats(
           *scheduleProblem, templateMatches, searchOptions);
+      scheduleCacheModel.recordGuardBudgetPruned(
+          searchResult.prunedByGuardBudget);
       if (searchResult.keptInstances.empty()) {
         if (const PatternOpView *primaryOpView =
                 selectDominantPrimaryOp(pattern)) {
@@ -143,6 +148,8 @@ struct AscendSchedulePass
       }
       ScheduleDecisionSet decisionSet = buildScheduleDecisionSet(
           scheduleProblem->kernelId, searchResult.keptInstances);
+      scheduleCacheModel.recordScheduleDecisionSet(*scheduleProblem,
+                                                   decisionSet);
       const ScheduleDecision &selectedDecision = decisionSet.decisions.front();
       const ScheduleInstance &selectedInstance = selectedDecision.instance;
 
@@ -188,6 +195,7 @@ struct AscendSchedulePass
         printScheduleGuardsReport(problem, searchResult, llvm::errs());
         printScheduleDecisionSetReport(entry.decisionSet, llvm::errs());
       }
+      printScheduleCacheReport(scheduleCacheModel, llvm::errs());
       emitScheduleReport(reportEntries, llvm::errs());
     }
   }

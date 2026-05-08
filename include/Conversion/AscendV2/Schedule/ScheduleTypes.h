@@ -156,6 +156,26 @@ struct ScheduleSearchOptions {
   unsigned compileTimeTopK = 4;
 };
 
+struct ShapeBucketKey {
+  std::string kernelId;
+  std::string family;
+  SmallVector<int64_t> resultShape;
+};
+
+struct TuningResultKey {
+  ShapeBucketKey bucket;
+  std::string templateName;
+  SmallVector<int64_t> tileShape;
+};
+
+struct ScheduleCacheReport {
+  unsigned shapeBucketLookups = 0;
+  unsigned shapeBucketMisses = 0;
+  unsigned tuningLookups = 0;
+  unsigned tuningMisses = 0;
+  unsigned negativeCacheEntries = 0;
+};
+
 inline OpRole parseOpRole(llvm::StringRef value) {
   return llvm::StringSwitch<OpRole>(value)
       .Case("cube", OpRole::Cube)
