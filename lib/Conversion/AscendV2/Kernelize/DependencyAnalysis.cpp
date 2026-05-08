@@ -61,44 +61,50 @@ bool isFullRankPermutationLike(AffineMap map, unsigned resultRank) {
   return map.getNumResults() == resultRank && map.isProjectedPermutation();
 }
 
-bool allIndexingMapsAreFullRankPermutationLike(Operation *op,
-                                               unsigned resultRank) {
+enum class ParallelIndexingKind { Elementwise, Broadcast, Unknown };
+
+ParallelIndexingKind classifyParallelIndexing(Operation *op,
+                                              unsigned resultRank) {
   auto indexingMaps = op->getAttrOfType<ArrayAttr>("indexing_maps");
   if (!indexingMaps)
-    return false;
+    return ParallelIndexingKind::Unknown;
 
+  bool hasProjectedMap = false;
   for (Attribute attr : indexingMaps) {
     auto mapAttr = dyn_cast<AffineMapAttr>(attr);
     if (!mapAttr)
-      return false;
-    if (!isFullRankPermutationLike(mapAttr.getValue(), resultRank))
-      return false;
+      return ParallelIndexingKind::Unknown;
+
+    AffineMap map = mapAttr.getValue();
+    if (!map.isProjectedPermutation())
+      return ParallelIndexingKind::Unknown;
+    if (map.getNumResults() > resultRank)
+      return ParallelIndexingKind::Unknown;
+    if (map.getNumResults() < resultRank) {
+      hasProjectedMap = true;
+      continue;
+    }
+    if (!isFullRankPermutationLike(map, resultRank))
+      return ParallelIndexingKind::Unknown;
   }
-  return true;
+  return hasProjectedMap ? ParallelIndexingKind::Broadcast
+                         : ParallelIndexingKind::Elementwise;
 }
 
-OpSemanticSummary buildSemanticSummary(Operation *op, OperationId opId) {
-  OpSemanticSummary summary;
-  summary.op = op;
-  summary.opId = opId;
-  summary.resultRank = getFirstRankedTensorResultRank(op);
-
-  StringRef opName = op->getName().getStringRef();
-  if (opName == "linalg.matmul" || opName == "linalg.batch_matmul") {
-    summary.accessPattern = AccessPatternKind::Contraction;
-    return summary;
-  }
-
+void populateIteratorSummary(Operation *op, OpSemanticSummary &summary,
+                             ArrayRef<StringRef> fallbackIteratorTypes = {}) {
   auto iteratorTypes = op->getAttrOfType<ArrayAttr>("iterator_types");
-  if (!iteratorTypes) {
-    summary.accessPattern = AccessPatternKind::Unknown;
-    return summary;
+
+  if (iteratorTypes) {
+    for (Attribute iteratorType : iteratorTypes)
+      summary.iteratorTypes.push_back(getIteratorTypeName(iteratorType));
+  } else {
+    summary.iteratorTypes.append(fallbackIteratorTypes.begin(),
+                                 fallbackIteratorTypes.end());
   }
 
   bool sawNonParallel = false;
-  for (Attribute iteratorType : iteratorTypes) {
-    StringRef typeName = getIteratorTypeName(iteratorType);
-    summary.iteratorTypes.push_back(typeName);
+  for (StringRef typeName : summary.iteratorTypes) {
     if (typeName == "reduction") {
       summary.hasReductionIterator = true;
       sawNonParallel = true;
@@ -109,6 +115,37 @@ OpSemanticSummary buildSemanticSummary(Operation *op, OperationId opId) {
   }
   summary.hasOnlyParallelIterators =
       !summary.iteratorTypes.empty() && !sawNonParallel;
+}
+
+OpSemanticSummary buildSemanticSummary(Operation *op, OperationId opId) {
+  OpSemanticSummary summary;
+  summary.op = op;
+  summary.opId = opId;
+  summary.resultRank = getFirstRankedTensorResultRank(op);
+
+  StringRef opName = op->getName().getStringRef();
+  if (opName == "linalg.matmul") {
+    populateIteratorSummary(
+        op, summary,
+        ArrayRef<StringRef>{"parallel", "parallel", "reduction"});
+    summary.accessPattern = AccessPatternKind::Contraction;
+    return summary;
+  }
+
+  if (opName == "linalg.batch_matmul") {
+    populateIteratorSummary(
+        op, summary,
+        ArrayRef<StringRef>{"parallel", "parallel", "parallel", "reduction"});
+    summary.accessPattern = AccessPatternKind::Contraction;
+    return summary;
+  }
+
+  if (!op->getAttrOfType<ArrayAttr>("iterator_types")) {
+    summary.accessPattern = AccessPatternKind::Unknown;
+    return summary;
+  }
+
+  populateIteratorSummary(op, summary);
 
   if (summary.hasReductionIterator) {
     summary.accessPattern = AccessPatternKind::Reduction;
@@ -116,10 +153,17 @@ OpSemanticSummary buildSemanticSummary(Operation *op, OperationId opId) {
   }
 
   if (summary.hasOnlyParallelIterators) {
-    summary.accessPattern =
-        allIndexingMapsAreFullRankPermutationLike(op, summary.resultRank)
-            ? AccessPatternKind::Elementwise
-            : AccessPatternKind::Broadcast;
+    switch (classifyParallelIndexing(op, summary.resultRank)) {
+    case ParallelIndexingKind::Elementwise:
+      summary.accessPattern = AccessPatternKind::Elementwise;
+      break;
+    case ParallelIndexingKind::Broadcast:
+      summary.accessPattern = AccessPatternKind::Broadcast;
+      break;
+    case ParallelIndexingKind::Unknown:
+      summary.accessPattern = AccessPatternKind::Unknown;
+      break;
+    }
     return summary;
   }
 
@@ -189,7 +233,13 @@ void emitDependencyAnalysisReport(raw_ostream &os,
        << op->getName().getStringRef() << "\" access = \""
        << stringifyAccessPattern(summary.accessPattern)
        << "\" producers = " << producerCount
-       << " consumers = " << consumerCount << "\n";
+       << " consumers = " << consumerCount
+       << " result_rank = " << summary.resultRank << " iterators = [";
+    llvm::interleaveComma(summary.iteratorTypes, os);
+    os << "] has_reduction = "
+       << (summary.hasReductionIterator ? "true" : "false")
+       << " only_parallel = "
+       << (summary.hasOnlyParallelIterators ? "true" : "false") << "\n";
   }
 }
 
