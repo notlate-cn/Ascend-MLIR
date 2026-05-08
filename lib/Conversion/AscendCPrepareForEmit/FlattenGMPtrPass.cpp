@@ -81,6 +81,11 @@ resolveGMChain(Value start, OpBuilder &b, Location loc) {
       cur = castOp.getSource();
       continue;
     }
+    // Collapse_shape is a contiguous view: flat index is preserved, look through.
+    if (auto colOp = cur.getDefiningOp<memref::CollapseShapeOp>()) {
+      cur = colOp.getSrc();
+      continue;
+    }
     if (auto ba = dyn_cast<BlockArgument>(cur))
       return {ba, acc};
     return {BlockArgument{}, Value{}};
@@ -118,7 +123,12 @@ static void flattenGMPtr(func::FuncOp func) {
     }
     for (memref::AllocOp allocOp : gmAllocs) {
       auto origTy = cast<MemRefType>(allocOp.getResult().getType());
-      SmallVector<int64_t> strides(origTy.getRank(), 1);
+      // Use C-order strides: innermost is 1, outer dims are dynamic.
+      // This lets the runtime correctly infer allocation size = D0*D1*...*Dn.
+      // Using all-1 strides would make the runtime compute only D0+D1+...+Dn-1
+      // elements (additive), which is far too small for multi-dim allocs.
+      SmallVector<int64_t> strides(origTy.getRank(), ShapedType::kDynamic);
+      if (!strides.empty()) strides.back() = 1;
       auto stridedLayout = StridedLayoutAttr::get(ctx, ShapedType::kDynamic, strides);
       auto stridedTy = MemRefType::get(origTy.getShape(), origTy.getElementType(),
                                        stridedLayout);
@@ -167,14 +177,16 @@ static void flattenGMPtr(func::FuncOp func) {
       subview.erase();
   }
 
-  // Clean up dead subview/cast chains; repeat until stable.
+  // Clean up dead subview/cast/collapse/expand chains; repeat until stable.
   {
     bool changed = true;
     while (changed) {
       changed = false;
       SmallVector<Operation *> dead;
       func.walk([&](Operation *op) {
-        if (op->use_empty() && isa<memref::SubViewOp, memref::CastOp>(op))
+        if (op->use_empty() &&
+            isa<memref::SubViewOp, memref::CastOp,
+                memref::CollapseShapeOp, memref::ExpandShapeOp>(op))
           dead.push_back(op);
       });
       for (Operation *op : dead) { op->erase(); changed = true; }

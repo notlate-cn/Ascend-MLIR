@@ -21,7 +21,13 @@ Value getAxisExtentValue(OpBuilder &b, Location loc,
   if (staticSize != ShapedType::kDynamic)
     return b.create<arith::ConstantIndexOp>(loc, staticSize);
 
-  // Dynamic: find first operand that has this axis in its indexing map.
+  // Dynamic: search operands of the post-collapse generics for a value that
+  // maps to axisIdx and dominates the current insertion point.
+  //
+  // After multi-op collapse, operands are tensor.collapse_shape results, not
+  // function arguments. We must trace through collapse_shape to its source
+  // (which should be a block argument) and compute the product of original
+  // dimensions to recover the collapsed axis extent.
   for (linalg::LinalgOp op : info.topoMembers) {
     auto maps     = op.getIndexingMapsArray();
     auto operands = op->getOperands();
@@ -29,8 +35,29 @@ Value getAxisExtentValue(OpBuilder &b, Location loc,
       if (!isa<RankedTensorType>(operand.getType())) continue;
       for (auto [dimPos, expr] : llvm::enumerate(map.getResults())) {
         auto d = dyn_cast<AffineDimExpr>(expr);
-        if (d && (int)d.getPosition() == axisIdx)
+        if (!d || (int)d.getPosition() != axisIdx) continue;
+
+        // Prefer block arguments: they dominate everywhere.
+        if (isa<BlockArgument>(operand))
           return b.create<tensor::DimOp>(loc, operand, (int64_t)dimPos);
+
+        // If operand is tensor.collapse_shape whose src is a block argument,
+        // recover the collapsed extent as the product of the original dims.
+        if (auto colOp = operand.getDefiningOp<tensor::CollapseShapeOp>()) {
+          Value src = colOp.getSrc();
+          if (isa<BlockArgument>(src)) {
+            auto grps = colOp.getReassociationIndices();
+            if ((size_t)dimPos < grps.size()) {
+              Value prod = b.create<arith::ConstantIndexOp>(loc, 1);
+              for (int64_t origDim : grps[dimPos])
+                prod = b.create<arith::MulIOp>(
+                    loc, prod,
+                    b.create<tensor::DimOp>(loc, src, origDim).getResult());
+              return prod;
+            }
+          }
+        }
+        // Operand does not dominate the insertion point; keep searching.
       }
     }
   }

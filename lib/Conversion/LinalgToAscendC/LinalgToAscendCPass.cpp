@@ -24,6 +24,7 @@
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/PatternMatch.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
+#include "mlir/Transforms/LoopInvariantCodeMotionUtils.h"
 #include "llvm/Support/Debug.h"
 
 #include "ascir/Dialect/Asc/IR/Asc.h"
@@ -320,6 +321,21 @@ struct LinalgToAscendCPass
       return;
     }
     eraseDeadTBufInitializers(funcOp);
+
+    // -----------------------------------------------------------------------
+    // Phase 2.5: Run LICM on inner (non-parallel) scf.for loops only.
+    // The VECCALC init_buffer len depends on DimOps created inside the inner
+    // for loop; LICM hoists those DimOps/arith ops to the outer for body,
+    // making the init_buffer's operands dominate the inner for, so that
+    // HoistOpPattern (Phase 3) can then hoist the init_buffer to the outer
+    // for.  We intentionally skip the outermost parallel for (ascendc.parallel
+    // attr) so that VECIN/VECOUT init_buffers already correctly placed inside
+    // the parallel for are not moved past the block-guard boundary.
+    // -----------------------------------------------------------------------
+    funcOp.walk([](scf::ForOp forOp) {
+      if (!forOp->hasAttr("ascendc.parallel"))
+        moveLoopInvariantCode(cast<LoopLikeOpInterface>(forOp.getOperation()));
+    });
 
     // -----------------------------------------------------------------------
     // Phase 3: Hoist pipe/queue/tbuf/init_buffer to entry block wherever

@@ -77,6 +77,9 @@ void registerVectorPlanPipeline() {
         pm.addNestedPass<func::FuncOp>(createAscendCPackTilingDataPass());
         pm.addNestedPass<func::FuncOp>(createAscendCFinalizeKernelPass());
         pm.addPass(createCSEPass());
+        // Canonicalize DCEs dead memref view ops (collapse_shape, expand_shape)
+        // left over after finalize-kernel removes the function return.
+        pm.addPass(createCanonicalizerPass());
         pm.addPass(createCanonicalizeCannSignaturePass());
       });
 }

@@ -20,11 +20,11 @@ PYTHON="${PYTHON:-python3}"
 
 D0=4; D1=8; D2=32
 N=$((D0 * D1 * D2))
-# XBLOCK tiles over the outer D0 dimension (not flat N).
-# BLOCK_DIM = ceil(D0 / XBLOCK).
-XBLOCK=${D0}
-XBLOCK_SUB=1
-BLOCK_DIM=1
+# After multi-op collapse, XBLOCK tiles over flat N = D0*D1*D2.
+# BLOCK_DIM = ceil(N / XBLOCK).
+XBLOCK=128
+XBLOCK_SUB=16
+BLOCK_DIM=$(( (N + XBLOCK - 1) / XBLOCK ))
 
 VERBOSE=false
 for arg in "$@"; do
@@ -86,23 +86,14 @@ VALIDATION_LOG="$BUILD_DIR/runtime_session.log"
 INTER1_OUT="$BUILD_DIR/inter1.npy"
 INTER2_OUT="$BUILD_DIR/inter2.npy"
 
-# Tiling params — from auto-generated tiling_space.json
-# dim_arg{N}_k = dimension k of argN (using pre-PackTilingData arg numbering).
-# Arg layout before PackTilingData:
-#   arg0=a, arg1=b, arg2=c (real inputs)  arg3=out (real output)
-#   arg4=inter1, arg5=inter2 (promoted GM intermediates, strided layout)
-#   arg6/arg7: FlattenGMPtrPass promotes allocs later, shifting indices by 2.
-# dim_arg6_{1,2} / dim_arg7_{1,2}: D1 and D2 of the two promoted intermediates.
-# FlattenGMPtrPass uses both dim1 and dim2 to compute the correct row-major
-#   offset for 3D subviews: offset = row * D1 * D2.
+# Tiling params — from auto-generated tiling_space.json.
+# After multi-op collapse the loop iterates over flat N = D0*D1*D2.
+# dim_arg{N}_{0,1,2} are the three 3D dimensions of each tensor arg:
+#   arg0=a, arg1=b, arg3=out (arg2=c is broadcast-fused, no separate dim)
 TILING_PARAMS="XBLOCK=${XBLOCK},XBLOCK_SUB=${XBLOCK_SUB}"
-TILING_PARAMS+=",dim_arg1_0=${D0}"
+TILING_PARAMS+=",dim_arg1_0=${D0},dim_arg1_1=${D1},dim_arg1_2=${D2}"
 TILING_PARAMS+=",dim_arg0_0=${D0},dim_arg0_1=${D1},dim_arg0_2=${D2}"
-TILING_PARAMS+=",dim_arg1_1=${D1},dim_arg1_2=${D2}"
-TILING_PARAMS+=",dim_arg2_1=${D1},dim_arg2_2=${D2}"
-TILING_PARAMS+=",dim_arg6_1=${D1},dim_arg6_2=${D2}"
-TILING_PARAMS+=",dim_arg7_1=${D1},dim_arg7_2=${D2}"
-TILING_PARAMS+=",dim_arg3_1=${D1},dim_arg3_2=${D2}"
+TILING_PARAMS+=",dim_arg3_0=${D0},dim_arg3_1=${D1},dim_arg3_2=${D2}"
 
 cat > "$RUN_MANIFEST" <<EOF
 {

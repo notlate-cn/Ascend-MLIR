@@ -69,21 +69,36 @@ struct VectorPlanTileFusePass
     // the first member.
     {
       Operation *insertBefore = collapsedInfo.topoMembers.front();
+      // Recursively hoist op and its pure operand-defining ops before
+      // insertBefore. Handles multi-op collapse where intermediate
+      // tensor.empty / collapse_shape ops appear between linalg members.
+      DenseSet<Operation *> memberSet;
+      for (linalg::LinalgOp m : collapsedInfo.topoMembers)
+        memberSet.insert(m.getOperation());
+      std::function<void(Operation *)> hoistBefore = [&](Operation *op) {
+        if (!op) return;
+        if (op->getBlock() != insertBefore->getBlock()) return;
+        if (!insertBefore->isBeforeInBlock(op)) return; // already before
+        if (memberSet.count(op)) return; // never hoist another member
+        // Recurse into operands first so SSA order is preserved.
+        for (Value v : op->getOperands())
+          hoistBefore(v.getDefiningOp());
+        op->moveBefore(insertBefore);
+      };
+      // Hoist init tensors (needed as iter_args) and all non-member inputs
+      // (e.g. collapse_shape of function args inserted for non-first members
+      // by applyMultiOpIRTransform — these must precede the loop).
       for (Value init : initTensors) {
         Operation *defOp = init.getDefiningOp();
         if (!defOp) continue; // block argument — always dominates
-        // Only move if defOp is in the same block and currently after insertBefore.
-        if (defOp->getBlock() != insertBefore->getBlock()) continue;
-        if (!insertBefore->isBeforeInBlock(defOp)) continue;
-        // Safe to move shallowly: linalg-generalize-named-ops only inserts
-        // tensor.empty ops whose dynamic-size operands are already defined
-        // before the first linalg op (they come from tensor.dim at func entry).
-        assert(llvm::all_of(defOp->getOperands(), [&](Value v) {
-          Operation *vOp = v.getDefiningOp();
-          return !vOp || vOp->isBeforeInBlock(insertBefore);
-        }) && "TileFuse: defOp operand not yet defined before insertBefore; "
-             "need recursive hoist");
-        defOp->moveBefore(insertBefore);
+        hoistBefore(defOp);
+      }
+      for (linalg::LinalgOp m : collapsedInfo.topoMembers) {
+        for (Value inp : m.getDpsInputs()) {
+          Operation *defOp = inp.getDefiningOp();
+          if (!defOp || memberSet.count(defOp)) continue;
+          hoistBefore(defOp);
+        }
       }
     }
     builder.setInsertionPoint(collapsedInfo.topoMembers.front());

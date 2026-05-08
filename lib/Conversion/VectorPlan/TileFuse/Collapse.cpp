@@ -250,6 +250,118 @@ static Value emitCollapseIfC(OpBuilder &builder, Location loc, Value operand,
   return builder.create<tensor::CollapseShapeOp>(loc, newType, operand, reassoc);
 }
 
+// Multi-op IR collapse: apply tensor.collapse_shape to all boundary inputs and
+// intermediate empties, rewrite each generic's maps, and restore shapes with
+// tensor.expand_shape at boundary outputs. Runs in topo order so each op's
+// inputs are already in the collapsed domain when we reach it.
+static void applyMultiOpIRTransform(OpBuilder &builder,
+                                     ArrayRef<LinalgOp> members,
+                                     ArrayRef<int> axisMap, int numPost) {
+  if (members.size() < 2) return;
+  Location loc = members.front()->getLoc();
+
+  DenseSet<Operation *> memberSet;
+  for (LinalgOp m : members)
+    memberSet.insert(m.getOperation());
+
+  // Collapse `v` using its indexing map. Returns v if already at post-collapse
+  // rank (already processed by a previous op in the chain) or if the type is
+  // unchanged (Class-A operand with no G-axes).
+  auto resolveCollapsed = [&](Value v, AffineMap vMap) -> Value {
+    auto mrt = dyn_cast<RankedTensorType>(v.getType());
+    if (!mrt || mrt.getRank() == numPost)
+      return v;
+    auto reassoc = buildReassociation(vMap, axisMap);
+    auto colType = collapseType(mrt, reassoc);
+    if (colType == mrt)
+      return v; // Class A: no G-axes, no shape change
+    return builder.create<tensor::CollapseShapeOp>(loc, colType, v, reassoc);
+  };
+
+  for (LinalgOp op : members) {
+    builder.setInsertionPoint(op);
+    auto maps    = op.getIndexingMapsArray();
+    auto operands = op->getOperands();
+    int numIns  = op.getNumDpsInputs();
+    int numOuts = op.getNumDpsInits();
+
+    // Capture original output values before collapse for shape queries in expand_shape.
+    SmallVector<Value> origOuts;
+    for (int i = 0; i < numOuts; ++i)
+      origOuts.push_back(operands[numIns + i]);
+
+    SmallVector<Value> newInputs, newOuts;
+    for (int i = 0; i < numIns; ++i)
+      newInputs.push_back(resolveCollapsed(operands[i], maps[i]));
+    for (int i = 0; i < numOuts; ++i)
+      newOuts.push_back(resolveCollapsed(origOuts[i], maps[numIns + i]));
+
+    SmallVector<AffineMap> newMaps;
+    for (AffineMap m : maps)
+      newMaps.push_back(rewriteMap(m, axisMap, numPost));
+
+    SmallVector<utils::IteratorType> newIters;
+    for (auto [i, it] : llvm::enumerate(op.getIteratorTypesArray())) {
+      int pm = ((int)i < (int)axisMap.size()) ? axisMap[i] : (int)i;
+      if (pm >= 0) newIters.push_back(it);
+    }
+
+    SmallVector<Type> resultTypes;
+    for (Value out : newOuts) resultTypes.push_back(out.getType());
+    auto newGeneric = builder.create<GenericOp>(
+        loc, resultTypes, newInputs, newOuts, newMaps, newIters);
+    builder.cloneRegionBefore(op->getRegion(0), newGeneric.getRegion(),
+                               newGeneric.getRegion().begin());
+
+    SmallVector<AffineMap> outMaps(maps.begin() + numIns, maps.end());
+    builder.setInsertionPointAfter(newGeneric);
+    int resIdx = 0;
+    for (auto [oldRes, newRes, outMap] :
+         llvm::zip(op->getResults(), newGeneric.getResults(), outMaps)) {
+      // In-group uses consume the collapsed result directly.
+      // Out-group uses (boundary outputs) get expand_shape to restore shape.
+      SmallVector<OpOperand *> inUses, outUses;
+      for (OpOperand &use : oldRes.getUses()) {
+        if (memberSet.count(use.getOwner()))
+          inUses.push_back(&use);
+        else
+          outUses.push_back(&use);
+      }
+      for (OpOperand *use : inUses)
+        use->set(newRes);
+      if (!outUses.empty()) {
+        Value replacement = newRes;
+        if (newRes.getType() != oldRes.getType()) {
+          auto reassoc = buildReassociation(outMap, axisMap);
+          // Build dynamic-dim operands from the original (pre-collapse) output.
+          Value origOut = origOuts[resIdx];
+          auto origOutTy = cast<RankedTensorType>(origOut.getType());
+          auto resultTy = cast<RankedTensorType>(oldRes.getType());
+          SmallVector<int64_t> staticShape;
+          SmallVector<Value> dynamicDims;
+          for (int d = 0; d < origOutTy.getRank(); ++d) {
+            if (!origOutTy.isDynamicDim(d)) {
+              staticShape.push_back(origOutTy.getDimSize(d));
+            } else {
+              staticShape.push_back(ShapedType::kDynamic);
+              dynamicDims.push_back(
+                  builder.create<tensor::DimOp>(loc, origOut, (int64_t)d).getResult());
+            }
+          }
+          replacement = builder.create<tensor::ExpandShapeOp>(
+              loc, resultTy, newRes,
+              getReassociationIndicesAttribute(builder, reassoc),
+              dynamicDims, staticShape);
+        }
+        for (OpOperand *use : outUses)
+          use->set(replacement);
+      }
+      ++resIdx;
+    }
+    op.erase();
+  }
+}
+
 static void applyIRTransform(OpBuilder &builder, GenericOp lop,
                                ArrayRef<int> collapseGroup,
                                ArrayRef<int> axisMap, int numPostDims) {
@@ -302,17 +414,34 @@ static void applyIRTransform(OpBuilder &builder, GenericOp lop,
   // Skip expand_shape for Class-A outputs (no G-axes collapsed) where
   // the new result type already matches the original type.
   builder.setInsertionPointAfter(newGeneric);
+  int outIdx = 0;
   for (auto [oldRes, newRes, outMap] :
        llvm::zip(lop.getResults(), newGeneric.getResults(), outMaps)) {
     if (newRes.getType() == oldRes.getType()) {
       oldRes.replaceAllUsesWith(newRes);
+      ++outIdx;
       continue;
     }
     auto reassoc = buildReassociation(outMap, axisMap);
-    auto origType = cast<RankedTensorType>(oldRes.getType());
+    Value origOut = outsVec[outIdx];
+    auto origOutTy = cast<RankedTensorType>(origOut.getType());
+    SmallVector<int64_t> staticShape;
+    SmallVector<Value> dynamicDims;
+    for (int d = 0; d < origOutTy.getRank(); ++d) {
+      if (!origOutTy.isDynamicDim(d)) {
+        staticShape.push_back(origOutTy.getDimSize(d));
+      } else {
+        staticShape.push_back(ShapedType::kDynamic);
+        dynamicDims.push_back(
+            builder.create<tensor::DimOp>(loc, origOut, (int64_t)d).getResult());
+      }
+    }
     Value expanded = builder.create<tensor::ExpandShapeOp>(
-        loc, origType, newRes, reassoc);
+        loc, cast<RankedTensorType>(oldRes.getType()), newRes,
+        getReassociationIndicesAttribute(builder, reassoc),
+        dynamicDims, staticShape);
     oldRes.replaceAllUsesWith(expanded);
+    ++outIdx;
   }
   lop.erase();
 }
@@ -380,20 +509,18 @@ CollapsedGroupInfo collapseGroup(OpBuilder &builder, func::FuncOp func) {
   }
   llvm::sort(result.broadcastAxes);
 
-  // IR transformation (v1: single generic only; multi-op analysis is complete
-  // but transform is deferred — callers must not assume IR was collapsed for
-  // members.size() > 1).
-  if (members.size() == 1)
+  // IR transformation: collapse the iteration space in the actual IR.
+  if (members.size() == 1) {
     if (auto lop = dyn_cast<GenericOp>(members.front().getOperation()))
       applyIRTransform(builder, lop, chosenGroup, newAxisMap, numPost);
-
-  // applyIRTransform erased the old generic and inserted a new one.
-  // Re-sync topoMembers and boundaryOut so Phase 3 sees valid ops/values.
-  if (members.size() == 1) {
-    result.topoMembers.clear();
-    func.walk([&](LinalgOp op) { result.topoMembers.push_back(op); });
-    result.boundaryOut = SmallVector<Value>(retOp.getOperands());
+  } else {
+    applyMultiOpIRTransform(builder, members, newAxisMap, numPost);
   }
+
+  // Re-sync topoMembers and boundaryOut so Phase 3 sees valid ops/values.
+  result.topoMembers.clear();
+  func.walk([&](LinalgOp op) { result.topoMembers.push_back(op); });
+  result.boundaryOut = SmallVector<Value>(retOp.getOperands());
 
   return result;
 }
