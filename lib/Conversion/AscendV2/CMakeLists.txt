@@ -3,6 +3,7 @@ add_mlir_library(AscendV2Conversion
   Kernelize/DependencyAnalysis.cpp
   Normalize/NormalizePass.cpp
   Kernelize/KernelizePass.cpp
+  Kernelize/OpRoleClassification.cpp
   Kernelize/StructuralMarking.cpp
   Schedule/SchedulePass.cpp
 

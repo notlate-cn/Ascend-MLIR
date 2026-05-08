@@ -9,18 +9,18 @@
 #include "Conversion/AscendV2/Debug/DebugOptions.h"
 #include "Conversion/AscendV2/Kernelize/DependencyAnalysis.h"
 #include "Conversion/AscendV2/Kernelize/KernelizeTypes.h"
+#include "Conversion/AscendV2/Kernelize/OpRoleClassification.h"
 #include "Conversion/AscendV2/Kernelize/StructuralMarking.h"
 #include "mlir/IR/Attributes.h"
+#include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/Operation.h"
 #include "llvm/ADT/ArrayRef.h"
-#include "llvm/ADT/SmallString.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/ADT/Twine.h"
 #include "llvm/Support/raw_ostream.h"
 
-#include <optional>
 #include <string>
 
 #define GEN_PASS_DECL_ASCENDKERNELIZEPASS
@@ -39,53 +39,6 @@ struct KernelizeReportEntry {
 
 bool isFuncOp(Operation *op) {
   return op->getName().getStringRef() == "func.func";
-}
-
-bool isLinalgStructuredOp(Operation *op) {
-  StringRef opName = op->getName().getStringRef();
-  return op->getName().getDialectNamespace() == "linalg" &&
-         opName != "linalg.yield" && opName != "linalg.index";
-}
-
-bool isSupportedLinalgOpName(StringRef opName) {
-  return opName == "linalg.generic" || opName == "linalg.matmul" ||
-         opName == "linalg.batch_matmul";
-}
-
-bool isIteratorType(Attribute attr, StringRef expected) {
-  if (auto stringAttr = dyn_cast<StringAttr>(attr))
-    return stringAttr.getValue() == expected;
-
-  SmallString<32> storage;
-  llvm::raw_svector_ostream os(storage);
-  attr.print(os);
-  return StringRef(storage).contains(expected);
-}
-
-std::optional<StringRef> classifyLinalgOp(Operation *op) {
-  StringRef opName = op->getName().getStringRef();
-  if (opName == "linalg.matmul" || opName == "linalg.batch_matmul")
-    return StringRef("cube");
-
-  if (opName != "linalg.generic")
-    return StringRef("unsupported");
-
-  auto iteratorTypes = op->getAttrOfType<ArrayAttr>("iterator_types");
-  if (!iteratorTypes)
-    return std::nullopt;
-
-  bool hasReduction = false;
-  for (Attribute iteratorType : iteratorTypes) {
-    if (isIteratorType(iteratorType, "parallel"))
-      continue;
-    if (isIteratorType(iteratorType, "reduction")) {
-      hasReduction = true;
-      continue;
-    }
-    return std::nullopt;
-  }
-
-  return hasReduction ? StringRef("reduction") : StringRef("vector");
 }
 
 void emitKernelizeReport(ArrayRef<KernelizeReportEntry> entries) {
@@ -151,39 +104,33 @@ struct AscendKernelizePass
             options, ::mlir::ascend::v2::DebugStage::Kernelize))
       emitStructuralMarkingReport(llvm::errs(), *depResult);
 
+    FailureOr<OpRoleMap> roleMap = OpRoleClassifier().classify(*depResult);
+    if (failed(roleMap)) {
+      signalPassFailure();
+      return;
+    }
+    attachRoleAttributes(module, *roleMap);
+    if (::mlir::ascend::v2::shouldDump(
+            options, ::mlir::ascend::v2::DebugStage::Kernelize))
+      emitOpRoleClassificationReport(llvm::errs(), *depResult, *roleMap);
+
     MLIRContext *context = module.getContext();
     SmallVector<KernelizeReportEntry> reportEntries;
     unsigned nextKernelId = 0;
-    if (module
-            .walk([&](Operation *op) {
-              if (!isLinalgStructuredOp(op))
-                return WalkResult::advance();
+    for (Operation *op : depResult->index.orderedOps) {
+      op->removeAttr(kKernelAttr);
+      op->removeAttr(kPrimaryAttr);
 
-              std::optional<StringRef> role = classifyLinalgOp(op);
-              if (!role) {
-                if (isSupportedLinalgOpName(op->getName().getStringRef())) {
-                  op->emitError() << "failed to classify supported linalg op";
-                  return WalkResult::interrupt();
-                }
-                role = StringRef("unsupported");
-              }
+      auto role = op->getAttrOfType<StringAttr>(kOpRoleAttr);
+      StringRef roleName = role ? role.getValue() : StringRef("unsupported");
+      if (roleName == "unsupported")
+        continue;
 
-              op->setAttr(kOpRoleAttr, StringAttr::get(context, *role));
-              if (*role == "unsupported")
-                return WalkResult::advance();
-
-              std::string kernelId =
-                  (llvm::Twine("kernel_") + llvm::Twine(nextKernelId++))
-                      .str();
-              op->setAttr(kKernelAttr, StringAttr::get(context, kernelId));
-              op->setAttr(kPrimaryAttr, BoolAttr::get(context, true));
-              reportEntries.push_back(
-                  KernelizeReportEntry{role->str(), kernelId});
-              return WalkResult::advance();
-            })
-            .wasInterrupted()) {
-      signalPassFailure();
-      return;
+      std::string kernelId =
+          (llvm::Twine("kernel_") + llvm::Twine(nextKernelId++)).str();
+      op->setAttr(kKernelAttr, StringAttr::get(context, kernelId));
+      op->setAttr(kPrimaryAttr, BoolAttr::get(context, true));
+      reportEntries.push_back(KernelizeReportEntry{roleName.str(), kernelId});
     }
 
     if (::mlir::ascend::v2::shouldDump(
