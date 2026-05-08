@@ -366,7 +366,7 @@ Builder rules:
 
 - `kernelId` comes from `KernelPatternView`.
 - `dominantRole` comes from the pattern view.
-- `resultRank` and `resultShape` come from the first primary op result shaped type.
+- `resultRank` and `resultShape` come from `selectDominantPrimaryOp(pattern)` result shaped type.
 - `templateTags`:
   - cube role -> `cube`
   - reduction role -> `reduction`
