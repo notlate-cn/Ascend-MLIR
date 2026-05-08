@@ -13,6 +13,8 @@ func.func @branch_merge(%a: tensor<16xf32>, %b: tensor<16xf32>,
       linalg.yield %x : f32
     } -> tensor<16xf32>
   %1 = linalg.generic {
+      ascend.v2.branch_root = true,
+      ascend.v2.branch_group = 99 : i64,
       indexing_maps = [
         affine_map<(d0) -> (d0)>,
         affine_map<(d0) -> (d0)>],
@@ -24,6 +26,8 @@ func.func @branch_merge(%a: tensor<16xf32>, %b: tensor<16xf32>,
       linalg.yield %scale : f32
     } -> tensor<16xf32>
   %2 = linalg.generic {
+      ascend.v2.merge_root = true,
+      ascend.v2.merge_group = 88 : i64,
       indexing_maps = [
         affine_map<(d0) -> (d0)>,
         affine_map<(d0) -> (d0)>],
@@ -57,3 +61,5 @@ func.func @branch_merge(%a: tensor<16xf32>, %b: tensor<16xf32>,
 // CHECK: op_id = 3
 // CHECK-SAME: merge_root = true
 // CHECK-SAME: merge_group = 0
+// CHECK-NOT: ascend.v2.branch_group = 99
+// CHECK-NOT: ascend.v2.merge_group = 88
