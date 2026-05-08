@@ -84,6 +84,18 @@ struct CoalescedAxisInfo {
   SmallVector<AxisCoalescingBarrier> barriers;
 };
 
+struct ScheduleProblem {
+  std::string kernelId;
+  OpRole dominantRole = OpRole::Unknown;
+  unsigned resultRank = 0;
+  SmallVector<int64_t> resultShape;
+  CoalescedAxisInfo axes;
+  unsigned guardBudget = 8;
+  SmallVector<std::string> templateTags;
+  SmallVector<std::string> structureConstraints;
+  SmallVector<std::string> shapeConstraints;
+};
+
 inline OpRole parseOpRole(llvm::StringRef value) {
   return llvm::StringSwitch<OpRole>(value)
       .Case("cube", OpRole::Cube)

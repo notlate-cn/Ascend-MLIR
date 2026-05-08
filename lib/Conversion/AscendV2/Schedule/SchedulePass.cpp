@@ -9,6 +9,7 @@
 #include "Conversion/AscendV2/Debug/DebugOptions.h"
 #include "Conversion/AscendV2/Schedule/AxisCoalescer.h"
 #include "Conversion/AscendV2/Schedule/KernelPatternView.h"
+#include "Conversion/AscendV2/Schedule/ScheduleProblemBuilder.h"
 #include "Conversion/AscendV2/Schedule/ScheduleTypes.h"
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/IR/Attributes.h"
@@ -39,7 +40,7 @@ namespace {
 
 constexpr llvm::StringLiteral kSingleTilePerBlock = "single_tile_per_block";
 
-struct ScheduleProblem {
+struct FixedScheduleProblem {
   OpRole opRole = OpRole::Unknown;
   std::optional<int64_t> resultRank;
   SmallVector<int64_t> staticShape;
@@ -47,15 +48,10 @@ struct ScheduleProblem {
 };
 
 struct ScheduleReportEntry {
-  ScheduleProblem problem;
+  FixedScheduleProblem problem;
   std::string scheduleFamily;
   std::string scheduleTemplate;
   std::string decisionId;
-};
-
-struct AxisCoalescingReportEntry {
-  std::string kernelId;
-  CoalescedAxisInfo info;
 };
 
 std::string stringifyAttr(Attribute attr) {
@@ -76,8 +72,8 @@ std::string stringifyStructuredIteratorType(utils::IteratorType iteratorType) {
   return "unknown";
 }
 
-ScheduleProblem extractScheduleProblem(Operation *op, OpRole opRole) {
-  ScheduleProblem problem;
+FixedScheduleProblem extractFixedScheduleProblem(Operation *op, OpRole opRole) {
+  FixedScheduleProblem problem;
   problem.opRole = opRole;
 
   if (op->getNumResults() != 0) {
@@ -104,7 +100,8 @@ ScheduleProblem extractScheduleProblem(Operation *op, OpRole opRole) {
   return problem;
 }
 
-std::optional<StringRef> chooseScheduleFamily(const ScheduleProblem &problem) {
+std::optional<StringRef>
+chooseScheduleFamily(const FixedScheduleProblem &problem) {
   if (problem.opRole == OpRole::Reduction)
     return StringRef("reduction_static");
   if (problem.opRole == OpRole::Cube)
@@ -157,7 +154,7 @@ struct AscendSchedulePass
 
     ModuleOp module = getOperation();
     MLIRContext *context = module.getContext();
-    std::vector<AxisCoalescingReportEntry> axisCoalescingEntries;
+    std::vector<ScheduleProblem> scheduleProblemEntries;
     SmallVector<ScheduleReportEntry> reportEntries;
     FailureOr<SmallVector<KernelPatternView>> patternViews =
         buildKernelPatternViews(module);
@@ -175,15 +172,24 @@ struct AscendSchedulePass
         return;
       }
 
+      CoalescedAxisInfo axes = std::move(*axisInfo);
+      FailureOr<ScheduleProblem> scheduleProblem =
+          buildScheduleProblem(pattern, axes);
+      if (failed(scheduleProblem)) {
+        signalPassFailure();
+        return;
+      }
+
       const PatternOpView *primaryOpView = selectDominantPrimaryOp(pattern);
       if (!primaryOpView) {
         signalPassFailure();
         return;
       }
 
-      ScheduleProblem problem =
-          extractScheduleProblem(primaryOpView->op, primaryOpView->role);
-      std::optional<StringRef> scheduleFamily = chooseScheduleFamily(problem);
+      FixedScheduleProblem fixedProblem =
+          extractFixedScheduleProblem(primaryOpView->op, primaryOpView->role);
+      std::optional<StringRef> scheduleFamily =
+          chooseScheduleFamily(fixedProblem);
       if (!scheduleFamily) {
         primaryOpView->op->emitError() << "unsupported schedule role";
         signalPassFailure();
@@ -205,17 +211,18 @@ struct AscendSchedulePass
       }
 
       reportEntries.push_back(ScheduleReportEntry{
-          std::move(problem), scheduleFamily->str(), kSingleTilePerBlock.str(),
-          decisionId});
-      axisCoalescingEntries.push_back(
-          AxisCoalescingReportEntry{pattern.kernelId, std::move(*axisInfo)});
+          std::move(fixedProblem), scheduleFamily->str(),
+          kSingleTilePerBlock.str(), decisionId});
+      scheduleProblemEntries.push_back(std::move(*scheduleProblem));
     }
 
     if (::mlir::ascend::v2::shouldDump(
             options, ::mlir::ascend::v2::DebugStage::Schedule)) {
       printKernelPatternViews(*patternViews, llvm::errs());
-      for (const AxisCoalescingReportEntry &entry : axisCoalescingEntries)
-        printAxisCoalescingReport(entry.kernelId, entry.info, llvm::errs());
+      for (const ScheduleProblem &problem : scheduleProblemEntries) {
+        printAxisCoalescingReport(problem.kernelId, problem.axes, llvm::errs());
+        printScheduleProblemReport(problem, llvm::errs());
+      }
       emitScheduleReport(reportEntries, llvm::errs());
     }
   }
