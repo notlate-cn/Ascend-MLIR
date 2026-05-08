@@ -23,7 +23,7 @@
 | 阶段 | 范围 | 状态 | 当前结论 |
 |---|---|---|---|
 | Phase 0 | V2 MVP 编译主干 | `Done` | Normalize -> Kernelize -> Schedule 纵向链路已打通 |
-| Phase 1 | Kernelize 完整候选分析 | `In Progress` | Task 5 融合候选分析已实现、已 review、xvm focused lit 通过 |
+| Phase 1 | Kernelize 完整候选分析 | `In Progress` | Task 6 候选合并分析已实现、已 review、xvm focused lit 通过 |
 | Phase 2 | Schedule 完整搜索与 guard/cache | `Planned` | 依赖 Phase 1 输出质量 |
 | Phase 3 | Realize plan objects | `Planned` | 依赖稳定 `ScheduleDecisionSet` |
 | Phase 4 | Target model 完整化 | `Planned` | 与 Phase 2/3 并行推进 |
@@ -112,6 +112,7 @@ cmake --build build-v2-verify --target check-afir -j10
 | Task 3: Structural Marking | `Done` | `18e0a2d` / `1fb4c2b` | `git diff --check` passed；xvm `ascend-kernelize-roles.mlir`、`ascend-kernelize-dependency.mlir`、`ascend-kernelize-mvp.mlir` 3/3 passed |
 | Task 4: Full OpRole Classification | `Done` | `af8a78d` / `61b63d6` | `git diff --check` passed；xvm `ascend-kernelize-roles.mlir`、`ascend-kernelize-dependency.mlir`、`ascend-kernelize-mvp.mlir`、`ascend-v2-pipeline-mvp.mlir` 4/4 passed |
 | Task 5: Primitive Candidate Analysis and CandidateClosure | `Done` | `28970ee` / `cf95af4` / `d25f4dc` | `git diff --check` passed；xvm `ascend-kernelize-candidates.mlir`、`ascend-kernelize-roles.mlir`、`ascend-kernelize-dependency.mlir`、`ascend-kernelize-mvp.mlir`、`ascend-v2-pipeline-mvp.mlir` 5/5 passed |
+| Task 6: Candidate Merge Analysis | `Done` | `4f8d11c` / `c0879fe` / `64762fe` | `git diff --check` passed；xvm `ascend-kernelize-merge-horizontal.mlir`、`ascend-kernelize-candidates.mlir`、`ascend-kernelize-roles.mlir`、`ascend-kernelize-dependency.mlir`、`ascend-kernelize-mvp.mlir`、`ascend-v2-pipeline-mvp.mlir` 6/6 passed |
 
 ## Phase 2：Schedule 完整搜索
 
