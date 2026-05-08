@@ -25,7 +25,7 @@
 |---|---|---|---|
 | Phase 0 | V2 MVP 编译主干 | `Done` | Normalize -> Kernelize -> Schedule 纵向链路已打通 |
 | Phase 1 | Kernelize 完整候选分析 | `Done` | Kernelize Phase 1 候选分析与 pattern partition 路径已完成并验证 |
-| Phase 2 | Schedule 完整搜索与 guard/cache | `In Progress` | Task 6 guard 生成已完成；下一步进入 ScheduleDecisionSet |
+| Phase 2 | Schedule 完整搜索与 guard/cache | `In Progress` | Task 7 ScheduleDecisionSet 已完成；下一步进入 cache 建模 |
 | Phase 3 | Realize plan objects | `Planned` | 依赖稳定 `ScheduleDecisionSet` |
 | Phase 4 | Target model 完整化 | `Planned` | 与 Phase 2/3 并行推进 |
 | Phase 5 | Translate / runtime artifact 对接 | `Planned` | 依赖 Realize 和 ABI 设计稳定 |
@@ -162,7 +162,7 @@ ssh xvm@orb 'cd /home/niu/code/Ascend-MLIR && cmake --build build-v2-verify --ta
 | `ScheduleSearch` | `Done` | 搜索 `ScheduleInstance` | compileTimeTopK 生效 |
 | guard 生成 | `Done` | `candidateGuards` / `decisionGuards` | static/dynamic shape 与 guard budget prune lit |
 | cache 建模 | `Planned` | `ShapeBucketCache` / `TuningResultCache` | key、negative cache、LRU 测试 |
-| `ScheduleDecisionSet` | `Planned` | 输出多个候选决策 | runtimeTopK 可导出 |
+| `ScheduleDecisionSet` | `Done` | 输出多个候选决策 | runtimeTopK 可导出 |
 | structured lowering | `Planned` | 生成稳定 loop skeleton | 替代手写 transform |
 
 计划文件：
@@ -180,6 +180,7 @@ ssh xvm@orb 'cd /home/niu/code/Ascend-MLIR && cmake --build build-v2-verify --ta
 | Task 4: TemplateRegistry MVP | `Done` | `36d0d34` | TDD RED/GREEN completed；spec review passed；code quality review approved；xvm clean `afir-opt` build passed；focused lit 6/6 passed；`check-afir` 39 discovered, 36 passed, 3 unsupported |
 | Task 5: ScheduleSearch And compileTimeTopK | `Done` | `c0a0dae` | TDD RED/GREEN completed；spec review passed；code quality review approved；xvm clean `afir-opt` build passed；focused lit 7/7 passed；`check-afir` 40 discovered, 37 passed, 3 unsupported |
 | Task 6: Guard Generation And Guard Budget | `Done` | `37226a3` | TDD RED/GREEN completed；spec review passed；code quality review approved；xvm clean `afir-opt` build passed；focused lit 8/8 passed；`check-afir` 41 discovered, 38 passed, 3 unsupported |
+| Task 7: ScheduleDecisionSet Builder | `Done` | `7cf1348` | TDD RED/GREEN completed；spec review passed；code quality review approved；xvm clean `afir-opt` build passed；focused lit 9/9 passed；`check-afir` 42 discovered, 39 passed, 3 unsupported |
 
 ### Phase 2 验证记录
 
@@ -291,6 +292,24 @@ ssh xvm@orb 'cd /home/niu/code/Ascend-MLIR && cmake --build build-v2-task6-verif
 | `git diff --check` | passed |
 | clean `afir-opt` build + Phase 2 Task 6 focused lit | 8 discovered, 8 passed |
 | `check-afir` | 41 discovered, 38 passed, 3 unsupported |
+
+Task 7 已执行：
+
+```bash
+rsync -av --relative include/Conversion/AscendV2/Schedule/ScheduleTypes.h include/Conversion/AscendV2/Schedule/ScheduleDecision.h lib/Conversion/AscendV2/Schedule/ScheduleDecision.cpp lib/Conversion/AscendV2/Schedule/SchedulePass.cpp lib/Conversion/AscendV2/CMakeLists.txt test/Conversion/ascend-schedule-decision-set.mlir test/Conversion/ascend-schedule-pattern-view.mlir xvm@orb:/home/niu/code/Ascend-MLIR/
+
+ssh xvm@orb 'cd /home/niu/code/Ascend-MLIR && cmake -S . -B build-v2-task7-verify -G Ninja -DLLVM_BUILD_DIR=/home/niu/code/llvm-project/llvm/build -DAFIR_ENABLE_BINDING_PYTHON=false && cmake --build build-v2-task7-verify --target afir-opt -j10 && /home/niu/code/llvm-project/llvm/build/bin/llvm-lit -v build-v2-task7-verify/test/Conversion/ascend-schedule-decision-set.mlir build-v2-task7-verify/test/Conversion/ascend-schedule-guards.mlir build-v2-task7-verify/test/Conversion/ascend-schedule-search.mlir build-v2-task7-verify/test/Conversion/ascend-schedule-template-registry.mlir build-v2-task7-verify/test/Conversion/ascend-schedule-problem.mlir build-v2-task7-verify/test/Conversion/ascend-schedule-axis-coalescing.mlir build-v2-task7-verify/test/Conversion/ascend-schedule-pattern-view.mlir build-v2-task7-verify/test/Conversion/ascend-schedule-mvp.mlir build-v2-task7-verify/test/Conversion/ascend-v2-pipeline-mvp.mlir'
+
+ssh xvm@orb 'cd /home/niu/code/Ascend-MLIR && cmake --build build-v2-task7-verify --target check-afir -j10'
+```
+
+结果：
+
+| 命令 | 结果 |
+|---|---|
+| `git diff --check` | passed |
+| clean `afir-opt` build + Phase 2 Task 7 focused lit | 9 discovered, 9 passed |
+| `check-afir` | 42 discovered, 39 passed, 3 unsupported |
 
 ## Phase 3：Realize Plan Objects
 
