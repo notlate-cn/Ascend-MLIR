@@ -23,7 +23,7 @@
 | 阶段 | 范围 | 状态 | 当前结论 |
 |---|---|---|---|
 | Phase 0 | V2 MVP 编译主干 | `Done` | Normalize -> Kernelize -> Schedule 纵向链路已打通 |
-| Phase 1 | Kernelize 完整候选分析 | `Planned` | 计划已落地，等待执行 |
+| Phase 1 | Kernelize 完整候选分析 | `In Progress` | Task 1 数据模型已实现、已 review、xvm focused lit 通过 |
 | Phase 2 | Schedule 完整搜索与 guard/cache | `Planned` | 依赖 Phase 1 输出质量 |
 | Phase 3 | Realize plan objects | `Planned` | 依赖稳定 `ScheduleDecisionSet` |
 | Phase 4 | Target model 完整化 | `Planned` | 与 Phase 2/3 并行推进 |
@@ -102,6 +102,12 @@ cmake --build build-v2-verify --target check-afir -j10
 计划文件：
 
 - `docs/superpowers/plans/2026-05-08-ascend-mlir-v2-kernelize-candidates.md`
+
+### Phase 1 执行记录
+
+| 计划任务 | 状态 | 提交 | 验证 |
+|---|---|---|---|
+| Task 1: Shared Kernelize Data Model | `Done` | `bb7a9c0` | `git diff --check` passed；xvm `afir-opt` build passed；`ascend-kernelize-mvp.mlir` 1/1 passed |
 
 ## Phase 2：Schedule 完整搜索
 
