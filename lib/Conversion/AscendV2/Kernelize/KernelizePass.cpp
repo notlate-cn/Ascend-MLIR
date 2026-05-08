@@ -7,6 +7,7 @@
 #include "Conversion/AscendV2/Kernelize/KernelizePass.h"
 
 #include "Conversion/AscendV2/Debug/DebugOptions.h"
+#include "Conversion/AscendV2/Kernelize/KernelizeTypes.h"
 #include "mlir/IR/Attributes.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/Operation.h"
@@ -25,13 +26,9 @@
 #include "Conversion/Passes.h.inc"
 
 using namespace mlir;
+using namespace mlir::afir::ascend::v2::kernelize;
 
 namespace {
-
-constexpr llvm::StringLiteral kNormalizedAttr = "ascend.v2.normalized";
-constexpr llvm::StringLiteral kOpRoleAttr = "ascend.v2.op_role";
-constexpr llvm::StringLiteral kKernelAttr = "ascend.v2.kernel";
-constexpr llvm::StringLiteral kPrimaryAttr = "ascend.v2.primary";
 
 struct KernelizeReportEntry {
   std::string opRole;
@@ -107,12 +104,13 @@ struct AscendKernelizePass
   using AscendKernelizePassBase::AscendKernelizePassBase;
 
   void runOnOperation() override {
-    ascend::v2::DebugOptions options{
-        ascend::v2::parseDebugStage(debugStage), dumpReport};
-    if (ascend::v2::shouldDump(options, ascend::v2::DebugStage::Kernelize))
-      ascend::v2::emitStageHeader(llvm::errs(),
-                                  ascend::v2::DebugStage::Kernelize,
-                                  getArgument());
+    ::mlir::ascend::v2::DebugOptions options{
+        ::mlir::ascend::v2::parseDebugStage(debugStage), dumpReport};
+    if (::mlir::ascend::v2::shouldDump(
+            options, ::mlir::ascend::v2::DebugStage::Kernelize))
+      ::mlir::ascend::v2::emitStageHeader(
+          llvm::errs(), ::mlir::ascend::v2::DebugStage::Kernelize,
+          getArgument());
 
     ModuleOp module = getOperation();
     if (module
@@ -167,7 +165,8 @@ struct AscendKernelizePass
       return;
     }
 
-    if (ascend::v2::shouldDump(options, ascend::v2::DebugStage::Kernelize))
+    if (::mlir::ascend::v2::shouldDump(
+            options, ::mlir::ascend::v2::DebugStage::Kernelize))
       emitKernelizeReport(reportEntries);
   }
 };
