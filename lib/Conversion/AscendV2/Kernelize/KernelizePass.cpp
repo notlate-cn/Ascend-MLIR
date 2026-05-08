@@ -10,6 +10,7 @@
 #include "Conversion/AscendV2/Kernelize/CandidateMergeAnalysis.h"
 #include "Conversion/AscendV2/Kernelize/DependencyAnalysis.h"
 #include "Conversion/AscendV2/Kernelize/FusionCandidateAnalysis.h"
+#include "Conversion/AscendV2/Kernelize/HorizontalFusionAnalysis.h"
 #include "Conversion/AscendV2/Kernelize/KernelizeTypes.h"
 #include "Conversion/AscendV2/Kernelize/OpRoleClassification.h"
 #include "Conversion/AscendV2/Kernelize/StructuralMarking.h"
@@ -144,6 +145,13 @@ struct AscendKernelizePass
             options, ::mlir::ascend::v2::DebugStage::Kernelize))
       emitCandidateMergeReport(llvm::errs(), mergedCandidates,
                                depResult->index);
+
+    SmallVector<HorizontalFusionCandidate> horizontalCandidates =
+        HorizontalFusionAnalyzer().analyze(fusionCandidates, mergedCandidates,
+                                           *depResult, config);
+    if (::mlir::ascend::v2::shouldDump(
+            options, ::mlir::ascend::v2::DebugStage::Kernelize))
+      emitHorizontalFusionReport(llvm::errs(), horizontalCandidates);
 
     MLIRContext *context = module.getContext();
     SmallVector<KernelizeReportEntry> reportEntries;
