@@ -25,8 +25,8 @@
 |---|---|---|---|
 | Phase 0 | V2 MVP 编译主干 | `Done` | Normalize -> Kernelize -> Schedule 纵向链路已打通 |
 | Phase 1 | Kernelize 完整候选分析 | `Done` | Kernelize Phase 1 候选分析与 pattern partition 路径已完成并验证 |
-| Phase 2 | Schedule 完整搜索与 guard/cache | `In Review` | Task 9 structured lowering 已完成；下一步执行 Phase 2 final review |
-| Phase 3 | Realize plan objects | `Planned` | 依赖稳定 `ScheduleDecisionSet` |
+| Phase 2 | Schedule 完整搜索与 guard/cache | `Done` | Phase 2 final review 与 xvm/docker 验证已完成 |
+| Phase 3 | Realize plan objects | `Planned` | 下一步从 `MemoryRealizationPlan` 的 plan object 边界开始 |
 | Phase 4 | Target model 完整化 | `Planned` | 与 Phase 2/3 并行推进 |
 | Phase 5 | Translate / runtime artifact 对接 | `Planned` | 依赖 Realize 和 ABI 设计稳定 |
 | Phase 6 | 架构文档与 demo 重写 | `Deferred` | 待 V2 主链路稳定后启动 |
@@ -183,6 +183,19 @@ ssh xvm@orb 'cd /home/niu/code/Ascend-MLIR && cmake --build build-v2-verify --ta
 | Task 7: ScheduleDecisionSet Builder | `Done` | `7cf1348` | TDD RED/GREEN completed；spec review passed；code quality review approved；xvm clean `afir-opt` build passed；focused lit 9/9 passed；`check-afir` 42 discovered, 39 passed, 3 unsupported |
 | Task 8: Schedule Cache Model | `Done` | `20c5a45` | spec review passed；code quality review approved；xvm clean `afir-opt` build passed；focused lit 10/10 passed；`check-afir` 43 discovered, 40 passed, 3 unsupported |
 | Task 9: StructuredLoweringDriver MVP | `Done` | `a1ae3be` | TDD RED/GREEN completed；spec review passed；code quality re-review approved；xvm clean `afir-opt` build passed；focused lit 11/11 passed；`check-afir` 44 discovered, 41 passed, 3 unsupported |
+| Task 10: Full Phase 2 Verification, Review, And Tracking | `Done` | 本文档提交 | final spec review approved；final code/test review approved；schedule focused 10/10 passed；pipeline smoke 1/1 passed；`check-afir` 44 discovered, 41 passed, 3 unsupported |
+
+### Phase 2 收口摘要
+
+| 项 | 结果 |
+|---|---|
+| 代码范围 | 新增 `include/Conversion/AscendV2/Schedule/*.h` 9 个、`lib/Conversion/AscendV2/Schedule/*.cpp` 8 个；局部更新 `SchedulePass.cpp` 与 `lib/Conversion/AscendV2/CMakeLists.txt` |
+| 测试范围 | 当前 `test/Conversion/ascend-schedule-*.mlir` 共 10 个；Phase 2 新增 9 个 focused schedule lit |
+| 行为覆盖 | pattern view、axis coalescing、problem builder、template registry、search、guards、decision set、cache、structured lowering marker |
+| 最终验证 | schedule focused 10/10 passed；pipeline smoke 1/1 passed；`check-afir` 44 discovered, 41 passed, 3 unsupported |
+| final review | V2-4 spec review approved；code/test review approved |
+| 残余风险 | 当前 `AxisCoalescer` 已覆盖分类/report、broadcast/reduction/multi-primary；若后续要求真正把相邻轴折叠成更少 logical axes，需要在 Phase 3/后续 Schedule 增量中补更强 collapse 测试 |
+| Phase 3 交接 | `StructuredLowering` 当前只写 `loop_skeleton_v0` marker，不做内存物化；Phase 3 从 `PlacementPlan`、`StaticMemoryPlan`、`MovementPlan`、`MemoryRealizationPlan` 接续 |
 
 ### Phase 2 验证记录
 
@@ -413,18 +426,19 @@ ssh xvm@orb 'cd /home/niu/code/Ascend-MLIR && cmake --build build-v2-task9-verif
 
 ## 当前下一步
 
-下一步继续执行 Phase 2 计划：
+下一步进入 Phase 3 计划拆解：
 
 ```text
-Task 10: Full Phase 2 Verification, Review, And Tracking
+Phase 3: Realize Plan Objects
 ```
 
 执行入口：
 
-- `docs/superpowers/plans/2026-05-08-ascend-mlir-v2-schedule-full-search.md`
+- `docs/Ascend-MLIR-Detailed-Implementation-V2-5.zh.md`
+- `docs/Ascend-MLIR-Detailed-Implementation-V2.zh.md`
 
 后续切分：
 
-1. Phase 2 final code review
-2. Phase 2 schedule 全量验证汇总
-3. Phase 3 Realize plan objects
+1. 基于 V2-5 生成 Phase 3 implementation plan
+2. 先落 `MemoryRealizationPlan` / `PlacementPlan` 数据模型
+3. 再接入 bufferization、static memory、movement plan 与 verifier
