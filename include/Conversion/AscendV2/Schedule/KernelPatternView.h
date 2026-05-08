@@ -1,0 +1,27 @@
+//===- KernelPatternView.h - Ascend V2 schedule pattern view -*- C++ -*-===//
+//
+// Part of the Ascend-MLIR Project
+//
+//===----------------------------------------------------------------------===//
+
+#ifndef ASCEND_MLIR_CONVERSION_ASCENDV2_SCHEDULE_KERNELPATTERNVIEW_H
+#define ASCEND_MLIR_CONVERSION_ASCENDV2_SCHEDULE_KERNELPATTERNVIEW_H
+
+#include "Conversion/AscendV2/Schedule/ScheduleTypes.h"
+#include "mlir/IR/BuiltinOps.h"
+#include "mlir/Support/LLVM.h"
+#include "mlir/Support/LogicalResult.h"
+#include "llvm/ADT/ArrayRef.h"
+#include "llvm/Support/raw_ostream.h"
+
+namespace mlir::afir::ascend::v2::schedule {
+
+FailureOr<SmallVector<KernelPatternView>>
+buildKernelPatternViews(ModuleOp module);
+
+void printKernelPatternViews(ArrayRef<KernelPatternView> patterns,
+                             llvm::raw_ostream &os);
+
+} // namespace mlir::afir::ascend::v2::schedule
+
+#endif // ASCEND_MLIR_CONVERSION_ASCENDV2_SCHEDULE_KERNELPATTERNVIEW_H

@@ -7,6 +7,8 @@
 #include "Conversion/AscendV2/Schedule/SchedulePass.h"
 
 #include "Conversion/AscendV2/Debug/DebugOptions.h"
+#include "Conversion/AscendV2/Schedule/KernelPatternView.h"
+#include "Conversion/AscendV2/Schedule/ScheduleTypes.h"
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/IR/Attributes.h"
 #include "mlir/IR/BuiltinOps.h"
@@ -29,21 +31,14 @@
 #include "Conversion/Passes.h.inc"
 
 using namespace mlir;
+using namespace mlir::afir::ascend::v2::schedule;
 
 namespace {
 
-constexpr llvm::StringLiteral kKernelAttr = "ascend.v2.kernel";
-constexpr llvm::StringLiteral kOpRoleAttr = "ascend.v2.op_role";
-constexpr llvm::StringLiteral kScheduleFamilyAttr =
-    "ascend.v2.schedule.family";
-constexpr llvm::StringLiteral kScheduleTemplateAttr =
-    "ascend.v2.schedule.template";
-constexpr llvm::StringLiteral kScheduleDecisionIdAttr =
-    "ascend.v2.schedule.decision_id";
 constexpr llvm::StringLiteral kSingleTilePerBlock = "single_tile_per_block";
 
 struct ScheduleProblem {
-  std::string opRole;
+  OpRole opRole = OpRole::Unknown;
   std::optional<int64_t> resultRank;
   SmallVector<int64_t> staticShape;
   SmallVector<std::string> iteratorTypes;
@@ -55,12 +50,6 @@ struct ScheduleReportEntry {
   std::string scheduleTemplate;
   std::string decisionId;
 };
-
-bool isLinalgStructuredOp(Operation *op) {
-  StringRef opName = op->getName().getStringRef();
-  return op->getName().getDialectNamespace() == "linalg" &&
-         opName != "linalg.yield" && opName != "linalg.index";
-}
 
 std::string stringifyAttr(Attribute attr) {
   if (auto stringAttr = dyn_cast<StringAttr>(attr))
@@ -80,9 +69,9 @@ std::string stringifyStructuredIteratorType(utils::IteratorType iteratorType) {
   return "unknown";
 }
 
-ScheduleProblem extractScheduleProblem(Operation *op, StringRef opRole) {
+ScheduleProblem extractScheduleProblem(Operation *op, OpRole opRole) {
   ScheduleProblem problem;
-  problem.opRole = opRole.str();
+  problem.opRole = opRole;
 
   if (op->getNumResults() != 0) {
     if (auto resultType =
@@ -109,12 +98,11 @@ ScheduleProblem extractScheduleProblem(Operation *op, StringRef opRole) {
 }
 
 std::optional<StringRef> chooseScheduleFamily(const ScheduleProblem &problem) {
-  StringRef opRole(problem.opRole);
-  if (opRole == "reduction")
+  if (problem.opRole == OpRole::Reduction)
     return StringRef("reduction_static");
-  if (opRole == "cube")
+  if (problem.opRole == OpRole::Cube)
     return StringRef("cube_static_matmul");
-  if (opRole != "vector")
+  if (problem.opRole != OpRole::Vector)
     return std::nullopt;
 
   if (problem.resultRank == 1)
@@ -125,22 +113,29 @@ std::optional<StringRef> chooseScheduleFamily(const ScheduleProblem &problem) {
   return std::nullopt;
 }
 
-void emitScheduleReport(ArrayRef<ScheduleReportEntry> entries) {
-  llvm::errs() << "Schedule report\n";
+const PatternOpView *getFirstPrimaryOpView(const KernelPatternView &pattern) {
+  for (const PatternOpView &opView : pattern.ops) {
+    if (opView.primary)
+      return &opView;
+  }
+  return nullptr;
+}
+
+void emitScheduleReport(ArrayRef<ScheduleReportEntry> entries,
+                        llvm::raw_ostream &os) {
+  os << "Schedule report\n";
   for (const ScheduleReportEntry &entry : entries) {
-    llvm::errs() << "  op_role = \"" << entry.problem.opRole << "\"\n";
+    os << "  op_role = \"" << stringifyOpRole(entry.problem.opRole) << "\"\n";
     if (entry.problem.resultRank)
-      llvm::errs() << "  result_rank = " << *entry.problem.resultRank << "\n";
+      os << "  result_rank = " << *entry.problem.resultRank << "\n";
     if (!entry.problem.staticShape.empty()) {
-      llvm::errs() << "  static_shape = [";
-      llvm::interleaveComma(entry.problem.staticShape, llvm::errs());
-      llvm::errs() << "]\n";
+      os << "  static_shape = [";
+      llvm::interleaveComma(entry.problem.staticShape, os);
+      os << "]\n";
     }
-    llvm::errs() << "  schedule_family = \"" << entry.scheduleFamily << "\"\n";
-    llvm::errs() << "  schedule_template = \"" << entry.scheduleTemplate
-                 << "\"\n";
-    llvm::errs() << "  schedule_decision_id = \"" << entry.decisionId
-                 << "\"\n";
+    os << "  schedule_family = \"" << entry.scheduleFamily << "\"\n";
+    os << "  schedule_template = \"" << entry.scheduleTemplate << "\"\n";
+    os << "  schedule_decision_id = \"" << entry.decisionId << "\"\n";
   }
 }
 
@@ -153,64 +148,66 @@ struct AscendSchedulePass
   using AscendSchedulePassBase::AscendSchedulePassBase;
 
   void runOnOperation() override {
-    ascend::v2::DebugOptions options{
-        ascend::v2::parseDebugStage(debugStage), dumpReport};
-    if (ascend::v2::shouldDump(options, ascend::v2::DebugStage::Schedule))
-      ascend::v2::emitStageHeader(llvm::errs(),
-                                  ascend::v2::DebugStage::Schedule,
-                                  getArgument());
+    ::mlir::ascend::v2::DebugOptions options{
+        ::mlir::ascend::v2::parseDebugStage(debugStage), dumpReport};
+    if (::mlir::ascend::v2::shouldDump(
+            options, ::mlir::ascend::v2::DebugStage::Schedule))
+      ::mlir::ascend::v2::emitStageHeader(
+          llvm::errs(), ::mlir::ascend::v2::DebugStage::Schedule,
+          getArgument());
 
     ModuleOp module = getOperation();
     MLIRContext *context = module.getContext();
     SmallVector<ScheduleReportEntry> reportEntries;
-    unsigned nextDecisionId = 0;
-
-    if (module
-            .walk([&](Operation *op) {
-              if (!isLinalgStructuredOp(op))
-                return WalkResult::advance();
-
-              if (!op->hasAttr(kKernelAttr)) {
-                op->emitError() << "requires ascend.v2.kernel";
-                return WalkResult::interrupt();
-              }
-
-              auto opRoleAttr = op->getAttrOfType<StringAttr>(kOpRoleAttr);
-              if (!opRoleAttr) {
-                op->emitError() << "unsupported schedule role";
-                return WalkResult::interrupt();
-              }
-
-              ScheduleProblem problem =
-                  extractScheduleProblem(op, opRoleAttr.getValue());
-              std::optional<StringRef> scheduleFamily =
-                  chooseScheduleFamily(problem);
-              if (!scheduleFamily) {
-                op->emitError() << "unsupported schedule role";
-                return WalkResult::interrupt();
-              }
-
-              std::string decisionId =
-                  (llvm::Twine("decision_") + llvm::Twine(nextDecisionId++))
-                      .str();
-              op->setAttr(kScheduleFamilyAttr,
-                          StringAttr::get(context, *scheduleFamily));
-              op->setAttr(kScheduleTemplateAttr,
-                          StringAttr::get(context, kSingleTilePerBlock));
-              op->setAttr(kScheduleDecisionIdAttr,
-                          StringAttr::get(context, decisionId));
-              reportEntries.push_back(ScheduleReportEntry{
-                  std::move(problem), scheduleFamily->str(),
-                  kSingleTilePerBlock.str(), decisionId});
-              return WalkResult::advance();
-            })
-            .wasInterrupted()) {
+    FailureOr<SmallVector<KernelPatternView>> patternViews =
+        buildKernelPatternViews(module);
+    if (failed(patternViews)) {
       signalPassFailure();
       return;
     }
 
-    if (ascend::v2::shouldDump(options, ascend::v2::DebugStage::Schedule))
-      emitScheduleReport(reportEntries);
+    unsigned nextDecisionId = 0;
+
+    for (const KernelPatternView &pattern : *patternViews) {
+      const PatternOpView *primaryOpView = getFirstPrimaryOpView(pattern);
+      if (!primaryOpView) {
+        signalPassFailure();
+        return;
+      }
+
+      ScheduleProblem problem =
+          extractScheduleProblem(primaryOpView->op, primaryOpView->role);
+      std::optional<StringRef> scheduleFamily = chooseScheduleFamily(problem);
+      if (!scheduleFamily) {
+        primaryOpView->op->emitError() << "unsupported schedule role";
+        signalPassFailure();
+        return;
+      }
+
+      std::string decisionId =
+          (llvm::Twine("decision_") + llvm::Twine(nextDecisionId++)).str();
+      StringAttr scheduleFamilyAttr = StringAttr::get(context, *scheduleFamily);
+      StringAttr scheduleTemplateAttr =
+          StringAttr::get(context, kSingleTilePerBlock);
+      StringAttr scheduleDecisionIdAttr = StringAttr::get(context, decisionId);
+
+      for (const PatternOpView &opView : pattern.ops) {
+        Operation *op = opView.op;
+        op->setAttr(kScheduleFamilyAttr, scheduleFamilyAttr);
+        op->setAttr(kScheduleTemplateAttr, scheduleTemplateAttr);
+        op->setAttr(kScheduleDecisionIdAttr, scheduleDecisionIdAttr);
+      }
+
+      reportEntries.push_back(ScheduleReportEntry{
+          std::move(problem), scheduleFamily->str(), kSingleTilePerBlock.str(),
+          decisionId});
+    }
+
+    if (::mlir::ascend::v2::shouldDump(
+            options, ::mlir::ascend::v2::DebugStage::Schedule)) {
+      printKernelPatternViews(*patternViews, llvm::errs());
+      emitScheduleReport(reportEntries, llvm::errs());
+    }
   }
 };
 

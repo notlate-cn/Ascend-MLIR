@@ -6,6 +6,7 @@ add_mlir_library(AscendV2Conversion
   Kernelize/FusionCandidateAnalysis.cpp
   Kernelize/HorizontalFusionAnalysis.cpp
   Kernelize/KernelPattern.cpp
+  Schedule/KernelPatternView.cpp
   Normalize/NormalizePass.cpp
   Kernelize/KernelizePass.cpp
   Kernelize/OpRoleClassification.cpp
@@ -19,6 +20,7 @@ add_mlir_library(AscendV2Conversion
   AFIRConversionPassIncGen
 
   LINK_LIBS PUBLIC
+  MLIRFuncDialect
   MLIRIR
   MLIRLinalgDialect
   MLIRPass
