@@ -11,6 +11,7 @@
 #include "Conversion/AscendV2/Kernelize/DependencyAnalysis.h"
 #include "Conversion/AscendV2/Kernelize/FusionCandidateAnalysis.h"
 #include "Conversion/AscendV2/Kernelize/HorizontalFusionAnalysis.h"
+#include "Conversion/AscendV2/Kernelize/KernelPattern.h"
 #include "Conversion/AscendV2/Kernelize/KernelizeTypes.h"
 #include "Conversion/AscendV2/Kernelize/OpRoleClassification.h"
 #include "Conversion/AscendV2/Kernelize/StructuralMarking.h"
@@ -21,7 +22,6 @@
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringRef.h"
-#include "llvm/ADT/Twine.h"
 #include "llvm/Support/raw_ostream.h"
 
 #include <string>
@@ -38,6 +38,7 @@ namespace {
 struct KernelizeReportEntry {
   std::string opRole;
   std::string kernelPattern;
+  unsigned primaryOpCount = 0;
 };
 
 bool isFuncOp(Operation *op) {
@@ -61,8 +62,29 @@ void emitKernelizeReport(ArrayRef<KernelizeReportEntry> entries) {
   for (const KernelizeReportEntry &entry : entries) {
     llvm::errs() << "  op_role = \"" << entry.opRole << "\"\n";
     llvm::errs() << "  kernel_pattern = \"" << entry.kernelPattern << "\"\n";
-    llvm::errs() << "  primary_ops = 1\n";
+    llvm::errs() << "  primary_ops = " << entry.primaryOpCount << "\n";
   }
+}
+
+SmallVector<KernelizeReportEntry>
+buildKernelizeReportEntries(ArrayRef<KernelPattern> patterns) {
+  SmallVector<KernelizeReportEntry> entries;
+  for (const KernelPattern &pattern : patterns) {
+    Operation *roleOp = !pattern.primaryOps.empty()
+                            ? pattern.primaryOps.front()
+                            : (!pattern.internalOps.empty()
+                                   ? pattern.internalOps.front()
+                                   : nullptr);
+    if (!roleOp)
+      continue;
+
+    auto role = roleOp->getAttrOfType<StringAttr>(kOpRoleAttr);
+    StringRef roleName = role ? role.getValue() : StringRef("unsupported");
+    entries.push_back(KernelizeReportEntry{
+        roleName.str(), pattern.kernelName,
+        static_cast<unsigned>(pattern.primaryOps.size())});
+  }
+  return entries;
 }
 
 } // namespace
@@ -153,25 +175,21 @@ struct AscendKernelizePass
             options, ::mlir::ascend::v2::DebugStage::Kernelize))
       emitHorizontalFusionReport(llvm::errs(), horizontalCandidates);
 
-    MLIRContext *context = module.getContext();
-    SmallVector<KernelizeReportEntry> reportEntries;
-    unsigned nextKernelId = 0;
-    for (Operation *op : depResult->index.orderedOps) {
-      auto role = op->getAttrOfType<StringAttr>(kOpRoleAttr);
-      StringRef roleName = role ? role.getValue() : StringRef("unsupported");
-      if (roleName == "unsupported")
-        continue;
+    KernelPatternGraph graph = KernelPatternBuilder().build(
+        fusionCandidates, mergedCandidates, horizontalCandidates, *depResult);
+    SmallVector<KernelPattern> patterns =
+        KernelPartitioner().partition(graph, *depResult);
+    attachKernelPatternAttributes(module, patterns);
 
-      std::string kernelId =
-          (llvm::Twine("kernel_") + llvm::Twine(nextKernelId++)).str();
-      op->setAttr(kKernelAttr, StringAttr::get(context, kernelId));
-      op->setAttr(kPrimaryAttr, BoolAttr::get(context, true));
-      reportEntries.push_back(KernelizeReportEntry{roleName.str(), kernelId});
+    if (::mlir::ascend::v2::shouldDump(
+            options, ::mlir::ascend::v2::DebugStage::Kernelize)) {
+      emitKernelPatternGraphReport(llvm::errs(), graph, depResult->index);
+      emitKernelPartitionReport(llvm::errs(), patterns, depResult->index);
     }
 
     if (::mlir::ascend::v2::shouldDump(
             options, ::mlir::ascend::v2::DebugStage::Kernelize))
-      emitKernelizeReport(reportEntries);
+      emitKernelizeReport(buildKernelizeReportEntries(patterns));
   }
 };
 
