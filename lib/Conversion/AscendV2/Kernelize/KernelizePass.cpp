@@ -7,6 +7,7 @@
 #include "Conversion/AscendV2/Kernelize/KernelizePass.h"
 
 #include "Conversion/AscendV2/Debug/DebugOptions.h"
+#include "Conversion/AscendV2/Kernelize/DependencyAnalysis.h"
 #include "Conversion/AscendV2/Kernelize/KernelizeTypes.h"
 #include "mlir/IR/Attributes.h"
 #include "mlir/IR/BuiltinOps.h"
@@ -129,6 +130,17 @@ struct AscendKernelizePass
       signalPassFailure();
       return;
     }
+
+    FailureOr<DependencyAnalysisResult> depResult =
+        DependencyAnalyzer().analyze(module);
+    if (failed(depResult)) {
+      signalPassFailure();
+      return;
+    }
+
+    if (::mlir::ascend::v2::shouldDump(
+            options, ::mlir::ascend::v2::DebugStage::Kernelize))
+      emitDependencyAnalysisReport(llvm::errs(), *depResult);
 
     MLIRContext *context = module.getContext();
     SmallVector<KernelizeReportEntry> reportEntries;
