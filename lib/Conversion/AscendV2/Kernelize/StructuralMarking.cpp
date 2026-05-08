@@ -30,11 +30,20 @@ bool hasAtLeastTwoEntries(
 }
 
 bool hasBranchRootMark(Operation *op) {
-  return op->hasAttr(kBranchRootAttr);
+  auto attr = op->getAttrOfType<BoolAttr>(kBranchRootAttr);
+  return attr && attr.getValue();
 }
 
 bool hasMergeRootMark(Operation *op) {
-  return op->hasAttr(kMergeRootAttr);
+  auto attr = op->getAttrOfType<BoolAttr>(kMergeRootAttr);
+  return attr && attr.getValue();
+}
+
+void clearStructuralMarks(Operation *op) {
+  op->removeAttr(kBranchRootAttr);
+  op->removeAttr(kBranchGroupAttr);
+  op->removeAttr(kMergeRootAttr);
+  op->removeAttr(kMergeGroupAttr);
 }
 
 } // namespace
@@ -42,6 +51,9 @@ bool hasMergeRootMark(Operation *op) {
 LogicalResult StructuralMarker::mark(
     ModuleOp module, const DependencyAnalysisResult &deps) const {
   MLIRContext *context = module.getContext();
+
+  for (Operation *op : deps.index.orderedOps)
+    clearStructuralMarks(op);
 
   int64_t nextBranchGroup = 0;
   for (Operation *op : deps.index.orderedOps) {
@@ -81,12 +93,15 @@ void emitStructuralMarkingReport(raw_ostream &os,
     os << "  op_id = " << opId.value;
     if (hasBranch) {
       auto branchGroup = op->getAttrOfType<IntegerAttr>(kBranchGroupAttr);
-      os << " branch_root = true branch_group = "
-         << branchGroup.getInt();
+      os << " branch_root = true";
+      if (branchGroup)
+        os << " branch_group = " << branchGroup.getInt();
     }
     if (hasMerge) {
       auto mergeGroup = op->getAttrOfType<IntegerAttr>(kMergeGroupAttr);
-      os << " merge_root = true merge_group = " << mergeGroup.getInt();
+      os << " merge_root = true";
+      if (mergeGroup)
+        os << " merge_group = " << mergeGroup.getInt();
     }
     os << "\n";
   }
