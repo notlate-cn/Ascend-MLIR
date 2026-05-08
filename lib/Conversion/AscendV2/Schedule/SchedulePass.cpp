@@ -7,6 +7,7 @@
 #include "Conversion/AscendV2/Schedule/SchedulePass.h"
 
 #include "Conversion/AscendV2/Debug/DebugOptions.h"
+#include "Conversion/AscendV2/Schedule/AxisCoalescer.h"
 #include "Conversion/AscendV2/Schedule/KernelPatternView.h"
 #include "Conversion/AscendV2/Schedule/ScheduleTypes.h"
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
@@ -25,6 +26,7 @@
 #include <optional>
 #include <string>
 #include <utility>
+#include <vector>
 
 #define GEN_PASS_DECL_ASCENDSCHEDULEPASS
 #define GEN_PASS_DEF_ASCENDSCHEDULEPASS
@@ -49,6 +51,11 @@ struct ScheduleReportEntry {
   std::string scheduleFamily;
   std::string scheduleTemplate;
   std::string decisionId;
+};
+
+struct AxisCoalescingReportEntry {
+  std::string kernelId;
+  CoalescedAxisInfo info;
 };
 
 std::string stringifyAttr(Attribute attr) {
@@ -113,14 +120,6 @@ std::optional<StringRef> chooseScheduleFamily(const ScheduleProblem &problem) {
   return std::nullopt;
 }
 
-const PatternOpView *getFirstPrimaryOpView(const KernelPatternView &pattern) {
-  for (const PatternOpView &opView : pattern.ops) {
-    if (opView.primary)
-      return &opView;
-  }
-  return nullptr;
-}
-
 void emitScheduleReport(ArrayRef<ScheduleReportEntry> entries,
                         llvm::raw_ostream &os) {
   os << "Schedule report\n";
@@ -158,6 +157,7 @@ struct AscendSchedulePass
 
     ModuleOp module = getOperation();
     MLIRContext *context = module.getContext();
+    std::vector<AxisCoalescingReportEntry> axisCoalescingEntries;
     SmallVector<ScheduleReportEntry> reportEntries;
     FailureOr<SmallVector<KernelPatternView>> patternViews =
         buildKernelPatternViews(module);
@@ -169,7 +169,13 @@ struct AscendSchedulePass
     unsigned nextDecisionId = 0;
 
     for (const KernelPatternView &pattern : *patternViews) {
-      const PatternOpView *primaryOpView = getFirstPrimaryOpView(pattern);
+      FailureOr<CoalescedAxisInfo> axisInfo = coalesceAxes(pattern);
+      if (failed(axisInfo)) {
+        signalPassFailure();
+        return;
+      }
+
+      const PatternOpView *primaryOpView = selectDominantPrimaryOp(pattern);
       if (!primaryOpView) {
         signalPassFailure();
         return;
@@ -201,11 +207,15 @@ struct AscendSchedulePass
       reportEntries.push_back(ScheduleReportEntry{
           std::move(problem), scheduleFamily->str(), kSingleTilePerBlock.str(),
           decisionId});
+      axisCoalescingEntries.push_back(
+          AxisCoalescingReportEntry{pattern.kernelId, std::move(*axisInfo)});
     }
 
     if (::mlir::ascend::v2::shouldDump(
             options, ::mlir::ascend::v2::DebugStage::Schedule)) {
       printKernelPatternViews(*patternViews, llvm::errs());
+      for (const AxisCoalescingReportEntry &entry : axisCoalescingEntries)
+        printAxisCoalescingReport(entry.kernelId, entry.info, llvm::errs());
       emitScheduleReport(reportEntries, llvm::errs());
     }
   }

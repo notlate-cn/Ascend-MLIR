@@ -19,6 +19,8 @@ namespace mlir::afir::ascend::v2::schedule {
 FailureOr<SmallVector<KernelPatternView>>
 buildKernelPatternViews(ModuleOp module);
 
+const PatternOpView *selectDominantPrimaryOp(const KernelPatternView &pattern);
+
 void printKernelPatternViews(ArrayRef<KernelPatternView> patterns,
                              llvm::raw_ostream &os);
 

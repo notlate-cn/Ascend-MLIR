@@ -8,12 +8,14 @@
 #define ASCEND_MLIR_CONVERSION_ASCENDV2_SCHEDULE_SCHEDULETYPES_H
 
 #include "mlir/IR/Operation.h"
+#include "mlir/IR/BuiltinTypes.h"
 #include "mlir/Support/LLVM.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/ADT/StringSwitch.h"
 
 #include <string>
+#include <utility>
 
 namespace mlir::afir::ascend::v2::schedule {
 
@@ -33,6 +35,20 @@ inline constexpr llvm::StringLiteral kStructuredLoweringAttr =
 
 enum class OpRole { Unknown, Vector, Reduction, Cube, Memory };
 
+enum class AxisKind {
+  Parallel,
+  Reduction,
+  Broadcast,
+  Unknown,
+};
+
+enum class AxisBarrierKind {
+  None,
+  UnsupportedIndexingMap,
+  UnsupportedIteratorType,
+  RankMismatch,
+};
+
 struct PatternOpView {
   Operation *op = nullptr;
   unsigned ordinal = 0;
@@ -45,6 +61,27 @@ struct KernelPatternView {
   SmallVector<PatternOpView> ops;
   SmallVector<Operation *> primaryOps;
   OpRole dominantRole = OpRole::Unknown;
+};
+
+struct LogicalAxisInfo {
+  unsigned logicalAxisId = 0;
+  AxisKind kind = AxisKind::Unknown;
+  int64_t staticExtent = ShapedType::kDynamic;
+  SmallVector<std::pair<Operation *, unsigned>> rawAxes;
+};
+
+struct AxisCoalescingBarrier {
+  Operation *op = nullptr;
+  AxisBarrierKind kind = AxisBarrierKind::None;
+  std::string reason;
+};
+
+struct CoalescedAxisInfo {
+  SmallVector<LogicalAxisInfo> logicalAxes;
+  SmallVector<unsigned> parallelAxes;
+  SmallVector<unsigned> reductionAxes;
+  SmallVector<unsigned> broadcastAxes;
+  SmallVector<AxisCoalescingBarrier> barriers;
 };
 
 inline OpRole parseOpRole(llvm::StringRef value) {
