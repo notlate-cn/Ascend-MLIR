@@ -41,6 +41,18 @@ bool isFuncOp(Operation *op) {
   return op->getName().getStringRef() == "func.func";
 }
 
+void clearOwnedKernelizeAttrs(ModuleOp module) {
+  auto clearAttrs = [](Operation *op) {
+    op->removeAttr(kOpRolesAttr);
+    op->removeAttr(kOpRoleAttr);
+    op->removeAttr(kKernelAttr);
+    op->removeAttr(kPrimaryAttr);
+  };
+
+  clearAttrs(module.getOperation());
+  module.walk(clearAttrs);
+}
+
 void emitKernelizeReport(ArrayRef<KernelizeReportEntry> entries) {
   llvm::errs() << "Kernelize report\n";
   for (const KernelizeReportEntry &entry : entries) {
@@ -104,6 +116,8 @@ struct AscendKernelizePass
             options, ::mlir::ascend::v2::DebugStage::Kernelize))
       emitStructuralMarkingReport(llvm::errs(), *depResult);
 
+    clearOwnedKernelizeAttrs(module);
+
     FailureOr<OpRoleMap> roleMap = OpRoleClassifier().classify(*depResult);
     if (failed(roleMap)) {
       signalPassFailure();
@@ -118,9 +132,6 @@ struct AscendKernelizePass
     SmallVector<KernelizeReportEntry> reportEntries;
     unsigned nextKernelId = 0;
     for (Operation *op : depResult->index.orderedOps) {
-      op->removeAttr(kKernelAttr);
-      op->removeAttr(kPrimaryAttr);
-
       auto role = op->getAttrOfType<StringAttr>(kOpRoleAttr);
       StringRef roleName = role ? role.getValue() : StringRef("unsupported");
       if (roleName == "unsupported")

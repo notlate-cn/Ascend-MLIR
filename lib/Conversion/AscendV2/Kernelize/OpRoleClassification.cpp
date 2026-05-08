@@ -139,12 +139,6 @@ void attachRoleAttributes(ModuleOp module, const OpRoleMap &roleMap) {
 
   for (const auto &entry : roleMap) {
     Operation *op = entry.first;
-    op->removeAttr(kOpRolesAttr);
-    op->removeAttr(kOpRoleAttr);
-  }
-
-  for (const auto &entry : roleMap) {
-    Operation *op = entry.first;
     ArrayRef<OpRole> roles = entry.second;
     op->setAttr(kOpRolesAttr, buildRoleArrayAttr(context, roles));
     op->setAttr(kOpRoleAttr,
