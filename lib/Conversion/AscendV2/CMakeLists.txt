@@ -3,6 +3,7 @@ add_mlir_library(AscendV2Conversion
   Kernelize/DependencyAnalysis.cpp
   Normalize/NormalizePass.cpp
   Kernelize/KernelizePass.cpp
+  Kernelize/StructuralMarking.cpp
   Schedule/SchedulePass.cpp
 
   ADDITIONAL_HEADER_DIRS

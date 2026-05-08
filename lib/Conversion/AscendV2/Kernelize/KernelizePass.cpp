@@ -9,6 +9,7 @@
 #include "Conversion/AscendV2/Debug/DebugOptions.h"
 #include "Conversion/AscendV2/Kernelize/DependencyAnalysis.h"
 #include "Conversion/AscendV2/Kernelize/KernelizeTypes.h"
+#include "Conversion/AscendV2/Kernelize/StructuralMarking.h"
 #include "mlir/IR/Attributes.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/Operation.h"
@@ -141,6 +142,14 @@ struct AscendKernelizePass
     if (::mlir::ascend::v2::shouldDump(
             options, ::mlir::ascend::v2::DebugStage::Kernelize))
       emitDependencyAnalysisReport(llvm::errs(), *depResult);
+
+    if (failed(StructuralMarker().mark(module, *depResult))) {
+      signalPassFailure();
+      return;
+    }
+    if (::mlir::ascend::v2::shouldDump(
+            options, ::mlir::ascend::v2::DebugStage::Kernelize))
+      emitStructuralMarkingReport(llvm::errs(), *depResult);
 
     MLIRContext *context = module.getContext();
     SmallVector<KernelizeReportEntry> reportEntries;
