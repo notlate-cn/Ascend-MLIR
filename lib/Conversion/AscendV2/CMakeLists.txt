@@ -1,5 +1,6 @@
 add_mlir_library(AscendV2Conversion
   Debug/DebugOptions.cpp
+  Kernelize/DependencyAnalysis.cpp
   Normalize/NormalizePass.cpp
   Kernelize/KernelizePass.cpp
   Schedule/SchedulePass.cpp
