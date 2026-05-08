@@ -139,6 +139,19 @@ struct ScheduleInstance {
   SmallVector<std::string> reasonKinds;
 };
 
+struct ScheduleDecision {
+  std::string decisionId;
+  ScheduleInstance instance;
+  SmallVector<ScheduleGuard> candidateGuards;
+  SmallVector<ScheduleGuard> decisionGuards;
+};
+
+struct ScheduleDecisionSet {
+  std::string kernelId;
+  SmallVector<ScheduleDecision, 4> decisions;
+  unsigned runtimeTopK = 1;
+};
+
 struct ScheduleSearchOptions {
   unsigned compileTimeTopK = 4;
 };

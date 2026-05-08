@@ -9,6 +9,7 @@
 #include "Conversion/AscendV2/Debug/DebugOptions.h"
 #include "Conversion/AscendV2/Schedule/AxisCoalescer.h"
 #include "Conversion/AscendV2/Schedule/KernelPatternView.h"
+#include "Conversion/AscendV2/Schedule/ScheduleDecision.h"
 #include "Conversion/AscendV2/Schedule/ScheduleProblemBuilder.h"
 #include "Conversion/AscendV2/Schedule/ScheduleSearch.h"
 #include "Conversion/AscendV2/Schedule/ScheduleTypes.h"
@@ -48,6 +49,7 @@ struct ScheduleDebugEntry {
   ScheduleProblem problem;
   SmallVector<ScheduleTemplate> templateMatches;
   ScheduleSearchResult searchResult;
+  ScheduleDecisionSet decisionSet;
 };
 
 void emitScheduleReport(ArrayRef<ScheduleReportEntry> entries,
@@ -96,8 +98,6 @@ struct AscendSchedulePass
       return;
     }
 
-    unsigned nextDecisionId = 0;
-
     for (const KernelPatternView &pattern : *patternViews) {
       FailureOr<CoalescedAxisInfo> axisInfo = coalesceAxes(pattern);
       if (failed(axisInfo)) {
@@ -141,31 +141,35 @@ struct AscendSchedulePass
         signalPassFailure();
         return;
       }
-      const ScheduleInstance &selectedInstance =
-          searchResult.keptInstances.front();
+      ScheduleDecisionSet decisionSet = buildScheduleDecisionSet(
+          scheduleProblem->kernelId, searchResult.keptInstances);
+      const ScheduleDecision &selectedDecision = decisionSet.decisions.front();
+      const ScheduleInstance &selectedInstance = selectedDecision.instance;
 
-      std::string decisionId =
-          (llvm::Twine("decision_") + llvm::Twine(nextDecisionId++)).str();
       StringAttr scheduleFamilyAttr =
           StringAttr::get(context, selectedInstance.tmpl.family);
       StringAttr scheduleTemplateAttr =
           StringAttr::get(context, selectedInstance.tmpl.name);
-      StringAttr scheduleDecisionIdAttr = StringAttr::get(context, decisionId);
+      StringAttr scheduleDecisionIdAttr =
+          StringAttr::get(context, selectedDecision.decisionId);
+      IntegerAttr runtimeTopKAttr = IntegerAttr::get(
+          IntegerType::get(context, 64), decisionSet.runtimeTopK);
 
       for (const PatternOpView &opView : pattern.ops) {
         Operation *op = opView.op;
         op->setAttr(kScheduleFamilyAttr, scheduleFamilyAttr);
         op->setAttr(kScheduleTemplateAttr, scheduleTemplateAttr);
         op->setAttr(kScheduleDecisionIdAttr, scheduleDecisionIdAttr);
+        op->setAttr(kScheduleRuntimeTopKAttr, runtimeTopKAttr);
       }
 
       reportEntries.push_back(ScheduleReportEntry{
           scheduleProblem->dominantRole, scheduleProblem->resultRank,
           scheduleProblem->resultShape, selectedInstance.tmpl.family,
-          selectedInstance.tmpl.name, decisionId});
+          selectedInstance.tmpl.name, selectedDecision.decisionId});
       scheduleDebugEntries.push_back(ScheduleDebugEntry{
           std::move(*scheduleProblem), std::move(templateMatches),
-          std::move(searchResult)});
+          std::move(searchResult), std::move(decisionSet)});
     }
 
     if (::mlir::ascend::v2::shouldDump(
@@ -182,6 +186,7 @@ struct AscendSchedulePass
                                   searchResult.generatedCount, searchOptions,
                                   searchResult.keptInstances, llvm::errs());
         printScheduleGuardsReport(problem, searchResult, llvm::errs());
+        printScheduleDecisionSetReport(entry.decisionSet, llvm::errs());
       }
       emitScheduleReport(reportEntries, llvm::errs());
     }
