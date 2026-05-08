@@ -61,14 +61,17 @@ CandidateClosure computeCandidateClosure(ArrayRef<Operation *> internalOps,
     }
 
     for (Value result : op->getResults()) {
-      bool hasOutsideUse = false;
+      bool hasInternalUse = false;
+      bool hasExternalUse = false;
       for (Operation *user : result.getUsers()) {
-        if (!internalSet.contains(user)) {
-          hasOutsideUse = true;
-          break;
-        }
+        if (internalSet.contains(user))
+          hasInternalUse = true;
+        else
+          hasExternalUse = true;
       }
-      if (hasOutsideUse)
+      if (hasInternalUse && hasExternalUse)
+        appendUniqueValue(closure.escapingValues, result);
+      else if (hasExternalUse)
         appendUniqueValue(closure.externalOutputs, result);
     }
   }
@@ -76,6 +79,8 @@ CandidateClosure computeCandidateClosure(ArrayRef<Operation *> internalOps,
   closure.isClosed = !hasUnknownInternalOp && closure.escapingValues.empty();
   if (hasUnknownInternalOp)
     closure.failureReason = "UnknownInternalOp";
+  else if (!closure.escapingValues.empty())
+    closure.failureReason = "ClosureEscape";
   return closure;
 }
 
