@@ -6,6 +6,7 @@
 - 拆分规格：`docs/Ascend-MLIR-Detailed-Implementation-V2-1.zh.md` 到 `V2-9.zh.md`
 - 第一轮 MVP 计划：`docs/superpowers/plans/2026-05-07-ascend-mlir-v2-mvp.md`
 - Phase 1 Kernelize 计划：`docs/superpowers/plans/2026-05-08-ascend-mlir-v2-kernelize-candidates.md`
+- Phase 2 Schedule 计划：`docs/superpowers/plans/2026-05-08-ascend-mlir-v2-schedule-full-search.md`
 
 ## 状态约定
 
@@ -24,7 +25,7 @@
 |---|---|---|---|
 | Phase 0 | V2 MVP 编译主干 | `Done` | Normalize -> Kernelize -> Schedule 纵向链路已打通 |
 | Phase 1 | Kernelize 完整候选分析 | `Done` | Kernelize Phase 1 候选分析与 pattern partition 路径已完成并验证 |
-| Phase 2 | Schedule 完整搜索与 guard/cache | `Planned` | 下一阶段进入 Schedule full search |
+| Phase 2 | Schedule 完整搜索与 guard/cache | `In Progress` | Task 1 pattern-level schedule view 已完成；下一步进入 AxisCoalescer |
 | Phase 3 | Realize plan objects | `Planned` | 依赖稳定 `ScheduleDecisionSet` |
 | Phase 4 | Target model 完整化 | `Planned` | 与 Phase 2/3 并行推进 |
 | Phase 5 | Translate / runtime artifact 对接 | `Planned` | 依赖 Realize 和 ABI 设计稳定 |
@@ -154,6 +155,7 @@ ssh xvm@orb 'cd /home/niu/code/Ascend-MLIR && cmake --build build-v2-verify --ta
 
 | 任务 | 状态 | 说明 | 验收 |
 |---|---|---|---|
+| `KernelPatternView` | `Done` | 从 `ascend.v2.kernel` / `ascend.v2.primary` / `ascend.v2.op_role` 重建 pattern-level schedule view | 新增 pattern-view lit；同一 kernel 内 ops 共享 schedule decision |
 | `AxisCoalescer` | `Planned` | 轴合并与 coalesced axis info | rank-1/rank-2/reduction lit |
 | `ScheduleProblemBuilder` | `Planned` | 从 `KernelPattern` 构建调度问题 | report 输出 shape/axis/constraint |
 | `TemplateRegistry` | `Planned` | 注册 schedule family/template | vector/reduction/cube family 可查询 |
@@ -162,6 +164,44 @@ ssh xvm@orb 'cd /home/niu/code/Ascend-MLIR && cmake --build build-v2-verify --ta
 | cache 建模 | `Planned` | `ShapeBucketCache` / `TuningResultCache` | key、negative cache、LRU 测试 |
 | `ScheduleDecisionSet` | `Planned` | 输出多个候选决策 | runtimeTopK 可导出 |
 | structured lowering | `Planned` | 生成稳定 loop skeleton | 替代手写 transform |
+
+计划文件：
+
+- `docs/superpowers/plans/2026-05-08-ascend-mlir-v2-schedule-full-search.md`
+
+### Phase 2 执行记录
+
+| 计划任务 | 状态 | 提交 | 验证 |
+|---|---|---|---|
+| Task 0: Schedule full search 计划 | `Done` | `047d04f` | 计划覆盖开发、spec review、code review、xvm/docker 验证、跟踪更新 |
+| Task 1: Shared Schedule Types and KernelPatternView | `Done` | `df41143` | `git diff --check` passed；spec review passed；code quality review approved；xvm `afir-opt` build passed；focused lit 3/3 passed；`check-afir` 36 discovered, 33 passed, 3 unsupported |
+
+### Phase 2 验证记录
+
+验证环境同 Phase 0：
+
+- 主机：只做代码开发与 static check
+- xvm/docker：编译与测试
+- 同步路径：`/home/niu/code/Ascend-MLIR`
+- 实际可用 LLVM build：`/home/niu/code/llvm-project/llvm/build`
+
+Task 1 已执行：
+
+```bash
+git diff --check
+
+ssh xvm@orb 'cd /home/niu/code/Ascend-MLIR && cmake --build build-v2-verify --target afir-opt -j10 && /home/niu/code/llvm-project/llvm/build/bin/llvm-lit -v build-v2-verify/test/Conversion/ascend-schedule-mvp.mlir build-v2-verify/test/Conversion/ascend-v2-pipeline-mvp.mlir build-v2-verify/test/Conversion/ascend-schedule-pattern-view.mlir'
+
+ssh xvm@orb 'cd /home/niu/code/Ascend-MLIR && cmake --build build-v2-verify --target check-afir -j10'
+```
+
+结果：
+
+| 命令 | 结果 |
+|---|---|
+| `git diff --check` | passed |
+| `afir-opt` build + Phase 2 Task 1 focused lit | 3 discovered, 3 passed |
+| `check-afir` | 36 discovered, 33 passed, 3 unsupported |
 
 ## Phase 3：Realize Plan Objects
 
@@ -222,17 +262,17 @@ ssh xvm@orb 'cd /home/niu/code/Ascend-MLIR && cmake --build build-v2-verify --ta
 
 ## 当前下一步
 
-下一步执行 Phase 2 计划：
+下一步继续执行 Phase 2 计划：
 
 ```text
-Schedule V2 完整搜索与 guard/cache
+Task 2: AxisCoalescer MVP
 ```
 
 执行入口：
 
-- Phase 2 Schedule full search 计划文档
+- `docs/superpowers/plans/2026-05-08-ascend-mlir-v2-schedule-full-search.md`
 
-第一批切分：
+后续切分：
 
 1. `AxisCoalescer`
 2. `ScheduleProblemBuilder`
