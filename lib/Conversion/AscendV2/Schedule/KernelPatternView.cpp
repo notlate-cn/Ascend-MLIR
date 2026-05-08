@@ -123,6 +123,20 @@ buildKernelPatternViews(ModuleOp module) {
   return patterns;
 }
 
+const PatternOpView *selectDominantPrimaryOp(const KernelPatternView &pattern) {
+  for (const PatternOpView &opView : pattern.ops) {
+    if (opView.primary && opView.role == pattern.dominantRole)
+      return &opView;
+  }
+
+  for (const PatternOpView &opView : pattern.ops) {
+    if (opView.primary)
+      return &opView;
+  }
+
+  return nullptr;
+}
+
 void printKernelPatternViews(ArrayRef<KernelPatternView> patterns,
                              llvm::raw_ostream &os) {
   for (const KernelPatternView &pattern : patterns) {
