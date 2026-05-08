@@ -4,6 +4,7 @@ add_mlir_library(AscendV2Conversion
   Debug/DebugOptions.cpp
   Kernelize/DependencyAnalysis.cpp
   Kernelize/FusionCandidateAnalysis.cpp
+  Kernelize/HorizontalFusionAnalysis.cpp
   Normalize/NormalizePass.cpp
   Kernelize/KernelizePass.cpp
   Kernelize/OpRoleClassification.cpp

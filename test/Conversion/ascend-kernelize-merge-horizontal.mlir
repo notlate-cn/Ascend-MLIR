@@ -1,6 +1,7 @@
 // RUN: sed -n '/\/\/ MERGE-BEGIN/,/\/\/ MERGE-END/p' %s | afir-opt --ascend-normalize --ascend-kernelize='debug-stage=kernelize dump-report=true' 2>&1 | FileCheck %s --check-prefix=MERGE
 // RUN: sed -n '/\/\/ REVERSE-BEGIN/,/\/\/ REVERSE-END/p' %s | afir-opt --ascend-normalize --ascend-kernelize='debug-stage=kernelize dump-report=true' 2>&1 | FileCheck %s --check-prefix=REVERSE
 // RUN: sed -n '/\/\/ SUBSUMED-BEGIN/,/\/\/ SUBSUMED-END/p' %s | afir-opt --ascend-normalize --ascend-kernelize='debug-stage=kernelize dump-report=true' 2>&1 | FileCheck %s --check-prefix=SUBSUMED
+// RUN: sed -n '/\/\/ HORIZONTAL-BEGIN/,/\/\/ HORIZONTAL-END/p' %s | afir-opt --ascend-normalize --ascend-kernelize='debug-stage=kernelize dump-report=true' 2>&1 | FileCheck %s --check-prefix=HORIZONTAL
 
 // MERGE-BEGIN
 func.func @vector_chain_into_reduction(%arg0: tensor<4x8xf32>,
@@ -165,6 +166,45 @@ func.func @nested_vector_chain(%arg0: tensor<4x8xf32>,
 }
 // SUBSUMED-END
 
+// HORIZONTAL-BEGIN
+func.func @horizontal_siblings(%arg0: tensor<4x8xf32>,
+                               %arg1: tensor<4x8xf32>,
+                               %arg2: tensor<4x8xf32>)
+    -> (tensor<4x8xf32>, tensor<4x8xf32>) {
+  %empty0 = tensor.empty() : tensor<4x8xf32>
+  %0 = linalg.generic {
+    indexing_maps = [
+      affine_map<(d0, d1) -> (d0, d1)>,
+      affine_map<(d0, d1) -> (d0, d1)>,
+      affine_map<(d0, d1) -> (d0, d1)>
+    ],
+    iterator_types = ["parallel", "parallel"]
+  } ins(%arg0, %arg1 : tensor<4x8xf32>, tensor<4x8xf32>)
+    outs(%empty0 : tensor<4x8xf32>) {
+  ^bb0(%x: f32, %y: f32, %o: f32):
+    %v = arith.addf %x, %y : f32
+    linalg.yield %v : f32
+  } -> tensor<4x8xf32>
+
+  %empty1 = tensor.empty() : tensor<4x8xf32>
+  %1 = linalg.generic {
+    indexing_maps = [
+      affine_map<(d0, d1) -> (d0, d1)>,
+      affine_map<(d0, d1) -> (d0, d1)>,
+      affine_map<(d0, d1) -> (d0, d1)>
+    ],
+    iterator_types = ["parallel", "parallel"]
+  } ins(%arg0, %arg2 : tensor<4x8xf32>, tensor<4x8xf32>)
+    outs(%empty1 : tensor<4x8xf32>) {
+  ^bb0(%x: f32, %y: f32, %o: f32):
+    %v = arith.mulf %x, %y : f32
+    linalg.yield %v : f32
+  } -> tensor<4x8xf32>
+
+  return %0, %1 : tensor<4x8xf32>, tensor<4x8xf32>
+}
+// HORIZONTAL-END
+
 // MERGE: FusionCandidateAnalysis
 // MERGE: primitive = "ElementwiseChain"
 // MERGE-SAME: internal_ops = [0, 1]
@@ -198,3 +238,18 @@ func.func @nested_vector_chain(%arg0: tensor<4x8xf32>,
 // SUBSUMED: CandidateMergeAnalysis
 // SUBSUMED-NOT: merged_candidate_id =
 // SUBSUMED: Kernelize report
+
+// HORIZONTAL: FusionCandidateAnalysis
+// HORIZONTAL: primitive = "FallbackSingleOp"
+// HORIZONTAL-SAME: internal_ops = [0]
+// HORIZONTAL: primitive = "FallbackSingleOp"
+// HORIZONTAL-SAME: internal_ops = [1]
+// HORIZONTAL: CandidateMergeAnalysis
+// HORIZONTAL-NOT: merged_candidate_id =
+// HORIZONTAL: HorizontalFusionAnalysis
+// HORIZONTAL: horizontal_candidate_id = 0
+// HORIZONTAL-SAME: sibling_candidates = [0, 1]
+// HORIZONTAL-SAME: shared_inputs = 1
+// HORIZONTAL-SAME: per_group_contracts = 2
+// HORIZONTAL-SAME: benefit = 15
+// HORIZONTAL: Kernelize report
