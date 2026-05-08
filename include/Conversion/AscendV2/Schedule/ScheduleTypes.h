@@ -1,0 +1,77 @@
+//===- ScheduleTypes.h - Ascend V2 schedule data model -------*- C++ -*-===//
+//
+// Part of the Ascend-MLIR Project
+//
+//===----------------------------------------------------------------------===//
+
+#ifndef ASCEND_MLIR_CONVERSION_ASCENDV2_SCHEDULE_SCHEDULETYPES_H
+#define ASCEND_MLIR_CONVERSION_ASCENDV2_SCHEDULE_SCHEDULETYPES_H
+
+#include "mlir/IR/Operation.h"
+#include "mlir/Support/LLVM.h"
+#include "llvm/ADT/SmallVector.h"
+#include "llvm/ADT/StringRef.h"
+#include "llvm/ADT/StringSwitch.h"
+
+#include <string>
+
+namespace mlir::afir::ascend::v2::schedule {
+
+inline constexpr llvm::StringLiteral kKernelAttr = "ascend.v2.kernel";
+inline constexpr llvm::StringLiteral kPrimaryAttr = "ascend.v2.primary";
+inline constexpr llvm::StringLiteral kOpRoleAttr = "ascend.v2.op_role";
+inline constexpr llvm::StringLiteral kScheduleFamilyAttr =
+    "ascend.v2.schedule.family";
+inline constexpr llvm::StringLiteral kScheduleTemplateAttr =
+    "ascend.v2.schedule.template";
+inline constexpr llvm::StringLiteral kScheduleDecisionIdAttr =
+    "ascend.v2.schedule.decision_id";
+inline constexpr llvm::StringLiteral kScheduleRuntimeTopKAttr =
+    "ascend.v2.schedule.runtime_top_k";
+inline constexpr llvm::StringLiteral kStructuredLoweringAttr =
+    "ascend.v2.schedule.structured_lowering";
+
+enum class OpRole { Unknown, Vector, Reduction, Cube, Memory };
+
+struct PatternOpView {
+  Operation *op = nullptr;
+  unsigned ordinal = 0;
+  OpRole role = OpRole::Unknown;
+  bool primary = false;
+};
+
+struct KernelPatternView {
+  std::string kernelId;
+  SmallVector<PatternOpView> ops;
+  SmallVector<Operation *> primaryOps;
+  OpRole dominantRole = OpRole::Unknown;
+};
+
+inline OpRole parseOpRole(llvm::StringRef value) {
+  return llvm::StringSwitch<OpRole>(value)
+      .Case("cube", OpRole::Cube)
+      .Case("reduction", OpRole::Reduction)
+      .Case("vector", OpRole::Vector)
+      .Case("memory", OpRole::Memory)
+      .Default(OpRole::Unknown);
+}
+
+inline llvm::StringRef stringifyOpRole(OpRole role) {
+  switch (role) {
+  case OpRole::Cube:
+    return "cube";
+  case OpRole::Reduction:
+    return "reduction";
+  case OpRole::Vector:
+    return "vector";
+  case OpRole::Memory:
+    return "memory";
+  case OpRole::Unknown:
+    return "unknown";
+  }
+  return "unknown";
+}
+
+} // namespace mlir::afir::ascend::v2::schedule
+
+#endif // ASCEND_MLIR_CONVERSION_ASCENDV2_SCHEDULE_SCHEDULETYPES_H
