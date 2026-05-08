@@ -179,7 +179,51 @@ bool hasDynamicTileSize(const TileShape &tileShape) {
   });
 }
 
-ScheduleInstance makeInstance(const ScheduleTemplate &tmpl,
+void appendCandidateGuards(ArrayRef<int64_t> shape,
+                           SmallVectorImpl<ScheduleGuard> &guards) {
+  for (auto [index, dim] : llvm::enumerate(shape)) {
+    ScheduleGuard guard;
+    guard.axisDomain = GuardAxisDomain::ResultDim;
+    guard.dim = index;
+    guard.value = dim;
+    if (ShapedType::isDynamic(dim)) {
+      guard.kind = GuardKind::PositiveExtent;
+      guard.text =
+          (llvm::Twine("d") + llvm::Twine(index) + " > 0").str();
+    } else {
+      guard.kind = GuardKind::ShapeStaticEqual;
+      guard.text = (llvm::Twine("d") + llvm::Twine(index) + " == " +
+                    llvm::Twine(dim))
+                       .str();
+    }
+    guards.push_back(std::move(guard));
+  }
+}
+
+void appendDecisionGuards(ArrayRef<int64_t> tileSizes,
+                          SmallVectorImpl<ScheduleGuard> &guards) {
+  for (auto [index, tileSize] : llvm::enumerate(tileSizes)) {
+    if (ShapedType::isDynamic(tileSize) || tileSize <= 1)
+      continue;
+
+    ScheduleGuard guard;
+    guard.kind = GuardKind::DivisibleBy;
+    guard.axisDomain = GuardAxisDomain::LogicalAxis;
+    guard.dim = index;
+    guard.value = tileSize;
+    guard.text = (llvm::Twine("a") + llvm::Twine(index) + " % " +
+                  llvm::Twine(tileSize) + " == 0")
+                     .str();
+    guards.push_back(std::move(guard));
+  }
+}
+
+unsigned getGuardCount(const ScheduleInstance &instance) {
+  return instance.candidateGuards.size() + instance.decisionGuards.size();
+}
+
+ScheduleInstance makeInstance(const ScheduleProblem &problem,
+                              const ScheduleTemplate &tmpl,
                               TileShape tileShape) {
   ScheduleInstance instance;
   instance.tmpl = tmpl;
@@ -187,6 +231,8 @@ ScheduleInstance makeInstance(const ScheduleTemplate &tmpl,
   // Coarse diagnostic scalar only. Schedule ordering is the explicit
   // lexicographic key in isLowerRankedInstance.
   instance.estimatedCost = estimateDebugCost(instance.tileShape);
+  appendCandidateGuards(problem.resultShape, instance.candidateGuards);
+  appendDecisionGuards(instance.tileShape.tileSizes, instance.decisionGuards);
   if (hasDynamicTileSize(instance.tileShape))
     instance.reasonKinds.push_back("dynamic_tile");
   return instance;
@@ -207,16 +253,23 @@ ScheduleSearchResult searchScheduleInstancesWithStats(
     const ScheduleProblem &problem, ArrayRef<ScheduleTemplate> templates,
     const ScheduleSearchOptions &options) {
   SmallVector<ScheduleInstance, 8> generatedInstances;
+  ScheduleSearchResult result;
   for (const ScheduleTemplate &tmpl : templates) {
     SmallVector<TileShape> tileShapes = generateTileShapes(problem);
-    for (TileShape &tileShape : tileShapes)
-      generatedInstances.push_back(makeInstance(tmpl, std::move(tileShape)));
+    for (TileShape &tileShape : tileShapes) {
+      ++result.generatedCount;
+      ScheduleInstance instance =
+          makeInstance(problem, tmpl, std::move(tileShape));
+      if (getGuardCount(instance) > problem.guardBudget) {
+        ++result.prunedByGuardBudget;
+        continue;
+      }
+      generatedInstances.push_back(std::move(instance));
+    }
   }
 
   llvm::sort(generatedInstances, isLowerRankedInstance);
 
-  ScheduleSearchResult result;
-  result.generatedCount = generatedInstances.size();
   unsigned keepCount =
       std::min<unsigned>(options.compileTimeTopK, generatedInstances.size());
   result.keptInstances.append(generatedInstances.begin(),
@@ -243,6 +296,41 @@ void printScheduleSearchReport(StringRef kernelId, unsigned generatedCount,
   os << "  compile_time_top_k = " << options.compileTimeTopK << "\n";
   for (const ScheduleInstance &instance : keptInstances)
     os << "  instance = " << instance.instanceId << "\n";
+}
+
+void printGuardTexts(const ScheduleInstance &instance, llvm::raw_ostream &os) {
+  for (const ScheduleGuard &guard : instance.candidateGuards)
+    os << "  candidate_guard = " << guard.text << "\n";
+  for (const ScheduleGuard &guard : instance.decisionGuards)
+    os << "  decision_guard = " << guard.text << "\n";
+}
+
+void printScheduleGuardsReport(const ScheduleProblem &problem,
+                               const ScheduleSearchResult &result,
+                               llvm::raw_ostream &os) {
+  os << "ScheduleGuards:\n";
+  os << "  kernel = " << problem.kernelId << "\n";
+  if (result.keptInstances.empty()) {
+    os << "  selected_instance = <none>\n";
+    os << "  candidate_guards = 0\n";
+    os << "  decision_guards = 0\n";
+  } else {
+    const ScheduleInstance &selectedInstance = result.keptInstances.front();
+    os << "  candidate_guards = "
+       << selectedInstance.candidateGuards.size() << "\n";
+    os << "  decision_guards = " << selectedInstance.decisionGuards.size()
+       << "\n";
+  }
+  os << "  guard_budget = " << problem.guardBudget << "\n";
+  os << "  pruned_by_guard_budget = " << result.prunedByGuardBudget << "\n";
+  if (!result.keptInstances.empty()) {
+    printGuardTexts(result.keptInstances.front(), os);
+    for (const ScheduleInstance &instance :
+         llvm::drop_begin(result.keptInstances)) {
+      os << "  kept_instance = " << instance.instanceId << "\n";
+      printGuardTexts(instance, os);
+    }
+  }
 }
 
 } // namespace mlir::afir::ascend::v2::schedule

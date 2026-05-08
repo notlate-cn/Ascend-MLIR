@@ -21,6 +21,7 @@ namespace mlir::afir::ascend::v2::schedule {
 
 struct ScheduleSearchResult {
   unsigned generatedCount = 0;
+  unsigned prunedByGuardBudget = 0;
   SmallVector<ScheduleInstance, 4> keptInstances;
 };
 
@@ -35,6 +36,10 @@ SmallVector<ScheduleInstance, 4> searchScheduleInstances(
 void printScheduleSearchReport(StringRef kernelId, unsigned generatedCount,
                                const ScheduleSearchOptions &options,
                                ArrayRef<ScheduleInstance> keptInstances,
+                               llvm::raw_ostream &os);
+
+void printScheduleGuardsReport(const ScheduleProblem &problem,
+                               const ScheduleSearchResult &result,
                                llvm::raw_ostream &os);
 
 } // namespace mlir::afir::ascend::v2::schedule

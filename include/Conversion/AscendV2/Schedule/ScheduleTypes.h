@@ -49,6 +49,26 @@ enum class AxisBarrierKind {
   RankMismatch,
 };
 
+enum class GuardKind {
+  ShapeStaticEqual,
+  ShapeDynamic,
+  DivisibleBy,
+  PositiveExtent,
+};
+
+enum class GuardAxisDomain {
+  ResultDim,
+  LogicalAxis,
+};
+
+struct ScheduleGuard {
+  GuardKind kind = GuardKind::ShapeDynamic;
+  GuardAxisDomain axisDomain = GuardAxisDomain::ResultDim;
+  unsigned dim = 0;
+  int64_t value = ShapedType::kDynamic;
+  std::string text;
+};
+
 struct PatternOpView {
   Operation *op = nullptr;
   unsigned ordinal = 0;
@@ -114,6 +134,8 @@ struct ScheduleInstance {
   ScheduleTemplate tmpl;
   TileShape tileShape;
   int64_t estimatedCost = 0;
+  SmallVector<ScheduleGuard> candidateGuards;
+  SmallVector<ScheduleGuard> decisionGuards;
   SmallVector<std::string> reasonKinds;
 };
 

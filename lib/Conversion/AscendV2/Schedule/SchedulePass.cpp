@@ -181,6 +181,7 @@ struct AscendSchedulePass
         printScheduleSearchReport(problem.kernelId,
                                   searchResult.generatedCount, searchOptions,
                                   searchResult.keptInstances, llvm::errs());
+        printScheduleGuardsReport(problem, searchResult, llvm::errs());
       }
       emitScheduleReport(reportEntries, llvm::errs());
     }
