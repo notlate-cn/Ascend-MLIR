@@ -35,7 +35,12 @@ func.func @branch_merge(%a: tensor<16xf32>, %b: tensor<16xf32>,
       ins(%0 : tensor<16xf32>)
       outs(%c : tensor<16xf32>) {
     ^bb0(%x: f32, %out: f32):
-      %one = arith.constant 1.000000e+00 : f32
+      %one = "arith.constant"() <{value = 1.000000e+00 : f32}> {
+        ascend.v2.kernel = "stale_kernel",
+        ascend.v2.op_role = "stale_role",
+        ascend.v2.op_roles = ["StaleRole"],
+        ascend.v2.primary = true
+      } : () -> f32
       %inc = arith.addf %x, %one : f32
       linalg.yield %inc : f32
     } -> tensor<16xf32>
@@ -88,3 +93,6 @@ func.func @reduction(%arg0: tensor<4x8xf32>) -> tensor<4xf32> {
 // CHECK-SAME: op_role = "reduction"
 // CHECK-NOT: ascend.v2.branch_group = 99
 // CHECK-NOT: ascend.v2.merge_group = 88
+// CHECK-NOT: stale_kernel
+// CHECK-NOT: stale_role
+// CHECK-NOT: StaleRole
