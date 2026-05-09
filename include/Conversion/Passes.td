@@ -84,11 +84,6 @@ def AscendRealizePass : Pass<"ascend-realize", "mlir::ModuleOp"> {
     optional debug report with empty GM-only plan objects.
   }];
   let constructor = "mlir::afir::createAscendRealizePass()";
-  let dependentDialects = [
-    "mlir::func::FuncDialect",
-    "mlir::linalg::LinalgDialect",
-    "mlir::memref::MemRefDialect"
-  ];
   let options = [
     Option<"debugStage", "debug-stage", "std::string", /*default=*/"\"none\"",
            "V2 debug stage: none, normalize, kernelize, schedule, realize, all">,

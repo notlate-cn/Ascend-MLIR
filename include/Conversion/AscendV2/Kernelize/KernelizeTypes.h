@@ -7,15 +7,18 @@
 #ifndef ASCEND_MLIR_CONVERSION_ASCENDV2_KERNELIZE_KERNELIZETYPES_H
 #define ASCEND_MLIR_CONVERSION_ASCENDV2_KERNELIZE_KERNELIZETYPES_H
 
+#include "Conversion/AscendV2/Common/Attributes.h"
+
 #include "llvm/ADT/StringRef.h"
 
 namespace mlir::afir::ascend::v2::kernelize {
 
-inline constexpr llvm::StringLiteral kNormalizedAttr = "ascend.v2.normalized";
-inline constexpr llvm::StringLiteral kOpRoleAttr = "ascend.v2.op_role";
-inline constexpr llvm::StringLiteral kOpRolesAttr = "ascend.v2.op_roles";
-inline constexpr llvm::StringLiteral kKernelAttr = "ascend.v2.kernel";
-inline constexpr llvm::StringLiteral kPrimaryAttr = "ascend.v2.primary";
+using ::mlir::afir::ascend::v2::kKernelAttr;
+using ::mlir::afir::ascend::v2::kNormalizedAttr;
+using ::mlir::afir::ascend::v2::kOpRoleAttr;
+using ::mlir::afir::ascend::v2::kOpRolesAttr;
+using ::mlir::afir::ascend::v2::kPrimaryAttr;
+
 inline constexpr llvm::StringLiteral kBranchRootAttr = "ascend.v2.branch_root";
 inline constexpr llvm::StringLiteral kBranchGroupAttr = "ascend.v2.branch_group";
 inline constexpr llvm::StringLiteral kMergeRootAttr = "ascend.v2.merge_root";

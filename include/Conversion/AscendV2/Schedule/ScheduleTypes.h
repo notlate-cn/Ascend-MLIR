@@ -7,6 +7,8 @@
 #ifndef ASCEND_MLIR_CONVERSION_ASCENDV2_SCHEDULE_SCHEDULETYPES_H
 #define ASCEND_MLIR_CONVERSION_ASCENDV2_SCHEDULE_SCHEDULETYPES_H
 
+#include "Conversion/AscendV2/Common/Attributes.h"
+
 #include "mlir/IR/Operation.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/Support/LLVM.h"
@@ -19,26 +21,24 @@
 
 namespace mlir::afir::ascend::v2::schedule {
 
-inline constexpr llvm::StringLiteral kKernelAttr = "ascend.v2.kernel";
-inline constexpr llvm::StringLiteral kPrimaryAttr = "ascend.v2.primary";
-inline constexpr llvm::StringLiteral kOpRoleAttr = "ascend.v2.op_role";
+using ::mlir::afir::ascend::v2::kKernelAttr;
+using ::mlir::afir::ascend::v2::kOpRoleAttr;
+using ::mlir::afir::ascend::v2::kPrimaryAttr;
+using ::mlir::afir::ascend::v2::kScheduleDecisionIdAttr;
+using ::mlir::afir::ascend::v2::kStructuredLoweringAttr;
+
 inline constexpr llvm::StringLiteral kScheduleFamilyAttr =
     "ascend.v2.schedule.family";
 inline constexpr llvm::StringLiteral kScheduleTemplateAttr =
     "ascend.v2.schedule.template";
-inline constexpr llvm::StringLiteral kScheduleDecisionIdAttr =
-    "ascend.v2.schedule.decision_id";
 inline constexpr llvm::StringLiteral kScheduleRuntimeTopKAttr =
     "ascend.v2.schedule.runtime_top_k";
-inline constexpr llvm::StringLiteral kStructuredLoweringAttr =
-    "ascend.v2.schedule.structured_lowering";
 
 enum class OpRole { Unknown, Vector, Reduction, Cube, Memory };
 
 enum class AxisKind {
   Parallel,
   Reduction,
-  Broadcast,
   Unknown,
 };
 

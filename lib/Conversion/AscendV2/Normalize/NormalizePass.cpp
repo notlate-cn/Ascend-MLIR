@@ -6,6 +6,7 @@
 
 #include "Conversion/AscendV2/Normalize/NormalizePass.h"
 
+#include "Conversion/AscendV2/Common/Attributes.h"
 #include "Conversion/AscendV2/Debug/DebugOptions.h"
 #include "mlir/IR/Attributes.h"
 #include "mlir/IR/BuiltinOps.h"
@@ -42,12 +43,13 @@ struct AscendNormalizePass
   using AscendNormalizePassBase::AscendNormalizePassBase;
 
   void runOnOperation() override {
-    ascend::v2::DebugOptions options{
-        ascend::v2::parseDebugStage(debugStage), dumpReport};
-    if (ascend::v2::shouldDump(options, ascend::v2::DebugStage::Normalize))
-      ascend::v2::emitStageHeader(llvm::errs(),
-                                  ascend::v2::DebugStage::Normalize,
-                                  getArgument());
+    ::mlir::ascend::v2::DebugOptions options{
+        ::mlir::ascend::v2::parseDebugStage(debugStage), dumpReport};
+    if (::mlir::ascend::v2::shouldDump(
+            options, ::mlir::ascend::v2::DebugStage::Normalize))
+      ::mlir::ascend::v2::emitStageHeader(
+          llvm::errs(), ::mlir::ascend::v2::DebugStage::Normalize,
+          getArgument());
 
     ModuleOp module = getOperation();
     if (module
@@ -68,7 +70,8 @@ struct AscendNormalizePass
     MLIRContext *context = module.getContext();
     module.walk([&](Operation *op) {
       if (op->getName().getStringRef() == "func.func")
-        op->setAttr("ascend.v2.normalized", BoolAttr::get(context, true));
+        op->setAttr(::mlir::afir::ascend::v2::kNormalizedAttr,
+                    BoolAttr::get(context, true));
     });
   }
 };

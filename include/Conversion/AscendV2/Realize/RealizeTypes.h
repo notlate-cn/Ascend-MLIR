@@ -7,20 +7,18 @@
 #ifndef ASCEND_MLIR_CONVERSION_ASCENDV2_REALIZE_REALIZETYPES_H
 #define ASCEND_MLIR_CONVERSION_ASCENDV2_REALIZE_REALIZETYPES_H
 
-#include "mlir/Support/LLVM.h"
-#include "llvm/ADT/SmallVector.h"
-#include "llvm/ADT/StringRef.h"
+#include "Conversion/AscendV2/Common/Attributes.h"
 
 #include <string>
 
 namespace mlir::afir::ascend::v2::realize {
 
-inline constexpr llvm::StringLiteral kScheduleDecisionIdAttr =
-    "ascend.v2.schedule.decision_id";
-inline constexpr llvm::StringLiteral kStructuredLoweringAttr =
-    "ascend.v2.schedule.structured_lowering";
-inline constexpr llvm::StringLiteral kKernelAttr = "ascend.v2.kernel";
+using ::mlir::afir::ascend::v2::kKernelAttr;
+using ::mlir::afir::ascend::v2::kScheduleDecisionIdAttr;
+using ::mlir::afir::ascend::v2::kStructuredLoweringAttr;
 
+// Realize-level placement names used by materialization plans. They are
+// intentionally distinct from the target profile hardware memory hierarchy.
 enum class MemoryPlace { GM, VECIN, VECCALC, VECOUT, A1, B1, A2, B2, CO1 };
 
 struct RealizeKernelView {

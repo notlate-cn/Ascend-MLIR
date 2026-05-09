@@ -26,7 +26,7 @@
 | Phase 0 | V2 MVP 编译主干 | `Done` | Normalize -> Kernelize -> Schedule 纵向链路已打通 |
 | Phase 1 | Kernelize 完整候选分析 | `Done` | Kernelize Phase 1 候选分析与 pattern partition 路径已完成并验证 |
 | Phase 2 | Schedule 完整搜索与 guard/cache | `Done` | Phase 2 final review 与 xvm/docker 验证已完成 |
-| Phase 3 | Realize plan objects | `In Progress` | `--ascend-realize` MVP 已进入实现 |
+| Phase 3 | Realize plan objects | `In Progress` | `--ascend-realize` MVP 已完成，下一步接入 bufferization / placement |
 | Phase 4 | Target model 完整化 | `Planned` | 与 Phase 2/3 并行推进 |
 | Phase 5 | Translate / runtime artifact 对接 | `Planned` | 依赖 Realize 和 ABI 设计稳定 |
 | Phase 6 | 架构文档与 demo 重写 | `Deferred` | 待 V2 主链路稳定后启动 |
@@ -395,7 +395,7 @@ ssh xvm@orb 'cd /home/niu/code/Ascend-MLIR && cmake --build build-v2-task9-verif
 | 任务 | 状态 | 说明 | 验收 |
 |---|---|---|---|
 | Task 0: Realize MVP 计划 | `Done` | 拆分第一批 Realize 实现范围 | 计划文件已提交 |
-| Task 1: Realize pass skeleton and plan reports | `Done` | `--ascend-realize`、`debug-stage=realize`、MVP plan objects | focused Realize lit 4/4 passed；pipeline smoke passed |
+| Task 1: Realize pass skeleton and plan reports | `Done` | `--ascend-realize`、`debug-stage=realize`、MVP plan objects | focused Realize lit 4/4 passed；pipeline smoke passed；review follow-up passed |
 | `BufferizationDriver` 对接 | `Planned` | 继续复用 One-Shot Bufferize | bufferized IR smoke |
 | `PlacementPlan` | `Planned` | resolved placement 规划 | 与 target memory place 对齐 |
 | `StaticMemoryPlan` | `Planned` | workspace layout / lifetime | peak workspace 可验证 |
@@ -406,13 +406,34 @@ ssh xvm@orb 'cd /home/niu/code/Ascend-MLIR && cmake --build build-v2-task9-verif
 
 | 命令 | 结果 |
 |---|---|
-| TDD RED: `ascend-realize-mvp.mlir` / `ascend-realize-requires-schedule.mlir` | failed as expected：`--ascend-realize` 未注册 |
+| TDD RED: `ascend-realize-mvp.mlir` / `ascend-realize-rejects-unscheduled.mlir` | failed as expected：`--ascend-realize` 未注册 |
 | TDD RED: `ascend-realize-rejects-partial-attrs.mlir` | failed as expected：半标记 op 被静默忽略 |
 | TDD RED: `ascend-realize-rejects-inconsistent-attrs.mlir` | failed as expected：同 kernel 不一致 schedule attrs 被接受 |
 | xvm focused build/test | `ninja -C build afir-opt` passed；Realize focused lit 4/4 passed；pipeline smoke passed |
 | spec review | passed：未越界实现真实 bufferization / placement / movement / materialization |
 | code quality review | approved after re-review：同 kernel schedule attr 一致性已补充 |
 | xvm `check-afir` | not completed：broader run 长时间停在既有 `externals/pyasc/.../Translation.cpp` 编译单元，已中断；本轮以 focused Realize + pipeline smoke 作为验证依据 |
+
+### Phase 3 Expert Review Follow-up
+
+| 项 | 状态 | 处理结论 | 验证 |
+|---|---|---|---|
+| `AxisKind::Broadcast` enum 残留 | `Done` | 删除 enum value，broadcast 继续通过 `broadcastAxes` metadata 表达 | `ascend-schedule-axis-coalescing.mlir` / `ascend-schedule-problem.mlir` passed |
+| `AscendRealizePass` phantom dependent dialects | `Done` | 移除 `FuncDialect` / `LinalgDialect` / `MemRefDialect` 依赖声明和死 include | `ninja -C build afir-opt` passed；Realize focused lit passed |
+| `RealizeTypes.h` dead include | `Done` | 删除未使用 `SmallVector.h` / `StringRef.h` / `LLVM.h` include | `ninja -C build AscendV2CommonAttributesTest` passed |
+| Realize `MemoryPlace` 与 TargetProfile 命名边界 | `Done` | 增加注释说明 Realize placement enum 与 target hardware memory hierarchy 不同 | `afir-opt` build passed |
+| unscheduled Realize 测试命名 | `Done` | `ascend-realize-requires-schedule.mlir` 重命名为 `ascend-realize-rejects-unscheduled.mlir` | renamed lit passed |
+| V2 shared attributes | `Done` | 新增 `Conversion/AscendV2/Common/Attributes.h`，Kernelize / Schedule / Realize 使用同源常量 | 新增 `AscendV2CommonAttributesTest` passed |
+
+Review / verification:
+
+| 命令 | 结果 |
+|---|---|
+| TDD RED: `AscendV2CommonAttributesTest` | failed as expected：`Conversion/AscendV2/Common/Attributes.h` 不存在 |
+| xvm build | `ninja -C build afir-opt AscendV2CommonAttributesTest AscendV2KernelPatternTest` passed |
+| xvm unit tests | `AscendV2CommonAttributesTest` 1/1 passed；`AscendV2KernelPatternTest` 1/1 passed；`ctest -R "AscendV2(CommonAttributes\|KernelPattern)Test"` 2/2 passed |
+| xvm focused lit | Realize / Schedule / pipeline smoke 7/7 passed |
+| xvm Ascend Conversion lit | `ascend-*.mlir` 22/22 passed |
 
 ## Phase 4：Target Model 完整化
 
