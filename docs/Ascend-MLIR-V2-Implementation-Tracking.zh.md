@@ -401,9 +401,9 @@ ssh xvm@orb 'cd /home/niu/code/Ascend-MLIR && cmake --build build-v2-task9-verif
 | Task 1: Realize pass skeleton and plan reports | `Done` | `--ascend-realize`、`debug-stage=realize`、MVP plan objects | focused Realize lit 4/4 passed；pipeline smoke passed；review follow-up passed |
 | `BufferizationDriver` facts MVP | `Done` | 新增只读 `BufferizationDriver`，按 kernel 收集 tensor input / output / temporary facts；完整 One-Shot Bufferize 接入后续继续推进 | focused Realize facts lit passed；Ascend Conversion lit 23/23 passed |
 | `PlacementPlan` GM-default MVP | `Done` | 新增只读 `PlacementPlanner`，将已收集 buffer facts 保守映射到 `GM`，并报告 deferred local count；target-aware placement 后续继续推进 | focused placement lit passed；Ascend Conversion lit passed |
-| `StaticMemoryPlan` | `Planned` | workspace layout / lifetime | peak workspace 可验证 |
-| `MovementPlan` | `Planned` | 显式 data movement 路径 | IR 与 plan 双向一致 |
-| `MemoryRealizationPlan` | `Planned` | 汇总 realization 结果 | verifier 通过 |
+| `StaticMemoryPlan` read-only MVP | `Done` | 新增 `StaticMemoryPlanner`，报告 empty workspace 与 tracked place count；真实 workspace layout / lifetime 后续推进 | focused completion lit passed；planner unit passed |
+| `MovementPlan` read-only MVP | `Done` | 新增 `MovementPlanner`，GM-only noop movement，并校验 static memory MVP 不变量；显式 data movement 后续推进 | focused completion lit passed；planner unit passed |
+| `MemoryRealizationPlan` read-only MVP | `Done` | 新增 `MemoryRealizationDriver`，冻结 read-only plan，报告 `plan_identity_only` 验证范围；真实 materialization 后续推进 | focused completion lit passed；planner unit passed |
 
 ### Phase 3 验证记录
 
@@ -427,6 +427,10 @@ ssh xvm@orb 'cd /home/niu/code/Ascend-MLIR && cmake --build build-v2-task9-verif
 | TDD GREEN: Realize placement plan | `ninja -C build afir-opt` passed；`llvm-lit -v build/test/Conversion/ascend-realize-mvp.mlir build/test/Conversion/ascend-realize-placement-plan.mlir` 2/2 passed |
 | spec review: PlacementPlan GM-default MVP | passed：实现符合计划，只做只读 GM-default placement counters，无 TargetMemoryModel / IR mutation / memory materialization 越界 |
 | code quality review: PlacementPlan GM-default MVP | approved：GM-default 计数不变量一致；已按建议为 split-input LIT 增加 report anchors |
+| TDD RED: Phase 3 completion MVP | failed as expected：旧实现缺少 `StaticMemoryPlan` / `MovementPlan` / `MemoryRealizationPlan` 新 report 字段；新增 planner unit test 在生产修复前失败 |
+| TDD GREEN: Phase 3 completion MVP | `ninja -C build afir-opt AscendRealizePlannerTest` passed；`AscendRealizePlannerTest` 8/8 passed；focused completion lit 2/2 passed |
+| spec review: Phase 3 completion MVP | passed：五个 Realize plan objects 均有 builder/driver 和 report；无 One-Shot Bufferize / TargetMemoryModel / IR mutation / memory materialization 越界 |
+| code quality review: Phase 3 completion MVP | approved after re-review：`verification_scope = "plan_identity_only"`；movement/static/realization plan id 与 MVP shape 不变量均有 unit 覆盖 |
 
 ### Phase 3 Expert Review Follow-up
 

@@ -27,3 +27,18 @@ add_dependencies(RuntimeUnitTests AscendCommonAttributesTest)
 add_test(NAME AscendCommonAttributesTest
   COMMAND $<TARGET_FILE:AscendCommonAttributesTest>
 )
+
+add_executable(AscendRealizePlannerTest
+  AscendRealizePlannerTest.cpp
+)
+
+target_link_libraries(AscendRealizePlannerTest PRIVATE
+  RuntimeUnitTestSupport
+  AscendConversion
+)
+
+add_dependencies(RuntimeUnitTests AscendRealizePlannerTest)
+
+add_test(NAME AscendRealizePlannerTest
+  COMMAND $<TARGET_FILE:AscendRealizePlannerTest>
+)

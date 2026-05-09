@@ -8,9 +8,12 @@
 
 #include "Conversion/Ascend/Debug/DebugOptions.h"
 #include "Conversion/Ascend/Realize/BufferizationDriver.h"
+#include "Conversion/Ascend/Realize/MemoryRealizationDriver.h"
+#include "Conversion/Ascend/Realize/MovementPlanner.h"
 #include "Conversion/Ascend/Realize/PlacementPlanner.h"
 #include "Conversion/Ascend/Realize/RealizeReport.h"
 #include "Conversion/Ascend/Realize/RealizeTypes.h"
+#include "Conversion/Ascend/Realize/StaticMemoryPlanner.h"
 #include "mlir/IR/Attributes.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/Operation.h"
@@ -101,6 +104,9 @@ buildMVPRealizePlans(ModuleOp module, bool &emittedError) {
 
   SmallVector<RealizePlanBundle, 4> bundles;
   PlacementPlanner placementPlanner;
+  StaticMemoryPlanner staticMemoryPlanner;
+  MovementPlanner movementPlanner;
+  MemoryRealizationDriver memoryRealizationDriver;
   for (StringRef kernel : kernels) {
     RealizePlanBundle bundle;
     bundle.kernel.kernelId = kernel.str();
@@ -114,13 +120,39 @@ buildMVPRealizePlans(ModuleOp module, bool &emittedError) {
       bundle.bufferizedIR.kernelId = bundle.kernel.kernelId;
     FailureOr<PlacementPlan> placement =
         placementPlanner.build(bundle.bufferizedIR);
-    if (failed(placement))
+    if (failed(placement)) {
+      module.emitError("ascend-realize failed to build placement plan");
+      emittedError = true;
       return failure();
+    }
     bundle.placement = std::move(*placement);
-    bundle.staticMemory.kernelId = bundle.kernel.kernelId;
-    bundle.movement.kernelId = bundle.kernel.kernelId;
-    bundle.realization.kernelId = bundle.kernel.kernelId;
-    bundle.realization.frozen = true;
+    FailureOr<StaticMemoryPlan> staticMemory =
+        staticMemoryPlanner.build(bundle.placement);
+    if (failed(staticMemory)) {
+      module.emitError("ascend-realize failed to build static memory plan");
+      emittedError = true;
+      return failure();
+    }
+    bundle.staticMemory = std::move(*staticMemory);
+    FailureOr<MovementPlan> movement =
+        movementPlanner.build(bundle.placement, bundle.staticMemory);
+    if (failed(movement)) {
+      module.emitError("ascend-realize failed to build movement plan");
+      emittedError = true;
+      return failure();
+    }
+    bundle.movement = std::move(*movement);
+    FailureOr<MemoryRealizationPlan> realization =
+        memoryRealizationDriver.materialize(bundle.placement,
+                                            bundle.staticMemory,
+                                            bundle.movement);
+    if (failed(realization)) {
+      module.emitError(
+          "ascend-realize failed to materialize memory realization plan");
+      emittedError = true;
+      return failure();
+    }
+    bundle.realization = std::move(*realization);
     bundles.push_back(std::move(bundle));
   }
   return bundles;

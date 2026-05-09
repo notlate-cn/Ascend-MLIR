@@ -48,17 +48,26 @@ struct PlacementPlan {
 
 struct StaticMemoryPlan {
   std::string kernelId;
+  std::string mode = "none";
+  unsigned trackedPlaceCount = 0;
   unsigned workspaceSlotCount = 0;
+  bool peakUsageKnown = false;
 };
 
 struct MovementPlan {
   std::string kernelId;
+  std::string mode = "none";
+  unsigned crossPlaceEdgeCount = 0;
   unsigned movementCount = 0;
+  unsigned redundantMovementCount = 0;
 };
 
 struct MemoryRealizationPlan {
   std::string kernelId;
+  std::string mode = "none";
   bool frozen = false;
+  std::string verificationScope = "none";
+  bool planIdsVerified = false;
   unsigned materializedAllocCount = 0;
   unsigned materializedCopyCount = 0;
 };
