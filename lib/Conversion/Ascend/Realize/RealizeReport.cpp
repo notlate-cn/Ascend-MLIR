@@ -32,15 +32,34 @@ void printRealizeReport(llvm::ArrayRef<RealizePlanBundle> bundles,
        << bundle.placement.deferredLocalPlaceCount << "\n";
     os << "StaticMemoryPlan:\n";
     os << "  kernel = " << bundle.staticMemory.kernelId << "\n";
+    os << "  mode = \"" << bundle.staticMemory.mode << "\"\n";
+    os << "  tracked_places = " << bundle.staticMemory.trackedPlaceCount
+       << "\n";
     os << "  workspace_slots = " << bundle.staticMemory.workspaceSlotCount
        << "\n";
+    os << "  peak_usage_known = "
+       << (bundle.staticMemory.peakUsageKnown ? "true" : "false") << "\n";
     os << "MovementPlan:\n";
     os << "  kernel = " << bundle.movement.kernelId << "\n";
+    os << "  mode = \"" << bundle.movement.mode << "\"\n";
+    os << "  cross_place_edges = " << bundle.movement.crossPlaceEdgeCount
+       << "\n";
     os << "  movements = " << bundle.movement.movementCount << "\n";
+    os << "  redundant_movements = "
+       << bundle.movement.redundantMovementCount << "\n";
     os << "MemoryRealizationPlan:\n";
     os << "  kernel = " << bundle.realization.kernelId << "\n";
+    os << "  mode = \"" << bundle.realization.mode << "\"\n";
     os << "  frozen = " << (bundle.realization.frozen ? "true" : "false")
        << "\n";
+    os << "  verification_scope = \""
+       << bundle.realization.verificationScope << "\"\n";
+    os << "  plan_ids_verified = "
+       << (bundle.realization.planIdsVerified ? "true" : "false") << "\n";
+    os << "  materialized_allocs = "
+       << bundle.realization.materializedAllocCount << "\n";
+    os << "  materialized_copies = "
+       << bundle.realization.materializedCopyCount << "\n";
   }
 }
 
