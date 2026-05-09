@@ -16,6 +16,7 @@
 #include "Conversion/AscendCPrepareForEmit/AscendCPrepareForEmitPass.h"
 #include "Conversion/AscendV2/Kernelize/KernelizePass.h"
 #include "Conversion/AscendV2/Normalize/NormalizePass.h"
+#include "Conversion/AscendV2/Realize/RealizePass.h"
 #include "Conversion/AscendV2/Schedule/SchedulePass.h"
 #include "Conversion/CanonicalizeCannSignature/CanonicalizeCannSignaturePass.h"
 #include "Conversion/FuseGatherElementwise/FuseGatherElementwisePass.h"
