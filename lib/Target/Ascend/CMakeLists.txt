@@ -1,5 +1,6 @@
 add_mlir_library(AscendTargetProfile
   TargetProfile.cpp
+  TargetMemoryModel.cpp
   CannTargetProfileLoader.cpp
 
   ADDITIONAL_HEADER_DIRS

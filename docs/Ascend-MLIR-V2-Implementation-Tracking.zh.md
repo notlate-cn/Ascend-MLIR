@@ -463,7 +463,7 @@ Review / verification:
 
 | 任务 | 状态 | 说明 | 验收 |
 |---|---|---|---|
-| `TargetMemoryModel` | `Planned` | memory places、capacity、alignment、path graph | 必需路径 verifier |
+| `TargetMemoryModel` | `Done` | logical places、capacity、alignment、visibility、direct path graph；multi-hop routing 与 intrinsic-backed path validation 延后到 TargetRouting / TargetIntrinsicModel / ProfileVerifier | `AscendTargetMemoryModelTest` + target profile lit |
 | `TargetIntrinsicModel` | `Planned` | compute/movement intrinsic dtype map | intrinsic lookup 测试 |
 | `TargetCostModel` | `Planned` | memory rates / path cost | cost query 测试 |
 | profile verifier | `Planned` | profile/memory/intrinsic 闭合检查 | 缺字段 fail-fast |
