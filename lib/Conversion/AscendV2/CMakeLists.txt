@@ -18,6 +18,8 @@ add_mlir_library(AscendV2Conversion
   Kernelize/KernelizePass.cpp
   Kernelize/OpRoleClassification.cpp
   Kernelize/StructuralMarking.cpp
+  Realize/RealizePass.cpp
+  Realize/RealizeReport.cpp
   Schedule/SchedulePass.cpp
 
   ADDITIONAL_HEADER_DIRS
@@ -30,6 +32,7 @@ add_mlir_library(AscendV2Conversion
   MLIRFuncDialect
   MLIRIR
   MLIRLinalgDialect
+  MLIRMemRefDialect
   MLIRPass
   MLIRSupport
 )

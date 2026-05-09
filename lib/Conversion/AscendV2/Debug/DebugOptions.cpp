@@ -16,6 +16,8 @@ DebugStage parseDebugStage(StringRef value) {
     return DebugStage::Kernelize;
   if (trimmed.equals_insensitive("schedule"))
     return DebugStage::Schedule;
+  if (trimmed.equals_insensitive("realize"))
+    return DebugStage::Realize;
   if (trimmed.equals_insensitive("all"))
     return DebugStage::All;
   return DebugStage::None;
@@ -41,6 +43,9 @@ void emitStageHeader(raw_ostream &os, DebugStage stage, StringRef passName) {
     break;
   case DebugStage::Schedule:
     stageName = "schedule";
+    break;
+  case DebugStage::Realize:
+    stageName = "realize";
     break;
   case DebugStage::All:
     stageName = "all";

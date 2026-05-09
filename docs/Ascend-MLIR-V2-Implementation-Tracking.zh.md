@@ -26,7 +26,7 @@
 | Phase 0 | V2 MVP 编译主干 | `Done` | Normalize -> Kernelize -> Schedule 纵向链路已打通 |
 | Phase 1 | Kernelize 完整候选分析 | `Done` | Kernelize Phase 1 候选分析与 pattern partition 路径已完成并验证 |
 | Phase 2 | Schedule 完整搜索与 guard/cache | `Done` | Phase 2 final review 与 xvm/docker 验证已完成 |
-| Phase 3 | Realize plan objects | `Planned` | 下一步从 `MemoryRealizationPlan` 的 plan object 边界开始 |
+| Phase 3 | Realize plan objects | `In Progress` | `--ascend-realize` MVP 已进入实现 |
 | Phase 4 | Target model 完整化 | `Planned` | 与 Phase 2/3 并行推进 |
 | Phase 5 | Translate / runtime artifact 对接 | `Planned` | 依赖 Realize 和 ABI 设计稳定 |
 | Phase 6 | 架构文档与 demo 重写 | `Deferred` | 待 V2 主链路稳定后启动 |
@@ -388,17 +388,31 @@ ssh xvm@orb 'cd /home/niu/code/Ascend-MLIR && cmake --build build-v2-task9-verif
 | clean `afir-opt` build + Phase 2 Task 9 focused lit | 11 discovered, 11 passed |
 | `check-afir` | 44 discovered, 41 passed, 3 unsupported |
 
-## Phase 3：Realize Plan Objects
+## Phase 3：Realize plan objects
 
-目标：把现有 buffer placement 原型升级为 V2-5 的显式 plan 闭环。
+目标：建立第四层 `--ascend-realize` pass、稳定 plan object 和 MVP debug report，后续再接入真实 bufferization、placement、static memory、movement 和 materialization。
 
 | 任务 | 状态 | 说明 | 验收 |
 |---|---|---|---|
+| Task 0: Realize MVP 计划 | `Done` | 拆分第一批 Realize 实现范围 | 计划文件已提交 |
+| Task 1: Realize pass skeleton and plan reports | `Done` | `--ascend-realize`、`debug-stage=realize`、MVP plan objects | focused Realize lit 4/4 passed；pipeline smoke passed |
 | `BufferizationDriver` 对接 | `Planned` | 继续复用 One-Shot Bufferize | bufferized IR smoke |
 | `PlacementPlan` | `Planned` | resolved placement 规划 | 与 target memory place 对齐 |
 | `StaticMemoryPlan` | `Planned` | workspace layout / lifetime | peak workspace 可验证 |
 | `MovementPlan` | `Planned` | 显式 data movement 路径 | IR 与 plan 双向一致 |
 | `MemoryRealizationPlan` | `Planned` | 汇总 realization 结果 | verifier 通过 |
+
+### Phase 3 验证记录
+
+| 命令 | 结果 |
+|---|---|
+| TDD RED: `ascend-realize-mvp.mlir` / `ascend-realize-requires-schedule.mlir` | failed as expected：`--ascend-realize` 未注册 |
+| TDD RED: `ascend-realize-rejects-partial-attrs.mlir` | failed as expected：半标记 op 被静默忽略 |
+| TDD RED: `ascend-realize-rejects-inconsistent-attrs.mlir` | failed as expected：同 kernel 不一致 schedule attrs 被接受 |
+| xvm focused build/test | `ninja -C build afir-opt` passed；Realize focused lit 4/4 passed；pipeline smoke passed |
+| spec review | passed：未越界实现真实 bufferization / placement / movement / materialization |
+| code quality review | approved after re-review：同 kernel schedule attr 一致性已补充 |
+| xvm `check-afir` | not completed：broader run 长时间停在既有 `externals/pyasc/.../Translation.cpp` 编译单元，已中断；本轮以 focused Realize + pipeline smoke 作为验证依据 |
 
 ## Phase 4：Target Model 完整化
 

@@ -76,6 +76,27 @@ def AscendSchedulePass : Pass<"ascend-schedule", "mlir::ModuleOp"> {
   ];
 }
 
+def AscendRealizePass : Pass<"ascend-realize", "mlir::ModuleOp"> {
+  let summary = "Construct Ascend MLIR V2 memory realization plans";
+  let description = [{
+    MVP pass for the V2 Realize stage. It preserves IR unchanged, validates
+    that Schedule/StructuredLowering attributes are present, and emits an
+    optional debug report with empty GM-only plan objects.
+  }];
+  let constructor = "mlir::afir::createAscendRealizePass()";
+  let dependentDialects = [
+    "mlir::func::FuncDialect",
+    "mlir::linalg::LinalgDialect",
+    "mlir::memref::MemRefDialect"
+  ];
+  let options = [
+    Option<"debugStage", "debug-stage", "std::string", /*default=*/"\"none\"",
+           "V2 debug stage: none, normalize, kernelize, schedule, realize, all">,
+    Option<"dumpReport", "dump-report", "bool", /*default=*/"false",
+           "Dump V2 analysis report to stderr">,
+  ];
+}
+
 //===----------------------------------------------------------------------===//
 // StableHLO to AFIR Conversion
 //===----------------------------------------------------------------------===//

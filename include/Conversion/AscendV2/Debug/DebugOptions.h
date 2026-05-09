@@ -13,7 +13,7 @@
 
 namespace mlir::ascend::v2 {
 
-enum class DebugStage { None, Normalize, Kernelize, Schedule, All };
+enum class DebugStage { None, Normalize, Kernelize, Schedule, Realize, All };
 
 struct DebugOptions {
   DebugStage stage = DebugStage::None;
