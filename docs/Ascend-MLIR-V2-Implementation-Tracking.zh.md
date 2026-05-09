@@ -185,6 +185,27 @@ ssh xvm@orb 'cd /home/niu/code/Ascend-MLIR && cmake --build build-v2-verify --ta
 | Task 9: StructuredLoweringDriver MVP | `Done` | `a1ae3be` | TDD RED/GREEN completed；spec review passed；code quality re-review approved；xvm clean `afir-opt` build passed；focused lit 11/11 passed；`check-afir` 44 discovered, 41 passed, 3 unsupported |
 | Task 10: Full Phase 2 Verification, Review, And Tracking | `Done` | 本文档提交 | final spec review approved；final code/test review approved；schedule focused 10/10 passed；pipeline smoke 1/1 passed；`check-afir` 44 discovered, 41 passed, 3 unsupported |
 
+### Phase 2 Expert Review Follow-up
+
+| 项 | 状态 | 处理结论 | 验证 |
+|---|---|---|---|
+| `KernelPattern` edge dedup key | `Done` | 移除重叠 bit-pack，改为 `KernelPatternEdgeKey` + `DenseSet` | 新增 C++ 单测覆盖旧碰撞样例；xvm `AscendV2KernelPatternTest` passed |
+| `runtimeTopK` hardcode | `Done` | 新增 `--runtime-top-k`，接入 `ScheduleSearchOptions`，非空 decision set clamp 到 `[1, decisions.size()]` | lit 覆盖默认、`runtime-top-k=2`、`runtime-top-k=0`；focused lit passed |
+| `AxisCoalescer` broadcast dead branch | `Done` | 删除不会命中的 `AxisKind::Broadcast` switch 分支，保留 `broadcastAxisMask` 处理 | `afir-opt` focused build/lit passed |
+| `resolveTableFamily` asymmetric table | `Deferred` | 当前实现按 producer -> consumer 方向使用 MVP 表，不属于本轮 bugfix | 后续复合候选能力扩展时再处理 |
+| `SubsumedCandidate` size equality | `No Action` | review 判定为误报：当前判断基于 union size，不会把等长不相交集合误判为包含 | 无代码改动 |
+| CMake dialect deps | `No Action` | 当前直接使用的 func/linalg deps 已在 `AscendV2Conversion` 中链接，无新增 arith/tensor/math C++ symbol 证据 | 无代码改动 |
+
+Review / verification:
+
+| 命令 | 结果 |
+|---|---|
+| `git diff --check` | passed |
+| TDD RED: `ascend-schedule-decision-set.mlir` 增加 `runtime-top-k=0` 期望 | failed as expected：旧实现输出 `runtime_top_k = 0` |
+| xvm focused build/test | `ninja -C build afir-opt AscendV2KernelPatternTest` passed；`AscendV2KernelPatternTest` 1/1 passed；`ascend-schedule-decision-set.mlir` 1/1 passed；`ctest -R AscendV2KernelPatternTest` passed |
+| xvm `check-afir` | 45 discovered, 44 passed, 1 failed：`tools/examples/example-pipelines.mlir` 缺少既有 example `run_manifest.json`，与本轮改动无关 |
+| xvm `check-unittests` after `source examples/env.sh` | 10 discovered, 8 passed, 2 failed：既有 runtime `MatmulTilingDispatcherTest` abort、`MixDirectTilingArtifactsTest` 缺 `libascend_hal.so`；新增 `AscendV2KernelPatternTest` passed |
+
 ### Phase 2 收口摘要
 
 | 项 | 结果 |

@@ -92,6 +92,7 @@ struct AscendSchedulePass
     ModuleOp module = getOperation();
     MLIRContext *context = module.getContext();
     ScheduleSearchOptions searchOptions;
+    searchOptions.runtimeTopK = runtimeTopK;
     ScheduleCacheModel scheduleCacheModel;
     std::vector<ScheduleDebugEntry> scheduleDebugEntries;
     SmallVector<ScheduleReportEntry> reportEntries;
@@ -149,7 +150,8 @@ struct AscendSchedulePass
         return;
       }
       ScheduleDecisionSet decisionSet = buildScheduleDecisionSet(
-          scheduleProblem->kernelId, searchResult.keptInstances);
+          scheduleProblem->kernelId, searchResult.keptInstances,
+          searchOptions);
       scheduleCacheModel.recordScheduleDecisionSet(*scheduleProblem,
                                                    decisionSet);
       const ScheduleDecision &selectedDecision = decisionSet.decisions.front();

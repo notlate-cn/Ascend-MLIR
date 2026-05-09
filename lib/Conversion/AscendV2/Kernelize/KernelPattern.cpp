@@ -24,7 +24,6 @@
 #include "llvm/Support/raw_ostream.h"
 
 #include <algorithm>
-#include <cstdint>
 #include <limits>
 #include <string>
 #include <utility>
@@ -38,12 +37,6 @@ struct CandidateBuildRecord {
   KernelPatternCandidate candidate;
   unsigned sourceId = 0;
 };
-
-uint64_t packEdgeKey(unsigned from, unsigned to, KernelPatternEdgeKind kind) {
-  return (static_cast<uint64_t>(from) << 32) |
-         (static_cast<uint64_t>(to) << 8) |
-         static_cast<unsigned>(kind);
-}
 
 unsigned getOpId(Operation *op, const ProducerConsumerIndex &index) {
   auto it = index.opIds.find(op);
@@ -92,12 +85,13 @@ void sortUniqueIds(SmallVectorImpl<unsigned> &ids) {
 }
 
 void appendEdge(SmallVectorImpl<KernelPatternEdge> &edges,
-                DenseSet<uint64_t> &seenEdges, unsigned from, unsigned to,
+                DenseSet<KernelPatternEdgeKey> &seenEdges, unsigned from,
+                unsigned to,
                 KernelPatternEdgeKind kind, Value carriedValue = {}) {
   if (from == to)
     return;
 
-  uint64_t key = packEdgeKey(from, to, kind);
+  KernelPatternEdgeKey key{from, to, kind};
   if (!seenEdges.insert(key).second)
     return;
 
@@ -336,7 +330,7 @@ KernelPatternGraph KernelPatternBuilder::build(
   for (auto &entry : graph.coveringMap)
     sortUniqueIds(entry.second);
 
-  DenseSet<uint64_t> seenEdges;
+  DenseSet<KernelPatternEdgeKey> seenEdges;
   for (const auto &entry : graph.coveringMap) {
     ArrayRef<unsigned> coveringIds = entry.second;
     for (auto [idx, from] : llvm::enumerate(coveringIds)) {

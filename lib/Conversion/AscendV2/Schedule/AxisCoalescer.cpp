@@ -240,10 +240,8 @@ FailureOr<CoalescedAxisInfo> coalesceAxes(const KernelPatternView &pattern) {
     case AxisKind::Reduction:
       info.reductionAxes.push_back(axis);
       break;
-    case AxisKind::Broadcast:
-      info.broadcastAxes.push_back(axis);
-      break;
     case AxisKind::Unknown:
+    default:
       break;
     }
 
