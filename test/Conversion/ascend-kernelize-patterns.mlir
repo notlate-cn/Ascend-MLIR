@@ -45,7 +45,7 @@ func.func @pattern_partition(%arg0: tensor<16xf32>,
 // CHECK-SAME: internal_ops = [0, 1]
 // CHECK-SAME: primary_ops = [0]
 // CHECK: linalg.generic
-// CHECK-SAME: ascend.v2.kernel = "kernel_0"
-// CHECK-SAME: ascend.v2.primary = true
+// CHECK-SAME: ascend.kernel = "kernel_0"
+// CHECK-SAME: ascend.primary = true
 // CHECK: linalg.generic
-// CHECK-SAME: ascend.v2.kernel = "kernel_0"
+// CHECK-SAME: ascend.kernel = "kernel_0"

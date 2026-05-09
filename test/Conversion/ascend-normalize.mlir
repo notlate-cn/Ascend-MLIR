@@ -21,7 +21,7 @@ func.func @valid(%arg0: tensor<4x8xf16>, %arg1: tensor<4x8xf16>) -> tensor<4x8xf
 }
 
 // CHECK-LABEL: func.func @valid
-// CHECK-SAME: ascend.v2.normalized = true
+// CHECK-SAME: ascend.normalized = true
 
 // -----
 

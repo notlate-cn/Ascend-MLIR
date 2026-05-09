@@ -25,7 +25,7 @@ func.func @elementwise(%arg0: tensor<64xf16>, %arg1: tensor<64xf16>) -> tensor<6
 // CHECK: Schedule report
 // CHECK: schedule_family = "vector_static_1d"
 // CHECK: schedule_template = "single_tile_per_block"
-// CHECK: ascend.v2.schedule.family = "vector_static_1d"
+// CHECK: ascend.schedule.family = "vector_static_1d"
 
 // -----
 
@@ -41,7 +41,7 @@ func.func @matmul(%lhs: tensor<4x8xf16>, %rhs: tensor<8x16xf16>) -> tensor<4x16x
 // MATMUL: Schedule report
 // MATMUL: schedule_family = "cube_static_matmul"
 // MATMUL: schedule_template = "single_tile_per_block"
-// MATMUL: ascend.v2.schedule.family = "cube_static_matmul"
+// MATMUL: ascend.schedule.family = "cube_static_matmul"
 
 // -----
 
@@ -65,4 +65,4 @@ func.func @missing_kernel(%arg0: tensor<64xf16>, %arg1: tensor<64xf16>) -> tenso
 }
 // MISSING-KERNEL-END
 
-// MISSING-KERNEL: requires ascend.v2.kernel
+// MISSING-KERNEL: requires ascend.kernel

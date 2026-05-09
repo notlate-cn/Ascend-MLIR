@@ -43,8 +43,8 @@ func.func @elementwise_chain(%arg0: tensor<64xf16>, %arg1: tensor<64xf16>,
 // CHECK-NEXT:   verified_ops = 2
 // CHECK: ScheduleCache:
 // CHECK: linalg.generic
-// CHECK-SAME: ascend.v2.schedule.decision_id = "kernel_0.decision.0"
-// CHECK-SAME: ascend.v2.schedule.structured_lowering = "loop_skeleton_v0"
+// CHECK-SAME: ascend.schedule.decision_id = "kernel_0.decision.0"
+// CHECK-SAME: ascend.schedule.structured_lowering = "loop_skeleton_v0"
 // CHECK: linalg.generic
-// CHECK-SAME: ascend.v2.schedule.decision_id = "kernel_0.decision.0"
-// CHECK-SAME: ascend.v2.schedule.structured_lowering = "loop_skeleton_v0"
+// CHECK-SAME: ascend.schedule.decision_id = "kernel_0.decision.0"
+// CHECK-SAME: ascend.schedule.structured_lowering = "loop_skeleton_v0"

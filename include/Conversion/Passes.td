@@ -10,7 +10,7 @@
 include "mlir/Pass/PassBase.td"
 
 //===----------------------------------------------------------------------===//
-// Ascend MLIR V2 Pipeline Skeleton
+// Ascend MLIR Pipeline Skeleton
 //===----------------------------------------------------------------------===//
 
 def AscendPrintTargetProfilePass
@@ -18,7 +18,7 @@ def AscendPrintTargetProfilePass
   let summary = "Load and print the Ascend CANN target profile";
   let description = [{
     Loads a CANN platform_config target profile and prints a stable MVP summary
-    for target model smoke tests and early V2 development.
+    for target model smoke tests and early Ascend pipeline development.
   }];
   let constructor = "mlir::afir::createAscendPrintTargetProfilePass()";
   let options = [
@@ -30,65 +30,65 @@ def AscendPrintTargetProfilePass
 }
 
 def AscendNormalizePass : Pass<"ascend-normalize", "mlir::ModuleOp"> {
-  let summary = "Normalize supported entry IR for the Ascend MLIR V2 pipeline";
+  let summary = "Normalize supported entry IR for the Ascend MLIR pipeline";
   let description = [{
-    Skeleton pass for the V2 Normalize stage. It preserves IR unchanged in this
+    Skeleton pass for the Ascend Normalize stage. It preserves IR unchanged in this
     MVP task and only emits an optional debug stage header.
   }];
   let constructor = "mlir::afir::createAscendNormalizePass()";
   let options = [
     Option<"debugStage", "debug-stage", "std::string", /*default=*/"\"none\"",
-           "V2 debug stage: none, normalize, kernelize, schedule, all">,
+           "Ascend debug stage: none, normalize, kernelize, schedule, all">,
     Option<"dumpReport", "dump-report", "bool", /*default=*/"false",
-           "Dump V2 analysis report to stderr">,
+           "Dump Ascend analysis report to stderr">,
   ];
 }
 
 def AscendKernelizePass : Pass<"ascend-kernelize", "mlir::ModuleOp"> {
-  let summary = "Build Ascend MLIR V2 kernel candidates";
+  let summary = "Build Ascend MLIR kernel candidates";
   let description = [{
-    Skeleton pass for the V2 Kernelize stage. It preserves IR unchanged in this
+    Skeleton pass for the Ascend Kernelize stage. It preserves IR unchanged in this
     MVP task and only emits an optional debug stage header.
   }];
   let constructor = "mlir::afir::createAscendKernelizePass()";
   let options = [
     Option<"debugStage", "debug-stage", "std::string", /*default=*/"\"none\"",
-           "V2 debug stage: none, normalize, kernelize, schedule, all">,
+           "Ascend debug stage: none, normalize, kernelize, schedule, all">,
     Option<"dumpReport", "dump-report", "bool", /*default=*/"false",
-           "Dump V2 analysis report to stderr">,
+           "Dump Ascend analysis report to stderr">,
   ];
 }
 
 def AscendSchedulePass : Pass<"ascend-schedule", "mlir::ModuleOp"> {
-  let summary = "Construct Ascend MLIR V2 schedule decisions";
+  let summary = "Construct Ascend MLIR schedule decisions";
   let description = [{
-    Skeleton pass for the V2 Schedule stage. It preserves IR unchanged in this
+    Skeleton pass for the Ascend Schedule stage. It preserves IR unchanged in this
     MVP task and only emits an optional debug stage header.
   }];
   let constructor = "mlir::afir::createAscendSchedulePass()";
   let options = [
     Option<"debugStage", "debug-stage", "std::string", /*default=*/"\"none\"",
-           "V2 debug stage: none, normalize, kernelize, schedule, all">,
+           "Ascend debug stage: none, normalize, kernelize, schedule, all">,
     Option<"dumpReport", "dump-report", "bool", /*default=*/"false",
-           "Dump V2 analysis report to stderr">,
+           "Dump Ascend analysis report to stderr">,
     Option<"runtimeTopK", "runtime-top-k", "unsigned", /*default=*/"1",
            "Maximum number of schedule decisions kept selectable at runtime">,
   ];
 }
 
 def AscendRealizePass : Pass<"ascend-realize", "mlir::ModuleOp"> {
-  let summary = "Construct Ascend MLIR V2 memory realization plans";
+  let summary = "Construct Ascend MLIR memory realization plans";
   let description = [{
-    MVP pass for the V2 Realize stage. It preserves IR unchanged, validates
+    MVP pass for the Ascend Realize stage. It preserves IR unchanged, validates
     that Schedule/StructuredLowering attributes are present, and emits an
     optional debug report with empty GM-only plan objects.
   }];
   let constructor = "mlir::afir::createAscendRealizePass()";
   let options = [
     Option<"debugStage", "debug-stage", "std::string", /*default=*/"\"none\"",
-           "V2 debug stage: none, normalize, kernelize, schedule, realize, all">,
+           "Ascend debug stage: none, normalize, kernelize, schedule, realize, all">,
     Option<"dumpReport", "dump-report", "bool", /*default=*/"false",
-           "Dump V2 analysis report to stderr">,
+           "Dump Ascend analysis report to stderr">,
   ];
 }
 

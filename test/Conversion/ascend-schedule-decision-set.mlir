@@ -44,11 +44,11 @@ func.func @elementwise_chain(%arg0: tensor<64xf16>, %arg1: tensor<64xf16>,
 // DEFAULT-NEXT:   selected = kernel_0.decision.0
 // DEFAULT: schedule_decision_id = "kernel_0.decision.0"
 // DEFAULT: linalg.generic
-// DEFAULT-SAME: ascend.v2.schedule.decision_id = "kernel_0.decision.0"
-// DEFAULT-SAME: ascend.v2.schedule.runtime_top_k = 1 : i64
+// DEFAULT-SAME: ascend.schedule.decision_id = "kernel_0.decision.0"
+// DEFAULT-SAME: ascend.schedule.runtime_top_k = 1 : i64
 // DEFAULT: linalg.generic
-// DEFAULT-SAME: ascend.v2.schedule.decision_id = "kernel_0.decision.0"
-// DEFAULT-SAME: ascend.v2.schedule.runtime_top_k = 1 : i64
+// DEFAULT-SAME: ascend.schedule.decision_id = "kernel_0.decision.0"
+// DEFAULT-SAME: ascend.schedule.runtime_top_k = 1 : i64
 
 // RUNTIME-TOP-K-2: ScheduleDecisionSet:
 // RUNTIME-TOP-K-2-NEXT:   kernel = kernel_0
@@ -56,11 +56,11 @@ func.func @elementwise_chain(%arg0: tensor<64xf16>, %arg1: tensor<64xf16>,
 // RUNTIME-TOP-K-2-NEXT:   runtime_top_k = 2
 // RUNTIME-TOP-K-2-NEXT:   selected = kernel_0.decision.0
 // RUNTIME-TOP-K-2: linalg.generic
-// RUNTIME-TOP-K-2-SAME: ascend.v2.schedule.decision_id = "kernel_0.decision.0"
-// RUNTIME-TOP-K-2-SAME: ascend.v2.schedule.runtime_top_k = 2 : i64
+// RUNTIME-TOP-K-2-SAME: ascend.schedule.decision_id = "kernel_0.decision.0"
+// RUNTIME-TOP-K-2-SAME: ascend.schedule.runtime_top_k = 2 : i64
 // RUNTIME-TOP-K-2: linalg.generic
-// RUNTIME-TOP-K-2-SAME: ascend.v2.schedule.decision_id = "kernel_0.decision.0"
-// RUNTIME-TOP-K-2-SAME: ascend.v2.schedule.runtime_top_k = 2 : i64
+// RUNTIME-TOP-K-2-SAME: ascend.schedule.decision_id = "kernel_0.decision.0"
+// RUNTIME-TOP-K-2-SAME: ascend.schedule.runtime_top_k = 2 : i64
 
 // RUNTIME-TOP-K-ZERO: ScheduleDecisionSet:
 // RUNTIME-TOP-K-ZERO-NEXT:   kernel = kernel_0
@@ -68,8 +68,8 @@ func.func @elementwise_chain(%arg0: tensor<64xf16>, %arg1: tensor<64xf16>,
 // RUNTIME-TOP-K-ZERO-NEXT:   runtime_top_k = 1
 // RUNTIME-TOP-K-ZERO-NEXT:   selected = kernel_0.decision.0
 // RUNTIME-TOP-K-ZERO: linalg.generic
-// RUNTIME-TOP-K-ZERO-SAME: ascend.v2.schedule.decision_id = "kernel_0.decision.0"
-// RUNTIME-TOP-K-ZERO-SAME: ascend.v2.schedule.runtime_top_k = 1 : i64
+// RUNTIME-TOP-K-ZERO-SAME: ascend.schedule.decision_id = "kernel_0.decision.0"
+// RUNTIME-TOP-K-ZERO-SAME: ascend.schedule.runtime_top_k = 1 : i64
 // RUNTIME-TOP-K-ZERO: linalg.generic
-// RUNTIME-TOP-K-ZERO-SAME: ascend.v2.schedule.decision_id = "kernel_0.decision.0"
-// RUNTIME-TOP-K-ZERO-SAME: ascend.v2.schedule.runtime_top_k = 1 : i64
+// RUNTIME-TOP-K-ZERO-SAME: ascend.schedule.decision_id = "kernel_0.decision.0"
+// RUNTIME-TOP-K-ZERO-SAME: ascend.schedule.runtime_top_k = 1 : i64

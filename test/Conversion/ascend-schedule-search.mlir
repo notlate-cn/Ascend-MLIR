@@ -106,4 +106,4 @@ func.func @dynamic_vector(%arg0: tensor<?x8xf16>,
 // CHECK-NEXT:   instance = kernel_3.vector_static_2d.1
 // CHECK: schedule_family = "vector_static_2d"
 // CHECK: schedule_template = "single_tile_per_block"
-// CHECK: ascend.v2.schedule.family = "vector_static_2d"
+// CHECK: ascend.schedule.family = "vector_static_2d"

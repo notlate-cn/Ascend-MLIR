@@ -18,7 +18,7 @@ add_mlir_public_c_api_library(AFIRCAPI
   AscendCParallelizeConversion
   AscendCPrepareForEmitConversion
   AscendTargetProfile
-  AscendV2Conversion
+  AscendConversion
   CanonicalizeCannSignatureConversion
   FuseGatherElementwiseConversion
   MarkStructuredOpsConversion
