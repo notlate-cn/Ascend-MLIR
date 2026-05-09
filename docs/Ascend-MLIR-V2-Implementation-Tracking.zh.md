@@ -7,6 +7,9 @@
 - 第一轮 MVP 计划：`docs/superpowers/plans/2026-05-07-ascend-mlir-v2-mvp.md`
 - Phase 1 Kernelize 计划：`docs/superpowers/plans/2026-05-08-ascend-mlir-v2-kernelize-candidates.md`
 - Phase 2 Schedule 计划：`docs/superpowers/plans/2026-05-08-ascend-mlir-v2-schedule-full-search.md`
+- 代码命名去版本化计划：`docs/superpowers/plans/2026-05-09-ascend-mlir-remove-v2-code-naming.md`
+
+说明：`V2` 在本文档中只表示方案版本。当前代码目录、namespace、CMake target、IR attrs、测试 target 使用版本无关 `Ascend` 命名。
 
 ## 状态约定
 
@@ -26,7 +29,7 @@
 | Phase 0 | V2 MVP 编译主干 | `Done` | Normalize -> Kernelize -> Schedule 纵向链路已打通 |
 | Phase 1 | Kernelize 完整候选分析 | `Done` | Kernelize Phase 1 候选分析与 pattern partition 路径已完成并验证 |
 | Phase 2 | Schedule 完整搜索与 guard/cache | `Done` | Phase 2 final review 与 xvm/docker 验证已完成 |
-| Phase 3 | Realize plan objects | `In Progress` | `--ascend-realize` MVP 已完成，下一步接入 bufferization / placement |
+| Phase 3 | Realize plan objects | `In Progress` | `--ascend-realize` MVP 与代码命名去版本化已完成，下一步接入 bufferization / placement |
 | Phase 4 | Target model 完整化 | `Planned` | 与 Phase 2/3 并行推进 |
 | Phase 5 | Translate / runtime artifact 对接 | `Planned` | 依赖 Realize 和 ABI 设计稳定 |
 | Phase 6 | 架构文档与 demo 重写 | `Deferred` | 待 V2 主链路稳定后启动 |
@@ -37,10 +40,10 @@
 |---|---|---|---|---|
 | V2 pass skeleton | V2-1 / V2-9 | `Done` | `--ascend-normalize`、`--ascend-kernelize`、`--ascend-schedule` | `check-afir` 覆盖 |
 | Target Profile MVP | V2-8 | `Done` | `TargetProfile`、`CannTargetProfileLoader`、`--ascend-print-target-profile` | `test/Target/ascend-target-profile.mlir` |
-| Normalize MVP | V2-2 | `Done` | dialect 白名单、`ascend.v2.normalized` | `test/Conversion/ascend-normalize.mlir` |
-| Kernelize MVP | V2-3 | `Done` | `ascend.v2.op_role`、`ascend.v2.kernel`、`ascend.v2.primary` | `test/Conversion/ascend-kernelize-mvp.mlir` |
+| Normalize MVP | V2-2 | `Done` | dialect 白名单、`ascend.normalized` | `test/Conversion/ascend-normalize.mlir` |
+| Kernelize MVP | V2-3 | `Done` | `ascend.op_role`、`ascend.kernel`、`ascend.primary` | `test/Conversion/ascend-kernelize-mvp.mlir` |
 | Schedule MVP | V2-4 | `Done` | fixed schedule family/template/decision attrs | `test/Conversion/ascend-schedule-mvp.mlir` |
-| Vertical MVP pipeline | V2-9 | `Done` | Normalize -> Kernelize -> Schedule smoke test | `test/Conversion/ascend-v2-pipeline-mvp.mlir` |
+| Vertical MVP pipeline | V2-9 | `Done` | Normalize -> Kernelize -> Schedule smoke test | `test/Conversion/ascend-pipeline-mvp.mlir` |
 
 ### Phase 0 验证记录
 
@@ -155,7 +158,7 @@ ssh xvm@orb 'cd /home/niu/code/Ascend-MLIR && cmake --build build-v2-verify --ta
 
 | 任务 | 状态 | 说明 | 验收 |
 |---|---|---|---|
-| `KernelPatternView` | `Done` | 从 `ascend.v2.kernel` / `ascend.v2.primary` / `ascend.v2.op_role` 重建 pattern-level schedule view | 新增 pattern-view lit；同一 kernel 内 ops 共享 schedule decision |
+| `KernelPatternView` | `Done` | 从 `ascend.kernel` / `ascend.primary` / `ascend.op_role` 重建 pattern-level schedule view | 新增 pattern-view lit；同一 kernel 内 ops 共享 schedule decision |
 | `AxisCoalescer` | `Done` | 轴合并与 coalesced axis info | rank-2/reduction/broadcast/matmul/multi-primary lit |
 | `ScheduleProblemBuilder` | `Done` | 从 `KernelPatternView` + axis info 构建调度问题 | report 输出 shape/axis/constraint |
 | `TemplateRegistry` | `Done` | 注册 schedule family/template | vector/reduction/cube family 可查询 |
@@ -189,12 +192,12 @@ ssh xvm@orb 'cd /home/niu/code/Ascend-MLIR && cmake --build build-v2-verify --ta
 
 | 项 | 状态 | 处理结论 | 验证 |
 |---|---|---|---|
-| `KernelPattern` edge dedup key | `Done` | 移除重叠 bit-pack，改为 `KernelPatternEdgeKey` + `DenseSet` | 新增 C++ 单测覆盖旧碰撞样例；xvm `AscendV2KernelPatternTest` passed |
+| `KernelPattern` edge dedup key | `Done` | 移除重叠 bit-pack，改为 `KernelPatternEdgeKey` + `DenseSet` | 新增 C++ 单测覆盖旧碰撞样例；xvm `AscendKernelPatternTest` passed |
 | `runtimeTopK` hardcode | `Done` | 新增 `--runtime-top-k`，接入 `ScheduleSearchOptions`，非空 decision set clamp 到 `[1, decisions.size()]` | lit 覆盖默认、`runtime-top-k=2`、`runtime-top-k=0`；focused lit passed |
 | `AxisCoalescer` broadcast dead branch | `Done` | 删除不会命中的 `AxisKind::Broadcast` switch 分支，保留 `broadcastAxisMask` 处理 | `afir-opt` focused build/lit passed |
 | `resolveTableFamily` asymmetric table | `Deferred` | 当前实现按 producer -> consumer 方向使用 MVP 表，不属于本轮 bugfix | 后续复合候选能力扩展时再处理 |
 | `SubsumedCandidate` size equality | `No Action` | review 判定为误报：当前判断基于 union size，不会把等长不相交集合误判为包含 | 无代码改动 |
-| CMake dialect deps | `No Action` | 当前直接使用的 func/linalg deps 已在 `AscendV2Conversion` 中链接，无新增 arith/tensor/math C++ symbol 证据 | 无代码改动 |
+| CMake dialect deps | `No Action` | 当前直接使用的 func/linalg deps 已在 `AscendConversion` 中链接，无新增 arith/tensor/math C++ symbol 证据 | 无代码改动 |
 
 Review / verification:
 
@@ -202,15 +205,15 @@ Review / verification:
 |---|---|
 | `git diff --check` | passed |
 | TDD RED: `ascend-schedule-decision-set.mlir` 增加 `runtime-top-k=0` 期望 | failed as expected：旧实现输出 `runtime_top_k = 0` |
-| xvm focused build/test | `ninja -C build afir-opt AscendV2KernelPatternTest` passed；`AscendV2KernelPatternTest` 1/1 passed；`ascend-schedule-decision-set.mlir` 1/1 passed；`ctest -R AscendV2KernelPatternTest` passed |
+| xvm focused build/test | `ninja -C build afir-opt AscendKernelPatternTest` passed；`AscendKernelPatternTest` 1/1 passed；`ascend-schedule-decision-set.mlir` 1/1 passed；`ctest -R AscendKernelPatternTest` passed |
 | xvm `check-afir` | 45 discovered, 44 passed, 1 failed：`tools/examples/example-pipelines.mlir` 缺少既有 example `run_manifest.json`，与本轮改动无关 |
-| xvm `check-unittests` after `source examples/env.sh` | 10 discovered, 8 passed, 2 failed：既有 runtime `MatmulTilingDispatcherTest` abort、`MixDirectTilingArtifactsTest` 缺 `libascend_hal.so`；新增 `AscendV2KernelPatternTest` passed |
+| xvm `check-unittests` after `source examples/env.sh` | 10 discovered, 8 passed, 2 failed：既有 runtime `MatmulTilingDispatcherTest` abort、`MixDirectTilingArtifactsTest` 缺 `libascend_hal.so`；新增 `AscendKernelPatternTest` passed |
 
 ### Phase 2 收口摘要
 
 | 项 | 结果 |
 |---|---|
-| 代码范围 | 新增 `include/Conversion/AscendV2/Schedule/*.h` 9 个、`lib/Conversion/AscendV2/Schedule/*.cpp` 8 个；局部更新 `SchedulePass.cpp` 与 `lib/Conversion/AscendV2/CMakeLists.txt` |
+| 代码范围 | 新增 `include/Conversion/Ascend/Schedule/*.h` 9 个、`lib/Conversion/Ascend/Schedule/*.cpp` 8 个；局部更新 `SchedulePass.cpp` 与 `lib/Conversion/Ascend/CMakeLists.txt` |
 | 测试范围 | 当前 `test/Conversion/ascend-schedule-*.mlir` 共 10 个；Phase 2 新增 9 个 focused schedule lit |
 | 行为覆盖 | pattern view、axis coalescing、problem builder、template registry、search、guards、decision set、cache、structured lowering marker |
 | 最终验证 | schedule focused 10/10 passed；pipeline smoke 1/1 passed；`check-afir` 44 discovered, 41 passed, 3 unsupported |
@@ -420,20 +423,24 @@ ssh xvm@orb 'cd /home/niu/code/Ascend-MLIR && cmake --build build-v2-task9-verif
 |---|---|---|---|
 | `AxisKind::Broadcast` enum 残留 | `Done` | 删除 enum value，broadcast 继续通过 `broadcastAxes` metadata 表达 | `ascend-schedule-axis-coalescing.mlir` / `ascend-schedule-problem.mlir` passed |
 | `AscendRealizePass` phantom dependent dialects | `Done` | 移除 `FuncDialect` / `LinalgDialect` / `MemRefDialect` 依赖声明和死 include | `ninja -C build afir-opt` passed；Realize focused lit passed |
-| `RealizeTypes.h` dead include | `Done` | 删除未使用 `SmallVector.h` / `StringRef.h` / `LLVM.h` include | `ninja -C build AscendV2CommonAttributesTest` passed |
+| `RealizeTypes.h` dead include | `Done` | 删除未使用 `SmallVector.h` / `StringRef.h` / `LLVM.h` include | `ninja -C build AscendCommonAttributesTest` passed |
 | Realize `MemoryPlace` 与 TargetProfile 命名边界 | `Done` | 增加注释说明 Realize placement enum 与 target hardware memory hierarchy 不同 | `afir-opt` build passed |
 | unscheduled Realize 测试命名 | `Done` | `ascend-realize-requires-schedule.mlir` 重命名为 `ascend-realize-rejects-unscheduled.mlir` | renamed lit passed |
-| V2 shared attributes | `Done` | 新增 `Conversion/AscendV2/Common/Attributes.h`，Kernelize / Schedule / Realize 使用同源常量 | 新增 `AscendV2CommonAttributesTest` passed |
+| Ascend shared attributes | `Done` | 新增 `Conversion/Ascend/Common/Attributes.h`，Kernelize / Schedule / Realize 使用同源常量 | 新增 `AscendCommonAttributesTest` passed |
+| 代码命名去版本化 | `Done` | 源码目录、namespace、CMake target、IR attrs、测试名迁移为版本无关 `Ascend` 命名；方案/文档版本名保留 | guard、xvm build、unit、ctest、Ascend lit passed |
 
 Review / verification:
 
 | 命令 | 结果 |
 |---|---|
-| TDD RED: `AscendV2CommonAttributesTest` | failed as expected：`Conversion/AscendV2/Common/Attributes.h` 不存在 |
-| xvm build | `ninja -C build afir-opt AscendV2CommonAttributesTest AscendV2KernelPatternTest` passed |
-| xvm unit tests | `AscendV2CommonAttributesTest` 1/1 passed；`AscendV2KernelPatternTest` 1/1 passed；`ctest -R "AscendV2(CommonAttributes\|KernelPattern)Test"` 2/2 passed |
+| TDD RED: `AscendCommonAttributesTest` | failed as expected：`Conversion/Ascend/Common/Attributes.h` 不存在 |
+| TDD RED: code naming guard | failed as expected：旧代码中存在 `AscendV2` / `ascend.v2` / `ascend-v2-pipeline` |
+| TDD RED: guard fallback probe | failed as expected：无 `rg` 环境下，临时 `AscendV2Probe` 同样被 `grep/find` fallback 捕获 |
+| xvm build | `ninja -C build afir-opt AscendCommonAttributesTest AscendKernelPatternTest` passed |
+| xvm unit tests | `AscendCommonAttributesTest` 1/1 passed；`AscendKernelPatternTest` 1/1 passed；`ctest -R "Ascend(CommonAttributes\|KernelPattern)Test"` 2/2 passed |
 | xvm focused lit | Realize / Schedule / pipeline smoke 7/7 passed |
 | xvm Ascend Conversion lit | `ascend-*.mlir` 22/22 passed |
+| code naming guard | host `rg` path passed；host no-`rg` fallback passed；xvm `command -v rg` returned missing and guard passed through `find`/`grep` fallback |
 
 ## Phase 4：Target Model 完整化
 

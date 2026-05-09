@@ -18,7 +18,7 @@ func.func @elementwise(%arg0: tensor<64xf16>, %arg1: tensor<64xf16>) -> tensor<6
   return %out : tensor<64xf16>
 }
 
-// CHECK: Ascend V2 realize report (ascend-realize)
+// CHECK: Ascend realize report (ascend-realize)
 // CHECK: Realize report
 // CHECK-NEXT:   kernels = 1
 // CHECK: BufferizedKernelIR:
@@ -38,5 +38,5 @@ func.func @elementwise(%arg0: tensor<64xf16>, %arg1: tensor<64xf16>) -> tensor<6
 // CHECK-NEXT:   kernel = kernel_0
 // CHECK-NEXT:   frozen = true
 // CHECK: linalg.generic
-// CHECK-SAME: ascend.v2.schedule.decision_id = "kernel_0.decision.0"
-// CHECK-SAME: ascend.v2.schedule.structured_lowering = "loop_skeleton_v0"
+// CHECK-SAME: ascend.schedule.decision_id = "kernel_0.decision.0"
+// CHECK-SAME: ascend.schedule.structured_lowering = "loop_skeleton_v0"

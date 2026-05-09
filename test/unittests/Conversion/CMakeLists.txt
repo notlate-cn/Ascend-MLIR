@@ -1,29 +1,29 @@
-add_executable(AscendV2KernelPatternTest
-  AscendV2KernelPatternTest.cpp
+add_executable(AscendKernelPatternTest
+  AscendKernelPatternTest.cpp
 )
 
-target_link_libraries(AscendV2KernelPatternTest PRIVATE
+target_link_libraries(AscendKernelPatternTest PRIVATE
   RuntimeUnitTestSupport
-  AscendV2Conversion
+  AscendConversion
 )
 
-add_dependencies(RuntimeUnitTests AscendV2KernelPatternTest)
+add_dependencies(RuntimeUnitTests AscendKernelPatternTest)
 
-add_test(NAME AscendV2KernelPatternTest
-  COMMAND $<TARGET_FILE:AscendV2KernelPatternTest>
+add_test(NAME AscendKernelPatternTest
+  COMMAND $<TARGET_FILE:AscendKernelPatternTest>
 )
 
-add_executable(AscendV2CommonAttributesTest
-  AscendV2CommonAttributesTest.cpp
+add_executable(AscendCommonAttributesTest
+  AscendCommonAttributesTest.cpp
 )
 
-target_link_libraries(AscendV2CommonAttributesTest PRIVATE
+target_link_libraries(AscendCommonAttributesTest PRIVATE
   RuntimeUnitTestSupport
-  AscendV2Conversion
+  AscendConversion
 )
 
-add_dependencies(RuntimeUnitTests AscendV2CommonAttributesTest)
+add_dependencies(RuntimeUnitTests AscendCommonAttributesTest)
 
-add_test(NAME AscendV2CommonAttributesTest
-  COMMAND $<TARGET_FILE:AscendV2CommonAttributesTest>
+add_test(NAME AscendCommonAttributesTest
+  COMMAND $<TARGET_FILE:AscendCommonAttributesTest>
 )

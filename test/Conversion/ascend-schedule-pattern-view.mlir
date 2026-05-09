@@ -41,7 +41,7 @@ func.func @elementwise_chain(%arg0: tensor<64xf16>, %arg1: tensor<64xf16>,
 // CHECK: primary_ops = 1
 // CHECK: dominant_role = vector
 // CHECK: linalg.generic
-// CHECK-SAME: ascend.v2.schedule.decision_id = "kernel_0.decision.0"
+// CHECK-SAME: ascend.schedule.decision_id = "kernel_0.decision.0"
 // CHECK: linalg.generic
-// CHECK-SAME: ascend.v2.schedule.decision_id = "kernel_0.decision.0"
-// CHECK: ascend.v2.schedule.family = "vector_static_1d"
+// CHECK-SAME: ascend.schedule.decision_id = "kernel_0.decision.0"
+// CHECK: ascend.schedule.family = "vector_static_1d"

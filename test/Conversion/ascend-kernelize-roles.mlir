@@ -13,8 +13,8 @@ func.func @branch_merge(%a: tensor<16xf32>, %b: tensor<16xf32>,
       linalg.yield %x : f32
     } -> tensor<16xf32>
   %1 = linalg.generic {
-      ascend.v2.branch_root = true,
-      ascend.v2.branch_group = 99 : i64,
+      ascend.branch_root = true,
+      ascend.branch_group = 99 : i64,
       indexing_maps = [
         affine_map<(d0) -> (d0)>,
         affine_map<(d0) -> (d0)>],
@@ -26,8 +26,8 @@ func.func @branch_merge(%a: tensor<16xf32>, %b: tensor<16xf32>,
       linalg.yield %scale : f32
     } -> tensor<16xf32>
   %2 = linalg.generic {
-      ascend.v2.merge_root = true,
-      ascend.v2.merge_group = 88 : i64,
+      ascend.merge_root = true,
+      ascend.merge_group = 88 : i64,
       indexing_maps = [
         affine_map<(d0) -> (d0)>,
         affine_map<(d0) -> (d0)>],
@@ -36,10 +36,10 @@ func.func @branch_merge(%a: tensor<16xf32>, %b: tensor<16xf32>,
       outs(%c : tensor<16xf32>) {
     ^bb0(%x: f32, %out: f32):
       %one = "arith.constant"() <{value = 1.000000e+00 : f32}> {
-        ascend.v2.kernel = "stale_kernel",
-        ascend.v2.op_role = "stale_role",
-        ascend.v2.op_roles = ["StaleRole"],
-        ascend.v2.primary = true
+        ascend.kernel = "stale_kernel",
+        ascend.op_role = "stale_role",
+        ascend.op_roles = ["StaleRole"],
+        ascend.primary = true
       } : () -> f32
       %inc = arith.addf %x, %one : f32
       linalg.yield %inc : f32
@@ -91,8 +91,8 @@ func.func @reduction(%arg0: tensor<4x8xf32>) -> tensor<4xf32> {
 // CHECK-SAME: op_role = "vector"
 // CHECK: roles = ["Primary", "Reduction"]
 // CHECK-SAME: op_role = "reduction"
-// CHECK-NOT: ascend.v2.branch_group = 99
-// CHECK-NOT: ascend.v2.merge_group = 88
+// CHECK-NOT: ascend.branch_group = 99
+// CHECK-NOT: ascend.merge_group = 88
 // CHECK-NOT: stale_kernel
 // CHECK-NOT: stale_role
 // CHECK-NOT: StaleRole

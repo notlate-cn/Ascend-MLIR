@@ -23,7 +23,7 @@ func.func @elementwise(%arg0: tensor<4x8xf16>, %arg1: tensor<4x8xf16>) -> tensor
 // CHECK: op_role = "vector"
 // CHECK: kernel_pattern = "kernel_0"
 // CHECK: primary_ops = 1
-// CHECK: ascend.v2.kernel
+// CHECK: ascend.kernel
 
 // -----
 
@@ -33,4 +33,4 @@ func.func @missing_normalize() {
 }
 // MISSING-NORMALIZE-END
 
-// MISSING-NORMALIZE: requires ascend.v2.normalized
+// MISSING-NORMALIZE: requires ascend.normalized

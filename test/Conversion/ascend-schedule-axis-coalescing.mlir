@@ -137,9 +137,9 @@ func.func @manual_cube_dominant_multi_primary(
   } ins(%arg0, %arg1 : tensor<4x16x8xf32>, tensor<4x16x8xf32>)
     outs(%vec_empty : tensor<4x16x8xf32>)
     attrs = {
-      ascend.v2.kernel = "kernel_0",
-      ascend.v2.op_role = "vector",
-      ascend.v2.primary = true
+      ascend.kernel = "kernel_0",
+      ascend.op_role = "vector",
+      ascend.primary = true
     } {
   ^bb0(%x: f32, %y: f32, %o: f32):
     %sum = arith.addf %x, %y : f32
@@ -148,9 +148,9 @@ func.func @manual_cube_dominant_multi_primary(
 
   %mat_empty = tensor.empty() : tensor<4x16xf32>
   %mat = linalg.matmul {
-      ascend.v2.kernel = "kernel_0",
-      ascend.v2.op_role = "cube",
-      ascend.v2.primary = true
+      ascend.kernel = "kernel_0",
+      ascend.op_role = "cube",
+      ascend.primary = true
     } ins(%lhs, %rhs : tensor<4x8xf32>, tensor<8x16xf32>)
       outs(%mat_empty : tensor<4x16xf32>) -> tensor<4x16xf32>
 
@@ -203,7 +203,7 @@ func.func @manual_cube_dominant_multi_primary(
 // MULTI: op_role = "reduction"
 // MULTI: schedule_family = "reduction_static"
 // MULTI: linalg.generic
-// MULTI-SAME: ascend.v2.schedule.family = "reduction_static"
+// MULTI-SAME: ascend.schedule.family = "reduction_static"
 
 // CUBE: SchedulePatternView:
 // CUBE-NEXT: kernel = kernel_0
@@ -221,6 +221,6 @@ func.func @manual_cube_dominant_multi_primary(
 // CUBE: op_role = "cube"
 // CUBE: schedule_family = "cube_static_matmul"
 // CUBE: linalg.generic
-// CUBE-SAME: ascend.v2.schedule.family = "cube_static_matmul"
+// CUBE-SAME: ascend.schedule.family = "cube_static_matmul"
 // CUBE: linalg.matmul
-// CUBE-SAME: ascend.v2.schedule.family = "cube_static_matmul"
+// CUBE-SAME: ascend.schedule.family = "cube_static_matmul"

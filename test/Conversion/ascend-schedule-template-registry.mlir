@@ -98,12 +98,12 @@ func.func @matmul(%lhs: tensor<4x8xf16>, %rhs: tensor<8x16xf16>) -> tensor<4x16x
 // CHECK-NEXT:   matches = 1
 // CHECK-NEXT:   template = cube_static_matmul/single_tile_per_block
 // CHECK: linalg.generic
-// CHECK-SAME: ascend.v2.schedule.family = "vector_static_1d"
+// CHECK-SAME: ascend.schedule.family = "vector_static_1d"
 // CHECK: linalg.generic
-// CHECK-SAME: ascend.v2.schedule.family = "vector_static_2d"
+// CHECK-SAME: ascend.schedule.family = "vector_static_2d"
 // CHECK: linalg.generic
-// CHECK-SAME: ascend.v2.schedule.family = "reduction_static"
+// CHECK-SAME: ascend.schedule.family = "reduction_static"
 // CHECK: linalg.generic
-// CHECK-SAME: ascend.v2.schedule.family = "reduction_static"
+// CHECK-SAME: ascend.schedule.family = "reduction_static"
 // CHECK: linalg.matmul
-// CHECK-SAME: ascend.v2.schedule.family = "cube_static_matmul"
+// CHECK-SAME: ascend.schedule.family = "cube_static_matmul"
