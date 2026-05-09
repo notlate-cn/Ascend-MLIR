@@ -26,6 +26,7 @@ build_e2e
 __checked_files_list__
 __code_format_check_result__
 __pycache__
+.pytest_cache/
 
 # third_party
 externals/llvm-project
