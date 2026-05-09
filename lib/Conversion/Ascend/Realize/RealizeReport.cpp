@@ -23,8 +23,13 @@ void printRealizeReport(llvm::ArrayRef<RealizePlanBundle> bundles,
        << "\n";
     os << "PlacementPlan:\n";
     os << "  kernel = " << bundle.placement.kernelId << "\n";
+    os << "  mode = \"" << bundle.placement.mode << "\"\n";
     os << "  selected_places = " << bundle.placement.selectedPlaceCount
        << "\n";
+    os << "  gm_places = " << bundle.placement.gmPlaceCount << "\n";
+    os << "  on_chip_places = " << bundle.placement.onChipPlaceCount << "\n";
+    os << "  deferred_local_places = "
+       << bundle.placement.deferredLocalPlaceCount << "\n";
     os << "StaticMemoryPlan:\n";
     os << "  kernel = " << bundle.staticMemory.kernelId << "\n";
     os << "  workspace_slots = " << bundle.staticMemory.workspaceSlotCount

@@ -30,7 +30,11 @@ func.func @elementwise(%arg0: tensor<64xf16>, %arg1: tensor<64xf16>) -> tensor<6
 // CHECK-NEXT:   temporary_values = 0
 // CHECK: PlacementPlan:
 // CHECK-NEXT:   kernel = kernel_0
-// CHECK-NEXT:   selected_places = 0
+// CHECK-NEXT:   mode = "gm_default"
+// CHECK-NEXT:   selected_places = 3
+// CHECK-NEXT:   gm_places = 3
+// CHECK-NEXT:   on_chip_places = 0
+// CHECK-NEXT:   deferred_local_places = 0
 // CHECK: StaticMemoryPlan:
 // CHECK-NEXT:   kernel = kernel_0
 // CHECK-NEXT:   workspace_slots = 0

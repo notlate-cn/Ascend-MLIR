@@ -39,7 +39,11 @@ struct BufferizedKernelIR {
 
 struct PlacementPlan {
   std::string kernelId;
+  std::string mode = "none";
   unsigned selectedPlaceCount = 0;
+  unsigned gmPlaceCount = 0;
+  unsigned onChipPlaceCount = 0;
+  unsigned deferredLocalPlaceCount = 0;
 };
 
 struct StaticMemoryPlan {

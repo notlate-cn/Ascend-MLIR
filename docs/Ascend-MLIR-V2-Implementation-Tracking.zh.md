@@ -400,7 +400,7 @@ ssh xvm@orb 'cd /home/niu/code/Ascend-MLIR && cmake --build build-v2-task9-verif
 | Task 0: Realize MVP 计划 | `Done` | 拆分第一批 Realize 实现范围 | 计划文件已提交 |
 | Task 1: Realize pass skeleton and plan reports | `Done` | `--ascend-realize`、`debug-stage=realize`、MVP plan objects | focused Realize lit 4/4 passed；pipeline smoke passed；review follow-up passed |
 | `BufferizationDriver` facts MVP | `Done` | 新增只读 `BufferizationDriver`，按 kernel 收集 tensor input / output / temporary facts；完整 One-Shot Bufferize 接入后续继续推进 | focused Realize facts lit passed；Ascend Conversion lit 23/23 passed |
-| `PlacementPlan` | `Planned` | resolved placement 规划 | 与 target memory place 对齐 |
+| `PlacementPlan` GM-default MVP | `Done` | 新增只读 `PlacementPlanner`，将已收集 buffer facts 保守映射到 `GM`，并报告 deferred local count；target-aware placement 后续继续推进 | focused placement lit passed；Ascend Conversion lit passed |
 | `StaticMemoryPlan` | `Planned` | workspace layout / lifetime | peak workspace 可验证 |
 | `MovementPlan` | `Planned` | 显式 data movement 路径 | IR 与 plan 双向一致 |
 | `MemoryRealizationPlan` | `Planned` | 汇总 realization 结果 | verifier 通过 |
@@ -423,6 +423,10 @@ ssh xvm@orb 'cd /home/niu/code/Ascend-MLIR && cmake --build build-v2-task9-verif
 | xvm focused build/unit/ctest | `ninja -C build afir-opt AscendCommonAttributesTest AscendKernelPatternTest` passed；`AscendCommonAttributesTest` 1/1 passed；`AscendKernelPatternTest` 1/1 passed；`ctest -R "Ascend(CommonAttributes\|KernelPattern)Test"` 2/2 passed |
 | xvm Conversion lit | `llvm-lit -v build/test/Conversion` 30/30 passed；`llvm-lit -v build/test/Conversion --filter="ascend-"` 23/23 passed |
 | code naming guard | `test/tools/check_ascend_no_v2_code_naming.sh` passed |
+| TDD RED: Realize placement plan | failed as expected：旧实现缺少 `mode = "gm_default"`，且仍输出 `selected_places = 0` |
+| TDD GREEN: Realize placement plan | `ninja -C build afir-opt` passed；`llvm-lit -v build/test/Conversion/ascend-realize-mvp.mlir build/test/Conversion/ascend-realize-placement-plan.mlir` 2/2 passed |
+| spec review: PlacementPlan GM-default MVP | passed：实现符合计划，只做只读 GM-default placement counters，无 TargetMemoryModel / IR mutation / memory materialization 越界 |
+| code quality review: PlacementPlan GM-default MVP | approved：GM-default 计数不变量一致；已按建议为 split-input LIT 增加 report anchors |
 
 ### Phase 3 Expert Review Follow-up
 
