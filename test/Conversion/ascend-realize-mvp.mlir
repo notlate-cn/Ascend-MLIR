@@ -23,8 +23,11 @@ func.func @elementwise(%arg0: tensor<64xf16>, %arg1: tensor<64xf16>) -> tensor<6
 // CHECK-NEXT:   kernels = 1
 // CHECK: BufferizedKernelIR:
 // CHECK-NEXT:   kernel = kernel_0
-// CHECK-NEXT:   mode = "gm_only"
-// CHECK-NEXT:   buffer_values = 0
+// CHECK-NEXT:   mode = "tensor_facts"
+// CHECK-NEXT:   buffer_values = 3
+// CHECK-NEXT:   input_values = 2
+// CHECK-NEXT:   output_values = 1
+// CHECK-NEXT:   temporary_values = 0
 // CHECK: PlacementPlan:
 // CHECK-NEXT:   kernel = kernel_0
 // CHECK-NEXT:   selected_places = 0

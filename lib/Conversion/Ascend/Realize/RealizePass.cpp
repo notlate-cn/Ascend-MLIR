@@ -7,6 +7,7 @@
 #include "Conversion/Ascend/Realize/RealizePass.h"
 
 #include "Conversion/Ascend/Debug/DebugOptions.h"
+#include "Conversion/Ascend/Realize/BufferizationDriver.h"
 #include "Conversion/Ascend/Realize/RealizeReport.h"
 #include "Conversion/Ascend/Realize/RealizeTypes.h"
 #include "mlir/IR/Attributes.h"
@@ -15,6 +16,7 @@
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallVector.h"
+#include "llvm/ADT/StringMap.h"
 #include "llvm/Support/raw_ostream.h"
 
 #include <string>
@@ -79,6 +81,18 @@ buildMVPRealizePlans(ModuleOp module, bool &emittedError) {
   if (scheduledOpsByKernel.empty())
     return failure();
 
+  BufferizationDriver bufferizationDriver;
+  FailureOr<SmallVector<BufferizedKernelIR, 4>> bufferized =
+      bufferizationDriver.collectTensorFacts(module);
+  if (failed(bufferized))
+    return failure();
+
+  llvm::StringMap<BufferizedKernelIR> bufferizedByKernel;
+  for (BufferizedKernelIR &ir : *bufferized) {
+    std::string kernelId = ir.kernelId;
+    bufferizedByKernel[kernelId] = std::move(ir);
+  }
+
   SmallVector<StringRef> kernels;
   for (const auto &entry : scheduledOpsByKernel)
     kernels.push_back(entry.first);
@@ -91,7 +105,11 @@ buildMVPRealizePlans(ModuleOp module, bool &emittedError) {
     bundle.kernel.decisionId = decisionByKernel[kernel];
     bundle.kernel.structuredLowering = skeletonByKernel[kernel];
     bundle.kernel.scheduledOps = scheduledOpsByKernel[kernel];
-    bundle.bufferizedIR.kernelId = bundle.kernel.kernelId;
+    auto bufferizedIt = bufferizedByKernel.find(bundle.kernel.kernelId);
+    if (bufferizedIt != bufferizedByKernel.end())
+      bundle.bufferizedIR = std::move(bufferizedIt->second);
+    else
+      bundle.bufferizedIR.kernelId = bundle.kernel.kernelId;
     bundle.placement.kernelId = bundle.kernel.kernelId;
     bundle.staticMemory.kernelId = bundle.kernel.kernelId;
     bundle.movement.kernelId = bundle.kernel.kernelId;

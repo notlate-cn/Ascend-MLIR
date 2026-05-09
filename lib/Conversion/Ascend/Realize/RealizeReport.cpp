@@ -17,6 +17,10 @@ void printRealizeReport(llvm::ArrayRef<RealizePlanBundle> bundles,
     os << "  kernel = " << bundle.bufferizedIR.kernelId << "\n";
     os << "  mode = \"" << bundle.bufferizedIR.mode << "\"\n";
     os << "  buffer_values = " << bundle.bufferizedIR.bufferValueCount << "\n";
+    os << "  input_values = " << bundle.bufferizedIR.inputValueCount << "\n";
+    os << "  output_values = " << bundle.bufferizedIR.outputValueCount << "\n";
+    os << "  temporary_values = " << bundle.bufferizedIR.temporaryValueCount
+       << "\n";
     os << "PlacementPlan:\n";
     os << "  kernel = " << bundle.placement.kernelId << "\n";
     os << "  selected_places = " << bundle.placement.selectedPlaceCount
