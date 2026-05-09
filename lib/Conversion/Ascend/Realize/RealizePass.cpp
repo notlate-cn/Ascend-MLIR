@@ -8,6 +8,7 @@
 
 #include "Conversion/Ascend/Debug/DebugOptions.h"
 #include "Conversion/Ascend/Realize/BufferizationDriver.h"
+#include "Conversion/Ascend/Realize/PlacementPlanner.h"
 #include "Conversion/Ascend/Realize/RealizeReport.h"
 #include "Conversion/Ascend/Realize/RealizeTypes.h"
 #include "mlir/IR/Attributes.h"
@@ -99,6 +100,7 @@ buildMVPRealizePlans(ModuleOp module, bool &emittedError) {
   llvm::sort(kernels);
 
   SmallVector<RealizePlanBundle, 4> bundles;
+  PlacementPlanner placementPlanner;
   for (StringRef kernel : kernels) {
     RealizePlanBundle bundle;
     bundle.kernel.kernelId = kernel.str();
@@ -110,7 +112,11 @@ buildMVPRealizePlans(ModuleOp module, bool &emittedError) {
       bundle.bufferizedIR = std::move(bufferizedIt->second);
     else
       bundle.bufferizedIR.kernelId = bundle.kernel.kernelId;
-    bundle.placement.kernelId = bundle.kernel.kernelId;
+    FailureOr<PlacementPlan> placement =
+        placementPlanner.build(bundle.bufferizedIR);
+    if (failed(placement))
+      return failure();
+    bundle.placement = std::move(*placement);
     bundle.staticMemory.kernelId = bundle.kernel.kernelId;
     bundle.movement.kernelId = bundle.kernel.kernelId;
     bundle.realization.kernelId = bundle.kernel.kernelId;
