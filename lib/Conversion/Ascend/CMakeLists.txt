@@ -18,6 +18,7 @@ add_mlir_library(AscendConversion
   Kernelize/KernelizePass.cpp
   Kernelize/OpRoleClassification.cpp
   Kernelize/StructuralMarking.cpp
+  Realize/BufferizationDriver.cpp
   Realize/RealizePass.cpp
   Realize/RealizeReport.cpp
   Schedule/SchedulePass.cpp

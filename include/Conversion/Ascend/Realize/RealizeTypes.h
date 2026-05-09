@@ -32,6 +32,9 @@ struct BufferizedKernelIR {
   std::string kernelId;
   std::string mode = "gm_only";
   unsigned bufferValueCount = 0;
+  unsigned inputValueCount = 0;
+  unsigned outputValueCount = 0;
+  unsigned temporaryValueCount = 0;
 };
 
 struct PlacementPlan {

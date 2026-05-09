@@ -399,7 +399,7 @@ ssh xvm@orb 'cd /home/niu/code/Ascend-MLIR && cmake --build build-v2-task9-verif
 |---|---|---|---|
 | Task 0: Realize MVP 计划 | `Done` | 拆分第一批 Realize 实现范围 | 计划文件已提交 |
 | Task 1: Realize pass skeleton and plan reports | `Done` | `--ascend-realize`、`debug-stage=realize`、MVP plan objects | focused Realize lit 4/4 passed；pipeline smoke passed；review follow-up passed |
-| `BufferizationDriver` 对接 | `Planned` | 继续复用 One-Shot Bufferize | bufferized IR smoke |
+| `BufferizationDriver` facts MVP | `Done` | 新增只读 `BufferizationDriver`，按 kernel 收集 tensor input / output / temporary facts；完整 One-Shot Bufferize 接入后续继续推进 | focused Realize facts lit passed；Ascend Conversion lit 23/23 passed |
 | `PlacementPlan` | `Planned` | resolved placement 规划 | 与 target memory place 对齐 |
 | `StaticMemoryPlan` | `Planned` | workspace layout / lifetime | peak workspace 可验证 |
 | `MovementPlan` | `Planned` | 显式 data movement 路径 | IR 与 plan 双向一致 |
@@ -416,6 +416,13 @@ ssh xvm@orb 'cd /home/niu/code/Ascend-MLIR && cmake --build build-v2-task9-verif
 | spec review | passed：未越界实现真实 bufferization / placement / movement / materialization |
 | code quality review | approved after re-review：同 kernel schedule attr 一致性已补充 |
 | xvm `check-afir` | not completed：broader run 长时间停在既有 `externals/pyasc/.../Translation.cpp` 编译单元，已中断；本轮以 focused Realize + pipeline smoke 作为验证依据 |
+| TDD RED: Realize bufferization facts | failed as expected：旧实现仍输出 `mode = "gm_only"` / `buffer_values = 0`；mixed-use 回归中旧逻辑会把 `%mid` 同时计为 output 和 temporary |
+| TDD GREEN: Realize bufferization facts | `ninja -C build afir-opt` passed；`llvm-lit -v build/test/Conversion/ascend-realize-mvp.mlir build/test/Conversion/ascend-realize-bufferization-facts.mlir` 2/2 passed |
+| spec review: Bufferization facts MVP | passed：实现符合计划，只做只读 tensor fact collection，无 One-Shot Bufferize / IR mutation / placement / movement 越界 |
+| code quality review: Bufferization facts MVP | approved after re-review：角色互斥计数修复，dead result 不再误计为 output |
+| xvm focused build/unit/ctest | `ninja -C build afir-opt AscendCommonAttributesTest AscendKernelPatternTest` passed；`AscendCommonAttributesTest` 1/1 passed；`AscendKernelPatternTest` 1/1 passed；`ctest -R "Ascend(CommonAttributes\|KernelPattern)Test"` 2/2 passed |
+| xvm Conversion lit | `llvm-lit -v build/test/Conversion` 30/30 passed；`llvm-lit -v build/test/Conversion --filter="ascend-"` 23/23 passed |
+| code naming guard | `test/tools/check_ascend_no_v2_code_naming.sh` passed |
 
 ### Phase 3 Expert Review Follow-up
 
