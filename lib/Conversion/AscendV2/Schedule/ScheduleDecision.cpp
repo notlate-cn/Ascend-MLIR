@@ -16,7 +16,8 @@
 namespace mlir::afir::ascend::v2::schedule {
 
 ScheduleDecisionSet buildScheduleDecisionSet(
-    llvm::StringRef kernelId, llvm::ArrayRef<ScheduleInstance> instances) {
+    llvm::StringRef kernelId, llvm::ArrayRef<ScheduleInstance> instances,
+    const ScheduleSearchOptions &options) {
   ScheduleDecisionSet decisionSet;
   decisionSet.kernelId = kernelId.str();
   for (auto [index, instance] : llvm::enumerate(instances)) {
@@ -29,8 +30,14 @@ ScheduleDecisionSet buildScheduleDecisionSet(
     decisionSet.decisions.push_back(std::move(decision));
   }
 
+  if (decisionSet.decisions.empty()) {
+    decisionSet.runtimeTopK = 0;
+    return decisionSet;
+  }
+
+  unsigned requestedRuntimeTopK = std::max(1u, options.runtimeTopK);
   decisionSet.runtimeTopK =
-      std::min<unsigned>(1, decisionSet.decisions.size());
+      std::min<unsigned>(requestedRuntimeTopK, decisionSet.decisions.size());
   return decisionSet;
 }
 

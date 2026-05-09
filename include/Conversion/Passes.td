@@ -71,6 +71,8 @@ def AscendSchedulePass : Pass<"ascend-schedule", "mlir::ModuleOp"> {
            "V2 debug stage: none, normalize, kernelize, schedule, all">,
     Option<"dumpReport", "dump-report", "bool", /*default=*/"false",
            "Dump V2 analysis report to stderr">,
+    Option<"runtimeTopK", "runtime-top-k", "unsigned", /*default=*/"1",
+           "Maximum number of schedule decisions kept selectable at runtime">,
   ];
 }
 

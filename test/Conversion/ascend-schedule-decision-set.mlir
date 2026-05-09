@@ -1,4 +1,6 @@
-// RUN: afir-opt %s --ascend-normalize --ascend-kernelize --ascend-schedule='dump-report=true debug-stage=schedule' 2>&1 | FileCheck %s
+// RUN: afir-opt %s --ascend-normalize --ascend-kernelize --ascend-schedule='dump-report=true debug-stage=schedule' 2>&1 | FileCheck %s --check-prefix=DEFAULT
+// RUN: afir-opt %s --ascend-normalize --ascend-kernelize --ascend-schedule='dump-report=true debug-stage=schedule runtime-top-k=2' 2>&1 | FileCheck %s --check-prefix=RUNTIME-TOP-K-2
+// RUN: afir-opt %s --ascend-normalize --ascend-kernelize --ascend-schedule='dump-report=true debug-stage=schedule runtime-top-k=0' 2>&1 | FileCheck %s --check-prefix=RUNTIME-TOP-K-ZERO
 
 func.func @elementwise_chain(%arg0: tensor<64xf16>, %arg1: tensor<64xf16>,
                              %arg2: tensor<64xf16>) -> tensor<64xf16> {
@@ -35,15 +37,39 @@ func.func @elementwise_chain(%arg0: tensor<64xf16>, %arg1: tensor<64xf16>,
   return %mul : tensor<64xf16>
 }
 
-// CHECK: ScheduleDecisionSet:
-// CHECK-NEXT:   kernel = kernel_0
-// CHECK-NEXT:   decisions = 2
-// CHECK-NEXT:   runtime_top_k = 1
-// CHECK-NEXT:   selected = kernel_0.decision.0
-// CHECK: schedule_decision_id = "kernel_0.decision.0"
-// CHECK: linalg.generic
-// CHECK-SAME: ascend.v2.schedule.decision_id = "kernel_0.decision.0"
-// CHECK-SAME: ascend.v2.schedule.runtime_top_k = 1 : i64
-// CHECK: linalg.generic
-// CHECK-SAME: ascend.v2.schedule.decision_id = "kernel_0.decision.0"
-// CHECK-SAME: ascend.v2.schedule.runtime_top_k = 1 : i64
+// DEFAULT: ScheduleDecisionSet:
+// DEFAULT-NEXT:   kernel = kernel_0
+// DEFAULT-NEXT:   decisions = 2
+// DEFAULT-NEXT:   runtime_top_k = 1
+// DEFAULT-NEXT:   selected = kernel_0.decision.0
+// DEFAULT: schedule_decision_id = "kernel_0.decision.0"
+// DEFAULT: linalg.generic
+// DEFAULT-SAME: ascend.v2.schedule.decision_id = "kernel_0.decision.0"
+// DEFAULT-SAME: ascend.v2.schedule.runtime_top_k = 1 : i64
+// DEFAULT: linalg.generic
+// DEFAULT-SAME: ascend.v2.schedule.decision_id = "kernel_0.decision.0"
+// DEFAULT-SAME: ascend.v2.schedule.runtime_top_k = 1 : i64
+
+// RUNTIME-TOP-K-2: ScheduleDecisionSet:
+// RUNTIME-TOP-K-2-NEXT:   kernel = kernel_0
+// RUNTIME-TOP-K-2-NEXT:   decisions = 2
+// RUNTIME-TOP-K-2-NEXT:   runtime_top_k = 2
+// RUNTIME-TOP-K-2-NEXT:   selected = kernel_0.decision.0
+// RUNTIME-TOP-K-2: linalg.generic
+// RUNTIME-TOP-K-2-SAME: ascend.v2.schedule.decision_id = "kernel_0.decision.0"
+// RUNTIME-TOP-K-2-SAME: ascend.v2.schedule.runtime_top_k = 2 : i64
+// RUNTIME-TOP-K-2: linalg.generic
+// RUNTIME-TOP-K-2-SAME: ascend.v2.schedule.decision_id = "kernel_0.decision.0"
+// RUNTIME-TOP-K-2-SAME: ascend.v2.schedule.runtime_top_k = 2 : i64
+
+// RUNTIME-TOP-K-ZERO: ScheduleDecisionSet:
+// RUNTIME-TOP-K-ZERO-NEXT:   kernel = kernel_0
+// RUNTIME-TOP-K-ZERO-NEXT:   decisions = 2
+// RUNTIME-TOP-K-ZERO-NEXT:   runtime_top_k = 1
+// RUNTIME-TOP-K-ZERO-NEXT:   selected = kernel_0.decision.0
+// RUNTIME-TOP-K-ZERO: linalg.generic
+// RUNTIME-TOP-K-ZERO-SAME: ascend.v2.schedule.decision_id = "kernel_0.decision.0"
+// RUNTIME-TOP-K-ZERO-SAME: ascend.v2.schedule.runtime_top_k = 1 : i64
+// RUNTIME-TOP-K-ZERO: linalg.generic
+// RUNTIME-TOP-K-ZERO-SAME: ascend.v2.schedule.decision_id = "kernel_0.decision.0"
+// RUNTIME-TOP-K-ZERO-SAME: ascend.v2.schedule.runtime_top_k = 1 : i64

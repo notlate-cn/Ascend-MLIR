@@ -19,7 +19,8 @@ class raw_ostream;
 namespace mlir::afir::ascend::v2::schedule {
 
 ScheduleDecisionSet buildScheduleDecisionSet(
-    llvm::StringRef kernelId, llvm::ArrayRef<ScheduleInstance> instances);
+    llvm::StringRef kernelId, llvm::ArrayRef<ScheduleInstance> instances,
+    const ScheduleSearchOptions &options = ScheduleSearchOptions());
 
 void printScheduleDecisionSetReport(const ScheduleDecisionSet &decisionSet,
                                     llvm::raw_ostream &os);

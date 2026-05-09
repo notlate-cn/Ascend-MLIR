@@ -19,11 +19,13 @@
 #include "mlir/Support/LLVM.h"
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/DenseMap.h"
+#include "llvm/ADT/Hashing.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/Support/raw_ostream.h"
 
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <string>
 
 namespace mlir::afir::ascend::v2::kernelize {
@@ -43,6 +45,16 @@ struct KernelPatternEdge {
   unsigned to = 0;
   KernelPatternEdgeKind kind = KernelPatternEdgeKind::DataDependency;
   Value carriedValue;
+};
+
+struct KernelPatternEdgeKey {
+  unsigned from = 0;
+  unsigned to = 0;
+  KernelPatternEdgeKind kind = KernelPatternEdgeKind::DataDependency;
+
+  bool operator==(const KernelPatternEdgeKey &other) const {
+    return from == other.from && to == other.to && kind == other.kind;
+  }
 };
 
 struct KernelPattern {
@@ -66,6 +78,34 @@ template <>
 struct CalculateSmallVectorDefaultInlinedElements<
     mlir::afir::ascend::v2::kernelize::KernelPattern> {
   static constexpr size_t value = 0;
+};
+
+template <>
+struct DenseMapInfo<mlir::afir::ascend::v2::kernelize::KernelPatternEdgeKey> {
+  using Key = mlir::afir::ascend::v2::kernelize::KernelPatternEdgeKey;
+
+  // Candidate ids are dense zero-based indices; reserve the max sentinels for
+  // DenseMap bookkeeping.
+  static inline Key getEmptyKey() {
+    return {std::numeric_limits<unsigned>::max(),
+            std::numeric_limits<unsigned>::max(),
+            mlir::afir::ascend::v2::kernelize::KernelPatternEdgeKind::
+                DataDependency};
+  }
+
+  static inline Key getTombstoneKey() {
+    return {std::numeric_limits<unsigned>::max() - 1,
+            std::numeric_limits<unsigned>::max(),
+            mlir::afir::ascend::v2::kernelize::KernelPatternEdgeKind::
+                DataDependency};
+  }
+
+  static unsigned getHashValue(const Key &key) {
+    return static_cast<unsigned>(
+        llvm::hash_combine(key.from, key.to, static_cast<unsigned>(key.kind)));
+  }
+
+  static bool isEqual(const Key &lhs, const Key &rhs) { return lhs == rhs; }
 };
 } // namespace llvm
 
