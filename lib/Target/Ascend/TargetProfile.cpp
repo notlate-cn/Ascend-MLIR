@@ -7,6 +7,7 @@
 #include "Target/Ascend/TargetProfile.h"
 
 #include "Target/Ascend/CannTargetProfileLoader.h"
+#include "Target/Ascend/TargetMemoryModel.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/Pass/Pass.h"
 #include "llvm/ADT/STLExtras.h"
@@ -25,18 +26,24 @@ StringRef stringifyMemoryPlace(MemoryPlace place) {
   switch (place) {
   case MemoryPlace::GM:
     return "GM";
-  case MemoryPlace::L2:
-    return "L2";
-  case MemoryPlace::L1:
-    return "L1";
-  case MemoryPlace::L0A:
-    return "L0A";
-  case MemoryPlace::L0B:
-    return "L0B";
-  case MemoryPlace::L0C:
-    return "L0C";
-  case MemoryPlace::UB:
-    return "UB";
+  case MemoryPlace::A1:
+    return "A1";
+  case MemoryPlace::A2:
+    return "A2";
+  case MemoryPlace::B1:
+    return "B1";
+  case MemoryPlace::B2:
+    return "B2";
+  case MemoryPlace::CO1:
+    return "CO1";
+  case MemoryPlace::VECIN:
+    return "VECIN";
+  case MemoryPlace::VECOUT:
+    return "VECOUT";
+  case MemoryPlace::VECCALC:
+    return "VECCALC";
+  case MemoryPlace::GMFlat:
+    return "GM_FLAT";
   }
   llvm_unreachable("unknown memory place");
 }
@@ -66,11 +73,6 @@ LogicalResult verifyTargetProfile(const TargetProfile &profile,
 
 namespace {
 
-constexpr ascend::MemoryPlace orderedMemoryPlaces[] = {
-    ascend::MemoryPlace::GM,  ascend::MemoryPlace::L2,  ascend::MemoryPlace::L1,
-    ascend::MemoryPlace::L0A, ascend::MemoryPlace::L0B, ascend::MemoryPlace::L0C,
-    ascend::MemoryPlace::UB};
-
 struct AscendPrintTargetProfilePass
     : public ::impl::AscendPrintTargetProfilePassBase<
           AscendPrintTargetProfilePass> {
@@ -85,6 +87,13 @@ struct AscendPrintTargetProfilePass
     }
 
     const ascend::TargetProfile &profile = *loaded;
+    FailureOr<ascend::TargetMemoryModel> memoryModel =
+        ascend::TargetMemoryModelBuilder().build(profile, llvm::errs());
+    if (failed(memoryModel)) {
+      signalPassFailure();
+      return;
+    }
+
     llvm::errs() << "TargetProfile\n";
     llvm::errs() << "  soc = \"" << profile.identity.socVersion << "\"\n";
     if (!profile.identity.shortSocVersion.empty())
@@ -93,14 +102,15 @@ struct AscendPrintTargetProfilePass
     if (!profile.identity.npuArch.empty())
       llvm::errs() << "  npu_arch = \"" << profile.identity.npuArch << "\"\n";
 
-    for (ascend::MemoryPlace place : orderedMemoryPlaces) {
-      auto it = profile.capacityBytes.find(place);
-      if (it == profile.capacityBytes.end())
+    for (ascend::MemoryPlace place : memoryModel->getMemoryPlaces()) {
+      FailureOr<ascend::CapacityRule> capacity = memoryModel->getCapacity(place);
+      if (failed(capacity))
         continue;
       llvm::errs() << "  memory_place = \""
                    << ascend::stringifyMemoryPlace(place) << "\"";
-      if (it->second > 0)
-        llvm::errs() << " capacity_bytes = " << it->second;
+      if (capacity->staticCapacityBytes > 0)
+        llvm::errs() << " capacity_bytes = "
+                     << capacity->staticCapacityBytes;
       llvm::errs() << "\n";
     }
 

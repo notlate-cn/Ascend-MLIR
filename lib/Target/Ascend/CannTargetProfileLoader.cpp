@@ -164,22 +164,17 @@ FailureOr<TargetProfile> loadImpl(StringRef cannRoot, StringRef socVersion,
 
   setCapacity(profile, MemoryPlace::GM,
               parseInt64(getValue(sections, "SoCInfo", "memory_size")));
-  setCapacity(profile, MemoryPlace::L2,
-              parseInt64(getValue(sections, "SoCInfo", "l2_size")));
-  setCapacity(profile, MemoryPlace::L1, profile.hardware.l1SizeBytes);
-  setCapacity(profile, MemoryPlace::L0A,
+  setCapacity(profile, MemoryPlace::A1, profile.hardware.l1SizeBytes);
+  setCapacity(profile, MemoryPlace::B1, profile.hardware.l1SizeBytes);
+  setCapacity(profile, MemoryPlace::A2,
               parseInt64(getValue(sections, "AICoreSpec", "l0_a_size")));
-  setCapacity(profile, MemoryPlace::L0B,
+  setCapacity(profile, MemoryPlace::B2,
               parseInt64(getValue(sections, "AICoreSpec", "l0_b_size")));
-  setCapacity(profile, MemoryPlace::L0C,
+  setCapacity(profile, MemoryPlace::CO1,
               parseInt64(getValue(sections, "AICoreSpec", "l0_c_size")));
-  setCapacity(profile, MemoryPlace::UB, profile.hardware.ubSizeBytes);
-
-  profile.movementPaths.push_back({MemoryPlace::GM, MemoryPlace::L1});
-  profile.movementPaths.push_back({MemoryPlace::L1, MemoryPlace::L0A});
-  profile.movementPaths.push_back({MemoryPlace::L1, MemoryPlace::L0B});
-  profile.movementPaths.push_back({MemoryPlace::L0C, MemoryPlace::UB});
-  profile.movementPaths.push_back({MemoryPlace::UB, MemoryPlace::GM});
+  setCapacity(profile, MemoryPlace::VECIN, profile.hardware.ubSizeBytes);
+  setCapacity(profile, MemoryPlace::VECOUT, profile.hardware.ubSizeBytes);
+  setCapacity(profile, MemoryPlace::VECCALC, profile.hardware.ubSizeBytes);
 
   llvm::StringSet<> seenIntrinsics;
   auto dtypeSectionIt = sections.find("AICoreintrinsicDtypeMap");

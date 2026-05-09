@@ -14,11 +14,21 @@
 #include "llvm/Support/raw_ostream.h"
 #include <cstdint>
 #include <string>
-#include <utility>
 
 namespace mlir::ascend {
 
-enum class MemoryPlace { GM, L2, L1, L0A, L0B, L0C, UB };
+enum class MemoryPlace {
+  GM = 0,
+  A1 = 1,
+  A2 = 2,
+  B1 = 3,
+  B2 = 4,
+  CO1 = 7,
+  VECIN = 9,
+  VECOUT = 10,
+  VECCALC = 11,
+  GMFlat = 22
+};
 
 struct TargetIdentity {
   std::string socVersion;
@@ -45,7 +55,6 @@ struct TargetProfile {
   TargetIdentity identity;
   TargetHardwareInfo hardware;
   DenseMap<MemoryPlace, int64_t> capacityBytes;
-  SmallVector<std::pair<MemoryPlace, MemoryPlace>> movementPaths;
   SmallVector<TargetIntrinsicInfo> intrinsics;
 };
 
