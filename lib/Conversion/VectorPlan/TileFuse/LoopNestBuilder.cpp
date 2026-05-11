@@ -87,13 +87,17 @@ LoopNestResult buildLoopNest(OpBuilder &builder, Location loc,
       parentStep = getAxisExtentValue(builder, loc, *plan.group, tp->axisIdx);
 
     Value ub = parentStep;
-    Value remaining, mainInnerUb;
+    Value remaining, mainInnerUb, innerExtent;
 
     if (tp == innermostInner) {
       // remaining = min(parentStep, extent - parentIV)
-      Value extent = getAxisExtentValue(builder, loc, *plan.group, tp->axisIdx);
+      // Note: capture `innerExtent` HERE (before emitFor reseats the builder
+      // inside the inner for's body), so it dominates the scf.if tail the
+      // GroupEmitter will later append in this same parent block.
+      innerExtent =
+          getAxisExtentValue(builder, loc, *plan.group, tp->axisIdx);
       Value extMinusParent =
-          builder.create<arith::SubIOp>(loc, extent, parentIV);
+          builder.create<arith::SubIOp>(loc, innerExtent, parentIV);
       remaining = builder.create<arith::MinSIOp>(loc, parentStep, extMinusParent);
       Value q = builder.create<arith::DivSIOp>(loc, remaining, tp->ssa);
       mainInnerUb = builder.create<arith::MulIOp>(loc, q, tp->ssa);
@@ -118,6 +122,8 @@ LoopNestResult buildLoopNest(OpBuilder &builder, Location loc,
       result.remaining = remaining;
       result.mainInnerUb = mainInnerUb;
       result.outerOfTailIV = parentIV;
+      result.innerTileExtent = innerExtent;
+      result.innerTileStep = tp->ssa;
     }
   }
 

@@ -449,25 +449,30 @@ SmallVector<Value> emitGroup(OpBuilder &builder, Location loc,
       OpBuilder::InsertionGuard g(builder);
       builder.setInsertionPointToStart(tailIf.thenBlock());
 
-      Value tailSize = builder.create<arith::SubIOp>(
-          loc, loopNest.remaining, loopNest.mainInnerUb);
-      Value tailComposed = loopNest.mainInnerUb;
-      // For an inner-only axis (no outer level) outerOfTailIV is c0 — add
-      // only when there's a real outer IV.
-      if (loopNest.outerOfTailIV) {
-        bool isC0 = false;
-        if (auto cst = loopNest.outerOfTailIV
-                            .getDefiningOp<arith::ConstantIndexOp>())
-          isC0 = cst.value() == 0;
-        if (!isC0)
-          tailComposed = builder.create<arith::AddIOp>(
-              loc, loopNest.outerOfTailIV, loopNest.mainInnerUb);
-      }
+      // Overlap-tail: process a STATIC slice of size T at offset
+      // `innerTileExtent - innerTileStep`, instead of a dynamic-size slice
+      // clamped to `remaining - mainInnerUb`.  Benefits:
+      //   - slice size is a compile-time T, matches the main loop's tile,
+      //     so bufferize does NOT wrap the linalg in a shadow-alloc
+      //     sandwich and DataCopy counts trivially meet dtype alignment.
+      //   - the only cost is that this tail re-computes the last
+      //     `T - actual_tail_size` rows that the prior main iter (or the
+      //     previous block's main loop) already produced; since both
+      //     elementwise and parallel-axis reduce are deterministic per
+      //     output row, the duplicate writes converge to the same value.
+      //
+      // Precondition: `innerTileExtent >= innerTileStep`.  The scf.if
+      // condition (mainInnerUb < remaining) only fires on the tail core,
+      // and in current workloads the tail core's enclosing axis always
+      // has `extent >= XBLOCK_SUB` (the tiling space enforces this).  If
+      // a future workload violates the precondition, the offset would
+      // underflow — TODO: scalar fallback or DataCopyPad for that edge.
+      Value tailComposed = builder.create<arith::SubIOp>(
+          loc, loopNest.innerTileExtent, loopNest.innerTileStep);
 
       DenseMap<int, Value> tailLoopIVs = loopNest.loopIVs;
       tailLoopIVs[loopNest.innerTileAxisIdx] = tailComposed;
-      DenseMap<int, Value> sizeOverride;
-      sizeOverride[loopNest.innerTileAxisIdx] = tailSize;
+      // No sizeOverride — tail uses the planned static tile size.
 
       SmallVector<Value> tailIterArgs(innermostFor.getResults().begin(),
                                        innermostFor.getResults().end());
@@ -478,7 +483,7 @@ SmallVector<Value> emitGroup(OpBuilder &builder, Location loc,
           emitGroupBodyOnce(builder, loc, info, plan,
                              tailLoopIVs, loopNest.outerLoopIVs,
                              tailIterArgs, /*bcastForOps=*/{},
-                             &sizeOverride);
+                             /*sizeOverride=*/nullptr);
       builder.create<scf::YieldOp>(loc, tailYieldVals);
     }
 

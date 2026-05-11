@@ -33,6 +33,17 @@ struct LoopNestResult {
   mlir::Value                          remaining;       // min(XBLOCK, extent-outer_iv)
   mlir::Value                          mainInnerUb;     // floor(remaining/T)*T
   mlir::Value                          outerOfTailIV;   // c0 if axis has no Outer
+  /// Full extent of the peeled axis and the inner step (T).  GroupEmitter
+  /// uses these to emit an overlap-tail: the tail slice is at offset
+  /// `innerTileExtent - innerTileStep` with size `innerTileStep` (static).
+  /// This avoids the dynamic-size DataCopy alignment issue and keeps
+  /// bufferize from inserting a shadow alloc.  The overlap re-computes
+  /// at most `innerTileStep - tailSize` rows that the previous main iter
+  /// already produced; cross-block races converge to the same value
+  /// because all supported ops (elementwise + parallel-axis reduce) are
+  /// deterministic per output row.
+  mlir::Value                          innerTileExtent;
+  mlir::Value                          innerTileStep;
 };
 
 LoopNestResult buildLoopNest(mlir::OpBuilder &builder,
