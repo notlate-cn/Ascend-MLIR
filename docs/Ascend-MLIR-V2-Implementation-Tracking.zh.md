@@ -475,7 +475,7 @@ Review / verification:
 |---|---|---|---|
 | `TargetMemoryModel` | `Done` | logical places、capacity、alignment、visibility、direct path graph；multi-hop routing 与 intrinsic-backed path validation 延后到 TargetRouting / TargetIntrinsicModel / ProfileVerifier | `AscendTargetMemoryModelTest` + target profile lit |
 | `TargetIntrinsicModel MVP` | `Done` | query-only intrinsic table、unit map、movement map、compute map、dtype-pattern token lookup；ProfileVerifier / path constraints / memory-model integration 后续继续推进 | `AscendTargetIntrinsicModelTest` + target profile lit |
-| `TargetCostModel` | `Planned` | memory rates / path cost | cost query 测试 |
+| `TargetCostModel MVP` | `Done` | query-only memory-rate lookup、direct-path cost lookup、transfer-cycle estimate；Schedule / Realize consumption 后续继续推进 | `AscendTargetCostModelTest` + target profile lit |
 | profile verifier | `Planned` | profile/memory/intrinsic 闭合检查 | 缺字段 fail-fast |
 | 多 SoC 支持 | `Planned` | 910B2 之外的 ini | 参数化 lit 或 unit tests |
 

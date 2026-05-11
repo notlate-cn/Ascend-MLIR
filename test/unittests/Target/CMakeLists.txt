@@ -27,3 +27,18 @@ add_dependencies(RuntimeUnitTests AscendTargetIntrinsicModelTest)
 add_test(NAME AscendTargetIntrinsicModelTest
   COMMAND $<TARGET_FILE:AscendTargetIntrinsicModelTest>
 )
+
+add_executable(AscendTargetCostModelTest
+  AscendTargetCostModelTest.cpp
+)
+
+target_link_libraries(AscendTargetCostModelTest PRIVATE
+  RuntimeUnitTestSupport
+  AscendTargetProfile
+)
+
+add_dependencies(RuntimeUnitTests AscendTargetCostModelTest)
+
+add_test(NAME AscendTargetCostModelTest
+  COMMAND $<TARGET_FILE:AscendTargetCostModelTest>
+)

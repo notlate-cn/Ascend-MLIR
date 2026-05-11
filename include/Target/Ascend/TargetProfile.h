@@ -54,11 +54,18 @@ struct TargetIntrinsicInfo {
   SmallVector<ExecutionUnit> units;
 };
 
+struct TargetMemoryRateInfo {
+  std::string section;
+  std::string name;
+  int64_t bytesPerCycle = 0;
+};
+
 struct TargetProfile {
   TargetIdentity identity;
   TargetHardwareInfo hardware;
   DenseMap<MemoryPlace, int64_t> capacityBytes;
   SmallVector<TargetIntrinsicInfo> intrinsics;
+  SmallVector<TargetMemoryRateInfo> memoryRates;
 };
 
 LogicalResult verifyTargetProfile(const TargetProfile &profile,
