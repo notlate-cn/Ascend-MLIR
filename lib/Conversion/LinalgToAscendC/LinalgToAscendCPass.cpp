@@ -241,6 +241,9 @@ static void eraseDeadTBufInitializers(func::FuncOp funcOp) {
 //===----------------------------------------------------------------------===//
 
 LogicalResult lowerLinalgToAscendC(func::FuncOp funcOp) {
+  if (funcOp.isExternal())
+    return success();
+
   MLIRContext *ctx = funcOp.getContext();
   OpBuilder builder(ctx);
 

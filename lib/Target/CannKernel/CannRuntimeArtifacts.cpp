@@ -254,13 +254,14 @@ emitRuntimeManifestJson(ModuleOp module, StringRef outPath,
     return failure();
 
   llvm::json::Array shapeArgOrder;
+  int64_t shapeAbiPosition = 0;
   for (auto [index, field] : llvm::enumerate(*fieldsOr)) {
     if (!field.isShape)
       continue;
     llvm::json::Object shapeArg;
     shapeArg["name"] = field.name;
     shapeArg["shapeKey"] = field.shapeKey;
-    shapeArg["abiPosition"] = static_cast<int64_t>(index);
+    shapeArg["abiPosition"] = shapeAbiPosition++;
     shapeArgOrder.push_back(std::move(shapeArg));
   }
 
