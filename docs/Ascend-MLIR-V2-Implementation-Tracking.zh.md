@@ -14,8 +14,9 @@
 - Phase 3B memory-space annotation 计划：`docs/superpowers/plans/2026-05-11-ascend-realize-memory-space-annotate-mvp.md`
 - Phase 5 backend integration 设计：`docs/superpowers/specs/2026-05-11-ascend-phase5-backend-integration-design.md`
 - Phase 5 backend integration 计划：`docs/superpowers/plans/2026-05-11-ascend-phase5-backend-integration.md`
-- Phase 5C full pipeline gap 计划：`docs/superpowers/plans/2026-05-11-ascend-phase5c-full-pipeline-gap.md`
-- Phase 5C full pipeline gap 报告：`docs/Ascend-MLIR-Phase5C-Full-Pipeline-Gap-Report.zh.md`
+- Phase 5C full pipeline gap 记录：`docs/superpowers/plans/2026-05-11-ascend-phase5c-full-pipeline-gap.md`
+- Phase 5C Realize-to-Phase5 bridge 计划：`docs/superpowers/plans/2026-05-11-ascend-realize-phase5-bridge.md`
+- Phase 5C full pipeline bridge 报告：`docs/Ascend-MLIR-Phase5C-Full-Pipeline-Bridge-Report.zh.md`
 
 说明：`V2` 在本文档中只表示方案版本。当前代码目录、namespace、CMake target、IR attrs、测试 target 使用版本无关 `Ascend` 命名。
 
@@ -39,9 +40,9 @@
 | Phase 2 | Schedule 完整搜索与 guard/cache | `Done` | Phase 2 final review 与 xvm/docker 验证已完成 |
 | Phase 3 | Realize plan objects | `Done` | `--ascend-realize` plan-object MVP、review follow-up 与代码命名去版本化已完成 |
 | Phase 4 | Target model 完整化 | `Done` | `TargetMemoryModel`、`TargetIntrinsicModel`、`TargetCostModel`、`TargetModelVerifier` MVP 已完成；多 SoC 覆盖后续增强 |
-| Phase 3B | Realize materialization 增强 | `Done` | One-Shot Bufferize、target-aware placement plan、workspace layout/lifetime、explicit data movement plan、memory-space annotation MVP 已完成；full workspace/copy materialization 转后续增强 |
-| Phase 5 | Translate / runtime artifact 对接 | `Done` | 官方 Ascend backend 入口、support matrix、ABI wrapper、runtime artifact emitters 与 transformer smoke 已完成；完整 Phase 0 -> Phase 5 普通用例当前 expected-fail，断点已固定为 Realize 到 Phase 5 的 value-level materialization bridge |
-| Phase 5C | Full pipeline ordinary acceptance | `In Progress` | expected-fail gap smoke 和报告已完成；positive 验收依赖 Realize-to-Phase-5 value-level materialization bridge |
+| Phase 3B | Realize materialization 增强 | `Done` | One-Shot Bufferize、target-aware placement plan、workspace layout/lifetime、explicit data movement plan、memory-space annotation MVP、普通 vector output Phase 5 bridge 已完成；full workspace/copy materialization 转后续增强 |
+| Phase 5 | Translate / runtime artifact 对接 | `Done` | 官方 Ascend backend 入口、support matrix、ABI wrapper、runtime artifact emitters 与 transformer smoke 已完成 |
+| Phase 5C | Full pipeline ordinary acceptance | `Done` | 最小普通 tensor/linalg 用例已通过完整 Phase 0 -> Phase 5 positive smoke；后续扩展到 demo 脚本、reduction/matmul/gather/transpose 和多 kernel |
 | Phase 6 | 架构文档与 demo 重写 | `Deferred` | 待 V2 主链路稳定后启动 |
 
 ## Phase 0：V2 MVP 编译主干
@@ -499,7 +500,8 @@ Review / verification:
 | workspace layout / lifetime MVP | `Done` | `StaticMemoryPlanner` 对 on-chip placement 生成保守 `workspace_layout`：一 local buffer 一个 live interval / workspace slot，报告 peak usage unit；value-level slot reuse、字节容量 verifier、真实 workspace alloc/subview 后续推进 | `ascend-realize-workspace-layout.mlir`；`AscendRealizePlannerTest` |
 | explicit data movement plan MVP | `Done` | `MovementPlanner` 对 on-chip workspace 场景生成 `movement_planning`：记录 movement demand、workspace reuse candidate、deferred path selection；legal path selection、value-level movement step、`memref.copy`、`memory_space` 后续推进 | `ascend-realize-data-movement-plan.mlir`；`AscendRealizePlannerTest` |
 | memory-space annotation materialization MVP | `Done` | 新增 `materialization-mode=memory-space-annotate`：先运行 One-Shot Bufferize，再把已证明的 vector temporary `memref.alloc` 标为 `VECCALC` memory space；report 按 kernel 记录 `memory_space_annotations`；跨 kernel temporary 保守不标注；不新增 workspace alloc/subview，不插入 `memref.copy` | `ascend-realize-memory-space-annotate.mlir`；`AscendRealizePlannerTest` |
-| full value-level workspace/copy materialization enhancement | `Planned` | 真实 workspace alloc/subview、legal path selection、value-level movement step、`memref.copy` materialization 和 slot reuse 继续作为后续增强；完整 Phase 0 -> Phase 5 普通用例 positive acceptance 依赖该 bridge | Phase 3B+ / Phase 5C |
+| Phase 5 bridge for ordinary vector output | `Done` | `memory-space-annotate` 模式下为 Phase 5 支持的最终 vector output 生成 `VECOUT` alloc，并插入 `VECOUT -> GM` epilogue `memref.copy`；保留 GM result 作为 ABI/return buffer | `ascend-full-pipeline-ordinary-smoke.mlir` |
+| full value-level workspace/copy materialization enhancement | `Planned` | 真实 workspace alloc/subview、legal path selection、value-level movement step、更多 producer/consumer copy materialization 和 slot reuse 继续作为后续增强 | Phase 3B+ |
 
 ### Phase 3B 验证记录
 
@@ -529,7 +531,7 @@ Review / verification:
 | `tiling_space.json` export | `Done` | `--tiling-space-out` 升级为 `schema_version = "2.0"`，包含 workspace/block dim/schema fields；兼容旧多 global module 选择首个 global kernel 的行为 | `cann-translate-runtime-artifacts.mlir`；`cann-translate-runtime-artifacts-unsupported.mlir` |
 | transformer dynamic smoke | `Done` | `examples/transformer/transformer_dynamic.mlir` 已纳入 Phase 5 验收 smoke；当前支持矩阵外的完整 transformer 图要求明确 unsupported，不允许静默成功 | `ascend-phase5-transformer-dynamic-smoke.mlir` |
 | pre-lowered ordinary example acceptance | `Done` | `examples/relu-broadcast-transpose/run.sh` 保留旧式前处理路径，但已切到 Phase 5 正式 backend 入口，并生成 `phase5_tiling_space.json`、`runtime_manifest.json`、`host_tiling.cpp` 后跑通 runtime-session sim 验证 | xvm `/tmp` copy run passed：`session.result=success`、`session.validation=pass` |
-| full Phase 0 -> Phase 5 ordinary gap smoke | `Done` | 最小普通 tensor/linalg 用例通过 Normalize / Kernelize / Schedule / Realize 后进入 `--ascend-compute-lower`，当前预期 fail-closed；断点是 Realize 尚未物化 Phase 5 可消费的 on-chip buffer/copy | `ascend-full-pipeline-gap-smoke.mlir`；gap report |
+| full Phase 0 -> Phase 5 ordinary positive smoke | `Done` | 最小普通 tensor/linalg 用例通过 Normalize / Kernelize / Schedule / Realize / ComputeLower / ABI wrappers；Realize bridge 物化 Phase 5 可消费的 `VECOUT` output 和 GM epilogue copy | `ascend-full-pipeline-ordinary-smoke.mlir`；bridge report |
 
 ### Phase 5 验证记录
 
@@ -544,7 +546,7 @@ Review / verification:
 | final review | spec review passed；code quality re-review approved：`--ascend-compute-lower` external declaration crash 改为 no-op；runtime manifest `shapeArgOrder.abiPosition` 改为 dense `shape_args` ABI 顺序 |
 | xvm transformer dynamic smoke | `ascend-phase5-transformer-dynamic-smoke.mlir` 1/1 passed；当前完整 transformer 图明确报 unsupported |
 | xvm ordinary Phase 5 example | `examples/relu-broadcast-transpose` copied to `/tmp` and run with build tools passed；new Phase 5 entries used for compute lower / ABI lowering / CANN signature；runtime-session sim reported `session.result=success` and `session.validation=pass` |
-| xvm full-pipeline gap smoke | `ascend-full-pipeline-gap-smoke.mlir` 1/1 passed；one-shot 与 target-aware memory-space annotate 两条完整前端链路均在 `ascend-compute-lower` fail-closed，并报告残留 `linalg.generic` |
+| xvm full-pipeline ordinary smoke | `ascend-full-pipeline-ordinary-smoke.mlir` 1/1 passed；one-shot/memory-space annotate 链路进入 `ascend-compute-lower` 后生成 `ascendc.add_l2` 和 `ascendc.data_copy_l2`；target-aware 链路继续通过 ABI wrappers |
 | xvm Phase 5C Ascend Conversion regression | `llvm-lit -v build/test/Conversion --filter="ascend-"` 39/39 passed |
 
 ## Phase 6：文档与 Demo 收敛
@@ -586,5 +588,5 @@ Phase 5: ComputeLoweringDriver -> ABI lowering -> HostTilingEmitter -> RuntimeMa
 
 1. Phase 4 剩余 target 查询模型已完成：`TargetMemoryModel`、`TargetIntrinsicModel`、`TargetCostModel`、`TargetModelVerifier`
 2. Phase 3B MVP 链路已闭环：One-Shot Bufferize、target-aware placement、workspace layout/lifetime、explicit data movement plan、memory-space annotation 均已实现和验证
-3. Phase 5C 已固定完整 Phase 0 -> Phase 5 普通用例的真实断点：Realize 尚未产出 Phase 5 可消费的 value-level on-chip buffer/copy
-4. 下一步优先补 Realize-to-Phase-5 materialization bridge；full transformer codegen、动态 guard / 多 kernel DAG manifest 作为后续增强继续推进
+3. Phase 5C 已完成最小普通 tensor/linalg 用例的完整 Phase 0 -> Phase 5 positive smoke
+4. 下一步优先把普通 demo 脚本迁移到完整 Phase 0 -> Phase 5；full transformer codegen、动态 guard / 多 kernel DAG manifest 作为后续增强继续推进

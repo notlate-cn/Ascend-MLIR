@@ -283,13 +283,27 @@ struct AscendRealizePass
         return;
       }
 
+      FailureOr<llvm::StringMap<Phase5BridgeMaterializationCounts>>
+          phase5BridgeCounts =
+              memoryRealizationDriver.materializePhase5Bridge(getOperation());
+      if (failed(phase5BridgeCounts)) {
+        getOperation()->emitError()
+            << "ascend-realize failed to materialize Phase 5 memory bridge";
+        signalPassFailure();
+        return;
+      }
+
       for (RealizePlanBundle &bundle : *bundles) {
         unsigned annotationCount = 0;
         auto countIt = annotationCounts->find(bundle.kernel.kernelId);
         if (countIt != annotationCounts->end())
           annotationCount = countIt->second;
-        memoryRealizationDriver.markMemorySpaceAnnotated(bundle.realization,
-                                                         annotationCount);
+        Phase5BridgeMaterializationCounts materializationCount;
+        auto bridgeIt = phase5BridgeCounts->find(bundle.kernel.kernelId);
+        if (bridgeIt != phase5BridgeCounts->end())
+          materializationCount = bridgeIt->second;
+        memoryRealizationDriver.markMemorySpaceMaterialized(
+            bundle.realization, annotationCount, materializationCount);
       }
     }
 
