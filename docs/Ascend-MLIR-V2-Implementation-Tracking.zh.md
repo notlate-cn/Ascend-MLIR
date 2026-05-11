@@ -525,6 +525,7 @@ Review / verification:
 | `RuntimeManifestBuilder` | `Done` | `afir-translate --runtime-manifest-out` 输出静态 shape / 单 kernel manifest；多 global kernel 显式 unsupported | `cann-translate-runtime-artifacts-unsupported.mlir` |
 | `tiling_space.json` export | `Done` | `--tiling-space-out` 升级为 `schema_version = "2.0"`，包含 workspace/block dim/schema fields；兼容旧多 global module 选择首个 global kernel 的行为 | `cann-translate-runtime-artifacts.mlir`；`cann-translate-runtime-artifacts-unsupported.mlir` |
 | transformer dynamic smoke | `Done` | `examples/transformer/transformer_dynamic.mlir` 已纳入 Phase 5 验收 smoke；当前支持矩阵外的完整 transformer 图要求明确 unsupported，不允许静默成功 | `ascend-phase5-transformer-dynamic-smoke.mlir` |
+| ordinary example acceptance | `Done` | `examples/relu-broadcast-transpose/run.sh` 已切到 Phase 5 正式入口，并生成 `phase5_tiling_space.json`、`runtime_manifest.json`、`host_tiling.cpp` 后跑通 runtime-session sim 验证 | xvm `/tmp` copy run passed：`session.result=success`、`session.validation=pass` |
 
 ### Phase 5 验证记录
 
@@ -538,6 +539,7 @@ Review / verification:
 | Task 4 code review | approved：runtime artifact 文件错误处理、`--tiling-space-out` 多 global 兼容、single-kernel manifest/host tiling 校验均通过 |
 | final review | spec review passed；code quality re-review approved：`--ascend-compute-lower` external declaration crash 改为 no-op；runtime manifest `shapeArgOrder.abiPosition` 改为 dense `shape_args` ABI 顺序 |
 | xvm transformer dynamic smoke | `ascend-phase5-transformer-dynamic-smoke.mlir` 1/1 passed；当前完整 transformer 图明确报 unsupported |
+| xvm ordinary Phase 5 example | `examples/relu-broadcast-transpose` copied to `/tmp` and run with build tools passed；new Phase 5 entries used for compute lower / ABI lowering / CANN signature；runtime-session sim reported `session.result=success` and `session.validation=pass` |
 
 ## Phase 6：文档与 Demo 收敛
 

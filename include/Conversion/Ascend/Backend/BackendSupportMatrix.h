@@ -31,7 +31,9 @@ enum class ComputeKind {
   Matmul,
   Fill,
   ElementwiseAdd,
+  ElementwiseMul,
   ElementwiseMax,
+  FusedElementwise,
   ReductionAdd,
 };
 
