@@ -240,107 +240,107 @@ static void eraseDeadTBufInitializers(func::FuncOp funcOp) {
 // Pass: build context, run data-move and compute conversions
 //===----------------------------------------------------------------------===//
 
+LogicalResult lowerLinalgToAscendC(func::FuncOp funcOp) {
+  MLIRContext *ctx = funcOp.getContext();
+  OpBuilder builder(ctx);
+
+  // -----------------------------------------------------------------------
+  // Phase 0: Build the shared pipe + one queue per on-chip alloc.
+  //
+  // Rules:
+  //  - Exactly ONE PipeOp per function, inserted at the top of entry block.
+  //  - One QueueOp per on-chip memref.alloc (memory_space > 0).
+  //  - TBuf + TPipeInitBufferOp inserted right after the alloc that owns it,
+  //    so that dynamic memref.dim ops remain dominated by the alloc.
+  // -----------------------------------------------------------------------
+  Block &entryBlock = funcOp.getBody().front();
+  builder.setInsertionPointToStart(&entryBlock);
+  Value pipe = builder.create<PipeOp>(funcOp.getLoc(), PipeType::get(ctx));
+
+  // lastQueueInserted is used to keep all QueueOps together at the top of
+  // the entry block, right after pipe (for readability).
+  Value lastQueueInserted = pipe;
+
+  AscendCBufferContext bufCtx;
+  bufCtx.pipe = pipe;
+
+  funcOp.walk([&](memref::AllocOp allocOp) {
+    int64_t ms = getMemorySpace(allocOp.getType());
+    if (ms <= 0)
+      return;
+
+    auto pos = static_cast<TPosition>(ms);
+
+    // Create QueueOp right after the previous queue (entry block top).
+    builder.setInsertionPointAfterValue(lastQueueInserted);
+    Value queue =
+        builder.create<QueueOp>(allocOp.getLoc(), QueueType::get(ctx, pos, 1));
+    lastQueueInserted = queue;
+
+    // TBuf + init_buffer inserted right before the alloc.
+    // len is computed from the alloc's dynamic size operands (its inputs),
+    // which are defined before the alloc and dominate the same scope.
+    // HoistQueBindPass will then lift tbuf+init_buffer to the entry block
+    // whenever all operands dominate the enclosing loop.
+    builder.setInsertionPoint(allocOp);
+    Value tbuf =
+        builder.create<TBufOp>(allocOp.getLoc(), TBufType::get(ctx, pos));
+    Value len = computeAllocByteCount(builder, allocOp.getLoc(), allocOp);
+    builder.create<TPipeInitBufferOp>(allocOp.getLoc(), pipe, tbuf, len);
+    // Initialize the TQue so that AllocTensor returns a tensor with a
+    // valid GetSize().  Without this, ReduceSum2DL2 computes a division
+    // by zero (_afir_cols = accumLt.GetSize() / vecoutLt.GetSize()).
+    Value depth = builder.create<arith::ConstantOp>(
+        allocOp.getLoc(), builder.getI32IntegerAttr(1));
+    builder.create<TPipeInitQueueOp>(allocOp.getLoc(), pipe, queue, depth, len);
+
+    bufCtx.allocToQueue[allocOp.getResult()] = queue;
+    bufCtx.allocToTBuf[allocOp.getResult()] = tbuf;
+  });
+
+  // -----------------------------------------------------------------------
+  // Phase 1: Convert memref.copy → AscendC data-move ops.
+  // -----------------------------------------------------------------------
+  if (failed(convertDataMove(funcOp, bufCtx)))
+    return failure();
+
+  // -----------------------------------------------------------------------
+  // Phase 2: Convert linalg compute ops → AscendC compute ops.
+  // -----------------------------------------------------------------------
+  if (failed(convertCompute(funcOp, bufCtx)))
+    return failure();
+  eraseDeadTBufInitializers(funcOp);
+
+  // -----------------------------------------------------------------------
+  // Phase 3: Hoist pipe/queue/tbuf/init_buffer to entry block wherever
+  // all operands dominate the enclosing loop (i.e., static tile sizes or
+  // function-argument-based sizes).
+  // -----------------------------------------------------------------------
+  RewritePatternSet hoistPatterns(ctx);
+  hoistPatterns.add<ascendc::HoistOpPattern<arith::ConstantOp>,
+                    ascendc::HoistOpPattern<arith::MulIOp>,
+                    ascendc::HoistOpPattern<ascendc::QueueOp>,
+                    ascendc::HoistOpPattern<ascendc::TBufOp>,
+                    ascendc::HoistOpPattern<ascendc::TPipeInitBufferOp>,
+                    ascendc::HoistOpPattern<ascendc::TPipeInitQueueOp>>(ctx);
+  if (failed(applyPatternsGreedily(funcOp, std::move(hoistPatterns))))
+    return failure();
+
+  return success();
+}
+
 namespace {
 struct LinalgToAscendCPass
     : public ::impl::LinalgToAscendCPassBase<LinalgToAscendCPass> {
 
   void runOnOperation() override {
-    func::FuncOp funcOp = getOperation();
-    MLIRContext *ctx = funcOp.getContext();
-    OpBuilder builder(ctx);
-
-    // -----------------------------------------------------------------------
-    // Phase 0: Build the shared pipe + one queue per on-chip alloc.
-    //
-    // Rules:
-    //  - Exactly ONE PipeOp per function, inserted at the top of entry block.
-    //  - One QueueOp per on-chip memref.alloc (memory_space > 0).
-    //  - TBuf + TPipeInitBufferOp inserted right after the alloc that owns it,
-    //    so that dynamic memref.dim ops remain dominated by the alloc.
-    // -----------------------------------------------------------------------
-    Block &entryBlock = funcOp.getBody().front();
-    builder.setInsertionPointToStart(&entryBlock);
-    Value pipe = builder.create<PipeOp>(funcOp.getLoc(), PipeType::get(ctx));
-
-    // lastQueueInserted is used to keep all QueueOps together at the top of
-    // the entry block, right after pipe (for readability).
-    Value lastQueueInserted = pipe;
-
-    AscendCBufferContext bufCtx;
-    bufCtx.pipe = pipe;
-
-    funcOp.walk([&](memref::AllocOp allocOp) {
-      int64_t ms = getMemorySpace(allocOp.getType());
-      if (ms <= 0)
-        return;
-
-      auto pos = static_cast<TPosition>(ms);
-
-      // Create QueueOp right after the previous queue (entry block top).
-      builder.setInsertionPointAfterValue(lastQueueInserted);
-      Value queue = builder.create<QueueOp>(allocOp.getLoc(),
-                                             QueueType::get(ctx, pos, 1));
-      lastQueueInserted = queue;
-
-      // TBuf + init_buffer inserted right before the alloc.
-      // len is computed from the alloc's dynamic size operands (its inputs),
-      // which are defined before the alloc and dominate the same scope.
-      // HoistQueBindPass will then lift tbuf+init_buffer to the entry block
-      // whenever all operands dominate the enclosing loop.
-      builder.setInsertionPoint(allocOp);
-      Value tbuf = builder.create<TBufOp>(allocOp.getLoc(),
-                                           TBufType::get(ctx, pos));
-      Value len = computeAllocByteCount(builder, allocOp.getLoc(), allocOp);
-      builder.create<TPipeInitBufferOp>(allocOp.getLoc(), pipe, tbuf, len);
-      // Initialize the TQue so that AllocTensor returns a tensor with a
-      // valid GetSize().  Without this, ReduceSum2DL2 computes a division
-      // by zero (_afir_cols = accumLt.GetSize() / vecoutLt.GetSize()).
-      Value depth = builder.create<arith::ConstantOp>(
-          allocOp.getLoc(), builder.getI32IntegerAttr(1));
-      builder.create<TPipeInitQueueOp>(allocOp.getLoc(), pipe, queue, depth,
-                                       len);
-
-      bufCtx.allocToQueue[allocOp.getResult()] = queue;
-      bufCtx.allocToTBuf[allocOp.getResult()] = tbuf;
-    });
-
-    // -----------------------------------------------------------------------
-    // Phase 1: Convert memref.copy → AscendC data-move ops.
-    // -----------------------------------------------------------------------
-    if (failed(convertDataMove(funcOp, bufCtx))) {
-      signalPassFailure();
-      return;
-    }
-
-    // -----------------------------------------------------------------------
-    // Phase 2: Convert linalg compute ops → AscendC compute ops.
-    // -----------------------------------------------------------------------
-    if (failed(convertCompute(funcOp, bufCtx))) {
-      signalPassFailure();
-      return;
-    }
-    eraseDeadTBufInitializers(funcOp);
-
-    // -----------------------------------------------------------------------
-    // Phase 3: Hoist pipe/queue/tbuf/init_buffer to entry block wherever
-    // all operands dominate the enclosing loop (i.e., static tile sizes or
-    // function-argument-based sizes).
-    // -----------------------------------------------------------------------
-    RewritePatternSet hoistPatterns(ctx);
-    hoistPatterns.add<
-        ascendc::HoistOpPattern<arith::ConstantOp>,
-        ascendc::HoistOpPattern<arith::MulIOp>,
-        ascendc::HoistOpPattern<ascendc::QueueOp>,
-        ascendc::HoistOpPattern<ascendc::TBufOp>,
-        ascendc::HoistOpPattern<ascendc::TPipeInitBufferOp>,
-        ascendc::HoistOpPattern<ascendc::TPipeInitQueueOp>>(ctx);
-    if (failed(applyPatternsGreedily(funcOp, std::move(hoistPatterns)))) {
+    if (failed(lowerLinalgToAscendC(getOperation()))) {
       signalPassFailure();
       return;
     }
 
     LLVM_DEBUG(llvm::dbgs() << "=== After LinalgToAscendCPass ===\n");
-    LLVM_DEBUG(funcOp.print(llvm::dbgs()));
+    LLVM_DEBUG(getOperation().print(llvm::dbgs()));
   }
 };
 } // namespace

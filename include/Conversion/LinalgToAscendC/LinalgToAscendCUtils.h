@@ -85,6 +85,11 @@ LogicalResult convertDataMove(func::FuncOp funcOp, AscendCBufferContext &ctx);
 /// Returns failure() if any required queue mapping is missing.
 LogicalResult convertCompute(func::FuncOp funcOp, AscendCBufferContext &ctx);
 
+/// Run the existing LinalgToAscendC lowering implementation on one function.
+/// This is shared by the legacy --linalg-to-ascendc pass and the Phase 5
+/// --ascend-compute-lower wrapper.
+LogicalResult lowerLinalgToAscendC(func::FuncOp funcOp);
+
 } // namespace afir
 } // namespace mlir
 

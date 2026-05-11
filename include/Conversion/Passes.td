@@ -110,6 +110,21 @@ def AscendRealizePass : Pass<"ascend-realize", "mlir::ModuleOp"> {
   ];
 }
 
+def AscendComputeLowerPass : Pass<"ascend-compute-lower", "mlir::func::FuncOp"> {
+  let summary = "Lower supported memory-realized linalg and copies to AscendC";
+  let description = [{
+    Phase 5 compute lowering wrapper. It reuses the existing LinalgToAscendC
+    lowering implementation and adds fail-closed support-matrix diagnostics.
+  }];
+  let constructor = "mlir::afir::createAscendComputeLowerPass()";
+  let dependentDialects = [
+    "mlir::ascendc::AscendCDialect",
+    "mlir::memref::MemRefDialect",
+    "mlir::arith::ArithDialect",
+    "mlir::linalg::LinalgDialect"
+  ];
+}
+
 //===----------------------------------------------------------------------===//
 // StableHLO to AFIR Conversion
 //===----------------------------------------------------------------------===//

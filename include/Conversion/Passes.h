@@ -9,6 +9,7 @@
 
 #include "Conversion/AFIRToASCIR/AFIRToASCIR.h"
 #include "Conversion/AFIRToASCIRText/AFIRToASCIRText.h"
+#include "Conversion/Ascend/Backend/ComputeLoweringPass.h"
 #include "Conversion/AscendCBufferPlacement/AscendCBufferPlacementPass.h"
 #include "Conversion/AscendCFoldConcatAlloc/AscendCFoldConcatAllocPass.h"
 #include "Conversion/LinalgToAscendC/LinalgToAscendCPass.h"
