@@ -8,6 +8,7 @@
 #include "Conversion/Ascend/Realize/MovementPlanner.h"
 #include "Conversion/Ascend/Realize/PlacementPlanner.h"
 #include "Conversion/Ascend/Realize/RealizeTypes.h"
+#include "Conversion/Ascend/Realize/StaticMemoryPlanner.h"
 #include "Target/Ascend/TargetMemoryModel.h"
 
 #include "gtest/gtest.h"
@@ -125,6 +126,29 @@ TEST(AscendRealizePlannerTest, PlacementPlannerFallsBackWhenVecCalcUnsupported) 
   EXPECT_EQ(plan->gmPlaceCount, 4u);
   EXPECT_EQ(plan->onChipPlaceCount, 0u);
   EXPECT_EQ(plan->deferredLocalPlaceCount, 1u);
+}
+
+TEST(AscendRealizePlannerTest,
+     StaticMemoryPlannerBuildsWorkspaceLayoutForOnChipPlaces) {
+  PlacementPlan placement = makePlacementPlan();
+  placement.mode = "target_aware";
+  placement.gmPlaceCount = 3;
+  placement.onChipPlaceCount = 1;
+  placement.deferredLocalPlaceCount = 0;
+
+  StaticMemoryPlanner planner;
+  auto plan = planner.build(placement);
+
+  ASSERT_TRUE(llvm::succeeded(plan));
+  EXPECT_EQ(plan->kernelId, "kernel_0");
+  EXPECT_EQ(plan->mode, "workspace_layout");
+  EXPECT_EQ(plan->trackedPlaceCount, 4u);
+  EXPECT_EQ(plan->localBufferCount, 1u);
+  EXPECT_EQ(plan->liveIntervalCount, 1u);
+  EXPECT_EQ(plan->workspaceSlotCount, 1u);
+  EXPECT_TRUE(plan->peakUsageKnown);
+  EXPECT_EQ(plan->peakUsageUnitCount, 1u);
+  EXPECT_TRUE(plan->capacityCheckDeferred);
 }
 
 TEST(AscendRealizePlannerTest, MovementPlannerRejectsMismatchedKernelId) {

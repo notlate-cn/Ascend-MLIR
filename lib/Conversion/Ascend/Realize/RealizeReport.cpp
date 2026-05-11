@@ -37,10 +37,19 @@ void printRealizeReport(llvm::ArrayRef<RealizePlanBundle> bundles,
     os << "  mode = \"" << bundle.staticMemory.mode << "\"\n";
     os << "  tracked_places = " << bundle.staticMemory.trackedPlaceCount
        << "\n";
+    os << "  local_buffers = " << bundle.staticMemory.localBufferCount
+       << "\n";
+    os << "  live_intervals = " << bundle.staticMemory.liveIntervalCount
+       << "\n";
     os << "  workspace_slots = " << bundle.staticMemory.workspaceSlotCount
        << "\n";
     os << "  peak_usage_known = "
        << (bundle.staticMemory.peakUsageKnown ? "true" : "false") << "\n";
+    os << "  peak_usage_units = " << bundle.staticMemory.peakUsageUnitCount
+       << "\n";
+    os << "  capacity_check_deferred = "
+       << (bundle.staticMemory.capacityCheckDeferred ? "true" : "false")
+       << "\n";
     os << "MovementPlan:\n";
     os << "  kernel = " << bundle.movement.kernelId << "\n";
     os << "  mode = \"" << bundle.movement.mode << "\"\n";

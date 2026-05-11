@@ -1,6 +1,6 @@
-// RUN: afir-opt %s --split-input-file --ascend-realize='dump-report=true debug-stage=realize' 2>&1 | FileCheck %s
+// RUN: afir-opt %s --ascend-realize='placement-mode=target-aware cann-root=%S/Inputs/ascend-target-aware-placement-cann soc=SyntheticSoC dump-report=true debug-stage=realize' 2>&1 | FileCheck %s
 
-func.func @two_op_kernel(%arg0: tensor<64xf16>, %arg1: tensor<64xf16>) -> tensor<64xf16> attributes {ascend.normalized = true} {
+func.func @workspace_layout_vector_temporary(%arg0: tensor<64xf16>, %arg1: tensor<64xf16>) -> tensor<64xf16> attributes {ascend.normalized = true} {
   %empty0 = tensor.empty() : tensor<64xf16>
   %mid = linalg.generic {
     indexing_maps = [
@@ -46,31 +46,23 @@ func.func @two_op_kernel(%arg0: tensor<64xf16>, %arg1: tensor<64xf16>) -> tensor
 }
 
 // CHECK-LABEL: Realize report
-// CHECK-NEXT:   kernels = 1
-// CHECK: BufferizedKernelIR:
-// CHECK-NEXT:   kernel = kernel_0
-// CHECK-NEXT:   mode = "tensor_facts"
-// CHECK-NEXT:   buffer_values = 4
-// CHECK-NEXT:   input_values = 2
-// CHECK-NEXT:   output_values = 1
-// CHECK-NEXT:   temporary_values = 1
 // CHECK: PlacementPlan:
 // CHECK-NEXT:   kernel = kernel_0
-// CHECK-NEXT:   mode = "gm_default"
+// CHECK-NEXT:   mode = "target_aware"
 // CHECK-NEXT:   selected_places = 4
-// CHECK-NEXT:   gm_places = 4
-// CHECK-NEXT:   on_chip_places = 0
-// CHECK-NEXT:   deferred_local_places = 1
+// CHECK-NEXT:   gm_places = 3
+// CHECK-NEXT:   on_chip_places = 1
+// CHECK-NEXT:   deferred_local_places = 0
 // CHECK: StaticMemoryPlan:
 // CHECK-NEXT:   kernel = kernel_0
-// CHECK-NEXT:   mode = "empty_workspace"
+// CHECK-NEXT:   mode = "workspace_layout"
 // CHECK-NEXT:   tracked_places = 4
-// CHECK-NEXT:   local_buffers = 0
-// CHECK-NEXT:   live_intervals = 0
-// CHECK-NEXT:   workspace_slots = 0
-// CHECK-NEXT:   peak_usage_known = false
-// CHECK-NEXT:   peak_usage_units = 0
-// CHECK-NEXT:   capacity_check_deferred = false
+// CHECK-NEXT:   local_buffers = 1
+// CHECK-NEXT:   live_intervals = 1
+// CHECK-NEXT:   workspace_slots = 1
+// CHECK-NEXT:   peak_usage_known = true
+// CHECK-NEXT:   peak_usage_units = 1
+// CHECK-NEXT:   capacity_check_deferred = true
 // CHECK: MovementPlan:
 // CHECK-NEXT:   kernel = kernel_0
 // CHECK-NEXT:   mode = "gm_noop"
