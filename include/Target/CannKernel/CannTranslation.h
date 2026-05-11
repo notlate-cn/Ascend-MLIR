@@ -11,10 +11,23 @@
 #include "llvm/Support/raw_ostream.h"
 
 namespace mlir {
+struct CannTranslationOptions {
+  StringRef tilingSpaceOutPath;
+  StringRef runtimeManifestOutPath;
+  StringRef hostTilingOutPath;
+  StringRef kernelFile;
+  StringRef soc = "Ascend910B1";
+};
+
 /// Translates a module containing CANN-signature aicore functions to C++.
 /// Expects func.func args in order: inputs, outputs, workspace:memref<ui8>,
 /// tiling:!emitasc.py_struct<...>, with cann.num_inputs attr.
-/// tilingSpaceOutPath: if non-empty, write tiling_space.json skeleton to this path.
+/// If artifact paths are non-empty, writes the requested runtime artifacts.
+LogicalResult translateToCannKernel(Operation *op, raw_ostream &os,
+                                    const CannTranslationOptions &options);
+
+/// Compatibility overload.
+/// tilingSpaceOutPath: if non-empty, write tiling_space.json to this path.
 /// kernelFile: value for "kernel_file" field in the JSON (may be empty).
 LogicalResult translateToCannKernel(Operation *op, raw_ostream &os,
                                     StringRef tilingSpaceOutPath = "",
