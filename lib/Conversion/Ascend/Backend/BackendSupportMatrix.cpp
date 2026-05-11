@@ -69,8 +69,12 @@ llvm::StringRef stringifyComputeKind(ComputeKind kind) {
     return "fill";
   case ComputeKind::ElementwiseAdd:
     return "elementwise_add";
+  case ComputeKind::ElementwiseMul:
+    return "elementwise_mul";
   case ComputeKind::ElementwiseMax:
     return "elementwise_max";
+  case ComputeKind::FusedElementwise:
+    return "fused_elementwise";
   case ComputeKind::ReductionAdd:
     return "reduction_add";
   case ComputeKind::Unknown:
@@ -107,7 +111,9 @@ bool AscendBackendSupportMatrix::isSupportedComputeKind(
   case ComputeKind::Matmul:
   case ComputeKind::Fill:
   case ComputeKind::ElementwiseAdd:
+  case ComputeKind::ElementwiseMul:
   case ComputeKind::ElementwiseMax:
+  case ComputeKind::FusedElementwise:
   case ComputeKind::ReductionAdd:
     return true;
   case ComputeKind::Unknown:

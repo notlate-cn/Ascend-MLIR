@@ -54,6 +54,47 @@ bool isSupportedAddReductionBody(linalg::GenericOp generic) {
   return true;
 }
 
+bool isSupportedFusedElementwiseBody(linalg::GenericOp generic) {
+  if (!llvm::all_of(generic.getIteratorTypesArray(), [](utils::IteratorType it) {
+        return it == utils::IteratorType::parallel;
+      }))
+    return false;
+
+  Block *body = generic.getBody();
+  auto yieldOp = dyn_cast<linalg::YieldOp>(body->getTerminator());
+  if (!yieldOp || yieldOp.getNumOperands() != 1)
+    return false;
+
+  Operation *lastArithOp = nullptr;
+  Value previousResult;
+  for (Operation &bodyOp : body->without_terminator()) {
+    if (!isa<arith::AddFOp, arith::MulFOp, arith::MaximumFOp,
+             arith::ConstantOp>(bodyOp))
+      return false;
+
+    if (isa<arith::ConstantOp>(bodyOp))
+      continue;
+
+    if (bodyOp.getNumOperands() != 2 || bodyOp.getNumResults() != 1)
+      return false;
+
+    auto isAvailableOperand = [&](Value value) {
+      if (isa<BlockArgument>(value))
+        return true;
+      if (value.getDefiningOp<arith::ConstantOp>())
+        return true;
+      return previousResult && value == previousResult;
+    };
+    if (!llvm::all_of(bodyOp.getOperands(), isAvailableOperand))
+      return false;
+
+    previousResult = bodyOp.getResult(0);
+    lastArithOp = &bodyOp;
+  }
+
+  return lastArithOp && yieldOp.getOperand(0) == lastArithOp->getResult(0);
+}
+
 ComputeKind classifyLinalgOp(Operation *op) {
   if (isa<linalg::MatmulOp>(op))
     return ComputeKind::Matmul;
@@ -63,12 +104,16 @@ ComputeKind classifyLinalgOp(Operation *op) {
     auto kind = elementwise.getKind();
     if (kind == linalg::ElementwiseKind::add)
       return ComputeKind::ElementwiseAdd;
+    if (kind == linalg::ElementwiseKind::mul)
+      return ComputeKind::ElementwiseMul;
     if (kind == linalg::ElementwiseKind::max_signed)
       return ComputeKind::ElementwiseMax;
   }
   if (auto generic = dyn_cast<linalg::GenericOp>(op)) {
     if (isSupportedAddReductionBody(generic))
       return ComputeKind::ReductionAdd;
+    if (isSupportedFusedElementwiseBody(generic))
+      return ComputeKind::FusedElementwise;
   }
   return ComputeKind::Unknown;
 }

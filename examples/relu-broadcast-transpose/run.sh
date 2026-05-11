@@ -26,12 +26,12 @@
 #   step3_bufferized.mlir     --one-shot-bufferize 结果（tensor→memref）
 #   step4_buffer_placement.mlir  --ascendc-buffer-placement 结果
 #                             → 推导 on-chip memory_space（VECIN=9, VECOUT=10）
-#   step5_ascendc.mlir        --linalg-to-ascendc 结果
+#   step5_ascendc.mlir        --ascend-compute-lower 结果
 #                             → data_copy_l2（GM→UB）+ relu + broadcast_l2 + add_l2
-#   step6_parallelize.mlir    --ascendc-parallelize（get_block_idx 单维调度）
-#   step7_kernel.mlir         --ascendc-prepare-for-emit（kernel IR）
-#   step7_cann.mlir           --canonicalize-cann-signature（CANN 标准签名）
-#   step8_kernel.cpp          afir-translate -mlir-to-cann（C++ kernel）
+#   step6_parallelize.mlir    --ascend-parallelize（get_block_idx 单维调度）
+#   step7_kernel.mlir         --ascend-prepare-for-emit（kernel IR）
+#   step7_cann.mlir           --ascend-canonicalize-cann-signature（CANN 标准签名）
+#   step8_kernel.cpp          afir-translate -mlir-to-cann（C++ kernel + Phase 5 artifacts）
 # ============================================================
 
 set -e
@@ -101,14 +101,16 @@ echo "==================== [STAGE 4] Buffer Placement：--ascendc-buffer-placeme
 $AFIR_OPT \
   --ascendc-buffer-placement \
   "$DIR/step3_bufferized.mlir" \
+  --canonicalize \
+  --cse \
   -o "$DIR/step4_buffer_placement.mlir" 2>&1
 log "  ✓ Buffer Placement 成功，输出: step4_buffer_placement.mlir"
 
 # ── STAGE 5: Linalg → AscendC Compute ─────────────────────
 echo ""
-echo "==================== [STAGE 5] Linalg → AscendC：--linalg-to-ascendc ===================="
+echo "==================== [STAGE 5] Linalg → AscendC：--ascend-compute-lower ===================="
 $AFIR_OPT \
-  --linalg-to-ascendc \
+  --ascend-compute-lower \
   "$DIR/step4_buffer_placement.mlir" \
   --canonicalize \
   --cse \
@@ -117,9 +119,9 @@ log "  ✓ Linalg→AscendC 成功，输出: step5_ascendc.mlir"
 
 # ── STAGE 6: AscendC Parallelize ───────────────────────────
 echo ""
-echo "==================== [STAGE 6] Parallelize：--ascendc-parallelize ===================="
+echo "==================== [STAGE 6] Parallelize：--ascend-parallelize ===================="
 $AFIR_OPT "$DIR/step5_ascendc.mlir" \
-  --ascendc-parallelize \
+  --ascend-parallelize \
   --canonicalize \
   --cse \
   -o "$DIR/step6_parallelize.mlir" 2>&1
@@ -127,9 +129,9 @@ log "  ✓ Parallelize 成功，输出: step6_parallelize.mlir"
 
 # ── STAGE 7: Prepare For Emit ──────────────────────────────
 echo ""
-echo "==================== [STAGE 7] Prepare For Emit：--ascendc-prepare-for-emit ===================="
+echo "==================== [STAGE 7] Prepare For Emit：--ascend-prepare-for-emit ===================="
 $AFIR_OPT "$DIR/step6_parallelize.mlir" \
-  --ascendc-prepare-for-emit \
+  --ascend-prepare-for-emit \
   --canonicalize \
   --cse \
   -o "$DIR/step7_kernel.mlir" 2>&1
@@ -137,8 +139,8 @@ log "  ✓ Prepare For Emit 成功，输出: step7_kernel.mlir"
 
 # ── STAGE 7b: Canonicalize CANN signature ──────────────────
 echo ""
-echo "==================== [STAGE 7b] CANN Signature：--canonicalize-cann-signature ===================="
-$AFIR_OPT --canonicalize-cann-signature \
+echo "==================== [STAGE 7b] CANN Signature：--ascend-canonicalize-cann-signature ===================="
+$AFIR_OPT --ascend-canonicalize-cann-signature \
   "$DIR/step7_kernel.mlir" \
   -o "$DIR/step7_cann.mlir" 2>&1
 log "  ✓ CANN 签名规范化成功，输出: step7_cann.mlir"
@@ -146,9 +148,23 @@ log "  ✓ CANN 签名规范化成功，输出: step7_cann.mlir"
 # ── STAGE 8: AscendC C++ Code Generation ───────────────────
 echo ""
 echo "==================== [STAGE 8] Codegen：afir-translate -mlir-to-cann ===================="
+BUILD_DIR="$DIR/build_e2e"
+rm -fr "$BUILD_DIR"
+mkdir -p "$BUILD_DIR"
+PHASE5_TILING_SPACE="$BUILD_DIR/phase5_tiling_space.json"
+PHASE5_RUNTIME_MANIFEST="$BUILD_DIR/runtime_manifest.json"
+PHASE5_HOST_TILING="$BUILD_DIR/host_tiling.cpp"
 "$AFIR_TRANSLATE" -mlir-to-cann "$DIR/step7_cann.mlir" \
+  --tiling-space-out="$PHASE5_TILING_SPACE" \
+  --runtime-manifest-out="$PHASE5_RUNTIME_MANIFEST" \
+  --host-tiling-out="$PHASE5_HOST_TILING" \
+  --cann-soc="${SOC_VERSION:-Ascend910B1}" \
   -o "$DIR/step8_kernel.cpp" 2>&1
+test -s "$PHASE5_TILING_SPACE"
+test -s "$PHASE5_RUNTIME_MANIFEST"
+test -s "$PHASE5_HOST_TILING"
 log "  ✓ Codegen 成功，输出: step8_kernel.cpp"
+log "  ✓ Phase 5 artifacts: $PHASE5_TILING_SPACE, $PHASE5_RUNTIME_MANIFEST, $PHASE5_HOST_TILING"
 
 # ── STAGE 8b: Generate test data ───────────────────────────
 echo ""
@@ -159,9 +175,6 @@ log "  ✓ 生成成功：input_data0.npy, input_data1.npy, output_expected.npy"
 # ── STAGE 9: Compile AscendC kernel ────────────────────────
 echo ""
 echo "==================== [STAGE 9] Compile：runtime-session ===================="
-BUILD_DIR="$DIR/build_e2e"
-rm -fr "$BUILD_DIR"
-mkdir -p "$BUILD_DIR"
 ARTIFACT_ROOT="$BUILD_DIR/artifact"
 RUN_MANIFEST="$BUILD_DIR/run_manifest.json"
 ACTUAL_OUTPUT="$BUILD_DIR/output.npy"
@@ -194,7 +207,7 @@ cat > "$RUN_MANIFEST" <<EOF
     { "name": "out", "path": "${DIR}/output_expected.npy" }
   ],
   "tiling": {
-    "schema": "${DIR}/tiling_space.json",
+    "schema": "${PHASE5_TILING_SPACE}",
     "params": "TB_M=64,TB_N=16,dim_arg0_0=640,dim_arg1_0=500,dim_arg0_1=1,dim_arg1_1=640"
   },
   "block_dim": 8,
@@ -226,6 +239,9 @@ echo "   step6_parallelize.mlir      → 多核 AiCore 调度（get_block_idx）
 echo "   step7_kernel.mlir           → 完整 AscendC kernel IR"
 echo "   step7_cann.mlir             → CANN 标准签名 IR"
 echo "   step8_kernel.cpp            → AscendC C++ kernel 源码"
+echo "   build_e2e/phase5_tiling_space.json → Phase 5 tiling space"
+echo "   build_e2e/runtime_manifest.json    → Phase 5 runtime manifest"
+echo "   build_e2e/host_tiling.cpp          → Phase 5 host tiling C ABI source"
 echo "   build_e2e/artifact               → runtime-session 编译产物"
 echo "   build_e2e/output.npy            → 仿真输出"
 echo "========================================================"
