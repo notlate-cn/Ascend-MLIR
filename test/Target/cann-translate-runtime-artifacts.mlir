@@ -18,7 +18,10 @@
 // MANIFEST: "kernelGraph"
 // MANIFEST: "kernelName": "broadcast_add_reducesum"
 // MANIFEST: "shapeArgOrder"
+// MANIFEST: "abiPosition": 0
 // MANIFEST: "name": "dim_arg0_0"
+// MANIFEST: "abiPosition": 1
+// MANIFEST: "name": "dim_arg1_1"
 // MANIFEST: "workspaceSizeBytes": 0
 
 // HOST: struct TilingData
