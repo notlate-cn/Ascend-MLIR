@@ -14,6 +14,7 @@
 namespace mlir::afir::ascend::realize {
 
 using ::mlir::afir::ascend::kKernelAttr;
+using ::mlir::afir::ascend::kOpRoleAttr;
 using ::mlir::afir::ascend::kScheduleDecisionIdAttr;
 using ::mlir::afir::ascend::kStructuredLoweringAttr;
 
@@ -31,10 +32,13 @@ struct RealizeKernelView {
 struct BufferizedKernelIR {
   std::string kernelId;
   std::string mode = "gm_only";
+  // Maintained by BufferizationDriver: bufferValueCount equals input + output
+  // + temporary, and vectorTemporaryValueCount is a subset of temporary.
   unsigned bufferValueCount = 0;
   unsigned inputValueCount = 0;
   unsigned outputValueCount = 0;
   unsigned temporaryValueCount = 0;
+  unsigned vectorTemporaryValueCount = 0;
 };
 
 struct PlacementPlan {

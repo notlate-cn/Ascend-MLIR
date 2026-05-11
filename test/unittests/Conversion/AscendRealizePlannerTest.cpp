@@ -6,13 +6,45 @@
 
 #include "Conversion/Ascend/Realize/MemoryRealizationDriver.h"
 #include "Conversion/Ascend/Realize/MovementPlanner.h"
+#include "Conversion/Ascend/Realize/PlacementPlanner.h"
 #include "Conversion/Ascend/Realize/RealizeTypes.h"
+#include "Target/Ascend/TargetMemoryModel.h"
 
 #include "gtest/gtest.h"
 
 using namespace mlir::afir::ascend::realize;
 
 namespace {
+
+mlir::ascend::TargetProfile makeCompleteTargetProfile() {
+  mlir::ascend::TargetProfile profile;
+  profile.identity.socVersion = "SyntheticSoC";
+  profile.hardware.aiCoreCount = 1;
+  profile.hardware.l1SizeBytes = 512 * 1024;
+  profile.hardware.ubSizeBytes = 192 * 1024;
+  profile.capacityBytes[mlir::ascend::MemoryPlace::GM] = 1024 * 1024 * 1024;
+  profile.capacityBytes[mlir::ascend::MemoryPlace::A1] = 512 * 1024;
+  profile.capacityBytes[mlir::ascend::MemoryPlace::B1] = 512 * 1024;
+  profile.capacityBytes[mlir::ascend::MemoryPlace::A2] = 64 * 1024;
+  profile.capacityBytes[mlir::ascend::MemoryPlace::B2] = 64 * 1024;
+  profile.capacityBytes[mlir::ascend::MemoryPlace::CO1] = 128 * 1024;
+  profile.capacityBytes[mlir::ascend::MemoryPlace::VECIN] = 192 * 1024;
+  profile.capacityBytes[mlir::ascend::MemoryPlace::VECOUT] = 192 * 1024;
+  profile.capacityBytes[mlir::ascend::MemoryPlace::VECCALC] = 192 * 1024;
+  return profile;
+}
+
+BufferizedKernelIR makeBufferizedKernelIR() {
+  BufferizedKernelIR ir;
+  ir.kernelId = "kernel_0";
+  ir.mode = "tensor_facts";
+  ir.inputValueCount = 2;
+  ir.outputValueCount = 1;
+  ir.temporaryValueCount = 1;
+  ir.vectorTemporaryValueCount = 1;
+  ir.bufferValueCount = 4;
+  return ir;
+}
 
 PlacementPlan makePlacementPlan() {
   PlacementPlan plan;
@@ -40,6 +72,60 @@ MovementPlan makeMovementPlan() {
 }
 
 } // namespace
+
+TEST(AscendRealizePlannerTest, PlacementPlannerBuildsTargetAwareVecCalcPlan) {
+  llvm::raw_null_ostream os;
+  auto memoryModel =
+      mlir::ascend::TargetMemoryModelBuilder().build(makeCompleteTargetProfile(),
+                                                     os);
+  ASSERT_TRUE(llvm::succeeded(memoryModel));
+
+  PlacementPlanner planner;
+  auto plan = planner.build(makeBufferizedKernelIR(), *memoryModel);
+
+  ASSERT_TRUE(llvm::succeeded(plan));
+  EXPECT_EQ(plan->kernelId, "kernel_0");
+  EXPECT_EQ(plan->mode, "target_aware");
+  EXPECT_EQ(plan->selectedPlaceCount, 4u);
+  EXPECT_EQ(plan->gmPlaceCount, 3u);
+  EXPECT_EQ(plan->onChipPlaceCount, 1u);
+  EXPECT_EQ(plan->deferredLocalPlaceCount, 0u);
+}
+
+TEST(AscendRealizePlannerTest, PlacementPlannerKeepsNonVectorTemporariesInGm) {
+  llvm::raw_null_ostream os;
+  auto memoryModel =
+      mlir::ascend::TargetMemoryModelBuilder().build(makeCompleteTargetProfile(),
+                                                     os);
+  ASSERT_TRUE(llvm::succeeded(memoryModel));
+
+  BufferizedKernelIR ir = makeBufferizedKernelIR();
+  ir.vectorTemporaryValueCount = 0;
+
+  PlacementPlanner planner;
+  auto plan = planner.build(ir, *memoryModel);
+
+  ASSERT_TRUE(llvm::succeeded(plan));
+  EXPECT_EQ(plan->mode, "target_aware");
+  EXPECT_EQ(plan->selectedPlaceCount, 4u);
+  EXPECT_EQ(plan->gmPlaceCount, 4u);
+  EXPECT_EQ(plan->onChipPlaceCount, 0u);
+  EXPECT_EQ(plan->deferredLocalPlaceCount, 1u);
+}
+
+TEST(AscendRealizePlannerTest, PlacementPlannerFallsBackWhenVecCalcUnsupported) {
+  mlir::ascend::TargetMemoryModel emptyMemoryModel;
+
+  PlacementPlanner planner;
+  auto plan = planner.build(makeBufferizedKernelIR(), emptyMemoryModel);
+
+  ASSERT_TRUE(llvm::succeeded(plan));
+  EXPECT_EQ(plan->mode, "gm_default");
+  EXPECT_EQ(plan->selectedPlaceCount, 4u);
+  EXPECT_EQ(plan->gmPlaceCount, 4u);
+  EXPECT_EQ(plan->onChipPlaceCount, 0u);
+  EXPECT_EQ(plan->deferredLocalPlaceCount, 1u);
+}
 
 TEST(AscendRealizePlannerTest, MovementPlannerRejectsMismatchedKernelId) {
   PlacementPlan placement = makePlacementPlan();
