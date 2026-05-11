@@ -730,11 +730,44 @@ LogicalResult convertCompute(func::FuncOp funcOp, AscendCBufferContext &ctx) {
     // ------------------------------------------------------------------
     // Step 3: Reduce the accumulated VECCALC to the output VECOUT tensor.
     //
-    // For a 2D iteration [parallel_dim, reduction_dim] with AR layout:
-    //   reduce_sum_2d_l2(vecoutLt, accumLt, AR, no_tmp)
+    // The VECCALC accumulator's physical layout follows the iteration
+    // order (the GM operand is data_copy'd verbatim).  When the reduction
+    // iterator is the innermost non-unit operand dim the buffer is
+    // [A_rows, R_cols] → AscendC reduces the contiguous (R) axis →
+    // ReduceLayout::AR.  When a parallel (non-unit) operand dim comes
+    // *after* the reduction dim — e.g. out[d0,d2] = sum_{d1} x[d0,d1,d2]
+    // once d0 is sliced to 1 — the buffer is [R_rows, A_cols] and we need
+    // ReduceLayout::RA (result[a] = sum_r src[r*A + a]).
     // ------------------------------------------------------------------
+    ReduceLayout layout = ReduceLayout::AR;
+    {
+      int redDim = -1;
+      for (unsigned d = 0; d < iterRank; ++d)
+        if (iterTypes[d] == utils::IteratorType::reduction) {
+          redDim = (int)d;
+          break;
+        }
+      for (unsigned i = 0; i < numInputs && layout == ReduceLayout::AR; ++i) {
+        AffineMap m = maps[i];
+        if (m.getNumResults() != iterRank)
+          continue; // not a full-rank operand
+        auto mrt =
+            cast<MemRefType>(genOp.getDpsInputOperand(i)->get().getType());
+        for (unsigned rp = 0; rp < m.getNumResults(); ++rp) {
+          auto de = dyn_cast<AffineDimExpr>(m.getResult(rp));
+          if (!de || (int)de.getPosition() != redDim)
+            continue;
+          for (unsigned d = rp + 1; d < mrt.getRank(); ++d)
+            if (mrt.getDimSize(d) != 1) {
+              layout = ReduceLayout::RA;
+              break;
+            }
+          break;
+        }
+      }
+    }
     Value vecoutLt = writeTensor(builder, loc, outMemref);
-    auto layoutAttr = ReduceLayoutAttr::get(mlirCtx, ReduceLayout::AR);
+    auto layoutAttr = ReduceLayoutAttr::get(mlirCtx, layout);
     auto reduceOp = builder.create<ReduceSum2DL2Op>(loc, vecoutLt, accumLt, layoutAttr,
                                                     /*sharedTmpBuffer=*/Value{});
     copyAscendCUnitAttr(genOp.getOperation(), reduceOp.getOperation());

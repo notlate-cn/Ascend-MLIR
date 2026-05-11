@@ -74,13 +74,22 @@ static memref::AllocOp allocOnChipMatchingSubview(OpBuilder &b, Location loc,
         resultShape.push_back(ShapedType::kDynamic);
         // If szVal is defined inside the loop (doesn't dominate hoistPoint),
         // try to re-derive it.  The common case is a memref.DimOp whose
-        // source argument dominates everywhere.
+        // source argument dominates everywhere; the source may also be an
+        // scf.for iter_arg, whose shape equals its init operand's (the loop
+        // body cannot retype a memref), so we walk the iter_arg chain
+        // outward until we hit a value that dominates the hoist point.
         if (!di.dominates(szVal, hoistPoint)) {
           if (auto dimOp = szVal.getDefiningOp<memref::DimOp>()) {
-            if (di.dominates(dimOp.getSource(), hoistPoint) &&
+            Value dimSrc = dimOp.getSource();
+            while (auto ba = dyn_cast<BlockArgument>(dimSrc)) {
+              auto forOp =
+                  dyn_cast_or_null<scf::ForOp>(ba.getOwner()->getParentOp());
+              if (!forOp || ba.getArgNumber() == 0) break; // 0 = induction var
+              dimSrc = forOp.getInitArgs()[ba.getArgNumber() - 1];
+            }
+            if (di.dominates(dimSrc, hoistPoint) &&
                 di.dominates(dimOp.getIndex(), hoistPoint)) {
-              szVal = b.create<memref::DimOp>(loc, dimOp.getSource(),
-                                              dimOp.getIndex());
+              szVal = b.create<memref::DimOp>(loc, dimSrc, dimOp.getIndex());
             }
           }
         }
