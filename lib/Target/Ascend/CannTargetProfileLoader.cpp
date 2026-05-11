@@ -15,6 +15,7 @@
 #include "llvm/Support/Path.h"
 #include <algorithm>
 #include <optional>
+#include <tuple>
 #include <utility>
 
 using namespace mlir;
@@ -112,6 +113,27 @@ void parseIni(StringRef content, SectionMap &sections) {
 void setCapacity(TargetProfile &profile, MemoryPlace place, int64_t bytes) {
   if (bytes > 0)
     profile.capacityBytes[place] = bytes;
+}
+
+void appendMemoryRate(TargetProfile &profile, StringRef section,
+                      StringRef name, StringRef value) {
+  name = trim(name);
+  if (name.empty() || name.starts_with("Intrinsic_"))
+    return;
+
+  int64_t rate = parseInt64(value);
+  if (rate <= 0)
+    return;
+  profile.memoryRates.push_back({section.str(), name.str(), rate});
+}
+
+void parseMemoryRates(TargetProfile &profile, const SectionMap &sections,
+                      StringRef section) {
+  auto sectionIt = sections.find(section);
+  if (sectionIt == sections.end())
+    return;
+  for (const auto &entry : sectionIt->second)
+    appendMemoryRate(profile, section, entry.first(), entry.second);
 }
 
 void appendDType(TargetIntrinsicInfo &intrinsic, StringRef dtype) {
@@ -213,6 +235,13 @@ FailureOr<TargetProfile> loadImpl(StringRef cannRoot, StringRef socVersion,
   setCapacity(profile, MemoryPlace::VECIN, profile.hardware.ubSizeBytes);
   setCapacity(profile, MemoryPlace::VECOUT, profile.hardware.ubSizeBytes);
   setCapacity(profile, MemoryPlace::VECCALC, profile.hardware.ubSizeBytes);
+
+  parseMemoryRates(profile, sections, "AICoreMemoryRates");
+  parseMemoryRates(profile, sections, "VectorCoreMemoryRates");
+  llvm::sort(profile.memoryRates, [](const TargetMemoryRateInfo &lhs,
+                                     const TargetMemoryRateInfo &rhs) {
+    return std::tie(lhs.section, lhs.name) < std::tie(rhs.section, rhs.name);
+  });
 
   struct IntrinsicSection {
     StringRef name;

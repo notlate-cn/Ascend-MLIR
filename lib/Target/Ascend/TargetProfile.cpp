@@ -13,6 +13,7 @@
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/raw_ostream.h"
+#include <tuple>
 
 #define GEN_PASS_DECL_ASCENDPRINTTARGETPROFILEPASS
 #define GEN_PASS_DEF_ASCENDPRINTTARGETPROFILEPASS
@@ -122,6 +123,22 @@ struct AscendPrintTargetProfilePass
 
     for (StringRef intrinsicName : intrinsicNames)
       llvm::errs() << "  intrinsic = \"" << intrinsicName << "\"\n";
+
+    SmallVector<const ascend::TargetMemoryRateInfo *> memoryRates;
+    memoryRates.reserve(profile.memoryRates.size());
+    for (const ascend::TargetMemoryRateInfo &rate : profile.memoryRates)
+      memoryRates.push_back(&rate);
+    llvm::sort(memoryRates, [](const ascend::TargetMemoryRateInfo *lhs,
+                               const ascend::TargetMemoryRateInfo *rhs) {
+      return std::tie(lhs->section, lhs->name) <
+             std::tie(rhs->section, rhs->name);
+    });
+
+    for (const ascend::TargetMemoryRateInfo *rate : memoryRates) {
+      llvm::errs() << "  memory_rate = \"" << rate->section << "."
+                   << rate->name << "\" bytes_per_cycle = "
+                   << rate->bytesPerCycle << "\n";
+    }
   }
 };
 
