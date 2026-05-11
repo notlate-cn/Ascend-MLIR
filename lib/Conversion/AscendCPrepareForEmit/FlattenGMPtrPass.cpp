@@ -49,24 +49,42 @@ resolveGMChain(Value start, OpBuilder &b, Location loc) {
         continue;
       }
       if (offs.size() >= 2) {
-        Value src = sv.getSource();
-        if (auto castOp = src.getDefiningOp<memref::CastOp>())
-          src = castOp.getSource();
-        auto ba = dyn_cast<BlockArgument>(src);
+        // The subview's offsets/sizes are in `shapeSrc`'s coordinate system.
+        // `shapeSrc` may be a memref.collapse_shape result (post-collapse view
+        // of a higher-rank arg); we use its dims for the stride formula but
+        // walk further to find the BlockArgument used as the flat-pointer base.
+        Value shapeSrc = sv.getSource();
+        if (auto castOp = shapeSrc.getDefiningOp<memref::CastOp>())
+          shapeSrc = castOp.getSource();
+        Value ptrSrc = shapeSrc;
+        while (true) {
+          if (auto colOp = ptrSrc.getDefiningOp<memref::CollapseShapeOp>()) {
+            ptrSrc = colOp.getSrc();
+            continue;
+          }
+          if (auto castOp = ptrSrc.getDefiningOp<memref::CastOp>()) {
+            ptrSrc = castOp.getSource();
+            continue;
+          }
+          break;
+        }
+        auto ba = dyn_cast<BlockArgument>(ptrSrc);
         if (!ba)
           return {BlockArgument{}, Value{}};
-        // Compute flat offset = sum_i(offs[i] * prod_{j=i+1..rank-1} dim(src, j)).
+        // Compute flat offset using `shapeSrc` dims (collapsed view's shape).
+        // Since collapse_shape is contiguous, flat offset in collapsed coords
+        // equals flat offset in the original arg's element space.
         // offs.size() == rank invariant: InsertTileBuffers always generates
         // full-rank subviews, so this formula is always complete.
-        // This correctly handles tensors of any rank (2D, 3D, etc.).
-        int64_t rank = cast<MemRefType>(ba.getType()).getRank();
+        int64_t rank =
+            cast<MemRefType>(shapeSrc.getType()).getRank();
         Value flat = b.create<arith::ConstantIndexOp>(loc, 0);
         for (size_t i = 0; i < offs.size(); ++i) {
           Value stride = b.create<arith::ConstantIndexOp>(loc, 1);
           for (int64_t j = static_cast<int64_t>(i) + 1; j < rank; ++j) {
             Value dimIdx = b.create<arith::ConstantIndexOp>(loc, j);
             stride = b.create<arith::MulIOp>(
-                loc, stride, b.create<memref::DimOp>(loc, ba, dimIdx));
+                loc, stride, b.create<memref::DimOp>(loc, shapeSrc, dimIdx));
           }
           Value off = materializeOffset(b, loc, offs[i]);
           flat = b.create<arith::AddIOp>(
@@ -175,6 +193,42 @@ static void flattenGMPtr(func::FuncOp func) {
     sgbOp.erase();
     if (subview.use_empty())
       subview.erase();
+  }
+
+  // Rewrite `memref.dim %collapse_shape, %const` to use the underlying arg's
+  // dims, so collapse_shape becomes dead.  ascir-translate cannot print
+  // collapse_shape, so any survivor would fail emission.  For reassoc
+  // group [a, b, ...]: dim_collapsed = product(dim(arg, k) for k in group).
+  {
+    SmallVector<memref::DimOp> dimOnCollapse;
+    func.walk([&](memref::DimOp op) {
+      if (op.getSource().getDefiningOp<memref::CollapseShapeOp>())
+        dimOnCollapse.push_back(op);
+    });
+    for (memref::DimOp dimOp : dimOnCollapse) {
+      auto colOp = dimOp.getSource().getDefiningOp<memref::CollapseShapeOp>();
+      auto idxAttr = dimOp.getConstantIndex();
+      if (!idxAttr)
+        continue; // dynamic index — leave alone (will likely fail later, but
+                  // not introduced by current passes)
+      int64_t idx = *idxAttr;
+      auto reassoc = colOp.getReassociationIndices();
+      if (idx < 0 || idx >= static_cast<int64_t>(reassoc.size()))
+        continue;
+      OpBuilder b(dimOp);
+      Location loc = dimOp.getLoc();
+      Value src = colOp.getSrc();
+      Value prod;
+      for (int64_t k : reassoc[idx]) {
+        Value kIdx = b.create<arith::ConstantIndexOp>(loc, k);
+        Value d = b.create<memref::DimOp>(loc, src, kIdx);
+        prod = prod ? b.create<arith::MulIOp>(loc, prod, d).getResult() : d;
+      }
+      if (!prod)
+        prod = b.create<arith::ConstantIndexOp>(loc, 1);
+      dimOp.getResult().replaceAllUsesWith(prod);
+      dimOp.erase();
+    }
   }
 
   // Clean up dead subview/cast/collapse/expand chains; repeat until stable.

@@ -283,6 +283,30 @@ def AscendCPackTilingDataPass : Pass<"ascendc-pack-tiling-data", "mlir::func::Fu
   ];
 }
 
+def AscendCDecomposeMultiAxisBroadcastPass
+    : Pass<"ascendc-decompose-multi-axis-broadcast", "mlir::func::FuncOp"> {
+  let summary = "Decompose multi-axis ascendc.broadcast_l2 into a chain of single-axis ones";
+  let description = [{
+    AscendC::Broadcast template only supports a single broadcast axis per call.
+    A linalg::generic with an indexing map that drops multiple iteration dims
+    (e.g. (d0,d1,d2) -> (d1) projecting away d0 and d2) lowers to a single
+    BroadcastL2Op whose srcShape contains a constant 1 in every dropped slot.
+
+    This pass walks each BroadcastL2Op, identifies the broadcast axes (where
+    srcShape[i] is statically 1 and dstShape[i] is not), and if there are 2+
+    axes, replaces the op with a chain of single-axis BroadcastL2Ops separated
+    by intermediate VECCALC tiles allocated via TBufOp + TPipeInitBufferOp.
+    The last broadcast in the chain writes to the original op's dst so that
+    downstream users observe the same final tensor.
+  }];
+  let constructor = "mlir::afir::createAscendCDecomposeMultiAxisBroadcastPass()";
+  let dependentDialects = [
+    "mlir::ascendc::AscendCDialect",
+    "mlir::arith::ArithDialect",
+    "mlir::func::FuncDialect"
+  ];
+}
+
 def AscendCFinalizeKernelPass : Pass<"ascendc-finalize-kernel", "mlir::func::FuncOp"> {
   let summary = "Stamp kernel attributes, strip return values, lower affine.min";
   let description = [{

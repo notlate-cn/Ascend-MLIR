@@ -3,6 +3,7 @@ add_mlir_library(AscendCPrepareForEmitConversion
   FlattenGMPtrPass.cpp
   PackTilingDataPass.cpp
   FinalizeKernelPass.cpp
+  DecomposeMultiAxisBroadcastPass.cpp
 
   ADDITIONAL_HEADER_DIRS
   ${CMAKE_SOURCE_DIR}/include/Conversion

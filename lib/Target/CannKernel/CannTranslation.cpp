@@ -2249,46 +2249,136 @@ static void fixBrokenOpEmitters(Operation *moduleOp) {
   });
 
   // BroadcastL2Op → verbatim
+  //
+  // AscendC::Broadcast only supports dim=1 or dim=2. For rank > 2, fold the
+  // N-D shapes to 2D by locating the broadcast axis (the unique dim where
+  // srcShape[i] is a compile-time constant 1 and dstShape[i] is not) and
+  // computing:
+  //
+  //   prefix = product(srcShape[0..bcastAxis-1])  (same for dst)
+  //   suffix = product(srcShape[bcastAxis+1..])    (same for dst)
+  //   src2D  = {prefix,            suffix}
+  //   dst2D  = {prefix*dstShape[i], suffix}
+  //
+  // This collapses all outer dims into one "row" count and all inner dims
+  // into one "col" count.  The broadcast is then a row-broadcast (axis=0) if
+  // bcastAxis < rank-1, or a column-broadcast (axis=1) otherwise.
+  //
+  // Multi-axis broadcasts (e.g. [1,D,1] → [D0,D,D2]) MUST be decomposed into
+  // a chain of single-axis BroadcastL2Ops by an earlier pass before reaching
+  // here; this handler emits an op error on multi-axis input.
   moduleOp->walk([&](ascendc::BroadcastL2Op op) {
     rewriter.setInsertionPoint(op);
     Location loc = op.getLoc();
     uint32_t rank = op.getConstRank();
 
-    // Build verbatim string with $N placeholders.
     // Operand layout: $0=dst, $1=src, $2..$2+rank-1=dstShape, $2+rank..=srcShape
-    std::string tmpl = "{\n";
-    tmpl += "  uint32_t _afir_ds[" + std::to_string(rank) + "] = {";
-    for (uint32_t i = 0; i < rank; ++i) {
-      if (i) tmpl += ", ";
-      tmpl += "(uint32_t)$" + std::to_string(2 + i);
-    }
-    tmpl += "};\n";
-    tmpl += "  uint32_t _afir_ss[" + std::to_string(rank) + "] = {";
-    for (uint32_t i = 0; i < rank; ++i) {
-      if (i) tmpl += ", ";
-      tmpl += "(uint32_t)$" + std::to_string(2 + rank + i);
-    }
-    tmpl += "};\n";
-    // Determine axis: if srcShape[-1] == 1 (column broadcast), axis=1.
-    // If srcShape[0] == 1 (row broadcast), axis=0.
-    // Inspect the last srcShape value operand: if it is a constant 1, use axis=1.
     auto srcShapeVals = op.getSrcShape();
-    int axis = 0;
-    if (!srcShapeVals.empty()) {
-      Value lastSrc = srcShapeVals[srcShapeVals.size() - 1];
-      if (auto constOp = lastSrc.getDefiningOp<arith::ConstantOp>()) {
-        if (auto intAttr = dyn_cast<IntegerAttr>(constOp.getValue())) {
-          if (intAttr.getInt() == 1)
-            axis = 1;
-        }
-      }
-    }
+    auto dstShapeVals = op.getDstShape();
+
+    // Helper: is `v` a compile-time constant integer with value 1?
+    auto isStaticOne = [](Value v) -> bool {
+      if (auto c = v.getDefiningOp<arith::ConstantOp>())
+        if (auto ia = dyn_cast<IntegerAttr>(c.getValue()))
+          return ia.getInt() == 1;
+      return false;
+    };
+
     // Use actual element type of dst instead of hardcoded 'half'.
     auto dstElemType =
         cast<ascendc::LocalTensorType>(op.getDst().getType()).getElementType();
     std::string elemTypeStr = getAscendCScalarTypeName(dstElemType);
-    tmpl += "  AscendC::Broadcast<" + elemTypeStr + ", " + std::to_string(rank) +
-            ", " + std::to_string(axis) + ">($0, $1, _afir_ds, _afir_ss);\n}";
+
+    // Helper: build a placeholder product string for indices [lo, hi).
+    // Returns e.g. "(uint32_t)$5 * (uint32_t)$6" or "(uint32_t)$5" for a
+    // single index, or "1u" when the range is empty.
+    auto placeholderProduct = [&](uint32_t lo, uint32_t hi) -> std::string {
+      if (lo >= hi) return "1u";
+      std::string s = "(uint32_t)$" + std::to_string(lo);
+      for (uint32_t k = lo + 1; k < hi; ++k)
+        s += " * (uint32_t)$" + std::to_string(k);
+      return s;
+    };
+
+    std::string tmpl;
+
+    // For rank > 2: fold to 2D.  Find the broadcast axis (where srcShape[i]
+    // is statically 1 and dstShape[i] is not).  Also count broadcast axes;
+    // multi-axis input is a programming error (decomposition pass missed it).
+    int bcastAxis = -1;
+    int bcastAxisCount = 0;
+    if (rank > 2) {
+      for (uint32_t i = 0; i < rank; ++i) {
+        if (isStaticOne(srcShapeVals[i]) && !isStaticOne(dstShapeVals[i])) {
+          if (bcastAxis < 0)
+            bcastAxis = static_cast<int>(i);
+          ++bcastAxisCount;
+        }
+      }
+      if (bcastAxisCount > 1) {
+        op.emitOpError("rank>2 broadcast with ")
+            << bcastAxisCount
+            << " broadcast axes reached CannTranslation; expected the "
+               "DecomposeMultiAxisBroadcast pass to lower this to a chain of "
+               "single-axis broadcasts";
+        return;
+      }
+    }
+
+    if (bcastAxis >= 0) {
+      // Fold rank-N to 2D.
+      uint32_t ba = static_cast<uint32_t>(bcastAxis);
+      // dstShape indices: 2..2+rank-1; srcShape indices: 2+rank..2+2*rank-1
+      uint32_t dstBase = 2, srcBase = 2 + rank;
+      // prefix: product of dims before bcastAxis (same in src and dst)
+      std::string prefixStr = placeholderProduct(srcBase, srcBase + ba);
+      // suffix: product of dims after bcastAxis (same in src and dst)
+      std::string suffixStr = placeholderProduct(srcBase + ba + 1, srcBase + rank);
+      // broadcast multiplier: dstShape[bcastAxis]
+      std::string bcastDimStr = "(uint32_t)$" + std::to_string(dstBase + ba);
+
+      // dst2D rows = prefix * dstShape[ba]; dst2D cols = suffix
+      std::string dst2DRow = prefixStr == "1u" ? bcastDimStr
+                                               : prefixStr + " * " + bcastDimStr;
+      std::string dst2DCol = suffixStr;
+      // src2D rows = prefix; src2D cols = suffix
+      std::string src2DRow = prefixStr;
+      std::string src2DCol = suffixStr;
+      // Broadcast axis in 2D: 0 for non-last, 1 for last-axis broadcast
+      int axis2D = (ba == rank - 1) ? 1 : 0;
+
+      tmpl = "{\n";
+      tmpl += "  uint32_t _afir_ds[2] = {" + dst2DRow + ", " + dst2DCol + "};\n";
+      tmpl += "  uint32_t _afir_ss[2] = {" + src2DRow + ", " + src2DCol + "};\n";
+      tmpl += "  AscendC::Broadcast<" + elemTypeStr + ", 2, " +
+              std::to_string(axis2D) + ">($0, $1, _afir_ds, _afir_ss);\n}";
+    } else {
+      // rank <= 2 or no constant-1 srcShape found: use native rank.
+      // Determine axis: if last srcShape dim is constant 1, it is column
+      // broadcast (axis=1); otherwise row broadcast (axis=0).
+      int axis = 0;
+      if (!srcShapeVals.empty()) {
+        Value lastSrc = srcShapeVals[srcShapeVals.size() - 1];
+        if (auto constOp = lastSrc.getDefiningOp<arith::ConstantOp>())
+          if (cast<IntegerAttr>(constOp.getValue()).getInt() == 1)
+            axis = 1;
+      }
+      tmpl = "{\n";
+      tmpl += "  uint32_t _afir_ds[" + std::to_string(rank) + "] = {";
+      for (uint32_t i = 0; i < rank; ++i) {
+        if (i) tmpl += ", ";
+        tmpl += "(uint32_t)$" + std::to_string(2 + i);
+      }
+      tmpl += "};\n";
+      tmpl += "  uint32_t _afir_ss[" + std::to_string(rank) + "] = {";
+      for (uint32_t i = 0; i < rank; ++i) {
+        if (i) tmpl += ", ";
+        tmpl += "(uint32_t)$" + std::to_string(2 + rank + i);
+      }
+      tmpl += "};\n";
+      tmpl += "  AscendC::Broadcast<" + elemTypeStr + ", " + std::to_string(rank) +
+              ", " + std::to_string(axis) + ">($0, $1, _afir_ds, _afir_ss);\n}";
+    }
 
     SmallVector<Value> args;
     args.push_back(op.getDst());

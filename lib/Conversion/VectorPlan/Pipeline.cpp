@@ -57,6 +57,10 @@ void registerVectorPlanPipeline() {
       [](OpPassManager &pm) {
         pm.addNestedPass<func::FuncOp>(mlir::createLinalgGeneralizeNamedOpsPass());
         pm.addNestedPass<func::FuncOp>(createVectorPlanTileFusePass());
+        // Fold tensor.dim on statically-known dimensions (e.g. the size-1
+        // broadcast axis) before bufferization so that subview size operands
+        // become constants rather than dynamic memref.dim values.
+        pm.addPass(createCanonicalizerPass());
         if (failed(parsePassPipeline(
                 "one-shot-bufferize{"
                 "bufferize-function-boundaries=true "
@@ -70,6 +74,11 @@ void registerVectorPlanPipeline() {
         pm.addNestedPass<func::FuncOp>(createVectorPlanInsertTileBuffersPass());
         pm.addNestedPass<func::FuncOp>(createAscendCBufferPlacementPass());
         pm.addNestedPass<func::FuncOp>(createLinalgToAscendCPass());
+        // Lower multi-axis broadcasts (e.g. [1,D,1]→[D0,D,D2]) into a chain
+        // of single-axis broadcasts before code emission, since AscendC's
+        // Broadcast intrinsic supports only one broadcast axis per call.
+        pm.addNestedPass<func::FuncOp>(
+            createAscendCDecomposeMultiAxisBroadcastPass());
         pm.addNestedPass<func::FuncOp>(createAscendCParallelizePass());
         pm.addPass(createCanonicalizerPass());
         pm.addPass(createCSEPass());
