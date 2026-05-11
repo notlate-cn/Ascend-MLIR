@@ -2636,7 +2636,58 @@ static void fixBrokenOpEmitters(Operation *moduleOp) {
       tmpl += "    $0.SetValue(_afir_r, _afir_scalar.GetValue(0));\n";
       tmpl += "  }\n}";
     } else {
-      tmpl += "  // RA layout not yet implemented\n}";
+      // RA layout: src is laid out as [R, A] (R = reduction extent, the FIRST
+      // axis; A = output extent, the SECOND axis), and we reduce R:
+      //     dst[a] = sum_{r} src[r*A + a]
+      // The reduction values for one output element are A-strided in the
+      // buffer, which adv_api ReduceSum<float, Pattern::Reduce::RA> handles
+      // directly.  This is the codegen path for a reduction whose iteration
+      // axis is the first (or, after collapse, the outer) axis of the operand
+      // — e.g. out[d0,d2] = sum_{d1} x[d0,d1,d2] processed one d0-row at a time
+      // (the per-row buffer is [d1(R), d2(A)]).
+      //
+      // Byte-length operands (same scheme as AR):
+      //   $2 = dst bytes = A * sizeof(T)       → A = $2 / sizeof(T)
+      //   $3 = src bytes = R * A * sizeof(T)   → R = $3 / $2
+      //   last operand   = TPipe (for the scratch TBuf)
+      //
+      // adv_api ReduceSum<float, RA> supports float only; a non-f32 reduce on a
+      // non-last axis is rejected at C++ compile time by its static_assert
+      // (acceptable: such kernels are not produced today).
+      std::string pipeRef;
+      bool haveLens = (bool)dstQueueLenVal && (bool)srcTBufLenVal;
+      if (haveLens) {
+        tmpl += "  uint32_t _afir_A = (uint32_t)($2 / sizeof(" + elemTypeStr + "));\n";
+        tmpl += "  uint32_t _afir_R = (uint32_t)($3 / $2);\n";
+        pipeRef = "$4";
+      } else if (dstQueueLenVal) {
+        tmpl += "  uint32_t _afir_A = (uint32_t)($2 / sizeof(" + elemTypeStr + "));\n";
+        tmpl += "  uint32_t _afir_R = (uint32_t)($1.GetSize() / _afir_A);\n";
+        pipeRef = "$3";
+      } else {
+        tmpl += "  uint32_t _afir_A = (uint32_t)($0.GetSize());\n";
+        tmpl += "  uint32_t _afir_R = (uint32_t)($1.GetSize() / _afir_A);\n";
+        pipeRef = "$2";
+      }
+      // Scratch for ReduceSum's internal tree reduction.  Over-estimate as the
+      // input byte size (a single-pass tree reduce never needs more than the
+      // input), 32 B-aligned, minimum 256 B for tiny shapes.  Use the InitBuffer
+      // byte-length ($3) when available rather than GetSize() — the simulator's
+      // LocalTensor::GetSize() is unreliable for loop-local InitBuffer'd tensors.
+      if (haveLens)
+        tmpl += "  uint32_t _afir_ws_bytes = (uint32_t)$3;\n";
+      else
+        tmpl += "  uint32_t _afir_ws_bytes = (uint32_t)$1.GetSize() * (uint32_t)sizeof(" +
+                elemTypeStr + ");\n";
+      tmpl += "  _afir_ws_bytes = (_afir_ws_bytes < 256u) ? 256u : _afir_ws_bytes;\n";
+      tmpl += "  _afir_ws_bytes = ((_afir_ws_bytes + 31u) / 32u) * 32u;\n";
+      tmpl += "  AscendC::TBuf<AscendC::TPosition::VECCALC> _afir_tbuf_ws;\n";
+      tmpl += "  " + pipeRef + ".InitBuffer(_afir_tbuf_ws, _afir_ws_bytes);\n";
+      tmpl += "  AscendC::LocalTensor<uint8_t> _afir_ws = _afir_tbuf_ws.Get<uint8_t>();\n";
+      tmpl += "  uint32_t _afir_srcShape[2] = {_afir_R, _afir_A};\n";
+      tmpl += "  AscendC::ReduceSum<" + elemTypeStr +
+              ", AscendC::Pattern::Reduce::RA>($0, $1, _afir_ws, _afir_srcShape, false);\n";
+      tmpl += "}";
     }
 
     // Find the TPipe value: walk enclosing function for PipeOp.
