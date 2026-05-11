@@ -54,8 +54,12 @@ struct StaticMemoryPlan {
   std::string kernelId;
   std::string mode = "none";
   unsigned trackedPlaceCount = 0;
+  unsigned localBufferCount = 0;
+  unsigned liveIntervalCount = 0;
   unsigned workspaceSlotCount = 0;
   bool peakUsageKnown = false;
+  unsigned peakUsageUnitCount = 0;
+  bool capacityCheckDeferred = false;
 };
 
 struct MovementPlan {

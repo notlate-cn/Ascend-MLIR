@@ -12,10 +12,19 @@ FailureOr<StaticMemoryPlan>
 StaticMemoryPlanner::build(const PlacementPlan &placement) const {
   StaticMemoryPlan plan;
   plan.kernelId = placement.kernelId;
-  plan.mode = "empty_workspace";
   plan.trackedPlaceCount = placement.selectedPlaceCount;
-  plan.workspaceSlotCount = 0;
-  plan.peakUsageKnown = false;
+  if (placement.onChipPlaceCount == 0) {
+    plan.mode = "empty_workspace";
+    return plan;
+  }
+
+  plan.mode = "workspace_layout";
+  plan.localBufferCount = placement.onChipPlaceCount;
+  plan.liveIntervalCount = placement.onChipPlaceCount;
+  plan.workspaceSlotCount = placement.onChipPlaceCount;
+  plan.peakUsageKnown = true;
+  plan.peakUsageUnitCount = plan.workspaceSlotCount;
+  plan.capacityCheckDeferred = true;
   return plan;
 }
 

@@ -9,6 +9,7 @@
 - Phase 2 Schedule 计划：`docs/superpowers/plans/2026-05-08-ascend-mlir-v2-schedule-full-search.md`
 - 代码命名去版本化计划：`docs/superpowers/plans/2026-05-09-ascend-mlir-remove-v2-code-naming.md`
 - Phase 3B target-aware placement 计划：`docs/superpowers/plans/2026-05-11-ascend-realize-target-aware-placement-mvp.md`
+- Phase 3B workspace layout/lifetime 计划：`docs/superpowers/plans/2026-05-11-ascend-realize-workspace-layout-lifetime-mvp.md`
 
 说明：`V2` 在本文档中只表示方案版本。当前代码目录、namespace、CMake target、IR attrs、测试 target 使用版本无关 `Ascend` 命名。
 
@@ -32,7 +33,7 @@
 | Phase 2 | Schedule 完整搜索与 guard/cache | `Done` | Phase 2 final review 与 xvm/docker 验证已完成 |
 | Phase 3 | Realize plan objects | `Done` | `--ascend-realize` plan-object MVP、review follow-up 与代码命名去版本化已完成 |
 | Phase 4 | Target model 完整化 | `In Progress` | `TargetMemoryModel` 已完成；下一步补齐 intrinsic / cost / verifier |
-| Phase 3B | Realize materialization 增强 | `In Progress` | One-Shot Bufferize opt-in MVP 与 target-aware placement plan MVP 已完成；workspace、movement、IR mutation 后续推进 |
+| Phase 3B | Realize materialization 增强 | `In Progress` | One-Shot Bufferize、target-aware placement plan、workspace layout/lifetime MVP 已完成；movement、IR mutation 后续推进 |
 | Phase 5 | Translate / runtime artifact 对接 | `Planned` | 依赖 Phase 3B materialized IR 和 ABI 设计稳定 |
 | Phase 6 | 架构文档与 demo 重写 | `Deferred` | 待 V2 主链路稳定后启动 |
 
@@ -488,7 +489,7 @@ Review / verification:
 |---|---|---|---|
 | One-Shot Bufferize opt-in MVP | `Done` | `ascend-realize` 新增 `materialization-mode=one-shot-bufferize`，在显式开启时调用 upstream One-Shot Bufferize 将 tensor IR 改写为 memref IR；默认 `plan-only` 保持原 read-only plan/report 行为 | `ascend-realize-one-shot-bufferize.mlir` |
 | target-aware placement plan MVP | `Done` | 新增 `placement-mode=target-aware`，加载 CANN target profile 并构建 `TargetMemoryModel`；输入/输出保守保持 `GM`，vector temporary 在 `VECCALC` 合法且有容量时计为 on-chip place；默认 `gm-default` 行为保持不变。`TargetCostModel` 排序、value-level place map、`memory_space` 写入和 copy/materialization 后续推进 | `ascend-realize-target-aware-placement.mlir`；`AscendRealizePlannerTest` |
-| workspace layout / lifetime | `Planned` | 计算 live range、workspace slot、peak usage 和 capacity verifier | placement、schedule decision |
+| workspace layout / lifetime MVP | `Done` | `StaticMemoryPlanner` 对 on-chip placement 生成保守 `workspace_layout`：一 local buffer 一个 live interval / workspace slot，报告 peak usage unit；value-level slot reuse、字节容量 verifier、真实 workspace alloc/subview 后续推进 | `ascend-realize-workspace-layout.mlir`；`AscendRealizePlannerTest` |
 | 显式 data movement | `Planned` | 基于合法 path 插入 `memref.copy`，记录 selected path / path kind | `TargetMemoryModel` routing、`TargetIntrinsicModel`、`TargetCostModel` |
 | IR mutation / materialization | `Planned` | materialize alloc / workspace / copy，写入 `memory_space` 并冻结 `MemoryRealizationPlan` | bufferization、placement、workspace、movement |
 
@@ -542,5 +543,5 @@ Phase 4: TargetIntrinsicModel -> TargetCostModel -> TargetModelVerifier
 后续切分：
 
 1. Phase 4 剩余 target 查询模型已完成：`TargetMemoryModel`、`TargetIntrinsicModel`、`TargetCostModel`、`TargetModelVerifier`
-2. Phase 3B 已完成 One-Shot Bufferize opt-in MVP 与 target-aware placement plan MVP；下一步推进 workspace layout、显式 data movement、`memory_space` materialization
+2. Phase 3B 已完成 One-Shot Bufferize opt-in MVP、target-aware placement plan MVP 与 workspace layout/lifetime MVP；下一步推进显式 data movement、`memory_space` materialization
 3. Phase 3B 输出稳定 materialized IR 后，再进入 Phase 5 Translate / Runtime Artifact
