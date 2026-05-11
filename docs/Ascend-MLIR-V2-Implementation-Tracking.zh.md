@@ -11,6 +11,7 @@
 - Phase 3B target-aware placement 计划：`docs/superpowers/plans/2026-05-11-ascend-realize-target-aware-placement-mvp.md`
 - Phase 3B workspace layout/lifetime 计划：`docs/superpowers/plans/2026-05-11-ascend-realize-workspace-layout-lifetime-mvp.md`
 - Phase 3B explicit data movement 计划：`docs/superpowers/plans/2026-05-11-ascend-realize-data-movement-plan-mvp.md`
+- Phase 3B memory-space annotation 计划：`docs/superpowers/plans/2026-05-11-ascend-realize-memory-space-annotate-mvp.md`
 
 说明：`V2` 在本文档中只表示方案版本。当前代码目录、namespace、CMake target、IR attrs、测试 target 使用版本无关 `Ascend` 命名。
 
@@ -33,8 +34,8 @@
 | Phase 1 | Kernelize 完整候选分析 | `Done` | Kernelize Phase 1 候选分析与 pattern partition 路径已完成并验证 |
 | Phase 2 | Schedule 完整搜索与 guard/cache | `Done` | Phase 2 final review 与 xvm/docker 验证已完成 |
 | Phase 3 | Realize plan objects | `Done` | `--ascend-realize` plan-object MVP、review follow-up 与代码命名去版本化已完成 |
-| Phase 4 | Target model 完整化 | `In Progress` | `TargetMemoryModel` 已完成；下一步补齐 intrinsic / cost / verifier |
-| Phase 3B | Realize materialization 增强 | `In Progress` | One-Shot Bufferize、target-aware placement plan、workspace layout/lifetime、explicit data movement plan MVP 已完成；IR mutation 后续推进 |
+| Phase 4 | Target model 完整化 | `Done` | `TargetMemoryModel`、`TargetIntrinsicModel`、`TargetCostModel`、`TargetModelVerifier` MVP 已完成；多 SoC 覆盖后续增强 |
+| Phase 3B | Realize materialization 增强 | `Done` | One-Shot Bufferize、target-aware placement plan、workspace layout/lifetime、explicit data movement plan、memory-space annotation MVP 已完成；full workspace/copy materialization 转后续增强 |
 | Phase 5 | Translate / runtime artifact 对接 | `Planned` | 依赖 Phase 3B materialized IR 和 ABI 设计稳定 |
 | Phase 6 | 架构文档与 demo 重写 | `Deferred` | 待 V2 主链路稳定后启动 |
 
@@ -492,7 +493,23 @@ Review / verification:
 | target-aware placement plan MVP | `Done` | 新增 `placement-mode=target-aware`，加载 CANN target profile 并构建 `TargetMemoryModel`；输入/输出保守保持 `GM`，vector temporary 在 `VECCALC` 合法且有容量时计为 on-chip place；默认 `gm-default` 行为保持不变。`TargetCostModel` 排序、value-level place map、`memory_space` 写入和 copy/materialization 后续推进 | `ascend-realize-target-aware-placement.mlir`；`AscendRealizePlannerTest` |
 | workspace layout / lifetime MVP | `Done` | `StaticMemoryPlanner` 对 on-chip placement 生成保守 `workspace_layout`：一 local buffer 一个 live interval / workspace slot，报告 peak usage unit；value-level slot reuse、字节容量 verifier、真实 workspace alloc/subview 后续推进 | `ascend-realize-workspace-layout.mlir`；`AscendRealizePlannerTest` |
 | explicit data movement plan MVP | `Done` | `MovementPlanner` 对 on-chip workspace 场景生成 `movement_planning`：记录 movement demand、workspace reuse candidate、deferred path selection；legal path selection、value-level movement step、`memref.copy`、`memory_space` 后续推进 | `ascend-realize-data-movement-plan.mlir`；`AscendRealizePlannerTest` |
-| IR mutation / materialization | `Planned` | materialize alloc / workspace / copy，写入 `memory_space` 并冻结 `MemoryRealizationPlan` | bufferization、placement、workspace、movement |
+| memory-space annotation materialization MVP | `Done` | 新增 `materialization-mode=memory-space-annotate`：先运行 One-Shot Bufferize，再把已证明的 vector temporary `memref.alloc` 标为 `VECCALC` memory space；report 按 kernel 记录 `memory_space_annotations`；跨 kernel temporary 保守不标注；不新增 workspace alloc/subview，不插入 `memref.copy` | `ascend-realize-memory-space-annotate.mlir`；`AscendRealizePlannerTest` |
+| full value-level workspace/copy materialization enhancement | `Planned` | 真实 workspace alloc/subview、legal path selection、value-level movement step、`memref.copy` materialization 和 slot reuse 继续作为后续增强，不阻塞 Phase 5 用当前 MVP 输出做首轮对接 | Phase 3B+ / Phase 5 对接 |
+
+### Phase 3B 验证记录
+
+| 命令 | 结果 |
+|---|---|
+| TDD RED: `ascend-realize-memory-space-annotate.mlir` multi-kernel count | failed as expected：旧实现把 module-wide annotation count 写入每个 kernel，`kernel_1` 期望 0 实际为 1 |
+| xvm focused build/test | `ninja -C build afir-opt AscendRealizePlannerTest` passed；`ctest -R "AscendRealizePlannerTest"` 1/1 passed |
+| xvm focused lit | Realize memory-space / one-shot / movement / workspace / MVP / completion 6/6 passed |
+| spec review | passed：`memory-space-annotate` 先 One-Shot Bufferize，只标注已证明 vector temporary，不插入 workspace/subview/copy |
+| code quality review | approved after re-review：per-kernel count、cross-kernel temporary negative case、alloc dynamic sizes / symbol operands / alignment 均已覆盖 |
+| xvm unit regression | `ctest -R "Ascend(CommonAttributes\|KernelPattern\|RealizePlanner\|TargetMemoryModel\|TargetIntrinsicModel\|TargetCostModel\|TargetModelVerifier)Test"` 7/7 passed |
+| xvm Ascend Conversion lit | `llvm-lit -v build/test/Conversion --filter="ascend-"` 30/30 passed |
+| xvm target profile lit | `llvm-lit -v build/test/Target/ascend-target-profile.mlir` 1/1 passed |
+| code naming guard | host passed；xvm passed |
+| whitespace | `git diff --check -- . ':!AGENTS.md'` passed |
 
 ## Phase 5：Translate / Runtime Artifact
 
@@ -529,20 +546,20 @@ Review / verification:
 
 ## 当前下一步
 
-Phase 4 target model 完整化结果：
+Phase 5 Translate / Runtime Artifact 首轮对接：
 
 ```text
-Phase 4: TargetIntrinsicModel -> TargetCostModel -> TargetModelVerifier
+Phase 5: ComputeLoweringDriver -> ABI lowering -> HostTilingEmitter -> RuntimeManifestBuilder
 ```
 
 执行入口：
 
-- `docs/Ascend-MLIR-Detailed-Implementation-V2-8.zh.md`
-- `docs/Ascend-MLIR-Detailed-Implementation-V2-5.zh.md`
 - `docs/Ascend-MLIR-Detailed-Implementation-V2.zh.md`
+- `docs/Ascend-MLIR-Detailed-Implementation-V2-6.zh.md`
+- `docs/Ascend-MLIR-Detailed-Implementation-V2-9.zh.md`
 
 后续切分：
 
 1. Phase 4 剩余 target 查询模型已完成：`TargetMemoryModel`、`TargetIntrinsicModel`、`TargetCostModel`、`TargetModelVerifier`
-2. Phase 3B 已完成 One-Shot Bufferize opt-in MVP、target-aware placement plan MVP、workspace layout/lifetime MVP 与 explicit data movement plan MVP；下一步推进 `memory_space` materialization
-3. Phase 3B 输出稳定 materialized IR 后，再进入 Phase 5 Translate / Runtime Artifact
+2. Phase 3B MVP 链路已闭环：One-Shot Bufferize、target-aware placement、workspace layout/lifetime、explicit data movement plan、memory-space annotation 均已实现和验证
+3. 下一步进入 Phase 5 Translate / Runtime Artifact 首轮对接；full workspace/copy materialization 作为后续增强继续推进

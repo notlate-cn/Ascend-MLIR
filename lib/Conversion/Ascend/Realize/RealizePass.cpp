@@ -44,12 +44,15 @@ namespace {
 constexpr llvm::StringLiteral kPlanOnlyMaterializationMode = "plan-only";
 constexpr llvm::StringLiteral kOneShotBufferizeMaterializationMode =
     "one-shot-bufferize";
+constexpr llvm::StringLiteral kMemorySpaceAnnotateMaterializationMode =
+    "memory-space-annotate";
 constexpr llvm::StringLiteral kGmDefaultPlacementMode = "gm-default";
 constexpr llvm::StringLiteral kTargetAwarePlacementMode = "target-aware";
 
 static bool isSupportedMaterializationMode(StringRef mode) {
   return mode == kPlanOnlyMaterializationMode ||
-         mode == kOneShotBufferizeMaterializationMode;
+         mode == kOneShotBufferizeMaterializationMode ||
+         mode == kMemorySpaceAnnotateMaterializationMode;
 }
 
 static bool isSupportedPlacementMode(StringRef mode) {
@@ -258,13 +261,35 @@ struct AscendRealizePass
       return;
     }
 
-    if (materializationMode == kOneShotBufferizeMaterializationMode) {
+    if (materializationMode == kOneShotBufferizeMaterializationMode ||
+        materializationMode == kMemorySpaceAnnotateMaterializationMode) {
       BufferizationDriver bufferizationDriver;
       if (failed(bufferizationDriver.runOneShotBufferize(getOperation()))) {
         getOperation()->emitError()
             << "ascend-realize failed to run one-shot bufferize";
         signalPassFailure();
         return;
+      }
+    }
+
+    if (materializationMode == kMemorySpaceAnnotateMaterializationMode) {
+      MemoryRealizationDriver memoryRealizationDriver;
+      FailureOr<llvm::StringMap<unsigned>> annotationCounts =
+          memoryRealizationDriver.annotateMemorySpaces(getOperation());
+      if (failed(annotationCounts)) {
+        getOperation()->emitError()
+            << "ascend-realize failed to annotate memory spaces";
+        signalPassFailure();
+        return;
+      }
+
+      for (RealizePlanBundle &bundle : *bundles) {
+        unsigned annotationCount = 0;
+        auto countIt = annotationCounts->find(bundle.kernel.kernelId);
+        if (countIt != annotationCounts->end())
+          annotationCount = countIt->second;
+        memoryRealizationDriver.markMemorySpaceAnnotated(bundle.realization,
+                                                         annotationCount);
       }
     }
 

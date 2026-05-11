@@ -77,6 +77,8 @@ void printRealizeReport(llvm::ArrayRef<RealizePlanBundle> bundles,
        << bundle.realization.verificationScope << "\"\n";
     os << "  plan_ids_verified = "
        << (bundle.realization.planIdsVerified ? "true" : "false") << "\n";
+    os << "  memory_space_annotations = "
+       << bundle.realization.memorySpaceAnnotationCount << "\n";
     os << "  materialized_allocs = "
        << bundle.realization.materializedAllocCount << "\n";
     os << "  materialized_copies = "

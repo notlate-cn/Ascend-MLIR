@@ -81,6 +81,7 @@ struct MemoryRealizationPlan {
   bool frozen = false;
   std::string verificationScope = "none";
   bool planIdsVerified = false;
+  unsigned memorySpaceAnnotationCount = 0;
   unsigned materializedAllocCount = 0;
   unsigned materializedCopyCount = 0;
 };

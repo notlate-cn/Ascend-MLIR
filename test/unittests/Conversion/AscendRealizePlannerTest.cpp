@@ -288,3 +288,20 @@ TEST(AscendRealizePlannerTest, MemoryRealizationBuildsReadOnlyFreezePlan) {
   EXPECT_EQ(plan->materializedAllocCount, 0u);
   EXPECT_EQ(plan->materializedCopyCount, 0u);
 }
+
+TEST(AscendRealizePlannerTest, MemoryRealizationAnnotatesPlanForMemorySpaces) {
+  MemoryRealizationPlan plan;
+  plan.kernelId = "kernel_0";
+  MemoryRealizationDriver driver;
+
+  driver.markMemorySpaceAnnotated(plan, 1);
+
+  EXPECT_EQ(plan.kernelId, "kernel_0");
+  EXPECT_EQ(plan.mode, "memory_space_annotate");
+  EXPECT_EQ(plan.verificationScope, "memory_space_annotation");
+  EXPECT_TRUE(plan.planIdsVerified);
+  EXPECT_TRUE(plan.frozen);
+  EXPECT_EQ(plan.memorySpaceAnnotationCount, 1u);
+  EXPECT_EQ(plan.materializedAllocCount, 0u);
+  EXPECT_EQ(plan.materializedCopyCount, 0u);
+}

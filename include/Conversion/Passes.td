@@ -83,7 +83,9 @@ def AscendRealizePass : Pass<"ascend-realize", "mlir::ModuleOp"> {
     validates that Schedule/StructuredLowering attributes are present, and emits
     an optional debug report with GM-only plan objects. The opt-in
     one-shot-bufferize materialization mode runs upstream One-Shot Bufferize as
-    the first Phase 3B IR mutation slice.
+    the first Phase 3B IR mutation slice. The opt-in memory-space-annotate mode
+    runs One-Shot Bufferize first and annotates proven local vector temporaries
+    with on-chip memory spaces.
   }];
   let dependentDialects = [
     "mlir::bufferization::BufferizationDialect",
@@ -100,7 +102,7 @@ def AscendRealizePass : Pass<"ascend-realize", "mlir::ModuleOp"> {
            "Realize placement mode: gm-default or target-aware">,
     Option<"materializationMode", "materialization-mode", "std::string",
            /*default=*/"\"plan-only\"",
-           "Realize materialization mode: plan-only or one-shot-bufferize">,
+           "Realize materialization mode: plan-only, one-shot-bufferize, or memory-space-annotate">,
     Option<"soc", "soc", "std::string", /*default=*/"\"Ascend910B2\"",
            "CANN SoC version for target-aware placement">,
     Option<"cannRoot", "cann-root", "std::string", /*default=*/"\"\"",
