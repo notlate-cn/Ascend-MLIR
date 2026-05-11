@@ -3,10 +3,14 @@
 #include "Conversion/VectorPlan/TilePlan.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
+#include "mlir/Dialect/Linalg/IR/Linalg.h"
+#include "mlir/IR/AffineExpr.h"
+#include "mlir/IR/AffineMap.h"
 #include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "llvm/ADT/DenseSet.h"
+#include "llvm/ADT/SmallVector.h"
 #include "llvm/Support/FormatVariadic.h"
 
 using namespace mlir;
@@ -25,13 +29,14 @@ namespace mlir::afir {
 //     │                         degradation when no ub axis is available)
 //     └─ emit one TilePlan   ≈ Scheduler::TileSplit (ubSplit) over the axes
 //
-// Phase 1 keeps this behavior-identical to the previous monolithic version:
-// only Y/R axis kinds are produced, the block axis is the *first* non-broadcast
-// parallel axis (no fusing of a leading run yet — P2), and the row-loop
-// degradation fires exactly where the old `splitParallel` branch did.  Later
-// phases add: leading-run block fusion (P2), full reduce model + per-operand
-// vectorized-dims (P3), transpose templates (P4), tiling-case enumeration +
-// cost model (P5), and UB peak-memory constraints (P6).
+// Status: P1 (refactor into classifyAxes / pickBlockAxis / in-order ubSplit)
+// + P3a (compute per-operand `vectorizedDims` and derive the row-loop
+// degradation from "the block axis is followed by a parallel axis inside a
+// reduce's vectorized region" instead of the old `splitParallel` heuristic —
+// behavior-identical for current shapes, but principled).  Still pending:
+// FullLoad/RCore reduce templates (P3b), leading-run block fusion + transpose
+// templates (P2+P4), tiling-case enumeration + cost model (P5), UB peak-memory
+// constraints (P6).  See the plan doc.
 // ===========================================================================
 
 static Value insertFuncArg(func::FuncOp func, OpBuilder &builder,
@@ -79,29 +84,93 @@ AxisGrouping classifyAxes(const CollapsedGroupInfo &info) {
   return g;
 }
 
+// ≈ AutoFuse's `tensor.attr.vectorized_axis` (the inner axes a vector op
+// processes whole, that must not be looped/ub-tiled).  For a reduce member,
+// that region is { its reduction iteration dims } ∪ { iteration dims that, in
+// some operand's affine_map, appear *after* a reduction dim } — because the
+// AscendC reduce intrinsic consumes a contiguous [R,A]/[A,R] tile, so anything
+// inner to the reduction in the operand layout has to stay whole.  Non-reduce
+// members contribute nothing here.  Returns the union over all members; also
+// fills `plan.vectorizedDims` per operand Value (in iteration-dim ids).
+DenseSet<int> computeVectorizedDims(const CollapsedGroupInfo &info,
+                                     TilePlan &plan) {
+  DenseSet<int> vec;
+  for (linalg::LinalgOp op : info.topoMembers) {
+    auto iterTypes = op.getIteratorTypesArray();
+    SmallVector<int> redDims;
+    for (int d = 0; d < (int)iterTypes.size(); ++d)
+      if (iterTypes[d] == utils::IteratorType::reduction)
+        redDims.push_back(d);
+    if (redDims.empty())
+      continue;
+    for (int d : redDims)
+      vec.insert(d);
+    auto maps     = op.getIndexingMapsArray();
+    auto operands = op->getOperands();
+    for (auto [operand, m] : llvm::zip(operands, maps)) {
+      bool seenRed = false;
+      SmallVector<int> opVecDims;
+      for (AffineExpr e : m.getResults()) {
+        auto de = dyn_cast<AffineDimExpr>(e);
+        if (!de)
+          continue;
+        int d = (int)de.getPosition();
+        if (llvm::is_contained(redDims, d)) {
+          seenRed = true;
+          opVecDims.push_back(d); // the reduction dim itself is vectorized
+          continue;
+        }
+        if (seenRed) {
+          vec.insert(d);
+          opVecDims.push_back(d);
+        }
+      }
+      if (!opVecDims.empty())
+        plan.vectorizedDims[operand] = std::move(opVecDims);
+    }
+  }
+  return vec;
+}
+
 struct BlockPick {
-  int  axis = -1;             // first non-broadcast parallel axis (the block axis)
+  int  axis = -1;             // the block-dispatch axis
   bool degradeToRowLoop = false;
 };
 
-// ≈ Scheduler::BlockSplit + the §3.5 "no valid ub axis ⇒ block-axis row loop"
-// degradation.  P1: the block axis is the first non-broadcast parallel axis.
-// The degradation fires exactly when AutoFuse's reduce model would lock every
-// other parallel axis inside the reduce's vectorized region — which, for the
-// op shapes that reach here, is precisely "≥2 non-broadcast parallel axes
-// separated by ≥1 reduction axis" (the old `splitParallel` condition).  P3
-// replaces this with the real per-operand vectorized-dims computation.
-BlockPick pickBlockAxis(const AxisGrouping &g) {
+// ≈ Scheduler::BlockSplit + the §3.5 "no usable inner tile axis ⇒ block-axis
+// row loop" degradation.  P1/P3a: the block axis is the first non-broadcast
+// parallel axis that is *not* inside a reduce's vectorized region; the
+// degradation fires when some parallel axis after it *is* in that region (then
+// pairing the block axis with a normal XBLOCK_SUB inner level would re-create a
+// non-contiguous operand slice — e.g. Case B's `out[d0,d2]=sum_{d1}x[d0,d1,d2]`,
+// where d2 is vectorized).  For the shapes that reach here this is equivalent
+// to the old `numParallel≥2 && numReduction≥1`, but it states the real reason.
+// P2 replaces the "first axis" with a fused leading run.
+BlockPick pickBlockAxis(const AxisGrouping &g, const DenseSet<int> &vecDims) {
   BlockPick bp;
-  int numParallelNonBcast = 0;
   for (int i : g.yAxes) {
-    if (g.axes[i].isBroadcastSplit)
+    if (g.axes[i].isBroadcastSplit || vecDims.count(i))
       continue;
-    ++numParallelNonBcast;
-    if (bp.axis < 0)
-      bp.axis = i;
+    bp.axis = i;
+    break;
   }
-  bp.degradeToRowLoop = numParallelNonBcast >= 2 && !g.rAxes.empty();
+  if (bp.axis < 0) {
+    // No non-vectorized non-broadcast parallel axis (e.g. `[R, P]`-style, where
+    // the only parallel axis is inner to the reduction): fall back to the first
+    // non-broadcast parallel axis — same (unsupported, non-contiguous) outcome
+    // the previous code produced; a proper fix for those shapes comes later.
+    for (int i : g.yAxes)
+      if (!g.axes[i].isBroadcastSplit) {
+        bp.axis = i;
+        break;
+      }
+  }
+  if (bp.axis >= 0)
+    for (int i : g.yAxes)
+      if (i > bp.axis && !g.axes[i].isBroadcastSplit && vecDims.count(i)) {
+        bp.degradeToRowLoop = true;
+        break;
+      }
   return bp;
 }
 
@@ -112,13 +181,15 @@ TilePlan genVectorTilePlan(func::FuncOp func,
                             OpBuilder &builder, Location loc,
                             bool enableReductionSplit,
                             int64_t maxFullLoopIters) {
-  AxisGrouping g  = classifyAxes(info);
-  BlockPick    bp = pickBlockAxis(g);
+  AxisGrouping  g       = classifyAxes(info);
 
   TilePlan plan;
   plan.group = &info;
   if (!g.rAxes.empty())
-    plan.reduceTemplate = TilePlan::ReduceTemplate::Common; // P1: only Common
+    plan.reduceTemplate = TilePlan::ReduceTemplate::Common; // P3a: only Common
+
+  DenseSet<int> vecDims = computeVectorizedDims(info, plan);
+  BlockPick     bp      = pickBlockAxis(g, vecDims);
   if (bp.axis >= 0)
     plan.blockFusedAxes.push_back(bp.axis);
 

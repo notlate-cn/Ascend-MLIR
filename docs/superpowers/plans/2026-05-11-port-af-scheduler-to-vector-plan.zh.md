@@ -220,10 +220,10 @@ AF：永远生成两套图模板，打分选 —— **保留模板**（不改图
 
 | 阶段 | 范围 | 验收门 |
 |---|---|---|
-| **P1** | §2 数据结构 + §3 重构骨架（`classifyAxes`/`normGroup`/`enumerateTilingCases`/`blockSplit`/`ubSplit`/`computeVectorizedDims`/`selectLoopAxes`/`pickBest`），**行为不变**。`splitParallel` if-分支删掉、由 §3.5 退化规则等价复现。`LoopNestBuilder` 暂不改（P1 里 block 段仍长度≤1）。`enumerateTilingCases` 暂只枚举 yAxes(×rAxes)。 | 现有 `build/test/Conversion/{Collapse,VectorPlanCodegen,LinalgToAscendC}` lit 全过；所有 E2E 门禁脚本 `validation=pass`（**精度通过即可，不要求 codegen 字节不变**）。 |
-| **P2** | §3.3 block 轴 fuse（fuse 前导 Y 段）+ `LoopNestBuilder` emit 一个外层循环跑乘积 + div/mod 恢复 IV；`SliceComputer` 支持恢复 IV / N·X 整维 slice。 | 新 lit `tile-fuse-vector-block-fuse.mlir`；新 e2e：一个 2-parallel-轴 elementwise example `validation=pass`；现有 example 全过。 |
-| **P3** | §4 reduce 三模板：删 `splitParallel`；`Common`/`FullLoad` 候选 + `RCore`（按 AF；超预算才临时降级）；§3.5 `vectorizedDims`/`selectLoopAxes` 完整化。给 `Collapse.cpp` 加 transpose 相关禁止合并。 | `reduce-axis1-e2e`（Case B）、`reduce-sum-3d-e2e`、`combo-elewise-reduce-e2e` 全 `validation=pass`；新 lit 验 `FullLoad`/`RCore` 选中；RCore e2e（P 小 R 大）`validation=pass`。 |
-| **P4** | §5 transpose 双模板：`classifyAxes` X/N + 保留模板的 transpose op lowering + 消除模板（吸 permutation 进 indexing map）+ §3.6 transpose 打分。 | 新 example `transpose-elementwise-e2e/run.sh`（尾轴/非尾轴各一个）`validation=pass`；lit 验两套模板 + 打分选取。 |
+| **P1** ✅ | §2 数据结构 + §3 重构骨架（`classifyAxes`/`pickBlockAxis`/in-order ubSplit），**行为不变**。老 `splitParallel` hack 暂以 `degradeToRowLoop` 路径等价保留（P3a 收编）。`LoopNestBuilder` 不改。 | done — commit `98030e6`；lit 无新增 fail；e2e reduce-{sum-3d,axis1}/combo/bcast-multi-axis pass。 |
+| **P3a** | §3.5 `computeVectorizedDims`（每个 operand 的向量化迭代维 = reduce 轴 ∪ operand layout 里排在 reduce 轴*之后*的迭代维）+ `selectLoopAxes`：把 `degradeToRowLoop = numParallel≥2 && numR≥1` 这条临时启发式换成"block 轴后面跟着一根落在 `vectorizedDims` 里的 parallel 轴 ⇒ 退化成 step-1 行循环"。**行为不变**（对现有 shape 等价），但原因正确、可推广。`vectorizedDims` 存进 `TilePlan`（GroupEmitter/后续用）。 | `reduce-axis1-e2e`（Case B）、`reduce-sum-3d-e2e`、`combo-elewise-reduce-e2e`、`bcast-multi-axis-e2e` 全 `validation=pass`；现有 lit 全过；新 lit `tile-fuse-vector-reduce-middle.mlir` 仍 pin 住退化形态（已有）。 |
+| **P3b** | §4 reduce 三模板里的 `FullLoad`（只在 `enableReductionSplit=true` 时与 `Common` 有区别 —— reduce 轴进 N、永不 tile-split）+ `RCore`（R 轴切多核 + 两阶段 partial→combine + `groups_relations_in`，对标 AF `reduce_schedule_case_generator` —— 这块大，可能独立成阶段）。`classifyAxes` 加 reduce-full-load 变体。 | 新 lit 验 `FullLoad`/`RCore` 选中；RCore e2e（P 小 R 大，如 softmax 形）`validation=pass`。 |
+| **P2+P4** | §3.3 block 轴 fuse（fuse 前导 Y 段，**需配套给 operand 发 `tensor.collapse_shape` 把对应维也合掉**，否则 flatten 后的 tile 不是 box）+ `LoopNestBuilder` emit 乘积外层循环 + div/mod 恢复 IV；**且** §5 transpose 双模板：`classifyAxes` X/N + 保留模板的 transpose op lowering + 消除模板（吸 permutation 进 indexing map）+ §3.6 transpose 打分。两者一起做的原因：transpose 是 block-fuse"多 parallel 轴"的主要客户来源（Collapse 已把可合并的合掉了）。给 `Collapse.cpp` 加 transpose 相关禁止合并也在这里。 | 新 example `transpose-elementwise-e2e/run.sh`（尾轴/非尾轴各一个）`validation=pass`；新 lit `tile-fuse-vector-{block-fuse,transpose}.mlir`；现有 example 全过。 |
 | **P5** | §3.2 完整笛卡尔积枚举（含 xAxes）+ §3.6 `costEstimate` 占位 + `pickBest` 填实 + §3.2 prune。 | lit 断言几个 shape 下选中的 case；无 e2e 回归。 |
 | **P6** | §6 约束 + UB 峰值（简单求和）+ 溢出剪枝 + emit 进 `vector_plan.tiling_infos`。 | lit 断言 `constraints` 出现；一个 example 里超大 `FullLoad` 被正确不选中。 |
 | **P7（可选/后续）** | concat / split / gather 的 classifyAxes + schedule case generator（对标 AF 对应文件）。 | 各自 e2e。 |
@@ -236,7 +236,7 @@ AF：永远生成两套图模板，打分选 —— **保留模板**（不改图
 |---|---|---|
 | 改 | `include/Conversion/VectorPlan/TilePlan.h` —— `AxisKind/AxisClass/AxisGrouping`、`TileParam` flag、`TilePlan` 扩展（reduceTemplate/blockFusedAxes/ubTilingAxis*/vectorizedDims/constraints）、`TileConstraint`、`TilePlanDraft` | P1（constraints P6） |
 | 改 | `lib/Conversion/VectorPlan/TileFuse/TilePlanGen.{h,cpp}` —— 编排器 + `classifyAxes`+`normGroup`+`enumerateTilingCases`+`blockSplit`+`ubSplit`+`computeVectorizedDims`+`selectLoopAxes`+`pickBest`+`costEstimate`+`estimateMemPeak`（concat/split/gather 留 TODO 函数体） | P1 → P6 |
-| 改 | `lib/Conversion/VectorPlan/TileFuse/LoopNestBuilder.cpp` —— fuse 乘积外层循环 + IV 恢复 | P2 |
+| 改 | `lib/Conversion/VectorPlan/TileFuse/LoopNestBuilder.cpp` —— fuse 乘积外层循环 + IV 恢复 | <br/> |
 | 改 | `lib/Conversion/VectorPlan/TileFuse/SliceComputer.cpp` —— N/X 整维 slice、恢复 IV、读 `vectorizedDims` | P2/P3 |
 | 改 | `lib/Conversion/VectorPlan/TileFuse/GroupEmitter.cpp` —— 用 `vectorizedDims` 决定 generic tile rank/位置 | P3 |
 | 改 | `lib/Conversion/VectorPlan/TileFuse/Collapse.cpp` —— transpose 禁止合并（TODO: concat/load/gather） | P3 |
