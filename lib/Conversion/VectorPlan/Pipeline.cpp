@@ -76,6 +76,11 @@ void registerVectorPlanPipeline() {
               "vector-plan-codegen: failed to add bufferize pass");
         pm.addNestedPass<func::FuncOp>(createAnnotateAscendCKernelKindPass());
         pm.addPass(createCSEPass());
+        // Fold bufferize-inserted shadow allocs (dynamic-size GM alloc +
+        // GM->GM copy sandwich around a linalg.generic) before InsertTileBuffers,
+        // which doesn't know how to handle them.  This only matters when a
+        // tail block produces dynamic-size DPS init operands.
+        pm.addNestedPass<func::FuncOp>(createVectorPlanFoldShadowAllocPass());
         pm.addNestedPass<func::FuncOp>(createVectorPlanInsertTileBuffersPass());
         pm.addNestedPass<func::FuncOp>(createAscendCBufferPlacementPass());
         pm.addNestedPass<func::FuncOp>(createLinalgToAscendCPass());

@@ -5,6 +5,7 @@ add_mlir_library(MLIRVectorPlan
   GroupOutline/GroupOutlinePass.cpp
   TileFuse/TileFusePass.cpp
   TileFuse/InsertTileBuffers.cpp
+  TileFuse/FoldShadowAlloc.cpp
   TileFuse/BroadcastAbsorb.cpp
   TileFuse/Collapse.cpp
   TileFuse/TileFuseUtils.cpp

@@ -491,6 +491,26 @@ def VectorPlanTileFuse : Pass<"vector-plan-tile-fuse", "mlir::func::FuncOp"> {
   let dependentDialects = ["mlir::linalg::LinalgDialect", "mlir::scf::SCFDialect", "mlir::tensor::TensorDialect", "mlir::func::FuncDialect"];
 }
 
+def VectorPlanFoldShadowAlloc : Pass<"vector-plan-fold-shadow-alloc", "mlir::func::FuncOp"> {
+  let summary = "Fold bufferize-inserted dynamic-size shadow allocs back to in-place writes";
+  let description = [{
+    Runs after one-shot-bufferize and before vector-plan-insert-tile-buffers.
+
+    One-shot-bufferize wraps linalg.generic ops with a dynamic-size DPS init
+    in a "shadow sandwich" of `memref.alloc + memref.copy(src->alloc) +
+    linalg.generic(outs=alloc) + memref.copy(alloc->dst)` to avoid aliasing.
+    This is over-conservative for our tile-fuse output where the source and
+    destination subviews are the same iter_arg region.  Folding the sandwich
+    back to `linalg.generic(outs=dst)` lets the rest of the pipeline (which
+    cannot handle GM-space memref.alloc) succeed.
+  }];
+  let constructor = "mlir::afir::createVectorPlanFoldShadowAllocPass()";
+  let dependentDialects = [
+    "mlir::linalg::LinalgDialect",
+    "mlir::memref::MemRefDialect",
+  ];
+}
+
 def VectorPlanInsertTileBuffers : Pass<"vector-plan-insert-tile-buffers", "mlir::func::FuncOp"> {
   let summary = "Promote inner-tile linalg.generic operands from GM to on-chip VECIN/VECOUT";
   let description = [{
