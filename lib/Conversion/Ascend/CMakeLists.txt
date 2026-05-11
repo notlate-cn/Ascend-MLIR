@@ -1,5 +1,6 @@
 add_mlir_library(AscendConversion
   Backend/BackendSupportMatrix.cpp
+  Backend/ComputeLoweringPass.cpp
   Schedule/AxisCoalescer.cpp
   Schedule/ScheduleCache.cpp
   Schedule/ScheduleDecision.cpp
@@ -43,5 +44,8 @@ add_mlir_library(AscendConversion
   MLIRMemRefDialect
   MLIRPass
   MLIRSupport
+  MLIRAsc
+  MLIRAscUtils
   AscendTargetProfile
+  LinalgToAscendCConversion
 )
