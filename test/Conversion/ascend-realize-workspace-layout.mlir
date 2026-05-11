@@ -80,5 +80,6 @@ func.func @workspace_layout_vector_temporary(%arg0: tensor<64xf16>, %arg1: tenso
 // CHECK-NEXT:   frozen = true
 // CHECK-NEXT:   verification_scope = "plan_identity_only"
 // CHECK-NEXT:   plan_ids_verified = true
+// CHECK-NEXT:   memory_space_annotations = 0
 // CHECK-NEXT:   materialized_allocs = 0
 // CHECK-NEXT:   materialized_copies = 0
