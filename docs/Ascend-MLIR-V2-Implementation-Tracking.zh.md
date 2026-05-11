@@ -29,9 +29,10 @@
 | Phase 0 | V2 MVP 编译主干 | `Done` | Normalize -> Kernelize -> Schedule 纵向链路已打通 |
 | Phase 1 | Kernelize 完整候选分析 | `Done` | Kernelize Phase 1 候选分析与 pattern partition 路径已完成并验证 |
 | Phase 2 | Schedule 完整搜索与 guard/cache | `Done` | Phase 2 final review 与 xvm/docker 验证已完成 |
-| Phase 3 | Realize plan objects | `In Progress` | `--ascend-realize` MVP 与代码命名去版本化已完成，下一步接入 bufferization / placement |
-| Phase 4 | Target model 完整化 | `Planned` | 与 Phase 2/3 并行推进 |
-| Phase 5 | Translate / runtime artifact 对接 | `Planned` | 依赖 Realize 和 ABI 设计稳定 |
+| Phase 3 | Realize plan objects | `Done` | `--ascend-realize` plan-object MVP、review follow-up 与代码命名去版本化已完成 |
+| Phase 4 | Target model 完整化 | `In Progress` | `TargetMemoryModel` 已完成；下一步补齐 intrinsic / cost / verifier |
+| Phase 3B | Realize materialization 增强 | `Planned` | 真实 One-Shot Bufferize、target-aware placement、workspace、movement、IR mutation；依赖 Phase 4 target model |
+| Phase 5 | Translate / runtime artifact 对接 | `Planned` | 依赖 Phase 3B materialized IR 和 ABI 设计稳定 |
 | Phase 6 | 架构文档与 demo 重写 | `Deferred` | 待 V2 主链路稳定后启动 |
 
 ## Phase 0：V2 MVP 编译主干
@@ -469,6 +470,18 @@ Review / verification:
 | profile verifier | `Planned` | profile/memory/intrinsic 闭合检查 | 缺字段 fail-fast |
 | 多 SoC 支持 | `Planned` | 910B2 之外的 ini | 参数化 lit 或 unit tests |
 
+## Phase 3B：Realize Materialization 增强
+
+目标：在 Phase 4 target 查询模型补齐后，把 Phase 3 的 read-only plan objects 升级为真实内存实现，产出 Phase 5 可消费的 materialized IR。
+
+| 任务 | 状态 | 说明 | 依赖 |
+|---|---|---|---|
+| One-Shot Bufferize 接入 | `Planned` | 将 tensor-level facts 转成真实 memref IR，保留本地 plan/report 入口 | Phase 3 `BufferizationDriver` facts MVP |
+| target-aware placement | `Planned` | 用 `TargetMemoryModel` / `TargetCostModel` 选择 GM / on-chip place，并处理降级规则 | Phase 4 `TargetMemoryModel`、`TargetCostModel` |
+| workspace layout / lifetime | `Planned` | 计算 live range、workspace slot、peak usage 和 capacity verifier | placement、schedule decision |
+| 显式 data movement | `Planned` | 基于合法 path 插入 `memref.copy`，记录 selected path / path kind | `TargetMemoryModel` routing、`TargetIntrinsicModel`、`TargetCostModel` |
+| IR mutation / materialization | `Planned` | materialize alloc / workspace / copy，写入 `memory_space` 并冻结 `MemoryRealizationPlan` | bufferization、placement、workspace、movement |
+
 ## Phase 5：Translate / Runtime Artifact
 
 目标：对齐 V2-6 / V2-9，把上游决策转成 backend/runtime 可消费产物。
@@ -504,19 +517,20 @@ Review / verification:
 
 ## 当前下一步
 
-下一步进入 Phase 3 计划拆解：
+下一步继续 Phase 4 target model 完整化：
 
 ```text
-Phase 3: Realize Plan Objects
+Phase 4: TargetIntrinsicModel -> TargetCostModel -> ProfileVerifier
 ```
 
 执行入口：
 
+- `docs/Ascend-MLIR-Detailed-Implementation-V2-8.zh.md`
 - `docs/Ascend-MLIR-Detailed-Implementation-V2-5.zh.md`
 - `docs/Ascend-MLIR-Detailed-Implementation-V2.zh.md`
 
 后续切分：
 
-1. 基于 V2-5 生成 Phase 3 implementation plan
-2. 先落 `MemoryRealizationPlan` / `PlacementPlan` 数据模型
-3. 再接入 bufferization、static memory、movement plan 与 verifier
+1. 先完成 Phase 4 剩余 target 查询模型：`TargetIntrinsicModel`、`TargetCostModel`、`ProfileVerifier`
+2. 再进入 Phase 3B：One-Shot Bufferize、target-aware placement、workspace layout、显式 data movement、IR mutation
+3. Phase 3B 输出稳定 materialized IR 后，再进入 Phase 5 Translate / Runtime Artifact
