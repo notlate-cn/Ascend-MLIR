@@ -14,6 +14,9 @@
 #include "Conversion/Ascend/Realize/RealizeReport.h"
 #include "Conversion/Ascend/Realize/RealizeTypes.h"
 #include "Conversion/Ascend/Realize/StaticMemoryPlanner.h"
+#include "Target/Ascend/CannTargetProfileLoader.h"
+#include "Target/Ascend/TargetMemoryModel.h"
+#include "Target/Ascend/TargetProfile.h"
 #include "mlir/Dialect/Bufferization/IR/Bufferization.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/IR/Attributes.h"
@@ -25,6 +28,7 @@
 #include "llvm/ADT/StringMap.h"
 #include "llvm/Support/raw_ostream.h"
 
+#include <optional>
 #include <string>
 #include <utility>
 
@@ -40,14 +44,22 @@ namespace {
 constexpr llvm::StringLiteral kPlanOnlyMaterializationMode = "plan-only";
 constexpr llvm::StringLiteral kOneShotBufferizeMaterializationMode =
     "one-shot-bufferize";
+constexpr llvm::StringLiteral kGmDefaultPlacementMode = "gm-default";
+constexpr llvm::StringLiteral kTargetAwarePlacementMode = "target-aware";
 
 static bool isSupportedMaterializationMode(StringRef mode) {
   return mode == kPlanOnlyMaterializationMode ||
          mode == kOneShotBufferizeMaterializationMode;
 }
 
+static bool isSupportedPlacementMode(StringRef mode) {
+  return mode == kGmDefaultPlacementMode || mode == kTargetAwarePlacementMode;
+}
+
 static FailureOr<SmallVector<RealizePlanBundle, 4>>
-buildMVPRealizePlans(ModuleOp module, bool &emittedError) {
+buildMVPRealizePlans(ModuleOp module,
+                     const ::mlir::ascend::TargetMemoryModel *memoryModel,
+                     bool &emittedError) {
   DenseMap<StringRef, unsigned> scheduledOpsByKernel;
   DenseMap<StringRef, std::string> decisionByKernel;
   DenseMap<StringRef, std::string> skeletonByKernel;
@@ -134,7 +146,8 @@ buildMVPRealizePlans(ModuleOp module, bool &emittedError) {
     else
       bundle.bufferizedIR.kernelId = bundle.kernel.kernelId;
     FailureOr<PlacementPlan> placement =
-        placementPlanner.build(bundle.bufferizedIR);
+        memoryModel ? placementPlanner.build(bundle.bufferizedIR, *memoryModel)
+                    : placementPlanner.build(bundle.bufferizedIR);
     if (failed(placement)) {
       module.emitError("ascend-realize failed to build placement plan");
       emittedError = true;
@@ -182,6 +195,14 @@ struct AscendRealizePass
   using AscendRealizePassBase::AscendRealizePassBase;
 
   void runOnOperation() override {
+    if (!isSupportedPlacementMode(placementMode)) {
+      getOperation()->emitError()
+          << "unsupported ascend-realize placement-mode \"" << placementMode
+          << "\"";
+      signalPassFailure();
+      return;
+    }
+
     if (!isSupportedMaterializationMode(materializationMode)) {
       getOperation()->emitError()
           << "unsupported ascend-realize materialization-mode \""
@@ -198,9 +219,36 @@ struct AscendRealizePass
           llvm::errs(), ::mlir::afir::ascend::debug::DebugStage::Realize,
           getArgument());
 
+    std::optional<::mlir::ascend::TargetMemoryModel> targetMemoryModel;
+    if (placementMode == kTargetAwarePlacementMode) {
+      FailureOr<::mlir::ascend::TargetProfile> profile =
+          ::mlir::ascend::CannTargetProfileLoader::load(cannRoot, soc);
+      if (failed(profile)) {
+        getOperation()->emitError()
+            << "ascend-realize target-aware placement failed to load target "
+               "profile";
+        signalPassFailure();
+        return;
+      }
+
+      FailureOr<::mlir::ascend::TargetMemoryModel> builtMemoryModel =
+          ::mlir::ascend::TargetMemoryModelBuilder().build(*profile,
+                                                           llvm::errs());
+      if (failed(builtMemoryModel)) {
+        getOperation()->emitError()
+            << "ascend-realize target-aware placement failed to build target "
+               "memory model";
+        signalPassFailure();
+        return;
+      }
+      targetMemoryModel = std::move(*builtMemoryModel);
+    }
+
     bool emittedError = false;
     FailureOr<SmallVector<RealizePlanBundle, 4>> bundles =
-        buildMVPRealizePlans(getOperation(), emittedError);
+        buildMVPRealizePlans(
+            getOperation(),
+            targetMemoryModel ? &*targetMemoryModel : nullptr, emittedError);
     if (failed(bundles)) {
       if (!emittedError)
         getOperation()->emitError()

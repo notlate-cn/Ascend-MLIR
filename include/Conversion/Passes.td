@@ -95,9 +95,16 @@ def AscendRealizePass : Pass<"ascend-realize", "mlir::ModuleOp"> {
            "Ascend debug stage: none, normalize, kernelize, schedule, realize, all">,
     Option<"dumpReport", "dump-report", "bool", /*default=*/"false",
            "Dump Ascend analysis report to stderr">,
+    Option<"placementMode", "placement-mode", "std::string",
+           /*default=*/"\"gm-default\"",
+           "Realize placement mode: gm-default or target-aware">,
     Option<"materializationMode", "materialization-mode", "std::string",
            /*default=*/"\"plan-only\"",
            "Realize materialization mode: plan-only or one-shot-bufferize">,
+    Option<"soc", "soc", "std::string", /*default=*/"\"Ascend910B2\"",
+           "CANN SoC version for target-aware placement">,
+    Option<"cannRoot", "cann-root", "std::string", /*default=*/"\"\"",
+           "CANN root path for target-aware placement">,
   ];
 }
 

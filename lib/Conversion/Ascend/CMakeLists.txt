@@ -42,4 +42,5 @@ add_mlir_library(AscendConversion
   MLIRMemRefDialect
   MLIRPass
   MLIRSupport
+  AscendTargetProfile
 )

@@ -60,6 +60,15 @@ static bool hasUseInsideKernel(Value value, StringRef kernelId) {
   return false;
 }
 
+static bool isVectorTemporary(Value value, StringRef kernelId) {
+  Operation *def = value.getDefiningOp();
+  if (!def || getKernelId(def) != kernelId)
+    return false;
+
+  auto role = def->getAttrOfType<StringAttr>(kOpRoleAttr);
+  return role && role.getValue() == "vector";
+}
+
 static void recordRole(KernelTensorFacts &facts, Value value,
                        TensorValueRole role) {
   auto it = facts.roles.find(value);
@@ -107,6 +116,10 @@ static BufferizedKernelIR buildIR(StringRef kernelId,
       ++ir.outputValueCount;
       break;
     }
+
+    if (entry.second == TensorValueRole::Temporary &&
+        isVectorTemporary(entry.first, kernelId))
+      ++ir.vectorTemporaryValueCount;
   }
   ir.bufferValueCount =
       ir.inputValueCount + ir.outputValueCount + ir.temporaryValueCount;
