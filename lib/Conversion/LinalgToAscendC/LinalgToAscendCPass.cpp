@@ -165,13 +165,26 @@ Value computeAllocByteCount(OpBuilder &b, Location loc,
   return b.create<arith::MulIOp>(loc, count, bytesPerElemVal);
 }
 
-/// Walk through subviews and scf.for iter_args to find the ultimate source.
+/// Walk through subviews, casts, and scf.for iter_args / results to find the
+/// ultimate source.
 static Value resolveToAllocRoot(Value v) {
   const int maxDepth = 20;
   for (int i = 0; i < maxDepth; ++i) {
     if (auto subview = v.getDefiningOp<memref::SubViewOp>()) {
       v = subview.getSource();
       continue;
+    }
+    if (auto castOp = v.getDefiningOp<memref::CastOp>()) {
+      v = castOp.getSource();
+      continue;
+    }
+    // Result of an scf.for: follow the matching scf.yield operand.
+    if (auto opResult = dyn_cast<OpResult>(v)) {
+      if (auto forOp = dyn_cast<scf::ForOp>(opResult.getOwner())) {
+        unsigned idx = opResult.getResultNumber();
+        v = forOp.getBody()->getTerminator()->getOperand(idx);
+        continue;
+      }
     }
     if (auto blockArg = dyn_cast<BlockArgument>(v)) {
       auto forOp = dyn_cast<scf::ForOp>(blockArg.getOwner()->getParentOp());

@@ -562,6 +562,11 @@ LogicalResult convertDataMove(func::FuncOp funcOp,
       builder.create<GlobalTensorSetGlobalBufferOp>(loc, dstGt, dst,
                                                      /*size=*/Value{});
       Value count = computeElementCount(builder, loc, src);
+      // The accumulator was just written by vector ops in the RBLOCK loop; the
+      // DataCopy below runs on the MTE3 pipe and would otherwise race ahead of
+      // those writes (the queued VECOUT path gets this sync from EnQue/DeQue,
+      // but the TBuf accumulator has no queue).  Barrier all pipes first.
+      builder.create<PipeBarrierOp>(loc, Pipe::PIPE_ALL);
       builder.create<DataCopyL2Op>(loc, dstGt, srcLt, count);
       copyOp.erase();
       continue;

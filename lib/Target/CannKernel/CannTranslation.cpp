@@ -2216,6 +2216,32 @@ static void fixBrokenOpEmitters(Operation *moduleOp) {
     rewriter.eraseOp(op);
   });
 
+  // DataCopyL2Op store of a TBuf-backed accumulator (the RBLOCK reduction-split
+  // path) → DataCopyPad, so a sub-32-byte element count (e.g. out[A_sub] with
+  // A_sub·elem_bytes < 32) reaches GM correctly.  Plain DataCopy to GM requires
+  // a block-aligned count and silently drops the tail otherwise; DataCopyPad
+  // takes a byte length.  The queued VECOUT path always stores a full inner
+  // row (≥ block-sized) and is left on the plain-DataCopy path.
+  moduleOp->walk([&](ascendc::DataCopyL2Op op) {
+    if (!isa<ascendc::GlobalTensorType>(op.getDst().getType()))
+      return;
+    if (!op.getSrc().getDefiningOp<ascendc::TBufGetTensorOp>())
+      return;
+    auto tt = cast<ascendc::LocalTensorType>(op.getSrc().getType());
+    std::string elemTypeStr = getAscendCScalarTypeName(tt.getElementType());
+    rewriter.setInsertionPoint(op);
+    Location loc = op.getLoc();
+    std::string tmpl =
+        "{\n  AscendC::DataCopyExtParams _afir_dcp{(uint16_t)1, "
+        "(uint32_t)($2 * sizeof(" + elemTypeStr + ")), (uint32_t)0, "
+        "(uint32_t)0, (uint32_t)0};\n"
+        "  AscendC::DataCopyPad($0, $1, _afir_dcp);\n}";
+    rewriter.create<emitasc::VerbatimOp>(
+        loc, rewriter.getStringAttr(tmpl),
+        ValueRange({op.getDst(), op.getSrc(), op.getCalCount()}));
+    rewriter.eraseOp(op);
+  });
+
   // DataCopyL2Op with GlobalTensorBracketOp source → verbatim
   //
   // PyAsc emits `GlobalTensor<T> row = base(offset);`, but AscendC's operator()
@@ -2566,6 +2592,21 @@ static void fixBrokenOpEmitters(Operation *moduleOp) {
       }
     }
 
+    // dst byte-length: if dst is a TBuf-backed tensor (the RBLOCK reduction-
+    // split accumulating-reduce path uses a fresh VECCALC TBuf for the per-chunk
+    // result), find its TPipeInitBufferOp length the same way.
+    if (!dstQueueLenVal) {
+      if (auto getOp = op.getDst().getDefiningOp<ascendc::TBufGetTensorOp>()) {
+        Value tbufVal = getOp.getBuffer();
+        for (auto *user : tbufVal.getUsers()) {
+          if (auto initB = dyn_cast<ascendc::TPipeInitBufferOp>(user)) {
+            dstQueueLenVal = initB.getLength();
+            break;
+          }
+        }
+      }
+    }
+
     // $3: find TPipeInitBufferOp length for the src TBuf (rows*N*sizeof(half)).
     Value srcTBufLenVal;
     if (auto getOp = op.getSrc().getDefiningOp<ascendc::TBufGetTensorOp>()) {
@@ -2577,6 +2618,13 @@ static void fixBrokenOpEmitters(Operation *moduleOp) {
         }
       }
     }
+
+    // Verbatim arg order is {dst, src, [dstLen], [srcLen], pipe}; the source
+    // byte-length token shifts depending on whether dstLen was pushed, and the
+    // pipe token depends on how many byte-length operands precede it.
+    std::string srcLenTok = dstQueueLenVal ? "$3" : "$2";
+    int pipeArgIdx = 2 + (dstQueueLenVal ? 1 : 0) + (srcTBufLenVal ? 1 : 0);
+    std::string pipeTok = "$" + std::to_string(pipeArgIdx);
 
     // Use the actual element type of dst (was previously hardcoded to `half`,
     // which silently miscompiled f32 reduce kernels: cols counted in bytes/2
@@ -2591,22 +2639,21 @@ static void fixBrokenOpEmitters(Operation *moduleOp) {
       // Use ReduceSum<T> per row with a 32-byte scratch VECCALC TBuf.
       // The TPipe is passed as the last operand so we can InitBuffer the scratch.
       // $1[r * cols] slices the src tensor to the start of row r.
-      std::string pipeRef; // placeholder name for pipe arg
+      std::string pipeRef = pipeTok;
       if (dstQueueLenVal && srcTBufLenVal) {
-        // $2 = dst_bytes, $3 = src_bytes, $4 = pipe
         tmpl += "  uint32_t _afir_rows = (uint32_t)($2 / sizeof(" + elemTypeStr + "));\n";
-        tmpl += "  uint32_t _afir_cols = (uint32_t)($3 / $2);\n";
-        pipeRef = "$4";
+        tmpl += "  uint32_t _afir_cols = (uint32_t)(" + srcLenTok + " / $2);\n";
       } else if (dstQueueLenVal) {
-        // $2 = dst_bytes, $3 = pipe
         tmpl += "  uint32_t _afir_rows = (uint32_t)($2 / sizeof(" + elemTypeStr + "));\n";
         tmpl += "  uint32_t _afir_cols = (uint32_t)($1.GetSize() / $2);\n";
-        pipeRef = "$3";
+      } else if (srcTBufLenVal) {
+        // dst byte-length unavailable; recover rows from $0.GetSize().
+        tmpl += "  uint32_t _afir_rows = (uint32_t)$0.GetSize();\n";
+        tmpl += "  uint32_t _afir_cols = (uint32_t)(" + srcLenTok +
+                " / ($0.GetSize() * (uint32_t)sizeof(" + elemTypeStr + ")));\n";
       } else {
-        // $2 = pipe
         tmpl += "  uint32_t _afir_rows = (uint32_t)($0.GetSize() / sizeof(" + elemTypeStr + "));\n";
         tmpl += "  uint32_t _afir_cols = (uint32_t)($1.GetSize() / $0.GetSize());\n";
-        pipeRef = "$2";
       }
       // Use TWO separate TBufs: _afir_tbuf_dst (result) and _afir_tbuf_ws (workspace).
       // ReduceSum requires dst != sharedTmpBuffer; aliasing them gives wrong results
@@ -2634,7 +2681,14 @@ static void fixBrokenOpEmitters(Operation *moduleOp) {
       // sync for the result tensor.)
       tmpl += "    AscendC::PipeBarrier<PIPE_V>();\n";
       tmpl += "    $0.SetValue(_afir_r, _afir_scalar.GetValue(0));\n";
-      tmpl += "  }\n}";
+      tmpl += "  }\n";
+      // The SetValue writes above happen on PIPE_S; a subsequent vector op that
+      // reads $0 (e.g. the accumulating AddL2 in the RBLOCK reduction-split
+      // path) runs on PIPE_V and must wait for the scalar writes to commit.
+      // When $0 is a queued VECOUT tensor this is handled by EnQue/DeQue, but
+      // when $0 is a plain TBuf tensor consumed directly we need an explicit
+      // barrier; PIPE_ALL is safe in both cases.
+      tmpl += "  AscendC::PipeBarrier<PIPE_ALL>();\n}";
     } else {
       // RA layout: src is laid out as [R, A] (R = reduction extent, the FIRST
       // axis; A = output extent, the SECOND axis), and we reduce R:
@@ -2654,20 +2708,17 @@ static void fixBrokenOpEmitters(Operation *moduleOp) {
       // adv_api ReduceSum<float, RA> supports float only; a non-f32 reduce on a
       // non-last axis is rejected at C++ compile time by its static_assert
       // (acceptable: such kernels are not produced today).
-      std::string pipeRef;
+      std::string pipeRef = pipeTok;
       bool haveLens = (bool)dstQueueLenVal && (bool)srcTBufLenVal;
       if (haveLens) {
         tmpl += "  uint32_t _afir_A = (uint32_t)($2 / sizeof(" + elemTypeStr + "));\n";
-        tmpl += "  uint32_t _afir_R = (uint32_t)($3 / $2);\n";
-        pipeRef = "$4";
+        tmpl += "  uint32_t _afir_R = (uint32_t)(" + srcLenTok + " / $2);\n";
       } else if (dstQueueLenVal) {
         tmpl += "  uint32_t _afir_A = (uint32_t)($2 / sizeof(" + elemTypeStr + "));\n";
         tmpl += "  uint32_t _afir_R = (uint32_t)($1.GetSize() / _afir_A);\n";
-        pipeRef = "$3";
       } else {
         tmpl += "  uint32_t _afir_A = (uint32_t)($0.GetSize());\n";
         tmpl += "  uint32_t _afir_R = (uint32_t)($1.GetSize() / _afir_A);\n";
-        pipeRef = "$2";
       }
       // Scratch for ReduceSum's internal tree reduction.  Over-estimate as the
       // input byte size (a single-pass tree reduce never needs more than the
@@ -2675,7 +2726,7 @@ static void fixBrokenOpEmitters(Operation *moduleOp) {
       // byte-length ($3) when available rather than GetSize() — the simulator's
       // LocalTensor::GetSize() is unreliable for loop-local InitBuffer'd tensors.
       if (haveLens)
-        tmpl += "  uint32_t _afir_ws_bytes = (uint32_t)$3;\n";
+        tmpl += "  uint32_t _afir_ws_bytes = (uint32_t)" + srcLenTok + ";\n";
       else
         tmpl += "  uint32_t _afir_ws_bytes = (uint32_t)$1.GetSize() * (uint32_t)sizeof(" +
                 elemTypeStr + ");\n";
