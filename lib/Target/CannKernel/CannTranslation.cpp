@@ -2576,11 +2576,13 @@ static void fixBrokenOpEmitters(Operation *moduleOp) {
       tmpl += "    AscendC::ReduceSum<" + elemTypeStr +
               ">(_afir_scalar, $1[_afir_r * _afir_cols],\n";
       tmpl += "                            _afir_ws, (int32_t)_afir_cols);\n";
-      // ReduceSum writes _afir_scalar on PIPE_V; SetValue/GetValue read it on
+      // ReduceSum writes _afir_scalar on PIPE_V; the GetValue below reads it on
       // PIPE_S — barrier so the scalar read sees the committed vector result.
+      // (No PIPE_S barrier afterwards: SetValue targets a different tensor than
+      // the next iteration's ReduceSum, and EnQue handles producer/consumer
+      // sync for the result tensor.)
       tmpl += "    AscendC::PipeBarrier<PIPE_V>();\n";
       tmpl += "    $0.SetValue(_afir_r, _afir_scalar.GetValue(0));\n";
-      tmpl += "    AscendC::PipeBarrier<PIPE_S>();\n";
       tmpl += "  }\n}";
     } else {
       tmpl += "  // RA layout not yet implemented\n}";
