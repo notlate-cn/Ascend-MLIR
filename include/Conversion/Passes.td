@@ -79,16 +79,25 @@ def AscendSchedulePass : Pass<"ascend-schedule", "mlir::ModuleOp"> {
 def AscendRealizePass : Pass<"ascend-realize", "mlir::ModuleOp"> {
   let summary = "Construct Ascend MLIR memory realization plans";
   let description = [{
-    MVP pass for the Ascend Realize stage. It preserves IR unchanged, validates
-    that Schedule/StructuredLowering attributes are present, and emits an
-    optional debug report with empty GM-only plan objects.
+    Pass for the Ascend Realize stage. The default mode preserves IR unchanged,
+    validates that Schedule/StructuredLowering attributes are present, and emits
+    an optional debug report with GM-only plan objects. The opt-in
+    one-shot-bufferize materialization mode runs upstream One-Shot Bufferize as
+    the first Phase 3B IR mutation slice.
   }];
+  let dependentDialects = [
+    "mlir::bufferization::BufferizationDialect",
+    "mlir::memref::MemRefDialect"
+  ];
   let constructor = "mlir::afir::createAscendRealizePass()";
   let options = [
     Option<"debugStage", "debug-stage", "std::string", /*default=*/"\"none\"",
            "Ascend debug stage: none, normalize, kernelize, schedule, realize, all">,
     Option<"dumpReport", "dump-report", "bool", /*default=*/"false",
            "Dump Ascend analysis report to stderr">,
+    Option<"materializationMode", "materialization-mode", "std::string",
+           /*default=*/"\"plan-only\"",
+           "Realize materialization mode: plan-only or one-shot-bufferize">,
   ];
 }
 

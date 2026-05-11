@@ -7,6 +7,9 @@
 #include "Conversion/Ascend/Realize/BufferizationDriver.h"
 
 #include "Conversion/Ascend/Common/Attributes.h"
+#include "mlir/Dialect/Bufferization/Transforms/Bufferize.h"
+#include "mlir/Dialect/Bufferization/Transforms/OneShotAnalysis.h"
+#include "mlir/Dialect/Bufferization/Transforms/OneShotModuleBufferize.h"
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/BuiltinTypes.h"
@@ -134,6 +137,16 @@ BufferizationDriver::collectTensorFacts(ModuleOp module) const {
   for (StringRef kernelId : kernelIds)
     result.push_back(buildIR(kernelId, factsByKernel[kernelId]));
   return result;
+}
+
+LogicalResult BufferizationDriver::runOneShotBufferize(ModuleOp module) const {
+  bufferization::OneShotBufferizationOptions options;
+  options.bufferizeFunctionBoundaries = true;
+
+  bufferization::BufferizationState state;
+  bufferization::BufferizationStatistics statistics;
+  return bufferization::runOneShotModuleBufferize(module, options, state,
+                                                  &statistics);
 }
 
 } // namespace mlir::afir::ascend::realize

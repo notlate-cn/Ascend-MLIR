@@ -14,6 +14,8 @@
 #include "Conversion/Ascend/Realize/RealizeReport.h"
 #include "Conversion/Ascend/Realize/RealizeTypes.h"
 #include "Conversion/Ascend/Realize/StaticMemoryPlanner.h"
+#include "mlir/Dialect/Bufferization/IR/Bufferization.h"
+#include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/IR/Attributes.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/Operation.h"
@@ -34,6 +36,15 @@ using namespace mlir;
 using namespace mlir::afir::ascend::realize;
 
 namespace {
+
+constexpr llvm::StringLiteral kPlanOnlyMaterializationMode = "plan-only";
+constexpr llvm::StringLiteral kOneShotBufferizeMaterializationMode =
+    "one-shot-bufferize";
+
+static bool isSupportedMaterializationMode(StringRef mode) {
+  return mode == kPlanOnlyMaterializationMode ||
+         mode == kOneShotBufferizeMaterializationMode;
+}
 
 static FailureOr<SmallVector<RealizePlanBundle, 4>>
 buildMVPRealizePlans(ModuleOp module, bool &emittedError) {
@@ -171,6 +182,14 @@ struct AscendRealizePass
   using AscendRealizePassBase::AscendRealizePassBase;
 
   void runOnOperation() override {
+    if (!isSupportedMaterializationMode(materializationMode)) {
+      getOperation()->emitError()
+          << "unsupported ascend-realize materialization-mode \""
+          << materializationMode << "\"";
+      signalPassFailure();
+      return;
+    }
+
     ::mlir::afir::ascend::debug::DebugOptions options{
         ::mlir::afir::ascend::debug::parseDebugStage(debugStage), dumpReport};
     if (::mlir::afir::ascend::debug::shouldDump(
@@ -189,6 +208,16 @@ struct AscendRealizePass
                "attributes";
       signalPassFailure();
       return;
+    }
+
+    if (materializationMode == kOneShotBufferizeMaterializationMode) {
+      BufferizationDriver bufferizationDriver;
+      if (failed(bufferizationDriver.runOneShotBufferize(getOperation()))) {
+        getOperation()->emitError()
+            << "ascend-realize failed to run one-shot bufferize";
+        signalPassFailure();
+        return;
+      }
     }
 
     if (::mlir::afir::ascend::debug::shouldDump(

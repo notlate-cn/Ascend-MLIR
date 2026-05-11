@@ -485,7 +485,7 @@ Review / verification:
 
 | 任务 | 状态 | 说明 | 依赖 |
 |---|---|---|---|
-| One-Shot Bufferize 接入 | `Planned` | 将 tensor-level facts 转成真实 memref IR，保留本地 plan/report 入口 | Phase 3 `BufferizationDriver` facts MVP |
+| One-Shot Bufferize opt-in MVP | `Done` | `ascend-realize` 新增 `materialization-mode=one-shot-bufferize`，在显式开启时调用 upstream One-Shot Bufferize 将 tensor IR 改写为 memref IR；默认 `plan-only` 保持原 read-only plan/report 行为 | `ascend-realize-one-shot-bufferize.mlir` |
 | target-aware placement | `Planned` | 用 `TargetMemoryModel` / `TargetCostModel` 选择 GM / on-chip place，并处理降级规则 | Phase 4 `TargetMemoryModel`、`TargetCostModel` |
 | workspace layout / lifetime | `Planned` | 计算 live range、workspace slot、peak usage 和 capacity verifier | placement、schedule decision |
 | 显式 data movement | `Planned` | 基于合法 path 插入 `memref.copy`，记录 selected path / path kind | `TargetMemoryModel` routing、`TargetIntrinsicModel`、`TargetCostModel` |
@@ -541,5 +541,5 @@ Phase 4: TargetIntrinsicModel -> TargetCostModel -> TargetModelVerifier
 后续切分：
 
 1. Phase 4 剩余 target 查询模型已完成：`TargetMemoryModel`、`TargetIntrinsicModel`、`TargetCostModel`、`TargetModelVerifier`
-2. 下一步进入 Phase 3B：One-Shot Bufferize、target-aware placement、workspace layout、显式 data movement、IR mutation
+2. Phase 3B 已完成第一步：One-Shot Bufferize opt-in MVP；下一步推进 target-aware placement、workspace layout、显式 data movement、`memory_space` materialization
 3. Phase 3B 输出稳定 materialized IR 后，再进入 Phase 5 Translate / Runtime Artifact

@@ -17,6 +17,7 @@ class BufferizationDriver {
 public:
   FailureOr<SmallVector<BufferizedKernelIR, 4>>
   collectTensorFacts(ModuleOp module) const;
+  LogicalResult runOneShotBufferize(ModuleOp module) const;
 };
 
 } // namespace mlir::afir::ascend::realize
