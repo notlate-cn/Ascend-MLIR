@@ -56,6 +56,11 @@ void registerVectorPlanPipeline() {
       "parallelize → prepare-for-emit → canonicalize-cann-signature",
       [](OpPassManager &pm) {
         pm.addNestedPass<func::FuncOp>(mlir::createLinalgGeneralizeNamedOpsPass());
+        // Fuse adjacent elementwise/broadcast linalg ops into downstream
+        // consumers (e.g. a reduce) so tile-fuse always sees a single op per
+        // kernel group.  Without this, multi-op groups that mix parallel and
+        // reduction iterators trip the tile-fuse assertions / IR domination.
+        pm.addNestedPass<func::FuncOp>(mlir::createLinalgElementwiseOpFusionPass());
         pm.addNestedPass<func::FuncOp>(createVectorPlanTileFusePass());
         // Fold tensor.dim on statically-known dimensions (e.g. the size-1
         // broadcast axis) before bufferization so that subview size operands
