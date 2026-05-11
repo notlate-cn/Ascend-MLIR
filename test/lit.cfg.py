@@ -118,7 +118,6 @@ tool_dirs = [config.afir_tools_dir, config.llvm_tools_dir]
 tools = [
     'afir-opt',
     'afir-translate',
-    'torch-opt',
     ToolSubst('%PYTHON', config.python_executable, unresolved='ignore'),
 ]
 

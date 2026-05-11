@@ -38,14 +38,3 @@ module {
   // A private func without aclnn.kind must be left unchanged.
   func.func private @unrelated_helper(%x: tensor<4xf32>) -> tensor<4xf32>
 }
-
-
-module {
-  func.func private @__aclnn_flash_attention(tensor<?x?x?x?xf32>, tensor<?x?x?x?xf32>, tensor<?x?x?x?xf32>, tensor<?x?x?x?xf32>, tensor<?x?x?x?xf32>) -> tensor<?x?x?x?xf32>
-  attributes {aclnn.layout = "BNSD", aclnn.op = "FlashAttentionScore"}
-  func.func @coordinator(%arg0: tensor<?x?x?x?xf32>, %arg1: tensor<?x?x?x?xf32>, %arg2: tensor<?x?x?x?xf32>, %arg3: tensor<?x?x?x?xf32>, %arg4: tensor<?x?x?x?xf32>) -> tensor<?x?x?x?xf32> {
-    %0 = call @__aclnn_flash_attention(%arg0, %arg1, %arg2, %arg3, %arg4) : (tensor<?x?x?x?xf32>, tensor<?x?x?x?xf32>, tensor<?x?x?x?xf32>, tensor<?x?x?x?xf32>, tensor<?x?x?x?xf32>) -> tensor<?x?x?x?xf32>
-    return %0 : tensor<?x?x?x?xf32>
-  }
-  func.func private @unrelated_helper(tensor<4xf32>) -> tensor<4xf32>
-}
