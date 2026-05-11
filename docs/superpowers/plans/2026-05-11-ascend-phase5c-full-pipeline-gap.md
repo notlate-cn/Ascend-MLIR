@@ -10,6 +10,14 @@
 
 ---
 
+## Superseded
+
+This plan captured the expected-fail gap state before the Realize-to-Phase-5
+bridge. The bridge follow-up is tracked in
+`docs/superpowers/plans/2026-05-11-ascend-realize-phase5-bridge.md`; the active
+positive smoke is now
+`test/Conversion/ascend-full-pipeline-ordinary-smoke.mlir`.
+
 ## File Structure
 
 - Create `test/Conversion/ascend-full-pipeline-gap-smoke.mlir`
