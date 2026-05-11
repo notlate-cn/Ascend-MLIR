@@ -3,6 +3,11 @@
 // VectorGroup end-to-end codegen: 1D pointwise through the full
 // --vector-plan-codegen pipeline. Verifies AiCore dispatch (get_block_idx),
 // Phase B names in TilingData (XBLOCK/XBLOCK_SUB), and kernel attributes.
+//
+// NB: the body must be a non-trivial pointwise op (here `x + x`).  A bare
+// `yield %in` is an identity copy that linalg-fuse-elementwise-ops (now
+// run by --vector-plan-codegen) folds away, leaving an empty function
+// with nothing to tile.
 
 // CHECK:      func.func @pointwise(
 // CHECK-SAME: ascendc.aicore
@@ -18,7 +23,8 @@ func.func @pointwise(%a: tensor<1024xf32>, %b: tensor<1024xf32>) -> tensor<1024x
     iterator_types = ["parallel"]}
     ins(%a : tensor<1024xf32>) outs(%b : tensor<1024xf32>) {
   ^bb0(%in: f32, %out: f32):
-    linalg.yield %in : f32
+    %v = arith.addf %in, %in : f32
+    linalg.yield %v : f32
   } -> tensor<1024xf32>
   return %result : tensor<1024xf32>
 }

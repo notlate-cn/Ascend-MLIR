@@ -19,8 +19,23 @@
 // CHECK: scf.for %[[BCAST:[^ ]*]] = %{{.*}} to %{{.*}} step %{{.*}}
 // CHECK-NOT: {ascendc.parallel}
 
-// Inner XBLOCK_SUB loop
-// CHECK: scf.for %[[INNER:[^ ]*]] = %{{.*}} to %[[XBLOCK]] step %[[XBLOCK_SUB]]
+// Tail-peel: inner ub = (remaining / XBLOCK_SUB) * XBLOCK_SUB.
+// CHECK: %[[REM:[^ ]*]] = arith.minsi %[[XBLOCK]]
+// CHECK: %[[Q:[^ ]*]] = arith.divsi %[[REM]], %[[XBLOCK_SUB]]
+// CHECK: %[[MAINUB:[^ ]*]] = arith.muli %[[Q]], %[[XBLOCK_SUB]]
+
+// Inner XBLOCK_SUB loop (ub = mainUb, not XBLOCK)
+// CHECK: scf.for %[[INNER:[^ ]*]] = %{{.*}} to %[[MAINUB]] step %[[XBLOCK_SUB]]
+// CHECK: linalg.generic
+// CHECK: scf.yield
+
+// Overlap-tail scf.if (mainUb < remaining) inside the BCast loop.
+// CHECK: arith.cmpi slt, %[[MAINUB]], %[[REM]]
+// CHECK: scf.if
+// CHECK: linalg.generic
+// CHECK: scf.yield
+// CHECK: } else {
+// CHECK: scf.yield
 
 func.func @bcast_op(%a: tensor<1024x512x16xf32>,
                     %b: tensor<1024x512xf32>,

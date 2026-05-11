@@ -9,10 +9,25 @@
 // CHECK-SAME: %[[XBLOCK_SUB:[^ ,)]*]]: index {vector_plan.default_tile_size = 16 : i64}
 
 // CHECK: scf.for %[[OUTER:[^ ]*]] = %{{.*}} to %{{.*}} step %[[XBLOCK]]
-// CHECK: scf.for %[[INNER:[^ ]*]] = %{{.*}} to %[[XBLOCK]] step %[[XBLOCK_SUB]]
+//
+// Tail-peel: inner ub = (remaining / XBLOCK_SUB) * XBLOCK_SUB.
+// CHECK: %[[REM:[^ ]*]] = arith.minsi %[[XBLOCK]]
+// CHECK: %[[Q:[^ ]*]] = arith.divsi %[[REM]], %[[XBLOCK_SUB]]
+// CHECK: %[[MAINUB:[^ ]*]] = arith.muli %[[Q]], %[[XBLOCK_SUB]]
+// CHECK: scf.for %[[INNER:[^ ]*]] = %{{.*}} to %[[MAINUB]] step %[[XBLOCK_SUB]]
+// The reduction axis (d1) has no loop IV → full-dim slice in the extract.
 // CHECK: tensor.extract_slice
 // CHECK: linalg.generic
 // CHECK: tensor.insert_slice
+// CHECK: scf.yield
+//
+// Overlap-tail in scf.if (mainUb < remaining), then else branch.
+// CHECK: arith.cmpi slt, %[[MAINUB]], %[[REM]]
+// CHECK: scf.if
+// CHECK: linalg.generic
+// CHECK: scf.yield
+// CHECK: } else {
+// CHECK: scf.yield
 // CHECK: } {ascendc.parallel}
 
 func.func @reduce(%a: tensor<1024x512xf32>,

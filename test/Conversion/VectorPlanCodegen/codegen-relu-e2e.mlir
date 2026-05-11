@@ -27,7 +27,8 @@
 // CANN: DataCopy({{.*}}, {{.*}}, {{.*}})
 // CANN: Duplicate({{.*}}, c0_f32,
 // CANN: Max(
-// CANN: SetGlobalBuffer(reinterpret_cast<__gm__ float*>(v2) + {{.*}})
+// Output write (GM destination arg index is ABI-dependent — don't pin it).
+// CANN: SetGlobalBuffer(reinterpret_cast<__gm__ float*>(v{{[0-9]+}}) + {{.*}})
 
 func.func @relu(%a: tensor<1024xf32>, %b: tensor<1024xf32>) -> tensor<1024xf32> {
   %result = linalg.generic {
