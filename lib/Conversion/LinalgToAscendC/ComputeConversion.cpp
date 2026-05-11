@@ -27,6 +27,7 @@
 #include "llvm/Support/Debug.h"
 
 #include "ascir/Dialect/Asc/IR/Asc.h"
+#include "ascir/Dialect/EmitAsc/IR/EmitAsc.h"
 
 #include <algorithm>
 
@@ -397,6 +398,74 @@ LogicalResult convertCompute(func::FuncOp funcOp, AscendCBufferContext &ctx) {
     return dequeued;
   };
 
+  // C++ scalar type name for a verbatim template.
+  auto cppScalarName = [](Type t) -> std::string {
+    if (t.isF32()) return "float";
+    if (t.isF16()) return "half";
+    if (t.isBF16()) return "bfloat16_t";
+    if (auto it = dyn_cast<IntegerType>(t))
+      return "int" + std::to_string(it.getWidth()) + "_t";
+    return "float";
+  };
+
+  // Helper: copy a row-strided 2-D tile from GM into a packed VECIN TQue.
+  // The GM source is `srcGt` pointing at the tile origin; the tile is
+  // `rows` blocks of `cols` elements, consecutive blocks `rowStride` elements
+  // apart in GM (gap = rowStride - cols); the VECIN destination is packed
+  // [rows*cols].  This is the [XBLOCK_SUB x RBLOCK_0] chunk of x[A,R] in the
+  // RBLOCK reduction-split path, whose subview layout is strided<[R, 1]> with
+  // R != RBLOCK_0 — a flat DataCopy of rows*cols elements would read
+  // contiguous memory from the origin (the wrong rows).  Emitted as a verbatim
+  // doing one plain DataCopy per row (the AscendC dialect has no strided-copy
+  // op here).  Requires RBLOCK_0*elem_bytes % 32 == 0 — the tiling-space
+  // generator is expected to honour that for the reduction-split tunable.
+  //
+  // `initB` is where the buffer/queue are *allocated* (hoisted out of the
+  // RBLOCK loop to function entry, so InitBuffer/InitQueue run once instead of
+  // once per trip — repeating them would exhaust the UB pool); `b` is where
+  // the per-trip AllocTensor / copy / EnQue / DeQue go.  `rows/cols/rowStride`
+  // must be valid at `initB`'s insertion point too (loop-invariant).  Returns
+  // {dequeued tensor, queue} so the caller can FreeTensor it after use (a
+  // shared depth-1 queue would otherwise dead-lock the next AllocTensor).
+  auto copyGmToVecinStrided =
+      [&](OpBuilder &initB, OpBuilder &b, Location loc, Type elemType,
+          Value srcGt, Value rows, Value cols,
+          Value rowStride) -> std::pair<Value, Value> {
+    unsigned elemBytes = elemType.getIntOrFloatBitWidth() / 8;
+    Value nElems = initB.create<arith::MulIOp>(loc, rows, cols);
+    Value byteSize = initB.create<arith::MulIOp>(
+        loc, nElems, initB.create<arith::ConstantIndexOp>(loc, elemBytes));
+    Value vecinTbuf =
+        initB.create<TBufOp>(loc, TBufType::get(mlirCtx, TPosition::VECIN));
+    initB.create<TPipeInitBufferOp>(loc, ctx.pipe, vecinTbuf, byteSize);
+    Value vecinQue =
+        initB.create<QueueOp>(loc, QueueType::get(mlirCtx, TPosition::VECIN, 1));
+    Value depth = initB.create<arith::ConstantOp>(loc, b.getI32IntegerAttr(1));
+    initB.create<TPipeInitQueueOp>(loc, ctx.pipe, vecinQue, depth, byteSize);
+    Value lt = b.create<TQueBindAllocTensorOp>(
+        loc, LocalTensorType::get(elemType), vecinQue);
+    std::string ets = cppScalarName(elemType);
+    // One plain DataCopy per row: src row `i` lives at $1[i*rowStride] in GM
+    // (GetPhyAddr → fresh GlobalTensor), dst row `i` at $0[i*cols] in UB.
+    // Uses only the proven DataCopy / GetPhyAddr / LocalTensor::operator[]
+    // path (rather than a strided DataCopyPad, which this AscendC/sim build
+    // does not handle for GM→UB).  Requires cols*sizeof(elem) % 32 == 0.
+    std::string tmpl =
+        "{\n"
+        "  for (uint32_t _afir_i = 0; _afir_i < (uint32_t)$2; _afir_i++) {\n"
+        "    AscendC::GlobalTensor<" + ets + "> _afir_gt;\n"
+        "    _afir_gt.SetGlobalBuffer($1.GetPhyAddr(_afir_i * (uint32_t)$4));\n"
+        "    AscendC::DataCopy($0[_afir_i * (uint32_t)$3], _afir_gt, (uint32_t)$3);\n"
+        "  }\n"
+        "}";
+    b.create<emitasc::VerbatimOp>(loc, b.getStringAttr(tmpl),
+                                  ValueRange({lt, srcGt, rows, cols, rowStride}));
+    b.create<TQueBindEnqueTensorOp>(loc, vecinQue, lt);
+    Value deq = b.create<TQueBindDequeTensorOp>(
+        loc, LocalTensorType::get(elemType), vecinQue);
+    return {deq, vecinQue};
+  };
+
   // Helper: get a runtime Value for dimension `dim` of a memref.
   auto getDynDim = [&](OpBuilder &b, Location loc, Value memref,
                         unsigned dim) -> Value {
@@ -501,6 +570,7 @@ LogicalResult convertCompute(func::FuncOp funcOp, AscendCBufferContext &ctx) {
     // and the 2D input (if present).  We derive the full [M, N] iteration
     // shape from the first "full" input (rank == iterRank).
     SmallVector<Value> iterDimSizes(iterRank);
+    memref::SubViewOp fullRankSv;
     for (unsigned i = 0; i < numInputs; ++i) {
       Value inMemref = genOp.getDpsInputOperand(i)->get();
       AffineMap inMap = maps[i];
@@ -509,6 +579,8 @@ LogicalResult convertCompute(func::FuncOp funcOp, AscendCBufferContext &ctx) {
         auto mrt = cast<MemRefType>(inMemref.getType());
         for (unsigned d = 0; d < iterRank; ++d)
           iterDimSizes[d] = getDynDim(builder, loc, inMemref, d);
+        if (inMap.isIdentity())
+          fullRankSv = inMemref.getDefiningOp<memref::SubViewOp>();
         break;
       }
     }
@@ -521,6 +593,60 @@ LogicalResult convertCompute(func::FuncOp funcOp, AscendCBufferContext &ctx) {
           iterDimSizes[d] = getDynDim(builder, loc, outMemref, outDim++);
       }
     }
+
+    // ------------------------------------------------------------------
+    // Hoisting: when this reduce generic sits inside the RBLOCK reduction-
+    // split scf.for (input is a 2-D strided subview x[a_tile, r_chunk] whose
+    // size operands are kernel args), allocate all its UB scratch ONCE at
+    // function entry rather than once per loop trip — re-running
+    // InitBuffer/InitQueue ~R/RBLOCK_0 times overruns the UB pool.  Detect
+    // exactly that case (so the existing few-trip reduce kernels are left
+    // byte-for-byte unchanged).
+    // ------------------------------------------------------------------
+    Block &funcEntry = funcOp.getBody().front();
+    OpBuilder entryBuilder(mlirCtx);
+    entryBuilder.setInsertionPointAfter(ctx.pipe.getDefiningOp());
+    Value strideRowsEntry, strideColsEntry, strideRowStrideEntry;
+    bool hoist = false;
+    if (iterRank == 2 && fullRankSv &&
+        genOp->getParentOfType<scf::ForOp>() != nullptr) {
+      auto svTy = cast<MemRefType>(fullRankSv.getType());
+      if (auto sl = dyn_cast<StridedLayoutAttr>(svTy.getLayout())) {
+        int64_t s0 = sl.getStrides()[0], s1 = sl.getStrides()[1];
+        int64_t shape1 = svTy.getShape()[1];
+        if (s1 == 1 && !ShapedType::isDynamic(s0) &&
+            (ShapedType::isDynamic(shape1) || s0 != shape1)) {
+          // Both subview sizes must be kernel args (defined at function entry).
+          auto svSizes = fullRankSv.getMixedSizes();
+          Value v0, v1;
+          if (auto a = dyn_cast<Attribute>(svSizes[0]))
+            v0 = entryBuilder.create<arith::ConstantIndexOp>(
+                loc, cast<IntegerAttr>(a).getInt());
+          else if (auto ba = dyn_cast<BlockArgument>(cast<Value>(svSizes[0]));
+                   ba && ba.getOwner() == &funcEntry)
+            v0 = cast<Value>(svSizes[0]);
+          if (auto a = dyn_cast<Attribute>(svSizes[1]))
+            v1 = entryBuilder.create<arith::ConstantIndexOp>(
+                loc, cast<IntegerAttr>(a).getInt());
+          else if (auto ba = dyn_cast<BlockArgument>(cast<Value>(svSizes[1]));
+                   ba && ba.getOwner() == &funcEntry)
+            v1 = cast<Value>(svSizes[1]);
+          if (v0 && v1) {
+            hoist = true;
+            strideRowsEntry = v0;
+            strideColsEntry = v1;
+            strideRowStrideEntry =
+                entryBuilder.create<arith::ConstantIndexOp>(loc, s0);
+          }
+        }
+      }
+    }
+    // Builder used for all *allocations* (TBuf/InitBuffer/Queue/InitQueue) — at
+    // function entry when hoisting, else at the generic (in the loop, as before).
+    OpBuilder &initB = hoist ? entryBuilder : builder;
+    // Queue tensors that must be FreeTensor'd after use (only when the queue is
+    // hoisted out of the loop and therefore shared across trips).
+    SmallVector<std::pair<Value, Value>> vecinFrees;
 
     // Collect parallel and reduction dim sizes.
     SmallVector<Value> parallelDims, reductionDims;
@@ -535,12 +661,28 @@ LogicalResult convertCompute(func::FuncOp funcOp, AscendCBufferContext &ctx) {
     SmallVector<Value> fullShape;
     llvm::append_range(fullShape, parallelDims);
     llvm::append_range(fullShape, reductionDims);
-    Value totalElems = computeProduct(builder, loc, fullShape);
-    SmallVector<std::pair<Value, Value>> tempVecinTensors;
+    Value totalElems;
+    for (Value s : fullShape)
+      totalElems = totalElems ? builder.create<arith::MulIOp>(loc, totalElems, s) : s;
+    if (!totalElems)
+      totalElems = builder.create<arith::ConstantIndexOp>(loc, 1);
+    // When hoisting, all allocation sizes / counts use this loop-invariant
+    // value (built at function entry) instead of the per-trip `totalElems`.
+    // For the reduction-split shape iterDimSizes = [a_tile(dim0), r_chunk(dim1)]
+    // so totalElems == strideRowsEntry * strideColsEntry.
+    Value totalElemsEntry = totalElems;
+    SmallVector<Value> allocShape = fullShape;
+    if (hoist) {
+      totalElemsEntry = entryBuilder.create<arith::MulIOp>(
+          loc, strideRowsEntry, strideColsEntry);
+      allocShape = {totalElemsEntry};
+    }
+    Value count = hoist ? totalElemsEntry : totalElems;
 
     // Build a VECCALC accumulator for the full shape.  This is the tensor
     // that will hold the element-wise intermediate results before reduction.
-    Value accumLt = allocVeccalc(builder, loc, elemType, fullShape).second;
+    auto [accumTbuf, accumLt] =
+        allocVeccalc(initB, loc, elemType, allocShape);
 
     // Zero-initialize the accumulator.  The linalg.generic outs operand
     // provides the initial accumulator value, which is 0.0 (set by the
@@ -554,7 +696,7 @@ LogicalResult convertCompute(func::FuncOp funcOp, AscendCBufferContext &ctx) {
       zeroVal = builder.create<arith::ConstantOp>(
           loc, builder.getF32FloatAttr(0.0f));
     if (zeroVal) {
-      auto zeroDup = builder.create<DuplicateL2Op>(loc, accumLt, zeroVal, totalElems);
+      auto zeroDup = builder.create<DuplicateL2Op>(loc, accumLt, zeroVal, count);
       copyAscendCUnitAttr(genOp.getOperation(), zeroDup.getOperation());
     }
 
@@ -624,8 +766,7 @@ LogicalResult convertCompute(func::FuncOp funcOp, AscendCBufferContext &ctx) {
         builder.create<GlobalTensorSetGlobalBufferOp>(loc, srcGt, inMemref,
                                                        /*size=*/Value{});
         Value srcLt =
-            copyGmToVecin(builder, loc, elemType, srcGt, srcElemCount,
-                          srcElemCount, &tempVecinTensors);
+            copyGmToVecin(builder, loc, elemType, srcGt, srcElemCount);
         SmallVector<Value> dstShapeVals, srcShapeVals;
         for (Value s : fullShape)
           dstShapeVals.push_back(
@@ -658,9 +799,43 @@ LogicalResult convertCompute(func::FuncOp funcOp, AscendCBufferContext &ctx) {
             loc, GlobalTensorType::get(elemType));
         builder.create<GlobalTensorSetGlobalBufferOp>(loc, srcGt, inMemref,
                                                        /*size=*/Value{});
-        inputLts[i] =
-            copyGmToVecin(builder, loc, elemType, srcGt, totalElems,
-                          totalElems, &tempVecinTensors);
+        // If the operand is a rank-2 subview whose row stride is a static
+        // value that doesn't (provably) match its column extent — i.e. the
+        // rows aren't packed — a flat DataCopy of rows*cols elements would
+        // read the wrong memory.  This is the [XBLOCK_SUB x RBLOCK_0] chunk
+        // of x[A,R] in the RBLOCK reduction-split path.  Use a strided copy.
+        bool strided = false;
+        if (auto mrt = dyn_cast<MemRefType>(inMemref.getType()))
+          if (mrt.getRank() == 2)
+            if (auto sl = dyn_cast<StridedLayoutAttr>(mrt.getLayout())) {
+              int64_t s0 = sl.getStrides()[0], s1 = sl.getStrides()[1];
+              int64_t shape1 = mrt.getShape()[1];
+              strided = s1 == 1 && !ShapedType::isDynamic(s0) &&
+                        (ShapedType::isDynamic(shape1) || s0 != shape1);
+            }
+        if (strided) {
+          // Sizes/stride used for the (hoisted) buffer alloc must be loop-
+          // invariant — use the function-entry copies when hoisting.
+          Value rows = hoist ? strideRowsEntry
+                             : getDynDim(builder, loc, inMemref, 0);
+          Value cols = hoist ? strideColsEntry
+                             : getDynDim(builder, loc, inMemref, 1);
+          Value rowStride =
+              hoist ? strideRowStrideEntry
+                    : initB.create<arith::ConstantIndexOp>(
+                          loc, cast<StridedLayoutAttr>(
+                                   cast<MemRefType>(inMemref.getType())
+                                       .getLayout())
+                                   .getStrides()[0]);
+          auto [deq, q] = copyGmToVecinStrided(initB, builder, loc, elemType,
+                                               srcGt, rows, cols, rowStride);
+          inputLts[i] = deq;
+          if (hoist)
+            vecinFrees.push_back({q, deq});
+        } else {
+          inputLts[i] =
+              copyGmToVecin(builder, loc, elemType, srcGt, totalElems);
+        }
       } else {
         // Already VECIN or VECCALC — use readTensor as-is.
         inputLts[i] = readTensor(builder, loc, inMemref);
@@ -717,9 +892,8 @@ LogicalResult convertCompute(func::FuncOp funcOp, AscendCBufferContext &ctx) {
         if (it != valToLt.end()) return it->second;
         // Scalar constant? Fill a fresh VECCALC with duplicate_l2.
         if (auto constOp = v.getDefiningOp<arith::ConstantOp>()) {
-          auto [dupTbuf, dupLt] =
-              allocVeccalc(builder, loc, elemType, fullShape);
-          auto dupOp = builder.create<DuplicateL2Op>(loc, dupLt, constOp.getResult(), totalElems);
+          auto [dupTbuf, dupLt] = allocVeccalc(initB, loc, elemType, allocShape);
+          auto dupOp = builder.create<DuplicateL2Op>(loc, dupLt, constOp.getResult(), count);
           copyAscendCUnitAttr(genOp.getOperation(), dupOp.getOperation());
           valToLt[v] = dupLt;
           return dupLt;
@@ -731,8 +905,7 @@ LogicalResult convertCompute(func::FuncOp funcOp, AscendCBufferContext &ctx) {
       auto chooseDst = [&](Value result) -> Value {
         if (result == yieldedVal)
           return accumLt;
-        auto [tmpTbuf, tmpLt] =
-            allocVeccalc(builder, loc, elemType, fullShape);
+        auto [tmpTbuf, tmpLt] = allocVeccalc(initB, loc, elemType, allocShape);
         valToLt[result] = tmpLt;
         return tmpLt;
       };
@@ -742,7 +915,7 @@ LogicalResult convertCompute(func::FuncOp funcOp, AscendCBufferContext &ctx) {
         Value rhs = resolve(addOp.getRhs());
         if (!lhs || !rhs) continue;
         Value dst = chooseDst(addOp.getResult());
-        auto addL2Op = builder.create<AddL2Op>(loc, dst, lhs, rhs, totalElems);
+        auto addL2Op = builder.create<AddL2Op>(loc, dst, lhs, rhs, count);
         copyAscendCUnitAttr(genOp.getOperation(), addL2Op.getOperation());
         if (dst == accumLt) valToLt[addOp.getResult()] = accumLt;
       } else if (auto mulOp = dyn_cast<arith::MulFOp>(bodyOp)) {
@@ -750,7 +923,7 @@ LogicalResult convertCompute(func::FuncOp funcOp, AscendCBufferContext &ctx) {
         Value rhs = resolve(mulOp.getRhs());
         if (!lhs || !rhs) continue;
         Value dst = chooseDst(mulOp.getResult());
-        auto mulOp2 = builder.create<MulL2Op>(loc, dst, lhs, rhs, totalElems);
+        auto mulOp2 = builder.create<MulL2Op>(loc, dst, lhs, rhs, count);
         copyAscendCUnitAttr(genOp.getOperation(), mulOp2.getOperation());
         if (dst == accumLt) valToLt[mulOp.getResult()] = accumLt;
       } else if (auto maxOp = dyn_cast<arith::MaximumFOp>(bodyOp)) {
@@ -758,7 +931,7 @@ LogicalResult convertCompute(func::FuncOp funcOp, AscendCBufferContext &ctx) {
         Value rhs = resolve(maxOp.getRhs());
         if (!lhs || !rhs) continue;
         Value dst = chooseDst(maxOp.getResult());
-        auto maxOp2 = builder.create<MaxL2Op>(loc, dst, lhs, rhs, totalElems);
+        auto maxOp2 = builder.create<MaxL2Op>(loc, dst, lhs, rhs, count);
         copyAscendCUnitAttr(genOp.getOperation(), maxOp2.getOperation());
         if (dst == accumLt) valToLt[maxOp.getResult()] = accumLt;
       }
@@ -807,6 +980,25 @@ LogicalResult convertCompute(func::FuncOp funcOp, AscendCBufferContext &ctx) {
     Value vecoutLt = writeTensor(builder, loc, outMemref);
     auto layoutAttr = ReduceLayoutAttr::get(mlirCtx, layout);
 
+    // When hoisting (RBLOCK reduction-split), give reduce_sum_2d_l2 a
+    // pre-allocated scratch tensor so CannTranslation doesn't InitBuffer one
+    // inside the loop.  Size it generously: rows*cols + 64 elements covers the
+    // AR layout's [8-elem result slot | cols-elem ReduceSum workspace] and the
+    // RA layout's input-sized workspace.
+    Value reduceScratch;
+    if (hoist && layout == ReduceLayout::AR) {
+      Value scratchElems = entryBuilder.create<arith::AddIOp>(
+          loc, totalElemsEntry,
+          entryBuilder.create<arith::ConstantIndexOp>(loc, 64));
+      reduceScratch =
+          allocVeccalc(entryBuilder, loc, elemType, {scratchElems}).second;
+    }
+
+    auto emitVecinFrees = [&] {
+      for (auto &qlt : vecinFrees)
+        builder.create<TQueBindFreeTensorOp>(loc, qlt.first, qlt.second);
+    };
+
     // Detect the RBLOCK reduction-split accumulator: outMemref is a non-init
     // iter_arg of an scf.for (the RBLOCK loop).  Each RBLOCK iteration reduces
     // its chunk into a temporary, then accumulates: acc += reduce(chunk).
@@ -817,16 +1009,22 @@ LogicalResult convertCompute(func::FuncOp funcOp, AscendCBufferContext &ctx) {
 
     if (isAccumulating) {
       SmallVector<Value> outDyn;
-      for (unsigned d = 0;
-           d < cast<MemRefType>(outMemref.getType()).getRank(); ++d)
-        outDyn.push_back(getDynDim(builder, loc, outMemref, d));
-      auto [tmpTbuf, tmpLt] = allocVeccalc(builder, loc, elemType, outDyn);
+      if (hoist) {
+        outDyn.push_back(strideRowsEntry);
+      } else {
+        for (unsigned d = 0;
+             d < cast<MemRefType>(outMemref.getType()).getRank(); ++d)
+          outDyn.push_back(getDynDim(builder, loc, outMemref, d));
+      }
+      auto [tmpTbuf, tmpLt] = allocVeccalc(initB, loc, elemType, outDyn);
       auto reduceOp = builder.create<ReduceSum2DL2Op>(
-          loc, tmpLt, accumLt, layoutAttr, /*sharedTmpBuffer=*/Value{});
+          loc, tmpLt, accumLt, layoutAttr, /*sharedTmpBuffer=*/reduceScratch);
       copyAscendCUnitAttr(genOp.getOperation(), reduceOp.getOperation());
-      Value cnt = computeElementCount(builder, loc, outMemref);
+      Value cnt = hoist ? strideRowsEntry
+                        : computeElementCount(builder, loc, outMemref);
       auto addOp = builder.create<AddL2Op>(loc, vecoutLt, vecoutLt, tmpLt, cnt);
       copyAscendCUnitAttr(genOp.getOperation(), addOp.getOperation());
+      emitVecinFrees();
       genOp.erase();
       continue;
     }
@@ -839,7 +1037,7 @@ LogicalResult convertCompute(func::FuncOp funcOp, AscendCBufferContext &ctx) {
     if (Value q = ctx.getQueue(outMemref))
       builder.create<TQueBindEnqueTensorOp>(loc, q, vecoutLt);
 
-    freeTempVecinTensors(builder, loc, tempVecinTensors);
+    emitVecinFrees();
     genOp.erase();
   }
 

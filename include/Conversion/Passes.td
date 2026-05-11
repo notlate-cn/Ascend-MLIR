@@ -164,6 +164,7 @@ def LinalgToAscendCPass : Pass<"linalg-to-ascendc", "mlir::func::FuncOp"> {
   let constructor = "mlir::afir::createLinalgToAscendCPass()";
   let dependentDialects = [
     "mlir::ascendc::AscendCDialect",
+    "mlir::emitasc::EmitAscDialect",
     "mlir::memref::MemRefDialect",
     "mlir::arith::ArithDialect",
     "mlir::linalg::LinalgDialect"

@@ -2655,21 +2655,33 @@ static void fixBrokenOpEmitters(Operation *moduleOp) {
         tmpl += "  uint32_t _afir_rows = (uint32_t)($0.GetSize() / sizeof(" + elemTypeStr + "));\n";
         tmpl += "  uint32_t _afir_cols = (uint32_t)($1.GetSize() / $0.GetSize());\n";
       }
-      // Use TWO separate TBufs: _afir_tbuf_dst (result) and _afir_tbuf_ws (workspace).
-      // ReduceSum requires dst != sharedTmpBuffer; aliasing them gives wrong results
-      // on arch 3101 because the intermediate tree-reduction overwrites the output.
-      // Workspace must hold one source row (count elements); 32 B is too small
-      // for count>8 fp32.
-      tmpl += "  AscendC::TBuf<AscendC::TPosition::VECCALC> _afir_tbuf_dst;\n";
-      tmpl += "  AscendC::TBuf<AscendC::TPosition::VECCALC> _afir_tbuf_ws;\n";
-      tmpl += "  uint32_t _afir_ws_bytes = ((_afir_cols * (uint32_t)sizeof(" +
-              elemTypeStr + ") + 31u) / 32u) * 32u;\n";
-      tmpl += "  " + pipeRef + ".InitBuffer(_afir_tbuf_dst, 32);\n";
-      tmpl += "  " + pipeRef + ".InitBuffer(_afir_tbuf_ws, _afir_ws_bytes);\n";
-      tmpl += "  AscendC::LocalTensor<" + elemTypeStr +
-              "> _afir_scalar = _afir_tbuf_dst.Get<" + elemTypeStr + ">();\n";
-      tmpl += "  AscendC::LocalTensor<" + elemTypeStr +
-              "> _afir_ws = _afir_tbuf_ws.Get<" + elemTypeStr + ">();\n";
+      // Need two distinct scratch tensors: _afir_scalar (per-row result, 1 elem)
+      // and _afir_ws (ReduceSum's internal tree workspace, ≥ cols elems).
+      // ReduceSum requires dst != sharedTmpBuffer (aliasing them corrupts the
+      // output on arch 3101).
+      if (op.getSharedTmpBuffer()) {
+        // Pre-allocated scratch (the RBLOCK reduction-split path passes one so
+        // we don't InitBuffer inside the loop): first 8 elems = result slot,
+        // the rest = workspace.  Passed as the last verbatim operand ($N).
+        tmpl += "  AscendC::LocalTensor<" + elemTypeStr + "> _afir_scalar = " +
+                pipeTok + ";\n";
+        tmpl += "  AscendC::LocalTensor<" + elemTypeStr + "> _afir_ws = " +
+                pipeTok + "[8];\n";
+      } else {
+        // No pre-allocated scratch — InitBuffer two fresh VECCALC TBufs.  The
+        // last operand ($N) is the TPipe.  Workspace must hold one source row
+        // (cols elements); 32 B is too small for cols>8 fp32.
+        tmpl += "  AscendC::TBuf<AscendC::TPosition::VECCALC> _afir_tbuf_dst;\n";
+        tmpl += "  AscendC::TBuf<AscendC::TPosition::VECCALC> _afir_tbuf_ws;\n";
+        tmpl += "  uint32_t _afir_ws_bytes = ((_afir_cols * (uint32_t)sizeof(" +
+                elemTypeStr + ") + 31u) / 32u) * 32u;\n";
+        tmpl += "  " + pipeRef + ".InitBuffer(_afir_tbuf_dst, 32);\n";
+        tmpl += "  " + pipeRef + ".InitBuffer(_afir_tbuf_ws, _afir_ws_bytes);\n";
+        tmpl += "  AscendC::LocalTensor<" + elemTypeStr +
+                "> _afir_scalar = _afir_tbuf_dst.Get<" + elemTypeStr + ">();\n";
+        tmpl += "  AscendC::LocalTensor<" + elemTypeStr +
+                "> _afir_ws = _afir_tbuf_ws.Get<" + elemTypeStr + ">();\n";
+      }
       tmpl += "  for (uint32_t _afir_r = 0; _afir_r < _afir_rows; _afir_r++) {\n";
       tmpl += "    AscendC::ReduceSum<" + elemTypeStr +
               ">(_afir_scalar, $1[_afir_r * _afir_cols],\n";
@@ -2755,8 +2767,11 @@ static void fixBrokenOpEmitters(Operation *moduleOp) {
       args.push_back(dstQueueLenVal);
     if (srcTBufLenVal)
       args.push_back(srcTBufLenVal);
-    if (pipeVal)
-      args.push_back(pipeVal);
+    // Last operand ($N): a pre-allocated scratch tensor when one was provided
+    // (AR reduction-split path), otherwise the TPipe (so the verbatim can
+    // InitBuffer its own scratch).
+    if (Value lastArg = op.getSharedTmpBuffer() ? op.getSharedTmpBuffer() : pipeVal)
+      args.push_back(lastArg);
 
     rewriter.create<emitasc::VerbatimOp>(
         loc, rewriter.getStringAttr(tmpl), ValueRange(args));

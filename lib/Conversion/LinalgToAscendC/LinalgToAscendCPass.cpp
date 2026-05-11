@@ -29,6 +29,7 @@
 
 #include "ascir/Dialect/Asc/IR/Asc.h"
 #include "ascir/Dialect/Asc/Utils/Utils.h"
+#include "ascir/Dialect/EmitAsc/IR/EmitAsc.h"
 
 #define GEN_PASS_DECL_LINALGTOASCENDCPASS
 #define GEN_PASS_DEF_LINALGTOASCENDCPASS

@@ -12,11 +12,11 @@
 #
 # 形状: x[A, R] f32  →  out[A] f32   (axis=1 reduce, R=65536 太大需拆 RBLOCK)
 #
-# ⚠️ WIP / 已知未通过: RBLOCK 拆分后每个 chunk 的 GM→UB 搬运是二维带 stride
-#   的 subview（[XBLOCK_SUB 行 × RBLOCK_0 列], 行 stride = R），但当前 codegen
-#   把它发成了一维连续 DataCopy（读错行 / 越界）。修复需要把 chunk load 改成
-#   带 stride 的 DataCopyPad2D（emitter + ComputeConversion 改动）。在此之前
-#   本用例 session.validation=fail，不要加入 e2e 验收门禁。
+# 验证 RBLOCK reduction-split codegen 的两个关键点：
+#   1. 每个 chunk 的 GM→UB 搬运是二维带 stride 的 subview
+#      （[XBLOCK_SUB 行 × RBLOCK_0 列]，行 stride = R），发成每行一次 DataCopy；
+#   2. reduce 用的所有 UB scratch（chunk 累加器 / VECIN / partial / workspace）
+#      在 R 块循环外只分配一次（否则 ~R/RBLOCK_0 次 InitBuffer 撑爆 UB）。
 # ============================================================
 
 set -e

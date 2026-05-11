@@ -13,6 +13,7 @@ add_mlir_library(LinalgToAscendCConversion
   AFIRDialect
   MLIRAsc
   MLIRAscUtils
+  MLIREmitAsc
   MLIRLinalgDialect
   MLIRMemRefDialect
   MLIRArithDialect
