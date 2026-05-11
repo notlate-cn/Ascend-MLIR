@@ -125,6 +125,53 @@ def AscendComputeLowerPass : Pass<"ascend-compute-lower", "mlir::func::FuncOp"> 
   ];
 }
 
+def AscendParallelizePass : Pass<"ascend-parallelize", "mlir::ModuleOp"> {
+  let summary = "Run Phase 5 Ascend kernel dispatch lowering";
+  let description = [{
+    Versionless Phase 5 wrapper around the existing AscendC parallelization
+    implementation.
+  }];
+  let constructor = "mlir::afir::createAscendParallelizePass()";
+  let dependentDialects = [
+    "mlir::ascendc::AscendCDialect",
+    "mlir::arith::ArithDialect",
+    "mlir::scf::SCFDialect",
+    "mlir::func::FuncDialect"
+  ];
+}
+
+def AscendPrepareForEmitPass
+    : Pass<"ascend-prepare-for-emit", "mlir::ModuleOp"> {
+  let summary = "Prepare Phase 5 AscendC kernel ABI data";
+  let description = [{
+    Versionless Phase 5 wrapper around the existing AscendC prepare-for-emit
+    implementation.
+  }];
+  let constructor = "mlir::afir::createAscendPrepareForEmitPass()";
+  let dependentDialects = [
+    "mlir::ascendc::AscendCDialect",
+    "mlir::emitasc::EmitAscDialect",
+    "mlir::func::FuncDialect",
+    "mlir::arith::ArithDialect",
+    "mlir::memref::MemRefDialect"
+  ];
+}
+
+def AscendCanonicalizeCannSignaturePass
+    : Pass<"ascend-canonicalize-cann-signature", "mlir::ModuleOp"> {
+  let summary = "Canonicalize Phase 5 Ascend kernel signatures to CANN ABI";
+  let description = [{
+    Versionless Phase 5 wrapper around the existing CANN signature
+    canonicalization implementation.
+  }];
+  let constructor = "mlir::afir::createAscendCanonicalizeCannSignaturePass()";
+  let dependentDialects = [
+    "mlir::func::FuncDialect",
+    "mlir::emitasc::EmitAscDialect",
+    "mlir::memref::MemRefDialect"
+  ];
+}
+
 //===----------------------------------------------------------------------===//
 // StableHLO to AFIR Conversion
 //===----------------------------------------------------------------------===//
