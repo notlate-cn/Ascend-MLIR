@@ -82,8 +82,12 @@ buildMVPRealizePlans(ModuleOp module, bool &emittedError) {
   if (walkResult.wasInterrupted())
     return failure();
 
-  if (scheduledOpsByKernel.empty())
+  if (scheduledOpsByKernel.empty()) {
+    module.emitError("ascend-realize requires at least one op with scheduled "
+                     "structured lowering attributes");
+    emittedError = true;
     return failure();
+  }
 
   BufferizationDriver bufferizationDriver;
   FailureOr<SmallVector<BufferizedKernelIR, 4>> bufferized =

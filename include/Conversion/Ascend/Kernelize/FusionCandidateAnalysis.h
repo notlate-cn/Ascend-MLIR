@@ -24,7 +24,7 @@
 namespace mlir::afir::ascend::kernelize {
 
 struct ScheduleContract {
-  SmallVector<StringRef, 0> templateFamilies;
+  SmallVector<std::string, 2> templateFamilies;
 };
 
 struct FusionCandidate {

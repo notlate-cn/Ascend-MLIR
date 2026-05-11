@@ -17,6 +17,7 @@
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/Support/raw_ostream.h"
 
+#include <cstddef>
 #include <cstdint>
 #include <string>
 
@@ -31,6 +32,18 @@ struct HorizontalFusionCandidate {
   bool legal = false;
   std::string rejectionReason;
 };
+
+} // namespace mlir::afir::ascend::kernelize
+
+namespace llvm {
+template <>
+struct CalculateSmallVectorDefaultInlinedElements<
+    mlir::afir::ascend::kernelize::HorizontalFusionCandidate> {
+  static constexpr size_t value = 0;
+};
+} // namespace llvm
+
+namespace mlir::afir::ascend::kernelize {
 
 class HorizontalFusionAnalyzer {
 public:
