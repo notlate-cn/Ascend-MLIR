@@ -6,8 +6,10 @@
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
+#include "mlir/Dialect/Utils/StaticValueUtils.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinTypes.h"
+#include "mlir/IR/Dominance.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/Support/Debug.h"
 
@@ -48,6 +50,58 @@ static memref::AllocOp allocOnChipSized(OpBuilder &b, Location loc,
   return b.create<memref::AllocOp>(loc, spacedType, ValueRange{stepSize});
 }
 
+// Allocate an on-chip memref whose shape matches `src`, using the subview's
+// explicit size operands.  `hoistPoint` is the operation BEFORE which the
+// alloc will be inserted; size operands that do not dominate it are re-derived
+// by cloning their defining memref.DimOp at the hoist point (valid because
+// the DimOp's source is always a function argument).
+static memref::AllocOp allocOnChipMatchingSubview(OpBuilder &b, Location loc,
+                                                   Value src, int64_t memSpace,
+                                                   Operation *hoistPoint) {
+  auto mrt = cast<MemRefType>(src.getType());
+  Attribute spaceAttr =
+      IntegerAttr::get(IntegerType::get(b.getContext(), 64), memSpace);
+
+  if (auto sv = src.getDefiningOp<memref::SubViewOp>()) {
+    DominanceInfo di;
+    SmallVector<int64_t> resultShape;
+    SmallVector<Value> dynSizes;
+    for (OpFoldResult sz : sv.getMixedSizes()) {
+      if (auto cst = getConstantIntValue(sz)) {
+        resultShape.push_back(*cst);
+      } else {
+        Value szVal = cast<Value>(sz);
+        resultShape.push_back(ShapedType::kDynamic);
+        // If szVal is defined inside the loop (doesn't dominate hoistPoint),
+        // try to re-derive it.  The common case is a memref.DimOp whose
+        // source argument dominates everywhere.
+        if (!di.dominates(szVal, hoistPoint)) {
+          if (auto dimOp = szVal.getDefiningOp<memref::DimOp>()) {
+            if (di.dominates(dimOp.getSource(), hoistPoint) &&
+                di.dominates(dimOp.getIndex(), hoistPoint)) {
+              szVal = b.create<memref::DimOp>(loc, dimOp.getSource(),
+                                              dimOp.getIndex());
+            }
+          }
+        }
+        dynSizes.push_back(szVal);
+      }
+    }
+    auto spacedType = MemRefType::get(resultShape, mrt.getElementType(),
+                                      MemRefLayoutAttrInterface{}, spaceAttr);
+    return b.create<memref::AllocOp>(loc, spacedType, dynSizes);
+  }
+
+  // Fallback: memref.dim at the current insertion point.
+  auto spacedType = MemRefType::get(mrt.getShape(), mrt.getElementType(),
+                                    MemRefLayoutAttrInterface{}, spaceAttr);
+  SmallVector<Value> dynSizes;
+  for (unsigned d = 0, rank = mrt.getRank(); d < rank; ++d)
+    if (ShapedType::isDynamic(mrt.getShape()[d]))
+      dynSizes.push_back(b.create<memref::DimOp>(loc, src, d));
+  return b.create<memref::AllocOp>(loc, spacedType, dynSizes);
+}
+
 // Allocate an on-chip memref with the same shape/element type as `src` but
 // with memory_space = `memSpace`.  Dynamic dimensions are materialized via
 // memref.dim ops inserted at `builder`'s current insertion point.
@@ -84,11 +138,14 @@ struct VectorPlanInsertTileBuffersPass
         targets.push_back(op);
     });
 
-    // Track GM values that have pending MTE2 (local→GM) writes.  When a
-    // subsequent op reads from the same GM address, we insert a
-    // PipeBarrier(MTE2) barrier to prevent the MTE1 load from observing stale
-    // data before the MTE2 store has committed.
-    llvm::SmallDenseMap<Value, Value> pendingMTE2Writes; // GM value → vecout
+    // Track GM values that have pending writes (UB→GM, MTE3).  When a
+    // subsequent op reads from the same GM address, we insert PipeBarrier(ALL)
+    // to ensure both the UB→GM store (MTE3) AND any preceding vector pipeline
+    // (PIPE_V) operations (e.g., Broadcast internal PipeBarrier(PIPE_V)) have
+    // fully committed before the GM→UB reload.  PIPE_MTE3 alone is insufficient
+    // when the store chain includes PIPE_V operations that may not yet be
+    // visible to the MTE3 engine.
+    llvm::SmallDenseMap<Value, Value> pendingMTE3Writes; // GM value → vecout
 
     for (linalg::GenericOp genOp : targets) {
       Location loc = genOp.getLoc();
@@ -108,24 +165,31 @@ struct VectorPlanInsertTileBuffersPass
         if (getMemSpace(inputMem.getType()) != 0)
           continue;
 
-        // Insert PipeBarrier inside the loop (before genOp) if there is a
-        // pending MTE2 store to this GM buffer.
+        // Insert PipeBarrier(ALL) before genOp if there is a pending write
+        // (UB→GM) to this GM buffer.  PIPE_ALL ensures both the MTE3 store and
+        // any preceding PIPE_V operations complete before the GM→UB reload.
         builder.setInsertionPoint(genOp);
-        if (pendingMTE2Writes.count(inputMem)) {
+        if (pendingMTE3Writes.count(inputMem)) {
           auto pipeAttr = ascendc::PipeAttr::get(builder.getContext(),
-                                                 ascendc::Pipe::PIPE_MTE2);
+                                                 ascendc::Pipe::PIPE_ALL);
           builder.create<ascendc::PipeBarrierOp>(loc, pipeAttr);
-          pendingMTE2Writes.erase(inputMem);
+          pendingMTE3Writes.erase(inputMem);
         }
 
         // Allocate the VECIN buffer outside the inner loop so InitBuffer is
-        // invoked only once per block.
+        // invoked only once per block.  Always use the subview-matching
+        // allocator so the buffer extent is read from the subview's actual
+        // size operands.  The previous rank-1 special case used
+        // `innerFor.getStep()`, which is only correct when the rank-1
+        // operand's axis is exactly the innermost loop's axis — for
+        // multi-axis broadcast operands (e.g. `a[d1]` with d2 as the
+        // innermost loop) it would size the tile by the wrong dim.
         Value vecin;
         if (innerFor) {
           builder.setInsertionPoint(innerFor);
-          auto elemTy = cast<MemRefType>(inputMem.getType()).getElementType();
-          vecin = allocOnChipSized(builder, loc, innerFor.getStep(), elemTy,
-                                   /*VECIN=*/9)
+          vecin = allocOnChipMatchingSubview(builder, loc, inputMem,
+                                              /*VECIN=*/9,
+                                              innerFor.getOperation())
                       .getResult();
         } else {
           builder.setInsertionPoint(genOp);
@@ -146,9 +210,9 @@ struct VectorPlanInsertTileBuffersPass
       Value vecout;
       if (innerFor) {
         builder.setInsertionPoint(innerFor);
-        auto elemTy = cast<MemRefType>(gmOut.getType()).getElementType();
-        vecout = allocOnChipSized(builder, loc, innerFor.getStep(), elemTy,
-                                  /*VECOUT=*/10)
+        vecout = allocOnChipMatchingSubview(builder, loc, gmOut,
+                                            /*VECOUT=*/10,
+                                            innerFor.getOperation())
                      .getResult();
       } else {
         builder.setInsertionPoint(genOp);
@@ -160,8 +224,8 @@ struct VectorPlanInsertTileBuffersPass
       builder.setInsertionPointAfter(genOp);
       builder.create<memref::CopyOp>(loc, vecout, gmOut);
 
-      // Record that gmOut now has a pending MTE2 write (local→GM).
-      pendingMTE2Writes[gmOut] = vecout;
+      // Record that gmOut now has a pending write (UB→GM).
+      pendingMTE3Writes[gmOut] = vecout;
 
       LLVM_DEBUG(llvm::dbgs() << "[insert-tile-buffers] promoted " << genOp
                                << "\n");

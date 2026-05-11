@@ -87,14 +87,41 @@ static bool decomposeBroadcast(BroadcastL2Op op, Value pipe) {
   Type elemType =
       cast<LocalTensorType>(op.getDst().getType()).getElementType();
 
-  // Walk axes in order, broadcasting one at a time.  Intermediate steps write
-  // to fresh VECCALC tensors; the last step writes to the original dst so that
-  // existing users of op.getDst() see the final result.
+  // Broadcast one axis at a time.  At each step pick a *foldable* axis — one
+  // whose prefix dims [0,ba) are all currently statically-1 OR whose suffix
+  // dims (ba, N) are all currently statically-1.  This avoids leaving a
+  // middle-axis broadcast for the CannTranslation fold to handle when both
+  // prefix and suffix have already grown non-1 (which is not foldable to a
+  // single 2D AscendC::Broadcast).
+  //
+  // Intermediate steps write to fresh VECCALC tensors; the last step writes
+  // to the original dst so existing users of op.getDst() see the final result.
   Value curTensor = op.getSrc();
   SmallVector<Value> curShape(srcShape.begin(), srcShape.end());
-  for (size_t k = 0; k < bcastAxes.size(); ++k) {
-    int ax = bcastAxes[k];
-    bool isLast = (k + 1 == bcastAxes.size());
+  SmallVector<int> remaining = bcastAxes;
+  while (!remaining.empty()) {
+    auto allOne = [&](int lo, int hi) {
+      for (int i = lo; i < hi; ++i)
+        if (!isStaticOne(curShape[i]))
+          return false;
+      return true;
+    };
+    int pickIdx = -1;
+    for (int k = 0; k < (int)remaining.size(); ++k) {
+      int ba = remaining[k];
+      if (allOne(0, ba) || allOne(ba + 1, rank)) {
+        pickIdx = k;
+        break;
+      }
+    }
+    if (pickIdx < 0) {
+      op.emitOpError(
+          "multi-axis broadcast with no foldable order: no remaining axis has "
+          "an all-const-1 prefix or suffix in the current shape");
+      return false;
+    }
+    int ax = remaining[pickIdx];
+    bool isLast = (remaining.size() == 1);
 
     SmallVector<Value> nextShape = curShape;
     nextShape[ax] = dstShape[ax];
@@ -107,7 +134,6 @@ static bool decomposeBroadcast(BroadcastL2Op op, Value pipe) {
         loc, nextTensor, curTensor, /*dstShape=*/nextShape,
         /*srcShape=*/curShape,
         b.getI32IntegerAttr(static_cast<int32_t>(rank)));
-    // Preserve any AscendC unit attributes on the original op.
     for (NamedAttribute attr : op->getAttrs()) {
       if (attr.getName().getValue().starts_with("ascendc."))
         stepOp->setAttr(attr.getName(), attr.getValue());
@@ -115,6 +141,7 @@ static bool decomposeBroadcast(BroadcastL2Op op, Value pipe) {
 
     curTensor = nextTensor;
     curShape = nextShape;
+    remaining.erase(remaining.begin() + pickIdx);
   }
 
   op.erase();

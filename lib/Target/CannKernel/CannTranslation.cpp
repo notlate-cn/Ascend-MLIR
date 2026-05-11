@@ -2326,32 +2326,83 @@ static void fixBrokenOpEmitters(Operation *moduleOp) {
     }
 
     if (bcastAxis >= 0) {
-      // Fold rank-N to 2D.
+      // Fold rank-N to 2D.  AscendC::Broadcast supports two 2D forms:
+      //   axis=0 (row):    src{1, N}    -> dst{M, N}
+      //   axis=1 (column): src{M, 1}    -> dst{M, N}
+      // For a broadcast on axis ba of an N-D shape, the element mapping is
+      // src[p, 0, s] -> dst[p, j, s] for j in [0, D), where p ranges over
+      // prefix = prod(dims[0,ba)) and s over suffix = prod(dims(ba,N)).  This
+      // folds to a 2D broadcast iff prefix==1 (row form: src{1, suffix} ->
+      // dst{D, suffix}) OR suffix==1 (column form: src{prefix, 1} ->
+      // dst{prefix, D}).  When both prefix and suffix are >1, the broadcast
+      // interleaves and cannot be expressed as a single 2D AscendC::Broadcast
+      // call.
+      //
+      // The check is STATIC: we treat a dim as "1" only when its shape operand
+      // is an arith.constant 1.  Runtime values whose value happens to be 1
+      // do not qualify — the kernel author / decompose pass must arrange the
+      // IR so the foldable dims are emitted as arith.constant 1 (e.g. the
+      // decompose pass walks broadcast axes in an order that keeps either
+      // prefix or suffix all-constant-1).
       uint32_t ba = static_cast<uint32_t>(bcastAxis);
-      // dstShape indices: 2..2+rank-1; srcShape indices: 2+rank..2+2*rank-1
       uint32_t dstBase = 2, srcBase = 2 + rank;
-      // prefix: product of dims before bcastAxis (same in src and dst)
+      auto rangeAllStaticOne = [&](uint32_t lo, uint32_t hi) -> bool {
+        for (uint32_t i = lo; i < hi; ++i)
+          if (!isStaticOne(srcShapeVals[i]))
+            return false;
+        return true;
+      };
+      bool prefixIsOne = rangeAllStaticOne(0, ba);
+      bool suffixIsOne = rangeAllStaticOne(ba + 1, rank);
+
       std::string prefixStr = placeholderProduct(srcBase, srcBase + ba);
-      // suffix: product of dims after bcastAxis (same in src and dst)
-      std::string suffixStr = placeholderProduct(srcBase + ba + 1, srcBase + rank);
-      // broadcast multiplier: dstShape[bcastAxis]
+      std::string suffixStr =
+          placeholderProduct(srcBase + ba + 1, srcBase + rank);
       std::string bcastDimStr = "(uint32_t)$" + std::to_string(dstBase + ba);
 
-      // dst2D rows = prefix * dstShape[ba]; dst2D cols = suffix
-      std::string dst2DRow = prefixStr == "1u" ? bcastDimStr
-                                               : prefixStr + " * " + bcastDimStr;
-      std::string dst2DCol = suffixStr;
-      // src2D rows = prefix; src2D cols = suffix
-      std::string src2DRow = prefixStr;
-      std::string src2DCol = suffixStr;
-      // Broadcast axis in 2D: 0 for non-last, 1 for last-axis broadcast
-      int axis2D = (ba == rank - 1) ? 1 : 0;
-
-      tmpl = "{\n";
-      tmpl += "  uint32_t _afir_ds[2] = {" + dst2DRow + ", " + dst2DCol + "};\n";
-      tmpl += "  uint32_t _afir_ss[2] = {" + src2DRow + ", " + src2DCol + "};\n";
-      tmpl += "  AscendC::Broadcast<" + elemTypeStr + ", 2, " +
-              std::to_string(axis2D) + ">($0, $1, _afir_ds, _afir_ss);\n}";
+      if (suffixIsOne) {
+        // Column broadcast: src{prefix, 1} -> dst{prefix, D}
+        std::string dst2DRow = prefixStr;
+        std::string dst2DCol = bcastDimStr;
+        std::string src2DRow = prefixStr;
+        std::string src2DCol = "1u";
+        tmpl = "{\n";
+        tmpl += "  uint32_t _afir_ds[2] = {" + dst2DRow + ", " + dst2DCol + "};\n";
+        tmpl += "  uint32_t _afir_ss[2] = {" + src2DRow + ", " + src2DCol + "};\n";
+        tmpl += "  AscendC::Broadcast<" + elemTypeStr +
+                ", 2, 1>($0, $1, _afir_ds, _afir_ss);\n}";
+      } else if (prefixIsOne) {
+        // Row broadcast: src{1, suffix} -> dst{D, suffix}
+        std::string dst2DRow = bcastDimStr;
+        std::string dst2DCol = suffixStr;
+        std::string src2DRow = "1u";
+        std::string src2DCol = suffixStr;
+        tmpl = "{\n";
+        tmpl += "  uint32_t _afir_ds[2] = {" + dst2DRow + ", " + dst2DCol + "};\n";
+        tmpl += "  uint32_t _afir_ss[2] = {" + src2DRow + ", " + src2DCol + "};\n";
+        tmpl += "  AscendC::Broadcast<" + elemTypeStr +
+                ", 2, 0>($0, $1, _afir_ds, _afir_ss);\n}";
+      } else {
+        // Middle axis with both prefix>1 and suffix>1 statically — the
+        // broadcast interleaves and is not a single 2D AscendC::Broadcast.
+        // Emit a runtime loop: for p in [0, prefix), do a 2D row broadcast of
+        // a (1, suffix) slice into a (D, suffix) slice, advancing the src/dst
+        // pointers by suffix / (D*suffix) elements per iteration.  When
+        // prefix==1 at runtime this is a single broadcast call (which is what
+        // the previous formula relied on); when prefix>1 it is still correct.
+        tmpl = "{\n";
+        tmpl += "  uint32_t _afir_prefix = " + prefixStr + ";\n";
+        tmpl += "  uint32_t _afir_suffix = " + suffixStr + ";\n";
+        tmpl += "  uint32_t _afir_D = " + bcastDimStr + ";\n";
+        tmpl += "  uint32_t _afir_ds[2] = {_afir_D, _afir_suffix};\n";
+        tmpl += "  uint32_t _afir_ss[2] = {1u, _afir_suffix};\n";
+        tmpl += "  for (uint32_t _afir_p = 0; _afir_p < _afir_prefix; ++_afir_p) {\n";
+        tmpl += "    AscendC::Broadcast<" + elemTypeStr + ", 2, 0>(\n";
+        tmpl += "        $0[_afir_p * _afir_D * _afir_suffix],\n";
+        tmpl += "        $1[_afir_p * _afir_suffix],\n";
+        tmpl += "        _afir_ds, _afir_ss);\n";
+        tmpl += "  }\n}";
+      }
     } else {
       // rank <= 2 or no constant-1 srcShape found: use native rank.
       // Determine axis: if last srcShape dim is constant 1, it is column
