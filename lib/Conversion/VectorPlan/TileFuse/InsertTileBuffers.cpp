@@ -150,13 +150,29 @@ struct VectorPlanInsertTileBuffersPass
     for (linalg::GenericOp genOp : targets) {
       Location loc = genOp.getLoc();
 
-      // Find the innermost enclosing scf::ForOp (the sub-tile loop).
-      // Buffer allocs must be hoisted BEFORE this loop so that AscendC's
-      // TPipe::InitBuffer is called once per block rather than once per
-      // sub-tile.  Calling InitBuffer repeatedly on the same TBuf/TQue handle
-      // inside a loop is a bump-allocator leak that causes the 4th and later
-      // sub-tile iterations to receive a zero-filled buffer.
+      // Determine where to anchor on-chip allocs.  Two cases:
+      //   (1) genOp is inside an scf.for sub-tile loop — hoist allocs BEFORE
+      //       that for so AscendC's TPipe::InitBuffer is called once per
+      //       block rather than once per sub-tile (bump-allocator leak).
+      //   (2) genOp is inside an scf.if then/else block (the Case-C tail
+      //       peel block) and not further inside an inner for — the if
+      //       runs at most once per kernel, so the alloc lives in the if
+      //       block.  It must be placed AFTER any dynamic size operands
+      //       (e.g. tailSize) defined inside the if, so we insert right
+      //       before genOp.
       auto innerFor = genOp->getParentOfType<scf::ForOp>();
+      Operation *allocAnchor = innerFor.getOperation();
+      {
+        Operation *cur = genOp->getParentOp();
+        while (cur) {
+          if (isa<scf::ForOp>(cur)) break;
+          if (isa<scf::IfOp>(cur)) {
+            allocAnchor = genOp.getOperation();
+            break;
+          }
+          cur = cur->getParentOp();
+        }
+      }
 
       // ---- Promote inputs: GM → VECIN ----
       // Allocs go before the inner loop; copies and barriers go before genOp.
@@ -185,11 +201,10 @@ struct VectorPlanInsertTileBuffersPass
         // multi-axis broadcast operands (e.g. `a[d1]` with d2 as the
         // innermost loop) it would size the tile by the wrong dim.
         Value vecin;
-        if (innerFor) {
-          builder.setInsertionPoint(innerFor);
+        if (allocAnchor) {
+          builder.setInsertionPoint(allocAnchor);
           vecin = allocOnChipMatchingSubview(builder, loc, inputMem,
-                                              /*VECIN=*/9,
-                                              innerFor.getOperation())
+                                              /*VECIN=*/9, allocAnchor)
                       .getResult();
         } else {
           builder.setInsertionPoint(genOp);
@@ -208,11 +223,10 @@ struct VectorPlanInsertTileBuffersPass
       Value gmOut = outOperand->get();
 
       Value vecout;
-      if (innerFor) {
-        builder.setInsertionPoint(innerFor);
+      if (allocAnchor) {
+        builder.setInsertionPoint(allocAnchor);
         vecout = allocOnChipMatchingSubview(builder, loc, gmOut,
-                                            /*VECOUT=*/10,
-                                            innerFor.getOperation())
+                                            /*VECOUT=*/10, allocAnchor)
                      .getResult();
       } else {
         builder.setInsertionPoint(genOp);

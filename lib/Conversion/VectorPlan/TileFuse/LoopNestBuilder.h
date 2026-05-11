@@ -17,6 +17,22 @@ struct LoopNestResult {
   llvm::SmallVector<mlir::scf::ForOp>  bcastForOps;
   mlir::Block                         *innermostBody = nullptr;
   llvm::SmallVector<mlir::Value>       iterArgs;
+
+  /// Tail-peel info for the innermost inner-tile axis.  When `hasTail` is
+  /// true, the innermost scf.for's ub has already been rewritten to
+  /// `mainInnerUb` (= floor(remaining / step) * step), and the GroupEmitter
+  /// must, after closing that for, emit an `scf.if (mainInnerUb < remaining)`
+  /// whose then-block re-emits the body with composed IV = outerOfTailIV +
+  /// mainInnerUb and slice-size override `{innerTileAxisIdx: tailSize}`
+  /// (tailSize is computed inside the if's then-block).
+  ///
+  /// Constraint: requires `XBLOCK_SUB | XBLOCK` so the tail block only fires
+  /// on the tail core (last block when `extent % XBLOCK != 0`).
+  bool                                 hasTail = false;
+  int                                  innerTileAxisIdx = -1;
+  mlir::Value                          remaining;       // min(XBLOCK, extent-outer_iv)
+  mlir::Value                          mainInnerUb;     // floor(remaining/T)*T
+  mlir::Value                          outerOfTailIV;   // c0 if axis has no Outer
 };
 
 LoopNestResult buildLoopNest(mlir::OpBuilder &builder,

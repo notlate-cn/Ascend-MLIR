@@ -70,7 +70,8 @@ SliceParams computeSlice(AffineMap indexingMap,
                           const DenseMap<int, Value> &loopIVs,
                           const TilePlan &plan,
                           Value tensor,
-                          OpBuilder &builder, Location loc) {
+                          OpBuilder &builder, Location loc,
+                          const DenseMap<int, Value> *sizeOverride) {
   SliceParams sp;
   Value c0 = builder.create<arith::ConstantIndexOp>(loc, 0);
   Value c1 = builder.create<arith::ConstantIndexOp>(loc, 1);
@@ -81,8 +82,15 @@ SliceParams computeSlice(AffineMap indexingMap,
     if (d && loopIVs.count((int)d.getPosition())) {
       int axisIdx = (int)d.getPosition();
       sp.offsets.push_back(OpFoldResult(loopIVs.lookup(axisIdx)));
-      sp.sizes.push_back(
-          OpFoldResult(getTileSizeForAxis(plan, axisIdx, builder, loc)));
+      // Tail emit passes {tile_axis -> tail_size} so the tail body shrinks the
+      // slice on the peeled axis only; other axes keep their planned size.
+      Value sz;
+      if (sizeOverride) {
+        auto it = sizeOverride->find(axisIdx);
+        if (it != sizeOverride->end()) sz = it->second;
+      }
+      if (!sz) sz = getTileSizeForAxis(plan, axisIdx, builder, loc);
+      sp.sizes.push_back(OpFoldResult(sz));
     } else {
       sp.offsets.push_back(OpFoldResult(c0));
       Value dimSize =

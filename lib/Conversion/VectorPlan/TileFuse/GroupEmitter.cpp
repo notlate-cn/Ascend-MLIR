@@ -88,7 +88,7 @@ emitGroupWithReductionSplit(OpBuilder &builder, Location loc,
   loopNest.innermostBody = parallelBody;
   loopNest.iterArgs = parallelIterArgs;
 
-  // parallelIVs = loopNest.loopIVs minus the reduction axis IV (which was
+  // parallelIVs = loopIVs minus the reduction axis IV (which was
   // composed using rblockIV). We strip it and rebuild within RBLOCK below.
   DenseMap<int, Value> parallelIVs;
   for (auto &kv : loopNest.loopIVs)
@@ -203,13 +203,26 @@ emitGroupWithReductionSplit(OpBuilder &builder, Location loc,
   return SmallVector<Value>(loopNest.allForOps.front().getResults());
 }
 
-SmallVector<Value> emitGroup(OpBuilder &builder, Location loc,
-                              const CollapsedGroupInfo &info,
-                              const TilePlan &plan,
-                              const LoopNestResult &loopNest) {
-  if (const TileParam *rblockParam = findReductionInner(plan))
-    return emitGroupWithReductionSplit(builder, loc, info, plan, loopNest,
-                                        rblockParam);
+// Emit one round of the tile body (extract_slice for each input/init, clone
+// the linalg op, insert_slice back).  Builder must be positioned where the
+// new ops should be inserted (inside an scf.for body or scf.if then-block).
+// Returns the values to yield (one per boundary output).
+//
+//   `iterArgs`     — input tensors for this iteration (loop iter_args, or
+//                    inner-for results when emitting the tail body).
+//   `bcastForOps`  — used by the hoist path; pass `{}` in tail mode to disable
+//                    hoisting (the tail body lives inside any BCast for and
+//                    must not re-hoist).
+//   `sizeOverride` — per-axis size override map (tail emit passes
+//                    `{innerTileAxisIdx: tailSize}`).
+static SmallVector<Value>
+emitGroupBodyOnce(OpBuilder &builder, Location loc,
+                  const CollapsedGroupInfo &info, const TilePlan &plan,
+                  const DenseMap<int, Value> &loopIVs,
+                  const DenseMap<int, Value> &outerLoopIVs,
+                  ArrayRef<Value> iterArgs,
+                  ArrayRef<scf::ForOp> bcastForOps,
+                  const DenseMap<int, Value> *sizeOverride) {
   // --- Collect boundary outs and map to iter args ---
   SmallVector<Value> allOuts;
   DenseSet<Value> seenOuts;
@@ -219,14 +232,12 @@ SmallVector<Value> emitGroup(OpBuilder &builder, Location loc,
         allOuts.push_back(out);
 
   DenseMap<Value, Value> outToIterArg;
-  assert(allOuts.size() == loopNest.iterArgs.size() &&
+  assert(allOuts.size() == iterArgs.size() &&
          "allOuts / iterArgs count mismatch");
-  for (auto [out, iterArg] : llvm::zip(allOuts, loopNest.iterArgs))
+  for (auto [out, iterArg] : llvm::zip(allOuts, iterArgs))
     outToIterArg[out] = iterArg;
 
   DenseMap<Value, Value> tiledValues;
-
-  builder.setInsertionPointToEnd(loopNest.innermostBody);
 
   // --- Emit tiled ops ---
   for (LinalgOp op : info.topoMembers) {
@@ -251,16 +262,16 @@ SmallVector<Value> emitGroup(OpBuilder &builder, Location loc,
       // dominate the BCast loop's containing block.
       // Identify which bcastForOp is the hoistable target.
       scf::ForOp hoistBeforeOp;
-      if (!loopNest.bcastForOps.empty()) {
+      if (!bcastForOps.empty()) {
         // Check from innermost to outermost BCast loop.
-        for (int i = (int)loopNest.bcastForOps.size() - 1; i >= 0; --i) {
-          scf::ForOp bcastFor = loopNest.bcastForOps[i];
+        for (int i = (int)bcastForOps.size() - 1; i >= 0; --i) {
+          scf::ForOp bcastFor = bcastForOps[i];
           // Check that bcastFor IV is NOT in the map's results (i.e., the
           // operand does not use the BCast axis).
           bool bcastUsed = false;
           for (int r = 0; r < (int)map.getNumResults(); ++r) {
             auto d = dyn_cast<AffineDimExpr>(map.getResult(r));
-            if (d && loopNest.loopIVs.lookup(d.getPosition()) ==
+            if (d && loopIVs.lookup(d.getPosition()) ==
                          bcastFor.getInductionVar()) {
               bcastUsed = true;
               break;
@@ -273,7 +284,7 @@ SmallVector<Value> emitGroup(OpBuilder &builder, Location loc,
           for (int r = 0; r < (int)map.getNumResults(); ++r) {
             auto d = dyn_cast<AffineDimExpr>(map.getResult(r));
             if (!d) continue;
-            Value outerIV = loopNest.outerLoopIVs.lookup(d.getPosition());
+            Value outerIV = outerLoopIVs.lookup(d.getPosition());
             if (outerIV && !dominatesBlock(outerIV, candidateBlock)) {
               outersDominate = false;
               break;
@@ -292,7 +303,7 @@ SmallVector<Value> emitGroup(OpBuilder &builder, Location loc,
           OpBuilder::InsertionGuard guard(builder);
           builder.setInsertionPoint(hoistBeforeOp->getBlock(),
                                     Block::iterator(hoistBeforeOp));
-          auto outerSp = computeOuterSlice(map, loopNest.outerLoopIVs, plan,
+          auto outerSp = computeOuterSlice(map, outerLoopIVs, plan,
                                             operand, builder, loc);
           auto outerSlicedType = tensor::ExtractSliceOp::inferResultType(
               cast<RankedTensorType>(operand.getType()),
@@ -305,8 +316,8 @@ SmallVector<Value> emitGroup(OpBuilder &builder, Location loc,
         // using the hoisted coarse slice as the source.
         // Inner offset = composedIV - outerIV (relative within outer tile).
         DenseMap<int, Value> innerOnlyIVs;
-        for (auto &[axisIdx, composedIV] : loopNest.loopIVs) {
-          Value outerIV = loopNest.outerLoopIVs.lookup(axisIdx);
+        for (auto &[axisIdx, composedIV] : loopIVs) {
+          Value outerIV = outerLoopIVs.lookup(axisIdx);
           if (outerIV && composedIV != outerIV)
             innerOnlyIVs[axisIdx] =
                 builder.create<arith::SubIOp>(loc, composedIV, outerIV);
@@ -314,7 +325,7 @@ SmallVector<Value> emitGroup(OpBuilder &builder, Location loc,
             innerOnlyIVs[axisIdx] = composedIV;
         }
         auto innerSp = computeSlice(map, innerOnlyIVs, plan, outerSliced,
-                                     builder, loc);
+                                     builder, loc, sizeOverride);
         auto innerSlicedType = tensor::ExtractSliceOp::inferResultType(
             cast<RankedTensorType>(outerSliced.getType()),
             innerSp.offsets, innerSp.sizes, innerSp.strides);
@@ -324,7 +335,8 @@ SmallVector<Value> emitGroup(OpBuilder &builder, Location loc,
         newOperands.push_back(sliced);
       } else {
         // No hoist possible; emit extract_slice in the innermost body as usual.
-        auto sp = computeSlice(map, loopNest.loopIVs, plan, operand, builder, loc);
+        auto sp = computeSlice(map, loopIVs, plan, operand, builder, loc,
+                                sizeOverride);
         auto slicedType = tensor::ExtractSliceOp::inferResultType(
             cast<RankedTensorType>(operand.getType()),
             sp.offsets, sp.sizes, sp.strides);
@@ -340,8 +352,8 @@ SmallVector<Value> emitGroup(OpBuilder &builder, Location loc,
       Value iterArg = outToIterArg.lookup(outOperand);
       if (!iterArg) iterArg = outOperand;
       AffineMap outMap = maps[numInputs + idx];
-      auto sp = computeSlice(outMap, loopNest.loopIVs, plan, iterArg,
-                              builder, loc);
+      auto sp = computeSlice(outMap, loopIVs, plan, iterArg,
+                              builder, loc, sizeOverride);
       auto slicedType = tensor::ExtractSliceOp::inferResultType(
           cast<RankedTensorType>(iterArg.getType()),
           sp.offsets, sp.sizes, sp.strides);
@@ -365,7 +377,7 @@ SmallVector<Value> emitGroup(OpBuilder &builder, Location loc,
 
   // --- Emit insert_slice for each boundary out ---
   SmallVector<Value> yieldVals;
-  for (auto [origOut, iterArg] : llvm::zip(allOuts, loopNest.iterArgs)) {
+  for (auto [origOut, iterArg] : llvm::zip(allOuts, iterArgs)) {
     Value tiledResult;
     for (LinalgOp op : info.topoMembers) {
       auto inits   = op.getDpsInits();
@@ -390,23 +402,111 @@ SmallVector<Value> emitGroup(OpBuilder &builder, Location loc,
       }
       if (outMap) break;
     }
-    auto sp = computeSlice(outMap, loopNest.loopIVs, plan, iterArg,
-                            builder, loc);
+    auto sp = computeSlice(outMap, loopIVs, plan, iterArg,
+                            builder, loc, sizeOverride);
     Value inserted = builder.create<tensor::InsertSliceOp>(
         loc, tiledResult, iterArg, sp.offsets, sp.sizes, sp.strides);
     yieldVals.push_back(inserted);
   }
 
-  builder.create<scf::YieldOp>(loc, yieldVals);
+  return yieldVals;
+}
 
+SmallVector<Value> emitGroup(OpBuilder &builder, Location loc,
+                              const CollapsedGroupInfo &info,
+                              const TilePlan &plan,
+                              const LoopNestResult &loopNest) {
+  if (const TileParam *rblockParam = findReductionInner(plan))
+    return emitGroupWithReductionSplit(builder, loc, info, plan, loopNest,
+                                        rblockParam);
+
+  // --- Main body in innermost for ---
+  builder.setInsertionPointToEnd(loopNest.innermostBody);
+  SmallVector<Value> mainYieldVals =
+      emitGroupBodyOnce(builder, loc, info, plan,
+                         loopNest.loopIVs, loopNest.outerLoopIVs,
+                         loopNest.iterArgs, loopNest.bcastForOps,
+                         /*sizeOverride=*/nullptr);
+  builder.create<scf::YieldOp>(loc, mainYieldVals);
+
+  // --- Tail peel: scf.if after innermost for ---
+  scf::ForOp innermostFor;
+  scf::IfOp tailIf;
+  if (loopNest.hasTail && !loopNest.allForOps.empty()) {
+    innermostFor = loopNest.allForOps.back();
+    builder.setInsertionPointAfter(innermostFor);
+
+    Value cond = builder.create<arith::CmpIOp>(
+        loc, arith::CmpIPredicate::slt,
+        loopNest.mainInnerUb, loopNest.remaining);
+
+    SmallVector<Type> resultTypes(innermostFor.getResultTypes().begin(),
+                                   innermostFor.getResultTypes().end());
+    tailIf = builder.create<scf::IfOp>(loc, resultTypes, cond,
+                                        /*withElseRegion=*/true);
+
+    {
+      OpBuilder::InsertionGuard g(builder);
+      builder.setInsertionPointToStart(tailIf.thenBlock());
+
+      Value tailSize = builder.create<arith::SubIOp>(
+          loc, loopNest.remaining, loopNest.mainInnerUb);
+      Value tailComposed = loopNest.mainInnerUb;
+      // For an inner-only axis (no outer level) outerOfTailIV is c0 — add
+      // only when there's a real outer IV.
+      if (loopNest.outerOfTailIV) {
+        bool isC0 = false;
+        if (auto cst = loopNest.outerOfTailIV
+                            .getDefiningOp<arith::ConstantIndexOp>())
+          isC0 = cst.value() == 0;
+        if (!isC0)
+          tailComposed = builder.create<arith::AddIOp>(
+              loc, loopNest.outerOfTailIV, loopNest.mainInnerUb);
+      }
+
+      DenseMap<int, Value> tailLoopIVs = loopNest.loopIVs;
+      tailLoopIVs[loopNest.innerTileAxisIdx] = tailComposed;
+      DenseMap<int, Value> sizeOverride;
+      sizeOverride[loopNest.innerTileAxisIdx] = tailSize;
+
+      SmallVector<Value> tailIterArgs(innermostFor.getResults().begin(),
+                                       innermostFor.getResults().end());
+
+      // Tail body is inside any BCast for(s); disable hoisting (already
+      // applied to the main body).
+      SmallVector<Value> tailYieldVals =
+          emitGroupBodyOnce(builder, loc, info, plan,
+                             tailLoopIVs, loopNest.outerLoopIVs,
+                             tailIterArgs, /*bcastForOps=*/{},
+                             &sizeOverride);
+      builder.create<scf::YieldOp>(loc, tailYieldVals);
+    }
+
+    {
+      OpBuilder::InsertionGuard g(builder);
+      builder.setInsertionPointToStart(tailIf.elseBlock());
+      builder.create<scf::YieldOp>(
+          loc, SmallVector<Value>(innermostFor.getResults().begin(),
+                                   innermostFor.getResults().end()));
+    }
+  }
+
+  // --- Propagate yields up the loop nest ---
+  // The immediate parent of innermost for yields scf.if.results (when peeled),
+  // not innermost.results.
   for (int i = (int)loopNest.allForOps.size() - 2; i >= 0; --i) {
     scf::ForOp inner = loopNest.allForOps[i + 1];
     scf::ForOp outer = loopNest.allForOps[i];
     builder.setInsertionPointToEnd(outer.getBody());
-    builder.create<scf::YieldOp>(loc, inner.getResults());
+    ValueRange yieldVR =
+        (tailIf && inner == innermostFor) ? tailIf.getResults()
+                                          : inner.getResults();
+    builder.create<scf::YieldOp>(loc, yieldVR);
   }
 
-  if (loopNest.allForOps.empty()) return yieldVals;
+  if (loopNest.allForOps.empty()) return mainYieldVals;
+  if (loopNest.allForOps.size() == 1 && tailIf)
+    return SmallVector<Value>(tailIf.getResults());
   scf::ForOp outermost = loopNest.allForOps.front();
   return SmallVector<Value>(outermost.getResults());
 }

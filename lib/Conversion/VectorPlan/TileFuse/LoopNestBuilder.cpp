@@ -64,16 +64,42 @@ LoopNestResult buildLoopNest(OpBuilder &builder, Location loc,
     return a->axisIdx < b->axisIdx;
   });
 
+  // Peel only the innermost (last) inner tile axis so the main body sees a
+  // static slice size while the tail handles `extent % step != 0`.  Other
+  // inner-tile axes (rare in current workloads) keep their original ub.
+  const TileParam *innermostInner = innerParams.empty() ? nullptr
+                                                          : innerParams.back();
+
   for (const TileParam *tp : innerParams) {
-    Value ub;
+    // parentStep is this inner axis's "tile budget":
+    //   - outer XBLOCK when an Outer level exists for this axis,
+    //   - full axis extent otherwise.
+    Value parentStep;
+    Value parentIV = c0;
     if (outerIVs.count(tp->axisIdx)) {
       for (auto &group : plan.tileable)
         for (const auto &op2 : group)
           if (op2.level == TileLevel::Outer && op2.axisIdx == tp->axisIdx)
-            ub = op2.ssa;
+            parentStep = op2.ssa;
+      parentIV = outerIVs[tp->axisIdx];
     }
-    if (!ub)
-      ub = getAxisExtentValue(builder, loc, *plan.group, tp->axisIdx);
+    if (!parentStep)
+      parentStep = getAxisExtentValue(builder, loc, *plan.group, tp->axisIdx);
+
+    Value ub = parentStep;
+    Value remaining, mainInnerUb;
+
+    if (tp == innermostInner) {
+      // remaining = min(parentStep, extent - parentIV)
+      Value extent = getAxisExtentValue(builder, loc, *plan.group, tp->axisIdx);
+      Value extMinusParent =
+          builder.create<arith::SubIOp>(loc, extent, parentIV);
+      remaining = builder.create<arith::MinSIOp>(loc, parentStep, extMinusParent);
+      Value q = builder.create<arith::DivSIOp>(loc, remaining, tp->ssa);
+      mainInnerUb = builder.create<arith::MulIOp>(loc, q, tp->ssa);
+      ub = mainInnerUb;
+    }
+
     auto forOp = emitFor(c0, ub, tp->ssa, /*isParallelOuter=*/false);
 
     if (outerIVs.count(tp->axisIdx)) {
@@ -84,6 +110,14 @@ LoopNestResult buildLoopNest(OpBuilder &builder, Location loc,
     } else {
       result.loopIVs[tp->axisIdx] = forOp.getInductionVar();
       result.outerLoopIVs[tp->axisIdx] = forOp.getInductionVar();
+    }
+
+    if (tp == innermostInner) {
+      result.hasTail = true;
+      result.innerTileAxisIdx = tp->axisIdx;
+      result.remaining = remaining;
+      result.mainInnerUb = mainInnerUb;
+      result.outerOfTailIV = parentIV;
     }
   }
 
