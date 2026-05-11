@@ -2527,52 +2527,61 @@ static void fixBrokenOpEmitters(Operation *moduleOp) {
       }
     }
 
+    // Use the actual element type of dst (was previously hardcoded to `half`,
+    // which silently miscompiled f32 reduce kernels: cols counted in bytes/2
+    // instead of bytes/4 and ReduceSum<half> reinterpreted f32 bytes as f16).
+    auto dstElemType =
+        cast<ascendc::LocalTensorType>(op.getDst().getType()).getElementType();
+    std::string elemTypeStr = getAscendCScalarTypeName(dstElemType);
+
     std::string tmpl = "{\n";
     if (isAR) {
       // AR: dst[r] = sum(src[r*cols .. r*cols+cols-1])
-      // Use ReduceSum<half> per row with a 32-byte scratch VECCALC TBuf.
+      // Use ReduceSum<T> per row with a 32-byte scratch VECCALC TBuf.
       // The TPipe is passed as the last operand so we can InitBuffer the scratch.
       // $1[r * cols] slices the src tensor to the start of row r.
       std::string pipeRef; // placeholder name for pipe arg
       if (dstQueueLenVal && srcTBufLenVal) {
         // $2 = dst_bytes, $3 = src_bytes, $4 = pipe
-        tmpl += "  uint32_t _afir_rows = (uint32_t)($2 / sizeof(half));\n";
+        tmpl += "  uint32_t _afir_rows = (uint32_t)($2 / sizeof(" + elemTypeStr + "));\n";
         tmpl += "  uint32_t _afir_cols = (uint32_t)($3 / $2);\n";
         pipeRef = "$4";
       } else if (dstQueueLenVal) {
         // $2 = dst_bytes, $3 = pipe
-        tmpl += "  uint32_t _afir_rows = (uint32_t)($2 / sizeof(half));\n";
+        tmpl += "  uint32_t _afir_rows = (uint32_t)($2 / sizeof(" + elemTypeStr + "));\n";
         tmpl += "  uint32_t _afir_cols = (uint32_t)($1.GetSize() / $2);\n";
         pipeRef = "$3";
       } else {
         // $2 = pipe
-        tmpl += "  uint32_t _afir_rows = (uint32_t)($0.GetSize() / sizeof(half));\n";
+        tmpl += "  uint32_t _afir_rows = (uint32_t)($0.GetSize() / sizeof(" + elemTypeStr + "));\n";
         tmpl += "  uint32_t _afir_cols = (uint32_t)($1.GetSize() / $0.GetSize());\n";
         pipeRef = "$2";
       }
-      auto srcElemType =
-          cast<ascendc::LocalTensorType>(op.getSrc().getType()).getElementType();
-      if (srcElemType.isF16()) {
-        tmpl += "  uint32_t _afir_src_elems = _afir_rows * _afir_cols;\n";
-        tmpl += "  AscendC::TBuf<AscendC::TPosition::VECCALC> _afir_src_f32_tbuf;\n";
-        tmpl += "  AscendC::TBuf<AscendC::TPosition::VECCALC> _afir_dst_f32_tbuf;\n";
-        tmpl += "  " + pipeRef + ".InitBuffer(_afir_src_f32_tbuf, _afir_src_elems * sizeof(float));\n";
-        tmpl += "  " + pipeRef + ".InitBuffer(_afir_dst_f32_tbuf, _afir_rows * sizeof(float));\n";
-        tmpl += "  AscendC::LocalTensor<float> _afir_src_f32 = _afir_src_f32_tbuf.Get<float>();\n";
-        tmpl += "  AscendC::LocalTensor<float> _afir_dst_f32 = _afir_dst_f32_tbuf.Get<float>();\n";
-        tmpl += "  AscendC::Cast(_afir_src_f32, $1, AscendC::RoundMode::CAST_NONE,\n";
-        tmpl += "                _afir_src_elems);\n";
-        tmpl += "  uint32_t _afir_shape[2] = {_afir_rows, _afir_cols};\n";
-        tmpl += "  AscendC::ReduceSum<float, AscendC::Pattern::Reduce::AR, true>(\n";
-        tmpl += "      _afir_dst_f32, _afir_src_f32, _afir_shape, false);\n";
-        tmpl += "  AscendC::Cast($0, _afir_dst_f32, AscendC::RoundMode::CAST_NONE,\n";
-        tmpl += "                _afir_rows);\n";
-      } else {
-        tmpl += "  uint32_t _afir_shape[2] = {_afir_rows, _afir_cols};\n";
-        tmpl += "  AscendC::ReduceSum<float, AscendC::Pattern::Reduce::AR, true>(\n";
-        tmpl += "      $0, $1, _afir_shape, false);\n";
-      }
-      tmpl += "}";
+      // Use TWO separate TBufs: _afir_tbuf_dst (result) and _afir_tbuf_ws (workspace).
+      // ReduceSum requires dst != sharedTmpBuffer; aliasing them gives wrong results
+      // on arch 3101 because the intermediate tree-reduction overwrites the output.
+      // Workspace must hold one source row (count elements); 32 B is too small
+      // for count>8 fp32.
+      tmpl += "  AscendC::TBuf<AscendC::TPosition::VECCALC> _afir_tbuf_dst;\n";
+      tmpl += "  AscendC::TBuf<AscendC::TPosition::VECCALC> _afir_tbuf_ws;\n";
+      tmpl += "  uint32_t _afir_ws_bytes = ((_afir_cols * (uint32_t)sizeof(" +
+              elemTypeStr + ") + 31u) / 32u) * 32u;\n";
+      tmpl += "  " + pipeRef + ".InitBuffer(_afir_tbuf_dst, 32);\n";
+      tmpl += "  " + pipeRef + ".InitBuffer(_afir_tbuf_ws, _afir_ws_bytes);\n";
+      tmpl += "  AscendC::LocalTensor<" + elemTypeStr +
+              "> _afir_scalar = _afir_tbuf_dst.Get<" + elemTypeStr + ">();\n";
+      tmpl += "  AscendC::LocalTensor<" + elemTypeStr +
+              "> _afir_ws = _afir_tbuf_ws.Get<" + elemTypeStr + ">();\n";
+      tmpl += "  for (uint32_t _afir_r = 0; _afir_r < _afir_rows; _afir_r++) {\n";
+      tmpl += "    AscendC::ReduceSum<" + elemTypeStr +
+              ">(_afir_scalar, $1[_afir_r * _afir_cols],\n";
+      tmpl += "                            _afir_ws, (int32_t)_afir_cols);\n";
+      // ReduceSum writes _afir_scalar on PIPE_V; SetValue/GetValue read it on
+      // PIPE_S — barrier so the scalar read sees the committed vector result.
+      tmpl += "    AscendC::PipeBarrier<PIPE_V>();\n";
+      tmpl += "    $0.SetValue(_afir_r, _afir_scalar.GetValue(0));\n";
+      tmpl += "    AscendC::PipeBarrier<PIPE_S>();\n";
+      tmpl += "  }\n}";
     } else {
       tmpl += "  // RA layout not yet implemented\n}";
     }
