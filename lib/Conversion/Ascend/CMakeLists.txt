@@ -1,4 +1,5 @@
 add_mlir_library(AscendConversion
+  Backend/BackendSupportMatrix.cpp
   Schedule/AxisCoalescer.cpp
   Schedule/ScheduleCache.cpp
   Schedule/ScheduleDecision.cpp
