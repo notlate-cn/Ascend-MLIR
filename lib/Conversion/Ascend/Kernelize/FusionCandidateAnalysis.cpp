@@ -17,6 +17,7 @@
 #include "llvm/Support/raw_ostream.h"
 
 #include <cstdint>
+#include <string>
 #include <utility>
 
 using namespace mlir;
@@ -226,9 +227,9 @@ void printOpIdList(raw_ostream &os, ArrayRef<Operation *> ops,
   os << "]";
 }
 
-void printStringList(raw_ostream &os, ArrayRef<StringRef> strings) {
+void printStringList(raw_ostream &os, ArrayRef<std::string> strings) {
   os << "[";
-  llvm::interleaveComma(strings, os, [&](StringRef value) {
+  llvm::interleaveComma(strings, os, [&](const std::string &value) {
     os << "\"" << value << "\"";
   });
   os << "]";

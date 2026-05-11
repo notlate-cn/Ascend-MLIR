@@ -445,6 +445,15 @@ ssh xvm@orb 'cd /home/niu/code/Ascend-MLIR && cmake --build build-v2-task9-verif
 | Ascend shared attributes | `Done` | 新增 `Conversion/Ascend/Common/Attributes.h`，Kernelize / Schedule / Realize 使用同源常量 | 新增 `AscendCommonAttributesTest` passed |
 | 代码命名去版本化 | `Done` | 源码目录、namespace、CMake target、IR attrs、测试名迁移为版本无关 `Ascend` 命名；方案/文档版本名保留 | guard、xvm build、unit、ctest、Ascend lit passed |
 
+### Phase 3/4 Expert Review Follow-up Round 2
+
+| 项 | 状态 | 处理结论 | 验证 |
+|---|---|---|---|
+| `buildFallbackPattern` 丢弃 closure 计算结果 | `Done` | 删除无效 `computeCandidateClosure` 调用；candidate / merged / horizontal candidate 的真实 closure 计算保留 | `AscendKernelPatternTest` passed；Ascend Conversion lit passed |
+| `MovementPlanner` 硬耦合 `empty_workspace` | `Done` | 仅保留 kernel id 与 tracked place 不变量；不再拒绝 future static-memory mode、workspace slots、known peak usage | `AscendRealizePlannerTest` 覆盖 future static plan cases |
+| `AscendRealizePass` 空模块诊断 | `Done` | empty/no scheduled op 路径直接 emit 明确 module diagnostic，避免依赖通用 fallback 错误 | `ascend-realize-rejects-unscheduled.mlir` passed |
+| `ScheduleContract::templateFamilies` 生命周期 | `Done` | 改为 owning `SmallVector<std::string, 2>`，merge / report helpers 同步使用 owning strings | xvm `afir-opt` build、Kernelize/Realize focused lit passed |
+
 Review / verification:
 
 | 命令 | 结果 |

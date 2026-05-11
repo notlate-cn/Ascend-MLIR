@@ -59,31 +59,43 @@ TEST(AscendRealizePlannerTest, MovementPlannerRejectsMismatchedTrackedPlaces) {
   EXPECT_TRUE(llvm::failed(planner.build(placement, staticMemory)));
 }
 
-TEST(AscendRealizePlannerTest, MovementPlannerRejectsUnsupportedStaticMode) {
+TEST(AscendRealizePlannerTest, MovementPlannerBuildsWithFutureStaticMode) {
   PlacementPlan placement = makePlacementPlan();
   StaticMemoryPlan staticMemory = makeStaticMemoryPlan();
   staticMemory.mode = "packed_workspace";
 
   MovementPlanner planner;
-  EXPECT_TRUE(llvm::failed(planner.build(placement, staticMemory)));
+  auto plan = planner.build(placement, staticMemory);
+
+  ASSERT_TRUE(llvm::succeeded(plan));
+  EXPECT_EQ(plan->kernelId, "kernel_0");
+  EXPECT_EQ(plan->mode, "gm_noop");
 }
 
-TEST(AscendRealizePlannerTest, MovementPlannerRejectsWorkspaceSlots) {
+TEST(AscendRealizePlannerTest, MovementPlannerBuildsWithWorkspaceSlots) {
   PlacementPlan placement = makePlacementPlan();
   StaticMemoryPlan staticMemory = makeStaticMemoryPlan();
   staticMemory.workspaceSlotCount = 1;
 
   MovementPlanner planner;
-  EXPECT_TRUE(llvm::failed(planner.build(placement, staticMemory)));
+  auto plan = planner.build(placement, staticMemory);
+
+  ASSERT_TRUE(llvm::succeeded(plan));
+  EXPECT_EQ(plan->kernelId, "kernel_0");
+  EXPECT_EQ(plan->mode, "gm_noop");
 }
 
-TEST(AscendRealizePlannerTest, MovementPlannerRejectsKnownPeakUsage) {
+TEST(AscendRealizePlannerTest, MovementPlannerBuildsWithKnownPeakUsage) {
   PlacementPlan placement = makePlacementPlan();
   StaticMemoryPlan staticMemory = makeStaticMemoryPlan();
   staticMemory.peakUsageKnown = true;
 
   MovementPlanner planner;
-  EXPECT_TRUE(llvm::failed(planner.build(placement, staticMemory)));
+  auto plan = planner.build(placement, staticMemory);
+
+  ASSERT_TRUE(llvm::succeeded(plan));
+  EXPECT_EQ(plan->kernelId, "kernel_0");
+  EXPECT_EQ(plan->mode, "gm_noop");
 }
 
 TEST(AscendRealizePlannerTest, MovementPlannerBuildsGmNoopPlan) {

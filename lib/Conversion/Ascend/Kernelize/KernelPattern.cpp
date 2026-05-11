@@ -214,13 +214,11 @@ KernelPattern buildPatternFromCandidate(const KernelPatternCandidate &candidate)
 }
 
 KernelPattern buildFallbackPattern(Operation *op,
-                                   const DependencyAnalysisResult &deps,
                                    ScheduleContract contract) {
   KernelPattern pattern;
   pattern.internalOps.push_back(op);
   pattern.primaryOps.push_back(op);
   pattern.scheduleContract = std::move(contract);
-  (void)computeCandidateClosure(pattern.internalOps, deps.index);
   return pattern;
 }
 
@@ -388,7 +386,7 @@ KernelPartitioner::partition(const KernelPatternGraph &graph,
     if (!hasSchedulableRole(op, contract))
       continue;
 
-    patterns.push_back(buildFallbackPattern(op, deps, std::move(contract)));
+    patterns.push_back(buildFallbackPattern(op, std::move(contract)));
     selectedOps.insert(op);
   }
 

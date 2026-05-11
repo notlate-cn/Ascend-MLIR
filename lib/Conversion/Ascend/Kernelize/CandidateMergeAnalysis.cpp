@@ -19,6 +19,7 @@
 #include <algorithm>
 #include <cstdint>
 #include <optional>
+#include <string>
 #include <utility>
 
 using namespace mlir;
@@ -45,12 +46,16 @@ void sortUniqueOpsByOpId(SmallVectorImpl<Operation *> &ops,
   ops.erase(std::unique(ops.begin(), ops.end()), ops.end());
 }
 
-bool containsFamily(ArrayRef<StringRef> families, StringRef family) {
-  return llvm::is_contained(families, family);
+bool containsFamily(ArrayRef<std::string> families, StringRef family) {
+  for (const std::string &value : families) {
+    if (value == family)
+      return true;
+  }
+  return false;
 }
 
-std::optional<StringRef> resolveTableFamily(ArrayRef<StringRef> lhsFamilies,
-                                            ArrayRef<StringRef> rhsFamilies) {
+std::optional<StringRef> resolveTableFamily(ArrayRef<std::string> lhsFamilies,
+                                            ArrayRef<std::string> rhsFamilies) {
   if (containsFamily(lhsFamilies, "vector") &&
       containsFamily(rhsFamilies, "reduction"))
     return StringRef("reduction");
@@ -66,20 +71,20 @@ std::optional<StringRef> resolveTableFamily(ArrayRef<StringRef> lhsFamilies,
   return std::nullopt;
 }
 
-SmallVector<StringRef, 0>
+SmallVector<std::string, 2>
 resolveTemplateFamilies(const FusionCandidate &lhs,
                         const FusionCandidate &rhs) {
-  ArrayRef<StringRef> lhsFamilies = lhs.scheduleContract.templateFamilies;
-  ArrayRef<StringRef> rhsFamilies = rhs.scheduleContract.templateFamilies;
-  SmallVector<StringRef, 0> resolved;
+  ArrayRef<std::string> lhsFamilies = lhs.scheduleContract.templateFamilies;
+  ArrayRef<std::string> rhsFamilies = rhs.scheduleContract.templateFamilies;
+  SmallVector<std::string, 2> resolved;
 
   if (std::optional<StringRef> tableFamily =
           resolveTableFamily(lhsFamilies, rhsFamilies)) {
-    resolved.push_back(*tableFamily);
+    resolved.push_back(tableFamily->str());
     return resolved;
   }
 
-  for (StringRef lhsFamily : lhsFamilies) {
+  for (const std::string &lhsFamily : lhsFamilies) {
     if (!containsFamily(rhsFamilies, lhsFamily) ||
         containsFamily(resolved, lhsFamily))
       continue;
@@ -214,14 +219,6 @@ void printStringList(raw_ostream &os, ArrayRef<std::string> strings) {
   os << "]";
 }
 
-void printStringRefList(raw_ostream &os, ArrayRef<StringRef> strings) {
-  os << "[";
-  llvm::interleaveComma(strings, os, [&](StringRef value) {
-    os << "\"" << value << "\"";
-  });
-  os << "]";
-}
-
 } // namespace
 
 SmallVector<MergedCandidate>
@@ -278,7 +275,7 @@ void emitCandidateMergeReport(raw_ostream &os,
     printStringList(os, candidate.primitiveCombo);
     os << " closed = " << (candidate.closure.isClosed ? "true" : "false")
        << " benefit = " << candidate.benefitScore << " families = ";
-    printStringRefList(os, candidate.scheduleContract.templateFamilies);
+    printStringList(os, candidate.scheduleContract.templateFamilies);
     os << "\n";
   }
 }
