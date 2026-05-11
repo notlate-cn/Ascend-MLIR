@@ -30,6 +30,8 @@ enum class MemoryPlace {
   GMFlat = 22
 };
 
+enum class ExecutionUnit { DMA, Cube, Vector };
+
 struct TargetIdentity {
   std::string socVersion;
   std::string shortSocVersion;
@@ -49,6 +51,7 @@ struct TargetHardwareInfo {
 struct TargetIntrinsicInfo {
   std::string name;
   SmallVector<std::string> dtypes;
+  SmallVector<ExecutionUnit> units;
 };
 
 struct TargetProfile {

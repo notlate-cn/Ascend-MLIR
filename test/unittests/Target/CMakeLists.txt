@@ -12,3 +12,18 @@ add_dependencies(RuntimeUnitTests AscendTargetMemoryModelTest)
 add_test(NAME AscendTargetMemoryModelTest
   COMMAND $<TARGET_FILE:AscendTargetMemoryModelTest>
 )
+
+add_executable(AscendTargetIntrinsicModelTest
+  AscendTargetIntrinsicModelTest.cpp
+)
+
+target_link_libraries(AscendTargetIntrinsicModelTest PRIVATE
+  RuntimeUnitTestSupport
+  AscendTargetProfile
+)
+
+add_dependencies(RuntimeUnitTests AscendTargetIntrinsicModelTest)
+
+add_test(NAME AscendTargetIntrinsicModelTest
+  COMMAND $<TARGET_FILE:AscendTargetIntrinsicModelTest>
+)
