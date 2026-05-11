@@ -2,6 +2,7 @@
 #include "SliceComputer.h"
 #include "TileFuseUtils.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
+#include "mlir/Dialect/Bufferization/IR/Bufferization.h"
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
@@ -123,7 +124,11 @@ emitGroupWithReductionSplit(OpBuilder &builder, Location loc,
     auto iterArgType = cast<RankedTensorType>(iterArg.getType());
     Type elemTy = iterArgType.getElementType();
 
-    // Init accumulator: tensor.empty(sizes) + linalg.fill(0).
+    // Init accumulator: bufferization.alloc_tensor (memory_space=11/VECCALC)
+    // + linalg.fill(0). The explicit memory space makes it bufferize to a
+    // memref.alloc in VECCALC, so the downstream tile-buffer-insertion pass
+    // skips the inner reduce generic (its output isn't a GM target) and the
+    // trailing acc->GM copy survives self-copy cleanup.
     SmallVector<Value> dynSizes;
     SmallVector<int64_t> staticShape;
     for (OpFoldResult ofr : outSp.sizes) {
@@ -135,8 +140,10 @@ emitGroupWithReductionSplit(OpBuilder &builder, Location loc,
         staticShape.push_back(attr.getInt());
       }
     }
-    Value accEmpty = builder.create<tensor::EmptyOp>(
-        loc, staticShape, elemTy, dynSizes);
+    Value accEmpty = builder.create<bufferization::AllocTensorOp>(
+        loc, RankedTensorType::get(staticShape, elemTy), dynSizes,
+        /*copy=*/Value{},
+        /*memory_space=*/builder.getI64IntegerAttr(11));
     Value zeroAttr = builder.create<arith::ConstantOp>(
         loc, builder.getZeroAttr(elemTy));
     Value accZero = builder.create<linalg::FillOp>(

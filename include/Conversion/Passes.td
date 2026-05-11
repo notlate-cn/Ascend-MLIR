@@ -488,7 +488,7 @@ def VectorPlanTileFuse : Pass<"vector-plan-tile-fuse", "mlir::func::FuncOp"> {
     Option<"hwMatmulKAlign",       "hw-matmul-k-align",      "int64_t", "16",    "">,
     Option<"l0aCapacityBytes",     "l0a-capacity-bytes",     "int64_t", "65536", "">,
   ];
-  let dependentDialects = ["mlir::linalg::LinalgDialect", "mlir::scf::SCFDialect", "mlir::tensor::TensorDialect", "mlir::func::FuncDialect"];
+  let dependentDialects = ["mlir::linalg::LinalgDialect", "mlir::scf::SCFDialect", "mlir::tensor::TensorDialect", "mlir::func::FuncDialect", "mlir::bufferization::BufferizationDialect"];
 }
 
 def VectorPlanFoldShadowAlloc : Pass<"vector-plan-fold-shadow-alloc", "mlir::func::FuncOp"> {

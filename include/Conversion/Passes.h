@@ -19,6 +19,7 @@
 #include "Conversion/MarkStructuredOps/MarkStructuredOpsPass.h"
 #include "Conversion/VectorPlan/VectorPlanPasses.h"
 #include "Conversion/LowerNonLinalgOps/LowerNonLinalgOpsPass.h"
+#include "mlir/Dialect/Bufferization/IR/Bufferization.h"
 #include "mlir/Pass/Pass.h"
 #include <memory>
 

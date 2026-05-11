@@ -31,5 +31,6 @@ add_mlir_library(MLIRVectorPlan
   MLIRFuncDialect
   MLIRArithDialect
   MLIRMemRefDialect
+  MLIRBufferizationDialect
   MLIRPass
 )

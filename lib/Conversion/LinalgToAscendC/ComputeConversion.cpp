@@ -212,6 +212,8 @@ LogicalResult convertCompute(func::FuncOp funcOp, AscendCBufferContext &ctx) {
       if (Value t = tbufSlice(b, loc, memref, sizeBytes, byteOff))
         return t;
     }
+    if (Value live = ctx.getLiveTensor(memref))
+      return live;
     if (Value q = ctx.getQueue(memref))
       return allocTensor(b, loc, q, mrt.getElementType());
     return tbufTensor(b, loc, getMemorySpace(mrt), mrt.getElementType());
@@ -421,6 +423,42 @@ LogicalResult convertCompute(func::FuncOp funcOp, AscendCBufferContext &ctx) {
     for (auto [queue, tensor] : tempVecinTensors)
       b.create<TQueBindFreeTensorOp>(loc, queue, tensor);
   };
+
+  // ------------------------------------------------------------------
+  // Fill PRE-pass: any linalg.fill writing a VECCALC (ms==11) buffer is an
+  // accumulator initializer (e.g. the loop-carried accumulator in the RBLOCK
+  // reduction-split path).  Lower it to Duplicate + register the resulting
+  // local_tensor as the live tensor for that alloc, so later steps
+  // (writeTensor, the reduce step, the trailing acc→GM copy) reuse it instead
+  // of re-allocating / failing to resolve the on-chip source.
+  {
+    SmallVector<linalg::FillOp> preFills;
+    funcOp.walk([&](linalg::FillOp op) {
+      if (getMemorySpace(op.getOutputs()[0].getType()) == 11)
+        preFills.push_back(op);
+    });
+    for (linalg::FillOp fillOp : preFills) {
+      Value dst = fillOp.getOutputs()[0];
+      // Skip if some earlier pass already registered a live tensor.
+      if (ctx.getLiveTensor(dst))
+        continue;
+      Location loc = fillOp.getLoc();
+      builder.setInsertionPoint(fillOp);
+      Type elemTy = cast<MemRefType>(dst.getType()).getElementType();
+      Value localDst;
+      if (Value tbuf = ctx.getTBuf(dst))
+        localDst = builder.create<TBufGetTensorOp>(
+            loc, LocalTensorType::get(elemTy), tbuf, /*len=*/Value{});
+      else
+        localDst = writeTensor(builder, loc, dst);
+      Value count = computeElementCount(builder, loc, dst);
+      auto dupOp = builder.create<DuplicateL2Op>(loc, localDst,
+                                                 fillOp.getInputs()[0], count);
+      copyAscendCUnitAttr(fillOp.getOperation(), dupOp.getOperation());
+      ctx.setLiveTensor(dst, localDst);
+      fillOp.erase();
+    }
+  }
 
   SmallVector<linalg::GenericOp> genericOps;
   funcOp.walk([&](linalg::GenericOp op) { genericOps.push_back(op); });
@@ -768,6 +806,31 @@ LogicalResult convertCompute(func::FuncOp funcOp, AscendCBufferContext &ctx) {
     }
     Value vecoutLt = writeTensor(builder, loc, outMemref);
     auto layoutAttr = ReduceLayoutAttr::get(mlirCtx, layout);
+
+    // Detect the RBLOCK reduction-split accumulator: outMemref is a non-init
+    // iter_arg of an scf.for (the RBLOCK loop).  Each RBLOCK iteration reduces
+    // its chunk into a temporary, then accumulates: acc += reduce(chunk).
+    bool isAccumulating = false;
+    if (auto ba = dyn_cast<BlockArgument>(outMemref))
+      isAccumulating = ba.getArgNumber() > 0 &&
+                       isa<scf::ForOp>(ba.getOwner()->getParentOp());
+
+    if (isAccumulating) {
+      SmallVector<Value> outDyn;
+      for (unsigned d = 0;
+           d < cast<MemRefType>(outMemref.getType()).getRank(); ++d)
+        outDyn.push_back(getDynDim(builder, loc, outMemref, d));
+      auto [tmpTbuf, tmpLt] = allocVeccalc(builder, loc, elemType, outDyn);
+      auto reduceOp = builder.create<ReduceSum2DL2Op>(
+          loc, tmpLt, accumLt, layoutAttr, /*sharedTmpBuffer=*/Value{});
+      copyAscendCUnitAttr(genOp.getOperation(), reduceOp.getOperation());
+      Value cnt = computeElementCount(builder, loc, outMemref);
+      auto addOp = builder.create<AddL2Op>(loc, vecoutLt, vecoutLt, tmpLt, cnt);
+      copyAscendCUnitAttr(genOp.getOperation(), addOp.getOperation());
+      genOp.erase();
+      continue;
+    }
+
     auto reduceOp = builder.create<ReduceSum2DL2Op>(loc, vecoutLt, accumLt, layoutAttr,
                                                     /*sharedTmpBuffer=*/Value{});
     copyAscendCUnitAttr(genOp.getOperation(), reduceOp.getOperation());

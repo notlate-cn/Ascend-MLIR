@@ -237,6 +237,10 @@ static void eraseDeadTBufInitializers(func::FuncOp funcOp) {
   }
 }
 
+void AscendCBufferContext::setLiveTensor(Value memref, Value lt) {
+  allocToLiveTensor[resolveToAllocRoot(memref)] = lt;
+}
+
 //===----------------------------------------------------------------------===//
 // Pass: build context, run data-move and compute conversions
 //===----------------------------------------------------------------------===//

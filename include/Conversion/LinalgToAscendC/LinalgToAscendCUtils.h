@@ -59,6 +59,10 @@ struct AscendCBufferContext {
   /// Look up a pre-dequeued live local_tensor for a memref value, walking
   /// through subviews to find the defining alloc.  Returns {} if not found.
   Value getLiveTensor(Value memref) const;
+
+  /// Register `lt` as the live local_tensor for `memref`, resolving `memref`
+  /// to its allocation root (tracing through subviews/casts/scf.for iter_args).
+  void setLiveTensor(Value memref, Value lt);
 };
 
 /// Return the integer memory_space of a memref type, or -1 if unavailable.

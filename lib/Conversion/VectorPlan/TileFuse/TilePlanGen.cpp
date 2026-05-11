@@ -193,6 +193,25 @@ TilePlan genVectorTilePlan(func::FuncOp func,
   if (bp.axis >= 0)
     plan.blockFusedAxes.push_back(bp.axis);
 
+  // Auto reduction-split: if the user did not request --enable-reduction-split
+  // but a reduction axis is so large that its on-chip tile clearly won't fit
+  // (R · elem_bytes > budget), switch that axis to the RBLOCK split path.
+  DenseSet<int> autoSplitR;
+  if (!enableReductionSplit && !bp.degradeToRowLoop && !info.topoMembers.empty()) {
+    unsigned elemBytes = 4;
+    if (auto st = dyn_cast<ShapedType>(
+            info.topoMembers[0]->getOperand(0).getType()))
+      if (st.getElementType().isIntOrFloat())
+        elemBytes = std::max(1u, st.getElementType().getIntOrFloatBitWidth() / 8);
+    constexpr int64_t kReductionTileBudgetBytes = 32 * 1024;
+    for (int i : g.rAxes) {
+      int64_t sz = info.collapsedAxes[i].staticSize;
+      if (sz != ShapedType::kDynamic &&
+          sz * (int64_t)elemBytes > kReductionTileBudgetBytes)
+        autoSplitR.insert(i);
+    }
+  }
+
   // --- ubSplit: one in-order pass over the collapsed axes (≈ TileSplit) ---
   // Counters preserved from the previous implementation so func-arg insertion
   // order and `vector_plan.tiling_infos` numbering are byte-identical.
@@ -263,7 +282,7 @@ TilePlan genVectorTilePlan(func::FuncOp func,
 
     } else { // AxisKind::R — reduction axis.
       std::string name = llvm::formatv("RBLOCK_{0}", rblockCount++).str();
-      if (!enableReductionSplit) {
+      if (!enableReductionSplit && !autoSplitR.count(i)) {
         plan.full.push_back({name, ext, OpFoldResult(ext), i,
                               TileLevel::Full, AxisRole::Reduction});
       } else {

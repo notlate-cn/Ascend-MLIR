@@ -540,6 +540,33 @@ LogicalResult convertDataMove(func::FuncOp funcOp,
       continue;
     }
 
+    // VECCALC(11) → GM(0): the result-store of a reduction-split accumulator.
+    // The accumulator is a TBuf-backed local tensor (not queued); the compute
+    // conversion's fill pre-pass registers it as `src`'s live tensor and writes
+    // it via the same TBuf, so a fresh TBufGetTensor on that same TBuf is the
+    // correct source here (data_copy reads it after the reduction loop).
+    if (srcMs == 11 && dstMs == 0) {
+      auto elemTy = cast<MemRefType>(src.getType()).getElementType();
+      Value srcLt = ctx.getLiveTensor(src);
+      if (!srcLt) {
+        Value tbuf = ctx.getTBuf(src);
+        if (!tbuf) {
+          copyOp.emitError("missing TBuf for VECCALC accumulator");
+          return failure();
+        }
+        srcLt = builder.create<TBufGetTensorOp>(
+            loc, LocalTensorType::get(elemTy), tbuf, /*len=*/Value{});
+      }
+      Value dstGt =
+          builder.create<GlobalTensorOp>(loc, GlobalTensorType::get(elemTy));
+      builder.create<GlobalTensorSetGlobalBufferOp>(loc, dstGt, dst,
+                                                     /*size=*/Value{});
+      Value count = computeElementCount(builder, loc, src);
+      builder.create<DataCopyL2Op>(loc, dstGt, srcLt, count);
+      copyOp.erase();
+      continue;
+    }
+
     LLVM_DEBUG(llvm::dbgs() << "[datamove] unrecognized copy: srcMs=" << srcMs
                              << " dstMs=" << dstMs << "\n");
   }
