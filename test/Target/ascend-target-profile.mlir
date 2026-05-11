@@ -15,3 +15,5 @@ module {}
 // CHECK: memory_place = "VECOUT"
 // CHECK: memory_place = "VECCALC"
 // CHECK: intrinsic = "Intrinsic_data_move_out2l1"
+// CHECK: intrinsic = "Intrinsic_mmad"
+// CHECK: intrinsic = "Intrinsic_vadd"

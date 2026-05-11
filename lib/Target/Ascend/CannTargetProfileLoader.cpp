@@ -8,12 +8,12 @@
 
 #include "llvm/ADT/SmallString.h"
 #include "llvm/ADT/StringMap.h"
-#include "llvm/ADT/StringSet.h"
 #include "llvm/ADT/StringSwitch.h"
 #include "llvm/ADT/StringExtras.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/Support/MemoryBuffer.h"
 #include "llvm/Support/Path.h"
+#include <algorithm>
 #include <optional>
 #include <utility>
 
@@ -114,6 +114,44 @@ void setCapacity(TargetProfile &profile, MemoryPlace place, int64_t bytes) {
     profile.capacityBytes[place] = bytes;
 }
 
+void appendDType(TargetIntrinsicInfo &intrinsic, StringRef dtype) {
+  if (!llvm::is_contained(intrinsic.dtypes, dtype))
+    intrinsic.dtypes.push_back(dtype.str());
+}
+
+void appendUnit(TargetIntrinsicInfo &intrinsic, ExecutionUnit unit) {
+  if (!llvm::is_contained(intrinsic.units, unit))
+    intrinsic.units.push_back(unit);
+}
+
+bool isFixPipePathIntrinsic(StringRef name) {
+  return name.starts_with("Intrinsic_fix_pipe_l");
+}
+
+void appendUnitsByName(TargetIntrinsicInfo &intrinsic) {
+  StringRef name(intrinsic.name);
+  if (name == "Intrinsic_mmad")
+    appendUnit(intrinsic, ExecutionUnit::Cube);
+  else if (name.starts_with("Intrinsic_v"))
+    appendUnit(intrinsic, ExecutionUnit::Vector);
+  else if (name.starts_with("Intrinsic_data_move_") ||
+           isFixPipePathIntrinsic(name))
+    appendUnit(intrinsic, ExecutionUnit::DMA);
+}
+
+void mergeIntrinsic(llvm::StringMap<TargetIntrinsicInfo> &intrinsics,
+                    TargetIntrinsicInfo intrinsic) {
+  if (intrinsic.name.empty())
+    return;
+
+  TargetIntrinsicInfo &merged = intrinsics[intrinsic.name];
+  merged.name = intrinsic.name;
+  for (StringRef dtype : intrinsic.dtypes)
+    appendDType(merged, dtype);
+  for (ExecutionUnit unit : intrinsic.units)
+    appendUnit(merged, unit);
+}
+
 FailureOr<TargetProfile> loadImpl(StringRef cannRoot, StringRef socVersion,
                                   raw_ostream &os) {
   if (cannRoot.empty()) {
@@ -176,17 +214,33 @@ FailureOr<TargetProfile> loadImpl(StringRef cannRoot, StringRef socVersion,
   setCapacity(profile, MemoryPlace::VECOUT, profile.hardware.ubSizeBytes);
   setCapacity(profile, MemoryPlace::VECCALC, profile.hardware.ubSizeBytes);
 
-  llvm::StringSet<> seenIntrinsics;
-  auto dtypeSectionIt = sections.find("AICoreintrinsicDtypeMap");
-  if (dtypeSectionIt != sections.end()) {
+  struct IntrinsicSection {
+    StringRef name;
+    std::optional<ExecutionUnit> unit;
+    bool inferUnitByName = false;
+  };
+  constexpr IntrinsicSection intrinsicSections[] = {
+      {"AICoreintrinsicDtypeMap", std::nullopt, true},
+      {"CUBECoreintrinsicDtypeMap", ExecutionUnit::Cube, false},
+      {"VectorCoreintrinsicDtypeMap", ExecutionUnit::Vector, false},
+  };
+
+  llvm::StringMap<TargetIntrinsicInfo> intrinsicMap;
+  for (const IntrinsicSection &section : intrinsicSections) {
+    auto dtypeSectionIt = sections.find(section.name);
+    if (dtypeSectionIt == sections.end())
+      continue;
+
     for (const auto &entry : dtypeSectionIt->second) {
       std::optional<TargetIntrinsicInfo> parsed =
           parseIntrinsicEntry(entry.first(), entry.second);
-      if (!parsed)
-        continue;
-      if (!seenIntrinsics.insert(parsed->name).second)
-        continue;
-      profile.intrinsics.push_back(std::move(*parsed));
+      if (parsed) {
+        if (section.unit)
+          appendUnit(*parsed, *section.unit);
+        if (section.inferUnitByName)
+          appendUnitsByName(*parsed);
+        mergeIntrinsic(intrinsicMap, std::move(*parsed));
+      }
     }
   }
 
@@ -195,12 +249,19 @@ FailureOr<TargetProfile> loadImpl(StringRef cannRoot, StringRef socVersion,
     for (const auto &entry : ratesSectionIt->second) {
       if (!entry.first().starts_with("Intrinsic_"))
         continue;
-      if (!seenIntrinsics.insert(entry.first()).second)
-        continue;
       TargetIntrinsicInfo intrinsic;
       intrinsic.name = entry.first().str();
-      profile.intrinsics.push_back(std::move(intrinsic));
+      appendUnitsByName(intrinsic);
+      mergeIntrinsic(intrinsicMap, std::move(intrinsic));
     }
+  }
+
+  for (auto &entry : intrinsicMap) {
+    llvm::sort(entry.second.dtypes);
+    entry.second.dtypes.erase(
+        std::unique(entry.second.dtypes.begin(), entry.second.dtypes.end()),
+        entry.second.dtypes.end());
+    profile.intrinsics.push_back(std::move(entry.second));
   }
 
   llvm::sort(profile.intrinsics, [](const TargetIntrinsicInfo &lhs,

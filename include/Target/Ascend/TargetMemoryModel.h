@@ -18,7 +18,6 @@
 
 namespace mlir::ascend {
 
-enum class ExecutionUnit { DMA, Cube, Vector };
 enum class PathKind { DirectCopy, Load2D, Load2DTranspose, FixPipe,
                       QueueTransfer };
 
