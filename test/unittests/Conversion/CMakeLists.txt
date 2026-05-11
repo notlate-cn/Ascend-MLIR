@@ -42,3 +42,18 @@ add_dependencies(RuntimeUnitTests AscendRealizePlannerTest)
 add_test(NAME AscendRealizePlannerTest
   COMMAND $<TARGET_FILE:AscendRealizePlannerTest>
 )
+
+add_executable(AscendBackendSupportMatrixTest
+  AscendBackendSupportMatrixTest.cpp
+)
+
+target_link_libraries(AscendBackendSupportMatrixTest PRIVATE
+  RuntimeUnitTestSupport
+  AscendConversion
+)
+
+add_dependencies(RuntimeUnitTests AscendBackendSupportMatrixTest)
+
+add_test(NAME AscendBackendSupportMatrixTest
+  COMMAND $<TARGET_FILE:AscendBackendSupportMatrixTest>
+)
