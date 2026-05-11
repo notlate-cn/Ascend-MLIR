@@ -473,10 +473,10 @@ Review / verification:
 
 | 任务 | 状态 | 说明 | 验收 |
 |---|---|---|---|
-| `TargetMemoryModel` | `Done` | logical places、capacity、alignment、visibility、direct path graph；multi-hop routing 与 intrinsic-backed path validation 延后到 TargetRouting / TargetIntrinsicModel / ProfileVerifier | `AscendTargetMemoryModelTest` + target profile lit |
-| `TargetIntrinsicModel MVP` | `Done` | query-only intrinsic table、unit map、movement map、compute map、dtype-pattern token lookup；ProfileVerifier / path constraints / memory-model integration 后续继续推进 | `AscendTargetIntrinsicModelTest` + target profile lit |
+| `TargetMemoryModel` | `Done` | logical places、capacity、alignment、visibility、direct path graph；multi-hop routing 延后到 TargetRouting，intrinsic-backed path validation 由 `TargetModelVerifier` MVP 覆盖 | `AscendTargetMemoryModelTest` + target profile lit |
+| `TargetIntrinsicModel MVP` | `Done` | query-only intrinsic table、unit map、movement map、compute map、dtype-pattern token lookup；path constraints / memory-model integration 后续继续推进，path-kind 闭合由 `TargetModelVerifier` MVP 覆盖 | `AscendTargetIntrinsicModelTest` + target profile lit |
 | `TargetCostModel MVP` | `Done` | query-only memory-rate lookup、direct-path cost lookup、transfer-cycle estimate；Schedule / Realize consumption 后续继续推进 | `AscendTargetCostModelTest` + target profile lit |
-| profile verifier | `Planned` | profile/memory/intrinsic 闭合检查 | 缺字段 fail-fast |
+| `TargetModelVerifier MVP` | `Done` | profile/memory/intrinsic/cost 闭合检查；`QueueTransfer` 在当前 MVP 中作为执行单元 handoff，不要求 movement intrinsic | `AscendTargetModelVerifierTest` |
 | 多 SoC 支持 | `Planned` | 910B2 之外的 ini | 参数化 lit 或 unit tests |
 
 ## Phase 3B：Realize Materialization 增强
@@ -526,10 +526,10 @@ Review / verification:
 
 ## 当前下一步
 
-下一步继续 Phase 4 target model 完整化：
+Phase 4 target model 完整化结果：
 
 ```text
-Phase 4: TargetIntrinsicModel -> TargetCostModel -> ProfileVerifier
+Phase 4: TargetIntrinsicModel -> TargetCostModel -> TargetModelVerifier
 ```
 
 执行入口：
@@ -540,6 +540,6 @@ Phase 4: TargetIntrinsicModel -> TargetCostModel -> ProfileVerifier
 
 后续切分：
 
-1. 先完成 Phase 4 剩余 target 查询模型：`TargetIntrinsicModel`、`TargetCostModel`、`ProfileVerifier`
-2. 再进入 Phase 3B：One-Shot Bufferize、target-aware placement、workspace layout、显式 data movement、IR mutation
+1. Phase 4 剩余 target 查询模型已完成：`TargetMemoryModel`、`TargetIntrinsicModel`、`TargetCostModel`、`TargetModelVerifier`
+2. 下一步进入 Phase 3B：One-Shot Bufferize、target-aware placement、workspace layout、显式 data movement、IR mutation
 3. Phase 3B 输出稳定 materialized IR 后，再进入 Phase 5 Translate / Runtime Artifact

@@ -42,3 +42,18 @@ add_dependencies(RuntimeUnitTests AscendTargetCostModelTest)
 add_test(NAME AscendTargetCostModelTest
   COMMAND $<TARGET_FILE:AscendTargetCostModelTest>
 )
+
+add_executable(AscendTargetModelVerifierTest
+  AscendTargetModelVerifierTest.cpp
+)
+
+target_link_libraries(AscendTargetModelVerifierTest PRIVATE
+  RuntimeUnitTestSupport
+  AscendTargetProfile
+)
+
+add_dependencies(RuntimeUnitTests AscendTargetModelVerifierTest)
+
+add_test(NAME AscendTargetModelVerifierTest
+  COMMAND $<TARGET_FILE:AscendTargetModelVerifierTest>
+)
