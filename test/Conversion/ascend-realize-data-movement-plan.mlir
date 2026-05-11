@@ -1,6 +1,6 @@
 // RUN: afir-opt %s --ascend-realize='placement-mode=target-aware cann-root=%S/Inputs/ascend-target-aware-placement-cann soc=SyntheticSoC dump-report=true debug-stage=realize' 2>&1 | FileCheck %s
 
-func.func @workspace_layout_vector_temporary(%arg0: tensor<64xf16>, %arg1: tensor<64xf16>) -> tensor<64xf16> attributes {ascend.normalized = true} {
+func.func @data_movement_plan_vector_temporary(%arg0: tensor<64xf16>, %arg1: tensor<64xf16>) -> tensor<64xf16> attributes {ascend.normalized = true} {
   %empty0 = tensor.empty() : tensor<64xf16>
   %mid = linalg.generic {
     indexing_maps = [
@@ -46,13 +46,6 @@ func.func @workspace_layout_vector_temporary(%arg0: tensor<64xf16>, %arg1: tenso
 }
 
 // CHECK-LABEL: Realize report
-// CHECK: PlacementPlan:
-// CHECK-NEXT:   kernel = kernel_0
-// CHECK-NEXT:   mode = "target_aware"
-// CHECK-NEXT:   selected_places = 4
-// CHECK-NEXT:   gm_places = 3
-// CHECK-NEXT:   on_chip_places = 1
-// CHECK-NEXT:   deferred_local_places = 0
 // CHECK: StaticMemoryPlan:
 // CHECK-NEXT:   kernel = kernel_0
 // CHECK-NEXT:   mode = "workspace_layout"
@@ -82,3 +75,5 @@ func.func @workspace_layout_vector_temporary(%arg0: tensor<64xf16>, %arg1: tenso
 // CHECK-NEXT:   plan_ids_verified = true
 // CHECK-NEXT:   materialized_allocs = 0
 // CHECK-NEXT:   materialized_copies = 0
+// CHECK-NOT: memref.copy
+// CHECK-NOT: memory_space

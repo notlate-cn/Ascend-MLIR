@@ -18,6 +18,16 @@ MovementPlanner::build(const PlacementPlan &placement,
 
   MovementPlan plan;
   plan.kernelId = placement.kernelId;
+  if (placement.onChipPlaceCount > 0) {
+    plan.mode = "movement_planning";
+    plan.crossPlaceEdgeCount = placement.onChipPlaceCount;
+    plan.movementDemandCount = placement.onChipPlaceCount;
+    plan.pathSelectionDeferredCount = plan.movementDemandCount;
+    plan.workspaceReuseCandidateCount = staticMemory.workspaceSlotCount;
+    plan.materializationDeferred = true;
+    return plan;
+  }
+
   plan.mode = "gm_noop";
   plan.crossPlaceEdgeCount = 0;
   plan.movementCount = 0;

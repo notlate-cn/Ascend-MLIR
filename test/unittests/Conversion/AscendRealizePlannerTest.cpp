@@ -151,6 +151,38 @@ TEST(AscendRealizePlannerTest,
   EXPECT_TRUE(plan->capacityCheckDeferred);
 }
 
+TEST(AscendRealizePlannerTest, MovementPlannerBuildsPlanningForOnChipWorkspace) {
+  PlacementPlan placement = makePlacementPlan();
+  placement.mode = "target_aware";
+  placement.gmPlaceCount = 3;
+  placement.onChipPlaceCount = 1;
+  placement.deferredLocalPlaceCount = 0;
+
+  StaticMemoryPlan staticMemory = makeStaticMemoryPlan();
+  staticMemory.mode = "workspace_layout";
+  staticMemory.localBufferCount = 1;
+  staticMemory.liveIntervalCount = 1;
+  staticMemory.workspaceSlotCount = 1;
+  staticMemory.peakUsageKnown = true;
+  staticMemory.peakUsageUnitCount = 1;
+  staticMemory.capacityCheckDeferred = true;
+
+  MovementPlanner planner;
+  auto plan = planner.build(placement, staticMemory);
+
+  ASSERT_TRUE(llvm::succeeded(plan));
+  EXPECT_EQ(plan->kernelId, "kernel_0");
+  EXPECT_EQ(plan->mode, "movement_planning");
+  EXPECT_EQ(plan->crossPlaceEdgeCount, 1u);
+  EXPECT_EQ(plan->movementDemandCount, 1u);
+  EXPECT_EQ(plan->selectedPathCount, 0u);
+  EXPECT_EQ(plan->pathSelectionDeferredCount, 1u);
+  EXPECT_EQ(plan->workspaceReuseCandidateCount, 1u);
+  EXPECT_EQ(plan->movementCount, 0u);
+  EXPECT_EQ(plan->redundantMovementCount, 0u);
+  EXPECT_TRUE(plan->materializationDeferred);
+}
+
 TEST(AscendRealizePlannerTest, MovementPlannerRejectsMismatchedKernelId) {
   PlacementPlan placement = makePlacementPlan();
   StaticMemoryPlan staticMemory = makeStaticMemoryPlan();
@@ -221,6 +253,11 @@ TEST(AscendRealizePlannerTest, MovementPlannerBuildsGmNoopPlan) {
   EXPECT_EQ(plan->crossPlaceEdgeCount, 0u);
   EXPECT_EQ(plan->movementCount, 0u);
   EXPECT_EQ(plan->redundantMovementCount, 0u);
+  EXPECT_EQ(plan->movementDemandCount, 0u);
+  EXPECT_EQ(plan->selectedPathCount, 0u);
+  EXPECT_EQ(plan->pathSelectionDeferredCount, 0u);
+  EXPECT_EQ(plan->workspaceReuseCandidateCount, 0u);
+  EXPECT_FALSE(plan->materializationDeferred);
 }
 
 TEST(AscendRealizePlannerTest, MemoryRealizationRejectsMismatchedKernelIds) {
