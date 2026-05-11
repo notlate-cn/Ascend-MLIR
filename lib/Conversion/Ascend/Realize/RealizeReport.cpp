@@ -58,6 +58,16 @@ void printRealizeReport(llvm::ArrayRef<RealizePlanBundle> bundles,
     os << "  movements = " << bundle.movement.movementCount << "\n";
     os << "  redundant_movements = "
        << bundle.movement.redundantMovementCount << "\n";
+    os << "  movement_demands = " << bundle.movement.movementDemandCount
+       << "\n";
+    os << "  selected_paths = " << bundle.movement.selectedPathCount << "\n";
+    os << "  path_selection_deferred = "
+       << bundle.movement.pathSelectionDeferredCount << "\n";
+    os << "  workspace_reuse_candidates = "
+       << bundle.movement.workspaceReuseCandidateCount << "\n";
+    os << "  materialization_deferred = "
+       << (bundle.movement.materializationDeferred ? "true" : "false")
+       << "\n";
     os << "MemoryRealizationPlan:\n";
     os << "  kernel = " << bundle.realization.kernelId << "\n";
     os << "  mode = \"" << bundle.realization.mode << "\"\n";

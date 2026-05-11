@@ -68,6 +68,11 @@ struct MovementPlan {
   unsigned crossPlaceEdgeCount = 0;
   unsigned movementCount = 0;
   unsigned redundantMovementCount = 0;
+  unsigned movementDemandCount = 0;
+  unsigned selectedPathCount = 0;
+  unsigned pathSelectionDeferredCount = 0;
+  unsigned workspaceReuseCandidateCount = 0;
+  bool materializationDeferred = false;
 };
 
 struct MemoryRealizationPlan {
