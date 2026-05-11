@@ -5,6 +5,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "Target/CannKernel/CannTranslation.h"
+#include "Target/CannKernel/CannRuntimeArtifacts.h"
 #include "ascir/Dialect/Asc/IR/Asc.h"
 #include "ascir/Dialect/Asc/Utils/Attributes.h"
 #include "ascir/Dialect/EmitAsc/IR/EmitAsc.h"
@@ -22,9 +23,8 @@
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/SmallPtrSet.h"
-#include "llvm/Support/FileSystem.h"
+#include "llvm/Support/Format.h"
 #include "llvm/Support/FormatVariadic.h"
-#include "llvm/Support/JSON.h"
 #include "llvm/Support/raw_ostream.h"
 
 #include <algorithm>
@@ -1981,66 +1981,6 @@ static LogicalResult emitTilingStructDecl(CodeEmitter &emitter, Location loc,
   return success();
 }
 
-/// Write tiling_space.json skeleton to outPath.
-/// dim_argN_D fields → fixed:true, shape_key:"argN_dimD".
-/// Other fields (TB_M etc.) → fixed:false, values:[].
-static void emitTilingSpaceJson(StringRef outPath,
-                                StringRef kernelFile,
-                                StringRef kernelName,
-                                emitasc::PyStructType tilingType) {
-  auto isDimField = [](StringRef name) {
-    return name.starts_with("dim_arg");
-  };
-  // "dim_arg2_1" → drop "dim_" → "arg2_1" → rfind '_' → "arg2" + "_dim" + "1"
-  auto makeShapeKey = [](StringRef name) -> std::string {
-    StringRef rest = name.drop_front(4); // drop "dim_"
-    auto pos = rest.rfind('_');
-    if (pos == StringRef::npos) return rest.str(); // single-component: no dimension index
-    return rest.substr(0, pos).str() + "_dim" + rest.substr(pos + 1).str();
-  };
-
-  auto names = tilingType.getNamesAttr().getValue();
-
-  if (names.empty()) {
-    llvm::errs() << "Warning: tiling struct has no fields; "
-                    "tiling_space.json will have empty tiling_params\n";
-  }
-
-  llvm::json::Array params;
-  for (auto &nameAttr : names) {
-    StringRef name = cast<StringAttr>(nameAttr).getValue();
-    llvm::json::Object p;
-    p["name"] = name.str();
-    p["type"] = "int64"; // TODO: derive from PyStructType field type when non-i64 fields exist
-    if (isDimField(name)) {
-      p["fixed"] = true;
-      p["shape_key"] = makeShapeKey(name);
-    } else {
-      p["fixed"] = false;
-      p["values"] = llvm::json::Array{};
-    }
-    params.push_back(std::move(p));
-  }
-
-  llvm::json::Object root;
-  root["kernel"]         = kernelName.str();
-  root["kernel_file"]    = kernelFile.str();
-  root["soc"]            = "Ascend910B1";
-  root["block_dim_expr"] = "";
-  root["tiling_params"]  = std::move(params);
-
-  std::error_code ec;
-  llvm::raw_fd_ostream f(outPath, ec);
-  if (ec) {
-    llvm::errs() << "Warning: cannot write tiling_space.json to "
-                 << outPath << ": " << ec.message() << "\n";
-    return;
-  }
-  llvm::json::OStream jos(f, /*IndentSize=*/2);
-  jos.value(llvm::json::Value(std::move(root)));
-  f << "\n";
-}
-
 /// Emit the CANN-standard function signature and body.
 static LogicalResult printCannFuncOp(CodeEmitter &emitter,
                                      func::FuncOp funcOp) {
@@ -2484,9 +2424,31 @@ static void fixBrokenOpEmitters(Operation *moduleOp) {
   });
 }
 
+static LogicalResult
+emitRequestedRuntimeArtifacts(ModuleOp moduleOp,
+                              const CannTranslationOptions &options) {
+  afir::cann::CannRuntimeArtifactOptions artifactOptions;
+  artifactOptions.kernelFile = options.kernelFile;
+  artifactOptions.soc = options.soc;
+
+  if (!options.tilingSpaceOutPath.empty() &&
+      failed(afir::cann::emitTilingSpaceJson(
+          moduleOp, options.tilingSpaceOutPath, artifactOptions)))
+    return failure();
+  if (!options.runtimeManifestOutPath.empty() &&
+      failed(afir::cann::emitRuntimeManifestJson(
+          moduleOp, options.runtimeManifestOutPath, artifactOptions)))
+    return failure();
+  if (!options.hostTilingOutPath.empty() &&
+      failed(afir::cann::emitHostTilingCpp(
+          moduleOp, options.hostTilingOutPath, artifactOptions)))
+    return failure();
+
+  return success();
+}
+
 LogicalResult mlir::translateToCannKernel(Operation *op, raw_ostream &os,
-                                          StringRef tilingSpaceOutPath,
-                                          StringRef kernelFile) {
+                                          const CannTranslationOptions &options) {
   auto moduleOp = dyn_cast<ModuleOp>(op);
   if (!moduleOp)
     return op->emitOpError("expected a module op");
@@ -2524,7 +2486,7 @@ LogicalResult mlir::translateToCannKernel(Operation *op, raw_ostream &os,
           if (emitGenericMixSingleChainKernel(
                   os, primaryKernel, *genericEmissionPlan, *supportedLowering,
                   emissionFailureReason))
-            return success();
+            return emitRequestedRuntimeArtifacts(moduleOp, options);
           return primaryKernel.emitOpError(
               Twine("mix translation found a valid single-chain cube/boundary/"
                     "vector plan, but the generic primary route could not "
@@ -2546,7 +2508,7 @@ LogicalResult mlir::translateToCannKernel(Operation *op, raw_ostream &os,
           if (emitSupportedMixKernel(os, primaryKernel, mixPartitionPlan,
                                      *legacyFallbackLowering,
                                      emissionFailureReason))
-            return success();
+            return emitRequestedRuntimeArtifacts(moduleOp, options);
           return primaryKernel.emitOpError(
               Twine("mix translation found a valid single-chain cube/boundary/"
                     "vector plan, but the retained supported-mix fallback "
@@ -2579,7 +2541,7 @@ LogicalResult mlir::translateToCannKernel(Operation *op, raw_ostream &os,
         if (emitSupportedMixKernel(os, primaryKernel, mixPartitionPlan,
                                    *legacyFallbackLowering,
                                    emissionFailureReason))
-          return success();
+          return emitRequestedRuntimeArtifacts(moduleOp, options);
         return primaryKernel.emitOpError(
             Twine("mix translation found a valid single-chain cube/boundary/"
                   "vector plan, but the retained supported-mix fallback "
@@ -2613,7 +2575,7 @@ LogicalResult mlir::translateToCannKernel(Operation *op, raw_ostream &os,
         if (emitSupportedMixKernel(os, primaryKernel, mixPartitionPlan,
                                    *legacyFallbackLowering,
                                    emissionFailureReason))
-          return success();
+          return emitRequestedRuntimeArtifacts(moduleOp, options);
         return primaryKernel.emitOpError(
             Twine("mix translation requires a supported cube/vector "
                   "partitioned kernel shape; generic single-chain analysis "
@@ -2652,7 +2614,6 @@ LogicalResult mlir::translateToCannKernel(Operation *op, raw_ostream &os,
   os << "\n";
 
   // First pass: emit TilingData struct declarations from aicore funcs
-  bool jsonWritten = false;
   for (Operation &child : moduleOp.getBody()->getOperations()) {
     auto funcOp = dyn_cast<func::FuncOp>(child);
     if (!funcOp)
@@ -2670,13 +2631,6 @@ LogicalResult mlir::translateToCannKernel(Operation *op, raw_ostream &os,
 
     if (failed(emitTilingStructDecl(emitter, funcOp.getLoc(), tilingType)))
       return failure();
-
-    // Write JSON skeleton for the first aicore func only
-    if (!tilingSpaceOutPath.empty() && !jsonWritten) {
-      emitTilingSpaceJson(tilingSpaceOutPath, kernelFile,
-                          funcOp.getName(), tilingType);
-      jsonWritten = true;
-    }
   }
 
   // Second pass: emit aicore kernel functions only.
@@ -2690,5 +2644,14 @@ LogicalResult mlir::translateToCannKernel(Operation *op, raw_ostream &os,
       return failure();
   }
 
-  return success();
+  return emitRequestedRuntimeArtifacts(moduleOp, options);
+}
+
+LogicalResult mlir::translateToCannKernel(Operation *op, raw_ostream &os,
+                                          StringRef tilingSpaceOutPath,
+                                          StringRef kernelFile) {
+  CannTranslationOptions options;
+  options.tilingSpaceOutPath = tilingSpaceOutPath;
+  options.kernelFile = kernelFile;
+  return translateToCannKernel(op, os, options);
 }

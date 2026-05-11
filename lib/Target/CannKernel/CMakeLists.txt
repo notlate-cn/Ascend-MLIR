@@ -1,5 +1,6 @@
 add_mlir_library(CannKernelTranslation
   CannTranslation.cpp
+  CannRuntimeArtifacts.cpp
   AfirOpEmitters.cpp
 
   ADDITIONAL_HEADER_DIRS

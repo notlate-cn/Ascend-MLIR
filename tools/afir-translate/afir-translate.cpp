@@ -18,8 +18,23 @@ using namespace llvm;
 
 static cl::opt<std::string> TilingSpaceOut(
     "tiling-space-out",
-    cl::desc("Write tiling_space.json skeleton to this path"),
+    cl::desc("Write tiling_space.json to this path"),
     cl::init(""));
+
+static cl::opt<std::string> RuntimeManifestOut(
+    "runtime-manifest-out",
+    cl::desc("Write runtime_manifest.json to this path"),
+    cl::init(""));
+
+static cl::opt<std::string> HostTilingOut(
+    "host-tiling-out",
+    cl::desc("Write host tiling C ABI source to this path"),
+    cl::init(""));
+
+static cl::opt<std::string> CannSoc(
+    "cann-soc",
+    cl::desc("CANN SoC string used in generated runtime artifacts"),
+    cl::init("Ascend910B1"));
 
 int main(int argc, char **argv) {
   registerAllTranslations();
@@ -27,7 +42,12 @@ int main(int argc, char **argv) {
   TranslateFromMLIRRegistration cannReg(
       "mlir-to-cann", "translate MLIR to CANN-standard AscendC kernel",
       [](Operation *op, raw_ostream &os) {
-        return translateToCannKernel(op, os, TilingSpaceOut, "");
+        CannTranslationOptions options;
+        options.tilingSpaceOutPath = TilingSpaceOut;
+        options.runtimeManifestOutPath = RuntimeManifestOut;
+        options.hostTilingOutPath = HostTilingOut;
+        options.soc = CannSoc;
+        return translateToCannKernel(op, os, options);
       },
       [](DialectRegistry &registry) {
         registerAllDialects(registry);
