@@ -2,6 +2,7 @@
 #include "GroupEmitter.h"
 #include "LoopNestBuilder.h"
 #include "SliceComputer.h"
+#include "TileFuseUtils.h"
 #include "TilePlanGen.h"
 #include "Conversion/VectorPlan/GroupInfo.h"
 #include "Conversion/VectorPlan/TilePlan.h"
@@ -50,11 +51,18 @@ struct VectorPlanTileFusePass
     // Emit tiling.infos module attribute (consumed by PrepareForEmit Phase B).
     emitTilingInfos(func, plan);
 
-    // Collect init tensors and original results BEFORE modification.
+    // Collect init tensors and original results BEFORE modification.  A member
+    // whose result is consumed only by other members (an intra-group
+    // intermediate, e.g. a multi-use linalg.transpose) does not need an
+    // scf.for iter_arg — GroupEmitter materializes a fresh on-chip tile for it
+    // — so skip its init/result here (keeping originalResults aligned with the
+    // loop results).
     SmallVector<Value> originalResults;
     SmallVector<Value> initTensors;
     DenseSet<Value> seenInits;
     for (linalg::LinalgOp op : collapsedInfo.topoMembers) {
+      if (resultUsedOnlyByGroupMembers(op, collapsedInfo))
+        continue;
       for (Value r : op->getResults())
         originalResults.push_back(r);
       for (Value out : op.getDpsInits())
@@ -112,10 +120,13 @@ struct VectorPlanTileFusePass
         emitGroup(builder, func.getLoc(), collapsedInfo, plan, loopNest);
 
     // Replace original results with loop results and erase original ops.
+    // Erase in reverse topo order so an intra-group member (whose result was
+    // not in originalResults, so its uses by later members were not
+    // redirected) is erased after those later members — by then it is unused.
     for (auto [origRes, loopRes] :
          llvm::zip(originalResults, loopResults))
       origRes.replaceAllUsesWith(loopRes);
-    for (linalg::LinalgOp op : collapsedInfo.topoMembers)
+    for (linalg::LinalgOp op : llvm::reverse(collapsedInfo.topoMembers))
       op->erase();
   }
 };

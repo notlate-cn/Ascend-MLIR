@@ -4,11 +4,24 @@
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
 #include "mlir/IR/AffineExpr.h"
 #include "mlir/IR/AffineMap.h"
+#include "llvm/ADT/SmallPtrSet.h"
 
 using namespace mlir;
 using namespace mlir::vector_plan;
 
 namespace mlir::afir {
+
+bool resultUsedOnlyByGroupMembers(linalg::LinalgOp op,
+                                   const CollapsedGroupInfo &info) {
+  llvm::SmallPtrSet<Operation *, 8> members;
+  for (linalg::LinalgOp m : info.topoMembers)
+    members.insert(m.getOperation());
+  for (Value r : op->getResults())
+    for (Operation *user : r.getUsers())
+      if (!members.contains(user))
+        return false;
+  return true;
+}
 
 Value castToIndex(OpBuilder &b, Location loc, Value v) {
   if (v.getType().isIndex()) return v;

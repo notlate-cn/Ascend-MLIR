@@ -231,12 +231,18 @@ emitGroupBodyOnce(OpBuilder &builder, Location loc,
                   ArrayRef<scf::ForOp> bcastForOps,
                   const DenseMap<int, Value> *sizeOverride) {
   // --- Collect boundary outs and map to iter args ---
+  // A member whose result is consumed only by other members (an intra-group
+  // intermediate — e.g. a multi-use linalg.transpose) gets a fresh per-
+  // iteration VECCALC tile below; it is not an scf.for iter_arg.
   SmallVector<Value> allOuts;
   DenseSet<Value> seenOuts;
-  for (LinalgOp op : info.topoMembers)
+  for (LinalgOp op : info.topoMembers) {
+    if (resultUsedOnlyByGroupMembers(op, info))
+      continue;
     for (Value out : op.getDpsInits())
       if (seenOuts.insert(out).second)
         allOuts.push_back(out);
+  }
 
   DenseMap<Value, Value> outToIterArg;
   assert(allOuts.size() == iterArgs.size() &&
@@ -354,11 +360,35 @@ emitGroupBodyOnce(OpBuilder &builder, Location loc,
     }
 
     // DPS inits (outs).
+    bool isIntraGroup = resultUsedOnlyByGroupMembers(op, info);
     for (int idx = 0; idx < op.getNumDpsInits(); ++idx) {
       Value outOperand = op.getDpsInits()[idx];
+      AffineMap outMap = maps[numInputs + idx];
+      if (isIntraGroup) {
+        // Intra-group intermediate: a fresh per-iteration VECCALC tile (no
+        // iter_arg, no extract/insert into a full-shape tensor that would
+        // bufferize to a GM buffer); consumers read the cloned op's result.
+        auto sp = computeSlice(outMap, loopIVs, plan, outOperand,
+                                builder, loc, sizeOverride);
+        Type elemTy =
+            cast<RankedTensorType>(outOperand.getType()).getElementType();
+        SmallVector<Value> dynSizes;
+        SmallVector<int64_t> staticShape;
+        for (OpFoldResult ofr : sp.sizes) {
+          if (auto v = dyn_cast<Value>(ofr)) {
+            dynSizes.push_back(v);
+            staticShape.push_back(ShapedType::kDynamic);
+          } else {
+            staticShape.push_back(cast<IntegerAttr>(cast<Attribute>(ofr)).getInt());
+          }
+        }
+        newOperands.push_back(builder.create<bufferization::AllocTensorOp>(
+            loc, RankedTensorType::get(staticShape, elemTy), dynSizes,
+            /*copy=*/Value{}, /*memory_space=*/builder.getI64IntegerAttr(11)));
+        continue;
+      }
       Value iterArg = outToIterArg.lookup(outOperand);
       if (!iterArg) iterArg = outOperand;
-      AffineMap outMap = maps[numInputs + idx];
       auto sp = computeSlice(outMap, loopIVs, plan, iterArg,
                               builder, loc, sizeOverride);
       auto slicedType = tensor::ExtractSliceOp::inferResultType(
