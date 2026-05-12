@@ -1,4 +1,5 @@
 #include "Collapse.h"
+#include "TileFuseUtils.h"
 #include "../GroupAnalysis/AxisLattice.h"
 #include "Conversion/VectorPlan/GroupInfo.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
@@ -450,7 +451,8 @@ static void applyIRTransform(OpBuilder &builder, GenericOp lop,
 // collapseGroup — public entry point
 //===----------------------------------------------------------------------===//
 
-CollapsedGroupInfo collapseGroup(OpBuilder &builder, func::FuncOp func) {
+static CollapsedGroupInfo collapseGroupImpl(OpBuilder &builder,
+                                            func::FuncOp func) {
   SmallVector<LinalgOp> members;
   func.walk([&](LinalgOp op) { members.push_back(op); });
 
@@ -534,6 +536,14 @@ CollapsedGroupInfo collapseGroup(OpBuilder &builder, func::FuncOp func) {
   func.walk([&](LinalgOp op) { result.topoMembers.push_back(op); });
   result.boundaryOut = SmallVector<Value>(retOp.getOperands());
 
+  return result;
+}
+
+CollapsedGroupInfo collapseGroup(OpBuilder &builder, func::FuncOp func) {
+  CollapsedGroupInfo result = collapseGroupImpl(builder, func);
+  // ≈ AF GenTilingGroup/NormGroup — classify the post-collapse iteration axes
+  // once here; TilePlanGen consumes result.grouping directly.
+  result.grouping = classifyAxes(result);
   return result;
 }
 
