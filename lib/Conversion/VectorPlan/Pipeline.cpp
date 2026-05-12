@@ -61,6 +61,10 @@ void registerVectorPlanPipeline() {
         // kernel group.  Without this, multi-op groups that mix parallel and
         // reduction iterators trip the tile-fuse assertions / IR domination.
         pm.addNestedPass<func::FuncOp>(mlir::createLinalgElementwiseOpFusionPass());
+        // TODO(P6): insert createAFIRSymbolizeShapesPass() here, atomically with
+        // the TilePlanGen UB-peak consumer that reads afir.symbolic_shapes.  The
+        // pass is available standalone (`--afir-symbolize-shapes`) in the
+        // meantime; it's left out of the pipeline until something consumes it.
         pm.addNestedPass<func::FuncOp>(createVectorPlanTileFusePass());
         // Fold tensor.dim on statically-known dimensions (e.g. the size-1
         // broadcast axis) before bufferization so that subview size operands

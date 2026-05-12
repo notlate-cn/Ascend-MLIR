@@ -61,4 +61,27 @@ def LinalgMark : Pass<"linalg-mark", "mlir::ModuleOp"> {
   let constructor = "mlir::createLinalgMarkPass()";
 }
 
+def AFIRSymbolizeShapesPass : Pass<"afir-symbolize-shapes", "mlir::func::FuncOp"> {
+  let summary = "Attach symbolic-dimension expressions to dynamic tensors";
+  let description = [{
+    Mints a symbol for every `?` dimension of the function's block arguments and
+    propagates a symbolic shape (a SymExpr per dim) through linalg structured
+    ops and a few tensor reshape/alloc ops.  Writes `afir.symbolic_shapes` on
+    each op (one comma-separated SymExpr list per result) and `afir.dim_symbols`
+    on the function.  Ops it cannot symbolize get no attr; the gap propagates
+    forward.  Does nothing for functions whose signature is fully static.
+  }];
+  let constructor = "mlir::createAFIRSymbolizeShapesPass()";
+}
+
+def AFIRVerifySymbolicShapesPass : Pass<"afir-verify-symbolic-shapes", "mlir::func::FuncOp"> {
+  let summary = "Verify the afir.symbolic_shapes / afir.dim_symbols attributes";
+  let description = [{
+    Checks shape arrays match result counts/ranks, symbol ids are in range, and
+    statically-typed dims carry the matching constant.  Emits diagnostics; meant
+    for lit tests.
+  }];
+  let constructor = "mlir::createAFIRVerifySymbolicShapesPass()";
+}
+
 #endif // AFIR_TRANSFORMS_PASSES

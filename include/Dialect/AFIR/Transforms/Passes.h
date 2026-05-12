@@ -7,6 +7,7 @@
 #ifndef MLIR_DIALECT_AFIR_TRANSFORMS_PASSES_H
 #define MLIR_DIALECT_AFIR_TRANSFORMS_PASSES_H
 
+#include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Pass/Pass.h"
 #include <memory>
 
@@ -17,6 +18,11 @@ std::unique_ptr<Pass> createLinalgInferShapePass();
 std::unique_ptr<Pass> createLinalgMarkPass();
 
 std::unique_ptr<Pass> createLinalgAddBroadcastPass();
+
+std::unique_ptr<Pass> createAFIRSymbolizeShapesPass();
+
+std::unique_ptr<Pass> createAFIRVerifySymbolicShapesPass();
+
 namespace afir {
 
 // Canonicalization pass

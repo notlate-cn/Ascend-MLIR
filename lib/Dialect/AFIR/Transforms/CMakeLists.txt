@@ -5,6 +5,8 @@ add_mlir_dialect_library(AFIRTransforms
   LinalgInferShape.cpp
   LinalgMark.cpp
   LinalgAddBroadcast.cpp
+  AFIRSymbolizeShapes.cpp
+  AFIRVerifySymbolicShapes.cpp
 
   ADDITIONAL_HEADER_DIRS
         ${CMAKE_SOURCE_DIR}/include/Dialect/AFIR/Transforms
@@ -14,6 +16,13 @@ add_mlir_dialect_library(AFIRTransforms
 
   LINK_LIBS PUBLIC
   AFIRDialect
+  AFIRSymbolicShape
   MLIRPass
   MLIRTransforms
+  MLIRFuncDialect
+  MLIRLinalgDialect
+  MLIRTensorDialect
+  MLIRBufferizationDialect
+  MLIRArithDialect
+  MLIRAffineDialect
 )
