@@ -82,10 +82,17 @@ static std::string getAscendCScalarTypeName(Type elemType) {
 }
 
 static Value peelSourceValue(Value value) {
-  if (!value)
-    return value;
-  if (auto castOp = value.getDefiningOp<emitasc::ReinterpretCastOp>())
-    return castOp.getOperand();
+  while (value) {
+    if (auto castOp = value.getDefiningOp<emitasc::ReinterpretCastOp>()) {
+      value = castOp.getOperand();
+      continue;
+    }
+    if (auto castOp = value.getDefiningOp<memref::CastOp>()) {
+      value = castOp.getSource();
+      continue;
+    }
+    break;
+  }
   return value;
 }
 
@@ -2047,6 +2054,44 @@ static LogicalResult printCannFuncOp(CodeEmitter &emitter,
   return success();
 }
 
+static bool isSameConstant(arith::ConstantOp lhs, arith::ConstantOp rhs) {
+  return lhs.getType() == rhs.getType() && lhs.getValue() == rhs.getValue();
+}
+
+static void deduplicateConstantsInBlock(Block &block) {
+  SmallVector<arith::ConstantOp> uniqueConstants;
+  SmallVector<arith::ConstantOp> constantsToErase;
+
+  for (Operation &op : block) {
+    if (auto constantOp = dyn_cast<arith::ConstantOp>(&op)) {
+      auto it = llvm::find_if(uniqueConstants, [&](arith::ConstantOp seen) {
+        return isSameConstant(seen, constantOp);
+      });
+      if (it != uniqueConstants.end()) {
+        constantOp.getResult().replaceAllUsesWith(it->getResult());
+        constantsToErase.push_back(constantOp);
+        continue;
+      }
+
+      uniqueConstants.push_back(constantOp);
+      continue;
+    }
+
+    for (Region &region : op.getRegions())
+      for (Block &nestedBlock : region)
+        deduplicateConstantsInBlock(nestedBlock);
+  }
+
+  for (arith::ConstantOp constantOp : constantsToErase)
+    constantOp.erase();
+}
+
+static void deduplicateConstantsForEmission(Operation *op) {
+  for (Region &region : op->getRegions())
+    for (Block &block : region)
+      deduplicateConstantsInBlock(block);
+}
+
 } // namespace
 
 // ─── Pre-pass: replace broken PyAsc emitter ops with emitasc.verbatim ───────
@@ -2082,6 +2127,30 @@ static LogicalResult printCannFuncOp(CodeEmitter &emitter,
 //       AscendC::ReduceSum<half,AscendC::AR>($0,$1,_t,_s,false);
 //     }
 //
+static Value findQueuedDataCopyGlobalSource(Value tensor) {
+  auto dequeOp = tensor.getDefiningOp<ascendc::TQueBindDequeTensorOp>();
+  if (!dequeOp)
+    return {};
+
+  Value queue = dequeOp.getQueue();
+  for (Operation *queueUser : queue.getUsers()) {
+    auto enqueOp = dyn_cast<ascendc::TQueBindEnqueTensorOp>(queueUser);
+    if (!enqueOp || enqueOp.getQueue() != queue)
+      continue;
+
+    Value enqueuedTensor = enqueOp.getTensor();
+    for (Operation *tensorUser : enqueuedTensor.getUsers()) {
+      auto copyOp = dyn_cast<ascendc::DataCopyL2Op>(tensorUser);
+      if (!copyOp || copyOp.getDst() != enqueuedTensor)
+        continue;
+      if (isa<ascendc::GlobalTensorType>(copyOp.getSrc().getType()))
+        return copyOp.getSrc();
+    }
+  }
+
+  return {};
+}
+
 static void fixBrokenOpEmitters(Operation *moduleOp) {
   IRRewriter rewriter(moduleOp->getContext());
 
@@ -2129,6 +2198,14 @@ static void fixBrokenOpEmitters(Operation *moduleOp) {
         ValueRange({op.getTensor(), baseBuffer, elemOffset}));
     rewriter.eraseOp(op);
   });
+
+  SmallVector<memref::CastOp> deadMemrefCasts;
+  moduleOp->walk([&](memref::CastOp op) {
+    if (op->use_empty())
+      deadMemrefCasts.push_back(op);
+  });
+  for (memref::CastOp op : deadMemrefCasts)
+    rewriter.eraseOp(op);
 
   // DataCopyL2Op with GlobalTensorBracketOp source → verbatim
   //
@@ -2201,8 +2278,30 @@ static void fixBrokenOpEmitters(Operation *moduleOp) {
     auto dstElemType =
         cast<ascendc::LocalTensorType>(op.getDst().getType()).getElementType();
     std::string elemTypeStr = getAscendCScalarTypeName(dstElemType);
-    tmpl += "  AscendC::Broadcast<" + elemTypeStr + ", " + std::to_string(rank) +
-            ", " + std::to_string(axis) + ">($0, $1, _afir_ds, _afir_ss);\n}";
+    Value gmScalarSource =
+        (rank == 2 && axis == 1) ? findQueuedDataCopyGlobalSource(op.getSrc())
+                                 : Value{};
+    if (gmScalarSource) {
+      unsigned gmOperand = 2 + (2 * rank);
+      tmpl += "  if (_afir_ds[0] < 16u && _afir_ss[1] == 1u) {\n";
+      tmpl += "    " + elemTypeStr + " _afir_zero = 0;\n";
+      tmpl += "    AscendC::Duplicate($0, _afir_zero, _afir_ds[0] * _afir_ds[1]);\n";
+      tmpl += "    for (uint32_t _afir_r = 0; _afir_r < _afir_ds[0]; ++_afir_r) {\n";
+      tmpl += "      auto _afir_v = $" + std::to_string(gmOperand) +
+              ".GetValue(_afir_r);\n";
+      tmpl += "      AscendC::Adds($0[_afir_r * _afir_ds[1]], "
+              "$0[_afir_r * _afir_ds[1]], _afir_v, (int32_t)_afir_ds[1]);\n";
+      tmpl += "    }\n";
+      tmpl += "  } else {\n";
+      tmpl += "    AscendC::Broadcast<" + elemTypeStr + ", " +
+              std::to_string(rank) + ", " + std::to_string(axis) +
+              ">($0, $1, _afir_ds, _afir_ss);\n";
+      tmpl += "  }\n}";
+    } else {
+      tmpl += "  AscendC::Broadcast<" + elemTypeStr + ", " +
+              std::to_string(rank) + ", " + std::to_string(axis) +
+              ">($0, $1, _afir_ds, _afir_ss);\n}";
+    }
 
     SmallVector<Value> args;
     args.push_back(op.getDst());
@@ -2211,6 +2310,8 @@ static void fixBrokenOpEmitters(Operation *moduleOp) {
       args.push_back(v);
     for (Value v : op.getSrcShape())
       args.push_back(v);
+    if (gmScalarSource)
+      args.push_back(gmScalarSource);
 
     rewriter.create<emitasc::VerbatimOp>(
         loc, rewriter.getStringAttr(tmpl), ValueRange(args));
@@ -2422,6 +2523,43 @@ static void fixBrokenOpEmitters(Operation *moduleOp) {
         loc, rewriter.getStringAttr(tmpl), ValueRange(args));
     rewriter.eraseOp(op);
   });
+
+  auto alignedByteLengthBlock = [](unsigned lengthOperand) {
+    std::string tmpl = "{\n";
+    tmpl += "  uint32_t _afir_bytes = static_cast<uint32_t>($" +
+            std::to_string(lengthOperand) + ");\n";
+    tmpl += "  uint32_t _afir_aligned_bytes = _afir_bytes == 0 ? 0 : "
+            "((_afir_bytes + 31u) / 32u) * 32u;\n";
+    tmpl += "  if (_afir_aligned_bytes < 32u)\n";
+    tmpl += "    _afir_aligned_bytes = 32u;\n";
+    return tmpl;
+  };
+
+  // TPipe buffer sizes are physical byte capacities. Keep IR lengths logical
+  // for shape reasoning, but round emitted runtime allocations to AscendC's
+  // 32-byte minimum/alignment so small tail tiles have valid LocalTensors.
+  moduleOp->walk([&](ascendc::TPipeInitBufferOp op) {
+    rewriter.setInsertionPoint(op);
+    Location loc = op.getLoc();
+    std::string tmpl = alignedByteLengthBlock(/*lengthOperand=*/2);
+    tmpl += "  $0.InitBuffer($1, _afir_aligned_bytes);\n}";
+    rewriter.create<emitasc::VerbatimOp>(
+        loc, rewriter.getStringAttr(tmpl),
+        ValueRange({op.getPipe(), op.getBuffer(), op.getLength()}));
+    rewriter.eraseOp(op);
+  });
+
+  moduleOp->walk([&](ascendc::TPipeInitQueueOp op) {
+    rewriter.setInsertionPoint(op);
+    Location loc = op.getLoc();
+    std::string tmpl = alignedByteLengthBlock(/*lengthOperand=*/3);
+    tmpl += "  $0.InitBuffer($1, $2, _afir_aligned_bytes);\n}";
+    rewriter.create<emitasc::VerbatimOp>(
+        loc, rewriter.getStringAttr(tmpl),
+        ValueRange({op.getPipe(), op.getQueue(), op.getNum(),
+                    op.getLength()}));
+    rewriter.eraseOp(op);
+  });
 }
 
 static LogicalResult
@@ -2601,6 +2739,7 @@ LogicalResult mlir::translateToCannKernel(Operation *op, raw_ostream &os,
 
   // Replace ops whose PyAsc emitters generate wrong C++ with verbatim.
   fixBrokenOpEmitters(op);
+  deduplicateConstantsForEmission(op);
 
   CodeEmitter emitter(os);
   CodeEmitter::Scope scope(emitter);

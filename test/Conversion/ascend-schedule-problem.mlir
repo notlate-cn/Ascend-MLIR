@@ -131,7 +131,7 @@ func.func @horizontal_siblings(%arg0: tensor<4x8xf32>,
 // CHECK-NEXT:   reduction_axes = []
 // CHECK-NEXT:   broadcast_axes = []
 // CHECK-NEXT:   barriers = 0
-// CHECK-NEXT: ScheduleProblem:
+// CHECK: ScheduleProblem:
 // CHECK-NEXT:   kernel = kernel_0
 // CHECK-NEXT:   role = vector
 // CHECK-NEXT:   result_rank = 2
@@ -140,6 +140,13 @@ func.func @horizontal_siblings(%arg0: tensor<4x8xf32>,
 // CHECK-NEXT:   template_tags = [vector]
 // CHECK-NEXT:   shape_constraints = [d0 == 4, d1 == 8]
 // CHECK-NEXT:   structure_constraints = [elementwise_chain]
+// CHECK-NEXT:   axis_constraints = [
+// CHECK-NEXT:     axis=0 roles=[bind_core,kernel_loop,vectorize] tail=masked_tail
+// CHECK-NEXT:     axis=1 roles=[bind_core,kernel_loop,vectorize] tail=masked_tail
+// CHECK-NEXT:   ]
+// CHECK-NEXT:   coalescing_hints = [
+// CHECK-NEXT:     group=1 kind=vectorizable members=[0,1]
+// CHECK-NEXT:   ]
 
 // CHECK: AxisCoalescing:
 // CHECK-NEXT:   kernel = kernel_1
@@ -148,7 +155,7 @@ func.func @horizontal_siblings(%arg0: tensor<4x8xf32>,
 // CHECK-NEXT:   reduction_axes = []
 // CHECK-NEXT:   broadcast_axes = []
 // CHECK-NEXT:   barriers = 0
-// CHECK-NEXT: ScheduleProblem:
+// CHECK: ScheduleProblem:
 // CHECK-NEXT:   kernel = kernel_1
 // CHECK-NEXT:   role = vector
 // CHECK-NEXT:   result_rank = 2
@@ -165,7 +172,7 @@ func.func @horizontal_siblings(%arg0: tensor<4x8xf32>,
 // CHECK-NEXT:   reduction_axes = [2]
 // CHECK-NEXT:   broadcast_axes = []
 // CHECK-NEXT:   barriers = 0
-// CHECK-NEXT: ScheduleProblem:
+// CHECK: ScheduleProblem:
 // CHECK-NEXT:   kernel = kernel_2
 // CHECK-NEXT:   role = cube
 // CHECK-NEXT:   result_rank = 2
@@ -182,7 +189,7 @@ func.func @horizontal_siblings(%arg0: tensor<4x8xf32>,
 // CHECK-NEXT:   reduction_axes = [1]
 // CHECK-NEXT:   broadcast_axes = []
 // CHECK-NEXT:   barriers = 0
-// CHECK-NEXT: ScheduleProblem:
+// CHECK: ScheduleProblem:
 // CHECK-NEXT:   kernel = kernel_3
 // CHECK-NEXT:   role = reduction
 // CHECK-NEXT:   result_rank = 1
@@ -191,6 +198,10 @@ func.func @horizontal_siblings(%arg0: tensor<4x8xf32>,
 // CHECK-NEXT:   template_tags = [reduction]
 // CHECK-NEXT:   shape_constraints = [d0 == 4]
 // CHECK-NEXT:   structure_constraints = [single_reduction_region]
+// CHECK-NEXT:   axis_constraints = [
+// CHECK-NEXT:     axis=0 roles=[bind_core,kernel_loop,vectorize] tail=masked_tail
+// CHECK-NEXT:     axis=1 roles=[full_reduction] tail=full_extent
+// CHECK-NEXT:   ]
 
 // CHECK: Schedule report
 

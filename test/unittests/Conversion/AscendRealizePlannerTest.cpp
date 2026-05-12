@@ -293,8 +293,9 @@ TEST(AscendRealizePlannerTest, MemoryRealizationAnnotatesPlanForMemorySpaces) {
   MemoryRealizationPlan plan;
   plan.kernelId = "kernel_0";
   MemoryRealizationDriver driver;
+  Phase5BridgeMaterializationCounts materializationCounts;
 
-  driver.markMemorySpaceAnnotated(plan, 1);
+  driver.markMemorySpaceMaterialized(plan, 1, materializationCounts);
 
   EXPECT_EQ(plan.kernelId, "kernel_0");
   EXPECT_EQ(plan.mode, "memory_space_annotate");

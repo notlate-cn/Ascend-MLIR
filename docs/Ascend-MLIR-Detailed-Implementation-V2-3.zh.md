@@ -374,6 +374,8 @@ using OpAxisMap = DenseMap<Operation*, SmallVector<LogicalAxis*>>;
 | ----------------------- | ------------------------------------------------------------ | ------------------------------------------------------------ |
 | `tileableAxes`          | 候选允许后续切分的逻辑轴集合                                 | role、iteratorTypes、indexing map、primitive 允许的 tile 传播规则 |
 | `requiredReductionAxes` | 必须保持为 reduction 的轴                                    | reduction role、reduce op 语义和 primitive 约束              |
+| `axisScheduleConstraints` | 轴级调度约束与候选执行角色提示；只描述合法性和偏好，不选择具体 tile size；单轴通过 `coalescingGroupId` 反向引用组级合轴提示 | `tileableAxes`、`requiredReductionAxes`、broadcast/layout/indexing 传播关系、primitive 语义 |
+| `axisCoalescingHints`   | 组级合轴提示；记录可一起线性化的轴组、组 kind 和成员顺序；与 `axisScheduleConstraints` 同级，不内嵌到单轴结构 | `axisScheduleConstraints`、layout 连续性约束、primitive 语义 |
 | `layoutConstraints`     | 后续模板不能破坏的 layout 条件                               | indexing、layout transform、transpose / gather / concat 等结构语义 |
 | `mustKeepOnChipValues`  | 进入单 kernel 时必须片上传递的值                             | producer-consumer carried values 和 primitive 的片上传播要求 |
 | `templateFamilies`      | 当前候选按 role 组合推断出的模板族标签集合；元素为字符串标识符（如 `"AnchorEpilogue"`、`"SoftmaxTemplate"`） | role 组合与结构语义；**不依赖 `TemplateRegistry` 内部结构**，由第二层按静态规则推断；第三层凭此标签在 `TemplateRegistry` 中自行查找，查不到则报错 |
@@ -387,7 +389,7 @@ using OpAxisMap = DenseMap<Operation*, SmallVector<LogicalAxis*>>;
 
 ##### 3.6.2.1 scheduleContract 推导规则
 
-每个 `scheduleContract` 字段在候选扩展完成、`CandidateClosure.isClosed = true` 后立即推导。推导只读消费 `OpSemanticSummary`、`OpRoleMap`、`ProducerConsumerIndex` 和候选自身的 `CandidateClosure`，不查询 target 硬件参数，不依赖 `TemplateRegistry` 内部结构。六个字段的推导顺序如下：`tileableAxes` → `requiredReductionAxes` → `layoutConstraints` → `mustKeepOnChipValues` → `templateFamilies` → `dynamicGuardSet`；前序字段的结果可被后续字段消费。
+每个 `scheduleContract` 字段在候选扩展完成、`CandidateClosure.isClosed = true` 后立即推导。推导只读消费 `OpSemanticSummary`、`OpRoleMap`、`ProducerConsumerIndex` 和候选自身的 `CandidateClosure`，不查询 target 硬件参数，不依赖 `TemplateRegistry` 内部结构。八个字段的推导顺序如下：`tileableAxes` → `requiredReductionAxes` → `axisScheduleConstraints` → `axisCoalescingHints` → `layoutConstraints` → `mustKeepOnChipValues` → `templateFamilies` → `dynamicGuardSet`；前序字段的结果可被后续字段消费。
 
 ---
 
@@ -450,7 +452,137 @@ using OpAxisMap = DenseMap<Operation*, SmallVector<LogicalAxis*>>;
 
 ---
 
-**③ `layoutConstraints` 推导**
+**③ `axisScheduleConstraints` 推导**
+
+`axisScheduleConstraints` 是第二层向第三层交付的轴级调度边界。它回答"合轴之后每根逻辑轴可以被第三层怎样使用"，但不回答"最终 tile 多大、采用几个 block、是否启用某个 target 专属模板"。具体数值选择仍由第三层 `TemplateRegistry`、`ScheduleSearch`、target memory/cost model 和第四层 capacity check 共同决定。
+
+业界同类编译系统通常采用这一分层：
+
+- MLIR Linalg / transform dialect 先以 iteration domain 表达合法 loop 维度，再由后续 tiling、interchange、mapping 选择具体 loop 结构。
+- IREE codegen 把 workgroup、subgroup、thread/vector 的多级 tiling 分开建模，先确认维度合法性，再绑定到硬件层级。
+- Triton kernel 以 program id grid 表达 block 级映射，用 mask 处理非整除 tail，而不是要求所有 shape 整除 tile。
+- TVM MetaSchedule 把 schedule trace、tile split、bind、vectorize 作为可搜索 decision，合法性和代价选择分离。
+
+Ascend 主线采用相同思想：第二层只产出轴约束和候选角色，第三层把这些约束作为 `ScheduleProblemBuilder`（见 3.6.2 表中 `scheduleContract` 字段消费方）的输入，再由 structured lowering 物化为 `scf.for`、`memref.subview`、block mapping 和 tail guard。
+
+**数据结构：**
+
+```cpp
+enum class AxisExecutionRole {
+  BindCoreCandidate,     // 可映射到 Ascend AI Core 级并行（block_idx），等价于 IREE workgroup；
+                         // 注意：Ascend 硬件无 GPU 意义上的 subgroup 层
+  KernelLoopCandidate,   // 可生成核内 outer loop（intra-core 的 scf.for），由单个 AI Core 顺序执行；
+                         // 不对应 GPU 的 subgroup / warp
+  VectorizeCandidate,    // 可作为最内层向量化 / AscendC vector intrinsic 轴
+  FullReduction,         // reduction 轴必须在单个 tile 内完整归约
+  ChunkedReduction,      // reduction 轴允许分块归约；仅 primitive 显式声明时可用
+  BroadcastProjection,   // broadcast 退化轴，不传播 tile size
+  LayoutCarry            // layout transform 只重编号或携带该轴
+};
+
+enum class AxisTailPolicy {
+  MustDivide,       // 模板要求整除；第三层需要产生 Divisible guard 或静态验证
+  MaskedTail,       // 允许 tail，通过 min(tile, dim-origin) 或 mask 处理
+  ScalarEpilogue,   // 允许单独尾部 epilogue
+  FullExtent        // 轴必须全长覆盖，典型为当前 FullReduction
+};
+
+// 合轴提示是"组级别"概念（多根轴属于同一组），不挂在单根轴上。
+// 单根轴的 AxisScheduleConstraint 只通过 coalescingGroupId 反向引用所属组，
+// 真正的组信息存放在候选级别的 AxisCoalescingHint 列表里（见 scheduleContract 字段）。
+enum class CoalescingHintKind {
+  Vectorizable,    // 组内至少一根轴可作为 VectorizeCandidate；可一起线性化并允许作为最内向量轴
+  LinearizeOnly    // 组内无轴可向量化；仅作为 block/grid 线性化提示，不传递为 vector 轴
+};
+
+struct AxisCoalescingHint {
+  uint32_t groupId;                       // 候选内唯一；0 表示"未参与任何合轴组"，不出现在列表中
+  CoalescingHintKind kind;                // 组级 kind，避免污染单轴 AxisExecutionRole
+  SmallVector<LogicalAxis *> members;     // 同组全部轴，按候选内访问顺序排列；size >= 2
+};
+
+struct AxisScheduleConstraint {
+  LogicalAxis *axis;
+  AxisKind kind;
+  SmallVector<AxisExecutionRole> allowedRoles;
+  AxisTailPolicy tailPolicy;
+  // 合轴在第二层只作为"提示"产出，不在此处执行折叠。
+  // coalescingGroupId == 0 表示该轴不参与任何合轴组；
+  // 非 0 时按 groupId 查找 scheduleContract.axisCoalescingHints 中唯一匹配项；
+  // 若实现选择用连续数组存储，数组下标为 groupId - 1，由 verifier 保证连续性和唯一性。
+  // 组的 kind / 成员 / 顺序均查那张表，本结构体不再重复存储。
+  uint32_t coalescingGroupId;
+  // reasons 仅用于诊断和 debug 构建，不参与 fingerprint，也不参与 cache key
+  // （见 3.12.4 fingerprint 参与项中的"显式排除项"）。
+  // Release 构建可为空；任何两次运行的 reasons 字符串差异不得改变编译产物。
+  SmallVector<std::string> reasons;
+};
+```
+
+> `axisCoalescingHints: SmallVector<AxisCoalescingHint>` 作为 `scheduleContract` 的并列字段（与 `axisScheduleConstraints` 同级），不内嵌到单轴结构。两者通过 `coalescingGroupId` 关联。这种"单轴属性 + 组级别属性"的分层与 MLIR `affine.parallel` / Linalg `loop tiling` 中"loop-level role"与"group-level mapping"的拆分一致。
+
+**推导规则：**
+
+| 轴类型 / 结构 | `allowedRoles` | `tailPolicy` | 说明 |
+| --- | --- | --- | --- |
+| `tileableAxes` 中的 parallel 轴 | `BindCoreCandidate`、`KernelLoopCandidate`、`VectorizeCandidate` | 默认 `MaskedTail` | 第三层可选择其中一级或多级切分；非整除 shape 必须通过 tail 处理，不应默认生成整除 guard |
+| `requiredReductionAxes` 且 primitive 未声明分块 reduction | `FullReduction` | `FullExtent` | 归约轴在当前 kernel 内保持完整；例如 `broadcast + add + reduce` 的 N 轴 |
+| `requiredReductionAxes` 且 primitive 声明分块 reduction | `ChunkedReduction`、`KernelLoopCandidate` | `MaskedTail` | 仅 Softmax online reduction、TopK 等专用 primitive 可开启；必须同步声明 cross-tile accumulate 语义 |
+| broadcast 退化轴 | `BroadcastProjection` | 继承 consumer 轴 | 输入侧不传播 tile size；consumer 侧仍可 tile / bind / vectorize |
+| layout transform 轴 | `LayoutCarry`，必要时附加 `KernelLoopCandidate` | 由被携带轴继承 | transpose 只改变轴顺序，reshape 只有在 product 可静态证明时才允许合轴 |
+| gather / indexing 动态访问轴 | 空或仅 `KernelLoopCandidate` | `MustDivide` 或拒绝 | 数据相关索引轴默认不能 bind core / vectorize，除非 primitive 专门证明边界和重排合法 |
+
+**合轴提示约束（语义：第二层只产出组级提示，不执行折叠）：**
+
+合轴提示组在以下条件**全部满足**时成立，按下列步骤产生：
+
+1. **组成立条件**（同时满足）：
+   - 所有候选成员轴均为 `Parallel`，且不存在数据相关 indexing 访问。
+   - 成员轴在候选内所有 op 的访问顺序一致，或仅通过可证明的 permutation 重编号。
+   - 合轴后的线性化顺序不破坏 `layoutConstraints` 对连续维度的要求。
+   - 组内 size ≥ 2。
+2. **分配 `groupId`**：在候选内单调递增分配（从 1 起），写入 `AxisCoalescingHint.groupId` 与各成员轴 `AxisScheduleConstraint.coalescingGroupId`。
+3. **决定组 `kind`**：
+   - 若组内**至少一根轴**的 `allowedRoles` 含 `VectorizeCandidate`，则 `kind = Vectorizable`，组可向第三层提示"作为一组线性化、并允许其中之一作为最内向量轴"。
+   - 否则 `kind = LinearizeOnly`，组只能作为 block/grid 线性化提示，**不**作为 vector 轴提示传递给第三层。
+4. **顺序记录**：`members` 按候选内访问顺序排列；第三层在线性化时遵循该顺序（如需重排须自证不破坏 layout 约束）。
+
+**第二层只写出提示，不做物理折叠**。组级 `AxisCoalescingHint` 描述"哪些轴可以一起线性化、是否允许其中之一作为最内向量轴"，但不指定折叠语义之外的内容；是否真正折叠成 flat logical axis、折叠后的 tile size、是否再做 split，全部由第三层 `ScheduleProblemBuilder` 决定。`tileableAxes` 与 `requiredReductionAxes` 在第二层始终以**未折叠**的逻辑轴形态保留，避免第二层产物在折叠后无法再被第三层重新切分。
+
+**3.7 合并下的组合并规则**：跨候选合并时，组按以下规则取交。两侧候选的组先按"成员集合相等"匹配（成员是 `LogicalAxis *`，通过 `axisId` 比较，与顺序无关）；匹配成功的组取相同 `members` 顺序（两侧必须一致，否则记 `TileContractUnavailable`），`kind` 按下表合并：
+
+| `a.kind` \ `b.kind` | `Vectorizable` | `LinearizeOnly` |
+| --- | --- | --- |
+| `Vectorizable` | `Vectorizable`（合并后仍需满足"组内至少一根轴的 `allowedRoles` 交集仍含 `VectorizeCandidate`"，否则降级为 `LinearizeOnly`） | `LinearizeOnly` |
+| `LinearizeOnly` | `LinearizeOnly` | `LinearizeOnly` |
+
+两侧组成员集合不一致时，**不**进行部分匹配：该组在合并后被整体丢弃（保守做法），不记错误；但若任一侧的某根轴在 `tileableAxes` 上仍存在且失去全部合轴提示，仍允许参与第三层调度，只是失去合轴优化空间。`groupId` 在合并后重新分配，不沿用两侧编号。
+
+**`broadcast + add + reduce` 示例：**
+
+| 逻辑轴 | 来源 | 约束 |
+| --- | --- | --- |
+| M | `tileableAxes` | `allowedRoles = [BindCoreCandidate, KernelLoopCandidate, VectorizeCandidate]`；`tailPolicy = MaskedTail` |
+| N | `requiredReductionAxes` | `allowedRoles = [FullReduction]`；`tailPolicy = FullExtent` |
+
+第三层据此可以生成如下层级，而不是依赖手写 transform：
+
+```text
+M: bind_core tile = TB_M, kernel_loop tile = Tb_M, tail = min(tile, M-origin)
+N: full_reduction extent = N
+```
+
+若后续 primitive 声明支持分块 reduction，则 N 轴可变为：
+
+```text
+N: kernel_loop tile = TB_N, cross_tile_accumulate = true, tail = min(tile, N-origin)
+```
+
+这是扩展点，不属于当前默认 `ReductionInlining` 语义。
+
+---
+
+**④ `layoutConstraints` 推导**
 
 收集候选内所有对内存布局有显式约束的 op，生成约束列表。每条约束的格式为 `{value, requiredLayout}`，`value` 为 SSA 值，`requiredLayout` 为枚举：
 
@@ -475,7 +607,7 @@ using OpAxisMap = DenseMap<Operation*, SmallVector<LogicalAxis*>>;
 
 ---
 
-**④ `mustKeepOnChipValues` 推导**
+**⑤ `mustKeepOnChipValues` 推导**
 
 收集在单 kernel 执行时必须保留在片上（不写回 GM 再读回）的 SSA 值。来源有两类：
 
@@ -506,7 +638,7 @@ using OpAxisMap = DenseMap<Operation*, SmallVector<LogicalAxis*>>;
 
 ---
 
-**⑤ `templateFamilies` 推导**
+**⑥ `templateFamilies` 推导**
 
 `templateFamilies` 由候选的**主角色集合 + primitive 标识 + 结构属性**三元组查静态映射表得出。映射表在编译器中以常量数组形式存储，不在运行时动态计算。
 
@@ -539,7 +671,7 @@ using OpAxisMap = DenseMap<Operation*, SmallVector<LogicalAxis*>>;
 
 ---
 
-**⑥ `dynamicGuardSet` 推导**
+**⑦ `dynamicGuardSet` 推导**
 
 `dynamicGuardSet` 是候选在运行时必须验证的 shape 谓词集合，格式为 `Set<ShapeGuard>`，每个 `ShapeGuard` 的结构为：
 
@@ -561,7 +693,7 @@ ShapeGuard {
 | `IndexedFusion` 的 gather 边界 | `max(indices) < data.dim(gather_dim)`；无法静态证明时产生 `LessEqual` guard | `EmitRuntimeCheck` |
 | `LayoutTransform` 的 reshape 合法性 | reshape 涉及动态维度时产生 `Equal`（product 不变）guard | `CompileError` |
 | `AnchorPrologue` 的 broadcast 兼容性 | broadcast 轴的 size 为 1 或与 consumer 轴 size 相等 | `CompileError` |
-| `tileableAxes` 的整除性 | 若模板要求 tile size 整除轴长，产生 `Divisible` guard；轴长为静态常数时静态验证，不产生 guard | `EmitRuntimeCheck` |
+| `axisScheduleConstraints` 的 tail 策略 | `MustDivide` 产生 `Divisible` guard；`MaskedTail` / `ScalarEpilogue` 不产生整除 guard，由第三层和第五层生成 tail 处理 | `EmitRuntimeCheck` |
 
 推导步骤：遍历候选内每个 op，调用 `op.getShapeGuards(OpSemanticSummary, AscendSymbolConstraintAttr)` 收集 guard；能被 `AscendSymbolConstraintAttr` 中已有等价关系静态证明的 guard 直接消除，不写入集合；剩余写入 `dynamicGuardSet`。若集合大小超过 `cfg.maxDynamicGuardBudget`，记 `DynamicGuardExplosion`，候选合法性失败。
 
@@ -840,6 +972,7 @@ classifyRematerializable(escapingValues, primitive, candidateSet, cfg):
 | `escapingValues`                    | 空                           |
 | `isClosed`                          | `true`                       |
 | `scheduleContract.tileableAxes`     | `[M, N]`                     |
+| `scheduleContract.axisScheduleConstraints` | M/N 均允许 `BindCoreCandidate`、`KernelLoopCandidate`、`VectorizeCandidate`，默认 `MaskedTail` |
 | `scheduleContract.templateFamilies` | `{AnchorEpilogue}`           |
 
 **案例 B：失败闭包**
@@ -880,6 +1013,7 @@ classifyRematerializable(escapingValues, primitive, candidateSet, cfg):
 | seed                                | `{max_reduce}`                                               |
 | `candidateOps`                      | `{max_reduce, sub, exp, sum_reduce, div}`                    |
 | 约束验证                            | `max_reduce` 和 `sum_reduce` 的 tile 轴均为 `seq_len`，`tileableAxes` 交集非空，契约成立 |
+| `scheduleContract.axisScheduleConstraints` | `seq_len` 允许 `KernelLoopCandidate` / `VectorizeCandidate`；若 primitive 声明 online 分块归约，则 reduction 轴允许 `ChunkedReduction` |
 | `scheduleContract.templateFamilies` | `{SoftmaxTemplate}`                                          |
 
 ### 3.7 Candidate Merge Analysis（候选合并分析）
@@ -930,17 +1064,35 @@ classifyRematerializable(escapingValues, primitive, candidateSet, cfg):
 | ----------------------- | --------------------------------------------- |
 | `tileableAxes`          | 取交集                                        |
 | `requiredReductionAxes` | 取并集（任一候选要求保留的轴均须保留）        |
+| `axisScheduleConstraints` | 按轴合并 allowedRoles：同一轴取交集，不同轴保留；`tailPolicy` 按下述合并函数取严格者（不是全序，而是成对规则，见下方"`tailPolicy` 合并规则"）；任一轴的 `allowedRoles` 交集为空，或同一轴在两侧之间 `tailPolicy` 不可合并，均记 `TileContractUnavailable` |
+| `axisCoalescingHints`   | 按"成员集合相等 + 成员顺序一致"匹配组，匹配组按 3.6.2.1 的 `CoalescingHintKind` 2x2 表合并；成员集合不一致的组整体丢弃；合并后重新分配 `groupId` 并回写成员轴的 `coalescingGroupId` |
 | `layoutConstraints`     | 取并集（约束只增不减）                        |
 | `mustKeepOnChipValues`  | 取并集                                        |
 | `templateFamilies`      | 以合并后主角色集合 + primitive 组合重查静态映射表；查到则用查表结果，查不到则取各源候选 `templateFamilies` 的交集兜底；交集亦为空则记 `TemplateFamilyDisjoint` |
 | `dynamicGuardSet`       | 取并集；超出预算则记 `DynamicGuardExplosion`  |
+
+**`tailPolicy` 合并规则**（成对函数，不是全序）：对同一根轴在两侧候选上的 `tailPolicy` 取值 `(a, b)`，按以下表格决定合并结果。表是对称的，未列出的组合视为冲突并记 `TileContractUnavailable`。
+
+| `a` \ `b` | `FullExtent` | `MustDivide` | `MaskedTail` | `ScalarEpilogue` |
+| --- | --- | --- | --- | --- |
+| `FullExtent` | `FullExtent` | 冲突 | 冲突 | 冲突 |
+| `MustDivide` | 冲突 | `MustDivide` | `MustDivide` | `MustDivide` |
+| `MaskedTail` | 冲突 | `MustDivide` | `MaskedTail` | `ScalarEpilogue` |
+| `ScalarEpilogue` | 冲突 | `MustDivide` | `ScalarEpilogue` | `ScalarEpilogue` |
+
+要点说明：
+
+- `FullExtent` 表示"轴必须全长覆盖"，与任何允许 tail 的策略不兼容；只能与 `FullExtent` 自身合并。
+- `MustDivide` 是"强制整除"的硬要求，遇到 `MaskedTail` / `ScalarEpilogue` 时**结果收敛到 `MustDivide`**（更严格的一侧赢），不是冲突；这与第三层降级生成 Divisible guard 一致。
+- `MaskedTail` 与 `ScalarEpilogue` 互兼容，合并结果偏向 `ScalarEpilogue`（更具体的 tail 处理形态由第三层模板决定，但合并产物不丢失"允许独立 epilogue"的可能性）。
+- `requiredReductionAxes` 在并集后若同一轴在两侧分别为 `FullReduction` / `ChunkedReduction`，按上表落到 `FullExtent` ⊕ `MaskedTail` = 冲突，因此跨候选合并不允许 reduction 语义降级；只有双方均声明 `ChunkedReduction` 时合并仍为 `ChunkedReduction`。
 
 **合并条件**：
 
 | 检查项             | 通过条件                                                     | 失败记录                   |
 | ------------------ | ------------------------------------------------------------ | -------------------------- |
 | 主导 op 可唯一确定 | 能选出唯一主导 op                                            | `PrimaryOpAmbiguous`       |
-| 调度契约交集非空   | `tileableAxes / requiredReductionAxes / layoutConstraints` 交集非空 | `TileContractUnavailable`  |
+| 调度契约交集非空   | `tileableAxes / requiredReductionAxes / axisScheduleConstraints / layoutConstraints` 兼容，且至少存在一根可 tile 或可完整 reduction 的轴 | `TileContractUnavailable`  |
 | 中间结果可片上传递 | carried values 无需完整写回 GM；可通过切分使单 tile 的中间结果满足片上容量 | `OnChipTransferImpossible` |
 | 动态 guard 可合并  | 合并后 guard 集未超预算                                      | `DynamicGuardExplosion`    |
 | 模板可承接         | 存在复合模板可继续 lowering                                  | `TemplateFamilyDisjoint`   |
@@ -1243,8 +1395,8 @@ classifyRematerializable(escapingValues, primitive, candidateSet, cfg):
 | 1    | `DependencyAnalysisVerifier`   | 3.3 完成后            | `ProducerConsumerIndex` 仅记录一跳依赖；`OpSemanticSummary` 覆盖 `KernelPattern` 候选范围内全部 op；`accessPatternKind` 取值合法；`NotApplicable` 仅出现在具名 contraction-like op 上 | `StructuralBarrier`     |
 | 2    | `StructuralMarkingVerifier`    | 3.4 完成后            | `branch_root` / `merge_root` 在 function 内唯一；`branch_group` / `merge_group` 编号连续；branch / merge 配对完整；`handwritten_pattern_candidate` 的 `groupId` 在 function 内唯一；不依赖 target 信息 | `StructuralBarrier`     |
 | 3    | `OpRoleClassificationVerifier` | 3.5 完成后            | `OpRoleMap` 覆盖第一层许可范围内全部 op；多角色组合符合 3.5.3 节优先级；同一 IR 多次运行结果稳定（确定性）；`AscendOpRoleAttr` 与 `OpRoleMap` 一致 | `StructuralBarrier`     |
-| 4    | `FusionCandidateVerifier`      | 3.6 完成后            | 每个 `FusionCandidate.closure.isClosed = true`；`scheduleContract` 字段完整（`tileableAxes`、`templateFamilies` 等非空且来源可追溯）；`benefitScore` 已计算；候选编译预算未超 `candidateBudgetPerFunction` | `BudgetExceeded` 或 `ClosureEscape` |
-| 5    | `CandidateMergeVerifier`       | 3.7 完成后            | `MergedCandidate.scheduleContract` 来自 3.7.3 节合并规则（取交 / 取并），无任意推导；`primaryOps` 唯一确定；`dynamicGuardSet` 未超全局 `maxDynamicGuardBudget` | `DynamicGuardExplosion` 或 `TileContractUnavailable` |
+| 4    | `FusionCandidateVerifier`      | 3.6 完成后            | 每个 `FusionCandidate.closure.isClosed = true`；`scheduleContract` 字段完整（`tileableAxes`、`templateFamilies` 等非空且来源可追溯）；**`axisScheduleConstraints` 覆盖 `tileableAxes ∪ requiredReductionAxes` 中每一根轴**，且每根轴的 `allowedRoles` 非空、`tailPolicy` 已显式赋值；**`axisCoalescingHints` 自洽**：每个 hint 的 `members.size() ≥ 2` 且全部出现在 `tileableAxes` 内、`groupId` 在候选内唯一且从 1 起连续分配；任一轴 `coalescingGroupId != 0` 时必须能找到唯一 hint，且该轴出现在该 hint 的 `members` 中；每个 hint 的成员轴必须反向指回同一 `groupId`；`kind = Vectorizable` 时组内至少一根轴的 `allowedRoles` 含 `VectorizeCandidate`；`kind = LinearizeOnly` 时不得依赖 vector 轴语义；`benefitScore` 已计算；候选编译预算未超 `candidateBudgetPerFunction` | `BudgetExceeded`、`ClosureEscape` 或 `ScheduleContractIncomplete` |
+| 5    | `CandidateMergeVerifier`       | 3.7 完成后            | `MergedCandidate.scheduleContract` 来自 3.7.3 节合并规则（取交 / 取并），无任意推导；`primaryOps` 唯一确定；`dynamicGuardSet` 未超全局 `maxDynamicGuardBudget`；合并后 `axisScheduleConstraints` 的轴覆盖性、`tailPolicy` 合并规则约束和 `axisCoalescingHints` 自洽性仍成立 | `DynamicGuardExplosion` 或 `TileContractUnavailable` |
 | 6    | `HorizontalFusionVerifier`     | 3.8 完成后            | 每个 `HorizontalFusionCandidate.siblingCandidates` 间互不可达条件成立（无 `ProducerConsumerIndex` 路径）；`sharedInputs` 非空；各兄弟候选主角色符合初期限制（均为 `Anchor`）；`perGroupContracts` 条目数与 `siblingCandidates` 数一致；组内候选数未超 `maxHorizontalFusionGroupSize`；参与水平融合的原始候选不再出现在独立候选列表中 | `HorizontalDependencyViolation`、`HorizontalRoleUnsupported`、`NoSharedInput`、`SourceCandidateNotClosed`、`HorizontalGroupSizeExceeded`、`HorizontalMergeProfitNegative` |
 | 7    | `KernelPatternBuildVerifier`   | 3.9 完成后            | `KernelPatternCandidate.candidateId` 唯一；`fingerprint` 仅含 3.12.4 节允许的参与项（无 `ascend.unknown_origin`、无前端前缀 attr、无 location 信息）；`HandwrittenPattern` 的 `MustCoLocate` 约束已建立；`coveringMap` 与 `overlapMap` 互一致 | `StructuralBarrier`     |
 | 8    | `KernelPatternFinalVerifier`   | 3.10 完成后（最终输出）| 最终 `KernelPattern[]` 满足 3.10.3 节验证条件：**无重叠**（各 pattern 的 `internalOps` 无交集；`rematerializedOps` 中副本不计入检查）、**全覆盖**（所有许可 op 已被覆盖）、**依赖可恢复**（pattern 间组成完整 DAG）、**模板可承接**（每个 pattern 存在后续 `scheduleTemplate` 或已注册为 `HandwrittenPattern`）；硬约束 `BranchPair / MergePair / MustCoLocate / MustSeparate / ScheduleBarrier` 全部满足；`HandwrittenPattern` 注入的 op 集合与匹配条件一致 | `StructuralBarrier` 或 `ScheduleFamilyNotSupported` |
@@ -1323,6 +1475,7 @@ fingerprint 只刻画编译语义，不刻画来源痕迹。参与项按来源�
 - 已知前端命名空间前缀的 attr（`torch.` / `onnx.` / `tf.` 等）
 - location / debug 信息
 - 任何 warning 级标记
+- `AxisScheduleConstraint.reasons`（debug-only 字符串字段；不同环境下文案差异不得污染 fingerprint）
 
 > `AscendSymbolConstraintAttr` 的符号变量**名**不参与 fingerprint，只有等价关系**结构**参与。来自不同前端但等价关系相同的两个 IR，在编译语义上等价，应命中同一 cache 条目。
 

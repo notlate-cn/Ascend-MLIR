@@ -30,4 +30,8 @@ TEST(AscendCommonAttributesTest, SharedConstantsMatchLayerNamespaces) {
             ascend::kStructuredLoweringAttr);
   EXPECT_EQ(ascend::realize::kStructuredLoweringAttr,
             ascend::kStructuredLoweringAttr);
+  EXPECT_EQ(ascend::schedule::kScheduleSelectedTileShapeAttr,
+            ascend::kScheduleSelectedTileShapeAttr);
+  EXPECT_EQ(ascend::schedule::kScheduleTailPoliciesAttr,
+            ascend::kScheduleTailPoliciesAttr);
 }

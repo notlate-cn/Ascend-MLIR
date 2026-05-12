@@ -103,25 +103,39 @@ func.func @reduction_keeps_split_logical_axis_guard(%arg0: tensor<2x4xf16>)
 // CHECK: ScheduleGuards:
 // CHECK-NEXT:   kernel = kernel_0
 // CHECK-NEXT:   candidate_guards = 2
-// CHECK-NEXT:   decision_guards = 2
+// CHECK-NEXT:   decision_guards = 0
+// CHECK-NOT:   decision_guard =
 // CHECK-NEXT:   guard_budget = 8
 // CHECK-NEXT:   pruned_by_guard_budget = 0
 // CHECK-NEXT:   candidate_guard = d0 == 4
 // CHECK-NEXT:   candidate_guard = d1 == 8
-// CHECK-NEXT:   decision_guard = a0 % 4 == 0
-// CHECK-NEXT:   decision_guard = a1 % 8 == 0
+// CHECK: ScheduleDecisionSet:
+// CHECK-NEXT:   kernel = kernel_0
+// CHECK-NEXT:   decisions = 2
+// CHECK-NEXT:   runtime_top_k = 1
+// CHECK-NEXT:   selected = kernel_0.decision.0
+// CHECK-NEXT:   candidate_guards = 2
+// CHECK-NEXT:   decision_guards = 0
 
 // CHECK: ScheduleSearch:
 // CHECK-NEXT:   kernel = kernel_1
 // CHECK: ScheduleGuards:
 // CHECK-NEXT:   kernel = kernel_1
 // CHECK-NEXT:   candidate_guards = 2
-// CHECK-NEXT:   decision_guards = 1
+// CHECK-NEXT:   decision_guards = 0
+// CHECK-NOT:   decision_guard =
 // CHECK-NEXT:   guard_budget = 8
 // CHECK-NEXT:   pruned_by_guard_budget = 0
 // CHECK-NEXT:   candidate_guard = d0 > 0
 // CHECK-NEXT:   candidate_guard = d1 == 8
-// CHECK-NEXT:   decision_guard = a1 % 8 == 0
+// CHECK: ScheduleDecisionSet:
+// CHECK-NEXT:   kernel = kernel_1
+// CHECK-NEXT:   decisions = 3
+// CHECK-NEXT:   runtime_top_k = 1
+// CHECK-NEXT:   selected = kernel_1.decision.0
+// CHECK-NEXT:   candidate_guards = 2
+// CHECK-NEXT:   decision_guards = 0
+// CHECK-NEXT:   selected_tile_shape = [64,8]
 
 // CHECK: ScheduleSearch:
 // CHECK-NEXT:   kernel = kernel_2
@@ -132,27 +146,44 @@ func.func @reduction_keeps_split_logical_axis_guard(%arg0: tensor<2x4xf16>)
 // CHECK-NEXT:   guard_budget = 8
 // CHECK-NEXT:   pruned_by_guard_budget = 0
 // CHECK-NEXT:   candidate_guard = d0 > 0
+// CHECK: ScheduleDecisionSet:
+// CHECK-NEXT:   kernel = kernel_2
+// CHECK-NEXT:   decisions = 1
+// CHECK-NEXT:   runtime_top_k = 1
+// CHECK-NEXT:   selected = kernel_2.decision.0
+// CHECK-NEXT:   candidate_guards = 1
+// CHECK-NEXT:   decision_guards = 0
 
 // CHECK: ScheduleSearch:
 // CHECK-NEXT:   kernel = kernel_3
 // CHECK-NEXT:   generated = 2
-// CHECK-NEXT:   kept = 1
+// CHECK-NEXT:   kept = 2
 // CHECK-NEXT:   compile_time_top_k = 4
 // CHECK-NEXT:   instance = kernel_3.reduction_static.0
+// CHECK-NEXT:   instance = kernel_3.reduction_static.1
 // CHECK: ScheduleGuards:
 // CHECK-NEXT:   kernel = kernel_3
 // CHECK-NEXT:   candidate_guards = 4
-// CHECK-NEXT:   decision_guards = 4
+// CHECK-NEXT:   decision_guards = 0
+// CHECK-NOT:   decision_guard =
 // CHECK-NEXT:   guard_budget = 8
-// CHECK-NEXT:   pruned_by_guard_budget = 1
+// CHECK-NEXT:   pruned_by_guard_budget = 0
 // CHECK-NEXT:   candidate_guard = d0 == 2
 // CHECK-NEXT:   candidate_guard = d1 == 2
 // CHECK-NEXT:   candidate_guard = d2 == 2
 // CHECK-NEXT:   candidate_guard = d3 == 2
-// CHECK-NEXT:   decision_guard = a0 % 2 == 0
-// CHECK-NEXT:   decision_guard = a1 % 2 == 0
-// CHECK-NEXT:   decision_guard = a2 % 2 == 0
-// CHECK-NEXT:   decision_guard = a3 % 2 == 0
+// CHECK-NEXT:   kept_instance = kernel_3.reduction_static.1
+// CHECK-NEXT:   candidate_guard = d0 == 2
+// CHECK-NEXT:   candidate_guard = d1 == 2
+// CHECK-NEXT:   candidate_guard = d2 == 2
+// CHECK-NEXT:   candidate_guard = d3 == 2
+// CHECK: ScheduleDecisionSet:
+// CHECK-NEXT:   kernel = kernel_3
+// CHECK-NEXT:   decisions = 2
+// CHECK-NEXT:   runtime_top_k = 1
+// CHECK-NEXT:   selected = kernel_3.decision.0
+// CHECK-NEXT:   candidate_guards = 4
+// CHECK-NEXT:   decision_guards = 0
 
 // CHECK: ScheduleSearch:
 // CHECK-NEXT:   kernel = kernel_4
@@ -164,13 +195,17 @@ func.func @reduction_keeps_split_logical_axis_guard(%arg0: tensor<2x4xf16>)
 // CHECK: ScheduleGuards:
 // CHECK-NEXT:   kernel = kernel_4
 // CHECK-NEXT:   candidate_guards = 1
-// CHECK-NEXT:   decision_guards = 2
+// CHECK-NEXT:   decision_guards = 0
+// CHECK-NOT:   decision_guard =
 // CHECK-NEXT:   guard_budget = 8
 // CHECK-NEXT:   pruned_by_guard_budget = 0
 // CHECK-NEXT:   candidate_guard = d0 == 2
-// CHECK-NEXT:   decision_guard = a0 % 2 == 0
-// CHECK-NEXT:   decision_guard = a1 % 4 == 0
 // CHECK-NEXT:   kept_instance = kernel_4.reduction_static.1
 // CHECK-NEXT:   candidate_guard = d0 == 2
-// CHECK-NEXT:   decision_guard = a0 % 2 == 0
-// CHECK-NEXT:   decision_guard = a1 % 2 == 0
+// CHECK: ScheduleDecisionSet:
+// CHECK-NEXT:   kernel = kernel_4
+// CHECK-NEXT:   decisions = 2
+// CHECK-NEXT:   runtime_top_k = 1
+// CHECK-NEXT:   selected = kernel_4.decision.0
+// CHECK-NEXT:   candidate_guards = 1
+// CHECK-NEXT:   decision_guards = 0

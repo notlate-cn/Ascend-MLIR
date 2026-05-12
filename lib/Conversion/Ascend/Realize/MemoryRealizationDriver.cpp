@@ -79,6 +79,28 @@ static bool isSupportedPhase5GenericBody(linalg::GenericOp generic) {
   return lastArithOp && yieldOp.getOperand(0) == lastArithOp->getResult(0);
 }
 
+static bool isSupportedPhase5ReductionBody(linalg::GenericOp generic) {
+  if (!llvm::is_contained(generic.getIteratorTypesArray(),
+                          utils::IteratorType::reduction))
+    return false;
+
+  Block *body = generic.getBody();
+  auto yieldOp = dyn_cast<linalg::YieldOp>(body->getTerminator());
+  if (!yieldOp || yieldOp.getNumOperands() != 1)
+    return false;
+
+  Operation *lastAdd = nullptr;
+  for (Operation &bodyOp : body->without_terminator()) {
+    if (isa<arith::ConstantOp>(bodyOp))
+      continue;
+    if (!isa<arith::AddFOp>(bodyOp))
+      return false;
+    lastAdd = &bodyOp;
+  }
+
+  return lastAdd && yieldOp.getOperand(0) == lastAdd->getResult(0);
+}
+
 static bool hasIdentityOutputMaps(linalg::LinalgOp linalgOp) {
   SmallVector<AffineMap> maps = linalgOp.getIndexingMapsArray();
   unsigned firstOutputMap = linalgOp.getNumDpsInputs();
@@ -118,6 +140,26 @@ static bool isSupportedPhase5VectorOutput(linalg::LinalgOp linalgOp) {
   return false;
 }
 
+static bool isReductionInitFillForWriter(Operation *user, Operation *writer,
+                                         Value output) {
+  auto fillOp = dyn_cast<linalg::FillOp>(user);
+  auto generic = dyn_cast<linalg::GenericOp>(writer);
+  if (!fillOp || !generic || !isSupportedPhase5ReductionBody(generic))
+    return false;
+
+  if (!llvm::is_contained(fillOp.getOutputs(), output))
+    return false;
+  return llvm::is_contained(generic.getDpsInits(), output);
+}
+
+static bool isSupportedPhase5FinalOutput(linalg::LinalgOp linalgOp) {
+  if (isSupportedPhase5VectorOutput(linalgOp))
+    return true;
+
+  auto generic = dyn_cast<linalg::GenericOp>(linalgOp.getOperation());
+  return generic && isSupportedPhase5ReductionBody(generic);
+}
+
 static bool isAllowedExternalOutputUse(Operation *user,
                                        llvm::DenseSet<Operation *> &visited) {
   if (!visited.insert(user).second)
@@ -147,6 +189,8 @@ static bool isFinalKernelOutput(Value value, Operation *writer) {
   llvm::DenseSet<Operation *> visited;
   for (Operation *user : value.getUsers()) {
     if (user == writer)
+      continue;
+    if (isReductionInitFillForWriter(user, writer, value))
       continue;
 
     if (auto castOp = dyn_cast<memref::CastOp>(user))
@@ -258,7 +302,7 @@ MemoryRealizationDriver::materializePhase5Bridge(ModuleOp module) const {
 
   SmallVector<Phase5BridgeOutput, 4> outputsToBridge;
   module.walk([&](linalg::LinalgOp linalgOp) {
-    if (!isSupportedPhase5VectorOutput(linalgOp))
+    if (!isSupportedPhase5FinalOutput(linalgOp))
       return;
 
     Operation *op = linalgOp.getOperation();

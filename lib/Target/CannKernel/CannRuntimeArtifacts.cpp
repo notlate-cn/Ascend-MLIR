@@ -6,6 +6,7 @@
 
 #include "Target/CannKernel/CannRuntimeArtifacts.h"
 
+#include "Conversion/Ascend/Common/Attributes.h"
 #include "ascir/Dialect/Asc/Utils/Attributes.h"
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/JSON.h"
@@ -146,6 +147,37 @@ static llvm::json::Array buildTilingSchema(ArrayRef<TilingFieldInfo> fields) {
   return schema;
 }
 
+static FailureOr<llvm::json::Object>
+buildScheduleTilingParams(func::FuncOp funcOp) {
+  llvm::json::Object tilingParams;
+
+  if (auto selectedTileShape =
+          funcOp->getAttrOfType<DenseI64ArrayAttr>(
+              ::mlir::afir::ascend::kScheduleSelectedTileShapeAttr)) {
+    llvm::json::Array selectedTileShapeJson;
+    for (int64_t tileSize : selectedTileShape.asArrayRef())
+      selectedTileShapeJson.push_back(tileSize);
+    tilingParams["selected_tile_shape"] = std::move(selectedTileShapeJson);
+  }
+
+  if (auto tailPolicies =
+          funcOp->getAttrOfType<ArrayAttr>(
+              ::mlir::afir::ascend::kScheduleTailPoliciesAttr)) {
+    llvm::json::Array tailPoliciesJson;
+    for (auto [index, tailPolicyAttr] : llvm::enumerate(tailPolicies)) {
+      auto tailPolicy = dyn_cast<StringAttr>(tailPolicyAttr);
+      if (!tailPolicy)
+        return funcOp.emitError()
+               << ::mlir::afir::ascend::kScheduleTailPoliciesAttr
+               << " element " << index << " must be a string attribute";
+      tailPoliciesJson.push_back(tailPolicy.getValue().str());
+    }
+    tilingParams["tail_policies"] = std::move(tailPoliciesJson);
+  }
+
+  return tilingParams;
+}
+
 static LogicalResult checkFileError(Operation *diagOp,
                                     llvm::raw_fd_ostream &file,
                                     StringRef outPath, StringRef phase) {
@@ -265,10 +297,15 @@ emitRuntimeManifestJson(ModuleOp module, StringRef outPath,
     shapeArgOrder.push_back(std::move(shapeArg));
   }
 
+  FailureOr<llvm::json::Object> tilingParams =
+      buildScheduleTilingParams(*funcOr);
+  if (failed(tilingParams))
+    return failure();
+
   llvm::json::Object scheduleEntry;
   scheduleEntry["decisionId"] = "static_0";
   scheduleEntry["guard"] = "true";
-  scheduleEntry["tilingParams"] = llvm::json::Object{};
+  scheduleEntry["tilingParams"] = std::move(*tilingParams);
   llvm::json::Array scheduleEntries;
   scheduleEntries.push_back(std::move(scheduleEntry));
 

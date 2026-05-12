@@ -14,8 +14,7 @@ namespace {
 
 ArrayRef<ScheduleTemplate> getRegistryTemplates() {
   static const SmallVector<ScheduleTemplate> templates = {
-      {"vector_static_1d", "single_tile_per_block", {"vector"}, 1, 1, 0},
-      {"vector_static_2d", "single_tile_per_block", {"vector"}, 2, 2, 1},
+      {"vector_generic", "single_tile_per_block", {"vector"}, 1, 8, 0},
       {"reduction_static", "single_tile_per_block", {"reduction"}, 0, 8, 2},
       {"cube_static_matmul", "single_tile_per_block", {"cube"}, 2, 2, 3},
   };

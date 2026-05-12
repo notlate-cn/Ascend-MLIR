@@ -17,6 +17,13 @@
 // MANIFEST: "guardSet": []
 // MANIFEST: "kernelGraph"
 // MANIFEST: "kernelName": "broadcast_add_reducesum"
+// MANIFEST: "tilingParams": {
+// MANIFEST: "selected_tile_shape": [
+// MANIFEST-NEXT: 64,
+// MANIFEST-NEXT: 15000
+// MANIFEST: "tail_policies": [
+// MANIFEST-NEXT: "masked_tail",
+// MANIFEST-NEXT: "full_extent"
 // MANIFEST: "shapeArgOrder"
 // MANIFEST: "abiPosition": 0
 // MANIFEST: "name": "dim_arg0_0"
@@ -40,7 +47,12 @@ module {
       %tiling: !emitasc.py_struct<"TilingData",
           [i64, i64, i64, i64],
           ["TB_M", "TB_N", "dim_arg0_0", "dim_arg1_1"]>
-  ) attributes {ascendc.aicore, ascendc.global, cann.num_inputs = 2 : i32} {
+  ) attributes {
+      ascend.schedule.selected_tile_shape = array<i64: 64, 15000>,
+      ascend.schedule.tail_policies = ["masked_tail", "full_extent"],
+      ascendc.aicore,
+      ascendc.global,
+      cann.num_inputs = 2 : i32} {
     %tb_m = emitasc.member %tiling "TB_M"
         : !emitasc.py_struct<"TilingData",
               [i64, i64, i64, i64],

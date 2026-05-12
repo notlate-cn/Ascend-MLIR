@@ -119,6 +119,7 @@ def AscendComputeLowerPass : Pass<"ascend-compute-lower", "mlir::func::FuncOp"> 
   let constructor = "mlir::afir::createAscendComputeLowerPass()";
   let dependentDialects = [
     "mlir::ascendc::AscendCDialect",
+    "mlir::emitasc::EmitAscDialect",
     "mlir::memref::MemRefDialect",
     "mlir::arith::ArithDialect",
     "mlir::linalg::LinalgDialect"
@@ -316,7 +317,7 @@ def LinalgToAscendCPass : Pass<"linalg-to-ascendc", "mlir::func::FuncOp"> {
       A1(1) → A2(2)         : deque → alloc → load_data_l0              → enque → free
       B1(3) → B2(4)         : deque → alloc → load_data_with_transpose  → enque → free
       CO1(7) → VECIN(9)     : deque → alloc → fixpipe                   → enque → free
-      VECOUT(10) → GM(0)    : deque → data_copy_l2 → free
+      VECOUT(10) → GM(0)    : deque → data_copy_l2/scalar tail writeback → free
 
     Compute lowering (linalg ops):
       linalg.matmul (A2/B2/CO1)       : deque A2+B2, alloc CO1 → mmad → enque CO1
@@ -327,6 +328,7 @@ def LinalgToAscendCPass : Pass<"linalg-to-ascendc", "mlir::func::FuncOp"> {
   let constructor = "mlir::afir::createLinalgToAscendCPass()";
   let dependentDialects = [
     "mlir::ascendc::AscendCDialect",
+    "mlir::emitasc::EmitAscDialect",
     "mlir::memref::MemRefDialect",
     "mlir::arith::ArithDialect",
     "mlir::linalg::LinalgDialect"

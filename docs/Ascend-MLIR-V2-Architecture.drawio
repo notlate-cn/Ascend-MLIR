@@ -1,0 +1,237 @@
+<mxfile host="app.diagrams.net" modified="2026-05-11T00:00:00.000Z" agent="ascend-mlir" version="24.0.0">
+  <diagram id="ascend-mlir-v2-arch" name="Ascend-MLIR V2 架构总览">
+    <mxGraphModel dx="2400" dy="1500" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="2400" pageHeight="1500" math="0" shadow="1">
+      <root>
+        <mxCell id="0" />
+        <mxCell id="1" parent="0" />
+
+        <!-- ============ Title ============ -->
+        <mxCell id="title" value="Ascend-MLIR V2 编译器架构总览" style="text;html=1;align=center;verticalAlign=middle;fontSize=42;fontStyle=1;fontColor=#0D1B2A;" vertex="1" parent="1">
+          <mxGeometry x="40" y="20" width="2320" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="subtitle" value="从 PyTorch / ONNX / TF 到 Ascend AI Core 的端到端自动调优编译流水线" style="text;html=1;align=center;verticalAlign=middle;fontSize=22;fontColor=#37474F;" vertex="1" parent="1">
+          <mxGeometry x="40" y="80" width="2320" height="32" as="geometry" />
+        </mxCell>
+
+        <!-- ============ Frontend ============ -->
+        <mxCell id="fe" value="&lt;b&gt;上层前端 lowering&lt;/b&gt;&lt;br&gt;&lt;span style='font-size:16px'&gt;torch-mlir · onnx-mlir · tf-mlir&lt;br&gt;Linalg + Tensor + Arith + Math + Func IR&lt;/span&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E3F2FD;strokeColor=#1565C0;strokeWidth=2;fontSize=20;fontColor=#0D47A1;align=center;verticalAlign=middle;shadow=1;" vertex="1" parent="1">
+          <mxGeometry x="40" y="140" width="220" height="900" as="geometry" />
+        </mxCell>
+
+        <!-- ============ Layer 1 — Normalize ============ -->
+        <mxCell id="l1box" value="" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E8F5E9;strokeColor=#2E7D32;strokeWidth=2;dashed=0;shadow=1;" vertex="1" parent="1">
+          <mxGeometry x="300" y="140" width="380" height="900" as="geometry" />
+        </mxCell>
+        <mxCell id="l1title" value="&lt;b&gt;Layer 1 — Normalize&lt;/b&gt;&lt;br&gt;&lt;span style='font-size:14px;color:#558B2F'&gt;V2-2 · 统一入口形态&lt;/span&gt;" style="text;html=1;align=center;verticalAlign=middle;fontSize=22;fontColor=#1B5E20;" vertex="1" parent="1">
+          <mxGeometry x="310" y="155" width="360" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="l1a" value="方言白名单 + 受限 Pass 调度&lt;br&gt;&lt;span style='font-size:12px;color:#33691E'&gt;cse · 限定 canonicalize · fold&lt;/span&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#558B2F;strokeWidth=1.5;fontSize=15;fontColor=#1B5E20;align=center;" vertex="1" parent="1">
+          <mxGeometry x="320" y="230" width="340" height="70" as="geometry" />
+        </mxCell>
+        <mxCell id="l1b" value="mark-structured-ops&lt;br&gt;&lt;span style='font-size:12px;color:#33691E'&gt;gather_dim · embedding_dim&lt;/span&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#558B2F;strokeWidth=1.5;fontSize=15;fontColor=#1B5E20;align=center;" vertex="1" parent="1">
+          <mxGeometry x="320" y="310" width="340" height="70" as="geometry" />
+        </mxCell>
+        <mxCell id="l1c" value="属性裁剪四级优先级&lt;br&gt;&lt;span style='font-size:12px;color:#33691E'&gt;保留表 / ascend.* / 前端前缀 / unknown_origin&lt;/span&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#558B2F;strokeWidth=1.5;fontSize=15;fontColor=#1B5E20;align=center;" vertex="1" parent="1">
+          <mxGeometry x="320" y="390" width="340" height="70" as="geometry" />
+        </mxCell>
+        <mxCell id="l1d" value="★ 带权 Union-Find 符号等价分析&lt;br&gt;&lt;span style='font-size:12px;color:#B71C1C'&gt;R1–R6 触发规则 → AscendSymbolConstraintAttr&lt;/span&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFEBEE;strokeColor=#C62828;strokeWidth=2.5;fontSize=15;fontColor=#B71C1C;align=center;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="320" y="470" width="340" height="80" as="geometry" />
+        </mxCell>
+        <mxCell id="l1e" value="OpSemanticSummary 构建&lt;br&gt;&lt;span style='font-size:12px;color:#33691E'&gt;resultShape · iteratorTypes · indexingMaps&lt;/span&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#558B2F;strokeWidth=1.5;fontSize=15;fontColor=#1B5E20;align=center;" vertex="1" parent="1">
+          <mxGeometry x="320" y="560" width="340" height="70" as="geometry" />
+        </mxCell>
+        <mxCell id="l1v" value="EntryNormalizationVerifier&lt;br&gt;&lt;span style='font-size:12px;color:#33691E'&gt;9 步顺序 · fail-fast · DialectRejected 不可恢复&lt;/span&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#F1F8E9;strokeColor=#558B2F;strokeWidth=1.5;fontSize=15;fontColor=#33691E;align=center;fontStyle=2;" vertex="1" parent="1">
+          <mxGeometry x="320" y="640" width="340" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="l1art" value="Artifact → L2&lt;br&gt;&lt;span style='font-size:13px;color:#424242'&gt;Normalized IR · AscendSymbolConstraintAttr&lt;br&gt;OpSemanticSummary · 结构标记&lt;/span&gt;" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#F5F5F5;strokeColor=#757575;strokeWidth=1;fontSize=14;fontColor=#424242;align=center;dashed=1;" vertex="1" parent="1">
+          <mxGeometry x="320" y="940" width="340" height="80" as="geometry" />
+        </mxCell>
+
+        <!-- ============ Layer 2 — Kernelize ============ -->
+        <mxCell id="l2box" value="" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFF3E0;strokeColor=#EF6C00;strokeWidth=2;shadow=1;" vertex="1" parent="1">
+          <mxGeometry x="720" y="140" width="420" height="900" as="geometry" />
+        </mxCell>
+        <mxCell id="l2title" value="&lt;b&gt;Layer 2 — Kernelize&lt;/b&gt;&lt;br&gt;&lt;span style='font-size:14px;color:#E65100'&gt;V2-3 · 自动融合 &amp;amp; Kernel 划分&lt;/span&gt;" style="text;html=1;align=center;verticalAlign=middle;fontSize=22;fontColor=#E65100;" vertex="1" parent="1">
+          <mxGeometry x="730" y="155" width="400" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="l2a" value="DependencyAnalyzer&lt;br&gt;&lt;span style='font-size:12px;color:#BF360C'&gt;ProducerConsumerIndex · GlobalAxisSpace · OpAxisMap&lt;/span&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#EF6C00;strokeWidth=1.5;fontSize=15;fontColor=#E65100;align=center;" vertex="1" parent="1">
+          <mxGeometry x="740" y="230" width="380" height="70" as="geometry" />
+        </mxCell>
+        <mxCell id="l2b" value="StructuralMarker · OpRoleClassifier&lt;br&gt;&lt;span style='font-size:12px;color:#BF360C'&gt;Anchor / Reduction / Injective / LayoutTransform / Indexing&lt;/span&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#EF6C00;strokeWidth=1.5;fontSize=15;fontColor=#E65100;align=center;" vertex="1" parent="1">
+          <mxGeometry x="740" y="310" width="380" height="70" as="geometry" />
+        </mxCell>
+        <mxCell id="l2c" value="★ FusionCandidateAnalyzer&lt;br&gt;&lt;span style='font-size:12px;color:#B71C1C'&gt;8 个 FusionPrimitive 优先级竞争&lt;br&gt;Anchor·Reduction·Norm·Softmax·Indexed·Branch·Injective·TopK&lt;/span&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFEBEE;strokeColor=#C62828;strokeWidth=2.5;fontSize=15;fontColor=#B71C1C;align=center;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="740" y="390" width="380" height="90" as="geometry" />
+        </mxCell>
+        <mxCell id="l2d" value="★ scheduleContract 7 字段顺序推导&lt;br&gt;&lt;span style='font-size:12px;color:#B71C1C'&gt;tileableAxes → requiredReductionAxes → axisScheduleConstraints&lt;br&gt;→ layoutConstraints → mustKeepOnChip → templateFamilies → dynamicGuardSet&lt;/span&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFEBEE;strokeColor=#C62828;strokeWidth=2.5;fontSize=15;fontColor=#B71C1C;align=center;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="740" y="490" width="380" height="100" as="geometry" />
+        </mxCell>
+        <mxCell id="l2e" value="CandidateMergeAnalyzer · HorizontalFusionAnalyzer&lt;br&gt;&lt;span style='font-size:12px;color:#BF360C'&gt;契约取交并 · tailPolicy 成对合并 · Q/K/V 并联&lt;/span&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#EF6C00;strokeWidth=1.5;fontSize=15;fontColor=#E65100;align=center;" vertex="1" parent="1">
+          <mxGeometry x="740" y="600" width="380" height="70" as="geometry" />
+        </mxCell>
+        <mxCell id="l2f" value="KernelPatternBuilder · KernelPartitioner&lt;br&gt;&lt;span style='font-size:12px;color:#BF360C'&gt;HandwrittenPattern + MustCoLocate · FallbackSingleOp 兜底&lt;/span&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#EF6C00;strokeWidth=1.5;fontSize=15;fontColor=#E65100;align=center;" vertex="1" parent="1">
+          <mxGeometry x="740" y="680" width="380" height="70" as="geometry" />
+        </mxCell>
+        <mxCell id="l2v" value="KernelizationVerifierSuite — 8 道&lt;br&gt;&lt;span style='font-size:12px;color:#BF360C'&gt;无重叠 · 全覆盖 · DAG · 模板可承接&lt;/span&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFF8E1;strokeColor=#EF6C00;strokeWidth=1.5;fontSize=15;fontColor=#BF360C;align=center;fontStyle=2;" vertex="1" parent="1">
+          <mxGeometry x="740" y="760" width="380" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="l2art" value="Artifact → L3&lt;br&gt;&lt;span style='font-size:13px;color:#424242'&gt;KernelPatternCandidate[] · KernelPatternGraph&lt;br&gt;scheduleContract[] · TemplateCapabilityQuery&lt;/span&gt;" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#F5F5F5;strokeColor=#757575;strokeWidth=1;fontSize=14;fontColor=#424242;align=center;dashed=1;" vertex="1" parent="1">
+          <mxGeometry x="740" y="940" width="380" height="80" as="geometry" />
+        </mxCell>
+
+        <!-- ============ Layer 3 — Schedule ============ -->
+        <mxCell id="l3box" value="" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#F3E5F5;strokeColor=#6A1B9A;strokeWidth=2;shadow=1;" vertex="1" parent="1">
+          <mxGeometry x="1180" y="140" width="420" height="900" as="geometry" />
+        </mxCell>
+        <mxCell id="l3title" value="&lt;b&gt;Layer 3 — Schedule&lt;/b&gt;&lt;br&gt;&lt;span style='font-size:14px;color:#6A1B9A'&gt;V2-4 · Memory-aware 自动调优&lt;/span&gt;" style="text;html=1;align=center;verticalAlign=middle;fontSize=22;fontColor=#4A148C;" vertex="1" parent="1">
+          <mxGeometry x="1190" y="155" width="400" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="l3a" value="AxisCoalescer&lt;br&gt;&lt;span style='font-size:12px;color:#6A1B9A'&gt;raw → logical · 菱形依赖一致性 · trivial split/concat 证明&lt;/span&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#6A1B9A;strokeWidth=1.5;fontSize=15;fontColor=#4A148C;align=center;" vertex="1" parent="1">
+          <mxGeometry x="1200" y="230" width="380" height="70" as="geometry" />
+        </mxCell>
+        <mxCell id="l3b" value="ScheduleProblemBuilder · TemplateRegistry&lt;br&gt;&lt;span style='font-size:12px;color:#6A1B9A'&gt;4 类 Constraint · templateFamily 静态映射 + 优先级&lt;/span&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#6A1B9A;strokeWidth=1.5;fontSize=15;fontColor=#4A148C;align=center;" vertex="1" parent="1">
+          <mxGeometry x="1200" y="310" width="380" height="70" as="geometry" />
+        </mxCell>
+        <mxCell id="l3c" value="ScheduleSearch&lt;br&gt;&lt;span style='font-size:12px;color:#6A1B9A'&gt;tile × cache × double_buffer × block-mapping&lt;br&gt;笛卡尔积 + 支配剪枝 + TopK + Guard Budget Filter&lt;/span&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#6A1B9A;strokeWidth=1.5;fontSize=15;fontColor=#4A148C;align=center;" vertex="1" parent="1">
+          <mxGeometry x="1200" y="390" width="380" height="80" as="geometry" />
+        </mxCell>
+        <mxCell id="l3d" value="★ 双段 MLP 收益模型&lt;br&gt;&lt;span style='font-size:12px;color:#B71C1C'&gt;KernelPattern 结构特征 + ScheduleInstance 利用率&lt;br&gt;overflowPenalty · movementPenalty 决胜&lt;/span&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFEBEE;strokeColor=#C62828;strokeWidth=2.5;fontSize=15;fontColor=#B71C1C;align=center;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="1200" y="480" width="380" height="90" as="geometry" />
+        </mxCell>
+        <mxCell id="l3e" value="ScheduleDecisionBuilder&lt;br&gt;&lt;span style='font-size:12px;color:#6A1B9A'&gt;decisionGuards · unitAssignment · cachePlan · promotionHints (isBinding)&lt;/span&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#6A1B9A;strokeWidth=1.5;fontSize=15;fontColor=#4A148C;align=center;" vertex="1" parent="1">
+          <mxGeometry x="1200" y="580" width="380" height="70" as="geometry" />
+        </mxCell>
+        <mxCell id="l3f" value="StructuredLoweringDriver&lt;br&gt;&lt;span style='font-size:12px;color:#6A1B9A'&gt;scf.for + CacheRead/Write · Pipeline · DoubleBuffer markers&lt;/span&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#6A1B9A;strokeWidth=1.5;fontSize=15;fontColor=#4A148C;align=center;" vertex="1" parent="1">
+          <mxGeometry x="1200" y="660" width="380" height="70" as="geometry" />
+        </mxCell>
+        <mxCell id="l3g" value="★ 三级编译缓存 + ProfileDB&lt;br&gt;&lt;span style='font-size:12px;color:#B71C1C'&gt;TemplateCache · ShapeBucketCache · TuningResultCache&lt;br&gt;Level-1 打分 / Level-2 Autotuner&lt;/span&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFEBEE;strokeColor=#C62828;strokeWidth=2.5;fontSize=15;fontColor=#B71C1C;align=center;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="1200" y="740" width="380" height="90" as="geometry" />
+        </mxCell>
+        <mxCell id="l3art" value="Artifact → L4&lt;br&gt;&lt;span style='font-size:13px;color:#424242'&gt;ScheduleDecisionSet[] (含 runtimeTopK)&lt;br&gt;结构化 IR + markers&lt;/span&gt;" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#F5F5F5;strokeColor=#757575;strokeWidth=1;fontSize=14;fontColor=#424242;align=center;dashed=1;" vertex="1" parent="1">
+          <mxGeometry x="1200" y="940" width="380" height="80" as="geometry" />
+        </mxCell>
+
+        <!-- ============ Layer 4 — Realize ============ -->
+        <mxCell id="l4box" value="" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FCE4EC;strokeColor=#AD1457;strokeWidth=2;shadow=1;" vertex="1" parent="1">
+          <mxGeometry x="1640" y="140" width="380" height="900" as="geometry" />
+        </mxCell>
+        <mxCell id="l4title" value="&lt;b&gt;Layer 4 — Realize&lt;/b&gt;&lt;br&gt;&lt;span style='font-size:14px;color:#AD1457'&gt;V2-5 · Buffer · Place · Movement&lt;/span&gt;" style="text;html=1;align=center;verticalAlign=middle;fontSize=22;fontColor=#880E4F;" vertex="1" parent="1">
+          <mxGeometry x="1650" y="155" width="360" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="l4a" value="BufferizationDriver&lt;br&gt;&lt;span style='font-size:12px;color:#AD1457'&gt;one-shot-bufferize + 五步 facts 回填&lt;/span&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#AD1457;strokeWidth=1.5;fontSize=15;fontColor=#880E4F;align=center;" vertex="1" parent="1">
+          <mxGeometry x="1660" y="230" width="340" height="70" as="geometry" />
+        </mxCell>
+        <mxCell id="l4b" value="★ PlacementPlanner&lt;br&gt;&lt;span style='font-size:12px;color:#B71C1C'&gt;GM · VECIN/OUT/CALC · A1-A2 · B1-B2 · CO1&lt;br&gt;isBinding 硬约束 · sharedInputs 跨 sibling 去重&lt;/span&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFEBEE;strokeColor=#C62828;strokeWidth=2.5;fontSize=15;fontColor=#B71C1C;align=center;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="1660" y="310" width="340" height="90" as="geometry" />
+        </mxCell>
+        <mxCell id="l4c" value="StaticMemoryPlanner&lt;br&gt;&lt;span style='font-size:12px;color:#AD1457'&gt;Live interval reuse + 线性 packing&lt;br&gt;容量放大 = pipelineDepthExpr × enableDoubleBuffer&lt;/span&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#AD1457;strokeWidth=1.5;fontSize=15;fontColor=#880E4F;align=center;" vertex="1" parent="1">
+          <mxGeometry x="1660" y="410" width="340" height="90" as="geometry" />
+        </mxCell>
+        <mxCell id="l4d" value="★ MovementPlanner&lt;br&gt;&lt;span style='font-size:12px;color:#B71C1C'&gt;selectLegalPath · pathGraph 多跳枚举&lt;br&gt;DirectCopy / Load2D / Load2DTranspose / QueueTransfer / FixPipe&lt;/span&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFEBEE;strokeColor=#C62828;strokeWidth=2.5;fontSize=15;fontColor=#B71C1C;align=center;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="1660" y="510" width="340" height="90" as="geometry" />
+        </mxCell>
+        <mxCell id="l4e" value="redundant copy elimination&lt;br&gt;&lt;span style='font-size:12px;color:#AD1457'&gt;alias · dead store · 同 slot 冗余&lt;/span&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#AD1457;strokeWidth=1.5;fontSize=15;fontColor=#880E4F;align=center;" vertex="1" parent="1">
+          <mxGeometry x="1660" y="610" width="340" height="70" as="geometry" />
+        </mxCell>
+        <mxCell id="l4f" value="MemoryRealizationDriver&lt;br&gt;&lt;span style='font-size:12px;color:#AD1457'&gt;写回 IR + memref.memory_space / copy / subview&lt;/span&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#AD1457;strokeWidth=1.5;fontSize=15;fontColor=#880E4F;align=center;" vertex="1" parent="1">
+          <mxGeometry x="1660" y="690" width="340" height="70" as="geometry" />
+        </mxCell>
+        <mxCell id="l4v" value="Verifier 5 项顺序&lt;br&gt;&lt;span style='font-size:12px;color:#AD1457'&gt;place · path · capacity · guard 一致 · mlir::verify&lt;/span&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FCE4EC;strokeColor=#AD1457;strokeWidth=1.5;fontSize=15;fontColor=#880E4F;align=center;fontStyle=2;" vertex="1" parent="1">
+          <mxGeometry x="1660" y="770" width="340" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="l4art" value="Artifact → L5&lt;br&gt;&lt;span style='font-size:13px;color:#424242'&gt;MemoryRealizationPlan&lt;br&gt;resolvedPlacement · workspaceLayout · resolvedMovements&lt;/span&gt;" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#F5F5F5;strokeColor=#757575;strokeWidth=1;fontSize=14;fontColor=#424242;align=center;dashed=1;" vertex="1" parent="1">
+          <mxGeometry x="1660" y="940" width="340" height="80" as="geometry" />
+        </mxCell>
+
+        <!-- ============ Layer 5 — Translate ============ -->
+        <mxCell id="l5box" value="" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E0F7FA;strokeColor=#00838F;strokeWidth=2;shadow=1;" vertex="1" parent="1">
+          <mxGeometry x="2060" y="140" width="300" height="900" as="geometry" />
+        </mxCell>
+        <mxCell id="l5title" value="&lt;b&gt;Layer 5 — Translate&lt;/b&gt;&lt;br&gt;&lt;span style='font-size:14px;color:#00838F'&gt;V2-6 · AscendC + Tiling + Manifest&lt;/span&gt;" style="text;html=1;align=center;verticalAlign=middle;fontSize=22;fontColor=#006064;" vertex="1" parent="1">
+          <mxGeometry x="2070" y="155" width="280" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="l5a" value="ComputeLoweringDriver&lt;br&gt;&lt;span style='font-size:11px;color:#00838F'&gt;linalg / memref.copy → backend op&lt;br&gt;matmul→mmad · Fallback 4 档&lt;/span&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#00838F;strokeWidth=1.5;fontSize=14;fontColor=#006064;align=center;" vertex="1" parent="1">
+          <mxGeometry x="2070" y="230" width="280" height="80" as="geometry" />
+        </mxCell>
+        <mxCell id="l5b" value="★ BackendABILoweringDriver&lt;br&gt;&lt;span style='font-size:11px;color:#B71C1C'&gt;3 Pass：Dispatch · TilingABI · SignatureCanonicalization&lt;br&gt;(CANN 标准签名)&lt;/span&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFEBEE;strokeColor=#C62828;strokeWidth=2.5;fontSize=14;fontColor=#B71C1C;align=center;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="2070" y="320" width="280" height="90" as="geometry" />
+        </mxCell>
+        <mxCell id="l5c" value="AscendCSourceEmitter&lt;br&gt;&lt;span style='font-size:11px;color:#00838F'&gt;AscendC Kernel MLIR → C++&lt;/span&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#00838F;strokeWidth=1.5;fontSize=14;fontColor=#006064;align=center;" vertex="1" parent="1">
+          <mxGeometry x="2070" y="420" width="280" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="l5d" value="HostTilingEmitter&lt;br&gt;&lt;span style='font-size:11px;color:#00838F'&gt;TilingData + 多 Guard 分支&lt;br&gt;C ABI 四件套 .so&lt;/span&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#00838F;strokeWidth=1.5;fontSize=14;fontColor=#006064;align=center;" vertex="1" parent="1">
+          <mxGeometry x="2070" y="490" width="280" height="80" as="geometry" />
+        </mxCell>
+        <mxCell id="l5e" value="RuntimeManifestBuilder&lt;br&gt;&lt;span style='font-size:11px;color:#00838F'&gt;shapeBucket · guardSet · scheduleEntries · kernelGraph&lt;/span&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#00838F;strokeWidth=1.5;fontSize=14;fontColor=#006064;align=center;" vertex="1" parent="1">
+          <mxGeometry x="2070" y="580" width="280" height="80" as="geometry" />
+        </mxCell>
+        <mxCell id="l5f" value="TilingSpaceExportPass&lt;br&gt;&lt;span style='font-size:11px;color:#00838F'&gt;tiling_space.json v2.0&lt;/span&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#00838F;strokeWidth=1.5;fontSize=14;fontColor=#006064;align=center;" vertex="1" parent="1">
+          <mxGeometry x="2070" y="670" width="280" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="l5v" value="Verifier 4 道&lt;br&gt;&lt;span style='font-size:11px;color:#00838F'&gt;ComputeLowering · KernelABI&lt;br&gt;SourceTranslation · HostTilingABI&lt;/span&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E0F2F1;strokeColor=#00838F;strokeWidth=1.5;fontSize=14;fontColor=#006064;align=center;fontStyle=2;" vertex="1" parent="1">
+          <mxGeometry x="2070" y="740" width="280" height="70" as="geometry" />
+        </mxCell>
+        <mxCell id="l5art" value="工件输出&lt;br&gt;&lt;span style='font-size:12px;color:#424242'&gt;.cpp · _cann.mlir · get_tiling.so&lt;br&gt;runtime_manifest.json · tiling_space.json&lt;/span&gt;" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#F5F5F5;strokeColor=#757575;strokeWidth=1;fontSize=13;fontColor=#424242;align=center;dashed=1;" vertex="1" parent="1">
+          <mxGeometry x="2070" y="940" width="280" height="80" as="geometry" />
+        </mxCell>
+
+        <!-- ============ Inter-layer arrows ============ -->
+        <mxCell id="e_fe_l1" style="endArrow=classic;html=1;strokeColor=#37474F;strokeWidth=3;" edge="1" parent="1" source="fe" target="l1box">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e_l1_l2" style="endArrow=classic;html=1;strokeColor=#37474F;strokeWidth=3;" edge="1" parent="1" source="l1box" target="l2box">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e_l2_l3" style="endArrow=classic;html=1;strokeColor=#37474F;strokeWidth=3;" edge="1" parent="1" source="l2box" target="l3box">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e_l3_l4" style="endArrow=classic;html=1;strokeColor=#37474F;strokeWidth=3;" edge="1" parent="1" source="l3box" target="l4box">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e_l4_l5" style="endArrow=classic;html=1;strokeColor=#37474F;strokeWidth=3;" edge="1" parent="1" source="l4box" target="l5box">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+
+        <!-- ============ Bottom: Backend / Runtime ============ -->
+        <mxCell id="bs" value="&lt;b&gt;bisheng&lt;/b&gt; →  &amp;lt;kernel&amp;gt;.bin (device ELF)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ECEFF1;strokeColor=#37474F;strokeWidth=2;fontSize=18;fontColor=#263238;align=center;shadow=1;" vertex="1" parent="1">
+          <mxGeometry x="40" y="1080" width="1120" height="80" as="geometry" />
+        </mxCell>
+        <mxCell id="rt" value="&lt;b&gt;lib/Runtime&lt;/b&gt; · AscendCL stream/event 调度 · 由 kernelGraph 驱动 DAG 执行 · ABI 四件套语言无关" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ECEFF1;strokeColor=#37474F;strokeWidth=2;fontSize=18;fontColor=#263238;align=center;shadow=1;" vertex="1" parent="1">
+          <mxGeometry x="1200" y="1080" width="1160" height="80" as="geometry" />
+        </mxCell>
+        <mxCell id="e_l5_bs" style="endArrow=classic;html=1;strokeColor=#37474F;strokeWidth=3;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" edge="1" parent="1" source="l5art" target="rt">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e_bs_rt" style="endArrow=classic;html=1;strokeColor=#37474F;strokeWidth=3;" edge="1" parent="1" source="bs" target="rt">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+
+        <!-- ============ Cross-cutting: Target ============ -->
+        <mxCell id="tgt" value="&lt;b&gt;横切层 — Target Hardware Modeling (V2-8)&lt;/b&gt;&lt;br&gt;&lt;span style='font-size:14px'&gt;TargetProfile = Identity + HardwareInfo + MemoryModel + IntrinsicModel + CostModel&lt;br&gt;← platform_config/&amp;lt;socVersion&amp;gt;.ini · TargetModelVerifier 闭合校验&lt;/span&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFDE7;strokeColor=#F9A825;strokeWidth=2.5;fontSize=18;fontColor=#F57F17;align=center;shadow=1;" vertex="1" parent="1">
+          <mxGeometry x="40" y="1200" width="2320" height="90" as="geometry" />
+        </mxCell>
+        <mxCell id="e_tgt_l3" style="endArrow=open;html=1;dashed=1;strokeColor=#F9A825;strokeWidth=2;exitX=0.4;exitY=0;exitDx=0;exitDy=0;entryX=0.5;entryY=1;entryDx=0;entryDy=0;" edge="1" parent="1" source="tgt" target="l3box">
+          <mxGeometry relative="1" as="geometry" />
+          <mxCell id="" />
+        </mxCell>
+        <mxCell id="e_tgt_l4" style="endArrow=open;html=1;dashed=1;strokeColor=#F9A825;strokeWidth=2;exitX=0.6;exitY=0;exitDx=0;exitDy=0;entryX=0.5;entryY=1;entryDx=0;entryDy=0;" edge="1" parent="1" source="tgt" target="l4box">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e_tgt_l5" style="endArrow=open;html=1;dashed=1;strokeColor=#F9A825;strokeWidth=2;exitX=0.8;exitY=0;exitDx=0;exitDy=0;entryX=0.5;entryY=1;entryDx=0;entryDy=0;" edge="1" parent="1" source="tgt" target="l5box">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+
+        <!-- ============ Cross-cutting: Observability ============ -->
+        <mxCell id="obs" value="&lt;b&gt;横切层 — E2E 可观测性 (V2-7)&lt;/b&gt;&lt;br&gt;&lt;span style='font-size:14px'&gt;统一 Diagnostics {stage, objectId, reasonKind, guardExpr, shapeBucketKey, fallbackTaken}&lt;br&gt;12 类 reasonKind 枚举 · Stage Dump · Debug Annotation · Debug Report · Verifier&lt;/span&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFDE7;strokeColor=#F9A825;strokeWidth=2.5;fontSize=18;fontColor=#F57F17;align=center;shadow=1;" vertex="1" parent="1">
+          <mxGeometry x="40" y="1310" width="2320" height="90" as="geometry" />
+        </mxCell>
+
+        <!-- ============ Legend ============ -->
+        <mxCell id="legend" value="&lt;b&gt;图例&lt;/b&gt;&amp;nbsp;&amp;nbsp;&amp;nbsp;&lt;span style='color:#B71C1C'&gt;★ 核心创新算法&lt;/span&gt;&amp;nbsp;|&amp;nbsp;实线箭头 = 主数据流&amp;nbsp;|&amp;nbsp;黄色虚线 = Target 供给&amp;nbsp;|&amp;nbsp;斜体框 = Verifier&amp;nbsp;|&amp;nbsp;灰底虚线框 = 层间合约 Artifact" style="text;html=1;align=center;verticalAlign=middle;fontSize=14;fontColor=#37474F;" vertex="1" parent="1">
+          <mxGeometry x="40" y="1420" width="2320" height="40" as="geometry" />
+        </mxCell>
+
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>
