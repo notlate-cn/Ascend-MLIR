@@ -1,5 +1,6 @@
 // RUN: sed -n '/\/\/ ABI-BEGIN/,/\/\/ ABI-END/p' %s | afir-opt --ascend-prepare-for-emit --ascend-canonicalize-cann-signature | FileCheck %s
 // RUN: sed -n '/\/\/ PARALLELIZE-BEGIN/,/\/\/ PARALLELIZE-END/p' %s | afir-opt --ascend-parallelize | FileCheck %s --check-prefix=PARALLELIZE
+// RUN: sed -n '/\/\/ SERIAL-BEGIN/,/\/\/ SERIAL-END/p' %s | afir-opt --ascend-parallelize | FileCheck %s --check-prefix=SERIAL
 
 // CHECK-LABEL: func.func @broadcast_add_reducesum
 // CHECK-SAME: %[[A:[a-z0-9]+]]: memref<?xf16>
@@ -42,3 +43,20 @@ func.func @parallel_dispatch(%out: memref<?xi32>, %n: index) attributes {ascendc
   return
 }
 // PARALLELIZE-END
+
+// SERIAL-LABEL: func.func @serial_loop_is_not_parallelized
+// SERIAL-NOT: ascendc.get_block_idx
+// SERIAL: scf.for
+// SERIAL: memref.store
+// SERIAL: return
+// SERIAL-BEGIN
+func.func @serial_loop_is_not_parallelized(%out: memref<?xi32>, %n: index) attributes {ascendc.aicore} {
+  %c0 = arith.constant 0 : index
+  %c4 = arith.constant 4 : index
+  %value = arith.constant 7 : i32
+  scf.for %i = %c0 to %n step %c4 {
+    memref.store %value, %out[%i] : memref<?xi32>
+  }
+  return
+}
+// SERIAL-END

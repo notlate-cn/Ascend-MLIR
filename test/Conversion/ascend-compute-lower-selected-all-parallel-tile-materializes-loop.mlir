@@ -1,4 +1,5 @@
 // RUN: afir-opt %s --ascend-compute-lower | FileCheck %s
+// RUN: afir-opt %s --ascend-compute-lower --ascend-parallelize | FileCheck %s --check-prefix=PARALLELIZE
 
 #identity = affine_map<(d0, d1) -> (d0, d1)>
 
@@ -9,6 +10,16 @@
 // CHECK: memref.subview %{{.*}}[%{{.*}}, 0] [%{{.*}}, %c128] [1, 1] : memref<70x128xf16>
 // CHECK: ascendc.data_copy_l2
 // CHECK-NOT: linalg.generic
+
+// PARALLELIZE-LABEL: func.func @selected_all_parallel_tile_materializes_loop
+// PARALLELIZE: ascendc.get_block_idx
+// PARALLELIZE: arith.muli %{{.*}}, %c64
+// PARALLELIZE: scf.if
+// PARALLELIZE: ascendc.add_l2
+// PARALLELIZE: memref.subview %{{.*}}[%{{.*}}, 0] [%{{.*}}, %c128] [1, 1] : memref<70x128xf16>
+// PARALLELIZE: ascendc.data_copy_l2
+// PARALLELIZE-NOT: scf.for
+// PARALLELIZE-NOT: linalg.generic
 func.func @selected_all_parallel_tile_materializes_loop() {
   %a = memref.alloc() : memref<70x128xf16, 9 : i32>
   %b = memref.alloc() : memref<70x128xf16, 9 : i32>

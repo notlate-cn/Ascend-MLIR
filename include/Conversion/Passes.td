@@ -343,18 +343,13 @@ def LinalgToAscendCPass : Pass<"linalg-to-ascendc", "mlir::func::FuncOp"> {
 def AscendCParallelizePass : Pass<"ascendc-parallelize", "mlir::func::FuncOp"> {
   let summary = "Replace outermost parallel scf.for loops with ascendc.get_block_idx dispatch";
   let description = [{
-    Converts the outermost two scf.for loops (TB_M × TB_N) that were annotated
-    with ascendc.parallel into multi-core AiCore dispatch using get_block_idx.
+    Converts annotated top-level scf.for tile loops into multi-core AiCore
+    dispatch using get_block_idx.
 
-    The 2D block index is linearized as: block_idx = i_TB_M * num_blocks_N + i_TB_N.
     The pass emits:
       %block_idx = ascendc.get_block_idx
-      %i_TB_M    = arith.divui  %block_idx, %num_blocks_N
-      %i_TB_N    = arith.remui  %block_idx, %num_blocks_N
-    and wraps the body in an scf.if guard for out-of-bounds blocks.
-
-    Options:
-      - core-num: total number of AiCores (default 20)
+      %i         = arith.muli %block_idx, %step
+    and wraps the body in an scf.if guard for the final partial tile.
   }];
   let constructor = "mlir::afir::createAscendCParallelizePass()";
   let dependentDialects = [

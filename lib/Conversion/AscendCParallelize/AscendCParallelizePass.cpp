@@ -4,22 +4,19 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// Converts the outermost two scf.for loops (TB_M × TB_N) into multi-core
-// AiCore dispatch:
+// Converts annotated outermost scf.for tile loops into multi-core AiCore
+// dispatch:
 //
 //   scf.for %i = 0 to %M step %TB_M {
-//     scf.for %j = 0 to %N step %TB_N {
-//       <body>
-//     }
+//     <body>
 //   }
+//   {ascendc.parallel = true}
 //
 // becomes:
 //
-//   %block_idx   = ascendc.get_block_idx : index
-//   %num_blks_N  = arith.ceildivui %N, %TB_N
-//   %i           = arith.muli (arith.divui %block_idx, %num_blks_N), %TB_M
-//   %j           = arith.muli (arith.remui %block_idx, %num_blks_N), %TB_N
-//   %in_bound    = arith.andi (arith.cmpi ult %i, %M), (arith.cmpi ult %j, %N)
+//   %block_idx = ascendc.get_block_idx : index
+//   %i         = arith.muli %block_idx, %TB_M
+//   %in_bound  = arith.cmpi ult %i, %M
 //   scf.if %in_bound { <body> }
 //
 //===----------------------------------------------------------------------===//
@@ -49,17 +46,18 @@ using namespace mlir::ascendc;
 namespace mlir::afir {
 
 //===----------------------------------------------------------------------===//
-// Helper: find the outermost two nested scf.for loops in a func
+// Helper: find top-level parallel scf.for loops in a func
 //===----------------------------------------------------------------------===//
 
 /// Collect all top-level scf.for loops directly in the function entry block
 /// (i.e. not nested inside another loop or region op).  These are the TB-level
 /// loops that each need to be parallelized independently.
-static SmallVector<scf::ForOp> findTopLevelFors(func::FuncOp func) {
+static SmallVector<scf::ForOp> findTopLevelParallelFors(func::FuncOp func) {
   SmallVector<scf::ForOp> result;
   Block &entry = func.getBody().front();
   for (Operation &op : entry.without_terminator()) {
-    if (auto forOp = dyn_cast<scf::ForOp>(&op))
+    if (auto forOp = dyn_cast<scf::ForOp>(&op);
+        forOp && forOp->hasAttr("ascendc.parallel"))
       result.push_back(forOp);
   }
   return result;
@@ -143,10 +141,11 @@ struct AscendCParallelizePass
     OpBuilder builder(func.getContext());
     // Collect ALL top-level scf.for loops before modifying them (they will be
     // erased one by one, so collecting first avoids iterator invalidation).
-    SmallVector<scf::ForOp> topFors = findTopLevelFors(func);
+    SmallVector<scf::ForOp> topFors = findTopLevelParallelFors(func);
     if (topFors.empty()) {
       LLVM_DEBUG(llvm::dbgs()
-                 << "[ascendc-parallelize] No outer loops found to parallelize\n");
+                 << "[ascendc-parallelize] No annotated outer loops found to "
+                    "parallelize\n");
       return;
     }
     for (scf::ForOp forOp : topFors) {
