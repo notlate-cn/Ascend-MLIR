@@ -58,17 +58,112 @@ static Value insertFuncArg(func::FuncOp func, OpBuilder &builder,
 
 namespace {
 
+// If `op` is a standalone transpose (a `linalg.generic` with one input read
+// through a non-identity permutation, an identity-mapped output, and a
+// yield-only body), return that permutation as `perm[inPos] = iteration dim
+// occupying input-layout position inPos`; else nullopt.  (`linalg.transpose`
+// becomes exactly this shape after `--linalg-generalize-named-ops`.)
+static std::optional<SmallVector<int64_t>> transposePerm(linalg::LinalgOp op) {
+  auto gen = dyn_cast<linalg::GenericOp>(op.getOperation());
+  if (!gen || gen.getNumDpsInputs() != 1 || gen.getNumDpsInits() != 1)
+    return std::nullopt;
+  auto maps = gen.getIndexingMapsArray();
+  if (maps.size() != 2 || !maps[1].isIdentity())
+    return std::nullopt;
+  unsigned rank = gen.getNumLoops();
+  if (maps[0].getNumResults() != rank)
+    return std::nullopt;
+  SmallVector<int64_t> perm;
+  llvm::SmallDenseSet<int64_t> seen;
+  for (AffineExpr e : maps[0].getResults()) {
+    auto de = dyn_cast<AffineDimExpr>(e);
+    if (!de)
+      return std::nullopt;
+    int64_t p = (int64_t)de.getPosition();
+    if (p < 0 || p >= (int64_t)rank || !seen.insert(p).second)
+      return std::nullopt;
+    perm.push_back(p);
+  }
+  bool ident = true;
+  for (unsigned i = 0; i < rank; ++i)
+    if (perm[i] != (int64_t)i) { ident = false; break; }
+  if (ident)
+    return std::nullopt;
+  Block &body = *gen.getBody();
+  if (body.getOperations().size() != 1)
+    return std::nullopt;
+  auto yieldOp = dyn_cast<linalg::YieldOp>(&body.front());
+  if (!yieldOp || yieldOp.getNumOperands() != 1)
+    return std::nullopt;
+  auto ba = dyn_cast<BlockArgument>(yieldOp.getOperand(0));
+  if (!ba || ba.getArgNumber() != 0)
+    return std::nullopt;
+  return perm;
+}
+
 // ≈ TilingGroup::GenTilingGroup — classify each collapsed iteration axis.
-// P1: non-broadcast parallel → Y, reduction → R, broadcast → Y (with the
-// isBroadcastSplit flag).  X/N (transpose / concat / split / gather) are
-// future work; the ops that produce them don't reach this path today.
+// non-broadcast parallel → Y, reduction → R, broadcast → Y (isBroadcastSplit);
+// for a group containing a standalone transpose member, ≈ GenTransposeTilingGroup
+// (tiling_group.cpp): from the tail, axes with input-pos == output-pos → N;
+// from the first differing position backward, input-side axes → X, output-side
+// axes → Y.  concat/split/gather still future.
 AxisGrouping classifyAxes(const CollapsedGroupInfo &info) {
   AxisGrouping g;
+  int rank = (int)info.collapsedAxes.size();
+  g.axes.resize(rank);
+  for (int i = 0; i < rank; ++i)
+    g.axes[i].origPos = i;
+
+  // --- transpose group (preserve template) -------------------------------
+  std::optional<SmallVector<int64_t>> permOr;
+  for (linalg::LinalgOp m : info.topoMembers)
+    if ((permOr = transposePerm(m)))
+      break;
+  if (permOr) {
+    const SmallVector<int64_t> &perm = *permOr; // perm[inPos] = iter dim
+    DenseSet<int> classified;
+    // 1. trailing axes with input-pos == output-pos → N (the output map is
+    //    identity, so the axis at output-position i is iter dim i; at
+    //    input-position i it is perm[i]).
+    int i = rank - 1;
+    for (; i >= 0 && perm[i] == i; --i) {
+      g.axes[i].kind = AxisKind::N;
+      g.axes[i].bindMultiCore = false;
+      g.nAxes.insert(g.nAxes.begin(), i);
+      classified.insert(i);
+    }
+    // 2. from the first differing position backward: input-side → X (unless
+    //    already in Y), output-side → Y (unless already in X); once both are,
+    //    dump the remaining (still-unclassified, in order) into Y and stop.
+    auto inX = [&](int d) { return llvm::is_contained(g.xAxes, d); };
+    auto inY = [&](int d) { return llvm::is_contained(g.yAxes, d); };
+    for (; i >= 0; --i) {
+      int inDim = (int)perm[i], outDim = i;
+      if (!inY(inDim)) { g.xAxes.insert(g.xAxes.begin(), inDim); classified.insert(inDim); }
+      if (!inX(outDim)) { g.yAxes.insert(g.yAxes.begin(), outDim); classified.insert(outDim); }
+      if (inY(inDim) && inX(outDim)) {
+        for (int j = i; j >= 0; --j)
+          if (!classified.count(j)) {
+            g.yAxes.insert(g.yAxes.begin(), j);
+            classified.insert(j);
+          }
+        break;
+      }
+    }
+    for (int d = 0; d < rank; ++d)
+      if (!classified.count(d)) { g.yAxes.push_back(d); classified.insert(d); }
+    for (int d : g.xAxes) { g.axes[d].kind = AxisKind::X; g.axes[d].bindMultiCore = false; }
+    for (int d : g.yAxes) { g.axes[d].kind = AxisKind::Y; g.axes[d].bindMultiCore = true; }
+    for (int d : g.xAxes) g.axesOrder.push_back(d);
+    for (int d : g.yAxes) g.axesOrder.push_back(d);
+    for (int d : g.nAxes) g.axesOrder.push_back(d);
+    return g;
+  }
+
+  // --- elementwise / reduce (existing) -----------------------------------
   DenseSet<int> bcastSet(info.broadcastAxes.begin(), info.broadcastAxes.end());
-  g.axes.resize(info.collapsedAxes.size());
-  for (int i = 0; i < (int)info.collapsedAxes.size(); ++i) {
+  for (int i = 0; i < rank; ++i) {
     AxisClass &ax = g.axes[i];
-    ax.origPos = i;
     g.axesOrder.push_back(i);
     if (info.collapsedAxes[i].role == AxisRole::Reduction) {
       ax.kind = AxisKind::R;
@@ -216,12 +311,35 @@ TilePlan genVectorTilePlan(func::FuncOp func,
   // Counters preserved from the previous implementation so func-arg insertion
   // order and `vector_plan.tiling_infos` numbering are byte-identical.
   int parallelSeen = 0, bcastCount = 0, bcastTileCount = 0, rblockCount = 0;
+  int naxisCount = 0, xsubCount = 0;
 
   for (int i = 0; i < (int)info.collapsedAxes.size(); ++i) {
     const AxisClass &ax = g.axes[i];
     Value ext = getAxisExtentValue(builder, loc, info, i);
 
-    if (ax.kind == AxisKind::Y && !ax.isBroadcastSplit) {
+    if (ax.kind == AxisKind::X) {
+      // Transpose X axis (input-side divergent): inner-tiled with its own
+      // tunable; never the block axis (bindMultiCore == false).  Until the §5
+      // transpose schedule generator gives X its own 16-fractal handling, this
+      // is just an ordinary inner tile.
+      std::string name = llvm::formatv("XBLOCK_X_{0}", xsubCount++).str();
+      Value param = insertFuncArg(func, builder, loc, 16, name);
+      SmallVector<TileParam> group;
+      group.push_back({name, param, OpFoldResult(ext), i, TileLevel::Inner,
+                        AxisRole::Parallel});
+      plan.tileable.push_back(std::move(group));
+      if (plan.ubTilingAxisX < 0)
+        plan.ubTilingAxisX = i;
+
+    } else if (ax.kind == AxisKind::N) {
+      // Transpose-N axis (trailing dim the permutation leaves in place): not
+      // tiled, not looped — whole-dim slice (≈ AF's n_group / a "vectorized"
+      // axis the transpose primitive processes whole).
+      std::string name = llvm::formatv("NAXIS_{0}", naxisCount++).str();
+      plan.full.push_back({name, ext, OpFoldResult(ext), i, TileLevel::Full,
+                            AxisRole::Parallel});
+
+    } else if (ax.kind == AxisKind::Y && !ax.isBroadcastSplit) {
       if (i == bp.axis) {
         // Block axis: XBLOCK (Outer) + inner level (XBLOCK_SUB, or step-1 row
         // loop under the degradation).
