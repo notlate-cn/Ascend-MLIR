@@ -489,7 +489,19 @@ CollapsedGroupInfo collapseGroup(OpBuilder &builder, func::FuncOp func) {
       break;
     }
   }
-  if (chosenGroup.empty()) return result;
+  if (chosenGroup.empty()) {
+    // No collapsable sub-group (e.g. broadcast axes split every candidate group
+    // to sub-groups of size < 2).  Still record broadcast axes so TilePlanGen
+    // emits BCAST loops instead of treating them as regular parallel axes.
+    for (auto &cand : candidates) {
+      auto bcast = computeBCast(cand, members, boundaryIn);
+      for (int b : bcast)
+        if (!llvm::is_contained(result.broadcastAxes, b))
+          result.broadcastAxes.push_back(b);
+    }
+    llvm::sort(result.broadcastAxes);
+    return result;
+  }
 
   if (hasAnyB2(chosenGroup, members, boundaryIn)) {
     result.hasB2 = true; result.noCollapse = true; return result;

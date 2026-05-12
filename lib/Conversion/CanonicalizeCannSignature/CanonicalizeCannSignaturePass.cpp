@@ -14,6 +14,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "Conversion/CanonicalizeCannSignature/CanonicalizeCannSignaturePass.h"
+#include "ascir/Dialect/Asc/IR/Asc.h"
 #include "ascir/Dialect/Asc/Utils/Attributes.h"
 #include "ascir/Dialect/EmitAsc/IR/EmitAsc.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
@@ -103,6 +104,31 @@ static LogicalResult canonicalizeFuncOp(func::FuncOp funcOp,
     auto strided = dyn_cast<StridedLayoutAttr>(mrt.getLayout());
     return !(strided && ShapedType::isDynamic(strided.getOffset()));
   };
+
+  // Returns true if arg is the DESTINATION of a data_copy_l2 (i.e., written to).
+  // Walk: arg → emitasc.reinterpret_cast → GlobalTensorSetGlobalBuffer (buffer=cast) →
+  //       the global_tensor operand → DataCopyL2Op where global_tensor is dst.
+  auto isArgWritten = [](BlockArgument arg) -> bool {
+    for (Operation *user : arg.getUsers()) {
+      auto castOp = dyn_cast<emitasc::ReinterpretCastOp>(user);
+      if (!castOp)
+        continue;
+      for (Operation *castUser : castOp.getResult().getUsers()) {
+        auto setGT =
+            dyn_cast<ascendc::GlobalTensorSetGlobalBufferOp>(castUser);
+        if (!setGT)
+          continue;
+        Value gt = setGT.getTensor();
+        for (Operation *gtUser : gt.getUsers()) {
+          auto dc = dyn_cast<ascendc::DataCopyL2Op>(gtUser);
+          if (dc && dc.getDst() == gt)
+            return true;
+        }
+      }
+    }
+    return false;
+  };
+
   int numRealBeforeTiling = 0;
   for (int i = 0; i < tilingIdx; ++i)
     if (isRealIO(args[i].getType()))
@@ -113,13 +139,20 @@ static LogicalResult canonicalizeFuncOp(func::FuncOp funcOp,
       numRealAfterTiling++;
   // When outputs appear after the tiling arg (PyAsc layout), all real args
   // before tiling are inputs. When outputs appear before the tiling arg
-  // (bufferized layout with promoted intermediates), subtract 1 for the output.
-  // Assumes single output in the bufferized layout case.
+  // (bufferized layout), count the real output args by checking data_copy_l2
+  // write direction. This handles both:
+  //   - normal case: one non-strided output among real IO args
+  //   - broadcast case: all outputs promoted to strided, zero non-strided outputs
   int numInputs;
-  if (numRealAfterTiling > 0)
+  if (numRealAfterTiling > 0) {
     numInputs = numRealBeforeTiling;
-  else
-    numInputs = numRealBeforeTiling > 0 ? numRealBeforeTiling - 1 : tilingIdx;
+  } else {
+    int numRealOutputs = 0;
+    for (int i = 0; i < tilingIdx; ++i)
+      if (isRealIO(args[i].getType()) && isArgWritten(args[i]))
+        numRealOutputs++;
+    numInputs = numRealBeforeTiling - numRealOutputs;
+  }
   emitasc::PyStructType tilingStructType =
       getTilingStructType(args[tilingIdx].getType());
   MLIRContext *ctx = funcOp.getContext();
