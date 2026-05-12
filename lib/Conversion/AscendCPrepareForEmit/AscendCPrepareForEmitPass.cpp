@@ -35,6 +35,8 @@
 
 #include "Conversion/AscendCPrepareForEmit/AscendCPrepareForEmitPass.h"
 
+#include "Analysis/SymbolicShape/DimSymbolTable.h"
+#include "Analysis/SymbolicShape/SymExpr.h"
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/Affine/Utils.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
@@ -108,11 +110,38 @@ static LogicalResult prepareFunc(func::FuncOp func) {
   // Scan the whole function for `memref.dim %argX, %cI` where %argX is a
   // BlockArgument and %cI is an arith.constant index.  Collect unique
   // (argNumber, dimIndex) pairs in stable order and remember the ops.
-  SmallVector<DimKey> dimKeys;        // unique keys, insertion order
+  SmallVector<DimKey> dimKeys;        // unique canonical keys, insertion order
   SmallVector<memref::DimOp> dimOps; // one entry per op (may repeat key)
 
+  // When afir-symbolize-shapes ran, two (argN, dimIdx) pairs that the linalg op
+  // proved equal share one root symbol -- fold both onto the root's (arg, dim)
+  // so they collapse to a single TilingData field instead of e.g. emitting both
+  // dim_arg3_0 and dim_arg0_0.  Falls back to identity when the attrs aren't
+  // present (fully-static kernel, or symbolize didn't run).
+  auto dimSymsAttr = func->getAttrOfType<ArrayAttr>("afir.dim_symbols");
+  std::optional<mlir::afir::symshape::DimSymbolTable> symTable;
+  if (dimSymsAttr)
+    symTable = mlir::afir::symshape::DimSymbolTable::fromAttr(dimSymsAttr);
+  auto canonicalize = [&](unsigned argN, int64_t dimIdx) -> DimKey {
+    if (symTable && dimIdx >= 0) {
+      if (auto a = func.getArgAttrOfType<StringAttr>(argN, "afir.symbolic_shape")) {
+        if (auto list = mlir::afir::symshape::parseSymExprList(a.getValue())) {
+          if ((size_t)dimIdx < list->size()) {
+            const auto &e = (*list)[dimIdx];
+            if (e.getKind() == mlir::afir::symshape::SymExpr::Kind::Sym &&
+                e.getSym() < symTable->numRoots()) {
+              auto src = symTable->sourceOf(e.getSym());
+              return DimKey{src.first, (int64_t)src.second};
+            }
+          }
+        }
+      }
+    }
+    return DimKey{argN, dimIdx};
+  };
+
   auto addDimKey = [&](unsigned argNum, int64_t dimIdx) {
-    DimKey key{argNum, dimIdx};
+    DimKey key = canonicalize(argNum, dimIdx);
     if (llvm::none_of(dimKeys, [&](const DimKey &k) { return k == key; }))
       dimKeys.push_back(key);
   };
@@ -302,7 +331,7 @@ static LogicalResult prepareFunc(func::FuncOp func) {
   // Helper: look up the i64 tiling field Value for a (argNumber, dimIndex) key.
   // Returns a null Value if the key was not collected.
   auto getDimI64Value = [&](unsigned argNum, int64_t dimIdx) -> Value {
-    DimKey key{argNum, dimIdx};
+    DimKey key = canonicalize(argNum, dimIdx);
     auto it = llvm::find_if(dimKeys, [&](const DimKey &d) { return d == key; });
     if (it == dimKeys.end())
       return {};
@@ -314,7 +343,7 @@ static LogicalResult prepareFunc(func::FuncOp func) {
     auto arg = cast<BlockArgument>(dimOp.getSource());
     auto constOp = dimOp.getIndex().getDefiningOp<arith::ConstantOp>();
     int64_t dimIdxVal = cast<IntegerAttr>(constOp.getValue()).getValue().getSExtValue();
-    DimKey key{arg.getArgNumber(), dimIdxVal};
+    DimKey key = canonicalize(arg.getArgNumber(), dimIdxVal);
     unsigned k = llvm::find_if(dimKeys, [&](const DimKey &d) { return d == key; }) -
                  dimKeys.begin();
     Value i64Val = tilingFieldVals[dimFieldBase + k];

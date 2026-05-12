@@ -392,6 +392,15 @@ void AFIRSymbolizeShapesPass::runOnOperation() {
       op->setAttr("afir.iter_extents", serializedStr(it->second));
   }
   func->setAttr("afir.dim_symbols", table.toAttr(&getContext()));
+  // Per-arg symbolic shape (serialized ids) -- lets downstream passes recover
+  // "arg a, dim d is symbol sK" without the union-find aliases (afir.dim_symbols
+  // lists only roots).
+  for (auto [argIdx, arg] : llvm::enumerate(entry.getArguments())) {
+    auto sm = shapeMap.find(arg);
+    if (sm == shapeMap.end())
+      continue;
+    func.setArgAttr(argIdx, "afir.symbolic_shape", serializedStr(sm->second));
+  }
 }
 
 } // namespace

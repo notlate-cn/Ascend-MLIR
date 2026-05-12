@@ -13,6 +13,7 @@ add_mlir_library(AscendCPrepareForEmitConversion
 
   LINK_LIBS PUBLIC
   AFIRDialect
+  AFIRSymbolicShape
   MLIRAsc
   MLIREmitAsc
   MLIRAffineDialect

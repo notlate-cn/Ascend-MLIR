@@ -1,5 +1,7 @@
 #include "Conversion/AscendCPrepareForEmit/AscendCPrepareForEmitPass.h"
 
+#include "Analysis/SymbolicShape/DimSymbolTable.h"
+#include "Analysis/SymbolicShape/SymExpr.h"
 #include "ascir/Dialect/Asc/IR/Asc.h"
 #include "ascir/Dialect/EmitAsc/IR/EmitAsc.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
@@ -85,11 +87,39 @@ static LogicalResult packTilingData(func::FuncOp func) {
   }
 
   // ── 2. Collect memref.dim uses on block args ──────────────────────────────
-  SmallVector<DimKey> dimKeys;
+  SmallVector<DimKey> dimKeys;        // unique canonical keys
   SmallVector<memref::DimOp> dimOps;
 
+  // afir-symbolize-shapes (when it ran) recorded, per block arg, which symbol
+  // each dim is (`afir.symbolic_shape` arg-attr, serialized ids) and which
+  // (arg,dim) each root symbol originates from (`afir.dim_symbols` func attr).
+  // Use that to fold dims the linalg op proved equal onto one TilingData field
+  // (e.g. dim_arg3_0 == dim_arg0_0).  Identity fallback when absent.
+  auto dimSymsAttr = func->getAttrOfType<ArrayAttr>("afir.dim_symbols");
+  std::optional<mlir::afir::symshape::DimSymbolTable> symTable;
+  if (dimSymsAttr)
+    symTable = mlir::afir::symshape::DimSymbolTable::fromAttr(dimSymsAttr);
+  auto canonicalize = [&](unsigned argN, int64_t dimIdx) -> DimKey {
+    if (symTable && dimIdx >= 0) {
+      if (auto a =
+              func.getArgAttrOfType<StringAttr>(argN, "afir.symbolic_shape")) {
+        if (auto list = mlir::afir::symshape::parseSymExprList(a.getValue())) {
+          if ((size_t)dimIdx < list->size()) {
+            const auto &e = (*list)[dimIdx];
+            if (e.getKind() == mlir::afir::symshape::SymExpr::Kind::Sym &&
+                e.getSym() < symTable->numRoots()) {
+              auto src = symTable->sourceOf(e.getSym());
+              return DimKey{src.first, (int64_t)src.second};
+            }
+          }
+        }
+      }
+    }
+    return DimKey{argN, dimIdx};
+  };
+
   auto addDimKey = [&](unsigned argNum, int64_t dimIdx) {
-    DimKey key{argNum, dimIdx};
+    DimKey key = canonicalize(argNum, dimIdx);
     if (llvm::none_of(dimKeys, [&](const DimKey &k) { return k == key; }))
       dimKeys.push_back(key);
   };
@@ -151,7 +181,7 @@ static LogicalResult packTilingData(func::FuncOp func) {
     auto constOp = dimOp.getIndex().getDefiningOp<arith::ConstantOp>();
     int64_t dimIdxVal =
         cast<IntegerAttr>(constOp.getValue()).getValue().getSExtValue();
-    DimKey key{arg.getArgNumber(), dimIdxVal};
+    DimKey key = canonicalize(arg.getArgNumber(), dimIdxVal);
     unsigned k = llvm::find_if(dimKeys, [&](const DimKey &d) {
                    return d == key;
                  }) - dimKeys.begin();

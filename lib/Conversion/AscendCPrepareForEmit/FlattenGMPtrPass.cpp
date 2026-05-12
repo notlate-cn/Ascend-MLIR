@@ -314,13 +314,27 @@ static void flattenGMPtr(func::FuncOp func) {
   // Update function type and clear arg_attrs if new args were added (the
   // entry.addArgument calls above do not update FuncOp::arg_attrs, so remove
   // it to avoid a verifier mismatch when intermediate buffers are promoted).
+  // Preserve afir.symbolic_shape on the original args (new args are appended,
+  // so their indices are unchanged) -- PackTilingData reads it to de-dup
+  // TilingData dim fields.
+  SmallVector<std::pair<unsigned, Attribute>> savedSymShapes;
+  if (!promotedArgDynSizes.empty())
+    // func.getNumArguments() still reflects the *original* type here (the
+    // entry.addArgument calls above didn't update it) -- that's exactly the
+    // range of args that can carry afir.symbolic_shape.
+    for (unsigned i = 0, n = func.getNumArguments(); i < n; ++i)
+      if (auto a = func.getArgAttr(i, "afir.symbolic_shape"))
+        savedSymShapes.push_back({i, a});
   SmallVector<Type> newArgTypes;
   for (BlockArgument arg : entry.getArguments())
     newArgTypes.push_back(arg.getType());
   func.setFunctionType(FunctionType::get(ctx, newArgTypes,
                                          func.getFunctionType().getResults()));
-  if (!promotedArgDynSizes.empty())
+  if (!promotedArgDynSizes.empty()) {
     func->removeAttr("arg_attrs");
+    for (auto &[idx, a] : savedSymShapes)
+      func.setArgAttr(idx, "afir.symbolic_shape", a);
+  }
 }
 
 struct AscendCFlattenGMPtrPass
