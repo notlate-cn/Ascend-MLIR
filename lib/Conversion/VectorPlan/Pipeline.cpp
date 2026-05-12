@@ -5,6 +5,7 @@
 #include "Conversion/LinalgToAscendC/LinalgToAscendCPass.h"
 #include "Conversion/MarkStructuredOps/MarkStructuredOpsPass.h"
 #include "Conversion/VectorPlan/VectorPlanPasses.h"
+#include "Dialect/AFIR/Transforms/Passes.h"
 #include "mlir/Dialect/Linalg/Passes.h"
 #include "mlir/Pass/PassManager.h"
 #include "mlir/Pass/PassRegistry.h"
@@ -61,10 +62,10 @@ void registerVectorPlanPipeline() {
         // kernel group.  Without this, multi-op groups that mix parallel and
         // reduction iterators trip the tile-fuse assertions / IR domination.
         pm.addNestedPass<func::FuncOp>(mlir::createLinalgElementwiseOpFusionPass());
-        // TODO(P6): insert createAFIRSymbolizeShapesPass() here, atomically with
-        // the TilePlanGen UB-peak consumer that reads afir.symbolic_shapes.  The
-        // pass is available standalone (`--afir-symbolize-shapes`) in the
-        // meantime; it's left out of the pipeline until something consumes it.
+        // Symbolize the kernel's dynamic dims (afir.dim_symbols on the func,
+        // afir.symbolic_shapes / afir.iter_extents on the ops) so tile-fuse can
+        // carry the symbolic axis extents through to the AscendC kernel.
+        pm.addNestedPass<func::FuncOp>(mlir::createAFIRSymbolizeShapesPass());
         pm.addNestedPass<func::FuncOp>(createVectorPlanTileFusePass());
         // Fold tensor.dim on statically-known dimensions (e.g. the size-1
         // broadcast axis) before bufferization so that subview size operands

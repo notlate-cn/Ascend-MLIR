@@ -30,6 +30,7 @@ func.func @elementwise(%a: tensor<?xf32>, %b: tensor<?xf32>, %init: tensor<?xf32
 // CHECK:       tensor.empty
 // CHECK-SAME:  afir.symbolic_shapes = ["(s0*s1)"]
 // CHECK:       linalg.generic
+// CHECK-SAME:  afir.iter_extents = "(s0*s1)"
 // CHECK-SAME:  afir.symbolic_shapes = ["(s0*s1)"]
 func.func @collapse(%a: tensor<?x?xf32>) -> tensor<?xf32> {
   %c0 = arith.constant 0 : index
@@ -56,6 +57,7 @@ func.func @collapse(%a: tensor<?x?xf32>) -> tensor<?xf32> {
 // CHECK-LABEL: func.func @reduce
 // CHECK-SAME:  afir.dim_symbols = [{arg = 0 : i64, dim = 0 : i64, id = 0 : i64}, {arg = 0 : i64, dim = 1 : i64, id = 1 : i64}]
 // CHECK:       linalg.generic
+// CHECK-SAME:  afir.iter_extents = "s0,s1"
 // CHECK-SAME:  afir.symbolic_shapes = ["s0"]
 func.func @reduce(%a: tensor<?x?xf32>, %b: tensor<?xf32>, %init: tensor<?xf32>) -> tensor<?xf32> {
   %r = linalg.generic {

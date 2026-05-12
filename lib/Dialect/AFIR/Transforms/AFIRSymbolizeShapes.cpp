@@ -74,6 +74,9 @@ private:
   // op -> per-result symbolic shapes (un-serialized), filled during the walk;
   // attrs are written after the walk so the table is final.
   SmallVector<std::pair<Operation *, SmallVector<ShapeVec>>> pending;
+  // linalg op -> per-iteration-dim extent SymExpr (un-serialized).  Emitted as
+  // `afir.iter_extents` so consumers (Collapse) need not re-derive it.
+  DenseMap<Operation *, ShapeVec> iterExtents;
 
   const ShapeVec *getShape(Value v) const {
     auto it = shapeMap.find(v);
@@ -172,6 +175,7 @@ AFIRSymbolizeShapesPass::transferLinalg(linalg::LinalgOp op) {
     }
     results.push_back(std::move(rs));
   }
+  iterExtents[op.getOperation()] = ShapeVec(iterSize.begin(), iterSize.end());
   return results;
 }
 
@@ -313,6 +317,7 @@ void AFIRSymbolizeShapesPass::runOnOperation() {
   table = DimSymbolTable();
   shapeMap.clear();
   pending.clear();
+  iterExtents.clear();
 
   if (func.isExternal() || func.getBody().empty())
     return;
@@ -369,18 +374,22 @@ void AFIRSymbolizeShapesPass::runOnOperation() {
     pending.push_back({&op, std::move(*res)});
   }
 
-  // 3. table is final -- write attrs.
+  // 3. table is final -- serialize and write attrs.
   Builder b(&getContext());
-  StringRef attrName = "afir.symbolic_shapes";
+  auto serializedStr = [&](ArrayRef<SymExpr> sv) {
+    SmallVector<SymExpr, 4> ser;
+    for (const SymExpr &e : sv)
+      ser.push_back(table.toSerialized(e));
+    return b.getStringAttr(symExprListStr(ser));
+  };
   for (auto &[op, resShapes] : pending) {
     SmallVector<Attribute> perResult;
-    for (ShapeVec &sv : resShapes) {
-      SmallVector<SymExpr, 4> ser;
-      for (SymExpr &e : sv)
-        ser.push_back(table.toSerialized(e));
-      perResult.push_back(b.getStringAttr(symExprListStr(ser)));
-    }
-    op->setAttr(attrName, b.getArrayAttr(perResult));
+    for (ShapeVec &sv : resShapes)
+      perResult.push_back(serializedStr(sv));
+    op->setAttr("afir.symbolic_shapes", b.getArrayAttr(perResult));
+    auto it = iterExtents.find(op);
+    if (it != iterExtents.end())
+      op->setAttr("afir.iter_extents", serializedStr(it->second));
   }
   func->setAttr("afir.dim_symbols", table.toAttr(&getContext()));
 }

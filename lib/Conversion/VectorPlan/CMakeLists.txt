@@ -33,4 +33,6 @@ add_mlir_library(MLIRVectorPlan
   MLIRMemRefDialect
   MLIRBufferizationDialect
   MLIRPass
+  AFIRTransforms
+  AFIRSymbolicShape
 )
