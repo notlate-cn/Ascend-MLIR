@@ -24,6 +24,7 @@
 #include "llvm/Support/Debug.h"
 
 #include "ascir/Dialect/Asc/IR/Asc.h"
+#include "ascir/Dialect/EmitAsc/IR/EmitAsc.h"
 
 #define DEBUG_TYPE "linalg-to-ascendc-datamove"
 
@@ -39,6 +40,61 @@ static Value emitDim(OpBuilder &b, Location loc, Value memref, int64_t d) {
   if (!ShapedType::isDynamic(mrt.getShape()[d]))
     return b.create<arith::ConstantIndexOp>(loc, mrt.getShape()[d]);
   return b.create<memref::DimOp>(loc, memref, d);
+}
+
+// Helper: C++ scalar type name for a verbatim DataCopy template.
+static std::string cppScalarName(Type t) {
+  if (t.isF32()) return "float";
+  if (t.isF16()) return "half";
+  if (t.isBF16()) return "bfloat16_t";
+  if (auto it = dyn_cast<IntegerType>(t))
+    return "int" + std::to_string(it.getWidth()) + "_t";
+  return "float";
+}
+
+// Helper: detect a 2-D memref whose rows may be non-contiguous in memory — a
+// "strided" subview such as the transposed-operand tile x[r0:r0+R, c0:c0+C] of
+// a wider buffer (row stride = the wider buffer's inner dim, not C).  Returns
+// true and sets `rowStride` (in elements) when the row stride is statically
+// known and a row gap is possible; a plain contiguous memref returns false (the
+// flat DataCopy fast path applies).  Only the 2-D case is handled here.
+static bool isMaybeRowStrided2D(MemRefType mrt, int64_t &rowStride) {
+  if (mrt.getRank() != 2)
+    return false;
+  SmallVector<int64_t> strides;
+  int64_t offset;
+  if (failed(mrt.getStridesAndOffset(strides, offset)))
+    return false;
+  if (strides[1] != 1 || ShapedType::isDynamic(strides[0]))
+    return false;
+  int64_t cols = mrt.getDimSize(1);
+  if (!ShapedType::isDynamic(cols) && cols == strides[0])
+    return false; // provably contiguous
+  rowStride = strides[0];
+  return true;
+}
+
+// Emit a GM → VECIN copy of a 2-D row-strided source: one plain DataCopy per
+// row (src row i at srcGt[i*rowStride], dst row i packed at dstLt[i*cols]).
+// Uses only the proven GetPhyAddr / DataCopy path (no strided DataCopyPad,
+// which this AscendC/sim build does not handle for GM→UB).  Requires
+// cols*sizeof(elem) % 32 == 0 — the tiling-space generator is expected to
+// honour that for inner tile sizes feeding a transposed operand.
+static void emitStridedGmToVecinDataCopy(OpBuilder &b, Location loc, Type elemTy,
+                                          Value dstLt, Value srcGt, Value rows,
+                                          Value cols, int64_t rowStride) {
+  std::string ets = cppScalarName(elemTy);
+  std::string tmpl =
+      "{\n"
+      "  for (uint32_t _afir_i = 0; _afir_i < (uint32_t)$2; _afir_i++) {\n"
+      "    AscendC::GlobalTensor<" + ets + "> _afir_gt;\n"
+      "    _afir_gt.SetGlobalBuffer($1.GetPhyAddr(_afir_i * " +
+      std::to_string(rowStride) + "u));\n"
+      "    AscendC::DataCopy($0[_afir_i * (uint32_t)$3], _afir_gt, (uint32_t)$3);\n"
+      "  }\n"
+      "}";
+  b.create<emitasc::VerbatimOp>(loc, b.getStringAttr(tmpl),
+                                ValueRange({dstLt, srcGt, rows, cols}));
 }
 
 // Helper: cast an index value to i16 (signless, compatible with ui16 field).
@@ -300,13 +356,23 @@ LogicalResult convertDataMove(func::FuncOp funcOp,
           LocalTensorType::get(cast<MemRefType>(dst.getType()).getElementType());
       Value dstLt =
           builder.create<TQueBindAllocTensorOp>(loc, dstLtType, dstQueue);
+      auto srcMrt = cast<MemRefType>(src.getType());
       Value srcGt = builder.create<GlobalTensorOp>(
-          loc,
-          GlobalTensorType::get(cast<MemRefType>(src.getType()).getElementType()));
+          loc, GlobalTensorType::get(srcMrt.getElementType()));
       builder.create<GlobalTensorSetGlobalBufferOp>(loc, srcGt, src,
                                                      /*size=*/Value{});
-      Value count = computeElementCount(builder, loc, dst);
-      builder.create<DataCopyL2Op>(loc, dstLt, srcGt, count);
+      int64_t rowStride = 0;
+      if (isMaybeRowStrided2D(srcMrt, rowStride)) {
+        // Strided 2-D source (e.g. an absorbed-transpose operand tile): copy
+        // row by row, packing into the VECIN tile; a flat DataCopy of
+        // rows*cols elements would read contiguous GM (the wrong rows).
+        emitStridedGmToVecinDataCopy(builder, loc, srcMrt.getElementType(),
+                                     dstLt, srcGt, emitDim(builder, loc, src, 0),
+                                     emitDim(builder, loc, src, 1), rowStride);
+      } else {
+        Value count = computeElementCount(builder, loc, dst);
+        builder.create<DataCopyL2Op>(loc, dstLt, srcGt, count);
+      }
       builder.create<TQueBindEnqueTensorOp>(loc, dstQueue, dstLt);
 
       // Immediately deque so the local_tensor is available as a live value

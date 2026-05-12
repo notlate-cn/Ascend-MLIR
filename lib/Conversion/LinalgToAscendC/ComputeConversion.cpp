@@ -1728,21 +1728,30 @@ LogicalResult convertCompute(func::FuncOp funcOp, AscendCBufferContext &ctx) {
         break;
       }
       case IndexingMapAnalysis::Kind::PureTranspose: {
-        // data_copy from GM into VECIN, then transpose to VECCALC.
-        SmallVector<Value> srcDims;
-        for (int64_t permDim : analysis.permutation)
-          srcDims.push_back(iterDimSizes[static_cast<unsigned>(permDim)]);
-        Value srcElemCount = builder.create<arith::ConstantIndexOp>(loc, 1);
-        for (Value d : srcDims)
-          srcElemCount = builder.create<arith::MulIOp>(loc, srcElemCount, d);
+        // The transpose source may already be on-chip (VECIN) — e.g. when the
+        // transpose was absorbed into a downstream elementwise generic and
+        // InsertTileBuffers placed a VECIN tile for the operand (whose load was
+        // emitted as a memref.copy and lowered by convertDataMove, registering
+        // the live tensor).  In that case reuse it; otherwise copy from GM.
+        // Mirrors the BroadcastTranspose case below.
+        Value srcVecinLt;
+        if (inMs == 9 /*VECIN*/) {
+          srcVecinLt = readTensor(builder, loc, inMemref);
+        } else {
+          SmallVector<Value> srcDims;
+          for (int64_t permDim : analysis.permutation)
+            srcDims.push_back(iterDimSizes[static_cast<unsigned>(permDim)]);
+          Value srcElemCount = builder.create<arith::ConstantIndexOp>(loc, 1);
+          for (Value d : srcDims)
+            srcElemCount = builder.create<arith::MulIOp>(loc, srcElemCount, d);
 
-        Value srcGt = builder.create<GlobalTensorOp>(
-            loc, GlobalTensorType::get(elemType));
-        builder.create<GlobalTensorSetGlobalBufferOp>(loc, srcGt, inMemref,
-                                                       /*size=*/Value{});
-        Value srcVecinLt =
-            copyGmToVecin(builder, loc, elemType, srcGt, srcElemCount,
-                          srcElemCount, &tempVecinTensors);
+          Value srcGt = builder.create<GlobalTensorOp>(
+              loc, GlobalTensorType::get(elemType));
+          builder.create<GlobalTensorSetGlobalBufferOp>(loc, srcGt, inMemref,
+                                                         /*size=*/Value{});
+          srcVecinLt =
+              copyGmToVecin(builder, loc, elemType, srcGt, srcElemCount);
+        }
 
         auto [transpTbuf, transpLt] =
             allocVeccalc(builder, loc, elemType, bufferDimSizes);
