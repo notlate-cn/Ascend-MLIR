@@ -104,7 +104,7 @@ grep -q "cannot access artifact root" "${INVALID_STDERR}"
 CONFLICT_STDERR="$(mktemp)"
 if build/bin/runtime-session \
     --artifact-root "${FAKE_ARTIFACT_ROOT}" \
-    --kernel examples/relu-broadcast-transpose/step8_kernel.cpp \
+    --kernel examples/relu-broadcast-transpose/step0_input.mlir \
     2>"${CONFLICT_STDERR}"; then
   echo "Error: conflicting runtime-session inputs unexpectedly succeeded" >&2
   exit 1
@@ -128,14 +128,14 @@ echo "--- Checking runtime-session positive vec simulation path ---"
 runtime_verify_build_example_toolchain
 bash examples/relu-broadcast-transpose/run.sh >/tmp/runtime_session_example.log 2>&1
 build/bin/runtime-session \
-  --kernel examples/relu-broadcast-transpose/step8_kernel.cpp \
+  --kernel examples/relu-broadcast-transpose/build_mainline/step10_kernel.cpp \
   --kernel-kind vec \
   --name relu_transpose_broadcast_add \
   --output "${RUNTIME_SESSION_ARTIFACT_ROOT}" \
   >/tmp/runtime_session_compile.log 2>&1
 test -f "${RUNTIME_SESSION_ARTIFACT_ROOT}/out/manifest.txt"
 build/bin/runtime-session \
-  --kernel examples/relu-broadcast-transpose/step8_kernel.cpp \
+  --kernel examples/relu-broadcast-transpose/build_mainline/step10_kernel.cpp \
   --kernel-kind vec \
   --name relu_transpose_broadcast_add \
   --output "${RUNTIME_SESSION_SECOND_ARTIFACT_ROOT}" \
@@ -148,8 +148,8 @@ cat > "${RUNTIME_SESSION_RUN_MANIFEST}" <<EOF
   "backend": "sim",
   "artifact_root": "${RUNTIME_SESSION_ARTIFACT_ROOT}",
   "inputs": [
-    { "name": "data0", "path": "${PROJECT_ROOT}/examples/relu-broadcast-transpose/input_data0.npy" },
-    { "name": "data1", "path": "${PROJECT_ROOT}/examples/relu-broadcast-transpose/input_data1.npy" }
+    { "name": "data0", "path": "${PROJECT_ROOT}/examples/relu-broadcast-transpose/build_mainline/input_data0.npy" },
+    { "name": "data1", "path": "${PROJECT_ROOT}/examples/relu-broadcast-transpose/build_mainline/input_data1.npy" }
   ],
   "outputs": [
     {
@@ -160,7 +160,7 @@ cat > "${RUNTIME_SESSION_RUN_MANIFEST}" <<EOF
     }
   ],
   "tiling": {
-    "schema": "${PROJECT_ROOT}/examples/relu-broadcast-transpose/tiling_space.json",
+    "schema": "${PROJECT_ROOT}/examples/relu-broadcast-transpose/build_mainline/phase5_tiling_space.json",
     "params": "TB_M=64,TB_N=64,dim_arg0_0=640,dim_arg1_0=500,dim_arg0_1=1,dim_arg1_1=640"
   },
   "block_dim": 8,
@@ -195,14 +195,14 @@ cat > "${RUNTIME_SESSION_DAG_MANIFEST}" <<EOF
     {
       "task_id": "producer_a",
       "inputs": [
-        { "name": "data0", "path": "${PROJECT_ROOT}/examples/relu-broadcast-transpose/input_data0.npy" },
-        { "name": "data1", "path": "${PROJECT_ROOT}/examples/relu-broadcast-transpose/input_data1.npy" }
+        { "name": "data0", "path": "${PROJECT_ROOT}/examples/relu-broadcast-transpose/build_mainline/input_data0.npy" },
+        { "name": "data1", "path": "${PROJECT_ROOT}/examples/relu-broadcast-transpose/build_mainline/input_data1.npy" }
       ],
       "outputs": [
         { "name": "mid_a", "shape": [500, 640], "dtype": "f16" }
       ],
       "tiling": {
-        "schema": "${PROJECT_ROOT}/examples/relu-broadcast-transpose/tiling_space.json",
+        "schema": "${PROJECT_ROOT}/examples/relu-broadcast-transpose/build_mainline/phase5_tiling_space.json",
         "params": "TB_M=64,TB_N=64,dim_arg0_0=640,dim_arg1_0=500,dim_arg0_1=1,dim_arg1_1=640"
       },
       "block_dim": 8,
@@ -212,14 +212,14 @@ cat > "${RUNTIME_SESSION_DAG_MANIFEST}" <<EOF
     {
       "task_id": "producer_b",
       "inputs": [
-        { "name": "data0", "path": "${PROJECT_ROOT}/examples/relu-broadcast-transpose/input_data0.npy" },
-        { "name": "data1", "path": "${PROJECT_ROOT}/examples/relu-broadcast-transpose/input_data1.npy" }
+        { "name": "data0", "path": "${PROJECT_ROOT}/examples/relu-broadcast-transpose/build_mainline/input_data0.npy" },
+        { "name": "data1", "path": "${PROJECT_ROOT}/examples/relu-broadcast-transpose/build_mainline/input_data1.npy" }
       ],
       "outputs": [
         { "name": "mid_b", "shape": [500, 640], "dtype": "f16" }
       ],
       "tiling": {
-        "schema": "${PROJECT_ROOT}/examples/relu-broadcast-transpose/tiling_space.json",
+        "schema": "${PROJECT_ROOT}/examples/relu-broadcast-transpose/build_mainline/phase5_tiling_space.json",
         "params": "TB_M=64,TB_N=64,dim_arg0_0=640,dim_arg1_0=500,dim_arg0_1=1,dim_arg1_1=640"
       },
       "block_dim": 8,
@@ -231,14 +231,14 @@ cat > "${RUNTIME_SESSION_DAG_MANIFEST}" <<EOF
       "dependencies": ["producer_a", "producer_b"],
       "artifact_root": "${RUNTIME_SESSION_SECOND_ARTIFACT_ROOT}",
       "inputs": [
-        { "name": "data0", "path": "${PROJECT_ROOT}/examples/relu-broadcast-transpose/input_data0.npy" },
+        { "name": "data0", "path": "${PROJECT_ROOT}/examples/relu-broadcast-transpose/build_mainline/input_data0.npy" },
         { "name": "data1", "source": "task_output", "upstream_task": "producer_a", "upstream_output": "mid_a" }
       ],
       "outputs": [
         { "name": "out", "path": "${RUNTIME_SESSION_DAG_OUTPUT}", "shape": [500, 640], "dtype": "f16" }
       ],
       "tiling": {
-        "schema": "${PROJECT_ROOT}/examples/relu-broadcast-transpose/tiling_space.json",
+        "schema": "${PROJECT_ROOT}/examples/relu-broadcast-transpose/build_mainline/phase5_tiling_space.json",
         "params": "TB_M=64,TB_N=64,dim_arg0_0=640,dim_arg1_0=500,dim_arg0_1=1,dim_arg1_1=640"
       },
       "block_dim": 8,

@@ -3,7 +3,7 @@
 #
 # The source graph is examples/relu-broadcast-transpose/step0_input.mlir.
 # This path exercises Normalize -> Kernelize -> Schedule -> Realize -> Phase 5
-# instead of the legacy transform-interpreter tiling path in run.sh.
+# instead of the legacy transform-interpreter tiling path in run-legacy.sh.
 
 set -euo pipefail
 

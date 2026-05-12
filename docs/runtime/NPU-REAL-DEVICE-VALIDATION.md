@@ -104,16 +104,16 @@ bash examples/relu-broadcast-transpose/run.sh
 
 ```bash
 MANIFEST=/tmp/runtime-npu-vec-smoke.json
-ARTIFACT_ROOT=$PWD/examples/relu-broadcast-transpose/build_e2e/artifact
+ARTIFACT_ROOT=$PWD/examples/relu-broadcast-transpose/build_mainline/artifact
 OUTPUT=/tmp/runtime-npu-vec-output.npy
 
 bash test/tools/runtime/prepare_npu_smoke_manifests.sh vec \
   "$MANIFEST" \
   "$ARTIFACT_ROOT" \
-  "$PWD/examples/relu-broadcast-transpose/input_data0.npy" \
-  "$PWD/examples/relu-broadcast-transpose/input_data1.npy" \
+  "$PWD/examples/relu-broadcast-transpose/build_mainline/input_data0.npy" \
+  "$PWD/examples/relu-broadcast-transpose/build_mainline/input_data1.npy" \
   "$OUTPUT" \
-  "$PWD/examples/relu-broadcast-transpose/output_expected.npy"
+  "$PWD/examples/relu-broadcast-transpose/build_mainline/output_expected.npy"
 ```
 
 3. Run it:
