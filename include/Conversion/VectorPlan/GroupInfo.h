@@ -1,4 +1,5 @@
 #pragma once
+#include "Analysis/SymbolicShape/SymExpr.h"
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/IR/Value.h"
 #include "llvm/ADT/SmallVector.h"
@@ -14,6 +15,11 @@ struct AxisInfo {
   llvm::StringRef name;
   int64_t         staticSize; // ShapedType::kDynamic if dynamic
   AxisRole        role;
+  // Symbolic extent in terms of afir.dim_symbols ids (serialized).  Invalid
+  // (!isValid()) when unknown -- e.g. multi-op funcs, or before
+  // afir-symbolize-shapes ran.  For a collapsed axis this is the product of the
+  // grouped canonical-axis extents.
+  mlir::afir::symshape::SymExpr extent;
 };
 
 // ---------------------------------------------------------------------------

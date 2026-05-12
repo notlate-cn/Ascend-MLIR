@@ -1,6 +1,7 @@
 #include "Collapse.h"
 #include "TileFuseUtils.h"
 #include "../GroupAnalysis/AxisLattice.h"
+#include "Analysis/SymbolicShape/SymExpr.h"
 #include "Conversion/VectorPlan/GroupInfo.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
@@ -49,6 +50,25 @@ static void fillStaticSizes(SmallVector<AxisInfo> &axes,
       if (sz != ShapedType::kDynamic) { ax.staticSize = sz; break; }
     }
   }
+}
+
+/// Fill symbolic extents from the lone member's `afir.iter_extents` attr (set
+/// by afir-symbolize-shapes).  Only the single-generic case is handled -- for
+/// multi-op funcs the iteration spaces don't line up 1:1 and extents stay
+/// invalid.  `afir.iter_extents[i]` corresponds to canonical axis `i` because a
+/// single op contributes every iteration position (none are "Absent").
+static void fillSymbolicExtents(SmallVector<AxisInfo> &axes,
+                                 ArrayRef<LinalgOp> members) {
+  if (members.size() != 1)
+    return;
+  auto attr = members.front()->getAttrOfType<StringAttr>("afir.iter_extents");
+  if (!attr)
+    return;
+  auto parsed = symshape::parseSymExprList(attr.getValue());
+  if (!parsed || parsed->size() != axes.size())
+    return;
+  for (auto [i, ax] : llvm::enumerate(axes))
+    ax.extent = (*parsed)[i];
 }
 
 //===----------------------------------------------------------------------===//
@@ -167,13 +187,24 @@ static void buildAxisMap(ArrayRef<AxisInfo> canonAxes,
       collapsedAxesOut.push_back(canonAxes[origIdx]);
     } else if (origIdx == collapseGroup.front()) {
       int64_t prod = 1;
+      symshape::SymExpr symProd; // invalid if any group member's extent is unknown
+      bool symOk = true;
       for (int g : collapseGroup) {
         int64_t s = canonAxes[g].staticSize;
         prod = (s == ShapedType::kDynamic || prod == ShapedType::kDynamic)
                    ? ShapedType::kDynamic : prod * s;
+        if (symOk && canonAxes[g].extent.isValid())
+          symProd = symProd.isValid()
+                        ? symshape::SymExpr::mul(symProd, canonAxes[g].extent)
+                        : canonAxes[g].extent;
+        else
+          symOk = false;
       }
+      if (!symOk)
+        symProd = symshape::SymExpr();
       axisMapOut[origIdx] = postIdx++;
-      collapsedAxesOut.push_back(AxisInfo{"", prod, canonAxes[origIdx].role});
+      collapsedAxesOut.push_back(
+          AxisInfo{"", prod, canonAxes[origIdx].role, symProd});
     } else {
       axisMapOut[origIdx] = -1; // absorbed
     }
@@ -463,6 +494,8 @@ static CollapsedGroupInfo collapseGroupImpl(OpBuilder &builder,
   auto canonAxes = computeCanonicalAxes(llvm::ArrayRef(members));
   // Fill in static sizes from op shapes (computeCanonicalAxes leaves them kDynamic).
   fillStaticSizes(canonAxes, members);
+  // Fill symbolic extents from afir.iter_extents (single-op case only).
+  fillSymbolicExtents(canonAxes, members);
 
   result.canonicalAxes = canonAxes;
   result.topoMembers   = members;
@@ -539,11 +572,27 @@ static CollapsedGroupInfo collapseGroupImpl(OpBuilder &builder,
   return result;
 }
 
+/// Record the post-collapse per-axis symbolic extents on `func` as
+/// `afir.axis_extents` (one StringAttr per collapsed axis, in axis order; ""
+/// when unknown).  Carries the symbolic shape past tile-fuse to the AscendC
+/// kernel func.  No-op when no axis has a known extent.
+static void writeAxisExtents(OpBuilder &builder, func::FuncOp func,
+                             ArrayRef<AxisInfo> axes) {
+  bool any = llvm::any_of(axes, [](const AxisInfo &a) { return a.extent.isValid(); });
+  if (!any)
+    return;
+  SmallVector<Attribute> strs;
+  for (const AxisInfo &a : axes)
+    strs.push_back(builder.getStringAttr(a.extent.isValid() ? a.extent.str() : ""));
+  func->setAttr("afir.axis_extents", builder.getArrayAttr(strs));
+}
+
 CollapsedGroupInfo collapseGroup(OpBuilder &builder, func::FuncOp func) {
   CollapsedGroupInfo result = collapseGroupImpl(builder, func);
   // ≈ AF GenTilingGroup/NormGroup — classify the post-collapse iteration axes
   // once here; TilePlanGen consumes result.grouping directly.
   result.grouping = classifyAxes(result);
+  writeAxisExtents(builder, func, result.collapsedAxes);
   return result;
 }
 
