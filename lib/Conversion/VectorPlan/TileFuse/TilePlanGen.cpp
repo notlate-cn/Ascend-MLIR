@@ -179,13 +179,15 @@ BlockPick pickBlockAxis(const AxisGrouping &g, const DenseSet<int> &vecDims) {
 
 // ≈ AutoFuse's GenTilingCase + PruneTilingCase.  Walks the cartesian product of
 // (ub_tiling_id over each axis group), emits one TilePlanDraft per point — plus
-// an RCore variant (`reduceIsBlock`) when a reduce axis is ub-split.  **P5b**
-// enumerates the `ubR` dimension for real (R kept whole, or an oversized /
-// `--enable-reduction-split` R axis ub-split); `ubY` and `ubX` are still fixed
-// to the block axis / the first transpose-X axis respectively — a non-block ub
-// axis needs LoopNestBuilder support for an Outer-only block group (TODO).  The
-// RCore/FullLoad reduce templates are enumerated for structural completeness but
-// `costEstimate` keeps them infeasible until their downstream codegen exists.
+// an RCore variant (`reduceIsBlock`) when a reduce axis is ub-split — then
+// prunes degenerate single-tile-axis cases.  **P5c** enumerates `ubY` over all
+// non-broadcast parallel axes (block axis first) and `ubR` over { R whole, each
+// oversized / `--enable-reduction-split` R axis }; `ubX` is still fixed to the
+// first transpose-X axis (a real choice needs the >16-fractal split).  Drafts
+// whose codegen isn't implemented yet — a non-block ub-Y axis, RCore, FullLoad —
+// are still enumerated but `costEstimate` keeps them infeasible, so the picked
+// plan stays exactly what the previous scheduler produced (ubY = block axis,
+// auto-split R when oversized).
 //
 // This is intentionally a *pure* function — it never mutates `func` — so
 // `pickBest` can score every candidate (blockDim, reduce template, ub-axis pick
@@ -198,7 +200,20 @@ enumerateTilingCases(const AxisGrouping &g, const CollapsedGroupInfo &info,
   BlockPick     bp      = pickBlockAxis(g, vecDims);
 
   int ubX = g.xAxes.empty() ? -1 : g.xAxes.front();
-  int ubY = bp.degradeToRowLoop ? -1 : bp.axis;
+
+  // ubY candidates ≈ GenTilingCase over y_group: every non-broadcast parallel
+  // axis, the block axis first (so ties in costEstimate keep the current pick).
+  // The row-loop degradation forces ubY = -1 (the block axis row-loops, no
+  // inner Y tile).
+  SmallVector<int> ubYs;
+  if (bp.degradeToRowLoop || bp.axis < 0) {
+    ubYs.push_back(bp.degradeToRowLoop ? -1 : bp.axis);
+  } else {
+    ubYs.push_back(bp.axis);
+    for (int y : g.yAxes)
+      if (y != bp.axis && !g.axes[y].isBroadcastSplit)
+        ubYs.push_back(y);
+  }
 
   // ubR candidates ≈ GenTilingCase over r_group: R kept whole, or one of the R
   // axes ub-split.  --enable-reduction-split forces a split (no "whole" case);
@@ -221,39 +236,58 @@ enumerateTilingCases(const AxisGrouping &g, const CollapsedGroupInfo &info,
   }
 
   SmallVector<TilePlanDraft> drafts;
-  for (int r : ubRs) {
-    TilePlanDraft d;
-    d.ubTilingAxisY = ubY;
-    d.ubTilingAxisX = ubX;
-    d.ubTilingAxisR = r;
-    drafts.push_back(d);
-    if (r != -1) {
-      // RCore variant (reduce axis also split across cores).  Enumerated for
-      // completeness; ∞-scored in costEstimate until the two-stage codegen exists.
-      TilePlanDraft rc = d;
-      rc.reduceIsBlock = true;
-      rc.blockTilingId = 1;
-      drafts.push_back(rc);
+  for (int y : ubYs)
+    for (int r : ubRs) {
+      TilePlanDraft d;
+      d.ubTilingAxisY = y;
+      d.ubTilingAxisX = ubX;
+      d.ubTilingAxisR = r;
+      drafts.push_back(d);
+      if (r != -1) {
+        // RCore variant (reduce axis also split across cores).  Enumerated for
+        // completeness; ∞-scored in costEstimate until the two-stage codegen exists.
+        TilePlanDraft rc = d;
+        rc.reduceIsBlock = true;
+        rc.blockTilingId = 1;
+        drafts.push_back(rc);
+      }
     }
+
+  // PruneTilingCase: in the single-tile-axis scenario (only ubY is a tile axis)
+  // a draft whose ubY axis has static extent 1 is pointless — drop it if there
+  // is another draft to fall back to.
+  if (drafts.size() > 1) {
+    llvm::erase_if(drafts, [&](const TilePlanDraft &d) {
+      return d.ubTilingAxisX < 0 && d.ubTilingAxisR < 0 &&
+             d.ubTilingAxisY >= 0 &&
+             info.collapsedAxes[d.ubTilingAxisY].staticSize == 1;
+    });
+    if (drafts.empty()) // shouldn't happen, but never return nothing
+      drafts.push_back(TilePlanDraft{});
   }
-  // TODO(P5+): also enumerate (a) ubY over the rest of g.yAxes once
-  // LoopNestBuilder handles a non-block ub axis, and (b) a FullLoad grouping
-  // variant (classifyAxes with reduce→N) when the reduction tile fits whole.
+
+  // TODO(P5+): also enumerate a FullLoad grouping variant (classifyAxes with
+  // reduce→N) when the reduction tile fits whole.
   return drafts;
 }
 
-// ≈ AutoFuse's score_func (argmin selects).  **P5b** is feasibility-only: a
-// draft is infeasible (∞) if it leaves a reduction axis whole that can't fit
-// on-chip, or if it uses a reduce template (RCore / FullLoad) whose codegen
-// isn't implemented yet.  Among feasible drafts, ties resolve to enumeration
-// order — and `enumerateTilingCases` puts the "R whole" draft first, so this
-// reproduces the previous scheduler exactly.  The §3.6 terms (blockDim distance
-// to #AICores, step-1 small-stride axes, vectorized region bytes) land with P6's
-// real UB-peak model.
+// ≈ AutoFuse's score_func (argmin selects).  Feasibility-only for now: a draft
+// is infeasible (∞) if it leaves a reduction axis whole that can't fit on-chip,
+// or if its codegen isn't implemented yet (a non-block ub-Y axis — which needs
+// LoopNestBuilder support for an Outer-only block group — or the RCore /
+// FullLoad reduce templates).  Among feasible drafts, ties resolve to
+// enumeration order, and `enumerateTilingCases` puts the "ubY = block axis, R
+// whole" draft first, so this reproduces the previous scheduler exactly.  The
+// §3.6 terms (blockDim distance to #AICores, step-1 small-stride axes,
+// vectorized region bytes) land with P6's real UB-peak model.
 double costEstimate(const AxisGrouping &g, const CollapsedGroupInfo &info,
+                    const DenseSet<int> &vecDims,
                     const TilePlanDraft &draft, unsigned elemBytes) {
   if (draft.reduceIsBlock)
     return kInfeasible; // RCore: no two-stage codegen yet.
+  if (draft.ubTilingAxisY >= 0 &&
+      draft.ubTilingAxisY != pickBlockAxis(g, vecDims).axis)
+    return kInfeasible; // non-block ub-Y axis: no Outer-only-block codegen yet.
   for (int r : g.rAxes) {
     if (r == draft.ubTilingAxisR)
       continue; // this R axis is ub-split → its on-chip tile is RBLOCK-bounded.
@@ -402,6 +436,7 @@ TilePlan genVectorTilePlan(func::FuncOp func,
                             int64_t maxFullLoopIters) {
   const AxisGrouping &g = info.grouping; // computed by the Collapse pass
   unsigned elemBytes = operandElemBytes(info);
+  DenseSet<int> vecDims = computeVectorizedDims(info);
 
   SmallVector<TilePlanDraft> drafts =
       enumerateTilingCases(g, info, enableReductionSplit, elemBytes);
@@ -411,9 +446,9 @@ TilePlan genVectorTilePlan(func::FuncOp func,
   // the "current scheduler" choice first.  Only the winner is materialized —
   // buildPlan is the one place that mutates `func`.
   const TilePlanDraft *best = &drafts.front();
-  double bestScore = costEstimate(g, info, *best, elemBytes);
+  double bestScore = costEstimate(g, info, vecDims, *best, elemBytes);
   for (const TilePlanDraft &d : llvm::drop_begin(drafts)) {
-    double s = costEstimate(g, info, d, elemBytes);
+    double s = costEstimate(g, info, vecDims, d, elemBytes);
     if (s < bestScore) { bestScore = s; best = &d; }
   }
   assert(bestScore < kInfeasible && "no feasible tiling case");
