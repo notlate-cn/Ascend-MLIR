@@ -1,5 +1,7 @@
 #include "TilePlanGen.h"
 #include "TileFuseUtils.h"
+#include "Analysis/SymbolicShape/DimSymbolTable.h"
+#include "Analysis/SymbolicShape/SymExpr.h"
 #include "Conversion/VectorPlan/TilePlan.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
@@ -477,9 +479,54 @@ void emitTilingInfos(func::FuncOp func, const TilePlan &plan) {
     }
   }
 
+  // block_dim_expr: a SymExpr string `ceil(<block axis extent>/XBLOCK)` with the
+  // block axis extent rendered in `argN_dimD` shape-key terms (the autotuner's
+  // var names).  Built from afir.axis_extents / afir.dim_symbols (set by
+  // afir-symbolize-shapes + Collapse) -- absent when those aren't available
+  // (e.g. multi-op funcs).  Also stamped on the func so afir-translate can lift
+  // it into tiling_space.json without re-deriving.
+  std::string blockDimExpr;
+  {
+    auto dimSymsAttr = func->getAttrOfType<ArrayAttr>("afir.dim_symbols");
+    auto axisExtAttr = func->getAttrOfType<ArrayAttr>("afir.axis_extents");
+    StringRef xblockName;
+    for (auto &grp : plan.tileable)
+      for (const auto &tp : grp)
+        if (tp.level == TileLevel::Outer)
+          xblockName = tp.name;
+    std::optional<symshape::DimSymbolTable> symTable;
+    if (dimSymsAttr)
+      symTable = symshape::DimSymbolTable::fromAttr(dimSymsAttr);
+    if (axisExtAttr && symTable && !xblockName.empty() &&
+        !plan.blockFusedAxes.empty()) {
+      symshape::SymExpr ext;
+      bool ok = true;
+      for (int ax : plan.blockFusedAxes) {
+        if (ax < 0 || ax >= (int)axisExtAttr.size()) { ok = false; break; }
+        auto s = dyn_cast<StringAttr>(axisExtAttr[ax]);
+        auto e = s ? symshape::parseSymExpr(s.getValue()) : std::nullopt;
+        if (!e || !e->isValid()) { ok = false; break; }
+        ext = ext.isValid() ? symshape::SymExpr::mul(ext, *e) : *e;
+      }
+      if (ok && ext.isValid()) {
+        auto nameFor = [&](symshape::SymId id) -> std::string {
+          auto src = symTable->sourceOf(id);
+          return "arg" + std::to_string(src.first) + "_dim" +
+                 std::to_string(src.second);
+        };
+        blockDimExpr =
+            "ceil(" + ext.emitC(nameFor) + "/" + xblockName.str() + ")";
+      }
+    }
+  }
+  if (!blockDimExpr.empty())
+    func->setAttr("afir.block_dim_expr", StringAttr::get(ctx, blockDimExpr));
+
   NamedAttrList entryAttrs;
   entryAttrs.append("fields", ArrayAttr::get(ctx, fields));
   entryAttrs.append("kernel_id", StringAttr::get(ctx, func.getName()));
+  if (!blockDimExpr.empty())
+    entryAttrs.append("block_dim_expr", StringAttr::get(ctx, blockDimExpr));
 
   StringRef attrName = "vector_plan.tiling_infos";
   SmallVector<Attribute> infos;

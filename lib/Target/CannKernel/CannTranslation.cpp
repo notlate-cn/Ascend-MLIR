@@ -1984,10 +1984,16 @@ static LogicalResult emitTilingStructDecl(CodeEmitter &emitter, Location loc,
 /// Write tiling_space.json skeleton to outPath.
 /// dim_argN_D fields → fixed:true, shape_key:"argN_dimD".
 /// Other fields (TB_M etc.) → fixed:false, values:[].
+/// block_dim_expr → the func's afir.block_dim_expr attr (set by TilePlanGen) if
+/// present, else "".
 static void emitTilingSpaceJson(StringRef outPath,
                                 StringRef kernelFile,
-                                StringRef kernelName,
+                                func::FuncOp funcOp,
                                 emitasc::PyStructType tilingType) {
+  StringRef kernelName = funcOp.getName();
+  std::string blockDimExpr;
+  if (auto a = funcOp->getAttrOfType<StringAttr>("afir.block_dim_expr"))
+    blockDimExpr = a.getValue().str();
   auto isDimField = [](StringRef name) {
     return name.starts_with("dim_arg");
   };
@@ -2026,7 +2032,7 @@ static void emitTilingSpaceJson(StringRef outPath,
   root["kernel"]         = kernelName.str();
   root["kernel_file"]    = kernelFile.str();
   root["soc"]            = "Ascend910B1";
-  root["block_dim_expr"] = "";
+  root["block_dim_expr"] = blockDimExpr;
   root["tiling_params"]  = std::move(params);
 
   std::error_code ec;
@@ -2986,7 +2992,7 @@ LogicalResult mlir::translateToCannKernel(Operation *op, raw_ostream &os,
     // Write JSON skeleton for the first aicore func only
     if (!tilingSpaceOutPath.empty() && !jsonWritten) {
       emitTilingSpaceJson(tilingSpaceOutPath, kernelFile,
-                          funcOp.getName(), tilingType);
+                          funcOp, tilingType);
       jsonWritten = true;
     }
   }
