@@ -10,8 +10,10 @@
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "llvm/ADT/DenseSet.h"
+#include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/Support/FormatVariadic.h"
+#include <limits>
 
 using namespace mlir;
 using namespace mlir::vector_plan;
@@ -26,22 +28,31 @@ namespace mlir::afir {
 //   genVectorTilePlan                     ≈ AutoSchedule::DoAutoSchedule
 //     ├─ (info.grouping)                  ≈ TilingGroup::GenTilingGroup  (X/Y/R/N)
 //     ├─ enumerateTilingCases  → [draft]  ≈ GenTilingCase + PruneTilingCase
-//     ├─ for each draft: buildPlan        ≈ Scheduler::BlockSplit + TileSplit
-//     │                                     (+ computeVectorizedDims, §3.5 row-loop
-//     │                                      degradation)
-//     └─ pickBest(drafts, costEstimate)   ≈ score_func + argmin
+//     ├─ for each draft: costEstimate     ≈ score_func
+//     ├─ pickBest = argmin                ≈ argmin score
+//     └─ buildPlan(winner)                ≈ Scheduler::BlockSplit + TileSplit
+//                                            (+ computeVectorizedDims, §3.5 row-loop
+//                                             degradation)
 //
-// Status: P1 (refactor into classifyAxes / pickBlockAxis / in-order ubSplit)
-// + P3a (compute per-operand `vectorizedDims` and derive the row-loop
-// degradation from "the block axis is followed by a parallel axis inside a
-// reduce's vectorized region" instead of the old `splitParallel` heuristic) +
-// P5a (enumerate/build/cost/pick *skeleton*: `enumerateTilingCases` is a pure
-// function emitting a single draft that records today's fixed choices, `buildPlan`
-// is the extracted materializer, `pickBest` is a trivial argmin — behavior is
-// byte-identical).  Still pending: P5b (real y×x×r product + RCore/FullLoad
-// reduce-template candidates + `costEstimate` filled + §3.4 "non-ub Y axes →
-// Full"), then P6 (UB peak-memory constraints).  See the plan doc.
+// Status: P1 (refactor) + P3a (per-operand `vectorizedDims` + the §3.5 row-loop
+// degradation) + P5a (enumerate/build/cost/pick skeleton) + P5b (real
+// reduce-axis enumeration: `enumerateTilingCases` walks the `ubR` candidates
+// — R kept whole, or an oversized / `--enable-reduction-split` R axis ub-split,
+// plus an ∞-scored RCore variant — `costEstimate` rejects the infeasible ones,
+// `buildPlan` consumes `draft.ubTilingAxisR`; the §3.4 change that a non-ub
+// parallel axis is fully loaded instead of getting its own `XBLOCK_SUB_n`).
+// Still pending: ubY/ubX enumeration over the rest of the y/x groups (needs
+// LoopNestBuilder support for a non-block ub axis), the RCore/FullLoad reduce
+// templates' codegen (their drafts are enumerated but `costEstimate` keeps them
+// ∞ until the codegen lands), a real cost model (§3.6 blockDim / vectorized
+// bytes — comes with P6's UB-peak accounting), and the transpose templates
+// score (§5).  See the plan doc.
 // ===========================================================================
+
+// Above this many bytes, a reduction axis clearly will not fit on-chip whole,
+// so it must be ub-split (≈ AutoFuse's reduce-template feasibility check).
+static constexpr int64_t kReductionTileBudgetBytes = 32 * 1024;
+static const double kInfeasible = std::numeric_limits<double>::infinity();
 
 static Value insertFuncArg(func::FuncOp func, OpBuilder &builder,
                             Location loc, int64_t defaultVal,
@@ -58,6 +69,17 @@ static Value insertFuncArg(func::FuncOp func, OpBuilder &builder,
                        builder.getStringAttr("vector_plan.default_tile_size"),
                        builder.getI64IntegerAttr(defaultVal))});
   return newArg;
+}
+
+// Element byte width of the group's first member's first operand — used for the
+// reduction-tile feasibility check (≈ AF's `dtype_size`).
+static unsigned operandElemBytes(const CollapsedGroupInfo &info) {
+  if (info.topoMembers.empty())
+    return 4;
+  if (auto st = dyn_cast<ShapedType>(info.topoMembers[0]->getOperand(0).getType()))
+    if (st.getElementType().isIntOrFloat())
+      return std::max(1u, st.getElementType().getIntOrFloatBitWidth() / 8);
+  return 4;
 }
 
 namespace {
@@ -156,41 +178,92 @@ BlockPick pickBlockAxis(const AxisGrouping &g, const DenseSet<int> &vecDims) {
 }
 
 // ≈ AutoFuse's GenTilingCase + PruneTilingCase.  Walks the cartesian product of
-// (ub_tiling_id over each axis group) and emits one TilePlanDraft per point —
-// plus an RCore variant when the reduce is a first-stage split — then prunes
-// degenerate single-tile cases.  **P5a** produces a *single* draft that records
-// the current scheduler's fixed choices: ubY = the block-dispatch axis, ubX =
-// the first transpose-X axis (always inner-tiled to 16 today — the >16-fractal
-// split that would make this a real choice is future work), no reduce-template
-// enumeration yet (`buildPlan` still derives reduce-split per-axis from the
-// `--enable-reduction-split` flag and the byte-budget heuristic).  P5b grows
-// this into the real product + RCore/FullLoad grouping variants + prune.
+// (ub_tiling_id over each axis group), emits one TilePlanDraft per point — plus
+// an RCore variant (`reduceIsBlock`) when a reduce axis is ub-split.  **P5b**
+// enumerates the `ubR` dimension for real (R kept whole, or an oversized /
+// `--enable-reduction-split` R axis ub-split); `ubY` and `ubX` are still fixed
+// to the block axis / the first transpose-X axis respectively — a non-block ub
+// axis needs LoopNestBuilder support for an Outer-only block group (TODO).  The
+// RCore/FullLoad reduce templates are enumerated for structural completeness but
+// `costEstimate` keeps them infeasible until their downstream codegen exists.
 //
-// This is intentionally a *pure* function — it never mutates `func` — so a
-// future multi-draft `pickBest` can score every candidate (blockDim, reduce
-// template, ub-axis pick are all determinable from the grouping + collapsed
-// sizes) before the winning one is materialized by `buildPlan`.
+// This is intentionally a *pure* function — it never mutates `func` — so
+// `pickBest` can score every candidate (blockDim, reduce template, ub-axis pick
+// are all determinable from the grouping + collapsed sizes) before the winning
+// one is materialized by `buildPlan`.
 SmallVector<TilePlanDraft>
-enumerateTilingCases(const AxisGrouping &g, const CollapsedGroupInfo &info) {
+enumerateTilingCases(const AxisGrouping &g, const CollapsedGroupInfo &info,
+                     bool enableReductionSplit, unsigned elemBytes) {
   DenseSet<int> vecDims = computeVectorizedDims(info);
-  BlockPick bp = pickBlockAxis(g, vecDims);
+  BlockPick     bp      = pickBlockAxis(g, vecDims);
 
-  TilePlanDraft d;
-  d.ubTilingAxisY = bp.axis; // the block axis is the (only) inner-tiled Y today
-  if (!g.xAxes.empty())
-    d.ubTilingAxisX = g.xAxes.front();
-  // ubTilingAxisR / reduceIsBlock / blockTilingId: left at defaults — buildPlan
-  // still picks the reduce-split axes itself in P5a.
-  return {d};
+  int ubX = g.xAxes.empty() ? -1 : g.xAxes.front();
+  int ubY = bp.degradeToRowLoop ? -1 : bp.axis;
+
+  // ubR candidates ≈ GenTilingCase over r_group: R kept whole, or one of the R
+  // axes ub-split.  --enable-reduction-split forces a split (no "whole" case);
+  // otherwise an R axis is only a split candidate when it's clearly too big to
+  // fit on-chip whole.  The row-loop degradation keeps R whole (as before).
+  SmallVector<int> ubRs;
+  if (bp.degradeToRowLoop || g.rAxes.empty()) {
+    ubRs.push_back(-1);
+  } else if (enableReductionSplit) {
+    for (int r : g.rAxes)
+      ubRs.push_back(r);
+  } else {
+    ubRs.push_back(-1);
+    for (int r : g.rAxes) {
+      int64_t sz = info.collapsedAxes[r].staticSize;
+      if (sz != ShapedType::kDynamic &&
+          sz * (int64_t)elemBytes > kReductionTileBudgetBytes)
+        ubRs.push_back(r);
+    }
+  }
+
+  SmallVector<TilePlanDraft> drafts;
+  for (int r : ubRs) {
+    TilePlanDraft d;
+    d.ubTilingAxisY = ubY;
+    d.ubTilingAxisX = ubX;
+    d.ubTilingAxisR = r;
+    drafts.push_back(d);
+    if (r != -1) {
+      // RCore variant (reduce axis also split across cores).  Enumerated for
+      // completeness; ∞-scored in costEstimate until the two-stage codegen exists.
+      TilePlanDraft rc = d;
+      rc.reduceIsBlock = true;
+      rc.blockTilingId = 1;
+      drafts.push_back(rc);
+    }
+  }
+  // TODO(P5+): also enumerate (a) ubY over the rest of g.yAxes once
+  // LoopNestBuilder handles a non-block ub axis, and (b) a FullLoad grouping
+  // variant (classifyAxes with reduce→N) when the reduction tile fits whole.
+  return drafts;
 }
 
-// ≈ AutoFuse's score_func.  **P5a**: with a single draft there is nothing to
-// rank, so this is a constant placeholder.  P5b fills it in (§3.6): a weighted
-// sum of |blockDim − #AICores|, presence of a step-1 small-stride axis, UB-peak
-// overflow penalty, and (negatively) the vectorized-region byte count — all
-// computable from the grouping + collapsed sizes without materializing the plan.
-double costEstimate(const AxisGrouping & /*g*/, const CollapsedGroupInfo & /*info*/,
-                    const TilePlanDraft & /*draft*/) {
+// ≈ AutoFuse's score_func (argmin selects).  **P5b** is feasibility-only: a
+// draft is infeasible (∞) if it leaves a reduction axis whole that can't fit
+// on-chip, or if it uses a reduce template (RCore / FullLoad) whose codegen
+// isn't implemented yet.  Among feasible drafts, ties resolve to enumeration
+// order — and `enumerateTilingCases` puts the "R whole" draft first, so this
+// reproduces the previous scheduler exactly.  The §3.6 terms (blockDim distance
+// to #AICores, step-1 small-stride axes, vectorized region bytes) land with P6's
+// real UB-peak model.
+double costEstimate(const AxisGrouping &g, const CollapsedGroupInfo &info,
+                    const TilePlanDraft &draft, unsigned elemBytes) {
+  if (draft.reduceIsBlock)
+    return kInfeasible; // RCore: no two-stage codegen yet.
+  for (int r : g.rAxes) {
+    if (r == draft.ubTilingAxisR)
+      continue; // this R axis is ub-split → its on-chip tile is RBLOCK-bounded.
+    // A statically oversized R axis kept whole can't fit; a dynamic one we can't
+    // prove either way, so (matching the previous scheduler) leave it Full.
+    int64_t sz = info.collapsedAxes[r].staticSize;
+    if (sz != ShapedType::kDynamic &&
+        sz * (int64_t)elemBytes > kReductionTileBudgetBytes)
+      return kInfeasible; // R kept whole but won't fit.
+  }
   return 0.0;
 }
 
@@ -204,41 +277,26 @@ double costEstimate(const AxisGrouping & /*g*/, const CollapsedGroupInfo & /*inf
 static TilePlan buildPlan(func::FuncOp func, const CollapsedGroupInfo &info,
                           const AxisGrouping &g, const TilePlanDraft &draft,
                           OpBuilder &builder, Location loc,
-                          bool enableReductionSplit, int64_t maxFullLoopIters) {
+                          int64_t maxFullLoopIters) {
+  assert(draft.blockTilingId == 0 && !draft.reduceIsBlock &&
+         "RCore draft reached buildPlan — should have been ∞-scored");
+
   TilePlan plan;
   plan.group = &info;
   if (!g.rAxes.empty())
-    plan.reduceTemplate = TilePlan::ReduceTemplate::Common; // P3a: only Common
+    plan.reduceTemplate = TilePlan::ReduceTemplate::Common;
 
   DenseSet<int> vecDims = computeVectorizedDims(info, &plan);
   BlockPick     bp      = pickBlockAxis(g, vecDims);
-  assert(bp.axis == draft.ubTilingAxisY && "draft/buildPlan block-axis mismatch");
+  assert(draft.ubTilingAxisY == (bp.degradeToRowLoop ? -1 : bp.axis) &&
+         "draft/buildPlan block-axis mismatch");
   if (bp.axis >= 0)
     plan.blockFusedAxes.push_back(bp.axis);
 
-  // Auto reduction-split: if the user did not request --enable-reduction-split
-  // but a reduction axis is so large that its on-chip tile clearly won't fit
-  // (R · elem_bytes > budget), switch that axis to the RBLOCK split path.
-  DenseSet<int> autoSplitR;
-  if (!enableReductionSplit && !bp.degradeToRowLoop && !info.topoMembers.empty()) {
-    unsigned elemBytes = 4;
-    if (auto st = dyn_cast<ShapedType>(
-            info.topoMembers[0]->getOperand(0).getType()))
-      if (st.getElementType().isIntOrFloat())
-        elemBytes = std::max(1u, st.getElementType().getIntOrFloatBitWidth() / 8);
-    constexpr int64_t kReductionTileBudgetBytes = 32 * 1024;
-    for (int i : g.rAxes) {
-      int64_t sz = info.collapsedAxes[i].staticSize;
-      if (sz != ShapedType::kDynamic &&
-          sz * (int64_t)elemBytes > kReductionTileBudgetBytes)
-        autoSplitR.insert(i);
-    }
-  }
-
   // --- ubSplit: one in-order pass over the collapsed axes (≈ TileSplit) ---
-  // Counters preserved from the previous implementation so func-arg insertion
-  // order and `vector_plan.tiling_infos` numbering are byte-identical.
-  int parallelSeen = 0, bcastCount = 0, bcastTileCount = 0, rblockCount = 0;
+  // Counters preserved so func-arg insertion order / `vector_plan.tiling_infos`
+  // numbering match the previous implementation on the shapes that reach here.
+  int bcastCount = 0, bcastTileCount = 0, rblockCount = 0;
   int naxisCount = 0, xsubCount = 0;
 
   for (int i = 0; i < (int)info.collapsedAxes.size(); ++i) {
@@ -248,8 +306,9 @@ static TilePlan buildPlan(func::FuncOp func, const CollapsedGroupInfo &info,
     if (ax.kind == AxisKind::X) {
       // Transpose X axis (input-side divergent): inner-tiled with its own
       // tunable; never the block axis (bindMultiCore == false).  Until the §5
-      // transpose schedule generator gives X its own 16-fractal handling, this
-      // is just an ordinary inner tile.
+      // transpose schedule generator gives X its own 16-fractal handling, every
+      // X axis is an ordinary inner tile (and `draft.ubTilingAxisX` just names
+      // the first one for the cost model).
       std::string name = llvm::formatv("XBLOCK_X_{0}", xsubCount++).str();
       Value param = insertFuncArg(func, builder, loc, 16, name);
       SmallVector<TileParam> group;
@@ -261,8 +320,7 @@ static TilePlan buildPlan(func::FuncOp func, const CollapsedGroupInfo &info,
 
     } else if (ax.kind == AxisKind::N) {
       // Transpose-N axis (trailing dim the permutation leaves in place): not
-      // tiled, not looped — whole-dim slice (≈ AF's n_group / a "vectorized"
-      // axis the transpose primitive processes whole).
+      // tiled, not looped — whole-dim slice (≈ AF's n_group).
       std::string name = llvm::formatv("NAXIS_{0}", naxisCount++).str();
       plan.full.push_back({name, ext, OpFoldResult(ext), i, TileLevel::Full,
                             AxisRole::Parallel});
@@ -283,27 +341,20 @@ static TilePlan buildPlan(func::FuncOp func, const CollapsedGroupInfo &info,
         } else {
           Value xblockSub =
               insertFuncArg(func, builder, loc, 16, "XBLOCK_SUB");
-          plan.ubTilingAxisY = i;
+          plan.ubTilingAxisY = i; // ubY == bp.axis (the only enumerated value)
           group.push_back({"XBLOCK_SUB", xblockSub, OpFoldResult(xblock), i,
                             TileLevel::Inner, AxisRole::Parallel});
         }
         plan.tileable.push_back(std::move(group));
         plan.blockDimExprs.push_back(
             OpFoldResult(builder.create<arith::CeilDivSIOp>(loc, ext, xblock)));
-      } else if (bp.degradeToRowLoop) {
-        // Non-block parallel axis under the row-loop degradation: no plan
-        // entry → SliceComputer yields the full-dim slice and no loop.
       } else {
-        // Non-block parallel axis: inner-tiled only.
-        std::string name =
-            llvm::formatv("XBLOCK_SUB_{0}", parallelSeen - 1).str();
-        Value param = insertFuncArg(func, builder, loc, 16, name);
-        SmallVector<TileParam> group;
-        group.push_back({name, param, OpFoldResult(ext), i,
-                          TileLevel::Inner, AxisRole::Parallel});
-        plan.tileable.push_back(std::move(group));
+        // §3.4: every non-ub parallel axis is fully loaded — no plan entry, so
+        // SliceComputer yields the whole-dim slice and there is no loop over it.
+        // (This replaces the old per-axis `XBLOCK_SUB_n` tunables; it is also
+        // the pre-existing behavior for non-block parallel axes under the §3.5
+        // row-loop degradation.)
       }
-      ++parallelSeen;
 
     } else if (ax.isBroadcastSplit) {
       // BCast axis: Full step-1 when small, inner-tiled (BCAST_TILE) otherwise.
@@ -328,16 +379,16 @@ static TilePlan buildPlan(func::FuncOp func, const CollapsedGroupInfo &info,
 
     } else { // AxisKind::R — reduction axis.
       std::string name = llvm::formatv("RBLOCK_{0}", rblockCount++).str();
-      if (!enableReductionSplit && !autoSplitR.count(i)) {
-        plan.full.push_back({name, ext, OpFoldResult(ext), i,
-                              TileLevel::Full, AxisRole::Reduction});
-      } else {
+      if (i == draft.ubTilingAxisR) {
         Value param = insertFuncArg(func, builder, loc, 64, name);
         SmallVector<TileParam> group;
         group.push_back({name, param, OpFoldResult(ext), i,
                           TileLevel::Inner, AxisRole::Reduction});
         plan.tileable.push_back(std::move(group));
         plan.ubTilingAxisR = i;
+      } else {
+        plan.full.push_back({name, ext, OpFoldResult(ext), i,
+                              TileLevel::Full, AxisRole::Reduction});
       }
     }
   }
@@ -350,22 +401,24 @@ TilePlan genVectorTilePlan(func::FuncOp func,
                             bool enableReductionSplit,
                             int64_t maxFullLoopIters) {
   const AxisGrouping &g = info.grouping; // computed by the Collapse pass
+  unsigned elemBytes = operandElemBytes(info);
 
-  SmallVector<TilePlanDraft> drafts = enumerateTilingCases(g, info);
+  SmallVector<TilePlanDraft> drafts =
+      enumerateTilingCases(g, info, enableReductionSplit, elemBytes);
   assert(!drafts.empty() && "enumerateTilingCases must yield at least one draft");
 
-  // Pick the lowest-scoring draft (≈ argmin score_func; ties → enumeration
-  // order, the "safe" defaults).  Only the winner is materialized — buildPlan is
-  // the one place that mutates `func` — so multi-draft scoring stays cheap.
+  // argmin score (≈ score_func selection); ties → enumeration order, which puts
+  // the "current scheduler" choice first.  Only the winner is materialized —
+  // buildPlan is the one place that mutates `func`.
   const TilePlanDraft *best = &drafts.front();
-  double bestScore = costEstimate(g, info, *best);
+  double bestScore = costEstimate(g, info, *best, elemBytes);
   for (const TilePlanDraft &d : llvm::drop_begin(drafts)) {
-    double s = costEstimate(g, info, d);
+    double s = costEstimate(g, info, d, elemBytes);
     if (s < bestScore) { bestScore = s; best = &d; }
   }
+  assert(bestScore < kInfeasible && "no feasible tiling case");
 
-  return buildPlan(func, info, g, *best, builder, loc, enableReductionSplit,
-                   maxFullLoopIters);
+  return buildPlan(func, info, g, *best, builder, loc, maxFullLoopIters);
 }
 
 void emitTilingInfos(func::FuncOp func, const TilePlan &plan) {

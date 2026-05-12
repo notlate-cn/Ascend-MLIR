@@ -13,9 +13,9 @@
 //
 // f16: AscendC::Transpose (the basic 16x16 form) operates on 16-bit data.
 // Tiling: d0 (=32) block-split (XBLOCK), walked XBLOCK_SUB at a time; d1 (=16)
-// not split (XBLOCK_SUB_0 = 16 = full d1).  AscendC::Transpose needs a square
-// 16x16 inner tile, so XBLOCK_SUB == XBLOCK_SUB_0 == 16; run.sh pins them.
-// block_dim = ceil(32 / XBLOCK).
+// is fully loaded (non-ub parallel axis → whole-dim slice, no loop — §3.4).
+// AscendC::Transpose needs a square 16x16 inner tile, so XBLOCK_SUB == 16;
+// run.sh pins it.  block_dim = ceil(32 / XBLOCK).
 
 #id2 = affine_map<(d0, d1) -> (d0, d1)>
 

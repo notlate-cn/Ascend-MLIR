@@ -16,7 +16,8 @@
 # (= 消除模板)。片上:转置后的 x operand tile 是 x 的行带 stride 的 subview
 # → 每行一条 DataCopy 装进 VECIN,再用 AscendC::Transpose 重排成输出布局后做
 # relu。AscendC::Transpose 的基础 16x16 形态只支持 16-bit 数据,故用 f16 +
-# 方阵内层 tile (XBLOCK_SUB == XBLOCK_SUB_0 == 16)。block_dim = ceil(N / XBLOCK)。
+# 方阵内层 tile (XBLOCK_SUB == 16;另一根迭代轴整维全载 — §3.4)。
+# block_dim = ceil(N / XBLOCK)。
 # ============================================================
 
 set -e
@@ -27,7 +28,7 @@ RUNTIME_SESSION="${RUNTIME_SESSION:-runtime-session}"
 PYTHON="${PYTHON:-python3}"
 
 M=16; N=32
-XBLOCK=16; XBLOCK_SUB=16; XBLOCK_SUB_0=16
+XBLOCK=16; XBLOCK_SUB=16
 BLOCK_DIM=$(( (N + XBLOCK - 1) / XBLOCK ))
 
 VERBOSE=false
@@ -57,12 +58,12 @@ echo "  ✓ Translate OK → transpose_relu_kernel.cpp + tiling_space.json"
 import json, pathlib
 p = pathlib.Path("$DIR/tiling_space.json")
 ts = json.loads(p.read_text())
-pin = {"XBLOCK": $XBLOCK, "XBLOCK_SUB": $XBLOCK_SUB, "XBLOCK_SUB_0": $XBLOCK_SUB_0}
+pin = {"XBLOCK": $XBLOCK, "XBLOCK_SUB": $XBLOCK_SUB}
 for param in ts["tiling_params"]:
     if param["name"] in pin:
         param["values"] = [pin[param["name"]]]
 p.write_text(json.dumps(ts, indent=2))
-print("  ✓ tiling_space.json patched (XBLOCK=$XBLOCK, XBLOCK_SUB=$XBLOCK_SUB, XBLOCK_SUB_0=$XBLOCK_SUB_0)")
+print("  ✓ tiling_space.json patched (XBLOCK=$XBLOCK, XBLOCK_SUB=$XBLOCK_SUB)")
 PYEOF
 
 echo ""
@@ -84,12 +85,12 @@ echo "  ✓ Compile OK → $ARTIFACT_ROOT"
 
 echo ""
 echo "==================== [STAGE 3] Simulator Run + Verify ===================="
-log "  XBLOCK=$XBLOCK, XBLOCK_SUB=$XBLOCK_SUB, XBLOCK_SUB_0=$XBLOCK_SUB_0, block_dim=$BLOCK_DIM"
+log "  XBLOCK=$XBLOCK, XBLOCK_SUB=$XBLOCK_SUB, block_dim=$BLOCK_DIM"
 log "  shape: x=${M}x${N}, out=${N}x${M}"
 VALIDATION_LOG="$BUILD_DIR/runtime_session.log"
 
-TILING_PARAMS="XBLOCK=${XBLOCK},XBLOCK_SUB=${XBLOCK_SUB},XBLOCK_SUB_0=${XBLOCK_SUB_0}"
-TILING_PARAMS+=",dim_arg0_1=${N},dim_arg4_1=${M}"
+TILING_PARAMS="XBLOCK=${XBLOCK},XBLOCK_SUB=${XBLOCK_SUB}"
+TILING_PARAMS+=",dim_arg0_1=${N},dim_arg3_1=${M}"
 
 cat > "$RUN_MANIFEST" <<MANIFEST
 {
