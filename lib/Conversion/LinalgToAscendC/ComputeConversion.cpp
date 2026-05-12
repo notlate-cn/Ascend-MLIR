@@ -1033,6 +1033,13 @@ LogicalResult convertCompute(func::FuncOp funcOp, AscendCBufferContext &ctx) {
                                                     /*sharedTmpBuffer=*/Value{});
     copyAscendCUnitAttr(genOp.getOperation(), reduceOp.getOperation());
 
+    // Register the reduce result as the live tensor for the output memref so
+    // downstream group members (e.g. an elementwise op that broadcasts s[a]
+    // back over the reduced axis) read it via getLiveTensor instead of treating
+    // the intra-group VECCALC alloc as a GM source.  Mirrors isTransposeGeneric.
+    if (outMs == 11 /*VECCALC*/ && !ctx.getLiveTensor(outMemref))
+      ctx.setLiveTensor(outMemref, vecoutLt);
+
     // Enqueue vecout if it has a queue (VECOUT path).
     if (Value q = ctx.getQueue(outMemref))
       builder.create<TQueBindEnqueTensorOp>(loc, q, vecoutLt);
@@ -1717,8 +1724,12 @@ LogicalResult convertCompute(func::FuncOp funcOp, AscendCBufferContext &ctx) {
       case IndexingMapAnalysis::Kind::PureBroadcast: {
         auto srcMrt = cast<MemRefType>(inMemref.getType());
         unsigned srcRank = srcMrt.getRank();
-        if (inMs == 9 /*VECIN*/) {
-          // broadcast_l2: expand narrow VECIN tile into full-shape VECCALC.
+        if (inMs == 9 /*VECIN*/ || inMs == 11 /*VECCALC*/) {
+          // broadcast_l2: expand narrow VECIN/VECCALC tile into full-shape
+          // VECCALC.  The VECCALC case is an intra-group intermediate (e.g. the
+          // result s[a] of a sibling reduce generic, registered as a live
+          // tensor) being broadcast back over the reduced axis — readTensor
+          // resolves it via getLiveTensor.
           SmallVector<Value> dstShapeVals, srcShapeVals;
           for (Value s : iterDimSizes)
             dstShapeVals.push_back(
@@ -1940,6 +1951,14 @@ LogicalResult convertCompute(func::FuncOp funcOp, AscendCBufferContext &ctx) {
             builder.create<AddL2Op>(loc, accumLt, lhs, rhs, totalElems);
         copyAscendCUnitAttr(genOp.getOperation(), addL2Op.getOperation());
         valToLt[addOp.getResult()] = accumLt;
+      } else if (auto subOp = dyn_cast<arith::SubFOp>(bodyOp)) {
+        Value lhs = resolve(subOp.getLhs());
+        Value rhs = resolve(subOp.getRhs());
+        if (!lhs || !rhs) continue;
+        auto subL2Op =
+            builder.create<SubL2Op>(loc, accumLt, lhs, rhs, totalElems);
+        copyAscendCUnitAttr(genOp.getOperation(), subL2Op.getOperation());
+        valToLt[subOp.getResult()] = accumLt;
       } else if (auto mulOp = dyn_cast<arith::MulFOp>(bodyOp)) {
         Value lhs = resolve(mulOp.getLhs());
         Value rhs = resolve(mulOp.getRhs());
