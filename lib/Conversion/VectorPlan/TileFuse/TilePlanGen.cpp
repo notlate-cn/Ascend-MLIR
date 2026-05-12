@@ -271,15 +271,15 @@ enumerateTilingCases(const AxisGrouping &g, const CollapsedGroupInfo &info,
   return drafts;
 }
 
-// ≈ AutoFuse's score_func (argmin selects).  Feasibility-only for now: a draft
-// is infeasible (∞) if it leaves a reduction axis whole that can't fit on-chip,
-// or if its codegen isn't implemented yet (a non-block ub-Y axis — which needs
-// LoopNestBuilder support for an Outer-only block group — or the RCore /
-// FullLoad reduce templates).  Among feasible drafts, ties resolve to
-// enumeration order, and `enumerateTilingCases` puts the "ubY = block axis, R
-// whole" draft first, so this reproduces the previous scheduler exactly.  The
-// §3.6 terms (blockDim distance to #AICores, step-1 small-stride axes,
-// vectorized region bytes) land with P6's real UB-peak model.
+// ≈ AutoFuse's score_func (argmin selects; ties → enumeration order, which puts
+// the "ubY = block axis, R whole" draft first).  Feasibility-only for now: ∞ for
+// a kept-whole reduction axis that can't fit on-chip, ∞ for an RCore/FullLoad
+// reduce template (no codegen yet), and ∞ for a non-block ub-Y axis (buildPlan
+// *can* materialize it — the "block-axis swap" below — but with the trivial cost
+// here it would never be a sensible pick, e.g. it would block-dispatch a tiny
+// broadcast axis instead of the big parallel one; a real §3.6 cost — blockDim
+// distance to #AICores, vectorized bytes, etc. — lands with P6's UB-peak model
+// and is what should override this).
 double costEstimate(const AxisGrouping &g, const CollapsedGroupInfo &info,
                     const DenseSet<int> &vecDims,
                     const TilePlanDraft &draft, unsigned elemBytes) {
@@ -287,7 +287,7 @@ double costEstimate(const AxisGrouping &g, const CollapsedGroupInfo &info,
     return kInfeasible; // RCore: no two-stage codegen yet.
   if (draft.ubTilingAxisY >= 0 &&
       draft.ubTilingAxisY != pickBlockAxis(g, vecDims).axis)
-    return kInfeasible; // non-block ub-Y axis: no Outer-only-block codegen yet.
+    return kInfeasible; // non-block ub-Y: see comment above.
   for (int r : g.rAxes) {
     if (r == draft.ubTilingAxisR)
       continue; // this R axis is ub-split → its on-chip tile is RBLOCK-bounded.
@@ -321,10 +321,15 @@ static TilePlan buildPlan(func::FuncOp func, const CollapsedGroupInfo &info,
 
   DenseSet<int> vecDims = computeVectorizedDims(info, &plan);
   BlockPick     bp      = pickBlockAxis(g, vecDims);
-  assert(draft.ubTilingAxisY == (bp.degradeToRowLoop ? -1 : bp.axis) &&
-         "draft/buildPlan block-axis mismatch");
-  if (bp.axis >= 0)
-    plan.blockFusedAxes.push_back(bp.axis);
+  // The cost model may pick a non-block ub-Y axis; honor it by making *that*
+  // axis the block axis (the pickBlockAxis default then becomes an ordinary
+  // whole-loaded parallel axis).  When ubY < 0 (the §3.5 row-loop degradation,
+  // or a group with no parallel axis) the block axis is the pickBlockAxis result
+  // and gets the step-1 row loop instead of XBLOCK_SUB.
+  int  blkAxis    = (draft.ubTilingAxisY >= 0) ? draft.ubTilingAxisY : bp.axis;
+  bool blkRowLoop = bp.degradeToRowLoop; // implies draft.ubTilingAxisY < 0
+  if (blkAxis >= 0)
+    plan.blockFusedAxes.push_back(blkAxis);
 
   // --- ubSplit: one in-order pass over the collapsed axes (≈ TileSplit) ---
   // Counters preserved so func-arg insertion order / `vector_plan.tiling_infos`
@@ -361,14 +366,15 @@ static TilePlan buildPlan(func::FuncOp func, const CollapsedGroupInfo &info,
       // Parallel axis (broadcast axes included — to the scheduler they are
       // ordinary Y axes; the lowering replicates the projecting operand
       // on-chip).
-      if (i == bp.axis) {
-        // Block axis: XBLOCK (Outer) + inner level (XBLOCK_SUB, or step-1 row
-        // loop under the §3.5 degradation).
+      if (i == blkAxis) {
+        // Block axis (= ubY when the draft picked one, else the pickBlockAxis
+        // default): XBLOCK (Outer) + inner level (XBLOCK_SUB, or step-1 row loop
+        // under the §3.5 degradation).
         Value xblock = insertFuncArg(func, builder, loc, 128, "XBLOCK");
         SmallVector<TileParam> group;
         group.push_back({"XBLOCK", xblock, OpFoldResult(ext), i,
                           TileLevel::Outer, AxisRole::Parallel});
-        if (bp.degradeToRowLoop) {
+        if (blkRowLoop) {
           // Fixed step 1 (not a tunable func arg): one row per tile body.
           Value one = builder.create<arith::ConstantIndexOp>(loc, 1);
           group.push_back({"XBLOCK_ROW", one, OpFoldResult(xblock), i,
@@ -376,7 +382,7 @@ static TilePlan buildPlan(func::FuncOp func, const CollapsedGroupInfo &info,
         } else {
           Value xblockSub =
               insertFuncArg(func, builder, loc, 16, "XBLOCK_SUB");
-          plan.ubTilingAxisY = i; // ubY == bp.axis (the only enumerated value)
+          plan.ubTilingAxisY = i;
           group.push_back({"XBLOCK_SUB", xblockSub, OpFoldResult(xblock), i,
                             TileLevel::Inner, AxisRole::Parallel});
         }
