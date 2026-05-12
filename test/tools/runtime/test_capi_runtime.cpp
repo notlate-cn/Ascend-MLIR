@@ -91,11 +91,12 @@ packExampleTiling(const std::string &schemaPath) {
 
 int main() {
   const std::string exampleDir = "examples/relu-broadcast-transpose";
-  const std::string kernelPath = exampleDir + "/step8_kernel.cpp";
-  const std::string input0Path = exampleDir + "/input_data0.npy";
-  const std::string input1Path = exampleDir + "/input_data1.npy";
-  const std::string expectedPath = exampleDir + "/output_expected.npy";
-  const std::string tilingSchemaPath = exampleDir + "/tiling_space.json";
+  const std::string buildDir = exampleDir + "/build_mainline";
+  const std::string kernelPath = buildDir + "/step10_kernel.cpp";
+  const std::string input0Path = buildDir + "/input_data0.npy";
+  const std::string input1Path = buildDir + "/input_data1.npy";
+  const std::string expectedPath = buildDir + "/output_expected.npy";
+  const std::string tilingSchemaPath = buildDir + "/phase5_tiling_space.json";
 
   const std::filesystem::path outputDir =
       std::filesystem::temp_directory_path() / "afirt-capi-smoke-out";

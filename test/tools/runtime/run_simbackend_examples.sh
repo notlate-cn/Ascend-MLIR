@@ -166,6 +166,7 @@ run_vec_example() {
   local atol="$7"
   local rtol="$8"
   local kernel_file="${9:-step8_kernel.cpp}"
+  local tiling_schema="${10:-${example_dir}/tiling_space.json}"
 
   local artifact_root
   artifact_root="$(make_tmp_artifact_root)"
@@ -202,7 +203,7 @@ ${inputs_json}
     { "name": "out", "path": "${expected_path}" }
   ],
   "tiling": {
-    "schema": "${example_dir}/tiling_space.json",
+    "schema": "${tiling_schema}",
     "params": "${tiling_params}"
   },
   "block_dim": ${block_dim},
@@ -319,11 +320,13 @@ if should_run_example "relu-broadcast-transpose"; then
 run_vec_example \
   "${PROJECT_ROOT}/examples/relu-broadcast-transpose" \
   "relu_transpose_broadcast_add" \
-  "    { \"name\": \"data0\", \"path\": \"${PROJECT_ROOT}/examples/relu-broadcast-transpose/input_data0.npy\" },
-    { \"name\": \"data1\", \"path\": \"${PROJECT_ROOT}/examples/relu-broadcast-transpose/input_data1.npy\" }" \
-  "${PROJECT_ROOT}/examples/relu-broadcast-transpose/output_expected.npy" \
+  "    { \"name\": \"data0\", \"path\": \"${PROJECT_ROOT}/examples/relu-broadcast-transpose/build_mainline/input_data0.npy\" },
+    { \"name\": \"data1\", \"path\": \"${PROJECT_ROOT}/examples/relu-broadcast-transpose/build_mainline/input_data1.npy\" }" \
+  "${PROJECT_ROOT}/examples/relu-broadcast-transpose/build_mainline/output_expected.npy" \
   "TB_M=64,TB_N=64,dim_arg0_0=640,dim_arg1_0=500,dim_arg0_1=1,dim_arg1_1=640" \
-  "8" "1e-2" "1e-2"
+  "8" "1e-2" "1e-2" \
+  "build_mainline/step10_kernel.cpp" \
+  "${PROJECT_ROOT}/examples/relu-broadcast-transpose/build_mainline/phase5_tiling_space.json"
 fi
 
 if should_run_example "add-broadcast-concat"; then
@@ -343,11 +346,13 @@ if should_run_example "broadcast-add-reduce"; then
 run_vec_example \
   "${PROJECT_ROOT}/examples/broadcast-add-reduce" \
   "broadcast_add_reducesum" \
-  "    { \"name\": \"a\", \"path\": \"${PROJECT_ROOT}/examples/broadcast-add-reduce/input_a.npy\" },
-    { \"name\": \"b\", \"path\": \"${PROJECT_ROOT}/examples/broadcast-add-reduce/input_b.npy\" }" \
-  "${PROJECT_ROOT}/examples/broadcast-add-reduce/output_c.npy" \
-  "TB_M=16,TB_N=16,Tb_M=512,dim_arg0_0=640,dim_arg1_1=512,dim_arg1_0=640" \
-  "40" "10" "1e-2"
+  "    { \"name\": \"a\", \"path\": \"${PROJECT_ROOT}/examples/broadcast-add-reduce/build_mainline/input_a.npy\" },
+    { \"name\": \"b\", \"path\": \"${PROJECT_ROOT}/examples/broadcast-add-reduce/build_mainline/input_b.npy\" }" \
+  "${PROJECT_ROOT}/examples/broadcast-add-reduce/build_mainline/output_c.npy" \
+  "TB_M=64,TB_N=15000,dim_arg0_0=640,dim_arg1_1=15000,dim_arg0_1=640,dim_arg1_0=15000" \
+  "10" "10" "1e-2" \
+  "build_mainline/step10_kernel.cpp" \
+  "${PROJECT_ROOT}/examples/broadcast-add-reduce/build_mainline/phase5_tiling_space.json"
 fi
 
 if should_run_example "gather-elementwise-fusion"; then

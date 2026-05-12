@@ -1083,7 +1083,8 @@ static void testVecCubeArtifactBackendCompilesVecArtifact() {
     return;
 
   ArtifactCompileRequest req;
-  req.kernelSource = "examples/relu-broadcast-transpose/step8_kernel.cpp";
+  req.kernelSource =
+      "examples/relu-broadcast-transpose/build_mainline/step10_kernel.cpp";
   req.kernelName = "relu_transpose_broadcast_add";
   req.kernelKind = KernelKind::Vec;
   req.outputDir = cleanup.path.string();
