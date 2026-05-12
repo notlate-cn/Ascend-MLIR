@@ -44,4 +44,4 @@ func.func @elementwise_chain(%arg0: tensor<64xf16>, %arg1: tensor<64xf16>,
 // CHECK-SAME: ascend.schedule.decision_id = "kernel_0.decision.0"
 // CHECK: linalg.generic
 // CHECK-SAME: ascend.schedule.decision_id = "kernel_0.decision.0"
-// CHECK: ascend.schedule.family = "vector_static_1d"
+// CHECK: ascend.schedule.family = "vector_generic"

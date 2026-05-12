@@ -110,6 +110,24 @@ void printShape(ArrayRef<int64_t> shape, llvm::raw_ostream &os) {
   os << "]";
 }
 
+void printCompactAxisList(ArrayRef<unsigned> axes, llvm::raw_ostream &os) {
+  os << "[";
+  llvm::interleave(axes, os, [&](unsigned axis) { os << axis; }, ",");
+  os << "]";
+}
+
+void printAxisExecutionRoles(ArrayRef<AxisExecutionRole> roles,
+                             llvm::raw_ostream &os) {
+  os << "[";
+  llvm::interleave(
+      roles, os,
+      [&](AxisExecutionRole role) {
+        os << stringifyAxisExecutionRole(role);
+      },
+      ",");
+  os << "]";
+}
+
 } // namespace
 
 FailureOr<ScheduleProblem>
@@ -167,6 +185,23 @@ void printScheduleProblemReport(const ScheduleProblem &problem,
   os << "  structure_constraints = ";
   printStringList(problem.structureConstraints, os);
   os << "\n";
+  os << "  axis_constraints = [\n";
+  for (const AxisScheduleConstraint &constraint :
+       problem.axes.axisScheduleConstraints) {
+    os << "    axis=" << constraint.logicalAxisId << " roles=";
+    printAxisExecutionRoles(constraint.allowedRoles, os);
+    os << " tail=" << stringifyAxisTailPolicy(constraint.tailPolicy) << "\n";
+  }
+  os << "  ]\n";
+  os << "  coalescing_hints = [\n";
+  for (const AxisCoalescingHint &hint : problem.axes.axisCoalescingHints) {
+    os << "    group=" << hint.groupId
+       << " kind=" << stringifyCoalescingHintKind(hint.kind)
+       << " members=";
+    printCompactAxisList(hint.memberAxisIds, os);
+    os << "\n";
+  }
+  os << "  ]\n";
 }
 
 } // namespace mlir::afir::ascend::schedule

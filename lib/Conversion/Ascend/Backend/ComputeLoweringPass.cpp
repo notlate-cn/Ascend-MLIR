@@ -16,6 +16,7 @@
 #include "llvm/ADT/STLExtras.h"
 
 #include "ascir/Dialect/Asc/IR/Asc.h"
+#include "ascir/Dialect/EmitAsc/IR/EmitAsc.h"
 
 #define GEN_PASS_DEF_ASCENDCOMPUTELOWERPASS
 #include "Conversion/Passes.h.inc"

@@ -24,6 +24,7 @@
 #include "llvm/Support/Debug.h"
 
 #include "ascir/Dialect/Asc/IR/Asc.h"
+#include "ascir/Dialect/EmitAsc/IR/EmitAsc.h"
 
 #define DEBUG_TYPE "linalg-to-ascendc-datamove"
 
@@ -65,6 +66,12 @@ static Value toI8(OpBuilder &b, Location loc, Value idx) {
 // Helper: create a i1 constant.
 static Value constI1(OpBuilder &b, Location loc, bool v) {
   return b.create<arith::ConstantIntOp>(loc, b.getI1Type(), v ? 1 : 0);
+}
+
+static bool shouldUseScalarVecoutWriteback(Value src) {
+  auto srcType = dyn_cast<MemRefType>(src.getType());
+  return srcType && srcType.getRank() == 1 &&
+         ShapedType::isDynamic(srcType.getShape()[0]);
 }
 
 // Helper: return the outermost enclosing scf::ForOp of `op` such that
@@ -534,7 +541,20 @@ LogicalResult convertDataMove(func::FuncOp funcOp,
               cast<MemRefType>(src.getType()).getElementType());
         }
       }
-      builder.create<DataCopyL2Op>(loc, dstGt, srcLt, count);
+      if (shouldUseScalarVecoutWriteback(src)) {
+        builder.create<emitasc::VerbatimOp>(
+            loc,
+            builder.getStringAttr(
+                "{\n"
+                "  for (uint32_t _afir_i = 0; _afir_i < (uint32_t)$2; "
+                "++_afir_i) {\n"
+                "    $0.SetValue(_afir_i, $1.GetValue(_afir_i));\n"
+                "  }\n"
+                "}"),
+            ValueRange{dstGt, srcLt, count});
+      } else {
+        builder.create<DataCopyL2Op>(loc, dstGt, srcLt, count);
+      }
       builder.create<TQueBindFreeTensorOp>(loc, srcQueue, srcLt);
       copyOp.erase();
       continue;

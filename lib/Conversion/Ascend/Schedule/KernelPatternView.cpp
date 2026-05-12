@@ -39,6 +39,31 @@ OpRole computeDominantRole(ArrayRef<PatternOpView> ops) {
   return OpRole::Unknown;
 }
 
+bool hasReductionIterator(linalg::LinalgOp linalgOp) {
+  return llvm::is_contained(linalgOp.getIteratorTypesArray(),
+                            utils::IteratorType::reduction);
+}
+
+bool isReductionInitHelper(linalg::LinalgOp linalgOp) {
+  auto fillOp = dyn_cast<linalg::FillOp>(linalgOp.getOperation());
+  if (!fillOp)
+    return false;
+
+  bool hasReductionInitUser = false;
+  for (Value result : fillOp->getResults()) {
+    for (Operation *user : result.getUsers()) {
+      auto userLinalgOp = dyn_cast<linalg::LinalgOp>(user);
+      if (!userLinalgOp || !hasReductionIterator(userLinalgOp))
+        return false;
+      if (!llvm::is_contained(userLinalgOp.getDpsInits(), result))
+        return false;
+      hasReductionInitUser = true;
+    }
+  }
+
+  return hasReductionInitUser;
+}
+
 LogicalResult finalizePatternGroup(PatternGroup &group) {
   KernelPatternView &view = group.view;
   llvm::sort(view.ops, [](const PatternOpView &lhs,
@@ -78,6 +103,8 @@ buildKernelPatternViews(ModuleOp module) {
       Operation *op = linalgOp.getOperation();
       auto kernelAttr = op->getAttrOfType<StringAttr>(kKernelAttr);
       if (!kernelAttr) {
+        if (isReductionInitHelper(linalgOp))
+          return WalkResult::advance();
         op->emitError() << "requires " << kKernelAttr;
         return WalkResult::interrupt();
       }

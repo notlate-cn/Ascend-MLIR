@@ -155,6 +155,9 @@ BufferizationDriver::collectTensorFacts(ModuleOp module) const {
 LogicalResult BufferizationDriver::runOneShotBufferize(ModuleOp module) const {
   bufferization::OneShotBufferizationOptions options;
   options.bufferizeFunctionBoundaries = true;
+  options.allowReturnAllocsFromLoops = true;
+  options.setFunctionBoundaryTypeConversion(
+      bufferization::LayoutMapOption::IdentityLayoutMap);
 
   bufferization::BufferizationState state;
   bufferization::BufferizationStatistics statistics;

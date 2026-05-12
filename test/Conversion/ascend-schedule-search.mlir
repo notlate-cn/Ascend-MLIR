@@ -76,20 +76,37 @@ func.func @dynamic_vector(%arg0: tensor<?x8xf16>,
   return %out : tensor<?x8xf16>
 }
 
+func.func @reduction_large_m(%arg0: tensor<640x15000xf16>) -> tensor<640xf16> {
+  %empty = tensor.empty() : tensor<640xf16>
+  %out = linalg.generic {
+    indexing_maps = [
+      affine_map<(d0, d1) -> (d0, d1)>,
+      affine_map<(d0, d1) -> (d0)>
+    ],
+    iterator_types = ["parallel", "reduction"]
+  } ins(%arg0 : tensor<640x15000xf16>)
+    outs(%empty : tensor<640xf16>) {
+  ^bb0(%x: f16, %acc: f16):
+    %v = arith.addf %acc, %x : f16
+    linalg.yield %v : f16
+  } -> tensor<640xf16>
+  return %out : tensor<640xf16>
+}
+
 // CHECK: ScheduleSearch:
 // CHECK-NEXT:   kernel = kernel_0
 // CHECK-NEXT:   generated = 2
 // CHECK-NEXT:   kept = 2
 // CHECK-NEXT:   compile_time_top_k = 4
-// CHECK-NEXT:   instance = kernel_0.vector_static_2d.0
-// CHECK-NEXT:   instance = kernel_0.vector_static_2d.1
+// CHECK-NEXT:   instance = kernel_0.vector_generic.0
+// CHECK-NEXT:   instance = kernel_0.vector_generic.1
 // CHECK: ScheduleSearch:
 // CHECK-NEXT:   kernel = kernel_1
 // CHECK-NEXT:   generated = 2
 // CHECK-NEXT:   kept = 2
 // CHECK-NEXT:   compile_time_top_k = 4
-// CHECK-NEXT:   instance = kernel_1.vector_static_2d.0
-// CHECK-NEXT:   instance = kernel_1.vector_static_2d.1
+// CHECK-NEXT:   instance = kernel_1.vector_generic.0
+// CHECK-NEXT:   instance = kernel_1.vector_generic.1
 // CHECK: ScheduleSearch:
 // CHECK-NEXT:   kernel = kernel_2
 // CHECK-NEXT:   generated = 2
@@ -99,11 +116,36 @@ func.func @dynamic_vector(%arg0: tensor<?x8xf16>,
 // CHECK-NEXT:   instance = kernel_2.reduction_static.1
 // CHECK: ScheduleSearch:
 // CHECK-NEXT:   kernel = kernel_3
-// CHECK-NEXT:   generated = 2
-// CHECK-NEXT:   kept = 2
+// CHECK-NEXT:   generated = 3
+// CHECK-NEXT:   kept = 3
 // CHECK-NEXT:   compile_time_top_k = 4
-// CHECK-NEXT:   instance = kernel_3.vector_static_2d.0
-// CHECK-NEXT:   instance = kernel_3.vector_static_2d.1
-// CHECK: schedule_family = "vector_static_2d"
+// CHECK-NEXT:   instance = kernel_3.vector_generic.0
+// CHECK-NEXT:   instance = kernel_3.vector_generic.1
+// CHECK-NEXT:   instance = kernel_3.vector_generic.2
+// CHECK: ScheduleDecisionSet:
+// CHECK:   kernel = kernel_3
+// CHECK:   decisions = 3
+// CHECK:   runtime_top_k = 1
+// CHECK:   selected = kernel_3.decision.0
+// CHECK-NEXT:   candidate_guards = 2
+// CHECK-NEXT:   decision_guards = 0
+// CHECK-NEXT:   selected_tile_shape = [64,8]
+// CHECK: ScheduleSearch:
+// CHECK-NEXT:   kernel = kernel_4
+// CHECK-NEXT:   generated = 3
+// CHECK-NEXT:   kept = 3
+// CHECK-NEXT:   compile_time_top_k = 4
+// CHECK-NEXT:   instance = kernel_4.reduction_static.0
+// CHECK-NEXT:   instance = kernel_4.reduction_static.1
+// CHECK-NEXT:   instance = kernel_4.reduction_static.2
+// CHECK: ScheduleDecisionSet:
+// CHECK:   kernel = kernel_4
+// CHECK:   decisions = 3
+// CHECK:   runtime_top_k = 1
+// CHECK:   selected = kernel_4.decision.0
+// CHECK-NEXT:   candidate_guards = 1
+// CHECK-NEXT:   decision_guards = 0
+// CHECK-NEXT:   selected_tile_shape = [64,15000]
+// CHECK: schedule_family = "vector_generic"
 // CHECK: schedule_template = "single_tile_per_block"
-// CHECK: ascend.schedule.family = "vector_static_2d"
+// CHECK: ascend.schedule.family = "vector_generic"

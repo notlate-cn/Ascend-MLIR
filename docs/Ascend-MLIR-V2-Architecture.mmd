@@ -1,0 +1,126 @@
+%%{init: {
+  "theme": "base",
+  "themeVariables": {
+    "fontSize": "18px",
+    "fontFamily": "Inter, PingFang SC, Microsoft YaHei, sans-serif",
+    "primaryColor": "#ffffff",
+    "primaryTextColor": "#111111",
+    "lineColor": "#455A64",
+    "clusterBkg": "#FAFAFA",
+    "clusterBorder": "#90A4AE"
+  },
+  "flowchart": {
+    "htmlLabels": true,
+    "nodeSpacing": 55,
+    "rankSpacing": 80,
+    "curve": "basis",
+    "padding": 14
+  }
+}}%%
+
+flowchart LR
+    classDef frontend fill:#E3F2FD,stroke:#1565C0,stroke-width:2px,color:#0D47A1
+    classDef layer1   fill:#E8F5E9,stroke:#2E7D32,stroke-width:2px,color:#1B5E20
+    classDef layer2   fill:#FFF3E0,stroke:#EF6C00,stroke-width:2px,color:#E65100
+    classDef layer3   fill:#F3E5F5,stroke:#6A1B9A,stroke-width:2px,color:#4A148C
+    classDef layer4   fill:#FCE4EC,stroke:#AD1457,stroke-width:2px,color:#880E4F
+    classDef layer5   fill:#E0F7FA,stroke:#00838F,stroke-width:2px,color:#006064
+    classDef backend  fill:#ECEFF1,stroke:#37474F,stroke-width:2px,color:#263238
+    classDef cross    fill:#FFFDE7,stroke:#F9A825,stroke-width:2px,color:#F57F17
+    classDef artifact fill:#F5F5F5,stroke:#757575,stroke-width:1px,color:#424242,font-style:italic
+    classDef star     fill:#FFEBEE,stroke:#C62828,stroke-width:2.5px,color:#B71C1C
+
+    FE["上层前端 lowering &nbsp;·&nbsp; torch-mlir / onnx-mlir / tf-mlir &nbsp;·&nbsp; Linalg + Tensor + Arith + Math + Func"]:::frontend
+
+    %% ========== Layer 1 ==========
+    subgraph L1G["<b>Layer 1 — Normalize (V2-2)</b> &nbsp;·&nbsp; 统一入口形态"]
+        direction TB
+        L1A["方言白名单 + 受限 Pass 调度"]:::layer1
+        L1B["mark-structured-ops &nbsp;·&nbsp; gather_dim / embedding_dim"]:::layer1
+        L1C["属性裁剪四级优先级"]:::layer1
+        L1D["★ 带权 Union-Find 符号等价分析 &nbsp;→&nbsp; AscendSymbolConstraintAttr"]:::star
+        L1V["EntryNormalizationVerifier &nbsp;·&nbsp; 9 步 fail-fast"]:::layer1
+        L1A --> L1B --> L1C --> L1D --> L1V
+    end
+    A1["Normalized Linalg/Tensor IR &nbsp;·&nbsp; AscendSymbolConstraintAttr &nbsp;·&nbsp; OpSemanticSummary"]:::artifact
+
+    %% ========== Layer 2 ==========
+    subgraph L2G["<b>Layer 2 — Kernelize (V2-3)</b> &nbsp;·&nbsp; 自动融合 &amp; Kernel 划分"]
+        direction TB
+        L2A["DependencyAnalyzer &nbsp;·&nbsp; OpRoleClassifier &nbsp;·&nbsp; StructuralMarker"]:::layer2
+        L2B["★ FusionCandidateAnalyzer &nbsp;·&nbsp; 8 个 FusionPrimitive 优先级竞争"]:::star
+        L2C["★ scheduleContract 7 字段顺序推导 &nbsp;·&nbsp; AxisExecutionRole × AxisTailPolicy"]:::star
+        L2D["CandidateMergeAnalyzer &nbsp;·&nbsp; HorizontalFusionAnalyzer (Q/K/V 并联)"]:::layer2
+        L2E["KernelPatternBuilder &nbsp;·&nbsp; HandwrittenPattern + MustCoLocate"]:::layer2
+        L2F["KernelPartitioner &nbsp;·&nbsp; FallbackSingleOpPattern 兜底"]:::layer2
+        L2V["KernelizationVerifierSuite &nbsp;·&nbsp; 8 道 &nbsp;·&nbsp; 无重叠/全覆盖/DAG/模板可承接"]:::layer2
+        L2A --> L2B --> L2C --> L2D --> L2E --> L2F --> L2V
+    end
+    A2["KernelPatternCandidate[] &nbsp;·&nbsp; KernelPatternGraph &nbsp;·&nbsp; scheduleContract[]"]:::artifact
+
+    %% ========== Layer 3 ==========
+    subgraph L3G["<b>Layer 3 — Schedule (V2-4)</b> &nbsp;·&nbsp; Memory-aware 自动调优"]
+        direction TB
+        L3A["AxisCoalescer &nbsp;·&nbsp; ScheduleProblemBuilder &nbsp;·&nbsp; TemplateRegistry"]:::layer3
+        L3B["ScheduleSearch &nbsp;·&nbsp; 笛卡尔积 + 支配剪枝 + TopK + Guard Budget"]:::layer3
+        L3C["★ 双段 MLP 收益模型 &nbsp;·&nbsp; overflowPenalty + movementPenalty"]:::star
+        L3D["ScheduleDecisionBuilder &nbsp;·&nbsp; decisionGuards · unitAssignment · cachePlan · promotionHints"]:::layer3
+        L3E["StructuredLoweringDriver &nbsp;·&nbsp; scf.for + CacheRead/Write/Pipeline/DoubleBuffer markers"]:::layer3
+        L3F["★ 三级编译缓存 &nbsp;·&nbsp; TemplateCache / ShapeBucketCache / TuningResultCache + ProfileDB"]:::star
+        L3A --> L3B --> L3C --> L3D --> L3E
+        L3F -.-> L3B
+    end
+    A3["ScheduleDecisionSet[] (含 runtimeTopK) &nbsp;·&nbsp; 结构化 IR (markers 直供 L4)"]:::artifact
+
+    %% ========== Layer 4 ==========
+    subgraph L4G["<b>Layer 4 — Realize (V2-5)</b> &nbsp;·&nbsp; Buffer · Place · Movement"]
+        direction TB
+        L4A["BufferizationDriver &nbsp;·&nbsp; one-shot-bufferize + 五步 facts 回填"]:::layer4
+        L4B["PlacementPlanner &nbsp;·&nbsp; GM / VECIN / VECOUT / VECCALC / A1-A2 / B1-B2 / CO1 &nbsp;·&nbsp; isBinding 硬约束"]:::layer4
+        L4C["StaticMemoryPlanner &nbsp;·&nbsp; Live interval reuse + 线性 packing &nbsp;·&nbsp; pipelineDepth × doubleBuffer"]:::layer4
+        L4D["MovementPlanner &nbsp;·&nbsp; DirectCopy / Load2D / Load2DTranspose / QueueTransfer / FixPipe"]:::layer4
+        L4V["MemoryRealizationDriver &nbsp;·&nbsp; Verifier 5 项: place / path / capacity / guard / mlir::verify"]:::layer4
+        L4A --> L4B --> L4C --> L4D --> L4V
+    end
+    A4["MemoryRealizationPlan &nbsp;·&nbsp; resolvedPlacement · workspaceLayout · resolvedMovements"]:::artifact
+
+    %% ========== Layer 5 ==========
+    subgraph L5G["<b>Layer 5 — Translate (V2-6)</b> &nbsp;·&nbsp; AscendC + Host Tiling + Runtime Manifest"]
+        direction TB
+        L5A["ComputeLoweringDriver &nbsp;·&nbsp; linalg / memref.copy → backend op &nbsp;·&nbsp; Fallback 4 档"]:::layer5
+        L5B["BackendABILoweringDriver &nbsp;·&nbsp; 3 Pass: Dispatch / TilingABI / SignatureCanonicalization (CANN)"]:::layer5
+        L5C["AscendCSourceEmitter &nbsp;·&nbsp; AscendC Kernel MLIR → AscendC C++"]:::layer5
+        L5D["HostTilingEmitter &nbsp;·&nbsp; TilingData + 多 Guard get_tiling 分支 + C ABI 四件套"]:::layer5
+        L5E["RuntimeManifestBuilder &nbsp;·&nbsp; shapeBucket / guardSet / scheduleEntries / kernelGraph"]:::layer5
+        L5F["TilingSpaceExportPass &nbsp;·&nbsp; tiling_space.json v2.0"]:::layer5
+        L5V["Verifier 4 道 &nbsp;·&nbsp; ComputeLowering / KernelABI / SourceTranslation / HostTilingABI"]:::layer5
+        L5A --> L5B
+        L5B --> L5C --> L5V
+        L5B --> L5D --> L5V
+        L5B --> L5E --> L5V
+        L5B --> L5F --> L5V
+    end
+    A5[".cpp &nbsp;·&nbsp; _cann.mlir &nbsp;·&nbsp; get_tiling.so &nbsp;·&nbsp; runtime_manifest.json &nbsp;·&nbsp; tiling_space.json"]:::artifact
+
+    %% ========== Backend ==========
+    BS["bisheng &nbsp;→&nbsp; &lt;kernel&gt;.bin (device ELF)"]:::backend
+    RT["lib/Runtime &nbsp;·&nbsp; AscendCL stream/event &nbsp;·&nbsp; 由 kernelGraph 驱动 DAG 调度"]:::backend
+
+    %% ========== Cross-cutting ==========
+    TGT["<b>横切 — Target Hardware Modeling (V2-8)</b> &nbsp;·&nbsp; TargetProfile = Identity + HardwareInfo + MemoryModel + IntrinsicModel + CostModel &nbsp;←&nbsp; platform_config/&lt;socVersion&gt;.ini"]:::cross
+    OBS["<b>横切 — E2E 可观测性 (V2-7)</b> &nbsp;·&nbsp; 统一 Diagnostics (stage/objectId/reasonKind/guardExpr) &nbsp;·&nbsp; Stage Dump · Debug Report · Verifier"]:::cross
+
+    %% ========== Main flow ==========
+    FE --> L1G --> A1 --> L2G --> A2 --> L3G --> A3 --> L4G --> A4 --> L5G --> A5 --> BS --> RT
+    A5 --> RT
+
+    %% ========== Cross-cutting supply ==========
+    TGT -. 供给 .-> L3G
+    TGT -. 供给 .-> L4G
+    TGT -. 供给 .-> L5G
+
+    OBS -. 订阅 .-> L1G
+    OBS -. 订阅 .-> L2G
+    OBS -. 订阅 .-> L3G
+    OBS -. 订阅 .-> L4G
+    OBS -. 订阅 .-> L5G

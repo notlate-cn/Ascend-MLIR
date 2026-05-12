@@ -82,6 +82,30 @@ bool isIdentityOnLeadingDims(AffineMap map) {
   return true;
 }
 
+bool isDimOrConstantProjection(AffineMap map) {
+  SmallVector<bool> seenDims(map.getNumDims(), false);
+  for (AffineExpr expr : map.getResults()) {
+    if (isa<AffineConstantExpr>(expr))
+      continue;
+
+    auto dimExpr = dyn_cast<AffineDimExpr>(expr);
+    if (!dimExpr)
+      return false;
+
+    unsigned position = dimExpr.getPosition();
+    if (position >= seenDims.size() || seenDims[position])
+      return false;
+    seenDims[position] = true;
+  }
+  return true;
+}
+
+bool hasConstantResult(AffineMap map) {
+  return llvm::any_of(map.getResults(), [](AffineExpr expr) {
+    return isa<AffineConstantExpr>(expr);
+  });
+}
+
 enum class ParallelIndexingKind {
   Elementwise,
   Broadcast,
@@ -98,7 +122,7 @@ classifyParallelIndexing(ArrayRef<AffineMap> indexingMaps,
   bool hasProjectedMap = false;
   bool hasNonIdentityFullRankMap = false;
   for (AffineMap map : indexingMaps) {
-    if (!map.isProjectedPermutation())
+    if (!isDimOrConstantProjection(map))
       return ParallelIndexingKind::Unknown;
 
     if (map.getNumResults() > resultRank)
@@ -111,6 +135,11 @@ classifyParallelIndexing(ArrayRef<AffineMap> indexingMaps,
 
     if (map.getNumResults() != resultRank)
       return ParallelIndexingKind::Unknown;
+
+    if (hasConstantResult(map)) {
+      hasProjectedMap = true;
+      continue;
+    }
 
     if (!isIdentityOnLeadingDims(map))
       hasNonIdentityFullRankMap = true;

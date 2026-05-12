@@ -79,6 +79,24 @@ void mergeStaticExtent(SmallVectorImpl<int64_t> &staticExtents, unsigned axis,
     staticExtents[axis] = extent;
 }
 
+bool isDimOrConstantProjection(AffineMap map) {
+  SmallVector<bool> seenDims(map.getNumDims(), false);
+  for (AffineExpr expr : map.getResults()) {
+    if (isa<AffineConstantExpr>(expr))
+      continue;
+
+    auto dimExpr = dyn_cast<AffineDimExpr>(expr);
+    if (!dimExpr)
+      return false;
+
+    unsigned position = dimExpr.getPosition();
+    if (position >= seenDims.size() || seenDims[position])
+      return false;
+    seenDims[position] = true;
+  }
+  return true;
+}
+
 void collectIndexingMapInfo(linalg::LinalgOp linalgOp, OpRole patternRole,
                             unsigned axisCount,
                             SmallVectorImpl<int64_t> &staticExtents,
@@ -103,9 +121,9 @@ void collectIndexingMapInfo(linalg::LinalgOp linalgOp, OpRole patternRole,
                          count);
   for (unsigned mapIndex = 0; mapIndex < count; ++mapIndex) {
     AffineMap map = indexingMaps[mapIndex];
-    if (!map.isProjectedPermutation()) {
+    if (!isDimOrConstantProjection(map)) {
       addBarrier(info, op, AxisBarrierKind::UnsupportedIndexingMap,
-                 (llvm::Twine("non-projected-permutation indexing map ") +
+                 (llvm::Twine("non-dim-or-constant-projection indexing map ") +
                   llvm::Twine(mapIndex))
                      .str());
       continue;
@@ -127,9 +145,17 @@ void collectIndexingMapInfo(linalg::LinalgOp linalgOp, OpRole patternRole,
 
     SmallVector<bool> usedAxes(axisCount, false);
     for (auto [resultIndex, expr] : llvm::enumerate(map.getResults())) {
-      auto dimExpr = dyn_cast<AffineDimExpr>(expr);
-      if (!dimExpr)
+      if (isa<AffineConstantExpr>(expr))
         continue;
+
+      auto dimExpr = dyn_cast<AffineDimExpr>(expr);
+      if (!dimExpr) {
+        addBarrier(info, op, AxisBarrierKind::UnsupportedIndexingMap,
+                   (llvm::Twine("unsupported affine result in indexing map ") +
+                    llvm::Twine(mapIndex))
+                       .str());
+        continue;
+      }
 
       unsigned axis = dimExpr.getPosition();
       if (axis >= axisCount) {
@@ -180,6 +206,134 @@ void appendPatternRawAxes(const KernelPatternView &pattern, unsigned axisCount,
 void printAxisList(ArrayRef<unsigned> axes, llvm::raw_ostream &os) {
   os << "[";
   llvm::interleaveComma(axes, os);
+  os << "]";
+}
+
+void printCompactAxisList(ArrayRef<unsigned> axes, llvm::raw_ostream &os) {
+  os << "[";
+  llvm::interleave(axes, os, [&](unsigned axis) { os << axis; }, ",");
+  os << "]";
+}
+
+void addRole(SmallVectorImpl<AxisExecutionRole> &roles,
+             AxisExecutionRole role) {
+  if (!llvm::is_contained(roles, role))
+    roles.push_back(role);
+}
+
+AxisScheduleConstraint *
+lookupAxisScheduleConstraint(CoalescedAxisInfo &info, unsigned logicalAxisId) {
+  for (AxisScheduleConstraint &constraint : info.axisScheduleConstraints) {
+    if (constraint.logicalAxisId == logicalAxisId)
+      return &constraint;
+  }
+  return nullptr;
+}
+
+void deriveAxisScheduleConstraints(CoalescedAxisInfo &info) {
+  info.axisScheduleConstraints.clear();
+  info.axisScheduleConstraints.reserve(info.logicalAxes.size());
+
+  for (const LogicalAxisInfo &axis : info.logicalAxes) {
+    AxisScheduleConstraint constraint;
+    constraint.logicalAxisId = axis.logicalAxisId;
+    constraint.kind = axis.kind;
+
+    switch (axis.kind) {
+    case AxisKind::Parallel:
+      constraint.allowedRoles.push_back(AxisExecutionRole::BindCoreCandidate);
+      constraint.allowedRoles.push_back(AxisExecutionRole::KernelLoopCandidate);
+      constraint.allowedRoles.push_back(AxisExecutionRole::VectorizeCandidate);
+      constraint.tailPolicy = AxisTailPolicy::MaskedTail;
+      break;
+    case AxisKind::Reduction:
+      constraint.allowedRoles.push_back(AxisExecutionRole::FullReduction);
+      constraint.tailPolicy = AxisTailPolicy::FullExtent;
+      break;
+    case AxisKind::Unknown:
+      constraint.tailPolicy = AxisTailPolicy::MustDivide;
+      break;
+    }
+
+    info.axisScheduleConstraints.push_back(std::move(constraint));
+  }
+
+  for (unsigned axis : info.broadcastAxes) {
+    AxisScheduleConstraint *constraint =
+        lookupAxisScheduleConstraint(info, axis);
+    if (!constraint || constraint->kind == AxisKind::Unknown)
+      continue;
+    addRole(constraint->allowedRoles,
+            AxisExecutionRole::BroadcastProjection);
+  }
+}
+
+SmallVector<unsigned, 4> getMaximalParallelRun(const CoalescedAxisInfo &info) {
+  SmallVector<unsigned, 4> bestRun;
+  SmallVector<unsigned, 4> currentRun;
+  for (const LogicalAxisInfo &axis : info.logicalAxes) {
+    if (axis.kind == AxisKind::Parallel) {
+      currentRun.push_back(axis.logicalAxisId);
+      continue;
+    }
+
+    if (currentRun.size() > bestRun.size())
+      bestRun = currentRun;
+    currentRun.clear();
+  }
+
+  if (currentRun.size() > bestRun.size())
+    bestRun = currentRun;
+  return bestRun;
+}
+
+void deriveAxisCoalescingHints(CoalescedAxisInfo &info) {
+  info.axisCoalescingHints.clear();
+  if (!info.barriers.empty())
+    return;
+
+  SmallVector<unsigned, 4> parallelRun = getMaximalParallelRun(info);
+  if (parallelRun.size() < 2)
+    return;
+
+  AxisCoalescingHint hint;
+  hint.groupId = 1;
+  bool vectorizable = false;
+  for (unsigned axis : parallelRun) {
+    AxisScheduleConstraint *constraint =
+        lookupAxisScheduleConstraint(info, axis);
+    if (!constraint)
+      continue;
+
+    hint.memberAxisIds.push_back(axis);
+    vectorizable |= llvm::is_contained(
+        constraint->allowedRoles, AxisExecutionRole::VectorizeCandidate);
+  }
+
+  if (hint.memberAxisIds.size() < 2)
+    return;
+
+  hint.kind = vectorizable ? CoalescingHintKind::Vectorizable
+                           : CoalescingHintKind::LinearizeOnly;
+  for (unsigned axis : hint.memberAxisIds) {
+    AxisScheduleConstraint *constraint =
+        lookupAxisScheduleConstraint(info, axis);
+    if (constraint)
+      constraint->coalescingGroupId = hint.groupId;
+  }
+
+  info.axisCoalescingHints.push_back(std::move(hint));
+}
+
+void printAxisExecutionRoles(ArrayRef<AxisExecutionRole> roles,
+                             llvm::raw_ostream &os) {
+  os << "[";
+  llvm::interleave(
+      roles, os,
+      [&](AxisExecutionRole role) {
+        os << stringifyAxisExecutionRole(role);
+      },
+      ",");
   os << "]";
 }
 
@@ -250,6 +404,8 @@ FailureOr<CoalescedAxisInfo> coalesceAxes(const KernelPatternView &pattern) {
   }
 
   appendPatternRawAxes(pattern, axisCount, info);
+  deriveAxisScheduleConstraints(info);
+  deriveAxisCoalescingHints(info);
 
   return info;
 }
@@ -270,6 +426,27 @@ void printAxisCoalescingReport(StringRef kernelId,
   printAxisList(info.broadcastAxes, os);
   os << "\n";
   os << "  barriers = " << info.barriers.size() << "\n";
+  os << "  axis_constraints = [\n";
+  for (const AxisScheduleConstraint &constraint :
+       info.axisScheduleConstraints) {
+    os << "    axis=" << constraint.logicalAxisId
+       << " kind=" << stringifyAxisKind(constraint.kind) << " roles=";
+    printAxisExecutionRoles(constraint.allowedRoles, os);
+    os << " tail=" << stringifyAxisTailPolicy(constraint.tailPolicy);
+    if (constraint.coalescingGroupId != 0)
+      os << " group=" << constraint.coalescingGroupId;
+    os << "\n";
+  }
+  os << "  ]\n";
+  os << "  coalescing_hints = [\n";
+  for (const AxisCoalescingHint &hint : info.axisCoalescingHints) {
+    os << "    group=" << hint.groupId
+       << " kind=" << stringifyCoalescingHintKind(hint.kind)
+       << " members=";
+    printCompactAxisList(hint.memberAxisIds, os);
+    os << "\n";
+  }
+  os << "  ]\n";
 }
 
 } // namespace mlir::afir::ascend::schedule

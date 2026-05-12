@@ -23,9 +23,9 @@ func.func @elementwise(%arg0: tensor<64xf16>, %arg1: tensor<64xf16>) -> tensor<6
 // POSITIVE-END
 
 // CHECK: Schedule report
-// CHECK: schedule_family = "vector_static_1d"
+// CHECK: schedule_family = "vector_generic"
 // CHECK: schedule_template = "single_tile_per_block"
-// CHECK: ascend.schedule.family = "vector_static_1d"
+// CHECK: ascend.schedule.family = "vector_generic"
 
 // -----
 

@@ -16,6 +16,7 @@
 #include "llvm/ADT/StringRef.h"
 #include "llvm/ADT/StringSwitch.h"
 
+#include <cstdint>
 #include <string>
 #include <utility>
 
@@ -25,6 +26,8 @@ using ::mlir::afir::ascend::kKernelAttr;
 using ::mlir::afir::ascend::kOpRoleAttr;
 using ::mlir::afir::ascend::kPrimaryAttr;
 using ::mlir::afir::ascend::kScheduleDecisionIdAttr;
+using ::mlir::afir::ascend::kScheduleSelectedTileShapeAttr;
+using ::mlir::afir::ascend::kScheduleTailPoliciesAttr;
 using ::mlir::afir::ascend::kStructuredLoweringAttr;
 
 inline constexpr llvm::StringLiteral kScheduleFamilyAttr =
@@ -40,6 +43,28 @@ enum class AxisKind {
   Parallel,
   Reduction,
   Unknown,
+};
+
+enum class AxisExecutionRole {
+  BindCoreCandidate,
+  KernelLoopCandidate,
+  VectorizeCandidate,
+  FullReduction,
+  ChunkedReduction,
+  BroadcastProjection,
+  LayoutCarry,
+};
+
+enum class AxisTailPolicy {
+  MustDivide,
+  MaskedTail,
+  ScalarEpilogue,
+  FullExtent,
+};
+
+enum class CoalescingHintKind {
+  Vectorizable,
+  LinearizeOnly,
 };
 
 enum class AxisBarrierKind {
@@ -96,12 +121,28 @@ struct AxisCoalescingBarrier {
   std::string reason;
 };
 
+struct AxisScheduleConstraint {
+  unsigned logicalAxisId = 0;
+  AxisKind kind = AxisKind::Unknown;
+  SmallVector<AxisExecutionRole, 3> allowedRoles;
+  AxisTailPolicy tailPolicy = AxisTailPolicy::MustDivide;
+  uint32_t coalescingGroupId = 0;
+};
+
+struct AxisCoalescingHint {
+  uint32_t groupId = 0;
+  CoalescingHintKind kind = CoalescingHintKind::LinearizeOnly;
+  SmallVector<unsigned, 2> memberAxisIds;
+};
+
 struct CoalescedAxisInfo {
   SmallVector<LogicalAxisInfo> logicalAxes;
   SmallVector<unsigned> parallelAxes;
   SmallVector<unsigned> reductionAxes;
   SmallVector<unsigned> broadcastAxes;
   SmallVector<AxisCoalescingBarrier> barriers;
+  SmallVector<AxisScheduleConstraint> axisScheduleConstraints;
+  SmallVector<AxisCoalescingHint> axisCoalescingHints;
 };
 
 struct ScheduleProblem {
@@ -184,6 +225,62 @@ inline OpRole parseOpRole(llvm::StringRef value) {
       .Case("vector", OpRole::Vector)
       .Case("memory", OpRole::Memory)
       .Default(OpRole::Unknown);
+}
+
+inline llvm::StringRef stringifyAxisKind(AxisKind kind) {
+  switch (kind) {
+  case AxisKind::Parallel:
+    return "parallel";
+  case AxisKind::Reduction:
+    return "reduction";
+  case AxisKind::Unknown:
+    return "unknown";
+  }
+  return "unknown";
+}
+
+inline llvm::StringRef stringifyAxisExecutionRole(AxisExecutionRole role) {
+  switch (role) {
+  case AxisExecutionRole::BindCoreCandidate:
+    return "bind_core";
+  case AxisExecutionRole::KernelLoopCandidate:
+    return "kernel_loop";
+  case AxisExecutionRole::VectorizeCandidate:
+    return "vectorize";
+  case AxisExecutionRole::FullReduction:
+    return "full_reduction";
+  case AxisExecutionRole::ChunkedReduction:
+    return "chunked_reduction";
+  case AxisExecutionRole::BroadcastProjection:
+    return "broadcast_projection";
+  case AxisExecutionRole::LayoutCarry:
+    return "layout_carry";
+  }
+  return "layout_carry";
+}
+
+inline llvm::StringRef stringifyAxisTailPolicy(AxisTailPolicy policy) {
+  switch (policy) {
+  case AxisTailPolicy::MustDivide:
+    return "must_divide";
+  case AxisTailPolicy::MaskedTail:
+    return "masked_tail";
+  case AxisTailPolicy::ScalarEpilogue:
+    return "scalar_epilogue";
+  case AxisTailPolicy::FullExtent:
+    return "full_extent";
+  }
+  return "must_divide";
+}
+
+inline llvm::StringRef stringifyCoalescingHintKind(CoalescingHintKind kind) {
+  switch (kind) {
+  case CoalescingHintKind::Vectorizable:
+    return "vectorizable";
+  case CoalescingHintKind::LinearizeOnly:
+    return "linearize_only";
+  }
+  return "linearize_only";
 }
 
 inline llvm::StringRef stringifyOpRole(OpRole role) {

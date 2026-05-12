@@ -6,6 +6,7 @@
 
 #include "Conversion/Ascend/Schedule/StructuredLoweringDriver.h"
 
+#include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/Diagnostics.h"
 #include "mlir/IR/Operation.h"
@@ -25,6 +26,58 @@ Operation *getDiagnosticOp(const KernelPatternView &pattern) {
   if (!pattern.ops.empty())
     return pattern.ops.front().op;
   return nullptr;
+}
+
+AxisTailPolicy getTailPolicyForAxis(const ScheduleProblem &scheduleProblem,
+                                    unsigned logicalAxisId) {
+  for (const AxisScheduleConstraint &constraint :
+       scheduleProblem.axes.axisScheduleConstraints)
+    if (constraint.logicalAxisId == logicalAxisId)
+      return constraint.tailPolicy;
+  return AxisTailPolicy::MustDivide;
+}
+
+ArrayAttr buildTailPoliciesAttr(MLIRContext *context,
+                                const ScheduleProblem &scheduleProblem) {
+  SmallVector<Attribute> tailPolicies;
+  tailPolicies.reserve(scheduleProblem.axes.logicalAxes.size());
+  for (const LogicalAxisInfo &axis : scheduleProblem.axes.logicalAxes) {
+    AxisTailPolicy tailPolicy =
+        getTailPolicyForAxis(scheduleProblem, axis.logicalAxisId);
+    tailPolicies.push_back(
+        StringAttr::get(context, stringifyAxisTailPolicy(tailPolicy)));
+  }
+  return ArrayAttr::get(context, tailPolicies);
+}
+
+void setScheduleMetadata(Operation *op, DenseI64ArrayAttr selectedTileShape,
+                         ArrayAttr tailPolicies) {
+  op->setAttr(kScheduleSelectedTileShapeAttr, selectedTileShape);
+  op->setAttr(kScheduleTailPoliciesAttr, tailPolicies);
+}
+
+LogicalResult preserveFunctionScheduleMetadata(Operation *op,
+                                               DenseI64ArrayAttr selectedTileShape,
+                                               ArrayAttr tailPolicies) {
+  auto funcOp = op->getParentOfType<func::FuncOp>();
+  if (!funcOp)
+    return success();
+
+  // Phase 5 artifacts currently model one primary global kernel per function.
+  // If multiple scheduled kernels exist, keep the first stable traversal result.
+  bool hasSelectedTileShape = funcOp->hasAttr(kScheduleSelectedTileShapeAttr);
+  bool hasTailPolicies = funcOp->hasAttr(kScheduleTailPoliciesAttr);
+  if (hasSelectedTileShape != hasTailPolicies)
+    return funcOp.emitError()
+           << "function schedule metadata must include both "
+           << kScheduleSelectedTileShapeAttr << " and "
+           << kScheduleTailPoliciesAttr;
+  if (hasSelectedTileShape)
+    return success();
+
+  funcOp->setAttr(kScheduleSelectedTileShapeAttr, selectedTileShape);
+  funcOp->setAttr(kScheduleTailPoliciesAttr, tailPolicies);
+  return success();
 }
 
 } // namespace
@@ -66,6 +119,14 @@ LogicalResult applyStructuredLoweringMarkers(
 
   const std::string &selectedDecisionId =
       decisionSet.decisions.front().decisionId;
+  Operation *metadataOp = getDiagnosticOp(pattern);
+  if (!metadataOp)
+    return failure();
+  MLIRContext *context = metadataOp->getContext();
+  DenseI64ArrayAttr selectedTileShape = DenseI64ArrayAttr::get(
+      context, decisionSet.decisions.front().instance.tileShape.tileSizes);
+  ArrayAttr tailPolicies = buildTailPoliciesAttr(context, scheduleProblem);
+
   for (const PatternOpView &opView : pattern.ops) {
     Operation *op = opView.op;
     auto decisionIdAttr =
@@ -89,6 +150,10 @@ LogicalResult applyStructuredLoweringMarkers(
     opView.op->setAttr(kStructuredLoweringAttr,
                        StringAttr::get(opView.op->getContext(),
                                        kLoopSkeletonV0));
+    setScheduleMetadata(opView.op, selectedTileShape, tailPolicies);
+    if (failed(preserveFunctionScheduleMetadata(opView.op, selectedTileShape,
+                                                tailPolicies)))
+      return failure();
     ++report.verifiedOps;
   }
 

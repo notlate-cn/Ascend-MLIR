@@ -23,6 +23,7 @@
 #include "Conversion/CanonicalizeCannSignature/CanonicalizeCannSignaturePass.h"
 #include "Conversion/FuseGatherElementwise/FuseGatherElementwisePass.h"
 #include "Conversion/MarkStructuredOps/MarkStructuredOpsPass.h"
+#include "ascir/Dialect/EmitAsc/IR/EmitAsc.h"
 #include "mlir/Pass/Pass.h"
 #include <memory>
 

@@ -14,6 +14,8 @@
 
 #include "Conversion/LinalgToAscendC/LinalgToAscendCUtils.h"
 
+#include "Conversion/Ascend/Common/Attributes.h"
+
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
@@ -24,6 +26,8 @@
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/BuiltinTypes.h"
+#include "mlir/IR/IRMapping.h"
+#include "llvm/ADT/STLExtras.h"
 #include "llvm/Support/Debug.h"
 
 #include "ascir/Dialect/Asc/IR/Asc.h"
@@ -37,6 +41,397 @@ using namespace mlir::ascendc;
 
 namespace mlir {
 namespace afir {
+
+namespace {
+
+Value getDimValue(OpBuilder &builder, Location loc, Value memref,
+                  unsigned dim) {
+  auto memrefType = cast<MemRefType>(memref.getType());
+  if (!ShapedType::isDynamic(memrefType.getShape()[dim]))
+    return builder.create<arith::ConstantIndexOp>(loc,
+                                                  memrefType.getShape()[dim]);
+  return builder.create<memref::DimOp>(loc, memref, dim);
+}
+
+bool isSupportedRank2Reduction(linalg::GenericOp op) {
+  if (op.getNumDpsInits() != 1)
+    return false;
+  auto iterTypes = op.getIteratorTypesArray();
+  return iterTypes.size() == 2 &&
+         iterTypes[0] == utils::IteratorType::parallel &&
+         iterTypes[1] == utils::IteratorType::reduction;
+}
+
+bool isSupportedRank2AllParallel(linalg::GenericOp op) {
+  if (op.getNumDpsInits() != 1)
+    return false;
+  auto iterTypes = op.getIteratorTypesArray();
+  return iterTypes.size() == 2 &&
+         iterTypes[0] == utils::IteratorType::parallel &&
+         iterTypes[1] == utils::IteratorType::parallel;
+}
+
+bool isProjectedParallelMap(AffineMap map) {
+  if (map.getNumDims() != 2 || map.getNumResults() != 1)
+    return false;
+  auto dimExpr = dyn_cast<AffineDimExpr>(map.getResult(0));
+  return dimExpr && dimExpr.getPosition() == 0;
+}
+
+bool isRank2IdentityMap(AffineMap map) {
+  return map.getNumDims() == 2 && map.getNumResults() == 2 &&
+         map.isIdentity();
+}
+
+bool isSupportedSelectedTileMap(Value operand, AffineMap map) {
+  auto memrefType = dyn_cast<MemRefType>(operand.getType());
+  if (!memrefType)
+    return false;
+  if (memrefType.getRank() == 1)
+    return isProjectedParallelMap(map);
+  if (memrefType.getRank() == 2)
+    return isRank2IdentityMap(map);
+  return false;
+}
+
+bool hasSupportedSelectedTileMaps(linalg::GenericOp op,
+                                  ArrayRef<AffineMap> maps,
+                                  Value writebackTarget) {
+  if (maps.size() !=
+      static_cast<size_t>(op.getNumDpsInputs() + op.getNumDpsInits()))
+    return false;
+
+  for (unsigned i = 0, e = op.getNumDpsInputs(); i < e; ++i)
+    if (!isSupportedSelectedTileMap(op.getDpsInputOperand(i)->get(), maps[i]))
+      return false;
+
+  return isSupportedSelectedTileMap(writebackTarget, maps.back());
+}
+
+FailureOr<int64_t> getStaticReductionExtent(linalg::GenericOp op,
+                                            ArrayRef<AffineMap> maps) {
+  for (unsigned i = 0, e = op.getNumDpsInputs(); i < e; ++i) {
+    Value input = op.getDpsInputOperand(i)->get();
+    auto inputType = dyn_cast<MemRefType>(input.getType());
+    if (!inputType || inputType.getRank() != 2 ||
+        !isRank2IdentityMap(maps[i]))
+      continue;
+    return inputType.getShape()[1];
+  }
+  return failure();
+}
+
+LogicalResult validateSelectedReductionTile(linalg::GenericOp op,
+                                            ArrayRef<AffineMap> maps,
+                                            int64_t reductionTile) {
+  if (ShapedType::isDynamic(reductionTile))
+    return success();
+
+  FailureOr<int64_t> reductionExtent = getStaticReductionExtent(op, maps);
+  if (failed(reductionExtent) || ShapedType::isDynamic(*reductionExtent))
+    return op.emitError("selected reduction tile requires full reduction axis");
+  if (reductionTile != *reductionExtent)
+    return op.emitError("selected reduction tile requires full reduction axis");
+
+  return success();
+}
+
+LogicalResult validateSelectedAllParallelTile(linalg::GenericOp op,
+                                              Value outMemref,
+                                              int64_t innerTile) {
+  if (ShapedType::isDynamic(innerTile))
+    return success();
+
+  auto outType = dyn_cast<MemRefType>(outMemref.getType());
+  if (!outType || outType.getRank() != 2)
+    return op.emitError("selected all-parallel tile requires a rank-2 output");
+
+  int64_t innerExtent = outType.getShape()[1];
+  if (ShapedType::isDynamic(innerExtent))
+    return success();
+  if (innerTile != innerExtent)
+    return op.emitError("selected all-parallel tile requires full inner axis");
+
+  return success();
+}
+
+LogicalResult validateSelectedTileMaps(linalg::GenericOp op,
+                                       ArrayRef<AffineMap> maps,
+                                       Value writebackTarget) {
+  if (maps.size() !=
+      static_cast<size_t>(op.getNumDpsInputs() + op.getNumDpsInits()))
+    return op.emitError("unsupported selected-tile indexing map");
+
+  for (unsigned i = 0, e = op.getNumDpsInputs(); i < e; ++i)
+    if (!isSupportedSelectedTileMap(op.getDpsInputOperand(i)->get(), maps[i]))
+      return op.emitError("unsupported selected-tile indexing map");
+
+  if (!isSupportedSelectedTileMap(writebackTarget, maps.back()))
+    return op.emitError("unsupported selected-tile indexing map");
+
+  return success();
+}
+
+Value createRank2TileAlloc(OpBuilder &builder, Location loc,
+                           MemRefType sourceType, Value tileRows,
+                           Value innerExtent) {
+  SmallVector<int64_t> tileShape{ShapedType::kDynamic, sourceType.getShape()[1]};
+  SmallVector<Value> dynamicSizes{tileRows};
+  if (ShapedType::isDynamic(sourceType.getShape()[1]))
+    dynamicSizes.push_back(innerExtent);
+
+  auto tileType = MemRefType::get(tileShape, sourceType.getElementType(),
+                                  MemRefLayoutAttrInterface{},
+                                  sourceType.getMemorySpace());
+  return builder.create<memref::AllocOp>(loc, tileType, dynamicSizes);
+}
+
+FailureOr<Value> buildTiledOperandSubview(OpBuilder &builder, Location loc,
+                                          Value operand, AffineMap map,
+                                          Value rowOffset, Value tileRows,
+                                          Value reductionExtent) {
+  auto memrefType = dyn_cast<MemRefType>(operand.getType());
+  if (!memrefType)
+    return failure();
+
+  auto one = builder.getIndexAttr(1);
+  if (memrefType.getRank() == 1 && isProjectedParallelMap(map)) {
+    SmallVector<OpFoldResult> offsets{rowOffset};
+    SmallVector<OpFoldResult> sizes{tileRows};
+    SmallVector<OpFoldResult> strides{one};
+    return builder
+        .create<memref::SubViewOp>(loc, operand, offsets, sizes, strides)
+        .getResult();
+  }
+
+  if (memrefType.getRank() == 2 && isRank2IdentityMap(map)) {
+    SmallVector<OpFoldResult> offsets{rowOffset, builder.getIndexAttr(0)};
+    SmallVector<OpFoldResult> sizes{tileRows, reductionExtent};
+    SmallVector<OpFoldResult> strides{one, one};
+    return builder
+        .create<memref::SubViewOp>(loc, operand, offsets, sizes, strides)
+        .getResult();
+  }
+
+  return failure();
+}
+
+memref::CopyOp findSingleWritebackCopy(Value source) {
+  memref::CopyOp result;
+  for (Operation *user : llvm::make_early_inc_range(source.getUsers())) {
+    auto copyOp = dyn_cast<memref::CopyOp>(user);
+    if (!copyOp || copyOp.getSource() != source ||
+        getMemorySpace(copyOp.getTarget().getType()) != 0)
+      continue;
+    if (result)
+      return {};
+    result = copyOp;
+  }
+  return result;
+}
+
+} // namespace
+
+LogicalResult materializeSelectedReductionTiles(func::FuncOp funcOp) {
+  OpBuilder builder(funcOp.getContext());
+  SmallVector<linalg::GenericOp> candidates;
+  funcOp.walk([&](linalg::GenericOp op) {
+    if (op->getParentOfType<scf::ForOp>())
+      return;
+    if (op->getAttrOfType<DenseI64ArrayAttr>(
+            ascend::kScheduleSelectedTileShapeAttr))
+      candidates.push_back(op);
+  });
+
+  for (linalg::GenericOp genOp : candidates) {
+    if (!isSupportedRank2Reduction(genOp))
+      continue;
+
+    auto selectedTile = genOp->getAttrOfType<DenseI64ArrayAttr>(
+        ascend::kScheduleSelectedTileShapeAttr);
+    if (!selectedTile || selectedTile.asArrayRef().size() != 2)
+      return genOp.emitError(
+          "selected rank-2 reduction tile requires exactly two dimensions");
+    int64_t tileRows = selectedTile.asArrayRef()[0];
+    if (ShapedType::isDynamic(tileRows) || tileRows <= 0)
+      return genOp.emitError(
+          "selected reduction tile requires a static positive parallel tile");
+
+    Value outMemref = genOp.getDpsInitOperand(0)->get();
+    auto outType = dyn_cast<MemRefType>(outMemref.getType());
+    if (!outType || outType.getRank() != 1)
+      continue;
+
+    memref::CopyOp writeback = findSingleWritebackCopy(outMemref);
+    if (!writeback)
+      continue;
+
+    auto maps = genOp.getIndexingMapsArray();
+    if (failed(validateSelectedTileMaps(genOp, maps, writeback.getTarget())))
+      return failure();
+    if (failed(validateSelectedReductionTile(
+            genOp, maps, selectedTile.asArrayRef()[1])))
+      return failure();
+
+    Location loc = genOp.getLoc();
+    builder.setInsertionPoint(genOp);
+    Value zero = builder.create<arith::ConstantIndexOp>(loc, 0);
+    Value step = builder.create<arith::ConstantIndexOp>(loc, tileRows);
+    Value rows = getDimValue(builder, loc, outMemref, 0);
+
+    auto forOp = builder.create<scf::ForOp>(loc, zero, rows, step);
+    forOp->setAttr("ascendc.parallel", builder.getBoolAttr(true));
+
+    OpBuilder bodyBuilder(funcOp.getContext());
+    bodyBuilder.setInsertionPointToStart(forOp.getBody());
+    Value remaining =
+        bodyBuilder.create<arith::SubIOp>(loc, rows, forOp.getInductionVar());
+    Value tileRowsValue =
+        bodyBuilder.create<arith::MinSIOp>(loc, step, remaining);
+
+    Value reductionExtent;
+    for (unsigned i = 0, e = genOp.getNumDpsInputs(); i < e; ++i) {
+      Value input = genOp.getDpsInputOperand(i)->get();
+      auto inputType = dyn_cast<MemRefType>(input.getType());
+      if (!inputType || inputType.getRank() != 2 ||
+          !isRank2IdentityMap(maps[i]))
+        continue;
+      reductionExtent = getDimValue(bodyBuilder, loc, input, 1);
+      break;
+    }
+    if (!reductionExtent)
+      return genOp.emitError("selected reduction tile requires a rank-2 input");
+
+    IRMapping mapper;
+    for (unsigned i = 0, e = genOp.getNumDpsInputs(); i < e; ++i) {
+      Value input = genOp.getDpsInputOperand(i)->get();
+      FailureOr<Value> tiledInput = buildTiledOperandSubview(
+          bodyBuilder, loc, input, maps[i], forOp.getInductionVar(),
+          tileRowsValue, reductionExtent);
+      if (failed(tiledInput))
+        return genOp.emitError("unsupported selected-tile indexing map");
+      mapper.map(input, *tiledInput);
+    }
+
+    auto tileOutType =
+        MemRefType::get({ShapedType::kDynamic}, outType.getElementType(),
+                        MemRefLayoutAttrInterface{}, outType.getMemorySpace());
+    Value tiledOut = bodyBuilder.create<memref::AllocOp>(
+        loc, tileOutType, ValueRange{tileRowsValue});
+    mapper.map(outMemref, tiledOut);
+
+    bodyBuilder.clone(*genOp, mapper);
+
+    Value dstMemref = writeback.getTarget();
+    FailureOr<Value> tiledDst = buildTiledOperandSubview(
+        bodyBuilder, loc, dstMemref, maps.back(), forOp.getInductionVar(),
+        tileRowsValue, reductionExtent);
+    if (failed(tiledDst))
+      return writeback.emitError("unsupported selected-tile indexing map");
+    bodyBuilder.create<memref::CopyOp>(loc, tiledOut, *tiledDst);
+
+    genOp.erase();
+    writeback.erase();
+    if (auto allocOp = outMemref.getDefiningOp<memref::AllocOp>())
+      if (allocOp->use_empty())
+        allocOp.erase();
+  }
+
+  return success();
+}
+
+LogicalResult materializeSelectedAllParallelTiles(func::FuncOp funcOp) {
+  OpBuilder builder(funcOp.getContext());
+  SmallVector<linalg::GenericOp> candidates;
+  funcOp.walk([&](linalg::GenericOp op) {
+    if (op->getParentOfType<scf::ForOp>())
+      return;
+    if (op->getAttrOfType<DenseI64ArrayAttr>(
+            ascend::kScheduleSelectedTileShapeAttr))
+      candidates.push_back(op);
+  });
+
+  for (linalg::GenericOp genOp : candidates) {
+    if (!isSupportedRank2AllParallel(genOp))
+      continue;
+
+    auto selectedTile = genOp->getAttrOfType<DenseI64ArrayAttr>(
+        ascend::kScheduleSelectedTileShapeAttr);
+    if (!selectedTile || selectedTile.asArrayRef().size() != 2)
+      return genOp.emitError("selected rank-2 all-parallel tile requires "
+                             "exactly two dimensions");
+    int64_t tileRows = selectedTile.asArrayRef()[0];
+    if (ShapedType::isDynamic(tileRows) || tileRows <= 0)
+      return genOp.emitError("selected all-parallel tile requires a static "
+                             "positive outer tile");
+
+    Value outMemref = genOp.getDpsInitOperand(0)->get();
+    auto outType = dyn_cast<MemRefType>(outMemref.getType());
+    if (!outType || outType.getRank() != 2)
+      continue;
+
+    memref::CopyOp writeback = findSingleWritebackCopy(outMemref);
+    if (!writeback)
+      continue;
+
+    auto maps = genOp.getIndexingMapsArray();
+    if (!hasSupportedSelectedTileMaps(genOp, maps, writeback.getTarget()))
+      continue;
+    if (failed(validateSelectedAllParallelTile(
+            genOp, outMemref, selectedTile.asArrayRef()[1])))
+      return failure();
+
+    Location loc = genOp.getLoc();
+    builder.setInsertionPoint(genOp);
+    Value zero = builder.create<arith::ConstantIndexOp>(loc, 0);
+    Value step = builder.create<arith::ConstantIndexOp>(loc, tileRows);
+    Value rows = getDimValue(builder, loc, outMemref, 0);
+    Value innerExtent = getDimValue(builder, loc, outMemref, 1);
+
+    auto forOp = builder.create<scf::ForOp>(loc, zero, rows, step);
+    forOp->setAttr("ascendc.parallel", builder.getBoolAttr(true));
+
+    OpBuilder bodyBuilder(funcOp.getContext());
+    bodyBuilder.setInsertionPointToStart(forOp.getBody());
+    Value remaining =
+        bodyBuilder.create<arith::SubIOp>(loc, rows, forOp.getInductionVar());
+    Value tileRowsValue =
+        bodyBuilder.create<arith::MinSIOp>(loc, step, remaining);
+
+    IRMapping mapper;
+    for (unsigned i = 0, e = genOp.getNumDpsInputs(); i < e; ++i) {
+      Value input = genOp.getDpsInputOperand(i)->get();
+      FailureOr<Value> tiledInput = buildTiledOperandSubview(
+          bodyBuilder, loc, input, maps[i], forOp.getInductionVar(),
+          tileRowsValue, innerExtent);
+      if (failed(tiledInput))
+        return genOp.emitError("unsupported selected-tile indexing map");
+      mapper.map(input, *tiledInput);
+    }
+
+    Value tiledOut =
+        createRank2TileAlloc(bodyBuilder, loc, outType, tileRowsValue,
+                             innerExtent);
+    mapper.map(outMemref, tiledOut);
+    bodyBuilder.clone(*genOp, mapper);
+
+    Value dstMemref = writeback.getTarget();
+    FailureOr<Value> tiledDst = buildTiledOperandSubview(
+        bodyBuilder, loc, dstMemref, maps.back(), forOp.getInductionVar(),
+        tileRowsValue, innerExtent);
+    if (failed(tiledDst))
+      return writeback.emitError("unsupported selected-tile indexing map");
+    bodyBuilder.create<memref::CopyOp>(loc, tiledOut, *tiledDst);
+
+    genOp.erase();
+    writeback.erase();
+    if (auto allocOp = outMemref.getDefiningOp<memref::AllocOp>())
+      if (allocOp->use_empty())
+        allocOp.erase();
+  }
+
+  return success();
+}
 
 LogicalResult convertCompute(func::FuncOp funcOp, AscendCBufferContext &ctx) {
   MLIRContext *mlirCtx = funcOp.getContext();

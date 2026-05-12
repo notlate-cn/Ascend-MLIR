@@ -16,6 +16,8 @@
 - Phase 5 backend integration 计划：`docs/superpowers/plans/2026-05-11-ascend-phase5-backend-integration.md`
 - Phase 5C full pipeline gap 记录：`docs/superpowers/plans/2026-05-11-ascend-phase5c-full-pipeline-gap.md`
 - Phase 5C Realize-to-Phase5 bridge 计划：`docs/superpowers/plans/2026-05-11-ascend-realize-phase5-bridge.md`
+- Phase 5C broadcast-add-reduce mainline E2E 计划：`docs/superpowers/plans/2026-05-11-broadcast-add-reduce-mainline-e2e.md`
+- Axis schedule contract / coalescing 泛化计划：`docs/superpowers/plans/2026-05-12-axis-schedule-contract-coalescing.md`
 - Phase 5C full pipeline bridge 报告：`docs/Ascend-MLIR-Phase5C-Full-Pipeline-Bridge-Report.zh.md`
 
 说明：`V2` 在本文档中只表示方案版本。当前代码目录、namespace、CMake target、IR attrs、测试 target 使用版本无关 `Ascend` 命名。
@@ -42,7 +44,8 @@
 | Phase 4 | Target model 完整化 | `Done` | `TargetMemoryModel`、`TargetIntrinsicModel`、`TargetCostModel`、`TargetModelVerifier` MVP 已完成；多 SoC 覆盖后续增强 |
 | Phase 3B | Realize materialization 增强 | `Done` | One-Shot Bufferize、target-aware placement plan、workspace layout/lifetime、explicit data movement plan、memory-space annotation MVP、普通 vector output Phase 5 bridge 已完成；full workspace/copy materialization 转后续增强 |
 | Phase 5 | Translate / runtime artifact 对接 | `Done` | 官方 Ascend backend 入口、support matrix、ABI wrapper、runtime artifact emitters 与 transformer smoke 已完成 |
-| Phase 5C | Full pipeline ordinary acceptance | `Done` | 最小普通 tensor/linalg 用例已通过完整 Phase 0 -> Phase 5 positive smoke；后续扩展到 demo 脚本、reduction/matmul/gather/transpose 和多 kernel |
+| Phase 5C | Full pipeline ordinary acceptance | `Done` | 最小普通 tensor/linalg 用例已通过完整 Phase 0 -> Phase 5 positive smoke；`broadcast-add-reduce` 与 `relu-broadcast-transpose` 均已有新主线 demo 并通过 runtime-session sim |
+| Phase 5C+ | Shape-general Schedule 泛化 | `In Progress` | `axisScheduleConstraints` / `axisCoalescingHints`、role-driven reduction tiling、role-driven vector tiling、tail-policy guards、schedule tile metadata 已落地；vector schedule template 已从 rank-specific 合并为 `vector_generic` 并覆盖 rank1/rank2/rank3；rank2 all-parallel identity vector 已可 selected tile -> `scf.for` materialization；`broadcast-add-reduce` 动态 M tail 与 N 非 128 验收通过；`relu-broadcast-transpose` 常量投影 broadcast/transpose 已走通；后续扩展到 matmul/gather、多 kernel 与更完整 target-driven tile |
 | Phase 6 | 架构文档与 demo 重写 | `Deferred` | 待 V2 主链路稳定后启动 |
 
 ## Phase 0：V2 MVP 编译主干
@@ -172,7 +175,7 @@ ssh xvm@orb 'cd /home/niu/code/Ascend-MLIR && cmake --build build-v2-verify --ta
 | `KernelPatternView` | `Done` | 从 `ascend.kernel` / `ascend.primary` / `ascend.op_role` 重建 pattern-level schedule view | 新增 pattern-view lit；同一 kernel 内 ops 共享 schedule decision |
 | `AxisCoalescer` | `Done` | 轴合并与 coalesced axis info | rank-2/reduction/broadcast/matmul/multi-primary lit |
 | `ScheduleProblemBuilder` | `Done` | 从 `KernelPatternView` + axis info 构建调度问题 | report 输出 shape/axis/constraint |
-| `TemplateRegistry` | `Done` | 注册 schedule family/template | vector/reduction/cube family 可查询 |
+| `TemplateRegistry` | `Done` | 注册 schedule family/template | `vector_generic` 不再按 rank 拆 template；vector/reduction/cube family 可查询 |
 | `ScheduleSearch` | `Done` | 搜索 `ScheduleInstance` | compileTimeTopK 生效 |
 | guard 生成 | `Done` | `candidateGuards` / `decisionGuards` | static/dynamic shape 与 guard budget prune lit |
 | cache 建模 | `Done` | `ShapeBucketCache` / `TuningResultCache` | key、negative cache、同 pass cache hit lit |
@@ -500,7 +503,7 @@ Review / verification:
 | workspace layout / lifetime MVP | `Done` | `StaticMemoryPlanner` 对 on-chip placement 生成保守 `workspace_layout`：一 local buffer 一个 live interval / workspace slot，报告 peak usage unit；value-level slot reuse、字节容量 verifier、真实 workspace alloc/subview 后续推进 | `ascend-realize-workspace-layout.mlir`；`AscendRealizePlannerTest` |
 | explicit data movement plan MVP | `Done` | `MovementPlanner` 对 on-chip workspace 场景生成 `movement_planning`：记录 movement demand、workspace reuse candidate、deferred path selection；legal path selection、value-level movement step、`memref.copy`、`memory_space` 后续推进 | `ascend-realize-data-movement-plan.mlir`；`AscendRealizePlannerTest` |
 | memory-space annotation materialization MVP | `Done` | 新增 `materialization-mode=memory-space-annotate`：先运行 One-Shot Bufferize，再把已证明的 vector temporary `memref.alloc` 标为 `VECCALC` memory space；report 按 kernel 记录 `memory_space_annotations`；跨 kernel temporary 保守不标注；不新增 workspace alloc/subview，不插入 `memref.copy` | `ascend-realize-memory-space-annotate.mlir`；`AscendRealizePlannerTest` |
-| Phase 5 bridge for ordinary vector output | `Done` | `memory-space-annotate` 模式下为 Phase 5 支持的最终 vector output 生成 `VECOUT` alloc，并插入 `VECOUT -> GM` epilogue `memref.copy`；保留 GM result 作为 ABI/return buffer | `ascend-full-pipeline-ordinary-smoke.mlir` |
+| Phase 5 bridge for ordinary vector / reduction output | `Done` | `memory-space-annotate` 模式下为 Phase 5 支持的最终 vector output 与保守 reduction output 生成 `VECOUT` alloc，并插入 `VECOUT -> GM` epilogue `memref.copy`；保留 GM result 作为 ABI/return buffer | `ascend-full-pipeline-ordinary-smoke.mlir`；`ascend-full-pipeline-broadcast-add-reduce.mlir` |
 | full value-level workspace/copy materialization enhancement | `Planned` | 真实 workspace alloc/subview、legal path selection、value-level movement step、更多 producer/consumer copy materialization 和 slot reuse 继续作为后续增强 | Phase 3B+ |
 
 ### Phase 3B 验证记录
@@ -532,6 +535,12 @@ Review / verification:
 | transformer dynamic smoke | `Done` | `examples/transformer/transformer_dynamic.mlir` 已纳入 Phase 5 验收 smoke；当前支持矩阵外的完整 transformer 图要求明确 unsupported，不允许静默成功 | `ascend-phase5-transformer-dynamic-smoke.mlir` |
 | pre-lowered ordinary example acceptance | `Done` | `examples/relu-broadcast-transpose/run.sh` 保留旧式前处理路径，但已切到 Phase 5 正式 backend 入口，并生成 `phase5_tiling_space.json`、`runtime_manifest.json`、`host_tiling.cpp` 后跑通 runtime-session sim 验证 | xvm `/tmp` copy run passed：`session.result=success`、`session.validation=pass` |
 | full Phase 0 -> Phase 5 ordinary positive smoke | `Done` | 最小普通 tensor/linalg 用例通过 Normalize / Kernelize / Schedule / Realize / ComputeLower / ABI wrappers；Realize bridge 物化 Phase 5 可消费的 `VECOUT` output 和 GM epilogue copy | `ascend-full-pipeline-ordinary-smoke.mlir`；bridge report |
+| broadcast-add-reduce mainline E2E | `Done` | `examples/broadcast-add-reduce/run-mainline.sh` 从 `step0_input.mlir` 出发，逐步生成 fused / normalized / kernelized / scheduled / realized / AscendC / CANN ABI IR、`step10_kernel.cpp`、Phase 5 artifacts，并通过 runtime-session sim；默认 `M=640,N=15000,BLOCK_DIM=20` | xvm `run-mainline.sh --log` passed：`session.result=success`、`session.validation=pass` |
+| relu-broadcast-transpose mainline E2E | `Done` | `examples/relu-broadcast-transpose/run-mainline.sh` 从 `step0_input.mlir` 出发，逐步生成 fused / normalized / kernelized / scheduled / realized / AscendC / CANN ABI IR、`step10_kernel.cpp`、Phase 5 artifacts，并通过 runtime-session sim；覆盖 `(d0,d1)->(d1,0)` 常量投影 broadcast/transpose、relu/max 与 add 融合 | `ascend-full-pipeline-relu-broadcast-transpose.mlir`；xvm `run-mainline.sh --log` passed：`session.result=success`、`session.validation=pass` |
+| axis schedule contract / coalescing 泛化 | `Done` | Schedule 侧新增 axis contract 数据模型、AxisCoalescer 推导 `axisScheduleConstraints` / `axisCoalescingHints` 并输出 debug report；`ScheduleProblem` 消费 axis contract；tail-policy-aware guard generation 已接入；role-driven reduction tile search 选择 `[64,N]` bounded parallel tile；selected tile shape / tail policy metadata 持久化到 scheduled ops、父 `func.func` 和 runtime manifest；Phase 5 对 selected tile materialization、32B runtime buffer 对齐、rows<16 broadcast tail fallback 已闭环 | `docs/superpowers/plans/2026-05-12-axis-schedule-contract-coalescing.md`；xvm 54 个 Ascend/CANN source LIT 54/54 passed；sim matrix `M=65/70/72,N=128`、`M=70,N=123`、`M=128,N=123`、默认 `M=640,N=15000` 全部 validation passed；static checks passed |
+| vector template 泛化 | `Done` | `TemplateRegistry` 将 `vector_static_1d` / `vector_static_2d` 合并为 `vector_generic`，template 数量不随 rank 增长；tiling 仍由 `ScheduleSearch` 基于实际 shape / axis contract 生成 `ScheduleInstance` | `ascend-schedule-template-registry.mlir` 新增 rank3 vector 覆盖；schedule cache/search/pattern-view/mvp LIT 期望同步 |
+| all-parallel vector bounded tile | `Done` | `ScheduleSearch` 对 `vector_generic` 生成 role-driven bounded parallel tile，rank2 dynamic/static 大 shape 优先选择 `[64,N]`；`ascend-compute-lower` 对 rank2 identity all-parallel selected tile 物化 `scf.for` / row subview / tiled writeback；broadcast-transpose 等 unsupported map 保守回退旧整块 lowering | `ascend-schedule-search.mlir`；`ascend-schedule-vector-bounded-tile.mlir`；`ascend-compute-lower-selected-all-parallel-tile-materializes-loop.mlir`；`ascend-compute-lower-selected-all-parallel-tile-fallback.mlir` |
+| broadcast-add-reduce legacy script | `In Progress` | 旧 `examples/broadcast-add-reduce/run.sh` 仍保留 legacy 链路，继续使用 `--transform-interpreter`、`--ascendc-buffer-placement`、`--linalg-to-ascendc`；后续 examples 全量迁移完成后再删除或改写旧入口 | legacy gap tracked |
 
 ### Phase 5 验证记录
 
@@ -548,6 +557,10 @@ Review / verification:
 | xvm ordinary Phase 5 example | `examples/relu-broadcast-transpose` copied to `/tmp` and run with build tools passed；new Phase 5 entries used for compute lower / ABI lowering / CANN signature；runtime-session sim reported `session.result=success` and `session.validation=pass` |
 | xvm full-pipeline ordinary smoke | `ascend-full-pipeline-ordinary-smoke.mlir` 1/1 passed；one-shot/memory-space annotate 链路进入 `ascend-compute-lower` 后生成 `ascendc.add_l2` 和 `ascendc.data_copy_l2`；target-aware 链路继续通过 ABI wrappers |
 | xvm Phase 5C Ascend Conversion regression | `llvm-lit -v build/test/Conversion --filter="ascend-"` 39/39 passed |
+| xvm broadcast-add-reduce mainline E2E | 默认 `M=640,N=15000,BLOCK_DIM=20` passed；输出 `step10_kernel.cpp` / `phase5_tiling_space.json` / runtime artifact；`session.result=success`、`session.validation=pass` |
+| xvm relu-broadcast-transpose mainline E2E | 默认 `M=640,N=500,BLOCK_DIM=20` passed；输出 `step10_kernel.cpp` / `phase5_tiling_space.json` / runtime artifact；`session.result=success`、`session.validation=pass`；当前 all-parallel ordinary path 仍未生成 `ascendc.get_block_idx` 绑核切分 |
+| xvm broadcast-add-reduce shape matrix | `M=65,N=128,BLOCK_DIM=2`、`M=70,N=128,BLOCK_DIM=2`、`M=72,N=128,BLOCK_DIM=2`、`M=70,N=123,BLOCK_DIM=2`、`M=128,N=123,BLOCK_DIM=2` passed；覆盖 rows<16 tail、tail=16/32、N 非 128、无 tail |
+| xvm bounded vector tile focused LIT | `ascend-schedule-search.mlir`、`ascend-schedule-vector-bounded-tile.mlir`、`ascend-compute-lower-selected-all-parallel-tile-materializes-loop.mlir`、`ascend-compute-lower-selected-all-parallel-tile-fallback.mlir`、selected reduction tile、两个 full-pipeline LIT passed |
 
 ## Phase 6：文档与 Demo 收敛
 
@@ -589,4 +602,6 @@ Phase 5: ComputeLoweringDriver -> ABI lowering -> HostTilingEmitter -> RuntimeMa
 1. Phase 4 剩余 target 查询模型已完成：`TargetMemoryModel`、`TargetIntrinsicModel`、`TargetCostModel`、`TargetModelVerifier`
 2. Phase 3B MVP 链路已闭环：One-Shot Bufferize、target-aware placement、workspace layout/lifetime、explicit data movement plan、memory-space annotation 均已实现和验证
 3. Phase 5C 已完成最小普通 tensor/linalg 用例的完整 Phase 0 -> Phase 5 positive smoke
-4. 下一步优先把普通 demo 脚本迁移到完整 Phase 0 -> Phase 5；full transformer codegen、动态 guard / 多 kernel DAG manifest 作为后续增强继续推进
+4. `broadcast-add-reduce` 已完成 axis contract、tail-policy guards、bounded M-axis tiling、Phase 5 tile metadata 和 rows<16 tail fallback；默认 `M=640,N=15000` 与动态 tail shape matrix 均已走新主线并通过 runtime-session sim
+5. `relu-broadcast-transpose` 已新增新主线脚本和 full-pipeline LIT，覆盖 `(d0,d1)->(d1,0)` 常量投影 broadcast/transpose 到 CANN codegen/runtime sim；当前仍记录 all-parallel ordinary path 缺少 bind-core 切分
+6. full transformer codegen、动态 guard / 多 kernel DAG manifest 作为后续增强继续推进
