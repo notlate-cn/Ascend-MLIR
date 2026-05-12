@@ -16,6 +16,36 @@ struct AxisInfo {
   AxisRole        role;
 };
 
+// ---------------------------------------------------------------------------
+// Axis classification (mirrors AutoFuse's `AxisGroup` x/y/r/n_group; see
+// docs/superpowers/plans/2026-05-11-port-af-scheduler-to-vector-plan.zh.md).
+// Computed once, on the post-collapse iteration axes, by the Collapse pass
+// (≈ AF MergeContinuousAxis → GenTilingGroup/NormGroup) and carried in
+// CollapsedGroupInfo::grouping; TilePlanGen consumes it directly.
+// ---------------------------------------------------------------------------
+enum class AxisKind : uint8_t {
+  Y, // ordinary elementwise / injective ("y_group")
+  R, // reduction ("r_group")
+  X, // transpose-divergent input-side axes ("x_group")
+  N, // non-tileable / vectorize-only ("n_group")
+};
+
+struct AxisClass {
+  AxisKind kind          = AxisKind::Y;
+  bool     bindMultiCore = false; // candidate for block dispatch (≈ SubAxis::is_bind_multi_core)
+  bool     enableTail    = true;
+  bool     enablePad     = false; // unaligned DataCopy → DataCopyPad — future
+  bool     isReduceSplit    = false;
+  bool     isBroadcastSplit = false;
+  int      origPos = -1; // position in the original (pre-reorder) loop order
+};
+
+struct AxisGrouping {
+  llvm::SmallVector<AxisClass> axes; // one per CollapsedGroupInfo::collapsedAxes
+  llvm::SmallVector<int> yAxes, rAxes, xAxes, nAxes; // index lists, in axesOrder
+  llvm::SmallVector<int> axesOrder;
+};
+
 struct GroupInfo {
   enum class Kind : uint8_t { Vector, Cube };
   Kind                                kind;
@@ -35,6 +65,10 @@ struct CollapsedGroupInfo : GroupInfo {
   llvm::SmallVector<int>            broadcastAxes;
   // Extent SSA values for broadcast axes (needed for dynamic shapes in Phase 2).
   llvm::DenseMap<int, mlir::Value>  broadcastAxisExtents;
+  // X/Y/R/N classification of the post-collapse axes (≈ AF AxisGroup).  Filled
+  // by Collapse; consumed by TilePlanGen.  (Filled in commit 2 of the
+  // unify-axis-classification refactor; until then it is empty.)
+  AxisGrouping                     grouping;
 };
 
 struct CubeGroupInfo : GroupInfo {

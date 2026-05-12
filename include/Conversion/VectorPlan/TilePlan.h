@@ -16,34 +16,8 @@ enum class TileFieldKind : uint8_t {
   Derived,
 };
 
-// ---------------------------------------------------------------------------
-// Axis classification (mirrors AutoFuse's `AxisGroup` x/y/r/n_group; see
-// docs/superpowers/plans/2026-05-11-port-af-scheduler-to-vector-plan.zh.md).
-// In P1 only Y (ordinary parallel) and R (reduction) are produced; X/N land
-// with transpose / concat / split / gather support in later phases.
-// ---------------------------------------------------------------------------
-enum class AxisKind : uint8_t {
-  Y, // ordinary elementwise / injective ("y_group")
-  R, // reduction ("r_group")
-  X, // transpose-divergent input-side axes ("x_group") — future
-  N, // non-tileable / vectorize-only ("n_group") — future
-};
-
-struct AxisClass {
-  AxisKind kind          = AxisKind::Y;
-  bool     bindMultiCore = false; // candidate for block dispatch (≈ SubAxis::is_bind_multi_core)
-  bool     enableTail    = true;
-  bool     enablePad     = false; // unaligned DataCopy → DataCopyPad — future
-  bool     isReduceSplit    = false;
-  bool     isBroadcastSplit = false;
-  int      origPos = -1; // position in the original (pre-reorder) loop order
-};
-
-struct AxisGrouping {
-  llvm::SmallVector<AxisClass> axes; // one per CollapsedGroupInfo::collapsedAxes
-  llvm::SmallVector<int> yAxes, rAxes, xAxes, nAxes; // index lists, in axesOrder
-  llvm::SmallVector<int> axesOrder;
-};
+// AxisKind / AxisClass / AxisGrouping live in GroupInfo.h (computed by Collapse,
+// carried in CollapsedGroupInfo::grouping).
 
 // One enumerated tiling-case draft (≈ AutoFuse `TilingCase`).  P1 produces a
 // single default draft; full y×x×r enumeration + RCore variant comes later.
