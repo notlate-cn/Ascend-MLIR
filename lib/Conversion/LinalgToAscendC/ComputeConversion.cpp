@@ -1571,13 +1571,75 @@ LogicalResult convertCompute(func::FuncOp funcOp, AscendCBufferContext &ctx) {
       Value inMemref = genOp.getDpsInputOperand(0)->get();
       Location loc = genOp.getLoc();
       builder.setInsertionPoint(genOp);
+      Type tElemType = cast<MemRefType>(outMemref.getType()).getElementType();
 
-      Value srcLt = readTensor(builder, loc, inMemref);
-      Value dstLt = writeTensor(builder, loc, outMemref);
-      builder.create<TransposeOp>(loc, dstLt, srcLt);
+      // --- source tile ---
+      // Preserve template: the transpose's on-chip output makes
+      // InsertTileBuffers skip the transpose op, so it does NOT pre-load the
+      // input — it stays a (row-strided) GM subview that we copy into VECIN
+      // here.  Degenerate case (transpose output is a GM target, e.g. a kernel
+      // result): InsertTileBuffers did create a VECIN tile, so just readTensor.
+      Value srcLt;
+      Value srcFreeQueue; // non-null ⇒ FreeTensor srcLt after the transpose
+      if (getMemorySpace(inMemref.getType()) == 0 /*GM*/) {
+        auto inMrt = cast<MemRefType>(inMemref.getType());
+        SmallVector<int64_t> strides;
+        int64_t off = 0;
+        bool haveStrides = succeeded(inMrt.getStridesAndOffset(strides, off));
+        Value srcGt = builder.create<GlobalTensorOp>(
+            loc, GlobalTensorType::get(tElemType));
+        builder.create<GlobalTensorSetGlobalBufferOp>(loc, srcGt, inMemref,
+                                                       /*size=*/Value{});
+        bool rowStrided = haveStrides && inMrt.getRank() == 2 &&
+                          strides[1] == 1 && !ShapedType::isDynamic(strides[0]) &&
+                          (ShapedType::isDynamic(inMrt.getDimSize(1)) ||
+                           inMrt.getDimSize(1) != strides[0]);
+        if (rowStrided) {
+          Value rows = getDynDim(builder, loc, inMemref, 0);
+          Value cols = getDynDim(builder, loc, inMemref, 1);
+          Value rowStride =
+              builder.create<arith::ConstantIndexOp>(loc, strides[0]);
+          auto [deq, q] = copyGmToVecinStrided(builder, builder, loc,
+                                                tElemType, srcGt, rows, cols,
+                                                rowStride);
+          srcLt = deq;
+          srcFreeQueue = q;
+        } else {
+          Value n = builder.create<arith::ConstantIndexOp>(loc, 1);
+          for (unsigned d = 0; d < inMrt.getRank(); ++d)
+            n = builder.create<arith::MulIOp>(
+                loc, n, getDynDim(builder, loc, inMemref, d));
+          srcLt = copyGmToVecin(builder, loc, tElemType, srcGt, n);
+        }
+      } else {
+        srcLt = readTensor(builder, loc, inMemref);
+      }
 
-      if (Value q = ctx.getQueue(outMemref))
-        builder.create<TQueBindEnqueTensorOp>(loc, q, dstLt);
+      // --- destination tile + transpose ---
+      if (getMemorySpace(outMemref.getType()) == 11 /*VECCALC*/) {
+        // Preserve template: an on-chip intermediate, possibly read by several
+        // consumers — fresh VECCALC TBuf, registered as the live tensor so the
+        // consumers reuse it (a depth-1 queue would dead-lock the 2nd reader).
+        SmallVector<Value> outDims;
+        for (unsigned d = 0;
+             d < cast<MemRefType>(outMemref.getType()).getRank(); ++d)
+          outDims.push_back(getDynDim(builder, loc, outMemref, d));
+        auto [transpTbuf, dstLt] =
+            allocVeccalc(builder, loc, tElemType, outDims);
+        auto transposeOp = builder.create<TransposeOp>(loc, dstLt, srcLt);
+        copyAscendCUnitAttr(genOp.getOperation(), transposeOp.getOperation());
+        ctx.setLiveTensor(outMemref, dstLt);
+        if (srcFreeQueue)
+          builder.create<TQueBindFreeTensorOp>(loc, srcFreeQueue, srcLt);
+      } else {
+        Value dstLt = writeTensor(builder, loc, outMemref);
+        auto transposeOp = builder.create<TransposeOp>(loc, dstLt, srcLt);
+        copyAscendCUnitAttr(genOp.getOperation(), transposeOp.getOperation());
+        if (Value q = ctx.getQueue(outMemref))
+          builder.create<TQueBindEnqueTensorOp>(loc, q, dstLt);
+        if (srcFreeQueue)
+          builder.create<TQueBindFreeTensorOp>(loc, srcFreeQueue, srcLt);
+      }
 
       genOp.erase();
       continue;
