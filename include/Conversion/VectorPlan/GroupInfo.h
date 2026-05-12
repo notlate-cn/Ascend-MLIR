@@ -36,7 +36,11 @@ struct AxisClass {
   bool     enableTail    = true;
   bool     enablePad     = false; // unaligned DataCopy → DataCopyPad — future
   bool     isReduceSplit    = false;
-  bool     isBroadcastSplit = false;
+  // True when some operand's indexing map projects this iteration axis away —
+  // i.e. that operand is constant along it ("broadcast").  Informational only:
+  // the schedule treats a broadcast axis as an ordinary parallel axis; the
+  // lowering (ComputeConversion) replicates the projecting operand on-chip.
+  bool     isBroadcastConst = false;
   int      origPos = -1; // position in the original (pre-reorder) loop order
 };
 

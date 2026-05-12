@@ -47,7 +47,7 @@ struct VectorPlanTileFusePass
     // Phase 2: TilePlanGen.
     builder.setInsertionPointToStart(&func.getBody().front());
     auto plan = genVectorTilePlan(func, collapsedInfo, builder, func.getLoc(),
-                                  enableReductionSplit, maxFullLoopIters);
+                                  enableReductionSplit);
     // Emit tiling.infos module attribute (consumed by PrepareForEmit Phase B).
     emitTilingInfos(func, plan);
 

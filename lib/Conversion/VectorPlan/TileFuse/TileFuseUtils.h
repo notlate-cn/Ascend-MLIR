@@ -27,8 +27,9 @@ bool resultUsedOnlyByGroupMembers(
 // iteration axis into X/Y/R/N: reduction → R; for a group containing a
 // standalone transpose member, ≈ GenTransposeTilingGroup (trailing
 // input-pos==output-pos axes → N; from the first permuted position backward,
-// input-side divergent → X, output-side → Y); broadcast axes → Y + isBroadcastSplit;
-// everything else → Y.  Called by the Collapse pass; the result is stored in
+// input-side divergent → X, output-side → Y); broadcast axes → Y + isBroadcastConst
+// (informational; still ordinary Y to the scheduler); everything else → Y.
+// Called by the Collapse pass; the result is stored in
 // CollapsedGroupInfo::grouping and consumed by TilePlanGen.
 mlir::vector_plan::AxisGrouping
 classifyAxes(const mlir::vector_plan::CollapsedGroupInfo &info);

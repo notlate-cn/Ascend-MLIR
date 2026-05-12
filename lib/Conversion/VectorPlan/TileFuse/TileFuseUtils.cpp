@@ -133,8 +133,12 @@ AxisGrouping classifyAxes(const CollapsedGroupInfo &info) {
       g.rAxes.push_back(i);
     } else {
       ax.kind = AxisKind::Y;
-      ax.isBroadcastSplit = bcastSet.count(i);
-      ax.bindMultiCore = !ax.isBroadcastSplit;
+      // A broadcast axis (some operand is constant along it) is an ordinary
+      // parallel axis to the scheduler — only the lowering treats it specially
+      // (replicating the projecting operand).  Keep it out of pickBlockAxis
+      // (bindMultiCore=false) so the block-axis choice is unaffected.
+      ax.isBroadcastConst = bcastSet.count(i);
+      ax.bindMultiCore = !ax.isBroadcastConst;
       g.yAxes.push_back(i);
     }
   }

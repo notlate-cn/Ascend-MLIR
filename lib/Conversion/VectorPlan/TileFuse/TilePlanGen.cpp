@@ -152,7 +152,7 @@ struct BlockPick {
 BlockPick pickBlockAxis(const AxisGrouping &g, const DenseSet<int> &vecDims) {
   BlockPick bp;
   for (int i : g.yAxes) {
-    if (g.axes[i].isBroadcastSplit || vecDims.count(i))
+    if (g.axes[i].isBroadcastConst || vecDims.count(i))
       continue;
     bp.axis = i;
     break;
@@ -163,14 +163,14 @@ BlockPick pickBlockAxis(const AxisGrouping &g, const DenseSet<int> &vecDims) {
     // non-broadcast parallel axis — same (unsupported, non-contiguous) outcome
     // the previous code produced; a proper fix for those shapes comes later.
     for (int i : g.yAxes)
-      if (!g.axes[i].isBroadcastSplit) {
+      if (!g.axes[i].isBroadcastConst) {
         bp.axis = i;
         break;
       }
   }
   if (bp.axis >= 0)
     for (int i : g.yAxes)
-      if (i > bp.axis && !g.axes[i].isBroadcastSplit && vecDims.count(i)) {
+      if (i > bp.axis && !g.axes[i].isBroadcastConst && vecDims.count(i)) {
         bp.degradeToRowLoop = true;
         break;
       }
@@ -201,17 +201,17 @@ enumerateTilingCases(const AxisGrouping &g, const CollapsedGroupInfo &info,
 
   int ubX = g.xAxes.empty() ? -1 : g.xAxes.front();
 
-  // ubY candidates ≈ GenTilingCase over y_group: every non-broadcast parallel
-  // axis, the block axis first (so ties in costEstimate keep the current pick).
-  // The row-loop degradation forces ubY = -1 (the block axis row-loops, no
-  // inner Y tile).
+  // ubY candidates ≈ GenTilingCase over y_group: every parallel axis (broadcast
+  // axes included — they're ordinary Y axes to the scheduler), the block axis
+  // first (so ties in costEstimate keep the current pick).  The row-loop
+  // degradation forces ubY = -1 (the block axis row-loops, no inner Y tile).
   SmallVector<int> ubYs;
   if (bp.degradeToRowLoop || bp.axis < 0) {
     ubYs.push_back(bp.degradeToRowLoop ? -1 : bp.axis);
   } else {
     ubYs.push_back(bp.axis);
     for (int y : g.yAxes)
-      if (y != bp.axis && !g.axes[y].isBroadcastSplit)
+      if (y != bp.axis)
         ubYs.push_back(y);
   }
 
@@ -310,8 +310,7 @@ double costEstimate(const AxisGrouping &g, const CollapsedGroupInfo &info,
 // `func` (it appends the tunable tile-size arguments).
 static TilePlan buildPlan(func::FuncOp func, const CollapsedGroupInfo &info,
                           const AxisGrouping &g, const TilePlanDraft &draft,
-                          OpBuilder &builder, Location loc,
-                          int64_t maxFullLoopIters) {
+                          OpBuilder &builder, Location loc) {
   assert(draft.blockTilingId == 0 && !draft.reduceIsBlock &&
          "RCore draft reached buildPlan — should have been ∞-scored");
 
@@ -330,8 +329,7 @@ static TilePlan buildPlan(func::FuncOp func, const CollapsedGroupInfo &info,
   // --- ubSplit: one in-order pass over the collapsed axes (≈ TileSplit) ---
   // Counters preserved so func-arg insertion order / `vector_plan.tiling_infos`
   // numbering match the previous implementation on the shapes that reach here.
-  int bcastCount = 0, bcastTileCount = 0, rblockCount = 0;
-  int naxisCount = 0, xsubCount = 0;
+  int rblockCount = 0, naxisCount = 0, xsubCount = 0;
 
   for (int i = 0; i < (int)info.collapsedAxes.size(); ++i) {
     const AxisClass &ax = g.axes[i];
@@ -359,10 +357,13 @@ static TilePlan buildPlan(func::FuncOp func, const CollapsedGroupInfo &info,
       plan.full.push_back({name, ext, OpFoldResult(ext), i, TileLevel::Full,
                             AxisRole::Parallel});
 
-    } else if (ax.kind == AxisKind::Y && !ax.isBroadcastSplit) {
+    } else if (ax.kind == AxisKind::Y) {
+      // Parallel axis (broadcast axes included — to the scheduler they are
+      // ordinary Y axes; the lowering replicates the projecting operand
+      // on-chip).
       if (i == bp.axis) {
         // Block axis: XBLOCK (Outer) + inner level (XBLOCK_SUB, or step-1 row
-        // loop under the degradation).
+        // loop under the §3.5 degradation).
         Value xblock = insertFuncArg(func, builder, loc, 128, "XBLOCK");
         SmallVector<TileParam> group;
         group.push_back({"XBLOCK", xblock, OpFoldResult(ext), i,
@@ -385,31 +386,10 @@ static TilePlan buildPlan(func::FuncOp func, const CollapsedGroupInfo &info,
       } else {
         // §3.4: every non-ub parallel axis is fully loaded — no plan entry, so
         // SliceComputer yields the whole-dim slice and there is no loop over it.
-        // (This replaces the old per-axis `XBLOCK_SUB_n` tunables; it is also
-        // the pre-existing behavior for non-block parallel axes under the §3.5
-        // row-loop degradation.)
+        // (This replaces the old per-axis `XBLOCK_SUB_n` and the broadcast-axis
+        // `BCAST_n` step-1 / `BCAST_TILE_n` tunables; also the pre-existing
+        // behavior for non-block parallel axes under the §3.5 degradation.)
       }
-
-    } else if (ax.isBroadcastSplit) {
-      // BCast axis: Full step-1 when small, inner-tiled (BCAST_TILE) otherwise.
-      bool escape =
-          (info.collapsedAxes[i].staticSize == ShapedType::kDynamic) ||
-          (info.collapsedAxes[i].staticSize > maxFullLoopIters);
-      if (!escape) {
-        std::string name = llvm::formatv("BCAST_{0}", bcastCount).str();
-        Value step = builder.create<arith::ConstantIndexOp>(loc, 1);
-        plan.full.push_back({name, step, OpFoldResult(ext), i,
-                              TileLevel::Full, AxisRole::Parallel});
-      } else {
-        std::string name =
-            llvm::formatv("BCAST_TILE_{0}", bcastTileCount++).str();
-        Value param = insertFuncArg(func, builder, loc, 16, name);
-        SmallVector<TileParam> group;
-        group.push_back({name, param, OpFoldResult(ext), i,
-                          TileLevel::Inner, AxisRole::Parallel});
-        plan.tileable.push_back(std::move(group));
-      }
-      ++bcastCount;
 
     } else { // AxisKind::R — reduction axis.
       std::string name = llvm::formatv("RBLOCK_{0}", rblockCount++).str();
@@ -432,8 +412,7 @@ static TilePlan buildPlan(func::FuncOp func, const CollapsedGroupInfo &info,
 TilePlan genVectorTilePlan(func::FuncOp func,
                             const CollapsedGroupInfo &info,
                             OpBuilder &builder, Location loc,
-                            bool enableReductionSplit,
-                            int64_t maxFullLoopIters) {
+                            bool enableReductionSplit) {
   const AxisGrouping &g = info.grouping; // computed by the Collapse pass
   unsigned elemBytes = operandElemBytes(info);
   DenseSet<int> vecDims = computeVectorizedDims(info);
@@ -453,7 +432,7 @@ TilePlan genVectorTilePlan(func::FuncOp func,
   }
   assert(bestScore < kInfeasible && "no feasible tiling case");
 
-  return buildPlan(func, info, g, *best, builder, loc, maxFullLoopIters);
+  return buildPlan(func, info, g, *best, builder, loc);
 }
 
 void emitTilingInfos(func::FuncOp func, const TilePlan &plan) {

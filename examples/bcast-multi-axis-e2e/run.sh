@@ -6,8 +6,9 @@ DIR="$(cd "$(dirname "$0")" && pwd)"
 AFIR_OPT="${AFIR_OPT:-afir-opt}"; AFIR_TRANSLATE="${AFIR_TRANSLATE:-afir-translate}"
 RUNTIME_SESSION="${RUNTIME_SESSION:-runtime-session}"; PYTHON="${PYTHON:-python3}"
 D0=4; D1=8; D2=16
-# d0 -> BCAST_TILE_0, d1 -> XBLOCK/XBLOCK_SUB (block-distributed), d2 -> BCAST_TILE_1
-XBLOCK=${D1}; XBLOCK_SUB=${D1}; BCAST_TILE_0=${D0}; BCAST_TILE_1=${D2}
+# d0 / d2 are broadcast axes → whole-dim in the tile (a replicated on-chip);
+# d1 is block-distributed (XBLOCK / XBLOCK_SUB).
+XBLOCK=${D1}; XBLOCK_SUB=${D1}
 BLOCK_DIM=$(( (D1 + XBLOCK - 1) / XBLOCK ))
 echo "=== reduce-multi-axis broadcast E2E ==="
 "$PYTHON" "$DIR/gen_inputs.py" --outdir "$DIR" --d0 "$D0" --d1 "$D1" --d2 "$D2"
@@ -16,7 +17,7 @@ echo "=== reduce-multi-axis broadcast E2E ==="
 "$PYTHON" - <<PYEOF
 import json, pathlib
 p = pathlib.Path("$DIR/tiling_space.json"); ts = json.loads(p.read_text())
-vals = {"XBLOCK": $XBLOCK, "XBLOCK_SUB": $XBLOCK_SUB, "BCAST_TILE_0": $BCAST_TILE_0, "BCAST_TILE_1": $BCAST_TILE_1}
+vals = {"XBLOCK": $XBLOCK, "XBLOCK_SUB": $XBLOCK_SUB}
 for x in ts["tiling_params"]:
     if x["name"] in vals: x["values"] = [vals[x["name"]]]
 p.write_text(json.dumps(ts, indent=2)); print("  tiling patched:", vals)
@@ -24,8 +25,8 @@ PYEOF
 BUILD_DIR="$DIR/build_e2e"; rm -fr "$BUILD_DIR"; mkdir -p "$BUILD_DIR"
 ART="$BUILD_DIR/artifact"
 "$RUNTIME_SESSION" --kernel "$DIR/bcast_multi_axis_kernel.cpp" --kernel-kind vec --output "$ART" --name bcast_multi_axis
-TP="XBLOCK=${XBLOCK},XBLOCK_SUB=${XBLOCK_SUB},BCAST_TILE_0=${BCAST_TILE_0},BCAST_TILE_1=${BCAST_TILE_1}"
-TP+=",dim_arg1_0=${D0},dim_arg1_1=${D1},dim_arg1_2=${D2},dim_arg0_0=${D1},dim_arg6_1=${D1},dim_arg6_2=${D2}"
+TP="XBLOCK=${XBLOCK},XBLOCK_SUB=${XBLOCK_SUB}"
+TP+=",dim_arg1_0=${D0},dim_arg1_1=${D1},dim_arg1_2=${D2},dim_arg0_0=${D1},dim_arg4_1=${D1},dim_arg4_2=${D2}"
 cat > "$BUILD_DIR/run_manifest.json" <<MEOF
 {
   "task_id": "main", "backend": "sim", "artifact_root": "${ART}",

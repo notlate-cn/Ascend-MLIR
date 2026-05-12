@@ -1,41 +1,33 @@
 // RUN: afir-opt %s --vector-plan-tile-fuse 2>&1 | FileCheck %s
 //
-// BCast: d0(1024)+d1(512) collapse → d0'(524288); d2(16) is BCast (b misses d2).
-// Loop order: XBLOCK(outer) → BCAST_0(step=1, ub=16) → XBLOCK_SUB(inner).
-// %b_collapsed does not depend on the BCast axis → its extract_slice is hoisted
-// before the BCAST_0 loop.
+// Broadcast = a parallel axis: `out[d0,d1,d2] = a[d0,d1,d2] * b[d0,d1]` — b is
+// constant along d2.  After collapse([0,1],[2]) the iteration space is
+// [d0'(524288, parallel), d2(16, broadcast)].  d2 is *not* special to the
+// scheduler — it's an ordinary non-ub parallel axis, so it goes whole-dim (no
+// loop, no `BCAST_n` / `BCAST_TILE_n` tunable).  Only the block axis d0' gets
+// XBLOCK + XBLOCK_SUB.  The tiled generic keeps b at its reduced shape
+// (1-D, mapped (d0,d1)->(d0)) — LinalgToAscendC replicates it on-chip.
 
+// CHECK-DAG: #[[ID2:.*]] = affine_map<(d0, d1) -> (d0, d1)>
+// CHECK-DAG: #[[PROJ:.*]] = affine_map<(d0, d1) -> (d0)>
+
+// Exactly two tunable args (XBLOCK, XBLOCK_SUB) — no BCAST*.
 // CHECK: func.func @bcast_op(
 // CHECK-SAME: %[[XBLOCK:[^ ,)]*]]: index {vector_plan.default_tile_size = 128 : i64}
-// CHECK-SAME: %[[XBLOCK_SUB:[^ ,)]*]]: index {vector_plan.default_tile_size = 16 : i64}
+// CHECK-SAME: %[[XBLOCK_SUB:[^ ,)]*]]: index {vector_plan.default_tile_size = 16 : i64})
 
-// Outer XBLOCK loop (ascendc.parallel attribute appears on closing brace line)
-// CHECK: scf.for %[[OUTER:[^ ]*]] = %{{.*}} to %{{.*}} step %[[XBLOCK]]
+// 3-D operands collapsed to 2-D ([d0', d2]).
+// CHECK: tensor.collapse_shape %{{.*}} {{\[}}[0, 1], [2]] : tensor<1024x512x16xf32> into tensor<524288x16xf32>
 
-// %b slice hoisted here (before BCAST loop, using outer IV and XBLOCK size)
-// CHECK: tensor.extract_slice %{{.*}}[%[[OUTER]]] [%[[XBLOCK]]]
+// Outer XBLOCK + inner XBLOCK_SUB — exactly two scf.for, no third loop over d2.
+// CHECK: scf.for %{{.*}} = %{{.*}} to %{{.*}} step %[[XBLOCK]]
+// CHECK: scf.for %{{.*}} = %{{.*}} to %{{.*}} step %[[XBLOCK_SUB]]
 
-// BCast loop (no {ascendc.parallel})
-// CHECK: scf.for %[[BCAST:[^ ]*]] = %{{.*}} to %{{.*}} step %{{.*}}
-// CHECK-NOT: {ascendc.parallel}
-
-// Tail-peel: inner ub = (remaining / XBLOCK_SUB) * XBLOCK_SUB.
-// CHECK: %[[REM:[^ ]*]] = arith.minsi %[[XBLOCK]]
-// CHECK: %[[Q:[^ ]*]] = arith.divsi %[[REM]], %[[XBLOCK_SUB]]
-// CHECK: %[[MAINUB:[^ ]*]] = arith.muli %[[Q]], %[[XBLOCK_SUB]]
-
-// Inner XBLOCK_SUB loop (ub = mainUb, not XBLOCK)
-// CHECK: scf.for %[[INNER:[^ ]*]] = %{{.*}} to %[[MAINUB]] step %[[XBLOCK_SUB]]
-// CHECK: linalg.generic
-// CHECK: scf.yield
-
-// Overlap-tail scf.if (mainUb < remaining) inside the BCast loop.
-// CHECK: arith.cmpi slt, %[[MAINUB]], %[[REM]]
-// CHECK: scf.if
-// CHECK: linalg.generic
-// CHECK: scf.yield
-// CHECK: } else {
-// CHECK: scf.yield
+// b sliced at its reduced (1-D) shape; the tiled generic reads it (d0,d1)->(d0).
+// CHECK: tensor.extract_slice %{{.*}}[%{{.*}}] [%[[XBLOCK_SUB]]] [%{{.*}}] : tensor<524288xf32> to tensor<?xf32>
+// CHECK: linalg.generic {indexing_maps = [#[[ID2]], #[[PROJ]], #[[ID2]]], iterator_types = ["parallel", "parallel"]}
+// CHECK: arith.mulf
+// CHECK: } {ascendc.parallel}
 
 func.func @bcast_op(%a: tensor<1024x512x16xf32>,
                     %b: tensor<1024x512xf32>,
