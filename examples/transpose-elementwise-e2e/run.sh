@@ -17,12 +17,6 @@
 # → 每行一条 DataCopy 装进 VECIN,再用 AscendC::Transpose 重排成输出布局后做
 # relu。AscendC::Transpose 的基础 16x16 形态只支持 16-bit 数据,故用 f16 +
 # 方阵内层 tile (XBLOCK_SUB == XBLOCK_SUB_0 == 16)。block_dim = ceil(N / XBLOCK)。
-#
-# 状态:生成的 kernel 已验证 bit-exact 正确(见 README.md),但下面的
-# session.validation=pass 断言目前会失败 —— runtime-session --run 对这个
-# kernel 报虚假的 max_abs_diff≈1.98 并随后段错误(与 pre-existing relu-e2e 的
-# sim 段错误同类)。所以本 example 暂不进 e2e 门禁;runtime-session 的
-# validation bug 修好后这个 run.sh 应能直接通过。
 # ============================================================
 
 set -e

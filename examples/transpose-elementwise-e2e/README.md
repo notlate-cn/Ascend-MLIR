@@ -16,25 +16,7 @@ example uses f16 and a square 16×16 inner tile (`XBLOCK_SUB == XBLOCK_SUB_0 ==
 operands.  Wider / non-square / non-16-multiple inner tiles need a different
 lowering (`TransDataTo5HD`, or a "preserve" template) — future work.
 
-## Status
-
-The generated kernel is **verified bit-exact correct** against `relu(x.T)` on
-the AscendC simulator (run the kernel, dump the output buffer, compare —
-`max_abs_diff == 0`).
-
-However `run.sh`'s `session.validation=pass` assertion currently **fails**:
-`runtime-session --run` reports a spurious `max_abs_diff ≈ 1.98` for this
-kernel (the sim output it actually writes is perfect) and then segfaults — the
-same family as the pre-existing `relu-e2e` sim segfault.  This kernel differs
-from the passing e2e gates in two ways that may trip the validator: a
-`memref<…, strided<[?,1], offset:?>>` output out-param (bufferization wraps the
-tile-fuse loop result as a fresh strided arg; the passing examples reuse a
-plain passed-in `%init` memref), and an `emitasc.verbatim` (the per-row
-DataCopy loop).
-
-So this example is **not in the e2e gate** for now.  When the runtime-session
-validation bug is fixed, `run.sh` should pass as-is.
-
-The codegen path is regression-tested by
-`test/Conversion/Collapse/tile-fuse-vector-transpose.mlir` (absorption + tiled
-IR shape).
+`run.sh` runs the full `--vector-plan-codegen` pipeline + the simulator and
+asserts `session.validation=pass`.  The codegen path is also regression-tested
+by `test/Conversion/Collapse/tile-fuse-vector-transpose.mlir` (absorption +
+tiled IR shape).
