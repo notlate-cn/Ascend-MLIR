@@ -13,7 +13,7 @@ import argparse
 import numpy as np
 import os
 
-M_DEFAULT, N_DEFAULT = 16, 32
+M_DEFAULT, N_DEFAULT = 32, 32
 SEED = 3
 
 

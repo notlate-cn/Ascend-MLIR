@@ -11,16 +11,17 @@
 #   out_a  = relu(t)
 #   out_b  = t * 2
 #
-# 形状: x[M, N] f16  ->  out_a, out_b : [N, M] f16   (M=16, N=32)
+# 形状: x[M, N] f16  ->  out_a, out_b : [N, M] f16   (M=N=32)
 #
 # t 有两个消费者 → --linalg-fuse-elementwise-ops 吸不动 transpose，它留作独立
 # op = 保留模板。classifyAxes(≈ AF GenTransposeTilingGroup) 把输入侧发散轴
 # (d0 = 输出外维) 划成 X(自己的 inner tunable XBLOCK_X_0，永不当块轴)、输出侧
-# (d1) 划成 Y(块轴)。片上：transpose 把行带 stride 的 x slice 每行一条 DataCopy
-# 装进 VECIN，AscendC::Transpose 重排成输出布局放在 VECCALC TBuf，两个消费者读
-# 同一个 TBuf(它留在片上，不外溢成 GM 参数)。f16 + 方阵 16x16 内层 tile
-# (AscendC::Transpose 基础形态 16-bit / 16x16)。run.sh 钉 XBLOCK = XBLOCK_SUB =
-# XBLOCK_X_0 = 16，d1=16=full → block_dim = ceil(16/XBLOCK) = 1。
+# (d1) 划成 Y(块轴)。片上(每个 16x16 tile)：transpose 把行带 stride 的 x slice
+# 每行一条 DataCopy 装进 VECIN，AscendC::Transpose 重排成输出布局放在 VECCALC
+# TBuf，两个消费者读同一个 TBuf(它留在片上，不外溢成 GM 参数)，再把行带 stride
+# 的 out[d0_range, d1_range] tile 每行一条 DataCopy 写回 GM。f16 + 方阵 16x16
+# 内层 tile (AscendC::Transpose 基础形态 16-bit / 16x16)。run.sh 钉 XBLOCK =
+# XBLOCK_SUB = XBLOCK_X_0 = 16，M=32 → block_dim = ceil(32/16) = 2(多核)。
 # ============================================================
 
 set -e
@@ -30,7 +31,7 @@ AFIR_TRANSLATE="${AFIR_TRANSLATE:-afir-translate}"
 RUNTIME_SESSION="${RUNTIME_SESSION:-runtime-session}"
 PYTHON="${PYTHON:-python3}"
 
-M=16; N=32
+M=32; N=32
 XBLOCK=16; XBLOCK_SUB=16; XBLOCK_X_0=16
 BLOCK_DIM=$(( (M + XBLOCK - 1) / XBLOCK ))   # block axis = the Y axis (out dim1 = M)
 

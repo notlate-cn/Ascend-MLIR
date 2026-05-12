@@ -97,6 +97,27 @@ static void emitStridedGmToVecinDataCopy(OpBuilder &b, Location loc, Type elemTy
                                 ValueRange({dstLt, srcGt, rows, cols}));
 }
 
+// Emit a VECOUT/VECCALC → GM store of a 2-D row-strided destination: one plain
+// DataCopy per row (src row i packed at srcLt[i*cols], dst row i at
+// dstGt[i*rowStride]).  Symmetric to emitStridedGmToVecinDataCopy.  Same
+// cols*sizeof(elem) % 32 == 0 requirement.
+static void emitStridedVecToGmDataCopy(OpBuilder &b, Location loc, Type elemTy,
+                                        Value dstGt, Value srcLt, Value rows,
+                                        Value cols, int64_t rowStride) {
+  std::string ets = cppScalarName(elemTy);
+  std::string tmpl =
+      "{\n"
+      "  for (uint32_t _afir_i = 0; _afir_i < (uint32_t)$2; _afir_i++) {\n"
+      "    AscendC::GlobalTensor<" + ets + "> _afir_gt;\n"
+      "    _afir_gt.SetGlobalBuffer($0.GetPhyAddr(_afir_i * " +
+      std::to_string(rowStride) + "u));\n"
+      "    AscendC::DataCopy(_afir_gt, $1[_afir_i * (uint32_t)$3], (uint32_t)$3);\n"
+      "  }\n"
+      "}";
+  b.create<emitasc::VerbatimOp>(loc, b.getStringAttr(tmpl),
+                                ValueRange({dstGt, srcLt, rows, cols}));
+}
+
 // Helper: cast an index value to i16 (signless, compatible with ui16 field).
 static Value toI16(OpBuilder &b, Location loc, Value idx) {
   return b.create<arith::IndexCastOp>(loc, b.getI16Type(), idx);
@@ -149,121 +170,6 @@ static Value getRootAlloc(Value v) {
   while (auto subview = v.getDefiningOp<memref::SubViewOp>())
     v = subview.getSource();
   return v;
-}
-
-static bool isValueOffset(OpFoldResult ofr, Value value) {
-  if (auto offsetValue = dyn_cast<Value>(ofr))
-    return offsetValue == value;
-  return false;
-}
-
-static bool genericHasReductionIterator(linalg::GenericOp genericOp) {
-  return llvm::any_of(genericOp.getIteratorTypesArray(),
-                      [](utils::IteratorType iteratorType) {
-                        return iteratorType == utils::IteratorType::reduction;
-                      });
-}
-
-static linalg::GenericOp findReductionGenericWriting(Value memref) {
-  Value root = getRootAlloc(memref);
-  for (Operation *user : root.getUsers()) {
-    auto genericOp = dyn_cast<linalg::GenericOp>(user);
-    if (!genericOp || !genericHasReductionIterator(genericOp))
-      continue;
-    for (Value init : genericOp.getDpsInits()) {
-      if (getRootAlloc(init) == root)
-        return genericOp;
-    }
-  }
-  return nullptr;
-}
-
-static scf::ForOp findReductionTileLoop(linalg::GenericOp genericOp) {
-  if (!genericOp)
-    return nullptr;
-
-  auto iterTypes = genericOp.getIteratorTypesArray();
-  auto maps = genericOp.getIndexingMapsArray();
-  unsigned iterRank = iterTypes.size();
-  SmallVector<unsigned> reductionDims;
-  for (unsigned d = 0; d < iterRank; ++d)
-    if (iterTypes[d] == utils::IteratorType::reduction)
-      reductionDims.push_back(d);
-  if (reductionDims.empty())
-    return nullptr;
-
-  SmallVector<scf::ForOp> enclosingLoops;
-  for (Operation *parent = genericOp->getParentOp(); parent;
-       parent = parent->getParentOp()) {
-    if (auto forOp = dyn_cast<scf::ForOp>(parent))
-      enclosingLoops.push_back(forOp);
-  }
-
-  for (scf::ForOp forOp : enclosingLoops) {
-    Value iv = forOp.getInductionVar();
-    for (unsigned inputIdx = 0; inputIdx < genericOp.getNumDpsInputs();
-         ++inputIdx) {
-      AffineMap map = maps[inputIdx];
-      if (map.getNumResults() != iterRank)
-        continue;
-      Value input = genericOp.getDpsInputOperand(inputIdx)->get();
-      auto subview = input.getDefiningOp<memref::SubViewOp>();
-      if (!subview)
-        continue;
-      SmallVector<OpFoldResult> offsets = subview.getMixedOffsets();
-      for (unsigned reductionDim : reductionDims) {
-        if (reductionDim < offsets.size() &&
-            isValueOffset(offsets[reductionDim], iv))
-          return forOp;
-      }
-    }
-  }
-
-  return nullptr;
-}
-
-static void emitAddPreviousReductionPartial(OpBuilder &builder, Location loc,
-                                            MLIRContext *mlirCtx,
-                                            AscendCBufferContext &ctx,
-                                            scf::ForOp reductionLoop,
-                                            Value dst, Value srcLt,
-                                            Value count, Type elemType) {
-  if (!reductionLoop || !count)
-    return;
-
-  Value isNotFirst = builder.create<arith::CmpIOp>(
-      loc, arith::CmpIPredicate::ne, reductionLoop.getInductionVar(),
-      reductionLoop.getLowerBound());
-  auto ifOp = builder.create<scf::IfOp>(loc, isNotFirst, /*withElseRegion=*/false);
-
-  OpBuilder::InsertionGuard guard(builder);
-  builder.setInsertionPointToStart(&ifOp.getThenRegion().front());
-
-  Value dstGt =
-      builder.create<GlobalTensorOp>(loc, GlobalTensorType::get(elemType));
-  builder.create<GlobalTensorSetGlobalBufferOp>(loc, dstGt, dst,
-                                                 /*size=*/Value{});
-
-  unsigned elemBytes = elemType.getIntOrFloatBitWidth() / 8;
-  Value byteSize = builder.create<arith::MulIOp>(
-      loc, count, builder.create<arith::ConstantIndexOp>(loc, elemBytes));
-  Value oldTbuf =
-      builder.create<TBufOp>(loc, TBufType::get(mlirCtx, TPosition::VECIN));
-  builder.create<TPipeInitBufferOp>(loc, ctx.pipe, oldTbuf, byteSize);
-  Value oldQueue =
-      builder.create<QueueOp>(loc, QueueType::get(mlirCtx, TPosition::VECIN, 1));
-  Value depth = builder.create<arith::ConstantOp>(
-      loc, builder.getI32IntegerAttr(1));
-  builder.create<TPipeInitQueueOp>(loc, ctx.pipe, oldQueue, depth, byteSize);
-
-  Value oldLt = builder.create<TQueBindAllocTensorOp>(
-      loc, LocalTensorType::get(elemType), oldQueue);
-  builder.create<DataCopyL2Op>(loc, oldLt, dstGt, count);
-  builder.create<TQueBindEnqueTensorOp>(loc, oldQueue, oldLt);
-  Value oldDequeued = builder.create<TQueBindDequeTensorOp>(
-      loc, LocalTensorType::get(elemType), oldQueue);
-  builder.create<AddL2Op>(loc, srcLt, srcLt, oldDequeued, count);
-  builder.create<TQueBindFreeTensorOp>(loc, oldQueue, oldDequeued);
 }
 
 LogicalResult convertDataMove(func::FuncOp funcOp,
@@ -583,24 +489,27 @@ LogicalResult convertDataMove(func::FuncOp funcOp,
         copyOp.emitError("missing queue for VECOUT buffer");
         return failure();
       }
+      auto dstMrt = cast<MemRefType>(dst.getType());
       auto srcLtType =
           LocalTensorType::get(cast<MemRefType>(src.getType()).getElementType());
       Value srcLt =
           builder.create<TQueBindDequeTensorOp>(loc, srcLtType, srcQueue);
       Value dstGt = builder.create<GlobalTensorOp>(
-          loc,
-          GlobalTensorType::get(cast<MemRefType>(dst.getType()).getElementType()));
+          loc, GlobalTensorType::get(dstMrt.getElementType()));
       builder.create<GlobalTensorSetGlobalBufferOp>(loc, dstGt, dst,
                                                      /*size=*/Value{});
-      Value count = computeElementCount(builder, loc, src);
-      if (linalg::GenericOp producer = findReductionGenericWriting(src)) {
-        if (scf::ForOp reductionLoop = findReductionTileLoop(producer)) {
-          emitAddPreviousReductionPartial(
-              builder, loc, mlirCtx, ctx, reductionLoop, dst, srcLt, count,
-              cast<MemRefType>(src.getType()).getElementType());
-        }
+      int64_t rowStride = 0;
+      if (isMaybeRowStrided2D(dstMrt, rowStride)) {
+        // Strided 2-D destination (e.g. an out[d0_range, d1_range] tile of a
+        // wider output, as a preserve-template transpose's consumer writes):
+        // store row by row; a flat DataCopy would write contiguous GM.
+        emitStridedVecToGmDataCopy(builder, loc, dstMrt.getElementType(), dstGt,
+                                   srcLt, emitDim(builder, loc, dst, 0),
+                                   emitDim(builder, loc, dst, 1), rowStride);
+      } else {
+        Value count = computeElementCount(builder, loc, src);
+        builder.create<DataCopyL2Op>(loc, dstGt, srcLt, count);
       }
-      builder.create<DataCopyL2Op>(loc, dstGt, srcLt, count);
       builder.create<TQueBindFreeTensorOp>(loc, srcQueue, srcLt);
       copyOp.erase();
       continue;
