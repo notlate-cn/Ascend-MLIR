@@ -71,42 +71,73 @@ static std::map<std::string, int64_t> parseKV(const std::string& s) {
   return m;
 }
 
-// Evaluate block_dim_expr: supports "ceil(X/Y)" and "X/Y"
+// Evaluate a block-dim expression.  Grammar (produced by TilePlanGen, mirrors
+// SymExpr::emitC plus a ceil() wrapper):
+//   expr ::= name | int | '(' expr op expr ')' | 'ceil(' expr '/' expr ')'
+//   op   ::= + | - | * | /                       (/ is integer division)
+// `name` is a tiling-param ("XBLOCK") or a shape key ("arg0_dim2"); unknown
+// names default to 1 with a warning.  Whitespace is stripped first.
+static int64_t evalBlockExpr(llvm::StringRef e,
+                             const std::map<std::string, int64_t>& vars) {
+  e = e.trim();
+  if (e.empty()) return 1;
+
+  // ceil( A / B ) -- split on the *last* top-level '/'.
+  if (e.starts_with("ceil(") && e.back() == ')') {
+    llvm::StringRef inner = e.drop_front(5).drop_back(1);
+    int depth = 0;
+    size_t slash = llvm::StringRef::npos;
+    for (size_t i = 0; i < inner.size(); ++i) {
+      char c = inner[i];
+      if (c == '(') ++depth;
+      else if (c == ')') --depth;
+      else if (c == '/' && depth == 0) slash = i;
+    }
+    if (slash == llvm::StringRef::npos) return evalBlockExpr(inner, vars);
+    int64_t a = evalBlockExpr(inner.substr(0, slash), vars);
+    int64_t b = evalBlockExpr(inner.substr(slash + 1), vars);
+    return b == 0 ? 1 : (a + b - 1) / b;
+  }
+
+  // ( A op B ) -- emitC fully parenthesizes, so exactly one top-level op.
+  if (e.front() == '(' && e.back() == ')') {
+    llvm::StringRef inner = e.drop_front(1).drop_back(1);
+    int depth = 0;
+    for (size_t i = 0; i < inner.size(); ++i) {
+      char c = inner[i];
+      if (c == '(') { ++depth; continue; }
+      if (c == ')') { --depth; continue; }
+      if (depth != 0 || i == 0) continue;
+      if (c != '+' && c != '-' && c != '*' && c != '/') continue;
+      char p = inner[i - 1];
+      if (p == '+' || p == '-' || p == '*' || p == '/' || p == '(') continue; // unary sign
+      int64_t a = evalBlockExpr(inner.substr(0, i), vars);
+      int64_t b = evalBlockExpr(inner.substr(i + 1), vars);
+      switch (c) {
+      case '+': return a + b;
+      case '-': return a - b;
+      case '*': return a * b;
+      case '/': return b == 0 ? 1 : a / b;
+      }
+    }
+    return evalBlockExpr(inner, vars); // redundant parens around a leaf
+  }
+
+  // leaf: integer literal or variable name.
+  int64_t v;
+  if (!e.getAsInteger(10, v)) return v;
+  auto it = vars.find(e.str());
+  if (it != vars.end()) return it->second;
+  llvm::errs() << "Warning: unrecognized token in block_dim_expr: '" << e
+               << "', treating as 1\n";
+  return 1;
+}
+
 static int64_t evalBlockDimExpr(const std::string& expr,
-                                 const std::map<std::string, int64_t>& vars) {
-  bool is_ceil = false;
-  std::string inner;
-  {
-    std::string e = expr;
-    e.erase(std::remove(e.begin(), e.end(), ' '), e.end());
-    if (e.size() > 5 && e.substr(0, 5) == "ceil(" && e.back() == ')') {
-      inner = e.substr(5, e.size() - 6);
-      is_ceil = true;
-    } else {
-      inner = e;
-    }
-  }
-  auto slash = inner.find('/');
-  if (slash == std::string::npos) {
-    auto it = vars.find(inner);
-    return it != vars.end() ? it->second : 1;
-  }
-  std::string lhs = inner.substr(0, slash);
-  std::string rhs = inner.substr(slash + 1);
-  auto lookup = [&](const std::string& name) -> int64_t {
-    auto it = vars.find(name);
-    if (it != vars.end()) return it->second;
-    int64_t v = 1;
-    if (llvm::StringRef(name).getAsInteger(10, v)) {
-      llvm::errs() << "Warning: unrecognized token in block_dim_expr: '" << name << "', treating as 1\n";
-      return 1;
-    }
-    return v;
-  };
-  int64_t a = lookup(lhs), b = lookup(rhs);
-  if (b == 0) return 1;
-  if (is_ceil) return (a + b - 1) / b;
-  return a / b;
+                                const std::map<std::string, int64_t>& vars) {
+  std::string e = expr;
+  e.erase(std::remove(e.begin(), e.end(), ' '), e.end());
+  return evalBlockExpr(e, vars);
 }
 
 static std::vector<uint8_t> packTiling(
