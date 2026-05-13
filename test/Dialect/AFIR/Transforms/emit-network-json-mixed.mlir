@@ -18,11 +18,15 @@ module {
 }
 
 // CHECK:       "function": "model"
+// CHECK:       "shape": [
+// CHECK-NEXT:    8
 // CHECK:       "kernel_group0"
 // CHECK:       "ascendc"
 // CHECK:       "__aclnn_softmax"
 // CHECK:       "aclnn"
 // CHECK:       "op": "Softmax"
+// CHECK:       "shape": [
+// CHECK-NEXT:    -1
 // CHECK:       "from": "kernel"
 // CHECK:       "kernel": "__aclnn_softmax"
 // CHECK:       "kernel_group1"

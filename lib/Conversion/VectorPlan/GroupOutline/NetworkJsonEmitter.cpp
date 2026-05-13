@@ -37,7 +37,7 @@ static std::string dtypeName(mlir::Type t) {
 static llvm::json::Object tensorDescriptor(mlir::RankedTensorType ty) {
   llvm::json::Array shape;
   for (int64_t d : ty.getShape())
-    shape.push_back(d);
+    shape.push_back(mlir::ShapedType::isDynamic(d) ? int64_t{-1} : d);
   llvm::json::Object desc;
   desc["shape"] = std::move(shape);
   desc["dtype"] = dtypeName(ty.getElementType());
@@ -142,7 +142,7 @@ llvm::Error emitNetworkJson(mlir::ModuleOp module, mlir::func::FuncOp coord,
         if (ty) {
           llvm::json::Array shape;
           for (int64_t d : ty.getShape())
-            shape.push_back(d);
+            shape.push_back(mlir::ShapedType::isDynamic(d) ? int64_t{-1} : d);
           resDesc["shape"] = std::move(shape);
           resDesc["dtype"] = dtypeName(ty.getElementType());
         }
