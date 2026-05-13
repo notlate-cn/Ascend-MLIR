@@ -196,6 +196,7 @@ static std::string buildNetworkHostCpp(ModuleOp module,
     os << "// tilings_path: " << cfg.tilingsPath << "\n";
   if (!cfg.kernelBinariesDir.empty())
     os << "// kernel_binaries_dir: " << cfg.kernelBinariesDir << "\n";
+  os << "#include \"acl/acl.h\"\n";
   os << "#include \"Runtime/AclnnOps.h\"\n";
   os << "#include <cstdint>\n";
   os << "#include <cstring>\n";
@@ -228,6 +229,16 @@ static std::string buildNetworkHostCpp(ModuleOp module,
   os << "    TensorInfo inputs[], int numInputs,\n";
   os << "    TensorInfo outputs[], int numOutputs,\n";
   os << "    aclrtStream stream) {\n";
+  os << "  // Try aclInit; if it fails (e.g. running on CPU sim with no NPU\n";
+  os << "  // device available), fall through in host-mode so aclnn ops dispatch\n";
+  os << "  // to AclnnOps.cpp's CPU-reference implementations.\n";
+  os << "  static bool initialized = false;\n";
+  os << "  if (!initialized) {\n";
+  os << "    initialized = true;\n";
+  os << "    if (aclInit(nullptr) != 0) {\n";
+  os << "      mlir::runtime::aclnn::setHostMode(true);\n";
+  os << "    }\n";
+  os << "  }\n";
   os << "  network_impl(inputs, numInputs, outputs, numOutputs, stream);\n";
   os << "}\n";
 
