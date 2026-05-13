@@ -297,6 +297,10 @@ static std::string buildNetworkHostCpp(ModuleOp module,
   os << "  network_impl(inputs, numInputs, outputs, numOutputs, stream);\n";
   os << "}\n";
 
+  os << "\nextern \"C\" void network_set_dump_dir(const char *dir) {\n";
+  os << "  mlir::runtime::hostLaunchSetDumpIntermediatesDir(dir);\n";
+  os << "}\n";
+
   return src;
 }
 

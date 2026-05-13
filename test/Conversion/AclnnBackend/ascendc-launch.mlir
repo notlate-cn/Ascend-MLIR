@@ -17,3 +17,5 @@ module {
 // CHECK: "kernel_group0"
 // CHECK: /*kernelBinariesDir=*/
 // CHECK: /*tilingsPath=*/
+// CHECK: extern "C" void network_set_dump_dir(const char *dir)
+// CHECK: mlir::runtime::hostLaunchSetDumpIntermediatesDir(dir)

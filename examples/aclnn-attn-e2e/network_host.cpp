@@ -36,3 +36,7 @@ extern "C" void network(
   }
   network_impl(inputs, numInputs, outputs, numOutputs, stream);
 }
+
+extern "C" void network_set_dump_dir(const char *dir) {
+  mlir::runtime::hostLaunchSetDumpIntermediatesDir(dir);
+}
