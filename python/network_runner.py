@@ -3,9 +3,9 @@
 
 See docs/superpowers/specs/2026-05-13-network-runner-mixed-cpu-sim-design.md.
 
-Phase 1, 2, and 3 are implemented; phases 4-5 will be added in follow-up commits.
+Phase 1, 2, 3, and 4 are implemented; phase 5 will be added in a follow-up commit.
 
-Note: Phases 2-3 (codegen + compile + sim run) require the simulator LD_LIBRARY_PATH.
+Note: Phases 2-4 (codegen + compile + sim run + autotune) require the simulator LD_LIBRARY_PATH.
 Run `source examples/env.sh` (or `source examples/env_gser.sh`) before executing.
 """
 import argparse
@@ -247,6 +247,91 @@ def phase3_default_build_and_dump(work, groups, network, artifacts, args):
     return tilings_path, inter
 
 
+def _shape_keys_needed(space: dict) -> list[str]:
+    """Collect all shape_key strings the kernel's tiling_space requires."""
+    keys = []
+    for p in space.get("tiling_params", []):
+        sk = p.get("shape_key")
+        if sk and sk not in keys:
+            keys.append(sk)
+    return keys
+
+
+def _shape_arg_for_kernel(inter: Path, kid: str, space: dict) -> str:
+    """Build the --shape KEY=VAL,... string for autotuner.
+
+    shape_key format is `arg<i>_dim<j>` — resolve by reading the dumped
+    intermediate input npy and indexing its .shape[j].
+    """
+    import numpy as np
+    import re
+    parts = []
+    for key in _shape_keys_needed(space):
+        m = re.match(r"^arg(\d+)_dim(\d+)$", key)
+        if not m:
+            sys.exit(f"phase 4: unsupported shape_key format: {key}")
+        arg_idx, dim_idx = int(m.group(1)), int(m.group(2))
+        npy = inter / f"{kid}_in_{arg_idx}.npy"
+        if not npy.exists():
+            sys.exit(f"phase 4: missing dumped input for shape_key {key}: {npy}")
+        shape = np.load(npy).shape
+        if dim_idx >= len(shape):
+            sys.exit(f"phase 4: shape_key {key} dim out of range for shape {shape}")
+        parts.append(f"{key}={shape[dim_idx]}")
+    return ",".join(parts)
+
+
+def phase4_autotune(work, network, inter, args):
+    """Run autotuner per ascendc kernel; aggregate tilings_best.json."""
+    tilings_best: dict = {}
+    for k in network.ascendc_kernels():
+        kid = k["id"]
+        space_path = work / f"{kid}_space.json"
+        cpp_path   = work / f"{kid}.cpp"
+        space = json.loads(space_path.read_text())
+
+        # Collect inputs from the dumped intermediates dir, in arg-index order.
+        in_npys = sorted(
+            inter.glob(f"{kid}_in_*.npy"),
+            key=lambda p: int(p.stem.split("_in_")[-1]),
+        )
+        if not in_npys:
+            sys.exit(f"phase 4: no dumped inputs for {kid} under {inter}")
+        # v1 supports only single-output kernels; assert and read out_0.
+        out0_npy = inter / f"{kid}_out_0.npy"
+        if not out0_npy.exists():
+            sys.exit(f"phase 4: missing {out0_npy}")
+
+        shape_arg = _shape_arg_for_kernel(inter, kid, space)
+        best_path = work / f"{kid}_best.json"
+        profile_dir = work / f"{kid}_autotune_profile"
+        profile_dir.mkdir(parents=True, exist_ok=True)
+
+        cmd = [
+            AUTOTUNER,
+            "--space",   str(space_path),
+            "--kernel",  str(cpp_path),
+            "--inputs",  ",".join(str(p) for p in in_npys),
+            "--expected", str(out0_npy),
+            "--shape",   shape_arg,
+            "--output",  str(best_path),
+            "--profile-out", str(profile_dir),
+            "--atol", str(args.atol),
+            "--rtol", str(args.rtol),
+        ]
+        run(cmd)
+
+        bc = json.loads(best_path.read_text())
+        params = dict(bc.get("config", {}))
+        params["_block_dim"] = int(bc.get("best", {}).get("block_dim", 1))
+        tilings_best[kid] = params
+
+    tilings_path = work / "tilings_best.json"
+    tilings_path.write_text(json.dumps(tilings_best, indent=2))
+    print(f"phase 4 OK → {tilings_path}")
+    return tilings_path
+
+
 def main():
     ap = argparse.ArgumentParser()
     g = ap.add_mutually_exclusive_group(required=True)
@@ -258,9 +343,9 @@ def main():
     ap.add_argument("--soc", default="Ascend910B1")
     ap.add_argument("--atol", type=float, default=1e-3)
     ap.add_argument("--rtol", type=float, default=1e-2)
-    ap.add_argument("--max-phase", type=int, default=3,
+    ap.add_argument("--max-phase", type=int, default=4,
                     help="Stop after this phase (1=outline, 2=codegen+compile, "
-                         "3=default-build+dump). Default: 3.")
+                         "3=default-build+dump, 4=autotune). Default: 4.")
     args = ap.parse_args()
 
     work = Path(args.workdir).absolute()
@@ -277,7 +362,11 @@ def main():
     if args.max_phase < 3:
         return
 
-    phase3_default_build_and_dump(work, groups, network, artifacts, args)
+    tilings_default, inter = phase3_default_build_and_dump(work, groups, network, artifacts, args)
+    if args.max_phase < 4:
+        return
+
+    phase4_autotune(work, network, inter, args)
 
 
 if __name__ == "__main__":
