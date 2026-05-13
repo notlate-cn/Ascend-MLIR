@@ -10,6 +10,7 @@
 #include "Runtime/Execution/NativeExecutionRunner.h"
 #include "Runtime/Support/NpyIO.h"
 #include "Runtime/Support/Types.h"
+#include "Runtime/TilingSchema.h"
 
 #include "llvm/Support/JSON.h"
 #include "llvm/Support/MemoryBuffer.h"
@@ -43,7 +44,8 @@ bool aclDtypeToDType(int aclDtype, DType &out) {
 
 struct KernelTiling {
   int blockDim = 1;
-  std::vector<uint8_t> packed;  // raw little-endian int64 words for non-meta params
+  // Raw param values keyed by name; packed in schema-declared order at launch time.
+  std::unordered_map<std::string, int64_t> params;
 };
 
 class HelperState {
@@ -118,9 +120,7 @@ int loadTilingsIfNeeded(HelperState &st, const std::string &path) {
         t.blockDim = static_cast<int>(v);
         continue;
       }
-      size_t off = t.packed.size();
-      t.packed.resize(off + sizeof(int64_t));
-      std::memcpy(t.packed.data() + off, &v, sizeof(int64_t));
+      t.params[pname.str()] = v;
     }
     st.tilingsByKernel.emplace(kv.first.str(), std::move(t));
   }
@@ -201,11 +201,44 @@ extern "C" int hostLaunchAscendCKernel(
     args.outputs.push_back(std::move(a));
   }
 
-  // Tilings + block dim.
+  // Tilings + block dim: pack params in schema-declared order.
   auto tIt = st.tilingsByKernel.find(kernelName);
   if (tIt != st.tilingsByKernel.end()) {
-    args.tiling = tIt->second.packed;
     args.block_dim = tIt->second.blockDim > 0 ? tIt->second.blockDim : 1;
+    // Try to load tiling_space.json to get schema-declared field order + defaults.
+    std::string schemaPath = std::string(kernelBinariesDir) + "/" +
+                             kernelName + "/tiling_space.json";
+    auto schemaOr = TilingSchema::fromJson(schemaPath);
+    if (schemaOr && schemaOr->size() > 0) {
+      // Build ordered param list using schema field order; fall back to 0 if
+      // a param is missing from the tilings map.
+      std::vector<std::pair<std::string, int64_t>> orderedParams;
+      orderedParams.reserve(schemaOr->size());
+      for (const auto &field : schemaOr->fields()) {
+        auto pit = tIt->second.params.find(field.name);
+        int64_t val = (pit != tIt->second.params.end()) ? pit->second : 0;
+        orderedParams.push_back({field.name, val});
+      }
+      auto packedOr = schemaOr->pack(orderedParams);
+      if (packedOr) {
+        args.tiling = std::move(*packedOr);
+      } else {
+        llvm::errs() << "hostLaunchAscendCKernel(" << kernelName
+                     << "): tiling pack failed: "
+                     << llvm::toString(packedOr.takeError()) << "\n";
+        return 2;
+      }
+    } else {
+      // No schema available (missing file or empty): fall back to iteration
+      // over the raw params map. For single-param kernels, order is moot;
+      // for multi-param kernels, the caller should provide tiling_space.json.
+      llvm::consumeError(schemaOr.takeError());
+      for (const auto &kv : tIt->second.params) {
+        size_t off = args.tiling.size();
+        args.tiling.resize(off + sizeof(int64_t));
+        std::memcpy(args.tiling.data() + off, &kv.second, sizeof(int64_t));
+      }
+    }
   }
 
   // Dump inputs.

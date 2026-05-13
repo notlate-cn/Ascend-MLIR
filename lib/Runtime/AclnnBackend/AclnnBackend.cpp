@@ -137,6 +137,15 @@ private:
       auto shape = rtt.getShape();
       int dtypeId = dtypeIdFor(rtt.getElementType());
       int elemBytes = elemBytesFor(rtt.getElementType());
+      if (dtypeId == -1 || elemBytes == 0) {
+        module_.emitError()
+            << "AclnnBackend: unsupported element type '"
+            << rtt.getElementType() << "' for result " << ri << " of '"
+            << kernelName << "'; cannot emit TensorInfo";
+        os_ << "#error \"unsupported element type for " << kernelName
+            << " result " << ri << "\"\n";
+        continue;
+      }
       int64_t nelems = 1;
       for (int64_t d : shape) nelems *= d;
       os_ << "  " << outsName << "[" << ri << "].rank = " << shape.size() << ";\n";
