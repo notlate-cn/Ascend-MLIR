@@ -11,9 +11,12 @@
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
+#include "mlir/IR/Matchers.h"
 #include "mlir/IR/PatternMatch.h"
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/SmallVector.h"
+
+#include <optional>
 
 namespace mlir::afir::ascend::realize {
 namespace {
@@ -214,8 +217,147 @@ struct Phase5BridgeOutput {
   linalg::LinalgOp linalgOp;
   OpOperand *initOperand;
   memref::AllocOp gmAlloc;
+  memref::CopyOp concatCopy;
   std::string kernelId;
 };
+
+static bool isConstantOpFoldResult(OpFoldResult ofr, int64_t expected) {
+  std::optional<int64_t> value = getConstantIntValue(ofr);
+  return value && *value == expected;
+}
+
+static bool hasReturnUse(Value value, llvm::DenseSet<Operation *> &visited) {
+  for (Operation *user : value.getUsers()) {
+    if (!visited.insert(user).second)
+      continue;
+    if (isa<func::ReturnOp>(user))
+      return true;
+    if (auto castOp = dyn_cast<memref::CastOp>(user))
+      if (hasReturnUse(castOp.getResult(), visited))
+        return true;
+  }
+  return false;
+}
+
+static bool hasReturnUse(Value value) {
+  llvm::DenseSet<Operation *> visited;
+  return hasReturnUse(value, visited);
+}
+
+static bool isSupportedConcatTargetSubview(Value target, MemRefType sourceType) {
+  auto subview = target.getDefiningOp<memref::SubViewOp>();
+  if (!subview)
+    return false;
+
+  auto targetType = dyn_cast<MemRefType>(target.getType());
+  auto concatOutputType = dyn_cast<MemRefType>(subview.getSource().getType());
+  if (!targetType || !concatOutputType)
+    return false;
+  if (sourceType.getMemorySpace() || targetType.getMemorySpace() ||
+      concatOutputType.getMemorySpace())
+    return false;
+  if (!hasReturnUse(subview.getSource()))
+    return false;
+  if (sourceType.getRank() != targetType.getRank() ||
+      sourceType.getRank() != concatOutputType.getRank())
+    return false;
+  if (sourceType.getElementType() != targetType.getElementType() ||
+      sourceType.getElementType() != concatOutputType.getElementType())
+    return false;
+  for (auto [sourceDim, targetDim] :
+       llvm::zip(sourceType.getShape(), targetType.getShape()))
+    if (!ShapedType::isDynamic(sourceDim) &&
+        !ShapedType::isDynamic(targetDim) && sourceDim != targetDim)
+      return false;
+
+  for (OpFoldResult stride : subview.getMixedStrides())
+    if (!isConstantOpFoldResult(stride, 1))
+      return false;
+
+  SmallVector<OpFoldResult> offsets = subview.getMixedOffsets();
+  if (offsets.size() != static_cast<size_t>(sourceType.getRank()))
+    return false;
+  for (unsigned i = 1, e = offsets.size(); i < e; ++i)
+    if (!isConstantOpFoldResult(offsets[i], 0))
+      return false;
+
+  return true;
+}
+
+static memref::CopyOp findSupportedConcatCopyUse(Value init, Operation *writer) {
+  auto sourceType = dyn_cast<MemRefType>(init.getType());
+  if (!sourceType || sourceType.getMemorySpace())
+    return {};
+
+  memref::CopyOp concatCopy;
+  for (Operation *user : init.getUsers()) {
+    if (user == writer)
+      continue;
+    if (isa<memref::DimOp>(user))
+      continue;
+
+    auto copyOp = dyn_cast<memref::CopyOp>(user);
+    if (!copyOp || copyOp.getSource() != init ||
+        copyOp->getBlock() != writer->getBlock() ||
+        !writer->isBeforeInBlock(copyOp.getOperation()) ||
+        !isSupportedConcatTargetSubview(copyOp.getTarget(), sourceType))
+      return {};
+    if (concatCopy)
+      return {};
+    concatCopy = copyOp;
+  }
+
+  return concatCopy;
+}
+
+static std::optional<Value> dynamicSizeForDim(memref::AllocOp allocOp,
+                                              int64_t dim) {
+  auto type = cast<MemRefType>(allocOp.getType());
+  if (dim < 0 || dim >= type.getRank())
+    return std::nullopt;
+  if (!ShapedType::isDynamic(type.getDimSize(dim)))
+    return std::nullopt;
+
+  unsigned dynamicIndex = 0;
+  for (int64_t i = 0; i < dim; ++i)
+    if (ShapedType::isDynamic(type.getDimSize(i)))
+      ++dynamicIndex;
+
+  if (dynamicIndex >= allocOp.getDynamicSizes().size())
+    return std::nullopt;
+  return allocOp.getDynamicSizes()[dynamicIndex];
+}
+
+static LogicalResult replaceAllocDimUses(IRRewriter &rewriter,
+                                         memref::AllocOp allocOp) {
+  auto type = cast<MemRefType>(allocOp.getType());
+  SmallVector<memref::DimOp, 4> dimUsers;
+  for (Operation *user : allocOp.getResult().getUsers())
+    if (auto dimOp = dyn_cast<memref::DimOp>(user))
+      dimUsers.push_back(dimOp);
+
+  for (memref::DimOp dimOp : dimUsers) {
+    std::optional<int64_t> dim = getConstantIntValue(dimOp.getIndex());
+    if (!dim || *dim < 0 || *dim >= type.getRank())
+      return failure();
+
+    rewriter.setInsertionPoint(dimOp);
+    if (!ShapedType::isDynamic(type.getDimSize(*dim))) {
+      Value replacement =
+          rewriter.create<arith::ConstantIndexOp>(dimOp.getLoc(),
+                                                  type.getDimSize(*dim));
+      rewriter.replaceOp(dimOp, replacement);
+      continue;
+    }
+
+    std::optional<Value> dynamicSize = dynamicSizeForDim(allocOp, *dim);
+    if (!dynamicSize)
+      return failure();
+    rewriter.replaceOp(dimOp, *dynamicSize);
+  }
+
+  return success();
+}
 
 } // namespace
 
@@ -321,11 +463,15 @@ MemoryRealizationDriver::materializePhase5Bridge(ModuleOp module) const {
       if (!allocType || allocType.getMemorySpace())
         continue;
 
-      if (!isFinalKernelOutput(init, op))
-        continue;
+      memref::CopyOp concatCopy;
+      if (!isFinalKernelOutput(init, op)) {
+        concatCopy = findSupportedConcatCopyUse(init, op);
+        if (!concatCopy)
+          continue;
+      }
 
       outputsToBridge.push_back({linalgOp, initOperand, allocOp,
-                                 kernelId.str()});
+                                 concatCopy, kernelId.str()});
     }
   });
 
@@ -342,11 +488,21 @@ MemoryRealizationDriver::materializePhase5Bridge(ModuleOp module) const {
         gmAlloc.getSymbolOperands(), gmAlloc.getAlignmentAttr());
     vecOutAlloc->setAttrs(gmAlloc->getAttrs());
 
-    item.initOperand->set(vecOutAlloc.getResult());
-    rewriter.setInsertionPointAfter(item.linalgOp);
-    rewriter.create<memref::CopyOp>(item.linalgOp.getLoc(),
-                                    vecOutAlloc.getResult(),
-                                    gmAlloc.getResult());
+    if (item.concatCopy) {
+      if (failed(replaceAllocDimUses(rewriter, gmAlloc)))
+        return failure();
+
+      item.initOperand->set(vecOutAlloc.getResult());
+      item.concatCopy->setOperand(0, vecOutAlloc.getResult());
+      if (gmAlloc.getResult().use_empty())
+        rewriter.eraseOp(gmAlloc);
+    } else {
+      item.initOperand->set(vecOutAlloc.getResult());
+      rewriter.setInsertionPointAfter(item.linalgOp);
+      rewriter.create<memref::CopyOp>(item.linalgOp.getLoc(),
+                                      vecOutAlloc.getResult(),
+                                      gmAlloc.getResult());
+    }
 
     ++counts[item.kernelId].materializedAllocCount;
     ++counts[item.kernelId].materializedCopyCount;

@@ -165,7 +165,7 @@ done
 
 if ((${#failures[@]} == 0)); then
   echo "INFO: executing focused cross-session runtime-session smoke"
-  run_runtime_session_smoke "session-a" "${REPO_ROOT}/examples/add-broadcast-concat/build_e2e/run_manifest.json"
+  run_runtime_session_smoke "session-a" "${REPO_ROOT}/examples/add-broadcast-concat/build_mainline/run_manifest.json"
   run_runtime_session_smoke "session-b" "${REPO_ROOT}/examples/broadcast-add-reduce/build_mainline/run_manifest.json"
 fi
 if ((${#failures[@]} == 0)); then
