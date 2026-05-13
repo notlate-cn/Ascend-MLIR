@@ -240,6 +240,18 @@ int main(int argc, char **argv) {
   if (!dumpDir.empty())
     network_set_dump_dir(dumpDir.c_str());
 
+  // Force aclnn host-mode CPU reference. The mixed-network case (aclnn op
+  // sandwiched between AscendC kernels) needs aclnn to compute on host
+  // buffers; the real aclnn library may "succeed" on the camodel sim's
+  // libascendcl but write into NPU/device memory pointers, which then
+  // crash on the next dumpTensorIfEnabled (memcpy of bogus pointer).
+  // Setting host-mode here is idempotent with the generated network()'s
+  // own aclInit-fallback path.
+  if (std::getenv("NETWORK_RUNNER_FORCE_HOST_MODE") ||
+      !std::getenv("NETWORK_RUNNER_REAL_ACLNN")) {
+    mlir::runtime::aclnn::setHostMode(true);
+  }
+
   // Load inputs
   std::vector<NpyArray> inputArrays;
   inputArrays.reserve(inputPaths.size());
