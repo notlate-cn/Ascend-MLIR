@@ -18,6 +18,7 @@
 
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
+#include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
@@ -230,6 +231,89 @@ memref::CopyOp findSingleWritebackCopy(Value source) {
   return result;
 }
 
+Value rootMemref(Value value) {
+  while (true) {
+    if (auto subview = value.getDefiningOp<memref::SubViewOp>()) {
+      value = subview.getSource();
+      continue;
+    }
+    if (auto cast = value.getDefiningOp<memref::CastOp>()) {
+      value = cast.getSource();
+      continue;
+    }
+    return value;
+  }
+}
+
+SmallVector<Value, 4> protectedMemrefRoots(linalg::GenericOp op,
+                                           Value outMemref) {
+  SmallVector<Value, 4> roots;
+  auto appendRoot = [&](Value value) {
+    if (!isa<MemRefType>(value.getType()))
+      return;
+    Value root = rootMemref(value);
+    if (!llvm::is_contained(roots, root))
+      roots.push_back(root);
+  };
+
+  for (OpOperand *operand : op.getDpsInputOperands())
+    appendRoot(operand->get());
+  appendRoot(outMemref);
+  return roots;
+}
+
+bool touchesProtectedMemrefRoot(Operation *op, ArrayRef<Value> roots) {
+  for (Value operand : op->getOperands()) {
+    if (!isa<MemRefType>(operand.getType()))
+      continue;
+    if (llvm::is_contained(roots, rootMemref(operand)))
+      return true;
+  }
+  return false;
+}
+
+bool isBenignShapeOrViewOp(Operation *op) {
+  return isa<arith::ConstantOp, arith::AddIOp, arith::SubIOp, arith::MulIOp,
+             arith::MinSIOp, arith::MaxSIOp, arith::IndexCastOp,
+             affine::AffineApplyOp, memref::AllocOp, memref::DimOp,
+             memref::SubViewOp, memref::CastOp>(op);
+}
+
+bool canMoveSelectedTileLoopBeforeWriteback(linalg::GenericOp op,
+                                            memref::CopyOp writeback,
+                                            Value outMemref) {
+  SmallVector<Value, 4> protectedRoots = protectedMemrefRoots(op, outMemref);
+  for (Operation *it = op->getNextNode(); it && it != writeback.getOperation();
+       it = it->getNextNode()) {
+    if (isBenignShapeOrViewOp(it))
+      continue;
+
+    if (auto linalgOp = dyn_cast<linalg::LinalgOp>(it)) {
+      if (touchesProtectedMemrefRoot(linalgOp.getOperation(), protectedRoots))
+        return false;
+      continue;
+    }
+
+    if (touchesProtectedMemrefRoot(it, protectedRoots))
+      return false;
+    return false;
+  }
+  return true;
+}
+
+Operation *selectedTileInsertionPoint(linalg::GenericOp op,
+                                      memref::CopyOp writeback,
+                                      Value outMemref) {
+  if (!canMoveSelectedTileLoopBeforeWriteback(op, writeback, outMemref))
+    return nullptr;
+
+  Operation *targetDef = writeback.getTarget().getDefiningOp();
+  if (targetDef && targetDef->getBlock() == op->getBlock() &&
+      op->isBeforeInBlock(targetDef))
+    return writeback.getOperation();
+  return op.getOperation();
+}
+
 } // namespace
 
 LogicalResult materializeSelectedReductionTiles(func::FuncOp funcOp) {
@@ -274,7 +358,12 @@ LogicalResult materializeSelectedReductionTiles(func::FuncOp funcOp) {
       return failure();
 
     Location loc = genOp.getLoc();
-    builder.setInsertionPoint(genOp);
+    Operation *insertionPoint =
+        selectedTileInsertionPoint(genOp, writeback, outMemref);
+    if (!insertionPoint)
+      continue;
+
+    builder.setInsertionPoint(insertionPoint);
     Value zero = builder.create<arith::ConstantIndexOp>(loc, 0);
     Value step = builder.create<arith::ConstantIndexOp>(loc, tileRows);
     Value rows = getDimValue(builder, loc, outMemref, 0);
@@ -382,7 +471,12 @@ LogicalResult materializeSelectedAllParallelTiles(func::FuncOp funcOp) {
       return failure();
 
     Location loc = genOp.getLoc();
-    builder.setInsertionPoint(genOp);
+    Operation *insertionPoint =
+        selectedTileInsertionPoint(genOp, writeback, outMemref);
+    if (!insertionPoint)
+      continue;
+
+    builder.setInsertionPoint(insertionPoint);
     Value zero = builder.create<arith::ConstantIndexOp>(loc, 0);
     Value step = builder.create<arith::ConstantIndexOp>(loc, tileRows);
     Value rows = getDimValue(builder, loc, outMemref, 0);

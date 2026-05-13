@@ -333,13 +333,15 @@ if should_run_example "add-broadcast-concat"; then
 run_vec_example \
   "${PROJECT_ROOT}/examples/add-broadcast-concat" \
   "ewop_broadcast_concat" \
-  "    { \"name\": \"a\", \"path\": \"${PROJECT_ROOT}/examples/add-broadcast-concat/input_a.npy\" },
-    { \"name\": \"b\", \"path\": \"${PROJECT_ROOT}/examples/add-broadcast-concat/input_b.npy\" },
-    { \"name\": \"c\", \"path\": \"${PROJECT_ROOT}/examples/add-broadcast-concat/input_c.npy\" },
-    { \"name\": \"d\", \"path\": \"${PROJECT_ROOT}/examples/add-broadcast-concat/input_d.npy\" }" \
-  "${PROJECT_ROOT}/examples/add-broadcast-concat/output.npy" \
-  "TB_M=64,TB_N=192,dim_arg0_0=640,dim_arg1_1=500,dim_arg2_0=640,dim_arg3_1=500,dim_arg0_1=500,dim_arg1_0=640,dim_arg2_1=500,dim_arg3_0=640" \
-  "10" "1e-3" "1e-3"
+  "    { \"name\": \"arg0\", \"path\": \"${PROJECT_ROOT}/examples/add-broadcast-concat/build_mainline/input_a.npy\" },
+    { \"name\": \"arg1\", \"path\": \"${PROJECT_ROOT}/examples/add-broadcast-concat/build_mainline/input_b.npy\" },
+    { \"name\": \"arg2\", \"path\": \"${PROJECT_ROOT}/examples/add-broadcast-concat/build_mainline/input_c.npy\" },
+    { \"name\": \"arg3\", \"path\": \"${PROJECT_ROOT}/examples/add-broadcast-concat/build_mainline/input_d.npy\" }" \
+  "${PROJECT_ROOT}/examples/add-broadcast-concat/build_mainline/output.npy" \
+  "dim_arg0_0=640,dim_arg1_1=500,dim_arg1_0=640,dim_arg2_0=640,dim_arg3_0=640,dim_arg3_1=500" \
+  "20" "1e-2" "1e-2" \
+  "build_mainline/step10_kernel.cpp" \
+  "${PROJECT_ROOT}/examples/add-broadcast-concat/build_mainline/phase5_tiling_space.json"
 fi
 
 if should_run_example "broadcast-add-reduce"; then
