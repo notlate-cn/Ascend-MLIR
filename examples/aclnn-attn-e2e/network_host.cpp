@@ -9,7 +9,6 @@
 using TensorInfo = mlir::runtime::aclnn::TensorInfo;
 using mlir::runtime::aclnn::run_FlashAttentionScore;
 
-
 static void network_impl(
     TensorInfo inputs[], int /*numInputs*/,
     TensorInfo outputs[], int /*numOutputs*/,

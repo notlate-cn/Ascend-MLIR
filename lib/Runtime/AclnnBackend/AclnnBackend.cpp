@@ -221,24 +221,6 @@ static void collectAclnnOps(ModuleOp module, func::FuncOp coord,
 }
 
 // ---------------------------------------------------------------------------
-// Emit forward declarations for AscendC kernel_group launchers.
-// ---------------------------------------------------------------------------
-static void emitKernelDecls(ModuleOp module, func::FuncOp coord,
-                              llvm::raw_ostream &os) {
-  llvm::StringSet<> seen;
-  for (Operation &op : coord.front()) {
-    auto callOp = dyn_cast<func::CallOp>(op);
-    if (!callOp) continue;
-    auto callee = module.lookupSymbol<func::FuncOp>(callOp.getCallee());
-    if (!callee || callee->hasAttr("aclnn.op")) continue;
-    auto name = callOp.getCallee().str();
-    if (seen.insert(name).second)
-      os << "extern void " << name
-         << "(TensorInfo *, int, TensorInfo *, int, aclrtStream);\n";
-  }
-}
-
-// ---------------------------------------------------------------------------
 // Build the complete network_host.cpp source string.
 // ---------------------------------------------------------------------------
 static std::string buildNetworkHostCpp(ModuleOp module,
@@ -270,10 +252,6 @@ static std::string buildNetworkHostCpp(ModuleOp module,
   os << "\n";
   os << "using TensorInfo = mlir::runtime::aclnn::TensorInfo;\n";
   os << "using mlir::runtime::aclnn::run_" << (!aclnnOps.empty() ? aclnnOps[0] : "FlashAttentionScore") << ";\n";
-  os << "\n";
-
-  // ② Forward declarations for AscendC kernel launchers (if any)
-  emitKernelDecls(module, coord, os);
   os << "\n";
 
   // ③ network_impl: coordinator body translated to C++
