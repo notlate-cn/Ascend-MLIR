@@ -247,7 +247,10 @@ extern "C" int hostLaunchAscendCKernel(
 
   // Launch.
   FileExecutionLaunch launch;
-  launch.binaryPath = std::string(kernelBinariesDir) + "/" + kernelName + ".bin";
+  // runtime-session --kernel ... --output DIR --name NAME produces
+  // DIR/NAME/NAME.bin (linked) and DIR/NAME/out/manifest.txt.
+  launch.binaryPath = std::string(kernelBinariesDir) + "/" + kernelName +
+                      "/" + kernelName + ".bin";
   launch.kernelName = kernelName;
   // 'Vec' magic matches both Vec and Mix kernel kinds (see SimBackend).
   launch.magic = 0x41415246u;  // kMagicElfAiVec

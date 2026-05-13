@@ -3,9 +3,9 @@
 
 See docs/superpowers/specs/2026-05-13-network-runner-mixed-cpu-sim-design.md.
 
-Phase 1 + Phase 2 are implemented; phases 3-5 will be added in follow-up commits.
+Phase 1, 2, and 3 are implemented; phases 4-5 will be added in follow-up commits.
 
-Note: Phase 2 (codegen + compile) requires the simulator LD_LIBRARY_PATH.
+Note: Phases 2-3 (codegen + compile + sim run) require the simulator LD_LIBRARY_PATH.
 Run `source examples/env.sh` (or `source examples/env_gser.sh`) before executing.
 """
 import argparse
@@ -72,6 +72,83 @@ def phase1_outline_or_emit_json(args, work):
     return groups
 
 
+def eval_block_dim(space: dict, params: dict) -> int:
+    """Evaluate space['block_dim_expr'] under integer params.
+
+    Grammar (matches autotuner_main.cpp evalBlockExpr):
+        expr  ::= id | int | '(' expr op expr ')' | 'ceil(' expr '/' expr ')'
+        op    ::= + | - | * | /
+        id    ::= tiling param name or shape key (treated as 1 if unknown)
+
+    Returns 1 if the expression is empty or cannot be evaluated.
+    """
+    expr = (space.get("block_dim_expr") or "").replace(" ", "")
+    if not expr:
+        return 1
+
+    def _eval(e: str) -> int:
+        e = e.strip()
+        if not e:
+            return 1
+
+        # ceil(A/B) -- find the last top-level '/' inside the parens.
+        if e.startswith("ceil(") and e.endswith(")"):
+            inner = e[5:-1]
+            depth = 0
+            slash = -1
+            for i, c in enumerate(inner):
+                if c == "(":
+                    depth += 1
+                elif c == ")":
+                    depth -= 1
+                elif c == "/" and depth == 0:
+                    slash = i
+            if slash == -1:
+                return _eval(inner)
+            a = _eval(inner[:slash])
+            b = _eval(inner[slash + 1:])
+            return 1 if b == 0 else (a + b - 1) // b
+
+        # (A op B) -- fully-parenthesized binary expression.
+        if e.startswith("(") and e.endswith(")"):
+            inner = e[1:-1]
+            depth = 0
+            for i, c in enumerate(inner):
+                if c == "(":
+                    depth += 1
+                elif c == ")":
+                    depth -= 1
+                elif depth == 0 and i > 0 and c in "+-*/":
+                    # Skip unary minus after another operator or '('
+                    prev = inner[i - 1]
+                    if prev in "+-*/(":
+                        continue
+                    a = _eval(inner[:i])
+                    b = _eval(inner[i + 1:])
+                    if c == "+":
+                        return a + b
+                    if c == "-":
+                        return a - b
+                    if c == "*":
+                        return a * b
+                    return 1 if b == 0 else a // b
+            return _eval(inner)  # redundant parens
+
+        # Leaf: integer literal or param name.
+        try:
+            return int(e)
+        except ValueError:
+            pass
+        if e in params:
+            return int(params[e])
+        return 1  # unknown name — warn-and-default as in C++ version
+
+    try:
+        return _eval(expr)
+    except Exception:
+        return 1
+
+
 def phase2_codegen_compile(work, groups, network):
     """For each ascendc kernel: --vector-plan-codegen → -mlir-to-cann → compile.
 
@@ -99,6 +176,77 @@ def phase2_codegen_compile(work, groups, network):
     return artifacts
 
 
+def phase3_default_build_and_dump(work, groups, network, artifacts, args):
+    """Build network_host.cpp with default tilings, g++ link, run, dump intermediates.
+
+    Steps:
+      1. Build tilings_default.json from each kernel's _space.json.
+      2. Generate network_host_default.cpp via aclnn-backend.
+      3. g++ link against libAscendCRuntime + CANN libs.
+      4. Run with --dump-intermediates DIR.
+
+    Returns (tilings_path, intermediates_dir).
+    """
+    # 1) Build tilings_default.json
+    default_tilings: dict = {}
+    for k in network.ascendc_kernels():
+        kid = k["id"]
+        space_path = work / f"{kid}_space.json"
+        space = json.loads(space_path.read_text())
+        # Tunable params: "fixed": false, default = first entry of "values".
+        params: dict = {}
+        for p in space.get("tiling_params", []):
+            if not p.get("fixed", False):
+                vals = p.get("values", [])
+                params[p["name"]] = vals[0] if vals else 16
+        params["_block_dim"] = eval_block_dim(space, params)
+        default_tilings[kid] = params
+
+    tilings_path = work / "tilings_default.json"
+    tilings_path.write_text(json.dumps(default_tilings, indent=2))
+
+    # 2) Generate network_host_default.cpp
+    host_cpp = work / "network_host_default.cpp"
+    run([
+        ACLNN_BACKEND,
+        "--input",          str(groups / "network.mlir"),
+        "--output",         str(host_cpp),
+        "--tilings",        str(tilings_path),
+        "--kernel-binaries", str(artifacts),
+    ])
+
+    # 3) g++ link
+    from runner_utils.build_host import link_host
+    harness_cpp = REPO / "python/runner_utils/harness.cpp"
+    binary = work / "network_test_default"
+    cann_home = os.environ.get("ASCEND_HOME_PATH",
+                               "/home/gser/Ascend/cann")
+    has_aclnn = bool(network.aclnn_kernels())
+    link_host(
+        host_cpp, harness_cpp, binary, REPO,
+        cann_home=cann_home,
+        soc=args.soc,
+        has_aclnn_ops=has_aclnn,
+    )
+
+    # 4) Run with --dump-intermediates. One --output per network output
+    # (matters! harness's outputs[] is sized from --output count; if it's
+    # smaller than the network's actual output count, network_impl writes
+    # past the vector end and the binary segfaults at cleanup).
+    inter = work / "intermediates_default"
+    inter.mkdir(parents=True, exist_ok=True)
+    cmd = [str(binary)]
+    for p in args.inputs:
+        cmd += ["--input", p]
+    for i in range(len(network.outputs)):
+        cmd += ["--output", str(work / f"output_default_{i}.npy")]
+    cmd += ["--dump-intermediates", str(inter)]
+    run(cmd)
+
+    print(f"phase 3 OK → {inter}")
+    return tilings_path, inter
+
+
 def main():
     ap = argparse.ArgumentParser()
     g = ap.add_mutually_exclusive_group(required=True)
@@ -110,6 +258,9 @@ def main():
     ap.add_argument("--soc", default="Ascend910B1")
     ap.add_argument("--atol", type=float, default=1e-3)
     ap.add_argument("--rtol", type=float, default=1e-2)
+    ap.add_argument("--max-phase", type=int, default=3,
+                    help="Stop after this phase (1=outline, 2=codegen+compile, "
+                         "3=default-build+dump). Default: 3.")
     args = ap.parse_args()
 
     work = Path(args.workdir).absolute()
@@ -118,9 +269,15 @@ def main():
     groups = phase1_outline_or_emit_json(args, work)
     print(f"workdir: {work}")
     print(f"groups:  {groups}")
+    if args.max_phase < 2:
+        return
 
     network = NetworkJson.load(str(groups / "network.json"))
-    phase2_codegen_compile(work, groups, network)
+    artifacts = phase2_codegen_compile(work, groups, network)
+    if args.max_phase < 3:
+        return
+
+    phase3_default_build_and_dump(work, groups, network, artifacts, args)
 
 
 if __name__ == "__main__":

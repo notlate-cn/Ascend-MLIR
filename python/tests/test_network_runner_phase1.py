@@ -32,6 +32,7 @@ module {
         "--inputs", "/dev/null",
         "--expected", "/dev/null",
         "--workdir", str(work),
+        "--max-phase", "1",
     ], capture_output=True, text=True)
     assert res.returncode == 0, f"stderr: {res.stderr}"
 
@@ -74,6 +75,7 @@ func.func @twochain(%a: tensor<128x64xf16>, %b: tensor<128x64xf16>,
         "--inputs", "/dev/null",
         "--expected", "/dev/null",
         "--workdir", str(work),
+        "--max-phase", "1",
     ], capture_output=True, text=True)
     assert res.returncode == 0, f"stderr: {res.stderr}"
 

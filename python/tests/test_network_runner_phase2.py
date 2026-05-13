@@ -47,6 +47,7 @@ def test_phase2_codegen_compile_twochain(tmp_path):
             "--inputs", "/dev/null",
             "--expected", "/dev/null",
             "--workdir", str(work),
+            "--max-phase", "2",
         ],
         capture_output=True,
         text=True,
