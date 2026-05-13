@@ -26,6 +26,13 @@ func.func @two(%a: tensor<8xf16>, %b: tensor<8xf16>,
 }
 
 // CHECK:      "function": "two"
+// CHECK:      "inputs": [
+// CHECK:        "dtype": "f16"
+// CHECK:        "name": "arg0"
+// CHECK:        "shape": [
+// CHECK:          8
+// CHECK:        ]
+// CHECK-COUNT-5: "dtype": "f16"
 // CHECK:      "kernels":
 // CHECK:        "file": "kernel_group0.mlir"
 // CHECK:        "id": "kernel_group0"

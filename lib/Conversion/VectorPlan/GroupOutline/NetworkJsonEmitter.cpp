@@ -14,15 +14,13 @@
 #include "llvm/Support/JSON.h"
 #include "llvm/Support/raw_ostream.h"
 
-using namespace mlir;
-
 namespace mlir::vector_plan {
 
 //===----------------------------------------------------------------------===//
 // Dtype name helper
 //===----------------------------------------------------------------------===//
 
-static std::string dtypeName(Type t) {
+static std::string dtypeName(mlir::Type t) {
   if (t.isF16())    return "f16";
   if (t.isBF16())   return "bf16";
   if (t.isF32())    return "f32";
@@ -36,7 +34,7 @@ static std::string dtypeName(Type t) {
 // Shape/dtype extraction from a RankedTensorType
 //===----------------------------------------------------------------------===//
 
-static llvm::json::Object tensorDescriptor(RankedTensorType ty) {
+static llvm::json::Object tensorDescriptor(mlir::RankedTensorType ty) {
   llvm::json::Array shape;
   for (int64_t d : ty.getShape())
     shape.push_back(d);
@@ -50,14 +48,14 @@ static llvm::json::Object tensorDescriptor(RankedTensorType ty) {
 // emitNetworkJson
 //===----------------------------------------------------------------------===//
 
-llvm::Error emitNetworkJson(ModuleOp module, func::FuncOp coord,
+llvm::Error emitNetworkJson(mlir::ModuleOp module, mlir::func::FuncOp coord,
                             llvm::raw_ostream &os) {
-  SymbolTable symTable(module);
+  mlir::SymbolTable symTable(module);
 
   // Map from SSA Value → its source descriptor (partial json::Object).
   // For network inputs: {"from":"input","name":"argN"}
   // For kernel results: {"from":"kernel","kernel":"<id>","result":N}
-  llvm::DenseMap<Value, llvm::json::Object> valueSource;
+  llvm::DenseMap<mlir::Value, llvm::json::Object> valueSource;
 
   // Seed with coordinator arguments.
   llvm::json::Array inputsArr;
@@ -69,7 +67,7 @@ llvm::Error emitNetworkJson(ModuleOp module, func::FuncOp coord,
     valueSource[arg] = src;
 
     // Only emit tensor-typed args as network inputs (skip non-tensor).
-    auto ty = dyn_cast<RankedTensorType>(arg.getType());
+    auto ty = mlir::dyn_cast<mlir::RankedTensorType>(arg.getType());
     if (!ty)
       continue;
     auto desc = tensorDescriptor(ty);
@@ -80,8 +78,8 @@ llvm::Error emitNetworkJson(ModuleOp module, func::FuncOp coord,
   llvm::json::Array kernelsArr;
   llvm::json::Array outputsArr;
 
-  for (Operation &op : coord.getBody().front()) {
-    if (auto castOp = dyn_cast<tensor::CastOp>(&op)) {
+  for (mlir::Operation &op : coord.getBody().front()) {
+    if (auto castOp = mlir::dyn_cast<mlir::tensor::CastOp>(&op)) {
       // Alias: propagate source descriptor to the cast result.
       auto it = valueSource.find(castOp.getSource());
       if (it != valueSource.end())
@@ -89,38 +87,47 @@ llvm::Error emitNetworkJson(ModuleOp module, func::FuncOp coord,
       continue;
     }
 
-    if (auto retOp = dyn_cast<func::ReturnOp>(&op)) {
+    if (auto retOp = mlir::dyn_cast<mlir::func::ReturnOp>(&op)) {
       for (auto [idx, operand] : llvm::enumerate(retOp.getOperands())) {
         llvm::json::Object outDesc;
         outDesc["name"] = ("out" + llvm::Twine(idx)).str();
         auto it = valueSource.find(operand);
-        if (it != valueSource.end()) {
-          // Copy source fields into outDesc.
-          for (auto &[k, v] : it->second)
-            outDesc[k] = v;
-        }
+        if (it == valueSource.end())
+          return llvm::createStringError(
+              llvm::inconvertibleErrorCode(),
+              "emitNetworkJson: return operand %u of %s has no provenance "
+              "descriptor",
+              static_cast<unsigned>(idx),
+              coord.getName().str().c_str());
+        // Copy source fields into outDesc.
+        for (auto &[k, v] : it->second)
+          outDesc[k] = v;
         outputsArr.push_back(std::move(outDesc));
       }
       continue;
     }
 
-    if (auto callOp = dyn_cast<func::CallOp>(&op)) {
-      StringRef calleeName = callOp.getCallee();
+    if (auto callOp = mlir::dyn_cast<mlir::func::CallOp>(&op)) {
+      llvm::StringRef calleeName = callOp.getCallee();
 
       // Look up callee to check for aclnn.op attr.
-      auto callee = symTable.lookup<func::FuncOp>(calleeName);
+      auto callee = symTable.lookup<mlir::func::FuncOp>(calleeName);
       bool isAclnn = callee && callee->hasAttr("aclnn.op");
       std::string kind = isAclnn ? "aclnn" : "ascendc";
 
       // Build args array.
       llvm::json::Array argsArr;
-      for (Value operand : callOp.getOperands()) {
-        llvm::json::Object argDesc;
+      for (auto [argIdx, operand] : llvm::enumerate(callOp.getOperands())) {
         auto it = valueSource.find(operand);
-        if (it != valueSource.end()) {
-          for (auto &[k, v] : it->second)
-            argDesc[k] = v;
-        }
+        if (it == valueSource.end())
+          return llvm::createStringError(
+              llvm::inconvertibleErrorCode(),
+              "emitNetworkJson: call arg %u of %s has no provenance descriptor",
+              static_cast<unsigned>(argIdx),
+              calleeName.str().c_str());
+        llvm::json::Object argDesc;
+        for (auto &[k, v] : it->second)
+          argDesc[k] = v;
         argsArr.push_back(std::move(argDesc));
       }
 
@@ -131,7 +138,7 @@ llvm::Error emitNetworkJson(ModuleOp module, func::FuncOp coord,
             (calleeName + "_r" + llvm::Twine(rIdx)).str();
         llvm::json::Object resDesc;
         resDesc["name"] = resName;
-        auto ty = dyn_cast<RankedTensorType>(result.getType());
+        auto ty = mlir::dyn_cast<mlir::RankedTensorType>(result.getType());
         if (ty) {
           llvm::json::Array shape;
           for (int64_t d : ty.getShape())
@@ -145,7 +152,7 @@ llvm::Error emitNetworkJson(ModuleOp module, func::FuncOp coord,
         llvm::json::Object src;
         src["from"] = "kernel";
         src["kernel"] = calleeName.str();
-        src["result"] = (int64_t)rIdx;
+        src["result"] = static_cast<int64_t>(rIdx);
         valueSource[result] = std::move(src);
       }
 
@@ -155,10 +162,11 @@ llvm::Error emitNetworkJson(ModuleOp module, func::FuncOp coord,
       kernelEntry["kind"]    = kind;
       if (!isAclnn)
         kernelEntry["file"] = (calleeName + ".mlir").str();
-      if (isAclnn && callee) {
-        if (auto opAttr = callee->getAttrOfType<StringAttr>("aclnn.op"))
+      if (isAclnn) {
+        if (auto opAttr = callee->getAttrOfType<mlir::StringAttr>("aclnn.op"))
           kernelEntry["op"] = opAttr.getValue().str();
-        if (auto layoutAttr = callee->getAttrOfType<StringAttr>("aclnn.layout"))
+        if (auto layoutAttr =
+                callee->getAttrOfType<mlir::StringAttr>("aclnn.layout"))
           kernelEntry["layout"] = layoutAttr.getValue().str();
       }
       kernelEntry["args"]    = std::move(argsArr);
@@ -168,10 +176,10 @@ llvm::Error emitNetworkJson(ModuleOp module, func::FuncOp coord,
     }
 
     // Anything else is unsupported.
-    return llvm::make_error<llvm::StringError>(
-        "emitNetworkJson: unsupported op in coordinator body: " +
-            op.getName().getStringRef().str(),
-        llvm::inconvertibleErrorCode());
+    return llvm::createStringError(
+        llvm::inconvertibleErrorCode(),
+        "emitNetworkJson: unsupported op in coordinator body: %s",
+        op.getName().getStringRef().str().c_str());
   }
 
   // Assemble root object.

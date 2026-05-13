@@ -257,7 +257,8 @@ static void stripVectorPlanAttrs(ModuleOp module) {
 
 static LogicalResult emitFiles(ModuleOp module,
                                 ArrayRef<int32_t> sortedGroupIds,
-                                StringRef outputDir) {
+                                StringRef outputDir,
+                                func::FuncOp coordFunc) {
   if (auto ec = llvm::sys::fs::create_directories(outputDir); ec)
     return module.emitError("cannot create output dir: ") << ec.message();
 
@@ -318,18 +319,9 @@ static LogicalResult emitFiles(ModuleOp module,
   llvm::raw_fd_ostream jsonOs(jsonFile, jec);
   if (jec)
     return module.emitError("cannot open network.json: ") << jec.message();
-  func::FuncOp coord;
-  module.walk([&](func::FuncOp f) -> WalkResult {
-    if (!f.isPrivate()) {
-      coord = f;
-      return WalkResult::interrupt();
-    }
-    return WalkResult::advance();
-  });
-  if (coord)
-    if (auto err = mlir::vector_plan::emitNetworkJson(module, coord, jsonOs))
-      return module.emitError("emitNetworkJson: ")
-             << llvm::toString(std::move(err));
+  if (auto err = mlir::vector_plan::emitNetworkJson(module, coordFunc, jsonOs))
+    return module.emitError("emitNetworkJson: ")
+           << llvm::toString(std::move(err));
 
   return success();
 }
@@ -407,7 +399,7 @@ struct VectorPlanGroupOutlinePass
     // Step 8: Optional file split when outputDir is set
     std::string outDir = outputDir.getValue();
     if (!outDir.empty()) {
-      if (failed(emitFiles(module, sortedGroupIds, outDir)))
+      if (failed(emitFiles(module, sortedGroupIds, outDir, coordFunc)))
         return signalPassFailure();
     }
   }
