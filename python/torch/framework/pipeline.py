@@ -141,7 +141,20 @@ def _run_mlir_pipeline(work_dir: Path) -> bool:
 
     step7 = work_dir / "step7_cann.mlir"
     print("  [step1-7] --vector-plan-codegen")
-    if not _run_afir_opt(step0b, step7, ["--vector-plan-codegen"], afir_opt):
+    # Also dump the IR after the interesting pipeline stages into stages.mlir
+    # (stderr of --mlir-print-ir-after); handy for inspecting the symbolic-shape
+    # flow without re-running by hand.
+    stage_passes = ("afir-symbolize-shapes,vector-plan-tile-fuse,one-shot-bufferize,"
+                    "linalg-to-ascendc,ascendc-parallelize,ascendc-pack-tiling-data,"
+                    "canonicalize-cann-signature")
+    proc = subprocess.run([afir_opt, "--vector-plan-codegen",
+                           f"--mlir-print-ir-after={stage_passes}",
+                           str(step0b), "-o", str(step7)],
+                          capture_output=True, text=True)
+    (work_dir / "stages.mlir").write_text(proc.stderr)
+    if proc.returncode != 0:
+        print("  FAIL: afir-opt --vector-plan-codegen")
+        print(f"  stderr tail: {proc.stderr[-800:]}")
         return False
 
     # afir-translate cannot print cf.assert (dynamic-broadcast checks); drop them.
