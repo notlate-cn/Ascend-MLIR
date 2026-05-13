@@ -3,6 +3,7 @@ add_mlir_library(MLIRVectorPlan
   GroupAnalysis/CanFuse.cpp
   GroupAnalysis/GroupAnalysisPass.cpp
   GroupOutline/GroupOutlinePass.cpp
+  GroupOutline/NetworkJsonEmitter.cpp
   TileFuse/TileFusePass.cpp
   TileFuse/InsertTileBuffers.cpp
   TileFuse/FoldShadowAlloc.cpp
@@ -35,4 +36,5 @@ add_mlir_library(MLIRVectorPlan
   MLIRPass
   AFIRTransforms
   AFIRSymbolicShape
+  LLVMSupport
 )

@@ -1,0 +1,191 @@
+//===- NetworkJsonEmitter.cpp - Emit network.json -------------------------===//
+//
+// Walks a coordinator func body, classifies callees, and writes network.json.
+//
+//===----------------------------------------------------------------------===//
+
+#include "NetworkJsonEmitter.h"
+#include "mlir/Dialect/Func/IR/FuncOps.h"
+#include "mlir/Dialect/Tensor/IR/Tensor.h"
+#include "mlir/IR/BuiltinOps.h"
+#include "mlir/IR/BuiltinTypes.h"
+#include "mlir/IR/SymbolTable.h"
+#include "llvm/ADT/DenseMap.h"
+#include "llvm/Support/JSON.h"
+#include "llvm/Support/raw_ostream.h"
+
+using namespace mlir;
+
+namespace mlir::vector_plan {
+
+//===----------------------------------------------------------------------===//
+// Dtype name helper
+//===----------------------------------------------------------------------===//
+
+static std::string dtypeName(Type t) {
+  if (t.isF16())    return "f16";
+  if (t.isBF16())   return "bf16";
+  if (t.isF32())    return "f32";
+  if (t.isInteger(8))  return "int8";
+  if (t.isInteger(32)) return "int32";
+  if (t.isInteger(64)) return "int64";
+  return "unknown";
+}
+
+//===----------------------------------------------------------------------===//
+// Shape/dtype extraction from a RankedTensorType
+//===----------------------------------------------------------------------===//
+
+static llvm::json::Object tensorDescriptor(RankedTensorType ty) {
+  llvm::json::Array shape;
+  for (int64_t d : ty.getShape())
+    shape.push_back(d);
+  llvm::json::Object desc;
+  desc["shape"] = std::move(shape);
+  desc["dtype"] = dtypeName(ty.getElementType());
+  return desc;
+}
+
+//===----------------------------------------------------------------------===//
+// emitNetworkJson
+//===----------------------------------------------------------------------===//
+
+llvm::Error emitNetworkJson(ModuleOp module, func::FuncOp coord,
+                            llvm::raw_ostream &os) {
+  SymbolTable symTable(module);
+
+  // Map from SSA Value → its source descriptor (partial json::Object).
+  // For network inputs: {"from":"input","name":"argN"}
+  // For kernel results: {"from":"kernel","kernel":"<id>","result":N}
+  llvm::DenseMap<Value, llvm::json::Object> valueSource;
+
+  // Seed with coordinator arguments.
+  llvm::json::Array inputsArr;
+  for (auto [idx, arg] : llvm::enumerate(coord.getArguments())) {
+    std::string argName = ("arg" + llvm::Twine(idx)).str();
+    llvm::json::Object src;
+    src["from"] = "input";
+    src["name"] = argName;
+    valueSource[arg] = src;
+
+    // Only emit tensor-typed args as network inputs (skip non-tensor).
+    auto ty = dyn_cast<RankedTensorType>(arg.getType());
+    if (!ty)
+      continue;
+    auto desc = tensorDescriptor(ty);
+    desc["name"] = argName;
+    inputsArr.push_back(std::move(desc));
+  }
+
+  llvm::json::Array kernelsArr;
+  llvm::json::Array outputsArr;
+
+  for (Operation &op : coord.getBody().front()) {
+    if (auto castOp = dyn_cast<tensor::CastOp>(&op)) {
+      // Alias: propagate source descriptor to the cast result.
+      auto it = valueSource.find(castOp.getSource());
+      if (it != valueSource.end())
+        valueSource[castOp.getResult()] = it->second;
+      continue;
+    }
+
+    if (auto retOp = dyn_cast<func::ReturnOp>(&op)) {
+      for (auto [idx, operand] : llvm::enumerate(retOp.getOperands())) {
+        llvm::json::Object outDesc;
+        outDesc["name"] = ("out" + llvm::Twine(idx)).str();
+        auto it = valueSource.find(operand);
+        if (it != valueSource.end()) {
+          // Copy source fields into outDesc.
+          for (auto &[k, v] : it->second)
+            outDesc[k] = v;
+        }
+        outputsArr.push_back(std::move(outDesc));
+      }
+      continue;
+    }
+
+    if (auto callOp = dyn_cast<func::CallOp>(&op)) {
+      StringRef calleeName = callOp.getCallee();
+
+      // Look up callee to check for aclnn.op attr.
+      auto callee = symTable.lookup<func::FuncOp>(calleeName);
+      bool isAclnn = callee && callee->hasAttr("aclnn.op");
+      std::string kind = isAclnn ? "aclnn" : "ascendc";
+
+      // Build args array.
+      llvm::json::Array argsArr;
+      for (Value operand : callOp.getOperands()) {
+        llvm::json::Object argDesc;
+        auto it = valueSource.find(operand);
+        if (it != valueSource.end()) {
+          for (auto &[k, v] : it->second)
+            argDesc[k] = v;
+        }
+        argsArr.push_back(std::move(argDesc));
+      }
+
+      // Build results array and register results in valueSource.
+      llvm::json::Array resultsArr;
+      for (auto [rIdx, result] : llvm::enumerate(callOp.getResults())) {
+        std::string resName =
+            (calleeName + "_r" + llvm::Twine(rIdx)).str();
+        llvm::json::Object resDesc;
+        resDesc["name"] = resName;
+        auto ty = dyn_cast<RankedTensorType>(result.getType());
+        if (ty) {
+          llvm::json::Array shape;
+          for (int64_t d : ty.getShape())
+            shape.push_back(d);
+          resDesc["shape"] = std::move(shape);
+          resDesc["dtype"] = dtypeName(ty.getElementType());
+        }
+        resultsArr.push_back(std::move(resDesc));
+
+        // Register source descriptor for downstream consumers.
+        llvm::json::Object src;
+        src["from"] = "kernel";
+        src["kernel"] = calleeName.str();
+        src["result"] = (int64_t)rIdx;
+        valueSource[result] = std::move(src);
+      }
+
+      // Build kernel entry.
+      llvm::json::Object kernelEntry;
+      kernelEntry["id"]      = calleeName.str();
+      kernelEntry["kind"]    = kind;
+      if (!isAclnn)
+        kernelEntry["file"] = (calleeName + ".mlir").str();
+      if (isAclnn && callee) {
+        if (auto opAttr = callee->getAttrOfType<StringAttr>("aclnn.op"))
+          kernelEntry["op"] = opAttr.getValue().str();
+        if (auto layoutAttr = callee->getAttrOfType<StringAttr>("aclnn.layout"))
+          kernelEntry["layout"] = layoutAttr.getValue().str();
+      }
+      kernelEntry["args"]    = std::move(argsArr);
+      kernelEntry["results"] = std::move(resultsArr);
+      kernelsArr.push_back(std::move(kernelEntry));
+      continue;
+    }
+
+    // Anything else is unsupported.
+    return llvm::make_error<llvm::StringError>(
+        "emitNetworkJson: unsupported op in coordinator body: " +
+            op.getName().getStringRef().str(),
+        llvm::inconvertibleErrorCode());
+  }
+
+  // Assemble root object.
+  llvm::json::Object root;
+  root["function"] = coord.getName().str();
+  root["inputs"]   = std::move(inputsArr);
+  root["kernels"]  = std::move(kernelsArr);
+  root["outputs"]  = std::move(outputsArr);
+
+  llvm::json::OStream jos(os, /*IndentSize=*/2);
+  jos.value(llvm::json::Value(std::move(root)));
+  os << "\n";
+
+  return llvm::Error::success();
+}
+
+} // namespace mlir::vector_plan

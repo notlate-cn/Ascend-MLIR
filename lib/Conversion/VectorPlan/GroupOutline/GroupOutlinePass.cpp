@@ -1,3 +1,4 @@
+#include "NetworkJsonEmitter.h"
 #include "Conversion/VectorPlan/VectorPlanPasses.h"
 #include "Conversion/VectorPlan/GroupInfo.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
@@ -310,6 +311,25 @@ static LogicalResult emitFiles(ModuleOp module,
   if (ec2)
     return module.emitError("cannot open ") << netFile << ": " << ec2.message();
   module.print(osNet);
+
+  // Also emit network.json describing the coordinator call graph.
+  std::string jsonFile = (outputDir + "/network.json").str();
+  std::error_code jec;
+  llvm::raw_fd_ostream jsonOs(jsonFile, jec);
+  if (jec)
+    return module.emitError("cannot open network.json: ") << jec.message();
+  func::FuncOp coord;
+  module.walk([&](func::FuncOp f) -> WalkResult {
+    if (!f.isPrivate()) {
+      coord = f;
+      return WalkResult::interrupt();
+    }
+    return WalkResult::advance();
+  });
+  if (coord)
+    if (auto err = mlir::vector_plan::emitNetworkJson(module, coord, jsonOs))
+      return module.emitError("emitNetworkJson: ")
+             << llvm::toString(std::move(err));
 
   return success();
 }
