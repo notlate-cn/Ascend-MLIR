@@ -23,6 +23,8 @@ std::unique_ptr<Pass> createAFIRSymbolizeShapesPass();
 
 std::unique_ptr<Pass> createAFIRVerifySymbolicShapesPass();
 
+std::unique_ptr<Pass> createAFIREmitNetworkJsonPass();
+
 namespace afir {
 
 // Canonicalization pass

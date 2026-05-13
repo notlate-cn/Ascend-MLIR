@@ -1,4 +1,4 @@
-#include "NetworkJsonEmitter.h"
+#include "Conversion/VectorPlan/GroupOutline/NetworkJsonEmitter.h"
 #include "Conversion/VectorPlan/VectorPlanPasses.h"
 #include "Conversion/VectorPlan/GroupInfo.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"

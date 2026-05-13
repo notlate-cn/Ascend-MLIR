@@ -84,4 +84,18 @@ def AFIRVerifySymbolicShapesPass : Pass<"afir-verify-symbolic-shapes", "mlir::fu
   let constructor = "mlir::createAFIRVerifySymbolicShapesPass()";
 }
 
+def AFIREmitNetworkJsonPass : Pass<"emit-network-json", "mlir::ModuleOp"> {
+  let summary = "Emit network.json for the coordinator func in the module";
+  let description = [{
+    Walks the (non-private) coordinator func's body, classifies each call by
+    callee `aclnn.op` attribute, and writes network.json (per the network-runner
+    design spec) to the file given by `path`.
+  }];
+  let constructor = "mlir::createAFIREmitNetworkJsonPass()";
+  let options = [
+    Option<"path", "path", "std::string", /*default=*/"\"\"",
+           "Output path for network.json (required)">,
+  ];
+}
+
 #endif // AFIR_TRANSFORMS_PASSES
