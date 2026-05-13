@@ -22,3 +22,16 @@ def test_fused_elementwise():
 
     return Model(), [TensorSpec(("M", "N"), torch.float16),
                      TensorSpec(("M", "N"), torch.float16)]
+
+
+@torch_e2e_test(verify_shapes={"M": 128, "N": 64})
+def test_fused_relu():
+    # relu(a*b + a): torch.export lowers relu to arith.cmpf-ugt + arith.select;
+    # LinalgToAscendC's SelectToMinMaxPattern rewrites it to arith.maximumf so it
+    # actually reaches the kernel (it was being silently dropped before).
+    class Model(torch.nn.Module):
+        def forward(self, a, b):
+            return torch.relu(a * b + a)
+
+    return Model(), [TensorSpec(("M", "N"), torch.float16),
+                     TensorSpec(("M", "N"), torch.float16)]

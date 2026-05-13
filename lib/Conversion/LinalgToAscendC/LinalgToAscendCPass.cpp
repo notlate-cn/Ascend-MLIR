@@ -260,6 +260,54 @@ void AscendCBufferContext::setLiveTensor(Value memref, Value lt) {
 //===----------------------------------------------------------------------===//
 
 namespace {
+
+// torch.export lowers `relu(x)` (and clamp/min/max) to `arith.select` of an
+// `arith.cmpf` comparing the two select operands.  Rewrite that to
+// `arith.maximumf` / `arith.minimumf` so the compute conversion (which knows
+// max/min, not select+cmpf) can lower it instead of silently dropping it.
+struct SelectToMinMaxPattern : OpRewritePattern<arith::SelectOp> {
+  using OpRewritePattern::OpRewritePattern;
+  LogicalResult matchAndRewrite(arith::SelectOp sel,
+                                PatternRewriter &rw) const override {
+    if (!isa<FloatType>(sel.getType()))
+      return failure();
+    auto cmp = sel.getCondition().getDefiningOp<arith::CmpFOp>();
+    if (!cmp)
+      return failure();
+    Value tv = sel.getTrueValue(), fv = sel.getFalseValue();
+    bool sameOrder; // true: cmp(tv, fv); false: cmp(fv, tv)
+    if (cmp.getLhs() == tv && cmp.getRhs() == fv)
+      sameOrder = true;
+    else if (cmp.getLhs() == fv && cmp.getRhs() == tv)
+      sameOrder = false;
+    else
+      return failure();
+    bool gtFamily;
+    switch (cmp.getPredicate()) {
+    case arith::CmpFPredicate::OGT:
+    case arith::CmpFPredicate::OGE:
+    case arith::CmpFPredicate::UGT:
+    case arith::CmpFPredicate::UGE:
+      gtFamily = true;
+      break;
+    case arith::CmpFPredicate::OLT:
+    case arith::CmpFPredicate::OLE:
+    case arith::CmpFPredicate::ULT:
+    case arith::CmpFPredicate::ULE:
+      gtFamily = false;
+      break;
+    default:
+      return failure(); // OEQ/ONE/ORD/... -- not a min/max
+    }
+    // sameOrder == gtFamily  <=>  result is max(tv, fv); else min(tv, fv).
+    if (sameOrder == gtFamily)
+      rw.replaceOpWithNewOp<arith::MaximumFOp>(sel, tv, fv);
+    else
+      rw.replaceOpWithNewOp<arith::MinimumFOp>(sel, tv, fv);
+    return success();
+  }
+};
+
 struct LinalgToAscendCPass
     : public ::impl::LinalgToAscendCPassBase<LinalgToAscendCPass> {
 
@@ -267,6 +315,17 @@ struct LinalgToAscendCPass
     func::FuncOp funcOp = getOperation();
     MLIRContext *ctx = funcOp.getContext();
     OpBuilder builder(ctx);
+
+    // Phase -1: normalize select+cmpf min/max idioms (relu = max(x,0) etc.)
+    // before the compute conversion looks at linalg bodies.
+    {
+      RewritePatternSet pats(ctx);
+      pats.add<SelectToMinMaxPattern>(ctx);
+      if (failed(applyPatternsGreedily(funcOp, std::move(pats)))) {
+        signalPassFailure();
+        return;
+      }
+    }
 
     // -----------------------------------------------------------------------
     // Phase 0: Build the shared pipe + one queue per on-chip alloc.

@@ -1975,6 +1975,14 @@ LogicalResult convertCompute(func::FuncOp funcOp, AscendCBufferContext &ctx) {
             builder.create<MaxL2Op>(loc, accumLt, lhs, rhs, totalElems);
         copyAscendCUnitAttr(genOp.getOperation(), maxL2Op.getOperation());
         valToLt[maxOp.getResult()] = accumLt;
+      } else if (auto minOp = dyn_cast<arith::MinimumFOp>(bodyOp)) {
+        Value lhs = resolve(minOp.getLhs());
+        Value rhs = resolve(minOp.getRhs());
+        if (!lhs || !rhs) continue;
+        auto minL2Op =
+            builder.create<MinL2Op>(loc, accumLt, lhs, rhs, totalElems);
+        copyAscendCUnitAttr(genOp.getOperation(), minL2Op.getOperation());
+        valToLt[minOp.getResult()] = accumLt;
       }
     }
 
