@@ -28,7 +28,8 @@ extern "C" void network(
   static bool initialized = false;
   if (!initialized) {
     initialized = true;
-    if (aclInit(nullptr) != 0) {
+    int rc = aclInit(nullptr);
+    if (rc != ACL_SUCCESS && rc != ACL_ERROR_REPEAT_INITIALIZE) {
       mlir::runtime::aclnn::setHostMode(true);
     }
   }

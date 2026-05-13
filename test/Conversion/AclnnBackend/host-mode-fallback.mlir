@@ -10,10 +10,11 @@ module {
   }
 }
 
-// The generated entry must (a) try aclInit, (b) on failure call setHostMode(true)
-// and continue, NOT exit.
+// The generated entry must (a) try aclInit, (b) on failure (not repeat-init) call
+// setHostMode(true) and continue, NOT exit.
 // CHECK: extern "C" void network(
-// CHECK: aclInit(nullptr)
-// CHECK: setHostMode(true)
+// CHECK: int rc = aclInit(nullptr);
+// CHECK: if (rc != ACL_SUCCESS && rc != ACL_ERROR_REPEAT_INITIALIZE) {
+// CHECK: setHostMode(true);
 // CHECK-NOT: exit(
 // CHECK: network_impl(

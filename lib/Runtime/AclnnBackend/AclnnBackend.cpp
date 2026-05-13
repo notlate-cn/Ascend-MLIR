@@ -235,7 +235,8 @@ static std::string buildNetworkHostCpp(ModuleOp module,
   os << "  static bool initialized = false;\n";
   os << "  if (!initialized) {\n";
   os << "    initialized = true;\n";
-  os << "    if (aclInit(nullptr) != 0) {\n";
+  os << "    int rc = aclInit(nullptr);\n";
+  os << "    if (rc != ACL_SUCCESS && rc != ACL_ERROR_REPEAT_INITIALIZE) {\n";
   os << "      mlir::runtime::aclnn::setHostMode(true);\n";
   os << "    }\n";
   os << "  }\n";
