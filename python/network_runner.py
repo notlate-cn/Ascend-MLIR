@@ -3,10 +3,10 @@
 
 See docs/superpowers/specs/2026-05-13-network-runner-mixed-cpu-sim-design.md.
 
-Phase 1, 2, 3, and 4 are implemented; phase 5 will be added in a follow-up commit.
+Phases 1-5 are implemented.
 
-Note: Phases 2-4 (codegen + compile + sim run + autotune) require the simulator LD_LIBRARY_PATH.
-Run `source examples/env.sh` (or `source examples/env_gser.sh`) before executing.
+Note: Phases 2-5 (codegen + compile + sim run + autotune + final verify) require the simulator
+LD_LIBRARY_PATH. Run `source examples/env.sh` (or `source examples/env_gser.sh`) before executing.
 """
 import argparse
 import json
@@ -332,6 +332,68 @@ def phase4_autotune(work, network, inter, args):
     return tilings_path
 
 
+def phase5_final_run_verify(work, groups, artifacts, tilings_best_path, network, args):
+    """Re-emit host C++ with best tilings, build, run, compare to --expected.
+
+    Returns 0 if all outputs PASS, non-zero on any FAIL.
+    """
+    import numpy as np
+    from runner_utils.build_host import link_host
+
+    # 1) Re-generate host with best tilings.
+    host_cpp = work / "network_host.cpp"
+    run([
+        ACLNN_BACKEND,
+        "--input",           str(groups / "network.mlir"),
+        "--output",          str(host_cpp),
+        "--tilings",         str(tilings_best_path),
+        "--kernel-binaries", str(artifacts),
+    ])
+
+    # 2) g++ link.
+    harness_cpp = REPO / "python/runner_utils/harness.cpp"
+    binary = work / "network_test"
+    has_aclnn = bool(network.aclnn_kernels())
+    cann_home = os.environ.get("ASCEND_HOME_PATH", "/home/gser/Ascend/cann")
+    link_host(
+        host_cpp, harness_cpp, binary, REPO,
+        cann_home=cann_home,
+        soc=args.soc,
+        has_aclnn_ops=has_aclnn,
+    )
+
+    # 3) Run; emit one --output per network output (mandatory: harness's
+    # outputs[] is sized from --output count; mismatch → SIGSEGV at cleanup).
+    out_dir = work / "outputs"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    out_paths = [str(out_dir / f"out{i}.npy") for i in range(len(network.outputs))]
+    cmd = [str(binary)]
+    for p in args.inputs:
+        cmd += ["--input", p]
+    for p in out_paths:
+        cmd += ["--output", p]
+    run(cmd)
+
+    # 4) Compare each output to --expected with atol/rtol.
+    if len(args.expected) != len(out_paths):
+        sys.exit(f"phase 5: --expected count ({len(args.expected)}) != "
+                 f"network output count ({len(out_paths)})")
+    fail = False
+    for i, (got, want) in enumerate(zip(out_paths, args.expected)):
+        a = np.load(got).astype(np.float32)
+        b = np.load(want).astype(np.float32)
+        if a.shape != b.shape:
+            print(f"network.output[{i}]: SHAPE MISMATCH got={a.shape} want={b.shape}  FAIL")
+            fail = True
+            continue
+        max_diff = float(np.max(np.abs(a - b))) if a.size else 0.0
+        ok = np.allclose(a, b, atol=args.atol, rtol=args.rtol, equal_nan=False)
+        print(f"network.output[{i}]: max_diff={max_diff:.4g}  {'PASS' if ok else 'FAIL'}")
+        if not ok:
+            fail = True
+    return 0 if not fail else 1
+
+
 def main():
     ap = argparse.ArgumentParser()
     g = ap.add_mutually_exclusive_group(required=True)
@@ -343,9 +405,9 @@ def main():
     ap.add_argument("--soc", default="Ascend910B1")
     ap.add_argument("--atol", type=float, default=1e-3)
     ap.add_argument("--rtol", type=float, default=1e-2)
-    ap.add_argument("--max-phase", type=int, default=4,
+    ap.add_argument("--max-phase", type=int, default=5,
                     help="Stop after this phase (1=outline, 2=codegen+compile, "
-                         "3=default-build+dump, 4=autotune). Default: 4.")
+                         "3=default-build+dump, 4=autotune, 5=final-build+verify). Default: 5.")
     args = ap.parse_args()
 
     work = Path(args.workdir).absolute()
@@ -366,7 +428,12 @@ def main():
     if args.max_phase < 4:
         return
 
-    phase4_autotune(work, network, inter, args)
+    tilings_best_path = phase4_autotune(work, network, inter, args)
+    if args.max_phase < 5:
+        return
+
+    rc = phase5_final_run_verify(work, groups, artifacts, tilings_best_path, network, args)
+    sys.exit(rc)
 
 
 if __name__ == "__main__":
