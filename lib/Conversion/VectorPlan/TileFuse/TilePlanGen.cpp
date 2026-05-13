@@ -54,7 +54,43 @@ namespace mlir::afir {
 // Above this many bytes, a reduction axis clearly will not fit on-chip whole,
 // so it must be ub-split (≈ AutoFuse's reduce-template feasibility check).
 static constexpr int64_t kReductionTileBudgetBytes = 32 * 1024;
+// Unified Buffer size on dav-c220 (Ascend 910B); a whole on-chip tile larger
+// than this cannot possibly fit, so such a tiling case is deprioritised.
+static constexpr int64_t kUBSizeBytes = 192 * 1024;
 static const double kInfeasible = std::numeric_limits<double>::infinity();
+
+// Conservative whole-tile on-chip footprint (bytes) for `draft`, when every
+// untiled axis has a known static extent.  std::nullopt otherwise -- the real
+// per-shape check then happens in the autotuner (via `footprint_expr`).  The
+// tiled axes use buildPlan's default inner-tile sizes; the buffer count is the
+// fused op's operand count plus a slack for compute temporaries (over-estimate
+// in the count, so the result over-states the footprint -> conservative for the
+// "definitely won't fit" judgement only as a soft penalty, not a hard reject).
+static std::optional<int64_t>
+staticTileFootprintBytes(const vector_plan::CollapsedGroupInfo &info,
+                         const TilePlanDraft &draft, unsigned elemBytes) {
+  constexpr int64_t kDefXBlockSub = 16, kDefRBlock = 64, kDefXBlockX = 16;
+  int64_t elemsPerBuf = 1;
+  for (auto [i, ax] : llvm::enumerate(info.collapsedAxes)) {
+    int64_t sz;
+    if ((int)i == draft.ubTilingAxisY)
+      sz = kDefXBlockSub;
+    else if ((int)i == draft.ubTilingAxisR)
+      sz = kDefRBlock;
+    else if ((int)i == draft.ubTilingAxisX)
+      sz = kDefXBlockX;
+    else {
+      sz = ax.staticSize;
+      if (sz == ShapedType::kDynamic)
+        return std::nullopt;
+    }
+    elemsPerBuf *= sz;
+  }
+  int64_t numBufs = 2;
+  if (!info.topoMembers.empty())
+    numBufs = (int64_t)info.topoMembers[0]->getNumOperands() + 1;
+  return numBufs * elemsPerBuf * (int64_t)elemBytes;
+}
 
 static Value insertFuncArg(func::FuncOp func, OpBuilder &builder,
                             Location loc, int64_t defaultVal,
@@ -300,6 +336,13 @@ double costEstimate(const AxisGrouping &g, const CollapsedGroupInfo &info,
         sz * (int64_t)elemBytes > kReductionTileBudgetBytes)
       return kInfeasible; // R kept whole but won't fit.
   }
+  // ≈ AF's UB-peak penalty (w3): when the whole-tile footprint is statically
+  // known and exceeds the UB, deprioritise this draft.  A soft penalty (not
+  // kInfeasible) so the pass never runs out of feasible drafts; the autotuner
+  // does the per-shape check via `footprint_expr` in vector_plan.tiling_infos.
+  if (auto fp = staticTileFootprintBytes(info, draft, elemBytes);
+      fp && *fp > kUBSizeBytes)
+    return 1.0e9 + (double)*fp; // larger overflow → larger penalty
   return 0.0;
 }
 
