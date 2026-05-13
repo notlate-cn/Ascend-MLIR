@@ -25,8 +25,9 @@ namespace {
 // ---------------------------------------------------------------------------
 class CoordEmitter {
 public:
-  CoordEmitter(ModuleOp module, llvm::raw_ostream &os)
-      : module_(module), os_(os) {}
+  CoordEmitter(ModuleOp module, llvm::raw_ostream &os,
+               const AclnnBackendConfig &cfg)
+      : module_(module), os_(os), cfg_(cfg) {}
 
   void emit(func::FuncOp coord) {
     // Map func arguments to inputs[N].
@@ -97,17 +98,80 @@ private:
       return;
     }
 
-    // AscendC kernel group → emit a TODO stub; a future patch will wire
-    // MixDirectBackend launch helpers here.
-    os_ << "  // TODO: launch " << callOp.getCallee() << "(\n";
-    for (auto [i, arg] : llvm::enumerate(callOp.getOperands()))
-      os_ << "  //   " << nameOf(arg) << (i + 1 < callOp.getNumOperands() ? "," : "") << "\n";
-    os_ << "  // );\n";
-    for (auto res : callOp.getResults()) {
-      std::string n = fresh();
-      os_ << "  TensorInfo " << n << "; // stub result of " << callOp.getCallee() << "\n";
-      names_[res] = n;
+    // AscendC kernel group → call the host launch helper.
+    emitAscendCLaunch(callOp);
+  }
+
+  // Map MLIR element type → aclDataType numeric id used by TensorInfo.dtype.
+  // f16 -> 1 (ACL_FLOAT16), bf16 -> 27, f32 -> 0.  Returns -1 if unknown.
+  static int dtypeIdFor(Type elemTy) {
+    if (elemTy.isF16()) return 1;
+    if (elemTy.isBF16()) return 27;
+    if (elemTy.isF32()) return 0;
+    return -1;
+  }
+
+  // Element size in bytes for the supported dtypes.
+  static int elemBytesFor(Type elemTy) {
+    if (elemTy.isF16() || elemTy.isBF16()) return 2;
+    if (elemTy.isF32()) return 4;
+    return 0;
+  }
+
+  void emitAscendCLaunch(func::CallOp callOp) {
+    const auto kernelName = callOp.getCallee().str();
+    const int numIn = static_cast<int>(callOp.getNumOperands());
+    const int numOut = static_cast<int>(callOp.getNumResults());
+
+    std::string insName = fresh();
+    std::string outsName = fresh();
+
+    // Preallocate output TensorInfos.
+    os_ << "  TensorInfo " << outsName << "[" << std::max(numOut, 1) << "] = {};\n";
+    for (auto [ri, res] : llvm::enumerate(callOp.getResults())) {
+      auto rtt = dyn_cast<RankedTensorType>(res.getType());
+      if (!rtt) {
+        os_ << "  // WARNING: non-ranked-tensor result for " << kernelName << "\n";
+        continue;
+      }
+      auto shape = rtt.getShape();
+      int dtypeId = dtypeIdFor(rtt.getElementType());
+      int elemBytes = elemBytesFor(rtt.getElementType());
+      int64_t nelems = 1;
+      for (int64_t d : shape) nelems *= d;
+      os_ << "  " << outsName << "[" << ri << "].rank = " << shape.size() << ";\n";
+      for (auto [di, d] : llvm::enumerate(shape))
+        os_ << "  " << outsName << "[" << ri << "].shape[" << di << "] = "
+            << d << ";\n";
+      os_ << "  " << outsName << "[" << ri << "].dtype = " << dtypeId << ";\n";
+      os_ << "  " << outsName << "[" << ri << "].data = ::operator new("
+          << (nelems * elemBytes) << ");\n";
     }
+
+    // Build input TensorInfo array.
+    os_ << "  TensorInfo " << insName << "[" << std::max(numIn, 1) << "] = {";
+    for (auto [i, arg] : llvm::enumerate(callOp.getOperands())) {
+      if (i) os_ << ", ";
+      os_ << nameOf(arg);
+    }
+    os_ << "};\n";
+
+    // Call the helper.
+    os_ << "  if (mlir::runtime::hostLaunchAscendCKernel(\n";
+    os_ << "        \"" << kernelName << "\",\n";
+    os_ << "        /*kernelBinariesDir=*/\"" << cfg_.kernelBinariesDir
+        << "\",\n";
+    os_ << "        /*tilingsPath=*/\"" << cfg_.tilingsPath << "\",\n";
+    os_ << "        " << insName << ", " << numIn << ", "
+        << outsName << ", " << numOut << ") != 0) {\n";
+    os_ << "    fprintf(stderr, \"hostLaunchAscendCKernel(" << kernelName
+        << ") failed\\n\");\n";
+    os_ << "    return;\n";
+    os_ << "  }\n";
+
+    // Register result names.
+    for (auto [ri, res] : llvm::enumerate(callOp.getResults()))
+      names_[res] = outsName + "[" + std::to_string(ri) + "]";
   }
 
   void emitReturn(func::ReturnOp retOp) {
@@ -117,6 +181,7 @@ private:
 
   ModuleOp module_;
   llvm::raw_ostream &os_;
+  const AclnnBackendConfig &cfg_;
   llvm::DenseMap<Value, std::string> names_;
   int nextTmp_ = 0;
 };
@@ -198,7 +263,9 @@ static std::string buildNetworkHostCpp(ModuleOp module,
     os << "// kernel_binaries_dir: " << cfg.kernelBinariesDir << "\n";
   os << "#include \"acl/acl.h\"\n";
   os << "#include \"Runtime/AclnnOps.h\"\n";
+  os << "#include \"Runtime/Execution/HostLaunchHelper.h\"\n";
   os << "#include <cstdint>\n";
+  os << "#include <cstdio>\n";
   os << "#include <cstring>\n";
   os << "\n";
   os << "using TensorInfo = mlir::runtime::aclnn::TensorInfo;\n";
@@ -218,7 +285,7 @@ static std::string buildNetworkHostCpp(ModuleOp module,
   os << "    aclrtStream stream) {\n";
 
   {
-    CoordEmitter emitter(module, os);
+    CoordEmitter emitter(module, os, cfg);
     emitter.emit(coord);
   }
 
