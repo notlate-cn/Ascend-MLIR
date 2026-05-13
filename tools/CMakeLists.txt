@@ -1,3 +1,4 @@
+add_subdirectory(aclnn-backend)
 add_subdirectory(afir-opt)
 add_subdirectory(afir-translate)
 add_subdirectory(autotuner)
