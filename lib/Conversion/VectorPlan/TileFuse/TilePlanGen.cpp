@@ -507,12 +507,23 @@ void emitTilingInfos(func::FuncOp func, const TilePlan &plan) {
               ba.getArgNumber(), "vector_plan.default_tile_size"))
         defaultVal = attr.getInt();
 
+      // Static extent of the axis this param tiles -- -1 when dynamic.  Lets
+      // afir-translate / the autotuner cap the search range at the axis size.
+      int64_t axisSize = -1;
+      if (plan.group && tp.axisIdx >= 0 &&
+          tp.axisIdx < (int)plan.group->collapsedAxes.size()) {
+        int64_t s = plan.group->collapsedAxes[tp.axisIdx].staticSize;
+        if (s != ShapedType::kDynamic)
+          axisSize = s;
+      }
+
       assert(ba.getArgNumber() <= (unsigned)INT32_MAX && "arg_index overflow");
       NamedAttrList fieldAttrs;
       fieldAttrs.append("abi_index",
                         IntegerAttr::get(i32Ty, abiIndex));
       fieldAttrs.append("arg_index",
                         IntegerAttr::get(i32Ty, (int32_t)ba.getArgNumber()));
+      fieldAttrs.append("axis_size", IntegerAttr::get(i64Ty, axisSize));
       fieldAttrs.append("default_value",
                         IntegerAttr::get(i64Ty, defaultVal));
       fieldAttrs.append("kind", StringAttr::get(ctx, "tunable"));

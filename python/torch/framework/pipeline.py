@@ -189,9 +189,9 @@ def _run_mlir_pipeline(work_dir: Path) -> bool:
 # ================================================================
 
 def _patch_tiling_space(path: Path) -> None:
-    """Fill empty search ranges for tunable params (afir-translate emits a
-    skeleton).  block_dim_expr is now populated by afir-translate (C2); only
-    fall back if it's still empty (multi-op kernels)."""
+    """Last-resort fallbacks: afir-translate now emits real `values` per tunable
+    param and a `block_dim_expr`; only patch what's still missing (e.g. multi-op
+    kernels with no afir.axis_extents)."""
     ts = json.loads(path.read_text())
     patched = False
     for p in ts.get("tiling_params", []):

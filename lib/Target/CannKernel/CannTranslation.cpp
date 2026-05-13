@@ -2005,6 +2005,48 @@ static void emitTilingSpaceJson(StringRef outPath,
     return rest.substr(0, pos).str() + "_dim" + rest.substr(pos + 1).str();
   };
 
+  // From vector_plan.tiling_infos (set by TilePlanGen): tunable field -> the
+  // static extent of the axis it tiles (-1 if dynamic) and its default value.
+  llvm::DenseMap<StringRef, std::pair<int64_t, int64_t>> tunableInfo; // name -> {axisSize, default}
+  if (auto moduleOp = funcOp->getParentOfType<ModuleOp>()) {
+    if (auto infos = moduleOp->getAttrOfType<ArrayAttr>("vector_plan.tiling_infos")) {
+      for (Attribute ia : infos) {
+        auto entry = dyn_cast<DictionaryAttr>(ia);
+        if (!entry) continue;
+        auto kid = dyn_cast_or_null<StringAttr>(entry.get("kernel_id"));
+        if (!kid || kid.getValue() != kernelName) continue;
+        if (auto fs = dyn_cast_or_null<ArrayAttr>(entry.get("fields"))) {
+          for (Attribute fa : fs) {
+            auto fd = dyn_cast<DictionaryAttr>(fa);
+            if (!fd) continue;
+            auto fn = dyn_cast_or_null<StringAttr>(fd.get("name"));
+            auto as = dyn_cast_or_null<IntegerAttr>(fd.get("axis_size"));
+            auto dv = dyn_cast_or_null<IntegerAttr>(fd.get("default_value"));
+            if (fn)
+              tunableInfo[fn.getValue()] = {as ? as.getInt() : -1,
+                                            dv ? dv.getInt() : 0};
+          }
+        }
+        break;
+      }
+    }
+  }
+  // Power-of-2 sweep for a tile-size param, capped at the axis size (when
+  // known); always non-empty.  The cartesian product (and ordering constraints
+  // like XBLOCK_SUB <= XBLOCK) are pruned by the autotuner.
+  auto genTunableValues = [](int64_t axisSize, int64_t defaultVal) {
+    llvm::SmallVector<int64_t, 8> cand{16, 32, 64, 128, 256};
+    if (defaultVal > 0) cand.push_back(defaultVal);
+    llvm::SmallVector<int64_t, 8> out;
+    for (int64_t v : cand)
+      if (v >= 1 && (axisSize <= 0 || v <= axisSize) && !llvm::is_contained(out, v))
+        out.push_back(v);
+    if (out.empty())
+      out.push_back(axisSize > 0 ? axisSize : (defaultVal > 0 ? defaultVal : 16));
+    llvm::sort(out);
+    return out;
+  };
+
   auto names = tilingType.getNamesAttr().getValue();
 
   if (names.empty()) {
@@ -2023,7 +2065,13 @@ static void emitTilingSpaceJson(StringRef outPath,
       p["shape_key"] = makeShapeKey(name);
     } else {
       p["fixed"] = false;
-      p["values"] = llvm::json::Array{};
+      auto it = tunableInfo.find(name);
+      int64_t axisSize = it != tunableInfo.end() ? it->second.first : -1;
+      int64_t defVal = it != tunableInfo.end() ? it->second.second : 0;
+      llvm::json::Array vals;
+      for (int64_t v : genTunableValues(axisSize, defVal))
+        vals.push_back(v);
+      p["values"] = std::move(vals);
     }
     params.push_back(std::move(p));
   }

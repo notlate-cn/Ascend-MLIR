@@ -658,11 +658,24 @@ static std::vector<SearchResult> runSearch(
 
   int total = static_cast<int>(combos.size());
   std::vector<SearchResult> results;
+  int pruned = 0;
   ExecutionSession session(ExecutionBackendKind::Simulation);
   for (int ci = 0; ci < total; ++ci) {
     std::map<std::string, int64_t> vars = shape;
     for (size_t si = 0; si < search_vars.size(); ++si)
       vars[search_vars[si].name] = combos[ci][si];
+
+    // Prune nonsensical tile-size combos: an inner tile ("<NAME>_SUB") may not
+    // exceed its outer tile ("<NAME>").
+    bool bad = false;
+    for (auto& kv : vars) {
+      if (kv.first.size() > 4 &&
+          kv.first.compare(kv.first.size() - 4, 4, "_SUB") == 0) {
+        auto it = vars.find(kv.first.substr(0, kv.first.size() - 4));
+        if (it != vars.end() && kv.second > it->second) { bad = true; break; }
+      }
+    }
+    if (bad) { ++pruned; continue; }
 
     std::vector<std::pair<std::string, int64_t>> param_vals;
     std::vector<std::string> param_types;
@@ -798,6 +811,9 @@ static std::vector<SearchResult> runSearch(
     llvm::outs().flush();
     results.push_back(sr);
   }
+  if (pruned)
+    llvm::errs() << "Pruned " << pruned << " of " << total
+                 << " tiling combos (inner-tile > outer-tile)\n";
   return results;
 }
 
