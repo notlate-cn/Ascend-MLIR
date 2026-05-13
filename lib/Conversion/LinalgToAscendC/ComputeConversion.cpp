@@ -934,8 +934,21 @@ LogicalResult convertCompute(func::FuncOp funcOp, AscendCBufferContext &ctx) {
         auto maxOp2 = builder.create<MaxL2Op>(loc, dst, lhs, rhs, count);
         copyAscendCUnitAttr(genOp.getOperation(), maxOp2.getOperation());
         if (dst == accumLt) valToLt[maxOp.getResult()] = accumLt;
+      } else if (auto minOp = dyn_cast<arith::MinimumFOp>(bodyOp)) {
+        Value lhs = resolve(minOp.getLhs());
+        Value rhs = resolve(minOp.getRhs());
+        if (!lhs || !rhs) continue;
+        Value dst = chooseDst(minOp.getResult());
+        auto minOp2 = builder.create<MinL2Op>(loc, dst, lhs, rhs, count);
+        copyAscendCUnitAttr(genOp.getOperation(), minOp2.getOperation());
+        if (dst == accumLt) valToLt[minOp.getResult()] = accumLt;
+      } else if (!isa<arith::ConstantOp>(bodyOp)) {
+        // Fail loudly rather than silently emitting a kernel that drops this op.
+        genOp.emitError("LinalgToAscendC: unsupported op in linalg.generic "
+                        "body: ")
+            << bodyOp.getName();
+        return failure();
       }
-      // Other arith ops can be added here as needed.
     }
 
     // ------------------------------------------------------------------
@@ -1983,6 +1996,12 @@ LogicalResult convertCompute(func::FuncOp funcOp, AscendCBufferContext &ctx) {
             builder.create<MinL2Op>(loc, accumLt, lhs, rhs, totalElems);
         copyAscendCUnitAttr(genOp.getOperation(), minL2Op.getOperation());
         valToLt[minOp.getResult()] = accumLt;
+      } else if (!isa<arith::ConstantOp>(bodyOp)) {
+        // Fail loudly rather than silently emitting a kernel that drops this op.
+        genOp.emitError("LinalgToAscendC: unsupported op in linalg.generic "
+                        "body: ")
+            << bodyOp.getName();
+        return failure();
       }
     }
 
