@@ -162,8 +162,6 @@ ScheduleDecisionSet buildScheduleDecisionSet(
                            llvm::Twine(index))
                               .str();
     decision.instance = instance;
-    decision.candidateGuards = instance.candidateGuards;
-    decision.decisionGuards = instance.decisionGuards;
     decision.tailPlans = buildTailPlans(problem, decision.instance);
     decisionSet.decisions.push_back(std::move(decision));
   }
@@ -191,9 +189,10 @@ void printScheduleDecisionSetReport(const ScheduleDecisionSet &decisionSet,
   else {
     os << decisionSet.decisions.front().decisionId << "\n";
     const ScheduleDecision &selectedDecision = decisionSet.decisions.front();
+    const ScheduleInstance &selectedInstance = selectedDecision.instance;
     os << "  candidate_guards = "
-       << selectedDecision.candidateGuards.size() << "\n";
-    os << "  decision_guards = " << selectedDecision.decisionGuards.size()
+       << selectedInstance.candidateGuards.size() << "\n";
+    os << "  decision_guards = " << selectedInstance.decisionGuards.size()
        << "\n";
     os << "  selected_tile_shape = ";
     printTileShape(selectedDecision.instance.tileShape.tileSizes, os);

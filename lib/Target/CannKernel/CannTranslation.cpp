@@ -2141,10 +2141,18 @@ static Value findQueuedDataCopyGlobalSource(Value tensor) {
     Value enqueuedTensor = enqueOp.getTensor();
     for (Operation *tensorUser : enqueuedTensor.getUsers()) {
       auto copyOp = dyn_cast<ascendc::DataCopyL2Op>(tensorUser);
-      if (!copyOp || copyOp.getDst() != enqueuedTensor)
-        continue;
-      if (isa<ascendc::GlobalTensorType>(copyOp.getSrc().getType()))
+      if (copyOp && copyOp.getDst() == enqueuedTensor &&
+          isa<ascendc::GlobalTensorType>(copyOp.getSrc().getType()))
         return copyOp.getSrc();
+
+      // The GM->local DataCopyL2 pre-lowering may already have replaced the
+      // copy with a verbatim block in this pass. That block keeps operands as
+      // (localDst, globalSrc, count), so preserve the source trace here.
+      auto verbatimOp = dyn_cast<emitasc::VerbatimOp>(tensorUser);
+      if (verbatimOp && verbatimOp->getNumOperands() >= 2 &&
+          verbatimOp->getOperand(0) == enqueuedTensor &&
+          isa<ascendc::GlobalTensorType>(verbatimOp->getOperand(1).getType()))
+        return verbatimOp->getOperand(1);
     }
   }
 

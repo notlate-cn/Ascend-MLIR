@@ -18,6 +18,7 @@
 - Phase 5C Realize-to-Phase5 bridge 计划：`docs/superpowers/plans/2026-05-11-ascend-realize-phase5-bridge.md`
 - Phase 5C broadcast-add-reduce mainline E2E 计划：`docs/superpowers/plans/2026-05-11-broadcast-add-reduce-mainline-e2e.md`
 - Axis schedule contract / coalescing 泛化计划：`docs/superpowers/plans/2026-05-12-axis-schedule-contract-coalescing.md`
+- Phase 5C+ dynamic shape mainline completion 计划：`docs/superpowers/plans/2026-05-14-phase5c-dynamic-shape-mainline-completion.md`
 - Phase 5C full pipeline bridge 报告：`docs/Ascend-MLIR-Phase5C-Full-Pipeline-Bridge-Report.zh.md`
 
 说明：`V2` 在本文档中只表示方案版本。当前代码目录、namespace、CMake target、IR attrs、测试 target 使用版本无关 `Ascend` 命名。
@@ -45,8 +46,18 @@
 | Phase 3B | Realize materialization 增强 | `Done` | One-Shot Bufferize、target-aware placement plan、workspace layout/lifetime、explicit data movement plan、memory-space annotation MVP、普通 vector output Phase 5 bridge 已完成；full workspace/copy materialization 转后续增强 |
 | Phase 5 | Translate / runtime artifact 对接 | `Done` | 官方 Ascend backend 入口、support matrix、ABI wrapper、runtime artifact emitters 与 transformer smoke 已完成 |
 | Phase 5C | Full pipeline ordinary acceptance | `Done` | 最小普通 tensor/linalg 用例已通过完整 Phase 0 -> Phase 5 positive smoke；`broadcast-add-reduce`、`relu-broadcast-transpose`、`add-broadcast-concat`、`gather-elementwise-fusion`、`split-relu-brc-add-mul`、`matmul-add-leakyrelu` 已有新主线 demo 并通过 runtime-session sim |
-| Phase 5C+ | Shape-general Schedule 泛化 | `In Progress` | `axisScheduleConstraints` / `axisCoalescingHints`、role-driven reduction tiling、role-driven vector tiling、role-driven cube tiling、tail-policy guards、schedule tile metadata 已落地；vector schedule template 已从 rank-specific 合并为 `vector_generic` 并覆盖 rank1/rank2/rank3；rank2 all-parallel identity 与 rank1 row/col projection vector 已可 selected tile -> `scf.for` materialization -> `ascendc.get_block_idx` parallelize；`broadcast-add-reduce` 动态 M tail 与 N 非 128 验收通过；`relu-broadcast-transpose` 常量投影 broadcast/transpose 已走通；`gather-elementwise-fusion` 已完成 N/K 非 16 tail-policy lowering，覆盖 K tail、N tail、N/K 同时 tail；`split-relu-brc-add-mul` 已走新主线默认验收；`matmul-add-leakyrelu` 已通过 cube/mix 新主线默认验收；后续扩展到多 kernel 与更完整 target-driven tile |
+| Phase 5C+ | Shape-general Schedule 泛化 | `In Progress` | `axisScheduleConstraints` / `axisCoalescingHints`、role-driven reduction/vector/cube tiling、tail-policy guards、schedule tile metadata 已落地；`ScheduleDecision` guard ownership 已收敛到 `ScheduleInstance`；StructuredLowering 已发射 guard/tail marker attrs 和 target tile policy metadata；runtime manifest 已新增 one-entry `kernel_entries` scaffold；transformer dynamic 已有 Normalize + Kernelize prefix entrypoint，full codegen 仍明确 fail-closed；后续扩展到多 kernel DAG、unsupported-op closure 与完整 target-driven tile |
 | Phase 6 | 架构文档与 demo 重写 | `Deferred` | 待 V2 主链路稳定后启动 |
+
+## Design vs Implementation Gap Board
+
+| Area | Design Target | Current Implementation | Status | Next Closure Step |
+|---|---|---|---|---|
+| ScheduleDecision ownership | `ScheduleDecision` refines `ScheduleInstance` without copying instance-owned fields | `ScheduleDecision` owns `instance`; guard counts are read through `instance`; static guard forbids duplicate fields | `Closed` | Keep static contract guard in regression |
+| Structured markers | `TailPlanMarker` / guard markers / cache markers are explicit IR carriers | Schedule emits selected tile, guard marker, tail marker, tail policy and target tile policy attrs | `MVP Closed` | Materialize richer marker objects when cache/runtime consumers need them |
+| Target-driven tile | Tile selection consumes target memory / intrinsic / cost model | Current role-driven `[32,N]` policy is routed through named target tile policy metadata | `MVP Closed` | Replace default policy constants with real target model queries |
+| Multi-kernel manifest | Runtime manifest can describe multiple kernel entries | Runtime manifest emits one-entry `kernel_entries` scaffold while preserving existing single-kernel fields | `MVP Closed` | Expand to multi-kernel DAG entries |
+| Transformer dynamic | Full transformer graph compiles through new mainline | `examples/transformer/run-mainline.sh` proves Normalize + Kernelize prefix and records full codegen unsupported gap explicitly | `Prefix Closed` | Close unsupported ops and multi-kernel DAG for full transformer |
 
 ## Phase 0：V2 MVP 编译主干
 
@@ -54,7 +65,7 @@
 |---|---|---|---|---|
 | V2 pass skeleton | V2-1 / V2-9 | `Done` | `--ascend-normalize`、`--ascend-kernelize`、`--ascend-schedule` | `check-afir` 覆盖 |
 | Target Profile MVP | V2-8 | `Done` | `TargetProfile`、`CannTargetProfileLoader`、`--ascend-print-target-profile` | `test/Target/ascend-target-profile.mlir` |
-| Normalize MVP | V2-2 | `Done` | dialect 白名单、`ascend.normalized` | `test/Conversion/ascend-normalize.mlir` |
+| Normalize MVP | V2-2 | `Done` | dialect 白名单、`cf.assert` shape-guard op 级例外、`ascend.normalized` | `test/Conversion/ascend-normalize.mlir` |
 | Kernelize MVP | V2-3 | `Done` | `ascend.op_role`、`ascend.kernel`、`ascend.primary` | `test/Conversion/ascend-kernelize-mvp.mlir` |
 | Schedule MVP | V2-4 | `Done` | fixed schedule family/template/decision attrs | `test/Conversion/ascend-schedule-mvp.mlir` |
 | Vertical MVP pipeline | V2-9 | `Done` | Normalize -> Kernelize -> Schedule smoke test | `test/Conversion/ascend-pipeline-mvp.mlir` |
@@ -530,7 +541,7 @@ Review / verification:
 | `ComputeLoweringDriver` 对齐 | `Done` | 新增 `--ascend-compute-lower` 正式入口，复用现有 LinalgToAscendC lowering，并通过 support matrix 对 unsupported op / movement path fail-closed；external `func.func` declaration 保守 no-op | `ascend-compute-lower.mlir`；`ascend-compute-lower-unsupported*.mlir`；`ascend-compute-lower-external.mlir`；`AscendBackendSupportMatrixTest` |
 | ABI lowering 对齐 | `Done` | 新增 `--ascend-parallelize`、`--ascend-prepare-for-emit`、`--ascend-canonicalize-cann-signature` 正式入口，旧原型入口保留 | `ascend-backend-abi-wrappers.mlir` |
 | `HostTilingEmitter` | `Done` | `afir-translate --host-tiling-out` 输出静态 shape / 单 kernel C ABI source | `cann-translate-runtime-artifacts.mlir` |
-| `RuntimeManifestBuilder` | `Done` | `afir-translate --runtime-manifest-out` 输出静态 shape / 单 kernel manifest；多 global kernel 显式 unsupported | `cann-translate-runtime-artifacts-unsupported.mlir` |
+| `RuntimeManifestBuilder` | `Done` | `afir-translate --runtime-manifest-out` 输出静态 shape / 单 kernel manifest，并新增 one-entry `kernel_entries` scaffold；多 global kernel 显式 unsupported | `cann-translate-runtime-artifacts-unsupported.mlir` |
 | `tiling_space.json` export | `Done` | `--tiling-space-out` 升级为 `schema_version = "2.0"`，包含 workspace/block dim/schema fields；兼容旧多 global module 选择首个 global kernel 的行为 | `cann-translate-runtime-artifacts.mlir`；`cann-translate-runtime-artifacts-unsupported.mlir` |
 | transformer dynamic smoke | `Done` | `examples/transformer/transformer_dynamic.mlir` 已纳入 Phase 5 验收 smoke；当前支持矩阵外的完整 transformer 图要求明确 unsupported，不允许静默成功 | `ascend-phase5-transformer-dynamic-smoke.mlir` |
 | pre-lowered ordinary example acceptance | `Done` | 旧式前处理路径已保留为 `examples/relu-broadcast-transpose/run-legacy.sh`；默认 `run.sh` 已切到 `run-mainline.sh`，生成 `phase5_tiling_space.json`、`phase5_runtime_manifest.json`、`host_tiling.cpp` 后跑通 runtime-session sim 验证 | xvm mainline run passed：`session.result=success`、`session.validation=pass` |
@@ -542,6 +553,8 @@ Review / verification:
 | axis schedule contract / coalescing 泛化 | `Done` | Schedule 侧新增 axis contract 数据模型、AxisCoalescer 推导 `axisScheduleConstraints` / `axisCoalescingHints` 并输出 debug report；`ScheduleProblem` 消费 axis contract；tail-policy-aware guard generation 已接入；role-driven reduction/vector tile search 选择 `[32,N]` bounded parallel tile；selected tile shape / tail policy metadata 持久化到 scheduled ops、父 `func.func` 和 runtime manifest；Phase 5 对 selected tile materialization、32B runtime buffer 对齐、rows<16 broadcast tail fallback 已闭环 | `docs/superpowers/plans/2026-05-12-axis-schedule-contract-coalescing.md`；xvm 54 个 Ascend/CANN source LIT 54/54 passed；sim matrix `M=65/70/72,N=128`、`M=70,N=123`、`M=128,N=123`、默认 `M=640,N=15000` 全部 validation passed；static checks passed |
 | vector template 泛化 | `Done` | `TemplateRegistry` 将 `vector_static_1d` / `vector_static_2d` 合并为 `vector_generic`，template 数量不随 rank 增长；tiling 仍由 `ScheduleSearch` 基于实际 shape / axis contract 生成 `ScheduleInstance` | `ascend-schedule-template-registry.mlir` 新增 rank3 vector 覆盖；schedule cache/search/pattern-view/mvp LIT 期望同步 |
 | all-parallel vector bounded tile | `Done` | `ScheduleSearch` 对 `vector_generic` 生成 role-driven bounded parallel tile，rank2 dynamic/static 大 shape 优先选择 `[32,N]`；`ascend-compute-lower` 对 rank2 identity 与 rank1 row/col projection all-parallel selected tile 物化 `scf.for` / subview / tiled writeback，随后 `--ascend-parallelize` 将外层 tile loop 映射为 `ascendc.get_block_idx`；broadcast-transpose 等 unsupported map 保守回退旧整块 lowering | `ascend-schedule-search.mlir`；`ascend-schedule-vector-bounded-tile.mlir`；`ascend-compute-lower-selected-all-parallel-tile-materializes-loop.mlir`；`ascend-compute-lower-selected-all-parallel-tile-fallback.mlir`；`ascend-full-pipeline-rank2-elementwise-add.mlir` |
+| Phase 5C+ metadata bridge | `Done` | `ScheduleDecision` 不再复制 instance guard 字段；StructuredLowering 持久化 guard/tail marker attrs 与 target tile policy；target tile 默认策略集中到 `TargetTilePolicy` hook；runtime manifest 保留旧字段并增加 `kernel_entries[0].tilingParams` | `check_ascend_schedule_decision_contract.sh`；`ascend-normalize.mlir`；`ascend-schedule-structured-lowering.mlir`；`ascend-schedule-search.mlir`；`cann-translate-runtime-artifacts.mlir` |
+| transformer_dynamic mainline prefix | `Done` | `examples/transformer/run-mainline.sh` 从 `transformer_dynamic.mlir` 出发跑通 Normalize + Kernelize；完整 transformer codegen 从 kernelized prefix 继续要求明确 unsupported 诊断，不允许静默成功 | xvm `examples/transformer/run-mainline.sh` passed：`transformer_dynamic.mainline_prefix=pass` |
 | split-relu-brc-add-mul mainline E2E | `Done` | `examples/split-relu-brc-add-mul/run-mainline.sh` 从 `step0_input.mlir` 出发，覆盖 split 两路 relu + row/col broadcast + mul + concat；selected all-parallel tile 支持 `(d0)`/`(d1)` rank1 projection，允许共享只读 input root 的两路 producer 插到各自 writeback 前；默认 `run.sh` 已委托新主线，旧 transform-interpreter 路径保留为 `run-legacy.sh` | xvm default run passed；`run_simbackend_examples.sh split-relu-brc-add-mul` passed；5-example SimBackend smoke passed |
 | matmul-add-leakyrelu mainline E2E | `Done` | `examples/matmul-add-leakyrelu/run-mainline.sh` 从 `step0_input.mlir` 出发，覆盖 dynamic `linalg.matmul` + bias add + leaky_relu；Schedule 为 cube 角色生成 bounded M-axis tile，Realize 物化 GM->A1->A2、GM->B1->B2、CO1->VECIN cube/vector bridge，并标注 `AiCore.Cube` / `AiCore.Vector` 供 Phase 5 mix lowering 消费；cube bridge 仅在 matmul 输出后续用途均为同 block/same-kernel/supported vector DPS input 时触发，fanout 到 return/copy/non-vector 时保守拒绝；默认 `run.sh` 已委托新主线，旧 transform-interpreter 路径保留为 `run-legacy.sh` | `ascend-realize-cube-phase5-bridge.mlir`；`ascend-full-pipeline-matmul-add-leakyrelu.mlir`；xvm default run、altshape、repeat/output reuse、6-example SimBackend smoke passed |
 | supported example default entry migration | `Done` | `broadcast-add-reduce`、`relu-broadcast-transpose`、`add-broadcast-concat`、`gather-elementwise-fusion`、`split-relu-brc-add-mul`、`matmul-add-leakyrelu` 的默认 `run.sh` 已委托新主线 `run-mainline.sh`；旧 transform-interpreter 入口保留为 `run-legacy.sh` 便于对比 | 6-example SimBackend smoke passed |
@@ -581,6 +594,7 @@ Review / verification:
 | xvm supported example default entries | `examples/broadcast-add-reduce/run.sh --log` 与 `examples/relu-broadcast-transpose/run.sh --log` 均委托新主线并通过 runtime-session sim：`session.result=success`、`session.validation=pass`；已删除 relu 根目录旧生成物后重跑，确认不依赖 stale artifacts |
 | xvm runtime tool regression | `bash test/tools/runtime/run_runtime.sh` passed；覆盖 runtime-session CLI / vec example / DAG sim / C API / TaskGraph / SimBackend baseline / mix repeat |
 | xvm example smoke follow-up | 删除 broadcast/relu 根目录旧生成物后，`run_simbackend_examples.sh broadcast-add-reduce` passed；`run_simbackend_examples.sh add-broadcast-concat` passed；`run_simbackend_examples.sh gather-elementwise-fusion` passed；`add-broadcast-concat/build_mainline` + `broadcast-add-reduce/build_mainline` cross-session smoke passed |
+| xvm Phase 5C+ focused verification | `check_ascend_schedule_decision_contract.sh` passed；`ninja -C build afir-opt afir-translate` passed；`llvm-lit -v build/test/Conversion --filter="ascend-"` 55/55 passed；`llvm-lit -v build/test/Target` 14/14 passed；`examples/transformer/run-mainline.sh` passed 并报告 `transformer_dynamic.mainline_prefix=pass` |
 
 ## Phase 6：文档与 Demo 收敛
 

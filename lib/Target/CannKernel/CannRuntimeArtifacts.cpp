@@ -479,6 +479,10 @@ emitRuntimeManifestJson(ModuleOp module, StringRef outPath,
       buildScheduleTilingParams(*funcOr);
   if (failed(tilingParams))
     return failure();
+  FailureOr<llvm::json::Object> kernelEntryTilingParams =
+      buildScheduleTilingParams(*funcOr);
+  if (failed(kernelEntryTilingParams))
+    return failure();
 
   llvm::json::Object scheduleEntry;
   scheduleEntry["decisionId"] = "static_0";
@@ -495,6 +499,13 @@ emitRuntimeManifestJson(ModuleOp module, StringRef outPath,
   kernelGraph["nodes"] = std::move(kernelNodes);
   kernelGraph["edges"] = llvm::json::Array{};
 
+  llvm::json::Object kernelEntry;
+  kernelEntry["kernel_id"] = funcOr->getName().str();
+  kernelEntry["entry_index"] = 0;
+  kernelEntry["tilingParams"] = std::move(*kernelEntryTilingParams);
+  llvm::json::Array kernelEntries;
+  kernelEntries.push_back(std::move(kernelEntry));
+
   llvm::json::Object root;
   root["kernelName"] = funcOr->getName().str();
   root["shapeBucketKey"] = "static";
@@ -508,6 +519,7 @@ emitRuntimeManifestJson(ModuleOp module, StringRef outPath,
   root["workspaceSizeBytes"] = 0;
   root["shapeArgOrder"] = std::move(shapeArgOrder);
   root["kernelGraph"] = std::move(kernelGraph);
+  root["kernel_entries"] = std::move(kernelEntries);
   return writeJsonFile(module.getOperation(), outPath, std::move(root));
 }
 
