@@ -714,6 +714,27 @@ static std::vector<SearchResult> runSearch(
     int64_t block_dim = ts.block_dim_expr.empty() ? 1
                         : evalBlockDimExpr(ts.block_dim_expr, vars);
 
+    // Prune combos whose block_dim exceeds the simulator core count.
+    // camodel only models ~32 cores; with block_dim > that, blocks past the
+    // core count are silently dropped (their slice of the output stays zero),
+    // so the result is wrong. Real hardware schedules in waves and would be
+    // fine, so this gate only matters under sim. Override via env if needed.
+    int64_t simMaxBlockDim = 32;
+    if (const char *env = std::getenv("AUTOTUNER_SIM_MAX_BLOCK_DIM"))
+      simMaxBlockDim = std::strtoll(env, nullptr, 10);
+    if (block_dim > simMaxBlockDim) {
+      llvm::outs() << "[" << (ci + 1) << "/" << total << "]";
+      for (auto& kv : param_vals)
+        if (kv.first.compare(0, 4, "dim_") != 0)
+          llvm::outs() << " " << kv.first << "=" << kv.second;
+      llvm::outs() << " block_dim=" << block_dim
+                   << " PRUNED (block_dim > " << simMaxBlockDim
+                   << ", camodel core limit)\n";
+      llvm::outs().flush();
+      ++pruned;
+      continue;
+    }
+
     llvm::outs() << "[" << (ci + 1) << "/" << total << "]";
     for (auto& kv : param_vals)
       if (kv.first.compare(0, 4, "dim_") != 0)
@@ -813,7 +834,7 @@ static std::vector<SearchResult> runSearch(
   }
   if (pruned)
     llvm::errs() << "Pruned " << pruned << " of " << total
-                 << " tiling combos (inner-tile > outer-tile)\n";
+                 << " tiling combos (inner-tile > outer-tile, or block_dim > sim core count)\n";
   return results;
 }
 

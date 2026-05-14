@@ -21,23 +21,23 @@ RUNNER = REPO / "python/network_runner.py"
 
 TWOCHAIN_MLIR = """\
 #map = affine_map<(d0, d1) -> (d0, d1)>
-func.func @twochain(%a: tensor<128x64xf16>, %b: tensor<128x64xf16>,
-                    %c: tensor<128x64xf16>, %d: tensor<128x64xf16>,
-                    %i0: tensor<128x64xf16>, %i1: tensor<128x64xf16>)
-    -> (tensor<128x64xf16>, tensor<128x64xf16>) {
+func.func @twochain(%a: tensor<?x?xf16>, %b: tensor<?x?xf16>,
+                    %c: tensor<?x?xf16>, %d: tensor<?x?xf16>,
+                    %i0: tensor<?x?xf16>, %i1: tensor<?x?xf16>)
+    -> (tensor<?x?xf16>, tensor<?x?xf16>) {
   %x = linalg.generic {indexing_maps = [#map, #map, #map], iterator_types = ["parallel","parallel"]}
-       ins(%a, %b : tensor<128x64xf16>, tensor<128x64xf16>) outs(%i0 : tensor<128x64xf16>) {
+       ins(%a, %b : tensor<?x?xf16>, tensor<?x?xf16>) outs(%i0 : tensor<?x?xf16>) {
   ^bb0(%p: f16, %q: f16, %o: f16):
     %v = arith.addf %p, %q : f16
     linalg.yield %v : f16
-  } -> tensor<128x64xf16>
+  } -> tensor<?x?xf16>
   %y = linalg.generic {indexing_maps = [#map, #map, #map], iterator_types = ["parallel","parallel"]}
-       ins(%c, %d : tensor<128x64xf16>, tensor<128x64xf16>) outs(%i1 : tensor<128x64xf16>) {
+       ins(%c, %d : tensor<?x?xf16>, tensor<?x?xf16>) outs(%i1 : tensor<?x?xf16>) {
   ^bb0(%p: f16, %q: f16, %o: f16):
     %v = arith.mulf %p, %q : f16
     linalg.yield %v : f16
-  } -> tensor<128x64xf16>
-  return %x, %y : tensor<128x64xf16>, tensor<128x64xf16>
+  } -> tensor<?x?xf16>
+  return %x, %y : tensor<?x?xf16>, tensor<?x?xf16>
 }
 """
 

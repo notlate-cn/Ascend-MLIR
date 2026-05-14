@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <cstdlib>
 
 using TensorInfo = mlir::runtime::aclnn::TensorInfo;
 using mlir::runtime::aclnn::run_FlashAttentionScore;
@@ -29,9 +30,14 @@ extern "C" void network(
   static bool initialized = false;
   if (!initialized) {
     initialized = true;
-    int rc = aclInit(nullptr);
-    if (rc != ACL_SUCCESS && rc != ACL_ERROR_REPEAT_INITIALIZE) {
+    const char *force = std::getenv("ASCEND_MLIR_FORCE_HOST_MODE");
+    if (force && force[0] && force[0] != '0') {
       mlir::runtime::aclnn::setHostMode(true);
+    } else {
+      int rc = aclInit(nullptr);
+      if (rc != ACL_SUCCESS && rc != ACL_ERROR_REPEAT_INITIALIZE) {
+        mlir::runtime::aclnn::setHostMode(true);
+      }
     }
   }
   network_impl(inputs, numInputs, outputs, numOutputs, stream);

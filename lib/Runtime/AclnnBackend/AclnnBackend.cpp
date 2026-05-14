@@ -126,7 +126,18 @@ private:
     std::string insName = fresh();
     std::string outsName = fresh();
 
-    // Preallocate output TensorInfos.
+    // Build input TensorInfo array first; outputs may need its shapes for
+    // dynamic dims.
+    os_ << "  TensorInfo " << insName << "[" << std::max(numIn, 1) << "] = {";
+    for (auto [i, arg] : llvm::enumerate(callOp.getOperands())) {
+      if (i) os_ << ", ";
+      os_ << nameOf(arg);
+    }
+    os_ << "};\n";
+
+    // Preallocate output TensorInfos. For dynamic dims (kDynamic in the IR),
+    // copy the dim from the kernel's first input at runtime — works for the v1
+    // elementwise kernels where output shape == first-input shape.
     os_ << "  TensorInfo " << outsName << "[" << std::max(numOut, 1) << "] = {};\n";
     for (auto [ri, res] : llvm::enumerate(callOp.getResults())) {
       auto rtt = dyn_cast<RankedTensorType>(res.getType());
@@ -146,24 +157,23 @@ private:
             << " result " << ri << "\"\n";
         continue;
       }
-      int64_t nelems = 1;
-      for (int64_t d : shape) nelems *= d;
       os_ << "  " << outsName << "[" << ri << "].rank = " << shape.size() << ";\n";
-      for (auto [di, d] : llvm::enumerate(shape))
-        os_ << "  " << outsName << "[" << ri << "].shape[" << di << "] = "
-            << d << ";\n";
+      for (auto [di, d] : llvm::enumerate(shape)) {
+        if (mlir::ShapedType::isDynamic(d)) {
+          os_ << "  " << outsName << "[" << ri << "].shape[" << di << "] = "
+              << insName << "[0].shape[" << di << "];\n";
+        } else {
+          os_ << "  " << outsName << "[" << ri << "].shape[" << di << "] = "
+              << d << ";\n";
+        }
+      }
       os_ << "  " << outsName << "[" << ri << "].dtype = " << dtypeId << ";\n";
-      os_ << "  " << outsName << "[" << ri << "].data = ::operator new("
-          << (nelems * elemBytes) << ");\n";
+      // Compute byte size at runtime so dynamic dims work.
+      os_ << "  { size_t _n = " << elemBytes << "; for (int _d = 0; _d < "
+          << outsName << "[" << ri << "].rank; ++_d) _n *= (size_t)"
+          << outsName << "[" << ri << "].shape[_d]; "
+          << outsName << "[" << ri << "].data = ::operator new(_n); }\n";
     }
-
-    // Build input TensorInfo array.
-    os_ << "  TensorInfo " << insName << "[" << std::max(numIn, 1) << "] = {";
-    for (auto [i, arg] : llvm::enumerate(callOp.getOperands())) {
-      if (i) os_ << ", ";
-      os_ << nameOf(arg);
-    }
-    os_ << "};\n";
 
     // Call the helper.
     os_ << "  if (mlir::runtime::hostLaunchAscendCKernel(\n";
@@ -258,6 +268,7 @@ static std::string buildNetworkHostCpp(ModuleOp module,
   os << "#include <cstdint>\n";
   os << "#include <cstdio>\n";
   os << "#include <cstring>\n";
+  os << "#include <cstdlib>\n";
   os << "\n";
   os << "using TensorInfo = mlir::runtime::aclnn::TensorInfo;\n";
   os << "using mlir::runtime::aclnn::run_" << (!aclnnOps.empty() ? aclnnOps[0] : "FlashAttentionScore") << ";\n";
@@ -289,9 +300,14 @@ static std::string buildNetworkHostCpp(ModuleOp module,
   os << "  static bool initialized = false;\n";
   os << "  if (!initialized) {\n";
   os << "    initialized = true;\n";
-  os << "    int rc = aclInit(nullptr);\n";
-  os << "    if (rc != ACL_SUCCESS && rc != ACL_ERROR_REPEAT_INITIALIZE) {\n";
+  os << "    const char *force = std::getenv(\"ASCEND_MLIR_FORCE_HOST_MODE\");\n";
+  os << "    if (force && force[0] && force[0] != '0') {\n";
   os << "      mlir::runtime::aclnn::setHostMode(true);\n";
+  os << "    } else {\n";
+  os << "      int rc = aclInit(nullptr);\n";
+  os << "      if (rc != ACL_SUCCESS && rc != ACL_ERROR_REPEAT_INITIALIZE) {\n";
+  os << "        mlir::runtime::aclnn::setHostMode(true);\n";
+  os << "      }\n";
   os << "    }\n";
   os << "  }\n";
   os << "  network_impl(inputs, numInputs, outputs, numOutputs, stream);\n";

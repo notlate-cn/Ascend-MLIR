@@ -176,11 +176,50 @@ def phase2_codegen_compile(work, groups, network):
     return artifacts
 
 
+def _resolve_kernel_input_shape(network, kid, arg_idx, runner_inputs):
+    """Get the runtime shape of `kid`'s `arg_idx`-th input.
+
+    network args descriptor `from:input` → load the corresponding runner npy.
+    `from:kernel` → assume the upstream kernel's result has the same shape as
+    its first input (elementwise convention; works for v1 examples).
+    """
+    import numpy as np
+    k = network.kernel_by_id(kid)
+    arg = k["args"][arg_idx]
+    if arg["from"] == "input":
+        # find this input's index in network.inputs
+        for i, inp in enumerate(network.inputs):
+            if inp["name"] == arg["name"]:
+                return np.load(runner_inputs[i]).shape
+        raise RuntimeError(f"input {arg['name']} not found in network.inputs")
+    # from:kernel — recurse into upstream's first input
+    return _resolve_kernel_input_shape(network, arg["kernel"], 0, runner_inputs)
+
+
+def _shape_key_values_for_kernel(space, network, kid, runner_inputs):
+    """Return {shape_key: int} for every shape_key referenced in `space`."""
+    import re
+    out = {}
+    for p in space.get("tiling_params", []):
+        sk = p.get("shape_key")
+        if not sk or sk in out:
+            continue
+        m = re.match(r"^arg(\d+)_dim(\d+)$", sk)
+        if not m:
+            continue
+        arg_idx, dim_idx = int(m.group(1)), int(m.group(2))
+        shape = _resolve_kernel_input_shape(network, kid, arg_idx, runner_inputs)
+        out[sk] = int(shape[dim_idx])
+    return out
+
+
 def phase3_default_build_and_dump(work, groups, network, artifacts, args):
     """Build network_host.cpp with default tilings, g++ link, run, dump intermediates.
 
     Steps:
-      1. Build tilings_default.json from each kernel's _space.json.
+      1. Build tilings_default.json from each kernel's _space.json (tunable params
+         get their first 'values' entry; shape_key fixed params resolve from the
+         actual runner --inputs shapes).
       2. Generate network_host_default.cpp via aclnn-backend.
       3. g++ link against libAscendCRuntime + CANN libs.
       4. Run with --dump-intermediates DIR.
@@ -193,13 +232,25 @@ def phase3_default_build_and_dump(work, groups, network, artifacts, args):
         kid = k["id"]
         space_path = work / f"{kid}_space.json"
         space = json.loads(space_path.read_text())
-        # Tunable params: "fixed": false, default = first entry of "values".
+        # Tunable params: "fixed": false. For default, pick the LARGEST candidate
+        # so block_dim stays small (camodel sims ~32 cores; smaller XBLOCK with
+        # large total → block_dim swamps the device and most elements stay zero).
         params: dict = {}
         for p in space.get("tiling_params", []):
             if not p.get("fixed", False):
                 vals = p.get("values", [])
-                params[p["name"]] = vals[0] if vals else 16
-        params["_block_dim"] = eval_block_dim(space, params)
+                params[p["name"]] = vals[-1] if vals else 16
+        # Shape-keyed fixed params: dim_arg*_* etc. — resolve from runner inputs.
+        shape_keys = _shape_key_values_for_kernel(space, network, kid, args.inputs)
+        for p in space.get("tiling_params", []):
+            sk = p.get("shape_key")
+            if p.get("fixed", False) and sk and sk in shape_keys:
+                params[p["name"]] = shape_keys[sk]
+        # eval_block_dim grammar uses shape_key names directly (e.g. arg0_dim0),
+        # not the param names — register the shape_key → value mapping for it.
+        block_dim_params = dict(params)
+        block_dim_params.update(shape_keys)
+        params["_block_dim"] = eval_block_dim(space, block_dim_params)
         default_tilings[kid] = params
 
     tilings_path = work / "tilings_default.json"
