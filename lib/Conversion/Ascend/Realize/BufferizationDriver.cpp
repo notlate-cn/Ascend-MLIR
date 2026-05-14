@@ -4,7 +4,7 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "Conversion/Ascend/Realize/BufferizationDriver.h"
+#include "BufferizationDriver.h"
 
 #include "Conversion/Ascend/Common/Attributes.h"
 #include "mlir/Dialect/Bufferization/Transforms/Bufferize.h"

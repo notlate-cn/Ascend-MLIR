@@ -4,7 +4,7 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "Conversion/Ascend/Realize/MemoryRealizationDriver.h"
+#include "MemoryRealizationDriver.h"
 
 #include "Conversion/Ascend/Backend/LinalgBodyClassifier.h"
 #include "Target/Ascend/TargetProfile.h"

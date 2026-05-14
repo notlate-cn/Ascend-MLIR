@@ -4,7 +4,7 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "Conversion/Ascend/Realize/RealizeReport.h"
+#include "RealizeReport.h"
 
 namespace mlir::afir::ascend::realize {
 

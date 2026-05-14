@@ -1,5 +1,11 @@
+set(ASCEND_CONVERSION_INTERNAL_INCLUDE_DIR ${CMAKE_SOURCE_DIR}/lib)
+
 add_executable(AscendKernelPatternTest
   AscendKernelPatternTest.cpp
+)
+
+target_include_directories(AscendKernelPatternTest PRIVATE
+  ${ASCEND_CONVERSION_INTERNAL_INCLUDE_DIR}
 )
 
 target_link_libraries(AscendKernelPatternTest PRIVATE
@@ -17,6 +23,10 @@ add_executable(AscendCommonAttributesTest
   AscendCommonAttributesTest.cpp
 )
 
+target_include_directories(AscendCommonAttributesTest PRIVATE
+  ${ASCEND_CONVERSION_INTERNAL_INCLUDE_DIR}
+)
+
 target_link_libraries(AscendCommonAttributesTest PRIVATE
   RuntimeUnitTestSupport
   AscendConversion
@@ -32,6 +42,10 @@ add_executable(AscendScheduleDecisionTest
   AscendScheduleDecisionTest.cpp
 )
 
+target_include_directories(AscendScheduleDecisionTest PRIVATE
+  ${ASCEND_CONVERSION_INTERNAL_INCLUDE_DIR}
+)
+
 target_link_libraries(AscendScheduleDecisionTest PRIVATE
   RuntimeUnitTestSupport
   AscendConversion
@@ -45,6 +59,10 @@ add_test(NAME AscendScheduleDecisionTest
 
 add_executable(AscendRealizePlannerTest
   AscendRealizePlannerTest.cpp
+)
+
+target_include_directories(AscendRealizePlannerTest PRIVATE
+  ${ASCEND_CONVERSION_INTERNAL_INCLUDE_DIR}
 )
 
 target_link_libraries(AscendRealizePlannerTest PRIVATE

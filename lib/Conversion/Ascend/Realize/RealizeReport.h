@@ -7,7 +7,7 @@
 #ifndef ASCEND_MLIR_CONVERSION_ASCEND_REALIZE_REALIZEREPORT_H
 #define ASCEND_MLIR_CONVERSION_ASCEND_REALIZE_REALIZEREPORT_H
 
-#include "Conversion/Ascend/Realize/RealizeTypes.h"
+#include "RealizeTypes.h"
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/Support/raw_ostream.h"
 

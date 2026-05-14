@@ -4,7 +4,7 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "Conversion/Ascend/Realize/PlacementPlanner.h"
+#include "PlacementPlanner.h"
 
 #include "Target/Ascend/TargetMemoryModel.h"
 

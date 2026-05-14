@@ -4,9 +4,9 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "Conversion/Ascend/Kernelize/CandidateMergeAnalysis.h"
+#include "CandidateMergeAnalysis.h"
 
-#include "Conversion/Ascend/Kernelize/CandidateClosure.h"
+#include "CandidateClosure.h"
 #include "mlir/IR/Operation.h"
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/DenseMap.h"

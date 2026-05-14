@@ -7,7 +7,7 @@
 #ifndef ASCEND_MLIR_CONVERSION_ASCEND_REALIZE_MOVEMENTPLANNER_H
 #define ASCEND_MLIR_CONVERSION_ASCEND_REALIZE_MOVEMENTPLANNER_H
 
-#include "Conversion/Ascend/Realize/RealizeTypes.h"
+#include "RealizeTypes.h"
 #include "mlir/Support/LLVM.h"
 
 namespace mlir::afir::ascend::realize {

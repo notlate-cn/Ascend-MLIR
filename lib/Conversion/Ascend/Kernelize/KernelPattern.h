@@ -7,12 +7,12 @@
 #ifndef ASCEND_MLIR_CONVERSION_ASCEND_KERNELIZE_KERNELPATTERN_H
 #define ASCEND_MLIR_CONVERSION_ASCEND_KERNELIZE_KERNELPATTERN_H
 
-#include "Conversion/Ascend/Kernelize/CandidateClosure.h"
-#include "Conversion/Ascend/Kernelize/CandidateMergeAnalysis.h"
-#include "Conversion/Ascend/Kernelize/DependencyAnalysis.h"
-#include "Conversion/Ascend/Kernelize/FusionCandidateAnalysis.h"
-#include "Conversion/Ascend/Kernelize/HorizontalFusionAnalysis.h"
-#include "Conversion/Ascend/Kernelize/KernelizeTypes.h"
+#include "CandidateClosure.h"
+#include "CandidateMergeAnalysis.h"
+#include "DependencyAnalysis.h"
+#include "FusionCandidateAnalysis.h"
+#include "HorizontalFusionAnalysis.h"
+#include "KernelizeTypes.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/Operation.h"
 #include "mlir/IR/Value.h"

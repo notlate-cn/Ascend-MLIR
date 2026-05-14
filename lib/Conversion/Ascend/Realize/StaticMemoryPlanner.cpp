@@ -4,7 +4,7 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "Conversion/Ascend/Realize/StaticMemoryPlanner.h"
+#include "StaticMemoryPlanner.h"
 
 namespace mlir::afir::ascend::realize {
 
