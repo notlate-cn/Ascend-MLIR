@@ -42,15 +42,17 @@ bool hasVectorProducerConsumerChain(const KernelPatternView &pattern) {
 void appendTemplateTag(OpRole role, SmallVectorImpl<std::string> &tags) {
   switch (role) {
   case OpRole::Cube:
-    tags.push_back("cube");
+    tags.push_back(kOpRoleCube.str());
     return;
   case OpRole::Reduction:
-    tags.push_back("reduction");
+    tags.push_back(kOpRoleReduction.str());
     return;
   case OpRole::Vector:
-    tags.push_back("vector");
+    tags.push_back(kOpRoleVector.str());
     return;
   case OpRole::Memory:
+    tags.push_back(kOpRoleMemory.str());
+    return;
   case OpRole::Unknown:
     return;
   }

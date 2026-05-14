@@ -230,6 +230,8 @@ SmallVector<TileShape> generateTileShapes(const ScheduleProblem &problem) {
     appendUniqueTileShape(tileShapes, getFullLogicalAxisTile(problem.axes));
     break;
   case OpRole::Memory:
+    appendUniqueTileShape(tileShapes, getFullLogicalAxisTile(problem.axes));
+    break;
   case OpRole::Unknown:
     break;
   }

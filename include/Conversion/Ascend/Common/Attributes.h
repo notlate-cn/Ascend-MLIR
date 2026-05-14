@@ -17,6 +17,7 @@ inline constexpr llvm::StringLiteral kOpRolesAttr = "ascend.op_roles";
 inline constexpr llvm::StringLiteral kOpRoleVector = "vector";
 inline constexpr llvm::StringLiteral kOpRoleCube = "cube";
 inline constexpr llvm::StringLiteral kOpRoleReduction = "reduction";
+inline constexpr llvm::StringLiteral kOpRoleMemory = "memory";
 inline constexpr llvm::StringLiteral kOpRoleUnsupported = "unsupported";
 inline constexpr llvm::StringLiteral kKernelizeOpRoleVector = "Vector";
 inline constexpr llvm::StringLiteral kKernelizeOpRoleCube = "Cube";
