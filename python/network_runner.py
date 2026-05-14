@@ -162,6 +162,33 @@ def _eval_axis_extent(space: dict, params: dict) -> int:
     return eval_block_dim({"block_dim_expr": expr}, params)
 
 
+def _read_family(work, kid):
+    """Read <kid>_family.json (emitted by CannTranslation P2). Returns the
+    parsed dict, or a synthetic single-variant family when the file is missing
+    (defensive — TileFuse renames produce family.json for every codegen run)."""
+    p = work / f"{kid}_family.json"
+    if p.exists():
+        return json.loads(p.read_text())
+    return {"kernel_id": kid,
+            "variants": [{"id": "v0", "func_name": f"{kid}__v0",
+                          "space_file": f"{kid}__v0_space.json"}]}
+
+
+def _variant_kernel_name(work, kid, picked=None):
+    """Resolve the variant kernel name for `kid`.
+
+    `picked` is the variant id chosen by autotune (from <kid>_best.json's
+    "variant" field). When unset, returns the first (default) variant from
+    family.json — which P1a guarantees to be v0.
+    """
+    family = _read_family(work, kid)
+    if picked:
+        for v in family["variants"]:
+            if v["id"] == picked:
+                return v["func_name"]
+    return family["variants"][0]["func_name"]
+
+
 def phase2_codegen_compile(work, groups, network):
     """For each ascendc kernel: --vector-plan-codegen → -mlir-to-cann → compile.
 
@@ -176,15 +203,21 @@ def phase2_codegen_compile(work, groups, network):
         src = groups / k["file"]
         lowered = work / f"{kid}_lowered.mlir"
         cpp = work / f"{kid}.cpp"
-        space = work / f"{kid}_space.json"
+        space = work / f"{kid}_space.json"  # legacy back-compat (P2 also writes per-variant)
         run([AFIR_OPT, str(src), "--vector-plan-codegen", "-o", str(lowered)])
         run([AFIR_TRANSLATE, "-mlir-to-cann", str(lowered),
              "-o", str(cpp), f"--tiling-space-out={space}"])
-        run([RUNTIME_SESSION,
-             "--kernel", str(cpp),
-             "--kernel-kind", "vec",
-             "--output", str(artifacts / kid),
-             "--name", kid])
+        # Per-variant compile. The .cpp contains all variants' kernel symbols;
+        # each runtime-session call picks one via --name and produces a
+        # variant-specific artifact dir.
+        family = _read_family(work, kid)
+        for v in family["variants"]:
+            vname = v["func_name"]
+            run([RUNTIME_SESSION,
+                 "--kernel", str(cpp),
+                 "--kernel-kind", "vec",
+                 "--output", str(artifacts / vname),
+                 "--name", vname])
     print(f"phase 2 OK → {artifacts}")
     return artifacts
 
@@ -243,7 +276,13 @@ def phase3_default_build_and_dump(work, groups, network, artifacts, args):
     default_tilings: dict = {}
     for k in network.ascendc_kernels():
         kid = k["id"]
-        space_path = work / f"{kid}_space.json"
+        # For default, take the first variant from family.json (v0 by P1a
+        # convention). When P1b enables real multi-variant codegen, default
+        # picker can still safely pick v0 — the autotuner will revisit.
+        family = _read_family(work, kid)
+        default_variant = family["variants"][0]
+        space_path = work / default_variant["space_file"]
+        vkid = default_variant["func_name"]
         space = json.loads(space_path.read_text())
         params: dict = {}
         # Shape-keyed fixed params first: dim_arg*_* — resolve from runner inputs.
@@ -273,7 +312,9 @@ def phase3_default_build_and_dump(work, groups, network, artifacts, args):
         block_dim_params = dict(params)
         block_dim_params.update(shape_keys)
         params["_block_dim"] = eval_block_dim(space, block_dim_params)
-        default_tilings[kid] = params
+        # Key by variant kernel name so HostLaunchHelper's tilings lookup
+        # (which uses the symbol name P4's aclnn-backend emits) succeeds.
+        default_tilings[vkid] = params
 
     tilings_path = work / "tilings_default.json"
     tilings_path.write_text(json.dumps(default_tilings, indent=2))
@@ -355,56 +396,70 @@ def _shape_arg_for_kernel(inter: Path, kid: str, space: dict) -> str:
 
 
 def phase4_autotune(work, network, inter, args):
-    """Run autotuner per ascendc kernel; aggregate tilings_best.json."""
+    """Run autotuner per ascendc kernel family; aggregate tilings_best.json.
+
+    P5: switched from per-variant `--space` to per-family `--family` mode.
+    Each family's autotuner call loops over variants internally and picks the
+    cross-variant best; we read the winning variant name from best.json's
+    `variant` field and key tilings_best by the variant kernel name.
+    """
     tilings_best: dict = {}
     for k in network.ascendc_kernels():
         kid = k["id"]
-        space_path = work / f"{kid}_space.json"
-        cpp_path   = work / f"{kid}.cpp"
+        cpp_path = work / f"{kid}.cpp"
+        family_path = work / f"{kid}_family.json"
+
+        # Use the default-variant's space.json (v0) to derive shape args + the
+        # extent filter; all variants in a family share the same input shapes
+        # and the same axis extent.
+        family = _read_family(work, kid)
+        default_variant = family["variants"][0]
+        default_vkid = default_variant["func_name"]
+        space_path = work / default_variant["space_file"]
         space = json.loads(space_path.read_text())
 
-        # Collect inputs from the dumped intermediates dir, in arg-index order.
+        # Collect inputs from the dumped intermediates dir (named after the
+        # variant kernel — P4 emits hostLaunch with the variant suffix, so
+        # HostLaunchHelper dumps `<vkid>_in_*.npy`).
         in_npys = sorted(
-            inter.glob(f"{kid}_in_*.npy"),
+            inter.glob(f"{default_vkid}_in_*.npy"),
             key=lambda p: int(p.stem.split("_in_")[-1]),
         )
         if not in_npys:
-            sys.exit(f"phase 4: no dumped inputs for {kid} under {inter}")
-        # v1 supports only single-output kernels; assert and read out_0.
-        out0_npy = inter / f"{kid}_out_0.npy"
+            sys.exit(f"phase 4: no dumped inputs for {default_vkid} under {inter}")
+        out0_npy = inter / f"{default_vkid}_out_0.npy"
         if not out0_npy.exists():
             sys.exit(f"phase 4: missing {out0_npy}")
 
-        shape_arg = _shape_arg_for_kernel(inter, kid, space)
+        shape_arg = _shape_arg_for_kernel(inter, default_vkid, space)
         best_path = work / f"{kid}_best.json"
         profile_dir = work / f"{kid}_autotune_profile"
         profile_dir.mkdir(parents=True, exist_ok=True)
 
-        # Filter tunable candidates by the runtime extent. Same upper bound as
-        # phase 3's default-picker uses; written to a sibling space file so the
-        # autotuner doesn't waste trials on XBLOCK values larger than the data.
+        # Filter tunable candidates by the runtime extent (write filtered
+        # per-variant space.json files so --family-mode autotuner picks them
+        # up). Currently N=1 so only v0 is filtered; P1b widens the loop.
         shape_keys = {kv.split("=")[0]: int(kv.split("=")[1])
                        for kv in shape_arg.split(",") if "=" in kv}
         extent = _eval_axis_extent(space, shape_keys)
         if extent > 0:
-            filtered = json.loads(json.dumps(space))  # deep copy
-            for p in filtered.get("tiling_params", []):
-                if not p.get("fixed", False) and "values" in p:
-                    capped = [v for v in p["values"] if v <= extent]
-                    p["values"] = capped if capped else [extent]
-            space_path_eff = work / f"{kid}_space_filtered.json"
-            space_path_eff.write_text(json.dumps(filtered, indent=2))
-        else:
-            space_path_eff = space_path
+            for v in family["variants"]:
+                vspace_path = work / v["space_file"]
+                vspace = json.loads(vspace_path.read_text())
+                for p in vspace.get("tiling_params", []):
+                    if not p.get("fixed", False) and "values" in p:
+                        capped = [val for val in p["values"] if val <= extent]
+                        p["values"] = capped if capped else [extent]
+                vspace_path.write_text(json.dumps(vspace, indent=2))
 
         cmd = [
             AUTOTUNER,
-            "--space",   str(space_path_eff),
-            "--kernel",  str(cpp_path),
-            "--inputs",  ",".join(str(p) for p in in_npys),
+            "--family", str(family_path),
+            "--kernel", str(cpp_path),
+            "--inputs", ",".join(str(p) for p in in_npys),
             "--expected", str(out0_npy),
-            "--shape",   shape_arg,
-            "--output",  str(best_path),
+            "--shape", shape_arg,
+            "--output", str(best_path),
             "--profile-out", str(profile_dir),
             "--atol", str(args.atol),
             "--rtol", str(args.rtol),
@@ -414,7 +469,12 @@ def phase4_autotune(work, network, inter, args):
         bc = json.loads(best_path.read_text())
         params = dict(bc.get("config", {}))
         params["_block_dim"] = int(bc.get("best", {}).get("block_dim", 1))
-        tilings_best[kid] = params
+        # Key by the winning variant's kernel name. Falls back to v0 when
+        # autotuner output is missing the field (shouldn't happen in family
+        # mode).
+        picked = bc.get("variant", "v0")
+        vkid = _variant_kernel_name(work, kid, picked=picked)
+        tilings_best[vkid] = params
 
     tilings_path = work / "tilings_best.json"
     tilings_path.write_text(json.dumps(tilings_best, indent=2))
