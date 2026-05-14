@@ -2248,6 +2248,15 @@ static void fixBrokenOpEmitters(Operation *moduleOp) {
                   loc, constOff);
           }
         }
+      } else if (isa<BlockArgument>(castOp.getOperand())) {
+        // memref.cast directly off a BlockArgument (no subview underneath) —
+        // e.g. the RCore output arg arrives as `memref<f16, strided<[], offset:?>>`
+        // (from materialize_in_destination's bufferization) and is cast to plain
+        // `memref<f16>` before SetGlobalBuffer.  PyAsc's default printer for that
+        // memref.cast emits `half *v = reinterpret_cast<half*>(gm_addr)` (missing
+        // __gm__), which CANN rejects.  Peel the cast: use the BlockArgument
+        // directly; the cleanup pass below erases the now-dead cast.
+        baseBuffer = castOp.getOperand();
       }
     }
 

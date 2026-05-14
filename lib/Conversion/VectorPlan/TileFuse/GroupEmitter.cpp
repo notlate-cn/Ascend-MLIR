@@ -151,8 +151,37 @@ emitGroupWithReductionSplit(OpBuilder &builder, Location loc,
                         .getResult(0);
 
     // RBLOCK scf.for.
-    Value reductionExtent =
-        getAxisExtentValue(builder, loc, info, rblockParam->axisIdx);
+    // Common: span the full R extent (each parallel block does the whole
+    // reduction over R).
+    // RCore (P3b-2c/d): R itself is the block axis, so each core only sees
+    // a slice of R of size parentStep == XBLOCK; span 0..min(XBLOCK,
+    // R - outerR_IV) so the per-core inner reduce stays within its slice.
+    bool rcore = (plan.reduceTemplate == TilePlan::ReduceTemplate::RCore);
+    Value reductionExtent;
+    if (rcore) {
+      Value rExt =
+          getAxisExtentValue(builder, loc, info, rblockParam->axisIdx);
+      // Find the Outer-R TileParam's ssa (XBLOCK) and the outer IV.
+      Value outerStep, outerIV;
+      for (auto &grp : plan.tileable)
+        for (const TileParam &tp : grp)
+          if (tp.axisIdx == rblockParam->axisIdx &&
+              tp.level == TileLevel::Outer) {
+            outerStep = tp.ssa;
+            break;
+          }
+      auto outerIVIt = loopNest.outerLoopIVs.find(rblockParam->axisIdx);
+      assert(outerStep && outerIVIt != loopNest.outerLoopIVs.end() &&
+             "RCore: missing Outer-R TileParam or outerLoopIV");
+      outerIV = outerIVIt->second;
+      Value remaining =
+          builder.create<arith::SubIOp>(loc, rExt, outerIV);
+      reductionExtent =
+          builder.create<arith::MinSIOp>(loc, outerStep, remaining);
+    } else {
+      reductionExtent =
+          getAxisExtentValue(builder, loc, info, rblockParam->axisIdx);
+    }
     auto rFor = builder.create<scf::ForOp>(
         loc, c0, reductionExtent, rblockParam->ssa,
         SmallVector<Value>{accZero});
@@ -160,9 +189,16 @@ emitGroupWithReductionSplit(OpBuilder &builder, Location loc,
     // caller). Just point the builder at the end of the empty body.
     builder.setInsertionPointToEnd(rFor.getBody());
 
-    // IVs inside RBLOCK.
+    // IVs inside RBLOCK.  For RCore the per-core inner IV is local to the
+    // R slice [outerR_IV, outerR_IV+parentStep); compose with the outer IV
+    // so input slicing addresses the absolute R position.
     DenseMap<int, Value> allIVs(parallelIVs);
-    allIVs[rblockParam->axisIdx] = rFor.getInductionVar();
+    Value innerR = rFor.getInductionVar();
+    if (rcore) {
+      Value outerIV = loopNest.outerLoopIVs[rblockParam->axisIdx];
+      innerR = builder.create<arith::AddIOp>(loc, outerIV, innerR);
+    }
+    allIVs[rblockParam->axisIdx] = innerR;
     (void)rblockIV;
 
     SmallVector<Value> newOperands;
@@ -188,12 +224,27 @@ emitGroupWithReductionSplit(OpBuilder &builder, Location loc,
 
     builder.create<scf::YieldOp>(loc, cloned->getResult(0));
 
-    // After RBLOCK: insert into iter arg.
+    // After RBLOCK: write the partial back to the outer (parallel/block) iter
+    // arg's space.  For Common, tensor.insert_slice into a non-empty slice of
+    // a parallel-axis-indexed iterArg bufferizes to subview + memref.copy.
+    // For RCore (full-reduce, rank-0 → rank-0), that insert_slice has empty
+    // offsets/sizes/strides and canonicalize folds it to identity — the cross-
+    // space copy disappears and bufferize complains about inconsistent memory
+    // spaces between the outer iter_arg (GM) and yield (VECCALC).  Use
+    // bufferization.materialize_in_destination, which always emits memref.copy.
     builder.setInsertionPointAfter(rFor);
-    Value inserted = builder.create<tensor::InsertSliceOp>(
-        loc, rFor.getResult(0), iterArg,
-        outSp.offsets, outSp.sizes, outSp.strides);
-    yieldVals.push_back(inserted);
+    Value writtenBack;
+    if (rcore) {
+      writtenBack = builder.create<bufferization::MaterializeInDestinationOp>(
+                            loc, /*resultType=*/iterArg.getType(),
+                            /*source=*/rFor.getResult(0), /*dest=*/iterArg)
+                        .getResult();
+    } else {
+      writtenBack = builder.create<tensor::InsertSliceOp>(
+          loc, rFor.getResult(0), iterArg,
+          outSp.offsets, outSp.sizes, outSp.strides);
+    }
+    yieldVals.push_back(writtenBack);
   }
 
   builder.create<scf::YieldOp>(loc, yieldVals);

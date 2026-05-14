@@ -586,8 +586,7 @@ TilePlan genVectorTilePlan(func::FuncOp func,
     llvm::errs() << "[vector-plan] RCore TilePlan built (P3b-2b), but "
                     "GroupEmitter codegen WIP (P3b-2d). Plan: "
                     "docs/superpowers/plans/2026-05-14-p3b-rcore-reduce-multicore.zh.md\n";
-    llvm::report_fatal_error(
-        "RCore GroupEmitter codegen not yet implemented (P3b-2b)");
+    /* P3b-2d: guard removed — RCore codegen lives in GroupEmitter now. */
   }
   return plan;
 }
@@ -679,6 +678,35 @@ void emitTilingInfos(func::FuncOp func, const TilePlan &plan) {
         // Stamp the bare extent expression too — afir-translate lifts it into
         // tiling_space.json so the runner can evaluate the runtime upper bound
         // (sub product of arg*_dim*) and prune candidates with XBLOCK > extent.
+        func->setAttr("afir.axis_extent_expr",
+                      StringAttr::get(ctx, extExpr));
+      }
+    }
+  }
+  // Static fallback: when symbolic attrs are absent (e.g. an outlined kernel
+  // whose static shape never went through afir-symbolize-shapes) but every
+  // block-fused axis has a known static extent, emit a literal-int expr. The
+  // autotuner's grammar accepts plain integers, so eval just folds.
+  if (blockDimExpr.empty() && plan.group && !plan.blockFusedAxes.empty()) {
+    StringRef xblockName;
+    for (auto &grp : plan.tileable)
+      for (const auto &tp : grp)
+        if (tp.level == TileLevel::Outer)
+          xblockName = tp.name;
+    if (!xblockName.empty()) {
+      int64_t extent = 1;
+      bool allStatic = true;
+      for (int ax : plan.blockFusedAxes) {
+        if (ax < 0 || ax >= (int)plan.group->collapsedAxes.size()) {
+          allStatic = false; break;
+        }
+        int64_t s = plan.group->collapsedAxes[ax].staticSize;
+        if (s == ShapedType::kDynamic) { allStatic = false; break; }
+        extent *= s;
+      }
+      if (allStatic && extent > 0) {
+        std::string extExpr = std::to_string(extent);
+        blockDimExpr = "ceil(" + extExpr + "/" + xblockName.str() + ")";
         func->setAttr("afir.axis_extent_expr",
                       StringAttr::get(ctx, extExpr));
       }
