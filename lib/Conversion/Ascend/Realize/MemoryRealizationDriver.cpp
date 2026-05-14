@@ -12,6 +12,7 @@
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
+#include "mlir/IR/Dominance.h"
 #include "mlir/IR/Matchers.h"
 #include "mlir/IR/PatternMatch.h"
 #include "llvm/ADT/DenseSet.h"
@@ -400,7 +401,8 @@ static bool isDpsInputOperand(linalg::LinalgOp linalgOp,
 static bool collectSafeCubeVectorUses(linalg::MatmulOp matmulOp,
                                       SmallVectorImpl<OpOperand *> &uses,
                                       const backend::AscendBackendSupportMatrix
-                                          &matrix) {
+                                          &matrix,
+                                      DominanceInfo &dominance) {
   Operation *matmul = matmulOp.getOperation();
   StringRef kernelId = getKernelId(matmul);
   Value output = matmulOp.getDpsInitOperand(0)->get();
@@ -414,8 +416,7 @@ static bool collectSafeCubeVectorUses(linalg::MatmulOp matmulOp,
 
     auto linalgUser = dyn_cast<linalg::LinalgOp>(user);
     if (!linalgUser || getKernelId(user) != kernelId ||
-        user->getBlock() != matmul->getBlock() ||
-        !matmul->isBeforeInBlock(user) ||
+        !dominance.properlyDominates(matmul, user) ||
         !backend::isSupportedPhase5VectorOutput(linalgUser, matrix) ||
         !isDpsInputOperand(linalgUser, &use))
       return false;
@@ -556,6 +557,7 @@ MemoryRealizationDriver::materializePhase5Bridge(ModuleOp module) const {
   Attribute co1Space = getMemorySpaceAttr(context, kCo1MemorySpace);
   Attribute vecInSpace = getMemorySpaceAttr(context, kVecInMemorySpace);
   Attribute vecOutSpace = getMemorySpaceAttr(context, kVecOutMemorySpace);
+  DominanceInfo dominance(module);
 
   SmallVector<Phase5CubeBridge, 4> cubeBridges;
   module.walk([&](linalg::MatmulOp matmulOp) {
@@ -565,7 +567,8 @@ MemoryRealizationDriver::materializePhase5Bridge(ModuleOp module) const {
 
     Value originalOutput = matmulOp.getDpsInitOperand(0)->get();
     SmallVector<OpOperand *, 4> vectorInputUses;
-    if (!collectSafeCubeVectorUses(matmulOp, vectorInputUses, matrix))
+    if (!collectSafeCubeVectorUses(matmulOp, vectorInputUses, matrix,
+                                   dominance))
       return;
 
     cubeBridges.push_back({matmulOp, matmulOp.getDpsInputOperand(0)->get(),

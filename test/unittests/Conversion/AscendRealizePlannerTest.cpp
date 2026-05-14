@@ -14,6 +14,7 @@
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
+#include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/Parser/Parser.h"
 
@@ -82,7 +83,8 @@ MovementPlan makeMovementPlan() {
 OwningOpRef<ModuleOp> parseRealizeModule(MLIRContext &context,
                                          StringRef moduleText) {
   context.loadDialect<arith::ArithDialect, func::FuncDialect,
-                      linalg::LinalgDialect, memref::MemRefDialect>();
+                      linalg::LinalgDialect, memref::MemRefDialect,
+                      scf::SCFDialect>();
   return parseSourceString<ModuleOp>(moduleText, &context);
 }
 
@@ -466,4 +468,65 @@ module {
       ++vecOutAllocCount;
   });
   EXPECT_EQ(vecOutAllocCount, 0u);
+}
+
+TEST(AscendRealizePlannerTest,
+     Phase5CubeBridgeDominatesNestedVectorUse) {
+  MLIRContext context;
+  OwningOpRef<ModuleOp> module = parseRealizeModule(
+      context, R"mlir(
+module {
+  func.func @f(%lhs: memref<4x4xf16>, %rhs: memref<4x4xf16>,
+               %bias: memref<4x4xf32>, %cond: i1)
+      attributes {ascend.normalized = true} {
+    %mat = memref.alloc() : memref<4x4xf32>
+    linalg.matmul {
+      ascend.kernel = "kernel_0",
+      ascend.op_role = "cube",
+      ascend.schedule.decision_id = "kernel_0.decision.0",
+      ascend.schedule.structured_lowering = "loop_skeleton_v0"
+    }
+      ins(%lhs, %rhs : memref<4x4xf16>, memref<4x4xf16>)
+      outs(%mat : memref<4x4xf32>)
+    scf.if %cond {
+      %vec = memref.alloc() : memref<4x4xf32>
+      linalg.generic {
+        indexing_maps = [
+          affine_map<(d0, d1) -> (d0, d1)>,
+          affine_map<(d0, d1) -> (d0, d1)>,
+          affine_map<(d0, d1) -> (d0, d1)>],
+        iterator_types = ["parallel", "parallel"]}
+        ins(%mat, %bias : memref<4x4xf32>, memref<4x4xf32>)
+        outs(%vec : memref<4x4xf32>)
+        attrs = {ascend.kernel = "kernel_0",
+                 ascend.op_role = "vector",
+                 ascend.schedule.decision_id = "kernel_0.decision.0",
+                 ascend.schedule.structured_lowering = "loop_skeleton_v0"} {
+      ^bb0(%x: f32, %bias_elem: f32, %old: f32):
+        %sum = arith.addf %x, %bias_elem : f32
+        linalg.yield %sum : f32
+      }
+    }
+    return
+  }
+}
+)mlir");
+  ASSERT_TRUE(module);
+
+  MemoryRealizationDriver driver;
+  FailureOr<llvm::StringMap<Phase5BridgeMaterializationCounts>> counts =
+      driver.materializePhase5Bridge(*module);
+  ASSERT_TRUE(succeeded(counts));
+  ASSERT_EQ(counts->lookup("kernel_0").materializedAllocCount, 6u);
+  ASSERT_EQ(counts->lookup("kernel_0").materializedCopyCount, 5u);
+
+  unsigned vecInAllocCount = 0;
+  module->walk([&](memref::AllocOp allocOp) {
+    auto type = cast<MemRefType>(allocOp.getType());
+    auto space = dyn_cast_or_null<IntegerAttr>(type.getMemorySpace());
+    if (space && space.getInt() ==
+                     static_cast<int64_t>(mlir::ascend::MemoryPlace::VECIN))
+      ++vecInAllocCount;
+  });
+  EXPECT_EQ(vecInAllocCount, 1u);
 }
