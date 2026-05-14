@@ -2794,9 +2794,12 @@ static void fixBrokenOpEmitters(Operation *moduleOp) {
       //   $3 = src bytes = R * A * sizeof(T)   → R = $3 / $2
       //   last operand   = TPipe (for the scratch TBuf)
       //
-      // adv_api ReduceSum<float, RA> supports float only; a non-f32 reduce on a
-      // non-last axis is rejected at C++ compile time by its static_assert
-      // (acceptable: such kernels are not produced today).
+      // adv_api ReduceSum<*, RA> supports float only.  For a half input we
+      // upcast src to float in a VECCALC scratch TBuf, ReduceSum<float, RA>
+      // into a float result TBuf, then downcast back to half $0.  (R2 in the
+      // reduce-codegen-status notes.)
+      bool needUpcast = (elemTypeStr == "half");
+      std::string opTypeStr = needUpcast ? "float" : elemTypeStr;
       std::string pipeRef = pipeTok;
       bool haveLens = (bool)dstQueueLenVal && (bool)srcTBufLenVal;
       if (haveLens) {
@@ -2809,24 +2812,45 @@ static void fixBrokenOpEmitters(Operation *moduleOp) {
         tmpl += "  uint32_t _afir_A = (uint32_t)($0.GetSize());\n";
         tmpl += "  uint32_t _afir_R = (uint32_t)($1.GetSize() / _afir_A);\n";
       }
-      // Scratch for ReduceSum's internal tree reduction.  Over-estimate as the
-      // input byte size (a single-pass tree reduce never needs more than the
-      // input), 32 B-aligned, minimum 256 B for tiny shapes.  Use the InitBuffer
-      // byte-length ($3) when available rather than GetSize() — the simulator's
-      // LocalTensor::GetSize() is unreliable for loop-local InitBuffer'd tensors.
-      if (haveLens)
-        tmpl += "  uint32_t _afir_ws_bytes = (uint32_t)" + srcLenTok + ";\n";
-      else
-        tmpl += "  uint32_t _afir_ws_bytes = (uint32_t)$1.GetSize() * (uint32_t)sizeof(" +
-                elemTypeStr + ");\n";
+      // Scratch for ReduceSum's internal tree reduction, sized in the *op*
+      // type (float when upcasting from half).  Over-estimate as the float
+      // input byte size, 32 B-aligned, minimum 256 B.
+      tmpl += "  uint32_t _afir_ws_bytes = _afir_R * _afir_A * (uint32_t)sizeof(" +
+              opTypeStr + ");\n";
       tmpl += "  _afir_ws_bytes = (_afir_ws_bytes < 256u) ? 256u : _afir_ws_bytes;\n";
       tmpl += "  _afir_ws_bytes = ((_afir_ws_bytes + 31u) / 32u) * 32u;\n";
       tmpl += "  AscendC::TBuf<AscendC::TPosition::VECCALC> _afir_tbuf_ws;\n";
       tmpl += "  " + pipeRef + ".InitBuffer(_afir_tbuf_ws, _afir_ws_bytes);\n";
       tmpl += "  AscendC::LocalTensor<uint8_t> _afir_ws = _afir_tbuf_ws.Get<uint8_t>();\n";
+
+      std::string srcRef = "$1";
+      std::string dstRef = "$0";
+      if (needUpcast) {
+        // Float src TBuf (size = R*A*4 bytes), Cast half→float.
+        tmpl += "  uint32_t _afir_src_bytes = _afir_R * _afir_A * (uint32_t)sizeof(float);\n";
+        tmpl += "  _afir_src_bytes = ((_afir_src_bytes + 31u) / 32u) * 32u;\n";
+        tmpl += "  AscendC::TBuf<AscendC::TPosition::VECCALC> _afir_tbuf_srcf;\n";
+        tmpl += "  " + pipeRef + ".InitBuffer(_afir_tbuf_srcf, _afir_src_bytes);\n";
+        tmpl += "  AscendC::LocalTensor<float> _afir_srcf = _afir_tbuf_srcf.Get<float>();\n";
+        // Float dst TBuf (size = A*4 bytes).
+        tmpl += "  uint32_t _afir_dst_bytes = _afir_A * (uint32_t)sizeof(float);\n";
+        tmpl += "  _afir_dst_bytes = ((_afir_dst_bytes + 31u) / 32u) * 32u;\n";
+        tmpl += "  AscendC::TBuf<AscendC::TPosition::VECCALC> _afir_tbuf_dstf;\n";
+        tmpl += "  " + pipeRef + ".InitBuffer(_afir_tbuf_dstf, _afir_dst_bytes);\n";
+        tmpl += "  AscendC::LocalTensor<float> _afir_dstf = _afir_tbuf_dstf.Get<float>();\n";
+        tmpl += "  AscendC::Cast<float, half>(_afir_srcf, $1, AscendC::RoundMode::CAST_NONE, _afir_R * _afir_A);\n";
+        tmpl += "  AscendC::PipeBarrier<PIPE_V>();\n";
+        srcRef = "_afir_srcf";
+        dstRef = "_afir_dstf";
+      }
       tmpl += "  uint32_t _afir_srcShape[2] = {_afir_R, _afir_A};\n";
-      tmpl += "  AscendC::ReduceSum<" + elemTypeStr +
-              ", AscendC::Pattern::Reduce::RA>($0, $1, _afir_ws, _afir_srcShape, false);\n";
+      tmpl += "  AscendC::ReduceSum<" + opTypeStr +
+              ", AscendC::Pattern::Reduce::RA>(" + dstRef + ", " + srcRef +
+              ", _afir_ws, _afir_srcShape, false);\n";
+      if (needUpcast) {
+        tmpl += "  AscendC::PipeBarrier<PIPE_V>();\n";
+        tmpl += "  AscendC::Cast<half, float>($0, _afir_dstf, AscendC::RoundMode::CAST_RINT, _afir_A);\n";
+      }
       tmpl += "}";
     }
 
@@ -3072,18 +3096,21 @@ LogicalResult mlir::translateToCannKernel(Operation *op, raw_ostream &os,
     return {name.substr(0, pos).str(), ("v" + tail).str()};
   };
 
-  // Deduplicate struct declarations: P1b emits multiple variant funcs in the
-  // same .cpp; PyStructType identity isn't guaranteed across clones, so we
-  // dedup by struct name (typically "TilingData"). Two variants of the same
-  // kernel always share the schema. If a future case needs genuinely
-  // different struct layouts in one .cpp, revisit this dedup.
-  llvm::StringSet<> emittedStructs;
+  // Emit the TilingData struct decl just once. P1b's multi-variant codegen
+  // produces N aicore funcs in this module, all sharing the same struct
+  // schema (they're clones of one source kernel before TilePlanGen). The
+  // emitter writes the C++ name "TilingData", so emitting per-func would
+  // cause `redefinition of TilingData` at compile time. If two genuinely
+  // different schemas ever end up in one .cpp, dedup needs to key on
+  // struct content rather than just "first-one-wins".
+  bool tilingStructEmitted = false;
   for (func::FuncOp funcOp : aicoreFuncs) {
     auto args = funcOp.getArguments();
     auto tilingType = cast<emitasc::PyStructType>(args.back().getType());
-    if (emittedStructs.insert(tilingType.getName().str()).second) {
+    if (!tilingStructEmitted) {
       if (failed(emitTilingStructDecl(emitter, funcOp.getLoc(), tilingType)))
         return failure();
+      tilingStructEmitted = true;
     }
 
     if (tilingSpaceOutPath.empty()) continue;
