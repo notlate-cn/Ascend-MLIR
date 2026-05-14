@@ -65,15 +65,16 @@ bool containsFamilyPair(ArrayRef<std::string> lhsFamilies,
 
 std::optional<StringRef> resolveTableFamily(ArrayRef<std::string> lhsFamilies,
                                             ArrayRef<std::string> rhsFamilies) {
-  if (containsFamilyPair(lhsFamilies, rhsFamilies, "vector", "reduction"))
-    return StringRef("reduction");
+  if (containsFamilyPair(lhsFamilies, rhsFamilies, kOpRoleVector,
+                         kOpRoleReduction))
+    return StringRef(kOpRoleReduction);
 
-  if (containsFamilyPair(lhsFamilies, rhsFamilies, "cube", "vector"))
-    return StringRef("cube");
+  if (containsFamilyPair(lhsFamilies, rhsFamilies, kOpRoleCube, kOpRoleVector))
+    return StringRef(kOpRoleCube);
 
-  if (containsFamily(lhsFamilies, "vector") &&
-      containsFamily(rhsFamilies, "vector"))
-    return StringRef("vector");
+  if (containsFamily(lhsFamilies, kOpRoleVector) &&
+      containsFamily(rhsFamilies, kOpRoleVector))
+    return StringRef(kOpRoleVector);
 
   return std::nullopt;
 }
@@ -226,6 +227,15 @@ void printStringList(raw_ostream &os, ArrayRef<std::string> strings) {
   os << "]";
 }
 
+void printPrimitiveList(raw_ostream &os,
+                        ArrayRef<KernelizePrimitiveKind> primitives) {
+  os << "[";
+  llvm::interleaveComma(primitives, os, [&](KernelizePrimitiveKind primitive) {
+    os << "\"" << stringifyKernelizePrimitiveKind(primitive) << "\"";
+  });
+  os << "]";
+}
+
 } // namespace
 
 SmallVector<MergedCandidate>
@@ -279,7 +289,7 @@ void emitCandidateMergeReport(raw_ostream &os,
     os << " internal_ops = ";
     printOpIdList(os, candidate.internalOps, index);
     os << " primitive_combo = ";
-    printStringList(os, candidate.primitiveCombo);
+    printPrimitiveList(os, candidate.primitiveCombo);
     os << " closed = " << (candidate.closure.isClosed ? "true" : "false")
        << " benefit = " << candidate.benefitScore << " families = ";
     printStringList(os, candidate.scheduleContract.templateFamilies);

@@ -194,7 +194,8 @@ ScheduleContract buildFallbackContract(StringRef roleName) {
   return contract;
 }
 
-bool opRolesAttrHasKernelizeRole(Operation *op, StringRef roleName) {
+bool opRolesAttrHasKernelizeRole(Operation *op, OpRole role) {
+  StringRef roleName = stringifyOpRole(role);
   auto roles = op->getAttrOfType<ArrayAttr>(kOpRolesAttr);
   if (!roles)
     return false;
@@ -207,11 +208,11 @@ bool opRolesAttrHasKernelizeRole(Operation *op, StringRef roleName) {
 }
 
 ScheduleContract buildFallbackContract(Operation *op) {
-  if (opRolesAttrHasKernelizeRole(op, "Cube"))
+  if (opRolesAttrHasKernelizeRole(op, OpRole::Cube))
     return buildFallbackContract(kOpRoleCube);
-  if (opRolesAttrHasKernelizeRole(op, "Reduction"))
+  if (opRolesAttrHasKernelizeRole(op, OpRole::Reduction))
     return buildFallbackContract(kOpRoleReduction);
-  if (opRolesAttrHasKernelizeRole(op, "Vector"))
+  if (opRolesAttrHasKernelizeRole(op, OpRole::Vector))
     return buildFallbackContract(kOpRoleVector);
 
   auto role = op->getAttrOfType<StringAttr>(kOpRoleAttr);
@@ -232,6 +233,36 @@ KernelPattern buildPatternFromCandidate(const KernelPatternCandidate &candidate)
   pattern.primaryOps.append(candidate.primaryOps.begin(),
                             candidate.primaryOps.end());
   pattern.scheduleContract = candidate.scheduleContract;
+  return pattern;
+}
+
+void appendTemplateFamilies(SmallVectorImpl<std::string> &families,
+                            ArrayRef<std::string> newFamilies) {
+  for (StringRef newFamily : newFamilies) {
+    bool seen = llvm::any_of(families, [&](StringRef existingFamily) {
+      return existingFamily == newFamily;
+    });
+    if (!seen)
+      families.push_back(newFamily.str());
+  }
+}
+
+KernelPattern
+buildPatternFromCandidateGroup(ArrayRef<unsigned> candidateIds,
+                               ArrayRef<KernelPatternCandidate> candidates,
+                               const ProducerConsumerIndex &index) {
+  KernelPattern pattern;
+  for (unsigned candidateId : candidateIds) {
+    if (candidateId >= candidates.size())
+      continue;
+    const KernelPatternCandidate &candidate = candidates[candidateId];
+    appendOps(pattern.internalOps, candidate.internalOps);
+    appendOps(pattern.primaryOps, candidate.primaryOps);
+    appendTemplateFamilies(pattern.scheduleContract.templateFamilies,
+                           candidate.scheduleContract.templateFamilies);
+  }
+  sortUniqueOpsByOpId(pattern.internalOps, index);
+  sortUniqueOpsByOpId(pattern.primaryOps, index);
   return pattern;
 }
 
@@ -256,6 +287,65 @@ bool overlapsSelected(ArrayRef<Operation *> ops,
 void markSelected(ArrayRef<Operation *> ops, DenseSet<Operation *> &selectedOps) {
   for (Operation *op : ops)
     selectedOps.insert(op);
+}
+
+DenseMap<unsigned, SmallVector<unsigned>>
+buildUndirectedEdgeAdjacency(ArrayRef<KernelPatternEdge> edges,
+                             KernelPatternEdgeKind kind, unsigned nodeCount) {
+  DenseMap<unsigned, SmallVector<unsigned>> adjacency;
+  for (const KernelPatternEdge &edge : edges) {
+    if (edge.kind != kind || edge.from >= nodeCount || edge.to >= nodeCount)
+      continue;
+    adjacency[edge.from].push_back(edge.to);
+    adjacency[edge.to].push_back(edge.from);
+  }
+  for (auto &entry : adjacency)
+    sortUniqueIds(entry.second);
+  return adjacency;
+}
+
+SmallVector<unsigned>
+collectConnectedCandidateIds(unsigned root,
+                             const DenseMap<unsigned, SmallVector<unsigned>>
+                                 &adjacency) {
+  SmallVector<unsigned> worklist;
+  SmallVector<unsigned> component;
+  DenseSet<unsigned> visited;
+
+  worklist.push_back(root);
+  while (!worklist.empty()) {
+    unsigned current = worklist.pop_back_val();
+    if (!visited.insert(current).second)
+      continue;
+
+    component.push_back(current);
+    auto it = adjacency.find(current);
+    if (it == adjacency.end())
+      continue;
+    for (unsigned next : it->second)
+      worklist.push_back(next);
+  }
+
+  sortUniqueIds(component);
+  return component;
+}
+
+bool hasMustSeparateConflict(ArrayRef<unsigned> candidateIds,
+                             const DenseSet<unsigned> &selectedCandidateIds,
+                             ArrayRef<KernelPatternEdge> edges) {
+  for (const KernelPatternEdge &edge : edges) {
+    if (edge.kind != KernelPatternEdgeKind::MustSeparate)
+      continue;
+
+    bool fromInGroup = llvm::is_contained(candidateIds, edge.from);
+    bool toInGroup = llvm::is_contained(candidateIds, edge.to);
+    if (fromInGroup && toInGroup)
+      return true;
+    if ((fromInGroup && selectedCandidateIds.contains(edge.to)) ||
+        (toInGroup && selectedCandidateIds.contains(edge.from)))
+      return true;
+  }
+  return false;
 }
 
 void assignFinalPatternIds(SmallVectorImpl<KernelPattern> &patterns) {
@@ -390,14 +480,35 @@ KernelPartitioner::partition(const KernelPatternGraph &graph,
                              const DependencyAnalysisResult &deps) const {
   SmallVector<KernelPattern> patterns;
   DenseSet<Operation *> selectedOps;
+  DenseSet<unsigned> selectedCandidateIds;
+  DenseMap<unsigned, SmallVector<unsigned>> coLocationAdjacency =
+      buildUndirectedEdgeAdjacency(graph.edges,
+                                   KernelPatternEdgeKind::MustCoLocate,
+                                   static_cast<unsigned>(graph.nodes.size()));
 
-  for (const KernelPatternCandidate &candidate : graph.nodes) {
+  for (auto [candidateIndex, candidate] : llvm::enumerate(graph.nodes)) {
+    unsigned candidateId = static_cast<unsigned>(candidateIndex);
     if (candidate.internalOps.empty() ||
-        overlapsSelected(candidate.internalOps, selectedOps))
+        selectedCandidateIds.contains(candidateId))
       continue;
 
-    patterns.push_back(buildPatternFromCandidate(candidate));
-    markSelected(candidate.internalOps, selectedOps);
+    SmallVector<unsigned> candidateGroup =
+        collectConnectedCandidateIds(candidateId, coLocationAdjacency);
+    KernelPattern pattern =
+        candidateGroup.size() == 1
+            ? buildPatternFromCandidate(candidate)
+            : buildPatternFromCandidateGroup(candidateGroup, graph.nodes,
+                                             deps.index);
+    if (pattern.internalOps.empty() ||
+        overlapsSelected(pattern.internalOps, selectedOps) ||
+        hasMustSeparateConflict(candidateGroup, selectedCandidateIds,
+                                graph.edges))
+      continue;
+
+    markSelected(pattern.internalOps, selectedOps);
+    for (unsigned selectedCandidateId : candidateGroup)
+      selectedCandidateIds.insert(selectedCandidateId);
+    patterns.push_back(std::move(pattern));
   }
 
   for (Operation *op : deps.index.orderedOps) {

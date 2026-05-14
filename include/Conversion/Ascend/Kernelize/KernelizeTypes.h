@@ -58,6 +58,15 @@ enum class CandidateKind {
   HandwrittenPattern
 };
 
+enum class KernelizePrimitiveKind {
+  Unknown,
+  ElementwiseChain,
+  ConsumerIntoPrimary,
+  ReductionInlining,
+  FallbackSingleOp,
+  HandwrittenPattern
+};
+
 enum class KernelPatternEdgeKind {
   DataDependency,
   Overlap,
@@ -143,6 +152,25 @@ inline llvm::StringRef stringifyCandidateKind(CandidateKind kind) {
     return "HandwrittenPattern";
   }
   return "Fusion";
+}
+
+inline llvm::StringRef
+stringifyKernelizePrimitiveKind(KernelizePrimitiveKind kind) {
+  switch (kind) {
+  case KernelizePrimitiveKind::Unknown:
+    return "Unknown";
+  case KernelizePrimitiveKind::ElementwiseChain:
+    return "ElementwiseChain";
+  case KernelizePrimitiveKind::ConsumerIntoPrimary:
+    return "ConsumerIntoPrimary";
+  case KernelizePrimitiveKind::ReductionInlining:
+    return "ReductionInlining";
+  case KernelizePrimitiveKind::FallbackSingleOp:
+    return "FallbackSingleOp";
+  case KernelizePrimitiveKind::HandwrittenPattern:
+    return "HandwrittenPattern";
+  }
+  return "Unknown";
 }
 
 inline llvm::StringRef
