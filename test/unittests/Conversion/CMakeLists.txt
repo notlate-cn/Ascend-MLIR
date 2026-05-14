@@ -28,6 +28,21 @@ add_test(NAME AscendCommonAttributesTest
   COMMAND $<TARGET_FILE:AscendCommonAttributesTest>
 )
 
+add_executable(AscendScheduleDecisionTest
+  AscendScheduleDecisionTest.cpp
+)
+
+target_link_libraries(AscendScheduleDecisionTest PRIVATE
+  RuntimeUnitTestSupport
+  AscendConversion
+)
+
+add_dependencies(RuntimeUnitTests AscendScheduleDecisionTest)
+
+add_test(NAME AscendScheduleDecisionTest
+  COMMAND $<TARGET_FILE:AscendScheduleDecisionTest>
+)
+
 add_executable(AscendRealizePlannerTest
   AscendRealizePlannerTest.cpp
 )

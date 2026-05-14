@@ -181,6 +181,11 @@ struct TargetTilePolicy {
   std::string policyId = "target_default_32";
   int64_t defaultParallelTile = 32;
   int64_t semanticAlignmentGranularity = 16;
+  int64_t vectorBufferCount = 4;
+  SmallVector<AxisTailPolicy, 5> tailPolicyPreference = {
+      AxisTailPolicy::MaskedTail, AxisTailPolicy::ScalarEpilogue,
+      AxisTailPolicy::PadAndMask, AxisTailPolicy::FullExtent,
+      AxisTailPolicy::MustDivide};
 };
 
 struct ScheduleProblem {

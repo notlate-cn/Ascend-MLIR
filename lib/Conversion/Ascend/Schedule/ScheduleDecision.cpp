@@ -90,12 +90,9 @@ lookupAxisScheduleConstraint(const CoalescedAxisInfo &axes,
 }
 
 AxisTailPolicy selectConcreteTailPolicy(
-    const AxisScheduleConstraint &constraint) {
-  constexpr AxisTailPolicy kPreferenceOrder[] = {
-      AxisTailPolicy::MaskedTail, AxisTailPolicy::ScalarEpilogue,
-      AxisTailPolicy::PadAndMask, AxisTailPolicy::FullExtent,
-      AxisTailPolicy::MustDivide};
-  for (AxisTailPolicy policy : kPreferenceOrder) {
+    const AxisScheduleConstraint &constraint,
+    const TargetTilePolicy &targetTilePolicy) {
+  for (AxisTailPolicy policy : targetTilePolicy.tailPolicyPreference) {
     if (llvm::is_contained(constraint.allowedTailPolicies, policy))
       return policy;
   }
@@ -122,7 +119,8 @@ ScheduledAxisTailPlan buildTailPlanForTileIndex(const ScheduleProblem &problem,
     plan.selectedPolicy = AxisTailPolicy::MustDivide;
     plan.emitsRuntimeGuard = true;
   } else {
-    plan.selectedPolicy = selectConcreteTailPolicy(*constraint);
+    plan.selectedPolicy =
+        selectConcreteTailPolicy(*constraint, problem.targetTilePolicy);
     plan.affectedPrimitiveUses = constraint->primitiveUses;
     plan.alignmentGranularity = constraint->semanticAlignmentGranularity;
     plan.emitsRuntimeGuard =
