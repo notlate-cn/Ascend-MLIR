@@ -130,6 +130,50 @@ bool hasConstantResult(AffineMap map) {
   });
 }
 
+bool mapUsesIteratorKind(AffineMap map, ArrayRef<IteratorKind> iteratorTypes,
+                         IteratorKind kind) {
+  if (!isDimOrConstantProjection(map))
+    return false;
+
+  for (AffineExpr expr : map.getResults()) {
+    auto dimExpr = dyn_cast<AffineDimExpr>(expr);
+    if (!dimExpr)
+      continue;
+    unsigned position = dimExpr.getPosition();
+    if (position < iteratorTypes.size() && iteratorTypes[position] == kind)
+      return true;
+  }
+  return false;
+}
+
+bool isContractionIndexing(linalg::LinalgOp linalgOp,
+                           ArrayRef<AffineMap> indexingMaps,
+                           ArrayRef<IteratorKind> iteratorTypes) {
+  if (!llvm::is_contained(iteratorTypes, IteratorKind::Reduction))
+    return false;
+
+  unsigned inputCount = linalgOp.getNumDpsInputs();
+  unsigned initCount = linalgOp.getNumDpsInits();
+  if (inputCount < 2 || initCount == 0 ||
+      indexingMaps.size() != inputCount + initCount)
+    return false;
+
+  unsigned reductionInputCount = 0;
+  for (unsigned i = 0; i < inputCount; ++i)
+    if (mapUsesIteratorKind(indexingMaps[i], iteratorTypes,
+                            IteratorKind::Reduction))
+      ++reductionInputCount;
+  if (reductionInputCount < 2)
+    return false;
+
+  for (unsigned i = inputCount, e = indexingMaps.size(); i < e; ++i)
+    if (mapUsesIteratorKind(indexingMaps[i], iteratorTypes,
+                            IteratorKind::Reduction))
+      return false;
+
+  return true;
+}
+
 enum class ParallelIndexingKind {
   Elementwise,
   Broadcast,
@@ -151,6 +195,9 @@ classifyParallelIndexing(ArrayRef<AffineMap> indexingMaps,
 
     if (map.getNumResults() > resultRank)
       return ParallelIndexingKind::Unknown;
+
+    if (map.getNumResults() == 0)
+      continue;
 
     if (map.getNumResults() < resultRank) {
       hasProjectedMap = true;
@@ -213,40 +260,6 @@ OpSemanticSummary buildSemanticSummary(Operation *op, OperationId opId) {
   summary.resultRank = getFirstRankedShapedOutputRank(op);
   populateIndexingMaps(op, summary);
 
-  StringRef opName = op->getName().getStringRef();
-  if (opName == "linalg.matmul") {
-    populateIteratorSummary(
-        op, summary,
-        ArrayRef<IteratorKind>{IteratorKind::Parallel, IteratorKind::Parallel,
-                               IteratorKind::Reduction});
-    summary.accessPattern = AccessPatternKind::Contraction;
-    return summary;
-  }
-
-  if (opName == "linalg.batch_matmul") {
-    populateIteratorSummary(
-        op, summary,
-        ArrayRef<IteratorKind>{IteratorKind::Parallel, IteratorKind::Parallel,
-                               IteratorKind::Parallel,
-                               IteratorKind::Reduction});
-    summary.accessPattern = AccessPatternKind::Contraction;
-    return summary;
-  }
-
-  if (opName == "linalg.transpose") {
-    SmallVector<IteratorKind> parallelIterators(summary.resultRank,
-                                               IteratorKind::Parallel);
-    populateIteratorSummary(op, summary, parallelIterators);
-    summary.accessPattern = AccessPatternKind::LayoutTransform;
-    return summary;
-  }
-
-  if (opName == "linalg.fill") {
-    populateIteratorSummary(op, summary);
-    summary.accessPattern = AccessPatternKind::Elementwise;
-    return summary;
-  }
-
   if (!isa<linalg::LinalgOp>(op) &&
       !op->getAttrOfType<ArrayAttr>("iterator_types")) {
     summary.accessPattern = AccessPatternKind::Unknown;
@@ -256,6 +269,12 @@ OpSemanticSummary buildSemanticSummary(Operation *op, OperationId opId) {
   populateIteratorSummary(op, summary);
 
   if (summary.hasReductionIterator) {
+    if (auto linalgOp = dyn_cast<linalg::LinalgOp>(op);
+        linalgOp && isContractionIndexing(linalgOp, summary.indexingMaps,
+                                          summary.iteratorTypes)) {
+      summary.accessPattern = AccessPatternKind::Contraction;
+      return summary;
+    }
     summary.accessPattern = AccessPatternKind::Reduction;
     return summary;
   }
