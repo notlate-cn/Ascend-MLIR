@@ -86,7 +86,7 @@ ACTUAL_OUTPUT="$BUILD_DIR/output.npy"
   --kernel "$DIR/relu_kernel.cpp" \
   --kernel-kind vec \
   --output "$ARTIFACT_ROOT" \
-  --name relu \
+  --name relu__v0 \
   2>&1
 echo "  ✓ Compile OK → $ARTIFACT_ROOT"
 

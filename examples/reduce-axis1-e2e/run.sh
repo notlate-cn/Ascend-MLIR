@@ -74,7 +74,7 @@ ACTUAL_OUTPUT="$BUILD_DIR/output.npy"
   --kernel "$DIR/reduce_axis1_kernel.cpp" \
   --kernel-kind vec \
   --output "$ARTIFACT_ROOT" \
-  --name reduce_axis1 \
+  --name reduce_axis1__v0 \
   2>&1
 echo "  ✓ Compile OK → $ARTIFACT_ROOT"
 

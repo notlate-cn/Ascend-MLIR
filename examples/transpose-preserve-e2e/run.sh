@@ -79,7 +79,7 @@ RUN_MANIFEST="$BUILD_DIR/run_manifest.json"
   --kernel "$DIR/transpose_preserve_kernel.cpp" \
   --kernel-kind vec \
   --output "$ARTIFACT_ROOT" \
-  --name transpose_preserve \
+  --name transpose_preserve__v0 \
   2>&1
 echo "  ✓ Compile OK → $ARTIFACT_ROOT"
 

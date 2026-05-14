@@ -80,7 +80,7 @@ ACTUAL_OUTPUT="$BUILD_DIR/output.npy"
   --kernel "$DIR/reduce_sum_3d_kernel.cpp" \
   --kernel-kind vec \
   --output "$ARTIFACT_ROOT" \
-  --name reduce_sum_3d \
+  --name reduce_sum_3d__v0 \
   2>&1
 echo "  ✓ Compile OK → $ARTIFACT_ROOT"
 

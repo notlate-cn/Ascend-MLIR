@@ -25,7 +25,7 @@ p.write_text(json.dumps(ts, indent=2)); print("  tiling patched:", vals)
 PYEOF
 BUILD_DIR="$DIR/build_e2e"; rm -fr "$BUILD_DIR"; mkdir -p "$BUILD_DIR"
 ART="$BUILD_DIR/artifact"
-"$RUNTIME_SESSION" --kernel "$DIR/bcast_middle_kernel.cpp" --kernel-kind vec --output "$ART" --name bcast_middle
+"$RUNTIME_SESSION" --kernel "$DIR/bcast_middle_kernel.cpp" --kernel-kind vec --output "$ART" --name bcast_middle__v0
 # tiling_params lists: XBLOCK, XBLOCK_SUB, dim_arg0_1, dim_arg0_2, dim_arg1_1, dim_arg4_1, dim_arg4_2.
 # args: v1=x (8x16x32), v2=y (8x32), v3=out (8x16x32); dim_arg0=x, dim_arg1=y, dim_arg4=out.
 TP="XBLOCK=${XBLOCK},XBLOCK_SUB=${XBLOCK_SUB}"

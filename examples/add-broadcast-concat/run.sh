@@ -293,7 +293,7 @@ ACTUAL_OUTPUT="$BUILD_DIR/output.npy"
   --kernel "$DIR/step8_kernel.cpp" \
   --kernel-kind vec \
   --output "$ARTIFACT_ROOT" \
-  --name ewop_broadcast_concat \
+  --name ewop_broadcast_concat__v0 \
   2>&1
 log "  ✓ Compile 成功，输出: $ARTIFACT_ROOT"
 

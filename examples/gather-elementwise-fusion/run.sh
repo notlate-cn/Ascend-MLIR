@@ -143,7 +143,7 @@ ACTUAL_OUTPUT="$BUILD_DIR/output.npy"
   --kernel "$DIR/step8_kernel_gen.cpp" \
   --kernel-kind vec \
   --output "$ARTIFACT_ROOT" \
-  --name relu_index_select_add \
+  --name relu_index_select_add__v0 \
   2>&1
 log "  ok: $ARTIFACT_ROOT"
 

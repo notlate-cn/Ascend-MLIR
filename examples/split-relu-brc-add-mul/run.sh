@@ -167,7 +167,7 @@ $RUNTIME_SESSION \
   --kernel "$DIR/step8_kernel.cpp" \
   --kernel-kind vec \
   --output "$ARTIFACT_ROOT" \
-  --name ewop_broadcast_split \
+  --name ewop_broadcast_split__v0 \
   2>&1
 echo "  ✓ $ARTIFACT_ROOT"
 

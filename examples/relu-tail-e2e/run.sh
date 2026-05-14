@@ -39,7 +39,7 @@ ACTUAL_OUTPUT="$BUILD_DIR/output.npy"
 VALIDATION_LOG="$BUILD_DIR/runtime_session.log"
 
 "$RUNTIME_SESSION" --kernel "$DIR/relu_kernel.cpp" --kernel-kind vec \
-  --output "$ARTIFACT_ROOT" --name relu 2>&1
+  --output "$ARTIFACT_ROOT" --name relu__v0 2>&1
 
 TILING_PARAMS="XBLOCK=${XBLOCK},XBLOCK_SUB=${XBLOCK_SUB}"
 TILING_PARAMS+=",dim_arg0_0=${N}"

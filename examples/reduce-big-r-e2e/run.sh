@@ -88,7 +88,7 @@ ACTUAL_OUTPUT="$BUILD_DIR/output.npy"
   --kernel "$DIR/reduce_big_r_kernel.cpp" \
   --kernel-kind vec \
   --output "$ARTIFACT_ROOT" \
-  --name reduce_big_r \
+  --name reduce_big_r__v0 \
   2>&1
 echo "  ✓ Compile OK → $ARTIFACT_ROOT"
 

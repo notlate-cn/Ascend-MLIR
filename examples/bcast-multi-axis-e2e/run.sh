@@ -24,7 +24,7 @@ p.write_text(json.dumps(ts, indent=2)); print("  tiling patched:", vals)
 PYEOF
 BUILD_DIR="$DIR/build_e2e"; rm -fr "$BUILD_DIR"; mkdir -p "$BUILD_DIR"
 ART="$BUILD_DIR/artifact"
-"$RUNTIME_SESSION" --kernel "$DIR/bcast_multi_axis_kernel.cpp" --kernel-kind vec --output "$ART" --name bcast_multi_axis
+"$RUNTIME_SESSION" --kernel "$DIR/bcast_multi_axis_kernel.cpp" --kernel-kind vec --output "$ART" --name bcast_multi_axis__v0
 TP="XBLOCK=${XBLOCK},XBLOCK_SUB=${XBLOCK_SUB}"
 TP+=",dim_arg1_0=${D0},dim_arg1_1=${D1},dim_arg1_2=${D2},dim_arg0_0=${D1},dim_arg4_1=${D1},dim_arg4_2=${D2}"
 cat > "$BUILD_DIR/run_manifest.json" <<MEOF

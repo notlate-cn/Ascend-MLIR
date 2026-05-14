@@ -33,6 +33,16 @@ struct VectorPlanTileFusePass
     func::FuncOp func = getOperation();
     OpBuilder builder(func.getContext());
 
+    // P1a: rename the func with a __v0 variant suffix. The pipeline is moving
+    // toward multi-variant codegen (one func per feasible TilePlanDraft, named
+    // <original>__v<idx>); P1a wires only the N=1 case so the rename ripples
+    // through CannTranslation / autotuner / host-gen on every existing demo
+    // before P1b adds real cloning. Skip if a suffix is already present
+    // (defensive — should never happen in normal pipeline order).
+    if (!func.getName().contains("__v")) {
+      func.setName((func.getName() + "__v0").str());
+    }
+
     // Phase 0: absorb linalg.broadcast into downstream linalg.generic.
     {
       RewritePatternSet patterns(&getContext());

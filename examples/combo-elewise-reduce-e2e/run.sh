@@ -48,7 +48,7 @@ VALIDATION_LOG="$BUILD_DIR/runtime_session.log"
   --kernel "$DIR/combo_kernel.cpp" \
   --kernel-kind vec \
   --output "$ARTIFACT_ROOT" \
-  --name combo_elewise_reduce 2>&1
+  --name combo_elewise_reduce__v0 2>&1
 
 # Tiling params (from kernel_id signature):
 #   XBLOCK, XBLOCK_SUB, dim_arg0_0, dim_arg0_1, dim_arg0_2,

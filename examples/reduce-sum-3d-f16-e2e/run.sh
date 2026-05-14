@@ -49,7 +49,7 @@ VALIDATION_LOG="$BUILD_DIR/runtime_session.log"
   --kernel "$DIR/reduce_sum_3d_f16_kernel.cpp" \
   --kernel-kind vec \
   --output "$ARTIFACT_ROOT" \
-  --name reduce_sum_3d_f16 2>&1
+  --name reduce_sum_3d_f16__v0 2>&1
 
 TILING_PARAMS="XBLOCK=${XBLOCK},XBLOCK_SUB=${XBLOCK_SUB}"
 TILING_PARAMS+=",dim_arg0_0=${D0},dim_arg0_1=${D1},dim_arg0_2=${D2}"
