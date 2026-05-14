@@ -188,10 +188,8 @@ TileShape getRoleDrivenVectorTile(const ScheduleProblem &problem) {
 TileShape getRoleDrivenCubeTile(const ScheduleProblem &problem) {
   const CoalescedAxisInfo &axes = problem.axes;
   int64_t defaultParallelTile = getDefaultParallelTile(problem);
-  TileShape tileShape = getResultTile(problem.resultShape);
+  TileShape tileShape = getFullLogicalAxisTile(axes);
   for (auto [index, axis] : llvm::enumerate(axes.logicalAxes)) {
-    if (index >= tileShape.tileSizes.size())
-      break;
     const AxisScheduleConstraint *constraint =
         lookupAxisScheduleConstraint(axes, axis.logicalAxisId);
     if (!constraint || constraint->kind != AxisKind::Parallel)
@@ -229,7 +227,7 @@ SmallVector<TileShape> generateTileShapes(const ScheduleProblem &problem) {
     break;
   case OpRole::Cube:
     appendUniqueTileShape(tileShapes, getRoleDrivenCubeTile(problem));
-    appendUniqueTileShape(tileShapes, getResultTile(problem.resultShape));
+    appendUniqueTileShape(tileShapes, getFullLogicalAxisTile(problem.axes));
     break;
   case OpRole::Memory:
   case OpRole::Unknown:

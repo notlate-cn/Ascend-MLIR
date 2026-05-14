@@ -379,9 +379,9 @@ LogicalResult materializeSelectedReductionTiles(func::FuncOp funcOp) {
 
     auto selectedTile = genOp->getAttrOfType<DenseI64ArrayAttr>(
         ascend::kScheduleSelectedTileShapeAttr);
-    if (!selectedTile || selectedTile.asArrayRef().size() != 2)
+    if (!selectedTile || selectedTile.asArrayRef().size() < 2)
       return genOp.emitError(
-          "selected rank-2 reduction tile requires exactly two dimensions");
+          "selected rank-2 reduction tile requires at least two dimensions");
     int64_t tileRows = selectedTile.asArrayRef()[0];
     if (ShapedType::isDynamic(tileRows) || tileRows <= 0)
       return genOp.emitError(
@@ -492,9 +492,9 @@ LogicalResult materializeSelectedAllParallelTiles(func::FuncOp funcOp) {
 
     auto selectedTile = genOp->getAttrOfType<DenseI64ArrayAttr>(
         ascend::kScheduleSelectedTileShapeAttr);
-    if (!selectedTile || selectedTile.asArrayRef().size() != 2)
+    if (!selectedTile || selectedTile.asArrayRef().size() < 2)
       return genOp.emitError("selected rank-2 all-parallel tile requires "
-                             "exactly two dimensions");
+                             "at least two dimensions");
     int64_t tileRows = selectedTile.asArrayRef()[0];
     if (ShapedType::isDynamic(tileRows) || tileRows <= 0)
       return genOp.emitError("selected all-parallel tile requires a static "
