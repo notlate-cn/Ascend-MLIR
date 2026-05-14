@@ -110,6 +110,16 @@ func.func @reduction_odd_extent(%arg0: tensor<4x5xf16>) -> tensor<4xf16> {
   return %out : tensor<4xf16>
 }
 
+func.func @matmul_large_k_axis(%lhs: tensor<640x256xf16>,
+                               %rhs: tensor<256x128xf16>)
+    -> tensor<640x128xf16> {
+  %empty = tensor.empty() : tensor<640x128xf16>
+  %out = linalg.matmul
+      ins(%lhs, %rhs : tensor<640x256xf16>, tensor<256x128xf16>)
+      outs(%empty : tensor<640x128xf16>) -> tensor<640x128xf16>
+  return %out : tensor<640x128xf16>
+}
+
 // CHECK: ScheduleSearch:
 // CHECK-NEXT:   kernel = kernel_0
 // CHECK-NEXT:   generated = 2
@@ -170,6 +180,20 @@ func.func @reduction_odd_extent(%arg0: tensor<4x5xf16>) -> tensor<4xf16> {
 // CHECK-NEXT:   kept = 1
 // CHECK-NEXT:   compile_time_top_k = 4
 // CHECK-NEXT:   instance = kernel_5.reduction_static.0
+// CHECK: ScheduleSearch:
+// CHECK-NEXT:   kernel = kernel_6
+// CHECK-NEXT:   generated = 2
+// CHECK-NEXT:   kept = 2
+// CHECK-NEXT:   compile_time_top_k = 4
+// CHECK-NEXT:   instance = kernel_6.cube_static_matmul.0
+// CHECK-NEXT:   instance = kernel_6.cube_static_matmul.1
+// CHECK: ScheduleDecisionSet:
+// CHECK:   kernel = kernel_6
+// CHECK:   selected = kernel_6.decision.0
+// CHECK-NEXT:   candidate_guards = 2
+// CHECK-NEXT:   decision_guards = 0
+// CHECK-NEXT:   selected_tile_shape = [640,128,256]
+// CHECK-NEXT:   tail_plans = {{.*}}[axis=2 selected=full_extent affected=[reduction] align=0 buffering=separate_tail_buffer guard=false extent=256 tile=256 main=256 tail=0]
 // CHECK: schedule_family = "vector_generic"
 // CHECK: schedule_template = "single_tile_per_block"
 // CHECK: ascend.schedule.family = "vector_generic"
