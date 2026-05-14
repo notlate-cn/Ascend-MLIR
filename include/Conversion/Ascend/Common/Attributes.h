@@ -14,6 +14,10 @@ namespace mlir::afir::ascend {
 inline constexpr llvm::StringLiteral kNormalizedAttr = "ascend.normalized";
 inline constexpr llvm::StringLiteral kOpRoleAttr = "ascend.op_role";
 inline constexpr llvm::StringLiteral kOpRolesAttr = "ascend.op_roles";
+inline constexpr llvm::StringLiteral kOpRoleVector = "vector";
+inline constexpr llvm::StringLiteral kOpRoleCube = "cube";
+inline constexpr llvm::StringLiteral kOpRoleReduction = "reduction";
+inline constexpr llvm::StringLiteral kOpRoleUnsupported = "unsupported";
 inline constexpr llvm::StringLiteral kKernelAttr = "ascend.kernel";
 inline constexpr llvm::StringLiteral kKernelGraphEdgesAttr =
     "ascend.kernel_graph.edges";
@@ -34,6 +38,16 @@ inline constexpr llvm::StringLiteral kScheduleTailMarkersAttr =
     "ascend.schedule.tail_markers";
 inline constexpr llvm::StringLiteral kScheduleTargetTilePolicyAttr =
     "ascend.schedule.target_tile_policy";
+inline constexpr llvm::StringLiteral kAscendCUnitAttr = "ascendc.unit";
+inline constexpr llvm::StringLiteral kAscendCUnitCube = "AiCore.Cube";
+inline constexpr llvm::StringLiteral kAscendCUnitVector = "AiCore.Vector";
+inline constexpr llvm::StringLiteral kAscendCKernelKindAttr =
+    "ascendc.kernel_kind";
+inline constexpr llvm::StringLiteral kAscendCKernelKindVec = "vec";
+inline constexpr llvm::StringLiteral kAscendCKernelKindCube = "cube";
+inline constexpr llvm::StringLiteral kAscendCKernelKindMix = "mix";
+inline constexpr llvm::StringLiteral kGatherDimAttr = "gather_dim";
+inline constexpr llvm::StringLiteral kEmbeddingDimAttr = "embedding_dim";
 
 } // namespace mlir::afir::ascend
 

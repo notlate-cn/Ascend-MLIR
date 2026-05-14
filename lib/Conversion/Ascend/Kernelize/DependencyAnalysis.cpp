@@ -6,6 +6,7 @@
 
 #include "Conversion/Ascend/Kernelize/DependencyAnalysis.h"
 
+#include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/IR/AffineMap.h"
 #include "mlir/IR/Attributes.h"
 #include "mlir/IR/BuiltinAttributes.h"
@@ -28,9 +29,7 @@ namespace mlir::afir::ascend::kernelize {
 namespace {
 
 bool isTargetLinalgOp(Operation *op) {
-  StringRef opName = op->getName().getStringRef();
-  return opName == "linalg.generic" || opName == "linalg.matmul" ||
-         opName == "linalg.batch_matmul" || opName == "linalg.transpose";
+  return isa<linalg::LinalgOp>(op);
 }
 
 StringRef getIteratorTypeName(Attribute attr) {
@@ -49,15 +48,32 @@ StringRef getIteratorTypeName(Attribute attr) {
   return "unknown";
 }
 
-unsigned getFirstRankedTensorResultRank(Operation *op) {
+unsigned getFirstRankedShapedOutputRank(Operation *op) {
   for (Type resultType : op->getResultTypes()) {
-    if (auto rankedTensorType = dyn_cast<RankedTensorType>(resultType))
-      return rankedTensorType.getRank();
+    if (auto shapedType = dyn_cast<ShapedType>(resultType))
+      if (shapedType.hasRank())
+        return shapedType.getRank();
   }
+
+  auto linalgOp = dyn_cast<linalg::LinalgOp>(op);
+  if (!linalgOp)
+    return 0;
+
+  for (Value init : linalgOp.getDpsInits()) {
+    auto shapedType = dyn_cast<ShapedType>(init.getType());
+    if (shapedType && shapedType.hasRank())
+      return shapedType.getRank();
+  }
+
   return 0;
 }
 
 void populateIndexingMaps(Operation *op, OpSemanticSummary &summary) {
+  if (auto linalgOp = dyn_cast<linalg::LinalgOp>(op)) {
+    llvm::append_range(summary.indexingMaps, linalgOp.getIndexingMapsArray());
+    return;
+  }
+
   auto indexingMaps = op->getAttrOfType<ArrayAttr>("indexing_maps");
   if (!indexingMaps)
     return;
@@ -154,12 +170,27 @@ classifyParallelIndexing(ArrayRef<AffineMap> indexingMaps,
 
 void populateIteratorSummary(Operation *op, OpSemanticSummary &summary,
                              ArrayRef<StringRef> fallbackIteratorTypes = {}) {
-  auto iteratorTypes = op->getAttrOfType<ArrayAttr>("iterator_types");
+  if (auto linalgOp = dyn_cast<linalg::LinalgOp>(op)) {
+    for (utils::IteratorType iteratorType : linalgOp.getIteratorTypesArray()) {
+      switch (iteratorType) {
+      case utils::IteratorType::parallel:
+        summary.iteratorTypes.push_back("parallel");
+        break;
+      case utils::IteratorType::reduction:
+        summary.iteratorTypes.push_back("reduction");
+        break;
+      default:
+        summary.iteratorTypes.push_back("unknown");
+        break;
+      }
+    }
+  }
 
-  if (iteratorTypes) {
+  auto iteratorTypes = op->getAttrOfType<ArrayAttr>("iterator_types");
+  if (summary.iteratorTypes.empty() && iteratorTypes) {
     for (Attribute iteratorType : iteratorTypes)
       summary.iteratorTypes.push_back(getIteratorTypeName(iteratorType));
-  } else {
+  } else if (summary.iteratorTypes.empty()) {
     summary.iteratorTypes.append(fallbackIteratorTypes.begin(),
                                  fallbackIteratorTypes.end());
   }
@@ -182,7 +213,7 @@ OpSemanticSummary buildSemanticSummary(Operation *op, OperationId opId) {
   OpSemanticSummary summary;
   summary.op = op;
   summary.opId = opId;
-  summary.resultRank = getFirstRankedTensorResultRank(op);
+  summary.resultRank = getFirstRankedShapedOutputRank(op);
   populateIndexingMaps(op, summary);
 
   StringRef opName = op->getName().getStringRef();
@@ -209,7 +240,14 @@ OpSemanticSummary buildSemanticSummary(Operation *op, OperationId opId) {
     return summary;
   }
 
-  if (!op->getAttrOfType<ArrayAttr>("iterator_types")) {
+  if (opName == "linalg.fill") {
+    populateIteratorSummary(op, summary);
+    summary.accessPattern = AccessPatternKind::Elementwise;
+    return summary;
+  }
+
+  if (!isa<linalg::LinalgOp>(op) &&
+      !op->getAttrOfType<ArrayAttr>("iterator_types")) {
     summary.accessPattern = AccessPatternKind::Unknown;
     return summary;
   }

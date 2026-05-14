@@ -580,8 +580,8 @@ LogicalResult convertCompute(func::FuncOp funcOp, AscendCBufferContext &ctx) {
   auto copyAscendCUnitAttr = [](Operation *src, Operation *dst) {
     if (!src || !dst)
       return;
-    if (auto unitAttr = src->getAttrOfType<StringAttr>("ascendc.unit"))
-      dst->setAttr("ascendc.unit", unitAttr);
+    if (auto unitAttr = src->getAttrOfType<StringAttr>(ascend::kAscendCUnitAttr))
+      dst->setAttr(ascend::kAscendCUnitAttr, unitAttr);
   };
 
   auto getEnclosingLoopStepBound = [](Value value,
@@ -776,16 +776,15 @@ LogicalResult convertCompute(func::FuncOp funcOp, AscendCBufferContext &ctx) {
     return {tensor, forOp};
   };
 
-  auto isRank2SwapPermutation = [](ArrayRef<int64_t> permutation) {
-    return permutation.size() == 2 && permutation[0] == 1 &&
-           permutation[1] == 0;
-  };
-
   // --- linalg.transpose ---
   SmallVector<linalg::TransposeOp> transposeOps;
   funcOp.walk([&](linalg::TransposeOp op) { transposeOps.push_back(op); });
   for (linalg::TransposeOp transposeOp : transposeOps) {
-    if (!isRank2SwapPermutation(transposeOp.getPermutation()))
+    FailureOr<TransposeLoweringSpec> spec =
+        buildTransposeLoweringSpec(transposeOp);
+    if (failed(spec) ||
+        planTransposeLowering(*spec).kind !=
+            TransposeLoweringKind::AscendCSimple2D)
       continue;
 
     Value inMemref = transposeOp.getDpsInputOperand(0)->get();
@@ -1344,65 +1343,24 @@ LogicalResult convertCompute(func::FuncOp funcOp, AscendCBufferContext &ctx) {
       parallelGenericOps.push_back(op);
   });
 
-  // Helper: detect a standalone rank-2 transpose generic.
-  // Pattern: 1 input with a non-identity permutation map, 1 output with identity
-  // map, body is a single linalg.yield of the input block argument (no computation).
+  // Helper: detect a standalone generic transpose supported by the backend.
   auto isTransposeGeneric = [](linalg::GenericOp op) -> bool {
-    if (op.getNumDpsInputs() != 1 || op.getNumDpsInits() != 1)
-      return false;
-    auto maps = op.getIndexingMapsArray();
-    if (maps.size() != 2)
-      return false;
-    AffineMap inMap  = maps[0];
-    AffineMap outMap = maps[1];
-    unsigned rank    = op.getIteratorTypesArray().size();
-    if (rank != 2)
-      return false;
-    // Output must be identity
-    if (!outMap.isIdentity())
-      return false;
-    // Input must have same rank as iteration space (no broadcast)
-    if (inMap.getNumResults() != rank)
-      return false;
-    // All input map results must be distinct AffineDimExprs (no constants, no complex exprs)
-    SmallVector<int64_t> perm(rank, -1);
-    for (unsigned r = 0; r < rank; ++r) {
-      auto dimExpr = dyn_cast<AffineDimExpr>(inMap.getResult(r));
-      if (!dimExpr)
-        return false;
-      int64_t pos = static_cast<int64_t>(dimExpr.getPosition());
-      if (pos < 0 || pos >= static_cast<int64_t>(rank))
-        return false;
-      perm[r] = pos;
-    }
-    // All positions must be distinct (no repeated dim in permutation)
-    llvm::SmallDenseSet<int64_t> seen;
-    for (unsigned r = 0; r < rank; ++r)
-      if (!seen.insert(perm[r]).second)
-        return false;
-    if (perm[0] != 1 || perm[1] != 0)
-      return false;
-    // Body must be yield-only (single linalg.yield yielding the input block arg)
-    Block &body = *op.getBody();
-    if (body.getOperations().size() != 1)
-      return false;
-    auto yieldOp = dyn_cast<linalg::YieldOp>(&body.front());
-    if (!yieldOp || yieldOp.getNumOperands() != 1)
-      return false;
-    auto ba = dyn_cast<BlockArgument>(yieldOp.getOperand(0));
-    return ba && ba.getArgNumber() == 0;
+    FailureOr<TransposeLoweringSpec> spec = buildTransposeLoweringSpec(op);
+    return succeeded(spec) &&
+           planTransposeLowering(*spec).kind ==
+               TransposeLoweringKind::AscendCSimple2D;
   };
 
   // Helper: detect index_select gather (column gather).
   // Stamped by --mark-structured-ops: {gather_dim = N : i64} attribute.
   auto isIndexSelectGeneric = [](linalg::GenericOp op) -> bool {
-    return op->hasAttr("gather_dim");
+    return op->hasAttr(ascend::kGatherDimAttr);
   };
 
   // Helper: detect embedding gather (row gather).
   // Stamped by --mark-structured-ops: {embedding_dim = N : i64} attribute.
   auto isEmbeddingGeneric = [](linalg::GenericOp op) -> bool {
-    return op->hasAttr("embedding_dim");
+    return op->hasAttr(ascend::kEmbeddingDimAttr);
   };
   (void)isEmbeddingGeneric; // reserved for future use
 
@@ -1440,7 +1398,9 @@ LogicalResult convertCompute(func::FuncOp funcOp, AscendCBufferContext &ctx) {
       linalg::GenericOp preOp;
       for (linalg::GenericOp candidate : parallelGenericOps) {
         if (candidate == genOp) continue;
-        if (candidate->hasAttr("gather_dim") || candidate->hasAttr("embedding_dim")) continue;
+        if (candidate->hasAttr(ascend::kGatherDimAttr) ||
+            candidate->hasAttr(ascend::kEmbeddingDimAttr))
+          continue;
         if (candidate.getDpsInitOperand(0)->get() == dataMemref) {
           preOp = candidate;
           break;
@@ -1451,7 +1411,9 @@ LogicalResult convertCompute(func::FuncOp funcOp, AscendCBufferContext &ctx) {
       linalg::GenericOp postOp;
       for (linalg::GenericOp candidate : parallelGenericOps) {
         if (candidate == genOp) continue;
-        if (candidate->hasAttr("gather_dim") || candidate->hasAttr("embedding_dim")) continue;
+        if (candidate->hasAttr(ascend::kGatherDimAttr) ||
+            candidate->hasAttr(ascend::kEmbeddingDimAttr))
+          continue;
         for (OpOperand *inp : candidate.getDpsInputOperands()) {
           if (inp->get() == outMemref) {
             postOp = candidate;

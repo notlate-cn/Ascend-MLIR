@@ -7,7 +7,6 @@
 #include "Conversion/Ascend/Kernelize/OpRoleClassification.h"
 
 #include "Conversion/Ascend/Kernelize/KernelizeTypes.h"
-#include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/MLIRContext.h"
@@ -82,56 +81,6 @@ void appendComputeRoles(AccessPatternKind accessPattern,
   appendRole(roles, OpRole::Unsupported);
 }
 
-bool isRank2SwapPermutation(ArrayRef<int64_t> permutation) {
-  return permutation.size() == 2 && permutation[0] == 1 &&
-         permutation[1] == 0;
-}
-
-bool hasYieldOnlyInputBody(linalg::GenericOp generic) {
-  Block &body = *generic.getBody();
-  if (body.getOperations().size() != 1)
-    return false;
-  auto yieldOp = dyn_cast<linalg::YieldOp>(&body.front());
-  if (!yieldOp || yieldOp.getNumOperands() != 1)
-    return false;
-  auto blockArg = dyn_cast<BlockArgument>(yieldOp.getOperand(0));
-  return blockArg && blockArg.getArgNumber() == 0;
-}
-
-bool isSupportedRank2TransposeGeneric(linalg::GenericOp generic) {
-  if (generic.getNumDpsInputs() != 1 || generic.getNumDpsInits() != 1)
-    return false;
-  auto maps = generic.getIndexingMapsArray();
-  if (maps.size() != 2 || !maps[1].isIdentity() ||
-      maps[0].getNumResults() != 2)
-    return false;
-
-  SmallVector<int64_t, 2> permutation;
-  for (unsigned resultIndex = 0; resultIndex < 2; ++resultIndex) {
-    auto dimExpr = dyn_cast<AffineDimExpr>(maps[0].getResult(resultIndex));
-    if (!dimExpr)
-      return false;
-    permutation.push_back(dimExpr.getPosition());
-  }
-
-  return isRank2SwapPermutation(permutation) &&
-         hasYieldOnlyInputBody(generic);
-}
-
-bool isSupportedLayoutTransform(Operation *op,
-                                const OpSemanticSummary &summary) {
-  if (summary.resultRank != 2)
-    return false;
-
-  if (auto transpose = dyn_cast<linalg::TransposeOp>(op))
-    return isRank2SwapPermutation(transpose.getPermutation());
-
-  if (auto generic = dyn_cast<linalg::GenericOp>(op))
-    return isSupportedRank2TransposeGeneric(generic);
-
-  return false;
-}
-
 bool hasTrueBoolAttr(Operation *op, StringRef attrName) {
   auto attr = op->getAttrOfType<BoolAttr>(attrName);
   return attr && attr.getValue();
@@ -139,12 +88,12 @@ bool hasTrueBoolAttr(Operation *op, StringRef attrName) {
 
 StringRef getMvpScalarRole(ArrayRef<OpRole> roles) {
   if (hasRole(roles, OpRole::Cube))
-    return "cube";
+    return kOpRoleCube;
   if (hasRole(roles, OpRole::Reduction))
-    return "reduction";
+    return kOpRoleReduction;
   if (hasRole(roles, OpRole::Vector))
-    return "vector";
-  return "unsupported";
+    return kOpRoleVector;
+  return kOpRoleUnsupported;
 }
 
 ArrayAttr buildRoleArrayAttr(MLIRContext *context, ArrayRef<OpRole> roles) {
@@ -174,11 +123,7 @@ OpRoleClassifier::classify(const DependencyAnalysisResult &deps) const {
       return failure();
 
     OpRoleList roles;
-    if (summaryIt->second.accessPattern == AccessPatternKind::LayoutTransform &&
-        !isSupportedLayoutTransform(op, summaryIt->second))
-      appendRole(roles, OpRole::Unsupported);
-    else
-      appendComputeRoles(summaryIt->second.accessPattern, roles);
+    appendComputeRoles(summaryIt->second.accessPattern, roles);
 
     if (hasTrueBoolAttr(op, kBranchRootAttr))
       appendRole(roles, OpRole::Branch);

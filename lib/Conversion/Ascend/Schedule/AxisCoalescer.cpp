@@ -6,6 +6,7 @@
 
 #include "Conversion/Ascend/Schedule/AxisCoalescer.h"
 
+#include "Conversion/Ascend/Common/Attributes.h"
 #include "Conversion/Ascend/Schedule/KernelPatternView.h"
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/IR/AffineExpr.h"
@@ -241,7 +242,8 @@ AxisTailPolicy getDefaultTailPolicy(ArrayRef<AxisTailPolicy> policies) {
 }
 
 bool hasGatherIndexingMarker(Operation *op) {
-  return op && (op->hasAttr("gather_dim") || op->hasAttr("embedding_dim"));
+  return op && (op->hasAttr(::mlir::afir::ascend::kGatherDimAttr) ||
+                op->hasAttr(::mlir::afir::ascend::kEmbeddingDimAttr));
 }
 
 bool hasIntegerOrIndexElementType(Value value) {

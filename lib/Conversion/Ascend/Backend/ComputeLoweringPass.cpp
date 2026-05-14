@@ -6,6 +6,7 @@
 
 #include "Conversion/Ascend/Backend/ComputeLoweringPass.h"
 #include "Conversion/Ascend/Backend/BackendSupportMatrix.h"
+#include "Conversion/Ascend/Common/Attributes.h"
 #include "Conversion/LinalgToAscendC/LinalgToAscendCUtils.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
@@ -14,7 +15,6 @@
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "llvm/ADT/STLExtras.h"
-#include "llvm/ADT/SmallSet.h"
 
 #include "ascir/Dialect/Asc/IR/Asc.h"
 #include "ascir/Dialect/EmitAsc/IR/EmitAsc.h"
@@ -98,7 +98,7 @@ bool isSupportedFusedElementwiseBody(linalg::GenericOp generic) {
 }
 
 bool isSupportedVectorGatherBody(linalg::GenericOp generic) {
-  if (!generic->hasAttr("gather_dim"))
+  if (!generic->hasAttr(ascend::kGatherDimAttr))
     return false;
   if (!llvm::all_of(generic.getIteratorTypesArray(),
                     [](utils::IteratorType it) {
@@ -143,69 +143,17 @@ bool isSupportedVectorGatherBody(linalg::GenericOp generic) {
          yieldOp.getOperand(0) == previousResult;
 }
 
-bool hasOnChipOutput(linalg::LinalgOp linalgOp) {
-  if (linalgOp.getNumDpsInits() == 0)
-    return false;
-  MemorySpace memorySpace =
-      memorySpaceOf(linalgOp.getDpsInitOperand(0)->get().getType());
-  return memorySpace != MemorySpace::GM && memorySpace != MemorySpace::Unknown;
-}
-
-bool isRank2SwapPermutation(ArrayRef<int64_t> permutation) {
-  return permutation.size() == 2 && permutation[0] == 1 &&
-         permutation[1] == 0;
-}
-
-bool isSupportedRank2Transpose(linalg::TransposeOp transpose) {
-  return hasOnChipOutput(transpose) &&
-         isRank2SwapPermutation(transpose.getPermutation());
-}
-
-bool isStandaloneTransposeGeneric(linalg::GenericOp generic) {
-  if (!hasOnChipOutput(generic) || generic.getNumDpsInputs() != 1 ||
-      generic.getNumDpsInits() != 1)
-    return false;
-  auto maps = generic.getIndexingMapsArray();
-  if (maps.size() != 2)
-    return false;
-  AffineMap inMap = maps[0];
-  AffineMap outMap = maps[1];
-  unsigned rank = generic.getIteratorTypesArray().size();
-  if (rank != 2 || !outMap.isIdentity() || inMap.getNumResults() != rank)
-    return false;
-
-  llvm::SmallSet<unsigned, 4> seen;
-  SmallVector<int64_t, 2> permutation;
-  for (unsigned r = 0; r < rank; ++r) {
-    auto dimExpr = dyn_cast<AffineDimExpr>(inMap.getResult(r));
-    if (!dimExpr)
-      return false;
-    unsigned position = dimExpr.getPosition();
-    if (position >= rank || !seen.insert(position).second)
-      return false;
-    permutation.push_back(position);
-  }
-  if (!isRank2SwapPermutation(permutation))
-    return false;
-
-  Block &body = *generic.getBody();
-  if (body.getOperations().size() != 1)
-    return false;
-  auto yieldOp = dyn_cast<linalg::YieldOp>(&body.front());
-  if (!yieldOp || yieldOp.getNumOperands() != 1)
-    return false;
-  auto blockArg = dyn_cast<BlockArgument>(yieldOp.getOperand(0));
-  return blockArg && blockArg.getArgNumber() == 0;
-}
-
 ComputeKind classifyLinalgOp(Operation *op) {
   if (isa<linalg::MatmulOp>(op))
     return ComputeKind::Matmul;
   if (isa<linalg::FillOp>(op))
     return ComputeKind::Fill;
-  if (auto transpose = dyn_cast<linalg::TransposeOp>(op))
-    if (isSupportedRank2Transpose(transpose))
+  if (auto transpose = dyn_cast<linalg::TransposeOp>(op)) {
+    FailureOr<TransposeLoweringSpec> spec = buildTransposeLoweringSpec(transpose);
+    if (succeeded(spec) &&
+        planTransposeLowering(*spec).kind != TransposeLoweringKind::Unsupported)
       return ComputeKind::Transpose;
+  }
   if (auto elementwise = dyn_cast<linalg::ElementwiseOp>(op)) {
     auto kind = elementwise.getKind();
     if (kind == linalg::ElementwiseKind::add)
@@ -216,7 +164,9 @@ ComputeKind classifyLinalgOp(Operation *op) {
       return ComputeKind::ElementwiseMax;
   }
   if (auto generic = dyn_cast<linalg::GenericOp>(op)) {
-    if (isStandaloneTransposeGeneric(generic))
+    FailureOr<TransposeLoweringSpec> spec = buildTransposeLoweringSpec(generic);
+    if (succeeded(spec) &&
+        planTransposeLowering(*spec).kind != TransposeLoweringKind::Unsupported)
       return ComputeKind::Transpose;
     if (isSupportedVectorGatherBody(generic))
       return ComputeKind::VectorGather;

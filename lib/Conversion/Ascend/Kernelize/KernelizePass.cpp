@@ -15,6 +15,11 @@
 #include "Conversion/Ascend/Kernelize/KernelizeTypes.h"
 #include "Conversion/Ascend/Kernelize/OpRoleClassification.h"
 #include "Conversion/Ascend/Kernelize/StructuralMarking.h"
+#include "mlir/Dialect/Arith/IR/Arith.h"
+#include "mlir/Dialect/ControlFlow/IR/ControlFlowOps.h"
+#include "mlir/Dialect/Func/IR/FuncOps.h"
+#include "mlir/Dialect/Linalg/IR/Linalg.h"
+#include "mlir/Dialect/Tensor/IR/Tensor.h"
 #include "mlir/IR/Attributes.h"
 #include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/BuiltinOps.h"
@@ -42,7 +47,7 @@ struct KernelizeReportEntry {
 };
 
 bool isFuncOp(Operation *op) {
-  return op->getName().getStringRef() == "func.func";
+  return isa<func::FuncOp>(op);
 }
 
 void clearOwnedKernelizeAttrs(ModuleOp module) {
@@ -79,7 +84,9 @@ buildKernelizeReportEntries(ArrayRef<KernelPattern> patterns) {
       continue;
 
     auto role = roleOp->getAttrOfType<StringAttr>(kOpRoleAttr);
-    StringRef roleName = role ? role.getValue() : StringRef("unsupported");
+    StringRef roleName =
+        role ? role.getValue()
+             : StringRef(::mlir::afir::ascend::kOpRoleUnsupported);
     entries.push_back(KernelizeReportEntry{
         roleName.str(), pattern.kernelName,
         static_cast<unsigned>(pattern.primaryOps.size())});

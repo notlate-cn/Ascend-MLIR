@@ -36,6 +36,14 @@ def AscendNormalizePass : Pass<"ascend-normalize", "mlir::ModuleOp"> {
     MVP task and only emits an optional debug stage header.
   }];
   let constructor = "mlir::afir::createAscendNormalizePass()";
+  let dependentDialects = [
+    "mlir::func::FuncDialect",
+    "mlir::tensor::TensorDialect",
+    "mlir::linalg::LinalgDialect",
+    "mlir::arith::ArithDialect",
+    "mlir::math::MathDialect",
+    "mlir::cf::ControlFlowDialect"
+  ];
   let options = [
     Option<"debugStage", "debug-stage", "std::string", /*default=*/"\"none\"",
            "Ascend debug stage: none, normalize, kernelize, schedule, all">,
@@ -51,6 +59,13 @@ def AscendKernelizePass : Pass<"ascend-kernelize", "mlir::ModuleOp"> {
     MVP task and only emits an optional debug stage header.
   }];
   let constructor = "mlir::afir::createAscendKernelizePass()";
+  let dependentDialects = [
+    "mlir::func::FuncDialect",
+    "mlir::tensor::TensorDialect",
+    "mlir::linalg::LinalgDialect",
+    "mlir::arith::ArithDialect",
+    "mlir::cf::ControlFlowDialect"
+  ];
   let options = [
     Option<"debugStage", "debug-stage", "std::string", /*default=*/"\"none\"",
            "Ascend debug stage: none, normalize, kernelize, schedule, all">,
@@ -66,6 +81,12 @@ def AscendSchedulePass : Pass<"ascend-schedule", "mlir::ModuleOp"> {
     MVP task and only emits an optional debug stage header.
   }];
   let constructor = "mlir::afir::createAscendSchedulePass()";
+  let dependentDialects = [
+    "mlir::func::FuncDialect",
+    "mlir::tensor::TensorDialect",
+    "mlir::linalg::LinalgDialect",
+    "mlir::arith::ArithDialect"
+  ];
   let options = [
     Option<"debugStage", "debug-stage", "std::string", /*default=*/"\"none\"",
            "Ascend debug stage: none, normalize, kernelize, schedule, all">,
@@ -96,7 +117,11 @@ def AscendRealizePass : Pass<"ascend-realize", "mlir::ModuleOp"> {
   }];
   let dependentDialects = [
     "mlir::bufferization::BufferizationDialect",
-    "mlir::memref::MemRefDialect"
+    "mlir::memref::MemRefDialect",
+    "mlir::func::FuncDialect",
+    "mlir::tensor::TensorDialect",
+    "mlir::linalg::LinalgDialect",
+    "mlir::arith::ArithDialect"
   ];
   let constructor = "mlir::afir::createAscendRealizePass()";
   let options = [

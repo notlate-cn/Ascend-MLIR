@@ -45,12 +45,12 @@ static StringRef getKernelId(Operation *op) {
 
 static bool isVectorOp(Operation *op) {
   auto role = op->getAttrOfType<StringAttr>(kOpRoleAttr);
-  return role && role.getValue() == "vector";
+  return role && role.getValue() == kOpRoleVector;
 }
 
 static bool isCubeOp(Operation *op) {
   auto role = op->getAttrOfType<StringAttr>(kOpRoleAttr);
-  return role && role.getValue() == "cube";
+  return role && role.getValue() == kOpRoleCube;
 }
 
 static bool hasOnlyKernelUses(Value value, StringRef kernelId) {
@@ -75,16 +75,16 @@ static void annotateAscendCUnits(ModuleOp module) {
   MLIRContext *context = module.getContext();
   module.walk([&](linalg::LinalgOp linalgOp) {
     Operation *op = linalgOp.getOperation();
-    if (op->hasAttr("ascendc.unit"))
+    if (op->hasAttr(kAscendCUnitAttr))
       return;
     if (isCubeOp(op)) {
-      op->setAttr("ascendc.unit",
-                  StringAttr::get(context, "AiCore.Cube"));
+      op->setAttr(kAscendCUnitAttr,
+                  StringAttr::get(context, kAscendCUnitCube));
       return;
     }
     if (isVectorOp(op))
-      op->setAttr("ascendc.unit",
-                  StringAttr::get(context, "AiCore.Vector"));
+      op->setAttr(kAscendCUnitAttr,
+                  StringAttr::get(context, kAscendCUnitVector));
   });
 }
 
@@ -184,7 +184,7 @@ static bool isSupportedPhase5VectorOutput(linalg::LinalgOp linalgOp) {
 
 static bool isSupportedPhase5GatherOutput(linalg::LinalgOp linalgOp) {
   auto generic = dyn_cast<linalg::GenericOp>(linalgOp.getOperation());
-  if (!generic || !generic->hasAttr("gather_dim"))
+  if (!generic || !generic->hasAttr(kGatherDimAttr))
     return false;
   if (!llvm::all_of(generic.getIteratorTypesArray(),
                     [](utils::IteratorType iteratorType) {

@@ -14,6 +14,7 @@
 
 #include "Conversion/LinalgToAscendC/LinalgToAscendCUtils.h"
 
+#include "Conversion/Ascend/Common/Attributes.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
@@ -221,7 +222,7 @@ static bool isGatherTBufBackedVecout(Value src) {
   Value root = getRootAlloc(src);
   for (Operation *user : root.getUsers()) {
     auto generic = dyn_cast<linalg::GenericOp>(user);
-    if (!generic || !generic->hasAttr("gather_dim"))
+    if (!generic || !generic->hasAttr(ascend::kGatherDimAttr))
       continue;
     for (Value init : generic.getDpsInits())
       if (getRootAlloc(init) == root)

@@ -2,5 +2,6 @@
 
 // CHECK: transformer_dynamic.mainline_prefix=pass
 // CHECK: transformer_dynamic.rank2_transpose_closure=pass
+// CHECK: transformer_dynamic.transpose_kernelize_generalization=pass
 // CHECK: transformer_dynamic.full_codegen=deferred
-// CHECK: transformer_dynamic.next_gap=rank3_transpose_semantics
+// CHECK: transformer_dynamic.next_gap=batch_matmul_schedule

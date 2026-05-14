@@ -185,18 +185,18 @@ KernelPatternCandidate buildCandidateFromHorizontal(
 
 ScheduleContract buildFallbackContract(StringRef roleName) {
   ScheduleContract contract;
-  if (roleName == "cube")
-    contract.templateFamilies.push_back("cube");
-  else if (roleName == "reduction")
-    contract.templateFamilies.push_back("reduction");
-  else if (roleName == "vector")
-    contract.templateFamilies.push_back("vector");
+  if (roleName == kOpRoleCube)
+    contract.templateFamilies.push_back(kOpRoleCube.str());
+  else if (roleName == kOpRoleReduction)
+    contract.templateFamilies.push_back(kOpRoleReduction.str());
+  else if (roleName == kOpRoleVector)
+    contract.templateFamilies.push_back(kOpRoleVector.str());
   return contract;
 }
 
 bool hasSchedulableRole(Operation *op, ScheduleContract &contract) {
   auto role = op->getAttrOfType<StringAttr>(kOpRoleAttr);
-  if (!role || role.getValue() == "unsupported")
+  if (!role || role.getValue() == kOpRoleUnsupported)
     return false;
 
   contract = buildFallbackContract(role.getValue());

@@ -17,6 +17,7 @@
 
 #include "Conversion/FuseGatherElementwise/FuseGatherElementwisePass.h"
 
+#include "Conversion/Ascend/Common/Attributes.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
@@ -36,7 +37,8 @@ namespace {
 
 // Returns true if op is a gather (has gather_dim or embedding_dim attr).
 static bool isGatherOp(linalg::GenericOp op) {
-  return op->hasAttr("gather_dim") || op->hasAttr("embedding_dim");
+  return op->hasAttr(ascend::kGatherDimAttr) ||
+         op->hasAttr(ascend::kEmbeddingDimAttr);
 }
 
 // Returns true if the linalg.generic body contains only arith/constant ops
@@ -176,9 +178,11 @@ void FuseGatherElementwisePass::runOnOperation() {
 
     // Determine gatherDim for building extract indices.
     int64_t gatherDim = -1;
-    if (auto attr = gatherOp->getAttrOfType<IntegerAttr>("gather_dim"))
+    if (auto attr = gatherOp->getAttrOfType<IntegerAttr>(
+            ascend::kGatherDimAttr))
       gatherDim = attr.getInt();
-    else if (auto attr = gatherOp->getAttrOfType<IntegerAttr>("embedding_dim"))
+    else if (auto attr = gatherOp->getAttrOfType<IntegerAttr>(
+                 ascend::kEmbeddingDimAttr))
       gatherDim = attr.getInt();
 
     // Data source tensor: pre-op's first ins (raw data), or captured tensor.
@@ -284,10 +288,10 @@ void FuseGatherElementwisePass::runOnOperation() {
         /*bodyBuilder=*/bodyBuilder);
 
     // Copy gather_dim / embedding_dim attribute.
-    if (auto attr = gatherOp->getAttr("gather_dim"))
-      fusedOp->setAttr("gather_dim", attr);
-    if (auto attr = gatherOp->getAttr("embedding_dim"))
-      fusedOp->setAttr("embedding_dim", attr);
+    if (auto attr = gatherOp->getAttr(ascend::kGatherDimAttr))
+      fusedOp->setAttr(ascend::kGatherDimAttr, attr);
+    if (auto attr = gatherOp->getAttr(ascend::kEmbeddingDimAttr))
+      fusedOp->setAttr(ascend::kEmbeddingDimAttr, attr);
 
     // --- Replace uses and erase old ops ---
     Value fusedResult = fusedOp->getResult(0);

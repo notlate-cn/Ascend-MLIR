@@ -16,10 +16,12 @@
 #define CONVERSION_LINALGTOASCENDC_UTILS_H
 
 #include "mlir/Dialect/Func/IR/FuncOps.h"
+#include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/Value.h"
 #include "llvm/ADT/DenseMap.h"
+#include "llvm/ADT/SmallVector.h"
 
 namespace mlir {
 namespace afir {
@@ -64,6 +66,30 @@ struct AscendCBufferContext {
 /// Return the integer memory_space of a memref type, or -1 if unavailable.
 /// GM (default, no attribute) returns 0.
 int64_t getMemorySpace(mlir::Type type);
+
+enum class TransposeLoweringKind {
+  Unsupported,
+  AscendCSimple2D,
+};
+
+struct TransposeLoweringSpec {
+  unsigned rank = 0;
+  llvm::SmallVector<int64_t, 8> permutation;
+  bool hasOnChipOutput = false;
+};
+
+struct TransposeLoweringPlan {
+  TransposeLoweringKind kind = TransposeLoweringKind::Unsupported;
+};
+
+FailureOr<TransposeLoweringSpec>
+buildTransposeLoweringSpec(linalg::TransposeOp transpose);
+
+FailureOr<TransposeLoweringSpec>
+buildTransposeLoweringSpec(linalg::GenericOp generic);
+
+TransposeLoweringPlan
+planTransposeLowering(const TransposeLoweringSpec &spec);
 
 /// Compute total element count of a memref as an index-typed Value.
 /// Inserts arith.constant / memref.dim / arith.muli ops at the current
