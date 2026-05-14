@@ -5,6 +5,9 @@
 //===----------------------------------------------------------------------===//
 
 #include "Target/CannKernel/CannTranslation.h"
+#include "llvm/ADT/SmallString.h"
+#include "llvm/ADT/StringMap.h"
+#include "llvm/Support/Path.h"
 #include "ascir/Dialect/Asc/IR/Asc.h"
 #include "ascir/Dialect/Asc/Utils/Attributes.h"
 #include "ascir/Dialect/EmitAsc/IR/EmitAsc.h"
@@ -3030,32 +3033,96 @@ LogicalResult mlir::translateToCannKernel(Operation *op, raw_ostream &os,
   os << "#include \"adv_api/reduce/reduce.h\"\n";
   os << "\n";
 
-  // First pass: emit TilingData struct declarations from aicore funcs
-  bool jsonWritten = false;
+  // First pass: emit TilingData struct declarations + per-func space.json.
+  //
+  // P2 (multi-plan tiling variants): when the module contains funcs named
+  // <familyId>__v<idx>, write one space.json per func at the same dir as
+  // `tilingSpaceOutPath`, named <funcName>_space.json, plus a sibling
+  // <familyId>_family.json index. For back-compat with legacy direct
+  // afir-translate callers that read the original tilingSpaceOutPath path,
+  // if there is exactly one aicore func ALSO write that path (same content
+  // as the per-func file).
+  struct VariantInfo { std::string id; std::string funcName; std::string spaceFile; };
+  llvm::StringMap<llvm::SmallVector<VariantInfo>> familyVariants;
+  llvm::SmallVector<func::FuncOp> aicoreFuncs;
   for (Operation &child : moduleOp.getBody()->getOperations()) {
     auto funcOp = dyn_cast<func::FuncOp>(child);
-    if (!funcOp)
-      continue;
-    if (!funcOp->hasAttr(ascendc::attr::global))
-      continue;
-
+    if (!funcOp || !funcOp->hasAttr(ascendc::attr::global)) continue;
     auto args = funcOp.getArguments();
-    if (args.empty())
-      continue;
-    auto tilingType =
-        dyn_cast<emitasc::PyStructType>(args.back().getType());
-    if (!tilingType)
-      continue;
+    if (args.empty()) continue;
+    if (!dyn_cast<emitasc::PyStructType>(args.back().getType())) continue;
+    aicoreFuncs.push_back(funcOp);
+  }
 
+  // Helper: split "<family>__v<idx>" into (family, variantId). If no suffix,
+  // family == funcName and variantId == "" (legacy / no-variant codepath).
+  auto splitVariant = [](llvm::StringRef name)
+      -> std::pair<std::string, std::string> {
+    auto pos = name.rfind("__v");
+    if (pos == llvm::StringRef::npos) return {name.str(), ""};
+    auto tail = name.substr(pos + 3);
+    for (char c : tail) if (!llvm::isDigit(c)) return {name.str(), ""};
+    return {name.substr(0, pos).str(), ("v" + tail).str()};
+  };
+
+  for (func::FuncOp funcOp : aicoreFuncs) {
+    auto args = funcOp.getArguments();
+    auto tilingType = cast<emitasc::PyStructType>(args.back().getType());
     if (failed(emitTilingStructDecl(emitter, funcOp.getLoc(), tilingType)))
       return failure();
 
-    // Write JSON skeleton for the first aicore func only
-    if (!tilingSpaceOutPath.empty() && !jsonWritten) {
-      emitTilingSpaceJson(tilingSpaceOutPath, kernelFile,
-                          funcOp, tilingType);
-      jsonWritten = true;
+    if (tilingSpaceOutPath.empty()) continue;
+
+    auto [familyId, variantId] = splitVariant(funcOp.getName());
+    std::string funcNameStr = funcOp.getName().str();
+    SmallString<256> baseDir(tilingSpaceOutPath);
+    llvm::sys::path::remove_filename(baseDir);
+    SmallString<256> perFuncPath = baseDir;
+    llvm::sys::path::append(perFuncPath, funcNameStr + "_space.json");
+    emitTilingSpaceJson(perFuncPath, kernelFile, funcOp, tilingType);
+
+    if (!variantId.empty())
+      familyVariants[familyId].push_back({variantId, funcNameStr,
+                                          perFuncPath.str().str()});
+
+    // Back-compat: when there is exactly one aicore func and the requested
+    // path differs from the per-func path (legacy direct-call case), also
+    // write to the originally requested path so older scripts that read
+    // `tiling_space.json` keep working.
+    if (aicoreFuncs.size() == 1 && tilingSpaceOutPath != perFuncPath)
+      emitTilingSpaceJson(tilingSpaceOutPath, kernelFile, funcOp, tilingType);
+  }
+
+  // Emit family.json per family (only when at least one variant present).
+  for (auto &kv : familyVariants) {
+    llvm::StringRef familyId = kv.first();
+    SmallString<256> baseDir(tilingSpaceOutPath);
+    llvm::sys::path::remove_filename(baseDir);
+    SmallString<256> familyPath = baseDir;
+    llvm::sys::path::append(familyPath, familyId.str() + "_family.json");
+
+    llvm::json::Array variantArr;
+    for (auto &v : kv.second) {
+      llvm::json::Object entry;
+      entry["id"] = v.id;
+      entry["func_name"] = v.funcName;
+      entry["space_file"] = llvm::sys::path::filename(v.spaceFile).str();
+      variantArr.push_back(std::move(entry));
     }
+    llvm::json::Object root;
+    root["kernel_id"] = familyId.str();
+    root["variants"] = std::move(variantArr);
+
+    std::error_code ec;
+    llvm::raw_fd_ostream f(familyPath, ec);
+    if (ec) {
+      llvm::errs() << "Warning: cannot write family.json to " << familyPath
+                   << ": " << ec.message() << "\n";
+      continue;
+    }
+    llvm::json::OStream jos(f, /*IndentSize=*/2);
+    jos.value(llvm::json::Value(std::move(root)));
+    f << "\n";
   }
 
   // Second pass: emit aicore kernel functions only.
