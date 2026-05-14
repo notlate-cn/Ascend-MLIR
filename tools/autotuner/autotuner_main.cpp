@@ -27,7 +27,12 @@ using namespace mlir::runtime;
 using namespace llvm;
 
 static cl::opt<std::string> SpaceFile("space",
-    cl::desc("Path to tiling_space.json"), cl::Required);
+    cl::desc("Path to tiling_space.json (single variant); mutually exclusive "
+             "with --family"), cl::init(""));
+static cl::opt<std::string> FamilyFile("family",
+    cl::desc("Path to <kid>_family.json (multi-variant); per-variant space.json "
+             "paths are read from the family index. Cross-variant argmin "
+             "selects best."), cl::init(""));
 static cl::opt<std::string> KernelFile("kernel",
     cl::desc("Kernel .cpp source file (overrides kernel_file in JSON)"), cl::init(""));
 static cl::opt<std::string> InputFiles("inputs",
@@ -582,12 +587,23 @@ static llvm::Expected<KernelArtifact> prepareArtifact(const TilingSpace &space) 
   return compiler.compile(request);
 }
 
+struct VariantSummary {
+  std::string id;
+  std::string kernelName;
+  bool passed = false;
+  int64_t cycles = 0;
+  std::map<std::string, int64_t> config;
+};
+
 static llvm::Error writeBestConfigJson(const std::string &path,
                                       const TilingSpace &space,
                                       const KernelArtifact &artifact,
                                       const SearchResult &best,
-                                      const std::map<std::string, int64_t> &shape) {
+                                      const std::map<std::string, int64_t> &shape,
+                                      llvm::StringRef variantId = "",
+                                      llvm::ArrayRef<VariantSummary> allVariants = {}) {
   llvm::json::Object root;
+  if (!variantId.empty()) root["variant"] = variantId.str();
   root["kernel_name"] = artifact.kernelName;
   root["kernel_type"] = std::string(kernelKindToString(artifact.kernelKind));
   root["soc"] = artifact.socVersion;
@@ -616,6 +632,22 @@ static llvm::Error writeBestConfigJson(const std::string &path,
   for (const auto &kv : shape)
     shapeObj[kv.first] = kv.second;
   root["shape"] = std::move(shapeObj);
+
+  if (!allVariants.empty()) {
+    llvm::json::Array arr;
+    for (const auto &v : allVariants) {
+      llvm::json::Object entry;
+      entry["variant"] = v.id;
+      entry["kernel_name"] = v.kernelName;
+      entry["passed"] = v.passed;
+      entry["cycles"] = v.cycles;
+      llvm::json::Object cfg;
+      for (auto &kv : v.config) cfg[kv.first] = kv.second;
+      entry["config"] = std::move(cfg);
+      arr.push_back(std::move(entry));
+    }
+    root["all_variants"] = std::move(arr);
+  }
 
   std::error_code ec;
   llvm::raw_fd_ostream os(path, ec);
@@ -845,6 +877,157 @@ int main(int argc, char** argv) {
 
   // Note: _Exit() calls below bypass destructors to avoid simulator background
   // thread race on process exit (same reason as sim-validator tool).
+
+  // P3: --family mode. Parse <kid>_family.json, loop variants, run search
+  // each, cross-variant argmin. Single-space (--space) path follows below.
+  if (!FamilyFile.empty() && !SpaceFile.empty()) {
+    llvm::errs() << "Error: --space and --family are mutually exclusive\n";
+    _Exit(1);
+  }
+  if (!FamilyFile.empty()) {
+    auto bufOr = llvm::MemoryBuffer::getFile(FamilyFile, /*IsText=*/true);
+    if (!bufOr) {
+      llvm::errs() << "Error: cannot read family file: " << FamilyFile << "\n";
+      _Exit(1);
+    }
+    auto parsed = llvm::json::parse((*bufOr)->getBuffer());
+    if (!parsed) {
+      llvm::errs() << "Error: family.json parse: "
+                   << llvm::toString(parsed.takeError()) << "\n";
+      _Exit(1);
+    }
+    auto *familyObj = parsed->getAsObject();
+    if (!familyObj) { llvm::errs() << "Error: family.json: expected object\n"; _Exit(1); }
+    auto *variants = familyObj->getArray("variants");
+    if (!variants || variants->empty()) {
+      llvm::errs() << "Error: family.json: missing or empty 'variants'\n";
+      _Exit(1);
+    }
+    llvm::SmallString<256> familyDir(FamilyFile.getValue());
+    llvm::sys::path::remove_filename(familyDir);
+
+    struct Slot {
+      std::string variantId;
+      TilingSpace ts;
+      KernelArtifact artifact;
+      std::vector<SearchResult> results;
+      SearchResult best;
+      std::map<std::string, int64_t> shape;
+      bool found = false;
+    };
+    std::vector<Slot> slots;
+
+    for (auto &v : *variants) {
+      auto *vobj = v.getAsObject();
+      if (!vobj) continue;
+      auto idStr = vobj->getString("id");
+      auto spaceFileStr = vobj->getString("space_file");
+      if (!idStr || !spaceFileStr) continue;
+
+      llvm::SmallString<256> spacePath = familyDir;
+      llvm::sys::path::append(spacePath, spaceFileStr->str());
+      SpaceFile = spacePath.str().str();
+
+      auto ts_or = loadTilingSpace(SpaceFile);
+      if (!ts_or) {
+        llvm::errs() << "Error loading " << SpaceFile << ": "
+                     << llvm::toString(ts_or.takeError()) << "\n";
+        _Exit(1);
+      }
+      Slot slot;
+      slot.variantId = idStr->str();
+      slot.ts = std::move(*ts_or);
+
+      auto artifactOr = prepareArtifact(slot.ts);
+      if (!artifactOr) {
+        llvm::errs() << "Error prepareArtifact(" << slot.variantId << "): "
+                     << llvm::toString(artifactOr.takeError()) << "\n";
+        _Exit(1);
+      }
+      slot.artifact = std::move(*artifactOr);
+      slot.ts.kernel_name = slot.artifact.kernelName.empty()
+                              ? slot.ts.kernel_name
+                              : slot.artifact.kernelName;
+      slot.ts.kernel_type = std::string(kernelKindToString(slot.artifact.kernelKind));
+      slot.ts.soc = slot.artifact.socVersion;
+      slot.shape = parseKV(ShapeStr);
+
+      SearchInputs si;
+      si.inputFiles = splitComma(InputFiles);
+      si.expectedFile = ExpectedFile;
+      si.shape = slot.shape;
+      si.atol = Atol;
+      si.rtol = Rtol;
+
+      llvm::outs() << "Searching " << slot.ts.kernel_name << " on "
+                   << slot.ts.soc << " (variant " << slot.variantId << ")\n";
+      slot.results = runSearch(slot.ts, slot.shape, slot.artifact, si);
+      std::vector<SearchResult*> passed;
+      for (auto &r : slot.results) if (r.passed) passed.push_back(&r);
+      if (!passed.empty()) {
+        std::stable_sort(passed.begin(), passed.end(),
+                         [](SearchResult* a, SearchResult* b) {
+          if (a->cycle_count < 0) return false;
+          if (b->cycle_count < 0) return true;
+          return a->cycle_count < b->cycle_count;
+        });
+        slot.best = *passed[0];
+        slot.found = true;
+      }
+      slots.push_back(std::move(slot));
+    }
+
+    Slot *winner = nullptr;
+    for (auto &s : slots) {
+      if (!s.found) continue;
+      if (!winner || s.best.cycle_count < winner->best.cycle_count) winner = &s;
+    }
+    if (!winner) {
+      llvm::errs() << "Error: no variant produced a passing configuration\n";
+      _Exit(1);
+    }
+
+    llvm::outs() << "\nBest variant: " << winner->variantId
+                 << " kernel=" << winner->ts.kernel_name
+                 << " cycles=" << winner->best.cycle_count
+                 << " max_diff=" << winner->best.max_abs_diff << "\n";
+
+    llvm::SmallVector<VariantSummary> summary;
+    for (auto &s : slots) {
+      VariantSummary vs;
+      vs.id = s.variantId;
+      vs.kernelName = s.ts.kernel_name;
+      vs.passed = s.found;
+      vs.cycles = s.found ? s.best.cycle_count : -1;
+      if (s.found) for (auto &kv : s.best.config) vs.config[kv.first] = kv.second;
+      summary.push_back(std::move(vs));
+    }
+
+    if (auto err = writeBestConfigJson(OutputFile, winner->ts, winner->artifact,
+                                       winner->best, winner->shape,
+                                       winner->variantId, summary)) {
+      llvm::errs() << "Error: " << llvm::toString(std::move(err)) << "\n";
+      _Exit(1);
+    }
+
+    // Cleanup non-winning candidate dirs.
+    for (auto &s : slots)
+      for (auto &r : s.results)
+        if (!r.candidate_dir.empty() && r.candidate_dir != winner->best.candidate_dir) {
+          std::error_code ec;
+          std::filesystem::remove_all(r.candidate_dir, ec);
+        }
+
+    llvm::outs().flush();
+    llvm::errs().flush();
+    _Exit(0);
+  }
+
+  // Single-space mode (legacy).
+  if (SpaceFile.empty()) {
+    llvm::errs() << "Error: either --space or --family must be provided\n";
+    _Exit(1);
+  }
   auto ts_or = loadTilingSpace(SpaceFile);
   if (!ts_or) {
     llvm::errs() << "Error: " << llvm::toString(ts_or.takeError()) << "\n";
