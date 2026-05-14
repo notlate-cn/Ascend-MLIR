@@ -4,11 +4,11 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "Conversion/Ascend/Kernelize/FusionCandidateAnalysis.h"
+#include "FusionCandidateAnalysis.h"
 
-#include "Conversion/Ascend/Kernelize/CandidateClosure.h"
-#include "Conversion/Ascend/Kernelize/KernelizeTypes.h"
-#include "Conversion/Ascend/Kernelize/OpRoleClassification.h"
+#include "CandidateClosure.h"
+#include "KernelizeTypes.h"
+#include "OpRoleClassification.h"
 #include "mlir/IR/Operation.h"
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/STLExtras.h"

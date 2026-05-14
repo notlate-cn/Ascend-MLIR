@@ -4,9 +4,9 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "Conversion/Ascend/Schedule/ScheduleProblemBuilder.h"
+#include "ScheduleProblemBuilder.h"
 
-#include "Conversion/Ascend/Schedule/KernelPatternView.h"
+#include "KernelPatternView.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/Operation.h"
 #include "llvm/ADT/STLExtras.h"

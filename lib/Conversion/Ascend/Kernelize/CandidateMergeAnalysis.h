@@ -7,10 +7,10 @@
 #ifndef ASCEND_MLIR_CONVERSION_ASCEND_KERNELIZE_CANDIDATEMERGEANALYSIS_H
 #define ASCEND_MLIR_CONVERSION_ASCEND_KERNELIZE_CANDIDATEMERGEANALYSIS_H
 
-#include "Conversion/Ascend/Kernelize/CandidateClosure.h"
-#include "Conversion/Ascend/Kernelize/DependencyAnalysis.h"
-#include "Conversion/Ascend/Kernelize/FusionCandidateAnalysis.h"
-#include "Conversion/Ascend/Kernelize/KernelizeTypes.h"
+#include "CandidateClosure.h"
+#include "DependencyAnalysis.h"
+#include "FusionCandidateAnalysis.h"
+#include "KernelizeTypes.h"
 #include "mlir/IR/Operation.h"
 #include "mlir/Support/LLVM.h"
 #include "llvm/ADT/ArrayRef.h"

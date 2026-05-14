@@ -7,8 +7,8 @@
 #ifndef ASCEND_MLIR_CONVERSION_ASCEND_KERNELIZE_OPROLECLASSIFICATION_H
 #define ASCEND_MLIR_CONVERSION_ASCEND_KERNELIZE_OPROLECLASSIFICATION_H
 
-#include "Conversion/Ascend/Kernelize/DependencyAnalysis.h"
-#include "Conversion/Ascend/Kernelize/KernelizeTypes.h"
+#include "DependencyAnalysis.h"
+#include "KernelizeTypes.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/Operation.h"
 #include "mlir/Support/LLVM.h"

@@ -4,10 +4,10 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "Conversion/Ascend/Schedule/AxisCoalescer.h"
+#include "AxisCoalescer.h"
 
 #include "Conversion/Ascend/Common/Attributes.h"
-#include "Conversion/Ascend/Schedule/KernelPatternView.h"
+#include "KernelPatternView.h"
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/IR/AffineExpr.h"
 #include "mlir/IR/AffineMap.h"

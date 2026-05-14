@@ -4,7 +4,7 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "Conversion/Ascend/Realize/MovementPlanner.h"
+#include "MovementPlanner.h"
 
 namespace mlir::afir::ascend::realize {
 

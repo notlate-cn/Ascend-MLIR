@@ -4,10 +4,10 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "Conversion/Ascend/Kernelize/KernelPattern.h"
+#include "KernelPattern.h"
 
-#include "Conversion/Ascend/Kernelize/CandidateClosure.h"
-#include "Conversion/Ascend/Kernelize/KernelizeTypes.h"
+#include "CandidateClosure.h"
+#include "KernelizeTypes.h"
 #include "mlir/IR/Attributes.h"
 #include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/BuiltinOps.h"

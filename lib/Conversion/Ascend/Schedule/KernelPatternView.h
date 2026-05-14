@@ -7,7 +7,7 @@
 #ifndef ASCEND_MLIR_CONVERSION_ASCEND_SCHEDULE_KERNELPATTERNVIEW_H
 #define ASCEND_MLIR_CONVERSION_ASCEND_SCHEDULE_KERNELPATTERNVIEW_H
 
-#include "Conversion/Ascend/Schedule/ScheduleTypes.h"
+#include "ScheduleTypes.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/Support/LLVM.h"
 #include "mlir/Support/LogicalResult.h"

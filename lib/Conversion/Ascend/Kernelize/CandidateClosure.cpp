@@ -4,7 +4,7 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "Conversion/Ascend/Kernelize/CandidateClosure.h"
+#include "CandidateClosure.h"
 
 #include "mlir/IR/Operation.h"
 #include "mlir/IR/Value.h"

@@ -64,6 +64,7 @@
 | Schedule cube K axis | cube schedule 必须覆盖 matmul 的 `[M,N,K]` logical axes，不得只按 result `[M,N]` 生成 tile/tail plan | cube role-driven tile 与 full tile 已改为基于 `CoalescedAxisInfo.logicalAxes`，selected tile shape 保留 K 轴；rank2 vector/reduction selected-tile lowering 允许消费 kernel-level tile 前缀，避免 cube+vector epilogue 因 K 轴元数据失败 | `Closed` | 后续补 batch_matmul rank3 schedule/lowering |
 | Schedule function metadata scope | 单 `func.func` 内多个 kernel 不得把第一个 kernel 的 selected tile / tail plan 静默当成全函数事实 | `StructuredLoweringDriver` 已写入 `ascend.schedule.kernel_metadata` per-kernel array；单 kernel / 同 metadata 情况保留 legacy func-level attrs，多 kernel metadata 不一致时清理 legacy attrs，避免下游读取错误整函数事实 | `Closed` | 后续 runtime manifest 如需 schedule metadata，应消费 per-kernel schema |
 | Axis static extent consistency | 同一 logical axis 不能在同一 kernel pattern 内静默合并不同静态 extent | `AxisCoalescer` 在同轴静态 extent 冲突时记录 barrier 并发出 op 级错误，避免把第一个 extent 写成错误 guard / selected tile | `Closed` | 后续将所有 coalescing barrier 的消费策略统一到 ScheduleProblem |
+| Public header boundary | 商用 API 只暴露 pass 入口与 Common/Backend 稳定契约，阶段内部 analyzer / planner / types 不进入 public include | `Kernelize` / `Schedule` / `Realize` public include 目录只保留 `*Pass.h`；内部头已移到 `lib/Conversion/Ascend/...`，内部单测通过私有 include dir 访问；新增 `ascend-public-header-boundary.mlir` 守住边界 | `Closed` | 后续若新增内部头，默认放在 `lib` 私有目录 |
 
 ## Phase 0：V2 MVP 编译主干
 
@@ -627,6 +628,7 @@ Review / verification:
 | xvm LinalgToAscendC GM matmul test sync | 完整 Conversion lit 暴露 `linalg-to-ascendc.mlir` 旧 case 仍期望 GM `linalg.matmul` 不转换；当前 `ComputeConversion` 已支持 GM matmul scalar-loop fallback，且 `ascend-compute-lower-matmul-gm.mlir` 已覆盖同语义；测试期望改为检查 `scf.for` / `arith.mulf` / `arith.addf` / `memref.store`，Ascend Conversion lit 79/79 passed |
 | xvm Schedule target-aware rank fallback removal | `ascend-schedule-target-tile-policy.mlir` RED confirmed rank-1 reduction 在 target-aware 下仍输出 `[32,?]`；fix 后 rank-1 result 由 UB 容量推导 `[8192,?]` / `target_ub_8192`，rank2 dynamic inner 显式输出 `[1,?]` / `target_dynamic_inner_1`；focused lit passed |
 | xvm Kernelize generic contraction traiting | `ascend-kernelize-generic-contraction.mlir` RED confirmed matmul-like `linalg.generic` 仍被名字无关 fallback 识别为 Reduction；fix 后 contraction 由 linalg indexing maps + reduction iterator + output map 不含 reduction dim 推导，`rg` confirmed Kernelize 不再对具体 `linalg.*` 名字做 access-pattern 分支；focused Kernelize lit 4/4 passed |
+| xvm Ascend public header boundary | `ascend-public-header-boundary.mlir` RED confirmed `include/Conversion/Ascend/Kernelize/CandidateClosure.h` 等内部头仍公开；fix 后 Kernelize / Schedule / Realize public include 仅保留 `KernelizePass.h` / `SchedulePass.h` / `RealizePass.h`，内部头移到 `lib/Conversion/Ascend/...`；focused header lit passed；key internal unit targets rebuilt；Ascend ctest 10/10 passed；Ascend Conversion lit 81/81 passed；xvm code naming guard passed |
 
 ## Phase 6：文档与 Demo 收敛
 

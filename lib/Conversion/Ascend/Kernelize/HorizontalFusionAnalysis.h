@@ -7,10 +7,10 @@
 #ifndef ASCEND_MLIR_CONVERSION_ASCEND_KERNELIZE_HORIZONTALFUSIONANALYSIS_H
 #define ASCEND_MLIR_CONVERSION_ASCEND_KERNELIZE_HORIZONTALFUSIONANALYSIS_H
 
-#include "Conversion/Ascend/Kernelize/CandidateMergeAnalysis.h"
-#include "Conversion/Ascend/Kernelize/DependencyAnalysis.h"
-#include "Conversion/Ascend/Kernelize/FusionCandidateAnalysis.h"
-#include "Conversion/Ascend/Kernelize/KernelizeTypes.h"
+#include "CandidateMergeAnalysis.h"
+#include "DependencyAnalysis.h"
+#include "FusionCandidateAnalysis.h"
+#include "KernelizeTypes.h"
 #include "mlir/IR/Value.h"
 #include "mlir/Support/LLVM.h"
 #include "llvm/ADT/ArrayRef.h"

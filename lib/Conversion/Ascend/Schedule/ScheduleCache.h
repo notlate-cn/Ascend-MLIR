@@ -7,7 +7,7 @@
 #ifndef ASCEND_MLIR_CONVERSION_ASCEND_SCHEDULE_SCHEDULECACHE_H
 #define ASCEND_MLIR_CONVERSION_ASCEND_SCHEDULE_SCHEDULECACHE_H
 
-#include "Conversion/Ascend/Schedule/ScheduleTypes.h"
+#include "ScheduleTypes.h"
 
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/StringSet.h"

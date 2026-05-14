@@ -7,7 +7,7 @@
 #ifndef ASCEND_MLIR_CONVERSION_ASCEND_KERNELIZE_CANDIDATECLOSURE_H
 #define ASCEND_MLIR_CONVERSION_ASCEND_KERNELIZE_CANDIDATECLOSURE_H
 
-#include "Conversion/Ascend/Kernelize/DependencyAnalysis.h"
+#include "DependencyAnalysis.h"
 #include "mlir/IR/Operation.h"
 #include "mlir/IR/Value.h"
 #include "mlir/Support/LLVM.h"

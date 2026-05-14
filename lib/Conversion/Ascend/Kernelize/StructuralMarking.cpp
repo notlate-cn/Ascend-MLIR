@@ -4,9 +4,9 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "Conversion/Ascend/Kernelize/StructuralMarking.h"
+#include "StructuralMarking.h"
 
-#include "Conversion/Ascend/Kernelize/KernelizeTypes.h"
+#include "KernelizeTypes.h"
 #include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/BuiltinTypes.h"
