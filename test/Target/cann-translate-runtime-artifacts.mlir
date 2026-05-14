@@ -17,8 +17,12 @@
 // MANIFEST: "guardSet": []
 // MANIFEST: "kernelGraph"
 // MANIFEST: "kernelName": "broadcast_add_reducesum"
+// MANIFEST: "kernel_entries": [
+// MANIFEST-NEXT: {
+// MANIFEST-DAG: "entry_index": 0,
+// MANIFEST-DAG: "kernel_id": "broadcast_add_reducesum",
 // MANIFEST: "tilingParams": {
-// MANIFEST: "selected_tile_shape": [
+// MANIFEST-NEXT: "selected_tile_shape": [
 // MANIFEST-NEXT: 64,
 // MANIFEST-NEXT: 15000
 // MANIFEST: "tail_plan": [

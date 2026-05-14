@@ -44,7 +44,19 @@ func.func @elementwise_chain(%arg0: tensor<64xf16>, %arg1: tensor<64xf16>,
 // CHECK: ScheduleCache:
 // CHECK: linalg.generic
 // CHECK-SAME: ascend.schedule.decision_id = "kernel_0.decision.0"
+// CHECK-SAME: ascend.schedule.guard_markers
+// CHECK-SAME: kind = "shape_static_equal"
+// CHECK-SAME: scope = "candidate"
+// CHECK-SAME: text = "d0 == 64"
 // CHECK-SAME: ascend.schedule.structured_lowering = "loop_skeleton_v0"
+// CHECK-SAME: ascend.schedule.tail_markers
+// CHECK-SAME: ascend.schedule.target_tile_policy = "target_default_32"
 // CHECK: linalg.generic
 // CHECK-SAME: ascend.schedule.decision_id = "kernel_0.decision.0"
+// CHECK-SAME: ascend.schedule.guard_markers
+// CHECK-SAME: kind = "shape_static_equal"
+// CHECK-SAME: scope = "candidate"
+// CHECK-SAME: text = "d0 == 64"
 // CHECK-SAME: ascend.schedule.structured_lowering = "loop_skeleton_v0"
+// CHECK-SAME: ascend.schedule.tail_markers
+// CHECK-SAME: ascend.schedule.target_tile_policy = "target_default_32"

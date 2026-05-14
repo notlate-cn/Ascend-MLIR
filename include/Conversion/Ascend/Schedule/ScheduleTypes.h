@@ -26,9 +26,12 @@ using ::mlir::afir::ascend::kKernelAttr;
 using ::mlir::afir::ascend::kOpRoleAttr;
 using ::mlir::afir::ascend::kPrimaryAttr;
 using ::mlir::afir::ascend::kScheduleDecisionIdAttr;
+using ::mlir::afir::ascend::kScheduleGuardMarkersAttr;
 using ::mlir::afir::ascend::kScheduleSelectedTileShapeAttr;
 using ::mlir::afir::ascend::kScheduleTailPlanAttr;
+using ::mlir::afir::ascend::kScheduleTailMarkersAttr;
 using ::mlir::afir::ascend::kScheduleTailPoliciesAttr;
+using ::mlir::afir::ascend::kScheduleTargetTilePolicyAttr;
 using ::mlir::afir::ascend::kStructuredLoweringAttr;
 
 inline constexpr llvm::StringLiteral kScheduleFamilyAttr =
@@ -168,12 +171,18 @@ struct CoalescedAxisInfo {
   SmallVector<AxisCoalescingHint> axisCoalescingHints;
 };
 
+struct TargetTilePolicy {
+  std::string policyId = "target_default_32";
+  int64_t defaultParallelTile = 32;
+};
+
 struct ScheduleProblem {
   std::string kernelId;
   OpRole dominantRole = OpRole::Unknown;
   unsigned resultRank = 0;
   SmallVector<int64_t> resultShape;
   CoalescedAxisInfo axes;
+  TargetTilePolicy targetTilePolicy;
   unsigned guardBudget = 8;
   SmallVector<std::string> templateTags;
   SmallVector<std::string> structureConstraints;
@@ -220,8 +229,6 @@ struct ScheduledAxisTailPlan {
 struct ScheduleDecision {
   std::string decisionId;
   ScheduleInstance instance;
-  SmallVector<ScheduleGuard> candidateGuards;
-  SmallVector<ScheduleGuard> decisionGuards;
   SmallVector<ScheduledAxisTailPlan, 4> tailPlans;
 };
 
@@ -344,6 +351,30 @@ inline llvm::StringRef stringifyTailBufferingMode(TailBufferingMode mode) {
     return "reuse_main_buffer_after_drain";
   }
   return "separate_tail_buffer";
+}
+
+inline llvm::StringRef stringifyGuardKind(GuardKind kind) {
+  switch (kind) {
+  case GuardKind::ShapeStaticEqual:
+    return "shape_static_equal";
+  case GuardKind::ShapeDynamic:
+    return "shape_dynamic";
+  case GuardKind::DivisibleBy:
+    return "divisible_by";
+  case GuardKind::PositiveExtent:
+    return "positive_extent";
+  }
+  return "shape_dynamic";
+}
+
+inline llvm::StringRef stringifyGuardAxisDomain(GuardAxisDomain domain) {
+  switch (domain) {
+  case GuardAxisDomain::ResultDim:
+    return "result_dim";
+  case GuardAxisDomain::LogicalAxis:
+    return "logical_axis";
+  }
+  return "result_dim";
 }
 
 inline llvm::StringRef stringifyCoalescingHintKind(CoalescingHintKind kind) {

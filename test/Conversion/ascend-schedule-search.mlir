@@ -173,3 +173,4 @@ func.func @reduction_odd_extent(%arg0: tensor<4x5xf16>) -> tensor<4xf16> {
 // CHECK: schedule_family = "vector_generic"
 // CHECK: schedule_template = "single_tile_per_block"
 // CHECK: ascend.schedule.family = "vector_generic"
+// CHECK-SAME: ascend.schedule.target_tile_policy = "target_default_32"

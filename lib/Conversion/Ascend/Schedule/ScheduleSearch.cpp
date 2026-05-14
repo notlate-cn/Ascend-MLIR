@@ -20,8 +20,6 @@ using namespace mlir;
 namespace mlir::afir::ascend::schedule {
 namespace {
 
-constexpr int64_t kDefaultParallelTile = 32;
-
 bool hasTileShape(ArrayRef<TileShape> tileShapes, const TileShape &candidate) {
   return llvm::any_of(tileShapes, [&](const TileShape &tileShape) {
     return tileShape.tileSizes == candidate.tileSizes;
@@ -94,7 +92,13 @@ TileShape getFullLogicalAxisTile(const CoalescedAxisInfo &axes) {
   return tileShape;
 }
 
-TileShape getRoleDrivenReductionTile(const CoalescedAxisInfo &axes) {
+int64_t getDefaultParallelTile(const ScheduleProblem &problem) {
+  return problem.targetTilePolicy.defaultParallelTile;
+}
+
+TileShape getRoleDrivenReductionTile(const ScheduleProblem &problem) {
+  const CoalescedAxisInfo &axes = problem.axes;
+  int64_t defaultParallelTile = getDefaultParallelTile(problem);
   TileShape tileShape;
   for (const LogicalAxisInfo &axis : axes.logicalAxes) {
     int64_t tileSize = normalizeExtent(axis.staticExtent);
@@ -117,9 +121,9 @@ TileShape getRoleDrivenReductionTile(const CoalescedAxisInfo &axes) {
          hasAxisExecutionRole(constraint->allowedRoles,
                               AxisExecutionRole::KernelLoopCandidate))) {
       if (ShapedType::isDynamic(axis.staticExtent))
-        tileSize = kDefaultParallelTile;
+        tileSize = defaultParallelTile;
       else
-        tileSize = std::min(axis.staticExtent, kDefaultParallelTile);
+        tileSize = std::min(axis.staticExtent, defaultParallelTile);
     }
 
     tileShape.tileSizes.push_back(tileSize);
@@ -150,7 +154,9 @@ FailureOr<TileShape> getSplitReductionTile(const CoalescedAxisInfo &axes) {
   return tileShape;
 }
 
-TileShape getRoleDrivenVectorTile(const CoalescedAxisInfo &axes) {
+TileShape getRoleDrivenVectorTile(const ScheduleProblem &problem) {
+  const CoalescedAxisInfo &axes = problem.axes;
+  int64_t defaultParallelTile = getDefaultParallelTile(problem);
   TileShape tileShape = getFullLogicalAxisTile(axes);
   if (axes.logicalAxes.size() < 2)
     return tileShape;
@@ -170,18 +176,19 @@ TileShape getRoleDrivenVectorTile(const CoalescedAxisInfo &axes) {
       continue;
 
     if (ShapedType::isDynamic(axis.staticExtent))
-      tileShape.tileSizes[index] = kDefaultParallelTile;
+      tileShape.tileSizes[index] = defaultParallelTile;
     else
       tileShape.tileSizes[index] =
-          std::min(axis.staticExtent, kDefaultParallelTile);
+          std::min(axis.staticExtent, defaultParallelTile);
     selectedOuterParallelTile = true;
   }
   return tileShape;
 }
 
-TileShape getRoleDrivenCubeTile(const CoalescedAxisInfo &axes,
-                                ArrayRef<int64_t> resultShape) {
-  TileShape tileShape = getResultTile(resultShape);
+TileShape getRoleDrivenCubeTile(const ScheduleProblem &problem) {
+  const CoalescedAxisInfo &axes = problem.axes;
+  int64_t defaultParallelTile = getDefaultParallelTile(problem);
+  TileShape tileShape = getResultTile(problem.resultShape);
   for (auto [index, axis] : llvm::enumerate(axes.logicalAxes)) {
     if (index >= tileShape.tileSizes.size())
       break;
@@ -196,10 +203,10 @@ TileShape getRoleDrivenCubeTile(const CoalescedAxisInfo &axes,
       continue;
 
     if (ShapedType::isDynamic(axis.staticExtent))
-      tileShape.tileSizes[index] = kDefaultParallelTile;
+      tileShape.tileSizes[index] = defaultParallelTile;
     else
       tileShape.tileSizes[index] =
-          std::min(axis.staticExtent, kDefaultParallelTile);
+          std::min(axis.staticExtent, defaultParallelTile);
     break;
   }
   return tileShape;
@@ -209,21 +216,19 @@ SmallVector<TileShape> generateTileShapes(const ScheduleProblem &problem) {
   SmallVector<TileShape> tileShapes;
   switch (problem.dominantRole) {
   case OpRole::Vector:
-    appendUniqueTileShape(tileShapes, getRoleDrivenVectorTile(problem.axes));
+    appendUniqueTileShape(tileShapes, getRoleDrivenVectorTile(problem));
     appendUniqueTileShape(tileShapes, getResultTile(problem.resultShape));
     appendUniqueTileShape(tileShapes, getHalfResultTile(problem.resultShape));
     break;
   case OpRole::Reduction:
-    appendUniqueTileShape(tileShapes, getRoleDrivenReductionTile(problem.axes));
+    appendUniqueTileShape(tileShapes, getRoleDrivenReductionTile(problem));
     appendUniqueTileShape(tileShapes, getFullLogicalAxisTile(problem.axes));
     if (FailureOr<TileShape> splitTile = getSplitReductionTile(problem.axes);
         succeeded(splitTile))
       appendUniqueTileShape(tileShapes, std::move(*splitTile));
     break;
   case OpRole::Cube:
-    appendUniqueTileShape(tileShapes,
-                          getRoleDrivenCubeTile(problem.axes,
-                                                problem.resultShape));
+    appendUniqueTileShape(tileShapes, getRoleDrivenCubeTile(problem));
     appendUniqueTileShape(tileShapes, getResultTile(problem.resultShape));
     break;
   case OpRole::Memory:
@@ -316,6 +321,7 @@ bool isBoundedParallelReductionTile(const ScheduleProblem &problem,
 
   bool hasBoundedParallelAxis = false;
   bool hasFullReductionAxis = false;
+  int64_t defaultParallelTile = getDefaultParallelTile(problem);
   for (auto [index, axis] : llvm::enumerate(problem.axes.logicalAxes)) {
     const AxisScheduleConstraint *constraint =
         lookupAxisScheduleConstraint(problem.axes, axis.logicalAxisId);
@@ -333,8 +339,8 @@ bool isBoundedParallelReductionTile(const ScheduleProblem &problem,
 
     if (constraint->kind == AxisKind::Parallel &&
         (ShapedType::isDynamic(axis.staticExtent) ||
-         axis.staticExtent > kDefaultParallelTile) &&
-        tileSize == kDefaultParallelTile &&
+         axis.staticExtent > defaultParallelTile) &&
+        tileSize == defaultParallelTile &&
         (hasAxisExecutionRole(constraint->allowedRoles,
                               AxisExecutionRole::BindCoreCandidate) ||
          hasAxisExecutionRole(constraint->allowedRoles,
@@ -352,6 +358,7 @@ bool isBoundedParallelVectorTile(const ScheduleProblem &problem,
     return false;
 
   bool hasBoundedParallelAxis = false;
+  int64_t defaultParallelTile = getDefaultParallelTile(problem);
   for (auto [index, axis] : llvm::enumerate(problem.axes.logicalAxes)) {
     const AxisScheduleConstraint *constraint =
         lookupAxisScheduleConstraint(problem.axes, axis.logicalAxisId);
@@ -372,8 +379,8 @@ bool isBoundedParallelVectorTile(const ScheduleProblem &problem,
                              AxisExecutionRole::KernelLoopCandidate);
     if (canBindOrLoop &&
         (ShapedType::isDynamic(axis.staticExtent) ||
-         axis.staticExtent > kDefaultParallelTile) &&
-        tileSize == kDefaultParallelTile) {
+         axis.staticExtent > defaultParallelTile) &&
+        tileSize == defaultParallelTile) {
       hasBoundedParallelAxis = true;
       continue;
     }

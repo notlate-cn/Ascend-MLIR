@@ -39,6 +39,7 @@ add_mlir_library(AscendConversion
   LINK_LIBS PUBLIC
   MLIRBufferizationDialect
   MLIRBufferizationTransforms
+  MLIRControlFlowDialect
   MLIRFuncDialect
   MLIRIR
   MLIRLinalgDialect

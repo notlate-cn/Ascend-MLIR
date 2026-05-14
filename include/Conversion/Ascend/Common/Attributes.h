@@ -22,10 +22,16 @@ inline constexpr llvm::StringLiteral kStructuredLoweringAttr =
     "ascend.schedule.structured_lowering";
 inline constexpr llvm::StringLiteral kScheduleSelectedTileShapeAttr =
     "ascend.schedule.selected_tile_shape";
+inline constexpr llvm::StringLiteral kScheduleGuardMarkersAttr =
+    "ascend.schedule.guard_markers";
 inline constexpr llvm::StringLiteral kScheduleTailPoliciesAttr =
     "ascend.schedule.tail_policies";
 inline constexpr llvm::StringLiteral kScheduleTailPlanAttr =
     "ascend.schedule.tail_plan";
+inline constexpr llvm::StringLiteral kScheduleTailMarkersAttr =
+    "ascend.schedule.tail_markers";
+inline constexpr llvm::StringLiteral kScheduleTargetTilePolicyAttr =
+    "ascend.schedule.target_tile_policy";
 
 } // namespace mlir::afir::ascend
 

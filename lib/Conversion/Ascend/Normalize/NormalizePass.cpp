@@ -8,6 +8,7 @@
 
 #include "Conversion/Ascend/Common/Attributes.h"
 #include "Conversion/Ascend/Debug/DebugOptions.h"
+#include "mlir/Dialect/ControlFlow/IR/ControlFlowOps.h"
 #include "mlir/IR/Attributes.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/Operation.h"
@@ -34,6 +35,15 @@ bool isAllowedInputDialect(StringRef dialectNamespace) {
       .Default(false);
 }
 
+bool isAllowedInputOperation(Operation *op) {
+  // Frontends emit cf.assert for dynamic shape guards. It is a guard carrier,
+  // not a control-flow region that participates in kernel partitioning.
+  if (isa<cf::AssertOp>(op))
+    return true;
+
+  return isAllowedInputDialect(op->getName().getDialectNamespace());
+}
+
 } // namespace
 
 namespace mlir::afir {
@@ -54,9 +64,7 @@ struct AscendNormalizePass
     ModuleOp module = getOperation();
     if (module
             .walk([&](Operation *op) {
-              StringRef dialectNamespace =
-                  op->getName().getDialectNamespace();
-              if (isAllowedInputDialect(dialectNamespace))
+              if (isAllowedInputOperation(op))
                 return WalkResult::advance();
 
               op->emitError() << "unsupported dialect before Kernelize";

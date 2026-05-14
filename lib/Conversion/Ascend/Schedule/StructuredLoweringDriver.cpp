@@ -52,6 +52,43 @@ ArrayAttr buildAffectedPrimitiveUsesAttr(
   return builder.getArrayAttr(affected);
 }
 
+void appendGuardMarkerEntries(Builder &builder,
+                              SmallVectorImpl<Attribute> &entries,
+                              ArrayRef<ScheduleGuard> guards,
+                              StringRef scope) {
+  for (const ScheduleGuard &guard : guards) {
+    entries.push_back(builder.getDictionaryAttr({
+        builder.getNamedAttr("scope", builder.getStringAttr(scope)),
+        builder.getNamedAttr("kind",
+                             builder.getStringAttr(
+                                 stringifyGuardKind(guard.kind))),
+        builder.getNamedAttr(
+            "domain",
+            builder.getStringAttr(
+                stringifyGuardAxisDomain(guard.axisDomain))),
+        builder.getNamedAttr("dim",
+                             builder.getI64IntegerAttr(
+                                 static_cast<int64_t>(guard.dim))),
+        builder.getNamedAttr("value",
+                             builder.getI64IntegerAttr(guard.value)),
+        builder.getNamedAttr("text", builder.getStringAttr(guard.text)),
+    }));
+  }
+}
+
+ArrayAttr buildGuardMarkersAttr(MLIRContext *context,
+                                const ScheduleDecision &decision) {
+  Builder builder(context);
+  SmallVector<Attribute> entries;
+  entries.reserve(decision.instance.candidateGuards.size() +
+                  decision.instance.decisionGuards.size());
+  appendGuardMarkerEntries(builder, entries, decision.instance.candidateGuards,
+                           "candidate");
+  appendGuardMarkerEntries(builder, entries, decision.instance.decisionGuards,
+                           "decision");
+  return builder.getArrayAttr(entries);
+}
+
 ArrayAttr buildTailPlanAttr(MLIRContext *context,
                             const ScheduleDecision &decision) {
   Builder builder(context);
@@ -83,17 +120,55 @@ ArrayAttr buildTailPlanAttr(MLIRContext *context,
   return builder.getArrayAttr(entries);
 }
 
+ArrayAttr buildTailMarkersAttr(MLIRContext *context,
+                               const ScheduleDecision &decision) {
+  Builder builder(context);
+  SmallVector<Attribute> entries;
+  entries.reserve(decision.tailPlans.size());
+  for (const ScheduledAxisTailPlan &tailPlan : decision.tailPlans) {
+    entries.push_back(builder.getDictionaryAttr({
+        builder.getNamedAttr("axis",
+                             builder.getI64IntegerAttr(
+                                 static_cast<int64_t>(
+                                     tailPlan.logicalAxisId))),
+        builder.getNamedAttr(
+            "selected",
+            builder.getStringAttr(
+                stringifyAxisTailPolicy(tailPlan.selectedPolicy))),
+        builder.getNamedAttr("align",
+                             builder.getI64IntegerAttr(
+                                 tailPlan.alignmentGranularity)),
+        builder.getNamedAttr(
+            "buffering",
+            builder.getStringAttr(
+                stringifyTailBufferingMode(tailPlan.tailBufferingMode))),
+        builder.getNamedAttr("guard",
+                             builder.getBoolAttr(
+                                 tailPlan.emitsRuntimeGuard)),
+    }));
+  }
+  return builder.getArrayAttr(entries);
+}
+
 void setScheduleMetadata(Operation *op, DenseI64ArrayAttr selectedTileShape,
-                         ArrayAttr tailPolicies, ArrayAttr tailPlan) {
+                         ArrayAttr guardMarkers, ArrayAttr tailPolicies,
+                         ArrayAttr tailPlan, ArrayAttr tailMarkers,
+                         StringAttr targetTilePolicy) {
   op->setAttr(kScheduleSelectedTileShapeAttr, selectedTileShape);
+  op->setAttr(kScheduleGuardMarkersAttr, guardMarkers);
   op->setAttr(kScheduleTailPoliciesAttr, tailPolicies);
   op->setAttr(kScheduleTailPlanAttr, tailPlan);
+  op->setAttr(kScheduleTailMarkersAttr, tailMarkers);
+  op->setAttr(kScheduleTargetTilePolicyAttr, targetTilePolicy);
 }
 
 LogicalResult preserveFunctionScheduleMetadata(Operation *op,
                                                DenseI64ArrayAttr selectedTileShape,
+                                               ArrayAttr guardMarkers,
                                                ArrayAttr tailPolicies,
-                                               ArrayAttr tailPlan) {
+                                               ArrayAttr tailPlan,
+                                               ArrayAttr tailMarkers,
+                                               StringAttr targetTilePolicy) {
   auto funcOp = op->getParentOfType<func::FuncOp>();
   if (!funcOp)
     return success();
@@ -115,8 +190,11 @@ LogicalResult preserveFunctionScheduleMetadata(Operation *op,
     return success();
 
   funcOp->setAttr(kScheduleSelectedTileShapeAttr, selectedTileShape);
+  funcOp->setAttr(kScheduleGuardMarkersAttr, guardMarkers);
   funcOp->setAttr(kScheduleTailPoliciesAttr, tailPolicies);
   funcOp->setAttr(kScheduleTailPlanAttr, tailPlan);
+  funcOp->setAttr(kScheduleTailMarkersAttr, tailMarkers);
+  funcOp->setAttr(kScheduleTargetTilePolicyAttr, targetTilePolicy);
   return success();
 }
 
@@ -166,8 +244,12 @@ LogicalResult applyStructuredLoweringMarkers(
   DenseI64ArrayAttr selectedTileShape = DenseI64ArrayAttr::get(
       context, decisionSet.decisions.front().instance.tileShape.tileSizes);
   const ScheduleDecision &selectedDecision = decisionSet.decisions.front();
+  ArrayAttr guardMarkers = buildGuardMarkersAttr(context, selectedDecision);
   ArrayAttr tailPolicies = buildTailPoliciesAttr(context, selectedDecision);
   ArrayAttr tailPlan = buildTailPlanAttr(context, selectedDecision);
+  ArrayAttr tailMarkers = buildTailMarkersAttr(context, selectedDecision);
+  StringAttr targetTilePolicy =
+      StringAttr::get(context, scheduleProblem.targetTilePolicy.policyId);
 
   for (const PatternOpView &opView : pattern.ops) {
     Operation *op = opView.op;
@@ -192,9 +274,12 @@ LogicalResult applyStructuredLoweringMarkers(
     opView.op->setAttr(kStructuredLoweringAttr,
                        StringAttr::get(opView.op->getContext(),
                                        kLoopSkeletonV0));
-    setScheduleMetadata(opView.op, selectedTileShape, tailPolicies, tailPlan);
-    if (failed(preserveFunctionScheduleMetadata(opView.op, selectedTileShape,
-                                                tailPolicies, tailPlan)))
+    setScheduleMetadata(opView.op, selectedTileShape, guardMarkers,
+                        tailPolicies, tailPlan, tailMarkers,
+                        targetTilePolicy);
+    if (failed(preserveFunctionScheduleMetadata(
+            opView.op, selectedTileShape, guardMarkers, tailPolicies, tailPlan,
+            tailMarkers, targetTilePolicy)))
       return failure();
     ++report.verifiedOps;
   }

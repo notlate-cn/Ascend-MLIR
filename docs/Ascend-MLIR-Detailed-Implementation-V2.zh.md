@@ -188,7 +188,9 @@ flowchart LR
 | `shape`   | 动态形状计算，部分前端会保留少量 shape 计算 op   |
 | `complex` | 复数运算，复数模型的合法入口                     |
 
-出现上述两级之外的方言，报错拒绝，不允许静默透传。
+此外，`cf.assert` 作为 **op 级例外** 允许透传，用于承载前端生成的动态 shape guard。该例外不表示 `cf` 方言整体进入白名单；`cf.br`、`cf.cond_br` 等控制流 op 仍然报错拒绝。
+
+出现上述两级之外的方言或 op 级例外之外的操作，报错拒绝，不允许静默透传。
 
 **透传方言的额外限制**：
 
@@ -197,6 +199,12 @@ flowchart LR
 | `index`   | 仅作为 shape / 维度计算的中间值；不参与 kernel 内主计算路径   | 不允许出现在 `linalg.generic` 的 body 内                     |
 | `shape`   | 仅作为 dynamic shape 表达；不参与 kernel 内主计算路径         | 不允许出现在 kernel 候选闭包内（详见 2.4 节）                |
 | `complex` | 仅允许 `complex.constant` 等纯常量在 module 顶层透传；不允许 `complex.add` / `complex.mul` 等计算 op 出现在任何 kernel 候选闭包内 | 当前版本下游层（第二、三、四、五层）**均不接受** `complex` 计算 op；遇到时第一层 verifier 报 `DialectRejected`。复数计算的完整支持在 V2-1.4.3 节中作为预留扩展点 |
+
+**op 级例外的额外限制**：
+
+| op          | 允许形态                                                     | 禁止形态                                                     |
+| ----------- | ------------------------------------------------------------ | ------------------------------------------------------------ |
+| `cf.assert` | 仅作为动态 shape guard 透传；不参与第二层 kernel 候选构造；后续层可将其消费为 guard 诊断或保留为 host/runtime guard 输入 | 不允许作为一般控制流载体；不允许引入 branch / region；不允许参与 `linalg` body 内主计算 |
 
 #### 2.3.2 结构规范化规则
 
@@ -357,7 +365,7 @@ equivalenceClasses:
 
 | 情况                                                  | 处理                                 |
 | ----------------------------------------------------- | ------------------------------------ |
-| 出现核心方言与透传方言白名单之外的方言                | 报错                                 |
+| 出现核心方言、透传方言白名单和 op 级例外之外的方言 / 操作 | 报错                                 |
 | 透传方言中的 op 影响 kernel 候选闭包                  | 报错                                 |
 | unranked tensor                                       | 报错                                 |
 | 无法解释的 shape 语义，或同一语义存在多种未规范化表达 | 报错；不区分子类型，不允许第二层补救 |
@@ -397,7 +405,7 @@ equivalenceClasses:
 
 | 顺序 | 检查项                  | 检查内容                                                     | 失败时 `reasonKind` |
 | ---- | ----------------------- | ------------------------------------------------------------ | ------------------- |
-| 1    | 方言白名单              | 所有 op 所属 dialect 必须出现在 2.3.1 节的核心方言或允许透传方言列表中 | `DialectRejected`   |
+| 1    | 方言白名单              | 所有 op 所属 dialect 必须出现在 2.3.1 节的核心方言、允许透传方言列表中，或命中 `cf.assert` op 级 shape-guard 例外 | `DialectRejected`   |
 | 2    | 透传方言闭包安全        | 透传方言中的 op 不得位于任何 kernel 候选闭包内（详见 2.4 节） | `DialectRejected`   |
 | 3    | shape 规范化            | 所有 tensor / memref 类型必须为 ranked symbolic；不允许 unranked，rank 必须已知且不变 | `DialectRejected`   |
 | 4    | 具名 op 保留            | `linalg.matmul` 等具名 op 未被退化为 `linalg.generic`        | `DialectRejected`   |
