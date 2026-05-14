@@ -14,6 +14,7 @@
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallVector.h"
+#include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/FormatVariadic.h"
 #include <limits>
 
@@ -255,12 +256,15 @@ enumerateTilingCases(const AxisGrouping &g, const CollapsedGroupInfo &info,
 
   // ubR candidates ≈ GenTilingCase over r_group: R kept whole, or one of the R
   // axes ub-split.  --enable-reduction-split forces a split (no "whole" case);
-  // otherwise an R axis is only a split candidate when it's clearly too big to
-  // fit on-chip whole.  The row-loop degradation keeps R whole (as before).
+  // a true full-reduce (no parallel axes) likewise must split — R kept whole
+  // would mean block_dim=1 with no parallelism, only path to multi-core is
+  // RCore over an R-split (the RCore variants are appended below).  Otherwise
+  // an R axis is only a split candidate when it's clearly too big to fit
+  // on-chip whole.  The row-loop degradation keeps R whole (as before).
   SmallVector<int> ubRs;
   if (bp.degradeToRowLoop || g.rAxes.empty()) {
     ubRs.push_back(-1);
-  } else if (enableReductionSplit) {
+  } else if (enableReductionSplit || g.yAxes.empty()) {
     for (int r : g.rAxes)
       ubRs.push_back(r);
   } else {
@@ -321,8 +325,24 @@ enumerateTilingCases(const AxisGrouping &g, const CollapsedGroupInfo &info,
 double costEstimate(const AxisGrouping &g, const CollapsedGroupInfo &info,
                     const DenseSet<int> &vecDims,
                     const TilePlanDraft &draft, unsigned elemBytes) {
-  if (draft.reduceIsBlock)
-    return kInfeasible; // RCore: no two-stage codegen yet.
+  // RCore (R axis as block axis, two-stage partial→combine codegen).  P3b-2a:
+  // open the gate for true full-reduce (no parallel axes to dispatch over —
+  // RCore is the only path to block_dim>1) and keep it ∞ everywhere else
+  // (Common with a real parallel block axis is always preferable until P3b-4's
+  // real cost model can compare them).  buildPlan codegen for RCore lands in
+  // P3b-2b/c/d; until then buildPlan asserts with a clear "WIP" message.
+  if (draft.reduceIsBlock) {
+    if (g.yAxes.empty() && draft.ubTilingAxisR >= 0)
+      return 0.0;
+    return kInfeasible;
+  }
+  // Full-reduce (no parallel axis) on the Common template — whether R kept
+  // whole (block_dim=1, no parallelism) or R ub-split (RBLOCK with no parallel
+  // outer scf.for) — both hit the R1 bug in GroupEmitter (setInsertionPointToEnd
+  // lands on the func entry block past func.return).  Reject so RCore is the
+  // unique pick when full-reduce.
+  if (g.yAxes.empty())
+    return kInfeasible;
   if (draft.ubTilingAxisY >= 0 &&
       draft.ubTilingAxisY != pickBlockAxis(g, vecDims).axis)
     return kInfeasible; // non-block ub-Y: see comment above.
@@ -356,8 +376,17 @@ double costEstimate(const AxisGrouping &g, const CollapsedGroupInfo &info,
 static TilePlan buildPlan(func::FuncOp func, const CollapsedGroupInfo &info,
                           const AxisGrouping &g, const TilePlanDraft &draft,
                           OpBuilder &builder, Location loc) {
-  assert(draft.blockTilingId == 0 && !draft.reduceIsBlock &&
-         "RCore draft reached buildPlan — should have been ∞-scored");
+  // P3b-2a wires the cost-model gate so RCore is selectable for full-reduce,
+  // but the buildPlan / LoopNestBuilder / GroupEmitter codegen lands in
+  // P3b-2b/c/d.  Until then, surface a clear error rather than producing bad IR.
+  if (draft.reduceIsBlock) {
+    llvm::errs() << "[vector-plan] RCore reduce template selected but codegen "
+                    "WIP (P3b-2b/c/d). Plan: docs/superpowers/plans/"
+                    "2026-05-14-p3b-rcore-reduce-multicore.zh.md\n";
+    llvm::report_fatal_error("RCore codegen not yet implemented (P3b-2a)");
+  }
+  assert(draft.blockTilingId == 0 &&
+         "blockTilingId != 0 only valid for RCore");
 
   TilePlan plan;
   plan.group = &info;
