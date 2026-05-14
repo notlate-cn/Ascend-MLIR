@@ -74,14 +74,11 @@ struct VectorPlanIsolateKernelOutputsPass
       if (!tensorTy) continue;
 
       builder.setInsertionPoint(defOp);
-      SmallVector<Value> dynSizes;
-      for (auto [i, d] : llvm::enumerate(tensorTy.getShape())) {
-        if (ShapedType::isDynamic(d))
-          dynSizes.push_back(
-              builder.create<tensor::DimOp>(defOp->getLoc(), initVal, i));
-      }
+      // When a copy source is provided, AllocTensorOp infers dynamic dim
+      // sizes from the source, and passing them again is a verifier error
+      // ("dynamic sizes not needed when copying a tensor").
       Value fresh = builder.create<bufferization::AllocTensorOp>(
-                            defOp->getLoc(), tensorTy, dynSizes,
+                            defOp->getLoc(), tensorTy, ValueRange{},
                             /*copy=*/initVal)
                         .getResult();
       initOperand->set(fresh);
