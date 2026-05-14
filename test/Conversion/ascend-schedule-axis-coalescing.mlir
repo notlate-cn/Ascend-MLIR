@@ -5,6 +5,7 @@
 // RUN: sed -n '/\/\/ GATHER-TAIL-BEGIN/,/\/\/ GATHER-TAIL-END/p' %s | afir-opt --ascend-schedule='dump-report=true debug-stage=schedule' 2>&1 | FileCheck %s --check-prefix=TAIL
 // RUN: sed -n '/\/\/ EMBEDDING-TAIL-BEGIN/,/\/\/ EMBEDDING-TAIL-END/p' %s | afir-opt --ascend-schedule='dump-report=true debug-stage=schedule' 2>&1 | FileCheck %s --check-prefix=EMBED
 // RUN: sed -n '/\/\/ PERMUTED-GATHER-TAIL-BEGIN/,/\/\/ PERMUTED-GATHER-TAIL-END/p' %s | afir-opt --ascend-schedule='dump-report=true debug-stage=schedule' 2>&1 | FileCheck %s --check-prefix=PERMUTE
+// RUN: sed -n '/\/\/ POST-REDUCE-BEGIN/,/\/\/ POST-REDUCE-END/p' %s | afir-opt --ascend-schedule='dump-report=true debug-stage=schedule' 2>&1 | FileCheck %s --check-prefix=POSTREDUCE
 // RUN: sed -n '/\/\/ CONFLICT-BEGIN/,/\/\/ CONFLICT-END/p' %s | not afir-opt --ascend-schedule 2>&1 | FileCheck %s --check-prefix=CONFLICT
 
 // SINGLE-BEGIN
@@ -278,6 +279,46 @@ func.func @manual_permuted_gather_tail_contract(%data: tensor<?x?xf16>,
 }
 // PERMUTED-GATHER-TAIL-END
 
+// POST-REDUCE-BEGIN
+#post_reduce_in = affine_map<(d0, d1) -> (d0, d1)>
+#post_reduce_out = affine_map<(d0, d1) -> (d0, 0)>
+#post_reduce_singleton = affine_map<(d0, d1) -> (d0, d1)>
+func.func @manual_reduction_with_singleton_vector_epilogue(
+    %arg0: tensor<4x8xf32>, %init: tensor<4x1xf32>) -> tensor<4x1xf32> {
+  %scale = arith.constant 8.000000e+00 : f32
+  %red = linalg.generic {
+    indexing_maps = [#post_reduce_in, #post_reduce_out],
+    iterator_types = ["parallel", "reduction"]
+  } ins(%arg0 : tensor<4x8xf32>)
+    outs(%init : tensor<4x1xf32>)
+    attrs = {
+      ascend.kernel = "kernel_0",
+      ascend.op_role = "reduction",
+      ascend.primary = true
+    } {
+  ^bb0(%x: f32, %acc: f32):
+    %sum = arith.addf %acc, %x : f32
+    linalg.yield %sum : f32
+  } -> tensor<4x1xf32>
+
+  %out = linalg.generic {
+    indexing_maps = [#post_reduce_singleton, #post_reduce_singleton],
+    iterator_types = ["parallel", "parallel"]
+  } ins(%red : tensor<4x1xf32>)
+    outs(%init : tensor<4x1xf32>)
+    attrs = {
+      ascend.kernel = "kernel_0",
+      ascend.op_role = "vector"
+    } {
+  ^bb0(%x: f32, %o: f32):
+    %v = arith.divf %x, %scale : f32
+    linalg.yield %v : f32
+  } -> tensor<4x1xf32>
+
+  return %out : tensor<4x1xf32>
+}
+// POST-REDUCE-END
+
 // CONFLICT-BEGIN
 func.func @manual_axis_static_extent_conflict(
     %a4: tensor<4xf32>,
@@ -461,5 +502,17 @@ func.func @manual_axis_static_extent_conflict(
 // PERMUTE-NEXT: axis=0 kind=parallel roles=[bind_core,kernel_loop,vectorize] tail=masked_tail group=1 allowed_tail=[masked_tail,scalar_epilogue,pad_and_mask] primitive_uses=[data_copy,vector_compute,write_back,gather_index] semantic_align=16
 // PERMUTE-NEXT: axis=1 kind=parallel roles=[bind_core,kernel_loop,vectorize,broadcast_projection] tail=masked_tail group=1 allowed_tail=[masked_tail,scalar_epilogue] primitive_uses=[data_copy,vector_compute,write_back] semantic_align=0
 // PERMUTE-NEXT: ]
+
+// POSTREDUCE: AxisCoalescing:
+// POSTREDUCE-NEXT: kernel = kernel_0
+// POSTREDUCE-NEXT: logical_axes = 2
+// POSTREDUCE-NEXT: parallel_axes = [0]
+// POSTREDUCE-NEXT: reduction_axes = [1]
+// POSTREDUCE-NEXT: broadcast_axes = []
+// POSTREDUCE-NEXT: barriers = 0
+// POSTREDUCE-NEXT: axis_constraints = [
+// POSTREDUCE-NEXT: axis=0 kind=parallel roles=[bind_core,kernel_loop,vectorize] tail=masked_tail
+// POSTREDUCE-NEXT: axis=1 kind=reduction roles=[full_reduction] tail=full_extent
+// POSTREDUCE-NEXT: ]
 
 // CONFLICT: conflicting static extent for logical axis 0: 4 vs 8

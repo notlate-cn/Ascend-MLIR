@@ -46,6 +46,18 @@ bool isRank2SwapPermutation(ArrayRef<int64_t> permutation) {
          permutation[1] == 0;
 }
 
+bool isValidPermutation(ArrayRef<int64_t> permutation) {
+  SmallVector<bool, 8> seen(permutation.size(), false);
+  for (int64_t position : permutation) {
+    if (position < 0 || position >= static_cast<int64_t>(permutation.size()))
+      return false;
+    if (seen[position])
+      return false;
+    seen[position] = true;
+  }
+  return true;
+}
+
 bool hasOnlyParallelIterators(linalg::LinalgOp linalgOp) {
   return llvm::all_of(linalgOp.getIteratorTypesArray(),
                       [](utils::IteratorType iteratorType) {
@@ -104,6 +116,102 @@ bool isSupportedFusedElementwiseBody(
   return lastArithOp && yieldOp.getOperand(0) == lastArithOp->getResult(0);
 }
 
+bool isSupportedPureYieldBody(linalg::GenericOp generic) {
+  if (!hasOnlyParallelIterators(generic))
+    return false;
+  if (generic.getNumDpsInputs() != 1 || generic.getNumDpsInits() != 1)
+    return false;
+  SmallVector<AffineMap> maps = generic.getIndexingMapsArray();
+  unsigned outputMapIndex = generic.getNumDpsInputs();
+  if (maps.size() <= outputMapIndex || !maps[outputMapIndex].isIdentity())
+    return false;
+  unsigned lastDim = 0;
+  bool hasLastDim = false;
+  for (AffineExpr expr : maps[0].getResults()) {
+    if (isa<AffineConstantExpr>(expr))
+      continue;
+    auto dimExpr = dyn_cast<AffineDimExpr>(expr);
+    if (!dimExpr)
+      return false;
+    unsigned position = dimExpr.getPosition();
+    if (hasLastDim && position <= lastDim)
+      return false;
+    lastDim = position;
+    hasLastDim = true;
+  }
+
+  Block *body = generic.getBody();
+  if (body->getOperations().size() != 1)
+    return false;
+  auto yieldOp = dyn_cast<linalg::YieldOp>(&body->front());
+  if (!yieldOp || yieldOp.getNumOperands() != 1)
+    return false;
+  auto blockArg = dyn_cast<BlockArgument>(yieldOp.getOperand(0));
+  return blockArg && blockArg.getArgNumber() == 0;
+}
+
+bool isSimpleDimOrConstantMap(AffineMap map, unsigned rank) {
+  for (AffineExpr expr : map.getResults()) {
+    if (isa<AffineConstantExpr>(expr))
+      continue;
+    auto dimExpr = dyn_cast<AffineDimExpr>(expr);
+    if (!dimExpr || dimExpr.getPosition() >= rank)
+      return false;
+  }
+  return true;
+}
+
+bool hasOnlyParallelOrReductionIterators(linalg::LinalgOp linalgOp) {
+  return llvm::all_of(linalgOp.getIteratorTypesArray(),
+                      [](utils::IteratorType iteratorType) {
+                        return iteratorType == utils::IteratorType::parallel ||
+                               iteratorType == utils::IteratorType::reduction;
+                      });
+}
+
+bool isSupportedGmScalarGeneric(linalg::GenericOp generic) {
+  if (!hasOnlyParallelOrReductionIterators(generic))
+    return false;
+  if (generic.getNumDpsInits() == 0)
+    return false;
+
+  unsigned rank = generic.getIteratorTypesArray().size();
+  SmallVector<AffineMap> maps = generic.getIndexingMapsArray();
+  unsigned firstOutputMap = generic.getNumDpsInputs();
+  size_t expectedMapCount = static_cast<size_t>(firstOutputMap) +
+                            static_cast<size_t>(generic.getNumDpsInits());
+  if (maps.size() != expectedMapCount)
+    return false;
+
+  for (unsigned i = 0, e = generic.getNumDpsInputs(); i < e; ++i)
+    if (!isSimpleDimOrConstantMap(maps[i], rank))
+      return false;
+
+  for (unsigned i = 0, e = generic.getNumDpsInits(); i < e; ++i) {
+    Value output = generic.getDpsInitOperand(i)->get();
+    auto outputType = dyn_cast<MemRefType>(output.getType());
+    if (!outputType || getIntegerMemorySpace(output.getType()) !=
+                           static_cast<int64_t>(MemorySpace::GM))
+      return false;
+    AffineMap outputMap = maps[firstOutputMap + i];
+    if (!isSimpleDimOrConstantMap(outputMap, rank) ||
+        outputMap.getNumResults() != static_cast<unsigned>(outputType.getRank()))
+      return false;
+  }
+
+  Block *body = generic.getBody();
+  auto yieldOp = dyn_cast<linalg::YieldOp>(body->getTerminator());
+  if (!yieldOp || yieldOp.getNumOperands() != generic.getNumDpsInits())
+    return false;
+  for (Operation &bodyOp : body->without_terminator()) {
+    if (isa<linalg::IndexOp>(bodyOp))
+      continue;
+    if (bodyOp.getNumRegions() != 0)
+      return false;
+  }
+  return true;
+}
+
 bool isSupportedVectorGatherBody(linalg::GenericOp generic,
                                  const AscendBackendSupportMatrix &matrix) {
   if (!matrix.isSupportedComputeKind(ComputeKind::VectorGather))
@@ -149,9 +257,10 @@ bool isSupportedVectorGatherBody(linalg::GenericOp generic,
 
 bool isSupportedTransposeOp(linalg::TransposeOp transpose,
                             const AscendBackendSupportMatrix &matrix) {
+  bool hasOnChip = hasOnChipOutput(transpose);
   return matrix.isSupportedComputeKind(ComputeKind::Transpose) &&
-         hasOnChipOutput(transpose) &&
-         isRank2SwapPermutation(transpose.getPermutation());
+         ((hasOnChip && isRank2SwapPermutation(transpose.getPermutation())) ||
+          (!hasOnChip && isValidPermutation(transpose.getPermutation())));
 }
 
 bool isSupportedTransposeGeneric(linalg::GenericOp generic,
@@ -243,6 +352,9 @@ classifyLinalgComputeKind(Operation *op,
                           const AscendBackendSupportMatrix &matrix) {
   if (isa<linalg::MatmulOp>(op))
     return ComputeKind::Matmul;
+  if (auto batchMatmul = dyn_cast<linalg::BatchMatmulOp>(op))
+    if (!hasOnChipOutput(batchMatmul))
+      return ComputeKind::BatchMatmul;
   if (isa<linalg::FillOp>(op))
     return ComputeKind::Fill;
 
@@ -263,12 +375,16 @@ classifyLinalgComputeKind(Operation *op,
   if (auto generic = dyn_cast<linalg::GenericOp>(op)) {
     if (isSupportedTransposeGeneric(generic, matrix))
       return ComputeKind::Transpose;
+    if (isSupportedPureYieldBody(generic))
+      return ComputeKind::TensorCopy;
     if (isSupportedVectorGatherBody(generic, matrix))
       return ComputeKind::VectorGather;
     if (isSupportedPhase5ReductionBody(generic, matrix))
       return ComputeKind::ReductionAdd;
     if (isSupportedFusedElementwiseBody(generic, matrix))
       return ComputeKind::FusedElementwise;
+    if (isSupportedGmScalarGeneric(generic))
+      return ComputeKind::ScalarGeneric;
   }
 
   return ComputeKind::Unknown;
@@ -292,7 +408,10 @@ bool isSupportedPhase5VectorOutput(
     return matrix.isSupportedComputeKind(kind);
   case ComputeKind::Unknown:
   case ComputeKind::Matmul:
+  case ComputeKind::BatchMatmul:
   case ComputeKind::Fill:
+  case ComputeKind::TensorCopy:
+  case ComputeKind::ScalarGeneric:
   case ComputeKind::Transpose:
   case ComputeKind::VectorGather:
   case ComputeKind::ReductionAdd:

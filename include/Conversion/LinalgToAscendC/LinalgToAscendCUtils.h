@@ -70,6 +70,7 @@ int64_t getMemorySpace(mlir::Type type);
 enum class TransposeLoweringKind {
   Unsupported,
   AscendCSimple2D,
+  ScalarMemRefLoop,
 };
 
 struct TransposeLoweringSpec {

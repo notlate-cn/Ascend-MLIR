@@ -111,6 +111,20 @@ bool isDimOrConstantProjection(AffineMap map) {
   return true;
 }
 
+bool isPostReductionSingletonCarry(linalg::LinalgOp linalgOp,
+                                   OpRole patternRole, unsigned axis,
+                                   int64_t extent) {
+  if (patternRole != OpRole::Reduction || extent != 1)
+    return false;
+
+  SmallVector<utils::IteratorType> iteratorTypes =
+      linalgOp.getIteratorTypesArray();
+  if (axis >= iteratorTypes.size())
+    return false;
+
+  return iteratorTypes[axis] != utils::IteratorType::reduction;
+}
+
 LogicalResult collectIndexingMapInfo(linalg::LinalgOp linalgOp,
                                      OpRole patternRole, unsigned axisCount,
                                      SmallVectorImpl<int64_t> &staticExtents,
@@ -182,9 +196,10 @@ LogicalResult collectIndexingMapInfo(linalg::LinalgOp linalgOp,
       }
 
       usedAxes[axis] = true;
-      if (failed(mergeStaticExtent(staticExtents, axis,
-                                   shapedType.getDimSize(resultIndex), info,
-                                   op)))
+      int64_t extent = shapedType.getDimSize(resultIndex);
+      if (isPostReductionSingletonCarry(linalgOp, patternRole, axis, extent))
+        continue;
+      if (failed(mergeStaticExtent(staticExtents, axis, extent, info, op)))
         return failure();
     }
 

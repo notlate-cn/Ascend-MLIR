@@ -148,7 +148,8 @@ module {
   EXPECT_TRUE(isSupportedPhase5FinalOutput(generic, matrix));
 }
 
-TEST(AscendLinalgBodyClassifierTest, RejectsUnsupportedBodyFromBothConsumers) {
+TEST(AscendLinalgBodyClassifierTest,
+     ClassifiesGmScalarGenericButRejectsPhase5Consumers) {
   MLIRContext context;
   OwningOpRef<ModuleOp> module = parseClassifierModule(
       context, R"mlir(
@@ -178,7 +179,7 @@ module {
 
   AscendBackendSupportMatrix matrix;
   EXPECT_EQ(classifyLinalgComputeKind(generic.getOperation(), matrix),
-            ComputeKind::Unknown);
+            ComputeKind::ScalarGeneric);
   EXPECT_FALSE(isSupportedPhase5VectorOutput(generic, matrix));
   EXPECT_FALSE(isSupportedPhase5FinalOutput(generic, matrix));
 }

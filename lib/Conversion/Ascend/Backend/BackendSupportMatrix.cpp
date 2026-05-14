@@ -70,6 +70,8 @@ llvm::StringRef stringifyComputeKind(ComputeKind kind) {
   switch (kind) {
   case ComputeKind::Matmul:
     return "matmul";
+  case ComputeKind::BatchMatmul:
+    return "batch_matmul";
   case ComputeKind::Fill:
     return "fill";
   case ComputeKind::ElementwiseAdd:
@@ -80,6 +82,10 @@ llvm::StringRef stringifyComputeKind(ComputeKind kind) {
     return "elementwise_max";
   case ComputeKind::FusedElementwise:
     return "fused_elementwise";
+  case ComputeKind::TensorCopy:
+    return "tensor_copy";
+  case ComputeKind::ScalarGeneric:
+    return "scalar_generic";
   case ComputeKind::Transpose:
     return "transpose";
   case ComputeKind::VectorGather:
@@ -94,7 +100,8 @@ llvm::StringRef stringifyComputeKind(ComputeKind kind) {
 
 bool AscendBackendSupportMatrix::isSupportedMovementPath(
     MemorySpace source, MemorySpace target) const {
-  return (source == MemorySpace::GM &&
+  return (source == MemorySpace::GM && target == MemorySpace::GM) ||
+         (source == MemorySpace::GM &&
           (target == MemorySpace::A1 || target == MemorySpace::B1 ||
            target == MemorySpace::VECIN)) ||
          (source == MemorySpace::A1 && target == MemorySpace::A2) ||
@@ -118,11 +125,14 @@ bool AscendBackendSupportMatrix::isSupportedComputeKind(
     ComputeKind kind) const {
   switch (kind) {
   case ComputeKind::Matmul:
+  case ComputeKind::BatchMatmul:
   case ComputeKind::Fill:
   case ComputeKind::ElementwiseAdd:
   case ComputeKind::ElementwiseMul:
   case ComputeKind::ElementwiseMax:
   case ComputeKind::FusedElementwise:
+  case ComputeKind::TensorCopy:
+  case ComputeKind::ScalarGeneric:
   case ComputeKind::Transpose:
   case ComputeKind::VectorGather:
   case ComputeKind::ReductionAdd:
