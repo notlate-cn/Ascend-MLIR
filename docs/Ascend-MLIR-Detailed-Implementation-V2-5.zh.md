@@ -48,8 +48,8 @@ Bufferization → Placement → Static Memory Planning → Data Movement → Mat
 
 | 来源 | 内容 | 访问方式 |
 |---|---|---|
-| 第三层决策结果 | `scheduleContract`、`promotionHints`、`cachePlan`、`unitAssignment`、`decisionGuards`、`pipelineDepthExpr`、`enableDoubleBuffer` | 从 `func` attribute `AscendScheduleDecisionSetAttr` 反序列化为 `ScheduleDecisionSet` 对象，以只读方式注入各 planner |
-| 第三层 IR 结构 | loop 骨架、indexing 关系，以及 `Structured Lowering` 写入的内存意图标记 | 直接从 IR attribute 读取：`CacheReadMarker` / `CacheWriteMarker`（附加在 loop op 或计算 op）、`PipelineMarker`（附加在最外层 pipeline loop）、`DoubleBufferMarker`（附加在 movement loop）、`PromotionHintAttr`（附加在对应 op 或 loop） |
+| 第三层决策结果 | `scheduleContract`、`promotionHints`、`cachePlan`、`unitAssignment`、`decisionGuards`、`tailPlans`、`pipelineDepthExpr`、`enableDoubleBuffer` | 从 `func` attribute `AscendScheduleDecisionSetAttr` 反序列化为 `ScheduleDecisionSet` 对象，以只读方式注入各 planner |
+| 第三层 IR 结构 | loop 骨架、indexing 关系，以及 `Structured Lowering` 写入的内存意图和 tail 结构标记 | 直接从 IR attribute 读取：`CacheReadMarker` / `CacheWriteMarker`（附加在 loop op 或计算 op）、`TailPlanMarker`（附加在主循环、tail region 或相关 loop）、`PipelineMarker`（附加在最外层 pipeline loop）、`DoubleBufferMarker`（附加在 movement loop）、`PromotionHintAttr`（附加在对应 op 或 loop） |
 | target 查询接口 | `TargetMemoryModel`、`TargetIntrinsicModel`、`TargetCostModel` | 编译器初始化阶段构造，以只读引用注入，不通过 IR attribute 传递 |
 | 结构化 tensor IR | 本体 | 当前 pass 的 `ModuleOp` |
 
@@ -58,6 +58,8 @@ Bufferization → Placement → Static Memory Planning → Data Movement → Mat
 - IR 上 guarded region 的 `AscendGuardAttr`，由 `Structured Lowering` 在生成 loop 骨架时写入
 
 第四层以 `AscendGuardAttr` 作为 guard 结构的 IR 载体；若两者出现不一致，`BufferizationDriver` 的前置校验应报错拒绝进入后续规划。一致性检查为双向：IR 上每个 `AscendGuardAttr` 的 guard 表达式必须能在 `ScheduleDecisionSet.decisionGuards` 中找到对应条目（IR→数据方向）；同时，`ScheduleDecisionSet` 中每个 `decisionGuard` 条目必须能在 IR 上找到对应的 `AscendGuardAttr` guarded region（数据→IR 方向）。任一方向不一致均报错。
+
+**`tailPlans` 的职责边界：** 第四层只消费第三层已经选择好的 `ScheduleDecision.tailPlans`，不重新选择 `MaskedTail` / `ScalarEpilogue` / `PadAndMask` / `MustDivide`。`TailPlanMarker` 是 tail 结构在 IR 上的载体；若 `ScheduleDecision.tailPlans` 与 IR 上的 `TailPlanMarker` 不一致，前置校验必须报错。第四层只负责把 tail plan 转换为 buffer size、padding temp、guarded copy 和 workspace/lifetime 规划。
 
 ### 输出
 
@@ -68,6 +70,7 @@ Bufferization → Placement → Static Memory Planning → Data Movement → Mat
 | memory place | `memref` type 的 `memory_space` |
 | 跨 place movement | `memref.copy` |
 | workspace | `memref.alloc` + `memref.subview` |
+| tail padding temp | guard 作用域内的 `memref.alloc` / `memref.subview`，由 `TailPlanMarker(policy=PadAndMask)` 触发 |
 | guard / unit / schedule 信息 | 现有 op attribute |
 | function boundary | `func.func` 的 `memref` 参数与结果 |
 
@@ -98,11 +101,20 @@ Bufferization → Placement → Static Memory Planning → Data Movement → Mat
 | `writePoints` | `DenseMap<Value, SmallVector<Operation *>>` | 每个 buffer 的写点 |
 | `loopScopes` | `DenseMap<Value, LoopRegion>` | 每个 buffer 的主要生存区间（从定义点、最后使用点和 loop 骨架推导）|
 | `guardBindings` | `DenseMap<Value, SmallVector<GuardExpr>>` | 每个 buffer 关联的 guard 条件集合（从第三层 `decisionGuards` 回填）|
+| `tailPlanBindings` | `DenseMap<Value, SmallVector<ScheduledAxisTailPlan>>` | 每个 buffer 受哪些轴级 tail plan 影响；从 `TailPlanMarker` 和 uses 回填 |
 | `bufferRoles` | `DenseMap<Value, BufferRole>` | 输入、输出、临时、cache、workspace 等角色 |
 
 `BufferRole` 枚举：`InputBuffer`、`OutputBuffer`、`TemporaryBuffer`、`CacheBuffer`、`WorkspaceBuffer`
 
 `GuardedBufferKey` = `(baseBuffer, guardExpr)`，同一底层 buffer 在某个 guard 上下文中的独立规划单元；单 guard 时退化为单条记录。
+
+`tailPlanBindings` 构造规则：
+
+1. 遍历 `TailPlanMarker` 标记的主循环、tail guarded region、scalar epilogue region 和 padding region。
+2. 对每个 region 内的 load/store、`memref.copy`、view-like op 和后续 movement op，沿 `aliasInfo` 归一到 base buffer。
+3. 将该 region 对应的 `ScheduledAxisTailPlan` 绑定到所有被读、写或搬运的 base buffer；`PadAndMask` 额外绑定 padding temp、source buffer 和 guarded writeback destination。
+4. 若同一 buffer 同时受多个 axis tail plan 影响，按 `ScheduleDecision.tailPlans` 中的轴顺序稳定排序并去重。
+5. 后置校验要求双向一致：每个 `TailPlanMarker` 至少绑定一个 buffer；每个 `tailPlanBindings` 条目必须能追溯到 IR 中的 `TailPlanMarker` 或该 marker 控制下的 use。
 
 ### 实现
 
@@ -122,6 +134,7 @@ Bufferization → Placement → Static Memory Planning → Data Movement → Mat
 |---|---|
 | `AscendScheduleDecisionSetAttr` 存在 | `func` attribute 中必须可解析出 `ScheduleDecisionSet` |
 | `AscendGuardAttr` 与 `decisionGuards` 双向一致 | IR 上每个 guarded region 的 guard 表达式必须能在 `ScheduleDecision.decisionGuards` 中找到对应条目（IR→数据）；且 `ScheduleDecisionSet` 中每个 `decisionGuard` 条目必须能在 IR 上找到对应的 `AscendGuardAttr` guarded region（数据→IR）；任一方向不满足均报错 |
+| `TailPlanMarker` 与 `tailPlans` 双向一致 | IR 上每个 `TailPlanMarker.axis / selectedPolicy / mainExtentExpr / tailExtentExpr / tailBufferingMode` 必须能在 `ScheduleDecision.tailPlans` 中找到对应项；且每个 `tailPlan` 必须已由 Structured Lowering 物化为 guard、masked region、scalar epilogue 或 `TailPlanMarker` |
 | 内存意图标记完整性 | 每个 `CacheReadMarker` 必须指向 IR 中存在的 `Value`，其 `place` 字段必须是 `TargetMemoryModel` 承认的合法 place；`PipelineMarker` 的 `depthExpr` 不得为空 |
 | `PromotionHintAttr` 可解析 | 每个 `PromotionHintAttr` 的 `isBinding`、`reuseScope`、`preferredUnit` 字段必须完整，不允许存在 unknown 枚举值 |
 | loop 骨架轴数与 `outerInnerMapping` 一致 | `ScheduleDecision.outerInnerMapping` 中记录的每个 `(outer, inner)` 轴对，在 IR loop 中必须能找到对应的嵌套层 |

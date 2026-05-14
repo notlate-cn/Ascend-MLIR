@@ -484,7 +484,19 @@ enum class AxisTailPolicy {
   MustDivide,       // 模板要求整除；第三层需要产生 Divisible guard 或静态验证
   MaskedTail,       // 允许 tail，通过 min(tile, dim-origin) 或 mask 处理
   ScalarEpilogue,   // 允许单独尾部 epilogue
+  PadAndMask,       // 允许将 tail 搬入对齐临时 buffer，再用 mask / guard 写回真实范围
   FullExtent        // 轴必须全长覆盖，典型为当前 FullReduction
+};
+
+enum class PrimitiveAxisUseKind {
+  DataCopy,          // 该轴参与 GM/L2/L1/UB 数据搬运
+  VectorCompute,     // 该轴参与 vector intrinsic 计算
+  Reduction,         // 该轴参与归约
+  GatherIndex,       // 该轴参与数据相关 indexing / gather
+  CubeM,             // 该轴映射到 cube M 维
+  CubeN,             // 该轴映射到 cube N 维
+  CubeK,             // 该轴映射到 cube K 维
+  WriteBack          // 该轴参与最终写回
 };
 
 // 合轴提示是"组级别"概念（多根轴属于同一组），不挂在单根轴上。
@@ -505,7 +517,12 @@ struct AxisScheduleConstraint {
   LogicalAxis *axis;
   AxisKind kind;
   SmallVector<AxisExecutionRole> allowedRoles;
-  AxisTailPolicy tailPolicy;
+  SmallVector<AxisTailPolicy> allowedTailPolicies;
+  SmallVector<PrimitiveAxisUseKind> primitiveUses;
+  // target-independent 的语义对齐粒度，单位是"元素个数"而不是字节；
+  // 0 表示第二层无额外要求。dtype / target 相关的最终字节粒度由第三层
+  // 结合 TargetIntrinsicModel / TargetMemoryModel 写入 ScheduledAxisTailPlan。
+  int64_t semanticAlignmentGranularity;
   // 合轴在第二层只作为"提示"产出，不在此处执行折叠。
   // coalescingGroupId == 0 表示该轴不参与任何合轴组；
   // 非 0 时按 groupId 查找 scheduleContract.axisCoalescingHints 中唯一匹配项；
@@ -521,16 +538,22 @@ struct AxisScheduleConstraint {
 
 > `axisCoalescingHints: SmallVector<AxisCoalescingHint>` 作为 `scheduleContract` 的并列字段（与 `axisScheduleConstraints` 同级），不内嵌到单轴结构。两者通过 `coalescingGroupId` 关联。这种"单轴属性 + 组级别属性"的分层与 MLIR `affine.parallel` / Linalg `loop tiling` 中"loop-level role"与"group-level mapping"的拆分一致。
 
+`allowedTailPolicies` 表示第二层允许的 tail 处理集合，不表示最终选择。第三层在 `ScheduleDecisionBuilder` 中结合 `ScheduleInstance`、primitive 能力、target intrinsic / memory model、cost model 和具体 shape bucket 选择唯一 `selectedTailPolicy`，并写入 `ScheduleDecision.tailPlans`。因此第二层不得因为某个 primitive 当前实现只支持对齐 shape 就直接把轴特判为 `MustDivide`；只有 primitive 语义本身无法保证越界安全、重排合法性或写回正确性时，才允许收窄为 `MustDivide` 或拒绝候选。
+
 **推导规则：**
 
-| 轴类型 / 结构 | `allowedRoles` | `tailPolicy` | 说明 |
+| 轴类型 / 结构 | `allowedRoles` | `allowedTailPolicies` | 说明 |
 | --- | --- | --- | --- |
-| `tileableAxes` 中的 parallel 轴 | `BindCoreCandidate`、`KernelLoopCandidate`、`VectorizeCandidate` | 默认 `MaskedTail` | 第三层可选择其中一级或多级切分；非整除 shape 必须通过 tail 处理，不应默认生成整除 guard |
-| `requiredReductionAxes` 且 primitive 未声明分块 reduction | `FullReduction` | `FullExtent` | 归约轴在当前 kernel 内保持完整；例如 `broadcast + add + reduce` 的 N 轴 |
-| `requiredReductionAxes` 且 primitive 声明分块 reduction | `ChunkedReduction`、`KernelLoopCandidate` | `MaskedTail` | 仅 Softmax online reduction、TopK 等专用 primitive 可开启；必须同步声明 cross-tile accumulate 语义 |
-| broadcast 退化轴 | `BroadcastProjection` | 继承 consumer 轴 | 输入侧不传播 tile size；consumer 侧仍可 tile / bind / vectorize |
-| layout transform 轴 | `LayoutCarry`，必要时附加 `KernelLoopCandidate` | 由被携带轴继承 | transpose 只改变轴顺序，reshape 只有在 product 可静态证明时才允许合轴 |
-| gather / indexing 动态访问轴 | 空或仅 `KernelLoopCandidate` | `MustDivide` 或拒绝 | 数据相关索引轴默认不能 bind core / vectorize，除非 primitive 专门证明边界和重排合法 |
+| `tileableAxes` 中的 parallel 轴 | `BindCoreCandidate`、`KernelLoopCandidate`、`VectorizeCandidate` | 默认 `{MaskedTail, ScalarEpilogue}`，若 primitive/data movement 声明需要对齐搬运则附加 `PadAndMask` | 第三层可选择其中一级或多级切分；非整除 shape 必须优先通过 tail 处理，不应默认生成整除 guard |
+| `requiredReductionAxes` 且 primitive 未声明分块 reduction | `FullReduction` | `{FullExtent}` | 归约轴在当前 kernel 内保持完整；例如 `broadcast + add + reduce` 的 N 轴 |
+| `requiredReductionAxes` 且 primitive 声明分块 reduction | `ChunkedReduction`、`KernelLoopCandidate` | `{MaskedTail, ScalarEpilogue}`；若 primitive 声明 padding identity，可附加 `PadAndMask` | 仅 Softmax online reduction、TopK 等专用 primitive 可开启；必须同步声明 cross-tile accumulate 语义；padded lane 不得改变最终 reduction 结果 |
+| broadcast 退化轴 | `BroadcastProjection` | 继承 consumer 轴的集合 | 输入侧不传播 tile size；consumer 侧仍可 tile / bind / vectorize |
+| layout transform 轴 | `LayoutCarry`，必要时附加 `KernelLoopCandidate` | 由被携带轴继承；若线性化后需要对齐搬运，可附加 `PadAndMask` | transpose 只改变轴顺序，reshape 只有在 product 可静态证明时才允许合轴 |
+| gather / indexing 动态访问轴 | 空或仅 `KernelLoopCandidate` | 默认 `{MaskedTail, ScalarEpilogue, PadAndMask}`；若索引语义无法证明边界安全，则收窄为 `{MustDivide}` 或拒绝 | 数据相关索引轴默认不能 bind core / vectorize，除非 primitive 专门证明边界和重排合法；N/K 对齐问题由第三层 tail plan 和第五层 codegen 处理，不在第二层写 op 专用特判 |
+
+`primitiveUses` 用于把同一根逻辑轴在不同 primitive 中的用途显式交给第三层。例如同一 N 轴可能同时是 `DataCopy`、`VectorCompute` 和 `WriteBack`，K 轴可能是 `GatherIndex` 或 `Reduction`。第三层必须对这些用途的 tail 能力取交集，再从 `allowedTailPolicies` 中选择最终策略；任一用途只支持 `MustDivide` 时，该轴必须产生 guard，除非另一个合法策略（如 `PadAndMask`）能把该用途转换为对齐访问并保证真实范围写回。
+
+`semanticAlignmentGranularity` 只描述轴语义上的元素粒度，例如"该轴必须按 16 个元素对齐"。不同 dtype 下的字节数（如 fp16 的 32B、fp32 的 64B）不是第二层职责，第三层在生成 `ScheduledAxisTailPlan.alignmentGranularityExpr` 时结合 dtype、intrinsic 和 target memory model 统一计算。
 
 **合轴提示约束（语义：第二层只产出组级提示，不执行折叠）：**
 
@@ -562,8 +585,8 @@ struct AxisScheduleConstraint {
 
 | 逻辑轴 | 来源 | 约束 |
 | --- | --- | --- |
-| M | `tileableAxes` | `allowedRoles = [BindCoreCandidate, KernelLoopCandidate, VectorizeCandidate]`；`tailPolicy = MaskedTail` |
-| N | `requiredReductionAxes` | `allowedRoles = [FullReduction]`；`tailPolicy = FullExtent` |
+| M | `tileableAxes` | `allowedRoles = [BindCoreCandidate, KernelLoopCandidate, VectorizeCandidate]`；`allowedTailPolicies = {MaskedTail, ScalarEpilogue}` |
+| N | `requiredReductionAxes` | `allowedRoles = [FullReduction]`；`allowedTailPolicies = {FullExtent}` |
 
 第三层据此可以生成如下层级，而不是依赖手写 transform：
 
@@ -693,7 +716,7 @@ ShapeGuard {
 | `IndexedFusion` 的 gather 边界 | `max(indices) < data.dim(gather_dim)`；无法静态证明时产生 `LessEqual` guard | `EmitRuntimeCheck` |
 | `LayoutTransform` 的 reshape 合法性 | reshape 涉及动态维度时产生 `Equal`（product 不变）guard | `CompileError` |
 | `AnchorPrologue` 的 broadcast 兼容性 | broadcast 轴的 size 为 1 或与 consumer 轴 size 相等 | `CompileError` |
-| `axisScheduleConstraints` 的 tail 策略 | `MustDivide` 产生 `Divisible` guard；`MaskedTail` / `ScalarEpilogue` 不产生整除 guard，由第三层和第五层生成 tail 处理 | `EmitRuntimeCheck` |
+| `axisScheduleConstraints.allowedTailPolicies` | 只有集合收敛到 `MustDivide` 时产生 `Divisible` guard；`MaskedTail` / `ScalarEpilogue` / `PadAndMask` 不产生整除 guard，由第三层 `tailPlans` 和第五层 codegen 生成 tail 处理 | `EmitRuntimeCheck` |
 
 推导步骤：遍历候选内每个 op，调用 `op.getShapeGuards(OpSemanticSummary, AscendSymbolConstraintAttr)` 收集 guard；能被 `AscendSymbolConstraintAttr` 中已有等价关系静态证明的 guard 直接消除，不写入集合；剩余写入 `dynamicGuardSet`。若集合大小超过 `cfg.maxDynamicGuardBudget`，记 `DynamicGuardExplosion`，候选合法性失败。
 
@@ -1064,28 +1087,32 @@ classifyRematerializable(escapingValues, primitive, candidateSet, cfg):
 | ----------------------- | --------------------------------------------- |
 | `tileableAxes`          | 取交集                                        |
 | `requiredReductionAxes` | 取并集（任一候选要求保留的轴均须保留）        |
-| `axisScheduleConstraints` | 按轴合并 allowedRoles：同一轴取交集，不同轴保留；`tailPolicy` 按下述合并函数取严格者（不是全序，而是成对规则，见下方"`tailPolicy` 合并规则"）；任一轴的 `allowedRoles` 交集为空，或同一轴在两侧之间 `tailPolicy` 不可合并，均记 `TileContractUnavailable` |
+| `axisScheduleConstraints` | 按轴合并 allowedRoles：同一轴取交集，不同轴保留；`allowedTailPolicies` 按下述成对函数计算可用集合；任一轴的 `allowedRoles` 交集为空，或同一轴的 `allowedTailPolicies` 合并后为空，均记 `TileContractUnavailable` |
 | `axisCoalescingHints`   | 按"成员集合相等 + 成员顺序一致"匹配组，匹配组按 3.6.2.1 的 `CoalescingHintKind` 2x2 表合并；成员集合不一致的组整体丢弃；合并后重新分配 `groupId` 并回写成员轴的 `coalescingGroupId` |
 | `layoutConstraints`     | 取并集（约束只增不减）                        |
 | `mustKeepOnChipValues`  | 取并集                                        |
 | `templateFamilies`      | 以合并后主角色集合 + primitive 组合重查静态映射表；查到则用查表结果，查不到则取各源候选 `templateFamilies` 的交集兜底；交集亦为空则记 `TemplateFamilyDisjoint` |
 | `dynamicGuardSet`       | 取并集；超出预算则记 `DynamicGuardExplosion`  |
 
-**`tailPolicy` 合并规则**（成对函数，不是全序）：对同一根轴在两侧候选上的 `tailPolicy` 取值 `(a, b)`，按以下表格决定合并结果。表是对称的，未列出的组合视为冲突并记 `TileContractUnavailable`。
+**`allowedTailPolicies` 合并规则**（成对函数，不是全序）：对同一根轴在两侧候选上的集合 `A`、`B`，枚举 `(a ∈ A, b ∈ B)`，按以下表格生成兼容结果集合；表是对称的，未列出的组合视为冲突。最终集合为空时记 `TileContractUnavailable`。
 
-| `a` \ `b` | `FullExtent` | `MustDivide` | `MaskedTail` | `ScalarEpilogue` |
-| --- | --- | --- | --- | --- |
-| `FullExtent` | `FullExtent` | 冲突 | 冲突 | 冲突 |
-| `MustDivide` | 冲突 | `MustDivide` | `MustDivide` | `MustDivide` |
-| `MaskedTail` | 冲突 | `MustDivide` | `MaskedTail` | `ScalarEpilogue` |
-| `ScalarEpilogue` | 冲突 | `MustDivide` | `ScalarEpilogue` | `ScalarEpilogue` |
+| `a` \ `b` | `FullExtent` | `MustDivide` | `MaskedTail` | `ScalarEpilogue` | `PadAndMask` |
+| --- | --- | --- | --- | --- | --- |
+| `FullExtent` | `FullExtent` | 冲突 | 冲突 | 冲突 | 冲突 |
+| `MustDivide` | 冲突 | `MustDivide` | `MustDivide` | `MustDivide` | `MustDivide` |
+| `MaskedTail` | 冲突 | `MustDivide` | `MaskedTail` | `ScalarEpilogue` | `PadAndMask` |
+| `ScalarEpilogue` | 冲突 | `MustDivide` | `ScalarEpilogue` | `ScalarEpilogue` | `PadAndMask` |
+| `PadAndMask` | 冲突 | `MustDivide` | `PadAndMask` | `PadAndMask` | `PadAndMask` |
 
 要点说明：
 
 - `FullExtent` 表示"轴必须全长覆盖"，与任何允许 tail 的策略不兼容；只能与 `FullExtent` 自身合并。
-- `MustDivide` 是"强制整除"的硬要求，遇到 `MaskedTail` / `ScalarEpilogue` 时**结果收敛到 `MustDivide`**（更严格的一侧赢），不是冲突；这与第三层降级生成 Divisible guard 一致。
+- `MustDivide` 是"强制整除"的硬要求，遇到 `MaskedTail` / `ScalarEpilogue` / `PadAndMask` 时**结果收敛到 `MustDivide`**（更严格的一侧赢），不是冲突；这与第三层降级生成 Divisible guard 一致。
 - `MaskedTail` 与 `ScalarEpilogue` 互兼容，合并结果偏向 `ScalarEpilogue`（更具体的 tail 处理形态由第三层模板决定，但合并产物不丢失"允许独立 epilogue"的可能性）。
+- `PadAndMask` 表示"可通过对齐临时 buffer 把非整除访问转为对齐访问"，比 `MaskedTail` / `ScalarEpilogue` 更具体；若另一侧也允许 tail，则合并结果保留为 `PadAndMask`。
 - `requiredReductionAxes` 在并集后若同一轴在两侧分别为 `FullReduction` / `ChunkedReduction`，按上表落到 `FullExtent` ⊕ `MaskedTail` = 冲突，因此跨候选合并不允许 reduction 语义降级；只有双方均声明 `ChunkedReduction` 时合并仍为 `ChunkedReduction`。
+
+实现时不得按 enum ordinal 或简单 max/min 比较。合并算子按三层规则实现：先处理 `FullExtent` 的独立冲突域，再处理 `MustDivide` 的严格性优先，最后在 tail-compatible 策略中按具体性 `MaskedTail < ScalarEpilogue < PadAndMask` 选择结果。集合合并必须枚举所有 `(a, b)` pair 生成结果集合，再去重；不要假设该表是全序。
 
 **合并条件**：
 
@@ -1395,8 +1422,8 @@ classifyRematerializable(escapingValues, primitive, candidateSet, cfg):
 | 1    | `DependencyAnalysisVerifier`   | 3.3 完成后            | `ProducerConsumerIndex` 仅记录一跳依赖；`OpSemanticSummary` 覆盖 `KernelPattern` 候选范围内全部 op；`accessPatternKind` 取值合法；`NotApplicable` 仅出现在具名 contraction-like op 上 | `StructuralBarrier`     |
 | 2    | `StructuralMarkingVerifier`    | 3.4 完成后            | `branch_root` / `merge_root` 在 function 内唯一；`branch_group` / `merge_group` 编号连续；branch / merge 配对完整；`handwritten_pattern_candidate` 的 `groupId` 在 function 内唯一；不依赖 target 信息 | `StructuralBarrier`     |
 | 3    | `OpRoleClassificationVerifier` | 3.5 完成后            | `OpRoleMap` 覆盖第一层许可范围内全部 op；多角色组合符合 3.5.3 节优先级；同一 IR 多次运行结果稳定（确定性）；`AscendOpRoleAttr` 与 `OpRoleMap` 一致 | `StructuralBarrier`     |
-| 4    | `FusionCandidateVerifier`      | 3.6 完成后            | 每个 `FusionCandidate.closure.isClosed = true`；`scheduleContract` 字段完整（`tileableAxes`、`templateFamilies` 等非空且来源可追溯）；**`axisScheduleConstraints` 覆盖 `tileableAxes ∪ requiredReductionAxes` 中每一根轴**，且每根轴的 `allowedRoles` 非空、`tailPolicy` 已显式赋值；**`axisCoalescingHints` 自洽**：每个 hint 的 `members.size() ≥ 2` 且全部出现在 `tileableAxes` 内、`groupId` 在候选内唯一且从 1 起连续分配；任一轴 `coalescingGroupId != 0` 时必须能找到唯一 hint，且该轴出现在该 hint 的 `members` 中；每个 hint 的成员轴必须反向指回同一 `groupId`；`kind = Vectorizable` 时组内至少一根轴的 `allowedRoles` 含 `VectorizeCandidate`；`kind = LinearizeOnly` 时不得依赖 vector 轴语义；`benefitScore` 已计算；候选编译预算未超 `candidateBudgetPerFunction` | `BudgetExceeded`、`ClosureEscape` 或 `ScheduleContractIncomplete` |
-| 5    | `CandidateMergeVerifier`       | 3.7 完成后            | `MergedCandidate.scheduleContract` 来自 3.7.3 节合并规则（取交 / 取并），无任意推导；`primaryOps` 唯一确定；`dynamicGuardSet` 未超全局 `maxDynamicGuardBudget`；合并后 `axisScheduleConstraints` 的轴覆盖性、`tailPolicy` 合并规则约束和 `axisCoalescingHints` 自洽性仍成立 | `DynamicGuardExplosion` 或 `TileContractUnavailable` |
+| 4    | `FusionCandidateVerifier`      | 3.6 完成后            | 每个 `FusionCandidate.closure.isClosed = true`；`scheduleContract` 字段完整（`tileableAxes`、`templateFamilies` 等非空且来源可追溯）；**`axisScheduleConstraints` 覆盖 `tileableAxes ∪ requiredReductionAxes` 中每一根轴**，且每根轴的 `allowedRoles`、`allowedTailPolicies` 非空，`primitiveUses` 已按候选内 primitive 用途填充；**`axisCoalescingHints` 自洽**：每个 hint 的 `members.size() ≥ 2` 且全部出现在 `tileableAxes` 内、`groupId` 在候选内唯一且从 1 起连续分配；任一轴 `coalescingGroupId != 0` 时必须能找到唯一 hint，且该轴出现在该 hint 的 `members` 中；每个 hint 的成员轴必须反向指回同一 `groupId`；`kind = Vectorizable` 时组内至少一根轴的 `allowedRoles` 含 `VectorizeCandidate`；`kind = LinearizeOnly` 时不得依赖 vector 轴语义；`benefitScore` 已计算；候选编译预算未超 `candidateBudgetPerFunction` | `BudgetExceeded`、`ClosureEscape` 或 `ScheduleContractIncomplete` |
+| 5    | `CandidateMergeVerifier`       | 3.7 完成后            | `MergedCandidate.scheduleContract` 来自 3.7.3 节合并规则（取交 / 取并），无任意推导；`primaryOps` 唯一确定；`dynamicGuardSet` 未超全局 `maxDynamicGuardBudget`；合并后 `axisScheduleConstraints` 的轴覆盖性、`allowedTailPolicies` 合并规则约束和 `axisCoalescingHints` 自洽性仍成立 | `DynamicGuardExplosion` 或 `TileContractUnavailable` |
 | 6    | `HorizontalFusionVerifier`     | 3.8 完成后            | 每个 `HorizontalFusionCandidate.siblingCandidates` 间互不可达条件成立（无 `ProducerConsumerIndex` 路径）；`sharedInputs` 非空；各兄弟候选主角色符合初期限制（均为 `Anchor`）；`perGroupContracts` 条目数与 `siblingCandidates` 数一致；组内候选数未超 `maxHorizontalFusionGroupSize`；参与水平融合的原始候选不再出现在独立候选列表中 | `HorizontalDependencyViolation`、`HorizontalRoleUnsupported`、`NoSharedInput`、`SourceCandidateNotClosed`、`HorizontalGroupSizeExceeded`、`HorizontalMergeProfitNegative` |
 | 7    | `KernelPatternBuildVerifier`   | 3.9 完成后            | `KernelPatternCandidate.candidateId` 唯一；`fingerprint` 仅含 3.12.4 节允许的参与项（无 `ascend.unknown_origin`、无前端前缀 attr、无 location 信息）；`HandwrittenPattern` 的 `MustCoLocate` 约束已建立；`coveringMap` 与 `overlapMap` 互一致 | `StructuralBarrier`     |
 | 8    | `KernelPatternFinalVerifier`   | 3.10 完成后（最终输出）| 最终 `KernelPattern[]` 满足 3.10.3 节验证条件：**无重叠**（各 pattern 的 `internalOps` 无交集；`rematerializedOps` 中副本不计入检查）、**全覆盖**（所有许可 op 已被覆盖）、**依赖可恢复**（pattern 间组成完整 DAG）、**模板可承接**（每个 pattern 存在后续 `scheduleTemplate` 或已注册为 `HandwrittenPattern`）；硬约束 `BranchPair / MergePair / MustCoLocate / MustSeparate / ScheduleBarrier` 全部满足；`HandwrittenPattern` 注入的 op 集合与匹配条件一致 | `StructuralBarrier` 或 `ScheduleFamilyNotSupported` |

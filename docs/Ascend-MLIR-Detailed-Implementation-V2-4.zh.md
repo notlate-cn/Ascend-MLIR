@@ -931,6 +931,25 @@ struct ScheduleFamilyMatchResult {
 `ScheduleInstance` 是搜索空间中的候选描述（符号化），`ScheduleDecision` 是其精化结果（具体化）。两者通过**组合**关系表达，`ScheduleDecision` 持有选中的 `ScheduleInstance` 引用，并在此基础上补充求值后的具体字段，不重复存储 `ScheduleInstance` 已有的字段：
 
 ```cpp
+enum class TailBufferingMode {
+  SeparateTailBuffer,       // 默认：tail region 使用独立临时 buffer，不进入主循环 ping-pong
+  ReuseMainBufferAfterDrain // 仅当主 pipeline 已 drain 且生命周期不重叠时复用主循环 tbuf
+};
+
+struct ScheduledAxisTailPlan {
+  LogicalAxisId axis;
+  AxisTailPolicy selectedPolicy;          // 从第二层 allowedTailPolicies 中选出的唯一策略
+  SmallVector<PrimitiveAxisUseKind> affectedPrimitiveUses;
+                                          // primitiveUses 的子集：该 tail 策略实际需要特殊 lowering 的用途
+  Expr extentExpr;                        // 真实轴长度
+  Expr tileExpr;                          // 当前 decision 下的 tile 长度
+  Expr alignmentGranularityExpr;          // target / primitive 合并后的最终对齐粒度
+  Expr mainExtentExpr;                    // 可按 tile/alignment 直接处理的主区间
+  Expr tailExtentExpr;                    // extent - mainExtent；可为 0
+  TailBufferingMode tailBufferingMode;     // PadAndMask / epilogue 的 buffer 复用策略
+  bool emitsRuntimeGuard;                 // MustDivide 或动态 tail 分支需要运行时 guard 时为 true
+};
+
 struct ScheduleDecision {
   // --- 精化来源 ---
   ScheduleInstance scheduleInstance;  // 选中的候选（含所有符号化字段）
@@ -943,6 +962,8 @@ struct ScheduleDecision {
   UnitAssignment unitAssignment;           // Cube/Vector 分配（已确定）
   CachePlan cachePlan;                     // cache 计划（已从 cacheChoices 具体化）
   PromotionHints promotionHints;           // 片上提升意图（含 isBinding 字段）
+  SmallVector<ScheduledAxisTailPlan> tailPlans;
+                                          // 每根已调度轴的最终 tail 处理计划
 };
 
 struct ScheduleDecisionSet {
@@ -952,17 +973,47 @@ struct ScheduleDecisionSet {
 };
 ```
 
-**不允许的做法**：`ScheduleDecisionBuilder` 不得把 `ScheduleInstance` 中已有字段（`tileAxes`、`tileExprs`、`loadOrder`、`computeOrder`、`blockMapping`、`pipelineDepthExpr`、`enableDoubleBuffer`）复制到 `ScheduleDecision` 的平级字段。后续阶段通过 `decision.scheduleInstance.xxx` 访问这些字段。`runtimeTopK` 属于 `ScheduleDecisionSet` 级别，不得写入单个 `ScheduleDecision`。
+**不允许的做法**：`ScheduleDecisionBuilder` 不得把 `ScheduleInstance` 中已有字段（`tileAxes`、`tileExprs`、`loadOrder`、`computeOrder`、`blockMapping`、`pipelineDepthExpr`、`enableDoubleBuffer`）复制到 `ScheduleDecision` 的平级字段。后续阶段通过 `decision.scheduleInstance.xxx` 访问这些字段。`tailPlans` 是对第二层轴约束、primitive 用途和 target 能力求交后的**新精化结果**，不属于重复存储。`runtimeTopK` 属于 `ScheduleDecisionSet` 级别，不得写入单个 `ScheduleDecision`。
 
 #### 4.6.2 功能
 
 根据 `ScheduleProblem + TilingStrategy` 生成带 guard 的最终调度结果。
 
-#### 4.6.3 输出：`ScheduleDecisionSet`
+#### 4.6.3 Axis Tail Plan
+
+`AxisTailPlan` 是第三层把第二层 `axisScheduleConstraints.allowedTailPolicies` 具体化后的唯一结果。它是通用轴级机制，不属于 gather、reduce、transpose 或某个单独 op 的特判；任意 op 只通过 `primitiveUses` 和 primitive capability 影响策略集合。
+
+`ScheduleProblem.axisScheduleConstraints.primitiveUses` 是该轴在候选内的用途全集；`ScheduledAxisTailPlan.affectedPrimitiveUses` 是选择某个 tail 策略后需要特殊 tail lowering 的用途子集。例如某轴同时参与 `DataCopy`、`VectorCompute` 和 `WriteBack`，若 `MaskedTail` 只影响 vector compute 与 writeback，则 `affectedPrimitiveUses = {VectorCompute, WriteBack}`，而不是重复全集。
+
+**选择流程：**
+
+1. 从 `ScheduleProblem.axisScheduleConstraints` 读取当前轴的 `allowedTailPolicies`、`primitiveUses` 和 `semanticAlignmentGranularity`。
+2. 从选中 `ScheduleInstance` 读取该轴是否被 bind core、kernel loop、vectorize、coalesce 或 full reduction。
+3. 查询 `TargetIntrinsicModel` / `TargetMemoryModel`，得到每个 `PrimitiveAxisUseKind` 的 mask、scalar epilogue、padding、alignment 支持情况。
+4. 对第二层允许集合、primitive 能力集合、target 能力集合取交集；交集为空则该 `ScheduleInstance` 非法，不能进入 `ScheduleDecisionSet`。
+5. 按 cost model 选择唯一 `selectedPolicy`：优先选无需额外 guard 且无需额外 buffer 的 `MaskedTail`；若 intrinsic 不支持 mask 但 tail 很小，选 `ScalarEpilogue`；若数据搬运或 cube/vector intrinsic 要求对齐访问，选 `PadAndMask`；只有上述策略都不可用时才选 `MustDivide` 并生成 divisibility guard。
+6. 计算 `affectedPrimitiveUses`：从第二层 `primitiveUses` 中筛出会因为 `selectedPolicy` 改变 lowering 形态的用途，其余用途不写入该字段。
+7. 计算 `tailBufferingMode`：默认 `SeparateTailBuffer`；只有当主循环 pipeline 已 drain、double-buffer 生命周期不重叠、且复用不会改变 queue/tbuf 顺序时，才允许 `ReuseMainBufferAfterDrain`。
+8. 计算 `mainExtentExpr` / `tailExtentExpr`：静态 shape 直接常量折叠；动态 shape 写成符号表达式并进入 host tiling / runtime manifest。
+9. 将结果写入 `ScheduleDecision.tailPlans`，并把必要 guard 写入 `decisionGuards`。第四、五层只消费该结果，不重新选择 tail 策略。
+
+**策略语义：**
+
+| `selectedPolicy` | 第三层含义 | guard 规则 | 后续层职责 |
+| --- | --- | --- | --- |
+| `MustDivide` | 当前 decision 只接受整除 shape | 静态证明或生成 `dim % granularity == 0` / `dim % tile == 0` | 第四、五层无需生成 tail region |
+| `MaskedTail` | 主循环和 tail 共用同一结构，通过 valid extent / mask 防越界 | 不生成整除 guard；动态 `tailExtent > 0` 可生成 guarded region | 第五层发射 mask、`min(tile, dim-origin)` 或 guarded load/store |
+| `ScalarEpilogue` | 主循环处理对齐区间，tail 使用 scalar 或小粒度 loop | 不生成整除 guard；生成 `tailExtent > 0` epilogue guard | 第五层发射 scalar/small-vector epilogue |
+| `PadAndMask` | tail 读入或计算时使用对齐临时 buffer，最终只写回真实范围 | 不生成整除 guard；生成 padding temp 和 writeback guard 所需条件 | 第四层分配对齐临时 buffer；第五层发射 padding、mask 和 guarded writeback |
+| `FullExtent` | 该轴必须完整覆盖，不按 tile 拆 tail | 不生成 tail guard；若与 tile split 冲突则 decision 非法 | reduction/finalize 保持全轴语义 |
+
+`coalesced` 轴的 tail plan 必须同时记录 flat extent 与原始成员轴映射。若第三层把多根轴线性化为 flat axis，则 `mainExtentExpr` / `tailExtentExpr` 在 flat extent 上计算，Structured Lowering 在索引还原时必须用原始成员轴真实 extent 生成越界保护，不能只保护 flat index。
+
+#### 4.6.4 输出：`ScheduleDecisionSet`
 
 `ScheduleDecisionSet` 持有一个或多个 `ScheduleDecision`（运行期可选）。
 
-#### 4.6.4 编译期与运行期分工
+#### 4.6.5 编译期与运行期分工
 
 | 阶段                   | 动作                                                         |
 | ---------------------- | ------------------------------------------------------------ |
@@ -999,7 +1050,7 @@ fallback decision
 
 > 本节描述运行期选择的决策逻辑（选哪个、如何回退）。支撑运行期选择的三级缓存结构（`TemplateCache`、`ShapeBucketCache`、`TuningResultCache`）及完整的运行期查询流程见 4.9 节。
 
-#### 4.6.5 构造步骤
+#### 4.6.6 构造步骤
 
 1. 在编译期保留的 `scheduleSearchSpace` 上，按 bucket 和 `candidateGuards` 做运行期过滤
 2. Level-1 轻量打分，保留 `runtimeTopK / topN`
@@ -1010,10 +1061,11 @@ fallback decision
 7. 生成 `blockDimExpr`（由 `blockMapping` 和具体 shape 求值得到）
 8. 生成 `unitAssignment`（由 `ScheduleProblem.hardwareConstraints` 和 pattern roles 确定）
 9. 将 `cacheChoices` 具体化为 `cachePlan`（确定每个 value 的具体 memory place 和 scope）
-10. 生成 `promotionHints`（标注 `isBinding`，见 4.4.4 节）
-11. 将所有 `ScheduleDecision` 汇总为 `ScheduleDecisionSet`，并写入集合级参数 `runtimeTopK`
+10. 对每根 `tileAxes`、`requiredReductionAxes`、vectorized/coalesced 轴生成 `tailPlans`，并把 `MustDivide` 或显式 tail branch 所需条件合并进 `decisionGuards`
+11. 生成 `promotionHints`（标注 `isBinding`，见 4.4.4 节）
+12. 将所有 `ScheduleDecision` 汇总为 `ScheduleDecisionSet`，并写入集合级参数 `runtimeTopK`
 
-#### 4.6.6 案例
+#### 4.6.7 案例
 
 **广播 Elementwise `(1, A) → (B, A)`**：
 
@@ -1025,6 +1077,7 @@ fallback decision
 | `decisionGuards`    | `A >= vector_width`                                          |
 | `cachePlan`         | 在 `Ao/Ai` tile 作用域内沿 B 轴复用广播值，置于 UB           |
 | `promotionHints`    | `{value=b, isBinding=false, preferredUnit=Vector, reuseScope=Ao_tile}` |
+| `tailPlans`         | `{axis=A, selectedPolicy=MaskedTail, mainExtent=floor(A/TA)*TA, tailExtent=A%TA}` |
 
 `ScheduleDecisionSet.runtimeTopK = 4`（集合级参数，不在单个 `ScheduleDecision` 中重复记录）。
 
@@ -1036,10 +1089,10 @@ fallback decision
 
 `Structured Lowering` 把 `ScheduleDecision` 物化为结构化 loop IR。**本阶段只做结构变换，不做内存语义物化**：
 
-- **本阶段做**：生成切分后的 loop 骨架，固化轴顺序和索引映射，落实 `hoist_invariant`、`bind_block`、`blockDimExpr` 等结构动作，写入 `CacheReadMarker` 等内存意图标记
+- **本阶段做**：生成切分后的 loop 骨架，固化轴顺序和索引映射，落实 `hoist_invariant`、`bind_block`、`blockDimExpr` 等结构动作，按 `tailPlans` 生成主区间 / tail region / guard 结构，写入 `CacheReadMarker` 等内存意图标记
 - **本阶段不做**：将 `CacheReadMarker` 展开为实际 buffer 分配、copy-in/out 或 placement 决策——这些由第四层 `BufferizationDriver` 和 `PlacementPlanner` 负责
 
-内存语义标记（`CacheReadMarker`、`PipelineMarker`、`DoubleBufferMarker`）以显式 IR attribute 形式写入，携带足够信息供第四层直接消费，不依赖第四层反向解释 `ScheduleDecision`。
+内存语义标记（`CacheReadMarker`、`PipelineMarker`、`DoubleBufferMarker`）和结构化 tail 标记（`TailPlanMarker`）以显式 IR attribute 形式写入，携带足够信息供第四层直接消费，不依赖第四层反向解释 `ScheduleDecision`。
 
 **内存意图标记最小字段**：
 
@@ -1050,12 +1103,14 @@ fallback decision
 | `PipelineMarker`     | `depthExpr: Expr`（pipeline 深度表达式）                     | 最外层 pipeline loop attribute |
 | `DoubleBufferMarker` | `enabled: bool`                                              | 对应 movement loop attribute   |
 | `PromotionHintAttr`  | 与 `PromotionHint` 结构体字段一一对应（含 `isBinding`）      | 对应 op 或 loop attribute      |
+| `TailPlanMarker`     | `axis`、`selectedPolicy`、`mainExtentExpr`、`tailExtentExpr`、`alignmentGranularityExpr`、`affectedPrimitiveUses`、`tailBufferingMode` | 主循环、tail guarded region 或相关 loop attribute |
 
 **输出保证**：
 
 - loop 层次已按 tile 和 reorder 固定
 - 原始 logical axis 到切后轴的索引关系已显式化
 - 结构动作（`bind_block`、`hoist_invariant`）已落实到 IR
+- 每根已调度轴的 tail 结构已按 `ScheduleDecision.tailPlans` 物化：整除 guard、masked region、scalar epilogue 或 padding marker 至少有一种
 - 内存意图标记已写入 IR，携带 `isBinding`、`reuseScope`、`preferredMemoryPlace` 等字段
 - 后续第四层不需要再回头解释 `ScheduleDecision` 才能继续工作
 
@@ -1064,11 +1119,26 @@ fallback decision
 1. 读取 `scheduleInstance.tileAxes / tileExprs` 和 `outerInnerMapping`，生成切分后的 loop 骨架，替换原始轴
 2. 按 `scheduleInstance.loadOrder / computeOrder` 固定 loop 层次和计算顺序
 3. 按 `blockMapping / blockDimExpr / unitAssignment` 写入结构化并行映射信息
-4. 将 `cachePlan` 转换为显式 `CacheReadMarker` / `CacheWriteMarker` attribute，写入对应 op 或 loop，**不展开为实际 buffer**
-5. 将 `pipelineDepthExpr` 转换为 `PipelineMarker` attribute，标注流水语义
-6. 将 `enableDoubleBuffer` 转换为 `DoubleBufferMarker` attribute
-7. 按 `promotionHints` 写入 `PromotionHintAttr`（含 `isBinding` 字段），供第四层 `PlacementPlanner` 消费
-8. 按 `hoist_invariant`、broadcast reuse、branch/merge 等结构约束，落实不变项外提和结构动作
+4. 按 `tailPlans` 对每根轴生成主区间 loop、tail guarded region 或整除 guard，并写入 `TailPlanMarker`
+5. 将 `cachePlan` 转换为显式 `CacheReadMarker` / `CacheWriteMarker` attribute，写入对应 op 或 loop，**不展开为实际 buffer**
+6. 将 `pipelineDepthExpr` 转换为 `PipelineMarker` attribute，标注流水语义
+7. 将 `enableDoubleBuffer` 转换为 `DoubleBufferMarker` attribute
+8. 按 `promotionHints` 写入 `PromotionHintAttr`（含 `isBinding` 字段），供第四层 `PlacementPlanner` 消费
+9. 按 `hoist_invariant`、broadcast reuse、branch/merge 等结构约束，落实不变项外提和结构动作
+
+**Tail lowering 通用模板：**
+
+| `selectedPolicy` | Structured Lowering 结果 |
+| --- | --- |
+| `MustDivide` | 生成或挂接 `AscendGuardAttr(dim % granularity == 0)`；loop 内只保留完整 tile 路径 |
+| `MaskedTail` | 生成 `validExtent = min(tileExpr, extentExpr - origin)`，load/compute/store 使用 `validExtent` 或 mask；不生成整除 guard |
+| `ScalarEpilogue` | 生成主循环 `mainExtentExpr`，并生成 `if tailExtentExpr > 0` 的 scalar/small-loop epilogue region |
+| `PadAndMask` | 生成主循环和 `if tailExtentExpr > 0` 的 padding tail region；本层只写 `TailPlanMarker(policy=PadAndMask)` 和 guarded writeback 边界，不分配临时 buffer |
+| `FullExtent` | 不生成 tail split；若同一轴已被 `ScheduleInstance` 非法切分，`StructuredLoweringVerifier` 报错 |
+
+`PadAndMask` 的实际对齐临时 buffer、padding fill、copy-in/copy-out 在第四、五层完成：第四层根据 `TailPlanMarker` 规划 buffer 与 movement，第五层根据 `selectedPolicy` 发射 AscendC 代码。本层只保证控制流、索引和 guard 已结构化。
+
+`PadAndMask` / `ScalarEpilogue` tail region 默认位于主循环 steady-state pipeline 之外，不参与主循环 double buffer，也不占用主循环 ping-pong queue/tbuf。若 `ScheduledAxisTailPlan.tailBufferingMode = ReuseMainBufferAfterDrain`，`StructuredLoweringVerifier` 必须证明主 pipeline 已 drain、主循环 tbuf 生命周期结束、tail region 与下一轮主循环无重叠；否则第四层必须为 tail region 分配独立临时 buffer。
 
 #### 4.7.3 融合边界
 
@@ -1085,7 +1155,7 @@ fallback decision
 - 跨 branch / merge、gather / indexing、layout barrier 的融合
 - 需要单独外部可见结果、单独 write-back 边界或单独 kernel ABI 的融合
 
-**单 kernel 内多 loop 的合法性条件**：同一 kernel 内允许保留多个结构化 loop，合法条件为：这些 loop 共享同一个 tile 作用域、on-chip buffer 生命周期和片上数据流，且关键中间值（`isBinding=true` 的 `PromotionHint`）不需要离开片上。若某个 `ScheduleDecision` 导致 `isBinding=true` 的中间值必须回写 GM，则本层在 verifier 阶段报错，触发 4.6.4 节的运行期回退链（`StructuredLowering` 失败属于"Level-2 调优失败"路径），不允许静默降级。
+**单 kernel 内多 loop 的合法性条件**：同一 kernel 内允许保留多个结构化 loop，合法条件为：这些 loop 共享同一个 tile 作用域、on-chip buffer 生命周期和片上数据流，且关键中间值（`isBinding=true` 的 `PromotionHint`）不需要离开片上。若某个 `ScheduleDecision` 导致 `isBinding=true` 的中间值必须回写 GM，则本层在 verifier 阶段报错，触发 4.6.5 节的运行期回退链（`StructuredLowering` 失败属于"Level-2 调优失败"路径），不允许静默降级。
 
 #### 4.7.4 案例
 
@@ -1241,7 +1311,7 @@ ProfileDB 按 `targetVersion` 分区存储，不同硬件代际的数据不混�
 4. 用当前 bucket 构造 `TuningResultCache` key，查询；命中（含负缓存）则直接使用结果
 5. 未命中则在 `compileTimeTopK` 保留的候选中做 Level-1 快速调优，筛出 `runtimeTopK / topN`
 6. 直接使用 Level-1 结果，或在 `topN` 上执行 Level-2 Autotuner
-7. 级联回填 `TuningResultCache`；无合法结果则写负缓存，触发 4.6.4 节回退链
+7. 级联回填 `TuningResultCache`；无合法结果则写负缓存，触发 4.6.5 节回退链
 
 #### 4.9.4 decisionGuards 示例
 
@@ -1267,8 +1337,8 @@ decision_2: guard = (A > 4096)                      // 1 个 guard
 | `AxisCoalescingVerifier`     | 报编译错误，终止当前 `KernelPattern` 的编译；错误携带 `barrierKind` 和 `anchorOps` 供诊断 |
 | `ScheduleProblemVerifier`    | 报编译错误，终止当前 `KernelPattern` 的编译；不允许静默丢弃或降级 |
 | `TilingStrategyVerifier`     | 报编译错误，终止当前 `KernelPattern` 的编译；悬空标签错误携带标签名 |
-| `ScheduleDecisionVerifier`   | 报编译错误，终止当前 `KernelPattern` 的编译；不触发 4.6.4 节回退链（回退链只处理运行期 shape bucket 命中失败，不处理编译期结构违规） |
-| `StructuredLoweringVerifier` | `isBinding=true` 中间值回写 GM：报编译错误并触发 4.6.4 节回退链（属于"Level-2 调优失败"路径）；其余检查失败：报编译错误，终止当前 `KernelPattern` 的编译 |
+| `ScheduleDecisionVerifier`   | 报编译错误，终止当前 `KernelPattern` 的编译；不触发 4.6.5 节回退链（回退链只处理运行期 shape bucket 命中失败，不处理编译期结构违规） |
+| `StructuredLoweringVerifier` | `isBinding=true` 中间值回写 GM：报编译错误并触发 4.6.5 节回退链（属于"Level-2 调优失败"路径）；其余检查失败：报编译错误，终止当前 `KernelPattern` 的编译 |
 
 **检查内容**：
 
@@ -1277,5 +1347,5 @@ decision_2: guard = (A > 4096)                      // 1 个 guard
 | `AxisCoalescingVerifier`     | 每个 logical axis 的路径来源完整；菱形依赖已检测；`axisKinds` 无 parallel/reduction 混合；`convergingPathsPerLogicalAxis` 与 `rawAxesPerLogicalAxis` 一致 |
 | `ScheduleProblemVerifier`    | logical axes 非空；`scheduleContract` 字段已完整映射（无静默丢弃）；`guardBudget` 已正确扣除 `dynamicGuardSet` 消耗；`promotionHints.isBinding` 与 `mustKeepOnChipValues` 一致；`AscendSymbolConstraintAttr` 中的等价关系已提升为 `DimEquality` 约束；`hardwareConstraints` 中的 `RequiredComputeUnit / UnitCombinationRule` 与 `OpRoleMap` 中的主角色集合一致 |
 | `TilingStrategyVerifier`     | `scheduleFamily` 优先级已注册；同优先级 family 的并列决策符合 4.5.3 节规则；`guardBudget` 未被过滤步骤违反；`scheduleContract.templateFamilies` 中每个标签均能在 `TemplateRegistry` 中找到对应 `scheduleFamily`（即无悬空标签） |
-| `ScheduleDecisionVerifier`   | `ScheduleDecision` 字段无与 `ScheduleInstance` 的重复存储；`outerInnerMapping` 与 `tileAxes/tileExprs` 一致；`isBinding=true` 的 `promotionHint` 有对应 `MustKeepOnChip` 约束；`ScheduleDecisionSet.runtimeTopK` 已写入且不超过 `compileTimeTopK` |
-| `StructuredLoweringVerifier` | loop 骨架与 `computeOrder` 一致；内存意图标记（`CacheReadMarker` 等）已写入 IR；`isBinding=true` 的中间值未出现在 GM 回写路径上；IR 不含未经标记的内存语义暗示 |
+| `ScheduleDecisionVerifier`   | `ScheduleDecision` 字段无与 `ScheduleInstance` 的重复存储；`outerInnerMapping` 与 `tileAxes/tileExprs` 一致；每个被 tile / vectorize / coalesce / reduction 的 logical axis 都有唯一 `tailPlan`；`tailPlan.selectedPolicy` 属于第二层 `allowedTailPolicies` 与 primitive/target 能力交集；`tailPlan.affectedPrimitiveUses` 必须是第二层 `primitiveUses` 的子集；`MustDivide` 必须有静态证明或对应 `decisionGuard`；`PadAndMask` 必须有非零 `alignmentGranularityExpr`；`isBinding=true` 的 `promotionHint` 有对应 `MustKeepOnChip` 约束；`ScheduleDecisionSet.runtimeTopK` 已写入且不超过 `compileTimeTopK` |
+| `StructuredLoweringVerifier` | loop 骨架与 `computeOrder` 一致；每个 `tailPlan` 已物化为 `AscendGuardAttr`、masked region、scalar epilogue 或 `TailPlanMarker`；coalesced axis 的 flat extent 与原始成员轴 extent 映射一致；`PadAndMask` region 的 writeback 受真实 extent guard 保护；若 `tailBufferingMode = ReuseMainBufferAfterDrain`，必须证明主 pipeline 已 drain 且 tbuf 生命周期不重叠；内存意图标记（`CacheReadMarker` 等）已写入 IR；`isBinding=true` 的中间值未出现在 GM 回写路径上；IR 不含未经标记的内存语义暗示 |
