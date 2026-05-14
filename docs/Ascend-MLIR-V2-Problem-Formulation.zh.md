@@ -497,3 +497,367 @@ $$
 - 出口验证：V2-4.10 第三层 Verifier
 
 ---
+
+### 3.4 $P_4$ Realize：归约到 Register Allocation（区间图着色推广）
+
+#### 3.4.1 归约目标
+
+$P_4$ 是 **Register Allocation via Graph Coloring** 在多级存储 + 显式 DMA 模型下的推广：
+
+> 给定 buffer 集合 $\mathcal{B}$，每个 buffer 有生命周期区间 $[s_b, e_b]$ 和大小 $\text{sz}(b)$，将其放置到多级存储 $\mathcal{M} = \{\text{UB}, \text{L1}, \text{L0A}, \text{L0B}, \text{L0C}, \text{GM}\}$，并安排跨层 DMA 搬运计划，使得每级存储容量约束满足、生命周期不冲突的 buffer 可复用同一物理区域、总数据搬运代价最小。
+
+经典基础：
+
+- Chaitin (1982)：register allocation 归约为图着色 NP-hard。
+- Poletto-Sarkar (1999)：linear scan / interval graph 着色，多项式可解的特殊情形。
+- Belady (1966)：离线最优替换策略（MIN 算法）。
+- Sethi-Ullman (1970)：表达式树最少寄存器数。
+
+#### 3.4.2 形式定义
+
+固定上游 $\omega_{<4}^\star$（含 schedule 决策 $\sigma$），对每个 kernel $K_j$ 求解：
+
+$$
+P_4^{(j)}:\quad
+\begin{array}{ll}
+\text{Input} & K_j,\; \sigma_j,\; H,\; \mathcal{B}_j = \{b_1, \dots, b_n\} \\
+\text{Output} & \mu_j = \langle \pi_{\text{mem}}, \rho, \tau_{\text{dma}} \rangle \\
+\text{Decision} & \omega_4^{(j)} \in \Omega_{\text{mem}}^{(j)}
+\end{array}
+$$
+
+输出三元组 $\mu_j$ 含义：
+
+- $\pi_{\text{mem}}: \mathcal{B}_j \to \mathcal{M}$：placement，每个 buffer 的归属存储级
+- $\rho: \mathcal{B}_j \to \mathbb{Z}_{\geq 0}$：物理偏移（offset within memory level），允许多个生命周期不重叠的 buffer 共享同一偏移区域
+- $\tau_{\text{dma}}$：DMA 搬运计划，序列 $\langle (b, m_{\text{src}}, m_{\text{dst}}, t) \rangle$，每条记录在时刻 $t$ 将 buffer $b$ 从 $m_{\text{src}}$ 搬到 $m_{\text{dst}}$
+
+**约束**：
+
+$$
+\begin{aligned}
+& \text{(capacity)} \quad \forall m \in \mathcal{M},\, \forall t.\;\; \sum_{b:\, \pi_{\text{mem}}(b)=m,\, t \in [s_b, e_b]} \text{sz}(b) \;\leq\; \text{Cap}_m(H) \\
+& \text{(no-overlap)} \quad \forall b_1, b_2:\, \pi_{\text{mem}}(b_1) = \pi_{\text{mem}}(b_2) \wedge [s_{b_1}, e_{b_1}] \cap [s_{b_2}, e_{b_2}] \neq \emptyset \\
+& \qquad\qquad \Longrightarrow [\rho(b_1), \rho(b_1)+\text{sz}(b_1)) \cap [\rho(b_2), \rho(b_2)+\text{sz}(b_2)) = \emptyset \\
+& \text{(alignment)} \quad \rho(b) \equiv 0 \pmod{\text{align}(H, \pi_{\text{mem}}(b))} \\
+& \text{(producer-locality)} \quad \text{producer}(b)\text{ 的执行单元可访问 } \pi_{\text{mem}}(b) \\
+& \text{(consumer-locality)} \quad \forall \text{consumer } c \text{ of } b.\; \pi_{\text{mem}}(b) \in \text{readable}(c, H) \\
+& \text{(layout)} \quad \pi_{\text{mem}}(b) = \text{L0A/L0B/L0C} \Longrightarrow \text{layout}(b) \in \text{supportedLayouts}(\pi_{\text{mem}}(b)) \\
+& \text{(must-keep-on-chip)} \quad \forall b \in \text{mustKeepOnChipValues}.\; \pi_{\text{mem}}(b) \neq \text{GM}
+\end{aligned}
+$$
+
+**目标函数（代理代价）**：
+
+$$
+C_4^{(j)}(\mu_j) \;=\; \sum_{(b, m_{\text{src}}, m_{\text{dst}}, t) \in \tau_{\text{dma}}} \text{dmaCost}(b, m_{\text{src}}, m_{\text{dst}}) \;+\; \kappa\cdot \text{fragLoss}(\rho)
+$$
+
+含义：
+
+- $\text{dmaCost}$：根据 DMA 通道带宽与 burst 大小估算的搬运耗时。
+- $\text{fragLoss}(\rho)$：内存碎片率（已分配但无法复用的"洞"），$\kappa$ 控制碎片的惩罚强度。
+
+直觉：**最小化 DMA 总量 ≈ 最大化片上 buffer 复用 + 最优 placement**，与经典 register allocation 的目标（最少 spill）同构。
+
+#### 3.4.3 复杂度
+
+- **单一存储级 + 大小 1 的 buffer + 生命周期区间**：退化为 **interval graph coloring**，多项式可解（Olariu 1991, $O(n \log n)$）。
+- **加入容量约束（buffer 大小 ≠ 1）**：变为 **strip packing** 子问题，NP-hard。
+- **多级存储 + 显式 DMA 决策**：放置选择本身是离散变量，进一步耦合 placement 与 packing。
+- **加 layout / locality 约束**：约束图不再是 interval graph，经典 Olariu 多项式算法失效。
+
+整体 $P_4$ 是 NP-hard，且不存在多项式时间近似方案（PTAS 在 strip packing 上即已知不存在）。
+
+#### 3.4.4 与经典 Register Allocation 的差异
+
+| 维度 | 经典寄存器分配 | $P_4$ |
+|---|---|---|
+| 存储级 | 单一寄存器堆 | UB / L1 / L0A / L0B / L0C / GM 多级 |
+| Buffer 大小 | 统一一字 | 张量大小不一，可达 MB 级 |
+| 搬运 | spill/reload，由 ISA 隐式 | 显式 DMA，必须排进流水线 |
+| Layout | 不存在 | L0A/B/C 各有 NZ/ZN 等专用 layout |
+| 着色冲突图 | 区间图（理论上多项式） | 含 layout / locality 约束的推广，非 interval graph |
+| 生命周期来源 | 寄存器变量活跃分析 | tile 调度产出的 buffer 区间（依赖 $\sigma_j$） |
+| 替换策略 | LRU / Belady-MIN | 离线最优 + 多级层次决策（哪一级 spill 到哪一级） |
+
+最关键差异：**显式 DMA 搬运**。经典 register allocation 中 spill 是隐式的（由 ISA 自动加载），代价在某种意义上是 free（只算带宽）；NPU 上 DMA 是**必须在调度中显式排进流水线的 op**，会和 cube/vector 单元抢占 issue slot，因此 placement 决策直接影响 §3.3 的流水线 overlap，形成 $P_3 \leftrightarrow P_4$ 的耦合（§2.3 S2）。
+
+V2 采用的妥协：$P_3$ 在代理代价中预估 `spillRisk`（§3.3.2 中 $C_3$ 的 $\epsilon$ 项），让 $P_3$ 倾向于产生"易于 $P_4$ 实现"的 tile 形状，从而**前向**缓解这层耦合。
+
+#### 3.4.5 求解策略家族
+
+| 家族 | 代表方法 | 适用情形 |
+|---|---|---|
+| **精确 ILP** | 二次分配（QAP）公式化 | $n \leq$ 数十的小 kernel；工业规模 kernel 不可行 |
+| **图着色启发式** | Chaitin-Briggs | 单一存储级；多级需大幅改造 |
+| **Linear Scan** | Poletto-Sarkar | 生命周期形成 interval 时 $O(n \log n)$；layout 约束破坏前提 |
+| **静态规划 + Greedy Packing** | First-Fit Decreasing / Best-Fit | 工程常用，简单且效果接近最优 |
+| **离线最优替换** | Belady MIN | 单级 + 等大小 block；NPU 多级需推广 |
+| **学习方法** | RL placement | 状态空间大但评估代价低时可行；NPU 上评估代价高，性价比一般 |
+
+#### 3.4.6 本工程的选择
+
+**Staged greedy + 多级 Belady 推广**：
+
+1. **Bufferization**（V2-5.3）：把 tensor SSA 形式物化为 buffer 集合 $\mathcal{B}_j$，给出每个 buffer 的生命周期区间。
+2. **Placement**（V2-5.4）：按 locality（哪条 op 访问）+ layout 兼容性 + `mustKeepOnChipValues` hint，将 buffer 自顶向下逐级放置（先尝试最近的 L0，失败则退到 UB，再失败到 GM）。
+3. **Static Memory Planning**（V2-5.5）：在每级存储内部用 First-Fit Decreasing 算偏移 $\rho$，对生命周期不重叠的 buffer 复用偏移。
+4. **Data Movement**（V2-5.6）：根据 placement 差异生成 $\tau_{\text{dma}}$，按调度时序排进流水线节拍。
+5. **Materialization + Verifier**（V2-5.7）：产出最终 `MemoryRealizationPlan`，验证所有约束。
+
+不采用：
+- 完整 ILP：单 kernel 内 buffer 数可达数十到上百，ILP 求解时间不可接受。
+- 在线 RL：编译期一次性决策，无需在线学习。
+- 单存储级简化：必须显式建模 NPU 多级存储，否则模型与硬件脱节。
+
+#### 3.4.7 V2 实现对应
+
+- 流水线总览：V2-5.1 整体流水线与核心类
+- Bufferization：V2-5.3
+- Placement：V2-5.4
+- 静态内存规划：V2-5.5
+- 数据搬运：V2-5.6
+- 物化与 Verifier：V2-5.7
+- 决策产物：`BufferizedKernelIR` → `PlacementPlan` → `StaticMemoryPlan` → `MovementPlan` → `MemoryRealizationPlan`
+
+---
+
+### 3.5 $P_5$ Translate：归约到 DAG Instruction Selection（Pattern Covering）
+
+#### 3.5.1 归约目标
+
+$P_5$ 是经典 **Instruction Selection via Tree/DAG Pattern Matching and Covering**：
+
+> 给定一个 IR DAG 和一组目标指令的模式（pattern）库，将 IR 的每个节点用一条或多条目标指令"覆盖"，每个 pattern 有匹配条件和代价，使得总代价最小且覆盖完整。
+
+经典文献：
+
+- Aho-Johnson (1976)：树上指令选择，动态规划 $O(n)$ 最优。
+- Aho-Ganapathi-Tjiang (1989)：bottom-up rewrite system (BURS) / `twig` / `iburg`。
+- Ertl (1999)：DAG 上指令选择 NP-hard 的归约证明。
+- Koes-Goldstein (2008)：近 - 最优 DAG 覆盖的实用启发式。
+
+#### 3.5.2 形式定义
+
+固定 $\omega_{<5}^\star$（kernel 划分、调度、内存方案都已确定），对每个 kernel $K_j$ 求解：
+
+$$
+P_5^{(j)}:\quad
+\begin{array}{ll}
+\text{Input} & \text{lowered IR DAG}\; D_j,\;\; \text{pattern library}\; \mathcal{L}(H) \\
+\text{Output} & \chi_j:\text{ 覆盖方案，将 } D_j \text{ 的每个节点分配到某条 pattern} \\
+\text{Decision} & \omega_5^{(j)} \in \Omega_{\text{cg}}^{(j)}
+\end{array}
+$$
+
+**Pattern 库** $\mathcal{L}(H)$ 中每条 pattern $p$ 是四元组：
+
+$$
+p = \langle \text{shape}_p,\; \text{guard}_p,\; \text{emit}_p,\; \text{cost}_p \rangle
+$$
+
+- $\text{shape}_p$：IR 子图模板（如 `linalg.matmul` 配某种 layout/dtype）
+- $\text{guard}_p$：适用条件（如"dtype = fp16 且 layout = NZ 且 K-轴对齐 16"）
+- $\text{emit}_p$：发射的目标指令序列（AscendC / cube intrinsic / vector intrinsic / DMA primitive）
+- $\text{cost}_p$：估算执行代价
+
+**覆盖** $\chi_j$ 满足：
+
+$$
+\begin{aligned}
+& \text{(complete)} \quad \bigcup_{p \in \chi_j} \text{nodes}(p) = V(D_j) \\
+& \text{(disjoint or overlap-allowed)} \quad \text{pattern 之间节点不重叠（基本形式），或允许 overlap 共享子节点（DAG 推广形式）} \\
+& \text{(guard-satisfied)} \quad \forall p \in \chi_j.\; \text{guard}_p(\text{context}) = \text{true} \\
+& \text{(encodable)} \quad \text{emit}_p \text{ 中每条目标指令在 } H \text{ 上可编码（寄存器数、立即数范围、操作数模式均合法）}
+\end{aligned}
+$$
+
+**目标函数**：
+
+$$
+C_5^{(j)}(\chi_j) \;=\; \sum_{p \in \chi_j} \text{cost}_p
+$$
+
+#### 3.5.3 复杂度
+
+- **树上** instruction selection（Aho-Johnson）：动态规划 $O(n)$ 最优。
+- **DAG 上**（共享子表达式）：NP-hard（Ertl 1999；归约自 set cover）。
+- **加 guard / 加状态**（如寄存器类约束）：更复杂，但实用启发式（greedy bottom-up + tie-breaking）在多数情况下接近最优。
+
+NPU 上 $D_j$ 是 DAG（buffer 复用、共享中间结果），原则上是 NP-hard 情形。但实践中：
+- $|V(D_j)|$ 通常 $\leq 数百$；
+- pattern 之间冲突有限（cube/vector/DMA 几乎不在节点上竞争）；
+- 因此启发式可达接近最优。
+
+#### 3.5.4 与经典 Instruction Selection 的差异
+
+| 维度 | 经典指令选择 | $P_5$ |
+|---|---|---|
+| IR 形态 | 表达式树 / SSA DAG | MLIR 多方言（含 region、blockArg、attr） |
+| 目标指令集 | 同构 ISA（RISC/CISC） | 异构：AscendC 高层 op + cube intrinsic + vector intrinsic + DMA primitive |
+| Pattern 来源 | 编译器手写或 BURS 表 | 手写 + `HandwrittenPattern` registry（高价值结构特例） |
+| 寄存器类 | 同构 GPR | 多级 buffer（已由 $P_4$ 决定，本层不再选择） |
+| ABI | 隐式调用约定 | 显式 kernel ABI（host 参数布局、tiling args、workspace） |
+| Host 配合 | 不存在 | 必须同时产出 host-side tiling 计算和 runtime manifest |
+| 验证 | ISA 编码合法 | IR verifier + AscendC 源代码可编译 + runtime manifest 一致性 |
+
+最关键差异：**$P_5$ 不是单一"IR → 指令"的翻译，而是同时产出三类 artifact**：
+
+1. **Kernel 侧**：AscendC 源码（被 CCE 编译器进一步编为二进制）。
+2. **Host 侧**：tiling 计算函数（运行时根据实际 shape 算出 tile 参数）。
+3. **Runtime Manifest**：kernel 元信息（参数布局、workspace 大小、launch 配置）。
+
+这三者必须**一致**：runtime 传给 kernel 的参数布局必须与 AscendC 源码的声明一致，与 manifest 中记录的一致。这是 $\mathcal{V}_{\text{enc}}$（指令可编码）之外的**跨工件一致性约束**，经典 instruction selection 不存在。
+
+#### 3.5.5 求解策略家族
+
+| 家族 | 代表方法 | 适用情形 |
+|---|---|---|
+| **树 DP（Aho-Johnson）** | `iburg` / `BURS` | IR 是树时最优；DAG 上不直接适用 |
+| **DAG Greedy Bottom-Up** | LLVM `SelectionDAG` 风格 | 工程主流，接近最优 |
+| **Pattern DSL + 优先级** | TableGen / MLIR `Pattern` | 声明式，易扩展 |
+| **精确 ILP** | DAG 上小规模可行 | 工业规模 kernel 不可行 |
+| **学习方法** | 不常见 | 工程上无优势，pattern 数量有限 |
+
+#### 3.5.6 本工程的选择
+
+**Pattern-driven rewriting + 显式优先级**：
+
+1. **Compute Lowering**（V2-6.3）：linalg / arith / vector op → AscendC compute primitive。Pattern 用 MLIR DRR / C++ pattern 写，按"最具体优先"排序。
+2. **Kernel ABI Translation**（V2-6.4）：根据 $P_4$ 的 `MemoryRealizationPlan` 生成 kernel 参数列表、workspace 布局。
+3. **AscendC Source Translation**（V2-6.5）：IR → AscendC 文本源码。
+4. **Host Tiling / Runtime Manifest**（V2-6.6）：生成 host 侧 tiling 函数 + manifest。
+5. **HandwrittenPattern 短路**：若 kernel 是 `HandwrittenPattern` 命中（从 $P_2$ 一路携带的标记），直接使用预定义的 emit 模板，跳过通用 pattern 匹配。
+
+不采用：
+- ILP：pattern 数 × DAG 大小的乘积空间过大。
+- 学习方法：pattern 集合可枚举，无学习必要。
+- 单一通用 lowering：不同 op 族对应的目标指令差异大（cube vs vector），必须 pattern 化。
+
+#### 3.5.7 V2 实现对应
+
+- Compute Lowering：V2-6.3
+- Kernel ABI：V2-6.4
+- AscendC 源码翻译：V2-6.5
+- Host tiling / Runtime manifest：V2-6.6
+- 层级验证：V2-6.7
+- pass 顺序与依赖：V2-6.8
+- 社区能力复用边界：V2-6.9
+
+---
+
+## 4. 子问题间的接口（Contract）
+
+### 4.1 接口的形式
+
+子问题 $P_i$ 的输出严格等于 $P_{i+1}$ 的输入，且每对相邻层之间存在**双重接口**：
+
+1. **IR snapshot**：当前阶段的 MLIR 模块状态，是主要的数据载体。
+2. **附加结构（side-channel artifact）**：本阶段的决策摘要，作为 hint 或 contract 传给下游。
+
+形式化：
+
+$$
+\text{Output}(P_i) \;=\; \langle \text{IR}_i,\; \mathcal{A}_i,\; \mathcal{H}_i \rangle
+$$
+
+- $\text{IR}_i$：阶段 $i$ 结束时的 IR 状态
+- $\mathcal{A}_i$：本阶段产出的**契约性**附加结构（下游必须读取并遵守）
+- $\mathcal{H}_i$：本阶段产出的**建议性** hint（下游可参考可忽略，对应 §2.4(2)）
+
+### 4.2 五对接口
+
+| 接口 | $\mathcal{A}_i$（契约） | $\mathcal{H}_i$（hint） |
+|---|---|---|
+| $P_1 \to P_2$ | 规范化后的 IR + 入口许可方言集 + `AscendSymbolConstraintAttr` | （无 —— L1 是平凡映射） |
+| $P_2 \to P_3$ | `KernelPattern` / `KernelPartitionDecision` / `scheduleContract`（含 `tileableAxes`、`requiredReductionAxes`、`layoutConstraints`、`mustKeepOnChipValues`、`templateFamilies`、`dynamicGuardSet`） | 轴优先级建议、handwritten pattern 命中标记 |
+| $P_3 \to P_4$ | `ScheduleDecision`（$\sigma_j$：tile / order / binding / pipeline depth） | spillRisk 评估、可选替代 tile 形状 |
+| $P_4 \to P_5$ | `MemoryRealizationPlan`（placement + offset + DMA 计划 + layout） | DMA 通道占用模式、对齐结构 |
+| $P_5 \to$ 运行时 | AscendC 源码 + Kernel ABI + Runtime Manifest + Host Tiling 函数 | （无 —— $P_5$ 终结） |
+
+### 4.3 不变量（Invariants）
+
+每层结束时，IR 必须满足**层间不变量**。这些不变量是 §2.5 中 $\bigwedge_i \mathcal{V}_i \Rightarrow \mathcal{V}$ 推导的具体形式。
+
+**$I_1$（Normalize 出口）**：
+- IR 中只剩许可方言集内的 op
+- 所有 op 满足 V2-2.3 表中的规范形
+- 无 `ascend.unknown_origin` 残留
+- `AscendSymbolConstraintAttr` 已就位
+
+**$I_2$（Kernelize 出口）**：
+- 每个 op 归属唯一 kernel（`FallbackSingleOpPattern` 兜底）
+- 跨 kernel 的 quotient graph 是 DAG
+- 每个 kernel 携带合法的 `scheduleContract`
+- 每个 kernel 在 `TemplateRegistry` 中存在对应 template family
+
+**$I_3$（Schedule 出口）**：
+- 每个 kernel 携带 `ScheduleDecision`，满足该 kernel 的 `scheduleContract`
+- 所有 tile 形状满足对齐与容量预算
+- Structured Lowering 已物化到 `scf` / `affine` 形式
+- `dynamicGuardSet` 已转换为运行时 guard 或编译期消除
+
+**$I_4$（Realize 出口）**：
+- 所有 tensor SSA 已 buffer 化
+- 每个 buffer 有唯一 placement + offset
+- 容量约束全部满足
+- DMA 搬运排进了流水线节拍
+- Layout 与 cube intrinsic 要求一致（为 $P_5$ 的 emit 做铺垫）
+
+**$I_5$（Translate 出口）**：
+- AscendC 源码可被 CCE 编译器编译通过
+- Kernel ABI 与 Runtime Manifest 与 Host Tiling 函数三者一致
+- 无残留高层方言 op
+
+### 4.4 验证职责的划分
+
+§1.2 中合法性谓词 $\mathcal{V} = \mathcal{V}_{\text{sem}} \wedge \mathcal{V}_{\text{cap}} \wedge \mathcal{V}_{\text{align}} \wedge \mathcal{V}_{\text{life}} \wedge \mathcal{V}_{\text{enc}}$ 的具体分配：
+
+| 子谓词 | 主要负责层 | 协助层 |
+|---|---|---|
+| $\mathcal{V}_{\text{sem}}$ | $P_1$（规范化保语义） | 全部层的 verifier |
+| $\mathcal{V}_{\text{cap}}$ | $P_3$ + $P_4$ | $P_2$ 提供 `scheduleContract` 约束 |
+| $\mathcal{V}_{\text{align}}$ | $P_4$ + $P_5$ | $P_3$ 保证 tile 形状对齐 |
+| $\mathcal{V}_{\text{life}}$ | $P_4$ | — |
+| $\mathcal{V}_{\text{enc}}$ | $P_5$ | — |
+
+### 4.5 不变量的传递与失败处理
+
+每层结束时**必须**通过其 verifier 才能进入下一层；不通过则按 V2-7.4 Diagnostics 规范报告失败：
+
+```
+stage = <P_i 对应层>
+objectId = <失败对象的稳定 ID>
+reasonKind = <失败原因枚举>
+message = <人类可读描述>
+isRecoverable = <bool>
+fallbackTaken = <bool>
+```
+
+由 §2.4(3) 的"层内候选集 + 早失败"原则，跨层不回退：
+
+- 若 $I_i$ 失败且 $P_i$ 仍有未尝试的候选 $\omega_i^{(k)}$，则在 **本层内** 切换候选；
+- 若 $P_i$ 候选集穷尽仍不满足 $I_i$，则编译终止（除非有显式兜底契约如 `FallbackSingleOpPattern`）；
+- $P_j (j > i)$ 不向 $P_i$ 请求重选。
+
+---
+
+## 5. 总结：本建模的工程意义
+
+回到 §1.6 给出的四条工程结论：
+
+| 结论 | 在本文的体现 |
+|---|---|
+| **(C1) 必须分解** | §1.3 NP-hardness + §1.4 状态空间爆炸 + §2.1 fixed-prefix 串行分解 |
+| **(C2) 必须分层近似** | §2.1 每层 $\arg\min_{\omega_i}$ on $\Omega_i(\omega_{<i})$ + §3.x 每层的代理代价 $C_i$ |
+| **(C3) 必须承认 sub-optimality** | §2.3 四类被牺牲耦合 (S1–S4) + §2.4 三类前向缓解手段 |
+| **(C4) 必须保留每层可替换性** | §3.x 每层归约到独立的经典问题家族 + §3.x.5 各列出多种求解策略家族 |
+
+由此本建模回答了原始问题"如何为 Ascend NPU 开发一款基于 MLIR 的 AI 编译器"中的"What/Why"部分：
+
+- **What**：求解 $P = \min_\omega C(\omega; G, H)$ s.t. $\mathcal{V}$，其决策空间是 5 类决策的笛卡尔积，目标是端到端 latency。
+- **Why 分五层**：每个子空间对应一个经典 CS 问题家族，且子问题之间是单向依赖（§2.2），五层是天然解耦点；分层不是最优解，而是工程可行的近似（§2.3）。
+- **Why 每层这样设计**：每层归约到经典问题（§3）后，其代理代价、约束、求解策略都有半个世纪的文献基础；本工程的选择（启发式 / 模板 / cache / 兜底契约）在该经典问题家族的策略家族中做了明确取舍。
+
+具体的 pass 实现、IR 结构、源码细节在 `Ascend-MLIR-Detailed-Implementation-V2.zh.md` 中给出，对应关系见各节末尾的 "V2 实现对应" 小节。
