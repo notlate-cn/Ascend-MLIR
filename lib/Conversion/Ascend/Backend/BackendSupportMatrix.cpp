@@ -12,30 +12,35 @@ namespace mlir::afir::ascend::backend {
 
 MemorySpace parseMemorySpace(int64_t value) {
   switch (value) {
-  case 0:
+  case static_cast<int64_t>(MemorySpace::GM):
     return MemorySpace::GM;
-  case 1:
+  case static_cast<int64_t>(MemorySpace::A1):
     return MemorySpace::A1;
-  case 2:
+  case static_cast<int64_t>(MemorySpace::A2):
     return MemorySpace::A2;
-  case 3:
+  case static_cast<int64_t>(MemorySpace::B1):
     return MemorySpace::B1;
-  case 4:
+  case static_cast<int64_t>(MemorySpace::B2):
     return MemorySpace::B2;
-  case 7:
+  case static_cast<int64_t>(MemorySpace::CO1):
     return MemorySpace::CO1;
-  case 9:
+  case static_cast<int64_t>(MemorySpace::VECIN):
     return MemorySpace::VECIN;
-  case 10:
+  case static_cast<int64_t>(MemorySpace::VECOUT):
     return MemorySpace::VECOUT;
-  case 11:
+  case static_cast<int64_t>(MemorySpace::VECCALC):
     return MemorySpace::VECCALC;
+  case static_cast<int64_t>(MemorySpace::GMFlat):
+    return MemorySpace::GMFlat;
   default:
-    return MemorySpace::Unknown;
+    return kUnknownMemorySpace;
   }
 }
 
 llvm::StringRef stringifyMemorySpace(MemorySpace space) {
+  if (space == kUnknownMemorySpace)
+    return "Unknown";
+
   switch (space) {
   case MemorySpace::GM:
     return "GM";
@@ -55,8 +60,8 @@ llvm::StringRef stringifyMemorySpace(MemorySpace space) {
     return "VECOUT";
   case MemorySpace::VECCALC:
     return "VECCALC";
-  case MemorySpace::Unknown:
-    return "Unknown";
+  case MemorySpace::GMFlat:
+    return "GMFlat";
   }
   return "Unknown";
 }

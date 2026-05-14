@@ -7,8 +7,12 @@
 #include "Conversion/Ascend/Backend/BackendSupportMatrix.h"
 
 #include "gtest/gtest.h"
+#include <type_traits>
 
 using namespace mlir::afir::ascend::backend;
+
+static_assert(std::is_same_v<MemorySpace, mlir::ascend::MemoryPlace>,
+              "backend memory spaces must use the target memory model enum");
 
 TEST(AscendBackendSupportMatrixTest, SupportsKnownMovementPaths) {
   AscendBackendSupportMatrix matrix;
@@ -47,7 +51,8 @@ TEST(AscendBackendSupportMatrixTest, ConvertsIntegerMemorySpaces) {
   EXPECT_EQ(parseMemorySpace(9), MemorySpace::VECIN);
   EXPECT_EQ(parseMemorySpace(10), MemorySpace::VECOUT);
   EXPECT_EQ(parseMemorySpace(11), MemorySpace::VECCALC);
-  EXPECT_EQ(parseMemorySpace(99), MemorySpace::Unknown);
+  EXPECT_EQ(parseMemorySpace(22), MemorySpace::GMFlat);
+  EXPECT_EQ(parseMemorySpace(99), kUnknownMemorySpace);
 }
 
 TEST(AscendBackendSupportMatrixTest, SupportsKnownComputeKinds) {
