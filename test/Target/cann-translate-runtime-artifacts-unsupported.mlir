@@ -1,4 +1,4 @@
-// RUN: sed -n '/\/\/ MULTI-BEGIN/,/\/\/ MULTI-END/p' %s | not afir-translate -mlir-to-cann --runtime-manifest-out=%t.manifest.json 2>&1 | FileCheck %s
+// RUN: sed -n '/\/\/ MULTI-BEGIN/,/\/\/ MULTI-END/p' %s | not afir-translate -mlir-to-cann --host-tiling-out=%t.host.cpp 2>&1 | FileCheck %s
 // RUN: rm -f %t.tiling.json
 // RUN: sed -n '/\/\/ MULTI-BEGIN/,/\/\/ MULTI-END/p' %s | afir-translate -mlir-to-cann --tiling-space-out=%t.tiling.json > %t.cpp
 // RUN: FileCheck %s --input-file=%t.tiling.json --check-prefix=TILING
@@ -16,8 +16,13 @@
 // RUN: sed -n '/\/\/ BAD-TAIL-PLAN-ALIGN-BEGIN/,/\/\/ BAD-TAIL-PLAN-ALIGN-END/p' %s | not afir-translate -mlir-to-cann --runtime-manifest-out=%t.bad-tail-plan-align.manifest.json 2>&1 | FileCheck %s --check-prefix=BAD-TAIL-PLAN-ALIGN
 // RUN: sed -n '/\/\/ NO-ATTR-BEGIN/,/\/\/ NO-ATTR-END/p' %s | afir-translate -mlir-to-cann --runtime-manifest-out=%t.no-attr.manifest.json > %t.no-attr.cpp
 // RUN: FileCheck %s --input-file=%t.no-attr.manifest.json --check-prefix=NO-ATTR
+// RUN: sed -n '/\/\/ BAD-GRAPH-NO-CARRIED-BEGIN/,/\/\/ BAD-GRAPH-NO-CARRIED-END/p' %s | not afir-translate -mlir-to-cann --runtime-manifest-out=%t.bad-graph-no-carried.manifest.json 2>&1 | FileCheck %s --check-prefix=BAD-GRAPH-NO-CARRIED
+// RUN: sed -n '/\/\/ BAD-GRAPH-CARRIED-TOP-BEGIN/,/\/\/ BAD-GRAPH-CARRIED-TOP-END/p' %s | not afir-translate -mlir-to-cann --runtime-manifest-out=%t.bad-graph-carried-top.manifest.json 2>&1 | FileCheck %s --check-prefix=BAD-GRAPH-CARRIED-TOP
+// RUN: sed -n '/\/\/ BAD-GRAPH-CARRIED-VALUE-BEGIN/,/\/\/ BAD-GRAPH-CARRIED-VALUE-END/p' %s | not afir-translate -mlir-to-cann --runtime-manifest-out=%t.bad-graph-carried-value.manifest.json 2>&1 | FileCheck %s --check-prefix=BAD-GRAPH-CARRIED-VALUE
+// RUN: sed -n '/\/\/ BAD-GRAPH-UNKNOWN-BEGIN/,/\/\/ BAD-GRAPH-UNKNOWN-END/p' %s | not afir-translate -mlir-to-cann --runtime-manifest-out=%t.bad-graph-unknown.manifest.json 2>&1 | FileCheck %s --check-prefix=BAD-GRAPH-UNKNOWN
+// RUN: sed -n '/\/\/ BAD-GRAPH-CYCLE-BEGIN/,/\/\/ BAD-GRAPH-CYCLE-END/p' %s | not afir-translate -mlir-to-cann --runtime-manifest-out=%t.bad-graph-cycle.manifest.json 2>&1 | FileCheck %s --check-prefix=BAD-GRAPH-CYCLE
 
-// CHECK: runtime manifest MVP supports exactly one global kernel
+// CHECK: host tiling MVP supports exactly one global kernel
 // TILING: "kernel": "kernel_a"
 // TILING: "schema_version": "2.0"
 // BAD-TAIL: ascend.schedule.tail_policies element 1 must be a string attribute
@@ -33,6 +38,11 @@
 // BAD-TAIL-PLAN-AFFECTED: ascend.schedule.tail_plan element 0 field 'affected' element 0 has unsupported value 'unknown_use'
 // BAD-TAIL-PLAN-ALIGN: ascend.schedule.tail_plan element 0 field 'align' must be an i64 integer attribute
 // NO-ATTR: "tilingParams": {}
+// BAD-GRAPH-NO-CARRIED: ascend.kernel_graph.edges element 0 requires non-empty array field 'carried_buffers'
+// BAD-GRAPH-CARRIED-TOP: ascend.kernel_graph.edges element 0 requires non-empty array field 'carried_buffers'
+// BAD-GRAPH-CARRIED-VALUE: ascend.kernel_graph.edges element 0 field 'carried_buffers' element 0 must be a string
+// BAD-GRAPH-UNKNOWN: ascend.kernel_graph.edges element 0 references unknown target kernel 'kernel_missing'
+// BAD-GRAPH-CYCLE: ascend.kernel_graph.edges must describe an acyclic kernel graph
 
 // MULTI-BEGIN
 module {
@@ -51,6 +61,105 @@ module {
   }
 }
 // MULTI-END
+
+// BAD-GRAPH-NO-CARRIED-BEGIN
+module attributes {
+    ascend.kernel_graph.edges = [
+      {from = "kernel_a", to = "kernel_b"}
+    ]} {
+  func.func @kernel_a(
+      %a: memref<?xf16>, %out: memref<?xf16>, %ws: memref<ui8>,
+      %tiling: !emitasc.py_struct<"TilingData", [i64], ["TB_M"]>
+  ) attributes {ascendc.aicore, ascendc.global, cann.num_inputs = 1 : i32} {
+    func.return
+  }
+
+  func.func @kernel_b(
+      %a: memref<?xf16>, %out: memref<?xf16>, %ws: memref<ui8>,
+      %tiling: !emitasc.py_struct<"TilingData", [i64], ["TB_M"]>
+  ) attributes {ascendc.aicore, ascendc.global, cann.num_inputs = 1 : i32} {
+    func.return
+  }
+}
+// BAD-GRAPH-NO-CARRIED-END
+
+// BAD-GRAPH-CARRIED-TOP-BEGIN
+module attributes {
+    ascend.kernel_graph.edges = [
+      {from = "kernel_a", to = "kernel_b", carried_buffers = "tmp0"}
+    ]} {
+  func.func @kernel_a(
+      %a: memref<?xf16>, %out: memref<?xf16>, %ws: memref<ui8>,
+      %tiling: !emitasc.py_struct<"TilingData", [i64], ["TB_M"]>
+  ) attributes {ascendc.aicore, ascendc.global, cann.num_inputs = 1 : i32} {
+    func.return
+  }
+
+  func.func @kernel_b(
+      %a: memref<?xf16>, %out: memref<?xf16>, %ws: memref<ui8>,
+      %tiling: !emitasc.py_struct<"TilingData", [i64], ["TB_M"]>
+  ) attributes {ascendc.aicore, ascendc.global, cann.num_inputs = 1 : i32} {
+    func.return
+  }
+}
+// BAD-GRAPH-CARRIED-TOP-END
+
+// BAD-GRAPH-CARRIED-VALUE-BEGIN
+module attributes {
+    ascend.kernel_graph.edges = [
+      {from = "kernel_a", to = "kernel_b", carried_buffers = [1 : i64]}
+    ]} {
+  func.func @kernel_a(
+      %a: memref<?xf16>, %out: memref<?xf16>, %ws: memref<ui8>,
+      %tiling: !emitasc.py_struct<"TilingData", [i64], ["TB_M"]>
+  ) attributes {ascendc.aicore, ascendc.global, cann.num_inputs = 1 : i32} {
+    func.return
+  }
+
+  func.func @kernel_b(
+      %a: memref<?xf16>, %out: memref<?xf16>, %ws: memref<ui8>,
+      %tiling: !emitasc.py_struct<"TilingData", [i64], ["TB_M"]>
+  ) attributes {ascendc.aicore, ascendc.global, cann.num_inputs = 1 : i32} {
+    func.return
+  }
+}
+// BAD-GRAPH-CARRIED-VALUE-END
+
+// BAD-GRAPH-UNKNOWN-BEGIN
+module attributes {
+    ascend.kernel_graph.edges = [
+      {from = "kernel_a", to = "kernel_missing", carried_buffers = ["tmp0"]}
+    ]} {
+  func.func @kernel_a(
+      %a: memref<?xf16>, %out: memref<?xf16>, %ws: memref<ui8>,
+      %tiling: !emitasc.py_struct<"TilingData", [i64], ["TB_M"]>
+  ) attributes {ascendc.aicore, ascendc.global, cann.num_inputs = 1 : i32} {
+    func.return
+  }
+}
+// BAD-GRAPH-UNKNOWN-END
+
+// BAD-GRAPH-CYCLE-BEGIN
+module attributes {
+    ascend.kernel_graph.edges = [
+      {from = "kernel_a", to = "kernel_b", carried_buffers = ["tmp0"]},
+      {from = "kernel_b", to = "kernel_a", carried_buffers = ["tmp1"]}
+    ]} {
+  func.func @kernel_a(
+      %a: memref<?xf16>, %out: memref<?xf16>, %ws: memref<ui8>,
+      %tiling: !emitasc.py_struct<"TilingData", [i64], ["TB_M"]>
+  ) attributes {ascendc.aicore, ascendc.global, cann.num_inputs = 1 : i32} {
+    func.return
+  }
+
+  func.func @kernel_b(
+      %a: memref<?xf16>, %out: memref<?xf16>, %ws: memref<ui8>,
+      %tiling: !emitasc.py_struct<"TilingData", [i64], ["TB_M"]>
+  ) attributes {ascendc.aicore, ascendc.global, cann.num_inputs = 1 : i32} {
+    func.return
+  }
+}
+// BAD-GRAPH-CYCLE-END
 
 // BAD-TAIL-BEGIN
 module {

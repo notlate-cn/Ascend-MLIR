@@ -776,6 +776,34 @@ LogicalResult convertCompute(func::FuncOp funcOp, AscendCBufferContext &ctx) {
     return {tensor, forOp};
   };
 
+  auto isRank2SwapPermutation = [](ArrayRef<int64_t> permutation) {
+    return permutation.size() == 2 && permutation[0] == 1 &&
+           permutation[1] == 0;
+  };
+
+  // --- linalg.transpose ---
+  SmallVector<linalg::TransposeOp> transposeOps;
+  funcOp.walk([&](linalg::TransposeOp op) { transposeOps.push_back(op); });
+  for (linalg::TransposeOp transposeOp : transposeOps) {
+    if (!isRank2SwapPermutation(transposeOp.getPermutation()))
+      continue;
+
+    Value inMemref = transposeOp.getDpsInputOperand(0)->get();
+    Value outMemref = transposeOp.getDpsInitOperand(0)->get();
+    if (getMemorySpace(outMemref.getType()) <= 0)
+      continue;
+
+    Location loc = transposeOp.getLoc();
+    builder.setInsertionPoint(transposeOp);
+    Value srcLt = readTensor(builder, loc, inMemref);
+    Value dstLt = writeTensor(builder, loc, outMemref);
+    auto lowered = builder.create<TransposeOp>(loc, dstLt, srcLt);
+    copyAscendCUnitAttr(transposeOp.getOperation(), lowered.getOperation());
+    if (Value queue = ctx.getQueue(outMemref))
+      builder.create<TQueBindEnqueTensorOp>(loc, queue, dstLt);
+    transposeOp.erase();
+  }
+
   // --- linalg.generic {iterator_types contains "reduction"} ---
   //
   // Generic lowering for reduction generics (e.g. broadcast+add+reducesum).
@@ -1316,7 +1344,7 @@ LogicalResult convertCompute(func::FuncOp funcOp, AscendCBufferContext &ctx) {
       parallelGenericOps.push_back(op);
   });
 
-  // Helper: detect a standalone transpose generic (any rank).
+  // Helper: detect a standalone rank-2 transpose generic.
   // Pattern: 1 input with a non-identity permutation map, 1 output with identity
   // map, body is a single linalg.yield of the input block argument (no computation).
   auto isTransposeGeneric = [](linalg::GenericOp op) -> bool {
@@ -1328,7 +1356,7 @@ LogicalResult convertCompute(func::FuncOp funcOp, AscendCBufferContext &ctx) {
     AffineMap inMap  = maps[0];
     AffineMap outMap = maps[1];
     unsigned rank    = op.getIteratorTypesArray().size();
-    if (rank == 0)
+    if (rank != 2)
       return false;
     // Output must be identity
     if (!outMap.isIdentity())
@@ -1352,11 +1380,7 @@ LogicalResult convertCompute(func::FuncOp funcOp, AscendCBufferContext &ctx) {
     for (unsigned r = 0; r < rank; ++r)
       if (!seen.insert(perm[r]).second)
         return false;
-    // Must be a non-identity permutation
-    bool isIdentityPerm = true;
-    for (unsigned r = 0; r < rank; ++r)
-      if (perm[r] != static_cast<int64_t>(r)) { isIdentityPerm = false; break; }
-    if (isIdentityPerm)
+    if (perm[0] != 1 || perm[1] != 0)
       return false;
     // Body must be yield-only (single linalg.yield yielding the input block arg)
     Block &body = *op.getBody();

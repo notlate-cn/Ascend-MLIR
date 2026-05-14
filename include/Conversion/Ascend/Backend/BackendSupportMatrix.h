@@ -34,6 +34,7 @@ enum class ComputeKind {
   ElementwiseMul,
   ElementwiseMax,
   FusedElementwise,
+  Transpose,
   VectorGather,
   ReductionAdd,
 };

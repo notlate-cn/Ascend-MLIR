@@ -58,6 +58,7 @@ TEST(AscendBackendSupportMatrixTest, SupportsKnownComputeKinds) {
   EXPECT_TRUE(matrix.isSupportedComputeKind(ComputeKind::ElementwiseMul));
   EXPECT_TRUE(matrix.isSupportedComputeKind(ComputeKind::ElementwiseMax));
   EXPECT_TRUE(matrix.isSupportedComputeKind(ComputeKind::FusedElementwise));
+  EXPECT_TRUE(matrix.isSupportedComputeKind(ComputeKind::Transpose));
   EXPECT_TRUE(matrix.isSupportedComputeKind(ComputeKind::ReductionAdd));
   EXPECT_FALSE(matrix.isSupportedComputeKind(ComputeKind::Unknown));
 }

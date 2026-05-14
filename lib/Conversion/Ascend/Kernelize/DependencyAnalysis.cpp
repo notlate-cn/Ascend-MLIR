@@ -30,7 +30,7 @@ namespace {
 bool isTargetLinalgOp(Operation *op) {
   StringRef opName = op->getName().getStringRef();
   return opName == "linalg.generic" || opName == "linalg.matmul" ||
-         opName == "linalg.batch_matmul";
+         opName == "linalg.batch_matmul" || opName == "linalg.transpose";
 }
 
 StringRef getIteratorTypeName(Attribute attr) {
@@ -199,6 +199,13 @@ OpSemanticSummary buildSemanticSummary(Operation *op, OperationId opId) {
         op, summary,
         ArrayRef<StringRef>{"parallel", "parallel", "parallel", "reduction"});
     summary.accessPattern = AccessPatternKind::Contraction;
+    return summary;
+  }
+
+  if (opName == "linalg.transpose") {
+    SmallVector<StringRef> parallelIterators(summary.resultRank, "parallel");
+    populateIteratorSummary(op, summary, parallelIterators);
+    summary.accessPattern = AccessPatternKind::LayoutTransform;
     return summary;
   }
 
