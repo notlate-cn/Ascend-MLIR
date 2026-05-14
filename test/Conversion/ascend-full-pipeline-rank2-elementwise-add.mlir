@@ -4,11 +4,11 @@
 // CHECK-SAME: %{{.*}}: memref<70x128xf16>
 // CHECK-SAME: %{{.*}}: memref<ui8>
 // CHECK-SAME: !emitasc.py_struct<"TilingData"
-// CHECK-SAME: ascend.schedule.selected_tile_shape = array<i64: 64, 128>
+// CHECK-SAME: ascend.schedule.selected_tile_shape = array<i64: 32, 128>
 // CHECK-SAME: ascend.schedule.tail_policies = ["masked_tail", "masked_tail"]
 // CHECK-SAME: cann.num_inputs = 2 : i32
 // CHECK: ascendc.get_block_idx
-// CHECK: arith.muli %{{.*}}, %c64
+// CHECK: arith.muli %{{.*}}, %c32
 // CHECK: scf.if
 // CHECK: ascendc.data_copy_l2
 // CHECK: ascendc.add_l2

@@ -24,4 +24,4 @@ func.func @dynamic_reduction(%arg0: tensor<?x?xf16>) -> tensor<?xf16> {
 // CHECK:   selected = kernel_0.decision.0
 // CHECK-NEXT:   candidate_guards = 1
 // CHECK-NEXT:   decision_guards = 0
-// CHECK-NEXT:   selected_tile_shape = [64,?]
+// CHECK-NEXT:   selected_tile_shape = [32,?]

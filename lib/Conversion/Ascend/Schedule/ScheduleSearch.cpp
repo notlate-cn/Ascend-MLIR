@@ -20,7 +20,7 @@ using namespace mlir;
 namespace mlir::afir::ascend::schedule {
 namespace {
 
-constexpr int64_t kDefaultParallelTile = 64;
+constexpr int64_t kDefaultParallelTile = 32;
 
 bool hasTileShape(ArrayRef<TileShape> tileShapes, const TileShape &candidate) {
   return llvm::any_of(tileShapes, [&](const TileShape &tileShape) {

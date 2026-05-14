@@ -388,30 +388,32 @@ run_vec_example \
   "    { \"name\": \"a\", \"path\": \"${PROJECT_ROOT}/examples/broadcast-add-reduce/build_mainline/input_a.npy\" },
     { \"name\": \"b\", \"path\": \"${PROJECT_ROOT}/examples/broadcast-add-reduce/build_mainline/input_b.npy\" }" \
   "${PROJECT_ROOT}/examples/broadcast-add-reduce/build_mainline/output_c.npy" \
-  "TB_M=64,TB_N=15000,dim_arg0_0=640,dim_arg1_1=15000,dim_arg0_1=640,dim_arg1_0=15000" \
-  "10" "10" "1e-2" \
+  "dim_arg0_0=640,dim_arg1_1=15000,dim_arg1_0=640" \
+  "20" "10" "1e-2" \
   "build_mainline/step10_kernel.cpp" \
   "${PROJECT_ROOT}/examples/broadcast-add-reduce/build_mainline/phase5_tiling_space.json"
 fi
 
 if should_run_example "gather-elementwise-fusion"; then
-run_gather_mainline_shape "${PROJECT_ROOT}/examples/gather-elementwise-fusion" 65 127 31 1
-run_gather_mainline_shape "${PROJECT_ROOT}/examples/gather-elementwise-fusion" 96 128 31 1
-run_gather_mainline_shape "${PROJECT_ROOT}/examples/gather-elementwise-fusion" 96 127 32 1
+run_gather_mainline_shape "${PROJECT_ROOT}/examples/gather-elementwise-fusion" 65 127 31 20
+run_gather_mainline_shape "${PROJECT_ROOT}/examples/gather-elementwise-fusion" 96 128 31 20
+run_gather_mainline_shape "${PROJECT_ROOT}/examples/gather-elementwise-fusion" 96 127 32 20
 fi
 
 if should_run_example "split-relu-brc-add-mul"; then
 run_vec_example \
   "${PROJECT_ROOT}/examples/split-relu-brc-add-mul" \
   "ewop_broadcast_split" \
-  "    { \"name\": \"input_a\", \"path\": \"${PROJECT_ROOT}/examples/split-relu-brc-add-mul/input_a.npy\" },
-    { \"name\": \"bias0\", \"path\": \"${PROJECT_ROOT}/examples/split-relu-brc-add-mul/bias0.npy\" },
-    { \"name\": \"bias1\", \"path\": \"${PROJECT_ROOT}/examples/split-relu-brc-add-mul/bias1.npy\" },
-    { \"name\": \"scale0\", \"path\": \"${PROJECT_ROOT}/examples/split-relu-brc-add-mul/scale0.npy\" },
-    { \"name\": \"scale1\", \"path\": \"${PROJECT_ROOT}/examples/split-relu-brc-add-mul/scale1.npy\" }" \
-  "${PROJECT_ROOT}/examples/split-relu-brc-add-mul/output.npy" \
-  "TB_M=16,TB_N=16,dim_arg0_1=512,dim_arg1_0=320,dim_arg0_0=640,dim_arg1_1=320,dim_arg3_0=512,dim_arg3_1=512,dim_arg2_0=320,dim_arg2_1=320,dim_arg4_0=512,dim_arg4_1=512" \
-  "20" "1e-2" "1e-2"
+  "    { \"name\": \"input_a\", \"path\": \"${PROJECT_ROOT}/examples/split-relu-brc-add-mul/build_mainline/input_a.npy\" },
+    { \"name\": \"bias0\", \"path\": \"${PROJECT_ROOT}/examples/split-relu-brc-add-mul/build_mainline/bias0.npy\" },
+    { \"name\": \"bias1\", \"path\": \"${PROJECT_ROOT}/examples/split-relu-brc-add-mul/build_mainline/bias1.npy\" },
+    { \"name\": \"scale0\", \"path\": \"${PROJECT_ROOT}/examples/split-relu-brc-add-mul/build_mainline/scale0.npy\" },
+    { \"name\": \"scale1\", \"path\": \"${PROJECT_ROOT}/examples/split-relu-brc-add-mul/build_mainline/scale1.npy\" }" \
+  "${PROJECT_ROOT}/examples/split-relu-brc-add-mul/build_mainline/output.npy" \
+  "dim_arg0_1=512,dim_arg1_0=320,dim_arg0_0=640,dim_arg3_0=512,dim_arg2_0=320,dim_arg4_0=512" \
+  "20" "1e-2" "1e-2" \
+  "build_mainline/step10_kernel.cpp" \
+  "${PROJECT_ROOT}/examples/split-relu-brc-add-mul/build_mainline/phase5_tiling_space.json"
 fi
 
 if should_run_example "matmul-add-leakyrelu"; then

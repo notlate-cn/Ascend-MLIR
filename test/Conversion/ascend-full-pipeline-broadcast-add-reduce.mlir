@@ -3,7 +3,7 @@
 // CHECK-LABEL: func.func @broadcast_add_reducesum
 // CHECK-SAME: %{{.*}}: memref<ui8>
 // CHECK-SAME: %{{.*}}: !emitasc.py_struct<"TilingData"
-// CHECK: ascend.schedule.selected_tile_shape = array<i64: 64, 15000>
+// CHECK: ascend.schedule.selected_tile_shape = array<i64: 32, 15000>
 // CHECK-SAME: ascend.schedule.tail_policies = ["masked_tail", "full_extent"]
 // CHECK-SAME: cann.num_inputs = 2 : i32
 // CHECK: ascendc.get_block_idx
