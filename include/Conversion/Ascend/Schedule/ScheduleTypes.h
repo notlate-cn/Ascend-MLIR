@@ -9,8 +9,9 @@
 
 #include "Conversion/Ascend/Common/Attributes.h"
 
-#include "mlir/IR/Operation.h"
+#include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/BuiltinTypes.h"
+#include "mlir/IR/Operation.h"
 #include "mlir/Support/LLVM.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringRef.h"
@@ -24,6 +25,7 @@ namespace mlir::afir::ascend::schedule {
 
 using ::mlir::afir::ascend::kKernelAttr;
 using ::mlir::afir::ascend::kOpRoleAttr;
+using ::mlir::afir::ascend::kOpRolesAttr;
 using ::mlir::afir::ascend::kPrimaryAttr;
 using ::mlir::afir::ascend::kScheduleDecisionIdAttr;
 using ::mlir::afir::ascend::kScheduleGuardMarkersAttr;
@@ -267,10 +269,36 @@ struct ScheduleCacheReport {
 inline OpRole parseOpRole(llvm::StringRef value) {
   return llvm::StringSwitch<OpRole>(value)
       .Case("cube", OpRole::Cube)
+      .Case("Cube", OpRole::Cube)
       .Case("reduction", OpRole::Reduction)
+      .Case("Reduction", OpRole::Reduction)
       .Case("vector", OpRole::Vector)
+      .Case("Vector", OpRole::Vector)
       .Case("memory", OpRole::Memory)
+      .Case("Memory", OpRole::Memory)
       .Default(OpRole::Unknown);
+}
+
+inline bool opRolesAttrHasRole(ArrayAttr roles, OpRole role) {
+  for (Attribute attr : roles) {
+    auto roleAttr = dyn_cast<StringAttr>(attr);
+    if (roleAttr && parseOpRole(roleAttr.getValue()) == role)
+      return true;
+  }
+  return false;
+}
+
+inline OpRole deriveOpRole(Operation *op) {
+  if (auto roles = op->getAttrOfType<ArrayAttr>(kOpRolesAttr)) {
+    for (OpRole role :
+         {OpRole::Cube, OpRole::Reduction, OpRole::Vector, OpRole::Memory}) {
+      if (opRolesAttrHasRole(roles, role))
+        return role;
+    }
+  }
+
+  auto roleAttr = op->getAttrOfType<StringAttr>(kOpRoleAttr);
+  return roleAttr ? parseOpRole(roleAttr.getValue()) : OpRole::Unknown;
 }
 
 inline llvm::StringRef stringifyAxisKind(AxisKind kind) {
