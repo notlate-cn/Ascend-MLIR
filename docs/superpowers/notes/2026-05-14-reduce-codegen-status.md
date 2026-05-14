@@ -13,6 +13,7 @@ Author: scout subagent (paired with Part 1: `examples/reduce-elewise-e2e/`)
   (in-place on the DPS init operand) and how `aclnn-backend` generates host code
   (assumes a separate output buffer is appended after the inputs). This breaks ANY
   reduce example, not just multi-kernel.
+  **FIXED 2026-05-14 (commit 28c8ea6):** see R3 below.
 - Several other landmines on the reduce path documented below: full-reduce-to-scalar
   is broken in `--vector-plan-codegen`; axis-0 reduce on `f16` is unsupported by the
   CANN ReduceSum API; `block_dim_expr` is empty for static-shape funcs (known).
@@ -109,6 +110,15 @@ ReduceSum → cast back) for `RA`, or a lit-test gate.
 ---
 
 ### R3 — Reduce kernels bufferize in-place on the DPS init; `aclnn-backend` assumes a separate output → host launch passes wrong buffer to the kernel
+
+**Status: FIXED (commit 28c8ea6, 2026-05-14)** — new pass
+`vector-plan-isolate-kernel-outputs` runs after LinalgElementwiseOpFusion
+in vector-plan-codegen. For each returned linalg result whose DPS init
+traces back to a func BlockArgument, the init is wrapped:
+`outs(bufferization.alloc_tensor() copy(%init))`. Bufferize then gives
+the result a fresh GM buffer, init is read-only, the memref ABI matches
+the tensor-level call signature, host buffer routing aligns. The original
+analysis below is preserved for context.
 
 **Symptom**: phase 3/5 produces all-zero outputs. No error, no hang, just a wrong-result
 PASS/FAIL at the very end (`max_diff ≈ |sum(x)|`).
