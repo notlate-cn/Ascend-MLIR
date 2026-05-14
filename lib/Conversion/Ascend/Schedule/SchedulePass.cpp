@@ -162,10 +162,68 @@ static bool hasVectorComputeIntrinsic(
   return true;
 }
 
+static bool hasPrimitiveUse(ArrayRef<PrimitiveAxisUseKind> primitiveUses,
+                            PrimitiveAxisUseKind use) {
+  return llvm::is_contained(primitiveUses, use);
+}
+
+static bool hasGatherAxis(const ScheduleProblem &problem) {
+  return llvm::any_of(
+      problem.axes.axisScheduleConstraints,
+      [](const AxisScheduleConstraint &constraint) {
+        return hasPrimitiveUse(constraint.primitiveUses,
+                               PrimitiveAxisUseKind::GatherIndex);
+      });
+}
+
+static FailureOr<int64_t> deriveSemanticAlignmentGranularity(
+    const ScheduleProblem &problem,
+    const ::mlir::ascend::TargetMemoryModel &memoryModel) {
+  if (!hasGatherAxis(problem))
+    return static_cast<int64_t>(0);
+  if (problem.resultElementBitWidth == 0)
+    return failure();
+
+  FailureOr<::mlir::ascend::AlignmentRule> alignment =
+      memoryModel.getAlignment(::mlir::ascend::MemoryPlace::VECIN);
+  if (failed(alignment))
+    return failure();
+
+  int64_t elementBytes =
+      std::max<int64_t>(1, (problem.resultElementBitWidth + 7) / 8);
+  int64_t addressAlignedElements = 1;
+  if (alignment->addressAlignmentBytes > 0) {
+    addressAlignedElements =
+        (alignment->addressAlignmentBytes + elementBytes - 1) / elementBytes;
+  }
+  int64_t tileAlignedElements =
+      std::max<int64_t>(1, alignment->tileAlignmentElements);
+  return std::max({static_cast<int64_t>(1), addressAlignedElements,
+                   tileAlignedElements});
+}
+
+static void applySemanticAlignmentGranularity(ScheduleProblem &problem) {
+  for (AxisScheduleConstraint &constraint :
+       problem.axes.axisScheduleConstraints) {
+    if (!hasPrimitiveUse(constraint.primitiveUses,
+                         PrimitiveAxisUseKind::GatherIndex))
+      continue;
+    constraint.semanticAlignmentGranularity =
+        problem.targetTilePolicy.semanticAlignmentGranularity;
+  }
+}
+
 static FailureOr<TargetTilePolicy>
 deriveTargetTilePolicy(const ScheduleProblem &problem,
                        const ScheduleTargetModelContext &targetContext) {
   TargetTilePolicy policy;
+  FailureOr<int64_t> semanticAlignmentGranularity =
+      deriveSemanticAlignmentGranularity(problem, targetContext.memoryModel);
+  if (failed(semanticAlignmentGranularity))
+    return failure();
+  if (*semanticAlignmentGranularity > 0)
+    policy.semanticAlignmentGranularity = *semanticAlignmentGranularity;
+
   if (!hasVectorComputeIntrinsic(targetContext.intrinsicModel,
                                  problem.dominantRole))
     return failure();
@@ -312,6 +370,7 @@ struct AscendSchedulePass
         }
         scheduleProblem->targetTilePolicy = std::move(*policy);
       }
+      applySemanticAlignmentGranularity(*scheduleProblem);
 
       SmallVector<ScheduleTemplate> templateMatches =
           matchScheduleTemplates(*scheduleProblem);

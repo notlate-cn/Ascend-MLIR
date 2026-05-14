@@ -362,7 +362,6 @@ void deriveAxisScheduleConstraints(CoalescedAxisInfo &info) {
                     AxisTailPolicy::PadAndMask);
       addPrimitiveUse(constraint.primitiveUses,
                       PrimitiveAxisUseKind::GatherIndex);
-      constraint.semanticAlignmentGranularity = 16;
     }
 
     constraint.tailPolicy =
