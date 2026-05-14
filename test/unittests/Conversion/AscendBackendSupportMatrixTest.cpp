@@ -16,6 +16,7 @@ static_assert(std::is_same_v<MemorySpace, mlir::ascend::MemoryPlace>,
 
 TEST(AscendBackendSupportMatrixTest, SupportsKnownMovementPaths) {
   AscendBackendSupportMatrix matrix;
+  EXPECT_TRUE(matrix.isSupportedMovementPath(MemorySpace::GM, MemorySpace::GM));
   EXPECT_TRUE(matrix.isSupportedMovementPath(MemorySpace::GM, MemorySpace::A1));
   EXPECT_TRUE(matrix.isSupportedMovementPath(MemorySpace::GM, MemorySpace::B1));
   EXPECT_TRUE(matrix.isSupportedMovementPath(MemorySpace::GM,
@@ -58,11 +59,14 @@ TEST(AscendBackendSupportMatrixTest, ConvertsIntegerMemorySpaces) {
 TEST(AscendBackendSupportMatrixTest, SupportsKnownComputeKinds) {
   AscendBackendSupportMatrix matrix;
   EXPECT_TRUE(matrix.isSupportedComputeKind(ComputeKind::Matmul));
+  EXPECT_TRUE(matrix.isSupportedComputeKind(ComputeKind::BatchMatmul));
   EXPECT_TRUE(matrix.isSupportedComputeKind(ComputeKind::Fill));
   EXPECT_TRUE(matrix.isSupportedComputeKind(ComputeKind::ElementwiseAdd));
   EXPECT_TRUE(matrix.isSupportedComputeKind(ComputeKind::ElementwiseMul));
   EXPECT_TRUE(matrix.isSupportedComputeKind(ComputeKind::ElementwiseMax));
   EXPECT_TRUE(matrix.isSupportedComputeKind(ComputeKind::FusedElementwise));
+  EXPECT_TRUE(matrix.isSupportedComputeKind(ComputeKind::TensorCopy));
+  EXPECT_TRUE(matrix.isSupportedComputeKind(ComputeKind::ScalarGeneric));
   EXPECT_TRUE(matrix.isSupportedComputeKind(ComputeKind::Transpose));
   EXPECT_TRUE(matrix.isSupportedComputeKind(ComputeKind::ReductionAdd));
   EXPECT_FALSE(matrix.isSupportedComputeKind(ComputeKind::Unknown));

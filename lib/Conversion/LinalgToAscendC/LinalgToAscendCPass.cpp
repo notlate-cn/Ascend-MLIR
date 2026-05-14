@@ -72,6 +72,18 @@ static bool isRank2SwapPermutation(ArrayRef<int64_t> permutation) {
          permutation[1] == 0;
 }
 
+static bool isValidPermutation(ArrayRef<int64_t> permutation) {
+  SmallVector<bool, 8> seen(permutation.size(), false);
+  for (int64_t position : permutation) {
+    if (position < 0 || position >= static_cast<int64_t>(permutation.size()))
+      return false;
+    if (seen[position])
+      return false;
+    seen[position] = true;
+  }
+  return true;
+}
+
 FailureOr<TransposeLoweringSpec>
 buildTransposeLoweringSpec(linalg::TransposeOp transpose) {
   TransposeLoweringSpec spec;
@@ -123,8 +135,12 @@ buildTransposeLoweringSpec(linalg::GenericOp generic) {
 
 TransposeLoweringPlan planTransposeLowering(const TransposeLoweringSpec &spec) {
   TransposeLoweringPlan plan;
-  if (spec.hasOnChipOutput && isRank2SwapPermutation(spec.permutation))
+  if (spec.hasOnChipOutput && isRank2SwapPermutation(spec.permutation)) {
     plan.kind = TransposeLoweringKind::AscendCSimple2D;
+    return plan;
+  }
+  if (!spec.hasOnChipOutput && isValidPermutation(spec.permutation))
+    plan.kind = TransposeLoweringKind::ScalarMemRefLoop;
   return plan;
 }
 

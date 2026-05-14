@@ -72,6 +72,560 @@ bool isSupportedRank2AllParallel(linalg::GenericOp op) {
          iterTypes[1] == utils::IteratorType::parallel;
 }
 
+LogicalResult lowerTransposeToLoops(OpBuilder &builder, Location loc,
+                                    Value inMemref, Value outMemref,
+                                    ArrayRef<int64_t> permutation) {
+  Value c0 = builder.create<arith::ConstantIndexOp>(loc, 0);
+  Value c1 = builder.create<arith::ConstantIndexOp>(loc, 1);
+
+  auto inType = cast<MemRefType>(inMemref.getType());
+  auto outType = cast<MemRefType>(outMemref.getType());
+  unsigned rank = outType.getRank();
+  if (inType.getRank() != static_cast<int64_t>(rank) ||
+      permutation.size() != rank)
+    return failure();
+
+  SmallVector<bool, 8> seen(rank, false);
+  for (int64_t position : permutation) {
+    if (position < 0 || position >= static_cast<int64_t>(rank))
+      return failure();
+    if (seen[position])
+      return failure();
+    seen[position] = true;
+  }
+
+  SmallVector<Value, 8> upperBounds;
+  upperBounds.reserve(rank);
+  for (unsigned dim = 0; dim < rank; ++dim)
+    upperBounds.push_back(getDimValue(builder, loc, outMemref, dim));
+
+  SmallVector<Value, 8> loopIndices;
+  auto buildNest = [&](auto &self, unsigned depth) -> LogicalResult {
+    if (depth == rank) {
+      SmallVector<Value, 8> inputIndices;
+      inputIndices.reserve(rank);
+      for (int64_t position : permutation)
+        inputIndices.push_back(loopIndices[static_cast<unsigned>(position)]);
+      Value value =
+          builder.create<memref::LoadOp>(loc, inMemref, inputIndices);
+      builder.create<memref::StoreOp>(loc, value, outMemref, loopIndices);
+      return success();
+    }
+
+    auto forOp = builder.create<scf::ForOp>(loc, c0, upperBounds[depth], c1);
+    OpBuilder::InsertionGuard guard(builder);
+    builder.setInsertionPointToStart(forOp.getBody());
+    loopIndices.push_back(forOp.getInductionVar());
+    LogicalResult result = self(self, depth + 1);
+    loopIndices.pop_back();
+    return result;
+  };
+
+  return buildNest(buildNest, 0);
+}
+
+bool isPureYieldGeneric(linalg::GenericOp op) {
+  if (op.getNumDpsInputs() != 1 || op.getNumDpsInits() != 1)
+    return false;
+  auto iteratorTypes = op.getIteratorTypesArray();
+  if (!llvm::all_of(iteratorTypes, [](utils::IteratorType iteratorType) {
+        return iteratorType == utils::IteratorType::parallel;
+      }))
+    return false;
+  auto maps = op.getIndexingMapsArray();
+  unsigned outputMapIndex = op.getNumDpsInputs();
+  if (maps.size() <= outputMapIndex || !maps[outputMapIndex].isIdentity())
+    return false;
+  unsigned lastDim = 0;
+  bool hasLastDim = false;
+  for (AffineExpr expr : maps[0].getResults()) {
+    if (isa<AffineConstantExpr>(expr))
+      continue;
+    auto dimExpr = dyn_cast<AffineDimExpr>(expr);
+    if (!dimExpr)
+      return false;
+    unsigned position = dimExpr.getPosition();
+    if (hasLastDim && position <= lastDim)
+      return false;
+    lastDim = position;
+    hasLastDim = true;
+  }
+  Block *body = op.getBody();
+  if (body->getOperations().size() != 1)
+    return false;
+  auto yieldOp = dyn_cast<linalg::YieldOp>(&body->front());
+  if (!yieldOp || yieldOp.getNumOperands() != 1)
+    return false;
+  auto blockArg = dyn_cast<BlockArgument>(yieldOp.getOperand(0));
+  return blockArg && blockArg.getArgNumber() == 0;
+}
+
+bool isGmAllParallelGeneric(linalg::GenericOp op) {
+  if (op.getNumDpsInits() != 1)
+    return false;
+
+  Value outMemref = op.getDpsInitOperand(0)->get();
+  auto outType = dyn_cast<MemRefType>(outMemref.getType());
+  if (!outType || getMemorySpace(outType) != 0)
+    return false;
+
+  auto iteratorTypes = op.getIteratorTypesArray();
+  if (!llvm::all_of(iteratorTypes, [](utils::IteratorType iteratorType) {
+        return iteratorType == utils::IteratorType::parallel;
+      }))
+    return false;
+
+  auto maps = op.getIndexingMapsArray();
+  unsigned firstOutputMap = op.getNumDpsInputs();
+  size_t expectedMapCount = static_cast<size_t>(firstOutputMap) +
+                            static_cast<size_t>(op.getNumDpsInits());
+  if (maps.size() != expectedMapCount)
+    return false;
+
+  AffineMap outMap = maps[firstOutputMap];
+  return outMap.isIdentity() &&
+         outMap.getNumResults() == static_cast<unsigned>(outType.getRank());
+}
+
+bool isSimpleDimOrConstantMap(AffineMap map, unsigned rank) {
+  for (AffineExpr expr : map.getResults()) {
+    if (isa<AffineConstantExpr>(expr))
+      continue;
+    auto dimExpr = dyn_cast<AffineDimExpr>(expr);
+    if (!dimExpr || dimExpr.getPosition() >= rank)
+      return false;
+  }
+  return true;
+}
+
+bool isGmScalarLoopGeneric(linalg::GenericOp op) {
+  if (op.getNumDpsInits() == 0)
+    return false;
+
+  auto iteratorTypes = op.getIteratorTypesArray();
+  if (!llvm::all_of(iteratorTypes, [](utils::IteratorType iteratorType) {
+        return iteratorType == utils::IteratorType::parallel ||
+               iteratorType == utils::IteratorType::reduction;
+      }))
+    return false;
+
+  unsigned rank = iteratorTypes.size();
+  auto maps = op.getIndexingMapsArray();
+  unsigned firstOutputMap = op.getNumDpsInputs();
+  size_t expectedMapCount = static_cast<size_t>(firstOutputMap) +
+                            static_cast<size_t>(op.getNumDpsInits());
+  if (maps.size() != expectedMapCount)
+    return false;
+
+  for (unsigned i = 0, e = op.getNumDpsInputs(); i < e; ++i)
+    if (!isSimpleDimOrConstantMap(maps[i], rank))
+      return false;
+
+  for (unsigned i = 0, e = op.getNumDpsInits(); i < e; ++i) {
+    Value output = op.getDpsInitOperand(i)->get();
+    auto outputType = dyn_cast<MemRefType>(output.getType());
+    if (!outputType || getMemorySpace(output.getType()) != 0)
+      return false;
+    AffineMap outputMap = maps[firstOutputMap + i];
+    if (!isSimpleDimOrConstantMap(outputMap, rank) ||
+        outputMap.getNumResults() != static_cast<unsigned>(outputType.getRank()))
+      return false;
+  }
+
+  Block *body = op.getBody();
+  auto yieldOp = dyn_cast<linalg::YieldOp>(body->getTerminator());
+  if (!yieldOp || yieldOp.getNumOperands() != op.getNumDpsInits())
+    return false;
+  for (Operation &bodyOp : body->without_terminator()) {
+    if (isa<linalg::IndexOp>(bodyOp))
+      continue;
+    if (bodyOp.getNumRegions() != 0)
+      return false;
+  }
+  return true;
+}
+
+FailureOr<SmallVector<Value, 4>>
+buildMappedIndices(OpBuilder &builder, Location loc, AffineMap map,
+                   ArrayRef<Value> loopIndices) {
+  SmallVector<Value, 4> indices;
+  for (AffineExpr expr : map.getResults()) {
+    if (auto dimExpr = dyn_cast<AffineDimExpr>(expr)) {
+      unsigned position = dimExpr.getPosition();
+      if (position >= loopIndices.size())
+        return failure();
+      indices.push_back(loopIndices[position]);
+      continue;
+    }
+    if (auto constExpr = dyn_cast<AffineConstantExpr>(expr)) {
+      indices.push_back(
+          builder.create<arith::ConstantIndexOp>(loc, constExpr.getValue()));
+      continue;
+    }
+    return failure();
+  }
+  return indices;
+}
+
+LogicalResult lowerPureYieldGenericToLoops(OpBuilder &builder,
+                                           linalg::GenericOp op) {
+  if (!isPureYieldGeneric(op))
+    return failure();
+
+  Location loc = op.getLoc();
+  Value inMemref = op.getDpsInputOperand(0)->get();
+  Value outMemref = op.getDpsInitOperand(0)->get();
+  AffineMap inMap = op.getIndexingMapsArray()[0];
+  unsigned rank = op.getIteratorTypesArray().size();
+
+  Value c0 = builder.create<arith::ConstantIndexOp>(loc, 0);
+  Value c1 = builder.create<arith::ConstantIndexOp>(loc, 1);
+  SmallVector<Value, 4> upperBounds;
+  upperBounds.reserve(rank);
+  for (unsigned dim = 0; dim < rank; ++dim)
+    upperBounds.push_back(getDimValue(builder, loc, outMemref, dim));
+
+  SmallVector<Value, 4> loopIndices;
+  auto buildNest = [&](auto &self, unsigned depth) -> LogicalResult {
+    if (depth == rank) {
+      FailureOr<SmallVector<Value, 4>> inputIndices =
+          buildMappedIndices(builder, loc, inMap, loopIndices);
+      if (failed(inputIndices))
+        return failure();
+      Value value =
+          builder.create<memref::LoadOp>(loc, inMemref, *inputIndices);
+      builder.create<memref::StoreOp>(loc, value, outMemref, loopIndices);
+      return success();
+    }
+
+    auto forOp = builder.create<scf::ForOp>(loc, c0, upperBounds[depth], c1);
+    OpBuilder::InsertionGuard guard(builder);
+    builder.setInsertionPointToStart(forOp.getBody());
+    loopIndices.push_back(forOp.getInductionVar());
+    LogicalResult result = self(self, depth + 1);
+    loopIndices.pop_back();
+    return result;
+  };
+
+  return buildNest(buildNest, 0);
+}
+
+LogicalResult lowerAllParallelGenericToLoops(OpBuilder &builder,
+                                             linalg::GenericOp op) {
+  if (!isGmAllParallelGeneric(op))
+    return failure();
+
+  Location loc = op.getLoc();
+  Block &body = *op.getBody();
+  Value outMemref = op.getDpsInitOperand(0)->get();
+  auto maps = op.getIndexingMapsArray();
+  unsigned inputCount = op.getNumDpsInputs();
+  unsigned rank = op.getIteratorTypesArray().size();
+
+  Value c0 = builder.create<arith::ConstantIndexOp>(loc, 0);
+  Value c1 = builder.create<arith::ConstantIndexOp>(loc, 1);
+  SmallVector<Value, 4> upperBounds;
+  upperBounds.reserve(rank);
+  for (unsigned dim = 0; dim < rank; ++dim)
+    upperBounds.push_back(getDimValue(builder, loc, outMemref, dim));
+
+  SmallVector<Value, 4> loopIndices;
+  auto buildNest = [&](auto &self, unsigned depth) -> LogicalResult {
+    if (depth == rank) {
+      IRMapping mapper;
+      for (unsigned i = 0; i < inputCount; ++i) {
+        FailureOr<SmallVector<Value, 4>> inputIndices =
+            buildMappedIndices(builder, loc, maps[i], loopIndices);
+        if (failed(inputIndices))
+          return failure();
+        Value input = op.getDpsInputOperand(i)->get();
+        Value value =
+            builder.create<memref::LoadOp>(loc, input, *inputIndices);
+        mapper.map(body.getArgument(i), value);
+      }
+
+      FailureOr<SmallVector<Value, 4>> outputIndices =
+          buildMappedIndices(builder, loc, maps[inputCount], loopIndices);
+      if (failed(outputIndices))
+        return failure();
+      Value currentOut =
+          builder.create<memref::LoadOp>(loc, outMemref, *outputIndices);
+      mapper.map(body.getArgument(inputCount), currentOut);
+
+      Value yieldedValue;
+      for (Operation &bodyOp : body.getOperations()) {
+        if (auto yieldOp = dyn_cast<linalg::YieldOp>(bodyOp)) {
+          if (yieldOp.getNumOperands() != 1)
+            return failure();
+          yieldedValue = mapper.lookupOrDefault(yieldOp.getOperand(0));
+          break;
+        }
+
+        if (auto indexOp = dyn_cast<linalg::IndexOp>(bodyOp)) {
+          unsigned dim = static_cast<unsigned>(indexOp.getDim());
+          if (dim >= loopIndices.size())
+            return failure();
+          mapper.map(indexOp.getResult(), loopIndices[dim]);
+          continue;
+        }
+
+        if (bodyOp.getNumRegions() != 0)
+          return failure();
+        builder.clone(bodyOp, mapper);
+      }
+
+      if (!yieldedValue)
+        return failure();
+      builder.create<memref::StoreOp>(loc, yieldedValue, outMemref,
+                                      *outputIndices);
+      return success();
+    }
+
+    auto forOp = builder.create<scf::ForOp>(loc, c0, upperBounds[depth], c1);
+    OpBuilder::InsertionGuard guard(builder);
+    builder.setInsertionPointToStart(forOp.getBody());
+    loopIndices.push_back(forOp.getInductionVar());
+    LogicalResult result = self(self, depth + 1);
+    loopIndices.pop_back();
+    return result;
+  };
+
+  return buildNest(buildNest, 0);
+}
+
+FailureOr<SmallVector<Value, 4>>
+buildLoopUpperBounds(OpBuilder &builder, Location loc, linalg::GenericOp op) {
+  unsigned rank = op.getIteratorTypesArray().size();
+  SmallVector<Value, 4> upperBounds(rank);
+  auto maps = op.getIndexingMapsArray();
+
+  auto bindOperandDims = [&](Value operand, AffineMap map) -> LogicalResult {
+    auto memrefType = dyn_cast<MemRefType>(operand.getType());
+    if (!memrefType)
+      return failure();
+    for (unsigned resultIndex = 0, e = map.getNumResults(); resultIndex < e;
+         ++resultIndex) {
+      auto dimExpr = dyn_cast<AffineDimExpr>(map.getResult(resultIndex));
+      if (!dimExpr)
+        continue;
+      unsigned loopDim = dimExpr.getPosition();
+      if (loopDim >= rank ||
+          resultIndex >= static_cast<unsigned>(memrefType.getRank()))
+        return failure();
+      if (!upperBounds[loopDim])
+        upperBounds[loopDim] =
+            getDimValue(builder, loc, operand, resultIndex);
+    }
+    return success();
+  };
+
+  for (unsigned i = 0, e = op.getNumDpsInputs(); i < e; ++i)
+    if (failed(bindOperandDims(op.getDpsInputOperand(i)->get(), maps[i])))
+      return failure();
+
+  unsigned firstOutputMap = op.getNumDpsInputs();
+  for (unsigned i = 0, e = op.getNumDpsInits(); i < e; ++i)
+    if (failed(bindOperandDims(op.getDpsInitOperand(i)->get(),
+                               maps[firstOutputMap + i])))
+      return failure();
+
+  for (Value bound : upperBounds)
+    if (!bound)
+      return failure();
+  return upperBounds;
+}
+
+LogicalResult lowerGmGenericToScalarLoops(OpBuilder &builder,
+                                          linalg::GenericOp op) {
+  if (!isGmScalarLoopGeneric(op))
+    return failure();
+
+  Location loc = op.getLoc();
+  Block &body = *op.getBody();
+  auto maps = op.getIndexingMapsArray();
+  unsigned inputCount = op.getNumDpsInputs();
+  unsigned outputCount = op.getNumDpsInits();
+  unsigned rank = op.getIteratorTypesArray().size();
+
+  FailureOr<SmallVector<Value, 4>> upperBounds =
+      buildLoopUpperBounds(builder, loc, op);
+  if (failed(upperBounds))
+    return failure();
+
+  Value c0 = builder.create<arith::ConstantIndexOp>(loc, 0);
+  Value c1 = builder.create<arith::ConstantIndexOp>(loc, 1);
+  SmallVector<Value, 4> loopIndices;
+  auto buildNest = [&](auto &self, unsigned depth) -> LogicalResult {
+    if (depth == rank) {
+      IRMapping mapper;
+      for (unsigned i = 0; i < inputCount; ++i) {
+        FailureOr<SmallVector<Value, 4>> inputIndices =
+            buildMappedIndices(builder, loc, maps[i], loopIndices);
+        if (failed(inputIndices))
+          return failure();
+        Value input = op.getDpsInputOperand(i)->get();
+        Value value =
+            builder.create<memref::LoadOp>(loc, input, *inputIndices);
+        mapper.map(body.getArgument(i), value);
+      }
+
+      SmallVector<Value, 4> outputs;
+      SmallVector<SmallVector<Value, 4>, 4> outputIndicesList;
+      unsigned firstOutputMap = inputCount;
+      for (unsigned i = 0; i < outputCount; ++i) {
+        FailureOr<SmallVector<Value, 4>> outputIndices =
+            buildMappedIndices(builder, loc, maps[firstOutputMap + i],
+                               loopIndices);
+        if (failed(outputIndices))
+          return failure();
+        Value output = op.getDpsInitOperand(i)->get();
+        Value current =
+            builder.create<memref::LoadOp>(loc, output, *outputIndices);
+        mapper.map(body.getArgument(inputCount + i), current);
+        outputs.push_back(output);
+        outputIndicesList.push_back(*outputIndices);
+      }
+
+      bool sawYield = false;
+      for (Operation &bodyOp : body.getOperations()) {
+        if (auto yieldOp = dyn_cast<linalg::YieldOp>(bodyOp)) {
+          if (yieldOp.getNumOperands() != outputCount)
+            return failure();
+          for (unsigned i = 0; i < outputCount; ++i) {
+            Value yielded = mapper.lookupOrDefault(yieldOp.getOperand(i));
+            builder.create<memref::StoreOp>(loc, yielded, outputs[i],
+                                            outputIndicesList[i]);
+          }
+          sawYield = true;
+          break;
+        }
+
+        if (auto indexOp = dyn_cast<linalg::IndexOp>(bodyOp)) {
+          unsigned dim = static_cast<unsigned>(indexOp.getDim());
+          if (dim >= loopIndices.size())
+            return failure();
+          mapper.map(indexOp.getResult(), loopIndices[dim]);
+          continue;
+        }
+
+        if (bodyOp.getNumRegions() != 0)
+          return failure();
+        builder.clone(bodyOp, mapper);
+      }
+
+      return success(sawYield);
+    }
+
+    auto forOp =
+        builder.create<scf::ForOp>(loc, c0, (*upperBounds)[depth], c1);
+    OpBuilder::InsertionGuard guard(builder);
+    builder.setInsertionPointToStart(forOp.getBody());
+    loopIndices.push_back(forOp.getInductionVar());
+    LogicalResult result = self(self, depth + 1);
+    loopIndices.pop_back();
+    return result;
+  };
+
+  return buildNest(buildNest, 0);
+}
+
+void lowerBatchMatmulToLoops(OpBuilder &builder, linalg::BatchMatmulOp op) {
+  Location loc = op.getLoc();
+  Value lhs = op.getDpsInputOperand(0)->get();
+  Value rhs = op.getDpsInputOperand(1)->get();
+  Value out = op.getDpsInitOperand(0)->get();
+
+  Value c0 = builder.create<arith::ConstantIndexOp>(loc, 0);
+  Value c1 = builder.create<arith::ConstantIndexOp>(loc, 1);
+  Value batch = getDimValue(builder, loc, out, 0);
+  Value mSize = getDimValue(builder, loc, out, 1);
+  Value nSize = getDimValue(builder, loc, out, 2);
+  Value kSize = getDimValue(builder, loc, lhs, 2);
+
+  auto forB = builder.create<scf::ForOp>(loc, c0, batch, c1);
+  {
+    OpBuilder::InsertionGuard guardB(builder);
+    builder.setInsertionPointToStart(forB.getBody());
+    Value b = forB.getInductionVar();
+    auto forM = builder.create<scf::ForOp>(loc, c0, mSize, c1);
+    {
+      OpBuilder::InsertionGuard guardM(builder);
+      builder.setInsertionPointToStart(forM.getBody());
+      Value m = forM.getInductionVar();
+      auto forN = builder.create<scf::ForOp>(loc, c0, nSize, c1);
+      {
+        OpBuilder::InsertionGuard guardN(builder);
+        builder.setInsertionPointToStart(forN.getBody());
+        Value n = forN.getInductionVar();
+        Value init =
+            builder.create<memref::LoadOp>(loc, out, ValueRange{b, m, n});
+        auto forK =
+            builder.create<scf::ForOp>(loc, c0, kSize, c1, ValueRange{init});
+        {
+          OpBuilder::InsertionGuard guardK(builder);
+          builder.setInsertionPointToStart(forK.getBody());
+          Value k = forK.getInductionVar();
+          Value acc = forK.getRegionIterArgs().front();
+          Value lhsValue =
+              builder.create<memref::LoadOp>(loc, lhs, ValueRange{b, m, k});
+          Value rhsValue =
+              builder.create<memref::LoadOp>(loc, rhs, ValueRange{b, k, n});
+          Value product =
+              builder.create<arith::MulFOp>(loc, lhsValue, rhsValue);
+          Value sum = builder.create<arith::AddFOp>(loc, acc, product);
+          builder.create<scf::YieldOp>(loc, sum);
+        }
+        builder.create<memref::StoreOp>(loc, forK.getResult(0), out,
+                                        ValueRange{b, m, n});
+      }
+    }
+  }
+}
+
+void lowerMatmulToLoops(OpBuilder &builder, linalg::MatmulOp op) {
+  Location loc = op.getLoc();
+  Value lhs = op.getDpsInputOperand(0)->get();
+  Value rhs = op.getDpsInputOperand(1)->get();
+  Value out = op.getDpsInitOperand(0)->get();
+
+  Value c0 = builder.create<arith::ConstantIndexOp>(loc, 0);
+  Value c1 = builder.create<arith::ConstantIndexOp>(loc, 1);
+  Value mSize = getDimValue(builder, loc, out, 0);
+  Value nSize = getDimValue(builder, loc, out, 1);
+  Value kSize = getDimValue(builder, loc, lhs, 1);
+
+  auto forM = builder.create<scf::ForOp>(loc, c0, mSize, c1);
+  {
+    OpBuilder::InsertionGuard guardM(builder);
+    builder.setInsertionPointToStart(forM.getBody());
+    Value m = forM.getInductionVar();
+    auto forN = builder.create<scf::ForOp>(loc, c0, nSize, c1);
+    {
+      OpBuilder::InsertionGuard guardN(builder);
+      builder.setInsertionPointToStart(forN.getBody());
+      Value n = forN.getInductionVar();
+      Value init = builder.create<memref::LoadOp>(loc, out, ValueRange{m, n});
+      auto forK =
+          builder.create<scf::ForOp>(loc, c0, kSize, c1, ValueRange{init});
+      {
+        OpBuilder::InsertionGuard guardK(builder);
+        builder.setInsertionPointToStart(forK.getBody());
+        Value k = forK.getInductionVar();
+        Value acc = forK.getRegionIterArgs().front();
+        Value lhsValue =
+            builder.create<memref::LoadOp>(loc, lhs, ValueRange{m, k});
+        Value rhsValue =
+            builder.create<memref::LoadOp>(loc, rhs, ValueRange{k, n});
+        Value product = builder.create<arith::MulFOp>(loc, lhsValue, rhsValue);
+        Value sum = builder.create<arith::AddFOp>(loc, acc, product);
+        builder.create<scf::YieldOp>(loc, sum);
+      }
+      builder.create<memref::StoreOp>(loc, forK.getResult(0), out,
+                                      ValueRange{m, n});
+    }
+  }
+}
+
 FailureOr<unsigned> getSingleDimProjection(AffineMap map) {
   if (map.getNumDims() != 2 || map.getNumResults() != 1)
     return failure();
@@ -782,13 +1336,26 @@ LogicalResult convertCompute(func::FuncOp funcOp, AscendCBufferContext &ctx) {
   for (linalg::TransposeOp transposeOp : transposeOps) {
     FailureOr<TransposeLoweringSpec> spec =
         buildTransposeLoweringSpec(transposeOp);
-    if (failed(spec) ||
-        planTransposeLowering(*spec).kind !=
-            TransposeLoweringKind::AscendCSimple2D)
+    if (failed(spec))
+      continue;
+    TransposeLoweringPlan plan = planTransposeLowering(*spec);
+    if (plan.kind == TransposeLoweringKind::Unsupported)
       continue;
 
     Value inMemref = transposeOp.getDpsInputOperand(0)->get();
     Value outMemref = transposeOp.getDpsInitOperand(0)->get();
+    if (plan.kind == TransposeLoweringKind::ScalarMemRefLoop) {
+      Location loc = transposeOp.getLoc();
+      builder.setInsertionPoint(transposeOp);
+      if (failed(lowerTransposeToLoops(builder, loc, inMemref, outMemref,
+                                       spec->permutation))) {
+        transposeOp.emitError("failed to lower transpose scalar fallback");
+        return failure();
+      }
+      transposeOp.erase();
+      continue;
+    }
+
     if (getMemorySpace(outMemref.getType()) <= 0)
       continue;
 
@@ -994,6 +1561,21 @@ LogicalResult convertCompute(func::FuncOp funcOp, AscendCBufferContext &ctx) {
   };
 
   SmallVector<linalg::GenericOp> genericOps;
+  funcOp.walk([&](linalg::GenericOp op) { genericOps.push_back(op); });
+
+  for (linalg::GenericOp genOp : genericOps) {
+    if (!isGmScalarLoopGeneric(genOp))
+      continue;
+
+    builder.setInsertionPoint(genOp);
+    if (failed(lowerGmGenericToScalarLoops(builder, genOp))) {
+      genOp.emitError("failed to lower GM generic scalar loop");
+      return failure();
+    }
+    genOp.erase();
+  }
+
+  genericOps.clear();
   funcOp.walk([&](linalg::GenericOp op) { genericOps.push_back(op); });
 
   for (linalg::GenericOp genOp : genericOps) {
@@ -1367,6 +1949,24 @@ LogicalResult convertCompute(func::FuncOp funcOp, AscendCBufferContext &ctx) {
   for (linalg::GenericOp genOp : parallelGenericOps) {
     Value outMemref = genOp.getDpsInitOperand(0)->get();
     int64_t outMs   = getMemorySpace(outMemref.getType());
+    if (outMs == 0 && isPureYieldGeneric(genOp)) {
+      builder.setInsertionPoint(genOp);
+      if (failed(lowerPureYieldGenericToLoops(builder, genOp))) {
+        genOp.emitError("failed to lower pure-yield generic copy");
+        return failure();
+      }
+      genOp.erase();
+      continue;
+    }
+    if (outMs == 0 && isGmAllParallelGeneric(genOp)) {
+      builder.setInsertionPoint(genOp);
+      if (failed(lowerAllParallelGenericToLoops(builder, genOp))) {
+        genOp.emitError("failed to lower GM all-parallel generic");
+        return failure();
+      }
+      genOp.erase();
+      continue;
+    }
     if (outMs <= 0)
       continue; // output must be on-chip (VECOUT or VECCALC)
 
@@ -2214,6 +2814,21 @@ LogicalResult convertCompute(func::FuncOp funcOp, AscendCBufferContext &ctx) {
   }
 
   // --- linalg.matmul → mmad ---
+  // --- linalg.batch_matmul GM fallback ---
+  SmallVector<linalg::BatchMatmulOp> batchMatmulOps;
+  funcOp.walk([&](linalg::BatchMatmulOp op) { batchMatmulOps.push_back(op); });
+
+  for (linalg::BatchMatmulOp batchMatmulOp : batchMatmulOps) {
+    Value out = batchMatmulOp.getDpsInitOperand(0)->get();
+    if (getMemorySpace(out.getType()) != 0)
+      continue;
+
+    builder.setInsertionPoint(batchMatmulOp);
+    lowerBatchMatmulToLoops(builder, batchMatmulOp);
+    batchMatmulOp.erase();
+  }
+
+  // --- linalg.matmul -> amad ---
   SmallVector<linalg::MatmulOp> matmulOps;
   funcOp.walk([&](linalg::MatmulOp op) { matmulOps.push_back(op); });
 
@@ -2221,6 +2836,13 @@ LogicalResult convertCompute(func::FuncOp funcOp, AscendCBufferContext &ctx) {
     Value A = matmulOp.getInputs()[0];
     Value B = matmulOp.getInputs()[1];
     Value C = matmulOp.getOutputs()[0];
+    if (getMemorySpace(A.getType()) == 0 && getMemorySpace(B.getType()) == 0 &&
+        getMemorySpace(C.getType()) == 0) {
+      builder.setInsertionPoint(matmulOp);
+      lowerMatmulToLoops(builder, matmulOp);
+      matmulOp.erase();
+      continue;
+    }
     if (getMemorySpace(A.getType()) != 2) continue;
     if (getMemorySpace(B.getType()) != 4) continue;
     if (getMemorySpace(C.getType()) != 7) continue;

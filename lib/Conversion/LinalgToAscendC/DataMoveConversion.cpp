@@ -302,6 +302,24 @@ LogicalResult convertDataMove(func::FuncOp funcOp,
       continue;
     }
 
+    // GM(0) -> GM(0): plain global-to-global copy.
+    if (srcMs == 0 && dstMs == 0) {
+      Type elemType = cast<MemRefType>(dst.getType()).getElementType();
+      Value dstGt = builder.create<GlobalTensorOp>(
+          loc, GlobalTensorType::get(elemType));
+      Value srcGt = builder.create<GlobalTensorOp>(
+          loc, GlobalTensorType::get(
+                   cast<MemRefType>(src.getType()).getElementType()));
+      builder.create<GlobalTensorSetGlobalBufferOp>(loc, dstGt, dst,
+                                                     /*size=*/Value{});
+      builder.create<GlobalTensorSetGlobalBufferOp>(loc, srcGt, src,
+                                                     /*size=*/Value{});
+      Value count = computeElementCount(builder, loc, dst);
+      builder.create<DataCopyL2Op>(loc, dstGt, srcGt, count);
+      copyOp.erase();
+      continue;
+    }
+
     // GM(0) → VECIN(9): alloc_tensor → data_copy_l2 → enque_tensor
     //
     // The resulting VECIN local_tensor may be consumed (via subview) across

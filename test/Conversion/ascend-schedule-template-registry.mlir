@@ -95,6 +95,15 @@ func.func @matmul(%lhs: tensor<4x8xf16>, %rhs: tensor<8x16xf16>) -> tensor<4x16x
   return %out : tensor<4x16xf16>
 }
 
+func.func @batch_matmul(%lhs: tensor<2x4x8xf16>,
+                        %rhs: tensor<2x8x16xf16>) -> tensor<2x4x16xf16> {
+  %empty = tensor.empty() : tensor<2x4x16xf16>
+  %out = linalg.batch_matmul
+      ins(%lhs, %rhs : tensor<2x4x8xf16>, tensor<2x8x16xf16>)
+      outs(%empty : tensor<2x4x16xf16>) -> tensor<2x4x16xf16>
+  return %out : tensor<2x4x16xf16>
+}
+
 // CHECK: TemplateRegistry:
 // CHECK-NEXT:   kernel = kernel_0
 // CHECK-NEXT:   matches = 1
@@ -119,6 +128,10 @@ func.func @matmul(%lhs: tensor<4x8xf16>, %rhs: tensor<8x16xf16>) -> tensor<4x16x
 // CHECK-NEXT:   kernel = kernel_5
 // CHECK-NEXT:   matches = 1
 // CHECK-NEXT:   template = cube_static_matmul/single_tile_per_block
+// CHECK: TemplateRegistry:
+// CHECK-NEXT:   kernel = kernel_6
+// CHECK-NEXT:   matches = 1
+// CHECK-NEXT:   template = cube_static_matmul/single_tile_per_block
 // CHECK: linalg.generic
 // CHECK-SAME: ascend.schedule.family = "vector_generic"
 // CHECK: linalg.generic
@@ -130,4 +143,6 @@ func.func @matmul(%lhs: tensor<4x8xf16>, %rhs: tensor<8x16xf16>) -> tensor<4x16x
 // CHECK: linalg.generic
 // CHECK-SAME: ascend.schedule.family = "reduction_static"
 // CHECK: linalg.matmul
+// CHECK-SAME: ascend.schedule.family = "cube_static_matmul"
+// CHECK: linalg.batch_matmul
 // CHECK-SAME: ascend.schedule.family = "cube_static_matmul"
