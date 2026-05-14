@@ -312,6 +312,24 @@ static LogicalResult replaceAllocDimUses(IRRewriter &rewriter,
   return success();
 }
 
+static LogicalResult verifyReplaceableAllocDimUses(memref::AllocOp allocOp) {
+  auto type = cast<MemRefType>(allocOp.getType());
+  for (Operation *user : allocOp.getResult().getUsers()) {
+    auto dimOp = dyn_cast<memref::DimOp>(user);
+    if (!dimOp)
+      continue;
+
+    std::optional<int64_t> dim = getConstantIntValue(dimOp.getIndex());
+    if (!dim || *dim < 0 || *dim >= type.getRank())
+      return failure();
+
+    if (ShapedType::isDynamic(type.getDimSize(*dim)) &&
+        !dynamicSizeForDim(allocOp, *dim))
+      return failure();
+  }
+  return success();
+}
+
 static SmallVector<Value, 4> buildDynamicSizes(OpBuilder &builder,
                                                Location loc, Value source) {
   SmallVector<Value, 4> dynamicSizes;
@@ -511,7 +529,6 @@ MemoryRealizationDriver::annotateMemorySpaces(ModuleOp module) const {
 FailureOr<llvm::StringMap<Phase5BridgeMaterializationCounts>>
 MemoryRealizationDriver::materializePhase5Bridge(ModuleOp module) const {
   MLIRContext *context = module.getContext();
-  annotateAscendCUnits(module);
   backend::AscendBackendSupportMatrix matrix;
 
   Attribute a1Space = getMemorySpaceAttr(context, kA1MemorySpace);
@@ -571,6 +588,12 @@ MemoryRealizationDriver::materializePhase5Bridge(ModuleOp module) const {
                                  concatCopy, kernelId.str()});
     }
   });
+
+  for (const Phase5BridgeOutput &item : outputsToBridge)
+    if (item.concatCopy && failed(verifyReplaceableAllocDimUses(item.gmAlloc)))
+      return failure();
+
+  annotateAscendCUnits(module);
 
   IRRewriter rewriter(context);
   llvm::StringMap<Phase5BridgeMaterializationCounts> counts;
