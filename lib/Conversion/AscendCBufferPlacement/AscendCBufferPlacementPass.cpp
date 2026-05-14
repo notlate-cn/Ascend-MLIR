@@ -13,6 +13,7 @@
  */
 
 #include "Conversion/AscendCBufferPlacement/AscendCBufferPlacementPass.h"
+#include "Conversion/Ascend/Common/Attributes.h"
 #include "Dialect/AFIR/AFIR.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
@@ -275,8 +276,8 @@ void inferBufferPositions(func::FuncOp funcOp,
   // Rule B: Vector op outs alloc -> VECCALC or VECOUT
   // Handle both linalg::GenericOp and linalg::ElementwiseOp
   auto processVectorOp = [&](Operation *op) {
-    auto unitAttr = op->getAttrOfType<StringAttr>("ascendc.unit");
-    if (!unitAttr || unitAttr.getValue() != "AiCore.Vector")
+    auto unitAttr = op->getAttrOfType<StringAttr>(::mlir::afir::ascend::kAscendCUnitAttr);
+    if (!unitAttr || unitAttr.getValue() != ::mlir::afir::ascend::kAscendCUnitVector)
       return;
 
     // Get the DPS output operand
@@ -306,8 +307,9 @@ void inferBufferPositions(func::FuncOp funcOp,
     for (Operation *user : out.getUsers()) {
       if (user == op)
         continue; // Skip the op itself (it uses out as output)
-      auto userUnit = user->getAttrOfType<StringAttr>("ascendc.unit");
-      if (userUnit && userUnit.getValue() == "AiCore.Vector") {
+      auto userUnit =
+          user->getAttrOfType<StringAttr>(::mlir::afir::ascend::kAscendCUnitAttr);
+      if (userUnit && userUnit.getValue() == ::mlir::afir::ascend::kAscendCUnitVector) {
         hasVectorConsumer = true;
         break;
       }
@@ -506,9 +508,9 @@ void clearAnnotations(func::FuncOp funcOp) {
   funcOp.walk([](Operation *op) {
     SmallVector<StringAttr> toRemove;
     for (NamedAttribute attr : op->getAttrs()) {
-      if (attr.getName().getValue() == "ascendc.unit")
+      if (attr.getName().getValue() == ::mlir::afir::ascend::kAscendCUnitAttr)
         continue;
-      if (attr.getName().getValue() == "ascendc.kernel_kind")
+      if (attr.getName().getValue() == ::mlir::afir::ascend::kAscendCKernelKindAttr)
         continue;
       if (attr.getName().getValue().starts_with("ascendc.")) {
         toRemove.push_back(attr.getName());
@@ -707,13 +709,14 @@ Value findRoleSubview(StringRef role, scf::ForOp forOp,
 
   if (role == "src") {
     // Generic source role: find the first ins-subview of a Vector generic
-    // (linalg.generic with ascendc.unit = "AiCore.Vector") inside forOp.
+    // inside forOp.
     Value found;
     forOp.walk([&](linalg::GenericOp genericOp) {
       if (found)
         return WalkResult::interrupt();
-      auto unitAttr = genericOp->getAttrOfType<StringAttr>("ascendc.unit");
-      if (!unitAttr || unitAttr.getValue() != "AiCore.Vector")
+      auto unitAttr =
+          genericOp->getAttrOfType<StringAttr>(::mlir::afir::ascend::kAscendCUnitAttr);
+      if (!unitAttr || unitAttr.getValue() != ::mlir::afir::ascend::kAscendCUnitVector)
         return WalkResult::advance();
       for (Value inp : genericOp.getInputs()) {
         Operation *defOp = inp.getDefiningOp();
@@ -730,13 +733,14 @@ Value findRoleSubview(StringRef role, scf::ForOp forOp,
 
   if (role == "dst") {
     // Generic destination role: find the outs-subview of a Vector generic
-    // (linalg.generic with ascendc.unit = "AiCore.Vector") inside forOp.
+    // inside forOp.
     Value found;
     forOp.walk([&](linalg::GenericOp genericOp) {
       if (found)
         return WalkResult::interrupt();
-      auto unitAttr = genericOp->getAttrOfType<StringAttr>("ascendc.unit");
-      if (!unitAttr || unitAttr.getValue() != "AiCore.Vector")
+      auto unitAttr =
+          genericOp->getAttrOfType<StringAttr>(::mlir::afir::ascend::kAscendCUnitAttr);
+      if (!unitAttr || unitAttr.getValue() != ::mlir::afir::ascend::kAscendCUnitVector)
         return WalkResult::advance();
       for (Value out : genericOp.getOutputs()) {
         Operation *defOp = out.getDefiningOp();
@@ -1166,8 +1170,9 @@ void insertCopiesForLoop(scf::ForOp forOp,
     // srcMemref is the original GM subview, we can recover it by walking
     // the generic and matching by shape/element-type with the VECIN alloc.
     forOp.walk([&](linalg::GenericOp genericOp) {
-      auto unitAttr = genericOp->getAttrOfType<StringAttr>("ascendc.unit");
-      if (!unitAttr || unitAttr.getValue() != "AiCore.Vector")
+      auto unitAttr =
+          genericOp->getAttrOfType<StringAttr>(::mlir::afir::ascend::kAscendCUnitAttr);
+      if (!unitAttr || unitAttr.getValue() != ::mlir::afir::ascend::kAscendCUnitVector)
         return;
       auto vecinTy = cast<MemRefType>(vecinSrc.getType());
       bool redirected = false;
@@ -1276,8 +1281,9 @@ void insertCopiesForLoop(scf::ForOp forOp,
       // use VECCALC buffers that are already allocated by Rule B.
       linalg::GenericOp vecGeneric;
       forOp.walk([&](linalg::GenericOp genericOp) {
-        auto unitAttr = genericOp->getAttrOfType<StringAttr>("ascendc.unit");
-        if (unitAttr && unitAttr.getValue() == "AiCore.Vector")
+        auto unitAttr =
+            genericOp->getAttrOfType<StringAttr>(::mlir::afir::ascend::kAscendCUnitAttr);
+        if (unitAttr && unitAttr.getValue() == ::mlir::afir::ascend::kAscendCUnitVector)
           vecGeneric = genericOp; // keep updating to get the last one
         return WalkResult::advance();
       });

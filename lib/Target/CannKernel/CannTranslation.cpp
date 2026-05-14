@@ -6,6 +6,7 @@
 
 #include "Target/CannKernel/CannTranslation.h"
 #include "Target/CannKernel/CannRuntimeArtifacts.h"
+#include "Conversion/Ascend/Common/Attributes.h"
 #include "ascir/Dialect/Asc/IR/Asc.h"
 #include "ascir/Dialect/Asc/Utils/Attributes.h"
 #include "ascir/Dialect/EmitAsc/IR/EmitAsc.h"
@@ -44,15 +45,16 @@ enum class AscendCKernelKind {
 };
 
 static AscendCKernelKind getKernelKind(func::FuncOp funcOp) {
-  auto kindAttr = funcOp->getAttrOfType<StringAttr>("ascendc.kernel_kind");
+  auto kindAttr = funcOp->getAttrOfType<StringAttr>(
+      mlir::afir::ascend::kAscendCKernelKindAttr);
   if (!kindAttr)
     return AscendCKernelKind::Unknown;
   StringRef kind = kindAttr.getValue();
-  if (kind == "vec")
+  if (kind == mlir::afir::ascend::kAscendCKernelKindVec)
     return AscendCKernelKind::Vec;
-  if (kind == "cube")
+  if (kind == mlir::afir::ascend::kAscendCKernelKindCube)
     return AscendCKernelKind::Cube;
-  if (kind == "mix")
+  if (kind == mlir::afir::ascend::kAscendCKernelKindMix)
     return AscendCKernelKind::Mix;
   return AscendCKernelKind::Unknown;
 }
@@ -119,13 +121,14 @@ enum class MixPartitionKind {
 
 // Supported mix analysis helpers.
 static MixPartitionKind getExplicitMixPartition(Operation *op) {
-  auto unitAttr = op->getAttrOfType<StringAttr>("ascendc.unit");
+  auto unitAttr = op->getAttrOfType<StringAttr>(
+      mlir::afir::ascend::kAscendCUnitAttr);
   if (!unitAttr)
     return MixPartitionKind::Unknown;
   StringRef unit = unitAttr.getValue();
-  if (unit == "AiCore.Cube")
+  if (unit == mlir::afir::ascend::kAscendCUnitCube)
     return MixPartitionKind::Cube;
-  if (unit == "AiCore.Vector")
+  if (unit == mlir::afir::ascend::kAscendCUnitVector)
     return MixPartitionKind::Vector;
   return MixPartitionKind::Unknown;
 }

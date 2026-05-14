@@ -6,6 +6,7 @@
 
 #include "Conversion/MarkStructuredOps/MarkStructuredOpsPass.h"
 
+#include "Conversion/Ascend/Common/Attributes.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
@@ -72,7 +73,7 @@ static std::optional<int64_t> getStaticBatchDim(Value value) {
 }
 
 static bool hasUnitAttr(Operation *op, StringRef expected) {
-  auto unitAttr = op->getAttrOfType<StringAttr>("ascendc.unit");
+  auto unitAttr = op->getAttrOfType<StringAttr>(ascend::kAscendCUnitAttr);
   return unitAttr && unitAttr.getValue() == expected;
 }
 
@@ -171,7 +172,7 @@ static bool isParallelGeneric(linalg::GenericOp genericOp) {
 static bool isBiasAddGeneric(linalg::GenericOp genericOp) {
   if (genericOp.getNumDpsInputs() != 2 || genericOp.getNumDpsInits() != 1 ||
       !isParallelGeneric(genericOp) ||
-      !hasUnitAttr(genericOp, "AiCore.Vector"))
+      !hasUnitAttr(genericOp, ascend::kAscendCUnitVector))
     return false;
   if (!isRankedMemRef(genericOp.getDpsInputOperand(0)->get(), 2) ||
       !isRankedMemRef(genericOp.getDpsInputOperand(1)->get(), 1) ||
@@ -204,7 +205,7 @@ static bool isBiasAddGeneric(linalg::GenericOp genericOp) {
 static bool isLeakyReluGeneric(linalg::GenericOp genericOp) {
   if (genericOp.getNumDpsInputs() != 1 || genericOp.getNumDpsInits() != 1 ||
       !isParallelGeneric(genericOp) ||
-      !hasUnitAttr(genericOp, "AiCore.Vector"))
+      !hasUnitAttr(genericOp, ascend::kAscendCUnitVector))
     return false;
   if (!isRankedMemRef(genericOp.getDpsInputOperand(0)->get(), 2) ||
       !isRankedMemRef(genericOp.getDpsInitOperand(0)->get(), 2))
@@ -244,14 +245,16 @@ static bool isLeakyReluGeneric(linalg::GenericOp genericOp) {
 static bool isSimple2DNdMatmulLike(const MatmulLikeOpInfo &info) {
   if (!info.batchShape.empty())
     return false;
-  return hasUnitAttr(info.op, "AiCore.Cube") && isIdentity2DMemRef(info.lhs) &&
+  return hasUnitAttr(info.op, ascend::kAscendCUnitCube) &&
+         isIdentity2DMemRef(info.lhs) &&
          isIdentity2DMemRef(info.rhs) && isIdentity2DMemRef(info.out);
 }
 
 static bool isSimple3DNdBatchMatmulLike(const MatmulLikeOpInfo &info) {
   if (info.batchShape.size() != 1)
     return false;
-  return hasUnitAttr(info.op, "AiCore.Cube") && isIdentity3DMemRef(info.lhs) &&
+  return hasUnitAttr(info.op, ascend::kAscendCUnitCube) &&
+         isIdentity3DMemRef(info.lhs) &&
          isIdentity3DMemRef(info.rhs) && isIdentity3DMemRef(info.out);
 }
 
@@ -281,8 +284,9 @@ struct AnnotateMixMatmulSemanticsPass
 
   void runOnOperation() override {
     func::FuncOp funcOp = getOperation();
-    auto kernelKind = funcOp->getAttrOfType<StringAttr>("ascendc.kernel_kind");
-    if (!kernelKind || kernelKind.getValue() != "mix")
+    auto kernelKind =
+        funcOp->getAttrOfType<StringAttr>(ascend::kAscendCKernelKindAttr);
+    if (!kernelKind || kernelKind.getValue() != ascend::kAscendCKernelKindMix)
       return;
     if (funcOp->hasAttr("abi_matmul_op_kind"))
       return;

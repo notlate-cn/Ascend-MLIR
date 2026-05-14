@@ -24,6 +24,7 @@
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/PatternMatch.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
+#include "llvm/ADT/SmallSet.h"
 #include "llvm/Support/Debug.h"
 
 #include "ascir/Dialect/Asc/IR/Asc.h"
@@ -56,6 +57,75 @@ int64_t getMemorySpace(Type type) {
   if (auto intAttr = dyn_cast<IntegerAttr>(space))
     return intAttr.getInt();
   return -1;
+}
+
+static bool hasOnChipOutput(linalg::LinalgOp linalgOp) {
+  if (linalgOp.getNumDpsInits() == 0)
+    return false;
+  int64_t memorySpace =
+      getMemorySpace(linalgOp.getDpsInitOperand(0)->get().getType());
+  return memorySpace > 0;
+}
+
+static bool isRank2SwapPermutation(ArrayRef<int64_t> permutation) {
+  return permutation.size() == 2 && permutation[0] == 1 &&
+         permutation[1] == 0;
+}
+
+FailureOr<TransposeLoweringSpec>
+buildTransposeLoweringSpec(linalg::TransposeOp transpose) {
+  TransposeLoweringSpec spec;
+  spec.rank = transpose.getPermutation().size();
+  llvm::append_range(spec.permutation, transpose.getPermutation());
+  spec.hasOnChipOutput = hasOnChipOutput(transpose);
+  return spec;
+}
+
+FailureOr<TransposeLoweringSpec>
+buildTransposeLoweringSpec(linalg::GenericOp generic) {
+  if (generic.getNumDpsInputs() != 1 || generic.getNumDpsInits() != 1)
+    return failure();
+  auto maps = generic.getIndexingMapsArray();
+  if (maps.size() != 2)
+    return failure();
+
+  AffineMap inMap = maps[0];
+  AffineMap outMap = maps[1];
+  unsigned rank = generic.getIteratorTypesArray().size();
+  if (!outMap.isIdentity() || inMap.getNumResults() != rank)
+    return failure();
+
+  TransposeLoweringSpec spec;
+  spec.rank = rank;
+  spec.hasOnChipOutput = hasOnChipOutput(generic);
+  llvm::SmallSet<unsigned, 8> seen;
+  for (unsigned r = 0; r < rank; ++r) {
+    auto dimExpr = dyn_cast<AffineDimExpr>(inMap.getResult(r));
+    if (!dimExpr)
+      return failure();
+    unsigned position = dimExpr.getPosition();
+    if (position >= rank || !seen.insert(position).second)
+      return failure();
+    spec.permutation.push_back(position);
+  }
+
+  Block &body = *generic.getBody();
+  if (body.getOperations().size() != 1)
+    return failure();
+  auto yieldOp = dyn_cast<linalg::YieldOp>(&body.front());
+  if (!yieldOp || yieldOp.getNumOperands() != 1)
+    return failure();
+  auto blockArg = dyn_cast<BlockArgument>(yieldOp.getOperand(0));
+  if (!blockArg || blockArg.getArgNumber() != 0)
+    return failure();
+  return spec;
+}
+
+TransposeLoweringPlan planTransposeLowering(const TransposeLoweringSpec &spec) {
+  TransposeLoweringPlan plan;
+  if (spec.hasOnChipOutput && isRank2SwapPermutation(spec.permutation))
+    plan.kind = TransposeLoweringKind::AscendCSimple2D;
+  return plan;
 }
 
 Value computeElementCount(OpBuilder &b, Location loc, Value memrefVal) {

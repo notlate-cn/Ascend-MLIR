@@ -66,7 +66,7 @@ static bool isVectorTemporary(Value value, StringRef kernelId) {
     return false;
 
   auto role = def->getAttrOfType<StringAttr>(kOpRoleAttr);
-  return role && role.getValue() == "vector";
+  return role && role.getValue() == kOpRoleVector;
 }
 
 static void recordRole(KernelTensorFacts &facts, Value value,

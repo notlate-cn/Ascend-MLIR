@@ -69,11 +69,11 @@ func.func @generic_rank3_transpose(%arg0: tensor<2x4x8xf16>)
 // CHECK-SAME: roles = ["Primary", "Vector", "LayoutTransform"]
 // CHECK-SAME: op_role = "vector"
 // CHECK: op_id = 2
-// CHECK-SAME: roles = ["Unsupported"]
-// CHECK-SAME: op_role = "unsupported"
+// CHECK-SAME: roles = ["Primary", "Vector", "LayoutTransform"]
+// CHECK-SAME: op_role = "vector"
 // CHECK: op_id = 3
-// CHECK-SAME: roles = ["Unsupported"]
-// CHECK-SAME: op_role = "unsupported"
+// CHECK-SAME: roles = ["Primary", "Vector", "LayoutTransform"]
+// CHECK-SAME: op_role = "vector"
 // CHECK: KernelPartition
 // CHECK: kernel_pattern = "kernel_0"
 // CHECK-SAME: internal_ops = [0]
@@ -86,4 +86,10 @@ func.func @generic_rank3_transpose(%arg0: tensor<2x4x8xf16>)
 // CHECK-SAME: ascend.op_role = "vector"
 // CHECK: linalg.generic
 // CHECK-SAME: ascend.kernel = "kernel_1"
+// CHECK-SAME: ascend.op_role = "vector"
+// CHECK: linalg.transpose
+// CHECK-SAME: ascend.kernel = "kernel_2"
+// CHECK-SAME: ascend.op_role = "vector"
+// CHECK: linalg.generic
+// CHECK-SAME: ascend.kernel = "kernel_3"
 // CHECK-SAME: ascend.op_role = "vector"

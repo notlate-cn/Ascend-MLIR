@@ -6,6 +6,7 @@
 
 #include "Conversion/MarkStructuredOps/MarkStructuredOpsPass.h"
 
+#include "Conversion/Ascend/Common/Attributes.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
@@ -154,10 +155,10 @@ void MarkStructuredOpsPass::runOnOperation() {
       return;
 
     if (info.isEmbedding) {
-      op->setAttr("embedding_dim",
+      op->setAttr(ascend::kEmbeddingDimAttr,
                   builder.getI64IntegerAttr(info.gatherDim));
     } else {
-      op->setAttr("gather_dim",
+      op->setAttr(ascend::kGatherDimAttr,
                   builder.getI64IntegerAttr(info.gatherDim));
     }
   });

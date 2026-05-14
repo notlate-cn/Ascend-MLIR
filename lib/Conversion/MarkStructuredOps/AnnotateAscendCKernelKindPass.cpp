@@ -11,6 +11,7 @@
 
 #include "Conversion/MarkStructuredOps/MarkStructuredOpsPass.h"
 
+#include "Conversion/Ascend/Common/Attributes.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/Builders.h"
@@ -28,11 +29,11 @@ namespace {
 
 static bool classifyKernelKind(llvm::StringRef unit, bool &sawCube,
                                bool &sawVector) {
-  if (unit == "AiCore.Cube") {
+  if (unit == ascend::kAscendCUnitCube) {
     sawCube = true;
     return true;
   }
-  if (unit == "AiCore.Vector") {
+  if (unit == ascend::kAscendCUnitVector) {
     sawVector = true;
     return true;
   }
@@ -56,7 +57,7 @@ struct AnnotateAscendCKernelKindPass
     bool hadError = false;
 
     funcOp.walk([&](Operation *op) {
-      auto unitAttr = op->getAttrOfType<StringAttr>("ascendc.unit");
+      auto unitAttr = op->getAttrOfType<StringAttr>(ascend::kAscendCUnitAttr);
       if (!unitAttr)
         return;
       sawAny = true;
@@ -74,13 +75,13 @@ struct AnnotateAscendCKernelKindPass
 
     std::string kernelKind;
     if (sawCube && sawVector)
-      kernelKind = "mix";
+      kernelKind = ascend::kAscendCKernelKindMix.str();
     else if (sawCube)
-      kernelKind = "cube";
+      kernelKind = ascend::kAscendCKernelKindCube.str();
     else
-      kernelKind = "vec";
+      kernelKind = ascend::kAscendCKernelKindVec.str();
 
-    funcOp->setAttr("ascendc.kernel_kind",
+    funcOp->setAttr(ascend::kAscendCKernelKindAttr,
                     StringAttr::get(funcOp.getContext(), kernelKind));
   }
 };

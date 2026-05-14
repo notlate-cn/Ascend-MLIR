@@ -37,3 +37,19 @@ TEST(AscendCommonAttributesTest, SharedConstantsMatchLayerNamespaces) {
   EXPECT_EQ(ascend::schedule::kScheduleTailPlanAttr,
             ascend::kScheduleTailPlanAttr);
 }
+
+TEST(AscendCommonAttributesTest, SharedBackendContractStringsAreCentralized) {
+  EXPECT_EQ(ascend::kAscendCUnitAttr, "ascendc.unit");
+  EXPECT_EQ(ascend::kAscendCUnitCube, "AiCore.Cube");
+  EXPECT_EQ(ascend::kAscendCUnitVector, "AiCore.Vector");
+  EXPECT_EQ(ascend::kAscendCKernelKindAttr, "ascendc.kernel_kind");
+  EXPECT_EQ(ascend::kAscendCKernelKindVec, "vec");
+  EXPECT_EQ(ascend::kAscendCKernelKindCube, "cube");
+  EXPECT_EQ(ascend::kAscendCKernelKindMix, "mix");
+  EXPECT_EQ(ascend::kOpRoleVector, "vector");
+  EXPECT_EQ(ascend::kOpRoleCube, "cube");
+  EXPECT_EQ(ascend::kOpRoleReduction, "reduction");
+  EXPECT_EQ(ascend::kOpRoleUnsupported, "unsupported");
+  EXPECT_EQ(ascend::kGatherDimAttr, "gather_dim");
+  EXPECT_EQ(ascend::kEmbeddingDimAttr, "embedding_dim");
+}

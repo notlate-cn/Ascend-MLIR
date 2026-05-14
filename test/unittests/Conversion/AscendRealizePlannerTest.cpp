@@ -93,6 +93,27 @@ TEST(AscendRealizePlannerTest, PlacementPlannerBuildsTargetAwareVecCalcPlan) {
   EXPECT_EQ(plan->deferredLocalPlaceCount, 0u);
 }
 
+TEST(AscendRealizePlannerTest, RealizeMemoryPlaceUsesTargetProfileValues) {
+  EXPECT_EQ(static_cast<int64_t>(MemoryPlace::GM),
+            static_cast<int64_t>(mlir::ascend::MemoryPlace::GM));
+  EXPECT_EQ(static_cast<int64_t>(MemoryPlace::A1),
+            static_cast<int64_t>(mlir::ascend::MemoryPlace::A1));
+  EXPECT_EQ(static_cast<int64_t>(MemoryPlace::A2),
+            static_cast<int64_t>(mlir::ascend::MemoryPlace::A2));
+  EXPECT_EQ(static_cast<int64_t>(MemoryPlace::B1),
+            static_cast<int64_t>(mlir::ascend::MemoryPlace::B1));
+  EXPECT_EQ(static_cast<int64_t>(MemoryPlace::B2),
+            static_cast<int64_t>(mlir::ascend::MemoryPlace::B2));
+  EXPECT_EQ(static_cast<int64_t>(MemoryPlace::CO1),
+            static_cast<int64_t>(mlir::ascend::MemoryPlace::CO1));
+  EXPECT_EQ(static_cast<int64_t>(MemoryPlace::VECIN),
+            static_cast<int64_t>(mlir::ascend::MemoryPlace::VECIN));
+  EXPECT_EQ(static_cast<int64_t>(MemoryPlace::VECOUT),
+            static_cast<int64_t>(mlir::ascend::MemoryPlace::VECOUT));
+  EXPECT_EQ(static_cast<int64_t>(MemoryPlace::VECCALC),
+            static_cast<int64_t>(mlir::ascend::MemoryPlace::VECCALC));
+}
+
 TEST(AscendRealizePlannerTest, PlacementPlannerKeepsNonVectorTemporariesInGm) {
   llvm::raw_null_ostream os;
   auto memoryModel =

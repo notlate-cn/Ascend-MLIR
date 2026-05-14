@@ -8,6 +8,7 @@
 #define ASCEND_MLIR_CONVERSION_ASCEND_REALIZE_REALIZETYPES_H
 
 #include "Conversion/Ascend/Common/Attributes.h"
+#include "Target/Ascend/TargetProfile.h"
 
 #include <string>
 
@@ -18,9 +19,7 @@ using ::mlir::afir::ascend::kOpRoleAttr;
 using ::mlir::afir::ascend::kScheduleDecisionIdAttr;
 using ::mlir::afir::ascend::kStructuredLoweringAttr;
 
-// Realize-level placement names used by materialization plans. They are
-// intentionally distinct from the target profile hardware memory hierarchy.
-enum class MemoryPlace { GM, VECIN, VECCALC, VECOUT, A1, B1, A2, B2, CO1 };
+using MemoryPlace = ::mlir::ascend::MemoryPlace;
 
 struct RealizeKernelView {
   std::string kernelId;
