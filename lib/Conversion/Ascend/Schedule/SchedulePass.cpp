@@ -228,13 +228,6 @@ deriveTargetTilePolicy(const ScheduleProblem &problem,
                                  problem.dominantRole))
     return failure();
 
-  if (problem.resultShape.size() < 2 || problem.resultElementBitWidth == 0)
-    return policy;
-
-  int64_t innerExtent = problem.resultShape.back();
-  if (ShapedType::isDynamic(innerExtent) || innerExtent <= 0)
-    return policy;
-
   FailureOr<int64_t> vecInCapacity = getAvailableCapacity(
       targetContext.memoryModel, ::mlir::ascend::MemoryPlace::VECIN);
   FailureOr<int64_t> vecOutCapacity = getAvailableCapacity(
@@ -254,20 +247,36 @@ deriveTargetTilePolicy(const ScheduleProblem &problem,
       failed(targetContext.costModel.getPathCost(vecOutToGm.front())))
     return failure();
 
+  if (problem.resultElementBitWidth == 0)
+    return failure();
+
   int64_t capacityBytes =
       std::min({*vecInCapacity, *vecOutCapacity, *vecCalcCapacity});
   int64_t elementBytes =
       std::max<int64_t>(1, (problem.resultElementBitWidth + 7) / 8);
-  int64_t rowBytes = innerExtent * elementBytes;
-  if (rowBytes <= 0)
-    return policy;
-
   int64_t vectorBufferCount =
       std::max<int64_t>(1, policy.vectorBufferCount);
+
+  int64_t parallelElementSpan = 1;
+  if (problem.resultShape.size() >= 2) {
+    int64_t innerExtent = problem.resultShape.back();
+    if (ShapedType::isDynamic(innerExtent) || innerExtent <= 0) {
+      policy.defaultParallelTile = 1;
+      policy.policyId = "target_dynamic_inner_1";
+      return policy;
+    }
+    parallelElementSpan = innerExtent;
+  }
+
+  int64_t rowBytes = parallelElementSpan * elementBytes;
+  if (rowBytes <= 0)
+    return failure();
+
   int64_t derivedTile = capacityBytes / vectorBufferCount / rowBytes;
   if (derivedTile <= 0)
     derivedTile = 1;
-  if (!ShapedType::isDynamic(problem.resultShape.front()))
+  if (!problem.resultShape.empty() &&
+      !ShapedType::isDynamic(problem.resultShape.front()))
     derivedTile = std::min(derivedTile, problem.resultShape.front());
 
   policy.defaultParallelTile = std::max<int64_t>(1, derivedTile);
