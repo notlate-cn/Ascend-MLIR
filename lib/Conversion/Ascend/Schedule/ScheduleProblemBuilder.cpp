@@ -194,6 +194,9 @@ buildScheduleProblem(const KernelPatternView &pattern,
   problem.kernelId = pattern.kernelId;
   problem.dominantRole = pattern.dominantRole;
   problem.resultRank = resultType.getRank();
+  Type elementType = resultType.getElementType();
+  problem.resultElementBitWidth =
+      elementType.isIntOrFloat() ? elementType.getIntOrFloatBitWidth() : 0;
   llvm::append_range(problem.resultShape, resultType.getShape());
   problem.axes = axes;
   problem.guardBudget = 8;

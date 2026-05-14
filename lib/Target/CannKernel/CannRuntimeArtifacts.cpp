@@ -8,7 +8,9 @@
 
 #include "Conversion/Ascend/Common/Attributes.h"
 #include "ascir/Dialect/Asc/Utils/Attributes.h"
+#include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/StringSwitch.h"
+#include "llvm/ADT/StringSet.h"
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/JSON.h"
 #include "llvm/Support/raw_ostream.h"
@@ -146,6 +148,21 @@ static llvm::json::Array buildTilingSchema(ArrayRef<TilingFieldInfo> fields) {
     schema.push_back(std::move(entry));
   }
   return schema;
+}
+
+static llvm::json::Array buildShapeArgOrder(ArrayRef<TilingFieldInfo> fields) {
+  llvm::json::Array shapeArgOrder;
+  int64_t shapeAbiPosition = 0;
+  for (const TilingFieldInfo &field : fields) {
+    if (!field.isShape)
+      continue;
+    llvm::json::Object shapeArg;
+    shapeArg["name"] = field.name;
+    shapeArg["shapeKey"] = field.shapeKey;
+    shapeArg["abiPosition"] = shapeAbiPosition++;
+    shapeArgOrder.push_back(std::move(shapeArg));
+  }
+  return shapeArgOrder;
 }
 
 static bool isSupportedTailPolicy(StringRef value) {
@@ -356,6 +373,186 @@ buildScheduleTilingParams(func::FuncOp funcOp) {
   return tilingParams;
 }
 
+static FailureOr<llvm::json::Array> buildScheduleEntries(func::FuncOp funcOp) {
+  FailureOr<llvm::json::Object> tilingParams =
+      buildScheduleTilingParams(funcOp);
+  if (failed(tilingParams))
+    return failure();
+
+  llvm::json::Object scheduleEntry;
+  scheduleEntry["decisionId"] = "static_0";
+  scheduleEntry["guard"] = "true";
+  scheduleEntry["tilingParams"] = std::move(*tilingParams);
+  llvm::json::Array scheduleEntries;
+  scheduleEntries.push_back(std::move(scheduleEntry));
+  return scheduleEntries;
+}
+
+static FailureOr<llvm::json::Object>
+buildKernelManifestEntry(func::FuncOp funcOp, int64_t entryIndex,
+                         StringRef soc) {
+  FailureOr<emitasc::PyStructType> tilingTypeOr = getTilingType(funcOp);
+  if (failed(tilingTypeOr))
+    return failure();
+  FailureOr<SmallVector<TilingFieldInfo>> fieldsOr =
+      collectTilingFields(funcOp, *tilingTypeOr);
+  if (failed(fieldsOr))
+    return failure();
+  FailureOr<llvm::json::Object> tilingParams =
+      buildScheduleTilingParams(funcOp);
+  if (failed(tilingParams))
+    return failure();
+  FailureOr<llvm::json::Array> scheduleEntries =
+      buildScheduleEntries(funcOp);
+  if (failed(scheduleEntries))
+    return failure();
+
+  llvm::json::Object kernelEntry;
+  kernelEntry["kernel_id"] = funcOp.getName().str();
+  kernelEntry["entry_index"] = entryIndex;
+  kernelEntry["shapeBucketKey"] = "static";
+  kernelEntry["guardSet"] = llvm::json::Array{};
+  kernelEntry["tilingSchema"] = buildTilingSchema(*fieldsOr);
+  kernelEntry["scheduleEntries"] = std::move(*scheduleEntries);
+  kernelEntry["tilingParams"] = std::move(*tilingParams);
+  kernelEntry["abiSignature"] = (funcOp.getName() + ":cann_static").str();
+  kernelEntry["cacheKey"] = (funcOp.getName() + ":static:" + soc).str();
+  kernelEntry["workspaceSizeExpr"] = "0";
+  kernelEntry["workspaceSizeBytes"] = 0;
+  kernelEntry["shapeArgOrder"] = buildShapeArgOrder(*fieldsOr);
+  return kernelEntry;
+}
+
+static LogicalResult detectKernelGraphCycle(ArrayRef<func::FuncOp> kernels,
+                                            ArrayRef<std::pair<std::string,
+                                                               std::string>>
+                                                edges) {
+  llvm::StringMap<unsigned> kernelIndex;
+  for (auto [index, kernelRef] : llvm::enumerate(kernels)) {
+    func::FuncOp kernel = kernelRef;
+    kernelIndex[kernel.getName()] = index;
+  }
+
+  SmallVector<SmallVector<unsigned>> adjacency(kernels.size());
+  for (const auto &edge : edges) {
+    unsigned from = kernelIndex.lookup(edge.first);
+    unsigned to = kernelIndex.lookup(edge.second);
+    adjacency[from].push_back(to);
+  }
+
+  enum class VisitState { Unvisited, Visiting, Visited };
+  SmallVector<VisitState> states(kernels.size(), VisitState::Unvisited);
+  std::function<bool(unsigned)> hasCycle = [&](unsigned node) {
+    states[node] = VisitState::Visiting;
+    for (unsigned next : adjacency[node]) {
+      if (states[next] == VisitState::Visiting)
+        return true;
+      if (states[next] == VisitState::Unvisited && hasCycle(next))
+        return true;
+    }
+    states[node] = VisitState::Visited;
+    return false;
+  };
+
+  for (unsigned i = 0, e = kernels.size(); i < e; ++i)
+    if (states[i] == VisitState::Unvisited && hasCycle(i))
+      return failure();
+  return success();
+}
+
+static FailureOr<llvm::json::Array>
+buildKernelGraphEdges(ModuleOp module, ArrayRef<func::FuncOp> kernels) {
+  llvm::StringSet<> kernelNames;
+  for (func::FuncOp kernel : kernels)
+    kernelNames.insert(kernel.getName());
+
+  auto edgesAttr = module->getAttrOfType<ArrayAttr>(
+      ::mlir::afir::ascend::kKernelGraphEdgesAttr);
+  llvm::json::Array edgesJson;
+  if (!edgesAttr)
+    return edgesJson;
+
+  SmallVector<std::pair<std::string, std::string>> edges;
+  for (auto [index, edgeAttr] : llvm::enumerate(edgesAttr)) {
+    auto edge = dyn_cast<DictionaryAttr>(edgeAttr);
+    if (!edge)
+      return module.emitError()
+             << ::mlir::afir::ascend::kKernelGraphEdgesAttr << " element "
+             << index << " must be a dictionary attribute";
+
+    auto from = dyn_cast_or_null<StringAttr>(edge.get("from"));
+    auto to = dyn_cast_or_null<StringAttr>(edge.get("to"));
+    if (!from || !to)
+      return module.emitError()
+             << ::mlir::afir::ascend::kKernelGraphEdgesAttr << " element "
+             << index << " requires string 'from' and 'to' fields";
+    if (!kernelNames.contains(from.getValue()))
+      return module.emitError()
+             << ::mlir::afir::ascend::kKernelGraphEdgesAttr << " element "
+             << index << " references unknown source kernel '"
+             << from.getValue() << "'";
+    if (!kernelNames.contains(to.getValue()))
+      return module.emitError()
+             << ::mlir::afir::ascend::kKernelGraphEdgesAttr << " element "
+             << index << " references unknown target kernel '" << to.getValue()
+             << "'";
+
+    auto carriedBuffers =
+        dyn_cast_or_null<ArrayAttr>(edge.get("carried_buffers"));
+    if (!carriedBuffers || carriedBuffers.empty())
+      return module.emitError()
+             << ::mlir::afir::ascend::kKernelGraphEdgesAttr << " element "
+             << index
+             << " requires non-empty array field 'carried_buffers'";
+
+    llvm::json::Array carriedBuffersJson;
+    for (auto [bufferIndex, bufferAttr] : llvm::enumerate(carriedBuffers)) {
+      auto buffer = dyn_cast<StringAttr>(bufferAttr);
+      if (!buffer)
+        return module.emitError()
+               << ::mlir::afir::ascend::kKernelGraphEdgesAttr << " element "
+               << index << " field 'carried_buffers' element " << bufferIndex
+               << " must be a string";
+      carriedBuffersJson.push_back(buffer.getValue().str());
+    }
+
+    llvm::json::Object edgeJson;
+    edgeJson["from"] = from.getValue().str();
+    edgeJson["to"] = to.getValue().str();
+    edgeJson["carriedBuffers"] = std::move(carriedBuffersJson);
+    edgesJson.push_back(std::move(edgeJson));
+    edges.push_back({from.getValue().str(), to.getValue().str()});
+  }
+
+  if (failed(detectKernelGraphCycle(kernels, edges)))
+    return module.emitError()
+           << ::mlir::afir::ascend::kKernelGraphEdgesAttr
+           << " must describe an acyclic kernel graph";
+  return edgesJson;
+}
+
+static FailureOr<llvm::json::Object>
+buildKernelGraph(ModuleOp module, ArrayRef<func::FuncOp> kernels) {
+  llvm::json::Array kernelNodes;
+  for (auto [index, kernelRef] : llvm::enumerate(kernels)) {
+    func::FuncOp kernel = kernelRef;
+    llvm::json::Object kernelNode;
+    kernelNode["name"] = kernel.getName().str();
+    kernelNode["entry_index"] = static_cast<int64_t>(index);
+    kernelNodes.push_back(std::move(kernelNode));
+  }
+
+  FailureOr<llvm::json::Array> kernelEdges =
+      buildKernelGraphEdges(module, kernels);
+  if (failed(kernelEdges))
+    return failure();
+
+  llvm::json::Object kernelGraph;
+  kernelGraph["nodes"] = std::move(kernelNodes);
+  kernelGraph["edges"] = std::move(*kernelEdges);
+  return kernelGraph;
+}
+
 static LogicalResult checkFileError(Operation *diagOp,
                                     llvm::raw_fd_ostream &file,
                                     StringRef outPath, StringRef phase) {
@@ -451,74 +648,58 @@ LogicalResult emitTilingSpaceJson(ModuleOp module, StringRef outPath,
 LogicalResult
 emitRuntimeManifestJson(ModuleOp module, StringRef outPath,
                         const CannRuntimeArtifactOptions &options) {
-  FailureOr<func::FuncOp> funcOr =
-      getSingleGlobalKernel(module, "runtime manifest");
-  if (failed(funcOr))
+  SmallVector<func::FuncOp> kernels = collectGlobalKernels(module);
+  if (kernels.empty()) {
+    module.emitError() << "runtime manifest requires at least one global kernel";
     return failure();
-  FailureOr<emitasc::PyStructType> tilingTypeOr = getTilingType(*funcOr);
+  }
+
+  func::FuncOp primaryKernel = kernels.front();
+  FailureOr<emitasc::PyStructType> tilingTypeOr =
+      getTilingType(primaryKernel);
   if (failed(tilingTypeOr))
     return failure();
   FailureOr<SmallVector<TilingFieldInfo>> fieldsOr =
-      collectTilingFields(*funcOr, *tilingTypeOr);
+      collectTilingFields(primaryKernel, *tilingTypeOr);
   if (failed(fieldsOr))
     return failure();
 
-  llvm::json::Array shapeArgOrder;
-  int64_t shapeAbiPosition = 0;
-  for (auto [index, field] : llvm::enumerate(*fieldsOr)) {
-    if (!field.isShape)
-      continue;
-    llvm::json::Object shapeArg;
-    shapeArg["name"] = field.name;
-    shapeArg["shapeKey"] = field.shapeKey;
-    shapeArg["abiPosition"] = shapeAbiPosition++;
-    shapeArgOrder.push_back(std::move(shapeArg));
-  }
-
   FailureOr<llvm::json::Object> tilingParams =
-      buildScheduleTilingParams(*funcOr);
+      buildScheduleTilingParams(primaryKernel);
   if (failed(tilingParams))
     return failure();
-  FailureOr<llvm::json::Object> kernelEntryTilingParams =
-      buildScheduleTilingParams(*funcOr);
-  if (failed(kernelEntryTilingParams))
+  FailureOr<llvm::json::Array> scheduleEntries =
+      buildScheduleEntries(primaryKernel);
+  if (failed(scheduleEntries))
     return failure();
 
-  llvm::json::Object scheduleEntry;
-  scheduleEntry["decisionId"] = "static_0";
-  scheduleEntry["guard"] = "true";
-  scheduleEntry["tilingParams"] = std::move(*tilingParams);
-  llvm::json::Array scheduleEntries;
-  scheduleEntries.push_back(std::move(scheduleEntry));
-
-  llvm::json::Object kernelNode;
-  kernelNode["name"] = funcOr->getName().str();
-  llvm::json::Array kernelNodes;
-  kernelNodes.push_back(std::move(kernelNode));
-  llvm::json::Object kernelGraph;
-  kernelGraph["nodes"] = std::move(kernelNodes);
-  kernelGraph["edges"] = llvm::json::Array{};
-
-  llvm::json::Object kernelEntry;
-  kernelEntry["kernel_id"] = funcOr->getName().str();
-  kernelEntry["entry_index"] = 0;
-  kernelEntry["tilingParams"] = std::move(*kernelEntryTilingParams);
   llvm::json::Array kernelEntries;
-  kernelEntries.push_back(std::move(kernelEntry));
+  for (auto [index, kernel] : llvm::enumerate(kernels)) {
+    FailureOr<llvm::json::Object> kernelEntry = buildKernelManifestEntry(
+        kernel, static_cast<int64_t>(index), options.soc);
+    if (failed(kernelEntry))
+      return failure();
+    kernelEntries.push_back(std::move(*kernelEntry));
+  }
+
+  FailureOr<llvm::json::Object> kernelGraph =
+      buildKernelGraph(module, kernels);
+  if (failed(kernelGraph))
+    return failure();
 
   llvm::json::Object root;
-  root["kernelName"] = funcOr->getName().str();
+  root["kernelName"] = primaryKernel.getName().str();
   root["shapeBucketKey"] = "static";
   root["guardSet"] = llvm::json::Array{};
   root["tilingSchema"] = buildTilingSchema(*fieldsOr);
-  root["scheduleEntries"] = std::move(scheduleEntries);
-  root["abiSignature"] = (funcOr->getName() + ":cann_static").str();
+  root["scheduleEntries"] = std::move(*scheduleEntries);
+  root["abiSignature"] = (primaryKernel.getName() + ":cann_static").str();
   root["cacheKey"] =
-      (funcOr->getName() + ":static:" + options.soc).str();
+      (primaryKernel.getName() + ":static:" + options.soc).str();
   root["workspaceSizeExpr"] = "0";
   root["workspaceSizeBytes"] = 0;
-  root["shapeArgOrder"] = std::move(shapeArgOrder);
-  root["kernelGraph"] = std::move(kernelGraph);
+  root["shapeArgOrder"] = buildShapeArgOrder(*fieldsOr);
+  root["kernelGraph"] = std::move(*kernelGraph);
   root["kernel_entries"] = std::move(kernelEntries);
   return writeJsonFile(module.getOperation(), outPath, std::move(root));
 }

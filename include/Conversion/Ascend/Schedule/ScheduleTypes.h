@@ -180,6 +180,7 @@ struct ScheduleProblem {
   std::string kernelId;
   OpRole dominantRole = OpRole::Unknown;
   unsigned resultRank = 0;
+  unsigned resultElementBitWidth = 0;
   SmallVector<int64_t> resultShape;
   CoalescedAxisInfo axes;
   TargetTilePolicy targetTilePolicy;

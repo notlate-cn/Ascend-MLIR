@@ -73,6 +73,13 @@ def AscendSchedulePass : Pass<"ascend-schedule", "mlir::ModuleOp"> {
            "Dump Ascend analysis report to stderr">,
     Option<"runtimeTopK", "runtime-top-k", "unsigned", /*default=*/"1",
            "Maximum number of schedule decisions kept selectable at runtime">,
+    Option<"targetTilePolicy", "target-tile-policy", "std::string",
+           /*default=*/"\"legacy-default\"",
+           "Schedule tile policy mode: legacy-default or target-aware">,
+    Option<"soc", "soc", "std::string", /*default=*/"\"Ascend910B2\"",
+           "CANN SoC version for target-aware schedule tiling">,
+    Option<"cannRoot", "cann-root", "std::string", /*default=*/"\"\"",
+           "CANN root path for target-aware schedule tiling">,
   ];
 }
 

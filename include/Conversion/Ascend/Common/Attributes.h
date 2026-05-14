@@ -15,6 +15,8 @@ inline constexpr llvm::StringLiteral kNormalizedAttr = "ascend.normalized";
 inline constexpr llvm::StringLiteral kOpRoleAttr = "ascend.op_role";
 inline constexpr llvm::StringLiteral kOpRolesAttr = "ascend.op_roles";
 inline constexpr llvm::StringLiteral kKernelAttr = "ascend.kernel";
+inline constexpr llvm::StringLiteral kKernelGraphEdgesAttr =
+    "ascend.kernel_graph.edges";
 inline constexpr llvm::StringLiteral kPrimaryAttr = "ascend.primary";
 inline constexpr llvm::StringLiteral kScheduleDecisionIdAttr =
     "ascend.schedule.decision_id";
