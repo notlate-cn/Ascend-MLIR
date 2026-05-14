@@ -14,9 +14,14 @@ namespace {
 
 ArrayRef<ScheduleTemplate> getRegistryTemplates() {
   static const SmallVector<ScheduleTemplate> templates = {
-      {"vector_generic", "single_tile_per_block", {"vector"}, 1, 8, 0},
-      {"reduction_static", "single_tile_per_block", {"reduction"}, 0, 8, 2},
-      {"cube_static_matmul", "single_tile_per_block", {"cube"}, 2, 3, 3},
+      {"vector_generic", "single_tile_per_block", {kOpRoleVector.str()}, 1, 8,
+       0},
+      {"reduction_static", "single_tile_per_block",
+       {kOpRoleReduction.str()}, 0, 8, 2},
+      {"cube_static_matmul", "single_tile_per_block", {kOpRoleCube.str()}, 2,
+       3, 3},
+      {"memory_copy", "single_tile_per_block", {kOpRoleMemory.str()}, 0, 8,
+       4},
   };
   return templates;
 }

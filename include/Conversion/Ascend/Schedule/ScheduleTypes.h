@@ -24,7 +24,11 @@
 namespace mlir::afir::ascend::schedule {
 
 using ::mlir::afir::ascend::kKernelAttr;
+using ::mlir::afir::ascend::kOpRoleCube;
+using ::mlir::afir::ascend::kOpRoleMemory;
 using ::mlir::afir::ascend::kOpRoleAttr;
+using ::mlir::afir::ascend::kOpRoleReduction;
+using ::mlir::afir::ascend::kOpRoleVector;
 using ::mlir::afir::ascend::kOpRolesAttr;
 using ::mlir::afir::ascend::kPrimaryAttr;
 using ::mlir::afir::ascend::kScheduleDecisionIdAttr;

@@ -49,6 +49,7 @@ TEST(AscendCommonAttributesTest, SharedBackendContractStringsAreCentralized) {
   EXPECT_EQ(ascend::kOpRoleVector, "vector");
   EXPECT_EQ(ascend::kOpRoleCube, "cube");
   EXPECT_EQ(ascend::kOpRoleReduction, "reduction");
+  EXPECT_EQ(ascend::kOpRoleMemory, "memory");
   EXPECT_EQ(ascend::kOpRoleUnsupported, "unsupported");
   EXPECT_EQ(ascend::kKernelizeOpRoleVector, "Vector");
   EXPECT_EQ(ascend::kKernelizeOpRoleCube, "Cube");
