@@ -10,7 +10,7 @@ Bug catalogue + current status (2026-05-14 EOD):
 
 | ID | Issue | Status |
 |---|---|---|
-| **R1** | Full-reduce-to-scalar: `--vector-plan-codegen` produces invalid IR | **Single-block FIXED** (`e3cf5a6` / `f6bacb5` / `6e59a19`); multi-block (R > autotuner's max XBLOCK ≈ 256) still wrong — partial→combine dual-kernel split pending **P3b-3**, currently blocked on the in-flight multi-plan retention framework. Empirical boundary in `2026-05-14-p3b-2-rcore-single-block-boundary.md`. |
+| **R1** | Full-reduce-to-scalar: `--vector-plan-codegen` produces invalid IR | **FULLY FIXED.** Single-block path: `e3cf5a6` / `f6bacb5` / `6e59a19` (P3b-2, R ≤ 256). Multi-block path (P3b-3 partial+combine dual-kernel split, R > 256): `2b61b8e` (SplitRCoreGroup transform) + `3282772` (pipeline integration) + `c08a32f` (N=16 default for fp16 32-byte alignment). R = 16/64/128/256/512/768/1024/2048 all PASS, including nanoGPT softmax scale. |
 | **R2** | CANN `ReduceSum<half, RA>` static_asserts at C++ compile | **FIXED** (`abe4536`): RA half input now upcasts to float, ReduceSum<float, RA>, downcasts result back to half. |
 | **R3** | Reduce kernel writes init in-place; host alloc'd fresh output → all-zero | **FIXED** (`28c8ea6`): new `vector-plan-isolate-kernel-outputs` pass wraps the DPS init with `bufferization.alloc_tensor() copy(%init)` so the result bufferizes to a fresh GM buffer distinct from any input. |
 | **R4** | `block_dim_expr` empty for static-shape funcs (known) | Partially addressed by C2 (`dd4593c`) — bare extent expression now emitted; verify whether `block_dim_expr` itself is still empty under static shapes. |
@@ -25,15 +25,32 @@ Bug catalogue + current status (2026-05-14 EOD):
 
 ### R1 — `--vector-plan-codegen` produces invalid IR for full-reduce-to-scalar
 
-**Status: SINGLE-BLOCK FIXED (commits `e3cf5a6` / `f6bacb5` / `6e59a19`, 2026-05-14);
-MULTI-BLOCK PENDING P3b-3.** AF port's RCore template now selectable for true
-full-reduce (no parallel axes); GroupEmitter emits R-as-block-axis with per-block
-inner R loop + cross-space writeback via `bufferization.materialize_in_destination`.
-**Correct only when block_dim = 1** (autotune picks XBLOCK ≥ R); for larger R every
-block writes its partial to the same GM scalar → race. Empirical boundary documented
-in `2026-05-14-p3b-2-rcore-single-block-boundary.md`. Production fix (partial→combine
-dual kernels) is plan `2026-05-14-p3b-rcore-reduce-multicore.zh.md` §5 (P3b-3) and is
-blocked on the in-flight multi-plan retention framework.
+**Status: FULLY FIXED.**
+
+Two-layer fix:
+
+* **P3b-2** (single-block, R ≤ 256) — commits `e3cf5a6` / `f6bacb5` / `6e59a19`.
+  AF port's RCore template is selectable for true full-reduce (no parallel axes);
+  GroupEmitter emits R-as-block-axis with per-block inner R loop + cross-space
+  writeback via `bufferization.materialize_in_destination`.  Correct when the
+  autotuner picks `block_dim = 1` (XBLOCK ≥ R); empirical boundary in
+  `2026-05-14-p3b-2-rcore-single-block-boundary.md`.
+
+* **P3b-3** (multi-block, R > 256) — commits `2b61b8e` / `3282772` / `c08a32f`.
+  New pass `vector-plan-split-rcore-group` (lives in GroupOutline) rewrites a
+  full-reduce private kernel into `<name>_partial` + `<name>_combine`:
+  partial takes `tensor<NxK>` (coordinator emits a `tensor.expand_shape`
+  alias of the rank-1 input), does an axis-1 reduce into `tensor<N>`; combine
+  reduces those N partials to scalar via the P3b-2 single-block path. Default
+  N=16 keeps the fp16 partial output ≥ 32 bytes (DataCopy alignment).
+  NetworkJsonEmitter aliases `tensor.expand_shape` / `collapse_shape` with a
+  shape override on the propagated descriptor; network_runner phases 3/4
+  prefer that override over the dumped npy.  Models AF's
+  `ReducePartitionCaseGenerator::GeneratorRCoreTask` / phase_1+phase_2 split,
+  but uses MLIR SSA def-use to express the workspace dependency.
+
+  R sweep (fp16) on this fix: R = 16/64/128/256/512/768/1024/2048 all PASS;
+  R=2048 = nanoGPT softmax scale.
 
 **Symptom**
 
