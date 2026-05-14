@@ -19,6 +19,7 @@ add_mlir_library(MLIRVectorPlan
   GroupAnalysis/GroupAnalysisPass.cpp
   GroupOutline/GroupOutlinePass.cpp
   GroupOutline/IsolateKernelOutputs.cpp
+  GroupOutline/SplitRCoreGroup.cpp
   TileFuse/TileFusePass.cpp
   TileFuse/InsertTileBuffers.cpp
   TileFuse/FoldShadowAlloc.cpp

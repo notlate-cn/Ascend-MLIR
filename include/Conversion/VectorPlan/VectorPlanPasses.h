@@ -14,6 +14,7 @@ std::unique_ptr<Pass> createVectorPlanBroadcastAbsorbPass();
 std::unique_ptr<Pass> createVectorPlanInsertTileBuffersPass();
 std::unique_ptr<Pass> createVectorPlanFoldShadowAllocPass();
 std::unique_ptr<Pass> createVectorPlanIsolateKernelOutputsPass();
+std::unique_ptr<Pass> createVectorPlanSplitRCoreGroupPass();
 void populateBroadcastAbsorbPatterns(mlir::RewritePatternSet &patterns);
 
 void registerVectorPlanPipeline();

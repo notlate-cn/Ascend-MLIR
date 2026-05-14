@@ -497,6 +497,49 @@ def VectorPlanTileFuse : Pass<"vector-plan-tile-fuse", "mlir::ModuleOp"> {
   let dependentDialects = ["mlir::linalg::LinalgDialect", "mlir::scf::SCFDialect", "mlir::tensor::TensorDialect", "mlir::func::FuncDialect", "mlir::bufferization::BufferizationDialect"];
 }
 
+def VectorPlanSplitRCoreGroup : Pass<"vector-plan-split-rcore-group", "mlir::ModuleOp"> {
+  let summary = "Split a full-reduce private kernel into partial+combine kernels (RCore)";
+  let description = [{
+    Runs after vector-plan-group-outline.  For each private kernel func whose
+    body is a single linalg.generic with ALL iterator types = reduction (true
+    full-reduce, output rank 0), rewrites it into two private kernel funcs:
+
+      - `<name>_partial(%x: tensor<R>) -> tensor<N>`:
+            %x2 = tensor.expand_shape %x to tensor<NxK>
+            %ws = linalg.fill 0 outs(tensor.empty() : tensor<N>)
+            %r  = linalg.generic {iter=[parallel, reduction]}
+                  ins(%x2) outs(%ws) -> tensor<N>      // axis-1 reduce
+            return %r
+      - `<name>_combine(%ws: tensor<N>, %init: tensor<>) -> tensor<>`:
+            %r = linalg.generic {iter=[reduction]}
+                 ins(%ws) outs(%init) -> tensor<>       // small full reduce
+            return %r
+
+    and replaces calls in the coordinator with `partial(in)` → `combine(ws, init)`,
+    using two `func.call`s connected by an SSA tensor value (the workspace).
+
+    N is the number of partial slots ≤ AICoreCount (8 by default; the partial
+    kernel's autotuner picks a block_dim ≤ N).  Requires R % N == 0; otherwise
+    falls back to N=1 (no split — equivalent to P3b-2's single-block path).
+
+    Models AF `ReducePartitionCaseGenerator::GeneratorRCoreTask` / phase_1 +
+    phase_2 ImplGraph split, but uses MLIR SSA def-use to express the workspace
+    dependency (instead of `groups_relations_in`).  See plan
+    docs/superpowers/plans/2026-05-14-p3b-rcore-reduce-multicore.zh.md §5.
+  }];
+  let constructor = "mlir::afir::createVectorPlanSplitRCoreGroupPass()";
+  let options = [
+    Option<"parallelSlots", "parallel-slots", "int64_t", "8",
+           "Target N (partial output extent / parallel block count)">,
+  ];
+  let dependentDialects = [
+    "mlir::tensor::TensorDialect",
+    "mlir::linalg::LinalgDialect",
+    "mlir::arith::ArithDialect",
+    "mlir::func::FuncDialect",
+  ];
+}
+
 def VectorPlanIsolateKernelOutputs : Pass<"vector-plan-isolate-kernel-outputs", "mlir::func::FuncOp"> {
   let summary = "Make every returned tensor bufferize to a fresh buffer distinct from any input";
   let description = [{
