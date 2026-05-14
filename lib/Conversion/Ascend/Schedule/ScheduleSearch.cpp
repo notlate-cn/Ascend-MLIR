@@ -133,7 +133,7 @@ FailureOr<TileShape> getSplitReductionTile(const CoalescedAxisInfo &axes) {
   for (unsigned reductionAxisId : axes.reductionAxes) {
     const LogicalAxisInfo *axis = lookupAxis(axes, reductionAxisId);
     if (!axis || ShapedType::isDynamic(axis->staticExtent) ||
-        axis->staticExtent < 2)
+        axis->staticExtent < 2 || axis->staticExtent % 2 != 0)
       continue;
 
     for (auto [index, logicalAxis] : llvm::enumerate(axes.logicalAxes)) {
@@ -387,6 +387,11 @@ lookupAxisScheduleConstraintForTileIndex(const ScheduleProblem &problem,
   return lookupAxisScheduleConstraint(problem.axes, logicalAxisId);
 }
 
+bool requiresDivisibleGuard(const AxisScheduleConstraint &constraint) {
+  return constraint.allowedTailPolicies.size() == 1 &&
+         constraint.allowedTailPolicies.front() == AxisTailPolicy::MustDivide;
+}
+
 void appendDecisionGuards(const ScheduleProblem &problem,
                           ArrayRef<int64_t> tileSizes,
                           SmallVectorImpl<ScheduleGuard> &guards) {
@@ -396,7 +401,7 @@ void appendDecisionGuards(const ScheduleProblem &problem,
 
     const AxisScheduleConstraint *constraint =
         lookupAxisScheduleConstraintForTileIndex(problem, index);
-    if (!constraint || constraint->tailPolicy != AxisTailPolicy::MustDivide)
+    if (!constraint || !requiresDivisibleGuard(*constraint))
       continue;
 
     ScheduleGuard guard;

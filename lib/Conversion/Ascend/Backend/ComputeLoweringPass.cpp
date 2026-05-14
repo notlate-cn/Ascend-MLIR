@@ -96,6 +96,52 @@ bool isSupportedFusedElementwiseBody(linalg::GenericOp generic) {
   return lastArithOp && yieldOp.getOperand(0) == lastArithOp->getResult(0);
 }
 
+bool isSupportedVectorGatherBody(linalg::GenericOp generic) {
+  if (!generic->hasAttr("gather_dim"))
+    return false;
+  if (!llvm::all_of(generic.getIteratorTypesArray(),
+                    [](utils::IteratorType it) {
+                      return it == utils::IteratorType::parallel;
+                    }))
+    return false;
+
+  bool sawLoad = false;
+  Value previousResult;
+  for (Operation &bodyOp : generic.getBody()->without_terminator()) {
+    if (isa<linalg::IndexOp, arith::IndexCastOp>(bodyOp))
+      continue;
+    if (isa<memref::LoadOp>(bodyOp)) {
+      if (sawLoad)
+        return false;
+      sawLoad = true;
+      previousResult = bodyOp.getResult(0);
+      continue;
+    }
+    if (isa<arith::AddFOp, arith::MulFOp, arith::MaximumFOp>(bodyOp)) {
+      if (!sawLoad)
+        return false;
+      if (bodyOp.getNumOperands() != 2 || bodyOp.getNumResults() != 1)
+        return false;
+      auto isAvailableOperand = [&](Value value) {
+        if (isa<BlockArgument>(value))
+          return true;
+        if (value.getDefiningOp<arith::ConstantOp>())
+          return true;
+        return previousResult && value == previousResult;
+      };
+      if (!llvm::all_of(bodyOp.getOperands(), isAvailableOperand))
+        return false;
+      previousResult = bodyOp.getResult(0);
+      continue;
+    }
+    return false;
+  }
+
+  auto yieldOp = dyn_cast<linalg::YieldOp>(generic.getBody()->getTerminator());
+  return sawLoad && previousResult && yieldOp && yieldOp.getNumOperands() == 1 &&
+         yieldOp.getOperand(0) == previousResult;
+}
+
 ComputeKind classifyLinalgOp(Operation *op) {
   if (isa<linalg::MatmulOp>(op))
     return ComputeKind::Matmul;
@@ -111,6 +157,8 @@ ComputeKind classifyLinalgOp(Operation *op) {
       return ComputeKind::ElementwiseMax;
   }
   if (auto generic = dyn_cast<linalg::GenericOp>(op)) {
+    if (isSupportedVectorGatherBody(generic))
+      return ComputeKind::VectorGather;
     if (isSupportedAddReductionBody(generic))
       return ComputeKind::ReductionAdd;
     if (isSupportedFusedElementwiseBody(generic))

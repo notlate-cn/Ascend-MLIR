@@ -227,6 +227,43 @@ EOF
     "${LAST_SUMMARY_PATH:-<none>}"
 }
 
+run_gather_mainline_shape() {
+  local example_dir="$1"
+  local m="$2"
+  local n="$3"
+  local k="$4"
+  local block_dim="$5"
+
+  local example_log
+  example_log="$(make_tmp_log)"
+
+  echo "--- SimBackend vec example: $(basename "${example_dir}") M=${m} N=${n} K=${k} block_dim=${block_dim} ---"
+  bash "${example_dir}/run.sh" \
+    --m "${m}" --n "${n}" --k "${k}" --block-dim "${block_dim}" --log \
+    2>&1 | tee "${example_log}"
+  grep -q '^session.backend=sim$' "${example_log}"
+  grep -q '^session.result=success$' "${example_log}"
+  grep -q '^session.validation=pass$' "${example_log}"
+
+  local validation_log="${example_dir}/build_mainline/runtime_session.log"
+  local actual_output="${example_dir}/build_mainline/output_actual.npy"
+  local summary_output
+  summary_output="$(make_tmp_output)"
+  test -f "${validation_log}"
+  test -f "${actual_output}"
+  cp "${actual_output}" "${summary_output}"
+  LAST_PROFILE_PATH="$(sed -n 's/^session\.profile\[[0-9][0-9]*\]=//p' "${validation_log}" | head -n1)"
+  LAST_SUMMARY_PATH="$(sed -n 's/^session\.profile\.summary=//p' "${validation_log}" | head -n1)"
+  test -f "${LAST_SUMMARY_PATH}"
+  record_summary \
+    "$(basename "${example_dir}")-M${m}-N${n}-K${k}" \
+    "vec" \
+    "0" \
+    "${summary_output}" \
+    "${LAST_PROFILE_PATH:-<none>}" \
+    "${LAST_SUMMARY_PATH:-<none>}"
+}
+
 run_mix_example() {
   local example_dir="$1"
   local kernel_name="$2"
@@ -358,15 +395,9 @@ run_vec_example \
 fi
 
 if should_run_example "gather-elementwise-fusion"; then
-run_vec_example \
-  "${PROJECT_ROOT}/examples/gather-elementwise-fusion" \
-  "relu_index_select_add" \
-  "    { \"name\": \"data\", \"path\": \"${PROJECT_ROOT}/examples/gather-elementwise-fusion/input_data.npy\" },
-    { \"name\": \"indices\", \"path\": \"${PROJECT_ROOT}/examples/gather-elementwise-fusion/input_indices.npy\" },
-    { \"name\": \"bias\", \"path\": \"${PROJECT_ROOT}/examples/gather-elementwise-fusion/input_bias.npy\" }" \
-  "${PROJECT_ROOT}/examples/gather-elementwise-fusion/output_out.npy" \
-  "TB_M=16,TB_N=16,dim_arg0_0=16,dim_arg1_0=128,dim_arg0_1=640,dim_arg2_0=128" \
-  "1" "10" "1e-2" "step8_kernel_gen.cpp"
+run_gather_mainline_shape "${PROJECT_ROOT}/examples/gather-elementwise-fusion" 65 127 31 1
+run_gather_mainline_shape "${PROJECT_ROOT}/examples/gather-elementwise-fusion" 96 128 31 1
+run_gather_mainline_shape "${PROJECT_ROOT}/examples/gather-elementwise-fusion" 96 127 32 1
 fi
 
 if should_run_example "split-relu-brc-add-mul"; then

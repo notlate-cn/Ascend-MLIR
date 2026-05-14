@@ -21,6 +21,23 @@
 // MANIFEST: "selected_tile_shape": [
 // MANIFEST-NEXT: 64,
 // MANIFEST-NEXT: 15000
+// MANIFEST: "tail_plan": [
+// MANIFEST-NEXT: {
+// MANIFEST-DAG: "affectedPrimitiveUses": [
+// MANIFEST-DAG: "data_copy",
+// MANIFEST-DAG: "vector_compute"
+// MANIFEST-DAG: "alignmentGranularity": 16,
+// MANIFEST-DAG: "axis": 0,
+// MANIFEST-DAG: "selectedPolicy": "masked_tail",
+// MANIFEST-DAG: "tailBufferingMode": "separate_tail_buffer"
+// MANIFEST-NEXT: },
+// MANIFEST-NEXT: {
+// MANIFEST-DAG: "affectedPrimitiveUses": [
+// MANIFEST-DAG: "write_back"
+// MANIFEST-DAG: "alignmentGranularity": 0,
+// MANIFEST-DAG: "axis": 1,
+// MANIFEST-DAG: "selectedPolicy": "full_extent",
+// MANIFEST-DAG: "tailBufferingMode": "reuse_main_buffer_after_drain"
 // MANIFEST: "tail_policies": [
 // MANIFEST-NEXT: "masked_tail",
 // MANIFEST-NEXT: "full_extent"
@@ -50,6 +67,22 @@ module {
   ) attributes {
       ascend.schedule.selected_tile_shape = array<i64: 64, 15000>,
       ascend.schedule.tail_policies = ["masked_tail", "full_extent"],
+      ascend.schedule.tail_plan = [
+        {
+          affected = ["data_copy", "vector_compute"],
+          align = 16 : i64,
+          axis = 0 : i64,
+          buffering = "separate_tail_buffer",
+          selected = "masked_tail"
+        },
+        {
+          affected = ["write_back"],
+          align = 0 : i64,
+          axis = 1 : i64,
+          buffering = "reuse_main_buffer_after_drain",
+          selected = "full_extent"
+        }
+      ],
       ascendc.aicore,
       ascendc.global,
       cann.num_inputs = 2 : i32} {

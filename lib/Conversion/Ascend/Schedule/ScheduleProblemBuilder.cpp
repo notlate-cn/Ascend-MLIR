@@ -128,6 +128,43 @@ void printAxisExecutionRoles(ArrayRef<AxisExecutionRole> roles,
   os << "]";
 }
 
+void printAxisTailPolicies(ArrayRef<AxisTailPolicy> policies,
+                           llvm::raw_ostream &os) {
+  os << "[";
+  llvm::interleave(
+      policies, os,
+      [&](AxisTailPolicy policy) { os << stringifyAxisTailPolicy(policy); },
+      ",");
+  os << "]";
+}
+
+void printPrimitiveUses(ArrayRef<PrimitiveAxisUseKind> uses,
+                        llvm::raw_ostream &os) {
+  os << "[";
+  llvm::interleave(
+      uses, os,
+      [&](PrimitiveAxisUseKind use) {
+        os << stringifyPrimitiveAxisUseKind(use);
+      },
+      ",");
+  os << "]";
+}
+
+bool shouldPrintTailContractFields(
+    ArrayRef<AxisScheduleConstraint> constraints) {
+  for (const AxisScheduleConstraint &constraint : constraints) {
+    if (constraint.semanticAlignmentGranularity != 0)
+      return true;
+    if (llvm::is_contained(constraint.allowedTailPolicies,
+                           AxisTailPolicy::PadAndMask))
+      return true;
+    if (llvm::is_contained(constraint.primitiveUses,
+                           PrimitiveAxisUseKind::GatherIndex))
+      return true;
+  }
+  return false;
+}
+
 } // namespace
 
 FailureOr<ScheduleProblem>
@@ -186,11 +223,22 @@ void printScheduleProblemReport(const ScheduleProblem &problem,
   printStringList(problem.structureConstraints, os);
   os << "\n";
   os << "  axis_constraints = [\n";
+  bool printTailContract =
+      shouldPrintTailContractFields(problem.axes.axisScheduleConstraints);
   for (const AxisScheduleConstraint &constraint :
        problem.axes.axisScheduleConstraints) {
     os << "    axis=" << constraint.logicalAxisId << " roles=";
     printAxisExecutionRoles(constraint.allowedRoles, os);
-    os << " tail=" << stringifyAxisTailPolicy(constraint.tailPolicy) << "\n";
+    os << " tail=" << stringifyAxisTailPolicy(constraint.tailPolicy);
+    if (printTailContract) {
+      os << " allowed_tail=";
+      printAxisTailPolicies(constraint.allowedTailPolicies, os);
+      os << " primitive_uses=";
+      printPrimitiveUses(constraint.primitiveUses, os);
+      os << " semantic_align="
+         << constraint.semanticAlignmentGranularity;
+    }
+    os << "\n";
   }
   os << "  ]\n";
   os << "  coalescing_hints = [\n";

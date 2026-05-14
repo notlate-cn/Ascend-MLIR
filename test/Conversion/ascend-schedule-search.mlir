@@ -93,6 +93,23 @@ func.func @reduction_large_m(%arg0: tensor<640x15000xf16>) -> tensor<640xf16> {
   return %out : tensor<640xf16>
 }
 
+func.func @reduction_odd_extent(%arg0: tensor<4x5xf16>) -> tensor<4xf16> {
+  %empty = tensor.empty() : tensor<4xf16>
+  %out = linalg.generic {
+    indexing_maps = [
+      affine_map<(d0, d1) -> (d0, d1)>,
+      affine_map<(d0, d1) -> (d0)>
+    ],
+    iterator_types = ["parallel", "reduction"]
+  } ins(%arg0 : tensor<4x5xf16>)
+    outs(%empty : tensor<4xf16>) {
+  ^bb0(%x: f16, %acc: f16):
+    %v = arith.addf %acc, %x : f16
+    linalg.yield %v : f16
+  } -> tensor<4xf16>
+  return %out : tensor<4xf16>
+}
+
 // CHECK: ScheduleSearch:
 // CHECK-NEXT:   kernel = kernel_0
 // CHECK-NEXT:   generated = 2
@@ -130,6 +147,7 @@ func.func @reduction_large_m(%arg0: tensor<640x15000xf16>) -> tensor<640xf16> {
 // CHECK-NEXT:   candidate_guards = 2
 // CHECK-NEXT:   decision_guards = 0
 // CHECK-NEXT:   selected_tile_shape = [64,8]
+// CHECK-NEXT:   tail_plans = [axis=0 selected=masked_tail affected=[data_copy,vector_compute,write_back] align=0 buffering=separate_tail_buffer guard=false extent=? tile=64 main=? tail=?] [axis=1 selected=masked_tail affected=[data_copy,vector_compute,write_back] align=0 buffering=separate_tail_buffer guard=false extent=8 tile=8 main=8 tail=0]
 // CHECK: ScheduleSearch:
 // CHECK-NEXT:   kernel = kernel_4
 // CHECK-NEXT:   generated = 3
@@ -146,6 +164,12 @@ func.func @reduction_large_m(%arg0: tensor<640x15000xf16>) -> tensor<640xf16> {
 // CHECK-NEXT:   candidate_guards = 1
 // CHECK-NEXT:   decision_guards = 0
 // CHECK-NEXT:   selected_tile_shape = [64,15000]
+// CHECK: ScheduleSearch:
+// CHECK-NEXT:   kernel = kernel_5
+// CHECK-NEXT:   generated = 1
+// CHECK-NEXT:   kept = 1
+// CHECK-NEXT:   compile_time_top_k = 4
+// CHECK-NEXT:   instance = kernel_5.reduction_static.0
 // CHECK: schedule_family = "vector_generic"
 // CHECK: schedule_template = "single_tile_per_block"
 // CHECK: ascend.schedule.family = "vector_generic"

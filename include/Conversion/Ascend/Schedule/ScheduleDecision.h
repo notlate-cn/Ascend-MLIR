@@ -10,7 +10,6 @@
 #include "Conversion/Ascend/Schedule/ScheduleTypes.h"
 
 #include "llvm/ADT/ArrayRef.h"
-#include "llvm/ADT/StringRef.h"
 
 namespace llvm {
 class raw_ostream;
@@ -19,7 +18,7 @@ class raw_ostream;
 namespace mlir::afir::ascend::schedule {
 
 ScheduleDecisionSet buildScheduleDecisionSet(
-    llvm::StringRef kernelId, llvm::ArrayRef<ScheduleInstance> instances,
+    const ScheduleProblem &problem, llvm::ArrayRef<ScheduleInstance> instances,
     const ScheduleSearchOptions &options = ScheduleSearchOptions());
 
 void printScheduleDecisionSetReport(const ScheduleDecisionSet &decisionSet,

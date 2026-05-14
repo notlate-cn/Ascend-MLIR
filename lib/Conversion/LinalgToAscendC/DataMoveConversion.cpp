@@ -217,6 +217,19 @@ static void emitAddPreviousReductionPartial(OpBuilder &builder, Location loc,
   builder.create<TQueBindFreeTensorOp>(loc, oldQueue, oldDequeued);
 }
 
+static bool isGatherTBufBackedVecout(Value src) {
+  Value root = getRootAlloc(src);
+  for (Operation *user : root.getUsers()) {
+    auto generic = dyn_cast<linalg::GenericOp>(user);
+    if (!generic || !generic->hasAttr("gather_dim"))
+      continue;
+    for (Value init : generic.getDpsInits())
+      if (getRootAlloc(init) == root)
+        return true;
+  }
+  return false;
+}
+
 LogicalResult convertDataMove(func::FuncOp funcOp,
                                AscendCBufferContext &ctx) {
   MLIRContext *mlirCtx = funcOp.getContext();
@@ -526,6 +539,24 @@ LogicalResult convertDataMove(func::FuncOp funcOp,
       }
       auto srcLtType =
           LocalTensorType::get(cast<MemRefType>(src.getType()).getElementType());
+      if (isGatherTBufBackedVecout(src)) {
+        Value srcTbuf = ctx.getTBuf(src);
+        if (!srcTbuf) {
+          copyOp.emitError("missing tbuf for gather VECOUT buffer");
+          return failure();
+        }
+        Value srcLt = builder.create<TBufGetTensorOp>(
+            loc, srcLtType, srcTbuf, /*len=*/Value{});
+        Value dstGt = builder.create<GlobalTensorOp>(
+            loc, GlobalTensorType::get(
+                     cast<MemRefType>(dst.getType()).getElementType()));
+        builder.create<GlobalTensorSetGlobalBufferOp>(loc, dstGt, dst,
+                                                       /*size=*/Value{});
+        Value count = computeElementCount(builder, loc, src);
+        builder.create<DataCopyL2Op>(loc, dstGt, srcLt, count);
+        copyOp.erase();
+        continue;
+      }
       Value srcLt =
           builder.create<TQueBindDequeTensorOp>(loc, srcLtType, srcQueue);
       Value dstGt = builder.create<GlobalTensorOp>(

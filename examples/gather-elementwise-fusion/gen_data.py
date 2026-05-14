@@ -6,14 +6,14 @@ Computation: out[i, j] = relu(data[i, indices[j]]) + bias[j]
   bias:    (K,)     f16   per-column bias added after relu+gather
   out:     (M, K)   f16   output
 
-Tiling constraints (参数设计规则):
-  - K >= 16  (DataCopy half requires >= 16 elements per transfer)
-  - TB_M divides M evenly (no tail block for simplicity)
-  - Tb_M = 1  (row-by-row gather; one row of data[N] fits in UB VECCALC)
-  - indices values are distinct and stay within the requested index range
+Runtime constraints:
+  - M >= 1, N >= 1, K >= 1
+  - K <= N
+  - one row of data[N] should fit in UB VECCALC for the current gather lowering
+  - indices values in [0, N), all distinct (for reproducibility)
 
 Usage:
-  python3 gen_data.py [--m M] [--n N] [--k K] [--index-high H] [--seed SEED] [--out-dir DIR]
+  python3 gen_data.py [--m M] [--n N] [--k K] [--seed SEED] [--out-dir DIR]
 """
 
 import argparse
@@ -23,24 +23,21 @@ from pathlib import Path
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--m",       type=int, default=16,
-                        help="Number of rows in data (must be divisible by TB_M=16)")
-    parser.add_argument("--n",       type=int, default=640,
+    parser.add_argument("--m",       type=int, default=64,
+                        help="Number of rows in data")
+    parser.add_argument("--n",       type=int, default=64,
                         help="Number of columns in data (gather source width)")
-    parser.add_argument("--k",       type=int, default=128,
-                        help="Gather output width K (>= 16, indices[K] -> data columns)")
-    parser.add_argument("--index-high", type=int, default=None,
-                        help="Exclusive upper bound for generated indices. Default: N")
+    parser.add_argument("--k",       type=int, default=16,
+                        help="Gather output width K (indices[K] -> data columns)")
     parser.add_argument("--seed",    type=int, default=42)
     parser.add_argument("--out-dir", type=str, default=".")
     args = parser.parse_args()
 
     M, N, K = args.m, args.n, args.k
-    index_high = N if args.index_high is None else args.index_high
-    assert K >= 16, "K must be >= 16 for DataCopy alignment"
-    assert M % 16 == 0, "M must be divisible by TB_M=16"
-    assert 0 < index_high <= N, "index_high must be in (0, N]"
-    assert K <= index_high, "K must be <= index_high for distinct indices"
+    assert M >= 1, "M must be >= 1"
+    assert N >= 1, "N must be >= 1"
+    assert K >= 1, "K must be >= 1"
+    assert K <= N, "K must be <= N (indices must be valid column indices)"
 
     out_dir = Path(args.out_dir)
     rng = np.random.default_rng(args.seed)
@@ -48,11 +45,8 @@ def main():
     # data[M, N]: random f16
     data = rng.uniform(-1.0, 1.0, (M, N)).astype(np.float32).astype(np.float16)
 
-    # indices[K]: K distinct column indices in [0, index_high), cast to i64.
-    # Real AscendC Gather can access a tail 32B datablock from the source row;
-    # examples keep away from the final half datablock until tail padding is
-    # represented as part of the runtime input contract.
-    indices = rng.choice(index_high, size=K, replace=False).astype(np.int64)
+    # indices[K]: K distinct column indices in [0, N), cast to i64
+    indices = rng.choice(N, size=K, replace=False).astype(np.int64)
 
     # bias[K]: random f16
     bias = rng.uniform(-0.5, 0.5, (K,)).astype(np.float32).astype(np.float16)

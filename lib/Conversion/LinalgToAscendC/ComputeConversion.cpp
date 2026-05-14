@@ -884,6 +884,15 @@ LogicalResult convertCompute(func::FuncOp funcOp, AscendCBufferContext &ctx) {
     return dequeued;
   };
 
+  auto copyGmToVeccalc =
+      [&](OpBuilder &b, Location loc, Type elemType, Value srcGt,
+          Value elemCount) -> Value {
+    auto [veccalcTbuf, veccalcLt] =
+        allocVeccalc(b, loc, elemType, SmallVector<Value>{elemCount});
+    b.create<DataCopyL2Op>(loc, veccalcLt, srcGt, elemCount);
+    return veccalcLt;
+  };
+
   // Helper: get a runtime Value for dimension `dim` of a memref.
   auto getDynDim = [&](OpBuilder &b, Location loc, Value memref,
                         unsigned dim) -> Value {
@@ -1421,13 +1430,19 @@ LogicalResult convertCompute(func::FuncOp funcOp, AscendCBufferContext &ctx) {
       Value srcBaseAddr =
           builder.create<arith::ConstantIntOp>(loc, i32Type, 0);
 
-      // Alloc the VECOUT output tensor.
-      Value dstLt = writeTensor(builder, loc, outMemref);
-
       Value zero = builder.create<arith::ConstantIndexOp>(loc, 0);
       Value one  = builder.create<arith::ConstantIndexOp>(loc, 1);
-      // Element offset for a single output row.
-      Value outElemsPerRow = dimK;
+      Value outTbuf = ctx.getTBuf(outMemref);
+      if (!outTbuf) {
+        genOp.emitError("missing TBuf for gather output buffer");
+        return failure();
+      }
+
+      // Byte size for a single output row (K * elemBytes).
+      Value elemBytesVal =
+          builder.create<arith::ConstantIndexOp>(loc, elemBytes);
+      Value outBytesPerRow =
+          builder.create<arith::MulIOp>(loc, dimK, elemBytesVal);
 
       // Collect enclosing scf.for induction variables to compute the global
       // row offset into the data memref.  The generic sits inside nested
@@ -1463,6 +1478,88 @@ LogicalResult convertCompute(func::FuncOp funcOp, AscendCBufferContext &ctx) {
       builder.create<TPipeInitQueueOp>(loc, ctx.pipe, dataRowQueue,
                                        dataRowQueueDepth, rowBytes);
 
+      // Pre-op temporaries are reused for every row. Initializing these TPipe
+      // buffers inside the row loop exhausts simulator buffer bookkeeping for
+      // larger M even though the loop is sequential.
+      Value preProcessedRowLt;
+      Value preDimN_i32;
+      llvm::SmallDenseMap<Value, Value> preInvariantConstLt;
+      if (preOp) {
+        auto [procTbuf, procLt] =
+            allocVeccalc(builder, loc, elemType, SmallVector<Value>{dimN});
+        (void)procTbuf;
+        preProcessedRowLt = procLt;
+        preDimN_i32 =
+            builder.create<arith::IndexCastOp>(loc, builder.getI32Type(), dimN);
+
+        Block &preBody = *preOp.getBody();
+        for (auto &bodyOp : preBody.without_terminator()) {
+          for (Value operand : bodyOp.getOperands()) {
+            auto constOp = operand.getDefiningOp<arith::ConstantOp>();
+            if (!constOp || preInvariantConstLt.contains(operand))
+              continue;
+            auto [dupTbuf, dupLt] =
+                allocVeccalc(builder, loc, elemType, SmallVector<Value>{dimN});
+            (void)dupTbuf;
+            auto dupOp = builder.create<DuplicateL2Op>(
+                loc, dupLt, constOp.getResult(), preDimN_i32);
+            copyAscendCUnitAttr(preOp.getOperation(), dupOp.getOperation());
+            preInvariantConstLt[operand] = dupLt;
+          }
+        }
+      }
+
+      Value fusedBodyDimK_i32;
+      llvm::SmallDenseMap<Value, Value> fusedBodyInvariantConstLt;
+      llvm::SmallDenseMap<Value, Value> fusedBodyInvariantInputLt;
+      if (!postOp) {
+        fusedBodyDimK_i32 =
+            builder.create<arith::IndexCastOp>(loc, builder.getI32Type(), dimK);
+        Block &gatherBody = *genOp.getBody();
+        unsigned numBodyIns = static_cast<unsigned>(genOp.getNumDpsInputs());
+
+        for (unsigned argNum = 1; argNum < numBodyIns; ++argNum) {
+          BlockArgument blockArg = gatherBody.getArgument(argNum);
+          Value argMemref = genOp.getDpsInputOperand(argNum)->get();
+          if (argMemref == outMemref)
+            continue;
+          int64_t argMs = getMemorySpace(argMemref.getType());
+          if (argMs == 0) {
+            auto argMrt = cast<MemRefType>(argMemref.getType());
+            Type argElem = argMrt.getElementType();
+            Value argGt = builder.create<GlobalTensorOp>(
+                loc, GlobalTensorType::get(argElem));
+            builder.create<GlobalTensorSetGlobalBufferOp>(
+                loc, argGt, argMemref, /*size=*/Value{});
+            Value argCount = computeElementCount(builder, loc, argMemref);
+            fusedBodyInvariantInputLt[blockArg] =
+                copyGmToVeccalc(builder, loc, argElem, argGt, argCount);
+          }
+        }
+
+        bool pastLoad = false;
+        for (auto &bodyOp : gatherBody.without_terminator()) {
+          if (isa<memref::LoadOp>(bodyOp)) {
+            pastLoad = true;
+            continue;
+          }
+          if (!pastLoad)
+            continue;
+          for (Value operand : bodyOp.getOperands()) {
+            auto constOp = operand.getDefiningOp<arith::ConstantOp>();
+            if (!constOp || fusedBodyInvariantConstLt.contains(operand))
+              continue;
+            auto [dupTbuf, dupLt] =
+                allocVeccalc(builder, loc, elemType, SmallVector<Value>{dimK});
+            (void)dupTbuf;
+            auto dupOp = builder.create<DuplicateL2Op>(
+                loc, dupLt, constOp.getResult(), fusedBodyDimK_i32);
+            copyAscendCUnitAttr(genOp.getOperation(), dupOp.getOperation());
+            fusedBodyInvariantConstLt[operand] = dupLt;
+          }
+        }
+      }
+
       builder.create<scf::ForOp>(
           loc, zero, tbM, one, ValueRange{},
           [&](OpBuilder &b, Location forLoc, Value rowIdx, ValueRange) {
@@ -1489,10 +1586,8 @@ LogicalResult convertCompute(func::FuncOp funcOp, AscendCBufferContext &ctx) {
             // Step 1b: If pre-op exists (e.g. relu), apply it on dataRowLt
             Value processedRowLt = dataRowLt;
             if (preOp) {
-              Value procLt =
-                  allocVeccalc(b, forLoc, elemType, SmallVector<Value>{dimN})
-                      .second;
-              Value dimN_i32 = b.create<arith::IndexCastOp>(forLoc, b.getI32Type(), dimN);
+              Value procLt = preProcessedRowLt;
+              Value dimN_i32 = preDimN_i32;
 
               Block &preBody = *preOp.getBody();
               llvm::SmallDenseMap<Value, Value> preValToLt;
@@ -1504,11 +1599,11 @@ LogicalResult convertCompute(func::FuncOp funcOp, AscendCBufferContext &ctx) {
                 }
                 auto it = preValToLt.find(v);
                 if (it != preValToLt.end()) return it->second;
-                if (auto constOp = v.getDefiningOp<arith::ConstantOp>()) {
-                  auto [dupTbuf2, dupLt] = allocVeccalc(b, forLoc, elemType,
-                                                         SmallVector<Value>{dimN});
-                  auto dupOp2 = b.create<DuplicateL2Op>(forLoc, dupLt, constOp.getResult(), dimN_i32);
-                  copyAscendCUnitAttr(preOp.getOperation(), dupOp2.getOperation());
+                if (v.getDefiningOp<arith::ConstantOp>()) {
+                  auto constIt = preInvariantConstLt.find(v);
+                  if (constIt == preInvariantConstLt.end())
+                    return Value{};
+                  Value dupLt = constIt->second;
                   preValToLt[v] = dupLt;
                   return dupLt;
                 }
@@ -1543,13 +1638,12 @@ LogicalResult convertCompute(func::FuncOp funcOp, AscendCBufferContext &ctx) {
             }
 
             // Step 2: gather_l2(dst[K], src[N], indices, srcBase=0, count=K)
-            Value dstElemOff =
-                b.create<arith::MulIOp>(forLoc, rowIdx, outElemsPerRow);
-            Value dstRowLt = b.create<LocalTensorSubIndexOp>(
-                forLoc, LocalTensorType::get(elemType), dstLt, dstElemOff);
-            Value gatheredRowLt =
-                allocVeccalc(b, forLoc, elemType, SmallVector<Value>{dimK})
-                    .second;
+            Value dstByteOff =
+                b.create<arith::MulIOp>(forLoc, rowIdx, outBytesPerRow);
+            Value dstRowLt = b.create<TBufGetWithOffsetOp>(
+                forLoc, LocalTensorType::get(elemType), outTbuf,
+                outBytesPerRow, dstByteOff);
+            Value gatheredRowLt = dstRowLt;
             b.create<GatherL2Op>(forLoc, gatheredRowLt, processedRowLt,
                                  indicesLt, srcBaseAddr, dimK_i32);
 
@@ -1570,7 +1664,18 @@ LogicalResult convertCompute(func::FuncOp funcOp, AscendCBufferContext &ctx) {
                   if (argNum >= numIns) return gatheredRowLt; // output init arg
                   Value argMemref = postOp.getDpsInputOperand(argNum)->get();
                   if (argMemref == outMemref) return gatheredRowLt;
-                  // Other inputs (bias, etc.) — read their tensor
+                  int64_t argMs = getMemorySpace(argMemref.getType());
+                  if (argMs == 0) {
+                    auto argMrt = cast<MemRefType>(argMemref.getType());
+                    Type argElem = argMrt.getElementType();
+                    Value argGt = b.create<GlobalTensorOp>(
+                        forLoc, GlobalTensorType::get(argElem));
+                    b.create<GlobalTensorSetGlobalBufferOp>(
+                        forLoc, argGt, argMemref, /*size=*/Value{});
+                    Value argCount = computeElementCount(b, forLoc, argMemref);
+                    return copyGmToVeccalc(b, forLoc, argElem, argGt, argCount);
+                  }
+                  // Other on-chip inputs (bias, etc.) — read their tensor.
                   return readTensor(b, forLoc, argMemref);
                 }
                 auto it = postValToLt.find(v);
@@ -1617,7 +1722,7 @@ LogicalResult convertCompute(func::FuncOp funcOp, AscendCBufferContext &ctx) {
               //   arg0 = indices element (i64, skip)
               //   arg1..argN-2 = extra ins (bias etc.)
               //   argN-1 = out init (skip, use gatheredRowLt instead)
-              Value dimK_i32v = b.create<arith::IndexCastOp>(forLoc, b.getI32Type(), dimK);
+              Value dimK_i32v = fusedBodyDimK_i32;
               Block &gatherBody = *genOp.getBody();
               unsigned numBodyIns = (unsigned)genOp.getNumDpsInputs();
               llvm::SmallDenseMap<Value, Value> bodyValToLt;
@@ -1631,8 +1736,6 @@ LogicalResult convertCompute(func::FuncOp funcOp, AscendCBufferContext &ctx) {
                 }
               }
 
-              SmallVector<std::pair<Value, Value>> bodyTempQueueTensors;
-
               auto bodyResolve = [&](Value v) -> Value {
                 // The "gathered row" value — the memref.load result maps to
                 // gatheredRowLt (post-gather result).
@@ -1643,6 +1746,11 @@ LogicalResult convertCompute(func::FuncOp funcOp, AscendCBufferContext &ctx) {
                   unsigned argNum = ba.getArgNumber();
                   if (argNum == 0) return Value{}; // indices arg, skip
                   if (argNum >= numBodyIns) return gatheredRowLt; // out init
+                  if (auto inputIt = fusedBodyInvariantInputLt.find(ba);
+                      inputIt != fusedBodyInvariantInputLt.end()) {
+                    bodyValToLt[v] = inputIt->second;
+                    return inputIt->second;
+                  }
                   // Extra ins (bias, etc.) at argNum=1..numBodyIns-1
                   Value argMemref = genOp.getDpsInputOperand(argNum)->get();
                   int64_t argMs = getMemorySpace(argMemref.getType());
@@ -1652,40 +1760,25 @@ LogicalResult convertCompute(func::FuncOp funcOp, AscendCBufferContext &ctx) {
                     bodyValToLt[v] = lt;
                     return lt;
                   }
-                  // GM: copy through a VECIN queue so the vector op observes
-                  // a synchronized local tensor on real hardware.
-                  Value argCount = getDynDim(b, forLoc, argMemref, 0);
+                  // GM: copy to VECCALC for vector ops. The CANN translation
+                  // rewrites the narrow gather+bias Add to read the copied
+                  // scalar source directly from GM in the simulator.
+                  Value argCount = computeElementCount(b, forLoc, argMemref);
                   auto argMrt = cast<MemRefType>(argMemref.getType());
                   Type argElem = argMrt.getElementType();
-                  Value argQueue = b.create<QueueOp>(
-                      forLoc, QueueType::get(mlirCtx, TPosition::VECIN, 1));
-                  unsigned argElemBytes =
-                      argElem.getIntOrFloatBitWidth() / 8;
-                  Value argBytes = b.create<arith::MulIOp>(
-                      forLoc, argCount,
-                      b.create<arith::ConstantIndexOp>(forLoc, argElemBytes));
-                  Value depth = b.create<arith::ConstantOp>(
-                      forLoc, b.getI32IntegerAttr(1));
-                  b.create<TPipeInitQueueOp>(forLoc, ctx.pipe, argQueue, depth,
-                                             argBytes);
-                  Value argAllocLt = b.create<TQueBindAllocTensorOp>(
-                      forLoc, LocalTensorType::get(argElem), argQueue);
                   Value argGt = b.create<GlobalTensorOp>(forLoc, GlobalTensorType::get(argElem));
                   b.create<GlobalTensorSetGlobalBufferOp>(forLoc, argGt, argMemref,
                                                            /*size=*/Value{});
-                  b.create<DataCopyL2Op>(forLoc, argAllocLt, argGt, argCount);
-                  b.create<TQueBindEnqueTensorOp>(forLoc, argQueue, argAllocLt);
-                  Value argLt = b.create<TQueBindDequeTensorOp>(
-                      forLoc, LocalTensorType::get(argElem), argQueue);
-                  bodyTempQueueTensors.push_back({argQueue, argLt});
+                  Value argLt =
+                      copyGmToVeccalc(b, forLoc, argElem, argGt, argCount);
                   bodyValToLt[v] = argLt;
                   return argLt;
                 }
                 if (auto constOp = v.getDefiningOp<arith::ConstantOp>()) {
-                  auto [dupTbuf4, dupLt] = allocVeccalc(b, forLoc, elemType,
-                                                         SmallVector<Value>{dimK});
-                  auto dupOp4 = b.create<DuplicateL2Op>(forLoc, dupLt, constOp.getResult(), dimK_i32v);
-                  copyAscendCUnitAttr(genOp.getOperation(), dupOp4.getOperation());
+                  auto constIt = fusedBodyInvariantConstLt.find(v);
+                  if (constIt == fusedBodyInvariantConstLt.end())
+                    return Value{};
+                  Value dupLt = constIt->second;
                   bodyValToLt[v] = dupLt;
                   return dupLt;
                 }
@@ -1725,35 +1818,11 @@ LogicalResult convertCompute(func::FuncOp funcOp, AscendCBufferContext &ctx) {
                   }
                 }
               }
-              for (auto [queue, tensor] : bodyTempQueueTensors)
-                b.create<TQueBindFreeTensorOp>(forLoc, queue, tensor);
-            }
-
-            Value zeroVal;
-            if (elemType.isF16())
-              zeroVal = b.create<arith::ConstantOp>(
-                  forLoc, b.getF16FloatAttr(0.0f));
-            else if (elemType.isF32())
-              zeroVal = b.create<arith::ConstantOp>(
-                  forLoc, b.getF32FloatAttr(0.0f));
-            if (zeroVal) {
-              Value zeroLt =
-                  allocVeccalc(b, forLoc, elemType, SmallVector<Value>{dimK})
-                      .second;
-              auto dupOp =
-                  b.create<DuplicateL2Op>(forLoc, zeroLt, zeroVal, dimK_i32);
-              copyAscendCUnitAttr(genOp.getOperation(), dupOp.getOperation());
-              auto copyOp = b.create<AddL2Op>(
-                  forLoc, dstRowLt, gatheredRowLt, zeroLt, dimK_i32);
-              copyAscendCUnitAttr(genOp.getOperation(), copyOp.getOperation());
             }
 
             b.create<TQueBindFreeTensorOp>(forLoc, dataRowQueue, dataRowLt);
             b.create<scf::YieldOp>(forLoc);
           });
-
-      if (Value q = ctx.getQueue(outMemref))
-        builder.create<TQueBindEnqueTensorOp>(loc, q, dstLt);
 
       if (postOp) postOp.erase();
       if (preOp) preOp.erase();
