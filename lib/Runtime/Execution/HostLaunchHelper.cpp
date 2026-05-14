@@ -188,6 +188,13 @@ extern "C" int hostLaunchAscendCKernel(
 
   // Build RunArgs from caller-provided TensorInfos (host buffers).
   RunArgs args;
+  // AscendC kernels often need scratch GM (workspace) for tile staging /
+  // sync barriers; alloc(0) leaves them no scratch and they write/read
+  // invalid memory → undefined behavior. Match the runtime-session
+  // manifest convention (16 MiB). Override via NETWORK_RUNNER_WORKSPACE_BYTES.
+  args.workspace_size = 16 * 1024 * 1024;
+  if (const char *e = std::getenv("NETWORK_RUNNER_WORKSPACE_BYTES"))
+    args.workspace_size = std::strtoull(e, nullptr, 10);
   args.inputs.reserve(numInputs);
   for (int i = 0; i < numInputs; ++i) {
     NDArray a;
