@@ -79,12 +79,24 @@ func.func @reduction(%arg0: tensor<4x8xf32>) -> tensor<4xf32> {
 // CHECK: op_id = 0
 // CHECK-SAME: branch_root = true
 // CHECK-SAME: branch_group = 0
+// CHECK: op_id = 1
+// CHECK-SAME: branch_group = 0
+// CHECK-SAME: merge_group = 0
+// CHECK: op_id = 2
+// CHECK-SAME: branch_group = 0
+// CHECK-SAME: merge_group = 0
 // CHECK: op_id = 3
 // CHECK-SAME: merge_root = true
 // CHECK-SAME: merge_group = 0
 // CHECK: OpRoleClassification
 // CHECK: op_id = 0
 // CHECK-SAME: roles = ["Primary", "Vector", "Injective", "Branch"]
+// CHECK-SAME: op_role = "vector"
+// CHECK: op_id = 1
+// CHECK-SAME: roles = ["Primary", "Vector", "Injective", "Branch", "Merge"]
+// CHECK-SAME: op_role = "vector"
+// CHECK: op_id = 2
+// CHECK-SAME: roles = ["Primary", "Vector", "Injective", "Branch", "Merge"]
 // CHECK-SAME: op_role = "vector"
 // CHECK: op_id = 3
 // CHECK-SAME: roles = ["Primary", "Vector", "Injective", "Merge"]
