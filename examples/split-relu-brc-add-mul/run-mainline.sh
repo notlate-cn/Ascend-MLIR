@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# New Ascend mainline pipeline for gather + relu + bias add.
+# New Ascend mainline pipeline for split + relu/broadcast elementwise + concat.
 #
-# This script starts from the linalg/tensor graph in step0_input.mlir and uses
-# the Ascend mainline passes through CANN codegen and runtime-session sim.
+# This path starts from the linalg/tensor graph in step0_input.mlir and runs
+# through Normalize -> Kernelize -> Schedule -> Realize -> Phase 5 codegen.
 
 set -euo pipefail
 
@@ -12,10 +12,8 @@ AFIR_TRANSLATE="${AFIR_TRANSLATE:-afir-translate}"
 RUNTIME_SESSION="${RUNTIME_SESSION:-runtime-session}"
 PYTHON="${PYTHON:-python3}"
 
-M=64
-N=64
-K=16
-SEED=42
+M=640
+N=512
 BLOCK_DIM=20
 SOC="${SOC_VERSION:-Ascend910B1}"
 VERBOSE=false
@@ -39,16 +37,6 @@ while [[ $# -gt 0 ]]; do
     --n)
       require_arg "$1" "${2:-}"
       N="$2"
-      shift 2
-      ;;
-    --k)
-      require_arg "$1" "${2:-}"
-      K="$2"
-      shift 2
-      ;;
-    --seed)
-      require_arg "$1" "${2:-}"
-      SEED="$2"
       shift 2
       ;;
     --block-dim)
@@ -83,12 +71,13 @@ require_positive_int() {
 
 require_positive_int "M" "$M"
 require_positive_int "N" "$N"
-require_positive_int "K" "$K"
 require_positive_int "BLOCK_DIM" "$BLOCK_DIM"
-if (( K > N )); then
-  echo "unsupported shape: K must be <= N" >&2
+if (( M % 2 != 0 )); then
+  echo "unsupported shape: M must be even for this split example" >&2
   exit 2
 fi
+
+HM=$((M / 2))
 
 log() {
   if $VERBOSE; then
@@ -106,134 +95,129 @@ PHASE5_HOST_TILING="$BUILD_DIR/host_tiling.cpp"
 ARTIFACT_ROOT="$BUILD_DIR/artifact"
 RUN_MANIFEST="$BUILD_DIR/run_manifest.json"
 ACTUAL_OUTPUT="$BUILD_DIR/output_actual.npy"
+EXPECTED_OUTPUT="$BUILD_DIR/output.npy"
 VALIDATION_LOG="$BUILD_DIR/runtime_session.log"
 
 echo "========================================================"
-echo " gather + relu + bias add Ascend mainline pipeline"
+echo " split + relu/broadcast elementwise + concat Ascend mainline pipeline"
 echo "========================================================"
 echo "shape.M=$M"
 echo "shape.N=$N"
-echo "shape.K=$K"
+echo "shape.HM=$HM"
 echo "block_dim=$BLOCK_DIM"
 
 echo ""
-echo "==================== [STAGE 1] Structural marking ===================="
+echo "==================== [STAGE 1] Linalg fusion ===================="
 "$AFIR_OPT" "$DIR/step0_input.mlir" \
-  --mark-structured-ops \
-  -o "$BUILD_DIR/step1_marked.mlir"
-log "  output: $BUILD_DIR/step1_marked.mlir"
-
-echo ""
-echo "==================== [STAGE 2] Gather elementwise fusion ===================="
-"$AFIR_OPT" "$BUILD_DIR/step1_marked.mlir" \
-  --fuse-gather-elementwise \
+  --linalg-fuse-elementwise-ops \
   --canonicalize \
   --cse \
-  -o "$BUILD_DIR/step2_fused.mlir"
-log "  output: $BUILD_DIR/step2_fused.mlir"
+  -o "$BUILD_DIR/step1_fused.mlir"
+log "  output: $BUILD_DIR/step1_fused.mlir"
 
 echo ""
-echo "==================== [STAGE 3] Ascend normalize ===================="
-"$AFIR_OPT" "$BUILD_DIR/step2_fused.mlir" \
+echo "==================== [STAGE 2] Ascend normalize ===================="
+"$AFIR_OPT" "$BUILD_DIR/step1_fused.mlir" \
   --ascend-normalize \
-  -o "$BUILD_DIR/step3_normalized.mlir"
-log "  output: $BUILD_DIR/step3_normalized.mlir"
+  -o "$BUILD_DIR/step2_normalized.mlir"
+log "  output: $BUILD_DIR/step2_normalized.mlir"
 
 echo ""
-echo "==================== [STAGE 4] Ascend kernelize ===================="
-"$AFIR_OPT" "$BUILD_DIR/step3_normalized.mlir" \
+echo "==================== [STAGE 3] Ascend kernelize ===================="
+"$AFIR_OPT" "$BUILD_DIR/step2_normalized.mlir" \
   --ascend-kernelize \
-  -o "$BUILD_DIR/step4_kernelized.mlir"
-log "  output: $BUILD_DIR/step4_kernelized.mlir"
+  -o "$BUILD_DIR/step3_kernelized.mlir"
+log "  output: $BUILD_DIR/step3_kernelized.mlir"
 
 echo ""
-echo "==================== [STAGE 5] Ascend schedule ===================="
-"$AFIR_OPT" "$BUILD_DIR/step4_kernelized.mlir" \
+echo "==================== [STAGE 4] Ascend schedule ===================="
+"$AFIR_OPT" "$BUILD_DIR/step3_kernelized.mlir" \
   --ascend-schedule \
-  -o "$BUILD_DIR/step5_scheduled.mlir"
-log "  output: $BUILD_DIR/step5_scheduled.mlir"
+  -o "$BUILD_DIR/step4_scheduled.mlir"
+log "  output: $BUILD_DIR/step4_scheduled.mlir"
 
 echo ""
-echo "==================== [STAGE 6] Ascend realize ===================="
-"$AFIR_OPT" "$BUILD_DIR/step5_scheduled.mlir" \
+echo "==================== [STAGE 5] Ascend realize ===================="
+"$AFIR_OPT" "$BUILD_DIR/step4_scheduled.mlir" \
   --ascend-realize='materialization-mode=memory-space-annotate' \
-  -o "$BUILD_DIR/step6_realized.mlir"
-log "  output: $BUILD_DIR/step6_realized.mlir"
+  -o "$BUILD_DIR/step5_realized.mlir"
+log "  output: $BUILD_DIR/step5_realized.mlir"
 
 echo ""
-echo "==================== [STAGE 7] Ascend compute lower ===================="
-"$AFIR_OPT" "$BUILD_DIR/step6_realized.mlir" \
+echo "==================== [STAGE 6] Ascend compute lower ===================="
+"$AFIR_OPT" "$BUILD_DIR/step5_realized.mlir" \
   --ascend-compute-lower \
-  -o "$BUILD_DIR/step7_ascendc.mlir"
-log "  output: $BUILD_DIR/step7_ascendc.mlir"
+  -o "$BUILD_DIR/step6_ascendc.mlir"
+log "  output: $BUILD_DIR/step6_ascendc.mlir"
 
 echo ""
-echo "==================== [STAGE 8] Ascend parallelize ===================="
-"$AFIR_OPT" "$BUILD_DIR/step7_ascendc.mlir" \
+echo "==================== [STAGE 7] Ascend parallelize ===================="
+"$AFIR_OPT" "$BUILD_DIR/step6_ascendc.mlir" \
   --ascend-parallelize \
-  -o "$BUILD_DIR/step8_parallelized.mlir"
-log "  output: $BUILD_DIR/step8_parallelized.mlir"
+  -o "$BUILD_DIR/step7_parallelized.mlir"
+log "  output: $BUILD_DIR/step7_parallelized.mlir"
 
 echo ""
-echo "==================== [STAGE 9] Ascend prepare for emit ===================="
-"$AFIR_OPT" "$BUILD_DIR/step8_parallelized.mlir" \
+echo "==================== [STAGE 8] Ascend prepare for emit ===================="
+"$AFIR_OPT" "$BUILD_DIR/step7_parallelized.mlir" \
   --ascend-prepare-for-emit \
-  -o "$BUILD_DIR/step9_kernel_ir.mlir"
-log "  output: $BUILD_DIR/step9_kernel_ir.mlir"
+  -o "$BUILD_DIR/step8_kernel_ir.mlir"
+log "  output: $BUILD_DIR/step8_kernel_ir.mlir"
 
 echo ""
-echo "==================== [STAGE 10] CANN signature ===================="
-"$AFIR_OPT" "$BUILD_DIR/step9_kernel_ir.mlir" \
+echo "==================== [STAGE 9] CANN signature ===================="
+"$AFIR_OPT" "$BUILD_DIR/step8_kernel_ir.mlir" \
   --ascend-canonicalize-cann-signature \
   --canonicalize \
   --cse \
-  -o "$BUILD_DIR/step10_cann.mlir"
-log "  output: $BUILD_DIR/step10_cann.mlir"
+  -o "$BUILD_DIR/step9_cann.mlir"
+log "  output: $BUILD_DIR/step9_cann.mlir"
 
 echo ""
-echo "==================== [STAGE 11] CANN codegen ===================="
-"$AFIR_TRANSLATE" -mlir-to-cann "$BUILD_DIR/step10_cann.mlir" \
+echo "==================== [STAGE 10] CANN codegen ===================="
+"$AFIR_TRANSLATE" -mlir-to-cann "$BUILD_DIR/step9_cann.mlir" \
   --tiling-space-out="$PHASE5_TILING_SPACE" \
   --runtime-manifest-out="$PHASE5_RUNTIME_MANIFEST" \
   --host-tiling-out="$PHASE5_HOST_TILING" \
   --cann-soc="$SOC" \
-  -o "$BUILD_DIR/step11_kernel.cpp"
-test -s "$BUILD_DIR/step11_kernel.cpp"
+  -o "$BUILD_DIR/step10_kernel.cpp"
+test -s "$BUILD_DIR/step10_kernel.cpp"
 test -s "$PHASE5_TILING_SPACE"
 test -s "$PHASE5_RUNTIME_MANIFEST"
 test -s "$PHASE5_HOST_TILING"
-log "  output: $BUILD_DIR/step11_kernel.cpp"
+log "  output: $BUILD_DIR/step10_kernel.cpp"
 
 echo ""
-echo "==================== [STAGE 12] Generate data ===================="
-"$PYTHON" "$DIR/gen_data.py" --m "$M" --n "$N" --k "$K" --seed "$SEED" \
-  --out-dir "$BUILD_DIR"
-log "  output: input_data.npy input_indices.npy input_bias.npy output_out.npy"
+echo "==================== [STAGE 11] Generate data ===================="
+"$PYTHON" "$DIR/gen_data.py" --M "$M" --N "$N" --outdir "$BUILD_DIR"
+log "  output: input_a.npy bias0.npy bias1.npy scale0.npy scale1.npy output.npy"
 
 echo ""
-echo "==================== [STAGE 13] runtime-session compile ===================="
+echo "==================== [STAGE 12] runtime-session compile ===================="
 "$RUNTIME_SESSION" \
-  --kernel "$BUILD_DIR/step11_kernel.cpp" \
+  --kernel "$BUILD_DIR/step10_kernel.cpp" \
   --kernel-kind vec \
   --output "$ARTIFACT_ROOT" \
-  --name relu_index_select_add
+  --name ewop_broadcast_split
 log "  output: $ARTIFACT_ROOT"
 
 echo ""
-echo "==================== [STAGE 14] runtime-session sim ===================="
-TILING_PARAMS="$("$PYTHON" - "$PHASE5_TILING_SPACE" "$M" "$N" "$K" <<'PY'
+echo "==================== [STAGE 13] runtime-session sim ===================="
+TILING_PARAMS="$("$PYTHON" - "$PHASE5_TILING_SPACE" "$M" "$N" "$HM" <<'PY'
 import json
 import sys
 
-schema_path, m, n, k = sys.argv[1], int(sys.argv[2]), int(sys.argv[3]), int(sys.argv[4])
+schema_path, m, n, hm = sys.argv[1], int(sys.argv[2]), int(sys.argv[3]), int(sys.argv[4])
 with open(schema_path, "r", encoding="utf-8") as f:
     root = json.load(f)
 
 shape_values = {
     "arg0_dim0": m,
     "arg0_dim1": n,
-    "arg1_dim0": k,
-    "arg2_dim0": k,
+    "arg1_dim0": hm,
+    "arg2_dim0": hm,
+    "arg3_dim0": n,
+    "arg4_dim0": n,
 }
 
 params = []
@@ -262,15 +246,17 @@ cat > "$RUN_MANIFEST" <<EOF
   "backend": "sim",
   "artifact_root": "${ARTIFACT_ROOT}",
   "inputs": [
-    { "name": "arg0", "path": "${BUILD_DIR}/input_data.npy" },
-    { "name": "arg1", "path": "${BUILD_DIR}/input_indices.npy" },
-    { "name": "arg2", "path": "${BUILD_DIR}/input_bias.npy" }
+    { "name": "input_a", "path": "${BUILD_DIR}/input_a.npy" },
+    { "name": "bias0", "path": "${BUILD_DIR}/bias0.npy" },
+    { "name": "bias1", "path": "${BUILD_DIR}/bias1.npy" },
+    { "name": "scale0", "path": "${BUILD_DIR}/scale0.npy" },
+    { "name": "scale1", "path": "${BUILD_DIR}/scale1.npy" }
   ],
   "outputs": [
     { "name": "out", "path": "${ACTUAL_OUTPUT}" }
   ],
   "expected_outputs": [
-    { "name": "out", "path": "${BUILD_DIR}/output_out.npy" }
+    { "name": "out", "path": "${EXPECTED_OUTPUT}" }
   ],
   "tiling": {
     "schema": "${PHASE5_TILING_SPACE}",
@@ -296,17 +282,16 @@ grep -q '^session.validation=pass$' "$VALIDATION_LOG"
 echo ""
 echo "========================================================"
 echo " mainline pipeline complete"
-echo "   build_mainline/step1_marked.mlir"
-echo "   build_mainline/step2_fused.mlir"
-echo "   build_mainline/step3_normalized.mlir"
-echo "   build_mainline/step4_kernelized.mlir"
-echo "   build_mainline/step5_scheduled.mlir"
-echo "   build_mainline/step6_realized.mlir"
-echo "   build_mainline/step7_ascendc.mlir"
-echo "   build_mainline/step8_parallelized.mlir"
-echo "   build_mainline/step9_kernel_ir.mlir"
-echo "   build_mainline/step10_cann.mlir"
-echo "   build_mainline/step11_kernel.cpp"
+echo "   build_mainline/step1_fused.mlir"
+echo "   build_mainline/step2_normalized.mlir"
+echo "   build_mainline/step3_kernelized.mlir"
+echo "   build_mainline/step4_scheduled.mlir"
+echo "   build_mainline/step5_realized.mlir"
+echo "   build_mainline/step6_ascendc.mlir"
+echo "   build_mainline/step7_parallelized.mlir"
+echo "   build_mainline/step8_kernel_ir.mlir"
+echo "   build_mainline/step9_cann.mlir"
+echo "   build_mainline/step10_kernel.cpp"
 echo "   build_mainline/phase5_tiling_space.json"
 echo "   build_mainline/phase5_runtime_manifest.json"
 echo "   build_mainline/host_tiling.cpp"

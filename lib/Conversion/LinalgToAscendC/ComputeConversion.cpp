@@ -72,11 +72,21 @@ bool isSupportedRank2AllParallel(linalg::GenericOp op) {
          iterTypes[1] == utils::IteratorType::parallel;
 }
 
-bool isProjectedParallelMap(AffineMap map) {
+FailureOr<unsigned> getSingleDimProjection(AffineMap map) {
   if (map.getNumDims() != 2 || map.getNumResults() != 1)
-    return false;
+    return failure();
   auto dimExpr = dyn_cast<AffineDimExpr>(map.getResult(0));
-  return dimExpr && dimExpr.getPosition() == 0;
+  if (!dimExpr)
+    return failure();
+  unsigned position = dimExpr.getPosition();
+  if (position >= 2)
+    return failure();
+  return position;
+}
+
+bool isProjectedParallelMap(AffineMap map) {
+  FailureOr<unsigned> projection = getSingleDimProjection(map);
+  return succeeded(projection) && *projection == 0;
 }
 
 bool isRank2IdentityMap(AffineMap map) {
@@ -89,7 +99,7 @@ bool isSupportedSelectedTileMap(Value operand, AffineMap map) {
   if (!memrefType)
     return false;
   if (memrefType.getRank() == 1)
-    return isProjectedParallelMap(map);
+    return succeeded(getSingleDimProjection(map));
   if (memrefType.getRank() == 2)
     return isRank2IdentityMap(map);
   return false;
@@ -196,9 +206,17 @@ FailureOr<Value> buildTiledOperandSubview(OpBuilder &builder, Location loc,
     return failure();
 
   auto one = builder.getIndexAttr(1);
-  if (memrefType.getRank() == 1 && isProjectedParallelMap(map)) {
-    SmallVector<OpFoldResult> offsets{rowOffset};
-    SmallVector<OpFoldResult> sizes{tileRows};
+  if (memrefType.getRank() == 1) {
+    FailureOr<unsigned> projection = getSingleDimProjection(map);
+    if (failed(projection))
+      return failure();
+
+    SmallVector<OpFoldResult> offsets{
+        *projection == 0 ? OpFoldResult(rowOffset)
+                         : OpFoldResult(builder.getIndexAttr(0))};
+    SmallVector<OpFoldResult> sizes{
+        *projection == 0 ? OpFoldResult(tileRows)
+                         : OpFoldResult(reductionExtent)};
     SmallVector<OpFoldResult> strides{one};
     return builder
         .create<memref::SubViewOp>(loc, operand, offsets, sizes, strides)
@@ -245,8 +263,7 @@ Value rootMemref(Value value) {
   }
 }
 
-SmallVector<Value, 4> protectedMemrefRoots(linalg::GenericOp op,
-                                           Value outMemref) {
+SmallVector<Value, 4> inputMemrefRoots(linalg::GenericOp op) {
   SmallVector<Value, 4> roots;
   auto appendRoot = [&](Value value) {
     if (!isa<MemRefType>(value.getType()))
@@ -258,18 +275,16 @@ SmallVector<Value, 4> protectedMemrefRoots(linalg::GenericOp op,
 
   for (OpOperand *operand : op.getDpsInputOperands())
     appendRoot(operand->get());
-  appendRoot(outMemref);
   return roots;
 }
 
-bool touchesProtectedMemrefRoot(Operation *op, ArrayRef<Value> roots) {
-  for (Value operand : op->getOperands()) {
-    if (!isa<MemRefType>(operand.getType()))
-      continue;
-    if (llvm::is_contained(roots, rootMemref(operand)))
-      return true;
-  }
-  return false;
+bool rootIntersects(Value value, ArrayRef<Value> roots) {
+  return isa<MemRefType>(value.getType()) &&
+         llvm::is_contained(roots, rootMemref(value));
+}
+
+bool rootEquals(Value value, Value root) {
+  return isa<MemRefType>(value.getType()) && rootMemref(value) == root;
 }
 
 bool isBenignShapeOrViewOp(Operation *op) {
@@ -279,24 +294,55 @@ bool isBenignShapeOrViewOp(Operation *op) {
              memref::SubViewOp, memref::CastOp>(op);
 }
 
+bool mayWriteAnyRoot(Operation *op, ArrayRef<Value> roots) {
+  if (auto copyOp = dyn_cast<memref::CopyOp>(op))
+    return rootIntersects(copyOp.getTarget(), roots);
+  if (auto storeOp = dyn_cast<memref::StoreOp>(op))
+    return rootIntersects(storeOp.getMemref(), roots);
+  if (auto linalgOp = dyn_cast<linalg::LinalgOp>(op))
+    return llvm::any_of(linalgOp.getDpsInits(), [&](Value init) {
+      return rootIntersects(init, roots);
+    });
+  return false;
+}
+
+bool mayReadRoot(Operation *op, Value root) {
+  if (auto copyOp = dyn_cast<memref::CopyOp>(op))
+    return rootEquals(copyOp.getSource(), root);
+  if (auto loadOp = dyn_cast<memref::LoadOp>(op))
+    return rootEquals(loadOp.getMemref(), root);
+  if (auto linalgOp = dyn_cast<linalg::LinalgOp>(op))
+    return llvm::any_of(linalgOp.getDpsInputs(), [&](Value input) {
+      return rootEquals(input, root);
+    });
+  return false;
+}
+
+bool touchesAnyRoot(Operation *op, ArrayRef<Value> roots) {
+  return llvm::any_of(op->getOperands(), [&](Value operand) {
+    return rootIntersects(operand, roots);
+  });
+}
+
 bool canMoveSelectedTileLoopBeforeWriteback(linalg::GenericOp op,
                                             memref::CopyOp writeback,
                                             Value outMemref) {
-  SmallVector<Value, 4> protectedRoots = protectedMemrefRoots(op, outMemref);
+  SmallVector<Value, 4> inputRoots = inputMemrefRoots(op);
+  Value outputRoot = rootMemref(outMemref);
+  SmallVector<Value, 1> outputRoots{outputRoot};
   for (Operation *it = op->getNextNode(); it && it != writeback.getOperation();
        it = it->getNextNode()) {
     if (isBenignShapeOrViewOp(it))
       continue;
 
-    if (auto linalgOp = dyn_cast<linalg::LinalgOp>(it)) {
-      if (touchesProtectedMemrefRoot(linalgOp.getOperation(), protectedRoots))
-        return false;
-      continue;
-    }
-
-    if (touchesProtectedMemrefRoot(it, protectedRoots))
+    if (mayWriteAnyRoot(it, inputRoots) || mayWriteAnyRoot(it, outputRoots) ||
+        mayReadRoot(it, outputRoot))
       return false;
-    return false;
+
+    if (!isa<linalg::LinalgOp, memref::CopyOp, memref::LoadOp,
+             memref::StoreOp>(it) &&
+        (touchesAnyRoot(it, inputRoots) || touchesAnyRoot(it, outputRoots)))
+      return false;
   }
   return true;
 }
@@ -363,10 +409,11 @@ LogicalResult materializeSelectedReductionTiles(func::FuncOp funcOp) {
     if (!insertionPoint)
       continue;
 
+    Value dstMemref = writeback.getTarget();
     builder.setInsertionPoint(insertionPoint);
     Value zero = builder.create<arith::ConstantIndexOp>(loc, 0);
     Value step = builder.create<arith::ConstantIndexOp>(loc, tileRows);
-    Value rows = getDimValue(builder, loc, outMemref, 0);
+    Value rows = getDimValue(builder, loc, dstMemref, 0);
 
     auto forOp = builder.create<scf::ForOp>(loc, zero, rows, step);
     forOp->setAttr("ascendc.parallel", builder.getBoolAttr(true));
@@ -411,7 +458,6 @@ LogicalResult materializeSelectedReductionTiles(func::FuncOp funcOp) {
 
     bodyBuilder.clone(*genOp, mapper);
 
-    Value dstMemref = writeback.getTarget();
     FailureOr<Value> tiledDst = buildTiledOperandSubview(
         bodyBuilder, loc, dstMemref, maps.back(), forOp.getInductionVar(),
         tileRowsValue, reductionExtent);
@@ -476,11 +522,12 @@ LogicalResult materializeSelectedAllParallelTiles(func::FuncOp funcOp) {
     if (!insertionPoint)
       continue;
 
+    Value dstMemref = writeback.getTarget();
     builder.setInsertionPoint(insertionPoint);
     Value zero = builder.create<arith::ConstantIndexOp>(loc, 0);
     Value step = builder.create<arith::ConstantIndexOp>(loc, tileRows);
-    Value rows = getDimValue(builder, loc, outMemref, 0);
-    Value innerExtent = getDimValue(builder, loc, outMemref, 1);
+    Value rows = getDimValue(builder, loc, dstMemref, 0);
+    Value innerExtent = getDimValue(builder, loc, dstMemref, 1);
 
     auto forOp = builder.create<scf::ForOp>(loc, zero, rows, step);
     forOp->setAttr("ascendc.parallel", builder.getBoolAttr(true));
@@ -509,7 +556,6 @@ LogicalResult materializeSelectedAllParallelTiles(func::FuncOp funcOp) {
     mapper.map(outMemref, tiledOut);
     bodyBuilder.clone(*genOp, mapper);
 
-    Value dstMemref = writeback.getTarget();
     FailureOr<Value> tiledDst = buildTiledOperandSubview(
         bodyBuilder, loc, dstMemref, maps.back(), forOp.getInductionVar(),
         tileRowsValue, innerExtent);
