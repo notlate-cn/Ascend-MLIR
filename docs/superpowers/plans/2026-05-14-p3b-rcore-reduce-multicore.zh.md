@@ -12,7 +12,12 @@
 
 **Tech stack:** MLIR (linalg / scf / tensor / bufferization 方言)、vector-plan TilePlanGen / LoopNestBuilder / GroupEmitter / GroupOutline、`AclnnBackend` host-cpp 生成器、`hostLaunchAscendCKernel` runtime。
 
-**当前依赖:** AF port P1 已完成(commit `98030e6`);R3 已修(commit `28c8ea6`)。R1 仍 open;P3a 状态未确认(若 P3a 阻塞,本计划起手时需先确认)。
+**当前依赖:** AF port P1 / P3a / P3b-i(RBLOCK 单 kernel split,`51a4195`)/ P4 / P5a–d / B-1 / B-3 / c1 全部已完成。R3 已修(`28c8ea6`)。R1 仍 open。Memory `[[af-scheduler-port]]` 有完整 commit 时间线。
+
+**重要术语区分(避免混淆):**
+- **RBLOCK split**(P3b-i 已做):**单 kernel** 内 R 轴切大块,VECCALC accumulator 累加(`reduce_sum_2d_l2` 一次喂一块)。解决"R 轴 tile 装不进 UB"。
+- **RCore**(本计划):**双 kernel** partial→combine,R 轴切到不同核。解决"P 小、R 大,想用 R 轴提供多核并行"。
+- 两条路径 codegen 不重叠:RBLOCK 走 VECCALC accumulator + scf.for inner loop;RCore 走 partial GM workspace + 第二阶段 combine kernel。
 
 ---
 
@@ -63,10 +68,18 @@ R1 reproducer 输出非零、精度 ≤ 1e-6。
 
 | 阶段 | 内容 | 行为变化 | 工作量 | 风险 |
 |---|---|---|---|---|
-| **P3b-1** | RCore 作为枚举候选,`pickBest` 不选 | 无 | 小(~150 行) | 低 |
-| **P3b-2** | RCore 的 blockSplit/ubSplit/loop 物化,仅 emit partial 单 kernel | 新选项,只能跑 partial-only(数值不对) | 中(~300 行) | 中 |
+| **P3b-1** ✅ | RCore 作为枚举候选,`pickBest` 不选 | 无 | 小(~150 行) | 低 |
+| **P3b-2** ◀ 起手 | RCore 的 blockSplit/ubSplit/loop 物化,仅 emit partial 单 kernel | 新选项,只能跑 partial-only(数值不对) | 中(~300 行) | 中 |
 | **P3b-3** ⭐ | Group 拆分成 partial + combine 双 kernel,coord/JSON/host gen 串起来 | R1 reproducer 跑通,精度过 | **大**(~600 行 + 设计讨论) | **高** —— 先单独 design review |
 | **P3b-4** | `costEstimate` 真正选 RCore,处理 reduce-in-middle/多 reduce | 性能优化路径打通 | 中(~200 行) | 中 |
+
+**P3b-1 状态(已 done):** 落在 AF port 的 P5b/P5c/P5d 这批 commit 里(`1beaa2d` / `17962e3` / `aad7ab2`),不在 RCore 专属 commit 下:
+- `TilePlanDraft::reduceIsBlock` 字段存在(`include/Conversion/VectorPlan/TilePlan.h`)。
+- `enumerateTilingCases` 在每个 `ubR != -1` 的 draft 后追加一个 `reduceIsBlock=true` 的 RCore variant(`TilePlanGen.cpp:284-291`)。
+- `costEstimate` 在 `draft.reduceIsBlock` 时返回 `kInfeasible`(line 324-325),并标 TODO "no two-stage codegen yet"。
+- `buildPlan` 入口 assert RCore draft 不会到这里(line 359-360)。
+
+所以本计划**起手直接 P3b-2**,P3b-1 当作 prerequisite 验证(读上面 4 处代码确认还在,再起步)。
 
 每阶段 1 个 commit,标题 `feat(vector-plan): P3b-N — <内容>`。
 
@@ -96,43 +109,16 @@ R1 reproducer 输出非零、精度 ≤ 1e-6。
 
 ---
 
-## 3. P3b-1 — RCore 作为枚举候选(不选中)
+## 3. P3b-1 — RCore 作为枚举候选(不选中)— ✅ 已完成
 
-**Commit message:** `feat(vector-plan): P3b-1 — enumerate RCore reduce template as inactive candidate`
+**状态:** P5b/P5c/P5d 已经把这块做掉了。RCore variant 在 `enumerateTilingCases` 里枚举,`costEstimate` 用 `kInfeasible` 拒选,`buildPlan` 有 assert 保护。
 
-**目标:** TilePlan 数据结构加 RCore 字段;`enumerateTilingCases` 在有 reduce 轴时追加 RCore draft;`pickBest` 显式拒选 RCore(留 TODO)。零行为变化:所有现有 lit / e2e 必须仍然过。
+**起手前 verify(~5 分钟):**
+1. `grep -n "reduceIsBlock" include/Conversion/VectorPlan/TilePlan.h` — 字段存在。
+2. `grep -n "reduceIsBlock\|RCore" lib/Conversion/VectorPlan/TileFuse/TilePlanGen.cpp` — 看到 RCore variant 枚举 + `kInfeasible` 拒选 + buildPlan assert,4 处。
+3. R3 reproducer 现在仍 PASS、R1 reproducer 现在仍 fail —— 跟 plan 描述一致。
 
-### 3.1 文件清单
-
-| 动作 | 文件 | 改动 |
-|---|---|---|
-| 改 | `include/Conversion/VectorPlan/TilePlan.h` | 加 `enum class ReduceTemplate { None, Common, FullLoad, RCore }`;`TilePlan` 加 `ReduceTemplate reduceTemplate = ReduceTemplate::None`、`bool reduceIsBlock = false`、`int ubTilingAxisR = -1`;`TilePlanDraft` 加 `bool reduceIsBlock = false` |
-| 改 | `lib/Conversion/VectorPlan/TileFuse/TilePlanGen.cpp` | `enumerateTilingCases`:若 group 含 reduce 且 `rAxes` 非空,对每个已有 draft 追加一个 `reduceIsBlock=true` 的变体。`pickBest`:遇到 `reduceTemplate == RCore` 的候选直接打 +∞ 分(即不会被选) |
-| 建 | `test/Conversion/Collapse/tile-fuse-vector-rcore-enumerated.mlir` | 用 full-reduce 输入,跑 `--vector-plan-tile-fuse --debug-only=tile-plan-gen`,断言 stderr 里出现 RCore 候选被枚举但被拒的日志 |
-
-### 3.2 关键设计点
-
-- **`pickBest` 拒选 RCore 的方式:** 用一行 `if (p.reduceTemplate == ReduceTemplate::RCore) return +inf;` 注释明确写 "P3b-1: not yet implementable; will be reachable after P3b-2/3"。
-- **`enumerateTilingCases` 何时追加 RCore draft:** 复刻 AF `autoschedule.cpp` 里 `if (is_reduce_first_stage && r_id 有效) 追加 reduce_is_block=true` 的逻辑。`is_reduce_first_stage` 当前简化为 "group 里至少有一个 reduce op 且这个 reduce 的输出没有被后续 reduce 消费"。
-- **`reduceTemplate` 字段的写入时机:** `enumerateTilingCases` 写入 `reduceIsBlock`(到 draft);后续阶段 `blockSplit` 从 draft 转写到 `TilePlan::reduceTemplate`(Common 或 RCore)。本阶段最小实现:在 `blockSplit` 出口处根据 `draft.reduceIsBlock` 直接赋值。
-
-### 3.3 验收门
-
-1. 现有所有 lit:`PATH="$PWD/externals/llvm-project/build/bin:$PWD/build/bin:$PATH" externals/llvm-project/build/bin/llvm-lit build/test/Conversion/{Collapse,VectorPlanCodegen,LinalgToAscendC} -q` → 0 失败。
-2. 现有所有 e2e example 全 `validation=pass`:
-   - `examples/two-elewise-e2e/run.sh`
-   - `examples/mixed-attn-e2e/run.sh`
-   - `examples/reduce-axis1-e2e/run.sh`
-   - `examples/reduce-sum-3d-e2e/run.sh`
-   - `examples/combo-elewise-reduce-e2e/run.sh`
-   - `examples/bcast-multi-axis-e2e/run.sh`
-3. R3 reproducer(`/tmp/r3/single_red.mlir` 那个 8x16→8 reduce)仍然 PASS(回归)。
-4. 新 lit `tile-fuse-vector-rcore-enumerated.mlir` 断言 RCore draft 被枚举到。
-5. R1 reproducer(rank-1→rank-0 full reduce)**仍然 fail**,因为 RCore 没被选中,Common 走的退化路径依然撞 R1 那个 insertion-point bug。这是 expected。
-
-### 3.4 起手提示给执行者
-
-读 `2026-05-11-port-af-scheduler` plan §3.2(`enumerateTilingCases`)+ §4(reduce 三模板)。看 `TilePlanGen.cpp` 现在 `enumerateTilingCases` 的实现,在它结尾追加 RCore draft 那 ~20 行就够。`pickBest` 加 1 行 if。`TilePlan.h` 加字段。lit 用 `--debug-only=tile-plan-gen` 或者直接 dump 一个 TilePlan 的 attr 上去观察。
+如果以上 verify 全通过,跳到 §4 起手 P3b-2。
 
 ---
 
@@ -259,16 +245,16 @@ R1 reproducer 输出非零、精度 ≤ 1e-6。
 ## 7. 阶段间依赖
 
 ```
-P3b-1 ─→ P3b-2 ─→ P3b-3 ─→ P3b-4
-   │                  ↑
-   └─ R3 fix(已 done,28c8ea6)
-   └─ AF port P1(已 done,98030e6)
-   └─ AF port P3a(状态确认中)
+P3b-1 ✅ ─→ P3b-2 ◀ 起手 ─→ P3b-3 ⭐(先 design review) ─→ P3b-4
+                              ↑
+   AF port P1/P3a/P3b-i(RBLOCK)/P4/P5a–d/B-1/B-3/c1 全部已 done
+   R3 fix 已 done(28c8ea6)
+   P3b-1 RCore 枚举 + ∞-scored 已 done(P5b/P5c/P5d 三个 commit 内)
 ```
 
-P3b-1 起手前要确认 AF port P3a 是 done(`vectorizedDims` 已落)还是 pending。若 P3a pending,P3b-1 可以并行做(数据结构不冲突),但 P3b-2 必须等 P3a。
+P3b-2 是真正起手点。P3b-3 起手前要走 design review,不直接执行本计划。
 
-P3b-3 起手前要走 design review,不直接执行本计划。
+**注意 P3b-i(RBLOCK 单 kernel,`51a4195`)和本计划的关系:** 它在做 R 轴 inner-tile 切大块,数据通过 VECCALC accumulator + scf.for iter_arg 累加,**始终单 kernel**。本计划的 RCore 是 R 轴切到**不同 block**(多 kernel),partial 走 GM workspace、combine 第二阶段。两条 codegen 路径在 GroupEmitter / LinalgToAscendC 里**分别独立**(`reduceIsBlock=false` 走 RBLOCK,`reduceIsBlock=true` 走 RCore),实现时不互相踩。
 
 ---
 
