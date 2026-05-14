@@ -16,7 +16,6 @@
 #include "mlir/IR/Value.h"
 #include "mlir/Support/LLVM.h"
 #include "llvm/ADT/STLExtras.h"
-#include "llvm/ADT/SmallString.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/Support/raw_ostream.h"
@@ -32,20 +31,29 @@ bool isTargetLinalgOp(Operation *op) {
   return isa<linalg::LinalgOp>(op);
 }
 
-StringRef getIteratorTypeName(Attribute attr) {
-  if (auto stringAttr = dyn_cast<StringAttr>(attr))
-    return stringAttr.getValue();
+IteratorKind convertIteratorType(utils::IteratorType iteratorType) {
+  switch (iteratorType) {
+  case utils::IteratorType::parallel:
+    return IteratorKind::Parallel;
+  case utils::IteratorType::reduction:
+    return IteratorKind::Reduction;
+  default:
+    return IteratorKind::Unknown;
+  }
+}
 
-  SmallString<32> storage;
-  llvm::raw_svector_ostream os(storage);
-  attr.print(os);
-  StringRef printed(storage);
-  if (printed.contains("parallel"))
-    return "parallel";
-  if (printed.contains("reduction"))
-    return "reduction";
+IteratorKind getIteratorKind(Attribute attr) {
+  if (auto iteratorTypeAttr = dyn_cast<linalg::IteratorTypeAttr>(attr))
+    return convertIteratorType(iteratorTypeAttr.getValue());
 
-  return "unknown";
+  if (auto stringAttr = dyn_cast<StringAttr>(attr)) {
+    if (stringAttr.getValue() == stringifyIteratorKind(IteratorKind::Parallel))
+      return IteratorKind::Parallel;
+    if (stringAttr.getValue() == stringifyIteratorKind(IteratorKind::Reduction))
+      return IteratorKind::Reduction;
+  }
+
+  return IteratorKind::Unknown;
 }
 
 unsigned getFirstRankedShapedOutputRank(Operation *op) {
@@ -169,40 +177,29 @@ classifyParallelIndexing(ArrayRef<AffineMap> indexingMaps,
 }
 
 void populateIteratorSummary(Operation *op, OpSemanticSummary &summary,
-                             ArrayRef<StringRef> fallbackIteratorTypes = {}) {
+                             ArrayRef<IteratorKind> fallbackIteratorTypes = {}) {
   if (auto linalgOp = dyn_cast<linalg::LinalgOp>(op)) {
-    for (utils::IteratorType iteratorType : linalgOp.getIteratorTypesArray()) {
-      switch (iteratorType) {
-      case utils::IteratorType::parallel:
-        summary.iteratorTypes.push_back("parallel");
-        break;
-      case utils::IteratorType::reduction:
-        summary.iteratorTypes.push_back("reduction");
-        break;
-      default:
-        summary.iteratorTypes.push_back("unknown");
-        break;
-      }
-    }
+    for (utils::IteratorType iteratorType : linalgOp.getIteratorTypesArray())
+      summary.iteratorTypes.push_back(convertIteratorType(iteratorType));
   }
 
   auto iteratorTypes = op->getAttrOfType<ArrayAttr>("iterator_types");
   if (summary.iteratorTypes.empty() && iteratorTypes) {
     for (Attribute iteratorType : iteratorTypes)
-      summary.iteratorTypes.push_back(getIteratorTypeName(iteratorType));
+      summary.iteratorTypes.push_back(getIteratorKind(iteratorType));
   } else if (summary.iteratorTypes.empty()) {
     summary.iteratorTypes.append(fallbackIteratorTypes.begin(),
                                  fallbackIteratorTypes.end());
   }
 
   bool sawNonParallel = false;
-  for (StringRef typeName : summary.iteratorTypes) {
-    if (typeName == "reduction") {
+  for (IteratorKind iteratorType : summary.iteratorTypes) {
+    if (iteratorType == IteratorKind::Reduction) {
       summary.hasReductionIterator = true;
       sawNonParallel = true;
       continue;
     }
-    if (typeName != "parallel")
+    if (iteratorType != IteratorKind::Parallel)
       sawNonParallel = true;
   }
   summary.hasOnlyParallelIterators =
@@ -220,7 +217,8 @@ OpSemanticSummary buildSemanticSummary(Operation *op, OperationId opId) {
   if (opName == "linalg.matmul") {
     populateIteratorSummary(
         op, summary,
-        ArrayRef<StringRef>{"parallel", "parallel", "reduction"});
+        ArrayRef<IteratorKind>{IteratorKind::Parallel, IteratorKind::Parallel,
+                               IteratorKind::Reduction});
     summary.accessPattern = AccessPatternKind::Contraction;
     return summary;
   }
@@ -228,13 +226,16 @@ OpSemanticSummary buildSemanticSummary(Operation *op, OperationId opId) {
   if (opName == "linalg.batch_matmul") {
     populateIteratorSummary(
         op, summary,
-        ArrayRef<StringRef>{"parallel", "parallel", "parallel", "reduction"});
+        ArrayRef<IteratorKind>{IteratorKind::Parallel, IteratorKind::Parallel,
+                               IteratorKind::Parallel,
+                               IteratorKind::Reduction});
     summary.accessPattern = AccessPatternKind::Contraction;
     return summary;
   }
 
   if (opName == "linalg.transpose") {
-    SmallVector<StringRef> parallelIterators(summary.resultRank, "parallel");
+    SmallVector<IteratorKind> parallelIterators(summary.resultRank,
+                                               IteratorKind::Parallel);
     populateIteratorSummary(op, summary, parallelIterators);
     summary.accessPattern = AccessPatternKind::LayoutTransform;
     return summary;
@@ -346,7 +347,10 @@ void emitDependencyAnalysisReport(raw_ostream &os,
        << "\" producers = " << producerCount
        << " consumers = " << consumerCount
        << " result_rank = " << summary.resultRank << " iterators = [";
-    llvm::interleaveComma(summary.iteratorTypes, os);
+    llvm::interleaveComma(summary.iteratorTypes, os,
+                          [&](IteratorKind iteratorType) {
+                            os << stringifyIteratorKind(iteratorType);
+                          });
     os << "] has_reduction = "
        << (summary.hasReductionIterator ? "true" : "false")
        << " only_parallel = "

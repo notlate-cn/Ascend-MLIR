@@ -24,7 +24,7 @@ struct OpSemanticSummary {
   Operation *op = nullptr;
   OperationId opId;
   AccessPatternKind accessPattern = AccessPatternKind::Unknown;
-  SmallVector<StringRef> iteratorTypes;
+  SmallVector<IteratorKind> iteratorTypes;
   SmallVector<AffineMap> indexingMaps;
   unsigned resultRank = 0;
   bool hasReductionIterator = false;
