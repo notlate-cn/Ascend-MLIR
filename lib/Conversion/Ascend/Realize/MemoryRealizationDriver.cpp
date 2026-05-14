@@ -411,6 +411,47 @@ MemoryRealizationDriver::materialize(const PlacementPlan &placement,
   return plan;
 }
 
+LogicalResult
+MemoryRealizationDriver::materialize(ModuleOp module,
+                                     MutableArrayRef<RealizePlanBundle> bundles,
+                                     MemoryRealizationMode mode) const {
+  for (RealizePlanBundle &bundle : bundles) {
+    FailureOr<MemoryRealizationPlan> realization =
+        materialize(bundle.placement, bundle.staticMemory, bundle.movement);
+    if (failed(realization))
+      return failure();
+    bundle.realization = std::move(*realization);
+  }
+
+  if (mode == MemoryRealizationMode::PlanOnly)
+    return success();
+
+  FailureOr<llvm::StringMap<unsigned>> annotationCounts =
+      annotateMemorySpaces(module);
+  if (failed(annotationCounts))
+    return failure();
+
+  FailureOr<llvm::StringMap<Phase5BridgeMaterializationCounts>>
+      phase5BridgeCounts = materializePhase5Bridge(module);
+  if (failed(phase5BridgeCounts))
+    return failure();
+
+  for (RealizePlanBundle &bundle : bundles) {
+    unsigned annotationCount = 0;
+    auto countIt = annotationCounts->find(bundle.kernel.kernelId);
+    if (countIt != annotationCounts->end())
+      annotationCount = countIt->second;
+    Phase5BridgeMaterializationCounts materializationCount;
+    auto bridgeIt = phase5BridgeCounts->find(bundle.kernel.kernelId);
+    if (bridgeIt != phase5BridgeCounts->end())
+      materializationCount = bridgeIt->second;
+    markMemorySpaceMaterialized(bundle.realization, annotationCount,
+                                materializationCount);
+  }
+
+  return success();
+}
+
 FailureOr<llvm::StringMap<unsigned>>
 MemoryRealizationDriver::annotateMemorySpaces(ModuleOp module) const {
   MLIRContext *context = module.getContext();
