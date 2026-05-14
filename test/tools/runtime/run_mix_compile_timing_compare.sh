@@ -17,7 +17,7 @@ runtime_verify_build_example_toolchain
 runtime_verify_build_mix_compiler
 
 EXAMPLE="examples/matmul-add-leakyrelu/run.sh"
-ARTIFACT_DIR="${PROJECT_ROOT}/build/runtime-mix-matmul-add-leakyrelu"
+ARTIFACT_DIR="${PROJECT_ROOT}/examples/matmul-add-leakyrelu/build_mainline/artifact"
 RESULTS="$(mktemp /tmp/runtime-mix-compile-timing.XXXXXX.jsonl)"
 cleanup() {
   rm -f "${RESULTS}"

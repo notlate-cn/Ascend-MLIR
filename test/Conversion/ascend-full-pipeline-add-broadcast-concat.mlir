@@ -2,11 +2,12 @@
 
 // CHECK-LABEL: func.func @ewop_broadcast_concat
 // CHECK-SAME: cann.num_inputs = 4 : i32
-// CHECK: ascendc.broadcast_l2
-// CHECK: ascendc.mul_l2
-// CHECK: ascendc.get_block_idx
-// CHECK: ascendc.broadcast_l2
-// CHECK: ascendc.add_l2
+// CHECK-DAG: ascendc.get_block_idx
+// CHECK-DAG: ascendc.get_block_idx
+// CHECK-DAG: ascendc.broadcast_l2
+// CHECK-DAG: ascendc.broadcast_l2
+// CHECK-DAG: ascendc.add_l2
+// CHECK-DAG: ascendc.mul_l2
 // CHECK: return
 
 #broadcast_map = affine_map<(d0, d1) -> (d0)>

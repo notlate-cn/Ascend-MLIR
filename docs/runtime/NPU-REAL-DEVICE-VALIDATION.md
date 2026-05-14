@@ -134,8 +134,8 @@ bash examples/matmul-add-leakyrelu/run.sh
 
 ```bash
 MANIFEST=/tmp/runtime-npu-mix-smoke.json
-ARTIFACT_ROOT=$PWD/build/runtime-mix-matmul-add-leakyrelu
-DATA_DIR=$PWD/build/runtime-mix-matmul-add-leakyrelu-data/npy
+ARTIFACT_ROOT=$PWD/examples/matmul-add-leakyrelu/build_mainline/artifact
+DATA_DIR=$PWD/examples/matmul-add-leakyrelu/build_mainline/npy
 OUTPUT=/tmp/runtime-npu-mix-output.npy
 
 bash test/tools/runtime/prepare_npu_smoke_manifests.sh mix \

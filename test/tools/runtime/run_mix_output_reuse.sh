@@ -4,13 +4,19 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/runtime_verify_env.sh"
 runtime_verify_setup_env
+export LD_LIBRARY_PATH="$(runtime_verify_runtime_ld_library_path)"
+runtime_verify_prepare_build_dir
+runtime_verify_build_runtime_core
+runtime_verify_build_example_toolchain
+runtime_verify_build_mix_compiler
 
 echo "--- Preparing mix example artifact and manifest ---"
-bash examples/matmul-add-leakyrelu/run.sh >/tmp/runtime_mix_output_reuse_setup.log 2>&1 || true
+bash examples/matmul-add-leakyrelu/run.sh >/tmp/runtime_mix_output_reuse_setup.log 2>&1
 
-MANIFEST="${PROJECT_ROOT}/build/runtime-mix-matmul-add-leakyrelu-data/runtime-manifest.json"
-ARTIFACT_DIR="${PROJECT_ROOT}/build/runtime-mix-matmul-add-leakyrelu"
-RUNTIME_SESSION="${PROJECT_ROOT}/build/runtime-mix-bootstrap/bin/runtime-session"
+BUILD_DIR="${PROJECT_ROOT}/examples/matmul-add-leakyrelu/build_mainline"
+MANIFEST="${BUILD_DIR}/run_manifest.json"
+ARTIFACT_DIR="${BUILD_DIR}/artifact"
+RUNTIME_SESSION="${PROJECT_ROOT}/build/bin/runtime-session"
 
 test -f "${MANIFEST}"
 test -x "${RUNTIME_SESSION}"

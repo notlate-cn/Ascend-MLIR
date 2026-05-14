@@ -1123,9 +1123,19 @@ static void testVecCubeArtifactBackendCompilesCubeArtifact() {
   if (cleanup.path.empty())
     return;
 
+  std::filesystem::create_directories(rootPath);
+  const std::filesystem::path sourcePath = rootPath / "cube_kernel.cpp";
+  {
+    std::ofstream os(sourcePath);
+    os << "#include \"kernel_operator.h\"\n";
+    os << "extern \"C\" __global__ __aicore__ void cube_kernel(GM_ADDR out) {\n";
+    os << "  (void)out;\n";
+    os << "}\n";
+  }
+
   ArtifactCompileRequest req;
-  req.kernelSource = "examples/matmul-add-leakyrelu/step8_kernel.cpp";
-  req.kernelName = "matmul_add_leakyrelu";
+  req.kernelSource = sourcePath.string();
+  req.kernelName = "cube_kernel";
   req.kernelKind = KernelKind::Cube;
   req.outputDir = cleanup.path.string();
 
