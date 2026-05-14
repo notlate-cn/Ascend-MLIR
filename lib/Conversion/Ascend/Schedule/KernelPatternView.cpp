@@ -121,11 +121,9 @@ buildKernelPatternViews(ModuleOp module) {
       }
 
       PatternGroup &group = groups[groupIt->second];
-      auto roleAttr = op->getAttrOfType<StringAttr>(kOpRoleAttr);
       auto primaryAttr = op->getAttrOfType<BoolAttr>(kPrimaryAttr);
       group.view.ops.push_back(PatternOpView{
-          op, nextOrdinal,
-          roleAttr ? parseOpRole(roleAttr.getValue()) : OpRole::Unknown,
+          op, nextOrdinal, deriveOpRole(op),
           primaryAttr && primaryAttr.getValue()});
       ++nextOrdinal;
       return WalkResult::advance();

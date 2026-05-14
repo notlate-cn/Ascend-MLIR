@@ -194,12 +194,34 @@ ScheduleContract buildFallbackContract(StringRef roleName) {
   return contract;
 }
 
-bool hasSchedulableRole(Operation *op, ScheduleContract &contract) {
+bool opRolesAttrHasKernelizeRole(Operation *op, StringRef roleName) {
+  auto roles = op->getAttrOfType<ArrayAttr>(kOpRolesAttr);
+  if (!roles)
+    return false;
+  for (Attribute attr : roles) {
+    auto role = dyn_cast<StringAttr>(attr);
+    if (role && role.getValue() == roleName)
+      return true;
+  }
+  return false;
+}
+
+ScheduleContract buildFallbackContract(Operation *op) {
+  if (opRolesAttrHasKernelizeRole(op, "Cube"))
+    return buildFallbackContract(kOpRoleCube);
+  if (opRolesAttrHasKernelizeRole(op, "Reduction"))
+    return buildFallbackContract(kOpRoleReduction);
+  if (opRolesAttrHasKernelizeRole(op, "Vector"))
+    return buildFallbackContract(kOpRoleVector);
+
   auto role = op->getAttrOfType<StringAttr>(kOpRoleAttr);
   if (!role || role.getValue() == kOpRoleUnsupported)
-    return false;
+    return ScheduleContract();
+  return buildFallbackContract(role.getValue());
+}
 
-  contract = buildFallbackContract(role.getValue());
+bool hasSchedulableRole(Operation *op, ScheduleContract &contract) {
+  contract = buildFallbackContract(op);
   return !contract.templateFamilies.empty();
 }
 
