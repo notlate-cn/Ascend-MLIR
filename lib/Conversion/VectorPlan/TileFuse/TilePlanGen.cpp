@@ -324,7 +324,8 @@ enumerateTilingCases(const AxisGrouping &g, const CollapsedGroupInfo &info,
 // and is what should override this).
 double costEstimate(const AxisGrouping &g, const CollapsedGroupInfo &info,
                     const DenseSet<int> &vecDims,
-                    const TilePlanDraft &draft, unsigned elemBytes) {
+                    const TilePlanDraft &draft, unsigned elemBytes,
+                    bool relaxNonBlockUbY = false) {
   // RCore (R axis as block axis, two-stage partial→combine codegen).  P3b-2a:
   // open the gate for true full-reduce (no parallel axes to dispatch over —
   // RCore is the only path to block_dim>1) and keep it ∞ everywhere else
@@ -344,8 +345,14 @@ double costEstimate(const AxisGrouping &g, const CollapsedGroupInfo &info,
   if (g.yAxes.empty())
     return kInfeasible;
   if (draft.ubTilingAxisY >= 0 &&
-      draft.ubTilingAxisY != pickBlockAxis(g, vecDims).axis)
-    return kInfeasible; // non-block ub-Y: see comment above.
+      draft.ubTilingAxisY != pickBlockAxis(g, vecDims).axis) {
+    // non-block ub-Y: see comment above. P1b/P6 path opens this up so the
+    // autotuner can empirically compare it against the block-axis ubY pick;
+    // we mark it as a soft penalty instead of kInfeasible so it survives the
+    // feasibility filter and shows up as a multi-variant codegen target.
+    if (relaxNonBlockUbY) return 1.0;
+    return kInfeasible;
+  }
   for (int r : g.rAxes) {
     if (r == draft.ubTilingAxisR)
       continue; // this R axis is ub-split → its on-chip tile is RBLOCK-bounded.
@@ -727,6 +734,34 @@ void emitTilingInfos(func::FuncOp func, const TilePlan &plan) {
     llvm::append_range(infos, existing.getValue());
   infos.push_back(entryAttrs.getDictionary(ctx));
   moduleOp->setAttr(attrName, ArrayAttr::get(ctx, infos));
+}
+
+// ===========================================================================
+// Public entry points used by VectorPlanTileFusePass for P1b multi-variant
+// codegen (one func per feasible TilePlanDraft).
+// ===========================================================================
+SmallVector<vector_plan::TilePlanDraft>
+enumerateFeasibleDrafts(const vector_plan::CollapsedGroupInfo &info,
+                        bool enableReductionSplit,
+                        bool relaxNonBlockUbY) {
+  const vector_plan::AxisGrouping &g = info.grouping;
+  unsigned elemBytes = operandElemBytes(info);
+  DenseSet<int> vecDims = computeVectorizedDims(info);
+  auto drafts = enumerateTilingCases(g, info, enableReductionSplit, elemBytes);
+  SmallVector<vector_plan::TilePlanDraft> feasible;
+  for (const auto &d : drafts) {
+    double s = costEstimate(g, info, vecDims, d, elemBytes, relaxNonBlockUbY);
+    if (s < kInfeasible) feasible.push_back(d);
+  }
+  return feasible;
+}
+
+vector_plan::TilePlan
+buildPlanForDraft(func::FuncOp func,
+                  const vector_plan::CollapsedGroupInfo &info,
+                  const vector_plan::TilePlanDraft &draft,
+                  OpBuilder &builder, Location loc) {
+  return buildPlan(func, info, info.grouping, draft, builder, loc);
 }
 
 } // namespace mlir::afir

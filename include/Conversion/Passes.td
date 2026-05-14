@@ -476,12 +476,19 @@ def VectorPlanGroupOutline : Pass<"vector-plan-group-outline", "mlir::ModuleOp">
   let dependentDialects = ["mlir::func::FuncDialect", "mlir::linalg::LinalgDialect"];
 }
 
-def VectorPlanTileFuse : Pass<"vector-plan-tile-fuse", "mlir::func::FuncOp"> {
-  let summary = "Tile and fuse kernel group func";
+def VectorPlanTileFuse : Pass<"vector-plan-tile-fuse", "mlir::ModuleOp"> {
+  let summary = "Tile and fuse kernel group funcs (multi-variant codegen, P1b)";
   let constructor = "mlir::afir::createVectorPlanTileFusePass()";
   let options = [
     Option<"enableCollapse",       "enable-collapse",        "bool",    "true",  "">,
     Option<"enableReductionSplit", "enable-reduction-split", "bool",    "false", "">,
+    Option<"enableTilingVariants", "enable-tiling-variants", "bool",    "true",
+           "P1b: emit one func per feasible TilePlanDraft (kernel_<name>__v<i>); "
+           "when false, fall back to single-variant pickBest behavior (legacy).">,
+    Option<"relaxNonBlockUbY",     "relax-non-block-uby",    "bool",    "true",
+           "P6: when true, non-block ub-Y drafts pass the feasibility filter "
+           "with a soft penalty so the autotuner can profile them as separate "
+           "variants. No effect if enable-tiling-variants is false.">,
     Option<"hwMatmulMAlign",       "hw-matmul-m-align",      "int64_t", "16",    "">,
     Option<"hwMatmulNAlign",       "hw-matmul-n-align",      "int64_t", "16",    "">,
     Option<"hwMatmulKAlign",       "hw-matmul-k-align",      "int64_t", "16",    "">,

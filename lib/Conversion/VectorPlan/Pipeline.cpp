@@ -70,7 +70,9 @@ void registerVectorPlanPipeline() {
         // afir.symbolic_shapes / afir.iter_extents on the ops) so tile-fuse can
         // carry the symbolic axis extents through to the AscendC kernel.
         pm.addNestedPass<func::FuncOp>(mlir::createAFIRSymbolizeShapesPass());
-        pm.addNestedPass<func::FuncOp>(createVectorPlanTileFusePass());
+        // P1b: TileFuse is now a ModuleOp pass (it may emit multiple
+        // <name>__v<i> sibling funcs from one outlined group).
+        pm.addPass(createVectorPlanTileFusePass());
         // Fold tensor.dim on statically-known dimensions (e.g. the size-1
         // broadcast axis) before bufferization so that subview size operands
         // become constants rather than dynamic memref.dim values.

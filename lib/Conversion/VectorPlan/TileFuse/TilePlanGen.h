@@ -21,4 +21,23 @@ genVectorTilePlan(mlir::func::FuncOp func,
 void emitTilingInfos(mlir::func::FuncOp func,
                      const mlir::vector_plan::TilePlan &plan);
 
+/// P1b: enumerate every feasible TilePlanDraft for `info`. When
+/// `relaxNonBlockUbY=true` (P6 default) the non-block ub-Y drafts survive
+/// the feasibility filter with a soft penalty, so the autotuner can profile
+/// them as separate variants alongside the block-axis ub-Y pick.
+llvm::SmallVector<mlir::vector_plan::TilePlanDraft>
+enumerateFeasibleDrafts(const mlir::vector_plan::CollapsedGroupInfo &info,
+                        bool enableReductionSplit,
+                        bool relaxNonBlockUbY);
+
+/// P1b: materialize a specific draft into a TilePlan, mutating `func` (adds
+/// the tile-size BlockArguments). Caller owns the scheduling choice instead
+/// of letting `genVectorTilePlan`'s feasibility-only pickBest decide.
+mlir::vector_plan::TilePlan
+buildPlanForDraft(mlir::func::FuncOp func,
+                  const mlir::vector_plan::CollapsedGroupInfo &info,
+                  const mlir::vector_plan::TilePlanDraft &draft,
+                  mlir::OpBuilder &builder,
+                  mlir::Location loc);
+
 } // namespace mlir::afir
