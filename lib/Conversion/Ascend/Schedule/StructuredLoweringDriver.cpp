@@ -174,11 +174,15 @@ LogicalResult preserveFunctionScheduleMetadata(Operation *op,
     return success();
 
   // Phase 5 artifacts currently model one primary global kernel per function.
-  // If multiple scheduled kernels exist, keep the first stable traversal result.
   bool hasSelectedTileShape = funcOp->hasAttr(kScheduleSelectedTileShapeAttr);
+  bool hasGuardMarkers = funcOp->hasAttr(kScheduleGuardMarkersAttr);
   bool hasTailPolicies = funcOp->hasAttr(kScheduleTailPoliciesAttr);
   bool hasTailPlan = funcOp->hasAttr(kScheduleTailPlanAttr);
-  bool hasAnyMetadata = hasSelectedTileShape || hasTailPolicies || hasTailPlan;
+  bool hasTailMarkers = funcOp->hasAttr(kScheduleTailMarkersAttr);
+  bool hasTargetTilePolicy = funcOp->hasAttr(kScheduleTargetTilePolicyAttr);
+  bool hasAnyMetadata = hasSelectedTileShape || hasGuardMarkers ||
+                        hasTailPolicies || hasTailPlan || hasTailMarkers ||
+                        hasTargetTilePolicy;
   bool hasAllMetadata = hasSelectedTileShape && hasTailPolicies && hasTailPlan;
   if (hasAnyMetadata && !hasAllMetadata)
     return funcOp.emitError()
@@ -186,8 +190,25 @@ LogicalResult preserveFunctionScheduleMetadata(Operation *op,
            << kScheduleSelectedTileShapeAttr << ", "
            << kScheduleTailPoliciesAttr << ", and "
            << kScheduleTailPlanAttr << " together";
-  if (hasAllMetadata)
-    return success();
+
+  auto metadataMatches = [&](StringRef name, Attribute expected) {
+    Attribute existing = funcOp->getAttr(name);
+    return existing && existing == expected;
+  };
+  if (hasAllMetadata) {
+    if (metadataMatches(kScheduleSelectedTileShapeAttr, selectedTileShape) &&
+        metadataMatches(kScheduleGuardMarkersAttr, guardMarkers) &&
+        metadataMatches(kScheduleTailPoliciesAttr, tailPolicies) &&
+        metadataMatches(kScheduleTailPlanAttr, tailPlan) &&
+        metadataMatches(kScheduleTailMarkersAttr, tailMarkers) &&
+        metadataMatches(kScheduleTargetTilePolicyAttr, targetTilePolicy))
+      return success();
+
+    return funcOp.emitError()
+           << "function contains multiple kernels with conflicting schedule "
+              "metadata; function-scoped schedule metadata currently requires "
+              "one shared schedule";
+  }
 
   funcOp->setAttr(kScheduleSelectedTileShapeAttr, selectedTileShape);
   funcOp->setAttr(kScheduleGuardMarkersAttr, guardMarkers);
