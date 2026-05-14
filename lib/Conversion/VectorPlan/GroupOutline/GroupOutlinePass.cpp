@@ -256,7 +256,6 @@ static void stripVectorPlanAttrs(ModuleOp module) {
 //===----------------------------------------------------------------------===//
 
 static LogicalResult emitFiles(ModuleOp module,
-                                ArrayRef<int32_t> sortedGroupIds,
                                 StringRef outputDir,
                                 func::FuncOp coordFunc) {
   if (auto ec = llvm::sys::fs::create_directories(outputDir); ec)
@@ -264,28 +263,25 @@ static LogicalResult emitFiles(ModuleOp module,
 
   OpBuilder b(module.getContext());
 
-  for (int32_t gid : sortedGroupIds) {
-    // Find the kernel func for this group
-    std::string name = ("kernel_group" + llvm::Twine(gid)).str();
-    func::FuncOp kernelFunc;
-    module.walk([&](func::FuncOp f) -> WalkResult {
-      if (f.getSymName() == name) {
-        kernelFunc = f;
-        return WalkResult::interrupt();
-      }
-      return WalkResult::advance();
-    });
-    if (!kernelFunc)
-      continue;
+  // Discover private kernel funcs by name prefix.  Covers both the
+  // numerically-named groups emitted by this pass (`kernel_groupN`) and any
+  // post-split derivatives such as `kernel_groupN_partial` /
+  // `kernel_groupN_combine` produced by SplitRCoreGroup.
+  SmallVector<func::FuncOp> kernelFuncs;
+  module.walk([&](func::FuncOp f) {
+    if (f.isPrivate() && !f.getBody().empty() &&
+        f.getSymName().starts_with("kernel_group"))
+      kernelFuncs.push_back(f);
+  });
 
-    // Create a temporary sub-module containing only this kernel func
+  for (func::FuncOp kernelFunc : kernelFuncs) {
     OwningOpRef<ModuleOp> subMod =
         ModuleOp::create(module.getLoc());
     b.setInsertionPointToStart(subMod->getBody());
     b.clone(*kernelFunc);
 
     std::string filename =
-        (outputDir + "/kernel_group" + llvm::Twine(gid) + ".mlir").str();
+        (outputDir + "/" + kernelFunc.getSymName() + ".mlir").str();
     std::error_code ec;
     llvm::raw_fd_ostream os(filename, ec);
     if (ec)
@@ -294,16 +290,9 @@ static LogicalResult emitFiles(ModuleOp module,
   }
 
   // Strip kernel func bodies from the main module → coordinator + declarations
-  for (int32_t gid : sortedGroupIds) {
-    std::string name = ("kernel_group" + llvm::Twine(gid)).str();
-    module.walk([&](func::FuncOp f) -> WalkResult {
-      if (f.getSymName() == name) {
-        f.eraseBody();
-        f.setVisibility(SymbolTable::Visibility::Private);
-        return WalkResult::interrupt();
-      }
-      return WalkResult::advance();
-    });
+  for (func::FuncOp kernelFunc : kernelFuncs) {
+    kernelFunc.eraseBody();
+    kernelFunc.setVisibility(SymbolTable::Visibility::Private);
   }
 
   std::string netFile = (outputDir + "/network.mlir").str();
@@ -396,10 +385,18 @@ struct VectorPlanGroupOutlinePass
     // Step 7: Strip all vector_plan.* attributes
     stripVectorPlanAttrs(module);
 
+    // Step 7b: Optionally split full-reduce kernels into partial+combine pairs
+    // (RCore template). Models AF's GeneratorRCoreTask / phase_1+phase_2 graph
+    // split — see plan docs/superpowers/plans/2026-05-14-p3b-rcore-reduce-
+    // multicore.zh.md §5. emitFiles below walks private kernel funcs by name
+    // prefix so it picks up both original and post-split variants uniformly.
+    if (enableRCoreSplit)
+      (void)splitRCoreGroupsInPlace(module, rcoreParallelSlots);
+
     // Step 8: Optional file split when outputDir is set
     std::string outDir = outputDir.getValue();
     if (!outDir.empty()) {
-      if (failed(emitFiles(module, sortedGroupIds, outDir, coordFunc)))
+      if (failed(emitFiles(module, outDir, coordFunc)))
         return signalPassFailure();
     }
   }

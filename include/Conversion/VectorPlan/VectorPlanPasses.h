@@ -15,6 +15,13 @@ std::unique_ptr<Pass> createVectorPlanInsertTileBuffersPass();
 std::unique_ptr<Pass> createVectorPlanFoldShadowAllocPass();
 std::unique_ptr<Pass> createVectorPlanIsolateKernelOutputsPass();
 std::unique_ptr<Pass> createVectorPlanSplitRCoreGroupPass();
+
+// Split every full-reduce private kernel func in `module` into a partial +
+// combine pair (RCore template), rewriting coordinator call sites
+// accordingly.  Same logic as the standalone pass; exposed so GroupOutline
+// can invoke it between the structural transform and file emit.
+// Returns the number of kernels that were actually split (≥ 0).
+unsigned splitRCoreGroupsInPlace(mlir::ModuleOp module, int64_t parallelSlots);
 void populateBroadcastAbsorbPatterns(mlir::RewritePatternSet &patterns);
 
 void registerVectorPlanPipeline();

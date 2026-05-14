@@ -86,6 +86,39 @@ llvm::Error emitNetworkJson(mlir::ModuleOp module, mlir::func::FuncOp coord,
         valueSource[castOp.getResult()] = it->second;
       continue;
     }
+    if (auto expandOp = mlir::dyn_cast<mlir::tensor::ExpandShapeOp>(&op)) {
+      // Same-buffer view alias (used by SplitRCoreGroup to chunk an R-axis
+      // input into [N, K] before calling the partial kernel).  Propagate the
+      // source descriptor BUT override its shape/dtype with the expanded
+      // view's so downstream kernel arg descriptors and the network_runner
+      // shape-key resolver see the rank that the kernel actually consumes.
+      auto it = valueSource.find(expandOp.getSrc());
+      if (it != valueSource.end()) {
+        llvm::json::Object src = it->second;
+        if (auto rt = mlir::dyn_cast<mlir::RankedTensorType>(
+                expandOp.getResult().getType())) {
+          auto desc = tensorDescriptor(rt);
+          src["shape"] = std::move(desc["shape"]);
+          src["dtype"] = std::move(desc["dtype"]);
+        }
+        valueSource[expandOp.getResult()] = std::move(src);
+      }
+      continue;
+    }
+    if (auto collapseOp = mlir::dyn_cast<mlir::tensor::CollapseShapeOp>(&op)) {
+      auto it = valueSource.find(collapseOp.getSrc());
+      if (it != valueSource.end()) {
+        llvm::json::Object src = it->second;
+        if (auto rt = mlir::dyn_cast<mlir::RankedTensorType>(
+                collapseOp.getResult().getType())) {
+          auto desc = tensorDescriptor(rt);
+          src["shape"] = std::move(desc["shape"]);
+          src["dtype"] = std::move(desc["dtype"]);
+        }
+        valueSource[collapseOp.getResult()] = std::move(src);
+      }
+      continue;
+    }
 
     if (auto retOp = mlir::dyn_cast<mlir::func::ReturnOp>(&op)) {
       for (auto [idx, operand] : llvm::enumerate(retOp.getOperands())) {

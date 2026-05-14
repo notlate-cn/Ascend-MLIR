@@ -232,6 +232,11 @@ def _resolve_kernel_input_shape(network, kid, arg_idx, runner_inputs):
     import numpy as np
     k = network.kernel_by_id(kid)
     arg = k["args"][arg_idx]
+    # An arg propagated through tensor.expand_shape / collapse_shape carries an
+    # explicit shape override (the rank the kernel actually consumes), distinct
+    # from the underlying buffer's shape at the network input.  Prefer that.
+    if "shape" in arg:
+        return tuple(arg["shape"])
     if arg["from"] == "input":
         # find this input's index in network.inputs
         for i, inp in enumerate(network.inputs):
@@ -371,11 +376,14 @@ def _shape_keys_needed(space: dict) -> list[str]:
     return keys
 
 
-def _shape_arg_for_kernel(inter: Path, kid: str, space: dict) -> str:
+def _shape_arg_for_kernel(inter: Path, kid: str, space: dict,
+                            network=None, kernel_id_in_network: str = None,
+                            runner_inputs=None) -> str:
     """Build the --shape KEY=VAL,... string for autotuner.
 
-    shape_key format is `arg<i>_dim<j>` — resolve by reading the dumped
-    intermediate input npy and indexing its .shape[j].
+    shape_key format is `arg<i>_dim<j>`.  Prefer the network.json descriptor
+    (which honors expand_shape / collapse_shape rank overrides from
+    SplitRCoreGroup) when available; fall back to reading the dumped npy.
     """
     import numpy as np
     import re
@@ -385,10 +393,19 @@ def _shape_arg_for_kernel(inter: Path, kid: str, space: dict) -> str:
         if not m:
             sys.exit(f"phase 4: unsupported shape_key format: {key}")
         arg_idx, dim_idx = int(m.group(1)), int(m.group(2))
-        npy = inter / f"{kid}_in_{arg_idx}.npy"
-        if not npy.exists():
-            sys.exit(f"phase 4: missing dumped input for shape_key {key}: {npy}")
-        shape = np.load(npy).shape
+        shape = None
+        if network is not None and kernel_id_in_network is not None \
+                and runner_inputs is not None:
+            try:
+                shape = _resolve_kernel_input_shape(
+                    network, kernel_id_in_network, arg_idx, runner_inputs)
+            except Exception:
+                shape = None
+        if shape is None:
+            npy = inter / f"{kid}_in_{arg_idx}.npy"
+            if not npy.exists():
+                sys.exit(f"phase 4: missing dumped input for shape_key {key}: {npy}")
+            shape = np.load(npy).shape
         if dim_idx >= len(shape):
             sys.exit(f"phase 4: shape_key {key} dim out of range for shape {shape}")
         parts.append(f"{key}={shape[dim_idx]}")
@@ -431,7 +448,10 @@ def phase4_autotune(work, network, inter, args):
         if not out0_npy.exists():
             sys.exit(f"phase 4: missing {out0_npy}")
 
-        shape_arg = _shape_arg_for_kernel(inter, default_vkid, space)
+        shape_arg = _shape_arg_for_kernel(inter, default_vkid, space,
+                                            network=network,
+                                            kernel_id_in_network=kid,
+                                            runner_inputs=args.inputs)
         best_path = work / f"{kid}_best.json"
         profile_dir = work / f"{kid}_autotune_profile"
         profile_dir.mkdir(parents=True, exist_ok=True)

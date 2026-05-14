@@ -470,8 +470,12 @@ def VectorPlanGroupOutline : Pass<"vector-plan-group-outline", "mlir::ModuleOp">
   let summary = "Outline annotated fusion groups into kernel funcs";
   let constructor = "mlir::afir::createVectorPlanGroupOutlinePass()";
   let options = [
-    Option<"kernelFuncPrefix", "kernel-func-prefix", "std::string", "\"kernel_group\"", "">,
-    Option<"outputDir",        "output-dir",         "std::string", "\"\"",             "">,
+    Option<"kernelFuncPrefix",   "kernel-func-prefix",   "std::string", "\"kernel_group\"", "">,
+    Option<"outputDir",          "output-dir",           "std::string", "\"\"",             "">,
+    Option<"enableRCoreSplit",   "enable-rcore-split",   "bool",        "true",
+           "Run vector-plan-split-rcore-group between outline + file emit">,
+    Option<"rcoreParallelSlots", "rcore-parallel-slots", "int64_t",     "8",
+           "Target N for RCore split (largest divisor of R ≤ this)">,
   ];
   let dependentDialects = ["mlir::func::FuncDialect", "mlir::linalg::LinalgDialect"];
 }
