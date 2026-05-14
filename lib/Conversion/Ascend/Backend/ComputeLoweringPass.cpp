@@ -6,15 +6,13 @@
 
 #include "Conversion/Ascend/Backend/ComputeLoweringPass.h"
 #include "Conversion/Ascend/Backend/BackendSupportMatrix.h"
-#include "Conversion/Ascend/Common/Attributes.h"
+#include "Conversion/Ascend/Backend/LinalgBodyClassifier.h"
 #include "Conversion/LinalgToAscendC/LinalgToAscendCUtils.h"
 
-#include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/IR/BuiltinTypes.h"
-#include "llvm/ADT/STLExtras.h"
 
 #include "ascir/Dialect/Asc/IR/Asc.h"
 #include "ascir/Dialect/EmitAsc/IR/EmitAsc.h"
@@ -35,149 +33,6 @@ MemorySpace memorySpaceOf(Type type) {
   return backend::parseMemorySpace(getMemorySpace(type));
 }
 
-bool isSupportedAddReductionBody(linalg::GenericOp generic) {
-  if (!llvm::is_contained(generic.getIteratorTypesArray(),
-                          utils::IteratorType::reduction))
-    return false;
-
-  Block *body = generic.getBody();
-  auto yieldOp = dyn_cast<linalg::YieldOp>(body->getTerminator());
-  if (!yieldOp || yieldOp.getNumOperands() != 1)
-    return false;
-
-  if (!yieldOp.getOperand(0).getDefiningOp<arith::AddFOp>())
-    return false;
-
-  for (Operation &bodyOp : body->without_terminator()) {
-    if (!isa<arith::AddFOp, arith::ConstantOp>(bodyOp))
-      return false;
-  }
-
-  return true;
-}
-
-bool isSupportedFusedElementwiseBody(linalg::GenericOp generic) {
-  if (!llvm::all_of(generic.getIteratorTypesArray(), [](utils::IteratorType it) {
-        return it == utils::IteratorType::parallel;
-      }))
-    return false;
-
-  Block *body = generic.getBody();
-  auto yieldOp = dyn_cast<linalg::YieldOp>(body->getTerminator());
-  if (!yieldOp || yieldOp.getNumOperands() != 1)
-    return false;
-
-  Operation *lastArithOp = nullptr;
-  Value previousResult;
-  for (Operation &bodyOp : body->without_terminator()) {
-    if (!isa<arith::AddFOp, arith::MulFOp, arith::MaximumFOp,
-             arith::ConstantOp>(bodyOp))
-      return false;
-
-    if (isa<arith::ConstantOp>(bodyOp))
-      continue;
-
-    if (bodyOp.getNumOperands() != 2 || bodyOp.getNumResults() != 1)
-      return false;
-
-    auto isAvailableOperand = [&](Value value) {
-      if (isa<BlockArgument>(value))
-        return true;
-      if (value.getDefiningOp<arith::ConstantOp>())
-        return true;
-      return previousResult && value == previousResult;
-    };
-    if (!llvm::all_of(bodyOp.getOperands(), isAvailableOperand))
-      return false;
-
-    previousResult = bodyOp.getResult(0);
-    lastArithOp = &bodyOp;
-  }
-
-  return lastArithOp && yieldOp.getOperand(0) == lastArithOp->getResult(0);
-}
-
-bool isSupportedVectorGatherBody(linalg::GenericOp generic) {
-  if (!generic->hasAttr(ascend::kGatherDimAttr))
-    return false;
-  if (!llvm::all_of(generic.getIteratorTypesArray(),
-                    [](utils::IteratorType it) {
-                      return it == utils::IteratorType::parallel;
-                    }))
-    return false;
-
-  bool sawLoad = false;
-  Value previousResult;
-  for (Operation &bodyOp : generic.getBody()->without_terminator()) {
-    if (isa<linalg::IndexOp, arith::IndexCastOp>(bodyOp))
-      continue;
-    if (isa<memref::LoadOp>(bodyOp)) {
-      if (sawLoad)
-        return false;
-      sawLoad = true;
-      previousResult = bodyOp.getResult(0);
-      continue;
-    }
-    if (isa<arith::AddFOp, arith::MulFOp, arith::MaximumFOp>(bodyOp)) {
-      if (!sawLoad)
-        return false;
-      if (bodyOp.getNumOperands() != 2 || bodyOp.getNumResults() != 1)
-        return false;
-      auto isAvailableOperand = [&](Value value) {
-        if (isa<BlockArgument>(value))
-          return true;
-        if (value.getDefiningOp<arith::ConstantOp>())
-          return true;
-        return previousResult && value == previousResult;
-      };
-      if (!llvm::all_of(bodyOp.getOperands(), isAvailableOperand))
-        return false;
-      previousResult = bodyOp.getResult(0);
-      continue;
-    }
-    return false;
-  }
-
-  auto yieldOp = dyn_cast<linalg::YieldOp>(generic.getBody()->getTerminator());
-  return sawLoad && previousResult && yieldOp && yieldOp.getNumOperands() == 1 &&
-         yieldOp.getOperand(0) == previousResult;
-}
-
-ComputeKind classifyLinalgOp(Operation *op) {
-  if (isa<linalg::MatmulOp>(op))
-    return ComputeKind::Matmul;
-  if (isa<linalg::FillOp>(op))
-    return ComputeKind::Fill;
-  if (auto transpose = dyn_cast<linalg::TransposeOp>(op)) {
-    FailureOr<TransposeLoweringSpec> spec = buildTransposeLoweringSpec(transpose);
-    if (succeeded(spec) &&
-        planTransposeLowering(*spec).kind != TransposeLoweringKind::Unsupported)
-      return ComputeKind::Transpose;
-  }
-  if (auto elementwise = dyn_cast<linalg::ElementwiseOp>(op)) {
-    auto kind = elementwise.getKind();
-    if (kind == linalg::ElementwiseKind::add)
-      return ComputeKind::ElementwiseAdd;
-    if (kind == linalg::ElementwiseKind::mul)
-      return ComputeKind::ElementwiseMul;
-    if (kind == linalg::ElementwiseKind::max_signed)
-      return ComputeKind::ElementwiseMax;
-  }
-  if (auto generic = dyn_cast<linalg::GenericOp>(op)) {
-    FailureOr<TransposeLoweringSpec> spec = buildTransposeLoweringSpec(generic);
-    if (succeeded(spec) &&
-        planTransposeLowering(*spec).kind != TransposeLoweringKind::Unsupported)
-      return ComputeKind::Transpose;
-    if (isSupportedVectorGatherBody(generic))
-      return ComputeKind::VectorGather;
-    if (isSupportedAddReductionBody(generic))
-      return ComputeKind::ReductionAdd;
-    if (isSupportedFusedElementwiseBody(generic))
-      return ComputeKind::FusedElementwise;
-  }
-  return ComputeKind::Unknown;
-}
-
 LogicalResult verifySupportedInputs(func::FuncOp funcOp,
                                     const AscendBackendSupportMatrix &matrix) {
   WalkResult result = funcOp.walk([&](memref::CopyOp copyOp) {
@@ -195,7 +50,7 @@ LogicalResult verifySupportedInputs(func::FuncOp funcOp,
   result = funcOp.walk([&](Operation *op) {
     if (!isa<linalg::LinalgOp>(op))
       return WalkResult::advance();
-    ComputeKind kind = classifyLinalgOp(op);
+    ComputeKind kind = backend::classifyLinalgComputeKind(op, matrix);
     if (matrix.isSupportedComputeKind(kind))
       return WalkResult::advance();
     backend::UnsupportedReason reason = matrix.explainComputeKind(kind);

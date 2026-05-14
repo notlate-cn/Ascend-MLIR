@@ -6,6 +6,7 @@
 
 #include "Conversion/Ascend/Realize/MemoryRealizationDriver.h"
 
+#include "Conversion/Ascend/Backend/LinalgBodyClassifier.h"
 #include "Target/Ascend/TargetProfile.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
@@ -88,169 +89,19 @@ static void annotateAscendCUnits(ModuleOp module) {
   });
 }
 
-static bool isSupportedPhase5GenericBody(linalg::GenericOp generic) {
-  Block *body = generic.getBody();
-  auto yieldOp = dyn_cast<linalg::YieldOp>(body->getTerminator());
-  if (!yieldOp || yieldOp.getNumOperands() != 1)
-    return false;
-
-  Operation *lastArithOp = nullptr;
-  Value previousResult;
-  for (Operation &bodyOp : body->without_terminator()) {
-    if (isa<arith::ConstantOp>(bodyOp))
-      continue;
-    if (!isa<arith::AddFOp, arith::MulFOp, arith::MaximumFOp>(bodyOp))
-      return false;
-    if (bodyOp.getNumOperands() != 2 || bodyOp.getNumResults() != 1)
-      return false;
-
-    auto isAvailableOperand = [&](Value value) {
-      if (isa<BlockArgument>(value))
-        return true;
-      if (value.getDefiningOp<arith::ConstantOp>())
-        return true;
-      return previousResult && value == previousResult;
-    };
-    if (!llvm::all_of(bodyOp.getOperands(), isAvailableOperand))
-      return false;
-
-    previousResult = bodyOp.getResult(0);
-    lastArithOp = &bodyOp;
-  }
-
-  return lastArithOp && yieldOp.getOperand(0) == lastArithOp->getResult(0);
-}
-
-static bool isSupportedPhase5ReductionBody(linalg::GenericOp generic) {
-  if (!llvm::is_contained(generic.getIteratorTypesArray(),
-                          utils::IteratorType::reduction))
-    return false;
-
-  Block *body = generic.getBody();
-  auto yieldOp = dyn_cast<linalg::YieldOp>(body->getTerminator());
-  if (!yieldOp || yieldOp.getNumOperands() != 1)
-    return false;
-
-  Operation *lastAdd = nullptr;
-  for (Operation &bodyOp : body->without_terminator()) {
-    if (isa<arith::ConstantOp>(bodyOp))
-      continue;
-    if (!isa<arith::AddFOp>(bodyOp))
-      return false;
-    lastAdd = &bodyOp;
-  }
-
-  return lastAdd && yieldOp.getOperand(0) == lastAdd->getResult(0);
-}
-
-static bool hasIdentityOutputMaps(linalg::LinalgOp linalgOp) {
-  SmallVector<AffineMap> maps = linalgOp.getIndexingMapsArray();
-  unsigned firstOutputMap = linalgOp.getNumDpsInputs();
-  size_t expectedMapCount = static_cast<size_t>(firstOutputMap) +
-                            static_cast<size_t>(linalgOp.getNumDpsInits());
-  if (maps.size() < expectedMapCount)
-    return false;
-
-  for (unsigned i = 0, e = linalgOp.getNumDpsInits(); i < e; ++i)
-    if (!maps[firstOutputMap + i].isIdentity())
-      return false;
-  return true;
-}
-
-static bool isSupportedPhase5VectorOutput(linalg::LinalgOp linalgOp) {
-  if (!isVectorOp(linalgOp.getOperation()))
-    return false;
-  if (!llvm::all_of(linalgOp.getIteratorTypesArray(),
-                    [](utils::IteratorType iteratorType) {
-                      return iteratorType == utils::IteratorType::parallel;
-                    }))
-    return false;
-  if (!hasIdentityOutputMaps(linalgOp))
-    return false;
-
-  if (auto generic = dyn_cast<linalg::GenericOp>(linalgOp.getOperation()))
-    return isSupportedPhase5GenericBody(generic);
-
-  if (auto elementwise =
-          dyn_cast<linalg::ElementwiseOp>(linalgOp.getOperation())) {
-    auto kind = elementwise.getKind();
-    return kind == linalg::ElementwiseKind::add ||
-           kind == linalg::ElementwiseKind::mul ||
-           kind == linalg::ElementwiseKind::max_signed;
-  }
-
-  return false;
-}
-
-static bool isSupportedPhase5GatherOutput(linalg::LinalgOp linalgOp) {
-  auto generic = dyn_cast<linalg::GenericOp>(linalgOp.getOperation());
-  if (!generic || !generic->hasAttr(kGatherDimAttr))
-    return false;
-  if (!llvm::all_of(generic.getIteratorTypesArray(),
-                    [](utils::IteratorType iteratorType) {
-                      return iteratorType == utils::IteratorType::parallel;
-                    }))
-    return false;
-  if (!hasIdentityOutputMaps(generic))
-    return false;
-
-  bool sawLoad = false;
-  Value previousResult;
-  for (Operation &bodyOp : generic.getBody()->without_terminator()) {
-    if (isa<linalg::IndexOp, arith::IndexCastOp>(bodyOp))
-      continue;
-    if (isa<memref::LoadOp>(bodyOp)) {
-      if (sawLoad)
-        return false;
-      sawLoad = true;
-      previousResult = bodyOp.getResult(0);
-      continue;
-    }
-    if (isa<arith::AddFOp, arith::MulFOp, arith::MaximumFOp>(bodyOp)) {
-      if (!sawLoad)
-        return false;
-      if (bodyOp.getNumOperands() != 2 || bodyOp.getNumResults() != 1)
-        return false;
-      auto isAvailableOperand = [&](Value value) {
-        if (isa<BlockArgument>(value))
-          return true;
-        if (value.getDefiningOp<arith::ConstantOp>())
-          return true;
-        return previousResult && value == previousResult;
-      };
-      if (!llvm::all_of(bodyOp.getOperands(), isAvailableOperand))
-        return false;
-      previousResult = bodyOp.getResult(0);
-      continue;
-    }
-    return false;
-  }
-
-  auto yieldOp = dyn_cast<linalg::YieldOp>(generic.getBody()->getTerminator());
-  return sawLoad && previousResult && yieldOp && yieldOp.getNumOperands() == 1 &&
-         yieldOp.getOperand(0) == previousResult;
-}
-
 static bool isReductionInitFillForWriter(Operation *user, Operation *writer,
-                                         Value output) {
+                                         Value output,
+                                         const backend::AscendBackendSupportMatrix
+                                             &matrix) {
   auto fillOp = dyn_cast<linalg::FillOp>(user);
   auto generic = dyn_cast<linalg::GenericOp>(writer);
-  if (!fillOp || !generic || !isSupportedPhase5ReductionBody(generic))
+  if (!fillOp || !generic ||
+      !backend::isSupportedPhase5ReductionBody(generic, matrix))
     return false;
 
   if (!llvm::is_contained(fillOp.getOutputs(), output))
     return false;
   return llvm::is_contained(generic.getDpsInits(), output);
-}
-
-static bool isSupportedPhase5FinalOutput(linalg::LinalgOp linalgOp) {
-  if (isSupportedPhase5VectorOutput(linalgOp))
-    return true;
-  if (isSupportedPhase5GatherOutput(linalgOp))
-    return true;
-
-  auto generic = dyn_cast<linalg::GenericOp>(linalgOp.getOperation());
-  return generic && isSupportedPhase5ReductionBody(generic);
 }
 
 static bool isAllowedExternalOutputUse(Operation *user,
@@ -277,13 +128,15 @@ static bool isAllowedExternalOutputUse(Operation *user,
   return false;
 }
 
-static bool isFinalKernelOutput(Value value, Operation *writer) {
+static bool isFinalKernelOutput(Value value, Operation *writer,
+                                const backend::AscendBackendSupportMatrix
+                                    &matrix) {
   bool hasExternalUse = false;
   llvm::DenseSet<Operation *> visited;
   for (Operation *user : value.getUsers()) {
     if (user == writer)
       continue;
-    if (isReductionInitFillForWriter(user, writer, value))
+    if (isReductionInitFillForWriter(user, writer, value, matrix))
       continue;
 
     if (auto castOp = dyn_cast<memref::CastOp>(user))
@@ -509,7 +362,9 @@ static bool isDpsInputOperand(linalg::LinalgOp linalgOp,
 }
 
 static bool collectSafeCubeVectorUses(linalg::MatmulOp matmulOp,
-                                      SmallVectorImpl<OpOperand *> &uses) {
+                                      SmallVectorImpl<OpOperand *> &uses,
+                                      const backend::AscendBackendSupportMatrix
+                                          &matrix) {
   Operation *matmul = matmulOp.getOperation();
   StringRef kernelId = getKernelId(matmul);
   Value output = matmulOp.getDpsInitOperand(0)->get();
@@ -525,7 +380,7 @@ static bool collectSafeCubeVectorUses(linalg::MatmulOp matmulOp,
     if (!linalgUser || getKernelId(user) != kernelId ||
         user->getBlock() != matmul->getBlock() ||
         !matmul->isBeforeInBlock(user) ||
-        !isSupportedPhase5VectorOutput(linalgUser) ||
+        !backend::isSupportedPhase5VectorOutput(linalgUser, matrix) ||
         !isDpsInputOperand(linalgUser, &use))
       return false;
 
@@ -616,6 +471,7 @@ FailureOr<llvm::StringMap<Phase5BridgeMaterializationCounts>>
 MemoryRealizationDriver::materializePhase5Bridge(ModuleOp module) const {
   MLIRContext *context = module.getContext();
   annotateAscendCUnits(module);
+  backend::AscendBackendSupportMatrix matrix;
 
   Attribute a1Space = getMemorySpaceAttr(context, kA1MemorySpace);
   Attribute a2Space = getMemorySpaceAttr(context, kA2MemorySpace);
@@ -633,7 +489,7 @@ MemoryRealizationDriver::materializePhase5Bridge(ModuleOp module) const {
 
     Value originalOutput = matmulOp.getDpsInitOperand(0)->get();
     SmallVector<OpOperand *, 4> vectorInputUses;
-    if (!collectSafeCubeVectorUses(matmulOp, vectorInputUses))
+    if (!collectSafeCubeVectorUses(matmulOp, vectorInputUses, matrix))
       return;
 
     cubeBridges.push_back({matmulOp, matmulOp.getDpsInputOperand(0)->get(),
@@ -644,7 +500,7 @@ MemoryRealizationDriver::materializePhase5Bridge(ModuleOp module) const {
 
   SmallVector<Phase5BridgeOutput, 4> outputsToBridge;
   module.walk([&](linalg::LinalgOp linalgOp) {
-    if (!isSupportedPhase5FinalOutput(linalgOp))
+    if (!backend::isSupportedPhase5FinalOutput(linalgOp, matrix))
       return;
 
     Operation *op = linalgOp.getOperation();
@@ -664,7 +520,7 @@ MemoryRealizationDriver::materializePhase5Bridge(ModuleOp module) const {
         continue;
 
       memref::CopyOp concatCopy;
-      if (!isFinalKernelOutput(init, op)) {
+      if (!isFinalKernelOutput(init, op, matrix)) {
         concatCopy = findSupportedConcatCopyUse(init, op);
         if (!concatCopy)
           continue;
