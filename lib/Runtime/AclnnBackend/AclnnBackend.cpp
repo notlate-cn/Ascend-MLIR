@@ -11,6 +11,8 @@
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringSet.h"
 #include "llvm/Support/Error.h"
+#include "llvm/Support/JSON.h"
+#include "llvm/Support/MemoryBuffer.h"
 #include "llvm/Support/raw_ostream.h"
 
 #include <fstream>
@@ -120,13 +122,16 @@ private:
 
   void emitAscendCLaunch(func::CallOp callOp) {
     // The MLIR call uses the family id (network.mlir-level kernel name,
-    // matching network.json's kernels[].id). The actual emitted kernel binary
-    // is one of the variants TileFuse produced (P1a). For now (N=1), the
-    // selected variant is always v0; once P1b lets autotuner pick across
-    // variants, this needs to consult a kid→variant_name mapping (e.g. read
-    // from <kid>_best.json's "variant" field at host-gen time).
+    // matching network.json's kernels[].id). The actual emitted kernel
+    // binary is the variant the autotuner picked (or v0 by default).
+    // P1b: cfg_.variantOverrides (populated from tilings JSON keys at
+    // generate() time) supplies the kid→variant mapping; absent entry
+    // falls back to "<kid>__v0".
     const auto familyId = callOp.getCallee().str();
-    const auto kernelName = familyId + "__v0";
+    auto ovIt = cfg_.variantOverrides.find(familyId);
+    const auto kernelName = ovIt != cfg_.variantOverrides.end()
+                                ? ovIt->getValue()
+                                : familyId + "__v0";
     const int numIn = static_cast<int>(callOp.getNumOperands());
     const int numOut = static_cast<int>(callOp.getNumResults());
 
@@ -345,7 +350,33 @@ llvm::Error AclnnBackend::generate(const AclnnBackendConfig &cfg) {
                                    "AclnnBackend: failed to parse %s",
                                    cfg.networkMlirPath.c_str());
 
-  std::string cppSrc = buildNetworkHostCpp(*moduleRef, cfg);
+  // Build family→variant overrides from tilings JSON keys: every key shaped
+  // "<family>__v<idx>" pins the family's hostLaunch to that variant name.
+  // Default (no key, or key without __v) falls through to <family>__v0.
+  AclnnBackendConfig effectiveCfg = cfg;
+  if (!cfg.tilingsPath.empty()) {
+    if (auto bufOr = llvm::MemoryBuffer::getFile(cfg.tilingsPath,
+                                                  /*IsText=*/true)) {
+      if (auto parsed = llvm::json::parse((*bufOr)->getBuffer())) {
+        if (auto *obj = parsed->getAsObject()) {
+          for (auto &kv : *obj) {
+            llvm::StringRef name = kv.first;
+            auto pos = name.rfind("__v");
+            if (pos == llvm::StringRef::npos) continue;
+            llvm::StringRef tail = name.substr(pos + 3);
+            bool allDigit = !tail.empty();
+            for (char c : tail) if (!llvm::isDigit(c)) { allDigit = false; break; }
+            if (!allDigit) continue;
+            effectiveCfg.variantOverrides[name.substr(0, pos)] = name.str();
+          }
+        }
+      } else {
+        llvm::consumeError(parsed.takeError());
+      }
+    }
+  }
+
+  std::string cppSrc = buildNetworkHostCpp(*moduleRef, effectiveCfg);
 
   std::ofstream out(cfg.outputCppPath, std::ios::binary);
   if (!out)
