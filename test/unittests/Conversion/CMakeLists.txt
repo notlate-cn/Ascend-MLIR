@@ -57,3 +57,19 @@ add_dependencies(RuntimeUnitTests AscendBackendSupportMatrixTest)
 add_test(NAME AscendBackendSupportMatrixTest
   COMMAND $<TARGET_FILE:AscendBackendSupportMatrixTest>
 )
+
+add_executable(AscendLinalgBodyClassifierTest
+  AscendLinalgBodyClassifierTest.cpp
+)
+
+target_link_libraries(AscendLinalgBodyClassifierTest PRIVATE
+  RuntimeUnitTestSupport
+  AscendConversion
+  MLIRParser
+)
+
+add_dependencies(RuntimeUnitTests AscendLinalgBodyClassifierTest)
+
+add_test(NAME AscendLinalgBodyClassifierTest
+  COMMAND $<TARGET_FILE:AscendLinalgBodyClassifierTest>
+)
