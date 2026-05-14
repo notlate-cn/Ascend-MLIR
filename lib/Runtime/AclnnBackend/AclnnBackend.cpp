@@ -119,7 +119,14 @@ private:
   }
 
   void emitAscendCLaunch(func::CallOp callOp) {
-    const auto kernelName = callOp.getCallee().str();
+    // The MLIR call uses the family id (network.mlir-level kernel name,
+    // matching network.json's kernels[].id). The actual emitted kernel binary
+    // is one of the variants TileFuse produced (P1a). For now (N=1), the
+    // selected variant is always v0; once P1b lets autotuner pick across
+    // variants, this needs to consult a kid→variant_name mapping (e.g. read
+    // from <kid>_best.json's "variant" field at host-gen time).
+    const auto familyId = callOp.getCallee().str();
+    const auto kernelName = familyId + "__v0";
     const int numIn = static_cast<int>(callOp.getNumOperands());
     const int numOut = static_cast<int>(callOp.getNumResults());
 
