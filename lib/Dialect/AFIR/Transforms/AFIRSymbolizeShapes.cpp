@@ -290,6 +290,14 @@ AFIRSymbolizeShapesPass::transfer(Operation *op) {
   }
   if (auto alloc = dyn_cast<bufferization::AllocTensorOp>(op)) {
     auto ty = cast<RankedTensorType>(alloc.getResult().getType());
+    // When `copy` is set, the alloc's shape is inferred from the source
+    // tensor (and `dynamicSizes` is required to be empty by the op verifier),
+    // so look up the source's symbolic shape rather than the (empty) dynSizes.
+    if (Value copySrc = alloc.getCopy()) {
+      if (const ShapeVec *srcShape = getShape(copySrc))
+        return SmallVector<ShapeVec>{*srcShape};
+      return std::nullopt;
+    }
     auto rs = buildFromDynamicSizes(ty, alloc.getDynamicSizes());
     if (!rs)
       return std::nullopt;
