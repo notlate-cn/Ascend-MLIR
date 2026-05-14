@@ -14,7 +14,9 @@
 #include "mlir/IR/Operation.h"
 #include "mlir/Support/LogicalResult.h"
 #include "llvm/ADT/DenseMap.h"
+#include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/SmallVector.h"
+#include "llvm/ADT/STLExtras.h"
 #include "llvm/Support/raw_ostream.h"
 
 using namespace mlir;
@@ -46,6 +48,87 @@ void clearStructuralMarks(Operation *op) {
   op->removeAttr(kMergeGroupAttr);
 }
 
+bool isPropagationEligible(Operation *op,
+                           const DependencyAnalysisResult &deps) {
+  auto it = deps.summaries.find(op);
+  if (it == deps.summaries.end())
+    return false;
+
+  switch (it->second.accessPattern) {
+  case AccessPatternKind::Elementwise:
+  case AccessPatternKind::Broadcast:
+  case AccessPatternKind::Gather:
+  case AccessPatternKind::LayoutTransform:
+    return true;
+  case AccessPatternKind::Contraction:
+  case AccessPatternKind::Reduction:
+  case AccessPatternKind::Scatter:
+  case AccessPatternKind::NotApplicable:
+  case AccessPatternKind::Unknown:
+    return false;
+  }
+  return false;
+}
+
+ArrayRef<Operation *>
+lookupAdjacent(Operation *op,
+               const DenseMap<Operation *, SmallVector<Operation *>> &edges) {
+  auto it = edges.find(op);
+  if (it == edges.end())
+    return {};
+  return it->second;
+}
+
+void setGroupMark(Operation *op, StringRef attrName, int64_t group,
+                  MLIRContext *context) {
+  op->setAttr(attrName,
+              IntegerAttr::get(IntegerType::get(context, 64), group));
+}
+
+void propagateBranchGroup(Operation *root, int64_t group,
+                          MLIRContext *context,
+                          const DependencyAnalysisResult &deps) {
+  SmallVector<Operation *> worklist(lookupAdjacent(root, deps.index.consumers));
+  DenseSet<Operation *> visited;
+
+  while (!worklist.empty()) {
+    Operation *op = worklist.pop_back_val();
+    if (!visited.insert(op).second)
+      continue;
+    if (hasMergeRootMark(op) ||
+        hasAtLeastTwoEntries(op, deps.index.producers) ||
+        !isPropagationEligible(op, deps))
+      continue;
+
+    setGroupMark(op, kBranchGroupAttr, group, context);
+    if (hasAtLeastTwoEntries(op, deps.index.consumers))
+      continue;
+    llvm::append_range(worklist, lookupAdjacent(op, deps.index.consumers));
+  }
+}
+
+void propagateMergeGroup(Operation *root, int64_t group,
+                         MLIRContext *context,
+                         const DependencyAnalysisResult &deps) {
+  SmallVector<Operation *> worklist(lookupAdjacent(root, deps.index.producers));
+  DenseSet<Operation *> visited;
+
+  while (!worklist.empty()) {
+    Operation *op = worklist.pop_back_val();
+    if (!visited.insert(op).second)
+      continue;
+    if (hasBranchRootMark(op) ||
+        hasAtLeastTwoEntries(op, deps.index.consumers) ||
+        !isPropagationEligible(op, deps))
+      continue;
+
+    setGroupMark(op, kMergeGroupAttr, group, context);
+    if (hasAtLeastTwoEntries(op, deps.index.producers))
+      continue;
+    llvm::append_range(worklist, lookupAdjacent(op, deps.index.producers));
+  }
+}
+
 } // namespace
 
 LogicalResult StructuralMarker::mark(
@@ -61,9 +144,9 @@ LogicalResult StructuralMarker::mark(
       continue;
 
     op->setAttr(kBranchRootAttr, BoolAttr::get(context, true));
-    op->setAttr(kBranchGroupAttr,
-                IntegerAttr::get(IntegerType::get(context, 64),
-                                 nextBranchGroup++));
+    int64_t group = nextBranchGroup++;
+    setGroupMark(op, kBranchGroupAttr, group, context);
+    propagateBranchGroup(op, group, context, deps);
   }
 
   int64_t nextMergeGroup = 0;
@@ -72,9 +155,9 @@ LogicalResult StructuralMarker::mark(
       continue;
 
     op->setAttr(kMergeRootAttr, BoolAttr::get(context, true));
-    op->setAttr(kMergeGroupAttr,
-                IntegerAttr::get(IntegerType::get(context, 64),
-                                 nextMergeGroup++));
+    int64_t group = nextMergeGroup++;
+    setGroupMark(op, kMergeGroupAttr, group, context);
+    propagateMergeGroup(op, group, context, deps);
   }
 
   return success();
@@ -86,23 +169,23 @@ void emitStructuralMarkingReport(raw_ostream &os,
   for (Operation *op : deps.index.orderedOps) {
     bool hasBranch = hasBranchRootMark(op);
     bool hasMerge = hasMergeRootMark(op);
-    if (!hasBranch && !hasMerge)
+    auto branchGroup = op->getAttrOfType<IntegerAttr>(kBranchGroupAttr);
+    auto mergeGroup = op->getAttrOfType<IntegerAttr>(kMergeGroupAttr);
+    if (!hasBranch && !branchGroup && !hasMerge && !mergeGroup)
       continue;
 
     OperationId opId = deps.index.opIds.lookup(op);
     os << "  op_id = " << opId.value;
     if (hasBranch) {
-      auto branchGroup = op->getAttrOfType<IntegerAttr>(kBranchGroupAttr);
       os << " branch_root = true";
-      if (branchGroup)
-        os << " branch_group = " << branchGroup.getInt();
     }
+    if (branchGroup)
+      os << " branch_group = " << branchGroup.getInt();
     if (hasMerge) {
-      auto mergeGroup = op->getAttrOfType<IntegerAttr>(kMergeGroupAttr);
       os << " merge_root = true";
-      if (mergeGroup)
-        os << " merge_group = " << mergeGroup.getInt();
     }
+    if (mergeGroup)
+      os << " merge_group = " << mergeGroup.getInt();
     os << "\n";
   }
 }

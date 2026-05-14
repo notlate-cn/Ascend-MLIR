@@ -86,6 +86,10 @@ bool hasTrueBoolAttr(Operation *op, StringRef attrName) {
   return attr && attr.getValue();
 }
 
+bool hasIntegerAttr(Operation *op, StringRef attrName) {
+  return static_cast<bool>(op->getAttrOfType<IntegerAttr>(attrName));
+}
+
 StringRef getMvpScalarRole(ArrayRef<OpRole> roles) {
   if (hasRole(roles, OpRole::Cube))
     return kOpRoleCube;
@@ -125,9 +129,11 @@ OpRoleClassifier::classify(const DependencyAnalysisResult &deps) const {
     OpRoleList roles;
     appendComputeRoles(summaryIt->second.accessPattern, roles);
 
-    if (hasTrueBoolAttr(op, kBranchRootAttr))
+    if (hasTrueBoolAttr(op, kBranchRootAttr) ||
+        hasIntegerAttr(op, kBranchGroupAttr))
       appendRole(roles, OpRole::Branch);
-    if (hasTrueBoolAttr(op, kMergeRootAttr))
+    if (hasTrueBoolAttr(op, kMergeRootAttr) ||
+        hasIntegerAttr(op, kMergeGroupAttr))
       appendRole(roles, OpRole::Merge);
 
     sortByPriority(roles);
