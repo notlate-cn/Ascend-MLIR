@@ -18,6 +18,8 @@ inline constexpr llvm::StringLiteral kOpRoleVector = "vector";
 inline constexpr llvm::StringLiteral kOpRoleCube = "cube";
 inline constexpr llvm::StringLiteral kOpRoleReduction = "reduction";
 inline constexpr llvm::StringLiteral kOpRoleUnsupported = "unsupported";
+inline constexpr llvm::StringLiteral kKernelizeOpRoleVector = "Vector";
+inline constexpr llvm::StringLiteral kKernelizeOpRoleCube = "Cube";
 inline constexpr llvm::StringLiteral kKernelAttr = "ascend.kernel";
 inline constexpr llvm::StringLiteral kKernelGraphEdgesAttr =
     "ascend.kernel_graph.edges";

@@ -50,6 +50,8 @@ TEST(AscendCommonAttributesTest, SharedBackendContractStringsAreCentralized) {
   EXPECT_EQ(ascend::kOpRoleCube, "cube");
   EXPECT_EQ(ascend::kOpRoleReduction, "reduction");
   EXPECT_EQ(ascend::kOpRoleUnsupported, "unsupported");
+  EXPECT_EQ(ascend::kKernelizeOpRoleVector, "Vector");
+  EXPECT_EQ(ascend::kKernelizeOpRoleCube, "Cube");
   EXPECT_EQ(ascend::kGatherDimAttr, "gather_dim");
   EXPECT_EQ(ascend::kEmbeddingDimAttr, "embedding_dim");
 }

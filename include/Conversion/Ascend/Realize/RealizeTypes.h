@@ -15,7 +15,10 @@
 namespace mlir::afir::ascend::realize {
 
 using ::mlir::afir::ascend::kKernelAttr;
+using ::mlir::afir::ascend::kKernelizeOpRoleCube;
+using ::mlir::afir::ascend::kKernelizeOpRoleVector;
 using ::mlir::afir::ascend::kOpRoleAttr;
+using ::mlir::afir::ascend::kOpRolesAttr;
 using ::mlir::afir::ascend::kScheduleDecisionIdAttr;
 using ::mlir::afir::ascend::kStructuredLoweringAttr;
 

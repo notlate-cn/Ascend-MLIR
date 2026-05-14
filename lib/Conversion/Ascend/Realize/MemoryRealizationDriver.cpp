@@ -44,14 +44,32 @@ static StringRef getKernelId(Operation *op) {
   return kernelAttr ? kernelAttr.getValue() : StringRef();
 }
 
-static bool isVectorOp(Operation *op) {
+static bool opRolesAttrHasRole(Operation *op, StringRef roleName) {
+  auto roles = op->getAttrOfType<ArrayAttr>(kOpRolesAttr);
+  if (!roles)
+    return false;
+  for (Attribute attr : roles) {
+    auto role = dyn_cast<StringAttr>(attr);
+    if (role && role.getValue() == roleName)
+      return true;
+  }
+  return false;
+}
+
+static bool hasRole(Operation *op, StringRef legacyRoleName,
+                    StringRef kernelizeRoleName) {
   auto role = op->getAttrOfType<StringAttr>(kOpRoleAttr);
-  return role && role.getValue() == kOpRoleVector;
+  if (role && role.getValue() == legacyRoleName)
+    return true;
+  return opRolesAttrHasRole(op, kernelizeRoleName);
+}
+
+static bool isVectorOp(Operation *op) {
+  return hasRole(op, kOpRoleVector, kKernelizeOpRoleVector);
 }
 
 static bool isCubeOp(Operation *op) {
-  auto role = op->getAttrOfType<StringAttr>(kOpRoleAttr);
-  return role && role.getValue() == kOpRoleCube;
+  return hasRole(op, kOpRoleCube, kKernelizeOpRoleCube);
 }
 
 static bool hasOnlyKernelUses(Value value, StringRef kernelId) {
