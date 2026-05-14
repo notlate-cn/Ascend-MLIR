@@ -474,8 +474,8 @@ def VectorPlanGroupOutline : Pass<"vector-plan-group-outline", "mlir::ModuleOp">
     Option<"outputDir",          "output-dir",           "std::string", "\"\"",             "">,
     Option<"enableRCoreSplit",   "enable-rcore-split",   "bool",        "true",
            "Run vector-plan-split-rcore-group between outline + file emit">,
-    Option<"rcoreParallelSlots", "rcore-parallel-slots", "int64_t",     "8",
-           "Target N for RCore split (largest divisor of R ≤ this)">,
+    Option<"rcoreParallelSlots", "rcore-parallel-slots", "int64_t",     "16",
+           "Target N for RCore split (largest divisor of R ≤ this); 16 keeps fp16 partial output ≥ 32-byte aligned for DataCopy">,
   ];
   let dependentDialects = ["mlir::func::FuncDialect", "mlir::linalg::LinalgDialect"];
 }
