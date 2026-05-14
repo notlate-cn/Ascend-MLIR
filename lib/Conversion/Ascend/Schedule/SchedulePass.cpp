@@ -262,9 +262,9 @@ deriveTargetTilePolicy(const ScheduleProblem &problem,
   if (rowBytes <= 0)
     return policy;
 
-  constexpr int64_t kConservativeVectorBufferCount = 4;
-  int64_t derivedTile = capacityBytes / kConservativeVectorBufferCount /
-                        rowBytes;
+  int64_t vectorBufferCount =
+      std::max<int64_t>(1, policy.vectorBufferCount);
+  int64_t derivedTile = capacityBytes / vectorBufferCount / rowBytes;
   if (derivedTile <= 0)
     derivedTile = 1;
   if (!ShapedType::isDynamic(problem.resultShape.front()))
