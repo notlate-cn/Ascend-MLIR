@@ -376,14 +376,79 @@ double costEstimate(const AxisGrouping &g, const CollapsedGroupInfo &info,
 static TilePlan buildPlan(func::FuncOp func, const CollapsedGroupInfo &info,
                           const AxisGrouping &g, const TilePlanDraft &draft,
                           OpBuilder &builder, Location loc) {
-  // P3b-2a wires the cost-model gate so RCore is selectable for full-reduce,
-  // but the buildPlan / LoopNestBuilder / GroupEmitter codegen lands in
-  // P3b-2b/c/d.  Until then, surface a clear error rather than producing bad IR.
+  // P3b-2b: RCore TilePlan structure.  R axis (at draft.ubTilingAxisR) becomes
+  // the block axis, dispatched on XBLOCK; an inner RBLOCK loop sweeps the
+  // per-block R slice on each core.  LoopNestBuilder reuses its existing
+  // Outer-block + Inner-with-parent-step machinery (the per-block inner ub is
+  // `parentStep == XBLOCK` via the same code path that Common uses for ubY).
+  // GroupEmitter codegen for RCore (per-block reduce + partial-output bump)
+  // lands in P3b-2d; until then `genVectorTilePlan` guards with a clear error.
   if (draft.reduceIsBlock) {
-    llvm::errs() << "[vector-plan] RCore reduce template selected but codegen "
-                    "WIP (P3b-2b/c/d). Plan: docs/superpowers/plans/"
-                    "2026-05-14-p3b-rcore-reduce-multicore.zh.md\n";
-    llvm::report_fatal_error("RCore codegen not yet implemented (P3b-2a)");
+    assert(g.yAxes.empty() &&
+           "RCore restricted to true full-reduce in P3b-2 (P3b-4 widens)");
+    assert(draft.ubTilingAxisR >= 0 && "RCore requires a ub-split R axis");
+
+    TilePlan plan;
+    plan.group = &info;
+    plan.reduceTemplate = TilePlan::ReduceTemplate::RCore;
+    plan.reduceIsBlock = true;
+    (void)computeVectorizedDims(info, &plan);
+
+    int rAxis = draft.ubTilingAxisR;
+    plan.blockFusedAxes.push_back(rAxis);
+
+    int xsubCount = 0, naxisCount = 0, rblockCount = 0;
+    for (int i = 0; i < (int)info.collapsedAxes.size(); ++i) {
+      const AxisClass &ax = g.axes[i];
+      Value ext = getAxisExtentValue(builder, loc, info, i);
+
+      if (ax.kind == AxisKind::X) {
+        // Rare in a full-reduce, but mirror Common's handling.
+        std::string name = llvm::formatv("XBLOCK_X_{0}", xsubCount++).str();
+        Value param = insertFuncArg(func, builder, loc, 16, name);
+        SmallVector<TileParam> group;
+        group.push_back({name, param, OpFoldResult(ext), i, TileLevel::Inner,
+                          AxisRole::Parallel});
+        plan.tileable.push_back(std::move(group));
+        if (plan.ubTilingAxisX < 0)
+          plan.ubTilingAxisX = i;
+
+      } else if (ax.kind == AxisKind::N) {
+        std::string name = llvm::formatv("NAXIS_{0}", naxisCount++).str();
+        plan.full.push_back({name, ext, OpFoldResult(ext), i, TileLevel::Full,
+                              AxisRole::Parallel});
+
+      } else if (ax.kind == AxisKind::Y) {
+        llvm_unreachable("RCore: full-reduce has no Y axes (asserted above)");
+
+      } else { // AxisKind::R
+        if (i == rAxis) {
+          // R as block axis: XBLOCK (Outer, ascendc.parallel) + RBLOCK (Inner).
+          // LoopNestBuilder will give the Inner a ub of parentStep == XBLOCK
+          // (per-block R slice), and the composed loopIVs[rAxis] = outer + inner.
+          Value xblock = insertFuncArg(func, builder, loc, 128, "XBLOCK");
+          std::string innerName =
+              llvm::formatv("RBLOCK_{0}", rblockCount++).str();
+          Value rblock = insertFuncArg(func, builder, loc, 64, innerName);
+          SmallVector<TileParam> group;
+          group.push_back({"XBLOCK", xblock, OpFoldResult(ext), i,
+                            TileLevel::Outer, AxisRole::Reduction});
+          group.push_back({innerName, rblock, OpFoldResult(xblock), i,
+                            TileLevel::Inner, AxisRole::Reduction});
+          plan.tileable.push_back(std::move(group));
+          plan.ubTilingAxisR = i;
+          plan.blockDimExprs.push_back(OpFoldResult(
+              builder.create<arith::CeilDivSIOp>(loc, ext, xblock)));
+        } else {
+          // Secondary R axes (full-reduce typically has one) → full-load.
+          std::string name =
+              llvm::formatv("RBLOCK_{0}", rblockCount++).str();
+          plan.full.push_back({name, ext, OpFoldResult(ext), i,
+                                TileLevel::Full, AxisRole::Reduction});
+        }
+      }
+    }
+    return plan;
   }
   assert(draft.blockTilingId == 0 &&
          "blockTilingId != 0 only valid for RCore");
@@ -512,7 +577,19 @@ TilePlan genVectorTilePlan(func::FuncOp func,
   }
   assert(bestScore < kInfeasible && "no feasible tiling case");
 
-  return buildPlan(func, info, g, *best, builder, loc);
+  TilePlan plan = buildPlan(func, info, g, *best, builder, loc);
+  // P3b-2c/d: LoopNestBuilder is expected to handle RCore via its existing
+  // Outer-Inner-on-same-axis path (parentStep mechanism), but the GroupEmitter
+  // codegen — per-block R extent on the new rFor + dimension-bumped partial
+  // output — lands in P3b-2d.  Surface a clear error until then.
+  if (plan.reduceTemplate == TilePlan::ReduceTemplate::RCore) {
+    llvm::errs() << "[vector-plan] RCore TilePlan built (P3b-2b), but "
+                    "GroupEmitter codegen WIP (P3b-2d). Plan: "
+                    "docs/superpowers/plans/2026-05-14-p3b-rcore-reduce-multicore.zh.md\n";
+    llvm::report_fatal_error(
+        "RCore GroupEmitter codegen not yet implemented (P3b-2b)");
+  }
+  return plan;
 }
 
 void emitTilingInfos(func::FuncOp func, const TilePlan &plan) {
