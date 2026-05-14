@@ -90,6 +90,56 @@ static LogicalResult packTilingData(func::FuncOp func) {
   SmallVector<DimKey> dimKeys;        // unique canonical keys
   SmallVector<memref::DimOp> dimOps;
 
+  // Kernel-visible inputs are the contiguous run of identity-layout MemRef
+  // args at the head of the func signature. Earlier passes append tile-param
+  // args (`index` type, no longer carrying their `vector_plan.default_tile_size`
+  // attr by the time PackTilingData runs — bufferize / canonicalize drops it),
+  // followed by the strided output buffer (non-identity MemRef layout) and
+  // workspace.
+  //
+  // memref.dim ops sometimes reference those later buffers (e.g.
+  //   `memref.dim %arg5_strided_output, %c1`), producing a `dim_arg5_1`
+  // shape_key field. But the host (network_runner / autotuner) keys shapes
+  // by the network.json kernel-arg index, which only sees the original
+  // inputs — so `dim_arg5_1` is unresolvable at runtime.
+  //
+  // Map each derived buffer back to a shape-equivalent original input by
+  // matching element type + static shape (layout ignored). This funnels all
+  // dim queries on derived buffers onto a stable arg index the host knows
+  // how to look up. For DPS kernels the output is shape-equal to (one of)
+  // the inputs, so this is well-defined.
+  unsigned numOriginals = 0;
+  for (BlockArgument a : entry.getArguments()) {
+    auto mt = dyn_cast<MemRefType>(a.getType());
+    if (!mt) break;                          // hit a tile-index arg
+    if (!mt.getLayout().isIdentity()) break; // hit a strided derived buffer
+    numOriginals = a.getArgNumber() + 1;
+  }
+  DenseMap<unsigned, unsigned> argToOriginal;
+  for (BlockArgument a : entry.getArguments()) {
+    unsigned i = a.getArgNumber();
+    if (i < numOriginals) {
+      argToOriginal[i] = i;
+      continue;
+    }
+    auto mt = dyn_cast<MemRefType>(a.getType());
+    if (!mt) {
+      argToOriginal[i] = i;
+      continue;
+    }
+    unsigned matched = numOriginals > 0 ? numOriginals - 1 : i;
+    for (unsigned j = 0; j < numOriginals; ++j) {
+      auto origTy = dyn_cast<MemRefType>(entry.getArgument(j).getType());
+      if (!origTy) continue;
+      if (origTy.getElementType() == mt.getElementType() &&
+          origTy.getShape() == mt.getShape()) {
+        matched = j;
+        break;
+      }
+    }
+    argToOriginal[i] = matched;
+  }
+
   // afir-symbolize-shapes (when it ran) recorded, per block arg, which symbol
   // each dim is (`afir.symbolic_shape` arg-attr, serialized ids) and which
   // (arg,dim) each root symbol originates from (`afir.dim_symbols` func attr).
@@ -100,6 +150,10 @@ static LogicalResult packTilingData(func::FuncOp func) {
   if (dimSymsAttr)
     symTable = mlir::afir::symshape::DimSymbolTable::fromAttr(dimSymsAttr);
   auto canonicalize = [&](unsigned argN, int64_t dimIdx) -> DimKey {
+    // First, redirect derived-buffer args to the matching original input.
+    auto it = argToOriginal.find(argN);
+    if (it != argToOriginal.end()) argN = it->second;
+    // Then apply symbol-shape canonicalization when available.
     if (symTable && dimIdx >= 0) {
       if (auto a =
               func.getArgAttrOfType<StringAttr>(argN, "afir.symbolic_shape")) {
@@ -127,6 +181,10 @@ static LogicalResult packTilingData(func::FuncOp func) {
   func.walk([&](memref::DimOp dimOp) {
     auto arg = dyn_cast<BlockArgument>(dimOp.getSource());
     if (!arg) return;
+    // Only consider func-entry block args; inner-region (scf.for iter_args)
+    // BlockArguments have argNumbers local to their region and don't map to
+    // the kernel's arg layout.
+    if (arg.getOwner() != &entry) return;
     auto constOp = dimOp.getIndex().getDefiningOp<arith::ConstantOp>();
     if (!constOp) return;
     auto intAttr = dyn_cast<IntegerAttr>(constOp.getValue());
