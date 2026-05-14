@@ -5,6 +5,7 @@
 // RUN: sed -n '/\/\/ GATHER-TAIL-BEGIN/,/\/\/ GATHER-TAIL-END/p' %s | afir-opt --ascend-schedule='dump-report=true debug-stage=schedule' 2>&1 | FileCheck %s --check-prefix=TAIL
 // RUN: sed -n '/\/\/ EMBEDDING-TAIL-BEGIN/,/\/\/ EMBEDDING-TAIL-END/p' %s | afir-opt --ascend-schedule='dump-report=true debug-stage=schedule' 2>&1 | FileCheck %s --check-prefix=EMBED
 // RUN: sed -n '/\/\/ PERMUTED-GATHER-TAIL-BEGIN/,/\/\/ PERMUTED-GATHER-TAIL-END/p' %s | afir-opt --ascend-schedule='dump-report=true debug-stage=schedule' 2>&1 | FileCheck %s --check-prefix=PERMUTE
+// RUN: sed -n '/\/\/ CONFLICT-BEGIN/,/\/\/ CONFLICT-END/p' %s | not afir-opt --ascend-schedule 2>&1 | FileCheck %s --check-prefix=CONFLICT
 
 // SINGLE-BEGIN
 func.func @rank2_elementwise(%arg0: tensor<4x8xf32>,
@@ -277,6 +278,56 @@ func.func @manual_permuted_gather_tail_contract(%data: tensor<?x?xf16>,
 }
 // PERMUTED-GATHER-TAIL-END
 
+// CONFLICT-BEGIN
+func.func @manual_axis_static_extent_conflict(
+    %a4: tensor<4xf32>,
+    %b4: tensor<4xf32>,
+    %a8: tensor<8xf32>,
+    %b8: tensor<8xf32>) -> (tensor<4xf32>, tensor<8xf32>) {
+  %empty0 = tensor.empty() : tensor<4xf32>
+  %out0 = linalg.generic {
+    indexing_maps = [
+      affine_map<(d0) -> (d0)>,
+      affine_map<(d0) -> (d0)>,
+      affine_map<(d0) -> (d0)>
+    ],
+    iterator_types = ["parallel"]
+  } ins(%a4, %b4 : tensor<4xf32>, tensor<4xf32>)
+    outs(%empty0 : tensor<4xf32>)
+    attrs = {
+      ascend.kernel = "kernel_0",
+      ascend.op_role = "vector",
+      ascend.primary = true
+    } {
+  ^bb0(%x: f32, %y: f32, %o: f32):
+    %sum = arith.addf %x, %y : f32
+    linalg.yield %sum : f32
+  } -> tensor<4xf32>
+
+  %empty1 = tensor.empty() : tensor<8xf32>
+  %out1 = linalg.generic {
+    indexing_maps = [
+      affine_map<(d0) -> (d0)>,
+      affine_map<(d0) -> (d0)>,
+      affine_map<(d0) -> (d0)>
+    ],
+    iterator_types = ["parallel"]
+  } ins(%a8, %b8 : tensor<8xf32>, tensor<8xf32>)
+    outs(%empty1 : tensor<8xf32>)
+    attrs = {
+      ascend.kernel = "kernel_0",
+      ascend.op_role = "vector",
+      ascend.primary = true
+    } {
+  ^bb0(%x: f32, %y: f32, %o: f32):
+    %product = arith.mulf %x, %y : f32
+    linalg.yield %product : f32
+  } -> tensor<8xf32>
+
+  return %out0, %out1 : tensor<4xf32>, tensor<8xf32>
+}
+// CONFLICT-END
+
 // CHECK: AxisCoalescing:
 // CHECK-NEXT: kernel = kernel_0
 // CHECK-NEXT: logical_axes = 2
@@ -410,3 +461,5 @@ func.func @manual_permuted_gather_tail_contract(%data: tensor<?x?xf16>,
 // PERMUTE-NEXT: axis=0 kind=parallel roles=[bind_core,kernel_loop,vectorize] tail=masked_tail group=1 allowed_tail=[masked_tail,scalar_epilogue,pad_and_mask] primitive_uses=[data_copy,vector_compute,write_back,gather_index] semantic_align=16
 // PERMUTE-NEXT: axis=1 kind=parallel roles=[bind_core,kernel_loop,vectorize,broadcast_projection] tail=masked_tail group=1 allowed_tail=[masked_tail,scalar_epilogue] primitive_uses=[data_copy,vector_compute,write_back] semantic_align=0
 // PERMUTE-NEXT: ]
+
+// CONFLICT: conflicting static extent for logical axis 0: 4 vs 8

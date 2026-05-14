@@ -71,14 +71,26 @@ unsigned getAxisCount(Operation *op, OpRole primaryRole,
   return iteratorCount;
 }
 
-void mergeStaticExtent(SmallVectorImpl<int64_t> &staticExtents, unsigned axis,
-                       int64_t extent) {
+LogicalResult mergeStaticExtent(SmallVectorImpl<int64_t> &staticExtents,
+                                unsigned axis, int64_t extent,
+                                CoalescedAxisInfo &info, Operation *op) {
   if (axis >= staticExtents.size() || extent == ShapedType::kDynamic)
-    return;
+    return success();
 
   if (staticExtents[axis] == ShapedType::kDynamic ||
-      staticExtents[axis] == extent)
+      staticExtents[axis] == extent) {
     staticExtents[axis] = extent;
+    return success();
+  }
+
+  std::string reason =
+      (llvm::Twine("conflicting static extent for logical axis ") +
+       llvm::Twine(axis) + ": " + llvm::Twine(staticExtents[axis]) + " vs " +
+       llvm::Twine(extent))
+          .str();
+  addBarrier(info, op, AxisBarrierKind::RankMismatch, reason);
+  op->emitError() << reason;
+  return failure();
 }
 
 bool isDimOrConstantProjection(AffineMap map) {
@@ -99,11 +111,11 @@ bool isDimOrConstantProjection(AffineMap map) {
   return true;
 }
 
-void collectIndexingMapInfo(linalg::LinalgOp linalgOp, OpRole patternRole,
-                            unsigned axisCount,
-                            SmallVectorImpl<int64_t> &staticExtents,
-                            SmallVectorImpl<bool> &broadcastAxes,
-                            CoalescedAxisInfo &info) {
+LogicalResult collectIndexingMapInfo(linalg::LinalgOp linalgOp,
+                                     OpRole patternRole, unsigned axisCount,
+                                     SmallVectorImpl<int64_t> &staticExtents,
+                                     SmallVectorImpl<bool> &broadcastAxes,
+                                     CoalescedAxisInfo &info) {
   Operation *op = linalgOp.getOperation();
   SmallVector<AffineMap> indexingMaps = linalgOp.getIndexingMapsArray();
   OperandRange operands = op->getOperands();
@@ -170,8 +182,10 @@ void collectIndexingMapInfo(linalg::LinalgOp linalgOp, OpRole patternRole,
       }
 
       usedAxes[axis] = true;
-      mergeStaticExtent(staticExtents, axis,
-                        shapedType.getDimSize(resultIndex));
+      if (failed(mergeStaticExtent(staticExtents, axis,
+                                   shapedType.getDimSize(resultIndex), info,
+                                   op)))
+        return failure();
     }
 
     if (patternRole == OpRole::Vector && mapIndex < inputMapCount) {
@@ -181,6 +195,7 @@ void collectIndexingMapInfo(linalg::LinalgOp linalgOp, OpRole patternRole,
       }
     }
   }
+  return success();
 }
 
 void appendPatternRawAxes(const KernelPatternView &pattern, unsigned axisCount,
@@ -485,8 +500,10 @@ FailureOr<CoalescedAxisInfo> coalesceAxes(const KernelPatternView &pattern) {
                  "kernel pattern contains a non-linalg op");
       continue;
     }
-    collectIndexingMapInfo(patternLinalgOp, primaryOpView->role, axisCount,
-                           staticExtents, broadcastAxisMask, info);
+    if (failed(collectIndexingMapInfo(patternLinalgOp, primaryOpView->role,
+                                      axisCount, staticExtents,
+                                      broadcastAxisMask, info)))
+      return failure();
   }
 
   info.logicalAxes.reserve(axisCount);
