@@ -176,6 +176,7 @@ struct CoalescedAxisInfo {
 struct TargetTilePolicy {
   std::string policyId = "target_default_32";
   int64_t defaultParallelTile = 32;
+  int64_t semanticAlignmentGranularity = 16;
 };
 
 struct ScheduleProblem {
