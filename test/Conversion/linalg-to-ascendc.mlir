@@ -148,10 +148,17 @@ func.func @test_matmul() {
 }
 
 //===----------------------------------------------------------------------===//
-// Compute: linalg.matmul with wrong memory_space → NOT converted
+// Compute: linalg.matmul on GM buffers → scalar loop fallback
 //===----------------------------------------------------------------------===//
 // CHECK-LABEL: func @test_matmul_no_convert
-// CHECK: linalg.matmul
+// CHECK-NOT: linalg.matmul
+// CHECK: scf.for
+// CHECK: scf.for
+// CHECK: arith.mulf
+// CHECK: arith.addf
+// CHECK: memref.store
+// CHECK-NOT: linalg.matmul
+// CHECK: return
 func.func @test_matmul_no_convert(
     %A: memref<32x64xf32>, %B: memref<64x32xf32>, %C: memref<32x32xf32>) {
   linalg.matmul

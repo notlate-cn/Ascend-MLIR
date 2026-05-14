@@ -624,6 +624,7 @@ Review / verification:
 | xvm Schedule memory role fallback | `ascend-schedule-memory-role.mlir` RED confirmed `OpRole::Memory` kernel 可被解析但没有 template，Schedule 报 `no schedule template`；fix 后新增共享 `kOpRoleMemory`、`memory_copy` template 与 full logical-axis tile；focused lit passed；`AscendCommonAttributesTest` 2/2 passed；Ascend Conversion lit 72/72 passed；Ascend ctest 9/9 passed；xvm code naming guard passed |
 | xvm Schedule target policy hooks | `AscendScheduleDecisionTest.TailPolicyPreferenceComesFromTargetPolicy` RED confirmed `TargetTilePolicy` 没有 tail-policy preference API；fix 后 `TargetTilePolicy` 持有 tail preference 与 vector buffer count，`ScheduleDecision` 按策略选择 tail，target-aware tile 推导使用 policy buffer count；focused unit passed；Schedule lit 16/16 passed |
 | xvm Realize nested cube bridge dominance | `AscendRealizePlannerTest.Phase5CubeBridgeDominatesNestedVectorUse` RED confirmed matmul 后 `scf.if` region 内 vector consumer 未桥接，alloc/copy 计数为 0；fix 后 `collectSafeCubeVectorUses` 使用 `DominanceInfo` 判断安全 consumer，focused unit passed；Ascend ctest 10/10 passed；Realize/Schedule/ComputeLower/full-pipeline focused lit 59/59 passed；xvm code naming guard passed |
+| xvm LinalgToAscendC GM matmul test sync | 完整 Conversion lit 暴露 `linalg-to-ascendc.mlir` 旧 case 仍期望 GM `linalg.matmul` 不转换；当前 `ComputeConversion` 已支持 GM matmul scalar-loop fallback，且 `ascend-compute-lower-matmul-gm.mlir` 已覆盖同语义；测试期望改为检查 `scf.for` / `arith.mulf` / `arith.addf` / `memref.store`，Ascend Conversion lit 79/79 passed |
 
 ## Phase 6：文档与 Demo 收敛
 
