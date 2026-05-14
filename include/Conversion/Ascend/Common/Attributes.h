@@ -38,6 +38,8 @@ inline constexpr llvm::StringLiteral kScheduleTailMarkersAttr =
     "ascend.schedule.tail_markers";
 inline constexpr llvm::StringLiteral kScheduleTargetTilePolicyAttr =
     "ascend.schedule.target_tile_policy";
+inline constexpr llvm::StringLiteral kScheduleKernelMetadataAttr =
+    "ascend.schedule.kernel_metadata";
 inline constexpr llvm::StringLiteral kAscendCUnitAttr = "ascendc.unit";
 inline constexpr llvm::StringLiteral kAscendCUnitCube = "AiCore.Cube";
 inline constexpr llvm::StringLiteral kAscendCUnitVector = "AiCore.Vector";

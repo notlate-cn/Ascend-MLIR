@@ -20,6 +20,17 @@ namespace mlir::afir::ascend::schedule {
 namespace {
 
 constexpr llvm::StringLiteral kLoopSkeletonV0 = "loop_skeleton_v0";
+constexpr llvm::StringLiteral kKernelMetadataKernelKey = "kernel";
+constexpr llvm::StringLiteral kKernelMetadataSelectedTileShapeKey =
+    "selected_tile_shape";
+constexpr llvm::StringLiteral kKernelMetadataGuardMarkersKey =
+    "guard_markers";
+constexpr llvm::StringLiteral kKernelMetadataTailPoliciesKey =
+    "tail_policies";
+constexpr llvm::StringLiteral kKernelMetadataTailPlanKey = "tail_plan";
+constexpr llvm::StringLiteral kKernelMetadataTailMarkersKey = "tail_markers";
+constexpr llvm::StringLiteral kKernelMetadataTargetTilePolicyKey =
+    "target_tile_policy";
 
 Operation *getDiagnosticOp(const KernelPatternView &pattern) {
   if (!pattern.primaryOps.empty())
@@ -162,6 +173,167 @@ void setScheduleMetadata(Operation *op, DenseI64ArrayAttr selectedTileShape,
   op->setAttr(kScheduleTargetTilePolicyAttr, targetTilePolicy);
 }
 
+void clearLegacyFunctionScheduleMetadata(func::FuncOp funcOp) {
+  funcOp->removeAttr(kScheduleSelectedTileShapeAttr);
+  funcOp->removeAttr(kScheduleGuardMarkersAttr);
+  funcOp->removeAttr(kScheduleTailPoliciesAttr);
+  funcOp->removeAttr(kScheduleTailPlanAttr);
+  funcOp->removeAttr(kScheduleTailMarkersAttr);
+  funcOp->removeAttr(kScheduleTargetTilePolicyAttr);
+}
+
+void setLegacyFunctionScheduleMetadata(func::FuncOp funcOp,
+                                       DenseI64ArrayAttr selectedTileShape,
+                                       ArrayAttr guardMarkers,
+                                       ArrayAttr tailPolicies,
+                                       ArrayAttr tailPlan,
+                                       ArrayAttr tailMarkers,
+                                       StringAttr targetTilePolicy) {
+  funcOp->setAttr(kScheduleSelectedTileShapeAttr, selectedTileShape);
+  funcOp->setAttr(kScheduleGuardMarkersAttr, guardMarkers);
+  funcOp->setAttr(kScheduleTailPoliciesAttr, tailPolicies);
+  funcOp->setAttr(kScheduleTailPlanAttr, tailPlan);
+  funcOp->setAttr(kScheduleTailMarkersAttr, tailMarkers);
+  funcOp->setAttr(kScheduleTargetTilePolicyAttr, targetTilePolicy);
+}
+
+DictionaryAttr
+buildKernelScheduleMetadataEntry(Builder &builder, StringRef kernelId,
+                                 DenseI64ArrayAttr selectedTileShape,
+                                 ArrayAttr guardMarkers,
+                                 ArrayAttr tailPolicies, ArrayAttr tailPlan,
+                                 ArrayAttr tailMarkers,
+                                 StringAttr targetTilePolicy) {
+  return builder.getDictionaryAttr({
+      builder.getNamedAttr(kKernelMetadataKernelKey,
+                           builder.getStringAttr(kernelId)),
+      builder.getNamedAttr(kKernelMetadataSelectedTileShapeKey,
+                           selectedTileShape),
+      builder.getNamedAttr(kKernelMetadataGuardMarkersKey, guardMarkers),
+      builder.getNamedAttr(kKernelMetadataTailPoliciesKey, tailPolicies),
+      builder.getNamedAttr(kKernelMetadataTailPlanKey, tailPlan),
+      builder.getNamedAttr(kKernelMetadataTailMarkersKey, tailMarkers),
+      builder.getNamedAttr(kKernelMetadataTargetTilePolicyKey,
+                           targetTilePolicy),
+  });
+}
+
+bool kernelScheduleMetadataEntryMatches(DictionaryAttr entry,
+                                        DenseI64ArrayAttr selectedTileShape,
+                                        ArrayAttr guardMarkers,
+                                        ArrayAttr tailPolicies,
+                                        ArrayAttr tailPlan,
+                                        ArrayAttr tailMarkers,
+                                        StringAttr targetTilePolicy) {
+  return entry.get(kKernelMetadataSelectedTileShapeKey) == selectedTileShape &&
+         entry.get(kKernelMetadataGuardMarkersKey) == guardMarkers &&
+         entry.get(kKernelMetadataTailPoliciesKey) == tailPolicies &&
+         entry.get(kKernelMetadataTailPlanKey) == tailPlan &&
+         entry.get(kKernelMetadataTailMarkersKey) == tailMarkers &&
+         entry.get(kKernelMetadataTargetTilePolicyKey) == targetTilePolicy;
+}
+
+LogicalResult verifyLegacyFunctionScheduleMetadataShape(func::FuncOp funcOp) {
+  bool hasSelectedTileShape = funcOp->hasAttr(kScheduleSelectedTileShapeAttr);
+  bool hasGuardMarkers = funcOp->hasAttr(kScheduleGuardMarkersAttr);
+  bool hasTailPolicies = funcOp->hasAttr(kScheduleTailPoliciesAttr);
+  bool hasTailPlan = funcOp->hasAttr(kScheduleTailPlanAttr);
+  bool hasTailMarkers = funcOp->hasAttr(kScheduleTailMarkersAttr);
+  bool hasTargetTilePolicy = funcOp->hasAttr(kScheduleTargetTilePolicyAttr);
+  bool hasAnyMetadata = hasSelectedTileShape || hasGuardMarkers ||
+                        hasTailPolicies || hasTailPlan || hasTailMarkers ||
+                        hasTargetTilePolicy;
+  bool hasAllCoreMetadata =
+      hasSelectedTileShape && hasTailPolicies && hasTailPlan;
+  if (hasAnyMetadata && !hasAllCoreMetadata)
+    return funcOp.emitError()
+           << "function schedule metadata must include "
+           << kScheduleSelectedTileShapeAttr << ", "
+           << kScheduleTailPoliciesAttr << ", and "
+           << kScheduleTailPlanAttr << " together";
+  return success();
+}
+
+FailureOr<ArrayAttr>
+upsertKernelScheduleMetadata(func::FuncOp funcOp, StringRef kernelId,
+                             DenseI64ArrayAttr selectedTileShape,
+                             ArrayAttr guardMarkers, ArrayAttr tailPolicies,
+                             ArrayAttr tailPlan, ArrayAttr tailMarkers,
+                             StringAttr targetTilePolicy) {
+  Builder builder(funcOp.getContext());
+  SmallVector<Attribute> entries;
+  bool foundKernel = false;
+
+  if (Attribute existing = funcOp->getAttr(kScheduleKernelMetadataAttr)) {
+    auto existingEntries = dyn_cast<ArrayAttr>(existing);
+    if (!existingEntries)
+      return funcOp.emitError()
+             << kScheduleKernelMetadataAttr << " must be an array attribute";
+
+    for (Attribute rawEntry : existingEntries) {
+      auto entry = dyn_cast<DictionaryAttr>(rawEntry);
+      if (!entry)
+        return funcOp.emitError()
+               << kScheduleKernelMetadataAttr
+               << " entries must be dictionary attributes";
+      auto entryKernel =
+          dyn_cast_or_null<StringAttr>(entry.get(kKernelMetadataKernelKey));
+      if (!entryKernel)
+        return funcOp.emitError()
+               << kScheduleKernelMetadataAttr
+               << " entries must include a string kernel field";
+
+      if (entryKernel.getValue() == kernelId) {
+        foundKernel = true;
+        if (!kernelScheduleMetadataEntryMatches(
+                entry, selectedTileShape, guardMarkers, tailPolicies, tailPlan,
+                tailMarkers, targetTilePolicy))
+          return funcOp.emitError()
+                 << "function contains conflicting schedule metadata for "
+                    "kernel \""
+                 << kernelId << "\"";
+      }
+      entries.push_back(entry);
+    }
+  }
+
+  if (!foundKernel)
+    entries.push_back(buildKernelScheduleMetadataEntry(
+        builder, kernelId, selectedTileShape, guardMarkers, tailPolicies,
+        tailPlan, tailMarkers, targetTilePolicy));
+
+  return builder.getArrayAttr(entries);
+}
+
+void reconcileLegacyFunctionScheduleMetadata(func::FuncOp funcOp,
+                                             ArrayAttr kernelMetadata,
+                                             DenseI64ArrayAttr selectedTileShape,
+                                             ArrayAttr guardMarkers,
+                                             ArrayAttr tailPolicies,
+                                             ArrayAttr tailPlan,
+                                             ArrayAttr tailMarkers,
+                                             StringAttr targetTilePolicy) {
+  bool allEntriesShareMetadata = true;
+  for (Attribute rawEntry : kernelMetadata) {
+    auto entry = cast<DictionaryAttr>(rawEntry);
+    if (!kernelScheduleMetadataEntryMatches(
+            entry, selectedTileShape, guardMarkers, tailPolicies, tailPlan,
+            tailMarkers, targetTilePolicy)) {
+      allEntriesShareMetadata = false;
+      break;
+    }
+  }
+
+  if (allEntriesShareMetadata) {
+    setLegacyFunctionScheduleMetadata(funcOp, selectedTileShape, guardMarkers,
+                                      tailPolicies, tailPlan, tailMarkers,
+                                      targetTilePolicy);
+    return;
+  }
+
+  clearLegacyFunctionScheduleMetadata(funcOp);
+}
+
 LogicalResult preserveFunctionScheduleMetadata(Operation *op,
                                                DenseI64ArrayAttr selectedTileShape,
                                                ArrayAttr guardMarkers,
@@ -173,49 +345,24 @@ LogicalResult preserveFunctionScheduleMetadata(Operation *op,
   if (!funcOp)
     return success();
 
-  // Phase 5 artifacts currently model one primary global kernel per function.
-  bool hasSelectedTileShape = funcOp->hasAttr(kScheduleSelectedTileShapeAttr);
-  bool hasGuardMarkers = funcOp->hasAttr(kScheduleGuardMarkersAttr);
-  bool hasTailPolicies = funcOp->hasAttr(kScheduleTailPoliciesAttr);
-  bool hasTailPlan = funcOp->hasAttr(kScheduleTailPlanAttr);
-  bool hasTailMarkers = funcOp->hasAttr(kScheduleTailMarkersAttr);
-  bool hasTargetTilePolicy = funcOp->hasAttr(kScheduleTargetTilePolicyAttr);
-  bool hasAnyMetadata = hasSelectedTileShape || hasGuardMarkers ||
-                        hasTailPolicies || hasTailPlan || hasTailMarkers ||
-                        hasTargetTilePolicy;
-  bool hasAllMetadata = hasSelectedTileShape && hasTailPolicies && hasTailPlan;
-  if (hasAnyMetadata && !hasAllMetadata)
-    return funcOp.emitError()
-           << "function schedule metadata must include "
-           << kScheduleSelectedTileShapeAttr << ", "
-           << kScheduleTailPoliciesAttr << ", and "
-           << kScheduleTailPlanAttr << " together";
+  auto kernelAttr = op->getAttrOfType<StringAttr>(kKernelAttr);
+  if (!kernelAttr)
+    return op->emitError()
+           << "structured lowering requires " << kKernelAttr;
 
-  auto metadataMatches = [&](StringRef name, Attribute expected) {
-    Attribute existing = funcOp->getAttr(name);
-    return existing && existing == expected;
-  };
-  if (hasAllMetadata) {
-    if (metadataMatches(kScheduleSelectedTileShapeAttr, selectedTileShape) &&
-        metadataMatches(kScheduleGuardMarkersAttr, guardMarkers) &&
-        metadataMatches(kScheduleTailPoliciesAttr, tailPolicies) &&
-        metadataMatches(kScheduleTailPlanAttr, tailPlan) &&
-        metadataMatches(kScheduleTailMarkersAttr, tailMarkers) &&
-        metadataMatches(kScheduleTargetTilePolicyAttr, targetTilePolicy))
-      return success();
+  if (failed(verifyLegacyFunctionScheduleMetadataShape(funcOp)))
+    return failure();
 
-    return funcOp.emitError()
-           << "function contains multiple kernels with conflicting schedule "
-              "metadata; function-scoped schedule metadata currently requires "
-              "one shared schedule";
-  }
+  FailureOr<ArrayAttr> kernelMetadata = upsertKernelScheduleMetadata(
+      funcOp, kernelAttr.getValue(), selectedTileShape, guardMarkers,
+      tailPolicies, tailPlan, tailMarkers, targetTilePolicy);
+  if (failed(kernelMetadata))
+    return failure();
 
-  funcOp->setAttr(kScheduleSelectedTileShapeAttr, selectedTileShape);
-  funcOp->setAttr(kScheduleGuardMarkersAttr, guardMarkers);
-  funcOp->setAttr(kScheduleTailPoliciesAttr, tailPolicies);
-  funcOp->setAttr(kScheduleTailPlanAttr, tailPlan);
-  funcOp->setAttr(kScheduleTailMarkersAttr, tailMarkers);
-  funcOp->setAttr(kScheduleTargetTilePolicyAttr, targetTilePolicy);
+  funcOp->setAttr(kScheduleKernelMetadataAttr, *kernelMetadata);
+  reconcileLegacyFunctionScheduleMetadata(
+      funcOp, *kernelMetadata, selectedTileShape, guardMarkers, tailPolicies,
+      tailPlan, tailMarkers, targetTilePolicy);
   return success();
 }
 
