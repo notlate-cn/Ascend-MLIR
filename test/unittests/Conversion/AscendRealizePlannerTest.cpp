@@ -415,3 +415,55 @@ module {
   });
   EXPECT_EQ(vecOutAllocCount, 1u);
 }
+
+TEST(AscendRealizePlannerTest,
+     Phase5BridgeFailureDoesNotLeavePartialVecOutAlloc) {
+  MLIRContext context;
+  OwningOpRef<ModuleOp> module = parseRealizeModule(
+      context, R"mlir(
+module {
+  func.func @f(%arg0: memref<?x?xf32>, %arg1: memref<?x?xf32>,
+               %concat: memref<?x?xf32>, %m: index, %n: index,
+               %which_dim: index) -> memref<?x?xf32>
+      attributes {ascend.normalized = true} {
+    %out = memref.alloc(%m, %n) {alignment = 64 : i64} : memref<?x?xf32>
+    %dim = memref.dim %out, %which_dim : memref<?x?xf32>
+    %sub = memref.subview %concat[0, 0][%m, %n][1, 1]
+      : memref<?x?xf32> to memref<?x?xf32, strided<[?, 1]>>
+    linalg.generic {
+      indexing_maps = [
+        affine_map<(d0, d1) -> (d0, d1)>,
+        affine_map<(d0, d1) -> (d0, d1)>,
+        affine_map<(d0, d1) -> (d0, d1)>],
+      iterator_types = ["parallel", "parallel"]}
+      ins(%arg0, %arg1 : memref<?x?xf32>, memref<?x?xf32>)
+      outs(%out : memref<?x?xf32>)
+      attrs = {ascend.kernel = "kernel_0",
+               ascend.op_role = "vector",
+               ascend.schedule.decision_id = "kernel_0.decision.0",
+               ascend.schedule.structured_lowering = "loop_skeleton_v0"} {
+    ^bb0(%lhs: f32, %rhs: f32, %old: f32):
+      %sum = arith.addf %lhs, %rhs : f32
+      linalg.yield %sum : f32
+    }
+    memref.copy %out, %sub
+      : memref<?x?xf32> to memref<?x?xf32, strided<[?, 1]>>
+    return %concat : memref<?x?xf32>
+  }
+}
+)mlir");
+  ASSERT_TRUE(module);
+
+  MemoryRealizationDriver driver;
+  EXPECT_TRUE(failed(driver.materializePhase5Bridge(*module)));
+
+  unsigned vecOutAllocCount = 0;
+  module->walk([&](memref::AllocOp allocOp) {
+    auto type = cast<MemRefType>(allocOp.getType());
+    auto space = dyn_cast_or_null<IntegerAttr>(type.getMemorySpace());
+    if (space && space.getInt() ==
+                     static_cast<int64_t>(mlir::ascend::MemoryPlace::VECOUT))
+      ++vecOutAllocCount;
+  });
+  EXPECT_EQ(vecOutAllocCount, 0u);
+}
