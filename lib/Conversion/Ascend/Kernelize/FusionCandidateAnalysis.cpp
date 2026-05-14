@@ -83,15 +83,15 @@ bool isElementwiseChainOp(ArrayRef<OpRole> roles) {
 
 bool hasPrimaryFamily(ArrayRef<OpRole> roles, ScheduleContract &contract) {
   if (hasRole(roles, OpRole::Cube)) {
-    contract.templateFamilies.push_back("cube");
+    contract.templateFamilies.push_back(kOpRoleCube.str());
     return true;
   }
   if (hasRole(roles, OpRole::Reduction)) {
-    contract.templateFamilies.push_back("reduction");
+    contract.templateFamilies.push_back(kOpRoleReduction.str());
     return true;
   }
   if (hasRole(roles, OpRole::Vector)) {
-    contract.templateFamilies.push_back("vector");
+    contract.templateFamilies.push_back(kOpRoleVector.str());
     return true;
   }
   return false;
@@ -148,7 +148,7 @@ FusionCandidate buildElementwiseChainCandidate(
     const OpRoleMap &roleMap) {
   FusionCandidate candidate;
   candidate.kind = CandidateKind::Fusion;
-  candidate.primitive = "ElementwiseChain";
+  candidate.primitive = KernelizePrimitiveKind::ElementwiseChain;
   candidate.primaryOps.push_back(seed);
   candidate.internalOps.push_back(seed);
 
@@ -174,7 +174,7 @@ FusionCandidate buildConsumerIntoPrimaryCandidate(
     const OpRoleMap &roleMap) {
   FusionCandidate candidate;
   candidate.kind = CandidateKind::Fusion;
-  candidate.primitive = "ConsumerIntoPrimary";
+  candidate.primitive = KernelizePrimitiveKind::ConsumerIntoPrimary;
   candidate.primaryOps.push_back(seed);
   candidate.internalOps.push_back(seed);
 
@@ -197,7 +197,7 @@ FusionCandidate buildReductionInliningCandidate(
     const OpRoleMap &roleMap) {
   FusionCandidate candidate;
   candidate.kind = CandidateKind::Fusion;
-  candidate.primitive = "ReductionInlining";
+  candidate.primitive = KernelizePrimitiveKind::ReductionInlining;
   candidate.primaryOps.push_back(seed);
   candidate.internalOps.push_back(seed);
 
@@ -211,7 +211,7 @@ FusionCandidate buildReductionInliningCandidate(
 FusionCandidate buildFallbackSingleOpCandidate(Operation *seed) {
   FusionCandidate candidate;
   candidate.kind = CandidateKind::FallbackSingleOp;
-  candidate.primitive = "FallbackSingleOp";
+  candidate.primitive = KernelizePrimitiveKind::FallbackSingleOp;
   candidate.primaryOps.push_back(seed);
   candidate.internalOps.push_back(seed);
   candidate.benefitScore = 1;
@@ -305,7 +305,8 @@ void emitFusionCandidateReport(raw_ostream &os,
   for (const FusionCandidate &candidate : candidates) {
     os << "  candidate_id = " << candidate.candidateId << " kind = \""
        << stringifyCandidateKind(candidate.kind) << "\" primitive = \""
-       << candidate.primitive << "\" primary_ops = ";
+       << stringifyKernelizePrimitiveKind(candidate.primitive)
+       << "\" primary_ops = ";
     printOpIdList(os, candidate.primaryOps, index);
     os << " internal_ops = ";
     printOpIdList(os, candidate.internalOps, index);

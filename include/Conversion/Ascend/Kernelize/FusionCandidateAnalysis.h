@@ -30,7 +30,7 @@ struct ScheduleContract {
 struct FusionCandidate {
   unsigned candidateId = 0;
   CandidateKind kind = CandidateKind::Fusion;
-  std::string primitive;
+  KernelizePrimitiveKind primitive = KernelizePrimitiveKind::Unknown;
   SmallVector<Operation *, 0> primaryOps;
   SmallVector<Operation *, 0> internalOps;
   CandidateClosure closure;

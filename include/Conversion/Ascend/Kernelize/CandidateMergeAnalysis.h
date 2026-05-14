@@ -28,7 +28,7 @@ struct MergedCandidate {
   SmallVector<unsigned> sourceCandidateIds;
   SmallVector<Operation *> primaryOps;
   SmallVector<Operation *> internalOps;
-  SmallVector<std::string> primitiveCombo;
+  SmallVector<KernelizePrimitiveKind> primitiveCombo;
   CandidateClosure closure;
   ScheduleContract scheduleContract;
   int64_t benefitScore = 0;
