@@ -32,17 +32,15 @@ if "$AFIR_OPT" "$BUILD_DIR/step2_kernelized.mlir" \
   exit 1
 fi
 
-if ! grep -q "no schedule template" \
-    "$BUILD_DIR/full_codegen_from_prefix.stderr" ||
-    ! grep -q "linalg.batch_matmul" \
-      "$BUILD_DIR/full_codegen_from_prefix.stderr"; then
+if ! grep -q "function contains multiple kernels with conflicting schedule metadata" \
+    "$BUILD_DIR/full_codegen_from_prefix.stderr"; then
   echo "transformer_dynamic.full_codegen=unexpected-gap" >&2
   cat "$BUILD_DIR/full_codegen_from_prefix.stderr" >&2
   exit 1
 fi
 
 echo "transformer_dynamic.mainline_prefix=pass"
-echo "transformer_dynamic.rank2_transpose_closure=pass"
 echo "transformer_dynamic.transpose_kernelize_generalization=pass"
+echo "transformer_dynamic.multi_kernel_func_metadata=fail_closed"
 echo "transformer_dynamic.full_codegen=deferred"
-echo "transformer_dynamic.next_gap=batch_matmul_schedule"
+echo "transformer_dynamic.next_gap=multi_kernel_func_schedule_metadata"
