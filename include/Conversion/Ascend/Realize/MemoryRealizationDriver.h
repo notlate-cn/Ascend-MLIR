@@ -19,12 +19,21 @@ struct Phase5BridgeMaterializationCounts {
   unsigned materializedCopyCount = 0;
 };
 
+enum class MemoryRealizationMode {
+  PlanOnly,
+  MemorySpaceAnnotate,
+};
+
 class MemoryRealizationDriver {
 public:
   FailureOr<MemoryRealizationPlan>
   materialize(const PlacementPlan &placement,
               const StaticMemoryPlan &staticMemory,
               const MovementPlan &movement) const;
+
+  LogicalResult materialize(ModuleOp module,
+                            MutableArrayRef<RealizePlanBundle> bundles,
+                            MemoryRealizationMode mode) const;
 
   FailureOr<llvm::StringMap<unsigned>>
   annotateMemorySpaces(ModuleOp module) const;

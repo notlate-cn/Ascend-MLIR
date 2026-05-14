@@ -35,6 +35,7 @@ add_executable(AscendRealizePlannerTest
 target_link_libraries(AscendRealizePlannerTest PRIVATE
   RuntimeUnitTestSupport
   AscendConversion
+  MLIRParser
 )
 
 add_dependencies(RuntimeUnitTests AscendRealizePlannerTest)

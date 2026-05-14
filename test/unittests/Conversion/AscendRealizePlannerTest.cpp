@@ -10,9 +10,16 @@
 #include "Conversion/Ascend/Realize/RealizeTypes.h"
 #include "Conversion/Ascend/Realize/StaticMemoryPlanner.h"
 #include "Target/Ascend/TargetMemoryModel.h"
+#include "mlir/Dialect/Arith/IR/Arith.h"
+#include "mlir/Dialect/Func/IR/FuncOps.h"
+#include "mlir/Dialect/Linalg/IR/Linalg.h"
+#include "mlir/Dialect/MemRef/IR/MemRef.h"
+#include "mlir/IR/BuiltinOps.h"
+#include "mlir/Parser/Parser.h"
 
 #include "gtest/gtest.h"
 
+using namespace mlir;
 using namespace mlir::afir::ascend::realize;
 
 namespace {
@@ -70,6 +77,32 @@ MovementPlan makeMovementPlan() {
   plan.kernelId = "kernel_0";
   plan.mode = "gm_noop";
   return plan;
+}
+
+OwningOpRef<ModuleOp> parseRealizeModule(MLIRContext &context,
+                                         StringRef moduleText) {
+  context.loadDialect<arith::ArithDialect, func::FuncDialect,
+                      linalg::LinalgDialect, memref::MemRefDialect>();
+  return parseSourceString<ModuleOp>(moduleText, &context);
+}
+
+RealizePlanBundle makePlanBundle() {
+  RealizePlanBundle bundle;
+  bundle.kernel.kernelId = "kernel_0";
+  bundle.kernel.decisionId = "kernel_0.decision.0";
+  bundle.kernel.structuredLowering = "loop_skeleton_v0";
+  bundle.kernel.scheduledOps = 1;
+  bundle.bufferizedIR = makeBufferizedKernelIR();
+  bundle.placement = makePlacementPlan();
+  bundle.staticMemory = makeStaticMemoryPlan();
+  bundle.movement = makeMovementPlan();
+  MemoryRealizationDriver driver;
+  auto realization =
+      driver.materialize(bundle.placement, bundle.staticMemory,
+                         bundle.movement);
+  assert(succeeded(realization));
+  bundle.realization = *realization;
+  return bundle;
 }
 
 } // namespace
@@ -326,4 +359,59 @@ TEST(AscendRealizePlannerTest, MemoryRealizationAnnotatesPlanForMemorySpaces) {
   EXPECT_EQ(plan.memorySpaceAnnotationCount, 1u);
   EXPECT_EQ(plan.materializedAllocCount, 0u);
   EXPECT_EQ(plan.materializedCopyCount, 0u);
+}
+
+TEST(AscendRealizePlannerTest, MemoryRealizationMaterializeMutatesIRAndPlan) {
+  MLIRContext context;
+  OwningOpRef<ModuleOp> module = parseRealizeModule(
+      context, R"mlir(
+module {
+  func.func @f(%arg0: memref<4x8xf32>, %arg1: memref<4x8xf32>) -> memref<4x8xf32>
+      attributes {ascend.normalized = true} {
+    %out = memref.alloc() {alignment = 64 : i64} : memref<4x8xf32>
+    linalg.generic {
+      indexing_maps = [
+        affine_map<(d0, d1) -> (d0, d1)>,
+        affine_map<(d0, d1) -> (d0, d1)>,
+        affine_map<(d0, d1) -> (d0, d1)>],
+      iterator_types = ["parallel", "parallel"]}
+      ins(%arg0, %arg1 : memref<4x8xf32>, memref<4x8xf32>)
+      outs(%out : memref<4x8xf32>)
+      attrs = {ascend.kernel = "kernel_0",
+               ascend.op_role = "vector",
+               ascend.schedule.decision_id = "kernel_0.decision.0",
+               ascend.schedule.structured_lowering = "loop_skeleton_v0"} {
+    ^bb0(%lhs: f32, %rhs: f32, %old: f32):
+      %0 = arith.addf %lhs, %rhs : f32
+      linalg.yield %0 : f32
+    }
+    return %out : memref<4x8xf32>
+  }
+}
+)mlir");
+  ASSERT_TRUE(module);
+
+  SmallVector<RealizePlanBundle, 1> bundles;
+  bundles.push_back(makePlanBundle());
+
+  MemoryRealizationDriver driver;
+  ASSERT_TRUE(succeeded(driver.materialize(
+      *module, bundles, MemoryRealizationMode::MemorySpaceAnnotate)));
+
+  ASSERT_EQ(bundles.size(), 1u);
+  EXPECT_EQ(bundles[0].realization.mode, "memory_space_materialize");
+  EXPECT_EQ(bundles[0].realization.verificationScope,
+            "memory_space_materialization");
+  EXPECT_EQ(bundles[0].realization.materializedAllocCount, 1u);
+  EXPECT_EQ(bundles[0].realization.materializedCopyCount, 1u);
+
+  unsigned vecOutAllocCount = 0;
+  module->walk([&](memref::AllocOp allocOp) {
+    auto type = cast<MemRefType>(allocOp.getType());
+    auto space = dyn_cast_or_null<IntegerAttr>(type.getMemorySpace());
+    if (space && space.getInt() ==
+                     static_cast<int64_t>(mlir::ascend::MemoryPlace::VECOUT))
+      ++vecOutAllocCount;
+  });
+  EXPECT_EQ(vecOutAllocCount, 1u);
 }
