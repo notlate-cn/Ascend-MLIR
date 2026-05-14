@@ -104,6 +104,7 @@ func.func @reduction_keeps_split_logical_axis_guard(%arg0: tensor<2x4xf16>)
 // CHECK-NEXT:   kernel = kernel_0
 // CHECK-NEXT:   candidate_guards = 2
 // CHECK-NEXT:   decision_guards = 0
+// CHECK-NOT:   decision_guard = a0 % 64 == 0
 // CHECK-NOT:   decision_guard =
 // CHECK-NEXT:   guard_budget = 8
 // CHECK-NEXT:   pruned_by_guard_budget = 0
@@ -123,6 +124,7 @@ func.func @reduction_keeps_split_logical_axis_guard(%arg0: tensor<2x4xf16>)
 // CHECK-NEXT:   kernel = kernel_1
 // CHECK-NEXT:   candidate_guards = 2
 // CHECK-NEXT:   decision_guards = 0
+// CHECK-NOT:   decision_guard = a0 % 64 == 0
 // CHECK-NOT:   decision_guard =
 // CHECK-NEXT:   guard_budget = 8
 // CHECK-NEXT:   pruned_by_guard_budget = 0

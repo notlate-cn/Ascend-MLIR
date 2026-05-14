@@ -42,6 +42,7 @@ llvm::Expected<NDArray> LoadNpy(const std::string& path) {
   f.read(header.data(), hlen);
 
   NDArray arr;
+  bool fortranOrder = false;
 
   // Parse shape
   {
@@ -79,12 +80,53 @@ llvm::Expected<NDArray> LoadNpy(const std::string& path) {
                                         descr.c_str(), path.c_str());
   }
 
+  // Parse storage order. Runtime tensors are normalized to row-major storage.
+  {
+    std::regex re(R"('fortran_order'\s*:\s*(True|False))");
+    std::smatch m;
+    if (!std::regex_search(header, m, re))
+      return llvm::createStringError(llvm::inconvertibleErrorCode(),
+                                     "Cannot parse fortran_order: %s",
+                                     path.c_str());
+    fortranOrder = m[1].str() == "True";
+  }
+
   arr.allocate();
-  f.read(reinterpret_cast<char*>(arr.data),
-         static_cast<std::streamsize>(arr.nbytes()));
-  if (f.gcount() != static_cast<std::streamsize>(arr.nbytes()))
+  const size_t nbytes = arr.nbytes();
+  std::vector<uint8_t> payload(nbytes);
+  f.read(reinterpret_cast<char*>(payload.data()),
+         static_cast<std::streamsize>(nbytes));
+  if (f.gcount() != static_cast<std::streamsize>(nbytes))
     return llvm::createStringError(llvm::inconvertibleErrorCode(),
                                    "Truncated data in: %s", path.c_str());
+  if (!fortranOrder || arr.shape.size() <= 1) {
+    std::memcpy(arr.data, payload.data(), nbytes);
+    return arr;
+  }
+
+  const size_t elemBytes = dtypeBytes(arr.dtype);
+  const size_t rank = arr.shape.size();
+  std::vector<size_t> coords(rank, 0);
+  auto *dst = static_cast<uint8_t *>(arr.data);
+  for (size_t rowMajorIndex = 0, elementCount = arr.numElements();
+       rowMajorIndex < elementCount; ++rowMajorIndex) {
+    size_t rem = rowMajorIndex;
+    for (size_t axis = rank; axis > 0; --axis) {
+      const size_t dim = axis - 1;
+      const size_t extent = static_cast<size_t>(arr.shape[dim]);
+      coords[dim] = rem % extent;
+      rem /= extent;
+    }
+
+    size_t fortranIndex = 0;
+    size_t stride = 1;
+    for (size_t axis = 0; axis < rank; ++axis) {
+      fortranIndex += coords[axis] * stride;
+      stride *= static_cast<size_t>(arr.shape[axis]);
+    }
+    std::memcpy(dst + rowMajorIndex * elemBytes,
+                payload.data() + fortranIndex * elemBytes, elemBytes);
+  }
   return arr;
 }
 

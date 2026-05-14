@@ -143,6 +143,55 @@ static bool isSupportedPhase5VectorOutput(linalg::LinalgOp linalgOp) {
   return false;
 }
 
+static bool isSupportedPhase5GatherOutput(linalg::LinalgOp linalgOp) {
+  auto generic = dyn_cast<linalg::GenericOp>(linalgOp.getOperation());
+  if (!generic || !generic->hasAttr("gather_dim"))
+    return false;
+  if (!llvm::all_of(generic.getIteratorTypesArray(),
+                    [](utils::IteratorType iteratorType) {
+                      return iteratorType == utils::IteratorType::parallel;
+                    }))
+    return false;
+  if (!hasIdentityOutputMaps(generic))
+    return false;
+
+  bool sawLoad = false;
+  Value previousResult;
+  for (Operation &bodyOp : generic.getBody()->without_terminator()) {
+    if (isa<linalg::IndexOp, arith::IndexCastOp>(bodyOp))
+      continue;
+    if (isa<memref::LoadOp>(bodyOp)) {
+      if (sawLoad)
+        return false;
+      sawLoad = true;
+      previousResult = bodyOp.getResult(0);
+      continue;
+    }
+    if (isa<arith::AddFOp, arith::MulFOp, arith::MaximumFOp>(bodyOp)) {
+      if (!sawLoad)
+        return false;
+      if (bodyOp.getNumOperands() != 2 || bodyOp.getNumResults() != 1)
+        return false;
+      auto isAvailableOperand = [&](Value value) {
+        if (isa<BlockArgument>(value))
+          return true;
+        if (value.getDefiningOp<arith::ConstantOp>())
+          return true;
+        return previousResult && value == previousResult;
+      };
+      if (!llvm::all_of(bodyOp.getOperands(), isAvailableOperand))
+        return false;
+      previousResult = bodyOp.getResult(0);
+      continue;
+    }
+    return false;
+  }
+
+  auto yieldOp = dyn_cast<linalg::YieldOp>(generic.getBody()->getTerminator());
+  return sawLoad && previousResult && yieldOp && yieldOp.getNumOperands() == 1 &&
+         yieldOp.getOperand(0) == previousResult;
+}
+
 static bool isReductionInitFillForWriter(Operation *user, Operation *writer,
                                          Value output) {
   auto fillOp = dyn_cast<linalg::FillOp>(user);
@@ -157,6 +206,8 @@ static bool isReductionInitFillForWriter(Operation *user, Operation *writer,
 
 static bool isSupportedPhase5FinalOutput(linalg::LinalgOp linalgOp) {
   if (isSupportedPhase5VectorOutput(linalgOp))
+    return true;
+  if (isSupportedPhase5GatherOutput(linalgOp))
     return true;
 
   auto generic = dyn_cast<linalg::GenericOp>(linalgOp.getOperation());

@@ -66,7 +66,8 @@ static int g_pass = 0, g_fail = 0;
 // Write a minimal .npy v1 file for the given dtype descriptor and raw bytes.
 static bool writeNpy(const std::string& path, const std::string& descr,
                      const std::vector<int64_t>& shape,
-                     const void* data, size_t nbytes) {
+                     const void* data, size_t nbytes,
+                     bool fortranOrder = false) {
   std::ofstream f(path, std::ios::binary);
   if (!f) return false;
   std::string shape_str = "(";
@@ -76,7 +77,9 @@ static bool writeNpy(const std::string& path, const std::string& descr,
   }
   shape_str += ")";
   std::string dict = "{'descr': '" + descr +
-                     "', 'fortran_order': False, 'shape': " + shape_str + ", }";
+                     "', 'fortran_order': " +
+                     (fortranOrder ? "True" : "False") +
+                     ", 'shape': " + shape_str + ", }";
   size_t total = 10 + dict.size() + 1;
   size_t pad   = (64 - total % 64) % 64;
   dict.append(pad, ' ');
@@ -226,6 +229,29 @@ static void testNpyIORoundTrip() {
       EXPECT(r->dtype == DType::F32, "F32 dtype");
       float v; std::memcpy(&v, r->data, 4);
       EXPECT(std::fabs(v - 1.0f) < 1e-6f, "F32 data[0] = 1.0");
+    }
+  }
+
+  // F32 Fortran-order input is normalized into row-major NDArray storage.
+  {
+    // Logical row-major matrix:
+    //   [[1, 2, 3],
+    //    [4, 5, 6]]
+    // NPY Fortran-order payload stores the first axis as the fastest-varying
+    // dimension: [1, 4, 2, 5, 3, 6].
+    std::vector<float> fortranPayload = {1.0f, 4.0f, 2.0f,
+                                         5.0f, 3.0f, 6.0f};
+    writeNpy("/tmp/rt_test_f32_fortran.npy", "<f4", {2, 3},
+             fortranPayload.data(), fortranPayload.size() * 4,
+             /*fortranOrder=*/true);
+    auto r = LoadNpy("/tmp/rt_test_f32_fortran.npy");
+    EXPECT((bool)r, "F32 Fortran-order LoadNpy succeeds");
+    if (r) {
+      std::vector<float> values(6);
+      std::memcpy(values.data(), r->data, values.size() * sizeof(float));
+      EXPECT(values == std::vector<float>({1.0f, 2.0f, 3.0f,
+                                           4.0f, 5.0f, 6.0f}),
+             "F32 Fortran-order payload is converted to row-major");
     }
   }
 

@@ -34,4 +34,6 @@ TEST(AscendCommonAttributesTest, SharedConstantsMatchLayerNamespaces) {
             ascend::kScheduleSelectedTileShapeAttr);
   EXPECT_EQ(ascend::schedule::kScheduleTailPoliciesAttr,
             ascend::kScheduleTailPoliciesAttr);
+  EXPECT_EQ(ascend::schedule::kScheduleTailPlanAttr,
+            ascend::kScheduleTailPlanAttr);
 }

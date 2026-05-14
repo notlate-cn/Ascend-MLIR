@@ -150,8 +150,7 @@ struct AscendSchedulePass
         return;
       }
       ScheduleDecisionSet decisionSet = buildScheduleDecisionSet(
-          scheduleProblem->kernelId, searchResult.keptInstances,
-          searchOptions);
+          *scheduleProblem, searchResult.keptInstances, searchOptions);
       scheduleCacheModel.recordScheduleDecisionSet(*scheduleProblem,
                                                    decisionSet);
       const ScheduleDecision &selectedDecision = decisionSet.decisions.front();

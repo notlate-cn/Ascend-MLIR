@@ -10,6 +10,7 @@
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/IR/AffineExpr.h"
 #include "mlir/IR/AffineMap.h"
+#include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/Operation.h"
 #include "llvm/ADT/STLExtras.h"
@@ -221,6 +222,70 @@ void addRole(SmallVectorImpl<AxisExecutionRole> &roles,
     roles.push_back(role);
 }
 
+void addTailPolicy(SmallVectorImpl<AxisTailPolicy> &policies,
+                   AxisTailPolicy policy) {
+  if (!llvm::is_contained(policies, policy))
+    policies.push_back(policy);
+}
+
+void addPrimitiveUse(SmallVectorImpl<PrimitiveAxisUseKind> &uses,
+                     PrimitiveAxisUseKind use) {
+  if (!llvm::is_contained(uses, use))
+    uses.push_back(use);
+}
+
+AxisTailPolicy getDefaultTailPolicy(ArrayRef<AxisTailPolicy> policies) {
+  if (policies.empty())
+    return AxisTailPolicy::MustDivide;
+  return policies.front();
+}
+
+bool hasGatherIndexingMarker(Operation *op) {
+  return op && (op->hasAttr("gather_dim") || op->hasAttr("embedding_dim"));
+}
+
+bool hasIntegerOrIndexElementType(Value value) {
+  auto shapedType = dyn_cast<ShapedType>(value.getType());
+  if (!shapedType)
+    return false;
+  return isa<IntegerType, IndexType>(shapedType.getElementType());
+}
+
+bool mapUsesRawAxis(AffineMap map, unsigned rawAxis) {
+  for (AffineExpr expr : map.getResults()) {
+    auto dimExpr = dyn_cast<AffineDimExpr>(expr);
+    if (dimExpr && dimExpr.getPosition() == rawAxis)
+      return true;
+  }
+  return false;
+}
+
+bool hasGatherUseOnAxis(const LogicalAxisInfo &axis) {
+  for (auto [op, rawAxis] : axis.rawAxes) {
+    if (!hasGatherIndexingMarker(op))
+      continue;
+
+    auto linalgOp = dyn_cast<linalg::LinalgOp>(op);
+    if (!linalgOp)
+      continue;
+
+    SmallVector<AffineMap> indexingMaps = linalgOp.getIndexingMapsArray();
+    OperandRange operands = op->getOperands();
+    unsigned inputMapCount =
+        std::min<unsigned>(static_cast<unsigned>(linalgOp.getNumDpsInputs()),
+                           indexingMaps.size());
+    inputMapCount = std::min<unsigned>(inputMapCount, operands.size());
+
+    for (unsigned mapIndex = 0; mapIndex < inputMapCount; ++mapIndex) {
+      if (!hasIntegerOrIndexElementType(operands[mapIndex]))
+        continue;
+      if (mapUsesRawAxis(indexingMaps[mapIndex], rawAxis))
+        return true;
+    }
+  }
+  return false;
+}
+
 AxisScheduleConstraint *
 lookupAxisScheduleConstraint(CoalescedAxisInfo &info, unsigned logicalAxisId) {
   for (AxisScheduleConstraint &constraint : info.axisScheduleConstraints) {
@@ -244,17 +309,32 @@ void deriveAxisScheduleConstraints(CoalescedAxisInfo &info) {
       constraint.allowedRoles.push_back(AxisExecutionRole::BindCoreCandidate);
       constraint.allowedRoles.push_back(AxisExecutionRole::KernelLoopCandidate);
       constraint.allowedRoles.push_back(AxisExecutionRole::VectorizeCandidate);
-      constraint.tailPolicy = AxisTailPolicy::MaskedTail;
+      constraint.allowedTailPolicies.push_back(AxisTailPolicy::MaskedTail);
+      constraint.allowedTailPolicies.push_back(AxisTailPolicy::ScalarEpilogue);
+      constraint.primitiveUses.push_back(PrimitiveAxisUseKind::DataCopy);
+      constraint.primitiveUses.push_back(PrimitiveAxisUseKind::VectorCompute);
+      constraint.primitiveUses.push_back(PrimitiveAxisUseKind::WriteBack);
       break;
     case AxisKind::Reduction:
       constraint.allowedRoles.push_back(AxisExecutionRole::FullReduction);
-      constraint.tailPolicy = AxisTailPolicy::FullExtent;
+      constraint.allowedTailPolicies.push_back(AxisTailPolicy::FullExtent);
+      constraint.primitiveUses.push_back(PrimitiveAxisUseKind::Reduction);
       break;
     case AxisKind::Unknown:
-      constraint.tailPolicy = AxisTailPolicy::MustDivide;
+      constraint.allowedTailPolicies.push_back(AxisTailPolicy::MustDivide);
       break;
     }
 
+    if (axis.kind == AxisKind::Parallel && hasGatherUseOnAxis(axis)) {
+      addTailPolicy(constraint.allowedTailPolicies,
+                    AxisTailPolicy::PadAndMask);
+      addPrimitiveUse(constraint.primitiveUses,
+                      PrimitiveAxisUseKind::GatherIndex);
+      constraint.semanticAlignmentGranularity = 16;
+    }
+
+    constraint.tailPolicy =
+        getDefaultTailPolicy(constraint.allowedTailPolicies);
     info.axisScheduleConstraints.push_back(std::move(constraint));
   }
 
@@ -335,6 +415,43 @@ void printAxisExecutionRoles(ArrayRef<AxisExecutionRole> roles,
       },
       ",");
   os << "]";
+}
+
+void printAxisTailPolicies(ArrayRef<AxisTailPolicy> policies,
+                           llvm::raw_ostream &os) {
+  os << "[";
+  llvm::interleave(
+      policies, os,
+      [&](AxisTailPolicy policy) { os << stringifyAxisTailPolicy(policy); },
+      ",");
+  os << "]";
+}
+
+void printPrimitiveUses(ArrayRef<PrimitiveAxisUseKind> uses,
+                        llvm::raw_ostream &os) {
+  os << "[";
+  llvm::interleave(
+      uses, os,
+      [&](PrimitiveAxisUseKind use) {
+        os << stringifyPrimitiveAxisUseKind(use);
+      },
+      ",");
+  os << "]";
+}
+
+bool shouldPrintTailContractFields(
+    ArrayRef<AxisScheduleConstraint> constraints) {
+  for (const AxisScheduleConstraint &constraint : constraints) {
+    if (constraint.semanticAlignmentGranularity != 0)
+      return true;
+    if (llvm::is_contained(constraint.allowedTailPolicies,
+                           AxisTailPolicy::PadAndMask))
+      return true;
+    if (llvm::is_contained(constraint.primitiveUses,
+                           PrimitiveAxisUseKind::GatherIndex))
+      return true;
+  }
+  return false;
 }
 
 } // namespace
@@ -427,6 +544,8 @@ void printAxisCoalescingReport(StringRef kernelId,
   os << "\n";
   os << "  barriers = " << info.barriers.size() << "\n";
   os << "  axis_constraints = [\n";
+  bool printTailContract =
+      shouldPrintTailContractFields(info.axisScheduleConstraints);
   for (const AxisScheduleConstraint &constraint :
        info.axisScheduleConstraints) {
     os << "    axis=" << constraint.logicalAxisId
@@ -435,6 +554,14 @@ void printAxisCoalescingReport(StringRef kernelId,
     os << " tail=" << stringifyAxisTailPolicy(constraint.tailPolicy);
     if (constraint.coalescingGroupId != 0)
       os << " group=" << constraint.coalescingGroupId;
+    if (printTailContract) {
+      os << " allowed_tail=";
+      printAxisTailPolicies(constraint.allowedTailPolicies, os);
+      os << " primitive_uses=";
+      printPrimitiveUses(constraint.primitiveUses, os);
+      os << " semantic_align="
+         << constraint.semanticAlignmentGranularity;
+    }
     os << "\n";
   }
   os << "  ]\n";

@@ -24,6 +24,8 @@ inline constexpr llvm::StringLiteral kScheduleSelectedTileShapeAttr =
     "ascend.schedule.selected_tile_shape";
 inline constexpr llvm::StringLiteral kScheduleTailPoliciesAttr =
     "ascend.schedule.tail_policies";
+inline constexpr llvm::StringLiteral kScheduleTailPlanAttr =
+    "ascend.schedule.tail_plan";
 
 } // namespace mlir::afir::ascend
 

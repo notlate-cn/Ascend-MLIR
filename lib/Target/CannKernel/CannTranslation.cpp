@@ -2151,6 +2151,54 @@ static Value findQueuedDataCopyGlobalSource(Value tensor) {
   return {};
 }
 
+static Value findLocalTensorDataCopyCountBefore(Operation *anchor,
+                                                Value tensor) {
+  for (Operation *it = anchor->getPrevNode(); it; it = it->getPrevNode()) {
+    auto copyOp = dyn_cast<ascendc::DataCopyL2Op>(it);
+    if (copyOp && copyOp.getDst() == tensor)
+      return copyOp.getCalCount();
+  }
+  return {};
+}
+
+static Value findLocalTensorDataCopyGlobalSourceBefore(Operation *anchor,
+                                                       Value tensor) {
+  for (Operation *scope = anchor; scope; scope = scope->getParentOp()) {
+    if (!scope->getBlock())
+      continue;
+    for (Operation *it = scope->getPrevNode(); it; it = it->getPrevNode()) {
+      auto copyOp = dyn_cast<ascendc::DataCopyL2Op>(it);
+      if (copyOp && copyOp.getDst() == tensor &&
+          isa<ascendc::GlobalTensorType>(copyOp.getSrc().getType()))
+        return copyOp.getSrc();
+    }
+  }
+  return {};
+}
+
+static Value findLocalTensorByteLength(Value tensor) {
+  if (auto getOp = tensor.getDefiningOp<ascendc::TBufGetTensorOp>()) {
+    Value tbuf = getOp.getBuffer();
+    for (Operation *user : tbuf.getUsers())
+      if (auto initBuffer = dyn_cast<ascendc::TPipeInitBufferOp>(user))
+        return initBuffer.getLength();
+  }
+
+  Value queue;
+  if (auto allocOp = tensor.getDefiningOp<ascendc::TQueBindAllocTensorOp>())
+    queue = allocOp.getQueue();
+  else if (auto dequeOp =
+               tensor.getDefiningOp<ascendc::TQueBindDequeTensorOp>())
+    queue = dequeOp.getQueue();
+
+  if (queue)
+    for (Operation *user : queue.getUsers())
+      if (auto initQueue = dyn_cast<ascendc::TPipeInitQueueOp>(user))
+        return initQueue.getLength();
+
+  return {};
+}
+
 static void fixBrokenOpEmitters(Operation *moduleOp) {
   IRRewriter rewriter(moduleOp->getContext());
 
@@ -2207,11 +2255,47 @@ static void fixBrokenOpEmitters(Operation *moduleOp) {
   for (memref::CastOp op : deadMemrefCasts)
     rewriter.eraseOp(op);
 
+  // AscendC vector Add does not reliably consume a VECCALC tensor that was
+  // populated directly from GM in the simulator. For this narrow gather+bias
+  // pattern, load each bias scalar from GM and apply it with Adds on a
+  // one-element LocalTensor slice so the local source still stays on the vector
+  // path.
+  moduleOp->walk([&](ascendc::AddL2Op op) {
+    Value gmSource =
+        findLocalTensorDataCopyGlobalSourceBefore(op, op.getSrc1());
+    Value localSource = op.getSrc0();
+    if (!gmSource) {
+      gmSource = findLocalTensorDataCopyGlobalSourceBefore(op, op.getSrc0());
+      localSource = op.getSrc1();
+    }
+    if (!gmSource)
+      return;
+
+    auto dstType = dyn_cast<ascendc::LocalTensorType>(op.getDst().getType());
+    if (!dstType)
+      return;
+
+    rewriter.setInsertionPoint(op);
+    Location loc = op.getLoc();
+    std::string elemTypeStr = getAscendCScalarTypeName(dstType.getElementType());
+    std::string tmpl = "{\n";
+    tmpl += "  for (uint32_t _afir_i = 0; _afir_i < static_cast<uint32_t>($2); ++_afir_i) {\n";
+    tmpl += "    " + elemTypeStr + " _afir_r = $3.GetValue(_afir_i);\n";
+    tmpl += "    AscendC::Adds($0[_afir_i], $1[_afir_i], _afir_r, (int32_t)1);\n";
+    tmpl += "  }\n";
+    tmpl += "  $0.SetSize((uint32_t)$2);\n}";
+    rewriter.create<emitasc::VerbatimOp>(
+        loc, rewriter.getStringAttr(tmpl),
+        ValueRange({op.getDst(), localSource, op.getCalCount(), gmSource}));
+    rewriter.eraseOp(op);
+  });
+
   // DataCopyL2Op with GlobalTensorBracketOp source → verbatim
   //
   // PyAsc emits `GlobalTensor<T> row = base(offset);`, but AscendC's operator()
   // returns an element pointer/value rather than a sliced GlobalTensor. Rebuild a
-  // temporary GlobalTensor from `GetPhyAddr(offset)` instead.
+  // temporary GlobalTensor from `GetPhyAddr(offset)` instead.  MTE DataCopy is
+  // 32-byte block oriented, so dynamic tails fall back to scalar GM loads.
   moduleOp->walk([&](ascendc::DataCopyL2Op op) {
     auto bracketOp = op.getSrc().getDefiningOp<ascendc::GlobalTensorBracketOp>();
     if (!bracketOp)
@@ -2229,7 +2313,14 @@ static void fixBrokenOpEmitters(Operation *moduleOp) {
     std::string tmpl = "{\n";
     tmpl += "  AscendC::GlobalTensor<" + elemTypeStr + "> _afir_gt;\n";
     tmpl += "  _afir_gt.SetGlobalBuffer($1.GetPhyAddr($2));\n";
-    tmpl += "  AscendC::DataCopy($0, _afir_gt, $3);\n}";
+    tmpl += "  uint32_t _afir_count = (uint32_t)$3;\n";
+    tmpl += "  if ((_afir_count * sizeof(" + elemTypeStr + ")) % 32u == 0u) {\n";
+    tmpl += "    AscendC::DataCopy($0, _afir_gt, _afir_count);\n";
+    tmpl += "  } else {\n";
+    tmpl += "    for (uint32_t _afir_i = 0; _afir_i < _afir_count; ++_afir_i)\n";
+    tmpl += "      $0.SetValue(_afir_i, _afir_gt.GetValue(_afir_i));\n";
+    tmpl += "  }\n";
+    tmpl += "  $0.SetSize(_afir_count);\n}";
     rewriter.create<emitasc::VerbatimOp>(
         loc, rewriter.getStringAttr(tmpl),
         ValueRange({op.getDst(), bracketOp.getTensor(), bracketOp.getIndex(),
@@ -2237,6 +2328,58 @@ static void fixBrokenOpEmitters(Operation *moduleOp) {
     rewriter.eraseOp(op);
     if (bracketOp->use_empty())
       rewriter.eraseOp(bracketOp);
+  });
+
+  // DataCopyL2Op from GlobalTensor to LocalTensor must leave the local tensor
+  // with an explicit element count for subsequent vector ops and scalar reads.
+  // Non-32B dynamic tails use scalar GM loads instead of MTE DataCopy.
+  moduleOp->walk([&](ascendc::DataCopyL2Op op) {
+    if (!isa<ascendc::LocalTensorType>(op.getDst().getType()) ||
+        !isa<ascendc::GlobalTensorType>(op.getSrc().getType()))
+      return;
+
+    auto dstType = cast<ascendc::LocalTensorType>(op.getDst().getType());
+    std::string elemTypeStr = getAscendCScalarTypeName(dstType.getElementType());
+    rewriter.setInsertionPoint(op);
+    Location loc = op.getLoc();
+    std::string tmpl = "{\n";
+    tmpl += "  uint32_t _afir_count = (uint32_t)$2;\n";
+    tmpl += "  if ((_afir_count * sizeof(" + elemTypeStr + ")) % 32u == 0u) {\n";
+    tmpl += "    AscendC::DataCopy($0, $1, _afir_count);\n";
+    tmpl += "  } else {\n";
+    tmpl += "    for (uint32_t _afir_i = 0; _afir_i < _afir_count; ++_afir_i)\n";
+    tmpl += "      $0.SetValue(_afir_i, $1.GetValue(_afir_i));\n";
+    tmpl += "  }\n";
+    tmpl += "  $0.SetSize(_afir_count);\n}";
+    rewriter.create<emitasc::VerbatimOp>(
+        loc, rewriter.getStringAttr(tmpl),
+        ValueRange({op.getDst(), op.getSrc(), op.getCalCount()}));
+    rewriter.eraseOp(op);
+  });
+
+  // DataCopyL2Op from LocalTensor to GlobalTensor mirrors the same tail policy:
+  // aligned full blocks use MTE DataCopy, scalar tails avoid over-writing GM.
+  moduleOp->walk([&](ascendc::DataCopyL2Op op) {
+    if (!isa<ascendc::GlobalTensorType>(op.getDst().getType()) ||
+        !isa<ascendc::LocalTensorType>(op.getSrc().getType()))
+      return;
+
+    auto srcType = cast<ascendc::LocalTensorType>(op.getSrc().getType());
+    std::string elemTypeStr = getAscendCScalarTypeName(srcType.getElementType());
+    rewriter.setInsertionPoint(op);
+    Location loc = op.getLoc();
+    std::string tmpl = "{\n";
+    tmpl += "  uint32_t _afir_count = (uint32_t)$2;\n";
+    tmpl += "  if ((_afir_count * sizeof(" + elemTypeStr + ")) % 32u == 0u) {\n";
+    tmpl += "    AscendC::DataCopy($0, $1, _afir_count);\n";
+    tmpl += "  } else {\n";
+    tmpl += "    for (uint32_t _afir_i = 0; _afir_i < _afir_count; ++_afir_i)\n";
+    tmpl += "      $0.SetValue(_afir_i, $1.GetValue(_afir_i));\n";
+    tmpl += "  }\n}";
+    rewriter.create<emitasc::VerbatimOp>(
+        loc, rewriter.getStringAttr(tmpl),
+        ValueRange({op.getDst(), op.getSrc(), op.getCalCount()}));
+    rewriter.eraseOp(op);
   });
 
   // BroadcastL2Op → verbatim
@@ -2318,7 +2461,7 @@ static void fixBrokenOpEmitters(Operation *moduleOp) {
     rewriter.eraseOp(op);
   });
 
-  // GatherL2Op with i64 indices → verbatim
+  // GatherL2Op with i64 element indices -> byte offsets -> verbatim
   //
   // AscendC::Gather requires LocalTensor<uint32_t> byte offsets. Gather
   // lowering currently feeds LocalTensor<int64_t> element indices when the
@@ -2335,6 +2478,11 @@ static void fixBrokenOpEmitters(Operation *moduleOp) {
     auto idxElemType = dyn_cast<IntegerType>(indicesType.getElementType());
     if (!idxElemType || idxElemType.getWidth() != 64)
       return;
+    auto sourceType = dyn_cast<ascendc::LocalTensorType>(op.getSrc().getType());
+    if (!sourceType)
+      return;
+    unsigned sourceElemBytes =
+        sourceType.getElementType().getIntOrFloatBitWidth() / 8;
 
     Value pipeVal;
     if (auto funcOp = op->getParentOfType<func::FuncOp>()) {
@@ -2345,6 +2493,17 @@ static void fixBrokenOpEmitters(Operation *moduleOp) {
     }
     if (!pipeVal)
       return;
+    Value sourceElementCount =
+        findLocalTensorDataCopyCountBefore(op.getOperation(), op.getSrc());
+    std::string sourceSetSizeExpr = "$4";
+    if (!sourceElementCount) {
+      sourceElementCount = findLocalTensorByteLength(op.getSrc());
+      if (sourceElementCount)
+        sourceSetSizeExpr =
+            "($4 / " + std::to_string(sourceElemBytes) + "u)";
+    }
+    if (!sourceElementCount)
+      sourceElementCount = op.getCount();
 
     rewriter.setInsertionPoint(op);
     Location loc = op.getLoc();
@@ -2366,16 +2525,25 @@ static void fixBrokenOpEmitters(Operation *moduleOp) {
     std::string prelude;
     prelude += "AscendC::TBuf<AscendC::TPosition::VECCALC> " + tbufName +
                ";\n";
+    prelude += "uint32_t _afir_idx32_bytes = (uint32_t)$1 * sizeof(uint32_t);\n";
+    prelude +=
+        "uint32_t _afir_idx32_aligned_bytes = _afir_idx32_bytes == 0 ? 0 : "
+        "((_afir_idx32_bytes + 31u) / 32u) * 32u;\n";
+    prelude +=
+        "if (_afir_idx32_bytes != 0u && _afir_idx32_aligned_bytes < 32u)\n";
+    prelude += "  _afir_idx32_aligned_bytes = 32u;\n";
     prelude += "$0.InitBuffer(" + tbufName +
-               ", (uint32_t)$1 * sizeof(uint32_t));\n";
+               ", _afir_idx32_aligned_bytes);\n";
     prelude += "AscendC::LocalTensor<uint32_t> " + tensorName + " = " +
                tbufName + ".Get<uint32_t>();\n";
+    prelude += "$2.SetSize((uint32_t)$1);\n";
     prelude +=
         "for (uint32_t _afir_i = 0; _afir_i < static_cast<uint32_t>($1); _afir_i++) {\n";
     prelude += "  " + tensorName +
                ".SetValue(_afir_i, static_cast<uint32_t>($2.GetValue(_afir_i)) * " +
-               std::to_string(srcElemBytes) + ");\n";
+               std::to_string(srcElemBytes) + "u);\n";
     prelude += "}";
+    prelude += "\n" + tensorName + ".SetSize((uint32_t)$1);";
     prelude += "\nAscendC::PipeBarrier<PIPE_V>()";
     rewriter.create<emitasc::VerbatimOp>(
         loc, rewriter.getStringAttr(prelude),
@@ -2384,6 +2552,8 @@ static void fixBrokenOpEmitters(Operation *moduleOp) {
     rewriter.setInsertionPoint(op);
     std::string tmpl = "{\n";
     tmpl += "  uint32_t _afir_gather_count = static_cast<uint32_t>($3);\n";
+    tmpl += "  $0.SetSize(_afir_gather_count);\n";
+    tmpl += "  $1.SetSize((uint32_t)" + sourceSetSizeExpr + ");\n";
     tmpl += "  for (uint32_t _afir_off = 0; _afir_off < _afir_gather_count; _afir_off += " +
             std::to_string(maxGatherCount) + ") {\n";
     tmpl += "    uint32_t _afir_chunk = ((_afir_gather_count - _afir_off) < " +
@@ -2395,7 +2565,7 @@ static void fixBrokenOpEmitters(Operation *moduleOp) {
     tmpl += "\nAscendC::PipeBarrier<PIPE_V>()";
 
     SmallVector<Value> args = {op.getDst(), op.getSrc(), op.getSrcBaseAddr(),
-                               op.getCount()};
+                               sourceElementCount};
     rewriter.create<emitasc::VerbatimOp>(
         loc, rewriter.getStringAttr(tmpl), ValueRange(args));
     rewriter.eraseOp(op);

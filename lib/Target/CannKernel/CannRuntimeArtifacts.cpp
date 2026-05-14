@@ -8,6 +8,7 @@
 
 #include "Conversion/Ascend/Common/Attributes.h"
 #include "ascir/Dialect/Asc/Utils/Attributes.h"
+#include "llvm/ADT/StringSwitch.h"
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/JSON.h"
 #include "llvm/Support/raw_ostream.h"
@@ -147,9 +148,81 @@ static llvm::json::Array buildTilingSchema(ArrayRef<TilingFieldInfo> fields) {
   return schema;
 }
 
+static bool isSupportedTailPolicy(StringRef value) {
+  return llvm::StringSwitch<bool>(value)
+      .Case("must_divide", true)
+      .Case("masked_tail", true)
+      .Case("scalar_epilogue", true)
+      .Case("pad_and_mask", true)
+      .Case("full_extent", true)
+      .Default(false);
+}
+
+static bool isSupportedTailBufferingMode(StringRef value) {
+  return llvm::StringSwitch<bool>(value)
+      .Case("separate_tail_buffer", true)
+      .Case("reuse_main_buffer_after_drain", true)
+      .Default(false);
+}
+
+static bool isSupportedAffectedPrimitiveUse(StringRef value) {
+  return llvm::StringSwitch<bool>(value)
+      .Case("data_copy", true)
+      .Case("vector_compute", true)
+      .Case("reduction", true)
+      .Case("gather_index", true)
+      .Case("cube_m", true)
+      .Case("cube_n", true)
+      .Case("cube_k", true)
+      .Case("write_back", true)
+      .Default(false);
+}
+
+static LogicalResult checkScheduleMetadataCompleteness(func::FuncOp funcOp) {
+  bool hasSelectedTileShape =
+      funcOp->hasAttr(::mlir::afir::ascend::kScheduleSelectedTileShapeAttr);
+  bool hasTailPolicies =
+      funcOp->hasAttr(::mlir::afir::ascend::kScheduleTailPoliciesAttr);
+  bool hasTailPlan =
+      funcOp->hasAttr(::mlir::afir::ascend::kScheduleTailPlanAttr);
+  bool hasAnyMetadata = hasSelectedTileShape || hasTailPolicies || hasTailPlan;
+  bool hasAllMetadata = hasSelectedTileShape && hasTailPolicies && hasTailPlan;
+  if (!hasAnyMetadata || hasAllMetadata)
+    return success();
+
+  return funcOp.emitError()
+         << "schedule metadata requires "
+         << ::mlir::afir::ascend::kScheduleSelectedTileShapeAttr << ", "
+         << ::mlir::afir::ascend::kScheduleTailPoliciesAttr << ", and "
+         << ::mlir::afir::ascend::kScheduleTailPlanAttr << " together";
+}
+
+static LogicalResult validateScheduleMetadataAttributes(func::FuncOp funcOp) {
+  if (Attribute selectedTileShape =
+          funcOp->getAttr(::mlir::afir::ascend::kScheduleSelectedTileShapeAttr))
+    if (!isa<DenseI64ArrayAttr>(selectedTileShape))
+      return funcOp.emitError()
+             << ::mlir::afir::ascend::kScheduleSelectedTileShapeAttr
+             << " must be a dense i64 array attribute";
+
+  if (Attribute tailPolicies =
+          funcOp->getAttr(::mlir::afir::ascend::kScheduleTailPoliciesAttr))
+    if (!isa<ArrayAttr>(tailPolicies))
+      return funcOp.emitError()
+             << ::mlir::afir::ascend::kScheduleTailPoliciesAttr
+             << " must be an array attribute";
+
+  return success();
+}
+
 static FailureOr<llvm::json::Object>
 buildScheduleTilingParams(func::FuncOp funcOp) {
   llvm::json::Object tilingParams;
+
+  if (failed(checkScheduleMetadataCompleteness(funcOp)))
+    return failure();
+  if (failed(validateScheduleMetadataAttributes(funcOp)))
+    return failure();
 
   if (auto selectedTileShape =
           funcOp->getAttrOfType<DenseI64ArrayAttr>(
@@ -170,9 +243,114 @@ buildScheduleTilingParams(func::FuncOp funcOp) {
         return funcOp.emitError()
                << ::mlir::afir::ascend::kScheduleTailPoliciesAttr
                << " element " << index << " must be a string attribute";
+      if (!isSupportedTailPolicy(tailPolicy.getValue()))
+        return funcOp.emitError()
+               << ::mlir::afir::ascend::kScheduleTailPoliciesAttr
+               << " element " << index << " has unsupported value '"
+               << tailPolicy.getValue()
+               << "'; expected one of must_divide, masked_tail, "
+                  "scalar_epilogue, pad_and_mask, full_extent";
       tailPoliciesJson.push_back(tailPolicy.getValue().str());
     }
     tilingParams["tail_policies"] = std::move(tailPoliciesJson);
+  }
+
+  if (Attribute rawTailPlanAttr =
+          funcOp->getAttr(::mlir::afir::ascend::kScheduleTailPlanAttr)) {
+    auto tailPlanAttr = dyn_cast<ArrayAttr>(rawTailPlanAttr);
+    if (!tailPlanAttr)
+      return funcOp.emitError()
+             << ::mlir::afir::ascend::kScheduleTailPlanAttr
+             << " must be an array attribute";
+
+    llvm::json::Array tailPlanJson;
+    for (auto [index, tailPlanEntryAttr] : llvm::enumerate(tailPlanAttr)) {
+      auto tailPlanEntry = dyn_cast<DictionaryAttr>(tailPlanEntryAttr);
+      if (!tailPlanEntry)
+        return funcOp.emitError()
+               << ::mlir::afir::ascend::kScheduleTailPlanAttr
+               << " element " << index
+               << " must be a dictionary attribute";
+
+      auto axis = dyn_cast_or_null<IntegerAttr>(tailPlanEntry.get("axis"));
+      if (!axis || !axis.getType().isInteger(64))
+        return funcOp.emitError()
+               << ::mlir::afir::ascend::kScheduleTailPlanAttr
+               << " element " << index
+               << " field 'axis' must be an i64 integer attribute";
+      auto selected =
+          dyn_cast_or_null<StringAttr>(tailPlanEntry.get("selected"));
+      if (!selected)
+        return funcOp.emitError()
+               << ::mlir::afir::ascend::kScheduleTailPlanAttr
+               << " element " << index
+               << " field 'selected' must be a string attribute";
+      if (!isSupportedTailPolicy(selected.getValue()))
+        return funcOp.emitError()
+               << ::mlir::afir::ascend::kScheduleTailPlanAttr
+               << " element " << index
+               << " field 'selected' has unsupported value '"
+               << selected.getValue()
+               << "'; expected one of must_divide, masked_tail, "
+                  "scalar_epilogue, pad_and_mask, full_extent";
+      auto affected =
+          dyn_cast_or_null<ArrayAttr>(tailPlanEntry.get("affected"));
+      if (!affected)
+        return funcOp.emitError()
+               << ::mlir::afir::ascend::kScheduleTailPlanAttr
+               << " element " << index
+               << " field 'affected' must be an array attribute";
+      auto align = dyn_cast_or_null<IntegerAttr>(tailPlanEntry.get("align"));
+      if (!align || !align.getType().isInteger(64))
+        return funcOp.emitError()
+               << ::mlir::afir::ascend::kScheduleTailPlanAttr
+               << " element " << index
+               << " field 'align' must be an i64 integer attribute";
+      auto buffering =
+          dyn_cast_or_null<StringAttr>(tailPlanEntry.get("buffering"));
+      if (!buffering)
+        return funcOp.emitError()
+               << ::mlir::afir::ascend::kScheduleTailPlanAttr
+               << " element " << index
+               << " field 'buffering' must be a string attribute";
+      if (!isSupportedTailBufferingMode(buffering.getValue()))
+        return funcOp.emitError()
+               << ::mlir::afir::ascend::kScheduleTailPlanAttr
+               << " element " << index
+               << " field 'buffering' has unsupported value '"
+               << buffering.getValue()
+               << "'; expected one of separate_tail_buffer, "
+                  "reuse_main_buffer_after_drain";
+
+      llvm::json::Array affectedPrimitiveUsesJson;
+      for (auto [affectedIndex, affectedAttr] : llvm::enumerate(affected)) {
+        auto affectedUse = dyn_cast<StringAttr>(affectedAttr);
+        if (!affectedUse)
+          return funcOp.emitError()
+                 << ::mlir::afir::ascend::kScheduleTailPlanAttr
+                 << " element " << index << " field 'affected' element "
+                 << affectedIndex << " must be a string attribute";
+        if (!isSupportedAffectedPrimitiveUse(affectedUse.getValue()))
+          return funcOp.emitError()
+                 << ::mlir::afir::ascend::kScheduleTailPlanAttr
+                 << " element " << index << " field 'affected' element "
+                 << affectedIndex << " has unsupported value '"
+                 << affectedUse.getValue()
+                 << "'; expected one of data_copy, vector_compute, reduction, "
+                    "gather_index, cube_m, cube_n, cube_k, write_back";
+        affectedPrimitiveUsesJson.push_back(affectedUse.getValue().str());
+      }
+
+      llvm::json::Object tailPlanObject;
+      tailPlanObject["axis"] = axis.getInt();
+      tailPlanObject["selectedPolicy"] = selected.getValue().str();
+      tailPlanObject["alignmentGranularity"] = align.getInt();
+      tailPlanObject["tailBufferingMode"] = buffering.getValue().str();
+      tailPlanObject["affectedPrimitiveUses"] =
+          std::move(affectedPrimitiveUsesJson);
+      tailPlanJson.push_back(std::move(tailPlanObject));
+    }
+    tilingParams["tail_plan"] = std::move(tailPlanJson);
   }
 
   return tilingParams;

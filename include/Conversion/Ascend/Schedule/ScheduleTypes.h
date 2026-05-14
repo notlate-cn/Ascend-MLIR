@@ -27,6 +27,7 @@ using ::mlir::afir::ascend::kOpRoleAttr;
 using ::mlir::afir::ascend::kPrimaryAttr;
 using ::mlir::afir::ascend::kScheduleDecisionIdAttr;
 using ::mlir::afir::ascend::kScheduleSelectedTileShapeAttr;
+using ::mlir::afir::ascend::kScheduleTailPlanAttr;
 using ::mlir::afir::ascend::kScheduleTailPoliciesAttr;
 using ::mlir::afir::ascend::kStructuredLoweringAttr;
 
@@ -59,7 +60,24 @@ enum class AxisTailPolicy {
   MustDivide,
   MaskedTail,
   ScalarEpilogue,
+  PadAndMask,
   FullExtent,
+};
+
+enum class PrimitiveAxisUseKind {
+  DataCopy,
+  VectorCompute,
+  Reduction,
+  GatherIndex,
+  CubeM,
+  CubeN,
+  CubeK,
+  WriteBack,
+};
+
+enum class TailBufferingMode {
+  SeparateTailBuffer,
+  ReuseMainBufferAfterDrain,
 };
 
 enum class CoalescingHintKind {
@@ -125,6 +143,11 @@ struct AxisScheduleConstraint {
   unsigned logicalAxisId = 0;
   AxisKind kind = AxisKind::Unknown;
   SmallVector<AxisExecutionRole, 3> allowedRoles;
+  SmallVector<AxisTailPolicy, 3> allowedTailPolicies;
+  SmallVector<PrimitiveAxisUseKind, 4> primitiveUses;
+  int64_t semanticAlignmentGranularity = 0;
+  // Compatibility alias for older schedule consumers. New code should use
+  // allowedTailPolicies and pick the selected policy explicitly.
   AxisTailPolicy tailPolicy = AxisTailPolicy::MustDivide;
   uint32_t coalescingGroupId = 0;
 };
@@ -180,11 +203,26 @@ struct ScheduleInstance {
   SmallVector<std::string> reasonKinds;
 };
 
+struct ScheduledAxisTailPlan {
+  unsigned logicalAxisId = 0;
+  AxisTailPolicy selectedPolicy = AxisTailPolicy::MaskedTail;
+  SmallVector<PrimitiveAxisUseKind, 4> affectedPrimitiveUses;
+  int64_t extent = ShapedType::kDynamic;
+  int64_t tileSize = ShapedType::kDynamic;
+  int64_t alignmentGranularity = 0;
+  int64_t mainExtent = ShapedType::kDynamic;
+  int64_t tailExtent = ShapedType::kDynamic;
+  TailBufferingMode tailBufferingMode =
+      TailBufferingMode::SeparateTailBuffer;
+  bool emitsRuntimeGuard = false;
+};
+
 struct ScheduleDecision {
   std::string decisionId;
   ScheduleInstance instance;
   SmallVector<ScheduleGuard> candidateGuards;
   SmallVector<ScheduleGuard> decisionGuards;
+  SmallVector<ScheduledAxisTailPlan, 4> tailPlans;
 };
 
 struct ScheduleDecisionSet {
@@ -267,10 +305,45 @@ inline llvm::StringRef stringifyAxisTailPolicy(AxisTailPolicy policy) {
     return "masked_tail";
   case AxisTailPolicy::ScalarEpilogue:
     return "scalar_epilogue";
+  case AxisTailPolicy::PadAndMask:
+    return "pad_and_mask";
   case AxisTailPolicy::FullExtent:
     return "full_extent";
   }
   return "must_divide";
+}
+
+inline llvm::StringRef
+stringifyPrimitiveAxisUseKind(PrimitiveAxisUseKind kind) {
+  switch (kind) {
+  case PrimitiveAxisUseKind::DataCopy:
+    return "data_copy";
+  case PrimitiveAxisUseKind::VectorCompute:
+    return "vector_compute";
+  case PrimitiveAxisUseKind::Reduction:
+    return "reduction";
+  case PrimitiveAxisUseKind::GatherIndex:
+    return "gather_index";
+  case PrimitiveAxisUseKind::CubeM:
+    return "cube_m";
+  case PrimitiveAxisUseKind::CubeN:
+    return "cube_n";
+  case PrimitiveAxisUseKind::CubeK:
+    return "cube_k";
+  case PrimitiveAxisUseKind::WriteBack:
+    return "write_back";
+  }
+  return "data_copy";
+}
+
+inline llvm::StringRef stringifyTailBufferingMode(TailBufferingMode mode) {
+  switch (mode) {
+  case TailBufferingMode::SeparateTailBuffer:
+    return "separate_tail_buffer";
+  case TailBufferingMode::ReuseMainBufferAfterDrain:
+    return "reuse_main_buffer_after_drain";
+  }
+  return "separate_tail_buffer";
 }
 
 inline llvm::StringRef stringifyCoalescingHintKind(CoalescingHintKind kind) {
