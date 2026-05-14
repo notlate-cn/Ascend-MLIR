@@ -1,4 +1,4 @@
-// RUN: not afir-opt %s --ascend-normalize --ascend-kernelize --ascend-schedule 2>&1 | FileCheck %s
+// RUN: afir-opt %s --ascend-normalize --ascend-kernelize --ascend-schedule | FileCheck %s
 
 func.func @two_independent_kernels(%a: tensor<64xf16>,
                                    %b: tensor<64xf16>,
@@ -38,4 +38,9 @@ func.func @two_independent_kernels(%a: tensor<64xf16>,
   return %out0, %out1 : tensor<64xf16>, tensor<128xf16>
 }
 
-// CHECK: function contains multiple kernels with conflicting schedule metadata
+// CHECK-LABEL: func.func @two_independent_kernels
+// CHECK-SAME: ascend.schedule.kernel_metadata
+// CHECK-SAME: kernel = "kernel_0"
+// CHECK-SAME: selected_tile_shape = array<i64: 32>
+// CHECK-SAME: kernel = "kernel_1"
+// CHECK-SAME: selected_tile_shape = array<i64: 128>
