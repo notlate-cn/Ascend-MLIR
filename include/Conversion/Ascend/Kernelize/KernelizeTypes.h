@@ -36,6 +36,12 @@ enum class AccessPatternKind {
   Unknown
 };
 
+enum class IteratorKind {
+  Parallel,
+  Reduction,
+  Unknown
+};
+
 enum class OpRole {
   Primary,
   Cube,
@@ -108,6 +114,18 @@ inline llvm::StringRef stringifyAccessPattern(AccessPatternKind kind) {
     return "Unknown";
   }
   return "Unknown";
+}
+
+inline llvm::StringRef stringifyIteratorKind(IteratorKind kind) {
+  switch (kind) {
+  case IteratorKind::Parallel:
+    return "parallel";
+  case IteratorKind::Reduction:
+    return "reduction";
+  case IteratorKind::Unknown:
+    return "unknown";
+  }
+  return "unknown";
 }
 
 inline llvm::StringRef stringifyOpRole(OpRole role) {
