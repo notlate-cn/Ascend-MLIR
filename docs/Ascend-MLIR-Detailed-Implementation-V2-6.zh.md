@@ -28,7 +28,7 @@ flowchart LR
 | 项           | 内容                                                         |
 | ------------ | ------------------------------------------------------------ |
 | 输入         | 第四层输出的 `Memory-Realized IR`（普通 `memref + linalg + scf + func` MLIR，on-chip place 以 `memory_space` 表达，跨 place movement 以 `memref.copy` 表达） |
-| 侧边输入     | `MemoryRealizationPlan`（含 `resolvedPlacement`、`resolvedMovements`、`workspaceLayout`）、`ScheduleDecisionSet`（含 `decisionGuards`、`pipelineDepthExpr`、`enableDoubleBuffer`、`tilingParams`、`unitAssignment`、`compileTimeTopK`） |
+| 侧边输入     | `MemoryRealizationPlan`（含 `resolvedPlacement`、`resolvedMovements`、`workspaceLayout`）、`ScheduleDecisionSet`（含 `decisionGuards`、`tailPlans`、`pipelineDepthExpr`、`enableDoubleBuffer`、`tilingParams`、`unitAssignment`、`compileTimeTopK`） |
 | 输出（必选） | `AscendC Kernel MLIR`、`AscendC Source`、`Host Tiling`       |
 | 输出（可选） | `Runtime Manifest`                                           |
 
@@ -50,12 +50,12 @@ flowchart LR
 
 | 类 / 接口                    | 职责                                                         | 主要输入                                                     | 主要输出              |
 | ---------------------------- | ------------------------------------------------------------ | ------------------------------------------------------------ | --------------------- |
-| `ComputeLoweringDriver`      | 把 `memref.copy` 和 `linalg` 计算落成 backend compute/movement op | `Memory-Realized IR`、`TargetMemoryModel`、`MemoryRealizationPlan`、`ScheduleDecisionSet` | `Backend Compute IR`  |
+| `ComputeLoweringDriver`      | 把 `memref.copy` 和 `linalg` 计算落成 backend compute/movement op，并按 `tailPlans` 发射 mask / scalar epilogue / padding copy 结构 | `Memory-Realized IR`、`TargetMemoryModel`、`MemoryRealizationPlan`、`ScheduleDecisionSet` | `Backend Compute IR`  |
 | `OpLoweringTemplateRegistry` | 按 op family 分发 compute lowering，管理 signature / strategy / primitive emission 规则 | op、`AscendCBufferContext`                                   | backend op 序列       |
 | `BackendABILoweringDriver`   | 固定 kernel 函数签名、并行入口和 `TilingData` ABI            | `Backend Compute IR`、`ScheduleDecisionSet`、`MemoryRealizationPlan` | `AscendC Kernel MLIR` |
 | `AscendCSourceEmitter`       | 把 `AscendC Kernel MLIR` 翻译成 C++ 源码                     | `AscendC Kernel MLIR`                                        | `AscendC Source`      |
-| `HostTilingEmitter`          | 生成 host 侧 `TilingData` 结构和 `get_tiling/get_block_dim` 函数 | `AscendC Kernel MLIR`、`ScheduleDecisionSet`、调优结果       | `Host Tiling`         |
-| `RuntimeManifestBuilder`     | 组装 shape bucket、guard、schedule entry 和 cache key        | `AscendC Kernel MLIR`、`ScheduleDecisionSet`、`decisionGuards` | `Runtime Manifest`    |
+| `HostTilingEmitter`          | 生成 host 侧 `TilingData` 结构和 `get_tiling/get_block_dim` 函数，包含动态 tail extent / main extent / alignment 字段 | `AscendC Kernel MLIR`、`ScheduleDecisionSet`、调优结果       | `Host Tiling`         |
+| `RuntimeManifestBuilder`     | 组装 shape bucket、guard、tail plan、schedule entry 和 cache key        | `AscendC Kernel MLIR`、`ScheduleDecisionSet`、`decisionGuards` | `Runtime Manifest`    |
 
 ---
 
@@ -77,6 +77,7 @@ flowchart LR
 | 计算主体已绑定 backend compute op | 不再保留 `linalg.*` 形态                                     |
 | 搬运路径与 place 一致             | 与 `MemoryRealizationPlan.resolvedMovements / resolvedPlacement` 严格对齐 |
 | `decisionGuards` 已传递           | 动态 shape 场景下同一 kernel 可按 guard 区分实现路径         |
+| `tailPlans` 已消费                | `MaskedTail` 发射 mask/valid extent，`ScalarEpilogue` 发射 epilogue，`PadAndMask` 发射 padding temp 对应的数据搬运和 guarded writeback；第五层不得重新选择 tail 策略 |
 | pipe / queue / tbuf 已建立        | 每个片上 buffer 均对应唯一 queue 和 tbuf                     |
 
 最小 backend op 集：
@@ -358,11 +359,12 @@ func @kernel(inputs..., outputs..., %workspace: memref<ui8>,
 | 来源 | 字段类型 | 识别方式 | 字段名规则 |
 |---|---|---|---|
 | `ScheduleDecisionSet` 中的可调优 tiling 参数（`TilingParam`） | 调优参数（`fixed: false`） | 从 `ScheduleDecision.tilingParams` 枚举，每个 `TilingParam.name` 对应一个字段 | 直接使用 `TilingParam.name`（如 `TB_M`、`TB_N`、`TB_K`） |
+| `ScheduleDecision.tailPlans` 中的动态 tail 表达式 | 派生运行期参数（`derived: true`，不是 `get_tiling` 的直接 shape 参数） | 从 `mainExtentExpr`、`tailExtentExpr`、`alignmentGranularityExpr` 中收集无法静态折叠且 kernel 侧需要直接读取的表达式 | 使用 `axis_<name>_main`、`axis_<name>_tail`、`axis_<name>_align`；若表达式可由已有 shape/tiling 字段在 kernel 内低成本计算，则不生成独立字段 |
 | `decisionGuards` 中引用的 shape 符号变量 | shape 参数（`fixed: true`） | 扫描所有 `GuardExpr` 中出现的自由变量；同一变量名只生成一个字段 | 使用变量名本身（如 `M`、`K`、`N`）；若与调优参数名冲突，加 `dim_` 前缀（如 `dim_M`） |
 
-字段顺序规则：调优参数字段在前（按 `ScheduleDecision.tilingParams` 枚举顺序），shape 参数字段在后（按首次在 `decisionGuards` 中出现的顺序）。此顺序与 `tiling_space.json` 中 `tiling_params` 数组顺序严格一致，host 侧按同一顺序逐字段打包。
+字段顺序规则：调优参数字段在前（按 `ScheduleDecision.tilingParams` 枚举顺序），tail 派生字段居中（按 `ScheduleDecision.tailPlans` 的轴顺序），shape 参数字段在后（按首次在 `decisionGuards` 和 `tailPlans` 中出现的顺序）。此顺序与 `tiling_space.json` 中 `tiling_params` 数组顺序严格一致，host 侧按同一顺序逐字段打包。
 
-`decisionGuards` 中的 guard 表达式（如 `M % 32 == 0`）在 kernel 侧通过 `emitasc.member %tiling["M"]` 读取 shape 值后求值，不再作为独立参数传递——guard 的运行时求值责任落在 kernel body 内。
+`decisionGuards` 中的 guard 表达式（如 `M % 32 == 0`）在 kernel 侧通过 `emitasc.member %tiling["M"]` 读取 shape 值后求值，不再作为独立参数传递——guard 的运行时求值责任落在 kernel body 内。`tailPlans` 中的 `mainExtentExpr` / `tailExtentExpr` 也遵循同一规则：能由 shape + tile 现场计算的表达式在 kernel body 内计算；只有跨 host/runtime 需要复用或表达式过重时，才作为 `TilingData` 派生字段写入。
 
 **Pass 3：`KernelSignatureCanonicalizationPass`**
 
@@ -527,7 +529,7 @@ DataCopy(outGm, outVec, /* ... */);
 | `outputs`          | 参数 N+1 到倒数第三                                  | output buffer 描述       |
 | `workspaceArg`     | 倒数第二参数（类型必须是 `memref<ui8>`）             | workspace buffer         |
 | `tilingStructName` | `!emitasc.py_struct<"TilingData", ...>` 的 struct 名 | 与 kernel 侧一致         |
-| `tilingFields`     | `py_struct` 字段按序提取；每个字段携带 `fixed` 标记（`true` = shape 参数，`false` = 调优参数）和可选 `shapeKey`（shape 维度名） | host 侧逐字段同序打包；`fixed: true` 字段同时用于生成 `get_tiling` / `get_block_dim` 的函数参数列表 |
+| `tilingFields`     | `py_struct` 字段按序提取；每个字段携带 `fixed` 标记（`true` = shape 参数，`false` = 调优参数）、可选 `derived` 标记（tail 派生字段）和可选 `shapeKey`（shape 维度名） | host 侧逐字段同序打包；`fixed: true` 字段同时用于生成 `get_tiling` / `get_block_dim` 的函数参数列表 |
 | `abiArgs`          | 完整参数列表按序                                     | host 侧调用参数顺序      |
 
 **`Runtime Manifest`** 最小字段：
@@ -538,6 +540,7 @@ DataCopy(outGm, outVec, /* ... */);
 | `shapeBucketKey`    | `BucketKeyExpr`                | shape 分桶 key                               |
 | `guardSet`          | `SmallVector<GuardExpr>`       | 可用 schedule decision 集合                  |
 | `tilingSchema`      | `SmallVector<TilingParamDesc>` | host 须生成的参数描述                        |
+| `tailPlanEntries`   | `SmallVector<TailPlanManifestEntry>` | 每个 schedule entry 对应的轴级 tail 策略、对齐粒度和派生字段映射 |
 | `scheduleEntries`   | `SmallVector<ScheduleEntry>`   | runtime 可选择的决策集合                     |
 | `abiSignature`      | `StringRef`                    | kernel ABI 签名摘要                          |
 | `cacheKey`          | `StringRef`                    | 编译/调优结果缓存 key                        |
@@ -563,6 +566,18 @@ Runtime 在调用 `GetWorkspaceSize(shape_args, shape_count)` 时，按以下步
 | `name`        | `StringRef` | shape 参数名（与 `tilingSchema` 中 `fixed: true` 参数的 `name` 一致） |
 | `shapeKey`    | `StringRef` | 该槽位对应的逻辑 shape 维度名（如 `"M"`、`"K"`、`"N"`）       |
 | `abiPosition` | `int32_t`   | 该 shape 参数在 `HostTilingABI.abiArgs` 中的位置（0-based）；用于诊断与一致性校验 |
+
+`TailPlanManifestEntry` 最小字段：
+
+| 字段 | 类型 | 含义 |
+| --- | --- | --- |
+| `axis` | `StringRef` | 逻辑轴名或稳定 axis id |
+| `selectedPolicy` | `AxisTailPolicy` | 第三层选定的 tail 策略 |
+| `alignmentGranularity` | `StringRef` | 对齐粒度表达式；必须能从 `tilingSchema` 字段求值 |
+| `mainExtentField` | `StringRef` | 对应 `mainExtent` 的 `TilingData` 字段名；若 kernel 内现场计算则为空 |
+| `tailExtentField` | `StringRef` | 对应 `tailExtent` 的 `TilingData` 字段名；若 kernel 内现场计算则为空 |
+| `tailBufferingMode` | `TailBufferingMode` | tail region buffer 复用策略；默认 `SeparateTailBuffer` |
+| `affectedPrimitiveUses` | `SmallVector<PrimitiveAxisUseKind>` | 该 tail 策略影响的数据搬运、计算和写回用途 |
 
 `KernelGraph` 最小字段：
 
@@ -868,9 +883,9 @@ workspace_size = lib.matmul_add_leakyrelu_GetWorkspaceSize(shapes, 3)
 | Verifier                    | 检查时机   | 检查内容                                                     |
 | --------------------------- | ---------- | ------------------------------------------------------------ |
 | `ComputeLoweringVerifier`   | 6.3 完成后 | （1）所有 `linalg.*` 已消除（error，任一残留即失败）；（2）每个 `memory_space > 0` 的 `memref.alloc` 均在 `AscendCBufferContext` 中有对应 queue 和 tbuf（error）；（3）搬运路径双向对齐：`Backend Compute IR` 中每条 `ascendc.data_copy_*` / `ascendc.load_data_*` 必须能在 `MemoryRealizationPlan.resolvedMovements` 中找到对应条目（IR→plan 方向，error）；且 `resolvedMovements` 中每条 movement 必须在 `Backend Compute IR` 中有对应的 backend movement op（plan→IR 方向，error）；两方向均须满足，任一不满足均报 error 并列出具体缺失条目 |
-| `KernelABIVerifier`         | 6.4 完成后 | 函数签名符合 CANN 标准；`cann.num_inputs` 与参数一致；workspace 参数类型为 `memref<ui8>`；tiling 参数类型为 `!emitasc.py_struct<...>`；`TilingData` 字段顺序与 `ScheduleDecisionSet.tilingParams` 枚举顺序一致（此时 host 侧 `TilingData` 尚未生成，**不做 host/kernel 一致性校验**，该校验由 6.6 完成后的 `HostTilingABIVerifier` 负责） |
+| `KernelABIVerifier`         | 6.4 完成后 | 函数签名符合 CANN 标准；`cann.num_inputs` 与参数一致；workspace 参数类型为 `memref<ui8>`；tiling 参数类型为 `!emitasc.py_struct<...>`；`TilingData` 字段顺序与 6.4.3 节规则一致（`ScheduleDecisionSet.tilingParams` → `tailPlans` 派生字段 → shape 字段）；此时 host 侧 `TilingData` 尚未生成，**不做 host/kernel 一致性校验**，该校验由 6.6 完成后的 `HostTilingABIVerifier` 负责 |
 | `SourceTranslationVerifier` | 6.5 完成后 | 所有 backend op 均有对应 C++ 映射；生成源码语法正确          |
-| `HostTilingABIVerifier`     | 6.6 完成后 | （1）`HostTilingABI.tilingFields` 字段顺序与 kernel 侧 `!emitasc.py_struct` 字段顺序逐一一致（error）；（2）host 侧 `TilingData` 结构体字段顺序与 `tilingFields` 一致（error）；（3）`get_tiling` 函数的 shape 参数列表与 `tilingFields` 中 `fixed:true` 字段集合完全一致（error）；（4）若有 manifest，`guardSet` 与 `ScheduleDecisionSet.decisionGuards` 双向一致：manifest 中每个 guard 必须能在 `decisionGuards` 中找到对应条目（manifest→data，error），且 `decisionGuards` 中每个条目必须在 manifest `guardSet` 中有对应 guard（data→manifest，error）；任一方向不满足均报 error 并列出具体缺失条目 |
+| `HostTilingABIVerifier`     | 6.6 完成后 | （1）`HostTilingABI.tilingFields` 字段顺序与 kernel 侧 `!emitasc.py_struct` 字段顺序逐一一致（error）；（2）host 侧 `TilingData` 结构体字段顺序与 `tilingFields` 一致（error）；（3）`get_tiling` 函数的 shape 参数列表与 `tilingFields` 中 `fixed:true` 字段集合完全一致（error）；（4）若有 manifest，`guardSet` 与 `ScheduleDecisionSet.decisionGuards` 双向一致：manifest 中每个 guard 必须能在 `decisionGuards` 中找到对应条目（manifest→data，error），且 `decisionGuards` 中每个条目必须在 manifest `guardSet` 中有对应 guard（data→manifest，error）；（5）manifest 中每个 `tailPlanEntry` 必须能在 `ScheduleDecision.tailPlans` 中找到对应轴和策略，且其派生字段名必须存在于 `tilingSchema` 或可由 kernel body 现场计算；任一方向不满足均报 error 并列出具体缺失条目 |
 
 ---
 
