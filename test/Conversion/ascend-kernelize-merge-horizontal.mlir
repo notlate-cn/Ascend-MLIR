@@ -303,6 +303,13 @@ func.func @passthrough_dependency_not_horizontal(%arg0: tensor<4x8xf32>,
 // REVERSE: primitive = "ConsumerIntoPrimary"
 // REVERSE-SAME: internal_ops = [2, 3]
 // REVERSE: CandidateMergeAnalysis
+// REVERSE: merged_candidate_id = 0
+// REVERSE-SAME: source_candidates = [0, 1]
+// REVERSE-SAME: primary_ops = [0, 2]
+// REVERSE-SAME: internal_ops = [0, 1, 2, 3]
+// REVERSE-SAME: primitive_combo = ["ElementwiseChain", "ConsumerIntoPrimary"]
+// REVERSE-SAME: closed = true
+// REVERSE-SAME: families = ["cube"]
 // REVERSE-NOT: merged_candidate_id =
 // REVERSE: Kernelize report
 

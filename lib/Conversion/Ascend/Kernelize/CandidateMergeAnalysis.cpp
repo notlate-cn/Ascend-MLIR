@@ -54,14 +54,21 @@ bool containsFamily(ArrayRef<std::string> families, StringRef family) {
   return false;
 }
 
+bool containsFamilyPair(ArrayRef<std::string> lhsFamilies,
+                        ArrayRef<std::string> rhsFamilies, StringRef lhsFamily,
+                        StringRef rhsFamily) {
+  return (containsFamily(lhsFamilies, lhsFamily) &&
+          containsFamily(rhsFamilies, rhsFamily)) ||
+         (containsFamily(lhsFamilies, rhsFamily) &&
+          containsFamily(rhsFamilies, lhsFamily));
+}
+
 std::optional<StringRef> resolveTableFamily(ArrayRef<std::string> lhsFamilies,
                                             ArrayRef<std::string> rhsFamilies) {
-  if (containsFamily(lhsFamilies, "vector") &&
-      containsFamily(rhsFamilies, "reduction"))
+  if (containsFamilyPair(lhsFamilies, rhsFamilies, "vector", "reduction"))
     return StringRef("reduction");
 
-  if (containsFamily(lhsFamilies, "cube") &&
-      containsFamily(rhsFamilies, "vector"))
+  if (containsFamilyPair(lhsFamilies, rhsFamilies, "cube", "vector"))
     return StringRef("cube");
 
   if (containsFamily(lhsFamilies, "vector") &&
