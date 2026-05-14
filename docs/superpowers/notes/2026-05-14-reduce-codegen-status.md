@@ -26,6 +26,16 @@ Author: scout subagent (paired with Part 1: `examples/reduce-elewise-e2e/`)
 
 ### R1 — `--vector-plan-codegen` produces invalid IR for full-reduce-to-scalar
 
+**Status: SINGLE-BLOCK FIXED (commits `e3cf5a6` / `f6bacb5` / `6e59a19`, 2026-05-14);
+MULTI-BLOCK PENDING P3b-3.** AF port's RCore template now selectable for true
+full-reduce (no parallel axes); GroupEmitter emits R-as-block-axis with per-block
+inner R loop + cross-space writeback via `bufferization.materialize_in_destination`.
+**Correct only when block_dim = 1** (autotune picks XBLOCK ≥ R); for larger R every
+block writes its partial to the same GM scalar → race. Empirical boundary documented
+in `2026-05-14-p3b-2-rcore-single-block-boundary.md`. Production fix (partial→combine
+dual kernels) is plan `2026-05-14-p3b-rcore-reduce-multicore.zh.md` §5 (P3b-3) and is
+blocked on the in-flight multi-plan retention framework.
+
 **Symptom**
 
 ```
