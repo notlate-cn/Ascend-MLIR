@@ -62,6 +62,10 @@ void registerVectorPlanPipeline() {
         // kernel group.  Without this, multi-op groups that mix parallel and
         // reduction iterators trip the tile-fuse assertions / IR domination.
         pm.addNestedPass<func::FuncOp>(mlir::createLinalgElementwiseOpFusionPass());
+        // Make every returned tensor bufferize to a fresh buffer distinct from
+        // any input init. Without this, reduce kernels alias result→init and
+        // the host-launch ABI breaks (see R3 in reduce-codegen-status notes).
+        pm.addNestedPass<func::FuncOp>(createVectorPlanIsolateKernelOutputsPass());
         // Symbolize the kernel's dynamic dims (afir.dim_symbols on the func,
         // afir.symbolic_shapes / afir.iter_extents on the ops) so tile-fuse can
         // carry the symbolic axis extents through to the AscendC kernel.

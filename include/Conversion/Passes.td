@@ -490,6 +490,35 @@ def VectorPlanTileFuse : Pass<"vector-plan-tile-fuse", "mlir::func::FuncOp"> {
   let dependentDialects = ["mlir::linalg::LinalgDialect", "mlir::scf::SCFDialect", "mlir::tensor::TensorDialect", "mlir::func::FuncDialect", "mlir::bufferization::BufferizationDialect"];
 }
 
+def VectorPlanIsolateKernelOutputs : Pass<"vector-plan-isolate-kernel-outputs", "mlir::func::FuncOp"> {
+  let summary = "Make every returned tensor bufferize to a fresh buffer distinct from any input";
+  let description = [{
+    Runs at the start of vector-plan-codegen, on each outlined kernel func.
+
+    For each value flowing to `func.return`, finds the linalg DPS op producing
+    it. If that op's `outs(%init)` operand traces back (through tensor.cast /
+    collapse_shape / expand_shape) to a func BlockArgument, the init is wrapped:
+
+        %fresh = bufferization.alloc_tensor() copy(%init) : T
+        ... outs(%fresh) ...
+
+    This guarantees the bufferized output buffer is distinct from the input
+    init buffer, so the kernel's memref signature is "inputs read-only +
+    output written-to" rather than "in-place writeback through init". The
+    host-launch helper / network.json then route buffers correctly without
+    aliasing tricks.
+
+    For pure-elementwise ops the seed copy is wasted (the kernel overwrites
+    every element); a later peephole can elide it. Correctness first.
+  }];
+  let constructor = "mlir::afir::createVectorPlanIsolateKernelOutputsPass()";
+  let dependentDialects = [
+    "mlir::bufferization::BufferizationDialect",
+    "mlir::tensor::TensorDialect",
+    "mlir::linalg::LinalgDialect",
+  ];
+}
+
 def VectorPlanFoldShadowAlloc : Pass<"vector-plan-fold-shadow-alloc", "mlir::func::FuncOp"> {
   let summary = "Fold bufferize-inserted dynamic-size shadow allocs back to in-place writes";
   let description = [{
