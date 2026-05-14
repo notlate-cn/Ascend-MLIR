@@ -73,10 +73,8 @@ struct OperationId {
 struct KernelizeConfig {
   unsigned maxPrimitivePerOp = 4;
   unsigned maxOpsPerCandidate = 32;
-  unsigned maxBranchesPerCandidate = 4;
   unsigned maxPrimaryRolesPerCandidate = 2;
   unsigned maxHorizontalFusionGroupSize = 8;
-  unsigned localTopKPerPrimaryOpNeighborhood = 8;
 };
 
 inline llvm::StringRef stringifyAccessPattern(AccessPatternKind kind) {
