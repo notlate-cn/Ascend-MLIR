@@ -6,21 +6,20 @@ Author: scout subagent (paired with Part 1: `examples/reduce-elewise-e2e/`)
 
 ## TL;DR
 
+Bug catalogue + current status (2026-05-14 EOD):
+
+| ID | Issue | Status |
+|---|---|---|
+| **R1** | Full-reduce-to-scalar: `--vector-plan-codegen` produces invalid IR | **Single-block FIXED** (`e3cf5a6` / `f6bacb5` / `6e59a19`); multi-block (R > autotuner's max XBLOCK ≈ 256) still wrong — partial→combine dual-kernel split pending **P3b-3**, currently blocked on the in-flight multi-plan retention framework. Empirical boundary in `2026-05-14-p3b-2-rcore-single-block-boundary.md`. |
+| **R2** | CANN `ReduceSum<half, RA>` static_asserts at C++ compile | **FIXED** (`abe4536`): RA half input now upcasts to float, ReduceSum<float, RA>, downcasts result back to half. |
+| **R3** | Reduce kernel writes init in-place; host alloc'd fresh output → all-zero | **FIXED** (`28c8ea6`): new `vector-plan-isolate-kernel-outputs` pass wraps the DPS init with `bufferization.alloc_tensor() copy(%init)` so the result bufferizes to a fresh GM buffer distinct from any input. |
+| **R4** | `block_dim_expr` empty for static-shape funcs (known) | Partially addressed by C2 (`dd4593c`) — bare extent expression now emitted; verify whether `block_dim_expr` itself is still empty under static shapes. |
+| **R5** | Greedy fuser merges past Rule 3 with `linalg.fill` | Open. Not on critical path; affects only the workaround that tried to replace function-arg inits with `tensor.empty + linalg.fill`. |
+
 - **Group outline correctly splits two reductions on different axes** into two separate
   `kernel_group*.mlir` files (Rule 3: merged canonical axes lose every parallel axis).
-- **Single-kernel reduce through the network runner is broken end-to-end**: outputs come
-  back all-zero. Root cause is an ABI mismatch between how reduce kernels bufferize
-  (in-place on the DPS init operand) and how `aclnn-backend` generates host code
-  (assumes a separate output buffer is appended after the inputs). This breaks ANY
-  reduce example, not just multi-kernel.
-  **FIXED 2026-05-14 (commit 28c8ea6):** see R3 below.
-- Several other landmines on the reduce path documented below: full-reduce-to-scalar
-  is broken in `--vector-plan-codegen`; axis-0 reduce on `f16` is unsupported by the
-  CANN ReduceSum API; `block_dim_expr` is empty for static-shape funcs (known).
-- Part 1 demo (`examples/reduce-elewise-e2e/`) successfully exercises group outline
-  (2 kernels emitted) but FAILS at phase 5 verify with `max_diff ≈ 0.8` on both
-  outputs (all-zero), because of bug R3 below. Shipped as a probe with this status
-  noted in its README.
+- Part 1 demo `examples/reduce-elewise-e2e/` (referenced below) was a probe that
+  pre-dated R3's fix; with R3 fixed, it is no longer needed.
 
 ## Bug catalogue
 
@@ -76,6 +75,20 @@ specific file:line — needs an MLIR-debug pass to confirm.)
 ---
 
 ### R2 — CANN `ReduceSum` API does not support `f16` for the `RA` pattern
+
+**Status: FIXED (commit `abe4536`, 2026-05-14)** — `CannTranslation.cpp`'s
+`ReduceSum2DL2Op` RA template now detects half input and emits an upcast
+sequence: allocate VECCALC TBufs for `srcf: tensor<R*A × f32>` and
+`dstf: tensor<A × f32>`, `Cast<float, half>(srcf, src)`,
+`ReduceSum<float, Pattern::Reduce::RA>(dstf, srcf, ws, srcShape, false)`,
+`Cast<half, float>(dst, dstf, RoundMode::CAST_RINT)`, with PIPE_V barriers
+between Cast and ReduceSum. Workspace is sized in the op (float) type.
+The non-half (float) path is unchanged.
+
+Verified: axis-0 fp16 reduce reproducer (8x16 fp16 → 16 fp16) is now
+`max_diff=0.002 PASS` (fp16↔fp32 quantization noise). The original
+analysis below is preserved for context.
+
 
 **Symptom** (compile-time error during `runtime-session`):
 
