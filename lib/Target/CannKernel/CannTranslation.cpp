@@ -1994,6 +1994,9 @@ static void emitTilingSpaceJson(StringRef outPath,
   std::string blockDimExpr;
   if (auto a = funcOp->getAttrOfType<StringAttr>("afir.block_dim_expr"))
     blockDimExpr = a.getValue().str();
+  std::string axisExtentExpr;
+  if (auto a = funcOp->getAttrOfType<StringAttr>("afir.axis_extent_expr"))
+    axisExtentExpr = a.getValue().str();
   auto isDimField = [](StringRef name) {
     return name.starts_with("dim_arg");
   };
@@ -2081,6 +2084,7 @@ static void emitTilingSpaceJson(StringRef outPath,
   root["kernel_file"]    = kernelFile.str();
   root["soc"]            = "Ascend910B1";
   root["block_dim_expr"] = blockDimExpr;
+  root["axis_extent_expr"] = axisExtentExpr;
   root["tiling_params"]  = std::move(params);
 
   std::error_code ec;

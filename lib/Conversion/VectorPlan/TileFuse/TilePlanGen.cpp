@@ -597,8 +597,13 @@ void emitTilingInfos(func::FuncOp func, const TilePlan &plan) {
           return "arg" + std::to_string(src.first) + "_dim" +
                  std::to_string(src.second);
         };
-        blockDimExpr =
-            "ceil(" + ext.emitC(nameFor) + "/" + xblockName.str() + ")";
+        std::string extExpr = ext.emitC(nameFor);
+        blockDimExpr = "ceil(" + extExpr + "/" + xblockName.str() + ")";
+        // Stamp the bare extent expression too — afir-translate lifts it into
+        // tiling_space.json so the runner can evaluate the runtime upper bound
+        // (sub product of arg*_dim*) and prune candidates with XBLOCK > extent.
+        func->setAttr("afir.axis_extent_expr",
+                      StringAttr::get(ctx, extExpr));
       }
     }
   }

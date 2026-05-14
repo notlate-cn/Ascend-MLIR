@@ -149,6 +149,19 @@ def eval_block_dim(space: dict, params: dict) -> int:
         return 1
 
 
+def _eval_axis_extent(space: dict, params: dict) -> int:
+    """Evaluate space['axis_extent_expr'] under integer params.
+
+    Same grammar as eval_block_dim. Returns 0 (sentinel "unknown") if expr is
+    missing or empty — callers should skip capping in that case.
+    """
+    expr = (space.get("axis_extent_expr") or "").strip()
+    if not expr:
+        return 0
+    # Wrap in a fake space so we can reuse eval_block_dim's grammar handler.
+    return eval_block_dim({"block_dim_expr": expr}, params)
+
+
 def phase2_codegen_compile(work, groups, network):
     """For each ascendc kernel: --vector-plan-codegen → -mlir-to-cann → compile.
 
@@ -232,20 +245,29 @@ def phase3_default_build_and_dump(work, groups, network, artifacts, args):
         kid = k["id"]
         space_path = work / f"{kid}_space.json"
         space = json.loads(space_path.read_text())
-        # Tunable params: "fixed": false. For default, pick the LARGEST candidate
-        # so block_dim stays small (camodel sims ~32 cores; smaller XBLOCK with
-        # large total → block_dim swamps the device and most elements stay zero).
         params: dict = {}
-        for p in space.get("tiling_params", []):
-            if not p.get("fixed", False):
-                vals = p.get("values", [])
-                params[p["name"]] = vals[-1] if vals else 16
-        # Shape-keyed fixed params: dim_arg*_* etc. — resolve from runner inputs.
+        # Shape-keyed fixed params first: dim_arg*_* — resolve from runner inputs.
         shape_keys = _shape_key_values_for_kernel(space, network, kid, args.inputs)
         for p in space.get("tiling_params", []):
             sk = p.get("shape_key")
             if p.get("fixed", False) and sk and sk in shape_keys:
                 params[p["name"]] = shape_keys[sk]
+        # Evaluate axis_extent_expr (set by CannTranslation from the per-kernel
+        # SymExpr) under this invocation's shape_keys to get the total tile-axis
+        # extent. Used to cap tunable XBLOCK-like candidates: a value larger than
+        # the runtime extent is invalid (kernel doesn't write output → caller
+        # buffer reads as zeros).
+        extent = _eval_axis_extent(space, shape_keys)
+        # Tunable params: "fixed": false. For default, pick the LARGEST candidate
+        # that is also <= extent (camodel sims ~32 cores; we want block_dim small
+        # but not so large XBLOCK that no block actually writes output).
+        for p in space.get("tiling_params", []):
+            if not p.get("fixed", False):
+                vals = p.get("values", []) or [16]
+                if extent > 0:
+                    capped = [v for v in vals if v <= extent]
+                    vals = capped if capped else [extent]
+                params[p["name"]] = vals[-1]
         # eval_block_dim grammar uses shape_key names directly (e.g. arg0_dim0),
         # not the param names — register the shape_key → value mapping for it.
         block_dim_params = dict(params)
@@ -358,9 +380,26 @@ def phase4_autotune(work, network, inter, args):
         profile_dir = work / f"{kid}_autotune_profile"
         profile_dir.mkdir(parents=True, exist_ok=True)
 
+        # Filter tunable candidates by the runtime extent. Same upper bound as
+        # phase 3's default-picker uses; written to a sibling space file so the
+        # autotuner doesn't waste trials on XBLOCK values larger than the data.
+        shape_keys = {kv.split("=")[0]: int(kv.split("=")[1])
+                       for kv in shape_arg.split(",") if "=" in kv}
+        extent = _eval_axis_extent(space, shape_keys)
+        if extent > 0:
+            filtered = json.loads(json.dumps(space))  # deep copy
+            for p in filtered.get("tiling_params", []):
+                if not p.get("fixed", False) and "values" in p:
+                    capped = [v for v in p["values"] if v <= extent]
+                    p["values"] = capped if capped else [extent]
+            space_path_eff = work / f"{kid}_space_filtered.json"
+            space_path_eff.write_text(json.dumps(filtered, indent=2))
+        else:
+            space_path_eff = space_path
+
         cmd = [
             AUTOTUNER,
-            "--space",   str(space_path),
+            "--space",   str(space_path_eff),
             "--kernel",  str(cpp_path),
             "--inputs",  ",".join(str(p) for p in in_npys),
             "--expected", str(out0_npy),
