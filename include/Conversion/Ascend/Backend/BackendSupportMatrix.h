@@ -7,24 +7,15 @@
 #ifndef ASCEND_MLIR_CONVERSION_ASCEND_BACKEND_SUPPORT_MATRIX_H
 #define ASCEND_MLIR_CONVERSION_ASCEND_BACKEND_SUPPORT_MATRIX_H
 
+#include "Target/Ascend/TargetProfile.h"
 #include "llvm/ADT/StringRef.h"
-#include <cstdint>
 #include <string>
 
 namespace mlir::afir::ascend::backend {
 
-enum class MemorySpace : int64_t {
-  Unknown = -1,
-  GM = 0,
-  A1 = 1,
-  A2 = 2,
-  B1 = 3,
-  B2 = 4,
-  CO1 = 7,
-  VECIN = 9,
-  VECOUT = 10,
-  VECCALC = 11,
-};
+using MemorySpace = ::mlir::ascend::MemoryPlace;
+inline constexpr MemorySpace kUnknownMemorySpace =
+    static_cast<MemorySpace>(-1);
 
 enum class ComputeKind {
   Unknown,
