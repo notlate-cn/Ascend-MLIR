@@ -12,10 +12,11 @@
 // CHECK-SAME: buffering = "
 // CHECK-SAME: ascend.schedule.tail_policies
 // CHECK-SAME: cann.num_inputs = 3 : i32
-// CHECK: %[[VECOUT_TBUF:.*]] = ascendc.tbuf : <vecout>
-// CHECK: ascendc.global_tensor.set_global_buffer %[[BIAS_GT:.*]], %arg2
-// CHECK: %[[BIAS_LT:.*]] = ascendc.tbuf.get_tensor
-// CHECK: ascendc.data_copy_l2 %[[BIAS_LT]], %[[BIAS_GT]]
+// CHECK: %[[VECOUT_TBUF:[0-9]+]] = ascendc.tbuf : <vecout>
+// CHECK: emitasc.reinterpret_cast %arg2
+// CHECK: ascendc.global_tensor.set_global_buffer
+// CHECK: %[[BIAS_LT:[0-9]+]] = ascendc.tbuf.get_tensor
+// CHECK: ascendc.data_copy_l2 %[[BIAS_LT]],
 // CHECK: scf.for
 // CHECK: ascendc.gather_l2
 // CHECK: ascendc.max_l2

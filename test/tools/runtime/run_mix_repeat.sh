@@ -7,6 +7,7 @@ runtime_verify_setup_env
 export LD_LIBRARY_PATH="$(runtime_verify_runtime_ld_library_path)"
 runtime_verify_prepare_build_dir
 runtime_verify_build_runtime_core
+runtime_verify_build_example_toolchain
 runtime_verify_build_mix_compiler
 
 EXAMPLE_LOG="$(mktemp /tmp/runtime-mix-repeat-example.XXXXXX.log)"
@@ -17,10 +18,10 @@ trap cleanup EXIT
 
 bash examples/matmul-add-leakyrelu/run.sh >"${EXAMPLE_LOG}" 2>&1
 
-ARTIFACT_DIR="${PROJECT_ROOT}/build/runtime-mix-matmul-add-leakyrelu"
-DATA_DIR="${PROJECT_ROOT}/build/runtime-mix-matmul-add-leakyrelu-data"
-MANIFEST="${DATA_DIR}/runtime-manifest.json"
-RUNTIME_SESSION="${PROJECT_ROOT}/build/runtime-mix-bootstrap/bin/runtime-session"
+BUILD_DIR="${PROJECT_ROOT}/examples/matmul-add-leakyrelu/build_mainline"
+ARTIFACT_DIR="${BUILD_DIR}/artifact"
+MANIFEST="${BUILD_DIR}/run_manifest.json"
+RUNTIME_SESSION="${PROJECT_ROOT}/build/bin/runtime-session"
 
 for i in $(seq 1 20); do
   status=0

@@ -179,6 +179,32 @@ TileShape getRoleDrivenVectorTile(const CoalescedAxisInfo &axes) {
   return tileShape;
 }
 
+TileShape getRoleDrivenCubeTile(const CoalescedAxisInfo &axes,
+                                ArrayRef<int64_t> resultShape) {
+  TileShape tileShape = getResultTile(resultShape);
+  for (auto [index, axis] : llvm::enumerate(axes.logicalAxes)) {
+    if (index >= tileShape.tileSizes.size())
+      break;
+    const AxisScheduleConstraint *constraint =
+        lookupAxisScheduleConstraint(axes, axis.logicalAxisId);
+    if (!constraint || constraint->kind != AxisKind::Parallel)
+      continue;
+    if (!hasAxisExecutionRole(constraint->allowedRoles,
+                              AxisExecutionRole::BindCoreCandidate) &&
+        !hasAxisExecutionRole(constraint->allowedRoles,
+                              AxisExecutionRole::KernelLoopCandidate))
+      continue;
+
+    if (ShapedType::isDynamic(axis.staticExtent))
+      tileShape.tileSizes[index] = kDefaultParallelTile;
+    else
+      tileShape.tileSizes[index] =
+          std::min(axis.staticExtent, kDefaultParallelTile);
+    break;
+  }
+  return tileShape;
+}
+
 SmallVector<TileShape> generateTileShapes(const ScheduleProblem &problem) {
   SmallVector<TileShape> tileShapes;
   switch (problem.dominantRole) {
@@ -195,6 +221,9 @@ SmallVector<TileShape> generateTileShapes(const ScheduleProblem &problem) {
       appendUniqueTileShape(tileShapes, std::move(*splitTile));
     break;
   case OpRole::Cube:
+    appendUniqueTileShape(tileShapes,
+                          getRoleDrivenCubeTile(problem.axes,
+                                                problem.resultShape));
     appendUniqueTileShape(tileShapes, getResultTile(problem.resultShape));
     break;
   case OpRole::Memory:

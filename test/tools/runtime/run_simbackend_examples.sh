@@ -186,6 +186,7 @@ run_vec_example() {
     --kernel "${example_dir}/${kernel_file}" \
     --kernel-kind vec \
     --name "${kernel_name}" \
+    --soc "${SOC_VERSION}" \
     --output "${artifact_root}" >/tmp/runtime_simbackend_compile.log 2>&1
 
   cat > "${manifest}" <<EOF
@@ -272,6 +273,8 @@ run_mix_example() {
   local expected_path="$5"
   local atol="$6"
   local rtol="$7"
+  local kernel_file="${8:-step8_kernel.cpp}"
+  local cann_mlir="${9:-step7_cann.mlir}"
 
   local artifact_root
   artifact_root="$(make_tmp_artifact_root)"
@@ -285,13 +288,15 @@ run_mix_example() {
   bash "${example_dir}/run.sh" 2>&1 | tee "${example_log}"
   grep -q '^session.backend=sim$' "${example_log}"
   grep -q '^session.result=success$' "${example_log}"
+  grep -q '^session.validation=pass$' "${example_log}"
 
   ASCEND_DAV_SIM_VERSION="${DAV_SIM_VERSION}" "${RUNTIME_SESSION}" \
-    --kernel "${example_dir}/step8_kernel.cpp" \
+    --kernel "${example_dir}/${kernel_file}" \
     --kernel-kind mix \
     --name "${kernel_name}" \
-    --cann-mlir "${example_dir}/step7_cann.mlir" \
+    --cann-mlir "${example_dir}/${cann_mlir}" \
     --npy-dir "${data_dir}" \
+    --soc "${SOC_VERSION}" \
     --output "${artifact_root}" >/tmp/runtime_simbackend_mix_compile.log 2>&1
 
   cat > "${manifest}" <<EOF
@@ -420,12 +425,14 @@ if should_run_example "matmul-add-leakyrelu"; then
 run_mix_example \
   "${PROJECT_ROOT}/examples/matmul-add-leakyrelu" \
   "matmul_add_leakyrelu" \
-  "${PROJECT_ROOT}/build/runtime-mix-matmul-add-leakyrelu-data/npy" \
-  "    { \"name\": \"a\", \"path\": \"${PROJECT_ROOT}/build/runtime-mix-matmul-add-leakyrelu-data/npy/input_a.npy\" },
-    { \"name\": \"b\", \"path\": \"${PROJECT_ROOT}/build/runtime-mix-matmul-add-leakyrelu-data/npy/input_b.npy\" },
-    { \"name\": \"bias\", \"path\": \"${PROJECT_ROOT}/build/runtime-mix-matmul-add-leakyrelu-data/npy/input_bias.npy\" }" \
-  "${PROJECT_ROOT}/build/runtime-mix-matmul-add-leakyrelu-data/npy/output.npy" \
-  "1.0" "1e-2"
+  "${PROJECT_ROOT}/examples/matmul-add-leakyrelu/build_mainline/npy" \
+  "    { \"name\": \"a\", \"path\": \"${PROJECT_ROOT}/examples/matmul-add-leakyrelu/build_mainline/npy/input_a.npy\" },
+    { \"name\": \"b\", \"path\": \"${PROJECT_ROOT}/examples/matmul-add-leakyrelu/build_mainline/npy/input_b.npy\" },
+    { \"name\": \"bias\", \"path\": \"${PROJECT_ROOT}/examples/matmul-add-leakyrelu/build_mainline/npy/input_bias.npy\" }" \
+  "${PROJECT_ROOT}/examples/matmul-add-leakyrelu/build_mainline/npy/output.npy" \
+  "1.0" "1e-2" \
+  "build_mainline/step10_kernel.cpp" \
+  "build_mainline/step8_cann.mlir"
 fi
 
 print_summary

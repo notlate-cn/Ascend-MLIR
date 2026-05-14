@@ -25,6 +25,18 @@ constexpr int64_t kVecCalcMemorySpace =
     static_cast<int64_t>(::mlir::ascend::MemoryPlace::VECCALC);
 constexpr int64_t kVecOutMemorySpace =
     static_cast<int64_t>(::mlir::ascend::MemoryPlace::VECOUT);
+constexpr int64_t kA1MemorySpace =
+    static_cast<int64_t>(::mlir::ascend::MemoryPlace::A1);
+constexpr int64_t kA2MemorySpace =
+    static_cast<int64_t>(::mlir::ascend::MemoryPlace::A2);
+constexpr int64_t kB1MemorySpace =
+    static_cast<int64_t>(::mlir::ascend::MemoryPlace::B1);
+constexpr int64_t kB2MemorySpace =
+    static_cast<int64_t>(::mlir::ascend::MemoryPlace::B2);
+constexpr int64_t kCo1MemorySpace =
+    static_cast<int64_t>(::mlir::ascend::MemoryPlace::CO1);
+constexpr int64_t kVecInMemorySpace =
+    static_cast<int64_t>(::mlir::ascend::MemoryPlace::VECIN);
 
 static StringRef getKernelId(Operation *op) {
   auto kernelAttr = op->getAttrOfType<StringAttr>(kKernelAttr);
@@ -34,6 +46,11 @@ static StringRef getKernelId(Operation *op) {
 static bool isVectorOp(Operation *op) {
   auto role = op->getAttrOfType<StringAttr>(kOpRoleAttr);
   return role && role.getValue() == "vector";
+}
+
+static bool isCubeOp(Operation *op) {
+  auto role = op->getAttrOfType<StringAttr>(kOpRoleAttr);
+  return role && role.getValue() == "cube";
 }
 
 static bool hasOnlyKernelUses(Value value, StringRef kernelId) {
@@ -47,6 +64,28 @@ static bool hasOnlyKernelUses(Value value, StringRef kernelId) {
 static MemRefType withMemorySpace(MemRefType type, Attribute memorySpace) {
   return MemRefType::get(type.getShape(), type.getElementType(),
                          type.getLayout(), memorySpace);
+}
+
+static Attribute getMemorySpaceAttr(MLIRContext *context,
+                                    int64_t memorySpace) {
+  return IntegerAttr::get(IntegerType::get(context, 32), memorySpace);
+}
+
+static void annotateAscendCUnits(ModuleOp module) {
+  MLIRContext *context = module.getContext();
+  module.walk([&](linalg::LinalgOp linalgOp) {
+    Operation *op = linalgOp.getOperation();
+    if (op->hasAttr("ascendc.unit"))
+      return;
+    if (isCubeOp(op)) {
+      op->setAttr("ascendc.unit",
+                  StringAttr::get(context, "AiCore.Cube"));
+      return;
+    }
+    if (isVectorOp(op))
+      op->setAttr("ascendc.unit",
+                  StringAttr::get(context, "AiCore.Vector"));
+  });
 }
 
 static bool isSupportedPhase5GenericBody(linalg::GenericOp generic) {
@@ -272,6 +311,16 @@ struct Phase5BridgeOutput {
   std::string kernelId;
 };
 
+struct Phase5CubeBridge {
+  linalg::MatmulOp matmulOp;
+  Value lhs;
+  Value rhs;
+  OpOperand *initOperand;
+  Value originalOutput;
+  SmallVector<OpOperand *, 4> vectorInputUses;
+  std::string kernelId;
+};
+
 static bool isConstantOpFoldResult(OpFoldResult ofr, int64_t expected) {
   std::optional<int64_t> value = getConstantIntValue(ofr);
   return value && *value == expected;
@@ -410,6 +459,82 @@ static LogicalResult replaceAllocDimUses(IRRewriter &rewriter,
   return success();
 }
 
+static SmallVector<Value, 4> buildDynamicSizes(OpBuilder &builder,
+                                               Location loc, Value source) {
+  SmallVector<Value, 4> dynamicSizes;
+  auto type = cast<MemRefType>(source.getType());
+  for (auto [index, dim] : llvm::enumerate(type.getShape())) {
+    if (!ShapedType::isDynamic(dim))
+      continue;
+    dynamicSizes.push_back(
+        builder.create<memref::DimOp>(loc, source, index));
+  }
+  return dynamicSizes;
+}
+
+static memref::AllocOp createMemorySpaceAllocLike(IRRewriter &rewriter,
+                                                  Location loc, Value source,
+                                                  Attribute memorySpace) {
+  auto sourceType = cast<MemRefType>(source.getType());
+  auto allocType = withMemorySpace(sourceType, memorySpace);
+  SmallVector<Value, 4> dynamicSizes =
+      buildDynamicSizes(rewriter, loc, source);
+  return rewriter.create<memref::AllocOp>(loc, allocType, dynamicSizes);
+}
+
+static bool isBridgeableCubeMatmul(linalg::MatmulOp matmulOp) {
+  if (!isCubeOp(matmulOp.getOperation()))
+    return false;
+  if (matmulOp.getNumDpsInputs() != 2 || matmulOp.getNumDpsInits() != 1)
+    return false;
+  auto lhsType =
+      dyn_cast<MemRefType>(matmulOp.getDpsInputOperand(0)->get().getType());
+  auto rhsType =
+      dyn_cast<MemRefType>(matmulOp.getDpsInputOperand(1)->get().getType());
+  auto outType =
+      dyn_cast<MemRefType>(matmulOp.getDpsInitOperand(0)->get().getType());
+  if (!lhsType || !rhsType || !outType || lhsType.getRank() != 2 ||
+      rhsType.getRank() != 2 || outType.getRank() != 2)
+    return false;
+  return !lhsType.getMemorySpace() && !rhsType.getMemorySpace() &&
+         !outType.getMemorySpace();
+}
+
+static bool isDpsInputOperand(linalg::LinalgOp linalgOp,
+                              OpOperand *operand) {
+  for (OpOperand *input : linalgOp.getDpsInputOperands())
+    if (input == operand)
+      return true;
+  return false;
+}
+
+static bool collectSafeCubeVectorUses(linalg::MatmulOp matmulOp,
+                                      SmallVectorImpl<OpOperand *> &uses) {
+  Operation *matmul = matmulOp.getOperation();
+  StringRef kernelId = getKernelId(matmul);
+  Value output = matmulOp.getDpsInitOperand(0)->get();
+
+  for (OpOperand &use : output.getUses()) {
+    Operation *user = use.getOwner();
+    if (user == matmul)
+      continue;
+    if (isa<memref::DimOp, memref::DeallocOp>(user))
+      continue;
+
+    auto linalgUser = dyn_cast<linalg::LinalgOp>(user);
+    if (!linalgUser || getKernelId(user) != kernelId ||
+        user->getBlock() != matmul->getBlock() ||
+        !matmul->isBeforeInBlock(user) ||
+        !isSupportedPhase5VectorOutput(linalgUser) ||
+        !isDpsInputOperand(linalgUser, &use))
+      return false;
+
+    uses.push_back(&use);
+  }
+
+  return !uses.empty();
+}
+
 } // namespace
 
 FailureOr<MemoryRealizationPlan>
@@ -490,8 +615,32 @@ MemoryRealizationDriver::annotateMemorySpaces(ModuleOp module) const {
 FailureOr<llvm::StringMap<Phase5BridgeMaterializationCounts>>
 MemoryRealizationDriver::materializePhase5Bridge(ModuleOp module) const {
   MLIRContext *context = module.getContext();
-  Attribute vecOutSpace = IntegerAttr::get(IntegerType::get(context, 32),
-                                           kVecOutMemorySpace);
+  annotateAscendCUnits(module);
+
+  Attribute a1Space = getMemorySpaceAttr(context, kA1MemorySpace);
+  Attribute a2Space = getMemorySpaceAttr(context, kA2MemorySpace);
+  Attribute b1Space = getMemorySpaceAttr(context, kB1MemorySpace);
+  Attribute b2Space = getMemorySpaceAttr(context, kB2MemorySpace);
+  Attribute co1Space = getMemorySpaceAttr(context, kCo1MemorySpace);
+  Attribute vecInSpace = getMemorySpaceAttr(context, kVecInMemorySpace);
+  Attribute vecOutSpace = getMemorySpaceAttr(context, kVecOutMemorySpace);
+
+  SmallVector<Phase5CubeBridge, 4> cubeBridges;
+  module.walk([&](linalg::MatmulOp matmulOp) {
+    StringRef kernelId = getKernelId(matmulOp.getOperation());
+    if (kernelId.empty() || !isBridgeableCubeMatmul(matmulOp))
+      return;
+
+    Value originalOutput = matmulOp.getDpsInitOperand(0)->get();
+    SmallVector<OpOperand *, 4> vectorInputUses;
+    if (!collectSafeCubeVectorUses(matmulOp, vectorInputUses))
+      return;
+
+    cubeBridges.push_back({matmulOp, matmulOp.getDpsInputOperand(0)->get(),
+                           matmulOp.getDpsInputOperand(1)->get(),
+                           matmulOp.getDpsInitOperand(0), originalOutput,
+                           std::move(vectorInputUses), kernelId.str()});
+  });
 
   SmallVector<Phase5BridgeOutput, 4> outputsToBridge;
   module.walk([&](linalg::LinalgOp linalgOp) {
@@ -528,6 +677,45 @@ MemoryRealizationDriver::materializePhase5Bridge(ModuleOp module) const {
 
   IRRewriter rewriter(context);
   llvm::StringMap<Phase5BridgeMaterializationCounts> counts;
+  for (Phase5CubeBridge &item : cubeBridges) {
+    linalg::MatmulOp matmulOp = item.matmulOp;
+    if (!matmulOp)
+      continue;
+
+    Location loc = matmulOp.getLoc();
+    rewriter.setInsertionPoint(matmulOp);
+    memref::AllocOp a1 =
+        createMemorySpaceAllocLike(rewriter, loc, item.lhs, a1Space);
+    rewriter.create<memref::CopyOp>(loc, item.lhs, a1.getResult());
+    memref::AllocOp a2 =
+        createMemorySpaceAllocLike(rewriter, loc, a1.getResult(), a2Space);
+    rewriter.create<memref::CopyOp>(loc, a1.getResult(), a2.getResult());
+
+    memref::AllocOp b1 =
+        createMemorySpaceAllocLike(rewriter, loc, item.rhs, b1Space);
+    rewriter.create<memref::CopyOp>(loc, item.rhs, b1.getResult());
+    memref::AllocOp b2 =
+        createMemorySpaceAllocLike(rewriter, loc, b1.getResult(), b2Space);
+    rewriter.create<memref::CopyOp>(loc, b1.getResult(), b2.getResult());
+
+    memref::AllocOp co1 = createMemorySpaceAllocLike(
+        rewriter, loc, item.originalOutput, co1Space);
+    matmulOp.getDpsInputOperand(0)->set(a2.getResult());
+    matmulOp.getDpsInputOperand(1)->set(b2.getResult());
+    item.initOperand->set(co1.getResult());
+
+    rewriter.setInsertionPointAfter(matmulOp);
+    memref::AllocOp vecIn = createMemorySpaceAllocLike(
+        rewriter, loc, co1.getResult(), vecInSpace);
+    rewriter.create<memref::CopyOp>(loc, co1.getResult(),
+                                    vecIn.getResult());
+    for (OpOperand *use : item.vectorInputUses)
+      use->set(vecIn.getResult());
+
+    counts[item.kernelId].materializedAllocCount += 6;
+    counts[item.kernelId].materializedCopyCount += 5;
+  }
+
   for (Phase5BridgeOutput &item : outputsToBridge) {
     memref::AllocOp gmAlloc = item.gmAlloc;
     auto gmType = cast<MemRefType>(gmAlloc.getType());
