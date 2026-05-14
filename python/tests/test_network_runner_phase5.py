@@ -10,23 +10,23 @@ RUNNER = REPO / "python/network_runner.py"
 
 TWOCHAIN_MLIR = """\
 #map = affine_map<(d0, d1) -> (d0, d1)>
-func.func @twochain(%a: tensor<4x4xf16>, %b: tensor<4x4xf16>,
-                    %c: tensor<4x4xf16>, %d: tensor<4x4xf16>,
-                    %i0: tensor<4x4xf16>, %i1: tensor<4x4xf16>)
-    -> (tensor<4x4xf16>, tensor<4x4xf16>) {
+func.func @twochain(%a: tensor<?x?xf16>, %b: tensor<?x?xf16>,
+                    %c: tensor<?x?xf16>, %d: tensor<?x?xf16>,
+                    %i0: tensor<?x?xf16>, %i1: tensor<?x?xf16>)
+    -> (tensor<?x?xf16>, tensor<?x?xf16>) {
   %x = linalg.generic {indexing_maps = [#map, #map, #map], iterator_types = ["parallel","parallel"]}
-       ins(%a, %b : tensor<4x4xf16>, tensor<4x4xf16>) outs(%i0 : tensor<4x4xf16>) {
+       ins(%a, %b : tensor<?x?xf16>, tensor<?x?xf16>) outs(%i0 : tensor<?x?xf16>) {
   ^bb0(%p: f16, %q: f16, %o: f16):
     %v = arith.addf %p, %q : f16
     linalg.yield %v : f16
-  } -> tensor<4x4xf16>
+  } -> tensor<?x?xf16>
   %y = linalg.generic {indexing_maps = [#map, #map, #map], iterator_types = ["parallel","parallel"]}
-       ins(%c, %d : tensor<4x4xf16>, tensor<4x4xf16>) outs(%i1 : tensor<4x4xf16>) {
+       ins(%c, %d : tensor<?x?xf16>, tensor<?x?xf16>) outs(%i1 : tensor<?x?xf16>) {
   ^bb0(%p: f16, %q: f16, %o: f16):
     %v = arith.mulf %p, %q : f16
     linalg.yield %v : f16
-  } -> tensor<4x4xf16>
-  return %x, %y : tensor<4x4xf16>, tensor<4x4xf16>
+  } -> tensor<?x?xf16>
+  return %x, %y : tensor<?x?xf16>, tensor<?x?xf16>
 }
 """
 
@@ -43,12 +43,12 @@ def test_phase5_twochain_end_to_end(tmp_path):
     # 4x4 avoids unit-extent dims (which would be collapsed by
     # --linalg-fold-unit-extent-dims and emit unsupported tensor.collapse_shape).
     rng = np.random.default_rng(42)
-    a = rng.standard_normal((4, 4)).astype(np.float16) * 0.1
-    b = rng.standard_normal((4, 4)).astype(np.float16) * 0.1
-    c = rng.standard_normal((4, 4)).astype(np.float16) * 0.1
-    d = rng.standard_normal((4, 4)).astype(np.float16) * 0.1
-    i0 = np.zeros((4, 4), dtype=np.float16)
-    i1 = np.zeros((4, 4), dtype=np.float16)
+    a = rng.standard_normal((128, 64)).astype(np.float16) * 0.1
+    b = rng.standard_normal((128, 64)).astype(np.float16) * 0.1
+    c = rng.standard_normal((128, 64)).astype(np.float16) * 0.1
+    d = rng.standard_normal((128, 64)).astype(np.float16) * 0.1
+    i0 = np.zeros((128, 64), dtype=np.float16)
+    i1 = np.zeros((128, 64), dtype=np.float16)
     # Compute reference in f16 to match kernel precision (kernel operates in f16).
     exp0 = (a + b).astype(np.float16)
     exp1 = (c * d).astype(np.float16)

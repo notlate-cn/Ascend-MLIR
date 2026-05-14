@@ -47,20 +47,18 @@ def link_host(
     llvm_inc       = str(repo_root / "externals/llvm-project/llvm/include")
     llvm_build_inc = f"{llvm_build}/include"
 
-    # Runtime support sources compiled directly — avoids pulling in the full
-    # matmul/mix tiling stack from libAscendCRuntime.a.
+    # Runtime support sources compiled directly — but HostLaunchHelper now
+    # routes through ExecutionSession::run, which transitively needs
+    # TaskGraph, SimBackend, scheduler, etc. Pull those (and HostLaunchHelper
+    # itself) from the prebuilt libAscendCRuntime.a; ar archives are
+    # symbol-driven so the unused matmul/mix tiling stack stays out.
     runtime_sources = [
-        str(repo_root / "lib/Runtime/Execution/HostLaunchHelper.cpp"),
-        str(repo_root / "lib/Runtime/Execution/NativeExecutionRunner.cpp"),
-        str(repo_root / "lib/Runtime/Support/NpyIO.cpp"),
-        str(repo_root / "lib/Runtime/Support/TilingSchema.cpp"),
-        str(repo_root / "lib/Runtime/Support/TilingPack.cpp"),
-        str(repo_root / "lib/Runtime/Support/PathUtils.cpp"),
         str(repo_root / "lib/Runtime/AclnnOps.cpp"),
     ]
 
     sources = [str(host_cpp), str(harness_cpp)] + runtime_sources
     sources.extend(str(s) for s in extra_sources)
+    ascendc_runtime_a = str(repo_root / "build/lib/libAscendCRuntime.a")
 
     # CANN libs — same set runtime-session links against (see ninja -t commands
     # runtime-session). Order matters for static-lib resolution; keep simulator
@@ -82,6 +80,10 @@ def link_host(
         "-I", llvm_inc,
         "-I", llvm_build_inc,
         *sources,
+        # Pull HostLaunchHelper + ExecutionSession + TaskGraph + SimBackend +
+        # scheduler from the prebuilt static lib. Wrap with --whole-archive
+        # off so only referenced objects are pulled in.
+        ascendc_runtime_a,
         # LLVM support (llvm::json, MemoryBuffer, FileSystem, etc.)
         "-L", llvm_lib,
         "-lLLVMSupport",

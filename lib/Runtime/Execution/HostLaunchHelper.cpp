@@ -1,13 +1,20 @@
 //===- HostLaunchHelper.cpp - generated-host AscendC kernel launcher --===//
 //
-// Implements `hostLaunchAscendCKernel`, the C-callable wrapper around
-// NativeExecutionRunner (Simulation mode) used by AclnnBackend-emitted
-// network_host.cpp. See HostLaunchHelper.h for the contract.
+// Implements `hostLaunchAscendCKernel`, the C-callable wrapper used by
+// AclnnBackend-emitted network_host.cpp. Routes each kernel call through
+// `ExecutionSession::run(TaskGraph)` (the same path runtime-session uses)
+// instead of calling `NativeExecutionRunner::runFile` directly. Going
+// through the session-level scheduler / SimBackend dispatch is empirically
+// required for deterministic multi-block execution.
+//
+// Per-call I/O is staged through a temp scratch directory as .npy files so
+// it matches the run-manifest contract that SimBackend already speaks.
 //
 //===----------------------------------------------------------------------===//
 
 #include "Runtime/Execution/HostLaunchHelper.h"
-#include "Runtime/Execution/NativeExecutionRunner.h"
+#include "Runtime/Execution/ExecutionSession.h"
+#include "Runtime/Execution/TaskGraph.h"
 #include "Runtime/Support/NpyIO.h"
 #include "Runtime/Support/Types.h"
 #include "Runtime/TilingSchema.h"
@@ -16,9 +23,12 @@
 #include "llvm/Support/MemoryBuffer.h"
 #include "llvm/Support/raw_ostream.h"
 
+#include <algorithm>
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
+#include <filesystem>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -44,7 +54,7 @@ bool aclDtypeToDType(int aclDtype, DType &out) {
 
 struct KernelTiling {
   int blockDim = 1;
-  // Raw param values keyed by name; packed in schema-declared order at launch time.
+  // Raw param values keyed by name; packed in schema-declared order at launch.
   std::unordered_map<std::string, int64_t> params;
 };
 
@@ -56,8 +66,8 @@ public:
   }
 
   std::mutex mu;
-  std::unique_ptr<NativeExecutionRunner> runner;
-  bool runnerInitialized = false;
+  std::unique_ptr<ExecutionSession> session;
+  bool sessionInitialized = false;
 
   // Cache: parsed tilings keyed by file path.
   std::string loadedTilingsPath;
@@ -67,18 +77,12 @@ public:
   std::string dumpDir;
 };
 
-// Lazily create the simulation-mode runner. Caller holds the mutex.
-int ensureRunner(HelperState &st) {
-  if (st.runnerInitialized) return 0;
-  st.runner =
-      std::make_unique<NativeExecutionRunner>(ExecutionRunnerMode::Simulation);
-  if (auto err = st.runner->initialize(/*deviceId=*/0)) {
-    llvm::errs() << "hostLaunchAscendCKernel: runner initialize failed: "
-                 << llvm::toString(std::move(err)) << "\n";
-    st.runner.reset();
-    return 1;
-  }
-  st.runnerInitialized = true;
+// Lazily create the simulation-mode ExecutionSession. Caller holds the mutex.
+int ensureSession(HelperState &st) {
+  if (st.sessionInitialized) return 0;
+  st.session = std::make_unique<ExecutionSession>(
+      ExecutionBackendKind::Simulation);
+  st.sessionInitialized = true;
   return 0;
 }
 
@@ -102,7 +106,7 @@ int loadTilingsIfNeeded(HelperState &st, const std::string &path) {
     llvm::errs() << "hostLaunchAscendCKernel: tilings JSON parse failed ("
                  << path << "): " << llvm::toString(parsed.takeError())
                  << "\n";
-    return 0;  // keep going with empty tilings
+    return 0;
   }
   auto *topObj = parsed->getAsObject();
   if (!topObj) return 0;
@@ -127,7 +131,7 @@ int loadTilingsIfNeeded(HelperState &st, const std::string &path) {
   return 0;
 }
 
-// Build an NDArray view over an externally-owned host buffer.
+// Wrap a TensorInfo into an NDArray view for SaveNpy (no allocation).
 bool wrapTensorAsNDArray(const aclnn::TensorInfo &t, NDArray &out) {
   DType dt;
   if (!aclDtypeToDType(t.dtype, dt)) {
@@ -159,6 +163,23 @@ void dumpTensorIfEnabled(const std::string &dir, const std::string &kernel,
   }
 }
 
+// Make a per-call scratch directory under /tmp.
+llvm::Expected<std::string> makeScratchDir() {
+  char tmpl[] = "/tmp/host-launch-XXXXXX";
+  if (!::mkdtemp(tmpl)) {
+    return llvm::createStringError(std::error_code(errno, std::generic_category()),
+                                   "mkdtemp failed");
+  }
+  return std::string(tmpl);
+}
+
+void removeScratchDir(const std::string &dir) {
+  if (dir.empty()) return;
+  std::error_code ec;
+  std::filesystem::remove_all(dir, ec);
+  // Ignore errors — best-effort cleanup.
+}
+
 } // namespace
 
 extern "C" void hostLaunchSetDumpIntermediatesDir(const char *dir) {
@@ -182,101 +203,206 @@ extern "C" int hostLaunchAscendCKernel(
   HelperState &st = HelperState::instance();
   std::lock_guard<std::mutex> lk(st.mu);
 
-  if (int rc = ensureRunner(st)) return rc;
+  if (int rc = ensureSession(st)) return rc;
   loadTilingsIfNeeded(st, tilingsPath ? std::string(tilingsPath)
                                        : std::string());
 
-  // Build RunArgs from caller-provided TensorInfos (host buffers).
-  RunArgs args;
-  // AscendC kernels often need scratch GM (workspace) for tile staging /
-  // sync barriers; alloc(0) leaves them no scratch and they write/read
-  // invalid memory → undefined behavior. Match the runtime-session
-  // manifest convention (16 MiB). Override via NETWORK_RUNNER_WORKSPACE_BYTES.
-  args.workspace_size = 16 * 1024 * 1024;
-  if (const char *e = std::getenv("NETWORK_RUNNER_WORKSPACE_BYTES"))
-    args.workspace_size = std::strtoull(e, nullptr, 10);
-  args.inputs.reserve(numInputs);
-  for (int i = 0; i < numInputs; ++i) {
-    NDArray a;
-    if (!wrapTensorAsNDArray(inputs[i], a)) return 2;
-    args.inputs.push_back(std::move(a));
+  // Per-call scratch dir for staged .npy files.
+  auto scratchOr = makeScratchDir();
+  if (!scratchOr) {
+    llvm::errs() << "hostLaunchAscendCKernel(" << kernelName
+                 << "): scratch dir create failed: "
+                 << llvm::toString(scratchOr.takeError()) << "\n";
+    return 2;
   }
-  args.outputs.reserve(numOutputs);
-  for (int i = 0; i < numOutputs; ++i) {
-    NDArray a;
-    if (!wrapTensorAsNDArray(outputs[i], a)) return 2;
-    args.outputs.push_back(std::move(a));
+  const std::string scratch = std::move(*scratchOr);
+
+  // Build the single RuntimeTask.
+  RuntimeTask task;
+  task.taskId = "main";
+  task.artifact.kernelName = kernelName;
+  task.artifact.kernelKind = KernelKind::Vec;  // matches the magic used previously
+  task.artifact.socVersion = "Ascend910B1";
+  task.artifact.deviceBinaryPath = std::string(kernelBinariesDir) + "/" +
+                                   kernelName + "/" + kernelName + ".bin";
+
+  // Stage inputs as .npy files and add bindings.
+  task.invocation.inputs.reserve(numInputs);
+  for (int i = 0; i < numInputs; ++i) {
+    NDArray view;
+    if (!wrapTensorAsNDArray(inputs[i], view)) {
+      removeScratchDir(scratch);
+      return 2;
+    }
+    std::string npyPath = scratch + "/in_" + std::to_string(i) + ".npy";
+    if (auto err = SaveNpy(npyPath, view)) {
+      llvm::errs() << "hostLaunchAscendCKernel(" << kernelName
+                   << "): SaveNpy(in_" << i << ") failed: "
+                   << llvm::toString(std::move(err)) << "\n";
+      removeScratchDir(scratch);
+      return 2;
+    }
+    TensorBinding b;
+    b.name = "in_" + std::to_string(i);
+    b.sourceKind = BindingSourceKind::ExternalFile;
+    b.path = npyPath;
+    b.shape = std::vector<int64_t>(inputs[i].shape,
+                                   inputs[i].shape + inputs[i].rank);
+    DType dt;
+    aclDtypeToDType(inputs[i].dtype, dt);
+    b.dtype = dt;
+    task.invocation.inputs.push_back(std::move(b));
   }
 
-  // Tilings + block dim: pack params in schema-declared order.
+  // Add output bindings (paths the backend will write).
+  task.invocation.outputs.reserve(numOutputs);
+  std::vector<std::string> outputPaths;
+  outputPaths.reserve(numOutputs);
+  for (int i = 0; i < numOutputs; ++i) {
+    DType dt;
+    if (!aclDtypeToDType(outputs[i].dtype, dt)) {
+      removeScratchDir(scratch);
+      return 2;
+    }
+    std::string npyPath = scratch + "/out_" + std::to_string(i) + ".npy";
+    outputPaths.push_back(npyPath);
+    TensorBinding b;
+    b.name = "out_" + std::to_string(i);
+    b.sourceKind = BindingSourceKind::ExternalFile;
+    b.path = npyPath;
+    b.shape = std::vector<int64_t>(outputs[i].shape,
+                                   outputs[i].shape + outputs[i].rank);
+    b.dtype = dt;
+    task.invocation.outputs.push_back(std::move(b));
+  }
+
+  // Tilings + block dim.
   auto tIt = st.tilingsByKernel.find(kernelName);
   if (tIt != st.tilingsByKernel.end()) {
-    args.block_dim = tIt->second.blockDim > 0 ? tIt->second.blockDim : 1;
-    // Try to load tiling_space.json to get schema-declared field order + defaults.
+    task.invocation.blockDim =
+        tIt->second.blockDim > 0 ? tIt->second.blockDim : 1;
+
     std::string schemaPath = std::string(kernelBinariesDir) + "/" +
                              kernelName + "/tiling_space.json";
     auto schemaOr = TilingSchema::fromJson(schemaPath);
     if (schemaOr && schemaOr->size() > 0) {
-      // Build ordered param list using schema field order; fall back to 0 if
-      // a param is missing from the tilings map.
-      std::vector<std::pair<std::string, int64_t>> orderedParams;
-      orderedParams.reserve(schemaOr->size());
+      // Build a CSV in schema-declared order; missing values default to 0.
+      std::string csv;
       for (const auto &field : schemaOr->fields()) {
         auto pit = tIt->second.params.find(field.name);
         int64_t val = (pit != tIt->second.params.end()) ? pit->second : 0;
-        orderedParams.push_back({field.name, val});
+        if (!csv.empty()) csv.push_back(',');
+        csv += field.name;
+        csv.push_back('=');
+        csv += std::to_string(val);
       }
-      auto packedOr = schemaOr->pack(orderedParams);
-      if (packedOr) {
-        args.tiling = std::move(*packedOr);
-      } else {
-        llvm::errs() << "hostLaunchAscendCKernel(" << kernelName
-                     << "): tiling pack failed: "
-                     << llvm::toString(packedOr.takeError()) << "\n";
-        return 2;
-      }
+      TilingBinding tb;
+      tb.schemaPath = schemaPath;
+      tb.params = std::move(csv);
+      task.invocation.tiling = std::move(tb);
     } else {
-      // No schema available (missing file or empty): fall back to iteration
-      // over the raw params map. For single-param kernels, order is moot;
-      // for multi-param kernels, the caller should provide tiling_space.json.
-      llvm::consumeError(schemaOr.takeError());
-      for (const auto &kv : tIt->second.params) {
-        size_t off = args.tiling.size();
-        args.tiling.resize(off + sizeof(int64_t));
-        std::memcpy(args.tiling.data() + off, &kv.second, sizeof(int64_t));
+      // No schema available (missing file or empty). Pack the raw params as
+      // a sequence of int64 little-endian values (matches the original
+      // direct-runFile behavior) and stage as a tiling.bin binary.
+      if (schemaOr) {
+        // size()==0 — unusual; skip tiling.
+      } else {
+        llvm::consumeError(schemaOr.takeError());
+      }
+      if (!tIt->second.params.empty()) {
+        // unordered_map iteration order is randomized per-process by libstdc++;
+        // sort by key so the packed tiling bytes are deterministic across
+        // runs even when no schema is available. (Without sorting, each
+        // process gets a different parameter order → camodel either reads
+        // garbage tiling values and silently produces zeros, or works by
+        // luck. The "schema present" path above is already deterministic.)
+        std::vector<std::pair<std::string, int64_t>> sortedParams(
+            tIt->second.params.begin(), tIt->second.params.end());
+        std::sort(sortedParams.begin(), sortedParams.end(),
+                  [](const auto &a, const auto &b) { return a.first < b.first; });
+        std::string tilingBin = scratch + "/tiling.bin";
+        std::FILE *fp = std::fopen(tilingBin.c_str(), "wb");
+        if (!fp) {
+          llvm::errs() << "hostLaunchAscendCKernel(" << kernelName
+                       << "): cannot write " << tilingBin << "\n";
+          removeScratchDir(scratch);
+          return 2;
+        }
+        for (const auto &kv : sortedParams) {
+          int64_t v = kv.second;
+          std::fwrite(&v, sizeof(int64_t), 1, fp);
+        }
+        std::fclose(fp);
+        TilingBinding tb;
+        tb.binaryPath = tilingBin;
+        task.invocation.tiling = std::move(tb);
       }
     }
   }
 
-  // Dump inputs.
+  // AscendC kernels need scratch GM (workspace). Match the runtime-session
+  // manifest convention (16 MiB). Override via NETWORK_RUNNER_WORKSPACE_BYTES.
+  task.invocation.workspaceSize = 16 * 1024 * 1024;
+  if (const char *e = std::getenv("NETWORK_RUNNER_WORKSPACE_BYTES"))
+    task.invocation.workspaceSize = std::strtoull(e, nullptr, 10);
+
+  // Dump inputs (caller-owned buffers, before launch).
   for (int i = 0; i < numInputs; ++i)
     dumpTensorIfEnabled(st.dumpDir, kernelName, "in", i, inputs[i]);
 
-  // Launch.
-  FileExecutionLaunch launch;
-  // runtime-session --kernel ... --output DIR --name NAME produces
-  // DIR/NAME/NAME.bin (linked) and DIR/NAME/out/manifest.txt.
-  launch.binaryPath = std::string(kernelBinariesDir) + "/" + kernelName +
-                      "/" + kernelName + ".bin";
-  launch.kernelName = kernelName;
-  // 'Vec' magic matches both Vec and Mix kernel kinds (see SimBackend).
-  launch.magic = 0x41415246u;  // kMagicElfAiVec
-
-  if (auto err = st.runner->runFile(launch, args)) {
+  // Build TaskGraph and run via ExecutionSession (same path as runtime-session).
+  TaskGraph graph;
+  if (auto err = graph.addTask(task)) {
     llvm::errs() << "hostLaunchAscendCKernel(" << kernelName
-                 << ") runFile failed: " << llvm::toString(std::move(err))
-                 << "\n";
+                 << "): graph.addTask failed: "
+                 << llvm::toString(std::move(err)) << "\n";
+    removeScratchDir(scratch);
     return 3;
   }
 
-  // Output bytes already landed in the caller-provided host buffers because
-  // wrapTensorAsNDArray used setExternal — runFile's deviceToHost wrote into
-  // the same memory. Nothing to copy back.
+  auto traceOr = st.session->run(graph);
+  if (!traceOr) {
+    llvm::errs() << "hostLaunchAscendCKernel(" << kernelName
+                 << ") session.run failed: "
+                 << llvm::toString(traceOr.takeError()) << "\n";
+    removeScratchDir(scratch);
+    return 3;
+  }
 
-  // Dump outputs.
+  // Load outputs back from .npy and memcpy into caller buffers.
+  for (int i = 0; i < numOutputs; ++i) {
+    auto arrOr = LoadNpy(outputPaths[i]);
+    if (!arrOr) {
+      llvm::errs() << "hostLaunchAscendCKernel(" << kernelName
+                   << "): LoadNpy(out_" << i << ") failed: "
+                   << llvm::toString(arrOr.takeError()) << "\n";
+      removeScratchDir(scratch);
+      return 3;
+    }
+    NDArray &arr = *arrOr;
+    DType expectDt;
+    aclDtypeToDType(outputs[i].dtype, expectDt);
+    size_t expectBytes = arr.nbytes();
+    // Sanity: make sure it matches caller buffer size.
+    NDArray expectView;
+    expectView.dtype = expectDt;
+    expectView.shape.assign(outputs[i].shape,
+                            outputs[i].shape + outputs[i].rank);
+    if (expectView.nbytes() != expectBytes) {
+      llvm::errs() << "hostLaunchAscendCKernel(" << kernelName
+                   << "): output " << i << " size mismatch (expected "
+                   << expectView.nbytes() << " got " << expectBytes << ")\n";
+      removeScratchDir(scratch);
+      return 3;
+    }
+    std::memcpy(outputs[i].data, arr.data, expectBytes);
+  }
+
+  // Dump outputs (post-launch caller buffers).
   for (int i = 0; i < numOutputs; ++i)
     dumpTensorIfEnabled(st.dumpDir, kernelName, "out", i, outputs[i]);
 
+  removeScratchDir(scratch);
   return 0;
 }
 
