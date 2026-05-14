@@ -7,6 +7,7 @@
 #include "Target/CannKernel/CannTranslation.h"
 #include "llvm/ADT/SmallString.h"
 #include "llvm/ADT/StringMap.h"
+#include "llvm/ADT/StringSet.h"
 #include "llvm/Support/Path.h"
 #include "ascir/Dialect/Asc/IR/Asc.h"
 #include "ascir/Dialect/Asc/Utils/Attributes.h"
@@ -2251,15 +2252,21 @@ static void fixBrokenOpEmitters(Operation *moduleOp) {
                   loc, constOff);
           }
         }
-      } else if (isa<BlockArgument>(castOp.getOperand())) {
-        // memref.cast directly off a BlockArgument (no subview underneath) —
-        // e.g. the RCore output arg arrives as `memref<f16, strided<[], offset:?>>`
-        // (from materialize_in_destination's bufferization) and is cast to plain
-        // `memref<f16>` before SetGlobalBuffer.  PyAsc's default printer for that
-        // memref.cast emits `half *v = reinterpret_cast<half*>(gm_addr)` (missing
-        // __gm__), which CANN rejects.  Peel the cast: use the BlockArgument
-        // directly; the cleanup pass below erases the now-dead cast.
-        baseBuffer = castOp.getOperand();
+      } else if (auto ba = dyn_cast<BlockArgument>(castOp.getOperand())) {
+        // memref.cast directly off a *func-entry* BlockArgument (no subview
+        // underneath) — e.g. the RCore output arg arrives as `memref<f16,
+        // strided<[], offset:?>>` (from materialize_in_destination's
+        // bufferization) and is cast to plain `memref<f16>` before
+        // SetGlobalBuffer.  PyAsc's default printer for that memref.cast emits
+        // `half *v = reinterpret_cast<half*>(gm_addr)` (missing __gm__), which
+        // CANN rejects.  Peel the cast: use the BlockArgument directly; the
+        // cleanup pass below erases the now-dead cast.  Restrict to func-entry
+        // BlockArgs (not scf.for / scf.if region BlockArgs) so a future memref
+        // iter_arg inside a loop doesn't accidentally match.
+        Block *owner = ba.getOwner();
+        if (auto funcOp = dyn_cast<func::FuncOp>(owner->getParentOp());
+            funcOp && &funcOp.getBody().front() == owner)
+          baseBuffer = castOp.getOperand();
       }
     }
 
@@ -3065,11 +3072,19 @@ LogicalResult mlir::translateToCannKernel(Operation *op, raw_ostream &os,
     return {name.substr(0, pos).str(), ("v" + tail).str()};
   };
 
+  // Deduplicate struct declarations: P1b emits multiple variant funcs in the
+  // same .cpp; PyStructType identity isn't guaranteed across clones, so we
+  // dedup by struct name (typically "TilingData"). Two variants of the same
+  // kernel always share the schema. If a future case needs genuinely
+  // different struct layouts in one .cpp, revisit this dedup.
+  llvm::StringSet<> emittedStructs;
   for (func::FuncOp funcOp : aicoreFuncs) {
     auto args = funcOp.getArguments();
     auto tilingType = cast<emitasc::PyStructType>(args.back().getType());
-    if (failed(emitTilingStructDecl(emitter, funcOp.getLoc(), tilingType)))
-      return failure();
+    if (emittedStructs.insert(tilingType.getName().str()).second) {
+      if (failed(emitTilingStructDecl(emitter, funcOp.getLoc(), tilingType)))
+        return failure();
+    }
 
     if (tilingSpaceOutPath.empty()) continue;
 
