@@ -6,7 +6,27 @@
 
 #include "Conversion/Ascend/Kernelize/KernelizeOpInterface.h"
 
+#include "Conversion/Ascend/Common/Attributes.h"
+
 namespace mlir::afir::ascend::kernelize {
+namespace {
+
+void appendDefaultPreferredTemplateFamilies(KernelizeOpSemanticInfo &info) {
+  if (!info.preferredTemplateFamilies.empty())
+    return;
+
+  if (info.accessPattern == AccessPatternKind::Contraction) {
+    info.preferredTemplateFamilies.push_back(kOpRoleCube.str());
+  } else if (info.accessPattern == AccessPatternKind::Reduction) {
+    info.preferredTemplateFamilies.push_back(kOpRoleReduction.str());
+  } else if (info.accessPattern == AccessPatternKind::Elementwise ||
+             info.accessPattern == AccessPatternKind::Broadcast ||
+             info.accessPattern == AccessPatternKind::LayoutTransform) {
+    info.preferredTemplateFamilies.push_back(kOpRoleVector.str());
+  }
+}
+
+} // namespace
 
 void KernelizeOpModelRegistry::registerModel(KernelizeOpModel model) {
   models.push_back(model);
@@ -26,6 +46,7 @@ KernelizeOpModelRegistry::resolve(Operation *op) const {
       return failure();
     if (info.modelName == "unknown")
       info.modelName = model.name;
+    appendDefaultPreferredTemplateFamilies(info);
     return info;
   }
 

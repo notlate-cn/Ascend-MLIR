@@ -64,6 +64,7 @@ struct KernelizeOpSemanticInfo {
   SmallVector<AffineMap, 4> indexingMaps;
   SmallVector<unsigned, 2> resultRanks;
   SmallVector<KernelizeSemanticTrait, 4> traits;
+  SmallVector<std::string, 2> preferredTemplateFamilies;
   SmallVector<unsigned, 2> transparentOperandIndices;
   std::string modelName = "unknown";
   std::string unsupportedReason;

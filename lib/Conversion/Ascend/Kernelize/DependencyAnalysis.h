@@ -33,6 +33,7 @@ struct OpSemanticSummary {
   SmallVector<AffineMap> indexingMaps;
   SmallVector<unsigned> resultRanks;
   SmallVector<KernelizeSemanticTrait> traits;
+  SmallVector<std::string, 2> preferredTemplateFamilies;
   std::string modelName = "unknown";
   std::string unsupportedReason;
   unsigned resultRank = 0;

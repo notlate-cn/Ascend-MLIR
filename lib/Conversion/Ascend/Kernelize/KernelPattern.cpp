@@ -34,11 +34,6 @@ using namespace mlir;
 namespace mlir::afir::ascend::kernelize {
 namespace {
 
-constexpr const char kMustCoLocateGroupAttr[] =
-    "ascend.kernelize.must_colocate_group";
-constexpr const char kMustSeparateGroupAttr[] =
-    "ascend.kernelize.must_separate_group";
-
 struct CandidateBuildRecord {
   KernelPatternCandidate candidate;
   unsigned sourceId = 0;
@@ -581,9 +576,9 @@ KernelPatternGraph KernelPatternBuilder::build(
   separateGroups.reserve(graph.nodes.size());
   for (const KernelPatternCandidate &candidate : graph.nodes) {
     coLocateGroups.push_back(
-        collectIntegerGroups(candidate, kMustCoLocateGroupAttr));
+        collectIntegerGroups(candidate, kKernelizeMustCoLocateGroupAttr));
     separateGroups.push_back(
-        collectIntegerGroups(candidate, kMustSeparateGroupAttr));
+        collectIntegerGroups(candidate, kKernelizeMustSeparateGroupAttr));
   }
 
   for (unsigned from = 0; from < graph.nodes.size(); ++from) {

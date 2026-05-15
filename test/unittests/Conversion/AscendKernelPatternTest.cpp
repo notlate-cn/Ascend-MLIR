@@ -7,6 +7,7 @@
 #include "Conversion/Ascend/Kernelize/KernelPattern.h"
 
 #include "Conversion/Ascend/Kernelize/CandidateMergeAnalysis.h"
+#include "Conversion/Ascend/Kernelize/KernelizeFamilyResolver.h"
 
 #include "gtest/gtest.h"
 #include "mlir/IR/Location.h"
@@ -184,6 +185,21 @@ TEST(AscendCandidateMergeAnalyzerTest, IteratesMergedCandidatesToFixpoint) {
   EXPECT_EQ(fullChainIt->scheduleContract.templateFamilies.front(), "vector");
 }
 
+TEST(AscendKernelizeFamilyResolverTest, PrefersCubeForCubeVectorFamilyPair) {
+  SmallVector<std::string, 2> lhsFamilies{"cube"};
+  SmallVector<std::string, 2> rhsFamilies{"vector"};
+  SmallVector<KernelizePrimitiveKind, 2> primitives{
+      KernelizePrimitiveKind::ElementwiseChain,
+      KernelizePrimitiveKind::ConsumerIntoPrimary};
+
+  KernelizeFamilyResolution resolution =
+      resolveKernelizeTemplateFamilies(lhsFamilies, rhsFamilies, primitives);
+
+  ASSERT_EQ(resolution.templateFamilies.size(), 1u);
+  EXPECT_EQ(resolution.templateFamilies.front(), "cube");
+  EXPECT_EQ(resolution.resolverName, "kernelize_trait_resolver");
+}
+
 TEST(AscendKernelPatternBuilderTest, ProducesExplicitPlacementEdgesFromAttrs) {
   MLIRContext context;
   context.allowUnregisteredDialects();
@@ -192,16 +208,16 @@ TEST(AscendKernelPatternBuilderTest, ProducesExplicitPlacementEdgesFromAttrs) {
   TestOp third(context, "test.third");
 
   static_cast<Operation *>(first)->setAttr(
-      "ascend.kernelize.must_colocate_group",
+      kKernelizeMustCoLocateGroupAttr,
       IntegerAttr::get(IntegerType::get(&context, 32), 0));
   static_cast<Operation *>(second)->setAttr(
-      "ascend.kernelize.must_colocate_group",
+      kKernelizeMustCoLocateGroupAttr,
       IntegerAttr::get(IntegerType::get(&context, 32), 0));
   static_cast<Operation *>(second)->setAttr(
-      "ascend.kernelize.must_separate_group",
+      kKernelizeMustSeparateGroupAttr,
       IntegerAttr::get(IntegerType::get(&context, 32), 1));
   static_cast<Operation *>(third)->setAttr(
-      "ascend.kernelize.must_separate_group",
+      kKernelizeMustSeparateGroupAttr,
       IntegerAttr::get(IntegerType::get(&context, 32), 1));
 
   DependencyAnalysisResult deps;
