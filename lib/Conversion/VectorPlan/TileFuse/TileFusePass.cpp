@@ -32,7 +32,8 @@ namespace {
 /// `func`, using the caller-provided `draft`. `func` is assumed to be fresh
 /// (broadcast-absorbed but not yet collapsed). All IR mutations happen here.
 static void runVariantPipeline(func::FuncOp func,
-                                const TilePlanDraft &draft) {
+                                const TilePlanDraft &draft,
+                                llvm::StringRef socName) {
   OpBuilder builder(func.getContext());
 
   // Phase 1: Collapse.
@@ -42,7 +43,7 @@ static void runVariantPipeline(func::FuncOp func,
   // Phase 2: materialize the assigned draft into a TilePlan.
   builder.setInsertionPointToStart(&func.getBody().front());
   TilePlan plan = buildPlanForDraft(func, collapsedInfo, draft, builder,
-                                     func.getLoc());
+                                     func.getLoc(), socName);
   emitTilingInfos(func, plan);
 
   // Collect init tensors and original results BEFORE modification. Same
@@ -153,7 +154,8 @@ struct VectorPlanTileFusePass
       if (!info.topoMembers.empty()) {
         feasible = enumerateFeasibleDrafts(info, enableReductionSplit,
                                             enableTilingVariants &&
-                                                relaxNonBlockUbY);
+                                                relaxNonBlockUbY,
+                                            soc);
       }
     }
     discoveryClone.erase();
@@ -187,7 +189,7 @@ struct VectorPlanTileFusePass
     // (broadcast-absorbed, pre-collapse) IR as the original, so re-running
     // collapse per variant is deterministic.
     for (size_t i = 0; i < variantFuncs.size(); ++i)
-      runVariantPipeline(variantFuncs[i], feasible[i]);
+      runVariantPipeline(variantFuncs[i], feasible[i], soc);
   }
 };
 

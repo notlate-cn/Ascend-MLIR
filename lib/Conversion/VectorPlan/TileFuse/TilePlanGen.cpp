@@ -3,6 +3,7 @@
 #include "Analysis/SymbolicShape/DimSymbolTable.h"
 #include "Analysis/SymbolicShape/SymExpr.h"
 #include "Conversion/VectorPlan/TilePlan.h"
+#include "Target/CannKernel/SocSpec.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
@@ -55,18 +56,23 @@ namespace mlir::afir {
 // Above this many bytes, a reduction axis clearly will not fit on-chip whole,
 // so it must be ub-split (≈ AutoFuse's reduce-template feasibility check).
 static constexpr int64_t kReductionTileBudgetBytes = 32 * 1024;
-// Unified Buffer size on dav-c220 (Ascend 910B); a whole on-chip tile larger
-// than this cannot possibly fit, so such a tiling case is deprioritised.
-// Matches SocSpec(Ascend910B1).totalUbSize; not threaded through TilePlanGen
-// yet because the pass currently doesn't know the target SoC at TilePlanGen
-// time — the runtime UB-aware prune in CannTranslation
-// (ub_cost_bytes_exprs, commit series 5d163a7) does the per-SoC enforcement.
-static constexpr int64_t kUBSizeBytes = 192 * 1024;
-// AI-core count for §3.6 w1 (blockDim distance) — matches
-// SocSpec(Ascend910B1).numAICores. See kUBSizeBytes comment for why this
-// isn't yet SoC-threaded.
-static constexpr int64_t kNumAICores = 40;
 static const double kInfeasible = std::numeric_limits<double>::infinity();
+
+// Per-SoC UB capacity / #AI-cores used by the §3.6 cost model.  Looked up
+// from `cannkernel::SocSpec`; falls back to Ascend910B1 numbers when the
+// SoC is unknown (pre-2026-05-15 hardcoded behavior preserved).  The
+// runtime UB-aware prune in CannTranslation (`ub_cost_bytes_exprs`) is
+// the authoritative per-shape check; this is just the compile-time
+// feasibility/score gate.
+struct SocConstants {
+  int64_t ubBytes;
+  int64_t numAICores;
+};
+static SocConstants getSocConstants(llvm::StringRef socName) {
+  if (auto spec = afir::cannkernel::getSocSpec(socName))
+    return {(int64_t)spec->totalUbSize, (int64_t)spec->numAICores};
+  return {192 * 1024, 40}; // Ascend910B1 defaults
+}
 
 // Conservative whole-tile on-chip footprint (bytes) for `draft`, when every
 // untiled axis has a known static extent.  std::nullopt otherwise -- the real
@@ -276,7 +282,9 @@ enumerateTilingCases(const AxisGrouping &g, const CollapsedGroupInfo &info,
     for (int r : g.rAxes)
       ubRs.push_back(r);
   } else {
-    ubRs.push_back(-1);
+    // R-kept-whole (r=-1) is covered by the FullLoad draft pushed below
+    // (same IR, FullLoad-tagged plan). Don't emit a redundant Common-no-ubR
+    // draft here — the picker would otherwise emit two identical variants.
     for (int r : g.rAxes) {
       int64_t sz = info.collapsedAxes[r].staticSize;
       if (sz != ShapedType::kDynamic &&
@@ -303,10 +311,10 @@ enumerateTilingCases(const AxisGrouping &g, const CollapsedGroupInfo &info,
       }
     }
 
-  // FullLoad variant (≈ AF kAllLoad). Reduce axis kept whole + in-vector
-  // reduce. Enumerated once per ubY pick, only when there's an R axis to
-  // load whole and a parallel axis to block-dispatch over. ∞-scored in
-  // costEstimate (oversized R rejected; codegen-missing rejected always).
+  // FullLoad variant (≈ AF kAllLoad). Reduce axis kept whole; the resulting
+  // IR is identical to a Common draft with ubTilingAxisR=-1, so the main
+  // enumeration loop drops the r=-1 Common case to avoid an exact duplicate.
+  // costEstimate accepts this whenever every R axis fits whole on-chip.
   if (!g.rAxes.empty() && !g.yAxes.empty() && !bp.degradeToRowLoop) {
     for (int y : ubYs) {
       TilePlanDraft fl;
@@ -348,6 +356,7 @@ enumerateTilingCases(const AxisGrouping &g, const CollapsedGroupInfo &info,
 double costEstimate(const AxisGrouping &g, const CollapsedGroupInfo &info,
                     const DenseSet<int> &vecDims,
                     const TilePlanDraft &draft, unsigned elemBytes,
+                    SocConstants soc,
                     bool relaxNonBlockUbY = false) {
   // RCore (R axis as block axis, two-stage partial→combine codegen).  P3b-2a:
   // open the gate for true full-reduce (no parallel axes to dispatch over —
@@ -360,18 +369,19 @@ double costEstimate(const AxisGrouping &g, const CollapsedGroupInfo &info,
       return 0.0;
     return kInfeasible;
   }
-  // FullLoad (≈ AF kAllLoad, plan §4): only feasible when every R axis fits
-  // whole on-chip. Then ∞ anyway because the in-vector reduce codegen path
-  // doesn't exist yet — kept enumerated so future P6+ work can drop the
-  // gate without re-plumbing enumerateTilingCases.
+  // FullLoad (≈ AF kAllLoad, plan §4): R kept whole, single-shot
+  // reduce_sum_2d_l2 over the full R tile. IR-identical to a Common draft with
+  // ubTilingAxisR=-1 — enumerateTilingCases drops the redundant Common-no-ubR
+  // so this is the only path that reaches buildPlan when R isn't ub-split.
+  // Feasibility = every R axis fits whole on-chip.
   if (draft.isFullLoad) {
     for (int r : g.rAxes) {
       int64_t sz = info.collapsedAxes[r].staticSize;
       if (sz != ShapedType::kDynamic &&
           sz * (int64_t)elemBytes > kReductionTileBudgetBytes)
-        return kInfeasible; // oversized — never selectable, even with codegen
+        return kInfeasible;
     }
-    return kInfeasible; // codegen-missing — selectable once the path lands
+    return 0.0;
   }
   // Full-reduce (no parallel axis) on the Common template — whether R kept
   // whole (block_dim=1, no parallelism) or R ub-split (RBLOCK with no parallel
@@ -404,7 +414,7 @@ double costEstimate(const AxisGrouping &g, const CollapsedGroupInfo &info,
   // kInfeasible) so the pass never runs out of feasible drafts; the autotuner
   // does the per-shape check via `footprint_expr` in vector_plan.tiling_infos.
   auto fpOpt = staticTileFootprintBytes(info, draft, elemBytes);
-  if (fpOpt && *fpOpt > kUBSizeBytes)
+  if (fpOpt && *fpOpt > soc.ubBytes)
     return 1.0e9 + (double)*fpOpt; // larger overflow → larger penalty
 
   // §3.6 w1: under-saturation penalty — estimate blockDim from the chosen
@@ -420,8 +430,8 @@ double costEstimate(const AxisGrouping &g, const CollapsedGroupInfo &info,
       if (ext != ShapedType::kDynamic && ext > 0) {
         constexpr int64_t kDefXBlock = 128; // matches buildPlan default
         int64_t blockDim = (ext + kDefXBlock - 1) / kDefXBlock;
-        if (blockDim < kNumAICores)
-          score += (double)(kNumAICores - blockDim) / (double)kNumAICores;
+        if (blockDim < soc.numAICores)
+          score += (double)(soc.numAICores - blockDim) / (double)soc.numAICores;
       }
     }
   }
@@ -431,8 +441,8 @@ double costEstimate(const AxisGrouping &g, const CollapsedGroupInfo &info,
   // so it can't compete with the w3 over-budget penalty (≥ 1e9) and stays
   // below the w1 idle-core penalty (≤ 1.0).  No effect when footprint is
   // unknown.
-  if (fpOpt && *fpOpt <= kUBSizeBytes)
-    score -= 0.5 * (double)*fpOpt / (double)kUBSizeBytes;
+  if (fpOpt && *fpOpt <= soc.ubBytes)
+    score -= 0.5 * (double)*fpOpt / (double)soc.ubBytes;
 
   return score;
 }
@@ -527,7 +537,9 @@ static TilePlan buildPlan(func::FuncOp func, const CollapsedGroupInfo &info,
   TilePlan plan;
   plan.group = &info;
   if (!g.rAxes.empty())
-    plan.reduceTemplate = TilePlan::ReduceTemplate::Common;
+    plan.reduceTemplate = draft.isFullLoad
+                              ? TilePlan::ReduceTemplate::FullLoad
+                              : TilePlan::ReduceTemplate::Common;
 
   DenseSet<int> vecDims = computeVectorizedDims(info, &plan);
   BlockPick     bp      = pickBlockAxis(g, vecDims);
@@ -642,7 +654,8 @@ static TilePlan buildPlan(func::FuncOp func, const CollapsedGroupInfo &info,
 // model is the autotuner's job; `costEstimate` here just does a coarse static
 // check via `staticTileFootprintBytes` already.
 static void populateConstraints(TilePlan &plan, const CollapsedGroupInfo &info,
-                                 func::FuncOp func, unsigned elemBytes) {
+                                 func::FuncOp func, unsigned elemBytes,
+                                 SocConstants soc) {
   // Divides: every (Outer, Inner) pair within a tileable group.
   for (auto &group : plan.tileable) {
     const TileParam *outer = nullptr, *inner = nullptr;
@@ -696,16 +709,18 @@ static void populateConstraints(TilePlan &plan, const CollapsedGroupInfo &info,
   std::string footprint = "((" + std::to_string(numBufs * (int64_t)elemBytes) +
                           ") * " + product + ")";
   plan.constraints.push_back(
-      {TileConstraint::LeBytes, footprint, std::to_string(kUBSizeBytes)});
+      {TileConstraint::LeBytes, footprint, std::to_string(soc.ubBytes)});
 }
 
 TilePlan genVectorTilePlan(func::FuncOp func,
                             const CollapsedGroupInfo &info,
                             OpBuilder &builder, Location loc,
-                            bool enableReductionSplit) {
+                            bool enableReductionSplit,
+                            llvm::StringRef socName) {
   const AxisGrouping &g = info.grouping; // computed by the Collapse pass
   unsigned elemBytes = operandElemBytes(info);
   DenseSet<int> vecDims = computeVectorizedDims(info);
+  SocConstants soc = getSocConstants(socName);
 
   SmallVector<TilePlanDraft> drafts =
       enumerateTilingCases(g, info, enableReductionSplit, elemBytes);
@@ -715,15 +730,15 @@ TilePlan genVectorTilePlan(func::FuncOp func,
   // the "current scheduler" choice first.  Only the winner is materialized —
   // buildPlan is the one place that mutates `func`.
   const TilePlanDraft *best = &drafts.front();
-  double bestScore = costEstimate(g, info, vecDims, *best, elemBytes);
+  double bestScore = costEstimate(g, info, vecDims, *best, elemBytes, soc);
   for (const TilePlanDraft &d : llvm::drop_begin(drafts)) {
-    double s = costEstimate(g, info, vecDims, d, elemBytes);
+    double s = costEstimate(g, info, vecDims, d, elemBytes, soc);
     if (s < bestScore) { bestScore = s; best = &d; }
   }
   assert(bestScore < kInfeasible && "no feasible tiling case");
 
   TilePlan plan = buildPlan(func, info, g, *best, builder, loc);
-  populateConstraints(plan, info, func, elemBytes);
+  populateConstraints(plan, info, func, elemBytes, soc);
   // P3b-2c/d: LoopNestBuilder is expected to handle RCore via its existing
   // Outer-Inner-on-same-axis path (parentStep mechanism), but the GroupEmitter
   // codegen — per-block R extent on the new rFor + dimension-bumped partial
@@ -900,14 +915,17 @@ void emitTilingInfos(func::FuncOp func, const TilePlan &plan) {
 SmallVector<vector_plan::TilePlanDraft>
 enumerateFeasibleDrafts(const vector_plan::CollapsedGroupInfo &info,
                         bool enableReductionSplit,
-                        bool relaxNonBlockUbY) {
+                        bool relaxNonBlockUbY,
+                        llvm::StringRef socName) {
   const vector_plan::AxisGrouping &g = info.grouping;
   unsigned elemBytes = operandElemBytes(info);
   DenseSet<int> vecDims = computeVectorizedDims(info);
+  SocConstants soc = getSocConstants(socName);
   auto drafts = enumerateTilingCases(g, info, enableReductionSplit, elemBytes);
   SmallVector<vector_plan::TilePlanDraft> feasible;
   for (const auto &d : drafts) {
-    double s = costEstimate(g, info, vecDims, d, elemBytes, relaxNonBlockUbY);
+    double s = costEstimate(g, info, vecDims, d, elemBytes, soc,
+                             relaxNonBlockUbY);
     if (s < kInfeasible) feasible.push_back(d);
   }
   return feasible;
@@ -917,9 +935,11 @@ vector_plan::TilePlan
 buildPlanForDraft(func::FuncOp func,
                   const vector_plan::CollapsedGroupInfo &info,
                   const vector_plan::TilePlanDraft &draft,
-                  OpBuilder &builder, Location loc) {
+                  OpBuilder &builder, Location loc,
+                  llvm::StringRef socName) {
   TilePlan plan = buildPlan(func, info, info.grouping, draft, builder, loc);
-  populateConstraints(plan, info, func, operandElemBytes(info));
+  populateConstraints(plan, info, func, operandElemBytes(info),
+                      getSocConstants(socName));
   return plan;
 }
 

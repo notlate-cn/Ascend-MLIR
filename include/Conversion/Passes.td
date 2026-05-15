@@ -497,6 +497,10 @@ def VectorPlanTileFuse : Pass<"vector-plan-tile-fuse", "mlir::ModuleOp"> {
     Option<"hwMatmulNAlign",       "hw-matmul-n-align",      "int64_t", "16",    "">,
     Option<"hwMatmulKAlign",       "hw-matmul-k-align",      "int64_t", "16",    "">,
     Option<"l0aCapacityBytes",     "l0a-capacity-bytes",     "int64_t", "65536", "">,
+    Option<"soc",                  "soc",                    "std::string",
+           "\"Ascend910B1\"",
+           "Target SoC name (used by costEstimate to look up the UB pool "
+           "size and #AI cores from SocSpec). Default: Ascend910B1.">,
   ];
   let dependentDialects = ["mlir::linalg::LinalgDialect", "mlir::scf::SCFDialect", "mlir::tensor::TensorDialect", "mlir::func::FuncDialect", "mlir::bufferization::BufferizationDialect"];
 }

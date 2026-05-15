@@ -11,7 +11,8 @@ genVectorTilePlan(mlir::func::FuncOp func,
                   const mlir::vector_plan::CollapsedGroupInfo &info,
                   mlir::OpBuilder &builder,
                   mlir::Location loc,
-                  bool enableReductionSplit);
+                  bool enableReductionSplit,
+                  llvm::StringRef socName = "Ascend910B1");
 
 /// Write a `vector_plan.tiling_infos` entry for `func` to the parent ModuleOp.
 /// Must be called after genVectorTilePlan so all tiling args already exist on func.
@@ -28,7 +29,8 @@ void emitTilingInfos(mlir::func::FuncOp func,
 llvm::SmallVector<mlir::vector_plan::TilePlanDraft>
 enumerateFeasibleDrafts(const mlir::vector_plan::CollapsedGroupInfo &info,
                         bool enableReductionSplit,
-                        bool relaxNonBlockUbY);
+                        bool relaxNonBlockUbY,
+                        llvm::StringRef socName = "Ascend910B1");
 
 /// P1b: materialize a specific draft into a TilePlan, mutating `func` (adds
 /// the tile-size BlockArguments). Caller owns the scheduling choice instead
@@ -38,6 +40,7 @@ buildPlanForDraft(mlir::func::FuncOp func,
                   const mlir::vector_plan::CollapsedGroupInfo &info,
                   const mlir::vector_plan::TilePlanDraft &draft,
                   mlir::OpBuilder &builder,
-                  mlir::Location loc);
+                  mlir::Location loc,
+                  llvm::StringRef socName = "Ascend910B1");
 
 } // namespace mlir::afir
