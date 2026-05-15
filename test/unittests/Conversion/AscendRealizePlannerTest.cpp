@@ -888,6 +888,10 @@ module {
   bundles[0].movement.selectedPathCount = 1;
   bundles[0].movement.pathSelectionDeferredCount = 0;
   bundles[0].movement.materializationDeferred = true;
+  bundles[0].staticMemory.workspaceSlotCount = 1;
+  bundles[0].staticMemory.workspaceSlots = {StaticMemoryWorkspaceSlot{
+      /*slotId=*/0, /*valueId=*/0, /*offset=*/0, MemoryPlace::VECIN,
+      /*staticByteSizeKnown=*/true, /*byteSize=*/128}};
 
   MovementStep step;
   step.stepId = 0;
@@ -936,7 +940,7 @@ module {
 }
 
 TEST(AscendRealizePlannerTest,
-     MemoryRealizationMaterializesMovementStepsThroughWorkspaceSubviews) {
+     MemoryRealizationMaterializesMovementStepsThroughPackedWorkspaceViews) {
   MLIRContext context;
   OwningOpRef<ModuleOp> module = parseRealizeModule(
       context, R"mlir(
@@ -973,6 +977,16 @@ module {
   bundles[0].movement.selectedPathCount = 2;
   bundles[0].movement.pathSelectionDeferredCount = 0;
   bundles[0].movement.materializationDeferred = true;
+  bundles[0].staticMemory.workspaceSlotCount = 2;
+  bundles[0].staticMemory.workspaceSlots = {
+      StaticMemoryWorkspaceSlot{/*slotId=*/0, /*valueId=*/0, /*offset=*/0,
+                                MemoryPlace::VECIN,
+                                /*staticByteSizeKnown=*/true,
+                                /*byteSize=*/128},
+      StaticMemoryWorkspaceSlot{/*slotId=*/1, /*valueId=*/1, /*offset=*/128,
+                                MemoryPlace::VECIN,
+                                /*staticByteSizeKnown=*/true,
+                                /*byteSize=*/128}};
 
   MovementStep lhsStep;
   lhsStep.stepId = 0;
@@ -1001,7 +1015,7 @@ module {
   EXPECT_EQ(bundles[0].realization.materializedCopyCount, 2u);
 
   unsigned vecInAllocCount = 0;
-  unsigned subviewCount = 0;
+  unsigned reinterpretCastCount = 0;
   unsigned copyCount = 0;
   unsigned vecInInputCount = 0;
   module->walk([&](memref::AllocOp allocOp) {
@@ -1011,7 +1025,7 @@ module {
                      static_cast<int64_t>(mlir::ascend::MemoryPlace::VECIN))
       ++vecInAllocCount;
   });
-  module->walk([&](memref::SubViewOp) { ++subviewCount; });
+  module->walk([&](memref::ReinterpretCastOp) { ++reinterpretCastCount; });
   module->walk([&](memref::CopyOp) { ++copyCount; });
   module->walk([&](linalg::LinalgOp linalgOp) {
     for (OpOperand *input : linalgOp.getDpsInputOperands()) {
@@ -1024,7 +1038,7 @@ module {
     }
   });
   EXPECT_EQ(vecInAllocCount, 1u);
-  EXPECT_EQ(subviewCount, 2u);
+  EXPECT_EQ(reinterpretCastCount, 2u);
   EXPECT_EQ(copyCount, 2u);
   EXPECT_EQ(vecInInputCount, 2u);
 }

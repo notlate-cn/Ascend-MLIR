@@ -195,6 +195,7 @@ struct Phase5CubeBridge {
 
 struct MovementMaterializationItem {
   const MovementStep *step = nullptr;
+  const StaticMemoryWorkspaceSlot *slot = nullptr;
   Value source;
   SmallVector<OpOperand *, 4> uses;
   Operation *firstUser = nullptr;
@@ -226,19 +227,25 @@ static bool isGmMemref(Value value) {
   return type && !type.getMemorySpace();
 }
 
-static SmallVector<Value, 4> collectGmMovementSources(ModuleOp module,
-                                                      StringRef kernelId) {
-  SmallVector<Value, 4> sources;
+static void appendUniqueGmMovementSource(SmallVectorImpl<Value> &sources,
+                                         llvm::DenseSet<Value> &seen,
+                                         Value value) {
+  if (!isGmMemref(value) || !seen.insert(value).second)
+    return;
+  sources.push_back(value);
+}
+
+static SmallVector<Value, 8> collectGmMovementSourcesByValueId(
+    ModuleOp module, StringRef kernelId) {
+  SmallVector<Value, 8> sources;
   llvm::DenseSet<Value> seen;
   module.walk([&](linalg::LinalgOp linalgOp) {
     if (getKernelId(linalgOp.getOperation()) != kernelId)
       return;
-    for (OpOperand *input : linalgOp.getDpsInputOperands()) {
-      Value value = input->get();
-      if (!isGmMemref(value) || !seen.insert(value).second)
-        continue;
-      sources.push_back(value);
-    }
+    for (OpOperand *input : linalgOp.getDpsInputOperands())
+      appendUniqueGmMovementSource(sources, seen, input->get());
+    for (OpOperand &init : linalgOp.getDpsInitsMutable())
+      appendUniqueGmMovementSource(sources, seen, init.get());
   });
   return sources;
 }
@@ -462,9 +469,68 @@ static bool isStaticIdentityMemRef(Value value) {
   return type && type.hasStaticShape() && type.getLayout().isIdentity();
 }
 
+static std::optional<uint64_t> getElementByteWidth(MemRefType type) {
+  unsigned elementBits = type.getElementTypeBitWidth();
+  if (elementBits == 0 || elementBits % 8 != 0)
+    return std::nullopt;
+  return elementBits / 8;
+}
+
+static std::optional<uint64_t>
+getElementOffset(const StaticMemoryWorkspaceSlot &slot, MemRefType sourceType) {
+  std::optional<uint64_t> elementBytes = getElementByteWidth(sourceType);
+  if (!elementBytes || *elementBytes == 0)
+    return std::nullopt;
+  if (slot.offset % *elementBytes != 0 || slot.byteSize % *elementBytes != 0)
+    return std::nullopt;
+  return slot.offset / *elementBytes;
+}
+
+static std::optional<uint64_t> getPackedWorkspaceElementCount(
+    ArrayRef<MovementMaterializationItem> items) {
+  if (items.empty())
+    return std::nullopt;
+
+  auto sourceType = dyn_cast<MemRefType>(items.front().source.getType());
+  if (!sourceType)
+    return std::nullopt;
+
+  std::optional<uint64_t> elementBytes = getElementByteWidth(sourceType);
+  if (!elementBytes || *elementBytes == 0)
+    return std::nullopt;
+
+  uint64_t packedBytes = 0;
+  for (const MovementMaterializationItem &item : items) {
+    if (!item.slot || !item.slot->staticByteSizeKnown)
+      return std::nullopt;
+    auto itemType = dyn_cast<MemRefType>(item.source.getType());
+    if (!itemType || itemType.getElementType() != sourceType.getElementType())
+      return std::nullopt;
+    if (item.slot->offset % *elementBytes != 0 ||
+        item.slot->byteSize % *elementBytes != 0)
+      return std::nullopt;
+    packedBytes =
+        std::max<uint64_t>(packedBytes, item.slot->offset + item.slot->byteSize);
+  }
+
+  return packedBytes / *elementBytes;
+}
+
+static SmallVector<int64_t, 4> getIdentityStrides(ArrayRef<int64_t> shape) {
+  SmallVector<int64_t, 4> strides(shape.size(), 1);
+  int64_t runningStride = 1;
+  for (int64_t index = static_cast<int64_t>(shape.size()) - 1; index >= 0;
+       --index) {
+    strides[index] = runningStride;
+    runningStride *= shape[index];
+  }
+  return strides;
+}
+
 static bool canShareMovementWorkspace(const MovementMaterializationItem &lhs,
                                       const MovementMaterializationItem &rhs) {
-  if (!lhs.step || !rhs.step || lhs.step->dstPlace != rhs.step->dstPlace)
+  if (!lhs.step || !rhs.step || !lhs.slot || !rhs.slot ||
+      lhs.step->dstPlace != rhs.step->dstPlace)
     return false;
   if (!lhs.firstUser || !rhs.firstUser ||
       lhs.firstUser->getBlock() != rhs.firstUser->getBlock())
@@ -475,8 +541,11 @@ static bool canShareMovementWorkspace(const MovementMaterializationItem &lhs,
 
   auto lhsType = cast<MemRefType>(lhs.source.getType());
   auto rhsType = cast<MemRefType>(rhs.source.getType());
-  return lhsType.getShape() == rhsType.getShape() &&
-         lhsType.getElementType() == rhsType.getElementType();
+  if (lhsType.getElementType() != rhsType.getElementType())
+    return false;
+  return lhs.slot->staticByteSizeKnown && rhs.slot->staticByteSizeKnown &&
+         getElementOffset(*lhs.slot, lhsType) &&
+         getElementOffset(*rhs.slot, rhsType);
 }
 
 static Operation *
@@ -488,44 +557,41 @@ getEarliestUserInBlock(ArrayRef<MovementMaterializationItem> items) {
   return earliest;
 }
 
-static memref::AllocOp createMovementWorkspaceAlloc(
+static memref::AllocOp createPackedMovementWorkspaceAlloc(
     IRRewriter &rewriter, Location loc,
     ArrayRef<MovementMaterializationItem> items, Attribute memorySpace) {
   auto sourceType = cast<MemRefType>(items.front().source.getType());
-  SmallVector<int64_t, 4> workspaceShape;
-  workspaceShape.push_back(items.size());
-  for (int64_t dim : sourceType.getShape())
-    workspaceShape.push_back(dim);
+  std::optional<uint64_t> elementCount =
+      getPackedWorkspaceElementCount(items);
+  if (!elementCount)
+    return {};
 
-  auto workspaceType = MemRefType::get(workspaceShape,
-                                       sourceType.getElementType(),
-                                       MemRefLayoutAttrInterface{},
-                                       memorySpace);
+  auto workspaceType = MemRefType::get(
+      {static_cast<int64_t>(*elementCount)}, sourceType.getElementType(),
+      MemRefLayoutAttrInterface{}, memorySpace);
   return rewriter.create<memref::AllocOp>(loc, workspaceType);
 }
 
-static Value createMovementWorkspaceSubview(IRRewriter &rewriter, Location loc,
-                                            Value workspace, unsigned index,
-                                            MemRefType sourceType) {
-  auto workspaceType = cast<MemRefType>(workspace.getType());
-  SmallVector<OpFoldResult, 4> offsets;
-  SmallVector<OpFoldResult, 4> sizes;
-  SmallVector<OpFoldResult, 4> strides;
+static Value createPackedMovementWorkspaceView(
+    IRRewriter &rewriter, Location loc, Value workspace,
+    const MovementMaterializationItem &item, Attribute memorySpace) {
+  auto sourceType = cast<MemRefType>(item.source.getType());
+  std::optional<uint64_t> elementOffset =
+      getElementOffset(*item.slot, sourceType);
+  if (!elementOffset)
+    return {};
 
-  offsets.push_back(rewriter.getIndexAttr(index));
-  sizes.push_back(rewriter.getIndexAttr(1));
-  strides.push_back(rewriter.getIndexAttr(1));
-  for (int64_t dim : sourceType.getShape()) {
-    offsets.push_back(rewriter.getIndexAttr(0));
-    sizes.push_back(rewriter.getIndexAttr(dim));
-    strides.push_back(rewriter.getIndexAttr(1));
-  }
-
-  MemRefType subviewType = memref::SubViewOp::inferRankReducedResultType(
-      sourceType.getShape(), workspaceType, offsets, sizes, strides);
+  SmallVector<int64_t, 4> sizes(sourceType.getShape().begin(),
+                                sourceType.getShape().end());
+  SmallVector<int64_t, 4> strides = getIdentityStrides(sizes);
+  auto layout = StridedLayoutAttr::get(
+      rewriter.getContext(), static_cast<int64_t>(*elementOffset), strides);
+  auto viewType = MemRefType::get(sizes, sourceType.getElementType(), layout,
+                                  memorySpace);
   return rewriter
-      .create<memref::SubViewOp>(loc, subviewType, workspace, offsets, sizes,
-                                 strides)
+      .create<memref::ReinterpretCastOp>(
+          loc, viewType, workspace,
+          /*offset=*/static_cast<int64_t>(*elementOffset), sizes, strides)
       .getResult();
 }
 
@@ -554,20 +620,23 @@ static LogicalResult materializeMovementWorkspaceGroup(
     Attribute targetSpace, Phase5BridgeMaterializationCounts &counts) {
   Operation *firstUser = getEarliestUserInBlock(items);
   rewriter.setInsertionPoint(firstUser);
-  memref::AllocOp workspace =
-      createMovementWorkspaceAlloc(rewriter, firstUser->getLoc(), items,
-                                   targetSpace);
+  memref::AllocOp workspace = createPackedMovementWorkspaceAlloc(
+      rewriter, firstUser->getLoc(), items, targetSpace);
+  if (!workspace)
+    return failure();
 
   if (!hasMemorySpace(cast<MemRefType>(workspace.getType()),
                       items.front().step->dstPlace))
     return failure();
 
-  for (unsigned i = 0, e = items.size(); i < e; ++i) {
-    const MovementMaterializationItem &item = items[i];
-    auto sourceType = cast<MemRefType>(item.source.getType());
-    Value localView = createMovementWorkspaceSubview(
-        rewriter, firstUser->getLoc(), workspace.getResult(), i, sourceType);
-    rewriter.create<memref::CopyOp>(firstUser->getLoc(), item.source,
+  for (const MovementMaterializationItem &item : items) {
+    rewriter.setInsertionPoint(item.firstUser);
+    Value localView = createPackedMovementWorkspaceView(
+        rewriter, item.firstUser->getLoc(), workspace.getResult(), item,
+        targetSpace);
+    if (!localView)
+      return failure();
+    rewriter.create<memref::CopyOp>(item.firstUser->getLoc(), item.source,
                                     localView);
     for (OpOperand *use : item.uses)
       use->set(localView);
@@ -576,6 +645,14 @@ static LogicalResult materializeMovementWorkspaceGroup(
 
   ++counts.materializedAllocCount;
   return success();
+}
+
+static const StaticMemoryWorkspaceSlot *
+lookupWorkspaceSlot(const StaticMemoryPlan &staticMemory, unsigned slotId) {
+  for (const StaticMemoryWorkspaceSlot &slot : staticMemory.workspaceSlots)
+    if (slot.slotId == slotId)
+      return &slot;
+  return nullptr;
 }
 
 static bool isBridgeableCubeCompute(
@@ -800,14 +877,18 @@ MemoryRealizationDriver::materializeMovementSteps(
     if (kernelId.empty())
       continue;
 
-    SmallVector<Value, 4> sources =
-        collectGmMovementSources(module, kernelId);
+    SmallVector<Value, 8> sources =
+        collectGmMovementSourcesByValueId(module, kernelId);
     SmallVector<MovementMaterializationItem, 8> items;
     for (const MovementStep &step : bundle.movement.movementSteps) {
       if (!step.pathSelected || step.pathSelectionDeferred ||
           step.srcPlace != MemoryPlace::GM)
         continue;
       if (step.valueId >= sources.size())
+        return failure();
+      const StaticMemoryWorkspaceSlot *slot =
+          lookupWorkspaceSlot(bundle.staticMemory, step.slotId);
+      if (!slot)
         return failure();
 
       Value source = sources[step.valueId];
@@ -817,7 +898,7 @@ MemoryRealizationDriver::materializeMovementSteps(
                                            firstUser)))
         return failure();
 
-      items.push_back({&step, source, std::move(uses), firstUser});
+      items.push_back({&step, slot, source, std::move(uses), firstUser});
     }
 
     SmallVector<bool, 8> materialized(items.size(), false);
