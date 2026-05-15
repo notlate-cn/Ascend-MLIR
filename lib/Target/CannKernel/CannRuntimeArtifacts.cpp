@@ -175,6 +175,60 @@ static llvm::json::Array buildShapeArgOrder(ArrayRef<TilingFieldInfo> fields) {
   return shapeArgOrder;
 }
 
+static llvm::json::Object buildShapeDescriptor(ArrayRef<TilingFieldInfo> fields) {
+  llvm::json::Array dynamicDims;
+  for (const TilingFieldInfo &field : fields) {
+    if (!field.isShape)
+      continue;
+    llvm::json::Object dim;
+    dim["shapeKey"] = field.shapeKey;
+    dim["tilingField"] = field.name;
+    dynamicDims.push_back(std::move(dim));
+  }
+
+  llvm::json::Object shape;
+  shape["rank"] = static_cast<int64_t>(dynamicDims.size());
+  shape["dynamicDims"] = std::move(dynamicDims);
+  shape["shapeArgOrder"] = buildShapeArgOrder(fields);
+  return shape;
+}
+
+static llvm::json::Object buildWorkspaceDescriptor(func::FuncOp funcOp) {
+  llvm::json::Object workspace;
+  workspace["mode"] = "fixed";
+  workspace["argIndex"] =
+      static_cast<int64_t>(funcOp.getNumArguments() >= 2
+                               ? funcOp.getNumArguments() - 2
+                               : 0);
+  workspace["sizeExpr"] = "0";
+  workspace["sizeBytes"] = 0;
+  return workspace;
+}
+
+static llvm::json::Object buildResourceDescriptor(func::FuncOp funcOp) {
+  llvm::json::Array memorySpaces;
+  for (BlockArgument arg : funcOp.getArguments()) {
+    auto memrefType = dyn_cast<MemRefType>(arg.getType());
+    if (!memrefType)
+      continue;
+    llvm::json::Object memorySpace;
+    memorySpace["argIndex"] = static_cast<int64_t>(arg.getArgNumber());
+    if (auto intAttr =
+            dyn_cast_or_null<IntegerAttr>(memrefType.getMemorySpace()))
+      memorySpace["memorySpace"] = intAttr.getInt();
+    else
+      memorySpace["memorySpace"] = 0;
+    memorySpaces.push_back(std::move(memorySpace));
+  }
+
+  llvm::json::Object resources;
+  resources["executionUnit"] =
+      funcOp->hasAttr(ascendc::attr::aicore) ? "aicore" : "host";
+  resources["memorySpaces"] = std::move(memorySpaces);
+  resources["mixResourceType"] = "unknown";
+  return resources;
+}
+
 static bool isSupportedTailPolicy(StringRef value) {
   return llvm::StringSwitch<bool>(value)
       .Case("must_divide", true)
@@ -526,6 +580,9 @@ buildKernelManifestEntry(func::FuncOp funcOp, int64_t entryIndex,
   kernelEntry["workspaceSizeExpr"] = "0";
   kernelEntry["workspaceSizeBytes"] = 0;
   kernelEntry["shapeArgOrder"] = buildShapeArgOrder(*fieldsOr);
+  kernelEntry["shape"] = buildShapeDescriptor(*fieldsOr);
+  kernelEntry["workspace"] = buildWorkspaceDescriptor(funcOp);
+  kernelEntry["resources"] = buildResourceDescriptor(funcOp);
   return kernelEntry;
 }
 
@@ -814,6 +871,9 @@ emitRuntimeManifestJson(ModuleOp module, StringRef outPath,
   root["workspaceSizeExpr"] = "0";
   root["workspaceSizeBytes"] = 0;
   root["shapeArgOrder"] = buildShapeArgOrder(*fieldsOr);
+  root["shape"] = buildShapeDescriptor(*fieldsOr);
+  root["workspace"] = buildWorkspaceDescriptor(primaryKernel);
+  root["resources"] = buildResourceDescriptor(primaryKernel);
   root["kernelGraph"] = std::move(*kernelGraph);
   root["kernel_entries"] = std::move(kernelEntries);
   return writeJsonFile(module.getOperation(), outPath, std::move(root));

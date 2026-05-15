@@ -7,6 +7,9 @@
 #include "StaticMemoryPlanner.h"
 
 #include "Target/Ascend/TargetMemoryModel.h"
+#include "llvm/ADT/STLExtras.h"
+
+#include <algorithm>
 
 namespace mlir::afir::ascend::realize {
 namespace {
@@ -15,7 +18,18 @@ constexpr MemoryPlace kVectorTemporaryPlace = MemoryPlace::VECIN;
 
 static void populateVectorTemporarySlots(const BufferizedKernelIR &bufferizedIR,
                                          StaticMemoryPlan &plan) {
+  struct PhysicalSlot {
+    uint64_t offset = 0;
+    uint64_t capacity = 0;
+    unsigned liveUntil = 0;
+  };
+
+  SmallVector<PhysicalSlot, 4> physicalSlots;
   uint64_t nextOffset = 0;
+  uint64_t logicalLocalBytes = 0;
+  uint64_t peakWorkspaceBytes = 0;
+  unsigned peakWorkspaceUnits = 0;
+
   for (const BufferizedValueFact &fact : bufferizedIR.valueFacts) {
     if (!fact.isVectorTemporary)
       continue;
@@ -29,17 +43,61 @@ static void populateVectorTemporarySlots(const BufferizedKernelIR &bufferizedIR,
     interval.byteSize = fact.byteSize;
     plan.liveIntervals.push_back(interval);
 
+    if (fact.staticByteSizeKnown)
+      logicalLocalBytes += fact.byteSize;
+
+    unsigned physicalSlotIndex = physicalSlots.size();
+    for (auto [index, physicalSlot] : llvm::enumerate(physicalSlots)) {
+      if (physicalSlot.liveUntil <= interval.start &&
+          (!fact.staticByteSizeKnown || physicalSlot.capacity >= fact.byteSize)) {
+        physicalSlotIndex = static_cast<unsigned>(index);
+        break;
+      }
+    }
+
+    uint64_t slotOffset = nextOffset;
+    if (physicalSlotIndex == physicalSlots.size()) {
+      PhysicalSlot physicalSlot;
+      physicalSlot.offset = nextOffset;
+      physicalSlot.capacity = fact.staticByteSizeKnown ? fact.byteSize : 0;
+      physicalSlot.liveUntil = interval.end;
+      physicalSlots.push_back(physicalSlot);
+      if (fact.staticByteSizeKnown)
+        nextOffset += fact.byteSize;
+    } else {
+      PhysicalSlot &physicalSlot = physicalSlots[physicalSlotIndex];
+      slotOffset = physicalSlot.offset;
+      physicalSlot.liveUntil = interval.end;
+    }
+
     StaticMemoryWorkspaceSlot slot;
     slot.slotId = plan.workspaceSlots.size();
     slot.valueId = fact.valueId;
-    slot.offset = nextOffset;
+    slot.offset = slotOffset;
     slot.place = kVectorTemporaryPlace;
     slot.staticByteSizeKnown = fact.staticByteSizeKnown;
     slot.byteSize = fact.byteSize;
     plan.workspaceSlots.push_back(slot);
 
-    if (fact.staticByteSizeKnown)
-      nextOffset += fact.byteSize;
+    unsigned liveUnits = 0;
+    uint64_t liveBytes = 0;
+    for (const PhysicalSlot &physicalSlot : physicalSlots) {
+      if (physicalSlot.liveUntil <= interval.start)
+        continue;
+      ++liveUnits;
+      liveBytes += physicalSlot.capacity;
+    }
+    peakWorkspaceUnits = std::max(peakWorkspaceUnits, liveUnits);
+    peakWorkspaceBytes = std::max(peakWorkspaceBytes, liveBytes);
+  }
+
+  if (!plan.workspaceSlots.empty()) {
+    plan.peakUsageUnitCount = peakWorkspaceUnits;
+    if (bufferizedIR.staticByteSizeKnown) {
+      plan.localBufferByteCount = logicalLocalBytes;
+      plan.workspaceByteCount = nextOffset;
+      plan.peakUsageByteCount = peakWorkspaceBytes;
+    }
   }
 }
 
@@ -76,12 +134,16 @@ StaticMemoryPlanner::build(const PlacementPlan &placement,
   plan.liveIntervalCount = plannedSlotCount;
   plan.workspaceSlotCount = plannedSlotCount;
   plan.peakUsageKnown = true;
-  plan.peakUsageUnitCount = plan.workspaceSlotCount;
+  if (plan.peakUsageUnitCount == 0)
+    plan.peakUsageUnitCount = plan.workspaceSlotCount;
   if (bufferizedIR.staticByteSizeKnown) {
     plan.peakUsageBytesKnown = true;
-    plan.localBufferByteCount = bufferizedIR.vectorTemporaryByteCount;
-    plan.workspaceByteCount = bufferizedIR.vectorTemporaryByteCount;
-    plan.peakUsageByteCount = bufferizedIR.vectorTemporaryByteCount;
+    if (plan.localBufferByteCount == 0)
+      plan.localBufferByteCount = bufferizedIR.vectorTemporaryByteCount;
+    if (plan.workspaceByteCount == 0)
+      plan.workspaceByteCount = bufferizedIR.vectorTemporaryByteCount;
+    if (plan.peakUsageByteCount == 0)
+      plan.peakUsageByteCount = plan.workspaceByteCount;
   }
   plan.capacityCheckDeferred = true;
   return plan;

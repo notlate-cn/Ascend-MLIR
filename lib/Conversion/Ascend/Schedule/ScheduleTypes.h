@@ -278,6 +278,7 @@ struct ScheduleCacheReport {
   unsigned guardBudgetPruned = 0;
   unsigned negativeCacheHits = 0;
   unsigned negativeCacheEntries = 0;
+  unsigned persistentTuningHits = 0;
 };
 
 inline OpRole parseOpRole(llvm::StringRef value) {

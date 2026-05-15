@@ -72,6 +72,8 @@ constexpr llvm::StringLiteral kLegacyDefaultTilePolicyMode = "legacy-default";
 constexpr llvm::StringLiteral kTargetAwareTilePolicyMode = "target-aware";
 constexpr llvm::StringLiteral kRequireExplicitTilePolicyMode =
     "require-explicit";
+constexpr llvm::StringLiteral kSchedulePersistentTuningCacheAttr =
+    "ascend.schedule.tuning_cache";
 
 struct ScheduleTargetModelContext {
   ::mlir::ascend::TargetProfile profile;
@@ -103,6 +105,33 @@ static void clearOwnedScheduleAttrs(Operation *op) {
 
 static void clearOwnedScheduleAttrs(ModuleOp module) {
   module.walk([](Operation *op) { clearOwnedScheduleAttrs(op); });
+}
+
+static SmallVector<std::string, 8>
+loadPersistentTuningCache(ModuleOp module) {
+  SmallVector<std::string, 8> signatures;
+  auto cacheAttr =
+      module->getAttrOfType<ArrayAttr>(kSchedulePersistentTuningCacheAttr);
+  if (!cacheAttr)
+    return signatures;
+
+  for (Attribute attr : cacheAttr) {
+    auto signature = dyn_cast<StringAttr>(attr);
+    if (signature)
+      signatures.push_back(signature.getValue().str());
+  }
+  return signatures;
+}
+
+static void storePersistentTuningCache(ModuleOp module,
+                                       ScheduleCacheModel &cacheModel) {
+  MLIRContext *context = module.getContext();
+  SmallVector<Attribute, 8> attrs;
+  for (const std::string &signature :
+       cacheModel.getPersistentTuningSignatures())
+    attrs.push_back(StringAttr::get(context, signature));
+  module->setAttr(kSchedulePersistentTuningCacheAttr,
+                  ArrayAttr::get(context, attrs));
 }
 
 static FailureOr<ScheduleTargetModelContext>
@@ -402,6 +431,8 @@ struct AscendSchedulePass
     ScheduleSearchOptions searchOptions;
     searchOptions.runtimeTopK = runtimeTopK;
     ScheduleCacheModel scheduleCacheModel;
+    scheduleCacheModel.seedPersistentTuningSignatures(
+        loadPersistentTuningCache(module));
     std::vector<ScheduleDebugEntry> scheduleDebugEntries;
     SmallVector<ScheduleReportEntry> reportEntries;
     std::optional<ScheduleTargetModelContext> targetModelContext;
@@ -544,6 +575,7 @@ struct AscendSchedulePass
       printScheduleCacheReport(scheduleCacheModel, llvm::errs());
       emitScheduleReport(reportEntries, llvm::errs());
     }
+    storePersistentTuningCache(module, scheduleCacheModel);
   }
 };
 

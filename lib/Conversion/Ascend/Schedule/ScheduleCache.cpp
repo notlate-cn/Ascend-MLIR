@@ -75,6 +75,16 @@ TuningResultKey makeTuningResultKey(ShapeBucketKey bucket,
 
 } // namespace
 
+void ScheduleCacheModel::seedPersistentTuningSignatures(
+    ArrayRef<std::string> signatures) {
+  for (const std::string &signature : signatures) {
+    if (!tuningResultSignatures.insert(signature).second)
+      continue;
+    seededPersistentTuningSignatures.insert(signature);
+    persistentTuningSignatures.push_back(signature);
+  }
+}
+
 ScheduleCacheReport ScheduleCacheModel::recordScheduleDecisionSet(
     const ScheduleProblem &problem, const ScheduleDecisionSet &decisionSet) {
   if (decisionSet.decisions.empty())
@@ -97,9 +107,12 @@ ScheduleCacheReport ScheduleCacheModel::recordScheduleDecisionSet(
   TuningResultKey tuningKey =
       makeTuningResultKey(std::move(shapeKey), decision.instance);
   ++report.tuningLookups;
-  if (tuningResultSignatures.insert(getTuningResultSignature(tuningKey))
-          .second) {
+  std::string tuningSignature = getTuningResultSignature(tuningKey);
+  if (seededPersistentTuningSignatures.contains(tuningSignature)) {
+    ++report.persistentTuningHits;
+  } else if (tuningResultSignatures.insert(tuningSignature).second) {
     ++report.tuningMisses;
+    persistentTuningSignatures.push_back(tuningSignature);
     tuningResultKeys.push_back(std::move(tuningKey));
   }
 
@@ -130,6 +143,7 @@ void printScheduleCacheReport(const ScheduleCacheReport &report,
   os << "  guard_budget_pruned = " << report.guardBudgetPruned << "\n";
   os << "  negative_cache_hits = " << report.negativeCacheHits << "\n";
   os << "  negative_cache_entries = " << report.negativeCacheEntries << "\n";
+  os << "  persistent_tuning_hits = " << report.persistentTuningHits << "\n";
 }
 
 void printScheduleCacheReport(const ScheduleCacheModel &cacheModel,

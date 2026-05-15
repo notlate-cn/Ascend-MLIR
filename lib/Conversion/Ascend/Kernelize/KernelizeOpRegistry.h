@@ -10,13 +10,24 @@
 #include "DependencyAnalysis.h"
 #include "mlir/IR/Operation.h"
 #include "llvm/ADT/SmallVector.h"
+#include "llvm/ADT/StringRef.h"
 
 namespace mlir::afir::ascend::kernelize {
+
+enum class KernelizeOpTraitKind {
+  Unknown,
+  StructuredLinalg,
+  TensorView,
+};
+
+llvm::StringRef stringifyKernelizeOpTrait(KernelizeOpTraitKind kind);
 
 struct KernelizeOpModel {
   using MatchFn = bool (*)(Operation *op);
   using PopulateFn = void (*)(Operation *op, OpSemanticSummary &summary);
 
+  llvm::StringRef name = "unknown";
+  KernelizeOpTraitKind trait = KernelizeOpTraitKind::Unknown;
   MatchFn match = nullptr;
   PopulateFn populate = nullptr;
 };
