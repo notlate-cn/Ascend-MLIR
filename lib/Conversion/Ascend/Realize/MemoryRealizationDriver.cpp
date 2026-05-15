@@ -698,14 +698,14 @@ MemoryRealizationDriver::materialize(ModuleOp module,
   if (mode == MemoryRealizationMode::PlanOnly)
     return success();
 
-  FailureOr<llvm::StringMap<unsigned>> annotationCounts =
-      annotateMemorySpaces(module);
-  if (failed(annotationCounts))
-    return failure();
-
   FailureOr<llvm::StringMap<Phase5BridgeMaterializationCounts>>
       movementCounts = materializeMovementSteps(module, bundles);
   if (failed(movementCounts))
+    return failure();
+
+  FailureOr<llvm::StringMap<unsigned>> annotationCounts =
+      annotateMemorySpaces(module);
+  if (failed(annotationCounts))
     return failure();
 
   FailureOr<llvm::StringMap<Phase5BridgeMaterializationCounts>>

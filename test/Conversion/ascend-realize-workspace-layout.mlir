@@ -1,4 +1,5 @@
 // RUN: afir-opt %s --ascend-realize='placement-mode=target-aware cann-root=%S/Inputs/ascend-target-aware-placement-cann soc=SyntheticSoC dump-report=true debug-stage=realize' 2>&1 | FileCheck %s
+// RUN: afir-opt %s --ascend-realize='placement-mode=target-aware cann-root=%S/Inputs/ascend-target-aware-placement-cann soc=SyntheticSoC materialization-mode=memory-space-annotate dump-report=true debug-stage=realize' 2>&1 | FileCheck %s --check-prefix=MATERIALIZE
 
 func.func @workspace_layout_vector_temporary(%arg0: tensor<64xf16>, %arg1: tensor<64xf16>) -> tensor<64xf16> attributes {ascend.normalized = true} {
   %empty0 = tensor.empty() : tensor<64xf16>
@@ -87,3 +88,27 @@ func.func @workspace_layout_vector_temporary(%arg0: tensor<64xf16>, %arg1: tenso
 // CHECK-NEXT:   memory_space_annotations = 0
 // CHECK-NEXT:   materialized_allocs = 0
 // CHECK-NEXT:   materialized_copies = 0
+
+// MATERIALIZE-LABEL: Realize report
+// MATERIALIZE: MovementPlan:
+// MATERIALIZE-NEXT:   kernel = kernel_0
+// MATERIALIZE-NEXT:   mode = "movement_planning"
+// MATERIALIZE-NEXT:   cross_place_edges = 1
+// MATERIALIZE-NEXT:   movements = 0
+// MATERIALIZE-NEXT:   redundant_movements = 0
+// MATERIALIZE-NEXT:   movement_demands = 1
+// MATERIALIZE-NEXT:   selected_paths = 1
+// MATERIALIZE-NEXT:   path_selection_deferred = 0
+// MATERIALIZE-NEXT:   workspace_reuse_candidates = 1
+// MATERIALIZE-NEXT:   materialization_deferred = true
+// MATERIALIZE: MemoryRealizationPlan:
+// MATERIALIZE-NEXT:   kernel = kernel_0
+// MATERIALIZE-NEXT:   mode = "memory_space_materialize"
+// MATERIALIZE-NEXT:   frozen = true
+// MATERIALIZE-NEXT:   verification_scope = "memory_space_materialization"
+// MATERIALIZE-NEXT:   plan_ids_verified = true
+// MATERIALIZE-NEXT:   memory_space_annotations = 0
+// MATERIALIZE-NEXT:   materialized_allocs = 1
+// MATERIALIZE-NEXT:   materialized_copies = 1
+// MATERIALIZE: memref.alloc() : memref<64xf16, 9 : i32>
+// MATERIALIZE: memref.copy {{.*}} : memref<64xf16> to memref<64xf16, 9 : i32>

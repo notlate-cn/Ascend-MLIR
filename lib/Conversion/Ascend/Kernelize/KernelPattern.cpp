@@ -9,6 +9,7 @@
 #include "CandidateClosure.h"
 #include "KernelizeTypes.h"
 #include "mlir/IR/Attributes.h"
+#include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/MLIRContext.h"
@@ -41,6 +42,12 @@ constexpr const char kMustSeparateGroupAttr[] =
 struct CandidateBuildRecord {
   KernelPatternCandidate candidate;
   unsigned sourceId = 0;
+};
+
+struct KernelGraphEdgeRecord {
+  std::string from;
+  std::string to;
+  SmallVector<std::string, 2> carriedBuffers;
 };
 
 unsigned getOpId(Operation *op, const ProducerConsumerIndex &index) {
@@ -385,6 +392,74 @@ void assignFinalPatternIds(SmallVectorImpl<KernelPattern> &patterns) {
   }
 }
 
+KernelGraphEdgeRecord *
+lookupKernelGraphEdge(SmallVectorImpl<KernelGraphEdgeRecord> &edges,
+                      StringRef from, StringRef to) {
+  for (KernelGraphEdgeRecord &edge : edges)
+    if (edge.from == from && edge.to == to)
+      return &edge;
+  return nullptr;
+}
+
+void appendUniqueCarriedBuffer(KernelGraphEdgeRecord &edge,
+                               StringRef carriedBuffer) {
+  if (!llvm::is_contained(edge.carriedBuffers, carriedBuffer))
+    edge.carriedBuffers.push_back(carriedBuffer.str());
+}
+
+std::string getCarriedBufferName(StringRef from, StringRef to,
+                                 unsigned operandIndex) {
+  return (llvm::Twine(from) + "_to_" + to + "_operand" +
+          llvm::Twine(operandIndex))
+      .str();
+}
+
+void appendKernelGraphEdge(SmallVectorImpl<KernelGraphEdgeRecord> &edges,
+                           StringRef from, StringRef to,
+                           unsigned operandIndex) {
+  if (from == to)
+    return;
+
+  KernelGraphEdgeRecord *edge = lookupKernelGraphEdge(edges, from, to);
+  if (!edge) {
+    KernelGraphEdgeRecord newEdge;
+    newEdge.from = from.str();
+    newEdge.to = to.str();
+    edges.push_back(std::move(newEdge));
+    edge = &edges.back();
+  }
+
+  appendUniqueCarriedBuffer(*edge,
+                            getCarriedBufferName(from, to, operandIndex));
+}
+
+void attachKernelGraphEdgeAttributes(ModuleOp module,
+                                     ArrayRef<KernelGraphEdgeRecord> edges) {
+  if (edges.empty()) {
+    module->removeAttr(kKernelGraphEdgesAttr);
+    return;
+  }
+
+  Builder builder(module.getContext());
+  SmallVector<Attribute> edgeAttrs;
+  edgeAttrs.reserve(edges.size());
+  for (const KernelGraphEdgeRecord &edge : edges) {
+    SmallVector<Attribute> carriedBuffers;
+    carriedBuffers.reserve(edge.carriedBuffers.size());
+    for (StringRef carriedBuffer : edge.carriedBuffers)
+      carriedBuffers.push_back(builder.getStringAttr(carriedBuffer));
+
+    edgeAttrs.push_back(builder.getDictionaryAttr({
+        builder.getNamedAttr("from", builder.getStringAttr(edge.from)),
+        builder.getNamedAttr("to", builder.getStringAttr(edge.to)),
+        builder.getNamedAttr("carried_buffers",
+                             builder.getArrayAttr(carriedBuffers)),
+    }));
+  }
+
+  module->setAttr(kKernelGraphEdgesAttr, builder.getArrayAttr(edgeAttrs));
+}
+
 void printOpIdList(raw_ostream &os, ArrayRef<Operation *> ops,
                    const ProducerConsumerIndex &index) {
   os << "[";
@@ -586,6 +661,7 @@ KernelPartitioner::partition(const KernelPatternGraph &graph,
 void attachKernelPatternAttributes(ModuleOp module,
                                    ArrayRef<KernelPattern> patterns) {
   MLIRContext *context = module.getContext();
+  DenseMap<Operation *, StringRef> opToKernelName;
   for (const KernelPattern &pattern : patterns) {
     StringAttr kernelAttr = StringAttr::get(context, pattern.kernelName);
     DenseSet<Operation *> primarySet;
@@ -593,11 +669,32 @@ void attachKernelPatternAttributes(ModuleOp module,
       primarySet.insert(op);
 
     for (Operation *op : pattern.internalOps) {
+      opToKernelName.try_emplace(op, pattern.kernelName);
       op->setAttr(kKernelAttr, kernelAttr);
       if (primarySet.contains(op))
         op->setAttr(kPrimaryAttr, BoolAttr::get(context, true));
     }
   }
+
+  SmallVector<KernelGraphEdgeRecord, 4> graphEdges;
+  for (const KernelPattern &pattern : patterns) {
+    StringRef consumerKernel = pattern.kernelName;
+    for (Operation *op : pattern.internalOps) {
+      for (auto [operandIndex, operand] : llvm::enumerate(op->getOperands())) {
+        Operation *producer = operand.getDefiningOp();
+        if (!producer)
+          continue;
+        auto producerKernelIt = opToKernelName.find(producer);
+        if (producerKernelIt == opToKernelName.end())
+          continue;
+        appendKernelGraphEdge(graphEdges, producerKernelIt->second,
+                              consumerKernel,
+                              static_cast<unsigned>(operandIndex));
+      }
+    }
+  }
+
+  attachKernelGraphEdgeAttributes(module, graphEdges);
 }
 
 void emitKernelPatternGraphReport(raw_ostream &os,

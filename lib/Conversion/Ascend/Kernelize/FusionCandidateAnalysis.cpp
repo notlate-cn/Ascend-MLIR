@@ -11,12 +11,14 @@
 #include "OpRoleClassification.h"
 #include "mlir/IR/Operation.h"
 #include "llvm/ADT/ArrayRef.h"
+#include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/Support/raw_ostream.h"
 
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <utility>
 
@@ -117,6 +119,28 @@ bool isFallbackEligible(ArrayRef<OpRole> roles) {
   if (roles.empty())
     return false;
   return !hasRole(roles, OpRole::Unsupported);
+}
+
+bool isHandwrittenPrimaryCandidate(ArrayRef<OpRole> roles) {
+  return hasRole(roles, OpRole::Cube) || hasRole(roles, OpRole::Vector) ||
+         hasRole(roles, OpRole::Reduction);
+}
+
+unsigned getHandwrittenPrimaryPriority(ArrayRef<OpRole> roles) {
+  if (hasRole(roles, OpRole::Cube))
+    return 0;
+  if (hasRole(roles, OpRole::Vector))
+    return 1;
+  if (hasRole(roles, OpRole::Reduction))
+    return 2;
+  return 3;
+}
+
+std::optional<int64_t> getHandwrittenGroup(Operation *op) {
+  auto group = op->getAttrOfType<IntegerAttr>(kHandwrittenGroupAttr);
+  if (!group)
+    return std::nullopt;
+  return group.getInt();
 }
 
 bool legalizeCandidate(FusionCandidate &candidate,
@@ -245,6 +269,36 @@ FusionCandidate buildFallbackSingleOpCandidate(Operation *seed) {
   return candidate;
 }
 
+FusionCandidate buildHandwrittenPatternCandidate(
+    ArrayRef<Operation *> groupOps, const DependencyAnalysisResult &deps,
+    const OpRoleMap &roleMap) {
+  FusionCandidate candidate;
+  candidate.kind = CandidateKind::HandwrittenPattern;
+  candidate.primitive = KernelizePrimitiveKind::HandwrittenPattern;
+  candidate.internalOps.append(groupOps.begin(), groupOps.end());
+
+  Operation *primary = nullptr;
+  unsigned primaryPriority = 3;
+  for (Operation *op : groupOps) {
+    ArrayRef<OpRole> roles = getRoles(roleMap, op);
+    if (!isHandwrittenPrimaryCandidate(roles))
+      continue;
+    unsigned priority = getHandwrittenPrimaryPriority(roles);
+    if (primary && priority >= primaryPriority)
+      continue;
+    primary = op;
+    primaryPriority = priority;
+  }
+  if (primary)
+    candidate.primaryOps.push_back(primary);
+
+  sortByOpId(candidate.internalOps, deps.index);
+  sortByOpId(candidate.primaryOps, deps.index);
+  candidate.benefitScore =
+      1000 + 20 * static_cast<int64_t>(candidate.internalOps.size());
+  return candidate;
+}
+
 void printOpIdList(raw_ostream &os, ArrayRef<Operation *> ops,
                    const ProducerConsumerIndex &index) {
   os << "[";
@@ -308,6 +362,28 @@ FusionCandidateAnalyzer::analyze(const DependencyAnalysisResult &deps,
 
     appendLegalCandidate(candidates,
                          buildReductionInliningCandidate(seed, deps, roleMap),
+                         deps, roleMap, config);
+  }
+
+  DenseMap<int64_t, SmallVector<Operation *, 4>> handwrittenGroups;
+  for (Operation *op : deps.index.orderedOps) {
+    std::optional<int64_t> group = getHandwrittenGroup(op);
+    if (!group)
+      continue;
+    handwrittenGroups[*group].push_back(op);
+  }
+  SmallVector<int64_t, 4> handwrittenGroupIds;
+  for (const auto &entry : handwrittenGroups)
+    handwrittenGroupIds.push_back(entry.first);
+  llvm::sort(handwrittenGroupIds);
+  for (int64_t groupId : handwrittenGroupIds) {
+    SmallVector<Operation *, 4> &groupOps = handwrittenGroups[groupId];
+    if (groupOps.size() < 2)
+      continue;
+    sortByOpId(groupOps, deps.index);
+    appendLegalCandidate(candidates,
+                         buildHandwrittenPatternCandidate(groupOps, deps,
+                                                          roleMap),
                          deps, roleMap, config);
   }
 

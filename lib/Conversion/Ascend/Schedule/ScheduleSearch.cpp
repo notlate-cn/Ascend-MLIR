@@ -13,6 +13,7 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <optional>
 #include <utility>
 
 using namespace mlir;
@@ -94,6 +95,167 @@ TileShape getFullLogicalAxisTile(const CoalescedAxisInfo &axes) {
 
 int64_t getDefaultParallelTile(const ScheduleProblem &problem) {
   return problem.targetTilePolicy.defaultParallelTile;
+}
+
+void appendUniqueTileSize(SmallVectorImpl<int64_t> &tileSizes,
+                          int64_t tileSize) {
+  if (tileSize == 0)
+    return;
+  if (!llvm::is_contained(tileSizes, tileSize))
+    tileSizes.push_back(tileSize);
+}
+
+int64_t capTileSizeToExtent(int64_t extent, int64_t tileSize) {
+  if (ShapedType::isDynamic(extent))
+    return tileSize > 0 ? tileSize : ShapedType::kDynamic;
+  if (tileSize <= 0)
+    return extent;
+  return std::max<int64_t>(1, std::min(extent, tileSize));
+}
+
+bool canTileParallelAxis(const AxisScheduleConstraint *constraint) {
+  return constraint && constraint->kind == AxisKind::Parallel &&
+         (hasAxisExecutionRole(constraint->allowedRoles,
+                               AxisExecutionRole::BindCoreCandidate) ||
+          hasAxisExecutionRole(constraint->allowedRoles,
+                               AxisExecutionRole::KernelLoopCandidate) ||
+          hasAxisExecutionRole(constraint->allowedRoles,
+                               AxisExecutionRole::VectorizeCandidate));
+}
+
+SmallVector<int64_t, 6>
+getParallelAxisTileSizes(const LogicalAxisInfo &axis,
+                         const AxisScheduleConstraint *constraint,
+                         const ScheduleProblem &problem) {
+  SmallVector<int64_t, 6> tileSizes;
+  int64_t extent = normalizeExtent(axis.staticExtent);
+  appendUniqueTileSize(tileSizes, extent);
+  if (!canTileParallelAxis(constraint))
+    return tileSizes;
+
+  int64_t defaultParallelTile = getDefaultParallelTile(problem);
+  appendUniqueTileSize(tileSizes,
+                       capTileSizeToExtent(axis.staticExtent,
+                                           defaultParallelTile * 4));
+  appendUniqueTileSize(tileSizes,
+                       capTileSizeToExtent(axis.staticExtent,
+                                           defaultParallelTile * 2));
+  appendUniqueTileSize(tileSizes,
+                       capTileSizeToExtent(axis.staticExtent,
+                                           defaultParallelTile));
+  appendUniqueTileSize(tileSizes,
+                       capTileSizeToExtent(axis.staticExtent,
+                                           defaultParallelTile / 2));
+  appendUniqueTileSize(tileSizes,
+                       capTileSizeToExtent(axis.staticExtent,
+                                           defaultParallelTile / 4));
+
+  if (!ShapedType::isDynamic(axis.staticExtent)) {
+    appendUniqueTileSize(tileSizes,
+                         capTileSizeToExtent(axis.staticExtent,
+                                             axis.staticExtent / 2));
+    appendUniqueTileSize(tileSizes,
+                         capTileSizeToExtent(axis.staticExtent,
+                                             axis.staticExtent / 4));
+    appendUniqueTileSize(tileSizes, 1);
+  }
+
+  return tileSizes;
+}
+
+SmallVector<int64_t, 4>
+getAxisTileSizes(const LogicalAxisInfo &axis,
+                 const AxisScheduleConstraint *constraint,
+                 const ScheduleProblem &problem) {
+  if (axis.kind == AxisKind::Parallel)
+    return getParallelAxisTileSizes(axis, constraint, problem);
+
+  SmallVector<int64_t, 4> tileSizes;
+  appendUniqueTileSize(tileSizes, normalizeExtent(axis.staticExtent));
+  return tileSizes;
+}
+
+void appendAxisProductTileShapes(const ScheduleProblem &problem,
+                                 SmallVectorImpl<TileShape> &tileShapes) {
+  constexpr unsigned kMaxAxisProductTileShapes = 64;
+  const CoalescedAxisInfo &axes = problem.axes;
+  if (axes.logicalAxes.empty())
+    return;
+
+  SmallVector<SmallVector<int64_t, 6>, 4> perAxisTileSizes;
+  perAxisTileSizes.reserve(axes.logicalAxes.size());
+  for (const LogicalAxisInfo &axis : axes.logicalAxes) {
+    const AxisScheduleConstraint *constraint =
+        lookupAxisScheduleConstraint(axes, axis.logicalAxisId);
+    perAxisTileSizes.push_back(getAxisTileSizes(axis, constraint, problem));
+  }
+
+  SmallVector<TileShape, 8> worklist(1);
+  for (ArrayRef<int64_t> axisTileSizes : perAxisTileSizes) {
+    SmallVector<TileShape, 8> next;
+    for (const TileShape &partial : worklist) {
+      for (int64_t axisTileSize : axisTileSizes) {
+        TileShape candidate = partial;
+        candidate.tileSizes.push_back(axisTileSize);
+        next.push_back(std::move(candidate));
+        if (next.size() >= kMaxAxisProductTileShapes)
+          break;
+      }
+      if (next.size() >= kMaxAxisProductTileShapes)
+        break;
+    }
+    worklist = std::move(next);
+  }
+
+  for (TileShape &candidate : worklist)
+    appendUniqueTileShape(tileShapes, std::move(candidate));
+}
+
+std::optional<unsigned> getLogicalAxisIndex(const CoalescedAxisInfo &axes,
+                                            unsigned logicalAxisId) {
+  for (auto [index, axis] : llvm::enumerate(axes.logicalAxes))
+    if (axis.logicalAxisId == logicalAxisId)
+      return static_cast<unsigned>(index);
+  return std::nullopt;
+}
+
+void appendCoalescingHintTileShapes(const ScheduleProblem &problem,
+                                    SmallVectorImpl<TileShape> &tileShapes) {
+  const CoalescedAxisInfo &axes = problem.axes;
+  if (axes.axisCoalescingHints.empty() || axes.logicalAxes.empty())
+    return;
+
+  int64_t groupBudget = std::max<int64_t>(
+      1, problem.targetTilePolicy.defaultParallelTile *
+             std::max<int64_t>(1, problem.targetTilePolicy.vectorBufferCount));
+  for (const AxisCoalescingHint &hint : axes.axisCoalescingHints) {
+    if (hint.memberAxisIds.size() < 2)
+      continue;
+
+    TileShape candidate = getFullLogicalAxisTile(axes);
+    int64_t remainingBudget = groupBudget;
+    for (unsigned memberAxisId : llvm::reverse(hint.memberAxisIds)) {
+      std::optional<unsigned> axisIndex =
+          getLogicalAxisIndex(axes, memberAxisId);
+      if (!axisIndex)
+        continue;
+
+      const LogicalAxisInfo &axis = axes.logicalAxes[*axisIndex];
+      int64_t selectedTile = normalizeExtent(axis.staticExtent);
+      if (ShapedType::isDynamic(axis.staticExtent)) {
+        selectedTile = remainingBudget;
+      } else if (remainingBudget > 0) {
+        selectedTile = std::max<int64_t>(
+            1, std::min<int64_t>(axis.staticExtent, remainingBudget));
+      }
+      candidate.tileSizes[*axisIndex] = selectedTile;
+
+      if (!ShapedType::isDynamic(selectedTile) && selectedTile > 0)
+        remainingBudget = std::max<int64_t>(1, remainingBudget / selectedTile);
+    }
+
+    appendUniqueTileShape(tileShapes, std::move(candidate));
+  }
 }
 
 TileShape getRoleDrivenReductionTile(const ScheduleProblem &problem) {
@@ -236,6 +398,12 @@ SmallVector<TileShape> generateTileShapes(const ScheduleProblem &problem) {
     break;
   }
 
+  if (problem.dominantRole == OpRole::Memory ||
+      problem.dominantRole == OpRole::Unknown)
+    return tileShapes;
+
+  appendAxisProductTileShapes(problem, tileShapes);
+  appendCoalescingHintTileShapes(problem, tileShapes);
   return tileShapes;
 }
 

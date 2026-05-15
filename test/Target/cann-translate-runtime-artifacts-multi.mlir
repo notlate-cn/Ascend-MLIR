@@ -16,10 +16,16 @@
 // MANIFEST: "kernel_entries": [
 // MANIFEST: "entry_index": 0,
 // MANIFEST: "kernel_id": "kernel_a"
+// MANIFEST: "decisionId": "kernel_a.decision.0"
+// MANIFEST: "selected_tile_shape": [
+// MANIFEST-NEXT: 32
 // MANIFEST: "shapeArgOrder": [
 // MANIFEST: "shapeKey": "arg0_dim0"
 // MANIFEST: "entry_index": 1,
 // MANIFEST: "kernel_id": "kernel_b"
+// MANIFEST: "decisionId": "kernel_b.decision.0"
+// MANIFEST: "selected_tile_shape": [
+// MANIFEST-NEXT: 64
 // MANIFEST: "shapeArgOrder": [
 // MANIFEST: "shapeKey": "arg0_dim0"
 
@@ -30,14 +36,46 @@ module attributes {
   func.func @kernel_a(
       %a: memref<?xf16>, %out: memref<?xf16>, %ws: memref<ui8>,
       %tiling: !emitasc.py_struct<"TilingData", [i64], ["dim_arg0_0"]>
-  ) attributes {ascendc.aicore, ascendc.global, cann.num_inputs = 1 : i32} {
+  ) attributes {
+      ascend.schedule.kernel_metadata = [{
+        decision_id = "kernel_a.decision.0",
+        kernel = "kernel_a",
+        selected_tile_shape = array<i64: 32>,
+        tail_policies = ["masked_tail"],
+        tail_plan = [{
+          affected = ["data_copy", "vector_compute"],
+          align = 16 : i64,
+          axis = 0 : i64,
+          buffering = "separate_tail_buffer",
+          selected = "masked_tail"
+        }]
+      }],
+      ascendc.aicore,
+      ascendc.global,
+      cann.num_inputs = 1 : i32} {
     func.return
   }
 
   func.func @kernel_b(
       %a: memref<?xf16>, %out: memref<?xf16>, %ws: memref<ui8>,
       %tiling: !emitasc.py_struct<"TilingData", [i64], ["dim_arg0_0"]>
-  ) attributes {ascendc.aicore, ascendc.global, cann.num_inputs = 1 : i32} {
+  ) attributes {
+      ascend.schedule.kernel_metadata = [{
+        decision_id = "kernel_b.decision.0",
+        kernel = "kernel_b",
+        selected_tile_shape = array<i64: 64>,
+        tail_policies = ["masked_tail"],
+        tail_plan = [{
+          affected = ["data_copy", "vector_compute"],
+          align = 16 : i64,
+          axis = 0 : i64,
+          buffering = "separate_tail_buffer",
+          selected = "masked_tail"
+        }]
+      }],
+      ascendc.aicore,
+      ascendc.global,
+      cann.num_inputs = 1 : i32} {
     func.return
   }
 }

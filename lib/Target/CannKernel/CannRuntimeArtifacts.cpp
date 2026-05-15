@@ -29,6 +29,16 @@ struct TilingFieldInfo {
   std::string shapeKey;
 };
 
+static constexpr llvm::StringLiteral kKernelMetadataKernelKey = "kernel";
+static constexpr llvm::StringLiteral kKernelMetadataDecisionIdKey =
+    "decision_id";
+static constexpr llvm::StringLiteral kKernelMetadataSelectedTileShapeKey =
+    "selected_tile_shape";
+static constexpr llvm::StringLiteral kKernelMetadataTailPoliciesKey =
+    "tail_policies";
+static constexpr llvm::StringLiteral kKernelMetadataTailPlanKey =
+    "tail_plan";
+
 static SmallVector<func::FuncOp> collectGlobalKernels(ModuleOp module) {
   SmallVector<func::FuncOp> kernels;
   for (Operation &child : module.getBody()->getOperations())
@@ -195,13 +205,78 @@ static bool isSupportedAffectedPrimitiveUse(StringRef value) {
       .Default(false);
 }
 
+static FailureOr<DictionaryAttr>
+lookupKernelScheduleMetadata(func::FuncOp funcOp) {
+  auto metadata =
+      funcOp->getAttrOfType<ArrayAttr>(
+          ::mlir::afir::ascend::kScheduleKernelMetadataAttr);
+  if (!metadata)
+    return DictionaryAttr();
+
+  DictionaryAttr fallbackEntry;
+  for (auto [index, rawEntry] : llvm::enumerate(metadata)) {
+    auto entry = dyn_cast<DictionaryAttr>(rawEntry);
+    if (!entry)
+      return funcOp.emitError()
+             << ::mlir::afir::ascend::kScheduleKernelMetadataAttr
+             << " element " << index << " must be a dictionary attribute";
+
+    auto kernel =
+        dyn_cast_or_null<StringAttr>(entry.get(kKernelMetadataKernelKey));
+    if (!kernel)
+      return funcOp.emitError()
+             << ::mlir::afir::ascend::kScheduleKernelMetadataAttr
+             << " element " << index
+             << " entries must include a string kernel field";
+
+    if (kernel.getValue() == funcOp.getName())
+      return entry;
+    if (!fallbackEntry && metadata.size() == 1)
+      fallbackEntry = entry;
+  }
+
+  return fallbackEntry;
+}
+
+static Attribute getScheduleMetadataAttr(func::FuncOp funcOp,
+                                         DictionaryAttr kernelMetadata,
+                                         StringRef attrName,
+                                         StringRef kernelMetadataKey) {
+  if (Attribute attr = funcOp->getAttr(attrName))
+    return attr;
+  return kernelMetadata ? kernelMetadata.get(kernelMetadataKey) : Attribute();
+}
+
+static FailureOr<Attribute>
+getScheduleMetadataAttr(func::FuncOp funcOp, StringRef attrName,
+                        StringRef kernelMetadataKey) {
+  FailureOr<DictionaryAttr> kernelMetadata =
+      lookupKernelScheduleMetadata(funcOp);
+  if (failed(kernelMetadata))
+    return failure();
+  return getScheduleMetadataAttr(funcOp, *kernelMetadata, attrName,
+                                 kernelMetadataKey);
+}
+
 static LogicalResult checkScheduleMetadataCompleteness(func::FuncOp funcOp) {
+  FailureOr<DictionaryAttr> kernelMetadata =
+      lookupKernelScheduleMetadata(funcOp);
+  if (failed(kernelMetadata))
+    return failure();
+
   bool hasSelectedTileShape =
-      funcOp->hasAttr(::mlir::afir::ascend::kScheduleSelectedTileShapeAttr);
+      static_cast<bool>(getScheduleMetadataAttr(
+          funcOp, *kernelMetadata,
+          ::mlir::afir::ascend::kScheduleSelectedTileShapeAttr,
+          kKernelMetadataSelectedTileShapeKey));
   bool hasTailPolicies =
-      funcOp->hasAttr(::mlir::afir::ascend::kScheduleTailPoliciesAttr);
-  bool hasTailPlan =
-      funcOp->hasAttr(::mlir::afir::ascend::kScheduleTailPlanAttr);
+      static_cast<bool>(getScheduleMetadataAttr(
+          funcOp, *kernelMetadata,
+          ::mlir::afir::ascend::kScheduleTailPoliciesAttr,
+          kKernelMetadataTailPoliciesKey));
+  bool hasTailPlan = static_cast<bool>(getScheduleMetadataAttr(
+      funcOp, *kernelMetadata, ::mlir::afir::ascend::kScheduleTailPlanAttr,
+      kKernelMetadataTailPlanKey));
   bool hasAnyMetadata = hasSelectedTileShape || hasTailPolicies || hasTailPlan;
   bool hasAllMetadata = hasSelectedTileShape && hasTailPolicies && hasTailPlan;
   if (!hasAnyMetadata || hasAllMetadata)
@@ -215,15 +290,24 @@ static LogicalResult checkScheduleMetadataCompleteness(func::FuncOp funcOp) {
 }
 
 static LogicalResult validateScheduleMetadataAttributes(func::FuncOp funcOp) {
-  if (Attribute selectedTileShape =
-          funcOp->getAttr(::mlir::afir::ascend::kScheduleSelectedTileShapeAttr))
+  FailureOr<DictionaryAttr> kernelMetadata =
+      lookupKernelScheduleMetadata(funcOp);
+  if (failed(kernelMetadata))
+    return failure();
+
+  if (Attribute selectedTileShape = getScheduleMetadataAttr(
+          funcOp, *kernelMetadata,
+          ::mlir::afir::ascend::kScheduleSelectedTileShapeAttr,
+          kKernelMetadataSelectedTileShapeKey))
     if (!isa<DenseI64ArrayAttr>(selectedTileShape))
       return funcOp.emitError()
              << ::mlir::afir::ascend::kScheduleSelectedTileShapeAttr
              << " must be a dense i64 array attribute";
 
-  if (Attribute tailPolicies =
-          funcOp->getAttr(::mlir::afir::ascend::kScheduleTailPoliciesAttr))
+  if (Attribute tailPolicies = getScheduleMetadataAttr(
+          funcOp, *kernelMetadata,
+          ::mlir::afir::ascend::kScheduleTailPoliciesAttr,
+          kKernelMetadataTailPoliciesKey))
     if (!isa<ArrayAttr>(tailPolicies))
       return funcOp.emitError()
              << ::mlir::afir::ascend::kScheduleTailPoliciesAttr
@@ -235,24 +319,32 @@ static LogicalResult validateScheduleMetadataAttributes(func::FuncOp funcOp) {
 static FailureOr<llvm::json::Object>
 buildScheduleTilingParams(func::FuncOp funcOp) {
   llvm::json::Object tilingParams;
+  FailureOr<DictionaryAttr> kernelMetadata =
+      lookupKernelScheduleMetadata(funcOp);
+  if (failed(kernelMetadata))
+    return failure();
 
   if (failed(checkScheduleMetadataCompleteness(funcOp)))
     return failure();
   if (failed(validateScheduleMetadataAttributes(funcOp)))
     return failure();
 
-  if (auto selectedTileShape =
-          funcOp->getAttrOfType<DenseI64ArrayAttr>(
-              ::mlir::afir::ascend::kScheduleSelectedTileShapeAttr)) {
+  if (auto selectedTileShape = dyn_cast_or_null<DenseI64ArrayAttr>(
+          getScheduleMetadataAttr(
+              funcOp, *kernelMetadata,
+              ::mlir::afir::ascend::kScheduleSelectedTileShapeAttr,
+              kKernelMetadataSelectedTileShapeKey))) {
     llvm::json::Array selectedTileShapeJson;
     for (int64_t tileSize : selectedTileShape.asArrayRef())
       selectedTileShapeJson.push_back(tileSize);
     tilingParams["selected_tile_shape"] = std::move(selectedTileShapeJson);
   }
 
-  if (auto tailPolicies =
-          funcOp->getAttrOfType<ArrayAttr>(
-              ::mlir::afir::ascend::kScheduleTailPoliciesAttr)) {
+  if (auto tailPolicies = dyn_cast_or_null<ArrayAttr>(
+          getScheduleMetadataAttr(
+              funcOp, *kernelMetadata,
+              ::mlir::afir::ascend::kScheduleTailPoliciesAttr,
+              kKernelMetadataTailPoliciesKey))) {
     llvm::json::Array tailPoliciesJson;
     for (auto [index, tailPolicyAttr] : llvm::enumerate(tailPolicies)) {
       auto tailPolicy = dyn_cast<StringAttr>(tailPolicyAttr);
@@ -272,8 +364,10 @@ buildScheduleTilingParams(func::FuncOp funcOp) {
     tilingParams["tail_policies"] = std::move(tailPoliciesJson);
   }
 
-  if (Attribute rawTailPlanAttr =
-          funcOp->getAttr(::mlir::afir::ascend::kScheduleTailPlanAttr)) {
+  if (Attribute rawTailPlanAttr = getScheduleMetadataAttr(
+          funcOp, *kernelMetadata,
+          ::mlir::afir::ascend::kScheduleTailPlanAttr,
+          kKernelMetadataTailPlanKey)) {
     auto tailPlanAttr = dyn_cast<ArrayAttr>(rawTailPlanAttr);
     if (!tailPlanAttr)
       return funcOp.emitError()
@@ -379,8 +473,20 @@ static FailureOr<llvm::json::Array> buildScheduleEntries(func::FuncOp funcOp) {
   if (failed(tilingParams))
     return failure();
 
+  std::string decisionId = "static_0";
+  FailureOr<DictionaryAttr> kernelMetadata =
+      lookupKernelScheduleMetadata(funcOp);
+  if (failed(kernelMetadata))
+    return failure();
+  if (auto metadataDecisionId =
+          dyn_cast_or_null<StringAttr>(
+              (*kernelMetadata)
+                  ? (*kernelMetadata).get(kKernelMetadataDecisionIdKey)
+                  : Attribute()))
+    decisionId = metadataDecisionId.getValue().str();
+
   llvm::json::Object scheduleEntry;
-  scheduleEntry["decisionId"] = "static_0";
+  scheduleEntry["decisionId"] = decisionId;
   scheduleEntry["guard"] = "true";
   scheduleEntry["tilingParams"] = std::move(*tilingParams);
   llvm::json::Array scheduleEntries;

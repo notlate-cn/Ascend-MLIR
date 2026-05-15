@@ -132,36 +132,43 @@ func.func @batch_matmul_logical_axes(%lhs: tensor<2x4x8xf16>,
 
 // CHECK: ScheduleSearch:
 // CHECK-NEXT:   kernel = kernel_0
-// CHECK-NEXT:   generated = 2
-// CHECK-NEXT:   kept = 2
+// CHECK-NEXT:   generated = 12
+// CHECK-NEXT:   kept = 4
 // CHECK-NEXT:   compile_time_top_k = 4
 // CHECK-NEXT:   instance = kernel_0.vector_generic.0
 // CHECK-NEXT:   instance = kernel_0.vector_generic.1
+// CHECK-NEXT:   instance = kernel_0.vector_generic.2
+// CHECK-NEXT:   instance = kernel_0.vector_generic.3
 // CHECK: ScheduleSearch:
 // CHECK-NEXT:   kernel = kernel_1
-// CHECK-NEXT:   generated = 2
-// CHECK-NEXT:   kept = 2
+// CHECK-NEXT:   generated = 12
+// CHECK-NEXT:   kept = 4
 // CHECK-NEXT:   compile_time_top_k = 4
 // CHECK-NEXT:   instance = kernel_1.vector_generic.0
 // CHECK-NEXT:   instance = kernel_1.vector_generic.1
+// CHECK-NEXT:   instance = kernel_1.vector_generic.2
+// CHECK-NEXT:   instance = kernel_1.vector_generic.3
 // CHECK: ScheduleSearch:
 // CHECK-NEXT:   kernel = kernel_2
-// CHECK-NEXT:   generated = 2
-// CHECK-NEXT:   kept = 2
+// CHECK-NEXT:   generated = 4
+// CHECK-NEXT:   kept = 4
 // CHECK-NEXT:   compile_time_top_k = 4
 // CHECK-NEXT:   instance = kernel_2.reduction_static.0
 // CHECK-NEXT:   instance = kernel_2.reduction_static.1
+// CHECK-NEXT:   instance = kernel_2.reduction_static.2
+// CHECK-NEXT:   instance = kernel_2.reduction_static.3
 // CHECK: ScheduleSearch:
 // CHECK-NEXT:   kernel = kernel_3
-// CHECK-NEXT:   generated = 3
-// CHECK-NEXT:   kept = 3
+// CHECK-NEXT:   generated = 24
+// CHECK-NEXT:   kept = 4
 // CHECK-NEXT:   compile_time_top_k = 4
 // CHECK-NEXT:   instance = kernel_3.vector_generic.0
 // CHECK-NEXT:   instance = kernel_3.vector_generic.1
 // CHECK-NEXT:   instance = kernel_3.vector_generic.2
+// CHECK-NEXT:   instance = kernel_3.vector_generic.3
 // CHECK: ScheduleDecisionSet:
 // CHECK:   kernel = kernel_3
-// CHECK:   decisions = 3
+// CHECK:   decisions = 4
 // CHECK:   runtime_top_k = 1
 // CHECK:   selected = kernel_3.decision.0
 // CHECK-NEXT:   candidate_guards = 2
@@ -170,15 +177,16 @@ func.func @batch_matmul_logical_axes(%lhs: tensor<2x4x8xf16>,
 // CHECK-NEXT:   tail_plans = [axis=0 selected=masked_tail affected=[data_copy,vector_compute,write_back] align=0 buffering=separate_tail_buffer guard=false extent=? tile=32 main=? tail=?] [axis=1 selected=masked_tail affected=[data_copy,vector_compute,write_back] align=0 buffering=separate_tail_buffer guard=false extent=8 tile=8 main=8 tail=0]
 // CHECK: ScheduleSearch:
 // CHECK-NEXT:   kernel = kernel_4
-// CHECK-NEXT:   generated = 3
-// CHECK-NEXT:   kept = 3
+// CHECK-NEXT:   generated = 10
+// CHECK-NEXT:   kept = 4
 // CHECK-NEXT:   compile_time_top_k = 4
 // CHECK-NEXT:   instance = kernel_4.reduction_static.0
 // CHECK-NEXT:   instance = kernel_4.reduction_static.1
 // CHECK-NEXT:   instance = kernel_4.reduction_static.2
+// CHECK-NEXT:   instance = kernel_4.reduction_static.3
 // CHECK: ScheduleDecisionSet:
 // CHECK:   kernel = kernel_4
-// CHECK:   decisions = 3
+// CHECK:   decisions = 4
 // CHECK:   runtime_top_k = 1
 // CHECK:   selected = kernel_4.decision.0
 // CHECK-NEXT:   candidate_guards = 1
@@ -186,17 +194,21 @@ func.func @batch_matmul_logical_axes(%lhs: tensor<2x4x8xf16>,
 // CHECK-NEXT:   selected_tile_shape = [32,15000]
 // CHECK: ScheduleSearch:
 // CHECK-NEXT:   kernel = kernel_5
-// CHECK-NEXT:   generated = 1
-// CHECK-NEXT:   kept = 1
+// CHECK-NEXT:   generated = 3
+// CHECK-NEXT:   kept = 3
 // CHECK-NEXT:   compile_time_top_k = 4
 // CHECK-NEXT:   instance = kernel_5.reduction_static.0
+// CHECK-NEXT:   instance = kernel_5.reduction_static.1
+// CHECK-NEXT:   instance = kernel_5.reduction_static.2
 // CHECK: ScheduleSearch:
 // CHECK-NEXT:   kernel = kernel_6
-// CHECK-NEXT:   generated = 2
-// CHECK-NEXT:   kept = 2
+// CHECK-NEXT:   generated = 54
+// CHECK-NEXT:   kept = 4
 // CHECK-NEXT:   compile_time_top_k = 4
 // CHECK-NEXT:   instance = kernel_6.cube_static_matmul.0
 // CHECK-NEXT:   instance = kernel_6.cube_static_matmul.1
+// CHECK-NEXT:   instance = kernel_6.cube_static_matmul.2
+// CHECK-NEXT:   instance = kernel_6.cube_static_matmul.3
 // CHECK: ScheduleDecisionSet:
 // CHECK:   kernel = kernel_6
 // CHECK:   selected = kernel_6.decision.0
@@ -206,10 +218,13 @@ func.func @batch_matmul_logical_axes(%lhs: tensor<2x4x8xf16>,
 // CHECK-NEXT:   tail_plans = {{.*}}[axis=2 selected=full_extent affected=[reduction] align=0 buffering=separate_tail_buffer guard=false extent=256 tile=256 main=256 tail=0]
 // CHECK: ScheduleSearch:
 // CHECK-NEXT:   kernel = kernel_7
-// CHECK-NEXT:   generated = 1
-// CHECK-NEXT:   kept = 1
+// CHECK-NEXT:   generated = 24
+// CHECK-NEXT:   kept = 4
 // CHECK-NEXT:   compile_time_top_k = 4
 // CHECK-NEXT:   instance = kernel_7.cube_static_matmul.0
+// CHECK-NEXT:   instance = kernel_7.cube_static_matmul.1
+// CHECK-NEXT:   instance = kernel_7.cube_static_matmul.2
+// CHECK-NEXT:   instance = kernel_7.cube_static_matmul.3
 // CHECK: ScheduleDecisionSet:
 // CHECK:   kernel = kernel_7
 // CHECK:   selected = kernel_7.decision.0
