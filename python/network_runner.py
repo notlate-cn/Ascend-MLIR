@@ -209,7 +209,7 @@ def _variant_kernel_name(work, kid, picked=None):
     return family["variants"][0]["func_name"]
 
 
-def phase2_codegen_compile(work, groups, network):
+def phase2_codegen_compile(work, groups, network, soc="Ascend910B1"):
     """For each ascendc kernel: --vector-plan-codegen → -mlir-to-cann → compile.
 
     Requires the simulator LD_LIBRARY_PATH; source `examples/env.sh` first.
@@ -226,7 +226,8 @@ def phase2_codegen_compile(work, groups, network):
         space = work / f"{kid}_space.json"  # legacy back-compat (P2 also writes per-variant)
         run([AFIR_OPT, str(src), "--vector-plan-codegen", "-o", str(lowered)])
         run([AFIR_TRANSLATE, "-mlir-to-cann", str(lowered),
-             "-o", str(cpp), f"--tiling-space-out={space}"])
+             "-o", str(cpp), f"--tiling-space-out={space}",
+             f"--soc={soc}"])
         # Per-variant compile. The .cpp contains all variants' kernel symbols;
         # each runtime-session call picks one via --name and produces a
         # variant-specific artifact dir.
@@ -627,7 +628,7 @@ def main():
         return
 
     network = NetworkJson.load(str(groups / "network.json"))
-    artifacts = phase2_codegen_compile(work, groups, network)
+    artifacts = phase2_codegen_compile(work, groups, network, soc=args.soc)
     if args.max_phase < 3:
         return
 

@@ -1995,7 +1995,8 @@ static LogicalResult emitTilingStructDecl(CodeEmitter &emitter, Location loc,
 static void emitTilingSpaceJson(StringRef outPath,
                                 StringRef kernelFile,
                                 func::FuncOp funcOp,
-                                emitasc::PyStructType tilingType) {
+                                emitasc::PyStructType tilingType,
+                                StringRef socName) {
   StringRef kernelName = funcOp.getName();
   std::string blockDimExpr;
   if (auto a = funcOp->getAttrOfType<StringAttr>("afir.block_dim_expr"))
@@ -2088,7 +2089,7 @@ static void emitTilingSpaceJson(StringRef outPath,
   llvm::json::Object root;
   root["kernel"]         = kernelName.str();
   root["kernel_file"]    = kernelFile.str();
-  StringRef socStr = "Ascend910B1"; // TODO: thread real --soc through
+  StringRef socStr = socName.empty() ? StringRef("Ascend910B1") : socName;
   root["soc"]            = socStr.str();
   root["block_dim_expr"] = blockDimExpr;
   root["axis_extent_expr"] = axisExtentExpr;
@@ -2966,7 +2967,8 @@ static void fixBrokenOpEmitters(Operation *moduleOp) {
 
 LogicalResult mlir::translateToCannKernel(Operation *op, raw_ostream &os,
                                           StringRef tilingSpaceOutPath,
-                                          StringRef kernelFile) {
+                                          StringRef kernelFile,
+                                          StringRef socName) {
   auto moduleOp = dyn_cast<ModuleOp>(op);
   if (!moduleOp)
     return op->emitOpError("expected a module op");
@@ -3188,7 +3190,7 @@ LogicalResult mlir::translateToCannKernel(Operation *op, raw_ostream &os,
     llvm::sys::path::remove_filename(baseDir);
     SmallString<256> perFuncPath = baseDir;
     llvm::sys::path::append(perFuncPath, funcNameStr + "_space.json");
-    emitTilingSpaceJson(perFuncPath, kernelFile, funcOp, tilingType);
+    emitTilingSpaceJson(perFuncPath, kernelFile, funcOp, tilingType, socName);
 
     if (!variantId.empty())
       familyVariants[familyId].push_back({variantId, funcNameStr,
@@ -3199,7 +3201,7 @@ LogicalResult mlir::translateToCannKernel(Operation *op, raw_ostream &os,
     // write to the originally requested path so older scripts that read
     // `tiling_space.json` keep working.
     if (aicoreFuncs.size() == 1 && tilingSpaceOutPath != perFuncPath)
-      emitTilingSpaceJson(tilingSpaceOutPath, kernelFile, funcOp, tilingType);
+      emitTilingSpaceJson(tilingSpaceOutPath, kernelFile, funcOp, tilingType, socName);
   }
 
   // Emit family.json per family (only when at least one variant present).
