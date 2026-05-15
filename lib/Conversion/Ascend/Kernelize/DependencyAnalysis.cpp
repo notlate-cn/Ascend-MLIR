@@ -79,7 +79,19 @@ void collectAnalyzedProducers(
   if (producer->getNumRegions() != 0)
     return;
 
-  for (Value operand : producer->getOperands()) {
+  SmallVector<Value, 4> transparentOperands;
+  if (!info.transparentOperandIndices.empty()) {
+    for (unsigned operandIndex : info.transparentOperandIndices) {
+      if (operandIndex >= producer->getNumOperands())
+        continue;
+      transparentOperands.push_back(producer->getOperand(operandIndex));
+    }
+  } else {
+    transparentOperands.append(producer->operand_begin(),
+                               producer->operand_end());
+  }
+
+  for (Value operand : transparentOperands) {
     if (!isa<TensorType>(operand.getType()))
       continue;
     collectAnalyzedProducers(operand, index, resolved, producers,

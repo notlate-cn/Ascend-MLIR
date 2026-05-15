@@ -46,6 +46,7 @@ LogicalResult populateTestAnalyze(Operation *, KernelizeOpSemanticInfo &info) {
   info.iteratorKinds.push_back(IteratorKind::Parallel);
   info.resultRanks.push_back(1);
   info.traits.push_back(KernelizeSemanticTrait::Structured);
+  info.transparentOperandIndices.push_back(0);
   info.modelName = "test_model";
   return success();
 }
@@ -72,6 +73,8 @@ TEST(AscendKernelizeOpInterfaceTest, RegistryResolvesRegisteredModel) {
   EXPECT_EQ(info->resultRanks.front(), 1u);
   ASSERT_EQ(info->traits.size(), 1u);
   EXPECT_EQ(info->traits.front(), KernelizeSemanticTrait::Structured);
+  ASSERT_EQ(info->transparentOperandIndices.size(), 1u);
+  EXPECT_EQ(info->transparentOperandIndices.front(), 0u);
   EXPECT_EQ(info->modelName, "test_model");
 }
 
