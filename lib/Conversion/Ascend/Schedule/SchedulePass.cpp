@@ -11,6 +11,7 @@
 #include "KernelPatternView.h"
 #include "ScheduleCache.h"
 #include "ScheduleDecision.h"
+#include "SchedulePersistentCacheIO.h"
 #include "ScheduleProblemBuilder.h"
 #include "ScheduleSearch.h"
 #include "ScheduleTypes.h"
@@ -431,8 +432,21 @@ struct AscendSchedulePass
     ScheduleSearchOptions searchOptions;
     searchOptions.runtimeTopK = runtimeTopK;
     ScheduleCacheModel scheduleCacheModel;
-    scheduleCacheModel.seedPersistentTuningSignatures(
-        loadPersistentTuningCache(module));
+    SmallVector<std::string, 8> seededSignatures =
+        loadPersistentTuningCache(module);
+    if (!StringRef(tuningCacheIn).empty()) {
+      FailureOr<SmallVector<std::string, 8>> fileSignatures =
+          loadPersistentTuningCacheFile(tuningCacheIn);
+      if (failed(fileSignatures)) {
+        module.emitError()
+            << "failed to read ascend schedule tuning cache file: "
+            << tuningCacheIn;
+        signalPassFailure();
+        return;
+      }
+      seededSignatures.append(fileSignatures->begin(), fileSignatures->end());
+    }
+    scheduleCacheModel.seedPersistentTuningSignatures(seededSignatures);
     std::vector<ScheduleDebugEntry> scheduleDebugEntries;
     SmallVector<ScheduleReportEntry> reportEntries;
     std::optional<ScheduleTargetModelContext> targetModelContext;
@@ -576,6 +590,15 @@ struct AscendSchedulePass
       emitScheduleReport(reportEntries, llvm::errs());
     }
     storePersistentTuningCache(module, scheduleCacheModel);
+    if (!StringRef(tuningCacheOut).empty() &&
+        failed(writePersistentTuningCacheFile(
+            tuningCacheOut,
+            scheduleCacheModel.getPersistentTuningSignatures()))) {
+      module.emitError() << "failed to write ascend schedule tuning cache file: "
+                         << tuningCacheOut;
+      signalPassFailure();
+      return;
+    }
   }
 };
 

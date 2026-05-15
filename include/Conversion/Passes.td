@@ -101,6 +101,12 @@ def AscendSchedulePass : Pass<"ascend-schedule", "mlir::ModuleOp"> {
            "CANN SoC version for target-aware schedule tiling">,
     Option<"cannRoot", "cann-root", "std::string", /*default=*/"\"\"",
            "CANN root path for target-aware schedule tiling">,
+    Option<"tuningCacheIn", "tuning-cache-in", "std::string",
+           /*default=*/"\"\"",
+           "Line-based persistent tuning signature cache input path">,
+    Option<"tuningCacheOut", "tuning-cache-out", "std::string",
+           /*default=*/"\"\"",
+           "Line-based persistent tuning signature cache output path">,
   ];
 }
 
