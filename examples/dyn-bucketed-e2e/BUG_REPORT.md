@@ -27,6 +27,31 @@ No-op for the no-copy case.
 Verified: `bash examples/dyn-bucketed-e2e/run.sh` →
 `max_diff = 1.2e-07 / 2.4e-07 PASS`.
 
+**Follow-up (2026-05-15):** at R ≥ 256 a second, distinct failure mode
+appeared — same all-zero output, but this time *not* from underflowed
+GM offsets.  Root cause: the phase-3 default picker chose the largest
+extent-capped tunable (`XBLOCK_SUB = 128`) without any check against
+UB capacity.  On 910B1 the TBuf pool is 184 KB
+(`__NPU_ARCH__ 2201, TOTAL_VEC_LOCAL_SIZE`), but
+`align32(XBLOCK_SUB * dim_arg0_2 * 4)` at R = 512 is 256 KB for a
+single buffer — the TPipe bump-pointer allocator silently overflows
+(ASCENDC_DEBUG_ASSERT only logs).
+
+Fix landed in this series (llm-net):
+  - `377b99d` SocSpec table for SoC UB capacity
+  - `f687bad` UbCostExpr — lift `ascendc.pipe.init_buffer` size operand
+              to a SymExpr keyed on TilingData field names
+  - `892d63d` CannTranslation emits `ub_budget_bytes` (188416) and
+              `ub_cost_bytes_expr` (= `2 * max(align32(size))`) into
+              every `<kid>__v<i>_space.json`
+  - `0ec9e47` network_runner picker reads them and filters tunable
+              candidates whose evaluated cost exceeds the budget
+  - `b4ac1c6` autotuner mirrors the same prune in its candidate loop
+
+Picker math validated against the empirical sweep (see commit
+messages): R=64 still picks XBLOCK_SUB=128; R=256 drops to 64;
+R=512 drops to 32 — all within budget.
+
 ---
 
 ## Summary
