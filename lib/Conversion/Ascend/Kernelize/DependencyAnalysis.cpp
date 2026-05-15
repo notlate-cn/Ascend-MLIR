@@ -104,6 +104,24 @@ DependencyAnalyzer::analyze(ModuleOp module) const {
     resolved.try_emplace(op, std::move(*info));
   });
 
+  WalkResult unsupportedResult = module.walk([&](Operation *op) -> WalkResult {
+    auto it = resolved.find(op);
+    if (it == resolved.end())
+      return WalkResult::advance();
+
+    const KernelizeOpSemanticInfo &info = it->second;
+    if (info.participation == KernelizeParticipationKind::Unsupported &&
+        info.modelName != "unknown" && !info.unsupportedReason.empty()) {
+      op->emitError() << "unsupported Kernelize op semantics: "
+                      << info.unsupportedReason;
+      return WalkResult::interrupt();
+    }
+
+    return WalkResult::advance();
+  });
+  if (unsupportedResult.wasInterrupted())
+    return failure();
+
   module.walk([&](Operation *op) {
     auto it = resolved.find(op);
     if (it == resolved.end() ||
