@@ -1,7 +1,14 @@
 // RUN: afir-opt %s --vector-plan-tile-fuse 2>&1 | FileCheck %s
 
-// CHECK: module attributes {
-// CHECK-SAME: vector_plan.tiling_infos = [{fields = [{abi_index = 0 : i32, arg_index = 2 : i32, axis_size = 1024 : i64, default_value = 128 : i64, kind = "tunable", name = "XBLOCK"}, {abi_index = 1 : i32, arg_index = 3 : i32, axis_size = 1024 : i64, default_value = 16 : i64, kind = "tunable", name = "XBLOCK_SUB"}], kernel_id = "pointwise"}]
+// CHECK: vector_plan.tiling_infos
+// CHECK-SAME: block_dim_expr = "ceil(1024/XBLOCK)"
+// P6a: TileConstraint emission — XBLOCK_SUB | XBLOCK divides, plus a
+// conservative LeBytes footprint check against the SoC UB capacity.
+// CHECK-SAME: constraints = [{kind = "divides", lhs = "XBLOCK_SUB", rhs = "XBLOCK"}, {kind = "le_bytes", lhs = "((12) * XBLOCK_SUB)", rhs = "196608"}]
+// CHECK-SAME: fields = [
+// CHECK-SAME: abi_index = 0 : i32, arg_index = 2 : i32, axis_size = 1024 : i64, default_value = 128 : i64, kind = "tunable", name = "XBLOCK"
+// CHECK-SAME: abi_index = 1 : i32, arg_index = 3 : i32, axis_size = 1024 : i64, default_value = 16 : i64, kind = "tunable", name = "XBLOCK_SUB"
+// CHECK-SAME: kernel_id = "pointwise__v0"
 
 func.func @pointwise(%a: tensor<1024xf32>, %b: tensor<1024xf32>) -> tensor<1024xf32> {
   %result = linalg.generic {

@@ -31,10 +31,19 @@ struct TilePlanDraft {
 
 // A schedulability/legality constraint over the tunable params (≈ ATT's
 // tiling-data constraints).  Emitted into `vector_plan.tiling_infos` in P6.
+//
+// Both `lhs` and `rhs` are free-form arithmetic expressions over tile-param
+// names (e.g. "XBLOCK_SUB", "XBLOCK") and integer literals, using the same
+// pure +-*/ grammar as block_dim_expr / ub_cost_bytes_exprs (CeilDiv encoded
+// as `((a + b - 1) / b)`).  The autotuner re-uses its evalBlockExpr to
+// evaluate them under candidate tile values.
+//   Divides : lhs must evenly divide rhs (i.e. rhs % lhs == 0)
+//   LeBytes : lhs (in bytes) must be ≤ rhs (in bytes)
 struct TileConstraint {
-  enum Kind : uint8_t { Divides, LeBytes } kind;
-  Value lhs;
-  Value rhs;
+  enum Kind : uint8_t { Divides, LeBytes };
+  Kind        kind;
+  std::string lhs;
+  std::string rhs;
 };
 
 struct TileParam {

@@ -561,6 +561,80 @@ static TilePlan buildPlan(func::FuncOp func, const CollapsedGroupInfo &info,
   return plan;
 }
 
+// Stamp tile-data legality constraints (≈ ATT tiling-data constraints, plan
+// §6) onto `plan` for later emission into `vector_plan.tiling_infos`:
+//
+//   Divides : XBLOCK_SUB | XBLOCK  (and analogues per tileable group)
+//             — required by the existing tail-peel codegen path.
+//   LeBytes : conservative on-chip footprint ≤ UB capacity
+//             — `numBufs * elemBytes * Π per-axis-tile`.  Each axis's tile
+//             is the inner tunable name when tileable, otherwise the static
+//             extent / `argN_dimD` shape-key emitted by the SymExpr layer.
+//             Skipped (no LeBytes emitted) if any axis fails to resolve;
+//             that's also when the runtime UB-aware prune in CannTranslation
+//             (`ub_cost_bytes_exprs`) takes over.
+//
+// These are *recorded* (and surfaced as JSON) — the constraint solver / cost
+// model is the autotuner's job; `costEstimate` here just does a coarse static
+// check via `staticTileFootprintBytes` already.
+static void populateConstraints(TilePlan &plan, const CollapsedGroupInfo &info,
+                                 func::FuncOp func, unsigned elemBytes) {
+  // Divides: every (Outer, Inner) pair within a tileable group.
+  for (auto &group : plan.tileable) {
+    const TileParam *outer = nullptr, *inner = nullptr;
+    for (auto &tp : group) {
+      if (tp.level == TileLevel::Outer)      outer = &tp;
+      else if (tp.level == TileLevel::Inner) inner = &tp;
+    }
+    if (outer && inner)
+      plan.constraints.push_back(
+          {TileConstraint::Divides, inner->name, outer->name});
+  }
+
+  // LeBytes: only when every axis has a usable tile-size expression.
+  auto dimSymsAttr = func->getAttrOfType<ArrayAttr>("afir.dim_symbols");
+  std::optional<symshape::DimSymbolTable> symTable;
+  if (dimSymsAttr)
+    symTable = symshape::DimSymbolTable::fromAttr(dimSymsAttr);
+  auto nameFor = [&](symshape::SymId id) -> std::string {
+    if (!symTable) return "?";
+    auto src = symTable->sourceOf(id);
+    return "arg" + std::to_string(src.first) + "_dim" +
+           std::to_string(src.second);
+  };
+
+  // Per-axis tile-size string.
+  auto axisTileStr = [&](int axisIdx) -> std::string {
+    for (auto &grp : plan.tileable)
+      for (auto &tp : grp)
+        if (tp.axisIdx == axisIdx && tp.level == TileLevel::Inner)
+          return tp.name;
+    const auto &ax = info.collapsedAxes[axisIdx];
+    if (ax.staticSize != ShapedType::kDynamic)
+      return std::to_string(ax.staticSize);
+    if (ax.extent.isValid() && symTable)
+      return ax.extent.emitC(nameFor);
+    return ""; // unknown
+  };
+
+  std::string product;
+  bool ok = true;
+  for (int i = 0; i < (int)info.collapsedAxes.size(); ++i) {
+    std::string s = axisTileStr(i);
+    if (s.empty()) { ok = false; break; }
+    product = product.empty() ? s : ("(" + product + " * " + s + ")");
+  }
+  if (!ok || product.empty()) return;
+
+  int64_t numBufs = 2;
+  if (!info.topoMembers.empty())
+    numBufs = (int64_t)info.topoMembers[0]->getNumOperands() + 1;
+  std::string footprint = "((" + std::to_string(numBufs * (int64_t)elemBytes) +
+                          ") * " + product + ")";
+  plan.constraints.push_back(
+      {TileConstraint::LeBytes, footprint, std::to_string(kUBSizeBytes)});
+}
+
 TilePlan genVectorTilePlan(func::FuncOp func,
                             const CollapsedGroupInfo &info,
                             OpBuilder &builder, Location loc,
@@ -585,6 +659,7 @@ TilePlan genVectorTilePlan(func::FuncOp func,
   assert(bestScore < kInfeasible && "no feasible tiling case");
 
   TilePlan plan = buildPlan(func, info, g, *best, builder, loc);
+  populateConstraints(plan, info, func, elemBytes);
   // P3b-2c/d: LoopNestBuilder is expected to handle RCore via its existing
   // Outer-Inner-on-same-axis path (parentStep mechanism), but the GroupEmitter
   // codegen — per-block R extent on the new rFor + dimension-bumped partial
@@ -728,6 +803,24 @@ void emitTilingInfos(func::FuncOp func, const TilePlan &plan) {
   if (!blockDimExpr.empty())
     entryAttrs.append("block_dim_expr", StringAttr::get(ctx, blockDimExpr));
 
+  // Plan §6 / P6a: emit TileConstraint list as a "constraints" array of
+  // {kind, lhs, rhs} dicts.  Consumers (autotuner / CannTranslation) eval
+  // lhs/rhs under candidate tile values using the same +-*/ grammar as
+  // block_dim_expr.
+  if (!plan.constraints.empty()) {
+    SmallVector<Attribute> cs;
+    for (auto &c : plan.constraints) {
+      NamedAttrList ca;
+      ca.append("kind",
+                StringAttr::get(ctx, c.kind == TileConstraint::Divides
+                                         ? "divides" : "le_bytes"));
+      ca.append("lhs", StringAttr::get(ctx, c.lhs));
+      ca.append("rhs", StringAttr::get(ctx, c.rhs));
+      cs.push_back(ca.getDictionary(ctx));
+    }
+    entryAttrs.append("constraints", ArrayAttr::get(ctx, cs));
+  }
+
   StringRef attrName = "vector_plan.tiling_infos";
   SmallVector<Attribute> infos;
   if (auto existing = moduleOp->getAttrOfType<ArrayAttr>(attrName))
@@ -761,7 +854,9 @@ buildPlanForDraft(func::FuncOp func,
                   const vector_plan::CollapsedGroupInfo &info,
                   const vector_plan::TilePlanDraft &draft,
                   OpBuilder &builder, Location loc) {
-  return buildPlan(func, info, info.grouping, draft, builder, loc);
+  TilePlan plan = buildPlan(func, info, info.grouping, draft, builder, loc);
+  populateConstraints(plan, info, func, operandElemBytes(info));
+  return plan;
 }
 
 } // namespace mlir::afir
