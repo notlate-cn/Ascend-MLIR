@@ -10,6 +10,10 @@
 #include "RealizeTypes.h"
 #include "mlir/Support/LLVM.h"
 
+namespace mlir::ascend {
+class TargetMemoryModel;
+} // namespace mlir::ascend
+
 namespace mlir::afir::ascend::realize {
 
 class StaticMemoryPlanner {
@@ -17,6 +21,9 @@ public:
   FailureOr<StaticMemoryPlan> build(const PlacementPlan &placement) const;
   FailureOr<StaticMemoryPlan> build(const PlacementPlan &placement,
                                     const BufferizedKernelIR &bufferizedIR) const;
+  FailureOr<StaticMemoryPlan>
+  build(const PlacementPlan &placement, const BufferizedKernelIR &bufferizedIR,
+        const ::mlir::ascend::TargetMemoryModel &memoryModel) const;
 };
 
 } // namespace mlir::afir::ascend::realize
