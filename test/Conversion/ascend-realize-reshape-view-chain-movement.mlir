@@ -100,6 +100,56 @@ func.func @expand_chain_movement(%arg0: tensor<64xf16>,
   return %out : tensor<4x16xf16>
 }
 
+func.func @reshape_chain_movement(%arg0: tensor<4x8xf32>) -> tensor<8x4xf32>
+    attributes {ascend.normalized = true} {
+  %empty0 = tensor.empty() : tensor<4x8xf32>
+  %mid = linalg.generic {
+    indexing_maps = [
+      affine_map<(d0, d1) -> (d0, d1)>,
+      affine_map<(d0, d1) -> (d0, d1)>
+    ],
+    iterator_types = ["parallel", "parallel"]
+  } ins(%arg0 : tensor<4x8xf32>)
+    outs(%empty0 : tensor<4x8xf32>)
+    attrs = {
+      ascend.kernel = "reshape_kernel",
+      ascend.op_role = "vector",
+      ascend.schedule.decision_id = "reshape_kernel.decision.0",
+      ascend.schedule.structured_lowering = "loop_skeleton_v0"
+    } {
+  ^bb0(%x: f32, %o: f32):
+    linalg.yield %x : f32
+  } -> tensor<4x8xf32>
+
+  %c8_i64 = arith.constant 8 : i64
+  %c4_i64 = arith.constant 4 : i64
+  %shape = tensor.from_elements %c8_i64, %c4_i64 : tensor<2xi64>
+  %reshaped = tensor.reshape %mid(%shape)
+      : (tensor<4x8xf32>, tensor<2xi64>) -> tensor<8x4xf32>
+
+  %empty1 = tensor.empty() : tensor<8x4xf32>
+  %out = linalg.generic {
+    indexing_maps = [
+      affine_map<(d0, d1) -> (d0, d1)>,
+      affine_map<(d0, d1) -> (d0, d1)>
+    ],
+    iterator_types = ["parallel", "parallel"]
+  } ins(%reshaped : tensor<8x4xf32>)
+    outs(%empty1 : tensor<8x4xf32>)
+    attrs = {
+      ascend.kernel = "reshape_kernel",
+      ascend.op_role = "vector",
+      ascend.schedule.decision_id = "reshape_kernel.decision.0",
+      ascend.schedule.structured_lowering = "loop_skeleton_v0"
+    } {
+  ^bb0(%x: f32, %o: f32):
+    %v = arith.negf %x : f32
+    linalg.yield %v : f32
+  } -> tensor<8x4xf32>
+
+  return %out : tensor<8x4xf32>
+}
+
 // CHECK: MemoryRealizationPlan:
 // CHECK-NEXT:   kernel = collapse_kernel
 // CHECK-NEXT:   mode = "memory_space_materialize"
@@ -107,6 +157,11 @@ func.func @expand_chain_movement(%arg0: tensor<64xf16>,
 // CHECK-NEXT:   materialized_copies = 1
 // CHECK: MemoryRealizationPlan:
 // CHECK-NEXT:   kernel = expand_kernel
+// CHECK-NEXT:   mode = "memory_space_materialize"
+// CHECK:   materialized_allocs = 1
+// CHECK-NEXT:   materialized_copies = 1
+// CHECK: MemoryRealizationPlan:
+// CHECK-NEXT:   kernel = reshape_kernel
 // CHECK-NEXT:   mode = "memory_space_materialize"
 // CHECK:   materialized_allocs = 1
 // CHECK-NEXT:   materialized_copies = 1
@@ -122,3 +177,9 @@ func.func @expand_chain_movement(%arg0: tensor<64xf16>,
 // CHECK: %[[EXPANDED:.*]] = memref.expand_shape %[[EXPAND_LOCAL]] {{\[\[}}0, 1]] output_shape [4, 16] : memref<64xf16, 9 : i32> into memref<4x16xf16, 9 : i32>
 // CHECK: linalg.generic
 // CHECK-SAME: ins(%[[EXPANDED]]
+// CHECK-LABEL: func.func @reshape_chain_movement
+// CHECK: %[[RESHAPE_LOCAL:.*]] = memref.alloc() : memref<4x8xf32, 9 : i32>
+// CHECK: memref.copy {{.*}}, %[[RESHAPE_LOCAL]] : memref<4x8xf32> to memref<4x8xf32, 9 : i32>
+// CHECK: %[[RESHAPED:.*]] = memref.reshape %[[RESHAPE_LOCAL]](%{{.*}}) : (memref<4x8xf32, 9 : i32>, memref<2xi64>) -> memref<8x4xf32, 9 : i32>
+// CHECK: linalg.generic
+// CHECK-SAME: ins(%[[RESHAPED]]

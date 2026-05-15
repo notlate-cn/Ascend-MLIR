@@ -307,6 +307,13 @@ static bool collectViewChainToSource(
     return true;
   }
 
+  if (auto reshapeOp = dyn_cast<memref::ReshapeOp>(def)) {
+    if (!collectViewChainToSource(reshapeOp.getSource(), source, viewChain))
+      return false;
+    viewChain.push_back(def);
+    return true;
+  }
+
   if (auto expandOp = dyn_cast<memref::ExpandShapeOp>(def)) {
     if (!collectViewChainToSource(expandOp.getSrc(), source, viewChain))
       return false;
@@ -699,6 +706,18 @@ materializeMovementUseViewChain(IRRewriter &rewriter, Location loc, Value base,
       continue;
     }
 
+    if (auto reshapeOp = dyn_cast<memref::ReshapeOp>(viewOp)) {
+      auto oldType = dyn_cast<MemRefType>(reshapeOp.getType());
+      if (!oldType)
+        return failure();
+      auto newType = withMemorySpace(oldType, memorySpace);
+      current = rewriter
+                    .create<memref::ReshapeOp>(loc, newType, current,
+                                                reshapeOp.getShape())
+                    .getResult();
+      continue;
+    }
+
     if (auto expandOp = dyn_cast<memref::ExpandShapeOp>(viewOp)) {
       auto oldType = dyn_cast<MemRefType>(expandOp.getType());
       if (!oldType)
@@ -798,8 +817,23 @@ static LogicalResult materializeMovementWorkspaceGroup(
 static unsigned
 countDynamicViewChainRewrites(ArrayRef<MovementMaterializationItem> items) {
   unsigned count = 0;
-  for (const MovementMaterializationItem &item : items)
-    if (item.hasDynamicViewChain)
+  for (const MovementMaterializationItem &item : items) {
+    if (!item.hasDynamicViewChain)
+      continue;
+    for (const MovementUseRewrite &rewrite : item.uses)
+      if (hasDynamicViewChain(rewrite.viewChain))
+        ++count;
+  }
+  return count;
+}
+
+static unsigned
+countDynamicViewChainRewrites(const MovementMaterializationItem &item) {
+  unsigned count = 0;
+  if (!item.hasDynamicViewChain)
+    return count;
+  for (const MovementUseRewrite &rewrite : item.uses)
+    if (hasDynamicViewChain(rewrite.viewChain))
       ++count;
   return count;
 }
@@ -1024,13 +1058,12 @@ MemoryRealizationDriver::annotateMemorySpaces(ModuleOp module) const {
 
 FailureOr<llvm::StringMap<Phase5BridgeMaterializationCounts>>
 MemoryRealizationDriver::materializeMovementSteps(
-    ModuleOp module, llvm::ArrayRef<RealizePlanBundle> bundles) const {
+    ModuleOp module, MutableArrayRef<RealizePlanBundle> bundles) const {
   MLIRContext *context = module.getContext();
   IRRewriter rewriter(context);
   llvm::StringMap<Phase5BridgeMaterializationCounts> counts;
 
-  for (const RealizePlanBundle &constBundle : bundles) {
-    RealizePlanBundle &bundle = const_cast<RealizePlanBundle &>(constBundle);
+  for (RealizePlanBundle &bundle : bundles) {
     StringRef kernelId = bundle.kernel.kernelId;
     if (kernelId.empty())
       continue;
@@ -1093,8 +1126,8 @@ MemoryRealizationDriver::materializeMovementSteps(
       if (failed(materializeSingleMovementItem(rewriter, items[i], targetSpace,
                                                counts[kernelId])))
         return failure();
-      if (items[i].hasDynamicViewChain)
-        ++bundle.movement.dynamicViewChainRewriteCount;
+      bundle.movement.dynamicViewChainRewriteCount +=
+          countDynamicViewChainRewrites(items[i]);
       materialized[i] = true;
     }
   }
