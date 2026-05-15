@@ -99,7 +99,25 @@ bool appendUniqueFamily(ScheduleContract &contract, StringRef family) {
   return true;
 }
 
-bool appendPrimaryFamily(ArrayRef<OpRole> roles, ScheduleContract &contract) {
+bool appendPreferredFamilies(Operation *op, const DependencyAnalysisResult &deps,
+                             ScheduleContract &contract) {
+  auto summaryIt = deps.summaries.find(op);
+  if (summaryIt == deps.summaries.end())
+    return false;
+
+  bool foundFamily = false;
+  for (StringRef family : summaryIt->second.preferredTemplateFamilies)
+    foundFamily |= appendUniqueFamily(contract, family);
+  return foundFamily;
+}
+
+bool appendPrimaryFamily(Operation *op, const DependencyAnalysisResult &deps,
+                         const OpRoleMap &roleMap,
+                         ScheduleContract &contract) {
+  if (appendPreferredFamilies(op, deps, contract))
+    return true;
+
+  ArrayRef<OpRole> roles = getRoles(roleMap, op);
   if (hasRole(roles, OpRole::Cube)) {
     appendUniqueFamily(contract, kOpRoleCube);
     return true;
@@ -116,11 +134,12 @@ bool appendPrimaryFamily(ArrayRef<OpRole> roles, ScheduleContract &contract) {
 }
 
 bool populatePrimaryFamilies(ArrayRef<Operation *> primaryOps,
+                             const DependencyAnalysisResult &deps,
                              const OpRoleMap &roleMap,
                              ScheduleContract &contract) {
   bool foundFamily = false;
   for (Operation *primaryOp : primaryOps)
-    foundFamily |= appendPrimaryFamily(getRoles(roleMap, primaryOp), contract);
+    foundFamily |= appendPrimaryFamily(primaryOp, deps, roleMap, contract);
   return foundFamily;
 }
 
@@ -151,7 +170,7 @@ unsigned getHandwrittenPrimaryPriority(ArrayRef<OpRole> roles) {
 }
 
 std::optional<int64_t> getHandwrittenGroup(Operation *op) {
-  auto group = op->getAttrOfType<IntegerAttr>(kHandwrittenGroupAttr);
+  auto group = op->getAttrOfType<IntegerAttr>(kKernelizeHandwrittenGroupAttr);
   if (!group)
     return std::nullopt;
   return group.getInt();
@@ -178,7 +197,7 @@ bool legalizeCandidate(FusionCandidate &candidate,
   }
 
   if (candidate.primaryOps.empty() ||
-      !populatePrimaryFamilies(candidate.primaryOps, roleMap,
+      !populatePrimaryFamilies(candidate.primaryOps, deps, roleMap,
                                candidate.scheduleContract)) {
     candidate.rejectionReason = "TemplateFamilyUnavailable";
     return false;

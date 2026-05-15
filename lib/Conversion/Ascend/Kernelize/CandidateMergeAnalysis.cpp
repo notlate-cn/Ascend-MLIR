@@ -7,6 +7,7 @@
 #include "CandidateMergeAnalysis.h"
 
 #include "CandidateClosure.h"
+#include "KernelizeFamilyResolver.h"
 #include "mlir/IR/Operation.h"
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/DenseMap.h"
@@ -18,7 +19,6 @@
 
 #include <algorithm>
 #include <cstdint>
-#include <optional>
 #include <string>
 #include <utility>
 
@@ -53,59 +53,6 @@ void sortUniqueOpsByOpId(SmallVectorImpl<Operation *> &ops,
     return index.opIds.lookup(lhs).value < index.opIds.lookup(rhs).value;
   });
   ops.erase(std::unique(ops.begin(), ops.end()), ops.end());
-}
-
-bool containsFamily(ArrayRef<std::string> families, StringRef family) {
-  for (const std::string &value : families) {
-    if (value == family)
-      return true;
-  }
-  return false;
-}
-
-bool containsFamilyPair(ArrayRef<std::string> lhsFamilies,
-                        ArrayRef<std::string> rhsFamilies, StringRef lhsFamily,
-                        StringRef rhsFamily) {
-  return (containsFamily(lhsFamilies, lhsFamily) &&
-          containsFamily(rhsFamilies, rhsFamily)) ||
-         (containsFamily(lhsFamilies, rhsFamily) &&
-          containsFamily(rhsFamilies, lhsFamily));
-}
-
-std::optional<StringRef> resolveTableFamily(ArrayRef<std::string> lhsFamilies,
-                                            ArrayRef<std::string> rhsFamilies) {
-  if (containsFamilyPair(lhsFamilies, rhsFamilies, kOpRoleVector,
-                         kOpRoleReduction))
-    return StringRef(kOpRoleReduction);
-
-  if (containsFamilyPair(lhsFamilies, rhsFamilies, kOpRoleCube, kOpRoleVector))
-    return StringRef(kOpRoleCube);
-
-  if (containsFamily(lhsFamilies, kOpRoleVector) &&
-      containsFamily(rhsFamilies, kOpRoleVector))
-    return StringRef(kOpRoleVector);
-
-  return std::nullopt;
-}
-
-SmallVector<std::string, 2>
-resolveTemplateFamilies(ArrayRef<std::string> lhsFamilies,
-                        ArrayRef<std::string> rhsFamilies) {
-  SmallVector<std::string, 2> resolved;
-
-  if (std::optional<StringRef> tableFamily =
-          resolveTableFamily(lhsFamilies, rhsFamilies)) {
-    resolved.push_back(tableFamily->str());
-    return resolved;
-  }
-
-  for (const std::string &lhsFamily : lhsFamilies) {
-    if (!containsFamily(rhsFamilies, lhsFamily) ||
-        containsFamily(resolved, lhsFamily))
-      continue;
-    resolved.push_back(lhsFamily);
-  }
-  return resolved;
 }
 
 bool containsString(ArrayRef<std::string> values, StringRef value) {
@@ -253,9 +200,12 @@ MergedCandidate buildMergedCandidate(const MergeSource &lhs,
     return merged;
   }
 
-  merged.scheduleContract.templateFamilies = resolveTemplateFamilies(
+  KernelizeFamilyResolution resolution = resolveKernelizeTemplateFamilies(
       lhs.scheduleContract.templateFamilies,
-      rhs.scheduleContract.templateFamilies);
+      rhs.scheduleContract.templateFamilies, merged.primitiveCombo);
+  merged.scheduleContract.templateFamilies =
+      std::move(resolution.templateFamilies);
+  merged.familyResolverName = std::move(resolution.resolverName);
   if (merged.scheduleContract.templateFamilies.empty()) {
     merged.rejectionReason = "TemplateFamilyUnavailable";
     return merged;
@@ -373,6 +323,7 @@ void emitCandidateMergeReport(raw_ostream &os,
     os << " closed = " << (candidate.closure.isClosed ? "true" : "false")
        << " benefit = " << candidate.benefitScore << " families = ";
     printStringList(os, candidate.scheduleContract.templateFamilies);
+    os << " family_resolver = \"" << candidate.familyResolverName << "\"";
     os << "\n";
   }
 }

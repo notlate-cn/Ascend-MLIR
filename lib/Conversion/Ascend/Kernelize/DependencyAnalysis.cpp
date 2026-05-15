@@ -124,6 +124,9 @@ OpSemanticSummary makeSummary(Operation *op, OperationId opId,
                               info.indexingMaps.end());
   summary.resultRanks.append(info.resultRanks.begin(), info.resultRanks.end());
   summary.traits.append(info.traits.begin(), info.traits.end());
+  summary.preferredTemplateFamilies.append(
+      info.preferredTemplateFamilies.begin(),
+      info.preferredTemplateFamilies.end());
   summary.modelName = info.modelName;
   summary.unsupportedReason = info.unsupportedReason;
   summary.resultRank =

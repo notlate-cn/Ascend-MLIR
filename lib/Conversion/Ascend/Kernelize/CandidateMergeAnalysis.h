@@ -31,6 +31,7 @@ struct MergedCandidate {
   SmallVector<KernelizePrimitiveKind> primitiveCombo;
   CandidateClosure closure;
   ScheduleContract scheduleContract;
+  std::string familyResolverName = "kernelize_trait_resolver";
   int64_t benefitScore = 0;
   bool legal = false;
   std::string rejectionReason;

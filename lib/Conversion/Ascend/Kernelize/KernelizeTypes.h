@@ -16,6 +16,9 @@ namespace mlir::afir::ascend::kernelize {
 
 using ::mlir::afir::ascend::kKernelAttr;
 using ::mlir::afir::ascend::kKernelGraphEdgesAttr;
+using ::mlir::afir::ascend::kKernelizeHandwrittenGroupAttr;
+using ::mlir::afir::ascend::kKernelizeMustCoLocateGroupAttr;
+using ::mlir::afir::ascend::kKernelizeMustSeparateGroupAttr;
 using ::mlir::afir::ascend::kNormalizedAttr;
 using ::mlir::afir::ascend::kOpRoleAttr;
 using ::mlir::afir::ascend::kOpRolesAttr;
@@ -25,8 +28,6 @@ inline constexpr llvm::StringLiteral kBranchRootAttr = "ascend.branch_root";
 inline constexpr llvm::StringLiteral kBranchGroupAttr = "ascend.branch_group";
 inline constexpr llvm::StringLiteral kMergeRootAttr = "ascend.merge_root";
 inline constexpr llvm::StringLiteral kMergeGroupAttr = "ascend.merge_group";
-inline constexpr llvm::StringLiteral kHandwrittenGroupAttr =
-    "ascend.kernelize.handwritten_group";
 
 enum class OpRole {
   Primary,
