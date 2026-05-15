@@ -87,6 +87,17 @@ void collectAnalyzedProducers(
   }
 }
 
+void collectDependencyOperands(Operation *op,
+                               SmallVectorImpl<Value> &operands) {
+  if (auto linalgOp = dyn_cast<linalg::LinalgOp>(op)) {
+    for (OpOperand *inputOperand : linalgOp.getDpsInputOperands())
+      operands.push_back(inputOperand->get());
+    return;
+  }
+
+  operands.append(op->operand_begin(), op->operand_end());
+}
+
 OpSemanticSummary makeSummary(Operation *op, OperationId opId,
                               const KernelizeOpSemanticInfo &info) {
   OpSemanticSummary summary;
@@ -168,7 +179,9 @@ DependencyAnalyzer::analyze(ModuleOp module) const {
     result.summaries.try_emplace(op,
                                  makeSummary(op, opId, resolvedIt->second));
 
-    for (Value operand : op->getOperands()) {
+    SmallVector<Value, 4> dependencyOperands;
+    collectDependencyOperands(op, dependencyOperands);
+    for (Value operand : dependencyOperands) {
       SmallVector<Operation *, 4> operandProducers;
       SmallVector<Operation *, 4> unsupportedProducers;
       DenseSet<Operation *> visited;
