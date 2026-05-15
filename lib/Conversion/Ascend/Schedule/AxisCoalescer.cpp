@@ -485,24 +485,32 @@ bool shouldPrintTailContractFields(
   return false;
 }
 
+const PatternOpView *selectAxisCarrierOp(const KernelPatternView &pattern) {
+  for (const PatternOpView &opView : pattern.ops) {
+    if (opView.role == pattern.dominantRole)
+      return &opView;
+  }
+  return selectDominantPrimaryOp(pattern);
+}
+
 } // namespace
 
 FailureOr<CoalescedAxisInfo> coalesceAxes(const KernelPatternView &pattern) {
-  const PatternOpView *primaryOpView = selectDominantPrimaryOp(pattern);
-  if (!primaryOpView || !primaryOpView->op)
+  const PatternOpView *axisOpView = selectAxisCarrierOp(pattern);
+  if (!axisOpView || !axisOpView->op)
     return failure();
 
-  Operation *primaryOp = primaryOpView->op;
-  auto linalgOp = dyn_cast<linalg::LinalgOp>(primaryOp);
+  Operation *axisOp = axisOpView->op;
+  auto linalgOp = dyn_cast<linalg::LinalgOp>(axisOp);
   if (!linalgOp) {
-    primaryOp->emitError() << "axis coalescing requires a linalg primary op";
+    axisOp->emitError() << "axis coalescing requires a linalg axis carrier op";
     return failure();
   }
 
   CoalescedAxisInfo info;
   SmallVector<utils::IteratorType> iteratorTypes =
       linalgOp.getIteratorTypesArray();
-  unsigned axisCount = getAxisCount(primaryOp, primaryOpView->role,
+  unsigned axisCount = getAxisCount(axisOp, axisOpView->role,
                                    static_cast<unsigned>(iteratorTypes.size()));
   SmallVector<int64_t> staticExtents(axisCount, ShapedType::kDynamic);
   SmallVector<bool> broadcastAxisMask(axisCount, false);
@@ -514,7 +522,7 @@ FailureOr<CoalescedAxisInfo> coalesceAxes(const KernelPatternView &pattern) {
                  "kernel pattern contains a non-linalg op");
       continue;
     }
-    if (failed(collectIndexingMapInfo(patternLinalgOp, primaryOpView->role,
+    if (failed(collectIndexingMapInfo(patternLinalgOp, axisOpView->role,
                                       axisCount, staticExtents,
                                       broadcastAxisMask, info)))
       return failure();
@@ -524,9 +532,9 @@ FailureOr<CoalescedAxisInfo> coalesceAxes(const KernelPatternView &pattern) {
   for (unsigned axis = 0; axis < axisCount; ++axis) {
     AxisKind kind = AxisKind::Unknown;
     if (axis < iteratorTypes.size())
-      kind = classifyIteratorType(iteratorTypes[axis], info, primaryOp, axis);
+      kind = classifyIteratorType(iteratorTypes[axis], info, axisOp, axis);
     else
-      addBarrier(info, primaryOp, AxisBarrierKind::RankMismatch,
+      addBarrier(info, axisOp, AxisBarrierKind::RankMismatch,
                  (llvm::Twine("missing iterator type for axis ") +
                   llvm::Twine(axis))
                      .str());

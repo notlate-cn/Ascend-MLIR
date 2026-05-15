@@ -86,7 +86,6 @@ struct OperationId {
 };
 
 struct KernelizeConfig {
-  unsigned maxPrimitivePerOp = 4;
   unsigned maxOpsPerCandidate = 32;
   unsigned maxPrimaryRolesPerCandidate = 2;
   unsigned maxHorizontalFusionGroupSize = 8;

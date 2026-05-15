@@ -7,6 +7,7 @@
 #include "HorizontalFusionAnalysis.h"
 
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
+#include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/Operation.h"
 #include "mlir/IR/Value.h"
 #include "llvm/ADT/ArrayRef.h"
@@ -28,6 +29,7 @@ namespace {
 struct HorizontalSource {
   unsigned sourceId = 0;
   ArrayRef<Operation *> internalOps;
+  SmallVector<int64_t, 4> resultShape;
   SmallVector<Value> shareableInputs;
   ScheduleContract scheduleContract;
 };
@@ -73,6 +75,38 @@ bool hasOverlappingInternalOps(const HorizontalSource &lhs,
   return false;
 }
 
+SmallVector<int64_t, 4> collectPrimaryResultShape(
+    ArrayRef<Operation *> primaryOps) {
+  if (primaryOps.empty() || primaryOps.front()->getNumResults() == 0)
+    return {};
+
+  auto shapedType =
+      dyn_cast<ShapedType>(primaryOps.front()->getResult(0).getType());
+  if (!shapedType || !shapedType.hasRank())
+    return {};
+
+  SmallVector<int64_t, 4> shape;
+  llvm::append_range(shape, shapedType.getShape());
+  return shape;
+}
+
+bool hasCompatibleResultShape(const HorizontalSource &lhs,
+                              const HorizontalSource &rhs) {
+  if (lhs.resultShape.empty() || rhs.resultShape.empty() ||
+      lhs.resultShape.size() != rhs.resultShape.size())
+    return false;
+
+  for (auto [lhsExtent, rhsExtent] :
+       llvm::zip_equal(lhs.resultShape, rhs.resultShape)) {
+    if (lhsExtent == ShapedType::kDynamic ||
+        rhsExtent == ShapedType::kDynamic)
+      continue;
+    if (lhsExtent != rhsExtent)
+      return false;
+  }
+  return true;
+}
+
 SmallVector<Value> collectShareableInputs(ArrayRef<Operation *> internalOps,
                                           const CandidateClosure &closure) {
   DenseSet<Value> externalInputSet;
@@ -95,46 +129,47 @@ SmallVector<Value> collectShareableInputs(ArrayRef<Operation *> internalOps,
 }
 
 bool reachesAnyInternalOp(ArrayRef<Operation *> starts,
-                          ArrayRef<Operation *> targets) {
+                          ArrayRef<Operation *> targets,
+                          const ProducerConsumerIndex &index) {
   DenseSet<Operation *> targetSet;
   for (Operation *op : targets)
     targetSet.insert(op);
 
   DenseSet<Operation *> visitedOps;
-  DenseSet<Value> visitedValues;
-  SmallVector<Value> worklist;
-  for (Operation *op : starts) {
-    for (Value result : op->getResults())
-      worklist.push_back(result);
-  }
+  SmallVector<Operation *> worklist;
+  worklist.append(starts.begin(), starts.end());
 
   while (!worklist.empty()) {
-    Value value = worklist.pop_back_val();
-    if (!visitedValues.insert(value).second)
+    Operation *op = worklist.pop_back_val();
+    if (!visitedOps.insert(op).second)
       continue;
 
-    for (Operation *user : value.getUsers()) {
-      if (targetSet.contains(user))
-        return true;
+    auto consumersIt = index.consumers.find(op);
+    if (consumersIt == index.consumers.end())
+      continue;
 
-      if (!visitedOps.insert(user).second)
-        continue;
-      for (Value result : user->getResults())
-        worklist.push_back(result);
+    for (Operation *consumer : consumersIt->second) {
+      if (targetSet.contains(consumer))
+        return true;
+      worklist.push_back(consumer);
     }
   }
   return false;
 }
 
-bool areIndependent(const HorizontalSource &lhs, const HorizontalSource &rhs) {
+bool areIndependent(const HorizontalSource &lhs, const HorizontalSource &rhs,
+                    const ProducerConsumerIndex &index) {
   if (hasOverlappingInternalOps(lhs, rhs))
     return false;
-  return !reachesAnyInternalOp(lhs.internalOps, rhs.internalOps) &&
-         !reachesAnyInternalOp(rhs.internalOps, lhs.internalOps);
+  if (!hasCompatibleResultShape(lhs, rhs))
+    return false;
+  return !reachesAnyInternalOp(lhs.internalOps, rhs.internalOps, index) &&
+         !reachesAnyInternalOp(rhs.internalOps, lhs.internalOps, index);
 }
 
 bool isEligibleGroup(ArrayRef<unsigned> sourceIndices,
                      ArrayRef<HorizontalSource> sources,
+                     const ProducerConsumerIndex &index,
                      const KernelizeConfig &config) {
   if (sourceIndices.size() < 2 ||
       sourceIndices.size() > config.maxHorizontalFusionGroupSize)
@@ -144,7 +179,7 @@ bool isEligibleGroup(ArrayRef<unsigned> sourceIndices,
     const HorizontalSource &lhs = sources[lhsIndex];
     for (unsigned rhsIndex : sourceIndices.drop_front(idx + 1)) {
       const HorizontalSource &rhs = sources[rhsIndex];
-      if (!areIndependent(lhs, rhs))
+      if (!areIndependent(lhs, rhs, index))
         return false;
     }
   }
@@ -178,6 +213,7 @@ collectSources(ArrayRef<FusionCandidate> fusionCandidates,
 
     sources.push_back(HorizontalSource{
         candidate.candidateId, candidate.internalOps,
+        collectPrimaryResultShape(candidate.primaryOps),
         collectShareableInputs(candidate.internalOps, candidate.closure),
         candidate.scheduleContract});
   }
@@ -189,6 +225,7 @@ collectSources(ArrayRef<FusionCandidate> fusionCandidates,
 
     sources.push_back(HorizontalSource{
         mergedIdOffset + candidate.mergedCandidateId, candidate.internalOps,
+        collectPrimaryResultShape(candidate.primaryOps),
         collectShareableInputs(candidate.internalOps, candidate.closure),
         candidate.scheduleContract});
   }
@@ -241,7 +278,7 @@ SmallVector<HorizontalFusionCandidate>
 HorizontalFusionAnalyzer::analyze(
     ArrayRef<FusionCandidate> fusionCandidates,
     ArrayRef<MergedCandidate> mergedCandidates,
-    const DependencyAnalysisResult &,
+    const DependencyAnalysisResult &deps,
     const KernelizeConfig &config) const {
   SmallVector<HorizontalSource> sources =
       collectSources(fusionCandidates, mergedCandidates);
@@ -254,7 +291,7 @@ HorizontalFusionAnalyzer::analyze(
   for (Value input : externalInputs) {
     SmallVector<unsigned> sourceIndices = sourcesByInput.lookup(input);
     sortSourceIndicesBySourceId(sourceIndices, sources);
-    if (!isEligibleGroup(sourceIndices, sources, config))
+    if (!isEligibleGroup(sourceIndices, sources, deps.index, config))
       continue;
     appendGroup(groups, sourceIndices, input);
   }

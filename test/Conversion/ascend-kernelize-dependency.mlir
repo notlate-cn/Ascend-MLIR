@@ -111,6 +111,35 @@ func.func @constant_projection_broadcast_transpose_indexing(
   return %0 : tensor<4x8xf32>
 }
 
+func.func @dynamic_empty_shape_does_not_create_data_dependency(
+    %a: tensor<?xf32>, %b: tensor<?xf32>, %n: index) -> tensor<?xf32> {
+  %c0 = arith.constant 0 : index
+  %empty0 = tensor.empty(%n) : tensor<?xf32>
+  %0 = linalg.generic {
+      indexing_maps = [
+        affine_map<(d0) -> (d0)>,
+        affine_map<(d0) -> (d0)>],
+      iterator_types = ["parallel"]}
+      ins(%a : tensor<?xf32>)
+      outs(%empty0 : tensor<?xf32>) {
+    ^bb0(%x: f32, %out: f32):
+      linalg.yield %x : f32
+    } -> tensor<?xf32>
+  %dim = tensor.dim %0, %c0 : tensor<?xf32>
+  %empty1 = tensor.empty(%dim) : tensor<?xf32>
+  %1 = linalg.generic {
+      indexing_maps = [
+        affine_map<(d0) -> (d0)>,
+        affine_map<(d0) -> (d0)>],
+      iterator_types = ["parallel"]}
+      ins(%b : tensor<?xf32>)
+      outs(%empty1 : tensor<?xf32>) {
+    ^bb0(%x: f32, %out: f32):
+      linalg.yield %x : f32
+    } -> tensor<?xf32>
+  return %1 : tensor<?xf32>
+}
+
 // CHECK: DependencyAnalysis
 // CHECK: op_id = 0
 // CHECK-SAME: op = "linalg.generic"
@@ -168,4 +197,14 @@ func.func @constant_projection_broadcast_transpose_indexing(
 // CHECK-SAME: iterators = [parallel, parallel]
 // CHECK-SAME: has_reduction = false
 // CHECK-SAME: only_parallel = true
+// CHECK: op_id = 8
+// CHECK-SAME: op = "linalg.generic"
+// CHECK-SAME: access = "Elementwise"
+// CHECK-SAME: producers = 0
+// CHECK-SAME: consumers = 0
+// CHECK: op_id = 9
+// CHECK-SAME: op = "linalg.generic"
+// CHECK-SAME: access = "Elementwise"
+// CHECK-SAME: producers = 0
+// CHECK-SAME: consumers = 0
 // CHECK: Kernelize report

@@ -2,6 +2,7 @@
 // RUN: sed -n '/\/\/ REVERSE-BEGIN/,/\/\/ REVERSE-END/p' %s | afir-opt --ascend-normalize --ascend-kernelize='debug-stage=kernelize dump-report=true' 2>&1 | FileCheck %s --check-prefix=REVERSE
 // RUN: sed -n '/\/\/ SUBSUMED-BEGIN/,/\/\/ SUBSUMED-END/p' %s | afir-opt --ascend-normalize --ascend-kernelize='debug-stage=kernelize dump-report=true' 2>&1 | FileCheck %s --check-prefix=SUBSUMED
 // RUN: sed -n '/\/\/ HORIZONTAL-BEGIN/,/\/\/ HORIZONTAL-END/p' %s | afir-opt --ascend-normalize --ascend-kernelize='debug-stage=kernelize dump-report=true' 2>&1 | FileCheck %s --check-prefix=HORIZONTAL
+// RUN: sed -n '/\/\/ HORIZONTAL-SHAPE-BEGIN/,/\/\/ HORIZONTAL-SHAPE-END/p' %s | afir-opt --ascend-normalize --ascend-kernelize='debug-stage=kernelize dump-report=true' 2>&1 | FileCheck %s --check-prefix=SHAPE
 // RUN: sed -n '/\/\/ OUTS-BEGIN/,/\/\/ OUTS-END/p' %s | afir-opt --ascend-normalize --ascend-kernelize='debug-stage=kernelize dump-report=true' 2>&1 | FileCheck %s --check-prefix=OUTS
 // RUN: sed -n '/\/\/ DEPENDENCY-BEGIN/,/\/\/ DEPENDENCY-END/p' %s | afir-opt --ascend-normalize --ascend-kernelize='debug-stage=kernelize dump-report=true' 2>&1 | FileCheck %s --check-prefix=DEPENDENCY
 
@@ -207,6 +208,23 @@ func.func @horizontal_siblings(%arg0: tensor<4x8xf32>,
 }
 // HORIZONTAL-END
 
+// HORIZONTAL-SHAPE-BEGIN
+func.func @horizontal_fill_shape_mismatch(%arg0: tensor<4x8xf32>,
+                                          %arg1: tensor<4x16xf32>)
+    -> (tensor<4x8xf32>, tensor<4x16xf32>) {
+  %cst = arith.constant 0.000000e+00 : f32
+  %empty0 = tensor.empty() : tensor<4x8xf32>
+  %0 = linalg.fill ins(%cst : f32)
+                   outs(%empty0 : tensor<4x8xf32>) -> tensor<4x8xf32>
+
+  %empty1 = tensor.empty() : tensor<4x16xf32>
+  %1 = linalg.fill ins(%cst : f32)
+                   outs(%empty1 : tensor<4x16xf32>) -> tensor<4x16xf32>
+
+  return %0, %1 : tensor<4x8xf32>, tensor<4x16xf32>
+}
+// HORIZONTAL-SHAPE-END
+
 // OUTS-BEGIN
 func.func @shared_outs_init_not_horizontal(%arg0: tensor<4x8xf32>,
                                            %arg1: tensor<4x8xf32>)
@@ -336,6 +354,10 @@ func.func @passthrough_dependency_not_horizontal(%arg0: tensor<4x8xf32>,
 // HORIZONTAL-SAME: per_group_contracts = 2
 // HORIZONTAL-SAME: benefit = 15
 // HORIZONTAL: Kernelize report
+
+// SHAPE: HorizontalFusionAnalysis
+// SHAPE-NOT: horizontal_candidate_id =
+// SHAPE: Kernelize report
 
 // OUTS: FusionCandidateAnalysis
 // OUTS: primitive = "FallbackSingleOp"

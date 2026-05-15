@@ -101,7 +101,7 @@ func.func @reduction(%arg0: tensor<4x8xf32>) -> tensor<4xf32> {
 // CHECK: op_id = 3
 // CHECK-SAME: roles = ["Primary", "Vector", "Injective", "Merge"]
 // CHECK-SAME: op_role = "vector"
-// CHECK: roles = ["Primary", "Reduction"]
+// CHECK: roles = ["Reduction"]
 // CHECK-SAME: op_role = "reduction"
 // CHECK-NOT: ascend.branch_group = 99
 // CHECK-NOT: ascend.merge_group = 88

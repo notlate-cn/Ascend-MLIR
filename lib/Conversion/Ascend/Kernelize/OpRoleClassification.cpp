@@ -55,7 +55,6 @@ void appendComputeRoles(AccessPatternKind accessPattern,
     appendRole(roles, OpRole::Cube);
     return;
   case AccessPatternKind::Reduction:
-    appendRole(roles, OpRole::Primary);
     appendRole(roles, OpRole::Reduction);
     return;
   case AccessPatternKind::Elementwise:

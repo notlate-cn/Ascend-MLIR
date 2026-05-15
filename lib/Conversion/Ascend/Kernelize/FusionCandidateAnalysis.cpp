@@ -81,20 +81,36 @@ bool isElementwiseChainOp(ArrayRef<OpRole> roles) {
          !hasRole(roles, OpRole::Reduction) && !hasRole(roles, OpRole::Cube);
 }
 
-bool hasPrimaryFamily(ArrayRef<OpRole> roles, ScheduleContract &contract) {
+bool appendUniqueFamily(ScheduleContract &contract, StringRef family) {
+  if (llvm::is_contained(contract.templateFamilies, family))
+    return false;
+  contract.templateFamilies.push_back(family.str());
+  return true;
+}
+
+bool appendPrimaryFamily(ArrayRef<OpRole> roles, ScheduleContract &contract) {
   if (hasRole(roles, OpRole::Cube)) {
-    contract.templateFamilies.push_back(kOpRoleCube.str());
+    appendUniqueFamily(contract, kOpRoleCube);
     return true;
   }
   if (hasRole(roles, OpRole::Reduction)) {
-    contract.templateFamilies.push_back(kOpRoleReduction.str());
+    appendUniqueFamily(contract, kOpRoleReduction);
     return true;
   }
   if (hasRole(roles, OpRole::Vector)) {
-    contract.templateFamilies.push_back(kOpRoleVector.str());
+    appendUniqueFamily(contract, kOpRoleVector);
     return true;
   }
   return false;
+}
+
+bool populatePrimaryFamilies(ArrayRef<Operation *> primaryOps,
+                             const OpRoleMap &roleMap,
+                             ScheduleContract &contract) {
+  bool foundFamily = false;
+  for (Operation *primaryOp : primaryOps)
+    foundFamily |= appendPrimaryFamily(getRoles(roleMap, primaryOp), contract);
+  return foundFamily;
 }
 
 bool isFallbackEligible(ArrayRef<OpRole> roles) {
@@ -124,8 +140,8 @@ bool legalizeCandidate(FusionCandidate &candidate,
   }
 
   if (candidate.primaryOps.empty() ||
-      !hasPrimaryFamily(getRoles(roleMap, candidate.primaryOps.front()),
-                        candidate.scheduleContract)) {
+      !populatePrimaryFamilies(candidate.primaryOps, roleMap,
+                               candidate.scheduleContract)) {
     candidate.rejectionReason = "TemplateFamilyUnavailable";
     return false;
   }
@@ -175,19 +191,30 @@ FusionCandidate buildConsumerIntoPrimaryCandidate(
   FusionCandidate candidate;
   candidate.kind = CandidateKind::Fusion;
   candidate.primitive = KernelizePrimitiveKind::ConsumerIntoPrimary;
-  candidate.primaryOps.push_back(seed);
   candidate.internalOps.push_back(seed);
 
+  ArrayRef<OpRole> seedRoles = getRoles(roleMap, seed);
+  bool reductionSeed = hasRole(seedRoles, OpRole::Reduction) &&
+                       !hasRole(seedRoles, OpRole::Cube);
+  SmallVector<Operation *> absorbedConsumers;
   unsigned absorbedConsumerCount = 0;
   for (Operation *consumer : getConsumers(deps.index, seed)) {
     if (!isVectorInjective(getRoles(roleMap, consumer)) ||
         !hasAnalyzedProducerCount(deps.index, consumer, 1))
       continue;
     candidate.internalOps.push_back(consumer);
+    absorbedConsumers.push_back(consumer);
     ++absorbedConsumerCount;
   }
 
+  if (reductionSeed && !absorbedConsumers.empty())
+    candidate.primaryOps.append(absorbedConsumers.begin(),
+                                absorbedConsumers.end());
+  else
+    candidate.primaryOps.push_back(seed);
+
   sortByOpId(candidate.internalOps, deps.index);
+  sortByOpId(candidate.primaryOps, deps.index);
   candidate.benefitScore = 20 + 5 * static_cast<int64_t>(absorbedConsumerCount);
   return candidate;
 }
