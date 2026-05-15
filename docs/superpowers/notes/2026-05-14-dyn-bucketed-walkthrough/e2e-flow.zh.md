@@ -39,16 +39,16 @@ PASS / max_diff                                                ← Phase 5
 canonicalize/cse 之类的 no-op 或微调。Phase 2 默认链接到 `kernel_group0` 的
 dump 树，`kernel_group1` 是镜像结构。
 
-| # | 阶段                              | 关键 dump（点击查看）                                                                                                                                                    | 这一份相对上一份的新变化                                                                                                     |
-|---|---------------------------------|------------------------------------------------------------------------------------------------------------------------------------------------------------------|------------------------------------------------------------------------------------------------------------------|
-| 1 | **Phase 0 源**                   | [model.mlir](model.mlir)                                                                                                                                         | 起点：2 个 `linalg.generic`，全维 `?`（[上游原件](../../../../examples/dyn-bucketed-e2e/model.mlir)）                         |
-| 2 | **Phase 1b outline**            | [1_vector-plan-group-outline.mlir](pass_dumps_phase1b/builtin_module_no-symbol-name/1_vector-plan-group-outline.mlir)                                            | module 拆成 `@kernel_groupN` private func + coordinator `func.call`；落盘 `network.json`                              |
-| 3 | **Phase 2-A symbolize-shapes**  | [0_3_afir-symbolize-shapes.mlir](pass_dumps_phase2_kernel_group0/builtin_module_no-symbol-name/func_func_kernel_group0/0_3_afir-symbolize-shapes.mlir)           | func 头挂 `afir.dim_symbols`，op 挂 `afir.iter_extents` / `afir.symbolic_shapes` —— 整条符号 shape 链的起点                  |
-| 4 | **Phase 2-B tile-fuse**         | [1_vector-plan-tile-fuse.mlir](pass_dumps_phase2_kernel_group0/builtin_module_no-symbol-name/1_vector-plan-tile-fuse.mlir)                                       | 每个 feasible TilePlanDraft 复制出一个 `…__v<i>`；挂 `vector_plan.tiling_infos`（module 级）和 `afir.axis_extent_expr`                    |
-| 5 | **Phase 2-B bufferize**         | [3_one-shot-bufferize.mlir](pass_dumps_phase2_kernel_group0/builtin_module_no-symbol-name/3_one-shot-bufferize.mlir)                                             | **tensor → memref**：参数变 `memref<?x?x?xf32>`，整个 IR 切到 buffer 语义                                                   |
-| 6 | **Phase 2-C linalg-to-ascendc** | [4_8_linalg-to-ascendc.mlir](pass_dumps_phase2_kernel_group0/builtin_module_no-symbol-name/func_func_kernel_group0__v0/4_8_linalg-to-ascendc.mlir)               | `linalg.generic` body → `ascendc.add_l2 / mul_l2 / reduce_sum_2d_l2 / data_copy_l2 / duplicate_l2`；queue+pipe 物化 |
+| # | 阶段                              | 关键 dump（点击查看）                                                                                                                                                      | 这一份相对上一份的新变化                                                                                                     |
+|---|---------------------------------|--------------------------------------------------------------------------------------------------------------------------------------------------------------------|------------------------------------------------------------------------------------------------------------------|
+| 1 | **Phase 0 源**                   | [model.mlir](model.mlir)                                                                                                                                           | 起点：2 个 `linalg.generic`，全维 `?`（[上游原件](../../../../examples/dyn-bucketed-e2e/model.mlir)）                         |
+| 2 | **Phase 1b outline**            | [1_vector-plan-group-outline.mlir](pass_dumps_phase1b/builtin_module_no-symbol-name/1_vector-plan-group-outline.mlir)                                              | module 拆成 `@kernel_groupN` private func + coordinator `func.call`；落盘 `network.json`                              |
+| 3 | **Phase 2-A symbolize-shapes**  | [0_3_afir-symbolize-shapes.mlir](pass_dumps_phase2_kernel_group0/builtin_module_no-symbol-name/func_func_kernel_group0/0_3_afir-symbolize-shapes.mlir)             | func 头挂 `afir.dim_symbols`，op 挂 `afir.iter_extents` / `afir.symbolic_shapes` —— 整条符号 shape 链的起点                  |
+| 4 | **Phase 2-B tile-fuse**         | [1_vector-plan-tile-fuse.mlir](pass_dumps_phase2_kernel_group0/builtin_module_no-symbol-name/1_vector-plan-tile-fuse.mlir)                                         | 每个 feasible TilePlanDraft 复制出一个 `…__v<i>`；挂 `vector_plan.tiling_infos`                               |
+| 5 | **Phase 2-B bufferize**         | [3_one-shot-bufferize.mlir](pass_dumps_phase2_kernel_group0/builtin_module_no-symbol-name/3_one-shot-bufferize.mlir)                                               | **tensor → memref**：参数变 `memref<?x?x?xf32>`，整个 IR 切到 buffer 语义                                                   |
+| 6 | **Phase 2-C linalg-to-ascendc** | [4_8_linalg-to-ascendc.mlir](pass_dumps_phase2_kernel_group0/builtin_module_no-symbol-name/func_func_kernel_group0__v0/4_8_linalg-to-ascendc.mlir)                 | `linalg.generic` body → `ascendc.add_l2 / mul_l2 / reduce_sum_2d_l2 / data_copy_l2 / duplicate_l2`；queue+pipe 物化 |
 | 7 | **Phase 2-D pack-tiling-data**  | [6_12_ascendc-pack-tiling-data.mlir](pass_dumps_phase2_kernel_group0/builtin_module_no-symbol-name/func_func_kernel_group0__v0/6_12_ascendc-pack-tiling-data.mlir) | 所有 tunable + 动态维打包成 `TilingData` struct，作为新 func arg                                                             |
-| 8 | **Phase 2-D finalize-kernel**   | [6_13_ascendc-finalize-kernel.mlir](pass_dumps_phase2_kernel_group0/builtin_module_no-symbol-name/func_func_kernel_group0__v0/6_13_ascendc-finalize-kernel.mlir) | 改名到 `@kernel_group0__v0`，加 CANN ABI 属性（`ascendc.aicore` / `cann.num_inputs`），去 `func.return`，CANN ABI 最终态        |
+| 8 | **Phase 2-D finalize-kernel**   | [6_13_ascendc-finalize-kernel.mlir](pass_dumps_phase2_kernel_group0/builtin_module_no-symbol-name/func_func_kernel_group0__v0/6_13_ascendc-finalize-kernel.mlir)   | 改名到 `@kernel_group0__v0`，加 CANN ABI 属性（`ascendc.aicore` / `cann.num_inputs`），去 `func.return`，CANN ABI 最终态        |
 
 
 ---
@@ -248,8 +248,7 @@ aclnn kernel 不进 autotune。
 
 `phase5_final_run_verify`：
 
-1. 用 `tilings_best.json` 重新生成 `network_host.cpp`（aclnn + ascendc 混排
-   调度）。
+1. 用 `tilings_best.json` 重新生成 [network_host.cpp](network_host.cpp)（aclnn-backend 产物：把 `network.json` 调用图翻译成对 `hostLaunchAscendCKernel` / aclnn op 的 host 调用序列；TilingData 不在此文件填，launcher 内部读 JSON + input shape 自动组装）。
 2. 链接 phase 2 产出的 `.so`，跑 camodel simulator（`Ascend910B1`）。
 3. 输出 `out0.npy / out1.npy`，与 `expected*.npy` 用 `--atol/--rtol` 比对。
 
@@ -258,10 +257,12 @@ aclnn kernel 不进 autotune。
 ---
 
 
-子树速览：[`pass_dumps_phase1a/`](pass_dumps_phase1a/) ·
-[`pass_dumps_phase1b/`](pass_dumps_phase1b/) ·
-[`pass_dumps_phase2_kernel_group0/`](pass_dumps_phase2_kernel_group0/) ·
-[`pass_dumps_phase2_kernel_group1/`](pass_dumps_phase2_kernel_group1/)
+本目录其它产物：[model.mlir](model.mlir) · [network_host.cpp](network_host.cpp)
+
+dump 子树速览：[pass_dumps_phase1a/](pass_dumps_phase1a/) ·
+[pass_dumps_phase1b/](pass_dumps_phase1b/) ·
+[pass_dumps_phase2_kernel_group0/](pass_dumps_phase2_kernel_group0/) ·
+[pass_dumps_phase2_kernel_group1/](pass_dumps_phase2_kernel_group1/)
 
 ---
 
