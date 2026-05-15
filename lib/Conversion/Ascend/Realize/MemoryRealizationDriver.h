@@ -39,7 +39,7 @@ public:
   annotateMemorySpaces(ModuleOp module) const;
   FailureOr<llvm::StringMap<Phase5BridgeMaterializationCounts>>
   materializeMovementSteps(ModuleOp module,
-                           llvm::ArrayRef<RealizePlanBundle> bundles) const;
+                           MutableArrayRef<RealizePlanBundle> bundles) const;
   FailureOr<llvm::StringMap<Phase5BridgeMaterializationCounts>>
   materializePhase5Bridge(ModuleOp module) const;
   void markMemorySpaceMaterialized(
