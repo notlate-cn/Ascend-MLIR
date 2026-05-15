@@ -19,13 +19,13 @@ KernelizeOpModelRegistry::resolve(Operation *op) const {
       continue;
 
     KernelizeOpSemanticInfo info;
-    info.modelName = model.name.str();
+    info.modelName = model.name;
     if (!model.populate)
       return info;
     if (failed(model.populate(op, info)))
       return failure();
     if (info.modelName == "unknown")
-      info.modelName = model.name.str();
+      info.modelName = model.name;
     return info;
   }
 
