@@ -193,6 +193,84 @@ struct Phase5CubeBridge {
   std::string kernelId;
 };
 
+static void addMaterializationCounts(Phase5BridgeMaterializationCounts &lhs,
+                                     const Phase5BridgeMaterializationCounts
+                                         &rhs) {
+  lhs.materializedAllocCount += rhs.materializedAllocCount;
+  lhs.materializedCopyCount += rhs.materializedCopyCount;
+}
+
+static std::optional<int64_t> getMemorySpaceValue(MemRefType type) {
+  Attribute memorySpace = type.getMemorySpace();
+  if (!memorySpace)
+    return std::nullopt;
+  if (auto intAttr = dyn_cast<IntegerAttr>(memorySpace))
+    return intAttr.getInt();
+  return std::nullopt;
+}
+
+static bool hasMemorySpace(MemRefType type, MemoryPlace place) {
+  std::optional<int64_t> memorySpace = getMemorySpaceValue(type);
+  return memorySpace && *memorySpace == static_cast<int64_t>(place);
+}
+
+static bool isGmMemref(Value value) {
+  auto type = dyn_cast<MemRefType>(value.getType());
+  return type && !type.getMemorySpace();
+}
+
+static SmallVector<Value, 4> collectGmMovementSources(ModuleOp module,
+                                                      StringRef kernelId) {
+  SmallVector<Value, 4> sources;
+  llvm::DenseSet<Value> seen;
+  module.walk([&](linalg::LinalgOp linalgOp) {
+    if (getKernelId(linalgOp.getOperation()) != kernelId)
+      return;
+    for (OpOperand *input : linalgOp.getDpsInputOperands()) {
+      Value value = input->get();
+      if (!isGmMemref(value) || !seen.insert(value).second)
+        continue;
+      sources.push_back(value);
+    }
+  });
+  return sources;
+}
+
+static LogicalResult collectMovementSourceUses(
+    ModuleOp module, StringRef kernelId, Value source,
+    SmallVectorImpl<OpOperand *> &uses, Operation *&firstUser) {
+  Block *block = nullptr;
+  bool unsupportedUseBlock = false;
+  module.walk([&](linalg::LinalgOp linalgOp) {
+    if (getKernelId(linalgOp.getOperation()) != kernelId)
+      return;
+
+    for (OpOperand *input : linalgOp.getDpsInputOperands()) {
+      if (input->get() != source)
+        continue;
+
+      Operation *user = linalgOp.getOperation();
+      if (!block)
+        block = user->getBlock();
+      if (block != user->getBlock()) {
+        unsupportedUseBlock = true;
+        return;
+      }
+
+      uses.push_back(input);
+      if (!firstUser || user->isBeforeInBlock(firstUser))
+        firstUser = user;
+    }
+  });
+
+  if (unsupportedUseBlock || uses.empty() || !firstUser)
+    return failure();
+  for (OpOperand *use : uses)
+    if (use->getOwner()->getBlock() != firstUser->getBlock())
+      return failure();
+  return success();
+}
+
 static bool isConstantOpFoldResult(OpFoldResult ofr, int64_t expected) {
   std::optional<int64_t> value = getConstantIntValue(ofr);
   return value && *value == expected;
@@ -469,6 +547,11 @@ MemoryRealizationDriver::materialize(ModuleOp module,
     return failure();
 
   FailureOr<llvm::StringMap<Phase5BridgeMaterializationCounts>>
+      movementCounts = materializeMovementSteps(module, bundles);
+  if (failed(movementCounts))
+    return failure();
+
+  FailureOr<llvm::StringMap<Phase5BridgeMaterializationCounts>>
       phase5BridgeCounts = materializePhase5Bridge(module);
   if (failed(phase5BridgeCounts))
     return failure();
@@ -482,6 +565,9 @@ MemoryRealizationDriver::materialize(ModuleOp module,
     auto bridgeIt = phase5BridgeCounts->find(bundle.kernel.kernelId);
     if (bridgeIt != phase5BridgeCounts->end())
       materializationCount = bridgeIt->second;
+    auto movementIt = movementCounts->find(bundle.kernel.kernelId);
+    if (movementIt != movementCounts->end())
+      addMaterializationCounts(materializationCount, movementIt->second);
     markMemorySpaceMaterialized(bundle.realization, annotationCount,
                                 materializationCount);
   }
@@ -543,6 +629,56 @@ MemoryRealizationDriver::annotateMemorySpaces(ModuleOp module) const {
   }
 
   return annotationCounts;
+}
+
+FailureOr<llvm::StringMap<Phase5BridgeMaterializationCounts>>
+MemoryRealizationDriver::materializeMovementSteps(
+    ModuleOp module, llvm::ArrayRef<RealizePlanBundle> bundles) const {
+  MLIRContext *context = module.getContext();
+  IRRewriter rewriter(context);
+  llvm::StringMap<Phase5BridgeMaterializationCounts> counts;
+
+  for (const RealizePlanBundle &bundle : bundles) {
+    StringRef kernelId = bundle.kernel.kernelId;
+    if (kernelId.empty())
+      continue;
+
+    SmallVector<Value, 4> sources =
+        collectGmMovementSources(module, kernelId);
+    for (const MovementStep &step : bundle.movement.movementSteps) {
+      if (!step.pathSelected || step.pathSelectionDeferred ||
+          step.srcPlace != MemoryPlace::GM)
+        continue;
+      if (step.valueId >= sources.size())
+        return failure();
+
+      Value source = sources[step.valueId];
+      SmallVector<OpOperand *, 4> uses;
+      Operation *firstUser = nullptr;
+      if (failed(collectMovementSourceUses(module, kernelId, source, uses,
+                                           firstUser)))
+        return failure();
+
+      Attribute targetSpace =
+          getMemorySpaceAttr(context, static_cast<int64_t>(step.dstPlace));
+      rewriter.setInsertionPoint(firstUser);
+      memref::AllocOp localAlloc = createMemorySpaceAllocLike(
+          rewriter, firstUser->getLoc(), source, targetSpace);
+      rewriter.create<memref::CopyOp>(firstUser->getLoc(), source,
+                                      localAlloc.getResult());
+      for (OpOperand *use : uses)
+        use->set(localAlloc.getResult());
+
+      auto localType = cast<MemRefType>(localAlloc.getType());
+      if (!hasMemorySpace(localType, step.dstPlace))
+        return failure();
+
+      ++counts[kernelId].materializedAllocCount;
+      ++counts[kernelId].materializedCopyCount;
+    }
+  }
+
+  return counts;
 }
 
 FailureOr<llvm::StringMap<Phase5BridgeMaterializationCounts>>
