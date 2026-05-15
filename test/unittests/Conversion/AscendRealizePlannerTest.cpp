@@ -4,6 +4,7 @@
 //
 //===----------------------------------------------------------------------===//
 
+#include "Conversion/Ascend/Realize/BufferizationDriver.h"
 #include "Conversion/Ascend/Realize/MemoryRealizationDriver.h"
 #include "Conversion/Ascend/Realize/MovementPlanner.h"
 #include "Conversion/Ascend/Realize/PlacementPlanner.h"
@@ -205,6 +206,91 @@ TEST(AscendRealizePlannerTest,
   EXPECT_TRUE(plan->peakUsageKnown);
   EXPECT_EQ(plan->peakUsageUnitCount, 1u);
   EXPECT_TRUE(plan->capacityCheckDeferred);
+}
+
+TEST(AscendRealizePlannerTest,
+     StaticMemoryPlannerComputesStaticBytePeakForVectorTemporary) {
+  BufferizedKernelIR ir = makeBufferizedKernelIR();
+  ir.staticByteSizeKnown = true;
+  ir.vectorTemporaryByteCount = 128;
+
+  PlacementPlan placement = makePlacementPlan();
+  placement.mode = "target_aware";
+  placement.gmPlaceCount = 3;
+  placement.onChipPlaceCount = 1;
+  placement.deferredLocalPlaceCount = 0;
+
+  StaticMemoryPlanner planner;
+  auto plan = planner.build(placement, ir);
+
+  ASSERT_TRUE(llvm::succeeded(plan));
+  EXPECT_EQ(plan->mode, "workspace_layout");
+  EXPECT_TRUE(plan->peakUsageKnown);
+  EXPECT_TRUE(plan->peakUsageBytesKnown);
+  EXPECT_EQ(plan->localBufferByteCount, 128u);
+  EXPECT_EQ(plan->workspaceByteCount, 128u);
+  EXPECT_EQ(plan->peakUsageByteCount, 128u);
+}
+
+TEST(AscendRealizePlannerTest,
+     BufferizationDriverCollectsStaticByteFacts) {
+  MLIRContext context;
+  OwningOpRef<ModuleOp> module = parseRealizeModule(
+      context, R"mlir(
+module {
+  func.func @f(%arg0: tensor<64xf16>, %arg1: tensor<64xf16>) -> tensor<64xf16>
+      attributes {ascend.normalized = true} {
+    %empty0 = tensor.empty() : tensor<64xf16>
+    %mid = linalg.generic {
+      indexing_maps = [
+        affine_map<(d0) -> (d0)>,
+        affine_map<(d0) -> (d0)>,
+        affine_map<(d0) -> (d0)>],
+      iterator_types = ["parallel"]}
+      ins(%arg0, %arg1 : tensor<64xf16>, tensor<64xf16>)
+      outs(%empty0 : tensor<64xf16>)
+      attrs = {ascend.kernel = "kernel_0",
+               ascend.op_role = "vector",
+               ascend.schedule.decision_id = "kernel_0.decision.0",
+               ascend.schedule.structured_lowering = "loop_skeleton_v0"} {
+    ^bb0(%lhs: f16, %rhs: f16, %old: f16):
+      %sum = arith.addf %lhs, %rhs : f16
+      linalg.yield %sum : f16
+    } -> tensor<64xf16>
+    %empty1 = tensor.empty() : tensor<64xf16>
+    %out = linalg.generic {
+      indexing_maps = [
+        affine_map<(d0) -> (d0)>,
+        affine_map<(d0) -> (d0)>],
+      iterator_types = ["parallel"]}
+      ins(%mid : tensor<64xf16>)
+      outs(%empty1 : tensor<64xf16>)
+      attrs = {ascend.kernel = "kernel_0",
+               ascend.op_role = "vector",
+               ascend.schedule.decision_id = "kernel_0.decision.0",
+               ascend.schedule.structured_lowering = "loop_skeleton_v0"} {
+    ^bb0(%x: f16, %old: f16):
+      %neg = arith.negf %x : f16
+      linalg.yield %neg : f16
+    } -> tensor<64xf16>
+    return %out : tensor<64xf16>
+  }
+}
+)mlir");
+  ASSERT_TRUE(module);
+
+  BufferizationDriver driver;
+  FailureOr<SmallVector<BufferizedKernelIR, 4>> facts =
+      driver.collectTensorFacts(*module);
+  ASSERT_TRUE(succeeded(facts));
+  ASSERT_EQ(facts->size(), 1u);
+  const BufferizedKernelIR &ir = facts->front();
+  EXPECT_EQ(ir.kernelId, "kernel_0");
+  EXPECT_TRUE(ir.staticByteSizeKnown);
+  EXPECT_EQ(ir.inputByteCount, 256u);
+  EXPECT_EQ(ir.outputByteCount, 128u);
+  EXPECT_EQ(ir.temporaryByteCount, 128u);
+  EXPECT_EQ(ir.vectorTemporaryByteCount, 128u);
 }
 
 TEST(AscendRealizePlannerTest, MovementPlannerBuildsPlanningForOnChipWorkspace) {

@@ -15,6 +15,8 @@ namespace mlir::afir::ascend::realize {
 class StaticMemoryPlanner {
 public:
   FailureOr<StaticMemoryPlan> build(const PlacementPlan &placement) const;
+  FailureOr<StaticMemoryPlan> build(const PlacementPlan &placement,
+                                    const BufferizedKernelIR &bufferizedIR) const;
 };
 
 } // namespace mlir::afir::ascend::realize

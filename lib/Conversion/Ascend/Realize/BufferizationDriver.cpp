@@ -34,6 +34,20 @@ static bool isTensorValue(Value value) {
   return llvm::isa<TensorType>(value.getType());
 }
 
+static FailureOr<uint64_t> getStaticTensorByteSize(Value value) {
+  auto tensorType = dyn_cast<RankedTensorType>(value.getType());
+  if (!tensorType || !tensorType.hasStaticShape())
+    return failure();
+
+  unsigned elementBits = tensorType.getElementTypeBitWidth();
+  if (elementBits == 0)
+    return failure();
+
+  uint64_t elementCount = static_cast<uint64_t>(tensorType.getNumElements());
+  uint64_t totalBits = elementCount * static_cast<uint64_t>(elementBits);
+  return (totalBits + 7) / 8;
+}
+
 static StringRef getKernelId(Operation *op) {
   auto kernelAttr = op->getAttrOfType<StringAttr>(kKernelAttr);
   return kernelAttr ? kernelAttr.getValue() : StringRef();
@@ -104,25 +118,41 @@ static BufferizedKernelIR buildIR(StringRef kernelId,
   BufferizedKernelIR ir;
   ir.kernelId = kernelId.str();
   ir.mode = "tensor_facts";
+  bool allStaticByteSizesKnown = true;
   for (const auto &entry : facts.roles) {
+    FailureOr<uint64_t> byteSize = getStaticTensorByteSize(entry.first);
+    if (failed(byteSize))
+      allStaticByteSizesKnown = false;
+
     switch (entry.second) {
     case TensorValueRole::Input:
       ++ir.inputValueCount;
+      if (succeeded(byteSize))
+        ir.inputByteCount += *byteSize;
       break;
     case TensorValueRole::Temporary:
       ++ir.temporaryValueCount;
+      if (succeeded(byteSize))
+        ir.temporaryByteCount += *byteSize;
       break;
     case TensorValueRole::Output:
       ++ir.outputValueCount;
+      if (succeeded(byteSize))
+        ir.outputByteCount += *byteSize;
       break;
     }
 
     if (entry.second == TensorValueRole::Temporary &&
-        isVectorTemporary(entry.first, kernelId))
+        isVectorTemporary(entry.first, kernelId)) {
       ++ir.vectorTemporaryValueCount;
+      if (succeeded(byteSize))
+        ir.vectorTemporaryByteCount += *byteSize;
+    }
   }
   ir.bufferValueCount =
       ir.inputValueCount + ir.outputValueCount + ir.temporaryValueCount;
+  ir.staticByteSizeKnown =
+      !facts.roles.empty() && allStaticByteSizesKnown;
   return ir;
 }
 

@@ -70,6 +70,10 @@ func.func @two_op_kernel(%arg0: tensor<64xf16>, %arg1: tensor<64xf16>) -> tensor
 // CHECK-NEXT:   workspace_slots = 0
 // CHECK-NEXT:   peak_usage_known = false
 // CHECK-NEXT:   peak_usage_units = 0
+// CHECK-NEXT:   peak_usage_bytes_known = false
+// CHECK-NEXT:   local_buffer_bytes = 0
+// CHECK-NEXT:   workspace_bytes = 0
+// CHECK-NEXT:   peak_usage_bytes = 0
 // CHECK-NEXT:   capacity_check_deferred = false
 // CHECK: MovementPlan:
 // CHECK-NEXT:   kernel = kernel_0
