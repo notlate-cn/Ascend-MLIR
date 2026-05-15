@@ -6,6 +6,8 @@
 
 #include "StaticMemoryPlanner.h"
 
+#include "Target/Ascend/TargetMemoryModel.h"
+
 namespace mlir::afir::ascend::realize {
 
 FailureOr<StaticMemoryPlan>
@@ -43,6 +45,29 @@ StaticMemoryPlanner::build(const PlacementPlan &placement,
     plan.peakUsageByteCount = bufferizedIR.vectorTemporaryByteCount;
   }
   plan.capacityCheckDeferred = true;
+  return plan;
+}
+
+FailureOr<StaticMemoryPlan> StaticMemoryPlanner::build(
+    const PlacementPlan &placement, const BufferizedKernelIR &bufferizedIR,
+    const ::mlir::ascend::TargetMemoryModel &memoryModel) const {
+  FailureOr<StaticMemoryPlan> plan = build(placement, bufferizedIR);
+  if (failed(plan))
+    return failure();
+
+  if (plan->mode != "workspace_layout" || !plan->peakUsageBytesKnown)
+    return plan;
+
+  FailureOr<::mlir::ascend::CapacityRule> capacity =
+      memoryModel.getCapacity(::mlir::ascend::MemoryPlace::VECCALC);
+  if (failed(capacity) || capacity->availableCapacityBytes < 0)
+    return failure();
+
+  if (plan->peakUsageByteCount >
+      static_cast<uint64_t>(capacity->availableCapacityBytes))
+    return failure();
+
+  plan->capacityCheckDeferred = false;
   return plan;
 }
 

@@ -233,6 +233,29 @@ TEST(AscendRealizePlannerTest,
 }
 
 TEST(AscendRealizePlannerTest,
+     StaticMemoryPlannerRejectsPeakUsageOverTargetCapacity) {
+  mlir::ascend::TargetProfile profile = makeCompleteTargetProfile();
+  profile.capacityBytes[mlir::ascend::MemoryPlace::VECCALC] = 64;
+  llvm::raw_null_ostream os;
+  auto memoryModel =
+      mlir::ascend::TargetMemoryModelBuilder().build(profile, os);
+  ASSERT_TRUE(llvm::succeeded(memoryModel));
+
+  BufferizedKernelIR ir = makeBufferizedKernelIR();
+  ir.staticByteSizeKnown = true;
+  ir.vectorTemporaryByteCount = 128;
+
+  PlacementPlan placement = makePlacementPlan();
+  placement.mode = "target_aware";
+  placement.gmPlaceCount = 3;
+  placement.onChipPlaceCount = 1;
+  placement.deferredLocalPlaceCount = 0;
+
+  StaticMemoryPlanner planner;
+  EXPECT_TRUE(failed(planner.build(placement, ir, *memoryModel)));
+}
+
+TEST(AscendRealizePlannerTest,
      BufferizationDriverCollectsStaticByteFacts) {
   MLIRContext context;
   OwningOpRef<ModuleOp> module = parseRealizeModule(

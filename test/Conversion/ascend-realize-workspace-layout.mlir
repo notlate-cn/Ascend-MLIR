@@ -66,7 +66,7 @@ func.func @workspace_layout_vector_temporary(%arg0: tensor<64xf16>, %arg1: tenso
 // CHECK-NEXT:   local_buffer_bytes = 128
 // CHECK-NEXT:   workspace_bytes = 128
 // CHECK-NEXT:   peak_usage_bytes = 128
-// CHECK-NEXT:   capacity_check_deferred = true
+// CHECK-NEXT:   capacity_check_deferred = false
 // CHECK: MovementPlan:
 // CHECK-NEXT:   kernel = kernel_0
 // CHECK-NEXT:   mode = "movement_planning"
