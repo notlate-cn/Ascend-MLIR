@@ -193,11 +193,16 @@ struct Phase5CubeBridge {
   std::string kernelId;
 };
 
+struct MovementUseRewrite {
+  OpOperand *use = nullptr;
+  SmallVector<Operation *, 2> viewChain;
+};
+
 struct MovementMaterializationItem {
   const MovementStep *step = nullptr;
   const StaticMemoryWorkspaceSlot *slot = nullptr;
   Value source;
-  SmallVector<OpOperand *, 4> uses;
+  SmallVector<MovementUseRewrite, 4> uses;
   Operation *firstUser = nullptr;
 };
 
@@ -250,9 +255,49 @@ static SmallVector<Value, 8> collectGmMovementSourcesByValueId(
   return sources;
 }
 
+static bool collectViewChainToSource(
+    Value value, Value source, SmallVectorImpl<Operation *> &viewChain) {
+  if (value == source)
+    return true;
+
+  Operation *def = value.getDefiningOp();
+  if (!def || def->getNumResults() != 1)
+    return false;
+
+  if (auto subview = dyn_cast<memref::SubViewOp>(def)) {
+    if (!collectViewChainToSource(subview.getSource(), source, viewChain))
+      return false;
+    viewChain.push_back(def);
+    return true;
+  }
+
+  if (auto castOp = dyn_cast<memref::CastOp>(def)) {
+    if (!collectViewChainToSource(castOp.getSource(), source, viewChain))
+      return false;
+    viewChain.push_back(def);
+    return true;
+  }
+
+  if (auto expandOp = dyn_cast<memref::ExpandShapeOp>(def)) {
+    if (!collectViewChainToSource(expandOp.getSrc(), source, viewChain))
+      return false;
+    viewChain.push_back(def);
+    return true;
+  }
+
+  if (auto collapseOp = dyn_cast<memref::CollapseShapeOp>(def)) {
+    if (!collectViewChainToSource(collapseOp.getSrc(), source, viewChain))
+      return false;
+    viewChain.push_back(def);
+    return true;
+  }
+
+  return false;
+}
+
 static LogicalResult collectMovementSourceUses(
     ModuleOp module, StringRef kernelId, Value source,
-    SmallVectorImpl<OpOperand *> &uses, Operation *&firstUser) {
+    SmallVectorImpl<MovementUseRewrite> &uses, Operation *&firstUser) {
   Block *block = nullptr;
   bool unsupportedUseBlock = false;
   module.walk([&](linalg::LinalgOp linalgOp) {
@@ -260,7 +305,8 @@ static LogicalResult collectMovementSourceUses(
       return;
 
     for (OpOperand *input : linalgOp.getDpsInputOperands()) {
-      if (input->get() != source)
+      SmallVector<Operation *, 2> viewChain;
+      if (!collectViewChainToSource(input->get(), source, viewChain))
         continue;
 
       Operation *user = linalgOp.getOperation();
@@ -271,7 +317,7 @@ static LogicalResult collectMovementSourceUses(
         return;
       }
 
-      uses.push_back(input);
+      uses.push_back({input, std::move(viewChain)});
       if (!firstUser || user->isBeforeInBlock(firstUser))
         firstUser = user;
     }
@@ -279,8 +325,8 @@ static LogicalResult collectMovementSourceUses(
 
   if (unsupportedUseBlock || uses.empty() || !firstUser)
     return failure();
-  for (OpOperand *use : uses)
-    if (use->getOwner()->getBlock() != firstUser->getBlock())
+  for (const MovementUseRewrite &rewrite : uses)
+    if (rewrite.use->getOwner()->getBlock() != firstUser->getBlock())
       return failure();
   return success();
 }
@@ -595,6 +641,67 @@ static Value createPackedMovementWorkspaceView(
       .getResult();
 }
 
+static FailureOr<Value>
+materializeMovementUseViewChain(IRRewriter &rewriter, Location loc, Value base,
+                                ArrayRef<Operation *> viewChain,
+                                Attribute memorySpace) {
+  Value current = base;
+  for (Operation *viewOp : viewChain) {
+    if (auto subview = dyn_cast<memref::SubViewOp>(viewOp)) {
+      auto oldType = dyn_cast<MemRefType>(subview.getType());
+      if (!oldType)
+        return failure();
+      auto newType = withMemorySpace(oldType, memorySpace);
+      current = rewriter
+                    .create<memref::SubViewOp>(
+                        loc, newType, current, subview.getMixedOffsets(),
+                        subview.getMixedSizes(), subview.getMixedStrides())
+                    .getResult();
+      continue;
+    }
+
+    if (auto castOp = dyn_cast<memref::CastOp>(viewOp)) {
+      auto oldType = dyn_cast<MemRefType>(castOp.getType());
+      if (!oldType)
+        return failure();
+      auto newType = withMemorySpace(oldType, memorySpace);
+      current =
+          rewriter.create<memref::CastOp>(loc, newType, current).getResult();
+      continue;
+    }
+
+    if (auto expandOp = dyn_cast<memref::ExpandShapeOp>(viewOp)) {
+      auto oldType = dyn_cast<MemRefType>(expandOp.getType());
+      if (!oldType)
+        return failure();
+      auto newType = withMemorySpace(oldType, memorySpace);
+      current =
+          rewriter
+              .create<memref::ExpandShapeOp>(
+                  loc, newType, current, expandOp.getReassociationIndices(),
+                  expandOp.getMixedOutputShape())
+              .getResult();
+      continue;
+    }
+
+    if (auto collapseOp = dyn_cast<memref::CollapseShapeOp>(viewOp)) {
+      auto oldType = dyn_cast<MemRefType>(collapseOp.getType());
+      if (!oldType)
+        return failure();
+      auto newType = withMemorySpace(oldType, memorySpace);
+      current =
+          rewriter
+              .create<memref::CollapseShapeOp>(
+                  loc, newType, current, collapseOp.getReassociationIndices())
+              .getResult();
+      continue;
+    }
+
+    return failure();
+  }
+  return current;
+}
+
 static LogicalResult materializeSingleMovementItem(
     IRRewriter &rewriter, const MovementMaterializationItem &item,
     Attribute targetSpace, Phase5BridgeMaterializationCounts &counts) {
@@ -603,8 +710,14 @@ static LogicalResult materializeSingleMovementItem(
       rewriter, item.firstUser->getLoc(), item.source, targetSpace);
   rewriter.create<memref::CopyOp>(item.firstUser->getLoc(), item.source,
                                   localAlloc.getResult());
-  for (OpOperand *use : item.uses)
-    use->set(localAlloc.getResult());
+  for (const MovementUseRewrite &rewrite : item.uses) {
+    FailureOr<Value> replacement = materializeMovementUseViewChain(
+        rewriter, item.firstUser->getLoc(), localAlloc.getResult(),
+        rewrite.viewChain, targetSpace);
+    if (failed(replacement))
+      return failure();
+    rewrite.use->set(*replacement);
+  }
 
   auto localType = cast<MemRefType>(localAlloc.getType());
   if (!hasMemorySpace(localType, item.step->dstPlace))
@@ -638,8 +751,14 @@ static LogicalResult materializeMovementWorkspaceGroup(
       return failure();
     rewriter.create<memref::CopyOp>(item.firstUser->getLoc(), item.source,
                                     localView);
-    for (OpOperand *use : item.uses)
-      use->set(localView);
+    for (const MovementUseRewrite &rewrite : item.uses) {
+      FailureOr<Value> replacement = materializeMovementUseViewChain(
+          rewriter, item.firstUser->getLoc(), localView, rewrite.viewChain,
+          targetSpace);
+      if (failed(replacement))
+        return failure();
+      rewrite.use->set(*replacement);
+    }
     ++counts.materializedCopyCount;
   }
 
@@ -892,7 +1011,7 @@ MemoryRealizationDriver::materializeMovementSteps(
         return failure();
 
       Value source = sources[step.valueId];
-      SmallVector<OpOperand *, 4> uses;
+      SmallVector<MovementUseRewrite, 4> uses;
       Operation *firstUser = nullptr;
       if (failed(collectMovementSourceUses(module, kernelId, source, uses,
                                            firstUser)))
