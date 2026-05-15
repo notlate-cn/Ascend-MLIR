@@ -42,6 +42,7 @@ check_phase_headers() {
 }
 
 check_phase_headers Kernelize \
+  "include/Conversion/Ascend/Kernelize/KernelizeExternalModels.h" \
   "include/Conversion/Ascend/Kernelize/KernelizePass.h" \
   "include/Conversion/Ascend/Kernelize/KernelizeOpInterface.h"
 check_phase_headers Schedule "include/Conversion/Ascend/Schedule/SchedulePass.h"

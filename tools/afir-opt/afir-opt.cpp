@@ -33,6 +33,7 @@ int main(int argc, char **argv) {
   registry.insert<afir::AFIRDialect>();
   registry.insert<ascendc::AscendCDialect>();
   registry.insert<emitasc::EmitAscDialect>();
+  afir::ascend::kernelize::registerKernelizeExternalModels(registry);
 
   // Register AFIR transform dialect extension
   afir::registerTransformDialectExtension(registry);
