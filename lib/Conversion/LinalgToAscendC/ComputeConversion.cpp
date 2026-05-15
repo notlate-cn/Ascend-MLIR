@@ -1262,6 +1262,13 @@ LogicalResult convertCompute(func::FuncOp funcOp, AscendCBufferContext &ctx) {
         if (auto f = dyn_cast<scf::ForOp>(p))
           enclosingIVs.push_back(f.getInductionVar());
 
+      // Set by the gather-body dispatch loops below when an op is encountered
+      // that isn't in their supported set; checked after the scf.for build to
+      // fail loudly (mirrors the elementwise loops at lines ~830, ~1808).
+      // Without this, an unhandled op (e.g. select+cmpf before 998edb7) is
+      // silently dropped and the kernel computes the wrong thing.
+      Operation *gatherUnsupportedOp = nullptr;
+
       // Data is in GM: set up a GlobalTensor for row-by-row copy.
       Value dataGt = builder.create<GlobalTensorOp>(
           loc, GlobalTensorType::get(elemType));
@@ -1362,6 +1369,8 @@ LogicalResult convertCompute(func::FuncOp funcOp, AscendCBufferContext &ctx) {
                     copyAscendCUnitAttr(preOp.getOperation(), mulOp3.getOperation());
                     preValToLt[mulOp2.getResult()] = procLt;
                   }
+                } else if (!isa<arith::ConstantOp>(bodyOp)) {
+                  if (!gatherUnsupportedOp) gatherUnsupportedOp = &bodyOp;
                 }
               }
               processedRowLt = procLt;
@@ -1433,6 +1442,8 @@ LogicalResult convertCompute(func::FuncOp funcOp, AscendCBufferContext &ctx) {
                     copyAscendCUnitAttr(postOp.getOperation(), maxOp4.getOperation());
                     postValToLt[maxOp3.getResult()] = gatheredRowLt;
                   }
+                } else if (!isa<arith::ConstantOp>(bodyOp)) {
+                  if (!gatherUnsupportedOp) gatherUnsupportedOp = &bodyOp;
                 }
               }
             } else {
@@ -1548,6 +1559,8 @@ LogicalResult convertCompute(func::FuncOp funcOp, AscendCBufferContext &ctx) {
                     copyAscendCUnitAttr(genOp.getOperation(), mulOp5.getOperation());
                     bodyValToLt[mulOp4.getResult()] = gatheredRowLt;
                   }
+                } else if (!isa<arith::ConstantOp, memref::LoadOp>(op)) {
+                  if (!gatherUnsupportedOp) gatherUnsupportedOp = &op;
                 }
               }
               for (auto [queue, tensor] : bodyTempQueueTensors)
@@ -1576,6 +1589,13 @@ LogicalResult convertCompute(func::FuncOp funcOp, AscendCBufferContext &ctx) {
             b.create<TQueBindFreeTensorOp>(forLoc, dataRowQueue, dataRowLt);
             b.create<scf::YieldOp>(forLoc);
           });
+
+      if (gatherUnsupportedOp) {
+        genOp.emitError("LinalgToAscendC: unsupported op in gather pre/post/"
+                        "fused body: ")
+            << gatherUnsupportedOp->getName();
+        return failure();
+      }
 
       if (Value q = ctx.getQueue(outMemref))
         builder.create<TQueBindEnqueTensorOp>(loc, q, dstLt);
