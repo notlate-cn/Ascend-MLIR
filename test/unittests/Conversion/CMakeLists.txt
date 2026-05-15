@@ -107,3 +107,18 @@ add_dependencies(RuntimeUnitTests AscendLinalgBodyClassifierTest)
 add_test(NAME AscendLinalgBodyClassifierTest
   COMMAND $<TARGET_FILE:AscendLinalgBodyClassifierTest>
 )
+
+add_executable(AscendKernelizeOpInterfaceTest
+  AscendKernelizeOpInterfaceTest.cpp
+)
+
+target_link_libraries(AscendKernelizeOpInterfaceTest PRIVATE
+  RuntimeUnitTestSupport
+  AscendConversion
+)
+
+add_dependencies(RuntimeUnitTests AscendKernelizeOpInterfaceTest)
+
+add_test(NAME AscendKernelizeOpInterfaceTest
+  COMMAND $<TARGET_FILE:AscendKernelizeOpInterfaceTest>
+)

@@ -8,6 +8,7 @@
 #define ASCEND_MLIR_CONVERSION_ASCEND_KERNELIZE_KERNELIZETYPES_H
 
 #include "Conversion/Ascend/Common/Attributes.h"
+#include "Conversion/Ascend/Kernelize/KernelizeOpInterface.h"
 
 #include "llvm/ADT/StringRef.h"
 
@@ -26,24 +27,6 @@ inline constexpr llvm::StringLiteral kMergeRootAttr = "ascend.merge_root";
 inline constexpr llvm::StringLiteral kMergeGroupAttr = "ascend.merge_group";
 inline constexpr llvm::StringLiteral kHandwrittenGroupAttr =
     "ascend.kernelize.handwritten_group";
-
-enum class AccessPatternKind {
-  NotApplicable,
-  Elementwise,
-  Broadcast,
-  Reduction,
-  Contraction,
-  Gather,
-  Scatter,
-  LayoutTransform,
-  Unknown
-};
-
-enum class IteratorKind {
-  Parallel,
-  Reduction,
-  Unknown
-};
 
 enum class OpRole {
   Primary,
@@ -93,42 +76,6 @@ struct KernelizeConfig {
   unsigned maxPrimaryRolesPerCandidate = 2;
   unsigned maxHorizontalFusionGroupSize = 8;
 };
-
-inline llvm::StringRef stringifyAccessPattern(AccessPatternKind kind) {
-  switch (kind) {
-  case AccessPatternKind::NotApplicable:
-    return "NotApplicable";
-  case AccessPatternKind::Elementwise:
-    return "Elementwise";
-  case AccessPatternKind::Broadcast:
-    return "Broadcast";
-  case AccessPatternKind::Reduction:
-    return "Reduction";
-  case AccessPatternKind::Contraction:
-    return "Contraction";
-  case AccessPatternKind::Gather:
-    return "Gather";
-  case AccessPatternKind::Scatter:
-    return "Scatter";
-  case AccessPatternKind::LayoutTransform:
-    return "LayoutTransform";
-  case AccessPatternKind::Unknown:
-    return "Unknown";
-  }
-  return "Unknown";
-}
-
-inline llvm::StringRef stringifyIteratorKind(IteratorKind kind) {
-  switch (kind) {
-  case IteratorKind::Parallel:
-    return "parallel";
-  case IteratorKind::Reduction:
-    return "reduction";
-  case IteratorKind::Unknown:
-    return "unknown";
-  }
-  return "unknown";
-}
 
 inline llvm::StringRef stringifyOpRole(OpRole role) {
   switch (role) {
