@@ -159,6 +159,7 @@ DependencyAnalyzer::analyze(ModuleOp module) const {
     result.index.opIds.try_emplace(op, opId);
   });
 
+  DenseMap<Operation *, DenseSet<Operation *>> reportedUnsupportedProducers;
   for (Operation *op : result.index.orderedOps) {
     OperationId opId = result.index.opIds.lookup(op);
     auto resolvedIt = resolved.find(op);
@@ -174,6 +175,13 @@ DependencyAnalyzer::analyze(ModuleOp module) const {
       collectAnalyzedProducers(operand, result.index, resolved,
                                operandProducers, unsupportedProducers,
                                visited);
+      for (Operation *unsupported : unsupportedProducers) {
+        if (!reportedUnsupportedProducers[op].insert(unsupported).second)
+          continue;
+        std::string reason = "no kernelize semantic model for op " +
+                             unsupported->getName().getStringRef().str();
+        result.unsupportedProducers.push_back({unsupported, op, reason});
+      }
       sortAndUniqueByOpId(operandProducers, result.index.opIds);
       for (Operation *producer : operandProducers) {
         result.index.producers[op].push_back(producer);
@@ -185,6 +193,16 @@ DependencyAnalyzer::analyze(ModuleOp module) const {
   for (Operation *op : result.index.orderedOps) {
     sortAndUniqueByOpId(result.index.producers[op], result.index.opIds);
     sortAndUniqueByOpId(result.index.consumers[op], result.index.opIds);
+  }
+
+  if (!result.unsupportedProducers.empty()) {
+    const UnsupportedProducerDiagnostic &diag =
+        result.unsupportedProducers.front();
+    diag.producer->emitError()
+        << "unsupported Kernelize tensor producer \""
+        << diag.producer->getName().getStringRef() << "\" consumed by \""
+        << diag.consumer->getName().getStringRef() << "\"";
+    return failure();
   }
 
   return result;
@@ -231,6 +249,15 @@ void emitDependencyAnalysisReport(raw_ostream &os,
        << (summary.hasReductionIterator ? "true" : "false")
        << " only_parallel = "
        << (summary.hasOnlyParallelIterators ? "true" : "false") << "\n";
+  }
+  if (!result.unsupportedProducers.empty()) {
+    os << "UnsupportedProducers\n";
+    for (const UnsupportedProducerDiagnostic &diag :
+         result.unsupportedProducers) {
+      os << "  producer = \"" << diag.producer->getName().getStringRef()
+         << "\" consumer = \"" << diag.consumer->getName().getStringRef()
+         << "\" unsupported_reason = \"" << diag.reason << "\"\n";
+    }
   }
 }
 
