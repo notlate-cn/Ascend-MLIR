@@ -11,6 +11,7 @@
 #include "mlir/Dialect/Bufferization/Transforms/OneShotAnalysis.h"
 #include "mlir/Dialect/Bufferization/Transforms/OneShotModuleBufferize.h"
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
+#include "mlir/Dialect/Tensor/IR/Tensor.h"
 #include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/Operation.h"
@@ -52,25 +53,78 @@ static StringRef getKernelId(Operation *op) {
   return kernelAttr ? kernelAttr.getValue() : StringRef();
 }
 
-static bool isProducedByKernel(Value value, StringRef kernelId) {
-  Operation *def = value.getDefiningOp();
-  return def && getKernelId(def) == kernelId;
+static bool isSupportedTensorViewOp(Operation *op) {
+  return op->getNumResults() == 1 &&
+         isa<tensor::CastOp, tensor::CollapseShapeOp, tensor::ExpandShapeOp,
+             tensor::ExtractSliceOp>(op);
+}
+
+static std::optional<Value> getTensorViewSource(Operation *op) {
+  if (!isSupportedTensorViewOp(op) || op->getNumOperands() == 0)
+    return std::nullopt;
+  Value source = op->getOperand(0);
+  if (!isTensorValue(source))
+    return std::nullopt;
+  return source;
+}
+
+static std::optional<Value> getKernelProducedTensorRoot(Value value,
+                                                        StringRef kernelId) {
+  llvm::DenseSet<Operation *> visited;
+  Value current = value;
+  while (Operation *def = current.getDefiningOp()) {
+    if (getKernelId(def) == kernelId)
+      return current;
+    if (!visited.insert(def).second)
+      return std::nullopt;
+
+    std::optional<Value> source = getTensorViewSource(def);
+    if (!source)
+      return std::nullopt;
+    current = *source;
+  }
+  return std::nullopt;
+}
+
+static bool hasUseOutsideKernel(Value value, StringRef kernelId,
+                                llvm::DenseSet<Operation *> &visited) {
+  for (Operation *user : value.getUsers()) {
+    if (getKernelId(user) == kernelId)
+      continue;
+    if (!visited.insert(user).second)
+      continue;
+    if (isSupportedTensorViewOp(user)) {
+      if (hasUseOutsideKernel(user->getResult(0), kernelId, visited))
+        return true;
+      continue;
+    }
+    return true;
+  }
+  return false;
 }
 
 static bool hasUseOutsideKernel(Value value, StringRef kernelId) {
+  llvm::DenseSet<Operation *> visited;
+  return hasUseOutsideKernel(value, kernelId, visited);
+}
+
+static bool hasUseInsideKernel(Value value, StringRef kernelId,
+                               llvm::DenseSet<Operation *> &visited) {
   for (Operation *user : value.getUsers()) {
-    if (getKernelId(user) != kernelId)
+    if (getKernelId(user) == kernelId)
+      return true;
+    if (!visited.insert(user).second)
+      continue;
+    if (isSupportedTensorViewOp(user) &&
+        hasUseInsideKernel(user->getResult(0), kernelId, visited))
       return true;
   }
   return false;
 }
 
 static bool hasUseInsideKernel(Value value, StringRef kernelId) {
-  for (Operation *user : value.getUsers()) {
-    if (getKernelId(user) == kernelId)
-      return true;
-  }
-  return false;
+  llvm::DenseSet<Operation *> visited;
+  return hasUseInsideKernel(value, kernelId, visited);
 }
 
 static bool opRolesAttrHasRole(Operation *op, StringRef roleName) {
@@ -121,8 +175,9 @@ static void collectLinalgFacts(linalg::LinalgOp linalgOp, StringRef kernelId,
     Value input = operand->get();
     if (!isTensorValue(input))
       continue;
-    if (isProducedByKernel(input, kernelId))
-      recordRole(facts, input, BufferizedValueRole::Temporary);
+    std::optional<Value> root = getKernelProducedTensorRoot(input, kernelId);
+    if (root)
+      recordRole(facts, *root, BufferizedValueRole::Temporary);
     else
       recordRole(facts, input, BufferizedValueRole::Input);
   }
