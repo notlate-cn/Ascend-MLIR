@@ -84,6 +84,14 @@ bool isElementwiseChainOp(ArrayRef<OpRole> roles) {
          !hasRole(roles, OpRole::Reduction) && !hasRole(roles, OpRole::Cube);
 }
 
+KernelizeSeedPolicy getSeedPolicy(Operation *op,
+                                  const DependencyAnalysisResult &deps) {
+  auto it = deps.summaries.find(op);
+  if (it == deps.summaries.end())
+    return KernelizeSeedPolicy::NeverSeed;
+  return it->second.seedPolicy;
+}
+
 bool appendUniqueFamily(ScheduleContract &contract, StringRef family) {
   if (llvm::is_contained(contract.templateFamilies, family))
     return false;
@@ -223,9 +231,8 @@ FusionCandidate buildConsumerIntoPrimaryCandidate(
   candidate.primitive = KernelizePrimitiveKind::ConsumerIntoPrimary;
   candidate.internalOps.push_back(seed);
 
-  ArrayRef<OpRole> seedRoles = getRoles(roleMap, seed);
-  bool reductionSeed = hasRole(seedRoles, OpRole::Reduction) &&
-                       !hasRole(seedRoles, OpRole::Cube);
+  bool reductionSeed =
+      getSeedPolicy(seed, deps) == KernelizeSeedPolicy::NonSeedWhenFused;
   SmallVector<Operation *> absorbedConsumers;
   unsigned absorbedConsumerCount = 0;
   for (Operation *consumer : getConsumers(deps.index, seed)) {
@@ -412,7 +419,10 @@ FusionCandidateAnalyzer::analyze(const DependencyAnalysisResult &deps,
 
   for (Operation *seed : deps.index.orderedOps) {
     ArrayRef<OpRole> roles = getRoles(roleMap, seed);
-    if (!hasRole(roles, OpRole::Cube) && !hasRole(roles, OpRole::Reduction))
+    bool consumerIntoPrimarySeed =
+        hasRole(roles, OpRole::Cube) ||
+        getSeedPolicy(seed, deps) == KernelizeSeedPolicy::NonSeedWhenFused;
+    if (!consumerIntoPrimarySeed)
       continue;
 
     FusionCandidate candidate =

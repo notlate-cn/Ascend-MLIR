@@ -28,6 +28,7 @@ struct OpSemanticSummary {
   KernelizeParticipationKind participation =
       KernelizeParticipationKind::Unsupported;
   AccessPatternKind accessPattern = AccessPatternKind::Unknown;
+  KernelizeSeedPolicy seedPolicy = KernelizeSeedPolicy::NeverSeed;
   SmallVector<IteratorKind> iteratorTypes;
   SmallVector<AffineMap> indexingMaps;
   SmallVector<unsigned> resultRanks;
