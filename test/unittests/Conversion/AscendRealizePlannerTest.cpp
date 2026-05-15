@@ -521,6 +521,52 @@ TEST(AscendRealizePlannerTest,
   EXPECT_EQ(plan->workspaceSlots[0].byteSize, 128u);
 }
 
+TEST(AscendRealizePlannerTest,
+     StaticMemoryPlannerReusesOffsetsForNonOverlappingVectorTemporaries) {
+  BufferizedKernelIR ir = makeBufferizedKernelIR();
+  ir.staticByteSizeKnown = true;
+  ir.temporaryValueCount = 2;
+  ir.vectorTemporaryValueCount = 2;
+  ir.bufferValueCount = 5;
+  ir.vectorTemporaryByteCount = 192;
+  ir.valueFacts = {
+      BufferizedValueFact{/*valueId=*/0, BufferizedValueRole::Input,
+                          /*isVectorTemporary=*/false,
+                          /*staticByteSizeKnown=*/true, /*byteSize=*/128},
+      BufferizedValueFact{/*valueId=*/1, BufferizedValueRole::Temporary,
+                          /*isVectorTemporary=*/true,
+                          /*staticByteSizeKnown=*/true, /*byteSize=*/128},
+      BufferizedValueFact{/*valueId=*/2, BufferizedValueRole::Temporary,
+                          /*isVectorTemporary=*/true,
+                          /*staticByteSizeKnown=*/true, /*byteSize=*/64},
+      BufferizedValueFact{/*valueId=*/3, BufferizedValueRole::Output,
+                          /*isVectorTemporary=*/false,
+                          /*staticByteSizeKnown=*/true, /*byteSize=*/128}};
+
+  PlacementPlan placement = makePlacementPlan();
+  placement.mode = "target_aware";
+  placement.selectedPlaceCount = 5;
+  placement.gmPlaceCount = 3;
+  placement.onChipPlaceCount = 2;
+  placement.deferredLocalPlaceCount = 0;
+
+  StaticMemoryPlanner planner;
+  auto plan = planner.build(placement, ir);
+
+  ASSERT_TRUE(llvm::succeeded(plan));
+  EXPECT_EQ(plan->mode, "workspace_layout");
+  EXPECT_EQ(plan->localBufferCount, 2u);
+  EXPECT_EQ(plan->liveIntervalCount, 2u);
+  EXPECT_EQ(plan->workspaceSlotCount, 2u);
+  EXPECT_EQ(plan->peakUsageUnitCount, 1u);
+  EXPECT_EQ(plan->localBufferByteCount, 192u);
+  EXPECT_EQ(plan->workspaceByteCount, 128u);
+  EXPECT_EQ(plan->peakUsageByteCount, 128u);
+  ASSERT_EQ(plan->workspaceSlots.size(), 2u);
+  EXPECT_EQ(plan->workspaceSlots[0].offset, 0u);
+  EXPECT_EQ(plan->workspaceSlots[1].offset, 0u);
+}
+
 TEST(AscendRealizePlannerTest, MovementPlannerBuildsPlanningForOnChipWorkspace) {
   PlacementPlan placement = makePlacementPlan();
   placement.mode = "target_aware";

@@ -18,6 +18,8 @@
 #include "llvm/ADT/StringRef.h"
 #include "llvm/Support/raw_ostream.h"
 
+#include <string>
+
 namespace mlir::afir::ascend::kernelize {
 
 struct OpSemanticSummary {
@@ -26,6 +28,8 @@ struct OpSemanticSummary {
   AccessPatternKind accessPattern = AccessPatternKind::Unknown;
   SmallVector<IteratorKind> iteratorTypes;
   SmallVector<AffineMap> indexingMaps;
+  std::string modelName = "unknown";
+  std::string traitName = "unknown";
   unsigned resultRank = 0;
   bool hasReductionIterator = false;
   bool hasOnlyParallelIterators = false;

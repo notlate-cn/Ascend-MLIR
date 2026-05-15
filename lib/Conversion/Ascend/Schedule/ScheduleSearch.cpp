@@ -439,8 +439,24 @@ int64_t estimateDebugCost(const TileShape &tileShape) {
          static_cast<int64_t>(tileShape.tileSizes.size());
 }
 
+int64_t estimateScheduleCost(const ScheduleInstance &instance) {
+  constexpr int64_t kGuardPenalty = 10'000;
+  constexpr int64_t kBoundedBonus = 2'000'000'000'000;
+  int64_t cost = estimateDebugCost(instance.tileShape);
+  cost += static_cast<int64_t>(instance.candidateGuards.size() +
+                               instance.decisionGuards.size()) *
+          kGuardPenalty;
+  if (hasReasonKind(instance, "bounded_parallel_reduction_tile") ||
+      hasReasonKind(instance, "bounded_parallel_vector_tile"))
+    cost -= kBoundedBonus;
+  return cost;
+}
+
 bool isLowerRankedInstance(const ScheduleInstance &lhs,
                            const ScheduleInstance &rhs) {
+  if (lhs.estimatedCost != rhs.estimatedCost)
+    return lhs.estimatedCost < rhs.estimatedCost;
+
   unsigned lhsDynamicCount = countDynamicTileSizes(lhs.tileShape.tileSizes);
   unsigned rhsDynamicCount = countDynamicTileSizes(rhs.tileShape.tileSizes);
   if (lhsDynamicCount != rhsDynamicCount)
@@ -630,9 +646,6 @@ ScheduleInstance makeInstance(const ScheduleProblem &problem,
   ScheduleInstance instance;
   instance.tmpl = tmpl;
   instance.tileShape = std::move(tileShape);
-  // Coarse diagnostic scalar only. Schedule ordering is the explicit
-  // lexicographic key in isLowerRankedInstance.
-  instance.estimatedCost = estimateDebugCost(instance.tileShape);
   appendCandidateGuards(problem.resultShape, instance.candidateGuards);
   appendDecisionGuards(problem, instance.tileShape.tileSizes,
                        instance.decisionGuards);
@@ -642,6 +655,8 @@ ScheduleInstance makeInstance(const ScheduleProblem &problem,
     instance.reasonKinds.push_back("bounded_parallel_reduction_tile");
   if (isBoundedParallelVectorTile(problem, instance.tileShape))
     instance.reasonKinds.push_back("bounded_parallel_vector_tile");
+  instance.reasonKinds.push_back("cost_search");
+  instance.estimatedCost = estimateScheduleCost(instance);
   return instance;
 }
 

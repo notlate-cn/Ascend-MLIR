@@ -10,7 +10,9 @@
 #include "ScheduleTypes.h"
 
 #include "llvm/ADT/ArrayRef.h"
+#include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringSet.h"
+#include <string>
 
 namespace llvm {
 class raw_ostream;
@@ -20,6 +22,8 @@ namespace mlir::afir::ascend::schedule {
 
 class ScheduleCacheModel {
 public:
+  void seedPersistentTuningSignatures(ArrayRef<std::string> signatures);
+
   ScheduleCacheReport
   recordScheduleDecisionSet(const ScheduleProblem &problem,
                             const ScheduleDecisionSet &decisionSet);
@@ -35,11 +39,16 @@ public:
   llvm::ArrayRef<TuningResultKey> getTuningResultKeys() const {
     return tuningResultKeys;
   }
+  llvm::ArrayRef<std::string> getPersistentTuningSignatures() const {
+    return persistentTuningSignatures;
+  }
 
 private:
   ScheduleCacheReport report;
   llvm::StringSet<> shapeBucketSignatures;
   llvm::StringSet<> tuningResultSignatures;
+  llvm::StringSet<> seededPersistentTuningSignatures;
+  SmallVector<std::string, 8> persistentTuningSignatures;
   SmallVector<ShapeBucketKey, 8> shapeBucketKeys;
   SmallVector<TuningResultKey, 8> tuningResultKeys;
 };

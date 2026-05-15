@@ -12,6 +12,7 @@
 #include "mlir/IR/Operation.h"
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/DenseMap.h"
+#include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringRef.h"
@@ -124,6 +125,11 @@ bool isFallbackEligible(ArrayRef<OpRole> roles) {
 bool isHandwrittenPrimaryCandidate(ArrayRef<OpRole> roles) {
   return hasRole(roles, OpRole::Cube) || hasRole(roles, OpRole::Vector) ||
          hasRole(roles, OpRole::Reduction);
+}
+
+bool isAttentionLikeHandwrittenOp(ArrayRef<OpRole> roles) {
+  return hasRole(roles, OpRole::Cube) || hasRole(roles, OpRole::Reduction) ||
+         isVectorInjective(roles);
 }
 
 unsigned getHandwrittenPrimaryPriority(ArrayRef<OpRole> roles) {
@@ -299,6 +305,75 @@ FusionCandidate buildHandwrittenPatternCandidate(
   return candidate;
 }
 
+std::optional<SmallVector<Operation *, 8>>
+collectAttentionLikeHandwrittenPattern(Operation *seed,
+                                       const DependencyAnalysisResult &deps,
+                                       const OpRoleMap &roleMap,
+                                       const KernelizeConfig &config) {
+  if (!hasRole(getRoles(roleMap, seed), OpRole::Cube))
+    return std::nullopt;
+
+  SmallVector<Operation *, 8> groupOps;
+  llvm::DenseSet<Operation *> seen;
+  SmallVector<Operation *, 4> seedReductionConsumers;
+  for (Operation *consumer : getConsumers(deps.index, seed))
+    if (hasRole(getRoles(roleMap, consumer), OpRole::Reduction))
+      seedReductionConsumers.push_back(consumer);
+  if (seedReductionConsumers.size() != 1)
+    return std::nullopt;
+
+  Operation *current = seedReductionConsumers.front();
+  bool hasVector = false;
+  unsigned cubeCount = 1;
+  seen.insert(seed);
+  seen.insert(current);
+  groupOps.push_back(seed);
+  groupOps.push_back(current);
+
+  while (true) {
+    SmallVector<Operation *, 4> eligibleConsumers;
+    for (Operation *consumer : getConsumers(deps.index, current)) {
+      if (seen.contains(consumer))
+        return std::nullopt;
+      if (isAttentionLikeHandwrittenOp(getRoles(roleMap, consumer)))
+        eligibleConsumers.push_back(consumer);
+    }
+
+    if (eligibleConsumers.empty())
+      break;
+    if (eligibleConsumers.size() != 1)
+      return std::nullopt;
+
+    Operation *next = eligibleConsumers.front();
+    ArrayRef<OpRole> nextRoles = getRoles(roleMap, next);
+    bool isCube = hasRole(nextRoles, OpRole::Cube);
+    if (!isCube && !hasRole(nextRoles, OpRole::Reduction) &&
+        !isVectorInjective(nextRoles))
+      return std::nullopt;
+
+    seen.insert(next);
+    groupOps.push_back(next);
+    if (isVectorInjective(nextRoles))
+      hasVector = true;
+    if (groupOps.size() > config.maxOpsPerCandidate)
+      return std::nullopt;
+
+    if (isCube) {
+      ++cubeCount;
+      if (cubeCount != 2)
+        return std::nullopt;
+      break;
+    }
+
+    current = next;
+  }
+
+  if (cubeCount < 2 || !hasVector)
+    return std::nullopt;
+  sortByOpId(groupOps, deps.index);
+  return groupOps;
+}
+
 void printOpIdList(raw_ostream &os, ArrayRef<Operation *> ops,
                    const ProducerConsumerIndex &index) {
   os << "[";
@@ -362,6 +437,22 @@ FusionCandidateAnalyzer::analyze(const DependencyAnalysisResult &deps,
 
     appendLegalCandidate(candidates,
                          buildReductionInliningCandidate(seed, deps, roleMap),
+                         deps, roleMap, config);
+  }
+
+  llvm::DenseSet<Operation *> attentionGroupedOps;
+  for (Operation *seed : deps.index.orderedOps) {
+    if (attentionGroupedOps.contains(seed))
+      continue;
+    std::optional<SmallVector<Operation *, 8>> groupOps =
+        collectAttentionLikeHandwrittenPattern(seed, deps, roleMap, config);
+    if (!groupOps)
+      continue;
+    for (Operation *op : *groupOps)
+      attentionGroupedOps.insert(op);
+    appendLegalCandidate(candidates,
+                         buildHandwrittenPatternCandidate(*groupOps, deps,
+                                                          roleMap),
                          deps, roleMap, config);
   }
 

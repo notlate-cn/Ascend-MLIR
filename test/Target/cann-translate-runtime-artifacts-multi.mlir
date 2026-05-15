@@ -16,18 +16,30 @@
 // MANIFEST: "kernel_entries": [
 // MANIFEST: "entry_index": 0,
 // MANIFEST: "kernel_id": "kernel_a"
+// MANIFEST: "resources": {
+// MANIFEST: "executionUnit": "aicore"
 // MANIFEST: "decisionId": "kernel_a.decision.0"
 // MANIFEST: "selected_tile_shape": [
 // MANIFEST-NEXT: 32
+// MANIFEST: "shape": {
+// MANIFEST: "rank": 1
 // MANIFEST: "shapeArgOrder": [
 // MANIFEST: "shapeKey": "arg0_dim0"
+// MANIFEST: "workspace": {
+// MANIFEST: "argIndex": 2
+// MANIFEST: "sizeBytes": 0
 // MANIFEST: "entry_index": 1,
 // MANIFEST: "kernel_id": "kernel_b"
 // MANIFEST: "decisionId": "kernel_b.decision.0"
 // MANIFEST: "selected_tile_shape": [
 // MANIFEST-NEXT: 64
+// MANIFEST: "shape": {
+// MANIFEST: "rank": 1
 // MANIFEST: "shapeArgOrder": [
 // MANIFEST: "shapeKey": "arg0_dim0"
+// MANIFEST: "workspace": {
+// MANIFEST: "argIndex": 2
+// MANIFEST: "sizeBytes": 0
 
 module attributes {
     ascend.kernel_graph.edges = [

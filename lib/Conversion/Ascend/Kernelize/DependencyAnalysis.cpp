@@ -114,8 +114,9 @@ void emitDependencyAnalysisReport(raw_ostream &os,
                                ? 0
                                : consumerIt->second.size();
     os << "  op_id = " << summary.opId.value << " op = \""
-       << op->getName().getStringRef() << "\" access = \""
-       << stringifyAccessPattern(summary.accessPattern)
+       << op->getName().getStringRef() << "\" model = \""
+       << summary.modelName << "\" trait = \"" << summary.traitName
+       << "\" access = \"" << stringifyAccessPattern(summary.accessPattern)
        << "\" producers = " << producerCount
        << " consumers = " << consumerCount
        << " result_rank = " << summary.resultRank << " iterators = [";

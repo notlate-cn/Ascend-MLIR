@@ -1,4 +1,5 @@
 // RUN: afir-opt %s --ascend-normalize --ascend-kernelize --ascend-schedule='target-tile-policy=legacy-default dump-report=true debug-stage=schedule' 2>&1 | FileCheck %s
+// RUN: afir-opt %s --ascend-normalize --ascend-kernelize --ascend-schedule='target-tile-policy=legacy-default dump-report=true debug-stage=schedule' --ascend-schedule='target-tile-policy=legacy-default dump-report=true debug-stage=schedule' 2>&1 | FileCheck %s --check-prefix=PERSIST
 
 func.func @vector_rank2_a(%arg0: tensor<4x8xf16>,
                           %arg1: tensor<4x8xf16>) -> tensor<4x8xf16> {
@@ -87,9 +88,14 @@ func.func @reduction_prunes_full_tile(%arg0: tensor<2x2x2x2x2xf16>)
 // CHECK-NEXT:   guard_budget_pruned = 0
 // CHECK-NEXT:   negative_cache_hits = 0
 // CHECK-NEXT:   negative_cache_entries = 0
+// CHECK-NEXT:   persistent_tuning_hits = 0
 // CHECK-DAG:   shape_bucket_key = kernel_0|vector_generic|4x8
 // CHECK-DAG:   shape_bucket_key = kernel_2|vector_generic|?x8
 // CHECK-DAG:   shape_bucket_key = kernel_3|reduction_static|2x2x2x2
 // CHECK-DAG:   tuning_result_key = kernel_0|vector_generic|single_tile_per_block|4x8|4x8
 // CHECK-DAG:   tuning_result_key = kernel_2|vector_generic|single_tile_per_block|?x8|32x8
 // CHECK-DAG:   tuning_result_key = kernel_3|reduction_static|single_tile_per_block|2x2x2x2|2x2x2x2x2
+// PERSIST: ScheduleCache:
+// PERSIST:   persistent_tuning_hits = 0
+// PERSIST: ScheduleCache:
+// PERSIST:   persistent_tuning_hits = 4

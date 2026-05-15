@@ -284,9 +284,22 @@ void populateLinalgSemanticSummary(Operation *op,
 
 } // namespace
 
+llvm::StringRef stringifyKernelizeOpTrait(KernelizeOpTraitKind kind) {
+  switch (kind) {
+  case KernelizeOpTraitKind::StructuredLinalg:
+    return "structured_linalg";
+  case KernelizeOpTraitKind::TensorView:
+    return "tensor_view";
+  case KernelizeOpTraitKind::Unknown:
+    return "unknown";
+  }
+  return "unknown";
+}
+
 KernelizeOpRegistry KernelizeOpRegistry::buildDefault() {
   KernelizeOpRegistry registry;
-  registry.registerModel({matchLinalgOp, populateLinalgSemanticSummary});
+  registry.registerModel({"linalg", KernelizeOpTraitKind::StructuredLinalg,
+                          matchLinalgOp, populateLinalgSemanticSummary});
   return registry;
 }
 
@@ -318,6 +331,8 @@ OpSemanticSummary KernelizeOpRegistry::summarize(Operation *op,
     return summary;
   }
 
+  summary.modelName = model->name.str();
+  summary.traitName = stringifyKernelizeOpTrait(model->trait).str();
   model->populate(op, summary);
   return summary;
 }
