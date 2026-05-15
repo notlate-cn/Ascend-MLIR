@@ -7,7 +7,9 @@ add_mlir_library(CannKernelTranslation
   ${CMAKE_SOURCE_DIR}/include
 
   LINK_LIBS PUBLIC
+  MLIRControlFlowDialect
   MLIRFuncDialect
+  MLIRSCFDialect
   MLIREmitAsc
   MLIRAsc
   MLIRTargetAsc

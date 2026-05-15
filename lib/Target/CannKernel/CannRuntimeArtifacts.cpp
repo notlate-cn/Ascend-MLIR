@@ -592,12 +592,21 @@ buildKernelGraphEdges(ModuleOp module, ArrayRef<func::FuncOp> kernels) {
       return module.emitError()
              << ::mlir::afir::ascend::kKernelGraphEdgesAttr << " element "
              << index << " requires string 'from' and 'to' fields";
-    if (!kernelNames.contains(from.getValue()))
+    bool fromKnown = kernelNames.contains(from.getValue());
+    bool toKnown = kernelNames.contains(to.getValue());
+    bool staleMergedSyntheticEdge =
+        !fromKnown && !toKnown && kernels.size() == 1 &&
+        from.getValue().starts_with("kernel_") &&
+        to.getValue().starts_with("kernel_");
+    if (staleMergedSyntheticEdge)
+      continue;
+
+    if (!fromKnown)
       return module.emitError()
              << ::mlir::afir::ascend::kKernelGraphEdgesAttr << " element "
              << index << " references unknown source kernel '"
              << from.getValue() << "'";
-    if (!kernelNames.contains(to.getValue()))
+    if (!toKnown)
       return module.emitError()
              << ::mlir::afir::ascend::kKernelGraphEdgesAttr << " element "
              << index << " references unknown target kernel '" << to.getValue()

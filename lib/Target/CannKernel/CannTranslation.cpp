@@ -14,12 +14,14 @@
 #include "ascir/Target/Asc/Common.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
+#include "mlir/Dialect/ControlFlow/IR/ControlFlowOps.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/IRMapping.h"
+#include "mlir/IR/Matchers.h"
 #include "mlir/IR/PatternMatch.h"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/DenseSet.h"
@@ -31,6 +33,7 @@
 #include <algorithm>
 #include <limits>
 #include <functional>
+#include <optional>
 #include <string>
 
 using namespace mlir;
@@ -104,6 +107,124 @@ static Value peelIndexCast(Value value) {
   if (auto castOp = value.getDefiningOp<arith::IndexCastOp>())
     return castOp.getOperand();
   return value;
+}
+
+struct IndexedValueStore {
+  Value memref;
+  int64_t index = 0;
+  Value stored;
+};
+
+struct MemRefDimBound {
+  Value memref;
+  int64_t dim = 0;
+  Value upperBound;
+};
+
+static std::optional<int64_t> getConstantIndexValue(Value value) {
+  APInt intValue;
+  if (matchPattern(value, m_ConstantInt(&intValue)))
+    return intValue.getSExtValue();
+  return std::nullopt;
+}
+
+static Value ensureIndexValue(Value value, IRRewriter &rewriter, Location loc) {
+  if (value.getType().isIndex())
+    return value;
+  return rewriter.create<arith::IndexCastOp>(loc, rewriter.getIndexType(),
+                                             value);
+}
+
+static SmallVector<SmallVector<int64_t>>
+parseReassociationIndices(ArrayAttr reassociation) {
+  SmallVector<SmallVector<int64_t>> groups;
+  for (Attribute rawGroup : reassociation) {
+    SmallVector<int64_t> group;
+    if (auto denseGroup = dyn_cast<DenseI64ArrayAttr>(rawGroup)) {
+      group.append(denseGroup.asArrayRef().begin(),
+                   denseGroup.asArrayRef().end());
+    } else if (auto arrayGroup = dyn_cast<ArrayAttr>(rawGroup)) {
+      for (Attribute rawIndex : arrayGroup)
+        group.push_back(cast<IntegerAttr>(rawIndex).getInt());
+    }
+    groups.push_back(std::move(group));
+  }
+  return groups;
+}
+
+static bool hasOnlyZeroStaticOffsets(memref::SubViewOp op) {
+  if (!op.getOffsets().empty())
+    return false;
+  return llvm::all_of(op.getStaticOffsets(), [](int64_t offset) {
+    return !ShapedType::isDynamic(offset) && offset == 0;
+  });
+}
+
+static FailureOr<Value> buildStaticSubViewLinearOffset(memref::SubViewOp op,
+                                                       IRRewriter &rewriter) {
+  if (!op.getOffsets().empty())
+    return failure();
+
+  ArrayRef<int64_t> staticOffsets = op.getStaticOffsets();
+  if (llvm::any_of(staticOffsets, ShapedType::isDynamic))
+    return failure();
+
+  auto sourceType = dyn_cast<MemRefType>(op.getSource().getType());
+  if (!sourceType || sourceType.getRank() !=
+                         static_cast<int64_t>(staticOffsets.size()))
+    return failure();
+
+  Location loc = op.getLoc();
+  auto makeIndex = [&](int64_t value) -> Value {
+    return rewriter.create<arith::ConstantIndexOp>(loc, value);
+  };
+  auto mul = [&](Value lhs, Value rhs) -> Value {
+    return rewriter.create<arith::MulIOp>(loc, lhs, rhs);
+  };
+  auto add = [&](Value lhs, Value rhs) -> Value {
+    return rewriter.create<arith::AddIOp>(loc, lhs, rhs);
+  };
+
+  SmallVector<Value> dynamicSizes(op.getSizes().begin(), op.getSizes().end());
+  ArrayRef<int64_t> staticSizes = op.getStaticSizes();
+  ArrayRef<int64_t> sourceShape = sourceType.getShape();
+  SmallVector<Value> dimExtents;
+  dimExtents.reserve(sourceType.getRank());
+
+  unsigned dynamicSizeIndex = 0;
+  for (auto [dim, sourceExtent] : llvm::enumerate(sourceShape)) {
+    Value dynamicSize;
+    int64_t staticSize = staticSizes[dim];
+    if (ShapedType::isDynamic(staticSize)) {
+      if (dynamicSizeIndex >= dynamicSizes.size())
+        return failure();
+      dynamicSize = dynamicSizes[dynamicSizeIndex++];
+    }
+
+    if (!ShapedType::isDynamic(sourceExtent))
+      dimExtents.push_back(makeIndex(sourceExtent));
+    else if (dynamicSize)
+      dimExtents.push_back(dynamicSize);
+    else
+      dimExtents.push_back(makeIndex(staticSize));
+  }
+
+  Value linearOffset = makeIndex(0);
+  for (int64_t dim = 0, rank = sourceType.getRank(); dim < rank; ++dim) {
+    int64_t offset = staticOffsets[dim];
+    if (offset == 0)
+      continue;
+
+    Value stride = makeIndex(1);
+    for (int64_t strideDim = dim + 1; strideDim < rank; ++strideDim)
+      stride = mul(stride, dimExtents[strideDim]);
+
+    Value term = stride;
+    if (offset != 1)
+      term = mul(makeIndex(offset), stride);
+    linearOffset = add(linearOffset, term);
+  }
+  return linearOffset;
 }
 
 static bool isRankedMemrefOf(Type type, int64_t rank, Type elementType) {
@@ -2265,6 +2386,232 @@ static void fixBrokenOpEmitters(Operation *moduleOp) {
   });
   for (memref::CastOp op : deadMemrefCasts)
     rewriter.eraseOp(op);
+
+  // Frontend shape guards survive Normalize as cf.assert. AscendC kernels have
+  // no cf.assert printer, so lower them to fail-closed early returns.
+  moduleOp->walk([&](cf::AssertOp op) {
+    rewriter.setInsertionPoint(op);
+    rewriter.create<emitasc::VerbatimOp>(
+        op.getLoc(), rewriter.getStringAttr("if (!$0) {\n  return;\n}"),
+        ValueRange({op.getArg()}));
+    rewriter.eraseOp(op);
+  });
+
+  SmallVector<IndexedValueStore> indexedStores;
+  SmallVector<MemRefDimBound> dimBounds;
+  moduleOp->walk([&](memref::StoreOp op) {
+    if (op.getIndices().size() == 1) {
+      std::optional<int64_t> index = getConstantIndexValue(op.getIndices()[0]);
+      if (index)
+        indexedStores.push_back(
+            {peelSourceValue(op.getMemref()), *index, op.getValueToStore()});
+    }
+
+    Value root = peelSourceValue(op.getMemref());
+    for (auto [dim, index] : llvm::enumerate(op.getIndices())) {
+      auto blockArg = dyn_cast<BlockArgument>(index);
+      if (!blockArg)
+        continue;
+      auto forOp = dyn_cast<scf::ForOp>(blockArg.getOwner()->getParentOp());
+      if (!forOp || forOp.getInductionVar() != index)
+        continue;
+      dimBounds.push_back(
+          {root, static_cast<int64_t>(dim), forOp.getUpperBound()});
+    }
+  });
+
+  auto lookupIndexedStore = [&](Value memref,
+                                int64_t index) -> std::optional<Value> {
+    Value root = peelSourceValue(memref);
+    for (const IndexedValueStore &store : indexedStores)
+      if (store.memref == root && store.index == index)
+        return store.stored;
+    return std::nullopt;
+  };
+
+  auto lookupDimBound = [&](Value memref, int64_t dim) -> std::optional<Value> {
+    Value root = peelSourceValue(memref);
+    for (const MemRefDimBound &bound : llvm::reverse(dimBounds))
+      if (bound.memref == root && bound.dim == dim)
+        return bound.upperBound;
+    return std::nullopt;
+  };
+
+  std::function<FailureOr<Value>(Value, int64_t, unsigned)> resolveDim;
+  resolveDim = [&](Value source, int64_t dim,
+                   unsigned depth) -> FailureOr<Value> {
+    if (depth > 8)
+      return failure();
+
+    auto sourceType = dyn_cast<MemRefType>(source.getType());
+    if (!sourceType || dim < 0 || dim >= sourceType.getRank())
+      return failure();
+
+    Location loc = source.getLoc();
+    auto makeIndex = [&](int64_t value) -> Value {
+      return rewriter.create<arith::ConstantIndexOp>(loc, value);
+    };
+    auto mul = [&](Value lhs, Value rhs) -> Value {
+      return rewriter.create<arith::MulIOp>(loc, lhs, rhs);
+    };
+
+    int64_t staticExtent = sourceType.getShape()[dim];
+    if (!ShapedType::isDynamic(staticExtent))
+      return makeIndex(staticExtent);
+
+    if (std::optional<Value> bound = lookupDimBound(source, dim))
+      return ensureIndexValue(*bound, rewriter, loc);
+
+    if (auto castOp = source.getDefiningOp<memref::CastOp>())
+      return resolveDim(castOp.getSource(), dim, depth + 1);
+
+    if (auto castOp = source.getDefiningOp<emitasc::ReinterpretCastOp>()) {
+      if (isa<MemRefType>(castOp.getSource().getType()))
+        return resolveDim(castOp.getSource(), dim, depth + 1);
+    }
+
+    if (auto reshapeOp = source.getDefiningOp<memref::ReshapeOp>()) {
+      if (std::optional<Value> stored =
+              lookupIndexedStore(reshapeOp.getShape(), dim))
+        return ensureIndexValue(*stored, rewriter, loc);
+
+      Value index = makeIndex(dim);
+      Value loaded = rewriter.create<memref::LoadOp>(
+          loc, reshapeOp.getShape(), ValueRange({index}));
+      return ensureIndexValue(loaded, rewriter, loc);
+    }
+
+    if (auto expandOp = source.getDefiningOp<memref::ExpandShapeOp>()) {
+      ArrayRef<int64_t> staticOutputShape = expandOp.getStaticOutputShape();
+      if (dim >= static_cast<int64_t>(staticOutputShape.size()))
+        return failure();
+      int64_t staticDim = staticOutputShape[dim];
+      if (!ShapedType::isDynamic(staticDim))
+        return makeIndex(staticDim);
+
+      unsigned dynamicIndex = 0;
+      for (int64_t i = 0; i < dim; ++i)
+        if (ShapedType::isDynamic(staticOutputShape[i]))
+          ++dynamicIndex;
+      auto outputShape = expandOp.getOutputShape();
+      if (dynamicIndex >= outputShape.size())
+        return failure();
+      return ensureIndexValue(outputShape[dynamicIndex], rewriter, loc);
+    }
+
+    if (auto collapseOp = source.getDefiningOp<memref::CollapseShapeOp>()) {
+      SmallVector<SmallVector<int64_t>> groups =
+          parseReassociationIndices(collapseOp.getReassociation());
+      if (dim >= static_cast<int64_t>(groups.size()) || groups[dim].empty())
+        return failure();
+
+      Value product = makeIndex(1);
+      for (int64_t sourceDim : groups[dim]) {
+        FailureOr<Value> extent =
+            resolveDim(collapseOp.getSrc(), sourceDim, depth + 1);
+        if (failed(extent))
+          return failure();
+        product = mul(product, *extent);
+      }
+      return product;
+    }
+
+    if (auto subViewOp = source.getDefiningOp<memref::SubViewOp>()) {
+      ArrayRef<int64_t> staticSizes = subViewOp.getStaticSizes();
+      if (dim >= static_cast<int64_t>(staticSizes.size()))
+        return failure();
+      int64_t staticSize = staticSizes[dim];
+      if (!ShapedType::isDynamic(staticSize))
+        return makeIndex(staticSize);
+
+      unsigned dynamicIndex = 0;
+      for (int64_t i = 0; i < dim; ++i)
+        if (ShapedType::isDynamic(staticSizes[i]))
+          ++dynamicIndex;
+      auto sizes = subViewOp.getSizes();
+      if (dynamicIndex >= sizes.size())
+        return failure();
+      return ensureIndexValue(sizes[dynamicIndex], rewriter, loc);
+    }
+
+    return failure();
+  };
+
+  SmallVector<memref::DimOp> dimOps;
+  moduleOp->walk([&](memref::DimOp op) { dimOps.push_back(op); });
+  for (memref::DimOp op : dimOps) {
+    std::optional<int64_t> dim = getConstantIndexValue(op.getIndex());
+    if (!dim)
+      continue;
+    rewriter.setInsertionPoint(op);
+    FailureOr<Value> resolved = resolveDim(op.getSource(), *dim, /*depth=*/0);
+    if (failed(resolved))
+      continue;
+    rewriter.replaceOp(op, *resolved);
+  }
+
+  // memref.reshape is a view-like operation. PyAsc has printers for
+  // emitasc.reinterpret_cast but not memref.reshape, so materialize the view as
+  // an explicit pointer reinterpretation before emission.
+  moduleOp->walk([&](memref::ReshapeOp op) {
+    rewriter.setInsertionPoint(op);
+    auto castOp = rewriter.create<emitasc::ReinterpretCastOp>(
+        op.getLoc(), op.getResult().getType(), peelSourceValue(op.getSource()));
+    rewriter.replaceOp(op, castOp.getResult());
+  });
+
+  auto lowerShapeViewToReinterpret = [&](auto op) {
+    rewriter.setInsertionPoint(op);
+    auto castOp = rewriter.create<emitasc::ReinterpretCastOp>(
+        op.getLoc(), op.getResult().getType(), peelSourceValue(op.getSrc()));
+    rewriter.replaceOp(op, castOp.getResult());
+  };
+  moduleOp->walk([&](memref::ExpandShapeOp op) {
+    lowerShapeViewToReinterpret(op);
+  });
+  moduleOp->walk([&](memref::CollapseShapeOp op) {
+    lowerShapeViewToReinterpret(op);
+  });
+  moduleOp->walk([&](memref::SubViewOp op) {
+    if (hasOnlyZeroStaticOffsets(op)) {
+      rewriter.setInsertionPoint(op);
+      auto castOp = rewriter.create<emitasc::ReinterpretCastOp>(
+          op.getLoc(), op.getResult().getType(),
+          peelSourceValue(op.getSource()));
+      rewriter.replaceOp(op, castOp.getResult());
+      return;
+    }
+
+    rewriter.setInsertionPoint(op);
+    FailureOr<Value> linearOffset = buildStaticSubViewLinearOffset(op, rewriter);
+    if (failed(linearOffset))
+      return;
+    auto offsetOp = rewriter.create<emitasc::PtrOffsetOp>(
+        op.getLoc(), op.getResult().getType(), peelSourceValue(op.getSource()),
+        /*staticOffset=*/IntegerAttr{}, /*dynamicOffset=*/*linearOffset);
+    rewriter.replaceOp(op, offsetOp.getResult());
+  });
+
+  auto lowerIntegerMinMax = [&](auto op, arith::CmpIPredicate predicate) {
+    rewriter.setInsertionPoint(op);
+    Value cmp = rewriter.create<arith::CmpIOp>(
+        op.getLoc(), predicate, op.getLhs(), op.getRhs());
+    Value selected = rewriter.create<arith::SelectOp>(
+        op.getLoc(), cmp, op.getLhs(), op.getRhs());
+    rewriter.replaceOp(op, selected);
+  };
+  moduleOp->walk([&](arith::MaxSIOp op) {
+    lowerIntegerMinMax(op, arith::CmpIPredicate::sgt);
+  });
+  moduleOp->walk([&](arith::MaxUIOp op) {
+    lowerIntegerMinMax(op, arith::CmpIPredicate::ugt);
+  });
+  moduleOp->walk([&](arith::MinSIOp op) {
+    lowerIntegerMinMax(op, arith::CmpIPredicate::slt);
+  });
+  moduleOp->walk([&](arith::MinUIOp op) {
+    lowerIntegerMinMax(op, arith::CmpIPredicate::ult);
+  });
 
   // AscendC vector Add does not reliably consume a VECCALC tensor that was
   // populated directly from GM in the simulator. For this narrow gather+bias
