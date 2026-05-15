@@ -433,6 +433,80 @@ TEST(AscendRealizePlannerTest, MovementPlannerBuildsPlanningForOnChipWorkspace) 
   EXPECT_TRUE(plan->materializationDeferred);
 }
 
+TEST(AscendRealizePlannerTest,
+     MovementPlannerBuildsValueLevelStepsForWorkspaceSlots) {
+  PlacementPlan placement = makePlacementPlan();
+  placement.mode = "target_aware";
+  placement.gmPlaceCount = 3;
+  placement.onChipPlaceCount = 1;
+  placement.deferredLocalPlaceCount = 0;
+
+  StaticMemoryPlan staticMemory = makeStaticMemoryPlan();
+  staticMemory.mode = "workspace_layout";
+  staticMemory.localBufferCount = 1;
+  staticMemory.liveIntervalCount = 1;
+  staticMemory.workspaceSlotCount = 1;
+  staticMemory.workspaceSlots = {StaticMemoryWorkspaceSlot{
+      /*slotId=*/0, /*valueId=*/1, /*offset=*/0, MemoryPlace::VECCALC,
+      /*staticByteSizeKnown=*/true, /*byteSize=*/128}};
+
+  MovementPlanner planner;
+  auto plan = planner.build(placement, staticMemory);
+
+  ASSERT_TRUE(llvm::succeeded(plan));
+  EXPECT_EQ(plan->movementDemandCount, 1u);
+  EXPECT_EQ(plan->selectedPathCount, 0u);
+  EXPECT_EQ(plan->pathSelectionDeferredCount, 1u);
+  ASSERT_EQ(plan->movementSteps.size(), 1u);
+  EXPECT_EQ(plan->movementSteps[0].stepId, 0u);
+  EXPECT_EQ(plan->movementSteps[0].valueId, 1u);
+  EXPECT_EQ(plan->movementSteps[0].slotId, 0u);
+  EXPECT_EQ(plan->movementSteps[0].srcPlace, MemoryPlace::GM);
+  EXPECT_EQ(plan->movementSteps[0].dstPlace, MemoryPlace::VECCALC);
+  EXPECT_FALSE(plan->movementSteps[0].pathSelected);
+  EXPECT_TRUE(plan->movementSteps[0].pathSelectionDeferred);
+  EXPECT_TRUE(plan->movementSteps[0].staticByteSizeKnown);
+  EXPECT_EQ(plan->movementSteps[0].byteSize, 128u);
+}
+
+TEST(AscendRealizePlannerTest,
+     MovementPlannerSelectsDirectTargetPathForMovementSteps) {
+  llvm::raw_null_ostream os;
+  auto memoryModel =
+      mlir::ascend::TargetMemoryModelBuilder().build(makeCompleteTargetProfile(),
+                                                     os);
+  ASSERT_TRUE(llvm::succeeded(memoryModel));
+
+  PlacementPlan placement = makePlacementPlan();
+  placement.mode = "target_aware";
+  placement.gmPlaceCount = 3;
+  placement.onChipPlaceCount = 1;
+  placement.deferredLocalPlaceCount = 0;
+
+  StaticMemoryPlan staticMemory = makeStaticMemoryPlan();
+  staticMemory.mode = "workspace_layout";
+  staticMemory.localBufferCount = 1;
+  staticMemory.liveIntervalCount = 1;
+  staticMemory.workspaceSlotCount = 1;
+  staticMemory.workspaceSlots = {StaticMemoryWorkspaceSlot{
+      /*slotId=*/0, /*valueId=*/1, /*offset=*/0, MemoryPlace::VECIN,
+      /*staticByteSizeKnown=*/true, /*byteSize=*/128}};
+
+  MovementPlanner planner;
+  auto plan = planner.build(placement, staticMemory, *memoryModel);
+
+  ASSERT_TRUE(llvm::succeeded(plan));
+  EXPECT_EQ(plan->movementDemandCount, 1u);
+  EXPECT_EQ(plan->selectedPathCount, 1u);
+  EXPECT_EQ(plan->pathSelectionDeferredCount, 0u);
+  ASSERT_EQ(plan->movementSteps.size(), 1u);
+  EXPECT_EQ(plan->movementSteps[0].srcPlace, MemoryPlace::GM);
+  EXPECT_EQ(plan->movementSteps[0].dstPlace, MemoryPlace::VECIN);
+  EXPECT_TRUE(plan->movementSteps[0].pathSelected);
+  EXPECT_FALSE(plan->movementSteps[0].pathSelectionDeferred);
+  EXPECT_EQ(plan->movementSteps[0].pathVariant, 0u);
+}
+
 TEST(AscendRealizePlannerTest, MovementPlannerRejectsMismatchedKernelId) {
   PlacementPlan placement = makePlacementPlan();
   StaticMemoryPlan staticMemory = makeStaticMemoryPlan();
