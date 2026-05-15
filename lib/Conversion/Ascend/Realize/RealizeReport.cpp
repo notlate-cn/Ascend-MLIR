@@ -47,6 +47,15 @@ void printRealizeReport(llvm::ArrayRef<RealizePlanBundle> bundles,
        << (bundle.staticMemory.peakUsageKnown ? "true" : "false") << "\n";
     os << "  peak_usage_units = " << bundle.staticMemory.peakUsageUnitCount
        << "\n";
+    os << "  peak_usage_bytes_known = "
+       << (bundle.staticMemory.peakUsageBytesKnown ? "true" : "false")
+       << "\n";
+    os << "  local_buffer_bytes = "
+       << bundle.staticMemory.localBufferByteCount << "\n";
+    os << "  workspace_bytes = " << bundle.staticMemory.workspaceByteCount
+       << "\n";
+    os << "  peak_usage_bytes = " << bundle.staticMemory.peakUsageByteCount
+       << "\n";
     os << "  capacity_check_deferred = "
        << (bundle.staticMemory.capacityCheckDeferred ? "true" : "false")
        << "\n";

@@ -162,7 +162,7 @@ buildMVPRealizePlans(ModuleOp module,
     }
     bundle.placement = std::move(*placement);
     FailureOr<StaticMemoryPlan> staticMemory =
-        staticMemoryPlanner.build(bundle.placement);
+        staticMemoryPlanner.build(bundle.placement, bundle.bufferizedIR);
     if (failed(staticMemory)) {
       module.emitError("ascend-realize failed to build static memory plan");
       emittedError = true;

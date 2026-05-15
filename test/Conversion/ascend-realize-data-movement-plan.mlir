@@ -55,6 +55,10 @@ func.func @data_movement_plan_vector_temporary(%arg0: tensor<64xf16>, %arg1: ten
 // CHECK-NEXT:   workspace_slots = 1
 // CHECK-NEXT:   peak_usage_known = true
 // CHECK-NEXT:   peak_usage_units = 1
+// CHECK-NEXT:   peak_usage_bytes_known = true
+// CHECK-NEXT:   local_buffer_bytes = 128
+// CHECK-NEXT:   workspace_bytes = 128
+// CHECK-NEXT:   peak_usage_bytes = 128
 // CHECK-NEXT:   capacity_check_deferred = true
 // CHECK: MovementPlan:
 // CHECK-NEXT:   kernel = kernel_0

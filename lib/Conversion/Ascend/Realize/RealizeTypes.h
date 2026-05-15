@@ -10,6 +10,7 @@
 #include "Conversion/Ascend/Common/Attributes.h"
 #include "Target/Ascend/TargetProfile.h"
 
+#include <cstdint>
 #include <string>
 
 namespace mlir::afir::ascend::realize {
@@ -41,6 +42,11 @@ struct BufferizedKernelIR {
   unsigned outputValueCount = 0;
   unsigned temporaryValueCount = 0;
   unsigned vectorTemporaryValueCount = 0;
+  bool staticByteSizeKnown = false;
+  uint64_t inputByteCount = 0;
+  uint64_t outputByteCount = 0;
+  uint64_t temporaryByteCount = 0;
+  uint64_t vectorTemporaryByteCount = 0;
 };
 
 struct PlacementPlan {
@@ -61,6 +67,10 @@ struct StaticMemoryPlan {
   unsigned workspaceSlotCount = 0;
   bool peakUsageKnown = false;
   unsigned peakUsageUnitCount = 0;
+  bool peakUsageBytesKnown = false;
+  uint64_t localBufferByteCount = 0;
+  uint64_t workspaceByteCount = 0;
+  uint64_t peakUsageByteCount = 0;
   bool capacityCheckDeferred = false;
 };
 
