@@ -6,6 +6,7 @@
 
 #include "KernelizeOpRegistry.h"
 
+#include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
 #include "mlir/IR/AffineMap.h"
@@ -23,9 +24,11 @@ namespace {
 
 bool matchLinalgOp(Operation *op) { return isa<linalg::LinalgOp>(op); }
 
+bool matchArithConstantOp(Operation *op) { return isa<arith::ConstantOp>(op); }
+
 bool matchTensorViewOp(Operation *op) {
   return isa<tensor::CastOp, tensor::CollapseShapeOp, tensor::ExpandShapeOp,
-             tensor::ExtractSliceOp>(op);
+             tensor::ExtractSliceOp, tensor::ReshapeOp>(op);
 }
 
 IteratorKind convertIteratorType(utils::IteratorType iteratorType) {
@@ -305,12 +308,22 @@ LogicalResult populateLinalgSemanticInfo(Operation *op,
   return success();
 }
 
-LogicalResult populateTensorViewSemanticInfo(Operation *,
+LogicalResult populateArithConstantSemanticInfo(
+    Operation *, KernelizeOpSemanticInfo &info) {
+  info.participation = KernelizeParticipationKind::Ignore;
+  info.accessPattern = AccessPatternKind::NotApplicable;
+  info.modelName = "arith_constant";
+  return success();
+}
+
+LogicalResult populateTensorViewSemanticInfo(Operation *op,
                                              KernelizeOpSemanticInfo &info) {
   info.participation = KernelizeParticipationKind::Transparent;
   info.accessPattern = AccessPatternKind::LayoutTransform;
   info.traits.push_back(KernelizeSemanticTrait::TensorView);
   info.modelName = "tensor_view";
+  if (isa<tensor::ReshapeOp>(op))
+    info.transparentOperandIndices.push_back(0);
   return success();
 }
 
@@ -319,6 +332,8 @@ LogicalResult populateTensorViewSemanticInfo(Operation *,
 void registerDefaultKernelizeOpModels(KernelizeOpModelRegistry &registry) {
   registry.registerModel(
       {"linalg", matchLinalgOp, populateLinalgSemanticInfo});
+  registry.registerModel({"arith_constant", matchArithConstantOp,
+                          populateArithConstantSemanticInfo});
   registry.registerModel(
       {"tensor_view", matchTensorViewOp, populateTensorViewSemanticInfo});
 }

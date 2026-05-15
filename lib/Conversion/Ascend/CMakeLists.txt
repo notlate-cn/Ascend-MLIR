@@ -40,6 +40,7 @@ add_mlir_library(AscendConversion
   AFIRConversionPassIncGen
 
   LINK_LIBS PUBLIC
+  MLIRArithDialect
   MLIRBufferizationDialect
   MLIRBufferizationTransforms
   MLIRControlFlowDialect
@@ -49,6 +50,7 @@ add_mlir_library(AscendConversion
   MLIRMemRefDialect
   MLIRPass
   MLIRSupport
+  MLIRTensorDialect
   MLIRAsc
   MLIRAscUtils
   AscendTargetProfile
