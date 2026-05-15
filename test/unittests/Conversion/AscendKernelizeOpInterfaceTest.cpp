@@ -6,8 +6,10 @@
 
 #include "Conversion/Ascend/Kernelize/KernelizeOpInterface.h"
 
+#include "Conversion/Ascend/Kernelize/DependencyAnalysis.h"
 #include "gtest/gtest.h"
 #include "mlir/IR/Builders.h"
+#include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/Dialect.h"
 #include "mlir/IR/Location.h"
 #include "mlir/IR/MLIRContext.h"
@@ -47,13 +49,22 @@ public:
   static ArrayRef<StringRef> getAttributeNames() { return {}; }
 };
 
+class NativeRejectOp
+    : public Op<NativeRejectOp, OpTrait::ZeroOperands, OpTrait::ZeroResults,
+                OpTrait::ZeroRegions> {
+public:
+  using Op::Op;
+  static StringRef getOperationName() { return "native_test.reject"; }
+  static ArrayRef<StringRef> getAttributeNames() { return {}; }
+};
+
 class NativeTestDialect : public Dialect {
 public:
   static StringRef getDialectNamespace() { return "native_test"; }
 
   explicit NativeTestDialect(MLIRContext *context)
       : Dialect("native_test", context, TypeID::get<NativeTestDialect>()) {
-    addOperations<NativeAnalyzeOp>();
+    addOperations<NativeAnalyzeOp, NativeRejectOp>();
   }
 };
 
@@ -71,6 +82,16 @@ struct NativeAnalyzeKernelizeModel
     info.traits.push_back(KernelizeSemanticTrait::Structured);
     info.modelName = "native_test_interface";
     return success();
+  }
+};
+
+struct NativeRejectKernelizeModel
+    : public KernelizeSemanticOpInterface::ExternalModel<
+          NativeRejectKernelizeModel, NativeRejectOp> {
+  LogicalResult
+  populateKernelizeSemanticInfo(Operation *,
+                                KernelizeOpSemanticInfo &) const {
+    return failure();
   }
 };
 
@@ -152,6 +173,25 @@ TEST(AscendKernelizeOpInterfaceTest, RegistryPrefersNativeInterfaceModel) {
   EXPECT_EQ(info->accessPattern, AccessPatternKind::Elementwise);
   EXPECT_EQ(info->seedPolicy, KernelizeSeedPolicy::MaySeed);
   EXPECT_EQ(info->modelName, "native_test_interface");
+}
+
+TEST(AscendKernelizeOpInterfaceTest,
+     DependencyAnalysisFailsClosedOnNativeInterfaceFailure) {
+  MLIRContext context;
+  context.getOrLoadDialect<NativeTestDialect>();
+  NativeRejectOp::attachInterface<NativeRejectKernelizeModel>(context);
+
+  ModuleOp module = ModuleOp::create(UnknownLoc::get(&context));
+  Operation *op =
+      Operation::create(OperationState(UnknownLoc::get(&context),
+                                       NativeRejectOp::getOperationName()));
+  module.getBody()->push_back(op);
+
+  FailureOr<DependencyAnalysisResult> result =
+      DependencyAnalyzer().analyze(module);
+
+  EXPECT_TRUE(failed(result));
+  module.getOperation()->destroy();
 }
 
 TEST(AscendKernelizeOpInterfaceTest, RegistryReportsUnsupportedByDefault) {

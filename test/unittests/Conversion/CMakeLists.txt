@@ -112,6 +112,10 @@ add_executable(AscendKernelizeOpInterfaceTest
   AscendKernelizeOpInterfaceTest.cpp
 )
 
+target_include_directories(AscendKernelizeOpInterfaceTest PRIVATE
+  ${ASCEND_CONVERSION_INTERNAL_INCLUDE_DIR}
+)
+
 target_link_libraries(AscendKernelizeOpInterfaceTest PRIVATE
   RuntimeUnitTestSupport
   AscendConversion
