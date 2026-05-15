@@ -260,6 +260,7 @@ LogicalResult populateLinalgSemanticInfo(Operation *op,
                                          KernelizeOpSemanticInfo &info) {
   info.participation = KernelizeParticipationKind::Analyze;
   info.modelName = "linalg";
+  info.seedPolicy = KernelizeSeedPolicy::MaySeed;
   info.traits.push_back(KernelizeSemanticTrait::Structured);
 
   populateResultRanks(op, info);
@@ -283,6 +284,7 @@ LogicalResult populateLinalgSemanticInfo(Operation *op,
       return success();
     }
     info.accessPattern = AccessPatternKind::Reduction;
+    info.seedPolicy = KernelizeSeedPolicy::NonSeedWhenFused;
     return success();
   }
 
@@ -312,6 +314,7 @@ LogicalResult populateArithConstantSemanticInfo(
     Operation *, KernelizeOpSemanticInfo &info) {
   info.participation = KernelizeParticipationKind::Ignore;
   info.accessPattern = AccessPatternKind::NotApplicable;
+  info.seedPolicy = KernelizeSeedPolicy::NeverSeed;
   info.modelName = "arith_constant";
   return success();
 }
@@ -320,6 +323,7 @@ LogicalResult populateTensorViewSemanticInfo(Operation *op,
                                              KernelizeOpSemanticInfo &info) {
   info.participation = KernelizeParticipationKind::Transparent;
   info.accessPattern = AccessPatternKind::LayoutTransform;
+  info.seedPolicy = KernelizeSeedPolicy::NeverSeed;
   info.traits.push_back(KernelizeSemanticTrait::TensorView);
   info.modelName = "tensor_view";
   if (isa<tensor::ReshapeOp>(op))

@@ -117,6 +117,7 @@ OpSemanticSummary makeSummary(Operation *op, OperationId opId,
   summary.opId = opId;
   summary.participation = info.participation;
   summary.accessPattern = info.accessPattern;
+  summary.seedPolicy = info.seedPolicy;
   summary.iteratorTypes.append(info.iteratorKinds.begin(),
                                info.iteratorKinds.end());
   summary.indexingMaps.append(info.indexingMaps.begin(),
@@ -257,6 +258,8 @@ void emitDependencyAnalysisReport(raw_ostream &os,
                                << "\"";
                           });
     os << "] access = \"" << stringifyAccessPattern(summary.accessPattern)
+       << "\" seed_policy = \""
+       << stringifyKernelizeSeedPolicy(summary.seedPolicy)
        << "\" result_ranks = [";
     llvm::interleaveComma(summary.resultRanks, os,
                           [&](unsigned rank) { os << rank; });

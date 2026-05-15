@@ -49,10 +49,17 @@ enum class KernelizeSemanticTrait {
   HandwrittenGroup,
 };
 
+enum class KernelizeSeedPolicy {
+  MaySeed,
+  NonSeedWhenFused,
+  NeverSeed,
+};
+
 struct KernelizeOpSemanticInfo {
   KernelizeParticipationKind participation =
       KernelizeParticipationKind::Unsupported;
   AccessPatternKind accessPattern = AccessPatternKind::Unknown;
+  KernelizeSeedPolicy seedPolicy = KernelizeSeedPolicy::NeverSeed;
   SmallVector<IteratorKind, 4> iteratorKinds;
   SmallVector<AffineMap, 4> indexingMaps;
   SmallVector<unsigned, 2> resultRanks;
@@ -86,6 +93,7 @@ llvm::StringRef stringifyIteratorKind(IteratorKind kind);
 llvm::StringRef
 stringifyKernelizeParticipation(KernelizeParticipationKind kind);
 llvm::StringRef stringifyKernelizeSemanticTrait(KernelizeSemanticTrait trait);
+llvm::StringRef stringifyKernelizeSeedPolicy(KernelizeSeedPolicy policy);
 
 } // namespace mlir::afir::ascend::kernelize
 

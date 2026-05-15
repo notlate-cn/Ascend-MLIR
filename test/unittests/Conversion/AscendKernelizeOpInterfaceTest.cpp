@@ -43,6 +43,7 @@ bool matchTestAnalyze(Operation *op) {
 LogicalResult populateTestAnalyze(Operation *, KernelizeOpSemanticInfo &info) {
   info.participation = KernelizeParticipationKind::Analyze;
   info.accessPattern = AccessPatternKind::Elementwise;
+  info.seedPolicy = KernelizeSeedPolicy::MaySeed;
   info.iteratorKinds.push_back(IteratorKind::Parallel);
   info.resultRanks.push_back(1);
   info.traits.push_back(KernelizeSemanticTrait::Structured);
@@ -67,6 +68,7 @@ TEST(AscendKernelizeOpInterfaceTest, RegistryResolvesRegisteredModel) {
   ASSERT_TRUE(succeeded(info));
   EXPECT_EQ(info->participation, KernelizeParticipationKind::Analyze);
   EXPECT_EQ(info->accessPattern, AccessPatternKind::Elementwise);
+  EXPECT_EQ(info->seedPolicy, KernelizeSeedPolicy::MaySeed);
   ASSERT_EQ(info->iteratorKinds.size(), 1u);
   EXPECT_EQ(info->iteratorKinds.front(), IteratorKind::Parallel);
   ASSERT_EQ(info->resultRanks.size(), 1u);
@@ -90,6 +92,7 @@ TEST(AscendKernelizeOpInterfaceTest, RegistryReportsUnsupportedByDefault) {
   ASSERT_TRUE(succeeded(info));
   EXPECT_EQ(info->participation, KernelizeParticipationKind::Unsupported);
   EXPECT_EQ(info->accessPattern, AccessPatternKind::Unknown);
+  EXPECT_EQ(info->seedPolicy, KernelizeSeedPolicy::NeverSeed);
   EXPECT_EQ(info->modelName, "unknown");
   EXPECT_EQ(info->unsupportedReason,
             "no kernelize semantic model for op test.unknown");
@@ -107,4 +110,11 @@ TEST(AscendKernelizeOpInterfaceTest, StringifiesPublicEnums) {
   EXPECT_EQ(stringifyAccessPattern(AccessPatternKind::Contraction),
             "Contraction");
   EXPECT_EQ(stringifyIteratorKind(IteratorKind::Reduction), "reduction");
+  EXPECT_EQ(stringifyKernelizeSeedPolicy(KernelizeSeedPolicy::MaySeed),
+            "may_seed");
+  EXPECT_EQ(
+      stringifyKernelizeSeedPolicy(KernelizeSeedPolicy::NonSeedWhenFused),
+      "non_seed_when_fused");
+  EXPECT_EQ(stringifyKernelizeSeedPolicy(KernelizeSeedPolicy::NeverSeed),
+            "never_seed");
 }

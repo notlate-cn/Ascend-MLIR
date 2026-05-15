@@ -105,4 +105,16 @@ llvm::StringRef stringifyKernelizeSemanticTrait(KernelizeSemanticTrait trait) {
   return "unknown";
 }
 
+llvm::StringRef stringifyKernelizeSeedPolicy(KernelizeSeedPolicy policy) {
+  switch (policy) {
+  case KernelizeSeedPolicy::MaySeed:
+    return "may_seed";
+  case KernelizeSeedPolicy::NonSeedWhenFused:
+    return "non_seed_when_fused";
+  case KernelizeSeedPolicy::NeverSeed:
+    return "never_seed";
+  }
+  return "never_seed";
+}
+
 } // namespace mlir::afir::ascend::kernelize
