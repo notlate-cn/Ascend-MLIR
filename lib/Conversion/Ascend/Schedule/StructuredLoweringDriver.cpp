@@ -21,6 +21,7 @@ namespace {
 
 constexpr llvm::StringLiteral kLoopSkeletonV0 = "loop_skeleton_v0";
 constexpr llvm::StringLiteral kKernelMetadataKernelKey = "kernel";
+constexpr llvm::StringLiteral kKernelMetadataDecisionIdKey = "decision_id";
 constexpr llvm::StringLiteral kKernelMetadataSelectedTileShapeKey =
     "selected_tile_shape";
 constexpr llvm::StringLiteral kKernelMetadataGuardMarkersKey =
@@ -199,6 +200,7 @@ void setLegacyFunctionScheduleMetadata(func::FuncOp funcOp,
 
 DictionaryAttr
 buildKernelScheduleMetadataEntry(Builder &builder, StringRef kernelId,
+                                 StringRef decisionId,
                                  DenseI64ArrayAttr selectedTileShape,
                                  ArrayAttr guardMarkers,
                                  ArrayAttr tailPolicies, ArrayAttr tailPlan,
@@ -207,6 +209,8 @@ buildKernelScheduleMetadataEntry(Builder &builder, StringRef kernelId,
   return builder.getDictionaryAttr({
       builder.getNamedAttr(kKernelMetadataKernelKey,
                            builder.getStringAttr(kernelId)),
+      builder.getNamedAttr(kKernelMetadataDecisionIdKey,
+                           builder.getStringAttr(decisionId)),
       builder.getNamedAttr(kKernelMetadataSelectedTileShapeKey,
                            selectedTileShape),
       builder.getNamedAttr(kKernelMetadataGuardMarkersKey, guardMarkers),
@@ -256,6 +260,7 @@ LogicalResult verifyLegacyFunctionScheduleMetadataShape(func::FuncOp funcOp) {
 
 FailureOr<ArrayAttr>
 upsertKernelScheduleMetadata(func::FuncOp funcOp, StringRef kernelId,
+                             StringRef decisionId,
                              DenseI64ArrayAttr selectedTileShape,
                              ArrayAttr guardMarkers, ArrayAttr tailPolicies,
                              ArrayAttr tailPlan, ArrayAttr tailMarkers,
@@ -299,8 +304,8 @@ upsertKernelScheduleMetadata(func::FuncOp funcOp, StringRef kernelId,
 
   if (!foundKernel)
     entries.push_back(buildKernelScheduleMetadataEntry(
-        builder, kernelId, selectedTileShape, guardMarkers, tailPolicies,
-        tailPlan, tailMarkers, targetTilePolicy));
+        builder, kernelId, decisionId, selectedTileShape, guardMarkers,
+        tailPolicies, tailPlan, tailMarkers, targetTilePolicy));
 
   return builder.getArrayAttr(entries);
 }
@@ -353,9 +358,15 @@ LogicalResult preserveFunctionScheduleMetadata(Operation *op,
   if (failed(verifyLegacyFunctionScheduleMetadataShape(funcOp)))
     return failure();
 
+  auto decisionIdAttr = op->getAttrOfType<StringAttr>(kScheduleDecisionIdAttr);
+  if (!decisionIdAttr)
+    return op->emitError()
+           << "structured lowering requires " << kScheduleDecisionIdAttr;
+
   FailureOr<ArrayAttr> kernelMetadata = upsertKernelScheduleMetadata(
-      funcOp, kernelAttr.getValue(), selectedTileShape, guardMarkers,
-      tailPolicies, tailPlan, tailMarkers, targetTilePolicy);
+      funcOp, kernelAttr.getValue(), decisionIdAttr.getValue(),
+      selectedTileShape, guardMarkers, tailPolicies, tailPlan, tailMarkers,
+      targetTilePolicy);
   if (failed(kernelMetadata))
     return failure();
 

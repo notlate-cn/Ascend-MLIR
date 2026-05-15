@@ -7,6 +7,8 @@
 set -euo pipefail
 
 DIR="$(cd "$(dirname "$0")" && pwd)"
+# shellcheck source=../mainline-target-env.sh
+source "$DIR/../mainline-target-env.sh"
 AFIR_OPT="${AFIR_OPT:-afir-opt}"
 AFIR_TRANSLATE="${AFIR_TRANSLATE:-afir-translate}"
 RUNTIME_SESSION="${RUNTIME_SESSION:-runtime-session}"
@@ -149,7 +151,7 @@ log "  output: $BUILD_DIR/step4_kernelized.mlir"
 echo ""
 echo "==================== [STAGE 5] Ascend schedule ===================="
 "$AFIR_OPT" "$BUILD_DIR/step4_kernelized.mlir" \
-  --ascend-schedule='target-tile-policy=legacy-default' \
+  --ascend-schedule="target-tile-policy=target-aware cann-root=${CANN_ROOT} soc=${SOC}" \
   -o "$BUILD_DIR/step5_scheduled.mlir"
 log "  output: $BUILD_DIR/step5_scheduled.mlir"
 

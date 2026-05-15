@@ -77,38 +77,45 @@ TuningResultKey makeTuningResultKey(ShapeBucketKey bucket,
 
 ScheduleCacheReport ScheduleCacheModel::recordScheduleDecisionSet(
     const ScheduleProblem &problem, const ScheduleDecisionSet &decisionSet) {
-  for (const ScheduleDecision &decision : decisionSet.decisions) {
-    ShapeBucketKey shapeKey =
-        makeShapeBucketKey(problem, decision.instance);
-    ++report.shapeBucketLookups;
+  if (decisionSet.decisions.empty())
+    return report;
 
-    // kernelId is an origin/debug field. Cache identity is intentionally
-    // normalized across kernel ids so identical kernels can reuse shape and
-    // tuning entries within one pass run.
-    if (shapeBucketSignatures.insert(getShapeBucketSignature(shapeKey)).second) {
-      ++report.shapeBucketMisses;
-      shapeBucketKeys.push_back(shapeKey);
-    }
+  const ScheduleDecision &decision = decisionSet.decisions.front();
+  ++report.selectedDecisionEntries;
 
-    TuningResultKey tuningKey =
-        makeTuningResultKey(std::move(shapeKey), decision.instance);
-    ++report.tuningLookups;
-    if (tuningResultSignatures.insert(getTuningResultSignature(tuningKey))
-            .second) {
-      ++report.tuningMisses;
-      tuningResultKeys.push_back(std::move(tuningKey));
-    }
+  ShapeBucketKey shapeKey = makeShapeBucketKey(problem, decision.instance);
+  ++report.shapeBucketLookups;
+
+  // kernelId is an origin/debug field. Cache identity is intentionally
+  // normalized across kernel ids so identical kernels can reuse shape and
+  // tuning entries within one pass run.
+  if (shapeBucketSignatures.insert(getShapeBucketSignature(shapeKey)).second) {
+    ++report.shapeBucketMisses;
+    shapeBucketKeys.push_back(shapeKey);
+  }
+
+  TuningResultKey tuningKey =
+      makeTuningResultKey(std::move(shapeKey), decision.instance);
+  ++report.tuningLookups;
+  if (tuningResultSignatures.insert(getTuningResultSignature(tuningKey))
+          .second) {
+    ++report.tuningMisses;
+    tuningResultKeys.push_back(std::move(tuningKey));
   }
 
   return report;
 }
 
 void ScheduleCacheModel::recordGuardBudgetPruned(unsigned count) {
-  report.negativeCacheEntries += count;
+  report.guardBudgetPruned += count;
 }
 
 void ScheduleCacheModel::recordNegativeCacheEntry() {
   ++report.negativeCacheEntries;
+}
+
+void ScheduleCacheModel::recordNegativeCacheHit() {
+  ++report.negativeCacheHits;
 }
 
 void printScheduleCacheReport(const ScheduleCacheReport &report,
@@ -118,6 +125,10 @@ void printScheduleCacheReport(const ScheduleCacheReport &report,
   os << "  shape_bucket_misses = " << report.shapeBucketMisses << "\n";
   os << "  tuning_lookups = " << report.tuningLookups << "\n";
   os << "  tuning_misses = " << report.tuningMisses << "\n";
+  os << "  selected_decision_entries = " << report.selectedDecisionEntries
+     << "\n";
+  os << "  guard_budget_pruned = " << report.guardBudgetPruned << "\n";
+  os << "  negative_cache_hits = " << report.negativeCacheHits << "\n";
   os << "  negative_cache_entries = " << report.negativeCacheEntries << "\n";
 }
 

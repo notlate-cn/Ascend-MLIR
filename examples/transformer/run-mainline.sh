@@ -4,7 +4,10 @@
 set -euo pipefail
 
 DIR="$(cd "$(dirname "$0")" && pwd)"
+# shellcheck source=../mainline-target-env.sh
+source "$DIR/../mainline-target-env.sh"
 AFIR_OPT="${AFIR_OPT:-afir-opt}"
+SOC="${SOC_VERSION:-Ascend910B1}"
 
 BUILD_DIR="$DIR/build_mainline"
 rm -rf "$BUILD_DIR"
@@ -19,7 +22,7 @@ mkdir -p "$BUILD_DIR"
   -o "$BUILD_DIR/step2_kernelized.mlir"
 
 if ! "$AFIR_OPT" "$BUILD_DIR/step2_kernelized.mlir" \
-    --ascend-schedule='target-tile-policy=legacy-default' \
+    --ascend-schedule="target-tile-policy=target-aware cann-root=${CANN_ROOT} soc=${SOC}" \
     --ascend-realize='materialization-mode=memory-space-annotate' \
     --ascend-compute-lower \
     -o "$BUILD_DIR/full_codegen.mlir" \

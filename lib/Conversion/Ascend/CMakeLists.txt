@@ -16,6 +16,7 @@ add_mlir_library(AscendConversion
   Kernelize/FusionCandidateAnalysis.cpp
   Kernelize/HorizontalFusionAnalysis.cpp
   Kernelize/KernelPattern.cpp
+  Kernelize/KernelizeOpRegistry.cpp
   Schedule/KernelPatternView.cpp
   Schedule/TemplateRegistry.cpp
   Normalize/NormalizePass.cpp

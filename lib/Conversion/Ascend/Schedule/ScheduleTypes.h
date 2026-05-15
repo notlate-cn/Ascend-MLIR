@@ -274,6 +274,9 @@ struct ScheduleCacheReport {
   unsigned shapeBucketMisses = 0;
   unsigned tuningLookups = 0;
   unsigned tuningMisses = 0;
+  unsigned selectedDecisionEntries = 0;
+  unsigned guardBudgetPruned = 0;
+  unsigned negativeCacheHits = 0;
   unsigned negativeCacheEntries = 0;
 };
 

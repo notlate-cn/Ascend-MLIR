@@ -26,6 +26,7 @@ public:
 
   void recordGuardBudgetPruned(unsigned count);
   void recordNegativeCacheEntry();
+  void recordNegativeCacheHit();
 
   const ScheduleCacheReport &getReport() const { return report; }
   llvm::ArrayRef<ShapeBucketKey> getShapeBucketKeys() const {

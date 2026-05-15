@@ -43,4 +43,4 @@ func.func @two_independent_kernels(%a: tensor<64xf16>,
 // CHECK-SAME: kernel = "kernel_0"
 // CHECK-SAME: selected_tile_shape = array<i64: 32>
 // CHECK-SAME: kernel = "kernel_1"
-// CHECK-SAME: selected_tile_shape = array<i64: 128>
+// CHECK-SAME: selected_tile_shape = array<i64: 32>

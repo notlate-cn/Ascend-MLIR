@@ -9,6 +9,8 @@ export ASCEND_DAV_SIM_VERSION="${ASCEND_DAV_SIM_VERSION:-dav_3002}"
 
 DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "${DIR}/../.." && pwd)"
+# shellcheck source=../mainline-target-env.sh
+source "$DIR/../mainline-target-env.sh"
 
 AFIR_OPT="${AFIR_OPT:-afir-opt}"
 AFIR_TRANSLATE="${AFIR_TRANSLATE:-afir-translate}"
@@ -135,7 +137,7 @@ log "  output: $BUILD_DIR/step2_kernelized.mlir"
 echo ""
 echo "==================== [STAGE 3] Ascend schedule ===================="
 "$AFIR_OPT" "$BUILD_DIR/step2_kernelized.mlir" \
-  --ascend-schedule='target-tile-policy=legacy-default' \
+  --ascend-schedule="target-tile-policy=target-aware cann-root=${CANN_ROOT} soc=${SOC}" \
   -o "$BUILD_DIR/step3_scheduled.mlir"
 log "  output: $BUILD_DIR/step3_scheduled.mlir"
 

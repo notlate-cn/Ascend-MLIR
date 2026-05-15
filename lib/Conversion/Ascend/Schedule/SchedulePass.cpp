@@ -36,6 +36,7 @@
 #include "llvm/Support/raw_ostream.h"
 
 #include <algorithm>
+#include <limits>
 #include <optional>
 #include <string>
 #include <utility>
@@ -224,6 +225,31 @@ static FailureOr<int64_t> deriveSemanticAlignmentGranularity(
                    tileAlignedElements});
 }
 
+static void setDynamicTargetTileFallback(TargetTilePolicy &policy,
+                                         StringRef reason) {
+  policy.defaultParallelTile =
+      std::max<int64_t>(1, policy.defaultParallelTile);
+  policy.policyId =
+      (llvm::Twine("target_") + reason + "_" +
+       llvm::Twine(policy.defaultParallelTile))
+          .str();
+}
+
+static std::optional<int64_t>
+getStaticReductionElementSpan(const ScheduleProblem &problem) {
+  int64_t span = 1;
+  for (const LogicalAxisInfo &axis : problem.axes.logicalAxes) {
+    if (axis.kind != AxisKind::Reduction)
+      continue;
+    if (ShapedType::isDynamic(axis.staticExtent) || axis.staticExtent <= 0)
+      return std::nullopt;
+    if (span > std::numeric_limits<int64_t>::max() / axis.staticExtent)
+      return std::nullopt;
+    span *= axis.staticExtent;
+  }
+  return span;
+}
+
 static void applySemanticAlignmentGranularity(ScheduleProblem &problem) {
   for (AxisScheduleConstraint &constraint :
        problem.axes.axisScheduleConstraints) {
@@ -283,11 +309,22 @@ deriveTargetTilePolicy(const ScheduleProblem &problem,
   if (problem.resultShape.size() >= 2) {
     int64_t innerExtent = problem.resultShape.back();
     if (ShapedType::isDynamic(innerExtent) || innerExtent <= 0) {
-      policy.defaultParallelTile = 1;
-      policy.policyId = "target_dynamic_inner_1";
+      setDynamicTargetTileFallback(policy, "dynamic_inner");
       return policy;
     }
     parallelElementSpan = innerExtent;
+  }
+  if (problem.dominantRole == OpRole::Reduction) {
+    std::optional<int64_t> reductionElementSpan =
+        getStaticReductionElementSpan(problem);
+    if (!reductionElementSpan) {
+      setDynamicTargetTileFallback(policy, "dynamic_reduction");
+      return policy;
+    }
+    if (parallelElementSpan >
+        std::numeric_limits<int64_t>::max() / *reductionElementSpan)
+      return failure();
+    parallelElementSpan *= *reductionElementSpan;
   }
 
   int64_t rowBytes = parallelElementSpan * elementBytes;

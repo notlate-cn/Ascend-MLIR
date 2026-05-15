@@ -26,12 +26,12 @@ func.func @large_rank2_vector(%arg0: tensor<640x15000xf16>,
 // CHECK-NEXT:   template = vector_generic/single_tile_per_block
 // CHECK: ScheduleSearch:
 // CHECK-NEXT:   kernel = kernel_0
-// CHECK-NEXT:   generated = 3
-// CHECK-NEXT:   kept = 3
+// CHECK-NEXT:   generated = 65
+// CHECK-NEXT:   kept = 4
 // CHECK-NEXT:   compile_time_top_k = 4
 // CHECK: ScheduleDecisionSet:
 // CHECK:   kernel = kernel_0
-// CHECK:   decisions = 3
+// CHECK:   decisions = 4
 // CHECK:   runtime_top_k = 1
 // CHECK:   selected = kernel_0.decision.0
 // CHECK-NEXT:   candidate_guards = 2

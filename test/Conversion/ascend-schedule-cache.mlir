@@ -79,18 +79,17 @@ func.func @reduction_prunes_full_tile(%arg0: tensor<2x2x2x2x2xf16>)
 }
 
 // CHECK: ScheduleCache:
-// CHECK-NEXT:   shape_bucket_lookups = 9
+// CHECK-NEXT:   shape_bucket_lookups = 4
 // CHECK-NEXT:   shape_bucket_misses = 3
-// CHECK-NEXT:   tuning_lookups = 9
-// CHECK-NEXT:   tuning_misses = 7
+// CHECK-NEXT:   tuning_lookups = 4
+// CHECK-NEXT:   tuning_misses = 3
+// CHECK-NEXT:   selected_decision_entries = 4
+// CHECK-NEXT:   guard_budget_pruned = 0
+// CHECK-NEXT:   negative_cache_hits = 0
 // CHECK-NEXT:   negative_cache_entries = 0
 // CHECK-DAG:   shape_bucket_key = kernel_0|vector_generic|4x8
 // CHECK-DAG:   shape_bucket_key = kernel_2|vector_generic|?x8
 // CHECK-DAG:   shape_bucket_key = kernel_3|reduction_static|2x2x2x2
 // CHECK-DAG:   tuning_result_key = kernel_0|vector_generic|single_tile_per_block|4x8|4x8
-// CHECK-DAG:   tuning_result_key = kernel_0|vector_generic|single_tile_per_block|4x8|2x4
 // CHECK-DAG:   tuning_result_key = kernel_2|vector_generic|single_tile_per_block|?x8|32x8
-// CHECK-DAG:   tuning_result_key = kernel_2|vector_generic|single_tile_per_block|?x8|?x8
-// CHECK-DAG:   tuning_result_key = kernel_2|vector_generic|single_tile_per_block|?x8|?x4
 // CHECK-DAG:   tuning_result_key = kernel_3|reduction_static|single_tile_per_block|2x2x2x2|2x2x2x2x2
-// CHECK-DAG:   tuning_result_key = kernel_3|reduction_static|single_tile_per_block|2x2x2x2|2x2x2x2x1
