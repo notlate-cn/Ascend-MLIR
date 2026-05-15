@@ -129,6 +129,8 @@ struct MovementPlan {
   unsigned selectedPathCount = 0;
   unsigned pathSelectionDeferredCount = 0;
   unsigned workspaceReuseCandidateCount = 0;
+  unsigned dynamicViewChainRewriteCount = 0;
+  unsigned deferredViewChainRewriteCount = 0;
   bool materializationDeferred = false;
   llvm::SmallVector<MovementStep, 8> movementSteps;
 };

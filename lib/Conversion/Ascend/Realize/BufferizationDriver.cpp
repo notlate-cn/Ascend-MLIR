@@ -56,7 +56,7 @@ static StringRef getKernelId(Operation *op) {
 static bool isSupportedTensorViewOp(Operation *op) {
   return op->getNumResults() == 1 &&
          isa<tensor::CastOp, tensor::CollapseShapeOp, tensor::ExpandShapeOp,
-             tensor::ExtractSliceOp>(op);
+             tensor::ExtractSliceOp, tensor::ReshapeOp>(op);
 }
 
 static std::optional<Value> getTensorViewSource(Operation *op) {
