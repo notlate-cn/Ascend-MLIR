@@ -16,6 +16,8 @@
 // RUN: sed -n '/\/\/ BAD-TAIL-PLAN-ALIGN-BEGIN/,/\/\/ BAD-TAIL-PLAN-ALIGN-END/p' %s | not afir-translate -mlir-to-cann --runtime-manifest-out=%t.bad-tail-plan-align.manifest.json 2>&1 | FileCheck %s --check-prefix=BAD-TAIL-PLAN-ALIGN
 // RUN: sed -n '/\/\/ NO-ATTR-BEGIN/,/\/\/ NO-ATTR-END/p' %s | afir-translate -mlir-to-cann --runtime-manifest-out=%t.no-attr.manifest.json > %t.no-attr.cpp
 // RUN: FileCheck %s --input-file=%t.no-attr.manifest.json --check-prefix=NO-ATTR
+// RUN: sed -n '/\/\/ STALE-GRAPH-BEGIN/,/\/\/ STALE-GRAPH-END/p' %s | afir-translate -mlir-to-cann --runtime-manifest-out=%t.stale-graph.manifest.json > %t.stale-graph.cpp
+// RUN: FileCheck %s --input-file=%t.stale-graph.manifest.json --check-prefix=STALE-GRAPH
 // RUN: sed -n '/\/\/ BAD-GRAPH-NO-CARRIED-BEGIN/,/\/\/ BAD-GRAPH-NO-CARRIED-END/p' %s | not afir-translate -mlir-to-cann --runtime-manifest-out=%t.bad-graph-no-carried.manifest.json 2>&1 | FileCheck %s --check-prefix=BAD-GRAPH-NO-CARRIED
 // RUN: sed -n '/\/\/ BAD-GRAPH-CARRIED-TOP-BEGIN/,/\/\/ BAD-GRAPH-CARRIED-TOP-END/p' %s | not afir-translate -mlir-to-cann --runtime-manifest-out=%t.bad-graph-carried-top.manifest.json 2>&1 | FileCheck %s --check-prefix=BAD-GRAPH-CARRIED-TOP
 // RUN: sed -n '/\/\/ BAD-GRAPH-CARRIED-VALUE-BEGIN/,/\/\/ BAD-GRAPH-CARRIED-VALUE-END/p' %s | not afir-translate -mlir-to-cann --runtime-manifest-out=%t.bad-graph-carried-value.manifest.json 2>&1 | FileCheck %s --check-prefix=BAD-GRAPH-CARRIED-VALUE
@@ -38,6 +40,8 @@
 // BAD-TAIL-PLAN-AFFECTED: ascend.schedule.tail_plan element 0 field 'affected' element 0 has unsupported value 'unknown_use'
 // BAD-TAIL-PLAN-ALIGN: ascend.schedule.tail_plan element 0 field 'align' must be an i64 integer attribute
 // NO-ATTR: "tilingParams": {}
+// STALE-GRAPH: "edges": []
+// STALE-GRAPH: "name": "kernel"
 // BAD-GRAPH-NO-CARRIED: ascend.kernel_graph.edges element 0 requires non-empty array field 'carried_buffers'
 // BAD-GRAPH-CARRIED-TOP: ascend.kernel_graph.edges element 0 requires non-empty array field 'carried_buffers'
 // BAD-GRAPH-CARRIED-VALUE: ascend.kernel_graph.edges element 0 field 'carried_buffers' element 0 must be a string
@@ -61,6 +65,20 @@ module {
   }
 }
 // MULTI-END
+
+// STALE-GRAPH-BEGIN
+module attributes {
+    ascend.kernel_graph.edges = [
+      {from = "kernel_0", to = "kernel_1", carried_buffers = ["tmp0"]}
+    ]} {
+  func.func @kernel(
+      %a: memref<?xf16>, %out: memref<?xf16>, %ws: memref<ui8>,
+      %tiling: !emitasc.py_struct<"TilingData", [i64], ["TB_M"]>
+  ) attributes {ascendc.aicore, ascendc.global, cann.num_inputs = 1 : i32} {
+    func.return
+  }
+}
+// STALE-GRAPH-END
 
 // BAD-GRAPH-NO-CARRIED-BEGIN
 module attributes {

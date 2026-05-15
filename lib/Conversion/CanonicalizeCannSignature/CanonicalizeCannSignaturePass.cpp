@@ -23,6 +23,7 @@
 #include "mlir/IR/PatternMatch.h"
 #include "mlir/Pass/Pass.h"
 #include "mlir/Transforms/DialectConversion.h"
+#include "llvm/ADT/STLExtras.h"
 #include <memory>
 
 #define GEN_PASS_DEF_CANONICALIZECANNSIGNATUREPASS
@@ -52,6 +53,49 @@ static bool isTilingMemref(Type type) {
 static emitasc::PyStructType getTilingStructType(Type tilingMemrefType) {
   return cast<emitasc::PyStructType>(
       cast<MemRefType>(tilingMemrefType).getElementType());
+}
+
+struct PromotedGlobalInput {
+  FlatSymbolRefAttr name;
+  MemRefType type;
+  SmallVector<memref::GetGlobalOp> getOps;
+};
+
+static FailureOr<SmallVector<PromotedGlobalInput>>
+collectPromotedGlobalInputs(func::FuncOp funcOp) {
+  SmallVector<PromotedGlobalInput> globals;
+  WalkResult result = funcOp.walk([&](memref::GetGlobalOp getGlobalOp) {
+    auto memrefType = dyn_cast<MemRefType>(getGlobalOp.getType());
+    if (!memrefType) {
+      getGlobalOp.emitOpError("must produce a memref to be promoted to a "
+                              "CANN GM input");
+      return WalkResult::interrupt();
+    }
+
+    FlatSymbolRefAttr name = getGlobalOp.getNameAttr();
+    for (PromotedGlobalInput &global : globals) {
+      if (global.name != name)
+        continue;
+      if (global.type != memrefType) {
+        getGlobalOp.emitOpError("has type ")
+            << memrefType << " but previous use of " << name.getValue()
+            << " has type " << global.type;
+        return WalkResult::interrupt();
+      }
+      global.getOps.push_back(getGlobalOp);
+      return WalkResult::advance();
+    }
+
+    PromotedGlobalInput global;
+    global.name = name;
+    global.type = memrefType;
+    global.getOps.push_back(getGlobalOp);
+    globals.push_back(std::move(global));
+    return WalkResult::advance();
+  });
+  if (result.wasInterrupted())
+    return failure();
+  return globals;
 }
 
 static LogicalResult canonicalizeFuncOp(func::FuncOp funcOp,
@@ -94,15 +138,25 @@ static LogicalResult canonicalizeFuncOp(func::FuncOp funcOp,
              << user->getName();
   }
 
-  int numInputs = tilingIdx;
+  FailureOr<SmallVector<PromotedGlobalInput>> promotedGlobalsOr =
+      collectPromotedGlobalInputs(funcOp);
+  if (failed(promotedGlobalsOr))
+    return failure();
+  SmallVector<PromotedGlobalInput> promotedGlobals =
+      std::move(*promotedGlobalsOr);
+
+  int numInputs = tilingIdx + static_cast<int>(promotedGlobals.size());
   emitasc::PyStructType tilingStructType =
       getTilingStructType(args[tilingIdx].getType());
   MLIRContext *ctx = funcOp.getContext();
 
-  // Build new arg types: inputs..., outputs..., memref<ui8>, PyStructType
+  // Build new arg types:
+  // inputs..., promoted global weights..., outputs..., memref<ui8>, PyStructType
   SmallVector<Type> newArgTypes;
   for (int i = 0; i < tilingIdx; ++i)
     newArgTypes.push_back(args[i].getType());
+  for (const PromotedGlobalInput &global : promotedGlobals)
+    newArgTypes.push_back(global.type);
   for (int i = tilingIdx + 1, e = args.size(); i < e; ++i)
     newArgTypes.push_back(args[i].getType());
   Type workspaceType =
@@ -113,6 +167,19 @@ static LogicalResult canonicalizeFuncOp(func::FuncOp funcOp,
   auto newFuncType = FunctionType::get(ctx, newArgTypes, {});
 
   Block &entryBlock = funcOp.getBody().front();
+
+  // Promote module-level memref globals used by the kernel body to explicit
+  // GM inputs. CANN kernels receive runtime buffers through GM_ADDR ABI
+  // arguments; keeping memref.get_global in the body has no PyAsc printer and
+  // also hides the weight dependency from runtime manifests.
+  for (auto [index, global] : llvm::enumerate(promotedGlobals)) {
+    BlockArgument globalArg = entryBlock.insertArgument(
+        tilingIdx + static_cast<int>(index), global.type, funcOp.getLoc());
+    for (memref::GetGlobalOp getGlobalOp : global.getOps) {
+      rewriter.replaceAllUsesWith(getGlobalOp.getResult(), globalArg);
+      rewriter.eraseOp(getGlobalOp);
+    }
+  }
 
   // Add workspace and tiling as new block args.
   BlockArgument wsArg =
@@ -129,7 +196,7 @@ static LogicalResult canonicalizeFuncOp(func::FuncOp funcOp,
   // Erase the old tiling memref arg (its only user was copy_struct, now erased).
   // New args were appended at the tail; tilingIdx still refers to the
   // original tiling memref arg position, which is unchanged.
-  entryBlock.eraseArgument(tilingIdx);
+  entryBlock.eraseArgument(tilingIdx + promotedGlobals.size());
 
   // Update function type and add cann.num_inputs attribute.
   funcOp.setType(newFuncType);
@@ -137,6 +204,12 @@ static LogicalResult canonicalizeFuncOp(func::FuncOp funcOp,
                   IntegerAttr::get(IntegerType::get(ctx, 32), numInputs));
 
   return success();
+}
+
+static bool shouldEraseModuleChild(Operation &child) {
+  if (isa<func::FuncOp>(child))
+    return false;
+  return child.getName().getDialectNamespace() == "transform";
 }
 
 } // namespace
@@ -162,11 +235,12 @@ struct CanonicalizeCannSignaturePass
       return;
     }
 
-    // Erase non-func module-level ops (e.g., transform sequences) so that the
-    // output can be parsed by tools that don't register transform dialects.
+    // Erase transform sequences so that the output can be parsed by tools that
+    // don't register transform dialects. Other module-level ops may carry
+    // resources or symbols referenced by the kernel body and must be preserved.
     SmallVector<Operation *> toErase;
     for (Operation &child : module.getBody()->getOperations()) {
-      if (!isa<func::FuncOp>(child))
+      if (shouldEraseModuleChild(child))
         toErase.push_back(&child);
     }
     for (Operation *op : toErase)

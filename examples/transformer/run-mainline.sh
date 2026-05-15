@@ -7,6 +7,7 @@ DIR="$(cd "$(dirname "$0")" && pwd)"
 # shellcheck source=../mainline-target-env.sh
 source "$DIR/../mainline-target-env.sh"
 AFIR_OPT="${AFIR_OPT:-afir-opt}"
+AFIR_TRANSLATE="${AFIR_TRANSLATE:-afir-translate}"
 SOC="${SOC_VERSION:-Ascend910B1}"
 
 BUILD_DIR="$DIR/build_mainline"
@@ -32,7 +33,33 @@ if ! "$AFIR_OPT" "$BUILD_DIR/step2_kernelized.mlir" \
   exit 1
 fi
 
+if ! "$AFIR_OPT" "$BUILD_DIR/full_codegen.mlir" \
+    --ascend-parallelize \
+    --ascend-prepare-for-emit \
+    --ascend-canonicalize-cann-signature \
+    -o "$BUILD_DIR/phase5_cann.mlir" \
+    2> "$BUILD_DIR/phase5_backend.stderr"; then
+  echo "transformer_dynamic.phase5_backend=unexpected-gap" >&2
+  cat "$BUILD_DIR/phase5_backend.stderr" >&2
+  exit 1
+fi
+
+if ! "$AFIR_TRANSLATE" -mlir-to-cann "$BUILD_DIR/phase5_cann.mlir" \
+    --tiling-space-out="$BUILD_DIR/tiling.json" \
+    --runtime-manifest-out="$BUILD_DIR/runtime_manifest.json" \
+    --host-tiling-out="$BUILD_DIR/host_tiling.cpp" \
+    --cann-soc="$SOC" \
+    -o "$BUILD_DIR/kernel.cpp" \
+    2> "$BUILD_DIR/phase5_translate.stderr"; then
+  echo "transformer_dynamic.phase5_translate=unexpected-gap" >&2
+  cat "$BUILD_DIR/phase5_translate.stderr" >&2
+  exit 1
+fi
+
 echo "transformer_dynamic.mainline_prefix=pass"
 echo "transformer_dynamic.transpose_kernelize_generalization=pass"
 echo "transformer_dynamic.multi_kernel_func_metadata=per_kernel"
+echo "transformer_dynamic.phase5_backend=pass"
+echo "transformer_dynamic.phase5_translate=pass"
+echo "transformer_dynamic.runtime_artifacts=pass"
 echo "transformer_dynamic.full_codegen=pass"
