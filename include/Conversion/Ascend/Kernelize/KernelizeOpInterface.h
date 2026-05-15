@@ -66,7 +66,7 @@ struct KernelizeOpModel {
   using PopulateFn =
       LogicalResult (*)(Operation *op, KernelizeOpSemanticInfo &info);
 
-  llvm::StringRef name = "unknown";
+  std::string name = "unknown";
   MatchFn match = nullptr;
   PopulateFn populate = nullptr;
 };
