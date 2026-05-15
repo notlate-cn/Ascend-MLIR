@@ -46,9 +46,16 @@ struct ProducerConsumerIndex {
   DenseMap<Operation *, SmallVector<Operation *>> consumers;
 };
 
+struct UnsupportedProducerDiagnostic {
+  Operation *producer = nullptr;
+  Operation *consumer = nullptr;
+  std::string reason;
+};
+
 struct DependencyAnalysisResult {
   ProducerConsumerIndex index;
   DenseMap<Operation *, OpSemanticSummary> summaries;
+  SmallVector<UnsupportedProducerDiagnostic, 4> unsupportedProducers;
 };
 
 class DependencyAnalyzer {
