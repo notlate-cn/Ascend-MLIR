@@ -22,7 +22,7 @@ enum class KernelizeOpTraitKind {
 
 llvm::StringRef stringifyKernelizeOpTrait(KernelizeOpTraitKind kind);
 
-struct KernelizeOpModel {
+struct KernelizeRegistryModel {
   using MatchFn = bool (*)(Operation *op);
   using PopulateFn = void (*)(Operation *op, OpSemanticSummary &summary);
 
@@ -36,14 +36,14 @@ class KernelizeOpRegistry {
 public:
   static KernelizeOpRegistry buildDefault();
 
-  void registerModel(KernelizeOpModel model);
+  void registerModel(KernelizeRegistryModel model);
   bool isTargetOp(Operation *op) const;
   OpSemanticSummary summarize(Operation *op, OperationId opId) const;
 
 private:
-  const KernelizeOpModel *lookupModel(Operation *op) const;
+  const KernelizeRegistryModel *lookupModel(Operation *op) const;
 
-  SmallVector<KernelizeOpModel, 4> models;
+  SmallVector<KernelizeRegistryModel, 4> models;
 };
 
 } // namespace mlir::afir::ascend::kernelize

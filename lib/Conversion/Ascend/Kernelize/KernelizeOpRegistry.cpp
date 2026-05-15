@@ -303,13 +303,13 @@ KernelizeOpRegistry KernelizeOpRegistry::buildDefault() {
   return registry;
 }
 
-void KernelizeOpRegistry::registerModel(KernelizeOpModel model) {
+void KernelizeOpRegistry::registerModel(KernelizeRegistryModel model) {
   models.push_back(model);
 }
 
-const KernelizeOpModel *
+const KernelizeRegistryModel *
 KernelizeOpRegistry::lookupModel(Operation *op) const {
-  for (const KernelizeOpModel &model : models)
+  for (const KernelizeRegistryModel &model : models)
     if (model.match && model.match(op))
       return &model;
   return nullptr;
@@ -325,7 +325,7 @@ OpSemanticSummary KernelizeOpRegistry::summarize(Operation *op,
   summary.op = op;
   summary.opId = opId;
 
-  const KernelizeOpModel *model = lookupModel(op);
+  const KernelizeRegistryModel *model = lookupModel(op);
   if (!model || !model->populate) {
     summary.accessPattern = AccessPatternKind::Unknown;
     return summary;
