@@ -59,7 +59,7 @@ void collectAnalyzedProducers(
     return;
   }
 
-  if (!visited.insert(producer).second || producer->getNumRegions() != 0)
+  if (!visited.insert(producer).second)
     return;
 
   auto resolvedIt = resolved.find(producer);
@@ -74,6 +74,9 @@ void collectAnalyzedProducers(
   }
 
   if (info.participation != KernelizeParticipationKind::Transparent)
+    return;
+
+  if (producer->getNumRegions() != 0)
     return;
 
   for (Value operand : producer->getOperands()) {
