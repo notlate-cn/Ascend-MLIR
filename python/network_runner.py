@@ -163,17 +163,23 @@ def _eval_axis_extent(space: dict, params: dict) -> int:
 
 
 def _eval_ub_cost(space: dict, params: dict) -> int:
-    """Evaluate space['ub_cost_bytes_expr'] under integer params.
+    """Evaluate UB cost under integer params.
 
-    Same grammar as eval_block_dim (CannTranslation emits pure +-*/, with
-    ceilDiv expressed as ((a + b - 1) / b) — so no ceil() token appears).
-    Returns 0 if the expression is absent — callers should treat that as
-    "unknown UB cost" and skip UB-aware pruning.
+    CannTranslation emits `ub_cost_bytes_exprs` as a list of per-buffer
+    aligned-size expressions (pure +-*/; ceilDiv as ((a+b-1)/b)). The
+    runtime peak is `2 * max(...)` (2x for input+output TBufs live
+    concurrently). Returns 0 if the list is absent — callers should
+    treat that as "unknown UB cost" and skip UB-aware pruning.
     """
-    expr = (space.get("ub_cost_bytes_expr") or "").strip()
-    if not expr:
+    exprs = space.get("ub_cost_bytes_exprs") or []
+    if not exprs:
         return 0
-    return eval_block_dim({"block_dim_expr": expr}, params)
+    peak = 0
+    for expr in exprs:
+        v = eval_block_dim({"block_dim_expr": expr}, params)
+        if v > peak:
+            peak = v
+    return 2 * peak
 
 
 def _read_family(work, kid):
@@ -332,7 +338,7 @@ def phase3_default_build_and_dump(work, groups, network, artifacts, args):
                     capped = [v for v in vals if v <= extent]
                     vals = capped if capped else [extent]
                 pick = vals[-1]
-                if ub_budget > 0 and space.get("ub_cost_bytes_expr"):
+                if ub_budget > 0 and space.get("ub_cost_bytes_exprs"):
                     trial = dict(params)
                     trial.update(shape_keys)
                     fits = []

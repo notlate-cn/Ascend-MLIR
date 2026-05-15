@@ -2118,8 +2118,16 @@ static void emitTilingSpaceJson(StringRef outPath,
   if (auto spec = afir::cannkernel::getSocSpec(socStr))
     root["ub_budget_bytes"] = (int64_t)spec->totalVecLocalSize;
   {
+    // Emit a LIST of per-buffer aligned-size expressions (each pure +-*/);
+    // consumers take max() in their host language and compare against
+    // ub_budget_bytes / 2 (the 2x safety factor for input+output liveness
+    // is applied at the consumer side, not baked into the expression, so
+    // we don't have to nest a Max-tree in SymExpr — that nests `?:` at
+    // each level and blows up emit-string size to 2^N with N buffers).
+    // Dedup identical expressions so the list stays small.
     afir::cannkernel::NameSymTable names;
-    afir::symshape::SymExpr peak;
+    std::vector<std::string> exprs;
+    llvm::StringSet<> seen;
     bool ok = true;
     funcOp.walk([&](Operation *op) {
       Value sizeOperand;
@@ -2132,18 +2140,19 @@ static void emitTilingSpaceJson(StringRef outPath,
       auto e = afir::cannkernel::liftSizeOperand(sizeOperand, names);
       if (!e) { ok = false; return; }
       auto aligned = afir::cannkernel::align32(*e);
-      peak = peak.isValid()
-                 ? afir::symshape::SymExpr::max(peak, aligned)
-                 : aligned;
-    });
-    if (ok && peak.isValid()) {
-      auto cost = afir::symshape::SymExpr::mul(
-          afir::symshape::SymExpr::constant(2), peak);
       auto nameFor = [&](afir::symshape::SymId id) -> std::string {
         auto it = names.idToName.find(id);
         return it != names.idToName.end() ? it->second : "?";
       };
-      root["ub_cost_bytes_expr"] = cost.emitC(nameFor);
+      std::string s = aligned.emitC(nameFor);
+      if (seen.insert(s).second)
+        exprs.push_back(std::move(s));
+    });
+    if (ok && !exprs.empty()) {
+      llvm::json::Array arr;
+      for (auto &s : exprs)
+        arr.push_back(s);
+      root["ub_cost_bytes_exprs"] = std::move(arr);
     }
   }
 
