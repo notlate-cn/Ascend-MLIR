@@ -7,6 +7,7 @@
 #include "KernelizeOpRegistry.h"
 
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
+#include "mlir/Dialect/Tensor/IR/Tensor.h"
 #include "mlir/IR/AffineMap.h"
 #include "mlir/IR/Attributes.h"
 #include "mlir/IR/BuiltinAttributes.h"
@@ -21,6 +22,11 @@ namespace mlir::afir::ascend::kernelize {
 namespace {
 
 bool matchLinalgOp(Operation *op) { return isa<linalg::LinalgOp>(op); }
+
+bool matchTensorViewOp(Operation *op) {
+  return isa<tensor::CastOp, tensor::CollapseShapeOp, tensor::ExpandShapeOp,
+             tensor::ExtractSliceOp>(op);
+}
 
 IteratorKind convertIteratorType(utils::IteratorType iteratorType) {
   switch (iteratorType) {
@@ -299,11 +305,22 @@ LogicalResult populateLinalgSemanticInfo(Operation *op,
   return success();
 }
 
+LogicalResult populateTensorViewSemanticInfo(Operation *,
+                                             KernelizeOpSemanticInfo &info) {
+  info.participation = KernelizeParticipationKind::Transparent;
+  info.accessPattern = AccessPatternKind::LayoutTransform;
+  info.traits.push_back(KernelizeSemanticTrait::TensorView);
+  info.modelName = "tensor_view";
+  return success();
+}
+
 } // namespace
 
 void registerDefaultKernelizeOpModels(KernelizeOpModelRegistry &registry) {
   registry.registerModel(
       {"linalg", matchLinalgOp, populateLinalgSemanticInfo});
+  registry.registerModel(
+      {"tensor_view", matchTensorViewOp, populateTensorViewSemanticInfo});
 }
 
 } // namespace mlir::afir::ascend::kernelize

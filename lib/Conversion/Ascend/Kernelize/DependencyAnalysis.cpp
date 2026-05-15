@@ -39,9 +39,17 @@ void sortAndUniqueByOpId(SmallVectorImpl<Operation *> &ops,
   ops.erase(std::unique(ops.begin(), ops.end()), ops.end());
 }
 
-void collectAnalyzedProducers(Value value, const ProducerConsumerIndex &index,
-                              SmallVectorImpl<Operation *> &producers,
-                              DenseSet<Operation *> &visited) {
+bool hasTensorResult(Operation *op) {
+  return llvm::any_of(op->getResultTypes(),
+                      [](Type type) { return isa<TensorType>(type); });
+}
+
+void collectAnalyzedProducers(
+    Value value, const ProducerConsumerIndex &index,
+    const DenseMap<Operation *, KernelizeOpSemanticInfo> &resolved,
+    SmallVectorImpl<Operation *> &producers,
+    SmallVectorImpl<Operation *> &unsupportedProducers,
+    DenseSet<Operation *> &visited) {
   Operation *producer = value.getDefiningOp();
   if (!producer)
     return;
@@ -54,10 +62,25 @@ void collectAnalyzedProducers(Value value, const ProducerConsumerIndex &index,
   if (!visited.insert(producer).second || producer->getNumRegions() != 0)
     return;
 
+  auto resolvedIt = resolved.find(producer);
+  if (resolvedIt == resolved.end())
+    return;
+
+  const KernelizeOpSemanticInfo &info = resolvedIt->second;
+  if (info.participation == KernelizeParticipationKind::Unsupported) {
+    if (hasTensorResult(producer))
+      unsupportedProducers.push_back(producer);
+    return;
+  }
+
+  if (info.participation != KernelizeParticipationKind::Transparent)
+    return;
+
   for (Value operand : producer->getOperands()) {
     if (!isa<TensorType>(operand.getType()))
       continue;
-    collectAnalyzedProducers(operand, index, producers, visited);
+    collectAnalyzedProducers(operand, index, resolved, producers,
+                             unsupportedProducers, visited);
   }
 }
 
@@ -143,8 +166,10 @@ DependencyAnalyzer::analyze(ModuleOp module) const {
 
     for (Value operand : op->getOperands()) {
       SmallVector<Operation *, 4> operandProducers;
+      SmallVector<Operation *, 4> unsupportedProducers;
       DenseSet<Operation *> visited;
-      collectAnalyzedProducers(operand, result.index, operandProducers,
+      collectAnalyzedProducers(operand, result.index, resolved,
+                               operandProducers, unsupportedProducers,
                                visited);
       sortAndUniqueByOpId(operandProducers, result.index.opIds);
       for (Operation *producer : operandProducers) {
