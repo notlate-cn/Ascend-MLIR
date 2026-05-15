@@ -19,7 +19,7 @@ mkdir -p "$BUILD_DIR"
   -o "$BUILD_DIR/step2_kernelized.mlir"
 
 if ! "$AFIR_OPT" "$BUILD_DIR/step2_kernelized.mlir" \
-    --ascend-schedule \
+    --ascend-schedule='target-tile-policy=legacy-default' \
     --ascend-realize='materialization-mode=memory-space-annotate' \
     --ascend-compute-lower \
     -o "$BUILD_DIR/full_codegen.mlir" \

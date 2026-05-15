@@ -69,6 +69,8 @@ struct ScheduleDebugEntry {
 
 constexpr llvm::StringLiteral kLegacyDefaultTilePolicyMode = "legacy-default";
 constexpr llvm::StringLiteral kTargetAwareTilePolicyMode = "target-aware";
+constexpr llvm::StringLiteral kRequireExplicitTilePolicyMode =
+    "require-explicit";
 
 struct ScheduleTargetModelContext {
   ::mlir::ascend::TargetProfile profile;
@@ -78,8 +80,28 @@ struct ScheduleTargetModelContext {
 };
 
 static bool isSupportedTargetTilePolicyMode(StringRef mode) {
-  return mode == kLegacyDefaultTilePolicyMode ||
+  return mode == kRequireExplicitTilePolicyMode ||
+         mode == kLegacyDefaultTilePolicyMode ||
          mode == kTargetAwareTilePolicyMode;
+}
+
+static void clearOwnedScheduleAttrs(Operation *op) {
+  op->removeAttr(kScheduleFamilyAttr);
+  op->removeAttr(kScheduleTemplateAttr);
+  op->removeAttr(kScheduleDecisionIdAttr);
+  op->removeAttr(kScheduleRuntimeTopKAttr);
+  op->removeAttr(kStructuredLoweringAttr);
+  op->removeAttr(kScheduleSelectedTileShapeAttr);
+  op->removeAttr(kScheduleGuardMarkersAttr);
+  op->removeAttr(kScheduleTailPoliciesAttr);
+  op->removeAttr(kScheduleTailPlanAttr);
+  op->removeAttr(kScheduleTailMarkersAttr);
+  op->removeAttr(kScheduleTargetTilePolicyAttr);
+  op->removeAttr(kScheduleKernelMetadataAttr);
+}
+
+static void clearOwnedScheduleAttrs(ModuleOp module) {
+  module.walk([](Operation *op) { clearOwnedScheduleAttrs(op); });
 }
 
 static FailureOr<ScheduleTargetModelContext>
@@ -319,6 +341,14 @@ struct AscendSchedulePass
       signalPassFailure();
       return;
     }
+    if (StringRef(targetTilePolicy) == kRequireExplicitTilePolicyMode) {
+      getOperation()->emitError()
+          << "ascend-schedule requires explicit target-tile-policy: use "
+             "target-tile-policy=legacy-default for compatibility or "
+             "target-tile-policy=target-aware with cann-root and soc";
+      signalPassFailure();
+      return;
+    }
 
     ::mlir::afir::ascend::debug::DebugOptions options{
         ::mlir::afir::ascend::debug::parseDebugStage(debugStage), dumpReport};
@@ -329,6 +359,8 @@ struct AscendSchedulePass
           getArgument());
 
     ModuleOp module = getOperation();
+    clearOwnedScheduleAttrs(module);
+
     MLIRContext *context = module.getContext();
     ScheduleSearchOptions searchOptions;
     searchOptions.runtimeTopK = runtimeTopK;

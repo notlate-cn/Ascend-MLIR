@@ -1,4 +1,4 @@
-// RUN: sed -n '/\/\/ POSITIVE-BEGIN/,/\/\/ POSITIVE-END/p' %s | afir-opt --ascend-normalize --ascend-kernelize --ascend-schedule --ascend-realize='materialization-mode=memory-space-annotate' | FileCheck %s --check-prefix=POSITIVE
+// RUN: sed -n '/\/\/ POSITIVE-BEGIN/,/\/\/ POSITIVE-END/p' %s | afir-opt --ascend-normalize --ascend-kernelize --ascend-schedule='target-tile-policy=legacy-default' --ascend-realize='materialization-mode=memory-space-annotate' | FileCheck %s --check-prefix=POSITIVE
 // RUN: sed -n '/\/\/ FANOUT-BEGIN/,/\/\/ FANOUT-END/p' %s | afir-opt --ascend-realize='materialization-mode=memory-space-annotate' | FileCheck %s --check-prefix=FANOUT
 
 // POSITIVE-LABEL: func.func @matmul_add_leakyrelu

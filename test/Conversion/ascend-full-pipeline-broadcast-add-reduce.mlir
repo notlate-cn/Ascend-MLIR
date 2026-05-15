@@ -1,4 +1,4 @@
-// RUN: afir-opt %s --linalg-fuse-elementwise-ops --ascend-normalize --ascend-kernelize --ascend-schedule --ascend-realize='materialization-mode=memory-space-annotate' --ascend-compute-lower --ascend-parallelize --ascend-prepare-for-emit --ascend-canonicalize-cann-signature | FileCheck %s
+// RUN: afir-opt %s --linalg-fuse-elementwise-ops --ascend-normalize --ascend-kernelize --ascend-schedule='target-tile-policy=legacy-default' --ascend-realize='materialization-mode=memory-space-annotate' --ascend-compute-lower --ascend-parallelize --ascend-prepare-for-emit --ascend-canonicalize-cann-signature | FileCheck %s
 
 // CHECK-LABEL: func.func @broadcast_add_reducesum
 // CHECK-SAME: %{{.*}}: memref<ui8>

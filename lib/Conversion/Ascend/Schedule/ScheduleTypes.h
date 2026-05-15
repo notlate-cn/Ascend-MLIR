@@ -33,6 +33,7 @@ using ::mlir::afir::ascend::kOpRolesAttr;
 using ::mlir::afir::ascend::kPrimaryAttr;
 using ::mlir::afir::ascend::kScheduleDecisionIdAttr;
 using ::mlir::afir::ascend::kScheduleGuardMarkersAttr;
+using ::mlir::afir::ascend::kScheduleKernelMetadataAttr;
 using ::mlir::afir::ascend::kScheduleSelectedTileShapeAttr;
 using ::mlir::afir::ascend::kScheduleTailPlanAttr;
 using ::mlir::afir::ascend::kScheduleTailMarkersAttr;
