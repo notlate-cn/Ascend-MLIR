@@ -78,6 +78,8 @@ func.func @workspace_layout_vector_temporary(%arg0: tensor<64xf16>, %arg1: tenso
 // CHECK-NEXT:   selected_paths = 1
 // CHECK-NEXT:   path_selection_deferred = 0
 // CHECK-NEXT:   workspace_reuse_candidates = 1
+// CHECK-NEXT:   dynamic_view_chain_rewrites = 0
+// CHECK-NEXT:   deferred_view_chain_rewrites = 0
 // CHECK-NEXT:   materialization_deferred = true
 // CHECK: MemoryRealizationPlan:
 // CHECK-NEXT:   kernel = kernel_0
@@ -100,6 +102,8 @@ func.func @workspace_layout_vector_temporary(%arg0: tensor<64xf16>, %arg1: tenso
 // MATERIALIZE-NEXT:   selected_paths = 1
 // MATERIALIZE-NEXT:   path_selection_deferred = 0
 // MATERIALIZE-NEXT:   workspace_reuse_candidates = 1
+// MATERIALIZE-NEXT:   dynamic_view_chain_rewrites = 0
+// MATERIALIZE-NEXT:   deferred_view_chain_rewrites = 0
 // MATERIALIZE-NEXT:   materialization_deferred = true
 // MATERIALIZE: MemoryRealizationPlan:
 // MATERIALIZE-NEXT:   kernel = kernel_0

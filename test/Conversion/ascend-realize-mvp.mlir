@@ -59,6 +59,8 @@ func.func @elementwise(%arg0: tensor<64xf16>, %arg1: tensor<64xf16>) -> tensor<6
 // CHECK-NEXT:   selected_paths = 0
 // CHECK-NEXT:   path_selection_deferred = 0
 // CHECK-NEXT:   workspace_reuse_candidates = 0
+// CHECK-NEXT:   dynamic_view_chain_rewrites = 0
+// CHECK-NEXT:   deferred_view_chain_rewrites = 0
 // CHECK-NEXT:   materialization_deferred = false
 // CHECK: MemoryRealizationPlan:
 // CHECK-NEXT:   kernel = kernel_0
