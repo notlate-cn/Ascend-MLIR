@@ -89,6 +89,51 @@ OwningOpRef<ModuleOp> parseRealizeModule(MLIRContext &context,
   return parseSourceString<ModuleOp>(moduleText, &context);
 }
 
+OwningOpRef<ModuleOp> parseVectorChainModule(MLIRContext &context) {
+  return parseRealizeModule(
+      context, R"mlir(
+module {
+  func.func @f(%arg0: tensor<64xf16>, %arg1: tensor<64xf16>) -> tensor<64xf16>
+      attributes {ascend.normalized = true} {
+    %empty0 = tensor.empty() : tensor<64xf16>
+    %mid = linalg.generic {
+      indexing_maps = [
+        affine_map<(d0) -> (d0)>,
+        affine_map<(d0) -> (d0)>,
+        affine_map<(d0) -> (d0)>],
+      iterator_types = ["parallel"]}
+      ins(%arg0, %arg1 : tensor<64xf16>, tensor<64xf16>)
+      outs(%empty0 : tensor<64xf16>)
+      attrs = {ascend.kernel = "kernel_0",
+               ascend.op_role = "vector",
+               ascend.schedule.decision_id = "kernel_0.decision.0",
+               ascend.schedule.structured_lowering = "loop_skeleton_v0"} {
+    ^bb0(%lhs: f16, %rhs: f16, %old: f16):
+      %sum = arith.addf %lhs, %rhs : f16
+      linalg.yield %sum : f16
+    } -> tensor<64xf16>
+    %empty1 = tensor.empty() : tensor<64xf16>
+    %out = linalg.generic {
+      indexing_maps = [
+        affine_map<(d0) -> (d0)>,
+        affine_map<(d0) -> (d0)>],
+      iterator_types = ["parallel"]}
+      ins(%mid : tensor<64xf16>)
+      outs(%empty1 : tensor<64xf16>)
+      attrs = {ascend.kernel = "kernel_0",
+               ascend.op_role = "vector",
+               ascend.schedule.decision_id = "kernel_0.decision.0",
+               ascend.schedule.structured_lowering = "loop_skeleton_v0"} {
+    ^bb0(%x: f16, %old: f16):
+      %neg = arith.negf %x : f16
+      linalg.yield %neg : f16
+    } -> tensor<64xf16>
+    return %out : tensor<64xf16>
+  }
+}
+)mlir");
+}
+
 RealizePlanBundle makePlanBundle() {
   RealizePlanBundle bundle;
   bundle.kernel.kernelId = "kernel_0";
@@ -258,48 +303,7 @@ TEST(AscendRealizePlannerTest,
 TEST(AscendRealizePlannerTest,
      BufferizationDriverCollectsStaticByteFacts) {
   MLIRContext context;
-  OwningOpRef<ModuleOp> module = parseRealizeModule(
-      context, R"mlir(
-module {
-  func.func @f(%arg0: tensor<64xf16>, %arg1: tensor<64xf16>) -> tensor<64xf16>
-      attributes {ascend.normalized = true} {
-    %empty0 = tensor.empty() : tensor<64xf16>
-    %mid = linalg.generic {
-      indexing_maps = [
-        affine_map<(d0) -> (d0)>,
-        affine_map<(d0) -> (d0)>,
-        affine_map<(d0) -> (d0)>],
-      iterator_types = ["parallel"]}
-      ins(%arg0, %arg1 : tensor<64xf16>, tensor<64xf16>)
-      outs(%empty0 : tensor<64xf16>)
-      attrs = {ascend.kernel = "kernel_0",
-               ascend.op_role = "vector",
-               ascend.schedule.decision_id = "kernel_0.decision.0",
-               ascend.schedule.structured_lowering = "loop_skeleton_v0"} {
-    ^bb0(%lhs: f16, %rhs: f16, %old: f16):
-      %sum = arith.addf %lhs, %rhs : f16
-      linalg.yield %sum : f16
-    } -> tensor<64xf16>
-    %empty1 = tensor.empty() : tensor<64xf16>
-    %out = linalg.generic {
-      indexing_maps = [
-        affine_map<(d0) -> (d0)>,
-        affine_map<(d0) -> (d0)>],
-      iterator_types = ["parallel"]}
-      ins(%mid : tensor<64xf16>)
-      outs(%empty1 : tensor<64xf16>)
-      attrs = {ascend.kernel = "kernel_0",
-               ascend.op_role = "vector",
-               ascend.schedule.decision_id = "kernel_0.decision.0",
-               ascend.schedule.structured_lowering = "loop_skeleton_v0"} {
-    ^bb0(%x: f16, %old: f16):
-      %neg = arith.negf %x : f16
-      linalg.yield %neg : f16
-    } -> tensor<64xf16>
-    return %out : tensor<64xf16>
-  }
-}
-)mlir");
+  OwningOpRef<ModuleOp> module = parseVectorChainModule(context);
   ASSERT_TRUE(module);
 
   BufferizationDriver driver;
@@ -314,6 +318,87 @@ module {
   EXPECT_EQ(ir.outputByteCount, 128u);
   EXPECT_EQ(ir.temporaryByteCount, 128u);
   EXPECT_EQ(ir.vectorTemporaryByteCount, 128u);
+}
+
+TEST(AscendRealizePlannerTest, BufferizationDriverBuildsStableValueFacts) {
+  MLIRContext context;
+  OwningOpRef<ModuleOp> module = parseVectorChainModule(context);
+  ASSERT_TRUE(module);
+
+  BufferizationDriver driver;
+  FailureOr<SmallVector<BufferizedKernelIR, 4>> facts =
+      driver.collectTensorFacts(*module);
+  ASSERT_TRUE(succeeded(facts));
+  ASSERT_EQ(facts->size(), 1u);
+  const BufferizedKernelIR &ir = facts->front();
+
+  ASSERT_EQ(ir.valueFacts.size(), 4u);
+  EXPECT_EQ(ir.valueFacts[0].valueId, 0u);
+  EXPECT_EQ(ir.valueFacts[0].role, BufferizedValueRole::Input);
+  EXPECT_FALSE(ir.valueFacts[0].isVectorTemporary);
+  EXPECT_TRUE(ir.valueFacts[0].staticByteSizeKnown);
+  EXPECT_EQ(ir.valueFacts[0].byteSize, 128u);
+
+  EXPECT_EQ(ir.valueFacts[1].valueId, 1u);
+  EXPECT_EQ(ir.valueFacts[1].role, BufferizedValueRole::Input);
+  EXPECT_FALSE(ir.valueFacts[1].isVectorTemporary);
+  EXPECT_TRUE(ir.valueFacts[1].staticByteSizeKnown);
+  EXPECT_EQ(ir.valueFacts[1].byteSize, 128u);
+
+  EXPECT_EQ(ir.valueFacts[2].valueId, 2u);
+  EXPECT_EQ(ir.valueFacts[2].role, BufferizedValueRole::Temporary);
+  EXPECT_TRUE(ir.valueFacts[2].isVectorTemporary);
+  EXPECT_TRUE(ir.valueFacts[2].staticByteSizeKnown);
+  EXPECT_EQ(ir.valueFacts[2].byteSize, 128u);
+
+  EXPECT_EQ(ir.valueFacts[3].valueId, 3u);
+  EXPECT_EQ(ir.valueFacts[3].role, BufferizedValueRole::Output);
+  EXPECT_FALSE(ir.valueFacts[3].isVectorTemporary);
+  EXPECT_TRUE(ir.valueFacts[3].staticByteSizeKnown);
+  EXPECT_EQ(ir.valueFacts[3].byteSize, 128u);
+}
+
+TEST(AscendRealizePlannerTest,
+     StaticMemoryPlannerBuildsValueLevelWorkspaceSlots) {
+  BufferizedKernelIR ir = makeBufferizedKernelIR();
+  ir.staticByteSizeKnown = true;
+  ir.vectorTemporaryByteCount = 128;
+  ir.valueFacts = {
+      BufferizedValueFact{/*valueId=*/0, BufferizedValueRole::Input,
+                          /*isVectorTemporary=*/false,
+                          /*staticByteSizeKnown=*/true, /*byteSize=*/128},
+      BufferizedValueFact{/*valueId=*/1, BufferizedValueRole::Temporary,
+                          /*isVectorTemporary=*/true,
+                          /*staticByteSizeKnown=*/true, /*byteSize=*/128},
+      BufferizedValueFact{/*valueId=*/2, BufferizedValueRole::Output,
+                          /*isVectorTemporary=*/false,
+                          /*staticByteSizeKnown=*/true, /*byteSize=*/128}};
+
+  PlacementPlan placement = makePlacementPlan();
+  placement.mode = "target_aware";
+  placement.gmPlaceCount = 3;
+  placement.onChipPlaceCount = 1;
+  placement.deferredLocalPlaceCount = 0;
+
+  StaticMemoryPlanner planner;
+  auto plan = planner.build(placement, ir);
+
+  ASSERT_TRUE(llvm::succeeded(plan));
+  ASSERT_EQ(plan->liveIntervals.size(), 1u);
+  EXPECT_EQ(plan->liveIntervals[0].valueId, 1u);
+  EXPECT_EQ(plan->liveIntervals[0].start, 0u);
+  EXPECT_EQ(plan->liveIntervals[0].end, 1u);
+  EXPECT_EQ(plan->liveIntervals[0].place, MemoryPlace::VECCALC);
+  EXPECT_TRUE(plan->liveIntervals[0].staticByteSizeKnown);
+  EXPECT_EQ(plan->liveIntervals[0].byteSize, 128u);
+
+  ASSERT_EQ(plan->workspaceSlots.size(), 1u);
+  EXPECT_EQ(plan->workspaceSlots[0].slotId, 0u);
+  EXPECT_EQ(plan->workspaceSlots[0].valueId, 1u);
+  EXPECT_EQ(plan->workspaceSlots[0].offset, 0u);
+  EXPECT_EQ(plan->workspaceSlots[0].place, MemoryPlace::VECCALC);
+  EXPECT_TRUE(plan->workspaceSlots[0].staticByteSizeKnown);
+  EXPECT_EQ(plan->workspaceSlots[0].byteSize, 128u);
 }
 
 TEST(AscendRealizePlannerTest, MovementPlannerBuildsPlanningForOnChipWorkspace) {

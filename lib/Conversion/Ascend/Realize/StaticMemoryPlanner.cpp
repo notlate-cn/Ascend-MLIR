@@ -9,6 +9,39 @@
 #include "Target/Ascend/TargetMemoryModel.h"
 
 namespace mlir::afir::ascend::realize {
+namespace {
+
+static void populateVectorTemporarySlots(const BufferizedKernelIR &bufferizedIR,
+                                         StaticMemoryPlan &plan) {
+  uint64_t nextOffset = 0;
+  for (const BufferizedValueFact &fact : bufferizedIR.valueFacts) {
+    if (!fact.isVectorTemporary)
+      continue;
+
+    StaticMemoryLiveInterval interval;
+    interval.valueId = fact.valueId;
+    interval.start = plan.liveIntervals.size();
+    interval.end = interval.start + 1;
+    interval.place = MemoryPlace::VECCALC;
+    interval.staticByteSizeKnown = fact.staticByteSizeKnown;
+    interval.byteSize = fact.byteSize;
+    plan.liveIntervals.push_back(interval);
+
+    StaticMemoryWorkspaceSlot slot;
+    slot.slotId = plan.workspaceSlots.size();
+    slot.valueId = fact.valueId;
+    slot.offset = nextOffset;
+    slot.place = MemoryPlace::VECCALC;
+    slot.staticByteSizeKnown = fact.staticByteSizeKnown;
+    slot.byteSize = fact.byteSize;
+    plan.workspaceSlots.push_back(slot);
+
+    if (fact.staticByteSizeKnown)
+      nextOffset += fact.byteSize;
+  }
+}
+
+} // namespace
 
 FailureOr<StaticMemoryPlan>
 StaticMemoryPlanner::build(const PlacementPlan &placement) const {
@@ -33,9 +66,13 @@ StaticMemoryPlanner::build(const PlacementPlan &placement,
   }
 
   plan.mode = "workspace_layout";
-  plan.localBufferCount = placement.onChipPlaceCount;
-  plan.liveIntervalCount = placement.onChipPlaceCount;
-  plan.workspaceSlotCount = placement.onChipPlaceCount;
+  populateVectorTemporarySlots(bufferizedIR, plan);
+  unsigned plannedSlotCount = plan.workspaceSlots.empty()
+                                  ? placement.onChipPlaceCount
+                                  : plan.workspaceSlots.size();
+  plan.localBufferCount = plannedSlotCount;
+  plan.liveIntervalCount = plannedSlotCount;
+  plan.workspaceSlotCount = plannedSlotCount;
   plan.peakUsageKnown = true;
   plan.peakUsageUnitCount = plan.workspaceSlotCount;
   if (bufferizedIR.staticByteSizeKnown) {

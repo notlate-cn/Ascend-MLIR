@@ -24,10 +24,9 @@
 namespace mlir::afir::ascend::realize {
 namespace {
 
-enum class TensorValueRole { Input, Temporary, Output };
-
 struct KernelTensorFacts {
-  llvm::DenseMap<Value, TensorValueRole> roles;
+  llvm::DenseMap<Value, BufferizedValueRole> roles;
+  llvm::SmallVector<Value, 8> orderedValues;
 };
 
 static bool isTensorValue(Value value) {
@@ -84,11 +83,16 @@ static bool isVectorTemporary(Value value, StringRef kernelId) {
 }
 
 static void recordRole(KernelTensorFacts &facts, Value value,
-                       TensorValueRole role) {
+                       BufferizedValueRole role) {
   auto it = facts.roles.find(value);
-  if (it == facts.roles.end() || static_cast<unsigned>(role) >
-                                     static_cast<unsigned>(it->second))
+  if (it == facts.roles.end()) {
+    facts.orderedValues.push_back(value);
     facts.roles[value] = role;
+    return;
+  }
+
+  if (static_cast<unsigned>(role) > static_cast<unsigned>(it->second))
+    it->second = role;
 }
 
 static void collectLinalgFacts(linalg::LinalgOp linalgOp, StringRef kernelId,
@@ -98,18 +102,18 @@ static void collectLinalgFacts(linalg::LinalgOp linalgOp, StringRef kernelId,
     if (!isTensorValue(input))
       continue;
     if (isProducedByKernel(input, kernelId))
-      recordRole(facts, input, TensorValueRole::Temporary);
+      recordRole(facts, input, BufferizedValueRole::Temporary);
     else
-      recordRole(facts, input, TensorValueRole::Input);
+      recordRole(facts, input, BufferizedValueRole::Input);
   }
 
   for (Value result : linalgOp->getResults()) {
     if (!isTensorValue(result))
       continue;
     if (hasUseOutsideKernel(result, kernelId))
-      recordRole(facts, result, TensorValueRole::Output);
+      recordRole(facts, result, BufferizedValueRole::Output);
     else if (hasUseInsideKernel(result, kernelId))
-      recordRole(facts, result, TensorValueRole::Temporary);
+      recordRole(facts, result, BufferizedValueRole::Temporary);
   }
 }
 
@@ -119,31 +123,47 @@ static BufferizedKernelIR buildIR(StringRef kernelId,
   ir.kernelId = kernelId.str();
   ir.mode = "tensor_facts";
   bool allStaticByteSizesKnown = true;
-  for (const auto &entry : facts.roles) {
-    FailureOr<uint64_t> byteSize = getStaticTensorByteSize(entry.first);
+  for (Value value : facts.orderedValues) {
+    auto roleIt = facts.roles.find(value);
+    if (roleIt == facts.roles.end())
+      continue;
+
+    FailureOr<uint64_t> byteSize = getStaticTensorByteSize(value);
     if (failed(byteSize))
       allStaticByteSizesKnown = false;
 
-    switch (entry.second) {
-    case TensorValueRole::Input:
+    bool vectorTemporary =
+        roleIt->second == BufferizedValueRole::Temporary &&
+        isVectorTemporary(value, kernelId);
+
+    BufferizedValueFact valueFact;
+    valueFact.valueId = ir.valueFacts.size();
+    valueFact.role = roleIt->second;
+    valueFact.isVectorTemporary = vectorTemporary;
+    valueFact.staticByteSizeKnown = succeeded(byteSize);
+    if (succeeded(byteSize))
+      valueFact.byteSize = *byteSize;
+    ir.valueFacts.push_back(valueFact);
+
+    switch (roleIt->second) {
+    case BufferizedValueRole::Input:
       ++ir.inputValueCount;
       if (succeeded(byteSize))
         ir.inputByteCount += *byteSize;
       break;
-    case TensorValueRole::Temporary:
+    case BufferizedValueRole::Temporary:
       ++ir.temporaryValueCount;
       if (succeeded(byteSize))
         ir.temporaryByteCount += *byteSize;
       break;
-    case TensorValueRole::Output:
+    case BufferizedValueRole::Output:
       ++ir.outputValueCount;
       if (succeeded(byteSize))
         ir.outputByteCount += *byteSize;
       break;
     }
 
-    if (entry.second == TensorValueRole::Temporary &&
-        isVectorTemporary(entry.first, kernelId)) {
+    if (vectorTemporary) {
       ++ir.vectorTemporaryValueCount;
       if (succeeded(byteSize))
         ir.vectorTemporaryByteCount += *byteSize;

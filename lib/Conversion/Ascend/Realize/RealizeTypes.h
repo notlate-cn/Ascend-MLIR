@@ -9,6 +9,7 @@
 
 #include "Conversion/Ascend/Common/Attributes.h"
 #include "Target/Ascend/TargetProfile.h"
+#include "llvm/ADT/SmallVector.h"
 
 #include <cstdint>
 #include <string>
@@ -32,6 +33,16 @@ struct RealizeKernelView {
   unsigned scheduledOps = 0;
 };
 
+enum class BufferizedValueRole { Input, Temporary, Output };
+
+struct BufferizedValueFact {
+  unsigned valueId = 0;
+  BufferizedValueRole role = BufferizedValueRole::Input;
+  bool isVectorTemporary = false;
+  bool staticByteSizeKnown = false;
+  uint64_t byteSize = 0;
+};
+
 struct BufferizedKernelIR {
   std::string kernelId;
   std::string mode = "gm_only";
@@ -47,6 +58,7 @@ struct BufferizedKernelIR {
   uint64_t outputByteCount = 0;
   uint64_t temporaryByteCount = 0;
   uint64_t vectorTemporaryByteCount = 0;
+  llvm::SmallVector<BufferizedValueFact, 8> valueFacts;
 };
 
 struct PlacementPlan {
@@ -56,6 +68,24 @@ struct PlacementPlan {
   unsigned gmPlaceCount = 0;
   unsigned onChipPlaceCount = 0;
   unsigned deferredLocalPlaceCount = 0;
+};
+
+struct StaticMemoryLiveInterval {
+  unsigned valueId = 0;
+  unsigned start = 0;
+  unsigned end = 0;
+  MemoryPlace place = MemoryPlace::VECCALC;
+  bool staticByteSizeKnown = false;
+  uint64_t byteSize = 0;
+};
+
+struct StaticMemoryWorkspaceSlot {
+  unsigned slotId = 0;
+  unsigned valueId = 0;
+  uint64_t offset = 0;
+  MemoryPlace place = MemoryPlace::VECCALC;
+  bool staticByteSizeKnown = false;
+  uint64_t byteSize = 0;
 };
 
 struct StaticMemoryPlan {
@@ -72,6 +102,8 @@ struct StaticMemoryPlan {
   uint64_t workspaceByteCount = 0;
   uint64_t peakUsageByteCount = 0;
   bool capacityCheckDeferred = false;
+  llvm::SmallVector<StaticMemoryLiveInterval, 8> liveIntervals;
+  llvm::SmallVector<StaticMemoryWorkspaceSlot, 8> workspaceSlots;
 };
 
 struct MovementPlan {
