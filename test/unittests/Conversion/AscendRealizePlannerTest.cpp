@@ -770,6 +770,100 @@ module {
 }
 
 TEST(AscendRealizePlannerTest,
+     MemoryRealizationMaterializesMovementStepsThroughWorkspaceSubviews) {
+  MLIRContext context;
+  OwningOpRef<ModuleOp> module = parseRealizeModule(
+      context, R"mlir(
+module {
+  func.func @f(%arg0: memref<4x8xf32>, %arg1: memref<4x8xf32>)
+      attributes {ascend.normalized = true} {
+    %out = memref.alloc() : memref<4x8xf32>
+    linalg.generic {
+      indexing_maps = [
+        affine_map<(d0, d1) -> (d0, d1)>,
+        affine_map<(d0, d1) -> (d0, d1)>,
+        affine_map<(d0, d1) -> (d0, d1)>],
+      iterator_types = ["parallel", "parallel"]}
+      ins(%arg0, %arg1 : memref<4x8xf32>, memref<4x8xf32>)
+      outs(%out : memref<4x8xf32>)
+      attrs = {ascend.kernel = "kernel_0",
+               ascend.op_role = "vector",
+               ascend.schedule.decision_id = "kernel_0.decision.0",
+               ascend.schedule.structured_lowering = "loop_skeleton_v0"} {
+    ^bb0(%lhs: f32, %rhs: f32, %old: f32):
+      %sum = arith.addf %lhs, %rhs : f32
+      linalg.yield %sum : f32
+    }
+    return
+  }
+}
+)mlir");
+  ASSERT_TRUE(module);
+
+  SmallVector<RealizePlanBundle, 1> bundles;
+  bundles.push_back(makePlanBundle());
+  bundles[0].movement.mode = "movement_planning";
+  bundles[0].movement.movementDemandCount = 2;
+  bundles[0].movement.selectedPathCount = 2;
+  bundles[0].movement.pathSelectionDeferredCount = 0;
+  bundles[0].movement.materializationDeferred = true;
+
+  MovementStep lhsStep;
+  lhsStep.stepId = 0;
+  lhsStep.valueId = 0;
+  lhsStep.slotId = 0;
+  lhsStep.srcPlace = MemoryPlace::GM;
+  lhsStep.dstPlace = MemoryPlace::VECIN;
+  lhsStep.pathSelected = true;
+  lhsStep.pathSelectionDeferred = false;
+  lhsStep.staticByteSizeKnown = true;
+  lhsStep.byteSize = 128;
+  bundles[0].movement.movementSteps.push_back(lhsStep);
+
+  MovementStep rhsStep = lhsStep;
+  rhsStep.stepId = 1;
+  rhsStep.valueId = 1;
+  rhsStep.slotId = 1;
+  bundles[0].movement.movementSteps.push_back(rhsStep);
+
+  MemoryRealizationDriver driver;
+  ASSERT_TRUE(succeeded(driver.materialize(
+      *module, bundles, MemoryRealizationMode::MemorySpaceAnnotate)));
+
+  EXPECT_EQ(bundles[0].realization.mode, "memory_space_materialize");
+  EXPECT_EQ(bundles[0].realization.materializedAllocCount, 1u);
+  EXPECT_EQ(bundles[0].realization.materializedCopyCount, 2u);
+
+  unsigned vecInAllocCount = 0;
+  unsigned subviewCount = 0;
+  unsigned copyCount = 0;
+  unsigned vecInInputCount = 0;
+  module->walk([&](memref::AllocOp allocOp) {
+    auto type = cast<MemRefType>(allocOp.getType());
+    auto space = dyn_cast_or_null<IntegerAttr>(type.getMemorySpace());
+    if (space && space.getInt() ==
+                     static_cast<int64_t>(mlir::ascend::MemoryPlace::VECIN))
+      ++vecInAllocCount;
+  });
+  module->walk([&](memref::SubViewOp) { ++subviewCount; });
+  module->walk([&](memref::CopyOp) { ++copyCount; });
+  module->walk([&](linalg::LinalgOp linalgOp) {
+    for (OpOperand *input : linalgOp.getDpsInputOperands()) {
+      auto type = dyn_cast<MemRefType>(input->get().getType());
+      auto space = type ? dyn_cast_or_null<IntegerAttr>(type.getMemorySpace())
+                        : IntegerAttr();
+      if (space && space.getInt() ==
+                       static_cast<int64_t>(mlir::ascend::MemoryPlace::VECIN))
+        ++vecInInputCount;
+    }
+  });
+  EXPECT_EQ(vecInAllocCount, 1u);
+  EXPECT_EQ(subviewCount, 2u);
+  EXPECT_EQ(copyCount, 2u);
+  EXPECT_EQ(vecInInputCount, 2u);
+}
+
+TEST(AscendRealizePlannerTest,
      Phase5BridgeFailureDoesNotLeavePartialVecOutAlloc) {
   MLIRContext context;
   OwningOpRef<ModuleOp> module = parseRealizeModule(
