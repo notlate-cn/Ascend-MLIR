@@ -149,7 +149,7 @@ log "  output: $BUILD_DIR/step4_kernelized.mlir"
 echo ""
 echo "==================== [STAGE 5] Ascend schedule ===================="
 "$AFIR_OPT" "$BUILD_DIR/step4_kernelized.mlir" \
-  --ascend-schedule \
+  --ascend-schedule='target-tile-policy=legacy-default' \
   -o "$BUILD_DIR/step5_scheduled.mlir"
 log "  output: $BUILD_DIR/step5_scheduled.mlir"
 

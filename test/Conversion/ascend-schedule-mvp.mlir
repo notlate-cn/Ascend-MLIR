@@ -1,6 +1,6 @@
-// RUN: sed -n '/\/\/ POSITIVE-BEGIN/,/\/\/ POSITIVE-END/p' %s | afir-opt --ascend-normalize --ascend-kernelize --ascend-schedule='dump-report=true debug-stage=schedule' 2>&1 | FileCheck %s
-// RUN: sed -n '/\/\/ MATMUL-BEGIN/,/\/\/ MATMUL-END/p' %s | afir-opt --ascend-normalize --ascend-kernelize --ascend-schedule='dump-report=true debug-stage=schedule' 2>&1 | FileCheck %s --check-prefix=MATMUL
-// RUN: sed -n '/\/\/ MISSING-KERNEL-BEGIN/,/\/\/ MISSING-KERNEL-END/p' %s | not afir-opt --ascend-schedule 2>&1 | FileCheck %s --check-prefix=MISSING-KERNEL
+// RUN: sed -n '/\/\/ POSITIVE-BEGIN/,/\/\/ POSITIVE-END/p' %s | afir-opt --ascend-normalize --ascend-kernelize --ascend-schedule='target-tile-policy=legacy-default dump-report=true debug-stage=schedule' 2>&1 | FileCheck %s
+// RUN: sed -n '/\/\/ MATMUL-BEGIN/,/\/\/ MATMUL-END/p' %s | afir-opt --ascend-normalize --ascend-kernelize --ascend-schedule='target-tile-policy=legacy-default dump-report=true debug-stage=schedule' 2>&1 | FileCheck %s --check-prefix=MATMUL
+// RUN: sed -n '/\/\/ MISSING-KERNEL-BEGIN/,/\/\/ MISSING-KERNEL-END/p' %s | not afir-opt --ascend-schedule='target-tile-policy=legacy-default' 2>&1 | FileCheck %s --check-prefix=MISSING-KERNEL
 
 // POSITIVE-BEGIN
 func.func @elementwise(%arg0: tensor<64xf16>, %arg1: tensor<64xf16>) -> tensor<64xf16> {

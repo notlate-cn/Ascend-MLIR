@@ -1,4 +1,4 @@
-// RUN: afir-opt %s --ascend-normalize --ascend-kernelize --ascend-schedule | FileCheck %s
+// RUN: afir-opt %s --ascend-normalize --ascend-kernelize --ascend-schedule='target-tile-policy=legacy-default' | FileCheck %s
 
 func.func @two_independent_kernels(%a: tensor<64xf16>,
                                    %b: tensor<64xf16>,

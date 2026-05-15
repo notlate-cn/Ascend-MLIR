@@ -1,4 +1,4 @@
-// RUN: afir-opt --ascend-normalize --ascend-kernelize --ascend-schedule %s | FileCheck %s
+// RUN: afir-opt --ascend-normalize --ascend-kernelize --ascend-schedule='target-tile-policy=legacy-default' %s | FileCheck %s
 
 func.func @elementwise(%arg0: tensor<64xf16>, %arg1: tensor<64xf16>) -> tensor<64xf16> {
   %empty = tensor.empty() : tensor<64xf16>
