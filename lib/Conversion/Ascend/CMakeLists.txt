@@ -16,6 +16,7 @@ add_mlir_library(AscendConversion
   Kernelize/DependencyAnalysis.cpp
   Kernelize/FusionCandidateAnalysis.cpp
   Kernelize/HorizontalFusionAnalysis.cpp
+  Kernelize/KernelizeExternalModels.cpp
   Kernelize/KernelizeFamilyResolver.cpp
   Kernelize/KernelizeOpInterface.cpp
   Kernelize/KernelPattern.cpp
@@ -40,6 +41,7 @@ add_mlir_library(AscendConversion
 
   DEPENDS
   AFIRConversionPassIncGen
+  AscendKernelizeOpInterfacesIncGen
 
   LINK_LIBS PUBLIC
   MLIRArithDialect

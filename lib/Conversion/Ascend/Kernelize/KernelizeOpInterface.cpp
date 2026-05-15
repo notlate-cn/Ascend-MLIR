@@ -8,6 +8,9 @@
 
 #include "Conversion/Ascend/Common/Attributes.h"
 
+#include "Conversion/Ascend/Kernelize/KernelizeOpInterfaces.cpp.inc"
+#include "llvm/Support/Casting.h"
+
 namespace mlir::afir::ascend::kernelize {
 namespace {
 
@@ -34,6 +37,17 @@ void KernelizeOpModelRegistry::registerModel(KernelizeOpModel model) {
 
 FailureOr<KernelizeOpSemanticInfo>
 KernelizeOpModelRegistry::resolve(Operation *op) const {
+  if (auto iface = llvm::dyn_cast<KernelizeSemanticOpInterface>(op)) {
+    KernelizeOpSemanticInfo info;
+    info.modelName.clear();
+    if (failed(iface.populateKernelizeSemanticInfo(info)))
+      return failure();
+    if (info.modelName.empty())
+      info.modelName = "native_op_interface";
+    appendDefaultPreferredTemplateFamilies(info);
+    return info;
+  }
+
   for (const KernelizeOpModel &model : models) {
     if (!model.match || !model.match(op))
       continue;

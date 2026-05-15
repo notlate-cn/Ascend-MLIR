@@ -16,6 +16,7 @@
 #include "Conversion/LinalgToAscendC/LinalgToAscendCPass.h"
 #include "Conversion/AscendCParallelize/AscendCParallelizePass.h"
 #include "Conversion/AscendCPrepareForEmit/AscendCPrepareForEmitPass.h"
+#include "Conversion/Ascend/Kernelize/KernelizeExternalModels.h"
 #include "Conversion/Ascend/Kernelize/KernelizePass.h"
 #include "Conversion/Ascend/Normalize/NormalizePass.h"
 #include "Conversion/Ascend/Realize/RealizePass.h"

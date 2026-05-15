@@ -8,6 +8,7 @@
 #define ASCEND_MLIR_CONVERSION_ASCEND_KERNELIZE_KERNELIZEOPINTERFACE_H
 
 #include "mlir/IR/AffineMap.h"
+#include "mlir/IR/OpDefinition.h"
 #include "mlir/IR/Operation.h"
 #include "mlir/Support/LogicalResult.h"
 #include "llvm/ADT/SmallVector.h"
@@ -97,5 +98,7 @@ llvm::StringRef stringifyKernelizeSemanticTrait(KernelizeSemanticTrait trait);
 llvm::StringRef stringifyKernelizeSeedPolicy(KernelizeSeedPolicy policy);
 
 } // namespace mlir::afir::ascend::kernelize
+
+#include "Conversion/Ascend/Kernelize/KernelizeOpInterfaces.h.inc"
 
 #endif // ASCEND_MLIR_CONVERSION_ASCEND_KERNELIZE_KERNELIZEOPINTERFACE_H

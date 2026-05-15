@@ -8,8 +8,10 @@
 
 #include "gtest/gtest.h"
 #include "mlir/IR/Builders.h"
+#include "mlir/IR/Dialect.h"
 #include "mlir/IR/Location.h"
 #include "mlir/IR/MLIRContext.h"
+#include "mlir/IR/OpDefinition.h"
 #include "mlir/IR/Operation.h"
 #include "mlir/IR/OperationSupport.h"
 
@@ -36,8 +38,48 @@ private:
   Operation *op = nullptr;
 };
 
+class NativeAnalyzeOp
+    : public Op<NativeAnalyzeOp, OpTrait::ZeroOperands,
+                OpTrait::ZeroResults, OpTrait::ZeroRegions> {
+public:
+  using Op::Op;
+  static StringRef getOperationName() { return "native_test.analyze"; }
+  static ArrayRef<StringRef> getAttributeNames() { return {}; }
+};
+
+class NativeTestDialect : public Dialect {
+public:
+  static StringRef getDialectNamespace() { return "native_test"; }
+
+  explicit NativeTestDialect(MLIRContext *context)
+      : Dialect("native_test", context, TypeID::get<NativeTestDialect>()) {
+    addOperations<NativeAnalyzeOp>();
+  }
+};
+
+struct NativeAnalyzeKernelizeModel
+    : public KernelizeSemanticOpInterface::ExternalModel<
+          NativeAnalyzeKernelizeModel, NativeAnalyzeOp> {
+  LogicalResult
+  populateKernelizeSemanticInfo(Operation *,
+                                KernelizeOpSemanticInfo &info) const {
+    info.participation = KernelizeParticipationKind::Analyze;
+    info.accessPattern = AccessPatternKind::Elementwise;
+    info.seedPolicy = KernelizeSeedPolicy::MaySeed;
+    info.iteratorKinds.push_back(IteratorKind::Parallel);
+    info.resultRanks.push_back(1);
+    info.traits.push_back(KernelizeSemanticTrait::Structured);
+    info.modelName = "native_test_interface";
+    return success();
+  }
+};
+
 bool matchTestAnalyze(Operation *op) {
   return op->getName().getStringRef() == "test.analyze";
+}
+
+bool matchNativeAnalyze(Operation *op) {
+  return op->getName().getStringRef() == NativeAnalyzeOp::getOperationName();
 }
 
 LogicalResult populateTestAnalyze(Operation *, KernelizeOpSemanticInfo &info) {
@@ -49,6 +91,14 @@ LogicalResult populateTestAnalyze(Operation *, KernelizeOpSemanticInfo &info) {
   info.traits.push_back(KernelizeSemanticTrait::Structured);
   info.transparentOperandIndices.push_back(0);
   info.modelName = "test_model";
+  return success();
+}
+
+LogicalResult populateNativeFallback(Operation *, KernelizeOpSemanticInfo &info) {
+  info.participation = KernelizeParticipationKind::Analyze;
+  info.accessPattern = AccessPatternKind::Reduction;
+  info.seedPolicy = KernelizeSeedPolicy::NonSeedWhenFused;
+  info.modelName = "fallback_model";
   return success();
 }
 
@@ -78,6 +128,30 @@ TEST(AscendKernelizeOpInterfaceTest, RegistryResolvesRegisteredModel) {
   ASSERT_EQ(info->transparentOperandIndices.size(), 1u);
   EXPECT_EQ(info->transparentOperandIndices.front(), 0u);
   EXPECT_EQ(info->modelName, "test_model");
+}
+
+TEST(AscendKernelizeOpInterfaceTest, RegistryPrefersNativeInterfaceModel) {
+  MLIRContext context;
+  context.getOrLoadDialect<NativeTestDialect>();
+  NativeAnalyzeOp::attachInterface<NativeAnalyzeKernelizeModel>(context);
+  Operation *op =
+      Operation::create(OperationState(UnknownLoc::get(&context),
+                                       NativeAnalyzeOp::getOperationName()));
+
+  KernelizeOpModelRegistry registry;
+  registry.registerModel(
+      {"fallback_model", matchNativeAnalyze, populateNativeFallback});
+
+  FailureOr<KernelizeOpSemanticInfo> info =
+      registry.resolve(op);
+
+  op->destroy();
+
+  ASSERT_TRUE(succeeded(info));
+  EXPECT_EQ(info->participation, KernelizeParticipationKind::Analyze);
+  EXPECT_EQ(info->accessPattern, AccessPatternKind::Elementwise);
+  EXPECT_EQ(info->seedPolicy, KernelizeSeedPolicy::MaySeed);
+  EXPECT_EQ(info->modelName, "native_test_interface");
 }
 
 TEST(AscendKernelizeOpInterfaceTest, RegistryReportsUnsupportedByDefault) {
