@@ -193,6 +193,13 @@ struct Phase5CubeBridge {
   std::string kernelId;
 };
 
+struct MovementMaterializationItem {
+  const MovementStep *step = nullptr;
+  Value source;
+  SmallVector<OpOperand *, 4> uses;
+  Operation *firstUser = nullptr;
+};
+
 static void addMaterializationCounts(Phase5BridgeMaterializationCounts &lhs,
                                      const Phase5BridgeMaterializationCounts
                                          &rhs) {
@@ -450,6 +457,127 @@ static memref::AllocOp createMemorySpaceAllocLike(IRRewriter &rewriter,
   return rewriter.create<memref::AllocOp>(loc, allocType, dynamicSizes);
 }
 
+static bool isStaticIdentityMemRef(Value value) {
+  auto type = dyn_cast<MemRefType>(value.getType());
+  return type && type.hasStaticShape() && type.getLayout().isIdentity();
+}
+
+static bool canShareMovementWorkspace(const MovementMaterializationItem &lhs,
+                                      const MovementMaterializationItem &rhs) {
+  if (!lhs.step || !rhs.step || lhs.step->dstPlace != rhs.step->dstPlace)
+    return false;
+  if (!lhs.firstUser || !rhs.firstUser ||
+      lhs.firstUser->getBlock() != rhs.firstUser->getBlock())
+    return false;
+  if (!isStaticIdentityMemRef(lhs.source) ||
+      !isStaticIdentityMemRef(rhs.source))
+    return false;
+
+  auto lhsType = cast<MemRefType>(lhs.source.getType());
+  auto rhsType = cast<MemRefType>(rhs.source.getType());
+  return lhsType.getShape() == rhsType.getShape() &&
+         lhsType.getElementType() == rhsType.getElementType();
+}
+
+static Operation *
+getEarliestUserInBlock(ArrayRef<MovementMaterializationItem> items) {
+  Operation *earliest = items.front().firstUser;
+  for (const MovementMaterializationItem &item : items)
+    if (item.firstUser->isBeforeInBlock(earliest))
+      earliest = item.firstUser;
+  return earliest;
+}
+
+static memref::AllocOp createMovementWorkspaceAlloc(
+    IRRewriter &rewriter, Location loc,
+    ArrayRef<MovementMaterializationItem> items, Attribute memorySpace) {
+  auto sourceType = cast<MemRefType>(items.front().source.getType());
+  SmallVector<int64_t, 4> workspaceShape;
+  workspaceShape.push_back(items.size());
+  for (int64_t dim : sourceType.getShape())
+    workspaceShape.push_back(dim);
+
+  auto workspaceType = MemRefType::get(workspaceShape,
+                                       sourceType.getElementType(),
+                                       MemRefLayoutAttrInterface{},
+                                       memorySpace);
+  return rewriter.create<memref::AllocOp>(loc, workspaceType);
+}
+
+static Value createMovementWorkspaceSubview(IRRewriter &rewriter, Location loc,
+                                            Value workspace, unsigned index,
+                                            MemRefType sourceType) {
+  auto workspaceType = cast<MemRefType>(workspace.getType());
+  SmallVector<OpFoldResult, 4> offsets;
+  SmallVector<OpFoldResult, 4> sizes;
+  SmallVector<OpFoldResult, 4> strides;
+
+  offsets.push_back(rewriter.getIndexAttr(index));
+  sizes.push_back(rewriter.getIndexAttr(1));
+  strides.push_back(rewriter.getIndexAttr(1));
+  for (int64_t dim : sourceType.getShape()) {
+    offsets.push_back(rewriter.getIndexAttr(0));
+    sizes.push_back(rewriter.getIndexAttr(dim));
+    strides.push_back(rewriter.getIndexAttr(1));
+  }
+
+  MemRefType subviewType = memref::SubViewOp::inferRankReducedResultType(
+      sourceType.getShape(), workspaceType, offsets, sizes, strides);
+  return rewriter
+      .create<memref::SubViewOp>(loc, subviewType, workspace, offsets, sizes,
+                                 strides)
+      .getResult();
+}
+
+static LogicalResult materializeSingleMovementItem(
+    IRRewriter &rewriter, const MovementMaterializationItem &item,
+    Attribute targetSpace, Phase5BridgeMaterializationCounts &counts) {
+  rewriter.setInsertionPoint(item.firstUser);
+  memref::AllocOp localAlloc = createMemorySpaceAllocLike(
+      rewriter, item.firstUser->getLoc(), item.source, targetSpace);
+  rewriter.create<memref::CopyOp>(item.firstUser->getLoc(), item.source,
+                                  localAlloc.getResult());
+  for (OpOperand *use : item.uses)
+    use->set(localAlloc.getResult());
+
+  auto localType = cast<MemRefType>(localAlloc.getType());
+  if (!hasMemorySpace(localType, item.step->dstPlace))
+    return failure();
+
+  ++counts.materializedAllocCount;
+  ++counts.materializedCopyCount;
+  return success();
+}
+
+static LogicalResult materializeMovementWorkspaceGroup(
+    IRRewriter &rewriter, ArrayRef<MovementMaterializationItem> items,
+    Attribute targetSpace, Phase5BridgeMaterializationCounts &counts) {
+  Operation *firstUser = getEarliestUserInBlock(items);
+  rewriter.setInsertionPoint(firstUser);
+  memref::AllocOp workspace =
+      createMovementWorkspaceAlloc(rewriter, firstUser->getLoc(), items,
+                                   targetSpace);
+
+  if (!hasMemorySpace(cast<MemRefType>(workspace.getType()),
+                      items.front().step->dstPlace))
+    return failure();
+
+  for (unsigned i = 0, e = items.size(); i < e; ++i) {
+    const MovementMaterializationItem &item = items[i];
+    auto sourceType = cast<MemRefType>(item.source.getType());
+    Value localView = createMovementWorkspaceSubview(
+        rewriter, firstUser->getLoc(), workspace.getResult(), i, sourceType);
+    rewriter.create<memref::CopyOp>(firstUser->getLoc(), item.source,
+                                    localView);
+    for (OpOperand *use : item.uses)
+      use->set(localView);
+    ++counts.materializedCopyCount;
+  }
+
+  ++counts.materializedAllocCount;
+  return success();
+}
+
 static bool isBridgeableCubeMatmul(linalg::MatmulOp matmulOp) {
   if (!isCubeOp(matmulOp.getOperation()))
     return false;
@@ -645,6 +773,7 @@ MemoryRealizationDriver::materializeMovementSteps(
 
     SmallVector<Value, 4> sources =
         collectGmMovementSources(module, kernelId);
+    SmallVector<MovementMaterializationItem, 8> items;
     for (const MovementStep &step : bundle.movement.movementSteps) {
       if (!step.pathSelected || step.pathSelectionDeferred ||
           step.srcPlace != MemoryPlace::GM)
@@ -659,22 +788,40 @@ MemoryRealizationDriver::materializeMovementSteps(
                                            firstUser)))
         return failure();
 
-      Attribute targetSpace =
-          getMemorySpaceAttr(context, static_cast<int64_t>(step.dstPlace));
-      rewriter.setInsertionPoint(firstUser);
-      memref::AllocOp localAlloc = createMemorySpaceAllocLike(
-          rewriter, firstUser->getLoc(), source, targetSpace);
-      rewriter.create<memref::CopyOp>(firstUser->getLoc(), source,
-                                      localAlloc.getResult());
-      for (OpOperand *use : uses)
-        use->set(localAlloc.getResult());
+      items.push_back({&step, source, std::move(uses), firstUser});
+    }
 
-      auto localType = cast<MemRefType>(localAlloc.getType());
-      if (!hasMemorySpace(localType, step.dstPlace))
+    SmallVector<bool, 8> materialized(items.size(), false);
+    for (unsigned i = 0, e = items.size(); i < e; ++i) {
+      if (materialized[i])
+        continue;
+
+      Attribute targetSpace = getMemorySpaceAttr(
+          context, static_cast<int64_t>(items[i].step->dstPlace));
+      SmallVector<MovementMaterializationItem, 4> group;
+      SmallVector<unsigned, 4> groupIndices;
+      group.push_back(items[i]);
+      groupIndices.push_back(i);
+      for (unsigned j = i + 1; j < e; ++j) {
+        if (materialized[j] || !canShareMovementWorkspace(items[i], items[j]))
+          continue;
+        group.push_back(items[j]);
+        groupIndices.push_back(j);
+      }
+
+      if (group.size() > 1) {
+        if (failed(materializeMovementWorkspaceGroup(
+                rewriter, group, targetSpace, counts[kernelId])))
+          return failure();
+        for (unsigned index : groupIndices)
+          materialized[index] = true;
+        continue;
+      }
+
+      if (failed(materializeSingleMovementItem(rewriter, items[i], targetSpace,
+                                               counts[kernelId])))
         return failure();
-
-      ++counts[kernelId].materializedAllocCount;
-      ++counts[kernelId].materializedCopyCount;
+      materialized[i] = true;
     }
   }
 
