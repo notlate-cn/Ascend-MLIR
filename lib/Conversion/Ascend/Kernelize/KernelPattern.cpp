@@ -33,6 +33,11 @@ using namespace mlir;
 namespace mlir::afir::ascend::kernelize {
 namespace {
 
+constexpr const char kMustCoLocateGroupAttr[] =
+    "ascend.kernelize.must_colocate_group";
+constexpr const char kMustSeparateGroupAttr[] =
+    "ascend.kernelize.must_separate_group";
+
 struct CandidateBuildRecord {
   KernelPatternCandidate candidate;
   unsigned sourceId = 0;
@@ -117,6 +122,30 @@ void sortEdges(SmallVectorImpl<KernelPatternEdge> &edges) {
     return std::make_tuple(lhs.from, lhs.to, static_cast<unsigned>(lhs.kind)) <
            std::make_tuple(rhs.from, rhs.to, static_cast<unsigned>(rhs.kind));
   });
+}
+
+SmallVector<int64_t, 2>
+collectIntegerGroups(const KernelPatternCandidate &candidate,
+                     StringRef attrName) {
+  SmallVector<int64_t, 2> groups;
+  for (Operation *op : candidate.internalOps) {
+    auto attr = op->getAttrOfType<IntegerAttr>(attrName);
+    if (!attr)
+      continue;
+    int64_t group = attr.getInt();
+    if (!llvm::is_contained(groups, group))
+      groups.push_back(group);
+  }
+  llvm::sort(groups);
+  return groups;
+}
+
+bool sharesIntegerGroup(ArrayRef<int64_t> lhs, ArrayRef<int64_t> rhs) {
+  for (int64_t group : lhs) {
+    if (llvm::is_contained(rhs, group))
+      return true;
+  }
+  return false;
 }
 
 KernelPatternCandidate buildCandidateFromFusion(
@@ -468,6 +497,28 @@ KernelPatternGraph KernelPatternBuilder::build(
           appendEdge(graph.edges, seenEdges, from, to,
                      KernelPatternEdgeKind::DataDependency, carriedValue);
       }
+    }
+  }
+
+  SmallVector<SmallVector<int64_t, 2>, 0> coLocateGroups;
+  SmallVector<SmallVector<int64_t, 2>, 0> separateGroups;
+  coLocateGroups.reserve(graph.nodes.size());
+  separateGroups.reserve(graph.nodes.size());
+  for (const KernelPatternCandidate &candidate : graph.nodes) {
+    coLocateGroups.push_back(
+        collectIntegerGroups(candidate, kMustCoLocateGroupAttr));
+    separateGroups.push_back(
+        collectIntegerGroups(candidate, kMustSeparateGroupAttr));
+  }
+
+  for (unsigned from = 0; from < graph.nodes.size(); ++from) {
+    for (unsigned to = from + 1; to < graph.nodes.size(); ++to) {
+      if (sharesIntegerGroup(coLocateGroups[from], coLocateGroups[to]))
+        appendEdge(graph.edges, seenEdges, from, to,
+                   KernelPatternEdgeKind::MustCoLocate);
+      if (sharesIntegerGroup(separateGroups[from], separateGroups[to]))
+        appendEdge(graph.edges, seenEdges, from, to,
+                   KernelPatternEdgeKind::MustSeparate);
     }
   }
 

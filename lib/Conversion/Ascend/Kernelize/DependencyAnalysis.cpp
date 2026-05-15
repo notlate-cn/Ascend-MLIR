@@ -14,6 +14,7 @@
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/Operation.h"
 #include "mlir/IR/Value.h"
+#include "llvm/ADT/DenseSet.h"
 #include "mlir/Support/LLVM.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallVector.h"
@@ -310,6 +311,28 @@ void sortAndUniqueByOpId(SmallVectorImpl<Operation *> &ops,
   ops.erase(std::unique(ops.begin(), ops.end()), ops.end());
 }
 
+void collectAnalyzedProducers(Value value, const ProducerConsumerIndex &index,
+                              SmallVectorImpl<Operation *> &producers,
+                              DenseSet<Operation *> &visited) {
+  Operation *producer = value.getDefiningOp();
+  if (!producer)
+    return;
+
+  if (index.opIds.contains(producer)) {
+    producers.push_back(producer);
+    return;
+  }
+
+  if (!visited.insert(producer).second || producer->getNumRegions() != 0)
+    return;
+
+  for (Value operand : producer->getOperands()) {
+    if (!isa<TensorType>(operand.getType()))
+      continue;
+    collectAnalyzedProducers(operand, index, producers, visited);
+  }
+}
+
 } // namespace
 
 FailureOr<DependencyAnalysisResult>
@@ -330,12 +353,15 @@ DependencyAnalyzer::analyze(ModuleOp module) const {
     result.summaries.try_emplace(op, buildSemanticSummary(op, opId));
 
     for (Value operand : op->getOperands()) {
-      Operation *producer = operand.getDefiningOp();
-      if (!producer || !result.index.opIds.contains(producer))
-        continue;
-
-      result.index.producers[op].push_back(producer);
-      result.index.consumers[producer].push_back(op);
+      SmallVector<Operation *, 4> operandProducers;
+      DenseSet<Operation *> visited;
+      collectAnalyzedProducers(operand, result.index, operandProducers,
+                               visited);
+      sortAndUniqueByOpId(operandProducers, result.index.opIds);
+      for (Operation *producer : operandProducers) {
+        result.index.producers[op].push_back(producer);
+        result.index.consumers[producer].push_back(op);
+      }
     }
   }
 

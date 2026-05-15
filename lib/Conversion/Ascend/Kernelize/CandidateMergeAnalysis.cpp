@@ -29,6 +29,15 @@ namespace {
 
 using CandidatePair = std::pair<unsigned, unsigned>;
 
+struct MergeSource {
+  SmallVector<unsigned, 4> sourceCandidateIds;
+  SmallVector<Operation *, 8> internalOps;
+  SmallVector<Operation *, 4> primaryOps;
+  SmallVector<KernelizePrimitiveKind, 4> primitiveCombo;
+  ScheduleContract scheduleContract;
+  int64_t benefitScore = 0;
+};
+
 uint64_t packPair(unsigned lhs, unsigned rhs) {
   return (static_cast<uint64_t>(lhs) << 32) | rhs;
 }
@@ -80,10 +89,8 @@ std::optional<StringRef> resolveTableFamily(ArrayRef<std::string> lhsFamilies,
 }
 
 SmallVector<std::string, 2>
-resolveTemplateFamilies(const FusionCandidate &lhs,
-                        const FusionCandidate &rhs) {
-  ArrayRef<std::string> lhsFamilies = lhs.scheduleContract.templateFamilies;
-  ArrayRef<std::string> rhsFamilies = rhs.scheduleContract.templateFamilies;
+resolveTemplateFamilies(ArrayRef<std::string> lhsFamilies,
+                        ArrayRef<std::string> rhsFamilies) {
   SmallVector<std::string, 2> resolved;
 
   if (std::optional<StringRef> tableFamily =
@@ -101,12 +108,19 @@ resolveTemplateFamilies(const FusionCandidate &lhs,
   return resolved;
 }
 
+bool containsString(ArrayRef<std::string> values, StringRef value) {
+  for (const std::string &existing : values)
+    if (existing == value)
+      return true;
+  return false;
+}
+
 DenseMap<Operation *, SmallVector<unsigned>>
-buildCoveringCandidateIds(ArrayRef<const FusionCandidate *> legalCandidates) {
+buildCoveringSourceIds(ArrayRef<MergeSource> sources) {
   DenseMap<Operation *, SmallVector<unsigned>> coveringCandidateIds;
-  for (const FusionCandidate *candidate : legalCandidates) {
-    for (Operation *op : candidate->internalOps)
-      coveringCandidateIds[op].push_back(candidate->candidateId);
+  for (auto [sourceId, source] : llvm::enumerate(sources)) {
+    for (Operation *op : source.internalOps)
+      coveringCandidateIds[op].push_back(static_cast<unsigned>(sourceId));
   }
 
   for (auto &entry : coveringCandidateIds)
@@ -152,20 +166,71 @@ collectAdjacentCandidatePairs(
   return pairs;
 }
 
-MergedCandidate buildMergedCandidate(const FusionCandidate &lhs,
-                                     const FusionCandidate &rhs,
+std::string buildSourceKey(const MergeSource &source,
+                           const ProducerConsumerIndex &index) {
+  std::string key;
+  llvm::raw_string_ostream os(key);
+  os << "ops:";
+  for (Operation *op : source.internalOps)
+    os << index.opIds.lookup(op).value << ",";
+  os << "|primary:";
+  for (Operation *op : source.primaryOps)
+    os << index.opIds.lookup(op).value << ",";
+  os << "|families:";
+  for (const std::string &family : source.scheduleContract.templateFamilies)
+    os << family << ",";
+  return os.str();
+}
+
+void appendUniqueCandidateIds(SmallVectorImpl<unsigned> &ids,
+                              ArrayRef<unsigned> newIds) {
+  ids.append(newIds.begin(), newIds.end());
+  sortUniqueCandidateIds(ids);
+}
+
+MergeSource buildMergeSource(const FusionCandidate &candidate) {
+  MergeSource source;
+  source.sourceCandidateIds.push_back(candidate.candidateId);
+  source.internalOps.append(candidate.internalOps.begin(),
+                            candidate.internalOps.end());
+  source.primaryOps.append(candidate.primaryOps.begin(),
+                           candidate.primaryOps.end());
+  source.primitiveCombo.push_back(candidate.primitive);
+  source.scheduleContract = candidate.scheduleContract;
+  source.benefitScore = candidate.benefitScore;
+  return source;
+}
+
+MergeSource buildMergeSource(const MergedCandidate &candidate) {
+  MergeSource source;
+  source.sourceCandidateIds.append(candidate.sourceCandidateIds.begin(),
+                                   candidate.sourceCandidateIds.end());
+  source.internalOps.append(candidate.internalOps.begin(),
+                            candidate.internalOps.end());
+  source.primaryOps.append(candidate.primaryOps.begin(),
+                           candidate.primaryOps.end());
+  source.primitiveCombo.append(candidate.primitiveCombo.begin(),
+                               candidate.primitiveCombo.end());
+  source.scheduleContract = candidate.scheduleContract;
+  source.benefitScore = candidate.benefitScore;
+  return source;
+}
+
+MergedCandidate buildMergedCandidate(const MergeSource &lhs,
+                                     const MergeSource &rhs,
                                      const DependencyAnalysisResult &deps,
                                      const KernelizeConfig &config) {
   MergedCandidate merged;
-  merged.sourceCandidateIds.push_back(lhs.candidateId);
-  merged.sourceCandidateIds.push_back(rhs.candidateId);
+  appendUniqueCandidateIds(merged.sourceCandidateIds, lhs.sourceCandidateIds);
+  appendUniqueCandidateIds(merged.sourceCandidateIds, rhs.sourceCandidateIds);
 
-  for (const FusionCandidate *source : {&lhs, &rhs}) {
+  for (const MergeSource *source : {&lhs, &rhs}) {
     merged.primaryOps.append(source->primaryOps.begin(),
                              source->primaryOps.end());
     merged.internalOps.append(source->internalOps.begin(),
                               source->internalOps.end());
-    merged.primitiveCombo.push_back(source->primitive);
+    merged.primitiveCombo.append(source->primitiveCombo.begin(),
+                                 source->primitiveCombo.end());
     merged.benefitScore += source->benefitScore;
   }
 
@@ -188,7 +253,9 @@ MergedCandidate buildMergedCandidate(const FusionCandidate &lhs,
     return merged;
   }
 
-  merged.scheduleContract.templateFamilies = resolveTemplateFamilies(lhs, rhs);
+  merged.scheduleContract.templateFamilies = resolveTemplateFamilies(
+      lhs.scheduleContract.templateFamilies,
+      rhs.scheduleContract.templateFamilies);
   if (merged.scheduleContract.templateFamilies.empty()) {
     merged.rejectionReason = "TemplateFamilyUnavailable";
     return merged;
@@ -242,35 +309,48 @@ SmallVector<MergedCandidate>
 CandidateMergeAnalyzer::analyze(ArrayRef<FusionCandidate> candidates,
                                 const DependencyAnalysisResult &deps,
                                 const KernelizeConfig &config) const {
-  SmallVector<const FusionCandidate *> legalCandidates;
-  DenseMap<unsigned, const FusionCandidate *> candidatesById;
+  SmallVector<MergeSource, 8> sources;
+  SmallVector<std::string, 16> seenSourceKeys;
   for (const FusionCandidate &candidate : candidates) {
     if (!candidate.legal || candidate.kind != CandidateKind::Fusion)
       continue;
-    legalCandidates.push_back(&candidate);
-    candidatesById.try_emplace(candidate.candidateId, &candidate);
+    sources.push_back(buildMergeSource(candidate));
   }
 
-  DenseMap<Operation *, SmallVector<unsigned>> coveringCandidateIds =
-      buildCoveringCandidateIds(legalCandidates);
-  SmallVector<CandidatePair> pairs =
-      collectAdjacentCandidatePairs(deps.index, coveringCandidateIds);
+  for (const MergeSource &source : sources)
+    seenSourceKeys.push_back(buildSourceKey(source, deps.index));
 
   SmallVector<MergedCandidate> mergedCandidates;
-  for (auto [lhsId, rhsId] : pairs) {
-    const FusionCandidate *lhs = candidatesById.lookup(lhsId);
-    const FusionCandidate *rhs = candidatesById.lookup(rhsId);
-    if (!lhs || !rhs)
-      continue;
+  bool changed = true;
+  while (changed) {
+    changed = false;
+    DenseMap<Operation *, SmallVector<unsigned>> coveringCandidateIds =
+        buildCoveringSourceIds(sources);
+    SmallVector<CandidatePair> pairs =
+        collectAdjacentCandidatePairs(deps.index, coveringCandidateIds);
 
-    MergedCandidate merged =
-        buildMergedCandidate(*lhs, *rhs, deps, config);
-    if (!merged.legal)
-      continue;
+    SmallVector<MergeSource, 8> newSources;
+    for (auto [lhsId, rhsId] : pairs) {
+      if (lhsId >= sources.size() || rhsId >= sources.size())
+        continue;
 
-    merged.mergedCandidateId =
-        static_cast<unsigned>(mergedCandidates.size());
-    mergedCandidates.push_back(std::move(merged));
+      MergedCandidate merged =
+          buildMergedCandidate(sources[lhsId], sources[rhsId], deps, config);
+      if (!merged.legal)
+        continue;
+
+      MergeSource mergedSource = buildMergeSource(merged);
+      std::string sourceKey = buildSourceKey(mergedSource, deps.index);
+      if (containsString(seenSourceKeys, sourceKey))
+        continue;
+      seenSourceKeys.push_back(sourceKey);
+
+      merged.mergedCandidateId = static_cast<unsigned>(mergedCandidates.size());
+      mergedCandidates.push_back(std::move(merged));
+      newSources.push_back(std::move(mergedSource));
+      changed = true;
+    }
+    sources.append(newSources.begin(), newSources.end());
   }
 
   return mergedCandidates;

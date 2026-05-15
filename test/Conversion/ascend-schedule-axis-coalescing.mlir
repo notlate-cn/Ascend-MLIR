@@ -323,8 +323,7 @@ func.func @manual_reduction_with_singleton_vector_epilogue(
     outs(%init : tensor<4x1xf32>)
     attrs = {
       ascend.kernel = "kernel_0",
-      ascend.op_role = "reduction",
-      ascend.primary = true
+      ascend.op_role = "reduction"
     } {
   ^bb0(%x: f32, %acc: f32):
     %sum = arith.addf %acc, %x : f32
@@ -338,7 +337,8 @@ func.func @manual_reduction_with_singleton_vector_epilogue(
     outs(%init : tensor<4x1xf32>)
     attrs = {
       ascend.kernel = "kernel_0",
-      ascend.op_role = "vector"
+      ascend.op_role = "vector",
+      ascend.primary = true
     } {
   ^bb0(%x: f32, %o: f32):
     %v = arith.divf %x, %scale : f32
@@ -545,6 +545,11 @@ func.func @manual_axis_static_extent_conflict(
 // TARGETGATHER-NEXT: axis=1 kind=parallel roles=[bind_core,kernel_loop,vectorize] tail=masked_tail group=1 allowed_tail=[masked_tail,scalar_epilogue,pad_and_mask] primitive_uses=[data_copy,vector_compute,write_back,gather_index] semantic_align=8
 // TARGETGATHER-NEXT: ]
 
+// POSTREDUCE: SchedulePatternView:
+// POSTREDUCE-NEXT: kernel = kernel_0
+// POSTREDUCE-NEXT: ops = 2
+// POSTREDUCE-NEXT: primary_ops = 1
+// POSTREDUCE-NEXT: dominant_role = reduction
 // POSTREDUCE: AxisCoalescing:
 // POSTREDUCE-NEXT: kernel = kernel_0
 // POSTREDUCE-NEXT: logical_axes = 2
