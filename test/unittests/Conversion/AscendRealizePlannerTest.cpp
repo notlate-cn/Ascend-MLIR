@@ -673,6 +673,32 @@ TEST(AscendRealizePlannerTest,
   EXPECT_EQ(plan->movementSteps[0].pathVariant, 0u);
 }
 
+TEST(AscendRealizePlannerTest,
+     MovementPlannerDoesNotInventDynamicViewChainCounts) {
+  PlacementPlan placement;
+  placement.kernelId = "kernel_0";
+  placement.selectedPlaceCount = 1;
+  placement.onChipPlaceCount = 1;
+
+  StaticMemoryPlan staticMemory;
+  staticMemory.kernelId = "kernel_0";
+  staticMemory.trackedPlaceCount = 1;
+  staticMemory.workspaceSlotCount = 1;
+  StaticMemoryWorkspaceSlot slot;
+  slot.slotId = 0;
+  slot.valueId = 0;
+  slot.place = MemoryPlace::VECIN;
+  slot.staticByteSizeKnown = true;
+  slot.byteSize = 128;
+  staticMemory.workspaceSlots.push_back(slot);
+
+  MovementPlanner planner;
+  FailureOr<MovementPlan> plan = planner.build(placement, staticMemory);
+  ASSERT_TRUE(succeeded(plan));
+  EXPECT_EQ(plan->dynamicViewChainRewriteCount, 0u);
+  EXPECT_EQ(plan->deferredViewChainRewriteCount, 0u);
+}
+
 TEST(AscendRealizePlannerTest, MovementPlannerRejectsMismatchedKernelId) {
   PlacementPlan placement = makePlacementPlan();
   StaticMemoryPlan staticMemory = makeStaticMemoryPlan();

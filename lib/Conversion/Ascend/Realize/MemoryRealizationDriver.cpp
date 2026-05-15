@@ -204,6 +204,7 @@ struct MovementMaterializationItem {
   Value source;
   SmallVector<MovementUseRewrite, 4> uses;
   Operation *firstUser = nullptr;
+  bool hasDynamicViewChain = false;
 };
 
 static void addMaterializationCounts(Phase5BridgeMaterializationCounts &lhs,
@@ -230,6 +231,34 @@ static bool hasMemorySpace(MemRefType type, MemoryPlace place) {
 static bool isGmMemref(Value value) {
   auto type = dyn_cast<MemRefType>(value.getType());
   return type && !type.getMemorySpace();
+}
+
+static bool hasDynamicSubViewOperand(memref::SubViewOp subview) {
+  for (OpFoldResult offset : subview.getMixedOffsets())
+    if (isa<Value>(offset))
+      return true;
+  for (OpFoldResult size : subview.getMixedSizes())
+    if (isa<Value>(size))
+      return true;
+  for (OpFoldResult stride : subview.getMixedStrides())
+    if (isa<Value>(stride))
+      return true;
+  return false;
+}
+
+static bool hasDynamicViewChain(ArrayRef<Operation *> viewChain) {
+  for (Operation *op : viewChain)
+    if (auto subview = dyn_cast<memref::SubViewOp>(op))
+      if (hasDynamicSubViewOperand(subview))
+        return true;
+  return false;
+}
+
+static bool hasDynamicViewChain(ArrayRef<MovementUseRewrite> uses) {
+  for (const MovementUseRewrite &rewrite : uses)
+    if (hasDynamicViewChain(rewrite.viewChain))
+      return true;
+  return false;
 }
 
 static void appendUniqueGmMovementSource(SmallVectorImpl<Value> &sources,
@@ -766,6 +795,15 @@ static LogicalResult materializeMovementWorkspaceGroup(
   return success();
 }
 
+static unsigned
+countDynamicViewChainRewrites(ArrayRef<MovementMaterializationItem> items) {
+  unsigned count = 0;
+  for (const MovementMaterializationItem &item : items)
+    if (item.hasDynamicViewChain)
+      ++count;
+  return count;
+}
+
 static const StaticMemoryWorkspaceSlot *
 lookupWorkspaceSlot(const StaticMemoryPlan &staticMemory, unsigned slotId) {
   for (const StaticMemoryWorkspaceSlot &slot : staticMemory.workspaceSlots)
@@ -991,7 +1029,8 @@ MemoryRealizationDriver::materializeMovementSteps(
   IRRewriter rewriter(context);
   llvm::StringMap<Phase5BridgeMaterializationCounts> counts;
 
-  for (const RealizePlanBundle &bundle : bundles) {
+  for (const RealizePlanBundle &constBundle : bundles) {
+    RealizePlanBundle &bundle = const_cast<RealizePlanBundle &>(constBundle);
     StringRef kernelId = bundle.kernel.kernelId;
     if (kernelId.empty())
       continue;
@@ -1017,7 +1056,9 @@ MemoryRealizationDriver::materializeMovementSteps(
                                            firstUser)))
         return failure();
 
-      items.push_back({&step, slot, source, std::move(uses), firstUser});
+      bool dynamicViewChain = hasDynamicViewChain(uses);
+      items.push_back(
+          {&step, slot, source, std::move(uses), firstUser, dynamicViewChain});
     }
 
     SmallVector<bool, 8> materialized(items.size(), false);
@@ -1042,6 +1083,8 @@ MemoryRealizationDriver::materializeMovementSteps(
         if (failed(materializeMovementWorkspaceGroup(
                 rewriter, group, targetSpace, counts[kernelId])))
           return failure();
+        bundle.movement.dynamicViewChainRewriteCount +=
+            countDynamicViewChainRewrites(group);
         for (unsigned index : groupIndices)
           materialized[index] = true;
         continue;
@@ -1050,6 +1093,8 @@ MemoryRealizationDriver::materializeMovementSteps(
       if (failed(materializeSingleMovementItem(rewriter, items[i], targetSpace,
                                                counts[kernelId])))
         return failure();
+      if (items[i].hasDynamicViewChain)
+        ++bundle.movement.dynamicViewChainRewriteCount;
       materialized[i] = true;
     }
   }

@@ -74,6 +74,10 @@ void printRealizeReport(llvm::ArrayRef<RealizePlanBundle> bundles,
        << bundle.movement.pathSelectionDeferredCount << "\n";
     os << "  workspace_reuse_candidates = "
        << bundle.movement.workspaceReuseCandidateCount << "\n";
+    os << "  dynamic_view_chain_rewrites = "
+       << bundle.movement.dynamicViewChainRewriteCount << "\n";
+    os << "  deferred_view_chain_rewrites = "
+       << bundle.movement.deferredViewChainRewriteCount << "\n";
     os << "  materialization_deferred = "
        << (bundle.movement.materializationDeferred ? "true" : "false")
        << "\n";
