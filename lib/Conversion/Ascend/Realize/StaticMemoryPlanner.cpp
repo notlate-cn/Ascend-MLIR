@@ -11,6 +11,8 @@
 namespace mlir::afir::ascend::realize {
 namespace {
 
+constexpr MemoryPlace kVectorTemporaryPlace = MemoryPlace::VECIN;
+
 static void populateVectorTemporarySlots(const BufferizedKernelIR &bufferizedIR,
                                          StaticMemoryPlan &plan) {
   uint64_t nextOffset = 0;
@@ -22,7 +24,7 @@ static void populateVectorTemporarySlots(const BufferizedKernelIR &bufferizedIR,
     interval.valueId = fact.valueId;
     interval.start = plan.liveIntervals.size();
     interval.end = interval.start + 1;
-    interval.place = MemoryPlace::VECCALC;
+    interval.place = kVectorTemporaryPlace;
     interval.staticByteSizeKnown = fact.staticByteSizeKnown;
     interval.byteSize = fact.byteSize;
     plan.liveIntervals.push_back(interval);
@@ -31,7 +33,7 @@ static void populateVectorTemporarySlots(const BufferizedKernelIR &bufferizedIR,
     slot.slotId = plan.workspaceSlots.size();
     slot.valueId = fact.valueId;
     slot.offset = nextOffset;
-    slot.place = MemoryPlace::VECCALC;
+    slot.place = kVectorTemporaryPlace;
     slot.staticByteSizeKnown = fact.staticByteSizeKnown;
     slot.byteSize = fact.byteSize;
     plan.workspaceSlots.push_back(slot);
@@ -96,7 +98,7 @@ FailureOr<StaticMemoryPlan> StaticMemoryPlanner::build(
     return plan;
 
   FailureOr<::mlir::ascend::CapacityRule> capacity =
-      memoryModel.getCapacity(::mlir::ascend::MemoryPlace::VECCALC);
+      memoryModel.getCapacity(kVectorTemporaryPlace);
   if (failed(capacity) || capacity->availableCapacityBytes < 0)
     return failure();
 
