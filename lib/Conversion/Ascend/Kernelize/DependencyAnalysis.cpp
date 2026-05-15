@@ -150,12 +150,17 @@ DependencyAnalyzer::analyze(ModuleOp module) const {
   registerDefaultKernelizeOpModels(registry);
 
   DenseMap<Operation *, KernelizeOpSemanticInfo> resolved;
-  module.walk([&](Operation *op) {
+  WalkResult resolveResult = module.walk([&](Operation *op) -> WalkResult {
     FailureOr<KernelizeOpSemanticInfo> info = registry.resolve(op);
-    if (failed(info))
-      return;
+    if (failed(info)) {
+      op->emitError() << "failed to resolve Kernelize op semantics";
+      return WalkResult::interrupt();
+    }
     resolved.try_emplace(op, std::move(*info));
+    return WalkResult::advance();
   });
+  if (resolveResult.wasInterrupted())
+    return failure();
 
   WalkResult unsupportedResult = module.walk([&](Operation *op) -> WalkResult {
     auto it = resolved.find(op);
