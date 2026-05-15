@@ -218,6 +218,10 @@ struct TilingSpace {
   std::string kernel_type = "vec";   // "vec" | "cube" | "mix"; default vec
   std::string soc;
   std::string block_dim_expr;
+  // UB-aware prune (stamped by CannTranslation from SoC table + symbolic
+  // init_buffer sizes; 0/empty means "unknown, skip prune").
+  int64_t     ub_budget_bytes = 0;
+  std::string ub_cost_bytes_expr;
   std::vector<TilingParam> params;
 };
 
@@ -477,6 +481,8 @@ static llvm::Expected<TilingSpace> loadTilingSpace(const std::string& path) {
   if (auto v = obj->getString("kernel_type"))    ts.kernel_type    = v->str();
   if (auto v = obj->getString("soc"))            ts.soc            = v->str();
   if (auto v = obj->getString("block_dim_expr")) ts.block_dim_expr = v->str();
+  if (auto v = obj->getInteger("ub_budget_bytes")) ts.ub_budget_bytes = *v;
+  if (auto v = obj->getString("ub_cost_bytes_expr")) ts.ub_cost_bytes_expr = v->str();
 
   auto* params = obj->getArray("tiling_params");
   if (!params)
@@ -708,6 +714,17 @@ static std::vector<SearchResult> runSearch(
       }
     }
     if (bad) { ++pruned; continue; }
+
+    // UB-budget prune: evaluate ub_cost_bytes_expr under this combo's tiling
+    // params (+ shape keys, already in `vars`) and drop combos whose peak UB
+    // cost exceeds the SoC pool. Pre-2026-05-14 this was unbounded and the
+    // search could pick a combo that silently overflows the bump allocator
+    // and produces all-zero output. See plan
+    // docs/superpowers/plans/2026-05-14-ub-aware-tiling-cost.zh.md.
+    if (ts.ub_budget_bytes > 0 && !ts.ub_cost_bytes_expr.empty()) {
+      int64_t cost = evalBlockExpr(ts.ub_cost_bytes_expr, vars);
+      if (cost > ts.ub_budget_bytes) { ++pruned; continue; }
+    }
 
     std::vector<std::pair<std::string, int64_t>> param_vals;
     std::vector<std::string> param_types;
