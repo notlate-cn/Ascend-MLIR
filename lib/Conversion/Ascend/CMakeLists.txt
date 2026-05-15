@@ -6,6 +6,7 @@ add_mlir_library(AscendConversion
   Schedule/AxisCoalescer.cpp
   Schedule/ScheduleCache.cpp
   Schedule/ScheduleDecision.cpp
+  Schedule/SchedulePersistentCacheIO.cpp
   Schedule/ScheduleProblemBuilder.cpp
   Schedule/ScheduleSearch.cpp
   Schedule/StructuredLoweringDriver.cpp
