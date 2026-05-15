@@ -15,14 +15,16 @@
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/Operation.h"
 #include "mlir/IR/Value.h"
-#include "llvm/ADT/DenseSet.h"
 #include "mlir/Support/LLVM.h"
+#include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/Support/raw_ostream.h"
 
 #include <algorithm>
+#include <cassert>
+#include <utility>
 
 using namespace mlir;
 
@@ -59,15 +61,53 @@ void collectAnalyzedProducers(Value value, const ProducerConsumerIndex &index,
   }
 }
 
+OpSemanticSummary makeSummary(Operation *op, OperationId opId,
+                              const KernelizeOpSemanticInfo &info) {
+  OpSemanticSummary summary;
+  summary.op = op;
+  summary.opId = opId;
+  summary.participation = info.participation;
+  summary.accessPattern = info.accessPattern;
+  summary.iteratorTypes.append(info.iteratorKinds.begin(),
+                               info.iteratorKinds.end());
+  summary.indexingMaps.append(info.indexingMaps.begin(),
+                              info.indexingMaps.end());
+  summary.resultRanks.append(info.resultRanks.begin(), info.resultRanks.end());
+  summary.traits.append(info.traits.begin(), info.traits.end());
+  summary.modelName = info.modelName;
+  summary.unsupportedReason = info.unsupportedReason;
+  summary.resultRank =
+      summary.resultRanks.empty() ? 0 : summary.resultRanks.front();
+  summary.hasReductionIterator =
+      llvm::is_contained(summary.iteratorTypes, IteratorKind::Reduction);
+  summary.hasOnlyParallelIterators =
+      !summary.iteratorTypes.empty() &&
+      llvm::all_of(summary.iteratorTypes, [](IteratorKind kind) {
+        return kind == IteratorKind::Parallel;
+      });
+  return summary;
+}
+
 } // namespace
 
 FailureOr<DependencyAnalysisResult>
 DependencyAnalyzer::analyze(ModuleOp module) const {
   DependencyAnalysisResult result;
-  KernelizeOpRegistry registry = KernelizeOpRegistry::buildDefault();
+  KernelizeOpModelRegistry registry;
+  registerDefaultKernelizeOpModels(registry);
+
+  DenseMap<Operation *, KernelizeOpSemanticInfo> resolved;
+  module.walk([&](Operation *op) {
+    FailureOr<KernelizeOpSemanticInfo> info = registry.resolve(op);
+    if (failed(info))
+      return;
+    resolved.try_emplace(op, std::move(*info));
+  });
 
   module.walk([&](Operation *op) {
-    if (!registry.isTargetOp(op))
+    auto it = resolved.find(op);
+    if (it == resolved.end() ||
+        it->second.participation != KernelizeParticipationKind::Analyze)
       return;
 
     OperationId opId{static_cast<unsigned>(result.index.orderedOps.size())};
@@ -77,7 +117,11 @@ DependencyAnalyzer::analyze(ModuleOp module) const {
 
   for (Operation *op : result.index.orderedOps) {
     OperationId opId = result.index.opIds.lookup(op);
-    result.summaries.try_emplace(op, registry.summarize(op, opId));
+    auto resolvedIt = resolved.find(op);
+    assert(resolvedIt != resolved.end() &&
+           "analyzed op must have resolved semantic info");
+    result.summaries.try_emplace(op,
+                                 makeSummary(op, opId, resolvedIt->second));
 
     for (Value operand : op->getOperands()) {
       SmallVector<Operation *, 4> operandProducers;
@@ -114,10 +158,23 @@ void emitDependencyAnalysisReport(raw_ostream &os,
                                ? 0
                                : consumerIt->second.size();
     os << "  op_id = " << summary.opId.value << " op = \""
-       << op->getName().getStringRef() << "\" model = \""
-       << summary.modelName << "\" trait = \"" << summary.traitName
-       << "\" access = \"" << stringifyAccessPattern(summary.accessPattern)
-       << "\" producers = " << producerCount
+       << op->getName().getStringRef() << "\" participation = \""
+       << stringifyKernelizeParticipation(summary.participation)
+       << "\" model = \"" << summary.modelName << "\" traits = [";
+    llvm::interleaveComma(summary.traits, os,
+                          [&](KernelizeSemanticTrait trait) {
+                            os << "\""
+                               << stringifyKernelizeSemanticTrait(trait)
+                               << "\"";
+                          });
+    os << "] access = \"" << stringifyAccessPattern(summary.accessPattern)
+       << "\" result_ranks = [";
+    llvm::interleaveComma(summary.resultRanks, os,
+                          [&](unsigned rank) { os << rank; });
+    os << "]";
+    if (!summary.unsupportedReason.empty())
+      os << " unsupported_reason = \"" << summary.unsupportedReason << "\"";
+    os << " producers = " << producerCount
        << " consumers = " << consumerCount
        << " result_rank = " << summary.resultRank << " iterators = [";
     llvm::interleaveComma(summary.iteratorTypes, os,

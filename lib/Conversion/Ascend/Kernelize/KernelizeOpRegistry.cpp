@@ -47,29 +47,34 @@ IteratorKind getIteratorKind(Attribute attr) {
   return IteratorKind::Unknown;
 }
 
-unsigned getFirstRankedShapedOutputRank(Operation *op) {
+void appendUniqueRank(SmallVectorImpl<unsigned> &ranks, unsigned rank) {
+  if (!llvm::is_contained(ranks, rank))
+    ranks.push_back(rank);
+}
+
+void populateResultRanks(Operation *op, KernelizeOpSemanticInfo &info) {
   for (Type resultType : op->getResultTypes()) {
     if (auto shapedType = dyn_cast<ShapedType>(resultType))
       if (shapedType.hasRank())
-        return shapedType.getRank();
+        appendUniqueRank(info.resultRanks,
+                         static_cast<unsigned>(shapedType.getRank()));
   }
 
   auto linalgOp = dyn_cast<linalg::LinalgOp>(op);
   if (!linalgOp)
-    return 0;
+    return;
 
   for (Value init : linalgOp.getDpsInits()) {
     auto shapedType = dyn_cast<ShapedType>(init.getType());
     if (shapedType && shapedType.hasRank())
-      return shapedType.getRank();
+      appendUniqueRank(info.resultRanks,
+                       static_cast<unsigned>(shapedType.getRank()));
   }
-
-  return 0;
 }
 
-void populateIndexingMaps(Operation *op, OpSemanticSummary &summary) {
+void populateIndexingMaps(Operation *op, KernelizeOpSemanticInfo &info) {
   if (auto linalgOp = dyn_cast<linalg::LinalgOp>(op)) {
-    llvm::append_range(summary.indexingMaps, linalgOp.getIndexingMapsArray());
+    llvm::append_range(info.indexingMaps, linalgOp.getIndexingMapsArray());
     return;
   }
 
@@ -81,7 +86,7 @@ void populateIndexingMaps(Operation *op, OpSemanticSummary &summary) {
     auto mapAttr = dyn_cast<AffineMapAttr>(attr);
     if (!mapAttr)
       continue;
-    summary.indexingMaps.push_back(mapAttr.getValue());
+    info.indexingMaps.push_back(mapAttr.getValue());
   }
 }
 
@@ -213,128 +218,92 @@ ParallelIndexingKind classifyParallelIndexing(ArrayRef<AffineMap> indexingMaps,
   return ParallelIndexingKind::Elementwise;
 }
 
-void populateIteratorSummary(Operation *op, OpSemanticSummary &summary,
-                             ArrayRef<IteratorKind> fallbackIteratorTypes = {}) {
+void populateIteratorInfo(Operation *op, KernelizeOpSemanticInfo &info,
+                          ArrayRef<IteratorKind> fallbackIteratorTypes = {}) {
   if (auto linalgOp = dyn_cast<linalg::LinalgOp>(op)) {
     for (utils::IteratorType iteratorType : linalgOp.getIteratorTypesArray())
-      summary.iteratorTypes.push_back(convertIteratorType(iteratorType));
+      info.iteratorKinds.push_back(convertIteratorType(iteratorType));
   }
 
   auto iteratorTypes = op->getAttrOfType<ArrayAttr>("iterator_types");
-  if (summary.iteratorTypes.empty() && iteratorTypes) {
+  if (info.iteratorKinds.empty() && iteratorTypes) {
     for (Attribute iteratorType : iteratorTypes)
-      summary.iteratorTypes.push_back(getIteratorKind(iteratorType));
-  } else if (summary.iteratorTypes.empty()) {
-    summary.iteratorTypes.append(fallbackIteratorTypes.begin(),
-                                 fallbackIteratorTypes.end());
+      info.iteratorKinds.push_back(getIteratorKind(iteratorType));
+  } else if (info.iteratorKinds.empty()) {
+    info.iteratorKinds.append(fallbackIteratorTypes.begin(),
+                              fallbackIteratorTypes.end());
   }
-
-  bool sawNonParallel = false;
-  for (IteratorKind iteratorType : summary.iteratorTypes) {
-    if (iteratorType == IteratorKind::Reduction) {
-      summary.hasReductionIterator = true;
-      sawNonParallel = true;
-      continue;
-    }
-    if (iteratorType != IteratorKind::Parallel)
-      sawNonParallel = true;
-  }
-  summary.hasOnlyParallelIterators =
-      !summary.iteratorTypes.empty() && !sawNonParallel;
 }
 
-void populateLinalgSemanticSummary(Operation *op,
-                                   OpSemanticSummary &summary) {
-  summary.resultRank = getFirstRankedShapedOutputRank(op);
-  populateIndexingMaps(op, summary);
-  populateIteratorSummary(op, summary);
+bool hasReductionIterator(ArrayRef<IteratorKind> iteratorKinds) {
+  return llvm::is_contained(iteratorKinds, IteratorKind::Reduction);
+}
 
-  if (summary.hasReductionIterator) {
-    if (auto linalgOp = dyn_cast<linalg::LinalgOp>(op);
-        linalgOp && isContractionIndexing(linalgOp, summary.indexingMaps,
-                                          summary.iteratorTypes)) {
-      summary.accessPattern = AccessPatternKind::Contraction;
-      return;
-    }
-    summary.accessPattern = AccessPatternKind::Reduction;
-    return;
+bool hasOnlyParallelIterators(ArrayRef<IteratorKind> iteratorKinds) {
+  if (iteratorKinds.empty())
+    return false;
+  return llvm::all_of(iteratorKinds, [](IteratorKind iteratorKind) {
+    return iteratorKind == IteratorKind::Parallel;
+  });
+}
+
+LogicalResult populateLinalgSemanticInfo(Operation *op,
+                                         KernelizeOpSemanticInfo &info) {
+  info.participation = KernelizeParticipationKind::Analyze;
+  info.modelName = "linalg";
+  info.traits.push_back(KernelizeSemanticTrait::Structured);
+
+  populateResultRanks(op, info);
+  populateIndexingMaps(op, info);
+  populateIteratorInfo(op, info);
+
+  if (info.resultRanks.size() > 1) {
+    info.participation = KernelizeParticipationKind::Unsupported;
+    info.accessPattern = AccessPatternKind::Unknown;
+    info.unsupportedReason = "linalg op has inconsistent ranked result ranks";
+    return success();
   }
 
-  if (summary.hasOnlyParallelIterators) {
-    switch (classifyParallelIndexing(summary.indexingMaps,
-                                     summary.resultRank)) {
+  unsigned resultRank =
+      info.resultRanks.empty() ? 0 : info.resultRanks.front();
+  if (hasReductionIterator(info.iteratorKinds)) {
+    if (auto linalgOp = dyn_cast<linalg::LinalgOp>(op);
+        linalgOp && isContractionIndexing(linalgOp, info.indexingMaps,
+                                          info.iteratorKinds)) {
+      info.accessPattern = AccessPatternKind::Contraction;
+      return success();
+    }
+    info.accessPattern = AccessPatternKind::Reduction;
+    return success();
+  }
+
+  if (hasOnlyParallelIterators(info.iteratorKinds)) {
+    switch (classifyParallelIndexing(info.indexingMaps, resultRank)) {
     case ParallelIndexingKind::Elementwise:
-      summary.accessPattern = AccessPatternKind::Elementwise;
+      info.accessPattern = AccessPatternKind::Elementwise;
       break;
     case ParallelIndexingKind::Broadcast:
-      summary.accessPattern = AccessPatternKind::Broadcast;
+      info.accessPattern = AccessPatternKind::Broadcast;
       break;
     case ParallelIndexingKind::LayoutTransform:
-      summary.accessPattern = AccessPatternKind::LayoutTransform;
+      info.accessPattern = AccessPatternKind::LayoutTransform;
       break;
     case ParallelIndexingKind::Unknown:
-      summary.accessPattern = AccessPatternKind::Unknown;
+      info.accessPattern = AccessPatternKind::Unknown;
       break;
     }
-    return;
+    return success();
   }
 
-  summary.accessPattern = AccessPatternKind::Unknown;
+  info.accessPattern = AccessPatternKind::Unknown;
+  return success();
 }
 
 } // namespace
 
-llvm::StringRef stringifyKernelizeOpTrait(KernelizeOpTraitKind kind) {
-  switch (kind) {
-  case KernelizeOpTraitKind::StructuredLinalg:
-    return "structured_linalg";
-  case KernelizeOpTraitKind::TensorView:
-    return "tensor_view";
-  case KernelizeOpTraitKind::Unknown:
-    return "unknown";
-  }
-  return "unknown";
-}
-
-KernelizeOpRegistry KernelizeOpRegistry::buildDefault() {
-  KernelizeOpRegistry registry;
-  registry.registerModel({"linalg", KernelizeOpTraitKind::StructuredLinalg,
-                          matchLinalgOp, populateLinalgSemanticSummary});
-  return registry;
-}
-
-void KernelizeOpRegistry::registerModel(KernelizeRegistryModel model) {
-  models.push_back(model);
-}
-
-const KernelizeRegistryModel *
-KernelizeOpRegistry::lookupModel(Operation *op) const {
-  for (const KernelizeRegistryModel &model : models)
-    if (model.match && model.match(op))
-      return &model;
-  return nullptr;
-}
-
-bool KernelizeOpRegistry::isTargetOp(Operation *op) const {
-  return lookupModel(op) != nullptr;
-}
-
-OpSemanticSummary KernelizeOpRegistry::summarize(Operation *op,
-                                                 OperationId opId) const {
-  OpSemanticSummary summary;
-  summary.op = op;
-  summary.opId = opId;
-
-  const KernelizeRegistryModel *model = lookupModel(op);
-  if (!model || !model->populate) {
-    summary.accessPattern = AccessPatternKind::Unknown;
-    return summary;
-  }
-
-  summary.modelName = model->name.str();
-  summary.traitName = stringifyKernelizeOpTrait(model->trait).str();
-  model->populate(op, summary);
-  return summary;
+void registerDefaultKernelizeOpModels(KernelizeOpModelRegistry &registry) {
+  registry.registerModel(
+      {"linalg", matchLinalgOp, populateLinalgSemanticInfo});
 }
 
 } // namespace mlir::afir::ascend::kernelize

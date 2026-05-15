@@ -25,11 +25,15 @@ namespace mlir::afir::ascend::kernelize {
 struct OpSemanticSummary {
   Operation *op = nullptr;
   OperationId opId;
+  KernelizeParticipationKind participation =
+      KernelizeParticipationKind::Unsupported;
   AccessPatternKind accessPattern = AccessPatternKind::Unknown;
   SmallVector<IteratorKind> iteratorTypes;
   SmallVector<AffineMap> indexingMaps;
+  SmallVector<unsigned> resultRanks;
+  SmallVector<KernelizeSemanticTrait> traits;
   std::string modelName = "unknown";
-  std::string traitName = "unknown";
+  std::string unsupportedReason;
   unsigned resultRank = 0;
   bool hasReductionIterator = false;
   bool hasOnlyParallelIterators = false;
