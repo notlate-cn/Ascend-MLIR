@@ -57,7 +57,15 @@ namespace mlir::afir {
 static constexpr int64_t kReductionTileBudgetBytes = 32 * 1024;
 // Unified Buffer size on dav-c220 (Ascend 910B); a whole on-chip tile larger
 // than this cannot possibly fit, so such a tiling case is deprioritised.
+// Matches SocSpec(Ascend910B1).totalUbSize; not threaded through TilePlanGen
+// yet because the pass currently doesn't know the target SoC at TilePlanGen
+// time — the runtime UB-aware prune in CannTranslation
+// (ub_cost_bytes_exprs, commit series 5d163a7) does the per-SoC enforcement.
 static constexpr int64_t kUBSizeBytes = 192 * 1024;
+// AI-core count for §3.6 w1 (blockDim distance) — matches
+// SocSpec(Ascend910B1).numAICores. See kUBSizeBytes comment for why this
+// isn't yet SoC-threaded.
+static constexpr int64_t kNumAICores = 40;
 static const double kInfeasible = std::numeric_limits<double>::infinity();
 
 // Conservative whole-tile on-chip footprint (bytes) for `draft`, when every
@@ -367,10 +375,38 @@ double costEstimate(const AxisGrouping &g, const CollapsedGroupInfo &info,
   // known and exceeds the UB, deprioritise this draft.  A soft penalty (not
   // kInfeasible) so the pass never runs out of feasible drafts; the autotuner
   // does the per-shape check via `footprint_expr` in vector_plan.tiling_infos.
-  if (auto fp = staticTileFootprintBytes(info, draft, elemBytes);
-      fp && *fp > kUBSizeBytes)
-    return 1.0e9 + (double)*fp; // larger overflow → larger penalty
-  return 0.0;
+  auto fpOpt = staticTileFootprintBytes(info, draft, elemBytes);
+  if (fpOpt && *fpOpt > kUBSizeBytes)
+    return 1.0e9 + (double)*fpOpt; // larger overflow → larger penalty
+
+  // §3.6 w1: under-saturation penalty — estimate blockDim from the chosen
+  // block axis's static extent / default XBLOCK; when blockDim < #AICores,
+  // some cores are idle.  Skipped (no penalty) when extent or block axis is
+  // unknown — that's the dynamic-shape case where the cost can't decide.
+  double score = 0.0;
+  {
+    BlockPick bp = pickBlockAxis(g, vecDims);
+    int blkAxis = (draft.ubTilingAxisY >= 0) ? draft.ubTilingAxisY : bp.axis;
+    if (blkAxis >= 0 && blkAxis < (int)info.collapsedAxes.size()) {
+      int64_t ext = info.collapsedAxes[blkAxis].staticSize;
+      if (ext != ShapedType::kDynamic && ext > 0) {
+        constexpr int64_t kDefXBlock = 128; // matches buildPlan default
+        int64_t blockDim = (ext + kDefXBlock - 1) / kDefXBlock;
+        if (blockDim < kNumAICores)
+          score += (double)(kNumAICores - blockDim) / (double)kNumAICores;
+      }
+    }
+  }
+
+  // §3.6 w4: vectorized-bytes bonus — bigger on-chip tile = better SIMD
+  // utilisation, up to the UB cap.  Capped at a small magnitude (≤ -0.5)
+  // so it can't compete with the w3 over-budget penalty (≥ 1e9) and stays
+  // below the w1 idle-core penalty (≤ 1.0).  No effect when footprint is
+  // unknown.
+  if (fpOpt && *fpOpt <= kUBSizeBytes)
+    score -= 0.5 * (double)*fpOpt / (double)kUBSizeBytes;
+
+  return score;
 }
 
 } // namespace
