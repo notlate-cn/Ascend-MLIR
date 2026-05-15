@@ -106,6 +106,19 @@ struct StaticMemoryPlan {
   llvm::SmallVector<StaticMemoryWorkspaceSlot, 8> workspaceSlots;
 };
 
+struct MovementStep {
+  unsigned stepId = 0;
+  unsigned valueId = 0;
+  unsigned slotId = 0;
+  MemoryPlace srcPlace = MemoryPlace::GM;
+  MemoryPlace dstPlace = MemoryPlace::VECCALC;
+  bool pathSelected = false;
+  unsigned pathVariant = 0;
+  bool pathSelectionDeferred = true;
+  bool staticByteSizeKnown = false;
+  uint64_t byteSize = 0;
+};
+
 struct MovementPlan {
   std::string kernelId;
   std::string mode = "none";
@@ -117,6 +130,7 @@ struct MovementPlan {
   unsigned pathSelectionDeferredCount = 0;
   unsigned workspaceReuseCandidateCount = 0;
   bool materializationDeferred = false;
+  llvm::SmallVector<MovementStep, 8> movementSteps;
 };
 
 struct MemoryRealizationPlan {

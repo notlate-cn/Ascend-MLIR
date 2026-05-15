@@ -174,7 +174,10 @@ buildMVPRealizePlans(ModuleOp module,
     }
     bundle.staticMemory = std::move(*staticMemory);
     FailureOr<MovementPlan> movement =
-        movementPlanner.build(bundle.placement, bundle.staticMemory);
+        memoryModel
+            ? movementPlanner.build(bundle.placement, bundle.staticMemory,
+                                    *memoryModel)
+            : movementPlanner.build(bundle.placement, bundle.staticMemory);
     if (failed(movement)) {
       module.emitError("ascend-realize failed to build movement plan");
       emittedError = true;
