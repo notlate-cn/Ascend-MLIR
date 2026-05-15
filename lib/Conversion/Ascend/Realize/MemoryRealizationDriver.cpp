@@ -184,7 +184,7 @@ struct Phase5BridgeOutput {
 };
 
 struct Phase5CubeBridge {
-  linalg::MatmulOp matmulOp;
+  linalg::LinalgOp linalgOp;
   Value lhs;
   Value rhs;
   OpOperand *initOperand;
@@ -578,19 +578,48 @@ static LogicalResult materializeMovementWorkspaceGroup(
   return success();
 }
 
-static bool isBridgeableCubeMatmul(linalg::MatmulOp matmulOp) {
-  if (!isCubeOp(matmulOp.getOperation()))
+static bool isBridgeableCubeCompute(
+    linalg::LinalgOp linalgOp,
+    const backend::AscendBackendSupportMatrix &matrix) {
+  if (!isCubeOp(linalgOp.getOperation()))
     return false;
-  if (matmulOp.getNumDpsInputs() != 2 || matmulOp.getNumDpsInits() != 1)
+
+  backend::ComputeKind computeKind =
+      backend::classifyLinalgComputeKind(linalgOp.getOperation(), matrix);
+  std::optional<int64_t> expectedRank;
+  switch (computeKind) {
+  case backend::ComputeKind::Matmul:
+    expectedRank = 2;
+    break;
+  case backend::ComputeKind::BatchMatmul:
+    expectedRank = 3;
+    break;
+  case backend::ComputeKind::ElementwiseAdd:
+  case backend::ComputeKind::ElementwiseMul:
+  case backend::ComputeKind::ElementwiseMax:
+  case backend::ComputeKind::Fill:
+  case backend::ComputeKind::TensorCopy:
+  case backend::ComputeKind::FusedElementwise:
+  case backend::ComputeKind::ScalarGeneric:
+  case backend::ComputeKind::Transpose:
+  case backend::ComputeKind::VectorGather:
+  case backend::ComputeKind::ReductionAdd:
+  case backend::ComputeKind::Unknown:
+    return false;
+  }
+
+  if (linalgOp.getNumDpsInputs() != 2 || linalgOp.getNumDpsInits() != 1)
     return false;
   auto lhsType =
-      dyn_cast<MemRefType>(matmulOp.getDpsInputOperand(0)->get().getType());
+      dyn_cast<MemRefType>(linalgOp.getDpsInputOperand(0)->get().getType());
   auto rhsType =
-      dyn_cast<MemRefType>(matmulOp.getDpsInputOperand(1)->get().getType());
+      dyn_cast<MemRefType>(linalgOp.getDpsInputOperand(1)->get().getType());
   auto outType =
-      dyn_cast<MemRefType>(matmulOp.getDpsInitOperand(0)->get().getType());
-  if (!lhsType || !rhsType || !outType || lhsType.getRank() != 2 ||
-      rhsType.getRank() != 2 || outType.getRank() != 2)
+      dyn_cast<MemRefType>(linalgOp.getDpsInitOperand(0)->get().getType());
+  if (!lhsType || !rhsType || !outType ||
+      lhsType.getRank() != *expectedRank ||
+      rhsType.getRank() != *expectedRank ||
+      outType.getRank() != *expectedRank)
     return false;
   return !lhsType.getMemorySpace() && !rhsType.getMemorySpace() &&
          !outType.getMemorySpace();
@@ -604,25 +633,25 @@ static bool isDpsInputOperand(linalg::LinalgOp linalgOp,
   return false;
 }
 
-static bool collectSafeCubeVectorUses(linalg::MatmulOp matmulOp,
+static bool collectSafeCubeVectorUses(linalg::LinalgOp linalgOp,
                                       SmallVectorImpl<OpOperand *> &uses,
                                       const backend::AscendBackendSupportMatrix
                                           &matrix,
                                       DominanceInfo &dominance) {
-  Operation *matmul = matmulOp.getOperation();
-  StringRef kernelId = getKernelId(matmul);
-  Value output = matmulOp.getDpsInitOperand(0)->get();
+  Operation *cubeOp = linalgOp.getOperation();
+  StringRef kernelId = getKernelId(cubeOp);
+  Value output = linalgOp.getDpsInitOperand(0)->get();
 
   for (OpOperand &use : output.getUses()) {
     Operation *user = use.getOwner();
-    if (user == matmul)
+    if (user == cubeOp)
       continue;
     if (isa<memref::DimOp, memref::DeallocOp>(user))
       continue;
 
     auto linalgUser = dyn_cast<linalg::LinalgOp>(user);
     if (!linalgUser || getKernelId(user) != kernelId ||
-        !dominance.properlyDominates(matmul, user) ||
+        !dominance.properlyDominates(cubeOp, user) ||
         !backend::isSupportedPhase5VectorOutput(linalgUser, matrix) ||
         !isDpsInputOperand(linalgUser, &use))
       return false;
@@ -843,20 +872,20 @@ MemoryRealizationDriver::materializePhase5Bridge(ModuleOp module) const {
   DominanceInfo dominance(module);
 
   SmallVector<Phase5CubeBridge, 4> cubeBridges;
-  module.walk([&](linalg::MatmulOp matmulOp) {
-    StringRef kernelId = getKernelId(matmulOp.getOperation());
-    if (kernelId.empty() || !isBridgeableCubeMatmul(matmulOp))
+  module.walk([&](linalg::LinalgOp linalgOp) {
+    StringRef kernelId = getKernelId(linalgOp.getOperation());
+    if (kernelId.empty() || !isBridgeableCubeCompute(linalgOp, matrix))
       return;
 
-    Value originalOutput = matmulOp.getDpsInitOperand(0)->get();
+    Value originalOutput = linalgOp.getDpsInitOperand(0)->get();
     SmallVector<OpOperand *, 4> vectorInputUses;
-    if (!collectSafeCubeVectorUses(matmulOp, vectorInputUses, matrix,
+    if (!collectSafeCubeVectorUses(linalgOp, vectorInputUses, matrix,
                                    dominance))
       return;
 
-    cubeBridges.push_back({matmulOp, matmulOp.getDpsInputOperand(0)->get(),
-                           matmulOp.getDpsInputOperand(1)->get(),
-                           matmulOp.getDpsInitOperand(0), originalOutput,
+    cubeBridges.push_back({linalgOp, linalgOp.getDpsInputOperand(0)->get(),
+                           linalgOp.getDpsInputOperand(1)->get(),
+                           linalgOp.getDpsInitOperand(0), originalOutput,
                            std::move(vectorInputUses), kernelId.str()});
   });
 
@@ -902,12 +931,12 @@ MemoryRealizationDriver::materializePhase5Bridge(ModuleOp module) const {
   IRRewriter rewriter(context);
   llvm::StringMap<Phase5BridgeMaterializationCounts> counts;
   for (Phase5CubeBridge &item : cubeBridges) {
-    linalg::MatmulOp matmulOp = item.matmulOp;
-    if (!matmulOp)
+    linalg::LinalgOp linalgOp = item.linalgOp;
+    if (!linalgOp)
       continue;
 
-    Location loc = matmulOp.getLoc();
-    rewriter.setInsertionPoint(matmulOp);
+    Location loc = linalgOp.getLoc();
+    rewriter.setInsertionPoint(linalgOp);
     memref::AllocOp a1 =
         createMemorySpaceAllocLike(rewriter, loc, item.lhs, a1Space);
     rewriter.create<memref::CopyOp>(loc, item.lhs, a1.getResult());
@@ -924,11 +953,11 @@ MemoryRealizationDriver::materializePhase5Bridge(ModuleOp module) const {
 
     memref::AllocOp co1 = createMemorySpaceAllocLike(
         rewriter, loc, item.originalOutput, co1Space);
-    matmulOp.getDpsInputOperand(0)->set(a2.getResult());
-    matmulOp.getDpsInputOperand(1)->set(b2.getResult());
+    linalgOp.getDpsInputOperand(0)->set(a2.getResult());
+    linalgOp.getDpsInputOperand(1)->set(b2.getResult());
     item.initOperand->set(co1.getResult());
 
-    rewriter.setInsertionPointAfter(matmulOp);
+    rewriter.setInsertionPointAfter(linalgOp);
     memref::AllocOp vecIn = createMemorySpaceAllocLike(
         rewriter, loc, co1.getResult(), vecInSpace);
     rewriter.create<memref::CopyOp>(loc, co1.getResult(),

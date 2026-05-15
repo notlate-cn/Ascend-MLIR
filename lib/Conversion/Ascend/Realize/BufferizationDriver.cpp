@@ -73,13 +73,33 @@ static bool hasUseInsideKernel(Value value, StringRef kernelId) {
   return false;
 }
 
+static bool opRolesAttrHasRole(Operation *op, StringRef roleName) {
+  auto roles = op->getAttrOfType<ArrayAttr>(kOpRolesAttr);
+  if (!roles)
+    return false;
+  for (Attribute attr : roles) {
+    auto role = dyn_cast<StringAttr>(attr);
+    if (role && role.getValue() == roleName)
+      return true;
+  }
+  return false;
+}
+
+static bool hasVectorRole(Operation *op) {
+  if (opRolesAttrHasRole(op, kKernelizeOpRoleVector) ||
+      opRolesAttrHasRole(op, kOpRoleVector))
+    return true;
+
+  auto role = op->getAttrOfType<StringAttr>(kOpRoleAttr);
+  return role && role.getValue() == kOpRoleVector;
+}
+
 static bool isVectorTemporary(Value value, StringRef kernelId) {
   Operation *def = value.getDefiningOp();
   if (!def || getKernelId(def) != kernelId)
     return false;
 
-  auto role = def->getAttrOfType<StringAttr>(kOpRoleAttr);
-  return role && role.getValue() == kOpRoleVector;
+  return hasVectorRole(def);
 }
 
 static void recordRole(KernelTensorFacts &facts, Value value,

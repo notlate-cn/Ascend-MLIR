@@ -82,7 +82,7 @@ struct AscendNormalizePass
 
     MLIRContext *context = module.getContext();
     module.walk([&](Operation *op) {
-      if (op->getName().getStringRef() == "func.func")
+      if (isa<func::FuncOp>(op))
         op->setAttr(::mlir::afir::ascend::kNormalizedAttr,
                     BoolAttr::get(context, true));
     });

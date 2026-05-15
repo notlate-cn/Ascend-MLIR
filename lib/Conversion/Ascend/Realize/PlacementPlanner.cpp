@@ -13,10 +13,10 @@
 namespace mlir::afir::ascend::realize {
 namespace {
 
-bool supportsVecCalcPlacement(
+bool supportsVectorInputPlacement(
     const ::mlir::ascend::TargetMemoryModel &memoryModel) {
   constexpr ::mlir::ascend::MemoryPlace place =
-      ::mlir::ascend::MemoryPlace::VECCALC;
+      ::mlir::ascend::MemoryPlace::VECIN;
   if (!memoryModel.supportsMemoryPlace(place))
     return false;
 
@@ -25,8 +25,13 @@ bool supportsVecCalcPlacement(
   if (failed(capacity) || capacity->availableCapacityBytes <= 0)
     return false;
 
-  return memoryModel.isPlaceVisibleTo(place,
-                                      ::mlir::ascend::ExecutionUnit::Vector);
+  if (!memoryModel.isPlaceVisibleTo(place,
+                                    ::mlir::ascend::ExecutionUnit::Vector))
+    return false;
+
+  return !memoryModel
+              .findDirectPaths(::mlir::ascend::MemoryPlace::GM, place)
+              .empty();
 }
 
 PlacementPlan buildGmDefaultPlan(const BufferizedKernelIR &bufferizedIR) {
@@ -50,7 +55,7 @@ PlacementPlanner::build(const BufferizedKernelIR &bufferizedIR) const {
 FailureOr<PlacementPlan> PlacementPlanner::build(
     const BufferizedKernelIR &bufferizedIR,
     const ::mlir::ascend::TargetMemoryModel &memoryModel) const {
-  if (!supportsVecCalcPlacement(memoryModel))
+  if (!supportsVectorInputPlacement(memoryModel))
     return buildGmDefaultPlan(bufferizedIR);
 
   PlacementPlan plan;

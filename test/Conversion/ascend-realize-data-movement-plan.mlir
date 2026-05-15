@@ -67,8 +67,8 @@ func.func @data_movement_plan_vector_temporary(%arg0: tensor<64xf16>, %arg1: ten
 // CHECK-NEXT:   movements = 0
 // CHECK-NEXT:   redundant_movements = 0
 // CHECK-NEXT:   movement_demands = 1
-// CHECK-NEXT:   selected_paths = 0
-// CHECK-NEXT:   path_selection_deferred = 1
+// CHECK-NEXT:   selected_paths = 1
+// CHECK-NEXT:   path_selection_deferred = 0
 // CHECK-NEXT:   workspace_reuse_candidates = 1
 // CHECK-NEXT:   materialization_deferred = true
 // CHECK: MemoryRealizationPlan:

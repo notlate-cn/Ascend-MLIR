@@ -89,6 +89,14 @@ OwningOpRef<ModuleOp> parseRealizeModule(MLIRContext &context,
   return parseSourceString<ModuleOp>(moduleText, &context);
 }
 
+bool hasMemoryPlace(Value value, MemoryPlace place) {
+  auto type = dyn_cast<MemRefType>(value.getType());
+  if (!type)
+    return false;
+  auto space = dyn_cast_or_null<IntegerAttr>(type.getMemorySpace());
+  return space && space.getInt() == static_cast<int64_t>(place);
+}
+
 OwningOpRef<ModuleOp> parseVectorChainModule(MLIRContext &context) {
   return parseRealizeModule(
       context, R"mlir(
@@ -134,6 +142,52 @@ module {
 )mlir");
 }
 
+OwningOpRef<ModuleOp> parseVectorChainArrayRolesOnlyModule(
+    MLIRContext &context) {
+  return parseRealizeModule(
+      context, R"mlir(
+module {
+  func.func @f(%arg0: tensor<64xf16>, %arg1: tensor<64xf16>) -> tensor<64xf16>
+      attributes {ascend.normalized = true} {
+    %empty0 = tensor.empty() : tensor<64xf16>
+    %mid = linalg.generic {
+      indexing_maps = [
+        affine_map<(d0) -> (d0)>,
+        affine_map<(d0) -> (d0)>,
+        affine_map<(d0) -> (d0)>],
+      iterator_types = ["parallel"]}
+      ins(%arg0, %arg1 : tensor<64xf16>, tensor<64xf16>)
+      outs(%empty0 : tensor<64xf16>)
+      attrs = {ascend.kernel = "kernel_0",
+               ascend.op_roles = ["Primary", "Vector", "Injective"],
+               ascend.schedule.decision_id = "kernel_0.decision.0",
+               ascend.schedule.structured_lowering = "loop_skeleton_v0"} {
+    ^bb0(%lhs: f16, %rhs: f16, %old: f16):
+      %sum = arith.addf %lhs, %rhs : f16
+      linalg.yield %sum : f16
+    } -> tensor<64xf16>
+    %empty1 = tensor.empty() : tensor<64xf16>
+    %out = linalg.generic {
+      indexing_maps = [
+        affine_map<(d0) -> (d0)>,
+        affine_map<(d0) -> (d0)>],
+      iterator_types = ["parallel"]}
+      ins(%mid : tensor<64xf16>)
+      outs(%empty1 : tensor<64xf16>)
+      attrs = {ascend.kernel = "kernel_0",
+               ascend.op_roles = ["Primary", "Vector", "Injective"],
+               ascend.schedule.decision_id = "kernel_0.decision.0",
+               ascend.schedule.structured_lowering = "loop_skeleton_v0"} {
+    ^bb0(%x: f16, %old: f16):
+      %neg = arith.negf %x : f16
+      linalg.yield %neg : f16
+    } -> tensor<64xf16>
+    return %out : tensor<64xf16>
+  }
+}
+)mlir");
+}
+
 RealizePlanBundle makePlanBundle() {
   RealizePlanBundle bundle;
   bundle.kernel.kernelId = "kernel_0";
@@ -155,7 +209,8 @@ RealizePlanBundle makePlanBundle() {
 
 } // namespace
 
-TEST(AscendRealizePlannerTest, PlacementPlannerBuildsTargetAwareVecCalcPlan) {
+TEST(AscendRealizePlannerTest,
+     PlacementPlannerBuildsTargetAwareVectorInputPlan) {
   llvm::raw_null_ostream os;
   auto memoryModel =
       mlir::ascend::TargetMemoryModelBuilder().build(makeCompleteTargetProfile(),
@@ -216,7 +271,8 @@ TEST(AscendRealizePlannerTest, PlacementPlannerKeepsNonVectorTemporariesInGm) {
   EXPECT_EQ(plan->deferredLocalPlaceCount, 1u);
 }
 
-TEST(AscendRealizePlannerTest, PlacementPlannerFallsBackWhenVecCalcUnsupported) {
+TEST(AscendRealizePlannerTest,
+     PlacementPlannerFallsBackWhenVectorInputUnsupported) {
   mlir::ascend::TargetMemoryModel emptyMemoryModel;
 
   PlacementPlanner planner;
@@ -280,7 +336,7 @@ TEST(AscendRealizePlannerTest,
 TEST(AscendRealizePlannerTest,
      StaticMemoryPlannerRejectsPeakUsageOverTargetCapacity) {
   mlir::ascend::TargetProfile profile = makeCompleteTargetProfile();
-  profile.capacityBytes[mlir::ascend::MemoryPlace::VECCALC] = 64;
+  profile.capacityBytes[mlir::ascend::MemoryPlace::VECIN] = 64;
   llvm::raw_null_ostream os;
   auto memoryModel =
       mlir::ascend::TargetMemoryModelBuilder().build(profile, os);
@@ -359,6 +415,70 @@ TEST(AscendRealizePlannerTest, BufferizationDriverBuildsStableValueFacts) {
 }
 
 TEST(AscendRealizePlannerTest,
+     BufferizationDriverReadsOpRolesArrayForVectorTemporary) {
+  MLIRContext context;
+  OwningOpRef<ModuleOp> module = parseVectorChainArrayRolesOnlyModule(context);
+  ASSERT_TRUE(module);
+
+  BufferizationDriver driver;
+  FailureOr<SmallVector<BufferizedKernelIR, 4>> facts =
+      driver.collectTensorFacts(*module);
+  ASSERT_TRUE(succeeded(facts));
+  ASSERT_EQ(facts->size(), 1u);
+  const BufferizedKernelIR &ir = facts->front();
+
+  EXPECT_EQ(ir.temporaryValueCount, 1u);
+  EXPECT_EQ(ir.vectorTemporaryValueCount, 1u);
+  EXPECT_EQ(ir.vectorTemporaryByteCount, 128u);
+  ASSERT_EQ(ir.valueFacts.size(), 4u);
+  EXPECT_TRUE(ir.valueFacts[2].isVectorTemporary);
+}
+
+TEST(AscendRealizePlannerTest,
+     TargetAwareMovementPlannerSelectsPathFromProductionWorkspacePlan) {
+  llvm::raw_null_ostream os;
+  auto memoryModel =
+      mlir::ascend::TargetMemoryModelBuilder().build(makeCompleteTargetProfile(),
+                                                     os);
+  ASSERT_TRUE(llvm::succeeded(memoryModel));
+
+  MLIRContext context;
+  OwningOpRef<ModuleOp> module = parseVectorChainModule(context);
+  ASSERT_TRUE(module);
+
+  BufferizationDriver bufferization;
+  FailureOr<SmallVector<BufferizedKernelIR, 4>> facts =
+      bufferization.collectTensorFacts(*module);
+  ASSERT_TRUE(succeeded(facts));
+  ASSERT_EQ(facts->size(), 1u);
+
+  PlacementPlanner placementPlanner;
+  FailureOr<PlacementPlan> placement =
+      placementPlanner.build(facts->front(), *memoryModel);
+  ASSERT_TRUE(succeeded(placement));
+  EXPECT_EQ(placement->mode, "target_aware");
+
+  StaticMemoryPlanner staticMemoryPlanner;
+  FailureOr<StaticMemoryPlan> staticMemory =
+      staticMemoryPlanner.build(*placement, facts->front(), *memoryModel);
+  ASSERT_TRUE(succeeded(staticMemory));
+  ASSERT_EQ(staticMemory->workspaceSlots.size(), 1u);
+  EXPECT_EQ(staticMemory->workspaceSlots[0].place, MemoryPlace::VECIN);
+
+  MovementPlanner movementPlanner;
+  FailureOr<MovementPlan> movement =
+      movementPlanner.build(*placement, *staticMemory, *memoryModel);
+  ASSERT_TRUE(succeeded(movement));
+  EXPECT_EQ(movement->movementDemandCount, 1u);
+  EXPECT_EQ(movement->selectedPathCount, 1u);
+  EXPECT_EQ(movement->pathSelectionDeferredCount, 0u);
+  ASSERT_EQ(movement->movementSteps.size(), 1u);
+  EXPECT_EQ(movement->movementSteps[0].srcPlace, MemoryPlace::GM);
+  EXPECT_EQ(movement->movementSteps[0].dstPlace, MemoryPlace::VECIN);
+  EXPECT_TRUE(movement->movementSteps[0].pathSelected);
+}
+
+TEST(AscendRealizePlannerTest,
      StaticMemoryPlannerBuildsValueLevelWorkspaceSlots) {
   BufferizedKernelIR ir = makeBufferizedKernelIR();
   ir.staticByteSizeKnown = true;
@@ -388,7 +508,7 @@ TEST(AscendRealizePlannerTest,
   EXPECT_EQ(plan->liveIntervals[0].valueId, 1u);
   EXPECT_EQ(plan->liveIntervals[0].start, 0u);
   EXPECT_EQ(plan->liveIntervals[0].end, 1u);
-  EXPECT_EQ(plan->liveIntervals[0].place, MemoryPlace::VECCALC);
+  EXPECT_EQ(plan->liveIntervals[0].place, MemoryPlace::VECIN);
   EXPECT_TRUE(plan->liveIntervals[0].staticByteSizeKnown);
   EXPECT_EQ(plan->liveIntervals[0].byteSize, 128u);
 
@@ -396,7 +516,7 @@ TEST(AscendRealizePlannerTest,
   EXPECT_EQ(plan->workspaceSlots[0].slotId, 0u);
   EXPECT_EQ(plan->workspaceSlots[0].valueId, 1u);
   EXPECT_EQ(plan->workspaceSlots[0].offset, 0u);
-  EXPECT_EQ(plan->workspaceSlots[0].place, MemoryPlace::VECCALC);
+  EXPECT_EQ(plan->workspaceSlots[0].place, MemoryPlace::VECIN);
   EXPECT_TRUE(plan->workspaceSlots[0].staticByteSizeKnown);
   EXPECT_EQ(plan->workspaceSlots[0].byteSize, 128u);
 }
@@ -447,7 +567,7 @@ TEST(AscendRealizePlannerTest,
   staticMemory.liveIntervalCount = 1;
   staticMemory.workspaceSlotCount = 1;
   staticMemory.workspaceSlots = {StaticMemoryWorkspaceSlot{
-      /*slotId=*/0, /*valueId=*/1, /*offset=*/0, MemoryPlace::VECCALC,
+      /*slotId=*/0, /*valueId=*/1, /*offset=*/0, MemoryPlace::VECIN,
       /*staticByteSizeKnown=*/true, /*byteSize=*/128}};
 
   MovementPlanner planner;
@@ -462,7 +582,7 @@ TEST(AscendRealizePlannerTest,
   EXPECT_EQ(plan->movementSteps[0].valueId, 1u);
   EXPECT_EQ(plan->movementSteps[0].slotId, 0u);
   EXPECT_EQ(plan->movementSteps[0].srcPlace, MemoryPlace::GM);
-  EXPECT_EQ(plan->movementSteps[0].dstPlace, MemoryPlace::VECCALC);
+  EXPECT_EQ(plan->movementSteps[0].dstPlace, MemoryPlace::VECIN);
   EXPECT_FALSE(plan->movementSteps[0].pathSelected);
   EXPECT_TRUE(plan->movementSteps[0].pathSelectionDeferred);
   EXPECT_TRUE(plan->movementSteps[0].staticByteSizeKnown);
@@ -974,4 +1094,73 @@ module {
       ++vecInAllocCount;
   });
   EXPECT_EQ(vecInAllocCount, 1u);
+}
+
+TEST(AscendRealizePlannerTest, Phase5CubeBridgeSupportsBatchMatmul) {
+  MLIRContext context;
+  OwningOpRef<ModuleOp> module = parseRealizeModule(
+      context, R"mlir(
+module {
+  func.func @f(%lhs: memref<2x4x8xf16>, %rhs: memref<2x8x16xf16>,
+               %bias: memref<2x4x16xf32>)
+      attributes {ascend.normalized = true} {
+    %mat = memref.alloc() : memref<2x4x16xf32>
+    linalg.batch_matmul {
+      ascend.kernel = "kernel_0",
+      ascend.op_role = "cube",
+      ascend.schedule.decision_id = "kernel_0.decision.0",
+      ascend.schedule.structured_lowering = "loop_skeleton_v0"
+    }
+      ins(%lhs, %rhs : memref<2x4x8xf16>, memref<2x8x16xf16>)
+      outs(%mat : memref<2x4x16xf32>)
+    %vec = memref.alloc() : memref<2x4x16xf32>
+    linalg.generic {
+      indexing_maps = [
+        affine_map<(d0, d1, d2) -> (d0, d1, d2)>,
+        affine_map<(d0, d1, d2) -> (d0, d1, d2)>,
+        affine_map<(d0, d1, d2) -> (d0, d1, d2)>],
+      iterator_types = ["parallel", "parallel", "parallel"]}
+      ins(%mat, %bias : memref<2x4x16xf32>, memref<2x4x16xf32>)
+      outs(%vec : memref<2x4x16xf32>)
+      attrs = {ascend.kernel = "kernel_0",
+               ascend.op_role = "vector",
+               ascend.schedule.decision_id = "kernel_0.decision.0",
+               ascend.schedule.structured_lowering = "loop_skeleton_v0"} {
+    ^bb0(%x: f32, %bias_elem: f32, %old: f32):
+      %sum = arith.addf %x, %bias_elem : f32
+      linalg.yield %sum : f32
+    }
+    return
+  }
+}
+)mlir");
+  ASSERT_TRUE(module);
+
+  MemoryRealizationDriver driver;
+  FailureOr<llvm::StringMap<Phase5BridgeMaterializationCounts>> counts =
+      driver.materializePhase5Bridge(*module);
+  ASSERT_TRUE(succeeded(counts));
+  ASSERT_EQ(counts->lookup("kernel_0").materializedAllocCount, 6u);
+  ASSERT_EQ(counts->lookup("kernel_0").materializedCopyCount, 5u);
+
+  linalg::BatchMatmulOp batchMatmul;
+  module->walk([&](linalg::BatchMatmulOp op) { batchMatmul = op; });
+  ASSERT_TRUE(batchMatmul);
+  EXPECT_TRUE(
+      hasMemoryPlace(batchMatmul.getDpsInputOperand(0)->get(),
+                     MemoryPlace::A2));
+  EXPECT_TRUE(
+      hasMemoryPlace(batchMatmul.getDpsInputOperand(1)->get(),
+                     MemoryPlace::B2));
+  EXPECT_TRUE(
+      hasMemoryPlace(batchMatmul.getDpsInitOperand(0)->get(),
+                     MemoryPlace::CO1));
+
+  unsigned vecInInputCount = 0;
+  module->walk([&](linalg::GenericOp generic) {
+    for (OpOperand *input : generic.getDpsInputOperands())
+      if (hasMemoryPlace(input->get(), MemoryPlace::VECIN))
+        ++vecInInputCount;
+  });
+  EXPECT_EQ(vecInInputCount, 1u);
 }
