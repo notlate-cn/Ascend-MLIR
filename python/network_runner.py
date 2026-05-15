@@ -162,6 +162,20 @@ def _eval_axis_extent(space: dict, params: dict) -> int:
     return eval_block_dim({"block_dim_expr": expr}, params)
 
 
+def _eval_ub_cost(space: dict, params: dict) -> int:
+    """Evaluate space['ub_cost_bytes_expr'] under integer params.
+
+    Same grammar as eval_block_dim (CannTranslation emits pure +-*/, with
+    ceilDiv expressed as ((a + b - 1) / b) — so no ceil() token appears).
+    Returns 0 if the expression is absent — callers should treat that as
+    "unknown UB cost" and skip UB-aware pruning.
+    """
+    expr = (space.get("ub_cost_bytes_expr") or "").strip()
+    if not expr:
+        return 0
+    return eval_block_dim({"block_dim_expr": expr}, params)
+
+
 def _read_family(work, kid):
     """Read <kid>_family.json (emitted by CannTranslation P2). Returns the
     parsed dict, or a synthetic single-variant family when the file is missing
@@ -304,14 +318,31 @@ def phase3_default_build_and_dump(work, groups, network, artifacts, args):
         extent = _eval_axis_extent(space, shape_keys)
         # Tunable params: "fixed": false. For default, pick the LARGEST candidate
         # that is also <= extent (camodel sims ~32 cores; we want block_dim small
-        # but not so large XBLOCK that no block actually writes output).
+        # but not so large XBLOCK that no block actually writes output) AND that
+        # keeps ub_cost_bytes_expr <= ub_budget_bytes (CannTranslation stamps
+        # both from the SoC table + symbolic init_buffer sizes). The UB prune
+        # is what prevents the TPipe bump-pointer allocator from silently
+        # overflowing — pre-2026-05-14 we picked the largest unconditionally
+        # and at R≥256 on dyn-bucketed-e2e that produced all-zero output.
+        ub_budget = int(space.get("ub_budget_bytes", 0))
         for p in space.get("tiling_params", []):
             if not p.get("fixed", False):
                 vals = p.get("values", []) or [16]
                 if extent > 0:
                     capped = [v for v in vals if v <= extent]
                     vals = capped if capped else [extent]
-                params[p["name"]] = vals[-1]
+                pick = vals[-1]
+                if ub_budget > 0 and space.get("ub_cost_bytes_expr"):
+                    trial = dict(params)
+                    trial.update(shape_keys)
+                    fits = []
+                    for v in vals:
+                        trial[p["name"]] = v
+                        if 0 < _eval_ub_cost(space, trial) <= ub_budget:
+                            fits.append(v)
+                    if fits:
+                        pick = fits[-1]
+                params[p["name"]] = pick
         # eval_block_dim grammar uses shape_key names directly (e.g. arg0_dim0),
         # not the param names — register the shape_key → value mapping for it.
         block_dim_params = dict(params)
