@@ -5,6 +5,8 @@
 //===----------------------------------------------------------------------===//
 
 #include "Target/CannKernel/CannTranslation.h"
+#include "Target/CannKernel/SocSpec.h"
+#include "Target/CannKernel/UbCostExpr.h"
 #include "llvm/ADT/SmallString.h"
 #include "llvm/ADT/StringMap.h"
 #include "llvm/ADT/StringSet.h"
@@ -2086,9 +2088,65 @@ static void emitTilingSpaceJson(StringRef outPath,
   llvm::json::Object root;
   root["kernel"]         = kernelName.str();
   root["kernel_file"]    = kernelFile.str();
-  root["soc"]            = "Ascend910B1";
+  StringRef socStr = "Ascend910B1"; // TODO: thread real --soc through
+  root["soc"]            = socStr.str();
   root["block_dim_expr"] = blockDimExpr;
   root["axis_extent_expr"] = axisExtentExpr;
+
+  // UB-aware tiling cost: stamp the SoC's TBuf/TQue pool size, plus a
+  // symbolic byte cost that the picker / autotuner can compare against it
+  // to prune over-budget candidates.  See plan
+  // docs/superpowers/plans/2026-05-14-ub-aware-tiling-cost.zh.md.
+  //
+  // Cost model: cost = 2 * max(align32(init_buffer.size))
+  //   - MAX (not SUM) over all init_buffer/init_queue ops in the function:
+  //     the simulator's TPipe bump-pointer allocator only fails at the
+  //     boundary where a *single* allocation runs off the pool end.  Sum
+  //     of all InitBuffer sizes routinely exceeds the pool in working
+  //     kernels (dead branches, dual-staged buffers) without observable
+  //     failure, so SUM is empirically not the right metric.
+  //   - 2x factor: peak live UB at any one instant typically holds an
+  //     input-side TBuf and an output-side TBuf concurrently, so the
+  //     effective cap on a single buffer is ~pool/2.  Validated against
+  //     examples/dyn-bucketed-e2e d2 sweep:
+  //       v32  =  32 KB (R=64,XBLOCK_SUB=128):  PASS — 2*32 = 64KB ≤ 184KB
+  //       v32  =  96 KB (R=192,XBLOCK_SUB=128): PASS — 2*96 = 192KB > 184KB,
+  //                                             picker drops to XBLOCK_SUB=64
+  //       v32  = 128 KB (R=256,XBLOCK_SUB=128): FAIL — 2*128 = 256KB > 184KB,
+  //                                             picker drops to XBLOCK_SUB=64
+  //       v32  = 256 KB (R=512,XBLOCK_SUB=128): FAIL — picker drops to XBLOCK_SUB=16
+  if (auto spec = afir::cannkernel::getSocSpec(socStr))
+    root["ub_budget_bytes"] = (int64_t)spec->totalVecLocalSize;
+  {
+    afir::cannkernel::NameSymTable names;
+    afir::symshape::SymExpr peak;
+    bool ok = true;
+    funcOp.walk([&](Operation *op) {
+      Value sizeOperand;
+      if (auto ib = dyn_cast<ascendc::TPipeInitBufferOp>(op))
+        sizeOperand = ib.getLength();
+      else if (auto iq = dyn_cast<ascendc::TPipeInitQueueOp>(op))
+        sizeOperand = iq.getLength();
+      else
+        return;
+      auto e = afir::cannkernel::liftSizeOperand(sizeOperand, names);
+      if (!e) { ok = false; return; }
+      auto aligned = afir::cannkernel::align32(*e);
+      peak = peak.isValid()
+                 ? afir::symshape::SymExpr::max(peak, aligned)
+                 : aligned;
+    });
+    if (ok && peak.isValid()) {
+      auto cost = afir::symshape::SymExpr::mul(
+          afir::symshape::SymExpr::constant(2), peak);
+      auto nameFor = [&](afir::symshape::SymId id) -> std::string {
+        auto it = names.idToName.find(id);
+        return it != names.idToName.end() ? it->second : "?";
+      };
+      root["ub_cost_bytes_expr"] = cost.emitC(nameFor);
+    }
+  }
+
   root["tiling_params"]  = std::move(params);
 
   std::error_code ec;
