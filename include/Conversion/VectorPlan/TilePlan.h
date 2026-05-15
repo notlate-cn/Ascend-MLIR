@@ -27,6 +27,14 @@ struct TilePlanDraft {
   int  ubTilingAxisR = -1;
   int  blockTilingId = 0;
   bool reduceIsBlock = false;
+  // FullLoad (≈ AF kAllLoad): every R axis kept whole AND treated as part of
+  // the vectorized region — the reduce happens inside the vector op, no
+  // ReduceSum intrinsic. Only feasible when total `Σ R · elemBytes` fits
+  // on-chip (≈ AF's reduction_tile_bytes ≤ UB_budget). Today enumerated by
+  // enumerateTilingCases but always ∞-scored: codegen for the in-vector
+  // reduce isn't implemented yet (GroupEmitter / ComputeConversion would
+  // need a new template; deferred).
+  bool isFullLoad   = false;
 };
 
 // A schedulability/legality constraint over the tunable params (≈ ATT's

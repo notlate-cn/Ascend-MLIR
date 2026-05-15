@@ -303,6 +303,21 @@ enumerateTilingCases(const AxisGrouping &g, const CollapsedGroupInfo &info,
       }
     }
 
+  // FullLoad variant (≈ AF kAllLoad). Reduce axis kept whole + in-vector
+  // reduce. Enumerated once per ubY pick, only when there's an R axis to
+  // load whole and a parallel axis to block-dispatch over. ∞-scored in
+  // costEstimate (oversized R rejected; codegen-missing rejected always).
+  if (!g.rAxes.empty() && !g.yAxes.empty() && !bp.degradeToRowLoop) {
+    for (int y : ubYs) {
+      TilePlanDraft fl;
+      fl.ubTilingAxisY = y;
+      fl.ubTilingAxisX = ubX;
+      fl.ubTilingAxisR = -1;
+      fl.isFullLoad = true;
+      drafts.push_back(fl);
+    }
+  }
+
   // PruneTilingCase: in the single-tile-axis scenario (only ubY is a tile axis)
   // a draft whose ubY axis has static extent 1 is pointless — drop it if there
   // is another draft to fall back to.
@@ -344,6 +359,19 @@ double costEstimate(const AxisGrouping &g, const CollapsedGroupInfo &info,
     if (g.yAxes.empty() && draft.ubTilingAxisR >= 0)
       return 0.0;
     return kInfeasible;
+  }
+  // FullLoad (≈ AF kAllLoad, plan §4): only feasible when every R axis fits
+  // whole on-chip. Then ∞ anyway because the in-vector reduce codegen path
+  // doesn't exist yet — kept enumerated so future P6+ work can drop the
+  // gate without re-plumbing enumerateTilingCases.
+  if (draft.isFullLoad) {
+    for (int r : g.rAxes) {
+      int64_t sz = info.collapsedAxes[r].staticSize;
+      if (sz != ShapedType::kDynamic &&
+          sz * (int64_t)elemBytes > kReductionTileBudgetBytes)
+        return kInfeasible; // oversized — never selectable, even with codegen
+    }
+    return kInfeasible; // codegen-missing — selectable once the path lands
   }
   // Full-reduce (no parallel axis) on the Common template — whether R kept
   // whole (block_dim=1, no parallelism) or R ub-split (RBLOCK with no parallel
