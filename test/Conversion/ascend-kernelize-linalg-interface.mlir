@@ -10,9 +10,11 @@ func.func @fill_tensor(%arg0: tensor<4x8xf32>) -> tensor<4x8xf32> {
 // CHECK: DependencyAnalysis
 // CHECK: op_id = 0
 // CHECK-SAME: op = "linalg.fill"
+// CHECK-SAME: participation = "analyze"
 // CHECK-SAME: model = "linalg"
-// CHECK-SAME: trait = "structured_linalg"
+// CHECK-SAME: traits = ["structured"]
 // CHECK-SAME: access = "Elementwise"
+// CHECK-SAME: result_ranks = [2]
 // CHECK-SAME: iterators = [parallel, parallel]
 // CHECK: OpRoleClassification
 // CHECK: op_id = 0
