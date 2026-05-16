@@ -231,25 +231,21 @@ for (HandwrittenPatternRecognizer *recognizer : getHandwrittenPatternRecognizers
 新增 `materialization-mode=tiled-linalg`，新增 `TilingRealizationDriver`（`lib/Conversion/Ascend/Realize/TilingRealizationDriver.cpp`）。
 
 职责：
-1. 读取每个 kernel 的 `ScheduleDecision`（tile sizes、dominant role）
-2. 对 primary op 调用 MLIR 上游 `linalg::TileUsingForOp`，生成 `scf.for` nest
-3. 对 fused ops 调用 `linalg::fuseProducerOfSlice`，把 vector/reduction epilogue 融入循环体
-4. 输出：`scf.for` + `linalg.generic`（仍是 tensor IR）
+1. 读取每个实现了 `TilingInterface` 且携带 `ascend.schedule.selected_tile_shape`（`DenseI64ArrayAttr`）属性的 op（SchedulePass 写入，语义等价于 ScheduleDecision.tileSizes）
+2. 对每个 op 调用 MLIR 上游 `scf::tileUsingSCF`，生成 `scf.for` nest（tile size 为 0 表示该维度不 tile）
+3. 对 tiling 产生的 `tensor.extract_slice` 调用 `scf::tileAndFuseProducerOfSlice`（best-effort，失败时静默跳过）
+4. 输出：`scf.for` + `linalg.*`（仍是 tensor IR）
 
 ```cpp
 class TilingRealizationDriver {
 public:
-  LogicalResult materialize(ModuleOp module,
-                            const RealizePlanBundle &plan,
-                            const ScheduleDecision &decision);
-private:
-  LogicalResult tilePrimaryOp(Operation *primaryOp,
-                               ArrayRef<int64_t> tileSizes,
-                               SmallVectorImpl<Operation *> &tiledOps);
-  LogicalResult fuseEpilogueOps(ArrayRef<Operation *> fusableOps,
-                                 scf::ForOp outerLoop);
+  /// 对 module 内所有携带 ascend.schedule.selected_tile_shape 的
+  /// TilingInterface op 执行 scf::tileUsingSCF，就地替换原 op。
+  LogicalResult tileModule(ModuleOp module) const;
 };
 ```
+
+> **实现注记**：接口设计从 spec 初稿的 `materialize(bundle, decision)` 简化为 `tileModule(module)`；tile sizes 直接从 attr 读取而非重新反序列化 `ScheduleDecision` 结构体——两者语义等价。Tiling API 使用当前上游名称 `scf::tileUsingSCF`（旧名 `linalg::TileUsingForOp` 已废弃）。
 
 **Step B：Buffer Placement（bufferize + memory space 标注）**
 
@@ -275,10 +271,11 @@ Phase5 接收 memref IR（已 tile、已 place），直接做 `classifyLinalgCom
 
 ### Phase 3 验收标准
 
-- [ ] `materialization-mode=tiled-linalg`：matmul 的 tile sizes 来自 ScheduleDecision，生成的 `scf.for` 循环边界与 tile sizes 一致（LIT FileCheck）
-- [ ] `materialization-mode=full-realize`：输出 memref IR 带正确 memory space，Phase5 可直接消费（LIT FileCheck）
-- [ ] 现有所有 full-pipeline LIT 测试在 `full-realize` 模式下无回归
-- [ ] `TilingRealizationDriver` 单元测试：给定 plan + decision，验证 scf.for 结构
+- [x] `materialization-mode=tiled-linalg`：matmul tile shape `[4,4,4]` 产生 3 层 `scf.for`，tensor IR 保留（LIT `ascend-realize-tiled-linalg.mlir`）
+- [x] `materialization-mode=full-realize`：同一输入产生 memref 类型的函数参数和 `memref.subview`，无 `tensor.empty`（LIT `ascend-realize-full-realize.mlir`）
+- [x] 现有所有 full-pipeline LIT 测试无回归（103/103）
+- [x] `TilingRealizationDriver` 单元测试：`TilesMatmulIntoScfForNest` / `SkipsOpsWithoutTileShapeAttr`（2/2）
+- [ ] **遗留**：memory space 属性标注（`ascend.memory_space`）的端到端验证留给 Phase 4 e2e，当前 LIT 仅验证 bufferize 到 memref，不含 placement 数据驱动的 memory space 注入
 
 ---
 
