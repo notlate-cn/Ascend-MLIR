@@ -1,5 +1,12 @@
 // RUN: afir-translate -mlir-to-cann %s --runtime-manifest-out=%t.manifest.json --cann-soc=Ascend910B2 > %t.cpp
 // RUN: FileCheck %s --input-file=%t.manifest.json --check-prefix=MANIFEST
+// RUN: FileCheck %s --input-file=%t.cpp --check-prefix=CPP
+
+// CPP: struct TilingData
+// CPP-NOT: struct TilingData
+// CPP: extern "C" __global__ __aicore__ void kernel_a
+// CPP-NOT: struct TilingData
+// CPP: extern "C" __global__ __aicore__ void kernel_b
 
 // MANIFEST: "kernelGraph": {
 // MANIFEST: "edges": [
