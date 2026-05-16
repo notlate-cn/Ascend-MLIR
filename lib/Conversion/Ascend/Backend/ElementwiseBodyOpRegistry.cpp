@@ -80,12 +80,6 @@ void registerBuiltinElementwiseBodyOps() {
        mlir::Value dst, mlir::Value src0, mlir::Value src1, mlir::Value cnt) {
       b.create<DivL2Op>(loc, dst, src0, src1, cnt);
     }});
-  registerElementwiseBodyOp({"math.fma", ComputeKind::ElementwiseFma,
-    nullptr,
-    [](mlir::OpBuilder &b, mlir::Location loc,
-       mlir::Value dst, mlir::Value src0, mlir::Value src1, mlir::Value cnt) {
-      b.create<FusedMulAddL2Op>(loc, dst, src0, src1, cnt);
-    }});
 
   // Unary ops
   registerElementwiseBodyOp({"arith.negf", ComputeKind::ElementwiseNeg,
