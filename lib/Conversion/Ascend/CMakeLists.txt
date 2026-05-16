@@ -15,6 +15,7 @@ add_mlir_library(AscendConversion
   Kernelize/CandidateMergeAnalysis.cpp
   Debug/DebugOptions.cpp
   Kernelize/DependencyAnalysis.cpp
+  Kernelize/HandwrittenContractRegistry.cpp
   Kernelize/FusionCandidateAnalysis.cpp
   Kernelize/HorizontalFusionAnalysis.cpp
   Kernelize/KernelizeExternalModels.cpp
