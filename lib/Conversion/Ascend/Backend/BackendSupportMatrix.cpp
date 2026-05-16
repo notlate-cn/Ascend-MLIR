@@ -6,7 +6,9 @@
 
 #include "Conversion/Ascend/Backend/BackendSupportMatrix.h"
 
+#include "mlir/IR/BuiltinTypes.h"
 #include "llvm/Support/FormatVariadic.h"
+#include "llvm/Support/raw_ostream.h"
 
 namespace mlir::afir::ascend::backend {
 
@@ -92,6 +94,27 @@ llvm::StringRef stringifyComputeKind(ComputeKind kind) {
     return "vector_gather";
   case ComputeKind::ReductionAdd:
     return "reduction_add";
+  case ComputeKind::ElementwiseSub:        return "elementwise_sub";
+  case ComputeKind::ElementwiseDiv:        return "elementwise_div";
+  case ComputeKind::ElementwiseNeg:        return "elementwise_neg";
+  case ComputeKind::ElementwiseExp:        return "elementwise_exp";
+  case ComputeKind::ElementwiseExp2:       return "elementwise_exp2";
+  case ComputeKind::ElementwiseLog:        return "elementwise_log";
+  case ComputeKind::ElementwiseSqrt:       return "elementwise_sqrt";
+  case ComputeKind::ElementwiseRsqrt:      return "elementwise_rsqrt";
+  case ComputeKind::ElementwiseTanh:       return "elementwise_tanh";
+  case ComputeKind::ElementwiseErf:        return "elementwise_erf";
+  case ComputeKind::ElementwiseAbs:        return "elementwise_abs";
+  case ComputeKind::ElementwiseSin:        return "elementwise_sin";
+  case ComputeKind::ElementwiseCos:        return "elementwise_cos";
+  case ComputeKind::ElementwiseFma:        return "elementwise_fma";
+  case ComputeKind::ElementwiseReciprocal: return "elementwise_reciprocal";
+  case ComputeKind::ElementwiseRelu:       return "elementwise_relu";
+  case ComputeKind::ElementwiseSelect:     return "elementwise_select";
+  case ComputeKind::ElementwiseMin:        return "elementwise_min";
+  case ComputeKind::ReductionMax:          return "reduction_max";
+  case ComputeKind::ReductionMin:          return "reduction_min";
+  case ComputeKind::ReductionMul:          return "reduction_mul";
   case ComputeKind::Unknown:
     return "unknown";
   }
@@ -136,6 +159,27 @@ bool AscendBackendSupportMatrix::isSupportedComputeKind(
   case ComputeKind::Transpose:
   case ComputeKind::VectorGather:
   case ComputeKind::ReductionAdd:
+  case ComputeKind::ElementwiseSub:
+  case ComputeKind::ElementwiseDiv:
+  case ComputeKind::ElementwiseNeg:
+  case ComputeKind::ElementwiseExp:
+  case ComputeKind::ElementwiseExp2:
+  case ComputeKind::ElementwiseLog:
+  case ComputeKind::ElementwiseSqrt:
+  case ComputeKind::ElementwiseRsqrt:
+  case ComputeKind::ElementwiseTanh:
+  case ComputeKind::ElementwiseErf:
+  case ComputeKind::ElementwiseAbs:
+  case ComputeKind::ElementwiseSin:
+  case ComputeKind::ElementwiseCos:
+  case ComputeKind::ElementwiseFma:
+  case ComputeKind::ElementwiseReciprocal:
+  case ComputeKind::ElementwiseRelu:
+  case ComputeKind::ElementwiseSelect:
+  case ComputeKind::ElementwiseMin:
+  case ComputeKind::ReductionMax:
+  case ComputeKind::ReductionMin:
+  case ComputeKind::ReductionMul:
     return true;
   case ComputeKind::Unknown:
     return false;
@@ -151,6 +195,44 @@ UnsupportedReason AscendBackendSupportMatrix::explainComputeKind(
           llvm::formatv("unsupported compute kind {0}",
                         stringifyComputeKind(kind))
               .str()};
+}
+
+bool AscendBackendSupportMatrix::isSupportedDtype(
+    ComputeKind /*kind*/, mlir::ArrayRef<mlir::Type> inputTypes,
+    mlir::ArrayRef<mlir::Type> outputTypes) const {
+  auto ok = [](mlir::Type t) { return t.isF32() || t.isF16() || t.isBF16(); };
+  for (mlir::Type t : inputTypes)
+    if (!ok(t)) return false;
+  for (mlir::Type t : outputTypes)
+    if (!ok(t)) return false;
+  return true;
+}
+
+UnsupportedReason AscendBackendSupportMatrix::explainDtype(
+    ComputeKind kind, mlir::ArrayRef<mlir::Type> inputTypes,
+    mlir::ArrayRef<mlir::Type> outputTypes) const {
+  if (isSupportedDtype(kind, inputTypes, outputTypes))
+    return {"dtype", ""};
+  auto ok = [](mlir::Type t) { return t.isF32() || t.isF16() || t.isBF16(); };
+  for (mlir::Type t : inputTypes) {
+    if (!ok(t)) {
+      std::string detail;
+      llvm::raw_string_ostream os(detail);
+      os << "unsupported input dtype for " << stringifyComputeKind(kind)
+         << ": " << t;
+      return {"dtype", os.str()};
+    }
+  }
+  for (mlir::Type t : outputTypes) {
+    if (!ok(t)) {
+      std::string detail;
+      llvm::raw_string_ostream os(detail);
+      os << "unsupported output dtype for " << stringifyComputeKind(kind)
+         << ": " << t;
+      return {"dtype", os.str()};
+    }
+  }
+  return {"dtype", "unsupported dtype combination"};
 }
 
 } // namespace mlir::afir::ascend::backend
