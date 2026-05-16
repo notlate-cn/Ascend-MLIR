@@ -260,6 +260,7 @@ struct ScheduleDecisionSet {
 struct ScheduleSearchOptions {
   unsigned compileTimeTopK = 4;
   unsigned runtimeTopK = 1;
+  unsigned maxAxisProductTileShapes = 64;
 };
 
 struct ShapeBucketKey {

@@ -432,6 +432,7 @@ struct AscendSchedulePass
     MLIRContext *context = module.getContext();
     ScheduleSearchOptions searchOptions;
     searchOptions.runtimeTopK = runtimeTopK;
+    searchOptions.maxAxisProductTileShapes = maxSearchBudget;
     ScheduleCacheModel scheduleCacheModel;
     SmallVector<std::string, 8> seededSignatures =
         loadPersistentTuningCache(module);

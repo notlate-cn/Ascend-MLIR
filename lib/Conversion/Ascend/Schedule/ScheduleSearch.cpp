@@ -176,8 +176,8 @@ getAxisTileSizes(const LogicalAxisInfo &axis,
 }
 
 void appendAxisProductTileShapes(const ScheduleProblem &problem,
-                                 SmallVectorImpl<TileShape> &tileShapes) {
-  constexpr unsigned kMaxAxisProductTileShapes = 64;
+                                 SmallVectorImpl<TileShape> &tileShapes,
+                                 unsigned maxTileShapes) {
   const CoalescedAxisInfo &axes = problem.axes;
   if (axes.logicalAxes.empty())
     return;
@@ -198,10 +198,10 @@ void appendAxisProductTileShapes(const ScheduleProblem &problem,
         TileShape candidate = partial;
         candidate.tileSizes.push_back(axisTileSize);
         next.push_back(std::move(candidate));
-        if (next.size() >= kMaxAxisProductTileShapes)
+        if (next.size() >= maxTileShapes)
           break;
       }
-      if (next.size() >= kMaxAxisProductTileShapes)
+      if (next.size() >= maxTileShapes)
         break;
     }
     worklist = std::move(next);
@@ -372,7 +372,8 @@ TileShape getRoleDrivenCubeTile(const ScheduleProblem &problem) {
   return tileShape;
 }
 
-SmallVector<TileShape> generateTileShapes(const ScheduleProblem &problem) {
+SmallVector<TileShape> generateTileShapes(const ScheduleProblem &problem,
+                                          const ScheduleSearchOptions &options) {
   SmallVector<TileShape> tileShapes;
   switch (problem.dominantRole) {
   case OpRole::Vector:
@@ -402,7 +403,8 @@ SmallVector<TileShape> generateTileShapes(const ScheduleProblem &problem) {
       problem.dominantRole == OpRole::Unknown)
     return tileShapes;
 
-  appendAxisProductTileShapes(problem, tileShapes);
+  appendAxisProductTileShapes(problem, tileShapes,
+                              options.maxAxisProductTileShapes);
   appendCoalescingHintTileShapes(problem, tileShapes);
   return tileShapes;
 }
@@ -677,7 +679,7 @@ ScheduleSearchResult searchScheduleInstancesWithStats(
   SmallVector<ScheduleInstance, 8> generatedInstances;
   ScheduleSearchResult result;
   for (const ScheduleTemplate &tmpl : templates) {
-    SmallVector<TileShape> tileShapes = generateTileShapes(problem);
+    SmallVector<TileShape> tileShapes = generateTileShapes(problem, options);
     for (TileShape &tileShape : tileShapes) {
       ++result.generatedCount;
       ScheduleInstance instance =

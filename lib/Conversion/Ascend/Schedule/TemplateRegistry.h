@@ -19,6 +19,14 @@ class raw_ostream;
 
 namespace mlir::afir::ascend::schedule {
 
+/// Register a custom schedule template into the global registry.
+/// Call before the first use of matchScheduleTemplates.
+void registerTemplate(ScheduleTemplate tmpl);
+
+/// Register the built-in default templates. Called automatically on first use;
+/// exposed here for explicit initialization in tests.
+void registerBuiltinTemplates();
+
 SmallVector<ScheduleTemplate>
 matchScheduleTemplates(const ScheduleProblem &problem);
 

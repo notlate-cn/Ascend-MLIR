@@ -191,6 +191,10 @@ collectMatchingTuningSignatures(const ScheduleTuningDatabase &db,
 void appendTuningResultRecords(ScheduleTuningDatabase &db, StringRef target,
                                StringRef policy,
                                ArrayRef<TuningResultKey> keys) {
+  assert(!target.contains(' ') &&
+         "TuningDB target field must not contain whitespace");
+  assert(!policy.contains(' ') &&
+         "TuningDB policy field must not contain whitespace");
   for (const TuningResultKey &key : keys) {
     ScheduleTuningRecord record;
     record.target = target.str();
