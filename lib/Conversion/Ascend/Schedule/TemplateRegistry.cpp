@@ -6,29 +6,26 @@
 
 #include "TemplateRegistry.h"
 
+#include "../Kernelize/HandwrittenContractRegistry.h"
+
 #include "llvm/ADT/STLExtras.h"
+#include "llvm/Support/ManagedStatic.h"
 #include "llvm/Support/raw_ostream.h"
+
+#include <mutex>
 
 namespace mlir::afir::ascend::schedule {
 namespace {
 
-ArrayRef<ScheduleTemplate> getRegistryTemplates() {
-  static const SmallVector<ScheduleTemplate> templates = {
-      {"vector_generic", "single_tile_per_block", {kOpRoleVector.str()}, 1, 8,
-       0},
-      {"reduction_static", "single_tile_per_block",
-       {kOpRoleReduction.str()}, 0, 8, 2},
-      {kKernelizeHandwrittenKindAttentionSdpa.str(), "grouped_tile_per_block",
-       {kKernelizeHandwrittenKindAttentionSdpa.str(), kOpRoleCube.str(),
-        kOpRoleReduction.str(), kOpRoleVector.str()},
-       2, 4, 2},
-      {"cube_static_matmul", "single_tile_per_block", {kOpRoleCube.str()}, 2,
-       3, 3},
-      {"memory_copy", "single_tile_per_block", {kOpRoleMemory.str()}, 0, 8,
-       4},
-  };
-  return templates;
-}
+struct TemplateRegistrySingleton {
+  std::mutex mu;
+  SmallVector<ScheduleTemplate> templates;
+  bool builtinsRegistered = false;
+};
+
+llvm::ManagedStatic<TemplateRegistrySingleton> gRegistry;
+
+TemplateRegistrySingleton &registry() { return *gRegistry; }
 
 bool hasTag(ArrayRef<std::string> tags, StringRef tag) {
   return llvm::any_of(tags, [&](const std::string &candidate) {
@@ -71,10 +68,57 @@ void sortTemplates(SmallVectorImpl<ScheduleTemplate> &templates) {
 
 } // namespace
 
+void registerBuiltinTemplates() {
+  TemplateRegistrySingleton &reg = registry();
+  std::lock_guard<std::mutex> lock(reg.mu);
+  if (reg.builtinsRegistered)
+    return;
+  reg.builtinsRegistered = true;
+
+  reg.templates.push_back(
+      {"vector_generic", "single_tile_per_block", {kOpRoleVector.str()}, 1, 8, 0});
+  reg.templates.push_back(
+      {"reduction_static", "single_tile_per_block", {kOpRoleReduction.str()}, 0, 8, 2});
+  {
+    using namespace ::mlir::afir::ascend::kernelize;
+    registerBuiltinHandwrittenContracts();
+    for (llvm::StringRef kind : {kKernelizeHandwrittenKindAttentionSdpa}) {
+      const HandwrittenContract *contract = lookupHandwrittenContract(kind);
+      if (!contract)
+        continue;
+      const HandwrittenContract::TemplateSpec &spec = contract->scheduleTemplate;
+      ScheduleTemplate tmpl;
+      tmpl.family = spec.layout;  // spec.layout → ScheduleTemplate::family
+      tmpl.name = spec.name;      // spec.name   → ScheduleTemplate::name
+      for (const std::string &tag : spec.tags)
+        tmpl.tags.push_back(tag);
+      tmpl.minRank = spec.minRank;
+      tmpl.maxRank = spec.maxRank;
+      tmpl.priority = spec.priority;
+      reg.templates.push_back(std::move(tmpl));
+    }
+  }
+  reg.templates.push_back(
+      {"cube_static_matmul", "single_tile_per_block", {kOpRoleCube.str()}, 2, 3, 3});
+  reg.templates.push_back(
+      {"memory_copy", "single_tile_per_block", {kOpRoleMemory.str()}, 0, 8, 4});
+}
+
+void registerTemplate(ScheduleTemplate tmpl) {
+  TemplateRegistrySingleton &reg = registry();
+  std::lock_guard<std::mutex> lock(reg.mu);
+  reg.templates.push_back(std::move(tmpl));
+}
+
 SmallVector<ScheduleTemplate>
 matchScheduleTemplates(const ScheduleProblem &problem) {
+  registerBuiltinTemplates();
+
+  TemplateRegistrySingleton &reg = registry();
+  std::lock_guard<std::mutex> lock(reg.mu);
+
   SmallVector<ScheduleTemplate> matches;
-  for (const ScheduleTemplate &scheduleTemplate : getRegistryTemplates()) {
+  for (const ScheduleTemplate &scheduleTemplate : reg.templates) {
     if (problem.resultRank < scheduleTemplate.minRank ||
         problem.resultRank > scheduleTemplate.maxRank)
       continue;
