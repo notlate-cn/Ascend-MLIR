@@ -66,14 +66,17 @@ Phase 5: Vision e2e             → Conv/BN/ReLU + ViT block 跑通
 
 ```cpp
 // lib/Conversion/Ascend/Backend/ElementwiseBodyOpRegistry.h
+using UnaryEmitter  = std::function<void(OpBuilder&, Location, Value dst,
+                                         Value src, Value count)>;
+using BinaryEmitter = std::function<void(OpBuilder&, Location, Value dst,
+                                         Value src0, Value src1, Value count)>;
+
 struct ElementwiseBodyOpEntry {
-  // op 类型标识（用 TypeID）
   llvm::TypeID opTypeId;
   ComputeKind kind;
-  unsigned arity;  // 1=unary（exp/sqrt/neg），2=binary（add/sub/mul）
-  // AscendC 发射函数指针（供 ComputeConversion 调用）
-  // 参数顺序：builder, loc, dst, src0, src1（unary 时 src1 为 nullptr Value）, count
-  std::function<void(OpBuilder&, Location, Value, Value, Value, Value)> emitter;
+  // 恰好一个 emitter 非空：unary op 设 unaryEmitter，binary op 设 binaryEmitter
+  UnaryEmitter  unaryEmitter;
+  BinaryEmitter binaryEmitter;
 };
 
 void registerElementwiseBodyOp(ElementwiseBodyOpEntry entry);
