@@ -55,8 +55,10 @@ def AscendNormalizePass : Pass<"ascend-normalize", "mlir::ModuleOp"> {
 def AscendKernelizePass : Pass<"ascend-kernelize", "mlir::ModuleOp"> {
   let summary = "Build Ascend MLIR kernel candidates";
   let description = [{
-    Skeleton pass for the Ascend Kernelize stage. It preserves IR unchanged in this
-    MVP task and only emits an optional debug stage header.
+    Analyzes linalg ops in a normalized module, fuses them into kernel candidates
+    via dependency, horizontal fusion, and merge analysis, then marks kernel
+    boundaries and assigns op roles (cube, vector, reduction, memory) for
+    downstream scheduling. Fails closed on any unsupported op semantics.
   }];
   let constructor = "mlir::afir::createAscendKernelizePass()";
   let dependentDialects = [
@@ -77,8 +79,9 @@ def AscendKernelizePass : Pass<"ascend-kernelize", "mlir::ModuleOp"> {
 def AscendSchedulePass : Pass<"ascend-schedule", "mlir::ModuleOp"> {
   let summary = "Construct Ascend MLIR schedule decisions";
   let description = [{
-    Skeleton pass for the Ascend Schedule stage. It preserves IR unchanged in this
-    MVP task and only emits an optional debug stage header.
+    Assigns tile schedules to kernelize-marked kernel candidates using a
+    template registry, axis coalescing, and a tuning database. Supports
+    persistent cache IO and target-aware tiling policy derivation.
   }];
   let constructor = "mlir::afir::createAscendSchedulePass()";
   let dependentDialects = [
@@ -113,6 +116,8 @@ def AscendSchedulePass : Pass<"ascend-schedule", "mlir::ModuleOp"> {
     Option<"tuningDbOut", "tuning-db-out", "std::string",
            /*default=*/"\"\"",
            "Versioned persistent schedule tuning database output path">,
+    Option<"maxSearchBudget", "max-search-budget", "unsigned", /*default=*/"64",
+           "Maximum number of axis-product tile shape candidates per kernel">,
   ];
 }
 
@@ -146,7 +151,7 @@ def AscendRealizePass : Pass<"ascend-realize", "mlir::ModuleOp"> {
            "Realize placement mode: gm-default or target-aware">,
     Option<"materializationMode", "materialization-mode", "std::string",
            /*default=*/"\"plan-only\"",
-           "Realize materialization mode: plan-only, one-shot-bufferize, or memory-space-annotate">,
+           "Realize materialization mode: plan-only, one-shot-bufferize, memory-space-annotate, tiled-linalg, or full-realize">,
     Option<"soc", "soc", "std::string", /*default=*/"\"Ascend910B2\"",
            "CANN SoC version for target-aware placement">,
     Option<"cannRoot", "cann-root", "std::string", /*default=*/"\"\"",
