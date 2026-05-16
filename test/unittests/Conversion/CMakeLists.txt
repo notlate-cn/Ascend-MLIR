@@ -170,3 +170,22 @@ add_dependencies(RuntimeUnitTests AscendRealizePassTiledLinalgTest)
 add_test(NAME AscendRealizePassTiledLinalgTest
   COMMAND $<TARGET_FILE:AscendRealizePassTiledLinalgTest>
 )
+
+add_executable(AscendElementwiseBodyOpRegistryTest
+  AscendElementwiseBodyOpRegistryTest.cpp
+)
+
+target_include_directories(AscendElementwiseBodyOpRegistryTest PRIVATE
+  ${ASCEND_CONVERSION_INTERNAL_INCLUDE_DIR}
+)
+
+target_link_libraries(AscendElementwiseBodyOpRegistryTest PRIVATE
+  RuntimeUnitTestSupport
+  AscendConversion
+)
+
+add_dependencies(RuntimeUnitTests AscendElementwiseBodyOpRegistryTest)
+
+add_test(NAME AscendElementwiseBodyOpRegistryTest
+  COMMAND $<TARGET_FILE:AscendElementwiseBodyOpRegistryTest>
+)
