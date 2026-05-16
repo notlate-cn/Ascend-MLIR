@@ -23,7 +23,7 @@ func.func @generic_contraction(%arg0: tensor<4x8xf32>,
 // CHECK: DependencyAnalysis
 // CHECK: op = "linalg.generic"
 // CHECK-SAME: participation = "analyze"
-// CHECK-SAME: model = "linalg"
+// CHECK-SAME: model = "linalg_external"
 // CHECK-SAME: traits = ["structured"]
 // CHECK-SAME: access = "Contraction"
 // CHECK-SAME: result_ranks = [2]

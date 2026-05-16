@@ -18,6 +18,10 @@ ArrayRef<ScheduleTemplate> getRegistryTemplates() {
        0},
       {"reduction_static", "single_tile_per_block",
        {kOpRoleReduction.str()}, 0, 8, 2},
+      {kKernelizeHandwrittenKindAttentionSdpa.str(), "grouped_tile_per_block",
+       {kKernelizeHandwrittenKindAttentionSdpa.str(), kOpRoleCube.str(),
+        kOpRoleReduction.str(), kOpRoleVector.str()},
+       2, 4, 2},
       {"cube_static_matmul", "single_tile_per_block", {kOpRoleCube.str()}, 2,
        3, 3},
       {"memory_copy", "single_tile_per_block", {kOpRoleMemory.str()}, 0, 8,
@@ -36,6 +40,22 @@ bool tagsIntersect(ArrayRef<std::string> lhs, ArrayRef<std::string> rhs) {
   return llvm::any_of(lhs, [&](const std::string &tag) {
     return hasTag(rhs, tag);
   });
+}
+
+bool isRoleTemplateTag(StringRef tag) {
+  return tag == kOpRoleCube || tag == kOpRoleMemory ||
+         tag == kOpRoleReduction || tag == kOpRoleVector;
+}
+
+bool hasRequiredContractTags(const ScheduleTemplate &scheduleTemplate,
+                             ArrayRef<std::string> problemTags) {
+  for (StringRef tag : scheduleTemplate.tags) {
+    if (isRoleTemplateTag(tag))
+      continue;
+    if (!hasTag(problemTags, tag))
+      return false;
+  }
+  return true;
 }
 
 void sortTemplates(SmallVectorImpl<ScheduleTemplate> &templates) {
@@ -57,6 +77,8 @@ matchScheduleTemplates(const ScheduleProblem &problem) {
   for (const ScheduleTemplate &scheduleTemplate : getRegistryTemplates()) {
     if (problem.resultRank < scheduleTemplate.minRank ||
         problem.resultRank > scheduleTemplate.maxRank)
+      continue;
+    if (!hasRequiredContractTags(scheduleTemplate, problem.templateTags))
       continue;
     if (!tagsIntersect(scheduleTemplate.tags, problem.templateTags))
       continue;

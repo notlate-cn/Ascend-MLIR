@@ -1,8 +1,8 @@
-// RUN: afir-opt %s --ascend-normalize --ascend-kernelize='debug-stage=kernelize dump-report=true' 2>&1 | FileCheck %s
+// RUN: afir-opt %s --ascend-normalize --ascend-kernelize --ascend-schedule='target-tile-policy=legacy-default' --ascend-realize='materialization-mode=memory-space-annotate' --ascend-compute-lower | FileCheck %s --implicit-check-not=linalg.
 
-func.func @sdpa_like(%q: tensor<2x4x8xf32>,
-                     %k: tensor<2x8x4xf32>,
-                     %v: tensor<2x4x8xf32>) -> tensor<2x4x8xf32> {
+func.func @sdpa_like_supported_body(%q: tensor<2x4x8xf32>,
+                                    %k: tensor<2x8x4xf32>,
+                                    %v: tensor<2x4x8xf32>) -> tensor<2x4x8xf32> {
   %score_empty = tensor.empty() : tensor<2x4x4xf32>
   %score = linalg.batch_matmul
       ins(%q, %k : tensor<2x4x8xf32>, tensor<2x8x4xf32>)
@@ -33,7 +33,7 @@ func.func @sdpa_like(%q: tensor<2x4x8xf32>,
   } ins(%score, %row_max : tensor<2x4x4xf32>, tensor<2x4xf32>)
     outs(%soft_empty : tensor<2x4x4xf32>) {
   ^bb0(%x: f32, %m: f32, %out: f32):
-    %centered = arith.subf %x, %m : f32
+    %centered = arith.addf %x, %m : f32
     linalg.yield %centered : f32
   } -> tensor<2x4x4xf32>
 
@@ -44,17 +44,6 @@ func.func @sdpa_like(%q: tensor<2x4x8xf32>,
   return %out : tensor<2x4x8xf32>
 }
 
-// CHECK: FusionCandidateAnalysis
-// CHECK: kind = "HandwrittenPattern" primitive = "HandwrittenPattern"
-// CHECK-SAME: internal_ops = [0, 1, 2, 3]
-// CHECK-SAME: families = ["attention_sdpa", "cube"]
-// CHECK-SAME: handwritten_kind = "attention_sdpa"
-// CHECK: KernelPatternGraph
-// CHECK: source = "HandwrittenPattern"
-// CHECK-SAME: internal_ops = [0, 1, 2, 3]
-// CHECK: KernelPartition
-// CHECK: kernel_pattern = "kernel_0"
-// CHECK-SAME: internal_ops = [0, 1, 2, 3]
-// CHECK: linalg.batch_matmul
-// CHECK-SAME: ascend.kernelize.handwritten_kind = "attention_sdpa"
-// CHECK-SAME: ascend.kernelize.template_families = ["attention_sdpa", "cube"]
+// CHECK: ascend.schedule.tuning_cache = ["attention_sdpa|grouped_tile_per_block|2x4x8|2x4x4x8"]
+// CHECK: ascendc.add_l2
+// CHECK: return

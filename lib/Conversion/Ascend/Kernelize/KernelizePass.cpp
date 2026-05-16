@@ -56,6 +56,8 @@ void clearOwnedKernelizeAttrs(ModuleOp module) {
     op->removeAttr(kOpRoleAttr);
     op->removeAttr(kKernelAttr);
     op->removeAttr(kPrimaryAttr);
+    op->removeAttr(kKernelizeHandwrittenKindAttr);
+    op->removeAttr(kKernelizeTemplateFamiliesAttr);
     op->removeAttr(kKernelGraphEdgesAttr);
   };
 

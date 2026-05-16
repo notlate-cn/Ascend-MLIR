@@ -17,8 +17,11 @@ namespace mlir::afir::ascend::kernelize {
 using ::mlir::afir::ascend::kKernelAttr;
 using ::mlir::afir::ascend::kKernelGraphEdgesAttr;
 using ::mlir::afir::ascend::kKernelizeHandwrittenGroupAttr;
+using ::mlir::afir::ascend::kKernelizeHandwrittenKindAttentionSdpa;
+using ::mlir::afir::ascend::kKernelizeHandwrittenKindAttr;
 using ::mlir::afir::ascend::kKernelizeMustCoLocateGroupAttr;
 using ::mlir::afir::ascend::kKernelizeMustSeparateGroupAttr;
+using ::mlir::afir::ascend::kKernelizeTemplateFamiliesAttr;
 using ::mlir::afir::ascend::kNormalizedAttr;
 using ::mlir::afir::ascend::kOpRoleAttr;
 using ::mlir::afir::ascend::kOpRolesAttr;

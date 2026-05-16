@@ -213,9 +213,16 @@ LogicalResult collectIndexingMapInfo(linalg::LinalgOp linalgOp,
   return success();
 }
 
+bool isAttentionHandwrittenPattern(const KernelPatternView &pattern) {
+  return pattern.handwrittenKind == kKernelizeHandwrittenKindAttentionSdpa;
+}
+
 void appendPatternRawAxes(const KernelPatternView &pattern, unsigned axisCount,
-                          CoalescedAxisInfo &info) {
+                          CoalescedAxisInfo &info,
+                          Operation *axisOnlyOp = nullptr) {
   for (const PatternOpView &opView : pattern.ops) {
+    if (axisOnlyOp && opView.op != axisOnlyOp)
+      continue;
     auto linalgOp = dyn_cast_or_null<linalg::LinalgOp>(opView.op);
     if (!linalgOp)
       continue;
@@ -486,6 +493,8 @@ bool shouldPrintTailContractFields(
 }
 
 const PatternOpView *selectAxisCarrierOp(const KernelPatternView &pattern) {
+  if (isAttentionHandwrittenPattern(pattern))
+    return selectDominantPrimaryOp(pattern);
   for (const PatternOpView &opView : pattern.ops) {
     if (opView.role == pattern.dominantRole)
       return &opView;
@@ -515,7 +524,10 @@ FailureOr<CoalescedAxisInfo> coalesceAxes(const KernelPatternView &pattern) {
   SmallVector<int64_t> staticExtents(axisCount, ShapedType::kDynamic);
   SmallVector<bool> broadcastAxisMask(axisCount, false);
 
+  bool useAxisCarrierOnly = isAttentionHandwrittenPattern(pattern);
   for (const PatternOpView &opView : pattern.ops) {
+    if (useAxisCarrierOnly && opView.op != axisOp)
+      continue;
     auto patternLinalgOp = dyn_cast_or_null<linalg::LinalgOp>(opView.op);
     if (!patternLinalgOp) {
       addBarrier(info, opView.op, AxisBarrierKind::RankMismatch,
@@ -561,7 +573,8 @@ FailureOr<CoalescedAxisInfo> coalesceAxes(const KernelPatternView &pattern) {
       info.broadcastAxes.push_back(axis);
   }
 
-  appendPatternRawAxes(pattern, axisCount, info);
+  appendPatternRawAxes(pattern, axisCount, info,
+                       useAxisCarrierOnly ? axisOp : nullptr);
   deriveAxisScheduleConstraints(info);
   deriveAxisCoalescingHints(info);
 

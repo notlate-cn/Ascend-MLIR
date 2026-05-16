@@ -303,11 +303,15 @@ FusionCandidate buildFallbackSingleOpCandidate(Operation *seed) {
 
 FusionCandidate buildHandwrittenPatternCandidate(
     ArrayRef<Operation *> groupOps, const DependencyAnalysisResult &deps,
-    const OpRoleMap &roleMap) {
+    const OpRoleMap &roleMap, StringRef handwrittenKind = {}) {
   FusionCandidate candidate;
   candidate.kind = CandidateKind::HandwrittenPattern;
   candidate.primitive = KernelizePrimitiveKind::HandwrittenPattern;
   candidate.internalOps.append(groupOps.begin(), groupOps.end());
+  if (!handwrittenKind.empty()) {
+    candidate.scheduleContract.handwrittenKind = handwrittenKind.str();
+    appendUniqueFamily(candidate.scheduleContract, handwrittenKind);
+  }
 
   Operation *primary = nullptr;
   unsigned primaryPriority = 3;
@@ -315,6 +319,11 @@ FusionCandidate buildHandwrittenPatternCandidate(
     ArrayRef<OpRole> roles = getRoles(roleMap, op);
     if (!isHandwrittenPrimaryCandidate(roles))
       continue;
+    if (handwrittenKind == kKernelizeHandwrittenKindAttentionSdpa) {
+      if (hasRole(roles, OpRole::Cube))
+        primary = op;
+      continue;
+    }
     unsigned priority = getHandwrittenPrimaryPriority(roles);
     if (primary && priority >= primaryPriority)
       continue;
@@ -481,7 +490,8 @@ FusionCandidateAnalyzer::analyze(const DependencyAnalysisResult &deps,
       attentionGroupedOps.insert(op);
     appendLegalCandidate(candidates,
                          buildHandwrittenPatternCandidate(*groupOps, deps,
-                                                          roleMap),
+                                                          roleMap,
+                                                          kKernelizeHandwrittenKindAttentionSdpa),
                          deps, roleMap, config);
   }
 
@@ -536,6 +546,9 @@ void emitFusionCandidateReport(raw_ostream &os,
     os << " closed = " << (candidate.closure.isClosed ? "true" : "false")
        << " benefit = " << candidate.benefitScore << " families = ";
     printStringList(os, candidate.scheduleContract.templateFamilies);
+    if (!candidate.scheduleContract.handwrittenKind.empty())
+      os << " handwritten_kind = \""
+         << candidate.scheduleContract.handwrittenKind << "\"";
     os << "\n";
   }
 }

@@ -107,6 +107,12 @@ def AscendSchedulePass : Pass<"ascend-schedule", "mlir::ModuleOp"> {
     Option<"tuningCacheOut", "tuning-cache-out", "std::string",
            /*default=*/"\"\"",
            "Line-based persistent tuning signature cache output path">,
+    Option<"tuningDbIn", "tuning-db-in", "std::string",
+           /*default=*/"\"\"",
+           "Versioned persistent schedule tuning database input path">,
+    Option<"tuningDbOut", "tuning-db-out", "std::string",
+           /*default=*/"\"\"",
+           "Versioned persistent schedule tuning database output path">,
   ];
 }
 

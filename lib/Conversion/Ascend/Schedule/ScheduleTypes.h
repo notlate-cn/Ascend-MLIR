@@ -24,6 +24,9 @@
 namespace mlir::afir::ascend::schedule {
 
 using ::mlir::afir::ascend::kKernelAttr;
+using ::mlir::afir::ascend::kKernelizeHandwrittenKindAttentionSdpa;
+using ::mlir::afir::ascend::kKernelizeHandwrittenKindAttr;
+using ::mlir::afir::ascend::kKernelizeTemplateFamiliesAttr;
 using ::mlir::afir::ascend::kOpRoleCube;
 using ::mlir::afir::ascend::kOpRoleMemory;
 using ::mlir::afir::ascend::kOpRoleAttr;
@@ -133,6 +136,8 @@ struct KernelPatternView {
   std::string kernelId;
   SmallVector<PatternOpView> ops;
   SmallVector<Operation *> primaryOps;
+  SmallVector<std::string> templateFamilies;
+  std::string handwrittenKind;
   OpRole dominantRole = OpRole::Unknown;
 };
 

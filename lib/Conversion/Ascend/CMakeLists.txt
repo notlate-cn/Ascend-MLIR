@@ -9,6 +9,7 @@ add_mlir_library(AscendConversion
   Schedule/SchedulePersistentCacheIO.cpp
   Schedule/ScheduleProblemBuilder.cpp
   Schedule/ScheduleSearch.cpp
+  Schedule/ScheduleTuningDB.cpp
   Schedule/StructuredLoweringDriver.cpp
   Kernelize/CandidateClosure.cpp
   Kernelize/CandidateMergeAnalysis.cpp
@@ -21,6 +22,7 @@ add_mlir_library(AscendConversion
   Kernelize/KernelizeOpInterface.cpp
   Kernelize/KernelPattern.cpp
   Kernelize/KernelizeOpRegistry.cpp
+  Kernelize/KernelizeSemanticUtils.cpp
   Schedule/KernelPatternView.cpp
   Schedule/TemplateRegistry.cpp
   Normalize/NormalizePass.cpp
