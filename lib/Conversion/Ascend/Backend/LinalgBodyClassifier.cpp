@@ -386,6 +386,12 @@ classifyLinalgComputeKind(Operation *op,
       return ComputeKind::ElementwiseMul;
     if (kind == linalg::ElementwiseKind::max_signed)
       return ComputeKind::ElementwiseMax;
+    if (kind == linalg::ElementwiseKind::sub)
+      return ComputeKind::ElementwiseSub;
+    if (kind == linalg::ElementwiseKind::div)
+      return ComputeKind::ElementwiseDiv;
+    if (kind == linalg::ElementwiseKind::min_signed)
+      return ComputeKind::ElementwiseMin;
   }
 
   if (auto generic = dyn_cast<linalg::GenericOp>(op)) {

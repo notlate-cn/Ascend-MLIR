@@ -15,10 +15,12 @@
 #include "Conversion/LinalgToAscendC/LinalgToAscendCUtils.h"
 
 #include "Conversion/Ascend/Common/Attributes.h"
+#include "Conversion/Ascend/Backend/LinalgBodyClassifier.h"
 
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
+#include "mlir/Dialect/Math/IR/Math.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
@@ -1876,8 +1878,74 @@ LogicalResult convertCompute(func::FuncOp funcOp, AscendCBufferContext &ctx) {
         auto maxOp2 = builder.create<MaxL2Op>(loc, dst, lhs, rhs, totalElems);
         copyAscendCUnitAttr(genOp.getOperation(), maxOp2.getOperation());
         if (dst == accumLt) valToLt[maxOp.getResult()] = accumLt;
+      } else if (auto subOp = dyn_cast<arith::SubFOp>(bodyOp)) {
+        Value lhs = resolve(subOp.getLhs());
+        Value rhs = resolve(subOp.getRhs());
+        if (!lhs || !rhs) continue;
+        Value dst = chooseDst(subOp.getResult());
+        auto result = builder.create<SubL2Op>(loc, dst, lhs, rhs, totalElems);
+        copyAscendCUnitAttr(genOp.getOperation(), result.getOperation());
+        if (dst == accumLt) valToLt[subOp.getResult()] = accumLt;
+      } else if (auto divOp = dyn_cast<arith::DivFOp>(bodyOp)) {
+        Value lhs = resolve(divOp.getLhs());
+        Value rhs = resolve(divOp.getRhs());
+        if (!lhs || !rhs) continue;
+        Value dst = chooseDst(divOp.getResult());
+        auto result = builder.create<DivL2Op>(loc, dst, lhs, rhs, totalElems);
+        copyAscendCUnitAttr(genOp.getOperation(), result.getOperation());
+        if (dst == accumLt) valToLt[divOp.getResult()] = accumLt;
+      } else if (auto minOp = dyn_cast<arith::MinimumFOp>(bodyOp)) {
+        Value lhs = resolve(minOp.getLhs());
+        Value rhs = resolve(minOp.getRhs());
+        if (!lhs || !rhs) continue;
+        Value dst = chooseDst(minOp.getResult());
+        auto result = builder.create<MinL2Op>(loc, dst, lhs, rhs, totalElems);
+        copyAscendCUnitAttr(genOp.getOperation(), result.getOperation());
+        if (dst == accumLt) valToLt[minOp.getResult()] = accumLt;
+      } else if (auto negOp = dyn_cast<arith::NegFOp>(bodyOp)) {
+        Value src = resolve(negOp.getOperand());
+        if (!src) continue;
+        Value dst = chooseDst(negOp.getResult());
+        auto result = builder.create<NegL2Op>(loc, dst, src, totalElems);
+        copyAscendCUnitAttr(genOp.getOperation(), result.getOperation());
+        if (dst == accumLt) valToLt[negOp.getResult()] = accumLt;
+      } else if (auto expOp = dyn_cast<math::ExpOp>(bodyOp)) {
+        Value src = resolve(expOp.getOperand());
+        if (!src) continue;
+        Value dst = chooseDst(expOp.getResult());
+        auto result = builder.create<ExpL2Op>(loc, dst, src, totalElems);
+        copyAscendCUnitAttr(genOp.getOperation(), result.getOperation());
+        if (dst == accumLt) valToLt[expOp.getResult()] = accumLt;
+      } else if (auto sqrtOp = dyn_cast<math::SqrtOp>(bodyOp)) {
+        Value src = resolve(sqrtOp.getOperand());
+        if (!src) continue;
+        Value dst = chooseDst(sqrtOp.getResult());
+        auto result = builder.create<SqrtL2Op>(loc, dst, src, totalElems);
+        copyAscendCUnitAttr(genOp.getOperation(), result.getOperation());
+        if (dst == accumLt) valToLt[sqrtOp.getResult()] = accumLt;
+      } else if (auto rsqrtOp = dyn_cast<math::RsqrtOp>(bodyOp)) {
+        Value src = resolve(rsqrtOp.getOperand());
+        if (!src) continue;
+        Value dst = chooseDst(rsqrtOp.getResult());
+        auto result = builder.create<RsqrtL2Op>(loc, dst, src, totalElems);
+        copyAscendCUnitAttr(genOp.getOperation(), result.getOperation());
+        if (dst == accumLt) valToLt[rsqrtOp.getResult()] = accumLt;
+      } else if (auto absOp = dyn_cast<math::AbsFOp>(bodyOp)) {
+        Value src = resolve(absOp.getOperand());
+        if (!src) continue;
+        Value dst = chooseDst(absOp.getResult());
+        auto result = builder.create<AbsL2Op>(loc, dst, src, totalElems);
+        copyAscendCUnitAttr(genOp.getOperation(), result.getOperation());
+        if (dst == accumLt) valToLt[absOp.getResult()] = accumLt;
+      } else if (auto logOp = dyn_cast<math::LogOp>(bodyOp)) {
+        Value src = resolve(logOp.getOperand());
+        if (!src) continue;
+        Value dst = chooseDst(logOp.getResult());
+        auto result = builder.create<LnL2Op>(loc, dst, src, totalElems);
+        copyAscendCUnitAttr(genOp.getOperation(), result.getOperation());
+        if (dst == accumLt) valToLt[logOp.getResult()] = accumLt;
       }
-      // Other arith ops can be added here as needed.
+      // Other arith/math ops can be added here as needed.
     }
 
     // ------------------------------------------------------------------
@@ -1888,9 +1956,23 @@ LogicalResult convertCompute(func::FuncOp funcOp, AscendCBufferContext &ctx) {
     // ------------------------------------------------------------------
     Value vecoutLt = writeTensor(builder, loc, outMemref);
     auto layoutAttr = ReduceLayoutAttr::get(mlirCtx, ReduceLayout::AR);
-    auto reduceOp = builder.create<ReduceSum2DL2Op>(loc, vecoutLt, accumLt, layoutAttr,
-                                                    /*sharedTmpBuffer=*/Value{});
-    copyAscendCUnitAttr(genOp.getOperation(), reduceOp.getOperation());
+    // Select reduction intrinsic based on body's reduction op kind.
+    ascend::backend::AscendBackendSupportMatrix matrix;
+    ascend::backend::ComputeKind reductionKind =
+        ascend::backend::classifyPhase5ReductionBody(genOp, matrix);
+    if (reductionKind == ascend::backend::ComputeKind::ReductionMax) {
+      auto reduceOp = builder.create<ReduceMax2DL2Op>(loc, vecoutLt, accumLt, layoutAttr,
+                                                      /*sharedTmpBuffer=*/Value{});
+      copyAscendCUnitAttr(genOp.getOperation(), reduceOp.getOperation());
+    } else if (reductionKind == ascend::backend::ComputeKind::ReductionMin) {
+      auto reduceOp = builder.create<ReduceMin2DL2Op>(loc, vecoutLt, accumLt, layoutAttr,
+                                                      /*sharedTmpBuffer=*/Value{});
+      copyAscendCUnitAttr(genOp.getOperation(), reduceOp.getOperation());
+    } else {
+      auto reduceOp = builder.create<ReduceSum2DL2Op>(loc, vecoutLt, accumLt, layoutAttr,
+                                                      /*sharedTmpBuffer=*/Value{});
+      copyAscendCUnitAttr(genOp.getOperation(), reduceOp.getOperation());
+    }
 
     // Enqueue vecout if it has a queue (VECOUT path).
     if (Value q = ctx.getQueue(outMemref))
@@ -2781,6 +2863,66 @@ LogicalResult convertCompute(func::FuncOp funcOp, AscendCBufferContext &ctx) {
             builder.create<MaxL2Op>(loc, accumLt, lhs, rhs, totalElems);
         copyAscendCUnitAttr(genOp.getOperation(), maxL2Op.getOperation());
         valToLt[maxOp.getResult()] = accumLt;
+      } else if (auto subOp = dyn_cast<arith::SubFOp>(bodyOp)) {
+        Value lhs = resolve(subOp.getLhs());
+        Value rhs = resolve(subOp.getRhs());
+        if (!lhs || !rhs) continue;
+        auto subL2Op =
+            builder.create<SubL2Op>(loc, accumLt, lhs, rhs, totalElems);
+        copyAscendCUnitAttr(genOp.getOperation(), subL2Op.getOperation());
+        valToLt[subOp.getResult()] = accumLt;
+      } else if (auto divOp = dyn_cast<arith::DivFOp>(bodyOp)) {
+        Value lhs = resolve(divOp.getLhs());
+        Value rhs = resolve(divOp.getRhs());
+        if (!lhs || !rhs) continue;
+        auto divL2Op =
+            builder.create<DivL2Op>(loc, accumLt, lhs, rhs, totalElems);
+        copyAscendCUnitAttr(genOp.getOperation(), divL2Op.getOperation());
+        valToLt[divOp.getResult()] = accumLt;
+      } else if (auto minOp = dyn_cast<arith::MinimumFOp>(bodyOp)) {
+        Value lhs = resolve(minOp.getLhs());
+        Value rhs = resolve(minOp.getRhs());
+        if (!lhs || !rhs) continue;
+        auto minL2Op =
+            builder.create<MinL2Op>(loc, accumLt, lhs, rhs, totalElems);
+        copyAscendCUnitAttr(genOp.getOperation(), minL2Op.getOperation());
+        valToLt[minOp.getResult()] = accumLt;
+      } else if (auto negOp = dyn_cast<arith::NegFOp>(bodyOp)) {
+        Value src = resolve(negOp.getOperand());
+        if (!src) continue;
+        auto negL2Op = builder.create<NegL2Op>(loc, accumLt, src, totalElems);
+        copyAscendCUnitAttr(genOp.getOperation(), negL2Op.getOperation());
+        valToLt[negOp.getResult()] = accumLt;
+      } else if (auto expOp = dyn_cast<math::ExpOp>(bodyOp)) {
+        Value src = resolve(expOp.getOperand());
+        if (!src) continue;
+        auto expL2Op = builder.create<ExpL2Op>(loc, accumLt, src, totalElems);
+        copyAscendCUnitAttr(genOp.getOperation(), expL2Op.getOperation());
+        valToLt[expOp.getResult()] = accumLt;
+      } else if (auto sqrtOp = dyn_cast<math::SqrtOp>(bodyOp)) {
+        Value src = resolve(sqrtOp.getOperand());
+        if (!src) continue;
+        auto sqrtL2Op = builder.create<SqrtL2Op>(loc, accumLt, src, totalElems);
+        copyAscendCUnitAttr(genOp.getOperation(), sqrtL2Op.getOperation());
+        valToLt[sqrtOp.getResult()] = accumLt;
+      } else if (auto rsqrtOp = dyn_cast<math::RsqrtOp>(bodyOp)) {
+        Value src = resolve(rsqrtOp.getOperand());
+        if (!src) continue;
+        auto rsqrtL2Op = builder.create<RsqrtL2Op>(loc, accumLt, src, totalElems);
+        copyAscendCUnitAttr(genOp.getOperation(), rsqrtL2Op.getOperation());
+        valToLt[rsqrtOp.getResult()] = accumLt;
+      } else if (auto absOp = dyn_cast<math::AbsFOp>(bodyOp)) {
+        Value src = resolve(absOp.getOperand());
+        if (!src) continue;
+        auto absL2Op = builder.create<AbsL2Op>(loc, accumLt, src, totalElems);
+        copyAscendCUnitAttr(genOp.getOperation(), absL2Op.getOperation());
+        valToLt[absOp.getResult()] = accumLt;
+      } else if (auto logOp = dyn_cast<math::LogOp>(bodyOp)) {
+        Value src = resolve(logOp.getOperand());
+        if (!src) continue;
+        auto lnL2Op = builder.create<LnL2Op>(loc, accumLt, src, totalElems);
+        copyAscendCUnitAttr(genOp.getOperation(), lnL2Op.getOperation());
+        valToLt[logOp.getResult()] = accumLt;
       }
     }
 
@@ -2919,7 +3061,10 @@ LogicalResult convertCompute(func::FuncOp funcOp, AscendCBufferContext &ctx) {
     auto kind = ewOp.getKind();
     if (kind != linalg::ElementwiseKind::add &&
         kind != linalg::ElementwiseKind::mul &&
-        kind != linalg::ElementwiseKind::max_signed)
+        kind != linalg::ElementwiseKind::max_signed &&
+        kind != linalg::ElementwiseKind::sub &&
+        kind != linalg::ElementwiseKind::div &&
+        kind != linalg::ElementwiseKind::min_signed)
       continue;
 
     Value src0 = ewOp.getInputs()[0];
@@ -2977,10 +3122,22 @@ LogicalResult convertCompute(func::FuncOp funcOp, AscendCBufferContext &ctx) {
       auto mulOp =
           builder.create<MulL2Op>(loc, writeTarget, localSrc0, localSrc1, count);
       copyAscendCUnitAttr(ewOp.getOperation(), mulOp.getOperation());
-    } else {
+    } else if (kind == linalg::ElementwiseKind::max_signed) {
       auto maxOp =
           builder.create<MaxL2Op>(loc, writeTarget, localSrc0, localSrc1, count);
       copyAscendCUnitAttr(ewOp.getOperation(), maxOp.getOperation());
+    } else if (kind == linalg::ElementwiseKind::sub) {
+      auto subOp =
+          builder.create<SubL2Op>(loc, writeTarget, localSrc0, localSrc1, count);
+      copyAscendCUnitAttr(ewOp.getOperation(), subOp.getOperation());
+    } else if (kind == linalg::ElementwiseKind::div) {
+      auto divOp =
+          builder.create<DivL2Op>(loc, writeTarget, localSrc0, localSrc1, count);
+      copyAscendCUnitAttr(ewOp.getOperation(), divOp.getOperation());
+    } else if (kind == linalg::ElementwiseKind::min_signed) {
+      auto minOp =
+          builder.create<MinL2Op>(loc, writeTarget, localSrc0, localSrc1, count);
+      copyAscendCUnitAttr(ewOp.getOperation(), minOp.getOperation());
     }
 
     if (Value q = ctx.getQueue(dst)) {
