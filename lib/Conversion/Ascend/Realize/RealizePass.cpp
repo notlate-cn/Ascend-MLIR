@@ -294,7 +294,7 @@ struct AscendRealizePass
       BufferizationDriver bufferizationDriver;
       if (failed(bufferizationDriver.runOneShotBufferize(getOperation()))) {
         getOperation()->emitError()
-            << "ascend-realize failed to run one-shot bufferize";
+            << "ascend-realize failed to bufferize";
         signalPassFailure();
         return;
       }
@@ -307,7 +307,7 @@ struct AscendRealizePass
               getOperation(), *bundles,
               MemoryRealizationMode::MemorySpaceAnnotate))) {
         getOperation()->emitError()
-            << "ascend-realize failed to materialize Phase 5 memory bridge";
+            << "ascend-realize failed to materialize memory realization plan";
         signalPassFailure();
         return;
       }
