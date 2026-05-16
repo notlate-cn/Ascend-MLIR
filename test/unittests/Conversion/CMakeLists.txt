@@ -126,3 +126,22 @@ add_dependencies(RuntimeUnitTests AscendKernelizeOpInterfaceTest)
 add_test(NAME AscendKernelizeOpInterfaceTest
   COMMAND $<TARGET_FILE:AscendKernelizeOpInterfaceTest>
 )
+
+add_executable(AscendHandwrittenContractRegistryTest
+  AscendHandwrittenContractRegistryTest.cpp
+)
+
+target_include_directories(AscendHandwrittenContractRegistryTest PRIVATE
+  ${ASCEND_CONVERSION_INTERNAL_INCLUDE_DIR}
+)
+
+target_link_libraries(AscendHandwrittenContractRegistryTest PRIVATE
+  RuntimeUnitTestSupport
+  AscendConversion
+)
+
+add_dependencies(RuntimeUnitTests AscendHandwrittenContractRegistryTest)
+
+add_test(NAME AscendHandwrittenContractRegistryTest
+  COMMAND $<TARGET_FILE:AscendHandwrittenContractRegistryTest>
+)
