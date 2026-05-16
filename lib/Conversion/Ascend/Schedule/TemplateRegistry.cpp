@@ -88,8 +88,8 @@ void registerBuiltinTemplates() {
         continue;
       const HandwrittenContract::TemplateSpec &spec = contract->scheduleTemplate;
       ScheduleTemplate tmpl;
-      tmpl.family = spec.layout;  // spec.layout → ScheduleTemplate::family
-      tmpl.name = spec.name;      // spec.name   → ScheduleTemplate::name
+      tmpl.family = spec.kindId;
+      tmpl.name = spec.tilingLayout;
       for (const std::string &tag : spec.tags)
         tmpl.tags.push_back(tag);
       tmpl.minRank = spec.minRank;
