@@ -8,6 +8,7 @@
 
 #include "Conversion/Ascend/Common/Attributes.h"
 #include "KernelPatternView.h"
+#include "../Kernelize/HandwrittenContractRegistry.h"
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/IR/AffineExpr.h"
 #include "mlir/IR/AffineMap.h"
@@ -211,10 +212,6 @@ LogicalResult collectIndexingMapInfo(linalg::LinalgOp linalgOp,
     }
   }
   return success();
-}
-
-bool isAttentionHandwrittenPattern(const KernelPatternView &pattern) {
-  return pattern.handwrittenKind == kKernelizeHandwrittenKindAttentionSdpa;
 }
 
 void appendPatternRawAxes(const KernelPatternView &pattern, unsigned axisCount,
@@ -493,7 +490,10 @@ bool shouldPrintTailContractFields(
 }
 
 const PatternOpView *selectAxisCarrierOp(const KernelPatternView &pattern) {
-  if (isAttentionHandwrittenPattern(pattern))
+  const ::mlir::afir::ascend::kernelize::HandwrittenContract *contract =
+      ::mlir::afir::ascend::kernelize::lookupHandwrittenContract(
+          pattern.handwrittenKind);
+  if (contract && contract->useAxisCarrierOnly)
     return selectDominantPrimaryOp(pattern);
   for (const PatternOpView &opView : pattern.ops) {
     if (opView.role == pattern.dominantRole)
@@ -524,7 +524,10 @@ FailureOr<CoalescedAxisInfo> coalesceAxes(const KernelPatternView &pattern) {
   SmallVector<int64_t> staticExtents(axisCount, ShapedType::kDynamic);
   SmallVector<bool> broadcastAxisMask(axisCount, false);
 
-  bool useAxisCarrierOnly = isAttentionHandwrittenPattern(pattern);
+  const ::mlir::afir::ascend::kernelize::HandwrittenContract *hwContract =
+      ::mlir::afir::ascend::kernelize::lookupHandwrittenContract(
+          pattern.handwrittenKind);
+  bool useAxisCarrierOnly = hwContract && hwContract->useAxisCarrierOnly;
   for (const PatternOpView &opView : pattern.ops) {
     if (useAxisCarrierOnly && opView.op != axisOp)
       continue;
