@@ -50,8 +50,10 @@ dispatchMatmulTiling(const MatmulTilingRequest &request,
     }
 
     auto apiResult = apiBackend.generate(request);
-    if (apiResult)
+    if (apiResult) {
+      llvm::consumeError(std::move(nativeFailure));
       return std::move(apiResult);
+    }
 
     llvm::Error apiFailure = apiResult.takeError();
     return llvm::joinErrors(
