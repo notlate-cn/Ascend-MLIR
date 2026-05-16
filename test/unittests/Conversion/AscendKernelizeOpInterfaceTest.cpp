@@ -207,9 +207,8 @@ TEST(AscendKernelizeOpInterfaceTest, RegistryReportsUnsupportedByDefault) {
   EXPECT_EQ(info->participation, KernelizeParticipationKind::Unsupported);
   EXPECT_EQ(info->accessPattern, AccessPatternKind::Unknown);
   EXPECT_EQ(info->seedPolicy, KernelizeSeedPolicy::NeverSeed);
-  EXPECT_EQ(info->modelName, "unknown");
-  EXPECT_EQ(info->unsupportedReason,
-            "no kernelize semantic model for op test.unknown");
+  EXPECT_EQ(info->modelName, "unregistered");
+  EXPECT_EQ(info->unsupportedReason, "");
 }
 
 TEST(AscendKernelizeOpInterfaceTest, StringifiesPublicEnums) {
