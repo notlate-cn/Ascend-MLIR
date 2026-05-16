@@ -67,8 +67,9 @@ LogicalResult TilingRealizationDriver::tileModule(ModuleOp module) const {
       auto extractSlice = dyn_cast<tensor::ExtractSliceOp>(sliceOp);
       if (!extractSlice)
         continue;
-      scf::tileAndFuseProducerOfSlice(rewriter, extractSlice,
-                                      tilingResult->loops);
+      // Best-effort: no-fusion is safe; the slice is simply left unfused.
+      (void)scf::tileAndFuseProducerOfSlice(rewriter, extractSlice,
+                                            tilingResult->loops);
     }
 
     rewriter.replaceOp(op, tilingResult->replacements);
