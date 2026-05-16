@@ -102,7 +102,7 @@ module {
   AscendBackendSupportMatrix matrix;
   EXPECT_EQ(classifyLinalgComputeKind(generic.getOperation(), matrix),
             ComputeKind::ReductionAdd);
-  EXPECT_TRUE(isSupportedPhase5ReductionBody(generic, matrix));
+  EXPECT_NE(classifyPhase5ReductionBody(generic, matrix), ComputeKind::Unknown);
   EXPECT_FALSE(isSupportedPhase5VectorOutput(generic, matrix));
   EXPECT_TRUE(isSupportedPhase5FinalOutput(generic, matrix));
 }

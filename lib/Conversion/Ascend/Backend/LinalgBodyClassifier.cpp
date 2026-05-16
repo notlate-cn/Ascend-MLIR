@@ -6,6 +6,7 @@
 
 #include "Conversion/Ascend/Backend/LinalgBodyClassifier.h"
 
+#include "Conversion/Ascend/Backend/ElementwiseBodyOpRegistry.h"
 #include "Conversion/Ascend/Common/Attributes.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
@@ -66,13 +67,9 @@ bool hasOnlyParallelIterators(linalg::LinalgOp linalgOp) {
 }
 
 ComputeKind classifyElementwiseBodyOp(Operation &bodyOp) {
-  if (isa<arith::AddFOp>(bodyOp))
-    return ComputeKind::ElementwiseAdd;
-  if (isa<arith::MulFOp>(bodyOp))
-    return ComputeKind::ElementwiseMul;
-  if (isa<arith::MaximumFOp>(bodyOp))
-    return ComputeKind::ElementwiseMax;
-  return ComputeKind::Unknown;
+  const ElementwiseBodyOpEntry *entry =
+      lookupElementwiseBodyOp(bodyOp.getName().getStringRef());
+  return entry ? entry->kind : ComputeKind::Unknown;
 }
 
 bool isAvailableOperand(Value value, Value previousResult) {
@@ -258,6 +255,9 @@ bool isSupportedVectorGatherBody(linalg::GenericOp generic,
 bool isSupportedTransposeOp(linalg::TransposeOp transpose,
                             const AscendBackendSupportMatrix &matrix) {
   bool hasOnChip = hasOnChipOutput(transpose);
+  // On-chip (UB) transpose is limited to 2D swap; the hardware intrinsic only
+  // supports rank-2. Off-chip (GM) transpose is lowered via DMA which handles
+  // arbitrary permutations.
   return matrix.isSupportedComputeKind(ComputeKind::Transpose) &&
          ((hasOnChip && isRank2SwapPermutation(transpose.getPermutation())) ||
           (!hasOnChip && isValidPermutation(transpose.getPermutation())));
@@ -267,6 +267,8 @@ bool isSupportedTransposeGeneric(linalg::GenericOp generic,
                                  const AscendBackendSupportMatrix &matrix) {
   if (!matrix.isSupportedComputeKind(ComputeKind::Transpose))
     return false;
+  // Generic transpose is only recognized for on-chip (UB) output, which
+  // requires a 2D swap permutation. Off-chip generic ops use linalg.transpose.
   if (!hasOnChipOutput(generic))
     return false;
   if (generic.getNumDpsInputs() != 1 || generic.getNumDpsInits() != 1)
@@ -322,38 +324,52 @@ bool hasIdentityOutputMaps(linalg::LinalgOp linalgOp) {
   return true;
 }
 
-bool isSupportedPhase5ReductionBody(
+ComputeKind classifyPhase5ReductionBody(
     linalg::GenericOp generic, const AscendBackendSupportMatrix &matrix) {
-  if (!matrix.isSupportedComputeKind(ComputeKind::ReductionAdd))
-    return false;
   if (!llvm::is_contained(generic.getIteratorTypesArray(),
                           utils::IteratorType::reduction))
-    return false;
+    return ComputeKind::Unknown;
 
   Block *body = generic.getBody();
   auto yieldOp = dyn_cast<linalg::YieldOp>(body->getTerminator());
   if (!yieldOp || yieldOp.getNumOperands() != 1)
-    return false;
+    return ComputeKind::Unknown;
 
-  Operation *lastAdd = nullptr;
+  // Find the single non-constant arith op in the body.
+  Operation *reductionOp = nullptr;
   for (Operation &bodyOp : body->without_terminator()) {
     if (isa<arith::ConstantOp>(bodyOp))
       continue;
-    if (!isa<arith::AddFOp>(bodyOp))
-      return false;
-    lastAdd = &bodyOp;
+    if (reductionOp)
+      return ComputeKind::Unknown; // more than one compute op
+    reductionOp = &bodyOp;
   }
+  if (!reductionOp)
+    return ComputeKind::Unknown;
+  if (yieldOp.getOperand(0) != reductionOp->getResult(0))
+    return ComputeKind::Unknown;
 
-  return lastAdd && yieldOp.getOperand(0) == lastAdd->getResult(0);
+  if (isa<arith::AddFOp>(reductionOp))      return ComputeKind::ReductionAdd;
+  if (isa<arith::MaximumFOp>(reductionOp))  return ComputeKind::ReductionMax;
+  if (isa<arith::MinimumFOp>(reductionOp))  return ComputeKind::ReductionMin;
+  if (isa<arith::MulFOp>(reductionOp))      return ComputeKind::ReductionMul;
+  return ComputeKind::Unknown;
 }
 
 ComputeKind
 classifyLinalgComputeKind(Operation *op,
                           const AscendBackendSupportMatrix &matrix) {
-  if (isa<linalg::MatmulOp>(op))
+  if (isa<linalg::MatmulOp, linalg::MatmulTransposeAOp,
+          linalg::MatmulTransposeBOp>(op))
     return ComputeKind::Matmul;
   if (auto batchMatmul = dyn_cast<linalg::BatchMatmulOp>(op))
     if (!hasOnChipOutput(batchMatmul))
+      return ComputeKind::BatchMatmul;
+  if (auto batchTranspose = dyn_cast<linalg::BatchMatmulTransposeAOp>(op))
+    if (!hasOnChipOutput(batchTranspose))
+      return ComputeKind::BatchMatmul;
+  if (auto batchTranspose = dyn_cast<linalg::BatchMatmulTransposeBOp>(op))
+    if (!hasOnChipOutput(batchTranspose))
       return ComputeKind::BatchMatmul;
   if (isa<linalg::FillOp>(op))
     return ComputeKind::Fill;
@@ -379,8 +395,9 @@ classifyLinalgComputeKind(Operation *op,
       return ComputeKind::TensorCopy;
     if (isSupportedVectorGatherBody(generic, matrix))
       return ComputeKind::VectorGather;
-    if (isSupportedPhase5ReductionBody(generic, matrix))
-      return ComputeKind::ReductionAdd;
+    if (ComputeKind rk = classifyPhase5ReductionBody(generic, matrix);
+        rk != ComputeKind::Unknown)
+      return rk;
     if (isSupportedFusedElementwiseBody(generic, matrix))
       return ComputeKind::FusedElementwise;
     if (isSupportedGmScalarGeneric(generic))
@@ -404,20 +421,29 @@ bool isSupportedPhase5VectorOutput(
   case ComputeKind::ElementwiseAdd:
   case ComputeKind::ElementwiseMul:
   case ComputeKind::ElementwiseMax:
+  case ComputeKind::ElementwiseSub:
+  case ComputeKind::ElementwiseDiv:
+  case ComputeKind::ElementwiseNeg:
+  case ComputeKind::ElementwiseExp:
+  case ComputeKind::ElementwiseExp2:
+  case ComputeKind::ElementwiseLog:
+  case ComputeKind::ElementwiseSqrt:
+  case ComputeKind::ElementwiseRsqrt:
+  case ComputeKind::ElementwiseTanh:
+  case ComputeKind::ElementwiseErf:
+  case ComputeKind::ElementwiseAbs:
+  case ComputeKind::ElementwiseSin:
+  case ComputeKind::ElementwiseCos:
+  case ComputeKind::ElementwiseFma:
+  case ComputeKind::ElementwiseReciprocal:
+  case ComputeKind::ElementwiseRelu:
+  case ComputeKind::ElementwiseSelect:
+  case ComputeKind::ElementwiseMin:
   case ComputeKind::FusedElementwise:
     return matrix.isSupportedComputeKind(kind);
-  case ComputeKind::Unknown:
-  case ComputeKind::Matmul:
-  case ComputeKind::BatchMatmul:
-  case ComputeKind::Fill:
-  case ComputeKind::TensorCopy:
-  case ComputeKind::ScalarGeneric:
-  case ComputeKind::Transpose:
-  case ComputeKind::VectorGather:
-  case ComputeKind::ReductionAdd:
+  default:
     return false;
   }
-  return false;
 }
 
 bool isSupportedPhase5GatherOutput(
@@ -437,7 +463,7 @@ bool isSupportedPhase5FinalOutput(linalg::LinalgOp linalgOp,
     return true;
 
   auto generic = dyn_cast<linalg::GenericOp>(linalgOp.getOperation());
-  return generic && isSupportedPhase5ReductionBody(generic, matrix);
+  return generic && classifyPhase5ReductionBody(generic, matrix) != ComputeKind::Unknown;
 }
 
 } // namespace mlir::afir::ascend::backend
