@@ -15,6 +15,8 @@
 
 namespace mlir::afir::ascend::kernelize {
 
+using llvm::SmallVector;
+
 /// Describes all compile-time behavior of one handwritten kernel pattern.
 /// Register via registerHandwrittenContract(); consume via lookupHandwrittenContract().
 struct HandwrittenContract {
