@@ -7,6 +7,7 @@
 #include "ScheduleProblemBuilder.h"
 
 #include "KernelPatternView.h"
+#include "../Kernelize/HandwrittenContractRegistry.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/Operation.h"
 #include "llvm/ADT/STLExtras.h"
@@ -219,9 +220,11 @@ buildScheduleProblem(const KernelPatternView &pattern,
   appendContractTemplateTags(pattern, problem.templateTags);
   appendShapeConstraints(problem.resultShape, problem.shapeConstraints);
   appendStructureConstraints(pattern, problem.structureConstraints);
-  if (pattern.handwrittenKind == kKernelizeHandwrittenKindAttentionSdpa) {
-    problem.structureConstraints.push_back("handwritten_group");
-    problem.structureConstraints.push_back("attention_sdpa_chain");
+  if (const auto *hwContract =
+          ::mlir::afir::ascend::kernelize::lookupHandwrittenContract(
+              pattern.handwrittenKind)) {
+    llvm::append_range(problem.structureConstraints,
+                       hwContract->structureConstraints);
   }
   return problem;
 }
