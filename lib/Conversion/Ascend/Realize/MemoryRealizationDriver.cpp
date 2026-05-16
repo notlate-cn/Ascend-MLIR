@@ -115,7 +115,7 @@ static bool isReductionInitFillForWriter(Operation *user, Operation *writer,
   auto fillOp = dyn_cast<linalg::FillOp>(user);
   auto generic = dyn_cast<linalg::GenericOp>(writer);
   if (!fillOp || !generic ||
-      !backend::isSupportedPhase5ReductionBody(generic, matrix))
+      backend::classifyPhase5ReductionBody(generic, matrix) == backend::ComputeKind::Unknown)
     return false;
 
   if (!llvm::is_contained(fillOp.getOutputs(), output))
@@ -914,17 +914,7 @@ static bool isBridgeableCubeCompute(
   case backend::ComputeKind::BatchMatmul:
     expectedRank = 3;
     break;
-  case backend::ComputeKind::ElementwiseAdd:
-  case backend::ComputeKind::ElementwiseMul:
-  case backend::ComputeKind::ElementwiseMax:
-  case backend::ComputeKind::Fill:
-  case backend::ComputeKind::TensorCopy:
-  case backend::ComputeKind::FusedElementwise:
-  case backend::ComputeKind::ScalarGeneric:
-  case backend::ComputeKind::Transpose:
-  case backend::ComputeKind::VectorGather:
-  case backend::ComputeKind::ReductionAdd:
-  case backend::ComputeKind::Unknown:
+  default:
     return false;
   }
 

@@ -19,8 +19,8 @@ ComputeKind
 classifyLinalgComputeKind(Operation *op,
                           const AscendBackendSupportMatrix &matrix);
 
-bool isSupportedPhase5ReductionBody(linalg::GenericOp generic,
-                                    const AscendBackendSupportMatrix &matrix);
+ComputeKind classifyPhase5ReductionBody(linalg::GenericOp generic,
+                                        const AscendBackendSupportMatrix &matrix);
 
 bool isSupportedPhase5VectorOutput(linalg::LinalgOp linalgOp,
                                    const AscendBackendSupportMatrix &matrix);
