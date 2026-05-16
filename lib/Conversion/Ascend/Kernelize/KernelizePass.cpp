@@ -7,6 +7,7 @@
 #include "Conversion/Ascend/Kernelize/KernelizePass.h"
 
 #include "Conversion/Ascend/Debug/DebugOptions.h"
+#include "Conversion/Ascend/Kernelize/KernelizeExternalModels.h"
 #include "CandidateMergeAnalysis.h"
 #include "DependencyAnalysis.h"
 #include "FusionCandidateAnalysis.h"
@@ -104,6 +105,11 @@ namespace mlir::afir {
 struct AscendKernelizePass
     : public ::impl::AscendKernelizePassBase<AscendKernelizePass> {
   using AscendKernelizePassBase::AscendKernelizePassBase;
+
+  void getDependentDialects(DialectRegistry &registry) const override {
+    AscendKernelizePassBase::getDependentDialects(registry);
+    ::mlir::afir::ascend::kernelize::registerKernelizeExternalModels(registry);
+  }
 
   void runOnOperation() override {
     ::mlir::afir::ascend::debug::DebugOptions options{

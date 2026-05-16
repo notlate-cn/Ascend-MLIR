@@ -169,7 +169,7 @@ DependencyAnalyzer::analyze(ModuleOp module) const {
 
     const KernelizeOpSemanticInfo &info = it->second;
     if (info.participation == KernelizeParticipationKind::Unsupported &&
-        info.modelName != "unknown" && !info.unsupportedReason.empty()) {
+        !info.unsupportedReason.empty()) {
       op->emitError() << "unsupported Kernelize op semantics: "
                       << info.unsupportedReason;
       return WalkResult::interrupt();

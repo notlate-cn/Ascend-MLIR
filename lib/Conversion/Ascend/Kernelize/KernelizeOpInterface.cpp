@@ -64,12 +64,16 @@ KernelizeOpModelRegistry::resolve(Operation *op) const {
     return info;
   }
 
+  // Ops with no registered model get Unsupported with an empty unsupportedReason
+  // so the DependencyAnalysis unsupportedResult walk (which checks !reason.empty())
+  // does NOT hard-fail on them. They are still caught by the unsupportedProducers
+  // path if they produce tensors consumed by analyzed ops (e.g. tensor.generate),
+  // but pure infrastructure ops whose results are only used as DPS init operands
+  // (e.g. tensor.empty) are silently excluded by collectDependencyOperands.
   KernelizeOpSemanticInfo info;
   info.participation = KernelizeParticipationKind::Unsupported;
   info.accessPattern = AccessPatternKind::Unknown;
-  info.modelName = "unknown";
-  info.unsupportedReason = "no kernelize semantic model for op " +
-                           op->getName().getStringRef().str();
+  info.modelName = "unregistered";
   return info;
 }
 

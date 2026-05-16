@@ -4,7 +4,7 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "KernelizeExternalModels.h"
+#include "Conversion/Ascend/Kernelize/KernelizeExternalModels.h"
 
 #include "KernelizeSemanticUtils.h"
 
