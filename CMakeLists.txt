@@ -65,6 +65,7 @@ include_directories(${LLVM_INCLUDE_DIRS})
 include_directories(${MLIR_INCLUDE_DIRS})
 include_directories(${CMAKE_SOURCE_DIR}/include)
 include_directories(${CMAKE_BINARY_DIR}/include)
+include_directories(${CMAKE_SOURCE_DIR}/lib)
 
 # StableHLO配置
 set(STABLEHLO_DIR "${CMAKE_SOURCE_DIR}/externals/stablehlo")
