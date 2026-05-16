@@ -231,6 +231,25 @@ V2 的 Normalize → Kernelize → Schedule → Realize → Translate 不是任�
 
 ### 3.1 $P_1$ Normalize：归约到 Term Rewriting System
 
+> *简要总结*
+>
+> **问题归类：项重写系统 (Term Rewriting System)**
+>
+> 前端 IR 存在多种语义等价的表达形式（不同方言、不同算子分解粒度）。下游处理需要每个算子有唯一的规范形式，否则要为每种变体重复实现处理逻辑。
+>
+> **原理：** 设计一组语义保持的重写规则，使其满足两个性质：
+>
+> - **终止性**：规则有限步内停止
+> - **合流性**：无论应用顺序如何，最终都收敛到同一规范形
+>
+> 合流性意味着不需要搜索"最优应用顺序"——任何顺序都得到相同结果，这一层因此不是优化问题。
+>
+> **解决方案：**
+>
+> - 手工设计规则集（V2-2.3 规范化表），并通过 verifier 静态校验合流性
+> - 入口拒绝不合法方言（`DialectRejected`），不尝试修复
+> - 单遍 fixpoint 重写至规范形
+
 #### 3.1.1 归约目标
 
 $P_1$ 是 **Term Rewriting System (TRS)** 中的"求规范形"问题：
@@ -298,6 +317,27 @@ $$
 ---
 
 ### 3.2 $P_2$ Kernelize：归约到带容量约束的图划分
+
+> *简要总结*
+>
+> **问题归类：带容量约束的非循环图划分 (Constrained Acyclic Graph Partitioning)**
+>
+> 计算图节点数大、若每个算子独立成 kernel，中间结果都要在 GM 和片上存储之间往返搬运，DMA 流量主导执行时间。需要把节点划分为若干子集，每个子集成为一个 kernel，子集内部的中间结果片上传递。
+>
+> **核心约束：**
+>
+> - 划分后的商图必须是 DAG（否则 kernel 之间死锁）
+> - 每个 kernel 的内存占用不超过片上存储容量
+> - 每个 kernel 内部必须能被下游调度（含合法的 OpRole 组合、可匹配模板族）
+>
+> **复杂度：** NP-hard（归约自带容量约束的 balanced graph partitioning）。METIS / hMETIS 等成熟工具不能直接用，因为它们针对对称图，不处理 acyclic 约束。
+>
+> **解决方案：**
+>
+> - **Role-driven 启发式**：以重算力算子（cube 类）为种子，按 OpRole 规则向数据依赖邻居扩展
+> - **代理代价**：跨 kernel 数据量 − λ·片上复用收益，等价于带权 min-cut
+> - **HandwrittenPattern 短路**：FlashAttention 等高价值子图通过结构匹配直接整体识别为单一 kernel，绕过通用启发式
+> - **FallbackSingleOpPattern 兜底**：任何无法融入大 kernel 的算子，单独成 kernel，保证全覆盖性
 
 #### 3.2.1 归约目标
 
@@ -376,6 +416,37 @@ $$
 ---
 
 ### 3.3 $P_3$ Schedule：归约到 Scheduling + Multi-dim Bin Packing + State-Space Search
+
+> *简要总结*
+>
+> **问题归类：作业车间调度 + 多维装箱 + 状态空间搜索的耦合问题**
+>
+> 每个 kernel 内部的多重嵌套循环需要决定四件事：
+>
+> - **Tile 形状**（每个轴一次处理多少元素）
+> - **循环顺序**
+> - **轴绑定**（哪些轴并行化到 block/thread）
+> - **流水线深度**（double buffer / triple buffer）
+>
+> **核心难点：** Tile 形状**同时是调度变量和资源消耗变量**。
+>
+> - 经典调度问题假设任务大小固定、决策只是顺序
+> - NPU 上 tile 大小直接决定 buffer footprint、cube 单元利用率、reuse 模式、对齐效率
+> - 这导致 scheduling 与 bin packing 强耦合，不能先 pack 再 schedule
+>
+> **复杂度：** NP-hard。三个子问题各自就 NP-hard：作业车间调度（Garey-Johnson-Sethi 1976）、多维装箱（Chlebík 2006 证明无 APTAS）、状态空间 $10^4 \sim 10^6$ 量级。
+>
+> **代理代价：** $\alpha \cdot t_{cube} + \beta \cdot t_{vector} + \gamma \cdot t_{dma} - \delta \cdot \text{overlap} + \epsilon \cdot \text{spillRisk}$。最后一项 `spillRisk` 是把下游 Realize 的内存压力**前向**回灌到本层代价，缓解 §2.3 S2 耦合。
+>
+> **解决方案：**
+>
+> - **模板化**：每个 kernel 根据其 templateFamilies 标签选择调度骨架，骨架定义参数空间
+> - **受约束参数搜索**：在模板允许范围内枚举 tile/order 候选，按代理代价排序取最优
+> - **AxisCoalescing 预处理**：合并可合并的轴，降低搜索维度
+> - **HandwrittenPattern 短路**：命中高价值结构直接用预定义最优调度
+> - **Compilation Cache**：相同 fingerprint 直接复用历史结果
+>
+> 不采用 polyhedral 框架（NPU 异构性超出仿射模型表达力）、不采用在线 RL（编译期成本不可接受）。
 
 #### 3.3.1 归约目标
 
@@ -499,6 +570,31 @@ $$
 ---
 
 ### 3.4 $P_4$ Realize：归约到 Register Allocation（区间图着色推广）
+
+> *简要总结*
+>
+> **问题归类：寄存器分配（图着色）在多级存储 + 显式 DMA 下的推广**
+>
+> 调度结果给出每个 buffer 的生命周期区间和大小，需要决定：
+>
+> - **Placement**：每个 buffer 放到哪一级存储（L0A/B/C、L1、UB、GM）
+> - **Offset**：在该存储级内部的物理偏移（生命周期不重叠的 buffer 可共享区域）
+> - **DMA 计划**：跨存储级的搬运指令及其在流水线中的时序
+>
+> **核心难点 —— 与经典 register allocation 的本质差异：**
+> 经典 CPU 寄存器分配中，spill 由 ISA 隐式触发，成本仅是带宽。NPU 上的搬运是**显式 DMA 指令**，必须排进流水线节拍，会和 cube/vector 单元争抢 issue slot。因此 placement 决策直接影响 §3.3 的流水线重叠。
+>
+> 此外还有 layout 约束：cube 单元的 L0A/B/C 只接受特定 layout（NZ 等），这破坏了 interval graph 着色的多项式可解性前提。
+>
+> **复杂度：** 在单一存储级 + 等大小情形下退化为区间图着色，多项式可解（Olariu 1991）。加入容量约束变 strip packing（NP-hard，无 PTAS）。加入多级存储 + layout + 显式 DMA 后整体 NP-hard。
+>
+> **解决方案（分阶段 greedy）：**
+>
+> 1. **Bufferization**：tensor SSA → 显式 buffer 集合，计算生命周期区间
+> 2. **Placement**：按 locality（使用者距离）+ layout 兼容性 + `mustKeepOnChipValues` hint，从最近的 L0 开始自顶向下放置；放不下退到下一级
+> 3. **Static Memory Planning**：每级内部用 First-Fit Decreasing 算 offset，生命周期不重叠的 buffer 复用
+> 4. **Data Movement**：根据 placement 差异生成 DMA 指令并排进流水线
+> 5. **Materialization + Verifier**：产出 `MemoryRealizationPlan` 并验证所有约束
 
 #### 3.4.1 归约目标
 
@@ -624,6 +720,35 @@ V2 采用的妥协：$P_3$ 在代理代价中预估 `spillRisk`（§3.3.2 中 $C
 ---
 
 ### 3.5 $P_5$ Translate：归约到 DAG Instruction Selection（Pattern Covering）
+
+> *简要总结*
+>
+> **问题归类：DAG 上的模式覆盖 (DAG Instruction Selection / Pattern Covering)**
+>
+> IR 上的每个节点需要被一条或多条目标指令覆盖。Pattern 库中每条规则包含：匹配的子图形状、适用条件 guard、发射的目标指令序列、估算代价。要求覆盖完整、guard 满足、可编码，总代价最小。
+>
+> **复杂度：**
+>
+> - 树上：Aho-Johnson 动态规划 $O(n)$ 最优
+> - DAG 上：NP-hard（Ertl 1999，归约自 set cover）
+>
+> 实际中 $|V(D_j)|$ 通常 ≤ 数百，pattern 之间冲突有限（cube / vector / DMA 几乎不在节点上竞争），启发式可接近最优。
+>
+> **核心难点 —— 与经典指令选择的本质差异：**
+> $P_5$ 不仅产出"IR → 指令"翻译，而是同时产出三类必须一致的工件：
+>
+> - **Kernel 侧**：AscendC 源码
+> - **Host 侧**：tiling 计算函数（运行时根据实际 shape 算 tile 参数）
+> - **Runtime Manifest**：kernel 元信息（参数布局、workspace 大小、launch 配置）
+>
+> 三者参数布局、workspace 大小、ABI 必须严格一致，这是经典指令选择不存在的**跨工件一致性约束**。
+>
+> **解决方案：**
+>
+> - **Pattern-driven rewriting**：用 MLIR DRR / C++ pattern 写规则，按"最具体优先"排序
+> - **Greedy bottom-up 匹配**：从叶子向根传递最优覆盖（DAG 上是近似算法）
+> - **HandwrittenPattern 短路**：命中高价值结构直接用预定义 emit 模板
+> - **三工件联合产出**：Compute Lowering → AscendC 源码 + Kernel ABI + Host Tiling + Runtime Manifest 同步生成，由 V2-6.7 验证一致性
 
 #### 3.5.1 归约目标
 
