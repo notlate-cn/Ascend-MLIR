@@ -15,6 +15,7 @@
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringRef.h"
+#include "llvm/ADT/StringSet.h"
 #include "llvm/Support/raw_ostream.h"
 
 #include <algorithm>
@@ -55,12 +56,6 @@ void sortUniqueOpsByOpId(SmallVectorImpl<Operation *> &ops,
   ops.erase(std::unique(ops.begin(), ops.end()), ops.end());
 }
 
-bool containsString(ArrayRef<std::string> values, StringRef value) {
-  for (const std::string &existing : values)
-    if (existing == value)
-      return true;
-  return false;
-}
 
 DenseMap<Operation *, SmallVector<unsigned>>
 buildCoveringSourceIds(ArrayRef<MergeSource> sources) {
@@ -260,7 +255,7 @@ CandidateMergeAnalyzer::analyze(ArrayRef<FusionCandidate> candidates,
                                 const DependencyAnalysisResult &deps,
                                 const KernelizeConfig &config) const {
   SmallVector<MergeSource, 8> sources;
-  SmallVector<std::string, 16> seenSourceKeys;
+  llvm::StringSet<> seenSourceKeys;
   for (const FusionCandidate &candidate : candidates) {
     if (!candidate.legal || candidate.kind != CandidateKind::Fusion)
       continue;
@@ -268,7 +263,7 @@ CandidateMergeAnalyzer::analyze(ArrayRef<FusionCandidate> candidates,
   }
 
   for (const MergeSource &source : sources)
-    seenSourceKeys.push_back(buildSourceKey(source, deps.index));
+    seenSourceKeys.insert(buildSourceKey(source, deps.index));
 
   SmallVector<MergedCandidate> mergedCandidates;
   bool changed = true;
@@ -291,9 +286,8 @@ CandidateMergeAnalyzer::analyze(ArrayRef<FusionCandidate> candidates,
 
       MergeSource mergedSource = buildMergeSource(merged);
       std::string sourceKey = buildSourceKey(mergedSource, deps.index);
-      if (containsString(seenSourceKeys, sourceKey))
+      if (!seenSourceKeys.insert(sourceKey).second)
         continue;
-      seenSourceKeys.push_back(sourceKey);
 
       merged.mergedCandidateId = static_cast<unsigned>(mergedCandidates.size());
       mergedCandidates.push_back(std::move(merged));

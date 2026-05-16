@@ -10,7 +10,6 @@
 #include "mlir/IR/Value.h"
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/DenseSet.h"
-#include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallVector.h"
 
 #include <algorithm>
@@ -20,13 +19,15 @@ using namespace mlir;
 namespace mlir::afir::ascend::kernelize {
 namespace {
 
-void appendUniqueValue(SmallVectorImpl<Value> &values, Value value) {
-  if (!llvm::is_contained(values, value))
+void appendUniqueValue(SmallVectorImpl<Value> &values,
+                       DenseSet<void *> &seen, Value value) {
+  if (seen.insert(value.getAsOpaquePointer()).second)
     values.push_back(value);
 }
 
-void appendUniqueOp(SmallVectorImpl<Operation *> &ops, Operation *op) {
-  if (!llvm::is_contained(ops, op))
+void appendUniqueOp(SmallVectorImpl<Operation *> &ops,
+                    DenseSet<Operation *> &seen, Operation *op) {
+  if (seen.insert(op).second)
     ops.push_back(op);
 }
 
@@ -36,28 +37,31 @@ CandidateClosure computeCandidateClosure(ArrayRef<Operation *> internalOps,
                                           const ProducerConsumerIndex &index) {
   CandidateClosure closure;
 
+  DenseSet<Operation *> seenInternalOps;
   bool hasUnknownInternalOp = false;
   for (Operation *op : internalOps) {
     if (!index.opIds.contains(op)) {
       hasUnknownInternalOp = true;
       continue;
     }
-    appendUniqueOp(closure.internalOps, op);
+    appendUniqueOp(closure.internalOps, seenInternalOps, op);
   }
 
   llvm::sort(closure.internalOps, [&](Operation *lhs, Operation *rhs) {
     return index.opIds.lookup(lhs).value < index.opIds.lookup(rhs).value;
   });
 
-  DenseSet<Operation *> internalSet;
-  for (Operation *op : closure.internalOps)
-    internalSet.insert(op);
+  DenseSet<Operation *> internalSet(closure.internalOps.begin(),
+                                    closure.internalOps.end());
 
+  DenseSet<void *> seenExternalInputs;
+  DenseSet<void *> seenEscapingValues;
+  DenseSet<void *> seenExternalOutputs;
   for (Operation *op : closure.internalOps) {
     for (Value operand : op->getOperands()) {
       Operation *producer = operand.getDefiningOp();
       if (!producer || !internalSet.contains(producer))
-        appendUniqueValue(closure.externalInputs, operand);
+        appendUniqueValue(closure.externalInputs, seenExternalInputs, operand);
     }
 
     for (Value result : op->getResults()) {
@@ -70,9 +74,9 @@ CandidateClosure computeCandidateClosure(ArrayRef<Operation *> internalOps,
           hasExternalUse = true;
       }
       if (hasInternalUse && hasExternalUse)
-        appendUniqueValue(closure.escapingValues, result);
+        appendUniqueValue(closure.escapingValues, seenEscapingValues, result);
       else if (hasExternalUse)
-        appendUniqueValue(closure.externalOutputs, result);
+        appendUniqueValue(closure.externalOutputs, seenExternalOutputs, result);
     }
   }
 
