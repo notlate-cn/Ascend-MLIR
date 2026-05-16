@@ -37,6 +37,7 @@ add_mlir_library(AscendConversion
   Realize/RealizePass.cpp
   Realize/RealizeReport.cpp
   Realize/StaticMemoryPlanner.cpp
+  Realize/TilingRealizationDriver.cpp
   Schedule/SchedulePass.cpp
 
   ADDITIONAL_HEADER_DIRS
@@ -56,8 +57,10 @@ add_mlir_library(AscendConversion
   MLIRLinalgDialect
   MLIRMemRefDialect
   MLIRPass
+  MLIRSCFTransforms
   MLIRSupport
   MLIRTensorDialect
+  MLIRTilingInterface
   MLIRAsc
   MLIRAscUtils
   AscendTargetProfile
