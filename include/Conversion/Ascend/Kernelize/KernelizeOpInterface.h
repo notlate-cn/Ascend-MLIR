@@ -10,6 +10,7 @@
 #include "mlir/IR/AffineMap.h"
 #include "mlir/IR/OpDefinition.h"
 #include "mlir/IR/Operation.h"
+#include "mlir/IR/Types.h"
 #include "mlir/Support/LogicalResult.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringRef.h"
@@ -69,6 +70,9 @@ struct KernelizeOpSemanticInfo {
   SmallVector<unsigned, 2> transparentOperandIndices;
   std::string modelName = "unknown";
   std::string unsupportedReason;
+  // Element types of DPS inputs and outputs. Populated for linalg ops.
+  mlir::SmallVector<mlir::Type, 4> inputElementTypes;
+  mlir::SmallVector<mlir::Type, 2> outputElementTypes;
 };
 
 struct KernelizeOpModel {

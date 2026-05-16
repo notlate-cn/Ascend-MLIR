@@ -271,6 +271,17 @@ LogicalResult populateLinalgSemanticInfo(Operation *op,
   populateIndexingMaps(op, info);
   populateIteratorInfo(op, info);
 
+  if (auto linalgOp = dyn_cast<linalg::LinalgOp>(op)) {
+    for (Value input : linalgOp.getDpsInputs()) {
+      if (auto shaped = dyn_cast<mlir::ShapedType>(input.getType()))
+        info.inputElementTypes.push_back(shaped.getElementType());
+    }
+    for (Value init : linalgOp.getDpsInits()) {
+      if (auto shaped = dyn_cast<mlir::ShapedType>(init.getType()))
+        info.outputElementTypes.push_back(shaped.getElementType());
+    }
+  }
+
   if (info.resultRanks.size() > 1) {
     info.participation = KernelizeParticipationKind::Unsupported;
     info.accessPattern = AccessPatternKind::Unknown;
