@@ -11,6 +11,7 @@ EXAMPLES=(
   "relu-broadcast-transpose"
   "split-relu-brc-add-mul"
   "matmul-add-leakyrelu"
+  "two-kernel-dag"
 )
 
 require_tool() {

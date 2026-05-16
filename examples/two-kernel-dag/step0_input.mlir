@@ -1,0 +1,56 @@
+// ============================================================
+// STAGE 0: High-Level IR - two generated kernels in one module
+//
+// Computation:
+//   kernel_a: a[N] + b[N] -> mid[N]
+//   kernel_b: mid[N] * c[N] -> out[N]
+//
+// The two functions intentionally remain separate global kernel roots. The
+// example runtime manifest wires them as a two-task DAG.
+// ============================================================
+
+module {
+  func.func @kernel_a(
+      %a : tensor<?xf16>,
+      %b : tensor<?xf16>) -> tensor<?xf16> {
+    %c0 = arith.constant 0 : index
+    %n = tensor.dim %a, %c0 : tensor<?xf16>
+    %init = tensor.empty(%n) : tensor<?xf16>
+    %out = linalg.generic {
+      indexing_maps = [
+        affine_map<(d0) -> (d0)>,
+        affine_map<(d0) -> (d0)>,
+        affine_map<(d0) -> (d0)>
+      ],
+      iterator_types = ["parallel"]
+    } ins(%a, %b : tensor<?xf16>, tensor<?xf16>)
+      outs(%init : tensor<?xf16>) {
+    ^bb0(%x: f16, %y: f16, %o: f16):
+      %sum = arith.addf %x, %y : f16
+      linalg.yield %sum : f16
+    } -> tensor<?xf16>
+    return %out : tensor<?xf16>
+  }
+
+  func.func @kernel_b(
+      %mid : tensor<?xf16>,
+      %c : tensor<?xf16>) -> tensor<?xf16> {
+    %c0 = arith.constant 0 : index
+    %n = tensor.dim %mid, %c0 : tensor<?xf16>
+    %init = tensor.empty(%n) : tensor<?xf16>
+    %out = linalg.generic {
+      indexing_maps = [
+        affine_map<(d0) -> (d0)>,
+        affine_map<(d0) -> (d0)>,
+        affine_map<(d0) -> (d0)>
+      ],
+      iterator_types = ["parallel"]
+    } ins(%mid, %c : tensor<?xf16>, tensor<?xf16>)
+      outs(%init : tensor<?xf16>) {
+    ^bb0(%x: f16, %y: f16, %o: f16):
+      %prod = arith.mulf %x, %y : f16
+      linalg.yield %prod : f16
+    } -> tensor<?xf16>
+    return %out : tensor<?xf16>
+  }
+}

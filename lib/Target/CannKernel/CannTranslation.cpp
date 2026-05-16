@@ -26,6 +26,7 @@
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/SmallPtrSet.h"
+#include "llvm/ADT/StringMap.h"
 #include "llvm/Support/Format.h"
 #include "llvm/Support/FormatVariadic.h"
 #include "llvm/Support/raw_ostream.h"
@@ -2084,6 +2085,14 @@ static bool emitGenericMixSingleChainKernel(
   return true;
 }
 
+/// Build a stable textual signature for duplicate PyStructType declarations.
+static std::string getPyStructSignature(emitasc::PyStructType pyType) {
+  std::string signature;
+  llvm::raw_string_ostream os(signature);
+  os << pyType;
+  return os.str();
+}
+
 /// Emit the TilingData struct declaration from a PyStructType.
 static LogicalResult emitTilingStructDecl(CodeEmitter &emitter, Location loc,
                                           emitasc::PyStructType pyType) {
@@ -3280,7 +3289,8 @@ LogicalResult mlir::translateToCannKernel(Operation *op, raw_ostream &os,
   os << "#include \"adv_api/reduce/reduce.h\"\n";
   os << "\n";
 
-  // First pass: emit TilingData struct declarations from aicore funcs
+  // First pass: emit TilingData struct declarations from aicore funcs.
+  llvm::StringMap<std::string> emittedStructSignatures;
   for (Operation &child : moduleOp.getBody()->getOperations()) {
     auto funcOp = dyn_cast<func::FuncOp>(child);
     if (!funcOp)
@@ -3295,6 +3305,18 @@ LogicalResult mlir::translateToCannKernel(Operation *op, raw_ostream &os,
         dyn_cast<emitasc::PyStructType>(args.back().getType());
     if (!tilingType)
       continue;
+
+    StringRef structName = tilingType.getNameAttr().getValue();
+    std::string signature = getPyStructSignature(tilingType);
+    auto [it, inserted] =
+        emittedStructSignatures.try_emplace(structName, signature);
+    if (!inserted) {
+      if (it->second != signature) {
+        return funcOp.emitError()
+               << "conflicting PyStructType declarations for " << structName;
+      }
+      continue;
+    }
 
     if (failed(emitTilingStructDecl(emitter, funcOp.getLoc(), tilingType)))
       return failure();
