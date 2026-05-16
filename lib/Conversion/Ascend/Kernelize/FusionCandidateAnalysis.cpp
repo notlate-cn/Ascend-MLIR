@@ -7,6 +7,7 @@
 #include "FusionCandidateAnalysis.h"
 
 #include "CandidateClosure.h"
+#include "HandwrittenContractRegistry.h"
 #include "KernelizeTypes.h"
 #include "OpRoleClassification.h"
 #include "mlir/IR/Operation.h"
@@ -313,14 +314,18 @@ FusionCandidate buildHandwrittenPatternCandidate(
     appendUniqueFamily(candidate.scheduleContract, handwrittenKind);
   }
 
+  const HandwrittenContract *hwContract =
+      lookupHandwrittenContract(handwrittenKind);
+
   Operation *primary = nullptr;
   unsigned primaryPriority = 3;
   for (Operation *op : groupOps) {
     ArrayRef<OpRole> roles = getRoles(roleMap, op);
     if (!isHandwrittenPrimaryCandidate(roles))
       continue;
-    if (handwrittenKind == kKernelizeHandwrittenKindAttentionSdpa) {
-      if (hasRole(roles, OpRole::Cube))
+    if (hwContract && !hwContract->primarySelectionRole.empty()) {
+      if (stringifyOpRole(OpRole::Cube) == hwContract->primarySelectionRole &&
+          hasRole(roles, OpRole::Cube))
         primary = op;
       continue;
     }
