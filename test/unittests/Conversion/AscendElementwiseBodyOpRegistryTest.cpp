@@ -33,6 +33,14 @@ TEST(ElementwiseBodyOpRegistryTest, BuiltinMathExpRegistered) {
   EXPECT_EQ(entry->binaryEmitter, nullptr);
 }
 
+TEST(ElementwiseBodyOpRegistryTest, UnsupportedMathOpsAreNotPlaceholderRegistered) {
+  EXPECT_EQ(lookupElementwiseBodyOp("math.exp2"), nullptr);
+  EXPECT_EQ(lookupElementwiseBodyOp("math.erf"), nullptr);
+  EXPECT_EQ(lookupElementwiseBodyOp("math.tanh"), nullptr);
+  EXPECT_EQ(lookupElementwiseBodyOp("math.sin"), nullptr);
+  EXPECT_EQ(lookupElementwiseBodyOp("math.cos"), nullptr);
+}
+
 TEST(ElementwiseBodyOpRegistryTest, BuiltinArithSubfRegistered) {
   const ElementwiseBodyOpEntry *entry = lookupElementwiseBodyOp("arith.subf");
   ASSERT_NE(entry, nullptr);

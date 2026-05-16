@@ -92,11 +92,6 @@ void registerBuiltinElementwiseBodyOps() {
        mlir::Value dst, mlir::Value src, mlir::Value cnt) {
       b.create<ExpL2Op>(loc, dst, src, cnt);
     }, nullptr});
-  registerElementwiseBodyOp({"math.exp2", ComputeKind::ElementwiseExp2,
-    [](mlir::OpBuilder &b, mlir::Location loc,
-       mlir::Value dst, mlir::Value src, mlir::Value cnt) {
-      b.create<ExpL2Op>(loc, dst, src, cnt);
-    }, nullptr});
   registerElementwiseBodyOp({"math.log", ComputeKind::ElementwiseLog,
     [](mlir::OpBuilder &b, mlir::Location loc,
        mlir::Value dst, mlir::Value src, mlir::Value cnt) {
@@ -116,27 +111,6 @@ void registerBuiltinElementwiseBodyOps() {
     [](mlir::OpBuilder &b, mlir::Location loc,
        mlir::Value dst, mlir::Value src, mlir::Value cnt) {
       b.create<AbsL2Op>(loc, dst, src, cnt);
-    }, nullptr});
-  // Placeholder ops: no dedicated AscendC L2 intrinsic yet; use AbsL2Op stub
-  registerElementwiseBodyOp({"math.tanh", ComputeKind::ElementwiseTanh,
-    [](mlir::OpBuilder &b, mlir::Location loc,
-       mlir::Value dst, mlir::Value src, mlir::Value cnt) {
-      b.create<AbsL2Op>(loc, dst, src, cnt); // placeholder until TanhL2Op available
-    }, nullptr});
-  registerElementwiseBodyOp({"math.erf", ComputeKind::ElementwiseErf,
-    [](mlir::OpBuilder &b, mlir::Location loc,
-       mlir::Value dst, mlir::Value src, mlir::Value cnt) {
-      b.create<AbsL2Op>(loc, dst, src, cnt); // placeholder until ErfL2Op available
-    }, nullptr});
-  registerElementwiseBodyOp({"math.sin", ComputeKind::ElementwiseSin,
-    [](mlir::OpBuilder &b, mlir::Location loc,
-       mlir::Value dst, mlir::Value src, mlir::Value cnt) {
-      b.create<AbsL2Op>(loc, dst, src, cnt); // placeholder
-    }, nullptr});
-  registerElementwiseBodyOp({"math.cos", ComputeKind::ElementwiseCos,
-    [](mlir::OpBuilder &b, mlir::Location loc,
-       mlir::Value dst, mlir::Value src, mlir::Value cnt) {
-      b.create<AbsL2Op>(loc, dst, src, cnt); // placeholder
     }, nullptr});
 }
 

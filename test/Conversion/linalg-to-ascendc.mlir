@@ -229,6 +229,58 @@ func.func @test_parallel_reduction_add() {
 }
 
 //===----------------------------------------------------------------------===//
+// Compute: linalg.generic product reduction uses the DPS init identity.
+// Regression: product reduction must duplicate 1.0 into the expanded VECCALC
+// accumulator, not the old hard-coded 0.0 add identity.
+//===----------------------------------------------------------------------===//
+// CHECK-LABEL: func @test_parallel_reduction_mul_identity
+// CHECK: %[[ONE:.*]] = arith.constant 1.000000e+00 : f32
+// CHECK: ascendc.duplicate_l2 {{.*}}, %[[ONE]],
+// CHECK: ascendc.mul_l2 {{.*}} {ascendc.unit = "AiCore.Vector"}
+// CHECK: ascendc.reduce_prod_2d_l2 {{.*}} {ascendc.unit = "AiCore.Vector"{{.*}}}
+// CHECK-NOT: linalg.generic
+func.func @test_parallel_reduction_mul_identity() {
+  %in = memref.alloc() : memref<8x4xf32, 9 : i32>
+  %out = memref.alloc() : memref<8xf32, 10 : i32>
+  %one = arith.constant 1.0 : f32
+  linalg.fill ins(%one : f32) outs(%out : memref<8xf32, 10 : i32>)
+  linalg.generic {indexing_maps = [#map_par_reduce_rhs, #map_par_reduce_lhs], iterator_types = ["parallel", "reduction"], ascendc.unit = "AiCore.Vector"}
+    ins(%in : memref<8x4xf32, 9 : i32>)
+    outs(%out : memref<8xf32, 10 : i32>) {
+  ^bb0(%value: f32, %acc: f32):
+    %next = arith.mulf %value, %acc : f32
+    linalg.yield %next : f32
+  }
+  return
+}
+
+//===----------------------------------------------------------------------===//
+// Compute: linalg.generic max reduction uses the DPS init identity.
+// Regression: max reduction must duplicate the fill identity, not a hard-coded
+// add identity.
+//===----------------------------------------------------------------------===//
+// CHECK-LABEL: func @test_parallel_reduction_max_identity
+// CHECK: %[[NEG:.*]] = arith.constant -3.000000e+00 : f32
+// CHECK: ascendc.duplicate_l2 {{.*}}, %[[NEG]],
+// CHECK: ascendc.max_l2 {{.*}} {ascendc.unit = "AiCore.Vector"}
+// CHECK: ascendc.reduce_max_2d_l2 {{.*}} {ascendc.unit = "AiCore.Vector"{{.*}}}
+// CHECK-NOT: linalg.generic
+func.func @test_parallel_reduction_max_identity() {
+  %in = memref.alloc() : memref<8x4xf32, 9 : i32>
+  %out = memref.alloc() : memref<8xf32, 10 : i32>
+  %neg = arith.constant -3.0 : f32
+  linalg.fill ins(%neg : f32) outs(%out : memref<8xf32, 10 : i32>)
+  linalg.generic {indexing_maps = [#map_par_reduce_rhs, #map_par_reduce_lhs], iterator_types = ["parallel", "reduction"], ascendc.unit = "AiCore.Vector"}
+    ins(%in : memref<8x4xf32, 9 : i32>)
+    outs(%out : memref<8xf32, 10 : i32>) {
+  ^bb0(%value: f32, %acc: f32):
+    %next = arith.maximumf %value, %acc : f32
+    linalg.yield %next : f32
+  }
+  return
+}
+
+//===----------------------------------------------------------------------===//
 // Compute: all-parallel generic with VECOUT output and temporary GM input.
 // Regression for real NPU: the final tensor must come from the VECOUT queue,
 // and temporary VECIN tensors created for GM inputs must be freed.

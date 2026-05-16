@@ -1,7 +1,9 @@
-// RUN: afir-opt %s --ascend-normalize --ascend-kernelize --ascend-schedule='target-tile-policy=legacy-default' --ascend-realize='materialization-mode=memory-space-annotate' --ascend-compute-lower | FileCheck %s
+// RUN: afir-opt %s --ascend-normalize --ascend-kernelize --ascend-schedule='target-tile-policy=legacy-default' --ascend-realize='materialization-mode=memory-space-annotate' --ascend-compute-lower | FileCheck %s --implicit-check-not=linalg.generic --implicit-check-not=ascendc.abs_l2
 
 // GELU: x * 0.5 * (1 + erf(x / sqrt(2)))
-// Tests: arith.mulf, math.erf (placeholder), arith.addf, arith.divf in fused elementwise
+// math.erf has no validated AscendC L2 lowering yet. The current contract is a
+// scalar fallback that preserves math.erf instead of silently emitting a wrong
+// placeholder intrinsic.
 
 func.func @gelu(%input: tensor<4x128xf32>) -> tensor<4x128xf32> {
   %cst_rsqrt2 = arith.constant 0.7071067811865476 : f32
@@ -30,4 +32,5 @@ func.func @gelu(%input: tensor<4x128xf32>) -> tensor<4x128xf32> {
 }
 
 // CHECK: func.func @gelu
+// CHECK: math.erf
 // CHECK: return

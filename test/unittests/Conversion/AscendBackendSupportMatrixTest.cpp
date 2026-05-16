@@ -6,6 +6,10 @@
 
 #include "Conversion/Ascend/Backend/BackendSupportMatrix.h"
 
+#include "mlir/IR/Builders.h"
+#include "mlir/IR/BuiltinTypes.h"
+#include "mlir/IR/MLIRContext.h"
+
 #include "gtest/gtest.h"
 #include <type_traits>
 
@@ -70,4 +74,33 @@ TEST(AscendBackendSupportMatrixTest, SupportsKnownComputeKinds) {
   EXPECT_TRUE(matrix.isSupportedComputeKind(ComputeKind::Transpose));
   EXPECT_TRUE(matrix.isSupportedComputeKind(ComputeKind::ReductionAdd));
   EXPECT_FALSE(matrix.isSupportedComputeKind(ComputeKind::Unknown));
+}
+
+TEST(AscendBackendSupportMatrixTest, RejectsAdvertisedButUnloweredComputeKinds) {
+  AscendBackendSupportMatrix matrix;
+  EXPECT_FALSE(matrix.isSupportedComputeKind(ComputeKind::ElementwiseExp2));
+  EXPECT_FALSE(matrix.isSupportedComputeKind(ComputeKind::ElementwiseTanh));
+  EXPECT_FALSE(matrix.isSupportedComputeKind(ComputeKind::ElementwiseErf));
+  EXPECT_FALSE(matrix.isSupportedComputeKind(ComputeKind::ElementwiseSin));
+  EXPECT_FALSE(matrix.isSupportedComputeKind(ComputeKind::ElementwiseCos));
+  EXPECT_FALSE(matrix.isSupportedComputeKind(ComputeKind::ElementwiseFma));
+  EXPECT_FALSE(matrix.isSupportedComputeKind(ComputeKind::ElementwiseReciprocal));
+  EXPECT_FALSE(matrix.isSupportedComputeKind(ComputeKind::ElementwiseRelu));
+  EXPECT_FALSE(matrix.isSupportedComputeKind(ComputeKind::ElementwiseSelect));
+}
+
+TEST(AscendBackendSupportMatrixTest, RejectsUnsupportedDtypes) {
+  mlir::MLIRContext context;
+  mlir::Builder builder(&context);
+  AscendBackendSupportMatrix matrix;
+
+  EXPECT_TRUE(matrix.isSupportedDtype(
+      ComputeKind::ElementwiseAdd, {builder.getF16Type()},
+      {builder.getF16Type()}));
+  EXPECT_FALSE(matrix.isSupportedDtype(
+      ComputeKind::ElementwiseAdd, {builder.getF64Type()},
+      {builder.getF64Type()}));
+  mlir::Type i8 = builder.getI8Type();
+  EXPECT_FALSE(matrix.isSupportedDtype(ComputeKind::ElementwiseAdd, {i8},
+                                       {i8}));
 }

@@ -153,33 +153,42 @@ func.func @reshape_chain_movement(%arg0: tensor<4x8xf32>) -> tensor<8x4xf32>
 // CHECK: MemoryRealizationPlan:
 // CHECK-NEXT:   kernel = collapse_kernel
 // CHECK-NEXT:   mode = "memory_space_materialize"
-// CHECK:   materialized_allocs = 1
-// CHECK-NEXT:   materialized_copies = 1
+// CHECK:   materialized_allocs = 2
+// CHECK-NEXT:   materialized_copies = 2
 // CHECK: MemoryRealizationPlan:
 // CHECK-NEXT:   kernel = expand_kernel
 // CHECK-NEXT:   mode = "memory_space_materialize"
-// CHECK:   materialized_allocs = 1
-// CHECK-NEXT:   materialized_copies = 1
+// CHECK:   materialized_allocs = 2
+// CHECK-NEXT:   materialized_copies = 2
 // CHECK: MemoryRealizationPlan:
 // CHECK-NEXT:   kernel = reshape_kernel
 // CHECK-NEXT:   mode = "memory_space_materialize"
-// CHECK:   materialized_allocs = 1
-// CHECK-NEXT:   materialized_copies = 1
+// CHECK:   materialized_allocs = 2
+// CHECK-NEXT:   materialized_copies = 2
 // CHECK-LABEL: func.func @collapse_chain_movement
 // CHECK: %[[COLLAPSE_LOCAL:.*]] = memref.alloc() : memref<4x16xf16, 9 : i32>
 // CHECK: memref.copy {{.*}}, %[[COLLAPSE_LOCAL]] : memref<4x16xf16> to memref<4x16xf16, 9 : i32>
 // CHECK: %[[COLLAPSED:.*]] = memref.collapse_shape %[[COLLAPSE_LOCAL]] {{\[\[}}0, 1]] : memref<4x16xf16, 9 : i32> into memref<64xf16, 9 : i32>
+// CHECK: %[[COLLAPSE_VECOUT:.*]] = memref.alloc() {{.*}} : memref<64xf16, 10 : i32>
 // CHECK: linalg.generic
 // CHECK-SAME: ins(%[[COLLAPSED]]
+// CHECK-SAME: outs(%[[COLLAPSE_VECOUT]]
+// CHECK: memref.copy %[[COLLAPSE_VECOUT]]
 // CHECK-LABEL: func.func @expand_chain_movement
 // CHECK: %[[EXPAND_LOCAL:.*]] = memref.alloc() : memref<64xf16, 9 : i32>
 // CHECK: memref.copy {{.*}}, %[[EXPAND_LOCAL]] : memref<64xf16> to memref<64xf16, 9 : i32>
 // CHECK: %[[EXPANDED:.*]] = memref.expand_shape %[[EXPAND_LOCAL]] {{\[\[}}0, 1]] output_shape [4, 16] : memref<64xf16, 9 : i32> into memref<4x16xf16, 9 : i32>
+// CHECK: %[[EXPAND_VECOUT:.*]] = memref.alloc() {{.*}} : memref<4x16xf16, 10 : i32>
 // CHECK: linalg.generic
 // CHECK-SAME: ins(%[[EXPANDED]]
+// CHECK-SAME: outs(%[[EXPAND_VECOUT]]
+// CHECK: memref.copy %[[EXPAND_VECOUT]]
 // CHECK-LABEL: func.func @reshape_chain_movement
 // CHECK: %[[RESHAPE_LOCAL:.*]] = memref.alloc() : memref<4x8xf32, 9 : i32>
 // CHECK: memref.copy {{.*}}, %[[RESHAPE_LOCAL]] : memref<4x8xf32> to memref<4x8xf32, 9 : i32>
 // CHECK: %[[RESHAPED:.*]] = memref.reshape %[[RESHAPE_LOCAL]](%{{.*}}) : (memref<4x8xf32, 9 : i32>, memref<2xi64>) -> memref<8x4xf32, 9 : i32>
+// CHECK: %[[RESHAPE_VECOUT:.*]] = memref.alloc() {{.*}} : memref<8x4xf32, 10 : i32>
 // CHECK: linalg.generic
 // CHECK-SAME: ins(%[[RESHAPED]]
+// CHECK-SAME: outs(%[[RESHAPE_VECOUT]]
+// CHECK: memref.copy %[[RESHAPE_VECOUT]]

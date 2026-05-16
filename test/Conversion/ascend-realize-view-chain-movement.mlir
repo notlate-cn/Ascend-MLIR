@@ -59,10 +59,13 @@ func.func @view_chain_movement(%arg0: tensor<64xf16>,
 // CHECK-NEXT:   verification_scope = "memory_space_materialization"
 // CHECK-NEXT:   plan_ids_verified = true
 // CHECK-NEXT:   memory_space_annotations = 0
-// CHECK-NEXT:   materialized_allocs = 1
-// CHECK-NEXT:   materialized_copies = 1
+// CHECK-NEXT:   materialized_allocs = 2
+// CHECK-NEXT:   materialized_copies = 2
 // CHECK: %[[LOCAL:.*]] = memref.alloc() : memref<64xf16, 9 : i32>
 // CHECK: memref.copy {{.*}}, %[[LOCAL]] : memref<64xf16> to memref<64xf16, 9 : i32>
 // CHECK: %[[SUBVIEW:.*]] = memref.subview %[[LOCAL]][0] [32] [1] : memref<64xf16, 9 : i32> to memref<32xf16, strided<[1]>, 9 : i32>
+// CHECK: %[[VECOUT:.*]] = memref.alloc() {{.*}} : memref<32xf16, 10 : i32>
 // CHECK: linalg.generic
 // CHECK-SAME: ins(%[[SUBVIEW]]
+// CHECK-SAME: outs(%[[VECOUT]]
+// CHECK: memref.copy %[[VECOUT]]
