@@ -9,6 +9,7 @@
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
+#include "mlir/Dialect/Math/IR/Math.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/Parser/Parser.h"
@@ -23,7 +24,8 @@ namespace {
 OwningOpRef<ModuleOp> parseClassifierModule(MLIRContext &context,
                                             StringRef body) {
   context.loadDialect<arith::ArithDialect, func::FuncDialect,
-                      linalg::LinalgDialect, memref::MemRefDialect>();
+                      linalg::LinalgDialect, math::MathDialect,
+                      memref::MemRefDialect>();
   return parseSourceString<ModuleOp>(body, &context);
 }
 
@@ -166,7 +168,7 @@ module {
       outs(%out : memref<4x8xf32>)
       attrs = {ascend.op_role = "vector"} {
     ^bb0(%lhs: f32, %rhs: f32, %old: f32):
-      %0 = arith.subf %lhs, %rhs : f32
+      %0 = math.exp2 %lhs : f32
       linalg.yield %0 : f32
     }
     return
@@ -182,4 +184,72 @@ module {
             ComputeKind::ScalarGeneric);
   EXPECT_FALSE(isSupportedPhase5VectorOutput(generic, matrix));
   EXPECT_FALSE(isSupportedPhase5FinalOutput(generic, matrix));
+}
+
+TEST(AscendLinalgBodyClassifierTest, SupportsRegisteredUnaryVectorBody) {
+  MLIRContext context;
+  OwningOpRef<ModuleOp> module = parseClassifierModule(
+      context, R"mlir(
+module {
+  func.func @f(%arg0: memref<4x8xf32, 9 : i32>,
+               %out: memref<4x8xf32, 10 : i32>) {
+    linalg.generic {
+      indexing_maps = [
+        affine_map<(d0, d1) -> (d0, d1)>,
+        affine_map<(d0, d1) -> (d0, d1)>],
+      iterator_types = ["parallel", "parallel"]}
+      ins(%arg0 : memref<4x8xf32, 9 : i32>)
+      outs(%out : memref<4x8xf32, 10 : i32>)
+      attrs = {ascend.op_role = "vector"} {
+    ^bb0(%value: f32, %old: f32):
+      %0 = math.exp %value : f32
+      linalg.yield %0 : f32
+    }
+    return
+  }
+}
+)mlir");
+  ASSERT_TRUE(module);
+  linalg::GenericOp generic = findFirstGeneric(*module);
+  ASSERT_TRUE(generic);
+
+  AscendBackendSupportMatrix matrix;
+  EXPECT_EQ(classifyLinalgComputeKind(generic.getOperation(), matrix),
+            ComputeKind::FusedElementwise);
+  EXPECT_TRUE(isSupportedPhase5VectorOutput(generic, matrix));
+}
+
+TEST(AscendLinalgBodyClassifierTest, RejectsUnsupportedVectorDtype) {
+  MLIRContext context;
+  OwningOpRef<ModuleOp> module = parseClassifierModule(
+      context, R"mlir(
+module {
+  func.func @f(%arg0: memref<4x8xf64, 9 : i32>,
+               %arg1: memref<4x8xf64, 9 : i32>,
+               %out: memref<4x8xf64, 10 : i32>) {
+    linalg.generic {
+      indexing_maps = [
+        affine_map<(d0, d1) -> (d0, d1)>,
+        affine_map<(d0, d1) -> (d0, d1)>,
+        affine_map<(d0, d1) -> (d0, d1)>],
+      iterator_types = ["parallel", "parallel"]}
+      ins(%arg0, %arg1 : memref<4x8xf64, 9 : i32>, memref<4x8xf64, 9 : i32>)
+      outs(%out : memref<4x8xf64, 10 : i32>)
+      attrs = {ascend.op_role = "vector"} {
+    ^bb0(%lhs: f64, %rhs: f64, %old: f64):
+      %0 = arith.addf %lhs, %rhs : f64
+      linalg.yield %0 : f64
+    }
+    return
+  }
+}
+)mlir");
+  ASSERT_TRUE(module);
+  linalg::GenericOp generic = findFirstGeneric(*module);
+  ASSERT_TRUE(generic);
+
+  AscendBackendSupportMatrix matrix;
+  EXPECT_EQ(classifyLinalgComputeKind(generic.getOperation(), matrix),
+            ComputeKind::Unknown);
+  EXPECT_FALSE(isSupportedPhase5VectorOutput(generic, matrix));
 }

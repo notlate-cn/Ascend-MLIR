@@ -94,13 +94,13 @@ func.func @cross_kernel_temporary(%arg0: tensor<64xf16>, %arg1: tensor<64xf16>) 
 // CHECK:   kernels = 3
 // CHECK: MemoryRealizationPlan:
 // CHECK-NEXT:   kernel = kernel_0
-// CHECK-NEXT:   mode = "memory_space_annotate"
+// CHECK-NEXT:   mode = "memory_space_materialize"
 // CHECK-NEXT:   frozen = true
-// CHECK-NEXT:   verification_scope = "memory_space_annotation"
+// CHECK-NEXT:   verification_scope = "memory_space_materialization"
 // CHECK-NEXT:   plan_ids_verified = true
 // CHECK-NEXT:   memory_space_annotations = 1
-// CHECK-NEXT:   materialized_allocs = 0
-// CHECK-NEXT:   materialized_copies = 0
+// CHECK-NEXT:   materialized_allocs = 1
+// CHECK-NEXT:   materialized_copies = 1
 // CHECK: MemoryRealizationPlan:
 // CHECK-NEXT:   kernel = kernel_1
 // CHECK-NEXT:   mode = "memory_space_annotate"
@@ -112,13 +112,20 @@ func.func @cross_kernel_temporary(%arg0: tensor<64xf16>, %arg1: tensor<64xf16>) 
 // CHECK-NEXT:   materialized_copies = 0
 // CHECK: MemoryRealizationPlan:
 // CHECK-NEXT:   kernel = kernel_2
-// CHECK-NEXT:   mode = "memory_space_annotate"
+// CHECK-NEXT:   mode = "memory_space_materialize"
 // CHECK-NEXT:   frozen = true
-// CHECK-NEXT:   verification_scope = "memory_space_annotation"
+// CHECK-NEXT:   verification_scope = "memory_space_materialization"
 // CHECK-NEXT:   plan_ids_verified = true
 // CHECK-NEXT:   memory_space_annotations = 0
-// CHECK-NEXT:   materialized_allocs = 0
-// CHECK-NEXT:   materialized_copies = 0
+// CHECK-NEXT:   materialized_allocs = 1
+// CHECK-NEXT:   materialized_copies = 1
+// CHECK-LABEL: func.func @memory_space_annotate
 // CHECK: memref.alloc() {{.*}} : memref<64xf16, 11 : i32>
-// CHECK-NOT: memref.alloc() {{.*}} : memref<64xf16, 11 : i32>
-// CHECK-NOT: memref.copy
+// CHECK: memref.alloc() {{.*}} : memref<64xf16, 10 : i32>
+// CHECK: memref.copy {{.*}} : memref<64xf16, 10 : i32> to memref<64xf16>
+// CHECK-LABEL: func.func @cross_kernel_temporary
+// CHECK: %[[CROSS_TMP:.*]] = memref.alloc() {{.*}} : memref<64xf16>
+// CHECK: linalg.generic
+// CHECK-SAME: outs(%[[CROSS_TMP]] : memref<64xf16>)
+// CHECK: memref.alloc() {{.*}} : memref<64xf16, 10 : i32>
+// CHECK: memref.copy {{.*}} : memref<64xf16, 10 : i32> to memref<64xf16>

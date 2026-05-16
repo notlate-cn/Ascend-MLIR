@@ -112,10 +112,20 @@ func.func @cross_shape_workspace_packing(%arg0: tensor<64xf16>,
 // CHECK-NEXT:   verification_scope = "memory_space_materialization"
 // CHECK-NEXT:   plan_ids_verified = true
 // CHECK-NEXT:   memory_space_annotations = 0
-// CHECK-NEXT:   materialized_allocs = 1
-// CHECK-NEXT:   materialized_copies = 2
+// CHECK-NEXT:   materialized_allocs = 3
+// CHECK-NEXT:   materialized_copies = 4
 // CHECK: %[[WORKSPACE:.*]] = memref.alloc() : memref<64xf16, 9 : i32>
 // CHECK: %[[VIEW0:.*]] = memref.reinterpret_cast %[[WORKSPACE]] to offset: [0], sizes: [64], strides: [1] : memref<64xf16, 9 : i32> to memref<64xf16, strided<[1]>, 9 : i32>
 // CHECK: memref.copy {{.*}}, %[[VIEW0]] : memref<64xf16> to memref<64xf16, strided<[1]>, 9 : i32>
+// CHECK: %[[VECOUT0:.*]] = memref.alloc() {{.*}} : memref<64xf16, 10 : i32>
+// CHECK: linalg.generic
+// CHECK-SAME: ins(%[[VIEW0]]
+// CHECK-SAME: outs(%[[VECOUT0]]
+// CHECK: memref.copy %[[VECOUT0]]
 // CHECK: %[[VIEW1:.*]] = memref.reinterpret_cast %[[WORKSPACE]] to offset: [0], sizes: [32], strides: [1] : memref<64xf16, 9 : i32> to memref<32xf16, strided<[1]>, 9 : i32>
 // CHECK: memref.copy {{.*}}, %[[VIEW1]] : memref<32xf16> to memref<32xf16, strided<[1]>, 9 : i32>
+// CHECK: %[[VECOUT1:.*]] = memref.alloc() {{.*}} : memref<32xf16, 10 : i32>
+// CHECK: linalg.generic
+// CHECK-SAME: ins(%[[VIEW1]]
+// CHECK-SAME: outs(%[[VECOUT1]]
+// CHECK: memref.copy %[[VECOUT1]]

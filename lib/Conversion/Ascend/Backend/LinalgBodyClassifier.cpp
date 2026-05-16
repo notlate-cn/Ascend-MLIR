@@ -66,6 +66,26 @@ bool hasOnlyParallelIterators(linalg::LinalgOp linalgOp) {
                       });
 }
 
+void collectLinalgElementTypes(linalg::LinalgOp linalgOp,
+                               SmallVectorImpl<Type> &inputTypes,
+                               SmallVectorImpl<Type> &outputTypes) {
+  for (Value input : linalgOp.getDpsInputs())
+    if (auto shaped = dyn_cast<ShapedType>(input.getType()))
+      inputTypes.push_back(shaped.getElementType());
+
+  for (Value init : linalgOp.getDpsInits())
+    if (auto shaped = dyn_cast<ShapedType>(init.getType()))
+      outputTypes.push_back(shaped.getElementType());
+}
+
+bool hasSupportedDtypes(linalg::LinalgOp linalgOp, ComputeKind kind,
+                        const AscendBackendSupportMatrix &matrix) {
+  SmallVector<Type, 4> inputTypes;
+  SmallVector<Type, 2> outputTypes;
+  collectLinalgElementTypes(linalgOp, inputTypes, outputTypes);
+  return matrix.isSupportedDtype(kind, inputTypes, outputTypes);
+}
+
 ComputeKind classifyElementwiseBodyOp(Operation &bodyOp) {
   const ElementwiseBodyOpEntry *entry =
       lookupElementwiseBodyOp(bodyOp.getName().getStringRef());
@@ -97,9 +117,12 @@ bool isSupportedFusedElementwiseBody(
       continue;
 
     ComputeKind kind = classifyElementwiseBodyOp(bodyOp);
-    if (!matrix.isSupportedComputeKind(kind))
+    if (!matrix.isSupportedComputeKind(kind) ||
+        !hasSupportedDtypes(cast<linalg::LinalgOp>(generic.getOperation()),
+                            kind, matrix))
       return false;
-    if (bodyOp.getNumOperands() != 2 || bodyOp.getNumResults() != 1)
+    unsigned numOperands = bodyOp.getNumOperands();
+    if ((numOperands != 1 && numOperands != 2) || bodyOp.getNumResults() != 1)
       return false;
     if (!llvm::all_of(bodyOp.getOperands(), [&](Value value) {
           return isAvailableOperand(value, previousResult);
@@ -354,11 +377,16 @@ ComputeKind classifyPhase5ReductionBody(
   if (yieldOp.getOperand(0) != lastOp->getResult(0))
     return ComputeKind::Unknown;
 
-  if (isa<arith::AddFOp>(kindOp))      return ComputeKind::ReductionAdd;
-  if (isa<arith::MaximumFOp>(kindOp))  return ComputeKind::ReductionMax;
-  if (isa<arith::MinimumFOp>(kindOp))  return ComputeKind::ReductionMin;
-  if (isa<arith::MulFOp>(kindOp))      return ComputeKind::ReductionMul;
-  return ComputeKind::Unknown;
+  ComputeKind kind = ComputeKind::Unknown;
+  if (isa<arith::AddFOp>(kindOp))      kind = ComputeKind::ReductionAdd;
+  if (isa<arith::MaximumFOp>(kindOp))  kind = ComputeKind::ReductionMax;
+  if (isa<arith::MinimumFOp>(kindOp))  kind = ComputeKind::ReductionMin;
+  if (isa<arith::MulFOp>(kindOp))      kind = ComputeKind::ReductionMul;
+  if (kind == ComputeKind::Unknown || !matrix.isSupportedComputeKind(kind) ||
+      !hasSupportedDtypes(cast<linalg::LinalgOp>(generic.getOperation()), kind,
+                          matrix))
+    return ComputeKind::Unknown;
+  return kind;
 }
 
 ComputeKind
@@ -385,18 +413,25 @@ classifyLinalgComputeKind(Operation *op,
 
   if (auto elementwise = dyn_cast<linalg::ElementwiseOp>(op)) {
     auto kind = elementwise.getKind();
+    ComputeKind computeKind = ComputeKind::Unknown;
     if (kind == linalg::ElementwiseKind::add)
-      return ComputeKind::ElementwiseAdd;
+      computeKind = ComputeKind::ElementwiseAdd;
     if (kind == linalg::ElementwiseKind::mul)
-      return ComputeKind::ElementwiseMul;
+      computeKind = ComputeKind::ElementwiseMul;
     if (kind == linalg::ElementwiseKind::max_signed)
-      return ComputeKind::ElementwiseMax;
+      computeKind = ComputeKind::ElementwiseMax;
     if (kind == linalg::ElementwiseKind::sub)
-      return ComputeKind::ElementwiseSub;
+      computeKind = ComputeKind::ElementwiseSub;
     if (kind == linalg::ElementwiseKind::div)
-      return ComputeKind::ElementwiseDiv;
+      computeKind = ComputeKind::ElementwiseDiv;
     if (kind == linalg::ElementwiseKind::min_signed)
-      return ComputeKind::ElementwiseMin;
+      computeKind = ComputeKind::ElementwiseMin;
+    if (computeKind != ComputeKind::Unknown &&
+        matrix.isSupportedComputeKind(computeKind) &&
+        hasSupportedDtypes(cast<linalg::LinalgOp>(elementwise.getOperation()),
+                           computeKind, matrix))
+      return computeKind;
+    return ComputeKind::Unknown;
   }
 
   if (auto generic = dyn_cast<linalg::GenericOp>(op)) {
@@ -451,7 +486,8 @@ bool isSupportedPhase5VectorOutput(
   case ComputeKind::ElementwiseSelect:
   case ComputeKind::ElementwiseMin:
   case ComputeKind::FusedElementwise:
-    return matrix.isSupportedComputeKind(kind);
+    return matrix.isSupportedComputeKind(kind) &&
+           hasSupportedDtypes(linalgOp, kind, matrix);
   default:
     return false;
   }

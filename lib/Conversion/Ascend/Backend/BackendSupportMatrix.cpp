@@ -163,24 +163,24 @@ bool AscendBackendSupportMatrix::isSupportedComputeKind(
   case ComputeKind::ElementwiseDiv:
   case ComputeKind::ElementwiseNeg:
   case ComputeKind::ElementwiseExp:
-  case ComputeKind::ElementwiseExp2:
   case ComputeKind::ElementwiseLog:
   case ComputeKind::ElementwiseSqrt:
   case ComputeKind::ElementwiseRsqrt:
+  case ComputeKind::ElementwiseAbs:
+  case ComputeKind::ElementwiseMin:
+  case ComputeKind::ReductionMax:
+  case ComputeKind::ReductionMin:
+  case ComputeKind::ReductionMul:
+    return true;
+  case ComputeKind::ElementwiseExp2:
   case ComputeKind::ElementwiseTanh:
   case ComputeKind::ElementwiseErf:
-  case ComputeKind::ElementwiseAbs:
   case ComputeKind::ElementwiseSin:
   case ComputeKind::ElementwiseCos:
   case ComputeKind::ElementwiseFma:
   case ComputeKind::ElementwiseReciprocal:
   case ComputeKind::ElementwiseRelu:
   case ComputeKind::ElementwiseSelect:
-  case ComputeKind::ElementwiseMin:
-  case ComputeKind::ReductionMax:
-  case ComputeKind::ReductionMin:
-  case ComputeKind::ReductionMul:
-    return true;
   case ComputeKind::Unknown:
     return false;
   }

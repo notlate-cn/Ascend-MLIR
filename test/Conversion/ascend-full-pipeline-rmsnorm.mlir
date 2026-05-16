@@ -1,4 +1,4 @@
-// RUN: afir-opt %s --ascend-normalize --ascend-kernelize --ascend-schedule='target-tile-policy=legacy-default' --ascend-realize='materialization-mode=memory-space-annotate' --ascend-compute-lower | FileCheck %s
+// RUN: afir-opt %s --ascend-normalize --ascend-kernelize --ascend-schedule='target-tile-policy=legacy-default' --ascend-realize='materialization-mode=memory-space-annotate' --ascend-compute-lower | FileCheck %s --implicit-check-not=linalg.generic
 
 // RMSNorm: x / sqrt(mean(x^2) + eps)
 // Tests: arith.mulf (fused with addf in reduction), math.rsqrt, arith.divf
@@ -76,4 +76,7 @@ func.func @rmsnorm(%input: tensor<4x32xf32>, %weight: tensor<32xf32>) -> tensor<
 }
 
 // CHECK: func.func @rmsnorm
+// CHECK: ascendc.mul_l2
+// CHECK: math.rsqrt
+// CHECK: ascendc.mul_l2
 // CHECK: return
