@@ -26,10 +26,16 @@ inline constexpr llvm::StringLiteral kKernelGraphEdgesAttr =
     "ascend.kernel_graph.edges";
 inline constexpr llvm::StringLiteral kKernelizeHandwrittenGroupAttr =
     "ascend.kernelize.handwritten_group";
+inline constexpr llvm::StringLiteral kKernelizeHandwrittenKindAttr =
+    "ascend.kernelize.handwritten_kind";
+inline constexpr llvm::StringLiteral kKernelizeHandwrittenKindAttentionSdpa =
+    "attention_sdpa";
 inline constexpr llvm::StringLiteral kKernelizeMustCoLocateGroupAttr =
     "ascend.kernelize.must_colocate_group";
 inline constexpr llvm::StringLiteral kKernelizeMustSeparateGroupAttr =
     "ascend.kernelize.must_separate_group";
+inline constexpr llvm::StringLiteral kKernelizeTemplateFamiliesAttr =
+    "ascend.kernelize.template_families";
 inline constexpr llvm::StringLiteral kPrimaryAttr = "ascend.primary";
 inline constexpr llvm::StringLiteral kScheduleDecisionIdAttr =
     "ascend.schedule.decision_id";

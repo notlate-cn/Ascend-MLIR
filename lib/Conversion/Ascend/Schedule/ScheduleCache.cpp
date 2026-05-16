@@ -14,9 +14,8 @@
 using namespace mlir;
 
 namespace mlir::afir::ascend::schedule {
-namespace {
 
-std::string serializeDims(ArrayRef<int64_t> dims) {
+std::string serializeScheduleDims(ArrayRef<int64_t> dims) {
   std::string result;
   llvm::raw_string_ostream os(result);
   llvm::interleave(
@@ -31,27 +30,17 @@ std::string serializeDims(ArrayRef<int64_t> dims) {
   return result;
 }
 
+namespace {
+
 std::string serializeShapeBucketKey(const ShapeBucketKey &key) {
   return (llvm::Twine(key.kernelId) + "|" + key.family + "|" +
-          serializeDims(key.resultShape))
-      .str();
-}
-
-std::string serializeTuningResultKey(const TuningResultKey &key) {
-  return (llvm::Twine(key.bucket.kernelId) + "|" + key.bucket.family + "|" +
-          key.templateName + "|" + serializeDims(key.bucket.resultShape) +
-          "|" + serializeDims(key.tileShape))
+          serializeScheduleDims(key.resultShape))
       .str();
 }
 
 std::string getShapeBucketSignature(const ShapeBucketKey &key) {
-  return (llvm::Twine(key.family) + "|" + serializeDims(key.resultShape)).str();
-}
-
-std::string getTuningResultSignature(const TuningResultKey &key) {
-  return (llvm::Twine(key.bucket.family) + "|" + key.templateName + "|" +
-          serializeDims(key.bucket.resultShape) + "|" +
-          serializeDims(key.tileShape))
+  return (llvm::Twine(key.family) + "|" +
+          serializeScheduleDims(key.resultShape))
       .str();
 }
 
@@ -74,6 +63,21 @@ TuningResultKey makeTuningResultKey(ShapeBucketKey bucket,
 }
 
 } // namespace
+
+std::string serializeTuningResultKey(const TuningResultKey &key) {
+  return (llvm::Twine(key.bucket.kernelId) + "|" + key.bucket.family + "|" +
+          key.templateName + "|" +
+          serializeScheduleDims(key.bucket.resultShape) + "|" +
+          serializeScheduleDims(key.tileShape))
+      .str();
+}
+
+std::string getTuningResultSignature(const TuningResultKey &key) {
+  return (llvm::Twine(key.bucket.family) + "|" + key.templateName + "|" +
+          serializeScheduleDims(key.bucket.resultShape) + "|" +
+          serializeScheduleDims(key.tileShape))
+      .str();
+}
 
 void ScheduleCacheModel::seedPersistentTuningSignatures(
     ArrayRef<std::string> signatures) {

@@ -39,6 +39,41 @@ OpRole computeDominantRole(ArrayRef<PatternOpView> ops) {
   return OpRole::Unknown;
 }
 
+void appendUniqueString(SmallVectorImpl<std::string> &values,
+                        StringRef value) {
+  if (!llvm::is_contained(values, value))
+    values.push_back(value.str());
+}
+
+void appendTemplateFamilies(Operation *op,
+                            SmallVectorImpl<std::string> &families) {
+  auto familyAttrs = op->getAttrOfType<ArrayAttr>(kKernelizeTemplateFamiliesAttr);
+  if (!familyAttrs)
+    return;
+  for (Attribute attr : familyAttrs) {
+    auto family = dyn_cast<StringAttr>(attr);
+    if (!family)
+      continue;
+    appendUniqueString(families, family.getValue());
+  }
+}
+
+LogicalResult mergeHandwrittenKind(Operation *op, KernelPatternView &view) {
+  auto kind = op->getAttrOfType<StringAttr>(kKernelizeHandwrittenKindAttr);
+  if (!kind)
+    return success();
+  if (view.handwrittenKind.empty()) {
+    view.handwrittenKind = kind.getValue().str();
+    return success();
+  }
+  if (view.handwrittenKind != kind.getValue()) {
+    op->emitError() << "conflicting " << kKernelizeHandwrittenKindAttr
+                    << " values inside kernel pattern";
+    return failure();
+  }
+  return success();
+}
+
 bool hasReductionIterator(linalg::LinalgOp linalgOp) {
   return llvm::is_contained(linalgOp.getIteratorTypesArray(),
                             utils::IteratorType::reduction);
@@ -125,6 +160,9 @@ buildKernelPatternViews(ModuleOp module) {
       group.view.ops.push_back(PatternOpView{
           op, nextOrdinal, deriveOpRole(op),
           primaryAttr && primaryAttr.getValue()});
+      appendTemplateFamilies(op, group.view.templateFamilies);
+      if (failed(mergeHandwrittenKind(op, group.view)))
+        return WalkResult::interrupt();
       ++nextOrdinal;
       return WalkResult::advance();
     });
@@ -171,6 +209,13 @@ void printKernelPatternViews(ArrayRef<KernelPatternView> patterns,
     os << "  primary_ops = " << pattern.primaryOps.size() << "\n";
     os << "  dominant_role = " << stringifyOpRole(pattern.dominantRole)
        << "\n";
+    if (!pattern.templateFamilies.empty()) {
+      os << "  template_families = [";
+      llvm::interleaveComma(pattern.templateFamilies, os);
+      os << "]\n";
+    }
+    if (!pattern.handwrittenKind.empty())
+      os << "  handwritten_kind = \"" << pattern.handwrittenKind << "\"\n";
   }
 }
 

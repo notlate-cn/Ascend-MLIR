@@ -1,4 +1,4 @@
-// RUN: afir-opt %s --ascend-normalize --ascend-kernelize='debug-stage=kernelize dump-report=true' 2>&1 | FileCheck %s
+// RUN: afir-opt %s --ascend-normalize --ascend-kernelize --ascend-schedule='target-tile-policy=legacy-default dump-report=true debug-stage=schedule' 2>&1 | FileCheck %s
 
 func.func @sdpa_like(%q: tensor<2x4x8xf32>,
                      %k: tensor<2x8x4xf32>,
@@ -44,17 +44,18 @@ func.func @sdpa_like(%q: tensor<2x4x8xf32>,
   return %out : tensor<2x4x8xf32>
 }
 
-// CHECK: FusionCandidateAnalysis
-// CHECK: kind = "HandwrittenPattern" primitive = "HandwrittenPattern"
-// CHECK-SAME: internal_ops = [0, 1, 2, 3]
-// CHECK-SAME: families = ["attention_sdpa", "cube"]
-// CHECK-SAME: handwritten_kind = "attention_sdpa"
-// CHECK: KernelPatternGraph
-// CHECK: source = "HandwrittenPattern"
-// CHECK-SAME: internal_ops = [0, 1, 2, 3]
-// CHECK: KernelPartition
-// CHECK: kernel_pattern = "kernel_0"
-// CHECK-SAME: internal_ops = [0, 1, 2, 3]
+// CHECK: SchedulePatternView:
+// CHECK:   kernel = kernel_0
+// CHECK:   ops = 4
+// CHECK:   handwritten_kind = "attention_sdpa"
+// CHECK: ScheduleProblem:
+// CHECK:   template_tags = [cube, attention_sdpa]
+// CHECK:   structure_constraints = [matmul_contract, handwritten_group, attention_sdpa_chain]
+// CHECK: TemplateRegistry:
+// CHECK:   kernel = kernel_0
+// CHECK:   template = attention_sdpa/grouped_tile_per_block
+// CHECK: Schedule report
+// CHECK: schedule_family = "attention_sdpa"
 // CHECK: linalg.batch_matmul
-// CHECK-SAME: ascend.kernelize.handwritten_kind = "attention_sdpa"
-// CHECK-SAME: ascend.kernelize.template_families = ["attention_sdpa", "cube"]
+// CHECK-SAME: ascend.schedule.family = "attention_sdpa"
+// CHECK-SAME: ascend.schedule.template = "grouped_tile_per_block"

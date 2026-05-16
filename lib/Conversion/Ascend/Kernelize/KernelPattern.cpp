@@ -291,6 +291,10 @@ buildPatternFromCandidateGroup(ArrayRef<unsigned> candidateIds,
     appendOps(pattern.primaryOps, candidate.primaryOps);
     appendTemplateFamilies(pattern.scheduleContract.templateFamilies,
                            candidate.scheduleContract.templateFamilies);
+    if (pattern.scheduleContract.handwrittenKind.empty() &&
+        !candidate.scheduleContract.handwrittenKind.empty())
+      pattern.scheduleContract.handwrittenKind =
+          candidate.scheduleContract.handwrittenKind;
   }
   sortUniqueOpsByOpId(pattern.internalOps, index);
   sortUniqueOpsByOpId(pattern.primaryOps, index);
@@ -656,9 +660,21 @@ KernelPartitioner::partition(const KernelPatternGraph &graph,
 void attachKernelPatternAttributes(ModuleOp module,
                                    ArrayRef<KernelPattern> patterns) {
   MLIRContext *context = module.getContext();
+  Builder builder(context);
   DenseMap<Operation *, StringRef> opToKernelName;
   for (const KernelPattern &pattern : patterns) {
     StringAttr kernelAttr = StringAttr::get(context, pattern.kernelName);
+    ArrayAttr templateFamiliesAttr;
+    if (!pattern.scheduleContract.templateFamilies.empty()) {
+      SmallVector<Attribute> families;
+      for (StringRef family : pattern.scheduleContract.templateFamilies)
+        families.push_back(builder.getStringAttr(family));
+      templateFamiliesAttr = builder.getArrayAttr(families);
+    }
+    StringAttr handwrittenKindAttr;
+    if (!pattern.scheduleContract.handwrittenKind.empty())
+      handwrittenKindAttr =
+          builder.getStringAttr(pattern.scheduleContract.handwrittenKind);
     DenseSet<Operation *> primarySet;
     for (Operation *op : pattern.primaryOps)
       primarySet.insert(op);
@@ -666,6 +682,10 @@ void attachKernelPatternAttributes(ModuleOp module,
     for (Operation *op : pattern.internalOps) {
       opToKernelName.try_emplace(op, pattern.kernelName);
       op->setAttr(kKernelAttr, kernelAttr);
+      if (templateFamiliesAttr)
+        op->setAttr(kKernelizeTemplateFamiliesAttr, templateFamiliesAttr);
+      if (handwrittenKindAttr)
+        op->setAttr(kKernelizeHandwrittenKindAttr, handwrittenKindAttr);
       if (primarySet.contains(op))
         op->setAttr(kPrimaryAttr, BoolAttr::get(context, true));
     }

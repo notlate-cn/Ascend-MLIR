@@ -14,6 +14,7 @@
 #include "SchedulePersistentCacheIO.h"
 #include "ScheduleProblemBuilder.h"
 #include "ScheduleSearch.h"
+#include "ScheduleTuningDB.h"
 #include "ScheduleTypes.h"
 #include "StructuredLoweringDriver.h"
 #include "TemplateRegistry.h"
@@ -446,6 +447,25 @@ struct AscendSchedulePass
       }
       seededSignatures.append(fileSignatures->begin(), fileSignatures->end());
     }
+    ScheduleTuningDatabase tuningDb;
+    std::string tuningTarget = StringRef(soc).str();
+    std::string tuningPolicy = StringRef(targetTilePolicy).str();
+    if (!StringRef(tuningDbIn).empty()) {
+      FailureOr<ScheduleTuningDatabase> loadedDb =
+          loadScheduleTuningDBFile(tuningDbIn);
+      if (failed(loadedDb)) {
+        module.emitError()
+            << "failed to read ascend schedule tuning database file: "
+            << tuningDbIn;
+        signalPassFailure();
+        return;
+      }
+      tuningDb = std::move(*loadedDb);
+      SmallVector<std::string, 8> dbSignatures =
+          collectMatchingTuningSignatures(tuningDb, tuningTarget,
+                                          tuningPolicy);
+      seededSignatures.append(dbSignatures.begin(), dbSignatures.end());
+    }
     scheduleCacheModel.seedPersistentTuningSignatures(seededSignatures);
     std::vector<ScheduleDebugEntry> scheduleDebugEntries;
     SmallVector<ScheduleReportEntry> reportEntries;
@@ -598,6 +618,17 @@ struct AscendSchedulePass
                          << tuningCacheOut;
       signalPassFailure();
       return;
+    }
+    if (!StringRef(tuningDbOut).empty()) {
+      appendTuningResultRecords(tuningDb, tuningTarget, tuningPolicy,
+                                scheduleCacheModel.getTuningResultKeys());
+      if (failed(writeScheduleTuningDBFile(tuningDbOut, tuningDb))) {
+        module.emitError()
+            << "failed to write ascend schedule tuning database file: "
+            << tuningDbOut;
+        signalPassFailure();
+        return;
+      }
     }
   }
 };

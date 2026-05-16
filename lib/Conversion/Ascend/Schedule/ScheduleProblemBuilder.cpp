@@ -58,6 +58,19 @@ void appendTemplateTag(OpRole role, SmallVectorImpl<std::string> &tags) {
   }
 }
 
+void appendUniqueTemplateTag(StringRef tag, SmallVectorImpl<std::string> &tags) {
+  if (!llvm::is_contained(tags, tag))
+    tags.push_back(tag.str());
+}
+
+void appendContractTemplateTags(const KernelPatternView &pattern,
+                                SmallVectorImpl<std::string> &tags) {
+  for (StringRef family : pattern.templateFamilies)
+    appendUniqueTemplateTag(family, tags);
+  if (!pattern.handwrittenKind.empty())
+    appendUniqueTemplateTag(pattern.handwrittenKind, tags);
+}
+
 void appendShapeConstraints(ArrayRef<int64_t> shape,
                             SmallVectorImpl<std::string> &constraints) {
   for (auto [index, dim] : llvm::enumerate(shape)) {
@@ -203,8 +216,13 @@ buildScheduleProblem(const KernelPatternView &pattern,
   problem.axes = axes;
   problem.guardBudget = 8;
   appendTemplateTag(problem.dominantRole, problem.templateTags);
+  appendContractTemplateTags(pattern, problem.templateTags);
   appendShapeConstraints(problem.resultShape, problem.shapeConstraints);
   appendStructureConstraints(pattern, problem.structureConstraints);
+  if (pattern.handwrittenKind == kKernelizeHandwrittenKindAttentionSdpa) {
+    problem.structureConstraints.push_back("handwritten_group");
+    problem.structureConstraints.push_back("attention_sdpa_chain");
+  }
   return problem;
 }
 

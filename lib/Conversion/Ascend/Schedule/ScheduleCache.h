@@ -53,6 +53,10 @@ private:
   SmallVector<TuningResultKey, 8> tuningResultKeys;
 };
 
+std::string serializeScheduleDims(ArrayRef<int64_t> dims);
+std::string serializeTuningResultKey(const TuningResultKey &key);
+std::string getTuningResultSignature(const TuningResultKey &key);
+
 void printScheduleCacheReport(const ScheduleCacheReport &report,
                               llvm::raw_ostream &os);
 

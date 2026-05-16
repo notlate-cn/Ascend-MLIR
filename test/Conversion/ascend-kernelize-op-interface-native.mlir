@@ -21,7 +21,7 @@ func.func @native_interface_compat(%arg0: tensor<8xf32>,
 
 // CHECK: DependencyAnalysis
 // CHECK: op = "linalg.generic"
-// CHECK-SAME: model = "linalg"
+// CHECK-SAME: model = "linalg_external"
 // CHECK: KernelPartition
 // CHECK: linalg.generic
 // CHECK-SAME: ascend.kernel = "kernel_0"

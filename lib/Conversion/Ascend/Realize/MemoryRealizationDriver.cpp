@@ -750,6 +750,58 @@ materializeMovementUseViewChain(IRRewriter &rewriter, Location loc, Value base,
   return current;
 }
 
+static LogicalResult preflightMovementUseViewChain(
+    ArrayRef<Operation *> viewChain, Attribute memorySpace) {
+  for (Operation *viewOp : viewChain) {
+    auto resultType =
+        viewOp->getNumResults() == 1
+            ? dyn_cast<MemRefType>(viewOp->getResult(0).getType())
+            : MemRefType();
+    if (!resultType)
+      return failure();
+
+    if (isa<memref::SubViewOp, memref::CastOp, memref::ReshapeOp,
+            memref::ExpandShapeOp, memref::CollapseShapeOp>(viewOp)) {
+      (void)withMemorySpace(resultType, memorySpace);
+      continue;
+    }
+
+    return failure();
+  }
+  return success();
+}
+
+static LogicalResult
+preflightSingleMovementItem(const MovementMaterializationItem &item,
+                            Attribute targetSpace) {
+  if (!item.step || !item.slot || !item.firstUser ||
+      !isa<MemRefType>(item.source.getType()))
+    return failure();
+  for (const MovementUseRewrite &rewrite : item.uses) {
+    if (!rewrite.use || !rewrite.use->getOwner() ||
+        rewrite.use->getOwner()->getBlock() != item.firstUser->getBlock())
+      return failure();
+    if (failed(preflightMovementUseViewChain(rewrite.viewChain, targetSpace)))
+      return failure();
+  }
+  return success();
+}
+
+static LogicalResult
+preflightMovementWorkspaceGroup(ArrayRef<MovementMaterializationItem> items,
+                                Attribute targetSpace) {
+  if (items.empty() || !getEarliestUserInBlock(items))
+    return failure();
+  for (const MovementMaterializationItem &item : items) {
+    if (failed(preflightSingleMovementItem(item, targetSpace)))
+      return failure();
+    auto sourceType = dyn_cast<MemRefType>(item.source.getType());
+    if (!sourceType || !getElementOffset(*item.slot, sourceType))
+      return failure();
+  }
+  return success();
+}
+
 static LogicalResult materializeSingleMovementItem(
     IRRewriter &rewriter, const MovementMaterializationItem &item,
     Attribute targetSpace, Phase5BridgeMaterializationCounts &counts) {
@@ -1113,6 +1165,15 @@ MemoryRealizationDriver::materializeMovementSteps(
       }
 
       if (group.size() > 1) {
+        if (failed(preflightMovementWorkspaceGroup(group, targetSpace))) {
+          unsigned deferred = countDynamicViewChainRewrites(group);
+          if (deferred == 0)
+            return failure();
+          bundle.movement.deferredViewChainRewriteCount += deferred;
+          for (unsigned index : groupIndices)
+            materialized[index] = true;
+          continue;
+        }
         if (failed(materializeMovementWorkspaceGroup(
                 rewriter, group, targetSpace, counts[kernelId])))
           return failure();
@@ -1123,6 +1184,14 @@ MemoryRealizationDriver::materializeMovementSteps(
         continue;
       }
 
+      if (failed(preflightSingleMovementItem(items[i], targetSpace))) {
+        unsigned deferred = countDynamicViewChainRewrites(items[i]);
+        if (deferred == 0)
+          return failure();
+        bundle.movement.deferredViewChainRewriteCount += deferred;
+        materialized[i] = true;
+        continue;
+      }
       if (failed(materializeSingleMovementItem(rewriter, items[i], targetSpace,
                                                counts[kernelId])))
         return failure();
