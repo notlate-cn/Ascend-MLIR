@@ -42,10 +42,10 @@ struct HandwrittenContract {
   SmallVector<std::string, 2> structureConstraints;
 
   /// TemplateRegistry: the schedule template registered for this pattern.
-  /// Fields: name, layout, tags, minRank, maxRank, priority.
+  /// Maps to ScheduleTemplate: family=kindId, name=tilingLayout.
   struct TemplateSpec {
-    std::string name;
-    std::string layout;
+    std::string kindId;       /// ScheduleTemplate::family — kind identifier string
+    std::string tilingLayout; /// ScheduleTemplate::name   — tiling layout strategy
     SmallVector<std::string, 4> tags;
     unsigned minRank = 0;
     unsigned maxRank = 8;
