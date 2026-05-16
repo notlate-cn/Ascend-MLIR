@@ -335,24 +335,29 @@ ComputeKind classifyPhase5ReductionBody(
   if (!yieldOp || yieldOp.getNumOperands() != 1)
     return ComputeKind::Unknown;
 
-  // Find the single non-constant arith op in the body.
-  Operation *reductionOp = nullptr;
+  // Find all non-constant compute ops; all must be the same homogeneous kind
+  // and the yield must use the last op's result. Multiple ops of the same kind
+  // are allowed (e.g. two arith.addf for a pre-accumulation + reduce pattern).
+  Operation *lastOp = nullptr;
+  Operation *kindOp = nullptr; // first op, used for kind determination
   for (Operation &bodyOp : body->without_terminator()) {
     if (isa<arith::ConstantOp>(bodyOp))
       continue;
-    if (reductionOp)
-      return ComputeKind::Unknown; // more than one compute op
-    reductionOp = &bodyOp;
+    if (kindOp && bodyOp.getName() != kindOp->getName())
+      return ComputeKind::Unknown; // mixed op kinds in body
+    if (!kindOp)
+      kindOp = &bodyOp;
+    lastOp = &bodyOp;
   }
-  if (!reductionOp)
+  if (!lastOp)
     return ComputeKind::Unknown;
-  if (yieldOp.getOperand(0) != reductionOp->getResult(0))
+  if (yieldOp.getOperand(0) != lastOp->getResult(0))
     return ComputeKind::Unknown;
 
-  if (isa<arith::AddFOp>(reductionOp))      return ComputeKind::ReductionAdd;
-  if (isa<arith::MaximumFOp>(reductionOp))  return ComputeKind::ReductionMax;
-  if (isa<arith::MinimumFOp>(reductionOp))  return ComputeKind::ReductionMin;
-  if (isa<arith::MulFOp>(reductionOp))      return ComputeKind::ReductionMul;
+  if (isa<arith::AddFOp>(kindOp))      return ComputeKind::ReductionAdd;
+  if (isa<arith::MaximumFOp>(kindOp))  return ComputeKind::ReductionMax;
+  if (isa<arith::MinimumFOp>(kindOp))  return ComputeKind::ReductionMin;
+  if (isa<arith::MulFOp>(kindOp))      return ComputeKind::ReductionMul;
   return ComputeKind::Unknown;
 }
 
