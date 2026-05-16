@@ -112,15 +112,10 @@ void registerBuiltinElementwiseBodyOps() {
        mlir::Value dst, mlir::Value src, mlir::Value cnt) {
       b.create<RsqrtL2Op>(loc, dst, src, cnt);
     }, nullptr});
-  registerElementwiseBodyOp({"math.abs", ComputeKind::ElementwiseAbs,
+  registerElementwiseBodyOp({"math.absf", ComputeKind::ElementwiseAbs,
     [](mlir::OpBuilder &b, mlir::Location loc,
        mlir::Value dst, mlir::Value src, mlir::Value cnt) {
       b.create<AbsL2Op>(loc, dst, src, cnt);
-    }, nullptr});
-  registerElementwiseBodyOp({"math.reciprocal", ComputeKind::ElementwiseReciprocal,
-    [](mlir::OpBuilder &b, mlir::Location loc,
-       mlir::Value dst, mlir::Value src, mlir::Value cnt) {
-      b.create<ReciprocalL2Op>(loc, dst, src, cnt);
     }, nullptr});
   // Placeholder ops: no dedicated AscendC L2 intrinsic yet; use AbsL2Op stub
   registerElementwiseBodyOp({"math.tanh", ComputeKind::ElementwiseTanh,
