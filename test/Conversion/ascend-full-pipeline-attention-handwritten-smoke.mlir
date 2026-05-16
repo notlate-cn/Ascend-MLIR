@@ -44,6 +44,6 @@ func.func @sdpa_like_supported_body(%q: tensor<2x4x8xf32>,
   return %out : tensor<2x4x8xf32>
 }
 
-// CHECK: ascend.schedule.tuning_cache = ["attention_sdpa|grouped_tile_per_block|2x4x8|2x4x4x8"]
+// CHECK: ascend.schedule.tuning_cache = ["attention_sdpa|grouped_tile_per_block|2x4x8|2x4x8x4"]
 // CHECK: ascendc.add_l2
 // CHECK: return
