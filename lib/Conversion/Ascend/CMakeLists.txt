@@ -1,5 +1,6 @@
 add_mlir_library(AscendConversion
   Backend/BackendSupportMatrix.cpp
+  Backend/ElementwiseBodyOpRegistry.cpp
   Backend/LinalgBodyClassifier.cpp
   Backend/ComputeLoweringPass.cpp
   Backend/BackendWrapperPasses.cpp

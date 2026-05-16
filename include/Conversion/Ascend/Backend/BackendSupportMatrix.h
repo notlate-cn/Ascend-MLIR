@@ -8,6 +8,8 @@
 #define ASCEND_MLIR_CONVERSION_ASCEND_BACKEND_SUPPORT_MATRIX_H
 
 #include "Target/Ascend/TargetProfile.h"
+#include "mlir/IR/Types.h"
+#include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/StringRef.h"
 #include <string>
 
@@ -31,6 +33,29 @@ enum class ComputeKind {
   Transpose,
   VectorGather,
   ReductionAdd,
+  // elementwise ops
+  ElementwiseSub,
+  ElementwiseDiv,
+  ElementwiseNeg,
+  ElementwiseExp,
+  ElementwiseExp2,
+  ElementwiseLog,
+  ElementwiseSqrt,
+  ElementwiseRsqrt,
+  ElementwiseTanh,
+  ElementwiseErf,
+  ElementwiseAbs,
+  ElementwiseSin,
+  ElementwiseCos,
+  ElementwiseFma,
+  ElementwiseReciprocal,
+  ElementwiseRelu,
+  ElementwiseSelect,
+  ElementwiseMin,
+  // reduction ops
+  ReductionMax,
+  ReductionMin,
+  ReductionMul,
 };
 
 struct UnsupportedReason {
@@ -50,6 +75,13 @@ public:
 
   bool isSupportedComputeKind(ComputeKind kind) const;
   UnsupportedReason explainComputeKind(ComputeKind kind) const;
+
+  bool isSupportedDtype(ComputeKind kind,
+                        mlir::ArrayRef<mlir::Type> inputTypes,
+                        mlir::ArrayRef<mlir::Type> outputTypes) const;
+  UnsupportedReason explainDtype(ComputeKind kind,
+                                 mlir::ArrayRef<mlir::Type> inputTypes,
+                                 mlir::ArrayRef<mlir::Type> outputTypes) const;
 };
 
 } // namespace mlir::afir::ascend::backend
