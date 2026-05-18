@@ -103,6 +103,15 @@ DictionaryAttr serializeTilingInfoSchema(MLIRContext *ctx,
 
 std::optional<TilingInfoSchema> deserializeTilingInfoSchema(
     DictionaryAttr entry) {
+  auto getStr = [](DictionaryAttr d, StringRef k) -> std::optional<std::string> {
+    if (auto a = d.getAs<StringAttr>(k)) return a.str();
+    return std::nullopt;
+  };
+  auto getInt = [](DictionaryAttr d, StringRef k) -> std::optional<int64_t> {
+    if (auto a = d.getAs<IntegerAttr>(k)) return a.getInt();
+    return std::nullopt;
+  };
+
   auto verAttr = entry.getAs<IntegerAttr>("schema_version");
   if (!verAttr || verAttr.getInt() != TilingInfoSchema::kSchemaVersion)
     return std::nullopt;
@@ -116,17 +125,19 @@ std::optional<TilingInfoSchema> deserializeTilingInfoSchema(
       auto d = dyn_cast<DictionaryAttr>(fa);
       if (!d) continue;
       SchemaField f;
-      f.name = d.getAs<StringAttr>("name").str();
-      auto k = d.getAs<StringAttr>("kind").getValue();
-      f.kind = (k == "tunable") ? SchemaFieldKind::Tunable
-                                : SchemaFieldKind::ShapeDerived;
+      auto name = getStr(d, "name");
+      auto kind = getStr(d, "kind");
+      if (!name || !kind) continue;
+      f.name = *name;
+      f.kind = (*kind == "tunable") ? SchemaFieldKind::Tunable
+                                    : SchemaFieldKind::ShapeDerived;
       if (f.kind == SchemaFieldKind::Tunable) {
-        f.axisSize     = d.getAs<IntegerAttr>("axis_size").getInt();
-        f.defaultValue = d.getAs<IntegerAttr>("default_value").getInt();
-        f.argIndex     = (int32_t)d.getAs<IntegerAttr>("arg_index").getInt();
+        f.axisSize     = getInt(d, "axis_size").value_or(-1);
+        f.defaultValue = getInt(d, "default_value").value_or(0);
+        f.argIndex     = (int32_t)getInt(d, "arg_index").value_or(-1);
       } else {
-        f.sourceArg = (int32_t)d.getAs<IntegerAttr>("source_arg").getInt();
-        f.sourceDim = (int32_t)d.getAs<IntegerAttr>("source_dim").getInt();
+        f.sourceArg = (int32_t)getInt(d, "source_arg").value_or(-1);
+        f.sourceDim = (int32_t)getInt(d, "source_dim").value_or(-1);
       }
       s.fields.push_back(std::move(f));
     }
@@ -136,20 +147,24 @@ std::optional<TilingInfoSchema> deserializeTilingInfoSchema(
       auto d = dyn_cast<DictionaryAttr>(aa);
       if (!d) continue;
       SchemaArg a;
-      a.mlirIndex = (int32_t)d.getAs<IntegerAttr>("mlir_index").getInt();
-      auto r = roleFromString(d.getAs<StringAttr>("role").getValue());
+      auto mlirIdx = getInt(d, "mlir_index");
+      auto roleStr = getStr(d, "role");
+      if (!mlirIdx || !roleStr) continue;
+      auto r = roleFromString(*roleStr);
       if (!r) continue;
+      a.mlirIndex = (int32_t)*mlirIdx;
       a.role = *r;
       if (a.role == SchemaArgRole::Input)
-        a.networkIndex = (int32_t)d.getAs<IntegerAttr>("network_index").getInt();
+        a.networkIndex = (int32_t)getInt(d, "network_index").value_or(-1);
       if (a.role == SchemaArgRole::Output) {
-        a.resultIndex = (int32_t)d.getAs<IntegerAttr>("result_index").getInt();
+        a.resultIndex = (int32_t)getInt(d, "result_index").value_or(-1);
         if (auto se = d.getAs<ArrayAttr>("shape_expr"))
           for (Attribute e : se)
-            a.shapeExpr.push_back(cast<StringAttr>(e).str());
+            if (auto sa = dyn_cast<StringAttr>(e))
+              a.shapeExpr.push_back(sa.str());
       }
       if (a.role == SchemaArgRole::TileParam)
-        a.tileParamName = d.getAs<StringAttr>("name").str();
+        a.tileParamName = getStr(d, "name").value_or(std::string());
       s.args.push_back(std::move(a));
     }
   }
