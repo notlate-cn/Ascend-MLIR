@@ -54,6 +54,10 @@ if ! python3 -c 'import numpy' >/dev/null 2>&1; then
   fail "python3 numpy module is unavailable"
 fi
 
+if [[ ! -f "${REPO_ROOT}/test/tools/check_ascend_queue_lifetime.py" ]]; then
+  fail "queue lifetime checker is unavailable"
+fi
+
 echo "INFO: executing ${#EXAMPLES[@]} example pipelines"
 
 workdir="$(mktemp -d "${TMPDIR:-/tmp}/afir-example-pipelines.XXXXXX")"
@@ -122,6 +126,7 @@ run_example() {
   local name="$1"
   local log_file="${workdir}/${name}.log"
   local script="${REPO_ROOT}/examples/${name}/run.sh"
+  local queue_lifetime_log="${workdir}/${name}-queue-lifetime.log"
 
   if [[ ! -x "${script}" && ! -f "${script}" ]]; then
     echo "FAIL [${name}] missing script: ${script}"
@@ -154,6 +159,34 @@ run_example() {
       failures+=("${name}:runtime-session-markers")
       return
     fi
+  fi
+
+  local build_dir="${REPO_ROOT}/examples/${name}/build_mainline"
+  if [[ ! -d "${build_dir}" ]]; then
+    echo "FAIL [${name}] missing build output directory: ${build_dir}"
+    failures+=("${name}:missing-build-dir")
+    return
+  fi
+
+  mapfile -t generated_mlir < <(
+    find "${build_dir}" -maxdepth 1 -type f \
+      \( -name 'step*_ascendc.mlir' -o \
+         -name 'step*_parallelized.mlir' -o \
+         -name 'step*_kernel_ir.mlir' -o \
+         -name 'step*_cann.mlir' \) | sort
+  )
+  if ((${#generated_mlir[@]} == 0)); then
+    echo "FAIL [${name}] no generated AscendC/CANN MLIR files found"
+    failures+=("${name}:missing-generated-mlir")
+    return
+  fi
+
+  if ! python3 "${REPO_ROOT}/test/tools/check_ascend_queue_lifetime.py" \
+      "${generated_mlir[@]}" >"${queue_lifetime_log}" 2>&1; then
+    echo "FAIL [${name}] queue lifetime check failed"
+    tail -n 80 "${queue_lifetime_log}" || true
+    failures+=("${name}:queue-lifetime")
+    return
   fi
 
   echo "PASS [${name}]"
