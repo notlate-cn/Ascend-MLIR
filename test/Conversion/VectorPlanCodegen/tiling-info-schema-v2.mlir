@@ -12,6 +12,7 @@
 // CHECK-SAME: role = "input"
 // CHECK-SAME: role = "tile_param"
 // CHECK-SAME: role = "output"
+// CHECK-SAME: shape_expr = ["arg0_dim0"]
 // CHECK-SAME: kind = "tunable"
 // CHECK-SAME: name = "XBLOCK"
 // CHECK-SAME: kind = "shape_derived"

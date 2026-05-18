@@ -17,9 +17,12 @@
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallVector.h"
+#include "llvm/Support/Debug.h"
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/FormatVariadic.h"
 #include <limits>
+
+#define DEBUG_TYPE "tile-plan-gen"
 
 using namespace mlir;
 using namespace mlir::vector_plan;
@@ -1217,10 +1220,61 @@ void emitTilingInfos(func::FuncOp func, const TilePlan &plan) {
     }
   };
 
+  // Helper for synthetic-output dynamic dims: trace
+  //   retOp.getOperand(ri) → linalg.generic → tensor.empty(%d0, %d1, ...)
+  //   → tensor.dim %argN, %cIdx  where %argN is an Input schema arg.
+  // Render "arg<networkIndex>_dim<dimIdx>" on success.  The plan spec §6
+  // explicitly defers anything more involved (reduce/matmul) to later.
+  auto resolveSyntheticDynDim =
+      [&](Value retVal, int64_t outDim) -> std::string {
+    auto genericOp = retVal.getDefiningOp<linalg::GenericOp>();
+    if (!genericOp || genericOp.getOutputs().empty()) {
+      LLVM_DEBUG(llvm::dbgs() << "[tiling-info] synthetic output dim "
+                              << outDim << ": no defining linalg.generic\n");
+      return {};
+    }
+    auto emptyOp = genericOp.getOutputs()[0].getDefiningOp<tensor::EmptyOp>();
+    if (!emptyOp) {
+      LLVM_DEBUG(llvm::dbgs() << "[tiling-info] synthetic output dim "
+                              << outDim << ": init not tensor.empty\n");
+      return {};
+    }
+    auto mixed = emptyOp.getMixedSizes();
+    if ((size_t)outDim >= mixed.size()) return {};
+    auto ofr = mixed[outDim];
+    auto val = dyn_cast<Value>(ofr);
+    if (!val) return {};
+    auto dimOp = val.getDefiningOp<tensor::DimOp>();
+    if (!dimOp) {
+      LLVM_DEBUG(llvm::dbgs() << "[tiling-info] synthetic output dim "
+                              << outDim << ": dyn size not tensor.dim\n");
+      return {};
+    }
+    auto ba = dyn_cast<BlockArgument>(dimOp.getSource());
+    if (!ba || ba.getOwner() != &entry) return {};
+    auto cst = dimOp.getIndex().getDefiningOp<arith::ConstantOp>();
+    if (!cst) return {};
+    auto intAttr = dyn_cast<IntegerAttr>(cst.getValue());
+    if (!intAttr) return {};
+    int32_t dimIdx = (int32_t)intAttr.getValue().getSExtValue();
+    for (auto &ia : schema.args) {
+      if (ia.role == vector_plan::SchemaArgRole::Input &&
+          (unsigned)ia.mlirIndex == ba.getArgNumber()) {
+        return "arg" + std::to_string(ia.networkIndex) +
+               "_dim" + std::to_string(dimIdx);
+      }
+    }
+    LLVM_DEBUG(llvm::dbgs() << "[tiling-info] synthetic output dim "
+                            << outDim << ": no matching Input arg\n");
+    return {};
+  };
+
   for (auto &a : schema.args) {
     if (a.role != vector_plan::SchemaArgRole::Output) continue;
     ShapedType st;
     StringAttr symAttr;
+    Value retVal;
+    bool synthetic = false;
     if ((unsigned)a.mlirIndex < entry.getNumArguments()) {
       // Real arg (post-bufferize path).
       st = cast<ShapedType>(entry.getArgument(a.mlirIndex).getType());
@@ -1230,11 +1284,29 @@ void emitTilingInfos(func::FuncOp func, const TilePlan &plan) {
                    dyn_cast<func::ReturnOp>(entry.getTerminator())) {
       // Synthetic output: use the corresponding return value type.
       unsigned ri = (unsigned)a.resultIndex;
-      if (ri < retOp.getNumOperands())
-        st = dyn_cast<ShapedType>(retOp.getOperand(ri).getType());
+      if (ri < retOp.getNumOperands()) {
+        retVal = retOp.getOperand(ri);
+        st = dyn_cast<ShapedType>(retVal.getType());
+        synthetic = true;
+      }
     }
     if (!st) continue;
-    tryEmitShapeExpr(a, st, symAttr);
+    if (!synthetic) {
+      tryEmitShapeExpr(a, st, symAttr);
+      continue;
+    }
+    // Synthetic-output branch: symAttr is unavailable.  Use static dims
+    // directly; for dynamic dims, trace the linalg.generic → tensor.empty
+    // → tensor.dim chain back to an Input schema arg.
+    for (int64_t d = 0, e = st.getRank(); d < e; ++d) {
+      std::string expr;
+      if (!ShapedType::isDynamic(st.getShape()[d])) {
+        expr = std::to_string(st.getShape()[d]);
+      } else {
+        expr = resolveSyntheticDynDim(retVal, d);
+      }
+      a.shapeExpr.push_back(expr);
+    }
   }
 
   // Walk dim ops (both tensor.dim and memref.dim) to add shape-derived
