@@ -11,6 +11,7 @@ EXAMPLES=(
   "relu-broadcast-transpose"
   "split-relu-brc-add-mul"
   "matmul-add-leakyrelu"
+  "three-kernel-dag"
   "two-kernel-dag"
   "two-kernel-rank-mix-dag"
 )

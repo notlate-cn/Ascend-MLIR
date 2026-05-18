@@ -2863,6 +2863,8 @@ LogicalResult convertCompute(func::FuncOp funcOp, AscendCBufferContext &ctx) {
       }
     }
 
+    if (!ownedInputTensors.empty())
+      builder.create<PipeBarrierOp>(loc, PipeAttr::get(mlirCtx, Pipe::PIPE_ALL));
     freeOwnedQueueTensors(builder, loc, ownedInputTensors);
 
     // ---- Step 3: Write accumulator to output buffer ----
@@ -3077,6 +3079,8 @@ LogicalResult convertCompute(func::FuncOp funcOp, AscendCBufferContext &ctx) {
           builder.create<MinL2Op>(loc, writeTarget, localSrc0, localSrc1, count);
       copyAscendCUnitAttr(ewOp.getOperation(), minOp.getOperation());
     }
+
+    builder.create<PipeBarrierOp>(loc, PipeAttr::get(mlirCtx, Pipe::PIPE_ALL));
 
     if (Value q = ctx.getQueue(dst)) {
       if (dstHoistFor) {
