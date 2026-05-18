@@ -138,8 +138,8 @@ enum class SchemaArgRole {
 struct SchemaArg {
   int32_t mlirIndex;            // position in the kernel func signature
   SchemaArgRole role;
-  // Input: network_index in coordinator-call operand list.
-  int32_t networkIndex = -1;
+  // Input: coordinator-call operand position.
+  int32_t callArgIndex = -1;
   // Output: result_index in the kernel's `results` array + shape_expr per
   // output dim (each entry is a host-evaluable string like "arg0_dim1").
   int32_t resultIndex = -1;

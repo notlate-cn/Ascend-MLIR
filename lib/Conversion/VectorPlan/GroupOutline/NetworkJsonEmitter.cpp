@@ -214,7 +214,7 @@ llvm::Error emitNetworkJson(mlir::ModuleOp module, mlir::func::FuncOp coord,
             switch (a.role) {
               case mlir::vector_plan::SchemaArgRole::Input:
                 e["role"] = "input";
-                e["network_index"] = static_cast<int64_t>(a.networkIndex);
+                e["call_arg_index"] = static_cast<int64_t>(a.callArgIndex);
                 break;
               case mlir::vector_plan::SchemaArgRole::Output: {
                 e["role"] = "output";

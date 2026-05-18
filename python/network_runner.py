@@ -303,13 +303,13 @@ def _resolve_shape_via_schema(space, network, kid, shape_key, runner_inputs):
             "shape_expr not yet supported in runner.")
     target_arg, dim_idx = int(m.group(1)), int(m.group(2))
 
-    # The integer in shape_key is the schema's `network_index` for an input
-    # arg — which corresponds to the kernel's coordinator-call operand position
-    # (i.e. the kernel.args[] index in network.json).  Find the schema entry
-    # and resolve via the existing legacy walker using its mlir_index, which
-    # is the position in the kernel func signature (== kernel.args[] index).
+    # The integer in shape_key is the schema's `call_arg_index` — the
+    # kernel's coordinator-call operand position (== kernel.args[] index in
+    # network.json).  Find the schema entry and resolve via the existing
+    # legacy walker using its mlir_index (position in the kernel func
+    # signature, == kernel.args[] index).
     for sa in sch:
-        if sa.get("role") == "input" and sa.get("network_index") == target_arg:
+        if sa.get("role") == "input" and sa.get("call_arg_index") == target_arg:
             kernel_arg_idx = sa.get("mlir_index", target_arg)
             shape = _resolve_kernel_input_shape(
                 network, kid, kernel_arg_idx, runner_inputs)

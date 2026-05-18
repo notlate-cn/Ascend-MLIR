@@ -79,7 +79,7 @@ DictionaryAttr serializeTilingInfoSchema(MLIRContext *ctx,
     d.append("mlir_index", IntegerAttr::get(i32Ty, a.mlirIndex));
     d.append("role",       StringAttr::get(ctx, roleToString(a.role)));
     if (a.role == SchemaArgRole::Input)
-      d.append("network_index", IntegerAttr::get(i32Ty, a.networkIndex));
+      d.append("call_arg_index", IntegerAttr::get(i32Ty, a.callArgIndex));
     if (a.role == SchemaArgRole::Output) {
       d.append("result_index", IntegerAttr::get(i32Ty, a.resultIndex));
       SmallVector<Attribute> exprs;
@@ -160,7 +160,7 @@ std::optional<TilingInfoSchema> deserializeTilingInfoSchema(
       a.mlirIndex = (int32_t)*mlirIdx;
       a.role = *r;
       if (a.role == SchemaArgRole::Input)
-        a.networkIndex = (int32_t)getInt(d, "network_index").value_or(-1);
+        a.callArgIndex = (int32_t)getInt(d, "call_arg_index").value_or(-1);
       if (a.role == SchemaArgRole::Output) {
         a.resultIndex = (int32_t)getInt(d, "result_index").value_or(-1);
         if (auto se = d.getAs<ArrayAttr>("shape_expr"))
@@ -1138,9 +1138,9 @@ void emitTilingInfos(func::FuncOp func, const TilePlan &plan) {
         a.role = vector_plan::SchemaArgRole::Input;
         if (auto attr = func.getArgAttrOfType<IntegerAttr>(
                 ba.getArgNumber(), "vector_plan.call_arg_index"))
-          a.networkIndex = (int32_t)attr.getInt();
+          a.callArgIndex = (int32_t)attr.getInt();
         else
-          a.networkIndex = (int32_t)numNetworkInputs;
+          a.callArgIndex = (int32_t)numNetworkInputs;
         ++numNetworkInputs;
       } else {
         // TODO multi-result: resultIndex hard-coded to 0; revisit when
@@ -1154,9 +1154,9 @@ void emitTilingInfos(func::FuncOp func, const TilePlan &plan) {
       a.role = vector_plan::SchemaArgRole::Input;
       if (auto attr = func.getArgAttrOfType<IntegerAttr>(
               ba.getArgNumber(), "vector_plan.call_arg_index"))
-        a.networkIndex = (int32_t)attr.getInt();
+        a.callArgIndex = (int32_t)attr.getInt();
       else
-        a.networkIndex = (int32_t)numNetworkInputs;
+        a.callArgIndex = (int32_t)numNetworkInputs;
       ++numNetworkInputs;
     } else if (isa<IndexType>(ty)) {
       a.role = vector_plan::SchemaArgRole::TileParam;
@@ -1217,7 +1217,7 @@ void emitTilingInfos(func::FuncOp func, const TilePlan &plan) {
           for (auto &ia : schema.args)
             if (ia.role == vector_plan::SchemaArgRole::Input &&
                 (unsigned)ia.mlirIndex == src.first) {
-              expr = "arg" + std::to_string(ia.networkIndex) +
+              expr = "arg" + std::to_string(ia.callArgIndex) +
                      "_dim" + std::to_string(src.second);
               break;
             }
@@ -1233,7 +1233,7 @@ void emitTilingInfos(func::FuncOp func, const TilePlan &plan) {
   // Helper for synthetic-output dynamic dims: trace
   //   retOp.getOperand(ri) → linalg.generic → tensor.empty(%d0, %d1, ...)
   //   → tensor.dim %argN, %cIdx  where %argN is an Input schema arg.
-  // Render "arg<networkIndex>_dim<dimIdx>" on success.  The plan spec §6
+  // Render "arg<callArgIndex>_dim<dimIdx>" on success.  The plan spec §6
   // explicitly defers anything more involved (reduce/matmul) to later.
   auto resolveSyntheticDynDim =
       [&](Value retVal, int64_t outDim) -> std::string {
@@ -1270,7 +1270,7 @@ void emitTilingInfos(func::FuncOp func, const TilePlan &plan) {
     for (auto &ia : schema.args) {
       if (ia.role == vector_plan::SchemaArgRole::Input &&
           (unsigned)ia.mlirIndex == ba.getArgNumber()) {
-        return "arg" + std::to_string(ia.networkIndex) +
+        return "arg" + std::to_string(ia.callArgIndex) +
                "_dim" + std::to_string(dimIdx);
       }
     }

@@ -2012,7 +2012,7 @@ static void emitTilingSpaceJson(StringRef outPath,
       funcOp->getParentOfType<ModuleOp>(), funcOp.getName());
 
   // v2 path: translate `dim_arg<N>_<D>` via the schema's args[] table:
-  //   - Input-arg-sourced field → "arg<network_index>_dim<source_dim>".
+  //   - Input-arg-sourced field → "arg<call_arg_index>_dim<source_dim>".
   //   - Output-arg-sourced field → the precomputed shape_expr[source_dim].
   auto makeShapeKey = [&](StringRef fieldName) -> std::string {
     if (!schema) {
@@ -2027,7 +2027,7 @@ static void emitTilingSpaceJson(StringRef outPath,
       for (auto &a : schema->args) {
         if (a.mlirIndex != f.sourceArg) continue;
         if (a.role == mlir::vector_plan::SchemaArgRole::Input)
-          return "arg" + std::to_string(a.networkIndex) +
+          return "arg" + std::to_string(a.callArgIndex) +
                  "_dim" + std::to_string(f.sourceDim);
         if (a.role == mlir::vector_plan::SchemaArgRole::Output &&
             (size_t)f.sourceDim < a.shapeExpr.size())
@@ -2133,7 +2133,7 @@ static void emitTilingSpaceJson(StringRef outPath,
       switch (a.role) {
         case mlir::vector_plan::SchemaArgRole::Input:
           e["role"] = "input";
-          e["network_index"] = static_cast<int64_t>(a.networkIndex);
+          e["call_arg_index"] = static_cast<int64_t>(a.callArgIndex);
           break;
         case mlir::vector_plan::SchemaArgRole::Output: {
           e["role"] = "output";
