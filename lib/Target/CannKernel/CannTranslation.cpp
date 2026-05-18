@@ -1993,11 +1993,11 @@ static LogicalResult emitTilingStructDecl(CodeEmitter &emitter, Location loc,
 /// Other fields (TB_M etc.) → fixed:false, values:[].
 /// block_dim_expr → the func's afir.block_dim_expr attr (set by TilePlanGen) if
 /// present, else "".
-static void emitTilingSpaceJson(StringRef outPath,
-                                StringRef kernelFile,
-                                func::FuncOp funcOp,
-                                emitasc::PyStructType tilingType,
-                                StringRef socName) {
+static LogicalResult emitTilingSpaceJson(StringRef outPath,
+                                         StringRef kernelFile,
+                                         func::FuncOp funcOp,
+                                         emitasc::PyStructType tilingType,
+                                         StringRef socName) {
   StringRef kernelName = funcOp.getName();
   std::string blockDimExpr;
   if (auto a = funcOp->getAttrOfType<StringAttr>("afir.block_dim_expr"))
@@ -2014,29 +2014,43 @@ static void emitTilingSpaceJson(StringRef outPath,
   // v2 path: translate `dim_arg<N>_<D>` via the schema's args[] table:
   //   - Input-arg-sourced field → "arg<call_arg_index>_dim<source_dim>".
   //   - Output-arg-sourced field → the precomputed shape_expr[source_dim].
-  auto makeShapeKey = [&](StringRef fieldName) -> std::string {
-    if (!schema) {
-      llvm::errs() << "CannTranslation: missing schema_version=2 for kernel "
-                   << funcOp.getName() << " — cannot derive shape_key for "
-                   << fieldName << "\n";
-      return std::string{};
-    }
+  //
+  // Failure paths return mlir::failure() and emit a hard diagnostic — empty
+  // shape_keys must never be written into tiling_space.json, where the
+  // downstream parsers (autotuner / network_runner) silently mis-resolve them.
+  auto makeShapeKey =
+      [&](StringRef fieldName) -> mlir::FailureOr<std::string> {
+    if (!schema)
+      return funcOp.emitError()
+             << "CannTranslation: missing schema_version=2 for kernel '"
+             << funcOp.getName() << "' — cannot derive shape_key for field '"
+             << fieldName << "'";
     for (auto &f : schema->fields) {
       if (f.kind != mlir::vector_plan::SchemaFieldKind::ShapeDerived) continue;
       if (f.name != fieldName) continue;
       for (auto &a : schema->args) {
         if (a.mlirIndex != f.sourceArg) continue;
         if (a.role == mlir::vector_plan::SchemaArgRole::Input)
-          return "arg" + std::to_string(a.callArgIndex) +
-                 "_dim" + std::to_string(f.sourceDim);
+          return std::string("arg" + std::to_string(a.callArgIndex) +
+                             "_dim" + std::to_string(f.sourceDim));
         if (a.role == mlir::vector_plan::SchemaArgRole::Output &&
             (size_t)f.sourceDim < a.shapeExpr.size())
           return a.shapeExpr[f.sourceDim];
-        break;
+        return funcOp.emitError()
+               << "CannTranslation: schema arg mlirIndex=" << f.sourceArg
+               << " for field '" << fieldName << "' in kernel '"
+               << funcOp.getName()
+               << "' has unsupported role/shapeExpr (source_dim="
+               << f.sourceDim << ")";
       }
-      return std::string{};
+      return funcOp.emitError()
+             << "CannTranslation: field '" << fieldName << "' in kernel '"
+             << funcOp.getName() << "' references source_arg mlirIndex="
+             << f.sourceArg << " but no such arg exists in schema";
     }
-    return std::string{};
+    return funcOp.emitError()
+           << "CannTranslation: shape-derived field '" << fieldName
+           << "' not found in schema for kernel '" << funcOp.getName() << "'";
   };
 
   // From vector_plan.tiling_infos (set by TilePlanGen): tunable field -> the
@@ -2096,7 +2110,9 @@ static void emitTilingSpaceJson(StringRef outPath,
     p["type"] = "int64"; // TODO: derive from PyStructType field type when non-i64 fields exist
     if (isDimField(name)) {
       p["fixed"] = true;
-      p["shape_key"] = makeShapeKey(name);
+      auto sk = makeShapeKey(name);
+      if (failed(sk)) return failure();
+      p["shape_key"] = *sk;
     } else {
       p["fixed"] = false;
       auto it = tunableInfo.find(name);
@@ -2229,11 +2245,12 @@ static void emitTilingSpaceJson(StringRef outPath,
   if (ec) {
     llvm::errs() << "Warning: cannot write tiling_space.json to "
                  << outPath << ": " << ec.message() << "\n";
-    return;
+    return failure();
   }
   llvm::json::OStream jos(f, /*IndentSize=*/2);
   jos.value(llvm::json::Value(std::move(root)));
   f << "\n";
+  return success();
 }
 
 /// Emit the CANN-standard function signature and body.
@@ -3255,7 +3272,9 @@ LogicalResult mlir::translateToCannKernel(Operation *op, raw_ostream &os,
     llvm::sys::path::remove_filename(baseDir);
     SmallString<256> perFuncPath = baseDir;
     llvm::sys::path::append(perFuncPath, funcNameStr + "_space.json");
-    emitTilingSpaceJson(perFuncPath, kernelFile, funcOp, tilingType, socName);
+    if (failed(emitTilingSpaceJson(perFuncPath, kernelFile, funcOp, tilingType,
+                                   socName)))
+      return failure();
 
     if (!variantId.empty())
       familyVariants[familyId].push_back({variantId, funcNameStr,
@@ -3270,7 +3289,9 @@ LogicalResult mlir::translateToCannKernel(Operation *op, raw_ostream &os,
     // because the old single-variant guard skipped the write.
     bool isFirstVariant = variantId.empty() || variantId == "v0";
     if (isFirstVariant && tilingSpaceOutPath != perFuncPath)
-      emitTilingSpaceJson(tilingSpaceOutPath, kernelFile, funcOp, tilingType, socName);
+      if (failed(emitTilingSpaceJson(tilingSpaceOutPath, kernelFile, funcOp,
+                                     tilingType, socName)))
+        return failure();
   }
 
   // Emit family.json per family (only when at least one variant present).

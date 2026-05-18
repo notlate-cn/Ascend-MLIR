@@ -212,7 +212,13 @@ def _patch_tiling_space(path: Path) -> None:
 
 
 def _build_shape_str(tiling_space_path: Path, verify_inputs: list[torch.Tensor]) -> str:
-    """Build the autotuner --shape arg from the JSON's fixed (shape_key) params."""
+    """Build the autotuner --shape arg from the JSON's fixed (shape_key) params.
+
+    Mirrors network_runner.py:_resolve_shape_via_schema: numeric-literal
+    shape_keys (e.g. "32", emitted when an output-sourced static dim resolves)
+    pass through as KEY=KEY so the autotuner's parseKV sees the literal value;
+    "argN_dimM" forms resolve against the supplied verify_inputs.
+    """
     ts = json.loads(tiling_space_path.read_text())
     parts = []
     for p in ts.get("tiling_params", []):
@@ -221,8 +227,30 @@ def _build_shape_str(tiling_space_path: Path, verify_inputs: list[torch.Tensor])
         key = p.get("shape_key")
         if not key:
             continue
-        arg_idx = int(key.split("_")[0].removeprefix("arg"))
-        dim_idx = int(key.split("_")[1].removeprefix("dim"))
+        # Numeric literal shape_key (output-sourced static dim).
+        try:
+            int(key)
+            parts.append(f"{key}={key}")
+            continue
+        except ValueError:
+            pass
+        m = re.match(r"^arg(\d+)_dim(\d+)$", key)
+        if not m:
+            raise RuntimeError(
+                f"_build_shape_str: unsupported shape_key format {key!r} "
+                f"in {tiling_space_path}; only 'argN_dimM' or numeric "
+                "literals supported.")
+        arg_idx = int(m.group(1))
+        dim_idx = int(m.group(2))
+        if arg_idx >= len(verify_inputs):
+            raise RuntimeError(
+                f"_build_shape_str: shape_key {key!r} arg index "
+                f"{arg_idx} out of range ({len(verify_inputs)} inputs).")
+        if dim_idx >= verify_inputs[arg_idx].dim():
+            raise RuntimeError(
+                f"_build_shape_str: shape_key {key!r} dim index "
+                f"{dim_idx} out of range for shape "
+                f"{tuple(verify_inputs[arg_idx].shape)}.")
         parts.append(f"{key}={verify_inputs[arg_idx].shape[dim_idx]}")
     return ",".join(parts)
 
