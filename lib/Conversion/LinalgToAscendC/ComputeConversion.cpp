@@ -1500,10 +1500,22 @@ LogicalResult convertCompute(func::FuncOp funcOp, AscendCBufferContext &ctx) {
   // VECIN TQue (AllocTensor → DataCopy → EnQue → DeQue) and return the
   // dequeued VECIN LocalTensor.  The AscendC simulator only supports
   // DataCopy from GM → VECIN TQue (not directly to VECCALC TBuf).
+  using OwnedQueueTensor = std::pair<Value, Value>;
+  auto freeOwnedQueueTensors =
+      [&](OpBuilder &b, Location loc, ArrayRef<OwnedQueueTensor> ownedTensors) {
+        for (const auto &[queue, tensor] : ownedTensors)
+          b.create<TQueBindFreeTensorOp>(loc, queue, tensor);
+      };
+  auto rememberQueueRead = [&](SmallVectorImpl<OwnedQueueTensor> &ownedTensors,
+                               Value queue, Value tensor) {
+    if (queue && tensor)
+      ownedTensors.push_back({queue, tensor});
+  };
+
   auto copyGmToVecin =
       [&](OpBuilder &b, Location loc, Type elemType, Value srcGt,
           Value elemCount, Value bufferElemCount,
-          SmallVectorImpl<std::pair<Value, Value>> *tempVecinTensors) -> Value {
+          SmallVectorImpl<OwnedQueueTensor> *ownedTensors = nullptr) -> Value {
     if (!bufferElemCount)
       bufferElemCount = elemCount;
     unsigned elemBytes = elemType.getIntOrFloatBitWidth() / 8;
@@ -1522,8 +1534,8 @@ LogicalResult convertCompute(func::FuncOp funcOp, AscendCBufferContext &ctx) {
     b.create<TQueBindEnqueTensorOp>(loc, vecinQue, lt);
     Value dequeued = b.create<TQueBindDequeTensorOp>(
         loc, LocalTensorType::get(elemType), vecinQue);
-    if (tempVecinTensors)
-      tempVecinTensors->push_back({vecinQue, dequeued});
+    if (ownedTensors)
+      rememberQueueRead(*ownedTensors, vecinQue, dequeued);
     return dequeued;
   };
 
@@ -1554,13 +1566,6 @@ LogicalResult convertCompute(func::FuncOp funcOp, AscendCBufferContext &ctx) {
     for (Value dim : dims)
       bufferDims.push_back(getEnclosingLoopStepBound(dim, anchor));
     return bufferDims;
-  };
-
-  auto freeTempVecinTensors =
-      [&](OpBuilder &b, Location loc,
-          ArrayRef<std::pair<Value, Value>> tempVecinTensors) {
-    for (auto [queue, tensor] : tempVecinTensors)
-      b.create<TQueBindFreeTensorOp>(loc, queue, tensor);
   };
 
   SmallVector<linalg::GenericOp> genericOps;
@@ -1702,8 +1707,6 @@ LogicalResult convertCompute(func::FuncOp funcOp, AscendCBufferContext &ctx) {
     llvm::append_range(fullShape, parallelDims);
     llvm::append_range(fullShape, reductionDims);
     Value totalElems = computeProduct(builder, loc, fullShape);
-    SmallVector<std::pair<Value, Value>> tempVecinTensors;
-
     // Build a VECCALC accumulator for the full shape.  This is the tensor
     // that will hold the element-wise intermediate results before reduction.
     Value accumLt = allocVeccalc(builder, loc, elemType, fullShape).second;
@@ -1722,6 +1725,7 @@ LogicalResult convertCompute(func::FuncOp funcOp, AscendCBufferContext &ctx) {
     }
 
     // Promote each input to a local_tensor of shape `fullShape`.
+    SmallVector<OwnedQueueTensor> ownedInputTensors;
     SmallVector<Value> inputLts(numInputs);
     for (unsigned i = 0; i < numInputs; ++i) {
       Value inMemref = genOp.getDpsInputOperand(i)->get();
@@ -1761,6 +1765,9 @@ LogicalResult convertCompute(func::FuncOp funcOp, AscendCBufferContext &ctx) {
                 builder.create<arith::ConstantIntOp>(loc, builder.getI32Type(), 1));
         }
         Value srcLt = readTensor(builder, loc, inMemref);
+        if (Value q = ctx.getQueue(inMemref))
+          if (!ctx.getLiveTensor(inMemref))
+            rememberQueueRead(ownedInputTensors, q, srcLt);
         auto [bcastTbuf, bcastLt] =
             allocVeccalc(builder, loc, elemType, fullShape);
         auto bcastOp = builder.create<BroadcastL2Op>(
@@ -1788,7 +1795,7 @@ LogicalResult convertCompute(func::FuncOp funcOp, AscendCBufferContext &ctx) {
                                                        /*size=*/Value{});
         Value srcLt =
             copyGmToVecin(builder, loc, elemType, srcGt, srcElemCount,
-                          srcElemCount, &tempVecinTensors);
+                          srcElemCount, &ownedInputTensors);
         SmallVector<Value> dstShapeVals, srcShapeVals;
         for (Value s : fullShape)
           dstShapeVals.push_back(
@@ -1823,10 +1830,13 @@ LogicalResult convertCompute(func::FuncOp funcOp, AscendCBufferContext &ctx) {
                                                        /*size=*/Value{});
         inputLts[i] =
             copyGmToVecin(builder, loc, elemType, srcGt, totalElems,
-                          totalElems, &tempVecinTensors);
+                          totalElems, &ownedInputTensors);
       } else {
         // Already VECIN or VECCALC — use readTensor as-is.
         inputLts[i] = readTensor(builder, loc, inMemref);
+        if (Value q = ctx.getQueue(inMemref))
+          if (!ctx.getLiveTensor(inMemref))
+            rememberQueueRead(ownedInputTensors, q, inputLts[i]);
       }
     }
 
@@ -1929,6 +1939,8 @@ LogicalResult convertCompute(func::FuncOp funcOp, AscendCBufferContext &ctx) {
       }
     }
 
+    freeOwnedQueueTensors(builder, loc, ownedInputTensors);
+
     // ------------------------------------------------------------------
     // Step 3: Reduce the accumulated VECCALC to the output VECOUT tensor.
     //
@@ -1959,7 +1971,6 @@ LogicalResult convertCompute(func::FuncOp funcOp, AscendCBufferContext &ctx) {
     if (Value q = ctx.getQueue(outMemref))
       builder.create<TQueBindEnqueTensorOp>(loc, q, vecoutLt);
 
-    freeTempVecinTensors(builder, loc, tempVecinTensors);
     genOp.erase();
   }
 
@@ -2576,7 +2587,6 @@ LogicalResult convertCompute(func::FuncOp funcOp, AscendCBufferContext &ctx) {
     SmallVector<Value> bufferDimSizes =
         getBufferDimSizes(iterDimSizes, genOp.getOperation());
     Value bufferTotalElems = computeProduct(builder, loc, bufferDimSizes);
-    SmallVector<std::pair<Value, Value>> tempVecinTensors;
 
     Value outQueue = ctx.getQueue(outMemref);
     Value accumLt;
@@ -2588,6 +2598,7 @@ LogicalResult convertCompute(func::FuncOp funcOp, AscendCBufferContext &ctx) {
     }
 
     // ---- Step 1: Promote each input to a VECCALC local_tensor ----
+    SmallVector<OwnedQueueTensor> ownedInputTensors;
     SmallVector<Value> inputLts(numInputs);
     for (unsigned i = 0; i < numInputs; ++i) {
       Value inMemref = genOp.getDpsInputOperand(i)->get();
@@ -2605,9 +2616,12 @@ LogicalResult convertCompute(func::FuncOp funcOp, AscendCBufferContext &ctx) {
                                                          /*size=*/Value{});
           inputLts[i] =
               copyGmToVecin(builder, loc, elemType, srcGt, totalElems,
-                            bufferTotalElems, &tempVecinTensors);
+                            bufferTotalElems, &ownedInputTensors);
         } else {
           inputLts[i] = readTensor(builder, loc, inMemref);
+          if (Value q = ctx.getQueue(inMemref))
+            if (!ctx.getLiveTensor(inMemref))
+              rememberQueueRead(ownedInputTensors, q, inputLts[i]);
         }
         break;
       }
@@ -2635,6 +2649,9 @@ LogicalResult convertCompute(func::FuncOp funcOp, AscendCBufferContext &ctx) {
                   builder.create<arith::ConstantIntOp>(loc, builder.getI32Type(), 1));
           }
           Value srcLt = readTensor(builder, loc, inMemref);
+          if (Value q = ctx.getQueue(inMemref))
+            if (!ctx.getLiveTensor(inMemref))
+              rememberQueueRead(ownedInputTensors, q, srcLt);
           auto [bcastTbuf, bcastLt] =
               allocVeccalc(builder, loc, elemType, bufferDimSizes);
           auto bcastOp = builder.create<BroadcastL2Op>(
@@ -2657,7 +2674,7 @@ LogicalResult convertCompute(func::FuncOp funcOp, AscendCBufferContext &ctx) {
                                                          /*size=*/Value{});
           Value srcLt =
               copyGmToVecin(builder, loc, elemType, srcGt, srcElemCount,
-                            srcElemCount, &tempVecinTensors);
+                            srcElemCount, &ownedInputTensors);
           SmallVector<Value> dstShapeVals, srcShapeVals;
           for (Value s : iterDimSizes)
             dstShapeVals.push_back(
@@ -2701,7 +2718,7 @@ LogicalResult convertCompute(func::FuncOp funcOp, AscendCBufferContext &ctx) {
                                                        /*size=*/Value{});
         Value srcVecinLt =
             copyGmToVecin(builder, loc, elemType, srcGt, srcElemCount,
-                          srcElemCount, &tempVecinTensors);
+                          srcElemCount, &ownedInputTensors);
 
         auto [transpTbuf, transpLt] =
             allocVeccalc(builder, loc, elemType, bufferDimSizes);
@@ -2724,6 +2741,9 @@ LogicalResult convertCompute(func::FuncOp funcOp, AscendCBufferContext &ctx) {
         Value srcVecinLt;
         if (inMs == 9 /*VECIN*/) {
           srcVecinLt = readTensor(builder, loc, inMemref);
+          if (Value q = ctx.getQueue(inMemref))
+            if (!ctx.getLiveTensor(inMemref))
+              rememberQueueRead(ownedInputTensors, q, srcVecinLt);
         } else {
           Value srcElemCount = builder.create<arith::ConstantIndexOp>(loc, 1);
           for (Value d : srcDimsVals)
@@ -2734,7 +2754,7 @@ LogicalResult convertCompute(func::FuncOp funcOp, AscendCBufferContext &ctx) {
                                                          /*size=*/Value{});
           srcVecinLt =
               copyGmToVecin(builder, loc, elemType, srcGt, srcElemCount,
-                            srcElemCount, &tempVecinTensors);
+                            srcElemCount, &ownedInputTensors);
         }
 
         // Step 2: Broadcast directly into iteration-space order [iterDimSizes]
@@ -2843,6 +2863,8 @@ LogicalResult convertCompute(func::FuncOp funcOp, AscendCBufferContext &ctx) {
       }
     }
 
+    freeOwnedQueueTensors(builder, loc, ownedInputTensors);
+
     // ---- Step 3: Write accumulator to output buffer ----
     // No reduction needed (all-parallel). The compute result is in accumLt
     // (a VECCALC tbuf). We need to deliver it to the output buffer:
@@ -2865,7 +2887,6 @@ LogicalResult convertCompute(func::FuncOp funcOp, AscendCBufferContext &ctx) {
       // tbuf tensor into a VECOUT queue can surface as UB/MTE faults.
       builder.create<TQueBindEnqueTensorOp>(loc, outQueue, accumLt);
     }
-    freeTempVecinTensors(builder, loc, tempVecinTensors);
     // If outMemref has no queue (VECCALC alloc without a queue), the result
     // already resides in the VECCALC tbuf and will be consumed by the next op.
 

@@ -12,6 +12,8 @@
 // CHECK: scf.if
 // CHECK: ascendc.data_copy_l2
 // CHECK: ascendc.add_l2
+// CHECK-NEXT: ascendc.que_bind.free_tensor
+// CHECK-NEXT: ascendc.que_bind.free_tensor
 // CHECK: ascendc.data_copy_l2
 // CHECK-NOT: scf.for
 // CHECK-NOT: linalg.generic
