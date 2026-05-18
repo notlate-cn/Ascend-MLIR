@@ -13,5 +13,6 @@ add_mlir_library(CannKernelTranslation
   MLIRTargetAsc
   MLIRIR
   AFIRSymbolicShape
+  MLIRVectorPlan
   LLVMSupport
 )

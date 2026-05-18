@@ -7,6 +7,7 @@
 #include "Target/CannKernel/CannTranslation.h"
 #include "Target/CannKernel/SocSpec.h"
 #include "Target/CannKernel/UbCostExpr.h"
+#include "Conversion/VectorPlan/TilePlan.h"
 #include "llvm/ADT/SmallString.h"
 #include "llvm/ADT/StringMap.h"
 #include "llvm/ADT/StringSet.h"
@@ -2007,12 +2008,37 @@ static void emitTilingSpaceJson(StringRef outPath,
   auto isDimField = [](StringRef name) {
     return name.starts_with("dim_arg");
   };
-  // "dim_arg2_1" → drop "dim_" → "arg2_1" → rfind '_' → "arg2" + "_dim" + "1"
-  auto makeShapeKey = [](StringRef name) -> std::string {
-    StringRef rest = name.drop_front(4); // drop "dim_"
-    auto pos = rest.rfind('_');
-    if (pos == StringRef::npos) return rest.str(); // single-component: no dimension index
-    return rest.substr(0, pos).str() + "_dim" + rest.substr(pos + 1).str();
+  auto schema = mlir::vector_plan::lookupTilingInfoSchema(
+      funcOp->getParentOfType<ModuleOp>(), funcOp.getName());
+
+  // v2 path: translate `dim_arg<N>_<D>` via the schema's args[] table:
+  //   - Input-arg-sourced field → "arg<network_index>_dim<source_dim>".
+  //   - Output-arg-sourced field → the precomputed shape_expr[source_dim].
+  // Legacy v1 fallback (string surgery `dim_arg<N>_<D> → arg<N>_dim<D>`)
+  // is kept until S5.
+  auto makeShapeKey = [&](StringRef fieldName) -> std::string {
+    if (!schema) {
+      StringRef rest = fieldName.drop_front(4); // drop "dim_"
+      auto pos = rest.rfind('_');
+      if (pos == StringRef::npos) return rest.str();
+      return rest.substr(0, pos).str() + "_dim" + rest.substr(pos + 1).str();
+    }
+    for (auto &f : schema->fields) {
+      if (f.kind != mlir::vector_plan::SchemaFieldKind::ShapeDerived) continue;
+      if (f.name != fieldName) continue;
+      for (auto &a : schema->args) {
+        if (a.mlirIndex != f.sourceArg) continue;
+        if (a.role == mlir::vector_plan::SchemaArgRole::Input)
+          return "arg" + std::to_string(a.networkIndex) +
+                 "_dim" + std::to_string(f.sourceDim);
+        if (a.role == mlir::vector_plan::SchemaArgRole::Output &&
+            (size_t)f.sourceDim < a.shapeExpr.size())
+          return a.shapeExpr[f.sourceDim];
+        break;
+      }
+      return std::string{};
+    }
+    return std::string{};
   };
 
   // From vector_plan.tiling_infos (set by TilePlanGen): tunable field -> the
