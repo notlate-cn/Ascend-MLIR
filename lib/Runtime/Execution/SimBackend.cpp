@@ -139,6 +139,66 @@ loadExpectedOutputs(const ExecutionInvocation &invocation) {
   return expected;
 }
 
+std::optional<size_t>
+findExpectedOutputIndexForBinding(const ExecutionInvocation &invocation,
+                                  llvm::StringRef outputName,
+                                  size_t outputIndex,
+                                  size_t expectedCount) {
+  for (size_t index = 0; index < invocation.expectedOutputs.size(); ++index) {
+    if (invocation.expectedOutputs[index].name == outputName)
+      return index;
+  }
+  if (expectedCount == invocation.outputs.size() && outputIndex < expectedCount)
+    return outputIndex;
+  return std::nullopt;
+}
+
+llvm::Expected<std::vector<NDArray>>
+selectActualOutputsForExpected(const ExecutionInvocation &invocation,
+                               llvm::ArrayRef<NDArray> actualOutputs,
+                               llvm::ArrayRef<NDArray> expectedOutputs) {
+  std::vector<NDArray> selected;
+  selected.reserve(expectedOutputs.size());
+  for (size_t expectedIndex = 0; expectedIndex < expectedOutputs.size();
+       ++expectedIndex) {
+    const TensorBinding &expectedBinding =
+        invocation.expectedOutputs[expectedIndex];
+    std::optional<size_t> actualIndex;
+    for (size_t outputIndex = 0; outputIndex < invocation.outputs.size();
+         ++outputIndex) {
+      if (invocation.outputs[outputIndex].name == expectedBinding.name) {
+        actualIndex = outputIndex;
+        break;
+      }
+    }
+    if (!actualIndex) {
+      if (expectedOutputs.size() == actualOutputs.size() &&
+          expectedIndex < actualOutputs.size()) {
+        actualIndex = expectedIndex;
+      } else {
+        return llvm::createStringError(
+            llvm::inconvertibleErrorCode(),
+            "expected output binding has no matching output: %s",
+            expectedBinding.name.c_str());
+      }
+    }
+    if (*actualIndex >= actualOutputs.size()) {
+      return llvm::createStringError(
+          llvm::inconvertibleErrorCode(),
+          "expected output binding index is out of range: %s",
+          expectedBinding.name.c_str());
+    }
+
+    const NDArray &actual = actualOutputs[*actualIndex];
+    NDArray view;
+    view.shape = actual.shape;
+    view.dtype = actual.dtype;
+    view.setExternal(actual.data);
+    selected.push_back(std::move(view));
+  }
+  return selected;
+}
+
 llvm::StringRef kernelKindToString(KernelKind kind) {
   switch (kind) {
   case KernelKind::Vec:
@@ -266,32 +326,31 @@ llvm::Expected<RunArgs> buildRunArgs(const ExecutionInvocation &invocation) {
   auto expectedOutputsOr = loadExpectedOutputs(invocation);
   if (!expectedOutputsOr)
     return expectedOutputsOr.takeError();
-  if (!invocation.outputs.empty() && !expectedOutputsOr->empty() &&
-      invocation.outputs.size() != expectedOutputsOr->size()) {
-    return llvm::createStringError(llvm::inconvertibleErrorCode(),
-                                   "output binding count does not match expected output count");
-  }
 
-  if (!expectedOutputsOr->empty()) {
-    for (const NDArray &expected : *expectedOutputsOr) {
+  for (size_t outputIndex = 0; outputIndex < invocation.outputs.size();
+       ++outputIndex) {
+    const TensorBinding &binding = invocation.outputs[outputIndex];
+    if (auto expectedIndex = findExpectedOutputIndexForBinding(
+            invocation, binding.name, outputIndex, expectedOutputsOr->size())) {
+      const NDArray &expected = (*expectedOutputsOr)[*expectedIndex];
       NDArray output;
       output.shape = expected.shape;
       output.dtype = expected.dtype;
       output.allocate();
       args.outputs.push_back(std::move(output));
+      continue;
     }
-    return args;
-  }
 
-  for (const TensorBinding &binding : invocation.outputs) {
-    if (!binding.shape)
+    if (!binding.shape) {
       return llvm::createStringError(
           llvm::inconvertibleErrorCode(),
           "output binding is missing shape metadata: %s", binding.name.c_str());
-    if (!binding.dtype)
+    }
+    if (!binding.dtype) {
       return llvm::createStringError(
           llvm::inconvertibleErrorCode(),
           "output binding is missing dtype metadata: %s", binding.name.c_str());
+    }
 
     NDArray output;
     output.shape = *binding.shape;
@@ -439,10 +498,15 @@ runWithExecutor(const ExecutionRequest &request) {
                                    launchError->c_str());
 
   if (!expectedOutputsOr->empty()) {
-    auto validationOr =
-        compareRuntimeOutputs(args.outputs, *expectedOutputsOr,
-                              request.task.invocation.atol,
-                              request.task.invocation.rtol);
+    auto actualForExpectedOr = selectActualOutputsForExpected(
+        request.task.invocation, args.outputs, *expectedOutputsOr);
+    if (!actualForExpectedOr) {
+      return stageError("validate", actualForExpectedOr.takeError());
+    }
+    auto validationOr = compareRuntimeOutputs(*actualForExpectedOr,
+                                              *expectedOutputsOr,
+                                              request.task.invocation.atol,
+                                              request.task.invocation.rtol);
     if (!validationOr) {
       return stageError("validate", validationOr.takeError());
     }

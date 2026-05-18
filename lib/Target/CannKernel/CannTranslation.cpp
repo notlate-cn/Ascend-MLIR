@@ -32,8 +32,8 @@
 #include "llvm/Support/raw_ostream.h"
 
 #include <algorithm>
-#include <limits>
 #include <functional>
+#include <limits>
 #include <optional>
 #include <string>
 
@@ -102,6 +102,18 @@ static Value peelSourceValue(Value value) {
   return value;
 }
 
+static Value peelPointerOffsetSource(Value value) {
+  while (value) {
+    value = peelSourceValue(value);
+    if (auto offsetOp = value.getDefiningOp<emitasc::PtrOffsetOp>()) {
+      value = offsetOp.getBase();
+      continue;
+    }
+    return value;
+  }
+  return value;
+}
+
 static Value peelIndexCast(Value value) {
   if (!value)
     return value;
@@ -129,9 +141,73 @@ static std::optional<int64_t> getConstantIndexValue(Value value) {
   return std::nullopt;
 }
 
+static bool isAvailableAtInsertionPoint(Operation *candidate,
+                                        IRRewriter &rewriter) {
+  Block *insertBlock = rewriter.getInsertionBlock();
+  if (!insertBlock)
+    return false;
+
+  auto insertionPoint = rewriter.getInsertionPoint();
+  if (insertionPoint == insertBlock->end())
+    return candidate->getBlock() == insertBlock;
+
+  Operation *insertOp = &*insertionPoint;
+  if (candidate->getBlock() == insertBlock)
+    return candidate->isBeforeInBlock(insertOp);
+
+  for (Operation *parent = insertOp->getParentOp(); parent;
+       parent = parent->getParentOp())
+    if (parent->getBlock() == candidate->getBlock())
+      return candidate->isBeforeInBlock(parent);
+  return false;
+}
+
+static bool isSameBlockAvailableAtInsertionPoint(Operation *candidate,
+                                                 IRRewriter &rewriter) {
+  Block *insertBlock = rewriter.getInsertionBlock();
+  if (!insertBlock || candidate->getBlock() != insertBlock)
+    return false;
+  auto insertionPoint = rewriter.getInsertionPoint();
+  return insertionPoint == insertBlock->end() ||
+         candidate->isBeforeInBlock(&*insertionPoint);
+}
+
+static bool isValueAvailableAtInsertionPoint(Value value,
+                                             IRRewriter &rewriter) {
+  if (Operation *defOp = value.getDefiningOp())
+    return isAvailableAtInsertionPoint(defOp, rewriter);
+
+  auto blockArg = dyn_cast<BlockArgument>(value);
+  if (!blockArg)
+    return false;
+
+  Block *insertBlock = rewriter.getInsertionBlock();
+  if (!insertBlock)
+    return false;
+  if (blockArg.getOwner() == insertBlock)
+    return true;
+
+  auto insertionPoint = rewriter.getInsertionPoint();
+  if (insertionPoint == insertBlock->end())
+    return false;
+
+  for (Operation *parent = insertionPoint->getParentOp(); parent;
+       parent = parent->getParentOp())
+    if (parent->getBlock() == blockArg.getOwner())
+      return true;
+  return false;
+}
+
 static Value ensureIndexValue(Value value, IRRewriter &rewriter, Location loc) {
   if (value.getType().isIndex())
     return value;
+  for (Operation *user : value.getUsers()) {
+    auto castOp = dyn_cast<arith::IndexCastOp>(user);
+    if (!castOp || !castOp.getResult().getType().isIndex())
+      continue;
+    if (isSameBlockAvailableAtInsertionPoint(castOp, rewriter))
+      return castOp.getResult();
+  }
   return rewriter.create<arith::IndexCastOp>(loc, rewriter.getIndexType(),
                                              value);
 }
@@ -2343,6 +2419,28 @@ static Value findLocalTensorByteLength(Value tensor) {
 static void fixBrokenOpEmitters(Operation *moduleOp) {
   IRRewriter rewriter(moduleOp->getContext());
 
+  auto eraseDeadCastOps = [&]() {
+    bool changed = true;
+    while (changed) {
+      changed = false;
+      SmallVector<Operation *> deadCasts;
+      moduleOp->walk([&](memref::CastOp op) {
+        if (op->use_empty())
+          deadCasts.push_back(op);
+      });
+      moduleOp->walk([&](emitasc::ReinterpretCastOp op) {
+        if (op->use_empty())
+          deadCasts.push_back(op);
+      });
+      for (Operation *op : deadCasts) {
+        if (op && op->use_empty()) {
+          rewriter.eraseOp(op);
+          changed = true;
+        }
+      }
+    }
+  };
+
   // GlobalTensorSetGlobalBufferOp → verbatim with pointer arithmetic offset.
   //
   // PyAsc auto-generates: $tensor.SetGlobalBuffer($buffer_ptr, $offset)
@@ -2428,6 +2526,19 @@ static void fixBrokenOpEmitters(Operation *moduleOp) {
           {root, static_cast<int64_t>(dim), forOp.getUpperBound()});
     }
   });
+  moduleOp->walk([&](memref::LoadOp op) {
+    Value root = peelSourceValue(op.getMemref());
+    for (auto [dim, index] : llvm::enumerate(op.getIndices())) {
+      auto blockArg = dyn_cast<BlockArgument>(index);
+      if (!blockArg)
+        continue;
+      auto forOp = dyn_cast<scf::ForOp>(blockArg.getOwner()->getParentOp());
+      if (!forOp || forOp.getInductionVar() != index)
+        continue;
+      dimBounds.push_back(
+          {root, static_cast<int64_t>(dim), forOp.getUpperBound()});
+    }
+  });
 
   auto lookupIndexedStore = [&](Value memref,
                                 int64_t index) -> std::optional<Value> {
@@ -2441,7 +2552,8 @@ static void fixBrokenOpEmitters(Operation *moduleOp) {
   auto lookupDimBound = [&](Value memref, int64_t dim) -> std::optional<Value> {
     Value root = peelSourceValue(memref);
     for (const MemRefDimBound &bound : llvm::reverse(dimBounds))
-      if (bound.memref == root && bound.dim == dim)
+      if (bound.memref == root && bound.dim == dim &&
+          isValueAvailableAtInsertionPoint(bound.upperBound, rewriter))
         return bound.upperBound;
     return std::nullopt;
   };
@@ -2467,9 +2579,6 @@ static void fixBrokenOpEmitters(Operation *moduleOp) {
     int64_t staticExtent = sourceType.getShape()[dim];
     if (!ShapedType::isDynamic(staticExtent))
       return makeIndex(staticExtent);
-
-    if (std::optional<Value> bound = lookupDimBound(source, dim))
-      return ensureIndexValue(*bound, rewriter, loc);
 
     if (auto castOp = source.getDefiningOp<memref::CastOp>())
       return resolveDim(castOp.getSource(), dim, depth + 1);
@@ -2543,6 +2652,9 @@ static void fixBrokenOpEmitters(Operation *moduleOp) {
       return ensureIndexValue(sizes[dynamicIndex], rewriter, loc);
     }
 
+    if (std::optional<Value> bound = lookupDimBound(source, dim))
+      return ensureIndexValue(*bound, rewriter, loc);
+
     return failure();
   };
 
@@ -2555,6 +2667,8 @@ static void fixBrokenOpEmitters(Operation *moduleOp) {
     rewriter.setInsertionPoint(op);
     FailureOr<Value> resolved = resolveDim(op.getSource(), *dim, /*depth=*/0);
     if (failed(resolved))
+      continue;
+    if (*resolved == op.getResult())
       continue;
     rewriter.replaceOp(op, *resolved);
   }
@@ -2600,6 +2714,94 @@ static void fixBrokenOpEmitters(Operation *moduleOp) {
         /*staticOffset=*/IntegerAttr{}, /*dynamicOffset=*/*linearOffset);
     rewriter.replaceOp(op, offsetOp.getResult());
   });
+
+  auto isGmBackedMemref = [&](Value memref) {
+    Value root = peelPointerOffsetSource(memref);
+    return isa_and_nonnull<BlockArgument>(root);
+  };
+
+  auto buildLinearIndex = [&](Value memref, ValueRange indices,
+                              Location loc) -> FailureOr<Value> {
+    auto memrefType = dyn_cast<MemRefType>(memref.getType());
+    if (!memrefType || memrefType.getRank() == 0 ||
+        memrefType.getRank() != static_cast<int64_t>(indices.size()))
+      return failure();
+
+    auto makeIndex = [&](int64_t value) -> Value {
+      return rewriter.create<arith::ConstantIndexOp>(loc, value);
+    };
+    auto mul = [&](Value lhs, Value rhs) -> Value {
+      return rewriter.create<arith::MulIOp>(loc, lhs, rhs);
+    };
+    auto add = [&](Value lhs, Value rhs) -> Value {
+      return rewriter.create<arith::AddIOp>(loc, lhs, rhs);
+    };
+
+    Value linear = makeIndex(0);
+    for (int64_t dim = 0, rank = memrefType.getRank(); dim < rank; ++dim) {
+      if (dim != 0) {
+        FailureOr<Value> extent = resolveDim(memref, dim, /*depth=*/0);
+        if (failed(extent))
+          return failure();
+        linear = mul(linear, *extent);
+      }
+      linear = add(linear, ensureIndexValue(indices[dim], rewriter, loc));
+    }
+    return linear;
+  };
+
+  SmallVector<memref::LoadOp> gmLoads;
+  SmallVector<memref::StoreOp> gmStores;
+  moduleOp->walk([&](memref::LoadOp op) {
+    if (isGmBackedMemref(op.getMemref()))
+      gmLoads.push_back(op);
+  });
+  moduleOp->walk([&](memref::StoreOp op) {
+    if (isGmBackedMemref(op.getMemref()))
+      gmStores.push_back(op);
+  });
+
+  for (memref::LoadOp op : gmLoads) {
+    rewriter.setInsertionPoint(op);
+    FailureOr<Value> linearIndex =
+        buildLinearIndex(op.getMemref(), op.getIndices(), op.getLoc());
+    if (failed(linearIndex))
+      continue;
+    std::string elemTypeStr = getAscendCScalarTypeName(op.getType());
+    auto call = rewriter.create<emitasc::CallOpaqueOp>(
+        op.getLoc(), op.getType(),
+        rewriter.getStringAttr("afir_gm_load<" + elemTypeStr + ">"),
+        ValueRange({peelPointerOffsetSource(op.getMemref()), *linearIndex}));
+    rewriter.replaceOp(op, call.getResult());
+  }
+
+  for (memref::StoreOp op : gmStores) {
+    rewriter.setInsertionPoint(op);
+    FailureOr<Value> linearIndex =
+        buildLinearIndex(op.getMemref(), op.getIndices(), op.getLoc());
+    if (failed(linearIndex))
+      continue;
+    auto memrefType = cast<MemRefType>(op.getMemref().getType());
+    std::string elemTypeStr =
+        getAscendCScalarTypeName(memrefType.getElementType());
+    rewriter.create<emitasc::CallOpaqueOp>(
+        op.getLoc(), TypeRange{},
+        rewriter.getStringAttr("afir_gm_store<" + elemTypeStr + ">"),
+        ValueRange({peelPointerOffsetSource(op.getMemref()), *linearIndex,
+                    op.getValueToStore()}));
+    rewriter.eraseOp(op);
+  }
+
+  SmallVector<emitasc::ReinterpretCastOp> deadReinterpretCasts;
+  moduleOp->walk([&](emitasc::ReinterpretCastOp op) {
+    if (op->use_empty())
+      deadReinterpretCasts.push_back(op);
+  });
+  for (emitasc::ReinterpretCastOp op : deadReinterpretCasts) {
+    if (op && op->use_empty()) {
+      rewriter.eraseOp(op);
+    }
+  }
 
   auto lowerIntegerMinMax = [&](auto op, arith::CmpIPredicate predicate) {
     rewriter.setInsertionPoint(op);
@@ -3097,6 +3299,8 @@ static void fixBrokenOpEmitters(Operation *moduleOp) {
                     op.getLength()}));
     rewriter.eraseOp(op);
   });
+
+  eraseDeadCastOps();
 }
 
 static LogicalResult
@@ -3288,6 +3492,14 @@ LogicalResult mlir::translateToCannKernel(Operation *op, raw_ostream &os,
   os << "#include \"adv_api/broadcast/broadcast.h\"\n";
   os << "#include \"adv_api/reduce/reduce.h\"\n";
   os << "\n";
+  os << "template <typename T>\n";
+  os << "__aicore__ inline T afir_gm_load(GM_ADDR base, uint64_t offset) {\n";
+  os << "  return reinterpret_cast<__gm__ T *>(base)[offset];\n";
+  os << "}\n\n";
+  os << "template <typename T>\n";
+  os << "__aicore__ inline void afir_gm_store(GM_ADDR base, uint64_t offset, T value) {\n";
+  os << "  reinterpret_cast<__gm__ T *>(base)[offset] = value;\n";
+  os << "}\n\n";
 
   // First pass: emit TilingData struct declarations from aicore funcs.
   llvm::StringMap<std::string> emittedStructSignatures;
