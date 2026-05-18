@@ -280,8 +280,8 @@ def _resolve_shape_via_schema(space, network, kid, shape_key, runner_inputs):
       - numeric literal (e.g. "32") when the schema's shape_expr resolved
         to a static dim.  Returned as int(value) directly.
 
-    Returns int (resolved dim size) or None if no schema info is present
-    (caller falls back to the legacy resolver).
+    Returns int (resolved dim size) or None if no schema_args is present
+    in the space.json (caller raises — schema v2 is required).
     """
     import re
     sch = space.get("schema_args")
@@ -320,23 +320,18 @@ def _resolve_shape_via_schema(space, network, kid, shape_key, runner_inputs):
 
 
 def _shape_key_values_for_kernel(space, network, kid, runner_inputs):
-    import re
     out = {}
     for p in space.get("tiling_params", []):
         sk = p.get("shape_key")
         if not sk or sk in out:
             continue
         val = _resolve_shape_via_schema(space, network, kid, sk, runner_inputs)
-        if val is not None:
-            out[sk] = val
-            continue
-        # Legacy path: shape_key like "arg<i>_dim<j>" against kernel.args[i].
-        m = re.match(r"^arg(\d+)_dim(\d+)$", sk)
-        if not m:
-            continue
-        arg_idx, dim_idx = int(m.group(1)), int(m.group(2))
-        shape = _resolve_kernel_input_shape(network, kid, arg_idx, runner_inputs)
-        out[sk] = int(shape[dim_idx])
+        if val is None:
+            raise RuntimeError(
+                f"network_runner: kernel {kid!r} has no schema_args in its "
+                f"_space.json; cannot resolve shape_key {sk!r}.  Re-run "
+                "vector-plan-codegen to regenerate.")
+        out[sk] = val
     return out
 
 

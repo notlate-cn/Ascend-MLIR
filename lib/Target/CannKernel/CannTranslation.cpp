@@ -2014,14 +2014,12 @@ static void emitTilingSpaceJson(StringRef outPath,
   // v2 path: translate `dim_arg<N>_<D>` via the schema's args[] table:
   //   - Input-arg-sourced field → "arg<network_index>_dim<source_dim>".
   //   - Output-arg-sourced field → the precomputed shape_expr[source_dim].
-  // Legacy v1 fallback (string surgery `dim_arg<N>_<D> → arg<N>_dim<D>`)
-  // is kept until S5.
   auto makeShapeKey = [&](StringRef fieldName) -> std::string {
     if (!schema) {
-      StringRef rest = fieldName.drop_front(4); // drop "dim_"
-      auto pos = rest.rfind('_');
-      if (pos == StringRef::npos) return rest.str();
-      return rest.substr(0, pos).str() + "_dim" + rest.substr(pos + 1).str();
+      llvm::errs() << "CannTranslation: missing schema_version=2 for kernel "
+                   << funcOp.getName() << " — cannot derive shape_key for "
+                   << fieldName << "\n";
+      return std::string{};
     }
     for (auto &f : schema->fields) {
       if (f.kind != mlir::vector_plan::SchemaFieldKind::ShapeDerived) continue;
