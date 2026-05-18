@@ -14,7 +14,7 @@
 #   data0: (d0,d1)->(d1,0)  — 转置+广播（列向量广播至[N,M]）
 #   data1: (d0,d1)->(d0,d1) — identity
 #
-# 形状: M=640, N=500, TB_N=64, block_dim=8（N不整除TB_N，含tail block）
+# 形状: M=640, N=500, TB_N=16, block_dim=8（N不整除TB_M，含tail block）
 #
 # 各阶段说明：
 #   step0_input.mlir          原始 High-Level IR（linalg/tensor，完全符号化）
@@ -176,7 +176,7 @@ log "  ✓ Compile 成功，输出: $ARTIFACT_ROOT"
 # ── STAGE 10: Run and verify ────────────────────────────────
 echo ""
 echo "==================== [STAGE 10] Run + Verify ===================="
-log "  使用参数：TB_M=64, TB_N=64, M=640, N=500, block-dim=8"
+log "  使用参数：TB_M=64, TB_N=16, M=640, N=500, block-dim=8"
 VALIDATION_LOG="$BUILD_DIR/runtime_session.log"
 cat > "$RUN_MANIFEST" <<EOF
 {
@@ -195,7 +195,7 @@ cat > "$RUN_MANIFEST" <<EOF
   ],
   "tiling": {
     "schema": "${DIR}/tiling_space.json",
-    "params": "TB_M=64,TB_N=64,dim_arg0_0=640,dim_arg1_0=500,dim_arg0_1=1,dim_arg1_1=640"
+    "params": "TB_M=64,TB_N=16,dim_arg0_0=640,dim_arg1_0=500,dim_arg0_1=1,dim_arg1_1=640"
   },
   "block_dim": 8,
   "workspace_size": 16777216,

@@ -139,3 +139,22 @@ add_dependencies(RuntimeUnitTests MixDirectTilingArtifactsTest)
 add_test(NAME MixDirectTilingArtifactsTest
   COMMAND $<TARGET_FILE:MixDirectTilingArtifactsTest>
 )
+
+add_executable(NativeLaunchTraceTest
+  NativeLaunchTraceTest.cpp
+)
+
+target_include_directories(NativeLaunchTraceTest PRIVATE
+  ${CMAKE_SOURCE_DIR}/lib/Runtime/Execution
+)
+
+target_link_libraries(NativeLaunchTraceTest PRIVATE
+  RuntimeUnitTestSupport
+  AscendCRuntime
+)
+
+add_dependencies(RuntimeUnitTests NativeLaunchTraceTest)
+
+add_test(NAME NativeLaunchTraceTest
+  COMMAND $<TARGET_FILE:NativeLaunchTraceTest>
+)

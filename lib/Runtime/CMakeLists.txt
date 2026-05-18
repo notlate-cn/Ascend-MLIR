@@ -1,8 +1,13 @@
 # lib/Runtime/CMakeLists.txt
+option(ASCEND_RUNTIME_SESSION_RUN_ONLY
+  "Build runtime-session with only --run-manifest planning/execution support"
+  OFF)
+
 add_mlir_library(AscendCRuntime
   Artifact/ArtifactCompiler.cpp
   Artifact/VecCubeArtifactBackend.cpp
   Artifact/RunManifest.cpp
+  Artifact/RuntimeSessionArtifactCompile.cpp
   Artifact/RuntimeSessionRequestBuilder.cpp
   Execution/DefaultExecutionRunner.cpp
   Execution/DynamicLibraryArtifactEnv.cpp
@@ -12,6 +17,7 @@ add_mlir_library(AscendCRuntime
   Execution/RuntimeFrontendCore.cpp
   Execution/ExecutionSession.cpp
   Execution/GlobalScheduler.cpp
+  Execution/LaunchTrace.cpp
   Execution/NpuBackend.cpp
   Execution/NativeExecutionRunner.cpp
   Execution/ResourceScheduler.cpp
@@ -101,28 +107,36 @@ if(NOT ASCEND_CANN_ARCH STREQUAL "")
       $ENV{ASCEND_TOOLKIT_HOME}/${ASCEND_CANN_ARCH}/lib64/device/lib64)
 endif()
 
-foreach(_dir ${ASCEND_LINK_DIRS})
-  if(EXISTS ${_dir})
-    target_link_directories(AscendCRuntime PUBLIC ${_dir})
-  endif()
-endforeach()
+if(NOT ASCEND_RUNTIME_SESSION_RUN_ONLY)
+  foreach(_dir ${ASCEND_LINK_DIRS})
+    if(EXISTS ${_dir})
+      target_link_directories(AscendCRuntime PUBLIC ${_dir})
+    endif()
+  endforeach()
+endif()
 
-target_link_libraries(AscendCRuntime PUBLIC
-  tiling_api
-  register
-  platform
-  ascendalog
-  unified_dlog
-  runtime_camodel
-  npu_drv
-  stars
-  model_top
-  ascendcl
-  error_manager
-  profapi
-  ge_common_base
-  ascend_dump
-  mmpa
-  c_sec
-  ${CMAKE_DL_LIBS}
-)
+if(ASCEND_RUNTIME_SESSION_RUN_ONLY)
+  target_link_libraries(AscendCRuntime PUBLIC
+    ${CMAKE_DL_LIBS}
+  )
+else()
+  target_link_libraries(AscendCRuntime PUBLIC
+    tiling_api
+    register
+    platform
+    ascendalog
+    unified_dlog
+    runtime_camodel
+    npu_drv
+    stars
+    model_top
+    ascendcl
+    error_manager
+    profapi
+    ge_common_base
+    ascend_dump
+    mmpa
+    c_sec
+    ${CMAKE_DL_LIBS}
+  )
+endif()

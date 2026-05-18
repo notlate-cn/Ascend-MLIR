@@ -13,8 +13,14 @@
     {
       "name": "TB_N",
       "type": "int64",
-      "values": [15000],
-      "note": "Reduction kernel processes full row at once; TB_N=N kept for framework compat"
+      "values": [16],
+      "note": "Inner row tile. Keep >=16 half elements for aligned row/output DataCopy while reduction is chunked separately."
+    },
+    {
+      "name": "Tb_M",
+      "type": "int64",
+      "values": [512],
+      "note": "Reduction-axis chunk size. Avoids materializing TB_N rows times full N in UB."
     },
     {"name": "dim_arg0_0", "type": "int64", "fixed": true, "shape_key": "M"},
     {"name": "dim_arg1_1", "type": "int64", "fixed": true, "shape_key": "N"},
