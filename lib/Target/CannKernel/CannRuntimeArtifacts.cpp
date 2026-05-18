@@ -16,6 +16,7 @@
 #include "llvm/Support/JSON.h"
 #include "llvm/Support/raw_ostream.h"
 
+#include <cctype>
 #include <functional>
 
 using namespace mlir;
@@ -203,16 +204,25 @@ static FailureOr<WorkspaceInfo> getWorkspaceInfo(func::FuncOp funcOp) {
   WorkspaceInfo info;
   auto sizeAttr = funcOp->getAttrOfType<IntegerAttr>(
       ::mlir::afir::ascend::kCannWorkspaceSizeBytesAttr);
-  if (!sizeAttr)
-    return info;
+  if (sizeAttr) {
+    int64_t sizeBytes = sizeAttr.getInt();
+    if (sizeBytes < 0)
+      return funcOp.emitError()
+             << ::mlir::afir::ascend::kCannWorkspaceSizeBytesAttr
+             << " must be a non-negative integer attribute";
+    info.sizeBytes = sizeBytes;
+    info.sizeExpr = std::to_string(sizeBytes);
+  }
 
-  int64_t sizeBytes = sizeAttr.getInt();
-  if (sizeBytes < 0)
-    return funcOp.emitError()
-           << ::mlir::afir::ascend::kCannWorkspaceSizeBytesAttr
-           << " must be a non-negative integer attribute";
-  info.sizeBytes = sizeBytes;
-  info.sizeExpr = std::to_string(sizeBytes);
+  auto exprAttr = funcOp->getAttrOfType<StringAttr>(
+      ::mlir::afir::ascend::kCannWorkspaceSizeExprAttr);
+  if (exprAttr) {
+    if (exprAttr.getValue().trim().empty())
+      return funcOp.emitError()
+             << ::mlir::afir::ascend::kCannWorkspaceSizeExprAttr
+             << " must not be empty";
+    info.sizeExpr = exprAttr.getValue().str();
+  }
   return info;
 }
 
@@ -227,6 +237,56 @@ static llvm::json::Object buildWorkspaceDescriptor(func::FuncOp funcOp,
   workspace["sizeExpr"] = info.sizeExpr;
   workspace["sizeBytes"] = info.sizeBytes;
   return workspace;
+}
+
+static FailureOr<std::string>
+buildHostWorkspaceSizeExpr(func::FuncOp funcOp, StringRef expr,
+                           ArrayRef<TilingFieldInfo> fields,
+                           bool &usesShapeArgs) {
+  llvm::StringMap<unsigned> shapeFieldAbiPositions;
+  unsigned shapeIndex = 0;
+  for (const TilingFieldInfo &field : fields) {
+    if (!field.isShape)
+      continue;
+    shapeFieldAbiPositions[field.name] = shapeIndex++;
+  }
+
+  std::string hostExpr;
+  for (size_t i = 0, e = expr.size(); i < e;) {
+    unsigned char ch = static_cast<unsigned char>(expr[i]);
+    if (std::isalpha(ch) || expr[i] == '_') {
+      size_t start = i++;
+      while (i < e) {
+        unsigned char identCh = static_cast<unsigned char>(expr[i]);
+        if (!std::isalnum(identCh) && expr[i] != '_')
+          break;
+        ++i;
+      }
+      StringRef ident = expr.slice(start, i);
+      auto it = shapeFieldAbiPositions.find(ident);
+      if (it == shapeFieldAbiPositions.end())
+        return funcOp.emitError()
+               << ::mlir::afir::ascend::kCannWorkspaceSizeExprAttr
+               << " references unknown tiling shape field \"" << ident
+               << "\"";
+      usesShapeArgs = true;
+      hostExpr += "shape_args[" + std::to_string(it->second) + "]";
+      continue;
+    }
+
+    if (std::isdigit(ch) || std::isspace(ch) || expr[i] == '+' ||
+        expr[i] == '-' || expr[i] == '*' || expr[i] == '/' ||
+        expr[i] == '%' || expr[i] == '(' || expr[i] == ')') {
+      hostExpr.push_back(expr[i++]);
+      continue;
+    }
+
+    return funcOp.emitError()
+           << ::mlir::afir::ascend::kCannWorkspaceSizeExprAttr
+           << " contains unsupported character '" << expr[i] << "'";
+  }
+
+  return hostExpr;
 }
 
 static llvm::json::Object buildResourceDescriptor(func::FuncOp funcOp) {
@@ -984,6 +1044,10 @@ LogicalResult emitHostTilingCpp(ModuleOp module, StringRef outPath,
   FailureOr<WorkspaceInfo> workspaceInfo = getWorkspaceInfo(*funcOr);
   if (failed(workspaceInfo))
     return failure();
+  FailureOr<SmallVector<TilingFieldInfo>> fieldsOr =
+      collectTilingFields(*funcOr, *tilingTypeOr);
+  if (failed(fieldsOr))
+    return failure();
 
   auto types = tilingTypeOr->getTypesAttr().getValue();
   auto names = tilingTypeOr->getNamesAttr().getValue();
@@ -996,6 +1060,11 @@ LogicalResult emitHostTilingCpp(ModuleOp module, StringRef outPath,
     if (isShapeField(name))
       shapeFieldPositions.push_back(index);
   }
+  bool workspaceExprUsesShapeArgs = false;
+  FailureOr<std::string> hostWorkspaceExpr = buildHostWorkspaceSizeExpr(
+      *funcOr, workspaceInfo->sizeExpr, *fieldsOr, workspaceExprUsesShapeArgs);
+  if (failed(hostWorkspaceExpr))
+    return failure();
 
   return writeTextFile(module.getOperation(), outPath, [&](raw_ostream &os) {
     StringRef kernelName = funcOr->getName();
@@ -1046,9 +1115,12 @@ LogicalResult emitHostTilingCpp(ModuleOp module, StringRef outPath,
 
     os << "int64_t " << kernelName
        << "_GetWorkspaceSize(const int64_t* shape_args, int32_t shape_count) {\n";
-    os << "  (void)shape_args;\n";
-    os << "  return shape_count == " << shapeFieldPositions.size()
-       << " ? " << workspaceInfo->sizeBytes << " : -1;\n";
+    if (!workspaceExprUsesShapeArgs)
+      os << "  (void)shape_args;\n";
+    os << "  return shape_count == " << shapeFieldPositions.size();
+    if (workspaceExprUsesShapeArgs)
+      os << " && shape_args != nullptr";
+    os << " ? " << *hostWorkspaceExpr << " : -1;\n";
     os << "}\n\n";
     os << "} // extern \"C\"\n";
   });

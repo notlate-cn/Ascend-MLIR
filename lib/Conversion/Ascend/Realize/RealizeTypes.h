@@ -41,6 +41,8 @@ struct BufferizedValueFact {
   bool isVectorTemporary = false;
   bool staticByteSizeKnown = false;
   uint64_t byteSize = 0;
+  bool byteSizeExprKnown = false;
+  std::string byteSizeExpr;
 };
 
 struct BufferizedKernelIR {
@@ -86,6 +88,8 @@ struct StaticMemoryWorkspaceSlot {
   MemoryPlace place = MemoryPlace::VECCALC;
   bool staticByteSizeKnown = false;
   uint64_t byteSize = 0;
+  bool byteSizeExprKnown = false;
+  std::string byteSizeExpr;
 };
 
 struct StaticMemoryPlan {
@@ -101,6 +105,8 @@ struct StaticMemoryPlan {
   uint64_t localBufferByteCount = 0;
   uint64_t workspaceByteCount = 0;
   uint64_t peakUsageByteCount = 0;
+  bool workspaceSizeExprKnown = false;
+  std::string workspaceSizeExpr;
   bool capacityCheckDeferred = false;
   llvm::SmallVector<StaticMemoryLiveInterval, 8> liveIntervals;
   llvm::SmallVector<StaticMemoryWorkspaceSlot, 8> workspaceSlots;
