@@ -58,20 +58,85 @@ static std::string cppScalarName(Type t) {
 // true and sets `rowStride` (in elements) when the row stride is statically
 // known and a row gap is possible; a plain contiguous memref returns false (the
 // flat DataCopy fast path applies).  Only the 2-D case is handled here.
-static bool isMaybeRowStrided2D(MemRefType mrt, int64_t &rowStride) {
+// Returns true when the memref is a 2-D row-strided source/dest that needs
+// per-row copies (rows not packed in memory).  Two flavors hit this:
+//   - static stride that's known to differ from the column extent
+//     (e.g. an RBLOCK reduction-split x[A,R] tile, or a transposed operand);
+//   - dynamic stride (e.g. a FullLoad leading-reduce slice of x[D0,D1] where
+//     shape symbolization hasn't pinned D1 — the runtime stride may exceed
+//     cols).  Caller must extract the runtime stride via
+//     memref.extract_strided_metadata.
+//
+// A plain contiguous memref (stride[0] statically == cols) returns false so
+// the flat-DataCopy fast path applies.  Only the 2-D case is handled here.
+static bool isMaybeRowStrided2D(MemRefType mrt) {
   if (mrt.getRank() != 2)
     return false;
-  SmallVector<int64_t> strides;
-  int64_t offset;
-  if (failed(mrt.getStridesAndOffset(strides, offset)))
+  // Only fire when the type carries an explicit StridedLayoutAttr — that's
+  // the marker for "this came from a subview / cast and the rows may not be
+  // packed".  An identity-layout memref<?x?xf32> is contiguous at runtime
+  // (stride[0] = dim 1), even though its dim-0 stride looks dynamic.
+  auto sl = dyn_cast<StridedLayoutAttr>(mrt.getLayout());
+  if (!sl)
     return false;
-  if (strides[1] != 1 || ShapedType::isDynamic(strides[0]))
+  ArrayRef<int64_t> strides = sl.getStrides();
+  if (strides[1] != 1)
     return false;
+  if (ShapedType::isDynamic(strides[0]))
+    return true; // conservatively assume strided
   int64_t cols = mrt.getDimSize(1);
   if (!ShapedType::isDynamic(cols) && cols == strides[0])
     return false; // provably contiguous
-  rowStride = strides[0];
   return true;
+}
+
+// Get an index Value for the row stride of a (possibly dynamic-stride) 2-D
+// strided memref.  Static stride → ConstantIndexOp.  Dynamic stride: the
+// producer is a memref.subview with unit strides over a row-major source
+// memref; the row stride is the source's dim 1.  Pulling from the parent
+// directly (instead of memref.extract_strided_metadata on the subview)
+// keeps the subview from being kept alive past LinalgToAscendC — the
+// downstream afir-translate has no printer for memref.subview.
+static Value materializeRowStride(OpBuilder &b, Location loc, Value memref) {
+  auto mrt = cast<MemRefType>(memref.getType());
+  auto sl = cast<StridedLayoutAttr>(mrt.getLayout());
+  ArrayRef<int64_t> strides = sl.getStrides();
+  if (!ShapedType::isDynamic(strides[0]))
+    return b.create<arith::ConstantIndexOp>(loc, strides[0]);
+  auto subview = memref.getDefiningOp<memref::SubViewOp>();
+  assert(subview && "dynamic-stride 2-D strided memref must come from a "
+                    "memref.subview (materializeRowStride extension needed)");
+  for (OpFoldResult s : subview.getMixedStrides()) {
+    auto attr = dyn_cast<Attribute>(s);
+    assert(attr && cast<IntegerAttr>(attr).getInt() == 1 &&
+           "non-unit subview stride: materializeRowStride needs extension");
+    (void)attr;
+  }
+  Value src = subview.getSource();
+  auto srcMrt = cast<MemRefType>(src.getType());
+  assert(srcMrt.getRank() == 2 &&
+         "rank>2 source: materializeRowStride needs extension");
+  (void)srcMrt;
+  return b.create<memref::DimOp>(loc, src, 1);
+}
+
+// Get an index Value for `dim` of a possibly-dynamic 2-D strided subview.
+// Prefers the SubViewOp's mixed size at that index (an Attribute constant or
+// the SSA value passed to the subview) over `memref.dim` on the subview
+// result — the latter keeps the subview alive past LinalgToAscendC.
+static Value materializeSubviewDim(OpBuilder &b, Location loc, Value memref,
+                                    unsigned dim) {
+  auto mrt = cast<MemRefType>(memref.getType());
+  if (!ShapedType::isDynamic(mrt.getShape()[dim]))
+    return b.create<arith::ConstantIndexOp>(loc, mrt.getShape()[dim]);
+  if (auto subview = memref.getDefiningOp<memref::SubViewOp>()) {
+    OpFoldResult s = subview.getMixedSizes()[dim];
+    if (auto attr = dyn_cast<Attribute>(s))
+      return b.create<arith::ConstantIndexOp>(loc,
+                                              cast<IntegerAttr>(attr).getInt());
+    return cast<Value>(s);
+  }
+  return b.create<memref::DimOp>(loc, memref, dim);
 }
 
 // Emit a GM → VECIN copy of a 2-D row-strided source: one plain DataCopy per
@@ -82,19 +147,19 @@ static bool isMaybeRowStrided2D(MemRefType mrt, int64_t &rowStride) {
 // honour that for inner tile sizes feeding a transposed operand.
 static void emitStridedGmToVecinDataCopy(OpBuilder &b, Location loc, Type elemTy,
                                           Value dstLt, Value srcGt, Value rows,
-                                          Value cols, int64_t rowStride) {
+                                          Value cols, Value rowStride) {
   std::string ets = cppScalarName(elemTy);
   std::string tmpl =
       "{\n"
       "  for (uint32_t _afir_i = 0; _afir_i < (uint32_t)$2; _afir_i++) {\n"
       "    AscendC::GlobalTensor<" + ets + "> _afir_gt;\n"
-      "    _afir_gt.SetGlobalBuffer($1.GetPhyAddr(_afir_i * " +
-      std::to_string(rowStride) + "u));\n"
+      "    _afir_gt.SetGlobalBuffer($1.GetPhyAddr(_afir_i * (uint32_t)$4));\n"
       "    AscendC::DataCopy($0[_afir_i * (uint32_t)$3], _afir_gt, (uint32_t)$3);\n"
       "  }\n"
       "}";
   b.create<emitasc::VerbatimOp>(loc, b.getStringAttr(tmpl),
-                                ValueRange({dstLt, srcGt, rows, cols}));
+                                ValueRange({dstLt, srcGt, rows, cols,
+                                            rowStride}));
 }
 
 // Emit a VECOUT/VECCALC → GM store of a 2-D row-strided destination: one plain
@@ -103,19 +168,19 @@ static void emitStridedGmToVecinDataCopy(OpBuilder &b, Location loc, Type elemTy
 // cols*sizeof(elem) % 32 == 0 requirement.
 static void emitStridedVecToGmDataCopy(OpBuilder &b, Location loc, Type elemTy,
                                         Value dstGt, Value srcLt, Value rows,
-                                        Value cols, int64_t rowStride) {
+                                        Value cols, Value rowStride) {
   std::string ets = cppScalarName(elemTy);
   std::string tmpl =
       "{\n"
       "  for (uint32_t _afir_i = 0; _afir_i < (uint32_t)$2; _afir_i++) {\n"
       "    AscendC::GlobalTensor<" + ets + "> _afir_gt;\n"
-      "    _afir_gt.SetGlobalBuffer($0.GetPhyAddr(_afir_i * " +
-      std::to_string(rowStride) + "u));\n"
+      "    _afir_gt.SetGlobalBuffer($0.GetPhyAddr(_afir_i * (uint32_t)$4));\n"
       "    AscendC::DataCopy(_afir_gt, $1[_afir_i * (uint32_t)$3], (uint32_t)$3);\n"
       "  }\n"
       "}";
   b.create<emitasc::VerbatimOp>(loc, b.getStringAttr(tmpl),
-                                ValueRange({dstGt, srcLt, rows, cols}));
+                                ValueRange({dstGt, srcLt, rows, cols,
+                                            rowStride}));
 }
 
 // Helper: cast an index value to i16 (signless, compatible with ui16 field).
@@ -267,14 +332,16 @@ LogicalResult convertDataMove(func::FuncOp funcOp,
           loc, GlobalTensorType::get(srcMrt.getElementType()));
       builder.create<GlobalTensorSetGlobalBufferOp>(loc, srcGt, src,
                                                      /*size=*/Value{});
-      int64_t rowStride = 0;
-      if (isMaybeRowStrided2D(srcMrt, rowStride)) {
-        // Strided 2-D source (e.g. an absorbed-transpose operand tile): copy
-        // row by row, packing into the VECIN tile; a flat DataCopy of
-        // rows*cols elements would read contiguous GM (the wrong rows).
+      if (isMaybeRowStrided2D(srcMrt)) {
+        // Strided 2-D source — copy row by row, packing into the VECIN tile.
+        // Triggers for absorbed-transpose operand tiles, RBLOCK reduction-
+        // split chunks, and FullLoad leading-reduce slices.  A flat DataCopy
+        // of rows*cols elements would read contiguous GM (the wrong rows).
+        Value rowStride = materializeRowStride(builder, loc, src);
+        Value rows = materializeSubviewDim(builder, loc, src, 0);
+        Value cols = materializeSubviewDim(builder, loc, src, 1);
         emitStridedGmToVecinDataCopy(builder, loc, srcMrt.getElementType(),
-                                     dstLt, srcGt, emitDim(builder, loc, src, 0),
-                                     emitDim(builder, loc, src, 1), rowStride);
+                                     dstLt, srcGt, rows, cols, rowStride);
       } else {
         Value count = computeElementCount(builder, loc, dst);
         builder.create<DataCopyL2Op>(loc, dstLt, srcGt, count);
@@ -498,14 +565,14 @@ LogicalResult convertDataMove(func::FuncOp funcOp,
           loc, GlobalTensorType::get(dstMrt.getElementType()));
       builder.create<GlobalTensorSetGlobalBufferOp>(loc, dstGt, dst,
                                                      /*size=*/Value{});
-      int64_t rowStride = 0;
-      if (isMaybeRowStrided2D(dstMrt, rowStride)) {
-        // Strided 2-D destination (e.g. an out[d0_range, d1_range] tile of a
-        // wider output, as a preserve-template transpose's consumer writes):
-        // store row by row; a flat DataCopy would write contiguous GM.
+      if (isMaybeRowStrided2D(dstMrt)) {
+        // Strided 2-D destination — store row by row; a flat DataCopy would
+        // write contiguous GM (the wrong rows).
+        Value rowStride = materializeRowStride(builder, loc, dst);
+        Value rows = materializeSubviewDim(builder, loc, dst, 0);
+        Value cols = materializeSubviewDim(builder, loc, dst, 1);
         emitStridedVecToGmDataCopy(builder, loc, dstMrt.getElementType(), dstGt,
-                                   srcLt, emitDim(builder, loc, dst, 0),
-                                   emitDim(builder, loc, dst, 1), rowStride);
+                                   srcLt, rows, cols, rowStride);
       } else {
         Value count = computeElementCount(builder, loc, src);
         builder.create<DataCopyL2Op>(loc, dstGt, srcLt, count);
