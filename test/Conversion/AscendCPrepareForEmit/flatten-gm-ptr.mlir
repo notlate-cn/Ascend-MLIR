@@ -104,3 +104,18 @@ func.func @test_bare_blockarg(%arg0: memref<128xf32>) {
     : !ascendc.global_tensor<*xf32>, memref<128xf32>
   return
 }
+
+// cast → collapse_shape → blockarg: resolveGMChain walks both cast and
+// collapse_shape transparently down to the block arg.
+// CHECK-LABEL: func.func @test_cast_collapse
+// CHECK: emitasc.reinterpret_cast
+// CHECK-NOT: memref.collapse_shape
+func.func @test_cast_collapse(%arg0: memref<4x32xf32>) {
+  %gt = ascendc.global_tensor : !ascendc.global_tensor<*xf32>
+  %col = memref.collapse_shape %arg0 [[0, 1]]
+       : memref<4x32xf32> into memref<128xf32>
+  %cast = memref.cast %col : memref<128xf32> to memref<?xf32>
+  ascendc.global_tensor.set_global_buffer %gt, %cast
+    : !ascendc.global_tensor<*xf32>, memref<?xf32>
+  return
+}

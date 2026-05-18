@@ -154,19 +154,13 @@ static void flattenGMPtr(func::FuncOp func) {
   }
 
   // ── 7b. Flatten set_global_buffer ─────────────────────────────────────────
-  // Three buffer shapes are accepted (in priority order):
-  //   1. cast?-subview chain  → flatten through resolveGMChain (offset != 0)
-  //   2. cast?-collapse chain → reinterpret on underlying block arg, offset 0
-  //   3. bare block arg       → reinterpret directly, offset 0
-  // ascir-translate cannot print memref.collapse_shape; without (2) the bcast
-  // pattern (whole-operand load → collapse_shape feeds SGB directly) leaks a
-  // collapse_shape into emission and crashes the printer.
-
-  auto peelCasts = [](Value v) {
-    while (auto castOp = v.getDefiningOp<memref::CastOp>())
-      v = castOp.getSource();
-    return v;
-  };
+  // resolveGMChain handles all three accepted buffer shapes:
+  //   1. cast?-subview chain   → block arg + computed flat offset
+  //   2. cast?-collapse chain  → block arg + offset 0
+  //   3. bare block arg        → block arg + offset 0
+  // ascir-translate cannot print memref.collapse_shape; case 2 is required for
+  // the bcast pattern (whole-operand load → collapse_shape feeds SGB directly)
+  // so collapse_shape doesn't leak to emission.
 
   SmallVector<GlobalTensorSetGlobalBufferOp> setGlobalBufferOps;
   func.walk([&](GlobalTensorSetGlobalBufferOp op) {
@@ -174,50 +168,17 @@ static void flattenGMPtr(func::FuncOp func) {
   });
 
   for (GlobalTensorSetGlobalBufferOp sgbOp : setGlobalBufferOps) {
-    Value buf = peelCasts(sgbOp.getBuffer());
-
     OpBuilder b(sgbOp);
     Location loc = sgbOp.getLoc();
-
-    if (auto subview = buf.getDefiningOp<memref::SubViewOp>()) {
-      auto [ba, acc] = resolveGMChain(subview.getResult(), b, loc);
-      if (!ba)
-        continue;
-      Value flatOffsetI32 = b.create<arith::IndexCastOp>(loc, i32Ty, acc);
-      Type elemTy = cast<MemRefType>(ba.getType()).getElementType();
-      Value flatBase =
-          b.create<emitasc::ReinterpretCastOp>(loc, mkFlatTy(elemTy), ba);
-      b.create<GlobalTensorSetGlobalBufferOp>(loc, sgbOp.getTensor(), flatBase,
-                                              flatOffsetI32);
-      sgbOp.erase();
-      if (subview.use_empty())
-        subview.erase();
-      continue;
-    }
-
-    // No subview: walk through collapse_shape to the underlying block arg.
-    Value ptrSrc = buf;
-    while (true) {
-      if (auto colOp = ptrSrc.getDefiningOp<memref::CollapseShapeOp>()) {
-        ptrSrc = colOp.getSrc();
-        continue;
-      }
-      if (auto castOp = ptrSrc.getDefiningOp<memref::CastOp>()) {
-        ptrSrc = castOp.getSource();
-        continue;
-      }
-      break;
-    }
-    auto ba = dyn_cast<BlockArgument>(ptrSrc);
+    auto [ba, acc] = resolveGMChain(sgbOp.getBuffer(), b, loc);
     if (!ba)
       continue;
+    Value flatOffsetI32 = b.create<arith::IndexCastOp>(loc, i32Ty, acc);
     Type elemTy = cast<MemRefType>(ba.getType()).getElementType();
     Value flatBase =
         b.create<emitasc::ReinterpretCastOp>(loc, mkFlatTy(elemTy), ba);
-    Value zeroI32 = b.create<arith::ConstantOp>(
-        loc, i32Ty, b.getIntegerAttr(i32Ty, 0));
     b.create<GlobalTensorSetGlobalBufferOp>(loc, sgbOp.getTensor(), flatBase,
-                                            zeroI32);
+                                            flatOffsetI32);
     sgbOp.erase();
   }
 
