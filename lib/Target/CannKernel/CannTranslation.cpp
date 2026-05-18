@@ -2120,6 +2120,47 @@ static void emitTilingSpaceJson(StringRef outPath,
   root["block_dim_expr"] = blockDimExpr;
   root["axis_extent_expr"] = axisExtentExpr;
 
+  // v2 schema sidecar: emit the full per-MLIR-arg table for the runner.
+  // The runner uses this to resolve shape_keys against arbitrary kernel-arg
+  // topologies (kernels that consume non-leading network inputs, or whose
+  // output stride depends on output-arg dims).  network.json is written at
+  // GroupOutline time, before TilePlanGen has emitted the schema, so the
+  // canonical sidecar lives here (post-codegen).  Shape matches the block
+  // in NetworkJsonEmitter.cpp:206-242.
+  if (schema) {
+    llvm::json::Array schArgs;
+    for (auto &a : schema->args) {
+      llvm::json::Object e;
+      e["mlir_index"] = static_cast<int64_t>(a.mlirIndex);
+      switch (a.role) {
+        case mlir::vector_plan::SchemaArgRole::Input:
+          e["role"] = "input";
+          e["network_index"] = static_cast<int64_t>(a.networkIndex);
+          break;
+        case mlir::vector_plan::SchemaArgRole::Output: {
+          e["role"] = "output";
+          e["result_index"] = static_cast<int64_t>(a.resultIndex);
+          llvm::json::Array se;
+          for (auto &s : a.shapeExpr) se.push_back(s);
+          e["shape_expr"] = std::move(se);
+          break;
+        }
+        case mlir::vector_plan::SchemaArgRole::TileParam:
+          e["role"] = "tile_param";
+          e["name"] = a.tileParamName;
+          break;
+        case mlir::vector_plan::SchemaArgRole::Workspace:
+          e["role"] = "workspace";
+          break;
+        case mlir::vector_plan::SchemaArgRole::TilingDataStruct:
+          e["role"] = "tiling_data_struct";
+          break;
+      }
+      schArgs.push_back(std::move(e));
+    }
+    root["schema_args"] = std::move(schArgs);
+  }
+
   // UB-aware tiling cost: stamp the SoC's TBuf/TQue pool size, plus a
   // symbolic byte cost that the picker / autotuner can compare against it
   // to prune over-budget candidates.  See plan
