@@ -16,6 +16,7 @@ struct MixToolkitPaths {
   std::string packScript;
   std::string packTool;
   std::string tikcpp;
+  std::string ascIncludeDir;
   std::string includeDir;
 };
 
@@ -30,6 +31,7 @@ static MixToolkitPaths getToolkitPaths() {
       ascendHome + "/compiler/tikcpp/ascendc_kernel_cmake/legacy_modules/util/ascendc_pack_kernel.sh",
       ascendHome + "/bin/ascendc_pack_kernel",
       tikcpp,
+      findAscendAscDir(ascendHome) + "/include",
       findAscendIncludeDir(ascendHome),
   };
 }
@@ -40,10 +42,6 @@ static std::string getBishengPath() {
 
 static std::string getLldPath() {
   return getToolkitPaths().lld;
-}
-
-static std::string getTikcppRoot() {
-  return getToolkitPaths().tikcpp;
 }
 
 static std::string getPackScriptPath() {
@@ -137,13 +135,16 @@ static void appendDefines(std::vector<std::string> &args,
 }
 
 static void appendTikcppIncludes(std::vector<std::string> &args) {
-  std::string tikcpp = getTikcppRoot();
+  MixToolkitPaths paths = getToolkitPaths();
+  std::string tikcpp = paths.tikcpp;
   args.push_back("-I");
   args.push_back(tikcpp + "/tikcfw");
   args.push_back("-I");
   args.push_back(tikcpp + "/tikcfw/impl");
   args.push_back("-I");
   args.push_back(tikcpp + "/tikcfw/interface");
+  args.push_back("-I");
+  args.push_back(paths.ascIncludeDir);
 }
 
 } // namespace
