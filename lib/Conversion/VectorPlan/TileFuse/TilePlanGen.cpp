@@ -141,6 +141,31 @@ namespace {
 // TileFuseUtils; the Collapse pass computes it and stores it in
 // CollapsedGroupInfo::grouping, which buildPlan reads below.)
 
+// Returns the iter-axis index of the outermost reduction axis that is followed
+// by a parallel axis which is in turn followed by another reduction axis (the
+// "displaced R" of AF's `IsNeedMultiReduce`, reduce_api_call_base.cpp:118).
+// For iter [reduction, parallel, reduction] this returns 0 (r1); for any
+// strictly-trailing or strictly-leading R-block it returns -1.
+//
+// Collapse already merges contiguous same-role axes, so by the time we see
+// the AxisGrouping a displaced R cannot be made contiguous by re-ordering.
+// This is the trigger for the step=1 peel-outer-R emit path.
+int firstDisplacedReduceAxis(const AxisGrouping &g) {
+  int n = (int)g.axes.size();
+  for (int i = 0; i < n; ++i) {
+    if (g.axes[i].kind != AxisKind::R) continue;
+    // Is there a parallel-then-R suffix after i?
+    bool sawParallel = false;
+    for (int j = i + 1; j < n; ++j) {
+      if (g.axes[j].kind == AxisKind::Y || g.axes[j].kind == AxisKind::X)
+        sawParallel = true;
+      else if (g.axes[j].kind == AxisKind::R && sawParallel)
+        return i;
+    }
+  }
+  return -1;
+}
+
 // ≈ AutoFuse's `tensor.attr.vectorized_axis` (the inner axes a vector op
 // processes whole, that must not be looped/ub-tiled).  For a reduce member,
 // that region is { its reduction iteration dims } ∪ { iteration dims that, in
@@ -326,6 +351,28 @@ enumerateTilingCases(const AxisGrouping &g, const CollapsedGroupInfo &info,
     }
   }
 
+  // Peel-outer-R variant (≈ AF IsNeedMultiReduce): when the group has a
+  // displaced reduction axis (R-then-P-then-R in iter order), no single
+  // reduce_sum_2d_l2 over a (parallel ++ reduction) flat buffer is correct —
+  // FullLoad sims wrong because ComputeConversion's layout heuristic mis-picks
+  // RA when the buffer is actually AR.  Emit an explicit "peel the outermost
+  // displaced R as a step=1 outer scf.for" draft instead; the GroupEmitter
+  // rank-reduces that axis out of the inner generic so what reaches
+  // ComputeConversion is the well-tested single-P/single-R shape.
+  if (!g.yAxes.empty() && !bp.degradeToRowLoop) {
+    int peeled = firstDisplacedReduceAxis(g);
+    if (peeled >= 0) {
+      for (int y : ubYs) {
+        TilePlanDraft pd;
+        pd.ubTilingAxisY = y;
+        pd.ubTilingAxisX = ubX;
+        pd.ubTilingAxisR = -1;
+        pd.peelOuterR    = peeled;
+        drafts.push_back(pd);
+      }
+    }
+  }
+
   // PruneTilingCase: in the single-tile-axis scenario (only ubY is a tile axis)
   // a draft whose ubY axis has static extent 1 is pointless — drop it if there
   // is another draft to fall back to.
@@ -358,6 +405,21 @@ double costEstimate(const AxisGrouping &g, const CollapsedGroupInfo &info,
                     const TilePlanDraft &draft, unsigned elemBytes,
                     SocConstants soc,
                     bool relaxNonBlockUbY = false) {
+  // When the group has a displaced reduction axis (R-then-P-then-R), the
+  // peel-outer-R draft is the only correct codegen path — every other variant
+  // hands ComputeConversion a flat (parallel ++ reduction) buffer whose layout
+  // heuristic mis-picks RA when AR is correct.  Gate it here so a vanilla
+  // FullLoad / Common-no-split / RBLOCK-split never wins on these shapes.
+  bool hasDisplaced = firstDisplacedReduceAxis(g) >= 0;
+  if (hasDisplaced && draft.peelOuterR < 0)
+    return kInfeasible;
+  if (draft.peelOuterR >= 0) {
+    if (!hasDisplaced)
+      return kInfeasible; // peel only meaningful for displaced R
+    // Cheap: just a §3.5-style fixed-cost score so the enumeration order
+    // (block-axis ubY first) determines tiebreaks.
+    return 0.0;
+  }
   // RCore (R axis as block axis, two-stage partial→combine codegen).  P3b-2a:
   // open the gate for true full-reduce (no parallel axes to dispatch over —
   // RCore is the only path to block_dim>1) and keep it ∞ everywhere else
@@ -540,6 +602,7 @@ static TilePlan buildPlan(func::FuncOp func, const CollapsedGroupInfo &info,
     plan.reduceTemplate = draft.isFullLoad
                               ? TilePlan::ReduceTemplate::FullLoad
                               : TilePlan::ReduceTemplate::Common;
+  plan.peelOuterR = draft.peelOuterR;
 
   DenseSet<int> vecDims = computeVectorizedDims(info, &plan);
   BlockPick     bp      = pickBlockAxis(g, vecDims);

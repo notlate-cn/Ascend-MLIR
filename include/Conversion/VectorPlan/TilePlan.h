@@ -35,6 +35,14 @@ struct TilePlanDraft {
   // reduce isn't implemented yet (GroupEmitter / ComputeConversion would
   // need a new template; deferred).
   bool isFullLoad   = false;
+  // Non-contiguous multi-reduce ("displaced R"): out[a]=sum_{r1,r2} x[r1,a,r2]
+  // — iter [reduction, parallel, reduction] where Collapse cannot merge the two
+  // R axes (a parallel axis separates them).  When >= 0, the named axis is the
+  // outermost displaced R; the GroupEmitter peels it into a step=1 outer scf.for
+  // and rank-reduces it out of the inner linalg.generic so the inner op shape
+  // matches the well-tested single-P/single-R reduce path.  Mirrors AutoFuse's
+  // `IsNeedMultiReduce` outer-loop emission (reduce_api_call.cpp:96).
+  int  peelOuterR   = -1;
 };
 
 // A schedulability/legality constraint over the tunable params (≈ ATT's
@@ -85,6 +93,8 @@ struct TilePlan {
   int                       ubTilingAxisY = -1;
   int                       ubTilingAxisX = -1;
   int                       ubTilingAxisR = -1;
+  // Mirrors TilePlanDraft::peelOuterR — see TilePlanDraft for semantics.
+  int                       peelOuterR    = -1;
   // Per-operand vectorized iteration dims (the dims that stay whole inside the
   // tiled linalg op, ≈ tensor.attr.vectorized_axis).  Filled by P3.
   llvm::DenseMap<Value, llvm::SmallVector<int>> vectorizedDims;
