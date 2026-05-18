@@ -95,6 +95,17 @@ packTilingDataFromSchema(func::FuncOp func,
   std::optional<mlir::afir::symshape::DimSymbolTable> symTable;
   if (dimSymsAttr)
     symTable = mlir::afir::symshape::DimSymbolTable::fromAttr(dimSymsAttr);
+  auto parseArgDimExpr =
+      [](StringRef s) -> std::optional<std::pair<int32_t, int32_t>> {
+    if (!s.consume_front("arg")) return std::nullopt;
+    auto sep = s.find("_dim");
+    if (sep == StringRef::npos) return std::nullopt;
+    int32_t a, d;
+    if (s.substr(0, sep).getAsInteger(10, a)) return std::nullopt;
+    if (s.substr(sep + 4).getAsInteger(10, d)) return std::nullopt;
+    return std::make_pair(a, d);
+  };
+
   auto canonicalize = [&](unsigned argN,
                           int64_t dimIdx) -> std::pair<unsigned, int64_t> {
     if (symTable && dimIdx >= 0) {
@@ -111,6 +122,24 @@ packTilingDataFromSchema(func::FuncOp func,
           }
         }
       }
+    }
+    // Schema shape_expr path: for Output args, the precomputed shape_expr
+    // tells us which (input arg, dim) this output dim depends on.  Covers
+    // cases where afir.symbolic_shape didn't survive to the output arg
+    // (output memref arg is created post-bufferize, after
+    // afir-symbolize-shapes ran).
+    for (auto &a : schema.args) {
+      if (a.role != mlir::vector_plan::SchemaArgRole::Output) continue;
+      if ((unsigned)a.mlirIndex != argN) continue;
+      if (dimIdx < 0 || (size_t)dimIdx >= a.shapeExpr.size()) break;
+      auto parsed = parseArgDimExpr(a.shapeExpr[dimIdx]);
+      if (!parsed) break;
+      for (auto &ia : schema.args) {
+        if (ia.role != mlir::vector_plan::SchemaArgRole::Input) continue;
+        if (ia.callArgIndex != parsed->first) continue;
+        return {(unsigned)ia.mlirIndex, (int64_t)parsed->second};
+      }
+      break;
     }
     return {argN, dimIdx};
   };
