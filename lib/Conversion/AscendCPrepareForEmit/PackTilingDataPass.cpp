@@ -74,8 +74,12 @@ static LogicalResult packTilingData(func::FuncOp func) {
     for (Attribute fa : fieldsAttr) {
       auto field = dyn_cast<DictionaryAttr>(fa);
       if (!field) continue;
-      unsigned argIdx = (unsigned)cast<IntegerAttr>(field.get("arg_index"))
-                            .getValue().getSExtValue();
+      // Schema v2: shape_derived fields don't have arg_index/name in the
+      // tunable sense -- skip them (PackTilingData only materializes the
+      // tunable slice).  S2 will switch this pass to consume the schema.
+      auto argIdxAttr = dyn_cast_or_null<IntegerAttr>(field.get("arg_index"));
+      if (!argIdxAttr) continue;
+      unsigned argIdx = (unsigned)argIdxAttr.getValue().getSExtValue();
       if (argIdx >= entry.getNumArguments())
         return func.emitError("PackTilingData: arg_index ")
                << argIdx << " out of range";

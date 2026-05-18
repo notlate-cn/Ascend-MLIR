@@ -7,6 +7,8 @@
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
+#include "mlir/Dialect/MemRef/IR/MemRef.h"
+#include "mlir/Dialect/Tensor/IR/Tensor.h"
 #include "mlir/IR/AffineExpr.h"
 #include "mlir/IR/AffineMap.h"
 #include "mlir/IR/BuiltinAttributes.h"
@@ -985,48 +987,6 @@ void emitTilingInfos(func::FuncOp func, const TilePlan &plan) {
   auto moduleOp = func->getParentOfType<ModuleOp>();
   if (!moduleOp) return;
 
-  Type i32Ty = IntegerType::get(ctx, 32);
-  Type i64Ty = IntegerType::get(ctx, 64);
-
-  SmallVector<Attribute> fields;
-  int32_t abiIndex = 0;
-
-  for (auto &group : plan.tileable) {
-    for (const auto &tp : group) {
-      auto ba = dyn_cast<BlockArgument>(tp.ssa);
-      if (!ba) continue;
-
-      int64_t defaultVal = 0;
-      if (auto attr = func.getArgAttrOfType<IntegerAttr>(
-              ba.getArgNumber(), "vector_plan.default_tile_size"))
-        defaultVal = attr.getInt();
-
-      // Static extent of the axis this param tiles -- -1 when dynamic.  Lets
-      // afir-translate / the autotuner cap the search range at the axis size.
-      int64_t axisSize = -1;
-      if (plan.group && tp.axisIdx >= 0 &&
-          tp.axisIdx < (int)plan.group->collapsedAxes.size()) {
-        int64_t s = plan.group->collapsedAxes[tp.axisIdx].staticSize;
-        if (s != ShapedType::kDynamic)
-          axisSize = s;
-      }
-
-      assert(ba.getArgNumber() <= (unsigned)INT32_MAX && "arg_index overflow");
-      NamedAttrList fieldAttrs;
-      fieldAttrs.append("abi_index",
-                        IntegerAttr::get(i32Ty, abiIndex));
-      fieldAttrs.append("arg_index",
-                        IntegerAttr::get(i32Ty, (int32_t)ba.getArgNumber()));
-      fieldAttrs.append("axis_size", IntegerAttr::get(i64Ty, axisSize));
-      fieldAttrs.append("default_value",
-                        IntegerAttr::get(i64Ty, defaultVal));
-      fieldAttrs.append("kind", StringAttr::get(ctx, "tunable"));
-      fieldAttrs.append("name", StringAttr::get(ctx, tp.name));
-      fields.push_back(fieldAttrs.getDictionary(ctx));
-      ++abiIndex;
-    }
-  }
-
   // block_dim_expr: a SymExpr string `ceil(<block axis extent>/XBLOCK)` with the
   // block axis extent rendered in `argN_dimD` shape-key terms (the autotuner's
   // var names).  Built from afir.axis_extents / afir.dim_symbols (set by
@@ -1117,16 +1077,203 @@ void emitTilingInfos(func::FuncOp func, const TilePlan &plan) {
   if (!rtName.empty())
     func->setAttr("afir.reduce_template", StringAttr::get(ctx, rtName));
 
-  NamedAttrList entryAttrs;
-  entryAttrs.append("fields", ArrayAttr::get(ctx, fields));
-  entryAttrs.append("kernel_id", StringAttr::get(ctx, func.getName()));
-  if (!blockDimExpr.empty())
-    entryAttrs.append("block_dim_expr", StringAttr::get(ctx, blockDimExpr));
+  // ─── Build schema_version=2 TilingInfoSchema ────────────────────────────
+  // Authored here (pre-bufferize) so that arg_index references for tunable
+  // tile-params land on the index-typed BlockArguments TilePlanGen just
+  // injected.  Inputs are tensor-typed at this stage; outputs are not yet
+  // appended as args (one-shot-bufferize will add them post-pipeline).  We
+  // synthesize Output SchemaArg entries from the func return types using
+  // the anticipated post-bufferize positions (numArgs + resultIdx).
+  vector_plan::TilingInfoSchema schema;
+  schema.kernelId     = func.getName().str();
+  schema.blockDimExpr = blockDimExpr;
+  if (auto a = func->getAttrOfType<StringAttr>("afir.axis_extent_expr"))
+    schema.axisExtentExpr = a.getValue().str();
 
-  // Plan §6 / P6a: emit TileConstraint list as a "constraints" array of
-  // {kind, lhs, rhs} dicts.  Consumers (autotuner / CannTranslation) eval
-  // lhs/rhs under candidate tile values using the same +-*/ grammar as
-  // block_dim_expr.
+  // Tunable fields: re-walk plan.tileable in the same order so the ordering
+  // matches the existing TilingData struct layout.
+  for (auto &group : plan.tileable) {
+    for (const auto &tp : group) {
+      auto ba = dyn_cast<BlockArgument>(tp.ssa);
+      if (!ba) continue;
+      int64_t defaultVal = 0;
+      if (auto attr = func.getArgAttrOfType<IntegerAttr>(
+              ba.getArgNumber(), "vector_plan.default_tile_size"))
+        defaultVal = attr.getInt();
+      int64_t axisSize = -1;
+      if (plan.group && tp.axisIdx >= 0 &&
+          tp.axisIdx < (int)plan.group->collapsedAxes.size()) {
+        int64_t s = plan.group->collapsedAxes[tp.axisIdx].staticSize;
+        if (s != ShapedType::kDynamic) axisSize = s;
+      }
+      assert(ba.getArgNumber() <= (unsigned)INT32_MAX && "arg_index overflow");
+      vector_plan::SchemaField f;
+      f.name         = tp.name;
+      f.kind         = vector_plan::SchemaFieldKind::Tunable;
+      f.axisSize     = axisSize;
+      f.defaultValue = defaultVal;
+      f.argIndex     = (int32_t)ba.getArgNumber();
+      schema.fields.push_back(std::move(f));
+    }
+  }
+
+  // Build args[] from the kernel func signature.  At this point the func has
+  // tensor inputs + index tile-params (outputs are still tensor.empty results
+  // not yet promoted to args).  We accept both tensor and memref typed args
+  // so this loop continues to do the right thing if emitTilingInfos is ever
+  // re-invoked post-bufferize.
+  Block &entry = func.getBody().front();
+  unsigned numNetworkInputs = 0;
+  for (BlockArgument ba : entry.getArguments()) {
+    vector_plan::SchemaArg a;
+    a.mlirIndex = (int32_t)ba.getArgNumber();
+    Type ty = ba.getType();
+    if (auto mt = dyn_cast<MemRefType>(ty)) {
+      if (mt.getElementType().isInteger(8)) {
+        a.role = vector_plan::SchemaArgRole::Workspace;
+      } else if (mt.getLayout().isIdentity()) {
+        a.role = vector_plan::SchemaArgRole::Input;
+        a.networkIndex = (int32_t)numNetworkInputs++;
+      } else {
+        // TODO multi-result: resultIndex hard-coded to 0; revisit when
+        // kernels with >1 DPS output exist.
+        a.role = vector_plan::SchemaArgRole::Output;
+        a.resultIndex = 0;
+      }
+    } else if (isa<RankedTensorType>(ty)) {
+      // Pre-bufferize: every tensor arg is an input (DPS init tensors are
+      // tensor.empty results, not func args).
+      a.role = vector_plan::SchemaArgRole::Input;
+      a.networkIndex = (int32_t)numNetworkInputs++;
+    } else if (isa<IndexType>(ty)) {
+      a.role = vector_plan::SchemaArgRole::TileParam;
+      for (auto &f : schema.fields)
+        if (f.kind == vector_plan::SchemaFieldKind::Tunable &&
+            f.argIndex == a.mlirIndex)
+          a.tileParamName = f.name;
+    } else {
+      continue; // unknown arg type — skip
+    }
+    schema.args.push_back(std::move(a));
+  }
+
+  // Synthesize Output SchemaArg entries from func return values.  Pre-
+  // bufferize the kernel returns tensors; one-shot-bufferize will later
+  // append a corresponding output memref arg per result at position
+  // numArgs + i.  We pre-assign that anticipated mlirIndex so post-
+  // bufferize consumers can index into the (now-larger) arg list.
+  // TODO multi-result: works correctly today (one Output per return).
+  if (!entry.empty()) {
+    if (auto retOp = dyn_cast<func::ReturnOp>(entry.getTerminator())) {
+      unsigned baseIdx = entry.getNumArguments();
+      for (auto [i, v] : llvm::enumerate(retOp.getOperands())) {
+        // Skip if we already classified a real Output arg above
+        // (post-bufferize path).
+        bool alreadyHaveOutput = llvm::any_of(schema.args, [&](auto &x) {
+          return x.role == vector_plan::SchemaArgRole::Output;
+        });
+        if (alreadyHaveOutput) break;
+        if (!isa<RankedTensorType, MemRefType>(v.getType())) continue;
+        vector_plan::SchemaArg a;
+        a.mlirIndex   = (int32_t)(baseIdx + i);
+        a.role        = vector_plan::SchemaArgRole::Output;
+        a.resultIndex = (int32_t)i;
+        schema.args.push_back(std::move(a));
+      }
+    }
+  }
+
+  // Compute output shape_expr using afir.dim_symbols + afir.symbolic_shape.
+  // For synthetic outputs (no arg attr available), fall back to looking at
+  // the corresponding func return type, then to literal static dims.
+  auto dimSymsAttr2 = func->getAttrOfType<ArrayAttr>("afir.dim_symbols");
+  std::optional<symshape::DimSymbolTable> symTable2;
+  if (dimSymsAttr2)
+    symTable2 = symshape::DimSymbolTable::fromAttr(dimSymsAttr2);
+
+  auto tryEmitShapeExpr = [&](vector_plan::SchemaArg &a, ShapedType st,
+                              StringAttr symAttr) {
+    auto symList = symAttr ? symshape::parseSymExprList(symAttr.getValue())
+                           : std::nullopt;
+    for (int64_t d = 0, e = st.getRank(); d < e; ++d) {
+      std::string expr;
+      if (symList && (size_t)d < symList->size() && symTable2) {
+        const auto &se = (*symList)[d];
+        if (se.getKind() == symshape::SymExpr::Kind::Sym) {
+          auto src = symTable2->sourceOf(se.getSym());
+          for (auto &ia : schema.args)
+            if (ia.role == vector_plan::SchemaArgRole::Input &&
+                (unsigned)ia.mlirIndex == src.first) {
+              expr = "arg" + std::to_string(ia.networkIndex) +
+                     "_dim" + std::to_string(src.second);
+              break;
+            }
+        }
+      }
+      if (expr.empty() && d < (int64_t)st.getShape().size() &&
+          !ShapedType::isDynamic(st.getShape()[d]))
+        expr = std::to_string(st.getShape()[d]);
+      a.shapeExpr.push_back(expr);
+    }
+  };
+
+  for (auto &a : schema.args) {
+    if (a.role != vector_plan::SchemaArgRole::Output) continue;
+    ShapedType st;
+    StringAttr symAttr;
+    if ((unsigned)a.mlirIndex < entry.getNumArguments()) {
+      // Real arg (post-bufferize path).
+      st = cast<ShapedType>(entry.getArgument(a.mlirIndex).getType());
+      symAttr = func.getArgAttrOfType<StringAttr>(
+          a.mlirIndex, "afir.symbolic_shape");
+    } else if (auto retOp =
+                   dyn_cast<func::ReturnOp>(entry.getTerminator())) {
+      // Synthetic output: use the corresponding return value type.
+      unsigned ri = (unsigned)a.resultIndex;
+      if (ri < retOp.getNumOperands())
+        st = dyn_cast<ShapedType>(retOp.getOperand(ri).getType());
+    }
+    if (!st) continue;
+    tryEmitShapeExpr(a, st, symAttr);
+  }
+
+  // Walk dim ops (both tensor.dim and memref.dim) to add shape-derived
+  // fields the kernel actually uses.  Dedup via (argN, dimIdx).
+  llvm::DenseSet<std::pair<int32_t, int32_t>> seenDims;
+  auto recordDim = [&](BlockArgument ba, int32_t dimI) {
+    if (!ba || ba.getOwner() != &entry) return;
+    int32_t argN = (int32_t)ba.getArgNumber();
+    // Skip if already a tunable on the same MLIR arg (won't normally
+    // collide -- tunables are index-typed, dim sources are shaped -- but
+    // dedup is cheap insurance).
+    for (auto &f : schema.fields)
+      if (f.kind == vector_plan::SchemaFieldKind::Tunable &&
+          f.argIndex == argN)
+        return;
+    if (!seenDims.insert({argN, dimI}).second) return;
+    vector_plan::SchemaField f;
+    f.name      = "dim_arg" + std::to_string(argN) + "_" + std::to_string(dimI);
+    f.kind      = vector_plan::SchemaFieldKind::ShapeDerived;
+    f.sourceArg = argN;
+    f.sourceDim = dimI;
+    schema.fields.push_back(std::move(f));
+  };
+  func.walk([&](Operation *op) {
+    if (auto dimOp = dyn_cast<memref::DimOp>(op)) {
+      auto ba = dyn_cast<BlockArgument>(dimOp.getSource());
+      if (auto cst = dimOp.getIndex().getDefiningOp<arith::ConstantOp>())
+        if (auto intAttr = dyn_cast<IntegerAttr>(cst.getValue()))
+          recordDim(ba, (int32_t)intAttr.getValue().getSExtValue());
+    } else if (auto dimOp = dyn_cast<tensor::DimOp>(op)) {
+      auto ba = dyn_cast<BlockArgument>(dimOp.getSource());
+      if (auto cst = dimOp.getIndex().getDefiningOp<arith::ConstantOp>())
+        if (auto intAttr = dyn_cast<IntegerAttr>(cst.getValue()))
+          recordDim(ba, (int32_t)intAttr.getValue().getSExtValue());
+    }
+  });
+
+  // Constraints: preserve existing {kind, lhs, rhs} serialization.
+  ArrayAttr constraintsAttr;
   if (!plan.constraints.empty()) {
     SmallVector<Attribute> cs;
     for (auto &c : plan.constraints) {
@@ -1138,14 +1285,16 @@ void emitTilingInfos(func::FuncOp func, const TilePlan &plan) {
       ca.append("rhs", StringAttr::get(ctx, c.rhs));
       cs.push_back(ca.getDictionary(ctx));
     }
-    entryAttrs.append("constraints", ArrayAttr::get(ctx, cs));
+    constraintsAttr = ArrayAttr::get(ctx, cs);
   }
 
+  DictionaryAttr entryDict =
+      vector_plan::serializeTilingInfoSchema(ctx, schema, constraintsAttr);
   StringRef attrName = "vector_plan.tiling_infos";
   SmallVector<Attribute> infos;
   if (auto existing = moduleOp->getAttrOfType<ArrayAttr>(attrName))
     llvm::append_range(infos, existing.getValue());
-  infos.push_back(entryAttrs.getDictionary(ctx));
+  infos.push_back(entryDict);
   moduleOp->setAttr(attrName, ArrayAttr::get(ctx, infos));
 }
 

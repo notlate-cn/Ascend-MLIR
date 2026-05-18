@@ -239,8 +239,10 @@ static LogicalResult prepareFunc(func::FuncOp func) {
         for (Attribute fa : fieldsAttr) {
           auto field = dyn_cast<DictionaryAttr>(fa);
           if (!field) continue;
-          auto argIdxAttr = cast<IntegerAttr>(field.get("arg_index"));
-          auto nameAttr   = cast<StringAttr>(field.get("name"));
+          // Schema v2: shape_derived fields lack arg_index; skip them here.
+          auto argIdxAttr = dyn_cast_or_null<IntegerAttr>(field.get("arg_index"));
+          auto nameAttr   = dyn_cast_or_null<StringAttr>(field.get("name"));
+          if (!argIdxAttr || !nameAttr) continue;
           unsigned argIdx = (unsigned)argIdxAttr.getValue().getSExtValue();
           if (argIdx >= entry.getNumArguments()) {
             func.emitError("vector_plan.tiling_infos arg_index ")
