@@ -9,6 +9,7 @@
 #include "Conversion/Ascend/Common/Attributes.h"
 #include "ascir/Dialect/Asc/Utils/Attributes.h"
 #include "llvm/ADT/DenseMap.h"
+#include "llvm/ADT/StringMap.h"
 #include "llvm/ADT/StringSwitch.h"
 #include "llvm/ADT/StringSet.h"
 #include "llvm/Support/FileSystem.h"
@@ -623,11 +624,55 @@ static LogicalResult detectKernelGraphCycle(ArrayRef<func::FuncOp> kernels,
   return success();
 }
 
+static LogicalResult
+collectKernelGraphNameAliases(ArrayRef<func::FuncOp> kernels,
+                              llvm::StringMap<std::string> &aliases) {
+  for (func::FuncOp kernel : kernels) {
+    aliases[kernel.getName()] = kernel.getName().str();
+
+    auto metadata =
+        kernel->getAttrOfType<ArrayAttr>(
+            ::mlir::afir::ascend::kScheduleKernelMetadataAttr);
+    if (!metadata)
+      continue;
+
+    for (auto [index, rawEntry] : llvm::enumerate(metadata)) {
+      auto entry = dyn_cast<DictionaryAttr>(rawEntry);
+      if (!entry)
+        return kernel.emitError()
+               << ::mlir::afir::ascend::kScheduleKernelMetadataAttr
+               << " element " << index << " must be a dictionary attribute";
+
+      auto internalKernel =
+          dyn_cast_or_null<StringAttr>(entry.get(kKernelMetadataKernelKey));
+      if (!internalKernel)
+        return kernel.emitError()
+               << ::mlir::afir::ascend::kScheduleKernelMetadataAttr
+               << " element " << index
+               << " entries must include a string kernel field";
+
+      auto existing = aliases.find(internalKernel.getValue());
+      if (existing != aliases.end() &&
+          StringRef(existing->second) != kernel.getName())
+        return kernel.emitError()
+               << ::mlir::afir::ascend::kScheduleKernelMetadataAttr
+               << " element " << index << " maps internal kernel '"
+               << internalKernel.getValue() << "' to both '"
+               << existing->second << "' and '" << kernel.getName() << "'";
+      aliases[internalKernel.getValue()] = kernel.getName().str();
+    }
+  }
+  return success();
+}
+
 static FailureOr<llvm::json::Array>
 buildKernelGraphEdges(ModuleOp module, ArrayRef<func::FuncOp> kernels) {
   llvm::StringSet<> kernelNames;
   for (func::FuncOp kernel : kernels)
     kernelNames.insert(kernel.getName());
+  llvm::StringMap<std::string> kernelAliases;
+  if (failed(collectKernelGraphNameAliases(kernels, kernelAliases)))
+    return failure();
 
   auto edgesAttr = module->getAttrOfType<ArrayAttr>(
       ::mlir::afir::ascend::kKernelGraphEdgesAttr);
@@ -649,25 +694,40 @@ buildKernelGraphEdges(ModuleOp module, ArrayRef<func::FuncOp> kernels) {
       return module.emitError()
              << ::mlir::afir::ascend::kKernelGraphEdgesAttr << " element "
              << index << " requires string 'from' and 'to' fields";
+
+    auto resolveKernelName =
+        [&](StringRef rawName) -> std::optional<std::string> {
+      auto alias = kernelAliases.find(rawName);
+      if (alias == kernelAliases.end())
+        return std::nullopt;
+      return alias->second;
+    };
+
     bool fromKnown = kernelNames.contains(from.getValue());
     bool toKnown = kernelNames.contains(to.getValue());
+    std::optional<std::string> resolvedFrom =
+        resolveKernelName(from.getValue());
+    std::optional<std::string> resolvedTo = resolveKernelName(to.getValue());
     bool staleMergedSyntheticEdge =
-        !fromKnown && !toKnown && kernels.size() == 1 &&
+        !resolvedFrom && !resolvedTo && kernels.size() == 1 &&
         from.getValue().starts_with("kernel_") &&
         to.getValue().starts_with("kernel_");
     if (staleMergedSyntheticEdge)
       continue;
 
-    if (!fromKnown)
+    if (!resolvedFrom)
       return module.emitError()
              << ::mlir::afir::ascend::kKernelGraphEdgesAttr << " element "
              << index << " references unknown source kernel '"
              << from.getValue() << "'";
-    if (!toKnown)
+    if (!resolvedTo)
       return module.emitError()
              << ::mlir::afir::ascend::kKernelGraphEdgesAttr << " element "
              << index << " references unknown target kernel '" << to.getValue()
              << "'";
+
+    if (*resolvedFrom == *resolvedTo && (!fromKnown || !toKnown))
+      continue;
 
     auto carriedBuffers =
         dyn_cast_or_null<ArrayAttr>(edge.get("carried_buffers"));
@@ -689,11 +749,11 @@ buildKernelGraphEdges(ModuleOp module, ArrayRef<func::FuncOp> kernels) {
     }
 
     llvm::json::Object edgeJson;
-    edgeJson["from"] = from.getValue().str();
-    edgeJson["to"] = to.getValue().str();
+    edgeJson["from"] = *resolvedFrom;
+    edgeJson["to"] = *resolvedTo;
     edgeJson["carriedBuffers"] = std::move(carriedBuffersJson);
     edgesJson.push_back(std::move(edgeJson));
-    edges.push_back({from.getValue().str(), to.getValue().str()});
+    edges.push_back({*resolvedFrom, *resolvedTo});
   }
 
   if (failed(detectKernelGraphCycle(kernels, edges)))
