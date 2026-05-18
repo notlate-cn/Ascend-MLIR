@@ -10,7 +10,7 @@
 // instead of treating the VECCALC alloc as a GM source — the latter leaves a
 // `memref.alloc : memref<?xf32, 11>` alive that has no printer (translate fails).
 
-// CHECK:      func.func @c1_ln(
+// CHECK:      func.func @c1_ln__v0(
 // CHECK-SAME: cann.num_inputs = 1
 // No space-11 memref.alloc must survive into the AscendC IR.
 // CHECK-NOT:  memref.alloc{{.*}}memref<?xf32, 11>

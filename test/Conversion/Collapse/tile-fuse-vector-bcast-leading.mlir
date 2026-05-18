@@ -13,7 +13,7 @@
 // CHECK-DAG: #[[PROJ:.*]] = affine_map<(d0, d1) -> (d1)>
 
 // Exactly two tunable args (XBLOCK, XBLOCK_SUB) — no BCAST*.
-// CHECK: func.func @bcast_leading(
+// CHECK: func.func @bcast_leading__v0(
 // CHECK-SAME: %[[XBLOCK:[^ ,)]*]]: index {vector_plan.default_tile_size = 128 : i64}
 // CHECK-SAME: %[[XBLOCK_SUB:[^ ,)]*]]: index {vector_plan.default_tile_size = 16 : i64})
 

@@ -7,10 +7,11 @@
 // RCore variant; costEstimate rejects the first (and RCore) as infeasible, so
 // the picked plan ub-splits d1 → an RBLOCK_0 tunable appears.
 
-// CHECK: func.func @reduce_autosplit(
+// CHECK: func.func @reduce_autosplit__v0(
 // CHECK-SAME: %[[XBLOCK:[^ ,)]*]]: index {vector_plan.default_tile_size = 128 : i64}
 // CHECK-SAME: %[[XBLOCK_SUB:[^ ,)]*]]: index {vector_plan.default_tile_size = 16 : i64}
 // CHECK-SAME: %[[RBLOCK:[^ ,)]*]]: index {vector_plan.default_tile_size = 64 : i64}
+// CHECK-SAME: afir.reduce_template = "Common"
 
 // CHECK: scf.for %{{.*}} = %{{.*}} to %{{.*}} step %[[XBLOCK]]
 // CHECK: scf.for %{{.*}} = %{{.*}} to %{{.*}} step %[[XBLOCK_SUB]]

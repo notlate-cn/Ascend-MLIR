@@ -7,7 +7,7 @@
 // linalg-generalize-named-ops before TileFuse so all three become
 // linalg.generic and fuse into a single tiled 1D loop.
 
-// MLIR: func.func @add_mul_relu(
+// MLIR: func.func @add_mul_relu__v0(
 // MLIR-SAME: ascendc.aicore
 // MLIR: emitasc.member {{.*}} "XBLOCK"
 // MLIR: emitasc.member {{.*}} "XBLOCK_SUB"
@@ -22,7 +22,7 @@
 
 // CANN: struct TilingData
 // CANN: XBLOCK
-// CANN: __aicore__ void add_mul_relu(
+// CANN: __aicore__ void add_mul_relu__v0(
 // CANN: Mul(
 // CANN: Add(
 // CANN: Max(

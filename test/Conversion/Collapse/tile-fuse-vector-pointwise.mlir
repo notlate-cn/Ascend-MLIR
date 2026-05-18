@@ -3,7 +3,7 @@
 // 1-D pointwise (single parallel axis d0=32768, no collapse).
 // Phase 2 must add XBLOCK (default=128) and XBLOCK_SUB (default=16) func args.
 
-// CHECK: func.func @pointwise(
+// CHECK: func.func @pointwise__v0(
 // CHECK-SAME: %[[XBLOCK:[^ ,)]*]]: index {vector_plan.default_tile_size = 128 : i64}
 // CHECK-SAME: %[[XBLOCK_SUB:[^ ,)]*]]: index {vector_plan.default_tile_size = 16 : i64}
 // CHECK: scf.for %[[OUTER:[^ ]*]] = %{{.*}} to %{{.*}} step %[[XBLOCK]]

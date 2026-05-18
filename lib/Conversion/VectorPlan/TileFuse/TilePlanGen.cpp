@@ -876,6 +876,19 @@ void emitTilingInfos(func::FuncOp func, const TilePlan &plan) {
   if (!blockDimExpr.empty())
     func->setAttr("afir.block_dim_expr", StringAttr::get(ctx, blockDimExpr));
 
+  // Stamp the picked reduce template so downstream passes / lit tests can
+  // observe which path was taken without re-running the cost model.  Skipped
+  // for non-reduce kernels (ReduceTemplate::None).
+  StringRef rtName;
+  switch (plan.reduceTemplate) {
+  case TilePlan::ReduceTemplate::Common:   rtName = "Common";   break;
+  case TilePlan::ReduceTemplate::FullLoad: rtName = "FullLoad"; break;
+  case TilePlan::ReduceTemplate::RCore:    rtName = "RCore";    break;
+  case TilePlan::ReduceTemplate::None:     break;
+  }
+  if (!rtName.empty())
+    func->setAttr("afir.reduce_template", StringAttr::get(ctx, rtName));
+
   NamedAttrList entryAttrs;
   entryAttrs.append("fields", ArrayAttr::get(ctx, fields));
   entryAttrs.append("kernel_id", StringAttr::get(ctx, func.getName()));

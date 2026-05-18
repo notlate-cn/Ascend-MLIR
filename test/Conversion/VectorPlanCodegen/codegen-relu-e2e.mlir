@@ -8,7 +8,7 @@
 //   max        →  VECCALC (Max)
 //   VECOUT     →  GM (DataCopy)
 
-// MLIR: func.func @relu(
+// MLIR: func.func @relu__v0(
 // MLIR-SAME: ascendc.aicore
 // MLIR: emitasc.member {{.*}} "XBLOCK"
 // MLIR: emitasc.member {{.*}} "XBLOCK_SUB"
@@ -21,7 +21,7 @@
 
 // CANN: struct TilingData
 // CANN: XBLOCK
-// CANN: __aicore__ void relu(
+// CANN: __aicore__ void relu__v0(
 // CANN: GetBlockIdx()
 // CANN: SetGlobalBuffer(reinterpret_cast<__gm__ float*>(v1) + {{.*}})
 // CANN: DataCopy({{.*}}, {{.*}}, {{.*}})

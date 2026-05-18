@@ -14,7 +14,7 @@ module {
 // CHECK-NOT: TODO: launch
 // CHECK: #include "Runtime/Execution/HostLaunchHelper.h"
 // CHECK: hostLaunchAscendCKernel(
-// CHECK: "kernel_group0"
+// CHECK: "kernel_group0__v0"
 // CHECK: /*kernelBinariesDir=*/
 // CHECK: /*tilingsPath=*/
 // CHECK: extern "C" void network_set_dump_dir(const char *dir)

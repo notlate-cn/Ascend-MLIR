@@ -28,7 +28,7 @@
 // iteration output row, left whole), the output at offset [%iv, 0].
 // TILE-DAG: #[[XMAP:.*]] = affine_map<(d0, d1) -> (d1, d0)>
 // TILE-DAG: #[[ID:.*]] = affine_map<(d0, d1) -> (d0, d1)>
-// TILE: func.func @transpose_relu(%{{.*}}: tensor<16x32xf16>, %{{.*}}: index {{{.*}}default_tile_size = 128{{.*}}}, %{{.*}}: index {{{.*}}default_tile_size = 16{{.*}}})
+// TILE: func.func @transpose_relu__v0(%{{.*}}: tensor<16x32xf16>, %{{.*}}: index {{{.*}}default_tile_size = 128{{.*}}}, %{{.*}}: index {{{.*}}default_tile_size = 16{{.*}}})
 // TILE: tensor.extract_slice %arg0[%c0{{[0-9_]*}}, %[[IV:[a-zA-Z0-9_]+]]] [
 // TILE: tensor.extract_slice %{{[^[]*}}[%[[IV]], %c0{{[0-9_]*}}] [
 // TILE: linalg.generic {indexing_maps = [#[[XMAP]], #[[ID]]]

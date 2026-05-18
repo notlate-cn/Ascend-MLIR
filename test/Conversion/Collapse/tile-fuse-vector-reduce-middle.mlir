@@ -8,7 +8,7 @@
 //   - d1 (reduction) and d2 stay full → operand slice x[row, :, :] and output
 //     slice out[row, :] are both contiguous in row-major layout.
 
-// CHECK: func.func @reduce_mid(
+// CHECK: func.func @reduce_mid__v0(
 // CHECK-SAME: %[[XBLOCK:[^ ,)]*]]: index {vector_plan.default_tile_size = 128 : i64}
 // CHECK-NOT: vector_plan.default_tile_size = 16
 

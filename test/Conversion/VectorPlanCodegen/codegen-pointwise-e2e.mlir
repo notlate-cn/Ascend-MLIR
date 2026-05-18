@@ -9,7 +9,7 @@
 // run by --vector-plan-codegen) folds away, leaving an empty function
 // with nothing to tile.
 
-// CHECK:      func.func @pointwise(
+// CHECK:      func.func @pointwise__v0(
 // CHECK-SAME: ascendc.aicore
 // CHECK:      emitasc.member %{{.*}} "XBLOCK"
 // CHECK:      emitasc.member %{{.*}} "XBLOCK_SUB"

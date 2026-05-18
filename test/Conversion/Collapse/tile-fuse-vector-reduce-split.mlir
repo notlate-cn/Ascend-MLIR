@@ -4,10 +4,14 @@
 // Expected: XBLOCK + XBLOCK_SUB + RBLOCK_0 func args.
 // Outer loop {ascendc.parallel}, inner parallel loop, linalg.fill, RBLOCK scf.for, insert_slice.
 
-// CHECK: func.func @reduce_split(
+// With --enable-reduction-split=true both the Common (RBLOCK-split) and
+// the FullLoad (R kept whole) drafts are feasible — enumerated in that order.
+// v0 is the RBLOCK-split body this test was written for.
+// CHECK: func.func @reduce_split__v0(
 // CHECK-SAME: %[[XBLOCK:[^ ,)]*]]: index {vector_plan.default_tile_size = 128 : i64}
 // CHECK-SAME: %[[XBLOCK_SUB:[^ ,)]*]]: index {vector_plan.default_tile_size = 16 : i64}
 // CHECK-SAME: %[[RBLOCK:[^ ,)]*]]: index {vector_plan.default_tile_size = 64 : i64}
+// CHECK-SAME: afir.reduce_template = "Common"
 
 // CHECK: scf.for %{{.*}} = %{{.*}} to %{{.*}} step %[[XBLOCK]]
 // CHECK: scf.for %{{.*}} = %{{.*}} to %[[XBLOCK]] step %[[XBLOCK_SUB]]
@@ -16,6 +20,10 @@
 // CHECK: linalg.generic
 // CHECK: tensor.insert_slice
 // CHECK: } {ascendc.parallel}
+
+// v1 is the FullLoad sibling — no RBLOCK, R kept whole.
+// CHECK: func.func @reduce_split__v1(
+// CHECK-SAME: afir.reduce_template = "FullLoad"
 
 func.func @reduce_split(%a: tensor<1024x512xf32>,
                          %c: tensor<1024xf32>) -> tensor<1024xf32> {
