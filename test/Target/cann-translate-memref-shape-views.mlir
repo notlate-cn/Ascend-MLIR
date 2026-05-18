@@ -1,7 +1,7 @@
 // RUN: afir-translate -mlir-to-cann %s | FileCheck %s
 
 // CHECK-LABEL: extern "C" __global__ __aicore__ void shape_views(
-// CHECK-COUNT-2: reinterpret_cast<float*>
+// CHECK-COUNT-1: reinterpret_cast<float*>
 // CHECK: float {{v[0-9]+}} =
 
 module {

@@ -8,11 +8,88 @@ DIR="$(cd "$(dirname "$0")" && pwd)"
 source "$DIR/../mainline-target-env.sh"
 AFIR_OPT="${AFIR_OPT:-afir-opt}"
 AFIR_TRANSLATE="${AFIR_TRANSLATE:-afir-translate}"
+RUNTIME_SESSION="${RUNTIME_SESSION:-runtime-session}"
+PYTHON="${PYTHON:-python3}"
 SOC="${SOC_VERSION:-Ascend910B1}"
+RUNTIME_E2E=false
+BATCH=1
+SEQ=1
+BLOCK_DIM=1
+VERBOSE=false
+
+require_arg() {
+  local opt="$1"
+  local value="${2:-}"
+  if [[ -z "$value" || "$value" == --* ]]; then
+    echo "missing value for ${opt}" >&2
+    exit 2
+  fi
+}
+
+require_positive_int() {
+  local name="$1"
+  local value="$2"
+  if [[ ! "$value" =~ ^[1-9][0-9]*$ ]]; then
+    echo "unsupported shape: ${name} must be >= 1" >&2
+    exit 2
+  fi
+}
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --runtime-e2e)
+      RUNTIME_E2E=true
+      shift
+      ;;
+    --batch)
+      require_arg "$1" "${2:-}"
+      BATCH="$2"
+      shift 2
+      ;;
+    --seq)
+      require_arg "$1" "${2:-}"
+      SEQ="$2"
+      shift 2
+      ;;
+    --block-dim)
+      require_arg "$1" "${2:-}"
+      BLOCK_DIM="$2"
+      shift 2
+      ;;
+    --soc)
+      require_arg "$1" "${2:-}"
+      SOC="$2"
+      shift 2
+      ;;
+    --log)
+      VERBOSE=true
+      shift
+      ;;
+    *)
+      echo "unknown argument: $1" >&2
+      exit 2
+      ;;
+  esac
+done
+
+require_positive_int "BATCH" "$BATCH"
+require_positive_int "SEQ" "$SEQ"
+require_positive_int "BLOCK_DIM" "$BLOCK_DIM"
+
+log() {
+  if $VERBOSE; then
+    echo "$@"
+  fi
+}
 
 BUILD_DIR="$DIR/build_mainline"
+NPY_DIR="$BUILD_DIR/npy"
+ARTIFACT_ROOT="$BUILD_DIR/artifact"
+RUN_MANIFEST="$BUILD_DIR/run_manifest.json"
+ACTUAL_OUTPUT_DIR="$BUILD_DIR/outputs"
+VALIDATION_LOG="$BUILD_DIR/runtime_session.log"
 rm -rf "$BUILD_DIR"
-mkdir -p "$BUILD_DIR"
+mkdir -p "$BUILD_DIR" "$NPY_DIR" "$ACTUAL_OUTPUT_DIR"
 
 "$AFIR_OPT" "$DIR/transformer_dynamic.mlir" \
   --ascend-normalize \
@@ -63,3 +140,37 @@ echo "transformer_dynamic.phase5_backend=pass"
 echo "transformer_dynamic.phase5_translate=pass"
 echo "transformer_dynamic.runtime_artifacts=pass"
 echo "transformer_dynamic.full_codegen=pass"
+
+if ! $RUNTIME_E2E; then
+  exit 0
+fi
+
+"$PYTHON" "$DIR/gen_data.py" \
+  --batch "$BATCH" \
+  --seq "$SEQ" \
+  --out-dir "$NPY_DIR" \
+  --artifact-root "$ARTIFACT_ROOT" \
+  --tiling-schema "$BUILD_DIR/tiling.json" \
+  --run-manifest "$RUN_MANIFEST" \
+  --actual-output-dir "$ACTUAL_OUTPUT_DIR" \
+  --block-dim "$BLOCK_DIM"
+
+rm -rf "$ARTIFACT_ROOT"
+"$RUNTIME_SESSION" \
+  --kernel "$BUILD_DIR/kernel.cpp" \
+  --kernel-kind vec \
+  --output "$ARTIFACT_ROOT" \
+  --name kernel
+log "transformer_dynamic.artifact_root=$ARTIFACT_ROOT"
+
+"$RUNTIME_SESSION" \
+  --run-manifest "$RUN_MANIFEST" \
+  --run >"$VALIDATION_LOG" 2>&1
+grep -v '^\[info\]\|^\[PEM_AIC_LOG\]\|^\[INFO\]\|^\[WARNING\]\|^\[DRVSTUB_LOG\]\|^\[FuncCache\]\|^ \|^=\|^\[TmSim\]\|^>>>>' \
+  "$VALIDATION_LOG" || true
+grep -q '^session.backend=sim$' "$VALIDATION_LOG"
+grep -q '^session.result=success$' "$VALIDATION_LOG"
+grep -q '^session.validation=pass$' "$VALIDATION_LOG"
+
+echo "transformer_dynamic.runtime_session=pass"
+echo "transformer_dynamic.validation=pass"
