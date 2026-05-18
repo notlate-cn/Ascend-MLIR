@@ -50,7 +50,7 @@
 
 module attributes {
     ascend.kernel_graph.edges = [
-      {from = "kernel_a", to = "kernel_b", carried_buffers = ["tmp0"]}
+      {from = "internal_kernel_a", to = "internal_kernel_b", carried_buffers = ["tmp0"]}
     ]} {
   func.func @kernel_a(
       %a: memref<?xf16>, %out: memref<?xf16>, %ws: memref<ui8>,
@@ -58,7 +58,7 @@ module attributes {
   ) attributes {
       ascend.schedule.kernel_metadata = [{
         decision_id = "kernel_a.decision.0",
-        kernel = "kernel_a",
+        kernel = "internal_kernel_a",
         selected_tile_shape = array<i64: 32>,
         tail_policies = ["masked_tail"],
         tail_plan = [{
@@ -81,7 +81,7 @@ module attributes {
   ) attributes {
       ascend.schedule.kernel_metadata = [{
         decision_id = "kernel_b.decision.0",
-        kernel = "kernel_b",
+        kernel = "internal_kernel_b",
         selected_tile_shape = array<i64: 64>,
         tail_policies = ["masked_tail"],
         tail_plan = [{
