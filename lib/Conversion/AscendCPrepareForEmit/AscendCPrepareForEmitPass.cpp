@@ -47,6 +47,8 @@
 #include "mlir/IR/PatternMatch.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 #include "llvm/ADT/SmallVector.h"
+#include "llvm/ADT/StringExtras.h"
+#include "llvm/ADT/Twine.h"
 #include "llvm/Support/Debug.h"
 
 #include "ascir/Dialect/Asc/IR/Asc.h"
@@ -71,23 +73,11 @@ namespace mlir::afir {
 /// GM memory_space value used by ascir-translate for __gm__ pointers.
 static constexpr int64_t kGMSpace = 22;
 
-/// Build the TilingData PyStruct type with the given field names and i64 types.
-static emitasc::PyStructType buildTilingDataType(MLIRContext *ctx,
-                                                 ArrayRef<StringRef> names) {
-  SmallVector<Attribute> typeAttrs, nameAttrs;
-  Type i64 = IntegerType::get(ctx, 64);
-  for (auto name : names) {
-    typeAttrs.push_back(TypeAttr::get(i64));
-    nameAttrs.push_back(StringAttr::get(ctx, name));
-  }
-  return emitasc::PyStructType::get(
-      ctx, StringAttr::get(ctx, "TilingData"),
-      ArrayAttr::get(ctx, typeAttrs), ArrayAttr::get(ctx, nameAttrs));
-}
-
-//===----------------------------------------------------------------------===//
-// Main transformation
-//===----------------------------------------------------------------------===//
+static constexpr const char *kTilingDataStructName = "TilingData";
+static constexpr const char *kDefaultTileNames[] = {"TB_M", "TB_N", "Tb_M",
+                                                    "Tb_N", "t_K"};
+static constexpr unsigned kDefaultTileNameCount =
+    sizeof(kDefaultTileNames) / sizeof(kDefaultTileNames[0]);
 
 /// Represents a memref.dim query on a block argument: (argNumber, dimIndex).
 struct DimKey {
@@ -97,6 +87,163 @@ struct DimKey {
     return argNumber == o.argNumber && dimIndex == o.dimIndex;
   }
 };
+
+static void appendUniqueDimKey(SmallVectorImpl<DimKey> &dimKeys,
+                               unsigned argNum, int64_t dimIdx) {
+  DimKey key{argNum, dimIdx};
+  if (llvm::none_of(dimKeys, [&](const DimKey &k) { return k == key; }))
+    dimKeys.push_back(key);
+}
+
+static emitasc::PyStructType getTilingStructTypeFromType(Type type) {
+  if (auto pyStruct = dyn_cast<emitasc::PyStructType>(type))
+    return pyStruct;
+  if (auto memrefType = dyn_cast<MemRefType>(type))
+    return dyn_cast<emitasc::PyStructType>(memrefType.getElementType());
+  return {};
+}
+
+static void appendTilingTypeNames(emitasc::PyStructType tilingType,
+                                  SmallVectorImpl<std::string> &names) {
+  for (Attribute nameAttr : tilingType.getNamesAttr().getValue())
+    names.push_back(cast<StringAttr>(nameAttr).getValue().str());
+}
+
+static SmallVector<std::string>
+collectProspectiveTilingNames(func::FuncOp func) {
+  SmallVector<std::string> names;
+
+  // Already-prepared functions carry their tiling schema in the function type.
+  for (BlockArgument arg : func.getArguments()) {
+    if (emitasc::PyStructType tilingType =
+            getTilingStructTypeFromType(arg.getType())) {
+      appendTilingTypeNames(tilingType, names);
+      return names;
+    }
+  }
+
+  SmallVector<BlockArgument> i64Args;
+  for (BlockArgument arg : func.getArguments()) {
+    if (arg.getType().isInteger(64))
+      i64Args.push_back(arg);
+  }
+  for (unsigned i = 0; i < i64Args.size(); ++i)
+    names.push_back(i < kDefaultTileNameCount ? kDefaultTileNames[i]
+                                              : "field");
+
+  SmallVector<DimKey> dimKeys;
+  func.walk([&](memref::DimOp dimOp) {
+    auto arg = dyn_cast<BlockArgument>(dimOp.getSource());
+    if (!arg)
+      return;
+    auto constOp = dimOp.getIndex().getDefiningOp<arith::ConstantOp>();
+    if (!constOp)
+      return;
+    auto intAttr = dyn_cast<IntegerAttr>(constOp.getValue());
+    if (!intAttr)
+      return;
+    appendUniqueDimKey(dimKeys, arg.getArgNumber(),
+                       intAttr.getValue().getSExtValue());
+  });
+
+  func.walk([&](ascendc::GlobalTensorSetGlobalBufferOp sgbOp) {
+    Value buf = sgbOp.getBuffer();
+    while (buf) {
+      if (auto ba = dyn_cast<BlockArgument>(buf)) {
+        if (auto memTy = dyn_cast<MemRefType>(ba.getType())) {
+          for (int64_t d = 0; d < memTy.getRank(); ++d)
+            appendUniqueDimKey(dimKeys, ba.getArgNumber(), d);
+        }
+        break;
+      }
+      if (auto sv = buf.getDefiningOp<memref::SubViewOp>()) {
+        buf = sv.getSource();
+        continue;
+      }
+      if (auto castOp = buf.getDefiningOp<memref::CastOp>()) {
+        buf = castOp.getSource();
+        continue;
+      }
+      break;
+    }
+  });
+
+  for (const DimKey &key : dimKeys) {
+    names.push_back("dim_arg" + std::to_string(key.argNumber) + "_" +
+                    std::to_string(key.dimIndex));
+  }
+  return names;
+}
+
+static bool sameNames(ArrayRef<StringRef> lhs, ArrayRef<std::string> rhs) {
+  if (lhs.size() != rhs.size())
+    return false;
+  for (auto [left, right] : llvm::zip(lhs, rhs)) {
+    if (left != right)
+      return false;
+  }
+  return true;
+}
+
+static std::string sanitizeCppIdentifier(StringRef value) {
+  std::string result;
+  result.reserve(value.size() + 1);
+  for (char c : value) {
+    if (llvm::isAlnum(c) || c == '_')
+      result.push_back(c);
+    else
+      result.push_back('_');
+  }
+  if (result.empty() || llvm::isDigit(result.front()))
+    result.insert(result.begin(), '_');
+  return result;
+}
+
+static bool requiresKernelSpecificTilingDataName(
+    func::FuncOp func, ArrayRef<StringRef> localTilingNames) {
+  ModuleOp module = func->getParentOfType<ModuleOp>();
+  if (!module || localTilingNames.empty())
+    return false;
+
+  for (func::FuncOp other : module.getOps<func::FuncOp>()) {
+    if (other == func)
+      continue;
+    SmallVector<std::string> otherNames = collectProspectiveTilingNames(other);
+    if (otherNames.empty())
+      continue;
+    if (!sameNames(localTilingNames, otherNames))
+      return true;
+  }
+  return false;
+}
+
+static std::string getTilingDataStructName(func::FuncOp func,
+                                           ArrayRef<StringRef> names) {
+  if (!requiresKernelSpecificTilingDataName(func, names))
+    return kTilingDataStructName;
+  return (Twine(kTilingDataStructName) + "_" +
+          sanitizeCppIdentifier(func.getName()))
+      .str();
+}
+
+/// Build the TilingData PyStruct type with the given field names and i64 types.
+static emitasc::PyStructType buildTilingDataType(MLIRContext *ctx,
+                                                 StringRef structName,
+                                                 ArrayRef<StringRef> names) {
+  SmallVector<Attribute> typeAttrs, nameAttrs;
+  Type i64 = IntegerType::get(ctx, 64);
+  for (auto name : names) {
+    typeAttrs.push_back(TypeAttr::get(i64));
+    nameAttrs.push_back(StringAttr::get(ctx, name));
+  }
+  return emitasc::PyStructType::get(ctx, StringAttr::get(ctx, structName),
+                                    ArrayAttr::get(ctx, typeAttrs),
+                                    ArrayAttr::get(ctx, nameAttrs));
+}
+
+//===----------------------------------------------------------------------===//
+// Main transformation
+//===----------------------------------------------------------------------===//
 
 static LogicalResult prepareFunc(func::FuncOp func) {
   MLIRContext *ctx = func.getContext();
@@ -110,12 +257,6 @@ static LogicalResult prepareFunc(func::FuncOp func) {
   // (argNumber, dimIndex) pairs in stable order and remember the ops.
   SmallVector<DimKey> dimKeys;        // unique keys, insertion order
   SmallVector<memref::DimOp> dimOps; // one entry per op (may repeat key)
-
-  auto addDimKey = [&](unsigned argNum, int64_t dimIdx) {
-    DimKey key{argNum, dimIdx};
-    if (llvm::none_of(dimKeys, [&](const DimKey &k) { return k == key; }))
-      dimKeys.push_back(key);
-  };
 
   func.walk([&](memref::DimOp dimOp) {
     auto arg = dyn_cast<BlockArgument>(dimOp.getSource());
@@ -131,7 +272,7 @@ static LogicalResult prepareFunc(func::FuncOp func) {
     if (!intAttr)
       return;
     int64_t dimIdxConst = intAttr.getValue().getSExtValue();
-    addDimKey(arg.getArgNumber(), dimIdxConst);
+    appendUniqueDimKey(dimKeys, arg.getArgNumber(), dimIdxConst);
     dimOps.push_back(dimOp);
   });
 
@@ -147,7 +288,7 @@ static LogicalResult prepareFunc(func::FuncOp func) {
       if (auto ba = dyn_cast<BlockArgument>(buf)) {
         if (auto memTy = dyn_cast<MemRefType>(ba.getType())) {
           for (int64_t d = 0; d < memTy.getRank(); ++d)
-            addDimKey(ba.getArgNumber(), d);
+            appendUniqueDimKey(dimKeys, ba.getArgNumber(), d);
         }
         break;
       }
@@ -199,17 +340,13 @@ static LogicalResult prepareFunc(func::FuncOp func) {
 
   // ── 3. Build TilingData field names ─────────────────────────────────────
   // Order: i64 tile-size args first, then dim fields.
-  static const char *kDefaultTileNames[] = {"TB_M", "TB_N", "Tb_M", "Tb_N", "t_K"};
-  static const unsigned kDefaultCount =
-      sizeof(kDefaultTileNames) / sizeof(kDefaultTileNames[0]);
-
   // Build all names upfront in a stable vector so StringRefs stay valid.
   SmallVector<std::string> tilingNameStorage;
   tilingNameStorage.reserve(i64Args.size() + dimKeys.size());
 
   // i64 tile-size args
   for (unsigned i = 0; i < i64Args.size(); ++i)
-    tilingNameStorage.push_back(i < kDefaultCount ? kDefaultTileNames[i] : "field");
+    tilingNameStorage.push_back(i < kDefaultTileNameCount ? kDefaultTileNames[i] : "field");
   // dim fields: "dim_argN_D"
   for (const DimKey &key : dimKeys)
     tilingNameStorage.push_back("dim_arg" + std::to_string(key.argNumber) +
@@ -225,7 +362,8 @@ static LogicalResult prepareFunc(func::FuncOp func) {
   emitasc::PyStructType tilingStructTy;
   Type tilingArgTy;
   if (hasTilingData) {
-    tilingStructTy = buildTilingDataType(ctx, tilingNames);
+    std::string structName = getTilingDataStructName(func, tilingNames);
+    tilingStructTy = buildTilingDataType(ctx, structName, tilingNames);
     tilingArgTy = MemRefType::get(
         {ShapedType::kDynamic}, tilingStructTy, MemRefLayoutAttrInterface{},
         IntegerAttr::get(IntegerType::get(ctx, 32), kGMSpace));

@@ -12,6 +12,7 @@ EXAMPLES=(
   "split-relu-brc-add-mul"
   "matmul-add-leakyrelu"
   "two-kernel-dag"
+  "two-kernel-rank-mix-dag"
 )
 
 require_tool() {
