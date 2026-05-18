@@ -985,6 +985,308 @@ TilePlan genVectorTilePlan(func::FuncOp func,
   return plan;
 }
 
+// Populate `schema.fields` with Tunable entries for every tile-param block
+// argument in `plan.tileable`, in the order they appear (matches the existing
+// TilingData struct layout).
+static void buildSchemaTunableFields(const TilePlan &plan, func::FuncOp func,
+                                     TilingInfoSchema &schema) {
+  for (auto &group : plan.tileable) {
+    for (const auto &tp : group) {
+      auto ba = dyn_cast<BlockArgument>(tp.ssa);
+      if (!ba) continue;
+      int64_t defaultVal = 0;
+      if (auto attr = func.getArgAttrOfType<IntegerAttr>(
+              ba.getArgNumber(), "vector_plan.default_tile_size"))
+        defaultVal = attr.getInt();
+      int64_t axisSize = -1;
+      if (plan.group && tp.axisIdx >= 0 &&
+          tp.axisIdx < (int)plan.group->collapsedAxes.size()) {
+        int64_t s = plan.group->collapsedAxes[tp.axisIdx].staticSize;
+        if (s != ShapedType::kDynamic) axisSize = s;
+      }
+      assert(ba.getArgNumber() <= (unsigned)INT32_MAX && "arg_index overflow");
+      SchemaField f;
+      f.name         = tp.name;
+      f.kind         = SchemaFieldKind::Tunable;
+      f.axisSize     = axisSize;
+      f.defaultValue = defaultVal;
+      f.argIndex     = (int32_t)ba.getArgNumber();
+      schema.fields.push_back(std::move(f));
+    }
+  }
+}
+
+// Populate `schema.args` from the kernel func signature: input / tile-param /
+// workspace from block arguments, plus synthetic Output entries from the
+// `func.return` operands (pre-bufferize the outputs are not yet args).
+static void buildSchemaArgs(func::FuncOp func, TilingInfoSchema &schema) {
+  Block &entry = func.getBody().front();
+  unsigned numNetworkInputs = 0;
+  for (BlockArgument ba : entry.getArguments()) {
+    SchemaArg a;
+    a.mlirIndex = (int32_t)ba.getArgNumber();
+    Type ty = ba.getType();
+    if (auto mt = dyn_cast<MemRefType>(ty)) {
+      if (mt.getElementType().isInteger(8)) {
+        a.role = SchemaArgRole::Workspace;
+      } else if (mt.getLayout().isIdentity()) {
+        a.role = SchemaArgRole::Input;
+        if (auto attr = func.getArgAttrOfType<IntegerAttr>(
+                ba.getArgNumber(), "vector_plan.call_arg_index"))
+          a.callArgIndex = (int32_t)attr.getInt();
+        else
+          a.callArgIndex = (int32_t)numNetworkInputs;
+        ++numNetworkInputs;
+      } else {
+        // TODO multi-result: resultIndex hard-coded to 0; revisit when
+        // kernels with >1 DPS output exist.
+        a.role = SchemaArgRole::Output;
+        a.resultIndex = 0;
+      }
+    } else if (isa<RankedTensorType>(ty)) {
+      // Pre-bufferize: every tensor arg is an input (DPS init tensors are
+      // tensor.empty results, not func args).
+      a.role = SchemaArgRole::Input;
+      if (auto attr = func.getArgAttrOfType<IntegerAttr>(
+              ba.getArgNumber(), "vector_plan.call_arg_index"))
+        a.callArgIndex = (int32_t)attr.getInt();
+      else
+        a.callArgIndex = (int32_t)numNetworkInputs;
+      ++numNetworkInputs;
+    } else if (isa<IndexType>(ty)) {
+      a.role = SchemaArgRole::TileParam;
+      for (auto &f : schema.fields)
+        if (f.kind == SchemaFieldKind::Tunable &&
+            f.argIndex == a.mlirIndex)
+          a.tileParamName = f.name;
+    } else {
+      continue; // unknown arg type — skip
+    }
+    schema.args.push_back(std::move(a));
+  }
+
+  // Synthesize Output SchemaArg entries from func return values.  Pre-
+  // bufferize the kernel returns tensors; one-shot-bufferize will later
+  // append a corresponding output memref arg per result at position
+  // numArgs + i.  We pre-assign that anticipated mlirIndex so post-
+  // bufferize consumers can index into the (now-larger) arg list.
+  // TODO multi-result: works correctly today (one Output per return).
+  if (entry.empty()) return;
+  auto retOp = dyn_cast<func::ReturnOp>(entry.getTerminator());
+  if (!retOp) return;
+  unsigned baseIdx = entry.getNumArguments();
+  for (auto [i, v] : llvm::enumerate(retOp.getOperands())) {
+    // Skip if we already classified a real Output arg above
+    // (post-bufferize path).
+    bool alreadyHaveOutput = llvm::any_of(schema.args, [&](auto &x) {
+      return x.role == SchemaArgRole::Output;
+    });
+    if (alreadyHaveOutput) break;
+    if (!isa<RankedTensorType, MemRefType>(v.getType())) continue;
+    SchemaArg a;
+    a.mlirIndex   = (int32_t)(baseIdx + i);
+    a.role        = SchemaArgRole::Output;
+    a.resultIndex = (int32_t)i;
+    schema.args.push_back(std::move(a));
+  }
+}
+
+// For each Output SchemaArg, populate `shapeExpr[]` per output dim using the
+// symbolic-shape table for real args, or by tracing the synthetic-output
+// linalg.generic → tensor.empty → tensor.dim chain back to an Input arg.
+static void computeOutputShapeExprs(
+    func::FuncOp func, TilingInfoSchema &schema,
+    const std::optional<symshape::DimSymbolTable> &symTable) {
+  Block &entry = func.getBody().front();
+
+  auto tryEmitShapeExpr = [&](SchemaArg &a, ShapedType st,
+                              StringAttr symAttr) {
+    auto symList = symAttr ? symshape::parseSymExprList(symAttr.getValue())
+                           : std::nullopt;
+    for (int64_t d = 0, e = st.getRank(); d < e; ++d) {
+      std::string expr;
+      if (symList && (size_t)d < symList->size() && symTable) {
+        const auto &se = (*symList)[d];
+        if (se.getKind() == symshape::SymExpr::Kind::Sym) {
+          auto src = symTable->sourceOf(se.getSym());
+          for (auto &ia : schema.args)
+            if (ia.role == SchemaArgRole::Input &&
+                (unsigned)ia.mlirIndex == src.first) {
+              expr = "arg" + std::to_string(ia.callArgIndex) +
+                     "_dim" + std::to_string(src.second);
+              break;
+            }
+        }
+      }
+      if (expr.empty() && d < (int64_t)st.getShape().size() &&
+          !ShapedType::isDynamic(st.getShape()[d]))
+        expr = std::to_string(st.getShape()[d]);
+      a.shapeExpr.push_back(expr);
+    }
+  };
+
+  // Helper for synthetic-output dynamic dims: trace
+  //   retOp.getOperand(ri) → linalg.generic → tensor.empty(%d0, %d1, ...)
+  //   → tensor.dim %argN, %cIdx  where %argN is an Input schema arg.
+  // Render "arg<callArgIndex>_dim<dimIdx>" on success.  The plan spec §6
+  // explicitly defers anything more involved (reduce/matmul) to later.
+  auto resolveSyntheticDynDim =
+      [&](Value retVal, int64_t outDim) -> std::string {
+    auto genericOp = retVal.getDefiningOp<linalg::GenericOp>();
+    if (!genericOp || genericOp.getOutputs().empty()) {
+      LLVM_DEBUG(llvm::dbgs() << "[tiling-info] synthetic output dim "
+                              << outDim << ": no defining linalg.generic\n");
+      return {};
+    }
+    auto emptyOp = genericOp.getOutputs()[0].getDefiningOp<tensor::EmptyOp>();
+    if (!emptyOp) {
+      LLVM_DEBUG(llvm::dbgs() << "[tiling-info] synthetic output dim "
+                              << outDim << ": init not tensor.empty\n");
+      return {};
+    }
+    auto mixed = emptyOp.getMixedSizes();
+    if ((size_t)outDim >= mixed.size()) return {};
+    auto ofr = mixed[outDim];
+    auto val = dyn_cast<Value>(ofr);
+    if (!val) return {};
+    auto dimOp = val.getDefiningOp<tensor::DimOp>();
+    if (!dimOp) {
+      LLVM_DEBUG(llvm::dbgs() << "[tiling-info] synthetic output dim "
+                              << outDim << ": dyn size not tensor.dim\n");
+      return {};
+    }
+    auto ba = dyn_cast<BlockArgument>(dimOp.getSource());
+    if (!ba || ba.getOwner() != &entry) return {};
+    auto cst = dimOp.getIndex().getDefiningOp<arith::ConstantOp>();
+    if (!cst) return {};
+    auto intAttr = dyn_cast<IntegerAttr>(cst.getValue());
+    if (!intAttr) return {};
+    int32_t dimIdx = (int32_t)intAttr.getValue().getSExtValue();
+    for (auto &ia : schema.args) {
+      if (ia.role == SchemaArgRole::Input &&
+          (unsigned)ia.mlirIndex == ba.getArgNumber()) {
+        return "arg" + std::to_string(ia.callArgIndex) +
+               "_dim" + std::to_string(dimIdx);
+      }
+    }
+    LLVM_DEBUG(llvm::dbgs() << "[tiling-info] synthetic output dim "
+                            << outDim << ": no matching Input arg\n");
+    return {};
+  };
+
+  for (auto &a : schema.args) {
+    if (a.role != SchemaArgRole::Output) continue;
+    ShapedType st;
+    StringAttr symAttr;
+    Value retVal;
+    bool synthetic = false;
+    if ((unsigned)a.mlirIndex < entry.getNumArguments()) {
+      // Real arg (post-bufferize path).
+      st = cast<ShapedType>(entry.getArgument(a.mlirIndex).getType());
+      symAttr = func.getArgAttrOfType<StringAttr>(
+          a.mlirIndex, "afir.symbolic_shape");
+    } else if (auto retOp =
+                   dyn_cast<func::ReturnOp>(entry.getTerminator())) {
+      // Synthetic output: use the corresponding return value type.
+      unsigned ri = (unsigned)a.resultIndex;
+      if (ri < retOp.getNumOperands()) {
+        retVal = retOp.getOperand(ri);
+        st = dyn_cast<ShapedType>(retVal.getType());
+        synthetic = true;
+      }
+    }
+    if (!st) continue;
+    if (!synthetic) {
+      tryEmitShapeExpr(a, st, symAttr);
+      continue;
+    }
+    // Synthetic-output branch: symAttr is unavailable.  Use static dims
+    // directly; for dynamic dims, trace the linalg.generic → tensor.empty
+    // → tensor.dim chain back to an Input schema arg.
+    for (int64_t d = 0, e = st.getRank(); d < e; ++d) {
+      std::string expr;
+      if (!ShapedType::isDynamic(st.getShape()[d])) {
+        expr = std::to_string(st.getShape()[d]);
+      } else {
+        expr = resolveSyntheticDynDim(retVal, d);
+      }
+      a.shapeExpr.push_back(expr);
+    }
+  }
+}
+
+// Walk memref.dim / tensor.dim ops in the kernel body, dedup via (argN, dimIdx),
+// and append ShapeDerived SchemaField entries for each unique source dim.
+static void collectShapeDerivedFields(func::FuncOp func,
+                                      TilingInfoSchema &schema) {
+  Block &entry = func.getBody().front();
+  llvm::DenseSet<std::pair<int32_t, int32_t>> seenDims;
+  auto recordDim = [&](BlockArgument ba, int32_t dimI) {
+    if (!ba || ba.getOwner() != &entry) return;
+    int32_t argN = (int32_t)ba.getArgNumber();
+    // Skip if already a tunable on the same MLIR arg (won't normally
+    // collide -- tunables are index-typed, dim sources are shaped -- but
+    // dedup is cheap insurance).
+    for (auto &f : schema.fields)
+      if (f.kind == SchemaFieldKind::Tunable &&
+          f.argIndex == argN)
+        return;
+    if (!seenDims.insert({argN, dimI}).second) return;
+    SchemaField f;
+    f.name      = "dim_arg" + std::to_string(argN) + "_" + std::to_string(dimI);
+    f.kind      = SchemaFieldKind::ShapeDerived;
+    f.sourceArg = argN;
+    f.sourceDim = dimI;
+    schema.fields.push_back(std::move(f));
+  };
+  func.walk([&](Operation *op) {
+    if (auto dimOp = dyn_cast<memref::DimOp>(op)) {
+      auto ba = dyn_cast<BlockArgument>(dimOp.getSource());
+      if (auto cst = dimOp.getIndex().getDefiningOp<arith::ConstantOp>())
+        if (auto intAttr = dyn_cast<IntegerAttr>(cst.getValue()))
+          recordDim(ba, (int32_t)intAttr.getValue().getSExtValue());
+    } else if (auto dimOp = dyn_cast<tensor::DimOp>(op)) {
+      auto ba = dyn_cast<BlockArgument>(dimOp.getSource());
+      if (auto cst = dimOp.getIndex().getDefiningOp<arith::ConstantOp>())
+        if (auto intAttr = dyn_cast<IntegerAttr>(cst.getValue()))
+          recordDim(ba, (int32_t)intAttr.getValue().getSExtValue());
+    }
+  });
+}
+
+// Serialize TilePlan constraints into the existing {kind, lhs, rhs} dict
+// array; returns a null ArrayAttr when there are no constraints.
+static ArrayAttr serializeConstraints(MLIRContext *ctx,
+                                      ArrayRef<TileConstraint> constraints) {
+  if (constraints.empty()) return ArrayAttr();
+  SmallVector<Attribute> cs;
+  for (auto &c : constraints) {
+    NamedAttrList ca;
+    ca.append("kind",
+              StringAttr::get(ctx, c.kind == TileConstraint::Divides
+                                       ? "divides" : "le_bytes"));
+    ca.append("lhs", StringAttr::get(ctx, c.lhs));
+    ca.append("rhs", StringAttr::get(ctx, c.rhs));
+    cs.push_back(ca.getDictionary(ctx));
+  }
+  return ArrayAttr::get(ctx, cs);
+}
+
+// Append the schema dict to the module-level `vector_plan.tiling_infos`
+// ArrayAttr, preserving any existing entries.
+static void serializeAndAttach(ModuleOp moduleOp, const TilingInfoSchema &schema,
+                               ArrayAttr constraintsAttr) {
+  MLIRContext *ctx = moduleOp.getContext();
+  DictionaryAttr entryDict =
+      serializeTilingInfoSchema(ctx, schema, constraintsAttr);
+  StringRef attrName = "vector_plan.tiling_infos";
+  SmallVector<Attribute> infos;
+  if (auto existing = moduleOp->getAttrOfType<ArrayAttr>(attrName))
+    llvm::append_range(infos, existing.getValue());
+  infos.push_back(entryDict);
+  moduleOp->setAttr(attrName, ArrayAttr::get(ctx, infos));
+}
+
 void emitTilingInfos(func::FuncOp func, const TilePlan &plan) {
   MLIRContext *ctx = func.getContext();
   auto moduleOp = func->getParentOfType<ModuleOp>();
@@ -1087,297 +1389,27 @@ void emitTilingInfos(func::FuncOp func, const TilePlan &plan) {
   // appended as args (one-shot-bufferize will add them post-pipeline).  We
   // synthesize Output SchemaArg entries from the func return types using
   // the anticipated post-bufferize positions (numArgs + resultIdx).
-  vector_plan::TilingInfoSchema schema;
+  TilingInfoSchema schema;
   schema.kernelId     = func.getName().str();
   schema.blockDimExpr = blockDimExpr;
   if (auto a = func->getAttrOfType<StringAttr>("afir.axis_extent_expr"))
     schema.axisExtentExpr = a.getValue().str();
 
-  // Tunable fields: re-walk plan.tileable in the same order so the ordering
-  // matches the existing TilingData struct layout.
-  for (auto &group : plan.tileable) {
-    for (const auto &tp : group) {
-      auto ba = dyn_cast<BlockArgument>(tp.ssa);
-      if (!ba) continue;
-      int64_t defaultVal = 0;
-      if (auto attr = func.getArgAttrOfType<IntegerAttr>(
-              ba.getArgNumber(), "vector_plan.default_tile_size"))
-        defaultVal = attr.getInt();
-      int64_t axisSize = -1;
-      if (plan.group && tp.axisIdx >= 0 &&
-          tp.axisIdx < (int)plan.group->collapsedAxes.size()) {
-        int64_t s = plan.group->collapsedAxes[tp.axisIdx].staticSize;
-        if (s != ShapedType::kDynamic) axisSize = s;
-      }
-      assert(ba.getArgNumber() <= (unsigned)INT32_MAX && "arg_index overflow");
-      vector_plan::SchemaField f;
-      f.name         = tp.name;
-      f.kind         = vector_plan::SchemaFieldKind::Tunable;
-      f.axisSize     = axisSize;
-      f.defaultValue = defaultVal;
-      f.argIndex     = (int32_t)ba.getArgNumber();
-      schema.fields.push_back(std::move(f));
-    }
-  }
+  buildSchemaTunableFields(plan, func, schema);
+  buildSchemaArgs(func, schema);
 
-  // Build args[] from the kernel func signature.  At this point the func has
-  // tensor inputs + index tile-params (outputs are still tensor.empty results
-  // not yet promoted to args).  We accept both tensor and memref typed args
-  // so this loop continues to do the right thing if emitTilingInfos is ever
-  // re-invoked post-bufferize.
-  Block &entry = func.getBody().front();
-  unsigned numNetworkInputs = 0;
-  for (BlockArgument ba : entry.getArguments()) {
-    vector_plan::SchemaArg a;
-    a.mlirIndex = (int32_t)ba.getArgNumber();
-    Type ty = ba.getType();
-    if (auto mt = dyn_cast<MemRefType>(ty)) {
-      if (mt.getElementType().isInteger(8)) {
-        a.role = vector_plan::SchemaArgRole::Workspace;
-      } else if (mt.getLayout().isIdentity()) {
-        a.role = vector_plan::SchemaArgRole::Input;
-        if (auto attr = func.getArgAttrOfType<IntegerAttr>(
-                ba.getArgNumber(), "vector_plan.call_arg_index"))
-          a.callArgIndex = (int32_t)attr.getInt();
-        else
-          a.callArgIndex = (int32_t)numNetworkInputs;
-        ++numNetworkInputs;
-      } else {
-        // TODO multi-result: resultIndex hard-coded to 0; revisit when
-        // kernels with >1 DPS output exist.
-        a.role = vector_plan::SchemaArgRole::Output;
-        a.resultIndex = 0;
-      }
-    } else if (isa<RankedTensorType>(ty)) {
-      // Pre-bufferize: every tensor arg is an input (DPS init tensors are
-      // tensor.empty results, not func args).
-      a.role = vector_plan::SchemaArgRole::Input;
-      if (auto attr = func.getArgAttrOfType<IntegerAttr>(
-              ba.getArgNumber(), "vector_plan.call_arg_index"))
-        a.callArgIndex = (int32_t)attr.getInt();
-      else
-        a.callArgIndex = (int32_t)numNetworkInputs;
-      ++numNetworkInputs;
-    } else if (isa<IndexType>(ty)) {
-      a.role = vector_plan::SchemaArgRole::TileParam;
-      for (auto &f : schema.fields)
-        if (f.kind == vector_plan::SchemaFieldKind::Tunable &&
-            f.argIndex == a.mlirIndex)
-          a.tileParamName = f.name;
-    } else {
-      continue; // unknown arg type — skip
-    }
-    schema.args.push_back(std::move(a));
-  }
+  // Symbolic-shape table for output shape_expr derivation.  Absent for
+  // kernels that never went through afir-symbolize-shapes; computeOutput-
+  // ShapeExprs then falls back to literal static dims / synthetic tracing.
+  std::optional<symshape::DimSymbolTable> symTable;
+  if (auto a = func->getAttrOfType<ArrayAttr>("afir.dim_symbols"))
+    symTable = symshape::DimSymbolTable::fromAttr(a);
+  computeOutputShapeExprs(func, schema, symTable);
 
-  // Synthesize Output SchemaArg entries from func return values.  Pre-
-  // bufferize the kernel returns tensors; one-shot-bufferize will later
-  // append a corresponding output memref arg per result at position
-  // numArgs + i.  We pre-assign that anticipated mlirIndex so post-
-  // bufferize consumers can index into the (now-larger) arg list.
-  // TODO multi-result: works correctly today (one Output per return).
-  if (!entry.empty()) {
-    if (auto retOp = dyn_cast<func::ReturnOp>(entry.getTerminator())) {
-      unsigned baseIdx = entry.getNumArguments();
-      for (auto [i, v] : llvm::enumerate(retOp.getOperands())) {
-        // Skip if we already classified a real Output arg above
-        // (post-bufferize path).
-        bool alreadyHaveOutput = llvm::any_of(schema.args, [&](auto &x) {
-          return x.role == vector_plan::SchemaArgRole::Output;
-        });
-        if (alreadyHaveOutput) break;
-        if (!isa<RankedTensorType, MemRefType>(v.getType())) continue;
-        vector_plan::SchemaArg a;
-        a.mlirIndex   = (int32_t)(baseIdx + i);
-        a.role        = vector_plan::SchemaArgRole::Output;
-        a.resultIndex = (int32_t)i;
-        schema.args.push_back(std::move(a));
-      }
-    }
-  }
+  collectShapeDerivedFields(func, schema);
 
-  // Compute output shape_expr using afir.dim_symbols + afir.symbolic_shape.
-  // For synthetic outputs (no arg attr available), fall back to looking at
-  // the corresponding func return type, then to literal static dims.
-  auto dimSymsAttr2 = func->getAttrOfType<ArrayAttr>("afir.dim_symbols");
-  std::optional<symshape::DimSymbolTable> symTable2;
-  if (dimSymsAttr2)
-    symTable2 = symshape::DimSymbolTable::fromAttr(dimSymsAttr2);
-
-  auto tryEmitShapeExpr = [&](vector_plan::SchemaArg &a, ShapedType st,
-                              StringAttr symAttr) {
-    auto symList = symAttr ? symshape::parseSymExprList(symAttr.getValue())
-                           : std::nullopt;
-    for (int64_t d = 0, e = st.getRank(); d < e; ++d) {
-      std::string expr;
-      if (symList && (size_t)d < symList->size() && symTable2) {
-        const auto &se = (*symList)[d];
-        if (se.getKind() == symshape::SymExpr::Kind::Sym) {
-          auto src = symTable2->sourceOf(se.getSym());
-          for (auto &ia : schema.args)
-            if (ia.role == vector_plan::SchemaArgRole::Input &&
-                (unsigned)ia.mlirIndex == src.first) {
-              expr = "arg" + std::to_string(ia.callArgIndex) +
-                     "_dim" + std::to_string(src.second);
-              break;
-            }
-        }
-      }
-      if (expr.empty() && d < (int64_t)st.getShape().size() &&
-          !ShapedType::isDynamic(st.getShape()[d]))
-        expr = std::to_string(st.getShape()[d]);
-      a.shapeExpr.push_back(expr);
-    }
-  };
-
-  // Helper for synthetic-output dynamic dims: trace
-  //   retOp.getOperand(ri) → linalg.generic → tensor.empty(%d0, %d1, ...)
-  //   → tensor.dim %argN, %cIdx  where %argN is an Input schema arg.
-  // Render "arg<callArgIndex>_dim<dimIdx>" on success.  The plan spec §6
-  // explicitly defers anything more involved (reduce/matmul) to later.
-  auto resolveSyntheticDynDim =
-      [&](Value retVal, int64_t outDim) -> std::string {
-    auto genericOp = retVal.getDefiningOp<linalg::GenericOp>();
-    if (!genericOp || genericOp.getOutputs().empty()) {
-      LLVM_DEBUG(llvm::dbgs() << "[tiling-info] synthetic output dim "
-                              << outDim << ": no defining linalg.generic\n");
-      return {};
-    }
-    auto emptyOp = genericOp.getOutputs()[0].getDefiningOp<tensor::EmptyOp>();
-    if (!emptyOp) {
-      LLVM_DEBUG(llvm::dbgs() << "[tiling-info] synthetic output dim "
-                              << outDim << ": init not tensor.empty\n");
-      return {};
-    }
-    auto mixed = emptyOp.getMixedSizes();
-    if ((size_t)outDim >= mixed.size()) return {};
-    auto ofr = mixed[outDim];
-    auto val = dyn_cast<Value>(ofr);
-    if (!val) return {};
-    auto dimOp = val.getDefiningOp<tensor::DimOp>();
-    if (!dimOp) {
-      LLVM_DEBUG(llvm::dbgs() << "[tiling-info] synthetic output dim "
-                              << outDim << ": dyn size not tensor.dim\n");
-      return {};
-    }
-    auto ba = dyn_cast<BlockArgument>(dimOp.getSource());
-    if (!ba || ba.getOwner() != &entry) return {};
-    auto cst = dimOp.getIndex().getDefiningOp<arith::ConstantOp>();
-    if (!cst) return {};
-    auto intAttr = dyn_cast<IntegerAttr>(cst.getValue());
-    if (!intAttr) return {};
-    int32_t dimIdx = (int32_t)intAttr.getValue().getSExtValue();
-    for (auto &ia : schema.args) {
-      if (ia.role == vector_plan::SchemaArgRole::Input &&
-          (unsigned)ia.mlirIndex == ba.getArgNumber()) {
-        return "arg" + std::to_string(ia.callArgIndex) +
-               "_dim" + std::to_string(dimIdx);
-      }
-    }
-    LLVM_DEBUG(llvm::dbgs() << "[tiling-info] synthetic output dim "
-                            << outDim << ": no matching Input arg\n");
-    return {};
-  };
-
-  for (auto &a : schema.args) {
-    if (a.role != vector_plan::SchemaArgRole::Output) continue;
-    ShapedType st;
-    StringAttr symAttr;
-    Value retVal;
-    bool synthetic = false;
-    if ((unsigned)a.mlirIndex < entry.getNumArguments()) {
-      // Real arg (post-bufferize path).
-      st = cast<ShapedType>(entry.getArgument(a.mlirIndex).getType());
-      symAttr = func.getArgAttrOfType<StringAttr>(
-          a.mlirIndex, "afir.symbolic_shape");
-    } else if (auto retOp =
-                   dyn_cast<func::ReturnOp>(entry.getTerminator())) {
-      // Synthetic output: use the corresponding return value type.
-      unsigned ri = (unsigned)a.resultIndex;
-      if (ri < retOp.getNumOperands()) {
-        retVal = retOp.getOperand(ri);
-        st = dyn_cast<ShapedType>(retVal.getType());
-        synthetic = true;
-      }
-    }
-    if (!st) continue;
-    if (!synthetic) {
-      tryEmitShapeExpr(a, st, symAttr);
-      continue;
-    }
-    // Synthetic-output branch: symAttr is unavailable.  Use static dims
-    // directly; for dynamic dims, trace the linalg.generic → tensor.empty
-    // → tensor.dim chain back to an Input schema arg.
-    for (int64_t d = 0, e = st.getRank(); d < e; ++d) {
-      std::string expr;
-      if (!ShapedType::isDynamic(st.getShape()[d])) {
-        expr = std::to_string(st.getShape()[d]);
-      } else {
-        expr = resolveSyntheticDynDim(retVal, d);
-      }
-      a.shapeExpr.push_back(expr);
-    }
-  }
-
-  // Walk dim ops (both tensor.dim and memref.dim) to add shape-derived
-  // fields the kernel actually uses.  Dedup via (argN, dimIdx).
-  llvm::DenseSet<std::pair<int32_t, int32_t>> seenDims;
-  auto recordDim = [&](BlockArgument ba, int32_t dimI) {
-    if (!ba || ba.getOwner() != &entry) return;
-    int32_t argN = (int32_t)ba.getArgNumber();
-    // Skip if already a tunable on the same MLIR arg (won't normally
-    // collide -- tunables are index-typed, dim sources are shaped -- but
-    // dedup is cheap insurance).
-    for (auto &f : schema.fields)
-      if (f.kind == vector_plan::SchemaFieldKind::Tunable &&
-          f.argIndex == argN)
-        return;
-    if (!seenDims.insert({argN, dimI}).second) return;
-    vector_plan::SchemaField f;
-    f.name      = "dim_arg" + std::to_string(argN) + "_" + std::to_string(dimI);
-    f.kind      = vector_plan::SchemaFieldKind::ShapeDerived;
-    f.sourceArg = argN;
-    f.sourceDim = dimI;
-    schema.fields.push_back(std::move(f));
-  };
-  func.walk([&](Operation *op) {
-    if (auto dimOp = dyn_cast<memref::DimOp>(op)) {
-      auto ba = dyn_cast<BlockArgument>(dimOp.getSource());
-      if (auto cst = dimOp.getIndex().getDefiningOp<arith::ConstantOp>())
-        if (auto intAttr = dyn_cast<IntegerAttr>(cst.getValue()))
-          recordDim(ba, (int32_t)intAttr.getValue().getSExtValue());
-    } else if (auto dimOp = dyn_cast<tensor::DimOp>(op)) {
-      auto ba = dyn_cast<BlockArgument>(dimOp.getSource());
-      if (auto cst = dimOp.getIndex().getDefiningOp<arith::ConstantOp>())
-        if (auto intAttr = dyn_cast<IntegerAttr>(cst.getValue()))
-          recordDim(ba, (int32_t)intAttr.getValue().getSExtValue());
-    }
-  });
-
-  // Constraints: preserve existing {kind, lhs, rhs} serialization.
-  ArrayAttr constraintsAttr;
-  if (!plan.constraints.empty()) {
-    SmallVector<Attribute> cs;
-    for (auto &c : plan.constraints) {
-      NamedAttrList ca;
-      ca.append("kind",
-                StringAttr::get(ctx, c.kind == TileConstraint::Divides
-                                         ? "divides" : "le_bytes"));
-      ca.append("lhs", StringAttr::get(ctx, c.lhs));
-      ca.append("rhs", StringAttr::get(ctx, c.rhs));
-      cs.push_back(ca.getDictionary(ctx));
-    }
-    constraintsAttr = ArrayAttr::get(ctx, cs);
-  }
-
-  DictionaryAttr entryDict =
-      vector_plan::serializeTilingInfoSchema(ctx, schema, constraintsAttr);
-  StringRef attrName = "vector_plan.tiling_infos";
-  SmallVector<Attribute> infos;
-  if (auto existing = moduleOp->getAttrOfType<ArrayAttr>(attrName))
-    llvm::append_range(infos, existing.getValue());
-  infos.push_back(entryDict);
-  moduleOp->setAttr(attrName, ArrayAttr::get(ctx, infos));
+  ArrayAttr constraintsAttr = serializeConstraints(ctx, plan.constraints);
+  serializeAndAttach(moduleOp, schema, constraintsAttr);
 }
 
 // ===========================================================================
