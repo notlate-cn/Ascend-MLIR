@@ -7,13 +7,16 @@
 #include "BufferizationDriver.h"
 
 #include "Conversion/Ascend/Common/Attributes.h"
+#include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Bufferization/Transforms/Bufferize.h"
 #include "mlir/Dialect/Bufferization/Transforms/OneShotAnalysis.h"
 #include "mlir/Dialect/Bufferization/Transforms/OneShotModuleBufferize.h"
+#include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
 #include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/BuiltinTypes.h"
+#include "mlir/IR/Matchers.h"
 #include "mlir/IR/Operation.h"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/STLExtras.h"
@@ -21,6 +24,7 @@
 #include "llvm/ADT/StringMap.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/Support/Casting.h"
+#include "llvm/Support/raw_ostream.h"
 
 namespace mlir::afir::ascend::realize {
 namespace {
@@ -46,6 +50,124 @@ static FailureOr<uint64_t> getStaticTensorByteSize(Value value) {
   uint64_t elementCount = static_cast<uint64_t>(tensorType.getNumElements());
   uint64_t totalBits = elementCount * static_cast<uint64_t>(elementBits);
   return (totalBits + 7) / 8;
+}
+
+static std::string joinFactors(ArrayRef<std::string> factors) {
+  if (factors.empty())
+    return "1";
+  std::string result;
+  llvm::raw_string_ostream os(result);
+  llvm::interleave(factors, os,
+                   [&os](const std::string &factor) { os << factor; },
+                   " * ");
+  return result;
+}
+
+static std::optional<std::string> getTensorDimExpr(Value value, unsigned dim);
+
+static std::optional<std::string> getIndexExpr(Value value) {
+  std::optional<int64_t> constant = getConstantIntValue(value);
+  if (constant)
+    return std::to_string(*constant);
+
+  if (auto dimOp = value.getDefiningOp<tensor::DimOp>()) {
+    std::optional<int64_t> dimIndex = getConstantIntValue(dimOp.getIndex());
+    if (!dimIndex || *dimIndex < 0)
+      return std::nullopt;
+    return getTensorDimExpr(dimOp.getSource(),
+                            static_cast<unsigned>(*dimIndex));
+  }
+
+  return std::nullopt;
+}
+
+static std::optional<std::string> getFunctionArgDimExpr(Value value,
+                                                        unsigned dim) {
+  auto blockArg = dyn_cast<BlockArgument>(value);
+  if (!blockArg)
+    return std::nullopt;
+  Operation *parentOp = blockArg.getOwner()->getParentOp();
+  if (!isa_and_nonnull<func::FuncOp>(parentOp))
+    return std::nullopt;
+  return (llvm::Twine("dim_arg") + llvm::Twine(blockArg.getArgNumber()) +
+          "_" + llvm::Twine(dim))
+      .str();
+}
+
+static std::optional<std::string> getEmptyResultDimExpr(tensor::EmptyOp emptyOp,
+                                                        unsigned dim) {
+  auto tensorType = dyn_cast<RankedTensorType>(emptyOp.getType());
+  if (!tensorType || dim >= static_cast<unsigned>(tensorType.getRank()) ||
+      !tensorType.isDynamicDim(dim))
+    return std::nullopt;
+
+  unsigned dynamicIndex = 0;
+  for (unsigned i = 0; i < dim; ++i)
+    if (tensorType.isDynamicDim(i))
+      ++dynamicIndex;
+  if (dynamicIndex >= emptyOp.getDynamicSizes().size())
+    return std::nullopt;
+  return getIndexExpr(emptyOp.getDynamicSizes()[dynamicIndex]);
+}
+
+static std::optional<std::string> getLinalgResultDimExpr(linalg::LinalgOp op,
+                                                         OpResult result,
+                                                         unsigned dim) {
+  OpOperand *init = op.getDpsInitOperand(result.getResultNumber());
+  if (!init)
+    return std::nullopt;
+  return getTensorDimExpr(init->get(), dim);
+}
+
+static std::optional<std::string> getTensorDimExpr(Value value, unsigned dim) {
+  if (std::optional<std::string> argExpr = getFunctionArgDimExpr(value, dim))
+    return argExpr;
+
+  Operation *def = value.getDefiningOp();
+  if (!def)
+    return std::nullopt;
+
+  if (auto emptyOp = dyn_cast<tensor::EmptyOp>(def))
+    return getEmptyResultDimExpr(emptyOp, dim);
+
+  if (auto castOp = dyn_cast<tensor::CastOp>(def))
+    return getTensorDimExpr(castOp.getSource(), dim);
+
+  if (auto linalgOp = dyn_cast<linalg::LinalgOp>(def))
+    if (auto result = dyn_cast<OpResult>(value))
+      return getLinalgResultDimExpr(linalgOp, result, dim);
+
+  return std::nullopt;
+}
+
+static std::optional<std::string> getTensorByteSizeExpr(Value value) {
+  auto tensorType = dyn_cast<RankedTensorType>(value.getType());
+  if (!tensorType)
+    return std::nullopt;
+
+  unsigned elementBits = tensorType.getElementTypeBitWidth();
+  if (elementBits == 0 || elementBits % 8 != 0)
+    return std::nullopt;
+
+  SmallVector<std::string, 4> factors;
+  for (auto [index, dim] : llvm::enumerate(tensorType.getShape())) {
+    if (ShapedType::isDynamic(dim)) {
+      std::optional<std::string> dimExpr =
+          getTensorDimExpr(value, static_cast<unsigned>(index));
+      if (!dimExpr)
+        return std::nullopt;
+      if (*dimExpr != "1")
+        factors.push_back(*dimExpr);
+      continue;
+    }
+    if (dim != 1)
+      factors.push_back(std::to_string(dim));
+  }
+
+  uint64_t elementBytes = elementBits / 8;
+  if (elementBytes != 1)
+    factors.push_back(std::to_string(elementBytes));
+  return joinFactors(factors);
 }
 
 static StringRef getKernelId(Operation *op) {
@@ -206,6 +328,7 @@ static BufferizedKernelIR buildIR(StringRef kernelId,
     FailureOr<uint64_t> byteSize = getStaticTensorByteSize(value);
     if (failed(byteSize))
       allStaticByteSizesKnown = false;
+    std::optional<std::string> byteSizeExpr = getTensorByteSizeExpr(value);
 
     bool vectorTemporary =
         roleIt->second == BufferizedValueRole::Temporary &&
@@ -218,6 +341,9 @@ static BufferizedKernelIR buildIR(StringRef kernelId,
     valueFact.staticByteSizeKnown = succeeded(byteSize);
     if (succeeded(byteSize))
       valueFact.byteSize = *byteSize;
+    valueFact.byteSizeExprKnown = byteSizeExpr.has_value();
+    if (byteSizeExpr)
+      valueFact.byteSizeExpr = *byteSizeExpr;
     ir.valueFacts.push_back(valueFact);
 
     switch (roleIt->second) {

@@ -59,6 +59,12 @@ void printRealizeReport(llvm::ArrayRef<RealizePlanBundle> bundles,
     os << "  capacity_check_deferred = "
        << (bundle.staticMemory.capacityCheckDeferred ? "true" : "false")
        << "\n";
+    os << "  workspace_size_expr_known = "
+       << (bundle.staticMemory.workspaceSizeExprKnown ? "true" : "false")
+       << "\n";
+    if (bundle.staticMemory.workspaceSizeExprKnown)
+      os << "  workspace_size_expr = \"" << bundle.staticMemory.workspaceSizeExpr
+         << "\"\n";
     os << "MovementPlan:\n";
     os << "  kernel = " << bundle.movement.kernelId << "\n";
     os << "  mode = \"" << bundle.movement.mode << "\"\n";

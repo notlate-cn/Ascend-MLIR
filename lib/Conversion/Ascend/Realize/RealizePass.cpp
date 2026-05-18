@@ -71,6 +71,14 @@ static bool isSupportedPlacementMode(StringRef mode) {
   return mode == kGmDefaultPlacementMode || mode == kTargetAwarePlacementMode;
 }
 
+static void appendWorkspaceExprTerm(std::string &expr, StringRef term) {
+  if (term.empty() || term == "0")
+    return;
+  if (!expr.empty())
+    expr += " + ";
+  expr += term.str();
+}
+
 static LogicalResult
 stampWorkspaceSizeAttrs(ModuleOp module,
                         ArrayRef<RealizePlanBundle> bundles) {
@@ -84,8 +92,10 @@ stampWorkspaceSizeAttrs(ModuleOp module,
   for (func::FuncOp funcOp : module.getOps<func::FuncOp>()) {
     llvm::StringSet<> seenKernels;
     uint64_t workspaceByteCount = 0;
+    std::string workspaceSizeExpr;
     bool hasScheduledKernel = false;
     bool hasKnownWorkspace = false;
+    bool hasDynamicWorkspaceExpr = false;
     bool workspaceByteCountOverflow = false;
 
     funcOp.walk([&](Operation *op) {
@@ -98,7 +108,16 @@ stampWorkspaceSizeAttrs(ModuleOp module,
         return;
       const StaticMemoryPlan *staticMemory =
           staticMemoryByKernel.lookup(kernelId);
-      if (!staticMemory || !staticMemory->peakUsageBytesKnown)
+      if (!staticMemory)
+        return;
+      if (staticMemory->workspaceSizeExprKnown) {
+        hasKnownWorkspace = true;
+        hasDynamicWorkspaceExpr = true;
+        appendWorkspaceExprTerm(workspaceSizeExpr,
+                                staticMemory->workspaceSizeExpr);
+        return;
+      }
+      if (!staticMemory->peakUsageBytesKnown)
         return;
       hasKnownWorkspace = true;
       uint64_t maxSigned =
@@ -121,12 +140,24 @@ stampWorkspaceSizeAttrs(ModuleOp module,
              << " exceeds signed 64-bit range";
 
     funcOp->removeAttr(::mlir::afir::ascend::kCannWorkspaceSizeBytesAttr);
-    if (!hasKnownWorkspace || workspaceByteCount == 0)
+    funcOp->removeAttr(::mlir::afir::ascend::kCannWorkspaceSizeExprAttr);
+    if (!hasKnownWorkspace)
       continue;
 
-    funcOp->setAttr(
-        ::mlir::afir::ascend::kCannWorkspaceSizeBytesAttr,
-        builder.getI64IntegerAttr(static_cast<int64_t>(workspaceByteCount)));
+    if (hasDynamicWorkspaceExpr) {
+      if (workspaceByteCount != 0)
+        appendWorkspaceExprTerm(workspaceSizeExpr,
+                                std::to_string(workspaceByteCount));
+      if (!workspaceSizeExpr.empty())
+        funcOp->setAttr(::mlir::afir::ascend::kCannWorkspaceSizeExprAttr,
+                        builder.getStringAttr(workspaceSizeExpr));
+      continue;
+    }
+
+    if (workspaceByteCount != 0)
+      funcOp->setAttr(::mlir::afir::ascend::kCannWorkspaceSizeBytesAttr,
+                      builder.getI64IntegerAttr(
+                          static_cast<int64_t>(workspaceByteCount)));
   }
 
   return success();

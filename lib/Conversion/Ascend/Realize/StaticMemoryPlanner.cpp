@@ -8,6 +8,7 @@
 
 #include "Target/Ascend/TargetMemoryModel.h"
 #include "llvm/ADT/STLExtras.h"
+#include "llvm/Support/raw_ostream.h"
 
 #include <algorithm>
 
@@ -29,6 +30,8 @@ static void populateVectorTemporarySlots(const BufferizedKernelIR &bufferizedIR,
   uint64_t logicalLocalBytes = 0;
   uint64_t peakWorkspaceBytes = 0;
   unsigned peakWorkspaceUnits = 0;
+  bool allWorkspaceExprsKnown = true;
+  SmallVector<std::string, 4> workspaceExprTerms;
 
   for (const BufferizedValueFact &fact : bufferizedIR.valueFacts) {
     if (!fact.isVectorTemporary)
@@ -43,15 +46,25 @@ static void populateVectorTemporarySlots(const BufferizedKernelIR &bufferizedIR,
     interval.byteSize = fact.byteSize;
     plan.liveIntervals.push_back(interval);
 
-    if (fact.staticByteSizeKnown)
+    if (fact.staticByteSizeKnown) {
       logicalLocalBytes += fact.byteSize;
+      if (fact.byteSize != 0)
+        workspaceExprTerms.push_back(std::to_string(fact.byteSize));
+    } else {
+      if (!fact.byteSizeExprKnown)
+        allWorkspaceExprsKnown = false;
+      else
+        workspaceExprTerms.push_back(fact.byteSizeExpr);
+    }
 
     unsigned physicalSlotIndex = physicalSlots.size();
-    for (auto [index, physicalSlot] : llvm::enumerate(physicalSlots)) {
-      if (physicalSlot.liveUntil <= interval.start &&
-          (!fact.staticByteSizeKnown || physicalSlot.capacity >= fact.byteSize)) {
-        physicalSlotIndex = static_cast<unsigned>(index);
-        break;
+    if (fact.staticByteSizeKnown) {
+      for (auto [index, physicalSlot] : llvm::enumerate(physicalSlots)) {
+        if (physicalSlot.liveUntil <= interval.start &&
+            physicalSlot.capacity >= fact.byteSize) {
+          physicalSlotIndex = static_cast<unsigned>(index);
+          break;
+        }
       }
     }
 
@@ -77,6 +90,8 @@ static void populateVectorTemporarySlots(const BufferizedKernelIR &bufferizedIR,
     slot.place = kVectorTemporaryPlace;
     slot.staticByteSizeKnown = fact.staticByteSizeKnown;
     slot.byteSize = fact.byteSize;
+    slot.byteSizeExprKnown = fact.byteSizeExprKnown;
+    slot.byteSizeExpr = fact.byteSizeExpr;
     plan.workspaceSlots.push_back(slot);
 
     unsigned liveUnits = 0;
@@ -97,6 +112,16 @@ static void populateVectorTemporarySlots(const BufferizedKernelIR &bufferizedIR,
       plan.localBufferByteCount = logicalLocalBytes;
       plan.workspaceByteCount = nextOffset;
       plan.peakUsageByteCount = peakWorkspaceBytes;
+    }
+    if (!bufferizedIR.staticByteSizeKnown && allWorkspaceExprsKnown &&
+        !workspaceExprTerms.empty()) {
+      std::string expr;
+      llvm::raw_string_ostream os(expr);
+      llvm::interleave(workspaceExprTerms, os,
+                       [&os](const std::string &term) { os << term; },
+                       " + ");
+      plan.workspaceSizeExprKnown = true;
+      plan.workspaceSizeExpr = os.str();
     }
   }
 }
