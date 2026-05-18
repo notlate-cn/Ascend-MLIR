@@ -46,6 +46,8 @@ TEST(AscendCommonAttributesTest, SharedBackendContractStringsAreCentralized) {
   EXPECT_EQ(ascend::kAscendCKernelKindVec, "vec");
   EXPECT_EQ(ascend::kAscendCKernelKindCube, "cube");
   EXPECT_EQ(ascend::kAscendCKernelKindMix, "mix");
+  EXPECT_EQ(ascend::kCannWorkspaceSizeBytesAttr,
+            "cann.workspace_size_bytes");
   EXPECT_EQ(ascend::kOpRoleVector, "vector");
   EXPECT_EQ(ascend::kOpRoleCube, "cube");
   EXPECT_EQ(ascend::kOpRoleReduction, "reduction");

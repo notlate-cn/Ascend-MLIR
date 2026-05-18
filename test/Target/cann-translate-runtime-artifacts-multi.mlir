@@ -34,7 +34,7 @@
 // MANIFEST: "shapeKey": "arg0_dim0"
 // MANIFEST: "workspace": {
 // MANIFEST: "argIndex": 2
-// MANIFEST: "sizeBytes": 0
+// MANIFEST: "sizeBytes": 1024
 // MANIFEST: "entry_index": 1,
 // MANIFEST: "kernel_id": "kernel_b"
 // MANIFEST: "decisionId": "kernel_b.decision.0"
@@ -46,7 +46,7 @@
 // MANIFEST: "shapeKey": "arg0_dim0"
 // MANIFEST: "workspace": {
 // MANIFEST: "argIndex": 2
-// MANIFEST: "sizeBytes": 0
+// MANIFEST: "sizeBytes": 2048
 
 module attributes {
     ascend.kernel_graph.edges = [
@@ -71,7 +71,8 @@ module attributes {
       }],
       ascendc.aicore,
       ascendc.global,
-      cann.num_inputs = 1 : i32} {
+      cann.num_inputs = 1 : i32,
+      cann.workspace_size_bytes = 1024 : i64} {
     func.return
   }
 
@@ -94,7 +95,8 @@ module attributes {
       }],
       ascendc.aicore,
       ascendc.global,
-      cann.num_inputs = 1 : i32} {
+      cann.num_inputs = 1 : i32,
+      cann.workspace_size_bytes = 2048 : i64} {
     func.return
   }
 }

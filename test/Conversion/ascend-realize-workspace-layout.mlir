@@ -90,6 +90,8 @@ func.func @workspace_layout_vector_temporary(%arg0: tensor<64xf16>, %arg1: tenso
 // CHECK-NEXT:   memory_space_annotations = 0
 // CHECK-NEXT:   materialized_allocs = 0
 // CHECK-NEXT:   materialized_copies = 0
+// CHECK: func.func @workspace_layout_vector_temporary
+// CHECK-SAME: cann.workspace_size_bytes = 128 : i64
 
 // MATERIALIZE-LABEL: Realize report
 // MATERIALIZE: MovementPlan:
@@ -114,6 +116,8 @@ func.func @workspace_layout_vector_temporary(%arg0: tensor<64xf16>, %arg1: tenso
 // MATERIALIZE-NEXT:   memory_space_annotations = 0
 // MATERIALIZE-NEXT:   materialized_allocs = 2
 // MATERIALIZE-NEXT:   materialized_copies = 2
+// MATERIALIZE: func.func @workspace_layout_vector_temporary
+// MATERIALIZE-SAME: cann.workspace_size_bytes = 128 : i64
 // MATERIALIZE: memref.alloc() : memref<64xf16, 9 : i32>
 // MATERIALIZE: memref.copy {{.*}} : memref<64xf16> to memref<64xf16, 9 : i32>
 // MATERIALIZE: memref.alloc() {{.*}} : memref<64xf16, 10 : i32>

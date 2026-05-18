@@ -6,6 +6,7 @@
 
 #include "Conversion/Ascend/Realize/RealizePass.h"
 
+#include "Conversion/Ascend/Common/Attributes.h"
 #include "Conversion/Ascend/Debug/DebugOptions.h"
 #include "BufferizationDriver.h"
 #include "MemoryRealizationDriver.h"
@@ -31,8 +32,10 @@
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringMap.h"
+#include "llvm/ADT/StringSet.h"
 #include "llvm/Support/raw_ostream.h"
 
+#include <limits>
 #include <optional>
 #include <string>
 #include <utility>
@@ -66,6 +69,67 @@ static bool isSupportedMaterializationMode(StringRef mode) {
 
 static bool isSupportedPlacementMode(StringRef mode) {
   return mode == kGmDefaultPlacementMode || mode == kTargetAwarePlacementMode;
+}
+
+static LogicalResult
+stampWorkspaceSizeAttrs(ModuleOp module,
+                        ArrayRef<RealizePlanBundle> bundles) {
+  llvm::StringMap<const StaticMemoryPlan *> staticMemoryByKernel;
+  for (const RealizePlanBundle &bundle : bundles) {
+    if (!bundle.kernel.kernelId.empty())
+      staticMemoryByKernel[bundle.kernel.kernelId] = &bundle.staticMemory;
+  }
+
+  Builder builder(module.getContext());
+  for (func::FuncOp funcOp : module.getOps<func::FuncOp>()) {
+    llvm::StringSet<> seenKernels;
+    uint64_t workspaceByteCount = 0;
+    bool hasScheduledKernel = false;
+    bool hasKnownWorkspace = false;
+    bool workspaceByteCountOverflow = false;
+
+    funcOp.walk([&](Operation *op) {
+      auto kernelAttr = op->getAttrOfType<StringAttr>(kKernelAttr);
+      if (!kernelAttr)
+        return;
+      hasScheduledKernel = true;
+      StringRef kernelId = kernelAttr.getValue();
+      if (!seenKernels.insert(kernelId).second)
+        return;
+      const StaticMemoryPlan *staticMemory =
+          staticMemoryByKernel.lookup(kernelId);
+      if (!staticMemory || !staticMemory->peakUsageBytesKnown)
+        return;
+      hasKnownWorkspace = true;
+      uint64_t maxSigned =
+          static_cast<uint64_t>(std::numeric_limits<int64_t>::max());
+      if (staticMemory->workspaceByteCount > maxSigned ||
+          workspaceByteCount > maxSigned - staticMemory->workspaceByteCount) {
+        workspaceByteCountOverflow = true;
+        return;
+      }
+      workspaceByteCount += staticMemory->workspaceByteCount;
+    });
+
+    if (!hasScheduledKernel)
+      continue;
+
+    if (workspaceByteCountOverflow)
+      return funcOp.emitError()
+             << "computed "
+             << ::mlir::afir::ascend::kCannWorkspaceSizeBytesAttr
+             << " exceeds signed 64-bit range";
+
+    funcOp->removeAttr(::mlir::afir::ascend::kCannWorkspaceSizeBytesAttr);
+    if (!hasKnownWorkspace || workspaceByteCount == 0)
+      continue;
+
+    funcOp->setAttr(
+        ::mlir::afir::ascend::kCannWorkspaceSizeBytesAttr,
+        builder.getI64IntegerAttr(static_cast<int64_t>(workspaceByteCount)));
+  }
+
+  return success();
 }
 
 static FailureOr<SmallVector<RealizePlanBundle, 4>>
@@ -273,6 +337,11 @@ struct AscendRealizePass
         getOperation()->emitError()
             << "ascend-realize requires scheduled structured lowering "
                "attributes";
+      signalPassFailure();
+      return;
+    }
+
+    if (failed(stampWorkspaceSizeAttrs(getOperation(), *bundles))) {
       signalPassFailure();
       return;
     }

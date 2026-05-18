@@ -30,6 +30,11 @@ struct TilingFieldInfo {
   std::string shapeKey;
 };
 
+struct WorkspaceInfo {
+  int64_t sizeBytes = 0;
+  std::string sizeExpr = "0";
+};
+
 static constexpr llvm::StringLiteral kKernelMetadataKernelKey = "kernel";
 static constexpr llvm::StringLiteral kKernelMetadataDecisionIdKey =
     "decision_id";
@@ -194,15 +199,33 @@ static llvm::json::Object buildShapeDescriptor(ArrayRef<TilingFieldInfo> fields)
   return shape;
 }
 
-static llvm::json::Object buildWorkspaceDescriptor(func::FuncOp funcOp) {
+static FailureOr<WorkspaceInfo> getWorkspaceInfo(func::FuncOp funcOp) {
+  WorkspaceInfo info;
+  auto sizeAttr = funcOp->getAttrOfType<IntegerAttr>(
+      ::mlir::afir::ascend::kCannWorkspaceSizeBytesAttr);
+  if (!sizeAttr)
+    return info;
+
+  int64_t sizeBytes = sizeAttr.getInt();
+  if (sizeBytes < 0)
+    return funcOp.emitError()
+           << ::mlir::afir::ascend::kCannWorkspaceSizeBytesAttr
+           << " must be a non-negative integer attribute";
+  info.sizeBytes = sizeBytes;
+  info.sizeExpr = std::to_string(sizeBytes);
+  return info;
+}
+
+static llvm::json::Object buildWorkspaceDescriptor(func::FuncOp funcOp,
+                                                   const WorkspaceInfo &info) {
   llvm::json::Object workspace;
   workspace["mode"] = "fixed";
   workspace["argIndex"] =
       static_cast<int64_t>(funcOp.getNumArguments() >= 2
                                ? funcOp.getNumArguments() - 2
                                : 0);
-  workspace["sizeExpr"] = "0";
-  workspace["sizeBytes"] = 0;
+  workspace["sizeExpr"] = info.sizeExpr;
+  workspace["sizeBytes"] = info.sizeBytes;
   return workspace;
 }
 
@@ -567,6 +590,9 @@ buildKernelManifestEntry(func::FuncOp funcOp, int64_t entryIndex,
       buildScheduleEntries(funcOp);
   if (failed(scheduleEntries))
     return failure();
+  FailureOr<WorkspaceInfo> workspaceInfo = getWorkspaceInfo(funcOp);
+  if (failed(workspaceInfo))
+    return failure();
 
   llvm::json::Object kernelEntry;
   kernelEntry["kernel_id"] = funcOp.getName().str();
@@ -578,11 +604,11 @@ buildKernelManifestEntry(func::FuncOp funcOp, int64_t entryIndex,
   kernelEntry["tilingParams"] = std::move(*tilingParams);
   kernelEntry["abiSignature"] = (funcOp.getName() + ":cann_static").str();
   kernelEntry["cacheKey"] = (funcOp.getName() + ":static:" + soc).str();
-  kernelEntry["workspaceSizeExpr"] = "0";
-  kernelEntry["workspaceSizeBytes"] = 0;
+  kernelEntry["workspaceSizeExpr"] = workspaceInfo->sizeExpr;
+  kernelEntry["workspaceSizeBytes"] = workspaceInfo->sizeBytes;
   kernelEntry["shapeArgOrder"] = buildShapeArgOrder(*fieldsOr);
   kernelEntry["shape"] = buildShapeDescriptor(*fieldsOr);
-  kernelEntry["workspace"] = buildWorkspaceDescriptor(funcOp);
+  kernelEntry["workspace"] = buildWorkspaceDescriptor(funcOp, *workspaceInfo);
   kernelEntry["resources"] = buildResourceDescriptor(funcOp);
   return kernelEntry;
 }
@@ -865,6 +891,9 @@ LogicalResult emitTilingSpaceJson(ModuleOp module, StringRef outPath,
       collectTilingFields(*funcOr, *tilingTypeOr);
   if (failed(fieldsOr))
     return failure();
+  FailureOr<WorkspaceInfo> workspaceInfo = getWorkspaceInfo(*funcOr);
+  if (failed(workspaceInfo))
+    return failure();
 
   llvm::json::Object root;
   root["schema_version"] = "2.0";
@@ -872,7 +901,7 @@ LogicalResult emitTilingSpaceJson(ModuleOp module, StringRef outPath,
   root["kernel_file"] = options.kernelFile.str();
   root["soc"] = options.soc.str();
   root["block_dim_expr"] = "20";
-  root["workspace_size_expr"] = "0";
+  root["workspace_size_expr"] = workspaceInfo->sizeExpr;
   root["tiling_params"] = buildTilingSchema(*fieldsOr);
   return writeJsonFile(module.getOperation(), outPath, std::move(root));
 }
@@ -904,6 +933,10 @@ emitRuntimeManifestJson(ModuleOp module, StringRef outPath,
       buildScheduleEntries(primaryKernel);
   if (failed(scheduleEntries))
     return failure();
+  FailureOr<WorkspaceInfo> primaryWorkspaceInfo =
+      getWorkspaceInfo(primaryKernel);
+  if (failed(primaryWorkspaceInfo))
+    return failure();
 
   llvm::json::Array kernelEntries;
   for (auto [index, kernel] : llvm::enumerate(kernels)) {
@@ -928,11 +961,12 @@ emitRuntimeManifestJson(ModuleOp module, StringRef outPath,
   root["abiSignature"] = (primaryKernel.getName() + ":cann_static").str();
   root["cacheKey"] =
       (primaryKernel.getName() + ":static:" + options.soc).str();
-  root["workspaceSizeExpr"] = "0";
-  root["workspaceSizeBytes"] = 0;
+  root["workspaceSizeExpr"] = primaryWorkspaceInfo->sizeExpr;
+  root["workspaceSizeBytes"] = primaryWorkspaceInfo->sizeBytes;
   root["shapeArgOrder"] = buildShapeArgOrder(*fieldsOr);
   root["shape"] = buildShapeDescriptor(*fieldsOr);
-  root["workspace"] = buildWorkspaceDescriptor(primaryKernel);
+  root["workspace"] =
+      buildWorkspaceDescriptor(primaryKernel, *primaryWorkspaceInfo);
   root["resources"] = buildResourceDescriptor(primaryKernel);
   root["kernelGraph"] = std::move(*kernelGraph);
   root["kernel_entries"] = std::move(kernelEntries);
@@ -946,6 +980,9 @@ LogicalResult emitHostTilingCpp(ModuleOp module, StringRef outPath,
     return failure();
   FailureOr<emitasc::PyStructType> tilingTypeOr = getTilingType(*funcOr);
   if (failed(tilingTypeOr))
+    return failure();
+  FailureOr<WorkspaceInfo> workspaceInfo = getWorkspaceInfo(*funcOr);
+  if (failed(workspaceInfo))
     return failure();
 
   auto types = tilingTypeOr->getTypesAttr().getValue();
@@ -1011,7 +1048,7 @@ LogicalResult emitHostTilingCpp(ModuleOp module, StringRef outPath,
        << "_GetWorkspaceSize(const int64_t* shape_args, int32_t shape_count) {\n";
     os << "  (void)shape_args;\n";
     os << "  return shape_count == " << shapeFieldPositions.size()
-       << " ? 0 : -1;\n";
+       << " ? " << workspaceInfo->sizeBytes << " : -1;\n";
     os << "}\n\n";
     os << "} // extern \"C\"\n";
   });

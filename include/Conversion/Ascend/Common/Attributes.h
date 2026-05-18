@@ -63,6 +63,8 @@ inline constexpr llvm::StringLiteral kAscendCKernelKindAttr =
 inline constexpr llvm::StringLiteral kAscendCKernelKindVec = "vec";
 inline constexpr llvm::StringLiteral kAscendCKernelKindCube = "cube";
 inline constexpr llvm::StringLiteral kAscendCKernelKindMix = "mix";
+inline constexpr llvm::StringLiteral kCannWorkspaceSizeBytesAttr =
+    "cann.workspace_size_bytes";
 inline constexpr llvm::StringLiteral kGatherDimAttr = "gather_dim";
 inline constexpr llvm::StringLiteral kEmbeddingDimAttr = "embedding_dim";
 
