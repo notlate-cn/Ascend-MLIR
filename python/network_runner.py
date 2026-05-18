@@ -268,14 +268,69 @@ def _resolve_kernel_input_shape(network, kid, arg_idx, runner_inputs):
     return _resolve_kernel_input_shape(network, arg["kernel"], 0, runner_inputs)
 
 
+def _resolve_shape_via_schema(space, network, kid, shape_key, runner_inputs):
+    """Resolve a shape_key string against the kernel's schema_args
+    (loaded from <kernel>_space.json by phase 4).
+
+    shape_key formats:
+      - "arg<N>_dim<D>" where N is a network-arg index (the shape_key
+        format emitted by CannTranslation when the kernel field is sourced
+        from an input arg, OR the literal shape_expr entry for an output-
+        sourced field whose expr happens to be 'argK_dimL').
+      - numeric literal (e.g. "32") when the schema's shape_expr resolved
+        to a static dim.  Returned as int(value) directly.
+
+    Returns int (resolved dim size) or None if no schema info is present
+    (caller falls back to the legacy resolver).
+    """
+    import re
+    sch = space.get("schema_args")
+    if not sch:
+        return None
+
+    # Numeric literal shape_expr → just an int.
+    try:
+        return int(shape_key)
+    except ValueError:
+        pass
+
+    m = re.match(r"^arg(\d+)_dim(\d+)$", shape_key)
+    if not m:
+        # Complex shape_expr (a*b+c, etc.) — runner doesn't evaluate yet.
+        raise RuntimeError(
+            f"network_runner: shape_key {shape_key!r} for kernel {kid!r} "
+            "is not a simple argN_dimD form or numeric literal; complex "
+            "shape_expr not yet supported in runner.")
+    target_arg, dim_idx = int(m.group(1)), int(m.group(2))
+
+    # The integer in shape_key is the schema's `network_index` for an input
+    # arg — which corresponds to the kernel's coordinator-call operand position
+    # (i.e. the kernel.args[] index in network.json).  Find the schema entry
+    # and resolve via the existing legacy walker using its mlir_index, which
+    # is the position in the kernel func signature (== kernel.args[] index).
+    for sa in sch:
+        if sa.get("role") == "input" and sa.get("network_index") == target_arg:
+            kernel_arg_idx = sa.get("mlir_index", target_arg)
+            shape = _resolve_kernel_input_shape(
+                network, kid, kernel_arg_idx, runner_inputs)
+            return int(shape[dim_idx])
+    raise RuntimeError(
+        f"network_runner: shape_key {shape_key!r} does not match any input "
+        f"in kernel {kid!r}'s schema_args.")
+
+
 def _shape_key_values_for_kernel(space, network, kid, runner_inputs):
-    """Return {shape_key: int} for every shape_key referenced in `space`."""
     import re
     out = {}
     for p in space.get("tiling_params", []):
         sk = p.get("shape_key")
         if not sk or sk in out:
             continue
+        val = _resolve_shape_via_schema(space, network, kid, sk, runner_inputs)
+        if val is not None:
+            out[sk] = val
+            continue
+        # Legacy path: shape_key like "arg<i>_dim<j>" against kernel.args[i].
         m = re.match(r"^arg(\d+)_dim(\d+)$", sk)
         if not m:
             continue
