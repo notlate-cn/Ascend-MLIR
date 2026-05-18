@@ -1136,7 +1136,12 @@ void emitTilingInfos(func::FuncOp func, const TilePlan &plan) {
         a.role = vector_plan::SchemaArgRole::Workspace;
       } else if (mt.getLayout().isIdentity()) {
         a.role = vector_plan::SchemaArgRole::Input;
-        a.networkIndex = (int32_t)numNetworkInputs++;
+        if (auto attr = func.getArgAttrOfType<IntegerAttr>(
+                ba.getArgNumber(), "vector_plan.call_arg_index"))
+          a.networkIndex = (int32_t)attr.getInt();
+        else
+          a.networkIndex = (int32_t)numNetworkInputs;
+        ++numNetworkInputs;
       } else {
         // TODO multi-result: resultIndex hard-coded to 0; revisit when
         // kernels with >1 DPS output exist.
@@ -1147,7 +1152,12 @@ void emitTilingInfos(func::FuncOp func, const TilePlan &plan) {
       // Pre-bufferize: every tensor arg is an input (DPS init tensors are
       // tensor.empty results, not func args).
       a.role = vector_plan::SchemaArgRole::Input;
-      a.networkIndex = (int32_t)numNetworkInputs++;
+      if (auto attr = func.getArgAttrOfType<IntegerAttr>(
+              ba.getArgNumber(), "vector_plan.call_arg_index"))
+        a.networkIndex = (int32_t)attr.getInt();
+      else
+        a.networkIndex = (int32_t)numNetworkInputs;
+      ++numNetworkInputs;
     } else if (isa<IndexType>(ty)) {
       a.role = vector_plan::SchemaArgRole::TileParam;
       for (auto &f : schema.fields)

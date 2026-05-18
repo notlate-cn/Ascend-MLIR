@@ -200,6 +200,16 @@ static func::FuncOp outlineGroup(OpBuilder &builder, ModuleOp module,
        llvm::zip(info.boundaryIn, body->getArguments()))
     mapping.map(orig, arg);
 
+  // Stamp `vector_plan.call_arg_index` on each kernel input arg so downstream
+  // consumers (TilePlanGen schema build) don't have to rely on positional
+  // equality between coordinator-call operand order and kernel arg order.
+  MLIRContext *ctx = kernelFunc.getContext();
+  for (unsigned i = 0, e = info.boundaryIn.size(); i < e; ++i) {
+    kernelFunc.setArgAttr(i, "vector_plan.call_arg_index",
+                          IntegerAttr::get(IntegerType::get(ctx, 32),
+                                           (int32_t)i));
+  }
+
   // Clone all ops in block range order (linalg + interstitial non-linalg).
   builder.setInsertionPointToEnd(body);
   for (Operation *op : info.opsToClone)
