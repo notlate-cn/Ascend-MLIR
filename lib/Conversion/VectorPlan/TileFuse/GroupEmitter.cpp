@@ -500,10 +500,205 @@ emitGroupBodyOnce(OpBuilder &builder, Location loc,
   return yieldVals;
 }
 
+// Emit the displaced-multi-R case (≈ AF `IsNeedMultiReduce`,
+// reduce_api_call.cpp:96): for `out[a] = sum_{r1,r2} x[r1,a,r2]` with
+// iter [reduction, parallel, reduction], peel the outermost displaced R as a
+// step=1 outer scf.for around the parallel inner body's accumulator, and
+// rank-reduce that axis out of the inner linalg.generic so what reaches
+// ComputeConversion is the well-tested 2-D [parallel, reduction] shape.
+//
+// Single-op groups only (the only displaced-R shape we have seen in practice
+// is a bare reduce — fused-with-elementwise extensions are a separate effort).
+static SmallVector<Value>
+emitGroupWithPeeledReduce(OpBuilder &builder, Location loc,
+                           const CollapsedGroupInfo &info,
+                           const TilePlan &plan,
+                           LoopNestResult loopNest) {
+  assert(plan.peelOuterR >= 0 && "peel-outer-R requires plan.peelOuterR");
+  assert(info.topoMembers.size() == 1 &&
+         "peel-outer-R: single-op groups only");
+  LinalgOp op = info.topoMembers[0];
+
+  int peelAxis = plan.peelOuterR;
+  MLIRContext *ctx = builder.getContext();
+
+  // Affine-map helper: drop the peel iter dim from `m`'s results and renumber
+  // remaining dim positions to fit the new (peeled) iter space.
+  auto dropDim = [&](AffineMap m, unsigned drop) -> AffineMap {
+    SmallVector<AffineExpr> nr;
+    for (AffineExpr r : m.getResults()) {
+      auto de = dyn_cast<AffineDimExpr>(r);
+      assert(de && "non-AffineDimExpr in indexing map");
+      unsigned p = de.getPosition();
+      if (p == drop) continue;
+      nr.push_back(getAffineDimExpr(p > drop ? p - 1 : p, ctx));
+    }
+    return AffineMap::get(m.getNumDims() - 1, /*symbols=*/0, nr, ctx);
+  };
+
+  auto origIterTypes = op.getIteratorTypesArray();
+  auto origMaps      = op.getIndexingMapsArray();
+  SmallVector<Attribute> newIterTypeAttrs;
+  for (int i = 0; i < (int)origIterTypes.size(); ++i)
+    if (i != peelAxis)
+      newIterTypeAttrs.push_back(
+          linalg::IteratorTypeAttr::get(ctx, origIterTypes[i]));
+
+  builder.setInsertionPointToEnd(loopNest.innermostBody);
+  Value c0 = builder.create<arith::ConstantIndexOp>(loc, 0);
+  Value c1 = builder.create<arith::ConstantIndexOp>(loc, 1);
+
+  SmallVector<Value> allOuts;
+  DenseSet<Value> seenOuts;
+  for (Value out : op.getDpsInits())
+    if (seenOuts.insert(out).second) allOuts.push_back(out);
+  assert(allOuts.size() == loopNest.iterArgs.size() &&
+         "peel-outer-R: outs / iterArgs mismatch");
+
+  Value peelExt = getAxisExtentValue(builder, loc, info, peelAxis);
+
+  int numInputs = op.getNumDpsInputs();
+
+  SmallVector<Value> yieldVals;
+  for (auto [origOut, iterArg] : llvm::zip(allOuts, loopNest.iterArgs)) {
+    AffineMap outMap;
+    {
+      auto inits = op.getDpsInits();
+      for (auto [i, in] : llvm::enumerate(inits))
+        if (in == origOut) { outMap = origMaps[numInputs + (int)i]; break; }
+    }
+
+    // Output tile in the parallel body (the peel axis is projected away from
+    // outMap for a reduce, so computeSlice trivially yields the parallel
+    // slice).
+    auto outSp =
+        computeSlice(outMap, loopNest.loopIVs, plan, iterArg, builder, loc);
+
+    auto iterArgTy = cast<RankedTensorType>(iterArg.getType());
+    Type elemTy    = iterArgTy.getElementType();
+
+    SmallVector<Value> dynSizes;
+    SmallVector<int64_t> staticShape;
+    for (OpFoldResult ofr : outSp.sizes) {
+      if (auto v = dyn_cast<Value>(ofr)) {
+        dynSizes.push_back(v);
+        staticShape.push_back(ShapedType::kDynamic);
+      } else {
+        staticShape.push_back(
+            cast<IntegerAttr>(cast<Attribute>(ofr)).getInt());
+      }
+    }
+    Value accEmpty = builder.create<bufferization::AllocTensorOp>(
+        loc, RankedTensorType::get(staticShape, elemTy), dynSizes,
+        /*copy=*/Value{},
+        /*memory_space=*/builder.getI64IntegerAttr(11));
+    Value zeroAttr = builder.create<arith::ConstantOp>(
+        loc, builder.getZeroAttr(elemTy));
+    Value accZero = builder.create<linalg::FillOp>(
+                        loc, ValueRange{zeroAttr}, ValueRange{accEmpty})
+                        .getResult(0);
+
+    // Outer scf.for over the displaced R, step=1, accumulator iter_arg.  Each
+    // iteration processes a r1-size-1 chunk through a peeled 2-D inner generic.
+    auto rFor = builder.create<scf::ForOp>(loc, c0, peelExt, c1,
+                                            SmallVector<Value>{accZero});
+    builder.setInsertionPointToEnd(rFor.getBody());
+    Value accIter = rFor.getRegionIterArgs().front();
+    Value peelIV  = rFor.getInductionVar();
+
+    DenseMap<int, Value> allIVs(loopNest.loopIVs);
+    allIVs[peelAxis] = peelIV;
+    DenseMap<int, Value> sizeOverride;
+    sizeOverride[peelAxis] = c1;
+
+    // Build rank-reduced inputs and the dropped indexing maps.
+    SmallVector<Value>     newInputs;
+    SmallVector<AffineMap> newMaps;
+    for (int idx = 0; idx < numInputs; ++idx) {
+      Value operand = op->getOperand(idx);
+      AffineMap m   = origMaps[idx];
+      auto sp = computeSlice(m, allIVs, plan, operand, builder, loc,
+                              &sizeOverride);
+      // The operand-layout dim position that corresponds to the peel iter dim
+      // gets dropped from the result type (its slice size is 1).  Some operands
+      // (e.g. layernorm-style y[a] with map (r1,a,r2)->(a)) do not have the
+      // peel axis in their map at all — dropDimPos stays -1 and the result
+      // shape is unchanged.
+      auto srcTy = cast<RankedTensorType>(operand.getType());
+      int dropDimPos = -1;
+      for (int dp = 0; dp < (int)m.getNumResults(); ++dp) {
+        auto de = dyn_cast<AffineDimExpr>(m.getResult(dp));
+        if (de && (int)de.getPosition() == peelAxis) {
+          dropDimPos = dp;
+          break;
+        }
+      }
+      // Force the peel-axis size to a *static* `1` so the extract_slice
+      // verifier accepts rank-reduction (its `static_sizes` array must have a
+      // literal 1 in the dropped position; an SSA `arith.constant 1` is still
+      // dynamic from the verifier's perspective).
+      if (dropDimPos >= 0)
+        sp.sizes[dropDimPos] = OpFoldResult(builder.getI64IntegerAttr(1));
+      auto inferredTy = cast<RankedTensorType>(
+          tensor::ExtractSliceOp::inferResultType(
+              srcTy, sp.offsets, sp.sizes, sp.strides));
+      RankedTensorType rrTy = inferredTy;
+      if (dropDimPos >= 0) {
+        SmallVector<int64_t> rrShape;
+        for (int dp = 0; dp < (int)inferredTy.getRank(); ++dp)
+          if (dp != dropDimPos) rrShape.push_back(inferredTy.getShape()[dp]);
+        rrTy = RankedTensorType::get(rrShape, srcTy.getElementType());
+      }
+      Value sliced = builder.create<tensor::ExtractSliceOp>(
+          loc, rrTy, operand, sp.offsets, sp.sizes, sp.strides);
+      newInputs.push_back(sliced);
+      newMaps.push_back(dropDim(m, peelAxis));
+    }
+    newMaps.push_back(dropDim(outMap, peelAxis));
+
+    // Clone the original linalg.generic and rewrite operands + structural
+    // attrs to the peeled shape.  The body block (scalar arith ops) is
+    // unchanged — same f32 block args, same yield.  This avoids reconstructing
+    // the body manually and works for any reduce-style body.
+    SmallVector<Value> newOperands(newInputs);
+    newOperands.push_back(accIter);
+    IRMapping noMap;
+    Operation *cloned = builder.clone(*op.getOperation(), noMap);
+    for (auto [i, val] : llvm::enumerate(newOperands))
+      cloned->setOperand((unsigned)i, val);
+    cloned->getResult(0).setType(accIter.getType());
+    cloned->setAttr("iterator_types",
+                    ArrayAttr::get(ctx, newIterTypeAttrs));
+    cloned->setAttr("indexing_maps", builder.getAffineMapArrayAttr(newMaps));
+
+    builder.create<scf::YieldOp>(loc, cloned->getResult(0));
+
+    builder.setInsertionPointAfter(rFor);
+    Value writtenBack = builder.create<tensor::InsertSliceOp>(
+        loc, rFor.getResult(0), iterArg,
+        outSp.offsets, outSp.sizes, outSp.strides);
+    yieldVals.push_back(writtenBack);
+  }
+
+  builder.create<scf::YieldOp>(loc, yieldVals);
+
+  // Propagate yields up the outer loop nest (mirrors emitGroupWithReductionSplit).
+  for (int i = (int)loopNest.allForOps.size() - 2; i >= 0; --i) {
+    scf::ForOp inner = loopNest.allForOps[i + 1];
+    scf::ForOp outer = loopNest.allForOps[i];
+    builder.setInsertionPointToEnd(outer.getBody());
+    builder.create<scf::YieldOp>(loc, inner.getResults());
+  }
+  if (loopNest.allForOps.empty()) return yieldVals;
+  return SmallVector<Value>(loopNest.allForOps.front().getResults());
+}
+
 SmallVector<Value> emitGroup(OpBuilder &builder, Location loc,
                               const CollapsedGroupInfo &info,
                               const TilePlan &plan,
                               const LoopNestResult &loopNest) {
+  if (plan.peelOuterR >= 0)
+    return emitGroupWithPeeledReduce(builder, loc, info, plan, loopNest);
   if (const TileParam *rblockParam = findReductionInner(plan))
     return emitGroupWithReductionSplit(builder, loc, info, plan, loopNest,
                                         rblockParam);
