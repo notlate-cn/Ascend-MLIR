@@ -5,6 +5,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "Conversion/VectorPlan/GroupOutline/NetworkJsonEmitter.h"
+#include "Conversion/VectorPlan/TilePlan.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
 #include "mlir/IR/BuiltinOps.h"
@@ -201,6 +202,43 @@ llvm::Error emitNetworkJson(mlir::ModuleOp module, mlir::func::FuncOp coord,
         if (auto layoutAttr =
                 callee->getAttrOfType<mlir::StringAttr>("aclnn.layout"))
           kernelEntry["layout"] = layoutAttr.getValue().str();
+      }
+      // v2 schema: also emit a full per-MLIR-arg table for the runner.
+      if (callee) {
+        if (auto schema = mlir::vector_plan::lookupTilingInfoSchema(
+                module, calleeName)) {
+          llvm::json::Array schArgs;
+          for (auto &a : schema->args) {
+            llvm::json::Object e;
+            e["mlir_index"] = static_cast<int64_t>(a.mlirIndex);
+            switch (a.role) {
+              case mlir::vector_plan::SchemaArgRole::Input:
+                e["role"] = "input";
+                e["network_index"] = static_cast<int64_t>(a.networkIndex);
+                break;
+              case mlir::vector_plan::SchemaArgRole::Output: {
+                e["role"] = "output";
+                e["result_index"] = static_cast<int64_t>(a.resultIndex);
+                llvm::json::Array se;
+                for (auto &s : a.shapeExpr) se.push_back(s);
+                e["shape_expr"] = std::move(se);
+                break;
+              }
+              case mlir::vector_plan::SchemaArgRole::TileParam:
+                e["role"] = "tile_param";
+                e["name"] = a.tileParamName;
+                break;
+              case mlir::vector_plan::SchemaArgRole::Workspace:
+                e["role"] = "workspace";
+                break;
+              case mlir::vector_plan::SchemaArgRole::TilingDataStruct:
+                e["role"] = "tiling_data_struct";
+                break;
+            }
+            schArgs.push_back(std::move(e));
+          }
+          kernelEntry["schema_args"] = std::move(schArgs);
+        }
       }
       kernelEntry["args"]    = std::move(argsArr);
       kernelEntry["results"] = std::move(resultsArr);
