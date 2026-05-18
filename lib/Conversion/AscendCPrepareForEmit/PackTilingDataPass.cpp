@@ -2,6 +2,7 @@
 
 #include "Analysis/SymbolicShape/DimSymbolTable.h"
 #include "Analysis/SymbolicShape/SymExpr.h"
+#include "Conversion/VectorPlan/TilePlan.h"
 #include "ascir/Dialect/Asc/IR/Asc.h"
 #include "ascir/Dialect/EmitAsc/IR/EmitAsc.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
@@ -44,7 +45,138 @@ static emitasc::PyStructType buildTilingDataType(MLIRContext *ctx,
                                     ArrayAttr::get(ctx, nameAttrs));
 }
 
+static LogicalResult
+packTilingDataFromSchema(func::FuncOp func,
+                          const mlir::vector_plan::TilingInfoSchema &schema) {
+  using namespace mlir::vector_plan;
+  MLIRContext *ctx = func.getContext();
+  Block &entry = func.getBody().front();
+  Type i64Ty = IntegerType::get(ctx, 64);
+  Type indexTy = IndexType::get(ctx);
+
+  // Build TilingData struct from schema.fields in order.
+  SmallVector<std::string> nameStorage;
+  for (auto &f : schema.fields) nameStorage.push_back(f.name);
+  SmallVector<StringRef> tilingNames;
+  for (auto &s : nameStorage) tilingNames.push_back(s);
+  if (tilingNames.empty()) return success();
+
+  auto tilingStructTy = buildTilingDataType(ctx, tilingNames);
+  auto tilingArgTy = MemRefType::get(
+      {ShapedType::kDynamic}, tilingStructTy, MemRefLayoutAttrInterface{},
+      IntegerAttr::get(IntegerType::get(ctx, 32), kGMSpace));
+
+  OpBuilder builder(ctx);
+  builder.setInsertionPointToStart(&entry);
+  BlockArgument tilingArg = entry.addArgument(tilingArgTy, func.getLoc());
+  Value localStruct = builder.create<emitasc::CopyStructOp>(
+      func.getLoc(), tilingStructTy, tilingArg);
+
+  SmallVector<Value> fieldVals;
+  for (auto &n : nameStorage)
+    fieldVals.push_back(builder.create<emitasc::MemberOp>(
+        func.getLoc(), i64Ty, localStruct, builder.getStringAttr(n)));
+
+  // Replace tunable tile-param args with i64→index cast of the field value.
+  SmallVector<unsigned> argsToErase;
+  for (size_t i = 0; i < schema.fields.size(); ++i) {
+    auto &f = schema.fields[i];
+    if (f.kind != SchemaFieldKind::Tunable) continue;
+    if (f.argIndex < 0 ||
+        (unsigned)f.argIndex >= entry.getNumArguments())
+      return func.emitError("PackTilingData: schema tunable arg_index ")
+             << f.argIndex << " out of range";
+    BlockArgument tileArg = entry.getArgument(f.argIndex);
+    Value val = builder.create<arith::IndexCastOp>(
+        func.getLoc(), indexTy, fieldVals[i]);
+    tileArg.replaceAllUsesWith(val);
+    argsToErase.push_back((unsigned)f.argIndex);
+  }
+
+  // Symbol-shape canonicalization: if afir.dim_symbols + per-arg
+  // afir.symbolic_shape are present, dim ops on derived buffers (e.g.
+  // arg1/arg2 sharing a symbol with arg0) map back onto the canonical
+  // (rootArg, rootDim) the schema field was emitted for.  Without this,
+  // a kernel func that takes multiple same-shape inputs would have
+  // memref.dim ops on args that the schema has no field for.
+  auto dimSymsAttr = func->getAttrOfType<ArrayAttr>("afir.dim_symbols");
+  std::optional<mlir::afir::symshape::DimSymbolTable> symTable;
+  if (dimSymsAttr)
+    symTable = mlir::afir::symshape::DimSymbolTable::fromAttr(dimSymsAttr);
+  auto canonicalize = [&](unsigned argN,
+                          int64_t dimIdx) -> std::pair<unsigned, int64_t> {
+    if (symTable && dimIdx >= 0) {
+      if (auto a =
+              func.getArgAttrOfType<StringAttr>(argN, "afir.symbolic_shape")) {
+        if (auto list = mlir::afir::symshape::parseSymExprList(a.getValue())) {
+          if ((size_t)dimIdx < list->size()) {
+            const auto &e = (*list)[dimIdx];
+            if (e.getKind() == mlir::afir::symshape::SymExpr::Kind::Sym &&
+                e.getSym() < symTable->numRoots()) {
+              auto src = symTable->sourceOf(e.getSym());
+              return {src.first, (int64_t)src.second};
+            }
+          }
+        }
+      }
+    }
+    return {argN, dimIdx};
+  };
+
+  // For shape-derived fields, rewrite memref.dim %argN, %cD where
+  // (sourceArg, sourceDim) matches (after symbol-shape canonicalization).
+  SmallVector<memref::DimOp> dimOps;
+  func.walk([&](memref::DimOp d) { dimOps.push_back(d); });
+  for (memref::DimOp dimOp : dimOps) {
+    auto ba = dyn_cast<BlockArgument>(dimOp.getSource());
+    if (!ba || ba.getOwner() != &entry) continue;
+    auto cst = dimOp.getIndex().getDefiningOp<arith::ConstantOp>();
+    if (!cst) continue;
+    int64_t d = cast<IntegerAttr>(cst.getValue()).getInt();
+    auto [cArg, cDim] = canonicalize(ba.getArgNumber(), d);
+    for (size_t i = 0; i < schema.fields.size(); ++i) {
+      auto &f = schema.fields[i];
+      if (f.kind != SchemaFieldKind::ShapeDerived) continue;
+      if (f.sourceArg != (int32_t)cArg) continue;
+      if (f.sourceDim != (int32_t)cDim) continue;
+      OpBuilder b(dimOp);
+      Value idxVal = b.create<arith::IndexCastOp>(
+          dimOp.getLoc(), indexTy, fieldVals[i]);
+      dimOp.replaceAllUsesWith(idxVal);
+      dimOp.erase();
+      break;
+    }
+  }
+
+  // Erase tile-param args in reverse order.
+  llvm::sort(argsToErase, std::greater<unsigned>());
+  for (unsigned idx : argsToErase) entry.eraseArgument(idx);
+  if (func->getAttr("arg_attrs")) func->removeAttr("arg_attrs");
+
+  SmallVector<Type> newArgTypes;
+  for (BlockArgument a : entry.getArguments())
+    newArgTypes.push_back(a.getType());
+  func.setFunctionType(FunctionType::get(
+      ctx, newArgTypes, func.getFunctionType().getResults()));
+
+  OpBuilder modBuilder(ctx);
+  modBuilder.setInsertionPointToStart(
+      func->getParentOfType<ModuleOp>().getBody());
+  modBuilder.create<emitasc::DeclarePyStructOp>(
+      func.getLoc(), TypeAttr::get(tilingStructTy));
+  return success();
+}
+
 static LogicalResult packTilingData(func::FuncOp func) {
+  // v2 schema dispatch: if the module carries a v2 tiling_infos entry for
+  // this kernel, take the schema-driven path.  Otherwise fall back to the
+  // legacy v1 walk-based logic below (to be removed in S5).
+  if (auto moduleOp = func->getParentOfType<ModuleOp>()) {
+    if (auto schema =
+            mlir::vector_plan::lookupTilingInfoSchema(moduleOp, func.getName()))
+      return packTilingDataFromSchema(func, *schema);
+  }
+
   MLIRContext *ctx = func.getContext();
   Block &entry = func.getBody().front();
   Type indexTy = IndexType::get(ctx);
