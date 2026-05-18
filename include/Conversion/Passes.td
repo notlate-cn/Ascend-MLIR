@@ -348,6 +348,43 @@ def CanonicalizeCannSignaturePass : Pass<"canonicalize-cann-signature", "mlir::M
 }
 
 //===----------------------------------------------------------------------===//
+// AscendCRCoreCombine
+//===----------------------------------------------------------------------===//
+
+def AscendCRCoreCombinePass : Pass<"ascendc-rcore-combine", "mlir::ModuleOp"> {
+  let summary = "Insert cross-core SyncAll + block-0 combine for RCore reduce kernels";
+  let description = [{
+    For kernels with `afir.reduce_template = "RCore"` (multi-core full-reduce,
+    no parallel axis), the per-core accumulator → GM output write races on the
+    same scalar slot.  This pass rewrites that final write into the AF kRCore
+    two-segment pattern (same `__aicore__` kernel, separated by SyncAll):
+
+      segment 1 (per core):
+        accumulator = reduce(x[block_idx * XBLOCK : (block_idx+1) * XBLOCK])
+        DataCopy(workspace + block_idx * sizeof(elem), accumulator, 1)
+      SyncAllHard()
+      segment 2 (block_idx == 0):
+        DataCopy(vecin, workspace + 0, block_dim)   // read all partials
+        reduce_sum_2d_l2(combined, vecin)            // sum block_dim slots
+        DataCopy(out_gm, combined, 1)                // write final
+
+    Runs after `canonicalize-cann-signature` so the workspace `memref<ui8>` arg
+    is already in place.  Other reduce templates (Common, FullLoad) are
+    skipped — their per-core writes target distinct output slots and don't
+    race.
+  }];
+  let constructor = "mlir::afir::createAscendCRCoreCombinePass()";
+  let dependentDialects = [
+    "mlir::ascendc::AscendCDialect",
+    "mlir::emitasc::EmitAscDialect",
+    "mlir::arith::ArithDialect",
+    "mlir::scf::SCFDialect",
+    "mlir::func::FuncDialect",
+    "mlir::memref::MemRefDialect"
+  ];
+}
+
+//===----------------------------------------------------------------------===//
 // FuseGatherElementwise
 //===----------------------------------------------------------------------===//
 

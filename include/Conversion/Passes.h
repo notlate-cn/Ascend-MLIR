@@ -13,6 +13,7 @@
 #include "Conversion/AscendCFoldConcatAlloc/AscendCFoldConcatAllocPass.h"
 #include "Conversion/LinalgToAscendC/LinalgToAscendCPass.h"
 #include "Conversion/AscendCParallelize/AscendCParallelizePass.h"
+#include "Conversion/AscendCRCoreCombine/AscendCRCoreCombinePass.h"
 #include "Conversion/AscendCPrepareForEmit/AscendCPrepareForEmitPass.h"
 #include "Conversion/CanonicalizeCannSignature/CanonicalizeCannSignaturePass.h"
 #include "Conversion/FuseGatherElementwise/FuseGatherElementwisePass.h"

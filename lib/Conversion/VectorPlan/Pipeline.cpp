@@ -1,6 +1,7 @@
 #include "Conversion/AscendCBufferPlacement/AscendCBufferPlacementPass.h"
 #include "Conversion/AscendCParallelize/AscendCParallelizePass.h"
 #include "Conversion/AscendCPrepareForEmit/AscendCPrepareForEmitPass.h"
+#include "Conversion/AscendCRCoreCombine/AscendCRCoreCombinePass.h"
 #include "Conversion/CanonicalizeCannSignature/CanonicalizeCannSignaturePass.h"
 #include "Conversion/LinalgToAscendC/LinalgToAscendCPass.h"
 #include "Conversion/MarkStructuredOps/MarkStructuredOpsPass.h"
@@ -111,6 +112,11 @@ void registerVectorPlanPipeline() {
         // left over after finalize-kernel removes the function return.
         pm.addPass(createCanonicalizerPass());
         pm.addPass(createCanonicalizeCannSignaturePass());
+        // RCore (full-reduce multi-core): redirect each core's partial write
+        // to workspace[block_idx], insert SyncAll + block-0 combine.  No-op
+        // for non-RCore funcs.  Runs last because it needs the canonicalized
+        // signature (workspace `memref<ui8>` arg in place).
+        pm.addPass(createAscendCRCoreCombinePass());
       });
 }
 

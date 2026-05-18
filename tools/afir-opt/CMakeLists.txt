@@ -35,6 +35,7 @@ target_link_libraries(afir-opt
     AscendCFoldConcatAllocConversion
     LinalgToAscendCConversion
     AscendCParallelizeConversion
+    AscendCRCoreCombineConversion
     AscendCPrepareForEmitConversion
     CanonicalizeCannSignatureConversion
     FuseGatherElementwiseConversion
