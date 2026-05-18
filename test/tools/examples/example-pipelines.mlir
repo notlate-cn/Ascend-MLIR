@@ -2,6 +2,6 @@
 // RUN: bash %S/example_pipelines.sh | FileCheck %s
 
 // CHECK: INFO: example pipeline test entry
-// CHECK: INFO: executing 8 example pipelines
-// CHECK: EXECUTED: 8 example pipelines
+// CHECK: INFO: executing 9 example pipelines
+// CHECK: EXECUTED: 9 example pipelines
 // CHECK: ALL EXAMPLE PIPELINES PASSED
