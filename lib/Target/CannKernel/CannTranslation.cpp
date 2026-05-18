@@ -3263,11 +3263,15 @@ LogicalResult mlir::translateToCannKernel(Operation *op, raw_ostream &os,
       familyVariants[familyId].push_back({variantId, funcNameStr,
                                           perFuncPath.str().str()});
 
-    // Back-compat: when there is exactly one aicore func and the requested
-    // path differs from the per-func path (legacy direct-call case), also
-    // write to the originally requested path so older scripts that read
-    // `tiling_space.json` keep working.
-    if (aicoreFuncs.size() == 1 && tilingSpaceOutPath != perFuncPath)
+    // Back-compat: always overwrite the requested tilingSpaceOutPath with the
+    // first variant's (v0) content, so direct callers (run.sh examples) see
+    // fresh schema even when multiple variants exist for a family.  Autotuner
+    // reads <family>_family.json + per-variant files and doesn't depend on
+    // this path, so the back-compat copy doesn't affect it.  Without this,
+    // multi-variant codegen left stale content from pre-multi-variant runs
+    // because the old single-variant guard skipped the write.
+    bool isFirstVariant = variantId.empty() || variantId == "v0";
+    if (isFirstVariant && tilingSpaceOutPath != perFuncPath)
       emitTilingSpaceJson(tilingSpaceOutPath, kernelFile, funcOp, tilingType, socName);
   }
 

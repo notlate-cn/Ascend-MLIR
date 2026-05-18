@@ -27,9 +27,9 @@ PYEOF
 BUILD_DIR="$DIR/build_e2e"; rm -fr "$BUILD_DIR"; mkdir -p "$BUILD_DIR"
 ART="$BUILD_DIR/artifact"
 "$RUNTIME_SESSION" --kernel "$DIR/bcast_trailing_kernel.cpp" --kernel-kind vec --output "$ART" --name bcast_trailing__v0
-# tiling_params lists: XBLOCK, XBLOCK_SUB, dim_arg0_2 (= x's dim 2 = C).
+# tiling_params lists: XBLOCK, XBLOCK_SUB only (bcast static, no dim_arg fields).
 # args: v1=x (8x4x32), v2=y (8x4), v3=out (8x4x32).
-TP="XBLOCK=${XBLOCK},XBLOCK_SUB=${XBLOCK_SUB},dim_arg0_2=${C}"
+TP="XBLOCK=${XBLOCK},XBLOCK_SUB=${XBLOCK_SUB}"
 cat > "$BUILD_DIR/run_manifest.json" <<MEOF
 {
   "task_id": "main", "backend": "sim", "artifact_root": "${ART}",

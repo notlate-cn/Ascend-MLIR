@@ -90,7 +90,6 @@ log "  shape: x=${M}x${N}, out=${N}x${M}"
 VALIDATION_LOG="$BUILD_DIR/runtime_session.log"
 
 TILING_PARAMS="XBLOCK=${XBLOCK},XBLOCK_SUB=${XBLOCK_SUB}"
-TILING_PARAMS+=",dim_arg0_1=${N},dim_arg3_1=${M}"
 
 cat > "$RUN_MANIFEST" <<MANIFEST
 {
