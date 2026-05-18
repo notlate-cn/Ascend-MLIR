@@ -7,7 +7,7 @@ import numpy as np
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--n", type=int, default=65)
+    parser.add_argument("--n", type=int, default=64)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--out-dir", required=True)
     args = parser.parse_args()

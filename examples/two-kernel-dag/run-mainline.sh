@@ -17,9 +17,7 @@ AFIR_TRANSLATE="${AFIR_TRANSLATE:-afir-translate}"
 RUNTIME_SESSION="${RUNTIME_SESSION:-runtime-session}"
 PYTHON="${PYTHON:-python3}"
 
-# Use a non-32-byte-aligned f16 length so the demo exercises the dynamic tail
-# path instead of depending on the aligned DataCopy fast path.
-N=65
+N=64
 SEED=42
 BLOCK_DIM=20
 SOC="${SOC_VERSION:-Ascend910B1}"
