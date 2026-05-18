@@ -14,10 +14,12 @@ from typing import Iterable
 
 VALUE = r"%[A-Za-z0-9_.$#-]+"
 DEQUE_RE = re.compile(
-    rf"(?P<value>{VALUE})\s*=\s*ascendc\.deque\s+(?P<queue>{VALUE})\b"
+    rf"(?P<value>{VALUE})\s*=\s*ascendc(?:\.que_bind)?\.deque(?:_tensor)?\s+"
+    rf"(?P<queue>{VALUE})\b"
 )
 FREE_RE = re.compile(
-    rf"ascendc\.free_tensor\s+(?P<queue>{VALUE})\s*,\s*(?P<value>{VALUE})\b"
+    rf"ascendc(?:\.que_bind)?\.free_tensor\s+(?P<queue>{VALUE})\s*,\s*"
+    rf"(?P<value>{VALUE})\b"
 )
 FUNC_RE = re.compile(r"\bfunc\.func\b")
 
