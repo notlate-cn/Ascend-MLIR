@@ -22,6 +22,156 @@
 using namespace mlir;
 using namespace mlir::vector_plan;
 
+namespace mlir::vector_plan {
+
+static StringRef roleToString(SchemaArgRole r) {
+  switch (r) {
+    case SchemaArgRole::Input:            return "input";
+    case SchemaArgRole::Output:           return "output";
+    case SchemaArgRole::TileParam:        return "tile_param";
+    case SchemaArgRole::Workspace:        return "workspace";
+    case SchemaArgRole::TilingDataStruct: return "tiling_data_struct";
+  }
+  llvm_unreachable("unknown role");
+}
+
+static std::optional<SchemaArgRole> roleFromString(StringRef s) {
+  if (s == "input")              return SchemaArgRole::Input;
+  if (s == "output")             return SchemaArgRole::Output;
+  if (s == "tile_param")         return SchemaArgRole::TileParam;
+  if (s == "workspace")          return SchemaArgRole::Workspace;
+  if (s == "tiling_data_struct") return SchemaArgRole::TilingDataStruct;
+  return std::nullopt;
+}
+
+DictionaryAttr serializeTilingInfoSchema(MLIRContext *ctx,
+                                          const TilingInfoSchema &s,
+                                          ArrayAttr constraintsAttr) {
+  Type i32Ty = IntegerType::get(ctx, 32);
+  Type i64Ty = IntegerType::get(ctx, 64);
+
+  SmallVector<Attribute> fieldsAttr;
+  for (const auto &f : s.fields) {
+    NamedAttrList d;
+    d.append("name", StringAttr::get(ctx, f.name));
+    d.append("kind",
+             StringAttr::get(ctx, f.kind == SchemaFieldKind::Tunable
+                                       ? "tunable" : "shape_derived"));
+    if (f.kind == SchemaFieldKind::Tunable) {
+      d.append("axis_size",     IntegerAttr::get(i64Ty, f.axisSize));
+      d.append("default_value", IntegerAttr::get(i64Ty, f.defaultValue));
+      d.append("arg_index",     IntegerAttr::get(i32Ty, f.argIndex));
+    } else {
+      d.append("source_arg", IntegerAttr::get(i32Ty, f.sourceArg));
+      d.append("source_dim", IntegerAttr::get(i32Ty, f.sourceDim));
+    }
+    fieldsAttr.push_back(d.getDictionary(ctx));
+  }
+
+  SmallVector<Attribute> argsAttr;
+  for (const auto &a : s.args) {
+    NamedAttrList d;
+    d.append("mlir_index", IntegerAttr::get(i32Ty, a.mlirIndex));
+    d.append("role",       StringAttr::get(ctx, roleToString(a.role)));
+    if (a.role == SchemaArgRole::Input)
+      d.append("network_index", IntegerAttr::get(i32Ty, a.networkIndex));
+    if (a.role == SchemaArgRole::Output) {
+      d.append("result_index", IntegerAttr::get(i32Ty, a.resultIndex));
+      SmallVector<Attribute> exprs;
+      for (auto &e : a.shapeExpr) exprs.push_back(StringAttr::get(ctx, e));
+      d.append("shape_expr", ArrayAttr::get(ctx, exprs));
+    }
+    if (a.role == SchemaArgRole::TileParam)
+      d.append("name", StringAttr::get(ctx, a.tileParamName));
+    argsAttr.push_back(d.getDictionary(ctx));
+  }
+
+  NamedAttrList entry;
+  entry.append("kernel_id",      StringAttr::get(ctx, s.kernelId));
+  entry.append("schema_version", IntegerAttr::get(i32Ty,
+                                                  TilingInfoSchema::kSchemaVersion));
+  entry.append("fields", ArrayAttr::get(ctx, fieldsAttr));
+  entry.append("args",   ArrayAttr::get(ctx, argsAttr));
+  if (!s.blockDimExpr.empty())
+    entry.append("block_dim_expr", StringAttr::get(ctx, s.blockDimExpr));
+  if (!s.axisExtentExpr.empty())
+    entry.append("axis_extent_expr", StringAttr::get(ctx, s.axisExtentExpr));
+  if (constraintsAttr)
+    entry.append("constraints", constraintsAttr);
+  return entry.getDictionary(ctx);
+}
+
+std::optional<TilingInfoSchema> deserializeTilingInfoSchema(
+    DictionaryAttr entry) {
+  auto verAttr = entry.getAs<IntegerAttr>("schema_version");
+  if (!verAttr || verAttr.getInt() != TilingInfoSchema::kSchemaVersion)
+    return std::nullopt;
+  TilingInfoSchema s;
+  if (auto a = entry.getAs<StringAttr>("kernel_id"))      s.kernelId      = a.str();
+  if (auto a = entry.getAs<StringAttr>("block_dim_expr")) s.blockDimExpr  = a.str();
+  if (auto a = entry.getAs<StringAttr>("axis_extent_expr")) s.axisExtentExpr = a.str();
+
+  if (auto arr = entry.getAs<ArrayAttr>("fields")) {
+    for (Attribute fa : arr) {
+      auto d = dyn_cast<DictionaryAttr>(fa);
+      if (!d) continue;
+      SchemaField f;
+      f.name = d.getAs<StringAttr>("name").str();
+      auto k = d.getAs<StringAttr>("kind").getValue();
+      f.kind = (k == "tunable") ? SchemaFieldKind::Tunable
+                                : SchemaFieldKind::ShapeDerived;
+      if (f.kind == SchemaFieldKind::Tunable) {
+        f.axisSize     = d.getAs<IntegerAttr>("axis_size").getInt();
+        f.defaultValue = d.getAs<IntegerAttr>("default_value").getInt();
+        f.argIndex     = (int32_t)d.getAs<IntegerAttr>("arg_index").getInt();
+      } else {
+        f.sourceArg = (int32_t)d.getAs<IntegerAttr>("source_arg").getInt();
+        f.sourceDim = (int32_t)d.getAs<IntegerAttr>("source_dim").getInt();
+      }
+      s.fields.push_back(std::move(f));
+    }
+  }
+  if (auto arr = entry.getAs<ArrayAttr>("args")) {
+    for (Attribute aa : arr) {
+      auto d = dyn_cast<DictionaryAttr>(aa);
+      if (!d) continue;
+      SchemaArg a;
+      a.mlirIndex = (int32_t)d.getAs<IntegerAttr>("mlir_index").getInt();
+      auto r = roleFromString(d.getAs<StringAttr>("role").getValue());
+      if (!r) continue;
+      a.role = *r;
+      if (a.role == SchemaArgRole::Input)
+        a.networkIndex = (int32_t)d.getAs<IntegerAttr>("network_index").getInt();
+      if (a.role == SchemaArgRole::Output) {
+        a.resultIndex = (int32_t)d.getAs<IntegerAttr>("result_index").getInt();
+        if (auto se = d.getAs<ArrayAttr>("shape_expr"))
+          for (Attribute e : se)
+            a.shapeExpr.push_back(cast<StringAttr>(e).str());
+      }
+      if (a.role == SchemaArgRole::TileParam)
+        a.tileParamName = d.getAs<StringAttr>("name").str();
+      s.args.push_back(std::move(a));
+    }
+  }
+  return s;
+}
+
+std::optional<TilingInfoSchema>
+lookupTilingInfoSchema(ModuleOp moduleOp, StringRef kernelName) {
+  auto arr = moduleOp->getAttrOfType<ArrayAttr>("vector_plan.tiling_infos");
+  if (!arr) return std::nullopt;
+  for (Attribute a : arr) {
+    auto d = dyn_cast<DictionaryAttr>(a);
+    if (!d) continue;
+    auto kid = d.getAs<StringAttr>("kernel_id");
+    if (!kid || kid.getValue() != kernelName) continue;
+    return deserializeTilingInfoSchema(d);
+  }
+  return std::nullopt;
+}
+
+} // namespace mlir::vector_plan
+
 namespace mlir::afir {
 
 // ===========================================================================

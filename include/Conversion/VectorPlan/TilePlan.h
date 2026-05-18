@@ -1,8 +1,12 @@
 #pragma once
 #include "Conversion/VectorPlan/GroupInfo.h"
+#include "mlir/IR/BuiltinAttributes.h"
+#include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/OpDefinition.h"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/SmallVector.h"
+#include "llvm/ADT/StringRef.h"
+#include <optional>
 #include <string>
 
 namespace mlir::vector_plan {
@@ -100,5 +104,75 @@ struct TilePlan {
   llvm::DenseMap<Value, llvm::SmallVector<int>> vectorizedDims;
   llvm::SmallVector<TileConstraint>             constraints;
 };
+
+// ──── Tiling-info schema v2 ──────────────────────────────────────────────
+// One TilingInfoSchema per kernel func.  Serialized into the
+// `vector_plan.tiling_infos` ModuleOp attribute (as a DictAttr), read by
+// PackTilingData / CannTranslation / NetworkJsonEmitter / runner.
+//
+// See docs/superpowers/specs/2026-05-18-tiling-info-schema-design.md.
+
+enum class SchemaFieldKind { Tunable, ShapeDerived };
+
+struct SchemaField {
+  std::string name;
+  SchemaFieldKind kind;
+  // Tunable: axis size (-1 dyn) + default + arg_index (the MLIR arg holding
+  // the index-typed tile-param value injected by TilePlanGen).
+  int64_t axisSize = -1;
+  int64_t defaultValue = 0;
+  int32_t argIndex = -1;  // MLIR arg index for the tile-param SSA value
+  // ShapeDerived: which (MLIR arg, dim) this field's value comes from.
+  int32_t sourceArg = -1;
+  int32_t sourceDim = -1;
+};
+
+enum class SchemaArgRole {
+  Input,
+  Output,
+  TileParam,
+  Workspace,
+  TilingDataStruct,
+};
+
+struct SchemaArg {
+  int32_t mlirIndex;            // position in the kernel func signature
+  SchemaArgRole role;
+  // Input: network_index in coordinator-call operand list.
+  int32_t networkIndex = -1;
+  // Output: result_index in the kernel's `results` array + shape_expr per
+  // output dim (each entry is a host-evaluable string like "arg0_dim1").
+  int32_t resultIndex = -1;
+  llvm::SmallVector<std::string, 4> shapeExpr;
+  // TileParam: the field name this arg holds.
+  std::string tileParamName;
+};
+
+struct TilingInfoSchema {
+  static constexpr int kSchemaVersion = 2;
+  std::string kernelId;
+  std::string blockDimExpr;
+  std::string axisExtentExpr;
+  llvm::SmallVector<SchemaField, 8> fields;
+  llvm::SmallVector<SchemaArg, 8> args;
+  // Constraints: reuse the existing {kind, lhs, rhs} struct.  Carried through
+  // unchanged.
+};
+
+// Serialize a TilingInfoSchema to a DictionaryAttr suitable for embedding in
+// `vector_plan.tiling_infos`.  Round-trips with deserialize().
+mlir::DictionaryAttr serializeTilingInfoSchema(
+    mlir::MLIRContext *ctx, const TilingInfoSchema &s,
+    mlir::ArrayAttr constraintsAttr);
+
+// Decode a vector_plan.tiling_infos entry into a TilingInfoSchema.  Returns
+// std::nullopt when the entry is not v2 (caller must fall back to legacy).
+std::optional<TilingInfoSchema> deserializeTilingInfoSchema(
+    mlir::DictionaryAttr entry);
+
+// Look up the schema entry for a given kernel func from a module's
+// vector_plan.tiling_infos attr.  Returns std::nullopt when absent or v1.
+std::optional<TilingInfoSchema> lookupTilingInfoSchema(
+    mlir::ModuleOp moduleOp, llvm::StringRef kernelName);
 
 } // namespace mlir::vector_plan
