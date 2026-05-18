@@ -1027,6 +1027,11 @@ static void buildSchemaArgs(func::FuncOp func, TilingInfoSchema &schema) {
     a.mlirIndex = (int32_t)ba.getArgNumber();
     Type ty = ba.getType();
     if (auto mt = dyn_cast<MemRefType>(ty)) {
+      // Workspace heuristic: post-bufferize the workspace memref is always
+      // memref<...xi8> (added by canonicalize-cann-signature).  Kernels with
+      // genuine i8 user data (quantized inputs) would currently mis-classify
+      // here; revisit when such a kernel lands by gating on an explicit arg
+      // attribute stamped by the workspace-allocation pass.
       if (mt.getElementType().isInteger(8)) {
         a.role = SchemaArgRole::Workspace;
       } else if (mt.getLayout().isIdentity()) {
@@ -1074,14 +1079,15 @@ static void buildSchemaArgs(func::FuncOp func, TilingInfoSchema &schema) {
   if (entry.empty()) return;
   auto retOp = dyn_cast<func::ReturnOp>(entry.getTerminator());
   if (!retOp) return;
+  // Skip if we already classified a real Output arg above
+  // (post-bufferize path).  Invariant across iterations — the loop only
+  // appends new Outputs, so checking once before the loop suffices.
+  bool alreadyHaveOutput = llvm::any_of(schema.args, [&](auto &x) {
+    return x.role == SchemaArgRole::Output;
+  });
+  if (alreadyHaveOutput) return;
   unsigned baseIdx = entry.getNumArguments();
   for (auto [i, v] : llvm::enumerate(retOp.getOperands())) {
-    // Skip if we already classified a real Output arg above
-    // (post-bufferize path).
-    bool alreadyHaveOutput = llvm::any_of(schema.args, [&](auto &x) {
-      return x.role == SchemaArgRole::Output;
-    });
-    if (alreadyHaveOutput) break;
     if (!isa<RankedTensorType, MemRefType>(v.getType())) continue;
     SchemaArg a;
     a.mlirIndex   = (int32_t)(baseIdx + i);
