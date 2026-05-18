@@ -33,8 +33,12 @@ static Value materializeOffset(OpBuilder &b, Location loc, OpFoldResult ofr) {
   return ofr.get<Value>();
 }
 
-// Walk a value to its root BlockArgument + flat index offset.
-// For 2D subviews, uses memref.dim %base, 1 for the column stride.
+// Walk a value to its root BlockArgument and compute the flat element offset
+// from that arg's base.  Transparently looks through memref.cast and
+// memref.collapse_shape (collapse is contiguous, so flat index is preserved),
+// and accumulates row-major flat offsets for 1D / 2D / 3D memref.subview.
+// Chains that terminate at a bare BlockArgument with no subview return
+// {ba, acc=0}.  Returns {BlockArgument{}, Value{}} on unrecognized chains.
 static std::pair<BlockArgument, Value>
 resolveGMChain(Value start, OpBuilder &b, Location loc) {
   Value cur = start;

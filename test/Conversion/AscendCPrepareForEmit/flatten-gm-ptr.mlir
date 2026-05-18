@@ -95,8 +95,12 @@ func.func @test_bare_collapse(%arg0: memref<4x32xf32>) {
 }
 
 // Bare block arg with identity layout, directly into set_global_buffer.
+// Non-subview chain must produce offset 0.
 // CHECK-LABEL: func.func @test_bare_blockarg
-// CHECK: emitasc.reinterpret_cast
+// CHECK: %[[C0:.*]] = arith.constant 0 : index
+// CHECK: %[[Z:.*]] = arith.index_cast %[[C0]] : index to i32
+// CHECK: %[[B:.*]] = emitasc.reinterpret_cast
+// CHECK: ascendc.global_tensor.set_global_buffer %{{.*}}, %[[B]], %[[Z]]
 // CHECK-NOT: memref.collapse_shape
 func.func @test_bare_blockarg(%arg0: memref<128xf32>) {
   %gt = ascendc.global_tensor : !ascendc.global_tensor<*xf32>
@@ -107,8 +111,12 @@ func.func @test_bare_blockarg(%arg0: memref<128xf32>) {
 
 // cast → collapse_shape → blockarg: resolveGMChain walks both cast and
 // collapse_shape transparently down to the block arg.
+// Non-subview chain must produce offset 0.
 // CHECK-LABEL: func.func @test_cast_collapse
-// CHECK: emitasc.reinterpret_cast
+// CHECK: %[[C0:.*]] = arith.constant 0 : index
+// CHECK: %[[Z:.*]] = arith.index_cast %[[C0]] : index to i32
+// CHECK: %[[B:.*]] = emitasc.reinterpret_cast
+// CHECK: ascendc.global_tensor.set_global_buffer %{{.*}}, %[[B]], %[[Z]]
 // CHECK-NOT: memref.collapse_shape
 func.func @test_cast_collapse(%arg0: memref<4x32xf32>) {
   %gt = ascendc.global_tensor : !ascendc.global_tensor<*xf32>
