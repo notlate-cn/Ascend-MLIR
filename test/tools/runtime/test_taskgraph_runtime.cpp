@@ -1345,6 +1345,51 @@ static void testPrepareRuntimeSessionGraphUsesMixMetadataDefaults() {
   }
 }
 
+static void testPrepareRuntimeSessionGraphRejectsMixInputCountMismatch() {
+  const std::filesystem::path rootPath =
+      makeRuntimeSessionMixArtifactRootWithAbiDefaults(
+          "runtime-session-builder-mix-input-count-mismatch", true);
+  RuntimeSessionTempRoot cleanup(rootPath);
+  EXPECT(!cleanup.path.empty(),
+         "runtime session builder mix input-count fixture root created");
+  if (cleanup.path.empty())
+    return;
+
+  const std::filesystem::path manifestPath =
+      makeTempDir("runtime-session-builder-mix-input-count-run-manifest") /
+      "run-manifest.json";
+  std::filesystem::create_directories(manifestPath.parent_path());
+  {
+    std::ofstream os(manifestPath);
+    os << "{\n"
+       << "  \"task_id\": \"main\",\n"
+       << "  \"backend\": \"sim\",\n"
+       << "  \"artifact_root\": \"" << cleanup.path.string() << "\",\n"
+       << "  \"inputs\": [\n"
+       << "    { \"name\": \"lhs\", \"path\": \"/tmp/lhs.npy\" },\n"
+       << "    { \"name\": \"rhs\", \"path\": \"/tmp/rhs.npy\" },\n"
+       << "    { \"name\": \"dead_init\", \"path\": \"/tmp/dead_init.npy\" }\n"
+       << "  ],\n"
+       << "  \"outputs\": [\n"
+       << "    { \"name\": \"out\", \"path\": \"/tmp/out.npy\" }\n"
+       << "  ]\n"
+       << "}\n";
+  }
+
+  auto graphOr = prepareRuntimeSessionGraphFromManifest(manifestPath.string());
+  EXPECT(!(bool)graphOr,
+         "runtime session builder rejects mix invocation input count mismatch");
+  if (graphOr)
+    return;
+
+  const std::string message = llvm::toString(graphOr.takeError());
+  EXPECT(message.find("mix artifact ABI input count mismatch") !=
+             std::string::npos,
+         "runtime session builder explains mix input count mismatch");
+  EXPECT(message.find("task main") != std::string::npos,
+         "runtime session builder reports mismatch task id");
+}
+
 static void testPrepareRuntimeSessionGraphFallsBackToManifestAbiDefaults() {
   const std::filesystem::path rootPath =
       makeRuntimeSessionMixArtifactRootWithAbiDefaults(
@@ -6421,8 +6466,8 @@ static void testMixDeviceCompileCommandUsesPyascStyleDefaults() {
          "mix device compile command preserves runtime GM address transform support");
   EXPECT(!vectorContainsSubstring(cmd, "/asc/impl/"),
          "mix device compile command avoids broad asc impl include paths");
-  EXPECT(!vectorContainsSubstring(cmd, "/asc/include/"),
-         "mix device compile command avoids broad asc include paths");
+  EXPECT(vectorContainsSubstring(cmd, "/asc/include"),
+         "mix device compile command includes generated CANN helper headers");
   EXPECT(!vectorContainsSubstring(cmd, "/tikcfw/include"),
          "mix device compile command follows pyasc tikcfw include surface");
 }
@@ -6617,6 +6662,7 @@ int main() {
   testRuntimeSessionRequestBuilderLoadsMixArtifactMetadataPath();
   testRuntimeSessionRequestBuilderRejectsMissingMixArtifactMetadata();
   testPrepareRuntimeSessionGraphUsesMixMetadataDefaults();
+  testPrepareRuntimeSessionGraphRejectsMixInputCountMismatch();
   testPrepareRuntimeSessionGraphFallsBackToManifestAbiDefaults();
   testPrepareRuntimeSessionGraphAcceptsMetadataOnlyMixArtifact();
   testRuntimeSessionRequestBuilderLoadsVecArtifactFromRoot();

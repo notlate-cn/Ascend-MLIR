@@ -344,6 +344,37 @@ void applyMixArtifactInvocationDefaults(const KernelArtifact &artifact,
   }
 }
 
+llvm::Error
+validateMixArtifactInvocationBindings(const KernelArtifact &artifact,
+                                      const ExecutionInvocation &invocation,
+                                      llvm::StringRef taskId) {
+  if (artifact.kernelKind != KernelKind::Mix)
+    return llvm::Error::success();
+
+  auto abiOr = loadMixAbiForArtifact(artifact);
+  if (!abiOr)
+    return abiOr.takeError();
+  const MixAbiMetadata &abi = *abiOr;
+
+  if (invocation.inputs.size() != abi.inputs.size()) {
+    return llvm::createStringError(
+        llvm::inconvertibleErrorCode(),
+        "mix artifact ABI input count mismatch for task %s: run manifest has "
+        "%zu input binding(s), artifact ABI has %zu",
+        taskId.str().c_str(), invocation.inputs.size(), abi.inputs.size());
+  }
+
+  if (invocation.outputs.size() != abi.outputs.size()) {
+    return llvm::createStringError(
+        llvm::inconvertibleErrorCode(),
+        "mix artifact ABI output count mismatch for task %s: run manifest has "
+        "%zu output binding(s), artifact ABI has %zu",
+        taskId.str().c_str(), invocation.outputs.size(), abi.outputs.size());
+  }
+
+  return llvm::Error::success();
+}
+
 llvm::Expected<KernelArtifact>
 loadArtifactFromRoot(llvm::StringRef artifactRootInput) {
   llvm::SmallString<256> artifactRoot(artifactRootInput);
@@ -492,6 +523,9 @@ prepareRuntimeSessionGraphFromManifest(llvm::StringRef runManifestPath) {
     task.artifact = *artifactOr;
     task.dependencies = taskSpec.dependencies;
     task.invocation = taskSpec.invocation;
+    if (auto err = validateMixArtifactInvocationBindings(
+            task.artifact, task.invocation, task.taskId))
+      return std::move(err);
     applyMixArtifactInvocationDefaults(task.artifact, task.invocation);
     if (auto err = graph.addTask(task))
       return std::move(err);
