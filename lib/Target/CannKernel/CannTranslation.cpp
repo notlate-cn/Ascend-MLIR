@@ -16,6 +16,7 @@
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/ControlFlow/IR/ControlFlowOps.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
+#include "mlir/Dialect/Math/IR/Math.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/BuiltinOps.h"
@@ -2432,6 +2433,14 @@ static void fixBrokenOpEmitters(Operation *moduleOp) {
         if (op->use_empty())
           deadCasts.push_back(op);
       });
+      moduleOp->walk([&](emitasc::PtrOffsetOp op) {
+        if (op->use_empty())
+          deadCasts.push_back(op);
+      });
+      moduleOp->walk([&](arith::ConstantOp op) {
+        if (op->use_empty())
+          deadCasts.push_back(op);
+      });
       for (Operation *op : deadCasts) {
         if (op && op->use_empty()) {
           rewriter.eraseOp(op);
@@ -2441,58 +2450,78 @@ static void fixBrokenOpEmitters(Operation *moduleOp) {
     }
   };
 
-  // GlobalTensorSetGlobalBufferOp → verbatim with pointer arithmetic offset.
-  //
-  // PyAsc auto-generates: $tensor.SetGlobalBuffer($buffer_ptr, $offset)
-  // But AscendC SetGlobalBuffer(ptr, uint64_t) treats the 2nd arg as a SIZE
-  // hint, NOT an element offset.  As a result, DataCopy always reads/writes
-  // from the base pointer, ignoring the offset.  This breaks multi-block
-  // kernels where each block operates on a different slice of the buffer.
-  //
-  // Fix: emit pointer arithmetic to bake the offset into the pointer:
-  //   $tensor.SetGlobalBuffer($buffer_ptr + $offset);
-  //
-  // When the offset is absent (op.getSize() is null), emit the 1-arg form
-  // with an explicit GM pointer cast because GM_ADDR is emitted as uint8_t*.
-  moduleOp->walk([&](ascendc::GlobalTensorSetGlobalBufferOp op) {
-    auto tensorType = dyn_cast<ascendc::GlobalTensorType>(op.getTensor().getType());
-    if (!tensorType)
-      return;
+  auto rewriteGlobalTensorSetGlobalBufferOps = [&]() {
+    // GlobalTensorSetGlobalBufferOp → verbatim with pointer arithmetic offset.
+    //
+    // PyAsc auto-generates: $tensor.SetGlobalBuffer($buffer_ptr, $offset)
+    // But AscendC SetGlobalBuffer(ptr, uint64_t) treats the 2nd arg as a SIZE
+    // hint, NOT an element offset. As a result, DataCopy always reads/writes
+    // from the base pointer, ignoring the offset. This breaks multi-block
+    // kernels where each block operates on a different slice of the buffer.
+    //
+    // Fix: emit pointer arithmetic to bake the offset into the pointer:
+    //   $tensor.SetGlobalBuffer($buffer_ptr + $offset);
+    //
+    // When the offset is absent (op.getSize() is null), emit the 1-arg form
+    // with an explicit GM pointer cast because GM_ADDR is emitted as uint8_t*.
+    moduleOp->walk([&](ascendc::GlobalTensorSetGlobalBufferOp op) {
+      auto tensorType =
+          dyn_cast<ascendc::GlobalTensorType>(op.getTensor().getType());
+      if (!tensorType)
+        return;
 
-    std::string elemTypeStr =
-        getAscendCScalarTypeName(tensorType.getElementType());
-    Value baseBuffer = peelSourceValue(op.getBuffer());
-    Value sizeVal = op.getSize();
-    rewriter.setInsertionPoint(op);
-    Location loc = op.getLoc();
-    if (!sizeVal) {
+      std::string elemTypeStr =
+          getAscendCScalarTypeName(tensorType.getElementType());
+      rewriter.setInsertionPoint(op);
+      Location loc = op.getLoc();
+      Value baseBuffer = peelSourceValue(op.getBuffer());
+      SmallVector<Value> elemOffsets;
+      bool sawPointerOffset = false;
+      while (auto offsetOp = baseBuffer.getDefiningOp<emitasc::PtrOffsetOp>()) {
+        sawPointerOffset = true;
+        if (Value dynamicOffset = offsetOp.getDynamicOffset()) {
+          if (getConstantIndexValue(dynamicOffset) != 0)
+            elemOffsets.push_back(peelIndexCast(dynamicOffset));
+        } else if (std::optional<APInt> staticOffset =
+                       offsetOp.getStaticOffset()) {
+          if (!staticOffset->isZero())
+            elemOffsets.push_back(rewriter.create<arith::ConstantIndexOp>(
+                op.getLoc(), staticOffset->getSExtValue()));
+        }
+        baseBuffer = peelSourceValue(offsetOp.getBase());
+      }
+
+      Value sizeVal = op.getSize();
+      if (sizeVal && (!sawPointerOffset || getConstantIndexValue(sizeVal) != 0))
+        elemOffsets.push_back(peelIndexCast(sizeVal));
+
+      if (elemOffsets.empty()) {
+        std::string tmpl =
+            "$0.SetGlobalBuffer(reinterpret_cast<__gm__ " + elemTypeStr +
+            "*>($1))";
+        rewriter.create<emitasc::VerbatimOp>(
+            loc, rewriter.getStringAttr(tmpl),
+            ValueRange({op.getTensor(), baseBuffer}));
+        rewriter.eraseOp(op);
+        return;
+      }
+
       std::string tmpl =
           "$0.SetGlobalBuffer(reinterpret_cast<__gm__ " + elemTypeStr +
-          "*>($1))";
-      rewriter.create<emitasc::VerbatimOp>(
-          loc, rewriter.getStringAttr(tmpl),
-          ValueRange({op.getTensor(), baseBuffer}));
+          "*>($1)";
+      SmallVector<Value> args{op.getTensor(), baseBuffer};
+      for (auto [index, elemOffset] : llvm::enumerate(elemOffsets)) {
+        tmpl += " + $" + std::to_string(index + 2);
+        args.push_back(elemOffset);
+      }
+      tmpl += ")";
+      rewriter.create<emitasc::VerbatimOp>(loc, rewriter.getStringAttr(tmpl),
+                                           ValueRange(args));
       rewriter.eraseOp(op);
-      return;
-    }
+    });
 
-    Value elemOffset = peelIndexCast(sizeVal);
-    std::string tmpl =
-        "$0.SetGlobalBuffer(reinterpret_cast<__gm__ " + elemTypeStr +
-        "*>($1) + $2)";
-    rewriter.create<emitasc::VerbatimOp>(
-        loc, rewriter.getStringAttr(tmpl),
-        ValueRange({op.getTensor(), baseBuffer, elemOffset}));
-    rewriter.eraseOp(op);
-  });
-
-  SmallVector<memref::CastOp> deadMemrefCasts;
-  moduleOp->walk([&](memref::CastOp op) {
-    if (op->use_empty())
-      deadMemrefCasts.push_back(op);
-  });
-  for (memref::CastOp op : deadMemrefCasts)
-    rewriter.eraseOp(op);
+    eraseDeadCastOps();
+  };
 
   // Frontend shape guards survive Normalize as cf.assert. AscendC kernels have
   // no cf.assert printer, so lower them to fail-closed early returns.
@@ -2506,6 +2535,25 @@ static void fixBrokenOpEmitters(Operation *moduleOp) {
 
   SmallVector<IndexedValueStore> indexedStores;
   SmallVector<MemRefDimBound> dimBounds;
+  auto recordLoopDimBounds = [&](Value memref, ValueRange indices) {
+    SmallVector<Value, 2> keys{memref};
+    Value root = peelSourceValue(memref);
+    if (root != memref)
+      keys.push_back(root);
+
+    for (auto [dim, index] : llvm::enumerate(indices)) {
+      auto blockArg = dyn_cast<BlockArgument>(index);
+      if (!blockArg)
+        continue;
+      auto forOp = dyn_cast<scf::ForOp>(blockArg.getOwner()->getParentOp());
+      if (!forOp || forOp.getInductionVar() != index)
+        continue;
+      for (Value key : keys)
+        dimBounds.push_back(
+            {key, static_cast<int64_t>(dim), forOp.getUpperBound()});
+    }
+  };
+
   moduleOp->walk([&](memref::StoreOp op) {
     if (op.getIndices().size() == 1) {
       std::optional<int64_t> index = getConstantIndexValue(op.getIndices()[0]);
@@ -2514,30 +2562,10 @@ static void fixBrokenOpEmitters(Operation *moduleOp) {
             {peelSourceValue(op.getMemref()), *index, op.getValueToStore()});
     }
 
-    Value root = peelSourceValue(op.getMemref());
-    for (auto [dim, index] : llvm::enumerate(op.getIndices())) {
-      auto blockArg = dyn_cast<BlockArgument>(index);
-      if (!blockArg)
-        continue;
-      auto forOp = dyn_cast<scf::ForOp>(blockArg.getOwner()->getParentOp());
-      if (!forOp || forOp.getInductionVar() != index)
-        continue;
-      dimBounds.push_back(
-          {root, static_cast<int64_t>(dim), forOp.getUpperBound()});
-    }
+    recordLoopDimBounds(op.getMemref(), op.getIndices());
   });
   moduleOp->walk([&](memref::LoadOp op) {
-    Value root = peelSourceValue(op.getMemref());
-    for (auto [dim, index] : llvm::enumerate(op.getIndices())) {
-      auto blockArg = dyn_cast<BlockArgument>(index);
-      if (!blockArg)
-        continue;
-      auto forOp = dyn_cast<scf::ForOp>(blockArg.getOwner()->getParentOp());
-      if (!forOp || forOp.getInductionVar() != index)
-        continue;
-      dimBounds.push_back(
-          {root, static_cast<int64_t>(dim), forOp.getUpperBound()});
-    }
+    recordLoopDimBounds(op.getMemref(), op.getIndices());
   });
 
   auto lookupIndexedStore = [&](Value memref,
@@ -2550,7 +2578,14 @@ static void fixBrokenOpEmitters(Operation *moduleOp) {
   };
 
   auto lookupDimBound = [&](Value memref, int64_t dim) -> std::optional<Value> {
+    for (const MemRefDimBound &bound : llvm::reverse(dimBounds))
+      if (bound.memref == memref && bound.dim == dim &&
+          isValueAvailableAtInsertionPoint(bound.upperBound, rewriter))
+        return bound.upperBound;
+
     Value root = peelSourceValue(memref);
+    if (root == memref)
+      return std::nullopt;
     for (const MemRefDimBound &bound : llvm::reverse(dimBounds))
       if (bound.memref == root && bound.dim == dim &&
           isValueAvailableAtInsertionPoint(bound.upperBound, rewriter))
@@ -2579,6 +2614,9 @@ static void fixBrokenOpEmitters(Operation *moduleOp) {
     int64_t staticExtent = sourceType.getShape()[dim];
     if (!ShapedType::isDynamic(staticExtent))
       return makeIndex(staticExtent);
+
+    if (std::optional<Value> bound = lookupDimBound(source, dim))
+      return ensureIndexValue(*bound, rewriter, loc);
 
     if (auto castOp = source.getDefiningOp<memref::CastOp>())
       return resolveDim(castOp.getSource(), dim, depth + 1);
@@ -2714,6 +2752,13 @@ static void fixBrokenOpEmitters(Operation *moduleOp) {
         /*staticOffset=*/IntegerAttr{}, /*dynamicOffset=*/*linearOffset);
     rewriter.replaceOp(op, offsetOp.getResult());
   });
+  rewriteGlobalTensorSetGlobalBufferOps();
+  moduleOp->walk([&](memref::LoadOp op) {
+    recordLoopDimBounds(op.getMemref(), op.getIndices());
+  });
+  moduleOp->walk([&](memref::StoreOp op) {
+    recordLoopDimBounds(op.getMemref(), op.getIndices());
+  });
 
   auto isGmBackedMemref = [&](Value memref) {
     Value root = peelPointerOffsetSource(memref);
@@ -2739,15 +2784,52 @@ static void fixBrokenOpEmitters(Operation *moduleOp) {
 
     Value linear = makeIndex(0);
     for (int64_t dim = 0, rank = memrefType.getRank(); dim < rank; ++dim) {
-      if (dim != 0) {
+      if (dim != 0 && getConstantIndexValue(linear) != 0) {
         FailureOr<Value> extent = resolveDim(memref, dim, /*depth=*/0);
         if (failed(extent))
           return failure();
         linear = mul(linear, *extent);
       }
-      linear = add(linear, ensureIndexValue(indices[dim], rewriter, loc));
+      Value index = ensureIndexValue(indices[dim], rewriter, loc);
+      if (getConstantIndexValue(linear) == 0)
+        linear = index;
+      else if (getConstantIndexValue(index) != 0)
+        linear = add(linear, index);
     }
     return linear;
+  };
+
+  auto buildPointerOffsetIndex = [&](Value memref,
+                                     Location loc) -> std::optional<Value> {
+    Value cursor = peelSourceValue(memref);
+    Value total;
+    auto appendOffset = [&](Value offset) {
+      offset = peelIndexCast(offset);
+      if (getConstantIndexValue(offset) == 0)
+        return;
+      if (!total) {
+        total = offset;
+        return;
+      }
+      total = rewriter.create<arith::AddIOp>(loc, total, offset);
+    };
+
+    while (auto offsetOp = cursor.getDefiningOp<emitasc::PtrOffsetOp>()) {
+      if (Value dynamicOffset = offsetOp.getDynamicOffset()) {
+        appendOffset(dynamicOffset);
+      } else if (std::optional<APInt> staticOffset =
+                     offsetOp.getStaticOffset()) {
+        if (!staticOffset->isZero()) {
+          Value offset = rewriter.create<arith::ConstantIndexOp>(
+              loc, staticOffset->getSExtValue());
+          appendOffset(offset);
+        }
+      }
+      cursor = peelSourceValue(offsetOp.getBase());
+    }
+    if (!total)
+      return std::nullopt;
+    return total;
   };
 
   SmallVector<memref::LoadOp> gmLoads;
@@ -2767,11 +2849,17 @@ static void fixBrokenOpEmitters(Operation *moduleOp) {
         buildLinearIndex(op.getMemref(), op.getIndices(), op.getLoc());
     if (failed(linearIndex))
       continue;
+    Value effectiveIndex = *linearIndex;
+    if (std::optional<Value> pointerOffset =
+            buildPointerOffsetIndex(op.getMemref(), op.getLoc()))
+      effectiveIndex =
+          rewriter.create<arith::AddIOp>(op.getLoc(), *pointerOffset,
+                                         effectiveIndex);
     std::string elemTypeStr = getAscendCScalarTypeName(op.getType());
     auto call = rewriter.create<emitasc::CallOpaqueOp>(
         op.getLoc(), op.getType(),
         rewriter.getStringAttr("afir_gm_load<" + elemTypeStr + ">"),
-        ValueRange({peelPointerOffsetSource(op.getMemref()), *linearIndex}));
+        ValueRange({peelPointerOffsetSource(op.getMemref()), effectiveIndex}));
     rewriter.replaceOp(op, call.getResult());
   }
 
@@ -2781,13 +2869,19 @@ static void fixBrokenOpEmitters(Operation *moduleOp) {
         buildLinearIndex(op.getMemref(), op.getIndices(), op.getLoc());
     if (failed(linearIndex))
       continue;
+    Value effectiveIndex = *linearIndex;
+    if (std::optional<Value> pointerOffset =
+            buildPointerOffsetIndex(op.getMemref(), op.getLoc()))
+      effectiveIndex =
+          rewriter.create<arith::AddIOp>(op.getLoc(), *pointerOffset,
+                                         effectiveIndex);
     auto memrefType = cast<MemRefType>(op.getMemref().getType());
     std::string elemTypeStr =
         getAscendCScalarTypeName(memrefType.getElementType());
     rewriter.create<emitasc::CallOpaqueOp>(
         op.getLoc(), TypeRange{},
         rewriter.getStringAttr("afir_gm_store<" + elemTypeStr + ">"),
-        ValueRange({peelPointerOffsetSource(op.getMemref()), *linearIndex,
+        ValueRange({peelPointerOffsetSource(op.getMemref()), effectiveIndex,
                     op.getValueToStore()}));
     rewriter.eraseOp(op);
   }
@@ -2802,6 +2896,43 @@ static void fixBrokenOpEmitters(Operation *moduleOp) {
       rewriter.eraseOp(op);
     }
   }
+
+  moduleOp->walk([&](arith::TruncFOp op) {
+    if (!op.getType().isF32())
+      return;
+    auto constOp = op.getIn().getDefiningOp<arith::ConstantOp>();
+    if (!constOp)
+      return;
+    auto valueAttr = dyn_cast<FloatAttr>(constOp.getValue());
+    if (!valueAttr)
+      return;
+
+    rewriter.setInsertionPoint(op);
+    auto folded = rewriter.create<arith::ConstantOp>(
+        op.getLoc(), op.getType(),
+        rewriter.getF32FloatAttr(
+            static_cast<float>(valueAttr.getValueAsDouble())));
+    rewriter.replaceOp(op, folded.getResult());
+  });
+
+  auto lowerScalarUnaryMath = [&](Operation *op, Value input, Type resultType,
+                                  StringRef functionName) {
+    if (!resultType.isF32())
+      return;
+    rewriter.setInsertionPoint(op);
+    auto call = rewriter.create<emitasc::CallOpaqueOp>(
+        op->getLoc(), resultType, rewriter.getStringAttr(functionName),
+        ValueRange({input}));
+    rewriter.replaceOp(op, call.getResult());
+  };
+  moduleOp->walk([&](math::ExpOp op) {
+    lowerScalarUnaryMath(op, op.getOperand(), op.getType(), "afir_scalar_exp");
+  });
+  moduleOp->walk([&](math::RsqrtOp op) {
+    lowerScalarUnaryMath(op, op.getOperand(), op.getType(),
+                         "afir_scalar_rsqrt");
+  });
+  eraseDeadCastOps();
 
   auto lowerIntegerMinMax = [&](auto op, arith::CmpIPredicate predicate) {
     rewriter.setInsertionPoint(op);
@@ -2897,6 +3028,26 @@ static void fixBrokenOpEmitters(Operation *moduleOp) {
     rewriter.eraseOp(op);
     if (bracketOp->use_empty())
       rewriter.eraseOp(bracketOp);
+  });
+
+  // CANN does not provide a three-argument GlobalTensor -> GlobalTensor
+  // DataCopy overload. Use scalar GM access as a fail-closed fallback for
+  // generated GM-to-GM movement.
+  moduleOp->walk([&](ascendc::DataCopyL2Op op) {
+    if (!isa<ascendc::GlobalTensorType>(op.getDst().getType()) ||
+        !isa<ascendc::GlobalTensorType>(op.getSrc().getType()))
+      return;
+
+    rewriter.setInsertionPoint(op);
+    Location loc = op.getLoc();
+    std::string tmpl = "{\n";
+    tmpl += "  uint32_t _afir_count = (uint32_t)$2;\n";
+    tmpl += "  for (uint32_t _afir_i = 0; _afir_i < _afir_count; ++_afir_i)\n";
+    tmpl += "    $0.SetValue(_afir_i, $1.GetValue(_afir_i));\n}";
+    rewriter.create<emitasc::VerbatimOp>(
+        loc, rewriter.getStringAttr(tmpl),
+        ValueRange({op.getDst(), op.getSrc(), op.getCalCount()}));
+    rewriter.eraseOp(op);
   });
 
   // DataCopyL2Op from GlobalTensor to LocalTensor must leave the local tensor
@@ -3486,6 +3637,7 @@ LogicalResult mlir::translateToCannKernel(Operation *op, raw_ostream &os,
   CodeEmitter::Scope scope(emitter);
 
   os << "#include \"kernel_operator.h\"\n";
+  os << "#include \"utils/std/cmath.h\"\n";
   // adv_api headers required by BroadcastL2Op and ReduceSum2DL2Op emitters.
   // These are not included by kernel_operator.h but are available via the
   // tikcfw/include search path added by the compiler driver.
@@ -3499,6 +3651,28 @@ LogicalResult mlir::translateToCannKernel(Operation *op, raw_ostream &os,
   os << "template <typename T>\n";
   os << "__aicore__ inline void afir_gm_store(GM_ADDR base, uint64_t offset, T value) {\n";
   os << "  reinterpret_cast<__gm__ T *>(base)[offset] = value;\n";
+  os << "}\n\n";
+  os << "__aicore__ inline float afir_scalar_exp(float x) {\n";
+  os << "  if (x < -20.0f) return 0.0f;\n";
+  os << "  if (x > 20.0f) x = 20.0f;\n";
+  os << "  constexpr float inv_ln2 = 1.4426950408889634f;\n";
+  os << "  constexpr float ln2 = 0.6931471805599453f;\n";
+  os << "  int32_t n = static_cast<int32_t>(x * inv_ln2 + (x >= 0.0f ? 0.5f : -0.5f));\n";
+  os << "  float r = x - static_cast<float>(n) * ln2;\n";
+  os << "  float r2 = r * r;\n";
+  os << "  float r3 = r2 * r;\n";
+  os << "  float r4 = r3 * r;\n";
+  os << "  float r5 = r4 * r;\n";
+  os << "  float y = 1.0f + r + 0.5f * r2 + 0.1666666716337204f * r3 + 0.0416666679084301f * r4 + 0.0083333337679505f * r5;\n";
+  os << "  if (n > 0) {\n";
+  os << "    for (int32_t i = 0; i < n; ++i) y *= 2.0f;\n";
+  os << "  } else {\n";
+  os << "    for (int32_t i = 0; i < -n; ++i) y *= 0.5f;\n";
+  os << "  }\n";
+  os << "  return y;\n";
+  os << "}\n\n";
+  os << "__aicore__ inline float afir_scalar_rsqrt(float x) {\n";
+  os << "  return 1.0f / AscendC::Std::sqrt(x);\n";
   os << "}\n\n";
 
   // First pass: emit TilingData struct declarations from aicore funcs.

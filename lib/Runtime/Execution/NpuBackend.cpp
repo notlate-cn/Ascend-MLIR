@@ -96,6 +96,35 @@ llvm::Error validateOutputBindingWithoutExpected(const TensorBinding &binding) {
   return llvm::Error::success();
 }
 
+std::optional<size_t>
+findExpectedOutputIndexForBinding(const ExecutionInvocation &invocation,
+                                  llvm::StringRef outputName,
+                                  size_t outputIndex,
+                                  size_t expectedCount) {
+  for (size_t index = 0; index < invocation.expectedOutputs.size(); ++index) {
+    if (invocation.expectedOutputs[index].name == outputName)
+      return index;
+  }
+  if (expectedCount == invocation.outputs.size() && outputIndex < expectedCount)
+    return outputIndex;
+  return std::nullopt;
+}
+
+std::optional<size_t>
+findOutputIndexForExpectedBinding(const ExecutionInvocation &invocation,
+                                  llvm::StringRef expectedName,
+                                  size_t expectedIndex,
+                                  size_t actualCount) {
+  for (size_t index = 0; index < invocation.outputs.size(); ++index) {
+    if (invocation.outputs[index].name == expectedName)
+      return index;
+  }
+  if (invocation.expectedOutputs.size() == actualCount &&
+      expectedIndex < actualCount)
+    return expectedIndex;
+  return std::nullopt;
+}
+
 NDArray buildAllocatedOutputFromExpected(const NDArray &expected) {
   NDArray output;
   output.shape = expected.shape;
@@ -128,26 +157,32 @@ validateInvocationBindings(const ExecutionInvocation &invocation) {
   auto expectedOutputsOr = loadExpectedOutputs(invocation);
   if (!expectedOutputsOr)
     return expectedOutputsOr.takeError();
-  if (!invocation.outputs.empty() && !expectedOutputsOr->empty() &&
-      invocation.outputs.size() != expectedOutputsOr->size()) {
-    return llvm::createStringError(
-        llvm::inconvertibleErrorCode(),
-        "output binding count does not match expected output count");
-  }
 
-  if (!expectedOutputsOr->empty()) {
-    for (size_t index = 0; index < expectedOutputsOr->size(); ++index) {
+  std::vector<bool> matchedExpected(expectedOutputsOr->size(), false);
+  for (size_t outputIndex = 0; outputIndex < invocation.outputs.size();
+       ++outputIndex) {
+    const TensorBinding &binding = invocation.outputs[outputIndex];
+    if (auto expectedIndex = findExpectedOutputIndexForBinding(
+            invocation, binding.name, outputIndex, expectedOutputsOr->size())) {
       if (auto err = validateOutputBindingAgainstExpected(
-              invocation.outputs[index], (*expectedOutputsOr)[index])) {
+              binding, (*expectedOutputsOr)[*expectedIndex])) {
         return llvm::Expected<std::vector<NDArray>>(std::move(err));
       }
+      matchedExpected[*expectedIndex] = true;
+      continue;
     }
-    return std::move(*expectedOutputsOr);
-  }
-
-  for (const TensorBinding &binding : invocation.outputs) {
     if (auto err = validateOutputBindingWithoutExpected(binding))
       return llvm::Expected<std::vector<NDArray>>(std::move(err));
+  }
+
+  for (size_t expectedIndex = 0; expectedIndex < matchedExpected.size();
+       ++expectedIndex) {
+    if (!matchedExpected[expectedIndex]) {
+      return llvm::createStringError(
+          llvm::inconvertibleErrorCode(),
+          "expected output binding has no matching output: %s",
+          invocation.expectedOutputs[expectedIndex].name.c_str());
+    }
   }
 
   return std::move(*expectedOutputsOr);
@@ -172,18 +207,53 @@ buildRunArgs(const ExecutionInvocation &invocation,
     args.inputs.push_back(std::move(*arrayOr));
   }
 
-  if (!expectedOutputs.empty()) {
-    for (const NDArray &expected : expectedOutputs) {
-      args.outputs.push_back(buildAllocatedOutputFromExpected(expected));
+  for (size_t outputIndex = 0; outputIndex < invocation.outputs.size();
+       ++outputIndex) {
+    const TensorBinding &binding = invocation.outputs[outputIndex];
+    if (auto expectedIndex = findExpectedOutputIndexForBinding(
+            invocation, binding.name, outputIndex, expectedOutputs.size())) {
+      args.outputs.push_back(
+          buildAllocatedOutputFromExpected(expectedOutputs[*expectedIndex]));
+      continue;
     }
-    return args;
-  }
-
-  for (const TensorBinding &binding : invocation.outputs) {
     args.outputs.push_back(buildAllocatedOutputFromBinding(binding));
   }
 
   return args;
+}
+
+llvm::Expected<std::vector<NDArray>>
+selectActualOutputsForExpected(const ExecutionInvocation &invocation,
+                               llvm::ArrayRef<NDArray> actualOutputs,
+                               llvm::ArrayRef<NDArray> expectedOutputs) {
+  std::vector<NDArray> selected;
+  selected.reserve(expectedOutputs.size());
+  for (size_t expectedIndex = 0; expectedIndex < expectedOutputs.size();
+       ++expectedIndex) {
+    const TensorBinding &expectedBinding =
+        invocation.expectedOutputs[expectedIndex];
+    std::optional<size_t> actualIndex = findOutputIndexForExpectedBinding(
+        invocation, expectedBinding.name, expectedIndex, actualOutputs.size());
+    if (!actualIndex) {
+      return llvm::createStringError(
+          llvm::inconvertibleErrorCode(),
+          "expected output binding has no matching output: %s",
+          expectedBinding.name.c_str());
+    }
+    if (*actualIndex >= actualOutputs.size()) {
+      return llvm::createStringError(
+          llvm::inconvertibleErrorCode(),
+          "expected output binding index is out of range: %s",
+          expectedBinding.name.c_str());
+    }
+    const NDArray &actual = actualOutputs[*actualIndex];
+    NDArray view;
+    view.shape = actual.shape;
+    view.dtype = actual.dtype;
+    view.setExternal(actual.data);
+    selected.push_back(std::move(view));
+  }
+  return selected;
 }
 
 llvm::Error writeActualOutputs(const ExecutionInvocation &invocation,
@@ -279,10 +349,14 @@ runWithExecutor(const ExecutionRequest &request,
   }
 
   if (!expectedOutputsOr->empty()) {
-    auto validationOr =
-        compareRuntimeOutputs(args.outputs, *expectedOutputsOr,
-                              request.task.invocation.atol,
-                              request.task.invocation.rtol);
+    auto actualForExpectedOr = selectActualOutputsForExpected(
+        request.task.invocation, args.outputs, *expectedOutputsOr);
+    if (!actualForExpectedOr) {
+      return stageError("validate", actualForExpectedOr.takeError());
+    }
+    auto validationOr = compareRuntimeOutputs(
+        *actualForExpectedOr, *expectedOutputsOr, request.task.invocation.atol,
+        request.task.invocation.rtol);
     if (!validationOr) {
       return stageError("validate", validationOr.takeError());
     }

@@ -6,8 +6,8 @@
 // CHECK: GM_ADDR
 // CHECK: GM_ADDR
 // CHECK: TilingData
-// CHECK: float {{v[0-9]+}} = {{v[0-9]+}}[{{[[:alnum:]_]+}}];
-// CHECK: {{v[0-9]+}}[{{[[:alnum:]_]+}}] = {{v[0-9]+}};
+// CHECK: float {{v[0-9]+}} = afir_gm_load<float>(
+// CHECK: afir_gm_store<float>(
 
 module {
   memref.global "private" constant @weights : memref<4xf32> = dense<1.0> {alignment = 64 : i64}
