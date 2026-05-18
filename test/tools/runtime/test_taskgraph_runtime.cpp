@@ -53,6 +53,7 @@
 #include <limits>
 #include <mutex>
 #include <memory>
+#include <optional>
 #include <string>
 #include <thread>
 #include <tuple>
@@ -865,6 +866,29 @@ public:
 
   int invocations = 0;
   ExecutionRequest lastRequest;
+};
+
+class ScopedEnvVar {
+public:
+  ScopedEnvVar(const char *name, const char *value) : name_(name) {
+    if (const char *current = std::getenv(name_))
+      oldValue_ = std::string(current);
+    if (value)
+      setenv(name_, value, 1);
+    else
+      unsetenv(name_);
+  }
+
+  ~ScopedEnvVar() {
+    if (oldValue_)
+      setenv(name_, oldValue_->c_str(), 1);
+    else
+      unsetenv(name_);
+  }
+
+private:
+  const char *name_;
+  std::optional<std::string> oldValue_;
 };
 
 #define EXPECT(cond, msg)                                                     \
@@ -2746,6 +2770,116 @@ static void testNpuBackendReachesRealDeviceModePath() {
     const std::string message = llvm::toString(resultOr.takeError());
     EXPECT(message.find("[npu:executor_initialize]") != std::string::npos,
            "npu backend reports executor initialize stage");
+  }
+}
+
+static ExecutionRequest
+makeNpuEnvDeviceSmokeRequest(const std::string &inputPath,
+                             const std::string &outputPath) {
+  ExecutionRequest request;
+  request.task.taskId = "task_npu_env_device";
+  request.task.artifact.kernelName = "vec_kernel";
+  request.task.artifact.kernelKind = KernelKind::Vec;
+  request.task.artifact.deviceBinaryPath = "/tmp/fake_npu_kernel.bin";
+  request.task.invocation.inputs.push_back(
+      TensorBinding{"in", BindingSourceKind::ExternalFile, inputPath});
+  request.task.invocation.outputs.push_back(
+      TensorBinding{"out", BindingSourceKind::ExternalFile, outputPath, "", "",
+                    std::vector<int64_t>{4}, DType::F16});
+  return request;
+}
+
+static void testNpuBackendInitializesRunnerFromAscendDeviceIdEnv() {
+  class CapturingRunner final : public ExecutionRunner {
+  public:
+    explicit CapturingRunner(int *deviceId) : deviceId_(deviceId) {}
+
+    ExecutionRunnerMode mode() const override {
+      return ExecutionRunnerMode::RealDevice;
+    }
+
+    llvm::Error initialize(int deviceId = 0) override {
+      *deviceId_ = deviceId;
+      return llvm::Error::success();
+    }
+
+    llvm::Error runFile(const FileExecutionLaunch &, RunArgs &) override {
+      return llvm::Error::success();
+    }
+
+    llvm::Error
+    runDynamicLibraryArtifact(const DynamicLibraryExecutionLaunch &,
+                              RunArgs &) override {
+      return llvm::Error::success();
+    }
+
+  private:
+    int *deviceId_;
+  };
+
+  ScopedEnvVar deviceEnv("ASCEND_DEVICE_ID", "7");
+  int initializedDeviceId = -1;
+  NpuBackend backend(
+      {},
+      [&](ExecutionRunnerMode mode)
+          -> llvm::Expected<std::unique_ptr<ExecutionRunner>> {
+        EXPECT(mode == ExecutionRunnerMode::RealDevice,
+               "npu backend requests real-device runner");
+        return std::make_unique<CapturingRunner>(&initializedDeviceId);
+      });
+
+  const std::string inputPath =
+      writeTempNpy("taskgraph-runtime-npu-env-input", {4}, DType::F16);
+  if (inputPath.empty())
+    return;
+
+  const std::string outputPath =
+      (std::filesystem::temp_directory_path() /
+       "taskgraph-runtime-npu-env-output.npy")
+          .string();
+  ExecutionRequest request =
+      makeNpuEnvDeviceSmokeRequest(inputPath, outputPath);
+
+  auto resultOr = backend.run(request);
+  EXPECT((bool)resultOr, "npu backend env-device smoke run succeeds");
+  EXPECT(initializedDeviceId == 7,
+         "npu backend initializes real-device runner from ASCEND_DEVICE_ID");
+}
+
+static void testNpuBackendRejectsInvalidAscendDeviceIdEnv() {
+  bool factoryCalled = false;
+  ScopedEnvVar deviceEnv("ASCEND_DEVICE_ID", "device7");
+  NpuBackend backend(
+      {},
+      [&](ExecutionRunnerMode)
+          -> llvm::Expected<std::unique_ptr<ExecutionRunner>> {
+        factoryCalled = true;
+        return llvm::createStringError(llvm::inconvertibleErrorCode(),
+                                       "runner factory should not be called");
+      });
+
+  const std::string inputPath =
+      writeTempNpy("taskgraph-runtime-npu-invalid-env-input", {4}, DType::F16);
+  if (inputPath.empty())
+    return;
+
+  const std::string outputPath =
+      (std::filesystem::temp_directory_path() /
+       "taskgraph-runtime-npu-invalid-env-output.npy")
+          .string();
+  ExecutionRequest request =
+      makeNpuEnvDeviceSmokeRequest(inputPath, outputPath);
+
+  auto resultOr = backend.run(request);
+  EXPECT(!(bool)resultOr, "npu backend rejects invalid ASCEND_DEVICE_ID");
+  EXPECT(!factoryCalled,
+         "npu backend rejects invalid device id before creating runner");
+  if (!resultOr) {
+    const std::string message = llvm::toString(resultOr.takeError());
+    EXPECT(message.find("[npu:executor_initialize]") != std::string::npos,
+           "invalid ASCEND_DEVICE_ID is reported as executor initialization");
+    EXPECT(message.find("ASCEND_DEVICE_ID") != std::string::npos,
+           "invalid ASCEND_DEVICE_ID diagnostic names the environment key");
   }
 }
 
@@ -6465,6 +6599,8 @@ int main() {
   testNpuBackendRejectsMissingDeviceBinaryPath();
   testNpuBackendRejectsMissingMixSharedObjectPath();
   testNpuBackendReachesRealDeviceModePath();
+  testNpuBackendInitializesRunnerFromAscendDeviceIdEnv();
+  testNpuBackendRejectsInvalidAscendDeviceIdEnv();
   testNpuBackendRejectsExpectedOutputMetadataMismatch();
   testNpuBackendRejectsExpectedOutputMissingPath();
   testNpuBackendDriverFailureIsStageWrapped();
