@@ -14,6 +14,8 @@ module {
   ) attributes {ascendc.aicore, ascendc.global, cann.num_inputs = 1 : i32} {
     %c0 = arith.constant 0 : index
     %c0_0 = arith.constant 0 : index
+    %v = memref.load %arg0[%c0] : memref<?xf16>
+    memref.store %v, %arg1[%c0_0] : memref<?xf16>
     return
   }
 }

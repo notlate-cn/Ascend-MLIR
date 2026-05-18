@@ -2966,6 +2966,50 @@ static void testNpuBackendRejectsExpectedOutputMissingPath() {
   }
 }
 
+static void testNpuBackendAllowsExpectedOutputSubsetByName() {
+  auto driver = std::make_shared<SuccessfulNpuBackendDriver>();
+  SuccessfulNpuBackendDriver *driverPtr = driver.get();
+  auto npuOr = createExecutionBackend(ExecutionBackendKind::Npu, driver);
+  EXPECT((bool)npuOr,
+         "driver-backed npu backend creation succeeds for expected output subset validation");
+  if (!npuOr)
+    return;
+
+  const std::string expectedPath =
+      writeTempNpy("taskgraph-runtime-npu-subset-expected", {4}, DType::F32);
+  if (expectedPath.empty())
+    return;
+
+  ExecutionRequest request;
+  request.task.taskId = "task_npu_expected_subset";
+  request.task.artifact.kernelName = "vec_kernel";
+  request.task.artifact.kernelKind = KernelKind::Vec;
+  request.task.artifact.deviceBinaryPath = "/tmp/fake_npu_kernel.bin";
+  request.task.invocation.outputs.push_back(
+      TensorBinding{"mid", BindingSourceKind::ExternalFile,
+                    "/tmp/task_npu_expected_subset.mid.npy", "", "",
+                    std::vector<int64_t>{8}, DType::F16});
+  request.task.invocation.outputs.push_back(
+      TensorBinding{"out", BindingSourceKind::ExternalFile,
+                    "/tmp/task_npu_expected_subset.out.npy"});
+  request.task.invocation.expectedOutputs.push_back(
+      TensorBinding{"out", BindingSourceKind::ExternalFile, expectedPath});
+
+  auto resultOr = (*npuOr)->run(request);
+  EXPECT((bool)resultOr,
+         "driver-backed npu backend accepts named expected output subset");
+  if (!resultOr) {
+    llvm::consumeError(resultOr.takeError());
+    return;
+  }
+  EXPECT(driverPtr->invocations == 1,
+         "driver-backed npu invokes driver for expected output subset");
+  EXPECT(driverPtr->lastRequest.task.invocation.outputs.size() == 2,
+         "driver-backed npu preserves all runtime output bindings");
+  EXPECT(driverPtr->lastRequest.task.invocation.expectedOutputs.size() == 1,
+         "driver-backed npu preserves requested golden subset");
+}
+
 static void testNpuBackendDriverFailureIsStageWrapped() {
   auto driver =
       std::make_shared<FailingExecutionBackendDriver>("driver-backed npu failure");
@@ -6614,6 +6658,7 @@ int main() {
   testNpuBackendRejectsInvalidAscendDeviceIdEnv();
   testNpuBackendRejectsExpectedOutputMetadataMismatch();
   testNpuBackendRejectsExpectedOutputMissingPath();
+  testNpuBackendAllowsExpectedOutputSubsetByName();
   testNpuBackendDriverFailureIsStageWrapped();
   testDriverBackedNpuBackendRejectsExpectedOutputMissingPath();
   testDriverBackedNpuBackendValidatesRuntimeBindings();

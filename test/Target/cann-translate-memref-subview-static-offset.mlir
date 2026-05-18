@@ -3,8 +3,9 @@
 // CHECK-LABEL: extern "C" __global__ __aicore__ void static_offset_subview(
 // CHECK: * {{v[0-9]+}};
 // CHECK: {{v[0-9]+}} = {{v[0-9]+}} * {{v[0-9]+}};
-// CHECK: float* {{v[0-9]+}} = {{v[0-9]+}} + {{v[0-9]+}};
-// CHECK: float {{v[0-9]+}} =
+// CHECK-NOT: float* {{v[0-9]+}} =
+// CHECK: float {{v[0-9]+}} = afir_gm_load<float>(
+// CHECK: afir_gm_store<float>(
 
 module {
   func.func @static_offset_subview(

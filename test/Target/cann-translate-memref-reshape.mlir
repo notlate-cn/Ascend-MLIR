@@ -1,8 +1,9 @@
 // RUN: afir-translate -mlir-to-cann %s | FileCheck %s
 
 // CHECK-LABEL: extern "C" __global__ __aicore__ void reshape_view(
-// CHECK: reinterpret_cast<float*>
-// CHECK: float {{v[0-9]+}} =
+// CHECK-NOT: reinterpret_cast<float*>
+// CHECK: float {{v[0-9]+}} = afir_gm_load<float>(
+// CHECK: afir_gm_store<float>(
 
 module {
   func.func @reshape_view(
