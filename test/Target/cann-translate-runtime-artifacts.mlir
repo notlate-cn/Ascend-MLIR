@@ -12,7 +12,7 @@
 // TILING: "fixed": true
 // TILING: "name": "dim_arg0_0"
 // TILING: "shape_key": "arg0_dim0"
-// TILING: "workspace_size_expr": "0"
+// TILING: "workspace_size_expr": "4096"
 
 // MANIFEST: "guardSet": []
 // MANIFEST: "kernelGraph"
@@ -50,7 +50,7 @@
 // MANIFEST: "name": "dim_arg0_0"
 // MANIFEST: "abiPosition": 1
 // MANIFEST: "name": "dim_arg1_1"
-// MANIFEST: "workspaceSizeBytes": 0
+// MANIFEST: "workspaceSizeBytes": 4096
 
 // HOST: struct TilingData
 // HOST: extern "C"
@@ -58,6 +58,7 @@
 // HOST: int32_t broadcast_add_reducesum_GetTiling(const int64_t* shape_args, int32_t shape_count, void* tiling_out)
 // HOST: int64_t broadcast_add_reducesum_GetBlockDim(const int64_t* shape_args, int32_t shape_count)
 // HOST: int64_t broadcast_add_reducesum_GetWorkspaceSize(const int64_t* shape_args, int32_t shape_count)
+// HOST: ? 4096 : -1;
 
 module {
   func.func @broadcast_add_reducesum(
@@ -89,7 +90,8 @@ module {
       ],
       ascendc.aicore,
       ascendc.global,
-      cann.num_inputs = 2 : i32} {
+      cann.num_inputs = 2 : i32,
+      cann.workspace_size_bytes = 4096 : i64} {
     %tb_m = emitasc.member %tiling "TB_M"
         : !emitasc.py_struct<"TilingData",
               [i64, i64, i64, i64],
