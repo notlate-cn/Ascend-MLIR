@@ -110,13 +110,6 @@ resolveGMChain(Value start, OpBuilder &b, Location loc) {
   }
 }
 
-// Peel through memref.cast to find the underlying subview (if any).
-static memref::SubViewOp peelCastsToSubview(Value v) {
-  while (auto castOp = v.getDefiningOp<memref::CastOp>())
-    v = castOp.getSource();
-  return v.getDefiningOp<memref::SubViewOp>();
-}
-
 static void flattenGMPtr(func::FuncOp func) {
   MLIRContext *ctx = func.getContext();
   Block &entry = func.getBody().front();
@@ -160,39 +153,72 @@ static void flattenGMPtr(func::FuncOp func) {
     }
   }
 
-  // ── 7b. Flatten subview + set_global_buffer ───────────────────────────────
-  // Collect set_global_buffer ops whose buffer leads (through optional casts)
-  // to a subview.
+  // ── 7b. Flatten set_global_buffer ─────────────────────────────────────────
+  // Three buffer shapes are accepted (in priority order):
+  //   1. cast?-subview chain  → flatten through resolveGMChain (offset != 0)
+  //   2. cast?-collapse chain → reinterpret on underlying block arg, offset 0
+  //   3. bare block arg       → reinterpret directly, offset 0
+  // ascir-translate cannot print memref.collapse_shape; without (2) the bcast
+  // pattern (whole-operand load → collapse_shape feeds SGB directly) leaks a
+  // collapse_shape into emission and crashes the printer.
+
+  auto peelCasts = [](Value v) {
+    while (auto castOp = v.getDefiningOp<memref::CastOp>())
+      v = castOp.getSource();
+    return v;
+  };
+
   SmallVector<GlobalTensorSetGlobalBufferOp> setGlobalBufferOps;
   func.walk([&](GlobalTensorSetGlobalBufferOp op) {
-    if (peelCastsToSubview(op.getBuffer()))
-      setGlobalBufferOps.push_back(op);
+    setGlobalBufferOps.push_back(op);
   });
 
   for (GlobalTensorSetGlobalBufferOp sgbOp : setGlobalBufferOps) {
-    auto subview = peelCastsToSubview(sgbOp.getBuffer());
-    if (!subview)
-      continue;
+    Value buf = peelCasts(sgbOp.getBuffer());
 
     OpBuilder b(sgbOp);
     Location loc = sgbOp.getLoc();
-    BlockArgument baseArg;
-    Value flatOffset;
 
-    auto [ba, acc] = resolveGMChain(subview.getResult(), b, loc);
+    if (auto subview = buf.getDefiningOp<memref::SubViewOp>()) {
+      auto [ba, acc] = resolveGMChain(subview.getResult(), b, loc);
+      if (!ba)
+        continue;
+      Value flatOffsetI32 = b.create<arith::IndexCastOp>(loc, i32Ty, acc);
+      Type elemTy = cast<MemRefType>(ba.getType()).getElementType();
+      Value flatBase =
+          b.create<emitasc::ReinterpretCastOp>(loc, mkFlatTy(elemTy), ba);
+      b.create<GlobalTensorSetGlobalBufferOp>(loc, sgbOp.getTensor(), flatBase,
+                                              flatOffsetI32);
+      sgbOp.erase();
+      if (subview.use_empty())
+        subview.erase();
+      continue;
+    }
+
+    // No subview: walk through collapse_shape to the underlying block arg.
+    Value ptrSrc = buf;
+    while (true) {
+      if (auto colOp = ptrSrc.getDefiningOp<memref::CollapseShapeOp>()) {
+        ptrSrc = colOp.getSrc();
+        continue;
+      }
+      if (auto castOp = ptrSrc.getDefiningOp<memref::CastOp>()) {
+        ptrSrc = castOp.getSource();
+        continue;
+      }
+      break;
+    }
+    auto ba = dyn_cast<BlockArgument>(ptrSrc);
     if (!ba)
       continue;
-    baseArg = ba;
-    flatOffset = acc;
-
-    Value flatOffsetI32 = b.create<arith::IndexCastOp>(loc, i32Ty, flatOffset);
-    Type elemTy = cast<MemRefType>(baseArg.getType()).getElementType();
-    Value flatBase = b.create<emitasc::ReinterpretCastOp>(loc, mkFlatTy(elemTy), baseArg);
+    Type elemTy = cast<MemRefType>(ba.getType()).getElementType();
+    Value flatBase =
+        b.create<emitasc::ReinterpretCastOp>(loc, mkFlatTy(elemTy), ba);
+    Value zeroI32 = b.create<arith::ConstantOp>(
+        loc, i32Ty, b.getIntegerAttr(i32Ty, 0));
     b.create<GlobalTensorSetGlobalBufferOp>(loc, sgbOp.getTensor(), flatBase,
-                                            flatOffsetI32);
+                                            zeroI32);
     sgbOp.erase();
-    if (subview.use_empty())
-      subview.erase();
   }
 
   // Rewrite `memref.dim %collapse_shape, %const` to use the underlying arg's

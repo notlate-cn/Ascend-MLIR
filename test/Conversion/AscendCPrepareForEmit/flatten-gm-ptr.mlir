@@ -78,3 +78,29 @@ func.func @test_gm_copy(%arg0: memref<16xf32>) {
   memref.copy %arg0, %alloc : memref<16xf32> to memref<16xf32>
   return
 }
+
+// Bare memref.collapse_shape (no surrounding subview): the bcast pattern
+// "load the whole operand" feeds collapse_shape directly into set_global_buffer.
+// CHECK-LABEL: func.func @test_bare_collapse
+// CHECK: emitasc.reinterpret_cast
+// CHECK-NOT: memref.collapse_shape
+// CHECK-NOT: memref.subview
+func.func @test_bare_collapse(%arg0: memref<4x32xf32>) {
+  %gt = ascendc.global_tensor : !ascendc.global_tensor<*xf32>
+  %col = memref.collapse_shape %arg0 [[0, 1]]
+       : memref<4x32xf32> into memref<128xf32>
+  ascendc.global_tensor.set_global_buffer %gt, %col
+    : !ascendc.global_tensor<*xf32>, memref<128xf32>
+  return
+}
+
+// Bare block arg with identity layout, directly into set_global_buffer.
+// CHECK-LABEL: func.func @test_bare_blockarg
+// CHECK: emitasc.reinterpret_cast
+// CHECK-NOT: memref.collapse_shape
+func.func @test_bare_blockarg(%arg0: memref<128xf32>) {
+  %gt = ascendc.global_tensor : !ascendc.global_tensor<*xf32>
+  ascendc.global_tensor.set_global_buffer %gt, %arg0
+    : !ascendc.global_tensor<*xf32>, memref<128xf32>
+  return
+}
