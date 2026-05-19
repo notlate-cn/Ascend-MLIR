@@ -83,15 +83,13 @@ echo ""
 echo "==================== [STAGE 3] Simulator Run + Verify ===================="
 log "  XBLOCK=$XBLOCK, XBLOCK_SUB=$XBLOCK_SUB, shape=${D0}x${D1}x${D2}=$N, block_dim=$BLOCK_DIM"
 VALIDATION_LOG="$BUILD_DIR/runtime_session.log"
-INTER1_OUT="$BUILD_DIR/inter1.npy"
-INTER2_OUT="$BUILD_DIR/inter2.npy"
 
-# Tiling params — from auto-generated tiling_space.json.
-# After multi-op collapse the loop iterates over flat N = D0*D1*D2.
-# dim_arg{N}_{0,1,2} are the three 3D dimensions of each tensor arg:
-#   arg0=a, arg1=b, arg3=out (arg2=c is broadcast-fused, no separate dim)
+# Tiling params — only the dim slots the kernel actually uses are emitted
+# (XBLOCK / XBLOCK_SUB / dim_arg0_* / dim_arg3_*); see TilingData fields in the
+# generated kernel.mlir.  After multi-op fuse there is a single output GM and
+# the three inputs (a/b/c) plus a dead DPS-init slot for `%out` — the kernel
+# signature has 4 input args; cann.num_inputs reflects that.
 TILING_PARAMS="XBLOCK=${XBLOCK},XBLOCK_SUB=${XBLOCK_SUB}"
-TILING_PARAMS+=",dim_arg1_0=${D0},dim_arg1_1=${D1},dim_arg1_2=${D2}"
 TILING_PARAMS+=",dim_arg0_0=${D0},dim_arg0_1=${D1},dim_arg0_2=${D2}"
 TILING_PARAMS+=",dim_arg3_0=${D0},dim_arg3_1=${D1},dim_arg3_2=${D2}"
 
@@ -101,19 +99,16 @@ cat > "$RUN_MANIFEST" <<EOF
   "backend": "sim",
   "artifact_root": "${ARTIFACT_ROOT}",
   "inputs": [
-    { "name": "a",   "path": "${DIR}/a.npy" },
-    { "name": "b",   "path": "${DIR}/b.npy" },
-    { "name": "c",   "path": "${DIR}/c.npy" }
+    { "name": "a",        "path": "${DIR}/a.npy" },
+    { "name": "b",        "path": "${DIR}/b.npy" },
+    { "name": "c",        "path": "${DIR}/c.npy" },
+    { "name": "out_init", "path": "${DIR}/out_init.npy" }
   ],
   "outputs": [
-    { "name": "out",   "path": "${ACTUAL_OUTPUT}" },
-    { "name": "inter1","path": "${INTER1_OUT}" },
-    { "name": "inter2","path": "${INTER2_OUT}" }
+    { "name": "out", "path": "${ACTUAL_OUTPUT}" }
   ],
   "expected_outputs": [
-    { "name": "out",   "path": "${DIR}/expected.npy" },
-    { "name": "inter1","path": "${DIR}/expected_inter1.npy" },
-    { "name": "inter2","path": "${DIR}/expected_inter2.npy" }
+    { "name": "out", "path": "${DIR}/expected.npy" }
   ],
   "tiling": {
     "schema": "${DIR}/tiling_space.json",
