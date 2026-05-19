@@ -122,6 +122,33 @@ MixTilingRequest makeExplicitBatchMatmulWithBiasRequest() {
   return request;
 }
 
+MixTilingRequest makeExplicitBatchSecondLhsMatmulRequest() {
+  MixTilingRequest request;
+  request.kernelName = "batch_second_lhs_project";
+  request.socVersion = "Ascend910B1";
+  request.inputs = {
+      {DType::F32, {1, 2, 128}},
+      {DType::F32, {2, 128, 384}},
+      {DType::F32, {2, 1, 128}},
+      {DType::F32, {384}},
+  };
+  request.outputs = {
+      {DType::F32, {2, 1, 384}},
+  };
+  request.matmul = MixAbiMatmulDesc{
+      "batch_matmul",
+      false,
+      false,
+      true,
+      "ND",
+      "ND",
+      "ND",
+      "BiasAdd",
+      {},
+  };
+  return request;
+}
+
 MixTilingRequest makeExplicitFlattenedLhsMatmulRequest() {
   MixTilingRequest request;
   request.kernelName = "flattened_lhs_matmul_bias";
@@ -235,6 +262,17 @@ TEST(MixTilingGeneratorTest, ExplicitBatchMatmulWithBiasUsesBatchTilingOnly) {
   ASSERT_TRUE(static_cast<bool>(result));
   EXPECT_EQ(result->strategyName, "batch-matmul");
   EXPECT_FALSE(result->tilingData.empty());
+}
+
+TEST(MixTilingGeneratorTest,
+     ExplicitBatchMatmulAllowsBatchSecondLhsLayout) {
+  auto result =
+      generateMixTilingInProcess(makeExplicitBatchSecondLhsMatmulRequest());
+
+  ASSERT_TRUE(static_cast<bool>(result));
+  EXPECT_EQ(result->strategyName, "batch-matmul");
+  EXPECT_FALSE(result->tilingData.empty());
+  EXPECT_NE(result->debugNote.find("batch=2"), std::string::npos);
 }
 
 TEST(MixTilingGeneratorTest, ExplicitMatmulAllowsFlattenedNonTransposedLhs) {
