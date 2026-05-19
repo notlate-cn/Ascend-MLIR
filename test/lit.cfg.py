@@ -76,6 +76,10 @@ if (os.environ.get('ASCEND_HOME_PATH') or
         os.environ.get('ASCEND_TOOLKIT_HOME')):
     config.available_features.add('ascend_env')
 
+if os.environ.get('AFIR_ENABLE_LONGRUN_TESTS', '').lower() in (
+        '1', 'on', 'true', 'yes'):
+    config.available_features.add('ascend_longrun')
+
 lit.llvm.llvm_config.use_default_substitutions()
 
 # excludes: A list of directories to exclude from the testsuite.
