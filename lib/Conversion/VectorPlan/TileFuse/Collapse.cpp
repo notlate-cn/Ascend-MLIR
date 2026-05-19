@@ -488,17 +488,41 @@ static CollapsedGroupInfo collapseGroupImpl(OpBuilder &builder,
   func.walk([&](LinalgOp op) { members.push_back(op); });
 
   CollapsedGroupInfo result;
-  // CV-fusion Phase 2: detect Cube kind by presence of matmul-like ops.  When
-  // Cube, skip the rest of collapse logic — the cube template needs explicit
-  // M/N/K iteration axes and cannot have them merged with vector axes.
-  // (TilePlanGen will dispatch on `result.kind` and take the cube branch.)
+  // CV-fusion Phase 2/4: detect Cube kind.  Two sources, in priority order:
+  //   1. `vector_plan.kind = "Cube"` attr on the func itself (set by
+  //      GroupOutline in Phase 3) — survives `--linalg-generalize-named-ops`
+  //      that turns matmul into generic.
+  //   2. Presence of named matmul ops (linalg.matmul etc.) — for funcs that
+  //      haven't gone through GroupOutline yet (e.g. direct `--vector-plan-
+  //      tile-fuse` on a single matmul kernel).
+  // When Cube, skip the rest of collapse logic — the cube template needs
+  // explicit M/N/K iteration axes and cannot have them merged with vector
+  // axes.  TilePlanGen will dispatch on `result.kind` and take the cube branch.
   result.kind = GroupInfo::Kind::Vector;
-  for (LinalgOp op : members) {
-    if (isa<linalg::MatmulOp, linalg::MatmulTransposeAOp,
-            linalg::MatmulTransposeBOp, linalg::BatchMatmulOp>(
-            op.getOperation())) {
+  if (auto attr = func->getAttrOfType<StringAttr>("vector_plan.kind"))
+    if (attr.getValue() == "Cube")
       result.kind = GroupInfo::Kind::Cube;
-      break;
+  if (result.kind != GroupInfo::Kind::Cube) {
+    for (LinalgOp op : members) {
+      Operation *raw = op.getOperation();
+      if (isa<linalg::MatmulOp, linalg::MatmulTransposeAOp,
+              linalg::MatmulTransposeBOp, linalg::BatchMatmulOp>(raw)) {
+        result.kind = GroupInfo::Kind::Cube;
+        break;
+      }
+      // Also detect generic-form matmul (post linalg-generalize-named-ops):
+      // 3-D iter [par, par, red] + 2 inputs + 1 init.
+      if (auto gen = dyn_cast<linalg::GenericOp>(raw)) {
+        auto iter = gen.getIteratorTypesArray();
+        if (iter.size() == 3 &&
+            iter[0] == utils::IteratorType::parallel &&
+            iter[1] == utils::IteratorType::parallel &&
+            iter[2] == utils::IteratorType::reduction &&
+            gen.getNumDpsInputs() == 2 && gen.getNumDpsInits() == 1) {
+          result.kind = GroupInfo::Kind::Cube;
+          break;
+        }
+      }
     }
   }
   if (result.kind == GroupInfo::Kind::Cube) {

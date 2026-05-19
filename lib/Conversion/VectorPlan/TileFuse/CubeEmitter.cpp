@@ -1,5 +1,6 @@
 #include "CubeEmitter.h"
 
+#include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/Dialect/SCF/Transforms/TileUsingInterface.h"
@@ -27,14 +28,40 @@ struct CubeBodyOps {
   linalg::LinalgOp lastConsumer; // last op in topological / use order
 };
 
+// Recognize a `linalg.generic` that is a generalized matmul: 3-D iter space
+// [par, par, red], 2 inputs + 1 init (DPS), body is the standard
+// multiply-accumulate (extf?-mulf-addf yielding the accumulator).  This is
+// what `--linalg-generalize-named-ops` produces from a `linalg.matmul`.
+static bool isMatmulGeneric(linalg::GenericOp gen) {
+  auto iter = gen.getIteratorTypesArray();
+  if (iter.size() != 3) return false;
+  if (iter[0] != utils::IteratorType::parallel ||
+      iter[1] != utils::IteratorType::parallel ||
+      iter[2] != utils::IteratorType::reduction)
+    return false;
+  if (gen.getNumDpsInputs() != 2 || gen.getNumDpsInits() != 1) return false;
+  // Body: at least one arith.mulf and one arith.addf.
+  bool hasMul = false, hasAdd = false;
+  for (Operation &op : gen.getBody()->getOperations()) {
+    if (isa<arith::MulFOp>(op)) hasMul = true;
+    else if (isa<arith::AddFOp>(op)) hasAdd = true;
+  }
+  return hasMul && hasAdd;
+}
+
 static CubeBodyOps findCubeBodyOps(func::FuncOp func) {
   CubeBodyOps r;
   SmallVector<linalg::LinalgOp> allLinalg;
   func.walk([&](linalg::LinalgOp op) {
+    Operation *raw = op.getOperation();
     if (isa<linalg::MatmulOp, linalg::MatmulTransposeAOp,
-            linalg::MatmulTransposeBOp, linalg::BatchMatmulOp>(
-            op.getOperation())) {
+            linalg::MatmulTransposeBOp, linalg::BatchMatmulOp>(raw)) {
       r.matmul = op;
+    } else if (auto gen = dyn_cast<linalg::GenericOp>(raw)) {
+      // After --linalg-generalize-named-ops, the matmul is a generic;
+      // recognize by iter-types + body pattern.
+      if (!r.matmul && isMatmulGeneric(gen))
+        r.matmul = op;
     }
     allLinalg.push_back(op);
   });
