@@ -144,9 +144,24 @@ struct VectorPlanGroupAnalysisPass
             canFuse  = canFuseVector(g1, g2, kind, groups, opts);
             priority = 0;
           } else if (oneCube) {
-            // Cube + Vector epilogue fusion (stub: skip for v1)
-            // canFuse = canFuseCubeEpilogue(...); // future work
-            canFuse  = false;
+            // Cube + Vector epilogue fusion (Phase 1 of [[af-cv-fusion-port]]).
+            // Allowed only when exactly one side is Cube and the other is
+            // Vector (rule out Cube+Cube — no two-matmul fusion in v1).  The
+            // direction matters: `canFuseCubeEpilogue(cube, vec, ...)` assumes
+            // cube produces and vec consumes; dispatch on group kinds.
+            const FusionGroup *cube = nullptr;
+            const FusionGroup *vec  = nullptr;
+            if (g1.kind == GroupInfo::Kind::Cube &&
+                g2.kind == GroupInfo::Kind::Vector) {
+              cube = &g1; vec = &g2;
+            } else if (g2.kind == GroupInfo::Kind::Cube &&
+                       g1.kind == GroupInfo::Kind::Vector) {
+              cube = &g2; vec = &g1;
+            }
+            if (cube && vec)
+              canFuse = canFuseCubeEpilogue(*cube, *vec, groups);
+            // Priority 1 = scheduled after vector-vector fusion (priority 0)
+            // so CV merges only fire on the residual standalone-Cube groups.
             priority = 1;
           }
 
