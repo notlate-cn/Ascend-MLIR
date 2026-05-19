@@ -10,6 +10,7 @@
 # build files
 build/
 output/
+out/
 build-*/
 *.pt
 *.log

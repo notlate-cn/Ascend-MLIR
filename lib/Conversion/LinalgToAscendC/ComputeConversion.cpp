@@ -500,8 +500,7 @@ LogicalResult convertCompute(func::FuncOp funcOp, AscendCBufferContext &ctx) {
 
     // Build a VECCALC accumulator for the full shape.  This is the tensor
     // that will hold the element-wise intermediate results before reduction.
-    auto [accumTbuf, accumLt] =
-        allocVeccalc(builder, loc, elemType, fullShape);
+    Value accumLt = allocVeccalc(builder, loc, elemType, fullShape).second;
 
     // Zero-initialize the accumulator.  The linalg.generic outs operand
     // provides the initial accumulator value, which is 0.0 (set by the
@@ -960,8 +959,7 @@ LogicalResult convertCompute(func::FuncOp funcOp, AscendCBufferContext &ctx) {
 
       // Allocate a VECCALC buffer for one data row (N elements).
       SmallVector<Value> rowDims = {dimN};
-      auto [dataRowTbuf, dataRowLtInit] =
-          allocVeccalc(builder, loc, elemType, rowDims);
+      Value dataRowTbuf = allocVeccalc(builder, loc, elemType, rowDims).first;
 
       builder.create<scf::ForOp>(
           loc, zero, tbM, one, ValueRange{},
@@ -986,8 +984,9 @@ LogicalResult convertCompute(func::FuncOp funcOp, AscendCBufferContext &ctx) {
             // Step 1b: If pre-op exists (e.g. relu), apply it on dataRowLt
             Value processedRowLt = dataRowLt;
             if (preOp) {
-              auto [procTbuf, procLt] = allocVeccalc(b, forLoc, elemType,
-                                                      SmallVector<Value>{dimN});
+              Value procLt =
+                  allocVeccalc(b, forLoc, elemType, SmallVector<Value>{dimN})
+                      .second;
               Value dimN_i32 = b.create<arith::IndexCastOp>(forLoc, b.getI32Type(), dimN);
 
               Block &preBody = *preOp.getBody();

@@ -161,7 +161,72 @@ done
 - `broadcast_add` 首次失败：优先查 `Broadcast` lowering/API 或二输入向量路径。
 - microcase 全过但 full case 失败：继续做 shape/tile 二分和 generated kernel checkpoint。
 
-### 3.3 当前实测结论
+### 3.3 真机调测原则
+
+真机问题要按层收窄，不要直接猜修复点。
+
+1. 先在 xvm 上生成 artifact、数据、expected output 和 run manifest。
+2. 任何 candidate fix、generated-kernel 变体或 runtime artifact 上 910C 前，必须先用 xvm Ascend910B1 仿真跑同一个候选，并要求：
+   - `session.backend=sim`
+   - `session.result=success`
+   - `session.validation=pass`
+3. 原始 demo 的 xvm pass 只能说明原始 demo 在仿真中可运行，不等价于某个候选修复可上真机；候选修复必须单独过 xvm。
+4. early-return checkpoint 等不完整 diagnostic kernel 可以上真机做定位，但不能作为 fix readiness 证明。
+5. 真机 status 只报真机事实：case 名、远端目录、device id、pass/fail、错误码、关键 `errorStr`、launch trace 是否排除了 ABI/H2D/GM/tiling 问题。
+
+### 3.4 真机 Debug Playbook
+
+1. 在 `NativeExecutionRunner` launch assembly 附近打开或补充 launch tracing：
+   - kernel name
+   - binary path
+   - block dim
+   - input and output counts
+   - each input/output byte size
+   - GM pointer values and alignment
+   - workspace size
+   - tiling byte count and first 64-bit words
+   - final launch argument count and byte size
+2. 通过同一套 xvm-to-remote run-only 打包路径构造 microcase：
+   - `const640`：write-only output baseline
+   - `copy640`：read input and write output
+   - `relu_only`：GM to local compute to GM
+   - `broadcast_add`：Broadcast + Add
+   - 如需要，再扩展 `transpose-only` 和 full generated kernel case
+3. 做 shape 和 scheduling 二分：
+   - `block_dim=1` vs 当前 multi-block launch
+   - aligned shapes，例如 64 或 128
+   - tail shapes，例如 65、127、500、640
+4. 如果 full generated kernel 仍是第一个失败点，插入 early-return checkpoint：
+   - entry 后立即返回
+   - buffer/queue init 后返回
+   - first `DataCopy` 后返回
+   - compute primitive 后返回
+   - final writeback 前后返回
+5. 收集远端 CANN logs 和 `npu-smi` 状态，但以 microcase 和 checkpoint 结果作为主要定位信号。
+6. 按证据修对应层：
+   - trace data 与 generated CANN signature 不一致：修 runtime ABI/launch packing
+   - kernel 收到错误 tiling：修 tiling/schema packing
+   - 仅某个 primitive、tail path 或 block partition 失败：修 lowering/scheduling/codegen
+
+### 3.5 plog 和 507035 triage
+
+任何真机 `rtStreamSynchronize failed` 都先收集真实 plog `errorStr`，再判断修复点：
+
+```shell
+grep -R "errorStr" -n \
+  /root/ascend/log/debug/plog \
+  /var/log/npu/slog \
+  /var/log/npu/plog \
+  /root/ascend/log 2>/dev/null | tail -n 50
+```
+
+- `507035` / `ACL_ERROR_RT_VECTOR_CORE_EXCEPTION` 只是症状类别，不是根因。必须结合 `errorStr` 和 launch trace 判断。
+- 如果 `errorStr` 包含 `ADDR_MISALIGN` 或 `UB address ... is not aligned`，优先检查对应 AscendC API 的 alignment 约束，并打印或核对出错 primitive 附近的 UB offset。
+- 如果 `errorStr` 包含 `VEC instruction to read/write UB is out of bounds`，先按 generated-kernel 的 UB lifetime、queue 使用、tile size、primitive shape misuse 定位。
+- 如果同时出现 `GM address accessed by scalar exceeds 48 bits`，不要直接归因到 host GM allocation。若 launch trace 显示 H2D/D2H、GM pointer alignment、workspace、argument count、tiling words 都正常，它可能是 kernel 内 UB corruption 的后续症状。
+- 在远端 CANN host 重新编译同一个 generated `step8_kernel.cpp` 可以排除 xvm compile artifact mismatch；如果错误不变，继续查 kernel ABI/tiling/lowering，不要停在 host dependency setup。
+
+### 3.6 当前实测结论
 - run-only `runtime-session` 在 7 卡真机上可以完成最小 `const640` kernel 的 launch、D2H 和 expected-output 校验，结果为 `session.result=success` / `session.validation=pass`。
 - `examples/relu-broadcast-transpose` 的 full-pipeline vec kernel 已在 7 卡真机通过：
   - xvm Ascend910B1 仿真先通过：`session.backend=sim` / `session.result=success` / `session.validation=pass`
@@ -188,3 +253,119 @@ done
     - GM 输入经临时 VECIN queue `DeQue` 后必须 `FreeTensor`
     - `affine.min` / `memref.dim(subview)` 产生的 tail alloc 尺寸要解析为 loop-step 上界
     - loop-invariant `InitBuffer` / `InitQueue` 必须 hoist 到 inner tile loop 外
+
+### 3.7 容器化 910C runner
+
+为了让 x86 和 aarch64 开发机使用同一套真机验证入口，新增 `scripts/real-npu-ci/`：
+
+- 开发机只负责通过 SSH 或其它 CI 入口触发任务。
+- 实际 clone/copy 源码、构建 Ascend-MLIR、生成 artifacts、运行 xvm-style sim pipeline、改写 manifest 到 `npu` backend、910C 真机运行和 plog 收集都在 910C aarch64 host 的 Docker 容器内完成。
+- NPU driver 不打包进镜像，运行时从 host 挂载 `/usr/local/Ascend/driver` 和 `/dev/davinci*`。
+- CANN toolkit 默认使用 host 上的 `/data/nyh/Ascend/latest`，通过挂载 `/data/nyh` 进入容器。
+- LLVM/MLIR 依赖推荐通过 `build-aarch64-image.sh --with-llvm` 在本机 OrbStack、xvm、native arm64 Linux 或 CI 上自动构建，并提前 bake 到 builder image 的 `/opt/llvm/build`。
+- 910C host 的常规职责是 pull/load 已构建好的 image 并运行验证 job；不要把镜像构建放进每次真机验证流程。
+
+在 arm64 Docker builder 上构建基础镜像：
+
+```shell
+scripts/real-npu-ci/build-aarch64-image.sh \
+  --tag ascend-mlir-builder:aarch64-ubuntu22.04
+```
+
+更推荐提前构建带 LLVM/MLIR 的共享镜像。版本 pin 记录在
+`scripts/real-npu-ci/versions.env`，后续 LLVM/MLIR 版本变更时更新该文件并重建镜像。
+
+首选方式：镜像构建时自动 clone/build pinned LLVM/MLIR：
+
+```shell
+scripts/real-npu-ci/build-aarch64-image.sh --with-llvm
+```
+
+如果已有确认可用的 arm64 LLVM build，也可以把它 bake 进去以加速镜像构建：
+
+```shell
+scripts/real-npu-ci/build-aarch64-image.sh \
+  --tag ascend-mlir-builder:aarch64-ubuntu22.04-llvm21 \
+  --embed-llvm-build-dir /opt/llvm/build
+```
+
+镜像构建完成后，把 image 推到 registry 让 910C host pull，或者 `docker save`
+后复制到 910C host 并 `docker load`。`submit-910c.sh` / `docker-run-910c.sh`
+只使用 910C host 上已经存在的 image tag，不负责构建镜像。
+
+PyAsc 跟随被验证的源码仓库 ref，不固定 bake 到通用镜像里；当 PyAsc 需要新的
+LLVM/MLIR 或系统依赖时，再更新 `versions.env` / Dockerfile 并重建镜像。
+镜像 tag 不编码 host CANN 版本；CANN 是运行时从 host 挂载进容器的依赖，而不是
+镜像内置依赖。
+
+默认 base image 是 Ubuntu 22.04。910C host 本身不要求是 Ubuntu，因为容器自带
+userland，只共享 host kernel。约束是运行也要留在容器内；如果把容器内编译出的
+二进制拷到 host 裸跑，就需要单独检查 glibc 兼容性。
+
+910C host 上用当前源码树触发一个 case：
+
+```shell
+cd /data/nyh/Codex-Ascend-MLIR
+scripts/real-npu-ci/docker-run-910c.sh \
+  --image ascend-mlir-builder:aarch64-ubuntu22.04-llvm21 \
+  --source-dir "$PWD" \
+  --ref "$(git rev-parse --short HEAD)" \
+  --case relu-broadcast-transpose \
+  --device-id 7
+```
+
+任意开发机远程触发同一流程：
+
+```shell
+scripts/real-npu-ci/submit-910c.sh \
+  --image ascend-mlir-builder:aarch64-ubuntu22.04-llvm21 \
+  --repo-url git@example.com:team/Codex-Ascend-MLIR.git \
+  --ref my-branch \
+  --case relu-broadcast-transpose \
+  --device-id 7
+```
+
+job 输出统一落在：
+
+```text
+/data/nyh/real-npu-jobs/<timestamp>-<ref>-<case>/
+  job-env.txt
+  logs/
+    build-project.log
+    <case>-sim.log
+    <case>-npu.log
+    plog/
+      npu-smi.txt
+      plog-errorStr.txt
+      plog-files.txt
+  out/
+```
+
+详细参数和运行方式见 `scripts/real-npu-ci/README.md`。
+
+## 4. 真机问题经验总结
+
+### 4.1 `relu-broadcast-transpose` 507035 lessons
+
+- 之前 `examples/relu-broadcast-transpose` 真机失败不是 launch ABI 问题。H2D roundtrip、GM pointer 512B alignment、workspace、argument count 和 tiling words 都正常。
+- 失败 plog 报 VEC UB out-of-bounds / scalar GM address over 48 bits，最终修复点在 generated kernel lowering 和 tile sizing。
+- VECOUT outputs 必须先从 VECOUT queue `AllocTensor` 再 enqueue。把 VECCALC tensor enqueue 到 VECOUT queue 可能过仿真，但真机会触发 UB/MTE fault。
+- 临时 GM-to-VECIN tensor 通过 `AllocTensor -> DataCopy -> EnQue -> DeQue` 创建后，必须在最后一次使用后 `FreeTensor`。
+- all-parallel tail-tiled kernel 的 buffer allocation 应使用 enclosing loop-step upper bound；DataCopy/compute 仍使用 actual tail element count。这样一个 max-sized queue/tbuf 可以跨 tail iteration 复用。
+- 计算 all-parallel VECOUT/VECIN/VECCALC buffer byte size 时，要把 `affine.min(remaining, step)` 和 `memref.dim(subview)` 解析到 loop-step upper bound。
+- loop-invariant `InitBuffer` / `InitQueue` 要 hoist 到 inner tile loop 外。每轮循环重复 init 在 simulator 与真机上的 UB 消耗表现不同，真机可能触发 `507035`。
+- 不要把同样的 max-size substitution 盲目套到 reduction output。rank-1 VECOUT reduction output 可能需要 exact tail size，因为 `ReduceSum2DL2` codegen 会从 source 和 destination tensor size 推导 rows/cols。
+- `TB_N` 从 64 调到 16 降低了该 demo 的 UB live set，是当前真机通过配置的一部分；但 tile 修改本身不是根因修复，必须同时保证 queue 和 buffer lifetime 正确。
+
+### 4.2 `add-broadcast-concat` 507035 lessons
+
+- 之前 `examples/add-broadcast-concat` 真机失败是 tiling configuration 问题，不是 launch ABI 问题。launch trace 显示 argument count、H2D/D2H、512B-aligned GM pointers、workspace、tiling words 都正常。
+- 在该 generated kernel 中，`TB_N` 当前实际表现为 inner M tile size；`N=500` 仍 full-width 进入每个 tile。`TB_N=192` 会让 UB live set 超界，并在 910C 上触发 `rtStreamSynchronize rc=507035`。
+- 当前接受配置是 `TB_M=64, TB_N=16`。流程上先跑 xvm Ascend910B1 simulation，再跑 910C 真机。
+
+### 4.3 `split-relu-brc-add-mul` 507035 lessons
+
+- 让 run manifest tiling fields 对齐 generated CANN `TilingData` signature 是必要 hygiene，但不是该 demo 的根因。8-field tiling probe 在 UB cleanup 前仍以同样 `507035` 失败。
+- 根因是 queue-backed memref alloc 还保留了 standalone TBuf initializer。这些 TBuf 没有实际用户，只有 `TPipe.InitBuffer`，但 hoist 后仍会消耗真机 UB。
+- data-move/compute conversion 后，应删除仅被 `TPipe.InitBuffer` 使用的 TBuf。该 demo 中 generated `InitBuffer` 从 20 个降到 14 个后，xvm simulation 保持通过，910C 真机通过。
+- `examples/split-relu-brc-add-mul` run manifest 要和当前 CANN signature 对齐：`TB_M`、`TB_N`、`dim_arg0_1`、`dim_arg1_0`、`dim_arg0_0`、`dim_arg3_0`、`dim_arg2_0`、`dim_arg4_0`。

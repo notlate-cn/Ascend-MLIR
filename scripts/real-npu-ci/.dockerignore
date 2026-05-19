@@ -1,0 +1,7 @@
+*
+!Dockerfile.builder
+!README.md
+!versions.env
+!*.sh
+!llvm-build/
+!llvm-build/**
