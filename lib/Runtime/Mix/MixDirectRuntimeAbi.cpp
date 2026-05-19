@@ -8,6 +8,8 @@
 #include "llvm/Support/Error.h"
 #include "llvm/Support/FileSystem.h"
 
+#include <limits>
+#include <optional>
 #include <utility>
 
 namespace mlir::runtime {
@@ -43,6 +45,74 @@ static llvm::StringRef getDTypeName(DType dtype) {
   }
 }
 
+static llvm::Error reconcileLinearizedTensorShapeWithNpy(
+    MixAbiTensorDesc &tensor, const NDArray &array, llvm::StringRef npyPath) {
+  size_t staticElementCount = 1;
+  std::optional<size_t> dynamicDimIndex;
+  unsigned dynamicDimCount = 0;
+
+  for (size_t i = 0; i < tensor.shape.size(); ++i) {
+    int64_t dim = tensor.shape[i];
+    if (dim < 0) {
+      dynamicDimIndex = i;
+      ++dynamicDimCount;
+      continue;
+    }
+    if (dim == 0)
+      return llvm::createStringError(
+          llvm::inconvertibleErrorCode(),
+          "RuntimeMix ABI cannot linearize tensor '%s': MLIR shape contains "
+          "zero-sized dim %zu while %s rank=%zu",
+          tensor.name.c_str(), i, npyPath.str().c_str(), array.shape.size());
+    if (staticElementCount >
+        std::numeric_limits<size_t>::max() / static_cast<size_t>(dim))
+      return llvm::createStringError(
+          llvm::inconvertibleErrorCode(),
+          "RuntimeMix ABI cannot linearize tensor '%s': static element count "
+          "overflows while reconciling %s",
+          tensor.name.c_str(), npyPath.str().c_str());
+    staticElementCount *= static_cast<size_t>(dim);
+  }
+
+  if (dynamicDimCount > 1)
+    return llvm::createStringError(
+        llvm::inconvertibleErrorCode(),
+        "RuntimeMix ABI cannot linearize tensor '%s': MLIR rank=%zu has %u "
+        "dynamic dims but %s rank=%zu",
+        tensor.name.c_str(), tensor.shape.size(), dynamicDimCount,
+        npyPath.str().c_str(), array.shape.size());
+
+  const size_t arrayElementCount = array.numElements();
+  if (dynamicDimCount == 0) {
+    if (staticElementCount == arrayElementCount)
+      return llvm::Error::success();
+    return llvm::createStringError(
+        llvm::inconvertibleErrorCode(),
+        "RuntimeMix ABI cannot linearize tensor '%s': MLIR rank=%zu has %zu "
+        "elements but %s rank=%zu has %zu elements",
+        tensor.name.c_str(), tensor.shape.size(), staticElementCount,
+        npyPath.str().c_str(), array.shape.size(), arrayElementCount);
+  }
+
+  if (arrayElementCount % staticElementCount != 0)
+    return llvm::createStringError(
+        llvm::inconvertibleErrorCode(),
+        "RuntimeMix ABI cannot linearize tensor '%s': %s element count %zu "
+        "is not divisible by MLIR static product %zu",
+        tensor.name.c_str(), npyPath.str().c_str(), arrayElementCount,
+        staticElementCount);
+
+  const size_t dynamicDim = arrayElementCount / staticElementCount;
+  if (dynamicDim > static_cast<size_t>(std::numeric_limits<int64_t>::max()))
+    return llvm::createStringError(
+        llvm::inconvertibleErrorCode(),
+        "RuntimeMix ABI cannot linearize tensor '%s': inferred dynamic dim "
+        "%zu overflows int64_t",
+        tensor.name.c_str(), dynamicDim);
+  tensor.shape[*dynamicDimIndex] = static_cast<int64_t>(dynamicDim);
+  return llvm::Error::success();
+}
+
 static std::string buildOrdinalTensorNpyName(bool isOutput, size_t index) {
   return (llvm::Twine(isOutput ? "output" : "input") + llvm::Twine(index) +
           ".npy")
@@ -68,7 +138,8 @@ resolveTensorNpyPath(llvm::StringRef npyDir, const MixAbiTensorDesc &tensor,
 }
 
 static llvm::Error reconcileTensorWithNpy(MixAbiTensorDesc &tensor,
-                                          llvm::StringRef npyPath) {
+                                          llvm::StringRef npyPath,
+                                          bool allowLinearizedRankMismatch) {
   auto arrayOr = loadNpyTensor(npyPath);
   if (!arrayOr)
     return arrayOr.takeError();
@@ -79,13 +150,16 @@ static llvm::Error reconcileTensorWithNpy(MixAbiTensorDesc &tensor,
         "contains %s",
         tensor.name.c_str(), getDTypeName(tensor.dtype).str().c_str(),
         npyPath.str().c_str(), getDTypeName(arrayOr->dtype).str().c_str());
-  if (!tensor.shape.empty() && tensor.shape.size() != arrayOr->shape.size())
+  if (!tensor.shape.empty() && tensor.shape.size() != arrayOr->shape.size()) {
+    if (allowLinearizedRankMismatch)
+      return reconcileLinearizedTensorShapeWithNpy(tensor, *arrayOr, npyPath);
     return llvm::createStringError(
         llvm::inconvertibleErrorCode(),
         "RuntimeMix ABI rank mismatch for tensor '%s': MLIR rank=%zu but %s "
         "rank=%zu",
         tensor.name.c_str(), tensor.shape.size(), npyPath.str().c_str(),
         arrayOr->shape.size());
+  }
   if (tensor.shape.empty()) {
     tensor.shape = arrayOr->shape;
     return llvm::Error::success();
@@ -111,7 +185,8 @@ static llvm::Error resolveDynamicShapesFromNpyDir(MixAbiMetadata &abi,
     auto npyPathOr = resolveTensorNpyPath(npyDir, abi.inputs[i], i, false);
     if (!npyPathOr)
       return npyPathOr.takeError();
-    if (auto err = reconcileTensorWithNpy(abi.inputs[i], *npyPathOr))
+    if (auto err = reconcileTensorWithNpy(abi.inputs[i], *npyPathOr,
+                                         /*allowLinearizedRankMismatch=*/false))
       return err;
   }
   for (size_t i = 0; i < abi.outputs.size(); ++i) {
@@ -120,7 +195,8 @@ static llvm::Error resolveDynamicShapesFromNpyDir(MixAbiMetadata &abi,
     auto npyPathOr = resolveTensorNpyPath(npyDir, abi.outputs[i], i, true);
     if (!npyPathOr)
       return npyPathOr.takeError();
-    if (auto err = reconcileTensorWithNpy(abi.outputs[i], *npyPathOr))
+    if (auto err = reconcileTensorWithNpy(abi.outputs[i], *npyPathOr,
+                                         /*allowLinearizedRankMismatch=*/true))
       return err;
   }
   return llvm::Error::success();

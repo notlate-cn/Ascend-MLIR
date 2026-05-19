@@ -90,12 +90,21 @@ buildExplicitMatmulTilingRequest(const MixTilingRequest &request,
   int64_t derivedKFromB = 0;
   if (isBatchMatmul) {
     if (!isRank3(a) || !isRank3(b) || !isRank3(c) || !hasPositiveShape(a) ||
-        !hasPositiveShape(b) || !hasPositiveShape(c) ||
-        matmul.batchShape.size() != 1 || a[0] != matmul.batchShape[0] ||
-        b[0] != matmul.batchShape[0] || c[0] != matmul.batchShape[0]) {
+        !hasPositiveShape(b) || !hasPositiveShape(c)) {
       return llvm::createStringError(
           llvm::inconvertibleErrorCode(),
           "invalid explicit batch matmul mix request: only positive rank-3 tensors with a single static batch dim are supported");
+    }
+    if (a[0] != b[0] || a[0] != c[0]) {
+      return llvm::createStringError(
+          llvm::inconvertibleErrorCode(),
+          "invalid explicit batch matmul mix request: batch dimensions do not match");
+    }
+    if (!matmul.batchShape.empty() &&
+        (matmul.batchShape.size() != 1 || matmul.batchShape[0] != a[0])) {
+      return llvm::createStringError(
+          llvm::inconvertibleErrorCode(),
+          "invalid explicit batch matmul mix request: shapes do not match annotated batch semantics");
     }
     derivedM = matmul.transA ? a[2] : a[1];
     derivedKFromA = matmul.transA ? a[1] : a[2];
@@ -157,7 +166,10 @@ buildExplicitMatmulTilingRequest(const MixTilingRequest &request,
   matmulRequest.problem.M = derivedM;
   matmulRequest.problem.N = derivedN;
   matmulRequest.problem.K = derivedKFromA;
-  matmulRequest.problem.batchShape = matmul.batchShape;
+  if (isBatchMatmul)
+    matmulRequest.problem.batchShape = {a[0]};
+  else
+    matmulRequest.problem.batchShape = matmul.batchShape;
   matmulRequest.problem.dtypeA = request.inputs[0].dtype;
   matmulRequest.problem.dtypeB = request.inputs[1].dtype;
   matmulRequest.problem.dtypeC = request.outputs[0].dtype;

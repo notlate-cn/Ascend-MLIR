@@ -395,9 +395,8 @@ classifyLinalgComputeKind(Operation *op,
   if (isa<linalg::MatmulOp, linalg::MatmulTransposeAOp,
           linalg::MatmulTransposeBOp>(op))
     return ComputeKind::Matmul;
-  if (auto batchMatmul = dyn_cast<linalg::BatchMatmulOp>(op))
-    if (!hasOnChipOutput(batchMatmul))
-      return ComputeKind::BatchMatmul;
+  if (isa<linalg::BatchMatmulOp>(op))
+    return ComputeKind::BatchMatmul;
   if (auto batchTranspose = dyn_cast<linalg::BatchMatmulTransposeAOp>(op))
     if (!hasOnChipOutput(batchTranspose))
       return ComputeKind::BatchMatmul;

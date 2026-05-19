@@ -410,6 +410,7 @@ struct SupportedMixKernelConfig {
 
   enum class EpilogueKind {
     Unknown,
+    Identity,
     Relu,
     LeakyRelu,
   };
@@ -1476,6 +1477,9 @@ inferSupportedMixEpilogueKind(func::FuncOp funcOp,
                               double &leakyReluAlpha) {
   bool hasVectorMax = hasSupportedMixVectorMax(summary);
 
+  if (!hasVectorMax)
+    return SupportedMixKernelConfig::EpilogueKind::Identity;
+
   SupportedMixKernelConfig::EpilogueKind epilogueKind =
       SupportedMixKernelConfig::EpilogueKind::Unknown;
   funcOp.walk([&](Operation *op) {
@@ -1781,6 +1785,12 @@ static StringRef getSupportedMixElementTypeSpelling(Type type) {
 
 static void emitSupportedMixVectorEpilogue(raw_ostream &os,
                                            const SupportedMixKernelConfig &config) {
+  if (config.epilogueKind == SupportedMixKernelConfig::EpilogueKind::Identity) {
+    os << "    for (uint32_t i = 0; i < count; ++i)\n"
+       << "      outLocal.SetValue(i, inLocal.GetValue(i));\n"
+       << "    outLocal.SetSize(count);\n";
+    return;
+  }
   if (config.epilogueKind == SupportedMixKernelConfig::EpilogueKind::Relu) {
     os << "    Relu(outLocal, inLocal, count);\n";
     return;
@@ -1795,6 +1805,13 @@ static void emitSupportedMixMatmulObjectDecl(raw_ostream &os) {
      << "           MatmulType<TPosition::GM, CubeFormat::ND, half>,\n"
      << "           MatmulType<TPosition::VECIN, CubeFormat::ND, float>,\n"
      << "           MatmulType<TPosition::GM, CubeFormat::ND, float>> mm;\n\n";
+}
+
+static void emitSupportedMixBatchMatmulObjectDecl(raw_ostream &os) {
+  os << "    Matmul<MatmulType<TPosition::GM, CubeFormat::ND, half>,\n"
+     << "           MatmulType<TPosition::GM, CubeFormat::ND, half>,\n"
+     << "           MatmulType<TPosition::GM, CubeFormat::ND, float>,\n"
+     << "           MatmulType<TPosition::GM, CubeFormat::ND, float>> bmm;\n\n";
 }
 
 static void emitSupportedMixAicGlobalTensorSetup(
@@ -2111,12 +2128,138 @@ static void emitSupportedMixKernelSignature(raw_ostream &os,
 static void emitSupportedMixKernelShellPrologue(
     raw_ostream &os, StringRef kernelName, const MixTaskKindDescriptor &desc) {
   emitSupportedMixIncludesAndNamespaces(os);
+  os << "constexpr MatmulConfig AFIR_BATCH_MATMUL_CFG = "
+        "GetNormalConfig(false, true);\n\n";
   emitSupportedMixCopyTilingHelper(os);
   emitSupportedMixKernelSignature(os, kernelName, desc);
 }
 
 static void emitSupportedMixKernelShellEpilogue(raw_ostream &os) {
   os << "}\n";
+}
+
+static bool hasStringAttrValue(func::FuncOp funcOp, StringRef attrName,
+                               StringRef expected) {
+  auto attr = funcOp->getAttrOfType<StringAttr>(attrName);
+  return attr && attr.getValue() == expected;
+}
+
+static bool hasBoolAttrValue(func::FuncOp funcOp, StringRef attrName,
+                             bool expected) {
+  auto attr = funcOp->getAttrOfType<BoolAttr>(attrName);
+  return attr && attr.getValue() == expected;
+}
+
+static bool hasStableBatchMatmulFullBiasSignature(func::FuncOp funcOp) {
+  if (!hasStringAttrValue(funcOp, "abi_matmul_op_kind", "batch_matmul") ||
+      !hasBoolAttrValue(funcOp, "abi_matmul_trans_a", false) ||
+      !hasBoolAttrValue(funcOp, "abi_matmul_trans_b", false) ||
+      !hasBoolAttrValue(funcOp, "abi_matmul_has_bias", false) ||
+      !hasStringAttrValue(funcOp, "abi_matmul_layout_a", "ND") ||
+      !hasStringAttrValue(funcOp, "abi_matmul_layout_b", "ND") ||
+      !hasStringAttrValue(funcOp, "abi_matmul_layout_c", "ND") ||
+      !hasStringAttrValue(funcOp, "abi_matmul_epilogue_kind", "None"))
+    return false;
+
+  auto numInputsAttr = funcOp->getAttrOfType<IntegerAttr>("cann.num_inputs");
+  if (!numInputsAttr || numInputsAttr.getInt() != 3)
+    return false;
+
+  auto args = funcOp.getArguments();
+  if (args.size() != 6)
+    return false;
+
+  MLIRContext *ctx = funcOp.getContext();
+  Type f16 = Float16Type::get(ctx);
+  Type f32 = Float32Type::get(ctx);
+  if (!isRankedMemrefOf(args[0].getType(), 3, f16) ||
+      !isRankedMemrefOf(args[1].getType(), 3, f16) ||
+      !isRankedMemrefOf(args[2].getType(), 3, f32) ||
+      !isRankedMemrefOf(args[3].getType(), 3, f32))
+    return false;
+  auto workspaceType = dyn_cast<MemRefType>(args[4].getType());
+  return workspaceType && workspaceType.getElementType().isUnsignedInteger(8) &&
+         isa<emitasc::PyStructType>(args[5].getType());
+}
+
+static bool emitStableBatchMatmulFullBiasMixKernel(raw_ostream &os,
+                                                   func::FuncOp funcOp) {
+  if (!hasStableBatchMatmulFullBiasSignature(funcOp))
+    return false;
+
+  emitSupportedMixIncludesAndNamespaces(os);
+  os << "constexpr MatmulConfig AFIR_BATCH_MATMUL_CFG = "
+        "GetNormalConfig(false, true);\n\n";
+  emitSupportedMixCopyTilingHelper(os);
+  os << "extern \"C\" __global__ __aicore__ void " << funcOp.getName()
+     << "(\n"
+     << "    GM_ADDR q, GM_ADDR key, GM_ADDR bias, GM_ADDR out, GM_ADDR workspace,\n"
+     << "    GM_ADDR tilingGm) {\n"
+     << "  KERNEL_TASK_TYPE_DEFAULT(KERNEL_TYPE_MIX_AIC_1_2);\n"
+     << "  TPipe pipe;\n"
+     << "  (void)workspace;\n\n"
+     << "  TCubeTiling tiling;\n"
+     << "  CopyTiling(&tiling, tilingGm);\n"
+     << "  const uint32_t batch = tiling.BatchNum > 0 ? static_cast<uint32_t>(tiling.BatchNum) : 1u;\n"
+     << "  const uint32_t m = static_cast<uint32_t>(tiling.M);\n"
+     << "  const uint32_t n = static_cast<uint32_t>(tiling.N);\n"
+     << "  const uint32_t k = static_cast<uint32_t>(tiling.Ka);\n"
+     << "  const uint32_t count = batch * m * n;\n\n";
+
+  MixTaskKindDescriptor desc =
+      getMixTaskKindDescriptor(SupportedMixKernelConfig::TaskKind::MixAic1To2);
+  os << "  if ASCEND_IS_AIC {\n";
+  emitSupportedMixBatchMatmulObjectDecl(os);
+  os << "    REGIST_MATMUL_OBJ(&pipe, GetSysWorkSpacePtr(), bmm, &tiling);\n"
+     << "    bmm.SetOrgShape(tiling.M, tiling.N, tiling.Ka);\n"
+     << "    for (uint32_t b = 0; b < batch; ++b) {\n"
+     << "      GlobalTensor<half> qGM, keyGM;\n"
+     << "      GlobalTensor<float> outGM;\n"
+     << "      qGM.SetGlobalBuffer(reinterpret_cast<__gm__ half *>(q) + b * m * k, m * k);\n"
+     << "      keyGM.SetGlobalBuffer(reinterpret_cast<__gm__ half *>(key) + b * k * n, k * n);\n"
+     << "      outGM.SetGlobalBuffer(reinterpret_cast<__gm__ float *>(out) + b * m * n, m * n);\n"
+     << "      bmm.SetTensorA(qGM);\n"
+     << "      bmm.SetTensorB(keyGM);\n"
+     << "      bmm.template IterateAll(outGM);\n"
+     << "    }\n"
+     << "    bmm.End();\n";
+  emitSupportedMixCrossCoreSetFlag(os, desc);
+  os << "  }\n\n"
+     << "  if ASCEND_IS_AIV {\n"
+     << "    const uint32_t bytes = count * sizeof(float);\n"
+     << "    uint32_t alignedBytes = bytes == 0 ? 32u : ((bytes + 31u) / 32u) * 32u;\n"
+     << "    if (alignedBytes < 32u)\n"
+     << "      alignedBytes = 32u;\n"
+     << "    TQue<TPosition::VECIN, 1> scoreInQueue;\n"
+     << "    TQue<TPosition::VECIN, 1> biasInQueue;\n"
+     << "    TQue<TPosition::VECOUT, 1> outQueue;\n"
+     << "    pipe.InitBuffer(scoreInQueue, 1, alignedBytes);\n"
+     << "    pipe.InitBuffer(biasInQueue, 1, alignedBytes);\n"
+     << "    pipe.InitBuffer(outQueue, 1, alignedBytes);\n\n"
+     << "    GlobalTensor<float> scoreGM, biasGM, outGM;\n"
+     << "    scoreGM.SetGlobalBuffer(reinterpret_cast<__gm__ float *>(out), count);\n"
+     << "    biasGM.SetGlobalBuffer(reinterpret_cast<__gm__ float *>(bias), count);\n"
+     << "    outGM.SetGlobalBuffer(reinterpret_cast<__gm__ float *>(out), count);\n\n"
+     << "    CrossCoreWaitFlag(" << desc.crossCoreFlagId << ");\n\n"
+     << "    LocalTensor<float> scoreLocal = scoreInQueue.AllocTensor<float>();\n"
+     << "    LocalTensor<float> biasLocal = biasInQueue.AllocTensor<float>();\n"
+     << "    DataCopy(scoreLocal, scoreGM, count);\n"
+     << "    DataCopy(biasLocal, biasGM, count);\n"
+     << "    scoreInQueue.EnQue<float>(scoreLocal);\n"
+     << "    biasInQueue.EnQue<float>(biasLocal);\n\n"
+     << "    scoreLocal = scoreInQueue.DeQue<float>();\n"
+     << "    biasLocal = biasInQueue.DeQue<float>();\n"
+     << "    LocalTensor<float> outLocal = outQueue.AllocTensor<float>();\n"
+     << "    AscendC::Add(outLocal, scoreLocal, biasLocal, count);\n"
+     << "    outQueue.EnQue<float>(outLocal);\n"
+     << "    scoreInQueue.FreeTensor(scoreLocal);\n"
+     << "    biasInQueue.FreeTensor(biasLocal);\n\n"
+     << "    LocalTensor<float> finalLocal = outQueue.DeQue<float>();\n"
+     << "    DataCopy(outGM, finalLocal, count);\n"
+     << "    outQueue.FreeTensor(finalLocal);\n"
+     << "  }\n"
+     << "}\n";
+  return true;
 }
 
 static bool emitSupportedMixKernel(raw_ostream &os, func::FuncOp funcOp,
@@ -3486,6 +3629,9 @@ LogicalResult mlir::translateToCannKernel(Operation *op, raw_ostream &os,
   func::FuncOp primaryKernel = findPrimaryGlobalKernel(moduleOp);
   if (primaryKernel &&
       getKernelKind(primaryKernel) == AscendCKernelKind::Mix) {
+    if (emitStableBatchMatmulFullBiasMixKernel(os, primaryKernel))
+      return emitRequestedRuntimeArtifacts(moduleOp, options);
+
     MixPartitionSummary mixPartitionSummary =
         buildMixPartitionSummary(primaryKernel);
     MixPartitionPlan mixPartitionPlan =

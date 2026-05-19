@@ -2910,7 +2910,138 @@ LogicalResult convertCompute(func::FuncOp funcOp, AscendCBufferContext &ctx) {
     batchMatmulOp.erase();
   }
 
-  // --- linalg.matmul -> amad ---
+  batchMatmulOps.clear();
+  funcOp.walk([&](linalg::BatchMatmulOp op) { batchMatmulOps.push_back(op); });
+
+  auto getDim = [&](OpBuilder &b, Location loc, Value mem, int64_t d) -> Value {
+    auto mrt = cast<MemRefType>(mem.getType());
+    if (!ShapedType::isDynamic(mrt.getShape()[d]))
+      return b.create<arith::ConstantIndexOp>(loc, mrt.getShape()[d]);
+    return b.create<memref::DimOp>(loc, mem, d);
+  };
+
+  auto buildMmadParams = [&](OpBuilder &b, Location loc, Value m, Value n,
+                             Value k) -> Value {
+    auto toI16 = [&](Value idx) -> Value {
+      return b.create<arith::IndexCastOp>(loc, b.getI16Type(), idx);
+    };
+    Value zero8 = b.create<arith::ConstantIntOp>(loc, b.getI8Type(), 0);
+
+    SmallVector<Value> operands = {toI16(m), toI16(n), toI16(k), zero8, zero8,
+                                   zero8};
+    auto ui16 = IntegerType::get(mlirCtx, 16, IntegerType::Unsigned);
+    auto ui8 = IntegerType::get(mlirCtx, 8, IntegerType::Unsigned);
+    SmallVector<Type> types = {ui16, ui16, ui16, ui8, ui8, ui8};
+    return b.create<ConstructOp>(loc, MmadParamsType::get(mlirCtx), operands,
+                                 b.getTypeArrayAttr(types));
+  };
+
+  auto matrixByteCount = [&](OpBuilder &b, Location loc, Value mem,
+                             int64_t rowDim, int64_t colDim) -> Value {
+    auto memType = cast<MemRefType>(mem.getType());
+    Value rows = getDim(b, loc, mem, rowDim);
+    Value cols = getDim(b, loc, mem, colDim);
+    Value elems = b.create<arith::MulIOp>(loc, rows, cols);
+    unsigned elemBytes = memType.getElementTypeBitWidth() / 8;
+    return b.create<arith::MulIOp>(
+        loc, elems, b.create<arith::ConstantIndexOp>(loc, elemBytes));
+  };
+
+  auto batchMatrixByteOffset = [&](OpBuilder &b, Location loc, Value mem,
+                                   Value batchIndex, int64_t rowDim,
+                                   int64_t colDim) -> Value {
+    auto memType = cast<MemRefType>(mem.getType());
+    Value rows = getDim(b, loc, mem, rowDim);
+    Value cols = getDim(b, loc, mem, colDim);
+    Value elems = b.create<arith::MulIOp>(loc, batchIndex, rows);
+    elems = b.create<arith::MulIOp>(loc, elems, cols);
+    unsigned elemBytes = memType.getElementTypeBitWidth() / 8;
+    return b.create<arith::MulIOp>(
+        loc, elems, b.create<arith::ConstantIndexOp>(loc, elemBytes));
+  };
+
+  // --- linalg.batch_matmul -> batched mmads ---
+  for (linalg::BatchMatmulOp batchMatmulOp : batchMatmulOps) {
+    Value A = batchMatmulOp.getInputs()[0];
+    Value B = batchMatmulOp.getInputs()[1];
+    Value C = batchMatmulOp.getOutputs()[0];
+    if (getMemorySpace(A.getType()) != 2)
+      continue;
+    if (getMemorySpace(B.getType()) != 4)
+      continue;
+    if (getMemorySpace(C.getType()) != 7)
+      continue;
+
+    auto aType = dyn_cast<MemRefType>(A.getType());
+    auto bType = dyn_cast<MemRefType>(B.getType());
+    auto cType = dyn_cast<MemRefType>(C.getType());
+    if (!aType || !bType || !cType || aType.getRank() != 3 ||
+        bType.getRank() != 3 || cType.getRank() != 3)
+      continue;
+
+    Value qA = ctx.getQueue(A), qB = ctx.getQueue(B), qC = ctx.getQueue(C);
+    Value tbufA = ctx.getTBuf(A), tbufB = ctx.getTBuf(B);
+    Value tbufC = ctx.getTBuf(C);
+    if (!qA || !qB || !qC || !tbufA || !tbufB || !tbufC) {
+      batchMatmulOp.emitError(
+          "missing queue/tbuf for batch_matmul A2/B2/CO1 buffer");
+      return failure();
+    }
+
+    Location loc = batchMatmulOp.getLoc();
+    builder.setInsertionPoint(batchMatmulOp);
+    Type elemTypeA = aType.getElementType();
+    Type elemTypeB = bType.getElementType();
+    Type elemTypeC = cType.getElementType();
+
+    Value tensorA;
+    if (!ctx.getLiveTensor(A))
+      tensorA = dequeTensor(builder, loc, qA, elemTypeA);
+    Value tensorB;
+    if (!ctx.getLiveTensor(B))
+      tensorB = dequeTensor(builder, loc, qB, elemTypeB);
+    Value tensorC = allocTensor(builder, loc, qC, elemTypeC);
+
+    Value zero = builder.create<arith::ConstantIndexOp>(loc, 0);
+    Value one = builder.create<arith::ConstantIndexOp>(loc, 1);
+    Value batch = getDim(builder, loc, C, 0);
+    auto forOp = builder.create<scf::ForOp>(loc, zero, batch, one);
+
+    {
+      OpBuilder::InsertionGuard guard(builder);
+      builder.setInsertionPointToStart(forOp.getBody());
+      Value batchIndex = forOp.getInductionVar();
+      Value aSize = matrixByteCount(builder, loc, A, 1, 2);
+      Value bSize = matrixByteCount(builder, loc, B, 1, 2);
+      Value cSize = matrixByteCount(builder, loc, C, 1, 2);
+      Value aOffset = batchMatrixByteOffset(builder, loc, A, batchIndex, 1, 2);
+      Value bOffset = batchMatrixByteOffset(builder, loc, B, batchIndex, 1, 2);
+      Value cOffset = batchMatrixByteOffset(builder, loc, C, batchIndex, 1, 2);
+
+      Value aSlice = builder.create<TBufGetWithOffsetOp>(
+          loc, LocalTensorType::get(elemTypeA), tbufA, aSize, aOffset);
+      Value bSlice = builder.create<TBufGetWithOffsetOp>(
+          loc, LocalTensorType::get(elemTypeB), tbufB, bSize, bOffset);
+      Value cSlice = builder.create<TBufGetWithOffsetOp>(
+          loc, LocalTensorType::get(elemTypeC), tbufC, cSize, cOffset);
+      Value params = buildMmadParams(builder, loc,
+                                     getDim(builder, loc, A, 1),
+                                     getDim(builder, loc, B, 2),
+                                     getDim(builder, loc, A, 2));
+      auto mmadOp = builder.create<MmadOp>(loc, cSlice, aSlice, bSlice, params);
+      copyAscendCUnitAttr(batchMatmulOp.getOperation(), mmadOp.getOperation());
+    }
+
+    builder.setInsertionPointAfter(forOp);
+    builder.create<TQueBindEnqueTensorOp>(loc, qC, tensorC);
+    if (tensorA)
+      builder.create<TQueBindFreeTensorOp>(loc, qA, tensorA);
+    if (tensorB)
+      builder.create<TQueBindFreeTensorOp>(loc, qB, tensorB);
+    batchMatmulOp.erase();
+  }
+
+  // --- linalg.matmul -> mmad ---
   SmallVector<linalg::MatmulOp> matmulOps;
   funcOp.walk([&](linalg::MatmulOp op) { matmulOps.push_back(op); });
 
