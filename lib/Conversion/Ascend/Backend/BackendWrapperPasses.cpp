@@ -8,6 +8,7 @@
 #include "Conversion/AscendCParallelize/AscendCParallelizePass.h"
 #include "Conversion/AscendCPrepareForEmit/AscendCPrepareForEmitPass.h"
 #include "Conversion/CanonicalizeCannSignature/CanonicalizeCannSignaturePass.h"
+#include "Conversion/MarkStructuredOps/MarkStructuredOpsPass.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
@@ -44,7 +45,8 @@ struct AscendPrepareForEmitPass
     : public ::impl::AscendPrepareForEmitPassBase<AscendPrepareForEmitPass> {
   void runOnOperation() override {
     OpPassManager pm("builtin.module");
-    pm.nest<func::FuncOp>().addPass(createAscendCPrepareForEmitPass());
+    pm.addPass(createAscendCPrepareForEmitPass());
+    pm.nest<func::FuncOp>().addPass(createAnnotateAscendCKernelKindPass());
     if (failed(runPipeline(pm, getOperation())))
       signalPassFailure();
   }

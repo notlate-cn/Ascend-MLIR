@@ -193,17 +193,34 @@ readFileText(llvm::StringRef path) {
 static bool isTensorArgReferencedInBody(llvm::StringRef bodyText,
                                         llvm::StringRef argName) {
   const std::string needle = argName.str();
+  auto isIdentifierChar = [](char c) {
+    return llvm::isAlnum(c) || c == '_';
+  };
   size_t pos = bodyText.find(needle);
   while (pos != llvm::StringRef::npos) {
-    const bool startsToken = pos == 0 || !llvm::isAlnum(bodyText[pos - 1]);
+    const bool startsToken = pos == 0 || !isIdentifierChar(bodyText[pos - 1]);
     const size_t end = pos + needle.size();
     const bool endsToken =
-        end >= bodyText.size() || !llvm::isAlnum(bodyText[end]);
+        end >= bodyText.size() || !isIdentifierChar(bodyText[end]);
     if (startsToken && endsToken)
       return true;
     pos = bodyText.find(needle, pos + needle.size());
   }
   return false;
+}
+
+static llvm::StringRef takeCurrentFunctionTail(llvm::StringRef tail) {
+  size_t nextFuncPos = llvm::StringRef::npos;
+  auto consider = [&](size_t pos) {
+    if (pos != llvm::StringRef::npos &&
+        (nextFuncPos == llvm::StringRef::npos || pos < nextFuncPos))
+      nextFuncPos = pos;
+  };
+  consider(tail.find("\n  func.func "));
+  consider(tail.find("\nfunc.func "));
+  if (nextFuncPos == llvm::StringRef::npos)
+    return tail;
+  return tail.take_front(nextFuncPos);
 }
 
 static llvm::Expected<std::string>
@@ -426,7 +443,8 @@ parseStableMatmulDesc(llvm::StringRef tail, llvm::StringRef path) {
 } // namespace
 
 llvm::Expected<MixAbiMetadata>
-extractMixAbiFromCannMlir(llvm::StringRef cannMlirPath) {
+extractMixAbiFromCannMlir(llvm::StringRef cannMlirPath,
+                          llvm::StringRef targetKernelName) {
   if (cannMlirPath.empty())
     return llvm::createStringError(llvm::inconvertibleErrorCode(),
                                    "Cannot extract mix ABI: empty MLIR path");
@@ -440,12 +458,35 @@ extractMixAbiFromCannMlir(llvm::StringRef cannMlirPath) {
     return textOr.takeError();
   llvm::StringRef text = *textOr;
 
-  size_t funcPos = text.find("func.func @");
+  size_t funcPos = llvm::StringRef::npos;
+  if (targetKernelName.empty()) {
+    funcPos = text.find("func.func @");
+  } else {
+    const std::string needle = ("func.func @" + targetKernelName).str();
+    size_t searchPos = 0;
+    while (true) {
+      size_t pos = text.find(needle, searchPos);
+      if (pos == llvm::StringRef::npos)
+        break;
+      size_t afterName = pos + needle.size();
+      if (afterName < text.size() && text[afterName] == '(') {
+        funcPos = pos;
+        break;
+      }
+      searchPos = afterName;
+    }
+  }
   if (funcPos == llvm::StringRef::npos)
-    return llvm::createStringError(
-        llvm::inconvertibleErrorCode(),
-        "Cannot extract mix ABI from %s: missing func.func declaration",
-        cannMlirPath.str().c_str());
+    return targetKernelName.empty()
+               ? llvm::createStringError(
+                     llvm::inconvertibleErrorCode(),
+                     "Cannot extract mix ABI from %s: missing func.func declaration",
+                     cannMlirPath.str().c_str())
+               : llvm::createStringError(
+                     llvm::inconvertibleErrorCode(),
+                     "Cannot extract mix ABI from %s: missing func.func @%s",
+                     cannMlirPath.str().c_str(),
+                     targetKernelName.str().c_str());
 
   text = text.drop_front(funcPos + strlen("func.func @"));
   size_t nameEnd = text.find('(');
@@ -454,8 +495,8 @@ extractMixAbiFromCannMlir(llvm::StringRef cannMlirPath) {
         llvm::inconvertibleErrorCode(),
         "Cannot extract mix ABI from %s: missing function argument list",
         cannMlirPath.str().c_str());
-  llvm::StringRef kernelName = text.take_front(nameEnd).trim();
-  if (kernelName.empty())
+  llvm::StringRef parsedKernelName = text.take_front(nameEnd).trim();
+  if (parsedKernelName.empty())
     return llvm::createStringError(
         llvm::inconvertibleErrorCode(),
         "Cannot extract mix ABI from %s: empty function name",
@@ -483,7 +524,8 @@ extractMixAbiFromCannMlir(llvm::StringRef cannMlirPath) {
         cannMlirPath.str().c_str());
 
   llvm::StringRef argList = afterName.take_front(argListEnd);
-  llvm::StringRef tail = afterName.drop_front(argListEnd + 1);
+  llvm::StringRef tail =
+      takeCurrentFunctionTail(afterName.drop_front(argListEnd + 1));
 
   size_t numInputsPos = tail.find("cann.num_inputs");
   if (numInputsPos == llvm::StringRef::npos)
@@ -523,7 +565,7 @@ extractMixAbiFromCannMlir(llvm::StringRef cannMlirPath) {
   }
 
   MixAbiMetadata abi;
-  abi.logicalKernelName = kernelName.str();
+  abi.logicalKernelName = parsedKernelName.str();
   abi.runtimeKernelName = abi.logicalKernelName;
   abi.workspaceBytes = 16777216ULL;
   abi.blockDim = 1;
@@ -567,7 +609,8 @@ extractMixAbiFromCannMlir(llvm::StringRef cannMlirPath) {
           cannMlirPath.str().c_str(), type.str().c_str(),
           parsedArgs[i].name.c_str());
     auto tensorOr =
-        parseTensorArg(parsedArgs[i], kernelName, cannMlirPath, i >= numInputs);
+        parseTensorArg(parsedArgs[i], parsedKernelName, cannMlirPath,
+                       i >= numInputs);
     if (!tensorOr)
       return tensorOr.takeError();
     if (!isTensorArgReferencedInBody(tail, parsedArgs[i].name))

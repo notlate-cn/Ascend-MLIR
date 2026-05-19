@@ -51,6 +51,9 @@
 #include "llvm/ADT/Twine.h"
 #include "llvm/Support/Debug.h"
 
+#include <functional>
+#include <optional>
+
 #include "ascir/Dialect/Asc/IR/Asc.h"
 #include "ascir/Dialect/EmitAsc/IR/EmitAsc.h"
 
@@ -95,6 +98,86 @@ static void appendUniqueDimKey(SmallVectorImpl<DimKey> &dimKeys,
     dimKeys.push_back(key);
 }
 
+static std::optional<int64_t> getConstantIndexValue(Value value) {
+  auto constOp = value.getDefiningOp<arith::ConstantOp>();
+  if (!constOp)
+    return std::nullopt;
+  auto intAttr = dyn_cast<IntegerAttr>(constOp.getValue());
+  if (!intAttr)
+    return std::nullopt;
+  return intAttr.getValue().getSExtValue();
+}
+
+static std::optional<int64_t> getConstantIndexValue(OpFoldResult value) {
+  if (auto attr = value.dyn_cast<Attribute>()) {
+    auto intAttr = dyn_cast<IntegerAttr>(attr);
+    if (!intAttr)
+      return std::nullopt;
+    return intAttr.getValue().getSExtValue();
+  }
+  return getConstantIndexValue(value.get<Value>());
+}
+
+static std::optional<int64_t> getStaticMemRefDim(Value source, int64_t dimIdx) {
+  auto memTy = dyn_cast<MemRefType>(source.getType());
+  if (!memTy || dimIdx < 0 || dimIdx >= memTy.getRank())
+    return std::nullopt;
+  if (memTy.isDynamicDim(dimIdx))
+    return std::nullopt;
+  return memTy.getDimSize(dimIdx);
+}
+
+static bool collectDimKeysForValue(Value source, int64_t dimIdx,
+                                   SmallVectorImpl<DimKey> &dimKeys) {
+  auto memTy = dyn_cast<MemRefType>(source.getType());
+  if (!memTy || dimIdx < 0 || dimIdx >= memTy.getRank())
+    return false;
+
+  if (!memTy.isDynamicDim(dimIdx))
+    return true;
+
+  if (auto arg = dyn_cast<BlockArgument>(source)) {
+    appendUniqueDimKey(dimKeys, arg.getArgNumber(), dimIdx);
+    return true;
+  }
+
+  if (auto castOp = source.getDefiningOp<memref::CastOp>())
+    return collectDimKeysForValue(castOp.getSource(), dimIdx, dimKeys);
+
+  if (auto collapseOp = source.getDefiningOp<memref::CollapseShapeOp>()) {
+    SmallVector<ReassociationIndices, 4> reassociation =
+        collapseOp.getReassociationIndices();
+    if (dimIdx >= static_cast<int64_t>(reassociation.size()))
+      return false;
+    for (int64_t sourceDim : reassociation[dimIdx]) {
+      if (!collectDimKeysForValue(collapseOp.getSrc(), sourceDim, dimKeys))
+        return false;
+    }
+    return true;
+  }
+
+  if (auto expandOp = source.getDefiningOp<memref::ExpandShapeOp>()) {
+    SmallVector<OpFoldResult> outputShape = expandOp.getMixedOutputShape();
+    if (dimIdx >= static_cast<int64_t>(outputShape.size()))
+      return false;
+    if (std::optional<int64_t> staticSize =
+            getConstantIndexValue(outputShape[dimIdx]))
+      return *staticSize != ShapedType::kDynamic;
+    return true;
+  }
+
+  if (auto subviewOp = source.getDefiningOp<memref::SubViewOp>()) {
+    SmallVector<OpFoldResult> sizes = subviewOp.getMixedSizes();
+    if (dimIdx >= static_cast<int64_t>(sizes.size()))
+      return false;
+    if (std::optional<int64_t> staticSize = getConstantIndexValue(sizes[dimIdx]))
+      return *staticSize != ShapedType::kDynamic;
+    return true;
+  }
+
+  return false;
+}
+
 static emitasc::PyStructType getTilingStructTypeFromType(Type type) {
   if (auto pyStruct = dyn_cast<emitasc::PyStructType>(type))
     return pyStruct;
@@ -133,17 +216,10 @@ collectProspectiveTilingNames(func::FuncOp func) {
 
   SmallVector<DimKey> dimKeys;
   func.walk([&](memref::DimOp dimOp) {
-    auto arg = dyn_cast<BlockArgument>(dimOp.getSource());
-    if (!arg)
+    std::optional<int64_t> dimIdx = getConstantIndexValue(dimOp.getIndex());
+    if (!dimIdx)
       return;
-    auto constOp = dimOp.getIndex().getDefiningOp<arith::ConstantOp>();
-    if (!constOp)
-      return;
-    auto intAttr = dyn_cast<IntegerAttr>(constOp.getValue());
-    if (!intAttr)
-      return;
-    appendUniqueDimKey(dimKeys, arg.getArgNumber(),
-                       intAttr.getValue().getSExtValue());
+    collectDimKeysForValue(dimOp.getSource(), *dimIdx, dimKeys);
   });
 
   func.walk([&](ascendc::GlobalTensorSetGlobalBufferOp sgbOp) {
@@ -252,28 +328,18 @@ static LogicalResult prepareFunc(func::FuncOp func) {
   Type i64Ty = IntegerType::get(ctx, 64);
 
   // ── 1. Collect memref.dim uses on block arguments ────────────────────────
-  // Scan the whole function for `memref.dim %argX, %cI` where %argX is a
-  // BlockArgument and %cI is an arith.constant index.  Collect unique
-  // (argNumber, dimIndex) pairs in stable order and remember the ops.
+  // Scan the whole function for constant-index memref.dim ops that can be
+  // resolved to function argument dimensions through view-like ops. Collect
+  // unique (argNumber, dimIndex) pairs in stable order and remember the ops.
   SmallVector<DimKey> dimKeys;        // unique keys, insertion order
   SmallVector<memref::DimOp> dimOps; // one entry per op (may repeat key)
 
   func.walk([&](memref::DimOp dimOp) {
-    auto arg = dyn_cast<BlockArgument>(dimOp.getSource());
-    if (!arg)
+    std::optional<int64_t> dimIdxConst = getConstantIndexValue(dimOp.getIndex());
+    if (!dimIdxConst)
       return;
-    // Extract the constant integer value from the index operand.
-    // arith.constant with index type stores an IntegerAttr with IndexType.
-    Value indexOperand = dimOp.getIndex();
-    auto constOp = indexOperand.getDefiningOp<arith::ConstantOp>();
-    if (!constOp)
-      return;
-    auto intAttr = dyn_cast<IntegerAttr>(constOp.getValue());
-    if (!intAttr)
-      return;
-    int64_t dimIdxConst = intAttr.getValue().getSExtValue();
-    appendUniqueDimKey(dimKeys, arg.getArgNumber(), dimIdxConst);
-    dimOps.push_back(dimOp);
+    if (collectDimKeysForValue(dimOp.getSource(), *dimIdxConst, dimKeys))
+      dimOps.push_back(dimOp);
   });
 
   // Also collect dim[1] (row stride = num columns) for every block argument
@@ -358,7 +424,10 @@ static LogicalResult prepareFunc(func::FuncOp func) {
     tilingNames.push_back(s);
 
   // ── 4. Build TilingData struct type and GM pointer arg type ──────────────
-  bool hasTilingData = !tilingNames.empty();
+  // CANN ABI requires every global kernel to carry a tiling pointer even when
+  // the kernel has no dynamic shape fields. Use an empty TilingData struct for
+  // fully static kernels so downstream signature canonicalization stays uniform.
+  bool hasTilingData = true;
   emitasc::PyStructType tilingStructTy;
   Type tilingArgTy;
   if (hasTilingData) {
@@ -404,17 +473,82 @@ static LogicalResult prepareFunc(func::FuncOp func) {
     return tilingFieldVals[dimFieldBase + k];
   };
 
+  auto materializeIndexValue = [&](OpBuilder &b, Location loc,
+                                   OpFoldResult value) -> Value {
+    if (std::optional<int64_t> staticValue = getConstantIndexValue(value)) {
+      if (*staticValue == ShapedType::kDynamic)
+        return {};
+      return b.create<arith::ConstantIndexOp>(loc, *staticValue);
+    }
+    Value dynamicValue = value.get<Value>();
+    if (dynamicValue.getType().isIndex())
+      return dynamicValue;
+    if (dynamicValue.getType().isInteger(64))
+      return b.create<arith::IndexCastOp>(loc, indexTy, dynamicValue);
+    return {};
+  };
+
+  std::function<Value(Value, int64_t, OpBuilder &, Location)> materializeDim;
+  materializeDim = [&](Value source, int64_t dimIdx, OpBuilder &b,
+                       Location loc) -> Value {
+    auto memTy = dyn_cast<MemRefType>(source.getType());
+    if (!memTy || dimIdx < 0 || dimIdx >= memTy.getRank())
+      return {};
+
+    if (std::optional<int64_t> staticDim = getStaticMemRefDim(source, dimIdx))
+      return b.create<arith::ConstantIndexOp>(loc, *staticDim);
+
+    if (auto arg = dyn_cast<BlockArgument>(source)) {
+      Value i64Val = getDimI64Value(arg.getArgNumber(), dimIdx);
+      if (!i64Val)
+        return {};
+      return b.create<arith::IndexCastOp>(loc, indexTy, i64Val);
+    }
+
+    if (auto castOp = source.getDefiningOp<memref::CastOp>())
+      return materializeDim(castOp.getSource(), dimIdx, b, loc);
+
+    if (auto collapseOp = source.getDefiningOp<memref::CollapseShapeOp>()) {
+      SmallVector<ReassociationIndices, 4> reassociation =
+          collapseOp.getReassociationIndices();
+      if (dimIdx >= static_cast<int64_t>(reassociation.size()))
+        return {};
+      Value product = b.create<arith::ConstantIndexOp>(loc, 1);
+      for (int64_t sourceDim : reassociation[dimIdx]) {
+        Value factor = materializeDim(collapseOp.getSrc(), sourceDim, b, loc);
+        if (!factor)
+          return {};
+        product = b.create<arith::MulIOp>(loc, product, factor);
+      }
+      return product;
+    }
+
+    if (auto expandOp = source.getDefiningOp<memref::ExpandShapeOp>()) {
+      SmallVector<OpFoldResult> outputShape = expandOp.getMixedOutputShape();
+      if (dimIdx >= static_cast<int64_t>(outputShape.size()))
+        return {};
+      return materializeIndexValue(b, loc, outputShape[dimIdx]);
+    }
+
+    if (auto subviewOp = source.getDefiningOp<memref::SubViewOp>()) {
+      SmallVector<OpFoldResult> sizes = subviewOp.getMixedSizes();
+      if (dimIdx >= static_cast<int64_t>(sizes.size()))
+        return {};
+      return materializeIndexValue(b, loc, sizes[dimIdx]);
+    }
+
+    return {};
+  };
+
   for (memref::DimOp dimOp : dimOps) {
-    auto arg = cast<BlockArgument>(dimOp.getSource());
-    auto constOp = dimOp.getIndex().getDefiningOp<arith::ConstantOp>();
-    int64_t dimIdxVal = cast<IntegerAttr>(constOp.getValue()).getValue().getSExtValue();
-    DimKey key{arg.getArgNumber(), dimIdxVal};
-    unsigned k = llvm::find_if(dimKeys, [&](const DimKey &d) { return d == key; }) -
-                 dimKeys.begin();
-    Value i64Val = tilingFieldVals[dimFieldBase + k];
-    // Cast i64 → index to replace the memref.dim (which returns index).
+    std::optional<int64_t> dimIdxVal = getConstantIndexValue(dimOp.getIndex());
+    if (!dimIdxVal)
+      continue;
     OpBuilder b(dimOp);
-    Value idxVal = b.create<arith::IndexCastOp>(dimOp.getLoc(), indexTy, i64Val);
+    Value idxVal = materializeDim(dimOp.getSource(), *dimIdxVal, b,
+                                  dimOp.getLoc());
+    if (!idxVal)
+      continue;
     dimOp.replaceAllUsesWith(idxVal);
     dimOp.erase();
   }
@@ -857,9 +991,12 @@ struct AscendCPrepareForEmitPass
   using AscendCPrepareForEmitPassBase::AscendCPrepareForEmitPassBase;
 
   void runOnOperation() override {
-    func::FuncOp func = getOperation();
-    if (failed(prepareFunc(func)))
-      signalPassFailure();
+    for (func::FuncOp func : getOperation().getOps<func::FuncOp>()) {
+      if (failed(prepareFunc(func))) {
+        signalPassFailure();
+        return;
+      }
+    }
   }
 };
 

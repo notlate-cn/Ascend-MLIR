@@ -113,11 +113,18 @@ resolveTaskBindings(const RuntimeTask &task, llvm::StringRef workingDirectory,
 
   for (size_t index = 0; index < resolved.invocation.outputs.size(); ++index) {
     TensorBinding &binding = resolved.invocation.outputs[index];
-    binding.sourceKind = BindingSourceKind::ExternalFile;
+    if (binding.sourceKind == BindingSourceKind::TaskOutput) {
+      return llvm::createStringError(
+          llvm::inconvertibleErrorCode(),
+          "output binding cannot use task_output source for task %s",
+          task.taskId.c_str());
+    }
     if (binding.path.empty()) {
       binding.path = materializeOutputPath(workingDirectory, resolved.taskId,
                                            binding.name, index);
     }
+    if (binding.sourceKind != BindingSourceKind::InputAlias)
+      binding.sourceKind = BindingSourceKind::ExternalFile;
   }
 
   return resolved;

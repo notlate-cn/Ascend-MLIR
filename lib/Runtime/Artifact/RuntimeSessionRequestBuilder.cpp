@@ -11,6 +11,7 @@
 #include "llvm/Support/MemoryBuffer.h"
 #include "llvm/Support/Path.h"
 
+#include <algorithm>
 #include <map>
 #include <optional>
 #include <string>
@@ -344,6 +345,57 @@ void applyMixArtifactInvocationDefaults(const KernelArtifact &artifact,
   }
 }
 
+static llvm::Error alignBindingsToAbiNames(
+    std::vector<TensorBinding> &bindings,
+    llvm::ArrayRef<MixAbiTensorDesc> abiTensors, llvm::StringRef taskId,
+    llvm::StringRef bindingKind) {
+  std::vector<TensorBinding> aligned;
+  aligned.reserve(abiTensors.size());
+  for (const MixAbiTensorDesc &tensor : abiTensors) {
+    auto it = std::find_if(
+        bindings.begin(), bindings.end(),
+        [&](const TensorBinding &binding) { return binding.name == tensor.name; });
+    if (it == bindings.end()) {
+      if (bindings.size() == abiTensors.size())
+        return llvm::Error::success();
+      return llvm::createStringError(
+          llvm::inconvertibleErrorCode(),
+          "mix artifact ABI %s binding mismatch for task %s: missing live "
+          "binding '%s'",
+          bindingKind.str().c_str(), taskId.str().c_str(),
+          tensor.name.c_str());
+    }
+    aligned.push_back(*it);
+  }
+
+  bindings = std::move(aligned);
+  return llvm::Error::success();
+}
+
+llvm::Error alignMixArtifactInvocationToAbi(const KernelArtifact &artifact,
+                                            ExecutionInvocation &invocation,
+                                            llvm::StringRef taskId) {
+  if (artifact.kernelKind != KernelKind::Mix)
+    return llvm::Error::success();
+
+  auto abiOr = loadMixAbiForArtifact(artifact);
+  if (!abiOr)
+    return abiOr.takeError();
+  const MixAbiMetadata &abi = *abiOr;
+
+  if (auto err =
+          alignBindingsToAbiNames(invocation.inputs, abi.inputs, taskId,
+                                  "input"))
+    return err;
+  if (invocation.outputs.size() != abi.outputs.size()) {
+    if (auto err =
+            alignBindingsToAbiNames(invocation.outputs, abi.outputs, taskId,
+                                    "output"))
+      return err;
+  }
+  return llvm::Error::success();
+}
+
 llvm::Error
 validateMixArtifactInvocationBindings(const KernelArtifact &artifact,
                                       const ExecutionInvocation &invocation,
@@ -523,6 +575,10 @@ prepareRuntimeSessionGraphFromManifest(llvm::StringRef runManifestPath) {
     task.artifact = *artifactOr;
     task.dependencies = taskSpec.dependencies;
     task.invocation = taskSpec.invocation;
+    if (auto err = alignMixArtifactInvocationToAbi(task.artifact,
+                                                   task.invocation,
+                                                   task.taskId))
+      return std::move(err);
     if (auto err = validateMixArtifactInvocationBindings(
             task.artifact, task.invocation, task.taskId))
       return std::move(err);

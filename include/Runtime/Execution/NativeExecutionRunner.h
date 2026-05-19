@@ -45,7 +45,10 @@ private:
   void *libHandle_ = nullptr;
   void *aclHandle_ = nullptr;
   void *stream_ = nullptr;
+  void *aclStream_ = nullptr;
   int32_t deviceId_ = 0;
+  bool aclInitialized_ = false;
+  bool aclDeviceSet_ = false;
 
   int (*rtSetDevice_)(int32_t) = nullptr;
   int (*rtDevBinaryRegister_)(const DevBinary *, void **) = nullptr;

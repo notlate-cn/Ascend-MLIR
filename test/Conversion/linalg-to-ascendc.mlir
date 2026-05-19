@@ -117,10 +117,14 @@ func.func @test_fill_co1() {
 }
 
 //===----------------------------------------------------------------------===//
-// Compute: linalg.fill on GM → NOT converted
+// Compute: linalg.fill on GM → segment duplicate + data_copy_l2
 //===----------------------------------------------------------------------===//
 // CHECK-LABEL: func @test_fill_gm
-// CHECK: linalg.fill
+// CHECK: ascendc.duplicate_l2
+// CHECK: scf.for
+// CHECK: ascendc.data_copy_l2
+// CHECK-NOT: memref.store
+// CHECK-NOT: linalg.fill
 func.func @test_fill_gm(%alloc: memref<32x32xf32>) {
   %cst = arith.constant 0.0 : f32
   linalg.fill ins(%cst : f32) outs(%alloc : memref<32x32xf32>)

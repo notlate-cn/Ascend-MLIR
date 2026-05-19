@@ -45,6 +45,28 @@ llvm::Error validateExternalFileBinding(llvm::StringRef role,
   return llvm::Error::success();
 }
 
+llvm::Error validateOutputBindingPathAndSource(const TensorBinding &binding) {
+  if (binding.sourceKind != BindingSourceKind::ExternalFile &&
+      binding.sourceKind != BindingSourceKind::InputAlias) {
+    return llvm::createStringError(
+        llvm::inconvertibleErrorCode(),
+        "output binding has unsupported source: %s", binding.name.c_str());
+  }
+  if (binding.sourceKind == BindingSourceKind::InputAlias &&
+      binding.aliasedInputName.empty()) {
+    return llvm::createStringError(
+        llvm::inconvertibleErrorCode(),
+        "input-alias output binding is missing input: %s",
+        binding.name.c_str());
+  }
+  if (binding.path.empty()) {
+    return llvm::createStringError(llvm::inconvertibleErrorCode(),
+                                   "output binding is missing path: %s",
+                                   binding.name.c_str());
+  }
+  return llvm::Error::success();
+}
+
 llvm::Expected<std::vector<NDArray>>
 loadExpectedOutputs(const ExecutionInvocation &invocation) {
   std::vector<NDArray> expected;
@@ -61,7 +83,7 @@ loadExpectedOutputs(const ExecutionInvocation &invocation) {
 
 llvm::Error validateOutputBindingAgainstExpected(const TensorBinding &binding,
                                                  const NDArray &expected) {
-  if (auto err = validateExternalFileBinding("output", binding))
+  if (auto err = validateOutputBindingPathAndSource(binding))
     return err;
   if (binding.shape && *binding.shape != expected.shape) {
     return llvm::createStringError(
@@ -79,7 +101,7 @@ llvm::Error validateOutputBindingAgainstExpected(const TensorBinding &binding,
 }
 
 llvm::Error validateOutputBindingWithoutExpected(const TensorBinding &binding) {
-  if (auto err = validateExternalFileBinding("output", binding))
+  if (auto err = validateOutputBindingPathAndSource(binding))
     return err;
   if (!binding.shape) {
     return llvm::createStringError(
@@ -125,10 +147,28 @@ findOutputIndexForExpectedBinding(const ExecutionInvocation &invocation,
   return std::nullopt;
 }
 
+std::optional<size_t>
+findInputIndexByName(const ExecutionInvocation &invocation,
+                     llvm::StringRef inputName) {
+  for (size_t index = 0; index < invocation.inputs.size(); ++index)
+    if (invocation.inputs[index].name == inputName)
+      return index;
+  return std::nullopt;
+}
+
 NDArray buildAllocatedOutputFromExpected(const NDArray &expected) {
   NDArray output;
   output.shape = expected.shape;
   output.dtype = expected.dtype;
+  output.allocate();
+  return output;
+}
+
+NDArray buildAllocatedOutputFromShapeAndType(std::vector<int64_t> shape,
+                                             DType dtype) {
+  NDArray output;
+  output.shape = std::move(shape);
+  output.dtype = dtype;
   output.allocate();
   return output;
 }
@@ -210,6 +250,32 @@ buildRunArgs(const ExecutionInvocation &invocation,
   for (size_t outputIndex = 0; outputIndex < invocation.outputs.size();
        ++outputIndex) {
     const TensorBinding &binding = invocation.outputs[outputIndex];
+    if (binding.sourceKind == BindingSourceKind::InputAlias) {
+      std::optional<size_t> inputIndex =
+          findInputIndexByName(invocation, binding.aliasedInputName);
+      if (!inputIndex) {
+        return llvm::createStringError(
+            llvm::inconvertibleErrorCode(),
+            "input-alias output references unknown input: %s",
+            binding.aliasedInputName.c_str());
+      }
+      const NDArray &input = args.inputs[*inputIndex];
+      std::vector<int64_t> shape =
+          binding.shape ? *binding.shape : input.shape;
+      DType dtype = binding.dtype ? *binding.dtype : input.dtype;
+      RunArgs::InPlaceOutput inPlace;
+      inPlace.inputIndex = *inputIndex;
+      inPlace.array =
+          buildAllocatedOutputFromShapeAndType(std::move(shape), dtype);
+      args.in_place_outputs.push_back(std::move(inPlace));
+      continue;
+    }
+    if (binding.sourceKind != BindingSourceKind::ExternalFile) {
+      return llvm::createStringError(
+          llvm::inconvertibleErrorCode(),
+          "unsupported output binding source for npu: %s",
+          binding.name.c_str());
+    }
     if (auto expectedIndex = findExpectedOutputIndexForBinding(
             invocation, binding.name, outputIndex, expectedOutputs.size())) {
       args.outputs.push_back(
@@ -220,6 +286,45 @@ buildRunArgs(const ExecutionInvocation &invocation,
   }
 
   return args;
+}
+
+llvm::Expected<std::vector<NDArray>>
+collectActualOutputsForInvocation(const ExecutionInvocation &invocation,
+                                  RunArgs &args) {
+  std::vector<NDArray> actualOutputs;
+  actualOutputs.reserve(invocation.outputs.size());
+  size_t outputIndex = 0;
+  size_t inPlaceIndex = 0;
+
+  for (const TensorBinding &binding : invocation.outputs) {
+    NDArray view;
+    if (binding.sourceKind == BindingSourceKind::InputAlias) {
+      if (inPlaceIndex >= args.in_place_outputs.size()) {
+        return llvm::createStringError(
+            llvm::inconvertibleErrorCode(),
+            "input-alias output index is out of range: %s",
+            binding.name.c_str());
+      }
+      NDArray &actual = args.in_place_outputs[inPlaceIndex++].array;
+      view.shape = actual.shape;
+      view.dtype = actual.dtype;
+      view.setExternal(actual.data);
+    } else {
+      if (outputIndex >= args.outputs.size()) {
+        return llvm::createStringError(
+            llvm::inconvertibleErrorCode(),
+            "output binding index is out of range: %s",
+            binding.name.c_str());
+      }
+      NDArray &actual = args.outputs[outputIndex++];
+      view.shape = actual.shape;
+      view.dtype = actual.dtype;
+      view.setExternal(actual.data);
+    }
+    actualOutputs.push_back(std::move(view));
+  }
+
+  return actualOutputs;
 }
 
 llvm::Expected<std::vector<NDArray>>
@@ -257,9 +362,13 @@ selectActualOutputsForExpected(const ExecutionInvocation &invocation,
 }
 
 llvm::Error writeActualOutputs(const ExecutionInvocation &invocation,
-                               const RunArgs &args) {
+                               RunArgs &args) {
+  auto actualOutputsOr = collectActualOutputsForInvocation(invocation, args);
+  if (!actualOutputsOr)
+    return actualOutputsOr.takeError();
   for (size_t index = 0; index < invocation.outputs.size(); ++index) {
-    if (auto err = SaveNpy(invocation.outputs[index].path, args.outputs[index]))
+    if (auto err =
+            SaveNpy(invocation.outputs[index].path, (*actualOutputsOr)[index]))
       return err;
   }
   return llvm::Error::success();
@@ -349,8 +458,12 @@ runWithExecutor(const ExecutionRequest &request,
   }
 
   if (!expectedOutputsOr->empty()) {
+    auto actualOutputsOr =
+        collectActualOutputsForInvocation(request.task.invocation, args);
+    if (!actualOutputsOr)
+      return stageError("validate", actualOutputsOr.takeError());
     auto actualForExpectedOr = selectActualOutputsForExpected(
-        request.task.invocation, args.outputs, *expectedOutputsOr);
+        request.task.invocation, *actualOutputsOr, *expectedOutputsOr);
     if (!actualForExpectedOr) {
       return stageError("validate", actualForExpectedOr.takeError());
     }

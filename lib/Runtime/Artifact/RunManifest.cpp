@@ -99,10 +99,10 @@ llvm::Expected<TensorBinding> parseTensorBinding(const llvm::json::Object &obj) 
   llvm::StringRef source = "external_file";
   if (auto sourceValue = obj.getString("source"))
     source = *sourceValue;
+  if (auto path = obj.getString("path"))
+    binding.path = path->str();
 
   if (source == "external_file") {
-    if (auto path = obj.getString("path"))
-      binding.path = path->str();
     binding.sourceKind = BindingSourceKind::ExternalFile;
   } else if (source == "task_output") {
     auto upstreamTaskOr = requireString(obj, "upstream_task");
@@ -114,6 +114,12 @@ llvm::Expected<TensorBinding> parseTensorBinding(const llvm::json::Object &obj) 
     binding.sourceKind = BindingSourceKind::TaskOutput;
     binding.upstreamTaskId = *upstreamTaskOr;
     binding.upstreamOutputName = *upstreamOutputOr;
+  } else if (source == "input_alias") {
+    auto inputOr = requireString(obj, "input");
+    if (!inputOr)
+      return inputOr.takeError();
+    binding.sourceKind = BindingSourceKind::InputAlias;
+    binding.aliasedInputName = *inputOr;
   } else {
     return llvm::createStringError(llvm::inconvertibleErrorCode(),
                                    "unsupported tensor binding source: %s",

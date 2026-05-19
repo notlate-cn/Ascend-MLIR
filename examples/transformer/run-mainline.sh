@@ -16,6 +16,8 @@ BATCH=1
 SEQ=1
 BLOCK_DIM=1
 VERBOSE=false
+RUN_TIMEOUT="${RUN_TIMEOUT:-600s}"
+export ASCEND_DAV_SIM_VERSION="${ASCEND_DAV_SIM_VERSION:-dav_3002}"
 
 require_arg() {
   local opt="$1"
@@ -76,6 +78,13 @@ require_positive_int "BATCH" "$BATCH"
 require_positive_int "SEQ" "$SEQ"
 require_positive_int "BLOCK_DIM" "$BLOCK_DIM"
 
+if [[ "$RUNTIME_SESSION" != */* ]]; then
+  RUNTIME_SESSION="$(command -v "$RUNTIME_SESSION")"
+fi
+if [[ -z "${AFIR_MIX_TILING_HELPER:-}" ]] && command -v mix-tiling-helper >/dev/null 2>&1; then
+  export AFIR_MIX_TILING_HELPER="$(command -v mix-tiling-helper)"
+fi
+
 log() {
   if $VERBOSE; then
     echo "$@"
@@ -85,6 +94,8 @@ log() {
 BUILD_DIR="$DIR/build_mainline"
 NPY_DIR="$BUILD_DIR/npy"
 ARTIFACT_ROOT="$BUILD_DIR/artifact"
+TILING_SCHEMA_DIR="$BUILD_DIR/tiling_schemas"
+MIX_COMPILE_NPY_ROOT="$BUILD_DIR/mix_compile_npy"
 RUN_MANIFEST="$BUILD_DIR/run_manifest.json"
 ACTUAL_OUTPUT_DIR="$BUILD_DIR/outputs"
 VALIDATION_LOG="$BUILD_DIR/runtime_session.log"
@@ -101,7 +112,9 @@ mkdir -p "$BUILD_DIR" "$NPY_DIR" "$ACTUAL_OUTPUT_DIR"
 
 if ! "$AFIR_OPT" "$BUILD_DIR/step2_kernelized.mlir" \
     --ascend-schedule="target-tile-policy=target-aware cann-root=${CANN_ROOT} soc=${SOC}" \
+    --ascend-kernel-split \
     --ascend-realize='materialization-mode=memory-space-annotate' \
+    --annotate-mix-matmul-semantics \
     --ascend-compute-lower \
     -o "$BUILD_DIR/full_codegen.mlir" \
     2> "$BUILD_DIR/full_codegen.stderr"; then
@@ -133,8 +146,18 @@ if ! "$AFIR_TRANSLATE" -mlir-to-cann "$BUILD_DIR/phase5_cann.mlir" \
   exit 1
 fi
 
+KERNEL_FUNC_COUNT="$(grep -c 'func.func @kernel_' "$BUILD_DIR/phase5_cann.mlir" || true)"
+KERNEL_CPP_COUNT="$(grep -c '__aicore__ void' "$BUILD_DIR/kernel.cpp" || true)"
+if (( KERNEL_FUNC_COUNT < 2 || KERNEL_CPP_COUNT != KERNEL_FUNC_COUNT )); then
+  echo "transformer_dynamic.kernel_split=unexpected-gap" >&2
+  echo "phase5_func_count=${KERNEL_FUNC_COUNT} cpp_kernel_count=${KERNEL_CPP_COUNT}" >&2
+  exit 1
+fi
+
 echo "transformer_dynamic.mainline_prefix=pass"
 echo "transformer_dynamic.transpose_kernelize_generalization=pass"
+echo "transformer_dynamic.kernel_split=pass"
+echo "transformer_dynamic.kernel_count=${KERNEL_CPP_COUNT}"
 echo "transformer_dynamic.multi_kernel_func_metadata=per_kernel"
 echo "transformer_dynamic.phase5_backend=pass"
 echo "transformer_dynamic.phase5_translate=pass"
@@ -151,21 +174,78 @@ fi
   --out-dir "$NPY_DIR" \
   --artifact-root "$ARTIFACT_ROOT" \
   --tiling-schema "$BUILD_DIR/tiling.json" \
+  --compiler-runtime-manifest "$BUILD_DIR/runtime_manifest.json" \
+  --cann-mlir "$BUILD_DIR/phase5_cann.mlir" \
+  --tiling-schema-dir "$TILING_SCHEMA_DIR" \
+  --mix-compile-npy-root "$MIX_COMPILE_NPY_ROOT" \
   --run-manifest "$RUN_MANIFEST" \
   --actual-output-dir "$ACTUAL_OUTPUT_DIR" \
   --block-dim "$BLOCK_DIM"
 
 rm -rf "$ARTIFACT_ROOT"
-"$RUNTIME_SESSION" \
-  --kernel "$BUILD_DIR/kernel.cpp" \
-  --kernel-kind vec \
-  --output "$ARTIFACT_ROOT" \
-  --name kernel
-log "transformer_dynamic.artifact_root=$ARTIFACT_ROOT"
+echo "transformer_dynamic.artifact_compile=start"
+while IFS=$'\t' read -r kernel_id kernel_kind; do
+  [[ -n "$kernel_id" ]] || continue
+  compile_args=(
+    --kernel "$BUILD_DIR/kernel.cpp" \
+    --kernel-kind "$kernel_kind" \
+    --output "$ARTIFACT_ROOT/$kernel_id" \
+    --name "$kernel_id"
+  )
+  if [[ "$kernel_kind" == "mix" ]]; then
+    compile_args+=(
+      --cann-mlir "$BUILD_DIR/phase5_cann.mlir"
+      --npy-dir "$MIX_COMPILE_NPY_ROOT/$kernel_id"
+    )
+  fi
+  if $VERBOSE; then
+    echo "transformer_dynamic.artifact_compile.kernel=${kernel_id} kind=${kernel_kind}"
+  fi
+  "$RUNTIME_SESSION" "${compile_args[@]}"
+done < <("$PYTHON" - "$BUILD_DIR/runtime_manifest.json" <<'PY'
+import json
+import sys
 
-"$RUNTIME_SESSION" \
-  --run-manifest "$RUN_MANIFEST" \
-  --run >"$VALIDATION_LOG" 2>&1
+with open(sys.argv[1], "r", encoding="utf-8") as f:
+    root = json.load(f)
+valid = {"vec", "cube", "mix"}
+for entry in root.get("kernel_entries", []):
+    resources = entry.get("resources", {})
+    kind = entry.get("kernelKind") or resources.get("kernelKind") or "vec"
+    if kind not in valid:
+        kind = "vec"
+    print(f"{entry['kernel_id']}\t{kind}")
+PY
+)
+echo "transformer_dynamic.artifact_compile=pass"
+log "transformer_dynamic.artifact_root=$ARTIFACT_ROOT"
+if $VERBOSE; then
+  "$PYTHON" - "$RUN_MANIFEST" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1], "r", encoding="utf-8") as f:
+    root = json.load(f)
+tasks = root.get("tasks", [])
+print(f"transformer_dynamic.run_plan.tasks={len(tasks)}")
+for index, task in enumerate(tasks):
+    deps = task.get("dependencies") or []
+    deps_text = ",".join(deps) if deps else "-"
+    print(
+        f"transformer_dynamic.run_plan[{index}]={task.get('task_id', '<missing>')} "
+        f"deps={deps_text}"
+    )
+PY
+fi
+
+echo "transformer_dynamic.runtime_session=start"
+if ! timeout "$RUN_TIMEOUT" "$RUNTIME_SESSION" \
+    --run-manifest "$RUN_MANIFEST" \
+    --run >"$VALIDATION_LOG" 2>&1; then
+  echo "transformer_dynamic.runtime_session=timeout_or_fail"
+  tail -n 200 "$VALIDATION_LOG" || true
+  exit 1
+fi
 grep -v '^\[info\]\|^\[PEM_AIC_LOG\]\|^\[INFO\]\|^\[WARNING\]\|^\[DRVSTUB_LOG\]\|^\[FuncCache\]\|^ \|^=\|^\[TmSim\]\|^>>>>' \
   "$VALIDATION_LOG" || true
 grep -q '^session.backend=sim$' "$VALIDATION_LOG"

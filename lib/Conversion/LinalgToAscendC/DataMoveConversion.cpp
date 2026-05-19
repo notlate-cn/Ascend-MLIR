@@ -64,6 +64,21 @@ static Value toI8(OpBuilder &b, Location loc, Value idx) {
   return b.create<arith::TruncIOp>(loc, b.getI8Type(), i64Val);
 }
 
+static Value ceilDivIndex(OpBuilder &b, Location loc, Value value,
+                          int64_t divisor) {
+  Value divisorValue = b.create<arith::ConstantIndexOp>(loc, divisor);
+  Value bias = b.create<arith::ConstantIndexOp>(loc, divisor - 1);
+  Value numerator = b.create<arith::AddIOp>(loc, value, bias);
+  return b.create<arith::DivUIOp>(loc, numerator, divisorValue);
+}
+
+static Value ceilToMultipleIndex(OpBuilder &b, Location loc, Value value,
+                                 int64_t divisor) {
+  return b.create<arith::MulIOp>(
+      loc, ceilDivIndex(b, loc, value, divisor),
+      b.create<arith::ConstantIndexOp>(loc, divisor));
+}
+
 // Helper: create a i1 constant.
 static Value constI1(OpBuilder &b, Location loc, bool v) {
   return b.create<arith::ConstantIntOp>(loc, b.getI1Type(), v ? 1 : 0);
@@ -278,6 +293,7 @@ LogicalResult convertDataMove(func::FuncOp funcOp,
       Value width  = emitDim(builder, loc, dst, 1);
       Value c0     = builder.create<arith::ConstantIndexOp>(loc, 16);
       Value nValue = builder.create<arith::DivUIOp>(loc, width, c0);
+      Value dstNzNStride = ceilToMultipleIndex(builder, loc, height, 16);
 
       SmallVector<Value> nd2nzOperands = {
           toI16(builder, loc, height),  // nd_num
@@ -286,7 +302,7 @@ LogicalResult convertDataMove(func::FuncOp funcOp,
           toI16(builder, loc, width),   // src_nd_matrix_stride
           toI16(builder, loc, height),  // src_d_value
           constI16(builder, loc, 0),    // dst_nz_c0_stride
-          toI16(builder, loc, height),  // dst_nz_n_stride
+          toI16(builder, loc, dstNzNStride), // dst_nz_n_stride
           constI16(builder, loc, 0),    // dst_nz_matrix_stride
       };
       // Nd2NzParams fields are all uint16_t — use Unsigned so CodeEmitter emits
@@ -409,13 +425,11 @@ LogicalResult convertDataMove(func::FuncOp funcOp,
 
       // LoadData2DParams for A1→A2 (NZ→ZZ, no transpose):
       //   start_index = 0, repeat_times = k/16 (kBlocks),
-      //   src_stride  = m/16 (mBlocks, stride between C0 groups),
+      //   src_stride  = ceil(m/16) (mBlocks, stride between C0 groups),
       //   if_transpose = false
       // dst is [m x k]
       Value mBlocks = toI16(builder, loc,
-          builder.create<arith::DivUIOp>(
-              loc, emitDim(builder, loc, dst, 0),
-              builder.create<arith::ConstantIndexOp>(loc, 16)));
+          ceilDivIndex(builder, loc, emitDim(builder, loc, dst, 0), 16));
       Value kBlocks = toI8(builder, loc,
           builder.create<arith::DivUIOp>(
               loc, emitDim(builder, loc, dst, 1),
@@ -544,6 +558,15 @@ LogicalResult convertDataMove(func::FuncOp funcOp,
       
       builder.create<DataCopyCO12DstOp>(loc, dstLt, srcLt, params);
       builder.create<TQueBindEnqueTensorOp>(loc, dstQueue, dstLt);
+      Value liveLt =
+          builder.create<TQueBindDequeTensorOp>(loc, srcLtType, dstQueue);
+      ctx.allocToLiveTensor[getRootAlloc(dst)] = liveLt;
+      {
+        OpBuilder::InsertionGuard guard(builder);
+        Block *parentBlock = copyOp->getBlock();
+        builder.setInsertionPoint(parentBlock->getTerminator());
+        builder.create<TQueBindFreeTensorOp>(loc, dstQueue, liveLt);
+      }
       builder.create<TQueBindFreeTensorOp>(loc, srcQueue, srcLt);
       copyOp.erase();
       continue;

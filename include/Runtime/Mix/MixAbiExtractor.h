@@ -7,6 +7,7 @@
 namespace mlir::runtime {
 
 llvm::Expected<MixAbiMetadata>
-extractMixAbiFromCannMlir(llvm::StringRef cannMlirPath);
+extractMixAbiFromCannMlir(llvm::StringRef cannMlirPath,
+                          llvm::StringRef kernelName = {});
 
 } // namespace mlir::runtime

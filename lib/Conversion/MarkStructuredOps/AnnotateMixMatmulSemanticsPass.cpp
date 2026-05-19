@@ -239,6 +239,39 @@ static bool isFullRank3AddGeneric(linalg::GenericOp genericOp) {
          yieldOp.getOperand(0) == addOp.getResult();
 }
 
+static bool isRank3ByRank1BiasAddGeneric(linalg::GenericOp genericOp) {
+  if (genericOp.getNumDpsInputs() != 2 || genericOp.getNumDpsInits() != 1 ||
+      !isParallelGeneric(genericOp) ||
+      !hasUnitAttr(genericOp, ascend::kAscendCUnitVector))
+    return false;
+  if (!isRankedMemRef(genericOp.getDpsInputOperand(0)->get(), 3) ||
+      !isRankedMemRef(genericOp.getDpsInputOperand(1)->get(), 1) ||
+      !isRankedMemRef(genericOp.getDpsInitOperand(0)->get(), 3))
+    return false;
+
+  Block &body = genericOp.getRegion().front();
+  if (body.getNumArguments() != 3)
+    return false;
+
+  arith::AddFOp addOp;
+  linalg::YieldOp yieldOp;
+  for (Operation &op : body.getOperations()) {
+    if (auto add = dyn_cast<arith::AddFOp>(op)) {
+      if (addOp)
+        return false;
+      addOp = add;
+      continue;
+    }
+    if (auto yield = dyn_cast<linalg::YieldOp>(op)) {
+      yieldOp = yield;
+      continue;
+    }
+    return false;
+  }
+  return addOp && yieldOp && yieldOp.getNumOperands() == 1 &&
+         yieldOp.getOperand(0) == addOp.getResult();
+}
+
 static bool isLeakyReluGeneric(linalg::GenericOp genericOp) {
   if (genericOp.getNumDpsInputs() != 1 || genericOp.getNumDpsInits() != 1 ||
       !isParallelGeneric(genericOp) ||
@@ -357,7 +390,7 @@ struct AnnotateMixMatmulSemanticsPass
     func::FuncOp funcOp = getOperation();
     auto kernelKind =
         funcOp->getAttrOfType<StringAttr>(ascend::kAscendCKernelKindAttr);
-    if (!kernelKind || kernelKind.getValue() != ascend::kAscendCKernelKindMix)
+    if (kernelKind && kernelKind.getValue() != ascend::kAscendCKernelKindMix)
       return;
     if (funcOp->hasAttr("abi_matmul_op_kind"))
       return;
@@ -389,8 +422,15 @@ struct AnnotateMixMatmulSemanticsPass
         linalg::GenericOp fullBiasAdd =
             findUniqueChainedGenericThroughCopies(matmulOp.out, generics,
                                                   isFullRank3AddGeneric);
-        if (!fullBiasAdd)
+        linalg::GenericOp rank1BiasAdd =
+            findUniqueChainedGenericThroughCopies(matmulOp.out, generics,
+                                                  isRank3ByRank1BiasAddGeneric);
+        if (rank1BiasAdd) {
+          hasBias = true;
+          epilogueKind = "BiasAdd";
+        } else if (!fullBiasAdd) {
           return;
+        }
       }
     } else {
       Value current = matmulOp.out;

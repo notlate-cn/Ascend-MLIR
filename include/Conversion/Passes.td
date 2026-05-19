@@ -121,6 +121,25 @@ def AscendSchedulePass : Pass<"ascend-schedule", "mlir::ModuleOp"> {
   ];
 }
 
+def AscendKernelSplitPass : Pass<"ascend-kernel-split", "mlir::ModuleOp"> {
+  let summary = "Outline logical Ascend kernels into separate functions";
+  let description = [{
+    Splits a scheduled single-function module that contains multiple
+    ascend.kernel logical groups into one func.func per kernel. Cross-kernel SSA
+    values become function arguments/results, while pure local helper ops are
+    cloned into the consuming kernel function. Existing single-kernel functions
+    are preserved unchanged.
+  }];
+  let constructor = "mlir::afir::createAscendKernelSplitPass()";
+  let dependentDialects = [
+    "mlir::func::FuncDialect",
+    "mlir::tensor::TensorDialect",
+    "mlir::linalg::LinalgDialect",
+    "mlir::arith::ArithDialect",
+    "mlir::memref::MemRefDialect"
+  ];
+}
+
 def AscendRealizePass : Pass<"ascend-realize", "mlir::ModuleOp"> {
   let summary = "Construct Ascend MLIR memory realization plans";
   let description = [{
@@ -195,7 +214,9 @@ def AscendPrepareForEmitPass
   let summary = "Prepare Phase 5 AscendC kernel ABI data";
   let description = [{
     Versionless Phase 5 wrapper around the existing AscendC prepare-for-emit
-    implementation.
+    implementation. It also derives ascendc.kernel_kind after prepare-for-emit
+    so downstream artifact generation can select vec, cube, or mix compile
+    paths per kernel.
   }];
   let constructor = "mlir::afir::createAscendPrepareForEmitPass()";
   let dependentDialects = [
@@ -419,7 +440,7 @@ def AscendCParallelizePass : Pass<"ascendc-parallelize", "mlir::func::FuncOp"> {
 // AscendC Prepare For Emit
 //===----------------------------------------------------------------------===//
 
-def AscendCPrepareForEmitPass : Pass<"ascendc-prepare-for-emit", "mlir::func::FuncOp"> {
+def AscendCPrepareForEmitPass : Pass<"ascendc-prepare-for-emit", "mlir::ModuleOp"> {
   let summary = "Prepare AscendC func signature and attributes for ascir-translate emission";
   let description = [{
     Transforms the function to match the AscendC C++ kernel interface expected

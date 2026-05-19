@@ -81,6 +81,7 @@ writeMixDirectManualHostStub(const MixDirectCompileContract &contract,
   stubArgs.hostStubSourcePath = hostStubSourcePath;
   stubArgs.mixLen = alignTo4(mixFileLen);
   stubArgs.mixFileLen = mixFileLen;
+  stubArgs.kernelArgCount = contract.kernelArgs.size();
   stubArgs.aivOnly = aivOnly;
   if (auto err = writeMixStubTemplate(stubArgs))
     return std::move(err);

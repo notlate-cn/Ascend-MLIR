@@ -14,7 +14,7 @@ namespace mlir::runtime {
 enum class KernelKind { Vec, Cube, Mix };
 enum class MixResourceType { Unknown, AIVOnly, AICOnly, Mix1C1V, Mix1C2V };
 enum class ExecutionBackendKind { Simulation, Npu };
-enum class BindingSourceKind { ExternalFile, TaskOutput };
+enum class BindingSourceKind { ExternalFile, TaskOutput, InputAlias };
 
 struct KernelArtifact {
   std::string kernelName;
@@ -37,6 +37,7 @@ struct TensorBinding {
   std::string upstreamOutputName;
   std::optional<std::vector<int64_t>> shape;
   std::optional<DType> dtype;
+  std::string aliasedInputName;
 };
 
 struct TilingBinding {

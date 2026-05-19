@@ -49,10 +49,6 @@ static std::string normalizeSocForSymbol(std::string value) {
   return value;
 }
 
-static uint64_t ceil4(uint64_t value) {
-  return (value + 3u) & ~uint64_t(3u);
-}
-
 static std::string emitMixHeader(const MixStubTemplateArgs &args) {
   std::string guard = "HEADER_ACLRTLAUNCH_" + toLowerAscii(args.kernelName) + "_H";
   std::transform(guard.begin(), guard.end(), guard.begin(),
@@ -71,8 +67,10 @@ static std::string emitMixHeader(const MixStubTemplateArgs &args) {
      << "#define ACLRT_LAUNCH_KERNEL(kernel_func) aclrtlaunch_##kernel_func\n"
      << "#endif\n\n"
      << "extern \"C\" uint32_t " << args.launcherSymbol
-     << "(uint32_t blockDim, aclrtStream stream, void *arg0, void *arg1, "
-        "void *arg2, void *arg3, void *workspace, void *tiling);\n";
+     << "(uint32_t blockDim, aclrtStream stream";
+  for (unsigned i = 0; i < 16; ++i)
+    os << ", void *arg" << i;
+  os << ");\n";
   os << "#endif\n";
   return os.str();
 }
@@ -156,17 +154,16 @@ static std::string emitMixHostStub(const MixStubTemplateArgs &args) {
      << "  AscendProfRegister();\n"
      << "}\n\n"
      << "extern \"C\" uint32_t " << args.launcherSymbol
-     << "(uint32_t numBlocks, aclrtStream stream, void *arg0, void *arg1, "
-        "void *arg2, void *arg3, void *workspace, void *tilingGm) {\n"
+     << "(uint32_t numBlocks, aclrtStream stream";
+  for (unsigned i = 0; i < 16; ++i)
+    os << ", void *arg" << i;
+  os << ") {\n"
      << "  struct {\n"
-     << "    alignas(((alignof(void *) + 3) >> 2) << 2) void *ffts_addr;\n"
-     << "    alignas(((alignof(void *) + 3) >> 2) << 2) void *arg0;\n"
-     << "    alignas(((alignof(void *) + 3) >> 2) << 2) void *arg1;\n"
-     << "    alignas(((alignof(void *) + 3) >> 2) << 2) void *arg2;\n"
-     << "    alignas(((alignof(void *) + 3) >> 2) << 2) void *arg3;\n"
-     << "    alignas(((alignof(void *) + 3) >> 2) << 2) void *workspace;\n"
-     << "    alignas(((alignof(void *) + 3) >> 2) << 2) void *tilingGm;\n"
-     << "    alignas(((alignof(void *) + 3) >> 2) << 2) void *overflow;\n"
+     << "    alignas(((alignof(void *) + 3) >> 2) << 2) void *ffts_addr;\n";
+  for (size_t i = 0; i < args.kernelArgCount; ++i)
+    os << "    alignas(((alignof(void *) + 3) >> 2) << 2) void *arg" << i
+       << ";\n";
+  os << "    alignas(((alignof(void *) + 3) >> 2) << 2) void *overflow;\n"
      << "  } args;\n"
      << "  if (g_kernel_handle == nullptr) {\n"
      << "    printf(\"[ERROR] %s\\n\", ascendcErrMsg);\n"
@@ -183,13 +180,10 @@ static std::string emitMixHostStub(const MixStubTemplateArgs &args) {
      << "    FreeAscendMemDevice(args.overflow);\n"
      << "    return ret;\n"
      << "  }\n"
-     << "  args.arg0 = arg0;\n"
-     << "  args.arg1 = arg1;\n"
-     << "  args.arg2 = arg2;\n"
-     << "  args.arg3 = arg3;\n"
-     << "  args.workspace = workspace;\n"
-     << "  args.tilingGm = tilingGm;\n"
-     << "  uint32_t aicNumBlocks = 0;\n"
+     << "";
+  for (size_t i = 0; i < args.kernelArgCount; ++i)
+    os << "  args.arg" << i << " = arg" << i << ";\n";
+  os << "  uint32_t aicNumBlocks = 0;\n"
      << "  uint32_t aivNumBlocks = 0;\n"
      << "  ret = GetCoreNumForMixVectorCore(&aicNumBlocks, &aivNumBlocks);\n"
      << "  if (ret != 0) {\n"
@@ -259,6 +253,10 @@ llvm::Error writeMixStubTemplate(const MixStubTemplateArgs &args) {
   if (args.mixFileLen == 0)
     return llvm::createStringError(llvm::inconvertibleErrorCode(),
                                    "MixStubTemplateArgs.mixFileLen must be greater than zero");
+  if (args.kernelArgCount > 16)
+    return llvm::createStringError(
+        llvm::inconvertibleErrorCode(),
+        "MixStubTemplateArgs.kernelArgCount must not exceed 16");
 
   if (auto err = writeTextFile(args.launcherHeaderPath, emitMixHeader(args)))
     return err;

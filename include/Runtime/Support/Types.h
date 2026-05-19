@@ -74,8 +74,14 @@ struct NDArray {
 };
 
 struct RunArgs {
+  struct InPlaceOutput {
+    size_t inputIndex = 0;
+    NDArray array;
+  };
+
   std::vector<NDArray> inputs;
   std::vector<NDArray> outputs;      // pre-allocated, filled after Run()
+  std::vector<InPlaceOutput> in_place_outputs;
   std::vector<uint8_t> tiling;       // packed TilingData bytes (little-endian)
   int                  block_dim     = 1;
   size_t               workspace_size = 8192;

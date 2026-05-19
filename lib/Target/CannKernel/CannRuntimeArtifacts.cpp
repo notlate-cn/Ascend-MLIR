@@ -9,9 +9,11 @@
 #include "Conversion/Ascend/Common/Attributes.h"
 #include "ascir/Dialect/Asc/Utils/Attributes.h"
 #include "llvm/ADT/DenseMap.h"
+#include "llvm/ADT/SetVector.h"
 #include "llvm/ADT/StringMap.h"
 #include "llvm/ADT/StringSwitch.h"
 #include "llvm/ADT/StringSet.h"
+#include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/JSON.h"
 #include "llvm/Support/raw_ostream.h"
@@ -53,17 +55,6 @@ static SmallVector<func::FuncOp> collectGlobalKernels(ModuleOp module) {
       if (funcOp->hasAttr(ascendc::attr::global))
         kernels.push_back(funcOp);
   return kernels;
-}
-
-static FailureOr<func::FuncOp> getSingleGlobalKernel(ModuleOp module,
-                                                     StringRef artifactName) {
-  SmallVector<func::FuncOp> kernels = collectGlobalKernels(module);
-  if (kernels.size() != 1) {
-    module.emitError() << artifactName
-                       << " MVP supports exactly one global kernel";
-    return failure();
-  }
-  return kernels.front();
 }
 
 static FailureOr<func::FuncOp> getPrimaryGlobalKernel(ModuleOp module,
@@ -112,6 +103,22 @@ static std::string getHostCppType(Type type) {
   if (type.isInteger(8))
     return "int8_t";
   return "int64_t";
+}
+
+static std::string sanitizeCppIdentifier(StringRef value) {
+  std::string result;
+  result.reserve(value.size() + 1);
+  for (char c : value) {
+    unsigned char ch = static_cast<unsigned char>(c);
+    if (std::isalnum(ch) || c == '_')
+      result.push_back(c);
+    else
+      result.push_back('_');
+  }
+  if (result.empty() ||
+      std::isdigit(static_cast<unsigned char>(result.front())))
+    result.insert(result.begin(), '_');
+  return result;
 }
 
 static std::string getJsonType(Type type) {
@@ -239,6 +246,114 @@ static llvm::json::Object buildWorkspaceDescriptor(func::FuncOp funcOp,
   return workspace;
 }
 
+static int64_t getCannWorkspaceArgIndex(func::FuncOp funcOp) {
+  return static_cast<int64_t>(funcOp.getNumArguments() >= 2
+                                  ? funcOp.getNumArguments() - 2
+                                  : 0);
+}
+
+static std::string getKernelKindString(func::FuncOp funcOp) {
+  auto kindAttr = funcOp->getAttrOfType<StringAttr>(
+      ::mlir::afir::ascend::kAscendCKernelKindAttr);
+  if (!kindAttr)
+    return "unknown";
+  StringRef kind = kindAttr.getValue();
+  if (kind == ::mlir::afir::ascend::kAscendCKernelKindVec ||
+      kind == ::mlir::afir::ascend::kAscendCKernelKindCube ||
+      kind == ::mlir::afir::ascend::kAscendCKernelKindMix)
+    return kind.str();
+  return "unknown";
+}
+
+static Value stripViewLike(Value value) {
+  while (true) {
+    if (auto castOp = value.getDefiningOp<memref::CastOp>()) {
+      value = castOp.getSource();
+      continue;
+    }
+    if (auto subviewOp = value.getDefiningOp<memref::SubViewOp>()) {
+      value = subviewOp.getSource();
+      continue;
+    }
+    if (auto collapseOp = value.getDefiningOp<memref::CollapseShapeOp>()) {
+      value = collapseOp.getSrc();
+      continue;
+    }
+    if (auto expandOp = value.getDefiningOp<memref::ExpandShapeOp>()) {
+      value = expandOp.getSrc();
+      continue;
+    }
+    if (auto reinterpretOp =
+            value.getDefiningOp<memref::ReinterpretCastOp>()) {
+      value = reinterpretOp.getSource();
+      continue;
+    }
+    return value;
+  }
+}
+
+static llvm::json::Array buildWritesToInputArgs(func::FuncOp funcOp,
+                                                int64_t numInputs) {
+  llvm::SmallSetVector<int64_t, 8> writtenInputArgs;
+  if (funcOp.getBody().empty())
+    return llvm::json::Array{};
+
+  Block &entryBlock = funcOp.getBody().front();
+
+  auto recordWriteTo = [&](Value memref) {
+    Value root = stripViewLike(memref);
+    auto blockArg = dyn_cast<BlockArgument>(root);
+    if (!blockArg || blockArg.getOwner() != &entryBlock)
+      return;
+    int64_t argIndex = static_cast<int64_t>(blockArg.getArgNumber());
+    if (argIndex < numInputs)
+      writtenInputArgs.insert(argIndex);
+  };
+
+  funcOp.walk([&](memref::StoreOp storeOp) {
+    recordWriteTo(storeOp.getMemref());
+  });
+  funcOp.walk([&](emitasc::CallOpaqueOp callOp) {
+    if (!callOp.getCallee().starts_with("afir_gm_store<"))
+      return;
+    ValueRange operands = callOp.getCalleeOperands();
+    if (operands.empty())
+      return;
+    recordWriteTo(operands.front());
+  });
+
+  llvm::json::Array writes;
+  for (int64_t argIndex : writtenInputArgs)
+    writes.push_back(argIndex);
+  return writes;
+}
+
+static FailureOr<llvm::json::Object>
+buildAbiDescriptor(func::FuncOp funcOp) {
+  auto numInputsAttr = funcOp->getAttrOfType<IntegerAttr>("cann.num_inputs");
+  if (!numInputsAttr)
+    return funcOp.emitError()
+           << "runtime manifest ABI requires cann.num_inputs";
+
+  int64_t numInputs = numInputsAttr.getInt();
+  if (numInputs < 0)
+    return funcOp.emitError()
+           << "cann.num_inputs must be a non-negative integer";
+
+  int64_t workspaceArgIndex = getCannWorkspaceArgIndex(funcOp);
+  if (workspaceArgIndex < numInputs)
+    return funcOp.emitError()
+           << "CANN ABI workspace argument index " << workspaceArgIndex
+           << " is before cann.num_inputs " << numInputs;
+
+  llvm::json::Object abi;
+  abi["numInputs"] = numInputs;
+  abi["numOutputs"] = workspaceArgIndex - numInputs;
+  abi["workspaceArgIndex"] = workspaceArgIndex;
+  abi["writesToInputArgs"] = buildWritesToInputArgs(funcOp, numInputs);
+  return abi;
+}
+
 static FailureOr<std::string>
 buildHostWorkspaceSizeExpr(func::FuncOp funcOp, StringRef expr,
                            ArrayRef<TilingFieldInfo> fields,
@@ -308,6 +423,7 @@ static llvm::json::Object buildResourceDescriptor(func::FuncOp funcOp) {
   llvm::json::Object resources;
   resources["executionUnit"] =
       funcOp->hasAttr(ascendc::attr::aicore) ? "aicore" : "host";
+  resources["kernelKind"] = getKernelKindString(funcOp);
   resources["memorySpaces"] = std::move(memorySpaces);
   resources["mixResourceType"] = "unknown";
   return resources;
@@ -383,17 +499,6 @@ static Attribute getScheduleMetadataAttr(func::FuncOp funcOp,
   if (Attribute attr = funcOp->getAttr(attrName))
     return attr;
   return kernelMetadata ? kernelMetadata.get(kernelMetadataKey) : Attribute();
-}
-
-static FailureOr<Attribute>
-getScheduleMetadataAttr(func::FuncOp funcOp, StringRef attrName,
-                        StringRef kernelMetadataKey) {
-  FailureOr<DictionaryAttr> kernelMetadata =
-      lookupKernelScheduleMetadata(funcOp);
-  if (failed(kernelMetadata))
-    return failure();
-  return getScheduleMetadataAttr(funcOp, *kernelMetadata, attrName,
-                                 kernelMetadataKey);
 }
 
 static LogicalResult checkScheduleMetadataCompleteness(func::FuncOp funcOp) {
@@ -664,11 +769,16 @@ buildKernelManifestEntry(func::FuncOp funcOp, int64_t entryIndex,
   kernelEntry["tilingParams"] = std::move(*tilingParams);
   kernelEntry["abiSignature"] = (funcOp.getName() + ":cann_static").str();
   kernelEntry["cacheKey"] = (funcOp.getName() + ":static:" + soc).str();
+  kernelEntry["kernelKind"] = getKernelKindString(funcOp);
   kernelEntry["workspaceSizeExpr"] = workspaceInfo->sizeExpr;
   kernelEntry["workspaceSizeBytes"] = workspaceInfo->sizeBytes;
   kernelEntry["shapeArgOrder"] = buildShapeArgOrder(*fieldsOr);
   kernelEntry["shape"] = buildShapeDescriptor(*fieldsOr);
   kernelEntry["workspace"] = buildWorkspaceDescriptor(funcOp, *workspaceInfo);
+  FailureOr<llvm::json::Object> abi = buildAbiDescriptor(funcOp);
+  if (failed(abi))
+    return failure();
+  kernelEntry["abi"] = std::move(*abi);
   kernelEntry["resources"] = buildResourceDescriptor(funcOp);
   return kernelEntry;
 }
@@ -1021,6 +1131,7 @@ emitRuntimeManifestJson(ModuleOp module, StringRef outPath,
   root["abiSignature"] = (primaryKernel.getName() + ":cann_static").str();
   root["cacheKey"] =
       (primaryKernel.getName() + ":static:" + options.soc).str();
+  root["kernelKind"] = getKernelKindString(primaryKernel);
   root["workspaceSizeExpr"] = primaryWorkspaceInfo->sizeExpr;
   root["workspaceSizeBytes"] = primaryWorkspaceInfo->sizeBytes;
   root["shapeArgOrder"] = buildShapeArgOrder(*fieldsOr);
@@ -1035,93 +1146,141 @@ emitRuntimeManifestJson(ModuleOp module, StringRef outPath,
 
 LogicalResult emitHostTilingCpp(ModuleOp module, StringRef outPath,
                                 const CannRuntimeArtifactOptions &options) {
-  FailureOr<func::FuncOp> funcOr = getSingleGlobalKernel(module, "host tiling");
-  if (failed(funcOr))
-    return failure();
-  FailureOr<emitasc::PyStructType> tilingTypeOr = getTilingType(*funcOr);
-  if (failed(tilingTypeOr))
-    return failure();
-  FailureOr<WorkspaceInfo> workspaceInfo = getWorkspaceInfo(*funcOr);
-  if (failed(workspaceInfo))
-    return failure();
-  FailureOr<SmallVector<TilingFieldInfo>> fieldsOr =
-      collectTilingFields(*funcOr, *tilingTypeOr);
-  if (failed(fieldsOr))
-    return failure();
+  struct HostTilingKernelInfo {
+    func::FuncOp funcOp;
+    emitasc::PyStructType tilingType;
+    WorkspaceInfo workspaceInfo;
+    SmallVector<TilingFieldInfo> fields;
+    SmallVector<unsigned> shapeFieldPositions;
+    std::string hostWorkspaceExpr;
+    bool workspaceExprUsesShapeArgs = false;
+    std::string structName;
+  };
 
-  auto types = tilingTypeOr->getTypesAttr().getValue();
-  auto names = tilingTypeOr->getNamesAttr().getValue();
-  if (types.size() != names.size())
-    return funcOr->emitError("PyStructType types/names size mismatch");
-
-  SmallVector<unsigned> shapeFieldPositions;
-  for (auto [index, nameAttr] : llvm::enumerate(names)) {
-    StringRef name = cast<StringAttr>(nameAttr).getValue();
-    if (isShapeField(name))
-      shapeFieldPositions.push_back(index);
+  SmallVector<func::FuncOp> kernels = collectGlobalKernels(module);
+  if (kernels.empty()) {
+    module.emitError() << "host tiling requires at least one global kernel";
+    return failure();
   }
-  bool workspaceExprUsesShapeArgs = false;
-  FailureOr<std::string> hostWorkspaceExpr = buildHostWorkspaceSizeExpr(
-      *funcOr, workspaceInfo->sizeExpr, *fieldsOr, workspaceExprUsesShapeArgs);
-  if (failed(hostWorkspaceExpr))
-    return failure();
 
-  return writeTextFile(module.getOperation(), outPath, [&](raw_ostream &os) {
-    StringRef kernelName = funcOr->getName();
-    os << "#include <cstdint>\n";
-    os << "#include <cstring>\n\n";
-    os << "struct TilingData {\n";
-    for (auto [typeAttr, nameAttr] : llvm::zip(types, names)) {
-      Type type = cast<TypeAttr>(typeAttr).getValue();
-      StringRef name = cast<StringAttr>(nameAttr).getValue();
-      os << "  " << getHostCppType(type) << " " << name << ";\n";
-    }
-    os << "};\n\n";
-    os << "extern \"C\" {\n\n";
-    os << "int32_t " << kernelName << "_GetTilingSize(void) {\n";
-    os << "  return static_cast<int32_t>(sizeof(TilingData));\n";
-    os << "}\n\n";
+  SmallVector<HostTilingKernelInfo, 4> infos;
+  llvm::StringSet<> usedStructNames;
+  bool hasMultipleKernels = kernels.size() > 1;
+  for (func::FuncOp kernel : kernels) {
+    FailureOr<emitasc::PyStructType> tilingTypeOr = getTilingType(kernel);
+    if (failed(tilingTypeOr))
+      return failure();
+    FailureOr<WorkspaceInfo> workspaceInfo = getWorkspaceInfo(kernel);
+    if (failed(workspaceInfo))
+      return failure();
+    FailureOr<SmallVector<TilingFieldInfo>> fieldsOr =
+        collectTilingFields(kernel, *tilingTypeOr);
+    if (failed(fieldsOr))
+      return failure();
 
-    os << "int32_t " << kernelName
-       << "_GetTiling(const int64_t* shape_args, int32_t shape_count, "
-          "void* tiling_out) {\n";
-    os << "  if (shape_count != " << shapeFieldPositions.size()
-       << " || tiling_out == nullptr";
-    if (!shapeFieldPositions.empty())
-      os << " || shape_args == nullptr";
-    os << ")\n";
-    os << "    return 1;\n";
-    os << "  TilingData data{};\n";
-    unsigned shapeIndex = 0;
+    auto types = tilingTypeOr->getTypesAttr().getValue();
+    auto names = tilingTypeOr->getNamesAttr().getValue();
+    if (types.size() != names.size())
+      return kernel.emitError("PyStructType types/names size mismatch");
+
+    HostTilingKernelInfo info;
+    info.funcOp = kernel;
+    info.tilingType = *tilingTypeOr;
+    info.workspaceInfo = *workspaceInfo;
+    info.fields = std::move(*fieldsOr);
     for (auto [index, nameAttr] : llvm::enumerate(names)) {
       StringRef name = cast<StringAttr>(nameAttr).getValue();
-      os << "  data." << name << " = ";
       if (isShapeField(name))
-        os << "shape_args[" << shapeIndex++ << "]";
-      else
-        os << "0";
-      os << ";\n";
+        info.shapeFieldPositions.push_back(index);
     }
-    os << "  std::memcpy(tiling_out, &data, sizeof(TilingData));\n";
-    os << "  return 0;\n";
-    os << "}\n\n";
+    FailureOr<std::string> hostWorkspaceExpr = buildHostWorkspaceSizeExpr(
+        kernel, info.workspaceInfo.sizeExpr, info.fields,
+        info.workspaceExprUsesShapeArgs);
+    if (failed(hostWorkspaceExpr))
+      return failure();
+    info.hostWorkspaceExpr = std::move(*hostWorkspaceExpr);
 
-    os << "int64_t " << kernelName
-       << "_GetBlockDim(const int64_t* shape_args, int32_t shape_count) {\n";
-    os << "  (void)shape_args;\n";
-    os << "  return shape_count == " << shapeFieldPositions.size()
-       << " ? 20 : -1;\n";
-    os << "}\n\n";
+    std::string baseStructName =
+        sanitizeCppIdentifier(info.tilingType.getNameAttr().getValue());
+    info.structName = baseStructName;
+    if (hasMultipleKernels &&
+        (baseStructName == "TilingData" ||
+         usedStructNames.contains(info.structName))) {
+      info.structName =
+          baseStructName + "_" + sanitizeCppIdentifier(kernel.getName());
+    }
+    usedStructNames.insert(info.structName);
+    infos.push_back(std::move(info));
+  }
 
-    os << "int64_t " << kernelName
-       << "_GetWorkspaceSize(const int64_t* shape_args, int32_t shape_count) {\n";
-    if (!workspaceExprUsesShapeArgs)
+  return writeTextFile(module.getOperation(), outPath, [&](raw_ostream &os) {
+    os << "#include <cstdint>\n";
+    os << "#include <cstring>\n\n";
+
+    for (const HostTilingKernelInfo &info : infos) {
+      auto types = info.tilingType.getTypesAttr().getValue();
+      auto names = info.tilingType.getNamesAttr().getValue();
+      os << "struct " << info.structName << " {\n";
+      for (auto [typeAttr, nameAttr] : llvm::zip(types, names)) {
+        Type type = cast<TypeAttr>(typeAttr).getValue();
+        StringRef name = cast<StringAttr>(nameAttr).getValue();
+        os << "  " << getHostCppType(type) << " " << name << ";\n";
+      }
+      os << "};\n\n";
+    }
+
+    os << "extern \"C\" {\n\n";
+    for (const HostTilingKernelInfo &info : infos) {
+      func::FuncOp funcOp = info.funcOp;
+      StringRef kernelName = funcOp.getName();
+      auto names = info.tilingType.getNamesAttr().getValue();
+      os << "int32_t " << kernelName << "_GetTilingSize(void) {\n";
+      os << "  return static_cast<int32_t>(sizeof(" << info.structName
+         << "));\n";
+      os << "}\n\n";
+
+      os << "int32_t " << kernelName
+         << "_GetTiling(const int64_t* shape_args, int32_t shape_count, "
+            "void* tiling_out) {\n";
+      os << "  if (shape_count != " << info.shapeFieldPositions.size()
+         << " || tiling_out == nullptr";
+      if (!info.shapeFieldPositions.empty())
+        os << " || shape_args == nullptr";
+      os << ")\n";
+      os << "    return 1;\n";
+      os << "  " << info.structName << " data{};\n";
+      unsigned shapeIndex = 0;
+      for (auto [index, nameAttr] : llvm::enumerate(names)) {
+        StringRef name = cast<StringAttr>(nameAttr).getValue();
+        os << "  data." << name << " = ";
+        if (isShapeField(name))
+          os << "shape_args[" << shapeIndex++ << "]";
+        else
+          os << "0";
+        os << ";\n";
+      }
+      os << "  std::memcpy(tiling_out, &data, sizeof(" << info.structName
+         << "));\n";
+      os << "  return 0;\n";
+      os << "}\n\n";
+
+      os << "int64_t " << kernelName
+         << "_GetBlockDim(const int64_t* shape_args, int32_t shape_count) {\n";
       os << "  (void)shape_args;\n";
-    os << "  return shape_count == " << shapeFieldPositions.size();
-    if (workspaceExprUsesShapeArgs)
-      os << " && shape_args != nullptr";
-    os << " ? " << *hostWorkspaceExpr << " : -1;\n";
-    os << "}\n\n";
+      os << "  return shape_count == " << info.shapeFieldPositions.size()
+         << " ? 20 : -1;\n";
+      os << "}\n\n";
+
+      os << "int64_t " << kernelName
+         << "_GetWorkspaceSize(const int64_t* shape_args, int32_t shape_count) {\n";
+      if (!info.workspaceExprUsesShapeArgs)
+        os << "  (void)shape_args;\n";
+      os << "  return shape_count == " << info.shapeFieldPositions.size();
+      if (info.workspaceExprUsesShapeArgs)
+        os << " && shape_args != nullptr";
+      os << " ? " << info.hostWorkspaceExpr << " : -1;\n";
+      os << "}\n\n";
+    }
     os << "} // extern \"C\"\n";
   });
 }

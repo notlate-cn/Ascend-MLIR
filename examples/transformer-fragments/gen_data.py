@@ -100,6 +100,47 @@ def build_shape_values(args: argparse.Namespace) -> dict[str, int]:
             "result0_dim1": args.seq,
             "result0_dim2": args.seq,
         }
+    elif args.fragment == "attn_softmax":
+        values = {
+            "arg0_dim0": args.batch,
+            "arg0_dim1": 4,
+            "arg0_dim2": args.seq,
+            "arg0_dim3": args.seq,
+            "result0_dim0": args.batch,
+            "result0_dim1": 4,
+            "result0_dim2": args.seq,
+            "result0_dim3": args.seq,
+        }
+    elif args.fragment == "attn_context":
+        batch_heads = args.batch * 4
+        values = {
+            "arg0_dim0": batch_heads,
+            "arg0_dim1": args.seq,
+            "arg0_dim2": args.seq,
+            "arg1_dim0": batch_heads,
+            "arg1_dim1": args.seq,
+            "arg1_dim2": 32,
+            "result0_dim0": batch_heads,
+            "result0_dim1": args.seq,
+            "result0_dim2": 32,
+        }
+    elif args.fragment == "attention_block":
+        batch_heads = args.batch * 4
+        values = {
+            "arg0_dim0": batch_heads,
+            "arg0_dim1": args.seq,
+            "arg0_dim2": 32,
+            "arg1_dim0": batch_heads,
+            "arg1_dim1": 32,
+            "arg1_dim2": args.seq,
+            "arg2_dim0": batch_heads,
+            "arg2_dim1": args.seq,
+            "arg2_dim2": 32,
+            "result0_dim0": args.seq,
+            "result0_dim1": args.batch,
+            "result0_dim2": 4,
+            "result0_dim3": 32,
+        }
     else:
         raise SystemExit(f"unsupported fragment: {args.fragment}")
 
@@ -305,6 +346,162 @@ def generate_attn_score(args: argparse.Namespace) -> tuple[list[dict[str, str]],
     return inputs, outputs
 
 
+def generate_attn_softmax(args: argparse.Namespace) -> tuple[list[dict[str, str]], list[dict[str, Any]]]:
+    rng = np.random.default_rng(args.seed)
+    score = rng.normal(0.0, 0.2, size=(args.batch, 4, args.seq, args.seq)).astype(np.float32)
+    shifted = score - score.max(axis=-1, keepdims=True)
+    exp = np.exp(shifted).astype(np.float32)
+    expected = exp / exp.sum(axis=-1, keepdims=True)
+
+    save(args.out_dir / "input_score.npy", score)
+    save(args.out_dir / "expected_out.npy", expected)
+    save(args.out_dir / "input0.npy", score)
+    save(args.out_dir / "output0.npy", expected)
+
+    inputs = [
+        {"name": "score", "path": str(args.out_dir / "input_score.npy")},
+    ]
+    outputs = [
+        {
+            "name": "row_max",
+            "path": str(args.actual_output.parent / "row_max_actual.npy"),
+            "shape": [args.batch, 4, args.seq],
+            "dtype": "f32",
+        },
+        {
+            "name": "exp_shifted",
+            "path": str(args.actual_output.parent / "exp_shifted_actual.npy"),
+            "shape": [args.batch, 4, args.seq, args.seq],
+            "dtype": "f32",
+        },
+        {
+            "name": "row_sum",
+            "path": str(args.actual_output.parent / "row_sum_actual.npy"),
+            "shape": [args.batch, 4, args.seq],
+            "dtype": "f32",
+        },
+        {
+            "name": "out",
+            "path": str(args.actual_output),
+            "shape": [args.batch, 4, args.seq, args.seq],
+            "dtype": "f32",
+        },
+    ]
+    return inputs, outputs
+
+
+def generate_attn_context(args: argparse.Namespace) -> tuple[list[dict[str, str]], list[dict[str, Any]]]:
+    rng = np.random.default_rng(args.seed)
+    batch_heads = args.batch * 4
+    prob = rng.random(size=(batch_heads, args.seq, args.seq)).astype(np.float32)
+    prob = prob / prob.sum(axis=-1, keepdims=True)
+    value = rng.normal(0.0, 0.2, size=(batch_heads, args.seq, 32)).astype(np.float32)
+    expected = np.matmul(prob, value).astype(np.float32)
+
+    save(args.out_dir / "input_prob.npy", prob)
+    save(args.out_dir / "input_value.npy", value)
+    save(args.out_dir / "expected_out.npy", expected)
+    save(args.out_dir / "input0.npy", prob)
+    save(args.out_dir / "input1.npy", value)
+    save(args.out_dir / "output0.npy", expected)
+
+    inputs = [
+        {"name": "prob", "path": str(args.out_dir / "input_prob.npy")},
+        {"name": "value", "path": str(args.out_dir / "input_value.npy")},
+    ]
+    outputs = [
+        {
+            "name": "out",
+            "path": str(args.actual_output),
+            "shape": [batch_heads, args.seq, 32],
+            "dtype": "f32",
+        },
+    ]
+    return inputs, outputs
+
+
+def generate_attention_block(args: argparse.Namespace) -> tuple[list[dict[str, str]], list[dict[str, Any]]]:
+    rng = np.random.default_rng(args.seed)
+    batch_heads = args.batch * 4
+    q = rng.normal(0.0, 0.2, size=(batch_heads, args.seq, 32)).astype(np.float32)
+    key = rng.normal(0.0, 0.2, size=(batch_heads, 32, args.seq)).astype(np.float32)
+    value = rng.normal(0.0, 0.2, size=(batch_heads, args.seq, 32)).astype(np.float32)
+
+    score = np.matmul(q.astype(np.float32), key.astype(np.float32))
+    scaled = score * np.float32(0.17677669529663687)
+    shifted = scaled - scaled.max(axis=-1, keepdims=True)
+    prob = np.exp(shifted).astype(np.float32)
+    prob = prob / prob.sum(axis=-1, keepdims=True)
+    context = np.matmul(prob, value.astype(np.float32)).astype(np.float32)
+    expected = context.reshape(args.batch, 4, args.seq, 32).transpose(2, 0, 1, 3)
+
+    save(args.out_dir / "input_q.npy", q)
+    save(args.out_dir / "input_key.npy", key)
+    save(args.out_dir / "input_value.npy", value)
+    save(args.out_dir / "expected_out.npy", expected)
+    save(args.out_dir / "input0.npy", q)
+    save(args.out_dir / "input1.npy", key)
+    save(args.out_dir / "input2.npy", value)
+    save(args.out_dir / "output0.npy", expected)
+
+    inputs = [
+        {"name": "q", "path": str(args.out_dir / "input_q.npy")},
+        {"name": "key", "path": str(args.out_dir / "input_key.npy")},
+        {"name": "value", "path": str(args.out_dir / "input_value.npy")},
+    ]
+    outputs = [
+        {
+            "name": "score",
+            "path": str(args.actual_output.parent / "score_actual.npy"),
+            "shape": [batch_heads, args.seq, args.seq],
+            "dtype": "f32",
+        },
+        {
+            "name": "scaled",
+            "path": str(args.actual_output.parent / "scaled_actual.npy"),
+            "shape": [batch_heads, args.seq, args.seq],
+            "dtype": "f32",
+        },
+        {
+            "name": "row_max",
+            "path": str(args.actual_output.parent / "row_max_actual.npy"),
+            "shape": [batch_heads, args.seq],
+            "dtype": "f32",
+        },
+        {
+            "name": "exp_shifted",
+            "path": str(args.actual_output.parent / "exp_shifted_actual.npy"),
+            "shape": [batch_heads, args.seq, args.seq],
+            "dtype": "f32",
+        },
+        {
+            "name": "row_sum",
+            "path": str(args.actual_output.parent / "row_sum_actual.npy"),
+            "shape": [batch_heads, args.seq],
+            "dtype": "f32",
+        },
+        {
+            "name": "prob",
+            "path": str(args.actual_output.parent / "prob_actual.npy"),
+            "shape": [batch_heads, args.seq, args.seq],
+            "dtype": "f32",
+        },
+        {
+            "name": "context",
+            "path": str(args.actual_output.parent / "context_actual.npy"),
+            "shape": [batch_heads, args.seq, 32],
+            "dtype": "f32",
+        },
+        {
+            "name": "out",
+            "path": str(args.actual_output),
+            "shape": [args.seq, args.batch, 4, 32],
+            "dtype": "f32",
+        },
+    ]
+    return inputs, outputs
+
+
 def write_manifest(args: argparse.Namespace, inputs: list[dict[str, str]], outputs: list[dict[str, Any]]) -> None:
     params = build_tiling_params(args.tiling_schema, args)
     manifest = {
@@ -333,7 +530,16 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "--fragment",
-        choices=["layernorm", "qkv", "qkv_heads", "qkv_project_heads", "attn_score"],
+        choices=[
+            "layernorm",
+            "qkv",
+            "qkv_heads",
+            "qkv_project_heads",
+            "attn_score",
+            "attn_softmax",
+            "attn_context",
+            "attention_block",
+        ],
         required=True,
     )
     parser.add_argument("--m", type=positive_int, default=4)
@@ -363,8 +569,14 @@ def main() -> None:
         inputs, outputs = generate_qkv_heads(args)
     elif args.fragment == "qkv_project_heads":
         inputs, outputs = generate_qkv_project_heads(args)
-    else:
+    elif args.fragment == "attn_score":
         inputs, outputs = generate_attn_score(args)
+    elif args.fragment == "attn_softmax":
+        inputs, outputs = generate_attn_softmax(args)
+    elif args.fragment == "attn_context":
+        inputs, outputs = generate_attn_context(args)
+    else:
+        inputs, outputs = generate_attention_block(args)
     write_manifest(args, inputs, outputs)
 
     print(f"transformer_fragment.{args.fragment}.data=pass")
