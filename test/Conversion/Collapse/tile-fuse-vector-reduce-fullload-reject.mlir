@@ -14,7 +14,9 @@
 // Companion of tile-fuse-tiling-infos.mlir which covers the pointwise case.
 
 // CHECK: vector_plan.tiling_infos
-// CHECK-SAME: constraints = [{kind = "divides", lhs = "XBLOCK_SUB", rhs = "XBLOCK"}, {kind = "le_bytes",
+// constraints: XBLOCK_SUB|XBLOCK divides + tail-offset 32B-align Divides
+// (innermost-Inner is RBLOCK_0 here since R is ub-split) + LeBytes UB.
+// CHECK-SAME: constraints = [{kind = "divides", lhs = "XBLOCK_SUB", rhs = "XBLOCK"}, {kind = "divides", lhs = "32", rhs = "((524288 - RBLOCK_0) * 4)"}, {kind = "le_bytes",
 // CHECK-SAME: name = "XBLOCK"
 // CHECK-SAME: name = "XBLOCK_SUB"
 // CHECK-SAME: name = "RBLOCK_0"

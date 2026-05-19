@@ -4,8 +4,8 @@
 // P6d: --soc threads into TilePlanGen and the LeBytes constraint's UB
 // capacity rhs comes from SocSpec, not a hardcoded 192 KiB.
 
-// B1:     constraints = [{kind = "divides", lhs = "XBLOCK_SUB", rhs = "XBLOCK"}, {kind = "le_bytes", lhs = "((12) * XBLOCK_SUB)", rhs = "196608"}]
-// B310B:  constraints = [{kind = "divides", lhs = "XBLOCK_SUB", rhs = "XBLOCK"}, {kind = "le_bytes", lhs = "((12) * XBLOCK_SUB)", rhs = "120832"}]
+// B1:     constraints = [{kind = "divides", lhs = "XBLOCK_SUB", rhs = "XBLOCK"}, {kind = "divides", lhs = "32", rhs = "((1024 - XBLOCK_SUB) * 4)"}, {kind = "le_bytes", lhs = "((12) * XBLOCK_SUB)", rhs = "196608"}]
+// B310B:  constraints = [{kind = "divides", lhs = "XBLOCK_SUB", rhs = "XBLOCK"}, {kind = "divides", lhs = "32", rhs = "((1024 - XBLOCK_SUB) * 4)"}, {kind = "le_bytes", lhs = "((12) * XBLOCK_SUB)", rhs = "120832"}]
 
 func.func @pointwise(%a: tensor<1024xf32>, %b: tensor<1024xf32>) -> tensor<1024xf32> {
   %result = linalg.generic {
