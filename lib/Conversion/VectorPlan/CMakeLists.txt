@@ -30,6 +30,7 @@ add_mlir_library(MLIRVectorPlan
   TileFuse/LoopNestBuilder.cpp
   TileFuse/SliceComputer.cpp
   TileFuse/GroupEmitter.cpp
+  TileFuse/CubeEmitter.cpp
   TileInfo/TilePlanToTileInfo.cpp
   Pipeline.cpp
 
@@ -44,6 +45,7 @@ add_mlir_library(MLIRVectorPlan
   MLIRLinalgDialect
   MLIRLinalgTransforms
   MLIRSCFDialect
+  MLIRSCFTransforms
   MLIRTensorDialect
   MLIRFuncDialect
   MLIRArithDialect

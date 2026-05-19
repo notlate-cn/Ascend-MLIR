@@ -1,4 +1,5 @@
 #include "Collapse.h"
+#include "CubeEmitter.h"
 #include "GroupEmitter.h"
 #include "LoopNestBuilder.h"
 #include "SliceComputer.h"
@@ -46,14 +47,15 @@ static void runVariantPipeline(func::FuncOp func,
                                      func.getLoc(), socName);
   emitTilingInfos(func, plan);
 
-  // CV-fusion Phase 2: Cube plans stop here.  The 5 cube tunable args + mix-
-  // kernel attrs are now on the func; the matmul + epilogue linalg ops are
-  // left in place for downstream Phase-4 emission (LoopNestBuilder cube path
-  // + the existing AnnotateMixMatmulSemantics / AscendCBufferPlacement /
-  // LinalgToAscendC mix pipeline).  Without Phase 4 the cube kernel won't
-  // actually run, but the front-end schema is now mix-compatible.
-  if (plan.cubeKind != CubeKind::None)
+  // CV-fusion Phase 4a: Cube plans run a separate emitter that does the tile-
+  // and-fuse + ascendc.unit / ascendc.parallel annotations.  On failure (the
+  // CubeEmitter doesn't yet support the IR shape), early-return so the linalg
+  // ops survive untouched — same effect as Phase 2's stop-here.  The 5 cube
+  // tunable args + mix-kernel attrs from buildCubePlan are already on `func`.
+  if (plan.cubeKind != CubeKind::None) {
+    (void)emitCubeKernel(func, plan); // failure logged via LLVM_DEBUG
     return;
+  }
 
   // Collect init tensors and original results BEFORE modification. Same
   // logic as the legacy single-plan path — an intra-group intermediate
