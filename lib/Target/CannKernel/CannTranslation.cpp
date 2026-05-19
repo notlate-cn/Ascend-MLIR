@@ -2173,6 +2173,24 @@ static LogicalResult emitTilingSpaceJson(StringRef outPath,
       schArgs.push_back(std::move(e));
     }
     root["schema_args"] = std::move(schArgs);
+
+    // shape_equalities: groups of (call_arg_index, dim) pairs whose input
+    // shape dims must all resolve to the same integer at runtime.  Runner
+    // validates before kernel launch.
+    if (!schema->shapeEqualities.empty()) {
+      llvm::json::Array eqs;
+      for (const auto &g : schema->shapeEqualities) {
+        llvm::json::Array group;
+        for (auto [callIdx, dim] : g) {
+          llvm::json::Array pair;
+          pair.push_back(static_cast<int64_t>(callIdx));
+          pair.push_back(static_cast<int64_t>(dim));
+          group.push_back(std::move(pair));
+        }
+        eqs.push_back(std::move(group));
+      }
+      root["shape_equalities"] = std::move(eqs);
+    }
   }
 
   // UB-aware tiling cost: stamp the SoC's TBuf/TQue pool size, plus a

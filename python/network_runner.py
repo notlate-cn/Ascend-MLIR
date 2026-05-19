@@ -243,6 +243,44 @@ def phase2_codegen_compile(work, groups, network, soc="Ascend910B1"):
     return artifacts
 
 
+def _validate_shape_equalities(space, network, kid, runner_inputs):
+    """Validate that user-passed input shapes satisfy the symbolic equalities
+    derived from the kernel's linalg op semantics.
+
+    `space["shape_equalities"]` is a list of groups; each group is a list of
+    `[call_arg_index, dim]` pairs that share the same shape root symbol.  All
+    input dim values within a group MUST resolve to the same integer.  Raises
+    RuntimeError with a precise diagnostic on mismatch (before kernel launch,
+    so the user sees the bug instead of garbage output).
+    """
+    groups = space.get("shape_equalities", [])
+    if not groups:
+        return
+    for group in groups:
+        # Resolve each (call_arg_index, dim) → integer via the existing walker.
+        resolved = []
+        for entry in group:
+            if len(entry) != 2:
+                continue
+            call_idx, dim_idx = int(entry[0]), int(entry[1])
+            shape = _resolve_kernel_input_shape(
+                network, kid, call_idx, runner_inputs)
+            if dim_idx >= len(shape):
+                raise RuntimeError(
+                    f"shape_equalities[{kid}]: call_arg_index={call_idx} "
+                    f"dim={dim_idx} out of range for shape {tuple(shape)}")
+            resolved.append((call_idx, dim_idx, int(shape[dim_idx])))
+        # All members of a group must have the same value.
+        vals = {v for _, _, v in resolved}
+        if len(vals) > 1:
+            details = ", ".join(
+                f"arg{c}.dim{d}={v}" for c, d, v in resolved)
+            raise RuntimeError(
+                f"shape_equalities[{kid}]: members must agree but got "
+                f"different values: {details}.  Symbolically these dims are "
+                "the same; pass consistent input shapes.")
+
+
 def _resolve_kernel_input_shape(network, kid, arg_idx, runner_inputs):
     """Get the runtime shape of `kid`'s `arg_idx`-th input.
 
@@ -360,6 +398,11 @@ def phase3_default_build_and_dump(work, groups, network, artifacts, args):
         space_path = work / default_variant["space_file"]
         vkid = default_variant["func_name"]
         space = json.loads(space_path.read_text())
+        # Validate user-passed shapes are consistent with the kernel's
+        # symbolic-shape equalities BEFORE the kernel ever launches.  Catches
+        # mismatched-shape inputs (e.g. a.dim0 != b.dim0 for an elementwise
+        # `a+b` kernel) with a clear diagnostic instead of garbage output.
+        _validate_shape_equalities(space, network, kid, args.inputs)
         params: dict = {}
         # Shape-keyed fixed params first: dim_arg*_* — resolve from runner inputs.
         shape_keys = _shape_key_values_for_kernel(space, network, kid, args.inputs)

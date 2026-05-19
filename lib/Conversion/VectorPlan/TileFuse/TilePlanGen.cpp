@@ -91,12 +91,27 @@ DictionaryAttr serializeTilingInfoSchema(MLIRContext *ctx,
     argsAttr.push_back(d.getDictionary(ctx));
   }
 
+  SmallVector<Attribute> shapeEqsAttr;
+  for (const auto &g : s.shapeEqualities) {
+    SmallVector<Attribute> pairs;
+    for (auto [callIdx, dim] : g) {
+      SmallVector<Attribute> pair = {
+          IntegerAttr::get(i32Ty, callIdx),
+          IntegerAttr::get(i32Ty, dim),
+      };
+      pairs.push_back(ArrayAttr::get(ctx, pair));
+    }
+    shapeEqsAttr.push_back(ArrayAttr::get(ctx, pairs));
+  }
+
   NamedAttrList entry;
   entry.append("kernel_id",      StringAttr::get(ctx, s.kernelId));
   entry.append("schema_version", IntegerAttr::get(i32Ty,
                                                   TilingInfoSchema::kSchemaVersion));
   entry.append("fields", ArrayAttr::get(ctx, fieldsAttr));
   entry.append("args",   ArrayAttr::get(ctx, argsAttr));
+  if (!shapeEqsAttr.empty())
+    entry.append("shape_equalities", ArrayAttr::get(ctx, shapeEqsAttr));
   if (!s.blockDimExpr.empty())
     entry.append("block_dim_expr", StringAttr::get(ctx, s.blockDimExpr));
   if (!s.axisExtentExpr.empty())
@@ -171,6 +186,23 @@ std::optional<TilingInfoSchema> deserializeTilingInfoSchema(
       if (a.role == SchemaArgRole::TileParam)
         a.tileParamName = getStr(d, "name").value_or(std::string());
       s.args.push_back(std::move(a));
+    }
+  }
+  if (auto groups = entry.getAs<ArrayAttr>("shape_equalities")) {
+    for (Attribute ga : groups) {
+      auto gAttr = dyn_cast<ArrayAttr>(ga);
+      if (!gAttr) continue;
+      llvm::SmallVector<std::pair<int32_t, int32_t>, 4> group;
+      for (Attribute pa : gAttr) {
+        auto pAttr = dyn_cast<ArrayAttr>(pa);
+        if (!pAttr || pAttr.size() != 2) continue;
+        auto callIdx = dyn_cast<IntegerAttr>(pAttr[0]);
+        auto dim     = dyn_cast<IntegerAttr>(pAttr[1]);
+        if (!callIdx || !dim) continue;
+        group.push_back({(int32_t)callIdx.getInt(), (int32_t)dim.getInt()});
+      }
+      if (group.size() >= 2)
+        s.shapeEqualities.push_back(std::move(group));
     }
   }
   return s;
@@ -1260,6 +1292,51 @@ static void collectShapeDerivedFields(func::FuncOp func,
   });
 }
 
+// Group Input args' shape dims by their shared shape-symbol root, so the
+// runtime can validate that user-passed input shapes are mutually consistent
+// (e.g. for `a + b` with a,b both `?x?x?`, a.dim_i must equal b.dim_i).
+// Reads `afir.dim_symbols` (func attr) + per-arg `afir.symbolic_shape`.
+// Skips constant entries (broadcast `1`) and unrecognized SymExpr forms.
+static void collectShapeEqualities(func::FuncOp func,
+                                   TilingInfoSchema &schema) {
+  auto dimSymsAttr = func->getAttrOfType<ArrayAttr>("afir.dim_symbols");
+  if (!dimSymsAttr) return;
+  auto symTable = symshape::DimSymbolTable::fromAttr(dimSymsAttr);
+  if (!symTable) return;
+
+  // Group (callArgIndex, dim) by the (rootArg, rootDim) the table resolves
+  // their SymId to.  Composite key via DenseMap<pair<unsigned,unsigned>>.
+  llvm::DenseMap<std::pair<unsigned, unsigned>,
+                 llvm::SmallVector<std::pair<int32_t, int32_t>, 4>>
+      groups;
+  for (auto &a : schema.args) {
+    if (a.role != SchemaArgRole::Input) continue;
+    if (a.callArgIndex < 0) continue;
+    auto symAttr = func.getArgAttrOfType<StringAttr>(
+        (unsigned)a.mlirIndex, "afir.symbolic_shape");
+    if (!symAttr) continue;
+    auto list = symshape::parseSymExprList(symAttr.getValue());
+    if (!list) continue;
+    for (int32_t d = 0; d < (int32_t)list->size(); ++d) {
+      const auto &e = (*list)[d];
+      if (e.getKind() != symshape::SymExpr::Kind::Sym) continue; // skip consts
+      if (e.getSym() >= symTable->numRoots()) continue;
+      auto src = symTable->sourceOf(e.getSym());
+      groups[{src.first, src.second}].push_back({a.callArgIndex, d});
+    }
+  }
+
+  // Stable output order: sort group keys.
+  llvm::SmallVector<std::pair<unsigned, unsigned>, 8> keys;
+  for (auto &kv : groups) keys.push_back(kv.first);
+  llvm::sort(keys);
+  for (auto &k : keys) {
+    auto &group = groups[k];
+    if (group.size() < 2) continue; // singleton: nothing to validate
+    schema.shapeEqualities.push_back(std::move(group));
+  }
+}
+
 // Serialize TilePlan constraints into the existing {kind, lhs, rhs} dict
 // array; returns a null ArrayAttr when there are no constraints.
 static ArrayAttr serializeConstraints(MLIRContext *ctx,
@@ -1413,6 +1490,7 @@ void emitTilingInfos(func::FuncOp func, const TilePlan &plan) {
   computeOutputShapeExprs(func, schema, symTable);
 
   collectShapeDerivedFields(func, schema);
+  collectShapeEqualities(func, schema);
 
   ArrayAttr constraintsAttr = serializeConstraints(ctx, plan.constraints);
   serializeAndAttach(moduleOp, schema, constraintsAttr);

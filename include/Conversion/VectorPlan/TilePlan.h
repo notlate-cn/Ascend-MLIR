@@ -155,6 +155,13 @@ struct TilingInfoSchema {
   std::string axisExtentExpr;
   llvm::SmallVector<SchemaField, 8> fields;
   llvm::SmallVector<SchemaArg, 8> args;
+  // Groups of (callArgIndex, dim) pairs that share the same shape root
+  // symbol — at runtime, all the corresponding input dims MUST resolve to
+  // the same integer or the caller passed inconsistent shapes.  Inputs only
+  // (outputs are covered by SchemaArg::shapeExpr).  Each group has >= 2
+  // members; single-element groups are not emitted (nothing to check).
+  llvm::SmallVector<llvm::SmallVector<std::pair<int32_t, int32_t>, 4>, 4>
+      shapeEqualities;
   // Constraints: reuse the existing {kind, lhs, rhs} struct.  Carried through
   // unchanged.
 };
