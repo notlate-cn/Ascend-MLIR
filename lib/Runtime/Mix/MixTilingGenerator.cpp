@@ -52,6 +52,10 @@ static bool isValidBiasShape(llvm::ArrayRef<int64_t> biasShape,
   return biasShape.size() == 1 && biasShape[0] == expectedN;
 }
 
+static bool isBroadcastableBatchDim(int64_t dim, int64_t expectedBatch) {
+  return dim == 1 || dim == expectedBatch;
+}
+
 static std::optional<size_t>
 findBiasInputIndex(llvm::ArrayRef<MixTilingTensorDesc> inputs,
                    int64_t expectedN) {
@@ -117,22 +121,44 @@ buildExplicitMatmulTilingRequest(const MixTilingRequest &request,
           llvm::inconvertibleErrorCode(),
           "invalid explicit batch matmul mix request: only positive rank-3 tensors with a single static batch dim are supported");
     }
-    if (a[0] != b[0] || a[0] != c[0]) {
+    const int64_t derivedBatch = c[0];
+    derivedM = c[1];
+    derivedN = c[2];
+    derivedKFromB = matmul.transB ? b[2] : b[1];
+    const int64_t derivedNFromB = matmul.transB ? b[1] : b[2];
+    if (!isBroadcastableBatchDim(b[0], derivedBatch) ||
+        derivedNFromB != derivedN) {
       return llvm::createStringError(
           llvm::inconvertibleErrorCode(),
-          "invalid explicit batch matmul mix request: batch dimensions do not match");
+          "invalid explicit batch matmul mix request: shapes do not match annotated matmul semantics");
     }
     if (!matmul.batchShape.empty() &&
-        (matmul.batchShape.size() != 1 || matmul.batchShape[0] != a[0])) {
+        (matmul.batchShape.size() != 1 ||
+         matmul.batchShape[0] != derivedBatch)) {
       return llvm::createStringError(
           llvm::inconvertibleErrorCode(),
           "invalid explicit batch matmul mix request: shapes do not match annotated batch semantics");
     }
-    derivedM = matmul.transA ? a[2] : a[1];
-    derivedKFromA = matmul.transA ? a[1] : a[2];
-    derivedN = matmul.transB ? b[1] : b[2];
-    derivedKFromB = matmul.transB ? b[2] : b[1];
-    if (c[1] != derivedM || c[2] != derivedN) {
+    if (!matmul.transA) {
+      if (isBroadcastableBatchDim(a[0], derivedBatch) && a[1] == derivedM &&
+          a[2] == derivedKFromB) {
+        derivedKFromA = a[2];
+      } else if (a[0] == derivedM &&
+                 isBroadcastableBatchDim(a[1], derivedBatch) &&
+                 a[2] == derivedKFromB) {
+        derivedKFromA = a[2];
+      }
+    } else {
+      if (isBroadcastableBatchDim(a[0], derivedBatch) &&
+          a[1] == derivedKFromB && a[2] == derivedM) {
+        derivedKFromA = a[1];
+      } else if (a[0] == derivedKFromB &&
+                 isBroadcastableBatchDim(a[1], derivedBatch) &&
+                 a[2] == derivedM) {
+        derivedKFromA = a[0];
+      }
+    }
+    if (derivedKFromA == 0) {
       return llvm::createStringError(
           llvm::inconvertibleErrorCode(),
           "invalid explicit batch matmul mix request: shapes do not match annotated matmul semantics");
@@ -210,7 +236,7 @@ buildExplicitMatmulTilingRequest(const MixTilingRequest &request,
   matmulRequest.problem.N = derivedN;
   matmulRequest.problem.K = derivedKFromA;
   if (isBatchMatmul)
-    matmulRequest.problem.batchShape = {a[0]};
+    matmulRequest.problem.batchShape = {c[0]};
   else
     matmulRequest.problem.batchShape = matmul.batchShape;
   matmulRequest.problem.dtypeA = request.inputs[0].dtype;
