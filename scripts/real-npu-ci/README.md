@@ -39,7 +39,7 @@ real-NPU host
 | `run-real-npu-job.sh` | 容器 ENTRYPOINT。负责 clone/copy 源码、构建 Ascend-MLIR、跑 sim pipeline、构建 run-only `runtime-session`、改写 manifest 为 `npu`、执行真机验证。 | 通常不手动运行，由 Docker ENTRYPOINT 自动执行。 |
 | `collect-plog.sh` | 收集 `npu-smi info`、近期 plog 文件列表和 `errorStr`。 | `run-real-npu-job.sh` 结束时自动调用，也可在容器内手动调用。 |
 | `submit.sh` | 开发机侧 SSH 提交器。登录 real-NPU host 后调用远端 `docker-run.sh`。 | x86/aarch64 开发机远程触发真机验证时使用。 |
-| `../sync-and-submit.sh` | 开发机侧一键入口。打包本地 git 工作树，同步到远端指定目录，然后用已有 image 跑指定用例。 | 需要验证本地未 push 改动时使用。 |
+| `scripts/sync-and-submit.sh` | 开发机侧一键入口。打包本地 git 工作树，同步到远端指定目录，然后用已有 image 跑指定用例。 | 需要验证本地未 push 改动时使用。 |
 | `README.md` | 本说明文档。 | 维护此目录流程和约定。 |
 
 ## 2. 准备变量（首次配置或凭证变化时执行）
@@ -191,14 +191,16 @@ docker image inspect "${SWR_IMAGE}" \
 docker logout "${SWR_REGISTRY}"
 ```
 
-## 6. 准备 real-NPU host 源码（按验证方式选择执行）
+## 6. 手动执行：准备源码并运行真机验证
 
-有两种方式，优先使用“已 push 分支/commit”方式；只有本地未提交改动需要实测时，才同步本地工作树。
-如果使用 `scripts/sync-and-submit.sh`，脚本会自动同步本地工作树，通常不需要手动执行 6.2。
+手动执行适合需要精确控制 host 上源码、image、job 参数或排查环境问题的场景。它分成两步：
 
-### 6.1 已 push 分支或 commit
+1. 先用 6.1 或 6.2 把要验证的源码准备到 real-NPU host。
+2. 再用 6.3、6.4 或 6.5 触发容器内构建和真机验证。
 
-在 real-NPU host 上准备仓库：
+### 6.1 手动准备源码：已 push 分支或 commit
+
+适合验证已经 push 到远端仓库的分支、tag 或 commit。在 real-NPU host 上准备仓库：
 
 ```shell
 cd /data/{username}
@@ -208,11 +210,11 @@ git fetch --all --prune
 git checkout <branch-or-commit>
 ```
 
-后续运行时使用 `--repo-url/--ref` 或 `--source-dir` 都可以。若用 `--repo-url/--ref`，容器会自己 clone 指定 ref。
+后续执行时可以使用 6.3 的 `--source-dir` 复用这个源码树，也可以使用 6.4 的 `--repo-url/--ref` 让容器自己 clone 指定 ref。
 
-### 6.2 同步本地未提交工作树
+### 6.2 手动准备源码：同步本地未提交工作树
 
-在开发机执行。这个方式只用于临时验证本地未 push 的改动。
+适合临时验证本地未 push 的改动。在开发机执行：
 
 ```shell
 ssh -p 141 root@<real-npu-host> \
@@ -229,11 +231,10 @@ ssh -p 141 root@<real-npu-host> \
 
 `COPYFILE_DISABLE=1` 和 `--no-xattrs` 用于避免 macOS 的 `._*` 扩展属性文件混入远端源码树。
 
-## 7. 在 real-NPU host 上运行真机验证（每次验证执行）
-
-### 7.1 host 已有源码树模式
+### 6.3 手动运行：host 已有源码树
 
 适合验证 `/data/{username}/Codex-Ascend-MLIR-current` 或 `/data/{username}/Codex-Ascend-MLIR` 中已有的源码。
+在 real-NPU host 上执行：
 
 ```shell
 cd /data/{username}/Codex-Ascend-MLIR-current
@@ -247,9 +248,10 @@ scripts/real-npu-ci/docker-run.sh \
   --jobs 6
 ```
 
-### 7.2 repo/ref 模式
+### 6.4 手动运行：容器内 clone repo/ref
 
 适合验证已经 push 的分支或 commit。容器会 clone 指定仓库和 ref。
+在 real-NPU host 上执行：
 
 ```shell
 cd /data/{username}/Codex-Ascend-MLIR
@@ -263,9 +265,25 @@ scripts/real-npu-ci/docker-run.sh \
   --jobs 6
 ```
 
-### 7.3 一键同步本地工作树并运行
+### 6.5 手动远程提交：开发机触发 host 上已有源码
 
-适合验证本地未 push 的改动。脚本会：
+开发机可以用 `scripts/real-npu-ci/submit.sh` 通过 SSH 触发远端 job。它只提交执行任务，不同步本地未提交改动；源码需要已经通过 6.1 或 6.2 准备到 host，或者用 `--repo-url --ref` 指向已 push 的代码。
+
+```shell
+scripts/real-npu-ci/submit.sh \
+  --image "${SWR_IMAGE}" \
+  --remote-source-dir /data/{username}/Codex-Ascend-MLIR-current \
+  --ref local-tree \
+  --case relu-broadcast-transpose \
+  --device-id 7 \
+  --jobs 6
+```
+
+如果使用 `--repo-url --ref`，本地未 push 的改动不会被验证。
+
+## 7. 一键执行：同步本地工作树并运行
+
+`scripts/sync-and-submit.sh` 适合验证本地未 push 的改动。它把“同步源码到 host + 触发 Docker job”合成一个入口：
 
 1. 从当前 git 工作树选取 tracked files、已展开的 submodule files 和未被 `.gitignore` 忽略的 untracked files。
 2. 替换远端 `--remote-dir` 指定的目录。
@@ -277,6 +295,24 @@ scripts/real-npu-ci/docker-run.sh \
 scripts/sync-and-submit.sh \
   --remote-dir /data/{username}/Codex-Ascend-MLIR-current \
   --case relu-broadcast-transpose
+```
+
+跑当前 real-NPU 全量用例时使用 `--case all`。它会同步源码一次，然后在 real-NPU host 上把每个 case 拆成独立 `docker run`，复用同一个远端源码目录和 ccache，避免同一容器内连续 NPU launch 的状态残留影响后续用例。
+
+当前 `all` 依次运行：
+
+- `add-broadcast-concat`
+- `broadcast-add-reduce`
+- `gather-elementwise-fusion`
+- `matmul-add-leakyrelu`
+- `relu-broadcast-transpose`
+- `split-relu-brc-add-mul`
+- `real-npu-multikernel`
+
+```shell
+scripts/sync-and-submit.sh \
+  --remote-dir /data/{username}/Codex-Ascend-MLIR-current \
+  --case all
 ```
 
 如果要执行任意命令，使用 `--cmd`。命令会在容器内完成项目构建后，从源码根目录执行，并预先设置：
@@ -352,8 +388,7 @@ scripts/sync-and-submit.sh --list-cases
 
 - `microcases`：运行 `examples/real-npu-microcases/prepare.sh` 生成的真机 microcases。
 - `real-npu-multikernel`：运行 `examples/real-npu-multikernel/run.sh`，覆盖串行双 kernel 和 fork-join 三 kernel 的真实 NPU DAG 调度路径。
-
-`all` 在 runner 中明确禁用，暂时不要使用。
+- `all`：运行当前 real-NPU 全量用例，包含六个普通 example 和 `real-npu-multikernel`；host 包装脚本会为每个 case 启动独立容器。
 
 `--case` 是保留的快捷方式，适合继续跑“example sim gate + 改 manifest 后真机 NPU run”的固定流程；`--cmd` 是通用入口，会覆盖 `--case`，适合全量脚本、临时排查命令或自定义验证流程。
 
@@ -365,22 +400,6 @@ scripts/sync-and-submit.sh --list-cases
 - 远端 image 必须已经存在；脚本不会执行 `docker pull` 或 `docker login`。
 - SSH 认证优先使用本机已有 ssh key；如果没有 key，脚本会读取 `ASCEND_MLIR_CI_SSH_PASSWORD`，或从 `examples/real-npu.md` 的密码行读取密码，并通过 `sshpass` 进行非交互登录。
 - 如果不想使用 ccache，可加 `--no-ccache`。
-
-### 7.4 开发机远程提交
-
-开发机可以用 `submit.sh` 通过 SSH 触发远端 job。它只触发远端执行，不会同步本地未提交改动。
-
-```shell
-scripts/real-npu-ci/submit.sh \
-  --image "${SWR_IMAGE}" \
-  --remote-source-dir /data/{username}/Codex-Ascend-MLIR-current \
-  --ref local-tree \
-  --case relu-broadcast-transpose \
-  --device-id 7 \
-  --jobs 6
-```
-
-如果使用 `--repo-url --ref`，本地未 push 的改动不会被验证。
 
 ## 8. 查看结果
 

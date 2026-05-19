@@ -25,6 +25,15 @@ CCACHE_DIR_HOST="${ASCEND_MLIR_CI_CCACHE_DIR:-}"
 CLEAN="${ASCEND_MLIR_CI_CLEAN:-0}"
 EXTRA_DOCKER_ARGS=()
 ENTRYPOINT_ARGS=()
+REAL_NPU_ALL_CASES=(
+  add-broadcast-concat
+  broadcast-add-reduce
+  gather-elementwise-fusion
+  matmul-add-leakyrelu
+  relu-broadcast-transpose
+  split-relu-brc-add-mul
+  real-npu-multikernel
+)
 
 usage() {
   cat <<'EOF'
@@ -37,7 +46,9 @@ Options:
                          from versions.env, or ascend-mlir-builder:aarch64-ubuntu22.04.
   --repo-url URL         Git repository URL to clone inside the container.
   --ref REF              Git ref, branch, tag, or commit to test. Default: HEAD
-  --case NAME            Example case to run. Default: relu-broadcast-transpose
+  --case NAME            Example case to run. Use all for the real-NPU suite;
+                         all runs each case in a separate container.
+                         Default: relu-broadcast-transpose
   --cmd COMMAND          Custom command to run after build, from repo root.
                          Takes precedence over --case.
   --job-root DIR         Host/container job root. Default: /data/nyh/real-npu-jobs
@@ -192,6 +203,48 @@ if [[ "${USE_CCACHE}" == "1" ]]; then
   fi
   mkdir -p "${CCACHE_DIR_HOST}"
   DOCKER_MOUNTS+=(-v "${CCACHE_DIR_HOST}:/ccache")
+fi
+
+if [[ "${CASE_NAME}" == "all" && -z "${CMD}" ]]; then
+  first_case=1
+  for suite_case in "${REAL_NPU_ALL_CASES[@]}"; do
+    echo "=== real-NPU suite case: ${suite_case} ==="
+    suite_args=(
+      --image "${IMAGE}"
+      --ref "${REF}"
+      --case "${suite_case}"
+      --job-root "${JOB_ROOT}"
+      --device-id "${DEVICE_ID}"
+      --llvm-build-dir "${LLVM_BUILD_DIR}"
+      --cann-home "${CANN_HOME}"
+      --jobs "${JOBS}"
+    )
+    if [[ -n "${REPO_URL}" ]]; then
+      suite_args+=(--repo-url "${REPO_URL}")
+    fi
+    if [[ -n "${SOURCE_DIR}" ]]; then
+      suite_args+=(--source-dir "${SOURCE_DIR}")
+    fi
+    if [[ "${INCREMENTAL_SOURCE}" == "1" ]]; then
+      suite_args+=(--incremental-source)
+    else
+      suite_args+=(--no-incremental-source)
+    fi
+    if [[ "${USE_CCACHE}" == "1" ]]; then
+      suite_args+=(--ccache-dir "${CCACHE_DIR_HOST}")
+    else
+      suite_args+=(--no-ccache)
+    fi
+    if [[ "${CLEAN}" == "1" && "${first_case}" == "1" ]]; then
+      suite_args+=(--clean)
+    fi
+    for extra_arg in "${EXTRA_DOCKER_ARGS[@]}"; do
+      suite_args+=(--docker-arg "${extra_arg}")
+    done
+    "${BASH_SOURCE[0]}" "${suite_args[@]}"
+    first_case=0
+  done
+  exit 0
 fi
 
 DOCKER_ENV=(

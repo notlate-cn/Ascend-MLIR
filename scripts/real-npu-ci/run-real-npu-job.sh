@@ -22,7 +22,9 @@ Usage: run-real-npu-job.sh
 This script is normally run as the container ENTRYPOINT. Configure it with:
   ASCEND_MLIR_CI_REPO_URL    Git repository URL to clone, unless SOURCE_DIR is set.
   ASCEND_MLIR_CI_REF         Git ref, branch, tag, or commit. Default: HEAD.
-  ASCEND_MLIR_CI_CASE        Example case name. Default: relu-broadcast-transpose.
+  ASCEND_MLIR_CI_CASE        Example case name. Use docker-run.sh --case all
+                              for the real-NPU suite.
+                              Default: relu-broadcast-transpose.
   ASCEND_MLIR_CI_CMD         Optional custom command to run after build. When set,
                               it takes precedence over ASCEND_MLIR_CI_CASE.
   ASCEND_MLIR_CI_JOB_ROOT    Output root. Default: /data/nyh/real-npu-jobs.
@@ -253,6 +255,9 @@ run_example_case() {
   ) >"${LOG_DIR}/${case_name}-sim.log" 2>&1
 
   local manifest="${case_dir}/build_e2e/run_manifest.json"
+  if [[ ! -f "${manifest}" ]]; then
+    manifest="${SRC_DIR}/build/runtime-mix-${case_name}-data/runtime-manifest.json"
+  fi
   [[ -f "${manifest}" ]] || fail "example did not produce run manifest: ${manifest}"
 
   log "run real NPU for ${case_name}"
@@ -342,7 +347,7 @@ else
       run_multikernel
       ;;
     all)
-      fail "case=all is intentionally not enabled yet; run named examples until all real-NPU cases are closed"
+      fail "case=all is a host-wrapper mode; use docker-run.sh or sync-and-submit.sh --case all so each real-NPU case runs in a separate container"
       ;;
     *)
       run_example_case "${CASE_NAME}"

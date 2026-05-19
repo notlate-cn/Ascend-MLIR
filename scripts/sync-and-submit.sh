@@ -45,7 +45,8 @@ Options:
                             from versions.env.
   --case NAME               Example case to run. NAME comes from
                             examples/<NAME>/run.sh. Special: microcases,
-                            real-npu-multikernel.
+                            real-npu-multikernel, all. all runs each case in
+                            a separate real-NPU container.
                             Default: relu-broadcast-transpose
   --cmd COMMAND             Custom command to run after build, from repo root.
                             Takes precedence over --case.
@@ -177,6 +178,7 @@ list_cases() {
   if [[ -f examples/real-npu-multikernel/run.sh ]]; then
     echo real-npu-multikernel
   fi
+  echo all
 }
 
 if [[ "${LIST_CASES}" == "1" ]]; then

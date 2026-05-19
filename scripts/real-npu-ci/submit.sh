@@ -28,7 +28,9 @@ Options:
   --remote-dir DIR          Repo path on the real-NPU host. Default: /data/nyh/Codex-Ascend-MLIR
   --repo-url URL            Git repository URL for the container to clone.
   --ref REF                 Git ref, branch, tag, or commit to test. Default: HEAD
-  --case NAME               Example case to run. Default: relu-broadcast-transpose
+  --case NAME               Example case to run. Use all for the real-NPU suite.
+                            all runs each case in a separate container.
+                            Default: relu-broadcast-transpose
   --cmd COMMAND             Custom command to run after build, from repo root.
                             Takes precedence over --case.
   --device-id ID            NPU device id. Default: ASCEND_DEVICE_ID or 7
