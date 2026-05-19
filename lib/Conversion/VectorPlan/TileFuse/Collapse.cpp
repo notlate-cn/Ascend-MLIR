@@ -3,6 +3,7 @@
 #include "../GroupAnalysis/AxisLattice.h"
 #include "Analysis/SymbolicShape/SymExpr.h"
 #include "Conversion/VectorPlan/GroupInfo.h"
+#include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
@@ -511,16 +512,28 @@ static CollapsedGroupInfo collapseGroupImpl(OpBuilder &builder,
         break;
       }
       // Also detect generic-form matmul (post linalg-generalize-named-ops):
-      // 3-D iter [par, par, red] + 2 inputs + 1 init.
+      // 3-D iter [par, par, red] + 2 inputs + 1 init AND body has both
+      // arith.mulf AND arith.addf (multiply-accumulate signature).  Body
+      // check is critical: combo-elewise-reduce has the same iter shape but
+      // a pure add-reduce body — must NOT be classified as Cube.
       if (auto gen = dyn_cast<linalg::GenericOp>(raw)) {
         auto iter = gen.getIteratorTypesArray();
-        if (iter.size() == 3 &&
-            iter[0] == utils::IteratorType::parallel &&
-            iter[1] == utils::IteratorType::parallel &&
-            iter[2] == utils::IteratorType::reduction &&
-            gen.getNumDpsInputs() == 2 && gen.getNumDpsInits() == 1) {
-          result.kind = GroupInfo::Kind::Cube;
-          break;
+        bool shape = iter.size() == 3 &&
+                     iter[0] == utils::IteratorType::parallel &&
+                     iter[1] == utils::IteratorType::parallel &&
+                     iter[2] == utils::IteratorType::reduction &&
+                     gen.getNumDpsInputs() == 2 &&
+                     gen.getNumDpsInits() == 1;
+        if (shape) {
+          bool hasMul = false, hasAdd = false;
+          for (Operation &bop : gen.getBody()->getOperations()) {
+            if (isa<arith::MulFOp>(bop)) hasMul = true;
+            else if (isa<arith::AddFOp>(bop)) hasAdd = true;
+          }
+          if (hasMul && hasAdd) {
+            result.kind = GroupInfo::Kind::Cube;
+            break;
+          }
         }
       }
     }
