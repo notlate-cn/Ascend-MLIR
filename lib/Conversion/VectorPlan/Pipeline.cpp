@@ -63,6 +63,16 @@ void registerVectorPlanPipeline() {
         // kernel group.  Without this, multi-op groups that mix parallel and
         // reduction iterators trip the tile-fuse assertions / IR domination.
         pm.addNestedPass<func::FuncOp>(mlir::createLinalgElementwiseOpFusionPass());
+        // CV-fusion Phase 5 ([[af-cv-fusion-port]]): the generalize pass above
+        // converts `linalg.matmul` into a generic with iter [par, par, red].
+        // Downstream AscendCBufferPlacement / LinalgToAscendC walk for
+        // `linalg::MatmulOp` (named) to place A1/A2/CO1 spaces + emit mmad;
+        // the generic form misses them.  We need to specialize back, but
+        // upstream's `linalg-specialize-generic-ops` is too aggressive —
+        // also specializes transpose / broadcast / fill patterns that break
+        // vector-side gates (transpose-preserve / bcast-*).  Custom narrow
+        // pass: only restore the matmul.
+        pm.addNestedPass<func::FuncOp>(createVectorPlanRestoreMatmulPass());
         // Make every returned tensor bufferize to a fresh buffer distinct from
         // any input init. Without this, reduce kernels alias result→init and
         // the host-launch ABI breaks (see R3 in reduce-codegen-status notes).

@@ -614,6 +614,27 @@ def VectorPlanIsolateKernelOutputs : Pass<"vector-plan-isolate-kernel-outputs", 
   ];
 }
 
+def VectorPlanRestoreMatmul : Pass<"vector-plan-restore-matmul", "mlir::func::FuncOp"> {
+  let summary = "Specialize generic-form matmul ops back to linalg.matmul";
+  let description = [{
+    CV-fusion Phase 5 of [[af-cv-fusion-port]].  Upstream
+    `--linalg-generalize-named-ops` converts `linalg.matmul` to a
+    `linalg.generic` with iter [par, par, red] + extf?/mulf/addf body.
+    Downstream AscendCBufferPlacement + LinalgToAscendC walk for
+    `linalg::MatmulOp` to place A1/A2/CO1 + emit mmad; the generic form
+    misses them.  This pass restores the matmul:
+      - Walk `linalg::GenericOp`; for those matching the matmul signature
+        (`isMatmulGeneric` heuristic — iter shape + body has both mulf
+        and addf), rebuild as `linalg.matmul`.
+      - All other generics untouched (transpose, broadcast, fill, reduce,
+        ... — none get specialized).  Vector-side gates unaffected.
+  }];
+  let constructor = "mlir::afir::createVectorPlanRestoreMatmulPass()";
+  let dependentDialects = [
+    "mlir::linalg::LinalgDialect",
+  ];
+}
+
 def VectorPlanFoldShadowAlloc : Pass<"vector-plan-fold-shadow-alloc", "mlir::func::FuncOp"> {
   let summary = "Fold bufferize-inserted dynamic-size shadow allocs back to in-place writes";
   let description = [{

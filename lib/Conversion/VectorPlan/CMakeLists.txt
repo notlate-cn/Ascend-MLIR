@@ -31,6 +31,7 @@ add_mlir_library(MLIRVectorPlan
   TileFuse/SliceComputer.cpp
   TileFuse/GroupEmitter.cpp
   TileFuse/CubeEmitter.cpp
+  TileFuse/RestoreMatmul.cpp
   TileInfo/TilePlanToTileInfo.cpp
   Pipeline.cpp
 

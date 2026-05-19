@@ -15,6 +15,7 @@ std::unique_ptr<Pass> createVectorPlanInsertTileBuffersPass();
 std::unique_ptr<Pass> createVectorPlanFoldShadowAllocPass();
 std::unique_ptr<Pass> createVectorPlanIsolateKernelOutputsPass();
 std::unique_ptr<Pass> createVectorPlanSplitRCoreGroupPass();
+std::unique_ptr<Pass> createVectorPlanRestoreMatmulPass();
 
 // Split every full-reduce private kernel func in `module` into a partial +
 // combine pair (RCore template), rewriting coordinator call sites
