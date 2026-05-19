@@ -61,6 +61,55 @@ DATA_DIR="${DATA_DIR:-$SCRIPT_DIR/data}"
 mkdir -p "${DATA_DIR}"
 python3 "$SCRIPT_DIR/gen_data.py" --out-dir "${DATA_DIR}"
 
-# ── STAGE 10: sim run (TODO: mix-compiler needs no-bias matmul ABI support)
-echo "=== [STAGE 10] sim run (deferred: needs mix-compiler ABI extension) ==="
-echo "PASS [matmul-relu-fused-e2e codegen]"
+# ── STAGE 10: RuntimeMix compile
+echo "=== [STAGE 10] RuntimeMix compile ==="
+ARTIFACT_DIR="${ARTIFACT_DIR:-$SCRIPT_DIR/artifact}"
+rm -rf "${ARTIFACT_DIR}"
+"${MIX_COMPILER:-mix-compiler}" \
+  --kernel       "$SCRIPT_DIR/step8_kernel.cpp" \
+  --cann-mlir    "$SCRIPT_DIR/step7_cann.mlir" \
+  --npy-dir      "${DATA_DIR}" \
+  --output       "${ARTIFACT_DIR}" \
+  --soc          "${SOC_VERSION:-Ascend910B1}" > "${ARTIFACT_DIR}.log" 2>&1 || {
+    echo "FAIL: mix-compiler failed" >&2
+    tail -n 40 "${ARTIFACT_DIR}.log" >&2
+    exit 2
+  }
+log "  artifact: ${ARTIFACT_DIR}"
+
+# ── STAGE 11: sim run + validation
+echo "=== [STAGE 11] runtime-session sim ==="
+RUN_MANIFEST="${ARTIFACT_DIR}/run_manifest.json"
+ACTUAL_OUTPUT="${ARTIFACT_DIR}/actual_output.npy"
+python3 "$SCRIPT_DIR/build_run_manifest.py" \
+  --artifact-dir "${ARTIFACT_DIR}" \
+  --data-dir     "${DATA_DIR}" \
+  --out-manifest "${RUN_MANIFEST}" \
+  --out-npy      "${ACTUAL_OUTPUT}" > /dev/null
+
+CANN_ARCH="$(uname -m)"
+[[ "${CANN_ARCH}" == "x86_64" ]] && CANN_ARCH=x86_64-linux || CANN_ARCH=aarch64-linux
+export LD_LIBRARY_PATH="${ASCEND_HOME_PATH}/${CANN_ARCH}/lib64:${ASCEND_HOME_PATH}/${CANN_ARCH}/simulator/${SOC_VERSION:-Ascend910B1}/lib:${ASCEND_HOME_PATH}/${CANN_ARCH}/lib64/device/lib64:${ASCEND_HOME_PATH}/runtime/lib64/stub${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
+
+SIM_LOG="${ARTIFACT_DIR}.sim.log"
+"${RUNTIME_SESSION:-runtime-session}" --run-manifest "${RUN_MANIFEST}" --run > "${SIM_LOG}" 2>&1 || {
+    echo "FAIL: runtime-session exited nonzero" >&2
+    tail -n 30 "${SIM_LOG}" >&2
+    exit 2
+  }
+grep -q '^session.result=success$'     "${SIM_LOG}" || { echo "FAIL: missing session.result=success"     >&2; exit 2; }
+grep -q '^session.validation=pass$'    "${SIM_LOG}" || { echo "FAIL: missing session.validation=pass"    >&2; exit 2; }
+
+# Numerical cross-check against the golden npy.
+python3 - "${ACTUAL_OUTPUT}" "${DATA_DIR}/output.npy" <<'PY'
+import sys
+import numpy as np
+actual = np.load(sys.argv[1])
+golden = np.load(sys.argv[2])
+diff = float(np.max(np.abs(actual - golden)))
+print(f"max_abs_diff = {diff}")
+if diff > 1e-3:
+    sys.exit(f"FAIL: numerical mismatch (max_abs_diff={diff})")
+PY
+
+echo "PASS [matmul-relu-fused-e2e]"

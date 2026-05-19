@@ -770,6 +770,22 @@ static TilePlan buildCubePlan(func::FuncOp func, const CollapsedGroupInfo &info,
   case CubeKind::MatmulVecFuse: cubeKindName = "MatmulVecFuse"; break;
   }
   func->setAttr("afir.cube_kind", builder.getStringAttr(cubeKindName));
+  // Mirror AnnotateMixMatmulSemantics so MixAbiExtractor's required-attr set
+  // is satisfied without re-running that legacy pass on cube-emitted kernels.
+  // Phase 1 CV-fusion only supports the canonical matmul shape: no transpose,
+  // ND layout on all sides, no bias.  Epilogue kind is the matched cube kind.
+  MLIRContext *ctx = builder.getContext();
+  func->setAttr("abi_matmul_op_kind",     StringAttr::get(ctx, "matmul"));
+  func->setAttr("abi_matmul_trans_a",     BoolAttr::get(ctx, false));
+  func->setAttr("abi_matmul_trans_b",     BoolAttr::get(ctx, false));
+  func->setAttr("abi_matmul_has_bias",    BoolAttr::get(ctx, false));
+  func->setAttr("abi_matmul_layout_a",    StringAttr::get(ctx, "ND"));
+  func->setAttr("abi_matmul_layout_b",    StringAttr::get(ctx, "ND"));
+  func->setAttr("abi_matmul_layout_c",    StringAttr::get(ctx, "ND"));
+  StringRef epilogueKindName =
+      (draft.cubeKind == CubeKind::MatmulVecFuse) ? "Relu" : "None";
+  func->setAttr("abi_matmul_epilogue_kind",
+                StringAttr::get(ctx, epilogueKindName));
   return plan;
 }
 

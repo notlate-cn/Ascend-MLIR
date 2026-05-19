@@ -60,6 +60,8 @@ parseEpilogueKind(llvm::StringRef epilogueKind) {
     return EpilogueKind::BiasAddRelu;
   if (epilogueKind == "BiasAddLeakyRelu")
     return EpilogueKind::BiasAddLeakyRelu;
+  if (epilogueKind == "Relu")
+    return EpilogueKind::Relu;
   return llvm::createStringError(llvm::inconvertibleErrorCode(),
                                  "unsupported matmul epilogue kind: %s",
                                  epilogueKind.str().c_str());
