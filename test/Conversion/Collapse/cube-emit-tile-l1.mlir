@@ -39,9 +39,9 @@ func.func @mm_relu(%a: tensor<32x16xf16>,
 // 4-level scf.for nest emitted (M_outer × N_outer × M_inner × N_inner).
 // Innermost body: tiled matmul + tiled relu with correct ascendc.unit.
 // Outermost 2 loops annotated `ascendc.parallel`; inner 2 are bare.
-// (Single-line checks follow input order; DAG checks would be ambiguous
-// since the body contains both matmul and generic between the loop opens
-// and the 4 closing braces.)
+// Outermost loop also carries Phase-4c dataflow strings
+// (`ascendc.prologue` GM→A1/B1, `ascendc.epilogue` VECOUT→GM) consumed by
+// AscendCBufferPlacement.
 // CHECK: scf.for
 // CHECK: scf.for
 // CHECK: scf.for
@@ -49,4 +49,6 @@ func.func @mm_relu(%a: tensor<32x16xf16>,
 // CHECK: linalg.matmul {ascendc.unit = "AiCore.Cube"}
 // CHECK: linalg.generic {{.*}}ascendc.unit = "AiCore.Vector"
 // CHECK: } {ascendc.parallel}
-// CHECK: } {ascendc.parallel}
+// CHECK: ascendc.epilogue = "result:VECOUT->GM"
+// CHECK-SAME: ascendc.parallel
+// CHECK-SAME: ascendc.prologue = "lhs:GM->A1,rhs:GM->B1"

@@ -171,11 +171,28 @@ LogicalResult emitCubeKernel(func::FuncOp func, const TilePlan &plan) {
   for (auto [orig, repl] : tfResult->replacements)
     rewriter.replaceAllUsesWith(orig, repl);
 
-  // Annotate the 2 outer loops with `ascendc.parallel`.  Phase 4b will add
-  // the dataflow prologue/epilogue strings consumed by AscendCBufferPlacement.
+  // Annotate the 2 outer loops with `ascendc.parallel` + dataflow strings
+  // consumed by AscendCBufferPlacement.  The outer loops route:
+  //   prologue: GM → A1/B1 (cube inputs), GM → VECIN (vec inputs, e.g. bias)
+  //   epilogue: VECOUT → GM (vec output back to global memory)
+  // Phase 4c will add the level-3 K loop with `lhs:A1->A2,rhs:B1->B2` and
+  // `acc:CO1->VECIN`; for the 2-level (no-K-tile) shape this just routes
+  // the level-2-tiled matmul's M_INNER × N_INNER tile straight to/from GM.
   auto unitAttr = rewriter.getUnitAttr();
-  for (auto loopLike : tfResult->loops)
-    loopLike->setAttr("ascendc.parallel", unitAttr);
+  // Outermost loop gets the full prologue/epilogue strings; the other parallel
+  // loop only carries `ascendc.parallel` (matches matmul-add-leakyrelu shape).
+  for (size_t i = 0; i < tfResult->loops.size(); ++i) {
+    Operation *loopOp = tfResult->loops[i];
+    loopOp->setAttr("ascendc.parallel", unitAttr);
+    if (i == 0) {
+      loopOp->setAttr(
+          "ascendc.prologue",
+          rewriter.getStringAttr("lhs:GM->A1,rhs:GM->B1"));
+      loopOp->setAttr(
+          "ascendc.epilogue",
+          rewriter.getStringAttr("result:VECOUT->GM"));
+    }
+  }
 
   // Phase 4b: level-2 inner M/N tile.  Pick the tiled consumer (the first
   // entry in `tiledAndFusedOps`) — that's the relu/elementwise op inside the
@@ -204,10 +221,16 @@ LogicalResult emitCubeKernel(func::FuncOp func, const TilePlan &plan) {
         for (auto [orig, repl] : tfResult2->replacements)
           rewriter.replaceAllUsesWith(orig, repl);
         // Re-annotate ascendc.unit on the level-2 tiled ops (the level-1
-        // annotations were on now-replaced ops).
+        // annotations were on now-replaced ops).  Matmul is detected via
+        // named-op kind OR generic-form pattern (post linalg-generalize).
         for (Operation *tiled : tfResult2->tiledAndFusedOps) {
-          if (isa<linalg::MatmulOp, linalg::MatmulTransposeAOp,
-                  linalg::MatmulTransposeBOp, linalg::BatchMatmulOp>(tiled))
+          bool isCube =
+              isa<linalg::MatmulOp, linalg::MatmulTransposeAOp,
+                  linalg::MatmulTransposeBOp, linalg::BatchMatmulOp>(tiled);
+          if (!isCube)
+            if (auto gen = dyn_cast<linalg::GenericOp>(tiled))
+              isCube = isMatmulGeneric(gen);
+          if (isCube)
             tiled->setAttr("ascendc.unit",
                             rewriter.getStringAttr("AiCore.Cube"));
           else if (isa<linalg::LinalgOp>(tiled))
@@ -227,10 +250,16 @@ LogicalResult emitCubeKernel(func::FuncOp func, const TilePlan &plan) {
   }
 
   // Fallback: only level-1 tile.  Annotate `ascendc.unit` on the tiled
-  // matmul / vec generic from the level-1 result.
+  // matmul / vec generic from the level-1 result.  Matmul detected via
+  // named-op kind OR generic-form pattern.
   for (Operation *tiled : tfResult->tiledAndFusedOps) {
-    if (isa<linalg::MatmulOp, linalg::MatmulTransposeAOp,
-            linalg::MatmulTransposeBOp, linalg::BatchMatmulOp>(tiled))
+    bool isCube =
+        isa<linalg::MatmulOp, linalg::MatmulTransposeAOp,
+            linalg::MatmulTransposeBOp, linalg::BatchMatmulOp>(tiled);
+    if (!isCube)
+      if (auto gen = dyn_cast<linalg::GenericOp>(tiled))
+        isCube = isMatmulGeneric(gen);
+    if (isCube)
       tiled->setAttr("ascendc.unit",
                      rewriter.getStringAttr("AiCore.Cube"));
     else if (isa<linalg::LinalgOp>(tiled))

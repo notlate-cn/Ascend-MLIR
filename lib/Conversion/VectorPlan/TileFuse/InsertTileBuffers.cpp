@@ -139,6 +139,14 @@ struct VectorPlanInsertTileBuffersPass
     func::FuncOp func = getOperation();
     OpBuilder builder(func.getContext());
 
+    // CV-fusion Phase 4: mix kernels go through AscendCBufferPlacement
+    // (A1/A2/B1/B2/CO1 memory spaces driven by dataflow annotations) — they
+    // must NOT also be wrapped by InsertTileBuffers' vector pipeline
+    // VECIN/VECOUT/VECCALC machinery.  Skip the whole func for mix.
+    if (auto kk = func->getAttrOfType<StringAttr>("ascendc.kernel_kind"))
+      if (kk.getValue() == "mix")
+        return;
+
     // Collect generics whose output is in global memory (memory_space == 0).
     SmallVector<linalg::GenericOp> targets;
     func.walk([&](linalg::GenericOp op) {
