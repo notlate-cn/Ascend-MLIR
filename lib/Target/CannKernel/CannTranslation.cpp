@@ -524,11 +524,22 @@ static MixPartitionSummary buildMixPartitionSummary(func::FuncOp funcOp) {
 
 static bool hasSupportedMixFunctionSignature(func::FuncOp funcOp) {
   auto numInputsAttr = funcOp->getAttrOfType<IntegerAttr>("cann.num_inputs");
-  if (!numInputsAttr || numInputsAttr.getInt() != 4)
+  if (!numInputsAttr)
+    return false;
+  int64_t numInputs = numInputsAttr.getInt();
+  // Supported layouts:
+  //   - matmul+bias+epilogue (num_inputs=4, 7 args):
+  //       A(f16,2D), B(f16,2D), bias(f32,1D), init(f32,2D), out(f32,2D),
+  //       ws(ui8), tiling
+  //   - matmul+epilogue, no-bias (num_inputs=3, 6 args):
+  //       A(f16,2D), B(f16,2D), init(f32,2D), out(f32,2D), ws(ui8), tiling
+  if (numInputs != 4 && numInputs != 3)
     return false;
 
   auto args = funcOp.getArguments();
-  if (args.size() != 7)
+  bool hasBias = (numInputs == 4);
+  size_t expectedArgs = hasBias ? 7 : 6;
+  if (args.size() != expectedArgs)
     return false;
 
   MLIRContext *ctx = funcOp.getContext();
@@ -536,20 +547,32 @@ static bool hasSupportedMixFunctionSignature(func::FuncOp funcOp) {
   Type f32 = Float32Type::get(ctx);
 
   if (!isRankedMemrefOf(args[0].getType(), 2, f16) ||
-      !isRankedMemrefOf(args[1].getType(), 2, f16) ||
-      !isRankedMemrefOf(args[2].getType(), 1, f32) ||
-      !isRankedMemrefOf(args[3].getType(), 2, f32))
+      !isRankedMemrefOf(args[1].getType(), 2, f16))
     return false;
 
-  auto outputType = dyn_cast<MemRefType>(args[4].getType());
+  size_t idx = 2;
+  if (hasBias) {
+    if (!isRankedMemrefOf(args[idx].getType(), 1, f32))
+      return false;
+    ++idx;
+  }
+  // init (f32, 2D)
+  if (!isRankedMemrefOf(args[idx].getType(), 2, f32))
+    return false;
+  ++idx;
+
+  auto outputType = dyn_cast<MemRefType>(args[idx].getType());
   if (!outputType || outputType.getRank() != 2 ||
       outputType.getElementType() != f32)
     return false;
+  ++idx;
 
-  auto workspaceType = dyn_cast<MemRefType>(args[5].getType());
+  auto workspaceType = dyn_cast<MemRefType>(args[idx].getType());
   if (!workspaceType || !workspaceType.getElementType().isUnsignedInteger(8))
     return false;
-  return isa<emitasc::PyStructType>(args[6].getType());
+  ++idx;
+
+  return isa<emitasc::PyStructType>(args[idx].getType());
 }
 
 static llvm::DenseMap<Operation *, MixPartitionKind>
@@ -1268,6 +1291,12 @@ static bool isSupportedMixVectorMulUser(Operation *user) {
          getTensorStoragePartition(mulOp.getDst()) == MixPartitionKind::Vector;
 }
 
+static bool isSupportedMixVectorMaxUser(Operation *user) {
+  auto maxOp = dyn_cast<ascendc::MaxL2Op>(user);
+  return maxOp &&
+         getTensorStoragePartition(maxOp.getDst()) == MixPartitionKind::Vector;
+}
+
 static FailureOr<SupportedMixKernelConfig::EpilogueKind>
 inferSupportedMixEpilogueKind(func::FuncOp funcOp,
                               const MixPartitionSummary &summary,
@@ -1286,22 +1315,33 @@ inferSupportedMixEpilogueKind(func::FuncOp funcOp,
       return WalkResult::advance();
     if (!hasVectorMax)
       return WalkResult::advance();
-    bool usedByVectorMul =
-        llvm::any_of(dupOp.getDst().getUsers(), isSupportedMixVectorMulUser);
-    if (!usedByVectorMul)
-      return WalkResult::advance();
     auto constOp = dupOp.getScalar().getDefiningOp<arith::ConstantOp>();
     if (!constOp)
       return WalkResult::advance();
     auto floatAttr = dyn_cast<FloatAttr>(constOp.getValue());
     if (!floatAttr)
       return WalkResult::advance();
-    leakyReluAlpha = floatAttr.getValue().convertToDouble();
-    epilogueKind =
-        (leakyReluAlpha == 0.0)
-            ? SupportedMixKernelConfig::EpilogueKind::Relu
-            : SupportedMixKernelConfig::EpilogueKind::LeakyRelu;
-    return WalkResult::interrupt();
+    double scalar = floatAttr.getValue().convertToDouble();
+    bool usedByVectorMul =
+        llvm::any_of(dupOp.getDst().getUsers(), isSupportedMixVectorMulUser);
+    bool usedByVectorMax =
+        llvm::any_of(dupOp.getDst().getUsers(), isSupportedMixVectorMaxUser);
+    if (usedByVectorMul) {
+      // dup(alpha) -> mul lane: LeakyRelu when alpha != 0, Relu when alpha == 0.
+      leakyReluAlpha = scalar;
+      epilogueKind =
+          (scalar == 0.0)
+              ? SupportedMixKernelConfig::EpilogueKind::Relu
+              : SupportedMixKernelConfig::EpilogueKind::LeakyRelu;
+      return WalkResult::interrupt();
+    }
+    if (usedByVectorMax && scalar == 0.0) {
+      // dup(0.0) -> max lane only: pure Relu (no Mul means alpha == 0).
+      leakyReluAlpha = 0.0;
+      epilogueKind = SupportedMixKernelConfig::EpilogueKind::Relu;
+      return WalkResult::interrupt();
+    }
+    return WalkResult::advance();
   });
 
   if (epilogueKind == SupportedMixKernelConfig::EpilogueKind::Unknown)
@@ -1895,9 +1935,13 @@ static void emitSupportedMixCopyTilingHelper(raw_ostream &os) {
 
 static void emitSupportedMixKernelSignature(raw_ostream &os,
                                             StringRef kernelName,
-                                            const MixTaskKindDescriptor &desc) {
+                                            const MixTaskKindDescriptor &desc,
+                                            bool hasBias) {
   os << "extern \"C\" __global__ __aicore__ void " << kernelName << "(\n"
-     << "    GM_ADDR a, GM_ADDR b, GM_ADDR bias, GM_ADDR out, GM_ADDR workspace,\n"
+     << "    GM_ADDR a, GM_ADDR b, ";
+  if (hasBias)
+    os << "GM_ADDR bias, ";
+  os << "GM_ADDR out, GM_ADDR workspace,\n"
      << "    GM_ADDR tilingGm) {\n"
      << "  KERNEL_TASK_TYPE_DEFAULT(" << desc.taskTypeSpelling << ");\n"
      << "  TPipe pipe;\n"
@@ -1907,10 +1951,11 @@ static void emitSupportedMixKernelSignature(raw_ostream &os,
 }
 
 static void emitSupportedMixKernelShellPrologue(
-    raw_ostream &os, StringRef kernelName, const MixTaskKindDescriptor &desc) {
+    raw_ostream &os, StringRef kernelName, const MixTaskKindDescriptor &desc,
+    bool hasBias) {
   emitSupportedMixIncludesAndNamespaces(os);
   emitSupportedMixCopyTilingHelper(os);
-  emitSupportedMixKernelSignature(os, kernelName, desc);
+  emitSupportedMixKernelSignature(os, kernelName, desc, hasBias);
 }
 
 static void emitSupportedMixKernelShellEpilogue(raw_ostream &os) {
@@ -1924,7 +1969,8 @@ static bool emitSupportedMixKernel(raw_ostream &os, func::FuncOp funcOp,
   const SupportedMixBoundaryLayer &boundaryLayer = supportedLowering.boundaryLayer;
   const SupportedMixKernelConfig &config = supportedLowering.config;
   MixTaskKindDescriptor desc = getMixTaskKindDescriptor(config.taskKind);
-  emitSupportedMixKernelShellPrologue(os, funcOp.getName(), desc);
+  emitSupportedMixKernelShellPrologue(os, funcOp.getName(), desc,
+                                      config.hasBiasAdd);
   const MixRegionPlan *cubeRegion =
       findFirstMixRegionOfKind(plan.regions, MixPartitionKind::Cube);
   const MixRegionPlan *boundaryRegion =
@@ -1949,7 +1995,8 @@ static bool emitGenericMixSingleChainKernel(
     SupportedMixLoweringFailureReason &failureReason) {
   MixTaskKindDescriptor desc =
       getMixTaskKindDescriptor(supportedLowering.config.taskKind);
-  emitSupportedMixKernelShellPrologue(os, funcOp.getName(), desc);
+  emitSupportedMixKernelShellPrologue(os, funcOp.getName(), desc,
+                                      supportedLowering.config.hasBiasAdd);
   if (!emitMixKernelShellBody(os, supportedLowering.cubeOps,
                               *emissionPlan.boundaryRegion,
                               *emissionPlan.vectorRegion,
