@@ -210,6 +210,16 @@ static func::FuncOp outlineGroup(OpBuilder &builder, ModuleOp module,
                                            (int32_t)i));
   }
 
+  // CV-fusion Phase 3: stamp `vector_plan.kind` on the outlined kernel func so
+  // downstream passes can dispatch on Cube vs Vector without re-walking ops to
+  // find a matmul.  Mirrors the `info.kind` value Phase 1 computed at fusion
+  // time.  TileFusePass + Phase-4 LoopNestBuilder can read this directly.
+  kernelFunc->setAttr(
+      "vector_plan.kind",
+      StringAttr::get(ctx, info.kind == GroupInfo::Kind::Cube
+                               ? "Cube"
+                               : "Vector"));
+
   // Clone all ops in block range order (linalg + interstitial non-linalg).
   builder.setInsertionPointToEnd(body);
   for (Operation *op : info.opsToClone)
