@@ -23,6 +23,20 @@ enum class TileFieldKind : uint8_t {
 // AxisKind / AxisClass / AxisGrouping live in GroupInfo.h (computed by Collapse,
 // carried in CollapsedGroupInfo::grouping).
 
+// CV-fusion Phase 2 ([[af-cv-fusion-port]]): tag for Cube-template kernels.
+// `None` is the default (vector-only kernel — every existing kernel today).
+// `MatmulOnly` = standalone matmul (no trailing vector epilogue).
+// `MatmulVecFuse` = matmul + 1+ trailing elementwise vector ops fused into one
+// mix kernel (the Phase 1 canFuseCubeEpilogue target shape).
+// Mirrors AF's `CubeTemplateType::{kCubeOnly, kUBFuse}` from
+// `ge-eco/.../optimize/autoschedule/...` (kUBFuse = cube output stays in UB
+// for the vector epilogue to consume — same idea as our MatmulVecFuse).
+enum class CubeKind : uint8_t {
+  None,
+  MatmulOnly,
+  MatmulVecFuse,
+};
+
 // One enumerated tiling-case draft (≈ AutoFuse `TilingCase`).  P1 produces a
 // single default draft; full y×x×r enumeration + RCore variant comes later.
 struct TilePlanDraft {
@@ -31,6 +45,11 @@ struct TilePlanDraft {
   int  ubTilingAxisR = -1;
   int  blockTilingId = 0;
   bool reduceIsBlock = false;
+  // Set by `enumerateTilingCases` when the group is a Cube template (matmul,
+  // optionally with a trailing vector epilogue).  When non-None,
+  // `buildPlan` takes the cube branch (5 cube tunable args, mix kernel attrs)
+  // and the vector-side fields above are unused.  CV-fusion Phase 2.
+  CubeKind cubeKind = CubeKind::None;
   // FullLoad (≈ AF kAllLoad): every R axis kept whole AND treated as part of
   // the vectorized region — the reduce happens inside the vector op, no
   // ReduceSum intrinsic. Only feasible when total `Σ R · elemBytes` fits
@@ -99,6 +118,11 @@ struct TilePlan {
   int                       ubTilingAxisR = -1;
   // Mirrors TilePlanDraft::peelOuterR — see TilePlanDraft for semantics.
   int                       peelOuterR    = -1;
+  // CV-fusion Phase 2: when non-None, this is a Cube template plan; see
+  // CubeKind comment.  Phase 4 will read this in LoopNestBuilder + GroupEmitter
+  // to emit the 3-level M_outer/N_outer × M_inner/N_inner × K nest with mix-
+  // kernel annotations.
+  CubeKind                  cubeKind      = CubeKind::None;
   // Per-operand vectorized iteration dims (the dims that stay whole inside the
   // tiled linalg op, ≈ tensor.attr.vectorized_axis).  Filled by P3.
   llvm::DenseMap<Value, llvm::SmallVector<int>> vectorizedDims;

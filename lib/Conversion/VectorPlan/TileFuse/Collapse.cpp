@@ -488,7 +488,34 @@ static CollapsedGroupInfo collapseGroupImpl(OpBuilder &builder,
   func.walk([&](LinalgOp op) { members.push_back(op); });
 
   CollapsedGroupInfo result;
+  // CV-fusion Phase 2: detect Cube kind by presence of matmul-like ops.  When
+  // Cube, skip the rest of collapse logic — the cube template needs explicit
+  // M/N/K iteration axes and cannot have them merged with vector axes.
+  // (TilePlanGen will dispatch on `result.kind` and take the cube branch.)
   result.kind = GroupInfo::Kind::Vector;
+  for (LinalgOp op : members) {
+    if (isa<linalg::MatmulOp, linalg::MatmulTransposeAOp,
+            linalg::MatmulTransposeBOp, linalg::BatchMatmulOp>(
+            op.getOperation())) {
+      result.kind = GroupInfo::Kind::Cube;
+      break;
+    }
+  }
+  if (result.kind == GroupInfo::Kind::Cube) {
+    // Minimal info: just members + boundary; no axis classification.  Cube
+    // tile-planning works on per-op M/N/K axes directly, not on the merged
+    // axis space.  See [[af-cv-fusion-port]] Phase 2.
+    result.topoMembers = members;
+    SmallVector<Value> boundaryIn;
+    for (Value arg : func.getArguments())
+      if (!arg.use_empty()) boundaryIn.push_back(arg);
+    result.boundaryIn = boundaryIn;
+    if (auto retOp = dyn_cast<func::ReturnOp>(
+            func.getBody().front().getTerminator()))
+      result.boundaryOut = SmallVector<Value>(retOp.getOperands());
+    result.noCollapse = true;
+    return result;
+  }
   if (members.empty()) return result;
 
   auto canonAxes = computeCanonicalAxes(llvm::ArrayRef(members));

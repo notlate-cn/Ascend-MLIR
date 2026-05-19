@@ -713,6 +713,66 @@ double costEstimate(const AxisGrouping &g, const CollapsedGroupInfo &info,
 
 } // namespace
 
+// CV-fusion Phase 2: materialize a Cube template draft.  Emits the 5 cube
+// tunable i64 func args (XBLOCK_M, XBLOCK_N, M_INNER, N_INNER, K_INNER) and
+// stamps `ascendc.kernel_kind = "mix"` + `afir.cube_kind = "<kind>"` attrs on
+// the func.  The TileParam entries land in plan.tileable so emitTilingInfos
+// renders them into `vector_plan.tiling_infos`.  Phase 4 will read these in
+// LoopNestBuilder + GroupEmitter to emit the 3-level scf.for nest.
+//
+// Axis indices are placeholders (0=M, 1=N, 2=K) for now — Phase 4 will line
+// them up with the linalg.matmul's iteration dims.
+static TilePlan buildCubePlan(func::FuncOp func, const CollapsedGroupInfo &info,
+                              const TilePlanDraft &draft,
+                              OpBuilder &builder, Location loc) {
+  TilePlan plan;
+  plan.group    = &info;
+  plan.cubeKind = draft.cubeKind;
+
+  // 5 cube tunable args.  Defaults are AF-style for f16 matmul: 128/128/64
+  // outer; 32/32 inner-MN; 16 inner-K (one cube fragment).
+  auto addInner = [&](StringRef name, int64_t defaultVal, int axisIdx,
+                      AxisRole role) {
+    Value param = insertFuncArg(func, builder, loc, defaultVal, name);
+    SmallVector<TileParam> grp;
+    grp.push_back({name.str(), param, OpFoldResult(param), axisIdx,
+                    TileLevel::Inner, role});
+    plan.tileable.push_back(std::move(grp));
+  };
+  auto addOuterInner = [&](StringRef outerName, int64_t outerDefault,
+                           StringRef innerName, int64_t innerDefault,
+                           int axisIdx, AxisRole role) {
+    Value outerSsa = insertFuncArg(func, builder, loc, outerDefault, outerName);
+    Value innerSsa = insertFuncArg(func, builder, loc, innerDefault, innerName);
+    SmallVector<TileParam> grp;
+    grp.push_back({outerName.str(), outerSsa, OpFoldResult(outerSsa), axisIdx,
+                    TileLevel::Outer, role});
+    grp.push_back({innerName.str(), innerSsa, OpFoldResult(innerSsa), axisIdx,
+                    TileLevel::Inner, role});
+    plan.tileable.push_back(std::move(grp));
+  };
+
+  // Order: M outer/inner, N outer/inner, K inner.  Matches AF tile spec
+  // (matmul-add-leakyrelu/step5_ascendc.mlir args arg4..arg8).
+  addOuterInner("XBLOCK_M", 128, "M_INNER", 32, 0, AxisRole::Parallel);
+  addOuterInner("XBLOCK_N", 128, "N_INNER", 32, 1, AxisRole::Parallel);
+  addInner     ("K_INNER",        16,                2, AxisRole::Reduction);
+
+  // Mark the func as a mix kernel; AnnotateMixMatmulSemantics + downstream
+  // passes use `ascendc.kernel_kind` to gate behavior.
+  func->setAttr("ascendc.kernel_kind", builder.getStringAttr("mix"));
+  // Record the cube template explicitly so observers (lit / future verifier)
+  // can pin the picked path without re-running the analysis.
+  StringRef cubeKindName = "None";
+  switch (draft.cubeKind) {
+  case CubeKind::None:          cubeKindName = "None"; break;
+  case CubeKind::MatmulOnly:    cubeKindName = "MatmulOnly"; break;
+  case CubeKind::MatmulVecFuse: cubeKindName = "MatmulVecFuse"; break;
+  }
+  func->setAttr("afir.cube_kind", builder.getStringAttr(cubeKindName));
+  return plan;
+}
+
 // Materialize one tiling-case draft into a TilePlan: ≈ Scheduler::BlockSplit
 // (pickBlockAxis → blockFusedAxes / XBLOCK) + Scheduler::TileSplit (the in-order
 // pass below over the collapsed axes, dispatching per axis kind) + the §3.5
@@ -721,6 +781,10 @@ double costEstimate(const AxisGrouping &g, const CollapsedGroupInfo &info,
 static TilePlan buildPlan(func::FuncOp func, const CollapsedGroupInfo &info,
                           const AxisGrouping &g, const TilePlanDraft &draft,
                           OpBuilder &builder, Location loc) {
+  // CV-fusion Phase 2: dispatch to the cube branch when the group is a Cube
+  // template.  Cube plans don't share the vector axis-grouping pipeline below.
+  if (draft.cubeKind != CubeKind::None)
+    return buildCubePlan(func, info, draft, builder, loc);
   // P3b-2b: RCore TilePlan structure.  R axis (at draft.ubTilingAxisR) becomes
   // the block axis, dispatched on XBLOCK; an inner RBLOCK loop sweeps the
   // per-block R slice on each core.  LoopNestBuilder reuses its existing
@@ -1544,6 +1608,24 @@ enumerateFeasibleDrafts(const vector_plan::CollapsedGroupInfo &info,
                         bool enableReductionSplit,
                         bool relaxNonBlockUbY,
                         llvm::StringRef socName) {
+  // CV-fusion Phase 2: Cube kernels enumerate exactly one cube draft.  Real
+  // cube TilingCase enumeration (AF's GenMatmulTilingCase) — picking among
+  // multiple tile-shape candidates — is deferred to Phase 2 v2.  For now,
+  // hardcoded preset defaults (128/128 outer × 32/32 inner × 16 K).
+  if (info.kind == GroupInfo::Kind::Cube) {
+    vector_plan::TilePlanDraft d;
+    bool hasTrailingVec = false;
+    for (linalg::LinalgOp op : info.topoMembers)
+      if (!isa<linalg::MatmulOp, linalg::MatmulTransposeAOp,
+                linalg::MatmulTransposeBOp, linalg::BatchMatmulOp>(
+              op.getOperation())) {
+        hasTrailingVec = true;
+        break;
+      }
+    d.cubeKind = hasTrailingVec ? vector_plan::CubeKind::MatmulVecFuse
+                                 : vector_plan::CubeKind::MatmulOnly;
+    return {d};
+  }
   const vector_plan::AxisGrouping &g = info.grouping;
   unsigned elemBytes = operandElemBytes(info);
   DenseSet<int> vecDims = computeVectorizedDims(info);
@@ -1565,8 +1647,13 @@ buildPlanForDraft(func::FuncOp func,
                   OpBuilder &builder, Location loc,
                   llvm::StringRef socName) {
   TilePlan plan = buildPlan(func, info, info.grouping, draft, builder, loc);
-  populateConstraints(plan, info, func, operandElemBytes(info),
-                      getSocConstants(socName));
+  // Vector-axis constraints (Divides/LeBytes) don't apply to cube plans —
+  // cube tile-data legality is enforced by the existing mix-compiler /
+  // matmul tiling library (Phase 6 wires this).  Skip to keep the schema
+  // clean.
+  if (plan.cubeKind == vector_plan::CubeKind::None)
+    populateConstraints(plan, info, func, operandElemBytes(info),
+                        getSocConstants(socName));
   return plan;
 }
 

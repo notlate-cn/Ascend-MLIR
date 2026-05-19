@@ -46,6 +46,15 @@ static void runVariantPipeline(func::FuncOp func,
                                      func.getLoc(), socName);
   emitTilingInfos(func, plan);
 
+  // CV-fusion Phase 2: Cube plans stop here.  The 5 cube tunable args + mix-
+  // kernel attrs are now on the func; the matmul + epilogue linalg ops are
+  // left in place for downstream Phase-4 emission (LoopNestBuilder cube path
+  // + the existing AnnotateMixMatmulSemantics / AscendCBufferPlacement /
+  // LinalgToAscendC mix pipeline).  Without Phase 4 the cube kernel won't
+  // actually run, but the front-end schema is now mix-compatible.
+  if (plan.cubeKind != CubeKind::None)
+    return;
+
   // Collect init tensors and original results BEFORE modification. Same
   // logic as the legacy single-plan path — an intra-group intermediate
   // (only consumed by other members) needs no scf.for iter_arg.
