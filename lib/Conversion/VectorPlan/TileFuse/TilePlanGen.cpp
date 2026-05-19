@@ -711,6 +711,166 @@ double costEstimate(const AxisGrouping &g, const CollapsedGroupInfo &info,
   return score;
 }
 
+// ---------------------------------------------------------------------------
+// Tensor-IR predicates for classifying the trailing elementwise chain that
+// sits between a `linalg.matmul` and the return.  Mirrors the post-bufferize
+// helpers in AnnotateMixMatmulSemanticsPass but works on tensor IR (no
+// `ascendc.unit` attr yet, ranked tensor types instead of memref).  Used by
+// buildCubePlan to stamp `abi_matmul_has_bias` + `abi_matmul_epilogue_kind`
+// correctly, replacing the previous "always Relu / never bias" hardcoding.
+// Keep narrow: only the AF-canonical bias-add (rank-1 vector, indexing
+// map `(d0,d1)->(d1)`) is recognized.  Other bcast forms fall back to
+// has_bias=false and are left for Gap-3 follow-up.
+
+static bool isParallelGenericTensor(linalg::GenericOp gen) {
+  return llvm::all_of(gen.getIteratorTypesArray(),
+                      [](utils::IteratorType t) {
+                        return t == utils::IteratorType::parallel;
+                      });
+}
+
+static bool isRankedTensor(Value v, int64_t rank) {
+  auto t = dyn_cast<RankedTensorType>(v.getType());
+  return t && t.getRank() == rank;
+}
+
+static bool isBiasAddGenericTensor(linalg::GenericOp gen) {
+  if (gen.getNumDpsInputs() != 2 || gen.getNumDpsInits() != 1 ||
+      !isParallelGenericTensor(gen))
+    return false;
+  if (!isRankedTensor(gen.getDpsInputOperand(0)->get(), 2) ||
+      !isRankedTensor(gen.getDpsInputOperand(1)->get(), 1) ||
+      !isRankedTensor(gen.getDpsInitOperand(0)->get(), 2))
+    return false;
+  Block &body = gen.getRegion().front();
+  if (body.getNumArguments() != 3)
+    return false;
+  arith::AddFOp addOp;
+  linalg::YieldOp yieldOp;
+  for (Operation &op : body.getOperations()) {
+    if (auto add = dyn_cast<arith::AddFOp>(op)) {
+      if (addOp) return false;
+      addOp = add;
+    } else if (auto y = dyn_cast<linalg::YieldOp>(op)) {
+      yieldOp = y;
+    } else {
+      return false;
+    }
+  }
+  return addOp && yieldOp && yieldOp.getNumOperands() == 1 &&
+         yieldOp.getOperand(0) == addOp.getResult();
+}
+
+static bool isReluGenericTensor(linalg::GenericOp gen) {
+  if (gen.getNumDpsInputs() != 1 || gen.getNumDpsInits() != 1 ||
+      !isParallelGenericTensor(gen))
+    return false;
+  if (!isRankedTensor(gen.getDpsInputOperand(0)->get(), 2) ||
+      !isRankedTensor(gen.getDpsInitOperand(0)->get(), 2))
+    return false;
+  Block &body = gen.getRegion().front();
+  if (body.getNumArguments() != 2)
+    return false;
+  arith::MaximumFOp maxOp;
+  arith::ConstantOp zeroConst;
+  linalg::YieldOp yieldOp;
+  for (Operation &op : body.getOperations()) {
+    if (auto m = dyn_cast<arith::MaximumFOp>(op)) {
+      if (maxOp) return false;
+      maxOp = m;
+    } else if (auto c = dyn_cast<arith::ConstantOp>(op)) {
+      auto fa = dyn_cast<FloatAttr>(c.getValue());
+      if (fa && fa.getValue().isZero()) zeroConst = c;
+    } else if (auto y = dyn_cast<linalg::YieldOp>(op)) {
+      yieldOp = y;
+    } else {
+      return false;
+    }
+  }
+  // Relu shape: max(arg0, 0.0); yield max.
+  return maxOp && zeroConst && yieldOp &&
+         yieldOp.getNumOperands() == 1 &&
+         yieldOp.getOperand(0) == maxOp.getResult();
+}
+
+static bool isLeakyReluGenericTensor(linalg::GenericOp gen) {
+  if (gen.getNumDpsInputs() != 1 || gen.getNumDpsInits() != 1 ||
+      !isParallelGenericTensor(gen))
+    return false;
+  if (!isRankedTensor(gen.getDpsInputOperand(0)->get(), 2) ||
+      !isRankedTensor(gen.getDpsInitOperand(0)->get(), 2))
+    return false;
+  Block &body = gen.getRegion().front();
+  if (body.getNumArguments() != 2)
+    return false;
+  arith::MulFOp mulOp;
+  arith::MaximumFOp maxOp;
+  linalg::YieldOp yieldOp;
+  for (Operation &op : body.getOperations()) {
+    if (auto m = dyn_cast<arith::MulFOp>(op)) {
+      if (mulOp) return false;
+      mulOp = m;
+    } else if (auto m = dyn_cast<arith::MaximumFOp>(op)) {
+      if (maxOp) return false;
+      maxOp = m;
+    } else if (isa<arith::ConstantOp>(op)) {
+      // allowed
+    } else if (auto y = dyn_cast<linalg::YieldOp>(op)) {
+      yieldOp = y;
+    } else {
+      return false;
+    }
+  }
+  return mulOp && maxOp && yieldOp && yieldOp.getNumOperands() == 1 &&
+         yieldOp.getOperand(0) == maxOp.getResult();
+}
+
+// Find the unique linalg.generic in `func` whose 1st DPS input is `value`
+// and which matches `predicate`.  Returns null on no/multiple matches.
+static linalg::GenericOp
+findChainedGenericInFunc(func::FuncOp func, Value value,
+                         llvm::function_ref<bool(linalg::GenericOp)> pred) {
+  linalg::GenericOp matched;
+  func.walk([&](linalg::GenericOp gen) {
+    if (gen.getNumDpsInputs() < 1) return;
+    if (gen.getDpsInputOperand(0)->get() != value) return;
+    if (!pred(gen)) return;
+    if (matched) { matched = {}; return; }
+    matched = gen;
+  });
+  return matched;
+}
+
+// Classify the trailing-elementwise chain on a cube func.  Returns
+// {has_bias, epilogue_kind_string} suitable for stamping abi_matmul_* attrs.
+static std::pair<bool, StringRef>
+classifyCubeEpilogueChain(func::FuncOp func, CubeKind cubeKind) {
+  if (cubeKind != CubeKind::MatmulVecFuse)
+    return {false, "None"};
+  // Find the matmul-like op.  Funcs go through TilePlanGen one cube group at
+  // a time, so just walk for the first linalg::MatmulOp (or BatchMatmulOp).
+  Value cur;
+  func.walk([&](linalg::MatmulOp mm) {
+    cur = mm.getResult(0);
+    return WalkResult::interrupt();
+  });
+  if (!cur)
+    return {false, "None"};
+  bool hasBias = false;
+  if (auto bias = findChainedGenericInFunc(func, cur, isBiasAddGenericTensor)) {
+    hasBias = true;
+    cur = bias.getResult(0);
+  }
+  if (auto leaky =
+          findChainedGenericInFunc(func, cur, isLeakyReluGenericTensor))
+    return {hasBias, hasBias ? "BiasAddLeakyRelu" : "LeakyRelu"};
+  if (auto relu = findChainedGenericInFunc(func, cur, isReluGenericTensor))
+    return {hasBias, hasBias ? "BiasAddRelu" : "Relu"};
+  if (hasBias)
+    return {true, "BiasAdd"};
+  return {false, "None"};
+}
+
 } // namespace
 
 // CV-fusion Phase 2: materialize a Cube template draft.  Emits the 5 cube
@@ -773,17 +933,18 @@ static TilePlan buildCubePlan(func::FuncOp func, const CollapsedGroupInfo &info,
   // Mirror AnnotateMixMatmulSemantics so MixAbiExtractor's required-attr set
   // is satisfied without re-running that legacy pass on cube-emitted kernels.
   // Phase 1 CV-fusion only supports the canonical matmul shape: no transpose,
-  // ND layout on all sides, no bias.  Epilogue kind is the matched cube kind.
+  // ND layout on all sides.  bias/epilogue come from a tensor-IR walk of the
+  // trailing chain (vs. the prior "always Relu / never bias" hardcoding).
   MLIRContext *ctx = builder.getContext();
   func->setAttr("abi_matmul_op_kind",     StringAttr::get(ctx, "matmul"));
   func->setAttr("abi_matmul_trans_a",     BoolAttr::get(ctx, false));
   func->setAttr("abi_matmul_trans_b",     BoolAttr::get(ctx, false));
-  func->setAttr("abi_matmul_has_bias",    BoolAttr::get(ctx, false));
   func->setAttr("abi_matmul_layout_a",    StringAttr::get(ctx, "ND"));
   func->setAttr("abi_matmul_layout_b",    StringAttr::get(ctx, "ND"));
   func->setAttr("abi_matmul_layout_c",    StringAttr::get(ctx, "ND"));
-  StringRef epilogueKindName =
-      (draft.cubeKind == CubeKind::MatmulVecFuse) ? "Relu" : "None";
+  auto [hasBias, epilogueKindName] =
+      classifyCubeEpilogueChain(func, draft.cubeKind);
+  func->setAttr("abi_matmul_has_bias", BoolAttr::get(ctx, hasBias));
   func->setAttr("abi_matmul_epilogue_kind",
                 StringAttr::get(ctx, epilogueKindName));
   return plan;

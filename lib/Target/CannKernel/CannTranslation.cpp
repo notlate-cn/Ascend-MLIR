@@ -528,9 +528,12 @@ static bool hasSupportedMixFunctionSignature(func::FuncOp funcOp) {
     return false;
   int64_t numInputs = numInputsAttr.getInt();
   // Supported layouts:
-  //   - matmul+bias+epilogue (num_inputs=4, 7 args):
-  //       A(f16,2D), B(f16,2D), bias(f32,1D), init(f32,2D), out(f32,2D),
-  //       ws(ui8), tiling
+  //   - matmul+bias+epilogue (num_inputs=4, 7 args).  Two arg orderings:
+  //       legacy: A(f16,2D), B(f16,2D), bias(f32,1D), init(f32,2D), out, ws, tiling
+  //       cube:   A(f16,2D), B(f16,2D), init(f32,2D), bias(f32,1D), out, ws, tiling
+  //     (the vector-plan cube path produces the latter because the init
+  //     operand of `linalg.matmul` precedes the bias operand of the trailing
+  //     `linalg.generic` in func-arg order after bufferization)
   //   - matmul+epilogue, no-bias (num_inputs=3, 6 args):
   //       A(f16,2D), B(f16,2D), init(f32,2D), out(f32,2D), ws(ui8), tiling
   if (numInputs != 4 && numInputs != 3)
@@ -552,14 +555,20 @@ static bool hasSupportedMixFunctionSignature(func::FuncOp funcOp) {
 
   size_t idx = 2;
   if (hasBias) {
-    if (!isRankedMemrefOf(args[idx].getType(), 1, f32))
+    // Accept either order: (bias 1D, init 2D) or (init 2D, bias 1D).
+    bool order1 = isRankedMemrefOf(args[idx].getType(), 1, f32) &&
+                  isRankedMemrefOf(args[idx + 1].getType(), 2, f32);
+    bool order2 = isRankedMemrefOf(args[idx].getType(), 2, f32) &&
+                  isRankedMemrefOf(args[idx + 1].getType(), 1, f32);
+    if (!order1 && !order2)
+      return false;
+    idx += 2;
+  } else {
+    // No-bias variant: just init (f32, 2D) at args[2].
+    if (!isRankedMemrefOf(args[idx].getType(), 2, f32))
       return false;
     ++idx;
   }
-  // init (f32, 2D)
-  if (!isRankedMemrefOf(args[idx].getType(), 2, f32))
-    return false;
-  ++idx;
 
   auto outputType = dyn_cast<MemRefType>(args[idx].getType());
   if (!outputType || outputType.getRank() != 2 ||
