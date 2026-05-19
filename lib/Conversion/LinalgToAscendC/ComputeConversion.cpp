@@ -57,6 +57,58 @@ Value getDimValue(OpBuilder &builder, Location loc, Value memref,
   return builder.create<memref::DimOp>(loc, memref, dim);
 }
 
+static memref::AllocOp getRootAllocOp(Value value) {
+  while (true) {
+    if (auto subview = value.getDefiningOp<memref::SubViewOp>()) {
+      value = subview.getSource();
+      continue;
+    }
+    if (auto castOp = value.getDefiningOp<memref::CastOp>()) {
+      value = castOp.getSource();
+      continue;
+    }
+    return value.getDefiningOp<memref::AllocOp>();
+  }
+}
+
+static Value getMemRefDimWithoutDimOp(OpBuilder &builder, Location loc,
+                                      Value memref, unsigned dim) {
+  auto memrefType = cast<MemRefType>(memref.getType());
+  if (!ShapedType::isDynamic(memrefType.getShape()[dim]))
+    return builder.create<arith::ConstantIndexOp>(loc,
+                                                  memrefType.getShape()[dim]);
+
+  if (auto allocOp = getRootAllocOp(memref)) {
+    unsigned dynamicOrdinal = 0;
+    for (unsigned i = 0; i < dim; ++i)
+      if (ShapedType::isDynamic(allocOp.getType().getShape()[i]))
+        ++dynamicOrdinal;
+    if (dynamicOrdinal < allocOp.getDynamicSizes().size())
+      return allocOp.getDynamicSizes()[dynamicOrdinal];
+  }
+
+  return {};
+}
+
+static Value computeContiguousFlatIndex(OpBuilder &builder, Location loc,
+                                        Value memref, ValueRange indices) {
+  auto memrefType = cast<MemRefType>(memref.getType());
+  if (memrefType.getRank() != static_cast<int64_t>(indices.size()))
+    return {};
+  if (indices.empty())
+    return builder.create<arith::ConstantIndexOp>(loc, 0);
+
+  Value flat = indices.front();
+  for (unsigned dim = 1; dim < indices.size(); ++dim) {
+    Value extent = getMemRefDimWithoutDimOp(builder, loc, memref, dim);
+    if (!extent)
+      return {};
+    flat = builder.create<arith::MulIOp>(loc, flat, extent);
+    flat = builder.create<arith::AddIOp>(loc, flat, indices[dim]);
+  }
+  return flat;
+}
+
 bool isSupportedRank2Reduction(linalg::GenericOp op) {
   if (op.getNumDpsInits() != 1)
     return false;
@@ -89,12 +141,15 @@ LogicalResult lowerTransposeToLoops(OpBuilder &builder, Location loc,
     return failure();
 
   SmallVector<bool, 8> seen(rank, false);
+  SmallVector<unsigned, 8> inversePermutation(rank, 0);
+  unsigned outputDim = 0;
   for (int64_t position : permutation) {
     if (position < 0 || position >= static_cast<int64_t>(rank))
       return failure();
     if (seen[position])
       return failure();
     seen[position] = true;
+    inversePermutation[static_cast<unsigned>(position)] = outputDim++;
   }
 
   SmallVector<Value, 8> upperBounds;
@@ -107,8 +162,8 @@ LogicalResult lowerTransposeToLoops(OpBuilder &builder, Location loc,
     if (depth == rank) {
       SmallVector<Value, 8> inputIndices;
       inputIndices.reserve(rank);
-      for (int64_t position : permutation)
-        inputIndices.push_back(loopIndices[static_cast<unsigned>(position)]);
+      for (unsigned inputDim = 0; inputDim < rank; ++inputDim)
+        inputIndices.push_back(loopIndices[inversePermutation[inputDim]]);
       Value value =
           builder.create<memref::LoadOp>(loc, inMemref, inputIndices);
       builder.create<memref::StoreOp>(loc, value, outMemref, loopIndices);
@@ -311,6 +366,148 @@ LogicalResult lowerPureYieldGenericToLoops(OpBuilder &builder,
   };
 
   return buildNest(buildNest, 0);
+}
+
+Value createLocalTensorBuffer(OpBuilder &builder, Location loc, Value pipe,
+                              TPosition position, Type elemType,
+                              Value byteCount) {
+  Value tbuf =
+      builder.create<TBufOp>(loc, TBufType::get(builder.getContext(), position));
+  builder.create<TPipeInitBufferOp>(loc, pipe, tbuf, byteCount);
+  return builder.create<TBufGetTensorOp>(
+      loc, LocalTensorType::get(elemType), tbuf, /*len=*/Value{});
+}
+
+struct QueuedLocalTensor {
+  Value queue;
+  Value tensor;
+};
+
+QueuedLocalTensor copyGlobalToVecinQueue(OpBuilder &builder, Location loc,
+                                         Value pipe, Type elemType,
+                                         Value srcGt, Value elemCount) {
+  unsigned elemBytes = elemType.getIntOrFloatBitWidth() / 8;
+  Value byteCount = builder.create<arith::MulIOp>(
+      loc, elemCount, builder.create<arith::ConstantIndexOp>(loc, elemBytes));
+  Value vecinTbuf =
+      builder.create<TBufOp>(loc, TBufType::get(builder.getContext(),
+                                               TPosition::VECIN));
+  builder.create<TPipeInitBufferOp>(loc, pipe, vecinTbuf, byteCount);
+  Value queue = builder.create<QueueOp>(
+      loc, QueueType::get(builder.getContext(), TPosition::VECIN, 1));
+  Value depth =
+      builder.create<arith::ConstantOp>(loc, builder.getI32IntegerAttr(1));
+  builder.create<TPipeInitQueueOp>(loc, pipe, queue, depth, byteCount);
+  Value allocated = builder.create<TQueBindAllocTensorOp>(
+      loc, LocalTensorType::get(elemType), queue);
+  builder.create<DataCopyL2Op>(loc, allocated, srcGt, elemCount);
+  builder.create<TQueBindEnqueTensorOp>(loc, queue, allocated);
+  Value dequeued = builder.create<TQueBindDequeTensorOp>(
+      loc, LocalTensorType::get(elemType), queue);
+  return {queue, dequeued};
+}
+
+LogicalResult lowerProjectedSuffixCopyToSegmentDataCopy(OpBuilder &builder,
+                                                        linalg::GenericOp op,
+                                                        Value pipe) {
+  if (!isPureYieldGeneric(op))
+    return failure();
+
+  Location loc = op.getLoc();
+  Value inMemref = op.getDpsInputOperand(0)->get();
+  Value outMemref = op.getDpsInitOperand(0)->get();
+  auto inType = dyn_cast<MemRefType>(inMemref.getType());
+  auto outType = dyn_cast<MemRefType>(outMemref.getType());
+  if (!inType || !outType || getMemorySpace(inType) != 0 ||
+      getMemorySpace(outType) != 0)
+    return failure();
+  if (inType.getElementType() != outType.getElementType())
+    return failure();
+
+  unsigned inRank = static_cast<unsigned>(inType.getRank());
+  unsigned outRank = static_cast<unsigned>(outType.getRank());
+  if (inRank > outRank)
+    return failure();
+
+  AffineMap inMap = op.getIndexingMapsArray()[0];
+  if (inMap.getNumResults() != inRank)
+    return failure();
+
+  unsigned prefixRank = outRank - inRank;
+  for (unsigned dim = 0; dim < inRank; ++dim) {
+    auto dimExpr = dyn_cast<AffineDimExpr>(inMap.getResult(dim));
+    if (!dimExpr || dimExpr.getPosition() != prefixRank + dim)
+      return failure();
+  }
+
+  Type elemType = inType.getElementType();
+  Value copyCount = computeElementCount(builder, loc, inMemref);
+  Value srcGt =
+      builder.create<GlobalTensorOp>(loc, GlobalTensorType::get(elemType));
+  builder.create<GlobalTensorSetGlobalBufferOp>(loc, srcGt, inMemref,
+                                                /*size=*/Value{});
+  if (prefixRank == 0) {
+    Value dstGt =
+        builder.create<GlobalTensorOp>(loc, GlobalTensorType::get(elemType));
+    builder.create<GlobalTensorSetGlobalBufferOp>(loc, dstGt, outMemref,
+                                                  /*size=*/Value{});
+    builder.create<DataCopyL2Op>(loc, dstGt, srcGt, copyCount);
+    return success();
+  }
+
+  QueuedLocalTensor local =
+      copyGlobalToVecinQueue(builder, loc, pipe, elemType, srcGt, copyCount);
+  Value dstGt =
+      builder.create<GlobalTensorOp>(loc, GlobalTensorType::get(elemType));
+
+  Value c0 = builder.create<arith::ConstantIndexOp>(loc, 0);
+  Value c1 = builder.create<arith::ConstantIndexOp>(loc, 1);
+  SmallVector<Value, 4> prefixUpperBounds;
+  prefixUpperBounds.reserve(prefixRank);
+  for (unsigned dim = 0; dim < prefixRank; ++dim)
+    prefixUpperBounds.push_back(getDimValue(builder, loc, outMemref, dim));
+
+  SmallVector<Value, 4> prefixIndices;
+  auto buildNest = [&](auto &self, unsigned depth) -> LogicalResult {
+    if (depth == prefixRank) {
+      Value dstOffset;
+      if (prefixRank > 0) {
+        Value flatPrefix = prefixIndices.front();
+        for (unsigned dim = 1; dim < prefixRank; ++dim) {
+          flatPrefix =
+              builder.create<arith::MulIOp>(loc, flatPrefix,
+                                            prefixUpperBounds[dim]);
+          flatPrefix =
+              builder.create<arith::AddIOp>(loc, flatPrefix,
+                                            prefixIndices[dim]);
+        }
+        dstOffset = builder.create<arith::MulIOp>(loc, flatPrefix, copyCount);
+      }
+      Value dstOffsetI32;
+      if (dstOffset)
+        dstOffsetI32 =
+            builder.create<arith::IndexCastOp>(loc, builder.getI32Type(),
+                                               dstOffset);
+      builder.create<GlobalTensorSetGlobalBufferOp>(loc, dstGt, outMemref,
+                                                    dstOffsetI32);
+      builder.create<DataCopyL2Op>(loc, dstGt, local.tensor, copyCount);
+      return success();
+    }
+
+    auto forOp =
+        builder.create<scf::ForOp>(loc, c0, prefixUpperBounds[depth], c1);
+    OpBuilder::InsertionGuard guard(builder);
+    builder.setInsertionPointToStart(forOp.getBody());
+    prefixIndices.push_back(forOp.getInductionVar());
+    LogicalResult result = self(self, depth + 1);
+    prefixIndices.pop_back();
+    return result;
+  };
+
+  if (failed(buildNest(buildNest, 0)))
+    return failure();
+  builder.create<TQueBindFreeTensorOp>(loc, local.queue, local.tensor);
+  return success();
 }
 
 LogicalResult lowerAllParallelGenericToLoops(OpBuilder &builder,
@@ -521,6 +718,81 @@ LogicalResult lowerGmGenericToScalarLoops(OpBuilder &builder,
 
     auto forOp =
         builder.create<scf::ForOp>(loc, c0, (*upperBounds)[depth], c1);
+    OpBuilder::InsertionGuard guard(builder);
+    builder.setInsertionPointToStart(forOp.getBody());
+    loopIndices.push_back(forOp.getInductionVar());
+    LogicalResult result = self(self, depth + 1);
+    loopIndices.pop_back();
+    return result;
+  };
+
+  return buildNest(buildNest, 0);
+}
+
+LogicalResult lowerRank2GmTransposeToLocalDataCopy(
+    OpBuilder &builder, Location loc, Value inMemref, Value outMemref,
+    ArrayRef<int64_t> permutation, Value pipe) {
+  auto inType = dyn_cast<MemRefType>(inMemref.getType());
+  auto outType = dyn_cast<MemRefType>(outMemref.getType());
+  if (!inType || !outType || inType.getRank() != 2 || outType.getRank() != 2)
+    return failure();
+  if (!inType.getLayout().isIdentity() || !outType.getLayout().isIdentity())
+    return failure();
+  if (getMemorySpace(inType) != 0 || getMemorySpace(outType) != 0)
+    return failure();
+  if (inType.getElementType() != outType.getElementType())
+    return failure();
+  if (permutation.size() != 2 || permutation[0] != 1 || permutation[1] != 0)
+    return failure();
+
+  Type elemType = inType.getElementType();
+  Value elemCount = computeElementCount(builder, loc, inMemref);
+  Value byteCount = computeByteCount(builder, loc, inMemref);
+
+  Value srcGt =
+      builder.create<GlobalTensorOp>(loc, GlobalTensorType::get(elemType));
+  builder.create<GlobalTensorSetGlobalBufferOp>(loc, srcGt, inMemref,
+                                                /*size=*/Value{});
+  Value srcLt = createLocalTensorBuffer(builder, loc, pipe, TPosition::VECIN,
+                                        elemType, byteCount);
+  builder.create<DataCopyL2Op>(loc, srcLt, srcGt, elemCount);
+
+  Value dstLt = createLocalTensorBuffer(builder, loc, pipe, TPosition::VECCALC,
+                                        elemType, byteCount);
+  builder.create<TransposeOp>(loc, dstLt, srcLt);
+
+  Value dstGt =
+      builder.create<GlobalTensorOp>(loc, GlobalTensorType::get(elemType));
+  builder.create<GlobalTensorSetGlobalBufferOp>(loc, dstGt, outMemref,
+                                                /*size=*/Value{});
+  builder.create<DataCopyL2Op>(loc, dstGt, dstLt, elemCount);
+  return success();
+}
+
+LogicalResult lowerFillToScalarLoops(OpBuilder &builder, linalg::FillOp op) {
+  Location loc = op.getLoc();
+  Value fillValue = op.getInputs()[0];
+  Value outMemref = op.getOutputs()[0];
+  auto outType = dyn_cast<MemRefType>(outMemref.getType());
+  if (!outType)
+    return failure();
+
+  Value c0 = builder.create<arith::ConstantIndexOp>(loc, 0);
+  Value c1 = builder.create<arith::ConstantIndexOp>(loc, 1);
+  SmallVector<Value, 4> upperBounds;
+  upperBounds.reserve(outType.getRank());
+  for (unsigned dim = 0, e = outType.getRank(); dim < e; ++dim)
+    upperBounds.push_back(getDimValue(builder, loc, outMemref, dim));
+
+  SmallVector<Value, 4> loopIndices;
+  auto buildNest = [&](auto &self, unsigned depth) -> LogicalResult {
+    if (depth == static_cast<unsigned>(outType.getRank())) {
+      builder.create<memref::StoreOp>(loc, fillValue, outMemref, loopIndices);
+      return success();
+    }
+
+    auto forOp =
+        builder.create<scf::ForOp>(loc, c0, upperBounds[depth], c1);
     OpBuilder::InsertionGuard guard(builder);
     builder.setInsertionPointToStart(forOp.getBody());
     loopIndices.push_back(forOp.getInductionVar());
@@ -1350,6 +1622,12 @@ LogicalResult convertCompute(func::FuncOp funcOp, AscendCBufferContext &ctx) {
     if (plan.kind == TransposeLoweringKind::ScalarMemRefLoop) {
       Location loc = transposeOp.getLoc();
       builder.setInsertionPoint(transposeOp);
+      if (succeeded(lowerRank2GmTransposeToLocalDataCopy(
+              builder, loc, inMemref, outMemref, spec->permutation,
+              ctx.pipe))) {
+        transposeOp.erase();
+        continue;
+      }
       if (failed(lowerTransposeToLoops(builder, loc, inMemref, outMemref,
                                        spec->permutation))) {
         transposeOp.emitError("failed to lower transpose scalar fallback");
@@ -1496,6 +1774,14 @@ LogicalResult convertCompute(func::FuncOp funcOp, AscendCBufferContext &ctx) {
     return {tbuf, lt};
   };
 
+  auto isDuplicateL2FillSupportedType = [](Type elemType) {
+    if (elemType.isF16() || elemType.isF32() || elemType.isBF16())
+      return true;
+    if (auto intType = dyn_cast<IntegerType>(elemType))
+      return intType.getWidth() == 16 || intType.getWidth() == 32;
+    return false;
+  };
+
   // Helper: copy `elemCount` elements from a GM GlobalTensor into a fresh
   // VECIN TQue (AllocTensor → DataCopy → EnQue → DeQue) and return the
   // dequeued VECIN LocalTensor.  The AscendC simulator only supports
@@ -1576,6 +1862,13 @@ LogicalResult convertCompute(func::FuncOp funcOp, AscendCBufferContext &ctx) {
       continue;
 
     builder.setInsertionPoint(genOp);
+    if (succeeded(
+            lowerProjectedSuffixCopyToSegmentDataCopy(builder, genOp,
+                                                      ctx.pipe))) {
+      genOp.erase();
+      continue;
+    }
+
     if (failed(lowerGmGenericToScalarLoops(builder, genOp))) {
       genOp.emitError("failed to lower GM generic scalar loop");
       return failure();
@@ -3235,12 +3528,9 @@ LogicalResult convertCompute(func::FuncOp funcOp, AscendCBufferContext &ctx) {
     ewOp.erase();
   }
 
-  // --- linalg.fill → duplicate_l2 ---
+  // --- linalg.fill -> duplicate_l2 / segment GM writes ---
   //
   // Erased cases (no AscendC op emitted):
-  //   ms=0  (GM):    fill initializes a GM accumulator that is fully overwritten
-  //                  by subsequent data_copy from on-chip; redundant after
-  //                  linalg.generic→reduce_sum_2d_l2 lowering.
   //   ms=7  (CO1):   mmad hardware zeroes CO1 automatically (cmatrixInitVal=false
   //                  default), so a separate duplicate_l2 is redundant and would
   //                  also cause a double-alloc on the CO1 queue.
@@ -3253,13 +3543,83 @@ LogicalResult convertCompute(func::FuncOp funcOp, AscendCBufferContext &ctx) {
     Value dst = fillOp.getOutputs()[0];
     int64_t ms = getMemorySpace(dst.getType());
     if (ms <= 0) {
-      // GM fill: only erase if the destination is an alloc within the function
-      // (accumulator pattern — fully overwritten by data_copy after reduce).
-      // Fills into function-argument GM memrefs are NOT converted and must be
-      // left in place.
-      bool dstIsAlloc = dst.getDefiningOp<memref::AllocOp>() != nullptr;
-      if (!dstIsAlloc)
-        continue; // preserve fill on func arg
+      auto dstType = dyn_cast<MemRefType>(dst.getType());
+      if (!dstType || !dstType.getLayout().isIdentity()) {
+        fillOp.emitError("unsupported GM fill layout");
+        return failure();
+      }
+
+      Location loc = fillOp.getLoc();
+      builder.setInsertionPoint(fillOp);
+
+      unsigned rank = static_cast<unsigned>(dstType.getRank());
+      Type elemType = dstType.getElementType();
+      if (!isDuplicateL2FillSupportedType(elemType)) {
+        if (failed(lowerFillToScalarLoops(builder, fillOp))) {
+          fillOp.emitError("failed to lower unsupported-dtype GM fill scalar loop");
+          return failure();
+        }
+        fillOp.erase();
+        continue;
+      }
+
+      Value c0 = builder.create<arith::ConstantIndexOp>(loc, 0);
+      Value c1 = builder.create<arith::ConstantIndexOp>(loc, 1);
+      Value segmentCount =
+          rank == 0 ? c1 : getDimValue(builder, loc, dst, rank - 1);
+      auto [fillTbuf, fillLt] =
+          allocVeccalc(builder, loc, elemType, SmallVector<Value>{segmentCount});
+      (void)fillTbuf;
+      auto dupOp = builder.create<DuplicateL2Op>(
+          loc, fillLt, fillOp.getInputs()[0], segmentCount);
+      copyAscendCUnitAttr(fillOp.getOperation(), dupOp.getOperation());
+
+      Value dstGt =
+          builder.create<GlobalTensorOp>(loc, GlobalTensorType::get(elemType));
+      unsigned prefixRank = rank == 0 ? 0 : rank - 1;
+      SmallVector<Value, 4> prefixUpperBounds;
+      prefixUpperBounds.reserve(prefixRank);
+      for (unsigned dim = 0; dim < prefixRank; ++dim)
+        prefixUpperBounds.push_back(getDimValue(builder, loc, dst, dim));
+
+      SmallVector<Value, 4> prefixIndices;
+      auto buildNest = [&](auto &self, unsigned depth) -> LogicalResult {
+        if (depth == prefixRank) {
+          Value dstOffsetI32;
+          if (prefixRank > 0) {
+            Value flatPrefix = prefixIndices.front();
+            for (unsigned dim = 1; dim < prefixRank; ++dim) {
+              flatPrefix =
+                  builder.create<arith::MulIOp>(loc, flatPrefix,
+                                                prefixUpperBounds[dim]);
+              flatPrefix =
+                  builder.create<arith::AddIOp>(loc, flatPrefix,
+                                                prefixIndices[dim]);
+            }
+            Value dstOffset =
+                builder.create<arith::MulIOp>(loc, flatPrefix, segmentCount);
+            dstOffsetI32 = builder.create<arith::IndexCastOp>(
+                loc, builder.getI32Type(), dstOffset);
+          }
+          builder.create<GlobalTensorSetGlobalBufferOp>(loc, dstGt, dst,
+                                                        dstOffsetI32);
+          builder.create<DataCopyL2Op>(loc, dstGt, fillLt, segmentCount);
+          return success();
+        }
+
+        auto forOp = builder.create<scf::ForOp>(
+            loc, c0, prefixUpperBounds[depth], c1);
+        OpBuilder::InsertionGuard guard(builder);
+        builder.setInsertionPointToStart(forOp.getBody());
+        prefixIndices.push_back(forOp.getInductionVar());
+        LogicalResult result = self(self, depth + 1);
+        prefixIndices.pop_back();
+        return result;
+      };
+      if (failed(buildNest(buildNest, 0))) {
+        fillOp.emitError("failed to lower GM fill segment copy");
+        return failure();
+      }
       fillOp.erase();
       continue;
     }
@@ -3284,6 +3644,56 @@ LogicalResult convertCompute(func::FuncOp funcOp, AscendCBufferContext &ctx) {
 
     fillOp.erase();
   }
+
+  // Lower scalar loops that still touch live on-chip buffers. These loops are
+  // produced by conservative fallback paths around cube/vector boundaries; the
+  // logical memref has already been materialized as an AscendC local tensor.
+  SmallVector<memref::LoadOp> localLoads;
+  funcOp.walk([&](memref::LoadOp loadOp) {
+    if (getMemorySpace(loadOp.getMemRef().getType()) > 0)
+      localLoads.push_back(loadOp);
+  });
+  for (memref::LoadOp loadOp : localLoads) {
+    Value tensor = ctx.getLiveTensor(loadOp.getMemRef());
+    if (!tensor)
+      continue;
+    OpBuilder b(loadOp);
+    Value flatIndex = computeContiguousFlatIndex(
+        b, loadOp.getLoc(), loadOp.getMemRef(), loadOp.getIndices());
+    if (!flatIndex)
+      continue;
+    Value value = b.create<LocalTensorGetValueOp>(
+        loadOp.getLoc(), loadOp.getType(), tensor, flatIndex);
+    loadOp.replaceAllUsesWith(value);
+    loadOp.erase();
+  }
+
+  SmallVector<memref::StoreOp> localStores;
+  funcOp.walk([&](memref::StoreOp storeOp) {
+    if (getMemorySpace(storeOp.getMemRef().getType()) > 0)
+      localStores.push_back(storeOp);
+  });
+  for (memref::StoreOp storeOp : localStores) {
+    Value tensor = ctx.getLiveTensor(storeOp.getMemRef());
+    if (!tensor)
+      continue;
+    OpBuilder b(storeOp);
+    Value flatIndex = computeContiguousFlatIndex(
+        b, storeOp.getLoc(), storeOp.getMemRef(), storeOp.getIndices());
+    if (!flatIndex)
+      continue;
+    b.create<LocalTensorSetValueOp>(storeOp.getLoc(), tensor, flatIndex,
+                                    storeOp.getValue());
+    storeOp.erase();
+  }
+
+  SmallVector<memref::AllocOp> deadOnChipAllocs;
+  funcOp.walk([&](memref::AllocOp allocOp) {
+    if (getMemorySpace(allocOp.getType()) > 0 && allocOp->use_empty())
+      deadOnChipAllocs.push_back(allocOp);
+  });
+  for (memref::AllocOp allocOp : deadOnChipAllocs)
+    allocOp.erase();
 
   return success();
 }

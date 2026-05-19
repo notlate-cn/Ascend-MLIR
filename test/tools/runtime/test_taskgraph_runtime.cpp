@@ -1345,18 +1345,18 @@ static void testPrepareRuntimeSessionGraphUsesMixMetadataDefaults() {
   }
 }
 
-static void testPrepareRuntimeSessionGraphRejectsMixInputCountMismatch() {
+static void testPrepareRuntimeSessionGraphFiltersUnusedMixInputs() {
   const std::filesystem::path rootPath =
       makeRuntimeSessionMixArtifactRootWithAbiDefaults(
-          "runtime-session-builder-mix-input-count-mismatch", true);
+          "runtime-session-builder-mix-unused-inputs", true);
   RuntimeSessionTempRoot cleanup(rootPath);
   EXPECT(!cleanup.path.empty(),
-         "runtime session builder mix input-count fixture root created");
+         "runtime session builder mix unused-input fixture root created");
   if (cleanup.path.empty())
     return;
 
   const std::filesystem::path manifestPath =
-      makeTempDir("runtime-session-builder-mix-input-count-run-manifest") /
+      makeTempDir("runtime-session-builder-mix-unused-input-run-manifest") /
       "run-manifest.json";
   std::filesystem::create_directories(manifestPath.parent_path());
   {
@@ -1377,17 +1377,34 @@ static void testPrepareRuntimeSessionGraphRejectsMixInputCountMismatch() {
   }
 
   auto graphOr = prepareRuntimeSessionGraphFromManifest(manifestPath.string());
-  EXPECT(!(bool)graphOr,
-         "runtime session builder rejects mix invocation input count mismatch");
-  if (graphOr)
+  EXPECT((bool)graphOr,
+         "runtime session builder filters unused mix invocation inputs");
+  if (!graphOr) {
+    llvm::consumeError(graphOr.takeError());
+    return;
+  }
+
+  auto orderedOr = graphOr->second.orderedTasks();
+  EXPECT((bool)orderedOr,
+         "runtime session builder orders mix unused-input graph");
+  if (!orderedOr) {
+    llvm::consumeError(orderedOr.takeError());
+    return;
+  }
+  EXPECT(orderedOr->size() == 1,
+         "runtime session builder unused-input graph has one task");
+  if (orderedOr->size() != 1)
     return;
 
-  const std::string message = llvm::toString(graphOr.takeError());
-  EXPECT(message.find("mix artifact ABI input count mismatch") !=
-             std::string::npos,
-         "runtime session builder explains mix input count mismatch");
-  EXPECT(message.find("task main") != std::string::npos,
-         "runtime session builder reports mismatch task id");
+  const RuntimeTask &task = orderedOr->front();
+  EXPECT(task.invocation.inputs.size() == 2,
+         "runtime session builder keeps only mix ABI live inputs");
+  if (task.invocation.inputs.size() == 2) {
+    EXPECT(task.invocation.inputs[0].name == "lhs",
+           "runtime session builder keeps lhs live input");
+    EXPECT(task.invocation.inputs[1].name == "rhs",
+           "runtime session builder keeps rhs live input");
+  }
 }
 
 static void testPrepareRuntimeSessionGraphFallsBackToManifestAbiDefaults() {
@@ -4100,6 +4117,81 @@ static void testSimulatorProfileSchemaV1Artifact() {
   }
 }
 
+static void testSimulatorProfileInputAliasOutput() {
+  const std::filesystem::path runtimeDir =
+      makeTempDir("taskgraph-profile-input-alias-run");
+  std::filesystem::create_directories(runtimeDir);
+
+  const std::string inputPath =
+      writeTempNpy("taskgraph-profile-input-alias-input", {4}, DType::F32);
+  if (inputPath.empty())
+    return;
+
+  ExecutionRequest request;
+  request.sessionId = "session-profile-input-alias";
+  request.workingDirectory = runtimeDir.string();
+  request.task.taskId = "task-input-alias";
+  request.task.artifact.kernelName = "kernel_input_alias";
+  request.task.artifact.kernelKind = KernelKind::Vec;
+  request.task.artifact.socVersion = "Ascend910B1";
+  request.task.artifact.artifactRoot = "/tmp/artifact-root";
+  request.task.invocation.enableProfiling = true;
+  request.task.invocation.inputs.push_back(TensorBinding{
+      "state", BindingSourceKind::ExternalFile, inputPath});
+
+  TensorBinding output;
+  output.name = "updated";
+  output.sourceKind = BindingSourceKind::InputAlias;
+  output.path = (runtimeDir / "updated.npy").string();
+  output.shape = std::vector<int64_t>{4};
+  output.dtype = DType::F32;
+  output.aliasedInputName = "state";
+  request.task.invocation.outputs.push_back(std::move(output));
+
+  auto profilePathOr =
+      materializeSimulatorProfileArtifactForTest(request, 42);
+  EXPECT((bool)profilePathOr,
+         "sim profile artifact handles input-alias output");
+  if (!profilePathOr) {
+    llvm::consumeError(profilePathOr.takeError());
+    return;
+  }
+
+  const std::string profileText = readTextFile(*profilePathOr);
+  if (profileText.empty())
+    return;
+
+  auto jsonOr = llvm::json::parse(profileText);
+  EXPECT((bool)jsonOr, "sim input-alias profile trace parses as json");
+  if (!jsonOr) {
+    llvm::consumeError(jsonOr.takeError());
+    return;
+  }
+
+  const auto *object = jsonOr->getAsObject();
+  EXPECT(object != nullptr, "sim input-alias profile trace is an object");
+  if (!object)
+    return;
+
+  auto *outputs = object->getArray("outputs");
+  EXPECT(outputs && outputs->size() == 1,
+         "sim input-alias profile trace emits one output");
+  if (outputs && outputs->size() == 1) {
+    const auto *output0 = (*outputs)[0].getAsObject();
+    EXPECT(output0 && output0->getString("name") &&
+               *output0->getString("name") == "updated",
+           "sim input-alias profile output name");
+    EXPECT(output0 && output0->getString("dtype") &&
+               *output0->getString("dtype") == "f32",
+           "sim input-alias profile output dtype");
+    EXPECT(output0 && output0->getArray("shape") &&
+               output0->getArray("shape")->size() == 1 &&
+               output0->getArray("shape")->front().getAsInteger() &&
+               *output0->getArray("shape")->front().getAsInteger() == 4,
+           "sim input-alias profile output shape");
+  }
+}
+
 static void testExecutionSessionPlansTopologicalOrder() {
   TaskGraph graph;
 
@@ -6242,6 +6334,53 @@ static void testRunManifestParsesTaskOutputBinding() {
   }
 }
 
+static void testRunManifestParsesInputAliasOutputBinding() {
+  const std::string manifestPath =
+      "/tmp/runtime_run_manifest_input_alias_output.json";
+  {
+    std::ofstream os(manifestPath);
+    os << R"JSON({
+  "task_id": "inplace",
+  "backend": "sim",
+  "artifact_root": "/tmp/artifact",
+  "inputs": [
+    { "name": "state", "path": "/tmp/state.npy" }
+  ],
+  "outputs": [
+    {
+      "name": "updated",
+      "source": "input_alias",
+      "input": "state",
+      "path": "/tmp/updated.npy",
+      "shape": [4],
+      "dtype": "f32"
+    }
+  ]
+})JSON";
+  }
+
+  auto specOr = loadRunManifest(manifestPath);
+  EXPECT((bool)specOr, "run manifest input-alias output parses");
+  if (specOr) {
+    EXPECT(specOr->tasks.size() == 1,
+           "run manifest input-alias output keeps one task");
+    if (specOr->tasks.size() == 1) {
+      const RunTaskSpec &task = specOr->tasks[0];
+      EXPECT(task.invocation.outputs.size() == 1,
+             "run manifest input-alias output count");
+      if (task.invocation.outputs.size() == 1) {
+        const TensorBinding &output = task.invocation.outputs[0];
+        EXPECT(output.sourceKind == BindingSourceKind::InputAlias,
+               "run manifest input-alias output source kind");
+        EXPECT(output.aliasedInputName == "state",
+               "run manifest input-alias output input name");
+        EXPECT(output.path == "/tmp/updated.npy",
+               "run manifest input-alias output path");
+      }
+    }
+  }
+}
+
 static void testRunManifestParsesDagSpec() {
   const std::string manifestPath = "/tmp/runtime_run_manifest_dag.json";
   {
@@ -6648,6 +6787,93 @@ static void testMixDirectDefaultContractUsesDirectSource() {
   std::filesystem::remove_all(root);
 }
 
+static void testMixDirectWrapperUsesCurrentCannAbi() {
+  const std::filesystem::path root = makeTempDir("mix-direct-current-abi");
+  std::filesystem::create_directories(root);
+  const std::filesystem::path source = root / "kernel.cpp";
+  {
+    std::ofstream os(source);
+    os << "struct TilingData_kernel_4 { long dim; };\n";
+    os << "extern \"C\" __global__ __aicore__ void kernel_4("
+          "GM_ADDR v1, GM_ADDR v2, GM_ADDR v3, TilingData_kernel_4 v4) {}\n";
+  }
+
+  auto summaryOr = buildMixDirectSourceContractSummaryForTest(
+      root.string(), source.string(), "kernel_4", "Ascend910B");
+  EXPECT((bool)summaryOr, "mix direct current CANN ABI contract builds");
+  if (!summaryOr) {
+    llvm::consumeError(summaryOr.takeError());
+    std::filesystem::remove_all(root);
+    return;
+  }
+
+  auto parsedOr = llvm::json::parse(*summaryOr);
+  EXPECT((bool)parsedOr, "mix direct current CANN ABI summary parses");
+  if (!parsedOr) {
+    llvm::consumeError(parsedOr.takeError());
+    std::filesystem::remove_all(root);
+    return;
+  }
+  const auto *rootObj = parsedOr->getAsObject();
+  EXPECT(rootObj != nullptr, "mix direct current CANN ABI summary root is object");
+  if (!rootObj) {
+    std::filesystem::remove_all(root);
+    return;
+  }
+  auto generatedSource = rootObj->getString("generated_source_path");
+  EXPECT(generatedSource && std::filesystem::exists(generatedSource->str()),
+         "mix direct current CANN ABI generated wrapper exists");
+  if (generatedSource) {
+    const std::string wrapper = readTextFile(generatedSource->str());
+    EXPECT(wrapper.find("workspace_param = v3") != std::string::npos,
+           "mix direct wrapper uses the parsed workspace argument");
+    EXPECT(wrapper.find("workspace_param = workspace") == std::string::npos,
+           "mix direct wrapper no longer requires a hard-coded workspace name");
+    EXPECT(wrapper.find("TilingData_kernel_4 v4_value{}") != std::string::npos,
+           "mix direct wrapper materializes by-value CANN tiling");
+    EXPECT(wrapper.find("afir_mix_copy_tiling(&v4_value, v4)") !=
+               std::string::npos,
+           "mix direct wrapper copies tiling from GM before origin call");
+    EXPECT(wrapper.find("kernel_4_origin(v1, v2, v3, v4_value)") !=
+               std::string::npos,
+           "mix direct wrapper calls origin with by-value tiling");
+  }
+
+  auto stubOr = writeMixDirectSourceStubSummaryForTest(
+      root.string(), source.string(), "kernel_4", "Ascend910B", 17);
+  EXPECT((bool)stubOr, "mix direct current CANN ABI stub builds");
+  if (stubOr) {
+    auto stubParsedOr = llvm::json::parse(*stubOr);
+    EXPECT((bool)stubParsedOr, "mix direct current CANN ABI stub summary parses");
+    if (stubParsedOr) {
+      const auto *stubRoot = stubParsedOr->getAsObject();
+      auto hostStub = stubRoot ? stubRoot->getString("host_stub_source_path")
+                               : std::optional<llvm::StringRef>();
+      auto launcherHeader =
+          stubRoot ? stubRoot->getString("launcher_header_path")
+                   : std::optional<llvm::StringRef>();
+      if (hostStub) {
+        const std::string hostStubText = readTextFile(hostStub->str());
+        EXPECT(hostStubText.find("void *arg15") != std::string::npos,
+               "mix direct host stub exposes the max runtime launch ABI");
+        EXPECT(hostStubText.find("void *arg3;") != std::string::npos,
+               "mix direct host stub packs all parsed kernel arguments");
+      }
+      if (launcherHeader) {
+        const std::string headerText = readTextFile(launcherHeader->str());
+        EXPECT(headerText.find("void *arg15") != std::string::npos,
+               "mix direct launcher header exposes the max runtime launch ABI");
+      }
+    } else {
+      llvm::consumeError(stubParsedOr.takeError());
+    }
+  } else {
+    llvm::consumeError(stubOr.takeError());
+  }
+
+  std::filesystem::remove_all(root);
+}
+
 int main() {
   testTaskGraphBasics();
   testProfileTraceCollectsArtifactPaths();
@@ -6662,7 +6888,7 @@ int main() {
   testRuntimeSessionRequestBuilderLoadsMixArtifactMetadataPath();
   testRuntimeSessionRequestBuilderRejectsMissingMixArtifactMetadata();
   testPrepareRuntimeSessionGraphUsesMixMetadataDefaults();
-  testPrepareRuntimeSessionGraphRejectsMixInputCountMismatch();
+  testPrepareRuntimeSessionGraphFiltersUnusedMixInputs();
   testPrepareRuntimeSessionGraphFallsBackToManifestAbiDefaults();
   testPrepareRuntimeSessionGraphAcceptsMetadataOnlyMixArtifact();
   testRuntimeSessionRequestBuilderLoadsVecArtifactFromRoot();
@@ -6675,6 +6901,7 @@ int main() {
   testMixDirectSourceContractSummary();
   testMixDirectSourceStubSummary();
   testMixDirectDefaultContractUsesDirectSource();
+  testMixDirectWrapperUsesCurrentCannAbi();
   testRuntimeSessionRequestBuilderBuildsSingleTaskGraph();
   testMixValidationCanBeRepresentedAsRuntimeTask();
   testOutputComparatorExactMatchPasses();
@@ -6730,6 +6957,7 @@ int main() {
   testBackendSurfacesProfileTrace();
   testBackendPreservesExistingProfileTrace();
   testSimulatorProfileSchemaV1Artifact();
+  testSimulatorProfileInputAliasOutput();
   testExecutionSessionPlansTopologicalOrder();
   testExecutionSessionPlanTracksMultipleReadyRoots();
   testExecutionSessionRunsTasksInTopologicalOrder();
@@ -6773,6 +7001,7 @@ int main() {
   testResourceSchedulerPreservesOutstandingReservationsAcrossReconfigure();
   testRunManifestParsesOutputMetadataWithoutExpectedOutputs();
   testRunManifestParsesTaskOutputBinding();
+  testRunManifestParsesInputAliasOutputBinding();
   testRunManifestParsesDagSpec();
   testRunManifestParsesDagArtifactRootOverride();
 

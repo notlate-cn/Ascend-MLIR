@@ -1,4 +1,3 @@
-// RUN: sed -n '/\/\/ MULTI-BEGIN/,/\/\/ MULTI-END/p' %s | not afir-translate -mlir-to-cann --host-tiling-out=%t.host.cpp 2>&1 | FileCheck %s
 // RUN: rm -f %t.tiling.json
 // RUN: sed -n '/\/\/ MULTI-BEGIN/,/\/\/ MULTI-END/p' %s | afir-translate -mlir-to-cann --tiling-space-out=%t.tiling.json > %t.cpp
 // RUN: FileCheck %s --input-file=%t.tiling.json --check-prefix=TILING
@@ -24,7 +23,6 @@
 // RUN: sed -n '/\/\/ BAD-GRAPH-UNKNOWN-BEGIN/,/\/\/ BAD-GRAPH-UNKNOWN-END/p' %s | not afir-translate -mlir-to-cann --runtime-manifest-out=%t.bad-graph-unknown.manifest.json 2>&1 | FileCheck %s --check-prefix=BAD-GRAPH-UNKNOWN
 // RUN: sed -n '/\/\/ BAD-GRAPH-CYCLE-BEGIN/,/\/\/ BAD-GRAPH-CYCLE-END/p' %s | not afir-translate -mlir-to-cann --runtime-manifest-out=%t.bad-graph-cycle.manifest.json 2>&1 | FileCheck %s --check-prefix=BAD-GRAPH-CYCLE
 
-// CHECK: host tiling MVP supports exactly one global kernel
 // TILING: "kernel": "kernel_a"
 // TILING: "schema_version": "2.0"
 // BAD-TAIL: ascend.schedule.tail_policies element 1 must be a string attribute

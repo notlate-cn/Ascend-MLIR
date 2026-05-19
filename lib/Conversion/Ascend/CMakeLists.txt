@@ -25,6 +25,7 @@ add_mlir_library(AscendConversion
   Kernelize/KernelPattern.cpp
   Kernelize/KernelizeOpRegistry.cpp
   Kernelize/KernelizeSemanticUtils.cpp
+  KernelSplit/KernelSplitPass.cpp
   Schedule/KernelPatternView.cpp
   Schedule/TemplateRegistry.cpp
   Normalize/NormalizePass.cpp
@@ -69,4 +70,5 @@ add_mlir_library(AscendConversion
   AscendCPrepareForEmitConversion
   CanonicalizeCannSignatureConversion
   LinalgToAscendCConversion
+  MarkStructuredOpsConversion
 )

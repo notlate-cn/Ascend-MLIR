@@ -15,6 +15,7 @@ struct MixStubTemplateArgs {
   std::string hostStubSourcePath;
   size_t mixLen = 0;
   size_t mixFileLen = 0;
+  size_t kernelArgCount = 6;
   // When true, always launch on AIV core (vector-only kernel).
   bool aivOnly = false;
 };

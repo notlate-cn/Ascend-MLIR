@@ -111,6 +111,48 @@ module {
   EXPECT_TRUE(isSupportedPhase5FinalOutput(generic, matrix));
 }
 
+TEST(AscendLinalgBodyClassifierTest,
+     ClassifiesProjectedFusedElementwiseBody) {
+  MLIRContext context;
+  OwningOpRef<ModuleOp> module = parseClassifierModule(
+      context, R"mlir(
+module {
+  func.func @f(%arg0: memref<70x128xf16, 9 : i32>,
+               %row: memref<70xf16, 9 : i32>,
+               %col: memref<128xf16, 9 : i32>,
+               %out: memref<70x128xf16, 10 : i32>) {
+    linalg.generic {
+      indexing_maps = [
+        affine_map<(d0, d1) -> (d0, d1)>,
+        affine_map<(d0, d1) -> (d0)>,
+        affine_map<(d0, d1) -> (d1)>,
+        affine_map<(d0, d1) -> (d0, d1)>],
+      iterator_types = ["parallel", "parallel"]}
+      ins(%arg0, %row, %col : memref<70x128xf16, 9 : i32>,
+                              memref<70xf16, 9 : i32>,
+                              memref<128xf16, 9 : i32>)
+      outs(%out : memref<70x128xf16, 10 : i32>)
+      attrs = {ascend.op_role = "vector"} {
+    ^bb0(%value: f16, %row_value: f16, %col_value: f16, %old: f16):
+      %sum = arith.addf %value, %row_value : f16
+      %scaled = arith.mulf %sum, %col_value : f16
+      linalg.yield %scaled : f16
+    }
+    return
+  }
+}
+)mlir");
+  ASSERT_TRUE(module);
+  linalg::GenericOp generic = findFirstGeneric(*module);
+  ASSERT_TRUE(generic);
+
+  AscendBackendSupportMatrix matrix;
+  EXPECT_EQ(classifyLinalgComputeKind(generic.getOperation(), matrix),
+            ComputeKind::FusedElementwise);
+  EXPECT_TRUE(isSupportedPhase5VectorOutput(generic, matrix));
+  EXPECT_TRUE(isSupportedPhase5FinalOutput(generic, matrix));
+}
+
 TEST(AscendLinalgBodyClassifierTest, ClassifiesSupportedReductionBodyOnce) {
   MLIRContext context;
   OwningOpRef<ModuleOp> module = parseClassifierModule(

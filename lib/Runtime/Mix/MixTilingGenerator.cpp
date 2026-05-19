@@ -9,6 +9,7 @@
 #include "llvm/Support/Path.h"
 
 #include <fstream>
+#include <limits>
 #include <memory>
 #include <optional>
 
@@ -34,9 +35,31 @@ static bool hasPositiveShape(llvm::ArrayRef<int64_t> shape) {
   return llvm::all_of(shape, [](int64_t dim) { return dim > 0; });
 }
 
+static std::optional<int64_t>
+getPositiveElementCount(llvm::ArrayRef<int64_t> shape) {
+  int64_t elements = 1;
+  for (int64_t dim : shape) {
+    if (dim <= 0 ||
+        elements > std::numeric_limits<int64_t>::max() / dim)
+      return std::nullopt;
+    elements *= dim;
+  }
+  return elements;
+}
+
 static bool isValidBiasShape(llvm::ArrayRef<int64_t> biasShape,
                              int64_t expectedN) {
   return biasShape.size() == 1 && biasShape[0] == expectedN;
+}
+
+static std::optional<size_t>
+findBiasInputIndex(llvm::ArrayRef<MixTilingTensorDesc> inputs,
+                   int64_t expectedN) {
+  for (size_t i = 2; i < inputs.size(); ++i) {
+    if (isValidBiasShape(inputs[i].shape, expectedN))
+      return i;
+  }
+  return std::nullopt;
 }
 
 static llvm::Expected<MatmulLayout> parseMatmulLayout(llvm::StringRef layout,
@@ -74,11 +97,10 @@ buildExplicitMatmulTilingRequest(const MixTilingRequest &request,
                                    "unsupported mix matmul op kind: %s",
                                    matmul.opKind.c_str());
   }
-  if (request.inputs.size() < 2 || request.inputs.size() > 3 ||
-      request.outputs.size() != 1) {
+  if (request.inputs.size() < 2 || request.outputs.size() != 1) {
     return llvm::createStringError(
         llvm::inconvertibleErrorCode(),
-        "invalid explicit matmul mix request: expected 2 or 3 inputs and 1 output");
+        "invalid explicit matmul mix request: expected at least 2 inputs and 1 output");
   }
 
   const auto &a = request.inputs[0].shape;
@@ -116,17 +138,37 @@ buildExplicitMatmulTilingRequest(const MixTilingRequest &request,
           "invalid explicit batch matmul mix request: shapes do not match annotated matmul semantics");
     }
   } else {
-    if (!isRank2(a) || !isRank2(b) || !isRank2(c) || !hasPositiveShape(a) ||
-        !hasPositiveShape(b) || !hasPositiveShape(c) ||
-        !matmul.batchShape.empty()) {
+    if (!isRank2(b) || !isRank2(c) || !hasPositiveShape(b) ||
+        !hasPositiveShape(c) || !matmul.batchShape.empty()) {
       return llvm::createStringError(
           llvm::inconvertibleErrorCode(),
-          "invalid explicit matmul mix request: only positive rank-2 tensors without batch are supported");
+          "invalid explicit matmul mix request: only positive rank-2 tensors or flattenable non-transposed lhs tensors without batch are supported");
     }
-    derivedM = matmul.transA ? a[1] : a[0];
-    derivedKFromA = matmul.transA ? a[0] : a[1];
     derivedN = matmul.transB ? b[0] : b[1];
     derivedKFromB = matmul.transB ? b[1] : b[0];
+    if (isRank2(a)) {
+      if (!hasPositiveShape(a)) {
+        return llvm::createStringError(
+            llvm::inconvertibleErrorCode(),
+            "invalid explicit matmul mix request: only positive rank-2 tensors or flattenable non-transposed lhs tensors without batch are supported");
+      }
+      derivedM = matmul.transA ? a[1] : a[0];
+      derivedKFromA = matmul.transA ? a[0] : a[1];
+    } else if (!matmul.transA) {
+      std::optional<int64_t> lhsElements = getPositiveElementCount(a);
+      if (!lhsElements ||
+          *lhsElements != c[0] * derivedKFromB) {
+        return llvm::createStringError(
+            llvm::inconvertibleErrorCode(),
+            "invalid explicit matmul mix request: flattenable lhs shape does not match annotated matmul semantics");
+      }
+      derivedM = c[0];
+      derivedKFromA = derivedKFromB;
+    } else {
+      return llvm::createStringError(
+          llvm::inconvertibleErrorCode(),
+          "invalid explicit matmul mix request: only positive rank-2 tensors or flattenable non-transposed lhs tensors without batch are supported");
+    }
     if (c[0] != derivedM || c[1] != derivedN) {
       return llvm::createStringError(
           llvm::inconvertibleErrorCode(),
@@ -139,9 +181,10 @@ buildExplicitMatmulTilingRequest(const MixTilingRequest &request,
         "invalid explicit %s mix request: shapes do not match annotated matmul semantics",
         isBatchMatmul ? "batch matmul" : "matmul");
   }
+  std::optional<size_t> biasInputIndex;
   if (matmul.hasBias) {
-    if (request.inputs.size() < 3 ||
-        !isValidBiasShape(request.inputs[2].shape, derivedN)) {
+    biasInputIndex = findBiasInputIndex(request.inputs, derivedN);
+    if (!biasInputIndex) {
       return llvm::createStringError(
           llvm::inconvertibleErrorCode(),
           "invalid explicit matmul mix request: bias must be a 1D vector with length N");
@@ -178,10 +221,11 @@ buildExplicitMatmulTilingRequest(const MixTilingRequest &request,
   matmulRequest.problem.layoutC = *layoutCOr;
   matmulRequest.problem.transA = matmul.transA;
   matmulRequest.problem.transB = matmul.transB;
-  matmulRequest.problem.hasBias = matmul.hasBias;
-  if (matmul.hasBias)
-    matmulRequest.problem.biasDType = request.inputs[2].dtype;
-  matmulRequest.fusion.epilogue = *epilogueOr;
+  matmulRequest.problem.hasBias = matmul.hasBias && !isBatchMatmul;
+  if (matmul.hasBias && !isBatchMatmul)
+    matmulRequest.problem.biasDType = request.inputs[*biasInputIndex].dtype;
+  matmulRequest.fusion.epilogue =
+      isBatchMatmul && matmul.hasBias ? EpilogueKind::None : *epilogueOr;
   matmulRequest.hints.socVersion = request.socVersion;
   return matmulRequest;
 }
@@ -241,6 +285,10 @@ public:
     if (request.matmul) {
       auto explicitMatmulRequest = buildExplicitMatmulTilingRequest(
           request, *request.matmul);
+      if (!explicitMatmulRequest) {
+        llvm::consumeError(explicitMatmulRequest.takeError());
+        return false;
+      }
       return static_cast<bool>(explicitMatmulRequest);
     }
     if (request.inputs.size() < 2 || request.inputs.size() > 3 ||

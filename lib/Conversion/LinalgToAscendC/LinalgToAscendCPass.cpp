@@ -251,6 +251,59 @@ Value computeAllocByteCount(OpBuilder &b, Location loc,
   return b.create<arith::MulIOp>(loc, count, bytesPerElemVal);
 }
 
+static Value ceilDivIndex(OpBuilder &b, Location loc, Value value,
+                          int64_t divisor) {
+  Value divisorValue = b.create<arith::ConstantIndexOp>(loc, divisor);
+  Value bias = b.create<arith::ConstantIndexOp>(loc, divisor - 1);
+  Value numerator = b.create<arith::AddIOp>(loc, value, bias);
+  return b.create<arith::DivUIOp>(loc, numerator, divisorValue);
+}
+
+static bool usesCubeRowBlockedStorage(int64_t memorySpace) {
+  return memorySpace == static_cast<int64_t>(TPosition::A1) ||
+         memorySpace == static_cast<int64_t>(TPosition::A2) ||
+         memorySpace == static_cast<int64_t>(TPosition::CO1);
+}
+
+Value computeCubePaddedAllocByteCount(OpBuilder &b, Location loc,
+                                      memref::AllocOp allocOp,
+                                      int64_t memorySpace) {
+  auto memrefType = allocOp.getType();
+  ArrayRef<int64_t> shape = memrefType.getShape();
+  if (!usesCubeRowBlockedStorage(memorySpace) || shape.size() < 2)
+    return computeAllocByteCount(b, loc, allocOp);
+
+  unsigned bytesPerElem = memrefType.getElementTypeBitWidth() / 8;
+  unsigned dynIdx = 0;
+  int64_t rowDim = static_cast<int64_t>(shape.size()) - 2;
+  Value count;
+  for (auto [dimIndex, dim] : llvm::enumerate(shape)) {
+    Value dimVal;
+    if (ShapedType::isDynamic(dim)) {
+      dimVal = allocOp.getDynamicSizes()[dynIdx++];
+    } else if (static_cast<int64_t>(dimIndex) == rowDim && dim % 16 != 0) {
+      int64_t padded = ((dim + 15) / 16) * 16;
+      dimVal = b.create<arith::ConstantIndexOp>(loc, padded);
+    } else {
+      dimVal = b.create<arith::ConstantIndexOp>(loc, dim);
+    }
+
+    if (static_cast<int64_t>(dimIndex) == rowDim &&
+        ShapedType::isDynamic(dim)) {
+      dimVal = b.create<arith::MulIOp>(
+          loc, ceilDivIndex(b, loc, dimVal, 16),
+          b.create<arith::ConstantIndexOp>(loc, 16));
+    }
+
+    count = count ? b.create<arith::MulIOp>(loc, count, dimVal) : dimVal;
+  }
+
+  if (!count)
+    count = b.create<arith::ConstantIndexOp>(loc, 1);
+  Value bytesPerElemVal = b.create<arith::ConstantIndexOp>(loc, bytesPerElem);
+  return b.create<arith::MulIOp>(loc, count, bytesPerElemVal);
+}
+
 /// Walk through subviews and scf.for iter_args to find the ultimate source.
 static Value resolveToAllocRoot(Value v) {
   const int maxDepth = 20;
@@ -380,7 +433,8 @@ LogicalResult lowerLinalgToAscendC(func::FuncOp funcOp) {
     builder.setInsertionPoint(allocOp);
     Value tbuf =
         builder.create<TBufOp>(allocOp.getLoc(), TBufType::get(ctx, pos));
-    Value len = computeAllocByteCount(builder, allocOp.getLoc(), allocOp);
+    Value len =
+        computeCubePaddedAllocByteCount(builder, allocOp.getLoc(), allocOp, ms);
     builder.create<TPipeInitBufferOp>(allocOp.getLoc(), pipe, tbuf, len);
     // Initialize the TQue so that AllocTensor returns a tensor with a
     // valid GetSize().  Without this, ReduceSum2DL2 computes a division

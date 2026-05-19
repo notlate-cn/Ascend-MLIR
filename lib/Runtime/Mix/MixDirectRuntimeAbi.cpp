@@ -235,7 +235,7 @@ loadMixDirectRuntimeAbi(llvm::StringRef cannMlirPath, llvm::StringRef npyDir,
         "canonical IO metadata for kernel '%s'",
         runtimeKernelName.str().c_str());
 
-  auto abiOr = extractMixAbiFromCannMlir(cannMlirPath);
+  auto abiOr = extractMixAbiFromCannMlir(cannMlirPath, runtimeKernelName);
   if (!abiOr)
     return abiOr.takeError();
   MixAbiMetadata abi = std::move(*abiOr);

@@ -64,13 +64,21 @@ static AscendCKernelKind getKernelKind(func::FuncOp funcOp) {
   return AscendCKernelKind::Unknown;
 }
 
-static func::FuncOp findPrimaryGlobalKernel(ModuleOp moduleOp) {
+static SmallVector<func::FuncOp> collectGlobalKernels(ModuleOp moduleOp) {
+  SmallVector<func::FuncOp> kernels;
   for (Operation &child : moduleOp.getBody()->getOperations()) {
     auto funcOp = dyn_cast<func::FuncOp>(child);
     if (funcOp && funcOp->hasAttr(ascendc::attr::global))
-      return funcOp;
+      kernels.push_back(funcOp);
   }
-  return {};
+  return kernels;
+}
+
+static bool moduleHasMixKernel(ModuleOp moduleOp) {
+  for (func::FuncOp funcOp : collectGlobalKernels(moduleOp))
+    if (getKernelKind(funcOp) == AscendCKernelKind::Mix)
+      return true;
+  return false;
 }
 
 static std::string getAscendCScalarTypeName(Type elemType) {
@@ -2094,15 +2102,6 @@ static bool emitMixKernelShellBody(
   return true;
 }
 
-static void emitSupportedMixIncludesAndNamespaces(raw_ostream &os) {
-  os << "#define __AFIR_RUNTIME_MIX_KERNEL_FUN_H__\n\n"
-     << "#define ASCENDC_CUBE_ONLY\n"
-     << "#include \"kernel_operator.h\"\n"
-     << "#include \"lib/matmul_intf.h\"\n\n"
-     << "using namespace AscendC;\n"
-     << "using namespace matmul;\n\n";
-}
-
 static void emitSupportedMixCopyTilingHelper(raw_ostream &os) {
   os << "__aicore__ inline void CopyTiling(TCubeTiling *tiling, GM_ADDR tilingGM) {\n"
      << "  uint64_t *dst = reinterpret_cast<uint64_t *>(tiling);\n"
@@ -2127,10 +2126,6 @@ static void emitSupportedMixKernelSignature(raw_ostream &os,
 
 static void emitSupportedMixKernelShellPrologue(
     raw_ostream &os, StringRef kernelName, const MixTaskKindDescriptor &desc) {
-  emitSupportedMixIncludesAndNamespaces(os);
-  os << "constexpr MatmulConfig AFIR_BATCH_MATMUL_CFG = "
-        "GetNormalConfig(false, true);\n\n";
-  emitSupportedMixCopyTilingHelper(os);
   emitSupportedMixKernelSignature(os, kernelName, desc);
 }
 
@@ -2148,6 +2143,271 @@ static bool hasBoolAttrValue(func::FuncOp funcOp, StringRef attrName,
                              bool expected) {
   auto attr = funcOp->getAttrOfType<BoolAttr>(attrName);
   return attr && attr.getValue() == expected;
+}
+
+struct StableF32BatchMatmulBiasMixSignature {
+  unsigned lhsArgIndex = 0;
+  unsigned rhsArgIndex = 0;
+  unsigned biasArgIndex = 0;
+  unsigned outArgIndex = 0;
+  unsigned workspaceArgIndex = 0;
+  unsigned tilingArgIndex = 0;
+};
+
+static bool isUnsignedI8Memref(Type type) {
+  auto memrefType = dyn_cast<MemRefType>(type);
+  return memrefType && memrefType.getElementType().isUnsignedInteger(8);
+}
+
+struct StableF32MatmulBiasMixSignature {
+  unsigned lhsArgIndex = 0;
+  unsigned rhsArgIndex = 0;
+  unsigned biasArgIndex = 0;
+  unsigned outArgIndex = 0;
+  unsigned workspaceArgIndex = 0;
+  unsigned tilingArgIndex = 0;
+};
+
+static bool isRankedF32MemrefWithMinRank(Type type, int64_t minRank) {
+  auto memrefType = dyn_cast<MemRefType>(type);
+  return memrefType && memrefType.hasRank() &&
+         memrefType.getRank() >= minRank &&
+         memrefType.getElementType() == Float32Type::get(type.getContext());
+}
+
+static std::optional<StableF32MatmulBiasMixSignature>
+matchStableF32MatmulBiasMixSignature(func::FuncOp funcOp) {
+  if (!hasStringAttrValue(funcOp, "abi_matmul_op_kind", "matmul") ||
+      !hasBoolAttrValue(funcOp, "abi_matmul_trans_a", false) ||
+      !hasBoolAttrValue(funcOp, "abi_matmul_trans_b", false) ||
+      !hasBoolAttrValue(funcOp, "abi_matmul_has_bias", true) ||
+      !hasStringAttrValue(funcOp, "abi_matmul_layout_a", "ND") ||
+      !hasStringAttrValue(funcOp, "abi_matmul_layout_b", "ND") ||
+      !hasStringAttrValue(funcOp, "abi_matmul_layout_c", "ND") ||
+      !hasStringAttrValue(funcOp, "abi_matmul_epilogue_kind", "BiasAdd"))
+    return std::nullopt;
+
+  auto numInputsAttr = funcOp->getAttrOfType<IntegerAttr>("cann.num_inputs");
+  if (!numInputsAttr || numInputsAttr.getInt() < 3)
+    return std::nullopt;
+
+  auto args = funcOp.getArguments();
+  if (args.size() < 6)
+    return std::nullopt;
+  const unsigned numInputs = static_cast<unsigned>(numInputsAttr.getInt());
+  const unsigned argCount = args.size();
+  const unsigned workspaceIndex = argCount - 2;
+  const unsigned tilingIndex = argCount - 1;
+  if (numInputs >= workspaceIndex ||
+      !isUnsignedI8Memref(args[workspaceIndex].getType()) ||
+      !isa<emitasc::PyStructType>(args[tilingIndex].getType()))
+    return std::nullopt;
+
+  MLIRContext *ctx = funcOp.getContext();
+  Type f32 = Float32Type::get(ctx);
+
+  std::optional<unsigned> lhsIndex;
+  std::optional<unsigned> rhsIndex;
+  std::optional<unsigned> biasIndex;
+  for (unsigned index = 0; index < numInputs; ++index) {
+    Type argType = args[index].getType();
+    if (!lhsIndex && isRankedF32MemrefWithMinRank(argType, 2)) {
+      lhsIndex = index;
+      continue;
+    }
+    if (lhsIndex && !rhsIndex && isRankedMemrefOf(argType, 2, f32)) {
+      rhsIndex = index;
+      continue;
+    }
+    if (!biasIndex && isRankedMemrefOf(argType, 1, f32))
+      biasIndex = index;
+  }
+  if (!lhsIndex || !rhsIndex || !biasIndex)
+    return std::nullopt;
+
+  std::optional<unsigned> outIndex;
+  for (unsigned index = numInputs; index < workspaceIndex; ++index) {
+    if (isRankedMemrefOf(args[index].getType(), 2, f32)) {
+      outIndex = index;
+      break;
+    }
+  }
+  if (!outIndex)
+    return std::nullopt;
+
+  return StableF32MatmulBiasMixSignature{
+      *lhsIndex, *rhsIndex, *biasIndex, *outIndex, workspaceIndex,
+      tilingIndex};
+}
+
+static bool emitStableF32MatmulBiasMixKernel(raw_ostream &os,
+                                             func::FuncOp funcOp) {
+  std::optional<StableF32MatmulBiasMixSignature> signature =
+      matchStableF32MatmulBiasMixSignature(funcOp);
+  if (!signature)
+    return false;
+
+  auto args = funcOp.getArguments();
+  const unsigned lastMlirArgIndex = args.size() - 1;
+  os << "extern \"C\" __global__ __aicore__ void " << funcOp.getName()
+     << "(\n";
+  for (unsigned index = 0; index < lastMlirArgIndex; ++index)
+    os << "    GM_ADDR arg" << index << ",\n";
+  os << "    GM_ADDR tilingGm) {\n"
+     << "  KERNEL_TASK_TYPE_DEFAULT(KERNEL_TYPE_MIX_AIC_1_2);\n";
+
+  for (unsigned index = 0; index < lastMlirArgIndex; ++index) {
+    if (index == signature->lhsArgIndex || index == signature->rhsArgIndex ||
+        index == signature->biasArgIndex || index == signature->outArgIndex)
+      continue;
+    os << "  (void)arg" << index << ";\n";
+  }
+  os << "\n"
+     << "  TCubeTiling tiling;\n"
+     << "  CopyTiling(&tiling, tilingGm);\n"
+     << "  const uint32_t m = static_cast<uint32_t>(tiling.M);\n"
+     << "  const uint32_t n = static_cast<uint32_t>(tiling.N);\n"
+     << "  const uint32_t k = static_cast<uint32_t>(tiling.Ka);\n\n"
+     << "  if ASCEND_IS_AIC {\n"
+     << "    __gm__ float *lhsGM = reinterpret_cast<__gm__ float *>(arg"
+     << signature->lhsArgIndex << ");\n"
+     << "    __gm__ float *rhsGM = reinterpret_cast<__gm__ float *>(arg"
+     << signature->rhsArgIndex << ");\n"
+     << "    __gm__ float *biasGM = reinterpret_cast<__gm__ float *>(arg"
+     << signature->biasArgIndex << ");\n"
+     << "    __gm__ float *outGM = reinterpret_cast<__gm__ float *>(arg"
+     << signature->outArgIndex << ");\n"
+     << "    for (uint32_t row = 0; row < m; ++row) {\n"
+     << "      for (uint32_t col = 0; col < n; ++col) {\n"
+     << "        float acc = 0.0f;\n"
+     << "        for (uint32_t kk = 0; kk < k; ++kk)\n"
+     << "          acc += lhsGM[static_cast<uint64_t>(row) * k + kk] * rhsGM[static_cast<uint64_t>(kk) * n + col];\n"
+     << "        acc += biasGM[col];\n"
+     << "        outGM[static_cast<uint64_t>(row) * n + col] = acc;\n"
+     << "      }\n"
+     << "    }\n"
+     << "  }\n\n"
+     << "  if ASCEND_IS_AIV {\n"
+     << "  }\n"
+     << "}\n";
+  return true;
+}
+
+static std::optional<StableF32BatchMatmulBiasMixSignature>
+matchStableF32BatchMatmulBiasMixSignature(func::FuncOp funcOp) {
+  if (!hasStringAttrValue(funcOp, "abi_matmul_op_kind", "batch_matmul") ||
+      !hasBoolAttrValue(funcOp, "abi_matmul_trans_a", false) ||
+      !hasBoolAttrValue(funcOp, "abi_matmul_trans_b", false) ||
+      !hasBoolAttrValue(funcOp, "abi_matmul_has_bias", true) ||
+      !hasStringAttrValue(funcOp, "abi_matmul_layout_a", "ND") ||
+      !hasStringAttrValue(funcOp, "abi_matmul_layout_b", "ND") ||
+      !hasStringAttrValue(funcOp, "abi_matmul_layout_c", "ND") ||
+      !hasStringAttrValue(funcOp, "abi_matmul_epilogue_kind", "BiasAdd"))
+    return std::nullopt;
+
+  auto numInputsAttr = funcOp->getAttrOfType<IntegerAttr>("cann.num_inputs");
+  if (!numInputsAttr || numInputsAttr.getInt() < 3)
+    return std::nullopt;
+
+  auto args = funcOp.getArguments();
+  if (args.size() < 6)
+    return std::nullopt;
+  const unsigned numInputs = static_cast<unsigned>(numInputsAttr.getInt());
+  const unsigned argCount = args.size();
+  const unsigned workspaceIndex = argCount - 2;
+  const unsigned tilingIndex = argCount - 1;
+  if (numInputs >= workspaceIndex ||
+      !isUnsignedI8Memref(args[workspaceIndex].getType()) ||
+      !isa<emitasc::PyStructType>(args[tilingIndex].getType()))
+    return std::nullopt;
+
+  MLIRContext *ctx = funcOp.getContext();
+  Type f32 = Float32Type::get(ctx);
+
+  SmallVector<unsigned> rank3Inputs;
+  std::optional<unsigned> biasIndex;
+  for (unsigned index = 0; index < numInputs; ++index) {
+    Type argType = args[index].getType();
+    if (isRankedMemrefOf(argType, 3, f32))
+      rank3Inputs.push_back(index);
+    else if (!biasIndex && isRankedMemrefOf(argType, 1, f32))
+      biasIndex = index;
+  }
+  if (rank3Inputs.size() < 2 || !biasIndex)
+    return std::nullopt;
+
+  std::optional<unsigned> outIndex;
+  for (unsigned index = numInputs; index < workspaceIndex; ++index) {
+    if (isRankedMemrefOf(args[index].getType(), 3, f32)) {
+      outIndex = index;
+      break;
+    }
+  }
+  if (!outIndex)
+    return std::nullopt;
+
+  return StableF32BatchMatmulBiasMixSignature{
+      rank3Inputs[0], rank3Inputs[1], *biasIndex, *outIndex, workspaceIndex,
+      tilingIndex};
+}
+
+static bool emitStableF32BatchMatmulBiasMixKernel(raw_ostream &os,
+                                                  func::FuncOp funcOp) {
+  std::optional<StableF32BatchMatmulBiasMixSignature> signature =
+      matchStableF32BatchMatmulBiasMixSignature(funcOp);
+  if (!signature)
+    return false;
+
+  auto args = funcOp.getArguments();
+  const unsigned lastMlirArgIndex = args.size() - 1;
+  os << "extern \"C\" __global__ __aicore__ void " << funcOp.getName()
+     << "(\n";
+  for (unsigned index = 0; index < lastMlirArgIndex; ++index)
+    os << "    GM_ADDR arg" << index << ",\n";
+  os << "    GM_ADDR tilingGm) {\n"
+     << "  KERNEL_TASK_TYPE_DEFAULT(KERNEL_TYPE_MIX_AIC_1_2);\n";
+
+  for (unsigned index = 0; index < lastMlirArgIndex; ++index) {
+    if (index == signature->lhsArgIndex || index == signature->rhsArgIndex ||
+        index == signature->biasArgIndex || index == signature->outArgIndex)
+      continue;
+    os << "  (void)arg" << index << ";\n";
+  }
+  os << "\n"
+     << "  TCubeTiling tiling;\n"
+     << "  CopyTiling(&tiling, tilingGm);\n"
+     << "  const uint32_t batch = tiling.BatchNum > 0 ? static_cast<uint32_t>(tiling.BatchNum) : 1u;\n"
+     << "  const uint32_t m = static_cast<uint32_t>(tiling.M);\n"
+     << "  const uint32_t n = static_cast<uint32_t>(tiling.N);\n"
+     << "  const uint32_t k = static_cast<uint32_t>(tiling.Ka);\n\n"
+     << "  if ASCEND_IS_AIC {\n"
+     << "    __gm__ float *lhsGM = reinterpret_cast<__gm__ float *>(arg"
+     << signature->lhsArgIndex << ");\n"
+     << "    __gm__ float *rhsGM = reinterpret_cast<__gm__ float *>(arg"
+     << signature->rhsArgIndex << ");\n"
+     << "    __gm__ float *biasGM = reinterpret_cast<__gm__ float *>(arg"
+     << signature->biasArgIndex << ");\n"
+     << "    __gm__ float *outGM = reinterpret_cast<__gm__ float *>(arg"
+     << signature->outArgIndex << ");\n"
+     << "    const uint64_t lhsBatchStride = static_cast<uint64_t>(m) * k;\n"
+     << "    const uint64_t rhsBatchStride = static_cast<uint64_t>(k) * n;\n"
+     << "    const uint64_t outBatchStride = static_cast<uint64_t>(m) * n;\n"
+     << "    for (uint32_t b = 0; b < batch; ++b) {\n"
+     << "      for (uint32_t row = 0; row < m; ++row) {\n"
+     << "        for (uint32_t col = 0; col < n; ++col) {\n"
+     << "          float acc = 0.0f;\n"
+     << "          for (uint32_t kk = 0; kk < k; ++kk)\n"
+     << "            acc += lhsGM[static_cast<uint64_t>(b) * lhsBatchStride + static_cast<uint64_t>(row) * k + kk] * rhsGM[static_cast<uint64_t>(b) * rhsBatchStride + static_cast<uint64_t>(kk) * n + col];\n"
+     << "          acc += biasGM[col];\n"
+     << "          outGM[static_cast<uint64_t>(b) * outBatchStride + static_cast<uint64_t>(row) * n + col] = acc;\n"
+     << "        }\n"
+     << "      }\n"
+     << "    }\n"
+     << "  }\n\n"
+     << "  if ASCEND_IS_AIV {\n"
+     << "  }\n"
+     << "}\n";
+  return true;
 }
 
 static bool hasStableBatchMatmulFullBiasSignature(func::FuncOp funcOp) {
@@ -2187,10 +2447,6 @@ static bool emitStableBatchMatmulFullBiasMixKernel(raw_ostream &os,
   if (!hasStableBatchMatmulFullBiasSignature(funcOp))
     return false;
 
-  emitSupportedMixIncludesAndNamespaces(os);
-  os << "constexpr MatmulConfig AFIR_BATCH_MATMUL_CFG = "
-        "GetNormalConfig(false, true);\n\n";
-  emitSupportedMixCopyTilingHelper(os);
   os << "extern \"C\" __global__ __aicore__ void " << funcOp.getName()
      << "(\n"
      << "    GM_ADDR q, GM_ADDR key, GM_ADDR bias, GM_ADDR out, GM_ADDR workspace,\n"
@@ -2445,6 +2701,60 @@ static void deduplicateConstantsForEmission(Operation *op) {
       deduplicateConstantsInBlock(block);
 }
 
+static void emitCannKernelPreamble(raw_ostream &os, bool includeMixSupport) {
+  if (includeMixSupport) {
+    os << "#define __AFIR_RUNTIME_MIX_KERNEL_FUN_H__\n\n";
+    os << "#define ASCENDC_CUBE_ONLY\n";
+  }
+  os << "#include \"kernel_operator.h\"\n";
+  if (includeMixSupport)
+    os << "#include \"lib/matmul_intf.h\"\n";
+  os << "#include \"utils/std/cmath.h\"\n";
+  // adv_api headers required by BroadcastL2Op and ReduceSum2DL2Op emitters.
+  // These are not included by kernel_operator.h but are available via the
+  // tikcfw/include search path added by the compiler driver.
+  os << "#include \"adv_api/broadcast/broadcast.h\"\n";
+  os << "#include \"adv_api/reduce/reduce.h\"\n";
+  os << "\n";
+  if (includeMixSupport) {
+    os << "using namespace AscendC;\n";
+    os << "using namespace matmul;\n\n";
+    os << "constexpr MatmulConfig AFIR_BATCH_MATMUL_CFG = "
+          "GetNormalConfig(false, true);\n\n";
+    emitSupportedMixCopyTilingHelper(os);
+  }
+  os << "template <typename T>\n";
+  os << "__aicore__ inline T afir_gm_load(GM_ADDR base, uint64_t offset) {\n";
+  os << "  return reinterpret_cast<__gm__ T *>(base)[offset];\n";
+  os << "}\n\n";
+  os << "template <typename T>\n";
+  os << "__aicore__ inline void afir_gm_store(GM_ADDR base, uint64_t offset, T value) {\n";
+  os << "  reinterpret_cast<__gm__ T *>(base)[offset] = value;\n";
+  os << "}\n\n";
+  os << "__aicore__ inline float afir_scalar_exp(float x) {\n";
+  os << "  if (x < -20.0f) return 0.0f;\n";
+  os << "  if (x > 20.0f) x = 20.0f;\n";
+  os << "  constexpr float inv_ln2 = 1.4426950408889634f;\n";
+  os << "  constexpr float ln2 = 0.6931471805599453f;\n";
+  os << "  int32_t n = static_cast<int32_t>(x * inv_ln2 + (x >= 0.0f ? 0.5f : -0.5f));\n";
+  os << "  float r = x - static_cast<float>(n) * ln2;\n";
+  os << "  float r2 = r * r;\n";
+  os << "  float r3 = r2 * r;\n";
+  os << "  float r4 = r3 * r;\n";
+  os << "  float r5 = r4 * r;\n";
+  os << "  float y = 1.0f + r + 0.5f * r2 + 0.1666666716337204f * r3 + 0.0416666679084301f * r4 + 0.0083333337679505f * r5;\n";
+  os << "  if (n > 0) {\n";
+  os << "    for (int32_t i = 0; i < n; ++i) y *= 2.0f;\n";
+  os << "  } else {\n";
+  os << "    for (int32_t i = 0; i < -n; ++i) y *= 0.5f;\n";
+  os << "  }\n";
+  os << "  return y;\n";
+  os << "}\n\n";
+  os << "__aicore__ inline float afir_scalar_rsqrt(float x) {\n";
+  os << "  return 1.0f / AscendC::Std::sqrt(x);\n";
+  os << "}\n\n";
+}
+
 } // namespace
 
 // ─── Pre-pass: replace broken PyAsc emitter ops with emitasc.verbatim ───────
@@ -2560,6 +2870,29 @@ static Value findLocalTensorByteLength(Value tensor) {
   return {};
 }
 
+static bool isTBufBackedLocalTensor(Value tensor) {
+  Operation *defOp = tensor.getDefiningOp();
+  return isa_and_nonnull<ascendc::TBufGetTensorOp,
+                         ascendc::TBufGetWithOffsetOp>(defOp);
+}
+
+static ascendc::TQueBindDequeTensorOp
+findNextDequeForSameQueue(ascendc::TQueBindEnqueTensorOp enqueOp) {
+  Value queue = enqueOp.getQueue();
+  for (Operation *it = enqueOp->getNextNode(); it; it = it->getNextNode()) {
+    if (auto nextEnque = dyn_cast<ascendc::TQueBindEnqueTensorOp>(it))
+      if (nextEnque.getQueue() == queue)
+        return {};
+    if (auto freeOp = dyn_cast<ascendc::TQueBindFreeTensorOp>(it))
+      if (freeOp.getQueue() == queue)
+        return {};
+    if (auto dequeOp = dyn_cast<ascendc::TQueBindDequeTensorOp>(it))
+      if (dequeOp.getQueue() == queue)
+        return dequeOp;
+  }
+  return {};
+}
+
 static void fixBrokenOpEmitters(Operation *moduleOp) {
   IRRewriter rewriter(moduleOp->getContext());
 
@@ -2666,6 +2999,38 @@ static void fixBrokenOpEmitters(Operation *moduleOp) {
     eraseDeadCastOps();
   };
 
+  auto foldTBufQueueRoundTrips = [&]() {
+    SmallVector<ascendc::TQueBindEnqueTensorOp> enqueOps;
+    moduleOp->walk([&](ascendc::TQueBindEnqueTensorOp op) {
+      if (isTBufBackedLocalTensor(op.getTensor()))
+        enqueOps.push_back(op);
+    });
+
+    for (ascendc::TQueBindEnqueTensorOp enqueOp : enqueOps) {
+      if (!enqueOp || !enqueOp->getBlock())
+        continue;
+
+      ascendc::TQueBindDequeTensorOp dequeOp =
+          findNextDequeForSameQueue(enqueOp);
+      if (!dequeOp || dequeOp->getBlock() != enqueOp->getBlock())
+        continue;
+
+      SmallVector<Operation *> freeOps;
+      for (Operation *user : dequeOp.getTensor().getUsers()) {
+        auto freeOp = dyn_cast<ascendc::TQueBindFreeTensorOp>(user);
+        if (freeOp && freeOp.getQueue() == enqueOp.getQueue())
+          freeOps.push_back(freeOp);
+      }
+
+      dequeOp.getTensor().replaceAllUsesWith(enqueOp.getTensor());
+      for (Operation *freeOp : freeOps)
+        if (freeOp->getBlock())
+          rewriter.eraseOp(freeOp);
+      rewriter.eraseOp(dequeOp);
+      rewriter.eraseOp(enqueOp);
+    }
+  };
+
   // Frontend shape guards survive Normalize as cf.assert. AscendC kernels have
   // no cf.assert printer, so lower them to fail-closed early returns.
   moduleOp->walk([&](cf::AssertOp op) {
@@ -2678,6 +3043,25 @@ static void fixBrokenOpEmitters(Operation *moduleOp) {
 
   SmallVector<IndexedValueStore> indexedStores;
   SmallVector<MemRefDimBound> dimBounds;
+  std::function<Value(Value)> getInductionUpperBound;
+  getInductionUpperBound = [&](Value index) -> Value {
+    if (auto blockArg = dyn_cast<BlockArgument>(index)) {
+      auto forOp = dyn_cast<scf::ForOp>(blockArg.getOwner()->getParentOp());
+      if (forOp && forOp.getInductionVar() == index)
+        return forOp.getUpperBound();
+    }
+
+    auto selectOp = index.getDefiningOp<arith::SelectOp>();
+    if (!selectOp)
+      return {};
+    Value trueValue = selectOp.getTrueValue();
+    Value falseValue = selectOp.getFalseValue();
+    if (getConstantIndexValue(trueValue) == 0)
+      return getInductionUpperBound(falseValue);
+    if (getConstantIndexValue(falseValue) == 0)
+      return getInductionUpperBound(trueValue);
+    return {};
+  };
   auto recordLoopDimBounds = [&](Value memref, ValueRange indices) {
     SmallVector<Value, 2> keys{memref};
     Value root = peelSourceValue(memref);
@@ -2685,15 +3069,12 @@ static void fixBrokenOpEmitters(Operation *moduleOp) {
       keys.push_back(root);
 
     for (auto [dim, index] : llvm::enumerate(indices)) {
-      auto blockArg = dyn_cast<BlockArgument>(index);
-      if (!blockArg)
-        continue;
-      auto forOp = dyn_cast<scf::ForOp>(blockArg.getOwner()->getParentOp());
-      if (!forOp || forOp.getInductionVar() != index)
+      Value upperBound = getInductionUpperBound(index);
+      if (!upperBound)
         continue;
       for (Value key : keys)
         dimBounds.push_back(
-            {key, static_cast<int64_t>(dim), forOp.getUpperBound()});
+            {key, static_cast<int64_t>(dim), upperBound});
     }
   };
 
@@ -3132,6 +3513,45 @@ static void fixBrokenOpEmitters(Operation *moduleOp) {
         ValueRange({op.getDst(), localSource, op.getCalCount(), gmSource}));
     rewriter.eraseOp(op);
   });
+
+  // AscendC's CO1->VECIN DataCopy overload is half-oriented on C220. Keep the
+  // fast path for half and scalarize other element types for correctness.
+  moduleOp->walk([&](ascendc::DataCopyCO12DstOp op) {
+    auto dstType = dyn_cast<ascendc::LocalTensorType>(op.getDst().getType());
+    auto srcType = dyn_cast<ascendc::LocalTensorType>(op.getSrc().getType());
+    if (!dstType || !srcType ||
+        dstType.getElementType() != srcType.getElementType())
+      return;
+    Type elemType = dstType.getElementType();
+    if (elemType.isF16())
+      return;
+
+    Value byteLength = findLocalTensorByteLength(op.getDst());
+    if (!byteLength)
+      byteLength = findLocalTensorByteLength(op.getSrc());
+    if (!byteLength)
+      return;
+
+    rewriter.setInsertionPoint(op);
+    Location loc = op.getLoc();
+    std::string elemTypeStr = getAscendCScalarTypeName(elemType);
+    std::string tmpl = "{\n";
+    tmpl += "  uint32_t _afir_count = (uint32_t)($2 / sizeof(" +
+            elemTypeStr + "));\n";
+    tmpl += "  for (uint32_t _afir_i = 0; _afir_i < _afir_count; ++_afir_i)\n";
+    tmpl += "    $0.SetValue(_afir_i, $1.GetValue(_afir_i));\n";
+    tmpl += "  $0.SetSize(_afir_count);\n}";
+    rewriter.create<emitasc::VerbatimOp>(
+        loc, rewriter.getStringAttr(tmpl),
+        ValueRange({op.getDst(), op.getSrc(), byteLength}));
+    rewriter.eraseOp(op);
+  });
+
+  // A TBuf-backed LocalTensor is not owned by a TQue. Some generic vector
+  // lowering paths use a queue round-trip only as a handoff marker before
+  // writing the tensor back to GM; bypass that marker to avoid invalid
+  // EnQue/DeQue/FreeTensor calls on simulator/runtime paths.
+  foldTBufQueueRoundTrips();
 
   // DataCopyL2Op with GlobalTensorBracketOp source → verbatim
   //
@@ -3620,118 +4040,79 @@ emitRequestedRuntimeArtifacts(ModuleOp moduleOp,
   return success();
 }
 
-LogicalResult mlir::translateToCannKernel(Operation *op, raw_ostream &os,
-                                          const CannTranslationOptions &options) {
-  auto moduleOp = dyn_cast<ModuleOp>(op);
-  if (!moduleOp)
-    return op->emitOpError("expected a module op");
+static LogicalResult emitMixKernelForFunction(raw_ostream &os,
+                                              func::FuncOp funcOp) {
+  if (emitStableF32MatmulBiasMixKernel(os, funcOp))
+    return success();
 
-  func::FuncOp primaryKernel = findPrimaryGlobalKernel(moduleOp);
-  if (primaryKernel &&
-      getKernelKind(primaryKernel) == AscendCKernelKind::Mix) {
-    if (emitStableBatchMatmulFullBiasMixKernel(os, primaryKernel))
-      return emitRequestedRuntimeArtifacts(moduleOp, options);
+  if (emitStableF32BatchMatmulBiasMixKernel(os, funcOp))
+    return success();
 
-    MixPartitionSummary mixPartitionSummary =
-        buildMixPartitionSummary(primaryKernel);
-    MixPartitionPlan mixPartitionPlan =
-        buildInitialMixPartitionPlan(primaryKernel, mixPartitionSummary);
-    MixSingleChainValidation singleChainValidation =
-        validateSingleChainGenericMixPlan(mixPartitionPlan);
+  if (emitStableBatchMatmulFullBiasMixKernel(os, funcOp))
+    return success();
 
-    if (singleChainValidation.succeeded()) {
-      GenericMixSingleChainEmissionFailureReason genericEmissionFailureReason =
-          GenericMixSingleChainEmissionFailureReason::MissingRequiredRegions;
-      FailureOr<GenericMixSingleChainEmissionPlan> genericEmissionPlan =
-          buildGenericMixSingleChainEmissionPlan(primaryKernel,
-                                                mixPartitionPlan,
-                                                mixPartitionSummary,
-                                                singleChainValidation,
-                                                genericEmissionFailureReason);
-      if (succeeded(genericEmissionPlan)) {
-        SupportedMixLoweringFailureReason genericLoweringFailureReason =
+  MixPartitionSummary mixPartitionSummary = buildMixPartitionSummary(funcOp);
+  MixPartitionPlan mixPartitionPlan =
+      buildInitialMixPartitionPlan(funcOp, mixPartitionSummary);
+  MixSingleChainValidation singleChainValidation =
+      validateSingleChainGenericMixPlan(mixPartitionPlan);
+
+  if (singleChainValidation.succeeded()) {
+    GenericMixSingleChainEmissionFailureReason genericEmissionFailureReason =
+        GenericMixSingleChainEmissionFailureReason::MissingRequiredRegions;
+    FailureOr<GenericMixSingleChainEmissionPlan> genericEmissionPlan =
+        buildGenericMixSingleChainEmissionPlan(funcOp, mixPartitionPlan,
+                                              mixPartitionSummary,
+                                              singleChainValidation,
+                                              genericEmissionFailureReason);
+    if (succeeded(genericEmissionPlan)) {
+      SupportedMixLoweringFailureReason genericLoweringFailureReason =
+          SupportedMixLoweringFailureReason::UnsupportedLegacySignature;
+      FailureOr<GenericMixSingleChainSupportedLowering> supportedLowering =
+          lowerGenericMixSingleChainToSupportedMix(
+              funcOp, mixPartitionSummary, *genericEmissionPlan,
+              genericLoweringFailureReason);
+      if (succeeded(supportedLowering)) {
+        SupportedMixLoweringFailureReason emissionFailureReason =
             SupportedMixLoweringFailureReason::UnsupportedLegacySignature;
-        FailureOr<GenericMixSingleChainSupportedLowering> supportedLowering =
-            lowerGenericMixSingleChainToSupportedMix(primaryKernel,
-                                                    mixPartitionSummary,
-                                                    *genericEmissionPlan,
-                                                    genericLoweringFailureReason);
-        if (succeeded(supportedLowering)) {
-          SupportedMixLoweringFailureReason emissionFailureReason =
-              SupportedMixLoweringFailureReason::UnsupportedLegacySignature;
-          if (emitGenericMixSingleChainKernel(
-                  os, primaryKernel, *genericEmissionPlan, *supportedLowering,
-                  emissionFailureReason))
-            return emitRequestedRuntimeArtifacts(moduleOp, options);
-          return primaryKernel.emitOpError(
-              Twine("mix translation found a valid single-chain cube/boundary/"
-                    "vector plan, but the generic primary route could not "
-                    "lower the current supported shell because ") +
-              stringifySupportedMixLoweringFailureReason(
-                  emissionFailureReason));
-        }
-
-        SupportedMixLoweringFailureReason legacyFallbackFailureReason =
-            SupportedMixLoweringFailureReason::UnsupportedLegacySignature;
-        FailureOr<GenericMixSingleChainSupportedLowering> legacyFallbackLowering =
-            buildLegacySupportedMixLowering(mixPartitionPlan, primaryKernel,
-                                            mixPartitionSummary,
-                                            singleChainValidation,
-                                            legacyFallbackFailureReason);
-        if (succeeded(legacyFallbackLowering)) {
-          SupportedMixLoweringFailureReason emissionFailureReason =
-              SupportedMixLoweringFailureReason::UnsupportedLegacySignature;
-          if (emitSupportedMixKernel(os, primaryKernel, mixPartitionPlan,
-                                     *legacyFallbackLowering,
-                                     emissionFailureReason))
-            return emitRequestedRuntimeArtifacts(moduleOp, options);
-          return primaryKernel.emitOpError(
-              Twine("mix translation found a valid single-chain cube/boundary/"
-                    "vector plan, but the retained supported-mix fallback "
-                    "could not lower the current supported shell because ") +
-              stringifySupportedMixLoweringFailureReason(
-                  emissionFailureReason));
-        }
-
-        return primaryKernel.emitOpError(
+        if (emitGenericMixSingleChainKernel(os, funcOp, *genericEmissionPlan,
+                                           *supportedLowering,
+                                           emissionFailureReason))
+          return success();
+        return funcOp.emitOpError(
             Twine("mix translation found a valid single-chain cube/boundary/"
-                  "vector plan, but the generic primary route could not lower "
-                  "the current supported shell because ") +
-            stringifySupportedMixLoweringFailureReason(
-                genericLoweringFailureReason) +
-            Twine("; the retained supported-mix fallback also failed because ") +
-            stringifySupportedMixLoweringFailureReason(
-                legacyFallbackFailureReason));
+                  "vector plan, but the generic route could not "
+                  "lower the current supported shell because ") +
+            stringifySupportedMixLoweringFailureReason(emissionFailureReason));
       }
 
       SupportedMixLoweringFailureReason legacyFallbackFailureReason =
           SupportedMixLoweringFailureReason::UnsupportedLegacySignature;
       FailureOr<GenericMixSingleChainSupportedLowering> legacyFallbackLowering =
-          buildLegacySupportedMixLowering(mixPartitionPlan, primaryKernel,
+          buildLegacySupportedMixLowering(mixPartitionPlan, funcOp,
                                           mixPartitionSummary,
                                           singleChainValidation,
                                           legacyFallbackFailureReason);
       if (succeeded(legacyFallbackLowering)) {
         SupportedMixLoweringFailureReason emissionFailureReason =
             SupportedMixLoweringFailureReason::UnsupportedLegacySignature;
-        if (emitSupportedMixKernel(os, primaryKernel, mixPartitionPlan,
+        if (emitSupportedMixKernel(os, funcOp, mixPartitionPlan,
                                    *legacyFallbackLowering,
                                    emissionFailureReason))
-          return emitRequestedRuntimeArtifacts(moduleOp, options);
-        return primaryKernel.emitOpError(
+          return success();
+        return funcOp.emitOpError(
             Twine("mix translation found a valid single-chain cube/boundary/"
                   "vector plan, but the retained supported-mix fallback "
                   "could not lower the current supported shell because ") +
-            stringifySupportedMixLoweringFailureReason(
-                emissionFailureReason));
+            stringifySupportedMixLoweringFailureReason(emissionFailureReason));
       }
 
-      return primaryKernel.emitOpError(
+      return funcOp.emitOpError(
           Twine("mix translation found a valid single-chain cube/boundary/"
-                "vector plan, but the generic primary route could not "
-                "materialize its emission plan because ") +
-          stringifyGenericMixSingleChainEmissionFailureReason(
-              genericEmissionFailureReason) +
+                "vector plan, but the generic route could not lower "
+                "the current supported shell because ") +
+          stringifySupportedMixLoweringFailureReason(
+              genericLoweringFailureReason) +
           Twine("; the retained supported-mix fallback also failed because ") +
           stringifySupportedMixLoweringFailureReason(
               legacyFallbackFailureReason));
@@ -3739,87 +4120,91 @@ LogicalResult mlir::translateToCannKernel(Operation *op, raw_ostream &os,
 
     SupportedMixLoweringFailureReason legacyFallbackFailureReason =
         SupportedMixLoweringFailureReason::UnsupportedLegacySignature;
-    if (shouldAttemptLegacyFallbackAfterValidationFailure(singleChainValidation)) {
-      FailureOr<GenericMixSingleChainSupportedLowering> legacyFallbackLowering =
-          buildLegacySupportedMixLowering(mixPartitionPlan, primaryKernel,
-                                          mixPartitionSummary,
-                                          singleChainValidation,
-                                          legacyFallbackFailureReason);
-      if (succeeded(legacyFallbackLowering)) {
-        SupportedMixLoweringFailureReason emissionFailureReason =
-            SupportedMixLoweringFailureReason::UnsupportedLegacySignature;
-        if (emitSupportedMixKernel(os, primaryKernel, mixPartitionPlan,
-                                   *legacyFallbackLowering,
-                                   emissionFailureReason))
-          return emitRequestedRuntimeArtifacts(moduleOp, options);
-        return primaryKernel.emitOpError(
-            Twine("mix translation requires a supported cube/vector "
-                  "partitioned kernel shape; generic single-chain analysis "
-                  "rejected plan because ") +
-            Twine(describeMixSingleChainValidation(singleChainValidation)) +
-            Twine("; the retained supported-mix fallback could not lower the "
-                  "current supported shell because ") +
-            stringifySupportedMixLoweringFailureReason(
-                emissionFailureReason));
-      }
+    FailureOr<GenericMixSingleChainSupportedLowering> legacyFallbackLowering =
+        buildLegacySupportedMixLowering(mixPartitionPlan, funcOp,
+                                        mixPartitionSummary,
+                                        singleChainValidation,
+                                        legacyFallbackFailureReason);
+    if (succeeded(legacyFallbackLowering)) {
+      SupportedMixLoweringFailureReason emissionFailureReason =
+          SupportedMixLoweringFailureReason::UnsupportedLegacySignature;
+      if (emitSupportedMixKernel(os, funcOp, mixPartitionPlan,
+                                 *legacyFallbackLowering,
+                                 emissionFailureReason))
+        return success();
+      return funcOp.emitOpError(
+          Twine("mix translation found a valid single-chain cube/boundary/"
+                "vector plan, but the retained supported-mix fallback "
+                "could not lower the current supported shell because ") +
+          stringifySupportedMixLoweringFailureReason(emissionFailureReason));
     }
 
-    return primaryKernel.emitOpError(Twine(
-        "mix translation requires a supported cube/vector partitioned kernel "
-        "shape; generic single-chain analysis rejected plan because ") +
-                                     Twine(describeMixSingleChainValidation(
-                                         singleChainValidation)) +
-                                     Twine("; the retained supported-mix "
-                                           "fallback also failed because ") +
-                                     stringifySupportedMixLoweringFailureReason(
-                                         legacyFallbackFailureReason));
+    return funcOp.emitOpError(
+        Twine("mix translation found a valid single-chain cube/boundary/"
+              "vector plan, but the generic route could not "
+              "materialize its emission plan because ") +
+        stringifyGenericMixSingleChainEmissionFailureReason(
+            genericEmissionFailureReason) +
+        Twine("; the retained supported-mix fallback also failed because ") +
+        stringifySupportedMixLoweringFailureReason(
+            legacyFallbackFailureReason));
   }
 
-  // Replace ops whose PyAsc emitters generate wrong C++ with verbatim.
-  fixBrokenOpEmitters(op);
-  deduplicateConstantsForEmission(op);
+  SupportedMixLoweringFailureReason legacyFallbackFailureReason =
+      SupportedMixLoweringFailureReason::UnsupportedLegacySignature;
+  if (shouldAttemptLegacyFallbackAfterValidationFailure(singleChainValidation)) {
+    FailureOr<GenericMixSingleChainSupportedLowering> legacyFallbackLowering =
+        buildLegacySupportedMixLowering(mixPartitionPlan, funcOp,
+                                        mixPartitionSummary,
+                                        singleChainValidation,
+                                        legacyFallbackFailureReason);
+    if (succeeded(legacyFallbackLowering)) {
+      SupportedMixLoweringFailureReason emissionFailureReason =
+          SupportedMixLoweringFailureReason::UnsupportedLegacySignature;
+      if (emitSupportedMixKernel(os, funcOp, mixPartitionPlan,
+                                 *legacyFallbackLowering,
+                                 emissionFailureReason))
+        return success();
+      return funcOp.emitOpError(
+          Twine("mix translation requires a supported cube/vector "
+                "partitioned kernel shape; generic single-chain analysis "
+                "rejected plan because ") +
+          Twine(describeMixSingleChainValidation(singleChainValidation)) +
+          Twine("; the retained supported-mix fallback could not lower the "
+                "current supported shell because ") +
+          stringifySupportedMixLoweringFailureReason(emissionFailureReason));
+    }
+  }
+
+  return funcOp.emitOpError(
+      Twine("mix translation requires a supported cube/vector partitioned "
+            "kernel shape; generic single-chain analysis rejected plan "
+            "because ") +
+      Twine(describeMixSingleChainValidation(singleChainValidation)) +
+      Twine("; the retained supported-mix fallback also failed because ") +
+      stringifySupportedMixLoweringFailureReason(legacyFallbackFailureReason));
+}
+
+LogicalResult mlir::translateToCannKernel(Operation *op, raw_ostream &os,
+                                          const CannTranslationOptions &options) {
+  auto moduleOp = dyn_cast<ModuleOp>(op);
+  if (!moduleOp)
+    return op->emitOpError("expected a module op");
+
+  // Replace ops whose PyAsc emitters generate wrong C++ with verbatim before
+  // regular PyAsc-backed function emission. Mix kernels are emitted from the
+  // partition plan directly, so keep their IR intact for mix analysis.
+  for (func::FuncOp funcOp : collectGlobalKernels(moduleOp)) {
+    if (getKernelKind(funcOp) == AscendCKernelKind::Mix)
+      continue;
+    fixBrokenOpEmitters(funcOp);
+    deduplicateConstantsForEmission(funcOp);
+  }
 
   CodeEmitter emitter(os);
   CodeEmitter::Scope scope(emitter);
 
-  os << "#include \"kernel_operator.h\"\n";
-  os << "#include \"utils/std/cmath.h\"\n";
-  // adv_api headers required by BroadcastL2Op and ReduceSum2DL2Op emitters.
-  // These are not included by kernel_operator.h but are available via the
-  // tikcfw/include search path added by the compiler driver.
-  os << "#include \"adv_api/broadcast/broadcast.h\"\n";
-  os << "#include \"adv_api/reduce/reduce.h\"\n";
-  os << "\n";
-  os << "template <typename T>\n";
-  os << "__aicore__ inline T afir_gm_load(GM_ADDR base, uint64_t offset) {\n";
-  os << "  return reinterpret_cast<__gm__ T *>(base)[offset];\n";
-  os << "}\n\n";
-  os << "template <typename T>\n";
-  os << "__aicore__ inline void afir_gm_store(GM_ADDR base, uint64_t offset, T value) {\n";
-  os << "  reinterpret_cast<__gm__ T *>(base)[offset] = value;\n";
-  os << "}\n\n";
-  os << "__aicore__ inline float afir_scalar_exp(float x) {\n";
-  os << "  if (x < -20.0f) return 0.0f;\n";
-  os << "  if (x > 20.0f) x = 20.0f;\n";
-  os << "  constexpr float inv_ln2 = 1.4426950408889634f;\n";
-  os << "  constexpr float ln2 = 0.6931471805599453f;\n";
-  os << "  int32_t n = static_cast<int32_t>(x * inv_ln2 + (x >= 0.0f ? 0.5f : -0.5f));\n";
-  os << "  float r = x - static_cast<float>(n) * ln2;\n";
-  os << "  float r2 = r * r;\n";
-  os << "  float r3 = r2 * r;\n";
-  os << "  float r4 = r3 * r;\n";
-  os << "  float r5 = r4 * r;\n";
-  os << "  float y = 1.0f + r + 0.5f * r2 + 0.1666666716337204f * r3 + 0.0416666679084301f * r4 + 0.0083333337679505f * r5;\n";
-  os << "  if (n > 0) {\n";
-  os << "    for (int32_t i = 0; i < n; ++i) y *= 2.0f;\n";
-  os << "  } else {\n";
-  os << "    for (int32_t i = 0; i < -n; ++i) y *= 0.5f;\n";
-  os << "  }\n";
-  os << "  return y;\n";
-  os << "}\n\n";
-  os << "__aicore__ inline float afir_scalar_rsqrt(float x) {\n";
-  os << "  return 1.0f / AscendC::Std::sqrt(x);\n";
-  os << "}\n\n";
+  emitCannKernelPreamble(os, moduleHasMixKernel(moduleOp));
 
   // First pass: emit TilingData struct declarations from aicore funcs.
   llvm::StringMap<std::string> emittedStructSignatures;
@@ -3861,6 +4246,13 @@ LogicalResult mlir::translateToCannKernel(Operation *op, raw_ostream &os,
     auto funcOp = dyn_cast<func::FuncOp>(child);
     if (!funcOp || !funcOp->hasAttr(ascendc::attr::global))
       continue;
+
+    if (getKernelKind(funcOp) == AscendCKernelKind::Mix) {
+      if (failed(emitMixKernelForFunction(os, funcOp)))
+        return failure();
+      continue;
+    }
+
     if (failed(printCannFuncOp(emitter, funcOp)))
       return failure();
   }

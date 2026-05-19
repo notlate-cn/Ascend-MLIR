@@ -110,7 +110,7 @@ while [[ $# -gt 0 ]]; do
 done
 
 case "$FRAGMENT" in
-  layernorm|qkv|qkv_heads|qkv_project_heads|attn_score)
+  layernorm|qkv|qkv_heads|qkv_project_heads|attn_score|attn_softmax|attn_context|attention_block)
     ;;
   *)
     echo "unknown fragment: $FRAGMENT" >&2
@@ -175,6 +175,20 @@ elif [[ "$FRAGMENT" == "attn_score" ]]; then
   echo "shape.batch=$BATCH"
   echo "shape.seq=$SEQ"
   echo "shape.k=$K"
+elif [[ "$FRAGMENT" == "attn_softmax" ]]; then
+  echo "shape.batch=$BATCH"
+  echo "shape.heads=4"
+  echo "shape.seq=$SEQ"
+elif [[ "$FRAGMENT" == "attn_context" ]]; then
+  echo "shape.batch=$BATCH"
+  echo "shape.heads=4"
+  echo "shape.seq=$SEQ"
+  echo "shape.head_dim=32"
+elif [[ "$FRAGMENT" == "attention_block" ]]; then
+  echo "shape.batch=$BATCH"
+  echo "shape.heads=4"
+  echo "shape.seq=$SEQ"
+  echo "shape.head_dim=32"
 else
   echo "shape.batch=$BATCH"
   echo "shape.seq=$SEQ"

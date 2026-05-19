@@ -32,6 +32,7 @@ namespace mlir {
 namespace afir {
 
 std::unique_ptr<Pass> createAscendPrintTargetProfilePass();
+std::unique_ptr<Pass> createAscendKernelSplitPass();
 
 #define GEN_PASS_DECL
 #define GEN_PASS_REGISTRATION

@@ -114,6 +114,48 @@ MixTilingRequest makeExplicitBatchMatmulRequest() {
   return request;
 }
 
+MixTilingRequest makeExplicitBatchMatmulWithBiasRequest() {
+  MixTilingRequest request = makeExplicitBatchMatmulRequest();
+  request.inputs.push_back({DType::F32, {64}});
+  request.matmul->hasBias = true;
+  request.matmul->epilogueKind = "BiasAdd";
+  return request;
+}
+
+MixTilingRequest makeExplicitFlattenedLhsMatmulRequest() {
+  MixTilingRequest request;
+  request.kernelName = "flattened_lhs_matmul_bias";
+  request.socVersion = "Ascend910B1";
+  request.inputs = {
+      {DType::F32, {1, 1, 4, 32}},
+      {DType::F32, {128, 128}},
+      {DType::F32, {128}},
+  };
+  request.outputs = {
+      {DType::F32, {1, 128}},
+  };
+  request.matmul = MixAbiMatmulDesc{
+      "matmul",
+      false,
+      false,
+      true,
+      "ND",
+      "ND",
+      "ND",
+      "BiasAdd",
+      {},
+  };
+  return request;
+}
+
+MixTilingRequest makeExplicitFusedMatmulWithExtraInputRequest() {
+  MixTilingRequest request = makeExplicitFlattenedLhsMatmulRequest();
+  request.kernelName = "fused_flattened_lhs_matmul_bias";
+  request.inputs.insert(request.inputs.begin() + 2,
+                        {DType::F32, {1, 1, 32}});
+  return request;
+}
+
 } // namespace
 
 TEST(MixTilingGeneratorTest, RejectsUnsupportedBiasDTypeThroughAdapter) {
@@ -184,4 +226,31 @@ TEST(MixTilingGeneratorTest, ExplicitBatchMatmulRoutesThroughBatchStrategy) {
   EXPECT_EQ(result->strategyName, "batch-matmul");
   EXPECT_FALSE(result->tilingData.empty());
   EXPECT_NE(result->debugNote.find("batch=2"), std::string::npos);
+}
+
+TEST(MixTilingGeneratorTest, ExplicitBatchMatmulWithBiasUsesBatchTilingOnly) {
+  auto result =
+      generateMixTilingInProcess(makeExplicitBatchMatmulWithBiasRequest());
+
+  ASSERT_TRUE(static_cast<bool>(result));
+  EXPECT_EQ(result->strategyName, "batch-matmul");
+  EXPECT_FALSE(result->tilingData.empty());
+}
+
+TEST(MixTilingGeneratorTest, ExplicitMatmulAllowsFlattenedNonTransposedLhs) {
+  auto result =
+      generateMixTilingInProcess(makeExplicitFlattenedLhsMatmulRequest());
+
+  ASSERT_TRUE(static_cast<bool>(result));
+  EXPECT_EQ(result->strategyName, "matmul-2d");
+  EXPECT_FALSE(result->tilingData.empty());
+}
+
+TEST(MixTilingGeneratorTest, ExplicitMatmulIgnoresExtraFusedInputsForTiling) {
+  auto result =
+      generateMixTilingInProcess(makeExplicitFusedMatmulWithExtraInputRequest());
+
+  ASSERT_TRUE(static_cast<bool>(result));
+  EXPECT_EQ(result->strategyName, "matmul-2d");
+  EXPECT_FALSE(result->tilingData.empty());
 }

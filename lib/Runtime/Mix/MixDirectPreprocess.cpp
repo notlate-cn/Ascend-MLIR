@@ -42,8 +42,8 @@ static std::string makeDirectWrapperGuard(llvm::StringRef sourcePath) {
   return "__" + guard + "__KERNEL_FUN_H__";
 }
 
-static llvm::Expected<std::vector<std::string>>
-parseDirectWrapperArgNames(llvm::StringRef sourcePath, llvm::StringRef kernelName) {
+static llvm::Expected<std::vector<MixDirectKernelArg>>
+parseDirectWrapperArgs(llvm::StringRef sourcePath, llvm::StringRef kernelName) {
   auto sourceOr = readTextFileOrErr(sourcePath);
   if (!sourceOr)
     return sourceOr.takeError();
@@ -80,7 +80,7 @@ parseDirectWrapperArgNames(llvm::StringRef sourcePath, llvm::StringRef kernelNam
   llvm::StringRef argsText = source.slice(openParen + 1, closeParen);
   llvm::SmallVector<llvm::StringRef> args;
   argsText.split(args, ',');
-  std::vector<std::string> names;
+  std::vector<MixDirectKernelArg> parsed;
   for (llvm::StringRef arg : args) {
     arg = arg.trim();
     if (arg.empty() || arg == "void")
@@ -96,19 +96,41 @@ parseDirectWrapperArgNames(llvm::StringRef sourcePath, llvm::StringRef kernelNam
           llvm::inconvertibleErrorCode(),
           "direct-source wrapper found an unnamed argument in %s",
           sourcePath.str().c_str());
-    names.push_back(name.str());
+    llvm::StringRef type = arg.take_front(name.data() - arg.data()).trim();
+    if (type.empty())
+      return llvm::createStringError(
+          llvm::inconvertibleErrorCode(),
+          "direct-source wrapper found an untyped argument '%s' in %s",
+          arg.str().c_str(), sourcePath.str().c_str());
+    parsed.push_back({type.str(), name.str(), false});
   }
-  return names;
+  return parsed;
+}
+
+static bool isPointerLikeDirectArgType(llvm::StringRef type) {
+  return type.contains("GM_ADDR") || type.contains("*") ||
+         type.contains("__gm__");
+}
+
+static void classifyDirectWrapperArgs(
+    std::vector<MixDirectKernelArg> &args,
+    std::optional<size_t> &workspaceArgIndex,
+    std::optional<size_t> &tilingArgIndex) {
+  if (args.empty())
+    return;
+  tilingArgIndex = args.size() - 1;
+  if (!isPointerLikeDirectArgType(args.back().type))
+    args.back().passTilingByValue = true;
+  if (args.size() >= 2)
+    workspaceArgIndex = args.size() - 2;
 }
 
 static llvm::Expected<std::string>
 writeDirectSourceWrapper(const MixCompileLayout &layout,
                          llvm::StringRef sourcePath,
-                         llvm::StringRef kernelName) {
-  auto argNamesOr = parseDirectWrapperArgNames(sourcePath, kernelName);
-  if (!argNamesOr)
-    return argNamesOr.takeError();
-
+                         llvm::StringRef kernelName,
+                         llvm::ArrayRef<MixDirectKernelArg> args,
+                         std::optional<size_t> workspaceArgIndex) {
   llvm::SmallString<256> absoluteSource(sourcePath);
   if (auto ec = llvm::sys::fs::make_absolute(absoluteSource))
     return llvm::createStringError(ec, "Cannot make source path absolute: %s",
@@ -140,11 +162,23 @@ writeDirectSourceWrapper(const MixCompileLayout &layout,
   os << "#ifndef ONE_CORE_DUMP_SIZE\n";
   os << "#define ONE_CORE_DUMP_SIZE 1048576 * 1\n";
   os << "#endif\n\n";
+  bool hasByValueTiling = false;
+  for (const MixDirectKernelArg &arg : args)
+    hasByValueTiling = hasByValueTiling || arg.passTilingByValue;
+  if (hasByValueTiling) {
+    os << "template <typename T>\n";
+    os << "__aicore__ inline void afir_mix_copy_tiling(T *tiling, GM_ADDR tilingGM) {\n";
+    os << "    uint8_t *dst = reinterpret_cast<uint8_t *>(tiling);\n";
+    os << "    auto src = reinterpret_cast<__gm__ uint8_t *>(tilingGM);\n";
+    os << "    for (uint32_t i = 0; i < sizeof(T); ++i)\n";
+    os << "        dst[i] = src[i];\n";
+    os << "}\n\n";
+  }
   os << "extern \"C\" __global__ [aicore] void auto_gen_" << kernelName
      << "_kernel(\n";
   os << "GM_ADDR ffts_addr";
-  for (const std::string &name : *argNamesOr)
-    os << ", __attribute__((cce_global)) uint8_t* " << name;
+  for (const MixDirectKernelArg &arg : args)
+    os << ", GM_ADDR " << arg.name;
   os << ", GM_ADDR overflow_status) {\n";
   os << "    icache_preload(1);\n";
   os << "    if (ffts_addr != nullptr) {\n";
@@ -153,38 +187,41 @@ writeDirectSourceWrapper(const MixCompileLayout &layout,
   os << "#ifdef ASCENDC_TIME_STAMP_ON\n";
   os << "    AscendC::PrintTimeStamp(static_cast<uint32_t>(AscendC::TimeStampId::TIME_STAMP_WRAP_FFTS_ADDR));\n";
   os << "#endif\n";
-  os << "#if defined(HAVE_WORKSPACE)\n";
-  os << "    GM_ADDR workspace_param;\n";
-  os << "    GM_ADDR workspace_usr;\n";
-  os << "#if defined(HAVE_TILING)\n";
-  os << "    workspace_param = workspace;\n";
-  os << "#else\n";
-  os << "    workspace_param = tilingGm;\n";
-  os << "#endif\n";
-  os << "    if (workspace_param == nullptr) {\n";
-  os << "        return;\n";
-  os << "    }\n";
-  os << "    AscendC::SetSysWorkspaceForce(workspace_param);\n";
-  os << "    workspace_usr = AscendC::GetUserWorkspace(workspace_param);\n";
-  os << "#if defined(REGIST_MATMUL_OBJ) || defined(__MIX_CORE_MACRO__)\n";
-  os << "    if constexpr (g_coreType == AscendC::AIC) {\n";
-  os << "        matmul::clearWorkspace(workspace_param);\n";
-  os << "#ifdef ASCENDC_TIME_STAMP_ON\n";
-  os << "        AscendC::PrintTimeStamp(static_cast<uint32_t>(AscendC::TimeStampId::TIME_STAMP_WRAP_CLEAR_WK_SPAC));\n";
-  os << "#endif\n";
-  os << "    }\n";
-  os << "#endif\n";
-  os << "#if defined(HAVE_TILING)\n";
-  os << "    workspace = workspace_usr;\n";
-  os << "#else\n";
-  os << "    tilingGm = workspace_usr;\n";
-  os << "#endif\n";
-  os << "#endif\n";
+  if (workspaceArgIndex && *workspaceArgIndex < args.size()) {
+    const std::string &workspaceName = args[*workspaceArgIndex].name;
+    os << "#if defined(HAVE_WORKSPACE)\n";
+    os << "    GM_ADDR workspace_param = " << workspaceName << ";\n";
+    os << "    GM_ADDR workspace_usr;\n";
+    os << "    if (workspace_param == nullptr) {\n";
+    os << "        return;\n";
+    os << "    }\n";
+    os << "    AscendC::SetSysWorkspaceForce(workspace_param);\n";
+    os << "    workspace_usr = AscendC::GetUserWorkspace(workspace_param);\n";
+    os << "#if defined(REGIST_MATMUL_OBJ)\n";
+    os << "    if constexpr (g_coreType == AscendC::AIC) {\n";
+    os << "        matmul::clearWorkspace(workspace_param);\n";
+    os << "#ifdef ASCENDC_TIME_STAMP_ON\n";
+    os << "        AscendC::PrintTimeStamp(static_cast<uint32_t>(AscendC::TimeStampId::TIME_STAMP_WRAP_CLEAR_WK_SPAC));\n";
+    os << "#endif\n";
+    os << "    }\n";
+    os << "#endif\n";
+    os << "    " << workspaceName << " = workspace_usr;\n";
+    os << "#endif\n";
+  }
+  for (const MixDirectKernelArg &arg : args) {
+    if (!arg.passTilingByValue)
+      continue;
+    os << "    " << arg.type << " " << arg.name << "_value{};\n";
+    os << "    afir_mix_copy_tiling(&" << arg.name << "_value, " << arg.name
+       << ");\n";
+  }
   os << "    " << kernelName << "_origin(";
-  for (size_t i = 0; i < argNamesOr->size(); ++i) {
+  for (size_t i = 0; i < args.size(); ++i) {
     if (i)
       os << ", ";
-    os << (*argNamesOr)[i];
+    os << args[i].name;
+    if (args[i].passTilingByValue)
+      os << "_value";
   }
   os << ");\n";
   os << "#if !(defined(ASCENDC_DUMP) && ASCENDC_DUMP == 0) && defined(ASCENDC_DEBUG)\n";
@@ -231,8 +268,16 @@ llvm::Expected<MixDirectCompileContract> buildMixDirectSourceCompileContract(
   MixDirectCompileContract contract;
   contract.mode = MixDirectContractMode::DirectSource;
   contract.layout = layout;
+  auto argsOr = parseDirectWrapperArgs(sourcePath, kernelName);
+  if (!argsOr)
+    return argsOr.takeError();
+  contract.kernelArgs = std::move(*argsOr);
+  classifyDirectWrapperArgs(contract.kernelArgs, contract.workspaceArgIndex,
+                            contract.tilingArgIndex);
   auto generatedSourceOr =
-      writeDirectSourceWrapper(layout, sourcePath, kernelName);
+      writeDirectSourceWrapper(layout, sourcePath, kernelName,
+                               contract.kernelArgs,
+                               contract.workspaceArgIndex);
   if (!generatedSourceOr)
     return generatedSourceOr.takeError();
   contract.generatedSourceName =

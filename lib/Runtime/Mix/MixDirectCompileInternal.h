@@ -10,6 +10,7 @@
 
 #include <chrono>
 #include <initializer_list>
+#include <optional>
 #include <string>
 #include <utility>
 #include <vector>
@@ -64,6 +65,12 @@ struct MixCompileLayout {
   std::string launchInfoPath;
 };
 
+struct MixDirectKernelArg {
+  std::string type;
+  std::string name;
+  bool passTilingByValue = false;
+};
+
 struct MixDirectCompileContract {
   MixDirectContractMode mode = MixDirectContractMode::DirectSource;
   MixPreprocessOutputs preprocess;
@@ -71,6 +78,9 @@ struct MixDirectCompileContract {
   std::string generatedSourceName;
   std::string generatedSourcePath;
   std::string runtimeKernelName;
+  std::vector<MixDirectKernelArg> kernelArgs;
+  std::optional<size_t> workspaceArgIndex;
+  std::optional<size_t> tilingArgIndex;
   std::vector<std::string> aicDefinitions;
   std::vector<std::string> aivDefinitions;
   bool synthesizedAicFromAiv = false;

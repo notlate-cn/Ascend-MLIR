@@ -75,6 +75,15 @@ NativeExecutionRunner::~NativeExecutionRunner() {
   if (stream_ && rtStreamDestroy_)
     rtStreamDestroy_(stream_);
   stream_ = nullptr;
+  if (aclStream_ && aclrtDestroyStream_)
+    aclrtDestroyStream_(aclStream_);
+  aclStream_ = nullptr;
+  if (aclDeviceSet_ && aclrtResetDevice_)
+    aclrtResetDevice_(deviceId_);
+  aclDeviceSet_ = false;
+  if (aclInitialized_ && aclFinalize_)
+    aclFinalize_();
+  aclInitialized_ = false;
   if (aclHandle_)
     dlclose(aclHandle_);
   aclHandle_ = nullptr;
@@ -324,6 +333,20 @@ llvm::Error NativeExecutionRunner::runBinary(
       return err;
     }
   }
+  for (RunArgs::InPlaceOutput &inPlace : args.in_place_outputs) {
+    if (inPlace.inputIndex >= inputGm.size()) {
+      freeAll();
+      return llvm::createStringError(
+          llvm::inconvertibleErrorCode(),
+          "input-alias output references invalid input index: %zu",
+          inPlace.inputIndex);
+    }
+    if (auto err = deviceToHost(inPlace.array.data, inputGm[inPlace.inputIndex],
+                                inPlace.array.nbytes())) {
+      freeAll();
+      return err;
+    }
+  }
 
   freeAll();
   return llvm::Error::success();
@@ -505,6 +528,20 @@ NativeExecutionRunner::runWithHandle(void *funcHandle, RunArgs &args,
           args.outputs[i].nbytes(), llvm::errs());
     }
   }
+  for (RunArgs::InPlaceOutput &inPlace : args.in_place_outputs) {
+    if (inPlace.inputIndex >= inputGm.size()) {
+      freeAll();
+      return llvm::createStringError(
+          llvm::inconvertibleErrorCode(),
+          "input-alias output references invalid input index: %zu",
+          inPlace.inputIndex);
+    }
+    if (auto err = deviceToHost(inPlace.array.data, inputGm[inPlace.inputIndex],
+                                inPlace.array.nbytes())) {
+      freeAll();
+      return err;
+    }
+  }
 
   freeAll();
   return llvm::Error::success();
@@ -639,9 +676,6 @@ llvm::Error NativeExecutionRunner::runDynamicLibraryArtifact(
   static constexpr int32_t kAclMemcpyHostToDevice = 1;
   static constexpr int32_t kAclMemcpyDeviceToHost = 2;
 
-  bool aclInitialized = false;
-  bool deviceSet = false;
-  void *aclStream = nullptr;
   std::vector<void *> aclAllocs;
   auto cleanup = [&]() {
     for (auto it = aclAllocs.rbegin(); it != aclAllocs.rend(); ++it) {
@@ -649,36 +683,43 @@ llvm::Error NativeExecutionRunner::runDynamicLibraryArtifact(
         (void)aclrtFree_(*it);
     }
     aclAllocs.clear();
-    if (aclStream)
-      (void)aclrtDestroyStream_(aclStream);
-    if (deviceSet)
-      (void)aclrtResetDevice_(deviceId_);
-    if (aclInitialized)
-      (void)aclFinalize_();
     dlclose(dynamicLib);
   };
 
-  int rc = aclInit_(nullptr);
-  if (rc != 0) {
+  int rc = 0;
+  if (!aclInitialized_) {
+    rc = aclInit_(nullptr);
+    if (rc != 0) {
+      dlclose(dynamicLib);
+      return llvm::createStringError(llvm::inconvertibleErrorCode(),
+                                     "aclInit failed: rc=%d", rc);
+    }
+    aclInitialized_ = true;
+  }
+
+  if (!aclDeviceSet_) {
+    rc = aclrtSetDevice_(deviceId_);
+    if (rc != 0) {
+      dlclose(dynamicLib);
+      return llvm::createStringError(llvm::inconvertibleErrorCode(),
+                                     "aclrtSetDevice failed: rc=%d", rc);
+    }
+    aclDeviceSet_ = true;
+  }
+
+  if (!aclStream_) {
+    rc = aclrtCreateStream_(&aclStream_);
+    if (rc != 0) {
+      dlclose(dynamicLib);
+      return llvm::createStringError(llvm::inconvertibleErrorCode(),
+                                     "aclrtCreateStream failed: rc=%d", rc);
+    }
+  }
+
+  if (!aclStream_) {
     dlclose(dynamicLib);
     return llvm::createStringError(llvm::inconvertibleErrorCode(),
-                                   "aclInit failed: rc=%d", rc);
-  }
-  aclInitialized = true;
-
-  rc = aclrtSetDevice_(deviceId_);
-  if (rc != 0) {
-    cleanup();
-    return llvm::createStringError(llvm::inconvertibleErrorCode(),
-                                   "aclrtSetDevice failed: rc=%d", rc);
-  }
-  deviceSet = true;
-
-  rc = aclrtCreateStream_(&aclStream);
-  if (rc != 0) {
-    cleanup();
-    return llvm::createStringError(llvm::inconvertibleErrorCode(),
-                                   "aclrtCreateStream failed: rc=%d", rc);
+                                   "aclrtCreateStream returned null stream");
   }
 
   std::vector<void *> inputGm;
@@ -765,7 +806,7 @@ llvm::Error NativeExecutionRunner::runDynamicLibraryArtifact(
   if (idx < 16)
     gmArgs[idx++] = tilingGm;
 
-  uint32_t launchRc = launchFn(static_cast<uint32_t>(args.block_dim), aclStream,
+  uint32_t launchRc = launchFn(static_cast<uint32_t>(args.block_dim), aclStream_,
                                gmArgs[0], gmArgs[1], gmArgs[2], gmArgs[3],
                                gmArgs[4], gmArgs[5], gmArgs[6], gmArgs[7],
                                gmArgs[8], gmArgs[9], gmArgs[10], gmArgs[11],
@@ -777,7 +818,7 @@ llvm::Error NativeExecutionRunner::runDynamicLibraryArtifact(
                                    launchRc);
   }
 
-  rc = aclrtSynchronizeStream_(aclStream);
+  rc = aclrtSynchronizeStream_(aclStream_);
   if (rc != 0) {
     cleanup();
     return llvm::createStringError(llvm::inconvertibleErrorCode(),
@@ -794,6 +835,26 @@ llvm::Error NativeExecutionRunner::runDynamicLibraryArtifact(
       cleanup();
       return llvm::createStringError(llvm::inconvertibleErrorCode(),
                                      "aclrtMemcpy output failed: rc=%d", rc);
+    }
+  }
+  for (RunArgs::InPlaceOutput &inPlace : args.in_place_outputs) {
+    if (inPlace.inputIndex >= inputGm.size()) {
+      cleanup();
+      return llvm::createStringError(
+          llvm::inconvertibleErrorCode(),
+          "input-alias output references invalid input index: %zu",
+          inPlace.inputIndex);
+    }
+    rc = aclrtMemcpy_(inPlace.array.data,
+                      static_cast<uint64_t>(inPlace.array.nbytes()),
+                      inputGm[inPlace.inputIndex],
+                      static_cast<uint64_t>(inPlace.array.nbytes()),
+                      kAclMemcpyDeviceToHost);
+    if (rc != 0) {
+      cleanup();
+      return llvm::createStringError(
+          llvm::inconvertibleErrorCode(),
+          "aclrtMemcpy input-alias output failed: rc=%d", rc);
     }
   }
 
