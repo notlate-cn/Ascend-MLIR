@@ -14,6 +14,9 @@ import numpy as np
 LAYERNORM_HIDDEN = 128
 QKV_HIDDEN = 16
 QKV_WIDTH = 48
+QKV_HEADS = 2
+QKV_HEAD_DIM = QKV_HIDDEN // QKV_HEADS
+ATTN_K = 32
 
 
 def positive_int(text: str) -> int:
@@ -34,25 +37,71 @@ def save(path: Path, value: np.ndarray) -> None:
 
 
 def build_shape_values(args: argparse.Namespace) -> dict[str, int]:
-    values = {
-        "arg0_dim0": args.m if args.fragment == "layernorm" else args.batch * args.seq,
-        "arg0_dim1": LAYERNORM_HIDDEN if args.fragment == "layernorm" else QKV_HIDDEN,
-        "arg1_dim0": LAYERNORM_HIDDEN if args.fragment == "layernorm" else QKV_HIDDEN,
-        "arg1_dim1": QKV_WIDTH if args.fragment == "qkv" else LAYERNORM_HIDDEN,
-        "arg2_dim0": LAYERNORM_HIDDEN if args.fragment == "layernorm" else QKV_WIDTH,
-        "arg3_dim0": args.batch * args.seq,
-        "arg3_dim1": QKV_WIDTH,
-    }
     if args.fragment == "layernorm":
-        values.update({
+        values = {
+            "arg0_dim0": args.m,
+            "arg0_dim1": LAYERNORM_HIDDEN,
+            "arg1_dim0": LAYERNORM_HIDDEN,
+            "arg1_dim1": LAYERNORM_HIDDEN,
+            "arg2_dim0": LAYERNORM_HIDDEN,
             "result0_dim0": args.m,
             "result0_dim1": LAYERNORM_HIDDEN,
-        })
-    else:
-        values.update({
-            "result0_dim0": args.batch * args.seq,
+        }
+    elif args.fragment == "qkv":
+        tokens = args.batch * args.seq
+        values = {
+            "arg0_dim0": tokens,
+            "arg0_dim1": QKV_HIDDEN,
+            "arg1_dim0": QKV_HIDDEN,
+            "arg1_dim1": QKV_WIDTH,
+            "arg2_dim0": QKV_WIDTH,
+            "arg3_dim0": tokens,
+            "arg3_dim1": QKV_WIDTH,
+            "result0_dim0": tokens,
             "result0_dim1": QKV_WIDTH,
-        })
+        }
+    elif args.fragment == "qkv_project_heads":
+        tokens = args.batch * args.seq
+        values = {
+            "arg0_dim0": tokens,
+            "arg0_dim1": QKV_HIDDEN,
+            "arg1_dim0": QKV_HIDDEN,
+            "arg1_dim1": QKV_WIDTH,
+            "arg2_dim0": QKV_WIDTH,
+            "arg3_dim0": tokens,
+            "arg3_dim1": QKV_WIDTH,
+            "result0_dim0": tokens,
+            "result0_dim1": 3,
+            "result0_dim2": QKV_HEADS,
+            "result0_dim3": QKV_HEAD_DIM,
+        }
+    elif args.fragment == "qkv_heads":
+        tokens = args.batch * args.seq
+        values = {
+            "arg0_dim0": tokens,
+            "arg0_dim1": QKV_WIDTH,
+            "result0_dim0": tokens,
+            "result0_dim1": 3,
+            "result0_dim2": QKV_HEADS,
+            "result0_dim3": QKV_HEAD_DIM,
+        }
+    elif args.fragment == "attn_score":
+        values = {
+            "arg0_dim0": args.batch,
+            "arg0_dim1": args.seq,
+            "arg0_dim2": args.k,
+            "arg1_dim0": args.batch,
+            "arg1_dim1": args.k,
+            "arg1_dim2": args.seq,
+            "arg2_dim0": args.batch,
+            "arg2_dim1": args.seq,
+            "arg2_dim2": args.seq,
+            "result0_dim0": args.batch,
+            "result0_dim1": args.seq,
+            "result0_dim2": args.seq,
+        }
+    else:
+        raise SystemExit(f"unsupported fragment: {args.fragment}")
 
     aliases = {}
     for key, value in values.items():
@@ -166,6 +215,96 @@ def generate_qkv(args: argparse.Namespace) -> tuple[list[dict[str, str]], list[d
     return inputs, outputs
 
 
+def generate_qkv_project_heads(args: argparse.Namespace) -> tuple[list[dict[str, str]], list[dict[str, Any]]]:
+    rng = np.random.default_rng(args.seed)
+    tokens = args.batch * args.seq
+    x = rng.integers(-4, 4, size=(tokens, QKV_HIDDEN)).astype(np.float16)
+    weight = rng.integers(-4, 4, size=(QKV_HIDDEN, QKV_WIDTH)).astype(np.float16)
+    bias = rng.normal(0.0, 0.01, size=(QKV_WIDTH,)).astype(np.float32)
+
+    expected_flat = x.astype(np.float32) @ weight.astype(np.float32) + bias.reshape(1, QKV_WIDTH)
+    expected = expected_flat.reshape(tokens, 3, QKV_HEADS, QKV_HEAD_DIM)
+
+    save(args.out_dir / "input_x.npy", x)
+    save(args.out_dir / "input_weight.npy", weight)
+    save(args.out_dir / "input_bias.npy", bias)
+    save(args.out_dir / "expected_out.npy", expected)
+    save(args.out_dir / "input0.npy", x)
+    save(args.out_dir / "input1.npy", weight)
+    save(args.out_dir / "input2.npy", bias)
+    save(args.out_dir / "output0.npy", expected)
+
+    inputs = [
+        {"name": "x", "path": str(args.out_dir / "input_x.npy")},
+        {"name": "weight", "path": str(args.out_dir / "input_weight.npy")},
+        {"name": "bias", "path": str(args.out_dir / "input_bias.npy")},
+    ]
+    outputs = [
+        {
+            "name": "out",
+            "path": str(args.actual_output),
+            "shape": [tokens, 3, QKV_HEADS, QKV_HEAD_DIM],
+            "dtype": "f32",
+        },
+    ]
+    return inputs, outputs
+
+
+def generate_qkv_heads(args: argparse.Namespace) -> tuple[list[dict[str, str]], list[dict[str, Any]]]:
+    rng = np.random.default_rng(args.seed)
+    tokens = args.batch * args.seq
+    qkv = rng.normal(0.0, 0.2, size=(tokens, QKV_WIDTH)).astype(np.float32)
+    expected = qkv.reshape(tokens, 3, QKV_HEADS, QKV_HEAD_DIM)
+
+    save(args.out_dir / "input_qkv.npy", qkv)
+    save(args.out_dir / "expected_out.npy", expected)
+
+    inputs = [
+        {"name": "qkv", "path": str(args.out_dir / "input_qkv.npy")},
+    ]
+    outputs = [
+        {
+            "name": "out",
+            "path": str(args.actual_output),
+            "shape": [tokens, 3, QKV_HEADS, QKV_HEAD_DIM],
+            "dtype": "f32",
+        },
+    ]
+    return inputs, outputs
+
+
+def generate_attn_score(args: argparse.Namespace) -> tuple[list[dict[str, str]], list[dict[str, Any]]]:
+    rng = np.random.default_rng(args.seed)
+    q = rng.integers(-3, 4, size=(args.batch, args.seq, args.k)).astype(np.float16)
+    key = rng.integers(-3, 4, size=(args.batch, args.k, args.seq)).astype(np.float16)
+    bias = rng.normal(0.0, 0.01, size=(args.batch, args.seq, args.seq)).astype(np.float32)
+    expected = np.matmul(q.astype(np.float32), key.astype(np.float32)) + bias
+
+    save(args.out_dir / "input_q.npy", q)
+    save(args.out_dir / "input_key.npy", key)
+    save(args.out_dir / "input_bias.npy", bias)
+    save(args.out_dir / "expected_out.npy", expected)
+    save(args.out_dir / "input0.npy", q)
+    save(args.out_dir / "input1.npy", key)
+    save(args.out_dir / "input2.npy", bias)
+    save(args.out_dir / "output0.npy", expected)
+
+    inputs = [
+        {"name": "q", "path": str(args.out_dir / "input_q.npy")},
+        {"name": "key", "path": str(args.out_dir / "input_key.npy")},
+        {"name": "bias", "path": str(args.out_dir / "input_bias.npy")},
+    ]
+    outputs = [
+        {
+            "name": "out",
+            "path": str(args.actual_output),
+            "shape": [args.batch, args.seq, args.seq],
+            "dtype": "f32",
+        },
+    ]
+    return inputs, outputs
+
+
 def write_manifest(args: argparse.Namespace, inputs: list[dict[str, str]], outputs: list[dict[str, Any]]) -> None:
     params = build_tiling_params(args.tiling_schema, args)
     manifest = {
@@ -192,10 +331,15 @@ def write_manifest(args: argparse.Namespace, inputs: list[dict[str, str]], outpu
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--fragment", choices=["layernorm", "qkv"], required=True)
+    parser.add_argument(
+        "--fragment",
+        choices=["layernorm", "qkv", "qkv_heads", "qkv_project_heads", "attn_score"],
+        required=True,
+    )
     parser.add_argument("--m", type=positive_int, default=4)
     parser.add_argument("--batch", type=positive_int, default=1)
     parser.add_argument("--seq", type=positive_int, default=1)
+    parser.add_argument("--k", type=positive_int, default=ATTN_K)
     parser.add_argument("--seed", type=positive_int, default=42)
     parser.add_argument("--out-dir", type=Path, required=True)
     parser.add_argument("--artifact-root", type=Path, required=True)
@@ -213,8 +357,14 @@ def main() -> None:
 
     if args.fragment == "layernorm":
         inputs, outputs = generate_layernorm(args)
-    else:
+    elif args.fragment == "qkv":
         inputs, outputs = generate_qkv(args)
+    elif args.fragment == "qkv_heads":
+        inputs, outputs = generate_qkv_heads(args)
+    elif args.fragment == "qkv_project_heads":
+        inputs, outputs = generate_qkv_project_heads(args)
+    else:
+        inputs, outputs = generate_attn_score(args)
     write_manifest(args, inputs, outputs)
 
     print(f"transformer_fragment.{args.fragment}.data=pass")

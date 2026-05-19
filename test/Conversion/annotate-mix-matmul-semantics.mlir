@@ -47,6 +47,16 @@
 // CHECK: abi_matmul_op_kind = "batch_matmul"
 // CHECK: abi_matmul_trans_a = false
 // CHECK: abi_matmul_trans_b = true
+// CHECK-LABEL: func.func @dynamic_batch_matmul_full_bias_add
+// CHECK-NOT: abi_matmul_batch_shape
+// CHECK: abi_matmul_epilogue_kind = "None"
+// CHECK: abi_matmul_has_bias = false
+// CHECK: abi_matmul_layout_a = "ND"
+// CHECK: abi_matmul_layout_b = "ND"
+// CHECK: abi_matmul_layout_c = "ND"
+// CHECK: abi_matmul_op_kind = "batch_matmul"
+// CHECK: abi_matmul_trans_a = false
+// CHECK: abi_matmul_trans_b = false
 // CHECK-LABEL: func.func @cube_only
 // CHECK-NOT: abi_matmul_
 // CHECK-LABEL: func.func @unrelated_generic
@@ -56,6 +66,7 @@
 
 #map = affine_map<(d0, d1) -> (d0, d1)>
 #map1 = affine_map<(d0, d1) -> (d1)>
+#map3 = affine_map<(d0, d1, d2) -> (d0, d1, d2)>
 #layout = affine_map<(d0, d1) -> (d1, d0)>
 
 module {
@@ -71,10 +82,12 @@ module {
     linalg.matmul {ascendc.unit = "AiCore.Cube"}
         ins(%arg0, %arg1 : memref<?x?xf16>, memref<?x?xf16>)
         outs(%acc : memref<?x?xf32>)
+    %acc_copy = memref.alloc(%dim0, %dim1) : memref<?x?xf32>
+    memref.copy %acc, %acc_copy : memref<?x?xf32> to memref<?x?xf32>
     %bias_added = memref.alloc(%dim0, %dim1) : memref<?x?xf32>
     linalg.generic
         {indexing_maps = [#map, #map1, #map], iterator_types = ["parallel", "parallel"]}
-        ins(%acc, %arg2 : memref<?x?xf32>, memref<?xf32>)
+        ins(%acc_copy, %arg2 : memref<?x?xf32>, memref<?xf32>)
         outs(%bias_added : memref<?x?xf32>) attrs = {ascendc.unit = "AiCore.Vector"} {
       ^bb0(%in: f32, %bias: f32, %out: f32):
         %sum = arith.addf %in, %bias : f32
@@ -126,6 +139,32 @@ module {
     linalg.batch_matmul_transpose_b {ascendc.unit = "AiCore.Cube"}
         ins(%arg0, %arg1 : memref<2x4x8xf16>, memref<2x16x8xf16>)
         outs(%arg2 : memref<2x4x16xf32>)
+    return
+  }
+
+  func.func @dynamic_batch_matmul_full_bias_add(
+      %arg0: memref<?x?x?xf16>, %arg1: memref<?x?x?xf16>,
+      %arg2: memref<?x?x?xf32>, %arg3: memref<?x?x?xf32>)
+      attributes {ascendc.kernel_kind = "mix"} {
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    %c2 = arith.constant 2 : index
+    %batch = memref.dim %arg3, %c0 : memref<?x?x?xf32>
+    %m = memref.dim %arg3, %c1 : memref<?x?x?xf32>
+    %n = memref.dim %arg3, %c2 : memref<?x?x?xf32>
+    %acc = memref.alloc(%batch, %m, %n) : memref<?x?x?xf32>
+    linalg.batch_matmul {ascendc.unit = "AiCore.Cube"}
+        ins(%arg0, %arg1 : memref<?x?x?xf16>, memref<?x?x?xf16>)
+        outs(%acc : memref<?x?x?xf32>)
+    linalg.generic
+        {indexing_maps = [#map3, #map3, #map3],
+         iterator_types = ["parallel", "parallel", "parallel"]}
+        ins(%acc, %arg2 : memref<?x?x?xf32>, memref<?x?x?xf32>)
+        outs(%arg3 : memref<?x?x?xf32>) attrs = {ascendc.unit = "AiCore.Vector"} {
+      ^bb0(%in: f32, %bias: f32, %out: f32):
+        %sum = arith.addf %in, %bias : f32
+        linalg.yield %sum : f32
+    }
     return
   }
 

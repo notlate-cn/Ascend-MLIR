@@ -148,6 +148,27 @@ func.func @test_matmul() {
 }
 
 //===----------------------------------------------------------------------===//
+// Compute: linalg.batch_matmul (rank3 A2/B2/CO1) -> batched mmads
+//===----------------------------------------------------------------------===//
+// CHECK-LABEL: func @test_batch_matmul
+// CHECK-NOT: linalg.batch_matmul
+// CHECK: scf.for
+// CHECK: ascendc.tbuf.get_with_offset
+// CHECK: ascendc.construct !ascendc.mmad_params
+// CHECK: ascendc.mmad {{.*}} {ascendc.unit = "AiCore.Cube"}
+// CHECK: ascendc.que_bind.enque_tensor
+func.func @test_batch_matmul() {
+  %A2  = memref.alloc() : memref<2x32x64xf32, 2 : i32>
+  %B2  = memref.alloc() : memref<2x64x32xf32, 4 : i32>
+  %CO1 = memref.alloc() : memref<2x32x32xf32, 7 : i32>
+  linalg.batch_matmul {ascendc.unit = "AiCore.Cube"}
+    ins(%A2, %B2 : memref<2x32x64xf32, 2 : i32>,
+                   memref<2x64x32xf32, 4 : i32>)
+    outs(%CO1 : memref<2x32x32xf32, 7 : i32>)
+  return
+}
+
+//===----------------------------------------------------------------------===//
 // Compute: linalg.matmul on GM buffers → scalar loop fallback
 //===----------------------------------------------------------------------===//
 // CHECK-LABEL: func @test_matmul_no_convert

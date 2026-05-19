@@ -16,6 +16,7 @@ FRAGMENT="layernorm"
 M=4
 BATCH=1
 SEQ=16
+K=32
 SEED=42
 BLOCK_DIM=1
 SOC="${SOC_VERSION:-Ascend910B1}"
@@ -40,6 +41,17 @@ require_positive_int() {
   fi
 }
 
+is_mix_fragment() {
+  case "$1" in
+    qkv|qkv_project_heads|attn_score)
+      return 0
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --fragment)
@@ -60,6 +72,11 @@ while [[ $# -gt 0 ]]; do
     --seq)
       require_arg "$1" "${2:-}"
       SEQ="$2"
+      shift 2
+      ;;
+    --k)
+      require_arg "$1" "${2:-}"
+      K="$2"
       shift 2
       ;;
     --seed)
@@ -93,7 +110,7 @@ while [[ $# -gt 0 ]]; do
 done
 
 case "$FRAGMENT" in
-  layernorm|qkv)
+  layernorm|qkv|qkv_heads|qkv_project_heads|attn_score)
     ;;
   *)
     echo "unknown fragment: $FRAGMENT" >&2
@@ -104,10 +121,11 @@ esac
 require_positive_int "M" "$M"
 require_positive_int "BATCH" "$BATCH"
 require_positive_int "SEQ" "$SEQ"
+require_positive_int "K" "$K"
 require_positive_int "BLOCK_DIM" "$BLOCK_DIM"
 
 if [[ -z "$RUNTIME_E2E" ]]; then
-  if [[ "$FRAGMENT" == "qkv" ]]; then
+  if [[ "$FRAGMENT" == "qkv" || "$FRAGMENT" == "qkv_project_heads" ]]; then
     RUNTIME_E2E=false
   else
     RUNTIME_E2E=true
@@ -139,11 +157,30 @@ echo "========================================================"
 if [[ "$FRAGMENT" == "layernorm" ]]; then
   echo "shape.M=$M"
   echo "shape.hidden=128"
-else
+elif [[ "$FRAGMENT" == "qkv" ]]; then
   echo "shape.batch=$BATCH"
   echo "shape.seq=$SEQ"
   echo "shape.tokens=$((BATCH * SEQ))"
   echo "shape.hidden=16"
+  echo "shape.qkv=48"
+elif [[ "$FRAGMENT" == "qkv_project_heads" ]]; then
+  echo "shape.batch=$BATCH"
+  echo "shape.seq=$SEQ"
+  echo "shape.tokens=$((BATCH * SEQ))"
+  echo "shape.hidden=16"
+  echo "shape.qkv=48"
+  echo "shape.heads=2"
+  echo "shape.head_dim=8"
+elif [[ "$FRAGMENT" == "attn_score" ]]; then
+  echo "shape.batch=$BATCH"
+  echo "shape.seq=$SEQ"
+  echo "shape.k=$K"
+else
+  echo "shape.batch=$BATCH"
+  echo "shape.seq=$SEQ"
+  echo "shape.tokens=$((BATCH * SEQ))"
+  echo "shape.heads=2"
+  echo "shape.head_dim=8"
   echo "shape.qkv=48"
 fi
 echo "block_dim=$BLOCK_DIM"
@@ -178,10 +215,11 @@ log "  output: $BUILD_DIR/step4_realized.mlir"
 
 echo ""
 echo "==================== [STAGE 5] Ascend compute lower ===================="
-if [[ "$FRAGMENT" == "qkv" ]]; then
+if is_mix_fragment "$FRAGMENT"; then
   "$AFIR_OPT" "$BUILD_DIR/step4_realized.mlir" \
-    --ascend-compute-lower \
     --annotate-ascendc-kernel-kind \
+    --annotate-mix-matmul-semantics \
+    --ascend-compute-lower \
     -o "$BUILD_DIR/step5_ascendc.mlir"
 else
   "$AFIR_OPT" "$BUILD_DIR/step4_realized.mlir" \
@@ -236,6 +274,7 @@ echo "==================== [STAGE 10] Generate data ===================="
   --m "$M" \
   --batch "$BATCH" \
   --seq "$SEQ" \
+  --k "$K" \
   --seed "$SEED" \
   --out-dir "$NPY_DIR" \
   --artifact-root "$ARTIFACT_ROOT" \
@@ -248,7 +287,7 @@ log "  output: $NPY_DIR"
 echo ""
 echo "==================== [STAGE 11] runtime-session compile ===================="
 rm -rf "$ARTIFACT_ROOT"
-if [[ "$FRAGMENT" == "qkv" ]]; then
+if is_mix_fragment "$FRAGMENT"; then
   ASCEND_DAV_SIM_VERSION="$ASCEND_DAV_SIM_VERSION" "$RUNTIME_SESSION" \
     --kernel "$BUILD_DIR/step9_kernel.cpp" \
     --kernel-kind mix \
@@ -258,7 +297,35 @@ if [[ "$FRAGMENT" == "qkv" ]]; then
     --soc "$SOC" \
     --output "$ARTIFACT_ROOT"
   test -s "$ARTIFACT_ROOT/out/tiling.bin"
-  cat > "$RUN_MANIFEST" <<EOF
+  if [[ "$FRAGMENT" == "attn_score" ]]; then
+    cat > "$RUN_MANIFEST" <<EOF
+{
+  "task_id": "main",
+  "backend": "sim",
+  "artifact_root": "${ARTIFACT_ROOT}",
+  "inputs": [
+    { "name": "q", "path": "${NPY_DIR}/input_q.npy" },
+    { "name": "key", "path": "${NPY_DIR}/input_key.npy" },
+    { "name": "bias", "path": "${NPY_DIR}/input_bias.npy" }
+  ],
+  "outputs": [
+    { "name": "out", "path": "${ACTUAL_OUTPUT}" }
+  ],
+  "expected_outputs": [
+    { "name": "out", "path": "${NPY_DIR}/expected_out.npy" }
+  ],
+  "tiling": {
+    "binary": "${ARTIFACT_ROOT}/out/tiling.bin"
+  },
+  "block_dim": ${BLOCK_DIM},
+  "workspace_size": 16777216,
+  "profiling": true,
+  "atol": 1.0,
+  "rtol": 1e-2
+}
+EOF
+  else
+    cat > "$RUN_MANIFEST" <<EOF
 {
   "task_id": "main",
   "backend": "sim",
@@ -284,6 +351,7 @@ if [[ "$FRAGMENT" == "qkv" ]]; then
   "rtol": 1e-2
 }
 EOF
+  fi
 else
   "$RUNTIME_SESSION" \
     --kernel "$BUILD_DIR/step9_kernel.cpp" \
@@ -294,15 +362,15 @@ fi
 log "  output: $ARTIFACT_ROOT"
 echo "transformer_fragment.${FRAGMENT}.artifact_compile=pass"
 
-if [[ "$FRAGMENT" == "qkv" && "$RUNTIME_E2E" != true ]]; then
-  echo "transformer_fragment.qkv.runtime_session=deferred"
-  echo "transformer_fragment.qkv.next_gap=qkv_runtime_sim"
+if [[ ("$FRAGMENT" == "qkv" || "$FRAGMENT" == "qkv_project_heads") && "$RUNTIME_E2E" != true ]]; then
+  echo "transformer_fragment.${FRAGMENT}.runtime_session=deferred"
+  echo "transformer_fragment.${FRAGMENT}.next_gap=${FRAGMENT}_runtime_sim"
   exit 0
 fi
 
 echo ""
 echo "==================== [STAGE 12] runtime-session sim ===================="
-if [[ "$FRAGMENT" == "qkv" ]]; then
+if is_mix_fragment "$FRAGMENT"; then
   CANN_ARCH="$(uname -m)"
   if [[ "$CANN_ARCH" == "x86_64" ]]; then
     CANN_ARCH="x86_64-linux"

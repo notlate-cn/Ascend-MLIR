@@ -370,6 +370,8 @@ def LinalgToAscendCPass : Pass<"linalg-to-ascendc", "mlir::func::FuncOp"> {
 
     Compute lowering (linalg ops):
       linalg.matmul (A2/B2/CO1)       : deque A2+B2, alloc CO1 → mmad → enque CO1
+      linalg.batch_matmul (rank3 A2/B2/CO1)
+                                        : batched tbuf offset slices → mmads
       linalg.fill (on-chip dst)        : alloc → duplicate_l2 → enque
       linalg.elementwise add           : deque srcs, alloc dst → add_l2 → enque dst
       linalg.elementwise max_signed    : deque srcs, alloc dst → max_l2 → enque dst
@@ -542,9 +544,11 @@ def AnnotateMixMatmulSemanticsPass : Pass<"annotate-mix-matmul-semantics", "mlir
     - 2D linalg.matmul
     - optional bias add epilogue
     - optional leaky_relu epilogue
+    - rank3 linalg.batch_matmul, with an optional full-rank add epilogue kept
+      as a separate vector-stage contract
 
     Emitted attributes:
-    - abi_matmul_op_kind = "matmul"
+    - abi_matmul_op_kind = "matmul" | "batch_matmul"
     - abi_matmul_trans_a = false
     - abi_matmul_trans_b = false
     - abi_matmul_has_bias = true|false
@@ -552,6 +556,7 @@ def AnnotateMixMatmulSemanticsPass : Pass<"annotate-mix-matmul-semantics", "mlir
     - abi_matmul_layout_b = "ND"
     - abi_matmul_layout_c = "ND"
     - abi_matmul_epilogue_kind = "None" | "BiasAdd" | "BiasAddLeakyRelu"
+    - abi_matmul_batch_shape = [B] when the batch dim is statically known
 
     The pass is conservative: unsupported patterns are left unannotated.
   }];

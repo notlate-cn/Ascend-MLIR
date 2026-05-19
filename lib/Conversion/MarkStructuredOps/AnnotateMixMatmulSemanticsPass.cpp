@@ -15,6 +15,7 @@
 #include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "llvm/ADT/STLFunctionalExtras.h"
+#include "llvm/ADT/SmallPtrSet.h"
 
 #include <optional>
 #include <string>
@@ -116,8 +117,9 @@ static std::optional<MatmulLikeOpInfo> getMatmulLikeOpInfo(Operation *op) {
   }
   if (auto matmul = dyn_cast<linalg::BatchMatmulOp>(op)) {
     auto batch = getStaticBatchDim(matmul.getDpsInitOperand(0)->get());
-    if (!batch)
-      return std::nullopt;
+    std::vector<int64_t> batchShape;
+    if (batch)
+      batchShape.push_back(*batch);
     return MatmulLikeOpInfo{
         matmul.getDpsInputOperand(0)->get(),
         matmul.getDpsInputOperand(1)->get(),
@@ -126,13 +128,14 @@ static std::optional<MatmulLikeOpInfo> getMatmulLikeOpInfo(Operation *op) {
         "batch_matmul",
         false,
         false,
-        {*batch},
+        std::move(batchShape),
     };
   }
   if (auto matmul = dyn_cast<linalg::BatchMatmulTransposeAOp>(op)) {
     auto batch = getStaticBatchDim(matmul.getDpsInitOperand(0)->get());
-    if (!batch)
-      return std::nullopt;
+    std::vector<int64_t> batchShape;
+    if (batch)
+      batchShape.push_back(*batch);
     return MatmulLikeOpInfo{
         matmul.getDpsInputOperand(0)->get(),
         matmul.getDpsInputOperand(1)->get(),
@@ -141,13 +144,14 @@ static std::optional<MatmulLikeOpInfo> getMatmulLikeOpInfo(Operation *op) {
         "batch_matmul",
         true,
         false,
-        {*batch},
+        std::move(batchShape),
     };
   }
   if (auto matmul = dyn_cast<linalg::BatchMatmulTransposeBOp>(op)) {
     auto batch = getStaticBatchDim(matmul.getDpsInitOperand(0)->get());
-    if (!batch)
-      return std::nullopt;
+    std::vector<int64_t> batchShape;
+    if (batch)
+      batchShape.push_back(*batch);
     return MatmulLikeOpInfo{
         matmul.getDpsInputOperand(0)->get(),
         matmul.getDpsInputOperand(1)->get(),
@@ -156,7 +160,7 @@ static std::optional<MatmulLikeOpInfo> getMatmulLikeOpInfo(Operation *op) {
         "batch_matmul",
         false,
         true,
-        {*batch},
+        std::move(batchShape),
     };
   }
   return std::nullopt;
@@ -177,6 +181,39 @@ static bool isBiasAddGeneric(linalg::GenericOp genericOp) {
   if (!isRankedMemRef(genericOp.getDpsInputOperand(0)->get(), 2) ||
       !isRankedMemRef(genericOp.getDpsInputOperand(1)->get(), 1) ||
       !isRankedMemRef(genericOp.getDpsInitOperand(0)->get(), 2))
+    return false;
+
+  Block &body = genericOp.getRegion().front();
+  if (body.getNumArguments() != 3)
+    return false;
+
+  arith::AddFOp addOp;
+  linalg::YieldOp yieldOp;
+  for (Operation &op : body.getOperations()) {
+    if (auto add = dyn_cast<arith::AddFOp>(op)) {
+      if (addOp)
+        return false;
+      addOp = add;
+      continue;
+    }
+    if (auto yield = dyn_cast<linalg::YieldOp>(op)) {
+      yieldOp = yield;
+      continue;
+    }
+    return false;
+  }
+  return addOp && yieldOp && yieldOp.getNumOperands() == 1 &&
+         yieldOp.getOperand(0) == addOp.getResult();
+}
+
+static bool isFullRank3AddGeneric(linalg::GenericOp genericOp) {
+  if (genericOp.getNumDpsInputs() != 2 || genericOp.getNumDpsInits() != 1 ||
+      !isParallelGeneric(genericOp) ||
+      !hasUnitAttr(genericOp, ascend::kAscendCUnitVector))
+    return false;
+  if (!isRankedMemRef(genericOp.getDpsInputOperand(0)->get(), 3) ||
+      !isRankedMemRef(genericOp.getDpsInputOperand(1)->get(), 3) ||
+      !isRankedMemRef(genericOp.getDpsInitOperand(0)->get(), 3))
     return false;
 
   Block &body = genericOp.getRegion().front();
@@ -251,7 +288,7 @@ static bool isSimple2DNdMatmulLike(const MatmulLikeOpInfo &info) {
 }
 
 static bool isSimple3DNdBatchMatmulLike(const MatmulLikeOpInfo &info) {
-  if (info.batchShape.size() != 1)
+  if (info.opKind != "batch_matmul")
     return false;
   return hasUnitAttr(info.op, ascend::kAscendCUnitCube) &&
          isIdentity3DMemRef(info.lhs) &&
@@ -268,6 +305,40 @@ static linalg::GenericOp findUniqueChainedGeneric(Value current,
     if (matched)
       return {};
     matched = generic;
+  }
+  return matched;
+}
+
+static SmallVector<Value> collectCopyForwardedValues(Value source) {
+  SmallVector<Value> values{source};
+  llvm::SmallPtrSet<Value, 8> seen;
+  seen.insert(source);
+  for (unsigned index = 0; index < values.size(); ++index) {
+    Value current = values[index];
+    for (Operation *user : current.getUsers()) {
+      auto copyOp = dyn_cast<memref::CopyOp>(user);
+      if (!copyOp || copyOp.getSource() != current)
+        continue;
+      Value target = copyOp.getTarget();
+      if (seen.insert(target).second)
+        values.push_back(target);
+    }
+  }
+  return values;
+}
+
+static linalg::GenericOp findUniqueChainedGenericThroughCopies(
+    Value current, ArrayRef<linalg::GenericOp> generics,
+    function_ref<bool(linalg::GenericOp)> predicate) {
+  linalg::GenericOp matched;
+  for (Value forwarded : collectCopyForwardedValues(current)) {
+    linalg::GenericOp candidate =
+        findUniqueChainedGeneric(forwarded, generics, predicate);
+    if (!candidate)
+      continue;
+    if (matched && matched != candidate)
+      return {};
+    matched = candidate;
   }
   return matched;
 }
@@ -306,27 +377,42 @@ struct AnnotateMixMatmulSemanticsPass
     if (!isSimple2DNdMatmulLike(matmulOp) &&
         !isSimple3DNdBatchMatmulLike(matmulOp))
       return;
-    if (!matmulOp.batchShape.empty() && !generics.empty())
-      return;
 
-    Value current = matmulOp.out;
-    linalg::GenericOp biasGeneric =
-        findUniqueChainedGeneric(current, generics, isBiasAddGeneric);
-    bool hasBias = static_cast<bool>(biasGeneric);
-    if (biasGeneric)
-      current = biasGeneric.getDpsInitOperand(0)->get();
-
-    linalg::GenericOp leakyReluGeneric =
-        findUniqueChainedGeneric(current, generics, isLeakyReluGeneric);
-    bool hasLeakyRelu = static_cast<bool>(leakyReluGeneric);
-
+    bool hasBias = false;
+    bool hasLeakyRelu = false;
     StringRef epilogueKind = "None";
-    if (hasBias && hasLeakyRelu)
-      epilogueKind = "BiasAddLeakyRelu";
-    else if (hasBias)
-      epilogueKind = "BiasAdd";
-    else if (hasLeakyRelu)
-      return;
+
+    if (matmulOp.opKind == "batch_matmul") {
+      if (generics.size() > 1)
+        return;
+      if (!generics.empty()) {
+        linalg::GenericOp fullBiasAdd =
+            findUniqueChainedGenericThroughCopies(matmulOp.out, generics,
+                                                  isFullRank3AddGeneric);
+        if (!fullBiasAdd)
+          return;
+      }
+    } else {
+      Value current = matmulOp.out;
+      linalg::GenericOp biasGeneric =
+          findUniqueChainedGenericThroughCopies(current, generics,
+                                                isBiasAddGeneric);
+      hasBias = static_cast<bool>(biasGeneric);
+      if (biasGeneric)
+        current = biasGeneric.getDpsInitOperand(0)->get();
+
+      linalg::GenericOp leakyReluGeneric =
+          findUniqueChainedGenericThroughCopies(current, generics,
+                                                isLeakyReluGeneric);
+      hasLeakyRelu = static_cast<bool>(leakyReluGeneric);
+
+      if (hasBias && hasLeakyRelu)
+        epilogueKind = "BiasAddLeakyRelu";
+      else if (hasBias)
+        epilogueKind = "BiasAdd";
+      else if (hasLeakyRelu)
+        return;
+    }
 
     MLIRContext *ctx = funcOp.getContext();
     funcOp->setAttr("abi_matmul_op_kind",

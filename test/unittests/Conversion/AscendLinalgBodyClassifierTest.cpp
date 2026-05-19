@@ -38,7 +38,42 @@ linalg::GenericOp findFirstGeneric(ModuleOp module) {
   return generic;
 }
 
+linalg::BatchMatmulOp findFirstBatchMatmul(ModuleOp module) {
+  linalg::BatchMatmulOp batchMatmul;
+  module.walk([&](linalg::BatchMatmulOp op) {
+    if (!batchMatmul)
+      batchMatmul = op;
+  });
+  return batchMatmul;
+}
+
 } // namespace
+
+TEST(AscendLinalgBodyClassifierTest,
+     ClassifiesOnChipBatchMatmulAsBatchMatmul) {
+  MLIRContext context;
+  OwningOpRef<ModuleOp> module = parseClassifierModule(
+      context, R"mlir(
+module {
+  func.func @f(%lhs: memref<2x4x8xf16, 2 : i32>,
+               %rhs: memref<2x8x16xf16, 4 : i32>,
+               %out: memref<2x4x16xf32, 7 : i32>) {
+    linalg.batch_matmul
+      ins(%lhs, %rhs : memref<2x4x8xf16, 2 : i32>,
+                       memref<2x8x16xf16, 4 : i32>)
+      outs(%out : memref<2x4x16xf32, 7 : i32>)
+    return
+  }
+}
+)mlir");
+  ASSERT_TRUE(module);
+  linalg::BatchMatmulOp batchMatmul = findFirstBatchMatmul(*module);
+  ASSERT_TRUE(batchMatmul);
+
+  AscendBackendSupportMatrix matrix;
+  EXPECT_EQ(classifyLinalgComputeKind(batchMatmul.getOperation(), matrix),
+            ComputeKind::BatchMatmul);
+}
 
 TEST(AscendLinalgBodyClassifierTest,
      ClassifiesSupportedFusedElementwiseBodyOnce) {
