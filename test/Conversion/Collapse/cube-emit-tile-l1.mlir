@@ -1,15 +1,18 @@
-// RUN: afir-opt %s --vector-plan-tile-fuse 2>&1 | FileCheck %s
+// RUN: afir-opt %s --vector-plan-tile-fuse --canonicalize 2>&1 | FileCheck %s
 //
-// CV-fusion Phase 4a of [[af-cv-fusion-port]]: level-1 cube tile + annotate.
+// CV-fusion Phase 4a+4b of [[af-cv-fusion-port]]: level-1 + level-2 cube
+// tile, ascendc annotations, post-canonicalize DCE.
 //
-// CubeEmitter calls `scf::tileConsumerAndFuseProducersUsingSCF` on the relu
-// epilogue with tile sizes [XBLOCK_M, XBLOCK_N] (K untiled), fusing the
-// matmul producer into the inner of two scf.for loops.  The outer 2 loops
-// get `ascendc.parallel` (multicore dispatch); the tiled matmul gets
-// `ascendc.unit = "AiCore.Cube"` and the tiled relu gets `"AiCore.Vector"`.
+// CubeEmitter calls `scf::tileConsumerAndFuseProducersUsingSCF` twice on the
+// relu epilogue: first with [XBLOCK_M, XBLOCK_N] (outer multicore tile),
+// then with [M_INNER, N_INNER] on the level-1 result (inner intra-block
+// tile, sized for the cube fragment 16×16).  K stays untiled until Phase 4c.
 //
-// Level-2 (inner M/N) and level-3 (K) tile + the `ascendc.prologue/epilogue`
-// dataflow string annotations land in Phase 4b/c.
+// Outer 2 loops get `ascendc.parallel`; inner 2 loops are bare.  The
+// innermost tiled matmul gets `ascendc.unit = "AiCore.Cube"` and the inner
+// tiled relu gets `"AiCore.Vector"`.  Original untiled + level-1-stale
+// linalg ops are dead after replaceAllUsesWith; downstream canonicalize
+// (this RUN line) DCEs them so only the level-2 tiled ops survive.
 
 #map = affine_map<(d0, d1) -> (d0, d1)>
 
@@ -33,8 +36,14 @@ func.func @mm_relu(%a: tensor<32x16xf16>,
   return %r : tensor<32x64xf32>
 }
 
-// Outer 2-level scf.for nest emitted; both annotated ascendc.parallel.
-// Lit checks follow input order: scf.for opens → body (matmul + vec) → closes.
+// 4-level scf.for nest emitted (M_outer × N_outer × M_inner × N_inner).
+// Innermost body: tiled matmul + tiled relu with correct ascendc.unit.
+// Outermost 2 loops annotated `ascendc.parallel`; inner 2 are bare.
+// (Single-line checks follow input order; DAG checks would be ambiguous
+// since the body contains both matmul and generic between the loop opens
+// and the 4 closing braces.)
+// CHECK: scf.for
+// CHECK: scf.for
 // CHECK: scf.for
 // CHECK: scf.for
 // CHECK: linalg.matmul {ascendc.unit = "AiCore.Cube"}

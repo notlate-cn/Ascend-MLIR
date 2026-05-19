@@ -150,9 +150,57 @@ LogicalResult emitCubeKernel(func::FuncOp func, const TilePlan &plan) {
   for (auto loopLike : tfResult->loops)
     loopLike->setAttr("ascendc.parallel", unitAttr);
 
-  // Annotate the tiled matmul with `ascendc.unit = "AiCore.Cube"`; the vec
-  // epilogue tiled ops get `"AiCore.Vector"`.  Downstream
-  // AnnotateMixMatmulSemantics + AscendCBufferPlacement consume these.
+  // Phase 4b: level-2 inner M/N tile.  Pick the tiled consumer (the first
+  // entry in `tiledAndFusedOps`) — that's the relu/elementwise op inside the
+  // 2-level outer scf.for nest.  tileConsumerAndFuseProducersUsingSCF again
+  // with [M_INNER, N_INNER] inserts 2 more scf.for loops AND re-fuses the
+  // matmul producer (now also tiled twice, with M_INNER × N_INNER × K).
+  // Inner loops do NOT get `ascendc.parallel` (intra-block, not multicore).
+  Operation *level1Consumer = tfResult->tiledAndFusedOps.empty()
+                                  ? nullptr
+                                  : tfResult->tiledAndFusedOps.front();
+  if (level1Consumer && isa<linalg::LinalgOp>(level1Consumer)) {
+    auto level1ConsumerLinalg = cast<linalg::LinalgOp>(level1Consumer);
+    SmallVector<OpFoldResult> tileSizes2 =
+        buildTileSizes(level1ConsumerLinalg, tunables.mInner, tunables.nInner,
+                        /*kSize=*/nullptr, b);
+    if (!tileSizes2.empty()) {
+      scf::SCFTilingOptions tilingOptions2;
+      tilingOptions2.setTileSizes(tileSizes2);
+      scf::SCFTileAndFuseOptions tfOptions2;
+      tfOptions2.tilingOptions = tilingOptions2;
+
+      rewriter.setInsertionPoint(level1Consumer);
+      auto tfResult2 = scf::tileConsumerAndFuseProducersUsingSCF(
+          rewriter, cast<TilingInterface>(level1Consumer), tfOptions2);
+      if (succeeded(tfResult2)) {
+        for (auto [orig, repl] : tfResult2->replacements)
+          rewriter.replaceAllUsesWith(orig, repl);
+        // Re-annotate ascendc.unit on the level-2 tiled ops (the level-1
+        // annotations were on now-replaced ops).
+        for (Operation *tiled : tfResult2->tiledAndFusedOps) {
+          if (isa<linalg::MatmulOp, linalg::MatmulTransposeAOp,
+                  linalg::MatmulTransposeBOp, linalg::BatchMatmulOp>(tiled))
+            tiled->setAttr("ascendc.unit",
+                            rewriter.getStringAttr("AiCore.Cube"));
+          else if (isa<linalg::LinalgOp>(tiled))
+            tiled->setAttr("ascendc.unit",
+                            rewriter.getStringAttr("AiCore.Vector"));
+        }
+        // tfResult is now stale (level-1 tiled ops replaced by level-2);
+        // mark by clearing so any later annotate-by-tfResult is a no-op.
+        // (We've already annotated parallel on the level-1 loops above —
+        // those loops survive untouched as the outer wrapper of level-2.)
+        return success();
+      }
+      LLVM_DEBUG(llvm::dbgs()
+                 << "[cube-emitter] level-2 tile-and-fuse failed; "
+                 << "leaving level-1 output\n");
+    }
+  }
+
+  // Fallback: only level-1 tile.  Annotate `ascendc.unit` on the tiled
+  // matmul / vec generic from the level-1 result.
   for (Operation *tiled : tfResult->tiledAndFusedOps) {
     if (isa<linalg::MatmulOp, linalg::MatmulTransposeAOp,
             linalg::MatmulTransposeBOp, linalg::BatchMatmulOp>(tiled))
