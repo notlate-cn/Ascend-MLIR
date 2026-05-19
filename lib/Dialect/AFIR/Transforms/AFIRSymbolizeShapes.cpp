@@ -142,14 +142,19 @@ AFIRSymbolizeShapesPass::transferLinalg(linalg::LinalgOp op) {
     if (!vShape)
       return std::nullopt;
     AffineMap m = maps[i];
-    if (!m.isProjectedPermutation())
+    // allowZeroInResults=true accepts broadcast maps like
+    // `(d0,d1,d2) -> (d0, 0, d2)` where one result is a constant 0.
+    if (!m.isProjectedPermutation(/*allowZeroInResults=*/true))
       return std::nullopt;
     if (m.getNumResults() != vShape->size())
       return std::nullopt;
     for (unsigned pos = 0; pos < m.getNumResults(); ++pos) {
       auto d = dyn_cast<AffineDimExpr>(m.getResult(pos));
       if (!d)
-        return std::nullopt;
+        // Constant entries (e.g. broadcast `(d0,d1,d2) -> (d0, 0, d2)`)
+        // don't pin any iter dim from this operand — skip, let other
+        // operands pin it.
+        continue;
       unsigned dim = d.getPosition();
       SymExpr pin = (*vShape)[pos];
       iterSize[dim] = iterSize[dim].isValid() ? unify(table, iterSize[dim], pin)
