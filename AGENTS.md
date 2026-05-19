@@ -21,9 +21,9 @@
   - Set `ASCEND_HOME_PATH=/home/niu/Ascend/latest` or source `/home/niu/Ascend/latest/set_env.sh` before verification.
 - Do not treat xvm CPU simulation as real NPU completion.
 - For shared x86/aarch64 developer workflows, use `scripts/real-npu-ci/` as
-  the containerized 910C host runner. Developer machines trigger jobs; build
+  the containerized real-NPU host runner. Developer machines trigger jobs; build
   and real-device execution stay on the aarch64 NPU host.
-- Prebuild the 910C runner image once per dependency stack, preferably via
+- Prebuild the real-NPU runner image once per dependency stack, preferably via
   `scripts/real-npu-ci/build-aarch64-image.sh --with-llvm` so pinned LLVM/MLIR
   is automatically built into `/opt/llvm/build`; validation jobs should reuse
   an existing image tag instead of rebuilding Docker images.
@@ -31,7 +31,7 @@
   aarch64 image rebuilds. PyAsc follows the source repo/ref under validation;
   rebuild the image when PyAsc requires a new LLVM/MLIR stack or extra system
   packages.
-- The generic aarch64 image may use Ubuntu 22.04 userland even if the 910C host
+- The generic aarch64 image may use Ubuntu 22.04 userland even if the real-NPU host
   OS differs, as long as build and real-device execution remain inside the
   container and driver/CANN/device nodes are mounted from the host.
 - Before any candidate fix, generated-kernel variant, or new runtime artifact is
@@ -74,7 +74,7 @@
 - `NpuBackend` is wired through the runtime-native execution path and honors `ASCEND_DEVICE_ID`.
 - `NativeExecutionRunner` now reports `rtStreamSynchronize` failures instead of treating failed real-device execution as success.
 - A run-manifest-only `runtime-session` build path exists so the remote host can execute prebuilt artifacts without loading CANN compiler/simulator dependencies at process startup.
-- Remote host CANN 9.1 toolkit and A3 ops are installed under `/data/nyh/Ascend`.
+- Remote host CANN 9.1 toolkit and A3 ops are installed under `/data/{username}/Ascend`.
 - xvm CANN 9.1 toolkit and A3 ops are installed under `/home/niu/Ascend`, with top-level `latest` switched to 9.1.
 - Current xvm 9.1 verification passes:
   - `bash test/tools/runtime/run_runtime.sh`
@@ -118,6 +118,6 @@
 ## Notes
 
 - `examples/dev-env.md` is the operational guide for xvm build/test/debug workflow.
-- `examples/real-npu.md` is the single operational guide for remote real-device NPU debugging, containerized 910C runner usage, run-only packaging, plog triage, and current real-NPU findings.
+- `examples/real-npu.md` is the single operational guide for remote real-device NPU debugging, containerized real-NPU runner usage, run-only packaging, plog triage, and current real-NPU findings.
 - If xvm reports stale or inconsistent build state, prefer a clean reconfigure before interpreting failures as CANN 9.1 regressions.
 - Do not include unrelated dirty files in commits or reviews.

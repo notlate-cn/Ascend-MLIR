@@ -49,7 +49,7 @@ Options:
   --help                         Show this help.
 
 The image intentionally does not include the Ascend host driver. Mount driver,
-device nodes, and the CANN toolkit from the 910C host at job runtime.
+device nodes, and the CANN toolkit from the real-NPU host at job runtime.
 
 Without --with-llvm or --embed-llvm-build-dir, jobs must mount LLVM via
 --llvm-build-dir or set ASCEND_MLIR_CI_BUILD_LLVM=1. For normal shared

@@ -188,12 +188,21 @@ build_project() {
     print_info "Using LLVM from: ${LLVM_BUILD_DIR}"
 
     configure_project() {
+        local launcher_args=()
+        if [ -n "${CMAKE_C_COMPILER_LAUNCHER:-}" ]; then
+            launcher_args+=("-DCMAKE_C_COMPILER_LAUNCHER=${CMAKE_C_COMPILER_LAUNCHER}")
+        fi
+        if [ -n "${CMAKE_CXX_COMPILER_LAUNCHER:-}" ]; then
+            launcher_args+=("-DCMAKE_CXX_COMPILER_LAUNCHER=${CMAKE_CXX_COMPILER_LAUNCHER}")
+        fi
+
         cmake -G Ninja "${PROJECT_ROOT}" \
             -DCMAKE_BUILD_TYPE=${BUILD_TYPE} \
             -DCMAKE_INSTALL_PREFIX="${INSTALL_DIR}" \
             -DAFIR_ENABLE_BINDING_PYTHON=true \
             -DPython3_EXECUTABLE="$(which python3)" \
-            -DLLVM_BUILD_DIR="${LLVM_BUILD_DIR}"
+            -DLLVM_BUILD_DIR="${LLVM_BUILD_DIR}" \
+            "${launcher_args[@]}"
     }
 
     configure_project_with_retry() {
@@ -211,7 +220,21 @@ build_project() {
     # Check if this is an incremental build (build.ninja exists)
     if [ -f "build.ninja" ]; then
         print_info "Incremental build detected (build.ninja exists)"
-        print_info "Skipping CMake configuration, running ninja directly..."
+        local needs_reconfigure=false
+        if [ -n "${CMAKE_C_COMPILER_LAUNCHER:-}" ] &&
+           ! grep -q "CMAKE_C_COMPILER_LAUNCHER.*${CMAKE_C_COMPILER_LAUNCHER}" CMakeCache.txt 2>/dev/null; then
+            needs_reconfigure=true
+        fi
+        if [ -n "${CMAKE_CXX_COMPILER_LAUNCHER:-}" ] &&
+           ! grep -q "CMAKE_CXX_COMPILER_LAUNCHER.*${CMAKE_CXX_COMPILER_LAUNCHER}" CMakeCache.txt 2>/dev/null; then
+            needs_reconfigure=true
+        fi
+        if $needs_reconfigure; then
+            print_info "CMake launcher changed; reconfiguring..."
+            configure_project_with_retry
+        else
+            print_info "Skipping CMake configuration, running ninja directly..."
+        fi
         if ! ninja -j${NUM_JOBS}; then
             print_warn "Incremental build failed; recreating build directory and reconfiguring..."
             cd "${PROJECT_ROOT}"

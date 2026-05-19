@@ -9,7 +9,8 @@
 ## 2. Host工作目录和环境安装
 
 ### 2.1 工作目录
-这是一台公共环境，只允许在 `/data/nyh` 目录下新增、修改、删除文件，务必谨记，务必谨记，务必谨记。
+这是一台公共环境，只允许在自己的 `/data/{username}` 目录下新增、修改、删除文件，务必谨记，务必谨记，务必谨记。
+本文中的 `{username}` 是占位符，实际操作时替换为自己在该 host 上分配到的目录名。
 
 ### 2.2 环境安装
 若要使能NPU硬件，需要安装其依赖的驱动包和软件包。
@@ -18,7 +19,7 @@
 目前驱动包已经安装好了，可以通过命令`npu-smi info`查看NPU硬件状态，能够看到是Ascend 910C，共16张卡，我们只允许使用7卡(`export ASCEND_DEVICE_ID=7`)。其安装在系统目录/usr/local/Ascend/driver目录下，后续每次建立shell会话，先执行命令`source /usr/local/Ascend/driver/bin/setenv.bash`，设置driver相关环境变量。
 
 #### 2.2.2 软件包安装
-软件包(toolkit工具包)只能安装到每位使用者的独立目录，比如我们的话就是第1点中的`/data/nyh/Ascend`目录下。
+软件包(toolkit工具包)只能安装到每位使用者的独立目录，即第1点中的 `/data/{username}/Ascend` 目录下。
 
 ##### (1) 软件包下载
 * 方式一：社区版（稳定但缺少最新功能），暂不使用此方法。
@@ -29,55 +30,29 @@
 ##### (2) 软件包安装
 针对方式二开发版，安装2个包即可。
 ```shell
-cd /data/nyh
+cd /data/{username}
 # 确保安装包具有可执行权限
 chmod +x Ascend-cann-toolkit_9.1.0_linux-aarch64.run
 chmod +x Ascend-cann-A3-ops_9.1.0_linux-aarch64.run
-# 安装指定目录 --install-path=/data/nyh/Ascend
-./Ascend-cann-toolkit_9.1.0_linux-aarch64.run --full --quiet --install-path=/data/nyh/Ascend
-./Ascend-cann-A3-ops_9.1.0_linux-aarch64.run --install --type=toolkit --quiet --install-path=/data/nyh/Ascend
+# 安装指定目录 --install-path=/data/{username}/Ascend
+./Ascend-cann-toolkit_9.1.0_linux-aarch64.run --full --quiet --install-path=/data/{username}/Ascend
+./Ascend-cann-A3-ops_9.1.0_linux-aarch64.run --install --type=toolkit --quiet --install-path=/data/{username}/Ascend
 
-# 本次实测 9.1.0 开发包生成的是 /data/nyh/Ascend/cann/set_env.sh，
-# 没有自动生成 /data/nyh/Ascend/latest/set_env.sh。
-# 若 /data/nyh/env.sh 仍 source latest，可以补一个兼容软链接。
-cd /data/nyh/Ascend
+# 本次实测 9.1.0 开发包生成的是 /data/{username}/Ascend/cann/set_env.sh，
+# 没有自动生成 /data/{username}/Ascend/latest/set_env.sh。
+# 若 /data/{username}/env.sh 仍 source latest，可以补一个兼容软链接。
+cd /data/{username}/Ascend
 ln -sfn cann latest
-```
-
-##### (3) xvm软件包安装
-xvm 也需要安装同版本 toolkit 和 A3 ops，用于在 xvm 上完成 artifact 编译、打包和
-run-manifest-only `runtime-session` 构建。安装包下载链接与远端 host 相同，但安装根目录
-使用 xvm 当前用户的 `~/Ascend`。
-
-```shell
-mkdir -p ~/Ascend/installers
-cd ~/Ascend/installers
-wget -O Ascend-cann-toolkit_9.1.0_linux-aarch64.run \
-  https://ascend.devcloud.huaweicloud.com/artifactory/cann-run-mirror/software/master/20260513000324948/Ascend-cann-toolkit_9.1.0_linux-aarch64.run
-wget -O Ascend-cann-A3-ops_9.1.0_linux-aarch64.run \
-  https://ascend.devcloud.huaweicloud.com/artifactory/cann-run-mirror/software/master/20260513000324948/Ascend-cann-A3-ops_9.1.0_linux-aarch64.run
-
-chmod +x Ascend-cann-toolkit_9.1.0_linux-aarch64.run
-chmod +x Ascend-cann-A3-ops_9.1.0_linux-aarch64.run
-
-./Ascend-cann-toolkit_9.1.0_linux-aarch64.run --full --quiet --install-path=$HOME/Ascend
-./Ascend-cann-A3-ops_9.1.0_linux-aarch64.run --install --type=toolkit --quiet --install-path=$HOME/Ascend
-
-# 本次 xvm 实测安装器会生成 ~/Ascend/cann -> ~/Ascend/cann-9.1.0，
-# 但顶层 ~/Ascend/latest 仍可能保留为旧 9.0 指向，需要显式切到 9.1。
-ln -sfn "$HOME/Ascend/ascend-toolkit/latest" "$HOME/Ascend/latest"
-
-source ~/Ascend/latest/set_env.sh
 ```
 
 ## 3. 使用方式
 按照上述步骤安装完成后，每次建立新的shell session，可以设置以下环境变量：
 ```shell
 source /usr/local/Ascend/driver/bin/setenv.bash
-source /data/nyh/Ascend/latest/set_env.sh
+source /data/{username}/Ascend/latest/set_env.sh
 export ASCEND_DEVICE_ID=7
 ```
-我把上述代码保存到了`/data/nyh/env.sh`，可以通过命令`cd /data/nyh; source /data/nyh/env.sh`一键设置。
+可以把上述代码保存到 `/data/{username}/env.sh`，后续通过命令 `cd /data/{username}; source /data/{username}/env.sh` 一键设置。
 
 ### 3.1 远端 host 无 LLVM 时的运行方式
 远端 host 只作为运行环境使用，不在远端构建 MLIR/LLVM 工程：
@@ -94,7 +69,7 @@ export ASCEND_DEVICE_ID=7
    ```shell
    bash test/tools/runtime/run_runtime_session_run_only_link_smoke.sh
    ```
-4. 打包到 `/data/nyh/<case>`：
+4. 打包到 `/data/{username}/<case>`：
    - `bin/runtime-session`：来自 `build-runtime-session-run-only/bin/runtime-session`
    - `artifact/`：包含 `out/manifest.txt` 和 device binary
    - `data/`：输入、expected output、tiling schema 等运行数据
@@ -104,8 +79,8 @@ export ASCEND_DEVICE_ID=7
 
 远端运行时：
 ```shell
-cd /data/nyh/<case>
-source /data/nyh/env.sh
+cd /data/{username}/<case>
+source /data/{username}/env.sh
 export LD_LIBRARY_PATH="$PWD/lib:${LD_LIBRARY_PATH:-}"
 export ASCEND_DEVICE_ID=7
 export ASCEND_RUNTIME_TRACE_LAUNCH=1
@@ -144,8 +119,8 @@ bash examples/real-npu-microcases/prepare.sh --out-dir /tmp/real-npu-microcases
 ```shell
 for c in const640 copy640 relu_only broadcast_add; do
   echo "=== ${c} ==="
-  cd "/data/nyh/real-npu-microcases/${c}"
-  source /data/nyh/env.sh
+  cd "/data/{username}/real-npu-microcases/${c}"
+  source /data/{username}/env.sh
   export LD_LIBRARY_PATH="$PWD/lib:${LD_LIBRARY_PATH:-}"
   export ASCEND_DEVICE_ID=7
   export ASCEND_RUNTIME_TRACE_LAUNCH=1
@@ -161,7 +136,45 @@ done
 - `broadcast_add` 首次失败：优先查 `Broadcast` lowering/API 或二输入向量路径。
 - microcase 全过但 full case 失败：继续做 shape/tile 二分和 generated kernel checkpoint。
 
-### 3.3 真机调测原则
+### 3.3 real-NPU 多 kernel 调度用例
+
+`examples/real-npu-multikernel` 用于验证 `runtime-session` 在真实 NPU 上的多 task DAG 调度路径，而不是只验证单个 kernel launch。
+
+当前包含两个用例：
+
+- `serial-two-kernel`：`producer -> consumer`，`producer` 使用 `const640` 生成中间输出，`consumer` 通过 `task_output` 消费该中间输出并执行真机已验证通过的 `copy_scalar640`。该用例验证最小串行依赖、上游输出物化和下游输入绑定。
+- `fork-join`：`producer_a` 和 `producer_b` 独立产生两个中间输出，`consumer` 等待二者完成后通过 `task_output` 读取并执行显式流水同步版 `add_wait640`。该用例验证 fork-join DAG、多个上游输出绑定和最终 expected-output 校验。
+
+本地或容器内手动运行：
+
+```shell
+source /data/{username}/env.sh
+export ASCEND_DEVICE_ID=7
+export RUNTIME_SESSION="$PWD/build/bin/runtime-session"
+export RUN_ONLY_RUNTIME_SESSION="$PWD/build-runtime-session-run-only/bin/runtime-session"
+
+bash examples/real-npu-multikernel/run.sh --case all
+```
+
+`run.sh` 默认每个 case 先生成 `backend=sim` 的 manifest 并用完整 `runtime-session` 过仿真，再用 `RUN_ONLY_RUNTIME_SESSION` 跑 `backend=npu` 真机 manifest。若只做真机定位，可以临时加 `--skip-sim`，但不能用它证明 candidate fix readiness。
+
+通过 `real-npu-ci` 一键跑：
+
+```shell
+scripts/sync-and-submit.sh \
+  --remote-dir /data/{username}/Codex-Ascend-MLIR-current \
+  --case real-npu-multikernel
+```
+
+通过标准：
+
+- `serial-two-kernel` 的 sim 和 npu 都必须看到 `session.result=success` 与 `session.validation=pass`。
+- `fork-join` 的 sim 和 npu 都必须看到 `session.result=success` 与 `session.validation=pass`。
+- sim 日志中 `serial-two-kernel` 应为 `planned_task_count=2`、`serialized_launch_count=2`；`fork-join` 应为 `planned_task_count=3`、`serialized_launch_count=3`。
+- npu 日志中 `serial-two-kernel` 应为 `planned_task_count=2`，且有 2 行 `device_id=7` 的 `[npu-launch] kernel=`；`fork-join` 应为 `planned_task_count=3`，且有 3 行 `device_id=7` 的 `[npu-launch] kernel=`。
+- plog 中没有新的 `errorStr` 或 vector core exception。
+
+### 3.4 真机调测原则
 
 真机问题要按层收窄，不要直接猜修复点。
 
@@ -174,7 +187,7 @@ done
 4. early-return checkpoint 等不完整 diagnostic kernel 可以上真机做定位，但不能作为 fix readiness 证明。
 5. 真机 status 只报真机事实：case 名、远端目录、device id、pass/fail、错误码、关键 `errorStr`、launch trace 是否排除了 ABI/H2D/GM/tiling 问题。
 
-### 3.4 真机 Debug Playbook
+### 3.5 真机 Debug Playbook
 
 1. 在 `NativeExecutionRunner` launch assembly 附近打开或补充 launch tracing：
    - kernel name
@@ -208,7 +221,7 @@ done
    - kernel 收到错误 tiling：修 tiling/schema packing
    - 仅某个 primitive、tail path 或 block partition 失败：修 lowering/scheduling/codegen
 
-### 3.5 plog 和 507035 triage
+### 3.6 plog 和 507035 triage
 
 任何真机 `rtStreamSynchronize failed` 都先收集真实 plog `errorStr`，再判断修复点：
 
@@ -226,44 +239,44 @@ grep -R "errorStr" -n \
 - 如果同时出现 `GM address accessed by scalar exceeds 48 bits`，不要直接归因到 host GM allocation。若 launch trace 显示 H2D/D2H、GM pointer alignment、workspace、argument count、tiling words 都正常，它可能是 kernel 内 UB corruption 的后续症状。
 - 在远端 CANN host 重新编译同一个 generated `step8_kernel.cpp` 可以排除 xvm compile artifact mismatch；如果错误不变，继续查 kernel ABI/tiling/lowering，不要停在 host dependency setup。
 
-### 3.6 当前实测结论
+### 3.7 当前实测结论
 - run-only `runtime-session` 在 7 卡真机上可以完成最小 `const640` kernel 的 launch、D2H 和 expected-output 校验，结果为 `session.result=success` / `session.validation=pass`。
 - `examples/relu-broadcast-transpose` 的 full-pipeline vec kernel 已在 7 卡真机通过：
   - xvm Ascend910B1 仿真先通过：`session.backend=sim` / `session.result=success` / `session.validation=pass`
-  - 远端 run-only 包：`/data/nyh/relu-broadcast-transpose-final-real-20260518-190410`
+  - 远端 run-only 包：`/data/{username}/relu-broadcast-transpose-final-real-20260518-190410`
   - 远端结果：`session.backend=npu` / `session.result=success` / `session.validation=pass`
 - `examples/add-broadcast-concat` 的 full-pipeline vec kernel 已在 7 卡真机通过：
   - xvm Ascend910B1 仿真先通过：`session.backend=sim` / `session.result=success` / `session.validation=pass`
-  - 远端 run-only 包：`/data/nyh/examples-real-add-broadcast-concat-tbn16-20260518-194533`
+  - 远端 run-only 包：`/data/{username}/examples-real-add-broadcast-concat-tbn16-20260518-194533`
   - 远端 launch trace：`kernel=ewop_broadcast_concat` / `block_dim=10` / `tiling.word[0]=64` / `tiling.word[1]=16`
   - 远端结果：`session.backend=npu` / `session.result=success` / `session.validation=pass`
   - 定位结论：原 `TB_N=192` 在该 generated kernel 中相当于过大的 inner M tile；`N=500` 保持完整宽度进入 UB，导致 UB live set 超界并触发 `rtStreamSynchronize rc=507035`。当前默认配置改为 `TB_N=16`。
 - `examples/split-relu-brc-add-mul` 的 full-pipeline vec kernel 已在 7 卡真机通过：
   - xvm Ascend910B1 仿真先通过：`session.backend=sim` / `session.result=success` / `session.validation=pass`
-  - 远端 run-only 包：`/data/nyh/examples-real-split-relu-brc-add-mul-dead-tbuf-20260518-195902`
+  - 远端 run-only 包：`/data/{username}/examples-real-split-relu-brc-add-mul-dead-tbuf-20260518-195902`
   - 远端 launch trace：`kernel=ewop_broadcast_split` / `block_dim=20` / `args_count=15` / `tiling_words=8`
   - 远端结果：`session.backend=npu` / `session.result=success` / `session.validation=pass`
   - 定位结论：仅把 tiling schema 从 12 字段裁到 CANN 签名的 8 字段仍失败；根因是 queue-backed memref alloc 同时保留了无实际用户的 TBuf `InitBuffer`，两条分支共享一个 `TPipe` 时 UB live set 超界。删除 dead TBuf initializer 后，generated kernel 的 `InitBuffer` 从 20 个降到 14 个并通过真机。
 - 本次 `rtStreamSynchronize failed: rc=507035` 定位结论：
   - launch ABI、H2D/D2H、GM pointer 512B 对齐、workspace、tiling words 均正常
   - plog 主要报 `The address for the VEC instruction to read/write UB is out of bounds.The GM address accessed by scalar exceeds 48 bits.`
-  - 未 hoist 的 `TB_N=16` 版本仍失败：`/data/nyh/relu-broadcast-transpose-tb16-real-20260518-183600`
+  - 未 hoist 的 `TB_N=16` 版本仍失败：`/data/{username}/relu-broadcast-transpose-tb16-real-20260518-183600`
   - hoist 后版本通过，说明根因是 generated kernel 的 UB/queue 生命周期与 tail alloc 尺寸上界处理：
     - VECOUT 输出 tensor 必须从 VECOUT queue `AllocTensor`
     - GM 输入经临时 VECIN queue `DeQue` 后必须 `FreeTensor`
     - `affine.min` / `memref.dim(subview)` 产生的 tail alloc 尺寸要解析为 loop-step 上界
     - loop-invariant `InitBuffer` / `InitQueue` 必须 hoist 到 inner tile loop 外
 
-### 3.7 容器化 910C runner
+### 3.8 容器化 real-NPU runner
 
 为了让 x86 和 aarch64 开发机使用同一套真机验证入口，新增 `scripts/real-npu-ci/`：
 
 - 开发机只负责通过 SSH 或其它 CI 入口触发任务。
-- 实际 clone/copy 源码、构建 Ascend-MLIR、生成 artifacts、运行 xvm-style sim pipeline、改写 manifest 到 `npu` backend、910C 真机运行和 plog 收集都在 910C aarch64 host 的 Docker 容器内完成。
+- 实际 clone/copy 源码、构建 Ascend-MLIR、生成 artifacts、运行 xvm-style sim pipeline、改写 manifest 到 `npu` backend、真实 NPU运行和 plog 收集都在 real-NPU aarch64 host 的 Docker 容器内完成。
 - NPU driver 不打包进镜像，运行时从 host 挂载 `/usr/local/Ascend/driver` 和 `/dev/davinci*`。
-- CANN toolkit 默认使用 host 上的 `/data/nyh/Ascend/latest`，通过挂载 `/data/nyh` 进入容器。
+- CANN toolkit 默认使用 host 上的 `/data/{username}/Ascend/latest`，通过挂载 `/data/{username}` 进入容器。
 - LLVM/MLIR 依赖推荐通过 `build-aarch64-image.sh --with-llvm` 在本机 OrbStack、xvm、native arm64 Linux 或 CI 上自动构建，并提前 bake 到 builder image 的 `/opt/llvm/build`。
-- 910C host 的常规职责是 pull/load 已构建好的 image 并运行验证 job；不要把镜像构建放进每次真机验证流程。
+- real-NPU host 的常规职责是 pull/load 已构建好的 image 并运行验证 job；不要把镜像构建放进每次真机验证流程。
 
 在 arm64 Docker builder 上构建基础镜像：
 
@@ -289,24 +302,24 @@ scripts/real-npu-ci/build-aarch64-image.sh \
   --embed-llvm-build-dir /opt/llvm/build
 ```
 
-镜像构建完成后，把 image 推到 registry 让 910C host pull，或者 `docker save`
-后复制到 910C host 并 `docker load`。`submit-910c.sh` / `docker-run-910c.sh`
-只使用 910C host 上已经存在的 image tag，不负责构建镜像。
+镜像构建完成后，把 image 推到 registry 让 real-NPU host pull，或者 `docker save`
+后复制到 real-NPU host 并 `docker load`。`submit.sh` / `docker-run.sh`
+只使用 real-NPU host 上已经存在的 image tag，不负责构建镜像。
 
 PyAsc 跟随被验证的源码仓库 ref，不固定 bake 到通用镜像里；当 PyAsc 需要新的
 LLVM/MLIR 或系统依赖时，再更新 `versions.env` / Dockerfile 并重建镜像。
 镜像 tag 不编码 host CANN 版本；CANN 是运行时从 host 挂载进容器的依赖，而不是
 镜像内置依赖。
 
-默认 base image 是 Ubuntu 22.04。910C host 本身不要求是 Ubuntu，因为容器自带
+默认 base image 是 Ubuntu 22.04。real-NPU host 本身不要求是 Ubuntu，因为容器自带
 userland，只共享 host kernel。约束是运行也要留在容器内；如果把容器内编译出的
 二进制拷到 host 裸跑，就需要单独检查 glibc 兼容性。
 
-910C host 上用当前源码树触发一个 case：
+real-NPU host 上用当前源码树触发一个 case：
 
 ```shell
-cd /data/nyh/Codex-Ascend-MLIR
-scripts/real-npu-ci/docker-run-910c.sh \
+cd /data/{username}/Codex-Ascend-MLIR
+scripts/real-npu-ci/docker-run.sh \
   --image ascend-mlir-builder:aarch64-ubuntu22.04-llvm21 \
   --source-dir "$PWD" \
   --ref "$(git rev-parse --short HEAD)" \
@@ -317,7 +330,7 @@ scripts/real-npu-ci/docker-run-910c.sh \
 任意开发机远程触发同一流程：
 
 ```shell
-scripts/real-npu-ci/submit-910c.sh \
+scripts/real-npu-ci/submit.sh \
   --image ascend-mlir-builder:aarch64-ubuntu22.04-llvm21 \
   --repo-url git@example.com:team/Codex-Ascend-MLIR.git \
   --ref my-branch \
@@ -328,7 +341,7 @@ scripts/real-npu-ci/submit-910c.sh \
 job 输出统一落在：
 
 ```text
-/data/nyh/real-npu-jobs/<timestamp>-<ref>-<case>/
+/data/{username}/real-npu-jobs/<timestamp>-<ref>-<case>/
   job-env.txt
   logs/
     build-project.log
@@ -361,11 +374,11 @@ job 输出统一落在：
 
 - 之前 `examples/add-broadcast-concat` 真机失败是 tiling configuration 问题，不是 launch ABI 问题。launch trace 显示 argument count、H2D/D2H、512B-aligned GM pointers、workspace、tiling words 都正常。
 - 在该 generated kernel 中，`TB_N` 当前实际表现为 inner M tile size；`N=500` 仍 full-width 进入每个 tile。`TB_N=192` 会让 UB live set 超界，并在 910C 上触发 `rtStreamSynchronize rc=507035`。
-- 当前接受配置是 `TB_M=64, TB_N=16`。流程上先跑 xvm Ascend910B1 simulation，再跑 910C 真机。
+- 当前接受配置是 `TB_M=64, TB_N=16`。流程上先跑 xvm Ascend910B1 simulation，再跑 真实 NPU。
 
 ### 4.3 `split-relu-brc-add-mul` 507035 lessons
 
 - 让 run manifest tiling fields 对齐 generated CANN `TilingData` signature 是必要 hygiene，但不是该 demo 的根因。8-field tiling probe 在 UB cleanup 前仍以同样 `507035` 失败。
 - 根因是 queue-backed memref alloc 还保留了 standalone TBuf initializer。这些 TBuf 没有实际用户，只有 `TPipe.InitBuffer`，但 hoist 后仍会消耗真机 UB。
-- data-move/compute conversion 后，应删除仅被 `TPipe.InitBuffer` 使用的 TBuf。该 demo 中 generated `InitBuffer` 从 20 个降到 14 个后，xvm simulation 保持通过，910C 真机通过。
+- data-move/compute conversion 后，应删除仅被 `TPipe.InitBuffer` 使用的 TBuf。该 demo 中 generated `InitBuffer` 从 20 个降到 14 个后，xvm simulation 保持通过，真实 NPU通过。
 - `examples/split-relu-brc-add-mul` run manifest 要和当前 CANN signature 对齐：`TB_M`、`TB_N`、`dim_arg0_1`、`dim_arg1_0`、`dim_arg0_0`、`dim_arg3_0`、`dim_arg2_0`、`dim_arg4_0`。

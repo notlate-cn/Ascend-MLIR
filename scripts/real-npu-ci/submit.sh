@@ -7,6 +7,7 @@ REMOTE_DIR="${ASCEND_MLIR_CI_REMOTE_DIR:-/data/nyh/Codex-Ascend-MLIR}"
 REPO_URL="${ASCEND_MLIR_CI_REPO_URL:-}"
 REF="${ASCEND_MLIR_CI_REF:-HEAD}"
 CASE_NAME="${ASCEND_MLIR_CI_CASE:-relu-broadcast-transpose}"
+CMD="${ASCEND_MLIR_CI_CMD:-}"
 DEVICE_ID="${ASCEND_DEVICE_ID:-7}"
 IMAGE="${ASCEND_MLIR_CI_IMAGE:-}"
 JOB_ROOT="${ASCEND_MLIR_CI_JOB_ROOT:-}"
@@ -17,28 +18,30 @@ JOBS="${ASCEND_MLIR_CI_JOBS:-6}"
 
 usage() {
   cat <<'EOF'
-Usage: submit-910c.sh [OPTIONS]
+Usage: submit.sh [OPTIONS]
 
-Submit a real-NPU validation job to the shared 910C host over SSH.
+Submit a real-NPU validation job to the shared real-NPU host over SSH.
 
 Options:
   --remote USER@HOST        SSH target. Default: root@<real-npu-host>
   --port PORT               SSH port. Default: 141
-  --remote-dir DIR          Repo path on the 910C host. Default: /data/nyh/Codex-Ascend-MLIR
+  --remote-dir DIR          Repo path on the real-NPU host. Default: /data/nyh/Codex-Ascend-MLIR
   --repo-url URL            Git repository URL for the container to clone.
   --ref REF                 Git ref, branch, tag, or commit to test. Default: HEAD
   --case NAME               Example case to run. Default: relu-broadcast-transpose
+  --cmd COMMAND             Custom command to run after build, from repo root.
+                            Takes precedence over --case.
   --device-id ID            NPU device id. Default: ASCEND_DEVICE_ID or 7
-  --image IMAGE             Builder image tag on the 910C host.
-  --job-root DIR            Job root on the 910C host/container.
+  --image IMAGE             Builder image tag on the real-NPU host.
+  --job-root DIR            Job root on the real-NPU host/container.
   --llvm-build-dir DIR      LLVM build dir inside the container.
   --cann-home DIR           CANN toolkit root inside the container.
-  --remote-source-dir DIR   Use a source tree already present on the 910C host.
+  --remote-source-dir DIR   Use a source tree already present on the real-NPU host.
   --jobs N                  Build parallelism inside the container. Default: 6.
   --help                    Show this help.
 
 Pass either --repo-url or --remote-source-dir. For x86 developer machines,
-prefer --repo-url plus --ref so the build happens entirely on the 910C host.
+prefer --repo-url plus --ref so the build happens entirely on the real-NPU host.
 EOF
 }
 
@@ -66,6 +69,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --case)
       CASE_NAME="$2"
+      shift 2
+      ;;
+    --cmd)
+      CMD="$2"
       shift 2
       ;;
     --device-id)
@@ -123,6 +130,9 @@ if [[ -n "${REMOTE_SOURCE_DIR}" ]]; then
 fi
 runner_args+=(--ref "${REF}")
 runner_args+=(--case "${CASE_NAME}")
+if [[ -n "${CMD}" ]]; then
+  runner_args+=(--cmd "${CMD}")
+fi
 runner_args+=(--device-id "${DEVICE_ID}")
 runner_args+=(--jobs "${JOBS}")
 if [[ -n "${IMAGE}" ]]; then
@@ -142,7 +152,7 @@ quote() {
   printf '%q' "$1"
 }
 
-remote_cmd="cd $(quote "${REMOTE_DIR}") && exec scripts/real-npu-ci/docker-run-910c.sh"
+remote_cmd="cd $(quote "${REMOTE_DIR}") && exec scripts/real-npu-ci/docker-run.sh"
 for arg in "${runner_args[@]}"; do
   remote_cmd+=" $(quote "${arg}")"
 done

@@ -4,11 +4,15 @@ set -euo pipefail
 REPO_URL="${ASCEND_MLIR_CI_REPO_URL:-}"
 REF="${ASCEND_MLIR_CI_REF:-HEAD}"
 CASE_NAME="${ASCEND_MLIR_CI_CASE:-relu-broadcast-transpose}"
+CMD="${ASCEND_MLIR_CI_CMD:-}"
 JOB_ROOT="${ASCEND_MLIR_CI_JOB_ROOT:-/data/nyh/real-npu-jobs}"
 SOURCE_DIR="${ASCEND_MLIR_CI_SOURCE_DIR:-}"
 LLVM_BUILD_DIR="${LLVM_BUILD_DIR:-/opt/llvm/build}"
 BUILD_LLVM="${ASCEND_MLIR_CI_BUILD_LLVM:-0}"
 JOBS="${ASCEND_MLIR_CI_JOBS:-6}"
+INCREMENTAL_SOURCE="${ASCEND_MLIR_CI_INCREMENTAL_SOURCE:-0}"
+USE_CCACHE="${ASCEND_MLIR_CI_USE_CCACHE:-1}"
+CLEAN="${ASCEND_MLIR_CI_CLEAN:-0}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 usage() {
@@ -19,9 +23,15 @@ This script is normally run as the container ENTRYPOINT. Configure it with:
   ASCEND_MLIR_CI_REPO_URL    Git repository URL to clone, unless SOURCE_DIR is set.
   ASCEND_MLIR_CI_REF         Git ref, branch, tag, or commit. Default: HEAD.
   ASCEND_MLIR_CI_CASE        Example case name. Default: relu-broadcast-transpose.
+  ASCEND_MLIR_CI_CMD         Optional custom command to run after build. When set,
+                              it takes precedence over ASCEND_MLIR_CI_CASE.
   ASCEND_MLIR_CI_JOB_ROOT    Output root. Default: /data/nyh/real-npu-jobs.
   ASCEND_MLIR_CI_SOURCE_DIR  Optional mounted source tree.
+  ASCEND_MLIR_CI_INCREMENTAL_SOURCE
+                              Build directly in SOURCE_DIR when set to 1.
   ASCEND_MLIR_CI_JOBS        Build parallelism. Default: 6.
+  ASCEND_MLIR_CI_USE_CCACHE   Use ccache when available. Default: 1.
+  ASCEND_MLIR_CI_CLEAN        Remove local build dirs before building. Default: 0.
   LLVM_BUILD_DIR             Required LLVM build dir, unless ASCEND_MLIR_CI_BUILD_LLVM=1.
   ASCEND_HOME_PATH           CANN toolkit root.
   ASCEND_DEVICE_ID           NPU device id.
@@ -35,14 +45,26 @@ fi
 
 timestamp="$(date +%Y%m%d-%H%M%S)"
 safe_ref="$(echo "${REF}" | tr '/:@ ' '____' | tr -cd '[:alnum:]_.-')"
-safe_case="$(echo "${CASE_NAME}" | tr '/:@ ' '____' | tr -cd '[:alnum:]_.-')"
+if [[ -n "${CMD}" ]]; then
+  safe_case="cmd"
+else
+  safe_case="$(echo "${CASE_NAME}" | tr '/:@ ' '____' | tr -cd '[:alnum:]_.-')"
+fi
 JOB_DIR="${JOB_ROOT}/${timestamp}-${safe_ref}-${safe_case}"
-SRC_DIR="${JOB_DIR}/src"
+JOB_SRC_DIR="${JOB_DIR}/src"
 LOG_DIR="${JOB_DIR}/logs"
 OUT_DIR="${JOB_DIR}/out"
+if [[ -n "${SOURCE_DIR}" && "${INCREMENTAL_SOURCE}" == "1" ]]; then
+  SRC_DIR="${SOURCE_DIR}"
+else
+  SRC_DIR="${JOB_SRC_DIR}"
+fi
 RUN_ONLY_BUILD_DIR="${SRC_DIR}/build-runtime-session-run-only"
 RUN_RUNTIME_SESSION="${RUN_ONLY_BUILD_DIR}/bin/runtime-session"
-mkdir -p "${SRC_DIR}" "${LOG_DIR}" "${OUT_DIR}"
+mkdir -p "${LOG_DIR}" "${OUT_DIR}"
+if [[ "${SRC_DIR}" == "${JOB_SRC_DIR}" ]]; then
+  mkdir -p "${SRC_DIR}"
+fi
 
 log() {
   echo "[$(date -Is)] $*"
@@ -76,10 +98,15 @@ record_job_env() {
     echo "repo_url=${REPO_URL}"
     echo "ref=${REF}"
     echo "case=${CASE_NAME}"
+    echo "cmd=${CMD}"
     echo "job_dir=${JOB_DIR}"
     echo "source_dir=${SOURCE_DIR}"
+    echo "src_dir=${SRC_DIR}"
     echo "llvm_build_dir=${LLVM_BUILD_DIR}"
     echo "jobs=${JOBS}"
+    echo "incremental_source=${INCREMENTAL_SOURCE}"
+    echo "use_ccache=${USE_CCACHE}"
+    echo "ccache_dir=${CCACHE_DIR:-}"
     echo "ascend_home_path=${ASCEND_HOME_PATH:-}"
     echo "ascend_device_id=${ASCEND_DEVICE_ID:-}"
     uname -a || true
@@ -99,7 +126,10 @@ if [[ -n "${ASCEND_HOME_PATH:-}" ]]; then
   source_if_exists "${ASCEND_HOME_PATH}/set_env.sh"
 fi
 
-if [[ -n "${SOURCE_DIR}" ]]; then
+if [[ -n "${SOURCE_DIR}" && "${INCREMENTAL_SOURCE}" == "1" ]]; then
+  log "use mounted source incrementally: ${SOURCE_DIR}"
+  [[ -w "${SRC_DIR}" ]] || fail "incremental source dir is not writable: ${SRC_DIR}"
+elif [[ -n "${SOURCE_DIR}" ]]; then
   log "copy source from mounted tree: ${SOURCE_DIR}"
   rsync -a --delete \
     --exclude build \
@@ -121,6 +151,29 @@ fi
 
 git -C "${SRC_DIR}" rev-parse HEAD >"${JOB_DIR}/commit.txt" 2>/dev/null || true
 git -C "${SRC_DIR}" status --short >"${JOB_DIR}/source-status.txt" 2>/dev/null || true
+
+if [[ "${CLEAN}" == "1" ]]; then
+  log "clean build directories"
+  rm -rf "${SRC_DIR}/build" "${RUN_ONLY_BUILD_DIR}"
+fi
+
+cmake_launcher_args=()
+if [[ "${USE_CCACHE}" == "1" ]] && command -v ccache >/dev/null 2>&1; then
+  export CCACHE_DIR="${CCACHE_DIR:-/ccache}"
+  export CCACHE_BASEDIR="${CCACHE_BASEDIR:-${SRC_DIR}}"
+  export CCACHE_COMPILERCHECK="${CCACHE_COMPILERCHECK:-content}"
+  export CCACHE_NOHASHDIR="${CCACHE_NOHASHDIR:-true}"
+  mkdir -p "${CCACHE_DIR}" || true
+  export CMAKE_C_COMPILER_LAUNCHER=ccache
+  export CMAKE_CXX_COMPILER_LAUNCHER=ccache
+  cmake_launcher_args=(
+    -DCMAKE_C_COMPILER_LAUNCHER=ccache
+    -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
+  )
+  log "ccache enabled: ${CCACHE_DIR}"
+elif [[ "${USE_CCACHE}" == "1" ]]; then
+  log "ccache requested but not found; continuing without ccache"
+fi
 
 if [[ ! -d "${LLVM_BUILD_DIR}/lib/cmake/mlir" ]]; then
   if [[ "${BUILD_LLVM}" == "1" ]]; then
@@ -153,7 +206,8 @@ log "build run-only runtime-session"
   cd "${SRC_DIR}"
   cmake -G Ninja -S "${SRC_DIR}" -B "${RUN_ONLY_BUILD_DIR}" \
     -DLLVM_BUILD_DIR="${LLVM_BUILD_DIR}" \
-    -DASCEND_RUNTIME_SESSION_RUN_ONLY=ON
+    -DASCEND_RUNTIME_SESSION_RUN_ONLY=ON \
+    "${cmake_launcher_args[@]}"
   cmake --build "${RUN_ONLY_BUILD_DIR}" --target runtime-session -j"${JOBS}"
 ) >"${LOG_DIR}/build-run-only.log" 2>&1
 
@@ -210,6 +264,25 @@ run_example_case() {
     >"${LOG_DIR}/${case_name}-npu.log" 2>&1
 }
 
+run_custom_cmd() {
+  local cmd="$1"
+  log "run custom command"
+  (
+    cd "${SRC_DIR}"
+    if [[ -n "${ASCEND_HOME_PATH:-}" ]]; then
+      source_if_exists "${ASCEND_HOME_PATH}/set_env.sh"
+    fi
+    # shellcheck source=/dev/null
+    source examples/env.sh
+    export PATH="${SRC_DIR}/build/bin:${PATH}"
+    export AFIR_OPT="${SRC_DIR}/build/bin/afir-opt"
+    export AFIR_TRANSLATE="${SRC_DIR}/build/bin/afir-translate"
+    export RUNTIME_SESSION="${SRC_DIR}/build/bin/runtime-session"
+    export RUN_ONLY_RUNTIME_SESSION="${RUN_RUNTIME_SESSION}"
+    bash -lc "${cmd}"
+  ) >"${LOG_DIR}/custom-cmd.log" 2>&1
+}
+
 run_microcases() {
   local micro_out="${OUT_DIR}/microcases"
   mkdir -p "${micro_out}"
@@ -241,17 +314,41 @@ run_microcases() {
   done
 }
 
-case "${CASE_NAME}" in
-  microcases)
-    run_microcases
-    ;;
-  all)
-    fail "case=all is intentionally not enabled yet; run named examples until all real-NPU cases are closed"
-    ;;
-  *)
-    run_example_case "${CASE_NAME}"
-    ;;
-esac
+run_multikernel() {
+  local multi_out="${OUT_DIR}/real-npu-multikernel"
+  mkdir -p "${multi_out}"
+  log "run real-NPU multi-kernel scheduling cases"
+  (
+    cd "${SRC_DIR}"
+    if [[ -n "${ASCEND_HOME_PATH:-}" ]]; then
+      source_if_exists "${ASCEND_HOME_PATH}/set_env.sh"
+    fi
+    # shellcheck source=/dev/null
+    source examples/env.sh
+    export RUNTIME_SESSION="${SRC_DIR}/build/bin/runtime-session"
+    export RUN_ONLY_RUNTIME_SESSION="${RUN_RUNTIME_SESSION}"
+    bash examples/real-npu-multikernel/run.sh --out-dir "${multi_out}"
+  ) >"${LOG_DIR}/real-npu-multikernel.log" 2>&1
+}
+
+if [[ -n "${CMD}" ]]; then
+  run_custom_cmd "${CMD}"
+else
+  case "${CASE_NAME}" in
+    microcases)
+      run_microcases
+      ;;
+    real-npu-multikernel|multikernel)
+      run_multikernel
+      ;;
+    all)
+      fail "case=all is intentionally not enabled yet; run named examples until all real-NPU cases are closed"
+      ;;
+    *)
+      run_example_case "${CASE_NAME}"
+      ;;
+  esac
+fi
 
 log "job complete: ${JOB_DIR}"
 echo "${JOB_DIR}" >"${JOB_ROOT}/latest-job.txt"

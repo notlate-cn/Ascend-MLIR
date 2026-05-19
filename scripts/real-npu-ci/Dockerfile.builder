@@ -89,8 +89,8 @@ RUN if [ -d /opt/ascend-mlir-ci/llvm-build/lib/cmake/mlir ]; then \
     fi && \
     chmod +x /opt/ascend-mlir-ci/collect-plog.sh \
              /opt/ascend-mlir-ci/run-real-npu-job.sh \
-             /opt/ascend-mlir-ci/submit-910c.sh \
-             /opt/ascend-mlir-ci/docker-run-910c.sh \
+             /opt/ascend-mlir-ci/submit.sh \
+             /opt/ascend-mlir-ci/docker-run.sh \
              /opt/ascend-mlir-ci/build-aarch64-image.sh
 
 WORKDIR /workspace
