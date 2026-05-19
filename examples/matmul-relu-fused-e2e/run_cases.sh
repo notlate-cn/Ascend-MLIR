@@ -29,22 +29,51 @@ WORK_ROOT="${WORK_ROOT:-/tmp/cv-fusion-cases}"
 rm -rf "${WORK_ROOT}"
 mkdir -p "${WORK_ROOT}"
 
-# case_name M K N input_lo input_hi with_relu xfail
+# case_name M K N input_lo input_hi with_relu xfail dyn
 # xfail=1 means failure is expected (Phase 2 work, recorded but not fatal).
+# dyn=1  emits ?x? shapes in step0.mlir and lets the pipeline resolve them
+#        via npy.  Exercises the dynamic-shape DPS-init elision in MixAbiExtractor.
 CASES=(
-  "small-baseline       32  16  64 -10 10  1  0"
-  "medium-shape        128  64 128 -10 10  1  0"
-  "tall-skinny         256  32  32 -10 10  1  0"
-  "wide-flat            32  32 256 -10 10  1  0"
-  "mixed-sign-relu      64  32  64 -50 50  1  0"
-  "matmul-only          64  32  64 -10 10  0  1"
-  "k-tail-24            32  24  64 -10 10  1  0"
+  "small-baseline       32  16  64 -10 10  1  0  0"
+  "medium-shape        128  64 128 -10 10  1  0  0"
+  "tall-skinny         256  32  32 -10 10  1  0  0"
+  "wide-flat            32  32 256 -10 10  1  0  0"
+  "mixed-sign-relu      64  32  64 -50 50  1  0  0"
+  "matmul-only          64  32  64 -10 10  0  1  0"
+  "k-tail-24            32  24  64 -10 10  1  0  0"
+  "dyn-shape           128  32  64 -10 10  1  0  1"
 )
 
 emit_step0() {
-  local out="$1" name="$2" M="$3" K="$4" N="$5" with_relu="$6"
+  local out="$1" name="$2" M="$3" K="$4" N="$5" with_relu="$6" dyn="${7:-0}"
   # MLIR identifiers can't contain '-'; sanitize for the func name.
   local funcname="${name//-/_}"
+  local TA TB TInit
+  if [[ "${dyn}" == "1" ]]; then
+    TA="tensor<?x?xf16>";  TB="tensor<?x?xf16>";  TInit="tensor<?x?xf32>"
+  else
+    TA="tensor<${M}x${K}xf16>"; TB="tensor<${K}x${N}xf16>"; TInit="tensor<${M}x${N}xf32>"
+  fi
+  if [[ "${with_relu}" == "1" && "${dyn}" == "1" ]]; then
+    cat > "${out}" <<MLIR
+func.func @${funcname}(%a: ${TA}, %b: ${TB}, %init: ${TInit}) -> ${TInit} {
+  %c = linalg.matmul ins(%a, %b : ${TA}, ${TB}) outs(%init : ${TInit}) -> ${TInit}
+  %c0 = arith.constant 0 : index
+  %c1 = arith.constant 1 : index
+  %dm = tensor.dim %c, %c0 : ${TInit}
+  %dn = tensor.dim %c, %c1 : ${TInit}
+  %empty = tensor.empty(%dm, %dn) : ${TInit}
+  %r = linalg.generic {indexing_maps=[affine_map<(d0,d1)->(d0,d1)>, affine_map<(d0,d1)->(d0,d1)>], iterator_types=["parallel","parallel"]} ins(%c : ${TInit}) outs(%empty : ${TInit}) {
+  ^bb0(%v: f32, %_: f32):
+    %z = arith.constant 0.0 : f32
+    %t = arith.maximumf %v, %z : f32
+    linalg.yield %t : f32
+  } -> ${TInit}
+  return %r : ${TInit}
+}
+MLIR
+    return
+  fi
   if [[ "${with_relu}" == "1" ]]; then
     cat > "${out}" <<MLIR
 func.func @${funcname}(%a: tensor<${M}x${K}xf16>,
@@ -100,10 +129,10 @@ PY
 }
 
 run_one() {
-  local name="$1" M="$2" K="$3" N="$4" lo="$5" hi="$6" with_relu="$7"
+  local name="$1" M="$2" K="$3" N="$4" lo="$5" hi="$6" with_relu="$7" dyn="${8:-0}"
   local dir="${WORK_ROOT}/${name}"
   mkdir -p "${dir}"
-  emit_step0   "${dir}/step0.mlir" "${name}" "${M}" "${K}" "${N}" "${with_relu}"
+  emit_step0   "${dir}/step0.mlir" "${name}" "${M}" "${K}" "${N}" "${with_relu}" "${dyn}"
   emit_gen_data "${dir}/gen.py"    "${M}" "${K}" "${N}" "${lo}" "${hi}" "${with_relu}"
 
   ${AFIR_OPT} --vector-plan-codegen "${dir}/step0.mlir" -o "${dir}/step7_cann.mlir" \
@@ -140,8 +169,8 @@ print(float(np.max(np.abs(a-g))))
 pass=0; fail=0; xfail=0; xpass=0
 declare -a FAILED XPASSED
 for spec in "${CASES[@]}"; do
-  read -r name M K N lo hi with_relu xfail_expected <<<"${spec}"
-  if run_one "${name}" "${M}" "${K}" "${N}" "${lo}" "${hi}" "${with_relu}"; then
+  read -r name M K N lo hi with_relu xfail_expected dyn <<<"${spec}"
+  if run_one "${name}" "${M}" "${K}" "${N}" "${lo}" "${hi}" "${with_relu}" "${dyn:-0}"; then
     if [[ "${xfail_expected}" == "1" ]]; then
       xpass=$((xpass+1)); XPASSED+=("${name}")
       echo "  (^ XPASS: case marked xfail but now passes — promote it)"
