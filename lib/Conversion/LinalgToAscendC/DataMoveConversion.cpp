@@ -27,6 +27,8 @@
 #include "ascir/Dialect/Asc/IR/Asc.h"
 #include "ascir/Dialect/EmitAsc/IR/EmitAsc.h"
 
+#include <optional>
+
 #define DEBUG_TYPE "linalg-to-ascendc-datamove"
 
 using namespace mlir;
@@ -116,6 +118,120 @@ static Value getRootAlloc(Value v) {
   while (auto subview = v.getDefiningOp<memref::SubViewOp>())
     v = subview.getSource();
   return v;
+}
+
+static bool isRank2Subview(Value v) {
+  auto type = dyn_cast<MemRefType>(v.getType());
+  return type && type.getRank() == 2 && v.getDefiningOp<memref::SubViewOp>();
+}
+
+static bool isContiguousRank2Subview(Value v) {
+  auto type = dyn_cast<MemRefType>(v.getType());
+  auto subview = v.getDefiningOp<memref::SubViewOp>();
+  if (!type || type.getRank() != 2 || !subview)
+    return false;
+  auto [strides, offset] = type.getStridesAndOffset();
+  (void)offset;
+  if (strides.size() != 2 || strides[0] == ShapedType::kDynamic)
+    return false;
+
+  auto getStaticIndex = [](OpFoldResult ofr) -> std::optional<int64_t> {
+    if (auto attr = ofr.dyn_cast<Attribute>())
+      return cast<IntegerAttr>(attr).getInt();
+    if (auto value = ofr.dyn_cast<Value>())
+      if (auto constant = value.getDefiningOp<arith::ConstantIndexOp>())
+        return constant.value();
+    return std::nullopt;
+  };
+  SmallVector<OpFoldResult> sizes = subview.getMixedSizes();
+  if (sizes.size() < 2)
+    return false;
+  std::optional<int64_t> innerSize = getStaticIndex(sizes[1]);
+  return innerSize && *innerSize == strides[0];
+}
+
+static Value getRank2RowStride(OpBuilder &b, Location loc, Value memref) {
+  auto type = dyn_cast<MemRefType>(memref.getType());
+  if (!type || type.getRank() != 2)
+    return Value{};
+
+  auto [strides, offset] = type.getStridesAndOffset();
+  (void)offset;
+  if (strides.size() == 2 && strides[0] != ShapedType::kDynamic)
+    return b.create<arith::ConstantIndexOp>(loc, strides[0]);
+
+  Value root = memref;
+  while (auto subview = root.getDefiningOp<memref::SubViewOp>())
+    root = subview.getSource();
+
+  auto rootType = dyn_cast<MemRefType>(root.getType());
+  if (rootType && rootType.getRank() == 2)
+    return emitDim(b, loc, root, 1);
+
+  return emitDim(b, loc, memref, 1);
+}
+
+static std::string getVerbatimScalarTypeName(Type elemType) {
+  if (elemType.isF16())
+    return "half";
+  if (elemType.isF32())
+    return "float";
+  if (auto intType = dyn_cast<IntegerType>(elemType)) {
+    if (intType.getWidth() == 8)
+      return intType.isUnsigned() ? "uint8_t" : "int8_t";
+    if (intType.getWidth() == 16)
+      return intType.isUnsigned() ? "uint16_t" : "int16_t";
+    if (intType.getWidth() == 32)
+      return intType.isUnsigned() ? "uint32_t" : "int32_t";
+  }
+  return "auto";
+}
+
+static void emitStridedLocalToGmCopy(OpBuilder &b, Location loc, Type elemType,
+                                     Value dstGt, Value srcLt, Value rows,
+                                     Value cols, Value dstRowStride) {
+  std::string elemTypeStr = getVerbatimScalarTypeName(elemType);
+  std::string body = "{\n";
+  body += "  uint32_t _afir_rows = (uint32_t)$2;\n";
+  body += "  uint32_t _afir_cols = (uint32_t)$3;\n";
+  body += "  uint32_t _afir_row_stride = (uint32_t)$4;\n";
+  body += "  uint32_t _afir_block_bytes = _afir_cols * sizeof(" +
+          elemTypeStr + ");\n";
+  body += "  uint32_t _afir_gap_bytes = (_afir_row_stride - _afir_cols) * "
+          "sizeof(" + elemTypeStr + ");\n";
+  body += "  uint32_t _afir_count = _afir_rows * _afir_cols;\n";
+  body += "  if (_afir_gap_bytes == 0u) {\n";
+  body += "    if ((_afir_count * sizeof(" + elemTypeStr +
+          ")) % 32u == 0u) {\n";
+  body += "      AscendC::DataCopy($0, $1, _afir_count);\n";
+  body += "    } else {\n";
+  body += "      for (uint32_t _afir_i = 0; _afir_i < _afir_count; "
+          "++_afir_i)\n";
+  body += "        $0.SetValue(_afir_i, static_cast<" + elemTypeStr +
+          ">($1.GetValue(_afir_i)));\n";
+  body += "    }\n";
+  body += "  } else if ((_afir_block_bytes % 32u) == 0u && "
+          "(_afir_gap_bytes % 32u) == 0u) {\n";
+  body += "    AscendC::DataCopyExtParams _afir_params{"
+          "static_cast<uint16_t>(_afir_rows), _afir_block_bytes, 0u, "
+          "_afir_gap_bytes, 0u};\n";
+  body += "    AscendC::DataCopyPad($0, $1, _afir_params);\n";
+  body += "  } else {\n";
+  body += "    for (uint32_t _afir_r = 0; _afir_r < _afir_rows; ++_afir_r) {\n";
+  body += "      for (uint32_t _afir_c = 0; _afir_c < _afir_cols; ++_afir_c) "
+          "{\n";
+  body += "        uint32_t _afir_local = _afir_r * _afir_cols + _afir_c;\n";
+  body += "        uint64_t _afir_gm = (uint64_t)_afir_r * _afir_row_stride + "
+          "_afir_c;\n";
+  body += "        $0.SetValue(_afir_gm, static_cast<" + elemTypeStr +
+          ">($1.GetValue(_afir_local)));\n";
+  body += "      }\n";
+  body += "    }\n";
+  body += "  }\n";
+  body += "}";
+  b.create<emitasc::VerbatimOp>(loc, b.getStringAttr(body),
+                                ValueRange{dstGt, srcLt, rows, cols,
+                                           dstRowStride});
 }
 
 static bool isValueOffset(OpFoldResult ofr, Value value) {
@@ -607,14 +723,26 @@ LogicalResult convertDataMove(func::FuncOp funcOp,
       builder.create<GlobalTensorSetGlobalBufferOp>(loc, dstGt, dst,
                                                      /*size=*/Value{});
       Value count = computeElementCount(builder, loc, src);
-      if (linalg::GenericOp producer = findReductionGenericWriting(src)) {
+      linalg::GenericOp producer = findReductionGenericWriting(src);
+      if (isRank2Subview(dst) && !isContiguousRank2Subview(dst) && !producer) {
+        Value rows = emitDim(builder, loc, dst, 0);
+        Value cols = emitDim(builder, loc, dst, 1);
+        Value dstRowStride = getRank2RowStride(builder, loc, dst);
+        if (!dstRowStride) {
+          copyOp.emitError("failed to compute rank-2 GM subview row stride");
+          return failure();
+        }
+        emitStridedLocalToGmCopy(
+            builder, loc, cast<MemRefType>(dst.getType()).getElementType(),
+            dstGt, srcLt, rows, cols, dstRowStride);
+      } else if (producer) {
         if (scf::ForOp reductionLoop = findReductionTileLoop(producer)) {
           emitAddPreviousReductionPartial(
               builder, loc, mlirCtx, ctx, reductionLoop, dst, srcLt, count,
               cast<MemRefType>(src.getType()).getElementType());
         }
-      }
-      if (shouldUseScalarVecoutWriteback(src)) {
+        builder.create<DataCopyL2Op>(loc, dstGt, srcLt, count);
+      } else if (shouldUseScalarVecoutWriteback(src)) {
         builder.create<emitasc::VerbatimOp>(
             loc,
             builder.getStringAttr(

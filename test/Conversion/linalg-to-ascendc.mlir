@@ -362,7 +362,7 @@ func.func @test_queue_backed_vecout_drops_dead_tbuf(%lhs: memref<?x?xf16, 9 : i3
 // CHECK: scf.if %[[NOT_FIRST]]
 // CHECK: ascendc.data_copy_l2 {{.*}} : !ascendc.local_tensor<*xf16>, !ascendc.global_tensor<*xf16>, index
 // CHECK: ascendc.add_l2
-// CHECK: emitasc.verbatim
+// CHECK: ascendc.data_copy_l2 {{.*}} : !ascendc.global_tensor<*xf16>, !ascendc.local_tensor<*xf16>, index
 func.func @test_reduction_chunk_copy_accumulates_previous_partial(%a: memref<?xf16>, %b: memref<?x?xf16>, %out: memref<?xf16>, %m: index, %n: index, %rn: index) {
   %c0 = arith.constant 0 : index
   %partial = memref.alloc(%m) : memref<?xf16, 10 : i32>

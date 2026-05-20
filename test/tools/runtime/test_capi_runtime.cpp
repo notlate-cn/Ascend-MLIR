@@ -60,7 +60,7 @@ packExampleTiling(const std::string &schemaPath) {
     return schemaOr.takeError();
 
   const std::string params =
-      "TB_M=64,TB_N=64,dim_arg0_0=640,dim_arg1_0=500,"
+      "dim_arg0_0=640,dim_arg1_0=500,"
       "dim_arg0_1=1,dim_arg1_1=640";
 
   std::map<std::string, int64_t> values;
@@ -172,7 +172,7 @@ int main() {
   int runRc = afirt_executor_run(
       executor, binary.data(), binary.size(), "relu_transpose_broadcast_add",
       2, inputPtrs, inputBytes, 1, outputPtrs, outputBytes, tilingOr->data(),
-      tilingOr->size(), 8, 0x41415246u, errBuf, sizeof(errBuf));
+      tilingOr->size(), 20, 0x41415246u, errBuf, sizeof(errBuf));
   EXPECT(runRc == 0, "execute example kernel through C API");
   EXPECT(errBuf[0] == '\0', "run produces no error text");
 
@@ -185,7 +185,7 @@ int main() {
   int runFileRc = afirt_executor_run_file(
       executor, binPath, "relu_transpose_broadcast_add", 2, inputPtrs,
       inputBytes, 1, outputPtrs, outputBytes, tilingOr->data(),
-      tilingOr->size(), 8, 0x41415246u, errBuf, sizeof(errBuf));
+      tilingOr->size(), 20, 0x41415246u, errBuf, sizeof(errBuf));
   EXPECT(runFileRc == 0, "execute example kernel through C API run_file");
   EXPECT(errBuf[0] == '\0', "run_file produces no error text");
   EXPECT(std::memcmp(actual.data(), expectedOr->data, expectedOr->nbytes()) == 0,

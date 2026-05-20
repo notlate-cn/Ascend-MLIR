@@ -365,8 +365,8 @@ run_vec_example \
   "    { \"name\": \"data0\", \"path\": \"${PROJECT_ROOT}/examples/relu-broadcast-transpose/build_mainline/input_data0.npy\" },
     { \"name\": \"data1\", \"path\": \"${PROJECT_ROOT}/examples/relu-broadcast-transpose/build_mainline/input_data1.npy\" }" \
   "${PROJECT_ROOT}/examples/relu-broadcast-transpose/build_mainline/output_expected.npy" \
-  "TB_M=64,TB_N=64,dim_arg0_0=640,dim_arg1_0=500,dim_arg0_1=1,dim_arg1_1=640" \
-  "8" "1e-2" "1e-2" \
+  "dim_arg0_0=640,dim_arg1_0=500,dim_arg0_1=1,dim_arg1_1=640" \
+  "20" "1e-2" "1e-2" \
   "build_mainline/step10_kernel.cpp" \
   "${PROJECT_ROOT}/examples/relu-broadcast-transpose/build_mainline/phase5_tiling_space.json"
 fi

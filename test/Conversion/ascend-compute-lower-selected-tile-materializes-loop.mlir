@@ -10,7 +10,7 @@
 // CHECK: ascendc.broadcast_l2
 // CHECK: ascendc.reduce_sum_2d_l2
 // CHECK: memref.subview %{{.*}}[%{{.*}}] [%{{.*}}] [1] : memref<70xf16>
-// CHECK: emitasc.verbatim
+// CHECK: ascendc.data_copy_l2
 // CHECK-NOT: linalg.generic
 func.func @selected_tile_materializes_loop() {
   %a = memref.alloc() : memref<70xf16, 9 : i32>

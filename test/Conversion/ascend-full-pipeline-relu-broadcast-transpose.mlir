@@ -25,7 +25,8 @@
 // CHECK-NOT: linalg.generic
 // CHECK: ascendc.add_l2
 // CHECK-NOT: linalg.generic
-// CHECK: ascendc.data_copy_l2
+// CHECK: emitasc.verbatim
+// CHECK-SAME: AscendC::DataCopy($0, $1, _afir_count);
 // CHECK-NOT: linalg.generic
 // CHECK: return
 // CHECK-NOT: linalg.generic
