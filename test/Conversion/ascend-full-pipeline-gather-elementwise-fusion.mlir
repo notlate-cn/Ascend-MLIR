@@ -12,12 +12,18 @@
 // CHECK-SAME: buffering = "
 // CHECK-SAME: ascend.schedule.tail_policies
 // CHECK-SAME: cann.num_inputs = 3 : i32
+// CHECK: %[[K_I64:[0-9]+]] = emitasc.member %arg5 "dim_arg1_0"
+// CHECK: %[[K_ELEMS:[0-9]+]] = arith.index_cast %[[K_I64]] : i64 to index
+// CHECK: %[[K_BYTES:[0-9]+]] = arith.muli %[[K_ELEMS]], %{{.*}} : index
 // CHECK: %[[VECOUT_TBUF:[0-9]+]] = ascendc.tbuf : <vecout>
 // CHECK: emitasc.reinterpret_cast %arg2
 // CHECK: ascendc.global_tensor.set_global_buffer
 // CHECK: %[[BIAS_LT:[0-9]+]] = ascendc.tbuf.get_tensor
 // CHECK: ascendc.data_copy_l2 %[[BIAS_LT]],
 // CHECK: scf.for
+// CHECK: ascendc.que_bind.deque_tensor
+// CHECK-NEXT: %[[ROW_BYTE_OFF:[0-9]+]] = arith.muli %{{.*}}, %{{.*}} : index
+// CHECK-NEXT: ascendc.tbuf.get_with_offset %[[VECOUT_TBUF]], %[[K_ELEMS]], %[[ROW_BYTE_OFF]]
 // CHECK: ascendc.gather_l2
 // CHECK: ascendc.max_l2
 // CHECK: ascendc.add_l2 %{{.*}}, %{{.*}}, %[[BIAS_LT]]
