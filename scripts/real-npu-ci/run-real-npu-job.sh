@@ -254,11 +254,23 @@ run_example_case() {
     bash "examples/${case_name}/run.sh" --log
   ) >"${LOG_DIR}/${case_name}-sim.log" 2>&1
 
-  local manifest="${case_dir}/build_e2e/run_manifest.json"
-  if [[ ! -f "${manifest}" ]]; then
-    manifest="${SRC_DIR}/build/runtime-mix-${case_name}-data/runtime-manifest.json"
+  local manifest=""
+  local manifest_candidates=(
+    "${case_dir}/build_mainline/run_manifest.json"
+    "${case_dir}/build_e2e/run_manifest.json"
+    "${SRC_DIR}/build/runtime-mix-${case_name}-data/runtime-manifest.json"
+  )
+  for candidate in "${manifest_candidates[@]}"; do
+    if [[ -f "${candidate}" ]]; then
+      manifest="${candidate}"
+      break
+    fi
+  done
+  if [[ -z "${manifest}" ]]; then
+    printf 'checked manifest candidates:\n' >&2
+    printf '  %s\n' "${manifest_candidates[@]}" >&2
+    fail "example did not produce a run manifest for ${case_name}"
   fi
-  [[ -f "${manifest}" ]] || fail "example did not produce run manifest: ${manifest}"
 
   log "run real NPU for ${case_name}"
   mkdir -p "${OUT_DIR}/${case_name}"
