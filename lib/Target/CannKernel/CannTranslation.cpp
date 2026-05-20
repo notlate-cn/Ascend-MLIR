@@ -3481,9 +3481,9 @@ static void fixBrokenOpEmitters(Operation *moduleOp) {
 
   // AscendC vector Add does not reliably consume a VECCALC tensor that was
   // populated directly from GM in the simulator. For this narrow gather+bias
-  // pattern, load each bias scalar from GM and apply it with Adds on a
-  // one-element LocalTensor slice so the local source still stays on the vector
-  // path.
+  // pattern, load each bias scalar from GM and apply the scalar update with
+  // SetValue. Using Adds on a one-element half slice can issue a VEC operation
+  // at an unaligned UB address for _afir_i > 0 on real hardware.
   moduleOp->walk([&](ascendc::AddL2Op op) {
     Value gmSource =
         findLocalTensorDataCopyGlobalSourceBefore(op, op.getSrc1());
@@ -3503,11 +3503,15 @@ static void fixBrokenOpEmitters(Operation *moduleOp) {
     Location loc = op.getLoc();
     std::string elemTypeStr = getAscendCScalarTypeName(dstType.getElementType());
     std::string tmpl = "{\n";
+    tmpl += "  AscendC::PipeBarrier<PIPE_ALL>();\n";
     tmpl += "  for (uint32_t _afir_i = 0; _afir_i < static_cast<uint32_t>($2); ++_afir_i) {\n";
     tmpl += "    " + elemTypeStr + " _afir_r = $3.GetValue(_afir_i);\n";
-    tmpl += "    AscendC::Adds($0[_afir_i], $1[_afir_i], _afir_r, (int32_t)1);\n";
+    tmpl += "    auto _afir_l = $1.GetValue(_afir_i);\n";
+    tmpl += "    $0.SetValue(_afir_i, static_cast<" + elemTypeStr +
+            ">(static_cast<float>(_afir_l) + static_cast<float>(_afir_r)));\n";
     tmpl += "  }\n";
-    tmpl += "  $0.SetSize((uint32_t)$2);\n}";
+    tmpl += "  $0.SetSize((uint32_t)$2);\n";
+    tmpl += "  AscendC::PipeBarrier<PIPE_ALL>();\n}";
     rewriter.create<emitasc::VerbatimOp>(
         loc, rewriter.getStringAttr(tmpl),
         ValueRange({op.getDst(), localSource, op.getCalCount(), gmSource}));

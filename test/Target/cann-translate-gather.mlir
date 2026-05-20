@@ -34,10 +34,13 @@
 // CHECK-SAME: _afir_idx32_0[_afir_off]
 // CHECK: AscendC::PipeBarrier<PIPE_V>();
 // CHECK-NOT: v39
+// CHECK: AscendC::PipeBarrier<PIPE_ALL>();
 // CHECK: for (uint32_t _afir_i = 0; _afir_i < static_cast<uint32_t>(
 // CHECK: _afir_r = {{.*}}.GetValue(_afir_i)
-// CHECK: AscendC::Adds(
+// CHECK: _afir_l = {{.*}}.GetValue(_afir_i)
+// CHECK: SetValue(_afir_i, static_cast<half>(static_cast<float>(_afir_l) + static_cast<float>(_afir_r)));
 // CHECK: SetSize((uint32_t)
+// CHECK: AscendC::PipeBarrier<PIPE_ALL>();
 // CHECK-NOT: AscendC::Add(
 // CHECK: SetGlobalBuffer(reinterpret_cast<__gm__ half*>(v4) +
 // CHECK: if ((_afir_count * sizeof(half)) % 32u == 0u)
