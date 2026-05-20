@@ -33,48 +33,47 @@ void registerElementwiseBodyOp(ElementwiseBodyOpEntry entry) {
 }
 
 void registerBuiltinElementwiseBodyOps() {
-  {
-    auto &reg = *gRegistry;
-    std::lock_guard<std::mutex> lock(reg.mu);
-    if (reg.builtinsRegistered)
-      return;
-    reg.builtinsRegistered = true;
-  }
-
+  auto &reg = *gRegistry;
+  std::lock_guard<std::mutex> lock(reg.mu);
+  if (reg.builtinsRegistered)
+    return;
   using namespace mlir::ascendc;
+  auto add = [&](ElementwiseBodyOpEntry entry) {
+    reg.entries.try_emplace(entry.dialectOpName, std::move(entry));
+  };
 
   // Binary ops
-  registerElementwiseBodyOp({"arith.addf", ComputeKind::ElementwiseAdd,
+  add({"arith.addf", ComputeKind::ElementwiseAdd,
     nullptr,
     [](mlir::OpBuilder &b, mlir::Location loc,
        mlir::Value dst, mlir::Value src0, mlir::Value src1, mlir::Value cnt) {
       b.create<AddL2Op>(loc, dst, src0, src1, cnt);
     }});
-  registerElementwiseBodyOp({"arith.mulf", ComputeKind::ElementwiseMul,
+  add({"arith.mulf", ComputeKind::ElementwiseMul,
     nullptr,
     [](mlir::OpBuilder &b, mlir::Location loc,
        mlir::Value dst, mlir::Value src0, mlir::Value src1, mlir::Value cnt) {
       b.create<MulL2Op>(loc, dst, src0, src1, cnt);
     }});
-  registerElementwiseBodyOp({"arith.maximumf", ComputeKind::ElementwiseMax,
+  add({"arith.maximumf", ComputeKind::ElementwiseMax,
     nullptr,
     [](mlir::OpBuilder &b, mlir::Location loc,
        mlir::Value dst, mlir::Value src0, mlir::Value src1, mlir::Value cnt) {
       b.create<MaxL2Op>(loc, dst, src0, src1, cnt);
     }});
-  registerElementwiseBodyOp({"arith.minimumf", ComputeKind::ElementwiseMin,
+  add({"arith.minimumf", ComputeKind::ElementwiseMin,
     nullptr,
     [](mlir::OpBuilder &b, mlir::Location loc,
        mlir::Value dst, mlir::Value src0, mlir::Value src1, mlir::Value cnt) {
       b.create<MinL2Op>(loc, dst, src0, src1, cnt);
     }});
-  registerElementwiseBodyOp({"arith.subf", ComputeKind::ElementwiseSub,
+  add({"arith.subf", ComputeKind::ElementwiseSub,
     nullptr,
     [](mlir::OpBuilder &b, mlir::Location loc,
        mlir::Value dst, mlir::Value src0, mlir::Value src1, mlir::Value cnt) {
       b.create<SubL2Op>(loc, dst, src0, src1, cnt);
     }});
-  registerElementwiseBodyOp({"arith.divf", ComputeKind::ElementwiseDiv,
+  add({"arith.divf", ComputeKind::ElementwiseDiv,
     nullptr,
     [](mlir::OpBuilder &b, mlir::Location loc,
        mlir::Value dst, mlir::Value src0, mlir::Value src1, mlir::Value cnt) {
@@ -82,36 +81,37 @@ void registerBuiltinElementwiseBodyOps() {
     }});
 
   // Unary ops
-  registerElementwiseBodyOp({"arith.negf", ComputeKind::ElementwiseNeg,
+  add({"arith.negf", ComputeKind::ElementwiseNeg,
     [](mlir::OpBuilder &b, mlir::Location loc,
        mlir::Value dst, mlir::Value src, mlir::Value cnt) {
       b.create<NegL2Op>(loc, dst, src, cnt);
     }, nullptr});
-  registerElementwiseBodyOp({"math.exp", ComputeKind::ElementwiseExp,
+  add({"math.exp", ComputeKind::ElementwiseExp,
     [](mlir::OpBuilder &b, mlir::Location loc,
        mlir::Value dst, mlir::Value src, mlir::Value cnt) {
       b.create<ExpL2Op>(loc, dst, src, cnt);
     }, nullptr});
-  registerElementwiseBodyOp({"math.log", ComputeKind::ElementwiseLog,
+  add({"math.log", ComputeKind::ElementwiseLog,
     [](mlir::OpBuilder &b, mlir::Location loc,
        mlir::Value dst, mlir::Value src, mlir::Value cnt) {
       b.create<LnL2Op>(loc, dst, src, cnt);
     }, nullptr});
-  registerElementwiseBodyOp({"math.sqrt", ComputeKind::ElementwiseSqrt,
+  add({"math.sqrt", ComputeKind::ElementwiseSqrt,
     [](mlir::OpBuilder &b, mlir::Location loc,
        mlir::Value dst, mlir::Value src, mlir::Value cnt) {
       b.create<SqrtL2Op>(loc, dst, src, cnt);
     }, nullptr});
-  registerElementwiseBodyOp({"math.rsqrt", ComputeKind::ElementwiseRsqrt,
+  add({"math.rsqrt", ComputeKind::ElementwiseRsqrt,
     [](mlir::OpBuilder &b, mlir::Location loc,
        mlir::Value dst, mlir::Value src, mlir::Value cnt) {
       b.create<RsqrtL2Op>(loc, dst, src, cnt);
     }, nullptr});
-  registerElementwiseBodyOp({"math.absf", ComputeKind::ElementwiseAbs,
+  add({"math.absf", ComputeKind::ElementwiseAbs,
     [](mlir::OpBuilder &b, mlir::Location loc,
        mlir::Value dst, mlir::Value src, mlir::Value cnt) {
       b.create<AbsL2Op>(loc, dst, src, cnt);
     }, nullptr});
+  reg.builtinsRegistered = true;
 }
 
 const ElementwiseBodyOpEntry *

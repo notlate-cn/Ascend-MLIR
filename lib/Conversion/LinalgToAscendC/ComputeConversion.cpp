@@ -3567,8 +3567,10 @@ LogicalResult convertCompute(func::FuncOp funcOp, AscendCBufferContext &ctx) {
       Value c1 = builder.create<arith::ConstantIndexOp>(loc, 1);
       Value segmentCount =
           rank == 0 ? c1 : getDimValue(builder, loc, dst, rank - 1);
-      auto [fillTbuf, fillLt] =
+      auto fillAlloc =
           allocVeccalc(builder, loc, elemType, SmallVector<Value>{segmentCount});
+      Value fillTbuf = fillAlloc.first;
+      Value fillLt = fillAlloc.second;
       (void)fillTbuf;
       auto dupOp = builder.create<DuplicateL2Op>(
           loc, fillLt, fillOp.getInputs()[0], segmentCount);
