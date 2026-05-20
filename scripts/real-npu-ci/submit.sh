@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-REMOTE="${ASCEND_MLIR_CI_REMOTE:-root@<real-npu-host>}"
+REMOTE="${ASCEND_MLIR_CI_REMOTE:-}"
 PORT="${ASCEND_MLIR_CI_REMOTE_PORT:-141}"
 REMOTE_DIR="${ASCEND_MLIR_CI_REMOTE_DIR:-/data/nyh/Codex-Ascend-MLIR}"
 REPO_URL="${ASCEND_MLIR_CI_REPO_URL:-}"
@@ -23,7 +23,7 @@ Usage: submit.sh [OPTIONS]
 Submit a real-NPU validation job to the shared real-NPU host over SSH.
 
 Options:
-  --remote USER@HOST        SSH target. Default: root@<real-npu-host>
+  --remote USER@HOST        SSH target. Required unless ASCEND_MLIR_CI_REMOTE is set.
   --port PORT               SSH port. Default: 141
   --remote-dir DIR          Repo path on the real-NPU host. Default: /data/nyh/Codex-Ascend-MLIR
   --repo-url URL            Git repository URL for the container to clone.
@@ -119,6 +119,11 @@ done
 
 if [[ -z "${REPO_URL}" && -z "${REMOTE_SOURCE_DIR}" ]]; then
   echo "one of --repo-url or --remote-source-dir is required" >&2
+  usage >&2
+  exit 2
+fi
+if [[ -z "${REMOTE}" ]]; then
+  echo "--remote is required, or set ASCEND_MLIR_CI_REMOTE" >&2
   usage >&2
   exit 2
 fi

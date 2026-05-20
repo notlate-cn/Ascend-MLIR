@@ -1,10 +1,17 @@
 # 真实NPU环境和使用指导
 
 ## 1. SSH连接host信息
-公网IP：<real-npu-host>
-端口号：141
-用户名：root
-密码：<redacted-password>
+真实 host 地址、端口、用户名和认证凭据不要写入仓库。
+需要连接共享 real-NPU host 时，通过本地 shell、SSH config 或安全的密钥/密码管理器设置：
+
+```shell
+export ASCEND_MLIR_CI_REMOTE='<user>@<real-npu-host>'
+export ASCEND_MLIR_CI_REMOTE_PORT='<ssh-port>'
+export ASCEND_MLIR_CI_SSH_PASSWORD='<optional-password>'
+```
+
+优先使用 SSH key；如必须使用密码，只在本地环境变量中临时设置
+`ASCEND_MLIR_CI_SSH_PASSWORD`，不要提交到文档、脚本或 shell history。
 
 ## 2. Host工作目录和环境安装
 

@@ -161,7 +161,7 @@ host 上已经存在目标 image tag 时，不需要每次 job 都重新 `docker
 ### 5.1 登录 host
 
 ```shell
-ssh -p 141 root@<real-npu-host>
+ssh -p "${ASCEND_MLIR_CI_REMOTE_PORT}" "${ASCEND_MLIR_CI_REMOTE}"
 ```
 
 ### 5.2 登录 SWR 并 pull
@@ -217,7 +217,7 @@ git checkout <branch-or-commit>
 适合临时验证本地未 push 的改动。在开发机执行：
 
 ```shell
-ssh -p 141 root@<real-npu-host> \
+ssh -p "${ASCEND_MLIR_CI_REMOTE_PORT}" "${ASCEND_MLIR_CI_REMOTE}" \
   'rm -rf /data/{username}/Codex-Ascend-MLIR-current && mkdir -p /data/{username}/Codex-Ascend-MLIR-current'
 
 COPYFILE_DISABLE=1 tar --no-xattrs \
@@ -225,7 +225,7 @@ COPYFILE_DISABLE=1 tar --no-xattrs \
   --exclude='./build' \
   --exclude='./out' \
   -czf - . | \
-ssh -p 141 root@<real-npu-host> \
+ssh -p "${ASCEND_MLIR_CI_REMOTE_PORT}" "${ASCEND_MLIR_CI_REMOTE}" \
   'tar --no-xattrs -C /data/{username}/Codex-Ascend-MLIR-current -xzf -'
 ```
 

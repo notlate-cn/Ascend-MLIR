@@ -9,7 +9,7 @@ if [[ -f "${REAL_NPU_CI_DIR}/versions.env" ]]; then
   source "${REAL_NPU_CI_DIR}/versions.env"
 fi
 
-REMOTE="${ASCEND_MLIR_CI_REMOTE:-root@<real-npu-host>}"
+REMOTE="${ASCEND_MLIR_CI_REMOTE:-}"
 PORT="${ASCEND_MLIR_CI_REMOTE_PORT:-141}"
 REMOTE_DIR="${ASCEND_MLIR_CI_REMOTE_DIR:-${ASCEND_MLIR_CI_REMOTE_SOURCE_DIR:-/data/nyh/Codex-Ascend-MLIR-current}}"
 IMAGE="${ASCEND_MLIR_CI_IMAGE:-${ASCEND_MLIR_CI_DEFAULT_REMOTE_IMAGE:-${ASCEND_MLIR_CI_DEFAULT_LLVM_IMAGE:-ascend-mlir-builder:aarch64-ubuntu22.04-llvm21}}}"
@@ -36,7 +36,7 @@ Package the local git worktree, sync it to a real-NPU host directory, then run a
 real-NPU validation job with an image that already exists on the real-NPU host.
 
 Options:
-  --remote USER@HOST        SSH target. Default: root@<real-npu-host>
+  --remote USER@HOST        SSH target. Required unless ASCEND_MLIR_CI_REMOTE is set.
   --port PORT               SSH port. Default: 141
   --remote-dir DIR          Remote source directory to replace and run.
                             Default: /data/nyh/Codex-Ascend-MLIR-current
@@ -73,8 +73,7 @@ out/, generated .npy files, and macOS metadata files are not synced.
 For the shared real-NPU host, the remote source directory must be under /data/nyh.
 
 SSH authentication uses normal ssh keys first. If ASCEND_MLIR_CI_SSH_PASSWORD
-is set, or examples/real-npu.md contains a password line, sshpass is used for
-password authentication.
+is set in the local environment, sshpass is used for password authentication.
 EOF
 }
 
@@ -186,8 +185,10 @@ if [[ "${LIST_CASES}" == "1" ]]; then
   exit 0
 fi
 
-if [[ -z "${SSH_PASSWORD}" && -f examples/real-npu.md ]]; then
-  SSH_PASSWORD="$(sed -n 's/^密码：//p' examples/real-npu.md | head -1 | tr -d '\r\n')"
+if [[ -z "${REMOTE}" ]]; then
+  echo "--remote is required, or set ASCEND_MLIR_CI_REMOTE" >&2
+  usage >&2
+  exit 2
 fi
 
 SSH_BASE=(ssh -p "${PORT}" -o StrictHostKeyChecking=accept-new)
