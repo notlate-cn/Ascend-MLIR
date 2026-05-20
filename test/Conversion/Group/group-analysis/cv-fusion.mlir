@@ -1,4 +1,4 @@
-// RUN: afir-opt --vector-plan-group-analysis %s | FileCheck %s
+// RUN: afir-opt --auto-fuse-group-analysis %s | FileCheck %s
 //
 // Phase 1 of [[af-cv-fusion-port]] — enable CV (Cube + Vector) fusion at the
 // GroupAnalysis layer.  GroupAnalysisPass.cpp:147-151 used to gate
@@ -33,6 +33,6 @@ func.func @mm_relu(%a: tensor<32x16xf16>,
 
 // Both matmul and the trailing relu generic must share the same group_id.
 // CHECK: linalg.matmul
-// CHECK-SAME: vector_plan.group_id = [[G:[0-9]+]]
+// CHECK-SAME: auto_fuse.group_id = [[G:[0-9]+]]
 // CHECK: linalg.generic
-// CHECK-SAME: vector_plan.group_id = [[G]]
+// CHECK-SAME: auto_fuse.group_id = [[G]]

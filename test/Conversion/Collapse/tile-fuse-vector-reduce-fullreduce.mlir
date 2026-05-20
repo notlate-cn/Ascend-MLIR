@@ -1,5 +1,5 @@
-// RUN: afir-opt %s --vector-plan-tile-fuse 2>&1 | FileCheck %s --check-prefix=TILE
-// RUN: afir-opt %s --vector-plan-codegen 2>&1 | FileCheck %s --check-prefix=COMBINE
+// RUN: afir-opt %s --auto-fuse-tile-fuse 2>&1 | FileCheck %s --check-prefix=TILE
+// RUN: afir-opt %s --auto-fuse-codegen 2>&1 | FileCheck %s --check-prefix=COMBINE
 //
 // Full-reduce-sum (no parallel axis) — exercises the RCore template:
 //   out = sum_{d0}( x[d0] )
@@ -14,8 +14,8 @@
 
 // Picker: single variant, RCore template, XBLOCK + RBLOCK_0 only.
 // TILE: func.func @full_reduce__v0(
-// TILE-SAME: %{{.*}}: index {vector_plan.default_tile_size = 128 : i64}
-// TILE-SAME: %{{.*}}: index {vector_plan.default_tile_size = 64 : i64}
+// TILE-SAME: %{{.*}}: index {auto_fuse.default_tile_size = 128 : i64}
+// TILE-SAME: %{{.*}}: index {auto_fuse.default_tile_size = 64 : i64}
 // TILE-SAME: afir.reduce_template = "RCore"
 // TILE-NOT: func.func @full_reduce__v1
 

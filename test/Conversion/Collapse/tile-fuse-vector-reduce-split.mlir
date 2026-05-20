@@ -1,4 +1,4 @@
-// RUN: afir-opt %s "--vector-plan-tile-fuse=enable-reduction-split=true" 2>&1 | FileCheck %s
+// RUN: afir-opt %s "--auto-fuse-tile-fuse=enable-reduction-split=true" 2>&1 | FileCheck %s
 //
 // Phase 4: reduction split with RBLOCK. d1 becomes RBLOCK_0 Inner parameter.
 // Expected: XBLOCK + XBLOCK_SUB + RBLOCK_0 func args.
@@ -8,9 +8,9 @@
 // the FullLoad (R kept whole) drafts are feasible — enumerated in that order.
 // v0 is the RBLOCK-split body this test was written for.
 // CHECK: func.func @reduce_split__v0(
-// CHECK-SAME: %[[XBLOCK:[^ ,)]*]]: index {vector_plan.default_tile_size = 128 : i64}
-// CHECK-SAME: %[[XBLOCK_SUB:[^ ,)]*]]: index {vector_plan.default_tile_size = 16 : i64}
-// CHECK-SAME: %[[RBLOCK:[^ ,)]*]]: index {vector_plan.default_tile_size = 64 : i64}
+// CHECK-SAME: %[[XBLOCK:[^ ,)]*]]: index {auto_fuse.default_tile_size = 128 : i64}
+// CHECK-SAME: %[[XBLOCK_SUB:[^ ,)]*]]: index {auto_fuse.default_tile_size = 16 : i64}
+// CHECK-SAME: %[[RBLOCK:[^ ,)]*]]: index {auto_fuse.default_tile_size = 64 : i64}
 // CHECK-SAME: afir.reduce_template = "Common"
 
 // CHECK: scf.for %{{.*}} = %{{.*}} to %{{.*}} step %[[XBLOCK]]

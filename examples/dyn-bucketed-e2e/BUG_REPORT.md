@@ -67,7 +67,7 @@ The failure is independent of tiling (XBLOCK / XBLOCK_SUB), so it is not the
 known "XBLOCK > total elements → zero output" pattern from
 [[network_runner_v1]].
 
-The kernel itself is correct in IR (verifier-clean, `vector-plan-codegen` lowers
+The kernel itself is correct in IR (verifier-clean, `auto-fuse-codegen` lowers
 to AscendC without complaint). The numerical mismatch is consistent
 (`max_abs_diff = 7.19`, identical across all 25 autotuned configs at d0=d1=4),
 suggesting a deterministic codegen miscompile rather than scheduling
@@ -165,19 +165,19 @@ isolation it just makes the primary bug harder to spot.
 
 ## 5. Drive-by fix: `IsolateKernelOutputs` builds invalid `bufferization.alloc_tensor`
 
-While bringing this example up, `vector-plan-codegen` failed with:
+While bringing this example up, `auto-fuse-codegen` failed with:
 ```
 error: dynamic sizes not needed when copying a tensor
 ```
 
-Root cause: `lib/Conversion/VectorPlan/GroupOutline/IsolateKernelOutputs.cpp`
+Root cause: `lib/Conversion/AutoFuse/GroupOutline/IsolateKernelOutputs.cpp`
 constructed `bufferization::AllocTensorOp` with **both** explicit `dynSizes`
 operands **and** a `copy` source — disallowed by the op verifier (dynamic
 sizes are inferred from the copy source).
 
 This regressed the (otherwise passing) `examples/combo-elewise-reduce-e2e`
 example as well; that one ran the same path and would fail with the identical
-verifier error. After the fix below, combo runs through `vector-plan-codegen`
+verifier error. After the fix below, combo runs through `auto-fuse-codegen`
 again.
 
 Fix (this commit): pass `ValueRange{}` for `dynSizes` when a copy source is
@@ -205,19 +205,19 @@ provided. The diff is one hunk:
 +                        .getResult();
 ```
 
-File: `lib/Conversion/VectorPlan/GroupOutline/IsolateKernelOutputs.cpp:83-86`
+File: `lib/Conversion/AutoFuse/GroupOutline/IsolateKernelOutputs.cpp:83-86`
 
 ## 6. What's known to work in this example
 
 Despite the numerical bug, the rest of the pipeline behaves correctly:
 
-- `--vector-plan-group-analysis` + `--vector-plan-group-outline` split the
+- `--auto-fuse-group-analysis` + `--auto-fuse-group-outline` split the
   9-arg model into **two** kernel groups (chain 0 inputs `{a,b,c,d}` + init0;
   chain 1 inputs `{e,f,g}` + init1). Triggered by the H2 horizontal-fuse
   bound (`maxHorizontalExtraInputs=4`).
 - `build_e2e/groups/network.json` is valid and emits `kind=ascendc` for both
   kernels (no aclnn fallback).
-- `vector-plan-codegen` lowers both kernels to AscendC; `g++` compiles
+- `auto-fuse-codegen` lowers both kernels to AscendC; `g++` compiles
   `network_host.cpp` and the kernel `.cpp` files; the simulator launches
   successfully (no crash, both `[block_end]` markers appear).
 - All inputs are passed as fully-dynamic `?` tensors and resolved at runtime
@@ -236,7 +236,7 @@ fusion / outline / host-driver chain.
 2. Verify that the `%out` (init) operand read is being routed to the correct
    `tbuf<vecout>` accumulator rather than being dropped or aliased to an
    `ascendc.duplicate_l2 %_, %cst` zero-fill (line 107).
-3. Cross-check `vector_plan.tiling_infos` (line 1) only emits dim fields for
+3. Cross-check `auto_fuse.tiling_infos` (line 1) only emits dim fields for
    `arg0` and `arg4`; whether `arg1..arg3` are assumed to share `arg0`'s
    dims via `afir.dim_symbols` and whether that holds at the lowering
    level for the reduce body.
@@ -259,7 +259,7 @@ examples/dyn-bucketed-e2e/
     │   ├── kernel_group1.mlir                   # outlined chain-1 kernel
     │   ├── network.mlir                         # coordinator only
     │   └── network.json                         # call graph + tensor descs
-    ├── kernel_group0_lowered.mlir               # after vector-plan-codegen
+    ├── kernel_group0_lowered.mlir               # after auto-fuse-codegen
     ├── kernel_group0.cpp                        # generated AscendC C++
     ├── kernel_group0_best.json                  # autotuner result (false pass)
     ├── network_host.cpp                         # host wiring (HostLaunchHelper)

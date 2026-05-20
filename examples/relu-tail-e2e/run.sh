@@ -17,7 +17,7 @@ echo "===================================================="
 
 "$PYTHON" "$DIR/gen_inputs.py" --outdir "$DIR" --n "$N"
 
-"$AFIR_OPT" "$DIR/relu.mlir" --vector-plan-codegen -o "$DIR/relu_kernel.mlir" 2>&1
+"$AFIR_OPT" "$DIR/relu.mlir" --auto-fuse-codegen -o "$DIR/relu_kernel.mlir" 2>&1
 "$AFIR_TRANSLATE" -mlir-to-cann "$DIR/relu_kernel.mlir" -o "$DIR/relu_kernel.cpp" \
   --tiling-space-out "$DIR/tiling_space.json" 2>&1
 

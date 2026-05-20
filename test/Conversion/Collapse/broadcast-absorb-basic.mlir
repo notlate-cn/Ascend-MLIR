@@ -1,4 +1,4 @@
-// RUN: afir-opt --vector-plan-broadcast-absorb %s | FileCheck %s
+// RUN: afir-opt --auto-fuse-broadcast-absorb %s | FileCheck %s
 
 // CHECK: #[[$MAP:.+]] = affine_map<(d0, d1, d2) -> (d0, d2)>
 // CHECK-LABEL: func.func @absorb_into_generic

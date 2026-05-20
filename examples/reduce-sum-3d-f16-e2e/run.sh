@@ -21,7 +21,7 @@ echo "======================================================"
 "$PYTHON" "$DIR/gen_inputs.py" --outdir "$DIR" --d0 "$D0" --d1 "$D1" --d2 "$D2"
 
 echo "[STAGE 1] MLIR codegen"
-"$AFIR_OPT" "$DIR/reduce_sum_3d_f16.mlir" --vector-plan-codegen \
+"$AFIR_OPT" "$DIR/reduce_sum_3d_f16.mlir" --auto-fuse-codegen \
   -o "$DIR/reduce_sum_3d_f16_kernel.mlir" 2>&1
 "$AFIR_TRANSLATE" -mlir-to-cann "$DIR/reduce_sum_3d_f16_kernel.mlir" \
   -o "$DIR/reduce_sum_3d_f16_kernel.cpp" \

@@ -1,4 +1,4 @@
-// RUN: afir-opt %s --vector-plan-tile-fuse 2>&1 | FileCheck %s
+// RUN: afir-opt %s --auto-fuse-tile-fuse 2>&1 | FileCheck %s
 //
 // Multi-reduce-axes, adjacent (no parallel axis between r1 and r2).
 //   out[a] = sum_{r1, r2}( x[a, r1, r2] )

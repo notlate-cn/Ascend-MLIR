@@ -14,7 +14,7 @@ XBLOCK=${AB}; XBLOCK_SUB=${AB}
 BLOCK_DIM=$(( (AB + XBLOCK - 1) / XBLOCK ))
 echo "=== bcast-trailing E2E (out[a,b,c] = x[a,b,c] + y[a,b]) ==="
 "$PYTHON" "$DIR/gen_inputs.py" --outdir "$DIR" --a "$A" --b "$B" --c "$C"
-"$AFIR_OPT" "$DIR/bcast_trailing.mlir" --vector-plan-codegen -o "$DIR/bcast_trailing_kernel.mlir"
+"$AFIR_OPT" "$DIR/bcast_trailing.mlir" --auto-fuse-codegen -o "$DIR/bcast_trailing_kernel.mlir"
 "$AFIR_TRANSLATE" -mlir-to-cann "$DIR/bcast_trailing_kernel.mlir" -o "$DIR/bcast_trailing_kernel.cpp" --tiling-space-out "$DIR/tiling_space.json"
 "$PYTHON" - <<PYEOF
 import json, pathlib

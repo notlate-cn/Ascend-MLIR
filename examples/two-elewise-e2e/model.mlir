@@ -1,6 +1,6 @@
 // Two completely independent elementwise linalg.generic ops.
-// Designed to exercise the auto-outline path: --vector-plan-group-analysis
-// + --vector-plan-group-outline should split this into kernel_group0 (add)
+// Designed to exercise the auto-outline path: --auto-fuse-group-analysis
+// + --auto-fuse-group-outline should split this into kernel_group0 (add)
 // and kernel_group1 (mul) with disjoint inputs.
 //
 // Shape 4x4 f16 keeps total elements (16) ≤ smallest XBLOCK candidate (16),

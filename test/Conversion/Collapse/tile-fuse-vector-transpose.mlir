@@ -10,7 +10,7 @@
 // RUN: afir-opt %s --linalg-generalize-named-ops --linalg-fuse-elementwise-ops \
 // RUN:   | FileCheck %s --check-prefix=ABSORB
 // RUN: afir-opt %s --linalg-generalize-named-ops --linalg-fuse-elementwise-ops \
-// RUN:            --vector-plan-tile-fuse | FileCheck %s --check-prefix=TILE
+// RUN:            --auto-fuse-tile-fuse | FileCheck %s --check-prefix=TILE
 
 // The transpose op is gone; the relu reads x at (d0,d1)->(d1,d0).
 // ABSORB-NOT: linalg.transpose

@@ -1,4 +1,4 @@
-// RUN: afir-opt --vector-plan-broadcast-absorb %s | FileCheck %s
+// RUN: afir-opt --auto-fuse-broadcast-absorb %s | FileCheck %s
 //
 // broadcast result has two uses (generic + return) → pattern does not fire → preserved.
 //

@@ -1,4 +1,4 @@
-// RUN: afir-opt --vector-plan-broadcast-absorb %s | FileCheck %s
+// RUN: afir-opt --auto-fuse-broadcast-absorb %s | FileCheck %s
 
 // CHECK-LABEL: func.func @fallback_no_generic_consumer
 func.func @fallback_no_generic_consumer(%x: tensor<4x8xf16>) -> tensor<4x3x8xf16> {

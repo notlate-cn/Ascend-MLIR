@@ -49,7 +49,7 @@ echo "========================================================"
 
 echo ""
 echo "==================== [STAGE 1] MLIR → AscendC C++ ===================="
-"$AFIR_OPT" "$DIR/full_reduce.mlir" --vector-plan-codegen \
+"$AFIR_OPT" "$DIR/full_reduce.mlir" --auto-fuse-codegen \
   -o "$DIR/full_reduce_kernel.mlir" 2>&1
 log "  ✓ MLIR codegen OK → full_reduce_kernel.mlir"
 

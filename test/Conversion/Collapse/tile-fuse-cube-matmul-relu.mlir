@@ -1,4 +1,4 @@
-// RUN: afir-opt %s --vector-plan-tile-fuse 2>&1 | FileCheck %s
+// RUN: afir-opt %s --auto-fuse-tile-fuse 2>&1 | FileCheck %s
 //
 // CV-fusion Phase 2: cube TilePlan structure ([[af-cv-fusion-port]]).
 //
@@ -10,7 +10,7 @@
 //     XBLOCK_M, M_INNER, XBLOCK_N, N_INNER, K_INNER
 //   - `ascendc.kernel_kind = "mix"` (gates downstream mix-pipeline passes)
 //   - `afir.cube_kind = "MatmulVecFuse"` (records the picked template)
-//   - schema v2 `vector_plan.tiling_infos` with the 5 tunable fields
+//   - schema v2 `auto_fuse.tiling_infos` with the 5 tunable fields
 // The matmul + generic linalg ops are LEFT IN PLACE for Phase-4 emission.
 
 #map = affine_map<(d0, d1) -> (d0, d1)>
@@ -35,7 +35,7 @@ func.func @mm_relu(%a: tensor<32x16xf16>,
   return %r : tensor<32x64xf32>
 }
 
-// Module-level vector_plan.tiling_infos schema v2 with the 5 cube tunables.
+// Module-level auto_fuse.tiling_infos schema v2 with the 5 cube tunables.
 // Emitted on the module attr line (before the func) — CHECK directives match
 // in order, so schema_version checks come first.
 // CHECK-DAG: name = "XBLOCK_M"

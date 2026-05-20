@@ -1,6 +1,6 @@
 #!/bin/bash
 # ============================================================
-# ReLU (max(x, 0)) 端到端编译流水线 Demo —— 使用 --vector-plan-codegen
+# ReLU (max(x, 0)) 端到端编译流水线 Demo —— 使用 --auto-fuse-codegen
 #
 # 用法：
 #   source examples/env.sh
@@ -10,7 +10,7 @@
 #   output[1024] = max(input[1024], 0.0)  (element-wise ReLU, float32)
 #
 # 特点：
-#   - 直接使用 --vector-plan-codegen 一键走完 tile→bufferize→
+#   - 直接使用 --auto-fuse-codegen 一键走完 tile→bufferize→
 #     buffer-placement→linalg-to-ascendc→parallelize→prepare-for-emit→
 #     canonicalize-cann-signature 全流水
 #   - TilePlanGen 自动生成 XBLOCK=128 / XBLOCK_SUB=16 tiling 策略
@@ -31,7 +31,7 @@ done
 log() { $VERBOSE && echo "$@" || true; }
 
 echo "========================================================"
-echo " ReLU E2E: vector-plan-codegen → runtime-session → sim"
+echo " ReLU E2E: auto-fuse-codegen → runtime-session → sim"
 echo "========================================================"
 
 
@@ -40,13 +40,13 @@ PYTHON="${PYTHON:-python3}"
 "$PYTHON" "$DIR/gen_inputs.py" --outdir "$DIR"
 
 
-# ── STAGE 1: vector-plan-codegen ──────────────────────────────
+# ── STAGE 1: auto-fuse-codegen ──────────────────────────────
 echo ""
 echo "==================== [STAGE 1] MLIR → AscendC C++ ===================="
-log "  Pass: --vector-plan-codegen (tile-fuse → bufferize → insert-tile-buffers"
+log "  Pass: --auto-fuse-codegen (tile-fuse → bufferize → insert-tile-buffers"
 log "        → buffer-placement → linalg-to-ascendc → parallelize → prepare-for-emit"
 log "        → canonicalize-cann-signature → translate)"
-"$AFIR_OPT" "$DIR/relu.mlir" --vector-plan-codegen \
+"$AFIR_OPT" "$DIR/relu.mlir" --auto-fuse-codegen \
   -o "$DIR/relu_kernel.mlir" 2>&1
 log "  ✓ MLIR codegen OK, output: relu_kernel.mlir"
 
@@ -134,7 +134,7 @@ grep -q '^session.validation=pass$' "$VALIDATION_LOG"
 echo ""
 echo "========================================================"
 echo " Done. 生成文件："
-echo "   relu_kernel.mlir           → vector-plan-codegen 后 MLIR"
+echo "   relu_kernel.mlir           → auto-fuse-codegen 后 MLIR"
 echo "   relu_kernel.cpp            → AscendC C++ kernel"
 echo "   build_e2e/artifact         → runtime-session 编译产物"
 echo "   build_e2e/output.npy       → 仿真输出"

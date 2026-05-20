@@ -1,4 +1,4 @@
-// RUN: afir-opt --vector-plan-group-analysis %s | FileCheck %s
+// RUN: afir-opt --auto-fuse-group-analysis %s | FileCheck %s
 
 // Reduce followed by pointwise: vertical fusion → same group_id.
 
@@ -30,5 +30,5 @@ func.func @reduce_pointwise(%in: tensor<4x8xf16>,
 }
 
 // Both ops share the same group_id.
-// CHECK: vector_plan.group_id = [[G:[0-9]+]]
-// CHECK: vector_plan.group_id = [[G]]
+// CHECK: auto_fuse.group_id = [[G:[0-9]+]]
+// CHECK: auto_fuse.group_id = [[G]]

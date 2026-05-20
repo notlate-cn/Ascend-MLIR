@@ -34,14 +34,14 @@ done
 log() { $VERBOSE && echo "$@" || true; }
 
 echo "========================================================"
-echo " reduce-axis1 E2E: vector-plan-codegen → runtime-session → sim"
+echo " reduce-axis1 E2E: auto-fuse-codegen → runtime-session → sim"
 echo "========================================================"
 
 "$PYTHON" "$DIR/gen_inputs.py" --outdir "$DIR" --d0 "$D0" --d1 "$D1" --d2 "$D2"
 
 echo ""
 echo "==================== [STAGE 1] MLIR → AscendC C++ ===================="
-"$AFIR_OPT" "$DIR/reduce_axis1.mlir" --vector-plan-codegen \
+"$AFIR_OPT" "$DIR/reduce_axis1.mlir" --auto-fuse-codegen \
   -o "$DIR/reduce_axis1_kernel.mlir" 2>&1
 log "  ✓ MLIR codegen OK → reduce_axis1_kernel.mlir"
 

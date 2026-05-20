@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Sweep 6 CV-fusion cases through the full vector-plan pipeline + sim.
+# Sweep 6 CV-fusion cases through the full auto-fuse pipeline + sim.
 #
 # Each case overrides: name, M, K, N, input range, with_relu.
 # Validates max_abs_diff = 0.0 against numpy golden.
@@ -191,8 +191,8 @@ run_one() {
   emit_step0   "${dir}/step0.mlir" "${name}" "${M}" "${K}" "${N}" "${with_relu}" "${dyn}" "${with_bias}"
   emit_gen_data "${dir}/gen.py"    "${M}" "${K}" "${N}" "${lo}" "${hi}" "${with_relu}" "${with_bias}"
 
-  ${AFIR_OPT} --vector-plan-codegen "${dir}/step0.mlir" -o "${dir}/step7_cann.mlir" \
-    2> "${dir}/opt.log" || { echo "FAIL[${name}]: vector-plan-codegen"; tail -5 "${dir}/opt.log"; return 1; }
+  ${AFIR_OPT} --auto-fuse-codegen "${dir}/step0.mlir" -o "${dir}/step7_cann.mlir" \
+    2> "${dir}/opt.log" || { echo "FAIL[${name}]: auto-fuse-codegen"; tail -5 "${dir}/opt.log"; return 1; }
   ${AFIR_TRANSLATE} --mlir-to-cann "${dir}/step7_cann.mlir" -o "${dir}/step8.cpp" \
     2> "${dir}/translate.log" || { echo "FAIL[${name}]: mlir-to-cann"; tail -5 "${dir}/translate.log"; return 1; }
 

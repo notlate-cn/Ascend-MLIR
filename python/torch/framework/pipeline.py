@@ -9,7 +9,7 @@ pytest integration: the @torch_e2e_test decorator.
         return Model(), [TensorSpec(("M", "N"), torch.float16),
                          TensorSpec(("M", "N"), torch.float16)]
 
-This driver runs the *vector-plan* lowering path (afir-opt --vector-plan-codegen),
+This driver runs the *auto-fuse* lowering path (afir-opt --auto-fuse-codegen),
 which carries the linalg-level symbolic shapes (afir.dim_symbols / afir.axis_extents /
 afir.symbolic_shape arg-attrs) through to the AscendC kernel: de-duped TilingData
 dim fields and a populated block_dim_expr in tiling_space.json.  See
@@ -38,7 +38,7 @@ OUTPUT_ROOT = REPO_ROOT / "output" / "torch_e2e"
 
 def torch_e2e_test(func=None, *, verify_shapes: dict[str, int] | None = None):
     """Decorate a function returning (model, list[TensorSpec]).  Runs the full
-    torch -> linalg -> vector-plan-codegen -> CANN kernel -> autotuner pipeline.
+    torch -> linalg -> auto-fuse-codegen -> CANN kernel -> autotuner pipeline.
 
     verify_shapes maps dynamic-dim names to concrete sizes used in the numeric
     verification (default 64).
@@ -72,7 +72,7 @@ def torch_e2e_test(func=None, *, verify_shapes: dict[str, int] | None = None):
             (work_dir / "step0_linalg.mlir").write_text(mlir_text)
 
             # 4. MLIR pipeline -> kernel.cpp + tiling_space.json
-            print("\n[Stage 0b-8] MLIR pipeline (vector-plan-codegen)")
+            print("\n[Stage 0b-8] MLIR pipeline (auto-fuse-codegen)")
             assert _run_mlir_pipeline(work_dir), "MLIR pipeline failed"
 
             # 5. concrete verify inputs + PyTorch reference
@@ -100,7 +100,7 @@ def torch_e2e_test(func=None, *, verify_shapes: dict[str, int] | None = None):
 
 
 # ================================================================
-# MLIR pipeline (vector-plan path)
+# MLIR pipeline (auto-fuse path)
 # ================================================================
 
 def _find_tool(name: str) -> str | None:
@@ -122,8 +122,8 @@ def _run_afir_opt(src: Path, dst: Path, passes: list[str], afir_opt: str) -> boo
 
 
 def _run_mlir_pipeline(work_dir: Path) -> bool:
-    """step0b (fold-unit-extent-dims) -> --vector-plan-codegen -> strip cf.assert
-    -> afir-translate -mlir-to-cann.  The vector-plan-codegen pipeline already
+    """step0b (fold-unit-extent-dims) -> --auto-fuse-codegen -> strip cf.assert
+    -> afir-translate -mlir-to-cann.  The auto-fuse-codegen pipeline already
     runs afir-symbolize-shapes before tile-fuse, so the symbolic shapes reach
     the kernel."""
     linalg_path = work_dir / "step0_linalg.mlir"
@@ -140,20 +140,20 @@ def _run_mlir_pipeline(work_dir: Path) -> bool:
         return False
 
     step7 = work_dir / "step7_cann.mlir"
-    print("  [step1-7] --vector-plan-codegen")
+    print("  [step1-7] --auto-fuse-codegen")
     # Also dump the IR after the interesting pipeline stages into stages.mlir
     # (stderr of --mlir-print-ir-after); handy for inspecting the symbolic-shape
     # flow without re-running by hand.
-    stage_passes = ("afir-symbolize-shapes,vector-plan-tile-fuse,one-shot-bufferize,"
+    stage_passes = ("afir-symbolize-shapes,auto-fuse-tile-fuse,one-shot-bufferize,"
                     "linalg-to-ascendc,ascendc-parallelize,ascendc-pack-tiling-data,"
                     "canonicalize-cann-signature")
-    proc = subprocess.run([afir_opt, "--vector-plan-codegen",
+    proc = subprocess.run([afir_opt, "--auto-fuse-codegen",
                            f"--mlir-print-ir-after={stage_passes}",
                            str(step0b), "-o", str(step7)],
                           capture_output=True, text=True)
     (work_dir / "stages.mlir").write_text(proc.stderr)
     if proc.returncode != 0:
-        print("  FAIL: afir-opt --vector-plan-codegen")
+        print("  FAIL: afir-opt --auto-fuse-codegen")
         print(f"  stderr tail: {proc.stderr[-800:]}")
         return False
 

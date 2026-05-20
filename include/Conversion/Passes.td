@@ -260,12 +260,12 @@ def AscendCFlattenGMPtrPass : Pass<"ascendc-flatten-gm-ptr", "mlir::func::FuncOp
 def AscendCPackTilingDataPass : Pass<"ascendc-pack-tiling-data", "mlir::func::FuncOp"> {
   let summary = "Pack index/i64 tiling args and memref.dim uses into a TilingData GM struct";
   let description = [{
-    Reads vector_plan.tiling_infos on the parent ModuleOp to discover named
+    Reads auto_fuse.tiling_infos on the parent ModuleOp to discover named
     tiling parameters (e.g. XBLOCK, XBLOCK_SUB).  Fails if tiling_infos is
     absent — no Phase A positional fallback.
 
     Transformations:
-      1. Collect tiling arg names/indices from vector_plan.tiling_infos.
+      1. Collect tiling arg names/indices from auto_fuse.tiling_infos.
       2. Scan for memref.dim %blockArg, %cI ops; each unique (arg, dim) pair
          becomes a dim_argN_D field in TilingData.
       3. Inject a new TilingData GM pointer block argument, emit
@@ -489,12 +489,12 @@ def AnnotateMixMatmulSemanticsPass : Pass<"annotate-mix-matmul-semantics", "mlir
 }
 
 //===----------------------------------------------------------------------===//
-// VectorPlan Passes
+// AutoFuse Passes
 //===----------------------------------------------------------------------===//
 
-def VectorPlanGroupAnalysis : Pass<"vector-plan-group-analysis", "mlir::func::FuncOp"> {
+def AutoFuseGroupAnalysis : Pass<"auto-fuse-group-analysis", "mlir::func::FuncOp"> {
   let summary = "Analyze linalg ops and annotate fusion groups";
-  let constructor = "mlir::afir::createVectorPlanGroupAnalysisPass()";
+  let constructor = "mlir::afir::createAutoFuseGroupAnalysisPass()";
   let options = [
     Option<"enableReductionSplit",     "enable-reduction-split",      "bool",    "false", "">,
     Option<"maxReduceEpilogueOps",     "max-reduce-epilogue-ops",     "int32_t", "3",     "">,
@@ -503,23 +503,23 @@ def VectorPlanGroupAnalysis : Pass<"vector-plan-group-analysis", "mlir::func::Fu
   let dependentDialects = ["mlir::linalg::LinalgDialect", "mlir::func::FuncDialect"];
 }
 
-def VectorPlanGroupOutline : Pass<"vector-plan-group-outline", "mlir::ModuleOp"> {
+def AutoFuseGroupOutline : Pass<"auto-fuse-group-outline", "mlir::ModuleOp"> {
   let summary = "Outline annotated fusion groups into kernel funcs";
-  let constructor = "mlir::afir::createVectorPlanGroupOutlinePass()";
+  let constructor = "mlir::afir::createAutoFuseGroupOutlinePass()";
   let options = [
     Option<"kernelFuncPrefix",   "kernel-func-prefix",   "std::string", "\"kernel_group\"", "">,
     Option<"outputDir",          "output-dir",           "std::string", "\"\"",             "">,
     Option<"enableRCoreSplit",   "enable-rcore-split",   "bool",        "true",
-           "Run vector-plan-split-rcore-group between outline + file emit">,
+           "Run auto-fuse-split-rcore-group between outline + file emit">,
     Option<"rcoreParallelSlots", "rcore-parallel-slots", "int64_t",     "16",
            "Target N for RCore split (largest divisor of R ≤ this); 16 keeps fp16 partial output ≥ 32-byte aligned for DataCopy">,
   ];
   let dependentDialects = ["mlir::func::FuncDialect", "mlir::linalg::LinalgDialect"];
 }
 
-def VectorPlanTileFuse : Pass<"vector-plan-tile-fuse", "mlir::ModuleOp"> {
+def AutoFuseTileFuse : Pass<"auto-fuse-tile-fuse", "mlir::ModuleOp"> {
   let summary = "Tile and fuse kernel group funcs (multi-variant codegen, P1b)";
-  let constructor = "mlir::afir::createVectorPlanTileFusePass()";
+  let constructor = "mlir::afir::createAutoFuseTileFusePass()";
   let options = [
     Option<"enableCollapse",       "enable-collapse",        "bool",    "true",  "">,
     Option<"enableReductionSplit", "enable-reduction-split", "bool",    "false", "">,
@@ -542,10 +542,10 @@ def VectorPlanTileFuse : Pass<"vector-plan-tile-fuse", "mlir::ModuleOp"> {
   let dependentDialects = ["mlir::linalg::LinalgDialect", "mlir::scf::SCFDialect", "mlir::tensor::TensorDialect", "mlir::func::FuncDialect", "mlir::bufferization::BufferizationDialect"];
 }
 
-def VectorPlanSplitRCoreGroup : Pass<"vector-plan-split-rcore-group", "mlir::ModuleOp"> {
+def AutoFuseSplitRCoreGroup : Pass<"auto-fuse-split-rcore-group", "mlir::ModuleOp"> {
   let summary = "Split a full-reduce private kernel into partial+combine kernels (RCore)";
   let description = [{
-    Runs after vector-plan-group-outline.  For each private kernel func whose
+    Runs after auto-fuse-group-outline.  For each private kernel func whose
     body is a single linalg.generic with ALL iterator types = reduction (true
     full-reduce, output rank 0), rewrites it into two private kernel funcs:
 
@@ -572,7 +572,7 @@ def VectorPlanSplitRCoreGroup : Pass<"vector-plan-split-rcore-group", "mlir::Mod
     dependency (instead of `groups_relations_in`).  See plan
     docs/superpowers/plans/2026-05-14-p3b-rcore-reduce-multicore.zh.md §5.
   }];
-  let constructor = "mlir::afir::createVectorPlanSplitRCoreGroupPass()";
+  let constructor = "mlir::afir::createAutoFuseSplitRCoreGroupPass()";
   let options = [
     Option<"parallelSlots", "parallel-slots", "int64_t", "8",
            "Target N (partial output extent / parallel block count)">,
@@ -585,10 +585,10 @@ def VectorPlanSplitRCoreGroup : Pass<"vector-plan-split-rcore-group", "mlir::Mod
   ];
 }
 
-def VectorPlanIsolateKernelOutputs : Pass<"vector-plan-isolate-kernel-outputs", "mlir::func::FuncOp"> {
+def AutoFuseIsolateKernelOutputs : Pass<"auto-fuse-isolate-kernel-outputs", "mlir::func::FuncOp"> {
   let summary = "Make every returned tensor bufferize to a fresh buffer distinct from any input";
   let description = [{
-    Runs at the start of vector-plan-codegen, on each outlined kernel func.
+    Runs at the start of auto-fuse-codegen, on each outlined kernel func.
 
     For each value flowing to `func.return`, finds the linalg DPS op producing
     it. If that op's `outs(%init)` operand traces back (through tensor.cast /
@@ -606,7 +606,7 @@ def VectorPlanIsolateKernelOutputs : Pass<"vector-plan-isolate-kernel-outputs", 
     For pure-elementwise ops the seed copy is wasted (the kernel overwrites
     every element); a later peephole can elide it. Correctness first.
   }];
-  let constructor = "mlir::afir::createVectorPlanIsolateKernelOutputsPass()";
+  let constructor = "mlir::afir::createAutoFuseIsolateKernelOutputsPass()";
   let dependentDialects = [
     "mlir::bufferization::BufferizationDialect",
     "mlir::tensor::TensorDialect",
@@ -614,7 +614,7 @@ def VectorPlanIsolateKernelOutputs : Pass<"vector-plan-isolate-kernel-outputs", 
   ];
 }
 
-def VectorPlanRestoreMatmul : Pass<"vector-plan-restore-matmul", "mlir::func::FuncOp"> {
+def AutoFuseRestoreMatmul : Pass<"auto-fuse-restore-matmul", "mlir::func::FuncOp"> {
   let summary = "Specialize generic-form matmul ops back to linalg.matmul";
   let description = [{
     CV-fusion Phase 5 of [[af-cv-fusion-port]].  Upstream
@@ -629,16 +629,16 @@ def VectorPlanRestoreMatmul : Pass<"vector-plan-restore-matmul", "mlir::func::Fu
       - All other generics untouched (transpose, broadcast, fill, reduce,
         ... — none get specialized).  Vector-side gates unaffected.
   }];
-  let constructor = "mlir::afir::createVectorPlanRestoreMatmulPass()";
+  let constructor = "mlir::afir::createAutoFuseRestoreMatmulPass()";
   let dependentDialects = [
     "mlir::linalg::LinalgDialect",
   ];
 }
 
-def VectorPlanFoldShadowAlloc : Pass<"vector-plan-fold-shadow-alloc", "mlir::func::FuncOp"> {
+def AutoFuseFoldShadowAlloc : Pass<"auto-fuse-fold-shadow-alloc", "mlir::func::FuncOp"> {
   let summary = "Fold bufferize-inserted dynamic-size shadow allocs back to in-place writes";
   let description = [{
-    Runs after one-shot-bufferize and before vector-plan-insert-tile-buffers.
+    Runs after one-shot-bufferize and before auto-fuse-insert-tile-buffers.
 
     One-shot-bufferize wraps linalg.generic ops with a dynamic-size DPS init
     in a "shadow sandwich" of `memref.alloc + memref.copy(src->alloc) +
@@ -648,14 +648,14 @@ def VectorPlanFoldShadowAlloc : Pass<"vector-plan-fold-shadow-alloc", "mlir::fun
     back to `linalg.generic(outs=dst)` lets the rest of the pipeline (which
     cannot handle GM-space memref.alloc) succeed.
   }];
-  let constructor = "mlir::afir::createVectorPlanFoldShadowAllocPass()";
+  let constructor = "mlir::afir::createAutoFuseFoldShadowAllocPass()";
   let dependentDialects = [
     "mlir::linalg::LinalgDialect",
     "mlir::memref::MemRefDialect",
   ];
 }
 
-def VectorPlanInsertTileBuffers : Pass<"vector-plan-insert-tile-buffers", "mlir::func::FuncOp"> {
+def AutoFuseInsertTileBuffers : Pass<"auto-fuse-insert-tile-buffers", "mlir::func::FuncOp"> {
   let summary = "Promote inner-tile linalg.generic operands from GM to on-chip VECIN/VECOUT";
   let description = [{
     Runs after one-shot-bufferize and before ascendc-buffer-placement.
@@ -670,7 +670,7 @@ def VectorPlanInsertTileBuffers : Pass<"vector-plan-insert-tile-buffers", "mlir:
     After promotion, remaining GM->GM memref.copy ops (bufferization artifacts
     from one-shot-bufferize's yield-copy lowering) are erased.
   }];
-  let constructor = "mlir::afir::createVectorPlanInsertTileBuffersPass()";
+  let constructor = "mlir::afir::createAutoFuseInsertTileBuffersPass()";
   let dependentDialects = [
     "mlir::linalg::LinalgDialect",
     "mlir::memref::MemRefDialect",
@@ -685,7 +685,7 @@ def VectorPlanInsertTileBuffers : Pass<"vector-plan-insert-tile-buffers", "mlir:
 def AclnnFinalizeDecl : Pass<"aclnn-finalize-decl", "mlir::ModuleOp"> {
   let summary = "Finalize aclnn func.func private declarations: replace aclnn.kind with aclnn.op + aclnn.layout";
   let description = [{
-    Runs after vector-plan-group-outline. Scans func.func private declarations
+    Runs after auto-fuse-group-outline. Scans func.func private declarations
     that carry {aclnn.kind = "..."} and replaces that marker with the final
     aclnn metadata attributes consumed by AclnnBackend:
 
@@ -708,7 +708,7 @@ def AclnnFinalizeDecl : Pass<"aclnn-finalize-decl", "mlir::ModuleOp"> {
 // BroadcastAbsorb
 //===----------------------------------------------------------------------===//
 
-def VectorPlanBroadcastAbsorb : Pass<"vector-plan-broadcast-absorb", "mlir::func::FuncOp"> {
+def AutoFuseBroadcastAbsorb : Pass<"auto-fuse-broadcast-absorb", "mlir::func::FuncOp"> {
   let summary = "Absorb linalg.broadcast into downstream linalg.generic indexing maps";
   let description = [{
     For each linalg.broadcast whose result is consumed by exactly one
@@ -716,7 +716,7 @@ def VectorPlanBroadcastAbsorb : Pass<"vector-plan-broadcast-absorb", "mlir::func
     original input and drops the broadcast dimensions from the operand's
     indexing map. Broadcasts with other consumers are left unchanged.
   }];
-  let constructor = "mlir::afir::createVectorPlanBroadcastAbsorbPass()";
+  let constructor = "mlir::afir::createAutoFuseBroadcastAbsorbPass()";
   let dependentDialects = ["mlir::linalg::LinalgDialect"];
 }
 

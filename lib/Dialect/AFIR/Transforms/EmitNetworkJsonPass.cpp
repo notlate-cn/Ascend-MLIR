@@ -2,12 +2,12 @@
 //
 // Standalone `--emit-network-json=path=...` pass. Used when the user provides
 // a hand-written network.mlir (mixed kernel_groupN + __aclnn_xxx calls)
-// instead of running --vector-plan-group-outline. Routes through the shared
+// instead of running --auto-fuse-group-outline. Routes through the shared
 // NetworkJsonEmitter helper.
 //
 //===----------------------------------------------------------------------===//
 #include "Dialect/AFIR/Transforms/Passes.h"
-#include "Conversion/VectorPlan/GroupOutline/NetworkJsonEmitter.h"
+#include "Conversion/AutoFuse/GroupOutline/NetworkJsonEmitter.h"
 
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/IR/BuiltinOps.h"
@@ -53,7 +53,7 @@ struct EmitNetworkJsonPass
       return signalPassFailure();
     }
     if (auto err =
-            mlir::vector_plan::emitNetworkJson(getOperation(), coord, os)) {
+            mlir::auto_fuse::emitNetworkJson(getOperation(), coord, os)) {
       getOperation()->emitError("emit-network-json: ")
           << llvm::toString(std::move(err));
       return signalPassFailure();

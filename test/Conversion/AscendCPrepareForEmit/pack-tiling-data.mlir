@@ -17,11 +17,11 @@ module {
 
 // -----
 
-// v2 schema path: PackTilingData should consume vector_plan.tiling_infos
+// v2 schema path: PackTilingData should consume auto_fuse.tiling_infos
 // directly and emit field names verbatim.
 // CHECK-LABEL: func.func @v2_transpose
 // CHECK: emitasc.py_struct<"TilingData", [i64, i64], ["XBLOCK", "dim_arg2_1"]>
-module attributes {vector_plan.tiling_infos = [{
+module attributes {auto_fuse.tiling_infos = [{
     kernel_id = "v2_transpose",
     schema_version = 2 : i32,
     fields = [

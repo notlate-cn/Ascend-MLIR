@@ -1,5 +1,5 @@
 #!/bin/bash
-# Combo (elementwise + reduce) end-to-end via --vector-plan-codegen.
+# Combo (elementwise + reduce) end-to-end via --auto-fuse-codegen.
 # Computation: out[d0,d1] = sum_{d2}( a[d0,d1,d2] + b[d0,d1,d2] )
 set -e
 DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -20,7 +20,7 @@ echo "========================================================"
 "$PYTHON" "$DIR/gen_inputs.py" --outdir "$DIR" --d0 "$D0" --d1 "$D1" --d2 "$D2"
 
 echo "[STAGE 1] MLIR codegen"
-"$AFIR_OPT" "$DIR/combo_elewise_reduce.mlir" --vector-plan-codegen \
+"$AFIR_OPT" "$DIR/combo_elewise_reduce.mlir" --auto-fuse-codegen \
   -o "$DIR/combo_kernel.mlir" 2>&1
 "$AFIR_TRANSLATE" -mlir-to-cann "$DIR/combo_kernel.mlir" \
   -o "$DIR/combo_kernel.cpp" \

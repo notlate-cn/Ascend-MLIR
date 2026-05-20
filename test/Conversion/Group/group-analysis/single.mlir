@@ -1,4 +1,4 @@
-// RUN: afir-opt --vector-plan-group-analysis %s | FileCheck %s
+// RUN: afir-opt --auto-fuse-group-analysis %s | FileCheck %s
 
 // Single linalg op: assigned group_id=0 and topo_index=0.
 
@@ -13,5 +13,5 @@ func.func @single(%x: tensor<8xf16>, %init: tensor<8xf16>) -> tensor<8xf16> {
   return %out : tensor<8xf16>
 }
 
-// CHECK: vector_plan.group_id = 0
-// CHECK: vector_plan.topo_index = 0
+// CHECK: auto_fuse.group_id = 0
+// CHECK: auto_fuse.topo_index = 0

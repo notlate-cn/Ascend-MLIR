@@ -1,4 +1,4 @@
-// RUN: afir-opt %s --vector-plan-tile-fuse 2>&1 | FileCheck %s
+// RUN: afir-opt %s --auto-fuse-tile-fuse 2>&1 | FileCheck %s
 //
 // P6c gate: FullLoad is enumerated for reduce funcs but always ∞-scored
 // (oversized OR codegen-missing), so the picked plan is the Common path
@@ -13,7 +13,7 @@
 //
 // Companion of tile-fuse-tiling-infos.mlir which covers the pointwise case.
 
-// CHECK: vector_plan.tiling_infos
+// CHECK: auto_fuse.tiling_infos
 // constraints: XBLOCK_SUB|XBLOCK divides + tail-offset 32B-align Divides
 // (innermost-Inner is RBLOCK_0 here since R is ub-split) + LeBytes UB.
 // CHECK-SAME: constraints = [{kind = "divides", lhs = "XBLOCK_SUB", rhs = "XBLOCK"}, {kind = "divides", lhs = "32", rhs = "((524288 - RBLOCK_0) * 4)"}, {kind = "le_bytes",

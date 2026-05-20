@@ -14,7 +14,7 @@ XBLOCK=128; XBLOCK_SUB=128
 BLOCK_DIM=$(( (BC + XBLOCK - 1) / XBLOCK ))
 echo "=== bcast-leading E2E (out[a,b,c] = x[a,b,c] + y[b,c]) ==="
 "$PYTHON" "$DIR/gen_inputs.py" --outdir "$DIR" --a "$A" --b "$B" --c "$C"
-"$AFIR_OPT" "$DIR/bcast_leading.mlir" --vector-plan-codegen -o "$DIR/bcast_leading_kernel.mlir"
+"$AFIR_OPT" "$DIR/bcast_leading.mlir" --auto-fuse-codegen -o "$DIR/bcast_leading_kernel.mlir"
 "$AFIR_TRANSLATE" -mlir-to-cann "$DIR/bcast_leading_kernel.mlir" -o "$DIR/bcast_leading_kernel.cpp" --tiling-space-out "$DIR/tiling_space.json"
 "$PYTHON" - <<PYEOF
 import json, pathlib

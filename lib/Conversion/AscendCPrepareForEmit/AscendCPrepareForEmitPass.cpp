@@ -220,14 +220,14 @@ static LogicalResult prepareFunc(func::FuncOp func) {
   }
 
   // ── 2. Collect tiling args ────────────────────────────────────────────────
-  // Phase B: read from vector_plan.tiling_infos if present.
+  // Phase B: read from auto_fuse.tiling_infos if present.
   // Phase A fallback: scan i64 block args with positional default names.
   SmallVector<BlockArgument> tilingArgs;
   SmallVector<std::string>   tilingArgNames;
 
   if (auto moduleOp = func->getParentOfType<ModuleOp>()) {
     if (auto tilingInfosAttr =
-            moduleOp->getAttrOfType<ArrayAttr>("vector_plan.tiling_infos")) {
+            moduleOp->getAttrOfType<ArrayAttr>("auto_fuse.tiling_infos")) {
       for (Attribute infoAttr : tilingInfosAttr) {
         auto info = dyn_cast<DictionaryAttr>(infoAttr);
         if (!info) continue;
@@ -245,7 +245,7 @@ static LogicalResult prepareFunc(func::FuncOp func) {
           if (!argIdxAttr || !nameAttr) continue;
           unsigned argIdx = (unsigned)argIdxAttr.getValue().getSExtValue();
           if (argIdx >= entry.getNumArguments()) {
-            func.emitError("vector_plan.tiling_infos arg_index ")
+            func.emitError("auto_fuse.tiling_infos arg_index ")
                 << argIdx << " out of range for func " << func.getName();
             return failure();
           }
@@ -727,7 +727,7 @@ static LogicalResult prepareFunc(func::FuncOp func) {
       entry.eraseArgument(idx);
     // entry.eraseArgument does not update FuncOp::arg_attrs; clear it so the
     // attribute count matches the new block arg count after step 9 rebuilds the
-    // function type. (TilePlanGen may have set vector_plan.default_tile_size on
+    // function type. (TilePlanGen may have set auto_fuse.default_tile_size on
     // the now-erased tiling args.)
     if (func->getAttr("arg_attrs"))
       func->removeAttr("arg_attrs");

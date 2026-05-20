@@ -1,4 +1,4 @@
-// RUN: afir-opt %s --vector-plan-tile-fuse --canonicalize 2>&1 | FileCheck %s
+// RUN: afir-opt %s --auto-fuse-tile-fuse --canonicalize 2>&1 | FileCheck %s
 //
 // CV-fusion Phase 4a+4b of [[af-cv-fusion-port]]: level-1 + level-2 cube
 // tile, ascendc annotations, post-canonicalize DCE.

@@ -1,4 +1,4 @@
-// RUN: afir-opt --vector-plan-tile-fuse %s | FileCheck %s
+// RUN: afir-opt --auto-fuse-tile-fuse %s | FileCheck %s
 //
 // 3 parallel axes. Input %x has map (d0,d1,d2)->(d0,d1): d2 absent, d0+d1 present
 // → d2 is BCast (partial). d2 is at tail of candidate {d0,d1,d2}.

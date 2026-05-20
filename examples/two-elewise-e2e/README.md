@@ -11,7 +11,7 @@ single `func.func @model`:
   - `out1 = c * d`
 
 Because the two ops share no inputs and no SSA dependencies, the
-`--vector-plan-group-analysis` + `--vector-plan-group-outline` passes split
+`--auto-fuse-group-analysis` + `--auto-fuse-group-outline` passes split
 the function into two AscendC kernels (`kernel_group0`, `kernel_group1`).
 This complements `examples/mixed-attn-e2e/`, which feeds a hand-written
 `network.mlir` directly.

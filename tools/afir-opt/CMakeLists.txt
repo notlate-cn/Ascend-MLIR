@@ -40,7 +40,7 @@ target_link_libraries(afir-opt
     CanonicalizeCannSignatureConversion
     FuseGatherElementwiseConversion
     MarkStructuredOpsConversion
-    MLIRVectorPlan
+    MLIRAutoFuse
     LowerNonLinalgOpsConversion
     MLIREmitAsc
     AFIRUtils

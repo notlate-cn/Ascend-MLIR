@@ -2,7 +2,7 @@
 
 #include "Analysis/SymbolicShape/DimSymbolTable.h"
 #include "Analysis/SymbolicShape/SymExpr.h"
-#include "Conversion/VectorPlan/TilePlan.h"
+#include "Conversion/AutoFuse/TilePlan.h"
 #include "ascir/Dialect/Asc/IR/Asc.h"
 #include "ascir/Dialect/EmitAsc/IR/EmitAsc.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
@@ -39,8 +39,8 @@ static emitasc::PyStructType buildTilingDataType(MLIRContext *ctx,
 
 static LogicalResult
 packTilingDataFromSchema(func::FuncOp func,
-                          const mlir::vector_plan::TilingInfoSchema &schema) {
-  using namespace mlir::vector_plan;
+                          const mlir::auto_fuse::TilingInfoSchema &schema) {
+  using namespace mlir::auto_fuse;
   MLIRContext *ctx = func.getContext();
   Block &entry = func.getBody().front();
   Type i64Ty = IntegerType::get(ctx, 64);
@@ -129,13 +129,13 @@ packTilingDataFromSchema(func::FuncOp func,
     // (output memref arg is created post-bufferize, after
     // afir-symbolize-shapes ran).
     for (auto &a : schema.args) {
-      if (a.role != mlir::vector_plan::SchemaArgRole::Output) continue;
+      if (a.role != mlir::auto_fuse::SchemaArgRole::Output) continue;
       if ((unsigned)a.mlirIndex != argN) continue;
       if (dimIdx < 0 || (size_t)dimIdx >= a.shapeExpr.size()) break;
       auto parsed = parseArgDimExpr(a.shapeExpr[dimIdx]);
       if (!parsed) break;
       for (auto &ia : schema.args) {
-        if (ia.role != mlir::vector_plan::SchemaArgRole::Input) continue;
+        if (ia.role != mlir::auto_fuse::SchemaArgRole::Input) continue;
         if (ia.callArgIndex != parsed->first) continue;
         return {(unsigned)ia.mlirIndex, (int64_t)parsed->second};
       }
@@ -193,10 +193,10 @@ static LogicalResult packTilingData(func::FuncOp func) {
   if (!moduleOp)
     return func.emitError("PackTilingData: func not inside a module");
   auto schema =
-      mlir::vector_plan::lookupTilingInfoSchema(moduleOp, func.getName());
+      mlir::auto_fuse::lookupTilingInfoSchema(moduleOp, func.getName());
   if (!schema)
     return func.emitError("PackTilingData: missing schema_version=2 "
-                          "vector_plan.tiling_infos entry for kernel ")
+                          "auto_fuse.tiling_infos entry for kernel ")
            << func.getName();
   return packTilingDataFromSchema(func, *schema);
 }

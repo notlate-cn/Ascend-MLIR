@@ -1,5 +1,5 @@
 // RUN: rm -rf %t && mkdir -p %t
-// RUN: afir-opt --vector-plan-group-analysis '--vector-plan-group-outline=output-dir=%t' %s
+// RUN: afir-opt --auto-fuse-group-analysis '--auto-fuse-group-outline=output-dir=%t' %s
 // RUN: FileCheck %s --check-prefix=NET    < %t/network.mlir
 // RUN: FileCheck %s --check-prefix=KERNEL < %t/kernel_group0.mlir
 
@@ -46,9 +46,9 @@ func.func @fanout(%x: tensor<8xf16>,
 // NET: func.func @fanout(
 // NET:   call @kernel_group0
 // NET-NOT: linalg.generic
-// NET-NOT: vector_plan.
+// NET-NOT: auto_fuse.
 
 // kernel_group0.mlir: all three linalg ops inside the kernel.
 // KERNEL: func.func private @kernel_group0(
 // KERNEL-COUNT-3: linalg.generic
-// KERNEL-NOT: vector_plan.
+// KERNEL-NOT: auto_fuse.

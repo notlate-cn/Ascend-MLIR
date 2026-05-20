@@ -11,12 +11,12 @@
 // eliminate score — is follow-up work; this test pins the axis model.)
 
 // RUN: afir-opt %s --linalg-generalize-named-ops --linalg-fuse-elementwise-ops \
-// RUN:            --canonicalize --vector-plan-tile-fuse | FileCheck %s
+// RUN:            --canonicalize --auto-fuse-tile-fuse | FileCheck %s
 
 // The transpose op survives (yield-only generic, permuted operand map).
 // CHECK-DAG: #[[XMAP:.*]] = affine_map<(d0, d1) -> (d1, d0)>
 // CHECK-DAG: #[[ID:.*]] = affine_map<(d0, d1) -> (d0, d1)>
-// CHECK: vector_plan.tiling_infos
+// CHECK: auto_fuse.tiling_infos
 // d0 (input-side divergent) → X: its own inner tunable, not the block axis.
 // CHECK-SAME: name = "XBLOCK_X_0"
 // d1 → Y: the block axis.

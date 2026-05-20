@@ -1,7 +1,7 @@
 #!/bin/bash
 # ============================================================
 # 2D reduce-sum with a too-large reduction axis — 端到端编译流水线 Demo
-#   使用 --vector-plan-codegen（自动启用 RBLOCK reduction-split）
+#   使用 --auto-fuse-codegen（自动启用 RBLOCK reduction-split）
 #
 # 用法：
 #   source examples/env.sh
@@ -44,14 +44,14 @@ done
 log() { $VERBOSE && echo "$@" || true; }
 
 echo "========================================================"
-echo " reduce-big-r E2E: vector-plan-codegen → runtime-session → sim"
+echo " reduce-big-r E2E: auto-fuse-codegen → runtime-session → sim"
 echo "========================================================"
 
 "$PYTHON" "$DIR/gen_inputs.py" --outdir "$DIR" --a "$A" --r "$R"
 
 echo ""
 echo "==================== [STAGE 1] MLIR → AscendC C++ ===================="
-"$AFIR_OPT" "$DIR/reduce_big_r.mlir" --vector-plan-codegen \
+"$AFIR_OPT" "$DIR/reduce_big_r.mlir" --auto-fuse-codegen \
   -o "$DIR/reduce_big_r_kernel.mlir" 2>&1
 log "  ✓ MLIR codegen OK → reduce_big_r_kernel.mlir"
 
@@ -139,7 +139,7 @@ grep -q '^session.validation=pass$' "$VALIDATION_LOG"
 echo ""
 echo "========================================================"
 echo " Done. 生成文件："
-echo "   reduce_big_r_kernel.mlir   → vector-plan-codegen 后 MLIR"
+echo "   reduce_big_r_kernel.mlir   → auto-fuse-codegen 后 MLIR"
 echo "   reduce_big_r_kernel.cpp    → AscendC C++ kernel"
 echo "   tiling_space.json          → 自动生成+patched tiling schema"
 echo "   build_e2e/artifact         → runtime-session 编译产物"

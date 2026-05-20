@@ -1,6 +1,6 @@
 #!/bin/bash
 # ============================================================
-# add+mul+relu 端到端编译流水线 Demo —— 使用 --vector-plan-codegen
+# add+mul+relu 端到端编译流水线 Demo —— 使用 --auto-fuse-codegen
 #
 # 用法：
 #   source examples/env.sh
@@ -33,14 +33,14 @@ done
 log() { $VERBOSE && echo "$@" || true; }
 
 echo "========================================================"
-echo " add+mul+relu E2E: vector-plan-codegen → runtime-session → sim"
+echo " add+mul+relu E2E: auto-fuse-codegen → runtime-session → sim"
 echo "========================================================"
 
 "$PYTHON" "$DIR/gen_inputs.py" --outdir "$DIR"
 
 echo ""
 echo "==================== [STAGE 1] MLIR → AscendC C++ ===================="
-"$AFIR_OPT" "$DIR/add_mul_relu.mlir" --vector-plan-codegen \
+"$AFIR_OPT" "$DIR/add_mul_relu.mlir" --auto-fuse-codegen \
   -o "$DIR/add_mul_relu_kernel.mlir" 2>&1
 log "  ✓ MLIR codegen OK → add_mul_relu_kernel.mlir"
 
@@ -133,7 +133,7 @@ grep -q '^session.validation=pass$' "$VALIDATION_LOG"
 echo ""
 echo "========================================================"
 echo " Done. 生成文件："
-echo "   add_mul_relu_kernel.mlir    → vector-plan-codegen 后 MLIR"
+echo "   add_mul_relu_kernel.mlir    → auto-fuse-codegen 后 MLIR"
 echo "   add_mul_relu_kernel.cpp     → AscendC C++ kernel"
 echo "   tiling_space.json           → 自动生成+patched tiling schema"
 echo "   build_e2e/artifact          → runtime-session 编译产物"

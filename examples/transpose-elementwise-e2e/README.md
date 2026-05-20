@@ -16,7 +16,7 @@ example uses f16 and a square 16×16 inner tile (`XBLOCK_SUB == XBLOCK_SUB_0 ==
 operands.  Wider / non-square / non-16-multiple inner tiles need a different
 lowering (`TransDataTo5HD`, or a "preserve" template) — future work.
 
-`run.sh` runs the full `--vector-plan-codegen` pipeline + the simulator and
+`run.sh` runs the full `--auto-fuse-codegen` pipeline + the simulator and
 asserts `session.validation=pass`.  The codegen path is also regression-tested
 by `test/Conversion/Collapse/tile-fuse-vector-transpose.mlir` (absorption +
 tiled IR shape).

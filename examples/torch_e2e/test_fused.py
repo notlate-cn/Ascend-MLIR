@@ -1,7 +1,7 @@
 """End-to-end fusion case exercising the linalg-level symbolic-shape path.
 
 `(a * b + a) * b` -- three elementwise ops on dynamic-shape inputs (mul, add,
-mul; `a` is reused).  Through the vector-plan-codegen pipeline these fuse into a
+mul; `a` is reused).  Through the auto-fuse-codegen pipeline these fuse into a
 single linalg.generic, whose two parallel axes collapse into one (extent
 `s0*s1`); the AscendC kernel ends up with a de-duped TilingData
 (`[XBLOCK, XBLOCK_SUB, dim_arg0_0, dim_arg0_1]` -- the second input's and the

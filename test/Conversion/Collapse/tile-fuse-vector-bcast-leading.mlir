@@ -1,4 +1,4 @@
-// RUN: afir-opt %s --vector-plan-tile-fuse 2>&1 | FileCheck %s
+// RUN: afir-opt %s --auto-fuse-tile-fuse 2>&1 | FileCheck %s
 //
 // Leading-axis broadcast = a parallel axis: `out[a,b,c] = x[a,b,c] + y[b,c]` — y
 // is constant along the *leading* iteration dim a.  After collapse([1,2]) the
@@ -14,8 +14,8 @@
 
 // Exactly two tunable args (XBLOCK, XBLOCK_SUB) — no BCAST*.
 // CHECK: func.func @bcast_leading__v0(
-// CHECK-SAME: %[[XBLOCK:[^ ,)]*]]: index {vector_plan.default_tile_size = 128 : i64}
-// CHECK-SAME: %[[XBLOCK_SUB:[^ ,)]*]]: index {vector_plan.default_tile_size = 16 : i64})
+// CHECK-SAME: %[[XBLOCK:[^ ,)]*]]: index {auto_fuse.default_tile_size = 128 : i64}
+// CHECK-SAME: %[[XBLOCK_SUB:[^ ,)]*]]: index {auto_fuse.default_tile_size = 16 : i64})
 
 // 3-D operands collapsed to 2-D ([a, bc]); y (rank-2) collapsed to 1-D.
 // CHECK: tensor.collapse_shape %{{.*}} {{\[}}[0], [1, 2]] : tensor<8x4x32xf32> into tensor<8x128xf32>

@@ -1,17 +1,17 @@
 #!/usr/bin/env bash
 # examples/matmul-relu-fused-e2e/run.sh
-# CV-fusion (matmul + relu) end-to-end via vector-plan-codegen.
+# CV-fusion (matmul + relu) end-to-end via auto-fuse-codegen.
 #
 # This is the first CV-fusion gate that does NOT use the transform-interpreter
 # path used by matmul-add-leakyrelu; it consumes raw `linalg.matmul + linalg.generic relu`
-# and lets vector-plan handle group analysis, cube tile plan, and emission.
+# and lets auto-fuse handle group analysis, cube tile plan, and emission.
 #
 # Usage:
 #   source examples/env.sh
 #   bash examples/matmul-relu-fused-e2e/run.sh [--log]
 #
 # STAGE summary (compared to matmul-add-leakyrelu):
-#   our STAGE 1-7: replaced by single `--vector-plan-codegen` invocation
+#   our STAGE 1-7: replaced by single `--auto-fuse-codegen` invocation
 #   our STAGE 8:   afir-translate -mlir-to-cann (unchanged)
 #   STAGE 9/10:    sim run (TODO: mix-compiler integration for no-bias matmul)
 set -euo pipefail
@@ -28,12 +28,12 @@ for arg in "$@"; do [[ $arg == "--log" ]] && VERBOSE=true; done
 log() { $VERBOSE && echo "$@" || true; }
 
 echo "=========================================================="
-echo " matmul + relu CV-fusion via vector-plan-codegen"
+echo " matmul + relu CV-fusion via auto-fuse-codegen"
 echo "=========================================================="
 
-# ── STAGE 1-7: vector-plan codegen (replaces transform+bufferize+place chain)
-echo "=== [STAGE 1-7] vector-plan-codegen ==="
-$AFIR_OPT --vector-plan-codegen \
+# ── STAGE 1-7: auto-fuse codegen (replaces transform+bufferize+place chain)
+echo "=== [STAGE 1-7] auto-fuse-codegen ==="
+$AFIR_OPT --auto-fuse-codegen \
   "$SCRIPT_DIR/step0_input.mlir" \
   -o "$SCRIPT_DIR/step7_cann.mlir"
 log "  step7_cann.mlir done"

@@ -29,7 +29,7 @@ probe() {
   cat > "${mlir}" <<< "$2"
 
   local stage1 stage2 epilogue
-  if ${AFIR_OPT} --vector-plan-codegen "${mlir}" -o "${cann}" 2> "${W}/${name}/opt.log"; then
+  if ${AFIR_OPT} --auto-fuse-codegen "${mlir}" -o "${cann}" 2> "${W}/${name}/opt.log"; then
     stage1=PASS
     # Pull the recorded epilogue kind for context.
     epilogue="$(grep -oE 'abi_matmul_epilogue_kind = "[^"]+"' "${cann}" | head -1 || true)"

@@ -45,10 +45,10 @@ def phase1_outline_or_emit_json(args, work):
         intermediate = work / "model_unit_folded.mlir"
         run([AFIR_OPT, "--linalg-fold-unit-extent-dims",
              args.input_linalg, "-o", str(intermediate)])
-        # Step b: --vector-plan-group-analysis + --vector-plan-group-outline
+        # Step b: --auto-fuse-group-analysis + --auto-fuse-group-outline
         run([AFIR_OPT,
-             "--vector-plan-group-analysis",
-             f"--vector-plan-group-outline=output-dir={groups}",
+             "--auto-fuse-group-analysis",
+             f"--auto-fuse-group-outline=output-dir={groups}",
              str(intermediate),
              "-o", str(work / "_outlined_combined.mlir")])
     else:
@@ -210,7 +210,7 @@ def _variant_kernel_name(work, kid, picked=None):
 
 
 def phase2_codegen_compile(work, groups, network, soc="Ascend910B1"):
-    """For each ascendc kernel: --vector-plan-codegen → -mlir-to-cann → compile.
+    """For each ascendc kernel: --auto-fuse-codegen → -mlir-to-cann → compile.
 
     Requires the simulator LD_LIBRARY_PATH; source `examples/env.sh` first.
     subprocess.run inherits the calling process's environment, so env vars set before
@@ -224,7 +224,7 @@ def phase2_codegen_compile(work, groups, network, soc="Ascend910B1"):
         lowered = work / f"{kid}_lowered.mlir"
         cpp = work / f"{kid}.cpp"
         space = work / f"{kid}_space.json"  # legacy back-compat (P2 also writes per-variant)
-        run([AFIR_OPT, str(src), "--vector-plan-codegen", "-o", str(lowered)])
+        run([AFIR_OPT, str(src), "--auto-fuse-codegen", "-o", str(lowered)])
         run([AFIR_TRANSLATE, "-mlir-to-cann", str(lowered),
              "-o", str(cpp), f"--tiling-space-out={space}",
              f"--soc={soc}"])
@@ -368,7 +368,7 @@ def _shape_key_values_for_kernel(space, network, kid, runner_inputs):
             raise RuntimeError(
                 f"network_runner: kernel {kid!r} has no schema_args in its "
                 f"_space.json; cannot resolve shape_key {sk!r}.  Re-run "
-                "vector-plan-codegen to regenerate.")
+                "auto-fuse-codegen to regenerate.")
         out[sk] = val
     return out
 

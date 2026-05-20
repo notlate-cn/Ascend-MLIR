@@ -1,4 +1,4 @@
-// RUN: afir-opt --vector-plan-tile-fuse %s | FileCheck %s
+// RUN: afir-opt --auto-fuse-tile-fuse %s | FileCheck %s
 //
 // LayerNorm-style scale+bias:
 //   input[4,8,16] — full (d0,d1,d2)→(d0,d1,d2)  Case C

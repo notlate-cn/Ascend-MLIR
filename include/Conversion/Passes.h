@@ -18,7 +18,7 @@
 #include "Conversion/CanonicalizeCannSignature/CanonicalizeCannSignaturePass.h"
 #include "Conversion/FuseGatherElementwise/FuseGatherElementwisePass.h"
 #include "Conversion/MarkStructuredOps/MarkStructuredOpsPass.h"
-#include "Conversion/VectorPlan/VectorPlanPasses.h"
+#include "Conversion/AutoFuse/AutoFusePasses.h"
 #include "Conversion/LowerNonLinalgOps/LowerNonLinalgOpsPass.h"
 #include "mlir/Dialect/Bufferization/IR/Bufferization.h"
 #include "mlir/Pass/Pass.h"

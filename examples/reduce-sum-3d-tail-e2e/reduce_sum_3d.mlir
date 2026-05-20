@@ -12,7 +12,7 @@
 // per-tile VECCALC accumulator internally (Duplicate 0), so the runtime-
 // allocated output buffer does not need to be pre-zeroed.  Taking %init as a
 // function arg (rather than a linalg.fill) also avoids forming a 2-op
-// fill+reduce group, which the vector-plan reduction-split path asserts
+// fill+reduce group, which the auto-fuse reduction-split path asserts
 // against.
 
 #map_full   = affine_map<(d0, d1, d2) -> (d0, d1, d2)>

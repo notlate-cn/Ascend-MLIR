@@ -1,6 +1,6 @@
-// RUN: afir-opt %s --vector-plan-tile-fuse 2>&1 | FileCheck %s
+// RUN: afir-opt %s --auto-fuse-tile-fuse 2>&1 | FileCheck %s
 
-// CHECK: vector_plan.tiling_infos
+// CHECK: auto_fuse.tiling_infos
 // CHECK-SAME: block_dim_expr = "ceil(1024/XBLOCK)"
 // P6a: TileConstraint emission — XBLOCK_SUB | XBLOCK divides; tail-offset
 // alignment (32 | (extent - INNER_TILE) * elemBytes, ≈ AF kAligned default);

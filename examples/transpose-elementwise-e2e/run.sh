@@ -38,14 +38,14 @@ done
 log() { $VERBOSE && echo "$@" || true; }
 
 echo "========================================================"
-echo " transpose-elementwise E2E: vector-plan-codegen → runtime-session → sim"
+echo " transpose-elementwise E2E: auto-fuse-codegen → runtime-session → sim"
 echo "========================================================"
 
 "$PYTHON" "$DIR/gen_inputs.py" --outdir "$DIR" --m "$M" --n "$N"
 
 echo ""
 echo "==================== [STAGE 1] MLIR → AscendC C++ ===================="
-"$AFIR_OPT" "$DIR/transpose_relu.mlir" --vector-plan-codegen \
+"$AFIR_OPT" "$DIR/transpose_relu.mlir" --auto-fuse-codegen \
   -o "$DIR/transpose_relu_kernel.mlir" 2>&1
 log "  ✓ MLIR codegen OK → transpose_relu_kernel.mlir"
 

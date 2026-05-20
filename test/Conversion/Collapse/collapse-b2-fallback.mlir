@@ -1,4 +1,4 @@
-// RUN: afir-opt --vector-plan-tile-fuse %s | FileCheck %s
+// RUN: afir-opt --auto-fuse-tile-fuse %s | FileCheck %s
 //
 // One input has G-axes present but non-consecutively ordered → B2 classification.
 // hasAnyB2=true → noCollapse=true → no IR transform.

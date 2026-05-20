@@ -1,5 +1,5 @@
 // RUN: rm -rf %t && mkdir -p %t
-// RUN: afir-opt --vector-plan-group-analysis '--vector-plan-group-outline=output-dir=%t' %s
+// RUN: afir-opt --auto-fuse-group-analysis '--auto-fuse-group-outline=output-dir=%t' %s
 // RUN: FileCheck %s --check-prefix=NET    < %t/network.mlir
 // RUN: FileCheck %s --check-prefix=KERNEL < %t/kernel_group0.mlir
 
@@ -16,14 +16,14 @@ func.func @single(%x: tensor<8xf16>, %init: tensor<8xf16>) -> tensor<8xf16> {
   return %out : tensor<8xf16>
 }
 
-// network.mlir: coordinator calls kernel, no linalg op, no vector_plan attrs.
+// network.mlir: coordinator calls kernel, no linalg op, no auto_fuse attrs.
 // NET: func.func private @kernel_group0
 // NET: func.func @single(
 // NET:   call @kernel_group0
 // NET-NOT: linalg.generic
-// NET-NOT: vector_plan.
+// NET-NOT: auto_fuse.
 
-// kernel_group0.mlir: kernel contains the linalg op, no vector_plan attrs.
+// kernel_group0.mlir: kernel contains the linalg op, no auto_fuse attrs.
 // KERNEL: func.func private @kernel_group0(
 // KERNEL:   linalg.generic
-// KERNEL-NOT: vector_plan.
+// KERNEL-NOT: auto_fuse.

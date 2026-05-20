@@ -1,4 +1,4 @@
-// RUN: afir-opt %s --vector-plan-tile-fuse 2>&1 | FileCheck %s
+// RUN: afir-opt %s --auto-fuse-tile-fuse 2>&1 | FileCheck %s
 //
 // Non-contiguous ("displaced") multi-reduce-axes:
 //   out[a] = sum_{r1, r2}( x[r1, a, r2] )

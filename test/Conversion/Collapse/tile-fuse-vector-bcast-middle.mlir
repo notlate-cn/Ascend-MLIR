@@ -1,4 +1,4 @@
-// RUN: afir-opt %s --vector-plan-tile-fuse 2>&1 | FileCheck %s
+// RUN: afir-opt %s --auto-fuse-tile-fuse 2>&1 | FileCheck %s
 //
 // Middle-axis broadcast = a parallel axis: `out[a,b,c] = x[a,b,c] + y[a,c]` — y
 // is constant along the *middle* iteration dim b.  `a` and `c` can't collapse
@@ -14,8 +14,8 @@
 
 // Exactly two tunable args (XBLOCK, XBLOCK_SUB) — no BCAST*.
 // CHECK: func.func @bcast_middle__v0(
-// CHECK-SAME: %[[XBLOCK:[^ ,)]*]]: index {vector_plan.default_tile_size = 128 : i64}
-// CHECK-SAME: %[[XBLOCK_SUB:[^ ,)]*]]: index {vector_plan.default_tile_size = 16 : i64})
+// CHECK-SAME: %[[XBLOCK:[^ ,)]*]]: index {auto_fuse.default_tile_size = 128 : i64}
+// CHECK-SAME: %[[XBLOCK_SUB:[^ ,)]*]]: index {auto_fuse.default_tile_size = 16 : i64})
 
 // Block axis is `a` (extent 8) — no collapse_shape (b separates a from c).
 // CHECK-NOT: tensor.collapse_shape

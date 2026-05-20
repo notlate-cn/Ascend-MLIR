@@ -13,7 +13,7 @@ XBLOCK=${A}; XBLOCK_SUB=${A}
 BLOCK_DIM=$(( (A + XBLOCK - 1) / XBLOCK ))
 echo "=== bcast-middle E2E (out[a,b,c] = x[a,b,c] + y[a,c]) ==="
 "$PYTHON" "$DIR/gen_inputs.py" --outdir "$DIR" --a "$A" --b "$B" --c "$C"
-"$AFIR_OPT" "$DIR/bcast_middle.mlir" --vector-plan-codegen -o "$DIR/bcast_middle_kernel.mlir"
+"$AFIR_OPT" "$DIR/bcast_middle.mlir" --auto-fuse-codegen -o "$DIR/bcast_middle_kernel.mlir"
 "$AFIR_TRANSLATE" -mlir-to-cann "$DIR/bcast_middle_kernel.mlir" -o "$DIR/bcast_middle_kernel.cpp" --tiling-space-out "$DIR/tiling_space.json"
 "$PYTHON" - <<PYEOF
 import json, pathlib

@@ -1,10 +1,10 @@
-// RUN: afir-opt %s --vector-plan-group-analysis --vector-plan-group-outline | FileCheck %s
+// RUN: afir-opt %s --auto-fuse-group-analysis --auto-fuse-group-outline | FileCheck %s
 //
 // CV-fusion Phase 3 of [[af-cv-fusion-port]].  Phase 1's canFuseCubeEpilogue
 // merges `linalg.matmul + linalg.generic relu` into one Cube group; existing
 // GroupOutline naturally outlines them into one kernel func (no Phase-3 code
 // change for the body itself).  Phase 3 adds:
-//   - `vector_plan.kind = "Cube"` attr on the outlined kernel func (Cube vs
+//   - `auto_fuse.kind = "Cube"` attr on the outlined kernel func (Cube vs
 //     Vector dispatch hint for downstream passes).
 //   - Lit pin so the cube outline shape is locked.
 
@@ -32,7 +32,7 @@ func.func @mm_relu(%a: tensor<32x16xf16>,
 
 // One outlined kernel func — both linalg ops inside, stamped Cube kind.
 // CHECK-LABEL: func.func private @kernel_group0
-// CHECK-SAME: attributes {vector_plan.kind = "Cube"}
+// CHECK-SAME: attributes {auto_fuse.kind = "Cube"}
 // CHECK: linalg.matmul
 // CHECK: linalg.generic
 // CHECK: return

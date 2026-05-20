@@ -1,4 +1,4 @@
-// RUN: afir-opt %s --vector-plan-tile-fuse 2>&1 | FileCheck %s
+// RUN: afir-opt %s --auto-fuse-tile-fuse 2>&1 | FileCheck %s
 //
 // Broadcast = a parallel axis: `out[d0,d1,d2] = a[d0,d1,d2] * b[d0,d1]` — b is
 // constant along d2.  After collapse([0,1],[2]) the iteration space is
@@ -13,8 +13,8 @@
 
 // Exactly two tunable args (XBLOCK, XBLOCK_SUB) — no BCAST*.
 // CHECK: func.func @bcast_op__v0(
-// CHECK-SAME: %[[XBLOCK:[^ ,)]*]]: index {vector_plan.default_tile_size = 128 : i64}
-// CHECK-SAME: %[[XBLOCK_SUB:[^ ,)]*]]: index {vector_plan.default_tile_size = 16 : i64})
+// CHECK-SAME: %[[XBLOCK:[^ ,)]*]]: index {auto_fuse.default_tile_size = 128 : i64}
+// CHECK-SAME: %[[XBLOCK_SUB:[^ ,)]*]]: index {auto_fuse.default_tile_size = 16 : i64})
 
 // 3-D operands collapsed to 2-D ([d0', d2]).
 // CHECK: tensor.collapse_shape %{{.*}} {{\[}}[0, 1], [2]] : tensor<1024x512x16xf32> into tensor<524288x16xf32>

@@ -12,7 +12,7 @@ XBLOCK=${D1}; XBLOCK_SUB=${D1}
 BLOCK_DIM=$(( (D1 + XBLOCK - 1) / XBLOCK ))
 echo "=== reduce-multi-axis broadcast E2E ==="
 "$PYTHON" "$DIR/gen_inputs.py" --outdir "$DIR" --d0 "$D0" --d1 "$D1" --d2 "$D2"
-"$AFIR_OPT" "$DIR/bcast_multi_axis.mlir" --vector-plan-codegen -o "$DIR/bcast_multi_axis_kernel.mlir"
+"$AFIR_OPT" "$DIR/bcast_multi_axis.mlir" --auto-fuse-codegen -o "$DIR/bcast_multi_axis_kernel.mlir"
 "$AFIR_TRANSLATE" -mlir-to-cann "$DIR/bcast_multi_axis_kernel.mlir" -o "$DIR/bcast_multi_axis_kernel.cpp" --tiling-space-out "$DIR/tiling_space.json"
 "$PYTHON" - <<PYEOF
 import json, pathlib

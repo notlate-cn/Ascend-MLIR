@@ -1,4 +1,4 @@
-// RUN: afir-opt %s --vector-plan-tile-fuse 2>&1 | FileCheck %s
+// RUN: afir-opt %s --auto-fuse-tile-fuse 2>&1 | FileCheck %s
 //
 // 3-D reduction on the MIDDLE axis: d0(parallel), d1(reduction), d2(parallel).
 // d0 and d2 cannot collapse (reduction axis between them), so >=2 parallel
@@ -9,8 +9,8 @@
 //     slice out[row, :] are both contiguous in row-major layout.
 
 // CHECK: func.func @reduce_mid__v0(
-// CHECK-SAME: %[[XBLOCK:[^ ,)]*]]: index {vector_plan.default_tile_size = 128 : i64}
-// CHECK-NOT: vector_plan.default_tile_size = 16
+// CHECK-SAME: %[[XBLOCK:[^ ,)]*]]: index {auto_fuse.default_tile_size = 128 : i64}
+// CHECK-NOT: auto_fuse.default_tile_size = 16
 
 // Outer block-dispatch loop.
 // CHECK: scf.for %[[OUTER:[^ ]*]] = %{{.*}} to %{{.*}} step %[[XBLOCK]]

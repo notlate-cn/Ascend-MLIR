@@ -21,6 +21,6 @@ add_mlir_public_c_api_library(AFIRCAPI
   CanonicalizeCannSignatureConversion
   FuseGatherElementwiseConversion
   MarkStructuredOpsConversion
-  MLIRVectorPlan
+  MLIRAutoFuse
   LowerNonLinalgOpsConversion
 )

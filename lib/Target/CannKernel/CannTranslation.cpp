@@ -7,7 +7,7 @@
 #include "Target/CannKernel/CannTranslation.h"
 #include "Target/CannKernel/SocSpec.h"
 #include "Target/CannKernel/UbCostExpr.h"
-#include "Conversion/VectorPlan/TilePlan.h"
+#include "Conversion/AutoFuse/TilePlan.h"
 #include "llvm/ADT/SmallString.h"
 #include "llvm/ADT/StringMap.h"
 #include "llvm/ADT/StringSet.h"
@@ -534,7 +534,7 @@ static bool hasSupportedMixFunctionSignature(func::FuncOp funcOp) {
   //   - matmul+bias+epilogue (num_inputs=4, 7 args).  Two arg orderings:
   //       legacy: A(f16,2D), B(f16,2D), bias(f32,1D), init(f32,2D), out, ws, tiling
   //       cube:   A(f16,2D), B(f16,2D), init(f32,2D), bias(f32,1D), out, ws, tiling
-  //     (the vector-plan cube path produces the latter because the init
+  //     (the auto-fuse cube path produces the latter because the init
   //     operand of `linalg.matmul` precedes the bias operand of the trailing
   //     `linalg.generic` in func-arg order after bufferization)
   //   - matmul+epilogue, no-bias (num_inputs=3, 6 args):
@@ -2113,7 +2113,7 @@ static LogicalResult emitTilingSpaceJson(StringRef outPath,
   auto isDimField = [](StringRef name) {
     return name.starts_with("dim_arg");
   };
-  auto schema = mlir::vector_plan::lookupTilingInfoSchema(
+  auto schema = mlir::auto_fuse::lookupTilingInfoSchema(
       funcOp->getParentOfType<ModuleOp>(), funcOp.getName());
 
   // v2 path: translate `dim_arg<N>_<D>` via the schema's args[] table:
@@ -2131,14 +2131,14 @@ static LogicalResult emitTilingSpaceJson(StringRef outPath,
              << funcOp.getName() << "' — cannot derive shape_key for field '"
              << fieldName << "'";
     for (auto &f : schema->fields) {
-      if (f.kind != mlir::vector_plan::SchemaFieldKind::ShapeDerived) continue;
+      if (f.kind != mlir::auto_fuse::SchemaFieldKind::ShapeDerived) continue;
       if (f.name != fieldName) continue;
       for (auto &a : schema->args) {
         if (a.mlirIndex != f.sourceArg) continue;
-        if (a.role == mlir::vector_plan::SchemaArgRole::Input)
+        if (a.role == mlir::auto_fuse::SchemaArgRole::Input)
           return std::string("arg" + std::to_string(a.callArgIndex) +
                              "_dim" + std::to_string(f.sourceDim));
-        if (a.role == mlir::vector_plan::SchemaArgRole::Output &&
+        if (a.role == mlir::auto_fuse::SchemaArgRole::Output &&
             (size_t)f.sourceDim < a.shapeExpr.size())
           return a.shapeExpr[f.sourceDim];
         return funcOp.emitError()
@@ -2158,11 +2158,11 @@ static LogicalResult emitTilingSpaceJson(StringRef outPath,
            << "' not found in schema for kernel '" << funcOp.getName() << "'";
   };
 
-  // From vector_plan.tiling_infos (set by TilePlanGen): tunable field -> the
+  // From auto_fuse.tiling_infos (set by TilePlanGen): tunable field -> the
   // static extent of the axis it tiles (-1 if dynamic) and its default value.
   llvm::DenseMap<StringRef, std::pair<int64_t, int64_t>> tunableInfo; // name -> {axisSize, default}
   if (auto moduleOp = funcOp->getParentOfType<ModuleOp>()) {
-    if (auto infos = moduleOp->getAttrOfType<ArrayAttr>("vector_plan.tiling_infos")) {
+    if (auto infos = moduleOp->getAttrOfType<ArrayAttr>("auto_fuse.tiling_infos")) {
       for (Attribute ia : infos) {
         auto entry = dyn_cast<DictionaryAttr>(ia);
         if (!entry) continue;
@@ -2252,11 +2252,11 @@ static LogicalResult emitTilingSpaceJson(StringRef outPath,
       llvm::json::Object e;
       e["mlir_index"] = static_cast<int64_t>(a.mlirIndex);
       switch (a.role) {
-        case mlir::vector_plan::SchemaArgRole::Input:
+        case mlir::auto_fuse::SchemaArgRole::Input:
           e["role"] = "input";
           e["call_arg_index"] = static_cast<int64_t>(a.callArgIndex);
           break;
-        case mlir::vector_plan::SchemaArgRole::Output: {
+        case mlir::auto_fuse::SchemaArgRole::Output: {
           e["role"] = "output";
           e["result_index"] = static_cast<int64_t>(a.resultIndex);
           llvm::json::Array se;
@@ -2264,14 +2264,14 @@ static LogicalResult emitTilingSpaceJson(StringRef outPath,
           e["shape_expr"] = std::move(se);
           break;
         }
-        case mlir::vector_plan::SchemaArgRole::TileParam:
+        case mlir::auto_fuse::SchemaArgRole::TileParam:
           e["role"] = "tile_param";
           e["name"] = a.tileParamName;
           break;
-        case mlir::vector_plan::SchemaArgRole::Workspace:
+        case mlir::auto_fuse::SchemaArgRole::Workspace:
           e["role"] = "workspace";
           break;
-        case mlir::vector_plan::SchemaArgRole::TilingDataStruct:
+        case mlir::auto_fuse::SchemaArgRole::TilingDataStruct:
           e["role"] = "tiling_data_struct";
           break;
       }

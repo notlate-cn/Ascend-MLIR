@@ -1,12 +1,12 @@
-// RUN: afir-opt %s --vector-plan-tile-fuse 2>&1 | FileCheck %s
+// RUN: afir-opt %s --auto-fuse-tile-fuse 2>&1 | FileCheck %s
 //
 // 2-D reduction: d0(parallel), d1(reduction, no split).
 // No collapse (different roles). Reduction axis d1 has no loop IV → full-dim slice.
 // Expected: XBLOCK + XBLOCK_SUB args. Outer + inner scf.for. extract_slice of %a takes full d1.
 
 // CHECK: func.func @reduce__v0(
-// CHECK-SAME: %[[XBLOCK:[^ ,)]*]]: index {vector_plan.default_tile_size = 128 : i64}
-// CHECK-SAME: %[[XBLOCK_SUB:[^ ,)]*]]: index {vector_plan.default_tile_size = 16 : i64}
+// CHECK-SAME: %[[XBLOCK:[^ ,)]*]]: index {auto_fuse.default_tile_size = 128 : i64}
+// CHECK-SAME: %[[XBLOCK_SUB:[^ ,)]*]]: index {auto_fuse.default_tile_size = 16 : i64}
 // CHECK-SAME: afir.reduce_template = "FullLoad"
 
 // CHECK: scf.for %[[OUTER:[^ ]*]] = %{{.*}} to %{{.*}} step %[[XBLOCK]]

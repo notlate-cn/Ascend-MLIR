@@ -1,5 +1,5 @@
-// RUN: afir-opt %s --vector-plan-tile-fuse 2>&1 | FileCheck %s --check-prefix=TILE
-// RUN: afir-opt %s --vector-plan-codegen 2>&1 | FileCheck %s --check-prefix=ASCENDC
+// RUN: afir-opt %s --auto-fuse-tile-fuse 2>&1 | FileCheck %s --check-prefix=TILE
+// RUN: afir-opt %s --auto-fuse-codegen 2>&1 | FileCheck %s --check-prefix=ASCENDC
 //
 // Leading-axis reduce (RA pattern + FullLoad): out[d1] = sum_{d0} x[d0,d1].
 // Reduce iter (d0) sits BEFORE the parallel iter (d1) in the input's

@@ -1,7 +1,7 @@
 // Mixed network for the v1 end-to-end demo.
 //
 // Pipeline:
-//   q' = q * scale + bias              (kernel_group0: AscendC elementwise via vector-plan-codegen)
+//   q' = q * scale + bias              (kernel_group0: AscendC elementwise via auto-fuse-codegen)
 //   out = softmax(q'·k^T/√d + mask)·v  (aclnn FlashAttentionScore, dispatched host-mode CPU reference)
 //
 // kernel_group1 is intentionally absent — a "second AscendC launch after FA in the

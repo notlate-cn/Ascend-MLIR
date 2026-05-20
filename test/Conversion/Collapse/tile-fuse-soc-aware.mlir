@@ -1,5 +1,5 @@
-// RUN: afir-opt %s --vector-plan-tile-fuse 2>&1 | FileCheck %s --check-prefix=B1
-// RUN: afir-opt %s --vector-plan-tile-fuse=soc=Ascend310B 2>&1 | FileCheck %s --check-prefix=B310B
+// RUN: afir-opt %s --auto-fuse-tile-fuse 2>&1 | FileCheck %s --check-prefix=B1
+// RUN: afir-opt %s --auto-fuse-tile-fuse=soc=Ascend310B 2>&1 | FileCheck %s --check-prefix=B310B
 //
 // P6d: --soc threads into TilePlanGen and the LeBytes constraint's UB
 // capacity rhs comes from SocSpec, not a hardcoded 192 KiB.
