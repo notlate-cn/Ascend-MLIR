@@ -1737,15 +1737,17 @@ LogicalResult convertCompute(func::FuncOp funcOp, AscendCBufferContext &ctx) {
   };
 
   // Helper: obtain a local_tensor slice via tbuf.get_with_offset.
+  // AscendC GetWithOffset(size, bufOffset) takes `size` in elements and
+  // `bufOffset` in bytes.
   // Returns null if no tbuf registered for `memref`.
   auto tbufSlice = [&](OpBuilder &b, Location loc, Value memref,
-                        Value sizeBytes, Value offsetBytes) -> Value {
+                        Value sizeElems, Value offsetBytes) -> Value {
     Value tbuf = ctx.getTBuf(memref);
     if (!tbuf)
       return Value{};
     auto mrt = cast<MemRefType>(memref.getType());
     return b.create<TBufGetWithOffsetOp>(
-        loc, LocalTensorType::get(mrt.getElementType()), tbuf, sizeBytes,
+        loc, LocalTensorType::get(mrt.getElementType()), tbuf, sizeElems,
         offsetBytes);
   };
 
@@ -1757,8 +1759,8 @@ LogicalResult convertCompute(func::FuncOp funcOp, AscendCBufferContext &ctx) {
     auto mrt = cast<MemRefType>(memref.getType());
     if (ctx.getLiveTensor(memref)) {
       if (Value byteOff = subviewByteOffset(b, loc, memref)) {
-        Value sizeBytes = computeByteCount(b, loc, memref);
-        if (Value t = tbufSlice(b, loc, memref, sizeBytes, byteOff))
+        Value sizeElems = computeElementCount(b, loc, memref);
+        if (Value t = tbufSlice(b, loc, memref, sizeElems, byteOff))
           return t;
       }
       return ctx.getLiveTensor(memref);
@@ -1775,8 +1777,8 @@ LogicalResult convertCompute(func::FuncOp funcOp, AscendCBufferContext &ctx) {
   auto writeTensor = [&](OpBuilder &b, Location loc, Value memref) -> Value {
     auto mrt = cast<MemRefType>(memref.getType());
     if (Value byteOff = subviewByteOffset(b, loc, memref)) {
-      Value sizeBytes = computeByteCount(b, loc, memref);
-      if (Value t = tbufSlice(b, loc, memref, sizeBytes, byteOff))
+      Value sizeElems = computeElementCount(b, loc, memref);
+      if (Value t = tbufSlice(b, loc, memref, sizeElems, byteOff))
         return t;
     }
     if (Value q = ctx.getQueue(memref))
@@ -2938,7 +2940,7 @@ LogicalResult convertCompute(func::FuncOp funcOp, AscendCBufferContext &ctx) {
                 b.create<arith::MulIOp>(forLoc, rowIdx, outBytesPerRow);
             Value dstRowLt = b.create<TBufGetWithOffsetOp>(
                 forLoc, LocalTensorType::get(elemType), outTbuf,
-                outBytesPerRow, dstByteOff);
+                dimK, dstByteOff);
             Value gatheredRowLt = dstRowLt;
             b.create<GatherL2Op>(forLoc, gatheredRowLt, processedRowLt,
                                  indicesLt, srcBaseAddr, dimK_i32);
@@ -3539,15 +3541,11 @@ LogicalResult convertCompute(func::FuncOp funcOp, AscendCBufferContext &ctx) {
                                  b.getTypeArrayAttr(types));
   };
 
-  auto matrixByteCount = [&](OpBuilder &b, Location loc, Value mem,
-                             int64_t rowDim, int64_t colDim) -> Value {
-    auto memType = cast<MemRefType>(mem.getType());
+  auto matrixElementCount = [&](OpBuilder &b, Location loc, Value mem,
+                                int64_t rowDim, int64_t colDim) -> Value {
     Value rows = getDim(b, loc, mem, rowDim);
     Value cols = getDim(b, loc, mem, colDim);
-    Value elems = b.create<arith::MulIOp>(loc, rows, cols);
-    unsigned elemBytes = memType.getElementTypeBitWidth() / 8;
-    return b.create<arith::MulIOp>(
-        loc, elems, b.create<arith::ConstantIndexOp>(loc, elemBytes));
+    return b.create<arith::MulIOp>(loc, rows, cols);
   };
 
   auto batchMatrixByteOffset = [&](OpBuilder &b, Location loc, Value mem,
@@ -3614,9 +3612,9 @@ LogicalResult convertCompute(func::FuncOp funcOp, AscendCBufferContext &ctx) {
       OpBuilder::InsertionGuard guard(builder);
       builder.setInsertionPointToStart(forOp.getBody());
       Value batchIndex = forOp.getInductionVar();
-      Value aSize = matrixByteCount(builder, loc, A, 1, 2);
-      Value bSize = matrixByteCount(builder, loc, B, 1, 2);
-      Value cSize = matrixByteCount(builder, loc, C, 1, 2);
+      Value aSize = matrixElementCount(builder, loc, A, 1, 2);
+      Value bSize = matrixElementCount(builder, loc, B, 1, 2);
+      Value cSize = matrixElementCount(builder, loc, C, 1, 2);
       Value aOffset = batchMatrixByteOffset(builder, loc, A, batchIndex, 1, 2);
       Value bOffset = batchMatrixByteOffset(builder, loc, B, batchIndex, 1, 2);
       Value cOffset = batchMatrixByteOffset(builder, loc, C, batchIndex, 1, 2);
@@ -3775,8 +3773,8 @@ LogicalResult convertCompute(func::FuncOp funcOp, AscendCBufferContext &ctx) {
       // than to the start of the alloc_tensor.
       if (isDstSubview) {
         if (Value byteOff = subviewByteOffset(builder, loc, dst)) {
-          Value sizeBytes = computeByteCount(builder, loc, dst);
-          writeTarget = tbufSlice(builder, loc, dst, sizeBytes, byteOff);
+          Value sizeElems = computeElementCount(builder, loc, dst);
+          writeTarget = tbufSlice(builder, loc, dst, sizeElems, byteOff);
         }
       }
       if (!writeTarget)

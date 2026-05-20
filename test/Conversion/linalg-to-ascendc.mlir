@@ -156,8 +156,12 @@ func.func @test_matmul() {
 //===----------------------------------------------------------------------===//
 // CHECK-LABEL: func @test_batch_matmul
 // CHECK-NOT: linalg.batch_matmul
+// CHECK-DAG: %[[BM2048:[A-Za-z0-9_]+]] = arith.constant 2048 : index
+// CHECK-DAG: %[[BM1024:[A-Za-z0-9_]+]] = arith.constant 1024 : index
 // CHECK: scf.for
-// CHECK: ascendc.tbuf.get_with_offset
+// CHECK: ascendc.tbuf.get_with_offset %{{.*}}, %[[BM2048]]
+// CHECK: ascendc.tbuf.get_with_offset %{{.*}}, %[[BM2048]]
+// CHECK: ascendc.tbuf.get_with_offset %{{.*}}, %[[BM1024]]
 // CHECK: ascendc.construct !ascendc.mmad_params
 // CHECK: ascendc.mmad {{.*}} {ascendc.unit = "AiCore.Cube"}
 // CHECK: ascendc.que_bind.enque_tensor
