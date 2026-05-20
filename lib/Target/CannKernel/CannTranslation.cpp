@@ -3753,11 +3753,15 @@ static void fixBrokenOpEmitters(Operation *moduleOp) {
       tmpl += "    AscendC::Broadcast<" + elemTypeStr + ", " +
               std::to_string(rank) + ", " + std::to_string(axis) +
               ">($0, $1, _afir_ds, _afir_ss);\n";
-      tmpl += "  }\n}";
+      tmpl += "  }\n";
+      tmpl += "  AscendC::PipeBarrier<PIPE_ALL>();\n";
+      tmpl += "}";
     } else {
       tmpl += "  AscendC::Broadcast<" + elemTypeStr + ", " +
               std::to_string(rank) + ", " + std::to_string(axis) +
-              ">($0, $1, _afir_ds, _afir_ss);\n}";
+              ">($0, $1, _afir_ds, _afir_ss);\n";
+      tmpl += "  AscendC::PipeBarrier<PIPE_ALL>();\n";
+      tmpl += "}";
     }
 
     SmallVector<Value> args;

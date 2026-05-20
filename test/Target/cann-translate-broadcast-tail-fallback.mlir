@@ -13,6 +13,7 @@
 // CHECK: {{.*}}.SetValue(_afir_row_offset + _afir_c, _afir_v);
 // CHECK: } else {
 // CHECK: AscendC::Broadcast<half, 2, 1>
+// CHECK: AscendC::PipeBarrier<PIPE_ALL>();
 
 module {
   func.func @broadcast_tail_fallback(
@@ -53,6 +54,7 @@ module {
 // CHECK: {{.*}}.SetValue(_afir_row_offset + _afir_c, _afir_v);
 // CHECK: } else {
 // CHECK: AscendC::Broadcast<half, 2, 1>
+// CHECK: AscendC::PipeBarrier<PIPE_ALL>();
 func.func @broadcast_full_tile_gm_fallback(
     %arg0: memref<?xf16>,
     %arg1: memref<?xf16>,
