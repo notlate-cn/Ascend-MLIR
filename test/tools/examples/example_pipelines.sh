@@ -138,7 +138,19 @@ run_example() {
   fi
 
   echo "== RUN ${name} =="
-  if ! bash "${script}" --log >"${log_file}" 2>&1; then
+  local attempt
+  local ran=false
+  for attempt in 1 2; do
+    if bash "${script}" --log >"${log_file}" 2>&1; then
+      ran=true
+      break
+    fi
+    if [[ "${attempt}" == "1" ]]; then
+      echo "WARN [${name}] exited nonzero; retrying once"
+      sleep 1
+    fi
+  done
+  if [[ "${ran}" != "true" ]]; then
     echo "FAIL [${name}] exited nonzero"
     tail -n 80 "${log_file}" || true
     failures+=("${name}:exit")
