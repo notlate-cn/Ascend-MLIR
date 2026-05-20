@@ -734,6 +734,26 @@ static bool isRankedTensor(Value v, int64_t rank) {
   return t && t.getRank() == rank;
 }
 
+// True iff `gen` (a 2-parallel-iter op) has the canonical bias-add operand
+// layout for a 2-D matmul epilogue:
+//   in0 (matmul result): (d0,d1) -> (d0,d1)   [identity]
+//   in1 (bias vector):   (d0,d1) -> (d1)      [per-column / per-N broadcast]
+//   init (output):       (d0,d1) -> (d0,d1)   [identity]
+// Without this check a per-ROW bias `(d0,d1)->(d0)` would be misclassified as
+// a per-column bias-add and folded into mm.SetBias() (which broadcasts along
+// N) — producing silently wrong numerics that still pass shape validation.
+static bool hasCanonicalColumnBiasMaps(linalg::GenericOp gen) {
+  auto maps = gen.getIndexingMapsArray();
+  if (maps.size() != 3)
+    return false;
+  MLIRContext *ctx = gen.getContext();
+  auto d0 = getAffineDimExpr(0, ctx);
+  auto d1 = getAffineDimExpr(1, ctx);
+  auto identity = AffineMap::get(2, 0, {d0, d1}, ctx);
+  auto colBias = AffineMap::get(2, 0, {d1}, ctx);
+  return maps[0] == identity && maps[1] == colBias && maps[2] == identity;
+}
+
 static bool isBiasAddGenericTensor(linalg::GenericOp gen) {
   if (gen.getNumDpsInputs() != 2 || gen.getNumDpsInits() != 1 ||
       !isParallelGenericTensor(gen))
@@ -741,6 +761,8 @@ static bool isBiasAddGenericTensor(linalg::GenericOp gen) {
   if (!isRankedTensor(gen.getDpsInputOperand(0)->get(), 2) ||
       !isRankedTensor(gen.getDpsInputOperand(1)->get(), 1) ||
       !isRankedTensor(gen.getDpsInitOperand(0)->get(), 2))
+    return false;
+  if (!hasCanonicalColumnBiasMaps(gen))
     return false;
   Block &body = gen.getRegion().front();
   if (body.getNumArguments() != 3)
@@ -761,12 +783,28 @@ static bool isBiasAddGenericTensor(linalg::GenericOp gen) {
          yieldOp.getOperand(0) == addOp.getResult();
 }
 
+// True iff a 1-input/1-init parallel generic maps both operands by the 2-D
+// identity `(d0,d1)->(d0,d1)` — i.e. a plain pointwise op, not a transpose
+// or broadcast.  Guards the relu/leakyrelu recognizers against misclassifying
+// e.g. a transpose-relu as a fusible relu epilogue.
+static bool hasIdentityPointwiseMaps(linalg::GenericOp gen) {
+  auto maps = gen.getIndexingMapsArray();
+  if (maps.size() != 2)
+    return false;
+  MLIRContext *ctx = gen.getContext();
+  auto identity = AffineMap::get(
+      2, 0, {getAffineDimExpr(0, ctx), getAffineDimExpr(1, ctx)}, ctx);
+  return maps[0] == identity && maps[1] == identity;
+}
+
 static bool isReluGenericTensor(linalg::GenericOp gen) {
   if (gen.getNumDpsInputs() != 1 || gen.getNumDpsInits() != 1 ||
       !isParallelGenericTensor(gen))
     return false;
   if (!isRankedTensor(gen.getDpsInputOperand(0)->get(), 2) ||
       !isRankedTensor(gen.getDpsInitOperand(0)->get(), 2))
+    return false;
+  if (!hasIdentityPointwiseMaps(gen))
     return false;
   Block &body = gen.getRegion().front();
   if (body.getNumArguments() != 2)
@@ -797,6 +835,8 @@ static bool isLeakyReluGenericTensor(linalg::GenericOp gen) {
     return false;
   if (!isRankedTensor(gen.getDpsInputOperand(0)->get(), 2) ||
       !isRankedTensor(gen.getDpsInitOperand(0)->get(), 2))
+    return false;
+  if (!hasIdentityPointwiseMaps(gen))
     return false;
   Block &body = gen.getRegion().front();
   if (body.getNumArguments() != 2)
@@ -835,6 +875,8 @@ static bool isFusedBiasAddReluGenericTensor(linalg::GenericOp gen) {
       !isRankedTensor(gen.getDpsInputOperand(1)->get(), 1) ||
       !isRankedTensor(gen.getDpsInitOperand(0)->get(), 2))
     return false;
+  if (!hasCanonicalColumnBiasMaps(gen))
+    return false;
   Block &body = gen.getRegion().front();
   if (body.getNumArguments() != 3)
     return false;
@@ -864,16 +906,6 @@ static bool isFusedBiasAddReluGenericTensor(linalg::GenericOp gen) {
          yieldOp.getOperand(0) == maxOp.getResult();
 }
 
-// Same shape but without relu: a single trailing generic with addf only
-// (bias-add fused into a generic but no max op).  Mirrors
-// `isFusedBiasAddReluGenericTensor` minus the maximumf.
-static bool isFusedBiasAddGenericTensor(linalg::GenericOp gen) {
-  // Identical to `isBiasAddGenericTensor` — the "fused" name is for
-  // symmetry with the relu variant.  We could reuse it directly, but
-  // keeping the alias makes the classifyChain switch easier to read.
-  return isBiasAddGenericTensor(gen);
-}
-
 // Find the unique linalg.generic in `func` whose 1st DPS input is `value`
 // and which matches `predicate`.  Returns null on no/multiple matches.
 static linalg::GenericOp
@@ -896,8 +928,9 @@ static std::pair<bool, StringRef>
 classifyCubeEpilogueChain(func::FuncOp func, CubeKind cubeKind) {
   if (cubeKind != CubeKind::MatmulVecFuse)
     return {false, "None"};
-  // Find the matmul-like op.  Funcs go through TilePlanGen one cube group at
-  // a time, so just walk for the first linalg::MatmulOp (or BatchMatmulOp).
+  // Find the matmul op.  Funcs go through TilePlanGen one cube group at a
+  // time, so walk for the first linalg::MatmulOp.  BatchMatmul is not yet
+  // handled by the CV-fusion epilogue path (Phase 2).
   Value cur;
   func.walk([&](linalg::MatmulOp mm) {
     cur = mm.getResult(0);

@@ -223,6 +223,7 @@ LogicalResult emitCubeKernel(func::FuncOp func, const TilePlan &plan) {
         // Re-annotate ascendc.unit on the level-2 tiled ops (the level-1
         // annotations were on now-replaced ops).  Matmul is detected via
         // named-op kind OR generic-form pattern (post linalg-generalize).
+        Operation *level2Matmul = nullptr;
         for (Operation *tiled : tfResult2->tiledAndFusedOps) {
           bool isCube =
               isa<linalg::MatmulOp, linalg::MatmulTransposeAOp,
@@ -230,17 +231,74 @@ LogicalResult emitCubeKernel(func::FuncOp func, const TilePlan &plan) {
           if (!isCube)
             if (auto gen = dyn_cast<linalg::GenericOp>(tiled))
               isCube = isMatmulGeneric(gen);
-          if (isCube)
+          if (isCube) {
             tiled->setAttr("ascendc.unit",
                             rewriter.getStringAttr("AiCore.Cube"));
-          else if (isa<linalg::LinalgOp>(tiled))
+            // Phase 1 CV-fusion groups have exactly one matmul.  If a future
+            // multi-matmul group reaches here, the K-tile below would only
+            // tile the last one and silently mis-emit the rest — flag it.
+            assert(!level2Matmul &&
+                   "CubeEmitter: >1 matmul in one cube group is unsupported");
+            level2Matmul = tiled;
+          } else if (isa<linalg::LinalgOp>(tiled)) {
             tiled->setAttr("ascendc.unit",
                             rewriter.getStringAttr("AiCore.Vector"));
+          }
         }
-        // tfResult is now stale (level-1 tiled ops replaced by level-2);
-        // mark by clearing so any later annotate-by-tfResult is a no-op.
-        // (We've already annotated parallel on the level-1 loops above —
-        // those loops survive untouched as the outer wrapper of level-2.)
+
+        // Phase 4c: level-3 K tile on the now-doubly-tiled matmul itself.
+        // tileUsingSCF (single-op tile, not tile-and-fuse) with [0, 0, K_INNER]
+        // wraps the matmul body in an scf.for over K, with the accumulator
+        // threaded as iter_args.  Tag the K loop with dataflow
+        // `lhs:A1->A2,rhs:B1->B2` / `acc:CO1->VECIN` so AscendCBufferPlacement
+        // inserts the A1→A2 / B1→B2 transitions (needed for matmul → mmad
+        // lowering in LinalgToAscendC).
+        if (level2Matmul && tunables.kInner) {
+          rewriter.setInsertionPoint(level2Matmul);
+          scf::SCFTilingOptions ktilOptions;
+          OpFoldResult zero = b.getIndexAttr(0);
+          ktilOptions.setTileSizes(
+              {zero, zero, OpFoldResult(tunables.kInner)});
+          auto ktilResult = scf::tileUsingSCF(
+              rewriter, cast<TilingInterface>(level2Matmul), ktilOptions);
+          if (succeeded(ktilResult)) {
+            for (auto [orig, repl] : llvm::zip(level2Matmul->getResults(),
+                                                ktilResult->replacements))
+              rewriter.replaceAllUsesWith(orig, repl);
+            // Re-stamp ascendc.unit on the inner-tiled matmul (level-3
+            // emits a new matmul inside the K loop).
+            for (Operation *tiled : ktilResult->tiledOps) {
+              bool isCube =
+                  isa<linalg::MatmulOp, linalg::MatmulTransposeAOp,
+                      linalg::MatmulTransposeBOp, linalg::BatchMatmulOp>(
+                      tiled);
+              if (!isCube)
+                if (auto gen = dyn_cast<linalg::GenericOp>(tiled))
+                  isCube = isMatmulGeneric(gen);
+              if (isCube)
+                tiled->setAttr("ascendc.unit",
+                                rewriter.getStringAttr("AiCore.Cube"));
+            }
+            // Annotate the K loop with the cube-internal dataflow strings.
+            // A degenerate K tile (kInner==0 or evenly dividing such that
+            // tileUsingSCF emits no loop) leaves `loops` empty — the
+            // dataflow annotations would then be silently dropped and
+            // AscendCBufferPlacement won't see the A1→A2/B1→B2 transitions.
+            if (ktilResult->loops.empty())
+              LLVM_DEBUG(llvm::dbgs()
+                         << "[cube-emitter] K-tile produced no scf loop "
+                            "(degenerate kInner?); cube dataflow annotations "
+                            "skipped\n");
+            for (auto loopLike : ktilResult->loops) {
+              loopLike->setAttr(
+                  "ascendc.prologue",
+                  rewriter.getStringAttr("lhs:A1->A2,rhs:B1->B2"));
+              loopLike->setAttr(
+                  "ascendc.epilogue",
+                  rewriter.getStringAttr("acc:CO1->VECIN"));
+            }
+          }
+        }
         return success();
       }
       LLVM_DEBUG(llvm::dbgs()
