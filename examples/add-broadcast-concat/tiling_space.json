@@ -13,8 +13,8 @@
     {
       "name": "TB_N",
       "type": "int64",
-      "values": [192],
-      "note": "UB: 12*TB_M*TB_N=147456B=144KB (~75%); inner loops=ceil(500/192)=3 (non-aligned tail)"
+      "values": [16],
+      "note": "910C real-NPU safe inner-M tile; N=500 stays full-width in each tile. TB_N=192 overcommits UB and fails with rtStreamSynchronize rc=507035."
     },
     {"name": "dim_arg0_0", "type": "int64", "fixed": true, "shape_key": "M"},
     {"name": "dim_arg1_1", "type": "int64", "fixed": true, "shape_key": "N"},

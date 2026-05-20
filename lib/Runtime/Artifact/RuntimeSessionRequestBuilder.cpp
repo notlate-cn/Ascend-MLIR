@@ -82,12 +82,6 @@ parseManifestMixResourceType(llvm::StringRef name, KernelKind kind) {
                                  name.str().c_str());
 }
 
-std::string defaultKernelName(llvm::StringRef kernelSource) {
-  if (!kernelSource.empty())
-    return llvm::sys::path::stem(kernelSource).str();
-  return "kernel";
-}
-
 std::map<std::string, std::string> readManifest(const std::string &path) {
   std::map<std::string, std::string> out;
   auto bufferOr = llvm::MemoryBuffer::getFile(path, false);
@@ -466,52 +460,6 @@ loadArtifactFromRoot(llvm::StringRef artifactRootInput) {
 llvm::Expected<KernelArtifact>
 loadRuntimeSessionArtifactFromRoot(llvm::StringRef artifactRoot) {
   return loadArtifactFromRoot(artifactRoot);
-}
-
-llvm::Expected<KernelArtifact>
-prepareRuntimeSessionArtifact(const RuntimeSessionArtifactRequest &request) {
-  const bool hasArtifactRoot = !request.artifactRoot.empty();
-  const bool hasKernelSource = !request.kernelSource.empty();
-  if (hasArtifactRoot == hasKernelSource) {
-    return llvm::createStringError(
-        llvm::inconvertibleErrorCode(),
-        "provide exactly one of --artifact-root or --kernel");
-  }
-
-  if (hasArtifactRoot)
-    return loadArtifactFromRoot(request.artifactRoot);
-
-  KernelKind kernelKind = KernelKind::Vec;
-  switch (request.kernelKind) {
-  case KernelKind::Vec:
-  case KernelKind::Cube:
-  case KernelKind::Mix:
-    kernelKind = request.kernelKind;
-    break;
-  default:
-    return llvm::createStringError(
-        llvm::inconvertibleErrorCode(),
-        "unsupported kernel kind: %d",
-        static_cast<int>(request.kernelKind));
-  }
-
-  std::string effectiveKernelName = request.kernelName;
-  if (effectiveKernelName.empty())
-    effectiveKernelName = defaultKernelName(request.kernelSource);
-
-  ArtifactCompileRequest compileRequest;
-  compileRequest.kernelSource = request.kernelSource;
-  compileRequest.kernelName = effectiveKernelName;
-  compileRequest.kernelKind = kernelKind;
-  compileRequest.socVersion = request.socVersion;
-  compileRequest.outputDir = request.outputDir;
-  if (request.cannMlirPath)
-    compileRequest.cannMlirPath = request.cannMlirPath;
-  if (request.npyDir)
-    compileRequest.npyDir = request.npyDir;
-
-  ArtifactCompiler compiler;
-  return compiler.compile(compileRequest);
 }
 
 llvm::Expected<TaskGraph>

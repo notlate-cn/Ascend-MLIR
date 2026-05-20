@@ -15,6 +15,7 @@
 #include "Conversion/LinalgToAscendC/LinalgToAscendCPass.h"
 #include "Conversion/LinalgToAscendC/LinalgToAscendCUtils.h"
 
+#include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
@@ -73,6 +74,56 @@ Value computeElementCount(OpBuilder &b, Location loc, Value memrefVal) {
   return count;
 }
 
+static Value getEnclosingLoopStepBound(Value value, Operation *anchor) {
+  auto matchesEnclosingStep = [&](Value candidate) -> bool {
+    for (Operation *parent = anchor; parent; parent = parent->getParentOp()) {
+      auto forOp = dyn_cast<scf::ForOp>(parent);
+      if (forOp && candidate == forOp.getStep())
+        return true;
+    }
+    return false;
+  };
+
+  if (auto minOp = value.getDefiningOp<arith::MinSIOp>()) {
+    if (matchesEnclosingStep(minOp.getLhs()))
+      return minOp.getLhs();
+    if (matchesEnclosingStep(minOp.getRhs()))
+      return minOp.getRhs();
+  }
+  if (auto minOp = value.getDefiningOp<arith::MinUIOp>()) {
+    if (matchesEnclosingStep(minOp.getLhs()))
+      return minOp.getLhs();
+    if (matchesEnclosingStep(minOp.getRhs()))
+      return minOp.getRhs();
+  }
+  if (auto minOp = value.getDefiningOp<affine::AffineMinOp>()) {
+    for (Value operand : minOp.getOperands())
+      if (matchesEnclosingStep(operand))
+        return operand;
+  }
+  return value;
+}
+
+static Value getAllocDynamicSizeBound(OpBuilder &b, Location loc, Value size,
+                                      Operation *anchor) {
+  if (auto dimOp = size.getDefiningOp<memref::DimOp>()) {
+    auto subviewOp = dimOp.getSource().getDefiningOp<memref::SubViewOp>();
+    auto dimIndexOp = dimOp.getIndex().getDefiningOp<arith::ConstantIndexOp>();
+    if (subviewOp && dimIndexOp) {
+      unsigned dim = static_cast<unsigned>(dimIndexOp.value());
+      SmallVector<OpFoldResult> mixedSizes = subviewOp.getMixedSizes();
+      if (dim < mixedSizes.size()) {
+        OpFoldResult subviewSize = mixedSizes[dim];
+        if (auto attr = subviewSize.dyn_cast<Attribute>())
+          return b.create<arith::ConstantIndexOp>(
+              loc, cast<IntegerAttr>(attr).getInt());
+        return getEnclosingLoopStepBound(subviewSize.get<Value>(), anchor);
+      }
+    }
+  }
+  return getEnclosingLoopStepBound(size, anchor);
+}
+
 Value computeByteCount(OpBuilder &b, Location loc, Value memrefVal) {
   auto memrefType = cast<MemRefType>(memrefVal.getType());
   unsigned bytesPerElem = memrefType.getElementTypeBitWidth() / 8;
@@ -89,14 +140,22 @@ Value computeAllocByteCount(OpBuilder &b, Location loc,
   auto memrefType = allocOp.getType();
   ArrayRef<int64_t> shape = memrefType.getShape();
   unsigned bytesPerElem = memrefType.getElementTypeBitWidth() / 8;
+  bool preserveExactTailSize =
+      static_cast<TPosition>(getMemorySpace(memrefType)) == TPosition::VECOUT &&
+      memrefType.getRank() == 1;
   Value count;
   unsigned dynIdx = 0;
   for (int64_t dim : shape) {
     Value dimVal;
-    if (ShapedType::isDynamic(dim))
-      dimVal = allocOp.getDynamicSizes()[dynIdx++];
-    else
+    if (ShapedType::isDynamic(dim)) {
+      Value rawDim = allocOp.getDynamicSizes()[dynIdx++];
+      dimVal = preserveExactTailSize
+                   ? rawDim
+                   : getAllocDynamicSizeBound(b, loc, rawDim,
+                                              allocOp.getOperation());
+    } else {
       dimVal = b.create<arith::ConstantIndexOp>(loc, dim);
+    }
     count = count ? b.create<arith::MulIOp>(loc, count, dimVal) : dimVal;
   }
   if (!count)
@@ -150,6 +209,31 @@ Value AscendCBufferContext::getLiveTensor(Value memref) const {
   if (it != allocToLiveTensor.end())
     return it->second;
   return {};
+}
+
+static void eraseDeadTBufInitializers(func::FuncOp funcOp) {
+  SmallVector<TBufOp> deadTBufs;
+  funcOp.walk([&](TBufOp tbuf) {
+    bool onlyInitUsers = true;
+    for (Operation *user : tbuf->getUsers()) {
+      if (!isa<TPipeInitBufferOp>(user)) {
+        onlyInitUsers = false;
+        break;
+      }
+    }
+    if (onlyInitUsers)
+      deadTBufs.push_back(tbuf);
+  });
+
+  for (TBufOp tbuf : deadTBufs) {
+    SmallVector<Operation *> users(tbuf->getUsers().begin(),
+                                   tbuf->getUsers().end());
+    for (Operation *user : users)
+      if (isa<TPipeInitBufferOp>(user))
+        user->erase();
+    if (tbuf->use_empty())
+      tbuf.erase();
+  }
 }
 
 //===----------------------------------------------------------------------===//
@@ -235,6 +319,7 @@ struct LinalgToAscendCPass
       signalPassFailure();
       return;
     }
+    eraseDeadTBufInitializers(funcOp);
 
     // -----------------------------------------------------------------------
     // Phase 3: Hoist pipe/queue/tbuf/init_buffer to entry block wherever
@@ -243,6 +328,8 @@ struct LinalgToAscendCPass
     // -----------------------------------------------------------------------
     RewritePatternSet hoistPatterns(ctx);
     hoistPatterns.add<
+        ascendc::HoistOpPattern<arith::ConstantOp>,
+        ascendc::HoistOpPattern<arith::MulIOp>,
         ascendc::HoistOpPattern<ascendc::QueueOp>,
         ascendc::HoistOpPattern<ascendc::TBufOp>,
         ascendc::HoistOpPattern<ascendc::TPipeInitBufferOp>,

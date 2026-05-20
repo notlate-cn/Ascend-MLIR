@@ -34,7 +34,8 @@ private:
   llvm::Expected<void *> registerBinary(const std::string &binaryPath,
                                         const std::string &functionName,
                                         uint32_t magic);
-  llvm::Error runWithHandle(void *funcHandle, RunArgs &args);
+  llvm::Error runWithHandle(void *funcHandle, RunArgs &args,
+                            const FileExecutionLaunch *launch = nullptr);
   llvm::Error runBinary(const std::vector<uint8_t> &binaryData,
                         const std::string &functionName, RunArgs &args,
                         uint32_t magic);

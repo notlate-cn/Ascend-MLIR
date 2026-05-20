@@ -16,7 +16,7 @@ from pathlib import Path
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--m",       type=int, default=640)
-    parser.add_argument("--n",       type=int, default=15000)
+    parser.add_argument("--n",       type=int, default=512)
     parser.add_argument("--seed",    type=int, default=42)
     parser.add_argument("--out-dir", type=str, default=".")
     args = parser.parse_args()
@@ -28,8 +28,8 @@ def main():
     a = rng.uniform(-1.0, 1.0, (M,)).astype(np.float32).astype(np.float16)
     b = rng.uniform(-1.0, 1.0, (M, N)).astype(np.float32).astype(np.float16)
 
-    # Expected output: float32 accumulation then cast to half,
-    # consistent with AscendC ReduceSum<half> (internally upcasts to float32).
+    # Expected output: float32 accumulation then cast to half, matching the
+    # generated f16 reduction path, which reduces through f32 intermediates.
     c = (a[:, None].astype(np.float32) + b.astype(np.float32)).sum(axis=1).astype(np.float16)
 
     np.save(out_dir / "input_a.npy",  a)

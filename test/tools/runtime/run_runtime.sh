@@ -319,6 +319,8 @@ grep -q '^session.profile\[0\]=' "${RUNTIME_SESSION_NPU_SUCCESS_STDOUT}"
 
 echo "--- Checking NPU smoke manifest helper assets ---"
 bash test/tools/runtime/test_prepare_npu_smoke_manifests.sh
+bash test/tools/runtime/test_prepare_real_npu_microcases.sh
+bash test/tools/runtime/test_prepare_real_npu_multikernel.sh
 
 # Compile test drivers
 echo "--- Compiling runtime tests ---"

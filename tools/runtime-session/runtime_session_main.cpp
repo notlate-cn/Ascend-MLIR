@@ -27,6 +27,7 @@ static constexpr size_t RuntimeSessionWorkdirLimit = 20;
 
 llvm::cl::OptionCategory RuntimeSessionCategory("runtime-session options");
 
+#ifndef ASCEND_RUNTIME_SESSION_RUN_ONLY
 llvm::cl::opt<std::string> ArtifactRoot(
     "artifact-root",
     llvm::cl::desc("Use an existing artifact root with a real manifest"),
@@ -60,11 +61,13 @@ llvm::cl::opt<std::string> TaskId(
     llvm::cl::desc("Task id to register in the task graph"),
     llvm::cl::init("main"),
     llvm::cl::cat(RuntimeSessionCategory));
+#endif
 llvm::cl::opt<bool> RunSession(
     "run",
     llvm::cl::desc("Execute the prepared task graph runtime session"),
     llvm::cl::init(false),
     llvm::cl::cat(RuntimeSessionCategory));
+#ifndef ASCEND_RUNTIME_SESSION_RUN_ONLY
 llvm::cl::opt<std::string> CannMlir(
     "cann-mlir",
     llvm::cl::desc("Path to step7_cann.mlir for mix artifact compilation"),
@@ -75,6 +78,7 @@ llvm::cl::opt<std::string> NpyDir(
     llvm::cl::desc("Directory containing runtime .npy files for ABI shaping"),
     llvm::cl::init(""),
     llvm::cl::cat(RuntimeSessionCategory));
+#endif
 llvm::cl::opt<std::string> RunManifestPath(
     "run-manifest",
     llvm::cl::desc("JSON manifest describing artifact root, bindings, and execution settings"),
@@ -105,6 +109,7 @@ public:
   }
 };
 
+#ifndef ASCEND_RUNTIME_SESSION_RUN_ONLY
 llvm::Expected<KernelKind> parseKernelKind(llvm::StringRef name) {
   if (name == "vec")
     return KernelKind::Vec;
@@ -123,6 +128,7 @@ void printArtifactSummary(const KernelArtifact &artifact) {
   llvm::outs() << "artifact.manifest=" << artifact.manifestPath << "\n";
   llvm::outs() << "artifact.soc=" << artifact.socVersion << "\n";
 }
+#endif
 
 void printPlan(const SessionPlan &plan) {
   llvm::outs() << "session.plan.tasks=" << plan.orderedTaskIds.size() << "\n";
@@ -244,7 +250,9 @@ int main(int argc, char **argv) {
       "task graph runtime planning and execution CLI for artifacts and session graphs\n");
 
   ExecutionBackendKind backendKind = ExecutionBackendKind::Simulation;
+#ifndef ASCEND_RUNTIME_SESSION_RUN_ONLY
   std::optional<KernelArtifact> artifact;
+#endif
   std::optional<TaskGraph> graph;
   if (!RunManifestPath.empty()) {
     auto manifestGraphOr = prepareRuntimeSessionGraphFromManifest(RunManifestPath);
@@ -256,6 +264,11 @@ int main(int argc, char **argv) {
     backendKind = manifestGraphOr->first;
     graph = std::move(manifestGraphOr->second);
   } else {
+#ifdef ASCEND_RUNTIME_SESSION_RUN_ONLY
+    llvm::errs()
+        << "Error: run-only runtime-session build requires --run-manifest\n";
+    return 4;
+#else
     const bool hasArtifactRoot = !ArtifactRoot.empty();
     const bool hasKernelFile = !KernelFile.empty();
     if (hasArtifactRoot == hasKernelFile) {
@@ -303,6 +316,7 @@ int main(int argc, char **argv) {
     }
     backendKind = preparedRunOr->backendKind;
     graph = std::move(preparedRunOr->graph);
+#endif
   }
 
   auto testingDriverOr = createTestingDriver(backendKind);

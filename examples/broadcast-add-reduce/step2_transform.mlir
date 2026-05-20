@@ -10,9 +10,9 @@
 // Tiling 结构 (仅对 Parallel 轴 d0 进行三级切分):
 //   - TB 层: 核间并行，每核负责 TB_M 行 (标记 ascendc.parallel)
 //   - Tb 层: UB (Unified Buffer) 批次，每批 Tb_M 行 (搬运粒度)
-//   - d1 层: 归约轴完整遍历 N，使用向量化规约
+//   - d1 层: 归约轴按 chunk 遍历 N，逐 chunk 累加 partial sum
 //
-// 函数签名扩展: 追加两个 index 参数 TB_M, Tb_M
+// 函数签名扩展: 追加三个 index 参数 TB_M, Tb_M, Tb_N
 //
 // RUN: afir-opt --transform-interpreter %s | FileCheck %s
 // CHECK: scf.for
@@ -78,15 +78,16 @@ module attributes {transform.with_named_sequence} {
   transform.named_sequence @__transform_main(
       %root : !transform.any_op {transform.readonly}
   ) {
-    // ---- Step 1: 匹配 func.func，追加 2 个 index 参数 ----
-    // 参数: TB_M (核间分块大小), Tb_M (UB 批次大小)
+    // ---- Step 1: 匹配 func.func，追加 3 个 index 参数 ----
+    // 参数: TB_M (核间分块大小), Tb_M (UB 行批次), Tb_N (Reduction chunk)
     %func = transform.structured.match ops{["func.func"]} in %root
         : (!transform.any_op) -> !transform.any_op
 
-    %func_new, %tb_m_param, %tb_inner_m_param =
-        transform.func.add_index_args %func, 2
+    %func_new, %tb_m_param, %tb_inner_m_param, %tb_red_param =
+        transform.func.add_index_args %func, 3
             : (!transform.any_op)
             -> (!transform.any_op,
+                !transform.any_op,
                 !transform.any_op,
                 !transform.any_op)
 
@@ -112,12 +113,12 @@ module attributes {transform.with_named_sequence} {
     transform.annotate %loop_tb "ascendc.parallel"
         = %true_param : !transform.any_op, !transform.any_param
 
-    // ---- Step 4: Tb 层切分 (沿 d0，UB 批次粒度) ----
-    %tiled_tb_inner, %loop_tb_inner =
+    // ---- Step 4: Tb 层切分 (沿 d0 行批次和 d1 reduction chunk) ----
+    %tiled_tb_inner, %loop_tb_inner, %loop_red_inner =
         transform.structured.tile_using_for %tiled_tb
-            tile_sizes [%tb_inner_m_param, 0]
-                : (!transform.any_op, !transform.any_op)
-            -> (!transform.any_op, !transform.any_op)
+            tile_sizes [%tb_inner_m_param, %tb_red_param]
+                : (!transform.any_op, !transform.any_op, !transform.any_op)
+            -> (!transform.any_op, !transform.any_op, !transform.any_op)
     transform.print %loop_tb_inner {name = "-------------------------------- 二次切出循环Tb--------------------------------"}: !transform.any_op
     transform.print %tiled_tb_inner {name = "-------------------------------- 二次切后的子图 --------------------------------"}: !transform.any_op
 

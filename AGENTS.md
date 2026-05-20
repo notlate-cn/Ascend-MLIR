@@ -7,164 +7,125 @@
   - CPU simulation execution with profiling
   - NPU execution path wiring
   - task-graph-based execution and future multi-task scheduling
-- Keep runtime entry points aligned with the runtime-native stack.
-- Keep xvm verification green while continuing runtime-native consolidation.
-- Close the original runtime task by reducing remaining work to:
-  - NPU real-device validation
-  - post-baseline runtime-native enhancement work
+- Keep `runtime-session` as the only general runtime CLI entry point.
+- Keep xvm CPU-simulation verification green while finishing real NPU validation.
+- Treat the original runtime task as architecturally complete except for real-device validation and follow-up fixes exposed by real hardware.
 
-## Progress
+## Current Development Mode
 
-- Runtime architecture has been reorganized into:
+- Edit locally in this workspace, then verify on xvm under `/home/niu/code/Codex-Ascend-MLIR`.
+- xvm is the authoritative development verification environment.
+- For xvm build/test/debug workflow, follow `examples/dev-env.md`.
+- xvm currently uses CANN 9.1:
+  - `/home/niu/Ascend/latest -> /home/niu/Ascend/cann-9.1.0`
+  - Set `ASCEND_HOME_PATH=/home/niu/Ascend/latest` or source `/home/niu/Ascend/latest/set_env.sh` before verification.
+- Do not treat xvm CPU simulation as real NPU completion.
+- For shared x86/aarch64 developer workflows, use `scripts/real-npu-ci/` as
+  the containerized real-NPU host runner. Developer machines trigger jobs; build
+  and real-device execution stay on the aarch64 NPU host.
+- Prebuild the real-NPU runner image once per dependency stack, preferably via
+  `scripts/real-npu-ci/build-aarch64-image.sh --with-llvm` so pinned LLVM/MLIR
+  is automatically built into `/opt/llvm/build`; validation jobs should reuse
+  an existing image tag instead of rebuilding Docker images.
+- Keep `scripts/real-npu-ci/versions.env` as the version pin for automated
+  aarch64 image rebuilds. PyAsc follows the source repo/ref under validation;
+  rebuild the image when PyAsc requires a new LLVM/MLIR stack or extra system
+  packages.
+- The generic aarch64 image may use Ubuntu 22.04 userland even if the real-NPU host
+  OS differs, as long as build and real-device execution remain inside the
+  container and driver/CANN/device nodes are mounted from the host.
+- Before any candidate fix, generated-kernel variant, or new runtime artifact is
+  advanced to 910C real-device validation, run it on xvm with Ascend910B1
+  simulation first and require `session.backend=sim`, `session.result=success`,
+  and `session.validation=pass`.
+- Keep the xvm result for the original demo separate from the xvm result for a
+  candidate fix. An original-demo xvm pass does not authorize taking an
+  unverified candidate fix to the real NPU.
+- Early-return checkpoints and other intentionally incomplete diagnostic kernels
+  may be run on the real NPU only for localization. They are not proof that a
+  fix is ready for board validation.
+- The remote real-NPU host is run-only for this project. It does not have the full LLVM development stack.
+- For real-device NPU debugging and operation, follow `examples/real-npu.md`.
+- For remote NPU validation:
+  1. Generate artifacts, data, expected outputs, and run manifests on xvm.
+  2. Build a run-manifest-only `runtime-session` on xvm with `ASCEND_RUNTIME_SESSION_RUN_ONLY=ON`.
+  3. Package only the runner, runtime artifacts, data, run manifest, and required runtime libraries.
+  4. Run on the remote host after sourcing the remote CANN/driver environment.
+- Use `ASCEND_DEVICE_ID=7` for the shared real-NPU host unless the user explicitly changes the device.
+
+## Current Progress
+
+- Runtime architecture has been reorganized around:
   - `Artifact/`
   - `Execution/`
   - `Profile/`
   - `Mix/`
   - `Support/`
-  - `Legacy/`
-- `runtime-session` is now the single general CLI entry point.
-- `GlobalScheduler` skeleton exists.
-- `ExecutionSession` is now a session facade over global scheduling.
-- first-version `ResourceScheduler` exists.
-- first-version `NpuBackend` multi-task scheduler contract exists.
-- The previous `runtime-session` local request assembly logic has been moved into:
-  - [include/Runtime/Artifact/RuntimeSessionRequestBuilder.h](/Volumes/GM9/code/Codex-Ascend-MLIR/include/Runtime/Artifact/RuntimeSessionRequestBuilder.h)
-  - [lib/Runtime/Artifact/RuntimeSessionRequestBuilder.cpp](/Volumes/GM9/code/Codex-Ascend-MLIR/lib/Runtime/Artifact/RuntimeSessionRequestBuilder.cpp)
-- `runtime_session_main.cpp` now keeps only:
-  - CLI parsing
-  - summary printing
-  - execution orchestration
-- Focused runtime verification currently passes on xvm through:
-  - [test/tools/runtime/run_runtime.sh](/Volumes/GM9/code/Codex-Ascend-MLIR/test/tools/runtime/run_runtime.sh)
-- xvm default runtime verification now uses a shared shell helper:
-  - [test/tools/runtime/runtime_verify_env.sh](/Volumes/GM9/code/Codex-Ascend-MLIR/test/tools/runtime/runtime_verify_env.sh)
-  - shared Ascend/LLVM env setup
-  - shared runtime test library path assembly
-  - shared stale-build detection and configure retry
-  - per-slice build helpers for runtime core, example toolchain, and `mix-compiler`
-- The repeated mix simulation baseline is part of focused verification and currently passes.
-- Simulation success paths now explicitly handle process-exit cleanup:
-  - `runtime-session` releases `ExecutionSession` workdir cleanup responsibility before `_Exit(0)` on successful sim runs
-- CLI regression coverage has been added for:
-  - conflicting `--artifact-root` / `--kernel`
-  - invalid `--kernel-kind` with missing kernel input
-- Profiling/session-summary retention and mix-sim stability fixes are already landed and covered by focused runtime verification.
-- A follow-up spec for `autotuner + legacy` audit is written:
-  - [docs/superpowers/specs/2026-04-13-autotuner-legacy-cleanup-design.md](/Volumes/GM9/code/Codex-Ascend-MLIR/docs/superpowers/specs/2026-04-13-autotuner-legacy-cleanup-design.md)
-- Historical legacy-cleanup audit artifacts now exist:
-  - [2026-04-13-runtime-legacy-dependency-audit.md](/Volumes/GM9/code/Codex-Ascend-MLIR/docs/superpowers/audits/2026-04-13-runtime-legacy-dependency-audit.md)
-  - [2026-04-13-autotuner-runtime-normalization-audit.md](/Volumes/GM9/code/Codex-Ascend-MLIR/docs/superpowers/audits/2026-04-13-autotuner-runtime-normalization-audit.md)
-  - [2026-04-13-runtime-legacy-cleanup-candidates.md](/Volumes/GM9/code/Codex-Ascend-MLIR/docs/superpowers/audits/2026-04-13-runtime-legacy-cleanup-candidates.md)
-- `autotuner --artifact-root` now uses the canonical runtime artifact loader instead of a local manifest parser.
-- `ArtifactCompiler` no longer depends on `Legacy/Compiler` for `vec` / `cube` builds.
-- A runtime-native vec/cube compile path now exists in:
-  - [include/Runtime/Artifact/VecCubeArtifactBackend.h](/Volumes/GM9/code/Codex-Ascend-MLIR/include/Runtime/Artifact/VecCubeArtifactBackend.h)
-  - [lib/Runtime/Artifact/VecCubeArtifactBackend.cpp](/Volumes/GM9/code/Codex-Ascend-MLIR/lib/Runtime/Artifact/VecCubeArtifactBackend.cpp)
-- `ArtifactCompiler` now dispatches:
-  - `mix` -> `MixDirectBackend`
-  - `vec/cube` -> `VecCubeArtifactBackend`
-- A runtime-native execution runner seam now exists:
-  - [include/Runtime/Execution/ExecutionRunner.h](/Volumes/GM9/code/Codex-Ascend-MLIR/include/Runtime/Execution/ExecutionRunner.h)
-  - [include/Runtime/Execution/DefaultExecutionRunner.h](/Volumes/GM9/code/Codex-Ascend-MLIR/include/Runtime/Execution/DefaultExecutionRunner.h)
-  - [lib/Runtime/Execution/DefaultExecutionRunner.cpp](/Volumes/GM9/code/Codex-Ascend-MLIR/lib/Runtime/Execution/DefaultExecutionRunner.cpp)
-- A runtime-native execution substrate now exists in:
-  - [include/Runtime/Execution/NativeExecutionRunner.h](/Volumes/GM9/code/Codex-Ascend-MLIR/include/Runtime/Execution/NativeExecutionRunner.h)
-  - [lib/Runtime/Execution/NativeExecutionRunner.cpp](/Volumes/GM9/code/Codex-Ascend-MLIR/lib/Runtime/Execution/NativeExecutionRunner.cpp)
-- `SimBackend` and `NpuBackend` no longer directly include `Runtime/Executor.h`.
-- `DefaultExecutionRunner` now delegates to `NativeExecutionRunner` instead of constructing `Legacy/Executor`.
-- `Legacy/Executor` and its public shim have been deleted after the runtime-native execution runner cutover.
-- The default runtime execution path is now fully runtime-native through `NativeExecutionRunner`.
-- `Legacy/SimValidator` has been removed after the runtime-native output comparator cutover left it with no remaining in-repo consumers.
-- `Legacy/HostRunnerGen`, its public shim, and its dedicated tests have now been deleted.
-- `Legacy/CompatRuntime` and its public shim have now been deleted; C API request assembly is now direct and runtime-native.
-- `Legacy/Compiler` and its public shim have now been deleted; the final retained legacy mix compile test has been removed.
-- The `include/Runtime/Legacy` and `lib/Runtime/Legacy` directories no longer contain active implementation units.
-- A shared runtime-native frontend core now exists in:
-  - [include/Runtime/Execution/RuntimeFrontendCore.h](/Volumes/GM9/code/Codex-Ascend-MLIR/include/Runtime/Execution/RuntimeFrontendCore.h)
-  - [lib/Runtime/Execution/RuntimeFrontendCore.cpp](/Volumes/GM9/code/Codex-Ascend-MLIR/lib/Runtime/Execution/RuntimeFrontendCore.cpp)
-- `runtime-session` and the C API now both consume shared frontend-core helpers for:
-  - compile request assembly
-  - single-task run preparation
-  - normalized run execution and summary interpretation
-- Execution/profile contract cleanup is now closed:
-  - retained profile handling is normalized through the frontend core
-  - `runtime-session` prints profile artifact paths and retained session summaries from the shared result contract
-  - the C API now executes through the same normalized frontend run path instead of interpreting raw execution outcomes separately
-- Against the original runtime task, the current completion state is:
-  - AscendC kernel compilation: done
-  - CPU simulation execution with profiling: done
-  - NPU execution path wiring: done in code, pending real-device validation
-- Fresh xvm verification after the frontend-core cutover includes:
-  - runtime-only rebuild of `AscendCRuntime`, `AFIRRuntimeCAPI`, and `runtime-session`: pass
-  - `test_taskgraph_runtime`: `478 passed, 0 failed`
-  - `test_capi_runtime`: `15 passed, 0 failed`
-  - `test_runtime`: `79 passed, 0 failed`
-  - `run_simbackend_smoke.sh`: pass
-- The six example pipelines remain the practical CPU-simulation acceptance baseline.
-- The main remaining gap for the original task is not architecture anymore; it is lack of NPU hardware validation.
-- Fresh xvm verification after the vec/cube backend cutover passes:
-  - `test_taskgraph_runtime`: `523 passed, 0 failed`
-  - `test_capi_runtime`: `15 passed, 0 failed`
-  - `test_runtime`: `104 passed, 0 failed`
-  - focused vec/mix smoke: pass
-  - repeated mix simulation baseline: pass
-- Fresh xvm autotuner vec smoke also passes after the compile-path cutover, with non-zero `score` / `cycle_count`.
-- Fresh xvm autotuner vec smoke also passes after the execution-runner adapter cutover, with non-zero `score` / `cycle_count`.
-- Fresh xvm verification after the native execution-runner cutover currently includes:
-  - runtime-only rebuild of `AscendCRuntime`, `runtime-session`, and `autotuner`: pass
-  - autotuner vec smoke: pass, non-zero `score` / `cycle_count`
-  - repeated mix simulation baseline: pass
-- Fresh xvm verification after deleting `Legacy/Executor` includes:
-  - `test_taskgraph_runtime`: `551 passed, 0 failed`
-  - `test_capi_runtime`: `15 passed, 0 failed`
-  - `test_runtime`: `108 passed, 0 failed`
-  - focused vec/mix smoke: pass
-  - repeated mix simulation baseline: pass
-- Fresh xvm runtime-focused verification after deleting `Legacy/Compiler` includes:
-  - `test_taskgraph_runtime`: `453 passed, 0 failed`
-  - `test_capi_runtime`: `15 passed, 0 failed`
-  - `test_runtime`: `86 passed, 0 failed`
-- Fresh xvm verification after execution/profile contract cleanup includes:
-  - runtime-only rebuild of `AscendCRuntime`, `AFIRRuntimeCAPI`, and `runtime-session`: pass
-  - `test_taskgraph_runtime`: `493 passed, 0 failed`
-  - `test_capi_runtime`: `15 passed, 0 failed`
-  - `test_runtime`: `79 passed, 0 failed`
-  - `run_simbackend_smoke.sh`: pass
-- Fresh xvm verification after default-verification cleanup includes:
-  - `bash test/tools/runtime/run_runtime.sh`: pass (`RC=0`)
-  - `bash test/tools/runtime/run_simbackend_smoke.sh`: pass
-  - `run_runtime.sh` now reuses the shared helper and no longer rebuilds `afir-opt` / `afir-translate` / `mix-compiler` in the initial runtime-core build step
-  - repeated mix simulation baseline remains part of the default runtime verification path and passes
-- Fresh xvm full CPU-simulation regression now passes:
-  - `bash test/tools/runtime/run_simbackend_examples.sh`: `RC=0`
-  - `bash test/tools/examples/example_pipelines.sh`: `RC=0`
-  - all 6 example pipelines pass end-to-end
+- `runtime-session` keeps CLI parsing, summary printing, and execution orchestration only.
+- Runtime request assembly lives in:
+  - `include/Runtime/Artifact/RuntimeSessionRequestBuilder.h`
+  - `lib/Runtime/Artifact/RuntimeSessionRequestBuilder.cpp`
+- Shared runtime frontend behavior lives in:
+  - `include/Runtime/Execution/RuntimeFrontendCore.h`
+  - `lib/Runtime/Execution/RuntimeFrontendCore.cpp`
+- `runtime-session` and the C API use the shared frontend core for compile request assembly, single-task run preparation, normalized execution, and summary interpretation.
+- `DefaultExecutionRunner` delegates to `NativeExecutionRunner`.
+- The old active `Legacy/` runtime implementation path has been removed from the current runtime execution path.
+- `NpuBackend` is wired through the runtime-native execution path and honors `ASCEND_DEVICE_ID`.
+- `NativeExecutionRunner` now reports `rtStreamSynchronize` failures instead of treating failed real-device execution as success.
+- A run-manifest-only `runtime-session` build path exists so the remote host can execute prebuilt artifacts without loading CANN compiler/simulator dependencies at process startup.
+- Remote host CANN 9.1 toolkit and A3 ops are installed under `/data/{username}/Ascend`.
+- xvm CANN 9.1 toolkit and A3 ops are installed under `/home/niu/Ascend`, with top-level `latest` switched to 9.1.
+- Current xvm 9.1 verification passes:
+  - `bash test/tools/runtime/run_runtime.sh`
+    - `RC=0`
+    - runtime tests report `113 passed, 0 failed`
+    - SimBackend vec/mix baseline passes
+    - repeated mix simulation baseline passes
+  - `bash test/tools/runtime/run_simbackend_examples.sh`
+    - `RC=0`
+    - 6 SimBackend examples pass
+  - `bash test/tools/examples/example_pipelines.sh`
+    - `RC=0`
+    - 6 example pipelines pass
+    - cross-session runtime-session smoke passes
+- Real NPU validation current state:
+  - `examples/real-npu-microcases` passes on device 7 through the containerized
+    run-only runner; the suite covers `const640`, copy variants, `relu_only`,
+    and `broadcast_add`, with `session.result=success` and
+    `session.validation=pass` for each case.
+  - `scripts/sync-and-submit.sh --case all --ref 2ecc4d4-real-all --device-id 7 --jobs 6`
+    passes on device 7. It covers `add-broadcast-concat`,
+    `broadcast-add-reduce`, `gather-elementwise-fusion`,
+    `matmul-add-leakyrelu`, `relu-broadcast-transpose`,
+    `split-relu-brc-add-mul`, and `real-npu-multikernel`.
+  - All real-NPU suite case logs report `session.result=success` and
+    `session.validation=pass`, and collected plog summaries contain no new
+    `errorStr`.
+  - Detailed real-NPU debugging experience, plog triage, and per-demo root-cause notes are maintained in `examples/real-npu.md`.
 
 ## Decisions
 
-- Treat `runtime-session` as the only general runtime CLI.
 - Keep request-building logic in the runtime library, not in CLI `main.cpp`.
 - Preserve CLI behavior while refactoring internals; do not accept silent semantic drift.
-- Use xvm as the authoritative verification environment.
-- Treat xvm as the authoritative development verification environment, but do not count it as NPU real-device completion.
-- Treat `Legacy/` as mixed-status implementation code, not as uniformly dead code.
-- Do not preserve runner compatibility outputs in the new vec/cube runtime-native compile path.
-- Treat verification-owned test include fixes as acceptable when removing transitive legacy includes exposes hidden test coupling.
-- Do not delete more `Legacy` code until:
-  - dependency audit is complete
-  - `autotuner` is re-audited against current runtime-native flows
-  - cleanup candidates are grouped by prerequisite and risk
-- Keep the untracked planning note below untouched:
-  - `docs/superpowers/plans/2026-04-10-runtime-taskgraph-mix.md`
-- Treat the following as the authoritative CPU-simulation regression baselines:
+- Use xvm for all normal build/test verification.
+- For real-NPU debugging status, do not present xvm simulation success as a
+  project result. Treat xvm success only as the required gate before a
+  candidate is allowed onto the real device.
+- Use the real NPU host only for run-only validation and hardware-specific debugging.
+- Do not run a proposed fix on the real NPU until that exact candidate has
+  passed xvm Ascend910B1 simulation, except for explicitly labeled diagnostic
+  checkpoint runs.
+- Treat any new real-NPU failure as a kernel/ABI/tiling investigation until evidence proves otherwise.
+- Do not reopen old `Legacy/` cleanup work as an active blocker unless a concrete current dependency reappears.
+- Treat these as the current CPU-simulation regression baselines:
   - `test/tools/runtime/run_runtime.sh`
   - `test/tools/runtime/run_simbackend_examples.sh`
   - `test/tools/examples/example_pipelines.sh`
 
-## TODO
+## Notes
 
-- Finish the original task with NPU real-device validation when hardware is available.
-- After that, continue runtime-native enhancement work in this order:
-  - execution/profile contract polish
-  - task-graph / scheduler evolution
-- Keep xvm focused runtime verification green while changing runtime-native internals.
+- `examples/dev-env.md` is the operational guide for xvm build/test/debug workflow.
+- `examples/real-npu.md` is the single operational guide for remote real-device NPU debugging, containerized real-NPU runner usage, run-only packaging, plog triage, and current real-NPU findings.
+- If xvm reports stale or inconsistent build state, prefer a clean reconfigure before interpreting failures as CANN 9.1 regressions.
+- Do not include unrelated dirty files in commits or reviews.

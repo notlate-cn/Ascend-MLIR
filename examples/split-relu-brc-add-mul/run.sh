@@ -15,7 +15,8 @@
 # Tiling 策略 (UB 计算):
 #   TB_M=16, TB_N=16 (inner batch = full TB), N 不切
 #   block_dim = HM / TB_M = 320 / 16 = 20
-#   UB 占用: 2 chains × (4 TQue + 8 TBuf) × 16 × 512 × 2B ≈ 196KB < 256KB
+#   UB 占用: queue-backed dead TBuf 会被 linalg-to-ascendc cleanup 删除；
+#            两条链共享一个 TPipe 时仍需保持 TB_N=16，避免真机 UB live set 超界。
 #
 # 用法:
 #   source examples/env.sh
@@ -175,7 +176,7 @@ echo ""
 echo "==================== [STAGE 10] Run + Verify ===================="
 VALIDATION_LOG="$BUILD_DIR/runtime_session.log"
 
-TILING_PARAMS="TB_M=${TB_M},TB_N=${TB_M},dim_arg0_1=${N},dim_arg1_0=${HM},dim_arg0_0=${M},dim_arg1_1=${HM},dim_arg3_0=${N},dim_arg3_1=${N},dim_arg2_0=${HM},dim_arg2_1=${HM},dim_arg4_0=${N},dim_arg4_1=${N}"
+TILING_PARAMS="TB_M=${TB_M},TB_N=${TB_M},dim_arg0_1=${N},dim_arg1_0=${HM},dim_arg0_0=${M},dim_arg3_0=${N},dim_arg2_0=${HM},dim_arg4_0=${N}"
 # Note: N must be a multiple of 16 (AscendC DataCopy alignment for f16).
 
 cat > "$RUN_MANIFEST" <<EOF
