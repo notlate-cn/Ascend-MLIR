@@ -3938,10 +3938,7 @@ static void fixBrokenOpEmitters(Operation *moduleOp) {
 
     std::string tmpl = "{\n";
     if (isAR) {
-      // AR: dst[r] = sum(src[r*cols .. r*cols+cols-1])
-      // Use ReduceSum<half> per row with a 32-byte scratch VECCALC TBuf.
-      // The TPipe is passed as the last operand so we can InitBuffer the scratch.
-      // $1[r * cols] slices the src tensor to the start of row r.
+      // AR: dst[r] = sum(src[r*cols .. r*cols+cols-1]).
       std::string pipeRef; // placeholder name for pipe arg
       if (dstQueueLenVal && srcTBufLenVal) {
         // $2 = dst_bytes, $3 = src_bytes, $4 = pipe
@@ -3962,6 +3959,7 @@ static void fixBrokenOpEmitters(Operation *moduleOp) {
       auto srcElemType =
           cast<ascendc::LocalTensorType>(op.getSrc().getType()).getElementType();
       if (srcElemType.isF16()) {
+        tmpl += "  AscendC::PipeBarrier<PIPE_V>();\n";
         tmpl += "  for (uint32_t _afir_r = 0; _afir_r < _afir_rows; ++_afir_r) {\n";
         tmpl += "    float _afir_acc = 0.0f;\n";
         tmpl += "    for (uint32_t _afir_c = 0; _afir_c < _afir_cols; ++_afir_c) {\n";
