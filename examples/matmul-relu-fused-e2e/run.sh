@@ -91,12 +91,27 @@ CANN_ARCH="$(uname -m)"
 [[ "${CANN_ARCH}" == "x86_64" ]] && CANN_ARCH=x86_64-linux || CANN_ARCH=aarch64-linux
 export LD_LIBRARY_PATH="${ASCEND_HOME_PATH}/${CANN_ARCH}/lib64:${ASCEND_HOME_PATH}/${CANN_ARCH}/simulator/${SOC_VERSION:-Ascend910B1}/lib:${ASCEND_HOME_PATH}/${CANN_ARCH}/lib64/device/lib64:${ASCEND_HOME_PATH}/runtime/lib64/stub${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
 
+# Suppress per-core camodel trace dumps unless SIM_KEEP_DUMP=1 (mirrors
+# examples/env.sh; set here too so the script is self-contained).
+if [[ -z "${SIM_KEEP_DUMP:-}" && -d "${REPO_ROOT}/scripts/sim_no_trace" ]]; then
+  export CAMODEL_CONFIG_PATH="${REPO_ROOT}/scripts/sim_no_trace"
+fi
+
 SIM_LOG="${ARTIFACT_DIR}.sim.log"
-"${RUNTIME_SESSION:-runtime-session}" --run-manifest "${RUN_MANIFEST}" --run > "${SIM_LOG}" 2>&1 || {
+# Run with CWD in the artifact dir so any residual camodel files stay there.
+( cd "${ARTIFACT_DIR}" && "${RUNTIME_SESSION:-runtime-session}" \
+    --run-manifest "${RUN_MANIFEST}" --run ) > "${SIM_LOG}" 2>&1 || {
     echo "FAIL: runtime-session exited nonzero" >&2
     tail -n 30 "${SIM_LOG}" >&2
     exit 2
   }
+# Purge the camodel per-core trace stubs (CAMODEL_CONFIG_PATH suppresses
+# their content but not their creation).  SIM_KEEP_DUMP=1 retains them.
+if [[ -z "${SIM_KEEP_DUMP:-}" ]]; then
+  find "${ARTIFACT_DIR}" -maxdepth 1 \( -name '*.dump' -o -name '*.vcd' \) -delete 2>/dev/null || true
+  rm -f "${ARTIFACT_DIR}"/ffts_verify_log*.log 2>/dev/null || true
+fi
+
 grep -q '^session.result=success$'     "${SIM_LOG}" || { echo "FAIL: missing session.result=success"     >&2; exit 2; }
 grep -q '^session.validation=pass$'    "${SIM_LOG}" || { echo "FAIL: missing session.validation=pass"    >&2; exit 2; }
 

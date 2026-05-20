@@ -25,6 +25,16 @@ CANN_ARCH="$(uname -m)"
 [[ "${CANN_ARCH}" == "x86_64" ]] && CANN_ARCH=x86_64-linux || CANN_ARCH=aarch64-linux
 export LD_LIBRARY_PATH="${ASCEND_HOME_PATH}/${CANN_ARCH}/lib64:${ASCEND_HOME_PATH}/${CANN_ARCH}/simulator/${SOC_VERSION}/lib:${ASCEND_HOME_PATH}/${CANN_ARCH}/lib64/device/lib64:${ASCEND_HOME_PATH}/runtime/lib64/stub${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
 
+# Suppress the camodel simulator's per-core trace dumps (hundreds of
+# core*.dump / *.vcd files dropped into the sim CWD).  scripts/sim_no_trace
+# overrides the trace toml with all dumps off; cycle_count is host wall-clock
+# so this doesn't affect validation.  Set SIM_KEEP_DUMP=1 to keep them for
+# debugging.  (run_cases.sh doesn't source examples/env.sh, so we wire it up
+# here too.)
+if [[ -z "${SIM_KEEP_DUMP:-}" && -d "${REPO_ROOT}/scripts/sim_no_trace" ]]; then
+  export CAMODEL_CONFIG_PATH="${REPO_ROOT}/scripts/sim_no_trace"
+fi
+
 WORK_ROOT="${WORK_ROOT:-/tmp/cv-fusion-cases}"
 rm -rf "${WORK_ROOT}"
 mkdir -p "${WORK_ROOT}"
@@ -208,8 +218,21 @@ run_one() {
     --out-manifest "${dir}/run.json" --out-npy "${dir}/actual.npy" >/dev/null \
     || { echo "FAIL[${name}]: build_manifest"; return 1; }
 
-  ${RUNTIME_SESSION} --run-manifest "${dir}/run.json" --run > "${dir}/sim.log" 2>&1 || {
+  # Run the sim with CWD inside the per-case dir so any camodel artifacts the
+  # no-trace config doesn't fully suppress land in the throwaway work dir,
+  # never the repo root.  Use absolute paths for the manifest/log.
+  ( cd "${dir}" && ${RUNTIME_SESSION} --run-manifest "${dir}/run.json" --run ) \
+    > "${dir}/sim.log" 2>&1 || {
     echo "FAIL[${name}]: runtime-session exit"; tail -5 "${dir}/sim.log"; return 1; }
+  # The camodel simulator creates ~866 per-core trace stub files per run
+  # (mostly 0-byte; CAMODEL_CONFIG_PATH=sim_no_trace suppresses their content
+  # but not their creation).  Purge them so the work dir stays inspectable.
+  # Keep them with SIM_KEEP_DUMP=1.
+  if [[ -z "${SIM_KEEP_DUMP:-}" ]]; then
+    find "${dir}" -maxdepth 1 \( -name '*.dump' -o -name '*.vcd' \) -delete 2>/dev/null || true
+    rm -f "${dir}"/ffts_verify_log*.log 2>/dev/null || true
+  fi
+
   grep -q '^session.result=success$'  "${dir}/sim.log" || { echo "FAIL[${name}]: session.result"; return 1; }
   grep -q '^session.validation=pass$' "${dir}/sim.log" || { echo "FAIL[${name}]: session.validation"; return 1; }
 
