@@ -1189,6 +1189,54 @@ Operation *selectedTileInsertionPoint(linalg::GenericOp op,
   return op.getOperation();
 }
 
+bool isZeroScalarConstant(Value value) {
+  auto constant = value.getDefiningOp<arith::ConstantOp>();
+  if (!constant)
+    return false;
+
+  Attribute attr = constant.getValue();
+  if (auto floatAttr = dyn_cast<FloatAttr>(attr))
+    return floatAttr.getValue().isZero();
+  if (auto intAttr = dyn_cast<IntegerAttr>(attr))
+    return intAttr.getValue().isZero();
+  return false;
+}
+
+linalg::FillOp findRedundantZeroFill(Value target, Operation *anchor) {
+  if (!target || !anchor || anchor->getBlock() == nullptr)
+    return {};
+
+  linalg::FillOp latestFill;
+  for (Operation *user : target.getUsers()) {
+    auto fillOp = dyn_cast<linalg::FillOp>(user);
+    if (!fillOp || fillOp.getOutputs()[0] != target ||
+        fillOp->getBlock() != anchor->getBlock() ||
+        !fillOp->isBeforeInBlock(anchor) ||
+        !isZeroScalarConstant(fillOp.getInputs()[0]))
+      continue;
+    if (!latestFill || latestFill->isBeforeInBlock(fillOp))
+      latestFill = fillOp;
+  }
+  if (!latestFill)
+    return {};
+
+  Value targetRoot = rootMemref(target);
+  SmallVector<Value, 1> targetRoots{targetRoot};
+  for (Operation *it = latestFill->getNextNode(); it && it != anchor;
+       it = it->getNextNode()) {
+    if (isBenignShapeOrViewOp(it))
+      continue;
+    if (mayReadRoot(it, targetRoot) || mayWriteAnyRoot(it, targetRoots))
+      return {};
+    if (!isa<linalg::LinalgOp, memref::CopyOp, memref::LoadOp,
+             memref::StoreOp>(it) &&
+        touchesAnyRoot(it, targetRoots))
+      return {};
+  }
+
+  return latestFill;
+}
+
 } // namespace
 
 LogicalResult materializeSelectedReductionTiles(func::FuncOp funcOp) {
@@ -1239,6 +1287,8 @@ LogicalResult materializeSelectedReductionTiles(func::FuncOp funcOp) {
       continue;
 
     Value dstMemref = writeback.getTarget();
+    linalg::FillOp redundantZeroFill =
+        findRedundantZeroFill(dstMemref, writeback.getOperation());
     builder.setInsertionPoint(insertionPoint);
     Value zero = builder.create<arith::ConstantIndexOp>(loc, 0);
     Value step = builder.create<arith::ConstantIndexOp>(loc, tileRows);
@@ -1296,6 +1346,8 @@ LogicalResult materializeSelectedReductionTiles(func::FuncOp funcOp) {
 
     genOp.erase();
     writeback.erase();
+    if (redundantZeroFill)
+      redundantZeroFill.erase();
     if (auto allocOp = outMemref.getDefiningOp<memref::AllocOp>())
       if (allocOp->use_empty())
         allocOp.erase();
