@@ -37,6 +37,7 @@ func.func @selected_tile_materializes_loop() {
 // CHECK-NOT: ascendc.data_copy_l2
 // CHECK: scf.for
 // CHECK: ascendc.duplicate_l2
+// CHECK-NEXT: ascendc.pipe_barrier pipe_v
 // CHECK: ascendc.reduce_sum_2d_l2
 // CHECK-NOT: linalg.fill
 func.func @selected_reduction_erases_redundant_zero_fill(
