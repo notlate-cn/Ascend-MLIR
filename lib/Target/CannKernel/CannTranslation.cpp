@@ -3733,14 +3733,20 @@ static void fixBrokenOpEmitters(Operation *moduleOp) {
       tmpl += "    for (uint32_t _afir_r = 0; _afir_r < _afir_ds[0]; ++_afir_r) {\n";
       tmpl += "      auto _afir_v = $" + std::to_string(gmOperand) +
               ".GetValue(_afir_r);\n";
-      tmpl += "      for (uint32_t _afir_c = 0; _afir_c < _afir_ds[1]; "
+      tmpl += "      uint32_t _afir_row_offset = _afir_r * _afir_ds[1];\n";
+      tmpl += "      if (((_afir_row_offset * sizeof(" + elemTypeStr +
+              ")) % 32u) == 0u) {\n";
+      tmpl += "        for (uint32_t _afir_c = 0; _afir_c < _afir_ds[1]; "
               "_afir_c += 1024u) {\n";
-      tmpl += "        uint32_t _afir_chunk = ((_afir_ds[1] - _afir_c) < "
+      tmpl += "          uint32_t _afir_chunk = ((_afir_ds[1] - _afir_c) < "
               "1024u) ? (_afir_ds[1] - _afir_c) : 1024u;\n";
-      tmpl += "        uint32_t _afir_offset = _afir_r * _afir_ds[1] + "
-              "_afir_c;\n";
-      tmpl += "        AscendC::Duplicate($0[_afir_offset], _afir_v, "
-              "_afir_chunk);\n";
+      tmpl += "          AscendC::Duplicate($0[_afir_row_offset + _afir_c], "
+              "_afir_v, _afir_chunk);\n";
+      tmpl += "        }\n";
+      tmpl += "      } else {\n";
+      tmpl += "        for (uint32_t _afir_c = 0; _afir_c < _afir_ds[1]; "
+              "++_afir_c)\n";
+      tmpl += "          $0.SetValue(_afir_row_offset + _afir_c, _afir_v);\n";
       tmpl += "      }\n";
       tmpl += "    }\n";
       tmpl += "  } else {\n";

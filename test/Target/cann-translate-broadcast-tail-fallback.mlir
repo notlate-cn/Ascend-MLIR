@@ -4,10 +4,13 @@
 // CHECK: if (_afir_ss[1] == 1u) {
 // CHECK: for (uint32_t _afir_r = 0; _afir_r < _afir_ds[0]; ++_afir_r) {
 // CHECK: auto _afir_v = {{.*}}.GetValue(_afir_r);
+// CHECK: uint32_t _afir_row_offset = _afir_r * _afir_ds[1];
+// CHECK: if (((_afir_row_offset * sizeof(half)) % 32u) == 0u) {
 // CHECK: for (uint32_t _afir_c = 0; _afir_c < _afir_ds[1]; _afir_c += 1024u) {
 // CHECK: uint32_t _afir_chunk = ((_afir_ds[1] - _afir_c) < 1024u) ? (_afir_ds[1] - _afir_c) : 1024u;
-// CHECK: uint32_t _afir_offset = _afir_r * _afir_ds[1] + _afir_c;
-// CHECK: AscendC::Duplicate({{.*}}[_afir_offset], _afir_v, _afir_chunk);
+// CHECK: AscendC::Duplicate({{.*}}[_afir_row_offset + _afir_c], _afir_v, _afir_chunk);
+// CHECK: } else {
+// CHECK: {{.*}}.SetValue(_afir_row_offset + _afir_c, _afir_v);
 // CHECK: } else {
 // CHECK: AscendC::Broadcast<half, 2, 1>
 
@@ -42,8 +45,12 @@ module {
 // CHECK-LABEL: void broadcast_full_tile_gm_fallback
 // CHECK: if (_afir_ss[1] == 1u) {
 // CHECK-NOT: if (_afir_ds[0] < 16u
+// CHECK: uint32_t _afir_row_offset = _afir_r * _afir_ds[1];
+// CHECK: if (((_afir_row_offset * sizeof(half)) % 32u) == 0u) {
 // CHECK: for (uint32_t _afir_c = 0; _afir_c < _afir_ds[1]; _afir_c += 1024u) {
-// CHECK: AscendC::Duplicate({{.*}}[_afir_offset], _afir_v, _afir_chunk);
+// CHECK: AscendC::Duplicate({{.*}}[_afir_row_offset + _afir_c], _afir_v, _afir_chunk);
+// CHECK: } else {
+// CHECK: {{.*}}.SetValue(_afir_row_offset + _afir_c, _afir_v);
 // CHECK: } else {
 // CHECK: AscendC::Broadcast<half, 2, 1>
 func.func @broadcast_full_tile_gm_fallback(
