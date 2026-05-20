@@ -291,6 +291,8 @@ run_custom_cmd() {
 run_microcases() {
   local micro_out="${OUT_DIR}/microcases"
   mkdir -p "${micro_out}"
+  # shellcheck source=/dev/null
+  source "${SRC_DIR}/examples/real-npu-microcases/cases.sh"
   log "prepare real-npu microcases"
   (
     cd "${SRC_DIR}"
@@ -303,12 +305,9 @@ run_microcases() {
     bash examples/real-npu-microcases/prepare.sh --out-dir "${micro_out}"
   ) >"${LOG_DIR}/microcases-prepare.log" 2>&1
 
-  for manifest in "${micro_out}"/*/run_manifest.json; do
-    [[ -f "${manifest}" ]] || continue
-    local case_dir
-    case_dir="$(dirname "${manifest}")"
-    local case_name
-    case_name="$(basename "${case_dir}")"
+  for case_name in "${REAL_NPU_MICROCASES[@]}"; do
+    local manifest="${micro_out}/${case_name}/run_manifest.json"
+    [[ -f "${manifest}" ]] || fail "microcase manifest not found: ${manifest}"
     mkdir -p "${OUT_DIR}/microcases-real/${case_name}"
     log "run real NPU microcase ${case_name}"
     run_real_manifest \

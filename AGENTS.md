@@ -90,7 +90,10 @@
     - 10 example pipelines pass
     - cross-session runtime-session smoke passes
 - Real NPU validation current state:
-  - minimal `const640` run-only case passes on device 7 with `session.result=success` and `session.validation=pass`
+  - `examples/real-npu-microcases` passes on device 7 through the containerized
+    run-only runner; the suite covers `const640`, copy variants, `relu_only`,
+    and `broadcast_add`, with `session.result=success` and
+    `session.validation=pass` for each case.
   - `examples/relu-broadcast-transpose` now passes on device 7 with `TB_N=16`, run-only packaging, `session.result=success`, and `session.validation=pass`
   - `examples/add-broadcast-concat` now passes on device 7 with `TB_N=16`, run-only packaging, `session.result=success`, and `session.validation=pass`
   - `examples/split-relu-brc-add-mul` now passes on device 7 after removing dead queue-backed TBuf initializers, with `session.result=success` and `session.validation=pass`

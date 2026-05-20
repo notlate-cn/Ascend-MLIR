@@ -12,6 +12,11 @@ extern "C" __global__ __aicore__ void copy_tbuf640(GM_ADDR input,
   inGlobal.SetGlobalBuffer(reinterpret_cast<__gm__ half *>(input));
   AscendC::LocalTensor<half> local = buf.Get<half>();
   AscendC::DataCopy(local, inGlobal, 640);
+  event_t eventId =
+      static_cast<event_t>(GetTPipePtr()->FetchEventID(
+          AscendC::HardEvent::MTE2_MTE3));
+  AscendC::SetFlag<AscendC::HardEvent::MTE2_MTE3>(eventId);
+  AscendC::WaitFlag<AscendC::HardEvent::MTE2_MTE3>(eventId);
 
   AscendC::GlobalTensor<half> outGlobal;
   outGlobal.SetGlobalBuffer(reinterpret_cast<__gm__ half *>(output));

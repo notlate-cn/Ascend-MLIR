@@ -4,13 +4,28 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "${SCRIPT_DIR}/../../.." && pwd)"
 HELPER="${PROJECT_ROOT}/examples/real-npu-microcases/prepare.sh"
+# shellcheck source=/dev/null
+source "${PROJECT_ROOT}/examples/real-npu-microcases/cases.sh"
 
 TMP_DIR="$(mktemp -d /tmp/runtime-real-npu-microcases-test.XXXXXX)"
 trap 'rm -rf "${TMP_DIR}"' EXIT
 
 bash "${HELPER}" --out-dir "${TMP_DIR}/case" --skip-compile
 
-for case_name in const640 copy640 copy_tbuf640 copy_scalar640 copy_params640 copy_wait640 const_with_input640 relu_only broadcast_add; do
+expected_order=(
+  const640
+  copy640
+  copy_tbuf640
+  copy_scalar640
+  copy_params640
+  copy_wait640
+  const_with_input640
+  relu_only
+  broadcast_add
+)
+test "${REAL_NPU_MICROCASES[*]}" = "${expected_order[*]}"
+
+for case_name in "${REAL_NPU_MICROCASES[@]}"; do
   manifest="${TMP_DIR}/case/${case_name}/run_manifest.json"
   test -f "${manifest}"
   grep -q '"backend": "npu"' "${manifest}"

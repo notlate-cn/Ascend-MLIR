@@ -95,6 +95,10 @@ export ASCEND_RUNTIME_TRACE_LAUNCH=1
 
 - `const640`：只写 output，验证 launch、D2H 和 expected-output 校验基线。
 - `copy640`：读一个 input 并写 output，验证 H2D、GM read 和基础 `DataCopy`。
+- `copy_tbuf640` / `copy_params640` / `copy_wait640`：验证不同 `DataCopy`
+  写法和显式 MTE 同步。
+- `copy_scalar640`：验证 scalar GM read/write。
+- `const_with_input640`：验证 input 绑定不会影响 write-only compute。
 - `relu_only`：GM -> UB -> `Max` -> GM，验证基础 vector compute。
 - `broadcast_add`：`Broadcast + Add`，验证 broadcast primitive 和二输入向量路径。
 
@@ -117,7 +121,8 @@ bash examples/real-npu-microcases/prepare.sh --out-dir /tmp/real-npu-microcases
 远端运行顺序：
 
 ```shell
-for c in const640 copy640 relu_only broadcast_add; do
+for c in const640 copy640 copy_tbuf640 copy_scalar640 copy_params640 \
+         copy_wait640 const_with_input640 relu_only broadcast_add; do
   echo "=== ${c} ==="
   cd "/data/{username}/real-npu-microcases/${c}"
   source /data/{username}/env.sh
@@ -241,6 +246,10 @@ grep -R "errorStr" -n \
 
 ### 3.7 当前实测结论
 - run-only `runtime-session` 在 7 卡真机上可以完成最小 `const640` kernel 的 launch、D2H 和 expected-output 校验，结果为 `session.result=success` / `session.validation=pass`。
+- `examples/real-npu-microcases` 已通过 containerized run-only 真机验证：
+  - 远端 job：`/data/{username}/real-npu-jobs/20260519-151405-microcase-relu-maxs-microcases`
+  - 覆盖 `const640`、copy variants、`relu_only` 和 `broadcast_add`
+  - 每个 case 均为 `session.backend=npu` / `session.result=success` / `session.validation=pass`
 - `examples/relu-broadcast-transpose` 的 full-pipeline vec kernel 已在 7 卡真机通过：
   - xvm Ascend910B1 仿真先通过：`session.backend=sim` / `session.result=success` / `session.validation=pass`
   - 远端 run-only 包：`/data/{username}/relu-broadcast-transpose-final-real-20260518-190410`
@@ -382,3 +391,14 @@ job 输出统一落在：
 - 根因是 queue-backed memref alloc 还保留了 standalone TBuf initializer。这些 TBuf 没有实际用户，只有 `TPipe.InitBuffer`，但 hoist 后仍会消耗真机 UB。
 - data-move/compute conversion 后，应删除仅被 `TPipe.InitBuffer` 使用的 TBuf。该 demo 中 generated `InitBuffer` 从 20 个降到 14 个后，xvm simulation 保持通过，真实 NPU通过。
 - `examples/split-relu-brc-add-mul` run manifest 要和当前 CANN signature 对齐：`TB_M`、`TB_N`、`dim_arg0_1`、`dim_arg1_0`、`dim_arg0_0`、`dim_arg3_0`、`dim_arg2_0`、`dim_arg4_0`。
+
+### 4.4 microcase synchronization lessons
+
+- `copy640`、`copy_tbuf640` 和 `copy_params640` 最初在真机上 validation fail，
+  但 H2D roundtrip、launch 参数和 GM pointer alignment 均正常；根因是手写
+  microcase kernel 缺少 MTE2 -> MTE3 同步，真机不会像仿真路径那样隐式掩盖。
+- `relu_only` 在补 MTE2 -> V / V -> MTE3 后仍失败，说明问题不在 runtime ABI。
+  将 `Duplicate(zero) + Max(x, zero)` 收敛为 `Maxs(x, 0)` 后真机通过，后续
+  需要单独验证 `Duplicate + binary Max` 时不要把它混入基础 relu microcase。
+- `scripts/real-npu-ci/run-real-npu-job.sh` 必须使用显式 microcase 顺序；glob
+  字母序会让 `broadcast_add` 先运行，掩盖更基础的 `DataCopy` / vector 边界。
