@@ -208,6 +208,9 @@ struct SupportedMixKernelConfig {
 
   enum class EpilogueKind {
     Unknown,
+    Identity,    // No activation; AIV does just pass-through DataCopy.  Used
+                 // when the only "epilogue" was bias-add (folded into AIC via
+                 // mm.SetBias) and no further elementwise was fused.
     Relu,
     LeakyRelu,
   };
@@ -1374,10 +1377,21 @@ inferSupportedMixKernelConfig(func::FuncOp funcOp,
   config.hasBiasAdd = inferSupportedMixHasBiasAdd(summary);
   auto epilogueKind =
       inferSupportedMixEpilogueKind(funcOp, summary, config.leakyReluAlpha);
-  if (failed(epilogueKind))
-    return failure();
-  config.epilogueKind = *epilogueKind;
-  return config;
+  if (succeeded(epilogueKind)) {
+    config.epilogueKind = *epilogueKind;
+    return config;
+  }
+  // No Relu/LeakyRelu pattern, but the chain may still be a supported
+  // bias-add-only epilogue (bias folded into AIC via mm.SetBias, AIV side is
+  // pass-through DataCopy).  Falling back to Identity also unblocks the case
+  // where vec ops exist but aren't a known activation shape — sim will only
+  // produce a correct result if those ops happen to be already-handled by
+  // the cube intrinsic (bias) or are a no-op chain.
+  if (config.hasBiasAdd) {
+    config.epilogueKind = SupportedMixKernelConfig::EpilogueKind::Identity;
+    return config;
+  }
+  return failure();
 }
 
 static FailureOr<SupportedMixBoundaryPayload>
@@ -1626,15 +1640,36 @@ static StringRef getSupportedMixElementTypeSpelling(Type type) {
   llvm_unreachable("unsupported supported-mix boundary element type");
 }
 
+// Emit the activation step of the AIV block.  Each EpilogueKind is one entry
+// in this dispatch table — adding a new fused elementwise op = adding (a) a
+// recognizer in `inferSupportedMixEpilogueKind` and (b) one emit branch here.
+//
+// Bias-add (if `config.hasBiasAdd`) is *not* emitted in this AIV step; it is
+// folded into the AIC matmul intrinsic via `mm.SetBias(biasGM)` (see
+// `emitSupportedMixMatmulExecution`).  So the kinds whose name starts with
+// "BiasAdd*" only differ from the non-bias kinds at the AIC side.
 static void emitSupportedMixVectorEpilogue(raw_ostream &os,
                                            const SupportedMixKernelConfig &config) {
-  if (config.epilogueKind == SupportedMixKernelConfig::EpilogueKind::Relu) {
+  using K = SupportedMixKernelConfig::EpilogueKind;
+  switch (config.epilogueKind) {
+  case K::Relu:
     os << "    Relu(outLocal, inLocal, count);\n";
     return;
+  case K::LeakyRelu:
+    os << "    LeakyRelu(outLocal, inLocal, static_cast<float>("
+       << llvm::formatv("{0:F6}", config.leakyReluAlpha).str()
+       << "f), count);\n";
+    return;
+  case K::Identity:
+    // Pure pass-through: nothing to compute in the AIV step.  The boundary
+    // transfer already moves the (AIC-side bias-folded) matmul result through
+    // the queue.  outLocal is allocated empty; copy inLocal into it.
+    os << "    DataCopy(outLocal, inLocal, count);\n";
+    return;
+  case K::Unknown:
+    break;
   }
-  os << "    LeakyRelu(outLocal, inLocal, static_cast<float>("
-     << llvm::formatv("{0:F6}", config.leakyReluAlpha).str()
-     << "f), count);\n";
+  llvm_unreachable("emitSupportedMixVectorEpilogue called with Unknown kind");
 }
 
 static void emitSupportedMixMatmulObjectDecl(raw_ostream &os) {

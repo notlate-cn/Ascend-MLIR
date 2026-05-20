@@ -37,10 +37,18 @@ def main():
 
     inputs = []
     for idx, desc in enumerate(abi["inputs"]):
-        npy = data_dir / f"input{idx}.npy"
+        # ABI input names are MLIR arg names like "arg0", "arg1", "arg3" (with
+        # holes when the DPS-init arg was elided).  Use the arg's own index
+        # to pick the npy file so a bias kernel ([arg0, arg1, arg3]) reads
+        # input3.npy for bias, not input2.npy (which would be `init` zeros).
+        name = desc["name"]
+        if name.startswith("arg") and name[3:].isdigit():
+            npy = data_dir / f"input{name[3:]}.npy"
+        else:
+            npy = data_dir / f"input{idx}.npy"
         if not npy.exists():
             sys.exit(f"missing {npy}")
-        inputs.append({"name": desc["name"], "path": str(npy)})
+        inputs.append({"name": name, "path": str(npy)})
 
     if len(abi["outputs"]) != 1:
         sys.exit("expected exactly one output")

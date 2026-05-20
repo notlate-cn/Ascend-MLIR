@@ -29,25 +29,48 @@ WORK_ROOT="${WORK_ROOT:-/tmp/cv-fusion-cases}"
 rm -rf "${WORK_ROOT}"
 mkdir -p "${WORK_ROOT}"
 
-# case_name M K N input_lo input_hi with_relu xfail dyn
-# xfail=1 means failure is expected (Phase 2 work, recorded but not fatal).
-# dyn=1  emits ?x? shapes in step0.mlir and lets the pipeline resolve them
-#        via npy.  Exercises the dynamic-shape DPS-init elision in MixAbiExtractor.
+# case_name M K N input_lo input_hi with_relu xfail dyn with_bias
+# xfail=1     -> failure is expected (Phase 2 work, recorded but not fatal).
+# dyn=1       -> emits ?x? shapes in step0.mlir; pipeline resolves shapes from npy.
+# with_bias=1 -> inserts a rank-1 bias-add generic between matmul and (optional) relu.
+#                Exercises the Identity epilogue (no-relu / bias-only)
+#                or BiasAddRelu (with relu) translator paths.
 CASES=(
-  "small-baseline       32  16  64 -10 10  1  0  0"
-  "medium-shape        128  64 128 -10 10  1  0  0"
-  "tall-skinny         256  32  32 -10 10  1  0  0"
-  "wide-flat            32  32 256 -10 10  1  0  0"
-  "mixed-sign-relu      64  32  64 -50 50  1  0  0"
-  "matmul-only          64  32  64 -10 10  0  1  0"
-  "k-tail-24            32  24  64 -10 10  1  0  0"
-  "dyn-shape           128  32  64 -10 10  1  0  1"
+  "small-baseline       32  16  64 -10 10  1  0  0  0"
+  "medium-shape        128  64 128 -10 10  1  0  0  0"
+  "tall-skinny         256  32  32 -10 10  1  0  0  0"
+  "wide-flat            32  32 256 -10 10  1  0  0  0"
+  "mixed-sign-relu      64  32  64 -50 50  1  0  0  0"
+  "matmul-only          64  32  64 -10 10  0  1  0  0"
+  "k-tail-24            32  24  64 -10 10  1  0  0  0"
+  "dyn-shape           128  32  64 -10 10  1  0  1  0"
+  "bias-only            64  32  64 -10 10  0  0  0  1"
 )
 
 emit_step0() {
-  local out="$1" name="$2" M="$3" K="$4" N="$5" with_relu="$6" dyn="${7:-0}"
+  local out="$1" name="$2" M="$3" K="$4" N="$5" with_relu="$6" dyn="${7:-0}" with_bias="${8:-0}"
   # MLIR identifiers can't contain '-'; sanitize for the func name.
   local funcname="${name//-/_}"
+  # Special case: bias-add (no relu) — matmul + linalg.generic(add bias).
+  if [[ "${with_bias}" == "1" && "${with_relu}" == "0" && "${dyn}" == "0" ]]; then
+    cat > "${out}" <<MLIR
+func.func @${funcname}(%a: tensor<${M}x${K}xf16>, %b: tensor<${K}x${N}xf16>,
+                       %init: tensor<${M}x${N}xf32>, %bias: tensor<${N}xf32>) -> tensor<${M}x${N}xf32> {
+  %c = linalg.matmul ins(%a, %b : tensor<${M}x${K}xf16>, tensor<${K}x${N}xf16>) outs(%init : tensor<${M}x${N}xf32>) -> tensor<${M}x${N}xf32>
+  %e = tensor.empty() : tensor<${M}x${N}xf32>
+  %r = linalg.generic {
+    indexing_maps = [affine_map<(d0,d1)->(d0,d1)>, affine_map<(d0,d1)->(d1)>, affine_map<(d0,d1)->(d0,d1)>],
+    iterator_types = ["parallel", "parallel"]
+  } ins(%c, %bias : tensor<${M}x${N}xf32>, tensor<${N}xf32>) outs(%e : tensor<${M}x${N}xf32>) {
+  ^bb0(%v: f32, %bv: f32, %_: f32):
+    %t = arith.addf %v, %bv : f32
+    linalg.yield %t : f32
+  } -> tensor<${M}x${N}xf32>
+  return %r : tensor<${M}x${N}xf32>
+}
+MLIR
+    return
+  fi
   local TA TB TInit
   if [[ "${dyn}" == "1" ]]; then
     TA="tensor<?x?xf16>";  TB="tensor<?x?xf16>";  TInit="tensor<?x?xf32>"
@@ -111,7 +134,7 @@ MLIR
 }
 
 emit_gen_data() {
-  local out="$1" M="$2" K="$3" N="$4" lo="$5" hi="$6" with_relu="$7"
+  local out="$1" M="$2" K="$3" N="$4" lo="$5" hi="$6" with_relu="$7" with_bias="${8:-0}"
   cat > "${out}" <<PY
 import numpy as np, sys
 from pathlib import Path
@@ -120,20 +143,30 @@ A = rng.integers(${lo}, ${hi}+1, (${M}, ${K})).astype(np.float16)
 B = rng.integers(${lo}, ${hi}+1, (${K}, ${N})).astype(np.float16)
 init = np.zeros((${M}, ${N}), dtype=np.float32)
 mm = A.astype(np.float32) @ B.astype(np.float32)
-out = np.maximum(mm, 0.0).astype(np.float32) if ${with_relu} else mm.astype(np.float32)
+out = mm.astype(np.float32)
+if ${with_bias}:
+    bias = rng.integers(1, 10, (${N},)).astype(np.float32)
+    out = out + bias
+if ${with_relu}:
+    out = np.maximum(out, 0.0)
+out = out.astype(np.float32)
 d = Path(sys.argv[1]); d.mkdir(parents=True, exist_ok=True)
-for n, v in [("input_a",A),("input_b",B),("input_init",init),("input0",A),("input1",B),("input2",init),("output",out),("output0",out)]:
+pairs = [("input_a",A),("input_b",B),("input_init",init),("input0",A),("input1",B),("input2",init),("output",out),("output0",out)]
+if ${with_bias}:
+    pairs.append(("input_bias",bias))
+    pairs.append(("input3",bias))
+for n, v in pairs:
     np.save(d/f"{n}.npy", v)
-print(f"shapes M=${M} K=${K} N=${N} range=[${lo},${hi}] with_relu=${with_relu} out_range=[{out.min()},{out.max()}]")
+print(f"shapes M=${M} K=${K} N=${N} range=[${lo},${hi}] relu=${with_relu} bias=${with_bias} out_range=[{out.min()},{out.max()}]")
 PY
 }
 
 run_one() {
-  local name="$1" M="$2" K="$3" N="$4" lo="$5" hi="$6" with_relu="$7" dyn="${8:-0}"
+  local name="$1" M="$2" K="$3" N="$4" lo="$5" hi="$6" with_relu="$7" dyn="${8:-0}" with_bias="${9:-0}"
   local dir="${WORK_ROOT}/${name}"
   mkdir -p "${dir}"
-  emit_step0   "${dir}/step0.mlir" "${name}" "${M}" "${K}" "${N}" "${with_relu}" "${dyn}"
-  emit_gen_data "${dir}/gen.py"    "${M}" "${K}" "${N}" "${lo}" "${hi}" "${with_relu}"
+  emit_step0   "${dir}/step0.mlir" "${name}" "${M}" "${K}" "${N}" "${with_relu}" "${dyn}" "${with_bias}"
+  emit_gen_data "${dir}/gen.py"    "${M}" "${K}" "${N}" "${lo}" "${hi}" "${with_relu}" "${with_bias}"
 
   ${AFIR_OPT} --vector-plan-codegen "${dir}/step0.mlir" -o "${dir}/step7_cann.mlir" \
     2> "${dir}/opt.log" || { echo "FAIL[${name}]: vector-plan-codegen"; tail -5 "${dir}/opt.log"; return 1; }
@@ -169,8 +202,8 @@ print(float(np.max(np.abs(a-g))))
 pass=0; fail=0; xfail=0; xpass=0
 declare -a FAILED XPASSED
 for spec in "${CASES[@]}"; do
-  read -r name M K N lo hi with_relu xfail_expected dyn <<<"${spec}"
-  if run_one "${name}" "${M}" "${K}" "${N}" "${lo}" "${hi}" "${with_relu}" "${dyn:-0}"; then
+  read -r name M K N lo hi with_relu xfail_expected dyn with_bias <<<"${spec}"
+  if run_one "${name}" "${M}" "${K}" "${N}" "${lo}" "${hi}" "${with_relu}" "${dyn:-0}" "${with_bias:-0}"; then
     if [[ "${xfail_expected}" == "1" ]]; then
       xpass=$((xpass+1)); XPASSED+=("${name}")
       echo "  (^ XPASS: case marked xfail but now passes — promote it)"
