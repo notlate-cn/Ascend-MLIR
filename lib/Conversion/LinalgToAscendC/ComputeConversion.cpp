@@ -2067,6 +2067,8 @@ LogicalResult convertCompute(func::FuncOp funcOp, AscendCBufferContext &ctx) {
       auto initDup =
           builder.create<DuplicateL2Op>(loc, accumLt, initVal, totalElems);
       copyAscendCUnitAttr(genOp.getOperation(), initDup.getOperation());
+      builder.create<PipeBarrierOp>(loc,
+                                    PipeAttr::get(mlirCtx, Pipe::PIPE_V));
     }
 
     // Promote each input to a local_tensor of shape `fullShape`.
