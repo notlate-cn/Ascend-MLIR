@@ -3617,6 +3617,45 @@ static void fixBrokenOpEmitters(Operation *moduleOp) {
       rewriter.eraseOp(bracketOp);
   });
 
+  // DataCopyL2Op with GlobalTensorBracketOp destination → verbatim.
+  // Mirror the source-bracket path: rebuild a temporary GlobalTensor from
+  // GetPhyAddr(offset) so row-wise writes address a sliced GM tensor, not the
+  // scalar-like result of AscendC's operator().
+  moduleOp->walk([&](ascendc::DataCopyL2Op op) {
+    auto bracketOp = op.getDst().getDefiningOp<ascendc::GlobalTensorBracketOp>();
+    if (!bracketOp)
+      return;
+
+    auto tensorType =
+        dyn_cast<ascendc::GlobalTensorType>(bracketOp.getResult().getType());
+    if (!tensorType)
+      return;
+    if (!isa<ascendc::LocalTensorType>(op.getSrc().getType()))
+      return;
+
+    std::string elemTypeStr =
+        getAscendCScalarTypeName(tensorType.getElementType());
+    rewriter.setInsertionPoint(op);
+    Location loc = op.getLoc();
+    std::string tmpl = "{\n";
+    tmpl += "  AscendC::GlobalTensor<" + elemTypeStr + "> _afir_gt;\n";
+    tmpl += "  _afir_gt.SetGlobalBuffer($0.GetPhyAddr($1));\n";
+    tmpl += "  uint32_t _afir_count = (uint32_t)$3;\n";
+    tmpl += "  if ((_afir_count * sizeof(" + elemTypeStr + ")) % 32u == 0u) {\n";
+    tmpl += "    AscendC::DataCopy(_afir_gt, $2, _afir_count);\n";
+    tmpl += "  } else {\n";
+    tmpl += "    for (uint32_t _afir_i = 0; _afir_i < _afir_count; ++_afir_i)\n";
+    tmpl += "      _afir_gt.SetValue(_afir_i, $2.GetValue(_afir_i));\n";
+    tmpl += "  }\n}";
+    rewriter.create<emitasc::VerbatimOp>(
+        loc, rewriter.getStringAttr(tmpl),
+        ValueRange({bracketOp.getTensor(), bracketOp.getIndex(), op.getSrc(),
+                    op.getCalCount()}));
+    rewriter.eraseOp(op);
+    if (bracketOp->use_empty())
+      rewriter.eraseOp(bracketOp);
+  });
+
   // CANN does not provide a three-argument GlobalTensor -> GlobalTensor
   // DataCopy overload. Use scalar GM access as a fail-closed fallback for
   // generated GM-to-GM movement.

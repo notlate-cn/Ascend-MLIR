@@ -3,13 +3,14 @@
 #broadcast_transpose = affine_map<(d0, d1) -> (d1, 0)>
 #identity = affine_map<(d0, d1) -> (d0, d1)>
 
-// CHECK-LABEL: func.func @selected_all_parallel_tile_fallback_for_broadcast_transpose
-// CHECK-NOT: scf.for
+// CHECK-LABEL: func.func @selected_all_parallel_tile_materializes_broadcast_transpose
+// CHECK: scf.for %{{.*}} = %c0 to %c70 step %c64
 // CHECK: ascendc.broadcast_l2
-// CHECK-NOT: scf.for
 // CHECK: ascendc.add_l2
+// CHECK: memref.subview %{{.*}}[%{{.*}}, %{{.*}}] [%{{.*}}, %c128] [1, 1] : memref<70x128xf16>
+// CHECK: ascendc.data_copy_l2
 // CHECK-NOT: linalg.generic
-func.func @selected_all_parallel_tile_fallback_for_broadcast_transpose() {
+func.func @selected_all_parallel_tile_materializes_broadcast_transpose() {
   %a = memref.alloc() : memref<128x1xf16, 9 : i32>
   %b = memref.alloc() : memref<70x128xf16, 9 : i32>
   %out = memref.alloc() : memref<70x128xf16, 10 : i32>

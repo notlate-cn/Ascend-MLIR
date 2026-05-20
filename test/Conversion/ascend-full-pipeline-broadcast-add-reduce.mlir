@@ -10,7 +10,7 @@
 // CHECK: ascendc.get_block_idx
 // CHECK: ascendc.data_copy_l2
 // CHECK: ascendc.reduce_sum_2d_l2
-// CHECK: emitasc.verbatim
+// CHECK: ascendc.data_copy_l2
 // CHECK-NOT: linalg.
 
 #broadcast_map = affine_map<(d0, d1) -> (d0)>
