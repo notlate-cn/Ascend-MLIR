@@ -45,26 +45,44 @@ CASES=(
   "k-tail-24            32  24  64 -10 10  1  0  0  0"
   "dyn-shape           128  32  64 -10 10  1  0  1  0"
   "bias-only            64  32  64 -10 10  0  0  0  1"
+  "bias-relu            64  32  64 -10 10  1  0  0  1"
+  "bcast-bias-relu      64  32  64 -10 10  1  0  0  2"
 )
 
 emit_step0() {
   local out="$1" name="$2" M="$3" K="$4" N="$5" with_relu="$6" dyn="${7:-0}" with_bias="${8:-0}"
   # MLIR identifiers can't contain '-'; sanitize for the func name.
   local funcname="${name//-/_}"
-  # Special case: bias-add (no relu) — matmul + linalg.generic(add bias).
-  if [[ "${with_bias}" == "1" && "${with_relu}" == "0" && "${dyn}" == "0" ]]; then
+  # Bias variants: with_bias=1 -> rank-1 [N] bias; with_bias=2 -> rank-2 [1,N]
+  # bcast bias.  Optionally followed by relu (with_relu=1).
+  if [[ ( "${with_bias}" == "1" || "${with_bias}" == "2" ) && "${dyn}" == "0" ]]; then
+    local biasTy biasMap
+    if [[ "${with_bias}" == "2" ]]; then
+      biasTy="tensor<1x${N}xf32>"; biasMap="affine_map<(d0,d1)->(0,d1)>"
+    else
+      biasTy="tensor<${N}xf32>";   biasMap="affine_map<(d0,d1)->(d1)>"
+    fi
+    local body
+    if [[ "${with_relu}" == "1" ]]; then
+      body="    %s = arith.addf %v, %bv : f32
+    %z = arith.constant 0.0 : f32
+    %t = arith.maximumf %s, %z : f32
+    linalg.yield %t : f32"
+    else
+      body="    %t = arith.addf %v, %bv : f32
+    linalg.yield %t : f32"
+    fi
     cat > "${out}" <<MLIR
 func.func @${funcname}(%a: tensor<${M}x${K}xf16>, %b: tensor<${K}x${N}xf16>,
-                       %init: tensor<${M}x${N}xf32>, %bias: tensor<${N}xf32>) -> tensor<${M}x${N}xf32> {
+                       %init: tensor<${M}x${N}xf32>, %bias: ${biasTy}) -> tensor<${M}x${N}xf32> {
   %c = linalg.matmul ins(%a, %b : tensor<${M}x${K}xf16>, tensor<${K}x${N}xf16>) outs(%init : tensor<${M}x${N}xf32>) -> tensor<${M}x${N}xf32>
   %e = tensor.empty() : tensor<${M}x${N}xf32>
   %r = linalg.generic {
-    indexing_maps = [affine_map<(d0,d1)->(d0,d1)>, affine_map<(d0,d1)->(d1)>, affine_map<(d0,d1)->(d0,d1)>],
+    indexing_maps = [affine_map<(d0,d1)->(d0,d1)>, ${biasMap}, affine_map<(d0,d1)->(d0,d1)>],
     iterator_types = ["parallel", "parallel"]
-  } ins(%c, %bias : tensor<${M}x${N}xf32>, tensor<${N}xf32>) outs(%e : tensor<${M}x${N}xf32>) {
+  } ins(%c, %bias : tensor<${M}x${N}xf32>, ${biasTy}) outs(%e : tensor<${M}x${N}xf32>) {
   ^bb0(%v: f32, %bv: f32, %_: f32):
-    %t = arith.addf %v, %bv : f32
-    linalg.yield %t : f32
+${body}
   } -> tensor<${M}x${N}xf32>
   return %r : tensor<${M}x${N}xf32>
 }
@@ -144,15 +162,20 @@ B = rng.integers(${lo}, ${hi}+1, (${K}, ${N})).astype(np.float16)
 init = np.zeros((${M}, ${N}), dtype=np.float32)
 mm = A.astype(np.float32) @ B.astype(np.float32)
 out = mm.astype(np.float32)
-if ${with_bias}:
-    bias = rng.integers(1, 10, (${N},)).astype(np.float32)
-    out = out + bias
+with_bias = ${with_bias}
+if with_bias:
+    # with_bias==2 -> rank-2 [1,N] bias; else rank-1 [N].
+    if with_bias == 2:
+        bias = rng.integers(1, 10, (1, ${N})).astype(np.float32)
+    else:
+        bias = rng.integers(1, 10, (${N},)).astype(np.float32)
+    out = out + bias  # numpy broadcasts both forms over rows
 if ${with_relu}:
     out = np.maximum(out, 0.0)
 out = out.astype(np.float32)
 d = Path(sys.argv[1]); d.mkdir(parents=True, exist_ok=True)
 pairs = [("input_a",A),("input_b",B),("input_init",init),("input0",A),("input1",B),("input2",init),("output",out),("output0",out)]
-if ${with_bias}:
+if with_bias:
     pairs.append(("input_bias",bias))
     pairs.append(("input3",bias))
 for n, v in pairs:

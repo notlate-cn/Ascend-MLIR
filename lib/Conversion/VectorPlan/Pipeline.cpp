@@ -63,6 +63,20 @@ void registerVectorPlanPipeline() {
         // kernel group.  Without this, multi-op groups that mix parallel and
         // reduction iterators trip the tile-fuse assertions / IR domination.
         pm.addNestedPass<func::FuncOp>(mlir::createLinalgElementwiseOpFusionPass());
+        // Canonicalize size-1 dims AFTER fuse-elementwise.  Running fold here
+        // collapses the unit dims that fusion may have propagated through
+        // operands (e.g. a `tensor<1xNxf32>` bias pushed into a 3D
+        // matmul-as-generic iter `(par,par,par,red)`), restoring the
+        // canonical 2D matmul + rank-1 bias-add shape that `RestoreMatmul`
+        // and `isBiasAddGenericTensor` (TilePlanGen) expect.  Without this,
+        // `bias.unsqueeze(0)` patterns survive as 3D ops through tile-fuse
+        // and trip downstream RestoreMatmul (no `linalg.matmul` to restore →
+        // dead generic left after return → `func.return must be last op`).
+        pm.addPass(mlir::createLinalgFoldUnitExtentDimsPass());
+        // The collapse-shape inserts the fold-unit pass produces sometimes
+        // leaves a generic with a now-redundant collapse on its input.
+        // Canonicalize folds those tensor.collapse_shape↔expand_shape pairs.
+        pm.addPass(createCanonicalizerPass());
         // CV-fusion Phase 5 ([[af-cv-fusion-port]]): the generalize pass above
         // converts `linalg.matmul` into a generic with iter [par, par, red].
         // Downstream AscendCBufferPlacement / LinalgToAscendC walk for

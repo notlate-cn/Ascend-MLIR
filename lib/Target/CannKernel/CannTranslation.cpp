@@ -556,13 +556,27 @@ static bool hasSupportedMixFunctionSignature(func::FuncOp funcOp) {
       !isRankedMemrefOf(args[1].getType(), 2, f16))
     return false;
 
+  // A "bias-like" memref is either rank-1 [N] or rank-2 [1, N] (the latter
+  // appears when the source bias was `tensor<1xNxf32>` and fold-unit-extent
+  // collapsed the unit dim only inside the body, leaving the func arg type
+  // intact).  mm.SetBias() doesn't care about static shape — it treats
+  // biasGM as a 1D buffer of length N regardless.
+  auto isBiasLikeMemref = [&](Type t) {
+    if (isRankedMemrefOf(t, 1, f32)) return true;
+    auto mr = dyn_cast<MemRefType>(t);
+    if (!mr || mr.getRank() != 2 || mr.getElementType() != f32) return false;
+    auto shape = mr.getShape();
+    return shape[0] == 1 || shape[1] == 1;
+  };
   size_t idx = 2;
   if (hasBias) {
-    // Accept either order: (bias 1D, init 2D) or (init 2D, bias 1D).
-    bool order1 = isRankedMemrefOf(args[idx].getType(), 1, f32) &&
-                  isRankedMemrefOf(args[idx + 1].getType(), 2, f32);
+    // Accept either order: (bias, init 2D) or (init 2D, bias).
+    bool order1 = isBiasLikeMemref(args[idx].getType()) &&
+                  isRankedMemrefOf(args[idx + 1].getType(), 2, f32) &&
+                  !isBiasLikeMemref(args[idx + 1].getType());
     bool order2 = isRankedMemrefOf(args[idx].getType(), 2, f32) &&
-                  isRankedMemrefOf(args[idx + 1].getType(), 1, f32);
+                  !isBiasLikeMemref(args[idx].getType()) &&
+                  isBiasLikeMemref(args[idx + 1].getType());
     if (!order1 && !order2)
       return false;
     idx += 2;

@@ -772,15 +772,13 @@ static bool isReluGenericTensor(linalg::GenericOp gen) {
   if (body.getNumArguments() != 2)
     return false;
   arith::MaximumFOp maxOp;
-  arith::ConstantOp zeroConst;
   linalg::YieldOp yieldOp;
   for (Operation &op : body.getOperations()) {
     if (auto m = dyn_cast<arith::MaximumFOp>(op)) {
       if (maxOp) return false;
       maxOp = m;
-    } else if (auto c = dyn_cast<arith::ConstantOp>(op)) {
-      auto fa = dyn_cast<FloatAttr>(c.getValue());
-      if (fa && fa.getValue().isZero()) zeroConst = c;
+    } else if (isa<arith::ConstantOp>(op)) {
+      // Zero const may live inline or be hoisted to function scope.
     } else if (auto y = dyn_cast<linalg::YieldOp>(op)) {
       yieldOp = y;
     } else {
@@ -788,7 +786,7 @@ static bool isReluGenericTensor(linalg::GenericOp gen) {
     }
   }
   // Relu shape: max(arg0, 0.0); yield max.
-  return maxOp && zeroConst && yieldOp &&
+  return maxOp && yieldOp &&
          yieldOp.getNumOperands() == 1 &&
          yieldOp.getOperand(0) == maxOp.getResult();
 }
@@ -825,6 +823,57 @@ static bool isLeakyReluGenericTensor(linalg::GenericOp gen) {
          yieldOp.getOperand(0) == maxOp.getResult();
 }
 
+// Fused (bias-add + relu) form: a single trailing generic that consumes the
+// matmul result + a rank-1 bias, body has both addf and maximumf, yielding
+// the maximumf result.  This is what `--linalg-fuse-elementwise-ops`
+// produces when bias-add and relu were two separate generics in the source.
+static bool isFusedBiasAddReluGenericTensor(linalg::GenericOp gen) {
+  if (gen.getNumDpsInputs() != 2 || gen.getNumDpsInits() != 1 ||
+      !isParallelGenericTensor(gen))
+    return false;
+  if (!isRankedTensor(gen.getDpsInputOperand(0)->get(), 2) ||
+      !isRankedTensor(gen.getDpsInputOperand(1)->get(), 1) ||
+      !isRankedTensor(gen.getDpsInitOperand(0)->get(), 2))
+    return false;
+  Block &body = gen.getRegion().front();
+  if (body.getNumArguments() != 3)
+    return false;
+  arith::AddFOp addOp;
+  arith::MaximumFOp maxOp;
+  linalg::YieldOp yieldOp;
+  for (Operation &op : body.getOperations()) {
+    if (auto a = dyn_cast<arith::AddFOp>(op)) {
+      if (addOp) return false;
+      addOp = a;
+    } else if (auto m = dyn_cast<arith::MaximumFOp>(op)) {
+      if (maxOp) return false;
+      maxOp = m;
+    } else if (isa<arith::ConstantOp>(op)) {
+      // Allowed inline zero const; canonicalize may also hoist it to
+      // function scope where it appears as a captured operand of maxOp,
+      // so absence from the body is fine.
+    } else if (auto y = dyn_cast<linalg::YieldOp>(op)) {
+      yieldOp = y;
+    } else {
+      return false;
+    }
+  }
+  // yield(max(add(matmul_result, bias), 0.0))
+  return addOp && maxOp && yieldOp &&
+         yieldOp.getNumOperands() == 1 &&
+         yieldOp.getOperand(0) == maxOp.getResult();
+}
+
+// Same shape but without relu: a single trailing generic with addf only
+// (bias-add fused into a generic but no max op).  Mirrors
+// `isFusedBiasAddReluGenericTensor` minus the maximumf.
+static bool isFusedBiasAddGenericTensor(linalg::GenericOp gen) {
+  // Identical to `isBiasAddGenericTensor` — the "fused" name is for
+  // symmetry with the relu variant.  We could reuse it directly, but
+  // keeping the alias makes the classifyChain switch easier to read.
+  return isBiasAddGenericTensor(gen);
+}
+
 // Find the unique linalg.generic in `func` whose 1st DPS input is `value`
 // and which matches `predicate`.  Returns null on no/multiple matches.
 static linalg::GenericOp
@@ -856,6 +905,14 @@ classifyCubeEpilogueChain(func::FuncOp func, CubeKind cubeKind) {
   });
   if (!cur)
     return {false, "None"};
+  // First: try the *fused* shape that --linalg-fuse-elementwise-ops produces
+  // when bias-add and an activation lived in two source generics.  These
+  // single-generic patterns consume the matmul result directly.
+  if (auto fused = findChainedGenericInFunc(func, cur,
+                                            isFusedBiasAddReluGenericTensor))
+    return {true, "BiasAddRelu"};
+  // Otherwise fall back to the two-step chained form (e.g. when fuse did not
+  // happen because shapes/iter-types diverged).
   bool hasBias = false;
   if (auto bias = findChainedGenericInFunc(func, cur, isBiasAddGenericTensor)) {
     hasBias = true;
