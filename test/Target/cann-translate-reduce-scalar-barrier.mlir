@@ -1,7 +1,7 @@
 // RUN: afir-translate -mlir-to-cann %s | FileCheck %s
 
 // CHECK-LABEL: void reduce_scalar_barrier
-// CHECK: AscendC::PipeBarrier<PIPE_V>();
+// CHECK: AscendC::PipeBarrier<PIPE_ALL>();
 // CHECK-NEXT: {
 // CHECK: float _afir_acc = 0.0f;
 // CHECK: _afir_acc += static_cast<float>({{.*}}.GetValue(_afir_offset));
