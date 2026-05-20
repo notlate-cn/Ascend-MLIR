@@ -8,6 +8,8 @@
 #include "llvm/Support/Error.h"
 #include "llvm/Support/FormatVariadic.h"
 
+#include <cstdlib>
+#include <limits>
 #include <optional>
 #include <utility>
 
@@ -204,7 +206,26 @@ uint32_t magicForKernelKind(KernelKind kind) {
   return kMagicElfAiVec;
 }
 
-llvm::Expected<ExecutionResult> runWithExecutor(const ExecutionRequest &request) {
+llvm::Expected<int> resolveNpuDeviceIdFromEnv() {
+  const char *raw = std::getenv("ASCEND_DEVICE_ID");
+  if (!raw || !*raw)
+    return 0;
+
+  llvm::StringRef text(raw);
+  text = text.trim();
+  int64_t deviceId = 0;
+  if (text.empty() || text.getAsInteger(10, deviceId) || deviceId < 0 ||
+      deviceId > std::numeric_limits<int32_t>::max()) {
+    return llvm::createStringError(
+        llvm::inconvertibleErrorCode(),
+        "ASCEND_DEVICE_ID must be a non-negative integer, got '%s'", raw);
+  }
+  return static_cast<int>(deviceId);
+}
+
+llvm::Expected<ExecutionResult>
+runWithExecutor(const ExecutionRequest &request,
+                const NpuExecutionRunnerFactory &runnerFactory) {
   if (request.task.artifact.kernelKind == KernelKind::Mix) {
     if (request.task.artifact.sharedLibraryPath.empty()) {
       return stageError("artifact",
@@ -227,11 +248,17 @@ llvm::Expected<ExecutionResult> runWithExecutor(const ExecutionRequest &request)
     return stageError("bindings", argsOr.takeError());
   RunArgs args = std::move(*argsOr);
 
-  auto runnerOr = createDefaultExecutionRunner(ExecutionRunnerMode::RealDevice);
+  auto deviceIdOr = resolveNpuDeviceIdFromEnv();
+  if (!deviceIdOr)
+    return stageError("executor_initialize", deviceIdOr.takeError());
+
+  const NpuExecutionRunnerFactory &factory =
+      runnerFactory ? runnerFactory : createDefaultExecutionRunner;
+  auto runnerOr = factory(ExecutionRunnerMode::RealDevice);
   if (!runnerOr)
     return stageError("executor_initialize", runnerOr.takeError());
   std::unique_ptr<ExecutionRunner> runner = std::move(*runnerOr);
-  if (auto err = runner->initialize())
+  if (auto err = runner->initialize(*deviceIdOr))
     return stageError("executor_initialize", std::move(err));
 
   if (request.task.artifact.kernelKind == KernelKind::Mix) {
@@ -294,7 +321,11 @@ llvm::Expected<ExecutionResult> runWithDriver(
 } // namespace
 
 NpuBackend::NpuBackend(std::shared_ptr<ExecutionBackendDriver> driver)
-    : driver_(std::move(driver)) {}
+    : NpuBackend(std::move(driver), createDefaultExecutionRunner) {}
+
+NpuBackend::NpuBackend(std::shared_ptr<ExecutionBackendDriver> driver,
+                       NpuExecutionRunnerFactory runnerFactory)
+    : driver_(std::move(driver)), runnerFactory_(std::move(runnerFactory)) {}
 
 ExecutionBackendKind NpuBackend::kind() const {
   return ExecutionBackendKind::Npu;
@@ -323,7 +354,7 @@ llvm::Expected<ExecutionResult>
 NpuBackend::run(const ExecutionRequest &request) {
   if (driver_)
     return runWithDriver(request, *driver_);
-  return runWithExecutor(request);
+  return runWithExecutor(request, runnerFactory_);
 }
 
 } // namespace mlir::runtime

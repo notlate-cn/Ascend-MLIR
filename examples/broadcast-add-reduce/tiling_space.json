@@ -7,18 +7,23 @@
     {
       "name": "TB_M",
       "type": "int64",
-      "min": 64, "max": 64, "step": 64,
-      "note": "M=640 must be TB_M multiple (no tail block); DataCopy half requires >= 16 elements"
+      "min": 16, "max": 16, "step": 16,
+      "note": "M=640 must be TB_M multiple. Keep TB_M=TB_N so each block has one row tile and does not re-register large UB buffers inside the block."
     },
     {
       "name": "TB_N",
       "type": "int64",
-      "values": [15000],
-      "note": "Reduction kernel processes full row at once; TB_N=N kept for framework compat"
+      "values": [16],
+      "note": "Inner row tile. Keep >=16 half elements for aligned row/output DataCopy while reduction is chunked separately."
+    },
+    {
+      "name": "Tb_M",
+      "type": "int64",
+      "values": [512],
+      "note": "Reduction-axis chunk size. Current demo uses N=512, so this is a single full reduction chunk."
     },
     {"name": "dim_arg0_0", "type": "int64", "fixed": true, "shape_key": "M"},
     {"name": "dim_arg1_1", "type": "int64", "fixed": true, "shape_key": "N"},
-    {"name": "dim_arg0_1", "type": "int64", "fixed": true, "shape_key": "M"},
-    {"name": "dim_arg1_0", "type": "int64", "fixed": true, "shape_key": "N"}
+    {"name": "dim_arg1_0", "type": "int64", "fixed": true, "shape_key": "M"}
   ]
 }
