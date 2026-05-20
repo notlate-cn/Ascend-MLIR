@@ -33,6 +33,7 @@ add_mlir_library(MLIRAutoFuse
   TileFuse/CubeEmitter.cpp
   TileFuse/RestoreMatmul.cpp
   TileInfo/TilePlanToTileInfo.cpp
+  Verify/VerifyTilingInfoSchemaPass.cpp
   Pipeline.cpp
 
   ADDITIONAL_HEADER_DIRS

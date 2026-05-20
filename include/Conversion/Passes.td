@@ -542,6 +542,12 @@ def AutoFuseTileFuse : Pass<"auto-fuse-tile-fuse", "mlir::ModuleOp"> {
   let dependentDialects = ["mlir::linalg::LinalgDialect", "mlir::scf::SCFDialect", "mlir::tensor::TensorDialect", "mlir::func::FuncDialect", "mlir::bufferization::BufferizationDialect"];
 }
 
+def AutoFuseVerifyTilingInfoSchema : Pass<"auto-fuse-verify-tiling-info-schema", "mlir::func::FuncOp"> {
+  let summary = "Verify auto_fuse.tiling_infos schema internal + IR consistency";
+  let constructor = "mlir::afir::createAutoFuseVerifyTilingInfoSchemaPass()";
+  let dependentDialects = ["mlir::func::FuncDialect", "mlir::memref::MemRefDialect"];
+}
+
 def AutoFuseSplitRCoreGroup : Pass<"auto-fuse-split-rcore-group", "mlir::ModuleOp"> {
   let summary = "Split a full-reduce private kernel into partial+combine kernels (RCore)";
   let description = [{

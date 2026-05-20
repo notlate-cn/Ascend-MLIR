@@ -129,6 +129,11 @@ void registerAutoFusePipeline() {
         pm.addPass(createCanonicalizerPass());
         pm.addPass(createCSEPass());
         pm.addNestedPass<func::FuncOp>(createAscendCFlattenGMPtrPass());
+        // Cross-check the auto_fuse.tiling_infos schema against the (now
+        // bufferized) kernel signature before PackTilingData consumes the
+        // indices blindly.  Hard-fails on any schema↔IR inconsistency.
+        pm.addNestedPass<func::FuncOp>(
+            createAutoFuseVerifyTilingInfoSchemaPass());
         pm.addNestedPass<func::FuncOp>(createAscendCPackTilingDataPass());
         pm.addNestedPass<func::FuncOp>(createAscendCFinalizeKernelPass());
         pm.addPass(createCSEPass());

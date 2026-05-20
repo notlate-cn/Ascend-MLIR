@@ -16,6 +16,7 @@ std::unique_ptr<Pass> createAutoFuseFoldShadowAllocPass();
 std::unique_ptr<Pass> createAutoFuseIsolateKernelOutputsPass();
 std::unique_ptr<Pass> createAutoFuseSplitRCoreGroupPass();
 std::unique_ptr<Pass> createAutoFuseRestoreMatmulPass();
+std::unique_ptr<Pass> createAutoFuseVerifyTilingInfoSchemaPass();
 
 // Split every full-reduce private kernel func in `module` into a partial +
 // combine pair (RCore template), rewriting coordinator call sites
