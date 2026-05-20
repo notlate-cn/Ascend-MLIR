@@ -13,8 +13,8 @@
     {
       "name": "TB_N",
       "type": "int64",
-      "values": [64],
-      "note": "intra-core UB batch tile of N-axis; TB_N=TB_M so inner loop runs once per block"
+      "values": [16],
+      "note": "intra-core UB batch tile of N-axis; TB_N=16 keeps real 910C UB live set within hardware bounds"
     },
     {"name": "dim_arg0_0", "type": "int64", "fixed": true, "shape_key": "M"},
     {"name": "dim_arg1_0", "type": "int64", "fixed": true, "shape_key": "N"},

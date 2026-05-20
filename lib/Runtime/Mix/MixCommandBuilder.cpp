@@ -229,23 +229,18 @@ std::vector<std::string> buildHostSharedLinkCommand(llvm::StringRef hostStubObje
                                                     llvm::StringRef outputSo,
                                                     llvm::StringRef socVersion,
                                                     llvm::StringRef deviceLibDir) {
+  (void)socVersion;
   std::string ascendHome = findAscendHome();
   std::string runnerLib64 = findAscendLib64Dir(ascendHome);
-  std::string runnerSimLibDir = findAscendSimulatorLibDir(ascendHome, socVersion);
-  std::string davSimLibDir = findAscendDavSimulatorLibDir(ascendHome);
   std::vector<std::string> cmd = {getHostCxxPath(),
                                   "-fPIC",
                                   "-shared",
-                                  "-Wl,-rpath-link," + runnerLib64,
-                                  "-Wl,-rpath-link," + runnerSimLibDir,
-                                  "-Wl,-rpath-link," + davSimLibDir};
+                                  "-Wl,-rpath-link," + runnerLib64};
   if (!deviceLibDir.empty())
     cmd.push_back("-Wl,-rpath-link," + deviceLibDir.str());
   cmd.push_back("-o");
   cmd.push_back(outputSo.str());
   cmd.push_back(hostStubObject.str());
-  cmd.push_back("-L" + runnerSimLibDir);
-  cmd.push_back("-L" + davSimLibDir);
   cmd.push_back("-L" + runnerLib64);
   if (!deviceLibDir.empty())
     cmd.push_back("-L" + deviceLibDir.str());
@@ -257,10 +252,6 @@ std::vector<std::string> buildHostSharedLinkCommand(llvm::StringRef hostStubObje
   cmd.push_back("-lascendalog");
   cmd.push_back("-lunified_dlog");
   cmd.push_back("-ldl");
-  cmd.push_back("-lruntime_camodel");
-  cmd.push_back("-lnpu_drv");
-  cmd.push_back("-lstars");
-  cmd.push_back("-lmodel_top");
   cmd.push_back("-lerror_manager");
   cmd.push_back("-lprofapi");
   cmd.push_back("-lge_common_base");

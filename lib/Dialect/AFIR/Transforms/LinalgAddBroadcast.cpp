@@ -140,7 +140,8 @@ std::pair<SmallVector<int64_t>, SmallVector<int64_t>> computeTransposeBroadcast(
 void makeCollapseShape(linalg::LinalgOp op, SmallVector<AffineMap> &newIndexingMap, PatternRewriter &rewriter) {
   auto loc = op.getLoc();
   for (auto [idx, oper] : llvm::enumerate(op.getDpsInputOperands())) {
-    AffineMap map = newIndexingMap[idx];
+    auto operandIndex = static_cast<unsigned>(idx);
+    AffineMap map = newIndexingMap[operandIndex];
     SmallVector<unsigned> broadcastDims(map.getBroadcastDims());
     if (broadcastDims.size()) {
       AffineMap newMap(map);
@@ -177,8 +178,8 @@ void makeCollapseShape(linalg::LinalgOp op, SmallVector<AffineMap> &newIndexingM
       reassociation.pop_back();
       reassociation.erase(reassociation.begin());
       Value newOper = rewriter.create<tensor::CollapseShapeOp>(loc, oper->get(), reassociation);
-      rewriter.modifyOpInPlace(op, [&]() { op->setOperand(idx, newOper); });
-      newIndexingMap[idx] = newMap;
+      rewriter.modifyOpInPlace(op, [&]() { op->setOperand(operandIndex, newOper); });
+      newIndexingMap[operandIndex] = newMap;
     }
   }
   if (op.getIndexingMapsArray() != newIndexingMap) {

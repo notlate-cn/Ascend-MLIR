@@ -346,8 +346,8 @@ run_vec_example \
   "    { \"name\": \"a\", \"path\": \"${PROJECT_ROOT}/examples/broadcast-add-reduce/input_a.npy\" },
     { \"name\": \"b\", \"path\": \"${PROJECT_ROOT}/examples/broadcast-add-reduce/input_b.npy\" }" \
   "${PROJECT_ROOT}/examples/broadcast-add-reduce/output_c.npy" \
-  "TB_M=64,TB_N=15000,dim_arg0_0=640,dim_arg1_1=15000,dim_arg0_1=640,dim_arg1_0=15000" \
-  "10" "10" "1e-2"
+  "TB_M=16,TB_N=16,Tb_M=512,dim_arg0_0=640,dim_arg1_1=512,dim_arg1_0=640" \
+  "40" "10" "1e-2"
 fi
 
 if should_run_example "gather-elementwise-fusion"; then
@@ -358,8 +358,8 @@ run_vec_example \
     { \"name\": \"indices\", \"path\": \"${PROJECT_ROOT}/examples/gather-elementwise-fusion/input_indices.npy\" },
     { \"name\": \"bias\", \"path\": \"${PROJECT_ROOT}/examples/gather-elementwise-fusion/input_bias.npy\" }" \
   "${PROJECT_ROOT}/examples/gather-elementwise-fusion/output_out.npy" \
-  "TB_M=64,TB_N=1,dim_arg0_0=512,dim_arg1_0=256,dim_arg0_1=640,dim_arg1_1=256" \
-  "8" "10" "1e-2" "step8_kernel_gen.cpp"
+  "TB_M=16,TB_N=16,dim_arg0_0=16,dim_arg1_0=128,dim_arg0_1=640,dim_arg2_0=128" \
+  "1" "10" "1e-2" "step8_kernel_gen.cpp"
 fi
 
 if should_run_example "split-relu-brc-add-mul"; then

@@ -14,6 +14,7 @@
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
+#include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/IRMapping.h"
@@ -26,6 +27,7 @@
 #include "llvm/Support/JSON.h"
 #include "llvm/Support/raw_ostream.h"
 
+#include <algorithm>
 #include <limits>
 #include <functional>
 #include <string>
@@ -2277,9 +2279,13 @@ static void fixBrokenOpEmitters(Operation *moduleOp) {
 
   // GatherL2Op with i64 indices → verbatim
   //
-  // AscendC::Gather requires LocalTensor<uint32_t> indices. Gather lowering
-  // currently feeds LocalTensor<int64_t> when the original indices memref is
-  // i64, so generate an explicit VECCALC staging buffer and cast loop.
+  // AscendC::Gather requires LocalTensor<uint32_t> byte offsets. Gather
+  // lowering currently feeds LocalTensor<int64_t> element indices when the
+  // original indices memref is i64. Convert those indices once before the row
+  // loop and reuse the uint32_t byte-offset tensor for each row. Keeping the
+  // scratch TBuf outside the hot row loop avoids repeated InitBuffer calls that
+  // can trip real-device UB bounds checks.
+  unsigned gatherScratchId = 0;
   moduleOp->walk([&](ascendc::GatherL2Op op) {
     auto indicesType =
         dyn_cast<ascendc::LocalTensorType>(op.getSrcOffset().getType());
@@ -2301,20 +2307,54 @@ static void fixBrokenOpEmitters(Operation *moduleOp) {
 
     rewriter.setInsertionPoint(op);
     Location loc = op.getLoc();
-    std::string tmpl = "{\n";
-    tmpl += "  AscendC::TBuf<AscendC::TPosition::VECCALC> _afir_idx32_tbuf;\n";
-    tmpl += "  $5.InitBuffer(_afir_idx32_tbuf, (uint32_t)$4 * sizeof(uint32_t));\n";
-    tmpl +=
-        "  AscendC::LocalTensor<uint32_t> _afir_idx32 = _afir_idx32_tbuf.Get<uint32_t>();\n";
-    tmpl +=
-        "  for (uint32_t _afir_i = 0; _afir_i < static_cast<uint32_t>($4); _afir_i++) {\n";
-    tmpl +=
-        "    _afir_idx32.SetValue(_afir_i, static_cast<uint32_t>($2.GetValue(_afir_i)));\n";
-    tmpl += "  }\n";
-    tmpl += "  AscendC::Gather($0, $1, _afir_idx32, $3, $4);\n}";
+    auto srcElemType =
+        cast<ascendc::LocalTensorType>(op.getSrc().getType()).getElementType();
+    unsigned srcElemBytes =
+        std::max<unsigned>(1, srcElemType.getIntOrFloatBitWidth() / 8);
+    unsigned maxGatherCount = srcElemBytes <= 2 ? 128 : (srcElemBytes <= 4 ? 64 : 32);
 
-    SmallVector<Value> args = {op.getDst(), op.getSrc(), op.getSrcOffset(),
-                               op.getSrcBaseAddr(), op.getCount(), pipeVal};
+    unsigned scratchId = gatherScratchId++;
+    std::string tbufName =
+        "_afir_idx32_tbuf_" + std::to_string(scratchId);
+    std::string tensorName = "_afir_idx32_" + std::to_string(scratchId);
+
+    Operation *preludeInsertionPoint = op.getOperation();
+    if (auto rowLoop = op->getParentOfType<scf::ForOp>())
+      preludeInsertionPoint = rowLoop.getOperation();
+    rewriter.setInsertionPoint(preludeInsertionPoint);
+    std::string prelude;
+    prelude += "AscendC::TBuf<AscendC::TPosition::VECCALC> " + tbufName +
+               ";\n";
+    prelude += "$0.InitBuffer(" + tbufName +
+               ", (uint32_t)$1 * sizeof(uint32_t));\n";
+    prelude += "AscendC::LocalTensor<uint32_t> " + tensorName + " = " +
+               tbufName + ".Get<uint32_t>();\n";
+    prelude +=
+        "for (uint32_t _afir_i = 0; _afir_i < static_cast<uint32_t>($1); _afir_i++) {\n";
+    prelude += "  " + tensorName +
+               ".SetValue(_afir_i, static_cast<uint32_t>($2.GetValue(_afir_i)) * " +
+               std::to_string(srcElemBytes) + ");\n";
+    prelude += "}";
+    prelude += "\nAscendC::PipeBarrier<PIPE_V>()";
+    rewriter.create<emitasc::VerbatimOp>(
+        loc, rewriter.getStringAttr(prelude),
+        ValueRange({pipeVal, op.getCount(), op.getSrcOffset()}));
+
+    rewriter.setInsertionPoint(op);
+    std::string tmpl = "{\n";
+    tmpl += "  uint32_t _afir_gather_count = static_cast<uint32_t>($3);\n";
+    tmpl += "  for (uint32_t _afir_off = 0; _afir_off < _afir_gather_count; _afir_off += " +
+            std::to_string(maxGatherCount) + ") {\n";
+    tmpl += "    uint32_t _afir_chunk = ((_afir_gather_count - _afir_off) < " +
+            std::to_string(maxGatherCount) + ") ? (_afir_gather_count - _afir_off) : " +
+            std::to_string(maxGatherCount) + ";\n";
+    tmpl += "    AscendC::Gather($0[_afir_off], $1, " + tensorName +
+            "[_afir_off], $2, _afir_chunk);\n";
+    tmpl += "  }\n}";
+    tmpl += "\nAscendC::PipeBarrier<PIPE_V>()";
+
+    SmallVector<Value> args = {op.getDst(), op.getSrc(), op.getSrcBaseAddr(),
+                               op.getCount()};
     rewriter.create<emitasc::VerbatimOp>(
         loc, rewriter.getStringAttr(tmpl), ValueRange(args));
     rewriter.eraseOp(op);
@@ -2325,12 +2365,12 @@ static void fixBrokenOpEmitters(Operation *moduleOp) {
   // AR layout: src[rows, cols] → dst[rows] by summing each row.
   // RA layout: not yet implemented.
   //
-  // Uses AscendC::ReduceSum<half> per-row with a 32-byte scratch VECCALC TBuf.
-  // GetValue/SetValue scalar loops over individual elements are avoided because
-  // the simulator's LocalTensor::GetValue() does not correctly access elements
-  // beyond the first 16 when called on a TBuf::Get() tensor allocated inside a
-  // loop (the simulator does not update the LocalTensor's internal size field
-  // for loop-iteration-dependent InitBuffer calls).
+  // Uses the adv_api ReduceSum AR path for row-wise reductions.  CANN 9.1's
+  // adv_api ReduceSum supports float, while the basic half ReduceSum count-mode
+  // path and scalar SetValue/GetValue based stitching are not reliable in the
+  // simulator for this generated kernel shape.  For f16 tensors, cast the
+  // source tile to f32, reduce in f32 with isReuseSource=true, then cast the
+  // row result back to f16.
   //
   // We look up InitBuffer/InitQueue ops in the IR to get the byte-lengths as
   // explicit SSA operands ($2 = dst_queue_bytes = rows*2,
@@ -2394,20 +2434,29 @@ static void fixBrokenOpEmitters(Operation *moduleOp) {
         tmpl += "  uint32_t _afir_cols = (uint32_t)($1.GetSize() / $0.GetSize());\n";
         pipeRef = "$2";
       }
-      // Use TWO separate TBufs: _afir_tbuf_dst (result) and _afir_tbuf_ws (workspace).
-      // ReduceSum requires dst != sharedTmpBuffer; aliasing them gives wrong results
-      // on arch 3101 because the intermediate tree-reduction overwrites the output.
-      tmpl += "  AscendC::TBuf<AscendC::TPosition::VECCALC> _afir_tbuf_dst;\n";
-      tmpl += "  AscendC::TBuf<AscendC::TPosition::VECCALC> _afir_tbuf_ws;\n";
-      tmpl += "  " + pipeRef + ".InitBuffer(_afir_tbuf_dst, 32);\n";
-      tmpl += "  " + pipeRef + ".InitBuffer(_afir_tbuf_ws, 32);\n";
-      tmpl += "  AscendC::LocalTensor<half> _afir_scalar = _afir_tbuf_dst.Get<half>();\n";
-      tmpl += "  AscendC::LocalTensor<half> _afir_ws = _afir_tbuf_ws.Get<half>();\n";
-      tmpl += "  for (uint32_t _afir_r = 0; _afir_r < _afir_rows; _afir_r++) {\n";
-      tmpl += "    AscendC::ReduceSum<half>(_afir_scalar, $1[_afir_r * _afir_cols],\n";
-      tmpl += "                            _afir_ws, (int32_t)_afir_cols);\n";
-      tmpl += "    $0.SetValue(_afir_r, _afir_scalar.GetValue(0));\n";
-      tmpl += "  }\n}";
+      auto srcElemType =
+          cast<ascendc::LocalTensorType>(op.getSrc().getType()).getElementType();
+      if (srcElemType.isF16()) {
+        tmpl += "  uint32_t _afir_src_elems = _afir_rows * _afir_cols;\n";
+        tmpl += "  AscendC::TBuf<AscendC::TPosition::VECCALC> _afir_src_f32_tbuf;\n";
+        tmpl += "  AscendC::TBuf<AscendC::TPosition::VECCALC> _afir_dst_f32_tbuf;\n";
+        tmpl += "  " + pipeRef + ".InitBuffer(_afir_src_f32_tbuf, _afir_src_elems * sizeof(float));\n";
+        tmpl += "  " + pipeRef + ".InitBuffer(_afir_dst_f32_tbuf, _afir_rows * sizeof(float));\n";
+        tmpl += "  AscendC::LocalTensor<float> _afir_src_f32 = _afir_src_f32_tbuf.Get<float>();\n";
+        tmpl += "  AscendC::LocalTensor<float> _afir_dst_f32 = _afir_dst_f32_tbuf.Get<float>();\n";
+        tmpl += "  AscendC::Cast(_afir_src_f32, $1, AscendC::RoundMode::CAST_NONE,\n";
+        tmpl += "                _afir_src_elems);\n";
+        tmpl += "  uint32_t _afir_shape[2] = {_afir_rows, _afir_cols};\n";
+        tmpl += "  AscendC::ReduceSum<float, AscendC::Pattern::Reduce::AR, true>(\n";
+        tmpl += "      _afir_dst_f32, _afir_src_f32, _afir_shape, false);\n";
+        tmpl += "  AscendC::Cast($0, _afir_dst_f32, AscendC::RoundMode::CAST_NONE,\n";
+        tmpl += "                _afir_rows);\n";
+      } else {
+        tmpl += "  uint32_t _afir_shape[2] = {_afir_rows, _afir_cols};\n";
+        tmpl += "  AscendC::ReduceSum<float, AscendC::Pattern::Reduce::AR, true>(\n";
+        tmpl += "      $0, $1, _afir_shape, false);\n";
+      }
+      tmpl += "}";
     } else {
       tmpl += "  // RA layout not yet implemented\n}";
     }

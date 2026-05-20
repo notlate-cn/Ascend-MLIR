@@ -12,4 +12,12 @@ target_include_directories(runtime-session PRIVATE
   ${CMAKE_SOURCE_DIR}/include
 )
 
-add_dependencies(runtime-session mix-tiling-helper)
+if(ASCEND_RUNTIME_SESSION_RUN_ONLY)
+  target_compile_definitions(runtime-session PRIVATE
+    ASCEND_RUNTIME_SESSION_RUN_ONLY=1)
+  target_link_options(runtime-session PRIVATE "LINKER:--as-needed")
+endif()
+
+if(NOT ASCEND_RUNTIME_SESSION_RUN_ONLY)
+  add_dependencies(runtime-session mix-tiling-helper)
+endif()

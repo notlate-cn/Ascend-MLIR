@@ -2,6 +2,7 @@
 
 #include "gtest/gtest.h"
 
+#include <algorithm>
 #include <string>
 #include <vector>
 
@@ -21,4 +22,17 @@ TEST(MixCommandBuilderTest, CarriesBiasShapeToExternalHelper) {
     }
   }
   EXPECT_TRUE(sawBiasShape);
+}
+
+TEST(MixCommandBuilderTest, HostSharedLinkAvoidsSimulatorOnlyLibraries) {
+  auto cmd = buildHostSharedLinkCommand("host_stub.o", "kernel.so",
+                                        "Ascend910B1", "/tmp/device-lib");
+
+  EXPECT_EQ(std::find(cmd.begin(), cmd.end(), "-lruntime_camodel"), cmd.end());
+  EXPECT_EQ(std::find(cmd.begin(), cmd.end(), "-lnpu_drv"), cmd.end());
+  EXPECT_EQ(std::find(cmd.begin(), cmd.end(), "-lstars"), cmd.end());
+  EXPECT_EQ(std::find(cmd.begin(), cmd.end(), "-lmodel_top"), cmd.end());
+  EXPECT_FALSE(std::any_of(cmd.begin(), cmd.end(), [](const std::string &arg) {
+    return arg.find("/simulator/") != std::string::npos;
+  }));
 }

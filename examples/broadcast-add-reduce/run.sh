@@ -79,7 +79,7 @@ echo ""
 echo "==================== [STAGE 2] Tiling：--transform-interpreter ===================="
 log "  输入: step2_transform.mlir（含 Transform 脚本）"
 log "  策略: 沿 Parallel 轴(d0=M) 做两级切分 TB/Tb"
-log "         Reduction 轴(d1=N) 不切，保持完整 N 规约"
+log "         Reduction 轴(d1=N) 按 chunk 切分并累加 partial sum"
 $AFIR_OPT --transform-interpreter "$DIR/step2_transform.mlir" --canonicalize --cse -o "$DIR/step2_tiled.mlir" 2>&1
 log "  ✓ Tiling 成功，输出: step2_tiled.mlir"
 log ""
@@ -207,8 +207,8 @@ log "$(head -20 "$DIR/step8_kernel.cpp")"
 # ── STAGE 8b: Generate test data ───────────────────────────────────────────
 echo ""
 echo "==================== [STAGE 8b] 生成测试数据：gen_data.py ===================="
-log "  M=640, N=15000, seed=42"
-"$PYTHON" "$DIR/gen_data.py" --m 640 --n 15000 --seed 42 --out-dir "$DIR" 2>&1
+log "  M=640, N=512, seed=42"
+"$PYTHON" "$DIR/gen_data.py" --m 640 --n 512 --seed 42 --out-dir "$DIR" 2>&1
 log "  ✓ 生成成功：input_a.npy, input_b.npy, output_c.npy"
 
 
@@ -235,7 +235,7 @@ log "  ✓ Compile 成功，输出: $ARTIFACT_ROOT"
 # ── STAGE 10: Run and verify ────────────────────────────────────────────────
 echo ""
 echo "==================== [STAGE 10] Run + Verify ===================="
-log "  使用参数：TB_M=64, TB_N=15000, M=640, N=15000, block-dim=10"
+log "  使用参数：TB_M=16, TB_N=16, Tb_M=512, M=640, N=512, block-dim=40"
 VALIDATION_LOG="$BUILD_DIR/runtime_session.log"
 cat > "$RUN_MANIFEST" <<EOF
 {
@@ -254,9 +254,9 @@ cat > "$RUN_MANIFEST" <<EOF
   ],
   "tiling": {
     "schema": "${DIR}/tiling_space.json",
-    "params": "TB_M=64,TB_N=15000,dim_arg0_0=640,dim_arg1_1=15000,dim_arg0_1=640,dim_arg1_0=15000"
+    "params": "TB_M=16,TB_N=16,Tb_M=512,dim_arg0_0=640,dim_arg1_1=512,dim_arg1_0=640"
   },
-  "block_dim": 10,
+  "block_dim": 40,
   "workspace_size": 16777216,
   "profiling": true,
   "atol": 10,

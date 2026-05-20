@@ -16,6 +16,7 @@
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
+#include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/Builders.h"
@@ -92,6 +93,121 @@ static Value getRootAlloc(Value v) {
   while (auto subview = v.getDefiningOp<memref::SubViewOp>())
     v = subview.getSource();
   return v;
+}
+
+static bool isValueOffset(OpFoldResult ofr, Value value) {
+  if (auto offsetValue = dyn_cast<Value>(ofr))
+    return offsetValue == value;
+  return false;
+}
+
+static bool genericHasReductionIterator(linalg::GenericOp genericOp) {
+  return llvm::any_of(genericOp.getIteratorTypesArray(),
+                      [](utils::IteratorType iteratorType) {
+                        return iteratorType == utils::IteratorType::reduction;
+                      });
+}
+
+static linalg::GenericOp findReductionGenericWriting(Value memref) {
+  Value root = getRootAlloc(memref);
+  for (Operation *user : root.getUsers()) {
+    auto genericOp = dyn_cast<linalg::GenericOp>(user);
+    if (!genericOp || !genericHasReductionIterator(genericOp))
+      continue;
+    for (Value init : genericOp.getDpsInits()) {
+      if (getRootAlloc(init) == root)
+        return genericOp;
+    }
+  }
+  return nullptr;
+}
+
+static scf::ForOp findReductionTileLoop(linalg::GenericOp genericOp) {
+  if (!genericOp)
+    return nullptr;
+
+  auto iterTypes = genericOp.getIteratorTypesArray();
+  auto maps = genericOp.getIndexingMapsArray();
+  unsigned iterRank = iterTypes.size();
+  SmallVector<unsigned> reductionDims;
+  for (unsigned d = 0; d < iterRank; ++d)
+    if (iterTypes[d] == utils::IteratorType::reduction)
+      reductionDims.push_back(d);
+  if (reductionDims.empty())
+    return nullptr;
+
+  SmallVector<scf::ForOp> enclosingLoops;
+  for (Operation *parent = genericOp->getParentOp(); parent;
+       parent = parent->getParentOp()) {
+    if (auto forOp = dyn_cast<scf::ForOp>(parent))
+      enclosingLoops.push_back(forOp);
+  }
+
+  for (scf::ForOp forOp : enclosingLoops) {
+    Value iv = forOp.getInductionVar();
+    for (unsigned inputIdx = 0; inputIdx < genericOp.getNumDpsInputs();
+         ++inputIdx) {
+      AffineMap map = maps[inputIdx];
+      if (map.getNumResults() != iterRank)
+        continue;
+      Value input = genericOp.getDpsInputOperand(inputIdx)->get();
+      auto subview = input.getDefiningOp<memref::SubViewOp>();
+      if (!subview)
+        continue;
+      SmallVector<OpFoldResult> offsets = subview.getMixedOffsets();
+      for (unsigned reductionDim : reductionDims) {
+        if (reductionDim < offsets.size() &&
+            isValueOffset(offsets[reductionDim], iv))
+          return forOp;
+      }
+    }
+  }
+
+  return nullptr;
+}
+
+static void emitAddPreviousReductionPartial(OpBuilder &builder, Location loc,
+                                            MLIRContext *mlirCtx,
+                                            AscendCBufferContext &ctx,
+                                            scf::ForOp reductionLoop,
+                                            Value dst, Value srcLt,
+                                            Value count, Type elemType) {
+  if (!reductionLoop || !count)
+    return;
+
+  Value isNotFirst = builder.create<arith::CmpIOp>(
+      loc, arith::CmpIPredicate::ne, reductionLoop.getInductionVar(),
+      reductionLoop.getLowerBound());
+  auto ifOp = builder.create<scf::IfOp>(loc, isNotFirst, /*withElseRegion=*/false);
+
+  OpBuilder::InsertionGuard guard(builder);
+  builder.setInsertionPointToStart(&ifOp.getThenRegion().front());
+
+  Value dstGt =
+      builder.create<GlobalTensorOp>(loc, GlobalTensorType::get(elemType));
+  builder.create<GlobalTensorSetGlobalBufferOp>(loc, dstGt, dst,
+                                                 /*size=*/Value{});
+
+  unsigned elemBytes = elemType.getIntOrFloatBitWidth() / 8;
+  Value byteSize = builder.create<arith::MulIOp>(
+      loc, count, builder.create<arith::ConstantIndexOp>(loc, elemBytes));
+  Value oldTbuf =
+      builder.create<TBufOp>(loc, TBufType::get(mlirCtx, TPosition::VECIN));
+  builder.create<TPipeInitBufferOp>(loc, ctx.pipe, oldTbuf, byteSize);
+  Value oldQueue =
+      builder.create<QueueOp>(loc, QueueType::get(mlirCtx, TPosition::VECIN, 1));
+  Value depth = builder.create<arith::ConstantOp>(
+      loc, builder.getI32IntegerAttr(1));
+  builder.create<TPipeInitQueueOp>(loc, ctx.pipe, oldQueue, depth, byteSize);
+
+  Value oldLt = builder.create<TQueBindAllocTensorOp>(
+      loc, LocalTensorType::get(elemType), oldQueue);
+  builder.create<DataCopyL2Op>(loc, oldLt, dstGt, count);
+  builder.create<TQueBindEnqueTensorOp>(loc, oldQueue, oldLt);
+  Value oldDequeued = builder.create<TQueBindDequeTensorOp>(
+      loc, LocalTensorType::get(elemType), oldQueue);
+  builder.create<AddL2Op>(loc, srcLt, srcLt, oldDequeued, count);
+  builder.create<TQueBindFreeTensorOp>(loc, oldQueue, oldDequeued);
 }
 
 LogicalResult convertDataMove(func::FuncOp funcOp,
@@ -411,6 +527,13 @@ LogicalResult convertDataMove(func::FuncOp funcOp,
       builder.create<GlobalTensorSetGlobalBufferOp>(loc, dstGt, dst,
                                                      /*size=*/Value{});
       Value count = computeElementCount(builder, loc, src);
+      if (linalg::GenericOp producer = findReductionGenericWriting(src)) {
+        if (scf::ForOp reductionLoop = findReductionTileLoop(producer)) {
+          emitAddPreviousReductionPartial(
+              builder, loc, mlirCtx, ctx, reductionLoop, dst, srcLt, count,
+              cast<MemRefType>(src.getType()).getElementType());
+        }
+      }
       builder.create<DataCopyL2Op>(loc, dstGt, srcLt, count);
       builder.create<TQueBindFreeTensorOp>(loc, srcQueue, srcLt);
       copyOp.erase();

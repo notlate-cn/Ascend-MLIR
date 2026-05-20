@@ -1,6 +1,7 @@
 # ide files
 /.claude/
 /.idea/
+/.vscode/
 **/.idea/
 /.cache
 /.gitcode/*
@@ -9,6 +10,7 @@
 # build files
 build/
 output/
+out/
 build-*/
 *.pt
 *.log

@@ -66,8 +66,8 @@ module {
           %50 = ascendc.global_tensor.bracket %38(%49) : !ascendc.global_tensor<*xf16>, index, !ascendc.global_tensor<*xf16>
           %51 = ascendc.tbuf.get_tensor %17 : !ascendc.tbuf<veccalc>, !ascendc.local_tensor<*xf16>
           ascendc.data_copy_l2 %51, %50, %34 : !ascendc.local_tensor<*xf16>, !ascendc.global_tensor<*xf16>, index
-          %52 = arith.muli %arg7, %37 : index
-          %53 = ascendc.tbuf.get_with_offset %18, %37, %52 : !ascendc.tbuf<vecout>, index, index, !ascendc.local_tensor<*xf16>
+          %52 = arith.muli %arg7, %14 : index
+          %53 = ascendc.local_tensor.subindex %36[%52] : !ascendc.local_tensor<*xf16>, index, !ascendc.local_tensor<*xf16>
           ascendc.gather_l2 %53, %51, %31, %c0_i32, %35 : !ascendc.local_tensor<*xf16>, !ascendc.local_tensor<*xf16>, !ascendc.local_tensor<*xi64>, i32, i32
           ascendc.pipe.init_buffer %8, %16, %37 : !ascendc.tbuf<veccalc>, index
           %54 = ascendc.tbuf.get_tensor %16 : !ascendc.tbuf<veccalc>, !ascendc.local_tensor<*xf16>
