@@ -247,9 +247,18 @@ grep -R "errorStr" -n \
 ### 3.7 当前实测结论
 - run-only `runtime-session` 在 7 卡真机上可以完成最小 `const640` kernel 的 launch、D2H 和 expected-output 校验，结果为 `session.result=success` / `session.validation=pass`。
 - `examples/real-npu-microcases` 已通过 containerized run-only 真机验证：
-  - 远端 job：`/data/{username}/real-npu-jobs/20260519-151405-microcase-relu-maxs-microcases`
+  - 远端 job：`/data/{username}/real-npu-jobs/20260520-020245-2ecc4d4-real-microcases-microcases`
   - 覆盖 `const640`、copy variants、`relu_only` 和 `broadcast_add`
   - 每个 case 均为 `session.backend=npu` / `session.result=success` / `session.validation=pass`
+- real-NPU containerized suite 已通过：
+  - 命令：`scripts/sync-and-submit.sh --case all --ref 2ecc4d4-real-all --device-id 7 --jobs 6`
+  - 覆盖 `add-broadcast-concat`、`broadcast-add-reduce`、`gather-elementwise-fusion`、
+    `matmul-add-leakyrelu`、`relu-broadcast-transpose`、`split-relu-brc-add-mul`
+    和 `real-npu-multikernel`
+  - 每个 NPU case 均为 `session.backend=npu` / `session.result=success` /
+    `session.validation=pass`
+  - `real-npu-multikernel` 的两个 DAG case 均先过 `sim` 再过 `npu`
+  - collected plog summaries 没有新的 `errorStr`
 - `examples/relu-broadcast-transpose` 的 full-pipeline vec kernel 已在 7 卡真机通过：
   - xvm Ascend910B1 仿真先通过：`session.backend=sim` / `session.result=success` / `session.validation=pass`
   - 远端 run-only 包：`/data/{username}/relu-broadcast-transpose-final-real-20260518-190410`

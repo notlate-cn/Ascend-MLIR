@@ -79,24 +79,29 @@
 - Current xvm 9.1 verification passes:
   - `bash test/tools/runtime/run_runtime.sh`
     - `RC=0`
-    - runtime tests report `115 passed, 0 failed`
+    - runtime tests report `113 passed, 0 failed`
     - SimBackend vec/mix baseline passes
     - repeated mix simulation baseline passes
   - `bash test/tools/runtime/run_simbackend_examples.sh`
     - `RC=0`
-    - 8 SimBackend examples pass
+    - 6 SimBackend examples pass
   - `bash test/tools/examples/example_pipelines.sh`
     - `RC=0`
-    - 10 example pipelines pass
+    - 6 example pipelines pass
     - cross-session runtime-session smoke passes
 - Real NPU validation current state:
   - `examples/real-npu-microcases` passes on device 7 through the containerized
     run-only runner; the suite covers `const640`, copy variants, `relu_only`,
     and `broadcast_add`, with `session.result=success` and
     `session.validation=pass` for each case.
-  - `examples/relu-broadcast-transpose` now passes on device 7 with `TB_N=16`, run-only packaging, `session.result=success`, and `session.validation=pass`
-  - `examples/add-broadcast-concat` now passes on device 7 with `TB_N=16`, run-only packaging, `session.result=success`, and `session.validation=pass`
-  - `examples/split-relu-brc-add-mul` now passes on device 7 after removing dead queue-backed TBuf initializers, with `session.result=success` and `session.validation=pass`
+  - `scripts/sync-and-submit.sh --case all --ref 2ecc4d4-real-all --device-id 7 --jobs 6`
+    passes on device 7. It covers `add-broadcast-concat`,
+    `broadcast-add-reduce`, `gather-elementwise-fusion`,
+    `matmul-add-leakyrelu`, `relu-broadcast-transpose`,
+    `split-relu-brc-add-mul`, and `real-npu-multikernel`.
+  - All real-NPU suite case logs report `session.result=success` and
+    `session.validation=pass`, and collected plog summaries contain no new
+    `errorStr`.
   - Detailed real-NPU debugging experience, plog triage, and per-demo root-cause notes are maintained in `examples/real-npu.md`.
 
 ## Decisions
