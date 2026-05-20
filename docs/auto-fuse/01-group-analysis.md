@@ -1,19 +1,19 @@
 # impl-01: Pass 1 — Group Analysis
 
 **设计依据**: [00-architecture.md](./00-architecture.md) §3, [00-data-model.md](./00-data-model.md) §3  
-**前置**: impl-00（数据结构 + pass 骨架已存在，`mlir-opt --vector-plan-group-analysis /dev/null` 通过）
+**前置**: impl-00（数据结构 + pass 骨架已存在，`mlir-opt --auto-fuse-group-analysis /dev/null` 通过）
 
 ---
 
 ## 定位
 
-`vector-plan-group-analysis` 是 func-level pass，输入是 linalg-on-tensor func，
+`auto-fuse-group-analysis` 是 func-level pass，输入是 linalg-on-tensor func，
 输出是每个 linalg op 上的两个 attribute：
 
 ```mlir
 %0 = linalg.reduce { ... }
-     {vector_plan.group_id = 0 : i32,
-      vector_plan.topo_index = 2 : i32} ins(...) outs(...)
+     {auto_fuse.group_id = 0 : i32,
+      auto_fuse.topo_index = 2 : i32} ins(...) outs(...)
 ```
 
 Pass 内部使用轻量的 `FusionGroup` 结构（不同于最终的 `GroupInfo`）进行迭代融合，
@@ -50,7 +50,7 @@ struct FusionPair {
 
 ## Phase 1: AxisLattice — 上确界推导
 
-文件：`lib/Conversion/VectorPlan/GroupAnalysis/AxisLattice.cpp`
+文件：`lib/Conversion/AutoFuse/GroupAnalysis/AxisLattice.cpp`
 
 ### 算法
 
@@ -115,8 +115,8 @@ SmallVector<AxisInfo> computeCanonicalAxes(ArrayRef<linalg::LinalgOp> members) {
 ### 测试用例
 
 ```mlir
-// test/Conversion/VectorPlan/group-analysis-axis-lattice.mlir
-// RUN: mlir-opt --vector-plan-group-analysis %s | FileCheck %s
+// test/Conversion/AutoFuse/group-analysis-axis-lattice.mlir
+// RUN: mlir-opt --auto-fuse-group-analysis %s | FileCheck %s
 
 func.func @reduce_then_pointwise(%in: tensor<16x32xf16>) -> tensor<16xf16> {
   // reduce: iterator_types = [parallel, reduction]
@@ -129,17 +129,17 @@ func.func @reduce_then_pointwise(%in: tensor<16x32xf16>) -> tensor<16xf16> {
   } ins(%0: tensor<16xf16>) outs(%out: tensor<16xf16>) { ... }
   return %1
 }
-// CHECK: vector_plan.group_id = 0
-// CHECK: vector_plan.group_id = 0
-// CHECK: vector_plan.topo_index = 0
-// CHECK: vector_plan.topo_index = 1
+// CHECK: auto_fuse.group_id = 0
+// CHECK: auto_fuse.group_id = 0
+// CHECK: auto_fuse.topo_index = 0
+// CHECK: auto_fuse.topo_index = 1
 ```
 
 ---
 
 ## Phase 2: CanFuse — 融合判断
 
-文件：`lib/Conversion/VectorPlan/GroupAnalysis/CanFuse.cpp`
+文件：`lib/Conversion/AutoFuse/GroupAnalysis/CanFuse.cpp`
 
 ### getFusionKind
 
@@ -331,8 +331,8 @@ int64_t computeScore(const FusionGroup &g1, const FusionGroup &g2) {
 ### 测试用例
 
 ```mlir
-// test/Conversion/VectorPlan/group-analysis-can-fuse.mlir
-// RUN: mlir-opt --vector-plan-group-analysis %s | FileCheck %s
+// test/Conversion/AutoFuse/group-analysis-can-fuse.mlir
+// RUN: mlir-opt --auto-fuse-group-analysis %s | FileCheck %s
 
 // ---- 不应融合：规则 4，链接 tensor 有 group 外消费者 ----
 func.func @no_fuse_fanout(%in: tensor<8xf16>, %extra_consumer_sink: tensor<8xf16>)
@@ -342,8 +342,8 @@ func.func @no_fuse_fanout(%in: tensor<8xf16>, %extra_consumer_sink: tensor<8xf16
   // %mid 也被 group 外消费：返回给调用方
   return %out1, %mid
 }
-// CHECK: vector_plan.group_id = [[A:[0-9]+]]
-// CHECK: vector_plan.group_id = [[B:[0-9]+]]
+// CHECK: auto_fuse.group_id = [[A:[0-9]+]]
+// CHECK: auto_fuse.group_id = [[B:[0-9]+]]
 // CHECK-NOT: group_id = [[A]]
 // （A 和 B group_id 不同，表示未融合）
 
@@ -354,15 +354,15 @@ func.func @horizontal_fuse(%x: tensor<8xf16>, %y1: tensor<8xf16>, %y2: tensor<8x
   %s2 = linalg.generic { ... } ins(%x, %y2) outs(...)  // sibling 2
   return %s1, %s2
 }
-// CHECK: {vector_plan.group_id = [[G:[0-9]+]]
-// CHECK: {vector_plan.group_id = [[G]]
+// CHECK: {auto_fuse.group_id = [[G:[0-9]+]]
+// CHECK: {auto_fuse.group_id = [[G]]
 ```
 
 ---
 
 ## Phase 3: GroupAnalysisPass — 主循环
 
-文件：`lib/Conversion/VectorPlan/GroupAnalysis/GroupAnalysisPass.cpp`
+文件：`lib/Conversion/AutoFuse/GroupAnalysis/GroupAnalysisPass.cpp`
 
 ### 算法
 
@@ -429,9 +429,9 @@ void runOnOperation() override {
 
   // 5. 写 attribute
   func.walk([&](linalg::LinalgOp op) {
-    op->setAttr("vector_plan.group_id",
+    op->setAttr("auto_fuse.group_id",
                 builder.getI32IntegerAttr(opToGroup[op]));
-    op->setAttr("vector_plan.topo_index",
+    op->setAttr("auto_fuse.topo_index",
                 builder.getI32IntegerAttr(topoIndex[op]));
   });
 }
@@ -444,35 +444,35 @@ void runOnOperation() override {
 ### 场景 1：单 op
 
 ```mlir
-// test/Conversion/VectorPlan/group-analysis-single.mlir
-// RUN: mlir-opt --vector-plan-group-analysis %s | FileCheck %s
+// test/Conversion/AutoFuse/group-analysis-single.mlir
+// RUN: mlir-opt --auto-fuse-group-analysis %s | FileCheck %s
 func.func @single(%x: tensor<8xf16>) -> tensor<8xf16> {
   %out = linalg.generic { ... } ins(%x) outs(...) { ... }
   return %out
 }
-// CHECK: vector_plan.group_id = 0
-// CHECK: vector_plan.topo_index = 0
+// CHECK: auto_fuse.group_id = 0
+// CHECK: auto_fuse.topo_index = 0
 ```
 
 ### 场景 2：reduce→pointwise（Vertical fusion）
 
 ```mlir
-// test/Conversion/VectorPlan/group-analysis-vertical.mlir
-// RUN: mlir-opt --vector-plan-group-analysis %s | FileCheck %s
+// test/Conversion/AutoFuse/group-analysis-vertical.mlir
+// RUN: mlir-opt --auto-fuse-group-analysis %s | FileCheck %s
 func.func @reduce_pointwise(%in: tensor<4x8xf16>) -> tensor<4xf16> {
   %r = linalg.reduce { arith.addf } ins(%in) outs(...) dimensions = [1]
   %out = linalg.generic { ... } ins(%r) outs(...)
   return %out
 }
-// CHECK: {vector_plan.group_id = [[G:[0-9]+]], vector_plan.topo_index = 0
-// CHECK: {vector_plan.group_id = [[G]], vector_plan.topo_index = 1
+// CHECK: {auto_fuse.group_id = [[G:[0-9]+]], auto_fuse.topo_index = 0
+// CHECK: {auto_fuse.group_id = [[G]], auto_fuse.topo_index = 1
 ```
 
 ### 场景 3：LayerNorm skip connection（多轮迭代验证）
 
 ```mlir
-// test/Conversion/VectorPlan/group-analysis-layernorm.mlir
-// RUN: mlir-opt --vector-plan-group-analysis %s | FileCheck %s
+// test/Conversion/AutoFuse/group-analysis-layernorm.mlir
+// RUN: mlir-opt --auto-fuse-group-analysis %s | FileCheck %s
 //
 // input → mean → sub → square → mean2 → sqrt → div → output
 //                └──────────────────────────────────↗
@@ -482,15 +482,15 @@ func.func @reduce_pointwise(%in: tensor<4x8xf16>) -> tensor<4xf16> {
 func.func @layernorm(%input: tensor<8x16xf16>) -> tensor<8x16xf16> {
   // ... (6 个 linalg op，含 skip connection)
 }
-// CHECK-COUNT-6: vector_plan.group_id = [[G:[0-9]+]]
+// CHECK-COUNT-6: auto_fuse.group_id = [[G:[0-9]+]]
 // （所有 6 个 op 在同一 group）
 ```
 
 ### 场景 4：matmul + epilogue（CubeGroup epilogue fusion，LOW priority）
 
 ```mlir
-// test/Conversion/VectorPlan/group-analysis-cube-epilogue.mlir
-// RUN: mlir-opt --vector-plan-group-analysis %s | FileCheck %s
+// test/Conversion/AutoFuse/group-analysis-cube-epilogue.mlir
+// RUN: mlir-opt --auto-fuse-group-analysis %s | FileCheck %s
 func.func @matmul_bias(%A: tensor<32x64xf16>, %B: tensor<64x32xf16>,
                         %bias: tensor<32xf16>) -> tensor<32x32xf16> {
   %mm = linalg.matmul ins(%A, %B) outs(...)
@@ -498,30 +498,30 @@ func.func @matmul_bias(%A: tensor<32x64xf16>, %B: tensor<64x32xf16>,
   return %add
 }
 // linalg.matmul 和 linalg.generic 应在同一 group，kind 为 Cube
-// CHECK: {vector_plan.group_id = [[G:[0-9]+]]
-// CHECK: {vector_plan.group_id = [[G]]
+// CHECK: {auto_fuse.group_id = [[G:[0-9]+]]
+// CHECK: {auto_fuse.group_id = [[G]]
 ```
 
 ### 场景 5：不应融合的情况
 
 ```mlir
-// test/Conversion/VectorPlan/group-analysis-no-fuse.mlir
-// RUN: mlir-opt --vector-plan-group-analysis %s | FileCheck %s
+// test/Conversion/AutoFuse/group-analysis-no-fuse.mlir
+// RUN: mlir-opt --auto-fuse-group-analysis %s | FileCheck %s
 
 // 规则 6：CumSum 类（epilogue 依赖 reduction partial sum）→ 不融合
 func.func @cumsum_no_fuse(%in: tensor<8xf16>) -> tensor<8xf16> {
   // partial sum 被 epilogue 直接依赖（不是 post-reduction 结果）
 }
-// CHECK: vector_plan.group_id = [[A:[0-9]+]]
-// CHECK: vector_plan.group_id = [[B:[0-9]+]]
+// CHECK: auto_fuse.group_id = [[A:[0-9]+]]
+// CHECK: auto_fuse.group_id = [[B:[0-9]+]]
 // CHECK-NOT: group_id = [[A]]  ← B 与 A 不同
 ```
 
 ### 场景 6：transpose + reduce 不应融合（规则 7）
 
 ```mlir
-// test/Conversion/VectorPlan/group-analysis-transpose-no-fuse.mlir
-// RUN: mlir-opt --vector-plan-group-analysis %s | FileCheck %s
+// test/Conversion/AutoFuse/group-analysis-transpose-no-fuse.mlir
+// RUN: mlir-opt --auto-fuse-group-analysis %s | FileCheck %s
 
 // transpose 的输出被 reduce 消费，但二者不应融合：
 // 若融合，collapse 候选组 G 会同时包含被 transpose 重排的轴和 reduce 累加的轴，
@@ -534,8 +534,8 @@ func.func @transpose_reduce_no_fuse(%in: tensor<8x16xf16>) -> tensor<16xf16> {
   return %r
 }
 // transpose 和 reduce 应在不同 group
-// CHECK: vector_plan.group_id = [[T:[0-9]+]]
-// CHECK: vector_plan.group_id = [[R:[0-9]+]]
+// CHECK: auto_fuse.group_id = [[T:[0-9]+]]
+// CHECK: auto_fuse.group_id = [[R:[0-9]+]]
 // CHECK-NOT: group_id = [[T]]  ← R 与 T 不同
 
 // 对比：transpose + pointwise 应正常融合
@@ -552,6 +552,6 @@ func.func @transpose_pointwise_fuse(%in: tensor<8x16xf16>,
   return %out
 }
 // transpose 和 pointwise 应在同一 group
-// CHECK: {vector_plan.group_id = [[G2:[0-9]+]]
-// CHECK: {vector_plan.group_id = [[G2]]
+// CHECK: {auto_fuse.group_id = [[G2:[0-9]+]]
+// CHECK: {auto_fuse.group_id = [[G2]]
 ```

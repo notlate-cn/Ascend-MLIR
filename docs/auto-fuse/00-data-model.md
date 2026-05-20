@@ -1,7 +1,7 @@
 # Vector Plan Generation — 各阶段关键数据结构
 
 **Date:** 2026-04-23  
-**Scope:** `vector-plan` pass 流水线内部各阶段的数据结构定义、所有权与关键不变量  
+**Scope:** `auto-fuse` pass 流水线内部各阶段的数据结构定义、所有权与关键不变量  
 **Companion docs:**  
 - 架构总纲：[00-architecture.md](./00-architecture.md)  
 - TileInfo 设计：[04-tile-info.md](./04-tile-info.md)
@@ -14,7 +14,7 @@
 func::FuncOp (linalg-on-tensor)
         │
         ▼  Phase 1: Group Analysis
-  vector_plan.group_id / topo_index  ← IR attribute(Outline Pass 消费后 strip)
+  auto_fuse.group_id / topo_index  ← IR attribute(Outline Pass 消费后 strip)
         │
         ▼  Outline Pass
   kernel_group{N}.mlir               ← 每个 group 一个独立文件
@@ -73,8 +73,8 @@ Pass 1 不产生 C++ 持久结构，产出是 **per-op IR attribute**：
 
 ```mlir
 %0 = linalg.reduce { ... }
-     {vector_plan.group_id = 0 : i32,
-      vector_plan.topo_index = 2 : i32}
+     {auto_fuse.group_id = 0 : i32,
+      auto_fuse.topo_index = 2 : i32}
 ```
 
 Pass 1 内部使用轻量 `FusionGroup` 结构进行迭代融合，详见 [01-group-analysis.md](./01-group-analysis.md)。

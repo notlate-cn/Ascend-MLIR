@@ -8,7 +8,7 @@
 
 ## 1. 总体目标
 
-将 vector-plan-tile-fuse（Pass 2）输出的 tiled+fused tensor-semantic IR
+将 auto-fuse-tile-fuse（Pass 2）输出的 tiled+fused tensor-semantic IR
 自动转换为 AscendC C++ kernel，覆盖 VectorGroup 和 CubeGroup 两类 group。
 
 **输入**：`kernel_group{N}.mlir`（Pass 2 产出，含 `ascendc.*` 注解 + `tiling.infos` module attribute）

@@ -31,9 +31,9 @@ graph LR
 
 | Phase | Pass 名称 | 粒度 | 产出 |
 |-------|----------|------|------|
-| 1 | `vector-plan-group-analysis` | @func | 每个 linalg op 标注 `group_id` + `topo_index` |
-| 2 | `vector-plan-group-outline` | @module | `network.mlir` + `kernel_group{N}.mlir` |
-| 3 | `vector-plan-tile-fuse` | @func | tiled+fused kernel IR + `tiling.infos` attribute |
+| 1 | `auto-fuse-group-analysis` | @func | 每个 linalg op 标注 `group_id` + `topo_index` |
+| 2 | `auto-fuse-group-outline` | @module | `network.mlir` + `kernel_group{N}.mlir` |
+| 3 | `auto-fuse-tile-fuse` | @func | tiled+fused kernel IR + `tiling.infos` attribute |
 | 4 | codegen pipeline | @module & @func | `kernel_group{N}.cpp` |
 | 5 | AutoTuner | offline | `tiling_func.cpp`（最优 tile 参数） |
 
@@ -75,12 +75,12 @@ graph LR
 ```bash
 # Phase 1 + 2：图分析 → Group Outline
 mlir-opt \
-  --vector-plan-group-analysis \
-  --vector-plan-group-outline \
+  --auto-fuse-group-analysis \
+  --auto-fuse-group-outline \
   input.mlir
 
 # Phase 3：对每个 kernel 执行 Tile-Fuse（生成 tiling.infos）
-mlir-opt --vector-plan-tile-fuse kernel_group0.mlir
+mlir-opt --auto-fuse-tile-fuse kernel_group0.mlir
 
 # Phase 4：Codegen pipeline
 mlir-opt \

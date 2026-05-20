@@ -7,7 +7,7 @@
 
 ## 定位
 
-`vector-plan-tile-fuse` 是 func-level pass，对每个 `kernel_group{N}.mlir` 独立运行。
+`auto-fuse-tile-fuse` 是 func-level pass，对每个 `kernel_group{N}.mlir` 独立运行。
 **不复用** `linalg::tileUsingForOp` / `tileAndFuseProducerOfSlice`，自行建 loop nest。
 统一发射策略让 horizontal fusion（无 SSA 边的 sibling）天然工作。
 
@@ -123,7 +123,7 @@ Debug / verifier 需要原始 canonical idx 时，通过 `canonicalAxisOf(postCo
 
 ## Phase 1: Collapse — 简化迭代空间
 
-文件：`lib/Conversion/VectorPlan/TileFuse/Collapse.cpp`
+文件：`lib/Conversion/AutoFuse/TileFuse/Collapse.cpp`
 
 ### 候选 collapse 组 G
 
@@ -408,7 +408,7 @@ GroupInfo fixupB2Variant1(OpBuilder &builder, GroupInfo info,
         auto transposeOp = builder.create<linalg::TransposeOp>(
             op->getLoc(), operand,
             createTransposedInit(builder, operand, perm), perm);
-        transposeOp->setAttr("vector_plan.no_collapse", builder.getUnitAttr());
+        transposeOp->setAttr("auto_fuse.no_collapse", builder.getUnitAttr());
         lop->setOperand(idx, transposeOp.getResult());
         insertBefore(info.topoMembers, op, transposeOp);
       }
@@ -441,7 +441,7 @@ GroupInfo fixupB2Variant2(OpBuilder &builder, GroupInfo info,
       // boundary 通常是 BlockArgument；在 func arg 上设 attr
       if (auto blockArg = dyn_cast<BlockArgument>(boundary))
         blockArg.getOwner()->getParentOp()->setAttr(
-            "vector_plan.load_with_transpose", builder.getUnitAttr());
+            "auto_fuse.load_with_transpose", builder.getUnitAttr());
       marked.insert(boundary);
     }
   }
@@ -452,8 +452,8 @@ GroupInfo fixupB2Variant2(OpBuilder &builder, GroupInfo info,
 ### 测试用例（Phase 1）
 
 ```mlir
-// test/Conversion/VectorPlan/broadcast-absorb-basic.mlir
-// RUN: mlir-opt --vector-plan-broadcast-absorb %s | FileCheck %s
+// test/Conversion/AutoFuse/broadcast-absorb-basic.mlir
+// RUN: mlir-opt --auto-fuse-broadcast-absorb %s | FileCheck %s
 // linalg.broadcast + linalg.generic → 吸收为缺轴 generic
 func.func @kernel_group0(%x: tensor<4x8xf16>, %y: tensor<4x3x8xf16>)
     -> tensor<4x3x8xf16> { ... }
@@ -461,21 +461,21 @@ func.func @kernel_group0(%x: tensor<4x8xf16>, %y: tensor<4x3x8xf16>)
 // CHECK: linalg.generic
 // CHECK-SAME: indexing_maps = [affine_map<(d0, d1, d2) -> (d0, d2)>
 
-// test/Conversion/VectorPlan/broadcast-absorb-fallback.mlir
+// test/Conversion/AutoFuse/broadcast-absorb-fallback.mlir
 // 非 generic 消费者 → 保留 linalg.broadcast 作为普通 op
 // CHECK: linalg.broadcast
 // CHECK: tensor.reshape
 
-// test/Conversion/VectorPlan/collapse-prune-middle-axis.mlir
+// test/Conversion/AutoFuse/collapse-prune-middle-axis.mlir
 // G = [d0, d1, d2]，d1 广播 → 整体不 collapse（两边碎片 size < 2）
 // CHECK-NOT: tensor.collapse_shape
 
-// test/Conversion/VectorPlan/collapse-prune-tail-axis.mlir
+// test/Conversion/AutoFuse/collapse-prune-tail-axis.mlir
 // G = [d0, d1, d2]，d2 广播 → 保留 [d0, d1] collapse
 // CHECK: tensor.collapse_shape {{.*}} [[0, 1], [2]]
 
-// test/Conversion/VectorPlan/tile-fuse-collapse-c.mlir
-// RUN: mlir-opt --vector-plan-tile-fuse %s | FileCheck %s
+// test/Conversion/AutoFuse/tile-fuse-collapse-c.mlir
+// RUN: mlir-opt --auto-fuse-tile-fuse %s | FileCheck %s
 // LayerNorm [B, S, H] → 候选 G = {d_B, d_S}；scale/bias [H] → Case A；其余 → Case C
 func.func @kernel_group0(%input: tensor<4x8x16xf16>,
                           %scale: tensor<16xf16>,
@@ -485,7 +485,7 @@ func.func @kernel_group0(%input: tensor<4x8x16xf16>,
 // CHECK: tensor.collapse_shape {{.*}} into tensor<32x16xf16>
 // CHECK: scf.for
 
-// test/Conversion/VectorPlan/tile-fuse-collapse-b2.mlir
+// test/Conversion/AutoFuse/tile-fuse-collapse-b2.mlir
 // B2 case：transpose+pointwise，input [S, B] 乱序
 // CHECK: linalg.transpose  ← B2 Variant 1
 //  或
@@ -496,7 +496,7 @@ func.func @kernel_group0(%input: tensor<4x8x16xf16>,
 
 ## Phase 2: TilePlanGen — VectorGroup 基础路径
 
-文件：`lib/Conversion/VectorPlan/TileFuse/TilePlanGen.cpp`
+文件：`lib/Conversion/AutoFuse/TileFuse/TilePlanGen.cpp`
 
 **适用条件**：`enableReductionSplit=false`，无 B2。
 
@@ -672,7 +672,7 @@ Codegen 不从 loop 结构反推核数——核数由 `tiling.infos.block_dim` �
 
 ### LoopNestBuilder
 
-文件：`lib/Conversion/VectorPlan/TileFuse/LoopNestBuilder.cpp`
+文件：`lib/Conversion/AutoFuse/TileFuse/LoopNestBuilder.cpp`
 
 ```cpp
 struct LoopNestResult {
@@ -797,7 +797,7 @@ LoopNestResult buildLoopNest(OpBuilder &builder, Location loc,
 
 ### SliceComputer
 
-文件：`lib/Conversion/VectorPlan/TileFuse/SliceComputer.cpp`
+文件：`lib/Conversion/AutoFuse/TileFuse/SliceComputer.cpp`
 
 ```cpp
 struct SliceParams {
@@ -844,7 +844,7 @@ SliceParams computeSlice(OpBuilder &builder, Location loc,
 
 ### GroupEmitter
 
-文件：`lib/Conversion/VectorPlan/TileFuse/GroupEmitter.cpp`
+文件：`lib/Conversion/AutoFuse/TileFuse/GroupEmitter.cpp`
 
 **主动 Load 上浮（BAII L2 的性能收益落地）**：
 
@@ -929,8 +929,8 @@ void emitGroup(OpBuilder &builder, Location loc,
 ### 测试用例（Phase 3）
 
 ```mlir
-// test/Conversion/VectorPlan/tile-fuse-vector-pointwise.mlir
-// RUN: mlir-opt --vector-plan-tile-fuse %s | FileCheck %s
+// test/Conversion/AutoFuse/tile-fuse-vector-pointwise.mlir
+// RUN: mlir-opt --auto-fuse-tile-fuse %s | FileCheck %s
 
 func.func @kernel_group0(%x: tensor<?xf16>, %y: tensor<?xf16>) -> tensor<?xf16> {
   %out = linalg.generic {
@@ -948,8 +948,8 @@ func.func @kernel_group0(%x: tensor<?xf16>, %y: tensor<?xf16>) -> tensor<?xf16> 
 // CHECK:     linalg.generic ins(%[[S1]], %[[S2]])
 // CHECK:     tensor.insert_slice
 
-// test/Conversion/VectorPlan/tile-fuse-vector-reduce-pointwise.mlir
-// RUN: mlir-opt --vector-plan-tile-fuse %s | FileCheck %s
+// test/Conversion/AutoFuse/tile-fuse-vector-reduce-pointwise.mlir
+// RUN: mlir-opt --auto-fuse-tile-fuse %s | FileCheck %s
 func.func @kernel_group0(%in: tensor<?x?xf16>) -> tensor<?xf16> {
   %r = linalg.reduce { arith.addf } ins(%in) outs(...) dimensions = [1]
   %out = linalg.generic { ... } ins(%r) outs(...)  // epilogue
@@ -963,8 +963,8 @@ func.func @kernel_group0(%in: tensor<?x?xf16>) -> tensor<?xf16> {
 // CHECK:     linalg.generic ins(%[[r]])  ← epilogue 使用 reduce 结果（无 extract_slice）
 // CHECK:     tensor.insert_slice
 
-// test/Conversion/VectorPlan/tile-fuse-vector-sibling.mlir
-// RUN: mlir-opt --vector-plan-tile-fuse %s | FileCheck %s
+// test/Conversion/AutoFuse/tile-fuse-vector-sibling.mlir
+// RUN: mlir-opt --auto-fuse-tile-fuse %s | FileCheck %s
 // 3 个 sibling：共享 boundary input x
 func.func @kernel_group0(%x: tensor<?xf16>, %a: tensor<?xf16>,
                           %b: tensor<?xf16>, %c: tensor<?xf16>)
@@ -982,8 +982,8 @@ func.func @kernel_group0(%x: tensor<?xf16>, %a: tensor<?xf16>,
 // CHECK-COUNT-3: linalg.generic
 // CHECK-COUNT-3: tensor.insert_slice
 
-// test/Conversion/VectorPlan/loop-order-broadcast-outside-tile.mlir
-// RUN: mlir-opt --vector-plan-tile-fuse %s | FileCheck %s
+// test/Conversion/AutoFuse/loop-order-broadcast-outside-tile.mlir
+// RUN: mlir-opt --auto-fuse-tile-fuse %s | FileCheck %s
 // attention mask 广播: scores[B,H,S,T] + mask[1,1,S,T]
 // d_B, d_H 为广播轴 → loop nest 中 d_B, d_H 在 tile 内层之外
 func.func @kernel_group0(%scores: tensor<?x?x?x?xf16>,
@@ -1044,8 +1044,8 @@ void emitGroupWithReductionSplit(OpBuilder &builder, Location loc,
 ### 测试用例（Phase 4）
 
 ```mlir
-// test/Conversion/VectorPlan/tile-fuse-vector-softmax.mlir
-// RUN: mlir-opt --vector-plan-tile-fuse="enable-reduction-split=true" %s \
+// test/Conversion/AutoFuse/tile-fuse-vector-softmax.mlir
+// RUN: mlir-opt --auto-fuse-tile-fuse="enable-reduction-split=true" %s \
 // RUN:   | FileCheck %s
 
 func.func @kernel_group0(%in: tensor<?x?xf16>) -> tensor<?x?xf16> {
@@ -1082,7 +1082,7 @@ if (check.hasB2) {
 
 // Variant 1 路径识别（loop nest 建立时使用）：
 bool useOriginalAxes = llvm::any_of(info.topoMembers, [](linalg::LinalgOp op) {
-  return op->hasAttr("vector_plan.no_collapse");
+  return op->hasAttr("auto_fuse.no_collapse");
 });
 // useOriginalAxes=true → LoopNestBuilder 用原始 G-axes（各轴独立 IV）
 // SliceComputer 对 B2 input 用原始 B2 map，对 output 用 canonical map
@@ -1091,8 +1091,8 @@ bool useOriginalAxes = llvm::any_of(info.topoMembers, [](linalg::LinalgOp op) {
 ### 测试用例（Phase 5）
 
 ```mlir
-// test/Conversion/VectorPlan/tile-fuse-vector-b2-v1.mlir
-// RUN: mlir-opt --vector-plan-tile-fuse %s | FileCheck %s
+// test/Conversion/AutoFuse/tile-fuse-vector-b2-v1.mlir
+// RUN: mlir-opt --auto-fuse-tile-fuse %s | FileCheck %s
 
 // input T [S, B]，consumer map: (d0,d1)→(d1,d0)（B2）
 // Variant 1：插 linalg.transpose [S,B]→[B,S]
@@ -1112,7 +1112,7 @@ func.func @kernel_group0(%T: tensor<?x?xf16>, %side: tensor<?x?xf16>)
 // GroupEmitter 中，boundary input 处理追加判断：
 if (auto blockArg = dyn_cast<BlockArgument>(operand)) {
   auto parentFunc = cast<func::FuncOp>(blockArg.getOwner()->getParentOp());
-  if (parentFunc->hasAttr("vector_plan.load_with_transpose")) {
+  if (parentFunc->hasAttr("auto_fuse.load_with_transpose")) {
     // 生成 ConfusionTranspose 占位 op（GM→UB 搬运时完成重排）
     auto confOp = builder.create<ConfusionTransposeOp>(loc, operand, ...);
     newOperands.push_back(confOp);
@@ -1124,8 +1124,8 @@ if (auto blockArg = dyn_cast<BlockArgument>(operand)) {
 ### 测试用例（Phase 6）
 
 ```mlir
-// test/Conversion/VectorPlan/tile-fuse-vector-b2-v2.mlir
-// RUN: mlir-opt --vector-plan-tile-fuse %s | FileCheck %s
+// test/Conversion/AutoFuse/tile-fuse-vector-b2-v2.mlir
+// RUN: mlir-opt --auto-fuse-tile-fuse %s | FileCheck %s
 
 // Variant 2：consumer map 改为 canonical，boundary input 打 load_with_transpose
 func.func @kernel_group0(%T: tensor<?x?xf16>, %side: tensor<?x?xf16>)
@@ -1244,8 +1244,8 @@ void emitCubeGroup(OpBuilder &builder, Location loc,
 ### 测试用例（Phase 7）
 
 ```mlir
-// test/Conversion/VectorPlan/tile-fuse-cube-matmul-bias-relu.mlir
-// RUN: mlir-opt --vector-plan-tile-fuse %s | FileCheck %s
+// test/Conversion/AutoFuse/tile-fuse-cube-matmul-bias-relu.mlir
+// RUN: mlir-opt --auto-fuse-tile-fuse %s | FileCheck %s
 
 func.func @kernel_group1(%A: tensor<?x?xf16>, %B: tensor<?x?xf16>,
                           %bias: tensor<?xf16>) -> tensor<?x?xf16> {
@@ -1264,8 +1264,8 @@ func.func @kernel_group1(%A: tensor<?x?xf16>, %B: tensor<?x?xf16>,
 // CHECK:              linalg.generic  ← bias add，AiCore.Vector
 // CHECK:              linalg.generic  ← relu，AiCore.Vector
 
-// test/Conversion/VectorPlan/tile-fuse-cube-layernorm-matmul.mlir
-// RUN: mlir-opt --vector-plan-tile-fuse %s | FileCheck %s
+// test/Conversion/AutoFuse/tile-fuse-cube-layernorm-matmul.mlir
+// RUN: mlir-opt --auto-fuse-tile-fuse %s | FileCheck %s
 // （LayerNorm VectorGroup + matmul+epilogue CubeGroup 各自独立文件，分别验证）
 ```
 
@@ -1396,8 +1396,8 @@ for (auto &tp : module.getAllTilePlans()) {
 ### 测试用例（Verifier）
 
 ```mlir
-// test/Conversion/VectorPlan/broadcast-axis-invariant-violation.mlir
-// RUN: not mlir-opt --vector-plan-tile-fuse --verify-diagnostics %s 2>&1 | FileCheck %s
+// test/Conversion/AutoFuse/broadcast-axis-invariant-violation.mlir
+// RUN: not mlir-opt --auto-fuse-tile-fuse --verify-diagnostics %s 2>&1 | FileCheck %s
 // 人工构造违反 BAII 的 TilePlan（广播轴出现在 collapsedAxes 中）
 // CHECK: BAII L1 violation
 ```

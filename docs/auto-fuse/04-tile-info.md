@@ -32,7 +32,7 @@ TilePlan（含 MLIR Value/OpFoldResult）
 
 ## Phase 1: TilePlanToTileInfo — 语义降维
 
-文件：`lib/Conversion/VectorPlan/TileInfo/TilePlanToTileInfo.cpp`
+文件：`lib/Conversion/AutoFuse/TileInfo/TilePlanToTileInfo.cpp`
 
 ### ValueExpr 工厂实现
 
@@ -179,7 +179,7 @@ TileInfo buildTileInfo(const CollapsedGroupInfo &info,
 
 ## Phase 2: TileInfoSerializer — TileInfo → tiling.infos attribute
 
-文件：`lib/Conversion/VectorPlan/TileInfo/TileInfoSerializer.cpp`
+文件：`lib/Conversion/AutoFuse/TileInfo/TileInfoSerializer.cpp`
 
 ### ValueExpr → MLIR DictionaryAttr
 
@@ -317,8 +317,8 @@ void serializeTileInfos(ModuleOp module,
 ### 测试用例（Phase 1 + 2）
 
 ```mlir
-// test/Conversion/VectorPlan/tile-info-vector-layernorm.mlir
-// RUN: mlir-opt --vector-plan-tile-fuse %s | FileCheck %s
+// test/Conversion/AutoFuse/tile-info-vector-layernorm.mlir
+// RUN: mlir-opt --auto-fuse-tile-fuse %s | FileCheck %s
 
 func.func @kernel_group0(%input: tensor<?x?x?xf16>,
                           %scale: tensor<?xf16>,
@@ -340,8 +340,8 @@ func.func @kernel_group0(%input: tensor<?x?x?xf16>,
 // CHECK-SAME:     {id = "tile.rblock_0",  abi_name = "RBLOCK_0",  abi_index = 2 : i64, kind = "fixed"
 // CHECK-SAME:   block_dim = [{op = "ceildiv"
 
-// test/Conversion/VectorPlan/tile-info-cube-matmul.mlir
-// RUN: mlir-opt --vector-plan-tile-fuse %s | FileCheck %s
+// test/Conversion/AutoFuse/tile-info-cube-matmul.mlir
+// RUN: mlir-opt --auto-fuse-tile-fuse %s | FileCheck %s
 func.func @kernel_group1(%A: tensor<?x?xf16>, %B: tensor<?x?xf16>,
                           %bias: tensor<?xf16>) -> tensor<?x?xf16> {
   %mm  = linalg.matmul ins(%A, %B) outs(...)
@@ -413,8 +413,8 @@ void adaptPrepareForEmit(func::FuncOp func, ModuleOp module) {
 ### 测试用例（Phase 3）
 
 ```mlir
-// test/Conversion/VectorPlan/tile-info-prepare-emit.mlir
-// RUN: mlir-opt --vector-plan-tile-fuse --ascendc-prepare-for-emit %s \
+// test/Conversion/AutoFuse/tile-info-prepare-emit.mlir
+// RUN: mlir-opt --auto-fuse-tile-fuse --ascendc-prepare-for-emit %s \
 // RUN:   | FileCheck %s
 
 func.func @kernel_group0(...) -> ... { ... }
@@ -466,10 +466,10 @@ void verifyTileInfoInvariants(const TileInfo &ti) {
 ```bash
 # Phase A + B：tile-fuse 生成 tiling.infos，prepare-emit 从中读取字段顺序
 mlir-opt \
-  --vector-plan-tile-fuse \
+  --auto-fuse-tile-fuse \
   --ascendc-prepare-for-emit \
-  test/Conversion/VectorPlan/tile-info-vector-layernorm.mlir \
-  | FileCheck test/Conversion/VectorPlan/tile-info-vector-layernorm.mlir
+  test/Conversion/AutoFuse/tile-info-vector-layernorm.mlir \
+  | FileCheck test/Conversion/AutoFuse/tile-info-vector-layernorm.mlir
 
 # 验证 tiling.infos 权威性：abi_index 顺序与 TilingData struct 完全对应
 # TilingData struct 中字段不再依赖 arg 扫描顺序

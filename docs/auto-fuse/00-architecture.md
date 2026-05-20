@@ -38,19 +38,19 @@ Pass 1 的分析产物是**受限 DAG 子图（Group）**，而非"单根链"。
 整个 plan generation 拆成三段，Pass 1 与 Outline Pass 通过 IR attribute 通信，
 Outline Pass 与 Pass 2 通过 func 边界（标准 MLIR func pass）通信：
 
-**Pass 1: vector-plan-group-analysis** (func-level)
+**Pass 1: auto-fuse-group-analysis** (func-level)
 - 输入：linalg-on-tensor func
 - 算法：迭代融合（§3）
 - 输出：每个 linalg op 上的 group annotation（`group_id` / `topo_index`）
 - 详细实现 → [01-group-analysis.md](./01-group-analysis.md)
 
-**Outline Pass: vector-plan-group-outline** (module-level)
+**Outline Pass: auto-fuse-group-outline** (module-level)
 - 输入：带 group annotation 的 func
 - 算法：分桶 + 两级拓扑排序 + func outlining + 文件分离
 - 输出：`network.mlir`（coordinator）+ `kernel_group{N}.mlir`（每个 group 一个文件）
 - 详细实现 → [02-group-outline.md](./02-group-outline.md)
 
-**Pass 2: vector-plan-tile-fuse** (func-level, per kernel file)
+**Pass 2: auto-fuse-tile-fuse** (func-level, per kernel file)
 - 输入：`kernel_group{N}.mlir`
 - 算法：Collapse → TilePlan 生成 → Loop Nest 生成
 - 输出：tiled+fused kernel func + `tiling.infos`
@@ -67,15 +67,15 @@ Outline Pass 与 Pass 2 通过 func 边界（标准 MLIR func pass）通信：
 
 ### 2.1 Pass 1 → Outline Pass：attribute schema
 
-`vector_plan.*` attribute 的生命周期完全局限于 **Pass 1 内部**：
+`auto_fuse.*` attribute 的生命周期完全局限于 **Pass 1 内部**：
 服务于迭代融合算法，由 Outline Pass 消费后全部 strip，不进入任何 kernel 文件。
 
 Pass 1 只写两个 per-op attribute：
 
 | attribute | 类型 | 消费方 | 作用 |
 |-----------|------|--------|------|
-| `vector_plan.group_id` | `i32` | Outline Pass | 决定分桶 |
-| `vector_plan.topo_index` | `i32` | Outline Pass | 全局拓扑位置序号 |
+| `auto_fuse.group_id` | `i32` | Outline Pass | 决定分桶 |
+| `auto_fuse.topo_index` | `i32` | Outline Pass | 全局拓扑位置序号 |
 
 ### 2.2 Outline Pass 产出示例
 
@@ -89,7 +89,7 @@ module {
   }
 }
 
-// kernel_group0.mlir — 干净的 linalg-on-tensor，无 vector_plan.* 属性
+// kernel_group0.mlir — 干净的 linalg-on-tensor，无 auto_fuse.* 属性
 module {
   func.func @kernel_group0(%arg0: tensor<?xf16>, ...) -> tensor<?x?xf16> {
     %0 = linalg.generic { ... }
@@ -304,7 +304,7 @@ ABI 物化：PrepareForEmit 按 `abiIndex` 构造 `TilingData` struct，不从 f
 ### 9.1 Pass Options
 
 ```tablegen
-def VectorPlanGroupAnalysis : Pass<"vector-plan-group-analysis", "func::FuncOp"> {
+def AutoFuseGroupAnalysis : Pass<"auto-fuse-group-analysis", "func::FuncOp"> {
   let options = [
     Option<"enableReductionSplit", "enable-reduction-split", "bool", "false",
            "Make RBLOCK tunable (Inner) instead of fixed full">,
@@ -315,14 +315,14 @@ def VectorPlanGroupAnalysis : Pass<"vector-plan-group-analysis", "func::FuncOp">
   ];
 }
 
-def VectorPlanGroupOutline : Pass<"vector-plan-group-outline", "ModuleOp"> {
+def AutoFuseGroupOutline : Pass<"auto-fuse-group-outline", "ModuleOp"> {
   let options = [
     Option<"kernelFuncPrefix", "kernel-func-prefix", "std::string",
            "\"kernel_group\"", "Prefix for outlined kernel func names">,
   ];
 }
 
-def VectorPlanTileFuse : Pass<"vector-plan-tile-fuse", "func::FuncOp"> {
+def AutoFuseTileFuse : Pass<"auto-fuse-tile-fuse", "func::FuncOp"> {
   let options = [
     Option<"enableCollapse", "enable-collapse", "bool", "true", "">,
     Option<"enforceCompletePlan", "enforce-complete-plan", "bool", "true", "">,
@@ -392,13 +392,13 @@ module attributes {
 ```
 Source linalg IR
   │
-  ├─ [Pass 1] vector-plan-group-analysis
+  ├─ [Pass 1] auto-fuse-group-analysis
   │   → group_id / topo_index annotations
   │
-  ├─ [Outline Pass] vector-plan-group-outline
+  ├─ [Outline Pass] auto-fuse-group-outline
   │   → network.mlir + kernel_group{N}.mlir
   │
-  ├─ [Pass 2] vector-plan-tile-fuse (per kernel, 可并行)
+  ├─ [Pass 2] auto-fuse-tile-fuse (per kernel, 可并行)
   │   ├─ Collapse → CollapsedGroupInfo
   │   ├─ TilePlan Generation → TilePlan
   │   ├─ Loop Nest 生成

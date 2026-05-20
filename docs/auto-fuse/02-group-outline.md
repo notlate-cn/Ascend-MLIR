@@ -1,16 +1,16 @@
 # impl-02: Outline Pass — Group → Kernel Func
 
 **设计依据**: [00-architecture.md](./00-architecture.md) §2, [00-data-model.md](./00-data-model.md) §4  
-**前置**: impl-01（每个 linalg op 已有 `vector_plan.group_id` / `vector_plan.topo_index`）
+**前置**: impl-01（每个 linalg op 已有 `auto_fuse.group_id` / `auto_fuse.topo_index`）
 
 ---
 
 ## 定位
 
-`vector-plan-group-outline` 是 module-level pass，消费 Pass 1 写的 attribute，
+`auto-fuse-group-outline` 是 module-level pass，消费 Pass 1 写的 attribute，
 把每个 fusion group 的 op 提取为独立的 `@kernel_groupN` func，
 并把原 func 改写为 coordinator（顺序 call 各 kernel func）。
-最后 strip 所有 `vector_plan.*` attribute，写出两类文件：
+最后 strip 所有 `auto_fuse.*` attribute，写出两类文件：
 
 ```
 network.mlir           coordinator func + 所有 kernel func 的 private 声明
@@ -19,10 +19,10 @@ kernel_group1.mlir
 ...
 ```
 
-Pass 2 的输入（`kernel_groupN.mlir`）不含任何 `vector_plan.*` attribute。
+Pass 2 的输入（`kernel_groupN.mlir`）不含任何 `auto_fuse.*` attribute。
 
 **接口边界**：
-- 输入：带 `vector_plan.group_id` / `vector_plan.topo_index` 的 ModuleOp
+- 输入：带 `auto_fuse.group_id` / `auto_fuse.topo_index` 的 ModuleOp
 - 输出：ModuleOp（coordinator + kernel func 声明）；可选写文件
 - attribute strip 在输出写入前完成
 
@@ -30,13 +30,13 @@ Pass 2 的输入（`kernel_groupN.mlir`）不含任何 `vector_plan.*` attribute
 
 ## Phase 1: 分桶 + 两级拓扑排序（Step 1–3）
 
-文件：`lib/Conversion/VectorPlan/GroupOutline/GroupOutlinePass.cpp`
+文件：`lib/Conversion/AutoFuse/GroupOutline/GroupOutlinePass.cpp`
 
 ```cpp
 // Step 1：分桶
 llvm::DenseMap<int32_t, SmallVector<linalg::LinalgOp>> buckets;
 module.walk([&](linalg::LinalgOp op) {
-  auto gid = op->getAttrOfType<IntegerAttr>("vector_plan.group_id");
+  auto gid = op->getAttrOfType<IntegerAttr>("auto_fuse.group_id");
   if (!gid) return; // 非 linalg op 或未标注（不应出现）
   buckets[gid.getInt()].push_back(op);
 });
@@ -64,8 +64,8 @@ llvm::sort(sortedGroupIds, [&](int32_t a, int32_t b) {
 ### 测试用例（Phase 1）
 
 ```mlir
-// test/Conversion/VectorPlan/group-outline-sort.mlir
-// RUN: mlir-opt --vector-plan-group-analysis --vector-plan-group-outline %s \
+// test/Conversion/AutoFuse/group-outline-sort.mlir
+// RUN: mlir-opt --auto-fuse-group-analysis --auto-fuse-group-outline %s \
 // RUN:   | FileCheck %s --check-prefix=OUTLINE
 
 func.func @two_groups(%x: tensor<8xf16>, %y: tensor<8xf16>) -> tensor<8xf16> {
@@ -205,8 +205,8 @@ void replaceGroupWithCall(OpBuilder &builder, func::FuncOp origFunc,
 ### 测试用例（Phase 3）
 
 ```mlir
-// test/Conversion/VectorPlan/group-outline-basic.mlir
-// RUN: mlir-opt --vector-plan-group-analysis --vector-plan-group-outline %s \
+// test/Conversion/AutoFuse/group-outline-basic.mlir
+// RUN: mlir-opt --auto-fuse-group-analysis --auto-fuse-group-outline %s \
 // RUN:   | FileCheck %s
 
 func.func @single_group(%x: tensor<8xf16>, %bias: tensor<8xf16>) -> tensor<8xf16> {
@@ -223,11 +223,11 @@ func.func @single_group(%x: tensor<8xf16>, %bias: tensor<8xf16>) -> tensor<8xf16
 // CHECK:        %[[R:.*]] = func.call @kernel_group0
 // CHECK:        return %[[R]]
 
-// kernel func 含 linalg op，不含 vector_plan.* attribute
+// kernel func 含 linalg op，不含 auto_fuse.* attribute
 // CHECK:      func.func private @kernel_group0
 // CHECK:        linalg.reduce
 // CHECK:        linalg.generic
-// CHECK-NOT:    vector_plan.group_id
+// CHECK-NOT:    auto_fuse.group_id
 ```
 
 ---
@@ -237,10 +237,10 @@ func.func @single_group(%x: tensor<8xf16>, %bias: tensor<8xf16>) -> tensor<8xf16
 ### Attribute Strip
 
 ```cpp
-void stripVectorPlanAttrs(ModuleOp module) {
+void stripAutoFuseAttrs(ModuleOp module) {
   module.walk([](linalg::LinalgOp op) {
-    op->removeAttr("vector_plan.group_id");
-    op->removeAttr("vector_plan.topo_index");
+    op->removeAttr("auto_fuse.group_id");
+    op->removeAttr("auto_fuse.topo_index");
   });
 }
 ```
@@ -289,8 +289,8 @@ void emitFiles(ModuleOp module, ArrayRef<int32_t> sortedGroupIds,
 ### 测试用例（Phase 4）
 
 ```mlir
-// test/Conversion/VectorPlan/group-outline-strip.mlir
-// RUN: mlir-opt --vector-plan-group-analysis --vector-plan-group-outline %s \
+// test/Conversion/AutoFuse/group-outline-strip.mlir
+// RUN: mlir-opt --auto-fuse-group-analysis --auto-fuse-group-outline %s \
 // RUN:   | FileCheck %s
 
 func.func @two_ops(%x: tensor<8xf16>) -> tensor<8xf16> {
@@ -299,9 +299,9 @@ func.func @two_ops(%x: tensor<8xf16>) -> tensor<8xf16> {
   return %b
 }
 
-// attribute strip 验证：输出中不含任何 vector_plan.* attribute
-// CHECK-NOT: vector_plan.group_id
-// CHECK-NOT: vector_plan.topo_index
+// attribute strip 验证：输出中不含任何 auto_fuse.* attribute
+// CHECK-NOT: auto_fuse.group_id
+// CHECK-NOT: auto_fuse.topo_index
 
 // coordinator 中只有 call，无 linalg op
 // CHECK:      func.func @two_ops
@@ -314,8 +314,8 @@ func.func @two_ops(%x: tensor<8xf16>) -> tensor<8xf16> {
 ## 完整流水线验收测试
 
 ```mlir
-// test/Conversion/VectorPlan/group-outline-pipeline.mlir
-// RUN: mlir-opt --vector-plan-group-analysis --vector-plan-group-outline %s \
+// test/Conversion/AutoFuse/group-outline-pipeline.mlir
+// RUN: mlir-opt --auto-fuse-group-analysis --auto-fuse-group-outline %s \
 // RUN:   | FileCheck %s --check-prefixes=CHECK,NET
 
 func.func @layernorm(%input: tensor<4x8xf16>, %scale: tensor<8xf16>,
@@ -335,5 +335,5 @@ func.func @layernorm(%input: tensor<4x8xf16>, %scale: tensor<8xf16>,
 // CHECK: func.func private @kernel_group0
 // CHECK:   linalg.reduce
 // CHECK:   linalg.generic
-// CHECK-NOT: vector_plan.
+// CHECK-NOT: auto_fuse.
 ```
