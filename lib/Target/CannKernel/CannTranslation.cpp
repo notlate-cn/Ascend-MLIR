@@ -3514,6 +3514,26 @@ static void fixBrokenOpEmitters(Operation *moduleOp) {
     rewriter.eraseOp(op);
   });
 
+  moduleOp->walk([&](ascendc::AddL2Op op) {
+    rewriter.setInsertionPoint(op);
+    Location loc = op.getLoc();
+    std::string tmpl = "{\n";
+    tmpl += "  uint32_t _afir_add_count = static_cast<uint32_t>($3);\n";
+    tmpl += "  for (uint32_t _afir_off = 0; _afir_off < _afir_add_count; "
+            "_afir_off += 1024u) {\n";
+    tmpl += "    uint32_t _afir_chunk = ((_afir_add_count - _afir_off) < "
+            "1024u) ? (_afir_add_count - _afir_off) : 1024u;\n";
+    tmpl += "    AscendC::Add($0[_afir_off], $1[_afir_off], $2[_afir_off], "
+            "_afir_chunk);\n";
+    tmpl += "  }\n";
+    tmpl += "  $0.SetSize(_afir_add_count);\n}";
+    rewriter.create<emitasc::VerbatimOp>(
+        loc, rewriter.getStringAttr(tmpl),
+        ValueRange({op.getDst(), op.getSrc0(), op.getSrc1(),
+                    op.getCalCount()}));
+    rewriter.eraseOp(op);
+  });
+
   // AscendC's CO1->VECIN DataCopy overload is half-oriented on C220. Keep the
   // fast path for half and scalarize other element types for correctness.
   moduleOp->walk([&](ascendc::DataCopyCO12DstOp op) {
@@ -3709,14 +3729,19 @@ static void fixBrokenOpEmitters(Operation *moduleOp) {
                                  : Value{};
     if (gmScalarSource) {
       unsigned gmOperand = 2 + (2 * rank);
-      tmpl += "  if (_afir_ds[0] < 16u && _afir_ss[1] == 1u) {\n";
-      tmpl += "    " + elemTypeStr + " _afir_zero = 0;\n";
-      tmpl += "    AscendC::Duplicate($0, _afir_zero, _afir_ds[0] * _afir_ds[1]);\n";
+      tmpl += "  if (_afir_ss[1] == 1u) {\n";
       tmpl += "    for (uint32_t _afir_r = 0; _afir_r < _afir_ds[0]; ++_afir_r) {\n";
       tmpl += "      auto _afir_v = $" + std::to_string(gmOperand) +
               ".GetValue(_afir_r);\n";
-      tmpl += "      AscendC::Adds($0[_afir_r * _afir_ds[1]], "
-              "$0[_afir_r * _afir_ds[1]], _afir_v, (int32_t)_afir_ds[1]);\n";
+      tmpl += "      for (uint32_t _afir_c = 0; _afir_c < _afir_ds[1]; "
+              "_afir_c += 1024u) {\n";
+      tmpl += "        uint32_t _afir_chunk = ((_afir_ds[1] - _afir_c) < "
+              "1024u) ? (_afir_ds[1] - _afir_c) : 1024u;\n";
+      tmpl += "        uint32_t _afir_offset = _afir_r * _afir_ds[1] + "
+              "_afir_c;\n";
+      tmpl += "        AscendC::Duplicate($0[_afir_offset], _afir_v, "
+              "_afir_chunk);\n";
+      tmpl += "      }\n";
       tmpl += "    }\n";
       tmpl += "  } else {\n";
       tmpl += "    AscendC::Broadcast<" + elemTypeStr + ", " +
@@ -3778,12 +3803,12 @@ static void fixBrokenOpEmitters(Operation *moduleOp) {
       return;
     Value sourceElementCount =
         findLocalTensorDataCopyCountBefore(op.getOperation(), op.getSrc());
-    std::string sourceSetSizeExpr = "$3";
+    std::string sourceSetSizeExpr = "$4";
     if (!sourceElementCount) {
       sourceElementCount = findLocalTensorByteLength(op.getSrc());
       if (sourceElementCount)
         sourceSetSizeExpr =
-            "($3 / " + std::to_string(sourceElemBytes) + "u)";
+            "($4 / " + std::to_string(sourceElemBytes) + "u)";
     }
     if (!sourceElementCount)
       sourceElementCount = op.getCount();
@@ -3848,7 +3873,7 @@ static void fixBrokenOpEmitters(Operation *moduleOp) {
     tmpl += "\nAscendC::PipeBarrier<PIPE_V>()";
 
     SmallVector<Value> args = {op.getDst(), op.getSrc(), op.getSrcBaseAddr(),
-                               sourceElementCount};
+                               op.getCount(), sourceElementCount};
     rewriter.create<emitasc::VerbatimOp>(
         loc, rewriter.getStringAttr(tmpl), ValueRange(args));
     rewriter.eraseOp(op);
@@ -3931,20 +3956,15 @@ static void fixBrokenOpEmitters(Operation *moduleOp) {
       auto srcElemType =
           cast<ascendc::LocalTensorType>(op.getSrc().getType()).getElementType();
       if (srcElemType.isF16()) {
-        tmpl += "  uint32_t _afir_src_elems = _afir_rows * _afir_cols;\n";
-        tmpl += "  AscendC::TBuf<AscendC::TPosition::VECCALC> _afir_src_f32_tbuf;\n";
-        tmpl += "  AscendC::TBuf<AscendC::TPosition::VECCALC> _afir_dst_f32_tbuf;\n";
-        tmpl += "  " + pipeRef + ".InitBuffer(_afir_src_f32_tbuf, _afir_src_elems * sizeof(float));\n";
-        tmpl += "  " + pipeRef + ".InitBuffer(_afir_dst_f32_tbuf, _afir_rows * sizeof(float));\n";
-        tmpl += "  AscendC::LocalTensor<float> _afir_src_f32 = _afir_src_f32_tbuf.Get<float>();\n";
-        tmpl += "  AscendC::LocalTensor<float> _afir_dst_f32 = _afir_dst_f32_tbuf.Get<float>();\n";
-        tmpl += "  AscendC::Cast(_afir_src_f32, $1, AscendC::RoundMode::CAST_NONE,\n";
-        tmpl += "                _afir_src_elems);\n";
-        tmpl += "  uint32_t _afir_shape[2] = {_afir_rows, _afir_cols};\n";
-        tmpl += "  AscendC::ReduceSum<float, AscendC::Pattern::Reduce::AR, true>(\n";
-        tmpl += "      _afir_dst_f32, _afir_src_f32, _afir_shape, false);\n";
-        tmpl += "  AscendC::Cast($0, _afir_dst_f32, AscendC::RoundMode::CAST_NONE,\n";
-        tmpl += "                _afir_rows);\n";
+        tmpl += "  for (uint32_t _afir_r = 0; _afir_r < _afir_rows; ++_afir_r) {\n";
+        tmpl += "    float _afir_acc = 0.0f;\n";
+        tmpl += "    for (uint32_t _afir_c = 0; _afir_c < _afir_cols; ++_afir_c) {\n";
+        tmpl += "      uint32_t _afir_offset = _afir_r * _afir_cols + _afir_c;\n";
+        tmpl += "      _afir_acc += static_cast<float>($1.GetValue(_afir_offset));\n";
+        tmpl += "    }\n";
+        tmpl += "    $0.SetValue(_afir_r, static_cast<half>(_afir_acc));\n";
+        tmpl += "  }\n";
+        tmpl += "  $0.SetSize(_afir_rows);\n";
       } else {
         tmpl += "  uint32_t _afir_shape[2] = {_afir_rows, _afir_cols};\n";
         tmpl += "  AscendC::ReduceSum<float, AscendC::Pattern::Reduce::AR, true>(\n";
