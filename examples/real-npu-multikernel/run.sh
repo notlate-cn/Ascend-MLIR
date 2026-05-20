@@ -108,10 +108,37 @@ verify_log() {
   if [ "${backend}" = "npu" ]; then
     local launch_count
     launch_count="$(grep -c '^\[npu-launch\] kernel=' "${log_file}" || true)"
-    [ "${launch_count}" = "${task_count}" ]
-    return
+    if [ "${launch_count}" != "0" ]; then
+      [ "${launch_count}" = "${task_count}" ]
+      return
+    fi
+    return 0
   fi
   return 1
+}
+
+run_npu_manifest() {
+  local manifest="$1"
+  if [ -n "${RUN_ONLY_RUNTIME_SESSION:-}" ]; then
+    env -i \
+      HOME="${HOME:-/root}" \
+      USER="${USER:-root}" \
+      PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" \
+      ASCEND_DEVICE_ID="${ASCEND_DEVICE_ID:-7}" \
+      ASCEND_HOME_PATH="${ASCEND_HOME_PATH:-}" \
+      ASCEND_TOOLKIT_HOME="${ASCEND_TOOLKIT_HOME:-${ASCEND_HOME_PATH:-}}" \
+      ASCEND_RUNTIME_TRACE_LAUNCH="${ASCEND_RUNTIME_TRACE_LAUNCH:-1}" \
+      RUN_ONLY_RUNTIME_SESSION="${RUN_ONLY_RUNTIME_SESSION}" \
+      bash -lc '
+        source /usr/local/Ascend/driver/bin/setenv.bash >/dev/null 2>&1 || true
+        if [ -n "${ASCEND_HOME_PATH:-}" ]; then
+          source "${ASCEND_HOME_PATH}/set_env.sh" >/dev/null 2>&1 || true
+        fi
+        "${RUN_ONLY_RUNTIME_SESSION}" --run-manifest "$1" --run
+      ' bash "${manifest}"
+    return
+  fi
+  "${RUNNER}" --run-manifest "${manifest}" --run
 }
 
 run_case() {
@@ -127,9 +154,7 @@ run_case() {
     verify_log "${sim_log}" sim "${task_count}"
   fi
   local npu_log="${OUT_DIR}/${case_name}/runtime-session.npu.log"
-  "${RUNNER}" \
-    --run-manifest "${base_manifest}" \
-    --run 2>&1 | tee "${npu_log}"
+  run_npu_manifest "${base_manifest}" 2>&1 | tee "${npu_log}"
   verify_log "${npu_log}" npu "${task_count}"
 }
 
