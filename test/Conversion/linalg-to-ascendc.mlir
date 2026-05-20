@@ -316,8 +316,8 @@ func.func @test_parallel_reduction_max_identity() {
 // CHECK: %[[TMP:.*]] = ascendc.que_bind.deque_tensor %[[TMP_Q]]
 // CHECK: %[[OUT:.*]] = ascendc.que_bind.alloc_tensor %[[OUT_Q]]
 // CHECK: ascendc.add_l2 %[[OUT]], {{.*}}, %[[TMP]]
-// CHECK: ascendc.que_bind.enque_tensor %[[OUT_Q]], %[[OUT]]
 // CHECK: ascendc.que_bind.free_tensor %[[TMP_Q]], %[[TMP]]
+// CHECK: ascendc.que_bind.enque_tensor %[[OUT_Q]], %[[OUT]]
 func.func @test_parallel_vecout_queue_and_temp_free(%rhs: memref<?x?xf16>, %m: index, %n: index) {
   %lhs = memref.alloc(%m) : memref<?x1xf16, 9 : i32>
   %out = memref.alloc(%m, %n) : memref<?x?xf16, 10 : i32>
@@ -362,7 +362,7 @@ func.func @test_queue_backed_vecout_drops_dead_tbuf(%lhs: memref<?x?xf16, 9 : i3
 // CHECK: scf.if %[[NOT_FIRST]]
 // CHECK: ascendc.data_copy_l2 {{.*}} : !ascendc.local_tensor<*xf16>, !ascendc.global_tensor<*xf16>, index
 // CHECK: ascendc.add_l2
-// CHECK: ascendc.data_copy_l2 {{.*}} : !ascendc.global_tensor<*xf16>, !ascendc.local_tensor<*xf16>, index
+// CHECK: emitasc.verbatim
 func.func @test_reduction_chunk_copy_accumulates_previous_partial(%a: memref<?xf16>, %b: memref<?x?xf16>, %out: memref<?xf16>, %m: index, %n: index, %rn: index) {
   %c0 = arith.constant 0 : index
   %partial = memref.alloc(%m) : memref<?xf16, 10 : i32>

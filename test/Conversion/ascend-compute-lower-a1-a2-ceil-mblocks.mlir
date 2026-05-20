@@ -13,7 +13,7 @@
 // CHECK: %[[PAD_M:.*]] = arith.muli %[[PAD_BLOCKS]], %[[C16]] : index
 // CHECK: %[[PAD_ELEMS:.*]] = arith.muli %[[PAD_M]], %[[C128]] : index
 // CHECK: %[[PAD_BYTES:.*]] = arith.muli %[[PAD_ELEMS]], %[[C4]] : index
-// CHECK: ascendc.pipe.init_buffer {{.*}}, %[[PAD_BYTES]]
+// CHECK: ascendc.pipe.init_queue {{.*}}, %[[PAD_BYTES]]
 // CHECK: ascendc.que_bind.deque_tensor
 // CHECK: %[[M_BLOCKS_NUM:.*]] = arith.addi %{{.*}}, %[[C15]] : index
 // CHECK: %[[M_BLOCKS:.*]] = arith.divui %[[M_BLOCKS_NUM]], %[[C16]] : index
@@ -39,7 +39,7 @@ func.func @copy_dynamic_m_a1_to_a2(%m: index) {
 // CHECK: %[[PAD_M_GM:.*]] = arith.muli %[[PAD_BLOCKS_GM]], %[[C16_GM]] : index
 // CHECK: %[[PAD_ELEMS_GM:.*]] = arith.muli %[[PAD_M_GM]], %[[C128_GM]] : index
 // CHECK: %[[PAD_BYTES_GM:.*]] = arith.muli %[[PAD_ELEMS_GM]], %[[C4_GM]] : index
-// CHECK: ascendc.pipe.init_buffer {{.*}}, %[[PAD_BYTES_GM]]
+// CHECK: ascendc.pipe.init_queue {{.*}}, %[[PAD_BYTES_GM]]
 // CHECK: %[[DST_STRIDE_NUM:.*]] = arith.addi %{{.*}}, %[[C15_GM]] : index
 // CHECK: %[[DST_STRIDE_BLOCKS:.*]] = arith.divui %[[DST_STRIDE_NUM]], %[[C16_GM]] : index
 // CHECK: %[[DST_STRIDE:.*]] = arith.muli %[[DST_STRIDE_BLOCKS]], %[[C16_GM]] : index

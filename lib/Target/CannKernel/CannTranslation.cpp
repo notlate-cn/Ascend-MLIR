@@ -3778,12 +3778,12 @@ static void fixBrokenOpEmitters(Operation *moduleOp) {
       return;
     Value sourceElementCount =
         findLocalTensorDataCopyCountBefore(op.getOperation(), op.getSrc());
-    std::string sourceSetSizeExpr = "$4";
+    std::string sourceSetSizeExpr = "$3";
     if (!sourceElementCount) {
       sourceElementCount = findLocalTensorByteLength(op.getSrc());
       if (sourceElementCount)
         sourceSetSizeExpr =
-            "($4 / " + std::to_string(sourceElemBytes) + "u)";
+            "($3 / " + std::to_string(sourceElemBytes) + "u)";
     }
     if (!sourceElementCount)
       sourceElementCount = op.getCount();
