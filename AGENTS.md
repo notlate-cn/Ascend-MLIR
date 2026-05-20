@@ -13,7 +13,7 @@
 
 ## Current Development Mode
 
-- Edit locally in this workspace, then verify on xvm under `/home/niu/code/Codex-Ascend-MLIR`.
+- Edit locally in this workspace, then verify on xvm under `/home/niu/code/Ascend-MLIR`.
 - xvm is the authoritative development verification environment.
 - For xvm build/test/debug workflow, follow `examples/dev-env.md`.
 - xvm currently uses CANN 9.1:
@@ -89,6 +89,22 @@
     - `RC=0`
     - 6 example pipelines pass
     - cross-session runtime-session smoke passes
+- Full transformer simulator E2E is covered by the mainline transformer flow:
+  logical kernels are split by `--ascend-kernel-split`, emitted as per-kernel
+  CANN artifacts, scheduled through a runtime/run-manifest task DAG, and
+  validated by `runtime-session` simulator with `session.validation=pass`.
+- Transformer shape matrix coverage is gated explicitly by
+  `test/tools/longrun/transformer-shape-matrix.mlir`; set
+  `AFIR_ENABLE_LONGRUN_TESTS=1` when intentionally running that long gate.
+- Transformer kernel census diagnostics are gated explicitly by
+  `test/tools/longrun/transformer-kernel-census.mlir`. The current
+  `batch=1, seq=1` census is 53 kernels / 53 tasks / 47 graph edges, bucketed
+  as 49 vec / 1 cube / 3 mix, with 26 root tasks and 25 weight/constant prepack
+  candidates.
+- Kernel DAG visualization lives in
+  `test/tools/diagnostics/ascend_kernel_dag_viz.py`; it reads runtime manifest,
+  run manifest, and kernelized IR to emit SVG plus summary JSON for op summary,
+  shape/tile, critical path, prepack roots, and simple fusion candidates.
 - Real NPU validation current state:
   - `examples/real-npu-microcases` passes on device 7 through the containerized
     run-only runner; the suite covers `const640`, copy variants, `relu_only`,
@@ -126,6 +142,9 @@
 ## Notes
 
 - `examples/dev-env.md` is the operational guide for xvm build/test/debug workflow.
+- `docs/Ascend-MLIR-V2-Implementation-Tracking.zh.md` remains the detailed
+  implementation status and verification record; keep `AGENTS.md` focused on
+  continuation rules, environment, and current next steps.
 - `examples/real-npu.md` is the single operational guide for remote real-device NPU debugging, containerized real-NPU runner usage, run-only packaging, plog triage, and current real-NPU findings.
 - If xvm reports stale or inconsistent build state, prefer a clean reconfigure before interpreting failures as CANN 9.1 regressions.
 - Do not include unrelated dirty files in commits or reviews.
