@@ -373,8 +373,9 @@ LogicalResult convertCompute(func::FuncOp funcOp, AscendCBufferContext &ctx) {
   // DataCopy from GM → VECIN TQue (not directly to VECCALC TBuf).
   auto copyGmToVecin =
       [&](OpBuilder &b, Location loc, Type elemType, Value srcGt,
-          Value elemCount, Value bufferElemCount,
-          SmallVectorImpl<std::pair<Value, Value>> *tempVecinTensors) -> Value {
+          Value elemCount, Value bufferElemCount = Value{},
+          SmallVectorImpl<std::pair<Value, Value>> *tempVecinTensors =
+              nullptr) -> Value {
     if (!bufferElemCount)
       bufferElemCount = elemCount;
     unsigned elemBytes = elemType.getIntOrFloatBitWidth() / 8;
