@@ -1,6 +1,5 @@
 #pragma once
 
-#include "Runtime/Artifact/ArtifactCompiler.h"
 #include "Runtime/Execution/TaskGraph.h"
 #include "Runtime/Support/Types.h"
 

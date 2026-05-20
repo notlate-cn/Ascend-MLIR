@@ -11,11 +11,12 @@
 #   gathered[M,K] + bias[K] --> out[M,K]
 #
 # Shapes (参数设计规则):
-#   M=512  (divisible by TB_M=64, no tail block)
+#   M=16   (single TB_M=16 block; avoids current multi-block Gather UB on real NPU)
 #   N=640  (gather source width, N >= K)
-#   K=256  (gather output width, K >= 16 for DataCopy alignment)
-#   TB_M=64, Tb_M=1 (row-by-row gather; one row data[N] fits in UB VECCALC)
-#   block_dim = M / TB_M = 8
+#   K=128  (gather output width, K >= 16 for DataCopy alignment)
+#   indices in [0, 624), avoiding the final 32B half datablock on real NPU
+#   TB_M=16, TB_N=16 (one 16-row tile per block; each row data[N] fits in UB VECCALC)
+#   block_dim = M / TB_M = 1
 # ============================================================
 
 set -e
@@ -126,8 +127,8 @@ log "  ok: step8_kernel_gen.cpp"
 
 echo ""
 echo "==================== [STAGE 8b] 生成测试数据：gen_data.py ===================="
-log "  M=512, N=640, K=256, seed=42"
-"$PYTHON" "$DIR/gen_data.py" --m 512 --n 640 --k 256 --seed 42 --out-dir "$DIR"
+log "  M=16, N=640, K=128, index_high=624, seed=42"
+"$PYTHON" "$DIR/gen_data.py" --m 16 --n 640 --k 128 --index-high 624 --seed 42 --out-dir "$DIR"
 log "  ok: input_data.npy, input_indices.npy, input_bias.npy, output_out.npy"
 
 echo ""
@@ -148,7 +149,7 @@ log "  ok: $ARTIFACT_ROOT"
 
 echo ""
 echo "==================== [STAGE 10] Run + Verify ===================="
-log "  TB_M=64, TB_N=1, M=512, N=640, K=256, block-dim=8"
+log "  TB_M=16, TB_N=16, M=16, N=640, K=128, index_high=624, block-dim=1"
 VALIDATION_LOG="$BUILD_DIR/runtime_session.log"
 cat > "$RUN_MANIFEST" <<EOF
 {
@@ -168,9 +169,9 @@ cat > "$RUN_MANIFEST" <<EOF
   ],
   "tiling": {
     "schema": "${DIR}/tiling_space.json",
-    "params": "TB_M=64,TB_N=1,dim_arg0_0=512,dim_arg1_0=256,dim_arg0_1=640,dim_arg1_1=256"
+    "params": "TB_M=16,TB_N=16,dim_arg0_0=16,dim_arg1_0=128,dim_arg0_1=640,dim_arg2_0=128"
   },
-  "block_dim": 8,
+  "block_dim": 1,
   "workspace_size": 16777216,
   "profiling": true,
   "atol": 10,
@@ -201,10 +202,10 @@ echo "   step7_kernel.mlir           → 完整 AscendC kernel IR"
 echo "   step7_cann.mlir             → CANN 标准签名 IR"
 echo "   step8_kernel_gen.cpp        → AscendC C++ kernel 源码"
 echo "   tiling_space.json           → tiling 参数空间"
-echo "   input_data.npy              → data[512,640] f16"
-echo "   input_indices.npy           → indices[256] i64"
-echo "   input_bias.npy              → bias[256] f16"
-echo "   output_out.npy              → expected out[512,256] f16"
+echo "   input_data.npy              → data[16,640] f16"
+echo "   input_indices.npy           → indices[128] i64"
+echo "   input_bias.npy              → bias[128] f16"
+echo "   output_out.npy              → expected out[16,128] f16"
 echo "   build_e2e/artifact               → runtime-session 编译产物"
 echo "   build_e2e/output.npy            → 仿真输出"
 echo "========================================================"

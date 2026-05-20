@@ -1,9 +1,11 @@
 #include "Runtime/Execution/NativeExecutionRunner.h"
 
+#include "LaunchTrace.h"
 #include "Runtime/PathUtils.h"
 
 #include "llvm/Support/Error.h"
 #include "llvm/Support/MemoryBuffer.h"
+#include "llvm/Support/raw_ostream.h"
 
 #include <algorithm>
 #include <atomic>
@@ -57,6 +59,8 @@ static std::string buildRegisteredFunctionKey(const FileExecutionLaunch &launch)
   key += std::to_string(launch.magic);
   return key;
 }
+
+constexpr size_t kLaunchTraceSampleBytes = 64;
 
 } // namespace
 
@@ -229,6 +233,7 @@ llvm::Error NativeExecutionRunner::runBinary(
                                    "rtFunctionRegister failed: rc=%d", rc);
 
   std::vector<void *> inputGm;
+  std::vector<LaunchTraceTensor> traceInputs;
   for (auto &input : args.inputs) {
     auto ptrOr = alloc(input.nbytes());
     if (!ptrOr) {
@@ -236,6 +241,8 @@ llvm::Error NativeExecutionRunner::runBinary(
       return ptrOr.takeError();
     }
     inputGm.push_back(*ptrOr);
+    traceInputs.push_back(
+        {input.nbytes(), reinterpret_cast<uintptr_t>(*ptrOr)});
     if (auto err = hostToDevice(*ptrOr, input.data, input.nbytes())) {
       freeAll();
       return err;
@@ -243,6 +250,7 @@ llvm::Error NativeExecutionRunner::runBinary(
   }
 
   std::vector<void *> outputGm;
+  std::vector<LaunchTraceTensor> traceOutputs;
   for (auto &output : args.outputs) {
     auto ptrOr = alloc(output.nbytes());
     if (!ptrOr) {
@@ -250,6 +258,8 @@ llvm::Error NativeExecutionRunner::runBinary(
       return ptrOr.takeError();
     }
     outputGm.push_back(*ptrOr);
+    traceOutputs.push_back(
+        {output.nbytes(), reinterpret_cast<uintptr_t>(*ptrOr)});
   }
 
   auto workspaceOr = alloc(args.workspace_size);
@@ -275,6 +285,22 @@ llvm::Error NativeExecutionRunner::runBinary(
 
   uint32_t argsSize =
       static_cast<uint32_t>(launchArgs.size() * sizeof(uint64_t));
+  if (isNativeLaunchTraceEnabled()) {
+    LaunchTraceRecord trace;
+    trace.kernelName = functionName;
+    trace.binaryPath = "<in-memory>";
+    trace.magic = magic;
+    trace.deviceId = deviceId_;
+    trace.blockDim = args.block_dim;
+    trace.inputs = traceInputs;
+    trace.outputs = traceOutputs;
+    trace.workspaceSize = args.workspace_size;
+    trace.workspacePtr = reinterpret_cast<uintptr_t>(*workspaceOr);
+    trace.tilingBytes = args.tiling;
+    trace.launchArgs = launchArgs;
+    trace.argsSize = argsSize;
+    printNativeLaunchTrace(trace, llvm::errs());
+  }
   rc = rtKernelLaunch_(fnNameVoid, static_cast<uint32_t>(args.block_dim),
                        launchArgs.data(), argsSize, nullptr, stream_);
   if (rc != 0) {
@@ -283,7 +309,12 @@ llvm::Error NativeExecutionRunner::runBinary(
                                    "rtKernelLaunch failed: rc=%d", rc);
   }
 
-  rtStreamSynchronize_(stream_);
+  rc = rtStreamSynchronize_(stream_);
+  if (rc != 0) {
+    freeAll();
+    return llvm::createStringError(llvm::inconvertibleErrorCode(),
+                                   "rtStreamSynchronize failed: rc=%d", rc);
+  }
 
   for (size_t i = 0; i < args.outputs.size(); ++i) {
     if (auto err =
@@ -337,23 +368,56 @@ llvm::Expected<void *> NativeExecutionRunner::registerBinary(
   return fnNameVoid;
 }
 
-llvm::Error NativeExecutionRunner::runWithHandle(void *funcHandle,
-                                                  RunArgs &args) {
+llvm::Error
+NativeExecutionRunner::runWithHandle(void *funcHandle, RunArgs &args,
+                                     const FileExecutionLaunch *launch) {
+  const bool traceEnabled = isNativeLaunchTraceEnabled();
   std::vector<void *> inputGm;
-  for (auto &input : args.inputs) {
+  std::vector<LaunchTraceTensor> traceInputs;
+  for (size_t inputIndex = 0; inputIndex < args.inputs.size(); ++inputIndex) {
+    auto &input = args.inputs[inputIndex];
     auto ptrOr = alloc(input.nbytes());
     if (!ptrOr) {
       freeAll();
       return ptrOr.takeError();
     }
     inputGm.push_back(*ptrOr);
+    traceInputs.push_back(
+        {input.nbytes(), reinterpret_cast<uintptr_t>(*ptrOr)});
     if (auto err = hostToDevice(*ptrOr, input.data, input.nbytes())) {
       freeAll();
       return err;
     }
+    if (traceEnabled) {
+      const size_t sampleBytes =
+          std::min(input.nbytes(), kLaunchTraceSampleBytes);
+      const uint8_t *hostBytes = static_cast<const uint8_t *>(input.data);
+      printNativeLaunchBufferSample(
+          "input[" + std::to_string(inputIndex) + "].host",
+          llvm::ArrayRef<uint8_t>(hostBytes, sampleBytes), input.nbytes(),
+          llvm::errs());
+      std::vector<uint8_t> roundtrip(sampleBytes);
+      if (sampleBytes > 0) {
+        if (auto err = deviceToHost(roundtrip.data(), *ptrOr, sampleBytes)) {
+          freeAll();
+          return err;
+        }
+      }
+      const bool matched =
+          sampleBytes == 0 ||
+          std::memcmp(roundtrip.data(), hostBytes, sampleBytes) == 0;
+      llvm::errs() << "[npu-launch] input[" << inputIndex
+                   << "].h2d_roundtrip match="
+                   << (matched ? "yes" : "no") << "\n";
+      printNativeLaunchBufferSample(
+          "input[" + std::to_string(inputIndex) + "].h2d_roundtrip",
+          llvm::ArrayRef<uint8_t>(roundtrip.data(), roundtrip.size()),
+          input.nbytes(), llvm::errs());
+    }
   }
 
   std::vector<void *> outputGm;
+  std::vector<LaunchTraceTensor> traceOutputs;
   for (auto &output : args.outputs) {
     auto ptrOr = alloc(output.nbytes());
     if (!ptrOr) {
@@ -361,6 +425,8 @@ llvm::Error NativeExecutionRunner::runWithHandle(void *funcHandle,
       return ptrOr.takeError();
     }
     outputGm.push_back(*ptrOr);
+    traceOutputs.push_back(
+        {output.nbytes(), reinterpret_cast<uintptr_t>(*ptrOr)});
   }
 
   auto workspaceOr = alloc(args.workspace_size);
@@ -386,6 +452,27 @@ llvm::Error NativeExecutionRunner::runWithHandle(void *funcHandle,
 
   uint32_t argsSize =
       static_cast<uint32_t>(launchArgs.size() * sizeof(uint64_t));
+  if (traceEnabled) {
+    LaunchTraceRecord trace;
+    if (launch) {
+      trace.kernelName = launch->kernelName;
+      trace.binaryPath = launch->binaryPath;
+      trace.magic = launch->magic;
+    } else {
+      trace.kernelName = "<registered>";
+      trace.binaryPath = "<registered>";
+    }
+    trace.deviceId = deviceId_;
+    trace.blockDim = args.block_dim;
+    trace.inputs = traceInputs;
+    trace.outputs = traceOutputs;
+    trace.workspaceSize = args.workspace_size;
+    trace.workspacePtr = reinterpret_cast<uintptr_t>(*workspaceOr);
+    trace.tilingBytes = args.tiling;
+    trace.launchArgs = launchArgs;
+    trace.argsSize = argsSize;
+    printNativeLaunchTrace(trace, llvm::errs());
+  }
   int rc = rtKernelLaunch_(funcHandle, static_cast<uint32_t>(args.block_dim),
                            launchArgs.data(), argsSize, nullptr, stream_);
   if (rc != 0) {
@@ -394,7 +481,12 @@ llvm::Error NativeExecutionRunner::runWithHandle(void *funcHandle,
                                    "rtKernelLaunch failed: rc=%d", rc);
   }
 
-  rtStreamSynchronize_(stream_);
+  rc = rtStreamSynchronize_(stream_);
+  if (rc != 0) {
+    freeAll();
+    return llvm::createStringError(llvm::inconvertibleErrorCode(),
+                                   "rtStreamSynchronize failed: rc=%d", rc);
+  }
 
   for (size_t i = 0; i < args.outputs.size(); ++i) {
     if (auto err =
@@ -402,6 +494,15 @@ llvm::Error NativeExecutionRunner::runWithHandle(void *funcHandle,
                          args.outputs[i].nbytes())) {
       freeAll();
       return err;
+    }
+    if (traceEnabled) {
+      const size_t sampleBytes =
+          std::min(args.outputs[i].nbytes(), kLaunchTraceSampleBytes);
+      printNativeLaunchBufferSample(
+          "output[" + std::to_string(i) + "].host_after_d2h",
+          llvm::ArrayRef<uint8_t>(
+              static_cast<const uint8_t *>(args.outputs[i].data), sampleBytes),
+          args.outputs[i].nbytes(), llvm::errs());
     }
   }
 
@@ -423,7 +524,7 @@ llvm::Error NativeExecutionRunner::runFile(const FileExecutionLaunch &launch,
       return handleOr.takeError();
     handleIt = registeredFunctionHandles_.emplace(key, *handleOr).first;
   }
-  return runWithHandle(handleIt->second, args);
+  return runWithHandle(handleIt->second, args, &launch);
 }
 
 llvm::Error NativeExecutionRunner::runDynamicLibraryArtifact(
