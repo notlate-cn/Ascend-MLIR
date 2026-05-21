@@ -139,6 +139,23 @@ void emitLocalToLocalScalarCopy(OpBuilder &builder, Location loc, Type elemType,
       loc, builder.getStringAttr(body), ValueRange{dstLt, srcLt, count});
 }
 
+void emitLocalTensorZeroPad(OpBuilder &builder, Location loc, Type elemType,
+                            Value tensor, Value begin, Value end) {
+  std::string elemTypeStr = getVerbatimScalarTypeName(elemType);
+  std::string body = "{\n";
+  body += "  AscendC::PipeBarrier<PIPE_ALL>();\n";
+  body += "  uint32_t _afir_begin = static_cast<uint32_t>($1);\n";
+  body += "  uint32_t _afir_end = static_cast<uint32_t>($2);\n";
+  body += "  for (uint32_t _afir_i = _afir_begin; _afir_i < _afir_end; "
+          "++_afir_i)\n";
+  body += "    $0.SetValue(_afir_i, static_cast<" + elemTypeStr + ">(0));\n";
+  body += "  $0.SetSize(_afir_end);\n";
+  body += "  AscendC::PipeBarrier<PIPE_ALL>();\n";
+  body += "}";
+  builder.create<emitasc::VerbatimOp>(
+      loc, builder.getStringAttr(body), ValueRange{tensor, begin, end});
+}
+
 static memref::AllocOp getRootAllocOp(Value value) {
   while (true) {
     if (auto subview = value.getDefiningOp<memref::SubViewOp>()) {
@@ -2976,6 +2993,8 @@ LogicalResult convertCompute(func::FuncOp funcOp, AscendCBufferContext &ctx) {
                                          gatherSourceRowLt, dataRowLt, dimN);
               processedRowLt = gatherSourceRowLt;
             }
+            emitLocalTensorZeroPad(b, forLoc, elemType, processedRowLt, dimN,
+                                   paddedDimN);
 
             // Step 2: gather_l2(dst[K], src[N], indices, srcBase=0, count=K)
             Value dstByteOff =
