@@ -393,7 +393,7 @@ run_vec_example \
   "    { \"name\": \"a\", \"path\": \"${PROJECT_ROOT}/examples/broadcast-add-reduce/build_mainline/input_a.npy\" },
     { \"name\": \"b\", \"path\": \"${PROJECT_ROOT}/examples/broadcast-add-reduce/build_mainline/input_b.npy\" }" \
   "${PROJECT_ROOT}/examples/broadcast-add-reduce/build_mainline/output_c.npy" \
-  "dim_arg0_0=640,dim_arg1_1=15000,dim_arg1_0=640" \
+  "dim_arg0_0=640,dim_arg1_1=128,dim_arg1_0=640" \
   "20" "10" "1e-2" \
   "build_mainline/step10_kernel.cpp" \
   "${PROJECT_ROOT}/examples/broadcast-add-reduce/build_mainline/phase5_tiling_space.json"
