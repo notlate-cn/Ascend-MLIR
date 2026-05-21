@@ -5,10 +5,13 @@
 //===----------------------------------------------------------------------===//
 
 #include "Conversion/AutoFuse/GroupOutline/NetworkJsonEmitter.h"
+#include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
+#include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/BuiltinTypes.h"
+#include "mlir/IR/DialectResourceBlobManager.h"
 #include "mlir/IR/SymbolTable.h"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/Support/JSON.h"
@@ -117,6 +120,74 @@ llvm::Error emitNetworkJson(mlir::ModuleOp module, mlir::func::FuncOp coord,
         }
         valueSource[collapseOp.getResult()] = std::move(src);
       }
+      continue;
+    }
+
+    if (auto emptyOp = mlir::dyn_cast<mlir::tensor::EmptyOp>(&op)) {
+      // A fresh DPS init/output buffer; the runner allocates it.
+      llvm::json::Object src;
+      src["from"] = "alloc";
+      if (auto rt =
+              mlir::dyn_cast<mlir::RankedTensorType>(emptyOp.getType())) {
+        auto desc = tensorDescriptor(rt);
+        src["shape"] = std::move(desc["shape"]);
+        src["dtype"] = std::move(desc["dtype"]);
+      }
+      valueSource[emptyOp.getResult()] = std::move(src);
+      continue;
+    }
+
+    if (auto sliceOp = mlir::dyn_cast<mlir::tensor::ExtractSliceOp>(&op)) {
+      // A static sub-view of another value; the runner copies the slice out.
+      llvm::json::Object src;
+      src["from"] = "slice";
+      if (auto it = valueSource.find(sliceOp.getSource());
+          it != valueSource.end()) {
+        llvm::json::Object srcCopy = it->second;
+        src["source"] = std::move(srcCopy);
+      }
+      auto toArr = [](llvm::ArrayRef<int64_t> xs) {
+        llvm::json::Array a;
+        for (int64_t x : xs)
+          a.push_back(mlir::ShapedType::isDynamic(x) ? int64_t{-1} : x);
+        return a;
+      };
+      src["offsets"] = toArr(sliceOp.getStaticOffsets());
+      src["sizes"]   = toArr(sliceOp.getStaticSizes());
+      src["strides"] = toArr(sliceOp.getStaticStrides());
+      if (auto rt = mlir::dyn_cast<mlir::RankedTensorType>(
+              sliceOp.getResult().getType())) {
+        auto desc = tensorDescriptor(rt);
+        src["shape"] = std::move(desc["shape"]);
+        src["dtype"] = std::move(desc["dtype"]);
+      }
+      valueSource[sliceOp.getResult()] = std::move(src);
+      continue;
+    }
+
+    if (auto cstOp = mlir::dyn_cast<mlir::arith::ConstantOp>(&op)) {
+      // A constant used as a kernel arg (linalg.fill value, attention scale,
+      // a weight tensor, ...).  Register it as a "const" source so downstream
+      // call args resolve; the runner materializes it (scalar value inline,
+      // tensor weight via its resource key).
+      llvm::json::Object src;
+      src["from"] = "const";
+      mlir::Attribute val = cstOp.getValue();
+      if (auto fa = mlir::dyn_cast<mlir::FloatAttr>(val)) {
+        src["value"] = fa.getValueAsDouble();
+        src["dtype"] = dtypeName(fa.getType());
+      } else if (auto ia = mlir::dyn_cast<mlir::IntegerAttr>(val)) {
+        src["value"] = static_cast<int64_t>(ia.getInt());
+        src["dtype"] = dtypeName(ia.getType());
+      } else if (auto rt =
+                     mlir::dyn_cast<mlir::RankedTensorType>(cstOp.getType())) {
+        auto desc = tensorDescriptor(rt);
+        src["shape"] = std::move(desc["shape"]);
+        src["dtype"] = std::move(desc["dtype"]);
+        if (auto dr = mlir::dyn_cast<mlir::DenseResourceElementsAttr>(val))
+          src["resource"] = dr.getRawHandle().getKey().str();
+      }
+      valueSource[cstOp.getResult()] = std::move(src);
       continue;
     }
 

@@ -142,14 +142,21 @@ rebuildGroupInfo(int32_t gid,
 
   // boundaryIn: walk ALL nested regions to catch scalar constants captured
   // inside linalg body blocks (e.g. %cst used in arith.divf inside the body).
+  // ConstantLike operands (arith.constant fill values / weights) are NOT passed
+  // as kernel args — they are rematerialized inside the kernel by outlineGroup.
+  // This keeps kernels tensor-arg-only (codegen casts arg types to
+  // RankedTensorType) and avoids threading scalar args through the runtime.
   llvm::DenseSet<Value> seen;
   for (auto *op : info.opsToClone) {
     op->walk([&](Operation *innerOp) {
       for (Value operand : innerOp->getOperands()) {
-        if (!isInternal(operand) && !seen.count(operand)) {
-          info.boundaryIn.push_back(operand);
-          seen.insert(operand);
-        }
+        if (isInternal(operand) || seen.count(operand))
+          continue;
+        if (Operation *def = operand.getDefiningOp();
+            def && def->hasTrait<mlir::OpTrait::ConstantLike>())
+          continue; // rematerialized, not an arg
+        info.boundaryIn.push_back(operand);
+        seen.insert(operand);
       }
     });
   }
@@ -221,8 +228,23 @@ static func::FuncOp outlineGroup(OpBuilder &builder, ModuleOp module,
                                ? "Cube"
                                : "Vector"));
 
-  // Clone all ops in block range order (linalg + interstitial non-linalg).
+  // Rematerialize ConstantLike operands inside the kernel (they were excluded
+  // from boundaryIn).  Clone each referenced constant once and map it so the
+  // member clones below pick up the in-kernel constant instead of a dangling
+  // cross-region reference.
   builder.setInsertionPointToEnd(body);
+  for (Operation *op : info.opsToClone)
+    op->walk([&](Operation *innerOp) {
+      for (Value operand : innerOp->getOperands()) {
+        if (mapping.contains(operand))
+          continue;
+        Operation *def = operand.getDefiningOp();
+        if (def && def->hasTrait<mlir::OpTrait::ConstantLike>())
+          builder.clone(*def, mapping);
+      }
+    });
+
+  // Clone all ops in block range order (linalg + interstitial non-linalg).
   for (Operation *op : info.opsToClone)
     builder.clone(*op, mapping);
 
