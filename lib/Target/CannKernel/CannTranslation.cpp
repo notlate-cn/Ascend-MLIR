@@ -3817,6 +3817,7 @@ static void fixBrokenOpEmitters(Operation *moduleOp) {
               std::to_string(gmBaseOperand) + ", " + gmOffsetExpr + ");\n";
       tmpl += "      uint32_t _afir_row_offset = _afir_r * _afir_ds[1];\n";
       tmpl += "      if (((_afir_row_offset * sizeof(" + elemTypeStr +
+              ")) % 32u) == 0u && ((_afir_ds[1] * sizeof(" + elemTypeStr +
               ")) % 32u) == 0u) {\n";
       tmpl += "        for (uint32_t _afir_c = 0; _afir_c < _afir_ds[1]; "
               "_afir_c += 1024u) {\n";
@@ -3824,6 +3825,14 @@ static void fixBrokenOpEmitters(Operation *moduleOp) {
               "1024u) ? (_afir_ds[1] - _afir_c) : 1024u;\n";
       tmpl += "          AscendC::Duplicate($0[_afir_row_offset + _afir_c], "
               "_afir_v, _afir_chunk);\n";
+      tmpl += "          uint32_t _afir_vec_elems = 32u / sizeof(" +
+              elemTypeStr + ");\n";
+      tmpl += "          uint32_t _afir_tail_base = (_afir_chunk / "
+              "_afir_vec_elems) * _afir_vec_elems;\n";
+      tmpl += "          for (uint32_t _afir_t = _afir_tail_base; "
+              "_afir_t < _afir_chunk; ++_afir_t)\n";
+      tmpl += "            $0.SetValue(_afir_row_offset + _afir_c + "
+              "_afir_t, _afir_v);\n";
       tmpl += "        }\n";
       tmpl += "      } else {\n";
       tmpl += "        for (uint32_t _afir_c = 0; _afir_c < _afir_ds[1]; "
