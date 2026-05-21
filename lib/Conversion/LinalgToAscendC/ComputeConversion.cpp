@@ -2772,12 +2772,12 @@ LogicalResult convertCompute(func::FuncOp funcOp, AscendCBufferContext &ctx) {
       builder.create<GlobalTensorSetGlobalBufferOp>(loc, dataGt, dataMemref,
                                                      /*size=*/Value{});
 
-      // Allocate a VECCALC buffer for one data row plus one 32B datablock of
-      // padding.  AscendC Gather offsets are byte offsets into UB; on hardware
-      // the vector instruction may touch the tail datablock even when the
-      // logical element is within [0, N).  Padding keeps max-index gathers from
+      // Allocate a VECCALC buffer for one data row plus one 128B vector-read
+      // window of padding.  AscendC Gather offsets are byte offsets into UB; on
+      // hardware the vector instruction may touch past the logical element even
+      // when the index is within [0, N).  Padding keeps max-index gathers from
       // reading past the registered UB buffer.
-      unsigned gatherPadElems = std::max<unsigned>(1, 32 / elemBytes);
+      unsigned gatherPadElems = std::max<unsigned>(1, 128 / elemBytes);
       Value gatherPadElemsVal =
           builder.create<arith::ConstantIndexOp>(loc, gatherPadElems);
       Value paddedDimN =
