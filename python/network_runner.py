@@ -11,6 +11,7 @@ LD_LIBRARY_PATH. Run `source examples/env.sh` (or `source examples/env_gser.sh`)
 import argparse
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -255,6 +256,15 @@ def phase2_codegen_compile(work, groups, network, soc="Ascend910B1"):
                  "--kernel-kind", "vec",
                  "--output", str(artifacts / vname),
                  "--name", vname])
+            # Stage the per-variant tiling schema where HostLaunchHelper looks
+            # for it (<artifacts>/<vname>/tiling_space.json). Without it the
+            # helper falls back to alphabetical-name param order, which differs
+            # from the kernel struct's mlir_index order and scrambles tiling
+            # params whose chosen values differ. The _space.json's tiling_params
+            # array is already in mlir_index order (TilingSchema reads that order).
+            vspace = work / v["space_file"]
+            if vspace.exists():
+                shutil.copy(vspace, artifacts / vname / "tiling_space.json")
     print(f"phase 2 OK → {artifacts}")
     return artifacts
 
@@ -441,10 +451,20 @@ def phase3_default_build_and_dump(work, groups, network, artifacts, args):
         # overflowing — pre-2026-05-14 we picked the largest unconditionally
         # and at R≥256 on dyn-bucketed-e2e that produced all-zero output.
         ub_budget = int(space.get("ub_budget_bytes", 0))
+        block_dim_expr = space.get("block_dim_expr", "") or ""
         for p in space.get("tiling_params", []):
             if not p.get("fixed", False):
+                name = p["name"]
                 vals = p.get("values", []) or [16]
-                if extent > 0:
+                # axis_extent_expr is the MULTICORE axis extent — it only bounds
+                # the block-dim param (the one named in block_dim_expr, e.g.
+                # XBLOCK). Inner-axis tile params (XBLOCK_X_0 / XBLOCK_SUB) span
+                # different axes; capping them by this extent shrinks them below
+                # their valid space (e.g. [8]->2) so the kernel under-processes →
+                # wrong / all-zero output. Only cap the block-dim param.
+                is_block_param = re.search(
+                    r"\b" + re.escape(name) + r"\b", block_dim_expr) is not None
+                if is_block_param and extent > 0:
                     capped = [v for v in vals if v <= extent]
                     vals = capped if capped else [extent]
                 pick = vals[-1]
