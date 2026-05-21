@@ -3447,18 +3447,19 @@ static void fixBrokenOpEmitters(Operation *moduleOp) {
     lowerIntegerMinMax(op, arith::CmpIPredicate::ult);
   });
 
-  // AscendC vector Add does not reliably consume a VECCALC tensor that was
-  // populated directly from GM in the simulator. For this narrow gather+bias
-  // pattern, load each bias scalar from GM and apply the scalar update with
-  // SetValue. Using Adds on a one-element half slice can issue a VEC operation
-  // at an unaligned UB address for _afir_i > 0 on real hardware.
+  // AscendC vector Add can issue a VEC operation at an unaligned UB address for
+  // this narrow gather+bias pattern. Keep the scalar SetValue update, but read
+  // the bias from the already-copied local tensor instead of issuing scalar GM
+  // reads in the hot loop.
   moduleOp->walk([&](ascendc::AddL2Op op) {
     Value gmSource =
         findLocalTensorDataCopyGlobalSourceBefore(op, op.getSrc1());
     Value localSource = op.getSrc0();
+    Value scalarSource = op.getSrc1();
     if (!gmSource) {
       gmSource = findLocalTensorDataCopyGlobalSourceBefore(op, op.getSrc0());
       localSource = op.getSrc1();
+      scalarSource = op.getSrc0();
     }
     if (!gmSource)
       return;
@@ -3482,7 +3483,7 @@ static void fixBrokenOpEmitters(Operation *moduleOp) {
     tmpl += "  AscendC::PipeBarrier<PIPE_ALL>();\n}";
     rewriter.create<emitasc::VerbatimOp>(
         loc, rewriter.getStringAttr(tmpl),
-        ValueRange({op.getDst(), localSource, op.getCalCount(), gmSource}));
+        ValueRange({op.getDst(), localSource, op.getCalCount(), scalarSource}));
     rewriter.eraseOp(op);
   });
 
