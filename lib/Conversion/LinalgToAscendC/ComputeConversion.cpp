@@ -682,8 +682,9 @@ LogicalResult convertCompute(func::FuncOp funcOp, AscendCBufferContext &ctx) {
 
     // Build a VECCALC accumulator for the full shape.  This is the tensor
     // that will hold the element-wise intermediate results before reduction.
-    auto [accumTbuf, accumLt] =
-        allocVeccalc(initB, loc, elemType, allocShape);
+    // NOTE: plain Value (not a structured binding) so the chooseDst lambda
+    // below can capture it; .first (tbuf) is unused here.
+    Value accumLt = allocVeccalc(initB, loc, elemType, allocShape).second;
 
     // Zero-initialize the accumulator.  The linalg.generic outs operand
     // provides the initial accumulator value, which is 0.0 (set by the
