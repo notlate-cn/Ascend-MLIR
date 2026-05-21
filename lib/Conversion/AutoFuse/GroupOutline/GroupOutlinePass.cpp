@@ -16,6 +16,7 @@
 #include "mlir/IR/OwningOpRef.h"
 #include <algorithm>
 #include <climits>
+#include <functional>
 
 #define GEN_PASS_DECL_AUTOFUSEGROUPOUTLINE
 #define GEN_PASS_DEF_AUTOFUSEGROUPOUTLINE
@@ -336,6 +337,162 @@ static LogicalResult emitFiles(ModuleOp module,
 }
 
 //===----------------------------------------------------------------------===//
+// reorderGroupsContiguous — schedule ops so each group's members are contiguous
+//===----------------------------------------------------------------------===//
+//
+// Group analysis guarantees groups form a DAG (cycle-checked), hence each group
+// is convex (no foreign op both consumes from and feeds into the same group).
+// But members can still be *interleaved* in block order, and the range-based
+// outliner needs contiguity.  We reorder the coordinator block:
+//   - cluster each group's members together, in group topological order;
+//   - keep glue used only within one group (internal glue) inside that cluster;
+//   - drop cross-group glue (reshapes feeding/fed-by multiple groups) into the
+//     GAP between clusters so it stays coordinator-level (never cloned into a
+//     kernel).
+// Returns false if the group graph is not a DAG (cannot order) — the caller's
+// contiguity guard then reports a clean error.
+static bool reorderGroupsContiguous(
+    func::FuncOp coordFunc,
+    const llvm::DenseMap<int32_t, llvm::SmallVector<linalg::LinalgOp>> &buckets) {
+  Block &block = coordFunc.getBody().front();
+
+  // member op -> group id
+  llvm::DenseMap<Operation *, int32_t> opGroup;
+  for (auto &[gid, ops] : buckets)
+    for (auto op : ops)
+      opGroup[op.getOperation()] = gid;
+
+  // sourceGroups(v): producer groups feeding v, transitively through non-members
+  llvm::DenseMap<Value, llvm::SmallDenseSet<int32_t, 2>> srcMemo;
+  std::function<llvm::SmallDenseSet<int32_t, 2>(Value)> sourceGroups =
+      [&](Value v) -> llvm::SmallDenseSet<int32_t, 2> {
+    auto it = srcMemo.find(v);
+    if (it != srcMemo.end())
+      return it->second;
+    llvm::SmallDenseSet<int32_t, 2> out;
+    if (Operation *def = v.getDefiningOp()) {
+      auto git = opGroup.find(def);
+      if (git != opGroup.end())
+        out.insert(git->second);
+      else
+        for (Value o : def->getOperands())
+          for (int32_t s : sourceGroups(o))
+            out.insert(s);
+    }
+    srcMemo[v] = out;
+    return out;
+  };
+
+  // consumerGroups(op): consumer groups of op's results, transitively through
+  // non-member ops.
+  llvm::DenseMap<Operation *, llvm::SmallDenseSet<int32_t, 2>> consMemo;
+  std::function<llvm::SmallDenseSet<int32_t, 2>(Operation *)> consumerGroups =
+      [&](Operation *op) -> llvm::SmallDenseSet<int32_t, 2> {
+    auto it = consMemo.find(op);
+    if (it != consMemo.end())
+      return it->second;
+    consMemo[op] = {}; // cycle guard (acyclic, but be safe)
+    llvm::SmallDenseSet<int32_t, 2> out;
+    for (Value r : op->getResults())
+      for (Operation *user : r.getUsers()) {
+        auto git = opGroup.find(user);
+        if (git != opGroup.end())
+          out.insert(git->second);
+        else
+          for (int32_t c : consumerGroups(user))
+            out.insert(c);
+      }
+    consMemo[op] = out;
+    return out;
+  };
+
+  // Build the glue-aware group DAG and topologically sort it (Kahn).
+  llvm::DenseMap<int32_t, llvm::DenseSet<int32_t>> gedges;
+  llvm::DenseMap<int32_t, int> indeg;
+  for (auto &[gid, ops] : buckets)
+    indeg.try_emplace(gid, 0);
+  for (auto &[gid, ops] : buckets)
+    for (auto op : ops)
+      for (Value operand : op.getOperation()->getOperands())
+        for (int32_t src : sourceGroups(operand))
+          if (src != gid && gedges[src].insert(gid).second)
+            ++indeg[gid];
+
+  llvm::SmallVector<int32_t> ready, topo;
+  for (auto &[gid, d] : indeg)
+    if (d == 0)
+      ready.push_back(gid);
+  llvm::sort(ready); // determinism
+  while (!ready.empty()) {
+    int32_t g = ready.front();
+    ready.erase(ready.begin());
+    topo.push_back(g);
+    llvm::SmallVector<int32_t> freed;
+    for (int32_t h : gedges.lookup(g))
+      if (--indeg[h] == 0)
+        freed.push_back(h);
+    llvm::sort(freed);
+    ready.append(freed.begin(), freed.end());
+  }
+  if (topo.size() != indeg.size())
+    return false; // not a DAG — let the caller's guard report it
+
+  llvm::DenseMap<int32_t, int> groupRank;
+  for (int i = 0; i < (int)topo.size(); ++i)
+    groupRank[topo[i]] = i;
+
+  // Assign a schedule key per op (excluding terminator).  Even rank 2*r is a
+  // group's own slot; odd rank 2*r+1 is the gap after group rank r.
+  Operation *term = block.getTerminator();
+  llvm::SmallVector<Operation *> ops;
+  llvm::DenseMap<Operation *, int> origIndex, keyRank;
+  int idx = 0;
+  for (Operation &o : block) {
+    if (&o == term)
+      continue;
+    origIndex[&o] = idx++;
+    ops.push_back(&o);
+  }
+
+  for (Operation *op : ops) {
+    auto git = opGroup.find(op);
+    if (git != opGroup.end()) {
+      keyRank[op] = 2 * groupRank[git->second]; // member: own cluster
+      continue;
+    }
+    // non-member (glue / constant / etc.)
+    llvm::SmallDenseSet<int32_t, 2> prod;
+    for (Value v : op->getOperands())
+      for (int32_t s : sourceGroups(v))
+        prod.insert(s);
+    auto cons = consumerGroups(op);
+    if (cons.size() == 1) {
+      int32_t g = *cons.begin();
+      bool prodOk = llvm::all_of(prod, [&](int32_t p) { return p == g; });
+      if (prodOk) {
+        keyRank[op] = 2 * groupRank[g]; // internal glue: join the cluster
+        continue;
+      }
+    }
+    int mp = -1;
+    for (int32_t p : prod)
+      mp = std::max(mp, groupRank[p]);
+    keyRank[op] = 2 * mp + 1; // cross glue: land in the gap after its producer
+  }
+
+  llvm::stable_sort(ops, [&](Operation *a, Operation *b) {
+    if (keyRank[a] != keyRank[b])
+      return keyRank[a] < keyRank[b];
+    return origIndex[a] < origIndex[b];
+  });
+
+  // Realize the order: move ops, in sorted order, to just before the terminator.
+  for (Operation *op : ops)
+    op->moveBefore(term);
+  return true;
+}
+
+//===----------------------------------------------------------------------===//
 // Main pass
 //===----------------------------------------------------------------------===//
 
@@ -386,6 +543,55 @@ struct AutoFuseGroupOutlinePass
       return;
 
     OpBuilder builder(module.getContext());
+
+    // Reorder the coordinator so each group's members are contiguous (analysis
+    // may interleave them).  Required because the outliner clones block ranges.
+    (void)reorderGroupsContiguous(coordFunc, buckets);
+
+    // Defensive guard: outlineGroup clones each group's entire [firstOp,lastOp]
+    // block range (interstitial ops included) and replaceGroupWithCall erases
+    // it.  That is sound ONLY when groups are contiguous.  If analysis produced
+    // a non-contiguous group whose range straddles another group's ops, the
+    // range-clone would erase that foreign group's ops, leaving dangling
+    // LinalgOp handles for a later iteration -> use-after-free / SIGSEGV.
+    // Detect this and fail cleanly.  (Real networks hit this when over-fusion
+    // yields interleaved/cyclic groups — see the transformer-encoder crash.)
+    {
+      llvm::DenseMap<Operation *, int32_t> opGid;
+      for (auto &[gid, ops] : buckets)
+        for (auto op : ops)
+          opGid[op.getOperation()] = gid;
+
+      for (int32_t gid : sortedGroupIds) {
+        auto &ops = buckets[gid];
+        llvm::DenseSet<Operation *> memberSet;
+        for (auto op : ops)
+          memberSet.insert(op.getOperation());
+        Block *blk = ops.front()->getBlock();
+        Operation *firstOp = nullptr, *lastOp = nullptr;
+        for (auto &o : *blk)
+          if (memberSet.contains(&o)) {
+            if (!firstOp) firstOp = &o;
+            lastOp = &o;
+          }
+        bool inRange = false;
+        for (auto &o : *blk) {
+          if (&o == firstOp) inRange = true;
+          if (inRange && !memberSet.contains(&o)) {
+            auto it = opGid.find(&o);
+            if (it != opGid.end() && it->second != gid) {
+              o.emitError() << "auto-fuse group " << gid << " is not contiguous: "
+                            << "its block range straddles an op of group "
+                            << it->second
+                            << "; group analysis produced a non-outlinable "
+                               "(interleaved/cyclic) grouping";
+              return signalPassFailure();
+            }
+          }
+          if (&o == lastOp) break;
+        }
+      }
+    }
 
     // Steps 4–6: For each group (in topo order), rebuild boundary info,
     // create kernel func, and replace group ops with a call.

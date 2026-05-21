@@ -4,8 +4,10 @@
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/Operation.h"
 #include "mlir/IR/Value.h"
+#include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/SmallVector.h"
+#include <functional>
 
 using namespace mlir;
 using namespace mlir::auto_fuse;
@@ -63,9 +65,13 @@ FusionKind getFusionKind(const FusionGroup &g1, const FusionGroup &g2) {
   if (hasSSAEdge(g1, g2))
     return FusionKind::Vertical;
 
-  // Horizontal: share at least one boundaryIn value
+  // Horizontal: share at least one boundaryIn *tensor* value.  A shared scalar
+  // (e.g. the constant fill value feeding linalg.fill) carries no shared tensor
+  // data and yields no fusion benefit, so it must not count.  Otherwise every
+  // linalg.fill in a network shares the zero constant and collapses into one
+  // scattered, cyclic pseudo-group that crashes --auto-fuse-group-outline.
   for (auto v : g1.boundaryIn)
-    if (g2.boundaryIn.contains(v))
+    if (isa<ShapedType>(v.getType()) && g2.boundaryIn.contains(v))
       return FusionKind::Horizontal;
 
   return FusionKind::None;
@@ -76,90 +82,81 @@ FusionKind getFusionKind(const FusionGroup &g1, const FusionGroup &g2) {
 //===----------------------------------------------------------------------===//
 
 /// Check if merging g1 and g2 would create a cycle in the group dependency
-/// graph, using BFS-based transitive reachability.
+/// graph.
 ///
-/// A cycle exists if any group reachable DOWNSTREAM from the merged group
-/// (i.e., consumes its results, directly or transitively) also produces a
-/// value consumed by the merged group.  The previous single-hop check missed
-/// multi-hop cycles (merged → G1 → G2 → ... → merged).
-static bool wouldCreateCycle(const FusionGroup &g1, const FusionGroup &g2,
-                              llvm::ArrayRef<FusionGroup> allGroups) {
-  // Outputs of the hypothetical merged group.
-  llvm::DenseSet<Value> mergedResults;
-  for (auto op : g1.members)
-    for (auto res : op.getOperation()->getResults())
-      mergedResults.insert(res);
-  for (auto op : g2.members)
-    for (auto res : op.getOperation()->getResults())
-      mergedResults.insert(res);
+/// Dependency edges are GLUE-AWARE: a value's "source groups" are traced
+/// transitively back through non-group ops (tensor.collapse_shape /
+/// expand_shape / extract_slice, ...).  A linalg-only view would miss edges
+/// routed through reshape glue (ubiquitous in real networks) and approve merges
+/// that produce cyclic, non-outlinable groups — the transformer-encoder crash.
+///
+/// We unify g1/g2 to a sentinel "merged" node and report a cycle iff the merged
+/// node can reach itself via >= 1 intermediate group (direct g1<->g2 edges
+/// become self-loops and are excluded).
+bool wouldCreateCycle(const FusionGroup &g1, const FusionGroup &g2,
+                      llvm::ArrayRef<FusionGroup> allGroups) {
+  // Sentinel group id for the hypothetical merged group (distinct from any real
+  // id and from the -1 "removed" marker).
+  constexpr int32_t kMerged = -2;
 
-  // Inputs of the hypothetical merged group (values NOT produced internally).
-  llvm::DenseSet<Value> mergedInputs;
-  for (auto op : g1.members)
-    for (auto operand : op.getOperation()->getOperands())
-      if (!mergedResults.contains(operand))
-        mergedInputs.insert(operand);
-  for (auto op : g2.members)
-    for (auto operand : op.getOperation()->getOperands())
-      if (!mergedResults.contains(operand))
-        mergedInputs.insert(operand);
-
-  // Build per-group result sets for all other groups.
-  llvm::DenseMap<int32_t, llvm::DenseSet<Value>> groupResultSets;
+  // Map every group-member op -> its group id, unifying g1/g2 to kMerged.
+  llvm::DenseMap<Operation *, int32_t> opGroup;
   for (const auto &g : allGroups) {
-    if (g.id < 0 || g.id == g1.id || g.id == g2.id)
+    if (g.id < 0)
       continue;
+    int32_t id = (g.id == g1.id || g.id == g2.id) ? kMerged : g.id;
     for (auto op : g.members)
-      for (auto res : op.getOperation()->getResults())
-        groupResultSets[g.id].insert(res);
+      opGroup[op.getOperation()] = id;
   }
 
-  // Helper: does group G consume any value from the given result set?
-  auto consumes = [](const FusionGroup &g,
-                     const llvm::DenseSet<Value> &results) -> bool {
-    for (auto op : g.members)
-      for (auto operand : op.getOperation()->getOperands())
-        if (results.contains(operand))
-          return true;
-    return false;
-  };
-
-  // BFS: collect all groups reachable downstream from merged.
-  llvm::DenseSet<int32_t> downstream;
-  llvm::SmallVector<int32_t> worklist;
-
-  for (const auto &g : allGroups) {
-    if (g.id < 0 || g.id == g1.id || g.id == g2.id)
-      continue;
-    if (consumes(g, mergedResults)) {
-      downstream.insert(g.id);
-      worklist.push_back(g.id);
-    }
-  }
-
-  while (!worklist.empty()) {
-    int32_t cur = worklist.pop_back_val();
-    const auto &curResults = groupResultSets[cur];
-    for (const auto &g : allGroups) {
-      if (g.id < 0 || g.id == g1.id || g.id == g2.id)
-        continue;
-      if (downstream.contains(g.id))
-        continue;
-      if (consumes(g, curResults)) {
-        downstream.insert(g.id);
-        worklist.push_back(g.id);
+  // sourceGroups(v): group ids that transitively PRODUCE v, tracing back
+  // through non-group glue ops.  Memoized; SSA is acyclic so it terminates.
+  llvm::DenseMap<Value, llvm::SmallDenseSet<int32_t, 2>> memo;
+  std::function<llvm::SmallDenseSet<int32_t, 2>(Value)> sourceGroups =
+      [&](Value v) -> llvm::SmallDenseSet<int32_t, 2> {
+    auto it = memo.find(v);
+    if (it != memo.end())
+      return it->second;
+    llvm::SmallDenseSet<int32_t, 2> out;
+    if (Operation *def = v.getDefiningOp()) {
+      auto git = opGroup.find(def);
+      if (git != opGroup.end()) {
+        out.insert(git->second); // produced directly by a group member
+      } else {
+        for (Value operand : def->getOperands())
+          for (int32_t s : sourceGroups(operand))
+            out.insert(s);
       }
     }
+    memo[v] = out; // store after recursion (return-by-value keeps refs safe)
+    return out;
+  };
+
+  // Build glue-aware group dependency edges (producer -> consumer).
+  llvm::DenseMap<int32_t, llvm::DenseSet<int32_t>> edges;
+  for (const auto &g : allGroups) {
+    if (g.id < 0)
+      continue;
+    int32_t cons = (g.id == g1.id || g.id == g2.id) ? kMerged : g.id;
+    for (auto op : g.members)
+      for (Value operand : op.getOperation()->getOperands())
+        for (int32_t src : sourceGroups(operand))
+          if (src != cons) // skip self-edges (incl. direct g1<->g2)
+            edges[src].insert(cons);
   }
 
-  // Cycle exists if any downstream group produces a value consumed by merged.
-  for (int32_t gid : downstream) {
-    if (llvm::any_of(groupResultSets[gid], [&](Value v) {
-          return mergedInputs.contains(v);
-        }))
-      return true;
+  // The merge creates a cycle iff the merged node can reach itself.
+  llvm::DenseSet<int32_t> seen;
+  llvm::SmallVector<int32_t> work{kMerged};
+  while (!work.empty()) {
+    int32_t cur = work.pop_back_val();
+    for (int32_t nxt : edges.lookup(cur)) {
+      if (nxt == kMerged)
+        return true;
+      if (seen.insert(nxt).second)
+        work.push_back(nxt);
+    }
   }
-
   return false;
 }
 
@@ -285,6 +282,12 @@ bool canFuseVector(const FusionGroup &g1, const FusionGroup &g2,
 
 bool canFuseCubeEpilogue(const FusionGroup &cube, const FusionGroup &vec,
                          llvm::ArrayRef<FusionGroup> allGroups) {
+  // E0: cycle check (mirrors canFuseVector Rule 2).  Without this, a cube+vec
+  // epilogue merge whose two sides also have an intermediate group between them
+  // (parallel dependency path) creates a cyclic group that cannot be outlined.
+  if (wouldCreateCycle(cube, vec, allGroups))
+    return false;
+
   // E1: all vec members have only parallel iterators
   for (auto op : vec.members) {
     bool allParallel = llvm::all_of(

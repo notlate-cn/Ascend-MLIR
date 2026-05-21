@@ -188,6 +188,12 @@ struct AutoFuseGroupAnalysisPass
         // Both must still be valid
         if (g1.id < 0 || g2.id < 0) continue;
 
+        // Pairs were scored against a stale snapshot of `groups`; an earlier
+        // merge in this same batch may have made this pair cycle-creating.
+        // Re-validate against the live state before committing the merge.
+        if (wouldCreateCycle(g1, g2, groups))
+          continue;
+
         mergeInto(g1, g2, func);
         changed = true;
       }
