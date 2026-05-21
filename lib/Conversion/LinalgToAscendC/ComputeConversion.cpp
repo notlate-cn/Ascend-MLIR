@@ -146,10 +146,10 @@ void emitLocalTensorZeroPad(OpBuilder &builder, Location loc, Type elemType,
   body += "  AscendC::PipeBarrier<PIPE_ALL>();\n";
   body += "  uint32_t _afir_begin = static_cast<uint32_t>($1);\n";
   body += "  uint32_t _afir_end = static_cast<uint32_t>($2);\n";
+  body += "  $0.SetSize(_afir_end);\n";
   body += "  for (uint32_t _afir_i = _afir_begin; _afir_i < _afir_end; "
           "++_afir_i)\n";
   body += "    $0.SetValue(_afir_i, static_cast<" + elemTypeStr + ">(0));\n";
-  body += "  $0.SetSize(_afir_end);\n";
   body += "  AscendC::PipeBarrier<PIPE_ALL>();\n";
   body += "}";
   builder.create<emitasc::VerbatimOp>(
