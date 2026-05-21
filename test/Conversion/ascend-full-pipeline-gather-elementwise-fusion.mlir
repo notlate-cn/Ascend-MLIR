@@ -13,10 +13,17 @@
 // CHECK-SAME: ascend.schedule.tail_policies
 // CHECK-SAME: cann.num_inputs = 3 : i32
 // CHECK: %[[K_I64:[0-9]+]] = emitasc.member %arg5 "dim_arg1_0"
+// CHECK: %[[N_I64:[0-9]+]] = emitasc.member %arg5 "dim_arg0_1"
+// CHECK: %c64 = arith.constant 64 : index
 // CHECK: %[[K_ELEMS:[0-9]+]] = arith.index_cast %[[K_I64]] : i64 to index
 // CHECK: %[[K_BYTES:[0-9]+]] = arith.muli %[[K_ELEMS]], %{{.*}} : index
-// CHECK: %[[VECOUT_TBUF:[0-9]+]] = ascendc.tbuf : <vecout>
 // CHECK: ascendc.pipe.init_queue
+// CHECK-NEXT: %[[VECOUT_TBUF:[0-9]+]] = ascendc.tbuf : <vecout>
+// CHECK: %[[N_ELEMS:[0-9]+]] = arith.index_cast %[[N_I64]] : i64 to index
+// CHECK: ascendc.global_tensor.set_global_buffer %{{[0-9]+}}, %arg0
+// CHECK-NEXT: %[[PADDED_N:[0-9]+]] = arith.addi %[[N_ELEMS]], %c64 : index
+// CHECK-NEXT: %[[GATHER_ROW_BYTES:[0-9]+]] = arith.muli %[[PADDED_N]], %{{.*}} : index
+// CHECK-NEXT: ascendc.pipe.init_queue
 // CHECK-NEXT: %[[GATHER_ROW_LT:[0-9]+]] = ascendc.tbuf.get_tensor %{{[0-9]+}} : !ascendc.tbuf<veccalc>, !ascendc.local_tensor<*xf16>
 // CHECK: %[[GATHER_SRC_LT:[0-9]+]] = ascendc.tbuf.get_tensor %{{[0-9]+}} : !ascendc.tbuf<veccalc>, !ascendc.local_tensor<*xf16>
 // CHECK: emitasc.reinterpret_cast %arg2
