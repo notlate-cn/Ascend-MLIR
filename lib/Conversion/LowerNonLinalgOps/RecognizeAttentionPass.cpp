@@ -142,12 +142,6 @@ struct RecognizeAttentionPattern
     Value k4 = expand(k);
     Value v4 = expand(v);
 
-    // Dummy mask/init (FlashAttentionScore is bidirectional; mask unused).
-    Value mask4 = rewriter.create<tensor::EmptyOp>(
-        loc, ArrayRef<int64_t>{BH, 1, S, D}, elemType);
-    Value init4 = rewriter.create<tensor::EmptyOp>(
-        loc, ArrayRef<int64_t>{BH, 1, S, D}, elemType);
-
     // Cast to the fully-dynamic declared type and call.
     auto module = bmm2->getParentOfType<ModuleOp>();
     func::FuncOp decl = getOrCreateAclnnDecl(module, elemType);
@@ -157,8 +151,14 @@ struct RecognizeAttentionPattern
         return val;
       return rewriter.create<tensor::CastOp>(loc, dynT, val);
     };
-    SmallVector<Value> args = {castDyn(q4), castDyn(k4), castDyn(v4),
-                               castDyn(mask4), castDyn(init4)};
+    // mask/init are dummy slots: FlashAttentionScore here is bidirectional
+    // (no mask) and the host CPU-reference run_FlashAttentionScore ignores both
+    // (sdpa_cpu allocates its own output). Reuse Q's casted value rather than
+    // fresh tensor.empty's — a standalone empty that feeds only this call has no
+    // kernel-group affiliation and the group-outline reorder can sink it past
+    // the call (invalid SSA / no network-json provenance).
+    Value q4dyn = castDyn(q4);
+    SmallVector<Value> args = {q4dyn, castDyn(k4), castDyn(v4), q4dyn, q4dyn};
     auto call = rewriter.create<func::CallOp>(loc, decl, args);
 
     // Cast result back to BNSD, collapse to [BH,S,D], replace bmm2.

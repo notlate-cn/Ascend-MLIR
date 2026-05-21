@@ -41,10 +41,18 @@ def phase1_outline_or_emit_json(args, work):
     groups.mkdir(parents=True, exist_ok=True)
 
     if args.input_linalg:
+        # Step a0: recognize decomposed attention (bmm -> softmax -> bmm) and
+        # route it to aclnn FlashAttentionScore, then finalize the aclnn decl
+        # (aclnn.kind -> aclnn.op/aclnn.layout) so the network-json emitter tags
+        # the call kind=aclnn. Both passes are no-ops when the model has no
+        # attention subgraph. Runs pre-group-analysis on the rawest IR.
+        recognized = work / "model_recognized.mlir"
+        run([AFIR_OPT, "--recognize-attention", "--aclnn-finalize-decl",
+             args.input_linalg, "-o", str(recognized)])
         # Step a: --linalg-fold-unit-extent-dims
         intermediate = work / "model_unit_folded.mlir"
         run([AFIR_OPT, "--linalg-fold-unit-extent-dims",
-             args.input_linalg, "-o", str(intermediate)])
+             str(recognized), "-o", str(intermediate)])
         # Step b: --auto-fuse-group-analysis + --auto-fuse-group-outline
         # Cube (matmul/batch_matmul) groups are routed to the aclnn matmul
         # fallback by default — the auto-fuse AscendC cube codegen isn't ready —
