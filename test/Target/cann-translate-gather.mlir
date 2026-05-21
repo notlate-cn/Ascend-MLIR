@@ -5,16 +5,18 @@
 // CHECK-NOT: SetGlobalBuffer(v1)
 // CHECK-NOT: = v46(
 // CHECK: AscendC::TBuf<AscendC::TPosition::VECCALC> _afir_idx32_tbuf_0;
-// CHECK: uint32_t _afir_idx32_bytes = (uint32_t)[[INDEX_COUNT:v[0-9]+]] * sizeof(uint32_t);
-// CHECK: uint32_t _afir_idx32_aligned_bytes = _afir_idx32_bytes == 0 ? 0 : ((_afir_idx32_bytes + 31u) / 32u) * 32u;
+// CHECK: uint32_t _afir_idx32_count = static_cast<uint32_t>([[INDEX_COUNT:v[0-9]+]]);
+// CHECK: uint32_t _afir_idx32_padded_count = _afir_idx32_count == 0u ? 0u : ((_afir_idx32_count + 127u) / 128u) * 128u;
+// CHECK: uint32_t _afir_idx32_bytes = _afir_idx32_padded_count * sizeof(uint32_t);
+// CHECK: uint32_t _afir_idx32_aligned_bytes = _afir_idx32_bytes == 0u ? 0u : ((_afir_idx32_bytes + 31u) / 32u) * 32u;
 // CHECK: if (_afir_idx32_bytes != 0u && _afir_idx32_aligned_bytes < 32u)
 // CHECK: _afir_idx32_aligned_bytes = 32u;
 // CHECK: InitBuffer(_afir_idx32_tbuf_0, _afir_idx32_aligned_bytes);
 // CHECK: AscendC::LocalTensor<uint32_t> _afir_idx32_0 = _afir_idx32_tbuf_0.Get<uint32_t>();
-// CHECK: SetSize((uint32_t)[[INDEX_COUNT]]);
-// CHECK: for (uint32_t _afir_i = 0; _afir_i < static_cast<uint32_t>([[INDEX_COUNT]]); _afir_i++)
+// CHECK: SetSize(_afir_idx32_padded_count);
+// CHECK: for (uint32_t _afir_i = 0; _afir_i < _afir_idx32_count; _afir_i++)
 // CHECK: _afir_idx32_0.SetValue(_afir_i, static_cast<uint32_t>({{v[0-9]+}}.GetValue(_afir_i)) * 2u);
-// CHECK: _afir_idx32_0.SetSize((uint32_t)[[INDEX_COUNT]]);
+// CHECK: _afir_idx32_0.SetSize(_afir_idx32_padded_count);
 // CHECK: AscendC::PipeBarrier<PIPE_V>();
 // CHECK: AscendC::GlobalTensor<half> _afir_gt;
 // CHECK: _afir_gt.SetGlobalBuffer(
