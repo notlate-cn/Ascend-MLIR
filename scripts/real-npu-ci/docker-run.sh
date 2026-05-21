@@ -178,7 +178,9 @@ mkdir -p "${JOB_ROOT}"
 
 DOCKER_MOUNTS=(
   -v "${JOB_ROOT}:${JOB_ROOT}"
-  -v /data/nyh:/data/nyh
+  # Mount all of /data so a per-user source tree (e.g. /data/gser) and a CANN
+  # toolkit owned by another user (e.g. /data/nyh/Ascend) are both visible.
+  -v /data:/data
   -v /usr/local/Ascend/driver:/usr/local/Ascend/driver:ro
 )
 
