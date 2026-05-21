@@ -63,6 +63,33 @@ after collapse.  Validated: t5u clean, full lit 93 pass.
 So phase-2's only remaining walls are the 3 reduce kernels (softmax g13,
 layernorm g29/g56) — all covered by the aclnn-direct-call plan below.
 
+**Attention → aclnn (softmax wall g13) — DONE** (commit `b0974cd`): new
+linalg-level pre-fusion pass `recognize-attention`
+(`lib/Conversion/LowerNonLinalgOps/RecognizeAttentionPass.cpp`). Anchors on the
+2nd batch_matmul, walks back from its lhs through the softmax glue
+(generic/collapse/expand/fill) to the 1st batch_matmul; the chain must contain a
+`math.exp` (that's what distinguishes attention from two arbitrary chained
+matmuls). Extracts Q=bmm1.lhs, K=transpose(bmm1.rhs last two), V=bmm2.rhs;
+expands each [BH,S,D]→BNSD [BH,1,S,D] (B*H heads in the batch, N=1, since SDPA is
+per-(b,n) independent); emits `@__aclnn_flash_attention` (shares the
+aclnn.kind="flash_attention" contract + aclnn-finalize-decl with
+convert-tm-tensor-attention). Scale 1/sqrt(D) + softmax recomputed inside FA, so
+the matched region is left dead for DCE. Matching is topological (not tied to the
+exact softmax shape), so it survives the scale-mul / dead-argmax / collapse-expand
+glue the torch importer emits. Verified on encoder: 5 batch_matmul→3, exp gone, 1
+FA call with correct Q/K/V. +1 lit `test/Conversion/recognize-attention.mlir`.
+**NOT yet wired into the network_runner phase-1 pipeline** — must run
+pre-group-analysis (before `--auto-fuse-group-analysis`); next step.
+
+NOTE: `--recognize-attention` assumes the model's attention scale == 1/sqrt(D)
+(headDim). Standard nn.MultiheadAttention matches; a custom scale would
+double/mis-apply (FA always uses 1/sqrt(headDim) in sdpa_cpu/aclnn).
+
+Pre-existing lit fail (NOT from this work): `tools/examples/example-pipelines.mlir`
+`broadcast-add-reduce` at the AiCore single-dim multicore scheduling step
+(AscendCParallelize) — in the TileFuse/Collapse.cpp path the other session is
+editing (uncommitted). Full lit 95/96.
+
 ## Roadmap to encoder numerical PASS (remaining, each multi-step)
 1. **Broadcast rank-3 codegen** (the current wall) — fix the fold workaround or
    the static_cast. Then re-run phase-2; expect more vector/reduce codegen walls.
