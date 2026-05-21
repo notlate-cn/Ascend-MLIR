@@ -115,6 +115,35 @@ NOTE: env to run e2e — also need `LD_LIBRARY_PATH` = sim + lib64 + devlib (see
 Reference gen: `/tmp/gen_encoder_ref.py` (seed 0, builds model + dumps
 input0.npy/expected0.npy/encoder.mlir consistently).
 
+**CoordEmitter host-gen completeness — DONE** (commit `3c753cb`): 3 fixes in
+`AclnnBackend.cpp` exposed by encoder host-gen (first net with slices/reshapes):
+(1) `tensor.extract_slice` → host strided copy; (2) `tensor.empty` → actually
+allocate (was unallocated → SaveNpy null-deref SIGSEGV); (3) collapse/expand →
+reshape *view* with result shape/rank/strides (was name-only alias → FA q.rank
+!=4 assert). **Encoder now runs FULL e2e through phase-3** on camodel (all AscendC
+kernels + aclnn FA/LayerNorm/Matmul execute, output produced, intermediates
+dumped). lit 95/97 unchanged.
+
+**CURRENT WALL — AscendC transpose kernel ACCURACY (numerical, NOT pipeline).**
+Whole-encoder output max_abs_diff=0.98 vs torch. Root cause traced by comparing
+each kernel's OWN dumped in→out to a numpy transpose oracle
+(intermediates_default/):
+  - `kernel_group0` [2,8,64]→[8,2,64] perm[1,0,2]: **ALL-ZERO output** (pure
+    transpose, totally broken — the "unreasonable XBLOCK ≫ extent → zero output"
+    class, see [[project_network_runner_v1]] / [[project_multi_input_dyn_reduce_bug]]).
+  - `kernel_group6` rank-5 perm[3,1,2,0,4] & `kernel_group10` rank-4 perm[0,1,3,2]:
+    **tail wrong** (max 0.088, exactly the LAST batch tile's region — 128/1024
+    elems; first tiles correct → multicore/tail boundary bug).
+  - `kernel_group11` perm[0,2,1] & `kernel_group12` perm[2,0,1,3]: CORRECT (0).
+  aclnn FA/LayerNorm/Matmul are CPU-exact (trusted). So the entire numerical gap
+  is AscendC transpose codegen (zero-output + tail) — the other session's
+  transpose/Collapse.cpp/tiling domain. Phase-4 autotuner also fails here
+  (kernel_group6 "no variant passes", max 0.088).
+NEXT (fix-session): AscendC transpose accuracy — group0 zero-output (XBLOCK
+search) + group6/10 tail. Then re-run; expect phase-4/5 to complete + numerical
+PASS. Diagnosis repro: `python3 -c` transpose-oracle over
+`/tmp/enc_e2e/intermediates_default/kernel_groupN__v0_{in_0,out_0}.npy`.
+
 ## Roadmap to encoder numerical PASS (remaining, each multi-step)
 1. **Broadcast rank-3 codegen** (the current wall) — fix the fold workaround or
    the static_cast. Then re-run phase-2; expect more vector/reduce codegen walls.
