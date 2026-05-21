@@ -46,8 +46,14 @@ def phase1_outline_or_emit_json(args, work):
         run([AFIR_OPT, "--linalg-fold-unit-extent-dims",
              args.input_linalg, "-o", str(intermediate)])
         # Step b: --auto-fuse-group-analysis + --auto-fuse-group-outline
+        # Cube (matmul/batch_matmul) groups are routed to the aclnn matmul
+        # fallback by default — the auto-fuse AscendC cube codegen isn't ready —
+        # so disable Cube+Vector epilogue fusion to keep matmuls standalone.
+        analysis = "--auto-fuse-group-analysis"
+        if getattr(args, "enable_cube_fusion", False) is False:
+            analysis += "=disable-cube-fusion=true"
         run([AFIR_OPT,
-             "--auto-fuse-group-analysis",
+             analysis,
              f"--auto-fuse-group-outline=output-dir={groups}",
              str(intermediate),
              "-o", str(work / "_outlined_combined.mlir")])
@@ -728,6 +734,9 @@ def main():
                     help="Execution backend for the final run+verify (phase 5). "
                          "sim=CANN simulator (default); npu=real Ascend device "
                          "(ASCEND_DEVICE_ID, default 0). Phases 2-4 always use sim.")
+    ap.add_argument("--enable-cube-fusion", action="store_true",
+                    help="Allow Cube+Vector epilogue fusion (AscendC cube "
+                         "codegen). Default: off — matmuls route to aclnn.")
     ap.add_argument("--atol", type=float, default=1e-3)
     ap.add_argument("--rtol", type=float, default=1e-2)
     ap.add_argument("--max-phase", type=int, default=5,
