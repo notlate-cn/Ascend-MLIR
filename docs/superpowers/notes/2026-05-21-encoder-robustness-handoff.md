@@ -175,11 +175,26 @@ C. **BUT the transpose accuracy is NOT tiling-driven — it's KERNEL CODEGEN:**
 NET: two real network_runner/HostLaunchHelper plumbing bugs (A picker cap, B
 schema staging) worth fixing on their own, but fixing them does NOT fix the
 transpose numerical errors — those are kernel codegen (autotuner-confirmed for
-group6). NEXT (fix-session): (1) AscendC transpose tail/zero codegen [other
-session]; (2) optionally A+B plumbing fixes [this side]. Repro: transpose-oracle
-over `/tmp/enc_e2e/intermediates_default/kernel_groupN__v0_{in_0,out_0}.npy`;
-tiling experiments via editing `/tmp/enc_e2e/tilings_default.json` +/- staging
-`*_space.json` as `artifacts/<k>__v0/tiling_space.json`, re-run network_test_default.
+group6).
+
+**A + B FIXED (commit `9834c1a9`, network_runner.py):**
+- A: picker now caps only the param named (word-boundary) in `block_dim_expr` by
+  `axis_extent_expr`; inner params pick from their own `values`. group0
+  XBLOCK_X_0 now 8 (was 2), group10 now 32 (was 2).
+- B: phase-2 stages each variant's `_space.json` →
+  `artifacts/<vname>/tiling_space.json` so HostLaunchHelper/TilingPack order the
+  struct by mlir_index (the tiling_params array order), not alphabetical.
+- Regression gate: **two-elewise-e2e PASS max_diff=0** (exercises picker +
+  HostLaunch multi-param tiling); lit 95/97 unchanged. Safe.
+
+**IMPORTANT consequence for the transpose fix-session:** with A+B delivering
+*correct* tiling values, the encoder transpose kernels get WORSE, not better —
+e.g. group11 was "correct" only because A capped XBLOCK_X_0 8→4 and that value
+accidentally avoided the codegen bug; with the correct 8 it now miscomputes.
+So the AscendC transpose codegen bug is tiling-VALUE-dependent and was partly
+masked by the (buggy) picker. Fix the codegen against the correct tiling values
+(XBLOCK_X_0 = full inner-axis extent), not the capped ones. Repro:
+transpose-oracle over `/tmp/enc_e2e/intermediates_default/kernel_groupN__v0_*.npy`.
 
 ## Roadmap to encoder numerical PASS (remaining, each multi-step)
 1. **Broadcast rank-3 codegen** (the current wall) — fix the fold workaround or
