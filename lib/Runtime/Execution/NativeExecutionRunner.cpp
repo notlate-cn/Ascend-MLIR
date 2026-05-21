@@ -60,7 +60,19 @@ static std::string buildRegisteredFunctionKey(const FileExecutionLaunch &launch)
   return key;
 }
 
-constexpr size_t kLaunchTraceSampleBytes = 64;
+// Number of leading bytes of each input/output buffer dumped as hex in the
+// launch trace.  Defaults to 64; override with ASCEND_RUNTIME_TRACE_SAMPLE_BYTES
+// to capture a full small output for off-device diff (e.g. a 640-elem f16
+// output needs 1280).  Opt-in: unset leaves the 64-byte default for all runs.
+static size_t launchTraceSampleBytes() {
+  if (const char *raw = std::getenv("ASCEND_RUNTIME_TRACE_SAMPLE_BYTES")) {
+    char *end = nullptr;
+    unsigned long long v = std::strtoull(raw, &end, 10);
+    if (end != raw && v > 0)
+      return static_cast<size_t>(v);
+  }
+  return 64;
+}
 
 } // namespace
 
@@ -390,7 +402,7 @@ NativeExecutionRunner::runWithHandle(void *funcHandle, RunArgs &args,
     }
     if (traceEnabled) {
       const size_t sampleBytes =
-          std::min(input.nbytes(), kLaunchTraceSampleBytes);
+          std::min(input.nbytes(), launchTraceSampleBytes());
       const uint8_t *hostBytes = static_cast<const uint8_t *>(input.data);
       printNativeLaunchBufferSample(
           "input[" + std::to_string(inputIndex) + "].host",
@@ -497,7 +509,7 @@ NativeExecutionRunner::runWithHandle(void *funcHandle, RunArgs &args,
     }
     if (traceEnabled) {
       const size_t sampleBytes =
-          std::min(args.outputs[i].nbytes(), kLaunchTraceSampleBytes);
+          std::min(args.outputs[i].nbytes(), launchTraceSampleBytes());
       printNativeLaunchBufferSample(
           "output[" + std::to_string(i) + "].host_after_d2h",
           llvm::ArrayRef<uint8_t>(
