@@ -3037,11 +3037,12 @@ static void fixBrokenOpEmitters(Operation *moduleOp) {
               ">(_afir_scalar, $1[_afir_r * _afir_cols],\n";
       tmpl += "                            _afir_ws, (int32_t)_afir_cols);\n";
       // ReduceSum writes _afir_scalar on PIPE_V; the GetValue below reads it on
-      // PIPE_S — barrier so the scalar read sees the committed vector result.
-      // (No PIPE_S barrier afterwards: SetValue targets a different tensor than
-      // the next iteration's ReduceSum, and EnQue handles producer/consumer
-      // sync for the result tensor.)
-      tmpl += "    AscendC::PipeBarrier<PIPE_V>();\n";
+      // PIPE_S. This is a V->S dependency, which PipeBarrier<PIPE_V> does NOT
+      // order (it only sequences vector-vs-vector). Use PIPE_ALL so the vector
+      // pipe drains before the scalar read; otherwise on real hardware the
+      // scalar GetValue races the ReduceSum write and reads stale (~0) data
+      // (the simulator masks this by executing effectively synchronously).
+      tmpl += "    AscendC::PipeBarrier<PIPE_ALL>();\n";
       tmpl += "    $0.SetValue(_afir_r, _afir_scalar.GetValue(0));\n";
       tmpl += "  }\n";
       // The SetValue writes above happen on PIPE_S; a subsequent vector op that
