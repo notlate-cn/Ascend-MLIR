@@ -139,10 +139,47 @@ each kernel's OWN dumped in→out to a numpy transpose oracle
   is AscendC transpose codegen (zero-output + tail) — the other session's
   transpose/Collapse.cpp/tiling domain. Phase-4 autotuner also fails here
   (kernel_group6 "no variant passes", max 0.088).
-NEXT (fix-session): AscendC transpose accuracy — group0 zero-output (XBLOCK
-search) + group6/10 tail. Then re-run; expect phase-4/5 to complete + numerical
-PASS. Diagnosis repro: `python3 -c` transpose-oracle over
-`/tmp/enc_e2e/intermediates_default/kernel_groupN__v0_{in_0,out_0}.npy`.
+**DEEP TILING DIAGNOSIS (2026-05-21):** drilled into whether the transpose errors
+are tiling-driven or kernel-codegen. Findings:
+
+A. **Picker bug (REAL, network_runner.py:444-461, MY territory):** the phase-3
+   default tiling picker caps EVERY tunable param by the single multicore
+   `axis_extent_expr`. But that extent only bounds the multicore param (the one in
+   `block_dim_expr`, = `XBLOCK`); inner-axis params (`XBLOCK_X_0`, `XBLOCK_SUB`)
+   belong to OTHER axes. Result: group0 `XBLOCK_X_0` capped 8→2 (its space=[8]);
+   group10 capped [16,32]→2. Fix: only cap the param(s) named in block_dim_expr;
+   for the rest pick from their own `values` (already the codegen-valid candidates).
+
+B. **HostLaunchHelper schema-staging gap (REAL, HostLaunchHelper.cpp:285-340):**
+   the helper looks for `<artifacts>/<kernel>__v0/tiling_space.json` to order the
+   tiling struct fields; it is NEVER staged (runtime-session/network_runner don't
+   write it), so it falls to the alphabetical-key fallback ([XBLOCK, XBLOCK_SUB,
+   XBLOCK_X_0]) which ≠ the kernel struct order (mlir_index: [XBLOCK_X_0, XBLOCK,
+   XBLOCK_SUB]). Scrambles params when their chosen values differ (e.g. group6
+   3/8/8). Fix candidate: stage each `kernel_groupN_space.json` →
+   `<artifacts>/<kernel>__v0/tiling_space.json` in phase-2 (its `tiling_params`
+   are already in mlir_index order; TilingSchema::fromJson reads that array order).
+
+C. **BUT the transpose accuracy is NOT tiling-driven — it's KERNEL CODEGEN:**
+   experiment — staged the (correct-order) schema with the original picker values
+   → group6/group10 outputs **byte-identical** to the fallback (still 0.088),
+   group11/12 still correct. I.e. the tile-param values don't change these
+   transpose kernels' wrong elements. Clincher: phase-4 **autotuner already tried
+   all tiling variants for group6 → ALL fail at 0.088** ("no variant produced a
+   passing configuration"). So group6/group10 tail errors are a genuine AscendC
+   transpose codegen tail/boundary bug (other session's Collapse.cpp/transpose
+   domain). group0 zero-output: picker gives XBLOCK_X_0=2, but bugs A+B prevented
+   a clean test of whether X_0=8 fixes it; likely codegen too (its own variant
+   never validated).
+
+NET: two real network_runner/HostLaunchHelper plumbing bugs (A picker cap, B
+schema staging) worth fixing on their own, but fixing them does NOT fix the
+transpose numerical errors — those are kernel codegen (autotuner-confirmed for
+group6). NEXT (fix-session): (1) AscendC transpose tail/zero codegen [other
+session]; (2) optionally A+B plumbing fixes [this side]. Repro: transpose-oracle
+over `/tmp/enc_e2e/intermediates_default/kernel_groupN__v0_{in_0,out_0}.npy`;
+tiling experiments via editing `/tmp/enc_e2e/tilings_default.json` +/- staging
+`*_space.json` as `artifacts/<k>__v0/tiling_space.json`, re-run network_test_default.
 
 ## Roadmap to encoder numerical PASS (remaining, each multi-step)
 1. **Broadcast rank-3 codegen** (the current wall) — fix the fold workaround or
