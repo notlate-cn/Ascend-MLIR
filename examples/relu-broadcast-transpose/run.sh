@@ -169,7 +169,7 @@ ACTUAL_OUTPUT="$BUILD_DIR/output.npy"
   --kernel "$DIR/step8_kernel.cpp" \
   --kernel-kind vec \
   --output "$ARTIFACT_ROOT" \
-  --name relu_transpose_broadcast_add__v0 \
+  --name relu_transpose_broadcast_add \
   2>&1
 log "  ✓ Compile 成功，输出: $ARTIFACT_ROOT"
 
