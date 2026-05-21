@@ -116,9 +116,9 @@ func.func @selected_all_parallel_tile_materializes_gm_inner_loop_strided_copy() 
 
 // CHECK-LABEL: func.func @selected_all_parallel_tile_materializes_dynamic_gm_full_inner_contiguous_copy
 // CHECK: scf.for %{{.*}} = %c0 to %{{.*}} step %c64
-// CHECK: scf.for %{{.*}} = %c0 to %{{.*}} step %c32
+// CHECK-NOT: step %c32
 // CHECK: emitasc.verbatim
-// CHECK-SAME: AscendC::DataCopyPad
+// CHECK-SAME: AscendC::DataCopy($0, $1, _afir_count);
 // CHECK: ascendc.add_l2
 // CHECK-NOT: linalg.generic
 func.func @selected_all_parallel_tile_materializes_dynamic_gm_full_inner_contiguous_copy(
@@ -132,9 +132,43 @@ func.func @selected_all_parallel_tile_materializes_dynamic_gm_full_inner_contigu
   linalg.generic {
       indexing_maps = [#identity, #identity, #identity],
       iterator_types = ["parallel", "parallel"],
-      ascend.schedule.selected_tile_shape = array<i64: 64, 32>}
+      ascend.schedule.selected_tile_shape = array<i64: 64, 128>}
       ins(%a, %b : memref<?x?xf16>,
                     memref<?x?xf16>)
+      outs(%out : memref<?x?xf16, 10 : i32>) {
+    ^bb0(%a_elem: f16, %b_elem: f16, %acc: f16):
+      %sum = arith.addf %a_elem, %b_elem : f16
+      linalg.yield %sum : f16
+  }
+  memref.copy %out, %gm : memref<?x?xf16, 10 : i32> to memref<?x?xf16>
+  return
+}
+
+// CHECK-LABEL: func.func @selected_all_parallel_tile_materializes_dynamic_subview_inner_loop
+// CHECK: scf.for %{{.*}} = %c0 to %{{.*}} step %c64
+// CHECK: scf.for %{{.*}} = %c0 to %{{.*}} step %c32
+// CHECK: emitasc.verbatim
+// CHECK-SAME: AscendC::DataCopyPad
+// CHECK: ascendc.add_l2
+// CHECK-NOT: linalg.generic
+func.func @selected_all_parallel_tile_materializes_dynamic_subview_inner_loop(
+    %a: memref<?x?xf16>, %b: memref<?x?xf16>) {
+  %c0 = arith.constant 0 : index
+  %c1 = arith.constant 1 : index
+  %m = memref.dim %a, %c0 : memref<?x?xf16>
+  %n = memref.dim %a, %c1 : memref<?x?xf16>
+  %a_view = memref.subview %a[%c0, %c0] [%m, %n] [%c1, %c1]
+      : memref<?x?xf16> to memref<?x?xf16, strided<[?, ?], offset: ?>>
+  %b_view = memref.subview %b[%c0, %c0] [%m, %n] [%c1, %c1]
+      : memref<?x?xf16> to memref<?x?xf16, strided<[?, ?], offset: ?>>
+  %out = memref.alloc(%m, %n) : memref<?x?xf16, 10 : i32>
+  %gm = memref.alloc(%m, %n) : memref<?x?xf16>
+  linalg.generic {
+      indexing_maps = [#identity, #identity, #identity],
+      iterator_types = ["parallel", "parallel"],
+      ascend.schedule.selected_tile_shape = array<i64: 64, 32>}
+      ins(%a_view, %b_view : memref<?x?xf16, strided<[?, ?], offset: ?>>,
+                              memref<?x?xf16, strided<[?, ?], offset: ?>>)
       outs(%out : memref<?x?xf16, 10 : i32>) {
     ^bb0(%a_elem: f16, %b_elem: f16, %acc: f16):
       %sum = arith.addf %a_elem, %b_elem : f16
