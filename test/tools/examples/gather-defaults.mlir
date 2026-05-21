@@ -1,0 +1,1 @@
+// RUN: %PYTHON %S/check_gather_defaults.py %S/../../../examples/gather-elementwise-fusion/run-mainline.sh %S/../../../examples/gather-elementwise-fusion/gen_data.py %S/../../../examples/gather-elementwise-fusion/tiling_space.json

@@ -23,11 +23,11 @@ from pathlib import Path
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--m",       type=int, default=64,
+    parser.add_argument("--m",       type=int, default=16,
                         help="Number of rows in data")
-    parser.add_argument("--n",       type=int, default=64,
+    parser.add_argument("--n",       type=int, default=640,
                         help="Number of columns in data (gather source width)")
-    parser.add_argument("--k",       type=int, default=16,
+    parser.add_argument("--k",       type=int, default=128,
                         help="Gather output width K (indices[K] -> data columns)")
     parser.add_argument("--seed",    type=int, default=42)
     parser.add_argument("--out-dir", type=str, default=".")
