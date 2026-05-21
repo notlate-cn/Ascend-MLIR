@@ -45,8 +45,8 @@ greedily peeled the first foldable axis; for a leading multi-axis bias broadcast
 with 1-step lookahead (peel inner axis first → two valid 2D row broadcasts).
 +1 lit `codegen-bcast-leading-multiaxis.mlir`.
 
-**Transpose wall (kernel_group6) — FIXED** (another session, on dev-network,
-`Collapse.cpp` +38/-1, uncommitted at time of writing; +lit
+**Transpose wall (kernel_group6) — FIXED** (commit a9a2f04 on dev-network,
+`Collapse.cpp` +38/-1; +lit
 `test/Conversion/Collapse/collapse-b2-glue-transpose.mlir`).
 NOTE: this handoff's earlier root-cause guess (unit-dim / `map.numResults <
 operand.rank`) was WRONG. **Real root cause:** `Collapse.cpp`'s B2 safety gate
@@ -58,7 +58,7 @@ slice crash.  Not unit-dim specific (non-unit collapse+transpose also crashed;
 identity+glue did not).  Fix: `isBoundaryDerived()` looks through
 collapse_shape/expand_shape to the real boundary input so glued transposes take
 the same `noCollapse` path as bare ones; + a `#ifndef NDEBUG` consistency assert
-after collapse.  Validated: t5u clean, full lit 93 pass.
+after collapse.  Validated: t5u clean, full lit 94 pass.
 
 So phase-2's only remaining walls are the 3 reduce kernels (softmax g13,
 layernorm g29/g56) — all covered by the aclnn-direct-call plan below.
