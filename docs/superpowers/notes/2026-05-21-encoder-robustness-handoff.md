@@ -85,10 +85,35 @@ NOTE: `--recognize-attention` assumes the model's attention scale == 1/sqrt(D)
 (headDim). Standard nn.MultiheadAttention matches; a custom scale would
 double/mis-apply (FA always uses 1/sqrt(headDim) in sdpa_cpu/aclnn).
 
-Pre-existing lit fail (NOT from this work): `tools/examples/example-pipelines.mlir`
-`broadcast-add-reduce` at the AiCore single-dim multicore scheduling step
-(AscendCParallelize) — in the TileFuse/Collapse.cpp path the other session is
-editing (uncommitted). Full lit 95/96.
+**Attention WIRED + LayerNorm → aclnn DONE** (commits `3f36271`, `2833937`):
+- recognize-attention wired into network_runner phase-1 (commit 3f36271, +fix:
+  FA dummy mask/init reused Q's value instead of standalone tensor.empty, which
+  the group-outline reorder sank past the call → invalid SSA / no json provenance).
+- `recognize-layernorm` (`RecognizeLayerNormPass.cpp`) + `run_LayerNorm` CPU ref
+  (AclnnOps.cpp) + registry `{"layer_norm",{"LayerNorm","ND"}}`. Anchors on
+  math.rsqrt, walks to x / gamma / beta, folds mean→sub→var→rsqrt→norm→*g+b into
+  `@__aclnn_layer_norm(x,gamma,beta)`. eps recomputed inside (torch default 1e-5).
+  +1 lit `recognize-layernorm.mlir`.
+Encoder now: **phase-1** = 1 FlashAttentionScore + 3 Matmul + 2 LayerNorm aclnn +
+AscendC kernels; **phase-2** = ALL kernels codegen+compile clean (both LN walls
+gone). Full lit 95/97 (2 fails = pre-existing example-pipelines + flaky
+runtime-focused-verification which PASSES in isolation).
+
+**CURRENT WALL (phase-3 host build, NEW + separate, pre-existing gap):**
+`network_host_default.cpp` fails to compile — `TensorInfo t41[4] =
+{/*unknown*/, t40, ...}`. The AclnnBackend **CoordEmitter** (host C++ generator,
+`lib/Runtime/AclnnBackend/AclnnBackend.cpp` ~line 48-72) propagates names through
+cast/collapse/expand/empty/const but **NOT `tensor.extract_slice`**. The encoder's
+QKV head-split (`extract_slice %collapsed[i,...]` → collapse → expand → kernel_group7)
+hits unknown. NetworkJsonEmitter DOES handle slice; the phase-3 C++ host path does
+not. Fix: teach CoordEmitter to emit a host-side strided copy for extract_slice
+(static offsets/sizes/strides), mirroring the const-baking. NOT attention/LN
+related; exposed because the encoder is the first net to host-gen with slices.
+
+NOTE: env to run e2e — also need `LD_LIBRARY_PATH` = sim + lib64 + devlib (see
+"How to run" below), else runtime-session can't load `libnpu_drv_camodel.so`.
+Reference gen: `/tmp/gen_encoder_ref.py` (seed 0, builds model + dumps
+input0.npy/expected0.npy/encoder.mlir consistently).
 
 ## Roadmap to encoder numerical PASS (remaining, each multi-step)
 1. **Broadcast rank-3 codegen** (the current wall) — fix the fold workaround or
