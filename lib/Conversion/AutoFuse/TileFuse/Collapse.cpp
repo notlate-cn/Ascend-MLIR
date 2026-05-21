@@ -157,6 +157,21 @@ static InputClass classifyInput(AffineMap map, ArrayRef<int> G) {
   return InputClass::C;
 }
 
+// An operand is "boundary-derived" if it is a boundary input itself, or a
+// tensor.collapse_shape/expand_shape view whose source chain reaches one. The
+// glue that --linalg-fold-unit-extent-dims inserts makes a generic read a
+// reshape result instead of the func arg, so a plain `bInSet.count(operand)`
+// would miss it and skip the B2 / broadcast classification below.
+static bool isBoundaryDerived(Value v, const DenseSet<Value> &bInSet) {
+  while (true) {
+    if (bInSet.count(v)) return true;
+    Operation *def = v.getDefiningOp();
+    if (auto c = dyn_cast_or_null<tensor::CollapseShapeOp>(def)) { v = c.getSrc(); continue; }
+    if (auto e = dyn_cast_or_null<tensor::ExpandShapeOp>(def))   { v = e.getSrc(); continue; }
+    return false;
+  }
+}
+
 static bool hasAnyB2(ArrayRef<int> G, ArrayRef<LinalgOp> members,
                      ArrayRef<Value> boundaryIn) {
   DenseSet<Value> bInSet(boundaryIn.begin(), boundaryIn.end());
@@ -164,7 +179,8 @@ static bool hasAnyB2(ArrayRef<int> G, ArrayRef<LinalgOp> members,
     auto inputs = op.getDpsInputs();
     auto maps   = op.getIndexingMapsArray();
     for (auto [operand, map] : llvm::zip(inputs, maps))
-      if (bInSet.count(operand) && classifyInput(map, G) == InputClass::B2)
+      if (isBoundaryDerived(operand, bInSet) &&
+          classifyInput(map, G) == InputClass::B2)
         return true;
   }
   return false;
@@ -343,6 +359,15 @@ static void applyMultiOpIRTransform(OpBuilder &builder,
     for (Value out : newOuts) resultTypes.push_back(out.getType());
     auto newGeneric = builder.create<GenericOp>(
         loc, resultTypes, newInputs, newOuts, newMaps, newIters);
+#ifndef NDEBUG
+    // See applyIRTransform: collapse must not desync operand rank from its
+    // rewritten indexing map (would crash later in ExtractSliceOp).
+    for (auto [operand, m] :
+         llvm::zip(newGeneric->getOperands(), newGeneric.getIndexingMapsArray()))
+      assert(cast<RankedTensorType>(operand.getType()).getRank() ==
+                 (int64_t)m.getNumResults() &&
+             "collapse produced operand/indexing-map rank mismatch (missed B2?)");
+#endif
     builder.cloneRegionBefore(op->getRegion(0), newGeneric.getRegion(),
                                newGeneric.getRegion().begin());
 
@@ -437,6 +462,18 @@ static void applyIRTransform(OpBuilder &builder, GenericOp lop,
 
   auto newGeneric = builder.create<GenericOp>(
       loc, resultTypes, newInputs, newOuts, newMaps, newIterTypes);
+
+#ifndef NDEBUG
+  // Guard: collapse must keep every operand's rank equal to its rewritten
+  // indexing map's result count. A mismatch means collapse ran on a non-
+  // collapsible (B2) operand that hasAnyB2 failed to flag — fail here loudly
+  // instead of deep inside ExtractSliceOp::inferResultType during emit.
+  for (auto [operand, m] :
+       llvm::zip(newGeneric->getOperands(), newGeneric.getIndexingMapsArray()))
+    assert(cast<RankedTensorType>(operand.getType()).getRank() ==
+               (int64_t)m.getNumResults() &&
+           "collapse produced operand/indexing-map rank mismatch (missed B2?)");
+#endif
 
   // Clone body. The GenericOp was created without a bodyBuild, so its region is
   // empty (no blocks). cloneRegionBefore inserts at the given iterator position.
