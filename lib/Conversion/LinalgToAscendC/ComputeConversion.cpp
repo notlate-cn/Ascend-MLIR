@@ -1554,8 +1554,19 @@ LogicalResult materializeSelectedAllParallelTiles(func::FuncOp funcOp) {
     Value rows = getDimValue(builder, loc, dstMemref, 0);
     Value innerExtent = getDimValue(builder, loc, dstMemref, 1);
     bool dynamicInner = ShapedType::isDynamic(outType.getShape()[1]);
+    bool hasRank2SubviewInput = false;
+    for (unsigned i = 0, e = genOp.getNumDpsInputs(); i < e; ++i) {
+      auto inputType =
+          dyn_cast<MemRefType>(genOp.getDpsInputOperand(i)->get().getType());
+      if (inputType && inputType.getRank() == 2 &&
+          genOp.getDpsInputOperand(i)->get().getDefiningOp<memref::SubViewOp>()) {
+        hasRank2SubviewInput = true;
+        break;
+      }
+    }
     bool needsInnerLoop =
-        dynamicInner || tileCols < outType.getShape()[1];
+        (!dynamicInner && tileCols < outType.getShape()[1]) ||
+        (dynamicInner && hasRank2SubviewInput);
 
     auto forOp = builder.create<scf::ForOp>(loc, zero, rows, step);
     forOp->setAttr("ascendc.parallel", builder.getBoolAttr(true));
