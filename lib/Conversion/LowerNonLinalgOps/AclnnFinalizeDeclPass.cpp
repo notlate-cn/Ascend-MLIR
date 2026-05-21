@@ -29,6 +29,7 @@ struct AclnnOpMeta {
 static const llvm::StringMap<AclnnOpMeta> &getRegistry() {
   static llvm::StringMap<AclnnOpMeta> table = {
       {"flash_attention", {"FlashAttentionScore", "BNSD"}},
+      {"layer_norm", {"LayerNorm", "ND"}},
   };
   return table;
 }

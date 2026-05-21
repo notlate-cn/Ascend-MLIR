@@ -42,12 +42,14 @@ def phase1_outline_or_emit_json(args, work):
 
     if args.input_linalg:
         # Step a0: recognize decomposed attention (bmm -> softmax -> bmm) and
-        # route it to aclnn FlashAttentionScore, then finalize the aclnn decl
+        # layernorm (reduce/rsqrt) subgraphs and route them to aclnn
+        # FlashAttentionScore / LayerNorm, then finalize the aclnn decls
         # (aclnn.kind -> aclnn.op/aclnn.layout) so the network-json emitter tags
-        # the call kind=aclnn. Both passes are no-ops when the model has no
-        # attention subgraph. Runs pre-group-analysis on the rawest IR.
+        # the calls kind=aclnn. All passes are no-ops when the model has no such
+        # subgraph. Runs pre-group-analysis on the rawest IR.
         recognized = work / "model_recognized.mlir"
-        run([AFIR_OPT, "--recognize-attention", "--aclnn-finalize-decl",
+        run([AFIR_OPT, "--recognize-attention", "--recognize-layernorm",
+             "--aclnn-finalize-decl",
              args.input_linalg, "-o", str(recognized)])
         # Step a: --linalg-fold-unit-extent-dims
         intermediate = work / "model_unit_folded.mlir"

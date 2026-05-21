@@ -361,4 +361,56 @@ void run_Matmul(TensorInfo a, TensorInfo b, TensorInfo /*init*/,
   matmul_cpu(a, b, out);
 }
 
+// ---------------------------------------------------------------------------
+// LayerNorm CPU reference: normalize over the last dim (size D = gamma.shape).
+//   out = (x - mean) / sqrt(var + eps) * gamma + beta
+// eps is the torch default; biased variance (divide by D), matching nn.LayerNorm.
+// ---------------------------------------------------------------------------
+static void layernorm_cpu(const TensorInfo &x, const TensorInfo &gamma,
+                          const TensorInfo &beta, TensorInfo *out) {
+  const float eps = 1e-5f;
+  int64_t D = gamma.shape[0];
+  int64_t rows = 1;
+  for (int i = 0; i < x.rank - 1; ++i)
+    rows *= x.shape[i];
+
+  allocTensorLike(x, out);
+
+  bool f16 = (x.dtype == 1);
+  auto rd = [&](const void *p, size_t i) -> float {
+    return f16 ? h2f(((const uint16_t *)p)[i]) : ((const float *)p)[i];
+  };
+  auto wr = [&](void *p, size_t i, float v) {
+    if (f16) ((uint16_t *)p)[i] = f2h(v);
+    else ((float *)p)[i] = v;
+  };
+
+  for (int64_t r = 0; r < rows; ++r) {
+    size_t base = (size_t)(r * D);
+    float mean = 0.f;
+    for (int64_t d = 0; d < D; ++d)
+      mean += rd(x.data, base + d);
+    mean /= (float)D;
+    float var = 0.f;
+    for (int64_t d = 0; d < D; ++d) {
+      float c = rd(x.data, base + d) - mean;
+      var += c * c;
+    }
+    var /= (float)D;
+    float rstd = 1.0f / std::sqrt(var + eps);
+    for (int64_t d = 0; d < D; ++d) {
+      float norm = (rd(x.data, base + d) - mean) * rstd;
+      wr(out->data, base + d,
+         norm * rd(gamma.data, (size_t)d) + rd(beta.data, (size_t)d));
+    }
+  }
+}
+
+void run_LayerNorm(TensorInfo x, TensorInfo gamma, TensorInfo beta,
+                   TensorInfo *out, aclrtStream /*stream*/) {
+  assert(g_host_mode &&
+         "run_LayerNorm: only the host-mode CPU reference is implemented");
+  layernorm_cpu(x, gamma, beta, out);
+}
+
 } // namespace mlir::runtime::aclnn

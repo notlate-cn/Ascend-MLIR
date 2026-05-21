@@ -66,4 +66,15 @@ void run_Matmul(
     TensorInfo *out, // allocated + written by this call
     aclrtStream stream);
 
+// CPU-reference LayerNorm (aclnn-fallback for the decomposed nn.LayerNorm
+// subgraph).  Normalizes over the last dim (size = gamma.shape[0]):
+//   out = (x - mean) / sqrt(var + eps) * gamma + beta
+// eps is the torch default (1e-5).  x: [.., D], gamma/beta: [D].  Host-mode only.
+void run_LayerNorm(
+    TensorInfo x,
+    TensorInfo gamma,
+    TensorInfo beta,
+    TensorInfo *out, // allocated + written by this call
+    aclrtStream stream);
+
 } // namespace mlir::runtime::aclnn

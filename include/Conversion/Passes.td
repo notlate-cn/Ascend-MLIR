@@ -719,6 +719,35 @@ def RecognizeAttention : Pass<"recognize-attention", "mlir::ModuleOp"> {
 }
 
 //===----------------------------------------------------------------------===//
+// RecognizeLayerNorm
+//===----------------------------------------------------------------------===//
+
+def RecognizeLayerNorm : Pass<"recognize-layernorm", "mlir::ModuleOp"> {
+  let summary = "Recognize decomposed LayerNorm and route to aclnn LayerNorm";
+  let description = [{
+    Matches the LayerNorm subgraph torch lowers nn.LayerNorm to at the linalg
+    level (normalizing over the last dim):
+
+        mean = sum(x)/N ; cen = x - mean ; var = sum(cen*cen)/N
+        rstd = rsqrt(var + eps) ; norm = cen * rstd
+        out  = norm * gamma + beta
+
+    Anchors on the `math.rsqrt`, walks to the centered input (x), the affine
+    weight (gamma) and bias (beta), and folds the whole region into a single
+    `func.call @__aclnn_layer_norm(x, gamma, beta)` (left dead for DCE). The
+    created private decl carries {aclnn.kind = "layer_norm"}, finalized by
+    `aclnn-finalize-decl` to aclnn.op="LayerNorm". eps is recomputed inside
+    run_LayerNorm (assumes the torch default 1e-5).
+  }];
+  let constructor = "mlir::afir::createRecognizeLayerNormPass()";
+  let dependentDialects = [
+    "mlir::func::FuncDialect",
+    "mlir::tensor::TensorDialect",
+    "mlir::linalg::LinalgDialect",
+  ];
+}
+
+//===----------------------------------------------------------------------===//
 // AclnnFinalizeDecl
 //===----------------------------------------------------------------------===//
 
