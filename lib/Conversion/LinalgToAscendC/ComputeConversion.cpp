@@ -1555,7 +1555,7 @@ LogicalResult materializeSelectedAllParallelTiles(func::FuncOp funcOp) {
     Value innerExtent = getDimValue(builder, loc, dstMemref, 1);
     bool dynamicInner = ShapedType::isDynamic(outType.getShape()[1]);
     bool needsInnerLoop =
-        !dynamicInner && tileCols < outType.getShape()[1];
+        dynamicInner || tileCols < outType.getShape()[1];
 
     auto forOp = builder.create<scf::ForOp>(loc, zero, rows, step);
     forOp->setAttr("ascendc.parallel", builder.getBoolAttr(true));
