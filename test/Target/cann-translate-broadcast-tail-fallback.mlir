@@ -5,10 +5,14 @@
 // CHECK: for (uint32_t _afir_r = 0; _afir_r < _afir_ds[0]; ++_afir_r) {
 // CHECK: auto _afir_v = afir_gm_load<half>(
 // CHECK: uint32_t _afir_row_offset = _afir_r * _afir_ds[1];
-// CHECK: if (((_afir_row_offset * sizeof(half)) % 32u) == 0u) {
+// CHECK: if (((_afir_row_offset * sizeof(half)) % 32u) == 0u && ((_afir_ds[1] * sizeof(half)) % 32u) == 0u) {
 // CHECK: for (uint32_t _afir_c = 0; _afir_c < _afir_ds[1]; _afir_c += 1024u) {
 // CHECK: uint32_t _afir_chunk = ((_afir_ds[1] - _afir_c) < 1024u) ? (_afir_ds[1] - _afir_c) : 1024u;
 // CHECK: AscendC::Duplicate({{.*}}[_afir_row_offset + _afir_c], _afir_v, _afir_chunk);
+// CHECK: uint32_t _afir_vec_elems = 32u / sizeof(half);
+// CHECK: uint32_t _afir_tail_base = (_afir_chunk / _afir_vec_elems) * _afir_vec_elems;
+// CHECK: for (uint32_t _afir_t = _afir_tail_base; _afir_t < _afir_chunk; ++_afir_t)
+// CHECK: {{.*}}.SetValue(_afir_row_offset + _afir_c + _afir_t, _afir_v);
 // CHECK: } else {
 // CHECK: {{.*}}.SetValue(_afir_row_offset + _afir_c, _afir_v);
 // CHECK: } else {
@@ -48,9 +52,13 @@ module {
 // CHECK-NOT: if (_afir_ds[0] < 16u
 // CHECK: auto _afir_v = afir_gm_load<half>(
 // CHECK: uint32_t _afir_row_offset = _afir_r * _afir_ds[1];
-// CHECK: if (((_afir_row_offset * sizeof(half)) % 32u) == 0u) {
+// CHECK: if (((_afir_row_offset * sizeof(half)) % 32u) == 0u && ((_afir_ds[1] * sizeof(half)) % 32u) == 0u) {
 // CHECK: for (uint32_t _afir_c = 0; _afir_c < _afir_ds[1]; _afir_c += 1024u) {
 // CHECK: AscendC::Duplicate({{.*}}[_afir_row_offset + _afir_c], _afir_v, _afir_chunk);
+// CHECK: uint32_t _afir_vec_elems = 32u / sizeof(half);
+// CHECK: uint32_t _afir_tail_base = (_afir_chunk / _afir_vec_elems) * _afir_vec_elems;
+// CHECK: for (uint32_t _afir_t = _afir_tail_base; _afir_t < _afir_chunk; ++_afir_t)
+// CHECK: {{.*}}.SetValue(_afir_row_offset + _afir_c + _afir_t, _afir_v);
 // CHECK: } else {
 // CHECK: {{.*}}.SetValue(_afir_row_offset + _afir_c, _afir_v);
 // CHECK: } else {
