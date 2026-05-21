@@ -38,13 +38,26 @@ Phase-1 (analysis+outline, disable-cube-fusion) now succeeds: **6 aclnn matmuls 
 19 AscendC vector/reduce kernels** (was: SIGSEGV, then 13 all-ascendc cube-fused).
 All 12 resource weights bake into the host with real data (0 elided).
 
-**Next wall (phase-2 codegen):** `kernel_group5.cpp` — `AscendC::Broadcast<float,
-float,3>(..., reinterpret_cast<uint64_t>(c8_i32), ...)` is illegal C++
-(reinterpret_cast int32→uint64). A rank>2 Broadcast slips past the fold-to-2D
-workaround in `CannTranslation.cpp:2646` (`moduleOp->walk(BroadcastL2Op)`) and
-hits PyAsc's broken default printer. Investigate why this BroadcastL2Op isn't
-rewritten (likely bcastAxis detection: srcShape dim not statically 1, or
-multi-axis not pre-decomposed).
+**Broadcast wall — FIXED** (commit b463454): `DecomposeMultiAxisBroadcast`
+greedily peeled the first foldable axis; for a leading multi-axis bias broadcast
+`[1,1,N]→[D0,D1,N]` it peeled the outer axis first and stranded the inner
+(non-1 prefix AND suffix) → rank-3 op → PyAsc's illegal `reinterpret_cast`. Fixed
+with 1-step lookahead (peel inner axis first → two valid 2D row broadcasts).
++1 lit `codegen-bcast-leading-multiaxis.mlir`.
+
+**Next wall (phase-2 codegen, kernel_group6):** a rank-5 `linalg.transpose` with
+a UNIT dim (`[1,8,2,3,64]→[3,8,2,1,64]` perm `[3,1,2,0,4]`, from attention head
+reshapes) SIGABRTs in `GroupEmitter`/`computeSlice`
+(`ExtractSliceOp::inferResultType`: staticSizes count != source rank). Root:
+`--linalg-fold-unit-extent-dims` does NOT fold `linalg.transpose`, so the unit
+dim survives; the codegen Collapse step then yields an indexing map with
+`numResults < operand.rank` (unit dim dropped from the map, not the operand) and
+`SliceComputer.cpp:79` emits one slice dim per map result → rank mismatch.
+Repro: rank-4 transpose OK; rank-5 with leading unit dim crashes. Fix options:
+(a) fold/lower unit-dim transpose to rank-(N-1) transpose + reshapes before
+codegen; (b) make computeSlice/GroupEmitter robust to map.numResults <
+operand.rank (full-size slice for untiled/collapsed dims). Then expect the
+softmax/layernorm reduce kernels as the next walls.
 
 ## Roadmap to encoder numerical PASS (remaining, each multi-step)
 1. **Broadcast rank-3 codegen** (the current wall) — fix the fold workaround or
