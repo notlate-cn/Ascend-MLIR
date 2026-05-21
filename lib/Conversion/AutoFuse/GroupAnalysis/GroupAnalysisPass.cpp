@@ -29,7 +29,7 @@ namespace {
 
 static bool isCubeOp(linalg::LinalgOp op) {
   // Explicit matmul ops
-  if (isa<linalg::MatmulOp>(op.getOperation()))
+  if (isa<linalg::MatmulOp, linalg::BatchMatmulOp>(op.getOperation()))
     return true;
   // Annotated cube ops
   if (op.getOperation()->hasAttr("ascendc.unit")) {
@@ -158,7 +158,7 @@ struct AutoFuseGroupAnalysisPass
                        g1.kind == GroupInfo::Kind::Vector) {
               cube = &g2; vec = &g1;
             }
-            if (cube && vec)
+            if (cube && vec && !this->disableCubeFusion)
               canFuse = canFuseCubeEpilogue(*cube, *vec, groups);
             // Priority 1 = scheduled after vector-vector fusion (priority 0)
             // so CV merges only fire on the residual standalone-Cube groups.

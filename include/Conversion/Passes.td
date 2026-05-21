@@ -499,6 +499,9 @@ def AutoFuseGroupAnalysis : Pass<"auto-fuse-group-analysis", "mlir::func::FuncOp
     Option<"enableReductionSplit",     "enable-reduction-split",      "bool",    "false", "">,
     Option<"maxReduceEpilogueOps",     "max-reduce-epilogue-ops",     "int32_t", "3",     "">,
     Option<"maxHorizontalExtraInputs", "max-horizontal-extra-inputs", "int32_t", "4",     "">,
+    Option<"disableCubeFusion",        "disable-cube-fusion",         "bool",    "false",
+           "Keep matmul/batch_matmul ops as standalone groups (no Cube+Vector "
+           "epilogue fusion) so they can be routed to the aclnn matmul fallback">,
   ];
   let dependentDialects = ["mlir::linalg::LinalgDialect", "mlir::func::FuncDialect"];
 }
