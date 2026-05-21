@@ -77,11 +77,18 @@ public:
   std::string dumpDir;
 };
 
-// Lazily create the simulation-mode ExecutionSession. Caller holds the mutex.
+// Lazily create the ExecutionSession. Backend is Simulation by default;
+// NETWORK_RUNNER_BACKEND=npu selects the real-device NpuBackend (null driver →
+// runWithExecutor → NativeExecutionRunner on ASCEND_DEVICE_ID). Caller holds
+// the mutex.
 int ensureSession(HelperState &st) {
   if (st.sessionInitialized) return 0;
-  st.session = std::make_unique<ExecutionSession>(
-      ExecutionBackendKind::Simulation);
+  ExecutionBackendKind kind = ExecutionBackendKind::Simulation;
+  if (const char *e = std::getenv("NETWORK_RUNNER_BACKEND")) {
+    if (std::string(e) == "npu")
+      kind = ExecutionBackendKind::Npu;
+  }
+  st.session = std::make_unique<ExecutionSession>(kind);
   st.sessionInitialized = true;
   return 0;
 }

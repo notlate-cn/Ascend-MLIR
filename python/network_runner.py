@@ -661,10 +661,13 @@ def phase5_final_run_verify(work, groups, artifacts, tilings_best_path, network,
         cann_home=cann_home,
         soc=args.soc,
         has_aclnn_ops=has_aclnn,
+        backend=args.backend,
     )
 
     # 3) Run; emit one --output per network output (mandatory: harness's
     # outputs[] is sized from --output count; mismatch → SIGSEGV at cleanup).
+    # For --backend npu, HostLaunchHelper selects the real device via
+    # NETWORK_RUNNER_BACKEND; ASCEND_DEVICE_ID picks the device (default 0).
     out_dir = work / "outputs"
     out_dir.mkdir(parents=True, exist_ok=True)
     out_paths = [str(out_dir / f"out{i}.npy") for i in range(len(network.outputs))]
@@ -673,7 +676,24 @@ def phase5_final_run_verify(work, groups, artifacts, tilings_best_path, network,
         cmd += ["--input", p]
     for p in out_paths:
         cmd += ["--output", p]
-    run(cmd)
+    run_env = None
+    if args.backend == "npu":
+        # Strip the simulator + devlib dirs from LD_LIBRARY_PATH for the device
+        # binary. examples/env.sh prepends "SIM_LIB:BASE_LIB:DEV_LIB" (needed by
+        # the sim phases 1-4), but for a real-device run two of those shadow the
+        # driver libs the dlopen'd libruntime.so needs:
+        #   - simulator/<soc>/lib  ships camodel npu_drv/stars/model_top stubs
+        #   - devlib/linux/<arch>  ships a stub libascend_hal.so
+        # Either ahead of /usr/local/Ascend/driver/lib64 (added by setenv.bash)
+        # makes rtSetDevice resolve to a stub HAL → 107001 (INVALID_DEVICEID).
+        # The working --case path never sources env.sh, so it gets the real
+        # driver HAL; dropping both dirs here matches that.
+        ld = os.environ.get("LD_LIBRARY_PATH", "")
+        ld = ":".join(p for p in ld.split(":")
+                      if p and "/simulator/" not in p and "/devlib/" not in p)
+        run_env = {**os.environ, "NETWORK_RUNNER_BACKEND": "npu",
+                   "LD_LIBRARY_PATH": ld}
+    run(cmd, env=run_env)
 
     # 4) Compare each output to --expected with atol/rtol.
     if len(args.expected) != len(out_paths):
@@ -704,6 +724,10 @@ def main():
     ap.add_argument("--expected", nargs="+", required=True)
     ap.add_argument("--workdir", required=True)
     ap.add_argument("--soc", default="Ascend910B1")
+    ap.add_argument("--backend", choices=["sim", "npu"], default="sim",
+                    help="Execution backend for the final run+verify (phase 5). "
+                         "sim=CANN simulator (default); npu=real Ascend device "
+                         "(ASCEND_DEVICE_ID, default 0). Phases 2-4 always use sim.")
     ap.add_argument("--atol", type=float, default=1e-3)
     ap.add_argument("--rtol", type=float, default=1e-2)
     ap.add_argument("--max-phase", type=int, default=5,

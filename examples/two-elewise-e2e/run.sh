@@ -26,4 +26,5 @@ PYTHONPATH=python python3 python/network_runner.py \
   --expected "$WORK/expected0.npy" "$WORK/expected1.npy" \
   --workdir  "$WORK" \
   --soc Ascend910B1 \
+  --backend "${BACKEND:-sim}" \
   --atol 1e-2 --rtol 1e-2

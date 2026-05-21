@@ -39,8 +39,17 @@ def link_host(
     has_aclnn_ops: bool = False,
     extra_sources: tuple = (),
     extra_libs: tuple = (),
+    backend: str = "sim",
 ) -> None:
-    """Compile host_cpp + harness_cpp and link into a runnable binary."""
+    """Compile host_cpp + harness_cpp and link into a runnable binary.
+
+    backend="sim" links the simulator runtime. backend="npu" drops the
+    simulator-only libs (runtime_camodel, npu_drv, stars, model_top) and the
+    simulator -L dir: the real-device runtime (libruntime.so) and libascendcl.so
+    are dlopen'd by NativeExecutionRunner at run time via ASCEND_HOME, so no
+    rt*/acl* symbols need link-time resolution. The aclnn libs stay linked
+    either way because AclnnOps.cpp is always compiled in.
+    """
     cann_inc       = f"{cann_home}/{cann_arch}/include"
     cann_lib       = f"{cann_home}/{cann_arch}/lib64"
     # devlib/linux/x86_64/ has the x86_64 libascend_hal.so. (devlib/ root and
@@ -80,6 +89,14 @@ def link_host(
         "opapi_transformer",   # aclnnFlashAttentionScore et al.
         "ascend_hal",
     ]
+    if backend == "npu":
+        # These libs live ONLY in simulator/<soc>/lib; the real device has no
+        # link-time equivalent in lib64/devlib — it dlopen's libruntime.so via
+        # ASCEND_HOME at run time (cf. run-only runtime-session, which links
+        # none of them). Dropping them (and the simulator -L below) keeps the
+        # host binary off the camodel/simulator dependency.
+        _drop = {"runtime_camodel", "npu_drv", "stars", "model_top"}
+        cann_libs = [lib for lib in cann_libs if lib not in _drop]
 
     cmd = [
         "g++", "-std=c++17", "-O2",
@@ -96,15 +113,19 @@ def link_host(
         "-L", llvm_lib,
         "-lLLVMSupport",
         "-lLLVMDemangle",
+    ]
+    if backend == "npu":
+        # No simulator dir: real device dlopen's libruntime.so from lib64.
+        link_dirs = [cann_lib, cann_devlib]
+    else:
         # CANN: simulator dir FIRST so libruntime_camodel.so resolves before
         # any real-NPU libruntime.so that lib64 also ships.
-        "-L", sim_lib,
-        "-L", cann_lib,      # lib64 first so libmetadef.so resolves here
-        "-L", cann_devlib,   # x86_64 ascend_hal lives only here
-    ]
+        link_dirs = [sim_lib, cann_lib, cann_devlib]
+    for d in link_dirs:
+        cmd += ["-L", d]
     cmd += [f"-l{lib}" for lib in cann_libs]
     cmd += [f"-l{lib}" for lib in extra_libs]
-    rpath = ":".join(filter(None, [sim_lib, cann_lib, cann_devlib]))
+    rpath = ":".join(filter(None, link_dirs))
     cmd += [
         f"-Wl,-rpath,{rpath}",
         "-o", str(out_binary),
