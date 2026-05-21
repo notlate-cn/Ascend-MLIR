@@ -3697,6 +3697,7 @@ static void fixBrokenOpEmitters(Operation *moduleOp) {
   });
 
   // BroadcastL2Op → verbatim
+  unsigned broadcastScratchId = 0;
   moduleOp->walk([&](ascendc::BroadcastL2Op op) {
     rewriter.setInsertionPoint(op);
     Location loc = op.getLoc();
@@ -3735,12 +3736,46 @@ static void fixBrokenOpEmitters(Operation *moduleOp) {
     auto dstElemType =
         cast<ascendc::LocalTensorType>(op.getDst().getType()).getElementType();
     std::string elemTypeStr = getAscendCScalarTypeName(dstElemType);
-    bool useColumnBroadcastFallback = (rank == 2 && axis == 1);
+    Value pipeVal;
+    if (rank == 2 && axis == 1) {
+      if (auto funcOp = op->getParentOfType<func::FuncOp>()) {
+        funcOp.walk([&](ascendc::PipeOp pipeOp) {
+          pipeVal = pipeOp.getResult();
+          return WalkResult::interrupt();
+        });
+      }
+    }
+    bool useColumnBroadcastFallback = (rank == 2 && axis == 1 && pipeVal);
     if (useColumnBroadcastFallback) {
+      unsigned pipeOperand = 2 + (2 * rank);
+      unsigned scratchId = broadcastScratchId++;
+      std::string tbufName =
+          "_afir_bcast_src_tbuf_" + std::to_string(scratchId);
+      std::string tensorName =
+          "_afir_bcast_src_" + std::to_string(scratchId);
+      tmpl += "  AscendC::TBuf<AscendC::TPosition::VECCALC> " + tbufName +
+              ";\n";
+      tmpl += "  uint32_t _afir_src_count = _afir_ds[0];\n";
+      tmpl += "  uint32_t _afir_src_bytes = _afir_src_count * sizeof(" +
+              elemTypeStr + ");\n";
+      tmpl += "  uint32_t _afir_src_aligned_bytes = _afir_src_bytes == 0u ? "
+              "0u : ((_afir_src_bytes + 31u) / 32u) * 32u;\n";
+      tmpl += "  if (_afir_src_bytes != 0u && _afir_src_aligned_bytes < 32u)\n";
+      tmpl += "    _afir_src_aligned_bytes = 32u;\n";
+      tmpl += "  $" + std::to_string(pipeOperand) + ".InitBuffer(" + tbufName +
+              ", _afir_src_aligned_bytes);\n";
+      tmpl += "  AscendC::LocalTensor<" + elemTypeStr + "> " + tensorName +
+              " = " + tbufName + ".Get<" + elemTypeStr + ">();\n";
+      tmpl += "  AscendC::PipeBarrier<PIPE_ALL>();\n";
+      tmpl += "  for (uint32_t _afir_i = 0; _afir_i < _afir_src_count; "
+              "++_afir_i)\n";
+      tmpl += "    " + tensorName + ".SetValue(_afir_i, static_cast<" +
+              elemTypeStr + ">($1.GetValue(_afir_i)));\n";
+      tmpl += "  " + tensorName + ".SetSize(_afir_src_count);\n";
       tmpl += "  AscendC::PipeBarrier<PIPE_ALL>();\n";
       tmpl += "  if (_afir_ss[1] == 1u) {\n";
       tmpl += "    for (uint32_t _afir_r = 0; _afir_r < _afir_ds[0]; ++_afir_r) {\n";
-      tmpl += "      auto _afir_v = $1.GetValue(_afir_r);\n";
+      tmpl += "      auto _afir_v = " + tensorName + ".GetValue(_afir_r);\n";
       tmpl += "      uint32_t _afir_row_offset = _afir_r * _afir_ds[1];\n";
       tmpl += "      if (((_afir_row_offset * sizeof(" + elemTypeStr +
               ")) % 32u) == 0u && ((_afir_ds[1] * sizeof(" + elemTypeStr +
@@ -3788,6 +3823,8 @@ static void fixBrokenOpEmitters(Operation *moduleOp) {
       args.push_back(v);
     for (Value v : op.getSrcShape())
       args.push_back(v);
+    if (useColumnBroadcastFallback)
+      args.push_back(pipeVal);
 
     rewriter.create<emitasc::VerbatimOp>(
         loc, rewriter.getStringAttr(tmpl), ValueRange(args));
