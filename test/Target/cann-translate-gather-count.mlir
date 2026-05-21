@@ -6,6 +6,8 @@
 // CHECK: uint32_t _afir_idx32_bytes = _afir_idx32_padded_count * sizeof(uint32_t);
 // CHECK: SetSize(_afir_idx32_count);
 // CHECK: for (uint32_t _afir_i = 0; _afir_i < _afir_idx32_count; _afir_i++)
+// CHECK: for (uint32_t _afir_i = _afir_idx32_count; _afir_i < _afir_idx32_padded_count; _afir_i++)
+// CHECK: _afir_idx32_0.SetValue(_afir_i, 0u);
 // CHECK: _afir_idx32_0.SetSize(_afir_idx32_padded_count);
 // CHECK: uint32_t _afir_gather_count = static_cast<uint32_t>(c16_i32);
 // CHECK: SetSize((uint32_t)(c128_idx / 2u));
