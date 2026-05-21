@@ -152,9 +152,14 @@ rebuildGroupInfo(int32_t gid,
       for (Value operand : innerOp->getOperands()) {
         if (isInternal(operand) || seen.count(operand))
           continue;
+        // Rematerialize SCALAR constants inside the kernel (cheap, avoids
+        // scalar args that codegen can't type as RankedTensorType).  TENSOR
+        // constants (weights) stay as kernel args — they are too large to
+        // embed and the host materializes their data.
         if (Operation *def = operand.getDefiningOp();
-            def && def->hasTrait<mlir::OpTrait::ConstantLike>())
-          continue; // rematerialized, not an arg
+            def && def->hasTrait<mlir::OpTrait::ConstantLike>() &&
+            !mlir::isa<mlir::ShapedType>(operand.getType()))
+          continue; // scalar const: rematerialized, not an arg
         info.boundaryIn.push_back(operand);
         seen.insert(operand);
       }
@@ -239,8 +244,9 @@ static func::FuncOp outlineGroup(OpBuilder &builder, ModuleOp module,
         if (mapping.contains(operand))
           continue;
         Operation *def = operand.getDefiningOp();
-        if (def && def->hasTrait<mlir::OpTrait::ConstantLike>())
-          builder.clone(*def, mapping);
+        if (def && def->hasTrait<mlir::OpTrait::ConstantLike>() &&
+            !mlir::isa<mlir::ShapedType>(operand.getType()))
+          builder.clone(*def, mapping); // scalar const only
       }
     });
 

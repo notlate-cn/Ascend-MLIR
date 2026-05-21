@@ -4,6 +4,7 @@
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
+#include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/MLIRContext.h"
 #include "mlir/Parser/Parser.h"
@@ -74,7 +75,55 @@ private:
       emitReturn(retOp);
       return;
     }
-    // arith constants, linalg.fill, etc. — not needed for pure aclnn path.
+    if (auto cstOp = dyn_cast<arith::ConstantOp>(op)) {
+      // A tensor constant (weight) used as a kernel arg: bake its raw bytes
+      // into a static array and build a host TensorInfo pointing at it.  Scalar
+      // constants are rematerialized inside kernels by the outliner, so they
+      // never reach here as args — skip them.
+      auto rt = dyn_cast<RankedTensorType>(cstOp.getType());
+      auto dense = dyn_cast<DenseElementsAttr>(cstOp.getValue());
+      if (rt && dense) {
+        int id = dtypeIdFor(rt.getElementType());
+        int eb = elemBytesFor(rt.getElementType());
+        if (id < 0 || eb == 0) {
+          os_ << "  // WARNING: unsupported const dtype for "
+              << cstOp.getResult().getType() << "\n";
+          return;
+        }
+        std::string n = fresh();
+        llvm::ArrayRef<char> raw = dense.getRawData();
+        int64_t numEl = rt.getNumElements();
+        os_ << "  static const unsigned char " << n << "_data[] = {";
+        auto emitByte = [&](unsigned char b, bool first) {
+          if (!first) os_ << ",";
+          os_ << (unsigned)b;
+        };
+        bool first = true;
+        if (dense.isSplat()) {
+          for (int64_t e = 0; e < numEl; ++e)
+            for (int b = 0; b < eb; ++b) {
+              emitByte((unsigned char)raw[b], first);
+              first = false;
+            }
+        } else {
+          for (char c : raw) {
+            emitByte((unsigned char)c, first);
+            first = false;
+          }
+        }
+        os_ << "};\n";
+        os_ << "  TensorInfo " << n << "; " << n << ".rank=" << rt.getRank()
+            << "; " << n << ".dtype=" << id << ";\n";
+        for (auto [d, sz] : llvm::enumerate(rt.getShape()))
+          os_ << "  " << n << ".shape[" << d << "]=" << sz << ";\n";
+        os_ << "  " << n << ".data=(void*)" << n << "_data;\n";
+        os_ << "  mlir::runtime::aclnn::rowMajorStrides(" << n << ".shape, "
+            << n << ".rank, " << n << ".strides);\n";
+        names_[cstOp.getResult()] = n;
+      }
+      return;
+    }
+    // scalar arith.constant / linalg.fill etc. — rematerialized in kernels.
   }
 
   void emitCall(func::CallOp callOp) {
