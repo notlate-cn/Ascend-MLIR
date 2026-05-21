@@ -10,6 +10,8 @@
 // CHECK: _afir_idx32_0.SetValue(_afir_i, 0u);
 // CHECK: _afir_idx32_0.SetSize(_afir_idx32_padded_count);
 // CHECK: uint32_t _afir_gather_count = static_cast<uint32_t>(c16_i32);
+// CHECK: uint32_t _afir_gather_padded_count = _afir_gather_count == 0u ? 0u : ((_afir_gather_count + 127u) / 128u) * 128u;
+// CHECK: SetSize(_afir_gather_padded_count);
 // CHECK: SetSize((uint32_t)(c128_idx / 2u));
 // CHECK: AscendC::Gather(
 module {
