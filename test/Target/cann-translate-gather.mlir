@@ -36,9 +36,13 @@
 // CHECK-SAME: _afir_idx32_0[_afir_off]
 // CHECK: AscendC::PipeBarrier<PIPE_V>();
 // CHECK-NOT: v39
+// CHECK: AscendC::Max(
+// CHECK: AscendC::LocalTensor<half> [[BIAS:v[0-9]+]] =
+// CHECK: SetGlobalBuffer(reinterpret_cast<__gm__ half*>(v3) + c0_i32);
+// CHECK: AscendC::DataCopy([[BIAS]],
 // CHECK: AscendC::PipeBarrier<PIPE_ALL>();
 // CHECK: for (uint32_t _afir_i = 0; _afir_i < static_cast<uint32_t>(
-// CHECK: _afir_r = {{.*}}.GetValue(_afir_i)
+// CHECK: _afir_r = [[BIAS]].GetValue(_afir_i)
 // CHECK: _afir_l = {{.*}}.GetValue(_afir_i)
 // CHECK: SetValue(_afir_i, static_cast<half>(static_cast<float>(_afir_l) + static_cast<float>(_afir_r)));
 // CHECK: SetSize((uint32_t)
