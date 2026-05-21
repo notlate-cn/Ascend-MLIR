@@ -227,7 +227,7 @@ ACTUAL_OUTPUT="$BUILD_DIR/output.npy"
   --kernel "$DIR/step8_kernel.cpp" \
   --kernel-kind vec \
   --output "$ARTIFACT_ROOT" \
-  --name broadcast_add_reducesum__v0 \
+  --name broadcast_add_reducesum \
   2>&1
 log "  ✓ Compile 成功，输出: $ARTIFACT_ROOT"
 
