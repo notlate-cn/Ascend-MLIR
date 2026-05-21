@@ -3507,6 +3507,29 @@ static void fixBrokenOpEmitters(Operation *moduleOp) {
     rewriter.eraseOp(op);
   });
 
+  moduleOp->walk([&](ascendc::MulL2Op op) {
+    if (op.getDst() != op.getSrc0() && op.getDst() != op.getSrc1())
+      return;
+
+    rewriter.setInsertionPoint(op);
+    Location loc = op.getLoc();
+    std::string tmpl = "{\n";
+    tmpl += "  uint32_t _afir_mul_count = static_cast<uint32_t>($3);\n";
+    tmpl += "  for (uint32_t _afir_off = 0; _afir_off < _afir_mul_count; "
+            "_afir_off += 1024u) {\n";
+    tmpl += "    uint32_t _afir_chunk = ((_afir_mul_count - _afir_off) < "
+            "1024u) ? (_afir_mul_count - _afir_off) : 1024u;\n";
+    tmpl += "    AscendC::Mul($0[_afir_off], $1[_afir_off], $2[_afir_off], "
+            "_afir_chunk);\n";
+    tmpl += "  }\n";
+    tmpl += "  $0.SetSize(_afir_mul_count);\n}";
+    rewriter.create<emitasc::VerbatimOp>(
+        loc, rewriter.getStringAttr(tmpl),
+        ValueRange({op.getDst(), op.getSrc0(), op.getSrc1(),
+                    op.getCalCount()}));
+    rewriter.eraseOp(op);
+  });
+
   // AscendC's CO1->VECIN DataCopy overload is half-oriented on C220. Keep the
   // fast path for half and scalarize other element types for correctness.
   moduleOp->walk([&](ascendc::DataCopyCO12DstOp op) {
