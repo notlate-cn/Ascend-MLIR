@@ -3943,6 +3943,10 @@ static void fixBrokenOpEmitters(Operation *moduleOp) {
                ".SetValue(_afir_i, static_cast<uint32_t>($2.GetValue(_afir_i)) * " +
                std::to_string(srcElemBytes) + "u);\n";
     prelude += "}";
+    prelude += "\nfor (uint32_t _afir_i = _afir_idx32_count; "
+               "_afir_i < _afir_idx32_padded_count; _afir_i++) {\n";
+    prelude += "  " + tensorName + ".SetValue(_afir_i, 0u);\n";
+    prelude += "}";
     prelude += "\n" + tensorName + ".SetSize(_afir_idx32_padded_count);";
     prelude += "\nAscendC::PipeBarrier<PIPE_V>()";
     rewriter.create<emitasc::VerbatimOp>(

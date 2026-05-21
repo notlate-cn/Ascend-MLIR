@@ -16,6 +16,8 @@
 // CHECK: SetSize(_afir_idx32_count);
 // CHECK: for (uint32_t _afir_i = 0; _afir_i < _afir_idx32_count; _afir_i++)
 // CHECK: _afir_idx32_0.SetValue(_afir_i, static_cast<uint32_t>({{v[0-9]+}}.GetValue(_afir_i)) * 2u);
+// CHECK: for (uint32_t _afir_i = _afir_idx32_count; _afir_i < _afir_idx32_padded_count; _afir_i++)
+// CHECK: _afir_idx32_0.SetValue(_afir_i, 0u);
 // CHECK: _afir_idx32_0.SetSize(_afir_idx32_padded_count);
 // CHECK: AscendC::PipeBarrier<PIPE_V>();
 // CHECK: AscendC::GlobalTensor<half> _afir_gt;
