@@ -3953,7 +3953,7 @@ static void fixBrokenOpEmitters(Operation *moduleOp) {
                ", _afir_idx32_aligned_bytes);\n";
     prelude += "AscendC::LocalTensor<uint32_t> " + tensorName + " = " +
                tbufName + ".Get<uint32_t>();\n";
-    prelude += "$2.SetSize(_afir_idx32_padded_count);\n";
+    prelude += "$2.SetSize(_afir_idx32_count);\n";
     prelude +=
         "for (uint32_t _afir_i = 0; _afir_i < _afir_idx32_count; _afir_i++) {\n";
     prelude += "  " + tensorName +
