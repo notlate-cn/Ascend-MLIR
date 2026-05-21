@@ -233,6 +233,17 @@ static func::FuncOp outlineGroup(OpBuilder &builder, ModuleOp module,
                                ? "Cube"
                                : "Vector"));
 
+  // aclnn fallback: route a standalone cube (matmul / batch_matmul) group to the
+  // aclnn CPU-reference matmul, since AscendC cube codegen isn't ready.  Only a
+  // single-op group maps cleanly to one aclnn op; CV-fused cube groups are left
+  // for the (future) cube codegen path.  Stamping `aclnn.op` makes
+  // emitNetworkJson tag the kernel kind=aclnn and the host emit run_Matmul.
+  if (info.kind == GroupInfo::Kind::Cube && info.topoMembers.size() == 1) {
+    linalg::LinalgOp member = info.topoMembers.front();
+    if (isa<linalg::MatmulOp, linalg::BatchMatmulOp>(member.getOperation()))
+      kernelFunc->setAttr("aclnn.op", StringAttr::get(ctx, "Matmul"));
+  }
+
   // Rematerialize ConstantLike operands inside the kernel (they were excluded
   // from boundaryIn).  Clone each referenced constant once and map it so the
   // member clones below pick up the in-kernel constant instead of a dangling

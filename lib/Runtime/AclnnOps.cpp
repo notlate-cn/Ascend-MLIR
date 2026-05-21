@@ -309,4 +309,51 @@ void run_FlashAttentionScore(
   freeTensor(&softmaxSum);
 }
 
+// ---------------------------------------------------------------------------
+// CPU reference: (batched) matrix multiply.  a:[..,M,K] b:[..,K,N] -> [..,M,N].
+// f16/f32, row-major.  Used as the aclnn fallback for cube (matmul) groups the
+// AscendC codegen can't yet handle.
+// ---------------------------------------------------------------------------
+static void matmul_cpu(const TensorInfo &a, const TensorInfo &b,
+                       TensorInfo *out) {
+  int rank = a.rank;
+  assert(rank >= 2 && b.rank == rank && "matmul expects matching rank >= 2");
+  int64_t M = a.shape[rank - 2], K = a.shape[rank - 1];
+  int64_t N = b.shape[rank - 1];
+  assert(b.shape[rank - 2] == K && "matmul inner dim mismatch");
+  int64_t batch = 1;
+  for (int i = 0; i < rank - 2; ++i)
+    batch *= a.shape[i];
+
+  // out template: a's shape with last dim -> N.
+  TensorInfo tmpl = a;
+  tmpl.shape[rank - 1] = N;
+  allocTensorLike(tmpl, out);
+
+  bool f16 = (a.dtype == 1);
+  auto rd = [&](const void *p, size_t i) -> float {
+    return f16 ? h2f(((const uint16_t *)p)[i]) : ((const float *)p)[i];
+  };
+  auto wr = [&](void *p, size_t i, float v) {
+    if (f16) ((uint16_t *)p)[i] = f2h(v);
+    else ((float *)p)[i] = v;
+  };
+  for (int64_t bi = 0; bi < batch; ++bi)
+    for (int64_t m = 0; m < M; ++m)
+      for (int64_t n = 0; n < N; ++n) {
+        float acc = 0.f;
+        for (int64_t k = 0; k < K; ++k)
+          acc += rd(a.data, (size_t)((bi * M + m) * K + k)) *
+                 rd(b.data, (size_t)((bi * K + k) * N + n));
+        wr(out->data, (size_t)((bi * M + m) * N + n), acc);
+      }
+}
+
+void run_Matmul(TensorInfo a, TensorInfo b, TensorInfo /*init*/,
+                TensorInfo *out, aclrtStream /*stream*/) {
+  assert(g_host_mode &&
+         "run_Matmul: only the host-mode CPU reference is implemented");
+  matmul_cpu(a, b, out);
+}
+
 } // namespace mlir::runtime::aclnn

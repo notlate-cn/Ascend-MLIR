@@ -347,7 +347,9 @@ static std::string buildNetworkHostCpp(ModuleOp module,
   os << "#include <cstdlib>\n";
   os << "\n";
   os << "using TensorInfo = mlir::runtime::aclnn::TensorInfo;\n";
-  os << "using mlir::runtime::aclnn::run_" << (!aclnnOps.empty() ? aclnnOps[0] : "FlashAttentionScore") << ";\n";
+  // Bring all aclnn CPU-reference ops (run_Matmul, run_FlashAttentionScore, ...)
+  // into scope so CoordEmitter's unqualified run_<Op>(...) calls resolve.
+  os << "using namespace mlir::runtime::aclnn;\n";
   os << "\n";
 
   // ③ network_impl: coordinator body translated to C++

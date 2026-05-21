@@ -56,4 +56,14 @@ void run_FlashAttentionScore(
     TensorInfo *out, // written by this call
     aclrtStream stream);
 
+// CPU-reference matrix multiply (aclnn-fallback for linalg.matmul /
+// batch_matmul).  a: [.., M, K], b: [.., K, N] -> out: [.., M, N], leading dims
+// are batch.  `init` is the DPS output buffer (unused).  Host-mode only.
+void run_Matmul(
+    TensorInfo a,
+    TensorInfo b,
+    TensorInfo init, // DPS init/output buffer (unused by the reference)
+    TensorInfo *out, // allocated + written by this call
+    aclrtStream stream);
+
 } // namespace mlir::runtime::aclnn
