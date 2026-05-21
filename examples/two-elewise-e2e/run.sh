@@ -4,9 +4,13 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO="$(cd "$SCRIPT_DIR/../.." && pwd)"
 WORK="${WORK:-$SCRIPT_DIR/build_e2e}"
 
-source /home/gser/Ascend/ascend-toolkit/set_env.sh
-# Manual sim env (examples/env.sh's resolve_ascend_env.sh skips these paths)
-export LD_LIBRARY_PATH="/home/gser/Ascend/cann-9.0.0/x86_64-linux/simulator/Ascend910B1/lib:/home/gser/Ascend/cann-9.0.0/x86_64-linux/lib64:/home/gser/Ascend/cann-9.0.0/x86_64-linux/devlib/linux/x86_64:${LD_LIBRARY_PATH:-}"
+# CANN toolkit + sim libs, arch-aware. Respects a pre-set ASCEND_HOME_PATH
+# (e.g. the real-NPU container's reused CANN); falls back to the local dev path.
+export ASCEND_HOME_PATH="${ASCEND_HOME_PATH:-/home/gser/Ascend/cann}"
+[ -f "$ASCEND_HOME_PATH/set_env.sh" ] && source "$ASCEND_HOME_PATH/set_env.sh"
+source "$REPO/examples/env.sh"
+# env.sh assigns SCRIPT_DIR/PROJECT_ROOT (non-local) → restore ours.
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 export PATH="$REPO/build/bin:$PATH"
 
 rm -rf "$WORK"

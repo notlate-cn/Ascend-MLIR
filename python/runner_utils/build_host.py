@@ -16,8 +16,16 @@ the simulator runtime can't initialize at execution time even if linking
 "succeeds" (libascendcl pulls in libruntime.so for the real-NPU side, which
 masks the sim-mode rtSetDevice symbols).
 """
+import os
+import platform
 import subprocess
 from pathlib import Path
+
+# Build-host architecture: pick the CANN arch dir and devlib subdir to match the
+# machine actually running g++ (x86 dev box vs aarch64 real-NPU container).
+_MACHINE = platform.machine()
+_HOST_CANN_ARCH = "aarch64-linux" if _MACHINE in ("aarch64", "arm64") else "x86_64-linux"
+_HOST_DEVLIB_ARCH = "aarch64" if _MACHINE in ("aarch64", "arm64") else "x86_64"
 
 
 def link_host(
@@ -26,7 +34,7 @@ def link_host(
     out_binary: Path,
     repo_root: Path,
     cann_home: str,
-    cann_arch: str = "x86_64-linux",
+    cann_arch: str = _HOST_CANN_ARCH,
     soc: str = "Ascend910B1",
     has_aclnn_ops: bool = False,
     extra_sources: tuple = (),
@@ -40,9 +48,9 @@ def link_host(
     # Per examples/env.sh: lib64 must precede devlib in LD_LIBRARY_PATH so
     # libmetadef.so resolves to the lib64 version (devlib's is stripped of ge::
     # symbols). Same ordering applies at link time.
-    cann_devlib    = f"{cann_home}/{cann_arch}/devlib/linux/x86_64"
+    cann_devlib    = f"{cann_home}/{cann_arch}/devlib/linux/{_HOST_DEVLIB_ARCH}"
     sim_lib        = f"{cann_home}/{cann_arch}/simulator/{soc}/lib"
-    llvm_build     = str(repo_root / "externals/llvm-project/build")
+    llvm_build     = os.environ.get("LLVM_BUILD_DIR") or str(repo_root / "externals/llvm-project/build")
     llvm_lib       = f"{llvm_build}/lib"
     llvm_inc       = str(repo_root / "externals/llvm-project/llvm/include")
     llvm_build_inc = f"{llvm_build}/include"
