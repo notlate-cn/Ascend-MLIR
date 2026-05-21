@@ -45,19 +45,23 @@ greedily peeled the first foldable axis; for a leading multi-axis bias broadcast
 with 1-step lookahead (peel inner axis first → two valid 2D row broadcasts).
 +1 lit `codegen-bcast-leading-multiaxis.mlir`.
 
-**Next wall (phase-2 codegen, kernel_group6):** a rank-5 `linalg.transpose` with
-a UNIT dim (`[1,8,2,3,64]→[3,8,2,1,64]` perm `[3,1,2,0,4]`, from attention head
-reshapes) SIGABRTs in `GroupEmitter`/`computeSlice`
-(`ExtractSliceOp::inferResultType`: staticSizes count != source rank). Root:
-`--linalg-fold-unit-extent-dims` does NOT fold `linalg.transpose`, so the unit
-dim survives; the codegen Collapse step then yields an indexing map with
-`numResults < operand.rank` (unit dim dropped from the map, not the operand) and
-`SliceComputer.cpp:79` emits one slice dim per map result → rank mismatch.
-Repro: rank-4 transpose OK; rank-5 with leading unit dim crashes. Fix options:
-(a) fold/lower unit-dim transpose to rank-(N-1) transpose + reshapes before
-codegen; (b) make computeSlice/GroupEmitter robust to map.numResults <
-operand.rank (full-size slice for untiled/collapsed dims). Then expect the
-softmax/layernorm reduce kernels as the next walls.
+**Transpose wall (kernel_group6) — FIXED** (another session, on dev-network,
+`Collapse.cpp` +38/-1, uncommitted at time of writing; +lit
+`test/Conversion/Collapse/collapse-b2-glue-transpose.mlir`).
+NOTE: this handoff's earlier root-cause guess (unit-dim / `map.numResults <
+operand.rank`) was WRONG. **Real root cause:** `Collapse.cpp`'s B2 safety gate
+`hasAnyB2` only treated function arguments as boundary inputs.  After
+`fold-unit-extent-dims` inserts `collapse_shape` glue, the generic reads the glue
+result `%c` (not the func arg), so `hasAnyB2` silently skipped the gate and
+force-collapsed the transpose → illegal generic (operand rank ≠ map results) →
+slice crash.  Not unit-dim specific (non-unit collapse+transpose also crashed;
+identity+glue did not).  Fix: `isBoundaryDerived()` looks through
+collapse_shape/expand_shape to the real boundary input so glued transposes take
+the same `noCollapse` path as bare ones; + a `#ifndef NDEBUG` consistency assert
+after collapse.  Validated: t5u clean, full lit 93 pass.
+
+So phase-2's only remaining walls are the 3 reduce kernels (softmax g13,
+layernorm g29/g56) — all covered by the aclnn-direct-call plan below.
 
 ## Roadmap to encoder numerical PASS (remaining, each multi-step)
 1. **Broadcast rank-3 codegen** (the current wall) — fix the fold workaround or
