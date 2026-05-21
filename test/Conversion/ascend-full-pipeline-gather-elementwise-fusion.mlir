@@ -34,6 +34,8 @@
 // CHECK: ascendc.que_bind.deque_tensor
 // CHECK-NEXT: emitasc.verbatim
 // CHECK-SAME: %[[GATHER_SRC_LT]],
+// CHECK-NEXT: emitasc.verbatim
+// CHECK-SAME: static_cast<half>(0)
 // CHECK-NEXT: %[[ROW_BYTE_OFF:[0-9]+]] = arith.muli %{{.*}}, %{{.*}} : index
 // CHECK-NEXT: %[[DST_ROW_LT:[0-9]+]] = ascendc.tbuf.get_with_offset %[[VECOUT_TBUF]], %[[K_ELEMS]], %[[ROW_BYTE_OFF]]
 // CHECK-NEXT: ascendc.gather_l2 %[[GATHER_ROW_LT]], %[[GATHER_SRC_LT]],
