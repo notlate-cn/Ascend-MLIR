@@ -13,7 +13,7 @@
 // CHECK: _afir_idx32_aligned_bytes = 32u;
 // CHECK: InitBuffer(_afir_idx32_tbuf_0, _afir_idx32_aligned_bytes);
 // CHECK: AscendC::LocalTensor<uint32_t> _afir_idx32_0 = _afir_idx32_tbuf_0.Get<uint32_t>();
-// CHECK: SetSize(_afir_idx32_padded_count);
+// CHECK: SetSize(_afir_idx32_count);
 // CHECK: for (uint32_t _afir_i = 0; _afir_i < _afir_idx32_count; _afir_i++)
 // CHECK: _afir_idx32_0.SetValue(_afir_i, static_cast<uint32_t>({{v[0-9]+}}.GetValue(_afir_i)) * 2u);
 // CHECK: _afir_idx32_0.SetSize(_afir_idx32_padded_count);
