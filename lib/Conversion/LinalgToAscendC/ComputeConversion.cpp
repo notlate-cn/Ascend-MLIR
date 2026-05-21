@@ -2789,7 +2789,7 @@ LogicalResult convertCompute(func::FuncOp funcOp, AscendCBufferContext &ctx) {
       // window past the logical index. Padding keeps max-index gathers inside
       // the registered UB buffer.
       unsigned gatherPadElems =
-          elemBytes <= 2 ? 128 : (elemBytes <= 4 ? 64 : 32);
+          elemBytes <= 2 ? 256 : (elemBytes <= 4 ? 128 : 64);
       Value gatherPadElemsVal =
           builder.create<arith::ConstantIndexOp>(loc, gatherPadElems);
       Value paddedDimN =
