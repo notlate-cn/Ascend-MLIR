@@ -59,17 +59,41 @@ private:
       return;
     }
     if (auto collapseOp = dyn_cast<tensor::CollapseShapeOp>(op)) {
-      names_[collapseOp.getResult()] = nameOf(collapseOp.getSrc());
+      emitReshapeView(collapseOp.getSrc(), collapseOp.getResult());
       return;
     }
     if (auto expandOp = dyn_cast<tensor::ExpandShapeOp>(op)) {
-      names_[expandOp.getResult()] = nameOf(expandOp.getSrc());
+      emitReshapeView(expandOp.getSrc(), expandOp.getResult());
       return;
     }
     if (auto emptyOp = dyn_cast<tensor::EmptyOp>(op)) {
+      // A DPS init / scratch buffer passed to a kernel as an operand.  It must
+      // be allocated (with shape) so the kernel can write it and the camodel
+      // npy I/O can stage it; an unallocated TensorInfo crashes SaveNpy.
       std::string n = fresh();
-      os_ << "  TensorInfo " << n << "; // tensor.empty — allocate at runtime\n";
+      auto rt = dyn_cast<RankedTensorType>(emptyOp.getType());
+      int id = rt ? dtypeIdFor(rt.getElementType()) : -1;
+      int eb = rt ? elemBytesFor(rt.getElementType()) : 0;
+      if (!rt || !rt.hasStaticShape() || id < 0 || eb == 0) {
+        os_ << "  // WARNING: unsupported tensor.empty " << emptyOp.getType()
+            << "\n";
+        os_ << "  TensorInfo " << n << ";\n";
+        names_[emptyOp.getResult()] = n;
+        return;
+      }
+      os_ << "  TensorInfo " << n << "; " << n << ".rank=" << rt.getRank()
+          << "; " << n << ".dtype=" << id << "; // tensor.empty\n";
+      for (auto [d, sz] : llvm::enumerate(rt.getShape()))
+        os_ << "  " << n << ".shape[" << d << "]=" << sz << ";\n";
+      os_ << "  mlir::runtime::aclnn::rowMajorStrides(" << n << ".shape, " << n
+          << ".rank, " << n << ".strides);\n";
+      os_ << "  " << n << ".data = ::operator new((size_t)" << rt.getNumElements()
+          << "*" << eb << ");\n";
       names_[emptyOp.getResult()] = n;
+      return;
+    }
+    if (auto sliceOp = dyn_cast<tensor::ExtractSliceOp>(op)) {
+      emitExtractSlice(sliceOp);
       return;
     }
     if (auto retOp = dyn_cast<func::ReturnOp>(op)) {
@@ -139,6 +163,100 @@ private:
       return;
     }
     // scalar arith.constant / linalg.fill etc. — rematerialized in kernels.
+  }
+
+  // Materialize a static tensor.extract_slice as a host-side strided copy into
+  // a fresh dense row-major buffer.  The source value is assumed contiguous
+  // row-major for the slice's source TYPE (true for the kernel-output /
+  // collapse_shape / expand_shape chains the outliner produces); we therefore
+  // compute the source strides from the source type at emit time rather than
+  // reading srcName.strides (which, through a collapse alias, describe the
+  // pre-collapse rank).  Rank-reducing slices (dropped unit dims) fall out for
+  // free: iterating the slice sizes row-major and writing dst sequentially
+  // yields the dense row-major result.
+  void emitExtractSlice(tensor::ExtractSliceOp sliceOp) {
+    auto srcType = sliceOp.getSourceType();
+    auto resType = cast<RankedTensorType>(sliceOp.getResult().getType());
+    auto offsets = sliceOp.getStaticOffsets();
+    auto sizes = sliceOp.getStaticSizes();
+    auto strides = sliceOp.getStaticStrides();
+
+    auto anyDyn = [](llvm::ArrayRef<int64_t> xs) {
+      return llvm::any_of(xs, ShapedType::isDynamic);
+    };
+    int id = dtypeIdFor(resType.getElementType());
+    int eb = elemBytesFor(resType.getElementType());
+    if (anyDyn(offsets) || anyDyn(sizes) || anyDyn(strides) || id < 0 ||
+        eb == 0) {
+      os_ << "  // WARNING: unsupported extract_slice (dynamic or bad dtype) "
+          << sliceOp.getResult().getType() << "\n";
+      return;
+    }
+
+    int64_t srcRank = srcType.getRank();
+    auto srcShape = srcType.getShape();
+    SmallVector<int64_t> srcStrides(srcRank, 1);
+    for (int64_t d = srcRank - 2; d >= 0; --d)
+      srcStrides[d] = srcStrides[d + 1] * srcShape[d + 1];
+    int64_t numEl = 1;
+    for (int64_t s : sizes)
+      numEl *= s;
+
+    std::string src = nameOf(sliceOp.getSource());
+    std::string n = fresh();
+    auto arr = [&](StringRef name, llvm::ArrayRef<int64_t> xs) {
+      os_ << "    const int64_t " << name << "[] = {";
+      for (auto [i, x] : llvm::enumerate(xs))
+        os_ << (i ? "," : "") << x;
+      os_ << "};\n";
+    };
+
+    os_ << "  TensorInfo " << n << "; " << n << ".rank=" << resType.getRank()
+        << "; " << n << ".dtype=" << id << ";\n";
+    for (auto [d, sz] : llvm::enumerate(resType.getShape()))
+      os_ << "  " << n << ".shape[" << d << "]=" << sz << ";\n";
+    os_ << "  mlir::runtime::aclnn::rowMajorStrides(" << n << ".shape, " << n
+        << ".rank, " << n << ".strides);\n";
+    os_ << "  { // tensor.extract_slice\n";
+    arr("_off", offsets);
+    arr("_sz", sizes);
+    arr("_st", strides);
+    arr("_ss", srcStrides);
+    os_ << "    size_t _ne = " << numEl << "; " << n
+        << ".data = ::operator new(_ne*" << eb << ");\n";
+    os_ << "    int64_t _idx[" << srcRank << "] = {0};\n";
+    os_ << "    for (size_t _o = 0; _o < _ne; ++_o) {\n";
+    os_ << "      size_t _s = 0; for (int _d = 0; _d < " << srcRank
+        << "; ++_d) _s += (size_t)(_off[_d] + _idx[_d]*_st[_d]) * (size_t)_ss[_d];\n";
+    os_ << "      memcpy((char*)" << n << ".data + _o*" << eb
+        << ", (const char*)" << src << ".data + _s*" << eb << ", " << eb
+        << ");\n";
+    os_ << "      for (int _d = " << srcRank - 1
+        << "; _d >= 0; --_d) { if (++_idx[_d] < _sz[_d]) break; _idx[_d] = 0; }\n";
+    os_ << "    }\n  }\n";
+    names_[sliceOp.getResult()] = n;
+  }
+
+  // collapse_shape / expand_shape: a contiguous reshape.  Emit a new TensorInfo
+  // that shares the source data pointer but takes the result type's shape/rank/
+  // (row-major) strides — a pure name alias would leave downstream consumers
+  // (e.g. the BNSD rank-4 view feeding FlashAttentionScore) seeing the source
+  // rank/shape.
+  void emitReshapeView(Value src, Value res) {
+    auto rt = dyn_cast<RankedTensorType>(res.getType());
+    std::string srcName = nameOf(src);
+    std::string n = fresh();
+    if (!rt || !rt.hasStaticShape()) {
+      names_[res] = srcName; // fall back to alias
+      return;
+    }
+    os_ << "  TensorInfo " << n << " = " << srcName << "; " << n
+        << ".rank=" << rt.getRank() << "; // reshape view\n";
+    for (auto [d, sz] : llvm::enumerate(rt.getShape()))
+      os_ << "  " << n << ".shape[" << d << "]=" << sz << ";\n";
+    os_ << "  mlir::runtime::aclnn::rowMajorStrides(" << n << ".shape, " << n
+        << ".rank, " << n << ".strides);\n";
+    names_[res] = n;
   }
 
   void emitCall(func::CallOp callOp) {
