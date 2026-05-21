@@ -100,18 +100,36 @@ static bool decomposeBroadcast(BroadcastL2Op op, Value pipe) {
   SmallVector<Value> curShape(srcShape.begin(), srcShape.end());
   SmallVector<int> remaining = bcastAxes;
   while (!remaining.empty()) {
-    auto allOne = [&](int lo, int hi) {
-      for (int i = lo; i < hi; ++i)
-        if (!isStaticOne(curShape[i]))
-          return false;
-      return true;
+    // An axis `ba` is foldable in `shape` when its prefix [0,ba) OR its suffix
+    // (ba,rank) is all statically-1 (-> a single 2D row/col AscendC::Broadcast).
+    auto foldableIn = [&](int ba, ArrayRef<Value> shape) {
+      auto allOneIn = [&](int lo, int hi) {
+        for (int i = lo; i < hi; ++i)
+          if (!isStaticOne(shape[i]))
+            return false;
+        return true;
+      };
+      return allOneIn(0, ba) || allOneIn(ba + 1, rank);
     };
-    int pickIdx = -1;
+    // Greedily pick a foldable axis, but with 1-step lookahead: broadcasting an
+    // axis grows its dim to non-1, which can strand a remaining axis (e.g. for
+    // [1,1,N]->[D0,D1,N], broadcasting outer axis 0 first leaves axis 1 with a
+    // non-1 prefix AND suffix).  Prefer the foldable axis that keeps the most
+    // remaining axes foldable; this picks the inner axis first there.
+    int pickIdx = -1, bestScore = -1;
     for (int k = 0; k < (int)remaining.size(); ++k) {
       int ba = remaining[k];
-      if (allOne(0, ba) || allOne(ba + 1, rank)) {
+      if (!foldableIn(ba, curShape))
+        continue;
+      SmallVector<Value> hyp(curShape.begin(), curShape.end());
+      hyp[ba] = dstShape[ba]; // becomes non-1 after broadcasting
+      int score = 0;
+      for (int j = 0; j < (int)remaining.size(); ++j)
+        if (j != k && foldableIn(remaining[j], hyp))
+          ++score;
+      if (score > bestScore) {
+        bestScore = score;
         pickIdx = k;
-        break;
       }
     }
     if (pickIdx < 0) {
