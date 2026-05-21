@@ -3886,9 +3886,15 @@ static void fixBrokenOpEmitters(Operation *moduleOp) {
     std::string prelude;
     prelude += "AscendC::TBuf<AscendC::TPosition::VECCALC> " + tbufName +
                ";\n";
-    prelude += "uint32_t _afir_idx32_bytes = (uint32_t)$1 * sizeof(uint32_t);\n";
+    prelude += "uint32_t _afir_idx32_count = static_cast<uint32_t>($1);\n";
+    prelude += "uint32_t _afir_idx32_padded_count = _afir_idx32_count == 0u ? 0u : "
+               "((_afir_idx32_count + " +
+               std::to_string(maxGatherCount - 1) + "u) / " +
+               std::to_string(maxGatherCount) + "u) * " +
+               std::to_string(maxGatherCount) + "u;\n";
+    prelude += "uint32_t _afir_idx32_bytes = _afir_idx32_padded_count * sizeof(uint32_t);\n";
     prelude +=
-        "uint32_t _afir_idx32_aligned_bytes = _afir_idx32_bytes == 0 ? 0 : "
+        "uint32_t _afir_idx32_aligned_bytes = _afir_idx32_bytes == 0u ? 0u : "
         "((_afir_idx32_bytes + 31u) / 32u) * 32u;\n";
     prelude +=
         "if (_afir_idx32_bytes != 0u && _afir_idx32_aligned_bytes < 32u)\n";
@@ -3897,14 +3903,14 @@ static void fixBrokenOpEmitters(Operation *moduleOp) {
                ", _afir_idx32_aligned_bytes);\n";
     prelude += "AscendC::LocalTensor<uint32_t> " + tensorName + " = " +
                tbufName + ".Get<uint32_t>();\n";
-    prelude += "$2.SetSize((uint32_t)$1);\n";
+    prelude += "$2.SetSize(_afir_idx32_padded_count);\n";
     prelude +=
-        "for (uint32_t _afir_i = 0; _afir_i < static_cast<uint32_t>($1); _afir_i++) {\n";
+        "for (uint32_t _afir_i = 0; _afir_i < _afir_idx32_count; _afir_i++) {\n";
     prelude += "  " + tensorName +
                ".SetValue(_afir_i, static_cast<uint32_t>($2.GetValue(_afir_i)) * " +
                std::to_string(srcElemBytes) + "u);\n";
     prelude += "}";
-    prelude += "\n" + tensorName + ".SetSize((uint32_t)$1);";
+    prelude += "\n" + tensorName + ".SetSize(_afir_idx32_padded_count);";
     prelude += "\nAscendC::PipeBarrier<PIPE_V>()";
     rewriter.create<emitasc::VerbatimOp>(
         loc, rewriter.getStringAttr(prelude),
