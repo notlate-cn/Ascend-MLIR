@@ -881,6 +881,22 @@ LogicalResult convertCompute(func::FuncOp funcOp, AscendCBufferContext &ctx) {
         yieldedVal = yield.getValues()[0];
 
     llvm::SmallDenseMap<Value, Value> valToLt;
+    // TBufs written by a vector op in this body carry no queue (EnQue/DeQue)
+    // sync, so a later vector op reading one has a vector->vector RAW that the
+    // hardware does not auto-order across multi-repeat tiles: it races on the
+    // real NPU while the simulator hides it (combo-elewise-reduce-e2e produced
+    // ~0 on device for the `acc += (a+b)` chain — the accumulate add read its
+    // TBuf inputs before the preceding add's write had landed).  Track such
+    // TBufs and emit a PipeBarrier before any vector op that reads one.  Mirrors
+    // the TBuf-accumulator->GM barrier in DataMoveConversion: a TBuf has no
+    // queue, so its write->read order must be made explicit.
+    llvm::SmallDenseSet<Value> vectorWrittenTBufs;
+    if (zeroVal)
+      vectorWrittenTBufs.insert(accumLt); // written by the zero-init Duplicate
+    auto syncTBufRAW = [&](Value lhs, Value rhs) {
+      if (vectorWrittenTBufs.contains(lhs) || vectorWrittenTBufs.contains(rhs))
+        builder.create<PipeBarrierOp>(loc, Pipe::PIPE_ALL);
+    };
     for (auto &bodyOp : bodyBlock.without_terminator()) {
       // Resolve an SSA value to its corresponding local_tensor.
       // Handles block args, prior body results, and scalar constants
@@ -917,32 +933,40 @@ LogicalResult convertCompute(func::FuncOp funcOp, AscendCBufferContext &ctx) {
         Value rhs = resolve(addOp.getRhs());
         if (!lhs || !rhs) continue;
         Value dst = chooseDst(addOp.getResult());
+        syncTBufRAW(lhs, rhs);
         auto addL2Op = builder.create<AddL2Op>(loc, dst, lhs, rhs, count);
         copyAscendCUnitAttr(genOp.getOperation(), addL2Op.getOperation());
+        vectorWrittenTBufs.insert(dst);
         if (dst == accumLt) valToLt[addOp.getResult()] = accumLt;
       } else if (auto mulOp = dyn_cast<arith::MulFOp>(bodyOp)) {
         Value lhs = resolve(mulOp.getLhs());
         Value rhs = resolve(mulOp.getRhs());
         if (!lhs || !rhs) continue;
         Value dst = chooseDst(mulOp.getResult());
+        syncTBufRAW(lhs, rhs);
         auto mulOp2 = builder.create<MulL2Op>(loc, dst, lhs, rhs, count);
         copyAscendCUnitAttr(genOp.getOperation(), mulOp2.getOperation());
+        vectorWrittenTBufs.insert(dst);
         if (dst == accumLt) valToLt[mulOp.getResult()] = accumLt;
       } else if (auto maxOp = dyn_cast<arith::MaximumFOp>(bodyOp)) {
         Value lhs = resolve(maxOp.getLhs());
         Value rhs = resolve(maxOp.getRhs());
         if (!lhs || !rhs) continue;
         Value dst = chooseDst(maxOp.getResult());
+        syncTBufRAW(lhs, rhs);
         auto maxOp2 = builder.create<MaxL2Op>(loc, dst, lhs, rhs, count);
         copyAscendCUnitAttr(genOp.getOperation(), maxOp2.getOperation());
+        vectorWrittenTBufs.insert(dst);
         if (dst == accumLt) valToLt[maxOp.getResult()] = accumLt;
       } else if (auto minOp = dyn_cast<arith::MinimumFOp>(bodyOp)) {
         Value lhs = resolve(minOp.getLhs());
         Value rhs = resolve(minOp.getRhs());
         if (!lhs || !rhs) continue;
         Value dst = chooseDst(minOp.getResult());
+        syncTBufRAW(lhs, rhs);
         auto minOp2 = builder.create<MinL2Op>(loc, dst, lhs, rhs, count);
         copyAscendCUnitAttr(genOp.getOperation(), minOp2.getOperation());
+        vectorWrittenTBufs.insert(dst);
         if (dst == accumLt) valToLt[minOp.getResult()] = accumLt;
       } else if (!isa<arith::ConstantOp>(bodyOp)) {
         // Fail loudly rather than silently emitting a kernel that drops this op.
