@@ -1,9 +1,11 @@
 // RUN: afir-translate -mlir-to-cann %s | FileCheck %s
 
 // CHECK-LABEL: void broadcast_tail_fallback
+// CHECK: AscendC::PipeBarrier<PIPE_ALL>();
 // CHECK: if (_afir_ss[1] == 1u) {
 // CHECK: for (uint32_t _afir_r = 0; _afir_r < _afir_ds[0]; ++_afir_r) {
-// CHECK: auto _afir_v = afir_gm_load<half>(
+// CHECK-NOT: afir_gm_load<half>
+// CHECK: auto _afir_v = {{.*}}.GetValue(_afir_r);
 // CHECK: uint32_t _afir_row_offset = _afir_r * _afir_ds[1];
 // CHECK: if (((_afir_row_offset * sizeof(half)) % 32u) == 0u && ((_afir_ds[1] * sizeof(half)) % 32u) == 0u) {
 // CHECK: for (uint32_t _afir_c = 0; _afir_c < _afir_ds[1]; _afir_c += 1024u) {
@@ -48,9 +50,11 @@ module {
   }
 
 // CHECK-LABEL: void broadcast_full_tile_gm_fallback
+// CHECK: AscendC::PipeBarrier<PIPE_ALL>();
 // CHECK: if (_afir_ss[1] == 1u) {
 // CHECK-NOT: if (_afir_ds[0] < 16u
-// CHECK: auto _afir_v = afir_gm_load<half>(
+// CHECK-NOT: afir_gm_load<half>
+// CHECK: auto _afir_v = {{.*}}.GetValue(_afir_r);
 // CHECK: uint32_t _afir_row_offset = _afir_r * _afir_ds[1];
 // CHECK: if (((_afir_row_offset * sizeof(half)) % 32u) == 0u && ((_afir_ds[1] * sizeof(half)) % 32u) == 0u) {
 // CHECK: for (uint32_t _afir_c = 0; _afir_c < _afir_ds[1]; _afir_c += 1024u) {
