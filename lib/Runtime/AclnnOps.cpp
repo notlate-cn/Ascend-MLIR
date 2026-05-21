@@ -153,10 +153,15 @@ static void sdpa_cpu(const TensorInfo &q, const TensorInfo &k,
   auto idx = [&](int64_t b, int64_t n, int64_t s, int64_t d) {
     return (size_t)((b * N + n) * S * D + s * D + d);
   };
-  auto qf16 = (const uint16_t *)q.data;
-  auto kf16 = (const uint16_t *)k.data;
-  auto vf16 = (const uint16_t *)v.data;
-  auto of16 = (uint16_t *)out->data;
+  // dtype-agnostic element access: 1 = ACL_FLOAT16, 0 = ACL_FLOAT (f32).
+  bool f16 = (q.dtype == 1);
+  auto rd = [&](const void *p, size_t i) -> float {
+    return f16 ? h2f(((const uint16_t *)p)[i]) : ((const float *)p)[i];
+  };
+  auto wr = [&](void *p, size_t i, float val) {
+    if (f16) ((uint16_t *)p)[i] = f2h(val);
+    else ((float *)p)[i] = val;
+  };
 
   std::vector<float> scores((size_t)(S * S));
 
@@ -167,7 +172,7 @@ static void sdpa_cpu(const TensorInfo &q, const TensorInfo &k,
         for (int64_t s2 = 0; s2 < S; ++s2) {
           float dot = 0.f;
           for (int64_t d = 0; d < D; ++d)
-            dot += h2f(qf16[idx(b, n, s1, d)]) * h2f(kf16[idx(b, n, s2, d)]);
+            dot += rd(q.data, idx(b, n, s1, d)) * rd(k.data, idx(b, n, s2, d));
           scores[(size_t)(s1 * S + s2)] = dot * scale;
         }
       // softmax row-wise
@@ -183,8 +188,8 @@ static void sdpa_cpu(const TensorInfo &q, const TensorInfo &k,
         for (int64_t d = 0; d < D; ++d) {
           float acc = 0.f;
           for (int64_t k2 = 0; k2 < S; ++k2)
-            acc += scores[(size_t)(s * S + k2)] * h2f(vf16[idx(b, n, k2, d)]);
-          of16[idx(b, n, s, d)] = f2h(acc);
+            acc += scores[(size_t)(s * S + k2)] * rd(v.data, idx(b, n, k2, d));
+          wr(out->data, idx(b, n, s, d), acc);
         }
     }
   }
