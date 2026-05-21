@@ -9,5 +9,6 @@ class Pass;
 namespace mlir::afir {
 
 std::unique_ptr<Pass> createAclnnFinalizeDeclPass();
+std::unique_ptr<Pass> createRecognizeAttentionPass();
 
 } // namespace mlir::afir

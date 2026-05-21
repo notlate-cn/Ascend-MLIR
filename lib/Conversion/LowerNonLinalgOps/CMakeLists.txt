@@ -1,5 +1,6 @@
 add_mlir_library(LowerNonLinalgOpsConversion
   AclnnFinalizeDeclPass.cpp
+  RecognizeAttentionPass.cpp
 
   ADDITIONAL_HEADER_DIRS
   ${CMAKE_SOURCE_DIR}/include/Conversion
@@ -9,5 +10,8 @@ add_mlir_library(LowerNonLinalgOpsConversion
 
   LINK_LIBS PUBLIC
   MLIRFuncDialect
+  MLIRLinalgDialect
+  MLIRMathDialect
+  MLIRTensorDialect
   MLIRPass
 )

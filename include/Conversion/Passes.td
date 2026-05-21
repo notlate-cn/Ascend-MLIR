@@ -688,6 +688,37 @@ def AutoFuseInsertTileBuffers : Pass<"auto-fuse-insert-tile-buffers", "mlir::fun
 }
 
 //===----------------------------------------------------------------------===//
+// RecognizeAttention
+//===----------------------------------------------------------------------===//
+
+def RecognizeAttention : Pass<"recognize-attention", "mlir::ModuleOp"> {
+  let summary = "Recognize decomposed scaled-dot-product attention and route to aclnn FlashAttentionScore";
+  let description = [{
+    Matches the attention subgraph a transformer encoder lowers to at the linalg
+    level — two `linalg.batch_matmul` with a softmax (a `math.exp`-containing
+    chain) between them:
+
+        bmm1:  Q[BH,S,D] @ K^T[BH,D,S]   -> scores[BH,S,S]
+        softmax(scores)                  -> probs[BH,S,S]
+        bmm2:  probs[BH,S,S] @ V[BH,S,D] -> out[BH,S,D]
+
+    and replaces it with a single `func.call @__aclnn_flash_attention` on BNSD
+    [BH,1,S,D] tensors (Q = bmm1.lhs, K = transpose(bmm1.rhs), V = bmm2.rhs).
+    The scale (1/sqrt(D)) and softmax are recomputed inside FlashAttentionScore,
+    so the matched region is discarded (left dead for DCE).
+
+    The created private decl carries {aclnn.kind = "flash_attention"}, finalized
+    by `aclnn-finalize-decl` (shares the contract with convert-tm-tensor-attention).
+  }];
+  let constructor = "mlir::afir::createRecognizeAttentionPass()";
+  let dependentDialects = [
+    "mlir::func::FuncDialect",
+    "mlir::tensor::TensorDialect",
+    "mlir::linalg::LinalgDialect",
+  ];
+}
+
+//===----------------------------------------------------------------------===//
 // AclnnFinalizeDecl
 //===----------------------------------------------------------------------===//
 
