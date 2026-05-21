@@ -2790,71 +2790,6 @@ static void emitCannKernelPreamble(raw_ostream &os, bool includeMixSupport) {
 //       AscendC::ReduceSum<half,AscendC::AR>($0,$1,_t,_s,false);
 //     }
 //
-struct GmScalarLoadSource {
-  Value baseBuffer;
-  SmallVector<Value> elemOffsets;
-};
-
-static std::optional<GmScalarLoadSource>
-findGlobalTensorSetGlobalBufferSource(Value tensor) {
-  for (Operation *user : tensor.getUsers()) {
-    auto verbatimOp = dyn_cast<emitasc::VerbatimOp>(user);
-    if (verbatimOp && verbatimOp->getNumOperands() >= 2 &&
-        verbatimOp->getOperand(0) == tensor) {
-      GmScalarLoadSource source;
-      source.baseBuffer = verbatimOp->getOperand(1);
-      for (Value offset : verbatimOp->getOperands().drop_front(2))
-        source.elemOffsets.push_back(offset);
-      return source;
-    }
-
-    auto setGlobalBufferOp =
-        dyn_cast<ascendc::GlobalTensorSetGlobalBufferOp>(user);
-    if (setGlobalBufferOp && setGlobalBufferOp.getTensor() == tensor) {
-      GmScalarLoadSource source;
-      source.baseBuffer = peelSourceValue(setGlobalBufferOp.getBuffer());
-      if (Value size = setGlobalBufferOp.getSize())
-        source.elemOffsets.push_back(peelIndexCast(size));
-      return source;
-    }
-  }
-
-  return std::nullopt;
-}
-
-static std::optional<GmScalarLoadSource>
-findQueuedDataCopyGlobalSource(Value tensor) {
-  auto dequeOp = tensor.getDefiningOp<ascendc::TQueBindDequeTensorOp>();
-  if (!dequeOp)
-    return std::nullopt;
-
-  Value queue = dequeOp.getQueue();
-  for (Operation *queueUser : queue.getUsers()) {
-    auto enqueOp = dyn_cast<ascendc::TQueBindEnqueTensorOp>(queueUser);
-    if (!enqueOp || enqueOp.getQueue() != queue)
-      continue;
-
-    Value enqueuedTensor = enqueOp.getTensor();
-    for (Operation *tensorUser : enqueuedTensor.getUsers()) {
-      auto copyOp = dyn_cast<ascendc::DataCopyL2Op>(tensorUser);
-      if (copyOp && copyOp.getDst() == enqueuedTensor &&
-          isa<ascendc::GlobalTensorType>(copyOp.getSrc().getType()))
-        return findGlobalTensorSetGlobalBufferSource(copyOp.getSrc());
-
-      // The GM->local DataCopyL2 pre-lowering may already have replaced the
-      // copy with a verbatim block in this pass. That block keeps operands as
-      // (localDst, globalSrc, count), so preserve the source trace here.
-      auto verbatimOp = dyn_cast<emitasc::VerbatimOp>(tensorUser);
-      if (verbatimOp && verbatimOp->getNumOperands() >= 2 &&
-          verbatimOp->getOperand(0) == enqueuedTensor &&
-          isa<ascendc::GlobalTensorType>(verbatimOp->getOperand(1).getType()))
-        return findGlobalTensorSetGlobalBufferSource(verbatimOp->getOperand(1));
-    }
-  }
-
-  return std::nullopt;
-}
-
 static Value findLocalTensorDataCopyCountBefore(Operation *anchor,
                                                 Value tensor) {
   for (Operation *it = anchor->getPrevNode(); it; it = it->getPrevNode()) {
@@ -3800,21 +3735,12 @@ static void fixBrokenOpEmitters(Operation *moduleOp) {
     auto dstElemType =
         cast<ascendc::LocalTensorType>(op.getDst().getType()).getElementType();
     std::string elemTypeStr = getAscendCScalarTypeName(dstElemType);
-    std::optional<GmScalarLoadSource> gmScalarSource =
-        (rank == 2 && axis == 1) ? findQueuedDataCopyGlobalSource(op.getSrc())
-                                 : std::optional<GmScalarLoadSource>{};
-    if (gmScalarSource) {
-      unsigned gmBaseOperand = 2 + (2 * rank);
-      std::string gmOffsetExpr = "static_cast<uint64_t>(_afir_r)";
-      for (unsigned i = 0, e = gmScalarSource->elemOffsets.size(); i < e; ++i) {
-        gmOffsetExpr =
-            "static_cast<uint64_t>($" + std::to_string(gmBaseOperand + 1 + i) +
-            ") + " + gmOffsetExpr;
-      }
+    bool useColumnBroadcastFallback = (rank == 2 && axis == 1);
+    if (useColumnBroadcastFallback) {
+      tmpl += "  AscendC::PipeBarrier<PIPE_ALL>();\n";
       tmpl += "  if (_afir_ss[1] == 1u) {\n";
       tmpl += "    for (uint32_t _afir_r = 0; _afir_r < _afir_ds[0]; ++_afir_r) {\n";
-      tmpl += "      auto _afir_v = afir_gm_load<" + elemTypeStr + ">($" +
-              std::to_string(gmBaseOperand) + ", " + gmOffsetExpr + ");\n";
+      tmpl += "      auto _afir_v = $1.GetValue(_afir_r);\n";
       tmpl += "      uint32_t _afir_row_offset = _afir_r * _afir_ds[1];\n";
       tmpl += "      if (((_afir_row_offset * sizeof(" + elemTypeStr +
               ")) % 32u) == 0u && ((_afir_ds[1] * sizeof(" + elemTypeStr +
@@ -3862,10 +3788,6 @@ static void fixBrokenOpEmitters(Operation *moduleOp) {
       args.push_back(v);
     for (Value v : op.getSrcShape())
       args.push_back(v);
-    if (gmScalarSource) {
-      args.push_back(gmScalarSource->baseBuffer);
-      llvm::append_range(args, gmScalarSource->elemOffsets);
-    }
 
     rewriter.create<emitasc::VerbatimOp>(
         loc, rewriter.getStringAttr(tmpl), ValueRange(args));
