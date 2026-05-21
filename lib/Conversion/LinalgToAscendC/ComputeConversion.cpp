@@ -156,6 +156,15 @@ void emitLocalTensorZeroPad(OpBuilder &builder, Location loc, Type elemType,
       loc, builder.getStringAttr(body), ValueRange{tensor, begin, end});
 }
 
+Value ceilToMultipleIndex(OpBuilder &builder, Location loc, Value value,
+                          int64_t divisor) {
+  Value divisorValue = builder.create<arith::ConstantIndexOp>(loc, divisor);
+  Value bias = builder.create<arith::ConstantIndexOp>(loc, divisor - 1);
+  Value numerator = builder.create<arith::AddIOp>(loc, value, bias);
+  Value quotient = builder.create<arith::DivUIOp>(loc, numerator, divisorValue);
+  return builder.create<arith::MulIOp>(loc, quotient, divisorValue);
+}
+
 static memref::AllocOp getRootAllocOp(Value value) {
   while (true) {
     if (auto subview = value.getDefiningOp<memref::SubViewOp>()) {
@@ -2807,10 +2816,14 @@ LogicalResult convertCompute(func::FuncOp funcOp, AscendCBufferContext &ctx) {
       // the registered UB buffer.
       unsigned gatherPadElems =
           elemBytes <= 2 ? 256 : (elemBytes <= 4 ? 128 : 64);
+      unsigned gatherChunkElems =
+          elemBytes <= 2 ? 128 : (elemBytes <= 4 ? 64 : 32);
       Value gatherPadElemsVal =
           builder.create<arith::ConstantIndexOp>(loc, gatherPadElems);
       Value paddedDimN =
           builder.create<arith::AddIOp>(loc, dimN, gatherPadElemsVal);
+      Value paddedDimK =
+          ceilToMultipleIndex(builder, loc, dimK, gatherChunkElems);
       Value dataRowQueue = builder.create<QueueOp>(
           loc, QueueType::get(mlirCtx, TPosition::VECIN, 1));
       Value rowBytes = builder.create<arith::MulIOp>(
@@ -2825,7 +2838,7 @@ LogicalResult convertCompute(func::FuncOp funcOp, AscendCBufferContext &ctx) {
       // rejects some VEC reads/writes against VECOUT TBuf slices that the
       // simulator accepts, so rows are copied to VECOUT only after vector work.
       auto gatheredRowAlloc =
-          allocVeccalc(builder, loc, elemType, SmallVector<Value>{dimK});
+          allocVeccalc(builder, loc, elemType, SmallVector<Value>{paddedDimK});
       Value gatheredRowLt = gatheredRowAlloc.second;
       auto gatherSourceRowAlloc =
           allocVeccalc(builder, loc, elemType, SmallVector<Value>{paddedDimN});

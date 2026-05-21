@@ -22,8 +22,13 @@
 // CHECK: %[[N_ELEMS:[0-9]+]] = arith.index_cast %[[N_I64]] : i64 to index
 // CHECK: ascendc.global_tensor.set_global_buffer %{{[0-9]+}}, %arg0
 // CHECK-NEXT: %[[PADDED_N:[0-9]+]] = arith.addi %[[N_ELEMS]], %c256 : index
+// CHECK-NEXT: %[[PADDED_K_ADD:[0-9]+]] = arith.addi %[[K_ELEMS]], %{{.*}} : index
+// CHECK-NEXT: %[[PADDED_K_DIV:[0-9]+]] = arith.divui %[[PADDED_K_ADD]], %{{.*}} : index
+// CHECK-NEXT: %[[PADDED_K:[0-9]+]] = arith.muli %[[PADDED_K_DIV]], %{{.*}} : index
 // CHECK-NEXT: %[[GATHER_ROW_BYTES:[0-9]+]] = arith.muli %[[PADDED_N]], %{{.*}} : index
 // CHECK-NEXT: ascendc.pipe.init_queue
+// CHECK-NEXT: %[[GATHER_DST_BYTES:[0-9]+]] = arith.muli %[[PADDED_K]], %{{.*}} : index
+// CHECK-NEXT: ascendc.pipe.init_buffer
 // CHECK-NEXT: %[[GATHER_ROW_LT:[0-9]+]] = ascendc.tbuf.get_tensor %{{[0-9]+}} : !ascendc.tbuf<veccalc>, !ascendc.local_tensor<*xf16>
 // CHECK: %[[GATHER_SRC_LT:[0-9]+]] = ascendc.tbuf.get_tensor %{{[0-9]+}} : !ascendc.tbuf<veccalc>, !ascendc.local_tensor<*xf16>
 // CHECK: emitasc.reinterpret_cast %arg2

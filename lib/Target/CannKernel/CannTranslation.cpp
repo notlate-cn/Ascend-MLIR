@@ -3956,7 +3956,12 @@ static void fixBrokenOpEmitters(Operation *moduleOp) {
     rewriter.setInsertionPoint(op);
     std::string tmpl = "{\n";
     tmpl += "  uint32_t _afir_gather_count = static_cast<uint32_t>($3);\n";
-    tmpl += "  $0.SetSize(_afir_gather_count);\n";
+    tmpl += "  uint32_t _afir_gather_padded_count = _afir_gather_count == 0u ? 0u : "
+            "((_afir_gather_count + " +
+            std::to_string(maxGatherCount - 1) + "u) / " +
+            std::to_string(maxGatherCount) + "u) * " +
+            std::to_string(maxGatherCount) + "u;\n";
+    tmpl += "  $0.SetSize(_afir_gather_padded_count);\n";
     tmpl += "  $1.SetSize((uint32_t)" + sourceSetSizeExpr + ");\n";
     tmpl += "  for (uint32_t _afir_off = 0; _afir_off < _afir_gather_count; _afir_off += " +
             std::to_string(maxGatherCount) + ") {\n";

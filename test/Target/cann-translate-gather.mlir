@@ -30,7 +30,8 @@
 // CHECK: for (uint32_t _afir_i = 0; _afir_i < _afir_count; ++_afir_i)
 // CHECK: {{v[0-9]+}}.SetValue(_afir_i, _afir_gt.GetValue(_afir_i));
 // CHECK: uint32_t _afir_gather_count = static_cast<uint32_t>({{v[0-9]+}});
-// CHECK: SetSize(_afir_gather_count);
+// CHECK: uint32_t _afir_gather_padded_count = _afir_gather_count == 0u ? 0u : ((_afir_gather_count + 127u) / 128u) * 128u;
+// CHECK: SetSize(_afir_gather_padded_count);
 // CHECK-NOT: $4
 // CHECK: SetSize((uint32_t)
 // CHECK: for (uint32_t _afir_off = 0; _afir_off < _afir_gather_count; _afir_off += 128)
