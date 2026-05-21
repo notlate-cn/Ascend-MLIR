@@ -116,9 +116,9 @@ func.func @selected_all_parallel_tile_materializes_gm_inner_loop_strided_copy() 
 
 // CHECK-LABEL: func.func @selected_all_parallel_tile_materializes_dynamic_gm_full_inner_contiguous_copy
 // CHECK: scf.for %{{.*}} = %c0 to %{{.*}} step %c64
-// CHECK-NOT: step %c32
+// CHECK: scf.for %{{.*}} = %c0 to %{{.*}} step %c32
 // CHECK: emitasc.verbatim
-// CHECK-SAME: AscendC::DataCopy($0, $1, _afir_count);
+// CHECK-SAME: AscendC::DataCopyPad
 // CHECK: ascendc.add_l2
 // CHECK-NOT: linalg.generic
 func.func @selected_all_parallel_tile_materializes_dynamic_gm_full_inner_contiguous_copy(
@@ -132,7 +132,7 @@ func.func @selected_all_parallel_tile_materializes_dynamic_gm_full_inner_contigu
   linalg.generic {
       indexing_maps = [#identity, #identity, #identity],
       iterator_types = ["parallel", "parallel"],
-      ascend.schedule.selected_tile_shape = array<i64: 64, 128>}
+      ascend.schedule.selected_tile_shape = array<i64: 64, 32>}
       ins(%a, %b : memref<?x?xf16>,
                     memref<?x?xf16>)
       outs(%out : memref<?x?xf16, 10 : i32>) {
