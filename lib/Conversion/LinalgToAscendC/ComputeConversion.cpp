@@ -123,6 +123,22 @@ void emitStridedGmToLocalCopy(OpBuilder &builder, Location loc, Type elemType,
       ValueRange{dstLt, srcGt, rows, cols, srcRowStride});
 }
 
+void emitLocalToLocalScalarCopy(OpBuilder &builder, Location loc, Type elemType,
+                                Value dstLt, Value srcLt, Value count) {
+  std::string elemTypeStr = getVerbatimScalarTypeName(elemType);
+  std::string body = "{\n";
+  body += "  AscendC::PipeBarrier<PIPE_ALL>();\n";
+  body += "  uint32_t _afir_count = static_cast<uint32_t>($2);\n";
+  body += "  for (uint32_t _afir_i = 0; _afir_i < _afir_count; ++_afir_i)\n";
+  body += "    $0.SetValue(_afir_i, static_cast<" + elemTypeStr +
+          ">($1.GetValue(_afir_i)));\n";
+  body += "  $0.SetSize(_afir_count);\n";
+  body += "  AscendC::PipeBarrier<PIPE_ALL>();\n";
+  body += "}";
+  builder.create<emitasc::VerbatimOp>(
+      loc, builder.getStringAttr(body), ValueRange{dstLt, srcLt, count});
+}
+
 static memref::AllocOp getRootAllocOp(Value value) {
   while (true) {
     if (auto subview = value.getDefiningOp<memref::SubViewOp>()) {
@@ -2776,6 +2792,16 @@ LogicalResult convertCompute(func::FuncOp funcOp, AscendCBufferContext &ctx) {
       builder.create<TPipeInitQueueOp>(loc, ctx.pipe, dataRowQueue,
                                        dataRowQueueDepth, rowBytes);
 
+      // Gather and post-gather vector ops must run in VECCALC.  Real hardware
+      // rejects some VEC reads/writes against VECOUT TBuf slices that the
+      // simulator accepts, so rows are copied to VECOUT only after vector work.
+      auto gatheredRowAlloc =
+          allocVeccalc(builder, loc, elemType, SmallVector<Value>{dimK});
+      Value gatheredRowLt = gatheredRowAlloc.second;
+      auto gatherSourceRowAlloc =
+          allocVeccalc(builder, loc, elemType, SmallVector<Value>{paddedDimN});
+      Value gatherSourceRowLt = gatherSourceRowAlloc.second;
+
       // Pre-op temporaries are reused for every row. Initializing these TPipe
       // buffers inside the row loop exhausts simulator buffer bookkeeping for
       // larger M even though the loop is sequential.
@@ -2784,7 +2810,7 @@ LogicalResult convertCompute(func::FuncOp funcOp, AscendCBufferContext &ctx) {
       llvm::SmallDenseMap<Value, Value> preInvariantConstLt;
       if (preOp) {
         auto [procTbuf, procLt] =
-            allocVeccalc(builder, loc, elemType, SmallVector<Value>{dimN});
+            allocVeccalc(builder, loc, elemType, SmallVector<Value>{paddedDimN});
         (void)procTbuf;
         preProcessedRowLt = procLt;
         preDimN_i32 =
@@ -2933,6 +2959,10 @@ LogicalResult convertCompute(func::FuncOp funcOp, AscendCBufferContext &ctx) {
                 }
               }
               processedRowLt = procLt;
+            } else {
+              emitLocalToLocalScalarCopy(b, forLoc, elemType,
+                                         gatherSourceRowLt, dataRowLt, dimN);
+              processedRowLt = gatherSourceRowLt;
             }
 
             // Step 2: gather_l2(dst[K], src[N], indices, srcBase=0, count=K)
@@ -2941,7 +2971,6 @@ LogicalResult convertCompute(func::FuncOp funcOp, AscendCBufferContext &ctx) {
             Value dstRowLt = b.create<TBufGetWithOffsetOp>(
                 forLoc, LocalTensorType::get(elemType), outTbuf,
                 dimK, dstByteOff);
-            Value gatheredRowLt = dstRowLt;
             b.create<GatherL2Op>(forLoc, gatheredRowLt, processedRowLt,
                                  indicesLt, srcBaseAddr, dimK_i32);
 
@@ -3118,6 +3147,8 @@ LogicalResult convertCompute(func::FuncOp funcOp, AscendCBufferContext &ctx) {
               }
             }
 
+            emitLocalToLocalScalarCopy(b, forLoc, elemType, dstRowLt,
+                                       gatheredRowLt, dimK);
             b.create<TQueBindFreeTensorOp>(forLoc, dataRowQueue, dataRowLt);
             b.create<scf::YieldOp>(forLoc);
           });
