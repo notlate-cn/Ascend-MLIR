@@ -768,7 +768,8 @@ LogicalResult convertCompute(func::FuncOp funcOp, AscendCBufferContext &ctx) {
         builder.create<GlobalTensorSetGlobalBufferOp>(loc, srcGt, inMemref,
                                                        /*size=*/Value{});
         Value srcLt =
-            copyGmToVecin(builder, loc, elemType, srcGt, srcElemCount);
+            copyGmToVecin(builder, loc, elemType, srcGt, srcElemCount,
+                          /*bufferElemCount=*/Value{}, &vecinFrees);
         SmallVector<Value> dstShapeVals, srcShapeVals;
         for (Value s : fullShape)
           dstShapeVals.push_back(
@@ -832,11 +833,18 @@ LogicalResult convertCompute(func::FuncOp funcOp, AscendCBufferContext &ctx) {
           auto [deq, q] = copyGmToVecinStrided(initB, builder, loc, elemType,
                                                srcGt, rows, cols, rowStride);
           inputLts[i] = deq;
-          if (hoist)
-            vecinFrees.push_back({q, deq});
+          // The per-trip AllocTensor comes from a depth-1 VECIN queue, so it
+          // MUST be freed after use regardless of whether InitBuffer/InitQueue
+          // were hoisted — otherwise the next loop trip's AllocTensor dead-locks
+          // on the unfreed buffer (camodel sim hangs indefinitely; real HW too).
+          // This is the multi-r-noncontig / full-reduce peeled-outer-R path,
+          // where `hoist` is false.  emitVecinFrees() emits the free in-loop
+          // after the reduce consumes the tile.
+          vecinFrees.push_back({q, deq});
         } else {
           inputLts[i] =
-              copyGmToVecin(builder, loc, elemType, srcGt, totalElems);
+              copyGmToVecin(builder, loc, elemType, srcGt, totalElems,
+                            /*bufferElemCount=*/Value{}, &vecinFrees);
         }
       } else {
         // Already VECIN or VECCALC — use readTensor as-is.
