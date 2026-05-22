@@ -7,8 +7,10 @@
 #include "OpRoleClassification.h"
 
 #include "KernelizeTypes.h"
+#include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/BuiltinOps.h"
+#include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/MLIRContext.h"
 #include "mlir/IR/Operation.h"
 #include "mlir/Support/LogicalResult.h"
@@ -47,12 +49,48 @@ void sortByPriority(SmallVectorImpl<OpRole> &roles) {
   roles.assign(sorted.begin(), sorted.end());
 }
 
-void appendComputeRoles(AccessPatternKind accessPattern,
+bool isCubeContractionInputType(Type type) {
+  return type.isF16() || type.isBF16();
+}
+
+bool isCubeContractionOutputType(Type type) {
+  return type.isF16() || type.isBF16() || type.isF32();
+}
+
+bool supportsCubeContractionDtypes(Operation *op) {
+  auto linalgOp = dyn_cast<linalg::LinalgOp>(op);
+  if (!linalgOp)
+    return true;
+
+  bool sawInput = false;
+  for (Value input : linalgOp.getDpsInputs()) {
+    auto shaped = dyn_cast<ShapedType>(input.getType());
+    if (!shaped)
+      continue;
+    sawInput = true;
+    if (!isCubeContractionInputType(shaped.getElementType()))
+      return false;
+  }
+
+  for (Value init : linalgOp.getDpsInits()) {
+    auto shaped = dyn_cast<ShapedType>(init.getType());
+    if (shaped && !isCubeContractionOutputType(shaped.getElementType()))
+      return false;
+  }
+
+  return sawInput;
+}
+
+void appendComputeRoles(Operation *op, AccessPatternKind accessPattern,
                         SmallVectorImpl<OpRole> &roles) {
   switch (accessPattern) {
   case AccessPatternKind::Contraction:
     appendRole(roles, OpRole::Primary);
-    appendRole(roles, OpRole::Cube);
+    if (supportsCubeContractionDtypes(op)) {
+      appendRole(roles, OpRole::Cube);
+      return;
+    }
+    appendRole(roles, OpRole::Vector);
     return;
   case AccessPatternKind::Reduction:
     appendRole(roles, OpRole::Reduction);
@@ -126,7 +164,7 @@ OpRoleClassifier::classify(const DependencyAnalysisResult &deps) const {
       return failure();
 
     OpRoleList roles;
-    appendComputeRoles(summaryIt->second.accessPattern, roles);
+    appendComputeRoles(op, summaryIt->second.accessPattern, roles);
 
     if (hasTrueBoolAttr(op, kBranchRootAttr) ||
         hasIntegerAttr(op, kBranchGroupAttr))

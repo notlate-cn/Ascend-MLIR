@@ -100,25 +100,39 @@ bool appendUniqueFamily(ScheduleContract &contract, StringRef family) {
   return true;
 }
 
+bool isFamilyCompatibleWithRoles(StringRef family, ArrayRef<OpRole> roles) {
+  if (family == kOpRoleCube)
+    return hasRole(roles, OpRole::Cube);
+  if (family == kOpRoleReduction)
+    return hasRole(roles, OpRole::Reduction);
+  if (family == kOpRoleVector)
+    return hasRole(roles, OpRole::Vector);
+  return true;
+}
+
 bool appendPreferredFamilies(Operation *op, const DependencyAnalysisResult &deps,
+                             ArrayRef<OpRole> roles,
                              ScheduleContract &contract) {
   auto summaryIt = deps.summaries.find(op);
   if (summaryIt == deps.summaries.end())
     return false;
 
   bool foundFamily = false;
-  for (StringRef family : summaryIt->second.preferredTemplateFamilies)
+  for (StringRef family : summaryIt->second.preferredTemplateFamilies) {
+    if (!isFamilyCompatibleWithRoles(family, roles))
+      continue;
     foundFamily |= appendUniqueFamily(contract, family);
+  }
   return foundFamily;
 }
 
 bool appendPrimaryFamily(Operation *op, const DependencyAnalysisResult &deps,
                          const OpRoleMap &roleMap,
                          ScheduleContract &contract) {
-  if (appendPreferredFamilies(op, deps, contract))
+  ArrayRef<OpRole> roles = getRoles(roleMap, op);
+  if (appendPreferredFamilies(op, deps, roles, contract))
     return true;
 
-  ArrayRef<OpRole> roles = getRoles(roleMap, op);
   if (hasRole(roles, OpRole::Cube)) {
     appendUniqueFamily(contract, kOpRoleCube);
     return true;

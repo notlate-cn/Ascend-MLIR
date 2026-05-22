@@ -11,6 +11,25 @@
 #include "llvm/Support/raw_ostream.h"
 
 namespace mlir::afir::ascend::backend {
+namespace {
+
+bool isGenericFloatDtype(mlir::Type t) {
+  return t.isF32() || t.isF16() || t.isBF16();
+}
+
+bool isCubeMatmulInputDtype(mlir::Type t) {
+  return t.isF16() || t.isBF16();
+}
+
+bool isCubeMatmulOutputDtype(mlir::Type t) {
+  return t.isF16() || t.isBF16() || t.isF32();
+}
+
+bool isMatmulKind(ComputeKind kind) {
+  return kind == ComputeKind::Matmul || kind == ComputeKind::BatchMatmul;
+}
+
+} // namespace
 
 MemorySpace parseMemorySpace(int64_t value) {
   switch (value) {
@@ -198,13 +217,18 @@ UnsupportedReason AscendBackendSupportMatrix::explainComputeKind(
 }
 
 bool AscendBackendSupportMatrix::isSupportedDtype(
-    ComputeKind /*kind*/, mlir::ArrayRef<mlir::Type> inputTypes,
+    ComputeKind kind, mlir::ArrayRef<mlir::Type> inputTypes,
     mlir::ArrayRef<mlir::Type> outputTypes) const {
-  auto ok = [](mlir::Type t) { return t.isF32() || t.isF16() || t.isBF16(); };
+  auto inputOk = isMatmulKind(kind) ? isCubeMatmulInputDtype
+                                    : isGenericFloatDtype;
+  auto outputOk = isMatmulKind(kind) ? isCubeMatmulOutputDtype
+                                     : isGenericFloatDtype;
   for (mlir::Type t : inputTypes)
-    if (!ok(t)) return false;
+    if (!inputOk(t))
+      return false;
   for (mlir::Type t : outputTypes)
-    if (!ok(t)) return false;
+    if (!outputOk(t))
+      return false;
   return true;
 }
 
@@ -213,9 +237,12 @@ UnsupportedReason AscendBackendSupportMatrix::explainDtype(
     mlir::ArrayRef<mlir::Type> outputTypes) const {
   if (isSupportedDtype(kind, inputTypes, outputTypes))
     return {"dtype", ""};
-  auto ok = [](mlir::Type t) { return t.isF32() || t.isF16() || t.isBF16(); };
+  auto inputOk = isMatmulKind(kind) ? isCubeMatmulInputDtype
+                                    : isGenericFloatDtype;
+  auto outputOk = isMatmulKind(kind) ? isCubeMatmulOutputDtype
+                                     : isGenericFloatDtype;
   for (mlir::Type t : inputTypes) {
-    if (!ok(t)) {
+    if (!inputOk(t)) {
       std::string detail;
       llvm::raw_string_ostream os(detail);
       os << "unsupported input dtype for " << stringifyComputeKind(kind)
@@ -224,7 +251,7 @@ UnsupportedReason AscendBackendSupportMatrix::explainDtype(
     }
   }
   for (mlir::Type t : outputTypes) {
-    if (!ok(t)) {
+    if (!outputOk(t)) {
       std::string detail;
       llvm::raw_string_ostream os(detail);
       os << "unsupported output dtype for " << stringifyComputeKind(kind)

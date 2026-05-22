@@ -611,22 +611,23 @@ static LogicalResult prepareFunc(func::FuncOp func) {
     return ofr.get<Value>();
   };
 
-  // Helper: walk up a chain of subview ops to find the root BlockArgument,
+  // Helper: walk up a chain of subview ops to find the root GM value,
   // accumulating a 1D flat offset along the way.  Returns null if the chain
-  // does not terminate at a BlockArgument, or if any subview has rank > 1
-  // and cannot be reduced to a 1D offset here (2D handled separately below).
+  // does not terminate at a BlockArgument or memref.get_global, or if any
+  // subview has rank > 1 and cannot be reduced to a 1D offset here (2D handled
+  // separately below).
   auto resolveSubviewChain1D =
       [&](memref::SubViewOp leaf, OpBuilder &b,
-          Location loc) -> std::pair<BlockArgument, Value> {
+          Location loc) -> std::pair<Value, Value> {
     Value accOffset = b.create<arith::ConstantIndexOp>(loc, 0);
     Value cur = leaf.getResult();
     while (true) {
       auto sv = cur.getDefiningOp<memref::SubViewOp>();
       if (!sv)
-        return {BlockArgument{}, Value{}};
+        return {Value{}, Value{}};
       SmallVector<OpFoldResult> offs = sv.getMixedOffsets();
       if (offs.size() != 1)
-        return {BlockArgument{}, Value{}}; // not 1D, give up
+        return {Value{}, Value{}}; // not 1D, give up
       Value off = materializeOffset(b, loc, offs[0]);
       accOffset = b.create<arith::AddIOp>(loc, accOffset, off);
       Value src = sv.getSource();
@@ -635,6 +636,8 @@ static LogicalResult prepareFunc(func::FuncOp func) {
         src = castOp.getSource();
       if (auto ba = dyn_cast<BlockArgument>(src))
         return {ba, accOffset};
+      if (src.getDefiningOp<memref::GetGlobalOp>())
+        return {src, accOffset};
       cur = src; // continue up the chain
     }
   };
@@ -656,7 +659,7 @@ static LogicalResult prepareFunc(func::FuncOp func) {
     OpBuilder b(sgbOp);
     Location loc = sgbOp.getLoc();
 
-    BlockArgument baseArg;
+    Value baseMemref;
     Value flatOffset;
 
     SmallVector<OpFoldResult> mixedOffsets = subview.getMixedOffsets();
@@ -668,6 +671,7 @@ static LogicalResult prepareFunc(func::FuncOp func) {
       Value accRow = b.create<arith::ConstantIndexOp>(loc, 0);
       Value accCol = b.create<arith::ConstantIndexOp>(loc, 0);
       Value cur = subview.getResult();
+      BlockArgument baseArg;
       bool ok = true;
       while (true) {
         auto sv = cur.getDefiningOp<memref::SubViewOp>();
@@ -696,6 +700,7 @@ static LogicalResult prepareFunc(func::FuncOp func) {
       }
       if (!ok || !baseArg)
         continue;
+      baseMemref = baseArg;
       // Get col stride: prefer pre-collected tiling field (cheaper), fall back
       // to the dynamic size captured during alloc promotion in step 7a (needed
       // for allocs promoted after the dim-collection phase, which have no
@@ -722,22 +727,22 @@ static LogicalResult prepareFunc(func::FuncOp func) {
       flatOffset = b.create<arith::AddIOp>(loc, rowTimesStride, accCol);
     } else {
       // ── 1D case: walk the subview chain ──────────────────────────────────
-      auto [ba, acc] = resolveSubviewChain1D(subview, b, loc);
-      if (!ba)
+      auto [base, acc] = resolveSubviewChain1D(subview, b, loc);
+      if (!base)
         continue;
-      baseArg = ba;
+      baseMemref = base;
       flatOffset = acc;
     }
 
     Value flatOffsetI32 = b.create<arith::IndexCastOp>(loc, i32Ty, flatOffset);
 
     // Cast base memref to flat GM pointer: memref<?xElem, 22>.
-    auto baseMemRefTy = cast<MemRefType>(baseArg.getType());
+    auto baseMemRefTy = cast<MemRefType>(baseMemref.getType());
     Type elemTy = baseMemRefTy.getElementType();
     auto flatTy = MemRefType::get(
         {ShapedType::kDynamic}, elemTy, MemRefLayoutAttrInterface{},
         IntegerAttr::get(IntegerType::get(ctx, 32), kGMSpace));
-    Value flatBase = b.create<emitasc::ReinterpretCastOp>(loc, flatTy, baseArg);
+    Value flatBase = b.create<emitasc::ReinterpretCastOp>(loc, flatTy, baseMemref);
 
     b.create<ascendc::GlobalTensorSetGlobalBufferOp>(
         loc, sgbOp.getTensor(), flatBase, flatOffsetI32);
