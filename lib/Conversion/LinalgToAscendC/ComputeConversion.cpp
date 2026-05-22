@@ -87,9 +87,23 @@ LogicalResult convertCompute(func::FuncOp funcOp, AscendCBufferContext &ctx) {
     if (!subviewOp)
       return Value{};
     SmallVector<OpFoldResult> mixedSizes = subviewOp.getMixedSizes();
-    if (dim >= mixedSizes.size())
+    // `dim` indexes the (possibly rank-reduced) RESULT; mixedSizes is indexed by
+    // SOURCE rank.  For a rank-reducing subview (e.g. peel-outer-R's
+    // x[1, a_tile, R2] -> [a_tile, R2]) the dropped unit dims must be skipped so
+    // result dim d maps to the d-th kept source dim — otherwise the reduction
+    // extent (R2) is read as the dropped unit size and the reduce degenerates.
+    llvm::SmallBitVector dropped = subviewOp.getDroppedDims();
+    unsigned srcDim = 0, kept = 0;
+    for (; srcDim < mixedSizes.size(); ++srcDim) {
+      if (dropped[srcDim])
+        continue;
+      if (kept == dim)
+        break;
+      ++kept;
+    }
+    if (srcDim >= mixedSizes.size())
       return Value{};
-    OpFoldResult size = mixedSizes[dim];
+    OpFoldResult size = mixedSizes[srcDim];
     if (auto attr = size.dyn_cast<Attribute>())
       return b.create<arith::ConstantIndexOp>(loc,
                                               cast<IntegerAttr>(attr).getInt());
