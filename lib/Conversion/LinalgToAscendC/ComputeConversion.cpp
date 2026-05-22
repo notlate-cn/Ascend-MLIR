@@ -2089,11 +2089,31 @@ LogicalResult convertCompute(func::FuncOp funcOp, AscendCBufferContext &ctx) {
     // AscendCBufferPlacement is converted by DataMoveConversion into a
     // data_copy_l2 with the correct subview offset, so the Concat position
     // is preserved automatically. We just need to enqueue the result tensor.
+    // Resolve the yielded value to its tensor.  A pure copy / broadcast body
+    // yields a block argument (an input) directly: the result lives in that
+    // input's promoted tensor (e.g. the BroadcastL2 destination), NOT in
+    // accumLt — the empty body never wrote accumLt, so enqueueing accumLt would
+    // emit an all-zero output (the leading-axis weight-broadcast bug).  A
+    // compute body yields a value in valToLt (== accumLt), so this is a no-op
+    // for that case.
+    Value resultLt = accumLt;
+    if (auto yieldOp = dyn_cast<linalg::YieldOp>(bodyBlock.getTerminator())) {
+      if (yieldOp.getNumOperands() == 1) {
+        Value yielded = yieldOp.getOperand(0);
+        if (auto ba = dyn_cast<BlockArgument>(yielded)) {
+          if (ba.getArgNumber() < numInputs)
+            resultLt = inputLts[ba.getArgNumber()];
+        } else if (auto it = valToLt.find(yielded); it != valToLt.end()) {
+          resultLt = it->second;
+        }
+      }
+    }
+
     if (outQueue) {
       // The queue expects a tensor allocated from the same queue.  Real
       // hardware is stricter than the simulator here; enqueueing a VECCALC
       // tbuf tensor into a VECOUT queue can surface as UB/MTE faults.
-      builder.create<TQueBindEnqueTensorOp>(loc, outQueue, accumLt);
+      builder.create<TQueBindEnqueTensorOp>(loc, outQueue, resultLt);
     }
     freeTempVecinTensors(builder, loc, tempVecinTensors);
     // If outMemref has no queue (VECCALC alloc without a queue), the result
