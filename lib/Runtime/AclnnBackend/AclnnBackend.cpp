@@ -271,12 +271,25 @@ private:
       // All results share one TensorInfo (aclnn ops return a single tensor).
       std::string resName = fresh();
       os_ << "  TensorInfo " << resName << ";\n";
-      os_ << "  run_" << opAttr.getValue() << "(";
-      for (auto [i, arg] : llvm::enumerate(callOp.getOperands())) {
-        if (i) os_ << ", ";
-        os_ << nameOf(arg);
+      if (opAttr.getValue() == "Transpose") {
+        // Transpose carries its permutation as an attribute; run_Transpose needs
+        // it (the shapes alone don't determine the axis order).
+        auto perm = callee->getAttrOfType<DenseI64ArrayAttr>("aclnn.perm");
+        std::string pn = fresh();
+        os_ << "  static const int64_t " << pn << "[] = {";
+        for (int i = 0; i < (int)perm.size(); ++i)
+          os_ << (i ? "," : "") << perm[i];
+        os_ << "};\n";
+        os_ << "  run_Transpose(" << nameOf(callOp.getOperand(0)) << ", " << pn
+            << ", " << perm.size() << ", &" << resName << ", stream);\n";
+      } else {
+        os_ << "  run_" << opAttr.getValue() << "(";
+        for (auto [i, arg] : llvm::enumerate(callOp.getOperands())) {
+          if (i) os_ << ", ";
+          os_ << nameOf(arg);
+        }
+        os_ << ", &" << resName << ", stream);\n";
       }
-      os_ << ", &" << resName << ", stream);\n";
       for (auto res : callOp.getResults())
         names_[res] = resName;
       return;

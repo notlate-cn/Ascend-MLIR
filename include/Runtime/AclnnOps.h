@@ -77,4 +77,14 @@ void run_LayerNorm(
     TensorInfo *out, // allocated + written by this call
     aclrtStream stream);
 
+// CPU-reference Transpose (aclnn-fallback; the AscendC transpose codegen is
+// unreliable).  out[i] = in[j] where j[perm[d]] = i[d], i.e. out shape =
+// permute(in shape, perm).  perm has `rank` entries.  Host-mode only.
+void run_Transpose(
+    TensorInfo in,
+    const int64_t *perm,
+    int rank,
+    TensorInfo *out, // allocated + written by this call
+    aclrtStream stream);
+
 } // namespace mlir::runtime::aclnn

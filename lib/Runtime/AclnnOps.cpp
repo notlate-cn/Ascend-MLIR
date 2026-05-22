@@ -413,4 +413,56 @@ void run_LayerNorm(TensorInfo x, TensorInfo gamma, TensorInfo beta,
   layernorm_cpu(x, gamma, beta, out);
 }
 
+// ---------------------------------------------------------------------------
+// Transpose CPU reference: out[i] = in[j], j[perm[d]] = i[d].
+//   out.shape[d] = in.shape[perm[d]]
+// ---------------------------------------------------------------------------
+static void transpose_cpu(const TensorInfo &in, const int64_t *perm, int rank,
+                          TensorInfo *out) {
+  TensorInfo tmpl = in;
+  tmpl.rank = rank;
+  for (int d = 0; d < rank; ++d)
+    tmpl.shape[d] = in.shape[perm[d]];
+  allocTensorLike(tmpl, out);
+
+  int64_t inStride[8];
+  inStride[rank - 1] = 1;
+  for (int d = rank - 2; d >= 0; --d)
+    inStride[d] = inStride[d + 1] * in.shape[d + 1];
+
+  int64_t total = 1;
+  for (int d = 0; d < rank; ++d)
+    total *= tmpl.shape[d];
+
+  bool f16 = (in.dtype == 1);
+  auto rd = [&](size_t i) -> float {
+    return f16 ? h2f(((const uint16_t *)in.data)[i])
+               : ((const float *)in.data)[i];
+  };
+  auto wr = [&](size_t i, float v) {
+    if (f16) ((uint16_t *)out->data)[i] = f2h(v);
+    else ((float *)out->data)[i] = v;
+  };
+
+  int64_t idx[8] = {0};
+  for (int64_t o = 0; o < total; ++o) {
+    size_t s = 0;
+    for (int d = 0; d < rank; ++d)
+      s += (size_t)idx[d] * (size_t)inStride[perm[d]];
+    wr((size_t)o, rd(s));
+    for (int d = rank - 1; d >= 0; --d) {
+      if (++idx[d] < tmpl.shape[d])
+        break;
+      idx[d] = 0;
+    }
+  }
+}
+
+void run_Transpose(TensorInfo in, const int64_t *perm, int rank,
+                   TensorInfo *out, aclrtStream /*stream*/) {
+  assert(g_host_mode &&
+         "run_Transpose: only the host-mode CPU reference is implemented");
+  transpose_cpu(in, perm, rank, out);
+}
+
 } // namespace mlir::runtime::aclnn

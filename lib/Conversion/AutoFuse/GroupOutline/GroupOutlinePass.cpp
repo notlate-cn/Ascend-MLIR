@@ -244,6 +244,19 @@ static func::FuncOp outlineGroup(OpBuilder &builder, ModuleOp module,
       kernelFunc->setAttr("aclnn.op", StringAttr::get(ctx, "Matmul"));
   }
 
+  // aclnn fallback: route a standalone transpose to the aclnn CPU-reference
+  // permute (the AscendC transpose codegen is unreliable; CanFuse keeps every
+  // transpose a singleton group). Stamp aclnn.op="Transpose" + aclnn.perm so
+  // emitNetworkJson tags it kind=aclnn and the host emits run_Transpose(perm).
+  if (info.topoMembers.size() == 1) {
+    linalg::LinalgOp tmember = info.topoMembers.front();
+    if (auto t = dyn_cast<linalg::TransposeOp>(tmember.getOperation())) {
+      kernelFunc->setAttr("aclnn.op", StringAttr::get(ctx, "Transpose"));
+      kernelFunc->setAttr("aclnn.perm",
+                          builder.getDenseI64ArrayAttr(t.getPermutation()));
+    }
+  }
+
   // Rematerialize ConstantLike operands inside the kernel (they were excluded
   // from boundaryIn).  Clone each referenced constant once and map it so the
   // member clones below pick up the in-kernel constant instead of a dangling

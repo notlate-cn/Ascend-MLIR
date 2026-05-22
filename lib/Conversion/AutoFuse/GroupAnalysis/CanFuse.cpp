@@ -61,6 +61,19 @@ static bool hasSSAEdge(const FusionGroup &g1, const FusionGroup &g2) {
 //===----------------------------------------------------------------------===//
 
 FusionKind getFusionKind(const FusionGroup &g1, const FusionGroup &g2) {
+  // Transpose is routed to the aclnn single-op fallback (the AscendC transpose
+  // codegen is unreliable across perm/shape/tiling — value-transpose intrinsic
+  // mis-handles tail-preserving perms and has fractal/tile-size bugs). Keep
+  // every transpose as its own singleton group so it never fuses; GroupOutline
+  // stamps it aclnn.op="Transpose" and the host runs run_Transpose.
+  auto hasTranspose = [](const FusionGroup &g) {
+    return llvm::any_of(g.members, [](linalg::LinalgOp op) {
+      return isa<linalg::TransposeOp>(op.getOperation());
+    });
+  };
+  if (hasTranspose(g1) || hasTranspose(g2))
+    return FusionKind::None;
+
   // Vertical: SSA edge exists between the two groups
   if (hasSSAEdge(g1, g2))
     return FusionKind::Vertical;
