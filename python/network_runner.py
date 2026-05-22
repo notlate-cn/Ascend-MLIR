@@ -651,7 +651,21 @@ def phase4_autotune(work, network, inter, args):
             "--atol", str(args.atol),
             "--rtol", str(args.rtol),
         ]
-        run(cmd)
+        try:
+            run(cmd)
+        except subprocess.CalledProcessError:
+            # The autotuner found no passing/profilable config for this kernel
+            # (e.g. its search space excludes the one that works). The phase-3
+            # default tiling is already verified correct, so fall back to it
+            # rather than aborting the whole network for one untunable kernel.
+            default_tilings = json.loads(
+                (work / "tilings_default.json").read_text())
+            if default_vkid in default_tilings:
+                tilings_best[default_vkid] = default_tilings[default_vkid]
+                print(f"phase 4: {kid} autotune found no config → "
+                      f"falling back to default tiling")
+                continue
+            raise
 
         bc = json.loads(best_path.read_text())
         params = dict(bc.get("config", {}))
