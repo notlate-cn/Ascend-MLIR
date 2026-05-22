@@ -1,7 +1,9 @@
 // RUN: afir-opt %s --ascend-compute-lower | FileCheck %s
 
 // CHECK-LABEL: func.func @named_rank2_leading_swap_gm
-// CHECK: ascendc.data_copy_l2
+// CHECK: scf.for %{{.*}} = %c0 to %c128 step %c32
+// CHECK: emitasc.verbatim
+// CHECK-SAME: DataCopyPad($0, _afir_src
 // CHECK: ascendc.transpose
 // CHECK: ascendc.data_copy_l2
 // CHECK-NOT: memref.load
@@ -33,6 +35,23 @@ func.func @named_rank2_leading_swap_gm_selected_tile(
       {ascend.schedule.selected_tile_shape = array<i64: 32, 384>}
       ins(%src : memref<384x128xf32>)
       outs(%dst : memref<128x384xf32>)
+      permutation = [1, 0]
+  return
+}
+
+// CHECK-LABEL: func.func @named_rank2_large_static_gm_auto_tile
+// CHECK: scf.for %{{.*}} = %c0 to %c512 step %c96
+// CHECK: ascendc.global_tensor.set_global_buffer %{{.*}}, %arg0
+// CHECK: emitasc.verbatim
+// CHECK-SAME: DataCopyPad($0, _afir_src
+// CHECK: ascendc.transpose
+// CHECK: ascendc.global_tensor.set_global_buffer %{{.*}}, %arg1
+// CHECK-NOT: linalg.transpose
+func.func @named_rank2_large_static_gm_auto_tile(
+    %src: memref<128x512xf32>,
+    %dst: memref<512x128xf32>) {
+  linalg.transpose ins(%src : memref<128x512xf32>)
+      outs(%dst : memref<512x128xf32>)
       permutation = [1, 0]
   return
 }

@@ -1696,9 +1696,7 @@ LogicalResult materializeSelectedTransposeTiles(func::FuncOp funcOp) {
   funcOp.walk([&](linalg::TransposeOp op) {
     if (op->getParentOfType<scf::ForOp>())
       return;
-    if (op->getAttrOfType<DenseI64ArrayAttr>(
-            ascend::kScheduleSelectedTileShapeAttr))
-      candidates.push_back(op);
+    candidates.push_back(op);
   });
 
   for (linalg::TransposeOp transposeOp : candidates) {
@@ -1721,18 +1719,39 @@ LogicalResult materializeSelectedTransposeTiles(func::FuncOp funcOp) {
 
     auto selectedTile = transposeOp->getAttrOfType<DenseI64ArrayAttr>(
         ascend::kScheduleSelectedTileShapeAttr);
-    if (!selectedTile || selectedTile.asArrayRef().size() < 2)
-      return transposeOp.emitError("selected rank-2 transpose tile requires "
-                                   "at least two dimensions");
-
-    int64_t tileRows = selectedTile.asArrayRef()[0];
-    int64_t tileCols = selectedTile.asArrayRef()[1];
-    if (ShapedType::isDynamic(tileRows) || tileRows <= 0)
-      return transposeOp.emitError("selected transpose tile requires a static "
-                                   "positive outer tile");
-    if (ShapedType::isDynamic(tileCols) || tileCols <= 0)
-      return transposeOp.emitError("selected transpose tile requires a static "
-                                   "positive inner tile");
+    int64_t tileRows = ShapedType::kDynamic;
+    int64_t tileCols = ShapedType::kDynamic;
+    if (selectedTile) {
+      if (selectedTile.asArrayRef().size() < 2)
+        return transposeOp.emitError("selected rank-2 transpose tile requires "
+                                     "at least two dimensions");
+      tileRows = selectedTile.asArrayRef()[0];
+      tileCols = selectedTile.asArrayRef()[1];
+      if (ShapedType::isDynamic(tileRows) || tileRows <= 0)
+        return transposeOp.emitError(
+            "selected transpose tile requires a static positive outer tile");
+      if (ShapedType::isDynamic(tileCols) || tileCols <= 0)
+        return transposeOp.emitError(
+            "selected transpose tile requires a static positive inner tile");
+    } else {
+      ArrayRef<int64_t> outShape = outType.getShape();
+      if (ShapedType::isDynamic(outShape[0]) ||
+          ShapedType::isDynamic(outShape[1]))
+        continue;
+      unsigned elemBits = outType.getElementTypeBitWidth();
+      if (elemBits == 0 || elemBits % 8 != 0)
+        continue;
+      int64_t elemBytes = static_cast<int64_t>(elemBits / 8);
+      constexpr int64_t kTransposeBufferBudgetBytes = 48 * 1024;
+      int64_t fullBytes = outShape[0] * outShape[1] * elemBytes;
+      if (fullBytes <= kTransposeBufferBudgetBytes)
+        continue;
+      tileCols = outShape[1];
+      tileRows =
+          std::max<int64_t>(1, kTransposeBufferBudgetBytes /
+                                   std::max<int64_t>(1, tileCols * elemBytes));
+      tileRows = std::min(tileRows, outShape[0]);
+    }
 
     if (ShapedType::isDynamic(outType.getShape()[1]) ||
         tileCols != outType.getShape()[1])
@@ -1780,7 +1799,8 @@ LogicalResult materializeSelectedTransposeTiles(func::FuncOp funcOp) {
     mapper.map(inMemref, inputTile);
     mapper.map(outMemref, outputTile);
     Operation *cloned = bodyBuilder.clone(*transposeOp, mapper);
-    cloned->removeAttr(ascend::kScheduleSelectedTileShapeAttr);
+    if (selectedTile)
+      cloned->removeAttr(ascend::kScheduleSelectedTileShapeAttr);
     transposeOp.erase();
   }
 
