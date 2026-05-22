@@ -267,3 +267,31 @@ NEXT options: (1) fix the leading-broadcast codegen (high leverage, 3+ sites);
 weight (removes group2/20/26 entirely). Repro: zero-scan
 `/tmp/enc_e2e/intermediates_default/*_out_0.npy`; group2 cpp shows broadcast_l2
 + emitasc.verbatim replicate loop.
+
+## ✅ ENCODER PASSES — full e2e numerical correctness (2026-05-22)
+The single-layer transformer encoder now completes the full 5-phase
+network_runner pipeline on camodel sim and **PASSES**:
+`network.output[0] max_diff=7.15e-07` (atol/rtol 1e-2). max_diff arc:
+0.98 → 0.31 → 7e-7. Three codegen fixes (chosen to stay within AF-codegen /
+aclnn-direct paradigms, no new mechanism) + one runner robustness fix:
+1. `9234f508` — pure copy/broadcast generic wrote an empty (all-zero) output:
+   Step-3 enqueued accumLt which the no-arith body never wrote; now resolve the
+   yielded value (block-arg input → its promoted/broadcast tensor). Fixed the
+   leading weight-broadcasts (group2/20/26) → 0.98→0.31.
+2. `15e357b0` — rank-N strided GM↔VECIN copy: an elementwise tiled on an inner
+   axis (bias-add over [8,2,192] tiled on 192) has rank-3 column-slice subviews;
+   the load/store only handled rank-2 row-strided → flat copy read/wrote across
+   rows (wrong tail, masked to ~0.3 by the downstream LayerNorm). Generalized
+   isMaybeRowStrided2D→ND (flatten contiguous-nested outer dims to rows).
+   0.31→7e-7.
+3. `182697d4` — phase-4 autotuner falls back to the (verified-correct) default
+   tiling when it finds no passing config for a kernel (group2/group18 candidate
+   tilings hit camodel div-by-0 during the search) instead of aborting.
+Plus the earlier transpose→aclnn (`16909f00`), attention/layernorm→aclnn, and
+host-gen completeness (`3c753cb`). Repro: gen ref `/tmp/gen_encoder_ref.py`, then
+network_runner (see env above) — phases 1-5 all OK, output PASS.
+
+REMAINING (not blocking correctness): the broadcast/elementwise codegen still has
+latent autotuner-config fragility (div-by-0 for some tilings) and transpose
+fusion is disabled (transpose→aclnn). Future: re-enable transpose fusion via AF
+"eliminate transpose"; harden broadcast tiling search.
