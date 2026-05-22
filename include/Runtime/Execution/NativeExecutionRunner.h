@@ -5,7 +5,7 @@
 
 #include <cstdint>
 #include <string>
-#include <unordered_map>
+#include <utility>
 #include <vector>
 
 namespace mlir::runtime {
@@ -31,11 +31,12 @@ private:
   void freeAll();
   llvm::Error hostToDevice(void *dst, const void *src, size_t nbytes);
   llvm::Error deviceToHost(void *dst, const void *src, size_t nbytes);
-  llvm::Expected<void *> registerBinary(const std::string &binaryPath,
-                                        const std::string &functionName,
-                                        uint32_t magic);
+  llvm::Expected<std::pair<void *, void *>>
+  registerBinary(const std::string &binaryPath,
+                 const std::string &functionName, uint32_t magic);
   llvm::Error runWithHandle(void *funcHandle, RunArgs &args,
                             const FileExecutionLaunch *launch = nullptr);
+  llvm::Error unregisterBinary(void *binaryHandle);
   llvm::Error runBinary(const std::vector<uint8_t> &binaryData,
                         const std::string &functionName, RunArgs &args,
                         uint32_t magic);
@@ -52,6 +53,7 @@ private:
 
   int (*rtSetDevice_)(int32_t) = nullptr;
   int (*rtDevBinaryRegister_)(const DevBinary *, void **) = nullptr;
+  int (*rtDevBinaryUnRegister_)(void *) = nullptr;
   int (*rtFunctionRegister_)(void *, void *, const char *, void *, uint32_t) =
       nullptr;
   int (*rtMalloc_)(void **, uint64_t, uint32_t, uint16_t) = nullptr;
@@ -86,7 +88,6 @@ private:
   std::vector<AllocInfo> allocMap_;
   std::vector<std::vector<uint8_t>> registeredBinaries_;
   std::vector<std::string> registeredNames_;
-  std::unordered_map<std::string, void *> registeredFunctionHandles_;
 };
 
 } // namespace mlir::runtime

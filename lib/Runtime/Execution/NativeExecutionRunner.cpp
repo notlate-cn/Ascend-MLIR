@@ -14,6 +14,7 @@
 #include <dlfcn.h>
 #include <mutex>
 #include <type_traits>
+#include <utility>
 
 namespace mlir::runtime {
 
@@ -49,15 +50,6 @@ static void prependEnvPath(const char *name, const std::string &prefix) {
     value += current;
   }
   ::setenv(name, value.c_str(), 1);
-}
-
-static std::string buildRegisteredFunctionKey(const FileExecutionLaunch &launch) {
-  std::string key = launch.binaryPath;
-  key.push_back('\n');
-  key += launch.kernelName;
-  key.push_back('\n');
-  key += std::to_string(launch.magic);
-  return key;
 }
 
 constexpr size_t kLaunchTraceSampleBytes = 64;
@@ -128,6 +120,8 @@ llvm::Error NativeExecutionRunner::loadRuntimeLibraries() {
   LOAD_RT(rtStreamSynchronize);
   LOAD_RT(rtDeviceSynchronize);
 #undef LOAD_RT
+  rtDevBinaryUnRegister_ = reinterpret_cast<decltype(rtDevBinaryUnRegister_)>(
+      dlsym(libHandle_, "rtDevBinaryUnRegister"));
 
   return llvm::Error::success();
 }
@@ -219,6 +213,17 @@ llvm::Error NativeExecutionRunner::deviceToHost(void *dst, const void *src,
   return llvm::Error::success();
 }
 
+llvm::Error NativeExecutionRunner::unregisterBinary(void *binaryHandle) {
+  if (!binaryHandle || !rtDevBinaryUnRegister_)
+    return llvm::Error::success();
+
+  int rc = rtDevBinaryUnRegister_(binaryHandle);
+  if (rc != 0)
+    return llvm::createStringError(llvm::inconvertibleErrorCode(),
+                                   "rtDevBinaryUnRegister failed: rc=%d", rc);
+  return llvm::Error::success();
+}
+
 llvm::Error NativeExecutionRunner::runBinary(
     const std::vector<uint8_t> &binaryData, const std::string &functionName,
     RunArgs &args, uint32_t magic) {
@@ -237,24 +242,29 @@ llvm::Error NativeExecutionRunner::runBinary(
   const char *fnName = functionName.c_str();
   void *fnNameVoid = const_cast<char *>(fnName);
   rc = rtFunctionRegister_(binHandle, fnNameVoid, fnName, fnNameVoid, 0);
+  auto failRegistered = [&](llvm::Error err) -> llvm::Error {
+    freeAll();
+    if (auto unregisterErr = unregisterBinary(binHandle))
+      return llvm::joinErrors(std::move(err), std::move(unregisterErr));
+    return err;
+  };
   if (rc != 0)
-    return llvm::createStringError(llvm::inconvertibleErrorCode(),
-                                   "rtFunctionRegister failed: rc=%d", rc);
+    return failRegistered(llvm::createStringError(
+        llvm::inconvertibleErrorCode(), "rtFunctionRegister failed: rc=%d",
+        rc));
 
   std::vector<void *> inputGm;
   std::vector<LaunchTraceTensor> traceInputs;
   for (auto &input : args.inputs) {
     auto ptrOr = alloc(input.nbytes());
     if (!ptrOr) {
-      freeAll();
-      return ptrOr.takeError();
+      return failRegistered(ptrOr.takeError());
     }
     inputGm.push_back(*ptrOr);
     traceInputs.push_back(
         {input.nbytes(), reinterpret_cast<uintptr_t>(*ptrOr)});
     if (auto err = hostToDevice(*ptrOr, input.data, input.nbytes())) {
-      freeAll();
-      return err;
+      return failRegistered(std::move(err));
     }
   }
 
@@ -263,8 +273,7 @@ llvm::Error NativeExecutionRunner::runBinary(
   for (auto &output : args.outputs) {
     auto ptrOr = alloc(output.nbytes());
     if (!ptrOr) {
-      freeAll();
-      return ptrOr.takeError();
+      return failRegistered(ptrOr.takeError());
     }
     outputGm.push_back(*ptrOr);
     traceOutputs.push_back(
@@ -273,8 +282,7 @@ llvm::Error NativeExecutionRunner::runBinary(
 
   auto workspaceOr = alloc(args.workspace_size);
   if (!workspaceOr) {
-    freeAll();
-    return workspaceOr.takeError();
+    return failRegistered(workspaceOr.takeError());
   }
 
   std::vector<uint64_t> launchArgs;
@@ -312,47 +320,41 @@ llvm::Error NativeExecutionRunner::runBinary(
   }
   rc = rtKernelLaunch_(fnNameVoid, static_cast<uint32_t>(args.block_dim),
                        launchArgs.data(), argsSize, nullptr, stream_);
-  if (rc != 0) {
-    freeAll();
-    return llvm::createStringError(llvm::inconvertibleErrorCode(),
-                                   "rtKernelLaunch failed: rc=%d", rc);
-  }
+  if (rc != 0)
+    return failRegistered(llvm::createStringError(
+        llvm::inconvertibleErrorCode(), "rtKernelLaunch failed: rc=%d", rc));
 
   rc = rtStreamSynchronize_(stream_);
-  if (rc != 0) {
-    freeAll();
-    return llvm::createStringError(llvm::inconvertibleErrorCode(),
-                                   "rtStreamSynchronize failed: rc=%d", rc);
-  }
+  if (rc != 0)
+    return failRegistered(llvm::createStringError(
+        llvm::inconvertibleErrorCode(), "rtStreamSynchronize failed: rc=%d",
+        rc));
 
   for (size_t i = 0; i < args.outputs.size(); ++i) {
     if (auto err =
             deviceToHost(args.outputs[i].data, outputGm[i],
                          args.outputs[i].nbytes())) {
-      freeAll();
-      return err;
+      return failRegistered(std::move(err));
     }
   }
   for (RunArgs::InPlaceOutput &inPlace : args.in_place_outputs) {
     if (inPlace.inputIndex >= inputGm.size()) {
-      freeAll();
-      return llvm::createStringError(
+      return failRegistered(llvm::createStringError(
           llvm::inconvertibleErrorCode(),
           "input-alias output references invalid input index: %zu",
-          inPlace.inputIndex);
+          inPlace.inputIndex));
     }
     if (auto err = deviceToHost(inPlace.array.data, inputGm[inPlace.inputIndex],
                                 inPlace.array.nbytes())) {
-      freeAll();
-      return err;
+      return failRegistered(std::move(err));
     }
   }
 
   freeAll();
-  return llvm::Error::success();
+  return unregisterBinary(binHandle);
 }
 
-llvm::Expected<void *> NativeExecutionRunner::registerBinary(
+llvm::Expected<std::pair<void *, void *>> NativeExecutionRunner::registerBinary(
     const std::string &binaryPath, const std::string &functionName,
     uint32_t magic) {
   auto buf = llvm::MemoryBuffer::getFile(binaryPath, /*IsText=*/false);
@@ -384,11 +386,15 @@ llvm::Expected<void *> NativeExecutionRunner::registerBinary(
   const char *fnName = stableName.c_str();
   void *fnNameVoid = const_cast<char *>(fnName);
   rc = rtFunctionRegister_(binHandle, fnNameVoid, fnName, fnNameVoid, 0);
-  if (rc != 0)
-    return llvm::createStringError(llvm::inconvertibleErrorCode(),
-                                   "rtFunctionRegister failed: rc=%d", rc);
+  if (rc != 0) {
+    auto err = llvm::createStringError(llvm::inconvertibleErrorCode(),
+                                       "rtFunctionRegister failed: rc=%d", rc);
+    if (auto unregisterErr = unregisterBinary(binHandle))
+      return llvm::joinErrors(std::move(err), std::move(unregisterErr));
+    return err;
+  }
 
-  return fnNameVoid;
+  return std::make_pair(fnNameVoid, binHandle);
 }
 
 llvm::Error
@@ -552,16 +558,19 @@ llvm::Error NativeExecutionRunner::runFile(const FileExecutionLaunch &launch,
   if (auto err = initialize())
     return err;
 
-  const std::string key = buildRegisteredFunctionKey(launch);
-  auto handleIt = registeredFunctionHandles_.find(key);
-  if (handleIt == registeredFunctionHandles_.end()) {
-    auto handleOr =
-        registerBinary(launch.binaryPath, launch.kernelName, launch.magic);
-    if (!handleOr)
-      return handleOr.takeError();
-    handleIt = registeredFunctionHandles_.emplace(key, *handleOr).first;
+  auto handleOr =
+      registerBinary(launch.binaryPath, launch.kernelName, launch.magic);
+  if (!handleOr)
+    return handleOr.takeError();
+
+  void *functionHandle = handleOr->first;
+  void *binaryHandle = handleOr->second;
+  if (auto err = runWithHandle(functionHandle, args, &launch)) {
+    if (auto unregisterErr = unregisterBinary(binaryHandle))
+      return llvm::joinErrors(std::move(err), std::move(unregisterErr));
+    return err;
   }
-  return runWithHandle(handleIt->second, args, &launch);
+  return unregisterBinary(binaryHandle);
 }
 
 llvm::Error NativeExecutionRunner::runDynamicLibraryArtifact(
