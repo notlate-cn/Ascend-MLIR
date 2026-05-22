@@ -2872,13 +2872,24 @@ static void fixBrokenOpEmitters(Operation *moduleOp) {
                ", (uint32_t)$1 * sizeof(uint32_t));\n";
     prelude += "AscendC::LocalTensor<uint32_t> " + tensorName + " = " +
                tbufName + ".Get<uint32_t>();\n";
+    // The index tensor ($2) arrived via DataCopy (MTE2) and DeQue; the DeQue
+    // only orders MTE2->V, but the GetValue below reads it on the scalar pipe
+    // (S).  Without an MTE2->S barrier the scalar read races the copy on real
+    // hardware and returns garbage indices (the simulator runs in order and
+    // hides it).  PIPE_ALL drains the move pipe before the scalar read.
+    prelude += "AscendC::PipeBarrier<PIPE_ALL>();\n";
     prelude +=
         "for (uint32_t _afir_i = 0; _afir_i < static_cast<uint32_t>($1); _afir_i++) {\n";
     prelude += "  " + tensorName +
                ".SetValue(_afir_i, static_cast<uint32_t>($2.GetValue(_afir_i)) * " +
                std::to_string(srcElemBytes) + ");\n";
     prelude += "}";
-    prelude += "\nAscendC::PipeBarrier<PIPE_V>()";
+    // The byte offsets were written by SetValue on the scalar pipe (S); the
+    // Gather below reads them on the vector pipe (V).  PipeBarrier<PIPE_V> only
+    // orders V-vs-V, NOT S->V, so on real hardware Gather can read stale/garbage
+    // offsets and dereference a wild UB address (VEC UB out-of-bounds; the
+    // simulator masks the cross-pipe race).  Use PIPE_ALL.
+    prelude += "\nAscendC::PipeBarrier<PIPE_ALL>()";
     rewriter.create<emitasc::VerbatimOp>(
         loc, rewriter.getStringAttr(prelude),
         ValueRange({pipeVal, op.getCount(), op.getSrcOffset()}));

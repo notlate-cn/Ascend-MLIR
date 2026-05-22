@@ -7,9 +7,12 @@
 // CHECK: AscendC::TBuf<AscendC::TPosition::VECCALC> _afir_idx32_tbuf_0;
 // CHECK: InitBuffer(_afir_idx32_tbuf_0, (uint32_t)v43 * sizeof(uint32_t));
 // CHECK: AscendC::LocalTensor<uint32_t> _afir_idx32_0 = _afir_idx32_tbuf_0.Get<uint32_t>();
+// MTE2->S barrier so the scalar GetValue sees the DataCopy'd indices on real HW.
+// CHECK: AscendC::PipeBarrier<PIPE_ALL>();
 // CHECK: for (uint32_t _afir_i = 0; _afir_i < static_cast<uint32_t>(v43); _afir_i++)
 // CHECK: _afir_idx32_0.SetValue(_afir_i, static_cast<uint32_t>(v39.GetValue(_afir_i)) * 2);
-// CHECK: AscendC::PipeBarrier<PIPE_V>();
+// S->V barrier so the vector Gather sees the scalar-written byte offsets.
+// CHECK: AscendC::PipeBarrier<PIPE_ALL>();
 // CHECK: AscendC::GlobalTensor<half> _afir_gt;
 // CHECK: _afir_gt.SetGlobalBuffer(
 // CHECK-SAME: GetPhyAddr(
