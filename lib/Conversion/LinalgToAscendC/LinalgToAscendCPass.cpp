@@ -391,6 +391,8 @@ LogicalResult lowerLinalgToAscendC(func::FuncOp funcOp) {
     return failure();
   if (failed(materializeSelectedAllParallelTiles(funcOp)))
     return failure();
+  if (failed(materializeSelectedTransposeTiles(funcOp)))
+    return failure();
 
   // -----------------------------------------------------------------------
   // Phase 0: Build the shared pipe + one queue per on-chip alloc.
