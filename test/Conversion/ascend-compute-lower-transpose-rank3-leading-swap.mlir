@@ -56,6 +56,23 @@ func.func @named_rank2_large_static_gm_auto_tile(
   return
 }
 
+// CHECK-LABEL: func.func @named_rank2_selected_narrow_inner_gm_auto_tile
+// CHECK: scf.for %{{.*}} = %c0 to %c512 step %c96
+// CHECK: emitasc.verbatim
+// CHECK-SAME: DataCopyPad($0, _afir_src
+// CHECK: ascendc.transpose
+// CHECK-NOT: linalg.transpose
+func.func @named_rank2_selected_narrow_inner_gm_auto_tile(
+    %src: memref<128x512xf32>,
+    %dst: memref<512x128xf32>) {
+  linalg.transpose
+      {ascend.schedule.selected_tile_shape = array<i64: 512, 96>}
+      ins(%src : memref<128x512xf32>)
+      outs(%dst : memref<512x128xf32>)
+      permutation = [1, 0]
+  return
+}
+
 // CHECK-LABEL: func.func @named_rank3_leading_swap_gm
 // CHECK: scf.for
 // CHECK: memref.load
