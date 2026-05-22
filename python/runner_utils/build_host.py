@@ -87,6 +87,8 @@ def link_host(
         "ascend_dump", "mmpa", "c_sec",
         "nnopbase",            # aclCreateTensor / aclDestroyTensor
         "opapi_transformer",   # aclnnFlashAttentionScore et al.
+        "opapi_nn",            # aclnnMatmul / aclnnBatchMatMul / aclnnLayerNorm
+        "opapi_math",          # aclnnPermute
         "ascend_hal",
     ]
     if backend == "npu":
@@ -127,6 +129,11 @@ def link_host(
     cmd += [f"-l{lib}" for lib in extra_libs]
     rpath = ":".join(filter(None, link_dirs))
     cmd += [
+        # CANN's aclnn libs (opapi_*) cross-reference ge::/protobuf symbols that
+        # live in sibling .so's resolved at run time via LD_LIBRARY_PATH; tolerate
+        # those shlib-internal undefined refs at link (the app's own symbols still
+        # resolve). Required once opapi_nn/opapi_math are pulled in.
+        "-Wl,--allow-shlib-undefined",
         f"-Wl,-rpath,{rpath}",
         "-o", str(out_binary),
         "-pthread", "-lrt", "-lm", "-ldl",

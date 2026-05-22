@@ -58,7 +58,8 @@ void run_FlashAttentionScore(
 
 // CPU-reference matrix multiply (aclnn-fallback for linalg.matmul /
 // batch_matmul).  a: [.., M, K], b: [.., K, N] -> out: [.., M, N], leading dims
-// are batch.  `init` is the DPS output buffer (unused).  Host-mode only.
+// are batch.  `init` is the DPS output buffer (unused).  Host mode: CPU
+// reference; device: aclnnMatmul (rank 2) / aclnnBatchMatMul (rank > 2).
 void run_Matmul(
     TensorInfo a,
     TensorInfo b,
@@ -69,7 +70,8 @@ void run_Matmul(
 // CPU-reference LayerNorm (aclnn-fallback for the decomposed nn.LayerNorm
 // subgraph).  Normalizes over the last dim (size = gamma.shape[0]):
 //   out = (x - mean) / sqrt(var + eps) * gamma + beta
-// eps is the torch default (1e-5).  x: [.., D], gamma/beta: [D].  Host-mode only.
+// eps is the torch default (1e-5).  x: [.., D], gamma/beta: [D].  Host mode: CPU
+// reference; device: aclnnLayerNorm (normalized over the last dim).
 void run_LayerNorm(
     TensorInfo x,
     TensorInfo gamma,
@@ -79,7 +81,8 @@ void run_LayerNorm(
 
 // CPU-reference Transpose (aclnn-fallback; the AscendC transpose codegen is
 // unreliable).  out[i] = in[j] where j[perm[d]] = i[d], i.e. out shape =
-// permute(in shape, perm).  perm has `rank` entries.  Host-mode only.
+// permute(in shape, perm).  perm has `rank` entries.  Host mode: CPU reference;
+// device: aclnnPermute.
 void run_Transpose(
     TensorInfo in,
     const int64_t *perm,

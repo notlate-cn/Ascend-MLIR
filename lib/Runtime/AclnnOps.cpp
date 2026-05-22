@@ -13,6 +13,10 @@
 #  if __has_include("aclnnop/aclnn_flash_attention_score.h")
 #    include "aclnn/acl_meta.h"
 #    include "aclnnop/aclnn_flash_attention_score.h"
+#    include "aclnnop/aclnn_matmul.h"
+#    include "aclnnop/aclnn_batch_matmul.h"
+#    include "aclnnop/aclnn_layer_norm.h"
+#    include "aclnnop/aclnn_permute.h"
 #    define HAVE_CANN 1
 #  endif
 #endif
@@ -42,6 +46,24 @@ static aclTensor *aclCreateTensorStub(...) { return nullptr; }
 static void aclDestroyTensorStub(const aclTensor *) {}
 #define aclCreateTensor(...)   aclCreateTensorStub(__VA_ARGS__)
 #define aclDestroyTensor(t)    aclDestroyTensorStub(t)
+
+static aclIntArray *aclCreateIntArrayStub(const int64_t *, uint64_t) { return nullptr; }
+static int aclDestroyIntArrayStub(const aclIntArray *) { return 0; }
+#define aclCreateIntArray(v, n) aclCreateIntArrayStub((v), (n))
+#define aclDestroyIntArray(a)   aclDestroyIntArrayStub(a)
+
+// Generic no-op stubs for the matmul/layernorm/permute aclnn ops — used only on
+// builds without CANN (CI/dev), where g_host_mode is always true so the device
+// branch never actually runs.
+static int aclnnGenericStub(...) { return 0; }
+#define aclnnMatmulGetWorkspaceSize(...)      aclnnGenericStub(__VA_ARGS__)
+#define aclnnMatmul(...)                      aclnnGenericStub(__VA_ARGS__)
+#define aclnnBatchMatMulGetWorkspaceSize(...) aclnnGenericStub(__VA_ARGS__)
+#define aclnnBatchMatMul(...)                 aclnnGenericStub(__VA_ARGS__)
+#define aclnnLayerNormGetWorkspaceSize(...)   aclnnGenericStub(__VA_ARGS__)
+#define aclnnLayerNorm(...)                   aclnnGenericStub(__VA_ARGS__)
+#define aclnnPermuteGetWorkspaceSize(...)     aclnnGenericStub(__VA_ARGS__)
+#define aclnnPermute(...)                     aclnnGenericStub(__VA_ARGS__)
 
 // CANN 9.0.0 aclnnFlashAttentionScoreGetWorkspaceSize signature (22 params):
 //   query, key, value,
@@ -355,10 +377,50 @@ static void matmul_cpu(const TensorInfo &a, const TensorInfo &b,
 }
 
 void run_Matmul(TensorInfo a, TensorInfo b, TensorInfo /*init*/,
-                TensorInfo *out, aclrtStream /*stream*/) {
-  assert(g_host_mode &&
-         "run_Matmul: only the host-mode CPU reference is implemented");
-  matmul_cpu(a, b, out);
+                TensorInfo *out, aclrtStream stream) {
+  if (g_host_mode) {
+    matmul_cpu(a, b, out);
+    return;
+  }
+
+  // out template: a's shape with last dim -> N (= b's last dim).
+  TensorInfo tmpl = a;
+  tmpl.shape[a.rank - 1] = b.shape[b.rank - 1];
+  allocTensorLike(tmpl, out);  // device buffer (aclrtMalloc)
+
+  rowMajorStrides(a.shape, a.rank, a.strides);
+  rowMajorStrides(b.shape, b.rank, b.strides);
+  aclTensor *aT = makeAclTensor(a);
+  aclTensor *bT = makeAclTensor(b);
+  aclTensor *oT = makeAclTensor(*out);
+
+  // cubeMathType=1 (ALLOW_FP32_DOWN_PRECISION): fp32 inputs run on the fp16
+  // cube. This is the device-accuracy knob the hardware session may tune
+  // (0 = KEEP_DTYPE) if fp32 precision is required.
+  const int8_t cubeMathType = 1;
+  bool batched = (a.rank > 2);
+  uint64_t       wsSize   = 0;
+  aclOpExecutor *executor = nullptr;
+  int rc = batched
+    ? aclnnBatchMatMulGetWorkspaceSize(aT, bT, oT, cubeMathType, &wsSize, &executor)
+    : aclnnMatmulGetWorkspaceSize(aT, bT, oT, cubeMathType, &wsSize, &executor);
+  if (rc != 0)
+    fprintf(stderr, "[AclnnOps] %sMatMulGetWorkspaceSize rc=%d\n",
+            batched ? "Batch" : "", rc);
+
+  void *ws = nullptr;
+  if (wsSize > 0)
+    aclrtMalloc(&ws, wsSize, ACL_MEM_MALLOC_NORMAL_ONLY);
+
+  rc = batched ? aclnnBatchMatMul(ws, wsSize, executor, stream)
+               : aclnnMatmul(ws, wsSize, executor, stream);
+  if (rc != 0)
+    fprintf(stderr, "[AclnnOps] %sMatMul rc=%d\n", batched ? "Batch" : "", rc);
+
+  if (ws) aclrtFree(ws);
+  aclDestroyTensor(aT);
+  aclDestroyTensor(bT);
+  aclDestroyTensor(oT);
 }
 
 // ---------------------------------------------------------------------------
@@ -407,10 +469,68 @@ static void layernorm_cpu(const TensorInfo &x, const TensorInfo &gamma,
 }
 
 void run_LayerNorm(TensorInfo x, TensorInfo gamma, TensorInfo beta,
-                   TensorInfo *out, aclrtStream /*stream*/) {
-  assert(g_host_mode &&
-         "run_LayerNorm: only the host-mode CPU reference is implemented");
-  layernorm_cpu(x, gamma, beta, out);
+                   TensorInfo *out, aclrtStream stream) {
+  if (g_host_mode) {
+    layernorm_cpu(x, gamma, beta, out);
+    return;
+  }
+
+  allocTensorLike(x, out);  // device buffer, same shape/dtype as x
+  rowMajorStrides(x.shape, x.rank, x.strides);
+  rowMajorStrides(gamma.shape, gamma.rank, gamma.strides);
+  rowMajorStrides(beta.shape, beta.rank, beta.strides);
+
+  int64_t D = gamma.shape[0];  // normalized over the last dim
+  aclIntArray *normShape = aclCreateIntArray(&D, 1);
+
+  aclTensor *xT = makeAclTensor(x);
+  aclTensor *gT = makeAclTensor(gamma);
+  aclTensor *bT = makeAclTensor(beta);
+  aclTensor *oT = makeAclTensor(*out);
+
+  // mean/rstd aux outputs: x's shape with the normalized (last) dim removed.
+  TensorInfo meanI, rstdI;
+  int auxRank = x.rank > 1 ? x.rank - 1 : 1;
+  meanI.rank = rstdI.rank = auxRank;
+  int64_t rows = 1;
+  for (int i = 0; i < auxRank; ++i) {
+    int64_t d = (x.rank > 1) ? x.shape[i] : 1;
+    meanI.shape[i] = rstdI.shape[i] = d;
+    rows *= d;
+  }
+  meanI.dtype = rstdI.dtype = ACL_FLOAT;  // mean/rstd are always fp32
+  rowMajorStrides(meanI.shape, auxRank, meanI.strides);
+  rowMajorStrides(rstdI.shape, auxRank, rstdI.strides);
+  aclrtMalloc(&meanI.data, rows * sizeof(float), ACL_MEM_MALLOC_NORMAL_ONLY);
+  aclrtMalloc(&rstdI.data, rows * sizeof(float), ACL_MEM_MALLOC_NORMAL_ONLY);
+  aclTensor *meanT = makeAclTensor(meanI);
+  aclTensor *rstdT = makeAclTensor(rstdI);
+
+  uint64_t       wsSize   = 0;
+  aclOpExecutor *executor = nullptr;
+  int rc = aclnnLayerNormGetWorkspaceSize(
+      xT, normShape, gT, bT, /*eps=*/1e-5, oT, meanT, rstdT, &wsSize, &executor);
+  if (rc != 0)
+    fprintf(stderr, "[AclnnOps] aclnnLayerNormGetWorkspaceSize rc=%d\n", rc);
+
+  void *ws = nullptr;
+  if (wsSize > 0)
+    aclrtMalloc(&ws, wsSize, ACL_MEM_MALLOC_NORMAL_ONLY);
+
+  rc = aclnnLayerNorm(ws, wsSize, executor, stream);
+  if (rc != 0)
+    fprintf(stderr, "[AclnnOps] aclnnLayerNorm rc=%d\n", rc);
+
+  if (ws) aclrtFree(ws);
+  aclrtFree(meanI.data);
+  aclrtFree(rstdI.data);
+  aclDestroyIntArray(normShape);
+  aclDestroyTensor(xT);
+  aclDestroyTensor(gT);
+  aclDestroyTensor(bT);
+  aclDestroyTensor(oT);
+  aclDestroyTensor(meanT);
+  aclDestroyTensor(rstdT);
 }
 
 // ---------------------------------------------------------------------------
@@ -459,10 +579,42 @@ static void transpose_cpu(const TensorInfo &in, const int64_t *perm, int rank,
 }
 
 void run_Transpose(TensorInfo in, const int64_t *perm, int rank,
-                   TensorInfo *out, aclrtStream /*stream*/) {
-  assert(g_host_mode &&
-         "run_Transpose: only the host-mode CPU reference is implemented");
-  transpose_cpu(in, perm, rank, out);
+                   TensorInfo *out, aclrtStream stream) {
+  if (g_host_mode) {
+    transpose_cpu(in, perm, rank, out);
+    return;
+  }
+
+  // out template: out.shape[d] = in.shape[perm[d]].
+  TensorInfo tmpl = in;
+  tmpl.rank = rank;
+  for (int d = 0; d < rank; ++d)
+    tmpl.shape[d] = in.shape[perm[d]];
+  allocTensorLike(tmpl, out);  // device buffer
+
+  rowMajorStrides(in.shape, in.rank, in.strides);
+  aclTensor *iT = makeAclTensor(in);
+  aclTensor *oT = makeAclTensor(*out);
+  aclIntArray *dims = aclCreateIntArray(perm, static_cast<uint64_t>(rank));
+
+  uint64_t       wsSize   = 0;
+  aclOpExecutor *executor = nullptr;
+  int rc = aclnnPermuteGetWorkspaceSize(iT, dims, oT, &wsSize, &executor);
+  if (rc != 0)
+    fprintf(stderr, "[AclnnOps] aclnnPermuteGetWorkspaceSize rc=%d\n", rc);
+
+  void *ws = nullptr;
+  if (wsSize > 0)
+    aclrtMalloc(&ws, wsSize, ACL_MEM_MALLOC_NORMAL_ONLY);
+
+  rc = aclnnPermute(ws, wsSize, executor, stream);
+  if (rc != 0)
+    fprintf(stderr, "[AclnnOps] aclnnPermute rc=%d\n", rc);
+
+  if (ws) aclrtFree(ws);
+  aclDestroyIntArray(dims);
+  aclDestroyTensor(iT);
+  aclDestroyTensor(oT);
 }
 
 } // namespace mlir::runtime::aclnn
