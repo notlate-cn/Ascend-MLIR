@@ -73,18 +73,34 @@ device** before the full networks — it isolates each op:
   rejections, `cubeMathType` accuracy (flip to `0` KEEP_DTYPE if fp32 matmul is
   off).
 
-### B. Mixed device-memory orchestration (the biggest unknown)
-The `run_*` wrappers assume their input `TensorInfo.data` are **device
-pointers** and they `aclrtMalloc` outputs on device. On sim everything was host
-malloc. **Untested:** whether the CoordEmitter-generated `network_host.cpp`
-(from `aclnn-backend`) actually
-  - allocates device buffers for intermediates,
-  - H2D-copies the network inputs and D2H-copies the outputs,
-  - hands consistent device pointers across the AscendC↔aclnn boundary.
-If outputs come back zero/garbage with rc=0 everywhere, suspect this: the host
-is probably still passing host pointers to aclnn. This may require changes in
-`lib/Runtime/AclnnBackend/AclnnBackend.cpp` (host-gen) — that's a code change,
-flag it back to me rather than patching blind.
+### B. Mixed device-memory orchestration — CONFIRMED BROKEN then FIXED (Approach B)
+
+**Confirmed broken (2026-05-22, device 7):** full encoder `--backend npu` ran
+phases 1-4 clean (11 AscendC kernels compiled + autotuned on-device, each
+standalone max_diff=0) but the integrated phase-5 failed. Root cause exactly as
+predicted: the generated `network_host.cpp` orchestrates every tensor in HOST
+memory (`::operator new`); the AscendC launch path (`hostLaunchAscendCKernel`)
+is host-in/host-out (stages its own H2D/D2H); but the aclnn `run_*` device
+branches used DEVICE pointers (aclrtMalloc out, host ptr wrapped as device in).
+A tensor crossing aclnn↔AscendC got a device ptr read as host (group2
+`input[1].host` decoded to a literal CANN `version.info` → aicore fault
+`rtStreamSynchronize rc=507034`) or a host ptr read as device (group14/21
+all-zero). Evidence: `/tmp/npu-real-logs/20260522-encoder-e2e/`.
+
+**Fixed (Approach B, commit on dev-network):** the aclnn `run_*` device branches
+are now **host-in/host-out**, matching the AscendC convention. Each stages its
+inputs H2D into temp device buffers (`stageToDevice`), runs the aclnn op into a
+temp device output (`stageDeviceOut`), then copies the result D2H into a fresh
+host buffer (`stageToHost`); temps freed via `freePool`. All in `AclnnOps.cpp`
+— no host-gen / HostLaunchHelper changes. Verified: unit 7/7, encoder+BERT sim
+no regression, compiles vs real CANN headers. **Re-run the full encoder/BERT
+`--backend npu` on device to confirm the integrated path now produces out0.npy.**
+
+[PERF FUTURE — Approach A] These per-op H2D/D2H round-trips are redundant once
+both domains agree. Future optimization: unify on the DEVICE domain — host-gen
+`aclrtMalloc`s all intermediates and `hostLaunchAscendCKernel` becomes
+device-pointer-aware (skips its npy/H2D/D2H staging). Bigger change (AclnnBackend
++ HostLaunchHelper + ExecutionSession); deferred behind correctness.
 
 ### C. Link / driver environment
 `64314d5`'s commit message flagged `ld: cannot find -lnpu_drv/-lstars/-lmodel_top`

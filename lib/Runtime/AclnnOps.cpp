@@ -42,6 +42,14 @@ static void aclrtFreeStub(void *p)                    { ::operator delete(p); }
 #define aclrtMalloc(p, sz, f) aclrtMallocStub(p, sz, f)
 #define aclrtFree(p)          aclrtFreeStub(p)
 
+static constexpr int ACL_MEMCPY_HOST_TO_DEVICE = 1;
+static constexpr int ACL_MEMCPY_DEVICE_TO_HOST = 2;
+static int aclrtMemcpyStub(void *d, size_t, const void *s, size_t n, int) {
+  std::memcpy(d, s, n);
+  return 0;
+}
+#define aclrtMemcpy(d, dm, s, n, k) aclrtMemcpyStub((d), (dm), (s), (n), (k))
+
 static aclTensor *aclCreateTensorStub(...) { return nullptr; }
 static void aclDestroyTensorStub(const aclTensor *) {}
 #define aclCreateTensor(...)   aclCreateTensorStub(__VA_ARGS__)
@@ -142,6 +150,63 @@ void freeTensor(TensorInfo *t) {
       aclrtFree(t->data);
     t->data = nullptr;
   }
+}
+
+// ---------------------------------------------------------------------------
+// Device staging (backend=npu).  The generated network_host.cpp orchestrates
+// every tensor in HOST memory (::operator new) and the AscendC launch path
+// (hostLaunchAscendCKernel) is host-in/host-out — it stages its own H2D/D2H
+// internally.  So the aclnn wrappers must follow the same convention: treat
+// TensorInfo.data as host pointers, copy inputs H2D into temporary device
+// buffers around the aclnn call, and copy the result D2H back into a fresh host
+// buffer.  Mixing the two domains (host ptr read as device, or vice-versa) is
+// what broke the integrated phase-5 run.
+// [PERF FUTURE: unify on the device domain instead — make host-gen aclrtMalloc
+//  all intermediates and hostLaunchAscendCKernel device-pointer-aware — to drop
+//  these per-op round-trips.  See 2026-05-22-real-npu-aclnn-direct-handoff.md.]
+// ---------------------------------------------------------------------------
+static size_t tensorBytes(const TensorInfo &t) {
+  size_t n = 1;
+  for (int i = 0; i < t.rank; ++i) n *= static_cast<size_t>(t.shape[i]);
+  return n * elemBytes(t.dtype);
+}
+
+// Copy a host-resident TensorInfo into a fresh device buffer; return the
+// device-backed descriptor and record the device ptr in `pool` for freeing.
+static TensorInfo stageToDevice(const TensorInfo &hostT,
+                                std::vector<void *> &pool) {
+  TensorInfo d = hostT;
+  rowMajorStrides(d.shape, d.rank, d.strides);
+  size_t nb = tensorBytes(hostT);
+  aclrtMalloc(&d.data, nb, ACL_MEM_MALLOC_NORMAL_ONLY);
+  aclrtMemcpy(d.data, nb, hostT.data, nb, ACL_MEMCPY_HOST_TO_DEVICE);
+  pool.push_back(d.data);
+  return d;
+}
+
+// Allocate a device output buffer shaped like `tmpl`; record ptr in `pool`.
+static TensorInfo stageDeviceOut(const TensorInfo &tmpl,
+                                 std::vector<void *> &pool) {
+  TensorInfo d = tmpl;
+  rowMajorStrides(d.shape, d.rank, d.strides);
+  aclrtMalloc(&d.data, tensorBytes(tmpl), ACL_MEM_MALLOC_NORMAL_ONLY);
+  pool.push_back(d.data);
+  return d;
+}
+
+// After the aclnn op wrote `devOut`, copy it D2H into a fresh HOST buffer so the
+// downstream host-domain consumers (AscendC launch / operator-new chain) see it.
+static void stageToHost(const TensorInfo &devOut, TensorInfo *out) {
+  *out = devOut;
+  size_t nb = tensorBytes(devOut);
+  out->data = ::operator new(nb);
+  aclrtMemcpy(out->data, nb, devOut.data, nb, ACL_MEMCPY_DEVICE_TO_HOST);
+}
+
+// Free every device buffer recorded in `pool`.
+static void freePool(std::vector<void *> &pool) {
+  for (void *p : pool)
+    if (p) aclrtFree(p);
 }
 
 // ---------------------------------------------------------------------------
@@ -260,17 +325,17 @@ void run_FlashAttentionScore(
   int64_t headDim  = q.shape[3];
   double  scale    = 1.0 / std::sqrt(static_cast<double>(headDim));
 
-  rowMajorStrides(q.shape, q.rank, q.strides);
-  rowMajorStrides(k.shape, k.rank, k.strides);
-  rowMajorStrides(v.shape, v.rank, v.strides);
+  // host-in/host-out: stage q/k/v H2D, run on device, copy result D2H.
+  std::vector<void *> pool;
+  TensorInfo qD = stageToDevice(q, pool);
+  TensorInfo kD = stageToDevice(k, pool);
+  TensorInfo vD = stageToDevice(v, pool);
+  TensorInfo oD = stageDeviceOut(q, pool);  // output shape == q
 
-  aclTensor *qT = makeAclTensor(q);
-  aclTensor *kT = makeAclTensor(k);
-  aclTensor *vT = makeAclTensor(v);
-
-  // Allocate main attention output (same shape + dtype as q).
-  allocTensorLike(q, out);
-  aclTensor *outT = makeAclTensor(*out);
+  aclTensor *qT   = makeAclTensor(qD);
+  aclTensor *kT   = makeAclTensor(kD);
+  aclTensor *vT   = makeAclTensor(vD);
+  aclTensor *outT = makeAclTensor(oD);
 
   // Allocate softmax intermediates required by the training-oriented API.
   // Shape: [B, N, S, 8] float32 (8-element alignment used by flash attention).
@@ -281,12 +346,8 @@ void run_FlashAttentionScore(
     softmaxMax.dtype = softmaxSum.dtype = ACL_FLOAT;  // float32
     std::memcpy(softmaxMax.shape, auxShape, 4 * sizeof(int64_t));
     std::memcpy(softmaxSum.shape, auxShape, 4 * sizeof(int64_t));
-    rowMajorStrides(softmaxMax.shape, 4, softmaxMax.strides);
-    rowMajorStrides(softmaxSum.shape, 4, softmaxSum.strides);
-    size_t auxBytes = static_cast<size_t>(
-        auxShape[0] * auxShape[1] * auxShape[2] * 8) * sizeof(float);
-    aclrtMalloc(&softmaxMax.data, auxBytes, ACL_MEM_MALLOC_NORMAL_ONLY);
-    aclrtMalloc(&softmaxSum.data, auxBytes, ACL_MEM_MALLOC_NORMAL_ONLY);
+    softmaxMax = stageDeviceOut(softmaxMax, pool);
+    softmaxSum = stageDeviceOut(softmaxSum, pool);
   }
   aclTensor *softmaxMaxT = makeAclTensor(softmaxMax);
   aclTensor *softmaxSumT = makeAclTensor(softmaxSum);
@@ -325,6 +386,7 @@ void run_FlashAttentionScore(
     fprintf(stderr, "[AclnnOps] aclnnFlashAttentionScore rc=%d\n", rc);
 
   if (ws) aclrtFree(ws);
+  stageToHost(oD, out);  // D2H into a fresh host buffer
 
   aclDestroyTensor(qT);
   aclDestroyTensor(kT);
@@ -332,8 +394,7 @@ void run_FlashAttentionScore(
   aclDestroyTensor(outT);
   aclDestroyTensor(softmaxMaxT);
   aclDestroyTensor(softmaxSumT);
-  freeTensor(&softmaxMax);
-  freeTensor(&softmaxSum);
+  freePool(pool);
 }
 
 // ---------------------------------------------------------------------------
@@ -383,16 +444,18 @@ void run_Matmul(TensorInfo a, TensorInfo b, TensorInfo /*init*/,
     return;
   }
 
+  // host-in/host-out staging.
+  std::vector<void *> pool;
+  TensorInfo aD = stageToDevice(a, pool);
+  TensorInfo bD = stageToDevice(b, pool);
   // out template: a's shape with last dim -> N (= b's last dim).
   TensorInfo tmpl = a;
   tmpl.shape[a.rank - 1] = b.shape[b.rank - 1];
-  allocTensorLike(tmpl, out);  // device buffer (aclrtMalloc)
+  TensorInfo oD = stageDeviceOut(tmpl, pool);
 
-  rowMajorStrides(a.shape, a.rank, a.strides);
-  rowMajorStrides(b.shape, b.rank, b.strides);
-  aclTensor *aT = makeAclTensor(a);
-  aclTensor *bT = makeAclTensor(b);
-  aclTensor *oT = makeAclTensor(*out);
+  aclTensor *aT = makeAclTensor(aD);
+  aclTensor *bT = makeAclTensor(bD);
+  aclTensor *oT = makeAclTensor(oD);
 
   // cubeMathType=1 (ALLOW_FP32_DOWN_PRECISION): fp32 inputs run on the fp16
   // cube. This is the device-accuracy knob the hardware session may tune
@@ -418,9 +481,11 @@ void run_Matmul(TensorInfo a, TensorInfo b, TensorInfo /*init*/,
     fprintf(stderr, "[AclnnOps] %sMatMul rc=%d\n", batched ? "Batch" : "", rc);
 
   if (ws) aclrtFree(ws);
+  stageToHost(oD, out);
   aclDestroyTensor(aT);
   aclDestroyTensor(bT);
   aclDestroyTensor(oT);
+  freePool(pool);
 }
 
 // ---------------------------------------------------------------------------
@@ -475,34 +540,32 @@ void run_LayerNorm(TensorInfo x, TensorInfo gamma, TensorInfo beta,
     return;
   }
 
-  allocTensorLike(x, out);  // device buffer, same shape/dtype as x
-  rowMajorStrides(x.shape, x.rank, x.strides);
-  rowMajorStrides(gamma.shape, gamma.rank, gamma.strides);
-  rowMajorStrides(beta.shape, beta.rank, beta.strides);
+  // host-in/host-out staging.
+  std::vector<void *> pool;
+  TensorInfo xD = stageToDevice(x, pool);
+  TensorInfo gD = stageToDevice(gamma, pool);
+  TensorInfo bD = stageToDevice(beta, pool);
+  TensorInfo oD = stageDeviceOut(x, pool);  // output shape == x
 
   int64_t D = gamma.shape[0];  // normalized over the last dim
   aclIntArray *normShape = aclCreateIntArray(&D, 1);
 
-  aclTensor *xT = makeAclTensor(x);
-  aclTensor *gT = makeAclTensor(gamma);
-  aclTensor *bT = makeAclTensor(beta);
-  aclTensor *oT = makeAclTensor(*out);
+  aclTensor *xT = makeAclTensor(xD);
+  aclTensor *gT = makeAclTensor(gD);
+  aclTensor *bT = makeAclTensor(bD);
+  aclTensor *oT = makeAclTensor(oD);
 
   // mean/rstd aux outputs: x's shape with the normalized (last) dim removed.
   TensorInfo meanI, rstdI;
   int auxRank = x.rank > 1 ? x.rank - 1 : 1;
   meanI.rank = rstdI.rank = auxRank;
-  int64_t rows = 1;
   for (int i = 0; i < auxRank; ++i) {
     int64_t d = (x.rank > 1) ? x.shape[i] : 1;
     meanI.shape[i] = rstdI.shape[i] = d;
-    rows *= d;
   }
   meanI.dtype = rstdI.dtype = ACL_FLOAT;  // mean/rstd are always fp32
-  rowMajorStrides(meanI.shape, auxRank, meanI.strides);
-  rowMajorStrides(rstdI.shape, auxRank, rstdI.strides);
-  aclrtMalloc(&meanI.data, rows * sizeof(float), ACL_MEM_MALLOC_NORMAL_ONLY);
-  aclrtMalloc(&rstdI.data, rows * sizeof(float), ACL_MEM_MALLOC_NORMAL_ONLY);
+  meanI = stageDeviceOut(meanI, pool);
+  rstdI = stageDeviceOut(rstdI, pool);
   aclTensor *meanT = makeAclTensor(meanI);
   aclTensor *rstdT = makeAclTensor(rstdI);
 
@@ -522,8 +585,7 @@ void run_LayerNorm(TensorInfo x, TensorInfo gamma, TensorInfo beta,
     fprintf(stderr, "[AclnnOps] aclnnLayerNorm rc=%d\n", rc);
 
   if (ws) aclrtFree(ws);
-  aclrtFree(meanI.data);
-  aclrtFree(rstdI.data);
+  stageToHost(oD, out);
   aclDestroyIntArray(normShape);
   aclDestroyTensor(xT);
   aclDestroyTensor(gT);
@@ -531,6 +593,7 @@ void run_LayerNorm(TensorInfo x, TensorInfo gamma, TensorInfo beta,
   aclDestroyTensor(oT);
   aclDestroyTensor(meanT);
   aclDestroyTensor(rstdT);
+  freePool(pool);
 }
 
 // ---------------------------------------------------------------------------
@@ -585,16 +648,18 @@ void run_Transpose(TensorInfo in, const int64_t *perm, int rank,
     return;
   }
 
+  // host-in/host-out staging.
+  std::vector<void *> pool;
+  TensorInfo inD = stageToDevice(in, pool);
   // out template: out.shape[d] = in.shape[perm[d]].
   TensorInfo tmpl = in;
   tmpl.rank = rank;
   for (int d = 0; d < rank; ++d)
     tmpl.shape[d] = in.shape[perm[d]];
-  allocTensorLike(tmpl, out);  // device buffer
+  TensorInfo oD = stageDeviceOut(tmpl, pool);
 
-  rowMajorStrides(in.shape, in.rank, in.strides);
-  aclTensor *iT = makeAclTensor(in);
-  aclTensor *oT = makeAclTensor(*out);
+  aclTensor *iT = makeAclTensor(inD);
+  aclTensor *oT = makeAclTensor(oD);
   aclIntArray *dims = aclCreateIntArray(perm, static_cast<uint64_t>(rank));
 
   uint64_t       wsSize   = 0;
@@ -612,9 +677,11 @@ void run_Transpose(TensorInfo in, const int64_t *perm, int rank,
     fprintf(stderr, "[AclnnOps] aclnnPermute rc=%d\n", rc);
 
   if (ws) aclrtFree(ws);
+  stageToHost(oD, out);
   aclDestroyIntArray(dims);
   aclDestroyTensor(iT);
   aclDestroyTensor(oT);
+  freePool(pool);
 }
 
 } // namespace mlir::runtime::aclnn
