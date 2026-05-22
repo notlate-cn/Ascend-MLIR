@@ -52,9 +52,14 @@ def phase1_outline_or_emit_json(args, work):
         run([AFIR_OPT, "--recognize-attention", "--recognize-layernorm",
              "--aclnn-finalize-decl",
              args.input_linalg, "-o", str(recognized)])
-        # Step a: --linalg-fold-unit-extent-dims
+        # Step a: --linalg-fold-unit-extent-dims + --canonicalize. Canonicalize
+        # folds away identity-copy generics (linalg.generic { yield %in }, e.g.
+        # the transposed-weight `.contiguous()` copies torch emits for nn.Linear)
+        # BEFORE outlining — otherwise each becomes a degenerate device kernel
+        # that --auto-fuse-codegen DCEs to an empty body (no tiling_infos →
+        # PackTilingData failure).
         intermediate = work / "model_unit_folded.mlir"
-        run([AFIR_OPT, "--linalg-fold-unit-extent-dims",
+        run([AFIR_OPT, "--linalg-fold-unit-extent-dims", "--canonicalize",
              str(recognized), "-o", str(intermediate)])
         # Step b: --auto-fuse-group-analysis + --auto-fuse-group-outline
         # Cube (matmul/batch_matmul) groups are routed to the aclnn matmul
