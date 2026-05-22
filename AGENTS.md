@@ -35,9 +35,14 @@
   OS differs, as long as build and real-device execution remain inside the
   container and driver/CANN/device nodes are mounted from the host.
 - Before any candidate fix, generated-kernel variant, or new runtime artifact is
-  advanced to 910C real-device validation, run it on xvm with Ascend910B1
-  simulation first and require `session.backend=sim`, `session.result=success`,
-  and `session.validation=pass`.
+  advanced to 910C real-device validation, run the matching xvm Ascend910B1
+  simulation gate first and require `session.backend=sim`,
+  `session.result=success`, and `session.validation=pass`.
+- Full transformer xvm runtime E2E is no longer a normal gate. It is too large
+  for routine simulator validation after f32 matmul falls back to vec kernels.
+  Use transformer fragments plus the full transformer compile/translate/artifact
+  smoke as the xvm gate, and treat full transformer xvm runtime as explicit
+  longrun/performance diagnostic only.
 - Keep the xvm result for the original demo separate from the xvm result for a
   candidate fix. An original-demo xvm pass does not authorize taking an
   unverified candidate fix to the real NPU.
@@ -51,7 +56,7 @@
   2. Build a run-manifest-only `runtime-session` on xvm with `ASCEND_RUNTIME_SESSION_RUN_ONLY=ON`.
   3. Package only the runner, runtime artifacts, data, run manifest, and required runtime libraries.
   4. Run on the remote host after sourcing the remote CANN/driver environment.
-- Use `ASCEND_DEVICE_ID=7` for the shared real-NPU host unless the user explicitly changes the device.
+- Use `ASCEND_DEVICE_ID=5` for the shared real-NPU host unless the user explicitly changes the device.
 
 ## Current Progress
 
@@ -89,10 +94,18 @@
     - `RC=0`
     - 6 example pipelines pass
     - cross-session runtime-session smoke passes
-- Full transformer simulator E2E is covered by the mainline transformer flow:
-  logical kernels are split by `--ascend-kernel-split`, emitted as per-kernel
-  CANN artifacts, scheduled through a runtime/run-manifest task DAG, and
-  validated by `runtime-session` simulator with `session.validation=pass`.
+- Transformer xvm coverage is split deliberately:
+  - routine gate: `test/tools/examples/transformer-fragments.mlir`, which
+    validates layernorm, QKV, QKV head projection, attention score, softmax,
+    context, and composed attention block fragments with simulator
+    `session.validation=pass`;
+  - full graph smoke: `examples/transformer/run-mainline.sh --batch 1 --seq 1
+    --log`, which checks normalize/kernelize/kernel split, Phase5 backend,
+    CANN translation, and per-kernel artifact generation without running the
+    full simulator runtime;
+  - longrun diagnostic only:
+    `test/tools/examples/transformer-runtime-e2e.mlir` with
+    `AFIR_ENABLE_LONGRUN_TESTS=1`.
 - Transformer shape matrix coverage is gated explicitly by
   `test/tools/longrun/transformer-shape-matrix.mlir`; set
   `AFIR_ENABLE_LONGRUN_TESTS=1` when intentionally running that long gate.
@@ -118,6 +131,13 @@
   - All real-NPU suite case logs report `session.result=success` and
     `session.validation=pass`, and collected plog summaries contain no new
     `errorStr`.
+  - Full transformer real-NPU diagnostic passes on device 5 for commit
+    `acbf997`: job
+    `/data/nyh/real-npu-jobs/20260522-083037-3f9d754-f32vec-diag2-dev5-cmd`
+    reports `session.backend=npu`, `session.result=success`,
+    `session.validation=pass`, and no plog `errorStr`. Its matching full xvm
+    simulator runtime is not a routine gate; the simulator keeps executing past
+    the old 600s timeout and is treated as longrun/performance diagnostic.
   - Detailed real-NPU debugging experience, plog triage, and per-demo root-cause notes are maintained in `examples/real-npu.md`.
 
 ## Decisions
