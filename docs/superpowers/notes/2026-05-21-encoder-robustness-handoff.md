@@ -228,3 +228,42 @@ Shares the main repo's prebuilt LLVM + submodules via symlinks; own `build/`.
 `ninja -C build afir-opt aclnn-backend` after edits; `afir-translate` is built.
 `AclnnOps.cpp` is compiled into the generated host at link time (no ninja needed
 for run_* changes to take effect in a run).
+
+## Transpose → aclnn (DONE, commit `16909f00`)
+Decided (with user, AF-doc-informed): the AscendC transpose codegen is unreliable
+(value-transpose intrinsic mis-handles tail-preserving perms → group0/group6
+zero/wrong; fractal/tile bugs for tail-transposing → group11 wrong at correct
+XBLOCK_X_0). AF's own transpose codegen only supports a fixed pattern set and
+needs a whole schedule machinery (keep-vs-eliminate, see AF doc
+`compiler/graph/optimize/autofuse/doc/transpose全流程说明.md`). So route ALL
+transpose → aclnn single-op fallback:
+- CanFuse.getFusionKind: any group with a linalg.transpose never fuses (singleton).
+- GroupOutline: stamp single-op transpose groups aclnn.op="Transpose"+aclnn.perm.
+- run_Transpose CPU ref + AclnnBackend.emitCall emits the perm literal.
+Encoder phase-1: 13 Transpose + 1 FA + 2 LayerNorm + 4 Matmul → aclnn.
+**FUTURE (user-requested): re-enable transpose participating in fusion** via
+AF-style "eliminate transpose" (propagate perm into consumers, delete node) —
+preserves fusion; the current singleton trades fusion for correctness. The fusion
+that was lost: a few transpose+broadcast (weight prep) and transpose+add (residual).
+
+## CURRENT WALL — AscendC broadcast/elementwise ZERO-OUTPUT (dominant)
+With transpose→aclnn, e2e reaches phase-3 but overall still max_diff 0.98 (was
+invariant across all transpose changes → the dominant error is elsewhere).
+Scanned all 11 AscendC kernel dumps: **8 are all-zero**. Of those, 3 are correct
+`linalg.fill(0)` init buffers (group3/14/21); the **5 genuinely broken** are:
+- group2/group20/group26: **leading-axis broadcast → zero** (e.g. group2
+  [64,192]→[8,64,192], map (d0,d1,d2)->(d1,d2); reads good input ~-0.14, writes
+  zero). NOT the XBLOCK≫extent class (XBLOCK=256 ≤ extent=12288). The broadcast_l2
+  + verbatim DataCopy-replicate codegen produces zero — a genuine broadcast
+  codegen bug (rank-expanding leading broadcast). These are weight broadcasts
+  feeding the aclnn batch_matmuls.
+- group5/group16: addf generics → zero, likely DOWNSTREAM of the zero broadcasts
+  (two-elewise add works, so add itself is fine).
+Phase-4 autotuner fails ("no variant passes") because it validates against the
+(zero) default dump as reference.
+NEXT options: (1) fix the leading-broadcast codegen (high leverage, 3+ sites);
+(2) route broadcast → aclnn (more unfusion — bias-adds fuse via broadcast);
+(3) eliminate the weight-broadcast by making run_Matmul accept an unbatched
+weight (removes group2/20/26 entirely). Repro: zero-scan
+`/tmp/enc_e2e/intermediates_default/*_out_0.npy`; group2 cpp shows broadcast_l2
++ emitasc.verbatim replicate loop.
