@@ -1717,10 +1717,31 @@ LogicalResult materializeSelectedTransposeTiles(func::FuncOp funcOp) {
     if (inType.getElementType() != outType.getElementType())
       continue;
 
-    auto selectedTile = transposeOp->getAttrOfType<DenseI64ArrayAttr>(
-        ascend::kScheduleSelectedTileShapeAttr);
     int64_t tileRows = ShapedType::kDynamic;
     int64_t tileCols = ShapedType::kDynamic;
+    ArrayRef<int64_t> outShape = outType.getShape();
+    auto deriveStaticFullInnerTile = [&]() -> bool {
+      if (ShapedType::isDynamic(outShape[0]) ||
+          ShapedType::isDynamic(outShape[1]))
+        return false;
+      unsigned elemBits = outType.getElementTypeBitWidth();
+      if (elemBits == 0 || elemBits % 8 != 0)
+        return false;
+      int64_t elemBytes = static_cast<int64_t>(elemBits / 8);
+      constexpr int64_t kTransposeBufferBudgetBytes = 48 * 1024;
+      int64_t fullBytes = outShape[0] * outShape[1] * elemBytes;
+      if (fullBytes <= kTransposeBufferBudgetBytes)
+        return false;
+      tileCols = outShape[1];
+      tileRows =
+          std::max<int64_t>(1, kTransposeBufferBudgetBytes /
+                                   std::max<int64_t>(1, tileCols * elemBytes));
+      tileRows = std::min(tileRows, outShape[0]);
+      return true;
+    };
+
+    auto selectedTile = transposeOp->getAttrOfType<DenseI64ArrayAttr>(
+        ascend::kScheduleSelectedTileShapeAttr);
     if (selectedTile) {
       if (selectedTile.asArrayRef().size() < 2)
         return transposeOp.emitError("selected rank-2 transpose tile requires "
@@ -1733,24 +1754,15 @@ LogicalResult materializeSelectedTransposeTiles(func::FuncOp funcOp) {
       if (ShapedType::isDynamic(tileCols) || tileCols <= 0)
         return transposeOp.emitError(
             "selected transpose tile requires a static positive inner tile");
+      if (!ShapedType::isDynamic(outShape[1]) && tileCols != outShape[1]) {
+        // GM rank-2 swap lowering consumes full output rows. A generic UB tile
+        // may cap the wrong dimension, so fall back to a full-inner row slice.
+        if (!deriveStaticFullInnerTile())
+          continue;
+      }
     } else {
-      ArrayRef<int64_t> outShape = outType.getShape();
-      if (ShapedType::isDynamic(outShape[0]) ||
-          ShapedType::isDynamic(outShape[1]))
+      if (!deriveStaticFullInnerTile())
         continue;
-      unsigned elemBits = outType.getElementTypeBitWidth();
-      if (elemBits == 0 || elemBits % 8 != 0)
-        continue;
-      int64_t elemBytes = static_cast<int64_t>(elemBits / 8);
-      constexpr int64_t kTransposeBufferBudgetBytes = 48 * 1024;
-      int64_t fullBytes = outShape[0] * outShape[1] * elemBytes;
-      if (fullBytes <= kTransposeBufferBudgetBytes)
-        continue;
-      tileCols = outShape[1];
-      tileRows =
-          std::max<int64_t>(1, kTransposeBufferBudgetBytes /
-                                   std::max<int64_t>(1, tileCols * elemBytes));
-      tileRows = std::min(tileRows, outShape[0]);
     }
 
     if (ShapedType::isDynamic(outType.getShape()[1]) ||
