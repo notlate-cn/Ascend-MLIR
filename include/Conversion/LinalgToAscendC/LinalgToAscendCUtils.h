@@ -120,6 +120,10 @@ LogicalResult materializeSelectedReductionTiles(func::FuncOp funcOp);
 /// data-move and compute conversion consume the linalg/memref surface.
 LogicalResult materializeSelectedAllParallelTiles(func::FuncOp funcOp);
 
+/// Materialize selected rank-2 GM transpose tiles as explicit scf loops before
+/// compute conversion lowers each tile.
+LogicalResult materializeSelectedTransposeTiles(func::FuncOp funcOp);
+
 /// Run the existing LinalgToAscendC lowering implementation on one function.
 /// This is shared by the legacy --linalg-to-ascendc pass and the Phase 5
 /// --ascend-compute-lower wrapper.

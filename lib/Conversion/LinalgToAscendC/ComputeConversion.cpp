@@ -77,12 +77,24 @@ std::string getVerbatimScalarTypeName(Type elemType) {
 
 void emitStridedGmToLocalCopy(OpBuilder &builder, Location loc, Type elemType,
                               Value dstLt, Value srcGt, Value rows,
-                              Value cols, Value srcRowStride) {
+                              Value cols, Value srcRowStride,
+                              Value srcBaseOffset = Value{}) {
+  bool useBaseOffset = false;
+  if (srcBaseOffset) {
+    auto constant = srcBaseOffset.getDefiningOp<arith::ConstantIndexOp>();
+    useBaseOffset = !constant || constant.value() != 0;
+  }
+  std::string srcTensor = useBaseOffset ? "_afir_src" : "$1";
   std::string elemTypeStr = getVerbatimScalarTypeName(elemType);
   std::string body = "{\n";
   body += "  uint32_t _afir_rows = (uint32_t)$2;\n";
   body += "  uint32_t _afir_cols = (uint32_t)$3;\n";
   body += "  uint32_t _afir_row_stride = (uint32_t)$4;\n";
+  if (useBaseOffset) {
+    body += "  uint64_t _afir_base = (uint64_t)$5;\n";
+    body += "  AscendC::GlobalTensor<" + elemTypeStr + "> _afir_src;\n";
+    body += "  _afir_src.SetGlobalBuffer($1.GetPhyAddr(_afir_base));\n";
+  }
   body += "  uint32_t _afir_block_bytes = _afir_cols * sizeof(" +
           elemTypeStr + ");\n";
   body += "  uint32_t _afir_gap_bytes = (_afir_row_stride - _afir_cols) * "
@@ -91,11 +103,12 @@ void emitStridedGmToLocalCopy(OpBuilder &builder, Location loc, Type elemType,
   body += "  if (_afir_gap_bytes == 0u) {\n";
   body += "    if ((_afir_count * sizeof(" + elemTypeStr +
           ")) % 32u == 0u) {\n";
-  body += "      AscendC::DataCopy($0, $1, _afir_count);\n";
+  body += "      AscendC::DataCopy($0, " + srcTensor + ", _afir_count);\n";
   body += "    } else {\n";
   body += "      for (uint32_t _afir_i = 0; _afir_i < _afir_count; "
           "++_afir_i)\n";
-  body += "        $0.SetValue(_afir_i, $1.GetValue(_afir_i));\n";
+  body += "        $0.SetValue(_afir_i, " + srcTensor +
+          ".GetValue(_afir_i));\n";
   body += "    }\n";
   body += "  } else if ((_afir_block_bytes % 32u) == 0u && "
           "(_afir_gap_bytes % 32u) == 0u) {\n";
@@ -104,7 +117,8 @@ void emitStridedGmToLocalCopy(OpBuilder &builder, Location loc, Type elemType,
           "_afir_gap_bytes, 0u, 0u};\n";
   body += "    AscendC::DataCopyPadExtParams<" + elemTypeStr +
           "> _afir_pad{false, 0, 0, static_cast<" + elemTypeStr + ">(0)};\n";
-  body += "    AscendC::DataCopyPad($0, $1, _afir_params, _afir_pad);\n";
+  body += "    AscendC::DataCopyPad($0, " + srcTensor +
+          ", _afir_params, _afir_pad);\n";
   body += "  } else {\n";
   body += "    for (uint32_t _afir_r = 0; _afir_r < _afir_rows; ++_afir_r) {\n";
   body += "      for (uint32_t _afir_c = 0; _afir_c < _afir_cols; ++_afir_c) "
@@ -112,15 +126,18 @@ void emitStridedGmToLocalCopy(OpBuilder &builder, Location loc, Type elemType,
   body += "        uint32_t _afir_local = _afir_r * _afir_cols + _afir_c;\n";
   body += "        uint64_t _afir_gm = (uint64_t)_afir_r * _afir_row_stride + "
           "_afir_c;\n";
-  body += "        $0.SetValue(_afir_local, $1.GetValue(_afir_gm));\n";
+  body += "        $0.SetValue(_afir_local, " + srcTensor +
+          ".GetValue(_afir_gm));\n";
   body += "      }\n";
   body += "    }\n";
   body += "  }\n";
   body += "  $0.SetSize(_afir_count);\n";
   body += "}";
-  builder.create<emitasc::VerbatimOp>(
-      loc, builder.getStringAttr(body),
-      ValueRange{dstLt, srcGt, rows, cols, srcRowStride});
+  SmallVector<Value> operands{dstLt, srcGt, rows, cols, srcRowStride};
+  if (useBaseOffset)
+    operands.push_back(srcBaseOffset);
+  builder.create<emitasc::VerbatimOp>(loc, builder.getStringAttr(body),
+                                      operands);
 }
 
 void emitLocalToLocalScalarCopy(OpBuilder &builder, Location loc, Type elemType,
@@ -837,6 +854,69 @@ LogicalResult lowerGmGenericToScalarLoops(OpBuilder &builder,
   return buildNest(buildNest, 0);
 }
 
+bool isContiguousRank2View(Value memref);
+Value getRank2RowStrideValue(OpBuilder &builder, Location loc, Value memref);
+
+Value materializeIndexValue(OpBuilder &builder, Location loc,
+                            OpFoldResult value) {
+  if (auto attr = value.dyn_cast<Attribute>())
+    return builder.create<arith::ConstantIndexOp>(
+        loc, cast<IntegerAttr>(attr).getInt());
+  return value.get<Value>();
+}
+
+bool isKnownZeroIndex(Value value) {
+  if (auto constant = value.getDefiningOp<arith::ConstantIndexOp>())
+    return constant.value() == 0;
+  return false;
+}
+
+FailureOr<std::pair<Value, Value>>
+getRank2BaseAndOffset(OpBuilder &builder, Location loc, Value memref) {
+  Value current = memref;
+  Value totalOffset = builder.create<arith::ConstantIndexOp>(loc, 0);
+
+  while (true) {
+    if (auto castOp = current.getDefiningOp<memref::CastOp>()) {
+      current = castOp.getSource();
+      continue;
+    }
+
+    auto subview = current.getDefiningOp<memref::SubViewOp>();
+    if (!subview)
+      break;
+
+    SmallVector<OpFoldResult> offsets = subview.getMixedOffsets();
+    if (offsets.size() < 2)
+      return failure();
+
+    Value rowOffset = materializeIndexValue(builder, loc, offsets[0]);
+    Value colOffset = materializeIndexValue(builder, loc, offsets[1]);
+    Value rowStride =
+        getRank2RowStrideValue(builder, loc, subview.getResult());
+    if (!rowStride)
+      return failure();
+
+    Value linearOffset = colOffset;
+    if (!isKnownZeroIndex(rowOffset)) {
+      Value rowPart = builder.create<arith::MulIOp>(loc, rowOffset, rowStride);
+      linearOffset = isKnownZeroIndex(colOffset)
+                         ? rowPart
+                         : builder.create<arith::AddIOp>(loc, rowPart,
+                                                         colOffset);
+    }
+    if (!isKnownZeroIndex(linearOffset))
+      totalOffset = isKnownZeroIndex(totalOffset)
+                        ? linearOffset
+                        : builder.create<arith::AddIOp>(loc, totalOffset,
+                                                        linearOffset);
+
+    current = subview.getSource();
+  }
+
+  return std::make_pair(current, totalOffset);
+}
+
 LogicalResult lowerRank2GmTransposeToLocalDataCopy(
     OpBuilder &builder, Location loc, Value inMemref, Value outMemref,
     ArrayRef<int64_t> permutation, Value pipe) {
@@ -844,7 +924,7 @@ LogicalResult lowerRank2GmTransposeToLocalDataCopy(
   auto outType = dyn_cast<MemRefType>(outMemref.getType());
   if (!inType || !outType || inType.getRank() != 2 || outType.getRank() != 2)
     return failure();
-  if (!inType.getLayout().isIdentity() || !outType.getLayout().isIdentity())
+  if (!isContiguousRank2View(outMemref))
     return failure();
   if (getMemorySpace(inType) != 0 || getMemorySpace(outType) != 0)
     return failure();
@@ -856,14 +936,36 @@ LogicalResult lowerRank2GmTransposeToLocalDataCopy(
   Type elemType = inType.getElementType();
   Value elemCount = computeElementCount(builder, loc, inMemref);
   Value byteCount = computeByteCount(builder, loc, inMemref);
+  FailureOr<std::pair<Value, Value>> srcBaseAndOffset =
+      getRank2BaseAndOffset(builder, loc, inMemref);
+  FailureOr<std::pair<Value, Value>> dstBaseAndOffset =
+      getRank2BaseAndOffset(builder, loc, outMemref);
+  if (failed(srcBaseAndOffset) || failed(dstBaseAndOffset))
+    return failure();
 
   Value srcGt =
       builder.create<GlobalTensorOp>(loc, GlobalTensorType::get(elemType));
-  builder.create<GlobalTensorSetGlobalBufferOp>(loc, srcGt, inMemref,
+  builder.create<GlobalTensorSetGlobalBufferOp>(loc, srcGt,
+                                                srcBaseAndOffset->first,
                                                 /*size=*/Value{});
   Value srcLt = createLocalTensorBuffer(builder, loc, pipe, TPosition::VECIN,
                                         elemType, byteCount);
-  builder.create<DataCopyL2Op>(loc, srcLt, srcGt, elemCount);
+  if (isContiguousRank2View(inMemref)) {
+    Value src = srcGt;
+    if (!isKnownZeroIndex(srcBaseAndOffset->second))
+      src = builder.create<GlobalTensorBracketOp>(
+          loc, GlobalTensorType::get(elemType), srcGt,
+          srcBaseAndOffset->second);
+    builder.create<DataCopyL2Op>(loc, srcLt, src, elemCount);
+  } else {
+    Value rows = getDimValue(builder, loc, inMemref, 0);
+    Value cols = getDimValue(builder, loc, inMemref, 1);
+    Value rowStride = getRank2RowStrideValue(builder, loc, inMemref);
+    if (!rowStride)
+      return failure();
+    emitStridedGmToLocalCopy(builder, loc, elemType, srcLt, srcGt, rows, cols,
+                             rowStride, srcBaseAndOffset->second);
+  }
 
   Value dstLt = createLocalTensorBuffer(builder, loc, pipe, TPosition::VECCALC,
                                         elemType, byteCount);
@@ -871,9 +973,15 @@ LogicalResult lowerRank2GmTransposeToLocalDataCopy(
 
   Value dstGt =
       builder.create<GlobalTensorOp>(loc, GlobalTensorType::get(elemType));
-  builder.create<GlobalTensorSetGlobalBufferOp>(loc, dstGt, outMemref,
+  builder.create<GlobalTensorSetGlobalBufferOp>(loc, dstGt,
+                                                dstBaseAndOffset->first,
                                                 /*size=*/Value{});
-  builder.create<DataCopyL2Op>(loc, dstGt, dstLt, elemCount);
+  Value dst = dstGt;
+  if (!isKnownZeroIndex(dstBaseAndOffset->second))
+    dst = builder.create<GlobalTensorBracketOp>(
+        loc, GlobalTensorType::get(elemType), dstGt,
+        dstBaseAndOffset->second);
+  builder.create<DataCopyL2Op>(loc, dst, dstLt, elemCount);
   return success();
 }
 
@@ -1024,6 +1132,67 @@ FailureOr<unsigned> getSingleDimProjection(AffineMap map) {
 bool isRank2IdentityMap(AffineMap map) {
   return map.getNumDims() == 2 && map.getNumResults() == 2 &&
          map.isIdentity();
+}
+
+bool isRank2SwapPermutation(ArrayRef<int64_t> permutation) {
+  return permutation.size() == 2 && permutation[0] == 1 &&
+         permutation[1] == 0;
+}
+
+std::optional<int64_t> getStaticIndexValue(OpFoldResult ofr) {
+  if (auto attr = ofr.dyn_cast<Attribute>())
+    return cast<IntegerAttr>(attr).getInt();
+  if (auto value = ofr.dyn_cast<Value>())
+    if (auto constant = value.getDefiningOp<arith::ConstantIndexOp>())
+      return constant.value();
+  return std::nullopt;
+}
+
+bool isContiguousRank2View(Value memref) {
+  auto type = dyn_cast<MemRefType>(memref.getType());
+  if (!type || type.getRank() != 2)
+    return false;
+  if (type.getLayout().isIdentity())
+    return true;
+
+  auto [strides, offset] = type.getStridesAndOffset();
+  (void)offset;
+  if (strides.size() != 2 || strides[0] == ShapedType::kDynamic ||
+      strides[1] != 1)
+    return false;
+
+  if (!ShapedType::isDynamic(type.getShape()[1]))
+    return type.getShape()[1] == strides[0];
+
+  auto subview = memref.getDefiningOp<memref::SubViewOp>();
+  if (!subview)
+    return false;
+  SmallVector<OpFoldResult> sizes = subview.getMixedSizes();
+  if (sizes.size() < 2)
+    return false;
+  std::optional<int64_t> innerSize = getStaticIndexValue(sizes[1]);
+  return innerSize && *innerSize == strides[0];
+}
+
+Value getRank2RowStrideValue(OpBuilder &builder, Location loc, Value memref) {
+  auto type = dyn_cast<MemRefType>(memref.getType());
+  if (!type || type.getRank() != 2)
+    return Value{};
+
+  auto [strides, offset] = type.getStridesAndOffset();
+  (void)offset;
+  if (strides.size() == 2 && strides[0] != ShapedType::kDynamic)
+    return builder.create<arith::ConstantIndexOp>(loc, strides[0]);
+
+  Value root = memref;
+  while (auto subview = root.getDefiningOp<memref::SubViewOp>())
+    root = subview.getSource();
+
+  auto rootType = dyn_cast<MemRefType>(root.getType());
+  if (rootType && rootType.getRank() == 2)
+    return getDimValue(builder, loc, root, 1);
+
+  return getDimValue(builder, loc, memref, 1);
 }
 
 bool isRank2BroadcastTransposeMap(AffineMap map) {
@@ -1516,6 +1685,103 @@ LogicalResult materializeSelectedReductionTiles(func::FuncOp funcOp) {
     if (auto allocOp = outMemref.getDefiningOp<memref::AllocOp>())
       if (allocOp->use_empty())
         allocOp.erase();
+  }
+
+  return success();
+}
+
+LogicalResult materializeSelectedTransposeTiles(func::FuncOp funcOp) {
+  OpBuilder builder(funcOp.getContext());
+  SmallVector<linalg::TransposeOp> candidates;
+  funcOp.walk([&](linalg::TransposeOp op) {
+    if (op->getParentOfType<scf::ForOp>())
+      return;
+    if (op->getAttrOfType<DenseI64ArrayAttr>(
+            ascend::kScheduleSelectedTileShapeAttr))
+      candidates.push_back(op);
+  });
+
+  for (linalg::TransposeOp transposeOp : candidates) {
+    FailureOr<TransposeLoweringSpec> spec =
+        buildTransposeLoweringSpec(transposeOp);
+    if (failed(spec) || !isRank2SwapPermutation(spec->permutation))
+      continue;
+
+    Value inMemref = transposeOp.getDpsInputOperand(0)->get();
+    Value outMemref = transposeOp.getDpsInitOperand(0)->get();
+    auto inType = dyn_cast<MemRefType>(inMemref.getType());
+    auto outType = dyn_cast<MemRefType>(outMemref.getType());
+    if (!inType || !outType || inType.getRank() != 2 ||
+        outType.getRank() != 2)
+      continue;
+    if (getMemorySpace(inType) != 0 || getMemorySpace(outType) != 0)
+      continue;
+    if (inType.getElementType() != outType.getElementType())
+      continue;
+
+    auto selectedTile = transposeOp->getAttrOfType<DenseI64ArrayAttr>(
+        ascend::kScheduleSelectedTileShapeAttr);
+    if (!selectedTile || selectedTile.asArrayRef().size() < 2)
+      return transposeOp.emitError("selected rank-2 transpose tile requires "
+                                   "at least two dimensions");
+
+    int64_t tileRows = selectedTile.asArrayRef()[0];
+    int64_t tileCols = selectedTile.asArrayRef()[1];
+    if (ShapedType::isDynamic(tileRows) || tileRows <= 0)
+      return transposeOp.emitError("selected transpose tile requires a static "
+                                   "positive outer tile");
+    if (ShapedType::isDynamic(tileCols) || tileCols <= 0)
+      return transposeOp.emitError("selected transpose tile requires a static "
+                                   "positive inner tile");
+
+    if (ShapedType::isDynamic(outType.getShape()[1]) ||
+        tileCols != outType.getShape()[1])
+      continue;
+
+    Location loc = transposeOp.getLoc();
+    builder.setInsertionPoint(transposeOp);
+    Value zero = builder.create<arith::ConstantIndexOp>(loc, 0);
+    Value step = builder.create<arith::ConstantIndexOp>(loc, tileRows);
+    Value rows = getDimValue(builder, loc, outMemref, 0);
+    auto forOp = builder.create<scf::ForOp>(loc, zero, rows, step);
+    forOp->setAttr("ascendc.parallel", builder.getBoolAttr(true));
+
+    OpBuilder bodyBuilder(funcOp.getContext());
+    bodyBuilder.setInsertionPointToStart(forOp.getBody());
+    Value remaining =
+        bodyBuilder.create<arith::SubIOp>(loc, rows, forOp.getInductionVar());
+    Value tileRowsValue =
+        bodyBuilder.create<arith::MinSIOp>(loc, step, remaining);
+
+    OpFoldResult zeroAttr = bodyBuilder.getIndexAttr(0);
+    OpFoldResult oneAttr = bodyBuilder.getIndexAttr(1);
+    OpFoldResult fullInnerAttr = bodyBuilder.getIndexAttr(tileCols);
+    OpFoldResult rowOffset = forOp.getInductionVar();
+    OpFoldResult tileRowsSize = tileRowsValue;
+
+    Value inputTile =
+        bodyBuilder
+            .create<memref::SubViewOp>(
+                loc, inMemref,
+                SmallVector<OpFoldResult>{zeroAttr, rowOffset},
+                SmallVector<OpFoldResult>{fullInnerAttr, tileRowsSize},
+                SmallVector<OpFoldResult>{oneAttr, oneAttr})
+            .getResult();
+    Value outputTile =
+        bodyBuilder
+            .create<memref::SubViewOp>(
+                loc, outMemref,
+                SmallVector<OpFoldResult>{rowOffset, zeroAttr},
+                SmallVector<OpFoldResult>{tileRowsSize, fullInnerAttr},
+                SmallVector<OpFoldResult>{oneAttr, oneAttr})
+            .getResult();
+
+    IRMapping mapper;
+    mapper.map(inMemref, inputTile);
+    mapper.map(outMemref, outputTile);
+    Operation *cloned = bodyBuilder.clone(*transposeOp, mapper);
+    cloned->removeAttr(ascend::kScheduleSelectedTileShapeAttr);
+    transposeOp.erase();
   }
 
   return success();

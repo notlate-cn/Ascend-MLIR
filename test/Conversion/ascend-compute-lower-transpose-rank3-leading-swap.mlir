@@ -15,6 +15,28 @@ func.func @named_rank2_leading_swap_gm(%src: memref<384x128xf32>,
   return
 }
 
+// CHECK-LABEL: func.func @named_rank2_leading_swap_gm_selected_tile
+// CHECK: scf.for %{{.*}} = %c0 to %c128 step %c32
+// CHECK-NOT: memref.subview
+// CHECK: ascendc.global_tensor.set_global_buffer %{{.*}}, %arg0
+// CHECK: emitasc.verbatim
+// CHECK-SAME: GetPhyAddr
+// CHECK-SAME: DataCopyPad($0, _afir_src
+// CHECK: ascendc.transpose
+// CHECK: ascendc.global_tensor.set_global_buffer %{{.*}}, %arg1
+// CHECK: ascendc.global_tensor.bracket
+// CHECK-NOT: linalg.transpose
+func.func @named_rank2_leading_swap_gm_selected_tile(
+    %src: memref<384x128xf32>,
+    %dst: memref<128x384xf32>) {
+  linalg.transpose
+      {ascend.schedule.selected_tile_shape = array<i64: 32, 384>}
+      ins(%src : memref<384x128xf32>)
+      outs(%dst : memref<128x384xf32>)
+      permutation = [1, 0]
+  return
+}
+
 // CHECK-LABEL: func.func @named_rank3_leading_swap_gm
 // CHECK: scf.for
 // CHECK: memref.load
