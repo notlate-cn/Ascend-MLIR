@@ -16,6 +16,7 @@
 
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
+#include "mlir/Dialect/Math/IR/Math.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
@@ -1994,11 +1995,42 @@ LogicalResult convertCompute(func::FuncOp funcOp, AscendCBufferContext &ctx) {
       } // end switch
     }
 
-    if (outQueue)
+    // The body-walk writes every op result into a single in-place accumulator
+    // (accumLt).  That is only safe for a linear chain where each value is read
+    // exactly once: if any value (a block-arg input OR an intermediate result)
+    // is read by more than one op, the in-place overwrite clobbers a value that
+    // is still needed later (e.g. fused bias-add+GELU reads x = bias-add result
+    // in both x/sqrt2 and the final *x → x*x instead of x*0.5(1+erf)).  For such
+    // "DAG" bodies, give each op its own fresh VECCALC dst so no value is
+    // overwritten while live.  Linear bodies keep the cheap in-place accumulator.
+    Block &bodyBlock = *genOp.getBody();
+    bool dagBody = false;
+    {
+      llvm::SmallDenseMap<Value, unsigned> useCount;
+      for (Operation &bodyOp : bodyBlock.without_terminator())
+        for (Value operand : bodyOp.getOperands()) {
+          bool counts = false;
+          if (auto ba = dyn_cast<BlockArgument>(operand))
+            counts = ba.getArgNumber() < numInputs;
+          else if (operand.getDefiningOp() &&
+                   operand.getDefiningOp()->getBlock() == &bodyBlock)
+            counts = true; // intermediate body result
+          if (counts && ++useCount[operand] > 1)
+            dagBody = true;
+        }
+    }
+
+    if (outQueue && !dagBody)
       accumLt = allocTensor(builder, loc, outQueue, elemType);
+    else if (outQueue)
+      accumLt = allocVeccalc(builder, loc, elemType, bufferDimSizes).second;
 
     // ---- Step 2: Walk body and inline arith ops onto VECCALC tensors ----
-    Block &bodyBlock = *genOp.getBody();
+    // Per-op dst: a fresh VECCALC for DAG bodies, else the in-place accumulator.
+    auto nextDst = [&]() -> Value {
+      return dagBody ? allocVeccalc(builder, loc, elemType, bufferDimSizes).second
+                     : accumLt;
+    };
     unsigned numBodyArgs = bodyBlock.getNumArguments();
     SmallVector<Value> argToLt(numBodyArgs);
     for (unsigned i = 0; i < numInputs; ++i)
@@ -2028,42 +2060,64 @@ LogicalResult convertCompute(func::FuncOp funcOp, AscendCBufferContext &ctx) {
         Value lhs = resolve(addOp.getLhs());
         Value rhs = resolve(addOp.getRhs());
         if (!lhs || !rhs) continue;
-        auto addL2Op =
-            builder.create<AddL2Op>(loc, accumLt, lhs, rhs, totalElems);
+        Value dst = nextDst();
+        auto addL2Op = builder.create<AddL2Op>(loc, dst, lhs, rhs, totalElems);
         copyAscendCUnitAttr(genOp.getOperation(), addL2Op.getOperation());
-        valToLt[addOp.getResult()] = accumLt;
+        valToLt[addOp.getResult()] = dst;
       } else if (auto subOp = dyn_cast<arith::SubFOp>(bodyOp)) {
         Value lhs = resolve(subOp.getLhs());
         Value rhs = resolve(subOp.getRhs());
         if (!lhs || !rhs) continue;
-        auto subL2Op =
-            builder.create<SubL2Op>(loc, accumLt, lhs, rhs, totalElems);
+        Value dst = nextDst();
+        auto subL2Op = builder.create<SubL2Op>(loc, dst, lhs, rhs, totalElems);
         copyAscendCUnitAttr(genOp.getOperation(), subL2Op.getOperation());
-        valToLt[subOp.getResult()] = accumLt;
+        valToLt[subOp.getResult()] = dst;
       } else if (auto mulOp = dyn_cast<arith::MulFOp>(bodyOp)) {
         Value lhs = resolve(mulOp.getLhs());
         Value rhs = resolve(mulOp.getRhs());
         if (!lhs || !rhs) continue;
-        auto mulL2Op =
-            builder.create<MulL2Op>(loc, accumLt, lhs, rhs, totalElems);
+        Value dst = nextDst();
+        auto mulL2Op = builder.create<MulL2Op>(loc, dst, lhs, rhs, totalElems);
         copyAscendCUnitAttr(genOp.getOperation(), mulL2Op.getOperation());
-        valToLt[mulOp.getResult()] = accumLt;
+        valToLt[mulOp.getResult()] = dst;
       } else if (auto maxOp = dyn_cast<arith::MaximumFOp>(bodyOp)) {
         Value lhs = resolve(maxOp.getLhs());
         Value rhs = resolve(maxOp.getRhs());
         if (!lhs || !rhs) continue;
-        auto maxL2Op =
-            builder.create<MaxL2Op>(loc, accumLt, lhs, rhs, totalElems);
+        Value dst = nextDst();
+        auto maxL2Op = builder.create<MaxL2Op>(loc, dst, lhs, rhs, totalElems);
         copyAscendCUnitAttr(genOp.getOperation(), maxL2Op.getOperation());
-        valToLt[maxOp.getResult()] = accumLt;
+        valToLt[maxOp.getResult()] = dst;
       } else if (auto minOp = dyn_cast<arith::MinimumFOp>(bodyOp)) {
         Value lhs = resolve(minOp.getLhs());
         Value rhs = resolve(minOp.getRhs());
         if (!lhs || !rhs) continue;
-        auto minL2Op =
-            builder.create<MinL2Op>(loc, accumLt, lhs, rhs, totalElems);
+        Value dst = nextDst();
+        auto minL2Op = builder.create<MinL2Op>(loc, dst, lhs, rhs, totalElems);
         copyAscendCUnitAttr(genOp.getOperation(), minL2Op.getOperation());
-        valToLt[minOp.getResult()] = accumLt;
+        valToLt[minOp.getResult()] = dst;
+      } else if (auto divOp = dyn_cast<arith::DivFOp>(bodyOp)) {
+        Value lhs = resolve(divOp.getLhs());
+        Value rhs = resolve(divOp.getRhs());
+        if (!lhs || !rhs) continue;
+        Value dst = nextDst();
+        auto divL2Op = builder.create<DivL2Op>(loc, dst, lhs, rhs, totalElems);
+        copyAscendCUnitAttr(genOp.getOperation(), divL2Op.getOperation());
+        valToLt[divOp.getResult()] = dst;
+      } else if (auto erfOp = dyn_cast<math::ErfOp>(bodyOp)) {
+        // AscendC::Erf forbids src/dst overlap, so it cannot reuse the in-place
+        // accumLt — emit into a fresh VECCALC tensor. Uses the simple overload
+        // (no caller tmp buffer); the math advanced-API manages its own scratch.
+        Value src = resolve(erfOp.getOperand());
+        if (!src) continue;
+        Value erfDst = allocVeccalc(builder, loc, elemType, bufferDimSizes).second;
+        std::string ets = cppScalarName(elemType);
+        std::string tmpl =
+            "AscendC::Erf<" + ets + ", false>($0, $1, (uint32_t)$2)";
+        auto vb = builder.create<emitasc::VerbatimOp>(
+            loc, builder.getStringAttr(tmpl), ValueRange({erfDst, src, totalElems}));
+        copyAscendCUnitAttr(genOp.getOperation(), vb.getOperation());
+        valToLt[erfOp.getResult()] = erfDst;
       } else if (!isa<arith::ConstantOp>(bodyOp)) {
         // Fail loudly rather than silently emitting a kernel that drops this op.
         genOp.emitError("LinalgToAscendC: unsupported op in linalg.generic "
