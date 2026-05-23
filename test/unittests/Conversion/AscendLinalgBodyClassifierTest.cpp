@@ -107,8 +107,8 @@ module {
   AscendBackendSupportMatrix matrix;
   EXPECT_EQ(classifyLinalgComputeKind(generic.getOperation(), matrix),
             ComputeKind::FusedElementwise);
-  EXPECT_TRUE(isSupportedPhase5VectorOutput(generic, matrix));
-  EXPECT_TRUE(isSupportedPhase5FinalOutput(generic, matrix));
+  EXPECT_TRUE(isSupportedBackendVectorOutput(generic, matrix));
+  EXPECT_TRUE(isSupportedBackendFinalOutput(generic, matrix));
 }
 
 TEST(AscendLinalgBodyClassifierTest,
@@ -149,8 +149,8 @@ module {
   AscendBackendSupportMatrix matrix;
   EXPECT_EQ(classifyLinalgComputeKind(generic.getOperation(), matrix),
             ComputeKind::FusedElementwise);
-  EXPECT_TRUE(isSupportedPhase5VectorOutput(generic, matrix));
-  EXPECT_TRUE(isSupportedPhase5FinalOutput(generic, matrix));
+  EXPECT_TRUE(isSupportedBackendVectorOutput(generic, matrix));
+  EXPECT_TRUE(isSupportedBackendFinalOutput(generic, matrix));
 }
 
 TEST(AscendLinalgBodyClassifierTest, ClassifiesSupportedReductionBodyOnce) {
@@ -181,9 +181,9 @@ module {
   AscendBackendSupportMatrix matrix;
   EXPECT_EQ(classifyLinalgComputeKind(generic.getOperation(), matrix),
             ComputeKind::ReductionAdd);
-  EXPECT_NE(classifyPhase5ReductionBody(generic, matrix), ComputeKind::Unknown);
-  EXPECT_FALSE(isSupportedPhase5VectorOutput(generic, matrix));
-  EXPECT_TRUE(isSupportedPhase5FinalOutput(generic, matrix));
+  EXPECT_NE(classifyBackendReductionBody(generic, matrix), ComputeKind::Unknown);
+  EXPECT_FALSE(isSupportedBackendVectorOutput(generic, matrix));
+  EXPECT_TRUE(isSupportedBackendFinalOutput(generic, matrix));
 }
 
 TEST(AscendLinalgBodyClassifierTest, ClassifiesSupportedGatherBodyOnce) {
@@ -222,13 +222,13 @@ module {
   AscendBackendSupportMatrix matrix;
   EXPECT_EQ(classifyLinalgComputeKind(generic.getOperation(), matrix),
             ComputeKind::VectorGather);
-  EXPECT_FALSE(isSupportedPhase5VectorOutput(generic, matrix));
-  EXPECT_TRUE(isSupportedPhase5GatherOutput(generic, matrix));
-  EXPECT_TRUE(isSupportedPhase5FinalOutput(generic, matrix));
+  EXPECT_FALSE(isSupportedBackendVectorOutput(generic, matrix));
+  EXPECT_TRUE(isSupportedBackendGatherOutput(generic, matrix));
+  EXPECT_TRUE(isSupportedBackendFinalOutput(generic, matrix));
 }
 
 TEST(AscendLinalgBodyClassifierTest,
-     ClassifiesGmScalarGenericButRejectsPhase5Consumers) {
+     ClassifiesGmScalarGenericButRejectsBackendConsumers) {
   MLIRContext context;
   OwningOpRef<ModuleOp> module = parseClassifierModule(
       context, R"mlir(
@@ -259,8 +259,8 @@ module {
   AscendBackendSupportMatrix matrix;
   EXPECT_EQ(classifyLinalgComputeKind(generic.getOperation(), matrix),
             ComputeKind::ScalarGeneric);
-  EXPECT_FALSE(isSupportedPhase5VectorOutput(generic, matrix));
-  EXPECT_FALSE(isSupportedPhase5FinalOutput(generic, matrix));
+  EXPECT_FALSE(isSupportedBackendVectorOutput(generic, matrix));
+  EXPECT_FALSE(isSupportedBackendFinalOutput(generic, matrix));
 }
 
 TEST(AscendLinalgBodyClassifierTest, SupportsRegisteredUnaryVectorBody) {
@@ -293,7 +293,7 @@ module {
   AscendBackendSupportMatrix matrix;
   EXPECT_EQ(classifyLinalgComputeKind(generic.getOperation(), matrix),
             ComputeKind::FusedElementwise);
-  EXPECT_TRUE(isSupportedPhase5VectorOutput(generic, matrix));
+  EXPECT_TRUE(isSupportedBackendVectorOutput(generic, matrix));
 }
 
 TEST(AscendLinalgBodyClassifierTest, RejectsUnsupportedVectorDtype) {
@@ -328,5 +328,5 @@ module {
   AscendBackendSupportMatrix matrix;
   EXPECT_EQ(classifyLinalgComputeKind(generic.getOperation(), matrix),
             ComputeKind::Unknown);
-  EXPECT_FALSE(isSupportedPhase5VectorOutput(generic, matrix));
+  EXPECT_FALSE(isSupportedBackendVectorOutput(generic, matrix));
 }

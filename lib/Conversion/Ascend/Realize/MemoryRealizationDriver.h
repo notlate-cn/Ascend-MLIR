@@ -14,7 +14,7 @@
 
 namespace mlir::afir::ascend::realize {
 
-struct Phase5BridgeMaterializationCounts {
+struct TranslateBridgeMaterializationCounts {
   unsigned materializedAllocCount = 0;
   unsigned materializedCopyCount = 0;
 };
@@ -37,14 +37,14 @@ public:
 
   FailureOr<llvm::StringMap<unsigned>>
   annotateMemorySpaces(ModuleOp module) const;
-  FailureOr<llvm::StringMap<Phase5BridgeMaterializationCounts>>
+  FailureOr<llvm::StringMap<TranslateBridgeMaterializationCounts>>
   materializeMovementSteps(ModuleOp module,
                            MutableArrayRef<RealizePlanBundle> bundles) const;
-  FailureOr<llvm::StringMap<Phase5BridgeMaterializationCounts>>
-  materializePhase5Bridge(ModuleOp module) const;
+  FailureOr<llvm::StringMap<TranslateBridgeMaterializationCounts>>
+  materializeTranslateMemoryBridge(ModuleOp module) const;
   void markMemorySpaceMaterialized(
       MemoryRealizationPlan &plan, unsigned annotationCount,
-      const Phase5BridgeMaterializationCounts &materializationCounts) const;
+      const TranslateBridgeMaterializationCounts &materializationCounts) const;
 };
 
 } // namespace mlir::afir::ascend::realize

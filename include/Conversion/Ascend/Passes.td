@@ -32,8 +32,9 @@ def AscendPrintTargetProfilePass
 def AscendNormalizePass : Pass<"ascend-normalize", "mlir::ModuleOp"> {
   let summary = "Normalize supported entry IR for the Ascend MLIR pipeline";
   let description = [{
-    Skeleton pass for the Ascend Normalize stage. It preserves IR unchanged in this
-    MVP task and only emits an optional debug stage header.
+    Validates supported entry dialects for the Ascend pipeline, preserves the
+    normalized IR shape, stamps the module with the normalized marker, and emits
+    optional debug-stage reporting.
   }];
   let constructor = "mlir::afir::createAscendNormalizePass()";
   let dependentDialects = [
@@ -183,7 +184,7 @@ def AscendRealizePass : Pass<"ascend-realize", "mlir::ModuleOp"> {
 def AscendComputeLowerPass : Pass<"ascend-compute-lower", "mlir::func::FuncOp"> {
   let summary = "Lower supported memory-realized linalg and copies to AscendC";
   let description = [{
-    Phase 5 compute lowering. It annotates kernel kind and mix matmul ABI
+    Translate compute lowering. It annotates kernel kind and mix matmul ABI
     semantics when needed, lowers supported linalg compute operations and
     memref.copy movement to AscendC, and fails closed on support-matrix
     diagnostics.
@@ -199,9 +200,10 @@ def AscendComputeLowerPass : Pass<"ascend-compute-lower", "mlir::func::FuncOp"> 
 }
 
 def AscendParallelizePass : Pass<"ascend-parallelize", "mlir::ModuleOp"> {
-  let summary = "Run Phase 5 Ascend kernel dispatch lowering";
+  let summary = "Lower Ascend kernel dispatch to explicit parallel loops";
   let description = [{
-    Phase 5 Ascend kernel dispatch lowering.
+    Lowers Ascend kernel dispatch structure to explicit parallel loops for the
+    internal AscendC kernel construction surface.
   }];
   let constructor = "mlir::afir::createAscendParallelizePass()";
   let dependentDialects = [
@@ -214,7 +216,7 @@ def AscendParallelizePass : Pass<"ascend-parallelize", "mlir::ModuleOp"> {
 
 def AscendPrepareForEmitPass
     : Pass<"ascend-prepare-for-emit", "mlir::ModuleOp"> {
-  let summary = "Prepare Phase 5 AscendC kernel ABI data";
+  let summary = "Prepare AscendC kernel ABI data for emission";
   let description = [{
     Prepares AscendC functions for emission. It also derives
     ascendc.kernel_kind after prepare-for-emit so downstream artifact
@@ -232,9 +234,9 @@ def AscendPrepareForEmitPass
 
 def AscendCanonicalizeCannSignaturePass
     : Pass<"ascend-canonicalize-cann-signature", "mlir::ModuleOp"> {
-  let summary = "Canonicalize Phase 5 Ascend kernel signatures to CANN ABI";
+  let summary = "Canonicalize Ascend kernel signatures to CANN ABI";
   let description = [{
-    Canonicalizes Phase 5 Ascend kernel signatures to the CANN runtime ABI.
+    Canonicalizes Ascend kernel signatures to the CANN runtime ABI.
   }];
   let constructor = "mlir::afir::createAscendCanonicalizeCannSignaturePass()";
   let dependentDialects = [
