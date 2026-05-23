@@ -7,8 +7,8 @@
 #ifndef ASCEND_MLIR_CONVERSION_ASCEND_PASSES_H
 #define ASCEND_MLIR_CONVERSION_ASCEND_PASSES_H
 
-#include "Conversion/Ascend/Backend/Lowering/ComputeLoweringPass.h"
-#include "Conversion/Ascend/Backend/Wrappers/BackendWrapperPasses.h"
+#include "Conversion/Ascend/Translate/KernelIR/ComputeLoweringPass.h"
+#include "Conversion/Ascend/Translate/PreEmit/PreEmitPublicPasses.h"
 #include "Conversion/Ascend/Kernelize/KernelizePass.h"
 #include "Conversion/Ascend/Normalize/NormalizePass.h"
 #include "Conversion/Ascend/Realize/RealizePass.h"

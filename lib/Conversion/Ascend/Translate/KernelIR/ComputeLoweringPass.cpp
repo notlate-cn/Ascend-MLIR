@@ -4,11 +4,11 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "Conversion/Ascend/Backend/Lowering/ComputeLoweringPass.h"
-#include "Conversion/Ascend/Backend/Lowering/BackendSupportMatrix.h"
-#include "Conversion/Ascend/Backend/Lowering/LinalgBodyClassifier.h"
-#include "Conversion/Ascend/Backend/Lowering/LinalgToAscendCUtils.h"
-#include "../Codegen/CodegenPasses.h"
+#include "Conversion/Ascend/Translate/KernelIR/ComputeLoweringPass.h"
+#include "Conversion/Ascend/Translate/KernelIR/Capabilities/BackendSupportMatrix.h"
+#include "Conversion/Ascend/Translate/KernelIR/Capabilities/LinalgBodyClassifier.h"
+#include "Conversion/Ascend/Translate/KernelIR/KernelIRUtils.h"
+#include "../PreEmit/PreEmitInternalPasses.h"
 #include "../../Kernelize/KernelizeInternalPasses.h"
 
 #include "mlir/Dialect/Func/IR/FuncOps.h"
@@ -88,7 +88,7 @@ struct AscendComputeLowerPass
       signalPassFailure();
       return;
     }
-    if (failed(lowerLinalgToAscendC(funcOp))) {
+    if (failed(lowerLinalgToKernelIR(funcOp))) {
       signalPassFailure();
       return;
     }

@@ -4,7 +4,7 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "Conversion/Ascend/Backend/Lowering/LinalgBodyClassifier.h"
+#include "Conversion/Ascend/Translate/KernelIR/Capabilities/LinalgBodyClassifier.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"

@@ -13,7 +13,7 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "CodegenPasses.h"
+#include "PreEmitInternalPasses.h"
 #include "ascir/Dialect/Asc/Utils/Attributes.h"
 #include "ascir/Dialect/EmitAsc/IR/EmitAsc.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
@@ -210,14 +210,14 @@ static bool shouldEraseModuleChild(Operation &child) {
 
 } // namespace
 
-struct AscendCodegenCanonicalizeCannSignaturePass
-    : public PassWrapper<AscendCodegenCanonicalizeCannSignaturePass,
+struct AscendPreEmitCanonicalizeCannSignaturePass
+    : public PassWrapper<AscendPreEmitCanonicalizeCannSignaturePass,
                          OperationPass<ModuleOp>> {
   MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(
-      AscendCodegenCanonicalizeCannSignaturePass)
+      AscendPreEmitCanonicalizeCannSignaturePass)
 
   StringRef getArgument() const final {
-    return "ascend-codegen-canonicalize-cann-signature-internal";
+    return "ascend-preemit-canonicalize-cann-signature-internal";
   }
 
   StringRef getDescription() const final {
@@ -252,8 +252,8 @@ struct AscendCodegenCanonicalizeCannSignaturePass
   }
 };
 
-std::unique_ptr<Pass> createAscendCodegenCanonicalizeCannSignaturePass() {
-  return std::make_unique<AscendCodegenCanonicalizeCannSignaturePass>();
+std::unique_ptr<Pass> createAscendPreEmitCanonicalizeCannSignaturePass() {
+  return std::make_unique<AscendPreEmitCanonicalizeCannSignaturePass>();
 }
 
 } // namespace mlir::afir

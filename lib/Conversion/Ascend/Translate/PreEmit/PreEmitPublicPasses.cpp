@@ -1,11 +1,11 @@
-//===- BackendWrapperPasses.cpp - Ascend backend wrapper passes -----------===//
+//===- PreEmitPublicPasses.cpp - Ascend pre-emit public passes -----------===//
 //
 // Part of the Ascend-MLIR Project
 //
 //===----------------------------------------------------------------------===//
 
-#include "Conversion/Ascend/Backend/Wrappers/BackendWrapperPasses.h"
-#include "../Codegen/CodegenPasses.h"
+#include "Conversion/Ascend/Translate/PreEmit/PreEmitPublicPasses.h"
+#include "PreEmitInternalPasses.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
@@ -32,7 +32,7 @@ struct AscendParallelizePass
     : public ::impl::AscendParallelizePassBase<AscendParallelizePass> {
   void runOnOperation() override {
     OpPassManager pm("builtin.module");
-    pm.nest<func::FuncOp>().addPass(createAscendCodegenParallelizePass());
+    pm.nest<func::FuncOp>().addPass(createAscendPreEmitParallelizePass());
     if (failed(runPipeline(pm, getOperation())))
       signalPassFailure();
   }
@@ -42,9 +42,9 @@ struct AscendPrepareForEmitPass
     : public ::impl::AscendPrepareForEmitPassBase<AscendPrepareForEmitPass> {
   void runOnOperation() override {
     OpPassManager pm("builtin.module");
-    pm.addPass(createAscendCodegenPrepareForEmitPass());
+    pm.addPass(createAscendPreEmitPrepareForEmitPass());
     pm.nest<func::FuncOp>().addPass(
-        createAscendCodegenAnnotateKernelKindPass());
+        createAscendPreEmitAnnotateKernelKindPass());
     if (failed(runPipeline(pm, getOperation())))
       signalPassFailure();
   }
@@ -55,7 +55,7 @@ struct AscendCanonicalizeCannSignaturePass
           AscendCanonicalizeCannSignaturePass> {
   void runOnOperation() override {
     OpPassManager pm("builtin.module");
-    pm.addPass(createAscendCodegenCanonicalizeCannSignaturePass());
+    pm.addPass(createAscendPreEmitCanonicalizeCannSignaturePass());
     if (failed(runPipeline(pm, getOperation())))
       signalPassFailure();
   }

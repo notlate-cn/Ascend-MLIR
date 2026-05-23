@@ -1,10 +1,10 @@
-//===- LinalgToAscendCLowering.cpp - Ascend compute lowering impl ---------===//
+//===- LinalgToKernelIR.cpp - Ascend compute lowering impl ---------===//
 //
 // Part of the Ascend-MLIR Project
 //
 //===----------------------------------------------------------------------===//
 
-#include "Conversion/Ascend/Backend/Lowering/LinalgToAscendCUtils.h"
+#include "Conversion/Ascend/Translate/KernelIR/KernelIRUtils.h"
 
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
@@ -367,7 +367,7 @@ static void eraseDeadTBufInitializers(func::FuncOp funcOp) {
 // Pass: build context, run data-move and compute conversions
 //===----------------------------------------------------------------------===//
 
-LogicalResult lowerLinalgToAscendC(func::FuncOp funcOp) {
+LogicalResult lowerLinalgToKernelIR(func::FuncOp funcOp) {
   if (funcOp.isExternal())
     return success();
 

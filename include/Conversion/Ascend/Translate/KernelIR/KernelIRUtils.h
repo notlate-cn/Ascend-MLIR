@@ -1,11 +1,11 @@
-//===- LinalgToAscendCUtils.h - Linalg to AscendC helpers -------*- C++ -*-===//
+//===- KernelIRUtils.h - Ascend KernelIR helpers -------*- C++ -*-===//
 //
 // Part of the Ascend-MLIR Project
 //
 //===----------------------------------------------------------------------===//
 
-#ifndef ASCEND_MLIR_CONVERSION_ASCEND_BACKEND_LOWERING_LINALG_TO_ASCENDC_UTILS_H
-#define ASCEND_MLIR_CONVERSION_ASCEND_BACKEND_LOWERING_LINALG_TO_ASCENDC_UTILS_H
+#ifndef ASCEND_MLIR_CONVERSION_ASCEND_TRANSLATE_KERNELIR_KERNEL_IR_UTILS_H
+#define ASCEND_MLIR_CONVERSION_ASCEND_TRANSLATE_KERNELIR_KERNEL_IR_UTILS_H
 
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
@@ -17,7 +17,7 @@
 
 namespace mlir::afir {
 
-/// Shared context for the LinalgToAscendC pass.
+/// Shared context for Ascend KernelIR construction.
 /// Holds the single pipe and the per-alloc queue map, built once in the pass
 /// entry and passed to both the data-move and compute conversion steps.
 struct AscendCBufferContext {
@@ -115,9 +115,9 @@ LogicalResult materializeSelectedAllParallelTiles(func::FuncOp funcOp);
 /// compute conversion lowers each tile.
 LogicalResult materializeSelectedTransposeTiles(func::FuncOp funcOp);
 
-/// Run the Ascend compute lowering implementation on one function.
-LogicalResult lowerLinalgToAscendC(func::FuncOp funcOp);
+/// Run the Ascend KernelIR construction implementation on one function.
+LogicalResult lowerLinalgToKernelIR(func::FuncOp funcOp);
 
 } // namespace mlir::afir
 
-#endif // ASCEND_MLIR_CONVERSION_ASCEND_BACKEND_LOWERING_LINALG_TO_ASCENDC_UTILS_H
+#endif // ASCEND_MLIR_CONVERSION_ASCEND_TRANSLATE_KERNELIR_KERNEL_IR_UTILS_H

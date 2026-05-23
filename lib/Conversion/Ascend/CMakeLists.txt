@@ -1,27 +1,10 @@
-add_mlir_library(AscendConversion
-  Backend/Lowering/BackendSupportMatrix.cpp
-  Backend/Lowering/ElementwiseBodyOpRegistry.cpp
-  Backend/Lowering/LinalgBodyClassifier.cpp
-  Backend/Lowering/LinalgToAscendCLowering.cpp
-  Backend/Lowering/DataMoveConversion.cpp
-  Backend/Lowering/ComputeConversion.cpp
-  Backend/Lowering/ComputeLoweringPass.cpp
-  Backend/Codegen/Parallelize.cpp
-  Backend/Codegen/PrepareForEmit.cpp
-  Backend/Codegen/CanonicalizeCannSignature.cpp
-  Backend/Codegen/KernelKind.cpp
-  Backend/Wrappers/BackendWrapperPasses.cpp
-  Schedule/AxisCoalescer.cpp
-  Schedule/ScheduleCache.cpp
-  Schedule/ScheduleDecision.cpp
-  Schedule/SchedulePersistentCacheIO.cpp
-  Schedule/ScheduleProblemBuilder.cpp
-  Schedule/ScheduleSearch.cpp
-  Schedule/ScheduleTuningDB.cpp
-  Schedule/StructuredLoweringDriver.cpp
+set(ASCEND_NORMALIZE_SOURCES
+  Normalize/NormalizePass.cpp
+)
+
+set(ASCEND_KERNELIZE_SOURCES
   Kernelize/CandidateClosure.cpp
   Kernelize/CandidateMergeAnalysis.cpp
-  Debug/DebugOptions.cpp
   Kernelize/DependencyAnalysis.cpp
   Kernelize/HandwrittenContractRegistry.cpp
   Kernelize/FusionCandidateAnalysis.cpp
@@ -36,12 +19,26 @@ add_mlir_library(AscendConversion
   Kernelize/GatherElementwiseFusion.cpp
   Kernelize/StructuredOpSemanticMarking.cpp
   Kernelize/MixMatmulSemantics.cpp
-  Schedule/KernelPatternView.cpp
-  Schedule/TemplateRegistry.cpp
-  Normalize/NormalizePass.cpp
   Kernelize/KernelizePass.cpp
   Kernelize/OpRoleClassification.cpp
   Kernelize/StructuralMarking.cpp
+)
+
+set(ASCEND_SCHEDULE_SOURCES
+  Schedule/AxisCoalescer.cpp
+  Schedule/ScheduleCache.cpp
+  Schedule/ScheduleDecision.cpp
+  Schedule/SchedulePersistentCacheIO.cpp
+  Schedule/ScheduleProblemBuilder.cpp
+  Schedule/ScheduleSearch.cpp
+  Schedule/ScheduleTuningDB.cpp
+  Schedule/StructuredLoweringDriver.cpp
+  Schedule/KernelPatternView.cpp
+  Schedule/TemplateRegistry.cpp
+  Schedule/SchedulePass.cpp
+)
+
+set(ASCEND_REALIZE_SOURCES
   Realize/BufferizationDriver.cpp
   Realize/MemoryRealizationDriver.cpp
   Realize/MovementPlanner.cpp
@@ -50,7 +47,38 @@ add_mlir_library(AscendConversion
   Realize/RealizeReport.cpp
   Realize/StaticMemoryPlanner.cpp
   Realize/TilingRealizationDriver.cpp
-  Schedule/SchedulePass.cpp
+)
+
+set(ASCEND_TRANSLATE_KERNELIR_SOURCES
+  Translate/KernelIR/Capabilities/BackendSupportMatrix.cpp
+  Translate/KernelIR/Capabilities/ElementwiseBodyOpRegistry.cpp
+  Translate/KernelIR/Capabilities/LinalgBodyClassifier.cpp
+  Translate/KernelIR/LinalgToKernelIR.cpp
+  Translate/KernelIR/DataMovementConversion.cpp
+  Translate/KernelIR/ComputeOpConversion.cpp
+  Translate/KernelIR/ComputeLoweringPass.cpp
+)
+
+set(ASCEND_TRANSLATE_PREEMIT_SOURCES
+  Translate/PreEmit/Parallelize.cpp
+  Translate/PreEmit/PrepareForEmit.cpp
+  Translate/PreEmit/CanonicalizeCannSignature.cpp
+  Translate/PreEmit/KernelKind.cpp
+  Translate/PreEmit/PreEmitPublicPasses.cpp
+)
+
+set(ASCEND_DEBUG_SOURCES
+  Debug/DebugOptions.cpp
+)
+
+add_mlir_library(AscendConversion
+  ${ASCEND_NORMALIZE_SOURCES}
+  ${ASCEND_KERNELIZE_SOURCES}
+  ${ASCEND_SCHEDULE_SOURCES}
+  ${ASCEND_REALIZE_SOURCES}
+  ${ASCEND_TRANSLATE_KERNELIR_SOURCES}
+  ${ASCEND_TRANSLATE_PREEMIT_SOURCES}
+  ${ASCEND_DEBUG_SOURCES}
 
   ADDITIONAL_HEADER_DIRS
   ${CMAKE_SOURCE_DIR}/include/Conversion

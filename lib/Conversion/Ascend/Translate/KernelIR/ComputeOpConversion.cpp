@@ -12,11 +12,11 @@
  * License.
  */
 
-#include "Conversion/Ascend/Backend/Lowering/LinalgToAscendCUtils.h"
+#include "Conversion/Ascend/Translate/KernelIR/KernelIRUtils.h"
 
 #include "Conversion/Ascend/Common/Attributes.h"
-#include "Conversion/Ascend/Backend/Lowering/ElementwiseBodyOpRegistry.h"
-#include "Conversion/Ascend/Backend/Lowering/LinalgBodyClassifier.h"
+#include "Conversion/Ascend/Translate/KernelIR/Capabilities/ElementwiseBodyOpRegistry.h"
+#include "Conversion/Ascend/Translate/KernelIR/Capabilities/LinalgBodyClassifier.h"
 
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
@@ -3854,11 +3854,11 @@ LogicalResult convertCompute(func::FuncOp funcOp, AscendCBufferContext &ctx) {
     //                    tensor; instead use the queue alloc tensor directly and
     //                    simply enqueue accumLt if the queue accepts VECCALC).
     //                   Simplest: treat the VECCALC accumLt as the enqueue source
-    //                   and let the downstream DataMoveConversion handle writeback.
+    //                   and let the downstream DataMovementConversion handle writeback.
     //   VECCALC (ms=11): accumLt already holds the result; no copy needed.
     //
     // Key insight: the epilogue memref.copy (VECOUT->GM) from memory
-    // realization is converted by DataMoveConversion into a data_copy_l2 with
+    // realization is converted by DataMovementConversion into a data_copy_l2 with
     // the correct subview offset, so the concat position is preserved
     // automatically. We just need to enqueue the result tensor.
     if (outQueue) {
