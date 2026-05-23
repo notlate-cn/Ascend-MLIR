@@ -56,6 +56,7 @@ set(ASCEND_TRANSLATE_KERNELIR_SOURCES
   Translate/KernelIR/Capabilities/LinalgBodyClassifier.cpp
   Translate/KernelIR/LinalgToKernelIR.cpp
   Translate/KernelIR/DataMovementConversion.cpp
+  Translate/KernelIR/ComputeSelectedTileLowering.cpp
   Translate/KernelIR/ComputeOpConversion.cpp
   Translate/KernelIR/ComputeLoweringPass.cpp
 )

@@ -50,6 +50,28 @@ struct ComputeLoweringContext {
                                             Type elemType, Location loc);
 };
 
+Value getDimValue(OpBuilder &builder, Location loc, Value memref,
+                  unsigned dim);
+void emitStridedGmToLocalCopy(OpBuilder &builder, Location loc, Type elemType,
+                              Value dstLt, Value srcGt, Value rows,
+                              Value cols, Value srcRowStride,
+                              Value srcBaseOffset = Value{});
+bool isPureYieldGeneric(linalg::GenericOp op);
+bool isGmAllParallelGeneric(linalg::GenericOp op);
+bool isGmScalarLoopGeneric(linalg::GenericOp op);
+LogicalResult lowerTransposeToLoops(OpBuilder &builder, Location loc,
+                                    Value inMemref, Value outMemref,
+                                    ArrayRef<int64_t> permutation);
+LogicalResult lowerPureYieldGenericToLoops(OpBuilder &builder,
+                                           linalg::GenericOp op);
+LogicalResult lowerAllParallelGenericToLoops(OpBuilder &builder,
+                                             linalg::GenericOp op);
+LogicalResult lowerGmGenericToScalarLoops(OpBuilder &builder,
+                                          linalg::GenericOp op);
+LogicalResult lowerRank2GmTransposeToLocalDataCopy(
+    OpBuilder &builder, Location loc, Value inMemref, Value outMemref,
+    ArrayRef<int64_t> permutation, Value pipe);
+
 LogicalResult lowerScalarFallbackComputes(ComputeLoweringContext &lowering);
 LogicalResult lowerTransposeComputes(ComputeLoweringContext &lowering);
 LogicalResult lowerReductionComputes(ComputeLoweringContext &lowering);
