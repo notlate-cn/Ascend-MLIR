@@ -11,7 +11,7 @@ add_mlir_library(AscendTargetProfile
   ${CMAKE_SOURCE_DIR}/include/Conversion
 
   DEPENDS
-  AFIRConversionPassIncGen
+  AscendConversionPassIncGen
 
   LINK_LIBS PUBLIC
   MLIRIR

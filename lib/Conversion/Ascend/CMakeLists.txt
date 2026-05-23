@@ -2,6 +2,13 @@ add_mlir_library(AscendConversion
   Backend/BackendSupportMatrix.cpp
   Backend/ElementwiseBodyOpRegistry.cpp
   Backend/LinalgBodyClassifier.cpp
+  Backend/LinalgToAscendCPass.cpp
+  Backend/DataMoveConversion.cpp
+  Backend/ComputeConversion.cpp
+  Backend/AscendCParallelizePass.cpp
+  Backend/AscendCPrepareForEmitPass.cpp
+  Backend/CanonicalizeCannSignaturePass.cpp
+  Backend/AnnotateAscendCKernelKindPass.cpp
   Backend/ComputeLoweringPass.cpp
   Backend/BackendWrapperPasses.cpp
   Schedule/AxisCoalescer.cpp
@@ -25,7 +32,10 @@ add_mlir_library(AscendConversion
   Kernelize/KernelPattern.cpp
   Kernelize/KernelizeOpRegistry.cpp
   Kernelize/KernelizeSemanticUtils.cpp
-  KernelSplit/KernelSplitPass.cpp
+  Kernelize/KernelSplitPass.cpp
+  Kernelize/FuseGatherElementwisePass.cpp
+  Kernelize/MarkStructuredOpsPass.cpp
+  Kernelize/AnnotateMixMatmulSemanticsPass.cpp
   Schedule/KernelPatternView.cpp
   Schedule/TemplateRegistry.cpp
   Normalize/NormalizePass.cpp
@@ -33,6 +43,8 @@ add_mlir_library(AscendConversion
   Kernelize/OpRoleClassification.cpp
   Kernelize/StructuralMarking.cpp
   Realize/BufferizationDriver.cpp
+  Realize/AscendCBufferPlacementPass.cpp
+  Realize/AscendCFoldConcatAllocPass.cpp
   Realize/MemoryRealizationDriver.cpp
   Realize/MovementPlanner.cpp
   Realize/PlacementPlanner.cpp
@@ -46,11 +58,13 @@ add_mlir_library(AscendConversion
   ${CMAKE_SOURCE_DIR}/include/Conversion
 
   DEPENDS
-  AFIRConversionPassIncGen
+  AscendConversionPassIncGen
   AscendKernelizeOpInterfacesIncGen
 
   LINK_LIBS PUBLIC
   MLIRArithDialect
+  MLIRAffineDialect
+  MLIRAffineUtils
   MLIRBufferizationDialect
   MLIRBufferizationTransforms
   MLIRControlFlowDialect
@@ -59,16 +73,14 @@ add_mlir_library(AscendConversion
   MLIRLinalgDialect
   MLIRMemRefDialect
   MLIRPass
+  MLIRSCFDialect
   MLIRSCFTransforms
   MLIRSupport
   MLIRTensorDialect
+  MLIRTransforms
   MLIRTilingInterface
   MLIRAsc
   MLIRAscUtils
+  MLIREmitAsc
   AscendTargetProfile
-  AscendCParallelizeConversion
-  AscendCPrepareForEmitConversion
-  CanonicalizeCannSignatureConversion
-  LinalgToAscendCConversion
-  MarkStructuredOpsConversion
 )

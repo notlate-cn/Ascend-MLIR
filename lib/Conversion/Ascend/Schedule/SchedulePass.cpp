@@ -46,7 +46,7 @@
 
 #define GEN_PASS_DECL_ASCENDSCHEDULEPASS
 #define GEN_PASS_DEF_ASCENDSCHEDULEPASS
-#include "Conversion/Passes.h.inc"
+#include "Conversion/Ascend/Passes.h.inc"
 
 using namespace mlir;
 using namespace mlir::afir::ascend::schedule;
@@ -621,8 +621,14 @@ struct AscendSchedulePass
       return;
     }
     if (!StringRef(tuningDbOut).empty()) {
-      appendTuningResultRecords(tuningDb, tuningTarget, tuningPolicy,
-                                scheduleCacheModel.getTuningResultKeys());
+      if (failed(appendTuningResultRecords(tuningDb, tuningTarget, tuningPolicy,
+                                           scheduleCacheModel.getTuningResultKeys()))) {
+        module.emitError() << "invalid ascend schedule tuning database fields"
+                           << " (target='" << tuningTarget
+                           << "', policy='" << tuningPolicy << "')";
+        signalPassFailure();
+        return;
+      }
       if (failed(writeScheduleTuningDBFile(tuningDbOut, tuningDb))) {
         module.emitError()
             << "failed to write ascend schedule tuning database file: "

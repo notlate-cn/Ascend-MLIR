@@ -51,10 +51,10 @@ collectMatchingTuningSignatures(const ScheduleTuningDatabase &db,
                                 llvm::StringRef target,
                                 llvm::StringRef policy);
 
-void appendTuningResultRecords(ScheduleTuningDatabase &db,
-                               llvm::StringRef target,
-                               llvm::StringRef policy,
-                               ArrayRef<TuningResultKey> keys);
+LogicalResult appendTuningResultRecords(ScheduleTuningDatabase &db,
+                                        llvm::StringRef target,
+                                        llvm::StringRef policy,
+                                        ArrayRef<TuningResultKey> keys);
 
 } // namespace mlir::afir::ascend::schedule
 

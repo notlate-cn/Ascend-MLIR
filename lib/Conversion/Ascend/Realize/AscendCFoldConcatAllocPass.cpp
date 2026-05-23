@@ -39,7 +39,7 @@
 //   scf.for ... iter_args(%a = %sub1_cast) { ... writes %a ... }
 //   return %alloc_out
 
-#include "Conversion/AscendCFoldConcatAlloc/AscendCFoldConcatAllocPass.h"
+#include "Conversion/Ascend/Realize/AscendCFoldConcatAllocPass.h"
 
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
@@ -52,7 +52,7 @@
 
 #define GEN_PASS_DECL_ASCENDCFOLDCONCATALLOCPASS
 #define GEN_PASS_DEF_ASCENDCFOLDCONCATALLOCPASS
-#include "Conversion/Passes.h.inc"
+#include "Conversion/Ascend/Passes.h.inc"
 
 #define DEBUG_TYPE "ascendc-fold-concat-alloc"
 

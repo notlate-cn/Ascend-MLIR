@@ -12,14 +12,6 @@ add_mlir_public_c_api_library(AFIRCAPI
   AFIRTransforms
   AFIRToASCIRConversion
   AFIRToASCIRTextConversion
-  AscendCBufferPlacementConversion
-  AscendCFoldConcatAllocConversion
-  LinalgToAscendCConversion
-  AscendCParallelizeConversion
-  AscendCPrepareForEmitConversion
   AscendTargetProfile
   AscendConversion
-  CanonicalizeCannSignatureConversion
-  FuseGatherElementwiseConversion
-  MarkStructuredOpsConversion
 )

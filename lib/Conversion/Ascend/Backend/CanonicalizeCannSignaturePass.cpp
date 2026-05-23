@@ -13,7 +13,7 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "Conversion/CanonicalizeCannSignature/CanonicalizeCannSignaturePass.h"
+#include "Conversion/Ascend/Backend/CanonicalizeCannSignaturePass.h"
 #include "ascir/Dialect/Asc/Utils/Attributes.h"
 #include "ascir/Dialect/EmitAsc/IR/EmitAsc.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
@@ -27,7 +27,7 @@
 #include <memory>
 
 #define GEN_PASS_DEF_CANONICALIZECANNSIGNATUREPASS
-#include "Conversion/Passes.h.inc"
+#include "Conversion/Ascend/Passes.h.inc"
 
 using namespace mlir;
 

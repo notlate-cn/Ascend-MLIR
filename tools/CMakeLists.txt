@@ -1,4 +1,5 @@
 add_subdirectory(afir-opt)
+add_subdirectory(ascend-mlir-opt)
 add_subdirectory(afir-translate)
 add_subdirectory(autotuner)
 add_subdirectory(mix-compiler)

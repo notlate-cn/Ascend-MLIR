@@ -15,7 +15,7 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "Conversion/FuseGatherElementwise/FuseGatherElementwisePass.h"
+#include "Conversion/Ascend/Kernelize/FuseGatherElementwisePass.h"
 
 #include "Conversion/Ascend/Common/Attributes.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
@@ -27,7 +27,7 @@
 
 #define GEN_PASS_DECL_FUSEGATHERELEMENTWISEPASS
 #define GEN_PASS_DEF_FUSEGATHERELEMENTWISEPASS
-#include "Conversion/Passes.h.inc"
+#include "Conversion/Ascend/Passes.h.inc"
 
 using namespace mlir;
 

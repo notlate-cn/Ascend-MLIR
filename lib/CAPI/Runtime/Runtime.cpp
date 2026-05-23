@@ -119,25 +119,34 @@ llvm::Expected<KernelKind> kernelKindForMagic(uint32_t magic) {
                                  "unsupported kernel magic: 0x%08x", magic);
 }
 
-void fillArray(NDArray& arr, void* data, size_t bytes) {
+// Infers a flat f16 NDArray layout from a raw byte buffer.
+// Returns an error if bytes is not divisible by 2 — the caller must ensure
+// buffer sizes are 2-byte aligned before calling into the C API.
+llvm::Expected<NDArray> fillArray(void *data, size_t bytes) {
+  NDArray arr;
   arr.data = data;
+  if (bytes == 0) {
+    arr.dtype = DType::F16;
+    arr.shape = {0};
+    return arr;
+  }
   if (bytes % 2 == 0) {
     arr.dtype = DType::F16;
     arr.shape = {static_cast<int64_t>(bytes / 2)};
-  } else if (bytes % 4 == 0) {
-    arr.dtype = DType::INT32;
-    arr.shape = {static_cast<int64_t>(bytes / 4)};
-  } else {
-    arr.dtype = DType::F16;
-    arr.shape = {static_cast<int64_t>((bytes + 1) / 2)};
+    return arr;
   }
+  return llvm::createStringError(
+      llvm::inconvertibleErrorCode(),
+      "buffer size %zu is not divisible by 2; cannot infer element dtype",
+      bytes);
 }
 
 llvm::Error materializeInputNpy(const std::string &path,
                                 const void *data, size_t bytes) {
-  NDArray arr;
-  fillArray(arr, const_cast<void *>(data), bytes);
-  return SaveNpy(path, arr);
+  auto arrOr = fillArray(const_cast<void *>(data), bytes);
+  if (!arrOr)
+    return arrOr.takeError();
+  return SaveNpy(path, *arrOr);
 }
 
 llvm::Error loadOutputNpy(const std::string &path, void *dst, size_t bytes) {
@@ -242,13 +251,14 @@ llvm::Error runWithExecutionSession(const std::string &binaryPath,
 
   for (int i = 0; i < num_outputs; ++i) {
     TensorBinding binding;
-    binding.name = "out";
+    binding.name = "out" + std::to_string(i);
     binding.sourceKind = BindingSourceKind::ExternalFile;
     binding.path = joinPath(tempDir, "output" + std::to_string(i) + ".npy");
-    NDArray shapeProbe;
-    fillArray(shapeProbe, nullptr, output_bytes[i]);
-    binding.shape = shapeProbe.shape;
-    binding.dtype = shapeProbe.dtype;
+    auto shapeProbeOr = fillArray(nullptr, output_bytes[i]);
+    if (!shapeProbeOr)
+      return shapeProbeOr.takeError();
+    binding.shape = shapeProbeOr->shape;
+    binding.dtype = shapeProbeOr->dtype;
     invocation.outputs.push_back(std::move(binding));
   }
 

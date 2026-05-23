@@ -21,7 +21,7 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "Conversion/AscendCParallelize/AscendCParallelizePass.h"
+#include "Conversion/Ascend/Backend/AscendCParallelizePass.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
@@ -36,7 +36,7 @@
 
 #define GEN_PASS_DECL_ASCENDCPARALLELIZEPASS
 #define GEN_PASS_DEF_ASCENDCPARALLELIZEPASS
-#include "Conversion/Passes.h.inc"
+#include "Conversion/Ascend/Passes.h.inc"
 
 #define DEBUG_TYPE "ascendc-parallelize"
 

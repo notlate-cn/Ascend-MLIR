@@ -12,8 +12,8 @@
  * License.
  */
 
-#include "Conversion/LinalgToAscendC/LinalgToAscendCPass.h"
-#include "Conversion/LinalgToAscendC/LinalgToAscendCUtils.h"
+#include "Conversion/Ascend/Backend/LinalgToAscendCPass.h"
+#include "Conversion/Ascend/Backend/LinalgToAscendCUtils.h"
 
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
@@ -33,7 +33,7 @@
 
 #define GEN_PASS_DECL_LINALGTOASCENDCPASS
 #define GEN_PASS_DEF_LINALGTOASCENDCPASS
-#include "Conversion/Passes.h.inc"
+#include "Conversion/Ascend/Passes.h.inc"
 
 #define DEBUG_TYPE "linalg-to-ascendc"
 

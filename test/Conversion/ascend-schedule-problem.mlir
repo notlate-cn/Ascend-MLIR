@@ -59,12 +59,12 @@ func.func @dynamic_vector(%arg0: tensor<?x8xf32>,
   return %out : tensor<?x8xf32>
 }
 
-func.func @matmul_problem(%lhs: tensor<4x8xf32>,
-                          %rhs: tensor<8x16xf32>) -> tensor<4x16xf32> {
-  %empty = tensor.empty() : tensor<4x16xf32>
-  %out = linalg.matmul ins(%lhs, %rhs : tensor<4x8xf32>, tensor<8x16xf32>)
-                       outs(%empty : tensor<4x16xf32>) -> tensor<4x16xf32>
-  return %out : tensor<4x16xf32>
+func.func @matmul_problem(%lhs: tensor<4x8xf16>,
+                          %rhs: tensor<8x16xf16>) -> tensor<4x16xf16> {
+  %empty = tensor.empty() : tensor<4x16xf16>
+  %out = linalg.matmul ins(%lhs, %rhs : tensor<4x8xf16>, tensor<8x16xf16>)
+                       outs(%empty : tensor<4x16xf16>) -> tensor<4x16xf16>
+  return %out : tensor<4x16xf16>
 }
 
 func.func @reduction_problem(%arg0: tensor<4x8xf32>) -> tensor<4xf32> {
