@@ -113,15 +113,20 @@ still fails on device, capture the exact `g++` line (printed with `+`).
 # inputs already staged: /tmp/enc_ref/{encoder.mlir,input0.npy,expected0.npy}
 #                        /tmp/bert_e2e/tiny_fp32/{step0_linalg.mlir,input_0.npy,expected_0.npy}
 source /home/gser/Ascend/cann/set_env.sh
-export ASCEND_DEVICE_ID=0          # pick a free device
+export ASCEND_DEVICE_ID=0              # pick a free device
+export NETWORK_RUNNER_SKIP_AUTOTUNE=1 # accuracy-only: skip phase-4 autotune,
+                                      # use phase-3 default tilings (much faster)
 PYTHONPATH=python python3 python/network_runner.py \
   --input-linalg /tmp/enc_ref/encoder.mlir \
   --inputs /tmp/enc_ref/input0.npy --expected /tmp/enc_ref/expected0.npy \
   --workdir /tmp/enc_npu --soc Ascend910B1 --atol 1e-2 --rtol 1e-2 \
   --backend npu
 ```
-Phases 1–4 run on sim (build + autotune); phase-5 builds the device host binary
-and runs on the NPU. Same form for BERT with `tiny_fp32/step0_linalg.mlir`.
+Phases 1–3 run on sim (build + default-tiling dump); phase-4 autotune is skipped
+when `NETWORK_RUNNER_SKIP_AUTOTUNE` is set (recommended while validating numerics
+— default tilings are correct, just untuned); phase-5 builds the device host
+binary and runs on the NPU. Same form for BERT with `tiny_fp32/step0_linalg.mlir`.
+Drop the env var once accuracy is confirmed to also exercise the on-device tuner.
 
 ## Op inventory per network (what the aclnn path must serve)
 

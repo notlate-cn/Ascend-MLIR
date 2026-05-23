@@ -811,7 +811,15 @@ def main():
     if args.max_phase < 4:
         return
 
-    tilings_best_path = phase4_autotune(work, network, inter, args)
+    # Accuracy-only mode: NETWORK_RUNNER_SKIP_AUTOTUNE skips the multi-round
+    # autotuner and feeds phase 5 the default tilings from phase 3. Use this to
+    # validate numerics fast without paying for performance search.
+    if os.environ.get("NETWORK_RUNNER_SKIP_AUTOTUNE", "") not in ("", "0", "false", "no"):
+        print("[phase4] NETWORK_RUNNER_SKIP_AUTOTUNE set — skipping autotune; "
+              "using default tilings (accuracy-only, no perf tuning).")
+        tilings_best_path = work / "tilings_default.json"
+    else:
+        tilings_best_path = phase4_autotune(work, network, inter, args)
     if args.max_phase < 5:
         return
 
