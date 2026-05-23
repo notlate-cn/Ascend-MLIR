@@ -1,3 +1,7 @@
+set_directory_properties(PROPERTIES
+  LABELS "runtime-unittest;runtime-component-unittest"
+)
+
 add_executable(MatmulTilingTypesTest
   MatmulTilingTypesTest.cpp
 )

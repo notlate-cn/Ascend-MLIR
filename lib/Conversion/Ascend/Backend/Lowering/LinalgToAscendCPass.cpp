@@ -12,8 +12,8 @@
  * License.
  */
 
-#include "Conversion/Ascend/Backend/LinalgToAscendCPass.h"
-#include "Conversion/Ascend/Backend/LinalgToAscendCUtils.h"
+#include "Conversion/Ascend/Backend/Lowering/LinalgToAscendCPass.h"
+#include "Conversion/Ascend/Backend/Lowering/LinalgToAscendCUtils.h"
 
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"

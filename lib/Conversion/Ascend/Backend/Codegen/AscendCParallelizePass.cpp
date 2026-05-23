@@ -21,7 +21,7 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "Conversion/Ascend/Backend/AscendCParallelizePass.h"
+#include "Conversion/Ascend/Backend/Codegen/AscendCParallelizePass.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"

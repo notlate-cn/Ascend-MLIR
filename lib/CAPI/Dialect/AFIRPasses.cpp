@@ -7,3 +7,7 @@ void mlirRegisterAFIRPasses() {
   mlir::afir::registerAFIRPasses();
   mlir::afir::registerAFIRConversionPasses();
 }
+
+void mlirRegisterAscendPasses() {
+  mlir::afir::registerAscendConversionPasses();
+}

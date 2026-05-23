@@ -1,16 +1,16 @@
 add_mlir_library(AscendConversion
-  Backend/BackendSupportMatrix.cpp
-  Backend/ElementwiseBodyOpRegistry.cpp
-  Backend/LinalgBodyClassifier.cpp
-  Backend/LinalgToAscendCPass.cpp
-  Backend/DataMoveConversion.cpp
-  Backend/ComputeConversion.cpp
-  Backend/AscendCParallelizePass.cpp
-  Backend/AscendCPrepareForEmitPass.cpp
-  Backend/CanonicalizeCannSignaturePass.cpp
-  Backend/AnnotateAscendCKernelKindPass.cpp
-  Backend/ComputeLoweringPass.cpp
-  Backend/BackendWrapperPasses.cpp
+  Backend/Lowering/BackendSupportMatrix.cpp
+  Backend/Lowering/ElementwiseBodyOpRegistry.cpp
+  Backend/Lowering/LinalgBodyClassifier.cpp
+  Backend/Lowering/LinalgToAscendCPass.cpp
+  Backend/Lowering/DataMoveConversion.cpp
+  Backend/Lowering/ComputeConversion.cpp
+  Backend/Lowering/ComputeLoweringPass.cpp
+  Backend/Codegen/AscendCParallelizePass.cpp
+  Backend/Codegen/AscendCPrepareForEmitPass.cpp
+  Backend/Codegen/CanonicalizeCannSignaturePass.cpp
+  Backend/Codegen/AnnotateAscendCKernelKindPass.cpp
+  Backend/Wrappers/BackendWrapperPasses.cpp
   Schedule/AxisCoalescer.cpp
   Schedule/ScheduleCache.cpp
   Schedule/ScheduleDecision.cpp

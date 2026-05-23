@@ -9,39 +9,18 @@
 
 #include "Conversion/AFIRToASCIR/AFIRToASCIR.h"
 #include "Conversion/AFIRToASCIRText/AFIRToASCIRText.h"
-#include "Conversion/Ascend/Backend/BackendWrapperPasses.h"
-#include "Conversion/Ascend/Backend/ComputeLoweringPass.h"
-#include "Conversion/Ascend/Realize/AscendCBufferPlacementPass.h"
-#include "Conversion/Ascend/Realize/AscendCFoldConcatAllocPass.h"
-#include "Conversion/Ascend/Backend/LinalgToAscendCPass.h"
-#include "Conversion/Ascend/Backend/AscendCParallelizePass.h"
-#include "Conversion/Ascend/Backend/AscendCPrepareForEmitPass.h"
-#include "Conversion/Ascend/Kernelize/KernelizeExternalModels.h"
-#include "Conversion/Ascend/Kernelize/KernelizePass.h"
-#include "Conversion/Ascend/Normalize/NormalizePass.h"
-#include "Conversion/Ascend/Realize/RealizePass.h"
-#include "Conversion/Ascend/Schedule/SchedulePass.h"
-#include "Conversion/Ascend/Backend/CanonicalizeCannSignaturePass.h"
-#include "Conversion/Ascend/Kernelize/FuseGatherElementwisePass.h"
-#include "Conversion/Ascend/Kernelize/MarkStructuredOpsPass.h"
-#include "ascir/Dialect/EmitAsc/IR/EmitAsc.h"
+#include "Conversion/Ascend/Passes.h"
 #include "mlir/Pass/Pass.h"
 #include <memory>
 
-namespace mlir {
-namespace afir {
-
-std::unique_ptr<Pass> createAscendPrintTargetProfilePass();
-std::unique_ptr<Pass> createAscendKernelSplitPass();
+namespace mlir::afir {
 
 #define GEN_PASS_DECL
 #define GEN_PASS_REGISTRATION
 #include "Conversion/Passes.h.inc"
 
 std::unique_ptr<Pass> createConvertAFIRToASCIRTextPass();
-std::unique_ptr<Pass> createAscendCBufferPlacementPass();
 
-}  // namespace afir
-}  // namespace mlir
+} // namespace mlir::afir
 
-#endif  // AFIR_CONVERSION_PASSES
+#endif // AFIR_CONVERSION_PASSES

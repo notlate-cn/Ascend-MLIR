@@ -12,11 +12,11 @@
  * License.
  */
 
-#include "Conversion/Ascend/Backend/LinalgToAscendCUtils.h"
+#include "Conversion/Ascend/Backend/Lowering/LinalgToAscendCUtils.h"
 
 #include "Conversion/Ascend/Common/Attributes.h"
-#include "Conversion/Ascend/Backend/ElementwiseBodyOpRegistry.h"
-#include "Conversion/Ascend/Backend/LinalgBodyClassifier.h"
+#include "Conversion/Ascend/Backend/Lowering/ElementwiseBodyOpRegistry.h"
+#include "Conversion/Ascend/Backend/Lowering/LinalgBodyClassifier.h"
 
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"

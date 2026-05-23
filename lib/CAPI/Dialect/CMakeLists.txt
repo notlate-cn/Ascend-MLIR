@@ -5,6 +5,7 @@ add_mlir_public_c_api_library(AFIRCAPI
 
   DEPENDS
   AFIRConversionPassIncGen
+  AscendConversionPassIncGen
   AFIRTransformsPassIncGen
 
   LINK_LIBS PUBLIC

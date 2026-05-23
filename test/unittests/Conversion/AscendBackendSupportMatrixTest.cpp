@@ -4,7 +4,7 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "Conversion/Ascend/Backend/BackendSupportMatrix.h"
+#include "Conversion/Ascend/Backend/Lowering/BackendSupportMatrix.h"
 
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinTypes.h"

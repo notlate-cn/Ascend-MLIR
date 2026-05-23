@@ -6,7 +6,7 @@
 
 #include "MemoryRealizationDriver.h"
 
-#include "Conversion/Ascend/Backend/LinalgBodyClassifier.h"
+#include "Conversion/Ascend/Backend/Lowering/LinalgBodyClassifier.h"
 #include "Target/Ascend/TargetProfile.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
