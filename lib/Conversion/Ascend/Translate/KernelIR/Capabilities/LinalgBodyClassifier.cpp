@@ -347,7 +347,7 @@ bool hasIdentityOutputMaps(linalg::LinalgOp linalgOp) {
   return true;
 }
 
-ComputeKind classifyPhase5ReductionBody(
+ComputeKind classifyBackendReductionBody(
     linalg::GenericOp generic, const AscendBackendSupportMatrix &matrix) {
   if (!llvm::is_contained(generic.getIteratorTypesArray(),
                           utils::IteratorType::reduction))
@@ -440,7 +440,7 @@ classifyLinalgComputeKind(Operation *op,
       return ComputeKind::TensorCopy;
     if (isSupportedVectorGatherBody(generic, matrix))
       return ComputeKind::VectorGather;
-    if (ComputeKind rk = classifyPhase5ReductionBody(generic, matrix);
+    if (ComputeKind rk = classifyBackendReductionBody(generic, matrix);
         rk != ComputeKind::Unknown)
       return rk;
     if (isSupportedFusedElementwiseBody(generic, matrix))
@@ -452,7 +452,7 @@ classifyLinalgComputeKind(Operation *op,
   return ComputeKind::Unknown;
 }
 
-bool isSupportedPhase5VectorOutput(
+bool isSupportedBackendVectorOutput(
     linalg::LinalgOp linalgOp, const AscendBackendSupportMatrix &matrix) {
   if (!hasVectorRole(linalgOp.getOperation()))
     return false;
@@ -492,7 +492,7 @@ bool isSupportedPhase5VectorOutput(
   }
 }
 
-bool isSupportedPhase5GatherOutput(
+bool isSupportedBackendGatherOutput(
     linalg::LinalgOp linalgOp, const AscendBackendSupportMatrix &matrix) {
   auto generic = dyn_cast<linalg::GenericOp>(linalgOp.getOperation());
   if (!generic || !hasIdentityOutputMaps(generic))
@@ -501,15 +501,15 @@ bool isSupportedPhase5GatherOutput(
          ComputeKind::VectorGather;
 }
 
-bool isSupportedPhase5FinalOutput(linalg::LinalgOp linalgOp,
+bool isSupportedBackendFinalOutput(linalg::LinalgOp linalgOp,
                                   const AscendBackendSupportMatrix &matrix) {
-  if (isSupportedPhase5VectorOutput(linalgOp, matrix))
+  if (isSupportedBackendVectorOutput(linalgOp, matrix))
     return true;
-  if (isSupportedPhase5GatherOutput(linalgOp, matrix))
+  if (isSupportedBackendGatherOutput(linalgOp, matrix))
     return true;
 
   auto generic = dyn_cast<linalg::GenericOp>(linalgOp.getOperation());
-  return generic && classifyPhase5ReductionBody(generic, matrix) != ComputeKind::Unknown;
+  return generic && classifyBackendReductionBody(generic, matrix) != ComputeKind::Unknown;
 }
 
 } // namespace mlir::afir::ascend::backend

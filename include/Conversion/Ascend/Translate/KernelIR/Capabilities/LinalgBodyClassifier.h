@@ -19,16 +19,16 @@ ComputeKind
 classifyLinalgComputeKind(Operation *op,
                           const AscendBackendSupportMatrix &matrix);
 
-ComputeKind classifyPhase5ReductionBody(linalg::GenericOp generic,
+ComputeKind classifyBackendReductionBody(linalg::GenericOp generic,
                                         const AscendBackendSupportMatrix &matrix);
 
-bool isSupportedPhase5VectorOutput(linalg::LinalgOp linalgOp,
+bool isSupportedBackendVectorOutput(linalg::LinalgOp linalgOp,
                                    const AscendBackendSupportMatrix &matrix);
 
-bool isSupportedPhase5GatherOutput(linalg::LinalgOp linalgOp,
+bool isSupportedBackendGatherOutput(linalg::LinalgOp linalgOp,
                                    const AscendBackendSupportMatrix &matrix);
 
-bool isSupportedPhase5FinalOutput(linalg::LinalgOp linalgOp,
+bool isSupportedBackendFinalOutput(linalg::LinalgOp linalgOp,
                                   const AscendBackendSupportMatrix &matrix);
 
 } // namespace mlir::afir::ascend::backend

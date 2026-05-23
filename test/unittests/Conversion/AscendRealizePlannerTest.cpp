@@ -809,7 +809,7 @@ TEST(AscendRealizePlannerTest, MemoryRealizationAnnotatesPlanForMemorySpaces) {
   MemoryRealizationPlan plan;
   plan.kernelId = "kernel_0";
   MemoryRealizationDriver driver;
-  Phase5BridgeMaterializationCounts materializationCounts;
+  TranslateBridgeMaterializationCounts materializationCounts;
 
   driver.markMemorySpaceMaterialized(plan, 1, materializationCounts);
 
@@ -1070,7 +1070,7 @@ module {
 }
 
 TEST(AscendRealizePlannerTest,
-     Phase5BridgeFailureDoesNotLeavePartialVecOutAlloc) {
+     TranslateBridgeFailureDoesNotLeavePartialVecOutAlloc) {
   MLIRContext context;
   OwningOpRef<ModuleOp> module = parseRealizeModule(
       context, R"mlir(
@@ -1108,7 +1108,7 @@ module {
   ASSERT_TRUE(module);
 
   MemoryRealizationDriver driver;
-  EXPECT_TRUE(failed(driver.materializePhase5Bridge(*module)));
+  EXPECT_TRUE(failed(driver.materializeTranslateMemoryBridge(*module)));
 
   unsigned vecOutAllocCount = 0;
   module->walk([&](memref::AllocOp allocOp) {
@@ -1122,7 +1122,7 @@ module {
 }
 
 TEST(AscendRealizePlannerTest,
-     Phase5CubeBridgeDominatesNestedVectorUse) {
+     TranslateCubeBridgeDominatesNestedVectorUse) {
   MLIRContext context;
   OwningOpRef<ModuleOp> module = parseRealizeModule(
       context, R"mlir(
@@ -1165,8 +1165,8 @@ module {
   ASSERT_TRUE(module);
 
   MemoryRealizationDriver driver;
-  FailureOr<llvm::StringMap<Phase5BridgeMaterializationCounts>> counts =
-      driver.materializePhase5Bridge(*module);
+  FailureOr<llvm::StringMap<TranslateBridgeMaterializationCounts>> counts =
+      driver.materializeTranslateMemoryBridge(*module);
   ASSERT_TRUE(succeeded(counts));
   ASSERT_EQ(counts->lookup("kernel_0").materializedAllocCount, 6u);
   ASSERT_EQ(counts->lookup("kernel_0").materializedCopyCount, 5u);
@@ -1182,7 +1182,7 @@ module {
   EXPECT_EQ(vecInAllocCount, 1u);
 }
 
-TEST(AscendRealizePlannerTest, Phase5CubeBridgeSupportsBatchMatmul) {
+TEST(AscendRealizePlannerTest, TranslateCubeBridgeSupportsBatchMatmul) {
   MLIRContext context;
   OwningOpRef<ModuleOp> module = parseRealizeModule(
       context, R"mlir(
@@ -1223,8 +1223,8 @@ module {
   ASSERT_TRUE(module);
 
   MemoryRealizationDriver driver;
-  FailureOr<llvm::StringMap<Phase5BridgeMaterializationCounts>> counts =
-      driver.materializePhase5Bridge(*module);
+  FailureOr<llvm::StringMap<TranslateBridgeMaterializationCounts>> counts =
+      driver.materializeTranslateMemoryBridge(*module);
   ASSERT_TRUE(succeeded(counts));
   ASSERT_EQ(counts->lookup("kernel_0").materializedAllocCount, 6u);
   ASSERT_EQ(counts->lookup("kernel_0").materializedCopyCount, 5u);

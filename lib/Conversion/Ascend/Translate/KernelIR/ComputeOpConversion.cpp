@@ -2553,7 +2553,7 @@ LogicalResult convertCompute(func::FuncOp funcOp, AscendCBufferContext &ctx) {
     Type elemType = cast<MemRefType>(outMemref.getType()).getElementType();
     ascend::backend::AscendBackendSupportMatrix matrix;
     ascend::backend::ComputeKind reductionKind =
-        ascend::backend::classifyPhase5ReductionBody(genOp, matrix);
+        ascend::backend::classifyBackendReductionBody(genOp, matrix);
     if (reductionKind == ascend::backend::ComputeKind::Unknown)
       continue;
 

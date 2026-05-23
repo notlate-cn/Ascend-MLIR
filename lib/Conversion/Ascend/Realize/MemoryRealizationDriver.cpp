@@ -115,7 +115,7 @@ static bool isReductionInitFillForWriter(Operation *user, Operation *writer,
   auto fillOp = dyn_cast<linalg::FillOp>(user);
   auto generic = dyn_cast<linalg::GenericOp>(writer);
   if (!fillOp || !generic ||
-      backend::classifyPhase5ReductionBody(generic, matrix) == backend::ComputeKind::Unknown)
+      backend::classifyBackendReductionBody(generic, matrix) == backend::ComputeKind::Unknown)
     return false;
 
   if (!llvm::is_contained(fillOp.getOutputs(), output))
@@ -175,7 +175,7 @@ struct AnnotatableAlloc {
   std::string kernelId;
 };
 
-struct Phase5BridgeOutput {
+struct TranslateBridgeOutput {
   linalg::LinalgOp linalgOp;
   OpOperand *initOperand;
   memref::AllocOp gmAlloc;
@@ -183,7 +183,7 @@ struct Phase5BridgeOutput {
   std::string kernelId;
 };
 
-struct Phase5CubeBridge {
+struct TranslateCubeBridge {
   linalg::LinalgOp linalgOp;
   Value lhs;
   Value rhs;
@@ -207,8 +207,8 @@ struct MovementMaterializationItem {
   bool hasDynamicViewChain = false;
 };
 
-static void addMaterializationCounts(Phase5BridgeMaterializationCounts &lhs,
-                                     const Phase5BridgeMaterializationCounts
+static void addMaterializationCounts(TranslateBridgeMaterializationCounts &lhs,
+                                     const TranslateBridgeMaterializationCounts
                                          &rhs) {
   lhs.materializedAllocCount += rhs.materializedAllocCount;
   lhs.materializedCopyCount += rhs.materializedCopyCount;
@@ -804,7 +804,7 @@ preflightMovementWorkspaceGroup(ArrayRef<MovementMaterializationItem> items,
 
 static LogicalResult materializeSingleMovementItem(
     IRRewriter &rewriter, const MovementMaterializationItem &item,
-    Attribute targetSpace, Phase5BridgeMaterializationCounts &counts) {
+    Attribute targetSpace, TranslateBridgeMaterializationCounts &counts) {
   rewriter.setInsertionPoint(item.firstUser);
   memref::AllocOp localAlloc = createMemorySpaceAllocLike(
       rewriter, item.firstUser->getLoc(), item.source, targetSpace);
@@ -830,7 +830,7 @@ static LogicalResult materializeSingleMovementItem(
 
 static LogicalResult materializeMovementWorkspaceGroup(
     IRRewriter &rewriter, ArrayRef<MovementMaterializationItem> items,
-    Attribute targetSpace, Phase5BridgeMaterializationCounts &counts) {
+    Attribute targetSpace, TranslateBridgeMaterializationCounts &counts) {
   Operation *firstUser = getEarliestUserInBlock(items);
   rewriter.setInsertionPoint(firstUser);
   memref::AllocOp workspace = createPackedMovementWorkspaceAlloc(
@@ -962,7 +962,7 @@ static bool collectSafeCubeVectorUses(linalg::LinalgOp linalgOp,
     auto linalgUser = dyn_cast<linalg::LinalgOp>(user);
     if (!linalgUser || getKernelId(user) != kernelId ||
         !dominance.properlyDominates(cubeOp, user) ||
-        !backend::isSupportedPhase5VectorOutput(linalgUser, matrix) ||
+        !backend::isSupportedBackendVectorOutput(linalgUser, matrix) ||
         !isDpsInputOperand(linalgUser, &use))
       return false;
 
@@ -1008,7 +1008,7 @@ MemoryRealizationDriver::materialize(ModuleOp module,
   if (mode == MemoryRealizationMode::PlanOnly)
     return success();
 
-  FailureOr<llvm::StringMap<Phase5BridgeMaterializationCounts>>
+  FailureOr<llvm::StringMap<TranslateBridgeMaterializationCounts>>
       movementCounts = materializeMovementSteps(module, bundles);
   if (failed(movementCounts))
     return failure();
@@ -1018,9 +1018,9 @@ MemoryRealizationDriver::materialize(ModuleOp module,
   if (failed(annotationCounts))
     return failure();
 
-  FailureOr<llvm::StringMap<Phase5BridgeMaterializationCounts>>
-      phase5BridgeCounts = materializePhase5Bridge(module);
-  if (failed(phase5BridgeCounts))
+  FailureOr<llvm::StringMap<TranslateBridgeMaterializationCounts>>
+      translateBridgeCounts = materializeTranslateMemoryBridge(module);
+  if (failed(translateBridgeCounts))
     return failure();
 
   for (RealizePlanBundle &bundle : bundles) {
@@ -1028,9 +1028,9 @@ MemoryRealizationDriver::materialize(ModuleOp module,
     auto countIt = annotationCounts->find(bundle.kernel.kernelId);
     if (countIt != annotationCounts->end())
       annotationCount = countIt->second;
-    Phase5BridgeMaterializationCounts materializationCount;
-    auto bridgeIt = phase5BridgeCounts->find(bundle.kernel.kernelId);
-    if (bridgeIt != phase5BridgeCounts->end())
+    TranslateBridgeMaterializationCounts materializationCount;
+    auto bridgeIt = translateBridgeCounts->find(bundle.kernel.kernelId);
+    if (bridgeIt != translateBridgeCounts->end())
       materializationCount = bridgeIt->second;
     auto movementIt = movementCounts->find(bundle.kernel.kernelId);
     if (movementIt != movementCounts->end())
@@ -1098,12 +1098,12 @@ MemoryRealizationDriver::annotateMemorySpaces(ModuleOp module) const {
   return annotationCounts;
 }
 
-FailureOr<llvm::StringMap<Phase5BridgeMaterializationCounts>>
+FailureOr<llvm::StringMap<TranslateBridgeMaterializationCounts>>
 MemoryRealizationDriver::materializeMovementSteps(
     ModuleOp module, MutableArrayRef<RealizePlanBundle> bundles) const {
   MLIRContext *context = module.getContext();
   IRRewriter rewriter(context);
-  llvm::StringMap<Phase5BridgeMaterializationCounts> counts;
+  llvm::StringMap<TranslateBridgeMaterializationCounts> counts;
 
   for (RealizePlanBundle &bundle : bundles) {
     StringRef kernelId = bundle.kernel.kernelId;
@@ -1194,8 +1194,8 @@ MemoryRealizationDriver::materializeMovementSteps(
   return counts;
 }
 
-FailureOr<llvm::StringMap<Phase5BridgeMaterializationCounts>>
-MemoryRealizationDriver::materializePhase5Bridge(ModuleOp module) const {
+FailureOr<llvm::StringMap<TranslateBridgeMaterializationCounts>>
+MemoryRealizationDriver::materializeTranslateMemoryBridge(ModuleOp module) const {
   MLIRContext *context = module.getContext();
   backend::AscendBackendSupportMatrix matrix;
 
@@ -1208,7 +1208,7 @@ MemoryRealizationDriver::materializePhase5Bridge(ModuleOp module) const {
   Attribute vecOutSpace = getMemorySpaceAttr(context, kVecOutMemorySpace);
   DominanceInfo dominance(module);
 
-  SmallVector<Phase5CubeBridge, 4> cubeBridges;
+  SmallVector<TranslateCubeBridge, 4> cubeBridges;
   module.walk([&](linalg::LinalgOp linalgOp) {
     StringRef kernelId = getKernelId(linalgOp.getOperation());
     if (kernelId.empty() || !isBridgeableCubeCompute(linalgOp, matrix))
@@ -1226,9 +1226,9 @@ MemoryRealizationDriver::materializePhase5Bridge(ModuleOp module) const {
                            std::move(vectorInputUses), kernelId.str()});
   });
 
-  SmallVector<Phase5BridgeOutput, 4> outputsToBridge;
+  SmallVector<TranslateBridgeOutput, 4> outputsToBridge;
   module.walk([&](linalg::LinalgOp linalgOp) {
-    if (!backend::isSupportedPhase5FinalOutput(linalgOp, matrix))
+    if (!backend::isSupportedBackendFinalOutput(linalgOp, matrix))
       return;
 
     Operation *op = linalgOp.getOperation();
@@ -1259,15 +1259,15 @@ MemoryRealizationDriver::materializePhase5Bridge(ModuleOp module) const {
     }
   });
 
-  for (const Phase5BridgeOutput &item : outputsToBridge)
+  for (const TranslateBridgeOutput &item : outputsToBridge)
     if (item.concatCopy && failed(verifyReplaceableAllocDimUses(item.gmAlloc)))
       return failure();
 
   annotateAscendCUnits(module);
 
   IRRewriter rewriter(context);
-  llvm::StringMap<Phase5BridgeMaterializationCounts> counts;
-  for (Phase5CubeBridge &item : cubeBridges) {
+  llvm::StringMap<TranslateBridgeMaterializationCounts> counts;
+  for (TranslateCubeBridge &item : cubeBridges) {
     linalg::LinalgOp linalgOp = item.linalgOp;
     if (!linalgOp)
       continue;
@@ -1306,7 +1306,7 @@ MemoryRealizationDriver::materializePhase5Bridge(ModuleOp module) const {
     counts[item.kernelId].materializedCopyCount += 5;
   }
 
-  for (Phase5BridgeOutput &item : outputsToBridge) {
+  for (TranslateBridgeOutput &item : outputsToBridge) {
     memref::AllocOp gmAlloc = item.gmAlloc;
     auto gmType = cast<MemRefType>(gmAlloc.getType());
     auto vecOutType = withMemorySpace(gmType, vecOutSpace);
@@ -1342,7 +1342,7 @@ MemoryRealizationDriver::materializePhase5Bridge(ModuleOp module) const {
 
 void MemoryRealizationDriver::markMemorySpaceMaterialized(
     MemoryRealizationPlan &plan, unsigned annotationCount,
-    const Phase5BridgeMaterializationCounts &materializationCounts) const {
+    const TranslateBridgeMaterializationCounts &materializationCounts) const {
   bool hasMaterialization =
       materializationCounts.materializedAllocCount != 0 ||
       materializationCounts.materializedCopyCount != 0;
