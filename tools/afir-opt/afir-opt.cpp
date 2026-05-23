@@ -20,6 +20,7 @@
 #include "Dialect/AFIR/AFIR.h"
 #include "Dialect/AFIR/Transforms/Passes.h"
 #include "Dialect/AFIR/TransformOps/AFIRTransformOps.h"
+#include "Conversion/Ascend/Kernelize/KernelizeExternalModels.h"
 #include "Conversion/Passes.h"
 #include "ascir/Dialect/EmitAsc/IR/EmitAsc.h"
 
@@ -47,6 +48,7 @@ int main(int argc, char **argv) {
   // Register AFIR-specific passes
   afir::registerAFIRPasses();
   afir::registerAFIRConversionPasses();
+  afir::registerAscendConversionPasses();
 
   return asMainReturnCode(MlirOptMain(argc, argv, "AFIR optimizer driver\n", registry));
 }

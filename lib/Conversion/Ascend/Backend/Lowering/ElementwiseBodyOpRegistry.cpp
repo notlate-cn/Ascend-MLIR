@@ -4,7 +4,7 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "Conversion/Ascend/Backend/ElementwiseBodyOpRegistry.h"
+#include "Conversion/Ascend/Backend/Lowering/ElementwiseBodyOpRegistry.h"
 
 #include "ascir/Dialect/Asc/IR/Asc.h"
 

@@ -4,11 +4,11 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "Conversion/Ascend/Backend/BackendWrapperPasses.h"
-#include "Conversion/Ascend/Backend/AscendCParallelizePass.h"
-#include "Conversion/Ascend/Backend/AscendCPrepareForEmitPass.h"
-#include "Conversion/Ascend/Backend/CanonicalizeCannSignaturePass.h"
-#include "Conversion/Ascend/Kernelize/MarkStructuredOpsPass.h"
+#include "Conversion/Ascend/Backend/Wrappers/BackendWrapperPasses.h"
+#include "Conversion/Ascend/Backend/Codegen/AscendCParallelizePass.h"
+#include "Conversion/Ascend/Backend/Codegen/AscendCPrepareForEmitPass.h"
+#include "Conversion/Ascend/Backend/Codegen/AnnotateAscendCKernelKindPass.h"
+#include "Conversion/Ascend/Backend/Codegen/CanonicalizeCannSignaturePass.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"

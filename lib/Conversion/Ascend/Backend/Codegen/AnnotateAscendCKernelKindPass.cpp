@@ -9,7 +9,7 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "Conversion/Ascend/Kernelize/MarkStructuredOpsPass.h"
+#include "Conversion/Ascend/Backend/Codegen/AnnotateAscendCKernelKindPass.h"
 
 #include "Conversion/Ascend/Common/Attributes.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"

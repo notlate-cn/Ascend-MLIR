@@ -33,7 +33,7 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "Conversion/Ascend/Backend/AscendCPrepareForEmitPass.h"
+#include "Conversion/Ascend/Backend/Codegen/AscendCPrepareForEmitPass.h"
 
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/Affine/Utils.h"

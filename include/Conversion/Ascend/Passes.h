@@ -7,12 +7,13 @@
 #ifndef ASCEND_MLIR_CONVERSION_ASCEND_PASSES_H
 #define ASCEND_MLIR_CONVERSION_ASCEND_PASSES_H
 
-#include "Conversion/Ascend/Backend/AscendCParallelizePass.h"
-#include "Conversion/Ascend/Backend/AscendCPrepareForEmitPass.h"
-#include "Conversion/Ascend/Backend/BackendWrapperPasses.h"
-#include "Conversion/Ascend/Backend/CanonicalizeCannSignaturePass.h"
-#include "Conversion/Ascend/Backend/ComputeLoweringPass.h"
-#include "Conversion/Ascend/Backend/LinalgToAscendCPass.h"
+#include "Conversion/Ascend/Backend/Codegen/AnnotateAscendCKernelKindPass.h"
+#include "Conversion/Ascend/Backend/Codegen/AscendCParallelizePass.h"
+#include "Conversion/Ascend/Backend/Codegen/AscendCPrepareForEmitPass.h"
+#include "Conversion/Ascend/Backend/Codegen/CanonicalizeCannSignaturePass.h"
+#include "Conversion/Ascend/Backend/Lowering/ComputeLoweringPass.h"
+#include "Conversion/Ascend/Backend/Lowering/LinalgToAscendCPass.h"
+#include "Conversion/Ascend/Backend/Wrappers/BackendWrapperPasses.h"
 #include "Conversion/Ascend/Kernelize/FuseGatherElementwisePass.h"
 #include "Conversion/Ascend/Kernelize/KernelizePass.h"
 #include "Conversion/Ascend/Kernelize/MarkStructuredOpsPass.h"

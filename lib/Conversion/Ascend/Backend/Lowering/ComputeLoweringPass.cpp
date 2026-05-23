@@ -4,10 +4,10 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "Conversion/Ascend/Backend/ComputeLoweringPass.h"
-#include "Conversion/Ascend/Backend/BackendSupportMatrix.h"
-#include "Conversion/Ascend/Backend/LinalgBodyClassifier.h"
-#include "Conversion/Ascend/Backend/LinalgToAscendCUtils.h"
+#include "Conversion/Ascend/Backend/Lowering/ComputeLoweringPass.h"
+#include "Conversion/Ascend/Backend/Lowering/BackendSupportMatrix.h"
+#include "Conversion/Ascend/Backend/Lowering/LinalgBodyClassifier.h"
+#include "Conversion/Ascend/Backend/Lowering/LinalgToAscendCUtils.h"
 
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/Linalg/IR/Linalg.h"

@@ -1,3 +1,7 @@
+set_directory_properties(PROPERTIES
+  LABELS "runtime-unittest;conversion-unittest"
+)
+
 set(ASCEND_CONVERSION_INTERNAL_INCLUDE_DIR ${CMAKE_SOURCE_DIR}/lib)
 
 add_executable(AscendKernelPatternTest

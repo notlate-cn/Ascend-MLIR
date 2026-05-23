@@ -9,8 +9,6 @@
 
 include "mlir/Pass/PassBase.td"
 
-include "Conversion/Ascend/Passes.td"
-
 //===----------------------------------------------------------------------===//
 // StableHLO to AFIR Conversion
 //===----------------------------------------------------------------------===//

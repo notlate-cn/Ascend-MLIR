@@ -4,9 +4,9 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "Conversion/Ascend/Backend/LinalgBodyClassifier.h"
+#include "Conversion/Ascend/Backend/Lowering/LinalgBodyClassifier.h"
 
-#include "Conversion/Ascend/Backend/ElementwiseBodyOpRegistry.h"
+#include "Conversion/Ascend/Backend/Lowering/ElementwiseBodyOpRegistry.h"
 #include "Conversion/Ascend/Common/Attributes.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"

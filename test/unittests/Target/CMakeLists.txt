@@ -1,3 +1,7 @@
+set_directory_properties(PROPERTIES
+  LABELS "runtime-unittest;target-unittest"
+)
+
 add_executable(AscendTargetMemoryModelTest
   AscendTargetMemoryModelTest.cpp
 )

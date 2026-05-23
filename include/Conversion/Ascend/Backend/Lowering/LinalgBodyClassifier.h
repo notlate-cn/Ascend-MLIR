@@ -7,7 +7,7 @@
 #ifndef ASCEND_MLIR_CONVERSION_ASCEND_BACKEND_LINALGBODYCLASSIFIER_H
 #define ASCEND_MLIR_CONVERSION_ASCEND_BACKEND_LINALGBODYCLASSIFIER_H
 
-#include "Conversion/Ascend/Backend/BackendSupportMatrix.h"
+#include "Conversion/Ascend/Backend/Lowering/BackendSupportMatrix.h"
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/IR/Operation.h"
 

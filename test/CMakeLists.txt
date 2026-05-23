@@ -21,19 +21,54 @@ add_lit_testsuite(check-afir "Running AFIR regression tests"
 )
 set_target_properties(check-afir PROPERTIES FOLDER "Tests")
 
-add_lit_testsuites(AFIR ${CMAKE_CURRENT_SOURCE_DIR} DEPENDS ${AFIR_TEST_DEPENDS})
+function(add_afir_lit_directory relative_dir)
+  set(lit_suite "${CMAKE_CURRENT_BINARY_DIR}/${relative_dir}")
+  string(REPLACE "/" "-" name_dashes "${relative_dir}")
+  string(TOLOWER "AFIR-${name_dashes}" name_var)
+  add_lit_target("check-${name_var}" "Running lit suite ${lit_suite}"
+    ${lit_suite}
+    DEPENDS ${AFIR_TEST_DEPENDS}
+  )
+  set_target_properties("check-${name_var}" PROPERTIES FOLDER "Tests")
+endfunction()
+
+foreach(lit_dir
+    Conversion
+    Dialect
+    Dialect/AFIR
+    Dialect/AFIR/Transforms
+    Target
+    tools
+    tools/diagnostics
+    tools/examples
+    tools/longrun
+    tools/runtime)
+  add_afir_lit_directory(${lit_dir})
+endforeach()
+
+if(AFIR_ENABLE_BINDING_PYTHON)
+  add_afir_lit_directory(python)
+endif()
 
 add_subdirectory(unittests)
 
-if(TARGET RuntimeUnitTests)
-  add_custom_target(check-unittests
-    COMMAND ${CMAKE_CTEST_COMMAND} --output-on-failure -L "runtime-unittest"
-    WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
-  )
-  add_dependencies(check-unittests RuntimeUnitTests)
-else()
-  add_custom_target(check-unittests
-    COMMAND ${CMAKE_COMMAND} -E echo "Skipping runtime unit tests because googletest is unavailable."
-  )
-endif()
-set_target_properties(check-unittests PROPERTIES FOLDER "Tests")
+function(add_afir_ctest_label_target target_name label)
+  if(TARGET RuntimeUnitTests)
+    add_custom_target(${target_name}
+      COMMAND ${CMAKE_CTEST_COMMAND} --output-on-failure -L "${label}"
+      WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
+    )
+    add_dependencies(${target_name} RuntimeUnitTests)
+  else()
+    add_custom_target(${target_name}
+      COMMAND ${CMAKE_COMMAND} -E echo "Skipping runtime unit tests because googletest is unavailable."
+    )
+  endif()
+  set_target_properties(${target_name} PROPERTIES FOLDER "Tests")
+endfunction()
+
+add_afir_ctest_label_target(check-unittests runtime-unittest)
+add_afir_ctest_label_target(check-afir-unittests runtime-unittest)
+add_afir_ctest_label_target(check-afir-unittests-conversion conversion-unittest)
+add_afir_ctest_label_target(check-afir-unittests-runtime runtime-component-unittest)
+add_afir_ctest_label_target(check-afir-unittests-target target-unittest)

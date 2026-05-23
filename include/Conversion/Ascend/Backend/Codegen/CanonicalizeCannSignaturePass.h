@@ -4,8 +4,8 @@
 //
 //===----------------------------------------------------------------------===//
 
-#ifndef AFIR_CONVERSION_CANONICALIZECANNSIGNATURE_PASS_H
-#define AFIR_CONVERSION_CANONICALIZECANNSIGNATURE_PASS_H
+#ifndef ASCEND_MLIR_CONVERSION_ASCEND_BACKEND_CODEGEN_CANONICALIZE_CANN_SIGNATURE_PASS_H
+#define ASCEND_MLIR_CONVERSION_ASCEND_BACKEND_CODEGEN_CANONICALIZE_CANN_SIGNATURE_PASS_H
 
 #include "mlir/Pass/Pass.h"
 #include <memory>
@@ -14,4 +14,4 @@ namespace mlir::afir {
 std::unique_ptr<Pass> createCanonicalizeCannSignaturePass();
 }  // namespace mlir::afir
 
-#endif // AFIR_CONVERSION_CANONICALIZECANNSIGNATURE_PASS_H
+#endif // ASCEND_MLIR_CONVERSION_ASCEND_BACKEND_CODEGEN_CANONICALIZE_CANN_SIGNATURE_PASS_H

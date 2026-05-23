@@ -13,7 +13,7 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "Conversion/Ascend/Backend/CanonicalizeCannSignaturePass.h"
+#include "Conversion/Ascend/Backend/Codegen/CanonicalizeCannSignaturePass.h"
 #include "ascir/Dialect/Asc/Utils/Attributes.h"
 #include "ascir/Dialect/EmitAsc/IR/EmitAsc.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"

@@ -1,19 +1,11 @@
-/*
- * Copyright (c) 2025 Huawei Technologies Co., Ltd.
- * This program is free software; you can redistribute it and/or modify it
- * under terms and conditions of the CANN Open Software License Agreement
- * Version 2.0 (the "License"). Please refer to LICENSE in the root of the
- * software repository for the full text of the License.
- *
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY
- * KIND, EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO
- * NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
- * See LICENSE in the root of the software repository for the full text of the
- * License.
- */
+//===- LinalgToAscendCUtils.h - Linalg to AscendC helpers -------*- C++ -*-===//
+//
+// Part of the Ascend-MLIR Project
+//
+//===----------------------------------------------------------------------===//
 
-#ifndef CONVERSION_LINALGTOASCENDC_UTILS_H
-#define CONVERSION_LINALGTOASCENDC_UTILS_H
+#ifndef ASCEND_MLIR_CONVERSION_ASCEND_BACKEND_LOWERING_LINALG_TO_ASCENDC_UTILS_H
+#define ASCEND_MLIR_CONVERSION_ASCEND_BACKEND_LOWERING_LINALG_TO_ASCENDC_UTILS_H
 
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
@@ -23,8 +15,7 @@
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/SmallVector.h"
 
-namespace mlir {
-namespace afir {
+namespace mlir::afir {
 
 /// Shared context for the LinalgToAscendC pass.
 /// Holds the single pipe and the per-alloc queue map, built once in the pass
@@ -129,7 +120,6 @@ LogicalResult materializeSelectedTransposeTiles(func::FuncOp funcOp);
 /// --ascend-compute-lower wrapper.
 LogicalResult lowerLinalgToAscendC(func::FuncOp funcOp);
 
-} // namespace afir
-} // namespace mlir
+} // namespace mlir::afir
 
-#endif // CONVERSION_LINALGTOASCENDC_UTILS_H
+#endif // ASCEND_MLIR_CONVERSION_ASCEND_BACKEND_LOWERING_LINALG_TO_ASCENDC_UTILS_H

@@ -4,8 +4,8 @@
 //
 //===----------------------------------------------------------------------===//
 
-#ifndef ASCEND_MLIR_CONVERSION_ASCENDCFOLDCONCATALLOC_H
-#define ASCEND_MLIR_CONVERSION_ASCENDCFOLDCONCATALLOC_H
+#ifndef ASCEND_MLIR_CONVERSION_ASCEND_REALIZE_ASCENDC_FOLD_CONCAT_ALLOC_PASS_H
+#define ASCEND_MLIR_CONVERSION_ASCEND_REALIZE_ASCENDC_FOLD_CONCAT_ALLOC_PASS_H
 
 #include "mlir/Pass/Pass.h"
 
@@ -19,4 +19,4 @@ std::unique_ptr<Pass> createAscendCFoldConcatAllocPass();
 
 }  // namespace mlir::afir
 
-#endif
+#endif // ASCEND_MLIR_CONVERSION_ASCEND_REALIZE_ASCENDC_FOLD_CONCAT_ALLOC_PASS_H
