@@ -41,6 +41,7 @@ set(ASCEND_SCHEDULE_SOURCES
 set(ASCEND_REALIZE_SOURCES
   Realize/BufferizationDriver.cpp
   Realize/MemoryRealizationDriver.cpp
+  Realize/TranslateMemoryBridge.cpp
   Realize/MovementPlanner.cpp
   Realize/PlacementPlanner.cpp
   Realize/RealizePass.cpp
