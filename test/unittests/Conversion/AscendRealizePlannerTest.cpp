@@ -10,6 +10,7 @@
 #include "Conversion/Ascend/Realize/PlacementPlanner.h"
 #include "Conversion/Ascend/Realize/RealizeTypes.h"
 #include "Conversion/Ascend/Realize/StaticMemoryPlanner.h"
+#include "Conversion/Ascend/Realize/TranslateMemoryBridge.h"
 #include "Target/Ascend/TargetMemoryModel.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
@@ -1107,8 +1108,7 @@ module {
 )mlir");
   ASSERT_TRUE(module);
 
-  MemoryRealizationDriver driver;
-  EXPECT_TRUE(failed(driver.materializeTranslateMemoryBridge(*module)));
+  EXPECT_TRUE(failed(materializeTranslateMemoryBridge(*module)));
 
   unsigned vecOutAllocCount = 0;
   module->walk([&](memref::AllocOp allocOp) {
@@ -1164,9 +1164,8 @@ module {
 )mlir");
   ASSERT_TRUE(module);
 
-  MemoryRealizationDriver driver;
   FailureOr<llvm::StringMap<TranslateBridgeMaterializationCounts>> counts =
-      driver.materializeTranslateMemoryBridge(*module);
+      materializeTranslateMemoryBridge(*module);
   ASSERT_TRUE(succeeded(counts));
   ASSERT_EQ(counts->lookup("kernel_0").materializedAllocCount, 6u);
   ASSERT_EQ(counts->lookup("kernel_0").materializedCopyCount, 5u);
@@ -1222,9 +1221,8 @@ module {
 )mlir");
   ASSERT_TRUE(module);
 
-  MemoryRealizationDriver driver;
   FailureOr<llvm::StringMap<TranslateBridgeMaterializationCounts>> counts =
-      driver.materializeTranslateMemoryBridge(*module);
+      materializeTranslateMemoryBridge(*module);
   ASSERT_TRUE(succeeded(counts));
   ASSERT_EQ(counts->lookup("kernel_0").materializedAllocCount, 6u);
   ASSERT_EQ(counts->lookup("kernel_0").materializedCopyCount, 5u);

@@ -8,16 +8,9 @@
 #define ASCEND_MLIR_CONVERSION_ASCEND_REALIZE_MEMORYREALIZATIONDRIVER_H
 
 #include "RealizeTypes.h"
-#include "mlir/IR/BuiltinOps.h"
-#include "mlir/Support/LLVM.h"
-#include "llvm/ADT/StringMap.h"
+#include "TranslateMemoryBridge.h"
 
 namespace mlir::afir::ascend::realize {
-
-struct TranslateBridgeMaterializationCounts {
-  unsigned materializedAllocCount = 0;
-  unsigned materializedCopyCount = 0;
-};
 
 enum class MemoryRealizationMode {
   PlanOnly,
@@ -40,8 +33,6 @@ public:
   FailureOr<llvm::StringMap<TranslateBridgeMaterializationCounts>>
   materializeMovementSteps(ModuleOp module,
                            MutableArrayRef<RealizePlanBundle> bundles) const;
-  FailureOr<llvm::StringMap<TranslateBridgeMaterializationCounts>>
-  materializeTranslateMemoryBridge(ModuleOp module) const;
   void markMemorySpaceMaterialized(
       MemoryRealizationPlan &plan, unsigned annotationCount,
       const TranslateBridgeMaterializationCounts &materializationCounts) const;
