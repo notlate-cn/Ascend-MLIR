@@ -87,14 +87,41 @@ A tensor crossing aclnn↔AscendC got a device ptr read as host (group2
 `rtStreamSynchronize rc=507034`) or a host ptr read as device (group14/21
 all-zero). Evidence: `/tmp/npu-real-logs/20260522-encoder-e2e/`.
 
-**Fixed (Approach B, commit on dev-network):** the aclnn `run_*` device branches
-are now **host-in/host-out**, matching the AscendC convention. Each stages its
-inputs H2D into temp device buffers (`stageToDevice`), runs the aclnn op into a
-temp device output (`stageDeviceOut`), then copies the result D2H into a fresh
-host buffer (`stageToHost`); temps freed via `freePool`. All in `AclnnOps.cpp`
-— no host-gen / HostLaunchHelper changes. Verified: unit 7/7, encoder+BERT sim
-no regression, compiles vs real CANN headers. **Re-run the full encoder/BERT
-`--backend npu` on device to confirm the integrated path now produces out0.npy.**
+**Fixed (Approach B, commit `085ad7a2` on dev-network):** the aclnn `run_*`
+device branches are now **host-in/host-out**, matching the AscendC convention.
+Each stages its inputs H2D into temp device buffers (`stageToDevice`), runs the
+aclnn op into a temp device output (`stageDeviceOut`), then copies the result D2H
+into a fresh host buffer (`stageToHost`); temps freed via `freePool`. All in
+`AclnnOps.cpp` — no host-gen / HostLaunchHelper changes.
+
+**✅ HW-re-validated end-to-end 2026-05-23 — via BERT.** BERT tiny full e2e
+`--backend npu` on device 7 PASSES: `network.output[0]: max_diff=1.407e-05 PASS`,
+`out0.npy` produced, matching BERT sim. The mixed-memory bug is fixed on a
+complete network. (Verified locally too: unit 7/7, encoder+BERT sim no
+regression, compiles vs real CANN headers.) Evidence: `/tmp/npu-real-logs/20260523-bert-fix/`.
+
+**Encoder full e2e still fails — but for two SEPARATE, encoder-specific reasons,
+not the mixed-mem fix** (which BERT proves correct). BERT's graph doesn't exercise
+either; encoder does because it has a chain of Transposes feeding the first
+AscendC kernels. Earlier "encoder advanced to group20, only one wall left" was
+over-optimistic — the front-end is already corrupt before any tiling matters:
+
+  (a) **Front-end host-gen buffer-wiring bug — fix first.** The very first
+      AscendC kernel (group3) reads a buffer nobody wrote (sampled bytes are CANN
+      `version.info` text); group14/21 then output all-zero. The network's main
+      input plumbing, or an early `run_Transpose` host-output landing, isn't
+      threaded to the memory group3 reads — a CoordEmitter / host-gen wiring
+      defect in `AclnnBackend.cpp`, NOT mixed-mem (host-in/host-out is fixed) and
+      NOT tiling. Any encoder accuracy number is meaningless until this is fixed.
+  (b) **tiling-related real-HW AscendC kernel faults (camodel-invisible).** Default
+      v0 tiling faults group2 (507034); the autotuner-selected v1 faults group20
+      (507035, VEC UB out-of-bounds). Changing tiling only moves which kernel dies
+      first — same family as the regression-sweep gather/combo UB. Kernel-codegen
+      session's domain. NETWORK_RUNNER_SKIP_AUTOTUNE only swaps which (b)-kernel
+      dies; it does NOT dodge (a).
+
+Evidence: `/tmp/npu-real-logs/20260523-encoder-handoff/` (README with a debug
+index). Encoder inputs staged remotely at `/data/gser/enc_ref/`.
 
 [PERF FUTURE — Approach A] These per-op H2D/D2H round-trips are redundant once
 both domains agree. Future optimization: unify on the DEVICE domain — host-gen
