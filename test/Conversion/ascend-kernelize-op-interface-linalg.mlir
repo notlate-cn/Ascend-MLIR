@@ -30,4 +30,5 @@ func.func @generic_contraction(%arg0: tensor<4x8xf32>,
 // CHECK-SAME: iterators = [parallel, parallel, reduction]
 // CHECK: OpRoleClassification
 // CHECK: op_id = 0
-// CHECK-SAME: roles = ["Primary", "Cube"]
+// CHECK-SAME: roles = ["Primary", "Vector"]
+// CHECK-SAME: op_role = "vector"

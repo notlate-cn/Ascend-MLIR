@@ -7,7 +7,7 @@
 #include "Conversion/Ascend/Backend/ComputeLoweringPass.h"
 #include "Conversion/Ascend/Backend/BackendSupportMatrix.h"
 #include "Conversion/Ascend/Backend/LinalgBodyClassifier.h"
-#include "Conversion/LinalgToAscendC/LinalgToAscendCUtils.h"
+#include "Conversion/Ascend/Backend/LinalgToAscendCUtils.h"
 
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
@@ -18,7 +18,7 @@
 #include "ascir/Dialect/EmitAsc/IR/EmitAsc.h"
 
 #define GEN_PASS_DEF_ASCENDCOMPUTELOWERPASS
-#include "Conversion/Passes.h.inc"
+#include "Conversion/Ascend/Passes.h.inc"
 
 namespace mlir::afir {
 namespace {

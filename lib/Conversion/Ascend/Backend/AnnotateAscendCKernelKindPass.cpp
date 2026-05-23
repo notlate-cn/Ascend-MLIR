@@ -9,7 +9,7 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "Conversion/MarkStructuredOps/MarkStructuredOpsPass.h"
+#include "Conversion/Ascend/Kernelize/MarkStructuredOpsPass.h"
 
 #include "Conversion/Ascend/Common/Attributes.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
@@ -19,7 +19,7 @@
 
 #define GEN_PASS_DECL_ANNOTATEASCENDCKERNELKINDPASS
 #define GEN_PASS_DEF_ANNOTATEASCENDCKERNELKINDPASS
-#include "Conversion/Passes.h.inc"
+#include "Conversion/Ascend/Passes.h.inc"
 
 using namespace mlir;
 

@@ -31,16 +31,8 @@ target_link_libraries(afir-opt
     AFIRTransforms
     AFIRToASCIRConversion
     AFIRToASCIRTextConversion
-    AscendCBufferPlacementConversion
-    AscendCFoldConcatAllocConversion
-    LinalgToAscendCConversion
-    AscendCParallelizeConversion
-    AscendCPrepareForEmitConversion
     AscendTargetProfile
     AscendConversion
-    CanonicalizeCannSignatureConversion
-    FuseGatherElementwiseConversion
-    MarkStructuredOpsConversion
     MLIREmitAsc
     AFIRUtils
 )

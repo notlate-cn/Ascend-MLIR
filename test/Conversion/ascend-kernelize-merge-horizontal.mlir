@@ -60,11 +60,11 @@ func.func @vector_chain_into_reduction(%arg0: tensor<4x8xf32>,
 // MERGE-END
 
 // REVERSE-BEGIN
-func.func @vector_chain_into_cube(%arg0: tensor<4x4xf32>,
-                                  %arg1: tensor<4x4xf32>,
-                                  %rhs: tensor<4x4xf32>)
-    -> tensor<4x4xf32> {
-  %empty0 = tensor.empty() : tensor<4x4xf32>
+func.func @vector_chain_into_cube(%arg0: tensor<4x4xf16>,
+                                  %arg1: tensor<4x4xf16>,
+                                  %rhs: tensor<4x4xf16>)
+    -> tensor<4x4xf16> {
+  %empty0 = tensor.empty() : tensor<4x4xf16>
   %0 = linalg.generic {
     indexing_maps = [
       affine_map<(d0, d1) -> (d0, d1)>,
@@ -72,14 +72,14 @@ func.func @vector_chain_into_cube(%arg0: tensor<4x4xf32>,
       affine_map<(d0, d1) -> (d0, d1)>
     ],
     iterator_types = ["parallel", "parallel"]
-  } ins(%arg0, %arg1 : tensor<4x4xf32>, tensor<4x4xf32>)
-    outs(%empty0 : tensor<4x4xf32>) {
-  ^bb0(%x: f32, %y: f32, %o: f32):
-    %v = arith.addf %x, %y : f32
-    linalg.yield %v : f32
-  } -> tensor<4x4xf32>
+  } ins(%arg0, %arg1 : tensor<4x4xf16>, tensor<4x4xf16>)
+    outs(%empty0 : tensor<4x4xf16>) {
+  ^bb0(%x: f16, %y: f16, %o: f16):
+    %v = arith.addf %x, %y : f16
+    linalg.yield %v : f16
+  } -> tensor<4x4xf16>
 
-  %empty1 = tensor.empty() : tensor<4x4xf32>
+  %empty1 = tensor.empty() : tensor<4x4xf16>
   %1 = linalg.generic {
     indexing_maps = [
       affine_map<(d0, d1) -> (d0, d1)>,
@@ -87,31 +87,31 @@ func.func @vector_chain_into_cube(%arg0: tensor<4x4xf32>,
       affine_map<(d0, d1) -> (d0, d1)>
     ],
     iterator_types = ["parallel", "parallel"]
-  } ins(%0, %arg1 : tensor<4x4xf32>, tensor<4x4xf32>)
-    outs(%empty1 : tensor<4x4xf32>) {
-  ^bb0(%x: f32, %y: f32, %o: f32):
-    %v = arith.mulf %x, %y : f32
-    linalg.yield %v : f32
-  } -> tensor<4x4xf32>
+  } ins(%0, %arg1 : tensor<4x4xf16>, tensor<4x4xf16>)
+    outs(%empty1 : tensor<4x4xf16>) {
+  ^bb0(%x: f16, %y: f16, %o: f16):
+    %v = arith.mulf %x, %y : f16
+    linalg.yield %v : f16
+  } -> tensor<4x4xf16>
 
-  %empty2 = tensor.empty() : tensor<4x4xf32>
-  %2 = linalg.matmul ins(%1, %rhs : tensor<4x4xf32>, tensor<4x4xf32>)
-    outs(%empty2 : tensor<4x4xf32>) -> tensor<4x4xf32>
+  %empty2 = tensor.empty() : tensor<4x4xf16>
+  %2 = linalg.matmul ins(%1, %rhs : tensor<4x4xf16>, tensor<4x4xf16>)
+    outs(%empty2 : tensor<4x4xf16>) -> tensor<4x4xf16>
 
-  %empty3 = tensor.empty() : tensor<4x4xf32>
+  %empty3 = tensor.empty() : tensor<4x4xf16>
   %3 = linalg.generic {
     indexing_maps = [
       affine_map<(d0, d1) -> (d0, d1)>,
       affine_map<(d0, d1) -> (d0, d1)>
     ],
     iterator_types = ["parallel", "parallel"]
-  } ins(%2 : tensor<4x4xf32>)
-    outs(%empty3 : tensor<4x4xf32>) {
-  ^bb0(%x: f32, %o: f32):
-    linalg.yield %x : f32
-  } -> tensor<4x4xf32>
+  } ins(%2 : tensor<4x4xf16>)
+    outs(%empty3 : tensor<4x4xf16>) {
+  ^bb0(%x: f16, %o: f16):
+    linalg.yield %x : f16
+  } -> tensor<4x4xf16>
 
-  return %3 : tensor<4x4xf32>
+  return %3 : tensor<4x4xf16>
 }
 // REVERSE-END
 

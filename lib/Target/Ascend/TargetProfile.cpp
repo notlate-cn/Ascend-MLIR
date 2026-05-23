@@ -17,7 +17,7 @@
 
 #define GEN_PASS_DECL_ASCENDPRINTTARGETPROFILEPASS
 #define GEN_PASS_DEF_ASCENDPRINTTARGETPROFILEPASS
-#include "Conversion/Passes.h.inc"
+#include "Conversion/Ascend/Passes.h.inc"
 
 using namespace mlir;
 

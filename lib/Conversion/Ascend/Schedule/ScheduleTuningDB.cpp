@@ -188,13 +188,19 @@ collectMatchingTuningSignatures(const ScheduleTuningDatabase &db,
   return signatures;
 }
 
-void appendTuningResultRecords(ScheduleTuningDatabase &db, StringRef target,
-                               StringRef policy,
-                               ArrayRef<TuningResultKey> keys) {
-  assert(!target.contains(' ') &&
-         "TuningDB target field must not contain whitespace");
-  assert(!policy.contains(' ') &&
-         "TuningDB policy field must not contain whitespace");
+LogicalResult appendTuningResultRecords(ScheduleTuningDatabase &db,
+                                        StringRef target, StringRef policy,
+                                        ArrayRef<TuningResultKey> keys) {
+  if (target.contains(' ')) {
+    llvm::errs() << "TuningDB target field must not contain whitespace: '"
+                 << target << "'\n";
+    return failure();
+  }
+  if (policy.contains(' ')) {
+    llvm::errs() << "TuningDB policy field must not contain whitespace: '"
+                 << policy << "'\n";
+    return failure();
+  }
   for (const TuningResultKey &key : keys) {
     ScheduleTuningRecord record;
     record.target = target.str();
@@ -207,6 +213,7 @@ void appendTuningResultRecords(ScheduleTuningDatabase &db, StringRef target,
     if (!containsRecord(db, record))
       db.records.push_back(std::move(record));
   }
+  return success();
 }
 
 } // namespace mlir::afir::ascend::schedule

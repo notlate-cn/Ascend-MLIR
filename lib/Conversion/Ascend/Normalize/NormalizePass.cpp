@@ -23,7 +23,7 @@
 
 #define GEN_PASS_DECL_ASCENDNORMALIZEPASS
 #define GEN_PASS_DEF_ASCENDNORMALIZEPASS
-#include "Conversion/Passes.h.inc"
+#include "Conversion/Ascend/Passes.h.inc"
 
 using namespace mlir;
 

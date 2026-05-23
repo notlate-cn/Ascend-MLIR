@@ -12,9 +12,8 @@
  * License.
  */
 
-#include "Conversion/AscendCBufferPlacement/AscendCBufferPlacementPass.h"
+#include "Conversion/Ascend/Realize/AscendCBufferPlacementPass.h"
 #include "Conversion/Ascend/Common/Attributes.h"
-#include "Dialect/AFIR/AFIR.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
@@ -39,7 +38,7 @@
 
 #define GEN_PASS_DECL_ASCENDCBUFFERPLACEMENTPASS
 #define GEN_PASS_DEF_ASCENDCBUFFERPLACEMENTPASS
-#include "Conversion/Passes.h.inc"
+#include "Conversion/Ascend/Passes.h.inc"
 
 using namespace mlir;
 using namespace mlir::ascendc;

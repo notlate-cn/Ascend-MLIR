@@ -33,7 +33,7 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "Conversion/AscendCPrepareForEmit/AscendCPrepareForEmitPass.h"
+#include "Conversion/Ascend/Backend/AscendCPrepareForEmitPass.h"
 
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/Affine/Utils.h"
@@ -59,7 +59,7 @@
 
 #define GEN_PASS_DECL_ASCENDCPREPAREFOREMITPASS
 #define GEN_PASS_DEF_ASCENDCPREPAREFOREMITPASS
-#include "Conversion/Passes.h.inc"
+#include "Conversion/Ascend/Passes.h.inc"
 
 #define DEBUG_TYPE "ascendc-prepare-for-emit"
 

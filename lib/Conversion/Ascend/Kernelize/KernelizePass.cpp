@@ -34,7 +34,7 @@
 
 #define GEN_PASS_DECL_ASCENDKERNELIZEPASS
 #define GEN_PASS_DEF_ASCENDKERNELIZEPASS
-#include "Conversion/Passes.h.inc"
+#include "Conversion/Ascend/Passes.h.inc"
 
 using namespace mlir;
 using namespace mlir::afir::ascend::kernelize;

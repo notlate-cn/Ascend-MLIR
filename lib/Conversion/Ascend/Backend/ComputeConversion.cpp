@@ -12,7 +12,7 @@
  * License.
  */
 
-#include "Conversion/LinalgToAscendC/LinalgToAscendCUtils.h"
+#include "Conversion/Ascend/Backend/LinalgToAscendCUtils.h"
 
 #include "Conversion/Ascend/Common/Attributes.h"
 #include "Conversion/Ascend/Backend/ElementwiseBodyOpRegistry.h"

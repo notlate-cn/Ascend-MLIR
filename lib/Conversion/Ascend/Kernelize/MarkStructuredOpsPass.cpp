@@ -4,7 +4,7 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "Conversion/MarkStructuredOps/MarkStructuredOpsPass.h"
+#include "Conversion/Ascend/Kernelize/MarkStructuredOpsPass.h"
 
 #include "Conversion/Ascend/Common/Attributes.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
@@ -16,7 +16,7 @@
 
 #define GEN_PASS_DECL_MARKSTRUCTUREDOPSPASS
 #define GEN_PASS_DEF_MARKSTRUCTUREDOPSPASS
-#include "Conversion/Passes.h.inc"
+#include "Conversion/Ascend/Passes.h.inc"
 
 using namespace mlir;
 

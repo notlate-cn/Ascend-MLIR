@@ -5,10 +5,10 @@
 //===----------------------------------------------------------------------===//
 
 #include "Conversion/Ascend/Backend/BackendWrapperPasses.h"
-#include "Conversion/AscendCParallelize/AscendCParallelizePass.h"
-#include "Conversion/AscendCPrepareForEmit/AscendCPrepareForEmitPass.h"
-#include "Conversion/CanonicalizeCannSignature/CanonicalizeCannSignaturePass.h"
-#include "Conversion/MarkStructuredOps/MarkStructuredOpsPass.h"
+#include "Conversion/Ascend/Backend/AscendCParallelizePass.h"
+#include "Conversion/Ascend/Backend/AscendCPrepareForEmitPass.h"
+#include "Conversion/Ascend/Backend/CanonicalizeCannSignaturePass.h"
+#include "Conversion/Ascend/Kernelize/MarkStructuredOpsPass.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
@@ -26,7 +26,7 @@
 #define GEN_PASS_DEF_ASCENDCANONICALIZECANNSIGNATUREPASS
 #define GEN_PASS_DEF_ASCENDPARALLELIZEPASS
 #define GEN_PASS_DEF_ASCENDPREPAREFOREMITPASS
-#include "Conversion/Passes.h.inc"
+#include "Conversion/Ascend/Passes.h.inc"
 
 namespace mlir::afir {
 namespace {

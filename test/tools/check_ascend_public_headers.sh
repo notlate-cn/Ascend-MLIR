@@ -42,8 +42,13 @@ check_phase_headers() {
 }
 
 check_phase_headers Kernelize \
+  "include/Conversion/Ascend/Kernelize/FuseGatherElementwisePass.h" \
   "include/Conversion/Ascend/Kernelize/KernelizeExternalModels.h" \
   "include/Conversion/Ascend/Kernelize/KernelizePass.h" \
-  "include/Conversion/Ascend/Kernelize/KernelizeOpInterface.h"
+  "include/Conversion/Ascend/Kernelize/KernelizeOpInterface.h" \
+  "include/Conversion/Ascend/Kernelize/MarkStructuredOpsPass.h"
 check_phase_headers Schedule "include/Conversion/Ascend/Schedule/SchedulePass.h"
-check_phase_headers Realize "include/Conversion/Ascend/Realize/RealizePass.h"
+check_phase_headers Realize \
+  "include/Conversion/Ascend/Realize/AscendCBufferPlacementPass.h" \
+  "include/Conversion/Ascend/Realize/AscendCFoldConcatAllocPass.h" \
+  "include/Conversion/Ascend/Realize/RealizePass.h"
