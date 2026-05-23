@@ -1,7 +1,7 @@
 // ============================================================
 // STAGE 2: Transform Dialect Tiling
 //
-// Input: step1b_fused.mlir (after --mark-structured-ops + --fuse-gather-elementwise)
+// Input: tensor-level gather IR before ascend-kernelize semantic marking.
 //   Single fused gather generic carries {gather_dim = 1 : i64}
 //   with relu + add inlined in body.
 //

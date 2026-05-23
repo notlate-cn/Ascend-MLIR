@@ -2603,10 +2603,10 @@ static LogicalResult printCannFuncOp(CodeEmitter &emitter,
   CodeEmitter::Scope scope(emitter);
   auto &os = emitter.ostream();
 
-  // cann.num_inputs must be present (set by CanonicalizeCannSignaturePass).
+  // cann.num_inputs must be present (set by ascend-canonicalize-cann-signature).
   if (!funcOp->hasAttr("cann.num_inputs"))
     return funcOp.emitOpError("missing cann.num_inputs attribute; "
-                               "run --canonicalize-cann-signature first");
+                               "run --ascend-canonicalize-cann-signature first");
 
   auto args = funcOp.getArguments();
   int numArgs = (int)args.size();

@@ -1,4 +1,4 @@
-// RUN: afir-opt %s --linalg-to-ascendc | FileCheck %s
+// RUN: afir-opt %s --ascend-compute-lower | FileCheck %s
 
 module {
   func.func @co1_vecin_scalar_loop(%out: memref<4xf32>) {

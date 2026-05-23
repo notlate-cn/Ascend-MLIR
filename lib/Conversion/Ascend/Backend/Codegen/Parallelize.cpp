@@ -1,4 +1,4 @@
-//===- AscendCParallelizePass.cpp - Replace parallel scf.for with get_block_idx ===//
+//===- Parallelize.cpp - Ascend kernel dispatch lowering ------------------===//
 //
 // Part of the Ascend-MLIR Project
 //
@@ -21,7 +21,7 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "Conversion/Ascend/Backend/Codegen/AscendCParallelizePass.h"
+#include "CodegenPasses.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
@@ -34,11 +34,7 @@
 
 #include "ascir/Dialect/Asc/IR/Asc.h"
 
-#define GEN_PASS_DECL_ASCENDCPARALLELIZEPASS
-#define GEN_PASS_DEF_ASCENDCPARALLELIZEPASS
-#include "Conversion/Ascend/Passes.h.inc"
-
-#define DEBUG_TYPE "ascendc-parallelize"
+#define DEBUG_TYPE "ascend-parallelize"
 
 using namespace mlir;
 using namespace mlir::ascendc;
@@ -132,9 +128,18 @@ static LogicalResult parallelizeOneLoop(scf::ForOp outerFor,
 // Pass definition
 //===----------------------------------------------------------------------===//
 
-struct AscendCParallelizePass
-    : public ::impl::AscendCParallelizePassBase<AscendCParallelizePass> {
-  using AscendCParallelizePassBase::AscendCParallelizePassBase;
+struct AscendCodegenParallelizePass
+    : public PassWrapper<AscendCodegenParallelizePass,
+                         OperationPass<func::FuncOp>> {
+  MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(AscendCodegenParallelizePass)
+
+  StringRef getArgument() const final {
+    return "ascend-codegen-parallelize-internal";
+  }
+
+  StringRef getDescription() const final {
+    return "Run internal Ascend kernel dispatch lowering";
+  }
 
   void runOnOperation() override {
     func::FuncOp func = getOperation();
@@ -144,21 +149,21 @@ struct AscendCParallelizePass
     SmallVector<scf::ForOp> topFors = findTopLevelParallelFors(func);
     if (topFors.empty()) {
       LLVM_DEBUG(llvm::dbgs()
-                 << "[ascendc-parallelize] No annotated outer loops found to "
+                 << "[ascend-parallelize] No annotated outer loops found to "
                     "parallelize\n");
       return;
     }
     for (scf::ForOp forOp : topFors) {
       if (failed(parallelizeOneLoop(forOp, builder))) {
         LLVM_DEBUG(llvm::dbgs()
-                   << "[ascendc-parallelize] Skipping loop (lb != 0)\n");
+                   << "[ascend-parallelize] Skipping loop (lb != 0)\n");
       }
     }
   }
 };
 
-std::unique_ptr<Pass> createAscendCParallelizePass() {
-  return std::make_unique<AscendCParallelizePass>();
+std::unique_ptr<Pass> createAscendCodegenParallelizePass() {
+  return std::make_unique<AscendCodegenParallelizePass>();
 }
 
 } // namespace mlir::afir

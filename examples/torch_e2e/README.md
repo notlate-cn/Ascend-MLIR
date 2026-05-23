@@ -65,13 +65,13 @@ def test_my_op():
 torch.nn.Module + TensorSpec
   → [torch-mlir] step0_linalg.mlir（动态 shape）
   → [step1] --linalg-fuse-elementwise-ops
-  → [step2] --transform-interpreter（自动生成 transform 脚本）
-  → [step3] --one-shot-bufferize
-  → [step4] --ascendc-buffer-placement
-  → [step5] --linalg-to-ascendc
-  → [step6] --ascendc-parallelize
-  → [step7] --ascendc-prepare-for-emit
-  → [step7b] --canonicalize-cann-signature
+  → [step2] --ascend-normalize
+  → [step3] --ascend-kernelize
+  → [step4] --ascend-schedule
+  → [step5] --ascend-realize
+  → [step6] --ascend-compute-lower
+  → [step7] --ascend-parallelize + --ascend-prepare-for-emit
+  → [step7b] --ascend-canonicalize-cann-signature
   → [step8] afir-translate -mlir-to-cann → step8_kernel.cpp + tiling_space.json
   → [step9-10] autotuner → compile + tiling 搜索 + 数值验证
 ```

@@ -1,4 +1,4 @@
-// RUN: afir-opt --canonicalize-cann-signature %s | FileCheck %s
+// RUN: afir-opt --ascend-canonicalize-cann-signature %s | FileCheck %s
 
 // CHECK-LABEL: func.func @broadcast_add_reducesum
 // CHECK-SAME: %[[A:[a-z0-9]+]]: memref<?xf16>

@@ -10,7 +10,7 @@
 // Op2 (index_select, dim=1): linalg.generic, body: tensor.extract
 //   Semantics: out[i, j] = relu_out[i, indices[j]]
 //   Matches torch-MLIR aten.index_select(data, dim=1, indices) lowering.
-//   --mark-structured-ops will stamp {gather_dim = 1 : i64} on this op.
+//   ascend-kernelize will stamp {gather_dim = 1 : i64} on this op.
 //
 // M, N, K are all dynamic dimensions.
 // ============================================================
@@ -48,7 +48,7 @@ module {
     } -> tensor<?x?xf16>
 
     // Op2: index_select(relu_out, dim=1, indices) -> gathered[M,K]
-    // --mark-structured-ops stamps {gather_dim = 1 : i64} on this op.
+    // ascend-kernelize stamps {gather_dim = 1 : i64} on this op.
     %empty_gathered = tensor.empty(%dim_m, %dim_k) : tensor<?x?xf16>
     %gathered = linalg.generic {
       indexing_maps = [#col_broadcast_map, #full_map],

@@ -29,7 +29,7 @@
 
 #include <optional>
 
-#define DEBUG_TYPE "linalg-to-ascendc-datamove"
+#define DEBUG_TYPE "ascend-compute-lower-datamove"
 
 using namespace mlir;
 using namespace mlir::ascendc;

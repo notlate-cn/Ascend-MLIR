@@ -1,11 +1,11 @@
-//===- FuseGatherElementwisePass.cpp - Fuse elementwise into gather -------===//
+//===- GatherElementwiseFusion.cpp - Fuse elementwise into gather ---------===//
 //
 // Part of the Ascend-MLIR Project
 //
 //===----------------------------------------------------------------------===//
 //
-// This pass runs at the tensor level (after --mark-structured-ops, before
-// --transform-interpreter). It fuses chains of:
+// This transformation runs at the tensor level during ascend-kernelize. It
+// fuses chains of:
 //
 //   pre-op (e.g. relu linalg.generic)
 //     -> gather linalg.generic {gather_dim / embedding_dim}
@@ -15,7 +15,7 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "Conversion/Ascend/Kernelize/FuseGatherElementwisePass.h"
+#include "KernelizeInternalPasses.h"
 
 #include "Conversion/Ascend/Common/Attributes.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
@@ -24,10 +24,6 @@
 #include "mlir/IR/AffineMap.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/IRMapping.h"
-
-#define GEN_PASS_DECL_FUSEGATHERELEMENTWISEPASS
-#define GEN_PASS_DEF_FUSEGATHERELEMENTWISEPASS
-#include "Conversion/Ascend/Passes.h.inc"
 
 using namespace mlir;
 
@@ -53,16 +49,9 @@ static bool isSimpleElementwise(linalg::GenericOp op) {
   return true;
 }
 
-struct FuseGatherElementwisePass
-    : public ::impl::FuseGatherElementwisePassBase<FuseGatherElementwisePass> {
-  void runOnOperation() override;
-};
-
 } // namespace
 
-void FuseGatherElementwisePass::runOnOperation() {
-  func::FuncOp funcOp = getOperation();
-
+LogicalResult fuseGatherElementwise(func::FuncOp funcOp) {
   // Collect gather ops first; we'll modify as we go.
   SmallVector<linalg::GenericOp> gatherOps;
   funcOp.walk([&](linalg::GenericOp op) {
@@ -302,12 +291,10 @@ void FuseGatherElementwisePass::runOnOperation() {
       gatherResult.replaceAllUsesWith(fusedResult);
     }
     gatherOp.erase();
-    if (preOp) preOp.erase();
+    if (preOp)
+      preOp.erase();
   }
-}
-
-std::unique_ptr<Pass> createFuseGatherElementwisePass() {
-  return std::make_unique<FuseGatherElementwisePass>();
+  return success();
 }
 
 } // namespace mlir::afir

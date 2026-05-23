@@ -1,5 +1,5 @@
 // RUN: afir-opt %s --ascend-normalize --ascend-kernelize | FileCheck %s --check-prefix=KERNELIZE
-// RUN: afir-opt %s --ascend-normalize --ascend-kernelize --ascend-schedule='target-tile-policy=target-aware cann-root=%S/Inputs/ascend-schedule-target-tile-cann soc=SyntheticScheduleSoC' --ascend-kernel-split --ascend-realize='materialization-mode=memory-space-annotate' --annotate-mix-matmul-semantics --ascend-compute-lower --ascend-parallelize --ascend-prepare-for-emit --ascend-canonicalize-cann-signature | FileCheck %s --implicit-check-not=ascendc.mmad --implicit-check-not=ascendc.load_data_with_transpose
+// RUN: afir-opt %s --ascend-normalize --ascend-kernelize --ascend-schedule='target-tile-policy=target-aware cann-root=%S/Inputs/ascend-schedule-target-tile-cann soc=SyntheticScheduleSoC' --ascend-kernel-split --ascend-realize='materialization-mode=memory-space-annotate' --ascend-compute-lower --ascend-parallelize --ascend-prepare-for-emit --ascend-canonicalize-cann-signature | FileCheck %s --implicit-check-not=ascendc.mmad --implicit-check-not=ascendc.load_data_with_transpose
 
 // Real 910B1 validation showed f32 batch_matmul with a fused epilogue must
 // not enter the mix/cube A2/B2/CO1 path: the generated f32 B1->B2 LoadData

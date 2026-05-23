@@ -152,7 +152,6 @@ echo ""
 echo "==================== [STAGE 5] Ascend compute lower ===================="
 "$AFIR_OPT" "$BUILD_DIR/step4_realized.mlir" \
   --ascend-compute-lower \
-  --annotate-ascendc-kernel-kind \
   -o "$BUILD_DIR/step5_ascendc.mlir"
 log "  output: $BUILD_DIR/step5_ascendc.mlir"
 

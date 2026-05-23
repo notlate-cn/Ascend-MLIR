@@ -1,18 +1,9 @@
-/*
- * Copyright (c) 2025 Huawei Technologies Co., Ltd.
- * This program is free software; you can redistribute it and/or modify it
- * under terms and conditions of the CANN Open Software License Agreement
- * Version 2.0 (the "License"). Please refer to LICENSE in the root of the
- * software repository for the full text of the License.
- *
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY
- * KIND, EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO
- * NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
- * See LICENSE in the root of the software repository for the full text of the
- * License.
- */
+//===- LinalgToAscendCLowering.cpp - Ascend compute lowering impl ---------===//
+//
+// Part of the Ascend-MLIR Project
+//
+//===----------------------------------------------------------------------===//
 
-#include "Conversion/Ascend/Backend/Lowering/LinalgToAscendCPass.h"
 #include "Conversion/Ascend/Backend/Lowering/LinalgToAscendCUtils.h"
 
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
@@ -31,11 +22,7 @@
 #include "ascir/Dialect/Asc/Utils/Utils.h"
 #include "ascir/Dialect/EmitAsc/IR/EmitAsc.h"
 
-#define GEN_PASS_DECL_LINALGTOASCENDCPASS
-#define GEN_PASS_DEF_LINALGTOASCENDCPASS
-#include "Conversion/Ascend/Passes.h.inc"
-
-#define DEBUG_TYPE "linalg-to-ascendc"
+#define DEBUG_TYPE "ascend-compute-lower"
 
 using namespace mlir;
 using namespace mlir::ascendc;
@@ -478,26 +465,6 @@ LogicalResult lowerLinalgToAscendC(func::FuncOp funcOp) {
     return failure();
 
   return success();
-}
-
-namespace {
-struct LinalgToAscendCPass
-    : public ::impl::LinalgToAscendCPassBase<LinalgToAscendCPass> {
-
-  void runOnOperation() override {
-    if (failed(lowerLinalgToAscendC(getOperation()))) {
-      signalPassFailure();
-      return;
-    }
-
-    LLVM_DEBUG(llvm::dbgs() << "=== After LinalgToAscendCPass ===\n");
-    LLVM_DEBUG(getOperation().print(llvm::dbgs()));
-  }
-};
-} // namespace
-
-std::unique_ptr<Pass> createLinalgToAscendCPass() {
-  return std::make_unique<LinalgToAscendCPass>();
 }
 
 } // namespace afir

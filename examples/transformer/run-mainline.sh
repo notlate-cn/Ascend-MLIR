@@ -78,13 +78,6 @@ require_positive_int "BATCH" "$BATCH"
 require_positive_int "SEQ" "$SEQ"
 require_positive_int "BLOCK_DIM" "$BLOCK_DIM"
 
-if [[ "$RUNTIME_SESSION" != */* ]]; then
-  RUNTIME_SESSION="$(command -v "$RUNTIME_SESSION")"
-fi
-if [[ -z "${AFIR_MIX_TILING_HELPER:-}" ]] && command -v mix-tiling-helper >/dev/null 2>&1; then
-  export AFIR_MIX_TILING_HELPER="$(command -v mix-tiling-helper)"
-fi
-
 log() {
   if $VERBOSE; then
     echo "$@"
@@ -114,7 +107,6 @@ if ! "$AFIR_OPT" "$BUILD_DIR/step2_kernelized.mlir" \
     --ascend-schedule="target-tile-policy=target-aware cann-root=${CANN_ROOT} soc=${SOC}" \
     --ascend-kernel-split \
     --ascend-realize='materialization-mode=memory-space-annotate' \
-    --annotate-mix-matmul-semantics \
     --ascend-compute-lower \
     -o "$BUILD_DIR/full_codegen.mlir" \
     2> "$BUILD_DIR/full_codegen.stderr"; then
@@ -166,6 +158,13 @@ echo "transformer_dynamic.full_codegen=pass"
 
 if ! $RUNTIME_E2E; then
   exit 0
+fi
+
+if [[ "$RUNTIME_SESSION" != */* ]]; then
+  RUNTIME_SESSION="$(command -v "$RUNTIME_SESSION")"
+fi
+if [[ -z "${AFIR_MIX_TILING_HELPER:-}" ]] && command -v mix-tiling-helper >/dev/null 2>&1; then
+  export AFIR_MIX_TILING_HELPER="$(command -v mix-tiling-helper)"
 fi
 
 "$PYTHON" "$DIR/gen_data.py" \

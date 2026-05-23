@@ -1,4 +1,4 @@
-// RUN: afir-opt %s --linalg-to-ascendc | FileCheck %s
+// RUN: afir-opt %s --ascend-compute-lower | FileCheck %s
 
 // Regression: A1->A2 LoadData src_stride must not floor dynamic M/16 to zero.
 // Small transformer tiles can have M < 16, so the packed A matrix still needs

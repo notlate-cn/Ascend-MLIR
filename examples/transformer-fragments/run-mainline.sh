@@ -229,17 +229,9 @@ log "  output: $BUILD_DIR/step4_realized.mlir"
 
 echo ""
 echo "==================== [STAGE 5] Ascend compute lower ===================="
-if is_mix_fragment "$FRAGMENT"; then
-  "$AFIR_OPT" "$BUILD_DIR/step4_realized.mlir" \
-    --annotate-ascendc-kernel-kind \
-    --annotate-mix-matmul-semantics \
-    --ascend-compute-lower \
-    -o "$BUILD_DIR/step5_ascendc.mlir"
-else
-  "$AFIR_OPT" "$BUILD_DIR/step4_realized.mlir" \
-    --ascend-compute-lower \
-    -o "$BUILD_DIR/step5_ascendc.mlir"
-fi
+"$AFIR_OPT" "$BUILD_DIR/step4_realized.mlir" \
+  --ascend-compute-lower \
+  -o "$BUILD_DIR/step5_ascendc.mlir"
 log "  output: $BUILD_DIR/step5_ascendc.mlir"
 echo "transformer_fragment.${FRAGMENT}.full_codegen=pass"
 

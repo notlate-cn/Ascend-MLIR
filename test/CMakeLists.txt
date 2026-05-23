@@ -50,6 +50,17 @@ if(AFIR_ENABLE_BINDING_PYTHON)
   add_afir_lit_directory(python)
 endif()
 
+foreach(lit_tool_target
+    check-afir
+    check-afir-tools-examples
+    check-afir-tools-runtime)
+  if(TARGET ${lit_tool_target})
+    add_dependencies(${lit_tool_target}
+      mix-compiler
+      runtime-session)
+  endif()
+endforeach()
+
 add_subdirectory(unittests)
 
 function(add_afir_ctest_label_target target_name label)
