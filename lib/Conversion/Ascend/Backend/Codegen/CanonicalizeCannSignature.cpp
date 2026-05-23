@@ -1,4 +1,4 @@
-//===- CanonicalizeCannSignaturePass.cpp - CANN signature canonicalization -===//
+//===- CanonicalizeCannSignature.cpp - CANN signature canonicalization ----===//
 //
 // Part of the Ascend-MLIR Project
 //
@@ -13,7 +13,7 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "Conversion/Ascend/Backend/Codegen/CanonicalizeCannSignaturePass.h"
+#include "CodegenPasses.h"
 #include "ascir/Dialect/Asc/Utils/Attributes.h"
 #include "ascir/Dialect/EmitAsc/IR/EmitAsc.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
@@ -21,13 +21,9 @@
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/PatternMatch.h"
-#include "mlir/Pass/Pass.h"
 #include "mlir/Transforms/DialectConversion.h"
 #include "llvm/ADT/STLExtras.h"
 #include <memory>
-
-#define GEN_PASS_DEF_CANONICALIZECANNSIGNATUREPASS
-#include "Conversion/Ascend/Passes.h.inc"
 
 using namespace mlir;
 
@@ -214,11 +210,19 @@ static bool shouldEraseModuleChild(Operation &child) {
 
 } // namespace
 
-struct CanonicalizeCannSignaturePass
-    : public ::impl::CanonicalizeCannSignaturePassBase<
-          CanonicalizeCannSignaturePass> {
-  using Base = ::impl::CanonicalizeCannSignaturePassBase<CanonicalizeCannSignaturePass>;
-  using Base::Base;
+struct AscendCodegenCanonicalizeCannSignaturePass
+    : public PassWrapper<AscendCodegenCanonicalizeCannSignaturePass,
+                         OperationPass<ModuleOp>> {
+  MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(
+      AscendCodegenCanonicalizeCannSignaturePass)
+
+  StringRef getArgument() const final {
+    return "ascend-codegen-canonicalize-cann-signature-internal";
+  }
+
+  StringRef getDescription() const final {
+    return "Run internal Ascend CANN signature canonicalization";
+  }
 
   void runOnOperation() override {
     ModuleOp module = getOperation();
@@ -248,8 +252,8 @@ struct CanonicalizeCannSignaturePass
   }
 };
 
-std::unique_ptr<Pass> createCanonicalizeCannSignaturePass() {
-  return std::make_unique<CanonicalizeCannSignaturePass>();
+std::unique_ptr<Pass> createAscendCodegenCanonicalizeCannSignaturePass() {
+  return std::make_unique<AscendCodegenCanonicalizeCannSignaturePass>();
 }
 
 } // namespace mlir::afir

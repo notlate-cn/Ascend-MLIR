@@ -40,7 +40,7 @@
 #include <limits>
 #include <optional>
 
-#define DEBUG_TYPE "linalg-to-ascendc-compute"
+#define DEBUG_TYPE "ascend-compute-lower-compute"
 
 using namespace mlir;
 using namespace mlir::ascendc;
@@ -2928,10 +2928,10 @@ LogicalResult convertCompute(func::FuncOp funcOp, AscendCBufferContext &ctx) {
   //   Final result   → write directly to VECOUT (writeTensor handles alloc)
   //   Enqueue VECOUT for downstream data-move epilogue copy
   //
-  // Concat semantics are implicitly handled: the VECOUT→GM copy op (inserted by
-  // AscendCBufferPlacement + DataMoveConversion) targets a memref subview of the
-  // output buffer with the correct byte offset, so Op1 and Op2 results land at
-  // the right positions in the concatenated output without any asc.concat op.
+  // Concat semantics are implicitly handled: the VECOUT->GM copy op from
+  // memory realization targets a memref subview of the output buffer with the
+  // correct byte offset, so Op1 and Op2 results land at the right positions in
+  // the concatenated output without any asc.concat op.
   SmallVector<linalg::GenericOp> parallelGenericOps;
   funcOp.walk([&](linalg::GenericOp op) {
     auto iterTypes = op.getIteratorTypesArray();
@@ -2951,13 +2951,13 @@ LogicalResult convertCompute(func::FuncOp funcOp, AscendCBufferContext &ctx) {
   };
 
   // Helper: detect index_select gather (column gather).
-  // Stamped by --mark-structured-ops: {gather_dim = N : i64} attribute.
+  // Stamped by ascend-kernelize: {gather_dim = N : i64} attribute.
   auto isIndexSelectGeneric = [](linalg::GenericOp op) -> bool {
     return op->hasAttr(ascend::kGatherDimAttr);
   };
 
   // Helper: detect embedding gather (row gather).
-  // Stamped by --mark-structured-ops: {embedding_dim = N : i64} attribute.
+  // Stamped by ascend-kernelize: {embedding_dim = N : i64} attribute.
   auto isEmbeddingGeneric = [](linalg::GenericOp op) -> bool {
     return op->hasAttr(ascend::kEmbeddingDimAttr);
   };
@@ -3320,7 +3320,7 @@ LogicalResult convertCompute(func::FuncOp funcOp, AscendCBufferContext &ctx) {
             // If no post-op, walk the gather body itself for any arith ops that
             // appear after the memref.load (from upstream fusion). This handles
             // the case where relu + add were fused into the gather body by
-            // --fuse-gather-elementwise before bufferization.
+            // ascend-kernelize gather elementwise fusion before bufferization.
             if (postOp) {
               Value dimK_i32v = b.create<arith::IndexCastOp>(forLoc, b.getI32Type(), dimK);
               Block &postBody = *postOp.getBody();
@@ -3386,7 +3386,7 @@ LogicalResult convertCompute(func::FuncOp funcOp, AscendCBufferContext &ctx) {
               }
             } else {
               // Walk the fused gather body for arith ops that appear after
-              // the memref.load (these were inlined by --fuse-gather-elementwise).
+              // the memref.load (these were inlined by gather elementwise fusion).
               // Block args:
               //   arg0 = indices element (i64, skip)
               //   arg1..argN-2 = extra ins (bias etc.)
@@ -3857,10 +3857,10 @@ LogicalResult convertCompute(func::FuncOp funcOp, AscendCBufferContext &ctx) {
     //                   and let the downstream DataMoveConversion handle writeback.
     //   VECCALC (ms=11): accumLt already holds the result; no copy needed.
     //
-    // Key insight: the epilogue memref.copy (VECOUT→GM) inserted by
-    // AscendCBufferPlacement is converted by DataMoveConversion into a
-    // data_copy_l2 with the correct subview offset, so the Concat position
-    // is preserved automatically. We just need to enqueue the result tensor.
+    // Key insight: the epilogue memref.copy (VECOUT->GM) from memory
+    // realization is converted by DataMoveConversion into a data_copy_l2 with
+    // the correct subview offset, so the concat position is preserved
+    // automatically. We just need to enqueue the result tensor.
     if (outQueue) {
       // The queue expects a tensor allocated from the same queue.  Real
       // hardware is stricter than the simulator here; enqueueing a VECCALC

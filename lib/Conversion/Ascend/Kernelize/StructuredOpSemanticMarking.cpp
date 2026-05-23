@@ -1,10 +1,10 @@
-//===- MarkStructuredOpsPass.cpp - Mark structured linalg ops -------------===//
+//===- StructuredOpSemanticMarking.cpp - Mark structured linalg ops -------===//
 //
 // Part of the Ascend-MLIR Project
 //
 //===----------------------------------------------------------------------===//
 
-#include "Conversion/Ascend/Kernelize/MarkStructuredOpsPass.h"
+#include "KernelizeInternalPasses.h"
 
 #include "Conversion/Ascend/Common/Attributes.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
@@ -14,20 +14,11 @@
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinAttributes.h"
 
-#define GEN_PASS_DECL_MARKSTRUCTUREDOPSPASS
-#define GEN_PASS_DEF_MARKSTRUCTUREDOPSPASS
-#include "Conversion/Ascend/Passes.h.inc"
-
 using namespace mlir;
 
 namespace mlir::afir {
 
 namespace {
-
-struct MarkStructuredOpsPass
-    : public ::impl::MarkStructuredOpsPassBase<MarkStructuredOpsPass> {
-  void runOnOperation() override;
-};
 
 // Five-condition gather detection.
 // Returns {isGather, gatherDim, isEmbedding} where gatherDim is the dimension
@@ -145,8 +136,7 @@ GatherInfo detectGather(linalg::GenericOp op) {
 
 }  // namespace
 
-void MarkStructuredOpsPass::runOnOperation() {
-  func::FuncOp funcOp = getOperation();
+LogicalResult markStructuredOps(func::FuncOp funcOp) {
   OpBuilder builder(funcOp.getContext());
 
   funcOp.walk([&](linalg::GenericOp op) {
@@ -162,10 +152,7 @@ void MarkStructuredOpsPass::runOnOperation() {
                   builder.getI64IntegerAttr(info.gatherDim));
     }
   });
-}
-
-std::unique_ptr<Pass> createMarkStructuredOpsPass() {
-  return std::make_unique<MarkStructuredOpsPass>();
+  return success();
 }
 
 }  // namespace mlir::afir

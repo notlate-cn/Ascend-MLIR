@@ -5,10 +5,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "Conversion/Ascend/Backend/Wrappers/BackendWrapperPasses.h"
-#include "Conversion/Ascend/Backend/Codegen/AscendCParallelizePass.h"
-#include "Conversion/Ascend/Backend/Codegen/AscendCPrepareForEmitPass.h"
-#include "Conversion/Ascend/Backend/Codegen/AnnotateAscendCKernelKindPass.h"
-#include "Conversion/Ascend/Backend/Codegen/CanonicalizeCannSignaturePass.h"
+#include "../Codegen/CodegenPasses.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
@@ -35,7 +32,7 @@ struct AscendParallelizePass
     : public ::impl::AscendParallelizePassBase<AscendParallelizePass> {
   void runOnOperation() override {
     OpPassManager pm("builtin.module");
-    pm.nest<func::FuncOp>().addPass(createAscendCParallelizePass());
+    pm.nest<func::FuncOp>().addPass(createAscendCodegenParallelizePass());
     if (failed(runPipeline(pm, getOperation())))
       signalPassFailure();
   }
@@ -45,8 +42,9 @@ struct AscendPrepareForEmitPass
     : public ::impl::AscendPrepareForEmitPassBase<AscendPrepareForEmitPass> {
   void runOnOperation() override {
     OpPassManager pm("builtin.module");
-    pm.addPass(createAscendCPrepareForEmitPass());
-    pm.nest<func::FuncOp>().addPass(createAnnotateAscendCKernelKindPass());
+    pm.addPass(createAscendCodegenPrepareForEmitPass());
+    pm.nest<func::FuncOp>().addPass(
+        createAscendCodegenAnnotateKernelKindPass());
     if (failed(runPipeline(pm, getOperation())))
       signalPassFailure();
   }
@@ -57,7 +55,7 @@ struct AscendCanonicalizeCannSignaturePass
           AscendCanonicalizeCannSignaturePass> {
   void runOnOperation() override {
     OpPassManager pm("builtin.module");
-    pm.addPass(createCanonicalizeCannSignaturePass());
+    pm.addPass(createAscendCodegenCanonicalizeCannSignaturePass());
     if (failed(runPipeline(pm, getOperation())))
       signalPassFailure();
   }

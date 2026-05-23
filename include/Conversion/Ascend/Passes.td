@@ -58,7 +58,9 @@ def AscendKernelizePass : Pass<"ascend-kernelize", "mlir::ModuleOp"> {
     Analyzes linalg ops in a normalized module, fuses them into kernel candidates
     via dependency, horizontal fusion, and merge analysis, then marks kernel
     boundaries and assigns op roles (cube, vector, reduction, memory) for
-    downstream scheduling. Fails closed on any unsupported op semantics.
+    downstream scheduling. It also owns structured gather marking and gather
+    elementwise fusion before candidate analysis. Fails closed on any
+    unsupported op semantics.
   }];
   let constructor = "mlir::afir::createAscendKernelizePass()";
   let dependentDialects = [
@@ -181,8 +183,10 @@ def AscendRealizePass : Pass<"ascend-realize", "mlir::ModuleOp"> {
 def AscendComputeLowerPass : Pass<"ascend-compute-lower", "mlir::func::FuncOp"> {
   let summary = "Lower supported memory-realized linalg and copies to AscendC";
   let description = [{
-    Phase 5 compute lowering wrapper. It reuses the existing LinalgToAscendC
-    lowering implementation and adds fail-closed support-matrix diagnostics.
+    Phase 5 compute lowering. It annotates kernel kind and mix matmul ABI
+    semantics when needed, lowers supported linalg compute operations and
+    memref.copy movement to AscendC, and fails closed on support-matrix
+    diagnostics.
   }];
   let constructor = "mlir::afir::createAscendComputeLowerPass()";
   let dependentDialects = [
@@ -197,8 +201,7 @@ def AscendComputeLowerPass : Pass<"ascend-compute-lower", "mlir::func::FuncOp"> 
 def AscendParallelizePass : Pass<"ascend-parallelize", "mlir::ModuleOp"> {
   let summary = "Run Phase 5 Ascend kernel dispatch lowering";
   let description = [{
-    Versionless Phase 5 wrapper around the existing AscendC parallelization
-    implementation.
+    Phase 5 Ascend kernel dispatch lowering.
   }];
   let constructor = "mlir::afir::createAscendParallelizePass()";
   let dependentDialects = [
@@ -213,10 +216,9 @@ def AscendPrepareForEmitPass
     : Pass<"ascend-prepare-for-emit", "mlir::ModuleOp"> {
   let summary = "Prepare Phase 5 AscendC kernel ABI data";
   let description = [{
-    Versionless Phase 5 wrapper around the existing AscendC prepare-for-emit
-    implementation. It also derives ascendc.kernel_kind after prepare-for-emit
-    so downstream artifact generation can select vec, cube, or mix compile
-    paths per kernel.
+    Prepares AscendC functions for emission. It also derives
+    ascendc.kernel_kind after prepare-for-emit so downstream artifact
+    generation can select vec, cube, or mix compile paths per kernel.
   }];
   let constructor = "mlir::afir::createAscendPrepareForEmitPass()";
   let dependentDialects = [
@@ -232,176 +234,9 @@ def AscendCanonicalizeCannSignaturePass
     : Pass<"ascend-canonicalize-cann-signature", "mlir::ModuleOp"> {
   let summary = "Canonicalize Phase 5 Ascend kernel signatures to CANN ABI";
   let description = [{
-    Versionless Phase 5 wrapper around the existing CANN signature
-    canonicalization implementation.
+    Canonicalizes Phase 5 Ascend kernel signatures to the CANN runtime ABI.
   }];
   let constructor = "mlir::afir::createAscendCanonicalizeCannSignaturePass()";
-  let dependentDialects = [
-    "mlir::func::FuncDialect",
-    "mlir::emitasc::EmitAscDialect",
-    "mlir::memref::MemRefDialect"
-  ];
-}
-
-//===----------------------------------------------------------------------===//
-// Legacy-compatible Ascend entry points hosted by the five-layer Ascend tree.
-//===----------------------------------------------------------------------===//
-
-def AscendCFoldConcatAllocPass
-    : Pass<"ascendc-fold-concat-alloc", "mlir::func::FuncOp"> {
-  let summary = "Eliminate redundant GM-to-GM copies introduced by tensor.concat bufferization";
-  let description = [{
-    After one-shot-bufferize of decomposed tensor.concat, this pass detects
-    intermediate result allocs that are copied into slices of the concat output
-    and rewrites users to write directly into the output subviews.
-  }];
-  let constructor = "mlir::afir::createAscendCFoldConcatAllocPass()";
-  let dependentDialects = [
-    "mlir::func::FuncDialect",
-    "mlir::memref::MemRefDialect"
-  ];
-}
-
-def AscendCBufferPlacementPass
-    : Pass<"ascendc-buffer-placement", "mlir::func::FuncOp"> {
-  let summary = "Annotate memref allocs with TPosition memory spaces and materialize data movement";
-  let description = [{
-    Legacy AscendC buffer-placement entry point retained for direct tests and
-    legacy scripts. It now lives under the Ascend Realize layer.
-  }];
-  let constructor = "mlir::afir::createAscendCBufferPlacementPass()";
-  let dependentDialects = [
-    "mlir::ascendc::AscendCDialect",
-    "mlir::memref::MemRefDialect",
-    "mlir::arith::ArithDialect"
-  ];
-}
-
-def MarkStructuredOpsPass : Pass<"mark-structured-ops", "mlir::func::FuncOp"> {
-  let summary = "Annotate structured linalg.generic ops with semantic attributes";
-  let description = [{
-    Detects structured linalg.generic patterns such as gather and embedding and
-    stamps semantic attributes consumed by downstream Ascend kernelization and
-    lowering stages.
-  }];
-  let constructor = "mlir::afir::createMarkStructuredOpsPass()";
-  let dependentDialects = [
-    "mlir::linalg::LinalgDialect",
-    "mlir::tensor::TensorDialect"
-  ];
-}
-
-def FuseGatherElementwisePass
-    : Pass<"fuse-gather-elementwise", "mlir::func::FuncOp"> {
-  let summary = "Fuse elementwise ops into adjacent gather generics at tensor level";
-  let description = [{
-    Runs after structured-op marking and before transform interpretation.
-    Detects pre/post elementwise chains around gather generics and folds the
-    supported chain into a single gather generic.
-  }];
-  let constructor = "mlir::afir::createFuseGatherElementwisePass()";
-  let dependentDialects = [
-    "mlir::linalg::LinalgDialect",
-    "mlir::tensor::TensorDialect",
-    "mlir::arith::ArithDialect"
-  ];
-}
-
-def AnnotateMixMatmulSemanticsPass
-    : Pass<"annotate-mix-matmul-semantics", "mlir::func::FuncOp"> {
-  let summary = "Annotate func.func with stable abi_matmul_* semantics for simple mix matmul patterns";
-  let description = [{
-    Scans bufferized mix matmul kernels while linalg.matmul and fused vector
-    epilogue ops are still present, then stamps stable function-level
-    abi_matmul_* attributes for downstream ABI extraction.
-  }];
-  let constructor = "mlir::afir::createAnnotateMixMatmulSemanticsPass()";
-  let dependentDialects = [
-    "mlir::func::FuncDialect",
-    "mlir::linalg::LinalgDialect",
-    "mlir::memref::MemRefDialect",
-    "mlir::arith::ArithDialect",
-    "mlir::scf::SCFDialect"
-  ];
-}
-
-def LinalgToAscendCPass
-    : Pass<"linalg-to-ascendc", "mlir::func::FuncOp"> {
-  let summary = "Lower linalg compute ops and memref.copy to AscendC dialect ops";
-  let description = [{
-    Legacy direct entry point for the Ascend backend lowering engine. It lowers
-    supported linalg compute operations and explicit memref.copy data movement
-    to AscendC dialect operations.
-  }];
-  let constructor = "mlir::afir::createLinalgToAscendCPass()";
-  let dependentDialects = [
-    "mlir::ascendc::AscendCDialect",
-    "mlir::emitasc::EmitAscDialect",
-    "mlir::memref::MemRefDialect",
-    "mlir::arith::ArithDialect",
-    "mlir::linalg::LinalgDialect"
-  ];
-}
-
-def AscendCParallelizePass
-    : Pass<"ascendc-parallelize", "mlir::func::FuncOp"> {
-  let summary = "Replace outermost parallel scf.for loops with ascendc.get_block_idx dispatch";
-  let description = [{
-    Converts annotated top-level scf.for tile loops into multi-core AiCore
-    dispatch using ascendc.get_block_idx.
-  }];
-  let constructor = "mlir::afir::createAscendCParallelizePass()";
-  let dependentDialects = [
-    "mlir::ascendc::AscendCDialect",
-    "mlir::arith::ArithDialect",
-    "mlir::scf::SCFDialect",
-    "mlir::func::FuncDialect"
-  ];
-  let options = [
-    Option<"coreNum", "core-num", "int64_t", /*default=*/"20",
-           "Number of AiCores available for parallel dispatch">,
-  ];
-}
-
-def AscendCPrepareForEmitPass
-    : Pass<"ascendc-prepare-for-emit", "mlir::ModuleOp"> {
-  let summary = "Prepare AscendC func signature and attributes for ascir-translate emission";
-  let description = [{
-    Transforms AscendC functions to the kernel interface expected by
-    ascir-translate, including global/aicore attributes, flattened GM memrefs,
-    TilingData consolidation, and void kernel returns.
-  }];
-  let constructor = "mlir::afir::createAscendCPrepareForEmitPass()";
-  let dependentDialects = [
-    "mlir::ascendc::AscendCDialect",
-    "mlir::emitasc::EmitAscDialect",
-    "mlir::func::FuncDialect",
-    "mlir::arith::ArithDialect",
-    "mlir::memref::MemRefDialect"
-  ];
-}
-
-def AnnotateAscendCKernelKindPass
-    : Pass<"annotate-ascendc-kernel-kind", "mlir::func::FuncOp"> {
-  let summary = "Annotate func.func with ascendc.kernel_kind derived from ascendc.unit";
-  let description = [{
-    Scans descendant operations for ascendc.unit and stamps the enclosing
-    function with ascendc.kernel_kind = vec, cube, or mix.
-  }];
-  let constructor = "mlir::afir::createAnnotateAscendCKernelKindPass()";
-  let dependentDialects = [
-    "mlir::func::FuncDialect"
-  ];
-}
-
-def CanonicalizeCannSignaturePass
-    : Pass<"canonicalize-cann-signature", "mlir::ModuleOp"> {
-  let summary = "Canonicalize aicore kernel signature to CANN calling convention";
-  let description = [{
-    Transforms AscendC aicore kernel signatures from the internal format to the
-    CANN runtime ABI and stamps cann.num_inputs metadata.
-  }];
-  let constructor = "mlir::afir::createCanonicalizeCannSignaturePass()";
   let dependentDialects = [
     "mlir::func::FuncDialect",
     "mlir::emitasc::EmitAscDialect",

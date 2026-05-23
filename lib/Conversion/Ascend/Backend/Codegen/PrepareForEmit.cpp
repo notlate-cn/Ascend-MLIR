@@ -1,11 +1,11 @@
-//===- AscendCPrepareForEmitPass.cpp - Prepare func for ascir-translate ===//
+//===- PrepareForEmit.cpp - Prepare Ascend kernels for emission -----------===//
 //
 // Part of the Ascend-MLIR Project
 //
 //===----------------------------------------------------------------------===//
 //
-// This pass transforms a func.func produced by --linalg-to-ascendc /
-// --ascendc-parallelize into the form expected by ascir-translate:
+// This pass transforms a func.func produced by ascend-compute-lower and
+// ascend-parallelize into the form expected by ascir-translate:
 //
 //   Input signature:
 //     @fc_relu(%A: memref<?x?xf32, strided<[?,?], offset:?>>,
@@ -33,7 +33,7 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "Conversion/Ascend/Backend/Codegen/AscendCPrepareForEmitPass.h"
+#include "CodegenPasses.h"
 
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/Affine/Utils.h"
@@ -57,11 +57,7 @@
 #include "ascir/Dialect/Asc/IR/Asc.h"
 #include "ascir/Dialect/EmitAsc/IR/EmitAsc.h"
 
-#define GEN_PASS_DECL_ASCENDCPREPAREFOREMITPASS
-#define GEN_PASS_DEF_ASCENDCPREPAREFOREMITPASS
-#include "Conversion/Ascend/Passes.h.inc"
-
-#define DEBUG_TYPE "ascendc-prepare-for-emit"
+#define DEBUG_TYPE "ascend-prepare-for-emit"
 
 using namespace mlir;
 using namespace mlir::ascendc;
@@ -991,9 +987,18 @@ static LogicalResult prepareFunc(func::FuncOp func) {
 // Pass definition
 //===----------------------------------------------------------------------===//
 
-struct AscendCPrepareForEmitPass
-    : public ::impl::AscendCPrepareForEmitPassBase<AscendCPrepareForEmitPass> {
-  using AscendCPrepareForEmitPassBase::AscendCPrepareForEmitPassBase;
+struct AscendCodegenPrepareForEmitPass
+    : public PassWrapper<AscendCodegenPrepareForEmitPass,
+                         OperationPass<ModuleOp>> {
+  MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(AscendCodegenPrepareForEmitPass)
+
+  StringRef getArgument() const final {
+    return "ascend-codegen-prepare-for-emit-internal";
+  }
+
+  StringRef getDescription() const final {
+    return "Run internal Ascend prepare-for-emit lowering";
+  }
 
   void runOnOperation() override {
     for (func::FuncOp func : getOperation().getOps<func::FuncOp>()) {
@@ -1005,8 +1010,8 @@ struct AscendCPrepareForEmitPass
   }
 };
 
-std::unique_ptr<Pass> createAscendCPrepareForEmitPass() {
-  return std::make_unique<AscendCPrepareForEmitPass>();
+std::unique_ptr<Pass> createAscendCodegenPrepareForEmitPass() {
+  return std::make_unique<AscendCodegenPrepareForEmitPass>();
 }
 
 } // namespace mlir::afir

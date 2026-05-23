@@ -115,9 +115,7 @@ LogicalResult materializeSelectedAllParallelTiles(func::FuncOp funcOp);
 /// compute conversion lowers each tile.
 LogicalResult materializeSelectedTransposeTiles(func::FuncOp funcOp);
 
-/// Run the existing LinalgToAscendC lowering implementation on one function.
-/// This is shared by the legacy --linalg-to-ascendc pass and the Phase 5
-/// --ascend-compute-lower wrapper.
+/// Run the Ascend compute lowering implementation on one function.
 LogicalResult lowerLinalgToAscendC(func::FuncOp funcOp);
 
 } // namespace mlir::afir

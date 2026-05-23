@@ -1,5 +1,5 @@
-// RUN: afir-opt %s --mark-structured-ops --fuse-gather-elementwise \
-// RUN:   --ascend-normalize --ascend-kernelize --ascend-schedule='target-tile-policy=legacy-default' \
+// RUN: afir-opt %s --ascend-normalize --ascend-kernelize \
+// RUN:   --ascend-schedule='target-tile-policy=legacy-default' \
 // RUN:   --ascend-realize='materialization-mode=memory-space-annotate' \
 // RUN:   --ascend-compute-lower --ascend-parallelize \
 // RUN:   --ascend-prepare-for-emit --ascend-canonicalize-cann-signature \

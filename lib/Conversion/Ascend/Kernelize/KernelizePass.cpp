@@ -12,6 +12,7 @@
 #include "DependencyAnalysis.h"
 #include "FusionCandidateAnalysis.h"
 #include "HorizontalFusionAnalysis.h"
+#include "KernelizeInternalPasses.h"
 #include "KernelPattern.h"
 #include "KernelizeTypes.h"
 #include "OpRoleClassification.h"
@@ -136,6 +137,14 @@ struct AscendKernelizePass
             .wasInterrupted()) {
       signalPassFailure();
       return;
+    }
+
+    for (func::FuncOp funcOp : module.getOps<func::FuncOp>()) {
+      if (failed(markStructuredOps(funcOp)) ||
+          failed(fuseGatherElementwise(funcOp))) {
+        signalPassFailure();
+        return;
+      }
     }
 
     FailureOr<DependencyAnalysisResult> depResult =

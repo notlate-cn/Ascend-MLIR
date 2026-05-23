@@ -2,14 +2,14 @@ add_mlir_library(AscendConversion
   Backend/Lowering/BackendSupportMatrix.cpp
   Backend/Lowering/ElementwiseBodyOpRegistry.cpp
   Backend/Lowering/LinalgBodyClassifier.cpp
-  Backend/Lowering/LinalgToAscendCPass.cpp
+  Backend/Lowering/LinalgToAscendCLowering.cpp
   Backend/Lowering/DataMoveConversion.cpp
   Backend/Lowering/ComputeConversion.cpp
   Backend/Lowering/ComputeLoweringPass.cpp
-  Backend/Codegen/AscendCParallelizePass.cpp
-  Backend/Codegen/AscendCPrepareForEmitPass.cpp
-  Backend/Codegen/CanonicalizeCannSignaturePass.cpp
-  Backend/Codegen/AnnotateAscendCKernelKindPass.cpp
+  Backend/Codegen/Parallelize.cpp
+  Backend/Codegen/PrepareForEmit.cpp
+  Backend/Codegen/CanonicalizeCannSignature.cpp
+  Backend/Codegen/KernelKind.cpp
   Backend/Wrappers/BackendWrapperPasses.cpp
   Schedule/AxisCoalescer.cpp
   Schedule/ScheduleCache.cpp
@@ -33,9 +33,9 @@ add_mlir_library(AscendConversion
   Kernelize/KernelizeOpRegistry.cpp
   Kernelize/KernelizeSemanticUtils.cpp
   Kernelize/KernelSplitPass.cpp
-  Kernelize/FuseGatherElementwisePass.cpp
-  Kernelize/MarkStructuredOpsPass.cpp
-  Kernelize/AnnotateMixMatmulSemanticsPass.cpp
+  Kernelize/GatherElementwiseFusion.cpp
+  Kernelize/StructuredOpSemanticMarking.cpp
+  Kernelize/MixMatmulSemantics.cpp
   Schedule/KernelPatternView.cpp
   Schedule/TemplateRegistry.cpp
   Normalize/NormalizePass.cpp
@@ -43,8 +43,6 @@ add_mlir_library(AscendConversion
   Kernelize/OpRoleClassification.cpp
   Kernelize/StructuralMarking.cpp
   Realize/BufferizationDriver.cpp
-  Realize/AscendCBufferPlacementPass.cpp
-  Realize/AscendCFoldConcatAllocPass.cpp
   Realize/MemoryRealizationDriver.cpp
   Realize/MovementPlanner.cpp
   Realize/PlacementPlanner.cpp

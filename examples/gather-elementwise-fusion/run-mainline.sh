@@ -119,24 +119,8 @@ echo "shape.K=$K"
 echo "block_dim=$BLOCK_DIM"
 
 echo ""
-echo "==================== [STAGE 1] Structural marking ===================="
-"$AFIR_OPT" "$DIR/step0_input.mlir" \
-  --mark-structured-ops \
-  -o "$BUILD_DIR/step1_marked.mlir"
-log "  output: $BUILD_DIR/step1_marked.mlir"
-
-echo ""
-echo "==================== [STAGE 2] Gather elementwise fusion ===================="
-"$AFIR_OPT" "$BUILD_DIR/step1_marked.mlir" \
-  --fuse-gather-elementwise \
-  --canonicalize \
-  --cse \
-  -o "$BUILD_DIR/step2_fused.mlir"
-log "  output: $BUILD_DIR/step2_fused.mlir"
-
-echo ""
 echo "==================== [STAGE 3] Ascend normalize ===================="
-"$AFIR_OPT" "$BUILD_DIR/step2_fused.mlir" \
+"$AFIR_OPT" "$DIR/step0_input.mlir" \
   --ascend-normalize \
   -o "$BUILD_DIR/step3_normalized.mlir"
 log "  output: $BUILD_DIR/step3_normalized.mlir"
@@ -298,8 +282,6 @@ grep -q '^session.validation=pass$' "$VALIDATION_LOG"
 echo ""
 echo "========================================================"
 echo " mainline pipeline complete"
-echo "   build_mainline/step1_marked.mlir"
-echo "   build_mainline/step2_fused.mlir"
 echo "   build_mainline/step3_normalized.mlir"
 echo "   build_mainline/step4_kernelized.mlir"
 echo "   build_mainline/step5_scheduled.mlir"

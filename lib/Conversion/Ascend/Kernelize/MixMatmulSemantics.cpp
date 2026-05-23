@@ -1,10 +1,10 @@
-//===- AnnotateMixMatmulSemanticsPass.cpp - Stable mix matmul attrs -------===//
+//===- MixMatmulSemantics.cpp - Stable mix matmul attrs -------------------===//
 //
 // Part of the Ascend-MLIR Project
 //
 //===----------------------------------------------------------------------===//
 
-#include "Conversion/Ascend/Kernelize/MarkStructuredOpsPass.h"
+#include "KernelizeInternalPasses.h"
 
 #include "Conversion/Ascend/Common/Attributes.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
@@ -20,10 +20,6 @@
 #include <optional>
 #include <string>
 #include <vector>
-
-#define GEN_PASS_DECL_ANNOTATEMIXMATMULSEMANTICSPASS
-#define GEN_PASS_DEF_ANNOTATEMIXMATMULSEMANTICSPASS
-#include "Conversion/Ascend/Passes.h.inc"
 
 using namespace mlir;
 
@@ -378,101 +374,88 @@ static linalg::GenericOp findUniqueChainedGenericThroughCopies(
 
 } // namespace
 
-struct AnnotateMixMatmulSemanticsPass
-    : public ::impl::AnnotateMixMatmulSemanticsPassBase<
-          AnnotateMixMatmulSemanticsPass> {
-  using Base =
-      ::impl::AnnotateMixMatmulSemanticsPassBase<
-          AnnotateMixMatmulSemanticsPass>;
-  using Base::Base;
+LogicalResult annotateMixMatmulSemantics(func::FuncOp funcOp) {
+  auto kernelKind =
+      funcOp->getAttrOfType<StringAttr>(ascend::kAscendCKernelKindAttr);
+  if (kernelKind && kernelKind.getValue() != ascend::kAscendCKernelKindMix)
+    return success();
+  if (funcOp->hasAttr("abi_matmul_op_kind"))
+    return success();
 
-  void runOnOperation() override {
-    func::FuncOp funcOp = getOperation();
-    auto kernelKind =
-        funcOp->getAttrOfType<StringAttr>(ascend::kAscendCKernelKindAttr);
-    if (kernelKind && kernelKind.getValue() != ascend::kAscendCKernelKindMix)
-      return;
-    if (funcOp->hasAttr("abi_matmul_op_kind"))
-      return;
+  SmallVector<MatmulLikeOpInfo> matmuls;
+  SmallVector<linalg::GenericOp> generics;
+  funcOp.walk([&](Operation *op) {
+    if (auto matmul = getMatmulLikeOpInfo(op))
+      matmuls.push_back(*matmul);
+    else if (auto generic = dyn_cast<linalg::GenericOp>(op))
+      generics.push_back(generic);
+  });
 
-    SmallVector<MatmulLikeOpInfo> matmuls;
-    SmallVector<linalg::GenericOp> generics;
-    funcOp.walk([&](Operation *op) {
-      if (auto matmul = getMatmulLikeOpInfo(op))
-        matmuls.push_back(*matmul);
-      else if (auto generic = dyn_cast<linalg::GenericOp>(op))
-        generics.push_back(generic);
-    });
+  if (matmuls.size() != 1)
+    return success();
+  const MatmulLikeOpInfo &matmulOp = matmuls.front();
+  if (!isSimple2DNdMatmulLike(matmulOp) &&
+      !isSimple3DNdBatchMatmulLike(matmulOp))
+    return success();
 
-    if (matmuls.size() != 1)
-      return;
-    const MatmulLikeOpInfo &matmulOp = matmuls.front();
-    if (!isSimple2DNdMatmulLike(matmulOp) &&
-        !isSimple3DNdBatchMatmulLike(matmulOp))
-      return;
+  bool hasBias = false;
+  bool hasLeakyRelu = false;
+  StringRef epilogueKind = "None";
 
-    bool hasBias = false;
-    bool hasLeakyRelu = false;
-    StringRef epilogueKind = "None";
-
-    if (matmulOp.opKind == "batch_matmul") {
-      if (generics.size() > 1)
-        return;
-      if (!generics.empty()) {
-        linalg::GenericOp fullBiasAdd =
-            findUniqueChainedGenericThroughCopies(matmulOp.out, generics,
-                                                  isFullRank3AddGeneric);
-        linalg::GenericOp rank1BiasAdd =
-            findUniqueChainedGenericThroughCopies(matmulOp.out, generics,
-                                                  isRank3ByRank1BiasAddGeneric);
-        if (rank1BiasAdd) {
-          hasBias = true;
-          epilogueKind = "BiasAdd";
-        } else if (!fullBiasAdd) {
-          return;
-        }
-      }
-    } else {
-      Value current = matmulOp.out;
-      linalg::GenericOp biasGeneric =
-          findUniqueChainedGenericThroughCopies(current, generics,
-                                                isBiasAddGeneric);
-      hasBias = static_cast<bool>(biasGeneric);
-      if (biasGeneric)
-        current = biasGeneric.getDpsInitOperand(0)->get();
-
-      linalg::GenericOp leakyReluGeneric =
-          findUniqueChainedGenericThroughCopies(current, generics,
-                                                isLeakyReluGeneric);
-      hasLeakyRelu = static_cast<bool>(leakyReluGeneric);
-
-      if (hasBias && hasLeakyRelu)
-        epilogueKind = "BiasAddLeakyRelu";
-      else if (hasBias)
+  if (matmulOp.opKind == "batch_matmul") {
+    if (generics.size() > 1)
+      return success();
+    if (!generics.empty()) {
+      linalg::GenericOp fullBiasAdd =
+          findUniqueChainedGenericThroughCopies(matmulOp.out, generics,
+                                                isFullRank3AddGeneric);
+      linalg::GenericOp rank1BiasAdd =
+          findUniqueChainedGenericThroughCopies(matmulOp.out, generics,
+                                                isRank3ByRank1BiasAddGeneric);
+      if (rank1BiasAdd) {
+        hasBias = true;
         epilogueKind = "BiasAdd";
-      else if (hasLeakyRelu)
-        return;
+      } else if (!fullBiasAdd) {
+        return success();
+      }
     }
+  } else {
+    Value current = matmulOp.out;
+    linalg::GenericOp biasGeneric =
+        findUniqueChainedGenericThroughCopies(current, generics,
+                                              isBiasAddGeneric);
+    hasBias = static_cast<bool>(biasGeneric);
+    if (biasGeneric)
+      current = biasGeneric.getDpsInitOperand(0)->get();
 
-    MLIRContext *ctx = funcOp.getContext();
-    funcOp->setAttr("abi_matmul_op_kind",
-                    StringAttr::get(ctx, matmulOp.opKind));
-    funcOp->setAttr("abi_matmul_trans_a", BoolAttr::get(ctx, matmulOp.transA));
-    funcOp->setAttr("abi_matmul_trans_b", BoolAttr::get(ctx, matmulOp.transB));
-    funcOp->setAttr("abi_matmul_has_bias", BoolAttr::get(ctx, hasBias));
-    funcOp->setAttr("abi_matmul_layout_a", StringAttr::get(ctx, "ND"));
-    funcOp->setAttr("abi_matmul_layout_b", StringAttr::get(ctx, "ND"));
-    funcOp->setAttr("abi_matmul_layout_c", StringAttr::get(ctx, "ND"));
-    funcOp->setAttr("abi_matmul_epilogue_kind",
-                    StringAttr::get(ctx, epilogueKind));
-    if (!matmulOp.batchShape.empty())
-      funcOp->setAttr("abi_matmul_batch_shape",
-                      Builder(ctx).getI64ArrayAttr(matmulOp.batchShape));
+    linalg::GenericOp leakyReluGeneric =
+        findUniqueChainedGenericThroughCopies(current, generics,
+                                              isLeakyReluGeneric);
+    hasLeakyRelu = static_cast<bool>(leakyReluGeneric);
+
+    if (hasBias && hasLeakyRelu)
+      epilogueKind = "BiasAddLeakyRelu";
+    else if (hasBias)
+      epilogueKind = "BiasAdd";
+    else if (hasLeakyRelu)
+      return success();
   }
-};
 
-std::unique_ptr<Pass> createAnnotateMixMatmulSemanticsPass() {
-  return std::make_unique<AnnotateMixMatmulSemanticsPass>();
+  MLIRContext *ctx = funcOp.getContext();
+  funcOp->setAttr("abi_matmul_op_kind",
+                  StringAttr::get(ctx, matmulOp.opKind));
+  funcOp->setAttr("abi_matmul_trans_a", BoolAttr::get(ctx, matmulOp.transA));
+  funcOp->setAttr("abi_matmul_trans_b", BoolAttr::get(ctx, matmulOp.transB));
+  funcOp->setAttr("abi_matmul_has_bias", BoolAttr::get(ctx, hasBias));
+  funcOp->setAttr("abi_matmul_layout_a", StringAttr::get(ctx, "ND"));
+  funcOp->setAttr("abi_matmul_layout_b", StringAttr::get(ctx, "ND"));
+  funcOp->setAttr("abi_matmul_layout_c", StringAttr::get(ctx, "ND"));
+  funcOp->setAttr("abi_matmul_epilogue_kind",
+                  StringAttr::get(ctx, epilogueKind));
+  if (!matmulOp.batchShape.empty())
+    funcOp->setAttr("abi_matmul_batch_shape",
+                    Builder(ctx).getI64ArrayAttr(matmulOp.batchShape));
+  return success();
 }
 
 } // namespace mlir::afir

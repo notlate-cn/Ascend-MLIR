@@ -316,13 +316,13 @@ def _run_mlir_pipeline(work_dir: Path) -> bool:
     运行 MLIR pipeline（stage 1-8）:
       step0b: --linalg-fold-unit-extent-dims
       step1: --linalg-fuse-elementwise-ops
-      step2: --transform-interpreter
-      step3: --one-shot-bufferize
-      step4: --ascendc-buffer-placement
-      step5: --linalg-to-ascendc
-      step6: --ascendc-parallelize
-      step7: --ascendc-prepare-for-emit
-      step7b: --canonicalize-cann-signature
+      step2: --ascend-normalize
+      step3: --ascend-kernelize
+      step4: --ascend-schedule
+      step5: --ascend-realize
+      step6: --ascend-compute-lower
+      step7: --ascend-parallelize / --ascend-prepare-for-emit
+      step7b: --ascend-canonicalize-cann-signature
       step8: afir-translate -mlir-to-cann
     """
     # 入口校验
@@ -348,65 +348,59 @@ def _run_mlir_pipeline(work_dir: Path) -> bool:
                          ["--linalg-fuse-elementwise-ops"], afir_opt):
         return False
 
-    # ── Stage 2: Tiling (Transform Interpreter) ──
-    transform_path = _generate_transform_script(step1, work_dir)
-
-    if transform_path is not None:
-        step2 = work_dir / "step2_tiled.mlir"
-        print(f"  [step2] --transform-interpreter ({transform_path.name})")
-        if not _run_afir_opt(transform_path, step2,
-                             ["--transform-interpreter", "--canonicalize", "--cse"],
-                             afir_opt):
-            return False
-    else:
-        print(f"  [step2] 跳过（无 parallel 维度，无法自动 tiling）")
-        step2 = step1
-
-    # ── Stage 3: Bufferize ──
-    step3 = work_dir / "step3_bufferized.mlir"
-    bufferize_opts = ("--one-shot-bufferize="
-                      "bufferize-function-boundaries=true "
-                      "allow-return-allocs-from-loops=true "
-                      "function-boundary-type-conversion=identity-layout-map")
-    print(f"  [step3] --one-shot-bufferize")
-    if not _run_afir_opt(step2, step3, [bufferize_opts, "--cse"], afir_opt):
+    # ── Stage 2: Ascend Normalize ──
+    step2 = work_dir / "step2_normalized.mlir"
+    print(f"  [step2] --ascend-normalize")
+    if not _run_afir_opt(step1, step2, ["--ascend-normalize"], afir_opt):
         return False
 
-    # ── Stage 4: Buffer Placement ──
-    step4 = work_dir / "step4_buffer_placement.mlir"
-    print(f"  [step4] --ascendc-buffer-placement")
-    if not _run_afir_opt(step3, step4, ["--ascendc-buffer-placement"], afir_opt):
+    # ── Stage 3: Ascend Kernelize ──
+    step3 = work_dir / "step3_kernelized.mlir"
+    print(f"  [step3] --ascend-kernelize")
+    if not _run_afir_opt(step2, step3, ["--ascend-kernelize"], afir_opt):
         return False
 
-    # ── Stage 5: Linalg → AscendC ──
-    step5 = work_dir / "step5_ascendc.mlir"
-    print(f"  [step5] --linalg-to-ascendc")
-    if not _run_afir_opt(step4, step5,
-                         ["--linalg-to-ascendc", "--canonicalize", "--cse"],
-                         afir_opt):
+    # ── Stage 4: Ascend Schedule ──
+    step4 = work_dir / "step4_scheduled.mlir"
+    print(f"  [step4] --ascend-schedule")
+    if not _run_afir_opt(
+            step3, step4,
+            ["--ascend-schedule=target-tile-policy=legacy-default"],
+            afir_opt):
         return False
 
-    # ── Stage 6: Parallelize ──
-    step6 = work_dir / "step6_parallelize.mlir"
-    print(f"  [step6] --ascendc-parallelize")
+    # ── Stage 5: Ascend Realize ──
+    step5 = work_dir / "step5_realized.mlir"
+    print(f"  [step5] --ascend-realize")
+    if not _run_afir_opt(
+            step4, step5,
+            ["--ascend-realize=materialization-mode=memory-space-annotate"],
+            afir_opt):
+        return False
+
+    # ── Stage 6: Ascend Compute Lower ──
+    step6 = work_dir / "step6_ascendc.mlir"
+    print(f"  [step6] --ascend-compute-lower")
     if not _run_afir_opt(step5, step6,
-                         ["--ascendc-parallelize", "--canonicalize", "--cse"],
+                         ["--ascend-compute-lower", "--canonicalize", "--cse"],
                          afir_opt):
         return False
 
-    # ── Stage 7: Prepare For Emit ──
+    # ── Stage 7: Parallelize + Prepare For Emit ──
     step7 = work_dir / "step7_kernel.mlir"
-    print(f"  [step7] --ascendc-prepare-for-emit")
-    if not _run_afir_opt(step6, step7,
-                         ["--ascendc-prepare-for-emit", "--canonicalize", "--cse"],
-                         afir_opt):
+    print(f"  [step7] --ascend-parallelize --ascend-prepare-for-emit")
+    if not _run_afir_opt(
+            step6, step7,
+            ["--ascend-parallelize", "--ascend-prepare-for-emit",
+             "--canonicalize", "--cse"],
+            afir_opt):
         return False
 
     # ── Stage 7b: Canonicalize CANN Signature ──
     step7b = work_dir / "step7_cann.mlir"
-    print(f"  [step7b] --canonicalize-cann-signature")
+    print(f"  [step7b] --ascend-canonicalize-cann-signature")
     if not _run_afir_opt(step7, step7b,
-                         ["--canonicalize-cann-signature"], afir_opt):
+                         ["--ascend-canonicalize-cann-signature"], afir_opt):
         return False
     # TODO: cf.assert 应由 afir-translate 处理（注册 cf dialect 或在 codegen 前用 pass 消除）
     # ── Stage 7c: 移除 cf.assert（动态 shape broadcast 检查，afir-translate 不支持）──

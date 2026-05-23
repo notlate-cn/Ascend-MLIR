@@ -8,6 +8,8 @@
 #include "Conversion/Ascend/Backend/Lowering/BackendSupportMatrix.h"
 #include "Conversion/Ascend/Backend/Lowering/LinalgBodyClassifier.h"
 #include "Conversion/Ascend/Backend/Lowering/LinalgToAscendCUtils.h"
+#include "../Codegen/CodegenPasses.h"
+#include "../../Kernelize/KernelizeInternalPasses.h"
 
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
@@ -77,6 +79,11 @@ struct AscendComputeLowerPass
     func::FuncOp funcOp = getOperation();
     AscendBackendSupportMatrix matrix;
 
+    if (failed(annotateAscendKernelKind(funcOp)) ||
+        failed(annotateMixMatmulSemantics(funcOp))) {
+      signalPassFailure();
+      return;
+    }
     if (failed(verifySupportedInputs(funcOp, matrix))) {
       signalPassFailure();
       return;
