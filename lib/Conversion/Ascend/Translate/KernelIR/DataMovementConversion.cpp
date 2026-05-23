@@ -12,7 +12,7 @@
  * License.
  */
 
-#include "Conversion/Ascend/Backend/Lowering/LinalgToAscendCUtils.h"
+#include "Conversion/Ascend/Translate/KernelIR/KernelIRUtils.h"
 
 #include "Conversion/Ascend/Common/Attributes.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"

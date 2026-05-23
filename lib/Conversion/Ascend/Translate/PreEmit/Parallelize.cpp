@@ -21,7 +21,7 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "CodegenPasses.h"
+#include "PreEmitInternalPasses.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
@@ -128,13 +128,13 @@ static LogicalResult parallelizeOneLoop(scf::ForOp outerFor,
 // Pass definition
 //===----------------------------------------------------------------------===//
 
-struct AscendCodegenParallelizePass
-    : public PassWrapper<AscendCodegenParallelizePass,
+struct AscendPreEmitParallelizePass
+    : public PassWrapper<AscendPreEmitParallelizePass,
                          OperationPass<func::FuncOp>> {
-  MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(AscendCodegenParallelizePass)
+  MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(AscendPreEmitParallelizePass)
 
   StringRef getArgument() const final {
-    return "ascend-codegen-parallelize-internal";
+    return "ascend-preemit-parallelize-internal";
   }
 
   StringRef getDescription() const final {
@@ -162,8 +162,8 @@ struct AscendCodegenParallelizePass
   }
 };
 
-std::unique_ptr<Pass> createAscendCodegenParallelizePass() {
-  return std::make_unique<AscendCodegenParallelizePass>();
+std::unique_ptr<Pass> createAscendPreEmitParallelizePass() {
+  return std::make_unique<AscendPreEmitParallelizePass>();
 }
 
 } // namespace mlir::afir

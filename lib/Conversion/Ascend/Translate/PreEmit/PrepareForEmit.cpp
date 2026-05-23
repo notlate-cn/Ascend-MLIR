@@ -33,7 +33,7 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "CodegenPasses.h"
+#include "PreEmitInternalPasses.h"
 
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/Affine/Utils.h"
@@ -987,13 +987,13 @@ static LogicalResult prepareFunc(func::FuncOp func) {
 // Pass definition
 //===----------------------------------------------------------------------===//
 
-struct AscendCodegenPrepareForEmitPass
-    : public PassWrapper<AscendCodegenPrepareForEmitPass,
+struct AscendPreEmitPrepareForEmitPass
+    : public PassWrapper<AscendPreEmitPrepareForEmitPass,
                          OperationPass<ModuleOp>> {
-  MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(AscendCodegenPrepareForEmitPass)
+  MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(AscendPreEmitPrepareForEmitPass)
 
   StringRef getArgument() const final {
-    return "ascend-codegen-prepare-for-emit-internal";
+    return "ascend-preemit-prepare-for-emit-internal";
   }
 
   StringRef getDescription() const final {
@@ -1010,8 +1010,8 @@ struct AscendCodegenPrepareForEmitPass
   }
 };
 
-std::unique_ptr<Pass> createAscendCodegenPrepareForEmitPass() {
-  return std::make_unique<AscendCodegenPrepareForEmitPass>();
+std::unique_ptr<Pass> createAscendPreEmitPrepareForEmitPass() {
+  return std::make_unique<AscendPreEmitPrepareForEmitPass>();
 }
 
 } // namespace mlir::afir

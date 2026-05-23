@@ -4,10 +4,10 @@
 //
 //===----------------------------------------------------------------------===//
 
-#ifndef ASCEND_MLIR_CONVERSION_ASCEND_BACKEND_LINALGBODYCLASSIFIER_H
-#define ASCEND_MLIR_CONVERSION_ASCEND_BACKEND_LINALGBODYCLASSIFIER_H
+#ifndef ASCEND_MLIR_CONVERSION_ASCEND_TRANSLATE_KERNELIR_CAPABILITIES_LINALG_BODY_CLASSIFIER_H
+#define ASCEND_MLIR_CONVERSION_ASCEND_TRANSLATE_KERNELIR_CAPABILITIES_LINALG_BODY_CLASSIFIER_H
 
-#include "Conversion/Ascend/Backend/Lowering/BackendSupportMatrix.h"
+#include "Conversion/Ascend/Translate/KernelIR/Capabilities/BackendSupportMatrix.h"
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/IR/Operation.h"
 
@@ -33,4 +33,4 @@ bool isSupportedPhase5FinalOutput(linalg::LinalgOp linalgOp,
 
 } // namespace mlir::afir::ascend::backend
 
-#endif // ASCEND_MLIR_CONVERSION_ASCEND_BACKEND_LINALGBODYCLASSIFIER_H
+#endif // ASCEND_MLIR_CONVERSION_ASCEND_TRANSLATE_KERNELIR_CAPABILITIES_LINALG_BODY_CLASSIFIER_H

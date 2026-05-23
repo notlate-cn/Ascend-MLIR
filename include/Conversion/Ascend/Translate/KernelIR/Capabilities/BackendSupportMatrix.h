@@ -1,11 +1,11 @@
-//===- BackendSupportMatrix.h - Ascend backend support matrix ---*- C++ -*-===//
+//===- BackendSupportMatrix.h - Ascend KernelIR support matrix ---*- C++ -*-===//
 //
 // Part of the Ascend-MLIR Project
 //
 //===----------------------------------------------------------------------===//
 
-#ifndef ASCEND_MLIR_CONVERSION_ASCEND_BACKEND_SUPPORT_MATRIX_H
-#define ASCEND_MLIR_CONVERSION_ASCEND_BACKEND_SUPPORT_MATRIX_H
+#ifndef ASCEND_MLIR_CONVERSION_ASCEND_TRANSLATE_KERNELIR_CAPABILITIES_BACKEND_SUPPORT_MATRIX_H
+#define ASCEND_MLIR_CONVERSION_ASCEND_TRANSLATE_KERNELIR_CAPABILITIES_BACKEND_SUPPORT_MATRIX_H
 
 #include "Target/Ascend/TargetProfile.h"
 #include "mlir/IR/Types.h"
@@ -86,4 +86,4 @@ public:
 
 } // namespace mlir::afir::ascend::backend
 
-#endif // ASCEND_MLIR_CONVERSION_ASCEND_BACKEND_SUPPORT_MATRIX_H
+#endif // ASCEND_MLIR_CONVERSION_ASCEND_TRANSLATE_KERNELIR_CAPABILITIES_BACKEND_SUPPORT_MATRIX_H

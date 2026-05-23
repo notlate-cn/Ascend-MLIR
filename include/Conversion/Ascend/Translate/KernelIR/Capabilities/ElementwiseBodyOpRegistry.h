@@ -4,10 +4,10 @@
 //
 //===----------------------------------------------------------------------===//
 
-#ifndef ASCEND_MLIR_CONVERSION_ASCEND_BACKEND_ELEMENTWISEBODYOPREGISTRY_H
-#define ASCEND_MLIR_CONVERSION_ASCEND_BACKEND_ELEMENTWISEBODYOPREGISTRY_H
+#ifndef ASCEND_MLIR_CONVERSION_ASCEND_TRANSLATE_KERNELIR_CAPABILITIES_ELEMENTWISE_BODY_OP_REGISTRY_H
+#define ASCEND_MLIR_CONVERSION_ASCEND_TRANSLATE_KERNELIR_CAPABILITIES_ELEMENTWISE_BODY_OP_REGISTRY_H
 
-#include "Conversion/Ascend/Backend/Lowering/BackendSupportMatrix.h"
+#include "Conversion/Ascend/Translate/KernelIR/Capabilities/BackendSupportMatrix.h"
 
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/Location.h"
@@ -47,4 +47,4 @@ lookupElementwiseBodyOp(llvm::StringRef dialectOpName);
 
 } // namespace mlir::afir::ascend::backend
 
-#endif // ASCEND_MLIR_CONVERSION_ASCEND_BACKEND_ELEMENTWISEBODYOPREGISTRY_H
+#endif // ASCEND_MLIR_CONVERSION_ASCEND_TRANSLATE_KERNELIR_CAPABILITIES_ELEMENTWISE_BODY_OP_REGISTRY_H

@@ -9,7 +9,7 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "CodegenPasses.h"
+#include "PreEmitInternalPasses.h"
 
 #include "Conversion/Ascend/Common/Attributes.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
@@ -38,14 +38,14 @@ static bool classifyKernelKind(llvm::StringRef unit, bool &sawCube,
 
 } // namespace
 
-struct AscendCodegenAnnotateKernelKindPass
-    : public PassWrapper<AscendCodegenAnnotateKernelKindPass,
+struct AscendPreEmitAnnotateKernelKindPass
+    : public PassWrapper<AscendPreEmitAnnotateKernelKindPass,
                          OperationPass<func::FuncOp>> {
   MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(
-      AscendCodegenAnnotateKernelKindPass)
+      AscendPreEmitAnnotateKernelKindPass)
 
   StringRef getArgument() const final {
-    return "ascend-codegen-annotate-kernel-kind-internal";
+    return "ascend-preemit-annotate-kernel-kind-internal";
   }
 
   StringRef getDescription() const final {
@@ -93,8 +93,8 @@ LogicalResult annotateAscendKernelKind(func::FuncOp funcOp) {
   return success();
 }
 
-std::unique_ptr<Pass> createAscendCodegenAnnotateKernelKindPass() {
-  return std::make_unique<AscendCodegenAnnotateKernelKindPass>();
+std::unique_ptr<Pass> createAscendPreEmitAnnotateKernelKindPass() {
+  return std::make_unique<AscendPreEmitAnnotateKernelKindPass>();
 }
 
 } // namespace mlir::afir

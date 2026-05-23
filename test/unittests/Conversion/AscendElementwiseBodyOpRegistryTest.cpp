@@ -4,7 +4,7 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "Conversion/Ascend/Backend/Lowering/ElementwiseBodyOpRegistry.h"
+#include "Conversion/Ascend/Translate/KernelIR/Capabilities/ElementwiseBodyOpRegistry.h"
 #include "gtest/gtest.h"
 
 using namespace mlir::afir::ascend::backend;
