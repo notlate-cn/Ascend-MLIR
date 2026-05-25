@@ -15,8 +15,14 @@ MatmulTilingRequest makeRequest() {
   request.problem.dtypeA = DType::F16;
   request.problem.dtypeB = DType::BF16;
   request.problem.dtypeC = DType::F32;
-  request.problem.hasBias = true;
   request.hints.socVersion = "Ascend910B1";
+  return request;
+}
+
+MatmulTilingRequest makeBiasRequest() {
+  MatmulTilingRequest request = makeRequest();
+  request.problem.hasBias = true;
+  request.problem.biasDType = DType::F32;
   return request;
 }
 
@@ -48,6 +54,16 @@ TEST(NativeMatmulPlannerTest, HonorsExplicitPlannerHints) {
   ASSERT_TRUE(static_cast<bool>(planOr));
   EXPECT_EQ(planOr->traverse, MatrixTraverseKind::FirstM);
   EXPECT_EQ(planOr->blockDim, 7u);
+  EXPECT_FALSE(planOr->splitKEnabled);
+  EXPECT_EQ(planOr->tileK, 512);
+}
+
+TEST(NativeMatmulPlannerTest, DisablesSplitKForBiasByDefault) {
+  MatmulTilingRequest request = makeBiasRequest();
+
+  auto planOr = NativeMatmulPlanner::buildPlan(request);
+
+  ASSERT_TRUE(static_cast<bool>(planOr));
   EXPECT_FALSE(planOr->splitKEnabled);
   EXPECT_EQ(planOr->tileK, 512);
 }
