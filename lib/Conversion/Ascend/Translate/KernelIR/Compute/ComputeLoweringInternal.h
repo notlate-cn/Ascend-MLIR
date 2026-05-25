@@ -11,6 +11,7 @@
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
+#include "mlir/IR/AffineMap.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/Support/LLVM.h"
 
@@ -50,6 +51,20 @@ struct ComputeLoweringContext {
                                             Type elemType, Location loc);
 };
 
+struct IndexingMapAnalysis {
+  enum class Kind {
+    Identity,
+    PureBroadcast,
+    PureTranspose,
+    BroadcastTranspose,
+  };
+  Kind kind;
+  SmallVector<int64_t> permutation;
+  SmallVector<int64_t> broadcastDims;
+};
+
+using OwnedQueueTensor = std::pair<Value, Value>;
+
 LogicalResult prepareComputeLoweringPreconditions(func::FuncOp funcOp);
 
 Value getDimValue(OpBuilder &builder, Location loc, Value memref,
@@ -73,6 +88,45 @@ LogicalResult lowerGmGenericToScalarLoops(OpBuilder &builder,
 LogicalResult lowerRank2GmTransposeToLocalDataCopy(
     OpBuilder &builder, Location loc, Value inMemref, Value outMemref,
     ArrayRef<int64_t> permutation, Value pipe);
+
+Value ceilToMultipleIndex(OpBuilder &builder, Location loc, Value value,
+                          int64_t divisor);
+void emitLocalToLocalScalarCopy(OpBuilder &builder, Location loc, Type elemType,
+                                Value dstLt, Value srcLt, Value count);
+void emitLocalTensorZeroPad(OpBuilder &builder, Location loc, Type elemType,
+                            Value tensor, Value begin, Value end);
+IndexingMapAnalysis analyzeIndexingMap(AffineMap map, unsigned iterRank);
+bool isBroadcastMap(AffineMap map, unsigned iterRank);
+std::pair<Value, Value> allocVeccalc(ComputeLoweringContext &lowering,
+                                     OpBuilder &builder, Location loc,
+                                     Type elemType, ArrayRef<Value> dynSizes);
+void freeOwnedQueueTensors(OpBuilder &builder, Location loc,
+                           ArrayRef<OwnedQueueTensor> ownedTensors);
+void rememberQueueRead(SmallVectorImpl<OwnedQueueTensor> &ownedTensors,
+                       Value queue, Value tensor);
+Value copyGmToVecin(ComputeLoweringContext &lowering, OpBuilder &builder,
+                    Location loc, Type elemType, Value srcGt, Value elemCount,
+                    Value bufferElemCount,
+                    SmallVectorImpl<OwnedQueueTensor> *ownedTensors = nullptr);
+Value copyGmToVecinScalar(
+    ComputeLoweringContext &lowering, OpBuilder &builder, Location loc,
+    Type elemType, Value srcGt, Value elemCount, Value bufferElemCount,
+    SmallVectorImpl<OwnedQueueTensor> *ownedTensors = nullptr);
+Value copyGmToVeccalc(ComputeLoweringContext &lowering, OpBuilder &builder,
+                      Location loc, Type elemType, Value srcGt,
+                      Value elemCount);
+Value getDynDim(ComputeLoweringContext &lowering, OpBuilder &builder,
+                Location loc, Value memref, unsigned dim);
+SmallVector<Value> getBufferDimSizes(ComputeLoweringContext &lowering,
+                                     ArrayRef<Value> dims, Operation *anchor);
+bool isRank2GmSubview(Value memref);
+bool isContiguousRank2GmSubview(Value memref);
+Value getRank2RowStride(ComputeLoweringContext &lowering, OpBuilder &builder,
+                        Location loc, Value memref);
+Value copyRank2GmSubviewRowsToVecin(
+    ComputeLoweringContext &lowering, OpBuilder &builder, Location loc,
+    Type elemType, Value srcMemref, Value bufferElemCount,
+    SmallVectorImpl<OwnedQueueTensor> *ownedTensors = nullptr);
 
 LogicalResult lowerScalarFallbackComputes(ComputeLoweringContext &lowering);
 LogicalResult lowerTransposeComputes(ComputeLoweringContext &lowering);
