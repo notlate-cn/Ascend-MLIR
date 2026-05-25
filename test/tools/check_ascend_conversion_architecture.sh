@@ -65,6 +65,7 @@ require_file "lib/Conversion/Ascend/Translate/KernelIR/Compute/ComputeFillLoweri
 require_file "lib/Conversion/Ascend/Translate/KernelIR/Compute/ComputeMatmulLowering.cpp"
 require_file "lib/Conversion/Ascend/Translate/KernelIR/Compute/ComputeLocalFallbackLowering.cpp"
 require_file "lib/Conversion/Ascend/Translate/KernelIR/Compute/ComputeLoweringPreconditions.cpp"
+require_file "lib/Conversion/Ascend/Translate/KernelIR/Compute/ComputeScalarLoopLowering.cpp"
 
 reject_pattern \
   "lib/Conversion/Ascend/Translate/KernelIR/Compute/ComputeLoweringPass.cpp" \
@@ -92,6 +93,11 @@ reject_pattern "include/Conversion/Ascend/Passes.td" "MVP|Phase 3B"
 line_count=$(wc -l < "$COMPUTE_ROOT/ComputeOpConversion.cpp")
 if [[ "$line_count" -ge 1000 ]]; then
   fail "ComputeOpConversion.cpp remains too large: $line_count lines"
+fi
+
+selected_tile_line_count=$(wc -l < "$KERNELIR_ROOT/ComputeSelectedTileLowering.cpp")
+if [[ "$selected_tile_line_count" -ge 1000 ]]; then
+  fail "ComputeSelectedTileLowering.cpp remains too large: $selected_tile_line_count lines"
 fi
 
 require_dir "lib/Conversion/Ascend/Kernelize/Semantic"
