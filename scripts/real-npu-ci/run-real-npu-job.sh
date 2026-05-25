@@ -23,7 +23,9 @@ This script is normally run as the container ENTRYPOINT. Configure it with:
   ASCEND_MLIR_CI_REPO_URL    Git repository URL to clone, unless SOURCE_DIR is set.
   ASCEND_MLIR_CI_REF         Git ref, branch, tag, or commit. Default: HEAD.
   ASCEND_MLIR_CI_CASE        Example case name. Use docker-run.sh --case all
-                              for the real-NPU suite.
+                              for the real-NPU suite. Special cases include
+                              microcases, real-npu-multikernel, and
+                              transformer-real-npu.
                               Default: relu-broadcast-transpose.
   ASCEND_MLIR_CI_CMD         Optional custom command to run after build. When set,
                               it takes precedence over ASCEND_MLIR_CI_CASE.
@@ -227,8 +229,25 @@ dst = Path(sys.argv[2])
 out = sys.argv[3]
 data = json.loads(src.read_text())
 data["backend"] = "npu"
-for binding in data.get("outputs", []):
-    binding["path"] = out
+rewritten = 0
+
+def output_path(index):
+    if index == 0:
+        return out
+    base = Path(out)
+    return str(base.with_name(f"{base.stem}.{index}{base.suffix}"))
+
+def rewrite_outputs(outputs):
+    global rewritten
+    for binding in outputs or []:
+        if "path" not in binding:
+            continue
+        binding["path"] = output_path(rewritten)
+        rewritten += 1
+
+rewrite_outputs(data.get("outputs"))
+for task in data.get("tasks", []):
+    rewrite_outputs(task.get("outputs"))
 dst.write_text(json.dumps(data, indent=2) + "\n")
 PY
   "${RUN_RUNTIME_SESSION}" --run-manifest "${real_manifest}" --run
@@ -347,6 +366,38 @@ run_multikernel() {
   ) >"${LOG_DIR}/real-npu-multikernel.log" 2>&1
 }
 
+run_transformer_real_npu() {
+  log "prepare transformer runtime artifacts for real NPU"
+  (
+    cd "${SRC_DIR}"
+    if [[ -n "${ASCEND_HOME_PATH:-}" ]]; then
+      source_if_exists "${ASCEND_HOME_PATH}/set_env.sh"
+    fi
+    # shellcheck source=/dev/null
+    source examples/env.sh
+    export PATH="${SRC_DIR}/build/bin:${PATH}"
+    export AFIR_OPT="${SRC_DIR}/build/bin/afir-opt"
+    export AFIR_TRANSLATE="${SRC_DIR}/build/bin/afir-translate"
+    export RUNTIME_SESSION="${SRC_DIR}/build/bin/runtime-session"
+    bash examples/transformer/run-mainline.sh \
+      --prepare-runtime-artifacts \
+      --batch "${ASCEND_MLIR_TRANSFORMER_BATCH:-1}" \
+      --seq "${ASCEND_MLIR_TRANSFORMER_SEQ:-1}" \
+      --log
+  ) >"${LOG_DIR}/transformer-real-npu-prepare.log" 2>&1
+
+  local manifest="${SRC_DIR}/examples/transformer/build_mainline/run_manifest.json"
+  [[ -f "${manifest}" ]] || fail "transformer run manifest not found: ${manifest}"
+
+  log "run real NPU for transformer-real-npu"
+  mkdir -p "${OUT_DIR}/transformer-real-npu"
+  run_real_manifest \
+    "${manifest}" \
+    "${OUT_DIR}/transformer-real-npu/run_manifest.npu.json" \
+    "${OUT_DIR}/transformer-real-npu/output.npy" \
+    >"${LOG_DIR}/transformer-real-npu-npu.log" 2>&1
+}
+
 if [[ -n "${CMD}" ]]; then
   run_custom_cmd "${CMD}"
 else
@@ -356,6 +407,9 @@ else
       ;;
     real-npu-multikernel|multikernel)
       run_multikernel
+      ;;
+    transformer-real-npu|transformer)
+      run_transformer_real_npu
       ;;
     all)
       fail "case=all is a host-wrapper mode; use docker-run.sh or sync-and-submit.sh --case all so each real-NPU case runs in a separate container"

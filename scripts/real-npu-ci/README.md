@@ -315,6 +315,17 @@ scripts/sync-and-submit.sh \
   --case all
 ```
 
+完整 Transformer 真机诊断使用独立 case。它会先运行 full graph
+compile/translate/artifact 准备，不进入 full simulator runtime，然后用
+run-only `runtime-session` 走标准真机 NPU 阶段：
+
+```shell
+scripts/sync-and-submit.sh \
+  --remote-dir /data/{username}/Codex-Ascend-MLIR-current \
+  --case transformer-real-npu \
+  --device-id 5
+```
+
 如果要执行任意命令，使用 `--cmd`。命令会在容器内完成项目构建后，从源码根目录执行，并预先设置：
 
 - `PATH`：包含 `build/bin`
@@ -384,10 +395,11 @@ scripts/sync-and-submit.sh \
 scripts/sync-and-submit.sh --list-cases
 ```
 
-当前还有两个特殊值：
+当前还有这些特殊值：
 
 - `microcases`：运行 `examples/real-npu-microcases/prepare.sh` 生成的真机 microcases。
 - `real-npu-multikernel`：运行 `examples/real-npu-multikernel/run.sh`，覆盖串行双 kernel 和 fork-join 三 kernel 的真实 NPU DAG 调度路径。
+- `transformer-real-npu`：运行 `examples/transformer/run-mainline.sh --prepare-runtime-artifacts` 生成 58-task full Transformer artifacts，再用标准 run-only 真机路径执行。
 - `all`：运行当前 real-NPU 全量用例，包含六个普通 example 和 `real-npu-multikernel`；host 包装脚本会为每个 case 启动独立容器。
 
 `--case` 是保留的快捷方式，适合继续跑“example sim gate + 改 manifest 后真机 NPU run”的固定流程；`--cmd` 是通用入口，会覆盖 `--case`，适合全量脚本、临时排查命令或自定义验证流程。

@@ -12,6 +12,7 @@ RUNTIME_SESSION="${RUNTIME_SESSION:-runtime-session}"
 PYTHON="${PYTHON:-python3}"
 SOC="${SOC_VERSION:-Ascend910B1}"
 RUNTIME_E2E=false
+PREPARE_RUNTIME_ARTIFACTS=false
 BATCH=1
 SEQ=1
 BLOCK_DIM=1
@@ -41,6 +42,10 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     --runtime-e2e)
       RUNTIME_E2E=true
+      shift
+      ;;
+    --prepare-runtime-artifacts)
+      PREPARE_RUNTIME_ARTIFACTS=true
       shift
       ;;
     --batch)
@@ -156,7 +161,7 @@ echo "transformer_dynamic.phase5_translate=pass"
 echo "transformer_dynamic.runtime_artifacts=pass"
 echo "transformer_dynamic.full_codegen=pass"
 
-if ! $RUNTIME_E2E; then
+if ! $RUNTIME_E2E && ! $PREPARE_RUNTIME_ARTIFACTS; then
   exit 0
 fi
 
@@ -235,6 +240,10 @@ for index, task in enumerate(tasks):
         f"deps={deps_text}"
     )
 PY
+fi
+
+if $PREPARE_RUNTIME_ARTIFACTS && ! $RUNTIME_E2E; then
+  exit 0
 fi
 
 echo "transformer_dynamic.runtime_session=start"
