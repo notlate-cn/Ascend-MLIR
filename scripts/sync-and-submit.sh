@@ -45,8 +45,8 @@ Options:
                             from versions.env.
   --case NAME               Example case to run. NAME comes from
                             examples/<NAME>/run.sh. Special: microcases,
-                            real-npu-multikernel, all. all runs each case in
-                            a separate real-NPU container.
+                            real-npu-multikernel, transformer-real-npu, all.
+                            all runs each case in a separate real-NPU container.
                             Default: relu-broadcast-transpose
   --cmd COMMAND             Custom command to run after build, from repo root.
                             Takes precedence over --case.
@@ -164,9 +164,6 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-REPO_ROOT="$(git rev-parse --show-toplevel)"
-cd "${REPO_ROOT}"
-
 list_cases() {
   find examples -mindepth 2 -maxdepth 2 -name run.sh -print |
     sed 's#^examples/##; s#/run.sh$##' |
@@ -177,13 +174,22 @@ list_cases() {
   if [[ -f examples/real-npu-multikernel/run.sh ]]; then
     echo real-npu-multikernel
   fi
+  if [[ -f examples/transformer/run-mainline.sh ]]; then
+    echo transformer-real-npu
+  fi
   echo all
 }
 
 if [[ "${LIST_CASES}" == "1" ]]; then
+  if repo_root="$(git rev-parse --show-toplevel 2>/dev/null)"; then
+    cd "${repo_root}"
+  fi
   list_cases | sort -u
   exit 0
 fi
+
+REPO_ROOT="$(git rev-parse --show-toplevel)"
+cd "${REPO_ROOT}"
 
 if [[ -z "${REMOTE}" ]]; then
   echo "--remote is required, or set ASCEND_MLIR_CI_REMOTE" >&2
