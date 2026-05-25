@@ -73,7 +73,9 @@ NativeMatmulPlanner::buildPlan(const MatmulTilingRequest &request) {
       clampTile(std::min(request.problem.M, targetM), 16, request.problem.M);
   plan.tileN =
       clampTile(std::min(request.problem.N, targetN), 16, request.problem.N);
+  const bool supportsSplitK = !request.problem.hasBias;
   plan.splitKEnabled =
+      supportsSplitK &&
       request.hints.preferSplitK.value_or(request.problem.K > plan.tileK);
   if (!plan.splitKEnabled)
     plan.tileK = request.problem.K;
