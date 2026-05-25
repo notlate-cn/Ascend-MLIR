@@ -26,6 +26,12 @@ def argparse_default(script: str, option: str) -> int:
     return int(match.group(1))
 
 
+def argparse_option_present(script: str, option: str) -> None:
+    pattern = rf'add_argument\("{re.escape(option)}"'
+    if not re.search(pattern, script):
+        fail(f"missing argparse option: {option}")
+
+
 def main(argv: list[str]) -> int:
     if len(argv) != 4:
         fail("usage: check_gather_defaults.py RUN_MAINLINE GEN_DATA TILING_SPACE")
@@ -36,6 +42,8 @@ def main(argv: list[str]) -> int:
 
     shapes = tiling_space["shapes"]
     expected = {"M": int(shapes["M"]), "N": int(shapes["N"]), "K": int(shapes["K"])}
+    expected_index_high = int(shapes["index_high"])
+    expected_tail_guard = expected["N"] - expected_index_high
 
     actual_run = {
         "M": shell_default(run_mainline, "M"),
@@ -52,6 +60,15 @@ def main(argv: list[str]) -> int:
     }
     if actual_gen != expected:
         fail(f"gen_data defaults drifted: expected {expected}, got {actual_gen}")
+
+    actual_tail_guard = shell_default(run_mainline, "INDEX_TAIL_GUARD")
+    if actual_tail_guard != expected_tail_guard:
+        fail(
+            "run-mainline INDEX_TAIL_GUARD drifted: "
+            f"expected {expected_tail_guard}, got {actual_tail_guard}"
+        )
+
+    argparse_option_present(gen_data, "--index-high")
 
     if tiling_space.get("block_dim_expr") != "ceil(M / TB_M)":
         fail(f"unsupported block_dim_expr: {tiling_space.get('block_dim_expr')}")
