@@ -19,6 +19,8 @@ N=640
 K=128
 SEED=42
 BLOCK_DIM=1
+INDEX_TAIL_GUARD=16
+INDEX_HIGH=""
 SOC="${SOC_VERSION:-Ascend910B1}"
 VERBOSE=false
 
@@ -51,6 +53,11 @@ while [[ $# -gt 0 ]]; do
     --seed)
       require_arg "$1" "${2:-}"
       SEED="$2"
+      shift 2
+      ;;
+    --index-high)
+      require_arg "$1" "${2:-}"
+      INDEX_HIGH="$2"
       shift 2
       ;;
     --block-dim)
@@ -91,6 +98,24 @@ if (( K > N )); then
   echo "unsupported shape: K must be <= N" >&2
   exit 2
 fi
+if [[ -n "$INDEX_HIGH" ]]; then
+  require_positive_int "INDEX_HIGH" "$INDEX_HIGH"
+  EFFECTIVE_INDEX_HIGH="$INDEX_HIGH"
+else
+  EFFECTIVE_INDEX_HIGH=$((N - INDEX_TAIL_GUARD))
+fi
+if (( EFFECTIVE_INDEX_HIGH < 1 )); then
+  echo "unsupported shape: index_high must be >= 1" >&2
+  exit 2
+fi
+if (( EFFECTIVE_INDEX_HIGH > N )); then
+  echo "unsupported shape: index_high must be <= N" >&2
+  exit 2
+fi
+if (( K > EFFECTIVE_INDEX_HIGH )); then
+  echo "unsupported shape: K must be <= index_high (${EFFECTIVE_INDEX_HIGH})" >&2
+  exit 2
+fi
 
 log() {
   if $VERBOSE; then
@@ -116,6 +141,7 @@ echo "========================================================"
 echo "shape.M=$M"
 echo "shape.N=$N"
 echo "shape.K=$K"
+echo "index_high=$EFFECTIVE_INDEX_HIGH"
 echo "block_dim=$BLOCK_DIM"
 
 echo ""
@@ -192,7 +218,8 @@ log "  output: $BUILD_DIR/step11_kernel.cpp"
 
 echo ""
 echo "==================== [STAGE 12] Generate data ===================="
-"$PYTHON" "$DIR/gen_data.py" --m "$M" --n "$N" --k "$K" --seed "$SEED" \
+"$PYTHON" "$DIR/gen_data.py" --m "$M" --n "$N" --k "$K" \
+  --index-high "$EFFECTIVE_INDEX_HIGH" --seed "$SEED" \
   --out-dir "$BUILD_DIR"
 log "  output: input_data.npy input_indices.npy input_bias.npy output_out.npy"
 

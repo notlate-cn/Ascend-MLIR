@@ -21,7 +21,7 @@
     {"name": "dim_arg1_0", "type": "int64", "fixed": true, "shape_key": "K",
      "note": "indices.shape[0] = K (also bias.shape[0])"},
     {"name": "dim_arg0_1", "type": "int64", "fixed": true, "shape_key": "N",
-     "note": "data.shape[1] = N (gather source width); demo indices stay below N - 16 half elements to avoid the final real-NPU Gather tail datablock"},
+     "note": "data.shape[1] = N (gather source width); demo indices use exclusive index_high = N - 16 to avoid the final real-NPU Gather tail datablock"},
     {"name": "dim_arg2_0", "type": "int64", "fixed": true, "shape_key": "K",
      "note": "bias.shape[0] = K"}
   ],
