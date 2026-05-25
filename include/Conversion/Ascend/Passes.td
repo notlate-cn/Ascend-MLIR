@@ -17,8 +17,8 @@ def AscendPrintTargetProfilePass
     : Pass<"ascend-print-target-profile", "mlir::ModuleOp"> {
   let summary = "Load and print the Ascend CANN target profile";
   let description = [{
-    Loads a CANN platform_config target profile and prints a stable MVP summary
-    for target model smoke tests and early Ascend pipeline development.
+    Loads a CANN platform_config target profile and prints a stable summary
+    for target model smoke tests and Ascend pipeline development.
   }];
   let constructor = "mlir::afir::createAscendPrintTargetProfilePass()";
   let options = [
@@ -149,10 +149,9 @@ def AscendRealizePass : Pass<"ascend-realize", "mlir::ModuleOp"> {
     Pass for the Ascend Realize stage. The default mode preserves IR unchanged,
     validates that Schedule/StructuredLowering attributes are present, and emits
     an optional debug report with GM-only plan objects. The opt-in
-    one-shot-bufferize materialization mode runs upstream One-Shot Bufferize as
-    the first Phase 3B IR mutation slice. The opt-in memory-space-annotate mode
-    runs One-Shot Bufferize first and annotates proven local vector temporaries
-    with on-chip memory spaces.
+    one-shot-bufferize materialization mode runs upstream One-Shot Bufferize.
+    The opt-in memory-space-annotate mode runs One-Shot Bufferize first and
+    annotates proven local vector temporaries with on-chip memory spaces.
   }];
   let dependentDialects = [
     "mlir::bufferization::BufferizationDialect",

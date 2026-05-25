@@ -11,26 +11,6 @@
 #include "llvm/Support/raw_ostream.h"
 
 namespace mlir::afir::ascend::backend {
-namespace {
-
-bool isGenericFloatDtype(mlir::Type t) {
-  return t.isF32() || t.isF16() || t.isBF16();
-}
-
-bool isCubeMatmulInputDtype(mlir::Type t) {
-  return t.isF16() || t.isBF16();
-}
-
-bool isCubeMatmulOutputDtype(mlir::Type t) {
-  return t.isF16() || t.isBF16() || t.isF32();
-}
-
-bool isMatmulKind(ComputeKind kind) {
-  return kind == ComputeKind::Matmul || kind == ComputeKind::BatchMatmul;
-}
-
-} // namespace
-
 MemorySpace parseMemorySpace(int64_t value) {
   switch (value) {
   case static_cast<int64_t>(MemorySpace::GM):
@@ -140,16 +120,13 @@ llvm::StringRef stringifyComputeKind(ComputeKind kind) {
   return "unknown";
 }
 
+AscendBackendSupportMatrix::AscendBackendSupportMatrix(
+    const BackendCapabilityProvider &provider)
+    : provider(provider) {}
+
 bool AscendBackendSupportMatrix::isSupportedMovementPath(
     MemorySpace source, MemorySpace target) const {
-  return (source == MemorySpace::GM && target == MemorySpace::GM) ||
-         (source == MemorySpace::GM &&
-          (target == MemorySpace::A1 || target == MemorySpace::B1 ||
-           target == MemorySpace::VECIN)) ||
-         (source == MemorySpace::A1 && target == MemorySpace::A2) ||
-         (source == MemorySpace::B1 && target == MemorySpace::B2) ||
-         (source == MemorySpace::CO1 && target == MemorySpace::VECIN) ||
-         (source == MemorySpace::VECOUT && target == MemorySpace::GM);
+  return provider.supportsMovementPath(source, target);
 }
 
 UnsupportedReason AscendBackendSupportMatrix::explainMovementPath(
@@ -165,45 +142,7 @@ UnsupportedReason AscendBackendSupportMatrix::explainMovementPath(
 
 bool AscendBackendSupportMatrix::isSupportedComputeKind(
     ComputeKind kind) const {
-  switch (kind) {
-  case ComputeKind::Matmul:
-  case ComputeKind::BatchMatmul:
-  case ComputeKind::Fill:
-  case ComputeKind::ElementwiseAdd:
-  case ComputeKind::ElementwiseMul:
-  case ComputeKind::ElementwiseMax:
-  case ComputeKind::FusedElementwise:
-  case ComputeKind::TensorCopy:
-  case ComputeKind::ScalarGeneric:
-  case ComputeKind::Transpose:
-  case ComputeKind::VectorGather:
-  case ComputeKind::ReductionAdd:
-  case ComputeKind::ElementwiseSub:
-  case ComputeKind::ElementwiseDiv:
-  case ComputeKind::ElementwiseNeg:
-  case ComputeKind::ElementwiseExp:
-  case ComputeKind::ElementwiseLog:
-  case ComputeKind::ElementwiseSqrt:
-  case ComputeKind::ElementwiseRsqrt:
-  case ComputeKind::ElementwiseAbs:
-  case ComputeKind::ElementwiseMin:
-  case ComputeKind::ReductionMax:
-  case ComputeKind::ReductionMin:
-  case ComputeKind::ReductionMul:
-    return true;
-  case ComputeKind::ElementwiseExp2:
-  case ComputeKind::ElementwiseTanh:
-  case ComputeKind::ElementwiseErf:
-  case ComputeKind::ElementwiseSin:
-  case ComputeKind::ElementwiseCos:
-  case ComputeKind::ElementwiseFma:
-  case ComputeKind::ElementwiseReciprocal:
-  case ComputeKind::ElementwiseRelu:
-  case ComputeKind::ElementwiseSelect:
-  case ComputeKind::Unknown:
-    return false;
-  }
-  return false;
+  return provider.supportsComputeKind(kind);
 }
 
 UnsupportedReason AscendBackendSupportMatrix::explainComputeKind(
@@ -219,17 +158,7 @@ UnsupportedReason AscendBackendSupportMatrix::explainComputeKind(
 bool AscendBackendSupportMatrix::isSupportedDtype(
     ComputeKind kind, mlir::ArrayRef<mlir::Type> inputTypes,
     mlir::ArrayRef<mlir::Type> outputTypes) const {
-  auto inputOk = isMatmulKind(kind) ? isCubeMatmulInputDtype
-                                    : isGenericFloatDtype;
-  auto outputOk = isMatmulKind(kind) ? isCubeMatmulOutputDtype
-                                     : isGenericFloatDtype;
-  for (mlir::Type t : inputTypes)
-    if (!inputOk(t))
-      return false;
-  for (mlir::Type t : outputTypes)
-    if (!outputOk(t))
-      return false;
-  return true;
+  return provider.supportsDtype(kind, inputTypes, outputTypes);
 }
 
 UnsupportedReason AscendBackendSupportMatrix::explainDtype(
@@ -237,12 +166,12 @@ UnsupportedReason AscendBackendSupportMatrix::explainDtype(
     mlir::ArrayRef<mlir::Type> outputTypes) const {
   if (isSupportedDtype(kind, inputTypes, outputTypes))
     return {"dtype", ""};
-  auto inputOk = isMatmulKind(kind) ? isCubeMatmulInputDtype
-                                    : isGenericFloatDtype;
-  auto outputOk = isMatmulKind(kind) ? isCubeMatmulOutputDtype
-                                     : isGenericFloatDtype;
+  bool isMatmulKind = kind == ComputeKind::Matmul ||
+                      kind == ComputeKind::BatchMatmul;
   for (mlir::Type t : inputTypes) {
-    if (!inputOk(t)) {
+    bool inputOk = isMatmulKind ? (t.isF16() || t.isBF16())
+                                : (t.isF32() || t.isF16() || t.isBF16());
+    if (!inputOk) {
       std::string detail;
       llvm::raw_string_ostream os(detail);
       os << "unsupported input dtype for " << stringifyComputeKind(kind)
@@ -251,7 +180,9 @@ UnsupportedReason AscendBackendSupportMatrix::explainDtype(
     }
   }
   for (mlir::Type t : outputTypes) {
-    if (!outputOk(t)) {
+    bool outputOk = isMatmulKind ? (t.isF16() || t.isBF16() || t.isF32())
+                                 : (t.isF32() || t.isF16() || t.isBF16());
+    if (!outputOk) {
       std::string detail;
       llvm::raw_string_ostream os(detail);
       os << "unsupported output dtype for " << stringifyComputeKind(kind)

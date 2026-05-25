@@ -164,9 +164,9 @@ stampWorkspaceSizeAttrs(ModuleOp module,
 }
 
 static FailureOr<SmallVector<RealizePlanBundle, 4>>
-buildMVPRealizePlans(ModuleOp module,
-                     const ::mlir::ascend::TargetMemoryModel *memoryModel,
-                     bool &emittedError) {
+buildRealizePlanBundles(ModuleOp module,
+                        const ::mlir::ascend::TargetMemoryModel *memoryModel,
+                        bool &emittedError) {
   DenseMap<StringRef, unsigned> scheduledOpsByKernel;
   DenseMap<StringRef, std::string> decisionByKernel;
   DenseMap<StringRef, std::string> skeletonByKernel;
@@ -360,7 +360,7 @@ struct AscendRealizePass
 
     bool emittedError = false;
     FailureOr<SmallVector<RealizePlanBundle, 4>> bundles =
-        buildMVPRealizePlans(
+        buildRealizePlanBundles(
             getOperation(),
             targetMemoryModel ? &*targetMemoryModel : nullptr, emittedError);
     if (failed(bundles)) {

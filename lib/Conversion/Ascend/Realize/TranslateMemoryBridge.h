@@ -18,6 +18,14 @@ struct TranslateBridgeMaterializationCounts {
   unsigned materializedCopyCount = 0;
 };
 
+class TranslateMemoryBridge {
+public:
+  virtual ~TranslateMemoryBridge() = default;
+
+  virtual FailureOr<llvm::StringMap<TranslateBridgeMaterializationCounts>>
+  materialize(ModuleOp module) const = 0;
+};
+
 FailureOr<llvm::StringMap<TranslateBridgeMaterializationCounts>>
 materializeTranslateMemoryBridge(ModuleOp module);
 

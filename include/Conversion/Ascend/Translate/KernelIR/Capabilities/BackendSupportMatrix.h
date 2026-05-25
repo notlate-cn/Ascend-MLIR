@@ -67,8 +67,26 @@ MemorySpace parseMemorySpace(int64_t value);
 llvm::StringRef stringifyMemorySpace(MemorySpace space);
 llvm::StringRef stringifyComputeKind(ComputeKind kind);
 
+class BackendCapabilityProvider {
+public:
+  virtual ~BackendCapabilityProvider() = default;
+
+  virtual bool supportsMovementPath(MemorySpace source,
+                                    MemorySpace target) const = 0;
+  virtual bool supportsComputeKind(ComputeKind kind) const = 0;
+  virtual bool supportsDtype(ComputeKind kind,
+                             mlir::ArrayRef<mlir::Type> inputTypes,
+                             mlir::ArrayRef<mlir::Type> outputTypes) const = 0;
+};
+
+const BackendCapabilityProvider &getDefaultBackendCapabilityProvider();
+
 class AscendBackendSupportMatrix {
 public:
+  explicit AscendBackendSupportMatrix(
+      const BackendCapabilityProvider &provider =
+          getDefaultBackendCapabilityProvider());
+
   bool isSupportedMovementPath(MemorySpace source, MemorySpace target) const;
   UnsupportedReason explainMovementPath(MemorySpace source,
                                         MemorySpace target) const;
@@ -82,6 +100,9 @@ public:
   UnsupportedReason explainDtype(ComputeKind kind,
                                  mlir::ArrayRef<mlir::Type> inputTypes,
                                  mlir::ArrayRef<mlir::Type> outputTypes) const;
+
+private:
+  const BackendCapabilityProvider &provider;
 };
 
 } // namespace mlir::afir::ascend::backend
