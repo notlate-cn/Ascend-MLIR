@@ -7,8 +7,8 @@
     {
       "name": "TB_M",
       "type": "int64",
-      "min": 16, "max": 16, "step": 16,
-      "note": "HM=320 must be TB_M multiple; DataCopy requires >= 16 elements"
+      "min": 32, "max": 32, "step": 32,
+      "note": "HM=320 must be TB_M multiple; default launch uses ceil(HM / 32)"
     },
     {
       "name": "TB_N",

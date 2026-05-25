@@ -1,0 +1,1 @@
+// RUN: %PYTHON %S/check_split_defaults.py %S/../../../examples/split-relu-brc-add-mul/run-mainline.sh %S/../../../examples/split-relu-brc-add-mul/gen_data.py %S/../../../examples/split-relu-brc-add-mul/tiling_space.json

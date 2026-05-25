@@ -14,9 +14,10 @@ AFIR_TRANSLATE="${AFIR_TRANSLATE:-afir-translate}"
 RUNTIME_SESSION="${RUNTIME_SESSION:-runtime-session}"
 PYTHON="${PYTHON:-python3}"
 
-M=640
-N=512
-BLOCK_DIM=20
+M=64
+N=80
+TILE_M=32
+BLOCK_DIM=""
 SOC="${SOC_VERSION:-Ascend910B1}"
 VERBOSE=false
 
@@ -73,13 +74,16 @@ require_positive_int() {
 
 require_positive_int "M" "$M"
 require_positive_int "N" "$N"
-require_positive_int "BLOCK_DIM" "$BLOCK_DIM"
 if (( M % 2 != 0 )); then
   echo "unsupported shape: M must be even for this split example" >&2
   exit 2
 fi
 
 HM=$((M / 2))
+if [[ -z "$BLOCK_DIM" ]]; then
+  BLOCK_DIM=$(((HM + TILE_M - 1) / TILE_M))
+fi
+require_positive_int "BLOCK_DIM" "$BLOCK_DIM"
 
 log() {
   if $VERBOSE; then

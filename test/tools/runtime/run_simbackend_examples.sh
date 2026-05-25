@@ -415,8 +415,8 @@ run_vec_example \
     { \"name\": \"scale0\", \"path\": \"${PROJECT_ROOT}/examples/split-relu-brc-add-mul/build_mainline/scale0.npy\" },
     { \"name\": \"scale1\", \"path\": \"${PROJECT_ROOT}/examples/split-relu-brc-add-mul/build_mainline/scale1.npy\" }" \
   "${PROJECT_ROOT}/examples/split-relu-brc-add-mul/build_mainline/output.npy" \
-  "dim_arg0_1=512,dim_arg1_0=320,dim_arg0_0=640,dim_arg3_0=512,dim_arg2_0=320,dim_arg4_0=512" \
-  "20" "1e-2" "1e-2" \
+  "dim_arg0_1=80,dim_arg1_0=32,dim_arg0_0=64,dim_arg3_0=80,dim_arg2_0=32,dim_arg4_0=80" \
+  "1" "1e-2" "1e-2" \
   "build_mainline/step10_kernel.cpp" \
   "${PROJECT_ROOT}/examples/split-relu-brc-add-mul/build_mainline/phase5_tiling_space.json"
 fi

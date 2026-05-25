@@ -3890,14 +3890,20 @@ static void fixBrokenOpEmitters(Operation *moduleOp) {
     Value sourceElementCount =
         findLocalTensorDataCopyCountBefore(op.getOperation(), op.getSrc());
     std::string sourceSetSizeExpr = "$4";
+    bool sourceSetSizeUsesByteOffsets = false;
     if (!sourceElementCount) {
       sourceElementCount = findLocalTensorByteLength(op.getSrc());
-      if (sourceElementCount)
-        sourceSetSizeExpr =
-            "($4 / " + std::to_string(sourceElemBytes) + "u)";
+      if (sourceElementCount) {
+        sourceSetSizeExpr = "$4";
+        sourceSetSizeUsesByteOffsets = true;
+      }
     }
     if (!sourceElementCount)
       sourceElementCount = op.getCount();
+    if (!sourceSetSizeUsesByteOffsets) {
+      sourceSetSizeExpr =
+          "($4 * " + std::to_string(sourceElemBytes) + "u)";
+    }
 
     rewriter.setInsertionPoint(op);
     Location loc = op.getLoc();
@@ -3948,7 +3954,7 @@ static void fixBrokenOpEmitters(Operation *moduleOp) {
     prelude += "  " + tensorName + ".SetValue(_afir_i, 0u);\n";
     prelude += "}";
     prelude += "\n" + tensorName + ".SetSize(_afir_idx32_padded_count);";
-    prelude += "\nAscendC::PipeBarrier<PIPE_V>()";
+    prelude += "\nAscendC::PipeBarrier<PIPE_ALL>()";
     rewriter.create<emitasc::VerbatimOp>(
         loc, rewriter.getStringAttr(prelude),
         ValueRange({pipeVal, op.getCount(), op.getSrcOffset()}));
@@ -3963,6 +3969,7 @@ static void fixBrokenOpEmitters(Operation *moduleOp) {
             std::to_string(maxGatherCount) + "u;\n";
     tmpl += "  $0.SetSize(_afir_gather_padded_count);\n";
     tmpl += "  $1.SetSize((uint32_t)" + sourceSetSizeExpr + ");\n";
+    tmpl += "  AscendC::SetMaskNorm();\n";
     tmpl += "  for (uint32_t _afir_off = 0; _afir_off < _afir_gather_count; _afir_off += " +
             std::to_string(maxGatherCount) + ") {\n";
     tmpl += "    uint32_t _afir_chunk = ((_afir_gather_count - _afir_off) < " +
@@ -3971,7 +3978,7 @@ static void fixBrokenOpEmitters(Operation *moduleOp) {
     tmpl += "    AscendC::Gather($0[_afir_off], $1, " + tensorName +
             "[_afir_off], $2, _afir_chunk);\n";
     tmpl += "  }\n}";
-    tmpl += "\nAscendC::PipeBarrier<PIPE_V>()";
+    tmpl += "\nAscendC::PipeBarrier<PIPE_ALL>()";
 
     SmallVector<Value> args = {op.getDst(), op.getSrc(), op.getSrcBaseAddr(),
                                op.getCount(), sourceElementCount};
