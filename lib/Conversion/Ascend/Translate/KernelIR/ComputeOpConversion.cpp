@@ -565,6 +565,49 @@ Value copyGmToVecin(ComputeLoweringContext &lowering, OpBuilder &builder,
   return dequeued;
 }
 
+Value copyGmToVecinScalar(ComputeLoweringContext &lowering, OpBuilder &builder,
+                          Location loc, Type elemType, Value srcGt,
+                          Value elemCount, Value bufferElemCount,
+                          SmallVectorImpl<OwnedQueueTensor> *ownedTensors =
+                              nullptr) {
+  if (!bufferElemCount)
+    bufferElemCount = elemCount;
+  unsigned elemBytes = elemType.getIntOrFloatBitWidth() / 8;
+  Value byteSize = builder.create<arith::MulIOp>(
+      loc, bufferElemCount,
+      builder.create<arith::ConstantIndexOp>(loc, elemBytes));
+  Value vecinTbuf = builder.create<TBufOp>(
+      loc, TBufType::get(lowering.mlirCtx, TPosition::VECIN));
+  builder.create<TPipeInitBufferOp>(loc, lowering.ctx.pipe, vecinTbuf,
+                                    byteSize);
+  Value vecinQue = builder.create<QueueOp>(
+      loc, QueueType::get(lowering.mlirCtx, TPosition::VECIN, 1));
+  Value depth =
+      builder.create<arith::ConstantOp>(loc, builder.getI32IntegerAttr(1));
+  builder.create<TPipeInitQueueOp>(loc, lowering.ctx.pipe, vecinQue, depth,
+                                   byteSize);
+  Value lt = builder.create<TQueBindAllocTensorOp>(
+      loc, LocalTensorType::get(elemType), vecinQue);
+
+  std::string elemTypeStr = getVerbatimScalarTypeName(elemType);
+  std::string body = "{\n";
+  body += "  uint32_t _afir_count = static_cast<uint32_t>($2);\n";
+  body += "  for (uint32_t _afir_i = 0; _afir_i < _afir_count; ++_afir_i)\n";
+  body += "    $0.SetValue(_afir_i, static_cast<" + elemTypeStr +
+          ">($1.GetValue(_afir_i)));\n";
+  body += "  $0.SetSize(_afir_count);\n";
+  body += "}";
+  builder.create<emitasc::VerbatimOp>(loc, builder.getStringAttr(body),
+                                      ValueRange{lt, srcGt, elemCount});
+
+  builder.create<TQueBindEnqueTensorOp>(loc, vecinQue, lt);
+  Value dequeued = builder.create<TQueBindDequeTensorOp>(
+      loc, LocalTensorType::get(elemType), vecinQue);
+  if (ownedTensors)
+    rememberQueueRead(*ownedTensors, vecinQue, dequeued);
+  return dequeued;
+}
+
 Value copyGmToVeccalc(ComputeLoweringContext &lowering, OpBuilder &builder,
                       Location loc, Type elemType, Value srcGt,
                       Value elemCount) {
@@ -1172,13 +1215,18 @@ LogicalResult lowerReductionComputes(ComputeLoweringContext &lowering) {
         Value srcElemCount = builder.create<arith::ConstantIndexOp>(loc, 1);
         for (Value d : srcDims)
           srcElemCount = builder.create<arith::MulIOp>(loc, srcElemCount, d);
+        SmallVector<Value> srcBufferDims =
+            getBufferDimSizes(lowering, srcDims, genOp.getOperation());
+        Value srcBufferElemCount =
+            lowering.computeProduct(builder, loc, srcBufferDims);
         Value srcGt = builder.create<GlobalTensorOp>(
             loc, GlobalTensorType::get(elemType));
         builder.create<GlobalTensorSetGlobalBufferOp>(loc, srcGt, inMemref,
                                                        /*size=*/Value{});
         Value srcLt =
-            copyGmToVecin(lowering, builder, loc, elemType, srcGt, srcElemCount,
-                          srcElemCount, &ownedInputTensors);
+            copyGmToVecinScalar(lowering, builder, loc, elemType, srcGt,
+                                srcElemCount, srcBufferElemCount,
+                                &ownedInputTensors);
         SmallVector<Value> dstShapeVals, srcShapeVals;
         for (Value s : fullShape)
           dstShapeVals.push_back(
@@ -1277,6 +1325,8 @@ LogicalResult lowerReductionComputes(ComputeLoweringContext &lowering) {
               allocVeccalc(lowering, builder, loc, elemType, fullShape);
           auto dupOp = builder.create<DuplicateL2Op>(loc, dupLt, constOp.getResult(), totalElems);
           lowering.copyAscendCUnitAttr(genOp.getOperation(), dupOp.getOperation());
+          builder.create<PipeBarrierOp>(
+              loc, PipeAttr::get(lowering.mlirCtx, Pipe::PIPE_ALL));
           valToLt[v] = dupLt;
           return dupLt;
         }
@@ -2092,13 +2142,18 @@ LogicalResult lowerParallelGenericComputes(ComputeLoweringContext &lowering) {
           Value srcElemCount = builder.create<arith::ConstantIndexOp>(loc, 1);
           for (Value d : srcDims)
             srcElemCount = builder.create<arith::MulIOp>(loc, srcElemCount, d);
+          SmallVector<Value> srcBufferDims =
+              getBufferDimSizes(lowering, srcDims, genOp.getOperation());
+          Value srcBufferElemCount =
+              lowering.computeProduct(builder, loc, srcBufferDims);
           Value srcGt = builder.create<GlobalTensorOp>(
               loc, GlobalTensorType::get(elemType));
           builder.create<GlobalTensorSetGlobalBufferOp>(loc, srcGt, inMemref,
                                                          /*size=*/Value{});
           Value srcLt =
-              copyGmToVecin(lowering, builder, loc, elemType, srcGt, srcElemCount,
-                            srcElemCount, &ownedInputTensors);
+              copyGmToVecinScalar(lowering, builder, loc, elemType, srcGt,
+                                  srcElemCount, srcBufferElemCount,
+                                  &ownedInputTensors);
           SmallVector<Value> dstShapeVals, srcShapeVals;
           for (Value s : iterDimSizes)
             dstShapeVals.push_back(
@@ -2246,6 +2301,13 @@ LogicalResult lowerParallelGenericComputes(ComputeLoweringContext &lowering) {
     argToLt[numInputs] = accumLt;
 
     llvm::SmallDenseMap<Value, Value> valToLt;
+    bool accumLtHasBodyValue = false;
+    auto emitAccumReadAfterWriteBarrier = [&](bool readsAccumLt) {
+      if (!accumLtHasBodyValue || !readsAccumLt)
+        return;
+      builder.create<PipeBarrierOp>(
+          loc, PipeAttr::get(lowering.mlirCtx, Pipe::PIPE_ALL));
+    };
     for (auto &bodyOp : bodyBlock.without_terminator()) {
       auto resolve = [&](Value v) -> Value {
         if (auto ba = dyn_cast<BlockArgument>(v))
@@ -2258,6 +2320,8 @@ LogicalResult lowerParallelGenericComputes(ComputeLoweringContext &lowering) {
               allocVeccalc(lowering, builder, loc, elemType, bufferDimSizes);
           auto dupOp = builder.create<DuplicateL2Op>(loc, dupLt, constOp.getResult(), totalElems);
           lowering.copyAscendCUnitAttr(genOp.getOperation(), dupOp.getOperation());
+          builder.create<PipeBarrierOp>(
+              loc, PipeAttr::get(lowering.mlirCtx, Pipe::PIPE_ALL));
           valToLt[v] = dupLt;
           return dupLt;
         }
@@ -2272,18 +2336,22 @@ LogicalResult lowerParallelGenericComputes(ComputeLoweringContext &lowering) {
       if (entry->unaryEmitter) {
         Value src = resolve(bodyOp.getOperand(0));
         if (!src) continue;
+        emitAccumReadAfterWriteBarrier(src == accumLt);
         entry->unaryEmitter(builder, loc, accumLt, src, totalElems);
         lowering.copyAscendCUnitAttr(genOp.getOperation(),
                             &*std::prev(builder.getInsertionPoint()));
         valToLt[bodyOp.getResult(0)] = accumLt;
+        accumLtHasBodyValue = true;
       } else if (entry->binaryEmitter) {
         Value lhs = resolve(bodyOp.getOperand(0));
         Value rhs = resolve(bodyOp.getOperand(1));
         if (!lhs || !rhs) continue;
+        emitAccumReadAfterWriteBarrier(lhs == accumLt || rhs == accumLt);
         entry->binaryEmitter(builder, loc, accumLt, lhs, rhs, totalElems);
         lowering.copyAscendCUnitAttr(genOp.getOperation(),
                             &*std::prev(builder.getInsertionPoint()));
         valToLt[bodyOp.getResult(0)] = accumLt;
+        accumLtHasBodyValue = true;
       }
     }
 
