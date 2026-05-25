@@ -11,6 +11,7 @@
 #include "mlir/IR/Types.h"
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/StringRef.h"
+#include <memory>
 #include <string>
 
 namespace mlir::afir::ascend::backend {
@@ -80,6 +81,9 @@ public:
 };
 
 const BackendCapabilityProvider &getDefaultBackendCapabilityProvider();
+std::unique_ptr<BackendCapabilityProvider>
+createTargetProfileBackendCapabilityProvider(
+    const ::mlir::ascend::TargetProfile &profile);
 
 class AscendBackendSupportMatrix {
 public:

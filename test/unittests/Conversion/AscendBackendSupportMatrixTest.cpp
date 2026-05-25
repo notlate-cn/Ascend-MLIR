@@ -6,17 +6,40 @@
 
 #include "Conversion/Ascend/Translate/KernelIR/Capabilities/BackendSupportMatrix.h"
 
+#include "Target/Ascend/TargetProfile.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/MLIRContext.h"
 
 #include "gtest/gtest.h"
+#include <memory>
 #include <type_traits>
 
 using namespace mlir::afir::ascend::backend;
 
 static_assert(std::is_same_v<MemorySpace, mlir::ascend::MemoryPlace>,
               "backend memory spaces must use the target memory model enum");
+
+static mlir::ascend::TargetProfile makeProfileWithVectorAndUb() {
+  mlir::ascend::TargetProfile profile;
+  profile.identity.socVersion = "SyntheticSoC";
+  profile.hardware.aiCoreCount = 1;
+  profile.hardware.vectorCoreCount = 1;
+  profile.hardware.l1SizeBytes = 64 * 1024;
+  profile.hardware.ubSizeBytes = 64 * 1024;
+  profile.capacityBytes[MemorySpace::GM] = 1 << 20;
+  profile.capacityBytes[MemorySpace::VECIN] = 64 * 1024;
+  profile.capacityBytes[MemorySpace::VECOUT] = 64 * 1024;
+  profile.intrinsics.push_back(
+      {"Intrinsic_vadd", {"f16", "f32"}, {mlir::ascend::ExecutionUnit::Vector}});
+  profile.intrinsics.push_back({"Intrinsic_data_move_out2ub",
+                                {"f16", "f32"},
+                                {mlir::ascend::ExecutionUnit::DMA}});
+  profile.intrinsics.push_back({"Intrinsic_data_move_ub2out",
+                                {"f16", "f32"},
+                                {mlir::ascend::ExecutionUnit::DMA}});
+  return profile;
+}
 
 TEST(AscendBackendSupportMatrixTest, SupportsKnownMovementPaths) {
   AscendBackendSupportMatrix matrix;
@@ -103,4 +126,71 @@ TEST(AscendBackendSupportMatrixTest, RejectsUnsupportedDtypes) {
   mlir::Type i8 = builder.getI8Type();
   EXPECT_FALSE(matrix.isSupportedDtype(ComputeKind::ElementwiseAdd, {i8},
                                        {i8}));
+}
+
+TEST(AscendBackendSupportMatrixTest,
+     TargetProfileProviderGatesMovementByAdvertisedMemoryPlaces) {
+  mlir::ascend::TargetProfile profile = makeProfileWithVectorAndUb();
+  std::unique_ptr<BackendCapabilityProvider> provider =
+      createTargetProfileBackendCapabilityProvider(profile);
+  AscendBackendSupportMatrix matrix(*provider);
+
+  EXPECT_TRUE(matrix.isSupportedMovementPath(MemorySpace::GM,
+                                             MemorySpace::VECIN));
+  EXPECT_TRUE(matrix.isSupportedMovementPath(MemorySpace::VECOUT,
+                                             MemorySpace::GM));
+  EXPECT_FALSE(matrix.isSupportedMovementPath(MemorySpace::GM,
+                                              MemorySpace::A1));
+}
+
+TEST(AscendBackendSupportMatrixTest,
+     TargetProfileProviderGatesMatmulByTargetIntrinsic) {
+  mlir::ascend::TargetProfile profile = makeProfileWithVectorAndUb();
+  std::unique_ptr<BackendCapabilityProvider> provider =
+      createTargetProfileBackendCapabilityProvider(profile);
+  AscendBackendSupportMatrix matrix(*provider);
+  EXPECT_FALSE(matrix.isSupportedComputeKind(ComputeKind::Matmul));
+
+  profile.intrinsics.push_back(
+      {"Intrinsic_mmad", {"f16"}, {mlir::ascend::ExecutionUnit::Cube}});
+  provider = createTargetProfileBackendCapabilityProvider(profile);
+  AscendBackendSupportMatrix cubeMatrix(*provider);
+  EXPECT_TRUE(cubeMatrix.isSupportedComputeKind(ComputeKind::Matmul));
+}
+
+TEST(AscendBackendSupportMatrixTest,
+     TargetProfileProviderGatesExpByTargetIntrinsic) {
+  mlir::ascend::TargetProfile profile = makeProfileWithVectorAndUb();
+  std::unique_ptr<BackendCapabilityProvider> provider =
+      createTargetProfileBackendCapabilityProvider(profile);
+  AscendBackendSupportMatrix matrix(*provider);
+
+  EXPECT_TRUE(matrix.isSupportedComputeKind(ComputeKind::ElementwiseAdd));
+  EXPECT_FALSE(matrix.isSupportedComputeKind(ComputeKind::ElementwiseExp));
+
+  profile.intrinsics.push_back(
+      {"Intrinsic_vexp", {"f16", "f32"}, {mlir::ascend::ExecutionUnit::Vector}});
+  provider = createTargetProfileBackendCapabilityProvider(profile);
+  AscendBackendSupportMatrix expMatrix(*provider);
+  EXPECT_TRUE(expMatrix.isSupportedComputeKind(ComputeKind::ElementwiseExp));
+}
+
+TEST(AscendBackendSupportMatrixTest, TargetProfileProviderGatesBF16Dtypes) {
+  mlir::MLIRContext context;
+  mlir::Builder builder(&context);
+  mlir::ascend::TargetProfile profile = makeProfileWithVectorAndUb();
+  std::unique_ptr<BackendCapabilityProvider> provider =
+      createTargetProfileBackendCapabilityProvider(profile);
+  AscendBackendSupportMatrix matrix(*provider);
+
+  EXPECT_FALSE(matrix.isSupportedDtype(ComputeKind::ElementwiseAdd,
+                                       {builder.getBF16Type()},
+                                       {builder.getBF16Type()}));
+
+  profile.hardware.supportBF16 = true;
+  provider = createTargetProfileBackendCapabilityProvider(profile);
+  AscendBackendSupportMatrix bf16Matrix(*provider);
+  EXPECT_TRUE(bf16Matrix.isSupportedDtype(ComputeKind::ElementwiseAdd,
+                                          {builder.getBF16Type()},
+                                          {builder.getBF16Type()}));
 }
