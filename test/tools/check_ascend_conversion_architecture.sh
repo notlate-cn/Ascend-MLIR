@@ -55,6 +55,11 @@ reject_file() {
 
 require_file "lib/Conversion/Ascend/Translate/KernelIR/Compute/ComputeLoweringInternal.h"
 require_file "lib/Conversion/Ascend/Translate/KernelIR/Compute/ComputeLoweringPipeline.cpp"
+require_file "lib/Conversion/Ascend/Translate/KernelIR/Compute/ComputeLoweringContext.cpp"
+require_file "lib/Conversion/Ascend/Translate/KernelIR/Compute/ComputeTransposeLowering.cpp"
+require_file "lib/Conversion/Ascend/Translate/KernelIR/Compute/ComputeReductionLowering.cpp"
+require_file "lib/Conversion/Ascend/Translate/KernelIR/Compute/ComputeParallelGenericLowering.cpp"
+require_file "lib/Conversion/Ascend/Translate/KernelIR/Compute/ComputeGatherLowering.cpp"
 require_file "lib/Conversion/Ascend/Translate/KernelIR/Compute/ComputeElementwiseLowering.cpp"
 require_file "lib/Conversion/Ascend/Translate/KernelIR/Compute/ComputeFillLowering.cpp"
 require_file "lib/Conversion/Ascend/Translate/KernelIR/Compute/ComputeMatmulLowering.cpp"
@@ -85,7 +90,7 @@ reject_pattern "lib/Conversion/Ascend/Realize/RealizePass.cpp" "buildMVPRealizeP
 reject_pattern "include/Conversion/Ascend/Passes.td" "MVP|Phase 3B"
 
 line_count=$(wc -l < "$COMPUTE_ROOT/ComputeOpConversion.cpp")
-if [[ "$line_count" -ge 2500 ]]; then
+if [[ "$line_count" -ge 1000 ]]; then
   fail "ComputeOpConversion.cpp remains too large: $line_count lines"
 fi
 

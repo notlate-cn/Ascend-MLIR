@@ -59,6 +59,11 @@ set(ASCEND_TRANSLATE_KERNELIR_SOURCES
   Translate/KernelIR/DataMovementConversion.cpp
   Translate/KernelIR/ComputeSelectedTileLowering.cpp
   Translate/KernelIR/Compute/ComputeOpConversion.cpp
+  Translate/KernelIR/Compute/ComputeLoweringContext.cpp
+  Translate/KernelIR/Compute/ComputeTransposeLowering.cpp
+  Translate/KernelIR/Compute/ComputeReductionLowering.cpp
+  Translate/KernelIR/Compute/ComputeParallelGenericLowering.cpp
+  Translate/KernelIR/Compute/ComputeGatherLowering.cpp
   Translate/KernelIR/Compute/ComputeMatmulLowering.cpp
   Translate/KernelIR/Compute/ComputeElementwiseLowering.cpp
   Translate/KernelIR/Compute/ComputeFillLowering.cpp
