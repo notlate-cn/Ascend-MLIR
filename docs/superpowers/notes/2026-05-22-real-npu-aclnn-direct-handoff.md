@@ -106,13 +106,11 @@ either; encoder does because it has a chain of Transposes feeding the first
 AscendC kernels. Earlier "encoder advanced to group20, only one wall left" was
 over-optimistic — the front-end is already corrupt before any tiling matters:
 
-  (a) **Front-end host-gen buffer-wiring bug — fix first.** The very first
-      AscendC kernel (group3) reads a buffer nobody wrote (sampled bytes are CANN
-      `version.info` text); group14/21 then output all-zero. The network's main
-      input plumbing, or an early `run_Transpose` host-output landing, isn't
-      threaded to the memory group3 reads — a CoordEmitter / host-gen wiring
-      defect in `AclnnBackend.cpp`, NOT mixed-mem (host-in/host-out is fixed) and
-      NOT tiling. Any encoder accuracy number is meaningless until this is fixed.
+  (a) ~~front-end host-gen wiring bug~~ MISDIAGNOSED — NOT a bug. group3/14/21
+      are `linalg.fill 0` zeroing a DPS-dest tensor.empty (init not read), feeding
+      aclnn-Matmul inits that run_Matmul ignores → dead. "version.info input" =
+      pre-fill init dump; all-zero output = correct. host-gen faithful; sim 7e-7
+      confirms. Encoder's only blocker is (b).
   (b) **tiling-related real-HW AscendC kernel faults (camodel-invisible).** Default
       v0 tiling faults group2 (507034); the autotuner-selected v1 faults group20
       (507035, VEC UB out-of-bounds). Changing tiling only moves which kernel dies
