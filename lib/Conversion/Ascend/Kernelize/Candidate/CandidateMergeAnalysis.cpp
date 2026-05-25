@@ -4,10 +4,10 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "CandidateMergeAnalysis.h"
+#include "Conversion/Ascend/Kernelize/Candidate/CandidateMergeAnalysis.h"
 
-#include "CandidateClosure.h"
-#include "KernelizeFamilyResolver.h"
+#include "Conversion/Ascend/Kernelize/Candidate/CandidateClosure.h"
+#include "Conversion/Ascend/Kernelize/Candidate/KernelizeFamilyResolver.h"
 #include "mlir/IR/Operation.h"
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/DenseMap.h"

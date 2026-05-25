@@ -15,7 +15,7 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "KernelizeInternalPasses.h"
+#include "Conversion/Ascend/Kernelize/KernelizeInternalPasses.h"
 
 #include "Conversion/Ascend/Common/Attributes.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"

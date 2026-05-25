@@ -7,7 +7,7 @@
 #ifndef ASCEND_MLIR_CONVERSION_ASCEND_KERNELIZE_FAMILY_RESOLVER_H
 #define ASCEND_MLIR_CONVERSION_ASCEND_KERNELIZE_FAMILY_RESOLVER_H
 
-#include "KernelizeTypes.h"
+#include "Conversion/Ascend/Kernelize/KernelizeTypes.h"
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/SmallVector.h"
 

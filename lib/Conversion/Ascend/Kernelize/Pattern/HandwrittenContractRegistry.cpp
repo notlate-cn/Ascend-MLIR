@@ -4,9 +4,9 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "HandwrittenContractRegistry.h"
+#include "Conversion/Ascend/Kernelize/Pattern/HandwrittenContractRegistry.h"
 
-#include "KernelizeTypes.h"
+#include "Conversion/Ascend/Kernelize/KernelizeTypes.h"
 #include "Conversion/Ascend/Common/Attributes.h"
 
 #include "llvm/ADT/StringMap.h"

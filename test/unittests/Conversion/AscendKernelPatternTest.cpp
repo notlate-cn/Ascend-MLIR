@@ -4,10 +4,10 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "Conversion/Ascend/Kernelize/KernelPattern.h"
+#include "Conversion/Ascend/Kernelize/Pattern/KernelPattern.h"
 
-#include "Conversion/Ascend/Kernelize/CandidateMergeAnalysis.h"
-#include "Conversion/Ascend/Kernelize/KernelizeFamilyResolver.h"
+#include "Conversion/Ascend/Kernelize/Candidate/CandidateMergeAnalysis.h"
+#include "Conversion/Ascend/Kernelize/Candidate/KernelizeFamilyResolver.h"
 
 #include "gtest/gtest.h"
 #include "mlir/IR/Location.h"

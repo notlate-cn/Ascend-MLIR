@@ -8,7 +8,7 @@
 
 #include "Conversion/Ascend/Common/Attributes.h"
 #include "KernelPatternView.h"
-#include "../Kernelize/HandwrittenContractRegistry.h"
+#include "Conversion/Ascend/Kernelize/Pattern/HandwrittenContractRegistry.h"
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/IR/AffineExpr.h"
 #include "mlir/IR/AffineMap.h"

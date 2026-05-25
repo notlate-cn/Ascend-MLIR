@@ -3,25 +3,25 @@ set(ASCEND_NORMALIZE_SOURCES
 )
 
 set(ASCEND_KERNELIZE_SOURCES
-  Kernelize/CandidateClosure.cpp
-  Kernelize/CandidateMergeAnalysis.cpp
-  Kernelize/DependencyAnalysis.cpp
-  Kernelize/HandwrittenContractRegistry.cpp
-  Kernelize/FusionCandidateAnalysis.cpp
-  Kernelize/HorizontalFusionAnalysis.cpp
-  Kernelize/KernelizeExternalModels.cpp
-  Kernelize/KernelizeFamilyResolver.cpp
-  Kernelize/KernelizeOpInterface.cpp
-  Kernelize/KernelPattern.cpp
-  Kernelize/KernelizeOpRegistry.cpp
-  Kernelize/KernelizeSemanticUtils.cpp
-  Kernelize/KernelSplitPass.cpp
-  Kernelize/GatherElementwiseFusion.cpp
-  Kernelize/StructuredOpSemanticMarking.cpp
-  Kernelize/MixMatmulSemantics.cpp
+  Kernelize/Semantic/KernelizeExternalModels.cpp
+  Kernelize/Semantic/KernelizeOpInterface.cpp
+  Kernelize/Semantic/KernelizeOpRegistry.cpp
+  Kernelize/Semantic/KernelizeSemanticUtils.cpp
+  Kernelize/Preprocess/GatherElementwiseFusion.cpp
+  Kernelize/Preprocess/StructuredOpSemanticMarking.cpp
+  Kernelize/Preprocess/MixMatmulSemantics.cpp
+  Kernelize/Analysis/DependencyAnalysis.cpp
+  Kernelize/Analysis/OpRoleClassification.cpp
+  Kernelize/Analysis/StructuralMarking.cpp
+  Kernelize/Candidate/CandidateClosure.cpp
+  Kernelize/Candidate/CandidateMergeAnalysis.cpp
+  Kernelize/Candidate/FusionCandidateAnalysis.cpp
+  Kernelize/Candidate/HorizontalFusionAnalysis.cpp
+  Kernelize/Candidate/KernelizeFamilyResolver.cpp
+  Kernelize/Pattern/HandwrittenContractRegistry.cpp
+  Kernelize/Pattern/KernelPattern.cpp
+  Kernelize/Split/KernelSplitPass.cpp
   Kernelize/KernelizePass.cpp
-  Kernelize/OpRoleClassification.cpp
-  Kernelize/StructuralMarking.cpp
 )
 
 set(ASCEND_SCHEDULE_SOURCES

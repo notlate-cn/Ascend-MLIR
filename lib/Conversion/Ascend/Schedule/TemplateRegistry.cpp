@@ -6,7 +6,7 @@
 
 #include "TemplateRegistry.h"
 
-#include "../Kernelize/HandwrittenContractRegistry.h"
+#include "Conversion/Ascend/Kernelize/Pattern/HandwrittenContractRegistry.h"
 
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/Support/ManagedStatic.h"

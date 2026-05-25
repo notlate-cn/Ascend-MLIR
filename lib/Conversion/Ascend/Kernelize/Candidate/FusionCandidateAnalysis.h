@@ -7,9 +7,9 @@
 #ifndef ASCEND_MLIR_CONVERSION_ASCEND_KERNELIZE_FUSIONCANDIDATEANALYSIS_H
 #define ASCEND_MLIR_CONVERSION_ASCEND_KERNELIZE_FUSIONCANDIDATEANALYSIS_H
 
-#include "CandidateClosure.h"
-#include "KernelizeTypes.h"
-#include "OpRoleClassification.h"
+#include "Conversion/Ascend/Kernelize/Candidate/CandidateClosure.h"
+#include "Conversion/Ascend/Kernelize/KernelizeTypes.h"
+#include "Conversion/Ascend/Kernelize/Analysis/OpRoleClassification.h"
 #include "mlir/IR/Operation.h"
 #include "mlir/Support/LLVM.h"
 #include "llvm/ADT/ArrayRef.h"

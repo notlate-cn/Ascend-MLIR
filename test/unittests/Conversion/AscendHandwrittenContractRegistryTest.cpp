@@ -4,7 +4,7 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "Conversion/Ascend/Kernelize/HandwrittenContractRegistry.h"
+#include "Conversion/Ascend/Kernelize/Pattern/HandwrittenContractRegistry.h"
 
 #include "Conversion/Ascend/Common/Attributes.h"
 #include "gtest/gtest.h"

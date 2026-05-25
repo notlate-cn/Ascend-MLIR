@@ -4,12 +4,12 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "FusionCandidateAnalysis.h"
+#include "Conversion/Ascend/Kernelize/Candidate/FusionCandidateAnalysis.h"
 
-#include "CandidateClosure.h"
-#include "HandwrittenContractRegistry.h"
-#include "KernelizeTypes.h"
-#include "OpRoleClassification.h"
+#include "Conversion/Ascend/Kernelize/Candidate/CandidateClosure.h"
+#include "Conversion/Ascend/Kernelize/Pattern/HandwrittenContractRegistry.h"
+#include "Conversion/Ascend/Kernelize/KernelizeTypes.h"
+#include "Conversion/Ascend/Kernelize/Analysis/OpRoleClassification.h"
 #include "mlir/IR/Operation.h"
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/DenseMap.h"
