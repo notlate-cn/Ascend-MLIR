@@ -16,3 +16,12 @@ Fix: extend the fill lowering to a fill whose output is a kernel output buffer �
 emit DuplicateL2(0) into the VECOUT tile before the store. Verify: sim no
 regression; out1 = zeros; rebuild afir-opt, regen group18, confirm Duplicate in
 .cpp. Reverify encoder --backend npu past group18. group2/20/26 PASS — don't touch.
+
+## CORRECTION: not the fill PRE-pass — dual-output empty store
+Extending the fill PRE-pass (ms 0/11/12, even all fills) did NOT change group18
+.cpp — still 0 Duplicate, empty `EnQue(v44)`. So out1's empty VECOUT is NOT a
+FillOp (canonicalized away pre-codegen): it's the dual-output store reusing
+add's result, 2nd output buffer enqueued with NO producer. Real root = dual-result
+codegen emits a VECOUT for the 2nd output with no compute. Fix belongs in the
+multi-output store path (DataMove/IsolateKernelOutputs), not fill lowering. Encoder
+sim stays 7.15e-7 regardless (camodel tolerates). Reverted; tree clean.
