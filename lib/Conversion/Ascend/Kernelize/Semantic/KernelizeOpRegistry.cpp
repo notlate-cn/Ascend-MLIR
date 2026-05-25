@@ -4,9 +4,9 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "KernelizeOpRegistry.h"
+#include "Conversion/Ascend/Kernelize/Semantic/KernelizeOpRegistry.h"
 
-#include "KernelizeSemanticUtils.h"
+#include "Conversion/Ascend/Kernelize/Semantic/KernelizeSemanticUtils.h"
 
 using namespace mlir;
 

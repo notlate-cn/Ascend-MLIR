@@ -6,7 +6,7 @@
 
 #include "Conversion/Ascend/Kernelize/KernelizeExternalModels.h"
 
-#include "KernelizeSemanticUtils.h"
+#include "Conversion/Ascend/Kernelize/Semantic/KernelizeSemanticUtils.h"
 
 #include "Conversion/Ascend/Kernelize/KernelizeOpInterface.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"

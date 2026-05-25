@@ -4,7 +4,7 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "KernelizeFamilyResolver.h"
+#include "Conversion/Ascend/Kernelize/Candidate/KernelizeFamilyResolver.h"
 
 #include "Conversion/Ascend/Common/Attributes.h"
 #include "llvm/ADT/STLExtras.h"

@@ -4,7 +4,7 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "HorizontalFusionAnalysis.h"
+#include "Conversion/Ascend/Kernelize/Candidate/HorizontalFusionAnalysis.h"
 
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/IR/BuiltinTypes.h"

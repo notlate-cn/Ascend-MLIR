@@ -7,7 +7,7 @@
 #include "ScheduleProblemBuilder.h"
 
 #include "KernelPatternView.h"
-#include "../Kernelize/HandwrittenContractRegistry.h"
+#include "Conversion/Ascend/Kernelize/Pattern/HandwrittenContractRegistry.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/Operation.h"
 #include "llvm/ADT/STLExtras.h"

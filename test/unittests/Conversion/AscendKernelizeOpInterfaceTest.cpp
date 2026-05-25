@@ -6,7 +6,7 @@
 
 #include "Conversion/Ascend/Kernelize/KernelizeOpInterface.h"
 
-#include "Conversion/Ascend/Kernelize/DependencyAnalysis.h"
+#include "Conversion/Ascend/Kernelize/Analysis/DependencyAnalysis.h"
 #include "gtest/gtest.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinOps.h"

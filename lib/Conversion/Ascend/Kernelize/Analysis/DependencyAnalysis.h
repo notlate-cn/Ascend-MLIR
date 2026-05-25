@@ -7,7 +7,7 @@
 #ifndef ASCEND_MLIR_CONVERSION_ASCEND_KERNELIZE_DEPENDENCYANALYSIS_H
 #define ASCEND_MLIR_CONVERSION_ASCEND_KERNELIZE_DEPENDENCYANALYSIS_H
 
-#include "KernelizeTypes.h"
+#include "Conversion/Ascend/Kernelize/KernelizeTypes.h"
 #include "mlir/IR/AffineMap.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/Operation.h"

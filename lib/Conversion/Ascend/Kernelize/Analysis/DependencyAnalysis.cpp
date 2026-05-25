@@ -4,9 +4,9 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "DependencyAnalysis.h"
+#include "Conversion/Ascend/Kernelize/Analysis/DependencyAnalysis.h"
 
-#include "KernelizeOpRegistry.h"
+#include "Conversion/Ascend/Kernelize/Semantic/KernelizeOpRegistry.h"
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/IR/AffineMap.h"
 #include "mlir/IR/Attributes.h"

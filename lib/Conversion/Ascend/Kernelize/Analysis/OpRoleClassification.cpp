@@ -4,9 +4,9 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "OpRoleClassification.h"
+#include "Conversion/Ascend/Kernelize/Analysis/OpRoleClassification.h"
 
-#include "KernelizeTypes.h"
+#include "Conversion/Ascend/Kernelize/KernelizeTypes.h"
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/BuiltinOps.h"
