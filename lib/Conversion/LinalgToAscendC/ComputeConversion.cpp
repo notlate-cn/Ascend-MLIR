@@ -2376,7 +2376,11 @@ LogicalResult convertCompute(func::FuncOp funcOp, AscendCBufferContext &ctx) {
     }
 
     // Skip fills that would cause a double-alloc or are otherwise redundant.
-    if (ms == 7 || ms == 10) {
+    // ms=7 (CO1) mmad zeroes automatically.  ms=10 (VECOUT) is only redundant
+    // when another op overwrites the same buffer (max_l2 precursor); when the
+    // fill IS the producer (standalone fill→output), emit Duplicate so its 0
+    // write isn't dropped (multi-output buffers are now shared/serialized).
+    if (ms == 7) {
       fillOp.erase();
       continue;
     }

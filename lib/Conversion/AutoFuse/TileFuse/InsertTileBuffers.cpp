@@ -164,6 +164,14 @@ struct AutoFuseInsertTileBuffersPass
     // visible to the MTE3 engine.
     llvm::SmallDenseMap<Value, Value> pendingMTE3Writes; // GM value → vecout
 
+    // All outputs of equal byte-width share ONE VECOUT buffer so they serialize
+    // through a single TQue.  Concurrent VECOUT queues deadlock on real NPU
+    // (1 VECOUT passes at 10 queues; 2 VECOUT hangs).  Each output keeps its own
+    // producer write; they run sequentially through the shared buffer.  Keyed by
+    // shape+elemtype; only reused when the shared buffer dominates the genOp.
+    DominanceInfo domInfo;
+    llvm::DenseMap<Type, memref::AllocOp> sharedVecout;
+
     for (linalg::GenericOp genOp : targets) {
       Location loc = genOp.getLoc();
 
@@ -239,15 +247,30 @@ struct AutoFuseInsertTileBuffersPass
       OpOperand *outOperand = genOp.getDpsInitOperand(0);
       Value gmOut = outOperand->get();
 
+      auto outMrt = cast<MemRefType>(gmOut.getType());
+      Type outKey = outMrt.getElementType();
+      auto cached = sharedVecout.find(outKey);
       Value vecout;
-      if (allocAnchor) {
+      if (cached != sharedVecout.end() &&
+          domInfo.dominates(cached->second.getOperation(), allocAnchor)) {
+        vecout = cached->second.getResult();
+        // Serialize: the previous output's UB→GM store (MTE3) must finish
+        // before this output overwrites the shared VECOUT buffer.
+        builder.setInsertionPoint(genOp);
+        builder.create<ascendc::PipeBarrierOp>(
+            loc, ascendc::PipeAttr::get(builder.getContext(),
+                                        ascendc::Pipe::PIPE_ALL));
+      } else if (allocAnchor) {
         builder.setInsertionPoint(allocAnchor);
-        vecout = allocOnChipMatchingSubview(builder, loc, gmOut,
-                                            /*VECOUT=*/10, allocAnchor)
-                     .getResult();
+        auto a = allocOnChipMatchingSubview(builder, loc, gmOut,
+                                            /*VECOUT=*/10, allocAnchor);
+        vecout = a.getResult();
+        sharedVecout[outKey] = a;
       } else {
         builder.setInsertionPoint(genOp);
-        vecout = allocOnChip(builder, loc, gmOut, /*VECOUT=*/10).getResult();
+        auto a = allocOnChip(builder, loc, gmOut, /*VECOUT=*/10);
+        vecout = a.getResult();
+        sharedVecout[outKey] = a;
       }
       outOperand->set(vecout);
 
