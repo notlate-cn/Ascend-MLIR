@@ -8,8 +8,7 @@
 #include "Conversion/Ascend/Translate/KernelIR/Capabilities/BackendSupportMatrix.h"
 #include "Conversion/Ascend/Translate/KernelIR/Capabilities/LinalgBodyClassifier.h"
 #include "Conversion/Ascend/Translate/KernelIR/KernelIRUtils.h"
-#include "../PreEmit/PreEmitInternalPasses.h"
-#include "../../Kernelize/KernelizeInternalPasses.h"
+#include "ComputeLoweringInternal.h"
 
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
@@ -79,8 +78,7 @@ struct AscendComputeLowerPass
     func::FuncOp funcOp = getOperation();
     AscendBackendSupportMatrix matrix;
 
-    if (failed(annotateAscendKernelKind(funcOp)) ||
-        failed(annotateMixMatmulSemantics(funcOp))) {
+    if (failed(prepareComputeLoweringPreconditions(funcOp))) {
       signalPassFailure();
       return;
     }

@@ -1,4 +1,4 @@
-#include "ComputeLoweringInternal.h"
+#include "Compute/ComputeLoweringInternal.h"
 
 #include "Conversion/Ascend/Common/Attributes.h"
 #include "mlir/Dialect/Affine/IR/AffineOps.h"

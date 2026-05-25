@@ -52,13 +52,20 @@ set(ASCEND_REALIZE_SOURCES
 
 set(ASCEND_TRANSLATE_KERNELIR_SOURCES
   Translate/KernelIR/Capabilities/BackendSupportMatrix.cpp
+  Translate/KernelIR/Capabilities/DefaultBackendCapabilityProvider.cpp
   Translate/KernelIR/Capabilities/ElementwiseBodyOpRegistry.cpp
   Translate/KernelIR/Capabilities/LinalgBodyClassifier.cpp
   Translate/KernelIR/LinalgToKernelIR.cpp
   Translate/KernelIR/DataMovementConversion.cpp
   Translate/KernelIR/ComputeSelectedTileLowering.cpp
-  Translate/KernelIR/ComputeOpConversion.cpp
-  Translate/KernelIR/ComputeLoweringPass.cpp
+  Translate/KernelIR/Compute/ComputeOpConversion.cpp
+  Translate/KernelIR/Compute/ComputeMatmulLowering.cpp
+  Translate/KernelIR/Compute/ComputeElementwiseLowering.cpp
+  Translate/KernelIR/Compute/ComputeFillLowering.cpp
+  Translate/KernelIR/Compute/ComputeLocalFallbackLowering.cpp
+  Translate/KernelIR/Compute/ComputeLoweringPipeline.cpp
+  Translate/KernelIR/Compute/ComputeLoweringPreconditions.cpp
+  Translate/KernelIR/Compute/ComputeLoweringPass.cpp
 )
 
 set(ASCEND_TRANSLATE_PREEMIT_SOURCES

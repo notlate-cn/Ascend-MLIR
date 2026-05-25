@@ -4,8 +4,8 @@
 //
 //===----------------------------------------------------------------------===//
 
-#ifndef ASCEND_MLIR_CONVERSION_ASCEND_TRANSLATE_KERNELIR_COMPUTELOWERINGINTERNAL_H
-#define ASCEND_MLIR_CONVERSION_ASCEND_TRANSLATE_KERNELIR_COMPUTELOWERINGINTERNAL_H
+#ifndef ASCEND_MLIR_CONVERSION_ASCEND_TRANSLATE_KERNELIR_COMPUTE_COMPUTELOWERINGINTERNAL_H
+#define ASCEND_MLIR_CONVERSION_ASCEND_TRANSLATE_KERNELIR_COMPUTE_COMPUTELOWERINGINTERNAL_H
 
 #include "Conversion/Ascend/Translate/KernelIR/KernelIRUtils.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
@@ -50,6 +50,8 @@ struct ComputeLoweringContext {
                                             Type elemType, Location loc);
 };
 
+LogicalResult prepareComputeLoweringPreconditions(func::FuncOp funcOp);
+
 Value getDimValue(OpBuilder &builder, Location loc, Value memref,
                   unsigned dim);
 void emitStridedGmToLocalCopy(OpBuilder &builder, Location loc, Type elemType,
@@ -86,4 +88,4 @@ LogicalResult lowerLocalScalarFallbackComputes(ComputeLoweringContext &lowering)
 
 } // namespace mlir::afir
 
-#endif // ASCEND_MLIR_CONVERSION_ASCEND_TRANSLATE_KERNELIR_COMPUTELOWERINGINTERNAL_H
+#endif // ASCEND_MLIR_CONVERSION_ASCEND_TRANSLATE_KERNELIR_COMPUTE_COMPUTELOWERINGINTERNAL_H

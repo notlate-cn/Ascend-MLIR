@@ -180,6 +180,12 @@ struct TranslateCubeBridge {
   std::string kernelId;
 };
 
+class DefaultTranslateMemoryBridge final : public TranslateMemoryBridge {
+public:
+  FailureOr<llvm::StringMap<TranslateBridgeMaterializationCounts>>
+  materialize(ModuleOp module) const override;
+};
+
 static bool isConstantOpFoldResult(OpFoldResult ofr, int64_t expected) {
   std::optional<int64_t> value = getConstantIntValue(ofr);
   return value && *value == expected;
@@ -436,7 +442,7 @@ static bool collectSafeCubeVectorUses(linalg::LinalgOp linalgOp,
 } // namespace
 
 FailureOr<llvm::StringMap<TranslateBridgeMaterializationCounts>>
-materializeTranslateMemoryBridge(ModuleOp module) {
+DefaultTranslateMemoryBridge::materialize(ModuleOp module) const {
   MLIRContext *context = module.getContext();
   backend::AscendBackendSupportMatrix matrix;
 
@@ -579,6 +585,11 @@ materializeTranslateMemoryBridge(ModuleOp module) {
   }
 
   return counts;
+}
+
+FailureOr<llvm::StringMap<TranslateBridgeMaterializationCounts>>
+materializeTranslateMemoryBridge(ModuleOp module) {
+  return DefaultTranslateMemoryBridge().materialize(module);
 }
 
 } // namespace mlir::afir::ascend::realize
