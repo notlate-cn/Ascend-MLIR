@@ -88,6 +88,21 @@ struct AutoFuseGroupAnalysisPass
   void runOnOperation() override {
     func::FuncOp func = getOperation();
 
+    // Step 0: matmul/bmm go to aclnn single-ops which allocate their own output,
+    // so a fill(0) accumulator init is redundant.  Detach it (init->bare empty)
+    // before grouping so the fill isn't pulled into an unrelated vector group as
+    // a dead dual-output (encoder group18 add+fill→two VECOUT deadlock).
+    func.walk([&](linalg::LinalgOp op) {
+      if (!isa<linalg::MatmulOp, linalg::BatchMatmulOp>(op.getOperation()))
+        return;
+      OpOperand *init = op.getDpsInitOperand(0);
+      if (auto fill = init->get().getDefiningOp<linalg::FillOp>()) {
+        init->set(fill.getOutputs()[0]);
+        if (fill->use_empty())
+          fill.erase();
+      }
+    });
+
     // Step 1: Collect all linalg ops in program order; each is its own group
     llvm::SmallVector<FusionGroup> groups;
     int32_t nextId = 0;
