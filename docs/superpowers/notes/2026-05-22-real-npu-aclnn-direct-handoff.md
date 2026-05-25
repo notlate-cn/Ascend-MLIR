@@ -168,3 +168,18 @@ Follow the 8-point real-NPU checklist (record/kill exact container+PID, timeout
 +monitor, pull logs repo-external, sync hygiene, rc semantics, clean orphans,
 stage-aware diagnosis). Confirm before any kill/rm. Report stage where it breaks
 (GetWorkspaceSize / launch / numeric) — that localizes A vs B vs C above.
+
+## 2026-05-25 — encoder group20 wild-address diagnosis (broadcast Vector kernel)
+
+plog confirmed: group20 v1 = "GM address accessed by scalar exceeds 48 bits"
+(subErrType 4, fixp_error0=0x8b57905); group2 = trap. NOT AF-tail-alignment.
+Source-read bounds are clamped; v1 tiles the leading broadcast axis (extent 2,
+XBLOCK=XBLOCK_SUB=2). Suspect = tail offset `v41 = extent - XBLOCK_SUB` in
+uint32 (kernel_group20.cpp:193) → underflows to ~4e9 when XBLOCK_SUB≥extent →
+SetGlobalBuffer base+huge = wild addr (camodel doesn't check; same class for
+group2). Offsets are uint32 (vs AF's int64). Not magnitude here (small shapes),
+so int64 alone won't fix — needs the exact faulting address. To decide v37(slab)
+vs v41(tail underflow): capture fixp_error0 + the 3 GM base ptrs (v1/v3/out)
+printed post-aclrtMalloc; subtract. Minimal-change candidates: clamp tail
+extent-XBLOCK_SUB underflow + clamp broadcast-axis tile offset to extent.
+Reverted an ineffective TilePlanGen broadcast-exclude attempt; tree clean.
