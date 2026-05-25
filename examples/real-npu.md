@@ -381,40 +381,10 @@ job 输出统一落在：
 
 详细参数和运行方式见 `scripts/real-npu-ci/README.md`。
 
-## 4. 真机问题经验总结
+## 4. 调试经验索引
 
-### 4.1 `relu-broadcast-transpose` 507035 lessons
+真机失败模式、历史案例和定位经验已经迁移到
+`docs/Real-NPU-Debugging-Lessons.zh.md`。
 
-- 之前 `examples/relu-broadcast-transpose` 真机失败不是 launch ABI 问题。H2D roundtrip、GM pointer 512B alignment、workspace、argument count 和 tiling words 都正常。
-- 失败 plog 报 VEC UB out-of-bounds / scalar GM address over 48 bits，最终修复点在 generated kernel lowering 和 tile sizing。
-- VECOUT outputs 必须先从 VECOUT queue `AllocTensor` 再 enqueue。把 VECCALC tensor enqueue 到 VECOUT queue 可能过仿真，但真机会触发 UB/MTE fault。
-- 临时 GM-to-VECIN tensor 通过 `AllocTensor -> DataCopy -> EnQue -> DeQue` 创建后，必须在最后一次使用后 `FreeTensor`。
-- all-parallel tail-tiled kernel 的 buffer allocation 应使用 enclosing loop-step upper bound；DataCopy/compute 仍使用 actual tail element count。这样一个 max-sized queue/tbuf 可以跨 tail iteration 复用。
-- 计算 all-parallel VECOUT/VECIN/VECCALC buffer byte size 时，要把 `affine.min(remaining, step)` 和 `memref.dim(subview)` 解析到 loop-step upper bound。
-- loop-invariant `InitBuffer` / `InitQueue` 要 hoist 到 inner tile loop 外。每轮循环重复 init 在 simulator 与真机上的 UB 消耗表现不同，真机可能触发 `507035`。
-- 不要把同样的 max-size substitution 盲目套到 reduction output。rank-1 VECOUT reduction output 可能需要 exact tail size，因为 `ReduceSum2DL2` codegen 会从 source 和 destination tensor size 推导 rows/cols。
-- `TB_N` 从 64 调到 16 降低了该 demo 的 UB live set，是当前真机通过配置的一部分；但 tile 修改本身不是根因修复，必须同时保证 queue 和 buffer lifetime 正确。
-
-### 4.2 `add-broadcast-concat` 507035 lessons
-
-- 之前 `examples/add-broadcast-concat` 真机失败是 tiling configuration 问题，不是 launch ABI 问题。launch trace 显示 argument count、H2D/D2H、512B-aligned GM pointers、workspace、tiling words 都正常。
-- 在该 generated kernel 中，`TB_N` 当前实际表现为 inner M tile size；`N=500` 仍 full-width 进入每个 tile。`TB_N=192` 会让 UB live set 超界，并在 910C 上触发 `rtStreamSynchronize rc=507035`。
-- 当前接受配置是 `TB_M=64, TB_N=16`。流程上先跑 xvm Ascend910B1 simulation，再跑 真实 NPU。
-
-### 4.3 `split-relu-brc-add-mul` 507035 lessons
-
-- 让 run manifest tiling fields 对齐 generated CANN `TilingData` signature 是必要 hygiene，但不是该 demo 的根因。8-field tiling probe 在 UB cleanup 前仍以同样 `507035` 失败。
-- 根因是 queue-backed memref alloc 还保留了 standalone TBuf initializer。这些 TBuf 没有实际用户，只有 `TPipe.InitBuffer`，但 hoist 后仍会消耗真机 UB。
-- data-move/compute conversion 后，应删除仅被 `TPipe.InitBuffer` 使用的 TBuf。该 demo 中 generated `InitBuffer` 从 20 个降到 14 个后，xvm simulation 保持通过，真实 NPU通过。
-- `examples/split-relu-brc-add-mul` run manifest 要和当前 CANN signature 对齐：`TB_M`、`TB_N`、`dim_arg0_1`、`dim_arg1_0`、`dim_arg0_0`、`dim_arg3_0`、`dim_arg2_0`、`dim_arg4_0`。
-
-### 4.4 microcase synchronization lessons
-
-- `copy640`、`copy_tbuf640` 和 `copy_params640` 最初在真机上 validation fail，
-  但 H2D roundtrip、launch 参数和 GM pointer alignment 均正常；根因是手写
-  microcase kernel 缺少 MTE2 -> MTE3 同步，真机不会像仿真路径那样隐式掩盖。
-- `relu_only` 在补 MTE2 -> V / V -> MTE3 后仍失败，说明问题不在 runtime ABI。
-  将 `Duplicate(zero) + Max(x, zero)` 收敛为 `Maxs(x, 0)` 后真机通过，后续
-  需要单独验证 `Duplicate + binary Max` 时不要把它混入基础 relu microcase。
-- `scripts/real-npu-ci/run-real-npu-job.sh` 必须使用显式 microcase 顺序；glob
-  字母序会让 `broadcast_add` 先运行，掩盖更基础的 `DataCopy` / vector 边界。
+本文只保留真实 NPU 环境、运行入口、验证标准和操作流程；新增调试经验请优先写入
+独立经验文档，避免操作指南和案例复盘长期重复发散。
