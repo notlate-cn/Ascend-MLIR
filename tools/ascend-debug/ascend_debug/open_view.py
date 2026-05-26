@@ -121,6 +121,14 @@ def _cell(value: Any) -> str:
     return html.escape("" if value is None else str(value))
 
 
+def _path_link(rel_path: str, *, exists: bool = True) -> str:
+    label = _cell(rel_path)
+    if not exists:
+        return label
+    href = html.escape(rel_path, quote=True)
+    return f'<a href="{href}">{label}</a>'
+
+
 def _metadata_rows(manifest: dict[str, Any]) -> str:
     keys = ("schema_version", "tool", "preset", "pipeline", "backend", "device_id")
     rows = []
@@ -135,30 +143,34 @@ def _stage_rows(run_dir: pathlib.Path, manifest: dict[str, Any]) -> str:
     stages = sorted(manifest["stages"], key=lambda stage: stage["order"])
     for stage in stages:
         rel_path = str(stage["path"])
-        status = "present" if (run_dir / rel_path).exists() else "missing"
+        exists = (run_dir / rel_path).exists()
+        status = "present" if exists else "missing"
         rows.append(
             "<tr>"
             f"<td>{_cell(stage['order'])}</td>"
             f"<td>{_cell(stage['name'])}</td>"
-            f"<td>{_cell(rel_path)}</td>"
+            f"<td>{_path_link(rel_path, exists=exists)}</td>"
             f"<td>{_cell(status)}</td>"
             "</tr>"
         )
     return "\n".join(rows)
 
 
-def _command_rows(manifest: dict[str, Any]) -> str:
+def _command_rows(run_dir: pathlib.Path, manifest: dict[str, Any]) -> str:
     rows = []
     for command in manifest.get("commands", []):
         args = " ".join(command.get("args", []))
         report_path = command.get("stderr") or command.get("stdout")
+        report_cell = ""
+        if report_path:
+            report_cell = _path_link(report_path, exists=(run_dir / report_path).exists())
         rows.append(
             "<tr>"
             f"<td>{_cell(command.get('stage'))}</td>"
             f"<td>{_cell(command.get('tool'))}</td>"
             f"<td>{_cell(args)}</td>"
             f"<td>{_cell(command.get('status'))}</td>"
-            f"<td>{_cell(report_path)}</td>"
+            f"<td>{report_cell}</td>"
             "</tr>"
         )
     return "\n".join(rows)
@@ -168,11 +180,12 @@ def _report_rows(run_dir: pathlib.Path, manifest: dict[str, Any]) -> str:
     rows = []
     for report in manifest.get("reports", []):
         rel_path = report["path"]
-        status = "present" if (run_dir / rel_path).exists() else "missing"
+        exists = (run_dir / rel_path).exists()
+        status = "present" if exists else "missing"
         rows.append(
             "<tr>"
             f"<td>{_cell(report.get('stage'))}</td>"
-            f"<td>{_cell(rel_path)}</td>"
+            f"<td>{_path_link(rel_path, exists=exists)}</td>"
             f"<td>{_cell(status)}</td>"
             "</tr>"
         )
@@ -183,12 +196,29 @@ def _graph_rows(run_dir: pathlib.Path, manifest: dict[str, Any]) -> str:
     rows = []
     for graph in manifest.get("graphs", []):
         rel_path = graph["path"]
-        status = "present" if (run_dir / rel_path).exists() else "missing"
+        exists = (run_dir / rel_path).exists()
+        status = "present" if exists else "missing"
         rows.append(
             "<tr>"
             f"<td>{_cell(graph.get('kind'))}</td>"
-            f"<td>{_cell(rel_path)}</td>"
+            f"<td>{_path_link(rel_path, exists=exists)}</td>"
             f"<td>{_cell(status)}</td>"
+            "</tr>"
+        )
+    return "\n".join(rows)
+
+
+def _summary_rows(run_dir: pathlib.Path) -> str:
+    summary_dir = run_dir / "summaries"
+    if not summary_dir.exists():
+        return ""
+    rows = []
+    for path in sorted(item for item in summary_dir.rglob("*") if item.is_file()):
+        rel_path = path.relative_to(run_dir).as_posix()
+        rows.append(
+            "<tr>"
+            f"<td>{_path_link(rel_path)}</td>"
+            f"<td>{_cell(path.stat().st_size)}</td>"
             "</tr>"
         )
     return "\n".join(rows)
@@ -204,7 +234,7 @@ def render_index(run_dir: pathlib.Path, manifest: dict[str, Any]) -> pathlib.Pat
 <table>
 <thead><tr><th>Stage</th><th>Tool</th><th>Args</th><th>Status</th><th>Report</th></tr></thead>
 <tbody>
-{_command_rows(manifest)}
+{_command_rows(run_dir, manifest)}
 </tbody>
 </table>
 </section>
@@ -231,6 +261,20 @@ def render_index(run_dir: pathlib.Path, manifest: dict[str, Any]) -> pathlib.Pat
 <thead><tr><th>Kind</th><th>Path</th><th>Status</th></tr></thead>
 <tbody>
 {_graph_rows(run_dir, manifest)}
+</tbody>
+</table>
+</section>
+"""
+    summary_rows = _summary_rows(run_dir)
+    summary_section = ""
+    if summary_rows:
+        summary_section = f"""
+<section>
+<h2>Summaries</h2>
+<table>
+<thead><tr><th>Path</th><th>Bytes</th></tr></thead>
+<tbody>
+{summary_rows}
 </tbody>
 </table>
 </section>
@@ -269,6 +313,7 @@ dd {{ margin: 0 0 0.35rem 0; }}
 {command_section}
 {report_section}
 {graph_section}
+{summary_section}
 </body>
 </html>
 """
