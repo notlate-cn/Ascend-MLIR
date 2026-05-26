@@ -5,11 +5,11 @@ INPUT_MLIR="$1"
 TMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/ascend-debug-cli.XXXXXX")"
 trap 'rm -rf "${TMP_DIR}"' EXIT
 
-ascend-debug --help >/tmp/ascend-debug-help.txt 2>&1
-grep -q 'collect' /tmp/ascend-debug-help.txt
-grep -q 'open' /tmp/ascend-debug-help.txt
-grep -q 'diff' /tmp/ascend-debug-help.txt
-grep -q 'locate' /tmp/ascend-debug-help.txt
+ascend-debug --help >"${TMP_DIR}/ascend-debug-help.txt" 2>&1
+grep -q 'collect' "${TMP_DIR}/ascend-debug-help.txt"
+grep -q 'open' "${TMP_DIR}/ascend-debug-help.txt"
+grep -q 'diff' "${TMP_DIR}/ascend-debug-help.txt"
+grep -q 'locate' "${TMP_DIR}/ascend-debug-help.txt"
 echo "ascend_debug.help=ok"
 
 ascend-debug collect "${INPUT_MLIR}" \
@@ -24,8 +24,8 @@ test -f "${TMP_DIR}/debug-run/manifest.json"
 test -f "${TMP_DIR}/debug-run/provenance.json"
 echo "ascend_debug.collect=ok"
 
-ascend-debug open "${TMP_DIR}/debug-run" --no-browser >/tmp/ascend-debug-open.txt
-grep -q 'index.html' /tmp/ascend-debug-open.txt
+ascend-debug open "${TMP_DIR}/debug-run" --no-browser >"${TMP_DIR}/ascend-debug-open.txt"
+grep -q 'index.html' "${TMP_DIR}/ascend-debug-open.txt"
 test -f "${TMP_DIR}/debug-run/index.html"
 echo "ascend_debug.open=ok"
 
