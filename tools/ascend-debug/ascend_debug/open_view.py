@@ -317,30 +317,68 @@ def _tensor_diff_rows(
     return "\n".join(rows)
 
 
-def _list_text(value: Any) -> str:
+def _kernel_list_cell(value: Any, kernel_views: dict[str, str]) -> str:
     if not isinstance(value, list) or not value:
         return "none"
-    return ",".join(str(item) for item in value)
+    links = []
+    for item in value:
+        if not isinstance(item, str) or not item:
+            continue
+        links.append(_link(kernel_views[item], item) if item in kernel_views else _cell(item))
+    return ", ".join(links) if links else "none"
 
 
 def _locate_section(summary: dict[str, Any] | None, kernel_views: dict[str, str]) -> str:
     if not summary:
         return ""
     kernel_id = summary.get("first_bad_kernel")
-    kernel_cell = _cell(kernel_id)
+    kernel_cell = _cell(kernel_id or "none")
     if isinstance(kernel_id, str) and kernel_id in kernel_views:
         kernel_cell = _link(kernel_views[kernel_id], kernel_id)
     first_bad_comparison = summary.get("first_bad_comparison")
-    comparison_id = ""
+    comparison_id = "none"
     if isinstance(first_bad_comparison, dict):
-        comparison_id = first_bad_comparison.get("id", "")
+        comparison_id = first_bad_comparison.get("id", "none")
     first_bad_context = summary.get("first_bad_context", {})
     if not isinstance(first_bad_context, dict):
         first_bad_context = {}
+    upstream_passed = _kernel_list_cell(first_bad_context.get("upstream_checked_passed"), kernel_views)
+    unchecked_upstream = _kernel_list_cell(first_bad_context.get("unchecked_direct_upstream"), kernel_views)
+    downstream_failed = _kernel_list_cell(first_bad_context.get("downstream_failed"), kernel_views)
+    direct_upstream = _kernel_list_cell(first_bad_context.get("direct_upstream"), kernel_views)
+    direct_downstream = _kernel_list_cell(first_bad_context.get("direct_downstream"), kernel_views)
     return f"""
-<section>
+<section class="locate-section">
 <h2>Locate</h2>
-<p>status={_cell(summary.get('status'))}; first_bad_kernel={kernel_cell}; first_bad_depth={_cell(summary.get('first_bad_depth'))}; first_bad_comparison={_cell(comparison_id)}; failed_kernels={_cell(summary.get('failed_kernel_count'))}; upstream_checked_passed={_cell(_list_text(first_bad_context.get('upstream_checked_passed')))}; unchecked_direct_upstream={_cell(_list_text(first_bad_context.get('unchecked_direct_upstream')))}; downstream_failed={_cell(_list_text(first_bad_context.get('downstream_failed')))}; method={_cell(summary.get('method'))}</p>
+<p class="locate-note">Earliest failed checkpoint in DAG order. This is a first-bad candidate, not root-cause proof when upstream kernels are not checked.</p>
+<div class="locate-grid">
+<div class="locate-panel">
+<h3>First Bad Candidate</h3>
+<dl>
+<dt>Status</dt><dd>{_cell(summary.get('status'))}</dd>
+<dt>Kernel</dt><dd>{kernel_cell}</dd>
+<dt>DAG depth</dt><dd>{_cell(summary.get('first_bad_depth'))}</dd>
+<dt>Failed comparison</dt><dd>{_cell(comparison_id)}</dd>
+</dl>
+</div>
+<div class="locate-panel">
+<h3>Evidence</h3>
+<dl>
+<dt>Failed kernels</dt><dd>{_cell(summary.get('failed_kernel_count'))}</dd>
+<dt>Upstream passed checkpoints</dt><dd>{upstream_passed}</dd>
+<dt>Downstream failed checkpoints</dt><dd>{downstream_failed}</dd>
+<dt>Method</dt><dd>{_cell(summary.get('method'))}</dd>
+</dl>
+</div>
+<div class="locate-panel">
+<h3>Coverage Gap</h3>
+<dl>
+<dt>Direct upstream</dt><dd>{direct_upstream}</dd>
+<dt>Direct downstream</dt><dd>{direct_downstream}</dd>
+<dt>Direct upstream without checkpoint</dt><dd>{unchecked_upstream}</dd>
+</dl>
+</div>
+</div>
 </section>
 """
 
@@ -838,6 +876,13 @@ th, td {{ border: 1px solid #cbd5e1; padding: 0.4rem 0.55rem; text-align: left; 
 th {{ background: #f1f5f9; }}
 dt {{ font-weight: 700; float: left; clear: left; margin-right: 0.4rem; }}
 dd {{ margin: 0 0 0.35rem 0; }}
+.locate-note {{ margin: 0.25rem 0 0.75rem; color: #475569; }}
+.locate-grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(18rem, 1fr)); gap: 0.75rem; }}
+.locate-panel {{ border: 1px solid #cbd5e1; border-radius: 6px; background: #f8fafc; padding: 0.75rem; }}
+.locate-panel h3 {{ margin: 0 0 0.65rem 0; font-size: 1rem; }}
+.locate-panel dl {{ margin: 0; }}
+.locate-panel dt {{ float: none; clear: none; margin: 0 0 0.15rem 0; color: #475569; font-weight: 700; }}
+.locate-panel dd {{ margin: 0 0 0.6rem 0; }}
 </style>
 </head>
 <body>

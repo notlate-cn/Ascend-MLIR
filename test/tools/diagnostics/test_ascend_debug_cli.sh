@@ -184,8 +184,16 @@ grep -Fq '../graphs/kernel_dag.summary.json.html' "${TMP_DIR}/debug-run-graph/vi
 grep -Fq 'checkpoint/kernel_0' "${TMP_DIR}/debug-run-graph/index.html"
 grep -Fq '<a href="views/kernels/kernel_0.html">kernel_0</a>' "${TMP_DIR}/debug-run-graph/index.html"
 grep -Fq 'max_abs_error' "${TMP_DIR}/debug-run-graph/index.html"
-grep -Fq 'first_bad_comparison=checkpoint/kernel_0' "${TMP_DIR}/debug-run-graph/index.html"
-grep -Fq 'first_bad_depth=1' "${TMP_DIR}/debug-run-graph/index.html"
+grep -Fq '<h3>First Bad Candidate</h3>' "${TMP_DIR}/debug-run-graph/index.html"
+grep -Fq '<dt>Kernel</dt><dd><a href="views/kernels/kernel_0.html">kernel_0</a></dd>' "${TMP_DIR}/debug-run-graph/index.html"
+grep -Fq '<dt>DAG depth</dt><dd>1</dd>' "${TMP_DIR}/debug-run-graph/index.html"
+grep -Fq '<dt>Failed comparison</dt><dd>checkpoint/kernel_0</dd>' "${TMP_DIR}/debug-run-graph/index.html"
+grep -Fq 'Earliest failed checkpoint in DAG order' "${TMP_DIR}/debug-run-graph/index.html"
+grep -Fq '<dt>Direct upstream without checkpoint</dt><dd>none</dd>' "${TMP_DIR}/debug-run-graph/index.html"
+if grep -Fq 'status=fail; first_bad_kernel=' "${TMP_DIR}/debug-run-graph/index.html"; then
+  echo "locate dashboard should not render raw key-value status line" >&2
+  exit 1
+fi
 echo "ascend_debug.open_kernel=ok"
 echo "ascend_debug.open_graph=ok"
 
