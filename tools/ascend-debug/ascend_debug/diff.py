@@ -141,9 +141,10 @@ def _compare_arrays(
     rhs: NpyArray,
     atol: float,
     rtol: float,
+    metadata: dict[str, str],
 ) -> dict[str, Any]:
     if lhs.shape != rhs.shape:
-        return {
+        result = {
             "id": comparison_id,
             "status": "fail",
             "reason": "shape-mismatch",
@@ -156,6 +157,8 @@ def _compare_arrays(
             "atol": atol,
             "rtol": rtol,
         }
+        result.update(metadata)
+        return result
     if len(lhs.values) != len(rhs.values):
         raise CommandError(f"internal tensor size mismatch for {comparison_id}")
 
@@ -165,7 +168,7 @@ def _compare_arrays(
     max_rel = max(rel_errors, default=0.0)
     mean_abs = sum(abs_errors) / len(abs_errors) if abs_errors else 0.0
     passed = all(error <= atol + rtol * abs(expected) for error, expected in zip(abs_errors, lhs.values))
-    return {
+    result = {
         "id": comparison_id,
         "status": "pass" if passed else "fail",
         "lhs": lhs_path,
@@ -180,6 +183,8 @@ def _compare_arrays(
         "max_rel_error": max_rel,
         "mean_abs_error": mean_abs,
     }
+    result.update(metadata)
+    return result
 
 
 def _comparison_entries(manifest: dict[str, Any]) -> list[dict[str, Any]]:
@@ -201,6 +206,14 @@ def _comparison_entries(manifest: dict[str, Any]) -> list[dict[str, Any]]:
             raise CommandError(f"tensor comparison {index} atol must be a non-negative number")
         if not isinstance(rtol, (int, float)) or isinstance(rtol, bool) or rtol < 0:
             raise CommandError(f"tensor comparison {index} rtol must be a non-negative number")
+        metadata = {}
+        for field in ("kernel_id", "task_id", "stage", "semantic_boundary"):
+            if field not in comparison:
+                continue
+            value = comparison[field]
+            if not isinstance(value, str) or not value:
+                raise CommandError(f"tensor comparison {index} {field} must be a non-empty string")
+            metadata[field] = value
         entries.append(
             {
                 "id": comparison_id,
@@ -208,6 +221,7 @@ def _comparison_entries(manifest: dict[str, Any]) -> list[dict[str, Any]]:
                 "rhs": str(rhs),
                 "atol": float(atol),
                 "rtol": float(rtol),
+                "metadata": metadata,
             }
         )
     return entries
@@ -233,6 +247,7 @@ def diff_run(args: argparse.Namespace) -> int:
                 rhs=rhs,
                 atol=comparison["atol"],
                 rtol=comparison["rtol"],
+                metadata=comparison["metadata"],
             )
         )
 

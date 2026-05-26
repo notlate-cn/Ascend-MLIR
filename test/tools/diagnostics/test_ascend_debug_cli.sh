@@ -81,48 +81,6 @@ cat >"${TMP_DIR}/run_manifest.json" <<'JSON'
 }
 JSON
 
-ascend-debug collect "${INPUT_MLIR}" \
-  --out "${TMP_DIR}/debug-run-graph" \
-  --preset deep \
-  --pipeline normalize-kernelize \
-  --artifact-manifest "${TMP_DIR}/artifact_manifest.json" \
-  --run-manifest "${TMP_DIR}/run_manifest.json" \
-  --dag-viz "${SCRIPT_DIR}/ascend_kernel_dag_viz.py"
-test -f "${TMP_DIR}/debug-run-graph/graphs/artifact_manifest.json"
-test -f "${TMP_DIR}/debug-run-graph/graphs/run_manifest.json"
-test -f "${TMP_DIR}/debug-run-graph/graphs/kernelized.mlir"
-test -f "${TMP_DIR}/debug-run-graph/graphs/kernel_dag.svg"
-test -f "${TMP_DIR}/debug-run-graph/graphs/kernel_dag.summary.json"
-test -f "${TMP_DIR}/debug-run-graph/reports/050-kernel-dag-viz.report.txt"
-grep -Fq 'ascend_kernel_dag_viz.kernel_count=1' "${TMP_DIR}/debug-run-graph/reports/050-kernel-dag-viz.report.txt"
-echo "ascend_debug.collect_graph=ok"
-
-mkdir -p "${TMP_DIR}/debug-run-graph/summaries"
-printf '{"status":"pass"}\n' >"${TMP_DIR}/debug-run-graph/summaries/tensor_diff.json"
-ascend-debug open "${TMP_DIR}/debug-run-graph" --no-browser >"${TMP_DIR}/ascend-debug-open-graph.txt"
-grep -Fq '<h2>Graphs</h2>' "${TMP_DIR}/debug-run-graph/index.html"
-grep -Fq '<h2>Kernels</h2>' "${TMP_DIR}/debug-run-graph/index.html"
-grep -Fq '<h2>Summaries</h2>' "${TMP_DIR}/debug-run-graph/index.html"
-grep -Fq '<a href="graphs/kernel_dag.svg">graphs/kernel_dag.svg</a>' "${TMP_DIR}/debug-run-graph/index.html"
-grep -Fq '<a href="graphs/kernel_dag.summary.json">graphs/kernel_dag.summary.json</a>' "${TMP_DIR}/debug-run-graph/index.html"
-grep -Fq '<a href="summaries/tensor_diff.json">summaries/tensor_diff.json</a>' "${TMP_DIR}/debug-run-graph/index.html"
-grep -Fq '<a href="views/stages/029-kernelize-out.mlir.html">View</a>' "${TMP_DIR}/debug-run-graph/index.html"
-grep -Fq '<a href="views/kernels/kernel_0.html">kernel_0</a>' "${TMP_DIR}/debug-run-graph/index.html"
-grep -Fq '../views/kernels/kernel_0.html' "${TMP_DIR}/debug-run-graph/graphs/kernel_dag.svg"
-test -f "${TMP_DIR}/debug-run-graph/views/stages/029-kernelize-out.mlir.html"
-test -f "${TMP_DIR}/debug-run-graph/views/graphs/kernelized.mlir.html"
-test -f "${TMP_DIR}/debug-run-graph/views/kernels/kernel_0.html"
-grep -Fq '<input id="search"' "${TMP_DIR}/debug-run-graph/views/stages/029-kernelize-out.mlir.html"
-grep -Fq '<span class="line-number">1</span>' "${TMP_DIR}/debug-run-graph/views/stages/029-kernelize-out.mlir.html"
-grep -Fq 'ascend.kernel' "${TMP_DIR}/debug-run-graph/views/stages/029-kernelize-out.mlir.html"
-grep -Fq '<h1>kernel_0</h1>' "${TMP_DIR}/debug-run-graph/views/kernels/kernel_0.html"
-grep -Fq 'selected_tile_shape' "${TMP_DIR}/debug-run-graph/views/kernels/kernel_0.html"
-grep -Fq 'workspace_size' "${TMP_DIR}/debug-run-graph/views/kernels/kernel_0.html"
-grep -Fq 'MLIR Ops' "${TMP_DIR}/debug-run-graph/views/kernels/kernel_0.html"
-grep -Fq '../graphs/kernelized.mlir.html#L' "${TMP_DIR}/debug-run-graph/views/kernels/kernel_0.html"
-echo "ascend_debug.open_kernel=ok"
-echo "ascend_debug.open_graph=ok"
-
 make_npy_pair() {
   local case_dir="$1"
   local rhs_last="$2"
@@ -146,6 +104,72 @@ write_npy(sys.argv[1], [1.0, 2.0, 3.0])
 write_npy(sys.argv[2], [1.0, 2.001, float(sys.argv[3])])
 PY
 }
+
+ascend-debug collect "${INPUT_MLIR}" \
+  --out "${TMP_DIR}/debug-run-graph" \
+  --preset deep \
+  --pipeline normalize-kernelize \
+  --artifact-manifest "${TMP_DIR}/artifact_manifest.json" \
+  --run-manifest "${TMP_DIR}/run_manifest.json" \
+  --dag-viz "${SCRIPT_DIR}/ascend_kernel_dag_viz.py"
+test -f "${TMP_DIR}/debug-run-graph/graphs/artifact_manifest.json"
+test -f "${TMP_DIR}/debug-run-graph/graphs/run_manifest.json"
+test -f "${TMP_DIR}/debug-run-graph/graphs/kernelized.mlir"
+test -f "${TMP_DIR}/debug-run-graph/graphs/kernel_dag.svg"
+test -f "${TMP_DIR}/debug-run-graph/graphs/kernel_dag.summary.json"
+test -f "${TMP_DIR}/debug-run-graph/reports/050-kernel-dag-viz.report.txt"
+grep -Fq 'ascend_kernel_dag_viz.kernel_count=1' "${TMP_DIR}/debug-run-graph/reports/050-kernel-dag-viz.report.txt"
+echo "ascend_debug.collect_graph=ok"
+
+cat >"${TMP_DIR}/debug-run-graph/tensors/manifest.json" <<'JSON'
+{
+  "schema_version": 1,
+  "comparisons": [
+    {
+      "id": "checkpoint/kernel_0",
+      "kernel_id": "kernel_0",
+      "task_id": "kernel_0",
+      "lhs": "tensors/cpu/output0.npy",
+      "rhs": "tensors/npu/output0.npy",
+      "atol": 0.01,
+      "rtol": 0.01
+    }
+  ]
+}
+JSON
+make_npy_pair "${TMP_DIR}/debug-run-graph" "3.2"
+if ascend-debug diff "${TMP_DIR}/debug-run-graph" >"${TMP_DIR}/ascend-debug-diff-graph.txt" 2>"${TMP_DIR}/ascend-debug-diff-graph.err"; then
+  echo "expected ascend-debug diff to fail for graph checkpoint" >&2
+  exit 1
+fi
+grep -Fq 'ascend_debug.diff.failed=1' "${TMP_DIR}/ascend-debug-diff-graph.txt"
+ascend-debug open "${TMP_DIR}/debug-run-graph" --no-browser >"${TMP_DIR}/ascend-debug-open-graph.txt"
+grep -Fq '<h2>Graphs</h2>' "${TMP_DIR}/debug-run-graph/index.html"
+grep -Fq '<h2>Kernels</h2>' "${TMP_DIR}/debug-run-graph/index.html"
+grep -Fq '<h2>Tensor Diff</h2>' "${TMP_DIR}/debug-run-graph/index.html"
+grep -Fq '<h2>Summaries</h2>' "${TMP_DIR}/debug-run-graph/index.html"
+grep -Fq '<a href="graphs/kernel_dag.svg">graphs/kernel_dag.svg</a>' "${TMP_DIR}/debug-run-graph/index.html"
+grep -Fq '<a href="graphs/kernel_dag.summary.json">graphs/kernel_dag.summary.json</a>' "${TMP_DIR}/debug-run-graph/index.html"
+grep -Fq '<a href="summaries/tensor_diff.json">summaries/tensor_diff.json</a>' "${TMP_DIR}/debug-run-graph/index.html"
+grep -Fq '<a href="views/stages/029-kernelize-out.mlir.html">View</a>' "${TMP_DIR}/debug-run-graph/index.html"
+grep -Fq '<a href="views/kernels/kernel_0.html">kernel_0</a>' "${TMP_DIR}/debug-run-graph/index.html"
+grep -Fq '../views/kernels/kernel_0.html' "${TMP_DIR}/debug-run-graph/graphs/kernel_dag.svg"
+test -f "${TMP_DIR}/debug-run-graph/views/stages/029-kernelize-out.mlir.html"
+test -f "${TMP_DIR}/debug-run-graph/views/graphs/kernelized.mlir.html"
+test -f "${TMP_DIR}/debug-run-graph/views/kernels/kernel_0.html"
+grep -Fq '<input id="search"' "${TMP_DIR}/debug-run-graph/views/stages/029-kernelize-out.mlir.html"
+grep -Fq '<span class="line-number">1</span>' "${TMP_DIR}/debug-run-graph/views/stages/029-kernelize-out.mlir.html"
+grep -Fq 'ascend.kernel' "${TMP_DIR}/debug-run-graph/views/stages/029-kernelize-out.mlir.html"
+grep -Fq '<h1>kernel_0</h1>' "${TMP_DIR}/debug-run-graph/views/kernels/kernel_0.html"
+grep -Fq 'selected_tile_shape' "${TMP_DIR}/debug-run-graph/views/kernels/kernel_0.html"
+grep -Fq 'workspace_size' "${TMP_DIR}/debug-run-graph/views/kernels/kernel_0.html"
+grep -Fq 'MLIR Ops' "${TMP_DIR}/debug-run-graph/views/kernels/kernel_0.html"
+grep -Fq '../graphs/kernelized.mlir.html#L' "${TMP_DIR}/debug-run-graph/views/kernels/kernel_0.html"
+grep -Fq 'checkpoint/kernel_0' "${TMP_DIR}/debug-run-graph/index.html"
+grep -Fq '<a href="views/kernels/kernel_0.html">kernel_0</a>' "${TMP_DIR}/debug-run-graph/index.html"
+grep -Fq 'max_abs_error' "${TMP_DIR}/debug-run-graph/index.html"
+echo "ascend_debug.open_kernel=ok"
+echo "ascend_debug.open_graph=ok"
 
 cat >"${TMP_DIR}/tensor-manifest-pass.json" <<'JSON'
 {
