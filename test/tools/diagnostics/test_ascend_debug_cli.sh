@@ -2,6 +2,7 @@
 set -euo pipefail
 
 INPUT_MLIR="$1"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 TMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/ascend-debug-cli.XXXXXX")"
 trap 'rm -rf "${TMP_DIR}"' EXIT
 
@@ -44,6 +45,63 @@ test -f "${TMP_DIR}/debug-run-deep/reports/020-kernelize.report.txt"
 test -f "${TMP_DIR}/debug-run-deep/reports/030-schedule.report.txt"
 test -f "${TMP_DIR}/debug-run-deep/reports/040-realize.report.txt"
 echo "ascend_debug.collect_deep=ok"
+
+cat >"${TMP_DIR}/runtime_manifest.json" <<'JSON'
+{
+  "kernel_entries": [
+    {
+      "kernel_id": "kernel_0",
+      "kernelKind": "vec",
+      "scheduleEntries": [
+        {"tilingParams": {"selected_tile_shape": [4, 8]}}
+      ],
+      "workspaceSizeBytes": 0
+    }
+  ],
+  "kernelGraph": {
+    "nodes": [
+      {"name": "kernel_0"}
+    ],
+    "edges": []
+  }
+}
+JSON
+
+cat >"${TMP_DIR}/run_manifest.json" <<'JSON'
+{
+  "backend": "sim",
+  "tasks": [
+    {
+      "task_id": "kernel_0",
+      "inputs": [{"name": "input", "path": "input.npy"}],
+      "outputs": [{"name": "out0", "shape": [4, 8], "dtype": "f16"}],
+      "workspace_size": 0
+    }
+  ]
+}
+JSON
+
+ascend-debug collect "${INPUT_MLIR}" \
+  --out "${TMP_DIR}/debug-run-graph" \
+  --preset deep \
+  --pipeline normalize-kernelize \
+  --runtime-manifest "${TMP_DIR}/runtime_manifest.json" \
+  --run-manifest "${TMP_DIR}/run_manifest.json" \
+  --dag-viz "${SCRIPT_DIR}/ascend_kernel_dag_viz.py"
+test -f "${TMP_DIR}/debug-run-graph/graphs/runtime_manifest.json"
+test -f "${TMP_DIR}/debug-run-graph/graphs/run_manifest.json"
+test -f "${TMP_DIR}/debug-run-graph/graphs/kernelized.mlir"
+test -f "${TMP_DIR}/debug-run-graph/graphs/kernel_dag.svg"
+test -f "${TMP_DIR}/debug-run-graph/graphs/kernel_dag.summary.json"
+test -f "${TMP_DIR}/debug-run-graph/reports/050-kernel-dag-viz.report.txt"
+grep -Fq 'ascend_kernel_dag_viz.kernel_count=1' "${TMP_DIR}/debug-run-graph/reports/050-kernel-dag-viz.report.txt"
+echo "ascend_debug.collect_graph=ok"
+
+ascend-debug open "${TMP_DIR}/debug-run-graph" --no-browser >"${TMP_DIR}/ascend-debug-open-graph.txt"
+grep -Fq '<h2>Graphs</h2>' "${TMP_DIR}/debug-run-graph/index.html"
+grep -Fq 'graphs/kernel_dag.svg' "${TMP_DIR}/debug-run-graph/index.html"
+grep -Fq 'graphs/kernel_dag.summary.json' "${TMP_DIR}/debug-run-graph/index.html"
+echo "ascend_debug.open_graph=ok"
 
 ascend-debug open "${TMP_DIR}/debug-run-deep" --no-browser >"${TMP_DIR}/ascend-debug-open-deep.txt"
 test -f "${TMP_DIR}/debug-run-deep/index.html"
@@ -221,6 +279,42 @@ check([report["path"] for report in reports] == [
     "reports/030-schedule.report.txt",
     "reports/040-realize.report.txt",
 ], "deep report paths mismatch")
+PY
+
+python3 - "${TMP_DIR}/debug-run-graph/manifest.json" <<'PY'
+import json
+import pathlib
+import sys
+
+def check(condition, message):
+    if not condition:
+        raise SystemExit(message)
+
+manifest = json.loads(pathlib.Path(sys.argv[1]).read_text())
+commands = manifest.get("commands", [])
+reports = manifest.get("reports", [])
+graphs = manifest.get("graphs", [])
+print(f"ascend_debug.graph.command_count={len(commands)}")
+print(f"ascend_debug.graph.artifact_count={len(graphs)}")
+check(len(commands) == 5, "graph manifest must record five commands")
+check(commands[-1]["stage"] == "kernel-dag-viz", "graph command stage mismatch")
+check(commands[-1]["tool"] == "ascend_kernel_dag_viz.py", "graph command tool mismatch")
+check(len(reports) == 5, "graph manifest must record five reports")
+check(reports[-1]["path"] == "reports/050-kernel-dag-viz.report.txt", "graph report path mismatch")
+check([graph["path"] for graph in graphs] == [
+    "graphs/runtime_manifest.json",
+    "graphs/run_manifest.json",
+    "graphs/kernelized.mlir",
+    "graphs/kernel_dag.svg",
+    "graphs/kernel_dag.summary.json",
+], "graph artifact paths mismatch")
+check([graph["kind"] for graph in graphs] == [
+    "runtime-manifest",
+    "run-manifest",
+    "kernelized-ir",
+    "kernel-dag-svg",
+    "kernel-dag-summary",
+], "graph artifact kinds mismatch")
 PY
 
 echo "ALL ASCEND DEBUG CLI TESTS PASSED"

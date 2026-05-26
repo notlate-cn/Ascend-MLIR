@@ -65,6 +65,7 @@ def write_manifest(
     version: str,
     commands: list[dict[str, Any]] | None = None,
     reports: list[dict[str, Any]] | None = None,
+    graphs: list[dict[str, Any]] | None = None,
 ) -> None:
     write_json(
         run_dir / "manifest.json",
@@ -84,6 +85,7 @@ def write_manifest(
             ],
             "commands": commands or [],
             "reports": reports or [],
+            "graphs": graphs or [],
         },
     )
 

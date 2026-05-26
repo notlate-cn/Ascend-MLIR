@@ -24,6 +24,10 @@ def build_parser() -> argparse.ArgumentParser:
     collect.add_argument("--out", type=pathlib.Path, required=True)
     collect.add_argument("--preset", choices=["quick", "deep"], default="quick")
     collect.add_argument("--pipeline", choices=["normalize-kernelize"], default="normalize-kernelize")
+    collect.add_argument("--runtime-manifest", type=pathlib.Path)
+    collect.add_argument("--run-manifest", type=pathlib.Path)
+    collect.add_argument("--kernelized-ir", type=pathlib.Path)
+    collect.add_argument("--dag-viz", type=pathlib.Path)
     collect.set_defaults(handler=collect_run)
 
     open_cmd = subparsers.add_parser("open", help="Generate or open the debug dashboard")
