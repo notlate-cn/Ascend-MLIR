@@ -212,32 +212,42 @@ def _report_rows(run_dir: pathlib.Path, manifest: dict[str, Any]) -> str:
     return "\n".join(rows)
 
 
-def _graph_rows(run_dir: pathlib.Path, manifest: dict[str, Any]) -> str:
+def _graph_rows(
+    run_dir: pathlib.Path,
+    manifest: dict[str, Any],
+    artifact_views: dict[str, str],
+) -> str:
     rows = []
     for graph in manifest.get("graphs", []):
         rel_path = graph["path"]
         exists = (run_dir / rel_path).exists()
         status = "present" if exists else "missing"
+        view_rel_path = artifact_views.get(rel_path)
+        view_cell = _link(view_rel_path, "View") if view_rel_path else ""
         rows.append(
             "<tr>"
             f"<td>{_cell(graph.get('kind'))}</td>"
             f"<td>{_path_link(rel_path, exists=exists)}</td>"
+            f"<td>{view_cell}</td>"
             f"<td>{_cell(status)}</td>"
             "</tr>"
         )
     return "\n".join(rows)
 
 
-def _summary_rows(run_dir: pathlib.Path) -> str:
+def _summary_rows(run_dir: pathlib.Path, json_views: dict[str, str]) -> str:
     summary_dir = run_dir / "summaries"
     if not summary_dir.exists():
         return ""
     rows = []
     for path in sorted(item for item in summary_dir.rglob("*") if item.is_file()):
         rel_path = path.relative_to(run_dir).as_posix()
+        view_rel_path = json_views.get(rel_path)
+        view_cell = _link(view_rel_path, "View") if view_rel_path else ""
         rows.append(
             "<tr>"
             f"<td>{_path_link(rel_path)}</td>"
+            f"<td>{view_cell}</td>"
             f"<td>{_cell(path.stat().st_size)}</td>"
             "</tr>"
         )
@@ -377,6 +387,93 @@ input.addEventListener("input", () => {{
     return view_rel_path
 
 
+def _render_json_view(run_dir: pathlib.Path, rel_path: str) -> str | None:
+    source_path = run_dir / rel_path
+    if not source_path.exists():
+        return None
+    view_rel_path = _stage_view_rel_path(rel_path)
+    view_path = run_dir / view_rel_path
+    raw_href = html.escape(_relative_href(view_rel_path, rel_path), quote=True)
+    dashboard_href = html.escape(_relative_href(view_rel_path, "index.html"), quote=True)
+    try:
+        source_text = source_path.read_text(encoding="utf-8")
+        parsed = json.loads(source_text)
+        source_text = json.dumps(parsed, indent=2, ensure_ascii=False)
+    except json.JSONDecodeError as error:
+        raise CommandError(f"JSON view source is not valid JSON: {source_path}: {error}") from error
+    except (OSError, UnicodeDecodeError) as error:
+        raise CommandError(f"could not read JSON view source: {source_path}: {error}") from error
+
+    lines = source_text.splitlines() or [""]
+    line_rows = []
+    for line_number, line in enumerate(lines, start=1):
+        escaped_line = html.escape(line)
+        line_rows.append(
+            '<tr class="line-row">'
+            f'<td class="gutter"><a href="#L{line_number}" id="L{line_number}">'
+            f'<span class="line-number">{line_number}</span></a></td>'
+            f'<td class="code"><pre>{escaped_line}</pre></td>'
+            "</tr>"
+        )
+
+    document = f"""<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>{_cell(pathlib.PurePosixPath(rel_path).name)} - ascend-debug</title>
+<style>
+body {{ font-family: sans-serif; margin: 0; color: #17202a; background: #f8fafc; }}
+header {{ position: sticky; top: 0; z-index: 1; padding: 0.75rem 1rem; background: #ffffff; border-bottom: 1px solid #cbd5e1; }}
+h1 {{ font-size: 1rem; margin: 0 0 0.5rem 0; }}
+.toolbar {{ display: flex; gap: 0.75rem; align-items: center; flex-wrap: wrap; }}
+input {{ min-width: 18rem; padding: 0.35rem 0.5rem; border: 1px solid #94a3b8; border-radius: 4px; color: #17202a; background: #ffffff; }}
+main {{ padding: 0.75rem 1rem 2rem; }}
+table {{ border-collapse: collapse; width: 100%; background: #0f172a; color: #e2e8f0; }}
+td {{ vertical-align: top; border-bottom: 1px solid #1e293b; }}
+.gutter {{ width: 4.5rem; text-align: right; padding: 0 0.65rem; background: #111827; user-select: none; }}
+.gutter a {{ color: #94a3b8; text-decoration: none; }}
+.code {{ padding-left: 0.75rem; }}
+pre {{ margin: 0; padding: 0.12rem 0; white-space: pre-wrap; overflow-wrap: anywhere; font: 12px/1.5 SFMono-Regular, Menlo, Consolas, monospace; color: #e2e8f0; }}
+.hidden {{ display: none; }}
+.match pre {{ background: #334155; color: #ffffff; }}
+</style>
+</head>
+<body>
+<header>
+<h1>{_cell(rel_path)}</h1>
+<div class="toolbar">
+<input id="search" type="search" placeholder="Search JSON">
+<a href="{raw_href}">Raw JSON</a>
+<a href="{dashboard_href}">Dashboard</a>
+</div>
+</header>
+<main>
+<table>
+<tbody>
+{''.join(line_rows)}
+</tbody>
+</table>
+</main>
+<script>
+const input = document.getElementById("search");
+const rows = Array.from(document.querySelectorAll(".line-row"));
+input.addEventListener("input", () => {{
+  const needle = input.value.toLowerCase();
+  for (const row of rows) {{
+    const text = row.innerText.toLowerCase();
+    const matched = !needle || text.includes(needle);
+    row.classList.toggle("hidden", !matched);
+    row.classList.toggle("match", Boolean(needle && matched));
+  }}
+}});
+</script>
+</body>
+</html>
+"""
+    layout.write_text(view_path, document)
+    return view_rel_path
+
+
 def _render_stage_views(run_dir: pathlib.Path, manifest: dict[str, Any]) -> dict[str, str]:
     stage_views = {}
     for stage in sorted(manifest["stages"], key=lambda item: item["order"]):
@@ -396,6 +493,27 @@ def _render_graph_mlir_views(run_dir: pathlib.Path, manifest: dict[str, Any]) ->
             if view_rel_path:
                 graph_views[rel_path] = view_rel_path
     return graph_views
+
+
+def _render_json_views(run_dir: pathlib.Path, manifest: dict[str, Any]) -> dict[str, str]:
+    json_paths = set()
+    for graph in manifest.get("graphs", []):
+        rel_path = graph.get("path")
+        if isinstance(rel_path, str) and rel_path.endswith(".json"):
+            json_paths.add(rel_path)
+
+    summary_dir = run_dir / "summaries"
+    if summary_dir.exists():
+        for path in summary_dir.rglob("*.json"):
+            if path.is_file():
+                json_paths.add(path.relative_to(run_dir).as_posix())
+
+    json_views = {}
+    for rel_path in sorted(json_paths):
+        view_rel_path = _render_json_view(run_dir, rel_path)
+        if view_rel_path:
+            json_views[rel_path] = view_rel_path
+    return json_views
 
 
 def _load_kernel_summary(run_dir: pathlib.Path) -> dict[str, Any] | None:
@@ -458,6 +576,7 @@ def _render_kernel_views(
     run_dir: pathlib.Path,
     summary: dict[str, Any] | None,
     graph_views: dict[str, str],
+    json_views: dict[str, str],
 ) -> dict[str, str]:
     if not summary:
         return {}
@@ -471,10 +590,8 @@ def _render_kernel_views(
         view_rel_path = f"views/kernels/{kernel_id}.html"
         dashboard_href = html.escape(_relative_href(view_rel_path, "index.html"), quote=True)
         dag_href = html.escape(_relative_href(view_rel_path, "graphs/kernel_dag.svg"), quote=True)
-        summary_href = html.escape(
-            _relative_href(view_rel_path, "graphs/kernel_dag.summary.json"),
-            quote=True,
-        )
+        summary_rel_path = json_views.get("graphs/kernel_dag.summary.json", "graphs/kernel_dag.summary.json")
+        summary_href = html.escape(_relative_href(view_rel_path, summary_rel_path), quote=True)
         fact_rows = []
         for label, value in (
             ("kind", node.get("kind")),
@@ -580,8 +697,9 @@ def render_index(run_dir: pathlib.Path, manifest: dict[str, Any]) -> pathlib.Pat
     index_path = run_dir / "index.html"
     stage_views = _render_stage_views(run_dir, manifest)
     graph_views = _render_graph_mlir_views(run_dir, manifest)
+    json_views = _render_json_views(run_dir, manifest)
     kernel_summary = _load_kernel_summary(run_dir)
-    kernel_views = _render_kernel_views(run_dir, kernel_summary, graph_views)
+    kernel_views = _render_kernel_views(run_dir, kernel_summary, graph_views, json_views)
     tensor_diff = _load_tensor_diff(run_dir)
     command_section = ""
     if manifest.get("commands"):
@@ -615,9 +733,9 @@ def render_index(run_dir: pathlib.Path, manifest: dict[str, Any]) -> pathlib.Pat
 <section>
 <h2>Graphs</h2>
 <table>
-<thead><tr><th>Kind</th><th>Path</th><th>Status</th></tr></thead>
+<thead><tr><th>Kind</th><th>Path</th><th>View</th><th>Status</th></tr></thead>
 <tbody>
-{_graph_rows(run_dir, manifest)}
+{_graph_rows(run_dir, manifest, {**graph_views, **json_views})}
 </tbody>
 </table>
 </section>
@@ -651,14 +769,14 @@ def render_index(run_dir: pathlib.Path, manifest: dict[str, Any]) -> pathlib.Pat
 </table>
 </section>
 """
-    summary_rows = _summary_rows(run_dir)
+    summary_rows = _summary_rows(run_dir, json_views)
     summary_section = ""
     if summary_rows:
         summary_section = f"""
 <section>
 <h2>Summaries</h2>
 <table>
-<thead><tr><th>Path</th><th>Bytes</th></tr></thead>
+<thead><tr><th>Path</th><th>View</th><th>Bytes</th></tr></thead>
 <tbody>
 {summary_rows}
 </tbody>
