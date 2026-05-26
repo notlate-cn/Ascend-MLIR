@@ -734,224 +734,162 @@ static bool isRankedTensor(Value v, int64_t rank) {
   return t && t.getRank() == rank;
 }
 
-// True iff `gen` (a 2-parallel-iter op) has the canonical bias-add operand
-// layout for a 2-D matmul epilogue:
-//   in0 (matmul result): (d0,d1) -> (d0,d1)   [identity]
-//   in1 (bias vector):   (d0,d1) -> (d1)      [per-column / per-N broadcast]
-//   init (output):       (d0,d1) -> (d0,d1)   [identity]
-// Without this check a per-ROW bias `(d0,d1)->(d0)` would be misclassified as
-// a per-column bias-add and folded into mm.SetBias() (which broadcasts along
-// N) — producing silently wrong numerics that still pass shape validation.
-static bool hasCanonicalColumnBiasMaps(linalg::GenericOp gen) {
+// Indexing-map predicates used by the structural bias/identity checks below.
+static AffineMap identityMap2D(MLIRContext *ctx) {
+  return AffineMap::get(2, 0,
+                        {getAffineDimExpr(0, ctx), getAffineDimExpr(1, ctx)},
+                        ctx);
+}
+
+// Per-column / per-N broadcast: (d0,d1) -> (d1).  Rejects per-ROW (d0)
+// which would mis-fold into mm.SetBias() (broadcasts along N).
+static AffineMap colBiasMap2D(MLIRContext *ctx) {
+  return AffineMap::get(2, 0, {getAffineDimExpr(1, ctx)}, ctx);
+}
+
+// True iff `gen` has the canonical bias-add operand layout for a 2-D matmul
+// epilogue: rank-2 identity input + rank-1 column-broadcast input + rank-2
+// identity init.
+static bool hasCanonicalColumnBiasShape(linalg::GenericOp gen) {
+  if (gen.getNumDpsInputs() != 2 || gen.getNumDpsInits() != 1 ||
+      !isParallelGenericTensor(gen))
+    return false;
+  if (!isRankedTensor(gen.getDpsInputOperand(0)->get(), 2) ||
+      !isRankedTensor(gen.getDpsInputOperand(1)->get(), 1) ||
+      !isRankedTensor(gen.getDpsInitOperand(0)->get(), 2))
+    return false;
   auto maps = gen.getIndexingMapsArray();
   if (maps.size() != 3)
     return false;
   MLIRContext *ctx = gen.getContext();
-  auto d0 = getAffineDimExpr(0, ctx);
-  auto d1 = getAffineDimExpr(1, ctx);
-  auto identity = AffineMap::get(2, 0, {d0, d1}, ctx);
-  auto colBias = AffineMap::get(2, 0, {d1}, ctx);
-  return maps[0] == identity && maps[1] == colBias && maps[2] == identity;
+  return maps[0] == identityMap2D(ctx) && maps[1] == colBiasMap2D(ctx) &&
+         maps[2] == identityMap2D(ctx);
 }
 
-static bool isBiasAddGenericTensor(linalg::GenericOp gen) {
-  if (gen.getNumDpsInputs() != 2 || gen.getNumDpsInits() != 1 ||
+// True iff `gen` is a plain rank-2 pointwise op (1 input, 1 init, identity
+// maps), guarding against e.g. transpose-as-relu misclassification.
+static bool hasRank2IdentityPointwiseShape(linalg::GenericOp gen) {
+  if (gen.getNumDpsInputs() != 1 || gen.getNumDpsInits() != 1 ||
       !isParallelGenericTensor(gen))
     return false;
   if (!isRankedTensor(gen.getDpsInputOperand(0)->get(), 2) ||
-      !isRankedTensor(gen.getDpsInputOperand(1)->get(), 1) ||
       !isRankedTensor(gen.getDpsInitOperand(0)->get(), 2))
     return false;
-  if (!hasCanonicalColumnBiasMaps(gen))
-    return false;
-  Block &body = gen.getRegion().front();
-  if (body.getNumArguments() != 3)
-    return false;
-  arith::AddFOp addOp;
-  linalg::YieldOp yieldOp;
-  for (Operation &op : body.getOperations()) {
-    if (auto add = dyn_cast<arith::AddFOp>(op)) {
-      if (addOp) return false;
-      addOp = add;
-    } else if (auto y = dyn_cast<linalg::YieldOp>(op)) {
-      yieldOp = y;
-    } else {
-      return false;
-    }
-  }
-  return addOp && yieldOp && yieldOp.getNumOperands() == 1 &&
-         yieldOp.getOperand(0) == addOp.getResult();
-}
-
-// True iff a 1-input/1-init parallel generic maps both operands by the 2-D
-// identity `(d0,d1)->(d0,d1)` — i.e. a plain pointwise op, not a transpose
-// or broadcast.  Guards the relu/leakyrelu recognizers against misclassifying
-// e.g. a transpose-relu as a fusible relu epilogue.
-static bool hasIdentityPointwiseMaps(linalg::GenericOp gen) {
   auto maps = gen.getIndexingMapsArray();
   if (maps.size() != 2)
     return false;
   MLIRContext *ctx = gen.getContext();
-  auto identity = AffineMap::get(
-      2, 0, {getAffineDimExpr(0, ctx), getAffineDimExpr(1, ctx)}, ctx);
-  return maps[0] == identity && maps[1] == identity;
+  return maps[0] == identityMap2D(ctx) && maps[1] == identityMap2D(ctx);
 }
 
-static bool isReluGenericTensor(linalg::GenericOp gen) {
-  if (gen.getNumDpsInputs() != 1 || gen.getNumDpsInits() != 1 ||
-      !isParallelGenericTensor(gen))
-    return false;
-  if (!isRankedTensor(gen.getDpsInputOperand(0)->get(), 2) ||
-      !isRankedTensor(gen.getDpsInitOperand(0)->get(), 2))
-    return false;
-  if (!hasIdentityPointwiseMaps(gen))
-    return false;
+// Collect the set of arithmetic op kinds in `gen.body` (excluding
+// linalg.yield and arith.constant), and require the yield operand to be the
+// result of `expectedYield` (a TypeID describing which op produces the
+// yielded value).  Returns true if the body is a "clean" expression of
+// arithmetic ops with no other operations, mulOps/maxOps duplicated allowed
+// (yield must come from expectedYield).
+struct GenericBodyShape {
+  llvm::SmallDenseSet<TypeID, 4> opKinds;
+  TypeID yieldSource;
+  bool wellFormed = false;
+};
+
+static GenericBodyShape analyzeGenericBody(linalg::GenericOp gen) {
+  GenericBodyShape shape;
   Block &body = gen.getRegion().front();
-  if (body.getNumArguments() != 2)
-    return false;
-  arith::MaximumFOp maxOp;
   linalg::YieldOp yieldOp;
   for (Operation &op : body.getOperations()) {
-    if (auto m = dyn_cast<arith::MaximumFOp>(op)) {
-      if (maxOp) return false;
-      maxOp = m;
-    } else if (isa<arith::ConstantOp>(op)) {
-      // Zero const may live inline or be hoisted to function scope.
-    } else if (auto y = dyn_cast<linalg::YieldOp>(op)) {
+    if (auto y = dyn_cast<linalg::YieldOp>(op)) {
       yieldOp = y;
-    } else {
-      return false;
+      continue;
     }
+    if (isa<arith::ConstantOp>(op))
+      continue;
+    // Only single-result arithmetic ops are accepted; anything else
+    // (memory ops, control flow, multi-result) bails out.
+    if (op.getNumResults() != 1)
+      return shape;
+    if (!op.getDialect() ||
+        op.getDialect()->getNamespace() != "arith")
+      return shape;
+    shape.opKinds.insert(op.getName().getTypeID());
   }
-  // Relu shape: max(arg0, 0.0); yield max.
-  return maxOp && yieldOp &&
-         yieldOp.getNumOperands() == 1 &&
-         yieldOp.getOperand(0) == maxOp.getResult();
+  if (!yieldOp || yieldOp.getNumOperands() != 1)
+    return shape;
+  Operation *def = yieldOp.getOperand(0).getDefiningOp();
+  if (!def)
+    return shape;
+  shape.yieldSource = def->getName().getTypeID();
+  shape.wellFormed = true;
+  return shape;
 }
 
-static bool isLeakyReluGenericTensor(linalg::GenericOp gen) {
-  if (gen.getNumDpsInputs() != 1 || gen.getNumDpsInits() != 1 ||
-      !isParallelGenericTensor(gen))
+// Return true iff the body contains exactly the op kinds in `expected`
+// (and yields from `expectedYield`).
+static bool bodyHas(const GenericBodyShape &s, TypeID expectedYield,
+                    llvm::ArrayRef<TypeID> expected) {
+  if (!s.wellFormed || s.yieldSource != expectedYield)
     return false;
-  if (!isRankedTensor(gen.getDpsInputOperand(0)->get(), 2) ||
-      !isRankedTensor(gen.getDpsInitOperand(0)->get(), 2))
+  if (s.opKinds.size() != expected.size())
     return false;
-  if (!hasIdentityPointwiseMaps(gen))
-    return false;
-  Block &body = gen.getRegion().front();
-  if (body.getNumArguments() != 2)
-    return false;
-  arith::MulFOp mulOp;
-  arith::MaximumFOp maxOp;
-  linalg::YieldOp yieldOp;
-  for (Operation &op : body.getOperations()) {
-    if (auto m = dyn_cast<arith::MulFOp>(op)) {
-      if (mulOp) return false;
-      mulOp = m;
-    } else if (auto m = dyn_cast<arith::MaximumFOp>(op)) {
-      if (maxOp) return false;
-      maxOp = m;
-    } else if (isa<arith::ConstantOp>(op)) {
-      // allowed
-    } else if (auto y = dyn_cast<linalg::YieldOp>(op)) {
-      yieldOp = y;
-    } else {
+  for (TypeID t : expected)
+    if (!s.opKinds.count(t))
       return false;
-    }
-  }
-  return mulOp && maxOp && yieldOp && yieldOp.getNumOperands() == 1 &&
-         yieldOp.getOperand(0) == maxOp.getResult();
+  return true;
 }
 
-// Fused (bias-add + relu) form: a single trailing generic that consumes the
-// matmul result + a rank-1 bias, body has both addf and maximumf, yielding
-// the maximumf result.  This is what `--linalg-fuse-elementwise-ops`
-// produces when bias-add and relu were two separate generics in the source.
-static bool isFusedBiasAddReluGenericTensor(linalg::GenericOp gen) {
-  if (gen.getNumDpsInputs() != 2 || gen.getNumDpsInits() != 1 ||
-      !isParallelGenericTensor(gen))
-    return false;
-  if (!isRankedTensor(gen.getDpsInputOperand(0)->get(), 2) ||
-      !isRankedTensor(gen.getDpsInputOperand(1)->get(), 1) ||
-      !isRankedTensor(gen.getDpsInitOperand(0)->get(), 2))
-    return false;
-  if (!hasCanonicalColumnBiasMaps(gen))
-    return false;
-  Block &body = gen.getRegion().front();
-  if (body.getNumArguments() != 3)
-    return false;
-  arith::AddFOp addOp;
-  arith::MaximumFOp maxOp;
-  linalg::YieldOp yieldOp;
-  for (Operation &op : body.getOperations()) {
-    if (auto a = dyn_cast<arith::AddFOp>(op)) {
-      if (addOp) return false;
-      addOp = a;
-    } else if (auto m = dyn_cast<arith::MaximumFOp>(op)) {
-      if (maxOp) return false;
-      maxOp = m;
-    } else if (isa<arith::ConstantOp>(op)) {
-      // Allowed inline zero const; canonicalize may also hoist it to
-      // function scope where it appears as a captured operand of maxOp,
-      // so absence from the body is fine.
-    } else if (auto y = dyn_cast<linalg::YieldOp>(op)) {
-      yieldOp = y;
-    } else {
-      return false;
-    }
-  }
-  // yield(max(add(matmul_result, bias), 0.0))
-  return addOp && maxOp && yieldOp &&
-         yieldOp.getNumOperands() == 1 &&
-         yieldOp.getOperand(0) == maxOp.getResult();
+// Activation-name registry for trailing-elementwise epilogues.
+//
+// Adding a new activation = one entry here: list the body op kinds + the
+// yield-op kind.  Two flavors are registered: with-bias (the fused-form
+// generic that consumes matmul result + rank-1 bias) and standalone (a
+// chained generic with a single rank-2 input).
+//
+// Example: to add Gelu = 0.5 * x * (1 + erf(x/sqrt(2))) one would add
+//   {{add, mul, erf}, add, "Gelu"} for standalone, and the bias variant.
+struct ActivationShape {
+  llvm::SmallVector<TypeID, 4> ops;
+  TypeID yield;
+  StringRef name;
+};
+
+static llvm::SmallVector<ActivationShape, 4>
+fusedBiasActivationTable(MLIRContext *ctx) {
+  // Body kinds for the *fused* (bias + activation) form.  All include
+  // arith.addf for the bias.  Yield always comes from the activation tail.
+  TypeID addId  = TypeID::get<arith::AddFOp>();
+  TypeID mulId  = TypeID::get<arith::MulFOp>();
+  TypeID maxId  = TypeID::get<arith::MaximumFOp>();
+  (void)ctx;
+  return {
+    // bias + relu      : addf + maximumf,        yield = maximumf
+    {{addId, maxId},        maxId, "BiasAddRelu"},
+    // bias + leakyrelu : addf + mulf + maximumf, yield = maximumf
+    {{addId, mulId, maxId}, maxId, "BiasAddLeakyRelu"},
+  };
 }
 
-// Fused (bias-add + leaky-relu) form: a single trailing generic that consumes
-// the matmul result + a rank-1 bias, body has addf, mulf (x*alpha) and
-// maximumf (max(x, x*alpha)).  This is what `--linalg-fuse-elementwise-ops`
-// produces when bias-add and leaky-relu were two separate generics in the
-// source.  Mirrors isFusedBiasAddReluGenericTensor but accepts the extra mulf
-// scaling step that distinguishes leaky-relu from plain relu.
-static bool isFusedBiasAddLeakyReluGenericTensor(linalg::GenericOp gen) {
-  if (gen.getNumDpsInputs() != 2 || gen.getNumDpsInits() != 1 ||
-      !isParallelGenericTensor(gen))
-    return false;
-  if (!isRankedTensor(gen.getDpsInputOperand(0)->get(), 2) ||
-      !isRankedTensor(gen.getDpsInputOperand(1)->get(), 1) ||
-      !isRankedTensor(gen.getDpsInitOperand(0)->get(), 2))
-    return false;
-  if (!hasCanonicalColumnBiasMaps(gen))
-    return false;
-  Block &body = gen.getRegion().front();
-  if (body.getNumArguments() != 3)
-    return false;
-  arith::AddFOp addOp;
-  arith::MulFOp mulOp;
-  arith::MaximumFOp maxOp;
-  linalg::YieldOp yieldOp;
-  for (Operation &op : body.getOperations()) {
-    if (auto a = dyn_cast<arith::AddFOp>(op)) {
-      if (addOp) return false;
-      addOp = a;
-    } else if (auto m = dyn_cast<arith::MulFOp>(op)) {
-      if (mulOp) return false;
-      mulOp = m;
-    } else if (auto m = dyn_cast<arith::MaximumFOp>(op)) {
-      if (maxOp) return false;
-      maxOp = m;
-    } else if (isa<arith::ConstantOp>(op)) {
-      // alpha const may live inline; canonicalize may also hoist it to
-      // function scope where it appears as a captured operand of mulOp.
-    } else if (auto y = dyn_cast<linalg::YieldOp>(op)) {
-      yieldOp = y;
-    } else {
-      return false;
-    }
-  }
-  // yield(max(add(matmul_result, bias), mul(add(matmul_result, bias), alpha)))
-  return addOp && mulOp && maxOp && yieldOp &&
-         yieldOp.getNumOperands() == 1 &&
-         yieldOp.getOperand(0) == maxOp.getResult();
+static llvm::SmallVector<ActivationShape, 4>
+standaloneActivationTable(MLIRContext *ctx) {
+  // Body kinds for the *standalone* activation (no bias) form.
+  TypeID mulId = TypeID::get<arith::MulFOp>();
+  TypeID maxId = TypeID::get<arith::MaximumFOp>();
+  (void)ctx;
+  return {
+    // relu      : maximumf,        yield = maximumf
+    {{maxId},        maxId, "Relu"},
+    // leakyrelu : mulf + maximumf, yield = maximumf
+    {{mulId, maxId}, maxId, "LeakyRelu"},
+  };
+}
+
+// Recognize a *bias-add only* generic (no activation tail).  Used as the
+// standalone-form 2-step fallback when the elementwise-fuse pass didn't
+// merge bias with the activation generic.
+static bool isStandaloneBiasAdd(const GenericBodyShape &s) {
+  TypeID addId = TypeID::get<arith::AddFOp>();
+  return s.wellFormed && s.yieldSource == addId && s.opKinds.size() == 1 &&
+         s.opKinds.count(addId);
 }
 
 // Find the unique linalg.generic in `func` whose 1st DPS input is `value`
@@ -972,13 +910,27 @@ findChainedGenericInFunc(func::FuncOp func, Value value,
 
 // Classify the trailing-elementwise chain on a cube func.  Returns
 // {has_bias, epilogue_kind_string} suitable for stamping abi_matmul_* attrs.
+//
+// Walk strategy (op-set based, no per-pattern matchers):
+//   1. Find the linalg.matmul; its result is the chain root.
+//   2. Try the *fused* form first: a single generic with bias-add structure
+//      whose body op-set matches one of `fusedBiasActivationTable`.  This is
+//      the shape `--linalg-fuse-elementwise-ops` produces when bias + act
+//      sat in two source generics.
+//   3. Otherwise fall back to two-step form: a bias-only generic, then a
+//      standalone-activation generic.  Either may be missing (bias-only,
+//      activation-only, or neither).
+//
+// Adding a new activation:
+//   - Add one entry to fusedBiasActivationTable (for the bias-fused form)
+//   - Add one entry to standaloneActivationTable (for the no-bias form)
+//   - Downstream (CannTranslation::emitSupportedMixVectorEpilogue) emits the
+//     kernel cpp body; that path has its own pattern walker and stays in
+//     sync via its own MixPartitionSummary inference.
 static std::pair<bool, StringRef>
 classifyCubeEpilogueChain(func::FuncOp func, CubeKind cubeKind) {
   if (cubeKind != CubeKind::MatmulVecFuse)
     return {false, "None"};
-  // Find the matmul op.  Funcs go through TilePlanGen one cube group at a
-  // time, so walk for the first linalg::MatmulOp.  BatchMatmul is not yet
-  // handled by the CV-fusion epilogue path (Phase 2).
   Value cur;
   func.walk([&](linalg::MatmulOp mm) {
     cur = mm.getResult(0);
@@ -986,27 +938,49 @@ classifyCubeEpilogueChain(func::FuncOp func, CubeKind cubeKind) {
   });
   if (!cur)
     return {false, "None"};
-  // First: try the *fused* shape that --linalg-fuse-elementwise-ops produces
-  // when bias-add and an activation lived in two source generics.  These
-  // single-generic patterns consume the matmul result directly.
-  if (auto fused = findChainedGenericInFunc(func, cur,
-                                            isFusedBiasAddReluGenericTensor))
-    return {true, "BiasAddRelu"};
-  if (auto fused = findChainedGenericInFunc(
-          func, cur, isFusedBiasAddLeakyReluGenericTensor))
-    return {true, "BiasAddLeakyRelu"};
-  // Otherwise fall back to the two-step chained form (e.g. when fuse did not
-  // happen because shapes/iter-types diverged).
-  bool hasBias = false;
-  if (auto bias = findChainedGenericInFunc(func, cur, isBiasAddGenericTensor)) {
-    hasBias = true;
-    cur = bias.getResult(0);
+
+  MLIRContext *ctx = func.getContext();
+
+  // Step 1: fused (bias + activation) single-generic form.
+  auto fusedTable = fusedBiasActivationTable(ctx);
+  for (const auto &shape : fusedTable) {
+    auto matchFused = [&](linalg::GenericOp gen) {
+      if (!hasCanonicalColumnBiasShape(gen))
+        return false;
+      return bodyHas(analyzeGenericBody(gen), shape.yield, shape.ops);
+    };
+    if (auto found = findChainedGenericInFunc(func, cur, matchFused))
+      return {true, shape.name};
   }
-  if (auto leaky =
-          findChainedGenericInFunc(func, cur, isLeakyReluGenericTensor))
-    return {hasBias, hasBias ? "BiasAddLeakyRelu" : "LeakyRelu"};
-  if (auto relu = findChainedGenericInFunc(func, cur, isReluGenericTensor))
-    return {hasBias, hasBias ? "BiasAddRelu" : "Relu"};
+
+  // Step 2: two-step chained form — optional bias-add then optional
+  // standalone activation.
+  bool hasBias = false;
+  if (auto biasGen = findChainedGenericInFunc(
+          func, cur, [](linalg::GenericOp gen) {
+            if (!hasCanonicalColumnBiasShape(gen))
+              return false;
+            return isStandaloneBiasAdd(analyzeGenericBody(gen));
+          })) {
+    hasBias = true;
+    cur = biasGen.getResult(0);
+  }
+  auto standaloneTable = standaloneActivationTable(ctx);
+  for (const auto &shape : standaloneTable) {
+    auto matchStandalone = [&](linalg::GenericOp gen) {
+      if (!hasRank2IdentityPointwiseShape(gen))
+        return false;
+      return bodyHas(analyzeGenericBody(gen), shape.yield, shape.ops);
+    };
+    if (auto found = findChainedGenericInFunc(func, cur, matchStandalone)) {
+      // Compose "BiasAdd<Act>" if both present, else just "<Act>".
+      if (hasBias) {
+        if (shape.name == "Relu") return {true, "BiasAddRelu"};
+        if (shape.name == "LeakyRelu") return {true, "BiasAddLeakyRelu"};
+      }
+      return {hasBias, shape.name};
+    }
+  }
   if (hasBias)
     return {true, "BiasAdd"};
   return {false, "None"};
