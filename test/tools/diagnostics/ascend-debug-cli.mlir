@@ -23,6 +23,8 @@ func.func @elementwise(%arg0: tensor<4x8xf16>, %arg1: tensor<4x8xf16>) -> tensor
 // CHECK: ascend_debug.collect_deep=ok
 // CHECK: ascend_debug.collect_graph=ok
 // CHECK: ascend_debug.open_graph=ok
+// CHECK: ascend_debug.diff_pass=ok
+// CHECK: ascend_debug.diff_fail=ok
 // CHECK: ascend_debug.open_deep=ok
 // CHECK: ascend_debug.open=ok
 // CHECK: ascend_debug.manifest.stage_count=5

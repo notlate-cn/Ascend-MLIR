@@ -103,6 +103,72 @@ grep -Fq 'graphs/kernel_dag.svg' "${TMP_DIR}/debug-run-graph/index.html"
 grep -Fq 'graphs/kernel_dag.summary.json' "${TMP_DIR}/debug-run-graph/index.html"
 echo "ascend_debug.open_graph=ok"
 
+make_npy_pair() {
+  local case_dir="$1"
+  local rhs_last="$2"
+  mkdir -p "${case_dir}/tensors/cpu" "${case_dir}/tensors/npu"
+  python3 - "${case_dir}/tensors/cpu/output0.npy" "${case_dir}/tensors/npu/output0.npy" "${rhs_last}" <<'PY'
+import pathlib
+import struct
+import sys
+
+def write_npy(path, values):
+    header = "{'descr': '<f4', 'fortran_order': False, 'shape': (3,), }"
+    header_bytes = header.encode("latin1")
+    padding = 16 - ((10 + len(header_bytes) + 1) % 16)
+    header_bytes += b" " * padding + b"\n"
+    payload = struct.pack("<3f", *values)
+    pathlib.Path(path).write_bytes(
+        b"\x93NUMPY\x01\x00" + struct.pack("<H", len(header_bytes)) + header_bytes + payload
+    )
+
+write_npy(sys.argv[1], [1.0, 2.0, 3.0])
+write_npy(sys.argv[2], [1.0, 2.001, float(sys.argv[3])])
+PY
+}
+
+cat >"${TMP_DIR}/tensor-manifest-pass.json" <<'JSON'
+{
+  "schema_version": 1,
+  "comparisons": [
+    {
+      "id": "final/output0",
+      "lhs": "tensors/cpu/output0.npy",
+      "rhs": "tensors/npu/output0.npy",
+      "atol": 0.01,
+      "rtol": 0.01
+    }
+  ]
+}
+JSON
+
+mkdir -p "${TMP_DIR}/debug-run-diff-pass/tensors"
+cp "${TMP_DIR}/tensor-manifest-pass.json" "${TMP_DIR}/debug-run-diff-pass/tensors/manifest.json"
+make_npy_pair "${TMP_DIR}/debug-run-diff-pass" "3.002"
+ascend-debug diff "${TMP_DIR}/debug-run-diff-pass" >"${TMP_DIR}/ascend-debug-diff-pass.txt"
+grep -Fq 'ascend_debug.diff.comparisons=1' "${TMP_DIR}/ascend-debug-diff-pass.txt"
+grep -Fq 'ascend_debug.diff.failed=0' "${TMP_DIR}/ascend-debug-diff-pass.txt"
+grep -Fq 'ascend_debug.diff.status=pass' "${TMP_DIR}/ascend-debug-diff-pass.txt"
+test -f "${TMP_DIR}/debug-run-diff-pass/summaries/tensor_diff.json"
+echo "ascend_debug.diff_pass=ok"
+
+mkdir -p "${TMP_DIR}/debug-run-diff-fail/tensors"
+cp "${TMP_DIR}/tensor-manifest-pass.json" "${TMP_DIR}/debug-run-diff-fail/tensors/manifest.json"
+make_npy_pair "${TMP_DIR}/debug-run-diff-fail" "3.2"
+if ascend-debug diff "${TMP_DIR}/debug-run-diff-fail" >"${TMP_DIR}/ascend-debug-diff-fail.txt" 2>"${TMP_DIR}/ascend-debug-diff-fail.err"; then
+  echo "expected ascend-debug diff to fail for mismatched tensors" >&2
+  exit 1
+fi
+grep -Fq 'ascend_debug.diff.comparisons=1' "${TMP_DIR}/ascend-debug-diff-fail.txt"
+grep -Fq 'ascend_debug.diff.failed=1' "${TMP_DIR}/ascend-debug-diff-fail.txt"
+grep -Fq 'ascend_debug.diff.status=fail' "${TMP_DIR}/ascend-debug-diff-fail.txt"
+test -f "${TMP_DIR}/debug-run-diff-fail/summaries/tensor_diff.json"
+if grep -Fq 'Traceback' "${TMP_DIR}/ascend-debug-diff-fail.err"; then
+  echo "unexpected traceback for tensor diff mismatch" >&2
+  exit 1
+fi
+echo "ascend_debug.diff_fail=ok"
+
 ascend-debug open "${TMP_DIR}/debug-run-deep" --no-browser >"${TMP_DIR}/ascend-debug-open-deep.txt"
 test -f "${TMP_DIR}/debug-run-deep/index.html"
 grep -Fq '<dt>preset</dt><dd>deep</dd>' "${TMP_DIR}/debug-run-deep/index.html"
