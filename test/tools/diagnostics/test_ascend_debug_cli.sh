@@ -143,10 +143,16 @@ if ascend-debug diff "${TMP_DIR}/debug-run-graph" >"${TMP_DIR}/ascend-debug-diff
   exit 1
 fi
 grep -Fq 'ascend_debug.diff.failed=1' "${TMP_DIR}/ascend-debug-diff-graph.txt"
+ascend-debug locate "${TMP_DIR}/debug-run-graph" >"${TMP_DIR}/ascend-debug-locate-graph.txt"
+grep -Fq 'ascend_debug.locate.status=fail' "${TMP_DIR}/ascend-debug-locate-graph.txt"
+grep -Fq 'ascend_debug.locate.first_bad_kernel=kernel_0' "${TMP_DIR}/ascend-debug-locate-graph.txt"
+grep -Fq 'ascend_debug.locate.first_bad_comparison=checkpoint/kernel_0' "${TMP_DIR}/ascend-debug-locate-graph.txt"
+test -f "${TMP_DIR}/debug-run-graph/summaries/locate.json"
 ascend-debug open "${TMP_DIR}/debug-run-graph" --no-browser >"${TMP_DIR}/ascend-debug-open-graph.txt"
 grep -Fq '<h2>Graphs</h2>' "${TMP_DIR}/debug-run-graph/index.html"
 grep -Fq '<h2>Kernels</h2>' "${TMP_DIR}/debug-run-graph/index.html"
 grep -Fq '<h2>Tensor Diff</h2>' "${TMP_DIR}/debug-run-graph/index.html"
+grep -Fq '<h2>Locate</h2>' "${TMP_DIR}/debug-run-graph/index.html"
 grep -Fq '<h2>Summaries</h2>' "${TMP_DIR}/debug-run-graph/index.html"
 grep -Fq '<a href="graphs/kernel_dag.svg">graphs/kernel_dag.svg</a>' "${TMP_DIR}/debug-run-graph/index.html"
 grep -Fq '<a href="graphs/kernel_dag.summary.json">graphs/kernel_dag.summary.json</a>' "${TMP_DIR}/debug-run-graph/index.html"
@@ -176,8 +182,57 @@ grep -Fq '../graphs/kernel_dag.summary.json.html' "${TMP_DIR}/debug-run-graph/vi
 grep -Fq 'checkpoint/kernel_0' "${TMP_DIR}/debug-run-graph/index.html"
 grep -Fq '<a href="views/kernels/kernel_0.html">kernel_0</a>' "${TMP_DIR}/debug-run-graph/index.html"
 grep -Fq 'max_abs_error' "${TMP_DIR}/debug-run-graph/index.html"
+grep -Fq 'first_bad_comparison=checkpoint/kernel_0' "${TMP_DIR}/debug-run-graph/index.html"
 echo "ascend_debug.open_kernel=ok"
 echo "ascend_debug.open_graph=ok"
+
+mkdir -p "${TMP_DIR}/debug-run-locate/summaries" "${TMP_DIR}/debug-run-locate/graphs"
+cat >"${TMP_DIR}/debug-run-locate/summaries/tensor_diff.json" <<'JSON'
+{
+  "schema_version": 1,
+  "tool": "ascend-debug",
+  "status": "fail",
+  "comparison_count": 3,
+  "failed_count": 2,
+  "comparisons": [
+    {"id": "checkpoint/kernel_3", "status": "fail", "kernel_id": "kernel_3", "task_id": "kernel_3", "max_abs_error": 0.3},
+    {"id": "checkpoint/kernel_1", "status": "fail", "kernel_id": "kernel_1", "task_id": "kernel_1", "max_abs_error": 0.1},
+    {"id": "checkpoint/kernel_0", "status": "pass", "kernel_id": "kernel_0", "task_id": "kernel_0", "max_abs_error": 0.0}
+  ]
+}
+JSON
+cat >"${TMP_DIR}/debug-run-locate/graphs/kernel_dag.summary.json" <<'JSON'
+{
+  "schema_version": 1,
+  "nodes": {
+    "kernel_0": {"depth": 1, "kind": "vec"},
+    "kernel_1": {"depth": 2, "kind": "vec"},
+    "kernel_3": {"depth": 4, "kind": "vec"}
+  },
+  "edges": [
+    {"from": "kernel_0", "to": "kernel_1"},
+    {"from": "kernel_1", "to": "kernel_3"}
+  ]
+}
+JSON
+ascend-debug locate "${TMP_DIR}/debug-run-locate" >"${TMP_DIR}/ascend-debug-locate.txt"
+grep -Fq 'ascend_debug.locate.status=fail' "${TMP_DIR}/ascend-debug-locate.txt"
+grep -Fq 'ascend_debug.locate.failed_kernels=2' "${TMP_DIR}/ascend-debug-locate.txt"
+grep -Fq 'ascend_debug.locate.first_bad_kernel=kernel_1' "${TMP_DIR}/ascend-debug-locate.txt"
+grep -Fq 'ascend_debug.locate.first_bad_comparison=checkpoint/kernel_1' "${TMP_DIR}/ascend-debug-locate.txt"
+python3 - "${TMP_DIR}/debug-run-locate/summaries/locate.json" <<'PY'
+import json
+import pathlib
+import sys
+
+summary = json.loads(pathlib.Path(sys.argv[1]).read_text())
+assert summary["schema_version"] == 1
+assert summary["status"] == "fail"
+assert summary["first_bad_kernel"] == "kernel_1"
+assert summary["first_bad_comparison"]["id"] == "checkpoint/kernel_1"
+assert summary["failed_kernel_ids"] == ["kernel_1", "kernel_3"]
+PY
+echo "ascend_debug.locate=ok"
 
 cat >"${TMP_DIR}/tensor-manifest-pass.json" <<'JSON'
 {
