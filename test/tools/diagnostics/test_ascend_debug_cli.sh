@@ -29,30 +29,55 @@ grep -q 'index.html' "${TMP_DIR}/ascend-debug-open.txt"
 test -f "${TMP_DIR}/debug-run/index.html"
 echo "ascend_debug.open=ok"
 
-python3 - "${TMP_DIR}/debug-run/manifest.json" <<'PY'
+python3 - "${TMP_DIR}/debug-run/manifest.json" "${TMP_DIR}/debug-run/provenance.json" "${INPUT_MLIR}" <<'PY'
 import json
 import pathlib
 import sys
 
+def check(condition, message):
+    if not condition:
+        raise SystemExit(message)
+
 manifest = json.loads(pathlib.Path(sys.argv[1]).read_text())
+provenance = json.loads(pathlib.Path(sys.argv[2]).read_text())
+input_mlir = sys.argv[3]
 stages = manifest["stages"]
 print(f"ascend_debug.manifest.stage_count={len(stages)}")
 for i, stage in enumerate(stages):
     print(f"ascend_debug.stage.{i}={pathlib.Path(stage['path']).name}")
-assert manifest["schema_version"] == 1
-assert manifest["tool"] == "ascend-debug"
-assert manifest["preset"] == "quick"
-assert manifest["backend"] == "compile"
-assert manifest["device_id"] is None
-assert manifest["device_scope"] == "single_run_single_device"
-assert [stage["order"] for stage in stages] == [0, 10, 19, 20, 29]
-assert [stage["name"] for stage in stages] == [
+expected_paths = [
+    "stages/000-source.mlir",
+    "stages/010-normalize-in.mlir",
+    "stages/019-normalize-out.mlir",
+    "stages/020-kernelize-in.mlir",
+    "stages/029-kernelize-out.mlir",
+]
+check(manifest["schema_version"] == 1, "manifest schema_version must be 1")
+check(manifest["tool"] == "ascend-debug", "manifest tool must be ascend-debug")
+check(manifest["input"] == "stages/000-source.mlir", "manifest input must point to staged source")
+check(manifest["preset"] == "quick", "manifest preset must be quick")
+check(manifest["backend"] == "compile", "manifest backend must be compile")
+check(manifest["device_id"] is None, "manifest device_id must be null")
+check(manifest["device_scope"] == "single_run_single_device", "manifest device_scope mismatch")
+check([stage["order"] for stage in stages] == [0, 10, 19, 20, 29], "stage orders mismatch")
+check([stage["name"] for stage in stages] == [
     "source",
     "normalize-in",
     "normalize-out",
     "kernelize-in",
     "kernelize-out",
-]
+], "stage names mismatch")
+actual_paths = [stage["path"] for stage in stages]
+check(actual_paths == expected_paths, f"stage paths mismatch: {actual_paths!r}")
+absolute_paths = [path for path in actual_paths if pathlib.PurePosixPath(path).is_absolute()]
+check(not absolute_paths, f"stage paths must be relative: {absolute_paths!r}")
+check(provenance["schema_version"] == 1, "provenance schema_version must be 1")
+check(provenance["tool"] == "ascend-debug", "provenance tool must be ascend-debug")
+check(provenance["version"], "provenance version must be present")
+check(provenance["original_input"] == input_mlir, "provenance original_input must preserve CLI input")
+check(provenance["boundaries"] == [], "provenance boundaries must start empty")
+check(provenance["kernels"] == [], "provenance kernels must start empty")
+check(provenance["runtime_tasks"] == [], "provenance runtime_tasks must start empty")
 PY
 
 echo "ALL ASCEND DEBUG CLI TESTS PASSED"
