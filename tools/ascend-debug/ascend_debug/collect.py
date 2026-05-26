@@ -6,14 +6,23 @@ from ascend_debug import __version__, layout
 from ascend_debug.runner import CommandError, find_tool, run_command
 
 
+def _clear_quick_artifacts(run_dir) -> None:
+    for stage in layout.QUICK_NORMALIZE_KERNELIZE_STAGES:
+        (run_dir / stage.path).unlink(missing_ok=True)
+    (run_dir / "manifest.json").unlink(missing_ok=True)
+    (run_dir / "provenance.json").unlink(missing_ok=True)
+
+
 def collect_quick(args: argparse.Namespace) -> int:
     input_path = args.input.resolve()
     run_dir = args.out.resolve()
-    if not input_path.exists():
-        raise CommandError(f"input MLIR does not exist: {input_path}")
 
     stages = layout.QUICK_NORMALIZE_KERNELIZE_STAGES
     layout.prepare_run_dir(run_dir)
+    _clear_quick_artifacts(run_dir)
+
+    if not input_path.exists():
+        raise CommandError(f"input MLIR does not exist: {input_path}")
 
     source = run_dir / stages[0].path
     normalize_in = run_dir / stages[1].path
