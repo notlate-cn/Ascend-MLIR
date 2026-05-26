@@ -13,6 +13,7 @@
 #include "llvm/ADT/StringMap.h"
 #include "llvm/ADT/StringSwitch.h"
 #include "llvm/ADT/StringSet.h"
+#include "llvm/ADT/Twine.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/JSON.h"
@@ -328,6 +329,65 @@ static llvm::json::Array buildWritesToInputArgs(func::FuncOp funcOp,
   return writes;
 }
 
+static FailureOr<std::string> getRuntimeDTypeName(Type elementType,
+                                                  func::FuncOp funcOp) {
+  if (elementType.isF16())
+    return std::string("f16");
+  if (elementType.isBF16())
+    return std::string("bf16");
+  if (elementType.isF32())
+    return std::string("f32");
+  if (elementType.isInteger(8))
+    return std::string("int8");
+  if (elementType.isInteger(32))
+    return std::string("int32");
+  if (elementType.isInteger(64))
+    return std::string("int64");
+  return funcOp.emitError() << "unsupported runtime ABI tensor element type: "
+                            << elementType;
+}
+
+static llvm::json::Array buildRuntimeShape(MemRefType memrefType) {
+  llvm::json::Array shape;
+  for (int64_t dim : memrefType.getShape())
+    shape.push_back(ShapedType::isDynamic(dim) ? -1 : dim);
+  return shape;
+}
+
+static FailureOr<llvm::json::Object>
+buildRuntimeTensorDescriptor(func::FuncOp funcOp, int64_t argIndex,
+                             StringRef prefix, int64_t logicalIndex) {
+  auto memrefType = dyn_cast<MemRefType>(funcOp.getArgument(argIndex).getType());
+  if (!memrefType)
+    return funcOp.emitError() << "runtime ABI tensor argument " << argIndex
+                              << " must be a memref";
+  FailureOr<std::string> dtype =
+      getRuntimeDTypeName(memrefType.getElementType(), funcOp);
+  if (failed(dtype))
+    return failure();
+
+  llvm::json::Object descriptor;
+  descriptor["name"] = (prefix + llvm::Twine(logicalIndex)).str();
+  descriptor["shape"] = buildRuntimeShape(memrefType);
+  descriptor["dtype"] = *dtype;
+  return descriptor;
+}
+
+static FailureOr<llvm::json::Array>
+buildRuntimeTensorDescriptors(func::FuncOp funcOp, int64_t begin, int64_t end,
+                              StringRef prefix) {
+  llvm::json::Array descriptors;
+  for (int64_t argIndex = begin; argIndex < end; ++argIndex) {
+    FailureOr<llvm::json::Object> descriptor =
+        buildRuntimeTensorDescriptor(funcOp, argIndex, prefix,
+                                     argIndex - begin);
+    if (failed(descriptor))
+      return failure();
+    descriptors.push_back(std::move(*descriptor));
+  }
+  return descriptors;
+}
+
 static FailureOr<llvm::json::Object>
 buildAbiDescriptor(func::FuncOp funcOp) {
   auto numInputsAttr = funcOp->getAttrOfType<IntegerAttr>("cann.num_inputs");
@@ -351,6 +411,16 @@ buildAbiDescriptor(func::FuncOp funcOp) {
   abi["numOutputs"] = workspaceArgIndex - numInputs;
   abi["workspaceArgIndex"] = workspaceArgIndex;
   abi["writesToInputArgs"] = buildWritesToInputArgs(funcOp, numInputs);
+  FailureOr<llvm::json::Array> inputs =
+      buildRuntimeTensorDescriptors(funcOp, 0, numInputs, "arg");
+  if (failed(inputs))
+    return failure();
+  FailureOr<llvm::json::Array> outputs = buildRuntimeTensorDescriptors(
+      funcOp, numInputs, workspaceArgIndex, "out");
+  if (failed(outputs))
+    return failure();
+  abi["inputs"] = std::move(*inputs);
+  abi["outputs"] = std::move(*outputs);
   return abi;
 }
 

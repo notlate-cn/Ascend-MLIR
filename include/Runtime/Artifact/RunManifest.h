@@ -3,7 +3,10 @@
 #include "Runtime/Execution/TaskGraph.h"
 #include "llvm/Support/Error.h"
 
+#include <cstdint>
 #include <string>
+#include <utility>
+#include <vector>
 
 namespace mlir::runtime {
 
@@ -23,6 +26,7 @@ struct ArtifactManifestPrepareRequest {
   std::string artifactManifestPath;
   std::string artifactRoot;
   std::string outputRunManifestPath;
+  std::vector<std::pair<std::string, int64_t>> shapeArgs;
   ExecutionBackendKind backendKind = ExecutionBackendKind::Simulation;
 };
 

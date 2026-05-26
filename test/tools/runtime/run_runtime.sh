@@ -129,8 +129,69 @@ fi
 grep -q "simulation path requires at least one output binding" "${RUN_STDERR}"
 
 echo "--- Checking runtime-session artifact-manifest prepare path ---"
+cat > "${FAKE_ARTIFACT_ROOT}/host_tiling.cpp" <<'EOF'
+#include <cstdint>
+#include <cstring>
+
+struct KernelATilingData {
+  int64_t dim;
+  int32_t tag;
+  int32_t tile;
+};
+
+extern "C" int32_t kernel_a_GetTilingSize(void) {
+  return static_cast<int32_t>(sizeof(KernelATilingData));
+}
+
+extern "C" int32_t kernel_a_GetTiling(const int64_t *shape_args,
+                                      int32_t shape_count,
+                                      void *tiling_out) {
+  if (shape_count != 1 || shape_args == nullptr || tiling_out == nullptr)
+    return 1;
+  KernelATilingData data{shape_args[0], 1234, 32};
+  std::memcpy(tiling_out, &data, sizeof(data));
+  return 0;
+}
+
+extern "C" int64_t kernel_a_GetBlockDim(const int64_t *shape_args,
+                                        int32_t shape_count) {
+  if (shape_count != 1 || shape_args == nullptr)
+    return -1;
+  return shape_args[0] / 32;
+}
+
+extern "C" int64_t kernel_a_GetWorkspaceSize(const int64_t *shape_args,
+                                             int32_t shape_count) {
+  if (shape_count != 1 || shape_args == nullptr)
+    return -1;
+  return shape_args[0] * 3;
+}
+EOF
+"${CXX:-c++}" -shared -fPIC "${FAKE_ARTIFACT_ROOT}/host_tiling.cpp" \
+  -o "${FAKE_ARTIFACT_ROOT}/host_tiling.so"
+for kernel in kernel_a kernel_b; do
+  mkdir -p "${FAKE_ARTIFACT_ROOT}/${kernel}/out"
+  cat > "${FAKE_ARTIFACT_ROOT}/${kernel}/out/manifest.txt" <<EOF
+kernel_name=${kernel}
+soc_version=Ascend910B1
+kernel_kind=vec
+device_binary_path=fake.bin
+EOF
+done
 cat > "${RUNTIME_SESSION_ARTIFACT_MANIFEST}" <<'EOF'
 {
+  "hostTilingBindings": [
+    {
+      "id": "kernel_a_tiling",
+      "library": "host_tiling.so",
+      "symbols": {
+        "getTilingSize": "kernel_a_GetTilingSize",
+        "getTiling": "kernel_a_GetTiling",
+        "getBlockDim": "kernel_a_GetBlockDim",
+        "getWorkspaceSize": "kernel_a_GetWorkspaceSize"
+      }
+    }
+  ],
   "kernelGraph": {
     "nodes": [
       { "name": "kernel_a" },
@@ -152,12 +213,37 @@ cat > "${RUNTIME_SESSION_ARTIFACT_MANIFEST}" <<'EOF'
       "scheduleEntries": [
         {
           "decisionId": "kernel_a.decision.0",
-          "guard": "true",
+          "guard": "arg0_dim0 % 32 == 0 && arg0_dim0 <= 256",
+          "priority": 0,
+          "hostTilingId": "kernel_a_tiling",
           "tilingParams": {
             "selected_tile_shape": [32]
           }
+        },
+        {
+          "decisionId": "kernel_a.fallback",
+          "guard": "arg0_dim0 > 0",
+          "priority": 99,
+          "fallback": true,
+          "tilingParams": {
+            "selected_tile_shape": [16]
+          }
         }
-      ]
+      ],
+      "shapeArgOrder": [
+        { "name": "dim_arg0_0", "shapeKey": "arg0_dim0", "abiPosition": 0 }
+      ],
+      "abi": {
+        "numInputs": 1,
+        "numOutputs": 1,
+        "workspaceArgIndex": 2,
+        "inputs": [
+          { "name": "arg0", "shape": [-1], "dtype": "f16" }
+        ],
+        "outputs": [
+          { "name": "out0", "shape": [128], "dtype": "f16" }
+        ]
+      }
     },
     {
       "kernel_id": "kernel_b",
@@ -171,7 +257,18 @@ cat > "${RUNTIME_SESSION_ARTIFACT_MANIFEST}" <<'EOF'
             "selected_tile_shape": [64]
           }
         }
-      ]
+      ],
+      "abi": {
+        "numInputs": 1,
+        "numOutputs": 1,
+        "workspaceArgIndex": 2,
+        "inputs": [
+          { "name": "arg0", "shape": [128], "dtype": "f16" }
+        ],
+        "outputs": [
+          { "name": "out0", "shape": [128], "dtype": "f16" }
+        ]
+      }
     }
   ]
 }
@@ -179,6 +276,7 @@ EOF
 build/bin/runtime-session \
   --artifact-manifest "${RUNTIME_SESSION_ARTIFACT_MANIFEST}" \
   --artifact-root "${FAKE_ARTIFACT_ROOT}" \
+  --shape-arg arg0_dim0=128 \
   --emit-run-manifest "${RUNTIME_SESSION_PREPARED_RUN_MANIFEST}" \
   >/tmp/runtime_session_prepare_manifest.log
 test -f "${RUNTIME_SESSION_PREPARED_RUN_MANIFEST}"
@@ -193,12 +291,28 @@ assert manifest["backend"] == "sim"
 assert manifest["artifact_root"] == artifact_root
 tasks = manifest["tasks"]
 assert [task["task_id"] for task in tasks] == ["kernel_a", "kernel_b"]
+assert tasks[0]["artifact_root"].endswith("/kernel_a")
+assert tasks[1]["artifact_root"].endswith("/kernel_b")
 assert tasks[0].get("dependencies", []) == []
 assert tasks[1]["dependencies"] == ["kernel_a"]
-assert tasks[0]["workspace_size"] == 1024
+assert tasks[0]["workspace_size"] == 384
 assert tasks[1]["workspace_size"] == 2048
-assert tasks[0]["tiling"]["params"] == "selected_tile_shape=32"
+assert tasks[0]["block_dim"] == 4
+tiling_path = pathlib.Path(tasks[0]["tiling"]["binary"])
+assert tiling_path.exists(), tiling_path
+assert tiling_path.stat().st_size == 16
 assert tasks[1]["tiling"]["params"] == "selected_tile_shape=64"
+assert tasks[0]["inputs"] == [{"name": "arg0", "shape": [128], "dtype": "f16"}]
+assert tasks[0]["outputs"] == [{"name": "out0", "shape": [128], "dtype": "f16"}]
+assert tasks[1]["inputs"] == [{
+    "name": "arg0",
+    "source": "task_output",
+    "upstream_task": "kernel_a",
+    "upstream_output": "out0",
+    "shape": [128],
+    "dtype": "f16",
+}]
+assert tasks[1]["outputs"] == [{"name": "out0", "shape": [128], "dtype": "f16"}]
 PY
 PLAN_OUTPUT="$(build/bin/runtime-session --run-manifest "${RUNTIME_SESSION_PREPARED_RUN_MANIFEST}")"
 printf '%s\n' "${PLAN_OUTPUT}" | grep -q "session.plan\\[0\\]=kernel_a"

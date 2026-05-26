@@ -43,6 +43,11 @@ llvm::cl::opt<std::string> EmitRunManifestPath(
     llvm::cl::desc("Write a concrete run manifest prepared from --artifact-manifest"),
     llvm::cl::init(""),
     llvm::cl::cat(RuntimeSessionCategory));
+llvm::cl::list<std::string> ShapeArgAssignments(
+    "shape-arg",
+    llvm::cl::desc("Concrete shape argument for artifact-manifest prepare, formatted as name=value"),
+    llvm::cl::ZeroOrMore,
+    llvm::cl::cat(RuntimeSessionCategory));
 llvm::cl::opt<std::string> KernelFile(
     "kernel",
     llvm::cl::desc("Kernel source to compile into a runtime artifact"),
@@ -131,6 +136,25 @@ llvm::Expected<KernelKind> parseKernelKind(llvm::StringRef name) {
   return llvm::createStringError(llvm::inconvertibleErrorCode(),
                                  "unsupported kernel kind: %s",
                                  name.str().c_str());
+}
+
+llvm::Expected<std::pair<std::string, int64_t>>
+parseShapeArgAssignment(llvm::StringRef assignment) {
+  auto [name, valueText] = assignment.split('=');
+  name = name.trim();
+  valueText = valueText.trim();
+  if (name.empty() || valueText.empty() || assignment.find('=') == llvm::StringRef::npos) {
+    return llvm::createStringError(llvm::inconvertibleErrorCode(),
+                                   "invalid --shape-arg assignment: %s",
+                                   assignment.str().c_str());
+  }
+  int64_t value = 0;
+  if (valueText.getAsInteger(10, value)) {
+    return llvm::createStringError(llvm::inconvertibleErrorCode(),
+                                   "invalid --shape-arg integer value: %s",
+                                   assignment.str().c_str());
+  }
+  return std::make_pair(name.str(), value);
 }
 
 void printArtifactSummary(const KernelArtifact &artifact) {
@@ -294,6 +318,15 @@ int main(int argc, char **argv) {
     prepareRequest.artifactManifestPath = ArtifactManifestPath;
     prepareRequest.artifactRoot = ArtifactRoot;
     prepareRequest.outputRunManifestPath = EmitRunManifestPath;
+    for (const std::string &assignment : ShapeArgAssignments) {
+      auto shapeArgOr = parseShapeArgAssignment(assignment);
+      if (!shapeArgOr) {
+        llvm::errs() << "Error: " << llvm::toString(shapeArgOr.takeError())
+                     << "\n";
+        return 4;
+      }
+      prepareRequest.shapeArgs.push_back(std::move(*shapeArgOr));
+    }
     if (auto err = emitRunManifestFromArtifactManifest(prepareRequest)) {
       llvm::errs() << "Error: " << llvm::toString(std::move(err)) << "\n";
       return 4;
