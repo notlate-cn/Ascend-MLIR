@@ -133,7 +133,7 @@ fi
 
 if ! "$AFIR_TRANSLATE" -mlir-to-cann "$BUILD_DIR/phase5_cann.mlir" \
     --tiling-space-out="$BUILD_DIR/tiling.json" \
-    --runtime-manifest-out="$BUILD_DIR/runtime_manifest.json" \
+    --artifact-manifest-out="$BUILD_DIR/artifact_manifest.json" \
     --host-tiling-out="$BUILD_DIR/host_tiling.cpp" \
     --cann-soc="$SOC" \
     -o "$BUILD_DIR/kernel.cpp" \
@@ -178,7 +178,7 @@ fi
   --out-dir "$NPY_DIR" \
   --artifact-root "$ARTIFACT_ROOT" \
   --tiling-schema "$BUILD_DIR/tiling.json" \
-  --compiler-runtime-manifest "$BUILD_DIR/runtime_manifest.json" \
+  --compiler-artifact-manifest "$BUILD_DIR/artifact_manifest.json" \
   --cann-mlir "$BUILD_DIR/phase5_cann.mlir" \
   --tiling-schema-dir "$TILING_SCHEMA_DIR" \
   --mix-compile-npy-root "$MIX_COMPILE_NPY_ROOT" \
@@ -206,7 +206,7 @@ while IFS=$'\t' read -r kernel_id kernel_kind; do
     echo "transformer_dynamic.artifact_compile.kernel=${kernel_id} kind=${kernel_kind}"
   fi
   "$RUNTIME_SESSION" "${compile_args[@]}"
-done < <("$PYTHON" - "$BUILD_DIR/runtime_manifest.json" <<'PY'
+done < <("$PYTHON" - "$BUILD_DIR/artifact_manifest.json" <<'PY'
 import json
 import sys
 

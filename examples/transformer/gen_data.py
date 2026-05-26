@@ -334,7 +334,7 @@ def consumer_operand_index(buffer_name: str) -> int:
 
 
 def build_multi_kernel_manifest(args: argparse.Namespace, output_dir: Path) -> dict:
-    compiler_manifest = json.loads(args.compiler_runtime_manifest.read_text(encoding="utf-8"))
+    compiler_manifest = json.loads(args.compiler_artifact_manifest.read_text(encoding="utf-8"))
     signatures = parse_cann_kernel_signatures(args.cann_mlir, compiler_manifest)
     entries = compiler_manifest.get("kernel_entries", [])
     entries_by_id = {entry["kernel_id"]: entry for entry in entries}
@@ -468,6 +468,7 @@ def main() -> None:
     parser.add_argument("--tiling-schema", type=Path)
     parser.add_argument("--run-manifest", type=Path)
     parser.add_argument("--actual-output-dir", type=Path)
+    parser.add_argument("--compiler-artifact-manifest", type=Path)
     parser.add_argument("--compiler-runtime-manifest", type=Path)
     parser.add_argument("--cann-mlir", type=Path)
     parser.add_argument("--tiling-schema-dir", type=Path)
@@ -486,13 +487,24 @@ def main() -> None:
         if not args.artifact_root:
             raise SystemExit("--artifact-root is required with --run-manifest")
         if not args.tiling_schema:
-            if not args.compiler_runtime_manifest:
+            if not args.compiler_artifact_manifest and not args.compiler_runtime_manifest:
                 raise SystemExit("--tiling-schema is required with --run-manifest")
         output_dir = args.actual_output_dir or args.run_manifest.parent / "outputs"
         output_dir.mkdir(parents=True, exist_ok=True)
-        if args.compiler_runtime_manifest:
+        if (
+            args.compiler_artifact_manifest
+            and args.compiler_runtime_manifest
+            and args.compiler_artifact_manifest.resolve() != args.compiler_runtime_manifest.resolve()
+        ):
+            raise SystemExit(
+                "cannot pass both --compiler-artifact-manifest and "
+                "--compiler-runtime-manifest with different paths"
+            )
+        if not args.compiler_artifact_manifest:
+            args.compiler_artifact_manifest = args.compiler_runtime_manifest
+        if args.compiler_artifact_manifest:
             if not args.cann_mlir:
-                raise SystemExit("--cann-mlir is required with --compiler-runtime-manifest")
+                raise SystemExit("--cann-mlir is required with --compiler-artifact-manifest")
             manifest = build_multi_kernel_manifest(args, output_dir)
         else:
             manifest = build_manifest(args, output_dir)

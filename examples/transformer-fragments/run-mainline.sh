@@ -145,7 +145,7 @@ RUN_MANIFEST="$BUILD_DIR/run_manifest.json"
 ACTUAL_OUTPUT="$BUILD_DIR/output_actual.npy"
 VALIDATION_LOG="$BUILD_DIR/runtime_session.log"
 PHASE5_TILING_SPACE="$BUILD_DIR/phase5_tiling_space.json"
-PHASE5_RUNTIME_MANIFEST="$BUILD_DIR/phase5_runtime_manifest.json"
+PHASE5_ARTIFACT_MANIFEST="$BUILD_DIR/phase5_artifact_manifest.json"
 PHASE5_HOST_TILING="$BUILD_DIR/host_tiling.cpp"
 
 rm -rf "$BUILD_DIR"
@@ -262,13 +262,13 @@ echo ""
 echo "==================== [STAGE 9] CANN codegen ===================="
 "$AFIR_TRANSLATE" -mlir-to-cann "$BUILD_DIR/step8_cann.mlir" \
   --tiling-space-out="$PHASE5_TILING_SPACE" \
-  --runtime-manifest-out="$PHASE5_RUNTIME_MANIFEST" \
+  --artifact-manifest-out="$PHASE5_ARTIFACT_MANIFEST" \
   --host-tiling-out="$PHASE5_HOST_TILING" \
   --cann-soc="$SOC" \
   -o "$BUILD_DIR/step9_kernel.cpp"
 test -s "$BUILD_DIR/step9_kernel.cpp"
 test -s "$PHASE5_TILING_SPACE"
-test -s "$PHASE5_RUNTIME_MANIFEST"
+test -s "$PHASE5_ARTIFACT_MANIFEST"
 test -s "$PHASE5_HOST_TILING"
 log "  output: $BUILD_DIR/step9_kernel.cpp"
 echo "transformer_fragment.${FRAGMENT}.phase5_translate=pass"
@@ -419,7 +419,7 @@ echo "   build_${FRAGMENT}/step7_kernel_ir.mlir"
 echo "   build_${FRAGMENT}/step8_cann.mlir"
 echo "   build_${FRAGMENT}/step9_kernel.cpp"
 echo "   build_${FRAGMENT}/phase5_tiling_space.json"
-echo "   build_${FRAGMENT}/phase5_runtime_manifest.json"
+echo "   build_${FRAGMENT}/phase5_artifact_manifest.json"
 echo "   build_${FRAGMENT}/host_tiling.cpp"
 echo "   build_${FRAGMENT}/artifact"
 echo "========================================================"

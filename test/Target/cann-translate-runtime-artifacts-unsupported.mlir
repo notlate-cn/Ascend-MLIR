@@ -1,27 +1,27 @@
 // RUN: rm -f %t.tiling.json
 // RUN: sed -n '/\/\/ MULTI-BEGIN/,/\/\/ MULTI-END/p' %s | afir-translate -mlir-to-cann --tiling-space-out=%t.tiling.json > %t.cpp
 // RUN: FileCheck %s --input-file=%t.tiling.json --check-prefix=TILING
-// RUN: sed -n '/\/\/ BAD-TAIL-BEGIN/,/\/\/ BAD-TAIL-END/p' %s | not afir-translate -mlir-to-cann --runtime-manifest-out=%t.bad-tail.manifest.json 2>&1 | FileCheck %s --check-prefix=BAD-TAIL
-// RUN: sed -n '/\/\/ BAD-SELECTED-TILE-SHAPE-TOP-BEGIN/,/\/\/ BAD-SELECTED-TILE-SHAPE-TOP-END/p' %s | not afir-translate -mlir-to-cann --runtime-manifest-out=%t.bad-selected-tile-shape-top.manifest.json 2>&1 | FileCheck %s --check-prefix=BAD-SELECTED-TILE-SHAPE-TOP
-// RUN: sed -n '/\/\/ BAD-TAIL-POLICIES-TOP-BEGIN/,/\/\/ BAD-TAIL-POLICIES-TOP-END/p' %s | not afir-translate -mlir-to-cann --runtime-manifest-out=%t.bad-tail-policies-top.manifest.json 2>&1 | FileCheck %s --check-prefix=BAD-TAIL-POLICIES-TOP
-// RUN: sed -n '/\/\/ BAD-TAIL-POLICIES-VALUE-BEGIN/,/\/\/ BAD-TAIL-POLICIES-VALUE-END/p' %s | not afir-translate -mlir-to-cann --runtime-manifest-out=%t.bad-tail-policies-value.manifest.json 2>&1 | FileCheck %s --check-prefix=BAD-TAIL-POLICIES-VALUE
-// RUN: sed -n '/\/\/ PARTIAL-NO-TAIL-PLAN-BEGIN/,/\/\/ PARTIAL-NO-TAIL-PLAN-END/p' %s | not afir-translate -mlir-to-cann --runtime-manifest-out=%t.partial-no-tail-plan.manifest.json 2>&1 | FileCheck %s --check-prefix=PARTIAL-NO-TAIL-PLAN
-// RUN: sed -n '/\/\/ PARTIAL-NO-TAIL-POLICIES-BEGIN/,/\/\/ PARTIAL-NO-TAIL-POLICIES-END/p' %s | not afir-translate -mlir-to-cann --runtime-manifest-out=%t.partial-no-tail-policies.manifest.json 2>&1 | FileCheck %s --check-prefix=PARTIAL-NO-TAIL-POLICIES
-// RUN: sed -n '/\/\/ BAD-TAIL-PLAN-BEGIN/,/\/\/ BAD-TAIL-PLAN-END/p' %s | not afir-translate -mlir-to-cann --runtime-manifest-out=%t.bad-tail-plan.manifest.json 2>&1 | FileCheck %s --check-prefix=BAD-TAIL-PLAN
-// RUN: sed -n '/\/\/ BAD-TAIL-PLAN-TOP-BEGIN/,/\/\/ BAD-TAIL-PLAN-TOP-END/p' %s | not afir-translate -mlir-to-cann --runtime-manifest-out=%t.bad-tail-plan-top.manifest.json 2>&1 | FileCheck %s --check-prefix=BAD-TAIL-PLAN-TOP
-// RUN: sed -n '/\/\/ BAD-TAIL-PLAN-I64-BEGIN/,/\/\/ BAD-TAIL-PLAN-I64-END/p' %s | not afir-translate -mlir-to-cann --runtime-manifest-out=%t.bad-tail-plan-i64.manifest.json 2>&1 | FileCheck %s --check-prefix=BAD-TAIL-PLAN-I64
-// RUN: sed -n '/\/\/ BAD-TAIL-PLAN-SELECTED-BEGIN/,/\/\/ BAD-TAIL-PLAN-SELECTED-END/p' %s | not afir-translate -mlir-to-cann --runtime-manifest-out=%t.bad-tail-plan-selected.manifest.json 2>&1 | FileCheck %s --check-prefix=BAD-TAIL-PLAN-SELECTED
-// RUN: sed -n '/\/\/ BAD-TAIL-PLAN-AFFECTED-BEGIN/,/\/\/ BAD-TAIL-PLAN-AFFECTED-END/p' %s | not afir-translate -mlir-to-cann --runtime-manifest-out=%t.bad-tail-plan-affected.manifest.json 2>&1 | FileCheck %s --check-prefix=BAD-TAIL-PLAN-AFFECTED
-// RUN: sed -n '/\/\/ BAD-TAIL-PLAN-ALIGN-BEGIN/,/\/\/ BAD-TAIL-PLAN-ALIGN-END/p' %s | not afir-translate -mlir-to-cann --runtime-manifest-out=%t.bad-tail-plan-align.manifest.json 2>&1 | FileCheck %s --check-prefix=BAD-TAIL-PLAN-ALIGN
-// RUN: sed -n '/\/\/ NO-ATTR-BEGIN/,/\/\/ NO-ATTR-END/p' %s | afir-translate -mlir-to-cann --runtime-manifest-out=%t.no-attr.manifest.json > %t.no-attr.cpp
+// RUN: sed -n '/\/\/ BAD-TAIL-BEGIN/,/\/\/ BAD-TAIL-END/p' %s | not afir-translate -mlir-to-cann --artifact-manifest-out=%t.bad-tail.manifest.json 2>&1 | FileCheck %s --check-prefix=BAD-TAIL
+// RUN: sed -n '/\/\/ BAD-SELECTED-TILE-SHAPE-TOP-BEGIN/,/\/\/ BAD-SELECTED-TILE-SHAPE-TOP-END/p' %s | not afir-translate -mlir-to-cann --artifact-manifest-out=%t.bad-selected-tile-shape-top.manifest.json 2>&1 | FileCheck %s --check-prefix=BAD-SELECTED-TILE-SHAPE-TOP
+// RUN: sed -n '/\/\/ BAD-TAIL-POLICIES-TOP-BEGIN/,/\/\/ BAD-TAIL-POLICIES-TOP-END/p' %s | not afir-translate -mlir-to-cann --artifact-manifest-out=%t.bad-tail-policies-top.manifest.json 2>&1 | FileCheck %s --check-prefix=BAD-TAIL-POLICIES-TOP
+// RUN: sed -n '/\/\/ BAD-TAIL-POLICIES-VALUE-BEGIN/,/\/\/ BAD-TAIL-POLICIES-VALUE-END/p' %s | not afir-translate -mlir-to-cann --artifact-manifest-out=%t.bad-tail-policies-value.manifest.json 2>&1 | FileCheck %s --check-prefix=BAD-TAIL-POLICIES-VALUE
+// RUN: sed -n '/\/\/ PARTIAL-NO-TAIL-PLAN-BEGIN/,/\/\/ PARTIAL-NO-TAIL-PLAN-END/p' %s | not afir-translate -mlir-to-cann --artifact-manifest-out=%t.partial-no-tail-plan.manifest.json 2>&1 | FileCheck %s --check-prefix=PARTIAL-NO-TAIL-PLAN
+// RUN: sed -n '/\/\/ PARTIAL-NO-TAIL-POLICIES-BEGIN/,/\/\/ PARTIAL-NO-TAIL-POLICIES-END/p' %s | not afir-translate -mlir-to-cann --artifact-manifest-out=%t.partial-no-tail-policies.manifest.json 2>&1 | FileCheck %s --check-prefix=PARTIAL-NO-TAIL-POLICIES
+// RUN: sed -n '/\/\/ BAD-TAIL-PLAN-BEGIN/,/\/\/ BAD-TAIL-PLAN-END/p' %s | not afir-translate -mlir-to-cann --artifact-manifest-out=%t.bad-tail-plan.manifest.json 2>&1 | FileCheck %s --check-prefix=BAD-TAIL-PLAN
+// RUN: sed -n '/\/\/ BAD-TAIL-PLAN-TOP-BEGIN/,/\/\/ BAD-TAIL-PLAN-TOP-END/p' %s | not afir-translate -mlir-to-cann --artifact-manifest-out=%t.bad-tail-plan-top.manifest.json 2>&1 | FileCheck %s --check-prefix=BAD-TAIL-PLAN-TOP
+// RUN: sed -n '/\/\/ BAD-TAIL-PLAN-I64-BEGIN/,/\/\/ BAD-TAIL-PLAN-I64-END/p' %s | not afir-translate -mlir-to-cann --artifact-manifest-out=%t.bad-tail-plan-i64.manifest.json 2>&1 | FileCheck %s --check-prefix=BAD-TAIL-PLAN-I64
+// RUN: sed -n '/\/\/ BAD-TAIL-PLAN-SELECTED-BEGIN/,/\/\/ BAD-TAIL-PLAN-SELECTED-END/p' %s | not afir-translate -mlir-to-cann --artifact-manifest-out=%t.bad-tail-plan-selected.manifest.json 2>&1 | FileCheck %s --check-prefix=BAD-TAIL-PLAN-SELECTED
+// RUN: sed -n '/\/\/ BAD-TAIL-PLAN-AFFECTED-BEGIN/,/\/\/ BAD-TAIL-PLAN-AFFECTED-END/p' %s | not afir-translate -mlir-to-cann --artifact-manifest-out=%t.bad-tail-plan-affected.manifest.json 2>&1 | FileCheck %s --check-prefix=BAD-TAIL-PLAN-AFFECTED
+// RUN: sed -n '/\/\/ BAD-TAIL-PLAN-ALIGN-BEGIN/,/\/\/ BAD-TAIL-PLAN-ALIGN-END/p' %s | not afir-translate -mlir-to-cann --artifact-manifest-out=%t.bad-tail-plan-align.manifest.json 2>&1 | FileCheck %s --check-prefix=BAD-TAIL-PLAN-ALIGN
+// RUN: sed -n '/\/\/ NO-ATTR-BEGIN/,/\/\/ NO-ATTR-END/p' %s | afir-translate -mlir-to-cann --artifact-manifest-out=%t.no-attr.manifest.json > %t.no-attr.cpp
 // RUN: FileCheck %s --input-file=%t.no-attr.manifest.json --check-prefix=NO-ATTR
-// RUN: sed -n '/\/\/ STALE-GRAPH-BEGIN/,/\/\/ STALE-GRAPH-END/p' %s | afir-translate -mlir-to-cann --runtime-manifest-out=%t.stale-graph.manifest.json > %t.stale-graph.cpp
+// RUN: sed -n '/\/\/ STALE-GRAPH-BEGIN/,/\/\/ STALE-GRAPH-END/p' %s | afir-translate -mlir-to-cann --artifact-manifest-out=%t.stale-graph.manifest.json > %t.stale-graph.cpp
 // RUN: FileCheck %s --input-file=%t.stale-graph.manifest.json --check-prefix=STALE-GRAPH
-// RUN: sed -n '/\/\/ BAD-GRAPH-NO-CARRIED-BEGIN/,/\/\/ BAD-GRAPH-NO-CARRIED-END/p' %s | not afir-translate -mlir-to-cann --runtime-manifest-out=%t.bad-graph-no-carried.manifest.json 2>&1 | FileCheck %s --check-prefix=BAD-GRAPH-NO-CARRIED
-// RUN: sed -n '/\/\/ BAD-GRAPH-CARRIED-TOP-BEGIN/,/\/\/ BAD-GRAPH-CARRIED-TOP-END/p' %s | not afir-translate -mlir-to-cann --runtime-manifest-out=%t.bad-graph-carried-top.manifest.json 2>&1 | FileCheck %s --check-prefix=BAD-GRAPH-CARRIED-TOP
-// RUN: sed -n '/\/\/ BAD-GRAPH-CARRIED-VALUE-BEGIN/,/\/\/ BAD-GRAPH-CARRIED-VALUE-END/p' %s | not afir-translate -mlir-to-cann --runtime-manifest-out=%t.bad-graph-carried-value.manifest.json 2>&1 | FileCheck %s --check-prefix=BAD-GRAPH-CARRIED-VALUE
-// RUN: sed -n '/\/\/ BAD-GRAPH-UNKNOWN-BEGIN/,/\/\/ BAD-GRAPH-UNKNOWN-END/p' %s | not afir-translate -mlir-to-cann --runtime-manifest-out=%t.bad-graph-unknown.manifest.json 2>&1 | FileCheck %s --check-prefix=BAD-GRAPH-UNKNOWN
-// RUN: sed -n '/\/\/ BAD-GRAPH-CYCLE-BEGIN/,/\/\/ BAD-GRAPH-CYCLE-END/p' %s | not afir-translate -mlir-to-cann --runtime-manifest-out=%t.bad-graph-cycle.manifest.json 2>&1 | FileCheck %s --check-prefix=BAD-GRAPH-CYCLE
+// RUN: sed -n '/\/\/ BAD-GRAPH-NO-CARRIED-BEGIN/,/\/\/ BAD-GRAPH-NO-CARRIED-END/p' %s | not afir-translate -mlir-to-cann --artifact-manifest-out=%t.bad-graph-no-carried.manifest.json 2>&1 | FileCheck %s --check-prefix=BAD-GRAPH-NO-CARRIED
+// RUN: sed -n '/\/\/ BAD-GRAPH-CARRIED-TOP-BEGIN/,/\/\/ BAD-GRAPH-CARRIED-TOP-END/p' %s | not afir-translate -mlir-to-cann --artifact-manifest-out=%t.bad-graph-carried-top.manifest.json 2>&1 | FileCheck %s --check-prefix=BAD-GRAPH-CARRIED-TOP
+// RUN: sed -n '/\/\/ BAD-GRAPH-CARRIED-VALUE-BEGIN/,/\/\/ BAD-GRAPH-CARRIED-VALUE-END/p' %s | not afir-translate -mlir-to-cann --artifact-manifest-out=%t.bad-graph-carried-value.manifest.json 2>&1 | FileCheck %s --check-prefix=BAD-GRAPH-CARRIED-VALUE
+// RUN: sed -n '/\/\/ BAD-GRAPH-UNKNOWN-BEGIN/,/\/\/ BAD-GRAPH-UNKNOWN-END/p' %s | not afir-translate -mlir-to-cann --artifact-manifest-out=%t.bad-graph-unknown.manifest.json 2>&1 | FileCheck %s --check-prefix=BAD-GRAPH-UNKNOWN
+// RUN: sed -n '/\/\/ BAD-GRAPH-CYCLE-BEGIN/,/\/\/ BAD-GRAPH-CYCLE-END/p' %s | not afir-translate -mlir-to-cann --artifact-manifest-out=%t.bad-graph-cycle.manifest.json 2>&1 | FileCheck %s --check-prefix=BAD-GRAPH-CYCLE
 
 // TILING: "kernel": "kernel_a"
 // TILING: "schema_version": "2.0"

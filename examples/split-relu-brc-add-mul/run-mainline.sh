@@ -96,7 +96,7 @@ rm -rf "$BUILD_DIR"
 mkdir -p "$BUILD_DIR"
 
 PHASE5_TILING_SPACE="$BUILD_DIR/phase5_tiling_space.json"
-PHASE5_RUNTIME_MANIFEST="$BUILD_DIR/phase5_runtime_manifest.json"
+PHASE5_ARTIFACT_MANIFEST="$BUILD_DIR/phase5_artifact_manifest.json"
 PHASE5_HOST_TILING="$BUILD_DIR/host_tiling.cpp"
 ARTIFACT_ROOT="$BUILD_DIR/artifact"
 RUN_MANIFEST="$BUILD_DIR/run_manifest.json"
@@ -183,13 +183,13 @@ echo ""
 echo "==================== [STAGE 10] CANN codegen ===================="
 "$AFIR_TRANSLATE" -mlir-to-cann "$BUILD_DIR/step9_cann.mlir" \
   --tiling-space-out="$PHASE5_TILING_SPACE" \
-  --runtime-manifest-out="$PHASE5_RUNTIME_MANIFEST" \
+  --artifact-manifest-out="$PHASE5_ARTIFACT_MANIFEST" \
   --host-tiling-out="$PHASE5_HOST_TILING" \
   --cann-soc="$SOC" \
   -o "$BUILD_DIR/step10_kernel.cpp"
 test -s "$BUILD_DIR/step10_kernel.cpp"
 test -s "$PHASE5_TILING_SPACE"
-test -s "$PHASE5_RUNTIME_MANIFEST"
+test -s "$PHASE5_ARTIFACT_MANIFEST"
 test -s "$PHASE5_HOST_TILING"
 log "  output: $BUILD_DIR/step10_kernel.cpp"
 
@@ -299,7 +299,7 @@ echo "   build_mainline/step8_kernel_ir.mlir"
 echo "   build_mainline/step9_cann.mlir"
 echo "   build_mainline/step10_kernel.cpp"
 echo "   build_mainline/phase5_tiling_space.json"
-echo "   build_mainline/phase5_runtime_manifest.json"
+echo "   build_mainline/phase5_artifact_manifest.json"
 echo "   build_mainline/host_tiling.cpp"
 echo "   build_mainline/artifact"
 echo "========================================================"

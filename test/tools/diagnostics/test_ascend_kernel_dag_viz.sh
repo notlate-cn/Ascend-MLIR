@@ -11,7 +11,7 @@ echo "INFO: ascend kernel dag viz test entry"
 TMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/ascend-kernel-dag-viz.XXXXXX")"
 trap 'rm -rf "${TMP_DIR}"' EXIT
 
-cat >"${TMP_DIR}/runtime_manifest.json" <<'JSON'
+cat >"${TMP_DIR}/artifact_manifest.json" <<'JSON'
 {
   "kernel_entries": [
     {
@@ -137,12 +137,18 @@ module {
 MLIR
 
 "${PYTHON}" "${TOOL}" \
-  --runtime-manifest "${TMP_DIR}/runtime_manifest.json" \
+  --artifact-manifest "${TMP_DIR}/artifact_manifest.json" \
   --run-manifest "${TMP_DIR}/run_manifest.json" \
   --kernelized-ir "${TMP_DIR}/step2_kernelized.mlir" \
   --svg-out "${TMP_DIR}/kernel_dag.svg" \
   --summary-out "${TMP_DIR}/kernel_dag_summary.json" \
   >"${TMP_DIR}/tool.stdout"
+
+"${PYTHON}" "${TOOL}" \
+  --runtime-manifest "${TMP_DIR}/artifact_manifest.json" \
+  --summary-out "${TMP_DIR}/legacy_kernel_dag_summary.json" \
+  >"${TMP_DIR}/legacy_tool.stdout"
+grep -Fq 'ascend_kernel_dag_viz.kernel_count=5' "${TMP_DIR}/legacy_tool.stdout"
 
 "${PYTHON}" - "${TMP_DIR}/kernel_dag.svg" "${TMP_DIR}/kernel_dag_summary.json" <<'PY'
 import json

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Render Ascend runtime manifests as a readable kernel DAG SVG."""
+"""Render Ascend artifact manifests as a readable kernel DAG SVG."""
 
 from __future__ import annotations
 
@@ -581,7 +581,8 @@ def write_summary(summary: dict[str, Any], out: Path) -> None:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--runtime-manifest", type=Path, required=True)
+    parser.add_argument("--artifact-manifest", type=Path)
+    parser.add_argument("--runtime-manifest", type=Path)
     parser.add_argument("--run-manifest", type=Path)
     parser.add_argument("--kernelized-ir", type=Path)
     parser.add_argument("--svg-out", type=Path)
@@ -595,8 +596,17 @@ def main() -> int:
 
     if not args.svg_out and not args.summary_out:
         raise SystemExit("at least one of --svg-out or --summary-out is required")
+    if not args.artifact_manifest and not args.runtime_manifest:
+        raise SystemExit("--artifact-manifest is required")
+    if (
+        args.artifact_manifest
+        and args.runtime_manifest
+        and args.artifact_manifest.resolve() != args.runtime_manifest.resolve()
+    ):
+        raise SystemExit("cannot pass both --artifact-manifest and --runtime-manifest with different paths")
 
-    runtime_manifest = load_json(args.runtime_manifest)
+    artifact_manifest_path = args.artifact_manifest or args.runtime_manifest
+    runtime_manifest = load_json(artifact_manifest_path)
     run_manifest = load_json(args.run_manifest) if args.run_manifest else {}
     summary = analyze(
         runtime_manifest,
