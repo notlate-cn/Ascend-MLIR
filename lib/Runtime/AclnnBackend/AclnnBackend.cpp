@@ -87,8 +87,17 @@ private:
         os_ << "  " << n << ".shape[" << d << "]=" << sz << ";\n";
       os_ << "  mlir::runtime::aclnn::rowMajorStrides(" << n << ".shape, " << n
           << ".rank, " << n << ".strides);\n";
-      os_ << "  " << n << ".data = ::operator new((size_t)" << rt.getNumElements()
-          << "*" << eb << ");\n";
+      // DPS-init buffers may be wired into kernel ABI slots that the kernel
+      // never reads in its body — but the host still stages the bytes H2D.
+      // `::operator new` returns uninitialized memory: glibc keeps free-list
+      // pointers in just-freed chunks, so the H2D'd device buffer ends up
+      // holding ptr-encoded bytes (0x0000ffff aa..) instead of valid f32.
+      // The kernel's unrelated scalar paths can fault on those bytes (real-NPU
+      // "GM address accessed by scalar exceeds 48 bits" on BERT group20).
+      // Zero-init defends against this without touching kernel codegen.
+      os_ << "  { size_t _b = (size_t)" << rt.getNumElements() << "*" << eb
+          << "; " << n << ".data = ::operator new(_b); std::memset("
+          << n << ".data, 0, _b); }\n";
       names_[emptyOp.getResult()] = n;
       return;
     }
@@ -376,10 +385,15 @@ private:
       }
       os_ << "  " << outsName << "[" << ri << "].dtype = " << dtypeId << ";\n";
       // Compute byte size at runtime so dynamic dims work.
+      // Zero-init output buffers too: kernel may leave tail/padding bytes
+      // untouched, and any leftover heap garbage would later be staged H2D
+      // when the next kernel consumes this buffer as input (see tensor.empty
+      // path above for the BERT group20 motivation).
       os_ << "  { size_t _n = " << elemBytes << "; for (int _d = 0; _d < "
           << outsName << "[" << ri << "].rank; ++_d) _n *= (size_t)"
           << outsName << "[" << ri << "].shape[_d]; "
-          << outsName << "[" << ri << "].data = ::operator new(_n); }\n";
+          << outsName << "[" << ri << "].data = ::operator new(_n); "
+          << "std::memset(" << outsName << "[" << ri << "].data, 0, _n); }\n";
     }
 
     // Call the helper.
