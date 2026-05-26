@@ -128,6 +128,7 @@ tool_dirs = [config.afir_tools_dir, config.llvm_tools_dir]
 tools = [
     'afir-opt',
     'ascend-mlir-opt',
+    'ascend-mlir-translate',
     'afir-translate',
     ToolSubst('%PYTHON', config.python_executable, unresolved='ignore'),
 ]

@@ -7,7 +7,7 @@ DIR="$(cd "$(dirname "$0")" && pwd)"
 # shellcheck source=../mainline-target-env.sh
 source "$DIR/../mainline-target-env.sh"
 AFIR_OPT="${AFIR_OPT:-afir-opt}"
-AFIR_TRANSLATE="${AFIR_TRANSLATE:-afir-translate}"
+ASCEND_MLIR_TRANSLATE="${ASCEND_MLIR_TRANSLATE:-${AFIR_TRANSLATE:-ascend-mlir-translate}}"
 RUNTIME_SESSION="${RUNTIME_SESSION:-runtime-session}"
 PYTHON="${PYTHON:-python3}"
 SOC="${SOC_VERSION:-Ascend910B1}"
@@ -131,7 +131,7 @@ if ! "$AFIR_OPT" "$BUILD_DIR/full_codegen.mlir" \
   exit 1
 fi
 
-if ! "$AFIR_TRANSLATE" -mlir-to-cann "$BUILD_DIR/phase5_cann.mlir" \
+if ! "$ASCEND_MLIR_TRANSLATE" -mlir-to-cann "$BUILD_DIR/phase5_cann.mlir" \
     --tiling-space-out="$BUILD_DIR/tiling.json" \
     --artifact-manifest-out="$BUILD_DIR/artifact_manifest.json" \
     --host-tiling-out="$BUILD_DIR/host_tiling.cpp" \

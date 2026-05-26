@@ -103,11 +103,11 @@ runtime_verify_build_example_toolchain() {
   if [ "${RUNTIME_VERIFY_EXAMPLE_TOOLCHAIN_READY:-0}" = "1" ]; then
     return 0
   fi
-  if [ -x build/bin/afir-opt ] && [ -x build/bin/afir-translate ]; then
+  if [ -x build/bin/afir-opt ] && [ -x build/bin/ascend-mlir-translate ]; then
     export RUNTIME_VERIFY_EXAMPLE_TOOLCHAIN_READY=1
     return 0
   fi
-  runtime_verify_build_targets afir-opt afir-translate
+  runtime_verify_build_targets afir-opt ascend-mlir-translate
   export RUNTIME_VERIFY_EXAMPLE_TOOLCHAIN_READY=1
 }
 

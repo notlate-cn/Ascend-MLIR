@@ -18,7 +18,7 @@ conda 环境 `torch-mlir` 关键依赖：
 # 1. 激活 torch-mlir conda 环境
 conda activate torch-mlir
 
-# 2. 设置 afir-opt / afir-translate / autotuner 路径
+# 2. 设置 afir-opt / ascend-mlir-translate / autotuner 路径
 source examples/env.sh
 ```
 
@@ -72,7 +72,7 @@ torch.nn.Module + TensorSpec
   → [step6] --ascend-compute-lower
   → [step7] --ascend-parallelize + --ascend-prepare-for-emit
   → [step7b] --ascend-canonicalize-cann-signature
-  → [step8] afir-translate -mlir-to-cann → step8_kernel.cpp + tiling_space.json
+  → [step8] ascend-mlir-translate -mlir-to-cann → step8_kernel.cpp + tiling_space.json
   → [step9-10] autotuner → compile + tiling 搜索 + 数值验证
 ```
 

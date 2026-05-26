@@ -9,7 +9,7 @@
 
 ### 9.1 当前原型流水线（V1 路径）
 
-> **工具说明**：本节命令行中出现的 `afir-opt` / `afir-translate` 是原型阶段的兼容 driver 工具，功能分别等价于 MLIR 社区的 `mlir-opt` / `mlir-translate`。它们随 AFIR Dialect 一同存在于原型期代码库中。V2 规范（见 V2-1.4.2）不依赖 AFIR Dialect；V2 各层 Pass 全部完成后，统一 driver 将替换为 `ascend-mlir-opt` / `ascend-mlir-translate`（见 9.2.1 节）。旧 `afir-*` 工具可以继续保留用于兼容和回归，但 Ascend 工具链、Artifact Manifest、Host Tiling ABI 和业务能力不得依赖 AFIR 方言或 `afir-translate`。
+> **工具说明**：本节命令行中出现的 `afir-opt` 是原型阶段兼容 driver，功能等价于 MLIR 社区的 `mlir-opt`。`ascend-mlir-translate` 是 V2 的 Ascend 命名翻译 driver，用于 `-mlir-to-cann`、Artifact Manifest 和 Host Tiling ABI 生成。旧 `afir-translate` 可以继续保留用于兼容和回归，但 Ascend 工具链、Artifact Manifest、Host Tiling ABI 和业务能力不得依赖 AFIR 方言或 `afir-translate`。
 
 当前原型阶段，Layers 1–3（Normalize / Kernelize / Schedule）尚未实现为自动化 Pass，由手写 Transform 脚本和人工挑选的融合策略代替。完整 Pass 序列如下。
 
@@ -57,9 +57,9 @@ afir-opt --ascendc-prepare-for-emit \
 afir-opt --canonicalize-cann-signature \
          step7_kernel.mlir -o step7_cann.mlir
 
-# 阶段 8：Codegen（Layer 5 实现；V2 目标工具为 ascend-mlir-translate）
-afir-translate -mlir-to-cann \
-               step7_cann.mlir -o step8_kernel.cpp
+# 阶段 8：Codegen（Layer 5 实现）
+ascend-mlir-translate -mlir-to-cann \
+                      step7_cann.mlir -o step8_kernel.cpp
 ```
 
 #### 9.1.2 混合 Cube+Vector 流水线扩展
