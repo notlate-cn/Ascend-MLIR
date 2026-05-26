@@ -244,6 +244,56 @@ def _summary_rows(run_dir: pathlib.Path) -> str:
     return "\n".join(rows)
 
 
+def _load_tensor_diff(run_dir: pathlib.Path) -> dict[str, Any] | None:
+    diff_path = run_dir / "summaries/tensor_diff.json"
+    if not diff_path.exists():
+        return None
+    try:
+        summary = json.loads(diff_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise CommandError(f"could not read tensor diff summary: {diff_path}: {error}") from error
+    if not isinstance(summary, dict):
+        raise CommandError(f"tensor diff summary must be a JSON object: {diff_path}")
+    comparisons = summary.get("comparisons")
+    if not isinstance(comparisons, list):
+        raise CommandError(f"tensor diff summary comparisons must be a list: {diff_path}")
+    return summary
+
+
+def _tensor_diff_rows(
+    summary: dict[str, Any] | None,
+    kernel_views: dict[str, str],
+) -> str:
+    if not summary:
+        return ""
+    rows = []
+    for comparison in summary.get("comparisons", []):
+        if not isinstance(comparison, dict):
+            continue
+        kernel_id = comparison.get("kernel_id")
+        kernel_cell = ""
+        if isinstance(kernel_id, str) and kernel_id:
+            kernel_cell = (
+                _link(kernel_views[kernel_id], kernel_id)
+                if kernel_id in kernel_views
+                else _cell(kernel_id)
+            )
+        rows.append(
+            "<tr>"
+            f"<td>{_cell(comparison.get('status'))}</td>"
+            f"<td>{_cell(comparison.get('id'))}</td>"
+            f"<td>{kernel_cell}</td>"
+            f"<td>{_cell(comparison.get('task_id'))}</td>"
+            f"<td>{_cell(comparison.get('max_abs_error'))}</td>"
+            f"<td>{_cell(comparison.get('max_rel_error'))}</td>"
+            f"<td>{_cell(comparison.get('mean_abs_error'))}</td>"
+            f"<td>{_cell(comparison.get('atol'))}</td>"
+            f"<td>{_cell(comparison.get('rtol'))}</td>"
+            "</tr>"
+        )
+    return "\n".join(rows)
+
+
 def _render_mlir_view(run_dir: pathlib.Path, rel_path: str) -> str | None:
     source_path = run_dir / rel_path
     if not source_path.exists():
@@ -532,6 +582,7 @@ def render_index(run_dir: pathlib.Path, manifest: dict[str, Any]) -> pathlib.Pat
     graph_views = _render_graph_mlir_views(run_dir, manifest)
     kernel_summary = _load_kernel_summary(run_dir)
     kernel_views = _render_kernel_views(run_dir, kernel_summary, graph_views)
+    tensor_diff = _load_tensor_diff(run_dir)
     command_section = ""
     if manifest.get("commands"):
         command_section = f"""
@@ -585,6 +636,21 @@ def render_index(run_dir: pathlib.Path, manifest: dict[str, Any]) -> pathlib.Pat
 </table>
 </section>
 """
+    tensor_diff_rows = _tensor_diff_rows(tensor_diff, kernel_views)
+    tensor_diff_section = ""
+    if tensor_diff_rows:
+        tensor_diff_section = f"""
+<section>
+<h2>Tensor Diff</h2>
+<p>status={_cell(tensor_diff.get('status'))}; comparisons={_cell(tensor_diff.get('comparison_count'))}; failed={_cell(tensor_diff.get('failed_count'))}</p>
+<table>
+<thead><tr><th>Status</th><th>ID</th><th>Kernel</th><th>Task</th><th>max_abs_error</th><th>max_rel_error</th><th>mean_abs_error</th><th>atol</th><th>rtol</th></tr></thead>
+<tbody>
+{tensor_diff_rows}
+</tbody>
+</table>
+</section>
+"""
     summary_rows = _summary_rows(run_dir)
     summary_section = ""
     if summary_rows:
@@ -634,6 +700,7 @@ dd {{ margin: 0 0 0.35rem 0; }}
 {report_section}
 {graph_section}
 {kernel_section}
+{tensor_diff_section}
 {summary_section}
 </body>
 </html>
