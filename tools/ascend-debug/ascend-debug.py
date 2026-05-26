@@ -6,16 +6,9 @@ import pathlib
 import sys
 
 from ascend_debug import __version__
-from ascend_debug import layout
 from ascend_debug.collect import collect_quick
+from ascend_debug.open_view import open_run
 from ascend_debug.runner import CommandError
-
-
-def open_debug_run(args: argparse.Namespace) -> int:
-    index = args.run_dir / "index.html"
-    layout.write_text(index, "<!doctype html><title>ascend-debug</title>\n")
-    print(index)
-    return 0
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -36,7 +29,7 @@ def build_parser() -> argparse.ArgumentParser:
     open_cmd = subparsers.add_parser("open", help="Generate or open the debug dashboard")
     open_cmd.add_argument("run_dir", type=pathlib.Path)
     open_cmd.add_argument("--no-browser", action="store_true")
-    open_cmd.set_defaults(handler=open_debug_run)
+    open_cmd.set_defaults(handler=open_run)
 
     diff = subparsers.add_parser("diff", help="Compare collected tensors")
     diff.add_argument("run_dir", type=pathlib.Path)
