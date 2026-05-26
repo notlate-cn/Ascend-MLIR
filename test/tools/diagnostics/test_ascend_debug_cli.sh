@@ -55,7 +55,7 @@ cat >"${TMP_DIR}/artifact_manifest.json" <<'JSON'
       "scheduleEntries": [
         {"tilingParams": {"selected_tile_shape": [4, 8]}}
       ],
-      "workspaceSizeBytes": 0
+      "workspaceSizeBytes": 4096
     }
   ],
   "kernelGraph": {
@@ -75,7 +75,7 @@ cat >"${TMP_DIR}/run_manifest.json" <<'JSON'
       "task_id": "kernel_0",
       "inputs": [{"name": "input", "path": "input.npy"}],
       "outputs": [{"name": "out0", "shape": [4, 8], "dtype": "f16"}],
-      "workspace_size": 0
+      "workspace_size": 4096
     }
   ]
 }
@@ -155,6 +155,7 @@ grep -Fq '<h2>Graphs</h2>' "${TMP_DIR}/debug-run-graph/index.html"
 grep -Fq '<h2>Kernels</h2>' "${TMP_DIR}/debug-run-graph/index.html"
 grep -Fq '<h2>Tensor Diff</h2>' "${TMP_DIR}/debug-run-graph/index.html"
 grep -Fq '<h2>Locate</h2>' "${TMP_DIR}/debug-run-graph/index.html"
+grep -Fq '<h2>Memory</h2>' "${TMP_DIR}/debug-run-graph/index.html"
 grep -Fq '<h2>Summaries</h2>' "${TMP_DIR}/debug-run-graph/index.html"
 grep -Fq '<a href="graphs/kernel_dag.svg">graphs/kernel_dag.svg</a>' "${TMP_DIR}/debug-run-graph/index.html"
 grep -Fq '<a href="graphs/kernel_dag.summary.json">graphs/kernel_dag.summary.json</a>' "${TMP_DIR}/debug-run-graph/index.html"
@@ -167,6 +168,8 @@ grep -Fq '../views/kernels/kernel_0.html' "${TMP_DIR}/debug-run-graph/graphs/ker
 test -f "${TMP_DIR}/debug-run-graph/views/stages/029-kernelize-out.mlir.html"
 test -f "${TMP_DIR}/debug-run-graph/views/graphs/kernelized.mlir.html"
 test -f "${TMP_DIR}/debug-run-graph/views/graphs/kernel_dag.summary.json.html"
+test -f "${TMP_DIR}/debug-run-graph/summaries/memory.json"
+test -f "${TMP_DIR}/debug-run-graph/views/summaries/memory.json.html"
 test -f "${TMP_DIR}/debug-run-graph/views/summaries/tensor_diff.json.html"
 test -f "${TMP_DIR}/debug-run-graph/views/kernels/kernel_0.html"
 grep -Fq '<input id="search"' "${TMP_DIR}/debug-run-graph/views/stages/029-kernelize-out.mlir.html"
@@ -178,6 +181,7 @@ grep -Fq 'kernel_count' "${TMP_DIR}/debug-run-graph/views/graphs/kernel_dag.summ
 grep -Fq '<h1>kernel_0</h1>' "${TMP_DIR}/debug-run-graph/views/kernels/kernel_0.html"
 grep -Fq 'selected_tile_shape' "${TMP_DIR}/debug-run-graph/views/kernels/kernel_0.html"
 grep -Fq 'workspace_size' "${TMP_DIR}/debug-run-graph/views/kernels/kernel_0.html"
+grep -Fq 'workspace_size</th><td>4096' "${TMP_DIR}/debug-run-graph/views/kernels/kernel_0.html"
 grep -Fq 'MLIR Ops' "${TMP_DIR}/debug-run-graph/views/kernels/kernel_0.html"
 grep -Fq '../graphs/kernelized.mlir.html#L' "${TMP_DIR}/debug-run-graph/views/kernels/kernel_0.html"
 grep -Fq '../graphs/kernel_dag.summary.json.html' "${TMP_DIR}/debug-run-graph/views/kernels/kernel_0.html"
@@ -190,6 +194,10 @@ grep -Fq '<dt>DAG depth</dt><dd>1</dd>' "${TMP_DIR}/debug-run-graph/index.html"
 grep -Fq '<dt>Failed comparison</dt><dd>checkpoint/kernel_0</dd>' "${TMP_DIR}/debug-run-graph/index.html"
 grep -Fq 'Earliest failed checkpoint in DAG order' "${TMP_DIR}/debug-run-graph/index.html"
 grep -Fq '<dt>Direct upstream without checkpoint</dt><dd>none</dd>' "${TMP_DIR}/debug-run-graph/index.html"
+grep -Fq '<dt>Peak workspace bytes</dt><dd>4096</dd>' "${TMP_DIR}/debug-run-graph/index.html"
+grep -Fq '<dt>Total workspace bytes</dt><dd>4096</dd>' "${TMP_DIR}/debug-run-graph/index.html"
+grep -Fq '<td><a href="views/kernels/kernel_0.html">kernel_0</a></td><td>1</td><td>4096</td>' "${TMP_DIR}/debug-run-graph/index.html"
+grep -Fq 'workspace_by_depth' "${TMP_DIR}/debug-run-graph/views/summaries/memory.json.html"
 if grep -Fq 'status=fail; first_bad_kernel=' "${TMP_DIR}/debug-run-graph/index.html"; then
   echo "locate dashboard should not render raw key-value status line" >&2
   exit 1

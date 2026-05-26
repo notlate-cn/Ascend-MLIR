@@ -611,6 +611,75 @@ def _load_kernel_summary(run_dir: pathlib.Path) -> dict[str, Any] | None:
     return summary
 
 
+def _int_value(value: Any) -> int:
+    return value if isinstance(value, int) and not isinstance(value, bool) else 0
+
+
+def _memory_summary(summary: dict[str, Any] | None) -> dict[str, Any] | None:
+    if not summary:
+        return None
+    nodes = summary.get("nodes", {})
+    if not isinstance(nodes, dict):
+        return None
+
+    kernels = []
+    by_depth: dict[int, dict[str, Any]] = {}
+    for kernel_id in sorted(nodes, key=_kernel_sort_key):
+        node = nodes[kernel_id]
+        if not isinstance(node, dict):
+            continue
+        depth = _int_value(node.get("depth"))
+        workspace_size = _int_value(node.get("workspace_size"))
+        kernel = {
+            "kernel_id": kernel_id,
+            "depth": depth,
+            "kind": node.get("kind"),
+            "workspace_size": workspace_size,
+            "output_shape": node.get("output_shape"),
+            "selected_tile_shape": node.get("selected_tile_shape"),
+            "input_degree": node.get("input_degree"),
+            "output_degree": node.get("output_degree"),
+        }
+        kernels.append(kernel)
+        bucket = by_depth.setdefault(
+            depth,
+            {
+                "depth": depth,
+                "kernel_count": 0,
+                "workspace_bytes": 0,
+                "peak_workspace_bytes": 0,
+                "kernels": [],
+            },
+        )
+        bucket["kernel_count"] += 1
+        bucket["workspace_bytes"] += workspace_size
+        bucket["peak_workspace_bytes"] = max(bucket["peak_workspace_bytes"], workspace_size)
+        bucket["kernels"].append(kernel_id)
+
+    total_workspace = sum(kernel["workspace_size"] for kernel in kernels)
+    peak_workspace = max((kernel["workspace_size"] for kernel in kernels), default=0)
+    return {
+        "schema_version": 1,
+        "tool": "ascend-debug",
+        "source": "kernel_dag.summary.json",
+        "analysis_level": "workspace-overview",
+        "note": "Workspace overview derived from DAG artifacts; Realize slot lifetime is not available here.",
+        "kernel_count": len(kernels),
+        "workspace_kernel_count": sum(1 for kernel in kernels if kernel["workspace_size"] > 0),
+        "total_workspace_bytes": total_workspace,
+        "peak_workspace_bytes": peak_workspace,
+        "workspace_by_depth": [by_depth[depth] for depth in sorted(by_depth)],
+        "kernels": kernels,
+    }
+
+
+def _write_memory_summary(run_dir: pathlib.Path, summary: dict[str, Any] | None) -> dict[str, Any] | None:
+    memory = _memory_summary(summary)
+    if memory:
+        layout.write_json(run_dir / "summaries/memory.json", memory)
+    return memory
+
+
 def _kernel_sort_key(kernel_id: str) -> tuple[int, str]:
     suffix = ""
     for char in reversed(kernel_id):
@@ -772,12 +841,61 @@ def _kernel_rows(summary: dict[str, Any] | None, kernel_views: dict[str, str]) -
     return "\n".join(rows)
 
 
+def _memory_rows(summary: dict[str, Any] | None, kernel_views: dict[str, str]) -> str:
+    if not summary:
+        return ""
+    rows = []
+    for kernel in summary.get("kernels", []):
+        if not isinstance(kernel, dict):
+            continue
+        kernel_id = kernel.get("kernel_id")
+        kernel_cell = _cell(kernel_id)
+        if isinstance(kernel_id, str) and kernel_id in kernel_views:
+            kernel_cell = _link(kernel_views[kernel_id], kernel_id)
+        rows.append(
+            "<tr>"
+            f"<td>{kernel_cell}</td>"
+            f"<td>{_cell(kernel.get('depth'))}</td>"
+            f"<td>{_cell(kernel.get('workspace_size'))}</td>"
+            f"<td>{_cell(kernel.get('kind'))}</td>"
+            f"<td>{_cell(kernel.get('input_degree'))}</td>"
+            f"<td>{_cell(kernel.get('output_degree'))}</td>"
+            f"<td>{_cell(kernel.get('selected_tile_shape'))}</td>"
+            "</tr>"
+        )
+    return "\n".join(rows)
+
+
+def _memory_section(summary: dict[str, Any] | None, kernel_views: dict[str, str]) -> str:
+    rows = _memory_rows(summary, kernel_views)
+    if not summary or not rows:
+        return ""
+    return f"""
+<section>
+<h2>Memory</h2>
+<p class="memory-note">{_cell(summary.get('note'))}</p>
+<dl>
+<dt>Peak workspace bytes</dt><dd>{_cell(summary.get('peak_workspace_bytes'))}</dd>
+<dt>Total workspace bytes</dt><dd>{_cell(summary.get('total_workspace_bytes'))}</dd>
+<dt>Kernels with workspace</dt><dd>{_cell(summary.get('workspace_kernel_count'))}</dd>
+</dl>
+<table>
+<thead><tr><th>Kernel</th><th>Depth</th><th>Workspace bytes</th><th>Kind</th><th>Inputs</th><th>Outputs</th><th>Tile</th></tr></thead>
+<tbody>
+{rows}
+</tbody>
+</table>
+</section>
+"""
+
+
 def render_index(run_dir: pathlib.Path, manifest: dict[str, Any]) -> pathlib.Path:
     index_path = run_dir / "index.html"
     stage_views = _render_stage_views(run_dir, manifest)
     graph_views = _render_graph_mlir_views(run_dir, manifest)
-    json_views = _render_json_views(run_dir, manifest)
     kernel_summary = _load_kernel_summary(run_dir)
+    memory_summary = _write_memory_summary(run_dir, kernel_summary)
+    json_views = _render_json_views(run_dir, manifest)
     kernel_views = _render_kernel_views(run_dir, kernel_summary, graph_views, json_views)
     tensor_diff = _load_tensor_diff(run_dir)
     locate_summary = _load_locate_summary(run_dir)
@@ -850,6 +968,7 @@ def render_index(run_dir: pathlib.Path, manifest: dict[str, Any]) -> pathlib.Pat
 </section>
 """
     locate_section = _locate_section(locate_summary, kernel_views)
+    memory_section = _memory_section(memory_summary, kernel_views)
     summary_rows = _summary_rows(run_dir, json_views)
     summary_section = ""
     if summary_rows:
@@ -877,6 +996,7 @@ th {{ background: #f1f5f9; }}
 dt {{ font-weight: 700; float: left; clear: left; margin-right: 0.4rem; }}
 dd {{ margin: 0 0 0.35rem 0; }}
 .locate-note {{ margin: 0.25rem 0 0.75rem; color: #475569; }}
+.memory-note {{ margin: 0.25rem 0 0.75rem; color: #475569; }}
 .locate-grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(18rem, 1fr)); gap: 0.75rem; }}
 .locate-panel {{ border: 1px solid #cbd5e1; border-radius: 6px; background: #f8fafc; padding: 0.75rem; }}
 .locate-panel h3 {{ margin: 0 0 0.65rem 0; font-size: 1rem; }}
@@ -908,6 +1028,7 @@ dd {{ margin: 0 0 0.35rem 0; }}
 {kernel_section}
 {tensor_diff_section}
 {locate_section}
+{memory_section}
 {summary_section}
 </body>
 </html>
