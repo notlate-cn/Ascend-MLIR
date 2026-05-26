@@ -906,6 +906,54 @@ static bool isFusedBiasAddReluGenericTensor(linalg::GenericOp gen) {
          yieldOp.getOperand(0) == maxOp.getResult();
 }
 
+// Fused (bias-add + leaky-relu) form: a single trailing generic that consumes
+// the matmul result + a rank-1 bias, body has addf, mulf (x*alpha) and
+// maximumf (max(x, x*alpha)).  This is what `--linalg-fuse-elementwise-ops`
+// produces when bias-add and leaky-relu were two separate generics in the
+// source.  Mirrors isFusedBiasAddReluGenericTensor but accepts the extra mulf
+// scaling step that distinguishes leaky-relu from plain relu.
+static bool isFusedBiasAddLeakyReluGenericTensor(linalg::GenericOp gen) {
+  if (gen.getNumDpsInputs() != 2 || gen.getNumDpsInits() != 1 ||
+      !isParallelGenericTensor(gen))
+    return false;
+  if (!isRankedTensor(gen.getDpsInputOperand(0)->get(), 2) ||
+      !isRankedTensor(gen.getDpsInputOperand(1)->get(), 1) ||
+      !isRankedTensor(gen.getDpsInitOperand(0)->get(), 2))
+    return false;
+  if (!hasCanonicalColumnBiasMaps(gen))
+    return false;
+  Block &body = gen.getRegion().front();
+  if (body.getNumArguments() != 3)
+    return false;
+  arith::AddFOp addOp;
+  arith::MulFOp mulOp;
+  arith::MaximumFOp maxOp;
+  linalg::YieldOp yieldOp;
+  for (Operation &op : body.getOperations()) {
+    if (auto a = dyn_cast<arith::AddFOp>(op)) {
+      if (addOp) return false;
+      addOp = a;
+    } else if (auto m = dyn_cast<arith::MulFOp>(op)) {
+      if (mulOp) return false;
+      mulOp = m;
+    } else if (auto m = dyn_cast<arith::MaximumFOp>(op)) {
+      if (maxOp) return false;
+      maxOp = m;
+    } else if (isa<arith::ConstantOp>(op)) {
+      // alpha const may live inline; canonicalize may also hoist it to
+      // function scope where it appears as a captured operand of mulOp.
+    } else if (auto y = dyn_cast<linalg::YieldOp>(op)) {
+      yieldOp = y;
+    } else {
+      return false;
+    }
+  }
+  // yield(max(add(matmul_result, bias), mul(add(matmul_result, bias), alpha)))
+  return addOp && mulOp && maxOp && yieldOp &&
+         yieldOp.getNumOperands() == 1 &&
+         yieldOp.getOperand(0) == maxOp.getResult();
+}
+
 // Find the unique linalg.generic in `func` whose 1st DPS input is `value`
 // and which matches `predicate`.  Returns null on no/multiple matches.
 static linalg::GenericOp
@@ -944,6 +992,9 @@ classifyCubeEpilogueChain(func::FuncOp func, CubeKind cubeKind) {
   if (auto fused = findChainedGenericInFunc(func, cur,
                                             isFusedBiasAddReluGenericTensor))
     return {true, "BiasAddRelu"};
+  if (auto fused = findChainedGenericInFunc(
+          func, cur, isFusedBiasAddLeakyReluGenericTensor))
+    return {true, "BiasAddLeakyRelu"};
   // Otherwise fall back to the two-step chained form (e.g. when fuse did not
   // happen because shapes/iter-types diverged).
   bool hasBias = false;
