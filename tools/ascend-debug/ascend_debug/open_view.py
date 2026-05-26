@@ -129,6 +129,19 @@ def _path_link(rel_path: str, *, exists: bool = True) -> str:
     return f'<a href="{href}">{label}</a>'
 
 
+def _link(href: str, label: str) -> str:
+    return f'<a href="{html.escape(href, quote=True)}">{_cell(label)}</a>'
+
+
+def _stage_view_rel_path(stage_rel_path: str) -> str:
+    return f"views/{stage_rel_path}.html"
+
+
+def _relative_href(from_rel_path: str, to_rel_path: str) -> str:
+    source_dir = pathlib.PurePosixPath(from_rel_path).parent
+    return posixpath.relpath(to_rel_path, start=str(source_dir))
+
+
 def _metadata_rows(manifest: dict[str, Any]) -> str:
     keys = ("schema_version", "tool", "preset", "pipeline", "backend", "device_id")
     rows = []
@@ -138,18 +151,25 @@ def _metadata_rows(manifest: dict[str, Any]) -> str:
     return "\n".join(rows)
 
 
-def _stage_rows(run_dir: pathlib.Path, manifest: dict[str, Any]) -> str:
+def _stage_rows(
+    run_dir: pathlib.Path,
+    manifest: dict[str, Any],
+    stage_views: dict[str, str],
+) -> str:
     rows = []
     stages = sorted(manifest["stages"], key=lambda stage: stage["order"])
     for stage in stages:
         rel_path = str(stage["path"])
         exists = (run_dir / rel_path).exists()
         status = "present" if exists else "missing"
+        view_rel_path = stage_views.get(rel_path)
+        view_cell = _link(view_rel_path, "View") if view_rel_path else ""
         rows.append(
             "<tr>"
             f"<td>{_cell(stage['order'])}</td>"
             f"<td>{_cell(stage['name'])}</td>"
             f"<td>{_path_link(rel_path, exists=exists)}</td>"
+            f"<td>{view_cell}</td>"
             f"<td>{_cell(status)}</td>"
             "</tr>"
         )
@@ -224,8 +244,96 @@ def _summary_rows(run_dir: pathlib.Path) -> str:
     return "\n".join(rows)
 
 
+def _render_stage_views(run_dir: pathlib.Path, manifest: dict[str, Any]) -> dict[str, str]:
+    stage_views = {}
+    for stage in sorted(manifest["stages"], key=lambda item: item["order"]):
+        rel_path = stage["path"]
+        source_path = run_dir / rel_path
+        if not source_path.exists():
+            continue
+        view_rel_path = _stage_view_rel_path(rel_path)
+        view_path = run_dir / view_rel_path
+        raw_href = html.escape(_relative_href(view_rel_path, rel_path), quote=True)
+        try:
+            source_text = source_path.read_text(encoding="utf-8", errors="replace")
+        except OSError as error:
+            raise CommandError(f"could not read stage for view: {source_path}: {error}") from error
+
+        lines = source_text.splitlines() or [""]
+        line_rows = []
+        dashboard_href = html.escape(_relative_href(view_rel_path, "index.html"), quote=True)
+        for line_number, line in enumerate(lines, start=1):
+            escaped_line = html.escape(line)
+            line_rows.append(
+                '<tr class="line-row">'
+                f'<td class="gutter"><a href="#L{line_number}" id="L{line_number}">'
+                f'<span class="line-number">{line_number}</span></a></td>'
+                f'<td class="code"><pre>{escaped_line}</pre></td>'
+                "</tr>"
+            )
+
+        document = f"""<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>{_cell(pathlib.PurePosixPath(rel_path).name)} - ascend-debug</title>
+<style>
+body {{ font-family: sans-serif; margin: 0; color: #17202a; background: #f8fafc; }}
+header {{ position: sticky; top: 0; z-index: 1; padding: 0.75rem 1rem; background: #ffffff; border-bottom: 1px solid #cbd5e1; }}
+h1 {{ font-size: 1rem; margin: 0 0 0.5rem 0; }}
+.toolbar {{ display: flex; gap: 0.75rem; align-items: center; flex-wrap: wrap; }}
+input {{ min-width: 18rem; padding: 0.35rem 0.5rem; border: 1px solid #94a3b8; border-radius: 4px; }}
+main {{ padding: 0.75rem 1rem 2rem; }}
+table {{ border-collapse: collapse; width: 100%; background: #ffffff; }}
+td {{ vertical-align: top; border-bottom: 1px solid #e2e8f0; }}
+.gutter {{ width: 4.5rem; text-align: right; padding: 0 0.65rem; background: #f1f5f9; user-select: none; }}
+.gutter a {{ color: #64748b; text-decoration: none; }}
+.code {{ padding-left: 0.75rem; }}
+pre {{ margin: 0; padding: 0.12rem 0; white-space: pre-wrap; overflow-wrap: anywhere; font: 12px/1.5 SFMono-Regular, Menlo, Consolas, monospace; }}
+.hidden {{ display: none; }}
+.match pre {{ background: #fef9c3; }}
+</style>
+</head>
+<body>
+<header>
+<h1>{_cell(rel_path)}</h1>
+<div class="toolbar">
+<input id="search" type="search" placeholder="Search MLIR">
+<a href="{raw_href}">Raw MLIR</a>
+<a href="{dashboard_href}">Dashboard</a>
+</div>
+</header>
+<main>
+<table>
+<tbody>
+{''.join(line_rows)}
+</tbody>
+</table>
+</main>
+<script>
+const input = document.getElementById("search");
+const rows = Array.from(document.querySelectorAll(".line-row"));
+input.addEventListener("input", () => {{
+  const needle = input.value.toLowerCase();
+  for (const row of rows) {{
+    const text = row.innerText.toLowerCase();
+    const matched = !needle || text.includes(needle);
+    row.classList.toggle("hidden", !matched);
+    row.classList.toggle("match", Boolean(needle && matched));
+  }}
+}});
+</script>
+</body>
+</html>
+"""
+        layout.write_text(view_path, document)
+        stage_views[rel_path] = view_rel_path
+    return stage_views
+
+
 def render_index(run_dir: pathlib.Path, manifest: dict[str, Any]) -> pathlib.Path:
     index_path = run_dir / "index.html"
+    stage_views = _render_stage_views(run_dir, manifest)
     command_section = ""
     if manifest.get("commands"):
         command_section = f"""
@@ -304,9 +412,9 @@ dd {{ margin: 0 0 0.35rem 0; }}
 <section>
 <h2>Stages</h2>
 <table>
-<thead><tr><th>Order</th><th>Stage</th><th>Path</th><th>Status</th></tr></thead>
+<thead><tr><th>Order</th><th>Stage</th><th>Path</th><th>View</th><th>Status</th></tr></thead>
 <tbody>
-{_stage_rows(run_dir, manifest)}
+{_stage_rows(run_dir, manifest, stage_views)}
 </tbody>
 </table>
 </section>

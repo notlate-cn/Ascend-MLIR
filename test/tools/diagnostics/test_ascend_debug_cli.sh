@@ -105,6 +105,11 @@ grep -Fq '<h2>Summaries</h2>' "${TMP_DIR}/debug-run-graph/index.html"
 grep -Fq '<a href="graphs/kernel_dag.svg">graphs/kernel_dag.svg</a>' "${TMP_DIR}/debug-run-graph/index.html"
 grep -Fq '<a href="graphs/kernel_dag.summary.json">graphs/kernel_dag.summary.json</a>' "${TMP_DIR}/debug-run-graph/index.html"
 grep -Fq '<a href="summaries/tensor_diff.json">summaries/tensor_diff.json</a>' "${TMP_DIR}/debug-run-graph/index.html"
+grep -Fq '<a href="views/stages/029-kernelize-out.mlir.html">View</a>' "${TMP_DIR}/debug-run-graph/index.html"
+test -f "${TMP_DIR}/debug-run-graph/views/stages/029-kernelize-out.mlir.html"
+grep -Fq '<input id="search"' "${TMP_DIR}/debug-run-graph/views/stages/029-kernelize-out.mlir.html"
+grep -Fq '<span class="line-number">1</span>' "${TMP_DIR}/debug-run-graph/views/stages/029-kernelize-out.mlir.html"
+grep -Fq 'ascend.kernel' "${TMP_DIR}/debug-run-graph/views/stages/029-kernelize-out.mlir.html"
 echo "ascend_debug.open_graph=ok"
 
 make_npy_pair() {
@@ -191,17 +196,19 @@ grep -Fq '<dt>schema_version</dt><dd>1</dd>' "${TMP_DIR}/debug-run/index.html"
 grep -Fq '<dt>preset</dt><dd>quick</dd>' "${TMP_DIR}/debug-run/index.html"
 grep -Fq '<dt>tool</dt><dd>ascend-debug</dd>' "${TMP_DIR}/debug-run/index.html"
 grep -Fq '<a href="stages/029-kernelize-out.mlir">stages/029-kernelize-out.mlir</a>' "${TMP_DIR}/debug-run/index.html"
+grep -Fq '<a href="views/stages/000-source.mlir.html">View</a>' "${TMP_DIR}/debug-run/index.html"
+test -f "${TMP_DIR}/debug-run/views/stages/000-source.mlir.html"
 python3 - "${TMP_DIR}/debug-run/index.html" <<'PY'
 import pathlib
 import sys
 
 html = pathlib.Path(sys.argv[1]).read_text()
 expected_rows = [
-    ("0", "source", '<a href="stages/000-source.mlir">stages/000-source.mlir</a>', "present"),
-    ("10", "normalize-in", '<a href="stages/010-normalize-in.mlir">stages/010-normalize-in.mlir</a>', "present"),
-    ("19", "normalize-out", '<a href="stages/019-normalize-out.mlir">stages/019-normalize-out.mlir</a>', "present"),
-    ("20", "kernelize-in", '<a href="stages/020-kernelize-in.mlir">stages/020-kernelize-in.mlir</a>', "present"),
-    ("29", "kernelize-out", '<a href="stages/029-kernelize-out.mlir">stages/029-kernelize-out.mlir</a>', "present"),
+    ("0", "source", '<a href="stages/000-source.mlir">stages/000-source.mlir</a>', '<a href="views/stages/000-source.mlir.html">View</a>', "present"),
+    ("10", "normalize-in", '<a href="stages/010-normalize-in.mlir">stages/010-normalize-in.mlir</a>', '<a href="views/stages/010-normalize-in.mlir.html">View</a>', "present"),
+    ("19", "normalize-out", '<a href="stages/019-normalize-out.mlir">stages/019-normalize-out.mlir</a>', '<a href="views/stages/019-normalize-out.mlir.html">View</a>', "present"),
+    ("20", "kernelize-in", '<a href="stages/020-kernelize-in.mlir">stages/020-kernelize-in.mlir</a>', '<a href="views/stages/020-kernelize-in.mlir.html">View</a>', "present"),
+    ("29", "kernelize-out", '<a href="stages/029-kernelize-out.mlir">stages/029-kernelize-out.mlir</a>', '<a href="views/stages/029-kernelize-out.mlir.html">View</a>', "present"),
 ]
 cursor = 0
 for row in expected_rows:
