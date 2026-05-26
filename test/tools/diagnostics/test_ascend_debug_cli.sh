@@ -97,10 +97,14 @@ test -f "${TMP_DIR}/debug-run-graph/reports/050-kernel-dag-viz.report.txt"
 grep -Fq 'ascend_kernel_dag_viz.kernel_count=1' "${TMP_DIR}/debug-run-graph/reports/050-kernel-dag-viz.report.txt"
 echo "ascend_debug.collect_graph=ok"
 
+mkdir -p "${TMP_DIR}/debug-run-graph/summaries"
+printf '{"status":"pass"}\n' >"${TMP_DIR}/debug-run-graph/summaries/tensor_diff.json"
 ascend-debug open "${TMP_DIR}/debug-run-graph" --no-browser >"${TMP_DIR}/ascend-debug-open-graph.txt"
 grep -Fq '<h2>Graphs</h2>' "${TMP_DIR}/debug-run-graph/index.html"
-grep -Fq 'graphs/kernel_dag.svg' "${TMP_DIR}/debug-run-graph/index.html"
-grep -Fq 'graphs/kernel_dag.summary.json' "${TMP_DIR}/debug-run-graph/index.html"
+grep -Fq '<h2>Summaries</h2>' "${TMP_DIR}/debug-run-graph/index.html"
+grep -Fq '<a href="graphs/kernel_dag.svg">graphs/kernel_dag.svg</a>' "${TMP_DIR}/debug-run-graph/index.html"
+grep -Fq '<a href="graphs/kernel_dag.summary.json">graphs/kernel_dag.summary.json</a>' "${TMP_DIR}/debug-run-graph/index.html"
+grep -Fq '<a href="summaries/tensor_diff.json">summaries/tensor_diff.json</a>' "${TMP_DIR}/debug-run-graph/index.html"
 echo "ascend_debug.open_graph=ok"
 
 make_npy_pair() {
@@ -174,8 +178,8 @@ test -f "${TMP_DIR}/debug-run-deep/index.html"
 grep -Fq '<dt>preset</dt><dd>deep</dd>' "${TMP_DIR}/debug-run-deep/index.html"
 grep -Fq '<h2>Commands</h2>' "${TMP_DIR}/debug-run-deep/index.html"
 grep -Fq '<h2>Reports</h2>' "${TMP_DIR}/debug-run-deep/index.html"
-grep -Fq 'reports/030-schedule.report.txt' "${TMP_DIR}/debug-run-deep/index.html"
-grep -Fq 'reports/040-realize.report.txt' "${TMP_DIR}/debug-run-deep/index.html"
+grep -Fq '<a href="reports/030-schedule.report.txt">reports/030-schedule.report.txt</a>' "${TMP_DIR}/debug-run-deep/index.html"
+grep -Fq '<a href="reports/040-realize.report.txt">reports/040-realize.report.txt</a>' "${TMP_DIR}/debug-run-deep/index.html"
 echo "ascend_debug.open_deep=ok"
 
 RESOLVED_RUN_DIR="$(python3 -c 'import pathlib, sys; print(pathlib.Path(sys.argv[1]).resolve())' "${TMP_DIR}/debug-run")"
@@ -186,17 +190,18 @@ grep -Fq '<h1>ascend-debug</h1>' "${TMP_DIR}/debug-run/index.html"
 grep -Fq '<dt>schema_version</dt><dd>1</dd>' "${TMP_DIR}/debug-run/index.html"
 grep -Fq '<dt>preset</dt><dd>quick</dd>' "${TMP_DIR}/debug-run/index.html"
 grep -Fq '<dt>tool</dt><dd>ascend-debug</dd>' "${TMP_DIR}/debug-run/index.html"
+grep -Fq '<a href="stages/029-kernelize-out.mlir">stages/029-kernelize-out.mlir</a>' "${TMP_DIR}/debug-run/index.html"
 python3 - "${TMP_DIR}/debug-run/index.html" <<'PY'
 import pathlib
 import sys
 
 html = pathlib.Path(sys.argv[1]).read_text()
 expected_rows = [
-    ("0", "source", "stages/000-source.mlir", "present"),
-    ("10", "normalize-in", "stages/010-normalize-in.mlir", "present"),
-    ("19", "normalize-out", "stages/019-normalize-out.mlir", "present"),
-    ("20", "kernelize-in", "stages/020-kernelize-in.mlir", "present"),
-    ("29", "kernelize-out", "stages/029-kernelize-out.mlir", "present"),
+    ("0", "source", '<a href="stages/000-source.mlir">stages/000-source.mlir</a>', "present"),
+    ("10", "normalize-in", '<a href="stages/010-normalize-in.mlir">stages/010-normalize-in.mlir</a>', "present"),
+    ("19", "normalize-out", '<a href="stages/019-normalize-out.mlir">stages/019-normalize-out.mlir</a>', "present"),
+    ("20", "kernelize-in", '<a href="stages/020-kernelize-in.mlir">stages/020-kernelize-in.mlir</a>', "present"),
+    ("29", "kernelize-out", '<a href="stages/029-kernelize-out.mlir">stages/029-kernelize-out.mlir</a>', "present"),
 ]
 cursor = 0
 for row in expected_rows:
