@@ -18,12 +18,15 @@ def collect_debug_run(args: argparse.Namespace) -> int:
 
     layout.write_manifest(
         run_dir,
-        input_path=args.input,
         preset=args.preset,
         pipeline=args.pipeline,
         stages=stages,
     )
-    layout.write_provenance_skeleton(run_dir)
+    layout.write_provenance_skeleton(
+        run_dir,
+        original_input=args.input,
+        version=__version__,
+    )
     return 0
 
 

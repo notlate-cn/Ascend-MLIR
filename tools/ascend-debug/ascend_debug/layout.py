@@ -47,7 +47,6 @@ def write_json(path: pathlib.Path, value: dict[str, Any]) -> None:
 def write_manifest(
     run_dir: pathlib.Path,
     *,
-    input_path: pathlib.Path,
     preset: str,
     pipeline: str,
     stages: tuple[StageArtifact, ...],
@@ -57,7 +56,7 @@ def write_manifest(
         {
             "schema_version": 1,
             "tool": "ascend-debug",
-            "input": str(input_path),
+            "input": stages[0].path,
             "preset": preset,
             "pipeline": pipeline,
             "backend": "compile",
@@ -71,11 +70,19 @@ def write_manifest(
     )
 
 
-def write_provenance_skeleton(run_dir: pathlib.Path) -> None:
+def write_provenance_skeleton(
+    run_dir: pathlib.Path,
+    *,
+    original_input: pathlib.Path,
+    version: str,
+) -> None:
     write_json(
         run_dir / "provenance.json",
         {
             "schema_version": 1,
+            "tool": "ascend-debug",
+            "version": version,
+            "original_input": str(original_input),
             "boundaries": [],
             "kernels": [],
             "runtime_tasks": [],
