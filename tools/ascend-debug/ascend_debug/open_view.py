@@ -244,35 +244,32 @@ def _summary_rows(run_dir: pathlib.Path) -> str:
     return "\n".join(rows)
 
 
-def _render_stage_views(run_dir: pathlib.Path, manifest: dict[str, Any]) -> dict[str, str]:
-    stage_views = {}
-    for stage in sorted(manifest["stages"], key=lambda item: item["order"]):
-        rel_path = stage["path"]
-        source_path = run_dir / rel_path
-        if not source_path.exists():
-            continue
-        view_rel_path = _stage_view_rel_path(rel_path)
-        view_path = run_dir / view_rel_path
-        raw_href = html.escape(_relative_href(view_rel_path, rel_path), quote=True)
-        try:
-            source_text = source_path.read_text(encoding="utf-8", errors="replace")
-        except OSError as error:
-            raise CommandError(f"could not read stage for view: {source_path}: {error}") from error
+def _render_mlir_view(run_dir: pathlib.Path, rel_path: str) -> str | None:
+    source_path = run_dir / rel_path
+    if not source_path.exists():
+        return None
+    view_rel_path = _stage_view_rel_path(rel_path)
+    view_path = run_dir / view_rel_path
+    raw_href = html.escape(_relative_href(view_rel_path, rel_path), quote=True)
+    try:
+        source_text = source_path.read_text(encoding="utf-8", errors="replace")
+    except OSError as error:
+        raise CommandError(f"could not read MLIR view source: {source_path}: {error}") from error
 
-        lines = source_text.splitlines() or [""]
-        line_rows = []
-        dashboard_href = html.escape(_relative_href(view_rel_path, "index.html"), quote=True)
-        for line_number, line in enumerate(lines, start=1):
-            escaped_line = html.escape(line)
-            line_rows.append(
-                '<tr class="line-row">'
-                f'<td class="gutter"><a href="#L{line_number}" id="L{line_number}">'
-                f'<span class="line-number">{line_number}</span></a></td>'
-                f'<td class="code"><pre>{escaped_line}</pre></td>'
-                "</tr>"
-            )
+    lines = source_text.splitlines() or [""]
+    line_rows = []
+    dashboard_href = html.escape(_relative_href(view_rel_path, "index.html"), quote=True)
+    for line_number, line in enumerate(lines, start=1):
+        escaped_line = html.escape(line)
+        line_rows.append(
+            '<tr class="line-row">'
+            f'<td class="gutter"><a href="#L{line_number}" id="L{line_number}">'
+            f'<span class="line-number">{line_number}</span></a></td>'
+            f'<td class="code"><pre>{escaped_line}</pre></td>'
+            "</tr>"
+        )
 
-        document = f"""<!doctype html>
+    document = f"""<!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
@@ -326,14 +323,215 @@ input.addEventListener("input", () => {{
 </body>
 </html>
 """
-        layout.write_text(view_path, document)
-        stage_views[rel_path] = view_rel_path
+    layout.write_text(view_path, document)
+    return view_rel_path
+
+
+def _render_stage_views(run_dir: pathlib.Path, manifest: dict[str, Any]) -> dict[str, str]:
+    stage_views = {}
+    for stage in sorted(manifest["stages"], key=lambda item: item["order"]):
+        rel_path = stage["path"]
+        view_rel_path = _render_mlir_view(run_dir, rel_path)
+        if view_rel_path:
+            stage_views[rel_path] = view_rel_path
     return stage_views
+
+
+def _render_graph_mlir_views(run_dir: pathlib.Path, manifest: dict[str, Any]) -> dict[str, str]:
+    graph_views = {}
+    for graph in manifest.get("graphs", []):
+        rel_path = graph.get("path")
+        if isinstance(rel_path, str) and rel_path.endswith(".mlir"):
+            view_rel_path = _render_mlir_view(run_dir, rel_path)
+            if view_rel_path:
+                graph_views[rel_path] = view_rel_path
+    return graph_views
+
+
+def _load_kernel_summary(run_dir: pathlib.Path) -> dict[str, Any] | None:
+    summary_path = run_dir / "graphs/kernel_dag.summary.json"
+    if not summary_path.exists():
+        return None
+    try:
+        summary = json.loads(summary_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise CommandError(f"could not read kernel DAG summary: {summary_path}: {error}") from error
+    if not isinstance(summary, dict):
+        raise CommandError(f"kernel DAG summary must be a JSON object: {summary_path}")
+    nodes = summary.get("nodes")
+    if not isinstance(nodes, dict):
+        raise CommandError(f"kernel DAG summary nodes must be an object: {summary_path}")
+    return summary
+
+
+def _kernel_sort_key(kernel_id: str) -> tuple[int, str]:
+    suffix = ""
+    for char in reversed(kernel_id):
+        if not char.isdigit():
+            break
+        suffix = char + suffix
+    return (int(suffix), kernel_id) if suffix else (10**9, kernel_id)
+
+
+def _kernel_edge_maps(summary: dict[str, Any]) -> tuple[dict[str, list[str]], dict[str, list[str]]]:
+    pred: dict[str, list[str]] = {}
+    succ: dict[str, list[str]] = {}
+    for kernel_id in summary.get("nodes", {}):
+        pred[kernel_id] = []
+        succ[kernel_id] = []
+    for edge in summary.get("edges", []):
+        if not isinstance(edge, dict):
+            continue
+        src = edge.get("from")
+        dst = edge.get("to")
+        if isinstance(src, str) and isinstance(dst, str):
+            succ.setdefault(src, []).append(dst)
+            pred.setdefault(dst, []).append(src)
+    for item in pred.values():
+        item.sort(key=_kernel_sort_key)
+    for item in succ.values():
+        item.sort(key=_kernel_sort_key)
+    return pred, succ
+
+
+def _kernel_link_list(kernel_ids: list[str], current_view: str) -> str:
+    if not kernel_ids:
+        return ""
+    links = []
+    for kernel_id in kernel_ids:
+        href = _relative_href(current_view, f"views/kernels/{kernel_id}.html")
+        links.append(_link(href, kernel_id))
+    return ", ".join(links)
+
+
+def _render_kernel_views(
+    run_dir: pathlib.Path,
+    summary: dict[str, Any] | None,
+    graph_views: dict[str, str],
+) -> dict[str, str]:
+    if not summary:
+        return {}
+    pred, succ = _kernel_edge_maps(summary)
+    kernel_views = {}
+    kernelized_view = graph_views.get("graphs/kernelized.mlir")
+    for kernel_id in sorted(summary["nodes"], key=_kernel_sort_key):
+        node = summary["nodes"][kernel_id]
+        if not isinstance(node, dict):
+            continue
+        view_rel_path = f"views/kernels/{kernel_id}.html"
+        dashboard_href = html.escape(_relative_href(view_rel_path, "index.html"), quote=True)
+        dag_href = html.escape(_relative_href(view_rel_path, "graphs/kernel_dag.svg"), quote=True)
+        summary_href = html.escape(
+            _relative_href(view_rel_path, "graphs/kernel_dag.summary.json"),
+            quote=True,
+        )
+        fact_rows = []
+        for label, value in (
+            ("kind", node.get("kind")),
+            ("depth", node.get("depth")),
+            ("input_degree", node.get("input_degree")),
+            ("output_degree", node.get("output_degree")),
+            ("output_shape", node.get("output_shape")),
+            ("output_dtype", node.get("output_dtype")),
+            ("selected_tile_shape", node.get("selected_tile_shape")),
+            ("workspace_size", node.get("workspace_size")),
+            ("is_root", node.get("is_root")),
+            ("is_leaf", node.get("is_leaf")),
+            ("is_prepack_candidate_root", node.get("is_prepack_candidate_root")),
+            ("touches_simple_fusion_edge", node.get("touches_simple_fusion_edge")),
+        ):
+            fact_rows.append(f"<tr><th>{_cell(label)}</th><td>{_cell(value)}</td></tr>")
+
+        op_rows = []
+        for op in node.get("ops", []):
+            if not isinstance(op, dict):
+                continue
+            line = op.get("line")
+            line_cell = _cell(line)
+            if isinstance(line, int) and kernelized_view:
+                href = f"{_relative_href(view_rel_path, kernelized_view)}#L{line}"
+                line_cell = _link(href, str(line))
+            op_rows.append(
+                "<tr>"
+                f"<td>{line_cell}</td>"
+                f"<td>{_cell(op.get('op'))}</td>"
+                f"<td>{_cell(op.get('label'))}</td>"
+                f"<td>{_cell(op.get('role'))}</td>"
+                f"<td>{_cell(op.get('result_type'))}</td>"
+                "</tr>"
+            )
+        if not op_rows:
+            op_rows.append('<tr><td colspan="5">No MLIR op summary available.</td></tr>')
+
+        upstream = _kernel_link_list(pred.get(kernel_id, []), view_rel_path)
+        downstream = _kernel_link_list(succ.get(kernel_id, []), view_rel_path)
+        document = f"""<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>{_cell(kernel_id)} - ascend-debug</title>
+<style>
+body {{ font-family: sans-serif; margin: 2rem; color: #17202a; background: #f8fafc; }}
+table {{ border-collapse: collapse; width: 100%; background: #ffffff; margin: 0 0 1rem; }}
+th, td {{ border: 1px solid #cbd5e1; padding: 0.4rem 0.55rem; text-align: left; vertical-align: top; }}
+th {{ background: #f1f5f9; }}
+.toolbar {{ display: flex; gap: 0.75rem; flex-wrap: wrap; margin-bottom: 1rem; }}
+.mono {{ font-family: SFMono-Regular, Menlo, Consolas, monospace; }}
+</style>
+</head>
+<body>
+<h1>{_cell(kernel_id)}</h1>
+<div class="toolbar">
+<a href="{dashboard_href}">Dashboard</a>
+<a href="{dag_href}">Kernel DAG</a>
+<a href="{summary_href}">DAG summary JSON</a>
+</div>
+<h2>Kernel Facts</h2>
+<table><tbody>{''.join(fact_rows)}</tbody></table>
+<h2>DAG Context</h2>
+<table><tbody>
+<tr><th>upstream</th><td>{upstream}</td></tr>
+<tr><th>downstream</th><td>{downstream}</td></tr>
+</tbody></table>
+<h2>MLIR Ops</h2>
+<table>
+<thead><tr><th>Line</th><th>Operation</th><th>Label</th><th>Role</th><th>Result Type</th></tr></thead>
+<tbody>{''.join(op_rows)}</tbody>
+</table>
+</body>
+</html>
+"""
+        layout.write_text(run_dir / view_rel_path, document)
+        kernel_views[kernel_id] = view_rel_path
+    return kernel_views
+
+
+def _kernel_rows(summary: dict[str, Any] | None, kernel_views: dict[str, str]) -> str:
+    if not summary or not kernel_views:
+        return ""
+    rows = []
+    for kernel_id in sorted(kernel_views, key=_kernel_sort_key):
+        node = summary["nodes"].get(kernel_id, {})
+        rows.append(
+            "<tr>"
+            f"<td>{_link(kernel_views[kernel_id], kernel_id)}</td>"
+            f"<td>{_cell(node.get('kind'))}</td>"
+            f"<td>{_cell(node.get('depth'))}</td>"
+            f"<td>{_cell(node.get('output_shape'))}</td>"
+            f"<td>{_cell(node.get('selected_tile_shape'))}</td>"
+            f"<td>{_cell(node.get('workspace_size'))}</td>"
+            f"<td>{_cell(len(node.get('ops', [])))}</td>"
+            "</tr>"
+        )
+    return "\n".join(rows)
 
 
 def render_index(run_dir: pathlib.Path, manifest: dict[str, Any]) -> pathlib.Path:
     index_path = run_dir / "index.html"
     stage_views = _render_stage_views(run_dir, manifest)
+    graph_views = _render_graph_mlir_views(run_dir, manifest)
+    kernel_summary = _load_kernel_summary(run_dir)
+    kernel_views = _render_kernel_views(run_dir, kernel_summary, graph_views)
     command_section = ""
     if manifest.get("commands"):
         command_section = f"""
@@ -369,6 +567,20 @@ def render_index(run_dir: pathlib.Path, manifest: dict[str, Any]) -> pathlib.Pat
 <thead><tr><th>Kind</th><th>Path</th><th>Status</th></tr></thead>
 <tbody>
 {_graph_rows(run_dir, manifest)}
+</tbody>
+</table>
+</section>
+"""
+    kernel_rows = _kernel_rows(kernel_summary, kernel_views)
+    kernel_section = ""
+    if kernel_rows:
+        kernel_section = f"""
+<section>
+<h2>Kernels</h2>
+<table>
+<thead><tr><th>Kernel</th><th>Kind</th><th>Depth</th><th>Output Shape</th><th>Tile</th><th>Workspace</th><th>Ops</th></tr></thead>
+<tbody>
+{kernel_rows}
 </tbody>
 </table>
 </section>
@@ -421,6 +633,7 @@ dd {{ margin: 0 0 0.35rem 0; }}
 {command_section}
 {report_section}
 {graph_section}
+{kernel_section}
 {summary_section}
 </body>
 </html>

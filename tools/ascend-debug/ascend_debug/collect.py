@@ -169,6 +169,8 @@ def _collect_graph_artifacts(
         svg_rel,
         "--summary-out",
         summary_rel,
+        "--kernel-view-base",
+        "../views/kernels",
     ]
     argv = [
         sys.executable,
@@ -181,6 +183,8 @@ def _collect_graph_artifacts(
         str(run_dir / svg_rel),
         "--summary-out",
         str(run_dir / summary_rel),
+        "--kernel-view-base",
+        "../views/kernels",
     ]
     if run_manifest_dst:
         tool_args[2:2] = ["--run-manifest", "graphs/run_manifest.json"]
