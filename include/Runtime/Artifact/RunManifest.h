@@ -19,6 +19,16 @@ struct RunManifestSpec {
   std::vector<RunTaskSpec> tasks;
 };
 
+struct ArtifactManifestPrepareRequest {
+  std::string artifactManifestPath;
+  std::string artifactRoot;
+  std::string outputRunManifestPath;
+  ExecutionBackendKind backendKind = ExecutionBackendKind::Simulation;
+};
+
 llvm::Expected<RunManifestSpec> loadRunManifest(const std::string &path);
+
+llvm::Error
+emitRunManifestFromArtifactManifest(const ArtifactManifestPrepareRequest &request);
 
 } // namespace mlir::runtime

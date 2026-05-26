@@ -59,6 +59,8 @@ RUNTIME_SESSION_ARTIFACT_ROOT="$(mktemp -d)"
 RUNTIME_SESSION_SECOND_ARTIFACT_ROOT="$(mktemp -d)"
 RUNTIME_SESSION_RUN_MANIFEST="$(mktemp /tmp/runtime_session_run_manifest.XXXXXX.json)"
 RUNTIME_SESSION_ACTUAL_OUTPUT="$(mktemp /tmp/runtime_session_actual.XXXXXX.npy)"
+RUNTIME_SESSION_ARTIFACT_MANIFEST="$(mktemp /tmp/runtime_session_artifact_manifest.XXXXXX.json)"
+RUNTIME_SESSION_PREPARED_RUN_MANIFEST="$(mktemp /tmp/runtime_session_prepared_run_manifest.XXXXXX.json)"
 RUNTIME_SESSION_DAG_MANIFEST="$(mktemp /tmp/runtime_session_dag_manifest.XXXXXX.json)"
 RUNTIME_SESSION_DAG_OUTPUT="$(mktemp /tmp/runtime_session_dag_actual.XXXXXX.npy)"
 RUNTIME_SESSION_NPU_MANIFEST="$(mktemp /tmp/runtime_session_npu_manifest.XXXXXX.json)"
@@ -74,7 +76,9 @@ cleanup() {
         "$CONFLICT_STDERR" "$INVALID_KIND_STDERR" \
         "$TEST_TASKGRAPH_RUNTIME_BIN" "$TEST_CAPI_RUNTIME_BIN" \
         "$RUNTIME_SESSION_RUN_MANIFEST" \
-        "$RUNTIME_SESSION_ACTUAL_OUTPUT" "$RUNTIME_SESSION_DAG_MANIFEST" \
+        "$RUNTIME_SESSION_ACTUAL_OUTPUT" "$RUNTIME_SESSION_ARTIFACT_MANIFEST" \
+        "$RUNTIME_SESSION_PREPARED_RUN_MANIFEST" \
+        "$RUNTIME_SESSION_DAG_MANIFEST" \
         "$RUNTIME_SESSION_DAG_OUTPUT" "$RUNTIME_SESSION_NPU_MANIFEST" \
         "$RUNTIME_SESSION_NPU_OUTPUT" "$RUNTIME_SESSION_NPU_SUCCESS_STDOUT" \
         "$RUNTIME_SESSION_NPU_SUCCESS_STDERR" "$NPU_STDERR"
@@ -123,6 +127,82 @@ if build/bin/runtime-session --artifact-root "${FAKE_ARTIFACT_ROOT}" --run 2>"${
   exit 1
 fi
 grep -q "simulation path requires at least one output binding" "${RUN_STDERR}"
+
+echo "--- Checking runtime-session artifact-manifest prepare path ---"
+cat > "${RUNTIME_SESSION_ARTIFACT_MANIFEST}" <<'EOF'
+{
+  "kernelGraph": {
+    "nodes": [
+      { "name": "kernel_a" },
+      { "name": "kernel_b" }
+    ],
+    "edges": [
+      {
+        "from": "kernel_a",
+        "to": "kernel_b",
+        "carriedBuffers": ["tmp0"]
+      }
+    ]
+  },
+  "kernel_entries": [
+    {
+      "kernel_id": "kernel_a",
+      "kernelKind": "vec",
+      "workspaceSizeBytes": 1024,
+      "scheduleEntries": [
+        {
+          "decisionId": "kernel_a.decision.0",
+          "guard": "true",
+          "tilingParams": {
+            "selected_tile_shape": [32]
+          }
+        }
+      ]
+    },
+    {
+      "kernel_id": "kernel_b",
+      "kernelKind": "vec",
+      "workspaceSizeBytes": 2048,
+      "scheduleEntries": [
+        {
+          "decisionId": "kernel_b.decision.0",
+          "guard": "true",
+          "tilingParams": {
+            "selected_tile_shape": [64]
+          }
+        }
+      ]
+    }
+  ]
+}
+EOF
+build/bin/runtime-session \
+  --artifact-manifest "${RUNTIME_SESSION_ARTIFACT_MANIFEST}" \
+  --artifact-root "${FAKE_ARTIFACT_ROOT}" \
+  --emit-run-manifest "${RUNTIME_SESSION_PREPARED_RUN_MANIFEST}" \
+  >/tmp/runtime_session_prepare_manifest.log
+test -f "${RUNTIME_SESSION_PREPARED_RUN_MANIFEST}"
+python3 - "${RUNTIME_SESSION_PREPARED_RUN_MANIFEST}" "${FAKE_ARTIFACT_ROOT}" <<'PY'
+import json
+import pathlib
+import sys
+
+manifest = json.loads(pathlib.Path(sys.argv[1]).read_text())
+artifact_root = sys.argv[2]
+assert manifest["backend"] == "sim"
+assert manifest["artifact_root"] == artifact_root
+tasks = manifest["tasks"]
+assert [task["task_id"] for task in tasks] == ["kernel_a", "kernel_b"]
+assert tasks[0].get("dependencies", []) == []
+assert tasks[1]["dependencies"] == ["kernel_a"]
+assert tasks[0]["workspace_size"] == 1024
+assert tasks[1]["workspace_size"] == 2048
+assert tasks[0]["tiling"]["params"] == "selected_tile_shape=32"
+assert tasks[1]["tiling"]["params"] == "selected_tile_shape=64"
+PY
+PLAN_OUTPUT="$(build/bin/runtime-session --run-manifest "${RUNTIME_SESSION_PREPARED_RUN_MANIFEST}")"
+printf '%s\n' "${PLAN_OUTPUT}" | grep -q "session.plan\\[0\\]=kernel_a"
+printf '%s\n' "${PLAN_OUTPUT}" | grep -q "session.plan\\[1\\]=kernel_b"
 
 echo "--- Checking runtime-session positive vec simulation path ---"
 runtime_verify_build_example_toolchain

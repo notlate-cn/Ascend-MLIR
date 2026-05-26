@@ -1,5 +1,6 @@
 #include "Runtime/RuntimeSessionRequestBuilder.h"
 #include "Runtime/RuntimeFrontendCore.h"
+#include "Runtime/RunManifest.h"
 #include "Runtime/ToolDiscovery.h"
 #include "Runtime/ExecutionBackend.h"
 #include "Runtime/ExecutionSession.h"
@@ -31,6 +32,16 @@ llvm::cl::OptionCategory RuntimeSessionCategory("runtime-session options");
 llvm::cl::opt<std::string> ArtifactRoot(
     "artifact-root",
     llvm::cl::desc("Use an existing artifact root with a real manifest"),
+    llvm::cl::cat(RuntimeSessionCategory));
+llvm::cl::opt<std::string> ArtifactManifestPath(
+    "artifact-manifest",
+    llvm::cl::desc("Artifact manifest to prepare into a concrete run manifest"),
+    llvm::cl::init(""),
+    llvm::cl::cat(RuntimeSessionCategory));
+llvm::cl::opt<std::string> EmitRunManifestPath(
+    "emit-run-manifest",
+    llvm::cl::desc("Write a concrete run manifest prepared from --artifact-manifest"),
+    llvm::cl::init(""),
     llvm::cl::cat(RuntimeSessionCategory));
 llvm::cl::opt<std::string> KernelFile(
     "kernel",
@@ -248,6 +259,49 @@ int main(int argc, char **argv) {
   llvm::cl::ParseCommandLineOptions(
       argc, argv,
       "task graph runtime planning and execution CLI for artifacts and session graphs\n");
+
+#ifndef ASCEND_RUNTIME_SESSION_RUN_ONLY
+  if (!ArtifactManifestPath.empty() || !EmitRunManifestPath.empty()) {
+    if (ArtifactManifestPath.empty()) {
+      llvm::errs() << "Error: --emit-run-manifest requires --artifact-manifest\n";
+      return 4;
+    }
+    if (EmitRunManifestPath.empty()) {
+      llvm::errs() << "Error: --artifact-manifest requires --emit-run-manifest\n";
+      return 4;
+    }
+    if (ArtifactRoot.empty()) {
+      llvm::errs() << "Error: --artifact-manifest prepare requires --artifact-root\n";
+      return 4;
+    }
+    if (!RunManifestPath.empty()) {
+      llvm::errs()
+          << "Error: cannot combine --emit-run-manifest with --run-manifest\n";
+      return 4;
+    }
+    if (!KernelFile.empty()) {
+      llvm::errs()
+          << "Error: cannot combine --artifact-manifest prepare with --kernel\n";
+      return 4;
+    }
+    if (RunSession) {
+      llvm::errs() << "Error: --emit-run-manifest is a prepare step; run the "
+                      "emitted manifest with --run-manifest --run\n";
+      return 4;
+    }
+
+    ArtifactManifestPrepareRequest prepareRequest;
+    prepareRequest.artifactManifestPath = ArtifactManifestPath;
+    prepareRequest.artifactRoot = ArtifactRoot;
+    prepareRequest.outputRunManifestPath = EmitRunManifestPath;
+    if (auto err = emitRunManifestFromArtifactManifest(prepareRequest)) {
+      llvm::errs() << "Error: " << llvm::toString(std::move(err)) << "\n";
+      return 4;
+    }
+    llvm::outs() << "run_manifest.path=" << EmitRunManifestPath << "\n";
+    return 0;
+  }
+#endif
 
   ExecutionBackendKind backendKind = ExecutionBackendKind::Simulation;
 #ifndef ASCEND_RUNTIME_SESSION_RUN_ONLY

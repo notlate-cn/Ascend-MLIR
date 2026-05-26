@@ -1,8 +1,20 @@
 #include "Runtime/RunManifest.h"
 
+#include "llvm/ADT/SmallVector.h"
+#include "llvm/ADT/STLExtras.h"
+#include "llvm/ADT/StringMap.h"
+#include "llvm/ADT/StringRef.h"
 #include "llvm/Support/Error.h"
+#include "llvm/Support/FileSystem.h"
+#include "llvm/Support/FormatVariadic.h"
 #include "llvm/Support/JSON.h"
 #include "llvm/Support/MemoryBuffer.h"
+#include "llvm/Support/raw_ostream.h"
+
+#include <algorithm>
+#include <string>
+#include <utility>
+#include <vector>
 
 namespace mlir::runtime {
 
@@ -47,6 +59,15 @@ parseStringArray(const llvm::json::Object &object, const char *fieldName) {
   return values;
 }
 
+llvm::Expected<const llvm::json::Array *>
+requireArray(const llvm::json::Object &object, const char *fieldName) {
+  if (auto *array = object.getArray(fieldName))
+    return array;
+  return llvm::createStringError(llvm::inconvertibleErrorCode(),
+                                 "missing required array field: %s",
+                                 fieldName);
+}
+
 llvm::Expected<ExecutionBackendKind> parseBackendKind(llvm::StringRef value) {
   if (value == "sim" || value == "simulation")
     return ExecutionBackendKind::Simulation;
@@ -55,6 +76,16 @@ llvm::Expected<ExecutionBackendKind> parseBackendKind(llvm::StringRef value) {
   return llvm::createStringError(llvm::inconvertibleErrorCode(),
                                  "unsupported backend kind: %s",
                                  value.str().c_str());
+}
+
+llvm::StringRef stringifyBackendKind(ExecutionBackendKind backendKind) {
+  switch (backendKind) {
+  case ExecutionBackendKind::Simulation:
+    return "sim";
+  case ExecutionBackendKind::Npu:
+    return "npu";
+  }
+  return "unknown";
 }
 
 llvm::Expected<DType> parseDType(llvm::StringRef value) {
@@ -235,6 +266,149 @@ parseTaskSpec(const llvm::json::Object &root,
   return spec;
 }
 
+llvm::Expected<int64_t>
+parseOptionalInteger(const llvm::json::Object &object, const char *fieldName,
+                     int64_t defaultValue) {
+  if (auto value = object.getInteger(fieldName))
+    return *value;
+  return defaultValue;
+}
+
+llvm::Expected<const llvm::json::Object *>
+selectStaticScheduleEntry(const llvm::json::Object &kernelEntry,
+                          llvm::StringRef kernelId) {
+  auto scheduleEntriesOr = requireArray(kernelEntry, "scheduleEntries");
+  if (!scheduleEntriesOr)
+    return scheduleEntriesOr.takeError();
+  if ((*scheduleEntriesOr)->empty()) {
+    return llvm::createStringError(llvm::inconvertibleErrorCode(),
+                                   "artifact manifest kernel %s has no schedule entries",
+                                   kernelId.str().c_str());
+  }
+
+  for (const llvm::json::Value &value : **scheduleEntriesOr) {
+    auto entryOr = requireObject(&value, "scheduleEntries");
+    if (!entryOr)
+      return entryOr.takeError();
+    if (auto guard = (*entryOr)->getString("guard")) {
+      if (*guard == "true")
+        return *entryOr;
+      continue;
+    }
+    if (auto fallback = (*entryOr)->getBoolean("fallback")) {
+      if (*fallback)
+        return *entryOr;
+      continue;
+    }
+    return *entryOr;
+  }
+
+  return llvm::createStringError(
+      llvm::inconvertibleErrorCode(),
+      "artifact manifest kernel %s has no static schedule entry",
+      kernelId.str().c_str());
+}
+
+std::string renderJsonScalar(const llvm::json::Value &value) {
+  if (auto string = value.getAsString())
+    return string->str();
+  if (auto integer = value.getAsInteger())
+    return std::to_string(*integer);
+  if (auto boolean = value.getAsBoolean())
+    return *boolean ? "true" : "false";
+  if (auto number = value.getAsNumber())
+    return llvm::formatv("{0}", *number).str();
+  return llvm::formatv("{0:0}", value).str();
+}
+
+std::string renderTilingParamValue(const llvm::json::Value &value) {
+  if (auto *array = value.getAsArray()) {
+    std::string rendered;
+    llvm::raw_string_ostream os(rendered);
+    for (auto [index, element] : llvm::enumerate(*array)) {
+      if (index != 0)
+        os << ",";
+      os << renderJsonScalar(element);
+    }
+    return os.str();
+  }
+  return renderJsonScalar(value);
+}
+
+std::string renderTilingParams(const llvm::json::Object &scheduleEntry) {
+  const llvm::json::Object *params = scheduleEntry.getObject("tilingParams");
+  if (!params || params->empty())
+    return "";
+
+  std::vector<std::pair<std::string, std::string>> fields;
+  fields.reserve(params->size());
+  for (const auto &field : *params)
+    fields.emplace_back(field.getFirst().str(),
+                        renderTilingParamValue(field.getSecond()));
+  std::sort(fields.begin(), fields.end());
+
+  std::string rendered;
+  llvm::raw_string_ostream os(rendered);
+  for (auto [index, field] : llvm::enumerate(fields)) {
+    if (index != 0)
+      os << ",";
+    os << field.first << "=" << field.second;
+  }
+  return os.str();
+}
+
+llvm::json::Array toJsonStringArray(llvm::ArrayRef<std::string> values) {
+  llvm::json::Array array;
+  for (const std::string &value : values)
+    array.push_back(value);
+  return array;
+}
+
+llvm::Expected<llvm::StringMap<llvm::SmallVector<std::string, 2>>>
+parseKernelGraphDependencies(const llvm::json::Object &root,
+                             llvm::ArrayRef<std::string> kernelIds) {
+  llvm::StringMap<bool> knownKernels;
+  for (const std::string &kernelId : kernelIds)
+    knownKernels[kernelId] = true;
+
+  llvm::StringMap<llvm::SmallVector<std::string, 2>> dependencies;
+  const llvm::json::Object *graph = root.getObject("kernelGraph");
+  if (!graph)
+    return dependencies;
+
+  const llvm::json::Array *edges = graph->getArray("edges");
+  if (!edges)
+    return dependencies;
+
+  for (const llvm::json::Value &value : *edges) {
+    auto edgeOr = requireObject(&value, "kernelGraph.edges");
+    if (!edgeOr)
+      return edgeOr.takeError();
+    auto fromOr = requireString(**edgeOr, "from");
+    if (!fromOr)
+      return fromOr.takeError();
+    auto toOr = requireString(**edgeOr, "to");
+    if (!toOr)
+      return toOr.takeError();
+    if (!knownKernels.count(*fromOr)) {
+      return llvm::createStringError(
+          llvm::inconvertibleErrorCode(),
+          "artifact manifest kernelGraph edge references unknown source kernel: %s",
+          fromOr->c_str());
+    }
+    if (!knownKernels.count(*toOr)) {
+      return llvm::createStringError(
+          llvm::inconvertibleErrorCode(),
+          "artifact manifest kernelGraph edge references unknown target kernel: %s",
+          toOr->c_str());
+    }
+    llvm::SmallVector<std::string, 2> &deps = dependencies[*toOr];
+    if (!llvm::is_contained(deps, *fromOr))
+      deps.push_back(*fromOr);
+  }
+  return dependencies;
+}
+
 } // namespace
 
 llvm::Expected<RunManifestSpec> loadRunManifest(const std::string &path) {
@@ -293,6 +467,133 @@ llvm::Expected<RunManifestSpec> loadRunManifest(const std::string &path) {
   }
 
   return spec;
+}
+
+llvm::Error emitRunManifestFromArtifactManifest(
+    const ArtifactManifestPrepareRequest &request) {
+  if (request.artifactManifestPath.empty()) {
+    return llvm::createStringError(llvm::inconvertibleErrorCode(),
+                                   "artifact manifest path is required");
+  }
+  if (request.artifactRoot.empty()) {
+    return llvm::createStringError(llvm::inconvertibleErrorCode(),
+                                   "artifact root is required");
+  }
+  if (request.outputRunManifestPath.empty()) {
+    return llvm::createStringError(llvm::inconvertibleErrorCode(),
+                                   "output run manifest path is required");
+  }
+
+  auto bufferOr =
+      llvm::MemoryBuffer::getFile(request.artifactManifestPath, /*IsText=*/true);
+  if (!bufferOr) {
+    return llvm::createStringError(llvm::inconvertibleErrorCode(),
+                                   "cannot read artifact manifest: %s",
+                                   request.artifactManifestPath.c_str());
+  }
+
+  auto jsonOr = llvm::json::parse((*bufferOr)->getBuffer());
+  if (!jsonOr) {
+    return llvm::createStringError(llvm::inconvertibleErrorCode(),
+                                   "invalid JSON in artifact manifest: %s",
+                                   request.artifactManifestPath.c_str());
+  }
+
+  const llvm::json::Object *root = jsonOr->getAsObject();
+  if (!root) {
+    return llvm::createStringError(
+        llvm::inconvertibleErrorCode(),
+        "artifact manifest root must be an object: %s",
+        request.artifactManifestPath.c_str());
+  }
+
+  auto kernelEntriesOr = requireArray(*root, "kernel_entries");
+  if (!kernelEntriesOr)
+    return kernelEntriesOr.takeError();
+  if ((*kernelEntriesOr)->empty()) {
+    return llvm::createStringError(llvm::inconvertibleErrorCode(),
+                                   "artifact manifest must contain at least one kernel entry");
+  }
+
+  struct PreparedKernel {
+    std::string kernelId;
+    int64_t workspaceSize = 8192;
+    std::string tilingParams;
+  };
+
+  llvm::SmallVector<PreparedKernel, 8> kernels;
+  llvm::SmallVector<std::string, 8> kernelIds;
+  for (const llvm::json::Value &value : **kernelEntriesOr) {
+    auto entryOr = requireObject(&value, "kernel_entries");
+    if (!entryOr)
+      return entryOr.takeError();
+    auto kernelIdOr = requireString(**entryOr, "kernel_id");
+    if (!kernelIdOr)
+      return kernelIdOr.takeError();
+    auto scheduleEntryOr = selectStaticScheduleEntry(**entryOr, *kernelIdOr);
+    if (!scheduleEntryOr)
+      return scheduleEntryOr.takeError();
+    auto workspaceSizeOr =
+        parseOptionalInteger(**entryOr, "workspaceSizeBytes", 8192);
+    if (!workspaceSizeOr)
+      return workspaceSizeOr.takeError();
+
+    PreparedKernel kernel;
+    kernel.kernelId = *kernelIdOr;
+    kernel.workspaceSize = *workspaceSizeOr;
+    kernel.tilingParams = renderTilingParams(**scheduleEntryOr);
+    kernels.push_back(std::move(kernel));
+    kernelIds.push_back(*kernelIdOr);
+  }
+
+  auto dependenciesOr = parseKernelGraphDependencies(*root, kernelIds);
+  if (!dependenciesOr)
+    return dependenciesOr.takeError();
+
+  llvm::json::Object runManifest;
+  runManifest["backend"] = stringifyBackendKind(request.backendKind).str();
+  runManifest["artifact_root"] = request.artifactRoot;
+  llvm::json::Array tasks;
+  for (const PreparedKernel &kernel : kernels) {
+    llvm::json::Object task;
+    task["task_id"] = kernel.kernelId;
+    auto depsIt = dependenciesOr->find(kernel.kernelId);
+    if (depsIt != dependenciesOr->end()) {
+      std::vector<std::string> deps(depsIt->second.begin(),
+                                    depsIt->second.end());
+      task["dependencies"] = toJsonStringArray(deps);
+    }
+    task["inputs"] = llvm::json::Array{};
+    task["outputs"] = llvm::json::Array{};
+    if (!kernel.tilingParams.empty()) {
+      llvm::json::Object tiling;
+      tiling["params"] = kernel.tilingParams;
+      task["tiling"] = std::move(tiling);
+    }
+    task["block_dim"] = 1;
+    task["workspace_size"] = kernel.workspaceSize;
+    tasks.push_back(std::move(task));
+  }
+  runManifest["tasks"] = std::move(tasks);
+
+  std::error_code error;
+  llvm::raw_fd_ostream os(request.outputRunManifestPath, error,
+                          llvm::sys::fs::OF_None);
+  if (error) {
+    return llvm::createStringError(error, "cannot open run manifest for writing: %s",
+                                   request.outputRunManifestPath.c_str());
+  }
+  llvm::json::OStream json(os, /*IndentSize=*/2);
+  json.value(llvm::json::Value(std::move(runManifest)));
+  os << "\n";
+  os.flush();
+  if (os.has_error()) {
+    std::error_code writeError = os.error();
+    os.clear_error();
+    return llvm::createStringError(writeError, "cannot write run manifest: %s",
+                                   request.outputRunManifestPath.c_str());
+  }
+  return llvm::Error::success();
 }
 
 } // namespace mlir::runtime
