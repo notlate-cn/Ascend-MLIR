@@ -5,6 +5,7 @@
 #include "Runtime/NpyIO.h"
 #include "Runtime/OutputComparator.h"
 #include "Runtime/TilingPack.h"
+#include "llvm/ADT/STLExtras.h"
 #include "llvm/Support/Error.h"
 #include "llvm/Support/FormatVariadic.h"
 
@@ -81,11 +82,23 @@ loadExpectedOutputs(const ExecutionInvocation &invocation) {
   return expected;
 }
 
+bool shapeCompatibleWithExpectedOutput(llvm::ArrayRef<int64_t> bindingShape,
+                                       llvm::ArrayRef<int64_t> expectedShape) {
+  if (bindingShape.size() != expectedShape.size())
+    return false;
+  for (auto [bindingDim, expectedDim] : llvm::zip(bindingShape, expectedShape)) {
+    if (bindingDim >= 0 && bindingDim != expectedDim)
+      return false;
+  }
+  return true;
+}
+
 llvm::Error validateOutputBindingAgainstExpected(const TensorBinding &binding,
                                                  const NDArray &expected) {
   if (auto err = validateOutputBindingPathAndSource(binding))
     return err;
-  if (binding.shape && *binding.shape != expected.shape) {
+  if (binding.shape &&
+      !shapeCompatibleWithExpectedOutput(*binding.shape, expected.shape)) {
     return llvm::createStringError(
         llvm::inconvertibleErrorCode(),
         "output binding metadata does not match expected output: %s shape",

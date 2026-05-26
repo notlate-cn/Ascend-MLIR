@@ -2997,6 +2997,43 @@ static void testNpuBackendRejectsExpectedOutputMetadataMismatch() {
   }
 }
 
+static void testNpuBackendAllowsDynamicOutputShapeWithExpectedOutput() {
+  auto driver = std::make_shared<SuccessfulNpuBackendDriver>();
+  SuccessfulNpuBackendDriver *driverPtr = driver.get();
+  auto npuOr = createExecutionBackend(ExecutionBackendKind::Npu, driver);
+  EXPECT((bool)npuOr,
+         "driver-backed npu backend creation succeeds for dynamic output metadata");
+  if (!npuOr)
+    return;
+
+  const std::string expectedPath =
+      writeTempNpy("taskgraph-runtime-npu-dynamic-expected", {2, 3}, DType::F16);
+  if (expectedPath.empty())
+    return;
+
+  ExecutionRequest request;
+  request.task.taskId = "task_npu_dynamic_expected";
+  request.task.artifact.kernelName = "vec_kernel";
+  request.task.artifact.kernelKind = KernelKind::Vec;
+  request.task.artifact.deviceBinaryPath = "/tmp/fake_npu_kernel.bin";
+  request.task.invocation.outputs.push_back(
+      TensorBinding{"out", BindingSourceKind::ExternalFile,
+                    "/tmp/task_npu_dynamic_expected.npy", "", "",
+                    std::vector<int64_t>{-1, -1}, DType::F16});
+  request.task.invocation.expectedOutputs.push_back(
+      TensorBinding{"out", BindingSourceKind::ExternalFile, expectedPath});
+
+  auto resultOr = (*npuOr)->run(request);
+  EXPECT((bool)resultOr,
+         "driver-backed npu accepts dynamic output shape when expected output fixes allocation shape");
+  if (!resultOr) {
+    llvm::consumeError(resultOr.takeError());
+    return;
+  }
+  EXPECT(driverPtr->invocations == 1,
+         "driver-backed npu invokes driver for dynamic output metadata");
+}
+
 static void testNpuBackendRejectsExpectedOutputMissingPath() {
   auto npuOr = createExecutionBackend(ExecutionBackendKind::Npu);
   EXPECT((bool)npuOr,
@@ -6930,6 +6967,7 @@ int main() {
   testNpuBackendInitializesRunnerFromAscendDeviceIdEnv();
   testNpuBackendRejectsInvalidAscendDeviceIdEnv();
   testNpuBackendRejectsExpectedOutputMetadataMismatch();
+  testNpuBackendAllowsDynamicOutputShapeWithExpectedOutput();
   testNpuBackendRejectsExpectedOutputMissingPath();
   testNpuBackendAllowsExpectedOutputSubsetByName();
   testNpuBackendDriverFailureIsStageWrapped();
