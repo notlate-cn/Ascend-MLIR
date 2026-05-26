@@ -2038,6 +2038,29 @@ LogicalResult convertCompute(func::FuncOp funcOp, AscendCBufferContext &ctx) {
     argToLt[numInputs] = accumLt;
 
     llvm::SmallDenseMap<Value, Value> valToLt;
+    // Guard body entry against MTE2 → V race on real-NPU.  Multi-trial
+    // statistics on BERT group20 (HEAD with Erf/EnQue PIPE_V barriers)
+    // still showed ~20% sub-deterministic failures, zero_frac concentrated
+    // at row-0 cols-0/1 — i.e. the FIRST vector op of a body reads from
+    // a VECIN tensor before MTE2's last cycle commits.  Sim serializes
+    // loads so it never trips.  A pre-body PIPE_ALL barrier flushes any
+    // pending MTE2/MTE3 before the first compute op runs.
+    //
+    // Mix-kernel guard: CannTranslation's mix-kernel emitter does its own
+    // strict single-executable-chain analysis on the AIV partition and
+    // rejects PipeBarrier ops "outside the chain" (matmul-add-leakyrelu
+    // mix kernel breaks otherwise).  Mix kernels have their own pipeline
+    // management, so skip both this barrier and the pre-EnQue barrier.
+    bool isMixKernel = false;
+    if (auto kk = funcOp->getAttrOfType<StringAttr>("ascendc.kernel_kind"))
+      isMixKernel = kk.getValue() == "mix";
+    if (!isMixKernel) {
+      auto bodyStartBarrier = builder.create<ascendc::PipeBarrierOp>(
+          loc, ascendc::PipeAttr::get(builder.getContext(),
+                                       ascendc::Pipe::PIPE_ALL));
+      copyAscendCUnitAttr(genOp.getOperation(),
+                          bodyStartBarrier.getOperation());
+    }
     for (auto &bodyOp : bodyBlock.without_terminator()) {
       auto resolve = [&](Value v) -> Value {
         if (auto ba = dyn_cast<BlockArgument>(v))
@@ -2108,12 +2131,29 @@ LogicalResult convertCompute(func::FuncOp funcOp, AscendCBufferContext &ctx) {
         // AscendC::Erf forbids src/dst overlap, so it cannot reuse the in-place
         // accumLt — emit into a fresh VECCALC tensor. Uses the simple overload
         // (no caller tmp buffer); the math advanced-API manages its own scratch.
+        //
+        // PIPE_V barrier follows: AscendC::Erf is a deep-pipeline math
+        // advanced-API; its result isn't committed by the time chained vector
+        // ops would naively read it.  Sim serializes ops so the data race is
+        // invisible, but real 910C with Erf in the middle of a body (BERT
+        // GELU group20) observed downstream VECCALC writes / VECOUT EnQue
+        // capturing partial results — symptom = 1-row-per-block (12.5% on
+        // `bd=4 8×256` shape) of the OUTPUT GM stayed at host-side zero-init.
+        // The barrier serializes V-pipe so subsequent ops wait for Erf.
         Value src = resolve(erfOp.getOperand());
         if (!src) continue;
         Value erfDst = allocVeccalc(builder, loc, elemType, bufferDimSizes).second;
         std::string ets = cppScalarName(elemType);
-        std::string tmpl =
-            "AscendC::Erf<" + ets + ", false>($0, $1, (uint32_t)$2)";
+        // PIPE_V (not PIPE_ALL): empirically PIPE_V drives BERT group20
+        // zero_frac 12.5%→3.1%; PIPE_ALL regressed to max_diff=0.4
+        // (over-serialization breaks intended V/MTE overlap).  PIPE_V
+        // serializes consecutive V-pipe consumers, which is what Erf's
+        // deep latency needs.  The residual ~3% miss / max_diff~1.7 needs
+        // a follow-up — barrier before VECOUT EnQue or finer-grained
+        // serialization between Erf-output consumers, TBD.
+        std::string tmpl = "AscendC::Erf<" + ets +
+                           ", false>($0, $1, (uint32_t)$2);\n"
+                           "  AscendC::PipeBarrier<PIPE_V>()";
         auto vb = builder.create<emitasc::VerbatimOp>(
             loc, builder.getStringAttr(tmpl), ValueRange({erfDst, src, totalElems}));
         copyAscendCUnitAttr(genOp.getOperation(), vb.getOperation());
@@ -2167,6 +2207,25 @@ LogicalResult convertCompute(func::FuncOp funcOp, AscendCBufferContext &ctx) {
       // The queue expects a tensor allocated from the same queue.  Real
       // hardware is stricter than the simulator here; enqueueing a VECCALC
       // tbuf tensor into a VECOUT queue can surface as UB/MTE faults.
+      //
+      // PIPE_V barrier before EnQue: a body that chains many V-pipe ops
+      // (e.g. BERT GELU group20: bias-add → divf → erf → addf → mulf →
+      // mulf, writing into resultLt at the tail) hits a real-NPU race
+      // where the VECOUT consumer DMA reads resultLt's first 1-2
+      // elements before the last V-pipe write commits (~50% trial rate,
+      // row-0-cols-0/1 stay at host zero-init).  Force a V-pipe drain
+      // so EnQue's MTE3-trigger observes the full computed tensor.  Sim
+      // serializes V naturally and never trips this; only real HW races.
+      //
+      // Mix-kernel guard: same reason as the body-start barrier — mix
+      // kernel emitter rejects extra ops in the single executable chain.
+      if (!isMixKernel) {
+        auto preEnqueBarrier = builder.create<ascendc::PipeBarrierOp>(
+            loc, ascendc::PipeAttr::get(builder.getContext(),
+                                         ascendc::Pipe::PIPE_V));
+        copyAscendCUnitAttr(genOp.getOperation(),
+                            preEnqueBarrier.getOperation());
+      }
       builder.create<TQueBindEnqueTensorOp>(loc, outQueue, resultLt);
     }
     freeTempVecinTensors(builder, loc, tempVecinTensors);
