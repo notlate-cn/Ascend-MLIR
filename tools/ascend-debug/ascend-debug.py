@@ -3,31 +3,12 @@ from __future__ import annotations
 
 import argparse
 import pathlib
+import sys
 
 from ascend_debug import __version__
 from ascend_debug import layout
-
-
-def collect_debug_run(args: argparse.Namespace) -> int:
-    run_dir = args.out
-    stages = layout.QUICK_NORMALIZE_KERNELIZE_STAGES
-    layout.prepare_run_dir(run_dir)
-
-    for stage in stages:
-        layout.copy_stage(args.input, run_dir / stage.path)
-
-    layout.write_manifest(
-        run_dir,
-        preset=args.preset,
-        pipeline=args.pipeline,
-        stages=stages,
-    )
-    layout.write_provenance_skeleton(
-        run_dir,
-        original_input=args.input,
-        version=__version__,
-    )
-    return 0
+from ascend_debug.collect import collect_quick
+from ascend_debug.runner import CommandError
 
 
 def open_debug_run(args: argparse.Namespace) -> int:
@@ -50,7 +31,7 @@ def build_parser() -> argparse.ArgumentParser:
     collect.add_argument("--out", type=pathlib.Path, required=True)
     collect.add_argument("--preset", choices=["quick"], default="quick")
     collect.add_argument("--pipeline", choices=["normalize-kernelize"], default="normalize-kernelize")
-    collect.set_defaults(handler=collect_debug_run)
+    collect.set_defaults(handler=collect_quick)
 
     open_cmd = subparsers.add_parser("open", help="Generate or open the debug dashboard")
     open_cmd.add_argument("run_dir", type=pathlib.Path)
@@ -71,7 +52,11 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
-    return int(args.handler(args))
+    try:
+        return int(args.handler(args))
+    except CommandError as error:
+        print(f"ascend-debug: error: {error}", file=sys.stderr)
+        return 1
 
 
 if __name__ == "__main__":

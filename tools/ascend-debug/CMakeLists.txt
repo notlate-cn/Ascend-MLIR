@@ -3,7 +3,9 @@ set(ASCEND_DEBUG_OUTPUT "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/ascend-debug")
 set(ASCEND_DEBUG_PACKAGE_OUTPUT "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/ascend_debug")
 set(ASCEND_DEBUG_PACKAGE_SOURCES
   "${CMAKE_CURRENT_SOURCE_DIR}/ascend_debug/__init__.py"
+  "${CMAKE_CURRENT_SOURCE_DIR}/ascend_debug/collect.py"
   "${CMAKE_CURRENT_SOURCE_DIR}/ascend_debug/layout.py"
+  "${CMAKE_CURRENT_SOURCE_DIR}/ascend_debug/runner.py"
 )
 
 add_custom_command(
