@@ -6,10 +6,10 @@ TMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/ascend-debug-cli.XXXXXX")"
 trap 'rm -rf "${TMP_DIR}"' EXIT
 
 ascend-debug --help >"${TMP_DIR}/ascend-debug-help.txt" 2>&1
-grep -q 'collect' "${TMP_DIR}/ascend-debug-help.txt"
-grep -q 'open' "${TMP_DIR}/ascend-debug-help.txt"
-grep -q 'diff' "${TMP_DIR}/ascend-debug-help.txt"
-grep -q 'locate' "${TMP_DIR}/ascend-debug-help.txt"
+grep -Fq 'collect' "${TMP_DIR}/ascend-debug-help.txt"
+grep -Fq 'open' "${TMP_DIR}/ascend-debug-help.txt"
+grep -Fq 'diff' "${TMP_DIR}/ascend-debug-help.txt"
+grep -Fq 'locate' "${TMP_DIR}/ascend-debug-help.txt"
 echo "ascend_debug.help=ok"
 
 ascend-debug collect "${INPUT_MLIR}" \
@@ -21,25 +21,76 @@ test -f "${TMP_DIR}/debug-run/stages/019-normalize-out.mlir"
 test -f "${TMP_DIR}/debug-run/stages/020-kernelize-in.mlir"
 cmp -s "${TMP_DIR}/debug-run/stages/019-normalize-out.mlir" "${TMP_DIR}/debug-run/stages/020-kernelize-in.mlir"
 test -f "${TMP_DIR}/debug-run/stages/029-kernelize-out.mlir"
-grep -q 'ascend.kernel' "${TMP_DIR}/debug-run/stages/029-kernelize-out.mlir"
+grep -Fq 'ascend.kernel' "${TMP_DIR}/debug-run/stages/029-kernelize-out.mlir"
 test -f "${TMP_DIR}/debug-run/manifest.json"
 test -f "${TMP_DIR}/debug-run/provenance.json"
 echo "ascend_debug.collect=ok"
 
 RESOLVED_RUN_DIR="$(python3 -c 'import pathlib, sys; print(pathlib.Path(sys.argv[1]).resolve())' "${TMP_DIR}/debug-run")"
 ascend-debug open "${TMP_DIR}/debug-run" --no-browser >"${TMP_DIR}/ascend-debug-open.txt"
-grep -q "ascend-debug.open.index=${RESOLVED_RUN_DIR}/index.html" "${TMP_DIR}/ascend-debug-open.txt"
+grep -Fq "ascend-debug.open.index=${RESOLVED_RUN_DIR}/index.html" "${TMP_DIR}/ascend-debug-open.txt"
 test -f "${TMP_DIR}/debug-run/index.html"
-grep -q '<h1>ascend-debug</h1>' "${TMP_DIR}/debug-run/index.html"
-grep -q '<dt>schema_version</dt><dd>1</dd>' "${TMP_DIR}/debug-run/index.html"
-grep -q '<dt>preset</dt><dd>quick</dd>' "${TMP_DIR}/debug-run/index.html"
-grep -q '<dt>tool</dt><dd>ascend-debug</dd>' "${TMP_DIR}/debug-run/index.html"
-grep -q '<tr><td>0</td><td>source</td><td>stages/000-source.mlir</td><td>present</td></tr>' "${TMP_DIR}/debug-run/index.html"
-grep -q '<tr><td>10</td><td>normalize-in</td><td>stages/010-normalize-in.mlir</td><td>present</td></tr>' "${TMP_DIR}/debug-run/index.html"
-grep -q '<tr><td>19</td><td>normalize-out</td><td>stages/019-normalize-out.mlir</td><td>present</td></tr>' "${TMP_DIR}/debug-run/index.html"
-grep -q '<tr><td>20</td><td>kernelize-in</td><td>stages/020-kernelize-in.mlir</td><td>present</td></tr>' "${TMP_DIR}/debug-run/index.html"
-grep -q '<tr><td>29</td><td>kernelize-out</td><td>stages/029-kernelize-out.mlir</td><td>present</td></tr>' "${TMP_DIR}/debug-run/index.html"
+grep -Fq '<h1>ascend-debug</h1>' "${TMP_DIR}/debug-run/index.html"
+grep -Fq '<dt>schema_version</dt><dd>1</dd>' "${TMP_DIR}/debug-run/index.html"
+grep -Fq '<dt>preset</dt><dd>quick</dd>' "${TMP_DIR}/debug-run/index.html"
+grep -Fq '<dt>tool</dt><dd>ascend-debug</dd>' "${TMP_DIR}/debug-run/index.html"
+python3 - "${TMP_DIR}/debug-run/index.html" <<'PY'
+import pathlib
+import sys
+
+html = pathlib.Path(sys.argv[1]).read_text()
+expected_rows = [
+    ("0", "source", "stages/000-source.mlir", "present"),
+    ("10", "normalize-in", "stages/010-normalize-in.mlir", "present"),
+    ("19", "normalize-out", "stages/019-normalize-out.mlir", "present"),
+    ("20", "kernelize-in", "stages/020-kernelize-in.mlir", "present"),
+    ("29", "kernelize-out", "stages/029-kernelize-out.mlir", "present"),
+]
+cursor = 0
+for row in expected_rows:
+    needle = "".join(f"<td>{cell}</td>" for cell in row)
+    position = html.find(needle, cursor)
+    if position < 0:
+        raise SystemExit(f"missing ordered stage row: {row!r}")
+    cursor = position + len(needle)
+PY
 echo "ascend_debug.open=ok"
+
+check_open_manifest_error() {
+  local manifest="$1"
+  local expected="$2"
+  local case_dir="${TMP_DIR}/bad-${expected}"
+  mkdir -p "${case_dir}"
+  printf '%s\n' "${manifest}" >"${case_dir}/manifest.json"
+  if ascend-debug open "${case_dir}" --no-browser >"${case_dir}/stdout.txt" 2>"${case_dir}/stderr.txt"; then
+    echo "expected ascend-debug open to fail for ${expected}" >&2
+    return 1
+  fi
+  grep -Fq 'ascend-debug: error:' "${case_dir}/stderr.txt"
+  if grep -Fq 'Traceback' "${case_dir}/stderr.txt"; then
+    echo "unexpected traceback for ${expected}" >&2
+    return 1
+  fi
+}
+
+check_open_manifest_error '{"schema_version": 1, "stages": [{"order": "0", "name": "source", "path": "stages/000-source.mlir"}]}' "bad-order"
+check_open_manifest_error '{"schema_version": 1, "stages": [{"order": 0, "name": "source", "path": "../outside.mlir"}]}' "bad-path"
+check_open_manifest_error '{"stages": []}' "missing-schema"
+printf '{"schema_version": 1, "stages": [' >"${TMP_DIR}/corrupt-manifest.json"
+check_open_manifest_error "$(cat "${TMP_DIR}/corrupt-manifest.json")" "corrupt-json"
+DECODE_DIR="${TMP_DIR}/bad-decode"
+mkdir -p "${DECODE_DIR}"
+printf '\377' >"${DECODE_DIR}/manifest.json"
+if ascend-debug open "${DECODE_DIR}" --no-browser >"${DECODE_DIR}/stdout.txt" 2>"${DECODE_DIR}/stderr.txt"; then
+  echo "expected ascend-debug open to fail for decode" >&2
+  exit 1
+fi
+grep -Fq 'ascend-debug: error:' "${DECODE_DIR}/stderr.txt"
+if grep -Fq 'Traceback' "${DECODE_DIR}/stderr.txt"; then
+  echo "unexpected traceback for decode" >&2
+  exit 1
+fi
+echo "ascend_debug.open_negative=ok"
 
 python3 - "${TMP_DIR}/debug-run/manifest.json" "${TMP_DIR}/debug-run/provenance.json" "${INPUT_MLIR}" <<'PY'
 import json
