@@ -1,4 +1,4 @@
-# AFIR Test Suite
+# Ascend-MLIR test suite
 configure_lit_site_cfg(
   ${CMAKE_CURRENT_SOURCE_DIR}/lit.site.cfg.py.in
   ${CMAKE_CURRENT_BINARY_DIR}/lit.site.cfg.py
@@ -50,6 +50,21 @@ endforeach()
 if(AFIR_ENABLE_BINDING_PYTHON)
   add_afir_lit_directory(python)
 endif()
+
+function(add_ascend_lit_alias alias_target legacy_target)
+  if(TARGET ${legacy_target} AND NOT TARGET ${alias_target})
+    add_custom_target(${alias_target})
+    add_dependencies(${alias_target} ${legacy_target})
+    set_target_properties(${alias_target} PROPERTIES FOLDER "Tests")
+  endif()
+endfunction()
+
+add_ascend_lit_alias(check-ascend check-afir)
+add_ascend_lit_alias(check-ascend-tools check-afir-tools)
+add_ascend_lit_alias(check-ascend-tools-diagnostics check-afir-tools-diagnostics)
+add_ascend_lit_alias(check-ascend-tools-examples check-afir-tools-examples)
+add_ascend_lit_alias(check-ascend-tools-longrun check-afir-tools-longrun)
+add_ascend_lit_alias(check-ascend-tools-runtime check-afir-tools-runtime)
 
 foreach(lit_tool_target
     check-afir
