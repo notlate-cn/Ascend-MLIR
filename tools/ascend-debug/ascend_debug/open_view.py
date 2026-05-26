@@ -317,6 +317,12 @@ def _tensor_diff_rows(
     return "\n".join(rows)
 
 
+def _list_text(value: Any) -> str:
+    if not isinstance(value, list) or not value:
+        return "none"
+    return ",".join(str(item) for item in value)
+
+
 def _locate_section(summary: dict[str, Any] | None, kernel_views: dict[str, str]) -> str:
     if not summary:
         return ""
@@ -328,10 +334,13 @@ def _locate_section(summary: dict[str, Any] | None, kernel_views: dict[str, str]
     comparison_id = ""
     if isinstance(first_bad_comparison, dict):
         comparison_id = first_bad_comparison.get("id", "")
+    first_bad_context = summary.get("first_bad_context", {})
+    if not isinstance(first_bad_context, dict):
+        first_bad_context = {}
     return f"""
 <section>
 <h2>Locate</h2>
-<p>status={_cell(summary.get('status'))}; first_bad_kernel={kernel_cell}; first_bad_comparison={_cell(comparison_id)}; failed_kernels={_cell(summary.get('failed_kernel_count'))}; method={_cell(summary.get('method'))}</p>
+<p>status={_cell(summary.get('status'))}; first_bad_kernel={kernel_cell}; first_bad_depth={_cell(summary.get('first_bad_depth'))}; first_bad_comparison={_cell(comparison_id)}; failed_kernels={_cell(summary.get('failed_kernel_count'))}; upstream_checked_passed={_cell(_list_text(first_bad_context.get('upstream_checked_passed')))}; unchecked_direct_upstream={_cell(_list_text(first_bad_context.get('unchecked_direct_upstream')))}; downstream_failed={_cell(_list_text(first_bad_context.get('downstream_failed')))}; method={_cell(summary.get('method'))}</p>
 </section>
 """
 
