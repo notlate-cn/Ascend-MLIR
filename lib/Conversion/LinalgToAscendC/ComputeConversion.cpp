@@ -2098,8 +2098,35 @@ LogicalResult convertCompute(func::FuncOp funcOp, AscendCBufferContext &ctx) {
         valToLt[minOp.getResult()] = dst;
       } else if (auto divOp = dyn_cast<arith::DivFOp>(bodyOp)) {
         Value lhs = resolve(divOp.getLhs());
+        if (!lhs) continue;
+        // Real-NPU `DivL2Op` (AscendC::Div) returns wrong values on the
+        // tested HW (single-op isolation 2026-05-26: input/√2 produced
+        // ~22× off and overflowed to inf, even though camodel sim is
+        // correct).  When the divisor is a compile-time scalar constant —
+        // the only divf shape the GELU-erf path produces (x / √2) — rewrite
+        // it to `mul(x, 1/const)` to dodge the hardware Div bug entirely.
+        // Vector/vector divf falls through to the original DivL2Op path;
+        // we don't have a HW-safe rewrite for that case yet.
+        if (auto cstOp = divOp.getRhs().getDefiningOp<arith::ConstantOp>()) {
+          if (auto floatAttr = dyn_cast<FloatAttr>(cstOp.getValue())) {
+            double recip = 1.0 / floatAttr.getValueAsDouble();
+            Value recipConst = builder.create<arith::ConstantOp>(
+                loc, builder.getFloatAttr(elemType, recip));
+            auto [recipTbuf, recipLt] =
+                allocVeccalc(builder, loc, elemType, bufferDimSizes);
+            auto dupOp = builder.create<DuplicateL2Op>(loc, recipLt,
+                                                       recipConst, totalElems);
+            copyAscendCUnitAttr(genOp.getOperation(), dupOp.getOperation());
+            Value dst = nextDst();
+            auto mulL2Op = builder.create<MulL2Op>(loc, dst, lhs, recipLt,
+                                                   totalElems);
+            copyAscendCUnitAttr(genOp.getOperation(), mulL2Op.getOperation());
+            valToLt[divOp.getResult()] = dst;
+            continue;
+          }
+        }
         Value rhs = resolve(divOp.getRhs());
-        if (!lhs || !rhs) continue;
+        if (!rhs) continue;
         Value dst = nextDst();
         auto divL2Op = builder.create<DivL2Op>(loc, dst, lhs, rhs, totalElems);
         copyAscendCUnitAttr(genOp.getOperation(), divL2Op.getOperation());
