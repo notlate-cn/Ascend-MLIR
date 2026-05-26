@@ -6,7 +6,55 @@
 
 #include "RealizeReport.h"
 
+#include "llvm/ADT/STLExtras.h"
+
 namespace mlir::afir::ascend::realize {
+namespace {
+
+void printByteSize(llvm::raw_ostream &os, bool known, uint64_t byteSize) {
+  if (known)
+    os << " byte_size=" << byteSize;
+  else
+    os << " byte_size=unknown";
+}
+
+void printStaticMemoryDetails(const StaticMemoryPlan &plan,
+                              llvm::raw_ostream &os) {
+  for (auto [index, interval] : llvm::enumerate(plan.liveIntervals)) {
+    os << "  live_interval[" << index << "] = value_id="
+       << interval.valueId << " start=" << interval.start
+       << " end=" << interval.end << " place="
+       << ::mlir::ascend::stringifyMemoryPlace(interval.place);
+    printByteSize(os, interval.staticByteSizeKnown, interval.byteSize);
+    os << "\n";
+  }
+  for (auto [index, slot] : llvm::enumerate(plan.workspaceSlots)) {
+    os << "  workspace_slot[" << index << "] = slot_id=" << slot.slotId
+       << " value_id=" << slot.valueId << " offset=" << slot.offset
+       << " place=" << ::mlir::ascend::stringifyMemoryPlace(slot.place);
+    printByteSize(os, slot.staticByteSizeKnown, slot.byteSize);
+    if (slot.byteSizeExprKnown)
+      os << " byte_size_expr=\"" << slot.byteSizeExpr << "\"";
+    os << "\n";
+  }
+}
+
+void printMovementDetails(const MovementPlan &plan, llvm::raw_ostream &os) {
+  for (auto [index, step] : llvm::enumerate(plan.movementSteps)) {
+    os << "  movement_step[" << index << "] = step_id=" << step.stepId
+       << " value_id=" << step.valueId << " slot_id=" << step.slotId
+       << " src=" << ::mlir::ascend::stringifyMemoryPlace(step.srcPlace)
+       << " dst=" << ::mlir::ascend::stringifyMemoryPlace(step.dstPlace)
+       << " path_selected=" << (step.pathSelected ? "true" : "false")
+       << " path_variant=" << step.pathVariant
+       << " path_selection_deferred="
+       << (step.pathSelectionDeferred ? "true" : "false");
+    printByteSize(os, step.staticByteSizeKnown, step.byteSize);
+    os << "\n";
+  }
+}
+
+} // namespace
 
 void printRealizeReport(llvm::ArrayRef<RealizePlanBundle> bundles,
                         llvm::raw_ostream &os) {
@@ -65,6 +113,7 @@ void printRealizeReport(llvm::ArrayRef<RealizePlanBundle> bundles,
     if (bundle.staticMemory.workspaceSizeExprKnown)
       os << "  workspace_size_expr = \"" << bundle.staticMemory.workspaceSizeExpr
          << "\"\n";
+    printStaticMemoryDetails(bundle.staticMemory, os);
     os << "MovementPlan:\n";
     os << "  kernel = " << bundle.movement.kernelId << "\n";
     os << "  mode = \"" << bundle.movement.mode << "\"\n";
@@ -87,6 +136,7 @@ void printRealizeReport(llvm::ArrayRef<RealizePlanBundle> bundles,
     os << "  materialization_deferred = "
        << (bundle.movement.materializationDeferred ? "true" : "false")
        << "\n";
+    printMovementDetails(bundle.movement, os);
     os << "MemoryRealizationPlan:\n";
     os << "  kernel = " << bundle.realization.kernelId << "\n";
     os << "  mode = \"" << bundle.realization.mode << "\"\n";

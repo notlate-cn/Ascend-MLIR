@@ -126,6 +126,39 @@ static void populateVectorTemporarySlots(const BufferizedKernelIR &bufferizedIR,
   }
 }
 
+static void populateFallbackSlots(unsigned slotCount,
+                                  const BufferizedKernelIR &bufferizedIR,
+                                  StaticMemoryPlan &plan) {
+  if (slotCount == 0 || !plan.workspaceSlots.empty())
+    return;
+
+  bool singleStaticSlot =
+      slotCount == 1 && bufferizedIR.staticByteSizeKnown &&
+      bufferizedIR.vectorTemporaryByteCount > 0;
+  uint64_t nextOffset = 0;
+  for (unsigned index = 0; index < slotCount; ++index) {
+    StaticMemoryLiveInterval interval;
+    interval.valueId = index;
+    interval.start = 0;
+    interval.end = 1;
+    interval.place = kVectorTemporaryPlace;
+    interval.staticByteSizeKnown = singleStaticSlot;
+    interval.byteSize =
+        singleStaticSlot ? bufferizedIR.vectorTemporaryByteCount : 0;
+    plan.liveIntervals.push_back(interval);
+
+    StaticMemoryWorkspaceSlot slot;
+    slot.slotId = index;
+    slot.valueId = interval.valueId;
+    slot.offset = nextOffset;
+    slot.place = kVectorTemporaryPlace;
+    slot.staticByteSizeKnown = singleStaticSlot;
+    slot.byteSize = interval.byteSize;
+    plan.workspaceSlots.push_back(slot);
+    nextOffset += slot.byteSize;
+  }
+}
+
 } // namespace
 
 FailureOr<StaticMemoryPlan>
@@ -155,6 +188,8 @@ StaticMemoryPlanner::build(const PlacementPlan &placement,
   unsigned plannedSlotCount = plan.workspaceSlots.empty()
                                   ? placement.onChipPlaceCount
                                   : plan.workspaceSlots.size();
+  populateFallbackSlots(plannedSlotCount, bufferizedIR, plan);
+  plannedSlotCount = plan.workspaceSlots.size();
   plan.localBufferCount = plannedSlotCount;
   plan.liveIntervalCount = plannedSlotCount;
   plan.workspaceSlotCount = plannedSlotCount;

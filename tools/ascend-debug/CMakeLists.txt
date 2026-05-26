@@ -7,6 +7,7 @@ set(ASCEND_DEBUG_PACKAGE_SOURCES
   "${CMAKE_CURRENT_SOURCE_DIR}/ascend_debug/diff.py"
   "${CMAKE_CURRENT_SOURCE_DIR}/ascend_debug/layout.py"
   "${CMAKE_CURRENT_SOURCE_DIR}/ascend_debug/locate.py"
+  "${CMAKE_CURRENT_SOURCE_DIR}/ascend_debug/memory.py"
   "${CMAKE_CURRENT_SOURCE_DIR}/ascend_debug/open_view.py"
   "${CMAKE_CURRENT_SOURCE_DIR}/ascend_debug/runner.py"
 )

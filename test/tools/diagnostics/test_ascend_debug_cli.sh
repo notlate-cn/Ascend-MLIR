@@ -150,6 +150,43 @@ grep -Fq 'ascend_debug.locate.first_bad_depth=1' "${TMP_DIR}/ascend-debug-locate
 grep -Fq 'ascend_debug.locate.first_bad_comparison=checkpoint/kernel_0' "${TMP_DIR}/ascend-debug-locate-graph.txt"
 grep -Fq 'ascend_debug.locate.upstream_checked_passed=none' "${TMP_DIR}/ascend-debug-locate-graph.txt"
 test -f "${TMP_DIR}/debug-run-graph/summaries/locate.json"
+cat >"${TMP_DIR}/debug-run-graph/reports/040-realize.report.txt" <<'TEXT'
+Realize report
+  kernels = 1
+BufferizedKernelIR:
+  kernel = kernel_0
+  mode = "gm_only"
+PlacementPlan:
+  kernel = kernel_0
+  mode = "target_aware"
+StaticMemoryPlan:
+  kernel = kernel_0
+  mode = "workspace_layout"
+  tracked_places = 5
+  local_buffers = 3
+  live_intervals = 3
+  workspace_slots = 3
+  peak_usage_known = true
+  peak_usage_units = 2
+  peak_usage_bytes_known = true
+  local_buffer_bytes = 384
+  workspace_bytes = 256
+  peak_usage_bytes = 256
+  capacity_check_deferred = false
+  live_interval[0] = value_id=10 start=0 end=2 place=VECIN byte_size=128
+  live_interval[1] = value_id=11 start=2 end=4 place=VECIN byte_size=128
+  live_interval[2] = value_id=12 start=1 end=3 place=VECIN byte_size=128
+  workspace_slot[0] = slot_id=0 value_id=10 offset=0 place=VECIN byte_size=128
+  workspace_slot[1] = slot_id=1 value_id=11 offset=0 place=VECIN byte_size=128
+  workspace_slot[2] = slot_id=2 value_id=12 offset=128 place=VECIN byte_size=128
+MovementPlan:
+  kernel = kernel_0
+  mode = "movement_planning"
+  movement_step[0] = step_id=0 value_id=10 slot_id=0 src=GM dst=VECIN path_selected=true byte_size=128
+MemoryRealizationPlan:
+  kernel = kernel_0
+  mode = "memory_space_materialize"
+TEXT
 ascend-debug open "${TMP_DIR}/debug-run-graph" --no-browser >"${TMP_DIR}/ascend-debug-open-graph.txt"
 grep -Fq '<h2>Graphs</h2>' "${TMP_DIR}/debug-run-graph/index.html"
 grep -Fq '<h2>Kernels</h2>' "${TMP_DIR}/debug-run-graph/index.html"
@@ -194,10 +231,105 @@ grep -Fq '<dt>DAG depth</dt><dd>1</dd>' "${TMP_DIR}/debug-run-graph/index.html"
 grep -Fq '<dt>Failed comparison</dt><dd>checkpoint/kernel_0</dd>' "${TMP_DIR}/debug-run-graph/index.html"
 grep -Fq 'Earliest failed checkpoint in DAG order' "${TMP_DIR}/debug-run-graph/index.html"
 grep -Fq '<dt>Direct upstream without checkpoint</dt><dd>none</dd>' "${TMP_DIR}/debug-run-graph/index.html"
-grep -Fq '<dt>Peak workspace bytes</dt><dd>4096</dd>' "${TMP_DIR}/debug-run-graph/index.html"
-grep -Fq '<dt>Total workspace bytes</dt><dd>4096</dd>' "${TMP_DIR}/debug-run-graph/index.html"
-grep -Fq '<td><a href="views/kernels/kernel_0.html">kernel_0</a></td><td>1</td><td>4096</td>' "${TMP_DIR}/debug-run-graph/index.html"
-grep -Fq 'workspace_by_depth' "${TMP_DIR}/debug-run-graph/views/summaries/memory.json.html"
+grep -Fq 'Realize memory plan' "${TMP_DIR}/debug-run-graph/index.html"
+grep -Fq '<dt>Peak workspace bytes</dt><dd>256</dd>' "${TMP_DIR}/debug-run-graph/index.html"
+grep -Fq '<dt>Workspace slot reuse groups</dt><dd>1</dd>' "${TMP_DIR}/debug-run-graph/index.html"
+grep -Fq '<h3>Peak Timeline</h3>' "${TMP_DIR}/debug-run-graph/index.html"
+grep -Fq '<td>kernel_0</td><td>1</td><td>256</td><td>0@VECIN, 128@VECIN</td><td>10, 12</td>' "${TMP_DIR}/debug-run-graph/index.html"
+grep -Fq '<h3>Workspace Slots</h3>' "${TMP_DIR}/debug-run-graph/index.html"
+grep -Fq '<td>kernel_0</td><td>0</td><td>VECIN</td><td>0</td><td>128</td><td>10</td><td>0..2</td><td>yes</td>' "${TMP_DIR}/debug-run-graph/index.html"
+grep -Fq 'movement_edges' "${TMP_DIR}/debug-run-graph/views/summaries/memory.json.html"
+python3 - "${TMP_DIR}/debug-run-graph/summaries/memory.json" <<'PY'
+import json
+import pathlib
+import sys
+
+summary = json.loads(pathlib.Path(sys.argv[1]).read_text())
+assert summary["analysis_level"] == "realize-memory-plan"
+assert summary["source"] == "reports/040-realize.report.txt"
+assert summary["peak_workspace_bytes"] == 256
+assert summary["total_workspace_bytes"] == 256
+assert summary["slot_reuse_group_count"] == 1
+kernel = summary["kernels"][0]
+assert kernel["kernel_id"] == "kernel_0"
+assert kernel["reuse_groups"] == [
+    {"place": "VECIN", "offset": 0, "slot_ids": [0, 1], "value_ids": [10, 11]}
+]
+assert kernel["peak_timeline"][1]["usage_bytes"] == 256
+assert kernel["peak_timeline"][1]["active_values"] == [10, 12]
+assert kernel["movement_edges"][0]["dst"] == "VECIN"
+PY
+mkdir -p "${TMP_DIR}/debug-run-memory-coverage/stages" \
+  "${TMP_DIR}/debug-run-memory-coverage/graphs" \
+  "${TMP_DIR}/debug-run-memory-coverage/reports"
+printf 'module {}\n' >"${TMP_DIR}/debug-run-memory-coverage/stages/000-source.mlir"
+cat >"${TMP_DIR}/debug-run-memory-coverage/manifest.json" <<'JSON'
+{
+  "schema_version": 1,
+  "tool": "ascend-debug",
+  "preset": "deep",
+  "pipeline": "normalize-kernelize",
+  "stages": [
+    {"order": 0, "name": "source", "path": "stages/000-source.mlir"}
+  ],
+  "reports": [
+    {"stage": "realize", "path": "reports/040-realize.report.txt"}
+  ],
+  "graphs": [
+    {"kind": "kernel-dag-summary", "path": "graphs/kernel_dag.summary.json"}
+  ]
+}
+JSON
+cat >"${TMP_DIR}/debug-run-memory-coverage/graphs/kernel_dag.summary.json" <<'JSON'
+{
+  "schema_version": 1,
+  "nodes": {
+    "kernel_0": {"depth": 1, "kind": "vec", "workspace_size": 256},
+    "kernel_1": {"depth": 2, "kind": "vec", "workspace_size": 0}
+  },
+  "edges": [
+    {"from": "kernel_0", "to": "kernel_1"}
+  ]
+}
+JSON
+cat >"${TMP_DIR}/debug-run-memory-coverage/reports/040-realize.report.txt" <<'TEXT'
+Realize report
+  kernels = 1
+StaticMemoryPlan:
+  kernel = kernel_0
+  mode = "workspace_layout"
+  tracked_places = 3
+  local_buffers = 1
+  live_intervals = 1
+  workspace_slots = 1
+  peak_usage_known = true
+  peak_usage_units = 1
+  peak_usage_bytes_known = true
+  local_buffer_bytes = 256
+  workspace_bytes = 256
+  peak_usage_bytes = 256
+  capacity_check_deferred = false
+  live_interval[0] = value_id=10 start=0 end=1 place=VECIN byte_size=256
+  workspace_slot[0] = slot_id=0 value_id=10 offset=0 place=VECIN byte_size=256
+TEXT
+ascend-debug open "${TMP_DIR}/debug-run-memory-coverage" --no-browser >"${TMP_DIR}/ascend-debug-open-memory-coverage.txt"
+grep -Fq '<h3>Kernel Coverage</h3>' "${TMP_DIR}/debug-run-memory-coverage/index.html"
+grep -Fq '<td><a href="views/kernels/kernel_0.html">kernel_0</a></td><td>1</td><td>256</td><td>realize-slot-plan</td>' "${TMP_DIR}/debug-run-memory-coverage/index.html"
+grep -Fq '<td><a href="views/kernels/kernel_1.html">kernel_1</a></td><td>2</td><td>0</td><td>no-workspace</td>' "${TMP_DIR}/debug-run-memory-coverage/index.html"
+python3 - "${TMP_DIR}/debug-run-memory-coverage/summaries/memory.json" <<'PY'
+import json
+import pathlib
+import sys
+
+summary = json.loads(pathlib.Path(sys.argv[1]).read_text())
+assert summary["kernel_count"] == 2
+assert summary["detailed_kernel_count"] == 1
+assert summary["unplanned_kernel_count"] == 1
+assert summary["kernel_coverage"][0]["kernel_id"] == "kernel_0"
+assert summary["kernel_coverage"][0]["memory_plan_status"] == "realize-slot-plan"
+assert summary["kernel_coverage"][1]["kernel_id"] == "kernel_1"
+assert summary["kernel_coverage"][1]["memory_plan_status"] == "no-workspace"
+PY
 if grep -Fq 'status=fail; first_bad_kernel=' "${TMP_DIR}/debug-run-graph/index.html"; then
   echo "locate dashboard should not render raw key-value status line" >&2
   exit 1

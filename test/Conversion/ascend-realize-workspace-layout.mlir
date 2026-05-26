@@ -68,6 +68,9 @@ func.func @workspace_layout_vector_temporary(%arg0: tensor<64xf16>, %arg1: tenso
 // CHECK-NEXT:   workspace_bytes = 128
 // CHECK-NEXT:   peak_usage_bytes = 128
 // CHECK-NEXT:   capacity_check_deferred = false
+// CHECK-NEXT:   workspace_size_expr_known = false
+// CHECK-NEXT:   live_interval[0] = value_id={{[0-9]+}} start=0 end=1 place=VECIN byte_size=128
+// CHECK-NEXT:   workspace_slot[0] = slot_id=0 value_id={{[0-9]+}} offset=0 place=VECIN byte_size=128
 // CHECK: MovementPlan:
 // CHECK-NEXT:   kernel = kernel_0
 // CHECK-NEXT:   mode = "movement_planning"
@@ -81,6 +84,7 @@ func.func @workspace_layout_vector_temporary(%arg0: tensor<64xf16>, %arg1: tenso
 // CHECK-NEXT:   dynamic_view_chain_rewrites = 0
 // CHECK-NEXT:   deferred_view_chain_rewrites = 0
 // CHECK-NEXT:   materialization_deferred = true
+// CHECK-NEXT:   movement_step[0] = step_id=0 value_id={{[0-9]+}} slot_id=0 src=GM dst=VECIN path_selected=true path_variant=0 path_selection_deferred=false byte_size=128
 // CHECK: MemoryRealizationPlan:
 // CHECK-NEXT:   kernel = kernel_0
 // CHECK-NEXT:   mode = "read_only_freeze"

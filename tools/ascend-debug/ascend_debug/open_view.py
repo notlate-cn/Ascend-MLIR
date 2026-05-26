@@ -9,7 +9,7 @@ import sys
 import webbrowser
 from typing import Any
 
-from ascend_debug import layout
+from ascend_debug import layout, memory
 from ascend_debug.runner import CommandError
 
 
@@ -611,73 +611,11 @@ def _load_kernel_summary(run_dir: pathlib.Path) -> dict[str, Any] | None:
     return summary
 
 
-def _int_value(value: Any) -> int:
-    return value if isinstance(value, int) and not isinstance(value, bool) else 0
-
-
-def _memory_summary(summary: dict[str, Any] | None) -> dict[str, Any] | None:
-    if not summary:
-        return None
-    nodes = summary.get("nodes", {})
-    if not isinstance(nodes, dict):
-        return None
-
-    kernels = []
-    by_depth: dict[int, dict[str, Any]] = {}
-    for kernel_id in sorted(nodes, key=_kernel_sort_key):
-        node = nodes[kernel_id]
-        if not isinstance(node, dict):
-            continue
-        depth = _int_value(node.get("depth"))
-        workspace_size = _int_value(node.get("workspace_size"))
-        kernel = {
-            "kernel_id": kernel_id,
-            "depth": depth,
-            "kind": node.get("kind"),
-            "workspace_size": workspace_size,
-            "output_shape": node.get("output_shape"),
-            "selected_tile_shape": node.get("selected_tile_shape"),
-            "input_degree": node.get("input_degree"),
-            "output_degree": node.get("output_degree"),
-        }
-        kernels.append(kernel)
-        bucket = by_depth.setdefault(
-            depth,
-            {
-                "depth": depth,
-                "kernel_count": 0,
-                "workspace_bytes": 0,
-                "peak_workspace_bytes": 0,
-                "kernels": [],
-            },
-        )
-        bucket["kernel_count"] += 1
-        bucket["workspace_bytes"] += workspace_size
-        bucket["peak_workspace_bytes"] = max(bucket["peak_workspace_bytes"], workspace_size)
-        bucket["kernels"].append(kernel_id)
-
-    total_workspace = sum(kernel["workspace_size"] for kernel in kernels)
-    peak_workspace = max((kernel["workspace_size"] for kernel in kernels), default=0)
-    return {
-        "schema_version": 1,
-        "tool": "ascend-debug",
-        "source": "kernel_dag.summary.json",
-        "analysis_level": "workspace-overview",
-        "note": "Workspace overview derived from DAG artifacts; Realize slot lifetime is not available here.",
-        "kernel_count": len(kernels),
-        "workspace_kernel_count": sum(1 for kernel in kernels if kernel["workspace_size"] > 0),
-        "total_workspace_bytes": total_workspace,
-        "peak_workspace_bytes": peak_workspace,
-        "workspace_by_depth": [by_depth[depth] for depth in sorted(by_depth)],
-        "kernels": kernels,
-    }
-
-
 def _write_memory_summary(run_dir: pathlib.Path, summary: dict[str, Any] | None) -> dict[str, Any] | None:
-    memory = _memory_summary(summary)
-    if memory:
-        layout.write_json(run_dir / "summaries/memory.json", memory)
-    return memory
+    memory_summary = memory.summarize_memory(run_dir, summary)
+    if memory_summary:
+        layout.write_json(run_dir / "summaries/memory.json", memory_summary)
+    return memory_summary
 
 
 def _kernel_sort_key(kernel_id: str) -> tuple[int, str]:
@@ -841,7 +779,24 @@ def _kernel_rows(summary: dict[str, Any] | None, kernel_views: dict[str, str]) -
     return "\n".join(rows)
 
 
-def _memory_rows(summary: dict[str, Any] | None, kernel_views: dict[str, str]) -> str:
+def _id_list_cell(value: Any) -> str:
+    if not isinstance(value, list) or not value:
+        return "none"
+    return ", ".join(_cell(item) for item in value)
+
+
+def _physical_slot_cell(value: Any) -> str:
+    if not isinstance(value, list) or not value:
+        return "none"
+    labels = []
+    for slot in value:
+        if not isinstance(slot, dict):
+            continue
+        labels.append(f"{_cell(slot.get('offset'))}@{_cell(slot.get('place'))}")
+    return ", ".join(labels) if labels else "none"
+
+
+def _memory_overview_rows(summary: dict[str, Any] | None, kernel_views: dict[str, str]) -> str:
     if not summary:
         return ""
     rows = []
@@ -866,9 +821,123 @@ def _memory_rows(summary: dict[str, Any] | None, kernel_views: dict[str, str]) -
     return "\n".join(rows)
 
 
+def _memory_timeline_rows(summary: dict[str, Any] | None) -> str:
+    if not summary:
+        return ""
+    rows = []
+    for kernel in summary.get("kernels", []):
+        if not isinstance(kernel, dict):
+            continue
+        kernel_id = kernel.get("kernel_id")
+        for item in kernel.get("peak_timeline", []):
+            if not isinstance(item, dict):
+                continue
+            rows.append(
+                "<tr>"
+                f"<td>{_cell(kernel_id)}</td>"
+                f"<td>{_cell(item.get('time'))}</td>"
+                f"<td>{_cell(item.get('usage_bytes'))}</td>"
+                f"<td>{_physical_slot_cell(item.get('active_physical_slots'))}</td>"
+                f"<td>{_id_list_cell(item.get('active_values'))}</td>"
+                "</tr>"
+            )
+    return "\n".join(rows)
+
+
+def _memory_slot_rows(summary: dict[str, Any] | None) -> str:
+    if not summary:
+        return ""
+    rows = []
+    for kernel in summary.get("kernels", []):
+        if not isinstance(kernel, dict):
+            continue
+        kernel_id = kernel.get("kernel_id")
+        for slot in kernel.get("workspace_slots", []):
+            if not isinstance(slot, dict):
+                continue
+            rows.append(
+                "<tr>"
+                f"<td>{_cell(kernel_id)}</td>"
+                f"<td>{_cell(slot.get('slot_id'))}</td>"
+                f"<td>{_cell(slot.get('place'))}</td>"
+                f"<td>{_cell(slot.get('offset'))}</td>"
+                f"<td>{_cell(slot.get('byte_size'))}</td>"
+                f"<td>{_cell(slot.get('value_id'))}</td>"
+                f"<td>{_cell(slot.get('live_range'))}</td>"
+                f"<td>{'yes' if slot.get('reused') else 'no'}</td>"
+                "</tr>"
+            )
+    return "\n".join(rows)
+
+
+def _memory_coverage_rows(summary: dict[str, Any] | None, kernel_views: dict[str, str]) -> str:
+    if not summary:
+        return ""
+    rows = []
+    for kernel in summary.get("kernel_coverage", []):
+        if not isinstance(kernel, dict):
+            continue
+        kernel_id = kernel.get("kernel_id")
+        kernel_cell = _cell(kernel_id)
+        if isinstance(kernel_id, str) and kernel_id in kernel_views:
+            kernel_cell = _link(kernel_views[kernel_id], kernel_id)
+        rows.append(
+            "<tr>"
+            f"<td>{kernel_cell}</td>"
+            f"<td>{_cell(kernel.get('depth'))}</td>"
+            f"<td>{_cell(kernel.get('dag_workspace_size'))}</td>"
+            f"<td>{_cell(kernel.get('memory_plan_status'))}</td>"
+            f"<td>{_cell(kernel.get('reason'))}</td>"
+            "</tr>"
+        )
+    return "\n".join(rows)
+
+
 def _memory_section(summary: dict[str, Any] | None, kernel_views: dict[str, str]) -> str:
-    rows = _memory_rows(summary, kernel_views)
-    if not summary or not rows:
+    if not summary:
+        return ""
+    if summary.get("analysis_level") == "realize-memory-plan":
+        coverage_rows = _memory_coverage_rows(summary, kernel_views)
+        timeline_rows = _memory_timeline_rows(summary)
+        slot_rows = _memory_slot_rows(summary)
+        if not coverage_rows and not timeline_rows and not slot_rows:
+            return ""
+        return f"""
+<section>
+<h2>Memory</h2>
+<p class="memory-note"><strong>Realize memory plan</strong>. {_cell(summary.get('note'))}</p>
+<dl>
+<dt>Peak workspace bytes</dt><dd>{_cell(summary.get('peak_workspace_bytes'))}</dd>
+<dt>Total workspace bytes</dt><dd>{_cell(summary.get('total_workspace_bytes'))}</dd>
+<dt>Workspace slot reuse groups</dt><dd>{_cell(summary.get('slot_reuse_group_count'))}</dd>
+<dt>Movement edges</dt><dd>{_cell(summary.get('movement_edge_count'))}</dd>
+</dl>
+<h3>Kernel Coverage</h3>
+<table>
+<thead><tr><th>Kernel</th><th>DAG depth</th><th>DAG workspace bytes</th><th>Memory plan</th><th>Reason</th></tr></thead>
+<tbody>
+{coverage_rows}
+</tbody>
+</table>
+<h3>Peak Timeline</h3>
+<table>
+<thead><tr><th>Kernel</th><th>Time</th><th>Usage bytes</th><th>Active physical slots</th><th>Active values</th></tr></thead>
+<tbody>
+{timeline_rows}
+</tbody>
+</table>
+<h3>Workspace Slots</h3>
+<table>
+<thead><tr><th>Kernel</th><th>Slot</th><th>Place</th><th>Offset</th><th>Bytes</th><th>Value</th><th>Live range</th><th>Reused</th></tr></thead>
+<tbody>
+{slot_rows}
+</tbody>
+</table>
+</section>
+"""
+
+    rows = _memory_overview_rows(summary, kernel_views)
+    if not rows:
         return ""
     return f"""
 <section>

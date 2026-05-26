@@ -312,6 +312,15 @@ NPU 与 CPU 对比不应由 NPU path 直接跑 CPU。`ascend-debug collect` 应�
 | `StaticMemoryPlan` | slot id、live interval、size、alignment、reuse group、peak usage |
 | `TargetMemoryModel`（参照） | path 可达性、容量规则、对齐约束 |
 
+`ascend-debug open` 读取 `reports/040-realize.report.txt` 时，应优先使用 `StaticMemoryPlan` 的 `live_interval[]`、`workspace_slot[]` 与 `MovementPlan` 的 `movement_step[]` 明细生成 `summaries/memory.json`。该 summary 至少包含：
+
+- 每个 kernel 的 workspace slot、value live range、physical offset、memory place、byte size。
+- 按 `(place, offset)` 聚合出的 workspace reuse group。
+- 按 live interval 扫描得到的 peak timeline 和 peak workspace bytes。
+- movement edge 摘要，说明 GM 到片上 workspace 的数据搬运路径。
+
+只有当 Realize report 不含 slot/lifetime 明细时，debug dashboard 才回退到从 kernel DAG 读取 `workspace_size` 的粗粒度 overview。
+
 #### 7.9.4 第五层：Translate / PreEmit
 
 重点回答：backend lowering 是否忠实保留第三、四层决策；host / kernel / runtime 的 schema 是否一致；动态 shape 下 runtime 如何最终选中某个 decision。
