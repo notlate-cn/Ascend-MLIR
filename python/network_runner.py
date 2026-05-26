@@ -461,17 +461,32 @@ def phase3_default_build_and_dump(work, groups, network, artifacts, args):
             if not p.get("fixed", False):
                 name = p["name"]
                 vals = p.get("values", []) or [16]
-                # axis_extent_expr is the MULTICORE axis extent — it only bounds
-                # the block-dim param (the one named in block_dim_expr, e.g.
-                # XBLOCK). Inner-axis tile params (XBLOCK_X_0 / XBLOCK_SUB) span
-                # different axes; capping them by this extent shrinks them below
-                # their valid space (e.g. [8]->2) so the kernel under-processes →
-                # wrong / all-zero output. Only cap the block-dim param.
+                # axis_extent_expr is the MULTICORE axis extent.  Two regimes
+                # for using it to bound a tunable:
+                #
+                #   - Block-dim param (named in block_dim_expr, e.g. XBLOCK):
+                #     hard cap to the extent.  If no candidate fits, fall back
+                #     to [extent].
+                #
+                #   - Inner-axis tile params (XBLOCK_X_0 / XBLOCK_SUB / …):
+                #     these may legitimately span an axis larger or smaller
+                #     than the multicore axis (encoder XBLOCK_X_0 spans M
+                #     while multicore is N), so do NOT shrink the candidate
+                #     set when at least one value already fits.  BUT when
+                #     *every* candidate exceeds the extent — which happens
+                #     for dyn-bucketed-e2e at d0*d1=8 with the generic
+                #     codegen sweep [16,32,64,128,256] — picking the largest
+                #     produces uint32_t-underflowed tail offsets that write
+                #     OOB and leave the caller's output buffer all-zero.
+                #     Fall back to [extent] in that case.
                 is_block_param = re.search(
                     r"\b" + re.escape(name) + r"\b", block_dim_expr) is not None
-                if is_block_param and extent > 0:
+                if extent > 0:
                     capped = [v for v in vals if v <= extent]
-                    vals = capped if capped else [extent]
+                    if is_block_param:
+                        vals = capped if capped else [extent]
+                    elif not capped:
+                        vals = [extent]
                 pick = vals[-1]
                 if ub_budget > 0 and space.get("ub_cost_bytes_exprs"):
                     trial = dict(params)
