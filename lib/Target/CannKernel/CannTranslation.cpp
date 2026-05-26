@@ -2329,10 +2329,18 @@ static LogicalResult emitTilingSpaceJson(StringRef outPath,
     // is applied at the consumer side, not baked into the expression, so
     // we don't have to nest a Max-tree in SymExpr — that nests `?:` at
     // each level and blows up emit-string size to 2^N with N buffers).
-    // Dedup identical expressions so the list stays small.
+    //
+    // TPipe bump-pointer model: every `InitBuffer` / `InitQueue` advances
+    // the UB allocator's offset by its aligned size; buffers are never
+    // reclaimed inside a kernel.  Real cost is therefore SUM (not MAX) of
+    // every InitBuffer in the function.  We dedup IDENTICAL size
+    // expressions but keep their count, so 44 same-size VECCALC TBufs
+    // (BERT GELU group20) emit as `44 * (align32(...))` rather than a
+    // single `align32(...)` that loses the 43-buffer SUM (which made the
+    // picker think 8KB total when reality was 352KB > 188KB UB pool,
+    // overflowing into invalid GM scalar addrs — rc=507035).
     afir::cannkernel::NameSymTable names;
-    std::vector<std::string> exprs;
-    llvm::StringSet<> seen;
+    std::map<std::string, int> exprCounts;
     bool ok = true;
     funcOp.walk([&](Operation *op) {
       Value sizeOperand;
@@ -2350,13 +2358,33 @@ static LogicalResult emitTilingSpaceJson(StringRef outPath,
         return it != names.idToName.end() ? it->second : "?";
       };
       std::string s = aligned.emitC(nameFor);
-      if (seen.insert(s).second)
-        exprs.push_back(std::move(s));
+      exprCounts[s]++;
     });
-    if (ok && !exprs.empty()) {
+    if (ok && !exprCounts.empty()) {
+      // Emit one combined SUM as a single list entry: the picker's
+      // `max(list)` then equals the total live UB footprint, and its 2×
+      // safety factor stays as defense-in-depth.
+      //
+      // Grammar requirement (eval_block_dim in network_runner.py and
+      // evalBlockExpr in autotuner_main.cpp): every binary op must be
+      // *fully parenthesized*, e.g. `(A * B)` not `A * B`.  Emit each
+      // count-multiplied term with explicit outer parens, then combine
+      // pairwise with parens as well.
+      std::string combined;
+      bool first = true;
+      for (auto &kv : exprCounts) {
+        std::string term = kv.second == 1
+            ? "(" + kv.first + ")"
+            : "(" + std::to_string(kv.second) + " * (" + kv.first + "))";
+        if (first) {
+          combined = term;
+          first = false;
+        } else {
+          combined = "(" + combined + " + " + term + ")";
+        }
+      }
       llvm::json::Array arr;
-      for (auto &s : exprs)
-        arr.push_back(s);
+      arr.push_back(combined);
       root["ub_cost_bytes_exprs"] = std::move(arr);
     }
   }
