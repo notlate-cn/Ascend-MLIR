@@ -98,6 +98,22 @@ def load_manifest(run_dir: pathlib.Path) -> dict[str, Any]:
             manifest_path=manifest_path,
             label=f"report {index}",
         )
+
+    graphs = manifest.get("graphs", [])
+    if not isinstance(graphs, list):
+        raise CommandError(f"manifest graphs must be a list: {manifest_path}")
+    for index, graph in enumerate(graphs):
+        if not isinstance(graph, dict):
+            raise CommandError(f"manifest graph {index} must be an object: {manifest_path}")
+        if "kind" in graph and not isinstance(graph["kind"], str):
+            raise CommandError(f"manifest graph {index} kind must be a string: {manifest_path}")
+        if "path" not in graph:
+            raise CommandError(f"manifest graph {index} missing path: {manifest_path}")
+        _validate_run_relative_path(
+            graph["path"],
+            manifest_path=manifest_path,
+            label=f"graph {index}",
+        )
     return manifest
 
 
@@ -135,13 +151,14 @@ def _command_rows(manifest: dict[str, Any]) -> str:
     rows = []
     for command in manifest.get("commands", []):
         args = " ".join(command.get("args", []))
+        report_path = command.get("stderr") or command.get("stdout")
         rows.append(
             "<tr>"
             f"<td>{_cell(command.get('stage'))}</td>"
             f"<td>{_cell(command.get('tool'))}</td>"
             f"<td>{_cell(args)}</td>"
             f"<td>{_cell(command.get('status'))}</td>"
-            f"<td>{_cell(command.get('stderr'))}</td>"
+            f"<td>{_cell(report_path)}</td>"
             "</tr>"
         )
     return "\n".join(rows)
@@ -155,6 +172,21 @@ def _report_rows(run_dir: pathlib.Path, manifest: dict[str, Any]) -> str:
         rows.append(
             "<tr>"
             f"<td>{_cell(report.get('stage'))}</td>"
+            f"<td>{_cell(rel_path)}</td>"
+            f"<td>{_cell(status)}</td>"
+            "</tr>"
+        )
+    return "\n".join(rows)
+
+
+def _graph_rows(run_dir: pathlib.Path, manifest: dict[str, Any]) -> str:
+    rows = []
+    for graph in manifest.get("graphs", []):
+        rel_path = graph["path"]
+        status = "present" if (run_dir / rel_path).exists() else "missing"
+        rows.append(
+            "<tr>"
+            f"<td>{_cell(graph.get('kind'))}</td>"
             f"<td>{_cell(rel_path)}</td>"
             f"<td>{_cell(status)}</td>"
             "</tr>"
@@ -186,6 +218,19 @@ def render_index(run_dir: pathlib.Path, manifest: dict[str, Any]) -> pathlib.Pat
 <thead><tr><th>Stage</th><th>Path</th><th>Status</th></tr></thead>
 <tbody>
 {_report_rows(run_dir, manifest)}
+</tbody>
+</table>
+</section>
+"""
+    graph_section = ""
+    if manifest.get("graphs"):
+        graph_section = f"""
+<section>
+<h2>Graphs</h2>
+<table>
+<thead><tr><th>Kind</th><th>Path</th><th>Status</th></tr></thead>
+<tbody>
+{_graph_rows(run_dir, manifest)}
 </tbody>
 </table>
 </section>
@@ -223,6 +268,7 @@ dd {{ margin: 0 0 0.35rem 0; }}
 </section>
 {command_section}
 {report_section}
+{graph_section}
 </body>
 </html>
 """

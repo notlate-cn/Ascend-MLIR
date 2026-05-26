@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import argparse
+import pathlib
+import shutil
+import sys
 
 from ascend_debug import __version__, layout
 from ascend_debug.runner import CommandError, find_tool, run_command
@@ -12,6 +15,8 @@ DEEP_REPORTS = (
     ("schedule", "reports/030-schedule.report.txt"),
     ("realize", "reports/040-realize.report.txt"),
 )
+
+KERNEL_DAG_REPORT = ("kernel-dag-viz", "reports/050-kernel-dag-viz.report.txt")
 
 
 def _clear_artifacts(run_dir, stages, reports=()) -> None:
@@ -33,6 +38,155 @@ def _record_command(stage: str, args: list[str], stdout_path: str, report_path: 
         "stderr": report_path,
         "status": "success",
     }
+
+
+def _graph_requested(args: argparse.Namespace) -> bool:
+    return bool(
+        args.runtime_manifest
+        or args.run_manifest
+        or args.kernelized_ir
+        or args.dag_viz
+    )
+
+
+def _resolve_existing_path(path: pathlib.Path, *, label: str) -> pathlib.Path:
+    resolved = path.resolve()
+    if not resolved.exists():
+        raise CommandError(f"{label} does not exist: {resolved}")
+    return resolved
+
+
+def _locate_dag_viz(explicit_path: pathlib.Path | None) -> pathlib.Path:
+    if explicit_path:
+        return _resolve_existing_path(explicit_path, label="DAG visualizer")
+
+    for name in ("ascend_kernel_dag_viz.py", "ascend-kernel-dag-viz"):
+        found = shutil.which(name)
+        if found:
+            return pathlib.Path(found).resolve()
+
+    current = pathlib.Path(__file__).resolve()
+    for root in current.parents:
+        candidate = root / "test" / "tools" / "diagnostics" / "ascend_kernel_dag_viz.py"
+        if candidate.exists():
+            return candidate
+    raise CommandError("DAG visualizer not found; pass --dag-viz PATH")
+
+
+def _copy_graph_artifact(
+    *,
+    src: pathlib.Path,
+    run_dir: pathlib.Path,
+    rel_path: str,
+    kind: str,
+) -> dict:
+    dst = run_dir / rel_path
+    layout.copy_stage(src, dst)
+    return {"kind": kind, "path": rel_path}
+
+
+def _collect_graph_artifacts(
+    *,
+    args: argparse.Namespace,
+    run_dir: pathlib.Path,
+    default_kernelized_ir: pathlib.Path,
+) -> tuple[list[dict], list[dict], list[dict]]:
+    if not _graph_requested(args):
+        return [], [], []
+    if not args.runtime_manifest:
+        raise CommandError("--runtime-manifest is required when collecting graph artifacts")
+
+    graphs: list[dict] = []
+    commands: list[dict] = []
+    reports: list[dict] = []
+
+    runtime_manifest = _resolve_existing_path(args.runtime_manifest, label="runtime manifest")
+    graphs.append(
+        _copy_graph_artifact(
+            src=runtime_manifest,
+            run_dir=run_dir,
+            rel_path="graphs/runtime_manifest.json",
+            kind="runtime-manifest",
+        )
+    )
+    runtime_manifest_dst = run_dir / "graphs/runtime_manifest.json"
+
+    run_manifest_dst = None
+    if args.run_manifest:
+        run_manifest = _resolve_existing_path(args.run_manifest, label="run manifest")
+        graphs.append(
+            _copy_graph_artifact(
+                src=run_manifest,
+                run_dir=run_dir,
+                rel_path="graphs/run_manifest.json",
+                kind="run-manifest",
+            )
+        )
+        run_manifest_dst = run_dir / "graphs/run_manifest.json"
+
+    kernelized_ir = (
+        _resolve_existing_path(args.kernelized_ir, label="kernelized IR")
+        if args.kernelized_ir
+        else default_kernelized_ir
+    )
+    graphs.append(
+        _copy_graph_artifact(
+            src=kernelized_ir,
+            run_dir=run_dir,
+            rel_path="graphs/kernelized.mlir",
+            kind="kernelized-ir",
+        )
+    )
+    kernelized_ir_dst = run_dir / "graphs/kernelized.mlir"
+
+    svg_rel = "graphs/kernel_dag.svg"
+    summary_rel = "graphs/kernel_dag.summary.json"
+    report_stage, report_rel = KERNEL_DAG_REPORT
+    dag_viz = _locate_dag_viz(args.dag_viz)
+    tool_args = [
+        "--runtime-manifest",
+        "graphs/runtime_manifest.json",
+        "--kernelized-ir",
+        "graphs/kernelized.mlir",
+        "--svg-out",
+        svg_rel,
+        "--summary-out",
+        summary_rel,
+    ]
+    argv = [
+        sys.executable,
+        str(dag_viz),
+        "--runtime-manifest",
+        str(runtime_manifest_dst),
+        "--kernelized-ir",
+        str(kernelized_ir_dst),
+        "--svg-out",
+        str(run_dir / svg_rel),
+        "--summary-out",
+        str(run_dir / summary_rel),
+    ]
+    if run_manifest_dst:
+        tool_args[2:2] = ["--run-manifest", "graphs/run_manifest.json"]
+        argv[4:4] = ["--run-manifest", str(run_manifest_dst)]
+
+    run_command(argv, stdout_path=run_dir / report_rel)
+    commands.append(
+        {
+            "stage": report_stage,
+            "tool": "ascend_kernel_dag_viz.py",
+            "args": tool_args,
+            "stdout": report_rel,
+            "status": "success",
+        }
+    )
+    reports.append({"stage": report_stage, "path": report_rel})
+    graphs.extend(
+        [
+            {"kind": "kernel-dag-svg", "path": svg_rel},
+            {"kind": "kernel-dag-summary", "path": summary_rel},
+        ]
+    )
+    return commands, reports, graphs
 
 
 def _run_opt_stage(
@@ -88,12 +242,20 @@ def collect_quick(args: argparse.Namespace) -> int:
     layout.copy_stage(normalize_out, kernelize_in)
     run_command([opt, str(kernelize_in), "--ascend-kernelize"], stdout_path=kernelize_out)
 
+    graph_commands, graph_reports, graphs = _collect_graph_artifacts(
+        args=args,
+        run_dir=run_dir,
+        default_kernelized_ir=kernelize_out,
+    )
     layout.write_manifest(
         run_dir,
         preset=args.preset,
         pipeline=args.pipeline,
         stages=stages,
         version=__version__,
+        commands=graph_commands,
+        reports=graph_reports,
+        graphs=graphs,
     )
     layout.write_provenance_skeleton(
         run_dir,
@@ -182,7 +344,14 @@ def collect_deep(args: argparse.Namespace) -> int:
         )
     )
 
+    graph_commands, graph_reports, graphs = _collect_graph_artifacts(
+        args=args,
+        run_dir=run_dir,
+        default_kernelized_ir=stage_paths["kernelize-out"],
+    )
+    commands.extend(graph_commands)
     reports = [{"stage": name, "path": path} for name, path in DEEP_REPORTS]
+    reports.extend(graph_reports)
     layout.write_manifest(
         run_dir,
         preset=args.preset,
@@ -191,6 +360,7 @@ def collect_deep(args: argparse.Namespace) -> int:
         version=__version__,
         commands=commands,
         reports=reports,
+        graphs=graphs,
     )
     layout.write_provenance_skeleton(
         run_dir,
