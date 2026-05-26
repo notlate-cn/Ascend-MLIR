@@ -1,11 +1,11 @@
 // RUN: rm -f %t.cpp %t.legacy.cpp %t.tiling.json %t.manifest.json %t.legacy-manifest.json %t.conflict-manifest.json %t.host.cpp
-// RUN: afir-translate -mlir-to-cann %s --tiling-space-out=%t.tiling.json --artifact-manifest-out=%t.manifest.json --host-tiling-out=%t.host.cpp --cann-soc=Ascend910B2 > %t.cpp
+// RUN: ascend-mlir-translate -mlir-to-cann %s --tiling-space-out=%t.tiling.json --artifact-manifest-out=%t.manifest.json --host-tiling-out=%t.host.cpp --cann-soc=Ascend910B2 > %t.cpp
 // RUN: FileCheck %s --input-file=%t.tiling.json --check-prefix=TILING
 // RUN: FileCheck %s --input-file=%t.manifest.json --check-prefix=MANIFEST
 // RUN: FileCheck %s --input-file=%t.host.cpp --check-prefix=HOST
-// RUN: afir-translate -mlir-to-cann %s --runtime-manifest-out=%t.legacy-manifest.json > %t.legacy.cpp
+// RUN: ascend-mlir-translate -mlir-to-cann %s --runtime-manifest-out=%t.legacy-manifest.json > %t.legacy.cpp
 // RUN: FileCheck %s --input-file=%t.legacy-manifest.json --check-prefix=MANIFEST
-// RUN: not afir-translate -mlir-to-cann %s --artifact-manifest-out=%t.manifest.json --runtime-manifest-out=%t.conflict-manifest.json 2>&1 | FileCheck %s --check-prefix=MANIFEST-CONFLICT
+// RUN: not ascend-mlir-translate -mlir-to-cann %s --artifact-manifest-out=%t.manifest.json --runtime-manifest-out=%t.conflict-manifest.json 2>&1 | FileCheck %s --check-prefix=MANIFEST-CONFLICT
 
 // TILING-DAG: "kernel": "broadcast_add_reducesum"
 // TILING-DAG: "schema_version": "2.0"

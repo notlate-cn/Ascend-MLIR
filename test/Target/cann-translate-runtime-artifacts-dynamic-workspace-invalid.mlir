@@ -1,4 +1,4 @@
-// RUN: not afir-translate -mlir-to-cann %s --host-tiling-out=%t.host.cpp --cann-soc=Ascend910B2 2>&1 | FileCheck %s
+// RUN: not ascend-mlir-translate -mlir-to-cann %s --host-tiling-out=%t.host.cpp --cann-soc=Ascend910B2 2>&1 | FileCheck %s
 
 // CHECK: cann.workspace_size_expr references unknown tiling shape field "dim_arg9_0"
 

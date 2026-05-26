@@ -1,5 +1,5 @@
 // RUN: rm -f %t.cpp %t.tiling.json %t.manifest.json %t.host.cpp
-// RUN: afir-translate -mlir-to-cann %s --tiling-space-out=%t.tiling.json --artifact-manifest-out=%t.manifest.json --host-tiling-out=%t.host.cpp --cann-soc=Ascend910B2 > %t.cpp
+// RUN: ascend-mlir-translate -mlir-to-cann %s --tiling-space-out=%t.tiling.json --artifact-manifest-out=%t.manifest.json --host-tiling-out=%t.host.cpp --cann-soc=Ascend910B2 > %t.cpp
 // RUN: FileCheck %s --input-file=%t.tiling.json --check-prefix=TILING
 // RUN: FileCheck %s --input-file=%t.manifest.json --check-prefix=MANIFEST
 // RUN: FileCheck %s --input-file=%t.host.cpp --check-prefix=HOST

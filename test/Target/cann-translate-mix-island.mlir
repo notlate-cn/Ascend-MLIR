@@ -1,4 +1,4 @@
-// RUN: not afir-translate -mlir-to-cann %S/cann-translate-mix-island-input.mlir 2>&1 | FileCheck %s
+// RUN: not ascend-mlir-translate -mlir-to-cann %S/cann-translate-mix-island-input.mlir 2>&1 | FileCheck %s
 
 // This fixture adds an unrelated vector-only sink that consumes the bias
 // broadcast branch but does not participate in the boundary-rooted execution

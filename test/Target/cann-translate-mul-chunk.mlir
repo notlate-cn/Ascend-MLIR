@@ -1,4 +1,4 @@
-// RUN: afir-translate -mlir-to-cann %s | FileCheck %s
+// RUN: ascend-mlir-translate -mlir-to-cann %s | FileCheck %s
 
 // CHECK-LABEL: void mul_l2_inplace_chunked
 // CHECK: uint32_t _afir_mul_count = static_cast<uint32_t>(

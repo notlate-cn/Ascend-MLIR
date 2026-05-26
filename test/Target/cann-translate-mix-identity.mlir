@@ -1,4 +1,4 @@
-// RUN: sed -e '/ascendc.duplicate_l2/d' -e '/ascendc.mul_l2/d' -e '/ascendc.max_l2/d' -e 's/ascendc.que_bind.enque_tensor %22, %106/ascendc.que_bind.enque_tensor %22, %95/' %S/cann-translate-mix-input.mlir | afir-translate -mlir-to-cann - | FileCheck %s
+// RUN: sed -e '/ascendc.duplicate_l2/d' -e '/ascendc.mul_l2/d' -e '/ascendc.max_l2/d' -e 's/ascendc.que_bind.enque_tensor %22, %106/ascendc.que_bind.enque_tensor %22, %95/' %S/cann-translate-mix-input.mlir | ascend-mlir-translate -mlir-to-cann - | FileCheck %s
 
 // Locks the supported mix path for matmul+bias fragments whose vector region
 // only forwards the bias-add result to the physical output buffer. This is the

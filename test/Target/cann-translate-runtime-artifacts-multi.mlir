@@ -1,4 +1,4 @@
-// RUN: afir-translate -mlir-to-cann %s --artifact-manifest-out=%t.manifest.json --host-tiling-out=%t.host.cpp --cann-soc=Ascend910B2 > %t.cpp
+// RUN: ascend-mlir-translate -mlir-to-cann %s --artifact-manifest-out=%t.manifest.json --host-tiling-out=%t.host.cpp --cann-soc=Ascend910B2 > %t.cpp
 // RUN: FileCheck %s --input-file=%t.manifest.json --check-prefix=MANIFEST
 // RUN: FileCheck %s --input-file=%t.cpp --check-prefix=CPP
 // RUN: FileCheck %s --input-file=%t.host.cpp --check-prefix=HOST
