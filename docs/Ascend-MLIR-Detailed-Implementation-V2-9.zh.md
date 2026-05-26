@@ -9,7 +9,7 @@
 
 ### 9.1 当前原型流水线（V1 路径）
 
-> **工具说明**：本节命令行中出现的 `afir-opt` / `afir-translate` 是原型阶段的兼容 driver 工具，功能分别等价于 MLIR 社区的 `mlir-opt` / `mlir-translate`。它们随 AFIR Dialect 一同存在于原型期代码库中。V2 规范（见 V2-1.4.2）不依赖 AFIR Dialect；V2 各层 Pass 全部完成后，统一 driver 将替换为 `ascend-mlir-opt` / `ascend-mlir-translate`（见 9.2.1 节）。旧 `afir-*` 工具可以继续保留用于兼容和回归，但 Ascend 工具链、Runtime Manifest、Host Tiling ABI 和业务能力不得依赖 AFIR 方言或 `afir-translate`。
+> **工具说明**：本节命令行中出现的 `afir-opt` / `afir-translate` 是原型阶段的兼容 driver 工具，功能分别等价于 MLIR 社区的 `mlir-opt` / `mlir-translate`。它们随 AFIR Dialect 一同存在于原型期代码库中。V2 规范（见 V2-1.4.2）不依赖 AFIR Dialect；V2 各层 Pass 全部完成后，统一 driver 将替换为 `ascend-mlir-opt` / `ascend-mlir-translate`（见 9.2.1 节）。旧 `afir-*` 工具可以继续保留用于兼容和回归，但 Ascend 工具链、Artifact Manifest、Host Tiling ABI 和业务能力不得依赖 AFIR 方言或 `afir-translate`。
 
 当前原型阶段，Layers 1–3（Normalize / Kernelize / Schedule）尚未实现为自动化 Pass，由手写 Transform 脚本和人工挑选的融合策略代替。完整 Pass 序列如下。
 
@@ -165,7 +165,7 @@ V2 完成后，编译器在一次调用中自动输出以下产物，无需人�
 | `<kernel>.cpp` | AscendC C++ kernel 源码 | 已实现 |
 | `<kernel>_cann.mlir` | CANN 标准签名 kernel MLIR | 已实现 |
 | `tiling_space.json` | tiling 参数空间描述（v2.0 规范格式，见 6.6.7 节） | 待实现 |
-| `runtime_manifest.json` | Runtime 调度清单，含 kernelGraph DAG（见 6.6.6 节） | 待实现 |
+| `artifact_manifest.json` | 编译产物清单，含 kernel entries、Host Tiling ABI binding 和 kernelGraph DAG（见 6.6.6 节） | 待实现 |
 | `<KernelName>_get_tiling.so` | C ABI 动态库（见 9.4.3 节） | 待实现 |
 
 ---
@@ -179,7 +179,7 @@ V2 完成后，编译器在一次调用中自动输出以下产物，无需人�
 ├── <kernel>.cpp               ← bisheng 编译输入
 ├── <kernel>_cann.mlir         ← 元数据来源（ABI、buffer 顺序等）
 ├── tiling_space.json          ← Autotuner / prepare-time 参数空间
-├── runtime_manifest.json      ← Runtime 调度总入口
+├── artifact_manifest.json      ← 编译产物总入口
 └── <KernelName>_get_tiling.so ← C ABI 动态库（非 C++ Runtime 对接）
 
 bisheng 编译后追加：
@@ -194,8 +194,10 @@ bisheng 编译后追加：
 | `<kernel>.cpp` / `<kernel>.bin` | CANN Runtime / 自定义 device 侧执行引擎 | device 侧 kernel 执行 |
 | `<kernel>_cann.mlir` | RuntimeMix、测试框架 | ABI 解析、tiling 参数填充 |
 | `tiling_space.json` | Level-2 Autotuner、prepare/offline 工具 | tiling 参数搜索、bucket/guard 产物生成；`runtime-session` 不在线消费 |
-| `runtime_manifest.json` | C++ Runtime、外部 Runtime 框架 | 全局调度，多 kernel DAG 执行 |
+| `artifact_manifest.json` | Runtime prepare 工具、C++ Runtime、外部 Runtime 框架 | artifact 发现、guard/fallback 选择、多 kernel DAG 执行 |
 | `<KernelName>_get_tiling.so` | Python / Go / Rust 推理框架 | 非 C++ 语言跨语言调用 tiling 查询 |
+
+`run_manifest.json` 不属于编译器直接产出的 artifact 清单。它由 prepare/packaging 步骤根据 `artifact_manifest.json`、artifact root、本次输入/输出文件、backend 和目标 shape 生成，是 `runtime-session --run-manifest ... --run` 的执行请求格式。二者命名必须严格区分：Artifact Manifest 描述“有哪些可运行产物以及如何按 shape 选择”，Run Manifest 描述“这一次运行哪些 task、读写哪些文件、使用哪些已选 launch 参数”。
 
 ---
 
@@ -210,7 +212,7 @@ bisheng 编译后追加：
 | 要求 | 说明 |
 |---|---|
 | 能加载 `.bin` ELF | 调用 CANN `AscendCL` 或等效接口执行 device 侧 kernel |
-| 能读取并解析 `runtime_manifest.json` | 获取 kernel 名称、ABI、guard/fallback、host tiling 符号绑定、workspace 大小、DAG 边 |
+| 能读取并解析 `artifact_manifest.json` | 获取 kernel 名称、ABI、guard/fallback、host tiling 符号绑定、workspace 大小、DAG 边 |
 | 能分配 workspace buffer | 按 `GetWorkspaceSize` 或 manifest 中 `workspaceSizeExpr` 计算所需字节，在 device 侧分配 |
 | 能按顺序（或 DAG 拓扑序）触发 kernel 执行 | 单 kernel 按顺序，多 kernel 按 `kernelGraph` 的拓扑序调度 |
 | 能填充 tiling 参数结构体并传入 kernel | 通过 manifest 指向的 Host Tiling C ABI（见 9.4.3 节）填充 |
@@ -227,7 +229,7 @@ bisheng 编译后追加：
 静态 shape（运行前形状固定）时，对接步骤最简：
 
 ```
-1. 读取 runtime_manifest.json
+1. 读取 artifact_manifest.json
    → 获取 kernelName、ABI 字段（inputs/outputs 顺序与类型）、hostTilingBindings
 
 2. 根据当前 schedule entry 的 `hostTilingId` 查找 binding，`dlopen(binding.library)` 并按 manifest 中的显式 symbol 名 `dlsym`
@@ -251,7 +253,7 @@ bisheng 编译后追加：
 
 #### 9.4.3 C ABI 接口规范
 
-编译器为每个 kernel 或 bucket variant 生成以下四个 C ABI 函数，以动态库（`.so`）形式导出，供 `runtime-session` 和任意支持 FFI 的语言调用。Runtime 必须以 `runtime_manifest.json` 中 `hostTilingBindings` 的 `library` 和 `symbols` 为准做动态链接；`<KernelName>_GetTiling` 只是默认命名约定，不是绑定来源。
+编译器为每个 kernel 或 bucket variant 生成以下四个 C ABI 函数，以动态库（`.so`）形式导出，供 `runtime-session` 和任意支持 FFI 的语言调用。Runtime 必须以 `artifact_manifest.json` 中 `hostTilingBindings` 的 `library` 和 `symbols` 为准做动态链接；`<KernelName>_GetTiling` 只是默认命名约定，不是绑定来源。
 
 ```c
 extern "C" {
@@ -263,7 +265,7 @@ extern "C" {
 
   /**
    * 根据运行时 shape 参数计算 tiling，填充到 tiling_out 指向的缓冲区。
-   * shape_args: 按 runtime_manifest.json 中 shapeArgOrder 列出的维度值数组
+   * shape_args: 按 artifact_manifest.json 中 shapeArgOrder 列出的维度值数组
    * shape_count: shape_args 的元素个数
    * tiling_out: 调用方分配、大小 >= GetTilingSize() 字节的缓冲区
    * 返回 0 表示成功，负数表示错误码
@@ -301,7 +303,7 @@ lib.matmul_add_leakyrelu_GetTiling.argtypes     = [
 lib.matmul_add_leakyrelu_GetBlockDim.restype    = ctypes.c_int64
 lib.matmul_add_leakyrelu_GetWorkspaceSize.restype = ctypes.c_int64
 
-# shape_args 顺序见 runtime_manifest.json 的 shapeArgOrder 字段
+# shape_args 顺序见 artifact_manifest.json 的 shapeArgOrder 字段
 shape_args = np.array([128, 256, 128], dtype=np.int64)
 n_shapes   = len(shape_args)
 shape_ptr  = shape_args.ctypes.data_as(ctypes.POINTER(ctypes.c_int64))
@@ -321,7 +323,7 @@ workspace_size = lib.matmul_add_leakyrelu_GetWorkspaceSize(shape_ptr, n_shapes)
 动态 shape 下，每次推理调用前 shape 才确定。对接步骤与静态形相同，差异在于：
 
 - `GetTiling`、`GetBlockDim`、`GetWorkspaceSize` 在每次推理时以当前 shape 为参数调用
-- 编译器在 `runtime_manifest.json` 的 `scheduleEntries[].guard` 字段记录 shape 约束（guard 条件），Runtime 按 priority 顺序选择匹配 entry；若普通 guard 均未命中，只能使用显式 `fallback=true` entry
+- 编译器在 `artifact_manifest.json` 的 `scheduleEntries[].guard` 字段记录 shape 约束（guard 条件），Runtime 按 priority 顺序选择匹配 entry；若普通 guard 均未命中，只能使用显式 `fallback=true` entry
 - `GetTiling` 只负责把已生成 binding 内的参数物化到 `TilingData`，并校验当前 shape 是否满足对应 guard/fallback 约束；它不调用 Autotuner、不生成新的 `best.config`
 - 若没有匹配 guard 且没有 fallback，Runtime 必须 fail fast，交由离线 prepare 服务重新生成覆盖该 shape 的产物
 
@@ -329,7 +331,7 @@ workspace_size = lib.matmul_add_leakyrelu_GetWorkspaceSize(shape_ptr, n_shapes)
 动态推理调用流程（每次 forward）：
 
 shape_args ← 本次输入的实际维度
-entry ← runtime_manifest.scheduleEntries 按 priority 匹配 guard / fallback
+entry ← artifact_manifest.scheduleEntries 按 priority 匹配 guard / fallback
 通过 entry.hostTilingId 查找 binding，dlopen(binding.library) 并绑定 binding.symbols
 GetTiling(shape_args, ..., tiling_out)  ← 物化已生成 binding 的参数
 GetBlockDim(shape_args, ...)            ← 当前 entry 的 block 数
@@ -338,7 +340,7 @@ GetWorkspaceSize(shape_args, ...)       ← 当前 entry 的 workspace 大小
 执行 kernel
 ```
 
-**shape_args 顺序约定**：`runtime_manifest.json` 中的 `shapeArgOrder` 字段（定义见 V2-6.6.2 节）显式列出每个位置对应哪个符号维度，Runtime 框架必须按此顺序传入，不得自行推断顺序。
+**shape_args 顺序约定**：`artifact_manifest.json` 中的 `shapeArgOrder` 字段（定义见 V2-6.6.2 节）显式列出每个位置对应哪个符号维度，Runtime 框架必须按此顺序传入，不得自行推断顺序。
 
 **动态 shape manifest 示例**：
 
@@ -383,7 +385,7 @@ GetWorkspaceSize(shape_args, ...)       ← 当前 entry 的 workspace 大小
 
 #### 9.4.5 多 Kernel DAG 调度
 
-多 kernel 场景（融合失败、多段 kernel）下，`runtime_manifest.json` 的 `kernelGraph` 字段描述内核间的数据依赖 DAG：
+多 kernel 场景（融合失败、多段 kernel）下，`artifact_manifest.json` 的 `kernelGraph` 字段描述内核间的数据依赖 DAG：
 
 ```json
 "kernelGraph": {
@@ -444,7 +446,7 @@ GetWorkspaceSize(shape_args, ...)       ← 当前 entry 的 workspace 大小
 
 #### 9.5.1 静态 Shape 场景
 
-- [ ] 读取 `runtime_manifest.json`，验证 `schema_version`
+- [ ] 读取 `artifact_manifest.json`，验证 `schema_version`
 - [ ] 按 `abi.inputs` / `abi.outputs` 字段顺序绑定 tensor buffer
 - [ ] 读取 `hostTilingBindings`，通过显式 `library` / `symbols` 绑定 Host Tiling C ABI
 - [ ] 调用 `GetTilingSize()` 确认 tiling 结构体大小

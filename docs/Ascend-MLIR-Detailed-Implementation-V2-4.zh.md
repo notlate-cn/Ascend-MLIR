@@ -913,7 +913,7 @@ struct ScheduleFamilyMatchResult {
 - `runtimeTopK` 在编译期由 `ScheduleDecisionBuilder` 写入 `ScheduleDecisionSet`（默认值 `min(4, compileTimeTopK)`），限制 prepare/offline tuning 在已选 `ScheduleDecision` 之中可继续筛选的候选数量上限；恒满足 `runtimeTopK ≤ compileTimeTopK`（4.10 节 `ScheduleDecisionVerifier` 强制此约束）
 - `topN` / `top1` 是 prepare/offline tuning 的进一步派生量，仅在 Level-1/Level-2 选择阶段使用，不写入 `ScheduleDecisionSet`
 
-简言之：`compileTimeTopK` 决定"编译期保留多少候选写入决策集合"，`runtimeTopK` 决定"部署准备/离线调优阶段可在这些候选中再筛多少进入实测"，两者均为单调递减的容量上限。`runtime-session` 只消费已经物化的 `runtime_manifest.json`、host tiling `.so` 和 kernel artifact，不执行 Level-1/Level-2 Autotuner。
+简言之：`compileTimeTopK` 决定"编译期保留多少候选写入决策集合"，`runtimeTopK` 决定"部署准备/离线调优阶段可在这些候选中再筛多少进入实测"，两者均为单调递减的容量上限。`runtime-session` 只消费已经物化的 `artifact_manifest.json`、host tiling `.so` 和 kernel artifact，不执行 Level-1/Level-2 Autotuner。
 
 **辅助类型最小定义**（供 4.6 节各结构体引用）：
 
@@ -995,7 +995,7 @@ struct ScheduleDecisionSet {
 5. 按 cost model 选择唯一 `selectedPolicy`：优先选无需额外 guard 且无需额外 buffer 的 `MaskedTail`；若 intrinsic 不支持 mask 但 tail 很小，选 `ScalarEpilogue`；若数据搬运或 cube/vector intrinsic 要求对齐访问，选 `PadAndMask`；只有上述策略都不可用时才选 `MustDivide` 并生成 divisibility guard。
 6. 计算 `affectedPrimitiveUses`：从第二层 `primitiveUses` 中筛出会因为 `selectedPolicy` 改变 lowering 形态的用途，其余用途不写入该字段。
 7. 计算 `tailBufferingMode`：默认 `SeparateTailBuffer`；只有当主循环 pipeline 已 drain、double-buffer 生命周期不重叠、且复用不会改变 queue/tbuf 顺序时，才允许 `ReuseMainBufferAfterDrain`。
-8. 计算 `mainExtentExpr` / `tailExtentExpr`：静态 shape 直接常量折叠；动态 shape 写成符号表达式并进入 host tiling / runtime manifest。
+8. 计算 `mainExtentExpr` / `tailExtentExpr`：静态 shape 直接常量折叠；动态 shape 写成符号表达式并进入 host tiling / artifact manifest。
 9. 将结果写入 `ScheduleDecision.tailPlans`，并把必要 guard 写入 `decisionGuards`。第四、五层只消费该结果，不重新选择 tail 策略。
 
 **策略语义：**
@@ -1021,7 +1021,7 @@ struct ScheduleDecisionSet {
 | 编译期                 | 过滤 `scheduleSearchSpace`，保留 `compileTimeTopK`           |
 | 部署准备 / Level-1     | 根据 profile shape、bucket 范围和 `candidateGuards` 做轻量打分，产出 `runtimeTopK / topN` |
 | 离线 / Level-2（可选） | 对 `topN` 做更充分调优，生成最终 `ScheduleDecisionSet`、`best.config` 或 tuning DB，并写入缓存 |
-| 运行期                 | 根据当前 shape 匹配 Runtime Manifest 中的 guard/fallback，调用 Host Tiling ABI 的 `GetTiling` / `GetBlockDim` / `GetWorkspaceSize`，不执行调优搜索 |
+| 运行期                 | 根据当前 shape 匹配 Artifact Manifest 中的 guard/fallback，调用 Host Tiling ABI 的 `GetTiling` / `GetBlockDim` / `GetWorkspaceSize`，不执行调优搜索 |
 
 **Level-1 评分只允许使用**：legality、片上容量合法性、`cacheMissPenalty`、`bankConflictPenalty`、promotion / movement 数量、`blockDimExpr` 是否可直接求值、execution unit 与 memory hierarchy 匹配情况。
 
@@ -1040,7 +1040,7 @@ fallback decision
      此路径只用于 bucket 命中失败的降级，不用于 Level-2 调优失败
 ```
 
-回退次数无上限，但每次回退都必须写入诊断日志（包含 kernel id、bucket key、失败原因）。若 fallback 被写入 Runtime Manifest，它必须是显式 `fallback=true` 的保守 `ScheduleDecision`：性能可以低于 bucket 专用 decision，但必须覆盖声明的合法 shape 范围；不能把“运行期未命中 guard 后在线调优”作为隐式 fallback。
+回退次数无上限，但每次回退都必须写入诊断日志（包含 kernel id、bucket key、失败原因）。若 fallback 被写入 Artifact Manifest，它必须是显式 `fallback=true` 的保守 `ScheduleDecision`：性能可以低于 bucket 专用 decision，但必须覆盖声明的合法 shape 范围；不能把“运行期未命中 guard 后在线调优”作为隐式 fallback。
 
 **Level-2 触发条件**：Level-2 Autotuner 默认关闭，需在编译器配置中显式开启（`enableLevel2Autotuner = true`）。开启后，仅当以下条件**同时成立**时才实际执行 Level-2：① Level-1 筛出的候选数 `>= 2`（只有 1 个候选时无需进一步优化）；② 当前 kernel 的 `scheduleFamily` 不是 `GenericInjectiveFamily`（该 family 的搜索空间已足够小，Level-2 增益可忽略）；③ `TuningResultCache` 中无该 bucket 的有效缓存命中。不满足以上任意条件时，直接使用 Level-1 top1，不进入 Level-2。Level-2 只能在编译/部署准备或离线调优服务中执行，`runtime-session` 不触发 Level-2，也不在 guard 未命中时生成新的 `best.config`。
 
@@ -1263,7 +1263,7 @@ struct HandwrittenTilingInstance {
 };
 ```
 
-`paramValues` 的 key 与 `HandwrittenPatternEntry.tilingParams` 中声明的参数名一一对应；`instanceGuards` 语义与通用路径的 `candidateGuards` 相同，供 Runtime Manifest 生成 guard/fallback 路由。`HandwrittenTilingInstance` 持有各 `TilingParam` 的具体取值，供 `HostTilingEmitter` 生成 host 侧 `get_tiling(...)` 代码。
+`paramValues` 的 key 与 `HandwrittenPatternEntry.tilingParams` 中声明的参数名一一对应；`instanceGuards` 语义与通用路径的 `candidateGuards` 相同，供 Artifact Manifest 生成 guard/fallback 路由。`HandwrittenTilingInstance` 持有各 `TilingParam` 的具体取值，供 `HostTilingEmitter` 生成 host 侧 `get_tiling(...)` 代码。
 
 ------
 
@@ -1331,13 +1331,13 @@ ProfileDB 按 `targetVersion` 分区存储，不同硬件代际的数据不混�
 5. 未命中则在 `compileTimeTopK` 保留的候选中做 Level-1 快速调优，筛出 `runtimeTopK / topN`
 6. 直接使用 Level-1 结果，或在 `topN` 上执行离线 Level-2 Autotuner
 7. 级联回填 `TuningResultCache`；无合法结果则写负缓存，触发 4.6.5 节准备阶段选择链
-8. 将每个最终 decision 写入 Runtime Manifest 的 guard entry；若需要全范围合法覆盖，额外生成显式 fallback entry
+8. 将每个最终 decision 写入 Artifact Manifest 的 guard entry；若需要全范围合法覆盖，额外生成显式 fallback entry
 
 #### 4.9.4 运行期消费流程
 
 `runtime-session` 的动态 shape 运行流程固定为：
 
-1. 读取 `runtime_manifest.json`
+1. 读取 `artifact_manifest.json`
 2. 从输入 tensor 提取 `shape_args`，按 `shapeArgOrder` 排列
 3. 按 manifest 中的 priority 顺序匹配 guard；若无优化 guard 命中，则选择 `fallback=true` entry；仍无 entry 则 fail fast
 4. 根据选中 entry 的 `hostTilingId` 查找 `hostTilingBindings`，用其中的 `library` 和 `symbols` 绑定 C ABI 符号

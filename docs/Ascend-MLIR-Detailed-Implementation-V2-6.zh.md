@@ -2,7 +2,7 @@
 
 第五层的任务是把第四层输出的 `Memory-Realized IR` 翻译成 backend 工具链和 runtime 所需的最终工件。
 
-本层只做翻译，不引入新的调度决策或内存规划，消费的所有决策结果均来自上游。翻译过程分为四个有序阶段：Compute Lowering → Kernel ABI Translation → AscendC Source Translation → Host Tiling & Runtime Manifest。
+本层只做翻译，不引入新的调度决策或内存规划，消费的所有决策结果均来自上游。翻译过程分为四个有序阶段：Compute Lowering → Kernel ABI Translation → AscendC Source Translation → Host Tiling & Artifact Manifest。
 
 ```mermaid
 flowchart LR
@@ -10,7 +10,7 @@ flowchart LR
     B[Compute Lowering\n6.3]
     C[Kernel ABI Translation\n6.4]
     D[AscendC Source Translation\n6.5]
-    E[Host Tiling /\nRuntime Manifest\n6.6]
+    E[Host Tiling /\nArtifact Manifest\n6.6]
 
     A --> B
     B -->|Backend Compute IR| C
@@ -30,7 +30,7 @@ flowchart LR
 | 输入         | 第四层输出的 `Memory-Realized IR`（普通 `memref + linalg + scf + func` MLIR，on-chip place 以 `memory_space` 表达，跨 place movement 以 `memref.copy` 表达） |
 | 侧边输入     | `MemoryRealizationPlan`（含 `resolvedPlacement`、`resolvedMovements`、`workspaceLayout`）、`ScheduleDecisionSet`（含 `decisionGuards`、`tailPlans`、`pipelineDepthExpr`、`enableDoubleBuffer`、`tilingParams`、`unitAssignment`、`compileTimeTopK`） |
 | 输出（必选） | `AscendC Kernel MLIR`、`AscendC Source`、`Host Tiling`       |
-| 输出（可选） | `Runtime Manifest`                                           |
+| 输出（可选） | `Artifact Manifest`                                           |
 
 第五层不修改 `ScheduleDecisionSet` 和 `MemoryRealizationPlan`；它们在此层为只读消费，第五层结束后统一清除。
 
@@ -42,7 +42,7 @@ flowchart LR
 | `AscendC Kernel MLIR`      | 6.4 Kernel ABI Translation | 6.5 Source Translation、6.6 Host Tiling |
 | `AscendC Source`           | 6.5 Source Translation     | 工具链编译                              |
 | `Host Tiling`              | 6.6                        | Runtime 调用                            |
-| `Runtime Manifest`（可选） | 6.6                        | Runtime kernel 选择与缓存               |
+| `Artifact Manifest`（可选） | 6.6                        | Runtime kernel 选择与缓存               |
 
 ---
 
@@ -55,7 +55,7 @@ flowchart LR
 | `BackendABILoweringDriver`   | 固定 kernel 函数签名、并行入口和 `TilingData` ABI            | `Backend Compute IR`、`ScheduleDecisionSet`、`MemoryRealizationPlan` | `AscendC Kernel MLIR` |
 | `AscendCSourceEmitter`       | 把 `AscendC Kernel MLIR` 翻译成 C++ 源码                     | `AscendC Kernel MLIR`                                        | `AscendC Source`      |
 | `HostTilingEmitter`          | 生成 host 侧 `TilingData` 结构和 `get_tiling/get_block_dim` 函数，包含动态 tail extent / main extent / alignment 字段 | `AscendC Kernel MLIR`、`ScheduleDecisionSet`、调优结果       | `Host Tiling`         |
-| `RuntimeManifestBuilder`     | 组装 shape bucket、guard、tail plan、schedule entry 和 cache key        | `AscendC Kernel MLIR`、`ScheduleDecisionSet`、`decisionGuards` | `Runtime Manifest`    |
+| `ArtifactManifestBuilder`     | 组装 shape bucket、guard、tail plan、schedule entry 和 cache key        | `AscendC Kernel MLIR`、`ScheduleDecisionSet`、`decisionGuards` | `Artifact Manifest`    |
 
 ---
 
@@ -494,7 +494,7 @@ DataCopy(outGm, outVec, /* ... */);
 
 ---
 
-### 6.6 Host Tiling / Runtime Manifest
+### 6.6 Host Tiling / Artifact Manifest
 
 #### 6.6.1 功能
 
@@ -502,9 +502,9 @@ DataCopy(outGm, outVec, /* ... */);
 
 **Host Tiling Codegen**：从 `AscendC Kernel MLIR` 提取稳定的 `HostTilingABI`，结合 prepare/offline 阶段已经选定的 `ScheduleDecision`（Level-1 top1 或 Level-2 Autotuner 产出的 `best.config`），生成 host 侧 `TilingData` 结构体、`get_tiling(...)` 和 `get_block_dim(...)` 函数。Host Tiling 只物化已选参数，不运行搜索。
 
-**Runtime Manifest（可选）**：把 `decisionGuards`、shape bucket、schedule entry、host tiling symbol binding 和 cache key 组装成 runtime 可消费的元数据结构，支持 runtime 按 shape 分桶选择已生成的 kernel/tiling variant。Manifest 中的 cache key 只用于产物复用和诊断，`runtime-session` 不通过它在线调用 Autotuner。
+**Artifact Manifest（可选）**：把 `decisionGuards`、shape bucket、schedule entry、host tiling symbol binding 和 cache key 组装成 runtime 可消费的元数据结构，支持 runtime 按 shape 分桶选择已生成的 kernel/tiling variant。Manifest 中的 cache key 只用于产物复用和诊断，`runtime-session` 不通过它在线调用 Autotuner。
 
-**Runtime Manifest 触发条件：**
+**Artifact Manifest 触发条件：**
 
 | 场景 | 是否必须生成 | 原因 |
 |---|---|---|
@@ -515,9 +515,13 @@ DataCopy(outGm, outVec, /* ... */);
 动态 shape 场景下不生成 manifest 时，编译器必须在 `HostTilingEmitter` 阶段检测到 `decisionGuards` 非空并报错，不允许静默跳过。
 
 **输入**：`AscendC Kernel MLIR`、`ScheduleDecisionSet`、`decisionGuards`、prepare/offline Level-1 `topN` 结果（可选）、Level-2 Autotuner `best.config`（可选）
-**输出**：`Host Tiling`（必选）、`Runtime Manifest`（动态 shape 必选，静态 shape 可选）
+**输出**：`Host Tiling`（必选）、`Artifact Manifest`（动态 shape 必选，静态 shape 可选）
 
-**运行期边界**：`runtime-session` 不消费 `tiling_space.json` 做搜索，也不在 guard 未命中时生成新的 `best.config`。运行期只读取 `runtime_manifest.json`，选择匹配 guard/fallback 的 `scheduleEntry`，绑定该 entry 指向的 Host Tiling ABI 符号，并调用 `GetTiling` / `GetBlockDim` / `GetWorkspaceSize` 查询当前 shape 的 launch 参数。
+**运行期边界**：`runtime-session` 不消费 `tiling_space.json` 做搜索，也不在 guard 未命中时生成新的 `best.config`。运行期只读取 `artifact_manifest.json`，选择匹配 guard/fallback 的 `scheduleEntry`，绑定该 entry 指向的 Host Tiling ABI 符号，并调用 `GetTiling` / `GetBlockDim` / `GetWorkspaceSize` 查询当前 shape 的 launch 参数。
+
+**命名兼容规则**：V2 主名统一为 `Artifact Manifest` / `artifact_manifest.json`，对应工具参数为 `--artifact-manifest-out` 和 `--artifact-manifest`。既有 `Runtime Manifest`、`runtime_manifest.json`、`--runtime-manifest-out`、`--runtime-manifest` 仅作为兼容别名保留，文档、示例和新测试不得继续新增旧名依赖。
+
+**与 Run Manifest 的边界**：`artifact_manifest.json` 是编译产物清单，描述 kernel entries、guard/fallback、Host Tiling ABI binding、workspace 表达式和 kernel DAG；`run_manifest.json` 是一次具体执行请求，描述本次运行的 backend、artifact_root、输入/输出文件、expected output、具体 task 拓扑和已选 tiling/launch 参数。`runtime-session --artifact-manifest ... --emit-run-manifest run_manifest.json` 属于 prepare/packaging 步骤；`runtime-session --run-manifest run_manifest.json --run` 属于 run-only 执行步骤。运行期禁止把 `run_manifest.json` 反向当成编译产物索引，也禁止在 `--run-manifest --run` 路径重新触发 Autotuner。
 
 #### 6.6.2 输出规范
 
@@ -534,7 +538,7 @@ DataCopy(outGm, outVec, /* ... */);
 | `tilingFields`     | `py_struct` 字段按序提取；每个字段携带 `fixed` 标记（`true` = shape 参数，`false` = 调优参数）、可选 `derived` 标记（tail 派生字段）和可选 `shapeKey`（shape 维度名） | host 侧逐字段同序打包；`fixed: true` 字段同时用于生成 `get_tiling` / `get_block_dim` 的函数参数列表 |
 | `abiArgs`          | 完整参数列表按序                                     | host 侧调用参数顺序      |
 
-**`Runtime Manifest`** 最小字段：
+**`Artifact Manifest`** 最小字段：
 
 | 字段                | 类型                           | 含义                                         |
 | ------------------- | ------------------------------ | -------------------------------------------- |
@@ -636,7 +640,7 @@ Runtime 必须优先使用 `hostTilingBindings.symbols` 做显式 `dlsym`。`<Ke
 | `hostTilingBindings` 显式绑定符号         | Runtime 通过 manifest 中的 `library` 和 `symbols` 绑定 C ABI，不从 AFIR 工具或 MLIR symbol 反推 |
 | `workspaceSizeExpr` 与 tiling 参数对齐    | 表达式中的变量名必须与 `tilingSchema` 中的参数名一致   |
 | `kernelGraph` 覆盖完整 DAG               | 凡第二层 `KernelPattern[]` DAG 中存在的边，必须全部出现在此字段 |
-| `kernelGraph` 只含 `CarriedValue` 边     | 第二层 `KernelPatternGraph` 有 7 种边类型（CarriedValue、Overlap、BranchPair、MergePair、MustCoLocate、MustSeparate、ScheduleBarrier），其中后 6 种在 Layer 2 内部调度决策阶段已完全消解，**不进入** Runtime Manifest；`kernelGraph.edges` 仅保留表达跨 kernel GM 数据流的 `CarriedValue` 类型边 |
+| `kernelGraph` 只含 `CarriedValue` 边     | 第二层 `KernelPatternGraph` 有 7 种边类型（CarriedValue、Overlap、BranchPair、MergePair、MustCoLocate、MustSeparate、ScheduleBarrier），其中后 6 种在 Layer 2 内部调度决策阶段已完全消解，**不进入** Artifact Manifest；`kernelGraph.edges` 仅保留表达跨 kernel GM 数据流的 `CarriedValue` 类型边 |
 
 #### 6.6.3 实现方案
 
@@ -663,13 +667,13 @@ Runtime 必须优先使用 `hostTilingBindings.symbols` 做显式 `dlsym`。`<Ke
 8. **额外生成 C ABI 查询接口**（见 6.6.6 节）：以固定数组形式接收 shape 参数，供 `runtime-session` 和非 C++ Runtime 框架通过 `dlopen` 调用
 9. **生成 `tiling_space.json`**（见 6.6.7 节）：根据 `ScheduleDecisionSet` 的搜索空间自动生成，供 Level-2 Autotuner、prepare/offline 工具和外部验证工具消费；此文件由编译器自动生成，不需要手工维护
 
-**通路 B：Runtime Manifest（可选）**
+**通路 B：Artifact Manifest（可选）**
 
 1. 从 `ScheduleDecisionSet` 读取 `decisionGuards` 和 `scheduleEntries`
 2. 按 shape 维度边界构造 `shapeBucketKey`
 3. 为每个 `scheduleEntry` 写入 `guard`、`priority`、`fallback`、`hostTilingId`、`workspaceSizeExpr` 和完整 `tilingParams`
 4. 组装 `guardSet`、`hostTilingBindings`、`abiSignature`、`cacheKey`，以及 `workspaceSizeExpr`、`kernelGraph`（见 6.6.2 节）
-5. 输出 `Runtime Manifest`；动态 shape 场景必须落盘为 `runtime_manifest.json` 或嵌入等价 runtime artifact，不能只存在于编译器内存对象中
+5. 输出 `Artifact Manifest`；动态 shape 场景必须落盘为 `artifact_manifest.json` 或嵌入等价 runtime artifact，不能只存在于编译器内存对象中
 
 **两级调优接入规则**：
 
@@ -687,8 +691,8 @@ Runtime 必须优先使用 `hostTilingBindings.symbols` 做显式 `dlsym`。`<Ke
 | 倒数第二参数不是 `memref<ui8>`           | ABI 提取失败，直接报错                                       |
 | `cann.num_inputs` 与签名参数不一致       | 直接报错，不猜测输入输出边界                                 |
 | `TilingData` 字段顺序 host/kernel 不一致 | 视为 ABI 错误，禁止继续                                      |
-| `Runtime Manifest` 未生成，且 `decisionGuards` 非空 | 报编译错误；动态 shape 场景下 manifest 为必选，缺失将导致 runtime 无法路由 shape bucket |
-| `Runtime Manifest` 未生成，且 `decisionGuards` 为空 | 允许；静态 shape 场景 manifest 为可选，`Host Tiling` 已足够 |
+| `Artifact Manifest` 未生成，且 `decisionGuards` 非空 | 报编译错误；动态 shape 场景下 manifest 为必选，缺失将导致 runtime 无法路由 shape bucket |
+| `Artifact Manifest` 未生成，且 `decisionGuards` 为空 | 允许；静态 shape 场景 manifest 为可选，`Host Tiling` 已足够 |
 | `ScheduleEntry.hostTilingId` 找不到对应 binding | 报编译错误；runtime 不允许从 kernel 名猜测动态库或 symbol |
 | 普通 guard 未覆盖且无 `fallback=true` entry | 报编译错误或要求上层声明 fail-fast 策略；不允许运行期在线调优补洞 |
 
@@ -747,7 +751,7 @@ int64_t block_dim = get_block_dim(m, n, k);
 launch_kernel(in0, in1, out0, workspace, tiling, block_dim);
 ```
 
-**生成的 Runtime Manifest（可选，以动态 shape broadcast+add 为例）**：
+**生成的 Artifact Manifest（可选，以动态 shape broadcast+add 为例）**：
 
 ```json
 {
@@ -822,7 +826,7 @@ extern "C" {
 int32_t <KernelName>_GetTilingSize(void);
 
 /// 根据 shape_args 填充 tiling_out（必须 >= GetTilingSize() 字节）。
-/// shape_args: 按 Runtime Manifest 的 shapeArgOrder 字段顺序排列的 int64_t 数组；
+/// shape_args: 按 Artifact Manifest 的 shapeArgOrder 字段顺序排列的 int64_t 数组；
 ///             该顺序与 HostTilingABI.abiArgs 中 shape 维度参数的出现顺序严格一致（见 6.6.2 节）。
 /// 返回 0 成功；非零表示 shape 超出合法范围（会同时写诊断信息）。
 int32_t <KernelName>_GetTiling(const int64_t* shape_args, int32_t shape_count,
@@ -841,8 +845,8 @@ int64_t <KernelName>_GetWorkspaceSize(const int64_t* shape_args, int32_t shape_c
 
 | 规则 | 说明 |
 |---|---|
-| Host Tiling ABI Binding | Runtime Manifest 必须显式记录 `library` 和四个 `symbols`；这里的 symbol 是动态链接器符号，不是 MLIR symbol，也不依赖 AFIR 方言或 `afir-translate` 工具 |
-| `shape_args` 顺序 | 必须按 Runtime Manifest 的 `shapeArgOrder` 字段顺序排列；该字段由编译器根据 `HostTilingABI.abiArgs` 中 shape 维度参数的出现顺序自动生成，调用方不得自行推断顺序 |
+| Host Tiling ABI Binding | Artifact Manifest 必须显式记录 `library` 和四个 `symbols`；这里的 symbol 是动态链接器符号，不是 MLIR symbol，也不依赖 AFIR 方言或 `afir-translate` 工具 |
+| `shape_args` 顺序 | 必须按 Artifact Manifest 的 `shapeArgOrder` 字段顺序排列；该字段由编译器根据 `HostTilingABI.abiArgs` 中 shape 维度参数的出现顺序自动生成，调用方不得自行推断顺序 |
 | `tiling_out` 大小 | 调用方通过 `GetTilingSize()` 获取大小后自行分配，避免 ABI 版本不一致导致的内存问题 |
 | `shape_count` 校验 | 若 `shape_count` 与预期不符，`GetTiling` / `GetBlockDim` / `GetWorkspaceSize` 均返回错误 |
 | 线程安全 | 这四个函数必须是线程安全的纯查询函数（只读 shape → 只写 tiling_out） |
@@ -937,7 +941,7 @@ workspace_size = lib.matmul_add_leakyrelu_GetWorkspaceSize(shapes, 3)
 | `shape_key` | 参数可选 | 当 `fixed=true` 时，标记该参数对应的逻辑 shape 维度名（如 `"M"`、`"K"`、`"N"`） |
 | `min / max / step` | 参数可选 | 调优参数的搜索范围；`fixed=true` 时忽略 |
 | `values` | 参数可选 | 枚举合法值列表；与 `min/max/step` 互斥 |
-| `decision_guards` | 否 | 动态 shape 下不同 guard 对应的 tiling 参数选择；静态 shape 时可省略；每个条目的 `tiling_params` 字段必须是**完整赋值**（列出所有 `fixed: false` 的非 shape 参数），不允许差量赋值——Level-2 Autotuner、HostTilingEmitter 和 Runtime Manifest Builder 按每个 guard 条目独立读取完整参数集，不做跨 guard 合并，差量赋值会导致未声明参数值不确定 |
+| `decision_guards` | 否 | 动态 shape 下不同 guard 对应的 tiling 参数选择；静态 shape 时可省略；每个条目的 `tiling_params` 字段必须是**完整赋值**（列出所有 `fixed: false` 的非 shape 参数），不允许差量赋值——Level-2 Autotuner、HostTilingEmitter 和 Artifact Manifest Builder 按每个 guard 条目独立读取完整参数集，不做跨 guard 合并，差量赋值会导致未声明参数值不确定 |
 | `shapes` | 否 | 静态 shape 场景下的具体 shape 值，供 Level-2 Autotuner 和验证工具使用 |
 
 **生成规则**：
@@ -978,8 +982,8 @@ Memory-Realized IR
   ├─ AscendCSourceTranslationDriver
   │     └─> AscendC Source
   │
-  └─ HostTilingEmitter + RuntimeManifestBuilder（可选）
-        └─> Host Tiling + Runtime Manifest（可选）
+  └─ HostTilingEmitter + ArtifactManifestBuilder（可选）
+        └─> Host Tiling + Artifact Manifest（可选）
 ```
 
 pass 顺序约束：
@@ -989,7 +993,7 @@ pass 顺序约束：
 - `TilingABIPreparationPass` 必须在 `KernelSignatureCanonicalizationPass` 之前
 - `AscendCSourceTranslationDriver` 只消费 Pass 3 之后的 CANN 标准签名 kernel function
 - `HostTilingEmitter` 必须在 `KernelSignatureCanonicalizationPass` 之后（依赖 `cann.num_inputs` 和 `!emitasc.py_struct<...>`）
-- `AscendCSourceTranslationDriver` 与 `HostTilingEmitter + RuntimeManifestBuilder` 均消费同一份 `AscendC Kernel MLIR`，两者之间无依赖，可并行执行
+- `AscendCSourceTranslationDriver` 与 `HostTilingEmitter + ArtifactManifestBuilder` 均消费同一份 `AscendC Kernel MLIR`，两者之间无依赖，可并行执行
 - 所有 verifier 在对应 pass 完成后立即运行，失败即中止后续 pass
 
 ---
