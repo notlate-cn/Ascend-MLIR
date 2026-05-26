@@ -25,8 +25,8 @@
 | `ascend-mlir-opt` | 作为 Ascend pass pipeline 的编译入口，产出编号后的 stage MLIR、pass report、diagnostic、provenance 原始信息 |
 | `lib/Conversion/Ascend` | 解释编译决策：kernelize、schedule、realize、translate/preemit 的选择、过滤、回退和映射 |
 | `lib/Runtime` / `runtime-session` | 执行 sim / NPU、保存 actual outputs、读取 expected outputs、比较 tensor、保留 profile |
-| `ascend_kernel_dag_viz` | 作为底层 DAG adapter，消费 manifest / provenance，生成 kernel DAG 视图和 summary |
-| `ascend-debug` | 用户面对的唯一通用调试入口，负责编排 collect / open / diff / locate |
+| 统一 diagnostics / debug 子系统 | 集中承载 debug graph、kernel DAG、stage graph、memory、diff、locate 等调试能力；具体目录名可随工程组织调整，但不应分散为多套脚本入口 |
+| `ascend-debug` | 用户面对的唯一通用调试入口，负责编排 collect / open / diff / locate / graph workspace |
 
 ### 7.2 Debug 输出机制
 
@@ -239,10 +239,12 @@ NPU 与 CPU 对比不应由 NPU path 直接跑 CPU。`ascend-debug collect` 应�
 | 视图 | 数据来源 | 是否可复用 MLIR 基础能力 |
 | --- | --- | --- |
 | stage IR graph | `stages/*.mlir` | 是。可复用 MLIR Graphviz / op graph 思路，但应接入 `ascend-mlir-opt` 工作流 |
-| kernel DAG | runtime manifest、run manifest、provenance、kernelized IR | 否。需要 Ascend 语义字段和增强后的 `ascend_kernel_dag_viz` |
+| unified debug graph / kernel DAG | runtime manifest、run manifest、provenance、kernelized IR、stage graph、diff / locate / memory summary | 否。需要 Ascend 语义字段，由统一 diagnostics / debug 子系统内部实现 |
 | memory timeline | Realize report、memory plan、workspace slot、movement edge | 部分。可借鉴 liveness / bufferization 思路，但 Ascend memory place 和 workspace reuse 需要自研 |
 
-`ascend_kernel_dag_viz` 不应作为新手直接调用的主入口。它应保留为 `ascend-debug open` 的底层 adapter，并继续增强：
+`ascend_kernel_dag_viz` 不再作为调试入口或底层依赖。kernel DAG 能力应由统一 diagnostics / debug 子系统承载，并由 `ascend-debug collect/open` 统一调用；旧独立脚本应删除，避免形成多套 debug 工具。
+
+统一 debug graph 应继续增强：
 
 - node 显示 kernel id、kernel kind、op summary、output shape、selected tile、workspace size
 - edge 显示 value / boundary / checkpoint 信息

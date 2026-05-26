@@ -9,7 +9,7 @@ import sys
 import webbrowser
 from typing import Any
 
-from ascend_debug import layout, memory
+from ascend_debug import debug_graph, layout, memory, stage_graph
 from ascend_debug.runner import CommandError
 
 
@@ -171,6 +171,43 @@ def _stage_rows(
             f"<td>{_path_link(rel_path, exists=exists)}</td>"
             f"<td>{view_cell}</td>"
             f"<td>{_cell(status)}</td>"
+            "</tr>"
+        )
+    return "\n".join(rows)
+
+
+def _stage_graph_rows(
+    run_dir: pathlib.Path,
+    manifest: dict[str, Any],
+    graph_views: dict[str, dict[str, Any]],
+) -> str:
+    rows = []
+    stages = sorted(manifest["stages"], key=lambda stage: stage["order"])
+    for stage in stages:
+        rel_path = str(stage["path"])
+        exists = (run_dir / rel_path).exists()
+        graph = graph_views.get(rel_path)
+        graph_cell = ""
+        json_cell = ""
+        node_count = ""
+        edge_count = ""
+        kernel_count = ""
+        if graph:
+            graph_cell = _link(graph["view_rel_path"], "Graph")
+            json_cell = _path_link(graph["json_rel_path"], exists=(run_dir / graph["json_rel_path"]).exists())
+            node_count = graph["node_count"]
+            edge_count = graph["edge_count"]
+            kernel_count = graph["kernel_count"]
+        rows.append(
+            "<tr>"
+            f"<td>{_cell(stage['order'])}</td>"
+            f"<td>{_cell(stage['name'])}</td>"
+            f"<td>{graph_cell}</td>"
+            f"<td>{json_cell}</td>"
+            f"<td>{_cell(node_count)}</td>"
+            f"<td>{_cell(edge_count)}</td>"
+            f"<td>{_cell(kernel_count)}</td>"
+            f"<td>{_cell('present' if exists else 'missing')}</td>"
             "</tr>"
         )
     return "\n".join(rows)
@@ -961,13 +998,23 @@ def _memory_section(summary: dict[str, Any] | None, kernel_views: dict[str, str]
 def render_index(run_dir: pathlib.Path, manifest: dict[str, Any]) -> pathlib.Path:
     index_path = run_dir / "index.html"
     stage_views = _render_stage_views(run_dir, manifest)
+    stage_graph_views = stage_graph.render_stage_graphs(run_dir, manifest["stages"])
     graph_views = _render_graph_mlir_views(run_dir, manifest)
     kernel_summary = _load_kernel_summary(run_dir)
     memory_summary = _write_memory_summary(run_dir, kernel_summary)
-    json_views = _render_json_views(run_dir, manifest)
-    kernel_views = _render_kernel_views(run_dir, kernel_summary, graph_views, json_views)
     tensor_diff = _load_tensor_diff(run_dir)
     locate_summary = _load_locate_summary(run_dir)
+    debug_graph_view = debug_graph.render_debug_graph(
+        run_dir=run_dir,
+        manifest=manifest,
+        stage_graph_views=stage_graph_views,
+        kernel_summary=kernel_summary,
+        tensor_diff=tensor_diff,
+        locate_summary=locate_summary,
+        memory_summary=memory_summary,
+    )
+    json_views = _render_json_views(run_dir, manifest)
+    kernel_views = _render_kernel_views(run_dir, kernel_summary, graph_views, json_views)
     command_section = ""
     if manifest.get("commands"):
         command_section = f"""
@@ -990,6 +1037,20 @@ def render_index(run_dir: pathlib.Path, manifest: dict[str, Any]) -> pathlib.Pat
 <thead><tr><th>Stage</th><th>Path</th><th>Status</th></tr></thead>
 <tbody>
 {_report_rows(run_dir, manifest)}
+</tbody>
+</table>
+</section>
+"""
+    stage_graph_rows = _stage_graph_rows(run_dir, manifest, stage_graph_views)
+    stage_graph_section = ""
+    if stage_graph_rows:
+        stage_graph_section = f"""
+<section>
+<h2>Graph Evolution</h2>
+<table>
+<thead><tr><th>Order</th><th>Stage</th><th>Graph</th><th>Graph JSON</th><th>Nodes</th><th>Edges</th><th>Kernels</th><th>Status</th></tr></thead>
+<tbody>
+{stage_graph_rows}
 </tbody>
 </table>
 </section>
@@ -1038,6 +1099,13 @@ def render_index(run_dir: pathlib.Path, manifest: dict[str, Any]) -> pathlib.Pat
 """
     locate_section = _locate_section(locate_summary, kernel_views)
     memory_section = _memory_section(memory_summary, kernel_views)
+    debug_graph_section = f"""
+<section class="primary-debug-section">
+<h2>Debug Graph</h2>
+<p>Unified graph workspace for stage evolution, kernel DAG, tensor diff, locate, and memory overlays.</p>
+<a class="primary-debug-link" href="{_cell(debug_graph_view['view_path'])}">Open Debug Graph</a>
+</section>
+"""
     summary_rows = _summary_rows(run_dir, json_views)
     summary_section = ""
     if summary_rows:
@@ -1062,6 +1130,8 @@ body {{ font-family: sans-serif; margin: 2rem; color: #1f2933; }}
 table {{ border-collapse: collapse; width: 100%; }}
 th, td {{ border: 1px solid #cbd5e1; padding: 0.4rem 0.55rem; text-align: left; }}
 th {{ background: #f1f5f9; }}
+.primary-debug-section {{ border: 1px solid #bfdbfe; background: #eff6ff; border-radius: 8px; padding: 0.9rem; margin: 1rem 0; }}
+.primary-debug-link {{ display: inline-block; padding: 0.45rem 0.7rem; background: #1d4ed8; color: #ffffff; border-radius: 6px; text-decoration: none; font-weight: 700; }}
 dt {{ font-weight: 700; float: left; clear: left; margin-right: 0.4rem; }}
 dd {{ margin: 0 0 0.35rem 0; }}
 .locate-note {{ margin: 0.25rem 0 0.75rem; color: #475569; }}
@@ -1082,6 +1152,7 @@ dd {{ margin: 0 0 0.35rem 0; }}
 {_metadata_rows(manifest)}
 </dl>
 </section>
+{debug_graph_section}
 <section>
 <h2>Stages</h2>
 <table>
@@ -1093,6 +1164,7 @@ dd {{ margin: 0 0 0.35rem 0; }}
 </section>
 {command_section}
 {report_section}
+{stage_graph_section}
 {graph_section}
 {kernel_section}
 {tensor_diff_section}

@@ -2,10 +2,8 @@ from __future__ import annotations
 
 import argparse
 import pathlib
-import shutil
-import sys
 
-from ascend_debug import __version__, layout
+from ascend_debug import __version__, kernel_dag, layout
 from ascend_debug.runner import CommandError, find_tool, run_command
 
 
@@ -16,7 +14,7 @@ DEEP_REPORTS = (
     ("realize", "reports/040-realize.report.txt"),
 )
 
-KERNEL_DAG_REPORT = ("kernel-dag-viz", "reports/050-kernel-dag-viz.report.txt")
+KERNEL_DAG_REPORT = ("kernel-dag", "reports/050-kernel-dag.report.txt")
 
 
 def _clear_artifacts(run_dir, stages, reports=()) -> None:
@@ -46,7 +44,6 @@ def _graph_requested(args: argparse.Namespace) -> bool:
         or args.runtime_manifest
         or args.run_manifest
         or args.kernelized_ir
-        or args.dag_viz
     )
 
 
@@ -55,23 +52,6 @@ def _resolve_existing_path(path: pathlib.Path, *, label: str) -> pathlib.Path:
     if not resolved.exists():
         raise CommandError(f"{label} does not exist: {resolved}")
     return resolved
-
-
-def _locate_dag_viz(explicit_path: pathlib.Path | None) -> pathlib.Path:
-    if explicit_path:
-        return _resolve_existing_path(explicit_path, label="DAG visualizer")
-
-    for name in ("ascend_kernel_dag_viz.py", "ascend-kernel-dag-viz"):
-        found = shutil.which(name)
-        if found:
-            return pathlib.Path(found).resolve()
-
-    current = pathlib.Path(__file__).resolve()
-    for root in current.parents:
-        candidate = root / "test" / "tools" / "diagnostics" / "ascend_kernel_dag_viz.py"
-        if candidate.exists():
-            return candidate
-    raise CommandError("DAG visualizer not found; pass --dag-viz PATH")
 
 
 def _copy_graph_artifact(
@@ -159,7 +139,6 @@ def _collect_graph_artifacts(
     svg_rel = "graphs/kernel_dag.svg"
     summary_rel = "graphs/kernel_dag.summary.json"
     report_stage, report_rel = KERNEL_DAG_REPORT
-    dag_viz = _locate_dag_viz(args.dag_viz)
     tool_args = [
         "--artifact-manifest" if args.artifact_manifest else "--runtime-manifest",
         manifest_rel,
@@ -172,29 +151,21 @@ def _collect_graph_artifacts(
         "--kernel-view-base",
         "../views/kernels",
     ]
-    argv = [
-        sys.executable,
-        str(dag_viz),
-        "--artifact-manifest" if args.artifact_manifest else "--runtime-manifest",
-        str(artifact_manifest_dst),
-        "--kernelized-ir",
-        str(kernelized_ir_dst),
-        "--svg-out",
-        str(run_dir / svg_rel),
-        "--summary-out",
-        str(run_dir / summary_rel),
-        "--kernel-view-base",
-        "../views/kernels",
-    ]
     if run_manifest_dst:
         tool_args[2:2] = ["--run-manifest", "graphs/run_manifest.json"]
-        argv[4:4] = ["--run-manifest", str(run_manifest_dst)]
 
-    run_command(argv, stdout_path=run_dir / report_rel)
+    summary = kernel_dag.analyze_paths(
+        artifact_manifest_path=artifact_manifest_dst,
+        run_manifest_path=run_manifest_dst,
+        kernelized_ir=kernelized_ir_dst,
+    )
+    kernel_dag.render_svg(summary, run_dir / svg_rel, "../views/kernels")
+    kernel_dag.write_summary(summary, run_dir / summary_rel)
+    kernel_dag.write_report(summary, run_dir / report_rel)
     commands.append(
         {
             "stage": report_stage,
-            "tool": "ascend_kernel_dag_viz.py",
+            "tool": "ascend-debug",
             "args": tool_args,
             "stdout": report_rel,
             "status": "success",

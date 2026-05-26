@@ -110,16 +110,174 @@ ascend-debug collect "${INPUT_MLIR}" \
   --preset deep \
   --pipeline normalize-kernelize \
   --artifact-manifest "${TMP_DIR}/artifact_manifest.json" \
-  --run-manifest "${TMP_DIR}/run_manifest.json" \
-  --dag-viz "${SCRIPT_DIR}/ascend_kernel_dag_viz.py"
+  --run-manifest "${TMP_DIR}/run_manifest.json"
 test -f "${TMP_DIR}/debug-run-graph/graphs/artifact_manifest.json"
 test -f "${TMP_DIR}/debug-run-graph/graphs/run_manifest.json"
 test -f "${TMP_DIR}/debug-run-graph/graphs/kernelized.mlir"
 test -f "${TMP_DIR}/debug-run-graph/graphs/kernel_dag.svg"
 test -f "${TMP_DIR}/debug-run-graph/graphs/kernel_dag.summary.json"
-test -f "${TMP_DIR}/debug-run-graph/reports/050-kernel-dag-viz.report.txt"
-grep -Fq 'ascend_kernel_dag_viz.kernel_count=1' "${TMP_DIR}/debug-run-graph/reports/050-kernel-dag-viz.report.txt"
+test -f "${TMP_DIR}/debug-run-graph/reports/050-kernel-dag.report.txt"
+grep -Fq 'ascend_debug.kernel_dag.kernel_count=1' "${TMP_DIR}/debug-run-graph/reports/050-kernel-dag.report.txt"
 echo "ascend_debug.collect_graph=ok"
+
+cat >"${TMP_DIR}/artifact_manifest_kernel_dag.json" <<'JSON'
+{
+  "kernel_entries": [
+    {
+      "kernel_id": "kernel_0",
+      "kernelKind": "vec",
+      "scheduleEntries": [
+        {"tilingParams": {"selected_tile_shape": [1, 4, 128]}}
+      ],
+      "workspaceSizeBytes": 0
+    },
+    {
+      "kernel_id": "kernel_1",
+      "kernelKind": "vec",
+      "scheduleEntries": [
+        {"tilingParams": {"selected_tile_shape": [128, 384]}}
+      ],
+      "workspaceSizeBytes": 0
+    },
+    {
+      "kernel_id": "kernel_2",
+      "kernelKind": "mix",
+      "scheduleEntries": [
+        {"tilingParams": {"selected_tile_shape": [1, 4, 384, 128]}}
+      ],
+      "workspaceSizeBytes": 4096
+    },
+    {
+      "kernel_id": "kernel_3",
+      "kernelKind": "vec",
+      "scheduleEntries": [
+        {"tilingParams": {"selected_tile_shape": [1, 4, 128]}}
+      ],
+      "workspaceSizeBytes": 0
+    },
+    {
+      "kernel_id": "kernel_4",
+      "kernelKind": "vec",
+      "scheduleEntries": [
+        {"tilingParams": {"selected_tile_shape": [1, 4, 128]}}
+      ],
+      "workspaceSizeBytes": 0
+    }
+  ],
+  "kernelGraph": {
+    "nodes": [
+      {"name": "kernel_0"},
+      {"name": "kernel_1"},
+      {"name": "kernel_2"},
+      {"name": "kernel_3"},
+      {"name": "kernel_4"}
+    ],
+    "edges": [
+      {"from": "kernel_0", "to": "kernel_2", "carriedBuffers": ["k0_to_k2"]},
+      {"from": "kernel_1", "to": "kernel_2", "carriedBuffers": ["k1_to_k2"]},
+      {"from": "kernel_2", "to": "kernel_3", "carriedBuffers": ["k2_to_k3"]},
+      {"from": "kernel_3", "to": "kernel_4", "carriedBuffers": ["k3_to_k4"]}
+    ]
+  }
+}
+JSON
+
+cat >"${TMP_DIR}/run_manifest_kernel_dag.json" <<'JSON'
+{
+  "backend": "sim",
+  "tasks": [
+    {
+      "task_id": "kernel_0",
+      "inputs": [{"name": "arg0", "path": "input.npy"}],
+      "outputs": [{"name": "out0", "shape": [1, 4, 128], "dtype": "f32"}],
+      "workspace_size": 0
+    },
+    {
+      "task_id": "kernel_1",
+      "inputs": [],
+      "outputs": [{"name": "out0", "shape": [128, 384], "dtype": "f32"}],
+      "workspace_size": 0
+    },
+    {
+      "task_id": "kernel_2",
+      "inputs": [{"name": "arg0"}, {"name": "arg1"}],
+      "outputs": [{"name": "out0", "shape": [1, 4, 384], "dtype": "f32"}],
+      "workspace_size": 4096
+    },
+    {
+      "task_id": "kernel_3",
+      "inputs": [{"name": "arg0"}],
+      "outputs": [{"name": "out0", "shape": [1, 4, 128], "dtype": "f32"}],
+      "workspace_size": 0
+    },
+    {
+      "task_id": "kernel_4",
+      "inputs": [{"name": "arg0"}],
+      "outputs": [{"name": "out0", "shape": [1, 4, 128], "dtype": "f32"}],
+      "workspace_size": 0
+    }
+  ]
+}
+JSON
+
+cat >"${TMP_DIR}/kernelized_kernel_dag.mlir" <<'MLIR'
+module {
+  func.func @main(%arg0: tensor<1x4x128xf32>) -> tensor<1x4x128xf32> {
+    %empty0 = tensor.empty() : tensor<1x4x128xf32>
+    %0 = linalg.transpose ins(%arg0 : tensor<1x4x128xf32>) outs(%empty0 : tensor<1x4x128xf32>) permutation = [0, 1, 2] {ascend.kernel = "kernel_0", ascend.op_role = "vector"} : tensor<1x4x128xf32> to tensor<1x4x128xf32>
+    %empty1 = tensor.empty() : tensor<128x384xf32>
+    %1 = linalg.transpose ins(%empty1 : tensor<128x384xf32>) outs(%empty1 : tensor<128x384xf32>) permutation = [1, 0] {ascend.kernel = "kernel_1", ascend.op_role = "vector"} : tensor<128x384xf32> to tensor<128x384xf32>
+    %empty2 = tensor.empty() : tensor<1x4x384xf32>
+    %2 = linalg.batch_matmul ins(%0, %1 : tensor<1x4x128xf32>, tensor<128x384xf32>) outs(%empty2 : tensor<1x4x384xf32>) {ascend.kernel = "kernel_2", ascend.op_role = "cube"} -> tensor<1x4x384xf32>
+    %empty3 = tensor.empty() : tensor<1x4x128xf32>
+    %3 = linalg.generic {iterator_types = ["parallel", "parallel", "parallel"]} ins(%0 : tensor<1x4x128xf32>) outs(%empty3 : tensor<1x4x128xf32>) attrs = {ascend.kernel = "kernel_3", ascend.op_role = "vector"} {
+    ^bb0(%in: f32, %out: f32):
+      %exp = math.exp %in : f32
+      linalg.yield %exp : f32
+    } -> tensor<1x4x128xf32>
+    %4 = linalg.generic {iterator_types = ["parallel", "parallel", "parallel"]} ins(%3 : tensor<1x4x128xf32>) outs(%empty3 : tensor<1x4x128xf32>) attrs = {ascend.kernel = "kernel_4", ascend.op_role = "vector"} {
+    ^bb0(%in: f32, %out: f32):
+      %div = arith.divf %in, %in : f32
+      linalg.yield %div : f32
+    } -> tensor<1x4x128xf32>
+    return %4 : tensor<1x4x128xf32>
+  }
+}
+MLIR
+
+ascend-debug collect "${INPUT_MLIR}" \
+  --out "${TMP_DIR}/debug-run-kernel-dag" \
+  --preset deep \
+  --pipeline normalize-kernelize \
+  --artifact-manifest "${TMP_DIR}/artifact_manifest_kernel_dag.json" \
+  --run-manifest "${TMP_DIR}/run_manifest_kernel_dag.json" \
+  --kernelized-ir "${TMP_DIR}/kernelized_kernel_dag.mlir"
+grep -Fq 'ascend_debug.kernel_dag.kernel_count=5' "${TMP_DIR}/debug-run-kernel-dag/reports/050-kernel-dag.report.txt"
+python3 - "${TMP_DIR}/debug-run-kernel-dag/graphs/kernel_dag.svg" "${TMP_DIR}/debug-run-kernel-dag/graphs/kernel_dag.summary.json" <<'PY'
+import json
+import sys
+import xml.etree.ElementTree as ET
+from pathlib import Path
+
+svg_path = Path(sys.argv[1])
+summary_path = Path(sys.argv[2])
+ET.parse(svg_path)
+svg_text = svg_path.read_text(encoding="utf-8")
+summary = json.loads(summary_path.read_text(encoding="utf-8"))
+
+assert summary["kernel_count"] == 5
+assert summary["graph_edges"] == 4
+assert summary["kind_counts"]["vec"] == 4
+assert summary["kind_counts"]["mix"] == 1
+assert summary["root_tasks"] == 2
+assert summary["prepack_candidate_roots"] == 1
+assert summary["critical_path_depth"] == 4
+assert len(summary["simple_fusion_edges"]) == 1
+assert "kernel_2" in svg_text
+assert "batch_matmul" in svg_text
+assert "1x4x128" in svg_text
+PY
+echo "ascend_debug.kernel_dag_internal=ok"
 
 cat >"${TMP_DIR}/debug-run-graph/tensors/manifest.json" <<'JSON'
 {
@@ -188,6 +346,55 @@ MemoryRealizationPlan:
   mode = "memory_space_materialize"
 TEXT
 ascend-debug open "${TMP_DIR}/debug-run-graph" --no-browser >"${TMP_DIR}/ascend-debug-open-graph.txt"
+grep -Fq '<a class="primary-debug-link" href="views/debug_graph.html">Open Debug Graph</a>' "${TMP_DIR}/debug-run-graph/index.html"
+test -f "${TMP_DIR}/debug-run-graph/summaries/debug_graph.json"
+test -f "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
+grep -Fq '<h1>Ascend Debug Graph</h1>' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
+grep -Fq '<svg id="unified-debug-graph-svg"' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
+grep -Fq '<button class="mode-tab active" data-mode="stage"' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
+grep -Fq '<button class="mode-tab" data-mode="kernel"' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
+grep -Fq 'id="stage-list"' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
+grep -Fq 'id="graph-search"' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
+grep -Fq 'id="graph-fit"' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
+grep -Fq 'id="graph-reset"' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
+grep -Fq 'id="inspector-json"' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
+grep -Fq 'id="artifact-index"' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
+grep -Fq 'id="stage-diff-panel"' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
+grep -Fq 'id="graph-workspace-data"' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
+grep -Fq 'function beginCanvasPan' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
+grep -Fq 'function isBlankCanvasPanTarget' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
+grep -Fq 'event.button !== 0 && event.button !== 2' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
+grep -Fq '!isBlankCanvasPanTarget(event.target)' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
+grep -Fq 'function applyGraphScale' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
+grep -Fq 'function fitGraphToView' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
+grep -Fq 'function searchActiveGraph' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
+grep -Fq 'addEventListener("contextmenu"' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
+grep -Fq 'addEventListener("wheel"' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
+grep -Fq 'canvas.classList.add("panning")' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
+grep -Fq 'diff-added' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
+grep -Fq 'Stage Diff' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
+grep -Fq 'function renderKernelDag' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
+grep -Fq 'Kernel DAG' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
+grep -Fq 'Tensor Diff' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
+grep -Fq 'Memory' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
+python3 - "${TMP_DIR}/debug-run-graph/summaries/debug_graph.json" <<'PY'
+import json
+import pathlib
+import sys
+
+graph = json.loads(pathlib.Path(sys.argv[1]).read_text())
+assert graph["schema_version"] == 1
+assert graph["visual_kind"] == "unified-debug-workspace"
+assert graph["primary_stage"]["name"] == "kernelize-out"
+assert graph["stage_count"] == 9
+assert len(graph["stage_diffs"]) == graph["stage_count"] - 1
+assert all("added_count" in item for item in graph["stage_diffs"])
+assert any(item["to_stage"]["name"] == "kernelize-out" for item in graph["stage_diffs"])
+assert graph["kernel_dag"]["kernel_count"] == 1
+assert graph["overlays"]["tensor_diff"]["status"] == "fail"
+assert graph["overlays"]["locate"]["first_bad_kernel"] == "kernel_0"
+assert graph["overlays"]["memory"]["peak_workspace_bytes"] == 256
+PY
 grep -Fq '<h2>Graphs</h2>' "${TMP_DIR}/debug-run-graph/index.html"
 grep -Fq '<h2>Kernels</h2>' "${TMP_DIR}/debug-run-graph/index.html"
 grep -Fq '<h2>Tensor Diff</h2>' "${TMP_DIR}/debug-run-graph/index.html"
@@ -445,6 +652,79 @@ grep -Fq '<a href="reports/030-schedule.report.txt">reports/030-schedule.report.
 grep -Fq '<a href="reports/040-realize.report.txt">reports/040-realize.report.txt</a>' "${TMP_DIR}/debug-run-deep/index.html"
 echo "ascend_debug.open_deep=ok"
 
+mkdir -p "${TMP_DIR}/debug-run-stage-graph/stages"
+cat >"${TMP_DIR}/debug-run-stage-graph/manifest.json" <<'JSON'
+{
+  "schema_version": 1,
+  "tool": "ascend-debug",
+  "preset": "quick",
+  "pipeline": "normalize-kernelize",
+  "stages": [
+    {"order": 0, "name": "source", "path": "stages/000-source.mlir"},
+    {"order": 29, "name": "kernelize-out", "path": "stages/029-kernelize-out.mlir"}
+  ]
+}
+JSON
+cat >"${TMP_DIR}/debug-run-stage-graph/stages/000-source.mlir" <<'MLIR'
+func.func @elementwise(%arg0: tensor<4x8xf16>, %arg1: tensor<4x8xf16>) -> tensor<4x8xf16> {
+  %empty = tensor.empty() : tensor<4x8xf16>
+  %out = linalg.generic {iterator_types = ["parallel", "parallel"]}
+    ins(%arg0, %arg1 : tensor<4x8xf16>, tensor<4x8xf16>)
+    outs(%empty : tensor<4x8xf16>) {
+    linalg.yield %arg0 : f16
+  } -> tensor<4x8xf16>
+  return %out : tensor<4x8xf16>
+}
+MLIR
+cat >"${TMP_DIR}/debug-run-stage-graph/stages/029-kernelize-out.mlir" <<'MLIR'
+func.func @elementwise(%arg0: tensor<4x8xf16>, %arg1: tensor<4x8xf16>) -> tensor<4x8xf16> {
+  %empty = tensor.empty() : tensor<4x8xf16>
+  %out = linalg.generic {ascend.kernel = "kernel_0", ascend.op_role = "vector", ascend.schedule.decision_id = "kernel_0.decision.0", iterator_types = ["parallel", "parallel"]}
+    ins(%arg0, %arg1 : tensor<4x8xf16>, tensor<4x8xf16>)
+    outs(%empty : tensor<4x8xf16>) {
+    linalg.yield %arg0 : f16
+  } -> tensor<4x8xf16>
+  return %out : tensor<4x8xf16>
+}
+MLIR
+ascend-debug open "${TMP_DIR}/debug-run-stage-graph" --no-browser >"${TMP_DIR}/ascend-debug-open-stage-graph.txt"
+grep -Fq '<h2>Graph Evolution</h2>' "${TMP_DIR}/debug-run-stage-graph/index.html"
+grep -Fq '<a href="views/graphs/stages/000-source.graph.html">Graph</a>' "${TMP_DIR}/debug-run-stage-graph/index.html"
+grep -Fq '<a href="views/graphs/stages/029-kernelize-out.graph.html">Graph</a>' "${TMP_DIR}/debug-run-stage-graph/index.html"
+test -f "${TMP_DIR}/debug-run-stage-graph/graphs/stages/000-source.graph.json"
+test -f "${TMP_DIR}/debug-run-stage-graph/graphs/stages/029-kernelize-out.graph.json"
+test -f "${TMP_DIR}/debug-run-stage-graph/views/graphs/stages/000-source.graph.html"
+test -f "${TMP_DIR}/debug-run-stage-graph/views/graphs/stages/029-kernelize-out.graph.html"
+grep -Fq 'Stage Graph' "${TMP_DIR}/debug-run-stage-graph/views/graphs/stages/000-source.graph.html"
+grep -Fq '<svg id="stage-graph-svg"' "${TMP_DIR}/debug-run-stage-graph/views/graphs/stages/000-source.graph.html"
+grep -Fq 'class="graph-node' "${TMP_DIR}/debug-run-stage-graph/views/graphs/stages/000-source.graph.html"
+grep -Fq 'class="graph-edge-path"' "${TMP_DIR}/debug-run-stage-graph/views/graphs/stages/000-source.graph.html"
+grep -Fq 'linalg.generic' "${TMP_DIR}/debug-run-stage-graph/views/graphs/stages/000-source.graph.html"
+grep -Fq 'Kernel boundary' "${TMP_DIR}/debug-run-stage-graph/views/graphs/stages/029-kernelize-out.graph.html"
+grep -Fq 'kernel_0' "${TMP_DIR}/debug-run-stage-graph/views/graphs/stages/029-kernelize-out.graph.html"
+python3 - "${TMP_DIR}/debug-run-stage-graph/graphs/stages/029-kernelize-out.graph.json" <<'PY'
+import json
+import pathlib
+import sys
+
+graph = json.loads(pathlib.Path(sys.argv[1]).read_text())
+assert graph["schema_version"] == 1
+assert graph["stage"]["name"] == "kernelize-out"
+assert graph["node_count"] >= 3
+assert graph["edge_count"] >= 2
+assert graph["kernel_count"] == 1
+assert graph["layout"]["visual_kind"] == "svg-dag"
+assert len(graph["layout"]["nodes"]) == graph["node_count"]
+assert len(graph["layout"]["edges"]) == graph["edge_count"]
+nodes = graph["nodes"]
+linalg_nodes = [node for node in nodes if node["op_name"] == "linalg.generic"]
+assert linalg_nodes
+assert linalg_nodes[0]["kernel_id"] == "kernel_0"
+assert "%arg0" in linalg_nodes[0]["input_values"]
+assert "%out" in linalg_nodes[0]["result_values"]
+PY
+echo "ascend_debug.stage_graph=ok"
+
 RESOLVED_RUN_DIR="$(python3 -c 'import pathlib, sys; print(pathlib.Path(sys.argv[1]).resolve())' "${TMP_DIR}/debug-run")"
 ascend-debug open "${TMP_DIR}/debug-run" --no-browser >"${TMP_DIR}/ascend-debug-open.txt"
 grep -Fq "ascend-debug.open.index=${RESOLVED_RUN_DIR}/index.html" "${TMP_DIR}/ascend-debug-open.txt"
@@ -455,7 +735,11 @@ grep -Fq '<dt>preset</dt><dd>quick</dd>' "${TMP_DIR}/debug-run/index.html"
 grep -Fq '<dt>tool</dt><dd>ascend-debug</dd>' "${TMP_DIR}/debug-run/index.html"
 grep -Fq '<a href="stages/029-kernelize-out.mlir">stages/029-kernelize-out.mlir</a>' "${TMP_DIR}/debug-run/index.html"
 grep -Fq '<a href="views/stages/000-source.mlir.html">View</a>' "${TMP_DIR}/debug-run/index.html"
+grep -Fq '<h2>Graph Evolution</h2>' "${TMP_DIR}/debug-run/index.html"
+grep -Fq '<a href="views/graphs/stages/000-source.graph.html">Graph</a>' "${TMP_DIR}/debug-run/index.html"
 test -f "${TMP_DIR}/debug-run/views/stages/000-source.mlir.html"
+test -f "${TMP_DIR}/debug-run/graphs/stages/000-source.graph.json"
+test -f "${TMP_DIR}/debug-run/views/graphs/stages/000-source.graph.html"
 python3 - "${TMP_DIR}/debug-run/index.html" <<'PY'
 import pathlib
 import sys
@@ -633,10 +917,10 @@ graphs = manifest.get("graphs", [])
 print(f"ascend_debug.graph.command_count={len(commands)}")
 print(f"ascend_debug.graph.artifact_count={len(graphs)}")
 check(len(commands) == 5, "graph manifest must record five commands")
-check(commands[-1]["stage"] == "kernel-dag-viz", "graph command stage mismatch")
-check(commands[-1]["tool"] == "ascend_kernel_dag_viz.py", "graph command tool mismatch")
+check(commands[-1]["stage"] == "kernel-dag", "graph command stage mismatch")
+check(commands[-1]["tool"] == "ascend-debug", "graph command tool mismatch")
 check(len(reports) == 5, "graph manifest must record five reports")
-check(reports[-1]["path"] == "reports/050-kernel-dag-viz.report.txt", "graph report path mismatch")
+check(reports[-1]["path"] == "reports/050-kernel-dag.report.txt", "graph report path mismatch")
 check([graph["path"] for graph in graphs] == [
     "graphs/artifact_manifest.json",
     "graphs/run_manifest.json",
