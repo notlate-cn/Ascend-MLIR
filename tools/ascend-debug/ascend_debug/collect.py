@@ -42,7 +42,8 @@ def _record_command(stage: str, args: list[str], stdout_path: str, report_path: 
 
 def _graph_requested(args: argparse.Namespace) -> bool:
     return bool(
-        args.runtime_manifest
+        args.artifact_manifest
+        or args.runtime_manifest
         or args.run_manifest
         or args.kernelized_ir
         or args.dag_viz
@@ -93,23 +94,39 @@ def _collect_graph_artifacts(
 ) -> tuple[list[dict], list[dict], list[dict]]:
     if not _graph_requested(args):
         return [], [], []
-    if not args.runtime_manifest:
-        raise CommandError("--runtime-manifest is required when collecting graph artifacts")
+    if not args.artifact_manifest and not args.runtime_manifest:
+        raise CommandError("--artifact-manifest is required when collecting graph artifacts")
+    if (
+        args.artifact_manifest
+        and args.runtime_manifest
+        and args.artifact_manifest.resolve() != args.runtime_manifest.resolve()
+    ):
+        raise CommandError(
+            "cannot pass both --artifact-manifest and --runtime-manifest with different paths"
+        )
 
     graphs: list[dict] = []
     commands: list[dict] = []
     reports: list[dict] = []
 
-    runtime_manifest = _resolve_existing_path(args.runtime_manifest, label="runtime manifest")
+    artifact_manifest_arg = args.artifact_manifest or args.runtime_manifest
+    manifest_label = "artifact manifest" if args.artifact_manifest else "runtime manifest"
+    artifact_manifest = _resolve_existing_path(artifact_manifest_arg, label=manifest_label)
+    manifest_rel = (
+        "graphs/artifact_manifest.json"
+        if args.artifact_manifest
+        else "graphs/runtime_manifest.json"
+    )
+    manifest_kind = "artifact-manifest" if args.artifact_manifest else "runtime-manifest"
     graphs.append(
         _copy_graph_artifact(
-            src=runtime_manifest,
+            src=artifact_manifest,
             run_dir=run_dir,
-            rel_path="graphs/runtime_manifest.json",
-            kind="runtime-manifest",
+            rel_path=manifest_rel,
+            kind=manifest_kind,
         )
     )
-    runtime_manifest_dst = run_dir / "graphs/runtime_manifest.json"
+    artifact_manifest_dst = run_dir / manifest_rel
 
     run_manifest_dst = None
     if args.run_manifest:
@@ -144,8 +161,8 @@ def _collect_graph_artifacts(
     report_stage, report_rel = KERNEL_DAG_REPORT
     dag_viz = _locate_dag_viz(args.dag_viz)
     tool_args = [
-        "--runtime-manifest",
-        "graphs/runtime_manifest.json",
+        "--artifact-manifest" if args.artifact_manifest else "--runtime-manifest",
+        manifest_rel,
         "--kernelized-ir",
         "graphs/kernelized.mlir",
         "--svg-out",
@@ -156,8 +173,8 @@ def _collect_graph_artifacts(
     argv = [
         sys.executable,
         str(dag_viz),
-        "--runtime-manifest",
-        str(runtime_manifest_dst),
+        "--artifact-manifest" if args.artifact_manifest else "--runtime-manifest",
+        str(artifact_manifest_dst),
         "--kernelized-ir",
         str(kernelized_ir_dst),
         "--svg-out",

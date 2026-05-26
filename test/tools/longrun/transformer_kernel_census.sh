@@ -59,19 +59,19 @@ from pathlib import Path
 build_dir = Path(sys.argv[1])
 batch = int(sys.argv[2])
 seq = int(sys.argv[3])
-runtime_manifest_path = build_dir / "runtime_manifest.json"
+artifact_manifest_path = build_dir / "artifact_manifest.json"
 run_manifest_path = build_dir / "run_manifest.json"
 runtime_log_path = build_dir / "runtime_session.log"
 
-for path in (runtime_manifest_path, run_manifest_path, runtime_log_path):
+for path in (artifact_manifest_path, run_manifest_path, runtime_log_path):
     if not path.exists():
         raise SystemExit(f"missing transformer census input: {path}")
 
-runtime_manifest = json.loads(runtime_manifest_path.read_text())
+artifact_manifest = json.loads(artifact_manifest_path.read_text())
 run_manifest = json.loads(run_manifest_path.read_text())
 tasks = {task["task_id"]: task for task in run_manifest.get("tasks", [])}
-entries = runtime_manifest.get("kernel_entries", [])
-graph = runtime_manifest.get("kernelGraph", {})
+entries = artifact_manifest.get("kernel_entries", [])
+graph = artifact_manifest.get("kernelGraph", {})
 edges = graph.get("edges", [])
 
 valid_kinds = {"vec", "cube", "mix"}

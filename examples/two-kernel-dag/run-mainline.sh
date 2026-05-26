@@ -63,7 +63,7 @@ rm -rf "$BUILD_DIR"
 mkdir -p "$BUILD_DIR"
 
 PHASE5_TILING_SPACE="$BUILD_DIR/phase5_tiling_space.json"
-PHASE5_RUNTIME_MANIFEST="$BUILD_DIR/phase5_runtime_manifest.json"
+PHASE5_ARTIFACT_MANIFEST="$BUILD_DIR/phase5_artifact_manifest.json"
 ARTIFACT_A="$BUILD_DIR/artifact_kernel_a"
 ARTIFACT_B="$BUILD_DIR/artifact_kernel_b"
 RUN_MANIFEST="$BUILD_DIR/run_manifest.json"
@@ -136,14 +136,14 @@ echo ""
 echo "==================== [STAGE 9] CANN codegen ===================="
 "$AFIR_TRANSLATE" -mlir-to-cann "$BUILD_DIR/step8_cann.mlir" \
   --tiling-space-out="$PHASE5_TILING_SPACE" \
-  --runtime-manifest-out="$PHASE5_RUNTIME_MANIFEST" \
+  --artifact-manifest-out="$PHASE5_ARTIFACT_MANIFEST" \
   --cann-soc="$SOC" \
   -o "$BUILD_DIR/step9_kernel.cpp"
 test -s "$BUILD_DIR/step9_kernel.cpp"
 test -s "$PHASE5_TILING_SPACE"
-test -s "$PHASE5_RUNTIME_MANIFEST"
+test -s "$PHASE5_ARTIFACT_MANIFEST"
 
-"$PYTHON" - "$PHASE5_RUNTIME_MANIFEST" <<'PY'
+"$PYTHON" - "$PHASE5_ARTIFACT_MANIFEST" <<'PY'
 import json
 import sys
 
@@ -304,7 +304,7 @@ echo "   build_mainline/step7_kernel_ir.mlir"
 echo "   build_mainline/step8_cann.mlir"
 echo "   build_mainline/step9_kernel.cpp"
 echo "   build_mainline/phase5_tiling_space.json"
-echo "   build_mainline/phase5_runtime_manifest.json"
+echo "   build_mainline/phase5_artifact_manifest.json"
 echo "   build_mainline/artifact_kernel_a"
 echo "   build_mainline/artifact_kernel_b"
 echo "   build_mainline/output.npy"

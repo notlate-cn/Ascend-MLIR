@@ -46,7 +46,7 @@ test -f "${TMP_DIR}/debug-run-deep/reports/030-schedule.report.txt"
 test -f "${TMP_DIR}/debug-run-deep/reports/040-realize.report.txt"
 echo "ascend_debug.collect_deep=ok"
 
-cat >"${TMP_DIR}/runtime_manifest.json" <<'JSON'
+cat >"${TMP_DIR}/artifact_manifest.json" <<'JSON'
 {
   "kernel_entries": [
     {
@@ -85,10 +85,10 @@ ascend-debug collect "${INPUT_MLIR}" \
   --out "${TMP_DIR}/debug-run-graph" \
   --preset deep \
   --pipeline normalize-kernelize \
-  --runtime-manifest "${TMP_DIR}/runtime_manifest.json" \
+  --artifact-manifest "${TMP_DIR}/artifact_manifest.json" \
   --run-manifest "${TMP_DIR}/run_manifest.json" \
   --dag-viz "${SCRIPT_DIR}/ascend_kernel_dag_viz.py"
-test -f "${TMP_DIR}/debug-run-graph/graphs/runtime_manifest.json"
+test -f "${TMP_DIR}/debug-run-graph/graphs/artifact_manifest.json"
 test -f "${TMP_DIR}/debug-run-graph/graphs/run_manifest.json"
 test -f "${TMP_DIR}/debug-run-graph/graphs/kernelized.mlir"
 test -f "${TMP_DIR}/debug-run-graph/graphs/kernel_dag.svg"
@@ -373,14 +373,14 @@ check(commands[-1]["tool"] == "ascend_kernel_dag_viz.py", "graph command tool mi
 check(len(reports) == 5, "graph manifest must record five reports")
 check(reports[-1]["path"] == "reports/050-kernel-dag-viz.report.txt", "graph report path mismatch")
 check([graph["path"] for graph in graphs] == [
-    "graphs/runtime_manifest.json",
+    "graphs/artifact_manifest.json",
     "graphs/run_manifest.json",
     "graphs/kernelized.mlir",
     "graphs/kernel_dag.svg",
     "graphs/kernel_dag.summary.json",
 ], "graph artifact paths mismatch")
 check([graph["kind"] for graph in graphs] == [
-    "runtime-manifest",
+    "artifact-manifest",
     "run-manifest",
     "kernelized-ir",
     "kernel-dag-svg",
