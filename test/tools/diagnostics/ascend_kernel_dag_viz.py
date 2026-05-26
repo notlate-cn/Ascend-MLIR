@@ -350,7 +350,7 @@ def analyze(
     }
 
 
-def render_svg(summary: dict[str, Any], out: Path) -> None:
+def render_svg(summary: dict[str, Any], out: Path, kernel_view_base: str | None = None) -> None:
     nodes = summary["nodes"]
     kernel_ids = sorted(nodes, key=kernel_sort_key)
     edges = summary["edges"]
@@ -537,6 +537,9 @@ def render_svg(summary: dict[str, Any], out: Path) -> None:
         if node["touches_simple_fusion_edge"]:
             title_lines.append("touches_simple_fusion_edge=true")
 
+        if kernel_view_base:
+            href = f"{kernel_view_base.rstrip('/')}/{kernel_id}.html"
+            add(f'<a href="{html.escape(href, quote=True)}">')
         add(f'<g id="{html.escape(kernel_id)}">')
         add("<title>" + html.escape("\n".join(title_lines)) + "</title>")
         add(
@@ -563,6 +566,8 @@ def render_svg(summary: dict[str, Any], out: Path) -> None:
         add(f'<text class="node-line mono" x="{x + 10}" y="{y + 56}">{html.escape(truncate(io_line, 38))}</text>')
         add(f'<text class="node-line mono" x="{x + 10}" y="{y + 72}">{html.escape(truncate(tile_line, 38))}</text>')
         add("</g>")
+        if kernel_view_base:
+            add("</a>")
 
     critical_label = " -> ".join(summary["critical_path"])
     fusion_label = ", ".join(f'{edge["from"]}->{edge["to"]}' for edge in summary["simple_fusion_edges"])
@@ -587,6 +592,10 @@ def main() -> int:
     parser.add_argument("--kernelized-ir", type=Path)
     parser.add_argument("--svg-out", type=Path)
     parser.add_argument("--summary-out", type=Path)
+    parser.add_argument(
+        "--kernel-view-base",
+        help="Optional SVG href prefix for per-kernel semantic view links.",
+    )
     parser.add_argument(
         "--runtime-input-root",
         action="append",
@@ -615,7 +624,7 @@ def main() -> int:
         args.runtime_input_root,
     )
     if args.svg_out:
-        render_svg(summary, args.svg_out)
+        render_svg(summary, args.svg_out, args.kernel_view_base)
     if args.summary_out:
         write_summary(summary, args.summary_out)
 
