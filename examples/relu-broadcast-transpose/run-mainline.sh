@@ -70,7 +70,6 @@ PHASE5_ARTIFACT_MANIFEST="$BUILD_DIR/phase5_artifact_manifest.json"
 PHASE5_HOST_TILING="$BUILD_DIR/host_tiling.cpp"
 ARTIFACT_ROOT="$BUILD_DIR/artifact"
 PREPARED_RUN_MANIFEST="$BUILD_DIR/run_manifest.prepared.json"
-RUN_MANIFEST="$BUILD_DIR/run_manifest.json"
 ACTUAL_OUTPUT="$BUILD_DIR/output.npy"
 VALIDATION_LOG="$BUILD_DIR/runtime_session.log"
 
@@ -187,47 +186,17 @@ echo "==================== [STAGE 13] runtime-session sim ===================="
   --shape-arg "arg0_dim1=1" \
   --shape-arg "arg1_dim0=$N" \
   --shape-arg "arg1_dim1=$M" \
+  --input "arg0=$BUILD_DIR/input_data0.npy" \
+  --input "arg1=$BUILD_DIR/input_data1.npy" \
+  --output "out0=$ACTUAL_OUTPUT" \
+  --expected-output "out0=$BUILD_DIR/output_expected.npy" \
+  --profiling \
+  --atol 1e-2 \
+  --rtol 1e-2 \
   --emit-run-manifest "$PREPARED_RUN_MANIFEST"
 
-"$PYTHON" - \
-  "$PREPARED_RUN_MANIFEST" \
-  "$RUN_MANIFEST" \
-  "$BUILD_DIR/input_data0.npy" \
-  "$BUILD_DIR/input_data1.npy" \
-  "$ACTUAL_OUTPUT" \
-  "$BUILD_DIR/output_expected.npy" <<'PY'
-import json
-import sys
-from pathlib import Path
-
-prepared_path, run_path, input0, input1, output, expected = sys.argv[1:]
-root = json.loads(Path(prepared_path).read_text())
-tasks = root.get("tasks", [])
-if len(tasks) != 1:
-    raise SystemExit(f"expected one prepared task, got {len(tasks)}")
-
-task = tasks[0]
-inputs = task.get("inputs", [])
-if len(inputs) != 2:
-    raise SystemExit(f"expected two inputs, got {len(inputs)}")
-inputs[0]["path"] = input0
-inputs[1]["path"] = input1
-
-outputs = task.get("outputs", [])
-if len(outputs) != 1:
-    raise SystemExit(f"expected one output, got {len(outputs)}")
-outputs[0]["path"] = output
-
-task["expected_outputs"] = [{"name": outputs[0]["name"], "path": expected}]
-task["profiling"] = True
-task["atol"] = 1e-2
-task["rtol"] = 1e-2
-
-Path(run_path).write_text(json.dumps(root, indent=2) + "\n")
-PY
-
 "$RUNTIME_SESSION" \
-  --run-manifest "$RUN_MANIFEST" \
+  --run-manifest "$PREPARED_RUN_MANIFEST" \
   --run >"$VALIDATION_LOG" 2>&1
 grep -v '^\[info\]\|^\[PEM_AIC_LOG\]\|^\[INFO\]\|^\[WARNING\]' \
   "$VALIDATION_LOG" || true

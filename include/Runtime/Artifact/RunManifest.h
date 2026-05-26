@@ -4,6 +4,7 @@
 #include "llvm/Support/Error.h"
 
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <utility>
 #include <vector>
@@ -22,11 +23,23 @@ struct RunManifestSpec {
   std::vector<RunTaskSpec> tasks;
 };
 
+struct ArtifactManifestBindingPath {
+  std::string taskId;
+  std::string bindingName;
+  std::string path;
+};
+
 struct ArtifactManifestPrepareRequest {
   std::string artifactManifestPath;
   std::string artifactRoot;
   std::string outputRunManifestPath;
   std::vector<std::pair<std::string, int64_t>> shapeArgs;
+  std::vector<ArtifactManifestBindingPath> inputPaths;
+  std::vector<ArtifactManifestBindingPath> outputPaths;
+  std::vector<ArtifactManifestBindingPath> expectedOutputPaths;
+  std::optional<bool> enableProfiling;
+  std::optional<double> atol;
+  std::optional<double> rtol;
   ExecutionBackendKind backendKind = ExecutionBackendKind::Simulation;
 };
 

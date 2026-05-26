@@ -61,6 +61,10 @@ RUNTIME_SESSION_RUN_MANIFEST="$(mktemp /tmp/runtime_session_run_manifest.XXXXXX.
 RUNTIME_SESSION_ACTUAL_OUTPUT="$(mktemp /tmp/runtime_session_actual.XXXXXX.npy)"
 RUNTIME_SESSION_ARTIFACT_MANIFEST="$(mktemp /tmp/runtime_session_artifact_manifest.XXXXXX.json)"
 RUNTIME_SESSION_PREPARED_RUN_MANIFEST="$(mktemp /tmp/runtime_session_prepared_run_manifest.XXXXXX.json)"
+RUNTIME_SESSION_PREPARED_INPUT="$(mktemp /tmp/runtime_session_prepared_input.XXXXXX.npy)"
+RUNTIME_SESSION_PREPARED_OUTPUT="$(mktemp /tmp/runtime_session_prepared_output.XXXXXX.npy)"
+RUNTIME_SESSION_PREPARED_EXPECTED="$(mktemp /tmp/runtime_session_prepared_expected.XXXXXX.npy)"
+RUNTIME_SESSION_PREPARE_BINDING_STDERR="$(mktemp /tmp/runtime_session_prepare_binding.XXXXXX.err)"
 RUNTIME_SESSION_DAG_MANIFEST="$(mktemp /tmp/runtime_session_dag_manifest.XXXXXX.json)"
 RUNTIME_SESSION_DAG_OUTPUT="$(mktemp /tmp/runtime_session_dag_actual.XXXXXX.npy)"
 RUNTIME_SESSION_NPU_MANIFEST="$(mktemp /tmp/runtime_session_npu_manifest.XXXXXX.json)"
@@ -78,6 +82,10 @@ cleanup() {
         "$RUNTIME_SESSION_RUN_MANIFEST" \
         "$RUNTIME_SESSION_ACTUAL_OUTPUT" "$RUNTIME_SESSION_ARTIFACT_MANIFEST" \
         "$RUNTIME_SESSION_PREPARED_RUN_MANIFEST" \
+        "$RUNTIME_SESSION_PREPARED_INPUT" \
+        "$RUNTIME_SESSION_PREPARED_OUTPUT" \
+        "$RUNTIME_SESSION_PREPARED_EXPECTED" \
+        "$RUNTIME_SESSION_PREPARE_BINDING_STDERR" \
         "$RUNTIME_SESSION_DAG_MANIFEST" \
         "$RUNTIME_SESSION_DAG_OUTPUT" "$RUNTIME_SESSION_NPU_MANIFEST" \
         "$RUNTIME_SESSION_NPU_OUTPUT" "$RUNTIME_SESSION_NPU_SUCCESS_STDOUT" \
@@ -277,16 +285,34 @@ build/bin/runtime-session \
   --artifact-manifest "${RUNTIME_SESSION_ARTIFACT_MANIFEST}" \
   --artifact-root "${FAKE_ARTIFACT_ROOT}" \
   --shape-arg arg0_dim0=128 \
+  --input "kernel_a.arg0=${RUNTIME_SESSION_PREPARED_INPUT}" \
+  --output "kernel_b.out0=${RUNTIME_SESSION_PREPARED_OUTPUT}" \
+  --expected-output "kernel_b.out0=${RUNTIME_SESSION_PREPARED_EXPECTED}" \
+  --profiling \
+  --atol 0.01 \
+  --rtol 0.02 \
   --emit-run-manifest "${RUNTIME_SESSION_PREPARED_RUN_MANIFEST}" \
   >/tmp/runtime_session_prepare_manifest.log
 test -f "${RUNTIME_SESSION_PREPARED_RUN_MANIFEST}"
-python3 - "${RUNTIME_SESSION_PREPARED_RUN_MANIFEST}" "${FAKE_ARTIFACT_ROOT}" <<'PY'
+python3 - \
+  "${RUNTIME_SESSION_PREPARED_RUN_MANIFEST}" \
+  "${FAKE_ARTIFACT_ROOT}" \
+  "${RUNTIME_SESSION_PREPARED_INPUT}" \
+  "${RUNTIME_SESSION_PREPARED_OUTPUT}" \
+  "${RUNTIME_SESSION_PREPARED_EXPECTED}" <<'PY'
 import json
 import pathlib
 import sys
 
+def expect_equal(actual, expected, label):
+    if actual != expected:
+        raise SystemExit(f"{label}: expected {expected!r}, got {actual!r}")
+
 manifest = json.loads(pathlib.Path(sys.argv[1]).read_text())
 artifact_root = sys.argv[2]
+input_path = sys.argv[3]
+output_path = sys.argv[4]
+expected_path = sys.argv[5]
 assert manifest["backend"] == "sim"
 assert manifest["artifact_root"] == artifact_root
 tasks = manifest["tasks"]
@@ -302,21 +328,64 @@ tiling_path = pathlib.Path(tasks[0]["tiling"]["binary"])
 assert tiling_path.exists(), tiling_path
 assert tiling_path.stat().st_size == 16
 assert tasks[1]["tiling"]["params"] == "selected_tile_shape=64"
-assert tasks[0]["inputs"] == [{"name": "arg0", "shape": [128], "dtype": "f16"}]
-assert tasks[0]["outputs"] == [{"name": "out0", "shape": [128], "dtype": "f16"}]
-assert tasks[1]["inputs"] == [{
+expect_equal(tasks[0]["inputs"], [{
+    "name": "arg0",
+    "path": input_path,
+    "shape": [128],
+    "dtype": "f16",
+}], "kernel_a inputs")
+expect_equal(tasks[0]["outputs"], [{"name": "out0", "shape": [128], "dtype": "f16"}], "kernel_a outputs")
+expect_equal(tasks[1]["inputs"], [{
     "name": "arg0",
     "source": "task_output",
     "upstream_task": "kernel_a",
     "upstream_output": "out0",
     "shape": [128],
     "dtype": "f16",
-}]
-assert tasks[1]["outputs"] == [{"name": "out0", "shape": [128], "dtype": "f16"}]
+}], "kernel_b inputs")
+expect_equal(tasks[1]["outputs"], [{
+    "name": "out0",
+    "path": output_path,
+    "shape": [128],
+    "dtype": "f16",
+}], "kernel_b outputs")
+expect_equal(tasks[1].get("expected_outputs"), [{
+    "name": "out0",
+    "path": expected_path,
+    "shape": [128],
+    "dtype": "f16",
+}], "kernel_b expected_outputs")
+expect_equal(tasks[1].get("profiling"), True, "kernel_b profiling")
+expect_equal(tasks[1].get("atol"), 0.01, "kernel_b atol")
+expect_equal(tasks[1].get("rtol"), 0.02, "kernel_b rtol")
 PY
 PLAN_OUTPUT="$(build/bin/runtime-session --run-manifest "${RUNTIME_SESSION_PREPARED_RUN_MANIFEST}")"
 printf '%s\n' "${PLAN_OUTPUT}" | grep -q "session.plan\\[0\\]=kernel_a"
 printf '%s\n' "${PLAN_OUTPUT}" | grep -q "session.plan\\[1\\]=kernel_b"
+if build/bin/runtime-session \
+  --artifact-manifest "${RUNTIME_SESSION_ARTIFACT_MANIFEST}" \
+  --artifact-root "${FAKE_ARTIFACT_ROOT}" \
+  --shape-arg arg0_dim0=128 \
+  --input "missing=${RUNTIME_SESSION_PREPARED_INPUT}" \
+  --emit-run-manifest "${RUNTIME_SESSION_PREPARED_RUN_MANIFEST}" \
+  2>"${RUNTIME_SESSION_PREPARE_BINDING_STDERR}"; then
+  echo "Error: runtime-session unknown input binding unexpectedly succeeded" >&2
+  exit 1
+fi
+grep -q "references unknown external input binding: missing" \
+  "${RUNTIME_SESSION_PREPARE_BINDING_STDERR}"
+if build/bin/runtime-session \
+  --artifact-manifest "${RUNTIME_SESSION_ARTIFACT_MANIFEST}" \
+  --artifact-root "${FAKE_ARTIFACT_ROOT}" \
+  --shape-arg arg0_dim0=128 \
+  --output "out0=${RUNTIME_SESSION_PREPARED_OUTPUT}" \
+  --emit-run-manifest "${RUNTIME_SESSION_PREPARED_RUN_MANIFEST}" \
+  2>"${RUNTIME_SESSION_PREPARE_BINDING_STDERR}"; then
+  echo "Error: runtime-session ambiguous output binding unexpectedly succeeded" >&2
+  exit 1
+fi
+grep -q "binding is ambiguous; use task.binding selector: out0" \
+  "${RUNTIME_SESSION_PREPARE_BINDING_STDERR}"
 
 echo "--- Checking runtime-session positive vec simulation path ---"
 runtime_verify_build_example_toolchain

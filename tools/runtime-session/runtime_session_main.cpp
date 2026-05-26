@@ -48,6 +48,31 @@ llvm::cl::list<std::string> ShapeArgAssignments(
     llvm::cl::desc("Concrete shape argument for artifact-manifest prepare, formatted as name=value"),
     llvm::cl::ZeroOrMore,
     llvm::cl::cat(RuntimeSessionCategory));
+llvm::cl::list<std::string> InputPathAssignments(
+    "input",
+    llvm::cl::desc("Concrete artifact-manifest input binding, formatted as name=path or task.name=path"),
+    llvm::cl::ZeroOrMore,
+    llvm::cl::cat(RuntimeSessionCategory));
+llvm::cl::list<std::string> ExpectedOutputPathAssignments(
+    "expected-output",
+    llvm::cl::desc("Concrete artifact-manifest expected output binding, formatted as name=path or task.name=path"),
+    llvm::cl::ZeroOrMore,
+    llvm::cl::cat(RuntimeSessionCategory));
+llvm::cl::opt<bool> EnableProfiling(
+    "profiling",
+    llvm::cl::desc("Enable profiling in run manifests emitted from --artifact-manifest"),
+    llvm::cl::init(false),
+    llvm::cl::cat(RuntimeSessionCategory));
+llvm::cl::opt<double> PrepareAtol(
+    "atol",
+    llvm::cl::desc("Absolute validation tolerance for run manifests emitted from --artifact-manifest"),
+    llvm::cl::init(1.0),
+    llvm::cl::cat(RuntimeSessionCategory));
+llvm::cl::opt<double> PrepareRtol(
+    "rtol",
+    llvm::cl::desc("Relative validation tolerance for run manifests emitted from --artifact-manifest"),
+    llvm::cl::init(1e-2),
+    llvm::cl::cat(RuntimeSessionCategory));
 llvm::cl::opt<std::string> KernelFile(
     "kernel",
     llvm::cl::desc("Kernel source to compile into a runtime artifact"),
@@ -57,10 +82,10 @@ llvm::cl::opt<std::string> KernelName(
     llvm::cl::desc("Kernel name override when compiling a new artifact"),
     llvm::cl::init(""),
     llvm::cl::cat(RuntimeSessionCategory));
-llvm::cl::opt<std::string> OutputDir(
+llvm::cl::list<std::string> OutputArgs(
     "output",
-    llvm::cl::desc("Artifact output directory when compiling"),
-    llvm::cl::init("./build/runtime-session-artifact"),
+    llvm::cl::desc("Artifact output directory when compiling, or artifact-manifest output binding as name=path or task.name=path"),
+    llvm::cl::ZeroOrMore,
     llvm::cl::cat(RuntimeSessionCategory));
 llvm::cl::opt<std::string> SocVersion(
     "soc",
@@ -155,6 +180,55 @@ parseShapeArgAssignment(llvm::StringRef assignment) {
                                    assignment.str().c_str());
   }
   return std::make_pair(name.str(), value);
+}
+
+llvm::Expected<ArtifactManifestBindingPath>
+parseBindingPathAssignment(llvm::StringRef optionName,
+                           llvm::StringRef assignment) {
+  auto [selector, path] = assignment.split('=');
+  selector = selector.trim();
+  path = path.trim();
+  if (selector.empty() || path.empty() ||
+      assignment.find('=') == llvm::StringRef::npos) {
+    return llvm::createStringError(llvm::inconvertibleErrorCode(),
+                                   "invalid --%s assignment: %s",
+                                   optionName.str().c_str(),
+                                   assignment.str().c_str());
+  }
+
+  ArtifactManifestBindingPath parsed;
+  auto [taskId, bindingName] = selector.split('.');
+  if (bindingName.empty()) {
+    parsed.bindingName = selector.str();
+  } else {
+    taskId = taskId.trim();
+    bindingName = bindingName.trim();
+    if (taskId.empty() || bindingName.empty()) {
+      return llvm::createStringError(llvm::inconvertibleErrorCode(),
+                                     "invalid --%s binding selector: %s",
+                                     optionName.str().c_str(),
+                                     selector.str().c_str());
+    }
+    parsed.taskId = taskId.str();
+    parsed.bindingName = bindingName.str();
+  }
+  parsed.path = path.str();
+  return parsed;
+}
+
+bool collectBindingAssignments(
+    llvm::StringRef optionName, const llvm::cl::list<std::string> &assignments,
+    std::vector<ArtifactManifestBindingPath> &out) {
+  for (const std::string &assignment : assignments) {
+    auto parsedOr = parseBindingPathAssignment(optionName, assignment);
+    if (!parsedOr) {
+      llvm::errs() << "Error: " << llvm::toString(parsedOr.takeError())
+                   << "\n";
+      return false;
+    }
+    out.push_back(std::move(*parsedOr));
+  }
+  return true;
 }
 
 void printArtifactSummary(const KernelArtifact &artifact) {
@@ -327,6 +401,22 @@ int main(int argc, char **argv) {
       }
       prepareRequest.shapeArgs.push_back(std::move(*shapeArgOr));
     }
+    if (!collectBindingAssignments("input", InputPathAssignments,
+                                   prepareRequest.inputPaths))
+      return 4;
+    if (!collectBindingAssignments("output", OutputArgs,
+                                   prepareRequest.outputPaths))
+      return 4;
+    if (!collectBindingAssignments("expected-output",
+                                   ExpectedOutputPathAssignments,
+                                   prepareRequest.expectedOutputPaths))
+      return 4;
+    if (EnableProfiling)
+      prepareRequest.enableProfiling = true;
+    if (PrepareAtol.getNumOccurrences() > 0)
+      prepareRequest.atol = PrepareAtol;
+    if (PrepareRtol.getNumOccurrences() > 0)
+      prepareRequest.rtol = PrepareRtol;
     if (auto err = emitRunManifestFromArtifactManifest(prepareRequest)) {
       llvm::errs() << "Error: " << llvm::toString(std::move(err)) << "\n";
       return 4;
@@ -376,12 +466,19 @@ int main(int argc, char **argv) {
       request.kernelSource = KernelFile;
       request.kernelName = KernelName;
       request.kernelKind = *kernelKindOr;
-      request.outputDir = OutputDir;
       request.socVersion = SocVersion;
       if (!CannMlir.empty())
         request.cannMlirPath = CannMlir;
       if (!NpyDir.empty())
         request.npyDir = NpyDir;
+      if (OutputArgs.size() > 1) {
+        llvm::errs()
+            << "Error: compile path accepts at most one --output directory\n";
+        return 4;
+      }
+      request.outputDir = OutputArgs.empty()
+                              ? "./build/runtime-session-artifact"
+                              : OutputArgs.front();
     }
 
     auto artifactOr = prepareRuntimeSessionArtifact(request);

@@ -1127,6 +1127,7 @@ llvm::Error emitRunManifestFromArtifactManifest(
     std::string artifactRoot;
     std::vector<TensorBinding> inputs;
     std::vector<TensorBinding> outputs;
+    std::vector<TensorBinding> expectedOutputs;
     std::vector<int64_t> shapeArgs;
     TilingBinding tiling;
     bool hasTiling = false;
@@ -1338,6 +1339,114 @@ llvm::Error emitRunManifestFromArtifactManifest(
     }
   }
 
+  auto describeBindingAssignment =
+      [](const ArtifactManifestBindingPath &assignment) {
+        if (assignment.taskId.empty())
+          return assignment.bindingName;
+        return (llvm::Twine(assignment.taskId) + "." + assignment.bindingName)
+            .str();
+      };
+
+  auto collectBindingMatches =
+      [&](const ArtifactManifestBindingPath &assignment, bool inputs) {
+        std::vector<std::pair<size_t, size_t>> matches;
+        for (auto [kernelIndexValue, kernel] : llvm::enumerate(kernels)) {
+          if (!assignment.taskId.empty() &&
+              kernel.kernelId != assignment.taskId)
+            continue;
+          llvm::ArrayRef<TensorBinding> bindings =
+              inputs ? llvm::ArrayRef<TensorBinding>(kernel.inputs)
+                     : llvm::ArrayRef<TensorBinding>(kernel.outputs);
+          for (auto [bindingIndex, binding] : llvm::enumerate(bindings)) {
+            if (binding.name != assignment.bindingName)
+              continue;
+            if (inputs &&
+                binding.sourceKind != BindingSourceKind::ExternalFile)
+              continue;
+            matches.emplace_back(kernelIndexValue, bindingIndex);
+          }
+        }
+        return matches;
+      };
+
+  auto applyBindingPathAssignments =
+      [&](llvm::ArrayRef<ArtifactManifestBindingPath> assignments,
+          bool inputs, llvm::StringRef optionName) -> llvm::Error {
+    for (const ArtifactManifestBindingPath &assignment : assignments) {
+      std::vector<std::pair<size_t, size_t>> matches =
+          collectBindingMatches(assignment, inputs);
+      const std::string selector = describeBindingAssignment(assignment);
+      if (matches.empty()) {
+        return llvm::createStringError(
+            llvm::inconvertibleErrorCode(),
+            "artifact manifest prepare --%s references unknown %s binding: %s",
+            optionName.str().c_str(),
+            inputs ? "external input" : "output", selector.c_str());
+      }
+      if (matches.size() > 1) {
+        return llvm::createStringError(
+            llvm::inconvertibleErrorCode(),
+            "artifact manifest prepare --%s binding is ambiguous; use "
+            "task.binding selector: %s",
+            optionName.str().c_str(), selector.c_str());
+      }
+      auto [kernelIndexValue, bindingIndex] = matches.front();
+      TensorBinding &binding =
+          inputs ? kernels[kernelIndexValue].inputs[bindingIndex]
+                 : kernels[kernelIndexValue].outputs[bindingIndex];
+      binding.path = assignment.path;
+    }
+    return llvm::Error::success();
+  };
+
+  if (auto err =
+          applyBindingPathAssignments(request.inputPaths, true, "input"))
+    return err;
+  if (auto err =
+          applyBindingPathAssignments(request.outputPaths, false, "output"))
+    return err;
+
+  for (const ArtifactManifestBindingPath &assignment :
+       request.expectedOutputPaths) {
+    std::vector<std::pair<size_t, size_t>> matches =
+        collectBindingMatches(assignment, /*inputs=*/false);
+    const std::string selector = describeBindingAssignment(assignment);
+    if (matches.empty()) {
+      return llvm::createStringError(
+          llvm::inconvertibleErrorCode(),
+          "artifact manifest prepare --expected-output references unknown "
+          "output binding: %s",
+          selector.c_str());
+    }
+    if (matches.size() > 1) {
+      return llvm::createStringError(
+          llvm::inconvertibleErrorCode(),
+          "artifact manifest prepare --expected-output binding is ambiguous; "
+          "use task.binding selector: %s",
+          selector.c_str());
+    }
+
+    auto [kernelIndexValue, bindingIndex] = matches.front();
+    const TensorBinding &output = kernels[kernelIndexValue].outputs[bindingIndex];
+    auto &expectedOutputs = kernels[kernelIndexValue].expectedOutputs;
+    auto duplicate = std::find_if(
+        expectedOutputs.begin(), expectedOutputs.end(),
+        [&](const TensorBinding &binding) { return binding.name == output.name; });
+    if (duplicate != expectedOutputs.end()) {
+      return llvm::createStringError(
+          llvm::inconvertibleErrorCode(),
+          "artifact manifest prepare --expected-output repeats binding: %s",
+          selector.c_str());
+    }
+
+    TensorBinding expected;
+    expected.name = output.name;
+    expected.path = assignment.path;
+    expected.shape = output.shape;
+    expected.dtype = output.dtype;
+    expectedOutputs.push_back(std::move(expected));
+  }
+
   llvm::json::Object runManifest;
   runManifest["backend"] = stringifyBackendKind(request.backendKind).str();
   runManifest["artifact_root"] = request.artifactRoot;
@@ -1354,6 +1463,14 @@ llvm::Error emitRunManifestFromArtifactManifest(
     }
     task["inputs"] = toJsonTensorBindings(kernel.inputs);
     task["outputs"] = toJsonTensorBindings(kernel.outputs);
+    if (!kernel.expectedOutputs.empty())
+      task["expected_outputs"] = toJsonTensorBindings(kernel.expectedOutputs);
+    if (request.enableProfiling)
+      task["profiling"] = *request.enableProfiling;
+    if (request.atol)
+      task["atol"] = *request.atol;
+    if (request.rtol)
+      task["rtol"] = *request.rtol;
     if (kernel.hasTiling) {
       llvm::json::Object tiling;
       if (!kernel.tiling.schemaPath.empty())
