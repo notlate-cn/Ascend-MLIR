@@ -146,7 +146,9 @@ grep -Fq 'ascend_debug.diff.failed=1' "${TMP_DIR}/ascend-debug-diff-graph.txt"
 ascend-debug locate "${TMP_DIR}/debug-run-graph" >"${TMP_DIR}/ascend-debug-locate-graph.txt"
 grep -Fq 'ascend_debug.locate.status=fail' "${TMP_DIR}/ascend-debug-locate-graph.txt"
 grep -Fq 'ascend_debug.locate.first_bad_kernel=kernel_0' "${TMP_DIR}/ascend-debug-locate-graph.txt"
+grep -Fq 'ascend_debug.locate.first_bad_depth=1' "${TMP_DIR}/ascend-debug-locate-graph.txt"
 grep -Fq 'ascend_debug.locate.first_bad_comparison=checkpoint/kernel_0' "${TMP_DIR}/ascend-debug-locate-graph.txt"
+grep -Fq 'ascend_debug.locate.upstream_checked_passed=none' "${TMP_DIR}/ascend-debug-locate-graph.txt"
 test -f "${TMP_DIR}/debug-run-graph/summaries/locate.json"
 ascend-debug open "${TMP_DIR}/debug-run-graph" --no-browser >"${TMP_DIR}/ascend-debug-open-graph.txt"
 grep -Fq '<h2>Graphs</h2>' "${TMP_DIR}/debug-run-graph/index.html"
@@ -183,6 +185,7 @@ grep -Fq 'checkpoint/kernel_0' "${TMP_DIR}/debug-run-graph/index.html"
 grep -Fq '<a href="views/kernels/kernel_0.html">kernel_0</a>' "${TMP_DIR}/debug-run-graph/index.html"
 grep -Fq 'max_abs_error' "${TMP_DIR}/debug-run-graph/index.html"
 grep -Fq 'first_bad_comparison=checkpoint/kernel_0' "${TMP_DIR}/debug-run-graph/index.html"
+grep -Fq 'first_bad_depth=1' "${TMP_DIR}/debug-run-graph/index.html"
 echo "ascend_debug.open_kernel=ok"
 echo "ascend_debug.open_graph=ok"
 
@@ -219,7 +222,9 @@ ascend-debug locate "${TMP_DIR}/debug-run-locate" >"${TMP_DIR}/ascend-debug-loca
 grep -Fq 'ascend_debug.locate.status=fail' "${TMP_DIR}/ascend-debug-locate.txt"
 grep -Fq 'ascend_debug.locate.failed_kernels=2' "${TMP_DIR}/ascend-debug-locate.txt"
 grep -Fq 'ascend_debug.locate.first_bad_kernel=kernel_1' "${TMP_DIR}/ascend-debug-locate.txt"
+grep -Fq 'ascend_debug.locate.first_bad_depth=2' "${TMP_DIR}/ascend-debug-locate.txt"
 grep -Fq 'ascend_debug.locate.first_bad_comparison=checkpoint/kernel_1' "${TMP_DIR}/ascend-debug-locate.txt"
+grep -Fq 'ascend_debug.locate.upstream_checked_passed=kernel_0' "${TMP_DIR}/ascend-debug-locate.txt"
 python3 - "${TMP_DIR}/debug-run-locate/summaries/locate.json" <<'PY'
 import json
 import pathlib
@@ -229,8 +234,15 @@ summary = json.loads(pathlib.Path(sys.argv[1]).read_text())
 assert summary["schema_version"] == 1
 assert summary["status"] == "fail"
 assert summary["first_bad_kernel"] == "kernel_1"
+assert summary["first_bad_depth"] == 2
 assert summary["first_bad_comparison"]["id"] == "checkpoint/kernel_1"
 assert summary["failed_kernel_ids"] == ["kernel_1", "kernel_3"]
+assert summary["passed_kernel_ids"] == ["kernel_0"]
+assert summary["first_bad_context"]["direct_upstream"] == ["kernel_0"]
+assert summary["first_bad_context"]["direct_downstream"] == ["kernel_3"]
+assert summary["first_bad_context"]["upstream_checked_passed"] == ["kernel_0"]
+assert summary["first_bad_context"]["downstream_failed"] == ["kernel_3"]
+assert summary["first_bad_context"]["unchecked_direct_upstream"] == []
 PY
 echo "ascend_debug.locate=ok"
 
