@@ -662,7 +662,7 @@ struct ScheduleProblemBuildContext {
 
 搜索空间由 `ScheduleTemplate.buildSearchSpace()` 通过**组合枚举**生成：对 `scheduleSkeleton` 中每个 `enableUbTile=true` 的 logical axis，枚举合法 tile size 集合；对 cache/pipeline 策略枚举布尔开关；对 block mapping 枚举轴分配方式；将上述枚举的笛卡尔积展开为候选列表，每个候选对应一个 `ScheduleInstance`。
 
-**tileExprs 的符号化参数变量**：每个被切分的 logical axis 对应一个参数化变量 `T_<axisName>`（如 `T_M`、`T_N`、`T_K`），取值为符号表达式，在 `candidateGuards` 中附加合法性条件（如 `T_M % cube_m_size == 0`、`T_M <= M`）。具体取值在运行期 Level-1 过滤时由 shape bucket 代入求值。
+**tileExprs 的符号化参数变量**：每个被切分的 logical axis 对应一个参数化变量 `T_<axisName>`（如 `T_M`、`T_N`、`T_K`），取值为符号表达式，在 `candidateGuards` 中附加合法性条件（如 `T_M % cube_m_size == 0`、`T_M <= M`）。具体取值在部署准备阶段的 Level-1 过滤中由 shape bucket 代入求值。
 
 **MatmulEpilogueFamily 的搜索空间枚举规则**（作为最重要 family 的示例）：
 - M 轴：tile 候选为 `{cube_m_size, 2*cube_m_size, 4*cube_m_size}`，guard 为 `T_M % cube_m_size == 0 && T_M <= M`
@@ -907,13 +907,13 @@ struct ScheduleFamilyMatchResult {
 
 #### 4.6.1 ScheduleInstance 与 ScheduleDecision 的关系
 
-**两级 `topK` 的关系**：搜索阶段的 `compileTimeTopK`（见 4.5.2 节，由 `TilingStrategy` 持有）与决策阶段的 `runtimeTopK`（由 `ScheduleDecisionSet` 持有）是同一概念在不同阶段的实例化：
+**两级 `topK` 的关系**：搜索阶段的 `compileTimeTopK`（见 4.5.2 节，由 `TilingStrategy` 持有）与准备阶段的 `runtimeTopK`（由 `ScheduleDecisionSet` 持有）是同一概念在不同阶段的实例化。这里的 `runtimeTopK` 是历史命名，含义是“为运行时可消费产物保留的候选上限”，不表示 `runtime-session` 会在线搜索：
 
 - `compileTimeTopK` 在编译期固定，限制 `scheduleSearchSpace` 经过滤排序后保留的 `ScheduleInstance` 候选数量上限；写入 `TilingStrategy` 后只读消费，第三层后续不再修改
-- `runtimeTopK` 在编译期由 `ScheduleDecisionBuilder` 写入 `ScheduleDecisionSet`（默认值 `min(4, compileTimeTopK)`），限制运行期 Level-1 / Level-2 在已选 `ScheduleDecision` 之中可继续筛选的候选数量上限；恒满足 `runtimeTopK ≤ compileTimeTopK`（4.10 节 `ScheduleDecisionVerifier` 强制此约束）
-- `topN` / `top1` 是运行期的进一步派生量，仅在 Level-1/Level-2 选择阶段使用，不写入 `ScheduleDecisionSet`
+- `runtimeTopK` 在编译期由 `ScheduleDecisionBuilder` 写入 `ScheduleDecisionSet`（默认值 `min(4, compileTimeTopK)`），限制 prepare/offline tuning 在已选 `ScheduleDecision` 之中可继续筛选的候选数量上限；恒满足 `runtimeTopK ≤ compileTimeTopK`（4.10 节 `ScheduleDecisionVerifier` 强制此约束）
+- `topN` / `top1` 是 prepare/offline tuning 的进一步派生量，仅在 Level-1/Level-2 选择阶段使用，不写入 `ScheduleDecisionSet`
 
-简言之：`compileTimeTopK` 决定"编译期保留多少候选写入决策集合"，`runtimeTopK` 决定"运行期可在这些候选中再筛多少进入实测"，两者均为单调递减的容量上限。
+简言之：`compileTimeTopK` 决定"编译期保留多少候选写入决策集合"，`runtimeTopK` 决定"部署准备/离线调优阶段可在这些候选中再筛多少进入实测"，两者均为单调递减的容量上限。`runtime-session` 只消费已经物化的 `runtime_manifest.json`、host tiling `.so` 和 kernel artifact，不执行 Level-1/Level-2 Autotuner。
 
 **辅助类型最小定义**（供 4.6 节各结构体引用）：
 
@@ -968,8 +968,9 @@ struct ScheduleDecision {
 
 struct ScheduleDecisionSet {
   SmallVector<ScheduleDecision> decisions;
-  int runtimeTopK;  // 运行期在已有决策中进一步保留的候选上限；属于集合级策略参数，
-                    // 不属于单个 ScheduleDecision；由 ScheduleDecisionBuilder 统一写入
+  int runtimeTopK;  // 为运行时产物准备阶段保留的候选上限；属于集合级策略参数，
+                    // 不属于单个 ScheduleDecision；由 ScheduleDecisionBuilder 统一写入；
+                    // 不表示 runtime-session 在线筛选
 };
 ```
 
@@ -1011,36 +1012,37 @@ struct ScheduleDecisionSet {
 
 #### 4.6.4 输出：`ScheduleDecisionSet`
 
-`ScheduleDecisionSet` 持有一个或多个 `ScheduleDecision`（运行期可选）。
+`ScheduleDecisionSet` 持有一个或多个 `ScheduleDecision`。动态 shape 场景下，多个 decision 会在编译/部署准备阶段被物化为多个 guard 分支或 kernel variant，运行时只做 guard 匹配和 ABI 查询。
 
-#### 4.6.5 编译期与运行期分工
+#### 4.6.5 编译期、准备阶段与运行期分工
 
 | 阶段                   | 动作                                                         |
 | ---------------------- | ------------------------------------------------------------ |
 | 编译期                 | 过滤 `scheduleSearchSpace`，保留 `compileTimeTopK`           |
-| 运行期 Level-1         | shape 已知后按 bucket / `candidateGuards` 命中，轻量打分，产出 `runtimeTopK / topN` |
-| 运行期 Level-2（可选） | 对 `topN` 做更充分调优，生成最终 `ScheduleDecisionSet` 并写入缓存 |
+| 部署准备 / Level-1     | 根据 profile shape、bucket 范围和 `candidateGuards` 做轻量打分，产出 `runtimeTopK / topN` |
+| 离线 / Level-2（可选） | 对 `topN` 做更充分调优，生成最终 `ScheduleDecisionSet`、`best.config` 或 tuning DB，并写入缓存 |
+| 运行期                 | 根据当前 shape 匹配 Runtime Manifest 中的 guard/fallback，调用 Host Tiling ABI 的 `GetTiling` / `GetBlockDim` / `GetWorkspaceSize`，不执行调优搜索 |
 
 **Level-1 评分只允许使用**：legality、片上容量合法性、`cacheMissPenalty`、`bankConflictPenalty`、promotion / movement 数量、`blockDimExpr` 是否可直接求值、execution unit 与 memory hierarchy 匹配情况。
 
-**运行期回退链**：
+**准备阶段选择链**：
 
 ```
 Level-1 过滤后有候选
   → 直接使用 top1 或进入 Level-2
 Level-1 过滤后无候选（当前 bucket 无合法实例）
-  → 写负缓存；报运行期 warning；使用 fallback decision（见下文）
+  → 写负缓存；报 prepare-time warning；使用 fallback decision（见下文）
 Level-2 调优失败（所有 topN 均不满足实测合法性）
-  → 退回 Level-1 的 top1；若 Level-1 top1 也已失效，则报运行期错误
+  → 退回 Level-1 的 top1；若 Level-1 top1 也已失效，则报准备阶段错误
 fallback decision
   → 取编译期 compileTimeTopK 中评分最高的 ScheduleInstance，
      不经 Level-1/2 直接生成 ScheduleDecision；
      此路径只用于 bucket 命中失败的降级，不用于 Level-2 调优失败
 ```
 
-回退次数无上限，但每次回退都必须写入诊断日志（包含 kernel id、bucket key、失败原因）。
+回退次数无上限，但每次回退都必须写入诊断日志（包含 kernel id、bucket key、失败原因）。若 fallback 被写入 Runtime Manifest，它必须是显式 `fallback=true` 的保守 `ScheduleDecision`：性能可以低于 bucket 专用 decision，但必须覆盖声明的合法 shape 范围；不能把“运行期未命中 guard 后在线调优”作为隐式 fallback。
 
-**Level-2 触发条件**：Level-2 Autotuner 默认关闭，需在编译器配置中显式开启（`enableLevel2Autotuner = true`）。开启后，仅当以下条件**同时成立**时才实际执行 Level-2：① Level-1 筛出的候选数 `>= 2`（只有 1 个候选时无需进一步优化）；② 当前 kernel 的 `scheduleFamily` 不是 `GenericInjectiveFamily`（该 family 的搜索空间已足够小，Level-2 增益可忽略）；③ `TuningResultCache` 中无该 bucket 的有效缓存命中。不满足以上任意条件时，直接使用 Level-1 top1，不进入 Level-2。
+**Level-2 触发条件**：Level-2 Autotuner 默认关闭，需在编译器配置中显式开启（`enableLevel2Autotuner = true`）。开启后，仅当以下条件**同时成立**时才实际执行 Level-2：① Level-1 筛出的候选数 `>= 2`（只有 1 个候选时无需进一步优化）；② 当前 kernel 的 `scheduleFamily` 不是 `GenericInjectiveFamily`（该 family 的搜索空间已足够小，Level-2 增益可忽略）；③ `TuningResultCache` 中无该 bucket 的有效缓存命中。不满足以上任意条件时，直接使用 Level-1 top1，不进入 Level-2。Level-2 只能在编译/部署准备或离线调优服务中执行，`runtime-session` 不触发 Level-2，也不在 guard 未命中时生成新的 `best.config`。
 
 **当前版本冻结默认值**：
 
@@ -1048,11 +1050,11 @@ fallback decision
 - 未启用 Level-2 时 `topN = 1`；启用 Level-2 时 `topN = min(2, runtimeTopK)`
 - `top1` 固定为 `runtimeTopK` 排序后的第一个候选
 
-> 本节描述运行期选择的决策逻辑（选哪个、如何回退）。支撑运行期选择的三级缓存结构（`TemplateCache`、`ShapeBucketCache`、`TuningResultCache`）及完整的运行期查询流程见 4.9 节。
+> 本节描述编译/准备阶段选择的决策逻辑（选哪个、如何回退）。支撑准备阶段选择的三级缓存结构（`TemplateCache`、`ShapeBucketCache`、`TuningResultCache`）及 runtime 消费边界见 4.9 节。
 
 #### 4.6.6 构造步骤
 
-1. 在编译期保留的 `scheduleSearchSpace` 上，按 bucket 和 `candidateGuards` 做运行期过滤
+1. 在编译期保留的 `scheduleSearchSpace` 上，按 profile bucket 和 `candidateGuards` 做 prepare-time 过滤
 2. Level-1 轻量打分，保留 `runtimeTopK / topN`
 3. 选出 `scheduleInstance`（直接用 Level-1 结果，或经 Level-2 精调；失败则走回退链）
 4. 通过 `scheduleInstance.scheduleTemplate` 反向校验其 `scheduleFamily` 归属
@@ -1155,7 +1157,7 @@ fallback decision
 - 跨 branch / merge、gather / indexing、layout barrier 的融合
 - 需要单独外部可见结果、单独 write-back 边界或单独 kernel ABI 的融合
 
-**单 kernel 内多 loop 的合法性条件**：同一 kernel 内允许保留多个结构化 loop，合法条件为：这些 loop 共享同一个 tile 作用域、on-chip buffer 生命周期和片上数据流，且关键中间值（`isBinding=true` 的 `PromotionHint`）不需要离开片上。若某个 `ScheduleDecision` 导致 `isBinding=true` 的中间值必须回写 GM，则本层在 verifier 阶段报错，触发 4.6.5 节的运行期回退链（`StructuredLowering` 失败属于"Level-2 调优失败"路径），不允许静默降级。
+**单 kernel 内多 loop 的合法性条件**：同一 kernel 内允许保留多个结构化 loop，合法条件为：这些 loop 共享同一个 tile 作用域、on-chip buffer 生命周期和片上数据流，且关键中间值（`isBinding=true` 的 `PromotionHint`）不需要离开片上。若某个 `ScheduleDecision` 导致 `isBinding=true` 的中间值必须回写 GM，则本层在 verifier 阶段报错，触发 4.6.5 节的准备阶段选择链（`StructuredLowering` 失败属于"Level-2 调优失败"路径），不允许静默降级。
 
 #### 4.7.4 案例
 
@@ -1261,15 +1263,32 @@ struct HandwrittenTilingInstance {
 };
 ```
 
-`paramValues` 的 key 与 `HandwrittenPatternEntry.tilingParams` 中声明的参数名一一对应；`instanceGuards` 语义与通用路径的 `candidateGuards` 相同，供运行期 bucket 命中校验。`HandwrittenTilingInstance` 持有各 `TilingParam` 的具体取值，供 `HostTilingEmitter` 生成 host 侧 `get_tiling(...)` 代码。
+`paramValues` 的 key 与 `HandwrittenPatternEntry.tilingParams` 中声明的参数名一一对应；`instanceGuards` 语义与通用路径的 `candidateGuards` 相同，供 Runtime Manifest 生成 guard/fallback 路由。`HandwrittenTilingInstance` 持有各 `TilingParam` 的具体取值，供 `HostTilingEmitter` 生成 host 侧 `get_tiling(...)` 代码。
 
 ------
 
-### 4.9 Compilation Cache and Runtime Selection
+### 4.9 Compilation Cache, Guard and Runtime Consumption
 
 #### 4.9.1 功能
 
-描述编译期如何缓存中间结果，以及运行期如何基于具体 shape 命中 bucket、筛选候选并选出最终 `ScheduleDecision`。
+描述编译/部署准备阶段如何缓存中间结果、如何为动态 shape 生成 guard/fallback，以及 `runtime-session` 如何消费已物化结果。Cache、guard 和 bucket 必须严格区分：
+
+- **Cache** 是复用机制，保存已构造的模板、bucket 描述、调优结果或负缓存；cache hit 只说明某个决策/工件可以复用。
+- **Guard** 是适用性谓词，说明某个 `ScheduleDecision` 或 kernel variant 是否能覆盖当前 shape；guard pass 才能启动该 variant。
+- **Shape bucket** 是 cache key 和 variant 分组维度，用于把连续 shape 空间归一化；bucket 可由 guard 区间表达，但不等同于 guard。
+
+因此，cache 命中后仍必须校验 guard；guard 命中也不表示存在在线调优结果。若当前 shape 不被任何优化 guard 覆盖，只能走 manifest 中显式声明的 fallback，或 fail fast 并由上层 prepare/offline 服务重新生成产物，`runtime-session` 不在线调用 Autotuner。
+
+**Shape bucket 定义规则**：bucket 不按输入 tensor 的每个 dim 机械切分，而只对调度敏感的 logical axis 建桶。调度敏感轴来自 `tileableAxes`、`requiredReductionAxes`、coalesced axis、影响 `blockDimExpr` / `workspaceSizeExpr` 的 shape 参数、以及 tail/alignment 策略需要的轴。每个 bucket 边界由以下来源合并后裁剪：
+
+- Profile shape 分布：高频 shape 或业务声明的典型范围优先形成专用 bucket。
+- Target 约束：UB/L1 容量、DMA 对齐、Cube/Vector intrinsic 粒度、block 数上限。
+- Tail 策略：`MustDivide` 需要整除 guard；`MaskedTail` / `PadAndMask` 可覆盖非整除范围，但可能需要单独 bucket 控制 workspace 或临时 buffer。
+- Search budget：bucket 数与 guard 数共同受 `guardBudget` 限制；超过预算时合并相邻低收益 bucket，并保留一个保守 fallback。
+
+例：`broadcast_add_reduce(M,N)` 中，若 schedule 只 tile/reduce `N` 且 `M` 只作为外层 batch 串行或 block 数的线性因子，则 bucket 可以只围绕 `N` 定义：`N % 32 == 0 && N <= 4096`、`N % 32 != 0 && N <= 4096`、`fallback(N > 0)`。不应因为输入有 `M`、`N` 两个维度就生成 `M_bucket × N_bucket` 的笛卡尔积，除非 `M` 也影响 tile、workspace、unit assignment 或 launch occupancy。
+
+**多 kernel/多 variant 覆盖策略**：编译器应为高频 bucket 或调度差异明显的 bucket 生成多个 kernel/tiling variant，但不为每个具体 shape 生成一个专用 kernel。完整合法覆盖通过一个或少量 generic/fallback variant 实现；热点 shape 的性能通过专用 bucket variant 提升。若用户要求“覆盖全部场景”，含义是所有声明合法 shape 都能被某个 guard/fallback 运行成功，不表示所有 shape 都有专用最优 kernel。
 
 #### 4.9.2 三级缓存
 
@@ -1303,17 +1322,33 @@ struct ProfileEntry {
 
 ProfileDB 按 `targetVersion` 分区存储，不同硬件代际的数据不混用。定期（如每次 target 版本升级后）用 ProfileDB 重新训练 MLP，更新 `TargetProfile.costModel`，不需要重新编译编译器。
 
-#### 4.9.3 运行期选择流程
+#### 4.9.3 准备阶段选择流程
 
 1. 用 `KernelPattern fingerprint + ScheduleProblem` 构造 `TemplateCache` key，查询
 2. 未命中则生成与具体 shape 解耦的 `scheduleFamily + scheduleTemplate + scheduleSkeleton + scheduleSearchSpace`，回填
-3. 对运行时 shape 归一化分桶，查询 `ShapeBucketCache`；未命中则生成新 bucket 并回填
+3. 根据 profile shape、用户声明的动态 shape 范围和 target 约束生成 shape bucket，查询或回填 `ShapeBucketCache`
 4. 用当前 bucket 构造 `TuningResultCache` key，查询；命中（含负缓存）则直接使用结果
 5. 未命中则在 `compileTimeTopK` 保留的候选中做 Level-1 快速调优，筛出 `runtimeTopK / topN`
-6. 直接使用 Level-1 结果，或在 `topN` 上执行 Level-2 Autotuner
-7. 级联回填 `TuningResultCache`；无合法结果则写负缓存，触发 4.6.5 节回退链
+6. 直接使用 Level-1 结果，或在 `topN` 上执行离线 Level-2 Autotuner
+7. 级联回填 `TuningResultCache`；无合法结果则写负缓存，触发 4.6.5 节准备阶段选择链
+8. 将每个最终 decision 写入 Runtime Manifest 的 guard entry；若需要全范围合法覆盖，额外生成显式 fallback entry
 
-#### 4.9.4 decisionGuards 示例
+#### 4.9.4 运行期消费流程
+
+`runtime-session` 的动态 shape 运行流程固定为：
+
+1. 读取 `runtime_manifest.json`
+2. 从输入 tensor 提取 `shape_args`，按 `shapeArgOrder` 排列
+3. 按 manifest 中的 priority 顺序匹配 guard；若无优化 guard 命中，则选择 `fallback=true` entry；仍无 entry 则 fail fast
+4. 根据选中 entry 的 `hostTilingId` 查找 `hostTilingBindings`，用其中的 `library` 和 `symbols` 绑定 C ABI 符号
+5. 调用 `GetTilingSize` 分配 host tiling buffer
+6. 调用 `GetTiling(shape_args, shape_count, tiling_out)` 填充 tiling
+7. 调用 `GetBlockDim` 和 `GetWorkspaceSize` 获取 launch 参数
+8. 按 Runtime TaskGraph / kernelGraph 启动 kernel
+
+此流程只做 guard 判断、符号绑定和参数查询，不访问 `TuningResultCache`，不执行 Level-1/Level-2 搜索，不生成新的 `best.config`。
+
+#### 4.9.5 decisionGuards 示例
 
 同一 `scheduleTemplate` 下保留多套决策，各自有不同生效条件，guard 总数不超过 `guardBudget`：
 
@@ -1337,8 +1372,8 @@ decision_2: guard = (A > 4096)                      // 1 个 guard
 | `AxisCoalescingVerifier`     | 报编译错误，终止当前 `KernelPattern` 的编译；错误携带 `barrierKind` 和 `anchorOps` 供诊断 |
 | `ScheduleProblemVerifier`    | 报编译错误，终止当前 `KernelPattern` 的编译；不允许静默丢弃或降级 |
 | `TilingStrategyVerifier`     | 报编译错误，终止当前 `KernelPattern` 的编译；悬空标签错误携带标签名 |
-| `ScheduleDecisionVerifier`   | 报编译错误，终止当前 `KernelPattern` 的编译；不触发 4.6.5 节回退链（回退链只处理运行期 shape bucket 命中失败，不处理编译期结构违规） |
-| `StructuredLoweringVerifier` | `isBinding=true` 中间值回写 GM：报编译错误并触发 4.6.5 节回退链（属于"Level-2 调优失败"路径）；其余检查失败：报编译错误，终止当前 `KernelPattern` 的编译 |
+| `ScheduleDecisionVerifier`   | 报编译错误，终止当前 `KernelPattern` 的编译；不触发 4.6.5 节准备阶段选择链（该链只处理 bucket 候选选择失败，不处理编译期结构违规） |
+| `StructuredLoweringVerifier` | `isBinding=true` 中间值回写 GM：报编译错误并触发 4.6.5 节准备阶段选择链（属于"Level-2 调优失败"路径）；其余检查失败：报编译错误，终止当前 `KernelPattern` 的编译 |
 
 **检查内容**：
 

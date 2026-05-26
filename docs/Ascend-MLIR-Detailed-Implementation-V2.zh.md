@@ -434,6 +434,7 @@ public:
 
 
 
+
 ## 3. 第二层：Kernelize
 
 第二层的任务是把第一层输出的规范化计算图划分成可独立调度的 `KernelPattern`。整个过程分七个有序步骤执行，每个步骤只消费前序步骤的产出，不回看原始 IR。
@@ -810,6 +811,8 @@ using OpAxisMap = DenseMap<Operation*, SmallVector<LogicalAxis*>>;
 | ----------------------- | ------------------------------------------------------------ | ------------------------------------------------------------ |
 | `tileableAxes`          | 候选允许后续切分的逻辑轴集合                                 | role、iteratorTypes、indexing map、primitive 允许的 tile 传播规则 |
 | `requiredReductionAxes` | 必须保持为 reduction 的轴                                    | reduction role、reduce op 语义和 primitive 约束              |
+| `axisScheduleConstraints` | 轴级调度约束与候选执行角色提示；只描述合法性和偏好，不选择具体 tile size；单轴通过 `coalescingGroupId` 反向引用组级合轴提示 | `tileableAxes`、`requiredReductionAxes`、broadcast/layout/indexing 传播关系、primitive 语义 |
+| `axisCoalescingHints`   | 组级合轴提示；记录可一起线性化的轴组、组 kind 和成员顺序；与 `axisScheduleConstraints` 同级，不内嵌到单轴结构 | `axisScheduleConstraints`、layout 连续性约束、primitive 语义 |
 | `layoutConstraints`     | 后续模板不能破坏的 layout 条件                               | indexing、layout transform、transpose / gather / concat 等结构语义 |
 | `mustKeepOnChipValues`  | 进入单 kernel 时必须片上传递的值                             | producer-consumer carried values 和 primitive 的片上传播要求 |
 | `templateFamilies`      | 当前候选按 role 组合推断出的模板族标签集合；元素为字符串标识符（如 `"AnchorEpilogue"`、`"SoftmaxTemplate"`） | role 组合与结构语义；**不依赖 `TemplateRegistry` 内部结构**，由第二层按静态规则推断；第三层凭此标签在 `TemplateRegistry` 中自行查找，查不到则报错 |
@@ -823,7 +826,7 @@ using OpAxisMap = DenseMap<Operation*, SmallVector<LogicalAxis*>>;
 
 ##### 3.6.2.1 scheduleContract 推导规则
 
-每个 `scheduleContract` 字段在候选扩展完成、`CandidateClosure.isClosed = true` 后立即推导。推导只读消费 `OpSemanticSummary`、`OpRoleMap`、`ProducerConsumerIndex` 和候选自身的 `CandidateClosure`，不查询 target 硬件参数，不依赖 `TemplateRegistry` 内部结构。六个字段的推导顺序如下：`tileableAxes` → `requiredReductionAxes` → `layoutConstraints` → `mustKeepOnChipValues` → `templateFamilies` → `dynamicGuardSet`；前序字段的结果可被后续字段消费。
+每个 `scheduleContract` 字段在候选扩展完成、`CandidateClosure.isClosed = true` 后立即推导。推导只读消费 `OpSemanticSummary`、`OpRoleMap`、`ProducerConsumerIndex` 和候选自身的 `CandidateClosure`，不查询 target 硬件参数，不依赖 `TemplateRegistry` 内部结构。八个字段的推导顺序如下：`tileableAxes` → `requiredReductionAxes` → `axisScheduleConstraints` → `axisCoalescingHints` → `layoutConstraints` → `mustKeepOnChipValues` → `templateFamilies` → `dynamicGuardSet`；前序字段的结果可被后续字段消费。
 
 ---
 
@@ -886,7 +889,160 @@ using OpAxisMap = DenseMap<Operation*, SmallVector<LogicalAxis*>>;
 
 ---
 
-**③ `layoutConstraints` 推导**
+**③ `axisScheduleConstraints` 推导**
+
+`axisScheduleConstraints` 是第二层向第三层交付的轴级调度边界。它回答"合轴之后每根逻辑轴可以被第三层怎样使用"，但不回答"最终 tile 多大、采用几个 block、是否启用某个 target 专属模板"。具体数值选择仍由第三层 `TemplateRegistry`、`ScheduleSearch`、target memory/cost model 和第四层 capacity check 共同决定。
+
+业界同类编译系统通常采用这一分层：
+
+- MLIR Linalg / transform dialect 先以 iteration domain 表达合法 loop 维度，再由后续 tiling、interchange、mapping 选择具体 loop 结构。
+- IREE codegen 把 workgroup、subgroup、thread/vector 的多级 tiling 分开建模，先确认维度合法性，再绑定到硬件层级。
+- Triton kernel 以 program id grid 表达 block 级映射，用 mask 处理非整除 tail，而不是要求所有 shape 整除 tile。
+- TVM MetaSchedule 把 schedule trace、tile split、bind、vectorize 作为可搜索 decision，合法性和代价选择分离。
+
+Ascend 主线采用相同思想：第二层只产出轴约束和候选角色，第三层把这些约束作为 `ScheduleProblemBuilder`（见 3.6.2 表中 `scheduleContract` 字段消费方）的输入，再由 structured lowering 物化为 `scf.for`、`memref.subview`、block mapping 和 tail guard。
+
+**数据结构：**
+
+```cpp
+enum class AxisExecutionRole {
+  BindCoreCandidate,     // 可映射到 Ascend AI Core 级并行（block_idx），等价于 IREE workgroup；
+                         // 注意：Ascend 硬件无 GPU 意义上的 subgroup 层
+  KernelLoopCandidate,   // 可生成核内 outer loop（intra-core 的 scf.for），由单个 AI Core 顺序执行；
+                         // 不对应 GPU 的 subgroup / warp
+  VectorizeCandidate,    // 可作为最内层向量化 / AscendC vector intrinsic 轴
+  FullReduction,         // reduction 轴必须在单个 tile 内完整归约
+  ChunkedReduction,      // reduction 轴允许分块归约；仅 primitive 显式声明时可用
+  BroadcastProjection,   // broadcast 退化轴，不传播 tile size
+  LayoutCarry            // layout transform 只重编号或携带该轴
+};
+
+enum class AxisTailPolicy {
+  MustDivide,       // 模板要求整除；第三层需要产生 Divisible guard 或静态验证
+  MaskedTail,       // 允许 tail，通过 min(tile, dim-origin) 或 mask 处理
+  ScalarEpilogue,   // 允许单独尾部 epilogue
+  PadAndMask,       // 允许将 tail 搬入对齐临时 buffer，再用 mask / guard 写回真实范围
+  FullExtent        // 轴必须全长覆盖，典型为当前 FullReduction
+};
+
+enum class PrimitiveAxisUseKind {
+  DataCopy,          // 该轴参与 GM/L2/L1/UB 数据搬运
+  VectorCompute,     // 该轴参与 vector intrinsic 计算
+  Reduction,         // 该轴参与归约
+  GatherIndex,       // 该轴参与数据相关 indexing / gather
+  CubeM,             // 该轴映射到 cube M 维
+  CubeN,             // 该轴映射到 cube N 维
+  CubeK,             // 该轴映射到 cube K 维
+  WriteBack          // 该轴参与最终写回
+};
+
+// 合轴提示是"组级别"概念（多根轴属于同一组），不挂在单根轴上。
+// 单根轴的 AxisScheduleConstraint 只通过 coalescingGroupId 反向引用所属组，
+// 真正的组信息存放在候选级别的 AxisCoalescingHint 列表里（见 scheduleContract 字段）。
+enum class CoalescingHintKind {
+  Vectorizable,    // 组内至少一根轴可作为 VectorizeCandidate；可一起线性化并允许作为最内向量轴
+  LinearizeOnly    // 组内无轴可向量化；仅作为 block/grid 线性化提示，不传递为 vector 轴
+};
+
+struct AxisCoalescingHint {
+  uint32_t groupId;                       // 候选内唯一；0 表示"未参与任何合轴组"，不出现在列表中
+  CoalescingHintKind kind;                // 组级 kind，避免污染单轴 AxisExecutionRole
+  SmallVector<LogicalAxis *> members;     // 同组全部轴，按候选内访问顺序排列；size >= 2
+};
+
+struct AxisScheduleConstraint {
+  LogicalAxis *axis;
+  AxisKind kind;
+  SmallVector<AxisExecutionRole> allowedRoles;
+  SmallVector<AxisTailPolicy> allowedTailPolicies;
+  SmallVector<PrimitiveAxisUseKind> primitiveUses;
+  // target-independent 的语义对齐粒度，单位是"元素个数"而不是字节；
+  // 0 表示第二层无额外要求。dtype / target 相关的最终字节粒度由第三层
+  // 结合 TargetIntrinsicModel / TargetMemoryModel 写入 ScheduledAxisTailPlan。
+  int64_t semanticAlignmentGranularity;
+  // 合轴在第二层只作为"提示"产出，不在此处执行折叠。
+  // coalescingGroupId == 0 表示该轴不参与任何合轴组；
+  // 非 0 时按 groupId 查找 scheduleContract.axisCoalescingHints 中唯一匹配项；
+  // 若实现选择用连续数组存储，数组下标为 groupId - 1，由 verifier 保证连续性和唯一性。
+  // 组的 kind / 成员 / 顺序均查那张表，本结构体不再重复存储。
+  uint32_t coalescingGroupId;
+  // reasons 仅用于诊断和 debug 构建，不参与 fingerprint，也不参与 cache key
+  // （见 3.12.4 fingerprint 参与项中的"显式排除项"）。
+  // Release 构建可为空；任何两次运行的 reasons 字符串差异不得改变编译产物。
+  SmallVector<std::string> reasons;
+};
+```
+
+> `axisCoalescingHints: SmallVector<AxisCoalescingHint>` 作为 `scheduleContract` 的并列字段（与 `axisScheduleConstraints` 同级），不内嵌到单轴结构。两者通过 `coalescingGroupId` 关联。这种"单轴属性 + 组级别属性"的分层与 MLIR `affine.parallel` / Linalg `loop tiling` 中"loop-level role"与"group-level mapping"的拆分一致。
+
+`allowedTailPolicies` 表示第二层允许的 tail 处理集合，不表示最终选择。第三层在 `ScheduleDecisionBuilder` 中结合 `ScheduleInstance`、primitive 能力、target intrinsic / memory model、cost model 和具体 shape bucket 选择唯一 `selectedTailPolicy`，并写入 `ScheduleDecision.tailPlans`。因此第二层不得因为某个 primitive 当前实现只支持对齐 shape 就直接把轴特判为 `MustDivide`；只有 primitive 语义本身无法保证越界安全、重排合法性或写回正确性时，才允许收窄为 `MustDivide` 或拒绝候选。
+
+**推导规则：**
+
+| 轴类型 / 结构 | `allowedRoles` | `allowedTailPolicies` | 说明 |
+| --- | --- | --- | --- |
+| `tileableAxes` 中的 parallel 轴 | `BindCoreCandidate`、`KernelLoopCandidate`、`VectorizeCandidate` | 默认 `{MaskedTail, ScalarEpilogue}`，若 primitive/data movement 声明需要对齐搬运则附加 `PadAndMask` | 第三层可选择其中一级或多级切分；非整除 shape 必须优先通过 tail 处理，不应默认生成整除 guard |
+| `requiredReductionAxes` 且 primitive 未声明分块 reduction | `FullReduction` | `{FullExtent}` | 归约轴在当前 kernel 内保持完整；例如 `broadcast + add + reduce` 的 N 轴 |
+| `requiredReductionAxes` 且 primitive 声明分块 reduction | `ChunkedReduction`、`KernelLoopCandidate` | `{MaskedTail, ScalarEpilogue}`；若 primitive 声明 padding identity，可附加 `PadAndMask` | 仅 Softmax online reduction、TopK 等专用 primitive 可开启；必须同步声明 cross-tile accumulate 语义；padded lane 不得改变最终 reduction 结果 |
+| broadcast 退化轴 | `BroadcastProjection` | 继承 consumer 轴的集合 | 输入侧不传播 tile size；consumer 侧仍可 tile / bind / vectorize |
+| layout transform 轴 | `LayoutCarry`，必要时附加 `KernelLoopCandidate` | 由被携带轴继承；若线性化后需要对齐搬运，可附加 `PadAndMask` | transpose 只改变轴顺序，reshape 只有在 product 可静态证明时才允许合轴 |
+| gather / indexing 动态访问轴 | 空或仅 `KernelLoopCandidate` | 默认 `{MaskedTail, ScalarEpilogue, PadAndMask}`；若索引语义无法证明边界安全，则收窄为 `{MustDivide}` 或拒绝 | 数据相关索引轴默认不能 bind core / vectorize，除非 primitive 专门证明边界和重排合法；N/K 对齐问题由第三层 tail plan 和第五层 codegen 处理，不在第二层写 op 专用特判 |
+
+`primitiveUses` 用于把同一根逻辑轴在不同 primitive 中的用途显式交给第三层。例如同一 N 轴可能同时是 `DataCopy`、`VectorCompute` 和 `WriteBack`，K 轴可能是 `GatherIndex` 或 `Reduction`。第三层必须对这些用途的 tail 能力取交集，再从 `allowedTailPolicies` 中选择最终策略；任一用途只支持 `MustDivide` 时，该轴必须产生 guard，除非另一个合法策略（如 `PadAndMask`）能把该用途转换为对齐访问并保证真实范围写回。
+
+`semanticAlignmentGranularity` 只描述轴语义上的元素粒度，例如"该轴必须按 16 个元素对齐"。不同 dtype 下的字节数（如 fp16 的 32B、fp32 的 64B）不是第二层职责，第三层在生成 `ScheduledAxisTailPlan.alignmentGranularityExpr` 时结合 dtype、intrinsic 和 target memory model 统一计算。
+
+**合轴提示约束（语义：第二层只产出组级提示，不执行折叠）：**
+
+合轴提示组在以下条件**全部满足**时成立，按下列步骤产生：
+
+1. **组成立条件**（同时满足）：
+  - 所有候选成员轴均为 `Parallel`，且不存在数据相关 indexing 访问。
+  - 成员轴在候选内所有 op 的访问顺序一致，或仅通过可证明的 permutation 重编号。
+  - 合轴后的线性化顺序不破坏 `layoutConstraints` 对连续维度的要求。
+  - 组内 size ≥ 2。
+2. **分配 `groupId`**：在候选内单调递增分配（从 1 起），写入 `AxisCoalescingHint.groupId` 与各成员轴 `AxisScheduleConstraint.coalescingGroupId`。
+3. **决定组 `kind`**：
+  - 若组内**至少一根轴**的 `allowedRoles` 含 `VectorizeCandidate`，则 `kind = Vectorizable`，组可向第三层提示"作为一组线性化、并允许其中之一作为最内向量轴"。
+  - 否则 `kind = LinearizeOnly`，组只能作为 block/grid 线性化提示，**不**作为 vector 轴提示传递给第三层。
+4. **顺序记录**：`members` 按候选内访问顺序排列；第三层在线性化时遵循该顺序（如需重排须自证不破坏 layout 约束）。
+
+**第二层只写出提示，不做物理折叠**。组级 `AxisCoalescingHint` 描述"哪些轴可以一起线性化、是否允许其中之一作为最内向量轴"，但不指定折叠语义之外的内容；是否真正折叠成 flat logical axis、折叠后的 tile size、是否再做 split，全部由第三层 `ScheduleProblemBuilder` 决定。`tileableAxes` 与 `requiredReductionAxes` 在第二层始终以**未折叠**的逻辑轴形态保留，避免第二层产物在折叠后无法再被第三层重新切分。
+
+**3.7 合并下的组合并规则**：跨候选合并时，组按以下规则取交。两侧候选的组先按"成员集合相等"匹配（成员是 `LogicalAxis *`，通过 `axisId` 比较，与顺序无关）；匹配成功的组取相同 `members` 顺序（两侧必须一致，否则记 `TileContractUnavailable`），`kind` 按下表合并：
+
+| `a.kind` \ `b.kind` | `Vectorizable` | `LinearizeOnly` |
+| --- | --- | --- |
+| `Vectorizable` | `Vectorizable`（合并后仍需满足"组内至少一根轴的 `allowedRoles` 交集仍含 `VectorizeCandidate`"，否则降级为 `LinearizeOnly`） | `LinearizeOnly` |
+| `LinearizeOnly` | `LinearizeOnly` | `LinearizeOnly` |
+
+两侧组成员集合不一致时，**不**进行部分匹配：该组在合并后被整体丢弃（保守做法），不记错误；但若任一侧的某根轴在 `tileableAxes` 上仍存在且失去全部合轴提示，仍允许参与第三层调度，只是失去合轴优化空间。`groupId` 在合并后重新分配，不沿用两侧编号。
+
+**`broadcast + add + reduce` 示例：**
+
+| 逻辑轴 | 来源 | 约束 |
+| --- | --- | --- |
+| M | `tileableAxes` | `allowedRoles = [BindCoreCandidate, KernelLoopCandidate, VectorizeCandidate]`；`allowedTailPolicies = {MaskedTail, ScalarEpilogue}` |
+| N | `requiredReductionAxes` | `allowedRoles = [FullReduction]`；`allowedTailPolicies = {FullExtent}` |
+
+第三层据此可以生成如下层级，而不是依赖手写 transform：
+
+```text
+M: bind_core tile = TB_M, kernel_loop tile = Tb_M, tail = min(tile, M-origin)
+N: full_reduction extent = N
+```
+
+若后续 primitive 声明支持分块 reduction，则 N 轴可变为：
+
+```text
+N: kernel_loop tile = TB_N, cross_tile_accumulate = true, tail = min(tile, N-origin)
+```
+
+这是扩展点，不属于当前默认 `ReductionInlining` 语义。
+
+---
+
+**④ `layoutConstraints` 推导**
 
 收集候选内所有对内存布局有显式约束的 op，生成约束列表。每条约束的格式为 `{value, requiredLayout}`，`value` 为 SSA 值，`requiredLayout` 为枚举：
 
@@ -911,7 +1067,7 @@ using OpAxisMap = DenseMap<Operation*, SmallVector<LogicalAxis*>>;
 
 ---
 
-**④ `mustKeepOnChipValues` 推导**
+**⑤ `mustKeepOnChipValues` 推导**
 
 收集在单 kernel 执行时必须保留在片上（不写回 GM 再读回）的 SSA 值。来源有两类：
 
@@ -942,7 +1098,7 @@ using OpAxisMap = DenseMap<Operation*, SmallVector<LogicalAxis*>>;
 
 ---
 
-**⑤ `templateFamilies` 推导**
+**⑥ `templateFamilies` 推导**
 
 `templateFamilies` 由候选的**主角色集合 + primitive 标识 + 结构属性**三元组查静态映射表得出。映射表在编译器中以常量数组形式存储，不在运行时动态计算。
 
@@ -975,7 +1131,7 @@ using OpAxisMap = DenseMap<Operation*, SmallVector<LogicalAxis*>>;
 
 ---
 
-**⑥ `dynamicGuardSet` 推导**
+**⑦ `dynamicGuardSet` 推导**
 
 `dynamicGuardSet` 是候选在运行时必须验证的 shape 谓词集合，格式为 `Set<ShapeGuard>`，每个 `ShapeGuard` 的结构为：
 
@@ -997,7 +1153,7 @@ ShapeGuard {
 | `IndexedFusion` 的 gather 边界 | `max(indices) < data.dim(gather_dim)`；无法静态证明时产生 `LessEqual` guard | `EmitRuntimeCheck` |
 | `LayoutTransform` 的 reshape 合法性 | reshape 涉及动态维度时产生 `Equal`（product 不变）guard | `CompileError` |
 | `AnchorPrologue` 的 broadcast 兼容性 | broadcast 轴的 size 为 1 或与 consumer 轴 size 相等 | `CompileError` |
-| `tileableAxes` 的整除性 | 若模板要求 tile size 整除轴长，产生 `Divisible` guard；轴长为静态常数时静态验证，不产生 guard | `EmitRuntimeCheck` |
+| `axisScheduleConstraints.allowedTailPolicies` | 只有集合收敛到 `MustDivide` 时产生 `Divisible` guard；`MaskedTail` / `ScalarEpilogue` / `PadAndMask` 不产生整除 guard，由第三层 `tailPlans` 和第五层 codegen 生成 tail 处理 | `EmitRuntimeCheck` |
 
 推导步骤：遍历候选内每个 op，调用 `op.getShapeGuards(OpSemanticSummary, AscendSymbolConstraintAttr)` 收集 guard；能被 `AscendSymbolConstraintAttr` 中已有等价关系静态证明的 guard 直接消除，不写入集合；剩余写入 `dynamicGuardSet`。若集合大小超过 `cfg.maxDynamicGuardBudget`，记 `DynamicGuardExplosion`，候选合法性失败。
 
@@ -1276,6 +1432,7 @@ classifyRematerializable(escapingValues, primitive, candidateSet, cfg):
 | `escapingValues`                    | 空                           |
 | `isClosed`                          | `true`                       |
 | `scheduleContract.tileableAxes`     | `[M, N]`                     |
+| `scheduleContract.axisScheduleConstraints` | M/N 均允许 `BindCoreCandidate`、`KernelLoopCandidate`、`VectorizeCandidate`，默认 `MaskedTail` |
 | `scheduleContract.templateFamilies` | `{AnchorEpilogue}`           |
 
 **案例 B：失败闭包**
@@ -1316,6 +1473,7 @@ classifyRematerializable(escapingValues, primitive, candidateSet, cfg):
 | seed                                | `{max_reduce}`                                               |
 | `candidateOps`                      | `{max_reduce, sub, exp, sum_reduce, div}`                    |
 | 约束验证                            | `max_reduce` 和 `sum_reduce` 的 tile 轴均为 `seq_len`，`tileableAxes` 交集非空，契约成立 |
+| `scheduleContract.axisScheduleConstraints` | `seq_len` 允许 `KernelLoopCandidate` / `VectorizeCandidate`；若 primitive 声明 online 分块归约，则 reduction 轴允许 `ChunkedReduction` |
 | `scheduleContract.templateFamilies` | `{SoftmaxTemplate}`                                          |
 
 ### 3.7 Candidate Merge Analysis（候选合并分析）
@@ -1366,17 +1524,39 @@ classifyRematerializable(escapingValues, primitive, candidateSet, cfg):
 | ----------------------- | --------------------------------------------- |
 | `tileableAxes`          | 取交集                                        |
 | `requiredReductionAxes` | 取并集（任一候选要求保留的轴均须保留）        |
+| `axisScheduleConstraints` | 按轴合并 allowedRoles：同一轴取交集，不同轴保留；`allowedTailPolicies` 按下述成对函数计算可用集合；任一轴的 `allowedRoles` 交集为空，或同一轴的 `allowedTailPolicies` 合并后为空，均记 `TileContractUnavailable` |
+| `axisCoalescingHints`   | 按"成员集合相等 + 成员顺序一致"匹配组，匹配组按 3.6.2.1 的 `CoalescingHintKind` 2x2 表合并；成员集合不一致的组整体丢弃；合并后重新分配 `groupId` 并回写成员轴的 `coalescingGroupId` |
 | `layoutConstraints`     | 取并集（约束只增不减）                        |
 | `mustKeepOnChipValues`  | 取并集                                        |
 | `templateFamilies`      | 以合并后主角色集合 + primitive 组合重查静态映射表；查到则用查表结果，查不到则取各源候选 `templateFamilies` 的交集兜底；交集亦为空则记 `TemplateFamilyDisjoint` |
 | `dynamicGuardSet`       | 取并集；超出预算则记 `DynamicGuardExplosion`  |
+
+**`allowedTailPolicies` 合并规则**（成对函数，不是全序）：对同一根轴在两侧候选上的集合 `A`、`B`，枚举 `(a ∈ A, b ∈ B)`，按以下表格生成兼容结果集合；表是对称的，未列出的组合视为冲突。最终集合为空时记 `TileContractUnavailable`。
+
+| `a` \ `b` | `FullExtent` | `MustDivide` | `MaskedTail` | `ScalarEpilogue` | `PadAndMask` |
+| --- | --- | --- | --- | --- | --- |
+| `FullExtent` | `FullExtent` | 冲突 | 冲突 | 冲突 | 冲突 |
+| `MustDivide` | 冲突 | `MustDivide` | `MustDivide` | `MustDivide` | `MustDivide` |
+| `MaskedTail` | 冲突 | `MustDivide` | `MaskedTail` | `ScalarEpilogue` | `PadAndMask` |
+| `ScalarEpilogue` | 冲突 | `MustDivide` | `ScalarEpilogue` | `ScalarEpilogue` | `PadAndMask` |
+| `PadAndMask` | 冲突 | `MustDivide` | `PadAndMask` | `PadAndMask` | `PadAndMask` |
+
+要点说明：
+
+- `FullExtent` 表示"轴必须全长覆盖"，与任何允许 tail 的策略不兼容；只能与 `FullExtent` 自身合并。
+- `MustDivide` 是"强制整除"的硬要求，遇到 `MaskedTail` / `ScalarEpilogue` / `PadAndMask` 时**结果收敛到 `MustDivide`**（更严格的一侧赢），不是冲突；这与第三层降级生成 Divisible guard 一致。
+- `MaskedTail` 与 `ScalarEpilogue` 互兼容，合并结果偏向 `ScalarEpilogue`（更具体的 tail 处理形态由第三层模板决定，但合并产物不丢失"允许独立 epilogue"的可能性）。
+- `PadAndMask` 表示"可通过对齐临时 buffer 把非整除访问转为对齐访问"，比 `MaskedTail` / `ScalarEpilogue` 更具体；若另一侧也允许 tail，则合并结果保留为 `PadAndMask`。
+- `requiredReductionAxes` 在并集后若同一轴在两侧分别为 `FullReduction` / `ChunkedReduction`，按上表落到 `FullExtent` ⊕ `MaskedTail` = 冲突，因此跨候选合并不允许 reduction 语义降级；只有双方均声明 `ChunkedReduction` 时合并仍为 `ChunkedReduction`。
+
+实现时不得按 enum ordinal 或简单 max/min 比较。合并算子按三层规则实现：先处理 `FullExtent` 的独立冲突域，再处理 `MustDivide` 的严格性优先，最后在 tail-compatible 策略中按具体性 `MaskedTail < ScalarEpilogue < PadAndMask` 选择结果。集合合并必须枚举所有 `(a, b)` pair 生成结果集合，再去重；不要假设该表是全序。
 
 **合并条件**：
 
 | 检查项             | 通过条件                                                     | 失败记录                   |
 | ------------------ | ------------------------------------------------------------ | -------------------------- |
 | 主导 op 可唯一确定 | 能选出唯一主导 op                                            | `PrimaryOpAmbiguous`       |
-| 调度契约交集非空   | `tileableAxes / requiredReductionAxes / layoutConstraints` 交集非空 | `TileContractUnavailable`  |
+| 调度契约交集非空   | `tileableAxes / requiredReductionAxes / axisScheduleConstraints / layoutConstraints` 兼容，且至少存在一根可 tile 或可完整 reduction 的轴 | `TileContractUnavailable`  |
 | 中间结果可片上传递 | carried values 无需完整写回 GM；可通过切分使单 tile 的中间结果满足片上容量 | `OnChipTransferImpossible` |
 | 动态 guard 可合并  | 合并后 guard 集未超预算                                      | `DynamicGuardExplosion`    |
 | 模板可承接         | 存在复合模板可继续 lowering                                  | `TemplateFamilyDisjoint`   |
@@ -1679,8 +1859,8 @@ classifyRematerializable(escapingValues, primitive, candidateSet, cfg):
 | 1    | `DependencyAnalysisVerifier`   | 3.3 完成后            | `ProducerConsumerIndex` 仅记录一跳依赖；`OpSemanticSummary` 覆盖 `KernelPattern` 候选范围内全部 op；`accessPatternKind` 取值合法；`NotApplicable` 仅出现在具名 contraction-like op 上 | `StructuralBarrier`     |
 | 2    | `StructuralMarkingVerifier`    | 3.4 完成后            | `branch_root` / `merge_root` 在 function 内唯一；`branch_group` / `merge_group` 编号连续；branch / merge 配对完整；`handwritten_pattern_candidate` 的 `groupId` 在 function 内唯一；不依赖 target 信息 | `StructuralBarrier`     |
 | 3    | `OpRoleClassificationVerifier` | 3.5 完成后            | `OpRoleMap` 覆盖第一层许可范围内全部 op；多角色组合符合 3.5.3 节优先级；同一 IR 多次运行结果稳定（确定性）；`AscendOpRoleAttr` 与 `OpRoleMap` 一致 | `StructuralBarrier`     |
-| 4    | `FusionCandidateVerifier`      | 3.6 完成后            | 每个 `FusionCandidate.closure.isClosed = true`；`scheduleContract` 字段完整（`tileableAxes`、`templateFamilies` 等非空且来源可追溯）；`benefitScore` 已计算；候选编译预算未超 `candidateBudgetPerFunction` | `BudgetExceeded` 或 `ClosureEscape` |
-| 5    | `CandidateMergeVerifier`       | 3.7 完成后            | `MergedCandidate.scheduleContract` 来自 3.7.3 节合并规则（取交 / 取并），无任意推导；`primaryOps` 唯一确定；`dynamicGuardSet` 未超全局 `maxDynamicGuardBudget` | `DynamicGuardExplosion` 或 `TileContractUnavailable` |
+| 4    | `FusionCandidateVerifier`      | 3.6 完成后            | 每个 `FusionCandidate.closure.isClosed = true`；`scheduleContract` 字段完整（`tileableAxes`、`templateFamilies` 等非空且来源可追溯）；**`axisScheduleConstraints` 覆盖 `tileableAxes ∪ requiredReductionAxes` 中每一根轴**，且每根轴的 `allowedRoles`、`allowedTailPolicies` 非空，`primitiveUses` 已按候选内 primitive 用途填充；**`axisCoalescingHints` 自洽**：每个 hint 的 `members.size() ≥ 2` 且全部出现在 `tileableAxes` 内、`groupId` 在候选内唯一且从 1 起连续分配；任一轴 `coalescingGroupId != 0` 时必须能找到唯一 hint，且该轴出现在该 hint 的 `members` 中；每个 hint 的成员轴必须反向指回同一 `groupId`；`kind = Vectorizable` 时组内至少一根轴的 `allowedRoles` 含 `VectorizeCandidate`；`kind = LinearizeOnly` 时不得依赖 vector 轴语义；`benefitScore` 已计算；候选编译预算未超 `candidateBudgetPerFunction` | `BudgetExceeded`、`ClosureEscape` 或 `ScheduleContractIncomplete` |
+| 5    | `CandidateMergeVerifier`       | 3.7 完成后            | `MergedCandidate.scheduleContract` 来自 3.7.3 节合并规则（取交 / 取并），无任意推导；`primaryOps` 唯一确定；`dynamicGuardSet` 未超全局 `maxDynamicGuardBudget`；合并后 `axisScheduleConstraints` 的轴覆盖性、`allowedTailPolicies` 合并规则约束和 `axisCoalescingHints` 自洽性仍成立 | `DynamicGuardExplosion` 或 `TileContractUnavailable` |
 | 6    | `HorizontalFusionVerifier`     | 3.8 完成后            | 每个 `HorizontalFusionCandidate.siblingCandidates` 间互不可达条件成立（无 `ProducerConsumerIndex` 路径）；`sharedInputs` 非空；各兄弟候选主角色符合初期限制（均为 `Anchor`）；`perGroupContracts` 条目数与 `siblingCandidates` 数一致；组内候选数未超 `maxHorizontalFusionGroupSize`；参与水平融合的原始候选不再出现在独立候选列表中 | `HorizontalDependencyViolation`、`HorizontalRoleUnsupported`、`NoSharedInput`、`SourceCandidateNotClosed`、`HorizontalGroupSizeExceeded`、`HorizontalMergeProfitNegative` |
 | 7    | `KernelPatternBuildVerifier`   | 3.9 完成后            | `KernelPatternCandidate.candidateId` 唯一；`fingerprint` 仅含 3.12.4 节允许的参与项（无 `ascend.unknown_origin`、无前端前缀 attr、无 location 信息）；`HandwrittenPattern` 的 `MustCoLocate` 约束已建立；`coveringMap` 与 `overlapMap` 互一致 | `StructuralBarrier`     |
 | 8    | `KernelPatternFinalVerifier`   | 3.10 完成后（最终输出）| 最终 `KernelPattern[]` 满足 3.10.3 节验证条件：**无重叠**（各 pattern 的 `internalOps` 无交集；`rematerializedOps` 中副本不计入检查）、**全覆盖**（所有许可 op 已被覆盖）、**依赖可恢复**（pattern 间组成完整 DAG）、**模板可承接**（每个 pattern 存在后续 `scheduleTemplate` 或已注册为 `HandwrittenPattern`）；硬约束 `BranchPair / MergePair / MustCoLocate / MustSeparate / ScheduleBarrier` 全部满足；`HandwrittenPattern` 注入的 op 集合与匹配条件一致 | `StructuralBarrier` 或 `ScheduleFamilyNotSupported` |
@@ -1759,6 +1939,7 @@ fingerprint 只刻画编译语义，不刻画来源痕迹。参与项按来源�
 - 已知前端命名空间前缀的 attr（`torch.` / `onnx.` / `tf.` 等）
 - location / debug 信息
 - 任何 warning 级标记
+- `AxisScheduleConstraint.reasons`（debug-only 字符串字段；不同环境下文案差异不得污染 fingerprint）
 
 > `AscendSymbolConstraintAttr` 的符号变量**名**不参与 fingerprint，只有等价关系**结构**参与。来自不同前端但等价关系相同的两个 IR，在编译语义上等价，应命中同一 cache 条目。
 
@@ -2015,6 +2196,7 @@ x → exp ─┬→ add(exp, b0) → out0
 | FallbackSingleOpPattern | 查询 `TemplateCapabilityQuery(cumsum, target)` 命中单 op 模板，生成回退 pattern，op 离开未覆盖池 |
 
 若 `TemplateCapabilityQuery` 未命中，第二层在末尾抛出编译错误，不向第三层传递不完整 `KernelPattern[]`（3.12.3 层级不变量）。
+
 
 
 
@@ -2682,7 +2864,7 @@ struct ScheduleProblemBuildContext {
 
 搜索空间由 `ScheduleTemplate.buildSearchSpace()` 通过**组合枚举**生成：对 `scheduleSkeleton` 中每个 `enableUbTile=true` 的 logical axis，枚举合法 tile size 集合；对 cache/pipeline 策略枚举布尔开关；对 block mapping 枚举轴分配方式；将上述枚举的笛卡尔积展开为候选列表，每个候选对应一个 `ScheduleInstance`。
 
-**tileExprs 的符号化参数变量**：每个被切分的 logical axis 对应一个参数化变量 `T_<axisName>`（如 `T_M`、`T_N`、`T_K`），取值为符号表达式，在 `candidateGuards` 中附加合法性条件（如 `T_M % cube_m_size == 0`、`T_M <= M`）。具体取值在运行期 Level-1 过滤时由 shape bucket 代入求值。
+**tileExprs 的符号化参数变量**：每个被切分的 logical axis 对应一个参数化变量 `T_<axisName>`（如 `T_M`、`T_N`、`T_K`），取值为符号表达式，在 `candidateGuards` 中附加合法性条件（如 `T_M % cube_m_size == 0`、`T_M <= M`）。具体取值在部署准备阶段的 Level-1 过滤中由 shape bucket 代入求值。
 
 **MatmulEpilogueFamily 的搜索空间枚举规则**（作为最重要 family 的示例）：
 - M 轴：tile 候选为 `{cube_m_size, 2*cube_m_size, 4*cube_m_size}`，guard 为 `T_M % cube_m_size == 0 && T_M <= M`
@@ -2927,13 +3109,13 @@ struct ScheduleFamilyMatchResult {
 
 #### 4.6.1 ScheduleInstance 与 ScheduleDecision 的关系
 
-**两级 `topK` 的关系**：搜索阶段的 `compileTimeTopK`（见 4.5.2 节，由 `TilingStrategy` 持有）与决策阶段的 `runtimeTopK`（由 `ScheduleDecisionSet` 持有）是同一概念在不同阶段的实例化：
+**两级 `topK` 的关系**：搜索阶段的 `compileTimeTopK`（见 4.5.2 节，由 `TilingStrategy` 持有）与准备阶段的 `runtimeTopK`（由 `ScheduleDecisionSet` 持有）是同一概念在不同阶段的实例化。这里的 `runtimeTopK` 是历史命名，含义是“为运行时可消费产物保留的候选上限”，不表示 `runtime-session` 会在线搜索：
 
 - `compileTimeTopK` 在编译期固定，限制 `scheduleSearchSpace` 经过滤排序后保留的 `ScheduleInstance` 候选数量上限；写入 `TilingStrategy` 后只读消费，第三层后续不再修改
-- `runtimeTopK` 在编译期由 `ScheduleDecisionBuilder` 写入 `ScheduleDecisionSet`（默认值 `min(4, compileTimeTopK)`），限制运行期 Level-1 / Level-2 在已选 `ScheduleDecision` 之中可继续筛选的候选数量上限；恒满足 `runtimeTopK ≤ compileTimeTopK`（4.10 节 `ScheduleDecisionVerifier` 强制此约束）
-- `topN` / `top1` 是运行期的进一步派生量，仅在 Level-1/Level-2 选择阶段使用，不写入 `ScheduleDecisionSet`
+- `runtimeTopK` 在编译期由 `ScheduleDecisionBuilder` 写入 `ScheduleDecisionSet`（默认值 `min(4, compileTimeTopK)`），限制 prepare/offline tuning 在已选 `ScheduleDecision` 之中可继续筛选的候选数量上限；恒满足 `runtimeTopK ≤ compileTimeTopK`（4.10 节 `ScheduleDecisionVerifier` 强制此约束）
+- `topN` / `top1` 是 prepare/offline tuning 的进一步派生量，仅在 Level-1/Level-2 选择阶段使用，不写入 `ScheduleDecisionSet`
 
-简言之：`compileTimeTopK` 决定"编译期保留多少候选写入决策集合"，`runtimeTopK` 决定"运行期可在这些候选中再筛多少进入实测"，两者均为单调递减的容量上限。
+简言之：`compileTimeTopK` 决定"编译期保留多少候选写入决策集合"，`runtimeTopK` 决定"部署准备/离线调优阶段可在这些候选中再筛多少进入实测"，两者均为单调递减的容量上限。`runtime-session` 只消费已经物化的 `runtime_manifest.json`、host tiling `.so` 和 kernel artifact，不执行 Level-1/Level-2 Autotuner。
 
 **辅助类型最小定义**（供 4.6 节各结构体引用）：
 
@@ -2951,6 +3133,25 @@ struct ScheduleFamilyMatchResult {
 `ScheduleInstance` 是搜索空间中的候选描述（符号化），`ScheduleDecision` 是其精化结果（具体化）。两者通过**组合**关系表达，`ScheduleDecision` 持有选中的 `ScheduleInstance` 引用，并在此基础上补充求值后的具体字段，不重复存储 `ScheduleInstance` 已有的字段：
 
 ```cpp
+enum class TailBufferingMode {
+  SeparateTailBuffer,       // 默认：tail region 使用独立临时 buffer，不进入主循环 ping-pong
+  ReuseMainBufferAfterDrain // 仅当主 pipeline 已 drain 且生命周期不重叠时复用主循环 tbuf
+};
+
+struct ScheduledAxisTailPlan {
+  LogicalAxisId axis;
+  AxisTailPolicy selectedPolicy;          // 从第二层 allowedTailPolicies 中选出的唯一策略
+  SmallVector<PrimitiveAxisUseKind> affectedPrimitiveUses;
+                                          // primitiveUses 的子集：该 tail 策略实际需要特殊 lowering 的用途
+  Expr extentExpr;                        // 真实轴长度
+  Expr tileExpr;                          // 当前 decision 下的 tile 长度
+  Expr alignmentGranularityExpr;          // target / primitive 合并后的最终对齐粒度
+  Expr mainExtentExpr;                    // 可按 tile/alignment 直接处理的主区间
+  Expr tailExtentExpr;                    // extent - mainExtent；可为 0
+  TailBufferingMode tailBufferingMode;     // PadAndMask / epilogue 的 buffer 复用策略
+  bool emitsRuntimeGuard;                 // MustDivide 或动态 tail 分支需要运行时 guard 时为 true
+};
+
 struct ScheduleDecision {
   // --- 精化来源 ---
   ScheduleInstance scheduleInstance;  // 选中的候选（含所有符号化字段）
@@ -2963,53 +3164,87 @@ struct ScheduleDecision {
   UnitAssignment unitAssignment;           // Cube/Vector 分配（已确定）
   CachePlan cachePlan;                     // cache 计划（已从 cacheChoices 具体化）
   PromotionHints promotionHints;           // 片上提升意图（含 isBinding 字段）
+  SmallVector<ScheduledAxisTailPlan> tailPlans;
+                                          // 每根已调度轴的最终 tail 处理计划
 };
 
 struct ScheduleDecisionSet {
   SmallVector<ScheduleDecision> decisions;
-  int runtimeTopK;  // 运行期在已有决策中进一步保留的候选上限；属于集合级策略参数，
-                    // 不属于单个 ScheduleDecision；由 ScheduleDecisionBuilder 统一写入
+  int runtimeTopK;  // 为运行时产物准备阶段保留的候选上限；属于集合级策略参数，
+                    // 不属于单个 ScheduleDecision；由 ScheduleDecisionBuilder 统一写入；
+                    // 不表示 runtime-session 在线筛选
 };
 ```
 
-**不允许的做法**：`ScheduleDecisionBuilder` 不得把 `ScheduleInstance` 中已有字段（`tileAxes`、`tileExprs`、`loadOrder`、`computeOrder`、`blockMapping`、`pipelineDepthExpr`、`enableDoubleBuffer`）复制到 `ScheduleDecision` 的平级字段。后续阶段通过 `decision.scheduleInstance.xxx` 访问这些字段。`runtimeTopK` 属于 `ScheduleDecisionSet` 级别，不得写入单个 `ScheduleDecision`。
+**不允许的做法**：`ScheduleDecisionBuilder` 不得把 `ScheduleInstance` 中已有字段（`tileAxes`、`tileExprs`、`loadOrder`、`computeOrder`、`blockMapping`、`pipelineDepthExpr`、`enableDoubleBuffer`）复制到 `ScheduleDecision` 的平级字段。后续阶段通过 `decision.scheduleInstance.xxx` 访问这些字段。`tailPlans` 是对第二层轴约束、primitive 用途和 target 能力求交后的**新精化结果**，不属于重复存储。`runtimeTopK` 属于 `ScheduleDecisionSet` 级别，不得写入单个 `ScheduleDecision`。
 
 #### 4.6.2 功能
 
 根据 `ScheduleProblem + TilingStrategy` 生成带 guard 的最终调度结果。
 
-#### 4.6.3 输出：`ScheduleDecisionSet`
+#### 4.6.3 Axis Tail Plan
 
-`ScheduleDecisionSet` 持有一个或多个 `ScheduleDecision`（运行期可选）。
+`AxisTailPlan` 是第三层把第二层 `axisScheduleConstraints.allowedTailPolicies` 具体化后的唯一结果。它是通用轴级机制，不属于 gather、reduce、transpose 或某个单独 op 的特判；任意 op 只通过 `primitiveUses` 和 primitive capability 影响策略集合。
 
-#### 4.6.4 编译期与运行期分工
+`ScheduleProblem.axisScheduleConstraints.primitiveUses` 是该轴在候选内的用途全集；`ScheduledAxisTailPlan.affectedPrimitiveUses` 是选择某个 tail 策略后需要特殊 tail lowering 的用途子集。例如某轴同时参与 `DataCopy`、`VectorCompute` 和 `WriteBack`，若 `MaskedTail` 只影响 vector compute 与 writeback，则 `affectedPrimitiveUses = {VectorCompute, WriteBack}`，而不是重复全集。
+
+**选择流程：**
+
+1. 从 `ScheduleProblem.axisScheduleConstraints` 读取当前轴的 `allowedTailPolicies`、`primitiveUses` 和 `semanticAlignmentGranularity`。
+2. 从选中 `ScheduleInstance` 读取该轴是否被 bind core、kernel loop、vectorize、coalesce 或 full reduction。
+3. 查询 `TargetIntrinsicModel` / `TargetMemoryModel`，得到每个 `PrimitiveAxisUseKind` 的 mask、scalar epilogue、padding、alignment 支持情况。
+4. 对第二层允许集合、primitive 能力集合、target 能力集合取交集；交集为空则该 `ScheduleInstance` 非法，不能进入 `ScheduleDecisionSet`。
+5. 按 cost model 选择唯一 `selectedPolicy`：优先选无需额外 guard 且无需额外 buffer 的 `MaskedTail`；若 intrinsic 不支持 mask 但 tail 很小，选 `ScalarEpilogue`；若数据搬运或 cube/vector intrinsic 要求对齐访问，选 `PadAndMask`；只有上述策略都不可用时才选 `MustDivide` 并生成 divisibility guard。
+6. 计算 `affectedPrimitiveUses`：从第二层 `primitiveUses` 中筛出会因为 `selectedPolicy` 改变 lowering 形态的用途，其余用途不写入该字段。
+7. 计算 `tailBufferingMode`：默认 `SeparateTailBuffer`；只有当主循环 pipeline 已 drain、double-buffer 生命周期不重叠、且复用不会改变 queue/tbuf 顺序时，才允许 `ReuseMainBufferAfterDrain`。
+8. 计算 `mainExtentExpr` / `tailExtentExpr`：静态 shape 直接常量折叠；动态 shape 写成符号表达式并进入 host tiling / runtime manifest。
+9. 将结果写入 `ScheduleDecision.tailPlans`，并把必要 guard 写入 `decisionGuards`。第四、五层只消费该结果，不重新选择 tail 策略。
+
+**策略语义：**
+
+| `selectedPolicy` | 第三层含义 | guard 规则 | 后续层职责 |
+| --- | --- | --- | --- |
+| `MustDivide` | 当前 decision 只接受整除 shape | 静态证明或生成 `dim % granularity == 0` / `dim % tile == 0` | 第四、五层无需生成 tail region |
+| `MaskedTail` | 主循环和 tail 共用同一结构，通过 valid extent / mask 防越界 | 不生成整除 guard；动态 `tailExtent > 0` 可生成 guarded region | 第五层发射 mask、`min(tile, dim-origin)` 或 guarded load/store |
+| `ScalarEpilogue` | 主循环处理对齐区间，tail 使用 scalar 或小粒度 loop | 不生成整除 guard；生成 `tailExtent > 0` epilogue guard | 第五层发射 scalar/small-vector epilogue |
+| `PadAndMask` | tail 读入或计算时使用对齐临时 buffer，最终只写回真实范围 | 不生成整除 guard；生成 padding temp 和 writeback guard 所需条件 | 第四层分配对齐临时 buffer；第五层发射 padding、mask 和 guarded writeback |
+| `FullExtent` | 该轴必须完整覆盖，不按 tile 拆 tail | 不生成 tail guard；若与 tile split 冲突则 decision 非法 | reduction/finalize 保持全轴语义 |
+
+`coalesced` 轴的 tail plan 必须同时记录 flat extent 与原始成员轴映射。若第三层把多根轴线性化为 flat axis，则 `mainExtentExpr` / `tailExtentExpr` 在 flat extent 上计算，Structured Lowering 在索引还原时必须用原始成员轴真实 extent 生成越界保护，不能只保护 flat index。
+
+#### 4.6.4 输出：`ScheduleDecisionSet`
+
+`ScheduleDecisionSet` 持有一个或多个 `ScheduleDecision`。动态 shape 场景下，多个 decision 会在编译/部署准备阶段被物化为多个 guard 分支或 kernel variant，运行时只做 guard 匹配和 ABI 查询。
+
+#### 4.6.5 编译期、准备阶段与运行期分工
 
 | 阶段                   | 动作                                                         |
 | ---------------------- | ------------------------------------------------------------ |
 | 编译期                 | 过滤 `scheduleSearchSpace`，保留 `compileTimeTopK`           |
-| 运行期 Level-1         | shape 已知后按 bucket / `candidateGuards` 命中，轻量打分，产出 `runtimeTopK / topN` |
-| 运行期 Level-2（可选） | 对 `topN` 做更充分调优，生成最终 `ScheduleDecisionSet` 并写入缓存 |
+| 部署准备 / Level-1     | 根据 profile shape、bucket 范围和 `candidateGuards` 做轻量打分，产出 `runtimeTopK / topN` |
+| 离线 / Level-2（可选） | 对 `topN` 做更充分调优，生成最终 `ScheduleDecisionSet`、`best.config` 或 tuning DB，并写入缓存 |
+| 运行期                 | 根据当前 shape 匹配 Runtime Manifest 中的 guard/fallback，调用 Host Tiling ABI 的 `GetTiling` / `GetBlockDim` / `GetWorkspaceSize`，不执行调优搜索 |
 
 **Level-1 评分只允许使用**：legality、片上容量合法性、`cacheMissPenalty`、`bankConflictPenalty`、promotion / movement 数量、`blockDimExpr` 是否可直接求值、execution unit 与 memory hierarchy 匹配情况。
 
-**运行期回退链**：
+**准备阶段选择链**：
 
 ```
 Level-1 过滤后有候选
   → 直接使用 top1 或进入 Level-2
 Level-1 过滤后无候选（当前 bucket 无合法实例）
-  → 写负缓存；报运行期 warning；使用 fallback decision（见下文）
+  → 写负缓存；报 prepare-time warning；使用 fallback decision（见下文）
 Level-2 调优失败（所有 topN 均不满足实测合法性）
-  → 退回 Level-1 的 top1；若 Level-1 top1 也已失效，则报运行期错误
+  → 退回 Level-1 的 top1；若 Level-1 top1 也已失效，则报准备阶段错误
 fallback decision
   → 取编译期 compileTimeTopK 中评分最高的 ScheduleInstance，
      不经 Level-1/2 直接生成 ScheduleDecision；
      此路径只用于 bucket 命中失败的降级，不用于 Level-2 调优失败
 ```
 
-回退次数无上限，但每次回退都必须写入诊断日志（包含 kernel id、bucket key、失败原因）。
+回退次数无上限，但每次回退都必须写入诊断日志（包含 kernel id、bucket key、失败原因）。若 fallback 被写入 Runtime Manifest，它必须是显式 `fallback=true` 的保守 `ScheduleDecision`：性能可以低于 bucket 专用 decision，但必须覆盖声明的合法 shape 范围；不能把“运行期未命中 guard 后在线调优”作为隐式 fallback。
 
-**Level-2 触发条件**：Level-2 Autotuner 默认关闭，需在编译器配置中显式开启（`enableLevel2Autotuner = true`）。开启后，仅当以下条件**同时成立**时才实际执行 Level-2：① Level-1 筛出的候选数 `>= 2`（只有 1 个候选时无需进一步优化）；② 当前 kernel 的 `scheduleFamily` 不是 `GenericInjectiveFamily`（该 family 的搜索空间已足够小，Level-2 增益可忽略）；③ `TuningResultCache` 中无该 bucket 的有效缓存命中。不满足以上任意条件时，直接使用 Level-1 top1，不进入 Level-2。
+**Level-2 触发条件**：Level-2 Autotuner 默认关闭，需在编译器配置中显式开启（`enableLevel2Autotuner = true`）。开启后，仅当以下条件**同时成立**时才实际执行 Level-2：① Level-1 筛出的候选数 `>= 2`（只有 1 个候选时无需进一步优化）；② 当前 kernel 的 `scheduleFamily` 不是 `GenericInjectiveFamily`（该 family 的搜索空间已足够小，Level-2 增益可忽略）；③ `TuningResultCache` 中无该 bucket 的有效缓存命中。不满足以上任意条件时，直接使用 Level-1 top1，不进入 Level-2。Level-2 只能在编译/部署准备或离线调优服务中执行，`runtime-session` 不触发 Level-2，也不在 guard 未命中时生成新的 `best.config`。
 
 **当前版本冻结默认值**：
 
@@ -3017,11 +3252,11 @@ fallback decision
 - 未启用 Level-2 时 `topN = 1`；启用 Level-2 时 `topN = min(2, runtimeTopK)`
 - `top1` 固定为 `runtimeTopK` 排序后的第一个候选
 
-> 本节描述运行期选择的决策逻辑（选哪个、如何回退）。支撑运行期选择的三级缓存结构（`TemplateCache`、`ShapeBucketCache`、`TuningResultCache`）及完整的运行期查询流程见 4.9 节。
+> 本节描述编译/准备阶段选择的决策逻辑（选哪个、如何回退）。支撑准备阶段选择的三级缓存结构（`TemplateCache`、`ShapeBucketCache`、`TuningResultCache`）及 runtime 消费边界见 4.9 节。
 
-#### 4.6.5 构造步骤
+#### 4.6.6 构造步骤
 
-1. 在编译期保留的 `scheduleSearchSpace` 上，按 bucket 和 `candidateGuards` 做运行期过滤
+1. 在编译期保留的 `scheduleSearchSpace` 上，按 profile bucket 和 `candidateGuards` 做 prepare-time 过滤
 2. Level-1 轻量打分，保留 `runtimeTopK / topN`
 3. 选出 `scheduleInstance`（直接用 Level-1 结果，或经 Level-2 精调；失败则走回退链）
 4. 通过 `scheduleInstance.scheduleTemplate` 反向校验其 `scheduleFamily` 归属
@@ -3030,10 +3265,11 @@ fallback decision
 7. 生成 `blockDimExpr`（由 `blockMapping` 和具体 shape 求值得到）
 8. 生成 `unitAssignment`（由 `ScheduleProblem.hardwareConstraints` 和 pattern roles 确定）
 9. 将 `cacheChoices` 具体化为 `cachePlan`（确定每个 value 的具体 memory place 和 scope）
-10. 生成 `promotionHints`（标注 `isBinding`，见 4.4.4 节）
-11. 将所有 `ScheduleDecision` 汇总为 `ScheduleDecisionSet`，并写入集合级参数 `runtimeTopK`
+10. 对每根 `tileAxes`、`requiredReductionAxes`、vectorized/coalesced 轴生成 `tailPlans`，并把 `MustDivide` 或显式 tail branch 所需条件合并进 `decisionGuards`
+11. 生成 `promotionHints`（标注 `isBinding`，见 4.4.4 节）
+12. 将所有 `ScheduleDecision` 汇总为 `ScheduleDecisionSet`，并写入集合级参数 `runtimeTopK`
 
-#### 4.6.6 案例
+#### 4.6.7 案例
 
 **广播 Elementwise `(1, A) → (B, A)`**：
 
@@ -3045,6 +3281,7 @@ fallback decision
 | `decisionGuards`    | `A >= vector_width`                                          |
 | `cachePlan`         | 在 `Ao/Ai` tile 作用域内沿 B 轴复用广播值，置于 UB           |
 | `promotionHints`    | `{value=b, isBinding=false, preferredUnit=Vector, reuseScope=Ao_tile}` |
+| `tailPlans`         | `{axis=A, selectedPolicy=MaskedTail, mainExtent=floor(A/TA)*TA, tailExtent=A%TA}` |
 
 `ScheduleDecisionSet.runtimeTopK = 4`（集合级参数，不在单个 `ScheduleDecision` 中重复记录）。
 
@@ -3056,10 +3293,10 @@ fallback decision
 
 `Structured Lowering` 把 `ScheduleDecision` 物化为结构化 loop IR。**本阶段只做结构变换，不做内存语义物化**：
 
-- **本阶段做**：生成切分后的 loop 骨架，固化轴顺序和索引映射，落实 `hoist_invariant`、`bind_block`、`blockDimExpr` 等结构动作，写入 `CacheReadMarker` 等内存意图标记
+- **本阶段做**：生成切分后的 loop 骨架，固化轴顺序和索引映射，落实 `hoist_invariant`、`bind_block`、`blockDimExpr` 等结构动作，按 `tailPlans` 生成主区间 / tail region / guard 结构，写入 `CacheReadMarker` 等内存意图标记
 - **本阶段不做**：将 `CacheReadMarker` 展开为实际 buffer 分配、copy-in/out 或 placement 决策——这些由第四层 `BufferizationDriver` 和 `PlacementPlanner` 负责
 
-内存语义标记（`CacheReadMarker`、`PipelineMarker`、`DoubleBufferMarker`）以显式 IR attribute 形式写入，携带足够信息供第四层直接消费，不依赖第四层反向解释 `ScheduleDecision`。
+内存语义标记（`CacheReadMarker`、`PipelineMarker`、`DoubleBufferMarker`）和结构化 tail 标记（`TailPlanMarker`）以显式 IR attribute 形式写入，携带足够信息供第四层直接消费，不依赖第四层反向解释 `ScheduleDecision`。
 
 **内存意图标记最小字段**：
 
@@ -3070,12 +3307,14 @@ fallback decision
 | `PipelineMarker`     | `depthExpr: Expr`（pipeline 深度表达式）                     | 最外层 pipeline loop attribute |
 | `DoubleBufferMarker` | `enabled: bool`                                              | 对应 movement loop attribute   |
 | `PromotionHintAttr`  | 与 `PromotionHint` 结构体字段一一对应（含 `isBinding`）      | 对应 op 或 loop attribute      |
+| `TailPlanMarker`     | `axis`、`selectedPolicy`、`mainExtentExpr`、`tailExtentExpr`、`alignmentGranularityExpr`、`affectedPrimitiveUses`、`tailBufferingMode` | 主循环、tail guarded region 或相关 loop attribute |
 
 **输出保证**：
 
 - loop 层次已按 tile 和 reorder 固定
 - 原始 logical axis 到切后轴的索引关系已显式化
 - 结构动作（`bind_block`、`hoist_invariant`）已落实到 IR
+- 每根已调度轴的 tail 结构已按 `ScheduleDecision.tailPlans` 物化：整除 guard、masked region、scalar epilogue 或 padding marker 至少有一种
 - 内存意图标记已写入 IR，携带 `isBinding`、`reuseScope`、`preferredMemoryPlace` 等字段
 - 后续第四层不需要再回头解释 `ScheduleDecision` 才能继续工作
 
@@ -3084,11 +3323,26 @@ fallback decision
 1. 读取 `scheduleInstance.tileAxes / tileExprs` 和 `outerInnerMapping`，生成切分后的 loop 骨架，替换原始轴
 2. 按 `scheduleInstance.loadOrder / computeOrder` 固定 loop 层次和计算顺序
 3. 按 `blockMapping / blockDimExpr / unitAssignment` 写入结构化并行映射信息
-4. 将 `cachePlan` 转换为显式 `CacheReadMarker` / `CacheWriteMarker` attribute，写入对应 op 或 loop，**不展开为实际 buffer**
-5. 将 `pipelineDepthExpr` 转换为 `PipelineMarker` attribute，标注流水语义
-6. 将 `enableDoubleBuffer` 转换为 `DoubleBufferMarker` attribute
-7. 按 `promotionHints` 写入 `PromotionHintAttr`（含 `isBinding` 字段），供第四层 `PlacementPlanner` 消费
-8. 按 `hoist_invariant`、broadcast reuse、branch/merge 等结构约束，落实不变项外提和结构动作
+4. 按 `tailPlans` 对每根轴生成主区间 loop、tail guarded region 或整除 guard，并写入 `TailPlanMarker`
+5. 将 `cachePlan` 转换为显式 `CacheReadMarker` / `CacheWriteMarker` attribute，写入对应 op 或 loop，**不展开为实际 buffer**
+6. 将 `pipelineDepthExpr` 转换为 `PipelineMarker` attribute，标注流水语义
+7. 将 `enableDoubleBuffer` 转换为 `DoubleBufferMarker` attribute
+8. 按 `promotionHints` 写入 `PromotionHintAttr`（含 `isBinding` 字段），供第四层 `PlacementPlanner` 消费
+9. 按 `hoist_invariant`、broadcast reuse、branch/merge 等结构约束，落实不变项外提和结构动作
+
+**Tail lowering 通用模板：**
+
+| `selectedPolicy` | Structured Lowering 结果 |
+| --- | --- |
+| `MustDivide` | 生成或挂接 `AscendGuardAttr(dim % granularity == 0)`；loop 内只保留完整 tile 路径 |
+| `MaskedTail` | 生成 `validExtent = min(tileExpr, extentExpr - origin)`，load/compute/store 使用 `validExtent` 或 mask；不生成整除 guard |
+| `ScalarEpilogue` | 生成主循环 `mainExtentExpr`，并生成 `if tailExtentExpr > 0` 的 scalar/small-loop epilogue region |
+| `PadAndMask` | 生成主循环和 `if tailExtentExpr > 0` 的 padding tail region；本层只写 `TailPlanMarker(policy=PadAndMask)` 和 guarded writeback 边界，不分配临时 buffer |
+| `FullExtent` | 不生成 tail split；若同一轴已被 `ScheduleInstance` 非法切分，`StructuredLoweringVerifier` 报错 |
+
+`PadAndMask` 的实际对齐临时 buffer、padding fill、copy-in/copy-out 在第四、五层完成：第四层根据 `TailPlanMarker` 规划 buffer 与 movement，第五层根据 `selectedPolicy` 发射 AscendC 代码。本层只保证控制流、索引和 guard 已结构化。
+
+`PadAndMask` / `ScalarEpilogue` tail region 默认位于主循环 steady-state pipeline 之外，不参与主循环 double buffer，也不占用主循环 ping-pong queue/tbuf。若 `ScheduledAxisTailPlan.tailBufferingMode = ReuseMainBufferAfterDrain`，`StructuredLoweringVerifier` 必须证明主 pipeline 已 drain、主循环 tbuf 生命周期结束、tail region 与下一轮主循环无重叠；否则第四层必须为 tail region 分配独立临时 buffer。
 
 #### 4.7.3 融合边界
 
@@ -3105,7 +3359,7 @@ fallback decision
 - 跨 branch / merge、gather / indexing、layout barrier 的融合
 - 需要单独外部可见结果、单独 write-back 边界或单独 kernel ABI 的融合
 
-**单 kernel 内多 loop 的合法性条件**：同一 kernel 内允许保留多个结构化 loop，合法条件为：这些 loop 共享同一个 tile 作用域、on-chip buffer 生命周期和片上数据流，且关键中间值（`isBinding=true` 的 `PromotionHint`）不需要离开片上。若某个 `ScheduleDecision` 导致 `isBinding=true` 的中间值必须回写 GM，则本层在 verifier 阶段报错，触发 4.6.4 节的运行期回退链（`StructuredLowering` 失败属于"Level-2 调优失败"路径），不允许静默降级。
+**单 kernel 内多 loop 的合法性条件**：同一 kernel 内允许保留多个结构化 loop，合法条件为：这些 loop 共享同一个 tile 作用域、on-chip buffer 生命周期和片上数据流，且关键中间值（`isBinding=true` 的 `PromotionHint`）不需要离开片上。若某个 `ScheduleDecision` 导致 `isBinding=true` 的中间值必须回写 GM，则本层在 verifier 阶段报错，触发 4.6.5 节的准备阶段选择链（`StructuredLowering` 失败属于"Level-2 调优失败"路径），不允许静默降级。
 
 #### 4.7.4 案例
 
@@ -3211,15 +3465,32 @@ struct HandwrittenTilingInstance {
 };
 ```
 
-`paramValues` 的 key 与 `HandwrittenPatternEntry.tilingParams` 中声明的参数名一一对应；`instanceGuards` 语义与通用路径的 `candidateGuards` 相同，供运行期 bucket 命中校验。`HandwrittenTilingInstance` 持有各 `TilingParam` 的具体取值，供 `HostTilingEmitter` 生成 host 侧 `get_tiling(...)` 代码。
+`paramValues` 的 key 与 `HandwrittenPatternEntry.tilingParams` 中声明的参数名一一对应；`instanceGuards` 语义与通用路径的 `candidateGuards` 相同，供 Runtime Manifest 生成 guard/fallback 路由。`HandwrittenTilingInstance` 持有各 `TilingParam` 的具体取值，供 `HostTilingEmitter` 生成 host 侧 `get_tiling(...)` 代码。
 
 ------
 
-### 4.9 Compilation Cache and Runtime Selection
+### 4.9 Compilation Cache, Guard and Runtime Consumption
 
 #### 4.9.1 功能
 
-描述编译期如何缓存中间结果，以及运行期如何基于具体 shape 命中 bucket、筛选候选并选出最终 `ScheduleDecision`。
+描述编译/部署准备阶段如何缓存中间结果、如何为动态 shape 生成 guard/fallback，以及 `runtime-session` 如何消费已物化结果。Cache、guard 和 bucket 必须严格区分：
+
+- **Cache** 是复用机制，保存已构造的模板、bucket 描述、调优结果或负缓存；cache hit 只说明某个决策/工件可以复用。
+- **Guard** 是适用性谓词，说明某个 `ScheduleDecision` 或 kernel variant 是否能覆盖当前 shape；guard pass 才能启动该 variant。
+- **Shape bucket** 是 cache key 和 variant 分组维度，用于把连续 shape 空间归一化；bucket 可由 guard 区间表达，但不等同于 guard。
+
+因此，cache 命中后仍必须校验 guard；guard 命中也不表示存在在线调优结果。若当前 shape 不被任何优化 guard 覆盖，只能走 manifest 中显式声明的 fallback，或 fail fast 并由上层 prepare/offline 服务重新生成产物，`runtime-session` 不在线调用 Autotuner。
+
+**Shape bucket 定义规则**：bucket 不按输入 tensor 的每个 dim 机械切分，而只对调度敏感的 logical axis 建桶。调度敏感轴来自 `tileableAxes`、`requiredReductionAxes`、coalesced axis、影响 `blockDimExpr` / `workspaceSizeExpr` 的 shape 参数、以及 tail/alignment 策略需要的轴。每个 bucket 边界由以下来源合并后裁剪：
+
+- Profile shape 分布：高频 shape 或业务声明的典型范围优先形成专用 bucket。
+- Target 约束：UB/L1 容量、DMA 对齐、Cube/Vector intrinsic 粒度、block 数上限。
+- Tail 策略：`MustDivide` 需要整除 guard；`MaskedTail` / `PadAndMask` 可覆盖非整除范围，但可能需要单独 bucket 控制 workspace 或临时 buffer。
+- Search budget：bucket 数与 guard 数共同受 `guardBudget` 限制；超过预算时合并相邻低收益 bucket，并保留一个保守 fallback。
+
+例：`broadcast_add_reduce(M,N)` 中，若 schedule 只 tile/reduce `N` 且 `M` 只作为外层 batch 串行或 block 数的线性因子，则 bucket 可以只围绕 `N` 定义：`N % 32 == 0 && N <= 4096`、`N % 32 != 0 && N <= 4096`、`fallback(N > 0)`。不应因为输入有 `M`、`N` 两个维度就生成 `M_bucket × N_bucket` 的笛卡尔积，除非 `M` 也影响 tile、workspace、unit assignment 或 launch occupancy。
+
+**多 kernel/多 variant 覆盖策略**：编译器应为高频 bucket 或调度差异明显的 bucket 生成多个 kernel/tiling variant，但不为每个具体 shape 生成一个专用 kernel。完整合法覆盖通过一个或少量 generic/fallback variant 实现；热点 shape 的性能通过专用 bucket variant 提升。若用户要求“覆盖全部场景”，含义是所有声明合法 shape 都能被某个 guard/fallback 运行成功，不表示所有 shape 都有专用最优 kernel。
 
 #### 4.9.2 三级缓存
 
@@ -3253,17 +3524,33 @@ struct ProfileEntry {
 
 ProfileDB 按 `targetVersion` 分区存储，不同硬件代际的数据不混用。定期（如每次 target 版本升级后）用 ProfileDB 重新训练 MLP，更新 `TargetProfile.costModel`，不需要重新编译编译器。
 
-#### 4.9.3 运行期选择流程
+#### 4.9.3 准备阶段选择流程
 
 1. 用 `KernelPattern fingerprint + ScheduleProblem` 构造 `TemplateCache` key，查询
 2. 未命中则生成与具体 shape 解耦的 `scheduleFamily + scheduleTemplate + scheduleSkeleton + scheduleSearchSpace`，回填
-3. 对运行时 shape 归一化分桶，查询 `ShapeBucketCache`；未命中则生成新 bucket 并回填
+3. 根据 profile shape、用户声明的动态 shape 范围和 target 约束生成 shape bucket，查询或回填 `ShapeBucketCache`
 4. 用当前 bucket 构造 `TuningResultCache` key，查询；命中（含负缓存）则直接使用结果
 5. 未命中则在 `compileTimeTopK` 保留的候选中做 Level-1 快速调优，筛出 `runtimeTopK / topN`
-6. 直接使用 Level-1 结果，或在 `topN` 上执行 Level-2 Autotuner
-7. 级联回填 `TuningResultCache`；无合法结果则写负缓存，触发 4.6.4 节回退链
+6. 直接使用 Level-1 结果，或在 `topN` 上执行离线 Level-2 Autotuner
+7. 级联回填 `TuningResultCache`；无合法结果则写负缓存，触发 4.6.5 节准备阶段选择链
+8. 将每个最终 decision 写入 Runtime Manifest 的 guard entry；若需要全范围合法覆盖，额外生成显式 fallback entry
 
-#### 4.9.4 decisionGuards 示例
+#### 4.9.4 运行期消费流程
+
+`runtime-session` 的动态 shape 运行流程固定为：
+
+1. 读取 `runtime_manifest.json`
+2. 从输入 tensor 提取 `shape_args`，按 `shapeArgOrder` 排列
+3. 按 manifest 中的 priority 顺序匹配 guard；若无优化 guard 命中，则选择 `fallback=true` entry；仍无 entry 则 fail fast
+4. 根据选中 entry 的 `hostTilingId` 查找 `hostTilingBindings`，用其中的 `library` 和 `symbols` 绑定 C ABI 符号
+5. 调用 `GetTilingSize` 分配 host tiling buffer
+6. 调用 `GetTiling(shape_args, shape_count, tiling_out)` 填充 tiling
+7. 调用 `GetBlockDim` 和 `GetWorkspaceSize` 获取 launch 参数
+8. 按 Runtime TaskGraph / kernelGraph 启动 kernel
+
+此流程只做 guard 判断、符号绑定和参数查询，不访问 `TuningResultCache`，不执行 Level-1/Level-2 搜索，不生成新的 `best.config`。
+
+#### 4.9.5 decisionGuards 示例
 
 同一 `scheduleTemplate` 下保留多套决策，各自有不同生效条件，guard 总数不超过 `guardBudget`：
 
@@ -3287,8 +3574,8 @@ decision_2: guard = (A > 4096)                      // 1 个 guard
 | `AxisCoalescingVerifier`     | 报编译错误，终止当前 `KernelPattern` 的编译；错误携带 `barrierKind` 和 `anchorOps` 供诊断 |
 | `ScheduleProblemVerifier`    | 报编译错误，终止当前 `KernelPattern` 的编译；不允许静默丢弃或降级 |
 | `TilingStrategyVerifier`     | 报编译错误，终止当前 `KernelPattern` 的编译；悬空标签错误携带标签名 |
-| `ScheduleDecisionVerifier`   | 报编译错误，终止当前 `KernelPattern` 的编译；不触发 4.6.4 节回退链（回退链只处理运行期 shape bucket 命中失败，不处理编译期结构违规） |
-| `StructuredLoweringVerifier` | `isBinding=true` 中间值回写 GM：报编译错误并触发 4.6.4 节回退链（属于"Level-2 调优失败"路径）；其余检查失败：报编译错误，终止当前 `KernelPattern` 的编译 |
+| `ScheduleDecisionVerifier`   | 报编译错误，终止当前 `KernelPattern` 的编译；不触发 4.6.5 节准备阶段选择链（该链只处理 bucket 候选选择失败，不处理编译期结构违规） |
+| `StructuredLoweringVerifier` | `isBinding=true` 中间值回写 GM：报编译错误并触发 4.6.5 节准备阶段选择链（属于"Level-2 调优失败"路径）；其余检查失败：报编译错误，终止当前 `KernelPattern` 的编译 |
 
 **检查内容**：
 
@@ -3297,8 +3584,9 @@ decision_2: guard = (A > 4096)                      // 1 个 guard
 | `AxisCoalescingVerifier`     | 每个 logical axis 的路径来源完整；菱形依赖已检测；`axisKinds` 无 parallel/reduction 混合；`convergingPathsPerLogicalAxis` 与 `rawAxesPerLogicalAxis` 一致 |
 | `ScheduleProblemVerifier`    | logical axes 非空；`scheduleContract` 字段已完整映射（无静默丢弃）；`guardBudget` 已正确扣除 `dynamicGuardSet` 消耗；`promotionHints.isBinding` 与 `mustKeepOnChipValues` 一致；`AscendSymbolConstraintAttr` 中的等价关系已提升为 `DimEquality` 约束；`hardwareConstraints` 中的 `RequiredComputeUnit / UnitCombinationRule` 与 `OpRoleMap` 中的主角色集合一致 |
 | `TilingStrategyVerifier`     | `scheduleFamily` 优先级已注册；同优先级 family 的并列决策符合 4.5.3 节规则；`guardBudget` 未被过滤步骤违反；`scheduleContract.templateFamilies` 中每个标签均能在 `TemplateRegistry` 中找到对应 `scheduleFamily`（即无悬空标签） |
-| `ScheduleDecisionVerifier`   | `ScheduleDecision` 字段无与 `ScheduleInstance` 的重复存储；`outerInnerMapping` 与 `tileAxes/tileExprs` 一致；`isBinding=true` 的 `promotionHint` 有对应 `MustKeepOnChip` 约束；`ScheduleDecisionSet.runtimeTopK` 已写入且不超过 `compileTimeTopK` |
-| `StructuredLoweringVerifier` | loop 骨架与 `computeOrder` 一致；内存意图标记（`CacheReadMarker` 等）已写入 IR；`isBinding=true` 的中间值未出现在 GM 回写路径上；IR 不含未经标记的内存语义暗示 |
+| `ScheduleDecisionVerifier`   | `ScheduleDecision` 字段无与 `ScheduleInstance` 的重复存储；`outerInnerMapping` 与 `tileAxes/tileExprs` 一致；每个被 tile / vectorize / coalesce / reduction 的 logical axis 都有唯一 `tailPlan`；`tailPlan.selectedPolicy` 属于第二层 `allowedTailPolicies` 与 primitive/target 能力交集；`tailPlan.affectedPrimitiveUses` 必须是第二层 `primitiveUses` 的子集；`MustDivide` 必须有静态证明或对应 `decisionGuard`；`PadAndMask` 必须有非零 `alignmentGranularityExpr`；`isBinding=true` 的 `promotionHint` 有对应 `MustKeepOnChip` 约束；`ScheduleDecisionSet.runtimeTopK` 已写入且不超过 `compileTimeTopK` |
+| `StructuredLoweringVerifier` | loop 骨架与 `computeOrder` 一致；每个 `tailPlan` 已物化为 `AscendGuardAttr`、masked region、scalar epilogue 或 `TailPlanMarker`；coalesced axis 的 flat extent 与原始成员轴 extent 映射一致；`PadAndMask` region 的 writeback 受真实 extent guard 保护；若 `tailBufferingMode = ReuseMainBufferAfterDrain`，必须证明主 pipeline 已 drain 且 tbuf 生命周期不重叠；内存意图标记（`CacheReadMarker` 等）已写入 IR；`isBinding=true` 的中间值未出现在 GM 回写路径上；IR 不含未经标记的内存语义暗示 |
+
 
 
 
@@ -3352,8 +3640,8 @@ Bufferization → Placement → Static Memory Planning → Data Movement → Mat
 
 | 来源 | 内容 | 访问方式 |
 |---|---|---|
-| 第三层决策结果 | `scheduleContract`、`promotionHints`、`cachePlan`、`unitAssignment`、`decisionGuards`、`pipelineDepthExpr`、`enableDoubleBuffer` | 从 `func` attribute `AscendScheduleDecisionSetAttr` 反序列化为 `ScheduleDecisionSet` 对象，以只读方式注入各 planner |
-| 第三层 IR 结构 | loop 骨架、indexing 关系，以及 `Structured Lowering` 写入的内存意图标记 | 直接从 IR attribute 读取：`CacheReadMarker` / `CacheWriteMarker`（附加在 loop op 或计算 op）、`PipelineMarker`（附加在最外层 pipeline loop）、`DoubleBufferMarker`（附加在 movement loop）、`PromotionHintAttr`（附加在对应 op 或 loop） |
+| 第三层决策结果 | `scheduleContract`、`promotionHints`、`cachePlan`、`unitAssignment`、`decisionGuards`、`tailPlans`、`pipelineDepthExpr`、`enableDoubleBuffer` | 从 `func` attribute `AscendScheduleDecisionSetAttr` 反序列化为 `ScheduleDecisionSet` 对象，以只读方式注入各 planner |
+| 第三层 IR 结构 | loop 骨架、indexing 关系，以及 `Structured Lowering` 写入的内存意图和 tail 结构标记 | 直接从 IR attribute 读取：`CacheReadMarker` / `CacheWriteMarker`（附加在 loop op 或计算 op）、`TailPlanMarker`（附加在主循环、tail region 或相关 loop）、`PipelineMarker`（附加在最外层 pipeline loop）、`DoubleBufferMarker`（附加在 movement loop）、`PromotionHintAttr`（附加在对应 op 或 loop） |
 | target 查询接口 | `TargetMemoryModel`、`TargetIntrinsicModel`、`TargetCostModel` | 编译器初始化阶段构造，以只读引用注入，不通过 IR attribute 传递 |
 | 结构化 tensor IR | 本体 | 当前 pass 的 `ModuleOp` |
 
@@ -3362,6 +3650,8 @@ Bufferization → Placement → Static Memory Planning → Data Movement → Mat
 - IR 上 guarded region 的 `AscendGuardAttr`，由 `Structured Lowering` 在生成 loop 骨架时写入
 
 第四层以 `AscendGuardAttr` 作为 guard 结构的 IR 载体；若两者出现不一致，`BufferizationDriver` 的前置校验应报错拒绝进入后续规划。一致性检查为双向：IR 上每个 `AscendGuardAttr` 的 guard 表达式必须能在 `ScheduleDecisionSet.decisionGuards` 中找到对应条目（IR→数据方向）；同时，`ScheduleDecisionSet` 中每个 `decisionGuard` 条目必须能在 IR 上找到对应的 `AscendGuardAttr` guarded region（数据→IR 方向）。任一方向不一致均报错。
+
+**`tailPlans` 的职责边界：** 第四层只消费第三层已经选择好的 `ScheduleDecision.tailPlans`，不重新选择 `MaskedTail` / `ScalarEpilogue` / `PadAndMask` / `MustDivide`。`TailPlanMarker` 是 tail 结构在 IR 上的载体；若 `ScheduleDecision.tailPlans` 与 IR 上的 `TailPlanMarker` 不一致，前置校验必须报错。第四层只负责把 tail plan 转换为 buffer size、padding temp、guarded copy 和 workspace/lifetime 规划。
 
 ### 输出
 
@@ -3372,6 +3662,7 @@ Bufferization → Placement → Static Memory Planning → Data Movement → Mat
 | memory place | `memref` type 的 `memory_space` |
 | 跨 place movement | `memref.copy` |
 | workspace | `memref.alloc` + `memref.subview` |
+| tail padding temp | guard 作用域内的 `memref.alloc` / `memref.subview`，由 `TailPlanMarker(policy=PadAndMask)` 触发 |
 | guard / unit / schedule 信息 | 现有 op attribute |
 | function boundary | `func.func` 的 `memref` 参数与结果 |
 
@@ -3402,11 +3693,20 @@ Bufferization → Placement → Static Memory Planning → Data Movement → Mat
 | `writePoints` | `DenseMap<Value, SmallVector<Operation *>>` | 每个 buffer 的写点 |
 | `loopScopes` | `DenseMap<Value, LoopRegion>` | 每个 buffer 的主要生存区间（从定义点、最后使用点和 loop 骨架推导）|
 | `guardBindings` | `DenseMap<Value, SmallVector<GuardExpr>>` | 每个 buffer 关联的 guard 条件集合（从第三层 `decisionGuards` 回填）|
+| `tailPlanBindings` | `DenseMap<Value, SmallVector<ScheduledAxisTailPlan>>` | 每个 buffer 受哪些轴级 tail plan 影响；从 `TailPlanMarker` 和 uses 回填 |
 | `bufferRoles` | `DenseMap<Value, BufferRole>` | 输入、输出、临时、cache、workspace 等角色 |
 
 `BufferRole` 枚举：`InputBuffer`、`OutputBuffer`、`TemporaryBuffer`、`CacheBuffer`、`WorkspaceBuffer`
 
 `GuardedBufferKey` = `(baseBuffer, guardExpr)`，同一底层 buffer 在某个 guard 上下文中的独立规划单元；单 guard 时退化为单条记录。
+
+`tailPlanBindings` 构造规则：
+
+1. 遍历 `TailPlanMarker` 标记的主循环、tail guarded region、scalar epilogue region 和 padding region。
+2. 对每个 region 内的 load/store、`memref.copy`、view-like op 和后续 movement op，沿 `aliasInfo` 归一到 base buffer。
+3. 将该 region 对应的 `ScheduledAxisTailPlan` 绑定到所有被读、写或搬运的 base buffer；`PadAndMask` 额外绑定 padding temp、source buffer 和 guarded writeback destination。
+4. 若同一 buffer 同时受多个 axis tail plan 影响，按 `ScheduleDecision.tailPlans` 中的轴顺序稳定排序并去重。
+5. 后置校验要求双向一致：每个 `TailPlanMarker` 至少绑定一个 buffer；每个 `tailPlanBindings` 条目必须能追溯到 IR 中的 `TailPlanMarker` 或该 marker 控制下的 use。
 
 ### 实现
 
@@ -3426,6 +3726,7 @@ Bufferization → Placement → Static Memory Planning → Data Movement → Mat
 |---|---|
 | `AscendScheduleDecisionSetAttr` 存在 | `func` attribute 中必须可解析出 `ScheduleDecisionSet` |
 | `AscendGuardAttr` 与 `decisionGuards` 双向一致 | IR 上每个 guarded region 的 guard 表达式必须能在 `ScheduleDecision.decisionGuards` 中找到对应条目（IR→数据）；且 `ScheduleDecisionSet` 中每个 `decisionGuard` 条目必须能在 IR 上找到对应的 `AscendGuardAttr` guarded region（数据→IR）；任一方向不满足均报错 |
+| `TailPlanMarker` 与 `tailPlans` 双向一致 | IR 上每个 `TailPlanMarker.axis / selectedPolicy / mainExtentExpr / tailExtentExpr / tailBufferingMode` 必须能在 `ScheduleDecision.tailPlans` 中找到对应项；且每个 `tailPlan` 必须已由 Structured Lowering 物化为 guard、masked region、scalar epilogue 或 `TailPlanMarker` |
 | 内存意图标记完整性 | 每个 `CacheReadMarker` 必须指向 IR 中存在的 `Value`，其 `place` 字段必须是 `TargetMemoryModel` 承认的合法 place；`PipelineMarker` 的 `depthExpr` 不得为空 |
 | `PromotionHintAttr` 可解析 | 每个 `PromotionHintAttr` 的 `isBinding`、`reuseScope`、`preferredUnit` 字段必须完整，不允许存在 unknown 枚举值 |
 | loop 骨架轴数与 `outerInnerMapping` 一致 | `ScheduleDecision.outerInnerMapping` 中记录的每个 `(outer, inner)` 轴对，在 IR loop 中必须能找到对应的嵌套层 |
@@ -4083,6 +4384,7 @@ Verifier 确认示例（vector 通路）：`9` 和 `10` 是合法 place；`GM ->
 
 
 
+
 ## 6. 第五层：Translate
 
 第五层的任务是把第四层输出的 `Memory-Realized IR` 翻译成 backend 工具链和 runtime 所需的最终工件。
@@ -4113,7 +4415,7 @@ flowchart LR
 | 项           | 内容                                                         |
 | ------------ | ------------------------------------------------------------ |
 | 输入         | 第四层输出的 `Memory-Realized IR`（普通 `memref + linalg + scf + func` MLIR，on-chip place 以 `memory_space` 表达，跨 place movement 以 `memref.copy` 表达） |
-| 侧边输入     | `MemoryRealizationPlan`（含 `resolvedPlacement`、`resolvedMovements`、`workspaceLayout`）、`ScheduleDecisionSet`（含 `decisionGuards`、`pipelineDepthExpr`、`enableDoubleBuffer`、`tilingParams`、`unitAssignment`、`compileTimeTopK`） |
+| 侧边输入     | `MemoryRealizationPlan`（含 `resolvedPlacement`、`resolvedMovements`、`workspaceLayout`）、`ScheduleDecisionSet`（含 `decisionGuards`、`tailPlans`、`pipelineDepthExpr`、`enableDoubleBuffer`、`tilingParams`、`unitAssignment`、`compileTimeTopK`） |
 | 输出（必选） | `AscendC Kernel MLIR`、`AscendC Source`、`Host Tiling`       |
 | 输出（可选） | `Runtime Manifest`                                           |
 
@@ -4135,12 +4437,12 @@ flowchart LR
 
 | 类 / 接口                    | 职责                                                         | 主要输入                                                     | 主要输出              |
 | ---------------------------- | ------------------------------------------------------------ | ------------------------------------------------------------ | --------------------- |
-| `ComputeLoweringDriver`      | 把 `memref.copy` 和 `linalg` 计算落成 backend compute/movement op | `Memory-Realized IR`、`TargetMemoryModel`、`MemoryRealizationPlan`、`ScheduleDecisionSet` | `Backend Compute IR`  |
+| `ComputeLoweringDriver`      | 把 `memref.copy` 和 `linalg` 计算落成 backend compute/movement op，并按 `tailPlans` 发射 mask / scalar epilogue / padding copy 结构 | `Memory-Realized IR`、`TargetMemoryModel`、`MemoryRealizationPlan`、`ScheduleDecisionSet` | `Backend Compute IR`  |
 | `OpLoweringTemplateRegistry` | 按 op family 分发 compute lowering，管理 signature / strategy / primitive emission 规则 | op、`AscendCBufferContext`                                   | backend op 序列       |
 | `BackendABILoweringDriver`   | 固定 kernel 函数签名、并行入口和 `TilingData` ABI            | `Backend Compute IR`、`ScheduleDecisionSet`、`MemoryRealizationPlan` | `AscendC Kernel MLIR` |
 | `AscendCSourceEmitter`       | 把 `AscendC Kernel MLIR` 翻译成 C++ 源码                     | `AscendC Kernel MLIR`                                        | `AscendC Source`      |
-| `HostTilingEmitter`          | 生成 host 侧 `TilingData` 结构和 `get_tiling/get_block_dim` 函数 | `AscendC Kernel MLIR`、`ScheduleDecisionSet`、调优结果       | `Host Tiling`         |
-| `RuntimeManifestBuilder`     | 组装 shape bucket、guard、schedule entry 和 cache key        | `AscendC Kernel MLIR`、`ScheduleDecisionSet`、`decisionGuards` | `Runtime Manifest`    |
+| `HostTilingEmitter`          | 生成 host 侧 `TilingData` 结构和 `get_tiling/get_block_dim` 函数，包含动态 tail extent / main extent / alignment 字段 | `AscendC Kernel MLIR`、`ScheduleDecisionSet`、调优结果       | `Host Tiling`         |
+| `RuntimeManifestBuilder`     | 组装 shape bucket、guard、tail plan、schedule entry 和 cache key        | `AscendC Kernel MLIR`、`ScheduleDecisionSet`、`decisionGuards` | `Runtime Manifest`    |
 
 ---
 
@@ -4162,6 +4464,7 @@ flowchart LR
 | 计算主体已绑定 backend compute op | 不再保留 `linalg.*` 形态                                     |
 | 搬运路径与 place 一致             | 与 `MemoryRealizationPlan.resolvedMovements / resolvedPlacement` 严格对齐 |
 | `decisionGuards` 已传递           | 动态 shape 场景下同一 kernel 可按 guard 区分实现路径         |
+| `tailPlans` 已消费                | `MaskedTail` 发射 mask/valid extent，`ScalarEpilogue` 发射 epilogue，`PadAndMask` 发射 padding temp 对应的数据搬运和 guarded writeback；第五层不得重新选择 tail 策略 |
 | pipe / queue / tbuf 已建立        | 每个片上 buffer 均对应唯一 queue 和 tbuf                     |
 
 最小 backend op 集：
@@ -4443,11 +4746,12 @@ func @kernel(inputs..., outputs..., %workspace: memref<ui8>,
 | 来源 | 字段类型 | 识别方式 | 字段名规则 |
 |---|---|---|---|
 | `ScheduleDecisionSet` 中的可调优 tiling 参数（`TilingParam`） | 调优参数（`fixed: false`） | 从 `ScheduleDecision.tilingParams` 枚举，每个 `TilingParam.name` 对应一个字段 | 直接使用 `TilingParam.name`（如 `TB_M`、`TB_N`、`TB_K`） |
+| `ScheduleDecision.tailPlans` 中的动态 tail 表达式 | 派生运行期参数（`derived: true`，不是 `get_tiling` 的直接 shape 参数） | 从 `mainExtentExpr`、`tailExtentExpr`、`alignmentGranularityExpr` 中收集无法静态折叠且 kernel 侧需要直接读取的表达式 | 使用 `axis_<name>_main`、`axis_<name>_tail`、`axis_<name>_align`；若表达式可由已有 shape/tiling 字段在 kernel 内低成本计算，则不生成独立字段 |
 | `decisionGuards` 中引用的 shape 符号变量 | shape 参数（`fixed: true`） | 扫描所有 `GuardExpr` 中出现的自由变量；同一变量名只生成一个字段 | 使用变量名本身（如 `M`、`K`、`N`）；若与调优参数名冲突，加 `dim_` 前缀（如 `dim_M`） |
 
-字段顺序规则：调优参数字段在前（按 `ScheduleDecision.tilingParams` 枚举顺序），shape 参数字段在后（按首次在 `decisionGuards` 中出现的顺序）。此顺序与 `tiling_space.json` 中 `tiling_params` 数组顺序严格一致，host 侧按同一顺序逐字段打包。
+字段顺序规则：调优参数字段在前（按 `ScheduleDecision.tilingParams` 枚举顺序），tail 派生字段居中（按 `ScheduleDecision.tailPlans` 的轴顺序），shape 参数字段在后（按首次在 `decisionGuards` 和 `tailPlans` 中出现的顺序）。此顺序与 `tiling_space.json` 中 `tiling_params` 数组顺序严格一致，host 侧按同一顺序逐字段打包。
 
-`decisionGuards` 中的 guard 表达式（如 `M % 32 == 0`）在 kernel 侧通过 `emitasc.member %tiling["M"]` 读取 shape 值后求值，不再作为独立参数传递——guard 的运行时求值责任落在 kernel body 内。
+`decisionGuards` 中的 guard 表达式（如 `M % 32 == 0`）在 kernel 侧通过 `emitasc.member %tiling["M"]` 读取 shape 值后求值，不再作为独立参数传递——guard 的运行时求值责任落在 kernel body 内。`tailPlans` 中的 `mainExtentExpr` / `tailExtentExpr` 也遵循同一规则：能由 shape + tile 现场计算的表达式在 kernel body 内计算；只有跨 host/runtime 需要复用或表达式过重时，才作为 `TilingData` 派生字段写入。
 
 **Pass 3：`KernelSignatureCanonicalizationPass`**
 
@@ -4583,22 +4887,24 @@ DataCopy(outGm, outVec, /* ... */);
 
 本阶段有两项职责，可独立实现：
 
-**Host Tiling Codegen**：从 `AscendC Kernel MLIR` 提取稳定的 `HostTilingABI`，结合 Level-1 运行期快速调优结果或可选 Level-2 Autotuner 最优结果，生成 host 侧 `TilingData` 结构体、`get_tiling(...)` 和 `get_block_dim(...)` 函数。
+**Host Tiling Codegen**：从 `AscendC Kernel MLIR` 提取稳定的 `HostTilingABI`，结合 prepare/offline 阶段已经选定的 `ScheduleDecision`（Level-1 top1 或 Level-2 Autotuner 产出的 `best.config`），生成 host 侧 `TilingData` 结构体、`get_tiling(...)` 和 `get_block_dim(...)` 函数。Host Tiling 只物化已选参数，不运行搜索。
 
-**Runtime Manifest（可选）**：把 `decisionGuards`、shape bucket、schedule entry 和 cache key 组装成 runtime 可消费的元数据结构，支持 runtime 按 shape 分桶选择 kernel 和复用编译缓存。
+**Runtime Manifest（可选）**：把 `decisionGuards`、shape bucket、schedule entry、host tiling symbol binding 和 cache key 组装成 runtime 可消费的元数据结构，支持 runtime 按 shape 分桶选择已生成的 kernel/tiling variant。Manifest 中的 cache key 只用于产物复用和诊断，`runtime-session` 不通过它在线调用 Autotuner。
 
 **Runtime Manifest 触发条件：**
 
 | 场景 | 是否必须生成 | 原因 |
 |---|---|---|
-| `ScheduleDecisionSet.decisionGuards` 非空（动态 shape，多 guard） | **必须生成** | Runtime 需要 manifest 中的 `guardSet` 和 `scheduleEntries` 才能在运行时按 shape 选择正确的 tiling 参数；缺失时 runtime 无法完成 shape bucket 路由，应报编译错误 |
+| `ScheduleDecisionSet.decisionGuards` 非空（动态 shape，多 guard） | **必须生成** | Runtime 需要 manifest 中的 `guardSet`、`scheduleEntries` 和 `hostTiling` binding 才能在运行时按 shape 选择正确的已生成 variant；缺失时 runtime 无法完成 shape bucket 路由，应报编译错误 |
 | 静态 shape（`decisionGuards` 为空，单一决策） | 可选 | `get_tiling` 函数已包含全部参数，runtime 无需额外路由；可生成 manifest 用于缓存和调试，但不强制 |
 | 需要编译缓存复用（`cacheKey` 用于跨编译实例共享） | 建议生成 | 无强制要求，但缺失时每次编译均需全量重建，影响增量编译性能 |
 
 动态 shape 场景下不生成 manifest 时，编译器必须在 `HostTilingEmitter` 阶段检测到 `decisionGuards` 非空并报错，不允许静默跳过。
 
-**输入**：`AscendC Kernel MLIR`、`ScheduleDecisionSet`、`decisionGuards`、Level-1 `topN` 结果（可选）、Level-2 Autotuner `best.config`（可选）
+**输入**：`AscendC Kernel MLIR`、`ScheduleDecisionSet`、`decisionGuards`、prepare/offline Level-1 `topN` 结果（可选）、Level-2 Autotuner `best.config`（可选）
 **输出**：`Host Tiling`（必选）、`Runtime Manifest`（动态 shape 必选，静态 shape 可选）
+
+**运行期边界**：`runtime-session` 不消费 `tiling_space.json` 做搜索，也不在 guard 未命中时生成新的 `best.config`。运行期只读取 `runtime_manifest.json`，选择匹配 guard/fallback 的 `scheduleEntry`，绑定该 entry 指向的 Host Tiling ABI 符号，并调用 `GetTiling` / `GetBlockDim` / `GetWorkspaceSize` 查询当前 shape 的 launch 参数。
 
 #### 6.6.2 输出规范
 
@@ -4612,7 +4918,7 @@ DataCopy(outGm, outVec, /* ... */);
 | `outputs`          | 参数 N+1 到倒数第三                                  | output buffer 描述       |
 | `workspaceArg`     | 倒数第二参数（类型必须是 `memref<ui8>`）             | workspace buffer         |
 | `tilingStructName` | `!emitasc.py_struct<"TilingData", ...>` 的 struct 名 | 与 kernel 侧一致         |
-| `tilingFields`     | `py_struct` 字段按序提取；每个字段携带 `fixed` 标记（`true` = shape 参数，`false` = 调优参数）和可选 `shapeKey`（shape 维度名） | host 侧逐字段同序打包；`fixed: true` 字段同时用于生成 `get_tiling` / `get_block_dim` 的函数参数列表 |
+| `tilingFields`     | `py_struct` 字段按序提取；每个字段携带 `fixed` 标记（`true` = shape 参数，`false` = 调优参数）、可选 `derived` 标记（tail 派生字段）和可选 `shapeKey`（shape 维度名） | host 侧逐字段同序打包；`fixed: true` 字段同时用于生成 `get_tiling` / `get_block_dim` 的函数参数列表 |
 | `abiArgs`          | 完整参数列表按序                                     | host 侧调用参数顺序      |
 
 **`Runtime Manifest`** 最小字段：
@@ -4623,12 +4929,15 @@ DataCopy(outGm, outVec, /* ... */);
 | `shapeBucketKey`    | `BucketKeyExpr`                | shape 分桶 key                               |
 | `guardSet`          | `SmallVector<GuardExpr>`       | 可用 schedule decision 集合                  |
 | `tilingSchema`      | `SmallVector<TilingParamDesc>` | host 须生成的参数描述                        |
+| `tailPlanEntries`   | `SmallVector<TailPlanManifestEntry>` | 每个 schedule entry 对应的轴级 tail 策略、对齐粒度和派生字段映射 |
 | `scheduleEntries`   | `SmallVector<ScheduleEntry>`   | runtime 可选择的决策集合                     |
 | `abiSignature`      | `StringRef`                    | kernel ABI 签名摘要                          |
 | `cacheKey`          | `StringRef`                    | 编译/调优结果缓存 key                        |
 | `workspaceSizeExpr` | `StringRef`                    | workspace 大小的符号表达式（如 `"mt*nt*4"`）；表达式中的变量名必须与 `tilingSchema` 中的参数名一致 |
 | `workspaceSizeBytes`| `int64_t`                      | 静态 shape 下的 workspace 字节数；动态 shape 时为 `-1`，Runtime 须用 `workspaceSizeExpr` 计算实际大小（见下方动态 shape 计算规则） |
 | `shapeArgOrder`     | `SmallVector<ShapeArgDesc>`    | 调用 C ABI（见 6.6.6 节）时 `shape_args` 数组中每个槽位对应的语义维度；按顺序与 `HostTilingABI.abiArgs` 中的 shape 参数一一对齐 |
+| `hostTilingBindings` | `SmallVector<HostTilingBinding>` | 可被 schedule entry 引用的 host tiling 动态库和导出符号；运行时通过此字段做 `dlopen` / `dlsym` |
+| `kernelGraph`       | `KernelGraph`                  | 本 kernel 在多 kernel DAG 中的节点与依赖边   |
 
 **动态 shape 下 workspace 大小的计算规则（`workspaceSizeBytes = -1` 时）：**
 
@@ -4639,7 +4948,6 @@ Runtime 在调用 `GetWorkspaceSize(shape_args, shape_count)` 时，按以下步
 3. 结果向上对齐到 `TargetMemoryModel` 要求的 workspace 对齐粒度（通常为 32 或 64 字节）
 
 `workspaceSizeExpr` 只允许包含：四则运算（`+`、`-`、`*`、`/`）、整除（`//`）、取模（`%`）、常数字面量，以及 `tilingSchema` 中已声明的参数名。不允许包含条件分支或函数调用；若需要按 guard 分支计算 workspace，应为每个 guard 分支单独生成一个 `workspaceSizeExpr`（通过多个 `scheduleEntry` 各自携带 `workspaceSizeExpr` 字段）。
-| `kernelGraph`       | `KernelGraph`                  | 本 kernel 在多 kernel DAG 中的节点与依赖边   |
 
 `ShapeArgDesc` 最小字段：
 
@@ -4648,6 +4956,45 @@ Runtime 在调用 `GetWorkspaceSize(shape_args, shape_count)` 时，按以下步
 | `name`        | `StringRef` | shape 参数名（与 `tilingSchema` 中 `fixed: true` 参数的 `name` 一致） |
 | `shapeKey`    | `StringRef` | 该槽位对应的逻辑 shape 维度名（如 `"M"`、`"K"`、`"N"`）       |
 | `abiPosition` | `int32_t`   | 该 shape 参数在 `HostTilingABI.abiArgs` 中的位置（0-based）；用于诊断与一致性校验 |
+
+`ScheduleEntry` 最小字段：
+
+| 字段 | 类型 | 含义 |
+| --- | --- | --- |
+| `decisionId` | `StringRef` | 对应第三层 `ScheduleDecision` 的稳定 ID |
+| `kernelName` | `StringRef` | 该 entry 启动的 kernel 名称；多 variant 编译时可不同 |
+| `guard` | `GuardExpr` | 当前 entry 的适用谓词；静态 shape 可为 `"true"` |
+| `priority` | `int32_t` | 多个 guard 同时成立时的选择顺序，数值越小优先级越高 |
+| `fallback` | `bool` | 是否为保守 fallback entry；只在所有普通 guard 未命中后使用 |
+| `shapeBucketKey` | `BucketKeyExpr` | 当前 entry 覆盖的 bucket key，用于诊断和 cache 复用 |
+| `tilingParams` | `DenseMap<StringRef, int64_t>` | 已选定的非 shape tiling 参数完整赋值，不允许差量赋值 |
+| `workspaceSizeExpr` | `StringRef` | 当前 entry 的 workspace 表达式；覆盖顶层默认值 |
+| `hostTilingId` | `StringRef` | 指向 `hostTilingBindings` 中的一项 |
+
+`HostTilingBinding` 最小字段：
+
+| 字段 | 类型 | 含义 |
+| --- | --- | --- |
+| `id` | `StringRef` | 被 `ScheduleEntry.hostTilingId` 引用的稳定 ID |
+| `library` | `StringRef` | host tiling 动态库路径，相对 runtime artifact root 或 manifest 所在目录 |
+| `symbols.getTilingSize` | `StringRef` | `GetTilingSize` 导出符号名 |
+| `symbols.getTiling` | `StringRef` | `GetTiling` 导出符号名 |
+| `symbols.getBlockDim` | `StringRef` | `GetBlockDim` 导出符号名 |
+| `symbols.getWorkspaceSize` | `StringRef` | `GetWorkspaceSize` 导出符号名 |
+
+Runtime 必须优先使用 `hostTilingBindings.symbols` 做显式 `dlsym`。`<KernelName>_GetTiling` 形式只作为默认命名约定和调试回退，不允许作为唯一绑定依据；这样可以支持同一 kernel family 下多个 bucket variant、版本化 symbol 和非 C++ framework 的稳定 FFI。
+
+`TailPlanManifestEntry` 最小字段：
+
+| 字段 | 类型 | 含义 |
+| --- | --- | --- |
+| `axis` | `StringRef` | 逻辑轴名或稳定 axis id |
+| `selectedPolicy` | `AxisTailPolicy` | 第三层选定的 tail 策略 |
+| `alignmentGranularity` | `StringRef` | 对齐粒度表达式；必须能从 `tilingSchema` 字段求值 |
+| `mainExtentField` | `StringRef` | 对应 `mainExtent` 的 `TilingData` 字段名；若 kernel 内现场计算则为空 |
+| `tailExtentField` | `StringRef` | 对应 `tailExtent` 的 `TilingData` 字段名；若 kernel 内现场计算则为空 |
+| `tailBufferingMode` | `TailBufferingMode` | tail region buffer 复用策略；默认 `SeparateTailBuffer` |
+| `affectedPrimitiveUses` | `SmallVector<PrimitiveAxisUseKind>` | 该 tail 策略影响的数据搬运、计算和写回用途 |
 
 `KernelGraph` 最小字段：
 
@@ -4672,7 +5019,8 @@ Runtime 在调用 `GetWorkspaceSize(shape_args, shape_count)` 时，按以下步
 | ----------------------------------------- | ------------------------------------------------------ |
 | `tilingSchema` 与 `tilingFields` 一一对应 | host 生成什么字段，kernel 按同样顺序读取什么字段       |
 | `ScheduleEntry` 只引用 schema 中已有字段  | 不允许 host/runtime 私自增加 kernel 不可见字段         |
-| `get_tiling(...)` 不运行搜索              | 只写入 Level-1 或 Level-2 已选好的参数，不在运行时搜索 |
+| `get_tiling(...)` 不运行搜索              | 只写入 prepare/offline 阶段已选好的参数，不在运行时搜索 |
+| `hostTilingBindings` 显式绑定符号         | Runtime 通过 manifest 中的 `library` 和 `symbols` 绑定 C ABI，不从 AFIR 工具或 MLIR symbol 反推 |
 | `workspaceSizeExpr` 与 tiling 参数对齐    | 表达式中的变量名必须与 `tilingSchema` 中的参数名一致   |
 | `kernelGraph` 覆盖完整 DAG               | 凡第二层 `KernelPattern[]` DAG 中存在的边，必须全部出现在此字段 |
 | `kernelGraph` 只含 `CarriedValue` 边     | 第二层 `KernelPatternGraph` 有 7 种边类型（CarriedValue、Overlap、BranchPair、MergePair、MustCoLocate、MustSeparate、ScheduleBarrier），其中后 6 种在 Layer 2 内部调度决策阶段已完全消解，**不进入** Runtime Manifest；`kernelGraph.edges` 仅保留表达跨 kernel GM 数据流的 `CarriedValue` 类型边 |
@@ -4688,32 +5036,34 @@ Runtime 在调用 `GetWorkspaceSize(shape_args, shape_count)` 时，按以下步
   - 最后参数类型必须是 `!emitasc.py_struct<...>`（tiling）
   - `cann.num_inputs` 与签名参数数量一致
 2. 提取 `HostTilingABI`（如 6.6.2 所定义）
-3. 读取调优结果：
-  - 仅启用 Level-1 时：读取快速调优选出的 `top1` 参数
-  - 启用 Level-2 时：读取 Autotuner 给出的 `best.config` 参数
+3. 读取已物化的调优结果：
+   - 仅启用 Level-1 时：读取 prepare 阶段选出的 `top1` 参数
+   - 启用 Level-2 时：读取离线 Autotuner 给出的 `best.config` 参数
+   - 若两者都不存在：读取显式 fallback decision 的保守参数；仍不存在则报编译错误
 4. 按 `tilingFields` 顺序生成 `TilingData` 结构体
 5. 确定 `get_tiling` / `get_block_dim` 的 shape 参数列表：从 `HostTilingABI.tilingFields` 中筛选 `fixed: true` 的字段（即 `tiling_space.json` 中 `fixed=true` 的参数），按其在 `tilingFields` 中的出现顺序作为函数参数，参数名使用 `ShapeArgDesc.name`，类型固定为 `int64_t`。**`fixed: true` 字段是 shape 参数的唯一来源**，`HostTilingEmitter` 不从其他地方推断 shape 参数列表。
 6. 生成 `get_tiling(int64_t <shape_param_0>, ..., TilingData* out)` 函数，按以下规则处理多 guard 分支：
   - **静态 shape（无 `decisionGuards` 或单 guard）**：函数体为无分支的逐字段赋值；`fixed: false` 字段按调优结果填入常量，`fixed: true` 字段透传 shape 参数（`out->M = M;`）
-  - **动态 shape（多 guard）**：函数体生成 `if / else if / else` 分支结构，每个 guard 对应一个分支；分支条件由 `decision_guards[i].guard` 表达式翻译为 C++ 布尔表达式（guard 中的 shape 变量名对应同名函数参数）；每个分支内对 `fixed: false` 字段赋该 guard 对应的调优结果值，`fixed: true` 字段在各分支中统一透传；所有 guard 分支必须互斥且完全覆盖合法 shape 范围，若存在未覆盖区域，最后一个 `else` 分支设置错误标志并返回非零值
+   - **动态 shape（多 guard）**：函数体生成 `if / else if / else` 分支结构，每个 guard 对应一个分支；分支条件由 `decision_guards[i].guard` 表达式翻译为 C++ 布尔表达式（guard 中的 shape 变量名对应同名函数参数）；每个分支内对 `fixed: false` 字段赋该 guard 对应的调优结果值，`fixed: true` 字段在各分支中统一透传；普通 guard 分支必须互斥，若 manifest 声明 `fallback=true` entry 则最后分支使用 fallback 参数，否则最后一个 `else` 分支设置错误标志并返回非零值
   - guard 表达式到 C++ 的翻译规则：`%` → `%`，`==` → `==`，`!=` → `!=`，`&&` → `&&`，`||` → `||`；shape 变量名直接使用函数参数名，无需额外映射
 7. 生成 `get_block_dim(int64_t <shape_param_0>, ...)` 函数（优先使用 `block_dim_expr`，否则使用最终结果中的 `blockDim` 常量；多 guard 时与 `get_tiling` 同结构生成分支）
-7. **额外生成 C ABI 查询接口**（见 6.6.6 节）：以固定数组形式接收 shape 参数，供非 C++ Runtime 框架通过 `dlopen` 调用
-8. **生成 `tiling_space.json`**（见 6.6.7 节）：根据 `ScheduleDecisionSet` 的搜索空间自动生成，供 Level-2 Autotuner 和外部工具消费；此文件由编译器自动生成，不需要手工维护
+8. **额外生成 C ABI 查询接口**（见 6.6.6 节）：以固定数组形式接收 shape 参数，供 `runtime-session` 和非 C++ Runtime 框架通过 `dlopen` 调用
+9. **生成 `tiling_space.json`**（见 6.6.7 节）：根据 `ScheduleDecisionSet` 的搜索空间自动生成，供 Level-2 Autotuner、prepare/offline 工具和外部验证工具消费；此文件由编译器自动生成，不需要手工维护
 
 **通路 B：Runtime Manifest（可选）**
 
 1. 从 `ScheduleDecisionSet` 读取 `decisionGuards` 和 `scheduleEntries`
 2. 按 shape 维度边界构造 `shapeBucketKey`
-3. 组装 `guardSet`、`scheduleEntries`、`abiSignature`、`cacheKey`，以及 `workspaceSizeExpr`、`kernelGraph`（见 6.6.2 节）
-4. 输出 `Runtime Manifest`；当前允许不单独落盘，作为内存对象存在
+3. 为每个 `scheduleEntry` 写入 `guard`、`priority`、`fallback`、`hostTilingId`、`workspaceSizeExpr` 和完整 `tilingParams`
+4. 组装 `guardSet`、`hostTilingBindings`、`abiSignature`、`cacheKey`，以及 `workspaceSizeExpr`、`kernelGraph`（见 6.6.2 节）
+5. 输出 `Runtime Manifest`；动态 shape 场景必须落盘为 `runtime_manifest.json` 或嵌入等价 runtime artifact，不能只存在于编译器内存对象中
 
 **两级调优接入规则**：
 
 | 级别                      | 职责                                                         | 对接方式                                                     |
 | ------------------------- | ------------------------------------------------------------ | ------------------------------------------------------------ |
-| Level-1 运行期快速调优    | 在 `compileTimeTopK` 候选中快速选出 `topN`（可直接用 `top1` 填参） | 调优结果作为输入传入 `HostTilingEmitter`                     |
-| Level-2 Autotuner（可选） | 读取 `tiling_space.json` 和 Level-1 `topN`，搜索最优 `best.config` | `TilingSpaceExportPass` 输出 `tiling_space.json`；`RuntimeAutotuningPass` 回填最终结果 |
+| Level-1 prepare-time 选择 | 在 `compileTimeTopK` 候选中快速选出 `topN`（可直接用 `top1` 填参） | 调优结果作为输入传入 `HostTilingEmitter`                     |
+| Level-2 Autotuner（可选） | 离线读取 `tiling_space.json` 和 Level-1 `topN`，搜索最优 `best.config` | `TilingSpaceExportPass` 输出 `tiling_space.json`；离线 Autotuner 回填最终结果 |
 | `get_tiling(...)`         | 把已选参数写入 `TilingData`                                  | 仅填参，不搜索                                               |
 
 #### 6.6.4 失败与回退规则
@@ -4726,6 +5076,8 @@ Runtime 在调用 `GetWorkspaceSize(shape_args, shape_count)` 时，按以下步
 | `TilingData` 字段顺序 host/kernel 不一致 | 视为 ABI 错误，禁止继续                                      |
 | `Runtime Manifest` 未生成，且 `decisionGuards` 非空 | 报编译错误；动态 shape 场景下 manifest 为必选，缺失将导致 runtime 无法路由 shape bucket |
 | `Runtime Manifest` 未生成，且 `decisionGuards` 为空 | 允许；静态 shape 场景 manifest 为可选，`Host Tiling` 已足够 |
+| `ScheduleEntry.hostTilingId` 找不到对应 binding | 报编译错误；runtime 不允许从 kernel 名猜测动态库或 symbol |
+| 普通 guard 未覆盖且无 `fallback=true` entry | 报编译错误或要求上层声明 fail-fast 策略；不允许运行期在线调优补洞 |
 
 #### 6.6.5 示例
 
@@ -4764,7 +5116,7 @@ struct TilingData {
   uint32_t kt;
 };
 
-// 由 Level-1 top1 = { mt=128, nt=128, kt=64 } 或 Level-2 best.config 填入
+// 由 prepare-time Level-1 top1 = { mt=128, nt=128, kt=64 } 或离线 Level-2 best.config 填入
 void get_tiling(int64_t m, int64_t n, int64_t k, TilingData* out) {
   out->mt = 128;
   out->nt = 128;
@@ -4789,9 +5141,46 @@ launch_kernel(in0, in1, out0, workspace, tiling, block_dim);
   "kernelName": "broadcast_add",
   "shapeBucketKey": "A_bucket=(1..256)/(257..4096)",
   "guardSet": ["A % 32 == 0", "A % 32 != 0"],
+  "hostTilingBindings": [
+    {
+      "id": "broadcast_add_tiling",
+      "library": "broadcast_add_get_tiling.so",
+      "symbols": {
+        "getTilingSize": "broadcast_add_GetTilingSize",
+        "getTiling": "broadcast_add_GetTiling",
+        "getBlockDim": "broadcast_add_GetBlockDim",
+        "getWorkspaceSize": "broadcast_add_GetWorkspaceSize"
+      }
+    }
+  ],
   "scheduleEntries": [
-    { "decisionId": "d0", "guard": "A%32==0", "tilingParams": {"tileA": 128} },
-    { "decisionId": "d1", "guard": "A%32!=0", "tilingParams": {"tileA": 96} }
+    {
+      "decisionId": "d0",
+      "guard": "A % 32 == 0 && A <= 4096",
+      "priority": 0,
+      "fallback": false,
+      "hostTilingId": "broadcast_add_tiling",
+      "tilingParams": {"tileA": 128},
+      "workspaceSizeExpr": "0"
+    },
+    {
+      "decisionId": "d1",
+      "guard": "A % 32 != 0 && A <= 4096",
+      "priority": 1,
+      "fallback": false,
+      "hostTilingId": "broadcast_add_tiling",
+      "tilingParams": {"tileA": 96},
+      "workspaceSizeExpr": "0"
+    },
+    {
+      "decisionId": "fallback",
+      "guard": "A > 0",
+      "priority": 99,
+      "fallback": true,
+      "hostTilingId": "broadcast_add_tiling",
+      "tilingParams": {"tileA": 64},
+      "workspaceSizeExpr": "0"
+    }
   ],
   "abiSignature": "broadcast_add:f16f16f16:abi_v2",
   "cacheKey": "broadcast_add:bucket1:abi_v2:target_910B",
@@ -4809,7 +5198,7 @@ launch_kernel(in0, in1, out0, workspace, tiling, block_dim);
 
 #### 6.6.6 C ABI 接口规范
 
-`HostTilingEmitter` 必须额外生成一组以 C 链接暴露的查询函数，供非 C++ Runtime 框架（PyTorch custom op、ONNX Runtime EP、MindSpore 自定义算子等）通过 `dlopen` / FFI 调用：
+`HostTilingEmitter` 必须额外生成一组以 C 链接暴露的查询函数，供 `runtime-session` 和非 C++ Runtime 框架（PyTorch custom op、ONNX Runtime EP、MindSpore 自定义算子等）通过 `dlopen` / FFI 调用：
 
 ```cpp
 // 生成文件：<KernelName>_get_tiling.cpp → 编译为 <KernelName>_get_tiling.so
@@ -4839,6 +5228,7 @@ int64_t <KernelName>_GetWorkspaceSize(const int64_t* shape_args, int32_t shape_c
 
 | 规则 | 说明 |
 |---|---|
+| Host Tiling ABI Binding | Runtime Manifest 必须显式记录 `library` 和四个 `symbols`；这里的 symbol 是动态链接器符号，不是 MLIR symbol，也不依赖 AFIR 方言或 `afir-translate` 工具 |
 | `shape_args` 顺序 | 必须按 Runtime Manifest 的 `shapeArgOrder` 字段顺序排列；该字段由编译器根据 `HostTilingABI.abiArgs` 中 shape 维度参数的出现顺序自动生成，调用方不得自行推断顺序 |
 | `tiling_out` 大小 | 调用方通过 `GetTilingSize()` 获取大小后自行分配，避免 ABI 版本不一致导致的内存问题 |
 | `shape_count` 校验 | 若 `shape_count` 与预期不符，`GetTiling` / `GetBlockDim` / `GetWorkspaceSize` 均返回错误 |
@@ -4871,7 +5261,7 @@ workspace_size = lib.matmul_add_leakyrelu_GetWorkspaceSize(shapes, 3)
 
 #### 6.6.7 `tiling_space.json` 规范化 Schema
 
-`tiling_space.json` 由 `TilingSpaceExportPass` 在编译期自动生成（**不需要手工维护**），用于 Level-2 Autotuner 和外部工具消费。Layer 3 `ScheduleSearch` 产出 `ScheduleDecisionSet` 后，即可导出此文件；手写 transform 脚本阶段亦可手工提供此文件作为等价替代。
+`tiling_space.json` 由 `TilingSpaceExportPass` 在编译期自动生成（**不需要手工维护**），用于 Level-2 Autotuner、prepare/offline 工具和外部验证工具消费。Layer 3 `ScheduleSearch` 产出 `ScheduleDecisionSet` 后，即可导出此文件；手写 transform 脚本阶段亦可手工提供此文件作为等价替代。`runtime-session` 不读取 `tiling_space.json` 做在线搜索。
 
 **规范化 JSON Schema（版本 `2.0`）**：
 
@@ -4934,7 +5324,7 @@ workspace_size = lib.matmul_add_leakyrelu_GetWorkspaceSize(shapes, 3)
 | `shape_key` | 参数可选 | 当 `fixed=true` 时，标记该参数对应的逻辑 shape 维度名（如 `"M"`、`"K"`、`"N"`） |
 | `min / max / step` | 参数可选 | 调优参数的搜索范围；`fixed=true` 时忽略 |
 | `values` | 参数可选 | 枚举合法值列表；与 `min/max/step` 互斥 |
-| `decision_guards` | 否 | 动态 shape 下不同 guard 对应的 tiling 参数选择；静态 shape 时可省略；每个条目的 `tiling_params` 字段必须是**完整赋值**（列出所有 `fixed: false` 的非 shape 参数），不允许差量赋值——Level-2 Autotuner 和 Runtime 按每个 guard 条目独立读取完整参数集，不做跨 guard 合并，差量赋值会导致未声明参数值不确定 |
+| `decision_guards` | 否 | 动态 shape 下不同 guard 对应的 tiling 参数选择；静态 shape 时可省略；每个条目的 `tiling_params` 字段必须是**完整赋值**（列出所有 `fixed: false` 的非 shape 参数），不允许差量赋值——Level-2 Autotuner、HostTilingEmitter 和 Runtime Manifest Builder 按每个 guard 条目独立读取完整参数集，不做跨 guard 合并，差量赋值会导致未声明参数值不确定 |
 | `shapes` | 否 | 静态 shape 场景下的具体 shape 值，供 Level-2 Autotuner 和验证工具使用 |
 
 **生成规则**：
@@ -4953,9 +5343,9 @@ workspace_size = lib.matmul_add_leakyrelu_GetWorkspaceSize(shapes, 3)
 | Verifier                    | 检查时机   | 检查内容                                                     |
 | --------------------------- | ---------- | ------------------------------------------------------------ |
 | `ComputeLoweringVerifier`   | 6.3 完成后 | （1）所有 `linalg.*` 已消除（error，任一残留即失败）；（2）每个 `memory_space > 0` 的 `memref.alloc` 均在 `AscendCBufferContext` 中有对应 queue 和 tbuf（error）；（3）搬运路径双向对齐：`Backend Compute IR` 中每条 `ascendc.data_copy_*` / `ascendc.load_data_*` 必须能在 `MemoryRealizationPlan.resolvedMovements` 中找到对应条目（IR→plan 方向，error）；且 `resolvedMovements` 中每条 movement 必须在 `Backend Compute IR` 中有对应的 backend movement op（plan→IR 方向，error）；两方向均须满足，任一不满足均报 error 并列出具体缺失条目 |
-| `KernelABIVerifier`         | 6.4 完成后 | 函数签名符合 CANN 标准；`cann.num_inputs` 与参数一致；workspace 参数类型为 `memref<ui8>`；tiling 参数类型为 `!emitasc.py_struct<...>`；`TilingData` 字段顺序与 `ScheduleDecisionSet.tilingParams` 枚举顺序一致（此时 host 侧 `TilingData` 尚未生成，**不做 host/kernel 一致性校验**，该校验由 6.6 完成后的 `HostTilingABIVerifier` 负责） |
+| `KernelABIVerifier`         | 6.4 完成后 | 函数签名符合 CANN 标准；`cann.num_inputs` 与参数一致；workspace 参数类型为 `memref<ui8>`；tiling 参数类型为 `!emitasc.py_struct<...>`；`TilingData` 字段顺序与 6.4.3 节规则一致（`ScheduleDecisionSet.tilingParams` → `tailPlans` 派生字段 → shape 字段）；此时 host 侧 `TilingData` 尚未生成，**不做 host/kernel 一致性校验**，该校验由 6.6 完成后的 `HostTilingABIVerifier` 负责 |
 | `SourceTranslationVerifier` | 6.5 完成后 | 所有 backend op 均有对应 C++ 映射；生成源码语法正确          |
-| `HostTilingABIVerifier`     | 6.6 完成后 | （1）`HostTilingABI.tilingFields` 字段顺序与 kernel 侧 `!emitasc.py_struct` 字段顺序逐一一致（error）；（2）host 侧 `TilingData` 结构体字段顺序与 `tilingFields` 一致（error）；（3）`get_tiling` 函数的 shape 参数列表与 `tilingFields` 中 `fixed:true` 字段集合完全一致（error）；（4）若有 manifest，`guardSet` 与 `ScheduleDecisionSet.decisionGuards` 双向一致：manifest 中每个 guard 必须能在 `decisionGuards` 中找到对应条目（manifest→data，error），且 `decisionGuards` 中每个条目必须在 manifest `guardSet` 中有对应 guard（data→manifest，error）；任一方向不满足均报 error 并列出具体缺失条目 |
+| `HostTilingABIVerifier`     | 6.6 完成后 | （1）`HostTilingABI.tilingFields` 字段顺序与 kernel 侧 `!emitasc.py_struct` 字段顺序逐一一致（error）；（2）host 侧 `TilingData` 结构体字段顺序与 `tilingFields` 一致（error）；（3）`get_tiling` 函数的 shape 参数列表与 `tilingFields` 中 `fixed:true` 字段集合完全一致（error）；（4）若有 manifest，`guardSet` 与 `ScheduleDecisionSet.decisionGuards` 双向一致：manifest 中每个 guard 必须能在 `decisionGuards` 中找到对应条目（manifest→data，error），且 `decisionGuards` 中每个条目必须在 manifest `guardSet` 中有对应 guard（data→manifest，error）；（5）manifest 中每个 `tailPlanEntry` 必须能在 `ScheduleDecision.tailPlans` 中找到对应轴和策略，且其派生字段名必须存在于 `tilingSchema` 或可由 kernel body 现场计算；任一方向不满足均报 error 并列出具体缺失条目 |
 
 ---
 
@@ -5001,6 +5391,7 @@ pass 顺序约束：
 | `memref` type system     | 承载 address space 信息            | 按 `memory_space` 分发 movement path   |
 
 第五层不修改任何 MLIR upstream 代码；所有 AscendC 专属逻辑以独立 pass / driver / emitter 形式实现。
+
 
 
 
@@ -5568,6 +5959,7 @@ auto moveIntrinsics   = targetProfile.intrinsicModel.movementIntrinsicMap[PathKi
 
 
 
+
 ## 9. Pass 流水线参考与 Runtime 对接规范
 
 本节作为开发参考补充，覆盖两个主题：
@@ -5579,7 +5971,7 @@ auto moveIntrinsics   = targetProfile.intrinsicModel.movementIntrinsicMap[PathKi
 
 ### 9.1 当前原型流水线（V1 路径）
 
-> **工具说明**：本节命令行中出现的 `afir-opt` 是原型阶段的 driver 工具，功能等价于 MLIR 社区的 `mlir-opt`——承载当前所有 Pass 的注册与执行入口。它随 AFIR Dialect 一同存在于原型期代码库中。V2 规范（见 V2-1.4.2）不依赖 AFIR Dialect；V2 各层 Pass 全部完成后，统一 driver 将替换为 `ascend-mlir-opt`（见 9.2.1 节）。在此之前，开发者可将本节的 `afir-opt` 命令理解为"在当前工具链下的等价调用"。
+> **工具说明**：本节命令行中出现的 `afir-opt` / `afir-translate` 是原型阶段的兼容 driver 工具，功能分别等价于 MLIR 社区的 `mlir-opt` / `mlir-translate`。它们随 AFIR Dialect 一同存在于原型期代码库中。V2 规范（见 V2-1.4.2）不依赖 AFIR Dialect；V2 各层 Pass 全部完成后，统一 driver 将替换为 `ascend-mlir-opt` / `ascend-mlir-translate`（见 9.2.1 节）。旧 `afir-*` 工具可以继续保留用于兼容和回归，但 Ascend 工具链、Runtime Manifest、Host Tiling ABI 和业务能力不得依赖 AFIR 方言或 `afir-translate`。
 
 当前原型阶段，Layers 1–3（Normalize / Kernelize / Schedule）尚未实现为自动化 Pass，由手写 Transform 脚本和人工挑选的融合策略代替。完整 Pass 序列如下。
 
@@ -5627,7 +6019,7 @@ afir-opt --ascendc-prepare-for-emit \
 afir-opt --canonicalize-cann-signature \
          step7_kernel.mlir -o step7_cann.mlir
 
-# 阶段 8：Codegen（Layer 5 实现）
+# 阶段 8：Codegen（Layer 5 实现；V2 目标工具为 ascend-mlir-translate）
 afir-translate -mlir-to-cann \
                step7_cann.mlir -o step8_kernel.cpp
 ```
@@ -5748,7 +6140,7 @@ V2 完成后，编译器在一次调用中自动输出以下产物，无需人�
 编译器输出目录/
 ├── <kernel>.cpp               ← bisheng 编译输入
 ├── <kernel>_cann.mlir         ← 元数据来源（ABI、buffer 顺序等）
-├── tiling_space.json          ← Autotuner / Runtime 参数空间
+├── tiling_space.json          ← Autotuner / prepare-time 参数空间
 ├── runtime_manifest.json      ← Runtime 调度总入口
 └── <KernelName>_get_tiling.so ← C ABI 动态库（非 C++ Runtime 对接）
 
@@ -5763,7 +6155,7 @@ bisheng 编译后追加：
 |---|---|---|
 | `<kernel>.cpp` / `<kernel>.bin` | CANN Runtime / 自定义 device 侧执行引擎 | device 侧 kernel 执行 |
 | `<kernel>_cann.mlir` | RuntimeMix、测试框架 | ABI 解析、tiling 参数填充 |
-| `tiling_space.json` | Level-2 Autotuner、Runtime 调度框架 | tiling 参数搜索、运行时参数查询 |
+| `tiling_space.json` | Level-2 Autotuner、prepare/offline 工具 | tiling 参数搜索、bucket/guard 产物生成；`runtime-session` 不在线消费 |
 | `runtime_manifest.json` | C++ Runtime、外部 Runtime 框架 | 全局调度，多 kernel DAG 执行 |
 | `<KernelName>_get_tiling.so` | Python / Go / Rust 推理框架 | 非 C++ 语言跨语言调用 tiling 查询 |
 
@@ -5780,16 +6172,17 @@ bisheng 编译后追加：
 | 要求 | 说明 |
 |---|---|
 | 能加载 `.bin` ELF | 调用 CANN `AscendCL` 或等效接口执行 device 侧 kernel |
-| 能读取并解析 `runtime_manifest.json` | 获取 kernel 名称、ABI、tiling 参数入口、workspace 大小、DAG 边 |
+| 能读取并解析 `runtime_manifest.json` | 获取 kernel 名称、ABI、guard/fallback、host tiling 符号绑定、workspace 大小、DAG 边 |
 | 能分配 workspace buffer | 按 `GetWorkspaceSize` 或 manifest 中 `workspaceSizeExpr` 计算所需字节，在 device 侧分配 |
 | 能按顺序（或 DAG 拓扑序）触发 kernel 执行 | 单 kernel 按顺序，多 kernel 按 `kernelGraph` 的拓扑序调度 |
-| 能填充 tiling 参数结构体并传入 kernel | 通过 C ABI（见 9.4.3 节）或直接解析 `tiling_space.json` 填充 |
+| 能填充 tiling 参数结构体并传入 kernel | 通过 manifest 指向的 Host Tiling C ABI（见 9.4.3 节）填充 |
 
 外部 Runtime **不需要**：
 
 - 理解 MLIR IR 格式
 - 依赖 CANN 编译器内部实现
 - 重新实现 tiling 算法（tiling 计算由编译器生成的 C ABI 函数完成）
+- 在线运行 Autotuner；若当前 shape 未被 manifest 的 guard/fallback 覆盖，应 fail fast 或交给离线 prepare 服务重新生成产物
 
 #### 9.4.2 静态 Shape 对接流程
 
@@ -5797,28 +6190,30 @@ bisheng 编译后追加：
 
 ```
 1. 读取 runtime_manifest.json
-   → 获取 kernelName、ABI 字段（inputs/outputs 顺序与类型）
+   → 获取 kernelName、ABI 字段（inputs/outputs 顺序与类型）、hostTilingBindings
 
-2. 调用 GetTilingSize() → 获取 tiling 结构体字节数
+2. 根据当前 schedule entry 的 `hostTilingId` 查找 binding，`dlopen(binding.library)` 并按 manifest 中的显式 symbol 名 `dlsym`
 
-3. 分配 tiling buffer（host 侧）
+3. 调用 GetTilingSize() → 获取 tiling 结构体字节数
 
-4. 调用 GetTiling(shape_args, shape_count, tiling_out)
+4. 分配 tiling buffer（host 侧）
+
+5. 调用 GetTiling(shape_args, shape_count, tiling_out)
    → 填充 tiling 结构体
 
-5. 调用 GetWorkspaceSize(shape_args, shape_count)
+6. 调用 GetWorkspaceSize(shape_args, shape_count)
    → 在 device 侧分配 workspace memref<ui8>
 
-6. 调用 GetBlockDim(shape_args, shape_count)
+7. 调用 GetBlockDim(shape_args, shape_count)
    → 设置 block_dim（AICore 并行数）
 
-7. 调用 AscendCL 执行 kernel
+8. 调用 AscendCL 执行 kernel
    参数顺序：inputs... outputs... workspace tiling_ptr
 ```
 
 #### 9.4.3 C ABI 接口规范
 
-编译器为每个 kernel 生成以下四个 C ABI 函数，以动态库（`.so`）形式导出，供任意支持 FFI 的语言调用：
+编译器为每个 kernel 或 bucket variant 生成以下四个 C ABI 函数，以动态库（`.so`）形式导出，供 `runtime-session` 和任意支持 FFI 的语言调用。Runtime 必须以 `runtime_manifest.json` 中 `hostTilingBindings` 的 `library` 和 `symbols` 为准做动态链接；`<KernelName>_GetTiling` 只是默认命名约定，不是绑定来源。
 
 ```c
 extern "C" {
@@ -5863,7 +6258,7 @@ lib = ctypes.CDLL("./matmul_add_leakyrelu_get_tiling.so")
 lib.matmul_add_leakyrelu_GetTilingSize.restype  = ctypes.c_int32
 lib.matmul_add_leakyrelu_GetTiling.restype      = ctypes.c_int32
 lib.matmul_add_leakyrelu_GetTiling.argtypes     = [
-    ctypes.POINTER(ctypes.c_int64), ctypes.c_int32, ctypes.c_void_p
+  ctypes.POINTER(ctypes.c_int64), ctypes.c_int32, ctypes.c_void_p
 ]
 lib.matmul_add_leakyrelu_GetBlockDim.restype    = ctypes.c_int64
 lib.matmul_add_leakyrelu_GetWorkspaceSize.restype = ctypes.c_int64
@@ -5888,21 +6283,65 @@ workspace_size = lib.matmul_add_leakyrelu_GetWorkspaceSize(shape_ptr, n_shapes)
 动态 shape 下，每次推理调用前 shape 才确定。对接步骤与静态形相同，差异在于：
 
 - `GetTiling`、`GetBlockDim`、`GetWorkspaceSize` 在每次推理时以当前 shape 为参数调用
-- 编译器在 `runtime_manifest.json` 的 `decision_guards` 字段记录 shape 约束（guard 条件），Runtime 无需自行实现分支选择，由 `GetTiling` 内部完成
-- 对于多路 guard（shape bucket 分发），`GetTiling` 内部根据 shape 参数选择对应的 `ScheduleDecision`，外部 Runtime 只需调用一次 `GetTiling`，无需感知内部分支
+- 编译器在 `runtime_manifest.json` 的 `scheduleEntries[].guard` 字段记录 shape 约束（guard 条件），Runtime 按 priority 顺序选择匹配 entry；若普通 guard 均未命中，只能使用显式 `fallback=true` entry
+- `GetTiling` 只负责把已生成 binding 内的参数物化到 `TilingData`，并校验当前 shape 是否满足对应 guard/fallback 约束；它不调用 Autotuner、不生成新的 `best.config`
+- 若没有匹配 guard 且没有 fallback，Runtime 必须 fail fast，交由离线 prepare 服务重新生成覆盖该 shape 的产物
 
 ```
 动态推理调用流程（每次 forward）：
 
 shape_args ← 本次输入的实际维度
-GetTiling(shape_args, ..., tiling_out)  ← 内部自动选 decision
-GetBlockDim(shape_args, ...)            ← 对应 block 数
-GetWorkspaceSize(shape_args, ...)       ← 对应 workspace 大小
+entry ← runtime_manifest.scheduleEntries 按 priority 匹配 guard / fallback
+通过 entry.hostTilingId 查找 binding，dlopen(binding.library) 并绑定 binding.symbols
+GetTiling(shape_args, ..., tiling_out)  ← 物化已生成 binding 的参数
+GetBlockDim(shape_args, ...)            ← 当前 entry 的 block 数
+GetWorkspaceSize(shape_args, ...)       ← 当前 entry 的 workspace 大小
 分配/复用 device workspace
 执行 kernel
 ```
 
 **shape_args 顺序约定**：`runtime_manifest.json` 中的 `shapeArgOrder` 字段（定义见 V2-6.6.2 节）显式列出每个位置对应哪个符号维度，Runtime 框架必须按此顺序传入，不得自行推断顺序。
+
+**动态 shape manifest 示例**：
+
+```json
+{
+  "kernelName": "broadcast_add",
+  "shapeArgOrder": [
+    {"name": "dim_arg0_1", "shapeKey": "A", "abiPosition": 0}
+  ],
+  "hostTilingBindings": [
+    {
+      "id": "broadcast_add_tiling",
+      "library": "broadcast_add_get_tiling.so",
+      "symbols": {
+        "getTilingSize": "broadcast_add_GetTilingSize",
+        "getTiling": "broadcast_add_GetTiling",
+        "getBlockDim": "broadcast_add_GetBlockDim",
+        "getWorkspaceSize": "broadcast_add_GetWorkspaceSize"
+      }
+    }
+  ],
+  "scheduleEntries": [
+    {
+      "decisionId": "aligned",
+      "guard": "A % 32 == 0 && A <= 4096",
+      "priority": 0,
+      "fallback": false,
+      "hostTilingId": "broadcast_add_tiling",
+      "tilingParams": {"tileA": 128}
+    },
+    {
+      "decisionId": "generic_tail",
+      "guard": "A > 0",
+      "priority": 99,
+      "fallback": true,
+      "hostTilingId": "broadcast_add_tiling",
+      "tilingParams": {"tileA": 64}
+    }
+  ]
+}
+```
 
 #### 9.4.5 多 Kernel DAG 调度
 
@@ -5910,17 +6349,17 @@ GetWorkspaceSize(shape_args, ...)       ← 对应 workspace 大小
 
 ```json
 "kernelGraph": {
-  "nodes": [
-    { "kernelName": "k1_matmul",  "blockDimExpr": "ceil(M/TB_M)" },
-    { "kernelName": "k2_softmax", "blockDimExpr": "B" }
-  ],
-  "edges": [
-    {
-      "from": "k1_matmul",
-      "to":   "k2_softmax",
-      "carriedBuffers": ["attn_score"]
-    }
-  ]
+"nodes": [
+{ "kernelName": "k1_matmul",  "blockDimExpr": "ceil(M/TB_M)" },
+{ "kernelName": "k2_softmax", "blockDimExpr": "B" }
+],
+"edges": [
+{
+"from": "k1_matmul",
+"to":   "k2_softmax",
+"carriedBuffers": ["attn_score"]
+}
+]
 }
 ```
 
@@ -5969,6 +6408,7 @@ GetWorkspaceSize(shape_args, ...)       ← 对应 workspace 大小
 
 - [ ] 读取 `runtime_manifest.json`，验证 `schema_version`
 - [ ] 按 `abi.inputs` / `abi.outputs` 字段顺序绑定 tensor buffer
+- [ ] 读取 `hostTilingBindings`，通过显式 `library` / `symbols` 绑定 Host Tiling C ABI
 - [ ] 调用 `GetTilingSize()` 确认 tiling 结构体大小
 - [ ] 调用 `GetTiling(shape_args, ...)` 填充 tiling
 - [ ] 按 `GetWorkspaceSize()` 分配 device workspace
@@ -5979,8 +6419,10 @@ GetWorkspaceSize(shape_args, ...)       ← 对应 workspace 大小
 #### 9.5.2 动态 Shape 场景（在静态清单基础上）
 
 - [ ] 确认 `shapeArgOrder` 字段存在且与实际 shape 维度一一对应
+- [ ] 按 `scheduleEntries[].priority` 匹配 guard；普通 guard 未命中时只使用显式 `fallback=true` entry
 - [ ] 每次推理前调用 `GetTiling` / `GetBlockDim` / `GetWorkspaceSize`（不缓存上次结果）
 - [ ] 若 workspace 大小随 shape 变化，在 size 增大时重新分配 device buffer
+- [ ] 若 guard/fallback 均未覆盖当前 shape，直接报错并触发离线 prepare 流程，不在线运行 Autotuner
 
 #### 9.5.3 多 Kernel DAG 场景（在静态清单基础上）
 
