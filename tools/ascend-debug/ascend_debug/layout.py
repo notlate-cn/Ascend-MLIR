@@ -22,6 +22,18 @@ QUICK_NORMALIZE_KERNELIZE_STAGES: tuple[StageArtifact, ...] = (
     StageArtifact(29, "kernelize-out", "stages/029-kernelize-out.mlir"),
 )
 
+DEEP_NORMALIZE_KERNELIZE_STAGES: tuple[StageArtifact, ...] = (
+    StageArtifact(0, "source", "stages/000-source.mlir"),
+    StageArtifact(10, "normalize-in", "stages/010-normalize-in.mlir"),
+    StageArtifact(19, "normalize-out", "stages/019-normalize-out.mlir"),
+    StageArtifact(20, "kernelize-in", "stages/020-kernelize-in.mlir"),
+    StageArtifact(29, "kernelize-out", "stages/029-kernelize-out.mlir"),
+    StageArtifact(30, "schedule-in", "stages/030-schedule-in.mlir"),
+    StageArtifact(39, "schedule-out", "stages/039-schedule-out.mlir"),
+    StageArtifact(40, "realize-in", "stages/040-realize-in.mlir"),
+    StageArtifact(49, "realize-out", "stages/049-realize-out.mlir"),
+)
+
 
 def prepare_run_dir(run_dir: pathlib.Path) -> None:
     run_dir.mkdir(parents=True, exist_ok=True)
@@ -50,12 +62,16 @@ def write_manifest(
     preset: str,
     pipeline: str,
     stages: tuple[StageArtifact, ...],
+    version: str,
+    commands: list[dict[str, Any]] | None = None,
+    reports: list[dict[str, Any]] | None = None,
 ) -> None:
     write_json(
         run_dir / "manifest.json",
         {
             "schema_version": 1,
             "tool": "ascend-debug",
+            "version": version,
             "input": stages[0].path,
             "preset": preset,
             "pipeline": pipeline,
@@ -66,6 +82,8 @@ def write_manifest(
                 {"order": stage.order, "name": stage.name, "path": stage.path}
                 for stage in stages
             ],
+            "commands": commands or [],
+            "reports": reports or [],
         },
     )
 

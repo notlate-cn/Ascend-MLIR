@@ -6,7 +6,7 @@ import pathlib
 import sys
 
 from ascend_debug import __version__
-from ascend_debug.collect import collect_quick
+from ascend_debug.collect import collect_run
 from ascend_debug.open_view import open_run
 from ascend_debug.runner import CommandError
 
@@ -22,9 +22,9 @@ def build_parser() -> argparse.ArgumentParser:
     collect = subparsers.add_parser("collect", help="Collect a debug run")
     collect.add_argument("input", type=pathlib.Path)
     collect.add_argument("--out", type=pathlib.Path, required=True)
-    collect.add_argument("--preset", choices=["quick"], default="quick")
+    collect.add_argument("--preset", choices=["quick", "deep"], default="quick")
     collect.add_argument("--pipeline", choices=["normalize-kernelize"], default="normalize-kernelize")
-    collect.set_defaults(handler=collect_quick)
+    collect.set_defaults(handler=collect_run)
 
     open_cmd = subparsers.add_parser("open", help="Generate or open the debug dashboard")
     open_cmd.add_argument("run_dir", type=pathlib.Path)

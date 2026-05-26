@@ -13,6 +13,20 @@ from ascend_debug import layout
 from ascend_debug.runner import CommandError
 
 
+def _validate_run_relative_path(value: Any, *, manifest_path: pathlib.Path, label: str) -> str:
+    if not isinstance(value, str):
+        raise CommandError(f"manifest {label} path must be a string: {manifest_path}")
+    path = pathlib.PurePosixPath(value)
+    if (
+        value in ("", ".")
+        or path.is_absolute()
+        or ".." in path.parts
+        or posixpath.normpath(value) != value
+    ):
+        raise CommandError(f"manifest {label} path must stay inside run dir: {manifest_path}")
+    return value
+
+
 def load_manifest(run_dir: pathlib.Path) -> dict[str, Any]:
     manifest_path = run_dir / "manifest.json"
     try:
@@ -41,16 +55,49 @@ def load_manifest(run_dir: pathlib.Path) -> dict[str, Any]:
             raise CommandError(f"manifest stage {index} order must be an integer: {manifest_path}")
         if not isinstance(stage["name"], str):
             raise CommandError(f"manifest stage {index} name must be a string: {manifest_path}")
-        if not isinstance(stage["path"], str):
-            raise CommandError(f"manifest stage {index} path must be a string: {manifest_path}")
-        path = pathlib.PurePosixPath(stage["path"])
-        if (
-            stage["path"] in ("", ".")
-            or path.is_absolute()
-            or ".." in path.parts
-            or posixpath.normpath(stage["path"]) != stage["path"]
+        _validate_run_relative_path(
+            stage["path"],
+            manifest_path=manifest_path,
+            label=f"stage {index}",
+        )
+
+    commands = manifest.get("commands", [])
+    if not isinstance(commands, list):
+        raise CommandError(f"manifest commands must be a list: {manifest_path}")
+    for index, command in enumerate(commands):
+        if not isinstance(command, dict):
+            raise CommandError(f"manifest command {index} must be an object: {manifest_path}")
+        for field in ("stage", "tool", "status"):
+            if field in command and not isinstance(command[field], str):
+                raise CommandError(f"manifest command {index} {field} must be a string: {manifest_path}")
+        if "args" in command and not (
+            isinstance(command["args"], list)
+            and all(isinstance(arg, str) for arg in command["args"])
         ):
-            raise CommandError(f"manifest stage {index} path must stay inside run dir: {manifest_path}")
+            raise CommandError(f"manifest command {index} args must be a string list: {manifest_path}")
+        for field in ("stdout", "stderr"):
+            if field in command:
+                _validate_run_relative_path(
+                    command[field],
+                    manifest_path=manifest_path,
+                    label=f"command {index} {field}",
+                )
+
+    reports = manifest.get("reports", [])
+    if not isinstance(reports, list):
+        raise CommandError(f"manifest reports must be a list: {manifest_path}")
+    for index, report in enumerate(reports):
+        if not isinstance(report, dict):
+            raise CommandError(f"manifest report {index} must be an object: {manifest_path}")
+        if "stage" in report and not isinstance(report["stage"], str):
+            raise CommandError(f"manifest report {index} stage must be a string: {manifest_path}")
+        if "path" not in report:
+            raise CommandError(f"manifest report {index} missing path: {manifest_path}")
+        _validate_run_relative_path(
+            report["path"],
+            manifest_path=manifest_path,
+            label=f"report {index}",
+        )
     return manifest
 
 
@@ -84,8 +131,65 @@ def _stage_rows(run_dir: pathlib.Path, manifest: dict[str, Any]) -> str:
     return "\n".join(rows)
 
 
+def _command_rows(manifest: dict[str, Any]) -> str:
+    rows = []
+    for command in manifest.get("commands", []):
+        args = " ".join(command.get("args", []))
+        rows.append(
+            "<tr>"
+            f"<td>{_cell(command.get('stage'))}</td>"
+            f"<td>{_cell(command.get('tool'))}</td>"
+            f"<td>{_cell(args)}</td>"
+            f"<td>{_cell(command.get('status'))}</td>"
+            f"<td>{_cell(command.get('stderr'))}</td>"
+            "</tr>"
+        )
+    return "\n".join(rows)
+
+
+def _report_rows(run_dir: pathlib.Path, manifest: dict[str, Any]) -> str:
+    rows = []
+    for report in manifest.get("reports", []):
+        rel_path = report["path"]
+        status = "present" if (run_dir / rel_path).exists() else "missing"
+        rows.append(
+            "<tr>"
+            f"<td>{_cell(report.get('stage'))}</td>"
+            f"<td>{_cell(rel_path)}</td>"
+            f"<td>{_cell(status)}</td>"
+            "</tr>"
+        )
+    return "\n".join(rows)
+
+
 def render_index(run_dir: pathlib.Path, manifest: dict[str, Any]) -> pathlib.Path:
     index_path = run_dir / "index.html"
+    command_section = ""
+    if manifest.get("commands"):
+        command_section = f"""
+<section>
+<h2>Commands</h2>
+<table>
+<thead><tr><th>Stage</th><th>Tool</th><th>Args</th><th>Status</th><th>Report</th></tr></thead>
+<tbody>
+{_command_rows(manifest)}
+</tbody>
+</table>
+</section>
+"""
+    report_section = ""
+    if manifest.get("reports"):
+        report_section = f"""
+<section>
+<h2>Reports</h2>
+<table>
+<thead><tr><th>Stage</th><th>Path</th><th>Status</th></tr></thead>
+<tbody>
+{_report_rows(run_dir, manifest)}
+</tbody>
+</table>
+</section>
+"""
     document = f"""<!doctype html>
 <html lang="en">
 <head>
@@ -117,6 +221,8 @@ dd {{ margin: 0 0 0.35rem 0; }}
 </tbody>
 </table>
 </section>
+{command_section}
+{report_section}
 </body>
 </html>
 """
