@@ -8,6 +8,7 @@ import sys
 from ascend_debug import __version__
 from ascend_debug.collect import collect_run
 from ascend_debug.diff import diff_run
+from ascend_debug.locate import locate_run
 from ascend_debug.open_view import open_run
 from ascend_debug.runner import CommandError
 
@@ -43,7 +44,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     locate = subparsers.add_parser("locate", help="Locate first bad kernel")
     locate.add_argument("run_dir", type=pathlib.Path)
-    locate.set_defaults(handler=lambda args: parser.exit(2, "ascend-debug locate is implemented in a later slice\n"))
+    locate.set_defaults(handler=locate_run)
 
     return parser
 

@@ -270,6 +270,19 @@ def _load_tensor_diff(run_dir: pathlib.Path) -> dict[str, Any] | None:
     return summary
 
 
+def _load_locate_summary(run_dir: pathlib.Path) -> dict[str, Any] | None:
+    locate_path = run_dir / "summaries/locate.json"
+    if not locate_path.exists():
+        return None
+    try:
+        summary = json.loads(locate_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise CommandError(f"could not read locate summary: {locate_path}: {error}") from error
+    if not isinstance(summary, dict):
+        raise CommandError(f"locate summary must be a JSON object: {locate_path}")
+    return summary
+
+
 def _tensor_diff_rows(
     summary: dict[str, Any] | None,
     kernel_views: dict[str, str],
@@ -302,6 +315,25 @@ def _tensor_diff_rows(
             "</tr>"
         )
     return "\n".join(rows)
+
+
+def _locate_section(summary: dict[str, Any] | None, kernel_views: dict[str, str]) -> str:
+    if not summary:
+        return ""
+    kernel_id = summary.get("first_bad_kernel")
+    kernel_cell = _cell(kernel_id)
+    if isinstance(kernel_id, str) and kernel_id in kernel_views:
+        kernel_cell = _link(kernel_views[kernel_id], kernel_id)
+    first_bad_comparison = summary.get("first_bad_comparison")
+    comparison_id = ""
+    if isinstance(first_bad_comparison, dict):
+        comparison_id = first_bad_comparison.get("id", "")
+    return f"""
+<section>
+<h2>Locate</h2>
+<p>status={_cell(summary.get('status'))}; first_bad_kernel={kernel_cell}; first_bad_comparison={_cell(comparison_id)}; failed_kernels={_cell(summary.get('failed_kernel_count'))}; method={_cell(summary.get('method'))}</p>
+</section>
+"""
 
 
 def _render_mlir_view(run_dir: pathlib.Path, rel_path: str) -> str | None:
@@ -701,6 +733,7 @@ def render_index(run_dir: pathlib.Path, manifest: dict[str, Any]) -> pathlib.Pat
     kernel_summary = _load_kernel_summary(run_dir)
     kernel_views = _render_kernel_views(run_dir, kernel_summary, graph_views, json_views)
     tensor_diff = _load_tensor_diff(run_dir)
+    locate_summary = _load_locate_summary(run_dir)
     command_section = ""
     if manifest.get("commands"):
         command_section = f"""
@@ -769,6 +802,7 @@ def render_index(run_dir: pathlib.Path, manifest: dict[str, Any]) -> pathlib.Pat
 </table>
 </section>
 """
+    locate_section = _locate_section(locate_summary, kernel_views)
     summary_rows = _summary_rows(run_dir, json_views)
     summary_section = ""
     if summary_rows:
@@ -819,6 +853,7 @@ dd {{ margin: 0 0 0.35rem 0; }}
 {graph_section}
 {kernel_section}
 {tensor_diff_section}
+{locate_section}
 {summary_section}
 </body>
 </html>
