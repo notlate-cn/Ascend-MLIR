@@ -500,22 +500,24 @@ DataCopy(outGm, outVec, /* ... */);
 
 本阶段有两项职责，可独立实现：
 
-**Host Tiling Codegen**：从 `AscendC Kernel MLIR` 提取稳定的 `HostTilingABI`，结合 Level-1 运行期快速调优结果或可选 Level-2 Autotuner 最优结果，生成 host 侧 `TilingData` 结构体、`get_tiling(...)` 和 `get_block_dim(...)` 函数。
+**Host Tiling Codegen**：从 `AscendC Kernel MLIR` 提取稳定的 `HostTilingABI`，结合 prepare/offline 阶段已经选定的 `ScheduleDecision`（Level-1 top1 或 Level-2 Autotuner 产出的 `best.config`），生成 host 侧 `TilingData` 结构体、`get_tiling(...)` 和 `get_block_dim(...)` 函数。Host Tiling 只物化已选参数，不运行搜索。
 
-**Runtime Manifest（可选）**：把 `decisionGuards`、shape bucket、schedule entry 和 cache key 组装成 runtime 可消费的元数据结构，支持 runtime 按 shape 分桶选择 kernel 和复用编译缓存。
+**Runtime Manifest（可选）**：把 `decisionGuards`、shape bucket、schedule entry、host tiling symbol binding 和 cache key 组装成 runtime 可消费的元数据结构，支持 runtime 按 shape 分桶选择已生成的 kernel/tiling variant。Manifest 中的 cache key 只用于产物复用和诊断，`runtime-session` 不通过它在线调用 Autotuner。
 
 **Runtime Manifest 触发条件：**
 
 | 场景 | 是否必须生成 | 原因 |
 |---|---|---|
-| `ScheduleDecisionSet.decisionGuards` 非空（动态 shape，多 guard） | **必须生成** | Runtime 需要 manifest 中的 `guardSet` 和 `scheduleEntries` 才能在运行时按 shape 选择正确的 tiling 参数；缺失时 runtime 无法完成 shape bucket 路由，应报编译错误 |
+| `ScheduleDecisionSet.decisionGuards` 非空（动态 shape，多 guard） | **必须生成** | Runtime 需要 manifest 中的 `guardSet`、`scheduleEntries` 和 `hostTiling` binding 才能在运行时按 shape 选择正确的已生成 variant；缺失时 runtime 无法完成 shape bucket 路由，应报编译错误 |
 | 静态 shape（`decisionGuards` 为空，单一决策） | 可选 | `get_tiling` 函数已包含全部参数，runtime 无需额外路由；可生成 manifest 用于缓存和调试，但不强制 |
 | 需要编译缓存复用（`cacheKey` 用于跨编译实例共享） | 建议生成 | 无强制要求，但缺失时每次编译均需全量重建，影响增量编译性能 |
 
 动态 shape 场景下不生成 manifest 时，编译器必须在 `HostTilingEmitter` 阶段检测到 `decisionGuards` 非空并报错，不允许静默跳过。
 
-**输入**：`AscendC Kernel MLIR`、`ScheduleDecisionSet`、`decisionGuards`、Level-1 `topN` 结果（可选）、Level-2 Autotuner `best.config`（可选）
+**输入**：`AscendC Kernel MLIR`、`ScheduleDecisionSet`、`decisionGuards`、prepare/offline Level-1 `topN` 结果（可选）、Level-2 Autotuner `best.config`（可选）
 **输出**：`Host Tiling`（必选）、`Runtime Manifest`（动态 shape 必选，静态 shape 可选）
+
+**运行期边界**：`runtime-session` 不消费 `tiling_space.json` 做搜索，也不在 guard 未命中时生成新的 `best.config`。运行期只读取 `runtime_manifest.json`，选择匹配 guard/fallback 的 `scheduleEntry`，绑定该 entry 指向的 Host Tiling ABI 符号，并调用 `GetTiling` / `GetBlockDim` / `GetWorkspaceSize` 查询当前 shape 的 launch 参数。
 
 #### 6.6.2 输出规范
 
@@ -547,6 +549,8 @@ DataCopy(outGm, outVec, /* ... */);
 | `workspaceSizeExpr` | `StringRef`                    | workspace 大小的符号表达式（如 `"mt*nt*4"`）；表达式中的变量名必须与 `tilingSchema` 中的参数名一致 |
 | `workspaceSizeBytes`| `int64_t`                      | 静态 shape 下的 workspace 字节数；动态 shape 时为 `-1`，Runtime 须用 `workspaceSizeExpr` 计算实际大小（见下方动态 shape 计算规则） |
 | `shapeArgOrder`     | `SmallVector<ShapeArgDesc>`    | 调用 C ABI（见 6.6.6 节）时 `shape_args` 数组中每个槽位对应的语义维度；按顺序与 `HostTilingABI.abiArgs` 中的 shape 参数一一对齐 |
+| `hostTilingBindings` | `SmallVector<HostTilingBinding>` | 可被 schedule entry 引用的 host tiling 动态库和导出符号；运行时通过此字段做 `dlopen` / `dlsym` |
+| `kernelGraph`       | `KernelGraph`                  | 本 kernel 在多 kernel DAG 中的节点与依赖边   |
 
 **动态 shape 下 workspace 大小的计算规则（`workspaceSizeBytes = -1` 时）：**
 
@@ -557,7 +561,6 @@ Runtime 在调用 `GetWorkspaceSize(shape_args, shape_count)` 时，按以下步
 3. 结果向上对齐到 `TargetMemoryModel` 要求的 workspace 对齐粒度（通常为 32 或 64 字节）
 
 `workspaceSizeExpr` 只允许包含：四则运算（`+`、`-`、`*`、`/`）、整除（`//`）、取模（`%`）、常数字面量，以及 `tilingSchema` 中已声明的参数名。不允许包含条件分支或函数调用；若需要按 guard 分支计算 workspace，应为每个 guard 分支单独生成一个 `workspaceSizeExpr`（通过多个 `scheduleEntry` 各自携带 `workspaceSizeExpr` 字段）。
-| `kernelGraph`       | `KernelGraph`                  | 本 kernel 在多 kernel DAG 中的节点与依赖边   |
 
 `ShapeArgDesc` 最小字段：
 
@@ -566,6 +569,33 @@ Runtime 在调用 `GetWorkspaceSize(shape_args, shape_count)` 时，按以下步
 | `name`        | `StringRef` | shape 参数名（与 `tilingSchema` 中 `fixed: true` 参数的 `name` 一致） |
 | `shapeKey`    | `StringRef` | 该槽位对应的逻辑 shape 维度名（如 `"M"`、`"K"`、`"N"`）       |
 | `abiPosition` | `int32_t`   | 该 shape 参数在 `HostTilingABI.abiArgs` 中的位置（0-based）；用于诊断与一致性校验 |
+
+`ScheduleEntry` 最小字段：
+
+| 字段 | 类型 | 含义 |
+| --- | --- | --- |
+| `decisionId` | `StringRef` | 对应第三层 `ScheduleDecision` 的稳定 ID |
+| `kernelName` | `StringRef` | 该 entry 启动的 kernel 名称；多 variant 编译时可不同 |
+| `guard` | `GuardExpr` | 当前 entry 的适用谓词；静态 shape 可为 `"true"` |
+| `priority` | `int32_t` | 多个 guard 同时成立时的选择顺序，数值越小优先级越高 |
+| `fallback` | `bool` | 是否为保守 fallback entry；只在所有普通 guard 未命中后使用 |
+| `shapeBucketKey` | `BucketKeyExpr` | 当前 entry 覆盖的 bucket key，用于诊断和 cache 复用 |
+| `tilingParams` | `DenseMap<StringRef, int64_t>` | 已选定的非 shape tiling 参数完整赋值，不允许差量赋值 |
+| `workspaceSizeExpr` | `StringRef` | 当前 entry 的 workspace 表达式；覆盖顶层默认值 |
+| `hostTilingId` | `StringRef` | 指向 `hostTilingBindings` 中的一项 |
+
+`HostTilingBinding` 最小字段：
+
+| 字段 | 类型 | 含义 |
+| --- | --- | --- |
+| `id` | `StringRef` | 被 `ScheduleEntry.hostTilingId` 引用的稳定 ID |
+| `library` | `StringRef` | host tiling 动态库路径，相对 runtime artifact root 或 manifest 所在目录 |
+| `symbols.getTilingSize` | `StringRef` | `GetTilingSize` 导出符号名 |
+| `symbols.getTiling` | `StringRef` | `GetTiling` 导出符号名 |
+| `symbols.getBlockDim` | `StringRef` | `GetBlockDim` 导出符号名 |
+| `symbols.getWorkspaceSize` | `StringRef` | `GetWorkspaceSize` 导出符号名 |
+
+Runtime 必须优先使用 `hostTilingBindings.symbols` 做显式 `dlsym`。`<KernelName>_GetTiling` 形式只作为默认命名约定和调试回退，不允许作为唯一绑定依据；这样可以支持同一 kernel family 下多个 bucket variant、版本化 symbol 和非 C++ framework 的稳定 FFI。
 
 `TailPlanManifestEntry` 最小字段：
 
@@ -602,7 +632,8 @@ Runtime 在调用 `GetWorkspaceSize(shape_args, shape_count)` 时，按以下步
 | ----------------------------------------- | ------------------------------------------------------ |
 | `tilingSchema` 与 `tilingFields` 一一对应 | host 生成什么字段，kernel 按同样顺序读取什么字段       |
 | `ScheduleEntry` 只引用 schema 中已有字段  | 不允许 host/runtime 私自增加 kernel 不可见字段         |
-| `get_tiling(...)` 不运行搜索              | 只写入 Level-1 或 Level-2 已选好的参数，不在运行时搜索 |
+| `get_tiling(...)` 不运行搜索              | 只写入 prepare/offline 阶段已选好的参数，不在运行时搜索 |
+| `hostTilingBindings` 显式绑定符号         | Runtime 通过 manifest 中的 `library` 和 `symbols` 绑定 C ABI，不从 AFIR 工具或 MLIR symbol 反推 |
 | `workspaceSizeExpr` 与 tiling 参数对齐    | 表达式中的变量名必须与 `tilingSchema` 中的参数名一致   |
 | `kernelGraph` 覆盖完整 DAG               | 凡第二层 `KernelPattern[]` DAG 中存在的边，必须全部出现在此字段 |
 | `kernelGraph` 只含 `CarriedValue` 边     | 第二层 `KernelPatternGraph` 有 7 种边类型（CarriedValue、Overlap、BranchPair、MergePair、MustCoLocate、MustSeparate、ScheduleBarrier），其中后 6 种在 Layer 2 内部调度决策阶段已完全消解，**不进入** Runtime Manifest；`kernelGraph.edges` 仅保留表达跨 kernel GM 数据流的 `CarriedValue` 类型边 |
@@ -618,32 +649,34 @@ Runtime 在调用 `GetWorkspaceSize(shape_args, shape_count)` 时，按以下步
    - 最后参数类型必须是 `!emitasc.py_struct<...>`（tiling）
    - `cann.num_inputs` 与签名参数数量一致
 2. 提取 `HostTilingABI`（如 6.6.2 所定义）
-3. 读取调优结果：
-   - 仅启用 Level-1 时：读取快速调优选出的 `top1` 参数
-   - 启用 Level-2 时：读取 Autotuner 给出的 `best.config` 参数
+3. 读取已物化的调优结果：
+   - 仅启用 Level-1 时：读取 prepare 阶段选出的 `top1` 参数
+   - 启用 Level-2 时：读取离线 Autotuner 给出的 `best.config` 参数
+   - 若两者都不存在：读取显式 fallback decision 的保守参数；仍不存在则报编译错误
 4. 按 `tilingFields` 顺序生成 `TilingData` 结构体
 5. 确定 `get_tiling` / `get_block_dim` 的 shape 参数列表：从 `HostTilingABI.tilingFields` 中筛选 `fixed: true` 的字段（即 `tiling_space.json` 中 `fixed=true` 的参数），按其在 `tilingFields` 中的出现顺序作为函数参数，参数名使用 `ShapeArgDesc.name`，类型固定为 `int64_t`。**`fixed: true` 字段是 shape 参数的唯一来源**，`HostTilingEmitter` 不从其他地方推断 shape 参数列表。
 6. 生成 `get_tiling(int64_t <shape_param_0>, ..., TilingData* out)` 函数，按以下规则处理多 guard 分支：
    - **静态 shape（无 `decisionGuards` 或单 guard）**：函数体为无分支的逐字段赋值；`fixed: false` 字段按调优结果填入常量，`fixed: true` 字段透传 shape 参数（`out->M = M;`）
-   - **动态 shape（多 guard）**：函数体生成 `if / else if / else` 分支结构，每个 guard 对应一个分支；分支条件由 `decision_guards[i].guard` 表达式翻译为 C++ 布尔表达式（guard 中的 shape 变量名对应同名函数参数）；每个分支内对 `fixed: false` 字段赋该 guard 对应的调优结果值，`fixed: true` 字段在各分支中统一透传；所有 guard 分支必须互斥且完全覆盖合法 shape 范围，若存在未覆盖区域，最后一个 `else` 分支设置错误标志并返回非零值
+   - **动态 shape（多 guard）**：函数体生成 `if / else if / else` 分支结构，每个 guard 对应一个分支；分支条件由 `decision_guards[i].guard` 表达式翻译为 C++ 布尔表达式（guard 中的 shape 变量名对应同名函数参数）；每个分支内对 `fixed: false` 字段赋该 guard 对应的调优结果值，`fixed: true` 字段在各分支中统一透传；普通 guard 分支必须互斥，若 manifest 声明 `fallback=true` entry 则最后分支使用 fallback 参数，否则最后一个 `else` 分支设置错误标志并返回非零值
    - guard 表达式到 C++ 的翻译规则：`%` → `%`，`==` → `==`，`!=` → `!=`，`&&` → `&&`，`||` → `||`；shape 变量名直接使用函数参数名，无需额外映射
 7. 生成 `get_block_dim(int64_t <shape_param_0>, ...)` 函数（优先使用 `block_dim_expr`，否则使用最终结果中的 `blockDim` 常量；多 guard 时与 `get_tiling` 同结构生成分支）
-7. **额外生成 C ABI 查询接口**（见 6.6.6 节）：以固定数组形式接收 shape 参数，供非 C++ Runtime 框架通过 `dlopen` 调用
-8. **生成 `tiling_space.json`**（见 6.6.7 节）：根据 `ScheduleDecisionSet` 的搜索空间自动生成，供 Level-2 Autotuner 和外部工具消费；此文件由编译器自动生成，不需要手工维护
+8. **额外生成 C ABI 查询接口**（见 6.6.6 节）：以固定数组形式接收 shape 参数，供 `runtime-session` 和非 C++ Runtime 框架通过 `dlopen` 调用
+9. **生成 `tiling_space.json`**（见 6.6.7 节）：根据 `ScheduleDecisionSet` 的搜索空间自动生成，供 Level-2 Autotuner、prepare/offline 工具和外部验证工具消费；此文件由编译器自动生成，不需要手工维护
 
 **通路 B：Runtime Manifest（可选）**
 
 1. 从 `ScheduleDecisionSet` 读取 `decisionGuards` 和 `scheduleEntries`
 2. 按 shape 维度边界构造 `shapeBucketKey`
-3. 组装 `guardSet`、`scheduleEntries`、`abiSignature`、`cacheKey`，以及 `workspaceSizeExpr`、`kernelGraph`（见 6.6.2 节）
-4. 输出 `Runtime Manifest`；当前允许不单独落盘，作为内存对象存在
+3. 为每个 `scheduleEntry` 写入 `guard`、`priority`、`fallback`、`hostTilingId`、`workspaceSizeExpr` 和完整 `tilingParams`
+4. 组装 `guardSet`、`hostTilingBindings`、`abiSignature`、`cacheKey`，以及 `workspaceSizeExpr`、`kernelGraph`（见 6.6.2 节）
+5. 输出 `Runtime Manifest`；动态 shape 场景必须落盘为 `runtime_manifest.json` 或嵌入等价 runtime artifact，不能只存在于编译器内存对象中
 
 **两级调优接入规则**：
 
 | 级别                      | 职责                                                         | 对接方式                                                     |
 | ------------------------- | ------------------------------------------------------------ | ------------------------------------------------------------ |
-| Level-1 运行期快速调优    | 在 `compileTimeTopK` 候选中快速选出 `topN`（可直接用 `top1` 填参） | 调优结果作为输入传入 `HostTilingEmitter`                     |
-| Level-2 Autotuner（可选） | 读取 `tiling_space.json` 和 Level-1 `topN`，搜索最优 `best.config` | `TilingSpaceExportPass` 输出 `tiling_space.json`；`RuntimeAutotuningPass` 回填最终结果 |
+| Level-1 prepare-time 选择 | 在 `compileTimeTopK` 候选中快速选出 `topN`（可直接用 `top1` 填参） | 调优结果作为输入传入 `HostTilingEmitter`                     |
+| Level-2 Autotuner（可选） | 离线读取 `tiling_space.json` 和 Level-1 `topN`，搜索最优 `best.config` | `TilingSpaceExportPass` 输出 `tiling_space.json`；离线 Autotuner 回填最终结果 |
 | `get_tiling(...)`         | 把已选参数写入 `TilingData`                                  | 仅填参，不搜索                                               |
 
 #### 6.6.4 失败与回退规则
@@ -656,6 +689,8 @@ Runtime 在调用 `GetWorkspaceSize(shape_args, shape_count)` 时，按以下步
 | `TilingData` 字段顺序 host/kernel 不一致 | 视为 ABI 错误，禁止继续                                      |
 | `Runtime Manifest` 未生成，且 `decisionGuards` 非空 | 报编译错误；动态 shape 场景下 manifest 为必选，缺失将导致 runtime 无法路由 shape bucket |
 | `Runtime Manifest` 未生成，且 `decisionGuards` 为空 | 允许；静态 shape 场景 manifest 为可选，`Host Tiling` 已足够 |
+| `ScheduleEntry.hostTilingId` 找不到对应 binding | 报编译错误；runtime 不允许从 kernel 名猜测动态库或 symbol |
+| 普通 guard 未覆盖且无 `fallback=true` entry | 报编译错误或要求上层声明 fail-fast 策略；不允许运行期在线调优补洞 |
 
 #### 6.6.5 示例
 
@@ -694,7 +729,7 @@ struct TilingData {
   uint32_t kt;
 };
 
-// 由 Level-1 top1 = { mt=128, nt=128, kt=64 } 或 Level-2 best.config 填入
+// 由 prepare-time Level-1 top1 = { mt=128, nt=128, kt=64 } 或离线 Level-2 best.config 填入
 void get_tiling(int64_t m, int64_t n, int64_t k, TilingData* out) {
   out->mt = 128;
   out->nt = 128;
@@ -719,9 +754,46 @@ launch_kernel(in0, in1, out0, workspace, tiling, block_dim);
   "kernelName": "broadcast_add",
   "shapeBucketKey": "A_bucket=(1..256)/(257..4096)",
   "guardSet": ["A % 32 == 0", "A % 32 != 0"],
+  "hostTilingBindings": [
+    {
+      "id": "broadcast_add_tiling",
+      "library": "broadcast_add_get_tiling.so",
+      "symbols": {
+        "getTilingSize": "broadcast_add_GetTilingSize",
+        "getTiling": "broadcast_add_GetTiling",
+        "getBlockDim": "broadcast_add_GetBlockDim",
+        "getWorkspaceSize": "broadcast_add_GetWorkspaceSize"
+      }
+    }
+  ],
   "scheduleEntries": [
-    { "decisionId": "d0", "guard": "A%32==0", "tilingParams": {"tileA": 128} },
-    { "decisionId": "d1", "guard": "A%32!=0", "tilingParams": {"tileA": 96} }
+    {
+      "decisionId": "d0",
+      "guard": "A % 32 == 0 && A <= 4096",
+      "priority": 0,
+      "fallback": false,
+      "hostTilingId": "broadcast_add_tiling",
+      "tilingParams": {"tileA": 128},
+      "workspaceSizeExpr": "0"
+    },
+    {
+      "decisionId": "d1",
+      "guard": "A % 32 != 0 && A <= 4096",
+      "priority": 1,
+      "fallback": false,
+      "hostTilingId": "broadcast_add_tiling",
+      "tilingParams": {"tileA": 96},
+      "workspaceSizeExpr": "0"
+    },
+    {
+      "decisionId": "fallback",
+      "guard": "A > 0",
+      "priority": 99,
+      "fallback": true,
+      "hostTilingId": "broadcast_add_tiling",
+      "tilingParams": {"tileA": 64},
+      "workspaceSizeExpr": "0"
+    }
   ],
   "abiSignature": "broadcast_add:f16f16f16:abi_v2",
   "cacheKey": "broadcast_add:bucket1:abi_v2:target_910B",
@@ -739,7 +811,7 @@ launch_kernel(in0, in1, out0, workspace, tiling, block_dim);
 
 #### 6.6.6 C ABI 接口规范
 
-`HostTilingEmitter` 必须额外生成一组以 C 链接暴露的查询函数，供非 C++ Runtime 框架（PyTorch custom op、ONNX Runtime EP、MindSpore 自定义算子等）通过 `dlopen` / FFI 调用：
+`HostTilingEmitter` 必须额外生成一组以 C 链接暴露的查询函数，供 `runtime-session` 和非 C++ Runtime 框架（PyTorch custom op、ONNX Runtime EP、MindSpore 自定义算子等）通过 `dlopen` / FFI 调用：
 
 ```cpp
 // 生成文件：<KernelName>_get_tiling.cpp → 编译为 <KernelName>_get_tiling.so
@@ -769,6 +841,7 @@ int64_t <KernelName>_GetWorkspaceSize(const int64_t* shape_args, int32_t shape_c
 
 | 规则 | 说明 |
 |---|---|
+| Host Tiling ABI Binding | Runtime Manifest 必须显式记录 `library` 和四个 `symbols`；这里的 symbol 是动态链接器符号，不是 MLIR symbol，也不依赖 AFIR 方言或 `afir-translate` 工具 |
 | `shape_args` 顺序 | 必须按 Runtime Manifest 的 `shapeArgOrder` 字段顺序排列；该字段由编译器根据 `HostTilingABI.abiArgs` 中 shape 维度参数的出现顺序自动生成，调用方不得自行推断顺序 |
 | `tiling_out` 大小 | 调用方通过 `GetTilingSize()` 获取大小后自行分配，避免 ABI 版本不一致导致的内存问题 |
 | `shape_count` 校验 | 若 `shape_count` 与预期不符，`GetTiling` / `GetBlockDim` / `GetWorkspaceSize` 均返回错误 |
@@ -801,7 +874,7 @@ workspace_size = lib.matmul_add_leakyrelu_GetWorkspaceSize(shapes, 3)
 
 #### 6.6.7 `tiling_space.json` 规范化 Schema
 
-`tiling_space.json` 由 `TilingSpaceExportPass` 在编译期自动生成（**不需要手工维护**），用于 Level-2 Autotuner 和外部工具消费。Layer 3 `ScheduleSearch` 产出 `ScheduleDecisionSet` 后，即可导出此文件；手写 transform 脚本阶段亦可手工提供此文件作为等价替代。
+`tiling_space.json` 由 `TilingSpaceExportPass` 在编译期自动生成（**不需要手工维护**），用于 Level-2 Autotuner、prepare/offline 工具和外部验证工具消费。Layer 3 `ScheduleSearch` 产出 `ScheduleDecisionSet` 后，即可导出此文件；手写 transform 脚本阶段亦可手工提供此文件作为等价替代。`runtime-session` 不读取 `tiling_space.json` 做在线搜索。
 
 **规范化 JSON Schema（版本 `2.0`）**：
 
@@ -864,7 +937,7 @@ workspace_size = lib.matmul_add_leakyrelu_GetWorkspaceSize(shapes, 3)
 | `shape_key` | 参数可选 | 当 `fixed=true` 时，标记该参数对应的逻辑 shape 维度名（如 `"M"`、`"K"`、`"N"`） |
 | `min / max / step` | 参数可选 | 调优参数的搜索范围；`fixed=true` 时忽略 |
 | `values` | 参数可选 | 枚举合法值列表；与 `min/max/step` 互斥 |
-| `decision_guards` | 否 | 动态 shape 下不同 guard 对应的 tiling 参数选择；静态 shape 时可省略；每个条目的 `tiling_params` 字段必须是**完整赋值**（列出所有 `fixed: false` 的非 shape 参数），不允许差量赋值——Level-2 Autotuner 和 Runtime 按每个 guard 条目独立读取完整参数集，不做跨 guard 合并，差量赋值会导致未声明参数值不确定 |
+| `decision_guards` | 否 | 动态 shape 下不同 guard 对应的 tiling 参数选择；静态 shape 时可省略；每个条目的 `tiling_params` 字段必须是**完整赋值**（列出所有 `fixed: false` 的非 shape 参数），不允许差量赋值——Level-2 Autotuner、HostTilingEmitter 和 Runtime Manifest Builder 按每个 guard 条目独立读取完整参数集，不做跨 guard 合并，差量赋值会导致未声明参数值不确定 |
 | `shapes` | 否 | 静态 shape 场景下的具体 shape 值，供 Level-2 Autotuner 和验证工具使用 |
 
 **生成规则**：
