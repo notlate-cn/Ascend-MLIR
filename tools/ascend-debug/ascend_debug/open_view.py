@@ -4,6 +4,7 @@ import argparse
 import html
 import json
 import pathlib
+import posixpath
 import sys
 import webbrowser
 from typing import Any
@@ -18,6 +19,8 @@ def load_manifest(run_dir: pathlib.Path) -> dict[str, Any]:
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     except FileNotFoundError as error:
         raise CommandError(f"manifest not found: {manifest_path}") from error
+    except (OSError, UnicodeDecodeError) as error:
+        raise CommandError(f"could not read manifest: {manifest_path}: {error}") from error
     except json.JSONDecodeError as error:
         raise CommandError(f"manifest is not valid JSON: {manifest_path}: {error}") from error
 
@@ -34,6 +37,20 @@ def load_manifest(run_dir: pathlib.Path) -> dict[str, Any]:
         for field in ("order", "name", "path"):
             if field not in stage:
                 raise CommandError(f"manifest stage {index} missing {field}: {manifest_path}")
+        if isinstance(stage["order"], bool) or not isinstance(stage["order"], int):
+            raise CommandError(f"manifest stage {index} order must be an integer: {manifest_path}")
+        if not isinstance(stage["name"], str):
+            raise CommandError(f"manifest stage {index} name must be a string: {manifest_path}")
+        if not isinstance(stage["path"], str):
+            raise CommandError(f"manifest stage {index} path must be a string: {manifest_path}")
+        path = pathlib.PurePosixPath(stage["path"])
+        if (
+            stage["path"] in ("", ".")
+            or path.is_absolute()
+            or ".." in path.parts
+            or posixpath.normpath(stage["path"]) != stage["path"]
+        ):
+            raise CommandError(f"manifest stage {index} path must stay inside run dir: {manifest_path}")
     return manifest
 
 
