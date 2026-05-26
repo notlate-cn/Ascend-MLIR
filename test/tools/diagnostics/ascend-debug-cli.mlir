@@ -1,0 +1,27 @@
+// RUN: bash %S/test_ascend_debug_cli.sh %s | FileCheck %s
+
+func.func @elementwise(%arg0: tensor<4x8xf16>, %arg1: tensor<4x8xf16>) -> tensor<4x8xf16> {
+  %empty = tensor.empty() : tensor<4x8xf16>
+  %out = linalg.generic {
+    indexing_maps = [
+      affine_map<(d0, d1) -> (d0, d1)>,
+      affine_map<(d0, d1) -> (d0, d1)>,
+      affine_map<(d0, d1) -> (d0, d1)>
+    ],
+    iterator_types = ["parallel", "parallel"]
+  } ins(%arg0, %arg1 : tensor<4x8xf16>, tensor<4x8xf16>)
+    outs(%empty : tensor<4x8xf16>) {
+  ^bb0(%x: f16, %y: f16, %o: f16):
+    %v = arith.addf %x, %y : f16
+    linalg.yield %v : f16
+  } -> tensor<4x8xf16>
+  return %out : tensor<4x8xf16>
+}
+
+// CHECK: ascend_debug.help=ok
+// CHECK: ascend_debug.collect=ok
+// CHECK: ascend_debug.open=ok
+// CHECK: ascend_debug.manifest.stage_count=5
+// CHECK: ascend_debug.stage.0=000-source.mlir
+// CHECK: ascend_debug.stage.4=029-kernelize-out.mlir
+// CHECK: ALL ASCEND DEBUG CLI TESTS PASSED
