@@ -266,6 +266,35 @@ static std::string getKernelKindString(func::FuncOp funcOp) {
   return "unknown";
 }
 
+static std::string getHostTilingBindingId(func::FuncOp funcOp) {
+  return (funcOp.getName() + ".host_tiling").str();
+}
+
+static llvm::json::Object buildHostTilingBinding(func::FuncOp funcOp) {
+  StringRef kernelName = funcOp.getName();
+  llvm::json::Object symbols;
+  symbols["getTilingSize"] =
+      (llvm::Twine(kernelName) + "_GetTilingSize").str();
+  symbols["getTiling"] = (llvm::Twine(kernelName) + "_GetTiling").str();
+  symbols["getBlockDim"] = (llvm::Twine(kernelName) + "_GetBlockDim").str();
+  symbols["getWorkspaceSize"] =
+      (llvm::Twine(kernelName) + "_GetWorkspaceSize").str();
+
+  llvm::json::Object binding;
+  binding["id"] = getHostTilingBindingId(funcOp);
+  binding["library"] = "host_tiling.so";
+  binding["symbols"] = std::move(symbols);
+  return binding;
+}
+
+static llvm::json::Array
+buildHostTilingBindings(ArrayRef<func::FuncOp> kernels) {
+  llvm::json::Array bindings;
+  for (func::FuncOp kernel : kernels)
+    bindings.push_back(buildHostTilingBinding(kernel));
+  return bindings;
+}
+
 static Value stripViewLike(Value value) {
   while (true) {
     if (auto castOp = value.getDefiningOp<memref::CastOp>()) {
@@ -629,6 +658,27 @@ static LogicalResult validateScheduleMetadataAttributes(func::FuncOp funcOp) {
   return success();
 }
 
+static FailureOr<SmallVector<int64_t>>
+collectSelectedTileShape(func::FuncOp funcOp) {
+  FailureOr<DictionaryAttr> kernelMetadata =
+      lookupKernelScheduleMetadata(funcOp);
+  if (failed(kernelMetadata))
+    return failure();
+
+  auto selectedTileShape = dyn_cast_or_null<DenseI64ArrayAttr>(
+      getScheduleMetadataAttr(
+          funcOp, *kernelMetadata,
+          ::mlir::afir::ascend::kScheduleSelectedTileShapeAttr,
+          kKernelMetadataSelectedTileShapeKey));
+  if (!selectedTileShape)
+    return SmallVector<int64_t>{};
+
+  SmallVector<int64_t> values;
+  values.append(selectedTileShape.asArrayRef().begin(),
+                selectedTileShape.asArrayRef().end());
+  return values;
+}
+
 static FailureOr<llvm::json::Object>
 buildScheduleTilingParams(func::FuncOp funcOp) {
   llvm::json::Object tilingParams;
@@ -801,6 +851,7 @@ static FailureOr<llvm::json::Array> buildScheduleEntries(func::FuncOp funcOp) {
   llvm::json::Object scheduleEntry;
   scheduleEntry["decisionId"] = decisionId;
   scheduleEntry["guard"] = "true";
+  scheduleEntry["hostTilingId"] = getHostTilingBindingId(funcOp);
   scheduleEntry["tilingParams"] = std::move(*tilingParams);
   llvm::json::Array scheduleEntries;
   scheduleEntries.push_back(std::move(scheduleEntry));
@@ -1209,6 +1260,7 @@ emitRuntimeManifestJson(ModuleOp module, StringRef outPath,
   root["workspace"] =
       buildWorkspaceDescriptor(primaryKernel, *primaryWorkspaceInfo);
   root["resources"] = buildResourceDescriptor(primaryKernel);
+  root["hostTilingBindings"] = buildHostTilingBindings(kernels);
   root["kernelGraph"] = std::move(*kernelGraph);
   root["kernel_entries"] = std::move(kernelEntries);
   return writeJsonFile(module.getOperation(), outPath, std::move(root));
@@ -1222,6 +1274,7 @@ LogicalResult emitHostTilingCpp(ModuleOp module, StringRef outPath,
     WorkspaceInfo workspaceInfo;
     SmallVector<TilingFieldInfo> fields;
     SmallVector<unsigned> shapeFieldPositions;
+    SmallVector<int64_t> selectedTileShape;
     std::string hostWorkspaceExpr;
     bool workspaceExprUsesShapeArgs = false;
     std::string structName;
@@ -1247,6 +1300,10 @@ LogicalResult emitHostTilingCpp(ModuleOp module, StringRef outPath,
         collectTilingFields(kernel, *tilingTypeOr);
     if (failed(fieldsOr))
       return failure();
+    FailureOr<SmallVector<int64_t>> selectedTileShape =
+        collectSelectedTileShape(kernel);
+    if (failed(selectedTileShape))
+      return failure();
 
     auto types = tilingTypeOr->getTypesAttr().getValue();
     auto names = tilingTypeOr->getNamesAttr().getValue();
@@ -1258,6 +1315,7 @@ LogicalResult emitHostTilingCpp(ModuleOp module, StringRef outPath,
     info.tilingType = *tilingTypeOr;
     info.workspaceInfo = *workspaceInfo;
     info.fields = std::move(*fieldsOr);
+    info.selectedTileShape = std::move(*selectedTileShape);
     for (auto [index, nameAttr] : llvm::enumerate(names)) {
       StringRef name = cast<StringAttr>(nameAttr).getValue();
       if (isShapeField(name))
@@ -1320,13 +1378,18 @@ LogicalResult emitHostTilingCpp(ModuleOp module, StringRef outPath,
       os << "    return 1;\n";
       os << "  " << info.structName << " data{};\n";
       unsigned shapeIndex = 0;
+      unsigned tileIndex = 0;
       for (auto [index, nameAttr] : llvm::enumerate(names)) {
         StringRef name = cast<StringAttr>(nameAttr).getValue();
         os << "  data." << name << " = ";
-        if (isShapeField(name))
+        if (isShapeField(name)) {
           os << "shape_args[" << shapeIndex++ << "]";
-        else
+        } else if (tileIndex < info.selectedTileShape.size()) {
+          os << info.selectedTileShape[tileIndex++];
+        } else {
           os << "0";
+          ++tileIndex;
+        }
         os << ";\n";
       }
       os << "  std::memcpy(tiling_out, &data, sizeof(" << info.structName

@@ -1,8 +1,14 @@
-// RUN: rm -f %t.cpp %t.legacy.cpp %t.tiling.json %t.manifest.json %t.legacy-manifest.json %t.conflict-manifest.json %t.host.cpp
+// RUN: rm -rf %t.artifacts
+// RUN: rm -f %t.cpp %t.legacy.cpp %t.tiling.json %t.manifest.json %t.legacy-manifest.json %t.conflict-manifest.json %t.host.cpp %t.run.json %t.run.broadcast_add_reducesum.tiling.bin
 // RUN: ascend-mlir-translate -mlir-to-cann %s --tiling-space-out=%t.tiling.json --artifact-manifest-out=%t.manifest.json --host-tiling-out=%t.host.cpp --cann-soc=Ascend910B2 > %t.cpp
 // RUN: FileCheck %s --input-file=%t.tiling.json --check-prefix=TILING
 // RUN: FileCheck %s --input-file=%t.manifest.json --check-prefix=MANIFEST
 // RUN: FileCheck %s --input-file=%t.host.cpp --check-prefix=HOST
+// RUN: mkdir -p %t.artifacts
+// RUN: c++ -std=c++17 -shared -fPIC %t.host.cpp -o %t.artifacts/host_tiling.so
+// RUN: env LD_LIBRARY_PATH=%cann_root/lib64:%cann_root/devlib:%cann_root/aarch64-linux/lib64:%cann_root/aarch64-linux/simulator/dav_2201/lib:%cann_root/runtime/lib64/stub:${LD_LIBRARY_PATH} runtime-session --artifact-manifest %t.manifest.json --artifact-root %t.artifacts --shape-arg arg0_dim0=64 --shape-arg arg1_dim1=15000 --emit-run-manifest %t.run.json
+// RUN: FileCheck %s --input-file=%t.run.json --check-prefix=RUNMANIFEST
+// RUN: test -s %t.run.broadcast_add_reducesum.tiling.bin
 // RUN: ascend-mlir-translate -mlir-to-cann %s --runtime-manifest-out=%t.legacy-manifest.json > %t.legacy.cpp
 // RUN: FileCheck %s --input-file=%t.legacy-manifest.json --check-prefix=MANIFEST
 // RUN: not ascend-mlir-translate -mlir-to-cann %s --artifact-manifest-out=%t.manifest.json --runtime-manifest-out=%t.conflict-manifest.json 2>&1 | FileCheck %s --check-prefix=MANIFEST-CONFLICT
@@ -18,12 +24,20 @@
 // TILING: "workspace_size_expr": "4096"
 
 // MANIFEST: "guardSet": []
+// MANIFEST: "hostTilingBindings": [
+// MANIFEST: "id": "broadcast_add_reducesum.host_tiling"
+// MANIFEST: "library": "host_tiling.so"
+// MANIFEST: "getBlockDim": "broadcast_add_reducesum_GetBlockDim"
+// MANIFEST: "getTiling": "broadcast_add_reducesum_GetTiling"
+// MANIFEST: "getTilingSize": "broadcast_add_reducesum_GetTilingSize"
+// MANIFEST: "getWorkspaceSize": "broadcast_add_reducesum_GetWorkspaceSize"
 // MANIFEST: "kernelGraph"
 // MANIFEST: "kernelName": "broadcast_add_reducesum"
 // MANIFEST: "kernel_entries": [
 // MANIFEST-NEXT: {
 // MANIFEST-DAG: "entry_index": 0,
 // MANIFEST-DAG: "kernel_id": "broadcast_add_reducesum",
+// MANIFEST-DAG: "hostTilingId": "broadcast_add_reducesum.host_tiling"
 // MANIFEST: "tilingParams": {
 // MANIFEST-NEXT: "selected_tile_shape": [
 // MANIFEST-NEXT: 64,
@@ -60,9 +74,19 @@
 // HOST: extern "C"
 // HOST: int32_t broadcast_add_reducesum_GetTilingSize(void)
 // HOST: int32_t broadcast_add_reducesum_GetTiling(const int64_t* shape_args, int32_t shape_count, void* tiling_out)
+// HOST: data.TB_M = 64;
+// HOST: data.TB_N = 15000;
+// HOST: data.dim_arg0_0 = shape_args[0];
+// HOST: data.dim_arg1_1 = shape_args[1];
 // HOST: int64_t broadcast_add_reducesum_GetBlockDim(const int64_t* shape_args, int32_t shape_count)
 // HOST: int64_t broadcast_add_reducesum_GetWorkspaceSize(const int64_t* shape_args, int32_t shape_count)
 // HOST: ? 4096 : -1;
+
+// RUNMANIFEST: "backend": "sim"
+// RUNMANIFEST: "block_dim": 20
+// RUNMANIFEST: "task_id": "broadcast_add_reducesum"
+// RUNMANIFEST: "binary": "{{.*}}broadcast_add_reducesum.tiling.bin"
+// RUNMANIFEST: "workspace_size": 4096
 
 module {
   func.func @broadcast_add_reducesum(

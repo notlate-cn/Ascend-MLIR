@@ -69,6 +69,7 @@ PHASE5_TILING_SPACE="$BUILD_DIR/phase5_tiling_space.json"
 PHASE5_ARTIFACT_MANIFEST="$BUILD_DIR/phase5_artifact_manifest.json"
 PHASE5_HOST_TILING="$BUILD_DIR/host_tiling.cpp"
 ARTIFACT_ROOT="$BUILD_DIR/artifact"
+PREPARED_RUN_MANIFEST="$BUILD_DIR/run_manifest.prepared.json"
 RUN_MANIFEST="$BUILD_DIR/run_manifest.json"
 ACTUAL_OUTPUT="$BUILD_DIR/output.npy"
 VALIDATION_LOG="$BUILD_DIR/runtime_session.log"
@@ -173,71 +174,57 @@ echo "==================== [STAGE 12] runtime-session compile ==================
   --kernel-kind vec \
   --output "$ARTIFACT_ROOT" \
   --name relu_transpose_broadcast_add
+"${CXX:-c++}" -std=c++17 -shared -fPIC "$PHASE5_HOST_TILING" \
+  -o "$ARTIFACT_ROOT/host_tiling.so"
 log "  output: $ARTIFACT_ROOT"
 
 echo ""
 echo "==================== [STAGE 13] runtime-session sim ===================="
-TILING_PARAMS="$("$PYTHON" - "$PHASE5_TILING_SPACE" "$M" "$N" <<'PY'
+"$RUNTIME_SESSION" \
+  --artifact-manifest "$PHASE5_ARTIFACT_MANIFEST" \
+  --artifact-root "$ARTIFACT_ROOT" \
+  --shape-arg "arg0_dim0=$M" \
+  --shape-arg "arg0_dim1=1" \
+  --shape-arg "arg1_dim0=$N" \
+  --shape-arg "arg1_dim1=$M" \
+  --emit-run-manifest "$PREPARED_RUN_MANIFEST"
+
+"$PYTHON" - \
+  "$PREPARED_RUN_MANIFEST" \
+  "$RUN_MANIFEST" \
+  "$BUILD_DIR/input_data0.npy" \
+  "$BUILD_DIR/input_data1.npy" \
+  "$ACTUAL_OUTPUT" \
+  "$BUILD_DIR/output_expected.npy" <<'PY'
 import json
 import sys
+from pathlib import Path
 
-schema_path, m, n = sys.argv[1], int(sys.argv[2]), int(sys.argv[3])
-with open(schema_path, "r", encoding="utf-8") as f:
-    root = json.load(f)
+prepared_path, run_path, input0, input1, output, expected = sys.argv[1:]
+root = json.loads(Path(prepared_path).read_text())
+tasks = root.get("tasks", [])
+if len(tasks) != 1:
+    raise SystemExit(f"expected one prepared task, got {len(tasks)}")
 
-shape_values = {
-    "arg0_dim0": m,
-    "arg0_dim1": 1,
-    "arg1_dim0": n,
-    "arg1_dim1": m,
-}
+task = tasks[0]
+inputs = task.get("inputs", [])
+if len(inputs) != 2:
+    raise SystemExit(f"expected two inputs, got {len(inputs)}")
+inputs[0]["path"] = input0
+inputs[1]["path"] = input1
 
-params = []
-for field in root.get("tiling_params", []):
-    name = field["name"]
-    if field.get("fixed"):
-        shape_key = field.get("shape_key")
-        if shape_key not in shape_values:
-            raise SystemExit(f"unsupported fixed shape key: {shape_key}")
-        value = shape_values[shape_key]
-    elif "fixed_value" in field:
-        value = int(field["fixed_value"])
-    elif field.get("values"):
-        value = int(field["values"][0])
-    else:
-        raise SystemExit(f"unsupported free tiling field: {name}")
-    params.append(f"{name}={value}")
+outputs = task.get("outputs", [])
+if len(outputs) != 1:
+    raise SystemExit(f"expected one output, got {len(outputs)}")
+outputs[0]["path"] = output
 
-print(",".join(params))
+task["expected_outputs"] = [{"name": outputs[0]["name"], "path": expected}]
+task["profiling"] = True
+task["atol"] = 1e-2
+task["rtol"] = 1e-2
+
+Path(run_path).write_text(json.dumps(root, indent=2) + "\n")
 PY
-)"
-
-cat > "$RUN_MANIFEST" <<EOF
-{
-  "task_id": "main",
-  "backend": "sim",
-  "artifact_root": "${ARTIFACT_ROOT}",
-  "inputs": [
-    { "name": "data0", "path": "${BUILD_DIR}/input_data0.npy" },
-    { "name": "data1", "path": "${BUILD_DIR}/input_data1.npy" }
-  ],
-  "outputs": [
-    { "name": "out", "path": "${ACTUAL_OUTPUT}" }
-  ],
-  "expected_outputs": [
-    { "name": "out", "path": "${BUILD_DIR}/output_expected.npy" }
-  ],
-  "tiling": {
-    "schema": "${PHASE5_TILING_SPACE}",
-    "params": "${TILING_PARAMS}"
-  },
-  "block_dim": ${BLOCK_DIM},
-  "workspace_size": 16777216,
-  "profiling": true,
-  "atol": 1e-2,
-  "rtol": 1e-2
-}
-EOF
 
 "$RUNTIME_SESSION" \
   --run-manifest "$RUN_MANIFEST" \
@@ -264,6 +251,7 @@ echo "   build_mainline/step10_kernel.cpp"
 echo "   build_mainline/phase5_tiling_space.json"
 echo "   build_mainline/phase5_artifact_manifest.json"
 echo "   build_mainline/host_tiling.cpp"
+echo "   build_mainline/run_manifest.prepared.json"
 echo "   build_mainline/artifact"
 echo "   build_mainline/output.npy"
 echo "========================================================"
