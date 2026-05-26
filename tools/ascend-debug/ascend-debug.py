@@ -2,60 +2,34 @@
 from __future__ import annotations
 
 import argparse
-import json
 import pathlib
-import shutil
 
 from ascend_debug import __version__
-
-
-STAGES = (
-    (0, "000-source.mlir"),
-    (10, "010-normalize-in.mlir"),
-    (19, "019-normalize-out.mlir"),
-    (20, "020-kernelize-in.mlir"),
-    (29, "029-kernelize-out.mlir"),
-)
+from ascend_debug import layout
 
 
 def collect_debug_run(args: argparse.Namespace) -> int:
     run_dir = args.out
-    stages_dir = run_dir / "stages"
-    stages_dir.mkdir(parents=True, exist_ok=True)
+    stages = layout.QUICK_NORMALIZE_KERNELIZE_STAGES
+    layout.prepare_run_dir(run_dir)
 
-    for _, name in STAGES:
-        shutil.copyfile(args.input, stages_dir / name)
+    for stage in stages:
+        layout.copy_stage(args.input, run_dir / stage.path)
 
-    manifest = {
-        "tool": "ascend-debug",
-        "preset": args.preset,
-        "pipeline": args.pipeline,
-        "device_scope": "single_run_single_device",
-        "stages": [
-            {
-                "order": order,
-                "path": str(stages_dir / name),
-            }
-            for order, name in STAGES
-        ],
-    }
-    (run_dir / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
-    (run_dir / "provenance.json").write_text(
-        json.dumps(
-            {
-                "input": str(args.input),
-                "version": __version__,
-            },
-            indent=2,
-        )
-        + "\n"
+    layout.write_manifest(
+        run_dir,
+        input_path=args.input,
+        preset=args.preset,
+        pipeline=args.pipeline,
+        stages=stages,
     )
+    layout.write_provenance_skeleton(run_dir)
     return 0
 
 
 def open_debug_run(args: argparse.Namespace) -> int:
     index = args.run_dir / "index.html"
-    index.write_text("<!doctype html><title>ascend-debug</title>\n")
+    layout.write_text(index, "<!doctype html><title>ascend-debug</title>\n")
     print(index)
     return 0
 

@@ -39,10 +39,20 @@ stages = manifest["stages"]
 print(f"ascend_debug.manifest.stage_count={len(stages)}")
 for i, stage in enumerate(stages):
     print(f"ascend_debug.stage.{i}={pathlib.Path(stage['path']).name}")
-assert [stage["order"] for stage in stages] == [0, 10, 19, 20, 29]
+assert manifest["schema_version"] == 1
 assert manifest["tool"] == "ascend-debug"
 assert manifest["preset"] == "quick"
+assert manifest["backend"] == "compile"
+assert manifest["device_id"] is None
 assert manifest["device_scope"] == "single_run_single_device"
+assert [stage["order"] for stage in stages] == [0, 10, 19, 20, 29]
+assert [stage["name"] for stage in stages] == [
+    "source",
+    "normalize-in",
+    "normalize-out",
+    "kernelize-in",
+    "kernelize-out",
+]
 PY
 
 echo "ALL ASCEND DEBUG CLI TESTS PASSED"
