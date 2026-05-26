@@ -5,10 +5,18 @@ import shlex
 import shutil
 import subprocess
 import tempfile
+from dataclasses import dataclass
 
 
 class CommandError(RuntimeError):
     pass
+
+
+@dataclass(frozen=True)
+class CommandResult:
+    argv: tuple[str, ...]
+    returncode: int
+    stderr: str
 
 
 def find_tool(name: str) -> str:
@@ -18,7 +26,23 @@ def find_tool(name: str) -> str:
     raise CommandError(f"required tool not found in PATH: {name}")
 
 
-def run_command(argv: list[str], *, stdout_path: pathlib.Path | None = None) -> None:
+def _write_report(path: pathlib.Path, *, argv: list[str], returncode: int, stderr: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    body = (
+        f"command: {shlex.join(argv)}\n"
+        f"exit_code: {returncode}\n"
+        "stderr:\n"
+        f"{stderr}"
+    )
+    path.write_text(body, encoding="utf-8")
+
+
+def run_command(
+    argv: list[str],
+    *,
+    stdout_path: pathlib.Path | None = None,
+    stderr_report_path: pathlib.Path | None = None,
+) -> CommandResult:
     if stdout_path:
         stdout_path.parent.mkdir(parents=True, exist_ok=True)
         stdout_file = tempfile.NamedTemporaryFile(
@@ -52,6 +76,14 @@ def run_command(argv: list[str], *, stdout_path: pathlib.Path | None = None) -> 
         if run_failed and temp_path:
             temp_path.unlink(missing_ok=True)
 
+    if stderr_report_path:
+        _write_report(
+            stderr_report_path,
+            argv=argv,
+            returncode=completed.returncode,
+            stderr=completed.stderr,
+        )
+
     if completed.returncode != 0:
         if temp_path:
             temp_path.unlink(missing_ok=True)
@@ -62,3 +94,4 @@ def run_command(argv: list[str], *, stdout_path: pathlib.Path | None = None) -> 
 
     if temp_path:
         temp_path.replace(stdout_path)
+    return CommandResult(tuple(argv), completed.returncode, completed.stderr)

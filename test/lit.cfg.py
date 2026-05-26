@@ -36,7 +36,7 @@ if not hasattr(config, 'enable_bindings_python'):
     config.enable_bindings_python = ''
 
 # name: The name of this test suite.
-config.name = 'AFIR'
+config.name = 'Ascend'
 
 config.test_format = lit.formats.ShTest(not lit.llvm.llvm_config.use_lit_shell)
 

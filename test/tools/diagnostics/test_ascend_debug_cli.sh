@@ -26,6 +26,34 @@ test -f "${TMP_DIR}/debug-run/manifest.json"
 test -f "${TMP_DIR}/debug-run/provenance.json"
 echo "ascend_debug.collect=ok"
 
+ascend-debug collect "${INPUT_MLIR}" \
+  --out "${TMP_DIR}/debug-run-deep" \
+  --preset deep \
+  --pipeline normalize-kernelize
+test -f "${TMP_DIR}/debug-run-deep/stages/000-source.mlir"
+test -f "${TMP_DIR}/debug-run-deep/stages/010-normalize-in.mlir"
+test -f "${TMP_DIR}/debug-run-deep/stages/019-normalize-out.mlir"
+test -f "${TMP_DIR}/debug-run-deep/stages/020-kernelize-in.mlir"
+test -f "${TMP_DIR}/debug-run-deep/stages/029-kernelize-out.mlir"
+test -f "${TMP_DIR}/debug-run-deep/stages/030-schedule-in.mlir"
+test -f "${TMP_DIR}/debug-run-deep/stages/039-schedule-out.mlir"
+test -f "${TMP_DIR}/debug-run-deep/stages/040-realize-in.mlir"
+test -f "${TMP_DIR}/debug-run-deep/stages/049-realize-out.mlir"
+test -f "${TMP_DIR}/debug-run-deep/reports/010-normalize.report.txt"
+test -f "${TMP_DIR}/debug-run-deep/reports/020-kernelize.report.txt"
+test -f "${TMP_DIR}/debug-run-deep/reports/030-schedule.report.txt"
+test -f "${TMP_DIR}/debug-run-deep/reports/040-realize.report.txt"
+echo "ascend_debug.collect_deep=ok"
+
+ascend-debug open "${TMP_DIR}/debug-run-deep" --no-browser >"${TMP_DIR}/ascend-debug-open-deep.txt"
+test -f "${TMP_DIR}/debug-run-deep/index.html"
+grep -Fq '<dt>preset</dt><dd>deep</dd>' "${TMP_DIR}/debug-run-deep/index.html"
+grep -Fq '<h2>Commands</h2>' "${TMP_DIR}/debug-run-deep/index.html"
+grep -Fq '<h2>Reports</h2>' "${TMP_DIR}/debug-run-deep/index.html"
+grep -Fq 'reports/030-schedule.report.txt' "${TMP_DIR}/debug-run-deep/index.html"
+grep -Fq 'reports/040-realize.report.txt' "${TMP_DIR}/debug-run-deep/index.html"
+echo "ascend_debug.open_deep=ok"
+
 RESOLVED_RUN_DIR="$(python3 -c 'import pathlib, sys; print(pathlib.Path(sys.argv[1]).resolve())' "${TMP_DIR}/debug-run")"
 ascend-debug open "${TMP_DIR}/debug-run" --no-browser >"${TMP_DIR}/ascend-debug-open.txt"
 grep -Fq "ascend-debug.open.index=${RESOLVED_RUN_DIR}/index.html" "${TMP_DIR}/ascend-debug-open.txt"
@@ -141,6 +169,58 @@ check(provenance["original_input"] == input_mlir, "provenance original_input mus
 check(provenance["boundaries"] == [], "provenance boundaries must start empty")
 check(provenance["kernels"] == [], "provenance kernels must start empty")
 check(provenance["runtime_tasks"] == [], "provenance runtime_tasks must start empty")
+PY
+
+python3 - "${TMP_DIR}/debug-run-deep/manifest.json" <<'PY'
+import json
+import pathlib
+import sys
+
+def check(condition, message):
+    if not condition:
+        raise SystemExit(message)
+
+manifest = json.loads(pathlib.Path(sys.argv[1]).read_text())
+stages = manifest["stages"]
+commands = manifest.get("commands", [])
+reports = manifest.get("reports", [])
+print(f"ascend_debug.deep.stage_count={len(stages)}")
+print(f"ascend_debug.deep.command_count={len(commands)}")
+check(manifest["preset"] == "deep", "deep manifest preset must be deep")
+check([stage["order"] for stage in stages] == [0, 10, 19, 20, 29, 30, 39, 40, 49], "deep stage orders mismatch")
+check([stage["name"] for stage in stages] == [
+    "source",
+    "normalize-in",
+    "normalize-out",
+    "kernelize-in",
+    "kernelize-out",
+    "schedule-in",
+    "schedule-out",
+    "realize-in",
+    "realize-out",
+], "deep stage names mismatch")
+check([stage["path"] for stage in stages] == [
+    "stages/000-source.mlir",
+    "stages/010-normalize-in.mlir",
+    "stages/019-normalize-out.mlir",
+    "stages/020-kernelize-in.mlir",
+    "stages/029-kernelize-out.mlir",
+    "stages/030-schedule-in.mlir",
+    "stages/039-schedule-out.mlir",
+    "stages/040-realize-in.mlir",
+    "stages/049-realize-out.mlir",
+], "deep stage paths mismatch")
+check(len(commands) == 4, "deep manifest must record four commands")
+check([command["stage"] for command in commands] == ["normalize", "kernelize", "schedule", "realize"], "deep command stages mismatch")
+check(all(command["status"] == "success" for command in commands), "deep commands must succeed")
+check(all(command["tool"] == "ascend-mlir-opt" for command in commands), "deep commands must use ascend-mlir-opt")
+check(len(reports) == 4, "deep manifest must record four reports")
+check([report["path"] for report in reports] == [
+    "reports/010-normalize.report.txt",
+    "reports/020-kernelize.report.txt",
+    "reports/030-schedule.report.txt",
+    "reports/040-realize.report.txt",
+], "deep report paths mismatch")
 PY
 
 echo "ALL ASCEND DEBUG CLI TESTS PASSED"

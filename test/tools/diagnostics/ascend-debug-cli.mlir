@@ -20,8 +20,12 @@ func.func @elementwise(%arg0: tensor<4x8xf16>, %arg1: tensor<4x8xf16>) -> tensor
 
 // CHECK: ascend_debug.help=ok
 // CHECK: ascend_debug.collect=ok
+// CHECK: ascend_debug.collect_deep=ok
+// CHECK: ascend_debug.open_deep=ok
 // CHECK: ascend_debug.open=ok
 // CHECK: ascend_debug.manifest.stage_count=5
 // CHECK: ascend_debug.stage.0=000-source.mlir
 // CHECK: ascend_debug.stage.4=029-kernelize-out.mlir
+// CHECK: ascend_debug.deep.stage_count=9
+// CHECK: ascend_debug.deep.command_count=4
 // CHECK: ALL ASCEND DEBUG CLI TESTS PASSED
