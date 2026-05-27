@@ -540,6 +540,10 @@ static std::string buildNetworkHostCpp(ModuleOp module,
   os << "  mlir::runtime::hostLaunchSetDumpIntermediatesDir(dir);\n";
   os << "}\n";
 
+  os << "\nextern \"C\" void network_set_profile_dir(const char *dir) {\n";
+  os << "  mlir::runtime::hostLaunchSetProfileDir(dir);\n";
+  os << "}\n";
+
   return src;
 }
 

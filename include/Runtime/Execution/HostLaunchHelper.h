@@ -34,4 +34,12 @@ extern "C" int hostLaunchAscendCKernel(
 // Per-kernel npys are written as DIR/<kernelName>_in_<i>.npy / _out_<i>.npy.
 extern "C" void hostLaunchSetDumpIntermediatesDir(const char *dir);
 
+// Optional dir for per-kernel timing files; pass nullptr to disable.
+// One JSON per launch is written to DIR/<kernelName>.timing.json with
+// {"kernel","wall_us","block_dim","num_inputs","num_outputs","backend"}.
+// Wall-clock is taken around ExecutionSession::run; on sim this is camodel
+// time (not representative of NPU perf), on real NPU it includes dispatch
+// overhead. Treat as a relative signal, not a precise kernel-time metric.
+extern "C" void hostLaunchSetProfileDir(const char *dir);
+
 } // namespace mlir::runtime

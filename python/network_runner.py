@@ -65,6 +65,7 @@ _PHASE_SPEC = [
         w / "network_host.cpp",
         w / "network_test",
         w / "outputs",
+        w / "profiles",
     ]),
 ]
 
@@ -829,6 +830,12 @@ def phase5_final_run_verify(work, groups, artifacts, tilings_best_path, network,
         cmd += ["--input", p]
     for p in out_paths:
         cmd += ["--output", p]
+    if getattr(args, "profile_dir", None):
+        profile_dir = Path(args.profile_dir)
+        if not profile_dir.is_absolute():
+            profile_dir = work / profile_dir
+        profile_dir.mkdir(parents=True, exist_ok=True)
+        cmd += ["--profile-dir", str(profile_dir)]
     run_env = None
     if args.backend == "npu":
         # Strip the simulator + devlib dirs from LD_LIBRARY_PATH for the device
@@ -893,6 +900,11 @@ def main():
                     help="Also create <workdir>/stages/<NN>-<phase>-<file> "
                          "symlinks for human-readable phase ordering. "
                          "<workdir>/manifest.json is always written.")
+    ap.add_argument("--profile-dir", default=None,
+                    help="If set, phase-5's final run writes per-kernel "
+                         "wall-clock timing JSON to this dir (relative to "
+                         "<workdir> if not absolute). One file per AscendC "
+                         "kernel: <kernel>.timing.json.")
     args = ap.parse_args()
 
     work = Path(args.workdir).absolute()

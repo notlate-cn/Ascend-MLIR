@@ -41,6 +41,7 @@ extern "C" void network(TensorInfo inputs[], int numInputs,
                         TensorInfo outputs[], int numOutputs,
                         void *stream);
 extern "C" void network_set_dump_dir(const char *dir);
+extern "C" void network_set_profile_dir(const char *dir);
 
 // ---------------------------------------------------------------------------
 // Minimal .npy v1 reader (little-endian, fortran_order=False, numeric dtypes)
@@ -213,6 +214,7 @@ int main(int argc, char **argv) {
   std::vector<std::string> inputPaths;
   std::vector<std::string> outputPaths;
   std::string dumpDir;
+  std::string profileDir;
 
   for (int i = 1; i < argc; ++i) {
     std::string a = argv[i];
@@ -224,6 +226,7 @@ int main(int argc, char **argv) {
     if      (a == "--input")               inputPaths.push_back(next());
     else if (a == "--output")              outputPaths.push_back(next());
     else if (a == "--dump-intermediates")  dumpDir = next();
+    else if (a == "--profile-dir")         profileDir = next();
     else {
       fprintf(stderr, "[harness] Unknown argument: %s\n", a.c_str());
       return 1;
@@ -233,12 +236,14 @@ int main(int argc, char **argv) {
   if (inputPaths.empty()) {
     fprintf(stderr, "Usage: harness --input a.npy [--input b.npy ...] "
                     "--output out.npy [--output out1.npy ...] "
-                    "[--dump-intermediates DIR]\n");
+                    "[--dump-intermediates DIR] [--profile-dir DIR]\n");
     return 1;
   }
 
   if (!dumpDir.empty())
     network_set_dump_dir(dumpDir.c_str());
+  if (!profileDir.empty())
+    network_set_profile_dir(profileDir.c_str());
 
   // Force aclnn host-mode CPU reference. The mixed-network case (aclnn op
   // sandwiched between AscendC kernels) needs aclnn to compute on host

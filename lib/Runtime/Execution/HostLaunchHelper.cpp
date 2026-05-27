@@ -24,6 +24,7 @@
 #include "llvm/Support/raw_ostream.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -75,6 +76,7 @@ public:
   bool tilingsLoaded = false;
 
   std::string dumpDir;
+  std::string profileDir;
 };
 
 // Lazily create the ExecutionSession. Backend is Simulation by default;
@@ -194,6 +196,43 @@ extern "C" void hostLaunchSetDumpIntermediatesDir(const char *dir) {
   std::lock_guard<std::mutex> lk(st.mu);
   st.dumpDir = dir ? std::string(dir) : std::string();
 }
+
+extern "C" void hostLaunchSetProfileDir(const char *dir) {
+  HelperState &st = HelperState::instance();
+  std::lock_guard<std::mutex> lk(st.mu);
+  st.profileDir = dir ? std::string(dir) : std::string();
+}
+
+namespace {
+
+void writeTimingIfEnabled(const std::string &dir, const std::string &kernel,
+                          int64_t wallUs, int blockDim,
+                          int numInputs, int numOutputs,
+                          const char *backend) {
+  if (dir.empty()) return;
+  std::error_code ec;
+  std::filesystem::create_directories(dir, ec);
+  std::string path = dir + "/" + kernel + ".timing.json";
+  std::FILE *fp = std::fopen(path.c_str(), "w");
+  if (!fp) {
+    llvm::errs() << "hostLaunchAscendCKernel: cannot write " << path << "\n";
+    return;
+  }
+  std::fprintf(fp,
+      "{\n"
+      "  \"kernel\": \"%s\",\n"
+      "  \"wall_us\": %lld,\n"
+      "  \"block_dim\": %d,\n"
+      "  \"num_inputs\": %d,\n"
+      "  \"num_outputs\": %d,\n"
+      "  \"backend\": \"%s\"\n"
+      "}\n",
+      kernel.c_str(), static_cast<long long>(wallUs), blockDim,
+      numInputs, numOutputs, backend);
+  std::fclose(fp);
+}
+
+} // namespace
 
 extern "C" int hostLaunchAscendCKernel(
     const char *kernelName,
@@ -367,13 +406,26 @@ extern "C" int hostLaunchAscendCKernel(
     return 3;
   }
 
+  // Wall-clock around session->run for per-kernel timing. Caveats: on sim
+  // this is camodel exec time; on NPU it includes dispatch overhead.
+  auto t0 = std::chrono::steady_clock::now();
   auto traceOr = st.session->run(graph);
+  auto t1 = std::chrono::steady_clock::now();
+  int64_t wallUs = std::chrono::duration_cast<std::chrono::microseconds>(
+      t1 - t0).count();
   if (!traceOr) {
     llvm::errs() << "hostLaunchAscendCKernel(" << kernelName
                  << ") session.run failed: "
                  << llvm::toString(traceOr.takeError()) << "\n";
     removeScratchDir(scratch);
     return 3;
+  }
+  {
+    const char *be = "sim";
+    if (const char *e = std::getenv("NETWORK_RUNNER_BACKEND"))
+      if (std::string(e) == "npu") be = "npu";
+    writeTimingIfEnabled(st.profileDir, kernelName, wallUs,
+                         task.invocation.blockDim, numInputs, numOutputs, be);
   }
 
   // Load outputs back from .npy and memcpy into caller buffers.
