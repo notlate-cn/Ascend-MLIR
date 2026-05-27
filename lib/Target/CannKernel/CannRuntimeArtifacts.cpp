@@ -425,7 +425,7 @@ buildAbiDescriptor(func::FuncOp funcOp) {
   auto numInputsAttr = funcOp->getAttrOfType<IntegerAttr>("cann.num_inputs");
   if (!numInputsAttr)
     return funcOp.emitError()
-           << "runtime manifest ABI requires cann.num_inputs";
+           << "artifact manifest ABI requires cann.num_inputs";
 
   int64_t numInputs = numInputsAttr.getInt();
   if (numInputs < 0)
@@ -1396,11 +1396,11 @@ LogicalResult emitTilingSpaceJson(ModuleOp module, StringRef outPath,
 }
 
 LogicalResult
-emitRuntimeManifestJson(ModuleOp module, StringRef outPath,
-                        const CannRuntimeArtifactOptions &options) {
+emitArtifactManifestJson(ModuleOp module, StringRef outPath,
+                         const CannRuntimeArtifactOptions &options) {
   SmallVector<func::FuncOp> kernels = collectGlobalKernels(module);
   if (kernels.empty()) {
-    module.emitError() << "runtime manifest requires at least one global kernel";
+    module.emitError() << "artifact manifest requires at least one global kernel";
     return failure();
   }
 

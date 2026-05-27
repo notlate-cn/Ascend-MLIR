@@ -469,7 +469,6 @@ def main() -> None:
     parser.add_argument("--run-manifest", type=Path)
     parser.add_argument("--actual-output-dir", type=Path)
     parser.add_argument("--compiler-artifact-manifest", type=Path)
-    parser.add_argument("--compiler-runtime-manifest", type=Path)
     parser.add_argument("--cann-mlir", type=Path)
     parser.add_argument("--tiling-schema-dir", type=Path)
     parser.add_argument("--mix-compile-npy-root", type=Path)
@@ -487,21 +486,10 @@ def main() -> None:
         if not args.artifact_root:
             raise SystemExit("--artifact-root is required with --run-manifest")
         if not args.tiling_schema:
-            if not args.compiler_artifact_manifest and not args.compiler_runtime_manifest:
+            if not args.compiler_artifact_manifest:
                 raise SystemExit("--tiling-schema is required with --run-manifest")
         output_dir = args.actual_output_dir or args.run_manifest.parent / "outputs"
         output_dir.mkdir(parents=True, exist_ok=True)
-        if (
-            args.compiler_artifact_manifest
-            and args.compiler_runtime_manifest
-            and args.compiler_artifact_manifest.resolve() != args.compiler_runtime_manifest.resolve()
-        ):
-            raise SystemExit(
-                "cannot pass both --compiler-artifact-manifest and "
-                "--compiler-runtime-manifest with different paths"
-            )
-        if not args.compiler_artifact_manifest:
-            args.compiler_artifact_manifest = args.compiler_runtime_manifest
         if args.compiler_artifact_manifest:
             if not args.cann_mlir:
                 raise SystemExit("--cann-mlir is required with --compiler-artifact-manifest")

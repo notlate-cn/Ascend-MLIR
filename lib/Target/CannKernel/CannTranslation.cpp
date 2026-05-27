@@ -4154,9 +4154,9 @@ emitRequestedRuntimeArtifacts(ModuleOp moduleOp,
       failed(afir::cann::emitTilingSpaceJson(
           moduleOp, options.tilingSpaceOutPath, artifactOptions)))
     return failure();
-  if (!options.runtimeManifestOutPath.empty() &&
-      failed(afir::cann::emitRuntimeManifestJson(
-          moduleOp, options.runtimeManifestOutPath, artifactOptions)))
+  if (!options.artifactManifestOutPath.empty() &&
+      failed(afir::cann::emitArtifactManifestJson(
+          moduleOp, options.artifactManifestOutPath, artifactOptions)))
     return failure();
   if (!options.hostTilingOutPath.empty() &&
       failed(afir::cann::emitHostTilingCpp(

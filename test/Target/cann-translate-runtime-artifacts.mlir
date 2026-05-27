@@ -1,5 +1,5 @@
 // RUN: rm -rf %t.artifacts
-// RUN: rm -f %t.cpp %t.legacy.cpp %t.tiling.json %t.manifest.json %t.legacy-manifest.json %t.conflict-manifest.json %t.host.cpp %t.run.json %t.run.broadcast_add_reducesum.tiling.bin
+// RUN: rm -f %t.cpp %t.legacy.cpp %t.tiling.json %t.manifest.json %t.legacy-manifest.json %t.host.cpp %t.run.json %t.run.broadcast_add_reducesum.tiling.bin
 // RUN: ascend-mlir-translate -mlir-to-cann %s --tiling-space-out=%t.tiling.json --artifact-manifest-out=%t.manifest.json --host-tiling-out=%t.host.cpp --cann-soc=Ascend910B2 > %t.cpp
 // RUN: FileCheck %s --input-file=%t.tiling.json --check-prefix=TILING
 // RUN: FileCheck %s --input-file=%t.manifest.json --check-prefix=MANIFEST
@@ -9,9 +9,7 @@
 // RUN: env LD_LIBRARY_PATH=%cann_root/lib64:%cann_root/devlib:%cann_root/aarch64-linux/lib64:%cann_root/aarch64-linux/simulator/dav_2201/lib:%cann_root/runtime/lib64/stub:${LD_LIBRARY_PATH} runtime-session --artifact-manifest %t.manifest.json --artifact-root %t.artifacts --shape-arg arg0_dim0=64 --shape-arg arg1_dim1=15000 --emit-run-manifest %t.run.json
 // RUN: FileCheck %s --input-file=%t.run.json --check-prefix=RUNMANIFEST
 // RUN: test -s %t.run.broadcast_add_reducesum.tiling.bin
-// RUN: ascend-mlir-translate -mlir-to-cann %s --runtime-manifest-out=%t.legacy-manifest.json > %t.legacy.cpp
-// RUN: FileCheck %s --input-file=%t.legacy-manifest.json --check-prefix=MANIFEST
-// RUN: not ascend-mlir-translate -mlir-to-cann %s --artifact-manifest-out=%t.manifest.json --runtime-manifest-out=%t.conflict-manifest.json 2>&1 | FileCheck %s --check-prefix=MANIFEST-CONFLICT
+// RUN: not ascend-mlir-translate -mlir-to-cann %s --runtime-manifest-out=%t.legacy-manifest.json 2>&1 | FileCheck %s --check-prefix=LEGACY-MANIFEST-REMOVED
 
 // TILING-DAG: "kernel": "broadcast_add_reducesum"
 // TILING-DAG: "schema_version": "2.0"
@@ -68,7 +66,7 @@
 // MANIFEST: "abiPosition": 1
 // MANIFEST: "name": "dim_arg1_1"
 // MANIFEST: "workspaceSizeBytes": 4096
-// MANIFEST-CONFLICT: cannot pass both --artifact-manifest-out and --runtime-manifest-out with different paths
+// LEGACY-MANIFEST-REMOVED: runtime-manifest-out
 
 // HOST: struct TilingData
 // HOST: extern "C"

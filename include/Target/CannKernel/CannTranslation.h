@@ -13,7 +13,7 @@
 namespace mlir {
 struct CannTranslationOptions {
   StringRef tilingSpaceOutPath;
-  StringRef runtimeManifestOutPath;
+  StringRef artifactManifestOutPath;
   StringRef hostTilingOutPath;
   StringRef kernelFile;
   StringRef soc = "Ascend910B1";

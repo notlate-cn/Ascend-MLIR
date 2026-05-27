@@ -165,6 +165,18 @@ cat >"${TMP_DIR}/run_manifest.json" <<'JSON'
 }
 JSON
 
+if ascend-debug collect "${INPUT_MLIR}" \
+  --out "${TMP_DIR}/debug-run-legacy-manifest-alias" \
+  --preset deep \
+  --pipeline normalize-kernelize \
+  --runtime-manifest "${TMP_DIR}/artifact_manifest.json" \
+  >"${TMP_DIR}/legacy-manifest-alias.txt" 2>&1; then
+  echo "ascend_debug.legacy_manifest_alias=unexpected_success"
+  exit 1
+fi
+grep -Fq -- "--runtime-manifest" "${TMP_DIR}/legacy-manifest-alias.txt"
+echo "ascend_debug.legacy_manifest_alias=rejected"
+
 make_npy_pair() {
   local case_dir="$1"
   local rhs_last="$2"

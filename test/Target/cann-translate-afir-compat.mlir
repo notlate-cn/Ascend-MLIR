@@ -1,9 +1,11 @@
 // RUN: afir-translate -mlir-to-cann %s --artifact-manifest-out=%t.manifest.json > %t.cpp
 // RUN: FileCheck %s --input-file=%t.cpp --check-prefix=CPP
 // RUN: FileCheck %s --input-file=%t.manifest.json --check-prefix=MANIFEST
+// RUN: not afir-translate -mlir-to-cann %s --runtime-manifest-out=%t.legacy-manifest.json 2>&1 | FileCheck %s --check-prefix=LEGACY-MANIFEST-REMOVED
 
 // CPP: extern "C" __global__ __aicore__ void compat_kernel
 // MANIFEST: "kernelName": "compat_kernel"
+// LEGACY-MANIFEST-REMOVED: runtime-manifest-out
 
 module {
   func.func @compat_kernel(

@@ -276,6 +276,7 @@ run_example_case() {
   local manifest=""
   local manifest_candidates=(
     "${case_dir}/build_mainline/run_manifest.json"
+    "${case_dir}/build_mainline/run_manifest.prepared.json"
     "${case_dir}/build_e2e/run_manifest.json"
     "${SRC_DIR}/build/runtime-mix-${case_name}-data/runtime-manifest.json"
   )

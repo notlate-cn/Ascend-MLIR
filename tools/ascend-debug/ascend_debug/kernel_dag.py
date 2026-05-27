@@ -66,13 +66,13 @@ def as_task_map(run_manifest: dict[str, Any]) -> dict[str, dict[str, Any]]:
 
 
 def collect_kernel_ids(
-    runtime_manifest: dict[str, Any],
+    artifact_manifest: dict[str, Any],
     entries_by_id: dict[str, dict[str, Any]],
     tasks_by_id: dict[str, dict[str, Any]],
 ) -> list[str]:
     ids: set[str] = set(entries_by_id)
     ids.update(tasks_by_id)
-    graph = runtime_manifest.get("kernelGraph") if isinstance(runtime_manifest.get("kernelGraph"), dict) else {}
+    graph = artifact_manifest.get("kernelGraph") if isinstance(artifact_manifest.get("kernelGraph"), dict) else {}
     for node in graph.get("nodes", []) if isinstance(graph.get("nodes"), list) else []:
         if isinstance(node, dict) and isinstance(node.get("name"), str):
             ids.add(node["name"])
@@ -148,10 +148,10 @@ def collect_op_summaries(kernelized_ir: Path | None) -> dict[str, list[dict[str,
 
 
 def build_graph(
-    runtime_manifest: dict[str, Any],
+    artifact_manifest: dict[str, Any],
     kernel_ids: list[str],
 ) -> tuple[list[dict[str, Any]], dict[str, set[str]], dict[str, set[str]]]:
-    graph = runtime_manifest.get("kernelGraph") if isinstance(runtime_manifest.get("kernelGraph"), dict) else {}
+    graph = artifact_manifest.get("kernelGraph") if isinstance(artifact_manifest.get("kernelGraph"), dict) else {}
     edges: list[dict[str, Any]] = []
     pred: dict[str, set[str]] = collections.defaultdict(set)
     succ: dict[str, set[str]] = collections.defaultdict(set)
@@ -264,12 +264,12 @@ def default_runtime_input_roots(roots: list[str], tasks_by_id: dict[str, dict[st
 
 
 def analyze(
-    runtime_manifest: dict[str, Any],
+    artifact_manifest: dict[str, Any],
     run_manifest: dict[str, Any],
     kernelized_ir: Path | None,
     runtime_input_roots_override: list[str] | None,
 ) -> dict[str, Any]:
-    entries = runtime_manifest.get("kernel_entries", [])
+    entries = artifact_manifest.get("kernel_entries", [])
     if not isinstance(entries, list):
         entries = []
     entries_by_id = {
@@ -278,8 +278,8 @@ def analyze(
         if isinstance(entry, dict) and isinstance(entry.get("kernel_id"), str)
     }
     tasks_by_id = as_task_map(run_manifest)
-    kernel_ids = collect_kernel_ids(runtime_manifest, entries_by_id, tasks_by_id)
-    edges, pred, succ = build_graph(runtime_manifest, kernel_ids)
+    kernel_ids = collect_kernel_ids(artifact_manifest, entries_by_id, tasks_by_id)
+    edges, pred, succ = build_graph(artifact_manifest, kernel_ids)
     depth, critical_path = topo_depth(kernel_ids, pred, succ)
 
     roots = sorted([kernel_id for kernel_id in kernel_ids if not pred[kernel_id]], key=kernel_sort_key)
@@ -591,10 +591,10 @@ def analyze_paths(
     kernelized_ir: Path | None = None,
     runtime_input_roots: list[str] | None = None,
 ) -> dict[str, Any]:
-    runtime_manifest = load_json(artifact_manifest_path)
+    artifact_manifest = load_json(artifact_manifest_path)
     run_manifest = load_json(run_manifest_path) if run_manifest_path else {}
     return analyze(
-        runtime_manifest,
+        artifact_manifest,
         run_manifest,
         kernelized_ir,
         runtime_input_roots,
@@ -619,8 +619,7 @@ def write_report(summary: dict[str, Any], out: Path) -> None:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--artifact-manifest", type=Path)
-    parser.add_argument("--runtime-manifest", type=Path)
+    parser.add_argument("--artifact-manifest", type=Path, required=True)
     parser.add_argument("--run-manifest", type=Path)
     parser.add_argument("--kernelized-ir", type=Path)
     parser.add_argument("--svg-out", type=Path)
@@ -638,20 +637,10 @@ def main() -> int:
 
     if not args.svg_out and not args.summary_out:
         raise SystemExit("at least one of --svg-out or --summary-out is required")
-    if not args.artifact_manifest and not args.runtime_manifest:
-        raise SystemExit("--artifact-manifest is required")
-    if (
-        args.artifact_manifest
-        and args.runtime_manifest
-        and args.artifact_manifest.resolve() != args.runtime_manifest.resolve()
-    ):
-        raise SystemExit("cannot pass both --artifact-manifest and --runtime-manifest with different paths")
-
-    artifact_manifest_path = args.artifact_manifest or args.runtime_manifest
-    runtime_manifest = load_json(artifact_manifest_path)
+    artifact_manifest = load_json(args.artifact_manifest)
     run_manifest = load_json(args.run_manifest) if args.run_manifest else {}
     summary = analyze(
-        runtime_manifest,
+        artifact_manifest,
         run_manifest,
         args.kernelized_ir,
         args.runtime_input_root,

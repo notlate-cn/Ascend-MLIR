@@ -21,8 +21,8 @@ struct CannRuntimeArtifactOptions {
 
 LogicalResult emitTilingSpaceJson(ModuleOp module, StringRef outPath,
                                   const CannRuntimeArtifactOptions &options);
-LogicalResult emitRuntimeManifestJson(ModuleOp module, StringRef outPath,
-                                      const CannRuntimeArtifactOptions &options);
+LogicalResult emitArtifactManifestJson(ModuleOp module, StringRef outPath,
+                                       const CannRuntimeArtifactOptions &options);
 LogicalResult emitHostTilingCpp(ModuleOp module, StringRef outPath,
                                 const CannRuntimeArtifactOptions &options);
 

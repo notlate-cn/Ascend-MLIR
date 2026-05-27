@@ -81,7 +81,6 @@ def _realize_pass_arg(args: argparse.Namespace) -> str:
 def _graph_requested(args: argparse.Namespace) -> bool:
     return bool(
         args.artifact_manifest
-        or args.runtime_manifest
         or args.run_manifest
         or args.kernelized_ir
     )
@@ -114,36 +113,21 @@ def _collect_graph_artifacts(
 ) -> tuple[list[dict], list[dict], list[dict]]:
     if not _graph_requested(args):
         return [], [], []
-    if not args.artifact_manifest and not args.runtime_manifest:
+    if not args.artifact_manifest:
         raise CommandError("--artifact-manifest is required when collecting graph artifacts")
-    if (
-        args.artifact_manifest
-        and args.runtime_manifest
-        and args.artifact_manifest.resolve() != args.runtime_manifest.resolve()
-    ):
-        raise CommandError(
-            "cannot pass both --artifact-manifest and --runtime-manifest with different paths"
-        )
 
     graphs: list[dict] = []
     commands: list[dict] = []
     reports: list[dict] = []
 
-    artifact_manifest_arg = args.artifact_manifest or args.runtime_manifest
-    manifest_label = "artifact manifest" if args.artifact_manifest else "runtime manifest"
-    artifact_manifest = _resolve_existing_path(artifact_manifest_arg, label=manifest_label)
-    manifest_rel = (
-        "graphs/artifact_manifest.json"
-        if args.artifact_manifest
-        else "graphs/runtime_manifest.json"
-    )
-    manifest_kind = "artifact-manifest" if args.artifact_manifest else "runtime-manifest"
+    artifact_manifest = _resolve_existing_path(args.artifact_manifest, label="artifact manifest")
+    manifest_rel = "graphs/artifact_manifest.json"
     graphs.append(
         _copy_graph_artifact(
             src=artifact_manifest,
             run_dir=run_dir,
             rel_path=manifest_rel,
-            kind=manifest_kind,
+            kind="artifact-manifest",
         )
     )
     artifact_manifest_dst = run_dir / manifest_rel
@@ -180,7 +164,7 @@ def _collect_graph_artifacts(
     summary_rel = "graphs/kernel_dag.summary.json"
     report_stage, report_rel = KERNEL_DAG_REPORT
     tool_args = [
-        "--artifact-manifest" if args.artifact_manifest else "--runtime-manifest",
+        "--artifact-manifest",
         manifest_rel,
         "--kernelized-ir",
         "graphs/kernelized.mlir",

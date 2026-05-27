@@ -26,11 +26,6 @@ static cl::opt<std::string> ArtifactManifestOut(
     cl::desc("Write artifact_manifest.json to this path"),
     cl::init(""));
 
-static cl::opt<std::string> RuntimeManifestOut(
-    "runtime-manifest-out",
-    cl::desc("Deprecated alias for --artifact-manifest-out"),
-    cl::init(""));
-
 static cl::opt<std::string> HostTilingOut(
     "host-tiling-out",
     cl::desc("Write host tiling C ABI source to this path"),
@@ -47,19 +42,9 @@ int main(int argc, char **argv) {
   TranslateFromMLIRRegistration cannReg(
       "mlir-to-cann", "translate MLIR to CANN-standard AscendC kernel",
       [](Operation *op, raw_ostream &os) {
-        if (!ArtifactManifestOut.empty() && !RuntimeManifestOut.empty() &&
-            ArtifactManifestOut.getValue() != RuntimeManifestOut.getValue()) {
-          op->emitError()
-              << "cannot pass both --artifact-manifest-out and "
-                 "--runtime-manifest-out with different paths";
-          return failure();
-        }
         CannTranslationOptions options;
         options.tilingSpaceOutPath = TilingSpaceOut;
-        const std::string &manifestOutPath =
-            !ArtifactManifestOut.empty() ? ArtifactManifestOut.getValue()
-                                         : RuntimeManifestOut.getValue();
-        options.runtimeManifestOutPath = manifestOutPath;
+        options.artifactManifestOutPath = ArtifactManifestOut;
         options.hostTilingOutPath = HostTilingOut;
         options.soc = CannSoc;
         return translateToCannKernel(op, os, options);

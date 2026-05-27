@@ -6,7 +6,8 @@
 //   kernel_b: mid[N] * c[N] -> out[N]
 //
 // The two functions intentionally remain separate global kernel roots. The
-// example runtime manifest wires them as a two-task DAG.
+// example artifact manifest records the kernel DAG, and the run manifest wires
+// it into a two-task runtime session.
 // ============================================================
 
 module {

@@ -167,7 +167,7 @@ static LogicalResult canonicalizeFuncOp(func::FuncOp funcOp,
   // Promote module-level memref globals used by the kernel body to explicit
   // GM inputs. CANN kernels receive runtime buffers through GM_ADDR ABI
   // arguments; keeping memref.get_global in the body has no PyAsc printer and
-  // also hides the weight dependency from runtime manifests.
+  // also hides the weight dependency from artifact manifests.
   for (auto [index, global] : llvm::enumerate(promotedGlobals)) {
     BlockArgument globalArg = entryBlock.insertArgument(
         tilingIdx + static_cast<int>(index), global.type, funcOp.getLoc());

@@ -115,7 +115,7 @@
   as 49 vec / 1 cube / 3 mix, with 26 root tasks and 25 weight/constant prepack
   candidates.
 - Kernel DAG visualization lives in
-  `test/tools/diagnostics/ascend_kernel_dag_viz.py`; it reads runtime manifest,
+  `test/tools/diagnostics/ascend_kernel_dag_viz.py`; it reads artifact manifest,
   run manifest, and kernelized IR to emit SVG plus summary JSON for op summary,
   shape/tile, critical path, prepack roots, and simple fusion candidates.
 - Real NPU validation current state:

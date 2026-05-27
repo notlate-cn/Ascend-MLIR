@@ -28,7 +28,6 @@ def build_parser() -> argparse.ArgumentParser:
     collect.add_argument("--preset", choices=["quick", "deep"], default="quick")
     collect.add_argument("--pipeline", choices=["normalize-kernelize"], default="normalize-kernelize")
     collect.add_argument("--artifact-manifest", type=pathlib.Path)
-    collect.add_argument("--runtime-manifest", type=pathlib.Path)
     collect.add_argument("--run-manifest", type=pathlib.Path)
     collect.add_argument("--kernelized-ir", type=pathlib.Path)
     collect.add_argument(

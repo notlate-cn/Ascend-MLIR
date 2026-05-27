@@ -17,13 +17,13 @@ export ASCEND_MLIR_CI_SSH_PASSWORD='<set locally only>'
 
 ### 2.1 工作目录
 这是一台公共环境，只允许在自己的 `/data/{username}` 目录下新增、修改、删除文件，务必谨记，务必谨记，务必谨记。
-本文中的 `{username}` 是占位符，实际操作时替换为自己在该 host 上分配到的目录名。
+本文中的 `{username}` 实际为`nyh`，完整路径为：`/data/nyh`。
 
 ### 2.2 环境安装
 若要使能NPU硬件，需要安装其依赖的驱动包和软件包。
 
 #### 2.2.1 驱动包安装
-目前驱动包已经安装好了，可以通过命令`npu-smi info`查看NPU硬件状态，能够看到是Ascend 910C，共16张卡，我们只允许使用7卡(`export ASCEND_DEVICE_ID=7`)。其安装在系统目录/usr/local/Ascend/driver目录下，后续每次建立shell会话，先执行命令`source /usr/local/Ascend/driver/bin/setenv.bash`，设置driver相关环境变量。
+目前驱动包已经安装好了，可以通过命令`npu-smi info`查看NPU硬件状态，能够看到是Ascend 910C，共16张卡，我们只允许使用7卡(`export ASCEND_DEVICE_ID=5`)。其安装在系统目录/usr/local/Ascend/driver目录下，后续每次建立shell会话，先执行命令`source /usr/local/Ascend/driver/bin/setenv.bash`，设置driver相关环境变量。
 
 #### 2.2.2 软件包安装
 软件包(toolkit工具包)只能安装到每位使用者的独立目录，即第1点中的 `/data/{username}/Ascend` 目录下。
@@ -57,7 +57,7 @@ ln -sfn cann latest
 ```shell
 source /usr/local/Ascend/driver/bin/setenv.bash
 source /data/{username}/Ascend/latest/set_env.sh
-export ASCEND_DEVICE_ID=7
+export ASCEND_DEVICE_ID=5
 ```
 可以把上述代码保存到 `/data/{username}/env.sh`，后续通过命令 `cd /data/{username}; source /data/{username}/env.sh` 一键设置。
 
@@ -89,7 +89,7 @@ export ASCEND_DEVICE_ID=7
 cd /data/{username}/<case>
 source /data/{username}/env.sh
 export LD_LIBRARY_PATH="$PWD/lib:${LD_LIBRARY_PATH:-}"
-export ASCEND_DEVICE_ID=7
+export ASCEND_DEVICE_ID=5
 export ASCEND_RUNTIME_TRACE_LAUNCH=1
 ./bin/runtime-session --run-manifest ./run_manifest.json --run
 ```
@@ -134,7 +134,7 @@ for c in const640 copy640 copy_tbuf640 copy_scalar640 copy_params640 \
   cd "/data/{username}/real-npu-microcases/${c}"
   source /data/{username}/env.sh
   export LD_LIBRARY_PATH="$PWD/lib:${LD_LIBRARY_PATH:-}"
-  export ASCEND_DEVICE_ID=7
+  export ASCEND_DEVICE_ID=5
   export ASCEND_RUNTIME_TRACE_LAUNCH=1
   ./bin/runtime-session --run-manifest ./run_manifest.json --run
 done
@@ -161,7 +161,7 @@ done
 
 ```shell
 source /data/{username}/env.sh
-export ASCEND_DEVICE_ID=7
+export ASCEND_DEVICE_ID=5
 export RUNTIME_SESSION="$PWD/build/bin/runtime-session"
 export RUN_ONLY_RUNTIME_SESSION="$PWD/build-runtime-session-run-only/bin/runtime-session"
 
