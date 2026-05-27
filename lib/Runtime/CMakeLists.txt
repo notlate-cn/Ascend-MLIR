@@ -5,6 +5,7 @@ option(ASCEND_RUNTIME_SESSION_RUN_ONLY
 
 add_mlir_library(AscendCRuntime
   Artifact/ArtifactCompiler.cpp
+  Artifact/DebugCase.cpp
   Artifact/VecCubeArtifactBackend.cpp
   Artifact/RunManifest.cpp
   Artifact/RuntimeSessionArtifactCompile.cpp

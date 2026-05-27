@@ -20,7 +20,228 @@ grep -Fq 'open' "${TMP_DIR}/ascend-debug-help.txt"
 grep -Fq 'serve' "${TMP_DIR}/ascend-debug-help.txt"
 grep -Fq 'diff' "${TMP_DIR}/ascend-debug-help.txt"
 grep -Fq 'locate' "${TMP_DIR}/ascend-debug-help.txt"
+grep -Fq 'run' "${TMP_DIR}/ascend-debug-help.txt"
 echo "ascend_debug.help=ok"
+
+mkdir -p "${TMP_DIR}/fake-runtime-session"
+cat >"${TMP_DIR}/fake-runtime-session/runtime-session" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' "$*" >>"${ASCEND_DEBUG_FAKE_RUNTIME_LOG}"
+if [[ "$#" -eq 4 && "$1" == "--case" && "$3" == "--emit-run-manifest" ]]; then
+  mkdir -p "$(dirname "$4")"
+  printf '{"backend":"sim","tasks":[]}\n' >"$4"
+  printf 'run_manifest.path=%s\n' "$4"
+  exit 0
+fi
+if [[ "$#" -eq 3 && "$1" == "--run-manifest" && "$3" == "--run" ]]; then
+  test -f "$2"
+  printf 'session.backend=sim\n'
+  printf 'session.result=success\n'
+  exit 0
+fi
+printf 'unexpected runtime-session invocation: %s\n' "$*" >&2
+exit 2
+SH
+chmod +x "${TMP_DIR}/fake-runtime-session/runtime-session"
+cat >"${TMP_DIR}/case.json" <<'JSON'
+{
+  "schema_version": 1,
+  "artifact": {
+    "root": "/tmp/artifact",
+    "manifest": "/tmp/artifact_manifest.json"
+  },
+  "backend": {
+    "kind": "sim"
+  },
+  "inputs": []
+}
+JSON
+ASCEND_DEBUG_FAKE_RUNTIME_LOG="${TMP_DIR}/fake-runtime-session.log" \
+  PATH="${TMP_DIR}/fake-runtime-session:${PATH}" \
+  ascend-debug run "${TMP_DIR}/case.json" --out "${TMP_DIR}/debug-case-run"
+test -f "${TMP_DIR}/debug-case-run/run_manifest.json"
+grep -Fq -- "--case ${TMP_DIR}/case.json --emit-run-manifest ${TMP_DIR}/debug-case-run/run_manifest.json" \
+  "${TMP_DIR}/fake-runtime-session.log"
+grep -Fq -- "--run-manifest ${TMP_DIR}/debug-case-run/run_manifest.json --run" \
+  "${TMP_DIR}/fake-runtime-session.log"
+grep -Fq "run_manifest.path=${TMP_DIR}/debug-case-run/run_manifest.json" \
+  "${TMP_DIR}/debug-case-run/runtime-session.prepare.log"
+grep -Fq "session.result=success" \
+  "${TMP_DIR}/debug-case-run/runtime-session.run.log"
+echo "ascend_debug.run_case=ok"
+
+mkdir -p "${TMP_DIR}/fake-source-tools"
+cat >"${TMP_DIR}/fake-source-tools/afir-opt" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+printf 'afir-opt %s\n' "$*" >>"${ASCEND_DEBUG_FAKE_SOURCE_LOG}"
+cat "$1"
+SH
+chmod +x "${TMP_DIR}/fake-source-tools/afir-opt"
+cat >"${TMP_DIR}/fake-source-tools/ascend-mlir-translate" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+printf 'ascend-mlir-translate %s\n' "$*" >>"${ASCEND_DEBUG_FAKE_SOURCE_LOG}"
+tiling=""
+manifest=""
+host_tiling=""
+kernel=""
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --tiling-space-out=*) tiling="${1#--tiling-space-out=}" ;;
+    --artifact-manifest-out=*) manifest="${1#--artifact-manifest-out=}" ;;
+    --host-tiling-out=*) host_tiling="${1#--host-tiling-out=}" ;;
+    -o)
+      kernel="$2"
+      shift
+      ;;
+  esac
+  shift
+done
+printf '{"schema_version":1}\n' >"${tiling}"
+printf '{"kernel_entries":[],"kernelGraph":{"nodes":[],"edges":[]}}\n' >"${manifest}"
+printf 'extern "C" int source_tiling() { return 0; }\n' >"${host_tiling}"
+printf 'extern "C" void source_kernel() {}\n' >"${kernel}"
+SH
+chmod +x "${TMP_DIR}/fake-source-tools/ascend-mlir-translate"
+cat >"${TMP_DIR}/fake-source-tools/runtime-session" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+printf 'runtime-session %s\n' "$*" >>"${ASCEND_DEBUG_FAKE_SOURCE_LOG}"
+if [[ "$1" == "--kernel" ]]; then
+  output=""
+  name=""
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --output)
+        output="$2"
+        shift
+        ;;
+      --name)
+        name="$2"
+        shift
+        ;;
+    esac
+    shift
+  done
+  mkdir -p "${output}/out"
+  printf 'fake artifact for %s\n' "${name}" >"${output}/out/manifest.txt"
+  printf 'artifact.kernel_name=%s\n' "${name}"
+  printf 'artifact.root=%s\n' "${output}"
+  printf 'artifact.manifest=%s\n' "${output}/out/manifest.txt"
+  printf 'artifact.soc=Ascend910B1\n'
+  exit 0
+fi
+if [[ "$#" -eq 4 && "$1" == "--case" && "$3" == "--emit-run-manifest" ]]; then
+  mkdir -p "$(dirname "$4")"
+  printf '{"backend":"sim","tasks":[]}\n' >"$4"
+  printf 'run_manifest.path=%s\n' "$4"
+  exit 0
+fi
+if [[ "$#" -eq 3 && "$1" == "--run-manifest" && "$3" == "--run" ]]; then
+  test -f "$2"
+  printf 'session.backend=sim\n'
+  printf 'session.result=success\n'
+  exit 0
+fi
+printf 'unexpected runtime-session invocation: %s\n' "$*" >&2
+exit 2
+SH
+chmod +x "${TMP_DIR}/fake-source-tools/runtime-session"
+cat >"${TMP_DIR}/fake-source-tools/c++" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+printf 'c++ %s\n' "$*" >>"${ASCEND_DEBUG_FAKE_SOURCE_LOG}"
+out=""
+while [[ $# -gt 0 ]]; do
+  if [[ "$1" == "-o" ]]; then
+    out="$2"
+    shift
+  fi
+  shift
+done
+mkdir -p "$(dirname "${out}")"
+printf 'fake host tiling so\n' >"${out}"
+SH
+chmod +x "${TMP_DIR}/fake-source-tools/c++"
+cat >"${TMP_DIR}/source.mlir" <<'MLIR'
+module {
+  func.func @source_kernel(%arg0: tensor<?x?xf16>) -> tensor<?x?xf16> {
+    return %arg0 : tensor<?x?xf16>
+  }
+}
+MLIR
+touch "${TMP_DIR}/input.raw" "${TMP_DIR}/expected.raw"
+cat >"${TMP_DIR}/source-case.json" <<'JSON'
+{
+  "schema_version": 1,
+  "source": {
+    "mlir": "source.mlir"
+  },
+  "backend": {
+    "kind": "sim"
+  },
+  "inputs": [
+    {
+      "name": "arg0",
+      "path": "input.raw",
+      "shape": [4, 8],
+      "datatype": "f16"
+    }
+  ],
+  "outputs": [
+    {
+      "name": "out0",
+      "path": "actual.npy"
+    }
+  ],
+  "expected_outputs": [
+    {
+      "name": "out0",
+      "path": "expected.raw",
+      "shape": [4, 8],
+      "datatype": "f16"
+    }
+  ],
+  "validation": {
+    "atol": 0.01,
+    "rtol": 0.02
+  }
+}
+JSON
+ASCEND_DEBUG_FAKE_SOURCE_LOG="${TMP_DIR}/fake-source-tools.log" \
+  CANN_ROOT="${TMP_DIR}/fake-cann-root" \
+  PATH="${TMP_DIR}/fake-source-tools:${PATH}" \
+  ascend-debug run "${TMP_DIR}/source-case.json" --out "${TMP_DIR}/debug-source-run"
+test -f "${TMP_DIR}/debug-source-run/step1_fused.mlir"
+test -f "${TMP_DIR}/debug-source-run/step10_kernel.cpp"
+test -f "${TMP_DIR}/debug-source-run/phase5_artifact_manifest.json"
+test -f "${TMP_DIR}/debug-source-run/artifact/host_tiling.so"
+test -f "${TMP_DIR}/debug-source-run/case.artifact.json"
+python3 - "${TMP_DIR}/debug-source-run/case.artifact.json" <<'PY'
+import json
+import pathlib
+import sys
+
+case = json.loads(pathlib.Path(sys.argv[1]).read_text())
+assert "source" not in case
+assert case["artifact"]["root"].endswith("/debug-source-run/artifact")
+assert case["artifact"]["manifest"].endswith("/debug-source-run/phase5_artifact_manifest.json")
+assert case["shape_args"] == {"arg0": [4, 8]}
+assert case["inputs"][0]["dtype"] == "f16"
+assert case["expected_outputs"][0]["dtype"] == "f16"
+PY
+grep -Fq -- 'afir-opt' "${TMP_DIR}/fake-source-tools.log"
+grep -Fq -- 'afir-opt '"${TMP_DIR}"'/debug-source-run/step8_kernel_ir.mlir --ascend-canonicalize-cann-signature --canonicalize --cse' \
+  "${TMP_DIR}/fake-source-tools.log"
+grep -Fq -- 'ascend-mlir-translate' "${TMP_DIR}/fake-source-tools.log"
+grep -Fq -- 'runtime-session --kernel' "${TMP_DIR}/fake-source-tools.log"
+grep -Fq -- "--case ${TMP_DIR}/debug-source-run/case.artifact.json --emit-run-manifest ${TMP_DIR}/debug-source-run/run_manifest.json" \
+  "${TMP_DIR}/fake-source-tools.log"
+grep -Fq "session.result=success" \
+  "${TMP_DIR}/debug-source-run/runtime-session.run.log"
+echo "ascend_debug.run_source_case=ok"
 
 ascend-debug collect "${INPUT_MLIR}" \
   --out "${TMP_DIR}/debug-run" \

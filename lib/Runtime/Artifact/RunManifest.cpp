@@ -883,6 +883,17 @@ std::string makeTilingBinaryPath(llvm::StringRef runManifestPath,
   return dir.str().str();
 }
 
+std::string makeDefaultOutputPath(llvm::StringRef outputDir,
+                                  llvm::StringRef kernelId,
+                                  llvm::StringRef outputName) {
+  llvm::SmallString<256> path(outputDir);
+  std::string filename =
+      (sanitizePathComponent(kernelId) + "." +
+       sanitizePathComponent(outputName) + ".actual.npy");
+  llvm::sys::path::append(path, filename);
+  return path.str().str();
+}
+
 using GetTilingSizeFn = int32_t (*)();
 using GetTilingFn = int32_t (*)(const int64_t *, int32_t, void *);
 using GetBlockDimFn = int64_t (*)(const int64_t *, int32_t);
@@ -1395,6 +1406,10 @@ llvm::Error emitRunManifestFromArtifactManifest(
           inputs ? kernels[kernelIndexValue].inputs[bindingIndex]
                  : kernels[kernelIndexValue].outputs[bindingIndex];
       binding.path = assignment.path;
+      if (assignment.shape)
+        binding.shape = *assignment.shape;
+      if (assignment.dtype)
+        binding.dtype = *assignment.dtype;
     }
     return llvm::Error::success();
   };
@@ -1444,7 +1459,29 @@ llvm::Error emitRunManifestFromArtifactManifest(
     expected.path = assignment.path;
     expected.shape = output.shape;
     expected.dtype = output.dtype;
+    if (assignment.shape)
+      expected.shape = *assignment.shape;
+    if (assignment.dtype)
+      expected.dtype = *assignment.dtype;
     expectedOutputs.push_back(std::move(expected));
+  }
+
+  if (!request.defaultOutputDirectory.empty()) {
+    if (auto ec = llvm::sys::fs::create_directories(
+            request.defaultOutputDirectory)) {
+      return llvm::createStringError(
+          ec, "cannot create default output directory: %s",
+          request.defaultOutputDirectory.c_str());
+    }
+    for (PreparedKernel &kernel : kernels) {
+      for (TensorBinding &output : kernel.outputs) {
+        if (output.sourceKind == BindingSourceKind::ExternalFile &&
+            output.path.empty()) {
+          output.path = makeDefaultOutputPath(request.defaultOutputDirectory,
+                                             kernel.kernelId, output.name);
+        }
+      }
+    }
   }
 
   llvm::json::Object runManifest;

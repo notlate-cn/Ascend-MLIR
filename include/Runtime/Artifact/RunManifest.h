@@ -27,6 +27,8 @@ struct ArtifactManifestBindingPath {
   std::string taskId;
   std::string bindingName;
   std::string path;
+  std::optional<std::vector<int64_t>> shape;
+  std::optional<DType> dtype;
 };
 
 struct ArtifactManifestPrepareRequest {
@@ -37,6 +39,7 @@ struct ArtifactManifestPrepareRequest {
   std::vector<ArtifactManifestBindingPath> inputPaths;
   std::vector<ArtifactManifestBindingPath> outputPaths;
   std::vector<ArtifactManifestBindingPath> expectedOutputPaths;
+  std::string defaultOutputDirectory;
   std::optional<bool> enableProfiling;
   std::optional<double> atol;
   std::optional<double> rtol;

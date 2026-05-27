@@ -1,0 +1,50 @@
+{
+  "schema_version": 1,
+  "source": {
+    "mlir": "step0_input.mlir"
+  },
+  "backend": {
+    "kind": "sim"
+  },
+  "inputs": [
+    {
+      "name": "arg0",
+      "path": "build_mainline/input_a.npy",
+      "dtype": "f16"
+    },
+    {
+      "name": "arg1",
+      "path": "build_mainline/input_b.npy",
+      "dtype": "f16"
+    },
+    {
+      "name": "arg2",
+      "path": "build_mainline/input_c.npy",
+      "dtype": "f16"
+    },
+    {
+      "name": "arg3",
+      "path": "build_mainline/input_d.npy",
+      "dtype": "f16"
+    }
+  ],
+  "outputs": [
+    {
+      "name": "out0",
+      "path": "build_mainline/output_actual.npy",
+      "dtype": "f16"
+    }
+  ],
+  "expected_outputs": [
+    {
+      "name": "out0",
+      "path": "build_mainline/output.npy",
+      "dtype": "f16"
+    }
+  ],
+  "validation": {
+    "atol": 0.01,
+    "rtol": 0.01
+  },
+  "profiling": true
+}

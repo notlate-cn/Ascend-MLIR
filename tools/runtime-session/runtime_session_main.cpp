@@ -1,5 +1,6 @@
 #include "Runtime/RuntimeSessionRequestBuilder.h"
 #include "Runtime/RuntimeFrontendCore.h"
+#include "Runtime/DebugCase.h"
 #include "Runtime/RunManifest.h"
 #include "Runtime/ToolDiscovery.h"
 #include "Runtime/ExecutionBackend.h"
@@ -19,6 +20,10 @@
 #include <utility>
 #include <vector>
 
+#ifndef _WIN32
+#include <unistd.h>
+#endif
+
 namespace {
 
 using namespace mlir::runtime;
@@ -32,6 +37,11 @@ llvm::cl::OptionCategory RuntimeSessionCategory("runtime-session options");
 llvm::cl::opt<std::string> ArtifactRoot(
     "artifact-root",
     llvm::cl::desc("Use an existing artifact root with a real manifest"),
+    llvm::cl::cat(RuntimeSessionCategory));
+llvm::cl::opt<std::string> DebugCasePath(
+    "case",
+    llvm::cl::desc("User-level case.json to prepare and optionally run"),
+    llvm::cl::init(""),
     llvm::cl::cat(RuntimeSessionCategory));
 llvm::cl::opt<std::string> ArtifactManifestPath(
     "artifact-manifest",
@@ -348,6 +358,30 @@ llvm::Expected<std::string> runtimeSessionWorkdirBaseDirectory() {
   return sessionRoot.string();
 }
 
+#ifndef ASCEND_RUNTIME_SESSION_RUN_ONLY
+std::string parentDirectoryOrCurrent(llvm::StringRef path) {
+  llvm::SmallString<256> dir(path);
+  llvm::sys::path::remove_filename(dir);
+  if (dir.empty())
+    return ".";
+  return dir.str().str();
+}
+
+llvm::Expected<std::string> createTemporaryCaseRunManifestPath() {
+  int fd = -1;
+  llvm::SmallString<256> path;
+  if (auto ec = llvm::sys::fs::createTemporaryFile(
+          "runtime-session-case", "json", fd, path))
+    return llvm::createStringError(ec,
+                                   "cannot create temporary case run manifest");
+#ifndef _WIN32
+  if (fd >= 0)
+    ::close(fd);
+#endif
+  return path.str().str();
+}
+#endif
+
 } // namespace
 
 int main(int argc, char **argv) {
@@ -358,8 +392,58 @@ int main(int argc, char **argv) {
       argc, argv,
       "task graph runtime planning and execution CLI for artifacts and session graphs\n");
 
+  std::string caseRunManifestPath;
 #ifndef ASCEND_RUNTIME_SESSION_RUN_ONLY
-  if (!ArtifactManifestPath.empty() || !EmitRunManifestPath.empty()) {
+  if (!DebugCasePath.empty()) {
+    if (!RunManifestPath.empty() || !ArtifactManifestPath.empty() ||
+        !ArtifactRoot.empty() || !KernelFile.empty()) {
+      llvm::errs() << "Error: --case cannot be combined with --run-manifest, "
+                      "--artifact-manifest, --artifact-root, or --kernel\n";
+      return 4;
+    }
+    if (!ShapeArgAssignments.empty() || !InputPathAssignments.empty() ||
+        !OutputArgs.empty() || !ExpectedOutputPathAssignments.empty()) {
+      llvm::errs() << "Error: --case carries shape/input/output bindings; do "
+                      "not combine it with --shape-arg, --input, --output, or "
+                      "--expected-output\n";
+      return 4;
+    }
+    if (EmitRunManifestPath.empty() && !RunSession) {
+      llvm::errs() << "Error: --case requires --emit-run-manifest or --run\n";
+      return 4;
+    }
+
+    if (!EmitRunManifestPath.empty()) {
+      caseRunManifestPath = EmitRunManifestPath;
+    } else {
+      auto tempPathOr = createTemporaryCaseRunManifestPath();
+      if (!tempPathOr) {
+        llvm::errs() << "Error: " << llvm::toString(tempPathOr.takeError())
+                     << "\n";
+        return 4;
+      }
+      caseRunManifestPath = *tempPathOr;
+    }
+
+    llvm::SmallString<256> defaultOutputDir(
+        parentDirectoryOrCurrent(caseRunManifestPath));
+    llvm::sys::path::append(defaultOutputDir, "outputs");
+
+    DebugCasePrepareRequest caseRequest;
+    caseRequest.casePath = DebugCasePath;
+    caseRequest.outputRunManifestPath = caseRunManifestPath;
+    caseRequest.defaultOutputDirectory = defaultOutputDir.str().str();
+    if (auto err = emitRunManifestFromDebugCase(caseRequest)) {
+      llvm::errs() << "Error: " << llvm::toString(std::move(err)) << "\n";
+      return 4;
+    }
+    llvm::outs() << "run_manifest.path=" << caseRunManifestPath << "\n";
+    if (!RunSession)
+      return 0;
+  }
+
+  if (caseRunManifestPath.empty() &&
+      (!ArtifactManifestPath.empty() || !EmitRunManifestPath.empty())) {
     if (ArtifactManifestPath.empty()) {
       llvm::errs() << "Error: --emit-run-manifest requires --artifact-manifest\n";
       return 4;
@@ -431,8 +515,12 @@ int main(int argc, char **argv) {
   std::optional<KernelArtifact> artifact;
 #endif
   std::optional<TaskGraph> graph;
-  if (!RunManifestPath.empty()) {
-    auto manifestGraphOr = prepareRuntimeSessionGraphFromManifest(RunManifestPath);
+  std::string effectiveRunManifestPath =
+      caseRunManifestPath.empty() ? RunManifestPath.getValue()
+                                  : caseRunManifestPath;
+  if (!effectiveRunManifestPath.empty()) {
+    auto manifestGraphOr =
+        prepareRuntimeSessionGraphFromManifest(effectiveRunManifestPath);
     if (!manifestGraphOr) {
       llvm::errs() << "Error: " << llvm::toString(manifestGraphOr.takeError())
                    << "\n";

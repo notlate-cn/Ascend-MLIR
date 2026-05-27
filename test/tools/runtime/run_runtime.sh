@@ -65,6 +65,10 @@ RUNTIME_SESSION_PREPARED_INPUT="$(mktemp /tmp/runtime_session_prepared_input.XXX
 RUNTIME_SESSION_PREPARED_OUTPUT="$(mktemp /tmp/runtime_session_prepared_output.XXXXXX.npy)"
 RUNTIME_SESSION_PREPARED_EXPECTED="$(mktemp /tmp/runtime_session_prepared_expected.XXXXXX.npy)"
 RUNTIME_SESSION_PREPARE_BINDING_STDERR="$(mktemp /tmp/runtime_session_prepare_binding.XXXXXX.err)"
+RUNTIME_SESSION_CASE_DIR="$(mktemp -d)"
+RUNTIME_SESSION_CASE_JSON="${RUNTIME_SESSION_CASE_DIR}/case.json"
+RUNTIME_SESSION_CASE_RUN_MANIFEST="${RUNTIME_SESSION_CASE_DIR}/run_manifest.json"
+RUNTIME_SESSION_CASE_CONFLICT_STDERR="${RUNTIME_SESSION_CASE_DIR}/conflict.err"
 RUNTIME_SESSION_DAG_MANIFEST="$(mktemp /tmp/runtime_session_dag_manifest.XXXXXX.json)"
 RUNTIME_SESSION_DAG_OUTPUT="$(mktemp /tmp/runtime_session_dag_actual.XXXXXX.npy)"
 RUNTIME_SESSION_NPU_MANIFEST="$(mktemp /tmp/runtime_session_npu_manifest.XXXXXX.json)"
@@ -76,6 +80,7 @@ cleanup() {
   rm -rf "$FAKE_ARTIFACT_ROOT"
   rm -rf "$RUNTIME_SESSION_ARTIFACT_ROOT"
   rm -rf "$RUNTIME_SESSION_SECOND_ARTIFACT_ROOT"
+  rm -rf "$RUNTIME_SESSION_CASE_DIR"
   rm -f "$INVALID_STDERR" "$RUN_STDERR" "$TEST_RUNTIME_BIN" \
         "$CONFLICT_STDERR" "$INVALID_KIND_STDERR" \
         "$TEST_TASKGRAPH_RUNTIME_BIN" "$TEST_CAPI_RUNTIME_BIN" \
@@ -281,6 +286,26 @@ cat > "${RUNTIME_SESSION_ARTIFACT_MANIFEST}" <<'EOF'
   ]
 }
 EOF
+python3 - \
+  "${RUNTIME_SESSION_PREPARED_INPUT}" \
+  "${RUNTIME_SESSION_PREPARED_EXPECTED}" <<'PY'
+import pathlib
+import struct
+import sys
+
+def write_npy(path, element_count):
+    header = "{'descr': '<f2', 'fortran_order': False, 'shape': (%d,), }" % element_count
+    header_bytes = header.encode("latin1")
+    padding = 16 - ((10 + len(header_bytes) + 1) % 16)
+    header_bytes += b" " * padding + b"\n"
+    payload = b"\x00\x00" * element_count
+    pathlib.Path(path).write_bytes(
+        b"\x93NUMPY\x01\x00" + struct.pack("<H", len(header_bytes)) + header_bytes + payload
+    )
+
+write_npy(sys.argv[1], 128)
+write_npy(sys.argv[2], 128)
+PY
 build/bin/runtime-session \
   --artifact-manifest "${RUNTIME_SESSION_ARTIFACT_MANIFEST}" \
   --artifact-root "${FAKE_ARTIFACT_ROOT}" \
@@ -386,6 +411,131 @@ if build/bin/runtime-session \
 fi
 grep -q "binding is ambiguous; use task.binding selector: out0" \
   "${RUNTIME_SESSION_PREPARE_BINDING_STDERR}"
+
+cat > "${RUNTIME_SESSION_CASE_JSON}" <<EOF
+{
+  "schema_version": 1,
+  "artifact": {
+    "root": "${FAKE_ARTIFACT_ROOT}",
+    "manifest": "${RUNTIME_SESSION_ARTIFACT_MANIFEST}"
+  },
+  "backend": {
+    "kind": "sim"
+  },
+  "shape_args": {
+    "arg0": [128]
+  },
+  "inputs": [
+    {
+      "name": "kernel_a.arg0",
+      "path": "${RUNTIME_SESSION_PREPARED_INPUT}"
+    }
+  ],
+  "outputs": [
+    {
+      "name": "kernel_b.out0",
+      "path": "${RUNTIME_SESSION_CASE_DIR}/custom_actual.npy"
+    }
+  ],
+  "expected_outputs": [
+    {
+      "name": "kernel_b.out0",
+      "path": "${RUNTIME_SESSION_PREPARED_EXPECTED}"
+    }
+  ],
+  "validation": {
+    "atol": 0.01,
+    "rtol": 0.02
+  }
+}
+EOF
+build/bin/runtime-session \
+  --case "${RUNTIME_SESSION_CASE_JSON}" \
+  --emit-run-manifest "${RUNTIME_SESSION_CASE_RUN_MANIFEST}" \
+  >"${RUNTIME_SESSION_CASE_DIR}/prepare.log"
+grep -q "^run_manifest.path=${RUNTIME_SESSION_CASE_RUN_MANIFEST}$" \
+  "${RUNTIME_SESSION_CASE_DIR}/prepare.log"
+test -f "${RUNTIME_SESSION_CASE_RUN_MANIFEST}"
+python3 - \
+  "${RUNTIME_SESSION_CASE_RUN_MANIFEST}" \
+  "${FAKE_ARTIFACT_ROOT}" \
+  "${RUNTIME_SESSION_PREPARED_INPUT}" \
+  "${RUNTIME_SESSION_PREPARED_EXPECTED}" \
+  "${RUNTIME_SESSION_CASE_DIR}" <<'PY'
+import json
+import pathlib
+import sys
+
+manifest = json.loads(pathlib.Path(sys.argv[1]).read_text())
+artifact_root = sys.argv[2]
+input_path = sys.argv[3]
+expected_path = sys.argv[4]
+case_dir = pathlib.Path(sys.argv[5])
+tasks = manifest["tasks"]
+assert manifest["backend"] == "sim"
+assert manifest["artifact_root"] == artifact_root
+assert [task["task_id"] for task in tasks] == ["kernel_a", "kernel_b"]
+assert tasks[0]["workspace_size"] == 384
+assert tasks[0]["block_dim"] == 4
+assert tasks[0]["tiling"]["binary"].endswith(".tiling.bin")
+assert tasks[0]["inputs"] == [{
+    "name": "arg0",
+    "path": input_path,
+    "shape": [128],
+    "dtype": "f16",
+}]
+assert tasks[0]["outputs"][0]["path"] == str(case_dir / "outputs" / "kernel_a.out0.actual.npy")
+assert tasks[1]["outputs"][0]["path"] == str(case_dir / "custom_actual.npy")
+assert tasks[1]["expected_outputs"] == [{
+    "name": "out0",
+    "path": expected_path,
+    "shape": [128],
+    "dtype": "f16",
+}]
+assert tasks[1]["atol"] == 0.01
+assert tasks[1]["rtol"] == 0.02
+PY
+if build/bin/runtime-session \
+  --case "${RUNTIME_SESSION_CASE_JSON}" \
+  --artifact-manifest "${RUNTIME_SESSION_ARTIFACT_MANIFEST}" \
+  --emit-run-manifest "${RUNTIME_SESSION_CASE_RUN_MANIFEST}" \
+  2>"${RUNTIME_SESSION_CASE_CONFLICT_STDERR}"; then
+  echo "Error: runtime-session --case conflict unexpectedly succeeded" >&2
+  exit 1
+fi
+grep -q -- "--case cannot be combined" "${RUNTIME_SESSION_CASE_CONFLICT_STDERR}"
+
+cat > "${RUNTIME_SESSION_CASE_DIR}/case_npu.json" <<EOF
+{
+  "schema_version": 1,
+  "artifact": {
+    "root": "${FAKE_ARTIFACT_ROOT}",
+    "manifest": "${RUNTIME_SESSION_ARTIFACT_MANIFEST}"
+  },
+  "backend": {
+    "kind": "npu"
+  },
+  "shape_args": {
+    "arg0": [128]
+  },
+  "inputs": [
+    {
+      "name": "kernel_a.arg0",
+      "path": "${RUNTIME_SESSION_PREPARED_INPUT}"
+    }
+  ]
+}
+EOF
+build/bin/runtime-session \
+  --case "${RUNTIME_SESSION_CASE_DIR}/case_npu.json" \
+  --emit-run-manifest "${RUNTIME_SESSION_CASE_DIR}/case_npu_run_manifest.json" \
+  --testing-driver npu-success \
+  --run >"${RUNTIME_SESSION_CASE_DIR}/case_npu_run.log"
+grep -q "^run_manifest.path=${RUNTIME_SESSION_CASE_DIR}/case_npu_run_manifest.json$" \
+  "${RUNTIME_SESSION_CASE_DIR}/case_npu_run.log"
+grep -q '^session.backend=npu$' "${RUNTIME_SESSION_CASE_DIR}/case_npu_run.log"
+grep -q '^session.result=success$' "${RUNTIME_SESSION_CASE_DIR}/case_npu_run.log"
+grep -q '^session.profile.count=2$' "${RUNTIME_SESSION_CASE_DIR}/case_npu_run.log"
 
 echo "--- Checking runtime-session positive vec simulation path ---"
 runtime_verify_build_example_toolchain

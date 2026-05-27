@@ -11,6 +11,7 @@ from ascend_debug.diff import diff_run
 from ascend_debug.locate import locate_run
 from ascend_debug.open_view import open_run
 from ascend_debug.runner import CommandError
+from ascend_debug.run_case import run_case
 from ascend_debug.serve import serve_run
 
 
@@ -70,6 +71,11 @@ def build_parser() -> argparse.ArgumentParser:
     locate = subparsers.add_parser("locate", help="Locate first bad kernel")
     locate.add_argument("run_dir", type=pathlib.Path)
     locate.set_defaults(handler=locate_run)
+
+    run = subparsers.add_parser("run", help="Prepare and run a case.json")
+    run.add_argument("case", type=pathlib.Path)
+    run.add_argument("--out", type=pathlib.Path, required=True)
+    run.set_defaults(handler=run_case)
 
     return parser
 

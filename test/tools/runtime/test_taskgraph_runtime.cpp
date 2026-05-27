@@ -18,6 +18,7 @@
 #include "Runtime/MixArtifact.h"
 #include "Runtime/MixCommandBuilder.h"
 #include "Runtime/MixTilingGenerator.h"
+#include "Runtime/DebugCase.h"
 #include "Runtime/RunManifest.h"
 #include "Runtime/ExecutionBackend.h"
 #include "Runtime/Execution/DefaultExecutionRunner.h"
@@ -6517,6 +6518,136 @@ static void testRunManifestParsesDagArtifactRootOverride() {
   }
 }
 
+static void testDebugCaseEmitsPreparedRunManifest() {
+  const std::filesystem::path root = makeTempDir("runtime-debug-case");
+  const std::filesystem::path artifactRoot = root / "artifact";
+  const std::filesystem::path outputDir = root / "outputs";
+  std::filesystem::create_directories(artifactRoot);
+  std::filesystem::create_directories(outputDir);
+
+  const std::filesystem::path artifactManifest = root / "artifact_manifest.json";
+  {
+    std::ofstream os(artifactManifest);
+    os << R"JSON({
+  "kernel_entries": [
+    {
+      "kernel_id": "kernel_0",
+      "kernelKind": "vec",
+      "workspaceSizeBytes": 4096,
+      "scheduleEntries": [
+        {
+          "decisionId": "kernel_0.decision.0",
+          "guard": "arg0_dim0 == 4",
+          "tilingParams": {
+            "selected_tile_shape": [4]
+          }
+        }
+      ],
+      "shapeArgOrder": [
+        { "name": "dim_arg0_0", "shapeKey": "arg0_dim0", "abiPosition": 0 }
+      ],
+      "abi": {
+        "numInputs": 1,
+        "numOutputs": 1,
+        "inputs": [
+          { "name": "arg0", "shape": [-1], "dtype": "f16" }
+        ],
+        "outputs": [
+          { "name": "out0", "shape": [4], "dtype": "f16" }
+        ]
+      }
+    }
+  ],
+  "kernelGraph": {
+    "nodes": [
+      { "name": "kernel_0" }
+    ],
+    "edges": []
+  }
+})JSON";
+  }
+
+  const std::string inputPath =
+      writeTempNpy("runtime_debug_case_input", {4}, DType::F16);
+  const std::string expectedPath =
+      writeTempNpy("runtime_debug_case_expected", {4}, DType::F16);
+  const std::filesystem::path casePath = root / "case.json";
+  {
+    std::ofstream os(casePath);
+    os << "{\n"
+       << "  \"schema_version\": 1,\n"
+       << "  \"artifact\": {\n"
+       << "    \"root\": \"" << artifactRoot.string() << "\",\n"
+       << "    \"manifest\": \"" << artifactManifest.string() << "\"\n"
+       << "  },\n"
+       << "  \"backend\": { \"kind\": \"sim\" },\n"
+       << "  \"shape_args\": { \"arg0\": [4] },\n"
+       << "  \"inputs\": [\n"
+       << "    { \"name\": \"arg0\", \"path\": \"" << inputPath << "\" }\n"
+       << "  ],\n"
+       << "  \"expected_outputs\": [\n"
+       << "    { \"name\": \"out0\", \"path\": \"" << expectedPath << "\" }\n"
+       << "  ],\n"
+       << "  \"validation\": { \"atol\": 0.01, \"rtol\": 0.02 }\n"
+       << "}\n";
+  }
+
+  const std::filesystem::path runManifest = root / "run_manifest.json";
+  DebugCasePrepareRequest request;
+  request.casePath = casePath.string();
+  request.outputRunManifestPath = runManifest.string();
+  request.defaultOutputDirectory = outputDir.string();
+  auto err = emitRunManifestFromDebugCase(request);
+  EXPECT(!err, "debug case emits prepared run manifest");
+  if (err) {
+    llvm::consumeError(std::move(err));
+    return;
+  }
+
+  auto specOr = loadRunManifest(runManifest.string());
+  EXPECT((bool)specOr, "debug case prepared run manifest parses");
+  if (!specOr)
+    return;
+
+  EXPECT(specOr->backendKind == ExecutionBackendKind::Simulation,
+         "debug case backend kind");
+  EXPECT(specOr->tasks.size() == 1, "debug case task count");
+  if (specOr->tasks.size() != 1)
+    return;
+  const RunTaskSpec &task = specOr->tasks[0];
+  EXPECT(task.artifactRoot == artifactRoot.string(),
+         "debug case artifact root");
+  EXPECT(task.invocation.inputs.size() == 1,
+         "debug case input count");
+  if (task.invocation.inputs.size() == 1) {
+    const TensorBinding &input = task.invocation.inputs[0];
+    EXPECT(input.path == inputPath, "debug case input path");
+    EXPECT(input.shape && *input.shape == std::vector<int64_t>{4},
+           "debug case infers input shape");
+    EXPECT(input.dtype && *input.dtype == DType::F16,
+           "debug case infers input dtype");
+  }
+  EXPECT(task.invocation.outputs.size() == 1,
+         "debug case output count");
+  if (task.invocation.outputs.size() == 1) {
+    const TensorBinding &output = task.invocation.outputs[0];
+    EXPECT(!output.path.empty(), "debug case assigns default output path");
+    EXPECT(llvm::StringRef(output.path).contains("kernel_0.out0"),
+           "debug case default output path is task qualified");
+  }
+  EXPECT(task.invocation.expectedOutputs.size() == 1,
+         "debug case expected output count");
+  if (task.invocation.expectedOutputs.size() == 1)
+    EXPECT(task.invocation.expectedOutputs[0].path == expectedPath,
+           "debug case expected output path");
+  EXPECT(task.invocation.atol == 0.01, "debug case atol");
+  EXPECT(task.invocation.rtol == 0.02, "debug case rtol");
+  EXPECT(task.invocation.workspaceSize == 4096, "debug case workspace");
+  EXPECT(task.invocation.tiling && task.invocation.tiling->params ==
+                                      "selected_tile_shape=4",
+         "debug case tiling params are generated");
+}
+
 static void testMixDirectParallelProcessRunnerRunsIndependentCommands() {
   const std::filesystem::path markerA =
       std::filesystem::temp_directory_path() / "runtime_parallel_a.marker";
@@ -7042,6 +7173,7 @@ int main() {
   testRunManifestParsesInputAliasOutputBinding();
   testRunManifestParsesDagSpec();
   testRunManifestParsesDagArtifactRootOverride();
+  testDebugCaseEmitsPreparedRunManifest();
 
   llvm::outs() << g_pass << " passed, " << g_fail << " failed\n";
   return g_fail ? 1 : 0;

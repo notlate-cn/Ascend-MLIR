@@ -12,6 +12,7 @@ set(ASCEND_DEBUG_PACKAGE_SOURCES
   "${CMAKE_CURRENT_SOURCE_DIR}/ascend_debug/memory.py"
   "${CMAKE_CURRENT_SOURCE_DIR}/ascend_debug/open_view.py"
   "${CMAKE_CURRENT_SOURCE_DIR}/ascend_debug/runner.py"
+  "${CMAKE_CURRENT_SOURCE_DIR}/ascend_debug/run_case.py"
   "${CMAKE_CURRENT_SOURCE_DIR}/ascend_debug/serve.py"
   "${CMAKE_CURRENT_SOURCE_DIR}/ascend_debug/stage_graph.py"
 )
