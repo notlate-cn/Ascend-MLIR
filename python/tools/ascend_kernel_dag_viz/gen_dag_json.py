@@ -129,20 +129,36 @@ def main():
 
     dag = build_dag(network, provenance or {})
     out_json = work / "dag.json"
-    out_json.write_text(json.dumps(dag, indent=2) + "\n")
+    dag_str = json.dumps(dag, indent=2)
+    out_json.write_text(dag_str + "\n")
     print(f"dag.json   → {out_json}")
 
-    # Copy the static viewer next to dag.json so a single http.server root works.
+    # Embed dag.json into the viewer so the resulting single HTML opens
+    # directly via file:// (no http.server needed, no localhost proxy
+    # interference). The fetch() call is replaced with an inline const.
     viewer_src = Path(__file__).resolve().parent / "viewer.html"
     out_html = work / "dag.html"
     if viewer_src.exists():
-        shutil.copy(viewer_src, out_html)
+        tmpl = viewer_src.read_text()
+        # Replace the fetch('dag.json') block with an inlined const.
+        old = ("  const res = await fetch('dag.json');\n"
+               "  if (!res.ok) {\n"
+               "    document.getElementById('meta').textContent = "
+               "\"fetch dag.json failed: \" + res.status;\n"
+               "    return;\n"
+               "  }\n"
+               "  const dag = await res.json();\n")
+        new = f"  const dag = {dag_str};\n"
+        if old not in tmpl:
+            print("warning: viewer.html fetch block not found — viewer may "
+                  "still require http server", file=sys.stderr)
+            shutil.copy(viewer_src, out_html)
+        else:
+            out_html.write_text(tmpl.replace(old, new))
         print(f"dag.html   → {out_html}")
         print()
-        print(f"View in browser:")
-        print(f"  cd {work}")
-        print(f"  python3 -m http.server 8000")
-        print(f"  open http://localhost:8000/dag.html")
+        print(f"View in browser (no server needed):")
+        print(f"  xdg-open {out_html}     # or: drag {out_html.name} into the browser")
     else:
         print(f"warning: viewer.html not found at {viewer_src}", file=sys.stderr)
 
