@@ -37,6 +37,89 @@ def run(cmd, **kw):
     subprocess.run(cmd, check=True, **kw)
 
 
+# Phase → ordered artifact paths. Scanned post-hoc in main()'s finally so
+# partial runs (--max-phase < 5, or crashes) still record what landed.
+_PHASE_SPEC = [
+    (1, "10", "outline", lambda w: [
+        w / "model_recognized.mlir",
+        w / "model_unit_folded.mlir",
+        w / "_outlined_combined.mlir",
+        w / "groups" / "network.json",
+        *(sorted((w / "groups").glob("kernel_group*.mlir"))
+          if (w / "groups").is_dir() else []),
+    ]),
+    (2, "20", "codegen", lambda w: [
+        w / "artifacts",
+        *sorted(w.glob("kernel_group*_lowered.mlir")),
+        *sorted(w.glob("kernel_group*_*.cpp")),
+        *sorted(w.glob("kernel_group*__v*_space.json")),
+    ]),
+    (3, "30", "default-build-dump", lambda w: [
+        w / "tilings_default.json",
+        w / "intermediates_default",
+    ]),
+    (4, "40", "autotune", lambda w: [
+        w / "tilings_best.json",
+    ]),
+    (5, "50", "runtime", lambda w: [
+        w / "network_host.cpp",
+        w / "network_test",
+        w / "outputs",
+    ]),
+]
+
+
+def _debug_manifest_write(work, mirror_stages):
+    """Write <work>/manifest.json listing each phase's artifacts in order.
+    If mirror_stages, also create <work>/stages/<order>-<name>-<file>
+    symlinks for human-readable browsing. Idempotent across re-runs."""
+    phases = []
+    for phase, order, name, spec in _PHASE_SPEC:
+        artifacts = []
+        for p in spec(work):
+            if p is None or not p.exists():
+                continue
+            try:
+                rel = p.relative_to(work)
+            except ValueError:
+                rel = p
+            artifacts.append({"name": p.name, "path": str(rel)})
+        if not artifacts:
+            continue
+        phases.append({"phase": phase, "order": order, "name": name,
+                       "artifacts": artifacts})
+
+    manifest = {
+        "schema_version": 1,
+        "tool": "network_runner.py",
+        "workdir": str(work),
+        "phases": phases,
+    }
+    manifest_path = work / "manifest.json"
+    manifest_path.write_text(json.dumps(manifest, indent=2) + "\n")
+    print(f"debug manifest → {manifest_path}")
+
+    if not mirror_stages:
+        return
+    stages = work / "stages"
+    if stages.is_dir():
+        for x in stages.iterdir():
+            if x.is_symlink():
+                x.unlink()
+    stages.mkdir(exist_ok=True)
+    for entry in phases:
+        for a in entry["artifacts"]:
+            link = stages / f"{entry['order']}-{entry['name']}-{a['name']}"
+            target_rel = Path("..") / a["path"]
+            try:
+                link.symlink_to(target_rel)
+            except FileExistsError:
+                pass
+            except OSError as e:
+                print(f"warn: symlink {link} -> {target_rel}: {e}")
+    print(f"debug stages view → {stages}/")
+
+
 def phase1_outline_or_emit_json(args, work):
     groups = work / "groups"
     groups.mkdir(parents=True, exist_ok=True)
@@ -806,40 +889,47 @@ def main():
     ap.add_argument("--max-phase", type=int, default=5,
                     help="Stop after this phase (1=outline, 2=codegen+compile, "
                          "3=default-build+dump, 4=autotune, 5=final-build+verify). Default: 5.")
+    ap.add_argument("--debug-out", action="store_true",
+                    help="Also create <workdir>/stages/<NN>-<phase>-<file> "
+                         "symlinks for human-readable phase ordering. "
+                         "<workdir>/manifest.json is always written.")
     args = ap.parse_args()
 
     work = Path(args.workdir).absolute()
     work.mkdir(parents=True, exist_ok=True)
 
-    groups = phase1_outline_or_emit_json(args, work)
-    print(f"workdir: {work}")
-    print(f"groups:  {groups}")
-    if args.max_phase < 2:
-        return
+    try:
+        groups = phase1_outline_or_emit_json(args, work)
+        print(f"workdir: {work}")
+        print(f"groups:  {groups}")
+        if args.max_phase < 2:
+            return
 
-    network = NetworkJson.load(str(groups / "network.json"))
-    artifacts = phase2_codegen_compile(work, groups, network, soc=args.soc)
-    if args.max_phase < 3:
-        return
+        network = NetworkJson.load(str(groups / "network.json"))
+        artifacts = phase2_codegen_compile(work, groups, network, soc=args.soc)
+        if args.max_phase < 3:
+            return
 
-    tilings_default, inter = phase3_default_build_and_dump(work, groups, network, artifacts, args)
-    if args.max_phase < 4:
-        return
+        tilings_default, inter = phase3_default_build_and_dump(work, groups, network, artifacts, args)
+        if args.max_phase < 4:
+            return
 
-    # Accuracy-only mode: NETWORK_RUNNER_SKIP_AUTOTUNE skips the multi-round
-    # autotuner and feeds phase 5 the default tilings from phase 3. Use this to
-    # validate numerics fast without paying for performance search.
-    if os.environ.get("NETWORK_RUNNER_SKIP_AUTOTUNE", "") not in ("", "0", "false", "no"):
-        print("[phase4] NETWORK_RUNNER_SKIP_AUTOTUNE set — skipping autotune; "
-              "using default tilings (accuracy-only, no perf tuning).")
-        tilings_best_path = work / "tilings_default.json"
-    else:
-        tilings_best_path = phase4_autotune(work, network, inter, args)
-    if args.max_phase < 5:
-        return
+        # Accuracy-only mode: NETWORK_RUNNER_SKIP_AUTOTUNE skips the multi-round
+        # autotuner and feeds phase 5 the default tilings from phase 3. Use this to
+        # validate numerics fast without paying for performance search.
+        if os.environ.get("NETWORK_RUNNER_SKIP_AUTOTUNE", "") not in ("", "0", "false", "no"):
+            print("[phase4] NETWORK_RUNNER_SKIP_AUTOTUNE set — skipping autotune; "
+                  "using default tilings (accuracy-only, no perf tuning).")
+            tilings_best_path = work / "tilings_default.json"
+        else:
+            tilings_best_path = phase4_autotune(work, network, inter, args)
+        if args.max_phase < 5:
+            return
 
-    rc = phase5_final_run_verify(work, groups, artifacts, tilings_best_path, network, args)
-    sys.exit(rc)
+        rc = phase5_final_run_verify(work, groups, artifacts, tilings_best_path, network, args)
+        sys.exit(rc)
+    finally:
+        _debug_manifest_write(work, mirror_stages=args.debug_out)
 
 
 if __name__ == "__main__":
