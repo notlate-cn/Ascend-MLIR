@@ -4,11 +4,20 @@ set -euo pipefail
 INPUT_MLIR="$1"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 TMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/ascend-debug-cli.XXXXXX")"
-trap 'rm -rf "${TMP_DIR}"' EXIT
+SERVE_PID=""
+cleanup() {
+  if [[ -n "${SERVE_PID}" ]]; then
+    kill "${SERVE_PID}" >/dev/null 2>&1 || true
+    wait "${SERVE_PID}" >/dev/null 2>&1 || true
+  fi
+  rm -rf "${TMP_DIR}"
+}
+trap cleanup EXIT
 
 ascend-debug --help >"${TMP_DIR}/ascend-debug-help.txt" 2>&1
 grep -Fq 'collect' "${TMP_DIR}/ascend-debug-help.txt"
 grep -Fq 'open' "${TMP_DIR}/ascend-debug-help.txt"
+grep -Fq 'serve' "${TMP_DIR}/ascend-debug-help.txt"
 grep -Fq 'diff' "${TMP_DIR}/ascend-debug-help.txt"
 grep -Fq 'locate' "${TMP_DIR}/ascend-debug-help.txt"
 echo "ascend_debug.help=ok"
@@ -116,7 +125,7 @@ grep -Fq 'workspace_slot[0]' "${TMP_DIR}/debug-run-memory-detail/reports/040-rea
 ascend-debug open "${TMP_DIR}/debug-run-memory-detail" --no-browser >"${TMP_DIR}/ascend-debug-open-memory-detail.txt"
 test -f "${TMP_DIR}/debug-run-memory-detail/summaries/memory.json"
 test -f "${TMP_DIR}/debug-run-memory-detail/views/summaries/memory.json.html"
-grep -Fq '<h1>Memory Summary</h1>' "${TMP_DIR}/debug-run-memory-detail/views/summaries/memory.json.html"
+grep -Fq '<h1>Memory 摘要</h1>' "${TMP_DIR}/debug-run-memory-detail/views/summaries/memory.json.html"
 grep -Fq 'class="ub-allocation-svg"' "${TMP_DIR}/debug-run-memory-detail/views/summaries/memory.json.html"
 grep -Fq 'slot 0 value 20' "${TMP_DIR}/debug-run-memory-detail/views/summaries/memory.json.html"
 echo "ascend_debug.collect_memory_detail=ok"
@@ -421,10 +430,12 @@ MemoryRealizationPlan:
   mode = "memory_space_materialize"
 TEXT
 ascend-debug open "${TMP_DIR}/debug-run-graph" --no-browser >"${TMP_DIR}/ascend-debug-open-graph.txt"
-grep -Fq '<a class="primary-debug-link" href="views/debug_graph.html">Open Debug Graph</a>' "${TMP_DIR}/debug-run-graph/index.html"
+grep -Fq '<a class="primary-debug-link" href="views/debug_graph.html">打开调试工作台</a>' "${TMP_DIR}/debug-run-graph/index.html"
+grep -Fq '<h2>Stage Timeline</h2>' "${TMP_DIR}/debug-run-graph/index.html"
+grep -Fq '<a href="views/debug_graph.html?stage=29">在工作台查看</a>' "${TMP_DIR}/debug-run-graph/index.html"
 test -f "${TMP_DIR}/debug-run-graph/summaries/debug_graph.json"
 test -f "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
-grep -Fq '<h1>Ascend Debug Graph</h1>' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
+grep -Fq '<h1>Ascend Debug 调试工作台</h1>' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
 grep -Fq '<svg id="unified-debug-graph-svg"' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
 grep -Fq '<button class="mode-tab active" data-mode="stage"' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
 grep -Fq '<button class="mode-tab" data-mode="kernel"' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
@@ -432,8 +443,7 @@ grep -Fq 'id="stage-list"' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
 grep -Fq 'id="graph-search"' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
 grep -Fq 'id="graph-fit"' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
 grep -Fq 'id="graph-reset"' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
-grep -Fq 'id="inspector-json"' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
-grep -Fq 'id="artifact-index"' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
+grep -Fq 'id="inspector-detail"' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
 grep -Fq 'id="stage-diff-panel"' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
 grep -Fq 'id="graph-workspace-data"' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
 grep -Fq 'function beginCanvasPan' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
@@ -456,10 +466,6 @@ if grep -Fq 'tensor&lt;' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"; th
   echo "debug graph embedded JSON should not show HTML-escaped MLIR types" >&2
   exit 1
 fi
-if grep -Fq 'tensor&lt;' "${TMP_DIR}/debug-run-graph/views/graphs/stages/029-kernelize-out.graph.html"; then
-  echo "stage graph embedded JSON should not show HTML-escaped MLIR types" >&2
-  exit 1
-fi
 python3 - "${TMP_DIR}/debug-run-graph/summaries/debug_graph.json" <<'PY'
 import json
 import pathlib
@@ -469,6 +475,7 @@ graph = json.loads(pathlib.Path(sys.argv[1]).read_text())
 assert graph["schema_version"] == 1
 assert graph["visual_kind"] == "unified-debug-workspace"
 assert graph["primary_stage"]["name"] == "kernelize-out"
+assert graph["primary_stage"]["stage_view_path"] == "views/stages/029-kernelize-out.mlir.html"
 assert graph["stage_count"] == 9
 assert len(graph["stage_diffs"]) == graph["stage_count"] - 1
 assert all("added_count" in item for item in graph["stage_diffs"])
@@ -478,23 +485,58 @@ assert graph["overlays"]["tensor_diff"]["status"] == "fail"
 assert graph["overlays"]["locate"]["first_bad_kernel"] == "kernel_0"
 assert graph["overlays"]["memory"]["peak_workspace_bytes"] == 256
 PY
-grep -Fq '<h2>Graphs</h2>' "${TMP_DIR}/debug-run-graph/index.html"
-grep -Fq '<h2>Kernels</h2>' "${TMP_DIR}/debug-run-graph/index.html"
-grep -Fq '<h2>Tensor Diff</h2>' "${TMP_DIR}/debug-run-graph/index.html"
-grep -Fq '<h2>Locate</h2>' "${TMP_DIR}/debug-run-graph/index.html"
-grep -Fq '<h2>Memory</h2>' "${TMP_DIR}/debug-run-graph/index.html"
-grep -Fq '<h2>Summaries</h2>' "${TMP_DIR}/debug-run-graph/index.html"
-grep -Fq '<a href="graphs/kernel_dag.svg">graphs/kernel_dag.svg</a>' "${TMP_DIR}/debug-run-graph/index.html"
-grep -Fq '<a href="graphs/kernel_dag.summary.json">graphs/kernel_dag.summary.json</a>' "${TMP_DIR}/debug-run-graph/index.html"
-grep -Fq '<a href="views/graphs/kernel_dag.summary.json.html">View</a>' "${TMP_DIR}/debug-run-graph/index.html"
-grep -Fq '<a href="summaries/tensor_diff.json">summaries/tensor_diff.json</a>' "${TMP_DIR}/debug-run-graph/index.html"
-grep -Fq '<a href="views/summaries/tensor_diff.json.html">View</a>' "${TMP_DIR}/debug-run-graph/index.html"
-grep -Fq '<a href="views/stages/029-kernelize-out.mlir.html">View</a>' "${TMP_DIR}/debug-run-graph/index.html"
-grep -Fq '<a href="views/kernels/kernel_0.html">kernel_0</a>' "${TMP_DIR}/debug-run-graph/index.html"
+for hidden_heading in '图数据' 'Kernel</h2>' 'Tensor Diff' 'Locate' 'Memory</h2>' '摘要' '报告' 'Stage 演进图'; do
+  if grep -Fq "<h2>${hidden_heading}" "${TMP_DIR}/debug-run-graph/index.html"; then
+    echo "index should not expose duplicated ${hidden_heading} section" >&2
+    exit 1
+  fi
+done
+grep -Fq '节点详情' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
+grep -Fq 'Region Body' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
+grep -Fq 'node.region_body' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
+if grep -Fq 'Body 摘要' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"; then
+  echo "node inspector should show concrete body instead of body summary" >&2
+  exit 1
+fi
+if grep -Fq '当前节点没有 region body' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"; then
+  echo "node inspector should not show no-region-body placeholder" >&2
+  exit 1
+fi
+grep -Fq '查看完整 MLIR' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
+grep -Fq 'Kernel 详情' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
+grep -Fq 'stage.stage_view_path' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
+grep -Fq 'URLSearchParams' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
+if grep -Fq '<summary>原始产物</summary>' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"; then
+  echo "unexpected raw artifact drawer in node inspector" >&2
+  exit 1
+fi
+if grep -Fq '原始 MLIR' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"; then
+  echo "unexpected duplicate raw MLIR action in node inspector" >&2
+  exit 1
+fi
+if grep -Fq '独立 Stage Graph' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"; then
+  echo "unexpected duplicate stage graph action in node inspector" >&2
+  exit 1
+fi
+if grep -Fq 'Stage View' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"; then
+  echo "unexpected duplicate Stage View action" >&2
+  exit 1
+fi
+if grep -Fq 'views/graphs/stages/' "${TMP_DIR}/debug-run-graph/index.html"; then
+  echo "index should link stage graph rows back to unified debug workspace" >&2
+  exit 1
+fi
+if grep -Fq 'views/summaries/debug_graph.json.html' "${TMP_DIR}/debug-run-graph/index.html"; then
+  echo "index should not expose debug graph summary JSON view" >&2
+  exit 1
+fi
+grep -Fq '<a href="views/stages/029-kernelize-out.mlir.html">查看 MLIR</a>' "${TMP_DIR}/debug-run-graph/index.html"
 grep -Fq '../views/kernels/kernel_0.html' "${TMP_DIR}/debug-run-graph/graphs/kernel_dag.svg"
 test -f "${TMP_DIR}/debug-run-graph/views/stages/029-kernelize-out.mlir.html"
 test -f "${TMP_DIR}/debug-run-graph/views/graphs/kernelized.mlir.html"
-test -f "${TMP_DIR}/debug-run-graph/views/graphs/kernel_dag.summary.json.html"
+test ! -e "${TMP_DIR}/debug-run-graph/views/graphs/kernel_dag.summary.json.html"
+test ! -e "${TMP_DIR}/debug-run-graph/views/graphs/stages/029-kernelize-out.graph.html"
+test ! -e "${TMP_DIR}/debug-run-graph/views/summaries/debug_graph.json.html"
 test -f "${TMP_DIR}/debug-run-graph/summaries/memory.json"
 test -f "${TMP_DIR}/debug-run-graph/views/summaries/memory.json.html"
 test -f "${TMP_DIR}/debug-run-graph/views/summaries/tensor_diff.json.html"
@@ -504,35 +546,17 @@ grep -Fq 'class="code-table text-code-table"' "${TMP_DIR}/debug-run-graph/views/
 grep -Fq 'color: #dbeafe' "${TMP_DIR}/debug-run-graph/views/stages/029-kernelize-out.mlir.html"
 grep -Fq '<span class="line-number">1</span>' "${TMP_DIR}/debug-run-graph/views/stages/029-kernelize-out.mlir.html"
 grep -Fq 'ascend.kernel' "${TMP_DIR}/debug-run-graph/views/stages/029-kernelize-out.mlir.html"
-grep -Fq '<input id="search" type="search" placeholder="Search JSON">' "${TMP_DIR}/debug-run-graph/views/graphs/kernel_dag.summary.json.html"
-grep -Fq 'class="code-table text-code-table"' "${TMP_DIR}/debug-run-graph/views/graphs/kernel_dag.summary.json.html"
-grep -Fq 'color: #dbeafe' "${TMP_DIR}/debug-run-graph/views/graphs/kernel_dag.summary.json.html"
-grep -Fq '<a href="../../graphs/kernel_dag.summary.json">Raw JSON</a>' "${TMP_DIR}/debug-run-graph/views/graphs/kernel_dag.summary.json.html"
-grep -Fq 'kernel_count' "${TMP_DIR}/debug-run-graph/views/graphs/kernel_dag.summary.json.html"
 grep -Fq '<h1>kernel_0</h1>' "${TMP_DIR}/debug-run-graph/views/kernels/kernel_0.html"
 grep -Fq 'selected_tile_shape' "${TMP_DIR}/debug-run-graph/views/kernels/kernel_0.html"
 grep -Fq 'workspace_size' "${TMP_DIR}/debug-run-graph/views/kernels/kernel_0.html"
 grep -Fq 'workspace_size</th><td>4096' "${TMP_DIR}/debug-run-graph/views/kernels/kernel_0.html"
 grep -Fq 'MLIR Ops' "${TMP_DIR}/debug-run-graph/views/kernels/kernel_0.html"
 grep -Fq '../graphs/kernelized.mlir.html#L' "${TMP_DIR}/debug-run-graph/views/kernels/kernel_0.html"
-grep -Fq '../graphs/kernel_dag.summary.json.html' "${TMP_DIR}/debug-run-graph/views/kernels/kernel_0.html"
-grep -Fq 'checkpoint/kernel_0' "${TMP_DIR}/debug-run-graph/index.html"
-grep -Fq '<a href="views/kernels/kernel_0.html">kernel_0</a>' "${TMP_DIR}/debug-run-graph/index.html"
-grep -Fq 'max_abs_error' "${TMP_DIR}/debug-run-graph/index.html"
-grep -Fq '<h3>First Bad Candidate</h3>' "${TMP_DIR}/debug-run-graph/index.html"
-grep -Fq '<dt>Kernel</dt><dd><a href="views/kernels/kernel_0.html">kernel_0</a></dd>' "${TMP_DIR}/debug-run-graph/index.html"
-grep -Fq '<dt>DAG depth</dt><dd>1</dd>' "${TMP_DIR}/debug-run-graph/index.html"
-grep -Fq '<dt>Failed comparison</dt><dd>checkpoint/kernel_0</dd>' "${TMP_DIR}/debug-run-graph/index.html"
-grep -Fq 'Earliest failed checkpoint in DAG order' "${TMP_DIR}/debug-run-graph/index.html"
-grep -Fq '<dt>Direct upstream without checkpoint</dt><dd>none</dd>' "${TMP_DIR}/debug-run-graph/index.html"
-grep -Fq 'Realize memory plan' "${TMP_DIR}/debug-run-graph/index.html"
-grep -Fq '<dt>Peak workspace bytes</dt><dd>256</dd>' "${TMP_DIR}/debug-run-graph/index.html"
-grep -Fq '<dt>Workspace slot reuse groups</dt><dd>1</dd>' "${TMP_DIR}/debug-run-graph/index.html"
-grep -Fq '<h3>Peak Timeline</h3>' "${TMP_DIR}/debug-run-graph/index.html"
-grep -Fq '<td>kernel_0</td><td>1</td><td>256</td><td>0@VECIN, 128@VECIN</td><td>10, 12</td>' "${TMP_DIR}/debug-run-graph/index.html"
-grep -Fq '<h3>Workspace Slots</h3>' "${TMP_DIR}/debug-run-graph/index.html"
-grep -Fq '<td>kernel_0</td><td>0</td><td>VECIN</td><td>0</td><td>128</td><td>10</td><td>0..2</td><td>yes</td>' "${TMP_DIR}/debug-run-graph/index.html"
-grep -Fq '<h1>Memory Summary</h1>' "${TMP_DIR}/debug-run-graph/views/summaries/memory.json.html"
+if grep -Fq 'DAG 摘要 JSON' "${TMP_DIR}/debug-run-graph/views/kernels/kernel_0.html"; then
+  echo "kernel detail should not expose raw DAG JSON view" >&2
+  exit 1
+fi
+grep -Fq '<h1>Memory 摘要</h1>' "${TMP_DIR}/debug-run-graph/views/summaries/memory.json.html"
 grep -Fq 'class="memory-kernel-viz"' "${TMP_DIR}/debug-run-graph/views/summaries/memory.json.html"
 grep -Fq 'class="ub-allocation-svg"' "${TMP_DIR}/debug-run-graph/views/summaries/memory.json.html"
 grep -Fq 'id="kernel-kernel_0"' "${TMP_DIR}/debug-run-graph/views/summaries/memory.json.html"
@@ -540,12 +564,12 @@ grep -Fq 'reuse-group' "${TMP_DIR}/debug-run-graph/views/summaries/memory.json.h
 grep -Fq 'movement-edge' "${TMP_DIR}/debug-run-graph/views/summaries/memory.json.html"
 grep -Fq 'value 10' "${TMP_DIR}/debug-run-graph/views/summaries/memory.json.html"
 grep -Fq 'slot 0' "${TMP_DIR}/debug-run-graph/views/summaries/memory.json.html"
-grep -Fq '<h1>Tensor Diff Summary</h1>' "${TMP_DIR}/debug-run-graph/views/summaries/tensor_diff.json.html"
-grep -Fq '<h1>Locate Summary</h1>' "${TMP_DIR}/debug-run-graph/views/summaries/locate.json.html"
-grep -Fq '<h1>Debug Graph Summary</h1>' "${TMP_DIR}/debug-run-graph/views/summaries/debug_graph.json.html"
-grep -Fq 'Memory View' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
+grep -Fq '<h1>Tensor Diff 摘要</h1>' "${TMP_DIR}/debug-run-graph/views/summaries/tensor_diff.json.html"
+grep -Fq '<h1>Locate 摘要</h1>' "${TMP_DIR}/debug-run-graph/views/summaries/locate.json.html"
+test ! -e "${TMP_DIR}/debug-run-graph/views/summaries/debug_graph.json.html"
+grep -Fq '内存视图' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
 grep -Fq 'summaries/memory.json.html#kernel-' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
-grep -Fq 'UB Allocation' "${TMP_DIR}/debug-run-graph/views/kernels/kernel_0.html"
+grep -Fq 'UB 分配' "${TMP_DIR}/debug-run-graph/views/kernels/kernel_0.html"
 grep -Fq '../summaries/memory.json.html#kernel-kernel_0' "${TMP_DIR}/debug-run-graph/views/kernels/kernel_0.html"
 grep -Fq 'class="ub-allocation-svg"' "${TMP_DIR}/debug-run-graph/views/kernels/kernel_0.html"
 python3 - "${TMP_DIR}/debug-run-graph/summaries/memory.json" <<'PY'
@@ -622,9 +646,10 @@ StaticMemoryPlan:
   workspace_slot[0] = slot_id=0 value_id=10 offset=0 place=VECIN byte_size=256
 TEXT
 ascend-debug open "${TMP_DIR}/debug-run-memory-coverage" --no-browser >"${TMP_DIR}/ascend-debug-open-memory-coverage.txt"
-grep -Fq '<h3>Kernel Coverage</h3>' "${TMP_DIR}/debug-run-memory-coverage/index.html"
-grep -Fq '<td><a href="views/kernels/kernel_0.html">kernel_0</a></td><td>1</td><td>256</td><td>realize-slot-plan</td>' "${TMP_DIR}/debug-run-memory-coverage/index.html"
-grep -Fq '<td><a href="views/kernels/kernel_1.html">kernel_1</a></td><td>2</td><td>0</td><td>no-workspace</td>' "${TMP_DIR}/debug-run-memory-coverage/index.html"
+test -f "${TMP_DIR}/debug-run-memory-coverage/views/summaries/memory.json.html"
+grep -Fq '<h2>Kernel 覆盖</h2>' "${TMP_DIR}/debug-run-memory-coverage/views/summaries/memory.json.html"
+grep -Fq '<td><a href="../kernels/kernel_0.html">kernel_0</a></td><td>1</td><td>256</td><td>realize-slot-plan</td>' "${TMP_DIR}/debug-run-memory-coverage/views/summaries/memory.json.html"
+grep -Fq '<td><a href="../kernels/kernel_1.html">kernel_1</a></td><td>2</td><td>0</td><td>no-workspace</td>' "${TMP_DIR}/debug-run-memory-coverage/views/summaries/memory.json.html"
 python3 - "${TMP_DIR}/debug-run-memory-coverage/summaries/memory.json" <<'PY'
 import json
 import pathlib
@@ -747,9 +772,12 @@ echo "ascend_debug.diff_fail=ok"
 
 ascend-debug open "${TMP_DIR}/debug-run-deep" --no-browser >"${TMP_DIR}/ascend-debug-open-deep.txt"
 test -f "${TMP_DIR}/debug-run-deep/index.html"
-grep -Fq '<dt>preset</dt><dd>deep</dd>' "${TMP_DIR}/debug-run-deep/index.html"
-grep -Fq '<h2>Commands</h2>' "${TMP_DIR}/debug-run-deep/index.html"
-grep -Fq '<h2>Reports</h2>' "${TMP_DIR}/debug-run-deep/index.html"
+grep -Fq '<span>preset</span><strong>deep</strong>' "${TMP_DIR}/debug-run-deep/index.html"
+grep -Fq '<summary>高级信息：执行命令</summary>' "${TMP_DIR}/debug-run-deep/index.html"
+if grep -Fq '<h2>报告</h2>' "${TMP_DIR}/debug-run-deep/index.html"; then
+  echo "index should not expose a separate report section" >&2
+  exit 1
+fi
 grep -Fq '<a href="reports/030-schedule.report.txt">reports/030-schedule.report.txt</a>' "${TMP_DIR}/debug-run-deep/index.html"
 grep -Fq '<a href="reports/040-realize.report.txt">reports/040-realize.report.txt</a>' "${TMP_DIR}/debug-run-deep/index.html"
 echo "ascend_debug.open_deep=ok"
@@ -773,7 +801,9 @@ func.func @elementwise(%arg0: tensor<4x8xf16>, %arg1: tensor<4x8xf16>) -> tensor
   %out = linalg.generic {iterator_types = ["parallel", "parallel"]}
     ins(%arg0, %arg1 : tensor<4x8xf16>, tensor<4x8xf16>)
     outs(%empty : tensor<4x8xf16>) {
-    linalg.yield %arg0 : f16
+  ^bb0(%x: f16, %y: f16, %o: f16):
+    %sum = arith.addf %x, %y : f16
+    linalg.yield %sum : f16
   } -> tensor<4x8xf16>
   return %out : tensor<4x8xf16>
 }
@@ -784,26 +814,21 @@ func.func @elementwise(%arg0: tensor<4x8xf16>, %arg1: tensor<4x8xf16>) -> tensor
   %out = linalg.generic {ascend.kernel = "kernel_0", ascend.op_role = "vector", ascend.schedule.decision_id = "kernel_0.decision.0", iterator_types = ["parallel", "parallel"]}
     ins(%arg0, %arg1 : tensor<4x8xf16>, tensor<4x8xf16>)
     outs(%empty : tensor<4x8xf16>) {
-    linalg.yield %arg0 : f16
+  ^bb0(%x: f16, %y: f16, %o: f16):
+    %sum = arith.addf %x, %y : f16
+    linalg.yield %sum : f16
   } -> tensor<4x8xf16>
   return %out : tensor<4x8xf16>
 }
 MLIR
 ascend-debug open "${TMP_DIR}/debug-run-stage-graph" --no-browser >"${TMP_DIR}/ascend-debug-open-stage-graph.txt"
-grep -Fq '<h2>Graph Evolution</h2>' "${TMP_DIR}/debug-run-stage-graph/index.html"
-grep -Fq '<a href="views/graphs/stages/000-source.graph.html">Graph</a>' "${TMP_DIR}/debug-run-stage-graph/index.html"
-grep -Fq '<a href="views/graphs/stages/029-kernelize-out.graph.html">Graph</a>' "${TMP_DIR}/debug-run-stage-graph/index.html"
+grep -Fq '<h2>Stage Timeline</h2>' "${TMP_DIR}/debug-run-stage-graph/index.html"
+grep -Fq '<a href="views/debug_graph.html?stage=0">在工作台查看</a>' "${TMP_DIR}/debug-run-stage-graph/index.html"
+grep -Fq '<a href="views/debug_graph.html?stage=29">在工作台查看</a>' "${TMP_DIR}/debug-run-stage-graph/index.html"
 test -f "${TMP_DIR}/debug-run-stage-graph/graphs/stages/000-source.graph.json"
 test -f "${TMP_DIR}/debug-run-stage-graph/graphs/stages/029-kernelize-out.graph.json"
-test -f "${TMP_DIR}/debug-run-stage-graph/views/graphs/stages/000-source.graph.html"
-test -f "${TMP_DIR}/debug-run-stage-graph/views/graphs/stages/029-kernelize-out.graph.html"
-grep -Fq 'Stage Graph' "${TMP_DIR}/debug-run-stage-graph/views/graphs/stages/000-source.graph.html"
-grep -Fq '<svg id="stage-graph-svg"' "${TMP_DIR}/debug-run-stage-graph/views/graphs/stages/000-source.graph.html"
-grep -Fq 'class="graph-node' "${TMP_DIR}/debug-run-stage-graph/views/graphs/stages/000-source.graph.html"
-grep -Fq 'class="graph-edge-path"' "${TMP_DIR}/debug-run-stage-graph/views/graphs/stages/000-source.graph.html"
-grep -Fq 'linalg.generic' "${TMP_DIR}/debug-run-stage-graph/views/graphs/stages/000-source.graph.html"
-grep -Fq 'Kernel boundary' "${TMP_DIR}/debug-run-stage-graph/views/graphs/stages/029-kernelize-out.graph.html"
-grep -Fq 'kernel_0' "${TMP_DIR}/debug-run-stage-graph/views/graphs/stages/029-kernelize-out.graph.html"
+test ! -e "${TMP_DIR}/debug-run-stage-graph/views/graphs/stages/000-source.graph.html"
+test ! -e "${TMP_DIR}/debug-run-stage-graph/views/graphs/stages/029-kernelize-out.graph.html"
 python3 - "${TMP_DIR}/debug-run-stage-graph/graphs/stages/029-kernelize-out.graph.json" <<'PY'
 import json
 import pathlib
@@ -816,12 +841,21 @@ assert graph["node_count"] >= 3
 assert graph["edge_count"] >= 2
 assert graph["kernel_count"] == 1
 assert graph["layout"]["visual_kind"] == "svg-dag"
+assert graph["layout"]["direction"] == "top-to-bottom"
 assert len(graph["layout"]["nodes"]) == graph["node_count"]
 assert len(graph["layout"]["edges"]) == graph["edge_count"]
+for edge in graph["edges"]:
+    source = graph["layout"]["nodes"][edge["from"]]
+    target = graph["layout"]["nodes"][edge["to"]]
+    assert source["y"] < target["y"]
 nodes = graph["nodes"]
 linalg_nodes = [node for node in nodes if node["op_name"] == "linalg.generic"]
 assert linalg_nodes
 assert linalg_nodes[0]["kernel_id"] == "kernel_0"
+assert linalg_nodes[0]["body_summary"] == "arith.addf"
+assert linalg_nodes[0]["body_ops"] == ["arith.addf", "linalg.yield"]
+assert "arith.addf" in linalg_nodes[0]["region_body"]
+assert "linalg.yield" in linalg_nodes[0]["region_body"]
 assert "%arg0" in linalg_nodes[0]["input_values"]
 assert "%out" in linalg_nodes[0]["result_values"]
 PY
@@ -831,28 +865,28 @@ RESOLVED_RUN_DIR="$(python3 -c 'import pathlib, sys; print(pathlib.Path(sys.argv
 ascend-debug open "${TMP_DIR}/debug-run" --no-browser >"${TMP_DIR}/ascend-debug-open.txt"
 grep -Fq "ascend-debug.open.index=${RESOLVED_RUN_DIR}/index.html" "${TMP_DIR}/ascend-debug-open.txt"
 test -f "${TMP_DIR}/debug-run/index.html"
-grep -Fq '<h1>ascend-debug</h1>' "${TMP_DIR}/debug-run/index.html"
-grep -Fq '<dt>schema_version</dt><dd>1</dd>' "${TMP_DIR}/debug-run/index.html"
-grep -Fq '<dt>preset</dt><dd>quick</dd>' "${TMP_DIR}/debug-run/index.html"
-grep -Fq '<dt>tool</dt><dd>ascend-debug</dd>' "${TMP_DIR}/debug-run/index.html"
-grep -Fq '<a href="stages/029-kernelize-out.mlir">stages/029-kernelize-out.mlir</a>' "${TMP_DIR}/debug-run/index.html"
-grep -Fq '<a href="views/stages/000-source.mlir.html">View</a>' "${TMP_DIR}/debug-run/index.html"
-grep -Fq '<h2>Graph Evolution</h2>' "${TMP_DIR}/debug-run/index.html"
-grep -Fq '<a href="views/graphs/stages/000-source.graph.html">Graph</a>' "${TMP_DIR}/debug-run/index.html"
+grep -Fq '<h1>Ascend Debug</h1>' "${TMP_DIR}/debug-run/index.html"
+grep -Fq '<h2>运行概览</h2>' "${TMP_DIR}/debug-run/index.html"
+grep -Fq '<span>preset</span><strong>quick</strong>' "${TMP_DIR}/debug-run/index.html"
+grep -Fq '<span>tool</span><strong>ascend-debug</strong>' "${TMP_DIR}/debug-run/index.html"
+grep -Fq '<h2>Stage Timeline</h2>' "${TMP_DIR}/debug-run/index.html"
+grep -Fq '<a href="views/stages/000-source.mlir.html">查看 MLIR</a>' "${TMP_DIR}/debug-run/index.html"
+grep -Fq '<a href="views/debug_graph.html?stage=0">在工作台查看</a>' "${TMP_DIR}/debug-run/index.html"
+grep -Fq '<a href="views/debug_graph.html?stage=29">在工作台查看</a>' "${TMP_DIR}/debug-run/index.html"
 test -f "${TMP_DIR}/debug-run/views/stages/000-source.mlir.html"
 test -f "${TMP_DIR}/debug-run/graphs/stages/000-source.graph.json"
-test -f "${TMP_DIR}/debug-run/views/graphs/stages/000-source.graph.html"
+test ! -e "${TMP_DIR}/debug-run/views/graphs/stages/000-source.graph.html"
 python3 - "${TMP_DIR}/debug-run/index.html" <<'PY'
 import pathlib
 import sys
 
 html = pathlib.Path(sys.argv[1]).read_text()
 expected_rows = [
-    ("0", "source", '<a href="stages/000-source.mlir">stages/000-source.mlir</a>', '<a href="views/stages/000-source.mlir.html">View</a>', "present"),
-    ("10", "normalize-in", '<a href="stages/010-normalize-in.mlir">stages/010-normalize-in.mlir</a>', '<a href="views/stages/010-normalize-in.mlir.html">View</a>', "present"),
-    ("19", "normalize-out", '<a href="stages/019-normalize-out.mlir">stages/019-normalize-out.mlir</a>', '<a href="views/stages/019-normalize-out.mlir.html">View</a>', "present"),
-    ("20", "kernelize-in", '<a href="stages/020-kernelize-in.mlir">stages/020-kernelize-in.mlir</a>', '<a href="views/stages/020-kernelize-in.mlir.html">View</a>', "present"),
-    ("29", "kernelize-out", '<a href="stages/029-kernelize-out.mlir">stages/029-kernelize-out.mlir</a>', '<a href="views/stages/029-kernelize-out.mlir.html">View</a>', "present"),
+    ("0", "source", '<a href="views/stages/000-source.mlir.html">查看 MLIR</a>', '<a href="views/debug_graph.html?stage=0">在工作台查看</a>', "存在"),
+    ("10", "normalize-in", '<a href="views/stages/010-normalize-in.mlir.html">查看 MLIR</a>', '<a href="views/debug_graph.html?stage=10">在工作台查看</a>', "存在"),
+    ("19", "normalize-out", '<a href="views/stages/019-normalize-out.mlir.html">查看 MLIR</a>', '<a href="views/debug_graph.html?stage=19">在工作台查看</a>', "存在"),
+    ("20", "kernelize-in", '<a href="views/stages/020-kernelize-in.mlir.html">查看 MLIR</a>', '<a href="views/debug_graph.html?stage=20">在工作台查看</a>', "存在"),
+    ("29", "kernelize-out", '<a href="views/stages/029-kernelize-out.mlir.html">查看 MLIR</a>', '<a href="views/debug_graph.html?stage=29">在工作台查看</a>', "存在"),
 ]
 cursor = 0
 for row in expected_rows:
@@ -863,6 +897,92 @@ for row in expected_rows:
     cursor = position + len(needle)
 PY
 echo "ascend_debug.open=ok"
+
+ascend-debug serve "${TMP_DIR}/debug-run-stage-graph" \
+  --host 127.0.0.1 \
+  --port 0 \
+  --no-browser \
+  >"${TMP_DIR}/ascend-debug-serve.txt" \
+  2>"${TMP_DIR}/ascend-debug-serve.err" &
+SERVE_PID="$!"
+SERVE_URL=""
+for _ in $(seq 1 100); do
+  if ! kill -0 "${SERVE_PID}" >/dev/null 2>&1; then
+    echo "ascend-debug serve exited early" >&2
+    cat "${TMP_DIR}/ascend-debug-serve.err" >&2 || true
+    exit 1
+  fi
+  SERVE_URL="$(python3 - "${TMP_DIR}/ascend-debug-serve.txt" <<'PY'
+import pathlib
+import re
+import sys
+
+text = pathlib.Path(sys.argv[1]).read_text() if pathlib.Path(sys.argv[1]).exists() else ""
+match = re.search(r"ascend-debug\.serve\.url=(http://[^\s]+)", text)
+print(match.group(1) if match else "")
+PY
+)"
+  if [[ -n "${SERVE_URL}" ]]; then
+    break
+  fi
+  sleep 0.05
+done
+if [[ -z "${SERVE_URL}" ]]; then
+  echo "ascend-debug serve did not print a URL" >&2
+  cat "${TMP_DIR}/ascend-debug-serve.err" >&2 || true
+  exit 1
+fi
+python3 - "${SERVE_URL}/views/debug_graph.html" <<'PY'
+import html
+import json
+import re
+import sys
+import urllib.request
+
+page = urllib.request.urlopen(sys.argv[1], timeout=5).read().decode("utf-8")
+payload = re.search(r'<script type="application/json" id="graph-workspace-data">(.*?)</script>', page, re.S)
+if not payload:
+    raise SystemExit("debug graph workspace JSON missing")
+data = json.loads(html.unescape(payload.group(1)))
+stage = next(item for item in data["stages"] if item["name"] == "kernelize-out")
+node = next(item for item in stage["graph"]["nodes"] if item["op_name"] == "linalg.generic")
+if node.get("body_summary") != "arith.addf":
+    raise SystemExit(f"unexpected initial body summary: {node.get('body_summary')}")
+PY
+python3 - "${TMP_DIR}/debug-run-stage-graph/stages/029-kernelize-out.mlir" <<'PY'
+import pathlib
+import sys
+
+path = pathlib.Path(sys.argv[1])
+text = path.read_text()
+if "arith.addf" not in text:
+    raise SystemExit("test fixture no longer contains arith.addf")
+path.write_text(text.replace("arith.addf", "arith.subf"))
+PY
+python3 - "${SERVE_URL}/views/debug_graph.html" "${SERVE_URL}/views/stages/029-kernelize-out.mlir.html" <<'PY'
+import html
+import json
+import re
+import sys
+import urllib.request
+
+debug_page = urllib.request.urlopen(sys.argv[1], timeout=5).read().decode("utf-8")
+payload = re.search(r'<script type="application/json" id="graph-workspace-data">(.*?)</script>', debug_page, re.S)
+if not payload:
+    raise SystemExit("debug graph workspace JSON missing after edit")
+data = json.loads(html.unescape(payload.group(1)))
+stage = next(item for item in data["stages"] if item["name"] == "kernelize-out")
+node = next(item for item in stage["graph"]["nodes"] if item["op_name"] == "linalg.generic")
+if node.get("body_summary") != "arith.subf":
+    raise SystemExit(f"serve did not refresh graph from edited MLIR: {node.get('body_summary')}")
+mlir_page = urllib.request.urlopen(sys.argv[2], timeout=5).read().decode("utf-8")
+if "arith.subf" not in mlir_page:
+    raise SystemExit("serve did not refresh MLIR HTML view from edited MLIR")
+PY
+kill "${SERVE_PID}" >/dev/null 2>&1 || true
+wait "${SERVE_PID}" >/dev/null 2>&1 || true
+SERVE_PID=""
+echo "ascend_debug.serve=ok"
 
 check_open_manifest_error() {
   local manifest="$1"

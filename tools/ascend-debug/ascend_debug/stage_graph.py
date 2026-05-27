@@ -14,6 +14,10 @@ OP_RE = re.compile(
     r"^\s*(?P<results>%[A-Za-z0-9_.$-]+(?:\s*,\s*%[A-Za-z0-9_.$-]+)*)\s*=\s*(?P<op>[A-Za-z_][A-Za-z0-9_.]*)"
 )
 RETURN_RE = re.compile(r"^\s*return\b")
+BODY_OP_RE = re.compile(
+    r"^\s*(?:%[A-Za-z0-9_.$-]+(?:\s*,\s*%[A-Za-z0-9_.$-]+)*\s*=\s*)?"
+    r"(?P<op>[A-Za-z_][A-Za-z0-9_.]*)\b"
+)
 
 
 def _cell(value: Any) -> str:
@@ -82,6 +86,42 @@ def _collect_op_text(lines: list[str], index: int, op_name: str) -> tuple[str, i
     return lines[index], index + 1
 
 
+def _extract_region_body(op_text: str) -> str | None:
+    body_lines: list[str] = []
+    in_region = False
+    for line in op_text.splitlines()[1:]:
+        stripped = line.strip()
+        if stripped.startswith("}"):
+            break
+        if stripped.startswith("^bb"):
+            in_region = True
+        if in_region and stripped:
+            body_lines.append(stripped)
+    return "\n".join(body_lines) if body_lines else None
+
+
+def _extract_body_ops(region_body: str | None) -> list[str]:
+    if not region_body:
+        return []
+    body_ops: list[str] = []
+    for line in region_body.splitlines():
+        if line.strip().startswith("^"):
+            continue
+        match = BODY_OP_RE.match(line)
+        if match:
+            body_ops.append(match.group("op"))
+    return body_ops
+
+
+def _summarize_body_ops(body_ops: list[str]) -> str | None:
+    compute_ops = [op for op in body_ops if op != "linalg.yield"]
+    if compute_ops:
+        return " -> ".join(compute_ops)
+    if body_ops:
+        return " -> ".join(body_ops)
+    return None
+
+
 def parse_stage_mlir(stage: dict[str, Any], text: str) -> dict[str, Any]:
     lines = text.splitlines()
     nodes: list[dict[str, Any]] = []
@@ -145,14 +185,21 @@ def parse_stage_mlir(stage: dict[str, Any], text: str) -> dict[str, Any]:
                     input_values.append(value)
 
         node_id = f"n{len(nodes)}"
+        region_body = _extract_region_body(op_text)
+        body_ops = _extract_body_ops(region_body)
         node = {
             "id": node_id,
             "line": index + 1,
+            "line_end": next_index,
             "op_name": op_name,
             "label": result_values[0] if result_values else op_name,
             "input_values": input_values,
             "result_values": result_values,
             "result_type": _extract_result_type(op_text),
+            "source_excerpt": op_text,
+            "region_body": region_body,
+            "body_ops": body_ops,
+            "body_summary": _summarize_body_ops(body_ops),
             "kernel_id": _extract_attr(op_text, "ascend.kernel"),
             "op_role": _extract_attr(op_text, "ascend.op_role"),
             "schedule_decision_id": _extract_attr(op_text, "ascend.schedule.decision_id"),
@@ -240,8 +287,8 @@ def _truncate(value: Any, limit: int) -> str:
 def _compute_graph_layout(graph: dict[str, Any]) -> dict[str, Any]:
     node_width = 220
     node_height = 82
-    column_gap = 110
-    row_gap = 58
+    column_gap = 72
+    layer_gap = 86
     margin_x = 36
     margin_y = 36
     predecessor_ids: dict[str, list[str]] = {
@@ -269,8 +316,8 @@ def _compute_graph_layout(graph: dict[str, Any]) -> dict[str, Any]:
     max_y = margin_y
     for layer in sorted(layers):
         for row, node_id in enumerate(layers[layer]):
-            x = margin_x + layer * (node_width + column_gap)
-            y = margin_y + row * (node_height + row_gap)
+            x = margin_x + row * (node_width + column_gap)
+            y = margin_y + layer * (node_height + layer_gap)
             node_layout[node_id] = {
                 "x": x,
                 "y": y,
@@ -288,15 +335,15 @@ def _compute_graph_layout(graph: dict[str, Any]) -> dict[str, Any]:
         target = node_layout.get(edge["to"])
         if not source or not target:
             continue
-        source_x = source["x"] + source["width"]
-        source_y = source["y"] + source["height"] / 2
-        target_x = target["x"]
-        target_y = target["y"] + target["height"] / 2
-        bend = max(48, abs(target_x - source_x) / 2)
+        source_x = source["x"] + source["width"] / 2
+        source_y = source["y"] + source["height"]
+        target_x = target["x"] + target["width"] / 2
+        target_y = target["y"]
+        bend = max(42, abs(target_y - source_y) / 2)
         path = (
             f"M {source_x:.1f} {source_y:.1f} "
-            f"C {source_x + bend:.1f} {source_y:.1f}, "
-            f"{target_x - bend:.1f} {target_y:.1f}, "
+            f"C {source_x:.1f} {source_y + bend:.1f}, "
+            f"{target_x:.1f} {target_y - bend:.1f}, "
             f"{target_x:.1f} {target_y:.1f}"
         )
         edge_layout.append(
@@ -313,7 +360,7 @@ def _compute_graph_layout(graph: dict[str, Any]) -> dict[str, Any]:
 
     return {
         "visual_kind": "svg-dag",
-        "direction": "left-to-right",
+        "direction": "top-to-bottom",
         "node_width": node_width,
         "node_height": node_height,
         "width": max(720, max_x + margin_x),
@@ -355,6 +402,7 @@ def render_svg_graph(
         index = node_index_by_id[node_id]
         result = ", ".join(node.get("result_values", [])) or node.get("label")
         inputs = ", ".join(node.get("input_values", [])) or "root"
+        detail = f"body: {node.get('body_summary')}" if node.get("body_summary") else f"in: {inputs}"
         kernel = node.get("kernel_id")
         classes = "graph-node kernel-node" if kernel else "graph-node"
         kernel_text = f"kernel {_truncate(kernel, 22)}" if kernel else f"line {node.get('line')}"
@@ -366,7 +414,7 @@ def render_svg_graph(
             f'height="{_cell(position.get("height"))}" rx="6" />'
             f'<text class="node-op" x="14" y="24">{_cell(_truncate(node.get("op_name"), 28))}</text>'
             f'<text class="node-result" x="14" y="47">{_cell(_truncate(result, 30))}</text>'
-            f'<text class="node-inputs" x="14" y="68">in: {_cell(_truncate(inputs, 30))}</text>'
+            f'<text class="node-inputs" x="14" y="68">{_cell(_truncate(detail, 30))}</text>'
             f'<text class="node-kernel" x="206" y="22">{_cell(kernel_text)}</text>'
             "</g>"
         )
@@ -522,7 +570,6 @@ if (graphNodes.length) selectNode(Number(graphNodes[0].dataset.nodeIndex));
 
 def render_stage_graphs(run_dir: pathlib.Path, stages: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
     graph_views: dict[str, dict[str, Any]] = {}
-    parsed: list[tuple[dict[str, Any], dict[str, Any], str, str]] = []
     for stage in sorted(stages, key=lambda item: item["order"]):
         rel_path = stage["path"]
         source_path = run_dir / rel_path
@@ -531,31 +578,12 @@ def render_stage_graphs(run_dir: pathlib.Path, stages: list[dict[str, Any]]) -> 
         text = source_path.read_text(encoding="utf-8", errors="replace")
         graph = parse_stage_mlir(stage, text)
         graph["layout"] = _compute_graph_layout(graph)
-        json_rel_path, view_rel_path = _stage_graph_rel_paths(rel_path)
+        json_rel_path, _ = _stage_graph_rel_paths(rel_path)
         layout.write_json(run_dir / json_rel_path, graph)
         graph_views[rel_path] = {
             "json_rel_path": json_rel_path,
-            "view_rel_path": view_rel_path,
             "node_count": graph["node_count"],
             "edge_count": graph["edge_count"],
             "kernel_count": graph["kernel_count"],
         }
-        parsed.append((stage, graph, rel_path, view_rel_path))
-
-    stage_links = [
-        {
-            "stage_path": stage["path"],
-            "label": f"{stage['order']:03d} {stage['name']}",
-            "view_rel_path": view_rel_path,
-        }
-        for stage, _, _, view_rel_path in parsed
-    ]
-    for _, graph, rel_path, view_rel_path in parsed:
-        _render_stage_graph_html(
-            run_dir=run_dir,
-            graph=graph,
-            view_rel_path=view_rel_path,
-            raw_mlir_rel_path=rel_path,
-            stage_links=stage_links,
-        )
     return graph_views

@@ -29,8 +29,7 @@ def _stage_record(
     graph_view: dict[str, Any],
 ) -> dict[str, Any] | None:
     graph_json_rel = graph_view.get("json_rel_path")
-    graph_view_rel = graph_view.get("view_rel_path")
-    if not isinstance(graph_json_rel, str) or not isinstance(graph_view_rel, str):
+    if not isinstance(graph_json_rel, str):
         return None
     graph = _load_json(run_dir / graph_json_rel)
     if not graph:
@@ -39,8 +38,8 @@ def _stage_record(
         "order": stage["order"],
         "name": stage["name"],
         "path": stage["path"],
+        "stage_view_path": f"views/{stage['path']}.html",
         "graph_json_path": graph_json_rel,
-        "graph_view_path": graph_view_rel,
         "node_count": graph.get("node_count", 0),
         "edge_count": graph.get("edge_count", 0),
         "kernel_count": graph.get("kernel_count", 0),
@@ -241,7 +240,7 @@ def _overlay_summary(
 def _kernel_rows(kernel_dag: dict[str, Any]) -> str:
     nodes = kernel_dag.get("nodes") if isinstance(kernel_dag.get("nodes"), dict) else {}
     if not nodes:
-        return '<tr><td colspan="6">No kernel DAG summary available.</td></tr>'
+        return '<tr><td colspan="6">没有 Kernel DAG 摘要。</td></tr>'
     rows = []
     for kernel_id in sorted(nodes):
         node = nodes[kernel_id] if isinstance(nodes[kernel_id], dict) else {}
@@ -276,7 +275,7 @@ def _artifact_rows(items: list[dict[str, Any]], path_key: str = "path") -> str:
             f"<td>{_cell(item.get('status', ''))}</td>"
             "</tr>"
         )
-    return "\n".join(rows) or '<tr><td colspan="3">No artifacts recorded.</td></tr>'
+    return "\n".join(rows) or '<tr><td colspan="3">没有记录产物。</td></tr>'
 
 
 def _summary_paths(run_dir: pathlib.Path) -> list[dict[str, Any]]:
@@ -296,24 +295,24 @@ def _overlay_cards(overlays: dict[str, Any]) -> str:
     cards.append(
         "<section class=\"metric-card\">"
         "<h3>Tensor Diff</h3>"
-        f"<dl><dt>Status</dt><dd>{_cell(tensor_diff.get('status', 'none'))}</dd>"
-        f"<dt>Failed</dt><dd>{_cell(tensor_diff.get('failed_count', 0))}</dd></dl>"
+        f"<dl><dt>状态</dt><dd>{_cell(tensor_diff.get('status', 'none'))}</dd>"
+        f"<dt>失败</dt><dd>{_cell(tensor_diff.get('failed_count', 0))}</dd></dl>"
         "</section>"
     )
     locate = overlays.get("locate", {})
     cards.append(
         "<section class=\"metric-card\">"
         "<h3>Locate</h3>"
-        f"<dl><dt>Status</dt><dd>{_cell(locate.get('status', 'none'))}</dd>"
-        f"<dt>First bad</dt><dd>{_cell(locate.get('first_bad_kernel', 'none'))}</dd></dl>"
+        f"<dl><dt>状态</dt><dd>{_cell(locate.get('status', 'none'))}</dd>"
+        f"<dt>首个异常</dt><dd>{_cell(locate.get('first_bad_kernel', 'none'))}</dd></dl>"
         "</section>"
     )
     memory = overlays.get("memory", {})
     cards.append(
         "<section class=\"metric-card\">"
         "<h3>Memory</h3>"
-        f"<dl><dt>Peak</dt><dd>{_cell(memory.get('peak_workspace_bytes', 0))}</dd>"
-        f"<dt>Reuse groups</dt><dd>{_cell(memory.get('slot_reuse_group_count', 0))}</dd></dl>"
+        f"<dl><dt>峰值</dt><dd>{_cell(memory.get('peak_workspace_bytes', 0))}</dd>"
+        f"<dt>复用组</dt><dd>{_cell(memory.get('slot_reuse_group_count', 0))}</dd></dl>"
         "</section>"
     )
     return "\n".join(cards)
@@ -337,22 +336,22 @@ def _artifact_index(debug_graph: dict[str, Any]) -> str:
     artifacts = debug_graph.get("artifacts", {})
     return f"""
 <section id="artifact-index" class="artifact-index">
-<h2>Artifact Index</h2>
+<h2>原始产物索引</h2>
 <div class="artifact-grid">
 <section>
-<h3>Commands</h3>
+<h3>执行命令</h3>
 <table><tbody>{_artifact_rows(artifacts.get('commands', []), path_key='stdout')}</tbody></table>
 </section>
 <section>
-<h3>Reports</h3>
+<h3>报告</h3>
 <table><tbody>{_artifact_rows(artifacts.get('reports', []))}</tbody></table>
 </section>
 <section>
-<h3>Graphs</h3>
+<h3>图数据</h3>
 <table><tbody>{_artifact_rows(artifacts.get('graphs', []))}</tbody></table>
 </section>
 <section>
-<h3>Summaries</h3>
+<h3>摘要</h3>
 <table><tbody>{_artifact_rows(artifacts.get('summaries', []))}</tbody></table>
 </section>
 </div>
@@ -394,7 +393,7 @@ h2 { margin: 0 0 0.65rem; font-size: 0.98rem; }
 h3 { margin: 0 0 0.45rem; font-size: 0.84rem; }
 .toolbar { display: flex; gap: 0.75rem; flex-wrap: wrap; align-items: center; color: var(--muted); font-size: 0.86rem; }
 .app-shell { display: grid; grid-template-columns: 15rem minmax(34rem, 1fr) 25rem; gap: 0.85rem; padding: 0.85rem; min-height: calc(100vh - 4.5rem); }
-.sidebar, .graph-panel, .inspector-panel, .artifact-index { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; }
+.sidebar, .graph-panel, .inspector-panel { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; }
 .sidebar { padding: 0.8rem; align-self: start; position: sticky; top: 0.85rem; }
 .mode-tabs { display: grid; grid-template-columns: 1fr; gap: 0.35rem; margin-bottom: 0.9rem; }
 .mode-tab, .stage-button { border: 1px solid var(--line); border-radius: 6px; background: #ffffff; color: var(--text); padding: 0.45rem 0.55rem; text-align: left; cursor: pointer; }
@@ -449,8 +448,13 @@ dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }
 .inspector-panel { min-width: 0; padding: 0.8rem; align-self: start; position: sticky; top: 0.85rem; max-height: calc(100vh - 1.7rem); overflow: auto; }
 .inspector-actions { display: flex; flex-wrap: wrap; gap: 0.45rem; margin-bottom: 0.6rem; }
 .chip { display: inline-block; border: 1px solid var(--line); border-radius: 999px; padding: 0.18rem 0.45rem; color: #344054; background: #ffffff; font-size: 0.78rem; }
+.inspector-section { border: 1px solid #e3e8ef; border-radius: 7px; background: #fbfcfe; padding: 0.65rem; margin-bottom: 0.65rem; }
+.inspector-section h3 { margin-bottom: 0.55rem; }
+.detail-grid { display: grid; grid-template-columns: 5.5rem minmax(0, 1fr); gap: 0.3rem 0.5rem; font-size: 0.82rem; }
+.detail-label { color: var(--muted); font-weight: 700; }
+.detail-value { min-width: 0; overflow-wrap: anywhere; font-family: SFMono-Regular, Menlo, Consolas, monospace; }
+.body-op-list { display: flex; flex-wrap: wrap; gap: 0.35rem; margin-top: 0.45rem; }
 pre { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; background: #0b1020; color: #dbeafe; border: 1px solid #1e293b; padding: 0.75rem; border-radius: 7px; font: 12px/1.45 SFMono-Regular, Menlo, Consolas, monospace; }
-.artifact-index { grid-column: 1 / -1; padding: 0.85rem; }
 .artifact-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(16rem, 1fr)); gap: 0.75rem; }
 table { width: 100%; border-collapse: collapse; font-size: 0.82rem; }
 th, td { border: 1px solid #d7dde7; padding: 0.34rem 0.42rem; text-align: left; vertical-align: top; }
@@ -467,7 +471,21 @@ th { background: #f2f5f9; }
 <script>
 const workspace = JSON.parse(document.getElementById("graph-workspace-data").textContent);
 let activeMode = "stage";
-let activeStageIndex = Math.max(0, workspace.stages.findIndex((stage) => workspace.primary_stage && stage.name === workspace.primary_stage.name));
+const initialParams = new URLSearchParams(window.location.search);
+const requestedStage = initialParams.get("stage");
+const requestedNode = initialParams.get("node");
+
+function defaultStageIndex() {
+  if (requestedStage) {
+    const requested = String(requestedStage);
+    const index = workspace.stages.findIndex((stage) =>
+      String(stage.order) === requested || stage.name === requested || stage.path === requested);
+    if (index >= 0) return index;
+  }
+  return Math.max(0, workspace.stages.findIndex((stage) => workspace.primary_stage && stage.name === workspace.primary_stage.name));
+}
+
+let activeStageIndex = defaultStageIndex();
 let selectedKey = null;
 let canvasPanState = null;
 let graphViewState = {scale: 1};
@@ -491,11 +509,58 @@ function truncate(value, limit) {
   return text.length <= limit ? text : `${text.slice(0, Math.max(0, limit - 1))}...`;
 }
 
-function setInspector(title, payload, links = []) {
+function setInspector(title, links = [], detailHtml = "") {
   document.getElementById("inspector-title").textContent = title;
   const actions = document.getElementById("inspector-actions");
   actions.innerHTML = links.map((link) => `<a class="chip" href="${escapeHtml(link.href)}">${escapeHtml(link.label)}</a>`).join("");
-  document.getElementById("inspector-json").textContent = JSON.stringify(payload, null, 2);
+  document.getElementById("inspector-detail").innerHTML = detailHtml;
+}
+
+function valueText(value) {
+  if (Array.isArray(value)) return value.length ? value.join(", ") : "无";
+  return value == null || value === "" ? "无" : String(value);
+}
+
+function detailRows(rows) {
+  return `<div class="detail-grid">${rows.map(([label, value]) => `
+<div class="detail-label">${escapeHtml(label)}</div>
+<div class="detail-value">${escapeHtml(valueText(value))}</div>`).join("")}</div>`;
+}
+
+function codeBlock(value) {
+  return `<pre>${escapeHtml(valueText(value))}</pre>`;
+}
+
+function renderNodeIrSection(node) {
+  const hasBody = Boolean(node.region_body);
+  const localIr = hasBody ? node.region_body : (node.source_excerpt || "");
+  if (!localIr) return "";
+  return `
+<section class="inspector-section">
+<h3>${hasBody ? "Region Body" : "Op 源码"}</h3>
+${codeBlock(localIr)}
+</section>`;
+}
+
+function renderStageNodeDetail(stage, node, diff) {
+  if (!node) return '<section class="inspector-section"><h3>节点详情</h3><div class="panel-subtitle">未选中节点。</div></section>';
+  const diffStatus = diff && diff.status ? diff.status : "无";
+  return `
+<section class="inspector-section">
+<h3>节点详情</h3>
+${detailRows([
+  ["Stage", `${stage.order} ${stage.name}`],
+  ["Op", node.op_name],
+  ["结果", node.result_values || node.label],
+  ["输入", node.input_values],
+  ["Type", node.result_type],
+  ["Kernel", node.kernel_id],
+  ["角色", node.op_role],
+  ["行号", node.line_end && node.line_end !== node.line ? `${node.line}-${node.line_end}` : node.line],
+  ["Diff 状态", diffStatus],
+])}
+</section>
+${renderNodeIrSection(node)}`;
 }
 
 function svgHeader(width, height) {
@@ -680,22 +745,22 @@ function renderStageDiff(stage = activeStage()) {
   const details = document.getElementById("stage-diff-details");
   if (!summary || !details) return;
   if (activeMode !== "stage") {
-    summary.innerHTML = '<span class="panel-subtitle">Kernel DAG mode has no adjacent stage diff.</span>';
+    summary.innerHTML = '<span class="panel-subtitle">Kernel DAG 模式没有相邻 Stage Diff。</span>';
     details.innerHTML = "";
     return;
   }
   const diff = activeStageDiff(stage);
   if (!diff) {
-    summary.innerHTML = '<span class="panel-subtitle">Source stage has no predecessor.</span>';
+    summary.innerHTML = '<span class="panel-subtitle">source Stage 没有前序阶段。</span>';
     details.innerHTML = "";
     return;
   }
   summary.innerHTML = `
 <div class="panel-subtitle">${escapeHtml(diff.from_stage.order)} ${escapeHtml(diff.from_stage.name)} -> ${escapeHtml(diff.to_stage.order)} ${escapeHtml(diff.to_stage.name)}</div>
 <div class="diff-counts">
-<div class="diff-pill diff-added-text"><strong>${escapeHtml(diff.added_count)}</strong>added</div>
-<div class="diff-pill diff-changed-text"><strong>${escapeHtml(diff.changed_count)}</strong>changed</div>
-<div class="diff-pill diff-removed-text"><strong>${escapeHtml(diff.removed_count)}</strong>removed</div>
+<div class="diff-pill diff-added-text"><strong>${escapeHtml(diff.added_count)}</strong>新增</div>
+<div class="diff-pill diff-changed-text"><strong>${escapeHtml(diff.changed_count)}</strong>变化</div>
+<div class="diff-pill diff-removed-text"><strong>${escapeHtml(diff.removed_count)}</strong>移除</div>
 </div>`;
   const changed = (diff.changed_nodes || []).slice(0, 8).map((node) => {
     const after = node.after || {};
@@ -703,13 +768,13 @@ function renderStageDiff(stage = activeStage()) {
     return `<li><span class="diff-changed-text">${escapeHtml(after.op_name || after.label || "node")}</span>: ${escapeHtml(fields || "metadata")}</li>`;
   });
   const added = (diff.added_nodes || []).slice(0, 5).map((node) => (
-    `<li><span class="diff-added-text">${escapeHtml(node.op_name || node.label || "node")}</span>: added</li>`
+    `<li><span class="diff-added-text">${escapeHtml(node.op_name || node.label || "node")}</span>: 新增</li>`
   ));
   const removed = (diff.removed_nodes || []).slice(0, 5).map((node) => (
-    `<li><span class="diff-removed-text">${escapeHtml(node.op_name || node.label || "node")}</span>: removed from current stage</li>`
+    `<li><span class="diff-removed-text">${escapeHtml(node.op_name || node.label || "node")}</span>: 从当前 Stage 移除</li>`
   ));
   const rows = [...changed, ...added, ...removed];
-  details.innerHTML = rows.length ? `<ul class="diff-list">${rows.join("")}</ul>` : '<span class="panel-subtitle">No semantic node changes detected.</span>';
+  details.innerHTML = rows.length ? `<ul class="diff-list">${rows.join("")}</ul>` : '<span class="panel-subtitle">没有检测到语义节点变化。</span>';
 }
 
 function stageNodeDiffInfo(stage, nodeId) {
@@ -787,7 +852,7 @@ function searchActiveGraph() {
       });
     }
   }
-  setSearchStatus(activeSearchResults.length ? `${activeSearchResults.length} match(es), Enter cycles` : "No match");
+  setSearchStatus(activeSearchResults.length ? `${activeSearchResults.length} 个匹配，按 Enter 切换` : "无匹配");
   if (activeSearchResults.length) activeSearchResults[0].select();
 }
 
@@ -802,12 +867,13 @@ function renderStageGraph() {
   const graph = stage ? stage.graph : null;
   const canvas = document.getElementById("graph-canvas");
   if (!graph || !graph.layout) {
-    canvas.innerHTML = `${svgHeader(720, 420)}<text x="28" y="42">No stage graph available.</text></svg>`;
+    canvas.innerHTML = `${svgHeader(720, 420)}<text x="28" y="42">当前 Stage 没有可展示的图。</text></svg>`;
     afterGraphRender();
     return;
   }
   document.getElementById("graph-title").textContent = `Stage Graph: ${stage.order} ${stage.name}`;
-  document.getElementById("graph-subtitle").textContent = `${graph.node_count} nodes, ${graph.edge_count} edges, ${graph.kernel_count} kernels`;
+  document.getElementById("graph-subtitle").textContent = `${graph.node_count} 个节点，${graph.edge_count} 条边，${graph.kernel_count} 个 Kernel`;
+  document.querySelectorAll(".stage-button").forEach((button) => button.classList.toggle("active", Number(button.dataset.stageIndex) === activeStageIndex));
   const layout = graph.layout;
   const nodeById = Object.fromEntries(graph.nodes.map((node, index) => [node.id, {node, index}]));
   const diff = activeStageDiff(stage);
@@ -821,6 +887,7 @@ function renderStageGraph() {
     if (!position) continue;
     const result = node.result_values && node.result_values.length ? node.result_values.join(", ") : node.label;
     const inputs = node.input_values && node.input_values.length ? node.input_values.join(", ") : "root";
+    const detail = node.body_summary ? `body: ${node.body_summary}` : `in: ${inputs}`;
     const issueClass = firstBad && node.kernel_id === firstBad ? " issue" : "";
     const kernelClass = node.kernel_id ? " kernel-node" : "";
     const diffInfo = diff && diff.node_status ? diff.node_status[node.id] : null;
@@ -831,7 +898,7 @@ function renderStageGraph() {
 <rect width="${position.width}" height="${position.height}" rx="6"></rect>
 <text class="node-op" x="14" y="24">${escapeHtml(truncate(node.op_name, 28))}</text>
 <text class="node-result" x="14" y="47">${escapeHtml(truncate(result, 30))}</text>
-<text class="node-inputs" x="14" y="68">in: ${escapeHtml(truncate(inputs, 30))}</text>
+<text class="node-inputs" x="14" y="68">${escapeHtml(truncate(detail, 30))}</text>
 <text class="node-kernel" x="${position.width - 14}" y="22">${escapeHtml(kernelText)}</text>
 </g>`;
   }
@@ -846,7 +913,8 @@ function renderStageGraph() {
       }
     });
   });
-  const preferred = selectedKey && graph.nodes.some((node) => node.id === selectedKey) ? selectedKey : (graph.nodes[0] && graph.nodes[0].id);
+  const requestedNodeMatch = requestedNode && graph.nodes.find((node) => node.id === requestedNode || node.label === requestedNode);
+  const preferred = requestedNodeMatch ? requestedNodeMatch.id : (selectedKey && graph.nodes.some((node) => node.id === selectedKey) ? selectedKey : (graph.nodes[0] && graph.nodes[0].id));
   if (preferred) selectStageNode(stage, graph, preferred);
   afterGraphRender();
 }
@@ -855,12 +923,16 @@ function selectStageNode(stage, graph, nodeId, options = {}) {
   selectedKey = nodeId;
   document.querySelectorAll(".graph-node").forEach((element) => element.classList.toggle("selected", element.dataset.nodeId === nodeId));
   const node = graph.nodes.find((item) => item.id === nodeId);
-  const links = [{label: "Stage MLIR", href: `../${stage.path}`}];
-  if (stage.graph_view_path) links.push({label: "Stage View", href: `../${stage.graph_view_path}`});
-  if (node && node.kernel_id) links.push({label: "Kernel View", href: `kernels/${node.kernel_id}.html`});
-  if (node && node.kernel_id && memoryHasKernel(node.kernel_id)) links.push({label: "Memory View", href: memoryViewLink(node.kernel_id)});
+  const links = [];
+  if (stage.stage_view_path) links.push({label: "查看完整 MLIR", href: `../${stage.stage_view_path}${node && node.line ? `#L${node.line}` : ""}`});
+  if (node && node.kernel_id) links.push({label: "Kernel 详情", href: `kernels/${node.kernel_id}.html`});
+  if (node && node.kernel_id && memoryHasKernel(node.kernel_id)) links.push({label: "内存视图", href: memoryViewLink(node.kernel_id)});
   const diff = node ? stageNodeDiffInfo(stage, nodeId) : null;
-  setInspector(node ? `${node.op_name} ${node.label || ""}` : "Stage Node", {stage: {order: stage.order, name: stage.name}, diff, node}, links);
+  setInspector(
+    node ? `节点详情：${node.op_name} ${node.label || ""}` : "节点详情",
+    links,
+    renderStageNodeDetail(stage, node, diff)
+  );
   if (options.center) {
     centerGraphElement(findStageNodeElement(nodeId));
   }
@@ -919,7 +991,7 @@ function renderKernelDag() {
   }
   svg += "</svg>";
   document.getElementById("graph-title").textContent = "Kernel DAG";
-  document.getElementById("graph-subtitle").textContent = `${summary.kernel_count || 0} kernels, ${summary.graph_edges || 0} edges, critical depth ${summary.critical_path_depth || 0}`;
+  document.getElementById("graph-subtitle").textContent = `${summary.kernel_count || 0} 个 Kernel，${summary.graph_edges || 0} 条边，关键深度 ${summary.critical_path_depth || 0}`;
   document.getElementById("graph-canvas").innerHTML = svg;
   document.querySelectorAll(".kernel-dag-node").forEach((element) => {
     element.addEventListener("click", () => selectKernel(element.dataset.kernelId));
@@ -938,9 +1010,9 @@ function selectKernel(kernelId, options = {}) {
   selectedKey = kernelId;
   document.querySelectorAll(".kernel-dag-node").forEach((element) => element.classList.toggle("selected", element.dataset.kernelId === kernelId));
   const node = workspace.kernel_dag && workspace.kernel_dag.nodes ? workspace.kernel_dag.nodes[kernelId] : null;
-  const links = [{label: "Kernel View", href: `kernels/${kernelId}.html`}];
-  if (memoryHasKernel(kernelId)) links.push({label: "Memory View", href: memoryViewLink(kernelId)});
-  setInspector(`Kernel ${kernelId}`, {kernel_id: kernelId, ...node}, links);
+  const links = [{label: "Kernel 详情", href: `kernels/${kernelId}.html`}];
+  if (memoryHasKernel(kernelId)) links.push({label: "内存视图", href: memoryViewLink(kernelId)});
+  setInspector(`Kernel 详情：${kernelId}`, links);
   if (options.center) {
     centerGraphElement(findKernelNodeElement(kernelId));
   }
@@ -966,32 +1038,32 @@ renderStageGraph();
 </script>
 """
     document = f"""<!doctype html>
-<html lang="en">
+<html lang="zh-CN">
 <head>
 <meta charset="utf-8">
-<title>Ascend Debug Graph</title>
+<title>Ascend Debug 调试工作台</title>
 {style}
 </head>
 <body>
 <header>
 <div>
-<h1>Ascend Debug Graph</h1>
+<h1>Ascend Debug 调试工作台</h1>
 <div class="toolbar">
-<a href="../index.html">Dashboard</a>
-<a href="../{_cell(summary_path)}">Raw debug_graph.json</a>
-<span>Primary stage: {_cell(primary_stage.get('name') if primary_stage else 'none')}</span>
-<span>Kernel DAG: {_cell(kernel_dag.get('kernel_count', 0))} kernels</span>
+<a href="../index.html">调试首页</a>
+<a href="../{_cell(summary_path)}">原始 debug_graph.json</a>
+<span>主 Stage：{_cell(primary_stage.get('name') if primary_stage else 'none')}</span>
+<span>Kernel DAG：{_cell(kernel_dag.get('kernel_count', 0))} 个 Kernel</span>
 </div>
 </div>
 </header>
 <main class="app-shell">
 <aside class="sidebar">
-<h2>Graph Mode</h2>
+<h2>视图模式</h2>
 <div class="mode-tabs">
-<button class="mode-tab active" data-mode="stage" type="button">Stage Evolution</button>
+<button class="mode-tab active" data-mode="stage" type="button">Stage 演进</button>
 <button class="mode-tab" data-mode="kernel" type="button">Kernel DAG</button>
 </div>
-<h2>Stages</h2>
+<h2>Stage 列表</h2>
 <div id="stage-list" class="stage-list">
 {_stage_buttons(debug_graph)}
 </div>
@@ -1007,13 +1079,13 @@ renderStageGraph();
 <section class="graph-panel">
 <div class="panel-header">
 <div>
-<h2 id="graph-title">Unified Stage Graph</h2>
+<h2 id="graph-title">统一 Stage Graph</h2>
 <div id="graph-subtitle" class="panel-subtitle"></div>
 </div>
 <div class="graph-tools">
-<input id="graph-search" class="graph-search" type="search" placeholder="Search op, kernel, loc">
-<button id="graph-fit" class="graph-tool-button" type="button">Fit</button>
-<button id="graph-reset" class="graph-tool-button" type="button">Reset</button>
+<input id="graph-search" class="graph-search" type="search" placeholder="搜索 op、Kernel、位置">
+<button id="graph-fit" class="graph-tool-button" type="button">适配</button>
+<button id="graph-reset" class="graph-tool-button" type="button">重置</button>
 <span id="graph-zoom-value" class="zoom-value">100%</span>
 <span id="graph-search-status" class="search-status"></span>
 </div>
@@ -1023,18 +1095,17 @@ renderStageGraph();
 </div>
 </section>
 <aside class="inspector-panel">
-<h2 id="inspector-title">Inspector</h2>
+<h2 id="inspector-title">节点详情</h2>
 <div id="inspector-actions" class="inspector-actions"></div>
-<pre id="inspector-json"></pre>
-<h2>Overlays</h2>
+<div id="inspector-detail"></div>
+<h2>诊断叠加</h2>
 {_overlay_cards(overlays)}
 <h2>Kernel DAG</h2>
 <table>
-<thead><tr><th>Kernel</th><th>Kind</th><th>Depth</th><th>Shape</th><th>Tile</th><th>Workspace</th></tr></thead>
+<thead><tr><th>Kernel</th><th>类型</th><th>深度</th><th>Shape</th><th>Tile</th><th>Workspace</th></tr></thead>
 <tbody>{_kernel_rows(kernel_dag)}</tbody>
 </table>
 </aside>
-{_artifact_index(debug_graph)}
 </main>
 <script type="application/json" id="graph-workspace-data">{workspace_json}</script>
 {script}

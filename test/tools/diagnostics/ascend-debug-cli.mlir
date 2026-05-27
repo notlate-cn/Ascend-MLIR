@@ -33,6 +33,7 @@ func.func @elementwise(%arg0: tensor<4x8xf16>, %arg1: tensor<4x8xf16>) -> tensor
 // CHECK: ascend_debug.open_deep=ok
 // CHECK: ascend_debug.stage_graph=ok
 // CHECK: ascend_debug.open=ok
+// CHECK: ascend_debug.serve=ok
 // CHECK: ascend_debug.manifest.stage_count=5
 // CHECK: ascend_debug.stage.0=000-source.mlir
 // CHECK: ascend_debug.stage.4=029-kernelize-out.mlir

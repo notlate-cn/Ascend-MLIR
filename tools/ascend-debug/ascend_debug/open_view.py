@@ -151,25 +151,45 @@ def _metadata_rows(manifest: dict[str, Any]) -> str:
     return "\n".join(rows)
 
 
+def _overview_cards(manifest: dict[str, Any]) -> str:
+    items = [
+        ("tool", manifest.get("tool")),
+        ("preset", manifest.get("preset")),
+        ("pipeline", manifest.get("pipeline")),
+        ("stages", len(manifest.get("stages", []))),
+        ("commands", len(manifest.get("commands", []))),
+    ]
+    if manifest.get("backend") is not None:
+        items.append(("backend", manifest.get("backend")))
+    if manifest.get("device_id") is not None:
+        items.append(("device", manifest.get("device_id")))
+    return "\n".join(
+        f'<div class="overview-card"><span>{_cell(label)}</span><strong>{_cell(value)}</strong></div>'
+        for label, value in items
+    )
+
+
 def _stage_rows(
     run_dir: pathlib.Path,
     manifest: dict[str, Any],
     stage_views: dict[str, str],
+    debug_graph_view_path: str,
 ) -> str:
     rows = []
     stages = sorted(manifest["stages"], key=lambda stage: stage["order"])
     for stage in stages:
         rel_path = str(stage["path"])
         exists = (run_dir / rel_path).exists()
-        status = "present" if exists else "missing"
+        status = "存在" if exists else "缺失"
         view_rel_path = stage_views.get(rel_path)
-        view_cell = _link(view_rel_path, "View") if view_rel_path else ""
+        view_cell = _link(view_rel_path, "查看 MLIR") if view_rel_path else ""
+        debug_cell = _link(f"{debug_graph_view_path}?stage={stage['order']}", "在工作台查看")
         rows.append(
             "<tr>"
             f"<td>{_cell(stage['order'])}</td>"
             f"<td>{_cell(stage['name'])}</td>"
-            f"<td>{_path_link(rel_path, exists=exists)}</td>"
             f"<td>{view_cell}</td>"
+            f"<td>{debug_cell}</td>"
             f"<td>{_cell(status)}</td>"
             "</tr>"
         )
@@ -193,7 +213,7 @@ def _stage_graph_rows(
         edge_count = ""
         kernel_count = ""
         if graph:
-            graph_cell = _link(graph["view_rel_path"], "Graph")
+            graph_cell = _link(graph["view_rel_path"], "图")
             json_cell = _path_link(graph["json_rel_path"], exists=(run_dir / graph["json_rel_path"]).exists())
             node_count = graph["node_count"]
             edge_count = graph["edge_count"]
@@ -207,7 +227,7 @@ def _stage_graph_rows(
             f"<td>{_cell(node_count)}</td>"
             f"<td>{_cell(edge_count)}</td>"
             f"<td>{_cell(kernel_count)}</td>"
-            f"<td>{_cell('present' if exists else 'missing')}</td>"
+            f"<td>{_cell('存在' if exists else '缺失')}</td>"
             "</tr>"
         )
     return "\n".join(rows)
@@ -238,7 +258,7 @@ def _report_rows(run_dir: pathlib.Path, manifest: dict[str, Any]) -> str:
     for report in manifest.get("reports", []):
         rel_path = report["path"]
         exists = (run_dir / rel_path).exists()
-        status = "present" if exists else "missing"
+        status = "存在" if exists else "缺失"
         rows.append(
             "<tr>"
             f"<td>{_cell(report.get('stage'))}</td>"
@@ -258,9 +278,9 @@ def _graph_rows(
     for graph in manifest.get("graphs", []):
         rel_path = graph["path"]
         exists = (run_dir / rel_path).exists()
-        status = "present" if exists else "missing"
+        status = "存在" if exists else "缺失"
         view_rel_path = artifact_views.get(rel_path)
-        view_cell = _link(view_rel_path, "View") if view_rel_path else ""
+        view_cell = _link(view_rel_path, "查看") if view_rel_path else ""
         rows.append(
             "<tr>"
             f"<td>{_cell(graph.get('kind'))}</td>"
@@ -280,7 +300,7 @@ def _summary_rows(run_dir: pathlib.Path, json_views: dict[str, str]) -> str:
     for path in sorted(item for item in summary_dir.rglob("*") if item.is_file()):
         rel_path = path.relative_to(run_dir).as_posix()
         view_rel_path = json_views.get(rel_path)
-        view_cell = _link(view_rel_path, "View") if view_rel_path else ""
+        view_cell = _link(view_rel_path, "查看") if view_rel_path else ""
         rows.append(
             "<tr>"
             f"<td>{_path_link(rel_path)}</td>"
@@ -387,32 +407,32 @@ def _locate_section(summary: dict[str, Any] | None, kernel_views: dict[str, str]
     return f"""
 <section class="locate-section">
 <h2>Locate</h2>
-<p class="locate-note">Earliest failed checkpoint in DAG order. This is a first-bad candidate, not root-cause proof when upstream kernels are not checked.</p>
+<p class="locate-note">按 DAG 顺序找到的最早失败 checkpoint。它是首个异常候选，不等同于根因证明，尤其是上游 Kernel 没有 checkpoint 时。</p>
 <div class="locate-grid">
 <div class="locate-panel">
-<h3>First Bad Candidate</h3>
+<h3>首个异常候选</h3>
 <dl>
-<dt>Status</dt><dd>{_cell(summary.get('status'))}</dd>
+<dt>状态</dt><dd>{_cell(summary.get('status'))}</dd>
 <dt>Kernel</dt><dd>{kernel_cell}</dd>
-<dt>DAG depth</dt><dd>{_cell(summary.get('first_bad_depth'))}</dd>
-<dt>Failed comparison</dt><dd>{_cell(comparison_id)}</dd>
+<dt>DAG 深度</dt><dd>{_cell(summary.get('first_bad_depth'))}</dd>
+<dt>失败对比</dt><dd>{_cell(comparison_id)}</dd>
 </dl>
 </div>
 <div class="locate-panel">
-<h3>Evidence</h3>
+<h3>证据</h3>
 <dl>
-<dt>Failed kernels</dt><dd>{_cell(summary.get('failed_kernel_count'))}</dd>
-<dt>Upstream passed checkpoints</dt><dd>{upstream_passed}</dd>
-<dt>Downstream failed checkpoints</dt><dd>{downstream_failed}</dd>
-<dt>Method</dt><dd>{_cell(summary.get('method'))}</dd>
+<dt>失败 Kernel 数</dt><dd>{_cell(summary.get('failed_kernel_count'))}</dd>
+<dt>已通过的上游 checkpoint</dt><dd>{upstream_passed}</dd>
+<dt>失败的下游 checkpoint</dt><dd>{downstream_failed}</dd>
+<dt>定位方法</dt><dd>{_cell(summary.get('method'))}</dd>
 </dl>
 </div>
 <div class="locate-panel">
-<h3>Coverage Gap</h3>
+<h3>覆盖缺口</h3>
 <dl>
-<dt>Direct upstream</dt><dd>{direct_upstream}</dd>
-<dt>Direct downstream</dt><dd>{direct_downstream}</dd>
-<dt>Direct upstream without checkpoint</dt><dd>{unchecked_upstream}</dd>
+<dt>直接上游</dt><dd>{direct_upstream}</dd>
+<dt>直接下游</dt><dd>{direct_downstream}</dd>
+<dt>未 checkpoint 的直接上游</dt><dd>{unchecked_upstream}</dd>
 </dl>
 </div>
 </div>
@@ -446,7 +466,7 @@ def _render_mlir_view(run_dir: pathlib.Path, rel_path: str) -> str | None:
         )
 
     document = f"""<!doctype html>
-<html lang="en">
+<html lang="zh-CN">
 <head>
 <meta charset="utf-8">
 <title>{_cell(pathlib.PurePosixPath(rel_path).name)} - ascend-debug</title>
@@ -473,9 +493,9 @@ table.code-table {{ border-collapse: collapse; width: 100%; background: #0b1020;
 <header>
 <h1>{_cell(rel_path)}</h1>
 <div class="toolbar">
-<input id="search" type="search" placeholder="Search MLIR">
-<a href="{raw_href}">Raw MLIR</a>
-<a href="{dashboard_href}">Dashboard</a>
+<input id="search" type="search" placeholder="搜索 MLIR">
+<a href="{raw_href}">原始 MLIR</a>
+<a href="{dashboard_href}">调试首页</a>
 </div>
 </header>
 <main>
@@ -592,8 +612,8 @@ pre.json-source {{ margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; ba
 <header>
 <h1>{_cell(title)}</h1>
 <div class="toolbar">
-<a href="{raw_href}">Raw JSON</a>
-<a href="{dashboard_href}">Dashboard</a>
+<a href="{raw_href}">原始 JSON</a>
+<a href="{dashboard_href}">调试工作台</a>
 <span>{_cell(rel_path)}</span>
 </div>
 </header>
@@ -650,7 +670,7 @@ def _render_ub_allocation_svg(kernel: dict[str, Any]) -> str:
     groups = _memory_slot_groups(kernel)
     intervals = _memory_interval_by_value(kernel)
     if not groups or not intervals:
-        return '<div class="empty-state">No Realize StaticMemoryPlan workspace slots are available for this kernel.</div>'
+        return '<div class="empty-state">这个 Kernel 没有可用的 Realize StaticMemoryPlan workspace slot。</div>'
 
     starts = [_as_int(interval.get("start")) for interval in intervals.values()]
     ends = [_as_int(interval.get("end")) for interval in intervals.values()]
@@ -668,7 +688,7 @@ def _render_ub_allocation_svg(kernel: dict[str, Any]) -> str:
     height = top + len(groups) * row_h + 54
 
     parts = [
-        f'<svg class="ub-allocation-svg" width="{width}" height="{height}" viewBox="0 0 {width} {height}" role="img" aria-label="UB allocation timeline">',
+        f'<svg class="ub-allocation-svg" width="{width}" height="{height}" viewBox="0 0 {width} {height}" role="img" aria-label="UB 分配时间线">',
         f'<line class="axis" x1="{left}" y1="{top - 14}" x2="{left + time_span * step}" y2="{top - 14}"></line>',
     ]
     for tick in range(min_time, max_time + 1):
@@ -698,7 +718,7 @@ def _render_ub_allocation_svg(kernel: dict[str, Any]) -> str:
             label = f"slot {slot.get('slot_id')} value {value_id}"
             parts.append(
                 f'<rect class="{css_class}" x="{x}" y="{y - 10}" width="{block_w}" height="{lane_h}" rx="5">'
-                f"<title>{_cell(label)}; live {start}..{end}; bytes {slot.get('byte_size')}</title>"
+                f"<title>{_cell(label)}; 生命周期 {start}..{end}; {slot.get('byte_size')} bytes</title>"
                 "</rect>"
             )
             parts.append(f'<text x="{x + 7}" y="{y + 8}">{_cell(label)}</text>')
@@ -729,7 +749,7 @@ def _memory_reuse_group_chips(kernel: dict[str, Any]) -> str:
             f"slots {_value_list(group.get('slot_ids'))}; values {_value_list(group.get('value_ids'))}"
             "</span>"
         )
-    return "".join(chips) or '<span class="chip">no slot reuse</span>'
+    return "".join(chips) or '<span class="chip">无 slot 复用</span>'
 
 
 def _memory_movement_chips(kernel: dict[str, Any]) -> str:
@@ -737,15 +757,15 @@ def _memory_movement_chips(kernel: dict[str, Any]) -> str:
     for edge in kernel.get("movement_edges", []):
         if not isinstance(edge, dict):
             continue
-        role = "cached" if edge.get("dst") not in (None, "unknown", "GM") else "movement"
+        role = "缓存" if edge.get("dst") not in (None, "unknown", "GM") else "搬运"
         chips.append(
             '<span class="chip movement-edge">'
             f"step {_cell(edge.get('step_id'))}: value {_cell(edge.get('value_id'))} "
             f"slot {_cell(edge.get('slot_id'))} {_cell(edge.get('src'))}->{_cell(edge.get('dst'))} "
-            f"{role} bytes {_cell(edge.get('byte_size'))}"
+            f"{role} {_cell(edge.get('byte_size'))} bytes"
             "</span>"
         )
-    return "".join(chips) or '<span class="chip">no movement edges</span>'
+    return "".join(chips) or '<span class="chip">无 movement edge</span>'
 
 
 def _render_memory_kernel_viz(kernel: dict[str, Any], *, heading_level: int, title: str) -> str:
@@ -758,15 +778,15 @@ def _render_memory_kernel_viz(kernel: dict[str, Any], *, heading_level: int, tit
 <{heading}>{_cell(title)}</{heading}>
 <div class="memory-facts">
 <span>workspace {_cell(kernel.get('workspace_bytes'))} B</span>
-<span>peak {_cell(kernel.get('peak_usage_bytes'))} B</span>
-<span>slots {_cell(kernel.get('workspace_slot_count'))}</span>
-<span>live intervals {_cell(kernel.get('live_interval_count'))}</span>
+<span>峰值 {_cell(kernel.get('peak_usage_bytes'))} B</span>
+<span>slot {_cell(kernel.get('workspace_slot_count'))}</span>
+<span>生命周期 {_cell(kernel.get('live_interval_count'))}</span>
 </div>
 </div>
 {svg}
-<h3>UB Reuse</h3>
+<h3>UB 复用</h3>
 <div>{_memory_reuse_group_chips(kernel)}</div>
-<h3>Movement / Cache</h3>
+<h3>搬运 / 缓存</h3>
 <div>{_memory_movement_chips(kernel)}</div>
 </section>
 """
@@ -787,11 +807,11 @@ def _memory_coverage_table(summary: dict[str, Any], view_rel_path: str) -> str:
             "</tr>"
         )
     if not rows:
-        rows.append('<tr><td colspan="5">No kernel coverage data available.</td></tr>')
+        rows.append('<tr><td colspan="5">没有 Kernel 覆盖数据。</td></tr>')
     return f"""
-<h2>Kernel Coverage</h2>
+<h2>Kernel 覆盖</h2>
 <table>
-<thead><tr><th>Kernel</th><th>DAG depth</th><th>DAG workspace bytes</th><th>Memory plan</th><th>Reason</th></tr></thead>
+<thead><tr><th>Kernel</th><th>DAG 深度</th><th>DAG workspace bytes</th><th>Memory plan</th><th>原因</th></tr></thead>
 <tbody>{''.join(rows)}</tbody>
 </table>
 """
@@ -800,12 +820,12 @@ def _memory_coverage_table(summary: dict[str, Any], view_rel_path: str) -> str:
 def _render_memory_summary_view(view_rel_path: str, rel_path: str, summary: dict[str, Any]) -> str:
     cards = "".join(
         [
-            _summary_card("Analysis", summary.get("analysis_level")),
+            _summary_card("分析级别", summary.get("analysis_level")),
             _summary_card("Kernels", summary.get("kernel_count")),
-            _summary_card("Detailed kernels", summary.get("detailed_kernel_count", summary.get("workspace_kernel_count", 0))),
-            _summary_card("Peak workspace", summary.get("peak_workspace_bytes")),
-            _summary_card("Reuse groups", summary.get("slot_reuse_group_count", 0)),
-            _summary_card("Movement edges", summary.get("movement_edge_count", 0)),
+            _summary_card("详细 Kernel", summary.get("detailed_kernel_count", summary.get("workspace_kernel_count", 0))),
+            _summary_card("workspace 峰值", summary.get("peak_workspace_bytes")),
+            _summary_card("复用组", summary.get("slot_reuse_group_count", 0)),
+            _summary_card("搬运边", summary.get("movement_edge_count", 0)),
         ]
     )
     body = [f'<div class="summary-card-grid">{cards}</div>']
@@ -817,12 +837,12 @@ def _render_memory_summary_view(view_rel_path: str, rel_path: str, summary: dict
         body.append(_memory_coverage_table(summary, view_rel_path))
         for kernel in summary.get("kernels", []):
             if isinstance(kernel, dict):
-                title = f"Kernel {kernel.get('kernel_id')} UB Allocation"
+                title = f"Kernel {kernel.get('kernel_id')} UB 分配"
                 body.append(_render_memory_kernel_viz(kernel, heading_level=2, title=title))
     else:
         body.append(
-            '<div class="empty-state">No Realize StaticMemoryPlan was found, so UB slot reuse and lifetime cannot be drawn. '
-            "This page only shows DAG workspace overview.</div>"
+            '<div class="empty-state">没有找到 Realize StaticMemoryPlan，因此无法绘制 UB slot 复用和生命周期。'
+            "当前页面仅展示 DAG workspace 概览。</div>"
         )
         rows = []
         for kernel in summary.get("kernels", []):
@@ -837,17 +857,17 @@ def _render_memory_summary_view(view_rel_path: str, rel_path: str, summary: dict
                 f"<td>{_cell(kernel.get('selected_tile_shape'))}</td>"
                 "</tr>"
             )
-        workspace_rows = "".join(rows) or '<tr><td colspan="5">No workspace data available.</td></tr>'
+        workspace_rows = "".join(rows) or '<tr><td colspan="5">没有 workspace 数据。</td></tr>'
         body.append(
-            "<h2>Workspace Overview</h2>"
-            "<table><thead><tr><th>Kernel</th><th>Depth</th><th>Workspace bytes</th><th>Kind</th><th>Tile</th></tr></thead>"
+            "<h2>Workspace 概览</h2>"
+            "<table><thead><tr><th>Kernel</th><th>深度</th><th>Workspace bytes</th><th>类型</th><th>Tile</th></tr></thead>"
             f"<tbody>{workspace_rows}</tbody></table>"
         )
 
     return _summary_page_document(
         view_rel_path=view_rel_path,
         rel_path=rel_path,
-        title="Memory Summary",
+        title="Memory 摘要",
         body="\n".join(body),
     )
 
@@ -856,9 +876,9 @@ def _render_tensor_diff_summary_view(view_rel_path: str, rel_path: str, summary:
     status = summary.get("status")
     cards = "".join(
         [
-            _summary_card("Status", status, "fail" if status == "fail" else "pass"),
-            _summary_card("Comparisons", summary.get("comparison_count")),
-            _summary_card("Failed", summary.get("failed_count"), "fail" if _as_int(summary.get("failed_count")) else ""),
+            _summary_card("状态", status, "fail" if status == "fail" else "pass"),
+            _summary_card("对比项", summary.get("comparison_count")),
+            _summary_card("失败项", summary.get("failed_count"), "fail" if _as_int(summary.get("failed_count")) else ""),
         ]
     )
     rows = []
@@ -879,16 +899,16 @@ def _render_tensor_diff_summary_view(view_rel_path: str, rel_path: str, summary:
         )
     body = f"""
 <div class="summary-card-grid">{cards}</div>
-<h2>Comparisons</h2>
+<h2>对比结果</h2>
 <table>
-<thead><tr><th>Status</th><th>ID</th><th>Kernel</th><th>Task</th><th>max_abs_error</th><th>max_rel_error</th><th>mean_abs_error</th></tr></thead>
-<tbody>{''.join(rows) or '<tr><td colspan="7">No comparisons available.</td></tr>'}</tbody>
+<thead><tr><th>状态</th><th>ID</th><th>Kernel</th><th>Task</th><th>max_abs_error</th><th>max_rel_error</th><th>mean_abs_error</th></tr></thead>
+<tbody>{''.join(rows) or '<tr><td colspan="7">没有对比结果。</td></tr>'}</tbody>
 </table>
 """
     return _summary_page_document(
         view_rel_path=view_rel_path,
         rel_path=rel_path,
-        title="Tensor Diff Summary",
+        title="Tensor Diff 摘要",
         body=body,
     )
 
@@ -899,33 +919,33 @@ def _render_locate_summary_view(view_rel_path: str, rel_path: str, summary: dict
         context = {}
     cards = "".join(
         [
-            _summary_card("Status", summary.get("status"), "fail" if summary.get("status") == "fail" else "pass"),
-            _summary_card("First bad kernel", summary.get("first_bad_kernel")),
-            _summary_card("First bad depth", summary.get("first_bad_depth")),
-            _summary_card("Failed kernels", summary.get("failed_kernel_count")),
+            _summary_card("状态", summary.get("status"), "fail" if summary.get("status") == "fail" else "pass"),
+            _summary_card("首个异常 Kernel", summary.get("first_bad_kernel")),
+            _summary_card("首个异常深度", summary.get("first_bad_depth")),
+            _summary_card("失败 Kernel 数", summary.get("failed_kernel_count")),
         ]
     )
     body = f"""
 <div class="summary-card-grid">{cards}</div>
 <section class="panel">
-<h2>First Bad Candidate</h2>
+<h2>首个异常候选</h2>
 <table>
 <tbody>
 <tr><th>Kernel</th><td>{_summary_kernel_link(view_rel_path, summary.get('first_bad_kernel'))}</td></tr>
-<tr><th>Comparison</th><td>{_cell((summary.get('first_bad_comparison') or {}).get('id') if isinstance(summary.get('first_bad_comparison'), dict) else None)}</td></tr>
-<tr><th>Method</th><td>{_cell(summary.get('method'))}</td></tr>
+<tr><th>对比项</th><td>{_cell((summary.get('first_bad_comparison') or {}).get('id') if isinstance(summary.get('first_bad_comparison'), dict) else None)}</td></tr>
+<tr><th>方法</th><td>{_cell(summary.get('method'))}</td></tr>
 </tbody>
 </table>
 </section>
 <section class="panel">
-<h2>DAG Context</h2>
+<h2>DAG 上下文</h2>
 <table>
 <tbody>
-<tr><th>Direct upstream</th><td>{_value_list(context.get('direct_upstream'))}</td></tr>
-<tr><th>Upstream checked passed</th><td>{_value_list(context.get('upstream_checked_passed'))}</td></tr>
-<tr><th>Direct upstream without checkpoint</th><td>{_value_list(context.get('unchecked_direct_upstream'))}</td></tr>
-<tr><th>Direct downstream</th><td>{_value_list(context.get('direct_downstream'))}</td></tr>
-<tr><th>Downstream failed</th><td>{_value_list(context.get('downstream_failed'))}</td></tr>
+<tr><th>直接上游</th><td>{_value_list(context.get('direct_upstream'))}</td></tr>
+<tr><th>已通过的上游 checkpoint</th><td>{_value_list(context.get('upstream_checked_passed'))}</td></tr>
+<tr><th>未 checkpoint 的直接上游</th><td>{_value_list(context.get('unchecked_direct_upstream'))}</td></tr>
+<tr><th>直接下游</th><td>{_value_list(context.get('direct_downstream'))}</td></tr>
+<tr><th>失败的下游 checkpoint</th><td>{_value_list(context.get('downstream_failed'))}</td></tr>
 </tbody>
 </table>
 </section>
@@ -933,7 +953,7 @@ def _render_locate_summary_view(view_rel_path: str, rel_path: str, summary: dict
     return _summary_page_document(
         view_rel_path=view_rel_path,
         rel_path=rel_path,
-        title="Locate Summary",
+        title="Locate 摘要",
         body=body,
     )
 
@@ -947,20 +967,20 @@ def _render_debug_graph_summary_view(view_rel_path: str, rel_path: str, summary:
         kernel_dag = {}
     body = f"""
 <div class="summary-card-grid">
-{_summary_card("Stages", summary.get('stage_count'))}
-{_summary_card("Primary stage", primary.get('name'))}
+{_summary_card("Stage 数", summary.get('stage_count'))}
+{_summary_card("主 Stage", primary.get('name'))}
 {_summary_card("Kernels", kernel_dag.get('kernel_count'))}
-{_summary_card("Kernel edges", kernel_dag.get('graph_edges'))}
+{_summary_card("Kernel 边", kernel_dag.get('graph_edges'))}
 </div>
 <section class="panel">
-<h2>Workspace</h2>
-<p><a href="{html.escape(_relative_href(view_rel_path, 'views/debug_graph.html'), quote=True)}">Open Debug Graph</a></p>
+<h2>调试工作台</h2>
+<p><a href="{html.escape(_relative_href(view_rel_path, 'views/debug_graph.html'), quote=True)}">打开调试工作台</a></p>
 </section>
 """
     return _summary_page_document(
         view_rel_path=view_rel_path,
         rel_path=rel_path,
-        title="Debug Graph Summary",
+        title="Debug Graph 摘要",
         body=body,
     )
 
@@ -1040,9 +1060,9 @@ table.code-table {{ border-collapse: collapse; width: 100%; background: #0b1020;
 <header>
 <h1>{_cell(rel_path)}</h1>
 <div class="toolbar">
-<input id="search" type="search" placeholder="Search JSON">
-<a href="{raw_href}">Raw JSON</a>
-<a href="{dashboard_href}">Dashboard</a>
+<input id="search" type="search" placeholder="搜索 JSON">
+<a href="{raw_href}">原始 JSON</a>
+<a href="{dashboard_href}">调试首页</a>
 </div>
 </header>
 <main>
@@ -1094,18 +1114,11 @@ def _render_graph_mlir_views(run_dir: pathlib.Path, manifest: dict[str, Any]) ->
 
 
 def _render_json_views(run_dir: pathlib.Path, manifest: dict[str, Any]) -> dict[str, str]:
-    json_paths = set()
-    for graph in manifest.get("graphs", []):
-        rel_path = graph.get("path")
-        if isinstance(rel_path, str) and rel_path.endswith(".json"):
-            json_paths.add(rel_path)
-
-    summary_dir = run_dir / "summaries"
-    if summary_dir.exists():
-        for path in summary_dir.rglob("*.json"):
-            if path.is_file():
-                json_paths.add(path.relative_to(run_dir).as_posix())
-
+    json_paths = {
+        rel_path
+        for rel_path in ("summaries/memory.json", "summaries/tensor_diff.json", "summaries/locate.json")
+        if (run_dir / rel_path).exists()
+    }
     json_views = {}
     for rel_path in sorted(json_paths):
         view_rel_path = _render_json_view(run_dir, rel_path)
@@ -1196,8 +1209,6 @@ def _render_kernel_views(
         view_rel_path = f"views/kernels/{kernel_id}.html"
         dashboard_href = html.escape(_relative_href(view_rel_path, "index.html"), quote=True)
         dag_href = html.escape(_relative_href(view_rel_path, "graphs/kernel_dag.svg"), quote=True)
-        summary_rel_path = json_views.get("graphs/kernel_dag.summary.json", "graphs/kernel_dag.summary.json")
-        summary_href = html.escape(_relative_href(view_rel_path, summary_rel_path), quote=True)
         memory_kernel = _memory_kernel_by_id(memory_summary, kernel_id)
         memory_href = ""
         memory_link = ""
@@ -1207,7 +1218,7 @@ def _render_kernel_views(
                 f"{_relative_href(view_rel_path, memory_view_path)}#kernel-{kernel_id}",
                 quote=True,
             )
-            memory_link = f'<a href="{memory_href}">Memory View</a>'
+            memory_link = f'<a href="{memory_href}">内存视图</a>'
         fact_rows = []
         for label, value in (
             ("kind", node.get("kind")),
@@ -1244,7 +1255,7 @@ def _render_kernel_views(
                 "</tr>"
             )
         if not op_rows:
-            op_rows.append('<tr><td colspan="5">No MLIR op summary available.</td></tr>')
+            op_rows.append('<tr><td colspan="5">没有 MLIR op 摘要。</td></tr>')
 
         upstream = _kernel_link_list(pred.get(kernel_id, []), view_rel_path)
         downstream = _kernel_link_list(succ.get(kernel_id, []), view_rel_path)
@@ -1253,10 +1264,10 @@ def _render_kernel_views(
             memory_section = _render_memory_kernel_viz(
                 memory_kernel,
                 heading_level=2,
-                title="UB Allocation",
+                title="UB 分配",
             )
         document = f"""<!doctype html>
-<html lang="en">
+<html lang="zh-CN">
 <head>
 <meta charset="utf-8">
 <title>{_cell(kernel_id)} - ascend-debug</title>
@@ -1287,21 +1298,20 @@ th {{ background: #f1f5f9; }}
 <body>
 <h1>{_cell(kernel_id)}</h1>
 <div class="toolbar">
-<a href="{dashboard_href}">Dashboard</a>
+<a href="{dashboard_href}">调试首页</a>
 <a href="{dag_href}">Kernel DAG</a>
-<a href="{summary_href}">DAG summary JSON</a>
 {memory_link}
 </div>
-<h2>Kernel Facts</h2>
+<h2>Kernel 基本信息</h2>
 <table><tbody>{''.join(fact_rows)}</tbody></table>
-<h2>DAG Context</h2>
+<h2>DAG 上下文</h2>
 <table><tbody>
-<tr><th>upstream</th><td>{upstream}</td></tr>
-<tr><th>downstream</th><td>{downstream}</td></tr>
+<tr><th>上游</th><td>{upstream}</td></tr>
+<tr><th>下游</th><td>{downstream}</td></tr>
 </tbody></table>
 <h2>MLIR Ops</h2>
 <table>
-<thead><tr><th>Line</th><th>Operation</th><th>Label</th><th>Role</th><th>Result Type</th></tr></thead>
+<thead><tr><th>行号</th><th>Operation</th><th>标签</th><th>角色</th><th>结果类型</th></tr></thead>
 <tbody>{''.join(op_rows)}</tbody>
 </table>
 {memory_section}
@@ -1461,28 +1471,28 @@ def _memory_section(summary: dict[str, Any] | None, kernel_views: dict[str, str]
 <h2>Memory</h2>
 <p class="memory-note"><strong>Realize memory plan</strong>. {_cell(summary.get('note'))}</p>
 <dl>
-<dt>Peak workspace bytes</dt><dd>{_cell(summary.get('peak_workspace_bytes'))}</dd>
-<dt>Total workspace bytes</dt><dd>{_cell(summary.get('total_workspace_bytes'))}</dd>
-<dt>Workspace slot reuse groups</dt><dd>{_cell(summary.get('slot_reuse_group_count'))}</dd>
-<dt>Movement edges</dt><dd>{_cell(summary.get('movement_edge_count'))}</dd>
+<dt>workspace 峰值 bytes</dt><dd>{_cell(summary.get('peak_workspace_bytes'))}</dd>
+<dt>workspace 总量 bytes</dt><dd>{_cell(summary.get('total_workspace_bytes'))}</dd>
+<dt>workspace slot 复用组</dt><dd>{_cell(summary.get('slot_reuse_group_count'))}</dd>
+<dt>搬运边</dt><dd>{_cell(summary.get('movement_edge_count'))}</dd>
 </dl>
-<h3>Kernel Coverage</h3>
+<h3>Kernel 覆盖</h3>
 <table>
-<thead><tr><th>Kernel</th><th>DAG depth</th><th>DAG workspace bytes</th><th>Memory plan</th><th>Reason</th></tr></thead>
+<thead><tr><th>Kernel</th><th>DAG 深度</th><th>DAG workspace bytes</th><th>Memory plan</th><th>原因</th></tr></thead>
 <tbody>
 {coverage_rows}
 </tbody>
 </table>
-<h3>Peak Timeline</h3>
+<h3>峰值时间线</h3>
 <table>
-<thead><tr><th>Kernel</th><th>Time</th><th>Usage bytes</th><th>Active physical slots</th><th>Active values</th></tr></thead>
+<thead><tr><th>Kernel</th><th>时间</th><th>占用 bytes</th><th>活跃 physical slot</th><th>活跃 value</th></tr></thead>
 <tbody>
 {timeline_rows}
 </tbody>
 </table>
-<h3>Workspace Slots</h3>
+<h3>Workspace Slot</h3>
 <table>
-<thead><tr><th>Kernel</th><th>Slot</th><th>Place</th><th>Offset</th><th>Bytes</th><th>Value</th><th>Live range</th><th>Reused</th></tr></thead>
+<thead><tr><th>Kernel</th><th>Slot</th><th>Place</th><th>Offset</th><th>Bytes</th><th>Value</th><th>生命周期</th><th>复用</th></tr></thead>
 <tbody>
 {slot_rows}
 </tbody>
@@ -1498,12 +1508,12 @@ def _memory_section(summary: dict[str, Any] | None, kernel_views: dict[str, str]
 <h2>Memory</h2>
 <p class="memory-note">{_cell(summary.get('note'))}</p>
 <dl>
-<dt>Peak workspace bytes</dt><dd>{_cell(summary.get('peak_workspace_bytes'))}</dd>
-<dt>Total workspace bytes</dt><dd>{_cell(summary.get('total_workspace_bytes'))}</dd>
-<dt>Kernels with workspace</dt><dd>{_cell(summary.get('workspace_kernel_count'))}</dd>
+<dt>workspace 峰值 bytes</dt><dd>{_cell(summary.get('peak_workspace_bytes'))}</dd>
+<dt>workspace 总量 bytes</dt><dd>{_cell(summary.get('total_workspace_bytes'))}</dd>
+<dt>有 workspace 的 Kernel</dt><dd>{_cell(summary.get('workspace_kernel_count'))}</dd>
 </dl>
 <table>
-<thead><tr><th>Kernel</th><th>Depth</th><th>Workspace bytes</th><th>Kind</th><th>Inputs</th><th>Outputs</th><th>Tile</th></tr></thead>
+<thead><tr><th>Kernel</th><th>深度</th><th>Workspace bytes</th><th>类型</th><th>输入</th><th>输出</th><th>Tile</th></tr></thead>
 <tbody>
 {rows}
 </tbody>
@@ -1541,120 +1551,45 @@ def render_index(run_dir: pathlib.Path, manifest: dict[str, Any]) -> pathlib.Pat
     command_section = ""
     if manifest.get("commands"):
         command_section = f"""
-<section>
-<h2>Commands</h2>
+<details class="advanced-section">
+<summary>高级信息：执行命令</summary>
 <table>
-<thead><tr><th>Stage</th><th>Tool</th><th>Args</th><th>Status</th><th>Report</th></tr></thead>
+<thead><tr><th>Stage</th><th>Tool</th><th>Args</th><th>状态</th><th>报告</th></tr></thead>
 <tbody>
 {_command_rows(run_dir, manifest)}
 </tbody>
 </table>
-</section>
+</details>
 """
-    report_section = ""
-    if manifest.get("reports"):
-        report_section = f"""
-<section>
-<h2>Reports</h2>
-<table>
-<thead><tr><th>Stage</th><th>Path</th><th>Status</th></tr></thead>
-<tbody>
-{_report_rows(run_dir, manifest)}
-</tbody>
-</table>
-</section>
-"""
-    stage_graph_rows = _stage_graph_rows(run_dir, manifest, stage_graph_views)
-    stage_graph_section = ""
-    if stage_graph_rows:
-        stage_graph_section = f"""
-<section>
-<h2>Graph Evolution</h2>
-<table>
-<thead><tr><th>Order</th><th>Stage</th><th>Graph</th><th>Graph JSON</th><th>Nodes</th><th>Edges</th><th>Kernels</th><th>Status</th></tr></thead>
-<tbody>
-{stage_graph_rows}
-</tbody>
-</table>
-</section>
-"""
-    graph_section = ""
-    if manifest.get("graphs"):
-        graph_section = f"""
-<section>
-<h2>Graphs</h2>
-<table>
-<thead><tr><th>Kind</th><th>Path</th><th>View</th><th>Status</th></tr></thead>
-<tbody>
-{_graph_rows(run_dir, manifest, {**graph_views, **json_views})}
-</tbody>
-</table>
-</section>
-"""
-    kernel_rows = _kernel_rows(kernel_summary, kernel_views)
-    kernel_section = ""
-    if kernel_rows:
-        kernel_section = f"""
-<section>
-<h2>Kernels</h2>
-<table>
-<thead><tr><th>Kernel</th><th>Kind</th><th>Depth</th><th>Output Shape</th><th>Tile</th><th>Workspace</th><th>Ops</th></tr></thead>
-<tbody>
-{kernel_rows}
-</tbody>
-</table>
-</section>
-"""
-    tensor_diff_rows = _tensor_diff_rows(tensor_diff, kernel_views)
-    tensor_diff_section = ""
-    if tensor_diff_rows:
-        tensor_diff_section = f"""
-<section>
-<h2>Tensor Diff</h2>
-<p>status={_cell(tensor_diff.get('status'))}; comparisons={_cell(tensor_diff.get('comparison_count'))}; failed={_cell(tensor_diff.get('failed_count'))}</p>
-<table>
-<thead><tr><th>Status</th><th>ID</th><th>Kernel</th><th>Task</th><th>max_abs_error</th><th>max_rel_error</th><th>mean_abs_error</th><th>atol</th><th>rtol</th></tr></thead>
-<tbody>
-{tensor_diff_rows}
-</tbody>
-</table>
-</section>
-"""
-    locate_section = _locate_section(locate_summary, kernel_views)
-    memory_section = _memory_section(memory_summary, kernel_views)
     debug_graph_section = f"""
 <section class="primary-debug-section">
-<h2>Debug Graph</h2>
-<p>Unified graph workspace for stage evolution, kernel DAG, tensor diff, locate, and memory overlays.</p>
-<a class="primary-debug-link" href="{_cell(debug_graph_view['view_path'])}">Open Debug Graph</a>
-</section>
-"""
-    summary_rows = _summary_rows(run_dir, json_views)
-    summary_section = ""
-    if summary_rows:
-        summary_section = f"""
-<section>
-<h2>Summaries</h2>
-<table>
-<thead><tr><th>Path</th><th>View</th><th>Bytes</th></tr></thead>
-<tbody>
-{summary_rows}
-</tbody>
-</table>
+<a class="primary-debug-link" href="{_cell(debug_graph_view['view_path'])}">打开调试工作台</a>
+<span>统一查看 Stage 演进、Kernel DAG、Tensor Diff、Locate 和 Memory。</span>
 </section>
 """
     document = f"""<!doctype html>
-<html lang="en">
+<html lang="zh-CN">
 <head>
 <meta charset="utf-8">
 <title>ascend-debug</title>
 <style>
-body {{ font-family: sans-serif; margin: 2rem; color: #1f2933; }}
-table {{ border-collapse: collapse; width: 100%; }}
-th, td {{ border: 1px solid #cbd5e1; padding: 0.4rem 0.55rem; text-align: left; }}
+body {{ font-family: sans-serif; margin: 0; color: #1f2933; background: #f8fafc; }}
+main {{ max-width: 1120px; margin: 0 auto; padding: 2rem; }}
+header {{ background: #ffffff; border-bottom: 1px solid #dbe3ee; }}
+header .inner {{ max-width: 1120px; margin: 0 auto; padding: 1.2rem 2rem; }}
+h1 {{ margin: 0; font-size: 1.55rem; }}
+section, details {{ margin: 1rem 0; }}
+table {{ border-collapse: collapse; width: 100%; background: #ffffff; }}
+th, td {{ border: 1px solid #cbd5e1; padding: 0.45rem 0.6rem; text-align: left; }}
 th {{ background: #f1f5f9; }}
-.primary-debug-section {{ border: 1px solid #bfdbfe; background: #eff6ff; border-radius: 8px; padding: 0.9rem; margin: 1rem 0; }}
+.overview-grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(9rem, 1fr)); gap: 0.75rem; }}
+.overview-card {{ border: 1px solid #dbe3ee; background: #ffffff; border-radius: 8px; padding: 0.7rem; }}
+.overview-card span {{ display: block; color: #64748b; font-size: 0.78rem; font-weight: 700; margin-bottom: 0.25rem; }}
+.overview-card strong {{ display: block; font-size: 1.1rem; overflow-wrap: anywhere; }}
+.primary-debug-section {{ display: flex; gap: 0.75rem; align-items: center; flex-wrap: wrap; border: 1px solid #bfdbfe; background: #eff6ff; border-radius: 8px; padding: 0.9rem; margin: 1rem 0; }}
 .primary-debug-link {{ display: inline-block; padding: 0.45rem 0.7rem; background: #1d4ed8; color: #ffffff; border-radius: 6px; text-decoration: none; font-weight: 700; }}
+.advanced-section {{ border: 1px solid #dbe3ee; background: #ffffff; border-radius: 8px; padding: 0.75rem; }}
+.advanced-section summary {{ cursor: pointer; font-weight: 700; }}
 dt {{ font-weight: 700; float: left; clear: left; margin-right: 0.4rem; }}
 dd {{ margin: 0 0 0.35rem 0; }}
 .locate-note {{ margin: 0.25rem 0 0.75rem; color: #475569; }}
@@ -1668,32 +1603,26 @@ dd {{ margin: 0 0 0.35rem 0; }}
 </style>
 </head>
 <body>
-<h1>ascend-debug</h1>
-<section>
-<h2>Run</h2>
-<dl>
-{_metadata_rows(manifest)}
-</dl>
-</section>
+<header><div class="inner"><h1>Ascend Debug</h1></div></header>
+<main>
 {debug_graph_section}
 <section>
-<h2>Stages</h2>
+<h2>运行概览</h2>
+<div class="overview-grid">
+{_overview_cards(manifest)}
+</div>
+</section>
+<section>
+<h2>Stage Timeline</h2>
 <table>
-<thead><tr><th>Order</th><th>Stage</th><th>Path</th><th>View</th><th>Status</th></tr></thead>
+<thead><tr><th>顺序</th><th>Stage</th><th>MLIR</th><th>调试图</th><th>状态</th></tr></thead>
 <tbody>
-{_stage_rows(run_dir, manifest, stage_views)}
+{_stage_rows(run_dir, manifest, stage_views, debug_graph_view['view_path'])}
 </tbody>
 </table>
 </section>
 {command_section}
-{report_section}
-{stage_graph_section}
-{graph_section}
-{kernel_section}
-{tensor_diff_section}
-{locate_section}
-{memory_section}
-{summary_section}
+</main>
 </body>
 </html>
 """

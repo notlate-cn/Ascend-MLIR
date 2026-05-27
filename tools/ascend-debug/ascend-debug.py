@@ -11,6 +11,7 @@ from ascend_debug.diff import diff_run
 from ascend_debug.locate import locate_run
 from ascend_debug.open_view import open_run
 from ascend_debug.runner import CommandError
+from ascend_debug.serve import serve_run
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -55,6 +56,13 @@ def build_parser() -> argparse.ArgumentParser:
     open_cmd.add_argument("run_dir", type=pathlib.Path)
     open_cmd.add_argument("--no-browser", action="store_true")
     open_cmd.set_defaults(handler=open_run)
+
+    serve = subparsers.add_parser("serve", help="Serve a debug dashboard and refresh HTML views on request")
+    serve.add_argument("run_dir", type=pathlib.Path)
+    serve.add_argument("--host", default="127.0.0.1")
+    serve.add_argument("--port", type=int, default=8000)
+    serve.add_argument("--no-browser", action="store_true")
+    serve.set_defaults(handler=serve_run)
 
     diff = subparsers.add_parser("diff", help="Compare collected tensors")
     diff.add_argument("run_dir", type=pathlib.Path)
