@@ -15,6 +15,7 @@
 #include "llvm/ADT/StringRef.h"
 
 #include <string>
+#include <optional>
 
 namespace mlir::afir::ascend::schedule {
 
@@ -28,6 +29,10 @@ struct ScheduleTuningRecord {
   std::string templateName;
   std::string resultShape;
   std::string tileShape;
+  std::optional<int64_t> score;
+  std::optional<int64_t> cycleCount;
+  std::string profilePath;
+  std::string source;
 };
 
 struct ScheduleNegativeRecord {
@@ -35,6 +40,9 @@ struct ScheduleNegativeRecord {
   std::string policy;
   std::string signature;
   std::string reason;
+  std::optional<int64_t> score;
+  std::string profilePath;
+  std::string source;
 };
 
 struct ScheduleTuningDatabase {

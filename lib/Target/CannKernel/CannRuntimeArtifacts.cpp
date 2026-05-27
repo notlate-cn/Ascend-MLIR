@@ -21,6 +21,7 @@
 
 #include <cctype>
 #include <functional>
+#include <optional>
 
 using namespace mlir;
 
@@ -48,6 +49,18 @@ static constexpr llvm::StringLiteral kKernelMetadataTailPoliciesKey =
     "tail_policies";
 static constexpr llvm::StringLiteral kKernelMetadataTailPlanKey =
     "tail_plan";
+static constexpr llvm::StringLiteral kKernelMetadataGuardKey = "guard";
+static constexpr llvm::StringLiteral kKernelMetadataPriorityKey = "priority";
+static constexpr llvm::StringLiteral kKernelMetadataFallbackKey = "fallback";
+static constexpr llvm::StringLiteral kKernelMetadataShapeBucketKey =
+    "shape_bucket_key";
+static constexpr llvm::StringLiteral kKernelMetadataHostTilingIdKey =
+    "host_tiling_id";
+static constexpr llvm::StringLiteral kKernelMetadataWorkspaceSizeExprKey =
+    "workspace_size_expr";
+static constexpr llvm::StringLiteral kKernelMetadataWorkspaceSizeBytesKey =
+    "workspace_size_bytes";
+static constexpr llvm::StringLiteral kKernelMetadataBlockDimKey = "block_dim";
 
 static SmallVector<func::FuncOp> collectGlobalKernels(ModuleOp module) {
   SmallVector<func::FuncOp> kernels;
@@ -56,16 +69,6 @@ static SmallVector<func::FuncOp> collectGlobalKernels(ModuleOp module) {
       if (funcOp->hasAttr(ascendc::attr::global))
         kernels.push_back(funcOp);
   return kernels;
-}
-
-static FailureOr<func::FuncOp> getPrimaryGlobalKernel(ModuleOp module,
-                                                      StringRef artifactName) {
-  SmallVector<func::FuncOp> kernels = collectGlobalKernels(module);
-  if (kernels.empty()) {
-    module.emitError() << artifactName << " requires at least one global kernel";
-    return failure();
-  }
-  return kernels.front();
 }
 
 static FailureOr<emitasc::PyStructType> getTilingType(func::FuncOp funcOp) {
@@ -558,15 +561,29 @@ static bool isSupportedAffectedPrimitiveUse(StringRef value) {
       .Default(false);
 }
 
+static FailureOr<SmallVector<DictionaryAttr>>
+collectKernelScheduleMetadata(func::FuncOp funcOp);
+
 static FailureOr<DictionaryAttr>
 lookupKernelScheduleMetadata(func::FuncOp funcOp) {
+  auto entriesOr = collectKernelScheduleMetadata(funcOp);
+  if (failed(entriesOr))
+    return failure();
+  if (!entriesOr->empty())
+    return entriesOr->front();
+  return DictionaryAttr();
+}
+
+static FailureOr<SmallVector<DictionaryAttr>>
+collectKernelScheduleMetadata(func::FuncOp funcOp) {
   auto metadata =
       funcOp->getAttrOfType<ArrayAttr>(
           ::mlir::afir::ascend::kScheduleKernelMetadataAttr);
   if (!metadata)
-    return DictionaryAttr();
+    return SmallVector<DictionaryAttr>{};
 
-  DictionaryAttr fallbackEntry;
+  SmallVector<DictionaryAttr> matchingEntries;
+  DictionaryAttr singleFallbackEntry;
   for (auto [index, rawEntry] : llvm::enumerate(metadata)) {
     auto entry = dyn_cast<DictionaryAttr>(rawEntry);
     if (!entry)
@@ -583,12 +600,16 @@ lookupKernelScheduleMetadata(func::FuncOp funcOp) {
              << " entries must include a string kernel field";
 
     if (kernel.getValue() == funcOp.getName())
-      return entry;
-    if (!fallbackEntry && metadata.size() == 1)
-      fallbackEntry = entry;
+      matchingEntries.push_back(entry);
+    if (!singleFallbackEntry && metadata.size() == 1)
+      singleFallbackEntry = entry;
   }
 
-  return fallbackEntry;
+  if (!matchingEntries.empty())
+    return matchingEntries;
+  if (singleFallbackEntry)
+    return SmallVector<DictionaryAttr>{singleFallbackEntry};
+  return SmallVector<DictionaryAttr>{};
 }
 
 static Attribute getScheduleMetadataAttr(func::FuncOp funcOp,
@@ -680,12 +701,9 @@ collectSelectedTileShape(func::FuncOp funcOp) {
 }
 
 static FailureOr<llvm::json::Object>
-buildScheduleTilingParams(func::FuncOp funcOp) {
+buildScheduleTilingParams(func::FuncOp funcOp,
+                          DictionaryAttr kernelMetadata) {
   llvm::json::Object tilingParams;
-  FailureOr<DictionaryAttr> kernelMetadata =
-      lookupKernelScheduleMetadata(funcOp);
-  if (failed(kernelMetadata))
-    return failure();
 
   if (failed(checkScheduleMetadataCompleteness(funcOp)))
     return failure();
@@ -694,7 +712,7 @@ buildScheduleTilingParams(func::FuncOp funcOp) {
 
   if (auto selectedTileShape = dyn_cast_or_null<DenseI64ArrayAttr>(
           getScheduleMetadataAttr(
-              funcOp, *kernelMetadata,
+              funcOp, kernelMetadata,
               ::mlir::afir::ascend::kScheduleSelectedTileShapeAttr,
               kKernelMetadataSelectedTileShapeKey))) {
     llvm::json::Array selectedTileShapeJson;
@@ -705,7 +723,7 @@ buildScheduleTilingParams(func::FuncOp funcOp) {
 
   if (auto tailPolicies = dyn_cast_or_null<ArrayAttr>(
           getScheduleMetadataAttr(
-              funcOp, *kernelMetadata,
+              funcOp, kernelMetadata,
               ::mlir::afir::ascend::kScheduleTailPoliciesAttr,
               kKernelMetadataTailPoliciesKey))) {
     llvm::json::Array tailPoliciesJson;
@@ -728,7 +746,7 @@ buildScheduleTilingParams(func::FuncOp funcOp) {
   }
 
   if (Attribute rawTailPlanAttr = getScheduleMetadataAttr(
-          funcOp, *kernelMetadata,
+          funcOp, kernelMetadata,
           ::mlir::afir::ascend::kScheduleTailPlanAttr,
           kKernelMetadataTailPlanKey)) {
     auto tailPlanAttr = dyn_cast<ArrayAttr>(rawTailPlanAttr);
@@ -830,31 +848,175 @@ buildScheduleTilingParams(func::FuncOp funcOp) {
   return tilingParams;
 }
 
-static FailureOr<llvm::json::Array> buildScheduleEntries(func::FuncOp funcOp) {
-  FailureOr<llvm::json::Object> tilingParams =
-      buildScheduleTilingParams(funcOp);
-  if (failed(tilingParams))
-    return failure();
-
-  std::string decisionId = "static_0";
+static FailureOr<llvm::json::Object>
+buildScheduleTilingParams(func::FuncOp funcOp) {
   FailureOr<DictionaryAttr> kernelMetadata =
       lookupKernelScheduleMetadata(funcOp);
   if (failed(kernelMetadata))
     return failure();
-  if (auto metadataDecisionId =
-          dyn_cast_or_null<StringAttr>(
-              (*kernelMetadata)
-                  ? (*kernelMetadata).get(kKernelMetadataDecisionIdKey)
-                  : Attribute()))
-    decisionId = metadataDecisionId.getValue().str();
+  return buildScheduleTilingParams(funcOp, *kernelMetadata);
+}
 
-  llvm::json::Object scheduleEntry;
-  scheduleEntry["decisionId"] = decisionId;
-  scheduleEntry["guard"] = "true";
-  scheduleEntry["hostTilingId"] = getHostTilingBindingId(funcOp);
-  scheduleEntry["tilingParams"] = std::move(*tilingParams);
+static std::optional<std::string> getStringMetadata(DictionaryAttr entry,
+                                                    StringRef key) {
+  if (!entry)
+    return std::nullopt;
+  if (auto attr = dyn_cast_or_null<StringAttr>(entry.get(key)))
+    return attr.getValue().str();
+  return std::nullopt;
+}
+
+static std::optional<int64_t> getI64Metadata(DictionaryAttr entry,
+                                             StringRef key) {
+  if (!entry)
+    return std::nullopt;
+  auto attr = dyn_cast_or_null<IntegerAttr>(entry.get(key));
+  if (!attr || !attr.getType().isInteger(64))
+    return std::nullopt;
+  return attr.getInt();
+}
+
+static std::optional<bool> getBoolMetadata(DictionaryAttr entry,
+                                           StringRef key) {
+  if (!entry)
+    return std::nullopt;
+  if (auto attr = dyn_cast_or_null<BoolAttr>(entry.get(key)))
+    return attr.getValue();
+  return std::nullopt;
+}
+
+static llvm::json::Array
+buildGuardSet(ArrayRef<DictionaryAttr> metadataEntries) {
+  SmallVector<std::string, 4> guards;
+  for (DictionaryAttr entry : metadataEntries) {
+    std::optional<std::string> guard =
+        getStringMetadata(entry, kKernelMetadataGuardKey);
+    if (guard && !guard->empty() && *guard != "true")
+      if (!llvm::is_contained(guards, *guard))
+        guards.push_back(*guard);
+  }
+
+  llvm::json::Array out;
+  for (const std::string &guard : guards)
+    out.push_back(guard);
+  return out;
+}
+
+static std::string combineShapeBucketKeys(ArrayRef<std::string> keys) {
+  if (keys.empty())
+    return "static";
+  if (keys.size() == 1)
+    return keys.front();
+
+  SmallVector<StringRef, 4> suffixes;
+  StringRef commonPrefix;
+  bool hasCommonPrefix = true;
+  for (const std::string &key : keys) {
+    StringRef keyRef(key);
+    size_t split = keyRef.rfind('.');
+    if (split == StringRef::npos) {
+      hasCommonPrefix = false;
+      break;
+    }
+    StringRef prefix = keyRef.take_front(split);
+    if (commonPrefix.empty())
+      commonPrefix = prefix;
+    else if (commonPrefix != prefix) {
+      hasCommonPrefix = false;
+      break;
+    }
+    suffixes.push_back(keyRef.drop_front(split + 1));
+  }
+
+  std::string result;
+  llvm::raw_string_ostream os(result);
+  if (hasCommonPrefix && !commonPrefix.empty()) {
+    os << commonPrefix << ".";
+    llvm::interleave(suffixes, os, [&](StringRef suffix) { os << suffix; },
+                     "_or_");
+    return os.str();
+  }
+
+  llvm::interleave(keys, os, [&](StringRef key) { os << key; }, "_or_");
+  return os.str();
+}
+
+static std::string
+buildShapeBucketKey(ArrayRef<DictionaryAttr> metadataEntries) {
+  SmallVector<std::string, 4> keys;
+  for (DictionaryAttr entry : metadataEntries) {
+    std::optional<std::string> key =
+        getStringMetadata(entry, kKernelMetadataShapeBucketKey);
+    if (key && !key->empty())
+      if (!llvm::is_contained(keys, *key))
+        keys.push_back(*key);
+  }
+  return combineShapeBucketKeys(keys);
+}
+
+static FailureOr<llvm::json::Array> buildScheduleEntries(func::FuncOp funcOp) {
   llvm::json::Array scheduleEntries;
-  scheduleEntries.push_back(std::move(scheduleEntry));
+  FailureOr<SmallVector<DictionaryAttr>> metadataEntries =
+      collectKernelScheduleMetadata(funcOp);
+  if (failed(metadataEntries))
+    return failure();
+
+  if (metadataEntries->empty()) {
+    FailureOr<llvm::json::Object> tilingParams =
+        buildScheduleTilingParams(funcOp, DictionaryAttr());
+    if (failed(tilingParams))
+      return failure();
+
+    llvm::json::Object scheduleEntry;
+    scheduleEntry["decisionId"] = "static_0";
+    scheduleEntry["kernelName"] = funcOp.getName().str();
+    scheduleEntry["guard"] = "true";
+    scheduleEntry["priority"] = 0;
+    scheduleEntry["fallback"] = false;
+    scheduleEntry["shapeBucketKey"] = "static";
+    scheduleEntry["hostTilingId"] = getHostTilingBindingId(funcOp);
+    scheduleEntry["tilingParams"] = std::move(*tilingParams);
+    scheduleEntries.push_back(std::move(scheduleEntry));
+    return scheduleEntries;
+  }
+
+  for (auto [index, metadata] : llvm::enumerate(*metadataEntries)) {
+    FailureOr<llvm::json::Object> tilingParams =
+        buildScheduleTilingParams(funcOp, metadata);
+    if (failed(tilingParams))
+      return failure();
+
+    std::string decisionId =
+        getStringMetadata(metadata, kKernelMetadataDecisionIdKey)
+            .value_or((llvm::Twine("static_") + llvm::Twine(index)).str());
+    llvm::json::Object scheduleEntry;
+    scheduleEntry["decisionId"] = decisionId;
+    scheduleEntry["kernelName"] = funcOp.getName().str();
+    scheduleEntry["guard"] =
+        getStringMetadata(metadata, kKernelMetadataGuardKey).value_or("true");
+    scheduleEntry["priority"] =
+        getI64Metadata(metadata, kKernelMetadataPriorityKey)
+            .value_or(static_cast<int64_t>(index));
+    scheduleEntry["fallback"] =
+        getBoolMetadata(metadata, kKernelMetadataFallbackKey).value_or(false);
+    scheduleEntry["shapeBucketKey"] =
+        getStringMetadata(metadata, kKernelMetadataShapeBucketKey)
+            .value_or("static");
+    scheduleEntry["hostTilingId"] =
+        getStringMetadata(metadata, kKernelMetadataHostTilingIdKey)
+            .value_or(getHostTilingBindingId(funcOp));
+    if (std::optional<std::string> workspaceExpr =
+            getStringMetadata(metadata, kKernelMetadataWorkspaceSizeExprKey))
+      scheduleEntry["workspaceSizeExpr"] = *workspaceExpr;
+    if (std::optional<int64_t> workspaceBytes =
+            getI64Metadata(metadata, kKernelMetadataWorkspaceSizeBytesKey))
+      scheduleEntry["workspaceSizeBytes"] = *workspaceBytes;
+    if (std::optional<int64_t> blockDim =
+            getI64Metadata(metadata, kKernelMetadataBlockDimKey))
+      scheduleEntry["blockDim"] = *blockDim;
+    scheduleEntry["tilingParams"] = std::move(*tilingParams);
+    scheduleEntries.push_back(std::move(scheduleEntry));
+  }
   return scheduleEntries;
 }
 
@@ -876,6 +1038,10 @@ buildKernelManifestEntry(func::FuncOp funcOp, int64_t entryIndex,
       buildScheduleEntries(funcOp);
   if (failed(scheduleEntries))
     return failure();
+  FailureOr<SmallVector<DictionaryAttr>> metadataEntries =
+      collectKernelScheduleMetadata(funcOp);
+  if (failed(metadataEntries))
+    return failure();
   FailureOr<WorkspaceInfo> workspaceInfo = getWorkspaceInfo(funcOp);
   if (failed(workspaceInfo))
     return failure();
@@ -883,8 +1049,8 @@ buildKernelManifestEntry(func::FuncOp funcOp, int64_t entryIndex,
   llvm::json::Object kernelEntry;
   kernelEntry["kernel_id"] = funcOp.getName().str();
   kernelEntry["entry_index"] = entryIndex;
-  kernelEntry["shapeBucketKey"] = "static";
-  kernelEntry["guardSet"] = llvm::json::Array{};
+  kernelEntry["shapeBucketKey"] = buildShapeBucketKey(*metadataEntries);
+  kernelEntry["guardSet"] = buildGuardSet(*metadataEntries);
   kernelEntry["tilingSchema"] = buildTilingSchema(*fieldsOr);
   kernelEntry["scheduleEntries"] = std::move(*scheduleEntries);
   kernelEntry["tilingParams"] = std::move(*tilingParams);
@@ -1171,29 +1337,61 @@ static LogicalResult writeTextFile(Operation *diagOp, StringRef outPath,
 
 LogicalResult emitTilingSpaceJson(ModuleOp module, StringRef outPath,
                                   const CannRuntimeArtifactOptions &options) {
-  FailureOr<func::FuncOp> funcOr =
-      getPrimaryGlobalKernel(module, "tiling space");
-  if (failed(funcOr))
+  SmallVector<func::FuncOp> kernels = collectGlobalKernels(module);
+  if (kernels.empty()) {
+    module.emitError() << "tiling space requires at least one global kernel";
     return failure();
-  FailureOr<emitasc::PyStructType> tilingTypeOr = getTilingType(*funcOr);
-  if (failed(tilingTypeOr))
-    return failure();
-  FailureOr<SmallVector<TilingFieldInfo>> fieldsOr =
-      collectTilingFields(*funcOr, *tilingTypeOr);
-  if (failed(fieldsOr))
-    return failure();
-  FailureOr<WorkspaceInfo> workspaceInfo = getWorkspaceInfo(*funcOr);
-  if (failed(workspaceInfo))
+  }
+
+  auto buildKernelObject = [&](func::FuncOp kernel)
+      -> FailureOr<llvm::json::Object> {
+    FailureOr<emitasc::PyStructType> tilingTypeOr = getTilingType(kernel);
+    if (failed(tilingTypeOr))
+      return failure();
+    FailureOr<SmallVector<TilingFieldInfo>> fieldsOr =
+        collectTilingFields(kernel, *tilingTypeOr);
+    if (failed(fieldsOr))
+      return failure();
+    FailureOr<WorkspaceInfo> workspaceInfo = getWorkspaceInfo(kernel);
+    if (failed(workspaceInfo))
+      return failure();
+    FailureOr<llvm::json::Array> scheduleEntries =
+        buildScheduleEntries(kernel);
+    if (failed(scheduleEntries))
+      return failure();
+    FailureOr<SmallVector<DictionaryAttr>> metadataEntries =
+        collectKernelScheduleMetadata(kernel);
+    if (failed(metadataEntries))
+      return failure();
+
+    llvm::json::Object kernelObject;
+    kernelObject["kernel"] = kernel.getName().str();
+    kernelObject["kernel_file"] = options.kernelFile.str();
+    kernelObject["soc"] = options.soc.str();
+    kernelObject["block_dim_expr"] = "20";
+    kernelObject["workspace_size_expr"] = workspaceInfo->sizeExpr;
+    kernelObject["shapeBucketKey"] = buildShapeBucketKey(*metadataEntries);
+    kernelObject["guardSet"] = buildGuardSet(*metadataEntries);
+    kernelObject["tiling_params"] = buildTilingSchema(*fieldsOr);
+    kernelObject["scheduleEntries"] = std::move(*scheduleEntries);
+    return kernelObject;
+  };
+
+  FailureOr<llvm::json::Object> primaryKernelObject =
+      buildKernelObject(kernels.front());
+  if (failed(primaryKernelObject))
     return failure();
 
-  llvm::json::Object root;
+  llvm::json::Object root = std::move(*primaryKernelObject);
   root["schema_version"] = "2.0";
-  root["kernel"] = funcOr->getName().str();
-  root["kernel_file"] = options.kernelFile.str();
-  root["soc"] = options.soc.str();
-  root["block_dim_expr"] = "20";
-  root["workspace_size_expr"] = workspaceInfo->sizeExpr;
-  root["tiling_params"] = buildTilingSchema(*fieldsOr);
+  llvm::json::Array kernelObjects;
+  for (func::FuncOp kernel : kernels) {
+    FailureOr<llvm::json::Object> kernelObject = buildKernelObject(kernel);
+    if (failed(kernelObject))
+      return failure();
+    kernelObjects.push_back(std::move(*kernelObject));
+  }
+  root["kernels"] = std::move(kernelObjects);
   return writeJsonFile(module.getOperation(), outPath, std::move(root));
 }
 
@@ -1224,6 +1422,10 @@ emitRuntimeManifestJson(ModuleOp module, StringRef outPath,
       buildScheduleEntries(primaryKernel);
   if (failed(scheduleEntries))
     return failure();
+  FailureOr<SmallVector<DictionaryAttr>> primaryMetadataEntries =
+      collectKernelScheduleMetadata(primaryKernel);
+  if (failed(primaryMetadataEntries))
+    return failure();
   FailureOr<WorkspaceInfo> primaryWorkspaceInfo =
       getWorkspaceInfo(primaryKernel);
   if (failed(primaryWorkspaceInfo))
@@ -1245,8 +1447,8 @@ emitRuntimeManifestJson(ModuleOp module, StringRef outPath,
 
   llvm::json::Object root;
   root["kernelName"] = primaryKernel.getName().str();
-  root["shapeBucketKey"] = "static";
-  root["guardSet"] = llvm::json::Array{};
+  root["shapeBucketKey"] = buildShapeBucketKey(*primaryMetadataEntries);
+  root["guardSet"] = buildGuardSet(*primaryMetadataEntries);
   root["tilingSchema"] = buildTilingSchema(*fieldsOr);
   root["scheduleEntries"] = std::move(*scheduleEntries);
   root["abiSignature"] = (primaryKernel.getName() + ":cann_static").str();

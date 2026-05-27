@@ -7,6 +7,7 @@
 #include "Runtime/TaskGraph.h"
 #include "Runtime/RuntimeSessionRequestBuilder.h"
 #include "llvm/ADT/SmallString.h"
+#include "llvm/ADT/StringExtras.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/Support/Error.h"
 #include "llvm/Support/CommandLine.h"
@@ -48,6 +49,24 @@ static cl::opt<double> Atol("atol", cl::desc("Absolute tolerance"), cl::init(1.0
 static cl::opt<double> Rtol("rtol", cl::desc("Relative tolerance"), cl::init(1e-2));
 static cl::opt<std::string> ProfileOutDir("profile-out",
     cl::desc("Directory for retained profiling artifacts"), cl::init(""));
+static cl::opt<std::string> TuningDbOut("tuning-db-out",
+    cl::desc("Append the best measured candidate to a schedule tuning DB"), cl::init(""));
+static cl::opt<std::string> ProfileDbOut("profile-db-out",
+    cl::desc("Append measured candidate samples to a ProfileDB JSONL file"), cl::init(""));
+static cl::opt<std::string> TuningPolicy("tuning-policy",
+    cl::desc("Policy field used for --tuning-db-out records"), cl::init("autotuner"));
+static cl::opt<std::string> TuningFamily("tuning-family",
+    cl::desc("Schedule family field used for --tuning-db-out records"), cl::init(""));
+static cl::opt<std::string> TuningTemplate("tuning-template",
+    cl::desc("Schedule template field used for tuning/profile DB records"), cl::init(""));
+static cl::opt<std::string> TuningResultShape("tuning-result-shape",
+    cl::desc("Result-shape field used for --tuning-db-out records"), cl::init(""));
+static cl::opt<std::string> TuningTileShape("tuning-tile-shape",
+    cl::desc("Tile-shape field used for --tuning-db-out records"), cl::init(""));
+static cl::opt<std::string> ProfileFingerprint("profile-fingerprint",
+    cl::desc("Kernel-pattern fingerprint field used for --profile-db-out"), cl::init(""));
+static cl::opt<std::string> ProfileShapeBucket("profile-shape-bucket",
+    cl::desc("Shape-bucket id used for tuning/profile DB records"), cl::init(""));
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -89,7 +108,12 @@ static int64_t evalBlockDimExpr(const std::string& expr,
   auto slash = inner.find('/');
   if (slash == std::string::npos) {
     auto it = vars.find(inner);
-    return it != vars.end() ? it->second : 1;
+    if (it != vars.end())
+      return it->second;
+    int64_t literal = 1;
+    if (!llvm::StringRef(inner).getAsInteger(10, literal))
+      return literal;
+    return 1;
   }
   std::string lhs = inner.substr(0, slash);
   std::string rhs = inner.substr(slash + 1);
@@ -182,6 +206,11 @@ struct TilingSpace {
   std::string kernel_type = "vec";   // "vec" | "cube" | "mix"; default vec
   std::string soc;
   std::string block_dim_expr;
+  std::string shape_bucket_key;
+  std::string schedule_family;
+  std::string schedule_template;
+  std::string result_shape;
+  std::string tile_shape;
   std::vector<TilingParam> params;
 };
 
@@ -441,6 +470,16 @@ static llvm::Expected<TilingSpace> loadTilingSpace(const std::string& path) {
   if (auto v = obj->getString("kernel_type"))    ts.kernel_type    = v->str();
   if (auto v = obj->getString("soc"))            ts.soc            = v->str();
   if (auto v = obj->getString("block_dim_expr")) ts.block_dim_expr = v->str();
+  if (auto v = obj->getString("shape_bucket_key")) ts.shape_bucket_key = v->str();
+  if (auto v = obj->getString("shapeBucketKey")) ts.shape_bucket_key = v->str();
+  if (auto v = obj->getString("schedule_family")) ts.schedule_family = v->str();
+  if (auto v = obj->getString("scheduleFamily")) ts.schedule_family = v->str();
+  if (auto v = obj->getString("schedule_template")) ts.schedule_template = v->str();
+  if (auto v = obj->getString("scheduleTemplate")) ts.schedule_template = v->str();
+  if (auto v = obj->getString("result_shape")) ts.result_shape = v->str();
+  if (auto v = obj->getString("resultShape")) ts.result_shape = v->str();
+  if (auto v = obj->getString("tile_shape")) ts.tile_shape = v->str();
+  if (auto v = obj->getString("tileShape")) ts.tile_shape = v->str();
 
   auto* params = obj->getArray("tiling_params");
   if (!params)
@@ -593,6 +632,275 @@ static llvm::Error writeBestConfigJson(const std::string &path,
   llvm::json::OStream jos(os, /*IndentSize=*/2);
   jos.value(llvm::json::Value(std::move(root)));
   os << "\n";
+  return llvm::Error::success();
+}
+
+static std::string joinInt64s(const std::vector<int64_t> &values) {
+  if (values.empty())
+    return "static";
+  std::string result;
+  llvm::raw_string_ostream os(result);
+  for (size_t index = 0; index < values.size(); ++index) {
+    if (index != 0)
+      os << "x";
+    os << values[index];
+  }
+  return os.str();
+}
+
+static std::optional<int64_t>
+findConfigValue(const SearchResult &result, llvm::StringRef name) {
+  for (const auto &kv : result.config)
+    if (kv.first == name)
+      return kv.second;
+  return std::nullopt;
+}
+
+static std::string
+deriveResultShape(const TilingSpace &space, const std::map<std::string, int64_t> &shape) {
+  if (!TuningResultShape.empty())
+    return TuningResultShape.getValue();
+  if (!space.result_shape.empty())
+    return space.result_shape;
+
+  std::vector<int64_t> dims;
+  for (const TilingParam &param : space.params) {
+    if (!param.fixed)
+      continue;
+    std::string key = param.shape_key.empty() ? param.name : param.shape_key;
+    auto it = shape.find(key);
+    if (it != shape.end()) {
+      dims.push_back(it->second);
+      continue;
+    }
+    if (!param.values.empty())
+      dims.push_back(param.values.front());
+  }
+  if (dims.empty())
+    for (const auto &kv : shape)
+      dims.push_back(kv.second);
+  return joinInt64s(dims);
+}
+
+static std::string deriveTileShape(const TilingSpace &space,
+                                  const SearchResult &result) {
+  if (!TuningTileShape.empty())
+    return TuningTileShape.getValue();
+  if (!space.tile_shape.empty())
+    return space.tile_shape;
+
+  std::vector<int64_t> dims;
+  for (const TilingParam &param : space.params) {
+    if (param.fixed)
+      continue;
+    if (std::optional<int64_t> value = findConfigValue(result, param.name))
+      dims.push_back(*value);
+  }
+  if (dims.empty()) {
+    for (const auto &kv : result.config) {
+      if (llvm::StringRef(kv.first).starts_with("dim_"))
+        continue;
+      dims.push_back(kv.second);
+    }
+  }
+  return joinInt64s(dims);
+}
+
+static std::string deriveTuningFamily(const TilingSpace &space,
+                                      const KernelArtifact &artifact) {
+  if (!TuningFamily.empty())
+    return TuningFamily.getValue();
+  if (!space.schedule_family.empty())
+    return space.schedule_family;
+  if (!space.kernel_name.empty())
+    return space.kernel_name;
+  return artifact.kernelName.empty() ? "unknown_kernel" : artifact.kernelName;
+}
+
+static std::string deriveTuningTemplate(const TilingSpace &space) {
+  if (!TuningTemplate.empty())
+    return TuningTemplate.getValue();
+  if (!space.schedule_template.empty())
+    return space.schedule_template;
+  return "autotuner";
+}
+
+static std::string
+deriveShapeBucket(const TilingSpace &space,
+                  const std::map<std::string, int64_t> &shape) {
+  if (!ProfileShapeBucket.empty())
+    return ProfileShapeBucket.getValue();
+  if (!space.shape_bucket_key.empty())
+    return space.shape_bucket_key;
+
+  std::string result;
+  llvm::raw_string_ostream os(result);
+  bool first = true;
+  for (const auto &kv : shape) {
+    if (!first)
+      os << ",";
+    first = false;
+    os << kv.first << "=" << kv.second;
+  }
+  return result.empty() ? "static" : os.str();
+}
+
+static llvm::Error requireTuningDbField(llvm::StringRef fieldName,
+                                        llvm::StringRef value) {
+  if (value.empty())
+    return llvm::createStringError(llvm::inconvertibleErrorCode(),
+                                   "tuning DB field %s must not be empty",
+                                   fieldName.str().c_str());
+  if (value.find_if([](char ch) { return llvm::isSpace(ch); }) !=
+      llvm::StringRef::npos) {
+    return llvm::createStringError(llvm::inconvertibleErrorCode(),
+                                   "tuning DB field %s must not contain whitespace: %s",
+                                   fieldName.str().c_str(), value.str().c_str());
+  }
+  return llvm::Error::success();
+}
+
+static llvm::Error appendBestTuningDbRecord(
+    const std::string &path, const TilingSpace &space,
+    const KernelArtifact &artifact, const SearchResult &best,
+    const std::map<std::string, int64_t> &shape) {
+  if (path.empty())
+    return llvm::Error::success();
+
+  std::string target = artifact.socVersion.empty() ? space.soc : artifact.socVersion;
+  std::string policy = TuningPolicy.getValue();
+  std::string family = deriveTuningFamily(space, artifact);
+  std::string templateName = deriveTuningTemplate(space);
+  std::string resultShape = deriveResultShape(space, shape);
+  std::string tileShape = deriveTileShape(space, best);
+  std::string signature =
+      family + "|" + templateName + "|" + resultShape + "|" + tileShape;
+
+  for (const auto &field : {
+           std::pair<llvm::StringRef, llvm::StringRef>("target", target),
+           std::pair<llvm::StringRef, llvm::StringRef>("policy", policy),
+           std::pair<llvm::StringRef, llvm::StringRef>("signature", signature),
+           std::pair<llvm::StringRef, llvm::StringRef>("family", family),
+           std::pair<llvm::StringRef, llvm::StringRef>("template", templateName),
+           std::pair<llvm::StringRef, llvm::StringRef>("result", resultShape),
+           std::pair<llvm::StringRef, llvm::StringRef>("tile", tileShape)}) {
+    if (auto err = requireTuningDbField(field.first, field.second))
+      return err;
+  }
+  if (!best.profile_path.empty())
+    if (auto err = requireTuningDbField("profile", best.profile_path))
+      return err;
+
+  bool needsHeader = true;
+  if (llvm::sys::fs::exists(path)) {
+    uint64_t size = 0;
+    if (!llvm::sys::fs::file_size(path, size))
+      needsHeader = size == 0;
+  }
+
+  std::error_code ec;
+  llvm::raw_fd_ostream os(path, ec, llvm::sys::fs::CD_OpenAlways,
+                          llvm::sys::fs::FA_Write, llvm::sys::fs::OF_Append);
+  if (ec)
+    return llvm::createStringError(ec, "cannot append tuning DB: %s",
+                                   path.c_str());
+  if (needsHeader)
+    os << "# ascend.schedule.tuning_db schema=1\n";
+  os << "record schema=1"
+     << " target=" << target
+     << " policy=" << policy
+     << " signature=" << signature
+     << " family=" << family
+     << " template=" << templateName
+     << " result=" << resultShape
+     << " tile=" << tileShape
+     << " score=" << best.cycle_count
+     << " cycle_count=" << best.cycle_count;
+  if (!best.profile_path.empty())
+    os << " profile=" << best.profile_path;
+  os << " source=autotuner\n";
+  os.flush();
+  if (os.has_error())
+    return llvm::createStringError(llvm::inconvertibleErrorCode(),
+                                   "failed to append tuning DB: %s",
+                                   path.c_str());
+  return llvm::Error::success();
+}
+
+static llvm::json::Object
+buildShapeJson(const std::map<std::string, int64_t> &shape) {
+  llvm::json::Object object;
+  for (const auto &kv : shape)
+    object[kv.first] = kv.second;
+  return object;
+}
+
+static llvm::json::Object buildConfigJson(const SearchResult &result) {
+  llvm::json::Object object;
+  for (const auto &kv : result.config)
+    object[kv.first] = kv.second;
+  return object;
+}
+
+static llvm::Error appendProfileDbRecords(
+    const std::string &path, const TilingSpace &space,
+    const KernelArtifact &artifact, llvm::ArrayRef<SearchResult> results,
+    const std::map<std::string, int64_t> &shape) {
+  if (path.empty())
+    return llvm::Error::success();
+
+  std::error_code ec;
+  llvm::raw_fd_ostream os(path, ec, llvm::sys::fs::CD_OpenAlways,
+                          llvm::sys::fs::FA_Write, llvm::sys::fs::OF_Append);
+  if (ec)
+    return llvm::createStringError(ec, "cannot append ProfileDB: %s",
+                                   path.c_str());
+
+  std::string fingerprint = !ProfileFingerprint.empty()
+                                ? ProfileFingerprint.getValue()
+                                : (artifact.kernelName.empty()
+                                       ? space.kernel_name
+                                       : artifact.kernelName);
+  if (fingerprint.empty())
+    fingerprint = "unknown_kernel";
+  std::string templateName = deriveTuningTemplate(space);
+  std::string shapeBucket = deriveShapeBucket(space, shape);
+
+  for (const SearchResult &result : results) {
+    if (!result.passed)
+      continue;
+
+    llvm::json::Object features;
+    features["kernel_name"] = artifact.kernelName;
+    features["kernel_type"] = std::string(kernelKindToString(artifact.kernelKind));
+    features["block_dim"] = result.block_dim;
+    features["shape"] = buildShapeJson(shape);
+    features["config"] = buildConfigJson(result);
+
+    llvm::json::Object root;
+    root["schema_version"] = 1;
+    root["targetVersion"] = artifact.socVersion;
+    root["kernelPatternFingerprint"] = fingerprint;
+    root["scheduleTemplate"] = templateName;
+    root["features"] = std::move(features);
+    root["measuredLatencyUs"] = result.cycle_count;
+    root["score"] = result.cycle_count;
+    root["cycle_count"] = result.cycle_count;
+    root["shapeBucketId"] = shapeBucket;
+    root["profile_path"] = result.profile_path;
+    root["session_summary_path"] = result.session_summary_path;
+    root["source"] = "autotuner";
+
+    llvm::json::OStream jos(os, /*IndentSize=*/0);
+    jos.value(llvm::json::Value(std::move(root)));
+    os << "\n";
+  }
+
+  os.flush();
+  if (os.has_error())
+    return llvm::createStringError(llvm::inconvertibleErrorCode(),
+                                   "failed to append ProfileDB: %s",
+                                   path.c_str());
   return llvm::Error::success();
 }
 
@@ -840,6 +1148,18 @@ int main(int argc, char** argv) {
       llvm::outs() << "  " << kv.first << "=" << kv.second << "\n";
 
   if (auto err = writeBestConfigJson(OutputFile, ts, artifact, best, shape)) {
+    llvm::errs() << "Error: " << llvm::toString(std::move(err)) << "\n";
+    cleanupCandidateDirs(best.candidate_dir);
+    _Exit(1);
+  }
+  if (auto err = appendBestTuningDbRecord(TuningDbOut.getValue(), ts, artifact,
+                                          best, shape)) {
+    llvm::errs() << "Error: " << llvm::toString(std::move(err)) << "\n";
+    cleanupCandidateDirs(best.candidate_dir);
+    _Exit(1);
+  }
+  if (auto err = appendProfileDbRecords(ProfileDbOut.getValue(), ts, artifact,
+                                        results, shape)) {
     llvm::errs() << "Error: " << llvm::toString(std::move(err)) << "\n";
     cleanupCandidateDirs(best.candidate_dir);
     _Exit(1);

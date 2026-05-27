@@ -56,6 +56,18 @@ bool hasRequiredNegativeFields(const llvm::StringMap<std::string> &fields) {
          fields.contains("signature") && fields.contains("reason");
 }
 
+bool parseOptionalI64(const llvm::StringMap<std::string> &fields,
+                      llvm::StringRef key, std::optional<int64_t> &out) {
+  auto it = fields.find(key);
+  if (it == fields.end() || it->second.empty())
+    return true;
+  int64_t value = 0;
+  if (llvm::StringRef(it->second).getAsInteger(10, value))
+    return false;
+  out = value;
+  return true;
+}
+
 bool containsRecord(const ScheduleTuningDatabase &db,
                     const ScheduleTuningRecord &record) {
   return llvm::any_of(db.records, [&](const ScheduleTuningRecord &candidate) {
@@ -105,6 +117,11 @@ FailureOr<ScheduleTuningDatabase> loadScheduleTuningDBFile(StringRef path) {
       record.templateName = fields["template"];
       record.resultShape = fields["result"];
       record.tileShape = fields["tile"];
+      if (!parseOptionalI64(fields, "score", record.score) ||
+          !parseOptionalI64(fields, "cycle_count", record.cycleCount))
+        return failure();
+      record.profilePath = fields.lookup("profile");
+      record.source = fields.lookup("source");
       if (!containsRecord(db, record))
         db.records.push_back(std::move(record));
       continue;
@@ -118,6 +135,10 @@ FailureOr<ScheduleTuningDatabase> loadScheduleTuningDBFile(StringRef path) {
       record.policy = fields["policy"];
       record.signature = fields["signature"];
       record.reason = fields["reason"];
+      if (!parseOptionalI64(fields, "score", record.score))
+        return failure();
+      record.profilePath = fields.lookup("profile");
+      record.source = fields.lookup("source");
       db.negativeRecords.push_back(std::move(record));
       continue;
     }
@@ -153,7 +174,16 @@ LogicalResult writeScheduleTuningDBFile(StringRef path,
                 << " family=" << record.family
                 << " template=" << record.templateName
                 << " result=" << record.resultShape
-                << " tile=" << record.tileShape << "\n";
+                << " tile=" << record.tileShape;
+    if (record.score)
+      output.os() << " score=" << *record.score;
+    if (record.cycleCount)
+      output.os() << " cycle_count=" << *record.cycleCount;
+    if (!record.profilePath.empty())
+      output.os() << " profile=" << record.profilePath;
+    if (!record.source.empty())
+      output.os() << " source=" << record.source;
+    output.os() << "\n";
   }
 
   SmallVector<ScheduleNegativeRecord, 4> negatives(db.negativeRecords.begin(),
@@ -168,7 +198,14 @@ LogicalResult writeScheduleTuningDBFile(StringRef path,
                 << " target=" << record.target
                 << " policy=" << record.policy
                 << " signature=" << record.signature
-                << " reason=" << record.reason << "\n";
+                << " reason=" << record.reason;
+    if (record.score)
+      output.os() << " score=" << *record.score;
+    if (!record.profilePath.empty())
+      output.os() << " profile=" << record.profilePath;
+    if (!record.source.empty())
+      output.os() << " source=" << record.source;
+    output.os() << "\n";
   }
 
   output.keep();

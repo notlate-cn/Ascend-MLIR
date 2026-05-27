@@ -1,0 +1,100 @@
+// RUN: rm -f %t.cpp %t.tiling.json %t.manifest.json %t.host.cpp
+// RUN: ascend-mlir-translate -mlir-to-cann %s --tiling-space-out=%t.tiling.json --artifact-manifest-out=%t.manifest.json --host-tiling-out=%t.host.cpp --cann-soc=Ascend910B2 > %t.cpp
+// RUN: FileCheck %s --input-file=%t.manifest.json --check-prefix=MANIFEST
+// RUN: FileCheck %s --input-file=%t.tiling.json --check-prefix=TILING
+
+// MANIFEST: "guardSet": [
+// MANIFEST-NEXT: "arg0_dim0 <= 128",
+// MANIFEST-NEXT: "arg0_dim0 > 0"
+// MANIFEST: "shapeBucketKey": "M.small_or_fallback"
+// MANIFEST: "scheduleEntries": [
+// MANIFEST: "blockDim": 4
+// MANIFEST: "decisionId": "kernel_variant.small"
+// MANIFEST: "fallback": false
+// MANIFEST: "guard": "arg0_dim0 <= 128"
+// MANIFEST: "priority": 0
+// MANIFEST: "shapeBucketKey": "M.small"
+// MANIFEST: "selected_tile_shape": [
+// MANIFEST-NEXT: 32
+// MANIFEST: "workspaceSizeBytes": 1024
+// MANIFEST: "blockDim": 1
+// MANIFEST: "decisionId": "kernel_variant.fallback"
+// MANIFEST: "fallback": true
+// MANIFEST: "guard": "arg0_dim0 > 0"
+// MANIFEST: "priority": 99
+// MANIFEST: "shapeBucketKey": "M.fallback"
+// MANIFEST: "selected_tile_shape": [
+// MANIFEST-NEXT: 16
+// MANIFEST: "workspaceSizeBytes": 2048
+
+// TILING: "guardSet": [
+// TILING-NEXT: "arg0_dim0 <= 128",
+// TILING-NEXT: "arg0_dim0 > 0"
+// TILING: "kernels": [
+// TILING: "guardSet": [
+// TILING-NEXT: "arg0_dim0 <= 128",
+// TILING-NEXT: "arg0_dim0 > 0"
+// TILING: "kernel": "kernel_variant"
+// TILING: "scheduleEntries": [
+// TILING: "decisionId": "kernel_variant.small"
+// TILING: "shapeBucketKey": "M.small"
+// TILING: "decisionId": "kernel_variant.fallback"
+// TILING: "shapeBucketKey": "M.fallback"
+// TILING: "shapeBucketKey": "M.small_or_fallback"
+
+module {
+  func.func @kernel_variant(
+      %a: memref<?xf16>,
+      %out: memref<?xf16>,
+      %ws: memref<ui8>,
+      %tiling: !emitasc.py_struct<"TilingData",
+          [i64, i64],
+          ["TB_M", "dim_arg0_0"]>
+  ) attributes {
+      ascend.schedule.kernel_metadata = [
+        {
+          block_dim = 4 : i64,
+          decision_id = "kernel_variant.small",
+          fallback = false,
+          guard = "arg0_dim0 <= 128",
+          kernel = "kernel_variant",
+          priority = 0 : i64,
+          selected_tile_shape = array<i64: 32>,
+          shape_bucket_key = "M.small",
+          tail_policies = ["masked_tail"],
+          tail_plan = [{
+            affected = ["data_copy", "vector_compute"],
+            align = 16 : i64,
+            axis = 0 : i64,
+            buffering = "separate_tail_buffer",
+            selected = "masked_tail"
+          }],
+          workspace_size_bytes = 1024 : i64
+        },
+        {
+          block_dim = 1 : i64,
+          decision_id = "kernel_variant.fallback",
+          fallback = true,
+          guard = "arg0_dim0 > 0",
+          kernel = "kernel_variant",
+          priority = 99 : i64,
+          selected_tile_shape = array<i64: 16>,
+          shape_bucket_key = "M.fallback",
+          tail_policies = ["scalar_epilogue"],
+          tail_plan = [{
+            affected = ["data_copy", "vector_compute"],
+            align = 1 : i64,
+            axis = 0 : i64,
+            buffering = "separate_tail_buffer",
+            selected = "scalar_epilogue"
+          }],
+          workspace_size_bytes = 2048 : i64
+        }
+      ],
+      ascendc.aicore,
+      ascendc.global,
+      cann.num_inputs = 1 : i32,
+      cann.workspace_size_bytes = 1024 : i64} {
+    func.return
+  }
+}
