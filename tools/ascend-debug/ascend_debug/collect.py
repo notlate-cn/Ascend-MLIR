@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import argparse
+import os
 import pathlib
+import shlex
 
 from ascend_debug import __version__, kernel_dag, layout
 from ascend_debug.runner import CommandError, find_tool, run_command
@@ -36,6 +38,44 @@ def _record_command(stage: str, args: list[str], stdout_path: str, report_path: 
         "stderr": report_path,
         "status": "success",
     }
+
+
+def _env_path(*names: str) -> pathlib.Path | None:
+    for name in names:
+        value = os.environ.get(name)
+        if value:
+            return pathlib.Path(value)
+    return None
+
+
+def _memory_detail_cann_root(args: argparse.Namespace) -> pathlib.Path:
+    cann_root = args.cann_root or _env_path("ASCEND_HOME_PATH", "ASCEND_HOME", "CANN_ROOT")
+    if not cann_root:
+        raise CommandError(
+            "--memory-detail requires --cann-root or ASCEND_HOME_PATH/ASCEND_HOME/CANN_ROOT"
+        )
+    return cann_root.resolve()
+
+
+def _realize_pass_arg(args: argparse.Namespace) -> str:
+    options = ["dump-report=true", "debug-stage=realize"]
+    if args.memory_detail:
+        cann_root = _memory_detail_cann_root(args)
+        soc = args.soc or os.environ.get("ASCEND_SOC_VERSION") or "Ascend910B2"
+        options.extend(
+            [
+                "placement-mode=target-aware",
+                "materialization-mode=plan-only",
+                f"cann-root={cann_root}",
+                f"soc={soc}",
+            ]
+        )
+    if args.realize_options:
+        try:
+            options.extend(shlex.split(args.realize_options))
+        except ValueError as error:
+            raise CommandError(f"invalid --realize-options: {error}") from error
+    return "--ascend-realize=" + " ".join(options)
 
 
 def _graph_requested(args: argparse.Namespace) -> bool:
@@ -202,6 +242,10 @@ def _run_opt_stage(
 
 
 def collect_run(args: argparse.Namespace) -> int:
+    if args.preset != "deep" and (
+        args.memory_detail or args.realize_options or args.cann_root or args.soc
+    ):
+        raise CommandError("Realize memory options require --preset deep")
     if args.preset == "quick":
         return collect_quick(args)
     if args.preset == "deep":
@@ -332,7 +376,7 @@ def collect_deep(args: argparse.Namespace) -> int:
             output_rel="stages/049-realize-out.mlir",
             report_path=report_paths["realize"],
             report_rel=report_rels["realize"],
-            pass_arg="--ascend-realize=dump-report=true debug-stage=realize",
+            pass_arg=_realize_pass_arg(args),
         )
     )
 

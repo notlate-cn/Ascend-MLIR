@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import html
-import json
 import pathlib
 import re
 from typing import Any
@@ -415,7 +414,7 @@ def _render_stage_graph_html(
             f'<a class="stage-link{active}" href="{href}">{_cell(link["label"])}</a>'
         )
     svg_graph = render_svg_graph(graph)
-    nodes_json = html.escape(json.dumps(graph["nodes"]), quote=False)
+    nodes_json = layout.json_script_payload(graph["nodes"])
     document = f"""<!doctype html>
 <html lang="en">
 <head>
@@ -450,7 +449,7 @@ h1 {{ margin: 0 0 0.35rem; font-size: 1rem; }}
 table {{ width: 100%; border-collapse: collapse; background: #ffffff; margin-top: 0.75rem; }}
 th, td {{ border: 1px solid #cbd5e1; padding: 0.35rem 0.45rem; text-align: left; vertical-align: top; }}
 th {{ background: #f1f5f9; }}
-pre {{ white-space: pre-wrap; overflow-wrap: anywhere; background: #0f172a; color: #e2e8f0; padding: 0.75rem; border-radius: 6px; }}
+pre {{ white-space: pre-wrap; overflow-wrap: anywhere; background: #0b1020; color: #dbeafe; border: 1px solid #1e293b; padding: 0.75rem; border-radius: 6px; }}
 </style>
 </head>
 <body>

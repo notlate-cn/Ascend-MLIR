@@ -27,6 +27,16 @@ test -f "${TMP_DIR}/debug-run/manifest.json"
 test -f "${TMP_DIR}/debug-run/provenance.json"
 echo "ascend_debug.collect=ok"
 
+if ascend-debug collect "${INPUT_MLIR}" \
+  --out "${TMP_DIR}/debug-run-memory-detail-negative" \
+  --pipeline normalize-kernelize \
+  --memory-detail >"${TMP_DIR}/ascend-debug-memory-detail-negative.txt" 2>"${TMP_DIR}/ascend-debug-memory-detail-negative.err"; then
+  echo "expected quick memory-detail collect to fail" >&2
+  exit 1
+fi
+grep -Fq 'Realize memory options require --preset deep' "${TMP_DIR}/ascend-debug-memory-detail-negative.err"
+echo "ascend_debug.collect_memory_detail_negative=ok"
+
 ascend-debug collect "${INPUT_MLIR}" \
   --out "${TMP_DIR}/debug-run-deep" \
   --preset deep \
@@ -45,6 +55,71 @@ test -f "${TMP_DIR}/debug-run-deep/reports/020-kernelize.report.txt"
 test -f "${TMP_DIR}/debug-run-deep/reports/030-schedule.report.txt"
 test -f "${TMP_DIR}/debug-run-deep/reports/040-realize.report.txt"
 echo "ascend_debug.collect_deep=ok"
+
+mkdir -p "${TMP_DIR}/fake-memory-detail-opt" "${TMP_DIR}/fake-cann-root"
+FAKE_CANN_ROOT="$(cd "${TMP_DIR}/fake-cann-root" && pwd -P)"
+cat >"${TMP_DIR}/fake-memory-detail-opt/ascend-mlir-opt" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+input="$1"
+pass_arg="${2:-}"
+cat "${input}"
+if [[ "${pass_arg}" == --ascend-realize* ]]; then
+  cat >&2 <<'TEXT'
+Ascend realize report (ascend-realize)
+Realize report
+  kernels = 1
+StaticMemoryPlan:
+  kernel = kernel_0
+  mode = "workspace_layout"
+  tracked_places = 5
+  local_buffers = 2
+  live_intervals = 2
+  workspace_slots = 2
+  peak_usage_known = true
+  peak_usage_units = 1
+  peak_usage_bytes_known = true
+  local_buffer_bytes = 128
+  workspace_bytes = 128
+  peak_usage_bytes = 128
+  capacity_check_deferred = false
+  live_interval[0] = value_id=20 start=0 end=1 place=VECIN byte_size=128
+  live_interval[1] = value_id=21 start=1 end=2 place=VECIN byte_size=128
+  workspace_slot[0] = slot_id=0 value_id=20 offset=0 place=VECIN byte_size=128
+  workspace_slot[1] = slot_id=1 value_id=21 offset=0 place=VECIN byte_size=128
+MovementPlan:
+  kernel = kernel_0
+  mode = "movement_planning"
+  movement_step[0] = step_id=0 value_id=20 slot_id=0 src=GM dst=VECIN path_selected=true byte_size=128
+MemoryRealizationPlan:
+  kernel = kernel_0
+  mode = "memory_space_materialize"
+TEXT
+else
+  printf 'fake report for %s\n' "${pass_arg}" >&2
+fi
+SH
+chmod +x "${TMP_DIR}/fake-memory-detail-opt/ascend-mlir-opt"
+PATH="${TMP_DIR}/fake-memory-detail-opt:${PATH}" \
+  ASCEND_HOME_PATH="${FAKE_CANN_ROOT}" \
+  ASCEND_SOC_VERSION="SyntheticSoC" \
+  ascend-debug collect "${INPUT_MLIR}" \
+    --out "${TMP_DIR}/debug-run-memory-detail" \
+    --preset deep \
+    --pipeline normalize-kernelize \
+    --memory-detail
+grep -Fq 'placement-mode=target-aware' "${TMP_DIR}/debug-run-memory-detail/manifest.json"
+grep -Fq 'materialization-mode=plan-only' "${TMP_DIR}/debug-run-memory-detail/manifest.json"
+grep -Fq "cann-root=${FAKE_CANN_ROOT}" "${TMP_DIR}/debug-run-memory-detail/manifest.json"
+grep -Fq 'soc=SyntheticSoC' "${TMP_DIR}/debug-run-memory-detail/manifest.json"
+grep -Fq 'workspace_slot[0]' "${TMP_DIR}/debug-run-memory-detail/reports/040-realize.report.txt"
+ascend-debug open "${TMP_DIR}/debug-run-memory-detail" --no-browser >"${TMP_DIR}/ascend-debug-open-memory-detail.txt"
+test -f "${TMP_DIR}/debug-run-memory-detail/summaries/memory.json"
+test -f "${TMP_DIR}/debug-run-memory-detail/views/summaries/memory.json.html"
+grep -Fq '<h1>Memory Summary</h1>' "${TMP_DIR}/debug-run-memory-detail/views/summaries/memory.json.html"
+grep -Fq 'class="ub-allocation-svg"' "${TMP_DIR}/debug-run-memory-detail/views/summaries/memory.json.html"
+grep -Fq 'slot 0 value 20' "${TMP_DIR}/debug-run-memory-detail/views/summaries/memory.json.html"
+echo "ascend_debug.collect_memory_detail=ok"
 
 cat >"${TMP_DIR}/artifact_manifest.json" <<'JSON'
 {
@@ -377,6 +452,14 @@ grep -Fq 'function renderKernelDag' "${TMP_DIR}/debug-run-graph/views/debug_grap
 grep -Fq 'Kernel DAG' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
 grep -Fq 'Tensor Diff' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
 grep -Fq 'Memory' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
+if grep -Fq 'tensor&lt;' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"; then
+  echo "debug graph embedded JSON should not show HTML-escaped MLIR types" >&2
+  exit 1
+fi
+if grep -Fq 'tensor&lt;' "${TMP_DIR}/debug-run-graph/views/graphs/stages/029-kernelize-out.graph.html"; then
+  echo "stage graph embedded JSON should not show HTML-escaped MLIR types" >&2
+  exit 1
+fi
 python3 - "${TMP_DIR}/debug-run-graph/summaries/debug_graph.json" <<'PY'
 import json
 import pathlib
@@ -417,9 +500,13 @@ test -f "${TMP_DIR}/debug-run-graph/views/summaries/memory.json.html"
 test -f "${TMP_DIR}/debug-run-graph/views/summaries/tensor_diff.json.html"
 test -f "${TMP_DIR}/debug-run-graph/views/kernels/kernel_0.html"
 grep -Fq '<input id="search"' "${TMP_DIR}/debug-run-graph/views/stages/029-kernelize-out.mlir.html"
+grep -Fq 'class="code-table text-code-table"' "${TMP_DIR}/debug-run-graph/views/stages/029-kernelize-out.mlir.html"
+grep -Fq 'color: #dbeafe' "${TMP_DIR}/debug-run-graph/views/stages/029-kernelize-out.mlir.html"
 grep -Fq '<span class="line-number">1</span>' "${TMP_DIR}/debug-run-graph/views/stages/029-kernelize-out.mlir.html"
 grep -Fq 'ascend.kernel' "${TMP_DIR}/debug-run-graph/views/stages/029-kernelize-out.mlir.html"
 grep -Fq '<input id="search" type="search" placeholder="Search JSON">' "${TMP_DIR}/debug-run-graph/views/graphs/kernel_dag.summary.json.html"
+grep -Fq 'class="code-table text-code-table"' "${TMP_DIR}/debug-run-graph/views/graphs/kernel_dag.summary.json.html"
+grep -Fq 'color: #dbeafe' "${TMP_DIR}/debug-run-graph/views/graphs/kernel_dag.summary.json.html"
 grep -Fq '<a href="../../graphs/kernel_dag.summary.json">Raw JSON</a>' "${TMP_DIR}/debug-run-graph/views/graphs/kernel_dag.summary.json.html"
 grep -Fq 'kernel_count' "${TMP_DIR}/debug-run-graph/views/graphs/kernel_dag.summary.json.html"
 grep -Fq '<h1>kernel_0</h1>' "${TMP_DIR}/debug-run-graph/views/kernels/kernel_0.html"
@@ -445,7 +532,22 @@ grep -Fq '<h3>Peak Timeline</h3>' "${TMP_DIR}/debug-run-graph/index.html"
 grep -Fq '<td>kernel_0</td><td>1</td><td>256</td><td>0@VECIN, 128@VECIN</td><td>10, 12</td>' "${TMP_DIR}/debug-run-graph/index.html"
 grep -Fq '<h3>Workspace Slots</h3>' "${TMP_DIR}/debug-run-graph/index.html"
 grep -Fq '<td>kernel_0</td><td>0</td><td>VECIN</td><td>0</td><td>128</td><td>10</td><td>0..2</td><td>yes</td>' "${TMP_DIR}/debug-run-graph/index.html"
-grep -Fq 'movement_edges' "${TMP_DIR}/debug-run-graph/views/summaries/memory.json.html"
+grep -Fq '<h1>Memory Summary</h1>' "${TMP_DIR}/debug-run-graph/views/summaries/memory.json.html"
+grep -Fq 'class="memory-kernel-viz"' "${TMP_DIR}/debug-run-graph/views/summaries/memory.json.html"
+grep -Fq 'class="ub-allocation-svg"' "${TMP_DIR}/debug-run-graph/views/summaries/memory.json.html"
+grep -Fq 'id="kernel-kernel_0"' "${TMP_DIR}/debug-run-graph/views/summaries/memory.json.html"
+grep -Fq 'reuse-group' "${TMP_DIR}/debug-run-graph/views/summaries/memory.json.html"
+grep -Fq 'movement-edge' "${TMP_DIR}/debug-run-graph/views/summaries/memory.json.html"
+grep -Fq 'value 10' "${TMP_DIR}/debug-run-graph/views/summaries/memory.json.html"
+grep -Fq 'slot 0' "${TMP_DIR}/debug-run-graph/views/summaries/memory.json.html"
+grep -Fq '<h1>Tensor Diff Summary</h1>' "${TMP_DIR}/debug-run-graph/views/summaries/tensor_diff.json.html"
+grep -Fq '<h1>Locate Summary</h1>' "${TMP_DIR}/debug-run-graph/views/summaries/locate.json.html"
+grep -Fq '<h1>Debug Graph Summary</h1>' "${TMP_DIR}/debug-run-graph/views/summaries/debug_graph.json.html"
+grep -Fq 'Memory View' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
+grep -Fq 'summaries/memory.json.html#kernel-' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
+grep -Fq 'UB Allocation' "${TMP_DIR}/debug-run-graph/views/kernels/kernel_0.html"
+grep -Fq '../summaries/memory.json.html#kernel-kernel_0' "${TMP_DIR}/debug-run-graph/views/kernels/kernel_0.html"
+grep -Fq 'class="ub-allocation-svg"' "${TMP_DIR}/debug-run-graph/views/kernels/kernel_0.html"
 python3 - "${TMP_DIR}/debug-run-graph/summaries/memory.json" <<'PY'
 import json
 import pathlib

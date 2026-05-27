@@ -451,20 +451,22 @@ def _render_mlir_view(run_dir: pathlib.Path, rel_path: str) -> str | None:
 <meta charset="utf-8">
 <title>{_cell(pathlib.PurePosixPath(rel_path).name)} - ascend-debug</title>
 <style>
-body {{ font-family: sans-serif; margin: 0; color: #17202a; background: #f8fafc; }}
+:root {{ color-scheme: light; }}
+body {{ font-family: sans-serif; margin: 0; color: #17202a; background: #eef2f7; }}
 header {{ position: sticky; top: 0; z-index: 1; padding: 0.75rem 1rem; background: #ffffff; border-bottom: 1px solid #cbd5e1; }}
 h1 {{ font-size: 1rem; margin: 0 0 0.5rem 0; }}
 .toolbar {{ display: flex; gap: 0.75rem; align-items: center; flex-wrap: wrap; }}
-input {{ min-width: 18rem; padding: 0.35rem 0.5rem; border: 1px solid #94a3b8; border-radius: 4px; }}
+input {{ min-width: 18rem; padding: 0.35rem 0.5rem; border: 1px solid #94a3b8; border-radius: 4px; color: #17202a; background: #ffffff; }}
 main {{ padding: 0.75rem 1rem 2rem; }}
-table {{ border-collapse: collapse; width: 100%; background: #ffffff; }}
-td {{ vertical-align: top; border-bottom: 1px solid #e2e8f0; }}
-.gutter {{ width: 4.5rem; text-align: right; padding: 0 0.65rem; background: #f1f5f9; user-select: none; }}
-.gutter a {{ color: #64748b; text-decoration: none; }}
+table.code-table {{ border-collapse: collapse; width: 100%; background: #0b1020; color: #dbeafe; border: 1px solid #1e293b; }}
+.code-table td {{ vertical-align: top; border-bottom: 1px solid #1e293b; }}
+.gutter {{ width: 4.5rem; text-align: right; padding: 0 0.65rem; background: #111827; user-select: none; }}
+.gutter a {{ color: #93a4bd; text-decoration: none; }}
 .code {{ padding-left: 0.75rem; }}
-pre {{ margin: 0; padding: 0.12rem 0; white-space: pre-wrap; overflow-wrap: anywhere; font: 12px/1.5 SFMono-Regular, Menlo, Consolas, monospace; }}
+.code pre {{ margin: 0; padding: 0.12rem 0; white-space: pre-wrap; overflow-wrap: anywhere; font: 12px/1.5 SFMono-Regular, Menlo, Consolas, monospace; color: #dbeafe; background: transparent; }}
+.line-row:hover pre {{ background: #172033; }}
 .hidden {{ display: none; }}
-.match pre {{ background: #fef9c3; }}
+.match pre {{ background: #1d4ed8; color: #ffffff; }}
 </style>
 </head>
 <body>
@@ -477,7 +479,7 @@ pre {{ margin: 0; padding: 0.12rem 0; white-space: pre-wrap; overflow-wrap: anyw
 </div>
 </header>
 <main>
-<table>
+<table class="code-table text-code-table">
 <tbody>
 {''.join(line_rows)}
 </tbody>
@@ -503,6 +505,480 @@ input.addEventListener("input", () => {{
     return view_rel_path
 
 
+def _attr(value: Any) -> str:
+    return html.escape("" if value is None else str(value), quote=True)
+
+
+def _as_int(value: Any, default: int = 0) -> int:
+    return value if isinstance(value, int) and not isinstance(value, bool) else default
+
+
+def _summary_kernel_link(view_rel_path: str, kernel_id: Any) -> str:
+    if not isinstance(kernel_id, str) or not kernel_id:
+        return _cell(kernel_id)
+    href = _relative_href(view_rel_path, f"views/kernels/{kernel_id}.html")
+    return _link(href, kernel_id)
+
+
+def _summary_card(label: str, value: Any, css_class: str = "") -> str:
+    class_attr = f' {css_class}' if css_class else ""
+    return (
+        f'<section class="summary-card{class_attr}">'
+        f"<span>{_cell(label)}</span>"
+        f"<strong>{_cell(value)}</strong>"
+        "</section>"
+    )
+
+
+def _summary_page_document(
+    *,
+    view_rel_path: str,
+    rel_path: str,
+    title: str,
+    body: str,
+) -> str:
+    raw_href = html.escape(_relative_href(view_rel_path, rel_path), quote=True)
+    dashboard_href = html.escape(_relative_href(view_rel_path, "index.html"), quote=True)
+    return f"""<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>{_cell(title)} - ascend-debug</title>
+<style>
+:root {{ color-scheme: light; }}
+* {{ box-sizing: border-box; }}
+body {{ margin: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; color: #17202a; background: #eef2f7; }}
+a {{ color: #1d4ed8; text-decoration: none; }}
+header {{ position: sticky; top: 0; z-index: 1; padding: 0.85rem 1rem; background: #ffffff; border-bottom: 1px solid #cbd5e1; }}
+h1 {{ font-size: 1.15rem; margin: 0 0 0.45rem; }}
+h2 {{ font-size: 1rem; margin: 1.15rem 0 0.65rem; }}
+h3 {{ font-size: 0.9rem; margin: 0 0 0.5rem; }}
+main {{ padding: 1rem; }}
+.toolbar {{ display: flex; gap: 0.75rem; align-items: center; flex-wrap: wrap; color: #64748b; font-size: 0.86rem; }}
+.summary-card-grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(10rem, 1fr)); gap: 0.65rem; margin-bottom: 1rem; }}
+.summary-card {{ border: 1px solid #cbd5e1; border-radius: 8px; background: #ffffff; padding: 0.75rem; min-height: 4.8rem; }}
+.summary-card span {{ display: block; color: #64748b; font-weight: 700; font-size: 0.78rem; margin-bottom: 0.35rem; }}
+.summary-card strong {{ display: block; font-size: 1.45rem; line-height: 1.1; overflow-wrap: anywhere; }}
+.summary-card.fail {{ border-color: #fecaca; background: #fff7f7; }}
+.summary-card.pass {{ border-color: #bbf7d0; background: #f0fdf4; }}
+.summary-card.warn {{ border-color: #fde68a; background: #fffbeb; }}
+.panel {{ border: 1px solid #cbd5e1; border-radius: 8px; background: #ffffff; padding: 0.85rem; margin: 0 0 0.85rem; }}
+.note {{ color: #475569; margin: 0 0 0.75rem; }}
+.empty-state {{ border: 1px dashed #94a3b8; border-radius: 8px; padding: 0.75rem; background: #f8fafc; color: #475569; }}
+table {{ width: 100%; border-collapse: collapse; background: #ffffff; margin: 0 0 0.85rem; font-size: 0.84rem; }}
+th, td {{ border: 1px solid #cbd5e1; padding: 0.4rem 0.5rem; text-align: left; vertical-align: top; }}
+th {{ background: #f1f5f9; color: #334155; }}
+.status-fail {{ color: #b91c1c; font-weight: 700; }}
+.status-pass {{ color: #047857; font-weight: 700; }}
+.memory-kernel-viz {{ border: 1px solid #cbd5e1; border-radius: 8px; background: #ffffff; padding: 0.85rem; margin-bottom: 1rem; overflow: auto; }}
+.memory-kernel-header {{ display: flex; gap: 0.75rem; flex-wrap: wrap; align-items: baseline; justify-content: space-between; margin-bottom: 0.65rem; }}
+.memory-kernel-header h2, .memory-kernel-header h3 {{ margin: 0; }}
+.memory-facts {{ display: flex; gap: 0.45rem; flex-wrap: wrap; color: #475569; font-size: 0.82rem; }}
+.chip {{ display: inline-block; border: 1px solid #cbd5e1; border-radius: 999px; padding: 0.16rem 0.45rem; background: #ffffff; color: #334155; margin: 0.12rem; font-size: 0.78rem; }}
+.reuse-group {{ border-color: #86efac; background: #f0fdf4; color: #047857; }}
+.movement-edge {{ border-color: #bfdbfe; background: #eff6ff; color: #1d4ed8; }}
+.ub-allocation-svg {{ display: block; min-width: 640px; max-width: none; background: #fbfdff; border: 1px solid #dbe3ee; border-radius: 8px; }}
+.ub-allocation-svg text {{ font-family: SFMono-Regular, Menlo, Consolas, monospace; font-size: 11px; fill: #334155; }}
+.ub-allocation-svg .axis {{ stroke: #94a3b8; stroke-width: 1; }}
+.ub-allocation-svg .grid {{ stroke: #dbe3ee; stroke-width: 1; }}
+.ub-allocation-svg .row-bg {{ fill: #f8fafc; stroke: #e2e8f0; }}
+.ub-allocation-svg .slot-block {{ fill: #60a5fa; stroke: #1d4ed8; stroke-width: 1.2; }}
+.ub-allocation-svg .slot-block.reuse-group {{ fill: #86efac; stroke: #059669; }}
+.ub-allocation-svg .movement-edge {{ fill: #f59e0b; stroke: #b45309; }}
+pre.json-source {{ margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; background: #0b1020; color: #dbeafe; border: 1px solid #1e293b; border-radius: 8px; padding: 0.8rem; font: 12px/1.45 SFMono-Regular, Menlo, Consolas, monospace; }}
+</style>
+</head>
+<body>
+<header>
+<h1>{_cell(title)}</h1>
+<div class="toolbar">
+<a href="{raw_href}">Raw JSON</a>
+<a href="{dashboard_href}">Dashboard</a>
+<span>{_cell(rel_path)}</span>
+</div>
+</header>
+<main>
+{body}
+</main>
+</body>
+</html>
+"""
+
+
+def _value_list(value: Any) -> str:
+    if not isinstance(value, list) or not value:
+        return "none"
+    return ", ".join(_cell(item) for item in value)
+
+
+def _memory_kernel_by_id(summary: dict[str, Any] | None, kernel_id: str) -> dict[str, Any] | None:
+    if not summary:
+        return None
+    for kernel in summary.get("kernels", []):
+        if isinstance(kernel, dict) and kernel.get("kernel_id") == kernel_id:
+            return kernel
+    return None
+
+
+def _memory_has_kernel_anchor(summary: dict[str, Any] | None, kernel_id: str) -> bool:
+    if not summary:
+        return False
+    if summary.get("analysis_level") == "realize-memory-plan":
+        return _memory_kernel_by_id(summary, kernel_id) is not None
+    return _memory_kernel_by_id(summary, kernel_id) is not None
+
+
+def _memory_interval_by_value(kernel: dict[str, Any]) -> dict[int, dict[str, Any]]:
+    intervals = {}
+    for interval in kernel.get("live_intervals", []):
+        if isinstance(interval, dict):
+            intervals[_as_int(interval.get("value_id"))] = interval
+    return intervals
+
+
+def _memory_slot_groups(kernel: dict[str, Any]) -> list[tuple[tuple[str, int], list[dict[str, Any]]]]:
+    groups: dict[tuple[str, int], list[dict[str, Any]]] = {}
+    for slot in kernel.get("workspace_slots", []):
+        if not isinstance(slot, dict):
+            continue
+        key = (str(slot.get("place") or "unknown"), _as_int(slot.get("offset")))
+        groups.setdefault(key, []).append(slot)
+    return sorted(groups.items(), key=lambda item: (item[0][0], item[0][1]))
+
+
+def _render_ub_allocation_svg(kernel: dict[str, Any]) -> str:
+    groups = _memory_slot_groups(kernel)
+    intervals = _memory_interval_by_value(kernel)
+    if not groups or not intervals:
+        return '<div class="empty-state">No Realize StaticMemoryPlan workspace slots are available for this kernel.</div>'
+
+    starts = [_as_int(interval.get("start")) for interval in intervals.values()]
+    ends = [_as_int(interval.get("end")) for interval in intervals.values()]
+    min_time = min(starts or [0])
+    max_time = max(ends or [min_time + 1])
+    if max_time <= min_time:
+        max_time = min_time + 1
+    time_span = max_time - min_time
+    left = 118
+    top = 42
+    step = 96
+    row_h = 54
+    lane_h = 28
+    width = max(640, left + time_span * step + 70)
+    height = top + len(groups) * row_h + 54
+
+    parts = [
+        f'<svg class="ub-allocation-svg" width="{width}" height="{height}" viewBox="0 0 {width} {height}" role="img" aria-label="UB allocation timeline">',
+        f'<line class="axis" x1="{left}" y1="{top - 14}" x2="{left + time_span * step}" y2="{top - 14}"></line>',
+    ]
+    for tick in range(min_time, max_time + 1):
+        x = left + (tick - min_time) * step
+        parts.append(f'<line class="grid" x1="{x}" y1="{top - 22}" x2="{x}" y2="{height - 28}"></line>')
+        parts.append(f'<text x="{x - 4}" y="{top - 26}">{_cell(tick)}</text>')
+
+    for row_index, ((place, offset), slots) in enumerate(groups):
+        y = top + row_index * row_h
+        parts.append(f'<rect class="row-bg" x="12" y="{y - 18}" width="{width - 28}" height="{row_h - 8}" rx="6"></rect>')
+        parts.append(f'<text x="20" y="{y + 4}">{_cell(place)}@{_cell(offset)}</text>')
+        for slot in sorted(
+            slots,
+            key=lambda item: (
+                _as_int(intervals.get(_as_int(item.get("value_id")), {}).get("start")),
+                _as_int(item.get("slot_id")),
+            ),
+        ):
+            value_id = _as_int(slot.get("value_id"))
+            interval = intervals.get(value_id, {})
+            start = _as_int(interval.get("start"), min_time)
+            end = _as_int(interval.get("end"), start + 1)
+            end = max(end, start + 1)
+            x = left + (start - min_time) * step + 4
+            block_w = max(28, (end - start) * step - 8)
+            css_class = "slot-block reuse-group" if slot.get("reused") else "slot-block"
+            label = f"slot {slot.get('slot_id')} value {value_id}"
+            parts.append(
+                f'<rect class="{css_class}" x="{x}" y="{y - 10}" width="{block_w}" height="{lane_h}" rx="5">'
+                f"<title>{_cell(label)}; live {start}..{end}; bytes {slot.get('byte_size')}</title>"
+                "</rect>"
+            )
+            parts.append(f'<text x="{x + 7}" y="{y + 8}">{_cell(label)}</text>')
+
+    for edge in kernel.get("movement_edges", []):
+        if not isinstance(edge, dict):
+            continue
+        value_id = _as_int(edge.get("value_id"))
+        interval = intervals.get(value_id, {})
+        x = left + (_as_int(interval.get("start"), min_time) - min_time) * step + 10
+        parts.append(
+            f'<circle class="movement-edge" cx="{x}" cy="{height - 19}" r="5">'
+            f"<title>{_cell(edge.get('src'))}->{_cell(edge.get('dst'))}; value {value_id}; slot {edge.get('slot_id')}</title>"
+            "</circle>"
+        )
+    parts.append("</svg>")
+    return "".join(parts)
+
+
+def _memory_reuse_group_chips(kernel: dict[str, Any]) -> str:
+    chips = []
+    for group in kernel.get("reuse_groups", []):
+        if not isinstance(group, dict):
+            continue
+        chips.append(
+            '<span class="chip reuse-group">'
+            f"{_cell(group.get('place'))}@{_cell(group.get('offset'))}: "
+            f"slots {_value_list(group.get('slot_ids'))}; values {_value_list(group.get('value_ids'))}"
+            "</span>"
+        )
+    return "".join(chips) or '<span class="chip">no slot reuse</span>'
+
+
+def _memory_movement_chips(kernel: dict[str, Any]) -> str:
+    chips = []
+    for edge in kernel.get("movement_edges", []):
+        if not isinstance(edge, dict):
+            continue
+        role = "cached" if edge.get("dst") not in (None, "unknown", "GM") else "movement"
+        chips.append(
+            '<span class="chip movement-edge">'
+            f"step {_cell(edge.get('step_id'))}: value {_cell(edge.get('value_id'))} "
+            f"slot {_cell(edge.get('slot_id'))} {_cell(edge.get('src'))}->{_cell(edge.get('dst'))} "
+            f"{role} bytes {_cell(edge.get('byte_size'))}"
+            "</span>"
+        )
+    return "".join(chips) or '<span class="chip">no movement edges</span>'
+
+
+def _render_memory_kernel_viz(kernel: dict[str, Any], *, heading_level: int, title: str) -> str:
+    kernel_id = kernel.get("kernel_id")
+    heading = f"h{heading_level}"
+    svg = _render_ub_allocation_svg(kernel)
+    return f"""
+<section id="kernel-{_attr(kernel_id)}" class="memory-kernel-viz">
+<div class="memory-kernel-header">
+<{heading}>{_cell(title)}</{heading}>
+<div class="memory-facts">
+<span>workspace {_cell(kernel.get('workspace_bytes'))} B</span>
+<span>peak {_cell(kernel.get('peak_usage_bytes'))} B</span>
+<span>slots {_cell(kernel.get('workspace_slot_count'))}</span>
+<span>live intervals {_cell(kernel.get('live_interval_count'))}</span>
+</div>
+</div>
+{svg}
+<h3>UB Reuse</h3>
+<div>{_memory_reuse_group_chips(kernel)}</div>
+<h3>Movement / Cache</h3>
+<div>{_memory_movement_chips(kernel)}</div>
+</section>
+"""
+
+
+def _memory_coverage_table(summary: dict[str, Any], view_rel_path: str) -> str:
+    rows = []
+    for kernel in summary.get("kernel_coverage", []):
+        if not isinstance(kernel, dict):
+            continue
+        rows.append(
+            "<tr>"
+            f"<td>{_summary_kernel_link(view_rel_path, kernel.get('kernel_id'))}</td>"
+            f"<td>{_cell(kernel.get('depth'))}</td>"
+            f"<td>{_cell(kernel.get('dag_workspace_size'))}</td>"
+            f"<td>{_cell(kernel.get('memory_plan_status'))}</td>"
+            f"<td>{_cell(kernel.get('reason'))}</td>"
+            "</tr>"
+        )
+    if not rows:
+        rows.append('<tr><td colspan="5">No kernel coverage data available.</td></tr>')
+    return f"""
+<h2>Kernel Coverage</h2>
+<table>
+<thead><tr><th>Kernel</th><th>DAG depth</th><th>DAG workspace bytes</th><th>Memory plan</th><th>Reason</th></tr></thead>
+<tbody>{''.join(rows)}</tbody>
+</table>
+"""
+
+
+def _render_memory_summary_view(view_rel_path: str, rel_path: str, summary: dict[str, Any]) -> str:
+    cards = "".join(
+        [
+            _summary_card("Analysis", summary.get("analysis_level")),
+            _summary_card("Kernels", summary.get("kernel_count")),
+            _summary_card("Detailed kernels", summary.get("detailed_kernel_count", summary.get("workspace_kernel_count", 0))),
+            _summary_card("Peak workspace", summary.get("peak_workspace_bytes")),
+            _summary_card("Reuse groups", summary.get("slot_reuse_group_count", 0)),
+            _summary_card("Movement edges", summary.get("movement_edge_count", 0)),
+        ]
+    )
+    body = [f'<div class="summary-card-grid">{cards}</div>']
+    note = summary.get("note")
+    if note:
+        body.append(f'<p class="note">{_cell(note)}</p>')
+
+    if summary.get("analysis_level") == "realize-memory-plan":
+        body.append(_memory_coverage_table(summary, view_rel_path))
+        for kernel in summary.get("kernels", []):
+            if isinstance(kernel, dict):
+                title = f"Kernel {kernel.get('kernel_id')} UB Allocation"
+                body.append(_render_memory_kernel_viz(kernel, heading_level=2, title=title))
+    else:
+        body.append(
+            '<div class="empty-state">No Realize StaticMemoryPlan was found, so UB slot reuse and lifetime cannot be drawn. '
+            "This page only shows DAG workspace overview.</div>"
+        )
+        rows = []
+        for kernel in summary.get("kernels", []):
+            if not isinstance(kernel, dict):
+                continue
+            rows.append(
+                f'<tr id="kernel-{_attr(kernel.get("kernel_id"))}">'
+                f"<td>{_summary_kernel_link(view_rel_path, kernel.get('kernel_id'))}</td>"
+                f"<td>{_cell(kernel.get('depth'))}</td>"
+                f"<td>{_cell(kernel.get('workspace_size'))}</td>"
+                f"<td>{_cell(kernel.get('kind'))}</td>"
+                f"<td>{_cell(kernel.get('selected_tile_shape'))}</td>"
+                "</tr>"
+            )
+        workspace_rows = "".join(rows) or '<tr><td colspan="5">No workspace data available.</td></tr>'
+        body.append(
+            "<h2>Workspace Overview</h2>"
+            "<table><thead><tr><th>Kernel</th><th>Depth</th><th>Workspace bytes</th><th>Kind</th><th>Tile</th></tr></thead>"
+            f"<tbody>{workspace_rows}</tbody></table>"
+        )
+
+    return _summary_page_document(
+        view_rel_path=view_rel_path,
+        rel_path=rel_path,
+        title="Memory Summary",
+        body="\n".join(body),
+    )
+
+
+def _render_tensor_diff_summary_view(view_rel_path: str, rel_path: str, summary: dict[str, Any]) -> str:
+    status = summary.get("status")
+    cards = "".join(
+        [
+            _summary_card("Status", status, "fail" if status == "fail" else "pass"),
+            _summary_card("Comparisons", summary.get("comparison_count")),
+            _summary_card("Failed", summary.get("failed_count"), "fail" if _as_int(summary.get("failed_count")) else ""),
+        ]
+    )
+    rows = []
+    for item in summary.get("comparisons", []):
+        if not isinstance(item, dict):
+            continue
+        status_class = "status-fail" if item.get("status") == "fail" else "status-pass"
+        rows.append(
+            "<tr>"
+            f'<td class="{status_class}">{_cell(item.get("status"))}</td>'
+            f"<td>{_cell(item.get('id'))}</td>"
+            f"<td>{_summary_kernel_link(view_rel_path, item.get('kernel_id'))}</td>"
+            f"<td>{_cell(item.get('task_id'))}</td>"
+            f"<td>{_cell(item.get('max_abs_error'))}</td>"
+            f"<td>{_cell(item.get('max_rel_error'))}</td>"
+            f"<td>{_cell(item.get('mean_abs_error'))}</td>"
+            "</tr>"
+        )
+    body = f"""
+<div class="summary-card-grid">{cards}</div>
+<h2>Comparisons</h2>
+<table>
+<thead><tr><th>Status</th><th>ID</th><th>Kernel</th><th>Task</th><th>max_abs_error</th><th>max_rel_error</th><th>mean_abs_error</th></tr></thead>
+<tbody>{''.join(rows) or '<tr><td colspan="7">No comparisons available.</td></tr>'}</tbody>
+</table>
+"""
+    return _summary_page_document(
+        view_rel_path=view_rel_path,
+        rel_path=rel_path,
+        title="Tensor Diff Summary",
+        body=body,
+    )
+
+
+def _render_locate_summary_view(view_rel_path: str, rel_path: str, summary: dict[str, Any]) -> str:
+    context = summary.get("first_bad_context", {})
+    if not isinstance(context, dict):
+        context = {}
+    cards = "".join(
+        [
+            _summary_card("Status", summary.get("status"), "fail" if summary.get("status") == "fail" else "pass"),
+            _summary_card("First bad kernel", summary.get("first_bad_kernel")),
+            _summary_card("First bad depth", summary.get("first_bad_depth")),
+            _summary_card("Failed kernels", summary.get("failed_kernel_count")),
+        ]
+    )
+    body = f"""
+<div class="summary-card-grid">{cards}</div>
+<section class="panel">
+<h2>First Bad Candidate</h2>
+<table>
+<tbody>
+<tr><th>Kernel</th><td>{_summary_kernel_link(view_rel_path, summary.get('first_bad_kernel'))}</td></tr>
+<tr><th>Comparison</th><td>{_cell((summary.get('first_bad_comparison') or {}).get('id') if isinstance(summary.get('first_bad_comparison'), dict) else None)}</td></tr>
+<tr><th>Method</th><td>{_cell(summary.get('method'))}</td></tr>
+</tbody>
+</table>
+</section>
+<section class="panel">
+<h2>DAG Context</h2>
+<table>
+<tbody>
+<tr><th>Direct upstream</th><td>{_value_list(context.get('direct_upstream'))}</td></tr>
+<tr><th>Upstream checked passed</th><td>{_value_list(context.get('upstream_checked_passed'))}</td></tr>
+<tr><th>Direct upstream without checkpoint</th><td>{_value_list(context.get('unchecked_direct_upstream'))}</td></tr>
+<tr><th>Direct downstream</th><td>{_value_list(context.get('direct_downstream'))}</td></tr>
+<tr><th>Downstream failed</th><td>{_value_list(context.get('downstream_failed'))}</td></tr>
+</tbody>
+</table>
+</section>
+"""
+    return _summary_page_document(
+        view_rel_path=view_rel_path,
+        rel_path=rel_path,
+        title="Locate Summary",
+        body=body,
+    )
+
+
+def _render_debug_graph_summary_view(view_rel_path: str, rel_path: str, summary: dict[str, Any]) -> str:
+    primary = summary.get("primary_stage", {})
+    if not isinstance(primary, dict):
+        primary = {}
+    kernel_dag = summary.get("kernel_dag", {})
+    if not isinstance(kernel_dag, dict):
+        kernel_dag = {}
+    body = f"""
+<div class="summary-card-grid">
+{_summary_card("Stages", summary.get('stage_count'))}
+{_summary_card("Primary stage", primary.get('name'))}
+{_summary_card("Kernels", kernel_dag.get('kernel_count'))}
+{_summary_card("Kernel edges", kernel_dag.get('graph_edges'))}
+</div>
+<section class="panel">
+<h2>Workspace</h2>
+<p><a href="{html.escape(_relative_href(view_rel_path, 'views/debug_graph.html'), quote=True)}">Open Debug Graph</a></p>
+</section>
+"""
+    return _summary_page_document(
+        view_rel_path=view_rel_path,
+        rel_path=rel_path,
+        title="Debug Graph Summary",
+        body=body,
+    )
+
+
+def _render_typed_json_view(view_rel_path: str, rel_path: str, parsed: Any) -> str | None:
+    if not isinstance(parsed, dict):
+        return None
+    if rel_path == "summaries/memory.json":
+        return _render_memory_summary_view(view_rel_path, rel_path, parsed)
+    if rel_path == "summaries/tensor_diff.json":
+        return _render_tensor_diff_summary_view(view_rel_path, rel_path, parsed)
+    if rel_path == "summaries/locate.json":
+        return _render_locate_summary_view(view_rel_path, rel_path, parsed)
+    if rel_path == "summaries/debug_graph.json":
+        return _render_debug_graph_summary_view(view_rel_path, rel_path, parsed)
+    return None
+
+
 def _render_json_view(run_dir: pathlib.Path, rel_path: str) -> str | None:
     source_path = run_dir / rel_path
     if not source_path.exists():
@@ -514,6 +990,10 @@ def _render_json_view(run_dir: pathlib.Path, rel_path: str) -> str | None:
     try:
         source_text = source_path.read_text(encoding="utf-8")
         parsed = json.loads(source_text)
+        typed_document = _render_typed_json_view(view_rel_path, rel_path, parsed)
+        if typed_document:
+            layout.write_text(view_path, typed_document)
+            return view_rel_path
         source_text = json.dumps(parsed, indent=2, ensure_ascii=False)
     except json.JSONDecodeError as error:
         raise CommandError(f"JSON view source is not valid JSON: {source_path}: {error}") from error
@@ -538,20 +1018,22 @@ def _render_json_view(run_dir: pathlib.Path, rel_path: str) -> str | None:
 <meta charset="utf-8">
 <title>{_cell(pathlib.PurePosixPath(rel_path).name)} - ascend-debug</title>
 <style>
-body {{ font-family: sans-serif; margin: 0; color: #17202a; background: #f8fafc; }}
+:root {{ color-scheme: light; }}
+body {{ font-family: sans-serif; margin: 0; color: #17202a; background: #eef2f7; }}
 header {{ position: sticky; top: 0; z-index: 1; padding: 0.75rem 1rem; background: #ffffff; border-bottom: 1px solid #cbd5e1; }}
 h1 {{ font-size: 1rem; margin: 0 0 0.5rem 0; }}
 .toolbar {{ display: flex; gap: 0.75rem; align-items: center; flex-wrap: wrap; }}
 input {{ min-width: 18rem; padding: 0.35rem 0.5rem; border: 1px solid #94a3b8; border-radius: 4px; color: #17202a; background: #ffffff; }}
 main {{ padding: 0.75rem 1rem 2rem; }}
-table {{ border-collapse: collapse; width: 100%; background: #0f172a; color: #e2e8f0; }}
-td {{ vertical-align: top; border-bottom: 1px solid #1e293b; }}
+table.code-table {{ border-collapse: collapse; width: 100%; background: #0b1020; color: #dbeafe; border: 1px solid #1e293b; }}
+.code-table td {{ vertical-align: top; border-bottom: 1px solid #1e293b; }}
 .gutter {{ width: 4.5rem; text-align: right; padding: 0 0.65rem; background: #111827; user-select: none; }}
-.gutter a {{ color: #94a3b8; text-decoration: none; }}
+.gutter a {{ color: #93a4bd; text-decoration: none; }}
 .code {{ padding-left: 0.75rem; }}
-pre {{ margin: 0; padding: 0.12rem 0; white-space: pre-wrap; overflow-wrap: anywhere; font: 12px/1.5 SFMono-Regular, Menlo, Consolas, monospace; color: #e2e8f0; }}
+.code pre {{ margin: 0; padding: 0.12rem 0; white-space: pre-wrap; overflow-wrap: anywhere; font: 12px/1.5 SFMono-Regular, Menlo, Consolas, monospace; color: #dbeafe; background: transparent; }}
+.line-row:hover pre {{ background: #172033; }}
 .hidden {{ display: none; }}
-.match pre {{ background: #334155; color: #ffffff; }}
+.match pre {{ background: #1d4ed8; color: #ffffff; }}
 </style>
 </head>
 <body>
@@ -564,7 +1046,7 @@ pre {{ margin: 0; padding: 0.12rem 0; white-space: pre-wrap; overflow-wrap: anyw
 </div>
 </header>
 <main>
-<table>
+<table class="code-table text-code-table">
 <tbody>
 {''.join(line_rows)}
 </tbody>
@@ -700,6 +1182,7 @@ def _render_kernel_views(
     summary: dict[str, Any] | None,
     graph_views: dict[str, str],
     json_views: dict[str, str],
+    memory_summary: dict[str, Any] | None,
 ) -> dict[str, str]:
     if not summary:
         return {}
@@ -715,6 +1198,16 @@ def _render_kernel_views(
         dag_href = html.escape(_relative_href(view_rel_path, "graphs/kernel_dag.svg"), quote=True)
         summary_rel_path = json_views.get("graphs/kernel_dag.summary.json", "graphs/kernel_dag.summary.json")
         summary_href = html.escape(_relative_href(view_rel_path, summary_rel_path), quote=True)
+        memory_kernel = _memory_kernel_by_id(memory_summary, kernel_id)
+        memory_href = ""
+        memory_link = ""
+        memory_view_path = json_views.get("summaries/memory.json")
+        if memory_view_path and _memory_has_kernel_anchor(memory_summary, kernel_id):
+            memory_href = html.escape(
+                f"{_relative_href(view_rel_path, memory_view_path)}#kernel-{kernel_id}",
+                quote=True,
+            )
+            memory_link = f'<a href="{memory_href}">Memory View</a>'
         fact_rows = []
         for label, value in (
             ("kind", node.get("kind")),
@@ -755,6 +1248,13 @@ def _render_kernel_views(
 
         upstream = _kernel_link_list(pred.get(kernel_id, []), view_rel_path)
         downstream = _kernel_link_list(succ.get(kernel_id, []), view_rel_path)
+        memory_section = ""
+        if memory_kernel:
+            memory_section = _render_memory_kernel_viz(
+                memory_kernel,
+                heading_level=2,
+                title="UB Allocation",
+            )
         document = f"""<!doctype html>
 <html lang="en">
 <head>
@@ -767,6 +1267,21 @@ th, td {{ border: 1px solid #cbd5e1; padding: 0.4rem 0.55rem; text-align: left; 
 th {{ background: #f1f5f9; }}
 .toolbar {{ display: flex; gap: 0.75rem; flex-wrap: wrap; margin-bottom: 1rem; }}
 .mono {{ font-family: SFMono-Regular, Menlo, Consolas, monospace; }}
+.memory-kernel-viz {{ border: 1px solid #cbd5e1; border-radius: 8px; background: #ffffff; padding: 0.85rem; margin: 1rem 0; overflow: auto; }}
+.memory-kernel-header {{ display: flex; gap: 0.75rem; flex-wrap: wrap; align-items: baseline; justify-content: space-between; margin-bottom: 0.65rem; }}
+.memory-kernel-header h2 {{ margin: 0; }}
+.memory-facts {{ display: flex; gap: 0.45rem; flex-wrap: wrap; color: #475569; font-size: 0.82rem; }}
+.chip {{ display: inline-block; border: 1px solid #cbd5e1; border-radius: 999px; padding: 0.16rem 0.45rem; background: #ffffff; color: #334155; margin: 0.12rem; font-size: 0.78rem; }}
+.reuse-group {{ border-color: #86efac; background: #f0fdf4; color: #047857; }}
+.movement-edge {{ border-color: #bfdbfe; background: #eff6ff; color: #1d4ed8; }}
+.ub-allocation-svg {{ display: block; min-width: 640px; max-width: none; background: #fbfdff; border: 1px solid #dbe3ee; border-radius: 8px; }}
+.ub-allocation-svg text {{ font-family: SFMono-Regular, Menlo, Consolas, monospace; font-size: 11px; fill: #334155; }}
+.ub-allocation-svg .axis {{ stroke: #94a3b8; stroke-width: 1; }}
+.ub-allocation-svg .grid {{ stroke: #dbe3ee; stroke-width: 1; }}
+.ub-allocation-svg .row-bg {{ fill: #f8fafc; stroke: #e2e8f0; }}
+.ub-allocation-svg .slot-block {{ fill: #60a5fa; stroke: #1d4ed8; stroke-width: 1.2; }}
+.ub-allocation-svg .slot-block.reuse-group {{ fill: #86efac; stroke: #059669; }}
+.ub-allocation-svg .movement-edge {{ fill: #f59e0b; stroke: #b45309; }}
 </style>
 </head>
 <body>
@@ -775,6 +1290,7 @@ th {{ background: #f1f5f9; }}
 <a href="{dashboard_href}">Dashboard</a>
 <a href="{dag_href}">Kernel DAG</a>
 <a href="{summary_href}">DAG summary JSON</a>
+{memory_link}
 </div>
 <h2>Kernel Facts</h2>
 <table><tbody>{''.join(fact_rows)}</tbody></table>
@@ -788,6 +1304,7 @@ th {{ background: #f1f5f9; }}
 <thead><tr><th>Line</th><th>Operation</th><th>Label</th><th>Role</th><th>Result Type</th></tr></thead>
 <tbody>{''.join(op_rows)}</tbody>
 </table>
+{memory_section}
 </body>
 </html>
 """
@@ -1014,7 +1531,13 @@ def render_index(run_dir: pathlib.Path, manifest: dict[str, Any]) -> pathlib.Pat
         memory_summary=memory_summary,
     )
     json_views = _render_json_views(run_dir, manifest)
-    kernel_views = _render_kernel_views(run_dir, kernel_summary, graph_views, json_views)
+    kernel_views = _render_kernel_views(
+        run_dir,
+        kernel_summary,
+        graph_views,
+        json_views,
+        memory_summary,
+    )
     command_section = ""
     if manifest.get("commands"):
         command_section = f"""

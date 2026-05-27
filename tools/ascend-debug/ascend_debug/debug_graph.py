@@ -370,7 +370,7 @@ def _render_html(
     overlays = debug_graph.get("overlays", {})
     kernel_dag = debug_graph.get("kernel_dag", {})
     summary_path = debug_graph.get("summary_path", "summaries/debug_graph.json")
-    workspace_json = html.escape(json.dumps(debug_graph), quote=False)
+    workspace_json = layout.json_script_payload(debug_graph)
     style = """
 <style>
 :root {
@@ -449,7 +449,7 @@ dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }
 .inspector-panel { min-width: 0; padding: 0.8rem; align-self: start; position: sticky; top: 0.85rem; max-height: calc(100vh - 1.7rem); overflow: auto; }
 .inspector-actions { display: flex; flex-wrap: wrap; gap: 0.45rem; margin-bottom: 0.6rem; }
 .chip { display: inline-block; border: 1px solid var(--line); border-radius: 999px; padding: 0.18rem 0.45rem; color: #344054; background: #ffffff; font-size: 0.78rem; }
-pre { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; background: #111827; color: #e5e7eb; padding: 0.75rem; border-radius: 7px; font: 12px/1.45 SFMono-Regular, Menlo, Consolas, monospace; }
+pre { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; background: #0b1020; color: #dbeafe; border: 1px solid #1e293b; padding: 0.75rem; border-radius: 7px; font: 12px/1.45 SFMono-Regular, Menlo, Consolas, monospace; }
 .artifact-index { grid-column: 1 / -1; padding: 0.85rem; }
 .artifact-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(16rem, 1fr)); gap: 0.75rem; }
 table { width: 100%; border-collapse: collapse; font-size: 0.82rem; }
@@ -739,6 +739,16 @@ function findKernelNodeElement(kernelId) {
   return Array.from(document.querySelectorAll(".kernel-dag-node")).find((element) => element.dataset.kernelId === kernelId) || null;
 }
 
+function memoryHasKernel(kernelId) {
+  const memory = workspace.overlay_details && workspace.overlay_details.memory ? workspace.overlay_details.memory : {};
+  const detailed = Array.isArray(memory.kernels) ? memory.kernels : [];
+  return detailed.some((kernel) => kernel && kernel.kernel_id === kernelId);
+}
+
+function memoryViewLink(kernelId) {
+  return `summaries/memory.json.html#kernel-${encodeURIComponent(kernelId)}`;
+}
+
 function setSearchStatus(text) {
   const status = document.getElementById("graph-search-status");
   if (status) status.textContent = text;
@@ -848,6 +858,7 @@ function selectStageNode(stage, graph, nodeId, options = {}) {
   const links = [{label: "Stage MLIR", href: `../${stage.path}`}];
   if (stage.graph_view_path) links.push({label: "Stage View", href: `../${stage.graph_view_path}`});
   if (node && node.kernel_id) links.push({label: "Kernel View", href: `kernels/${node.kernel_id}.html`});
+  if (node && node.kernel_id && memoryHasKernel(node.kernel_id)) links.push({label: "Memory View", href: memoryViewLink(node.kernel_id)});
   const diff = node ? stageNodeDiffInfo(stage, nodeId) : null;
   setInspector(node ? `${node.op_name} ${node.label || ""}` : "Stage Node", {stage: {order: stage.order, name: stage.name}, diff, node}, links);
   if (options.center) {
@@ -927,7 +938,9 @@ function selectKernel(kernelId, options = {}) {
   selectedKey = kernelId;
   document.querySelectorAll(".kernel-dag-node").forEach((element) => element.classList.toggle("selected", element.dataset.kernelId === kernelId));
   const node = workspace.kernel_dag && workspace.kernel_dag.nodes ? workspace.kernel_dag.nodes[kernelId] : null;
-  setInspector(`Kernel ${kernelId}`, {kernel_id: kernelId, ...node}, [{label: "Kernel View", href: `kernels/${kernelId}.html`}]);
+  const links = [{label: "Kernel View", href: `kernels/${kernelId}.html`}];
+  if (memoryHasKernel(kernelId)) links.push({label: "Memory View", href: memoryViewLink(kernelId)});
+  setInspector(`Kernel ${kernelId}`, {kernel_id: kernelId, ...node}, links);
   if (options.center) {
     centerGraphElement(findKernelNodeElement(kernelId));
   }

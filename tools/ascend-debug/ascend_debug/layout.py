@@ -56,6 +56,15 @@ def write_json(path: pathlib.Path, value: dict[str, Any]) -> None:
     path.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
 
+def json_script_payload(value: Any) -> str:
+    text = json.dumps(value, ensure_ascii=False)
+    return (
+        text.replace("&", "\\u0026")
+        .replace("<", "\\u003c")
+        .replace(">", "\\u003e")
+    )
+
+
 def write_manifest(
     run_dir: pathlib.Path,
     *,

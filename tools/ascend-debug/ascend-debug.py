@@ -30,6 +30,25 @@ def build_parser() -> argparse.ArgumentParser:
     collect.add_argument("--runtime-manifest", type=pathlib.Path)
     collect.add_argument("--run-manifest", type=pathlib.Path)
     collect.add_argument("--kernelized-ir", type=pathlib.Path)
+    collect.add_argument(
+        "--memory-detail",
+        action="store_true",
+        help="Use target-aware Realize options so memory.json can include UB/workspace slot lifetimes when available.",
+    )
+    collect.add_argument(
+        "--cann-root",
+        type=pathlib.Path,
+        help="CANN root for --memory-detail. Defaults to ASCEND_HOME_PATH, ASCEND_HOME, or CANN_ROOT.",
+    )
+    collect.add_argument(
+        "--soc",
+        help="SoC name for --memory-detail. Defaults to ASCEND_SOC_VERSION or Ascend910B2.",
+    )
+    collect.add_argument(
+        "--realize-options",
+        default="",
+        help="Advanced extra option string appended inside --ascend-realize=...",
+    )
     collect.set_defaults(handler=collect_run)
 
     open_cmd = subparsers.add_parser("open", help="Generate or open the debug dashboard")
