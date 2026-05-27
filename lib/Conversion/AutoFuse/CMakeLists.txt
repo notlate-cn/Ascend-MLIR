@@ -1,13 +1,17 @@
 add_mlir_library(MLIRNetworkJsonEmitter
   PARTIAL_SOURCES_INTENDED
   GroupOutline/NetworkJsonEmitter.cpp
+  GroupOutline/OpRoleClassifier.cpp
 
   ADDITIONAL_HEADER_DIRS
   ${CMAKE_SOURCE_DIR}/include/Conversion
 
   LINK_LIBS PUBLIC
   MLIRIR
+  MLIRArithDialect
   MLIRFuncDialect
+  MLIRLinalgDialect
+  MLIRMathDialect
   MLIRTensorDialect
   LLVMSupport
 )

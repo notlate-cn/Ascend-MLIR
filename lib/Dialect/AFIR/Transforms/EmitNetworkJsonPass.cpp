@@ -58,6 +58,29 @@ struct EmitNetworkJsonPass
           << llvm::toString(std::move(err));
       return signalPassFailure();
     }
+
+    // Debug-only sidecar — provenance for diff/locate tools. Derive its path
+    // from `path`: foo.json → foo.provenance.json (else append the suffix).
+    // Not consumed by the compilation pipeline; see debug.md §7.5.
+    std::string provPath = path;
+    llvm::StringRef p(provPath);
+    if (p.ends_with(".json"))
+      provPath = p.drop_back(5).str() + ".provenance.json";
+    else
+      provPath += ".provenance.json";
+    std::error_code pec;
+    llvm::raw_fd_ostream provOs(provPath, pec);
+    if (pec) {
+      getOperation()->emitError("emit-network-json: cannot open ")
+          << provPath << ": " << pec.message();
+      return signalPassFailure();
+    }
+    if (auto err = mlir::auto_fuse::emitNetworkProvenanceJson(
+            getOperation(), coord, provOs)) {
+      getOperation()->emitError("emit-network-json (provenance): ")
+          << llvm::toString(std::move(err));
+      return signalPassFailure();
+    }
   }
 };
 } // namespace

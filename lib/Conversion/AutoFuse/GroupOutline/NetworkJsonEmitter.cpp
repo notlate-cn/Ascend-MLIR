@@ -5,9 +5,12 @@
 //===----------------------------------------------------------------------===//
 
 #include "Conversion/AutoFuse/GroupOutline/NetworkJsonEmitter.h"
+#include "Conversion/AutoFuse/GroupOutline/OpRoleClassifier.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
+#include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
+#include "mlir/IR/AsmState.h"
 #include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/BuiltinTypes.h"
@@ -16,6 +19,8 @@
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/Support/JSON.h"
 #include "llvm/Support/raw_ostream.h"
+
+#include <cstdio>
 
 namespace mlir::auto_fuse {
 
@@ -292,6 +297,164 @@ llvm::Error emitNetworkJson(mlir::ModuleOp module, mlir::func::FuncOp coord,
   root["inputs"]   = std::move(inputsArr);
   root["kernels"]  = std::move(kernelsArr);
   root["outputs"]  = std::move(outputsArr);
+
+  llvm::json::OStream jos(os, /*IndentSize=*/2);
+  jos.value(llvm::json::Value(std::move(root)));
+  os << "\n";
+
+  return llvm::Error::success();
+}
+
+//===----------------------------------------------------------------------===//
+// emitNetworkProvenanceJson (debug-only sidecar)
+//===----------------------------------------------------------------------===//
+
+static std::string padId(unsigned n) {
+  char buf[8];
+  std::snprintf(buf, sizeof(buf), "op_%03u", n);
+  return std::string(buf);
+}
+
+static std::string locToString(mlir::Location loc) {
+  std::string s;
+  llvm::raw_string_ostream os(s);
+  loc.print(os);
+  return s;
+}
+
+// Trace through trivial DPS / view / glue ops back to the producing source op.
+static mlir::Operation *traceToSourceOp(mlir::Value v) {
+  mlir::Operation *def = v.getDefiningOp();
+  while (def && llvm::isa<mlir::tensor::CastOp, mlir::tensor::ExtractSliceOp,
+                          mlir::tensor::ExpandShapeOp,
+                          mlir::tensor::CollapseShapeOp>(def)) {
+    def = def->getOperand(0).getDefiningOp();
+  }
+  return def;
+}
+
+llvm::Error emitNetworkProvenanceJson(mlir::ModuleOp module,
+                                      mlir::func::FuncOp coord,
+                                      llvm::raw_ostream &os) {
+  mlir::SymbolTable symTable(module);
+
+  llvm::json::Array kernelsArr;
+  unsigned opCounter = 0;
+
+  for (mlir::Operation &op : coord.getBody().front()) {
+    auto callOp = mlir::dyn_cast<mlir::func::CallOp>(&op);
+    if (!callOp)
+      continue;
+
+    llvm::StringRef calleeName = callOp.getCallee();
+    auto callee = symTable.lookup<mlir::func::FuncOp>(calleeName);
+    bool isAclnn = callee && callee->hasAttr("aclnn.op");
+
+    llvm::json::Object entry;
+    entry["kernel_id"] = calleeName.str();
+    entry["kind"] = isAclnn ? "aclnn" : "ascendc";
+    entry["runtime_task"] = calleeName.str();
+
+    llvm::json::Array sourceOps;
+    llvm::json::Array boundary;
+    std::string summary;
+
+    if (isAclnn) {
+      // Synthetic single source op from aclnn.op attr.
+      std::string opName = "unknown";
+      if (auto a = callee->getAttrOfType<mlir::StringAttr>("aclnn.op"))
+        opName = a.getValue().str();
+      std::string id = padId(opCounter++);
+      llvm::json::Object so;
+      so["id"] = id;
+      so["name"] = "aclnn." + opName;
+      so["op_role"] = opName;
+      so["loc"] = locToString(callOp.getLoc());
+      so["result_ssa"] = "%0";
+      sourceOps.push_back(std::move(so));
+      summary = opName;
+      for (unsigned i = 0, e = callOp.getNumResults(); i < e; ++i) {
+        llvm::json::Object b;
+        b["result_index"] = static_cast<int64_t>(i);
+        b["source_op_id"] = id;
+        boundary.push_back(std::move(b));
+      }
+    } else if (!callee || callee.isExternal() || callee.getBody().empty()) {
+      // Declaration / external / no body — emit a placeholder.
+      std::string id = padId(opCounter++);
+      llvm::json::Object so;
+      so["id"] = id;
+      so["name"] = callee ? callee.getName().str() : std::string("<extern>");
+      so["op_role"] = "unknown";
+      so["loc"] = locToString(callOp.getLoc());
+      sourceOps.push_back(std::move(so));
+      summary = "unknown";
+    } else {
+      // AscendC: walk the callee body for source ops (linalg.LinalgOp).
+      mlir::AsmState asmState(callee);
+      llvm::DenseMap<mlir::Operation *, std::string> idOf;
+      for (mlir::Operation &kop : callee.getBody().front()) {
+        if (!mlir::isa<mlir::linalg::LinalgOp>(&kop))
+          continue;
+        std::string id = padId(opCounter++);
+        idOf[&kop] = id;
+        std::string role = classifyOpRole(&kop);
+        llvm::json::Object so;
+        so["id"] = id;
+        so["name"] = kop.getName().getStringRef().str();
+        so["op_role"] = role;
+        so["loc"] = locToString(kop.getLoc());
+        // result_ssa: capture the printed SSA name of the first result.
+        std::string ssaName;
+        if (kop.getNumResults() > 0) {
+          llvm::raw_string_ostream ss(ssaName);
+          kop.getResult(0).printAsOperand(ss, asmState);
+        }
+        so["result_ssa"] = ssaName;
+        sourceOps.push_back(std::move(so));
+        if (!summary.empty()) summary += "+";
+        summary += role;
+      }
+      // Build boundary: each callee return operand traces back to a source op.
+      auto retOp = mlir::dyn_cast<mlir::func::ReturnOp>(
+          callee.getBody().front().getTerminator());
+      if (retOp) {
+        for (auto [i, v] : llvm::enumerate(retOp.getOperands())) {
+          mlir::Operation *src = traceToSourceOp(v);
+          auto it = src ? idOf.find(src) : idOf.end();
+          llvm::json::Object b;
+          b["result_index"] = static_cast<int64_t>(i);
+          b["source_op_id"] = (it != idOf.end()) ? it->second : std::string("unknown");
+          boundary.push_back(std::move(b));
+        }
+      }
+    }
+
+    // Convention from HostLaunchHelper's dump-intermediates layout.
+    llvm::json::Array hints;
+    for (unsigned i = 0, e = callOp.getNumResults(); i < e; ++i)
+      hints.push_back(
+          ("intermediates_default/" + calleeName + "_out_" + llvm::Twine(i) +
+           ".npy").str());
+
+    entry["fused_ops_summary"] = summary;
+    entry["source_ops"] = std::move(sourceOps);
+    entry["boundary_source_ops"] = std::move(boundary);
+    entry["output_checkpoint_hint"] = std::move(hints);
+    entry["torch_hint"] = nullptr;
+
+    kernelsArr.push_back(std::move(entry));
+  }
+
+  llvm::json::Object root;
+  root["schema_version"] = 1;
+  root["tool"] = "NetworkJsonEmitter";
+  // Descriptive label only; source op order is stable per-emit but the
+  // referenced "stage" is the post-outline coordinator (which preserves
+  // post-recognize-aclnn linalg op identity inside private kernel funcs).
+  root["stage_input"] = "post-recognize-aclnn-outlined";
+  root["function"] = coord.getName().str();
+  root["kernels"] = std::move(kernelsArr);
 
   llvm::json::OStream jos(os, /*IndentSize=*/2);
   jos.value(llvm::json::Value(std::move(root)));

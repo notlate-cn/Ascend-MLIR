@@ -22,4 +22,17 @@ llvm::Error emitNetworkJson(mlir::ModuleOp module,
                             mlir::func::FuncOp coord,
                             llvm::raw_ostream &os);
 
+// Writes a debug-only provenance sidecar (see docs/auto-fuse/debug.md §7.5).
+// For each callee in the coordinator body, records the source ops fused into
+// it (id / name / op_role / loc / result_ssa), a kernel-level fused_ops_summary
+// joined from op_roles in topological order, and which source op produces each
+// kernel result (boundary_source_ops). aclnn kernels report a single synthetic
+// source op with role = the @__aclnn_<...> op name. The output schema is
+// independent of network.json's; the two files relate via `kernel_id` only.
+//
+// PROVENANCE IS DEBUG-ONLY. The main compilation pipeline must not consume it.
+llvm::Error emitNetworkProvenanceJson(mlir::ModuleOp module,
+                                      mlir::func::FuncOp coord,
+                                      llvm::raw_ostream &os);
+
 } // namespace mlir::auto_fuse

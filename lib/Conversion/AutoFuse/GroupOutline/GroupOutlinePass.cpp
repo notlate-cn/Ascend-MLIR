@@ -362,6 +362,21 @@ static LogicalResult emitFiles(ModuleOp module,
     subMod->print(os);
   }
 
+  // Provenance sidecar must walk kernel func bodies, so emit BEFORE we strip
+  // them. Debug-only — not consumed by the compilation pipeline (debug.md §7.5).
+  {
+    std::string provFile = (outputDir + "/network.provenance.json").str();
+    std::error_code pec;
+    llvm::raw_fd_ostream provOs(provFile, pec);
+    if (pec)
+      return module.emitError("cannot open network.provenance.json: ")
+             << pec.message();
+    if (auto err = mlir::auto_fuse::emitNetworkProvenanceJson(module, coordFunc,
+                                                               provOs))
+      return module.emitError("emitNetworkProvenanceJson: ")
+             << llvm::toString(std::move(err));
+  }
+
   // Strip kernel func bodies from the main module → coordinator + declarations
   for (func::FuncOp kernelFunc : kernelFuncs) {
     kernelFunc.eraseBody();
