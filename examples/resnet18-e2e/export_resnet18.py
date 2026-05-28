@@ -37,14 +37,25 @@ def main():
 
     with torch.no_grad():
         expected = model(x)
-    np.save(outdir / "input_0.npy", x.numpy())
     np.save(outdir / "expected_0.npy", expected.numpy())
 
     mlir_text = torch_to_linalg(model, [x], None)
     (outdir / "step0_linalg.mlir").write_text(mlir_text)
 
+    # ResNet's BatchNorm buffers (running_mean, running_var, num_batches_tracked)
+    # are NOT inlined as constants by torch.export — they become function inputs.
+    # Dump them in named_buffers() order (= torch.export's input order), with the
+    # image tensor at the end. The number of inputs matches the kernel func's
+    # arg count in step0_linalg.mlir.
+    n_inputs = 0
+    for name, buf in model.named_buffers():
+        np.save(outdir / f"input_{n_inputs}.npy", buf.detach().cpu().numpy())
+        n_inputs += 1
+    np.save(outdir / f"input_{n_inputs}.npy", x.numpy())
+    n_inputs += 1
+
     print(f"input={tuple(x.shape)} expected={tuple(expected.shape)} dtype={args.dtype}")
-    print(f"wrote: {outdir}/step0_linalg.mlir, input_0.npy, expected_0.npy")
+    print(f"wrote: {outdir}/step0_linalg.mlir, input_0..{n_inputs - 1}.npy ({n_inputs} inputs), expected_0.npy")
 
 
 if __name__ == "__main__":

@@ -12,9 +12,22 @@ source "${EX_DIR}/env_sibling.sh"
 conda run -n torch-mlir python "${EX_DIR}/export_resnet18.py" \
   --batch 1 --size 224 --dtype fp32 --outdir "${OUTDIR}"
 
+# ResNet has many inputs (60 BN buffers + image at the end) — enumerate by
+# integer index so input_10.npy comes after input_9.npy (shell glob would sort
+# lexically, putting 10 before 2). The export script writes them in the right
+# order matching torch.export's named_buffers() traversal.
+INPUTS=()
+i=0
+while [ -f "${OUTDIR}/input_${i}.npy" ]; do
+  INPUTS+=( "${OUTDIR}/input_${i}.npy" )
+  i=$((i + 1))
+done
+
+# network_runner.py uses argparse nargs="+" for --inputs, so all the npy
+# paths follow a single --inputs flag.
 conda run -n torch-mlir python "${WT_ROOT}/python/network_runner.py" \
   --input-linalg "${OUTDIR}/step0_linalg.mlir" \
-  --inputs "${OUTDIR}/input_0.npy" \
+  --inputs "${INPUTS[@]}" \
   --expected "${OUTDIR}/expected_0.npy" \
   --workdir "${OUTDIR}/work" \
   --max-phase "${MAX_PHASE}" \
