@@ -24,6 +24,7 @@
 #include "mlir/IR/AffineMap.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/IRMapping.h"
+#include "llvm/ADT/STLExtras.h"
 
 using namespace mlir;
 
@@ -37,16 +38,99 @@ static bool isGatherOp(linalg::GenericOp op) {
          op->hasAttr(ascend::kEmbeddingDimAttr);
 }
 
-// Returns true if the linalg.generic body contains only arith/constant ops
-// and a linalg.yield terminator (no tensor.extract, no linalg.index).
+static Operation *getOnlyUserOp(Value value) {
+  Operation *onlyUser = nullptr;
+  for (OpOperand &use : value.getUses()) {
+    Operation *user = use.getOwner();
+    if (!onlyUser) {
+      onlyUser = user;
+      continue;
+    }
+    if (onlyUser != user)
+      return nullptr;
+  }
+  return onlyUser;
+}
+
+static bool hasOnlyParallelIterators(linalg::GenericOp op) {
+  return llvm::all_of(op.getIteratorTypesArray(), [](utils::IteratorType type) {
+    return type == utils::IteratorType::parallel;
+  });
+}
+
+static bool hasProjectedPermutationMaps(linalg::GenericOp op) {
+  SmallVector<AffineMap> maps = op.getIndexingMapsArray();
+  size_t expectedMaps = static_cast<size_t>(op.getNumDpsInputs()) +
+                        static_cast<size_t>(op.getNumDpsInits());
+  if (maps.size() != expectedMaps)
+    return false;
+
+  return llvm::all_of(maps, [](AffineMap map) {
+    return map.isProjectedPermutation(/*allowZeroInResults=*/false);
+  });
+}
+
+static bool isSupportedGatherFusableBodyOp(Operation &bodyOp) {
+  return isa<arith::AddFOp, arith::MulFOp, arith::MaximumFOp,
+             arith::ConstantOp>(bodyOp);
+}
+
+static bool hasSupportedScalarElementwiseBody(linalg::GenericOp op) {
+  auto yieldOp = dyn_cast<linalg::YieldOp>(op.getBody()->getTerminator());
+  if (!yieldOp || yieldOp.getNumOperands() != 1)
+    return false;
+
+  for (Operation &bodyOp : op.getBody()->without_terminator())
+    if (!isSupportedGatherFusableBodyOp(bodyOp))
+      return false;
+
+  return true;
+}
+
+// Returns true if the linalg.generic is a tensor-level, all-parallel scalar
+// elementwise op that the gather lowering can preserve after inlining.
 static bool isSimpleElementwise(linalg::GenericOp op) {
   if (isGatherOp(op))
     return false;
-  for (auto &bodyOp : op.getBody()->without_terminator()) {
-    if (isa<tensor::ExtractOp>(bodyOp) || isa<linalg::IndexOp>(bodyOp))
-      return false;
+  if (op.getNumDpsInits() != 1 || op->getNumResults() != 1)
+    return false;
+  if (!hasOnlyParallelIterators(op) || !hasProjectedPermutationMaps(op))
+    return false;
+  return hasSupportedScalarElementwiseBody(op);
+}
+
+static bool isPreElementwiseForGather(linalg::GenericOp op) {
+  if (!isSimpleElementwise(op) || op.getNumDpsInputs() != 1)
+    return false;
+
+  SmallVector<AffineMap> maps = op.getIndexingMapsArray();
+  return maps[0] == maps[op.getNumDpsInputs()];
+}
+
+static int getSingleDpsInputIndex(linalg::GenericOp op, Value value) {
+  int found = -1;
+  for (unsigned i = 0, e = op.getNumDpsInputs(); i < e; ++i) {
+    if (op.getDpsInputOperand(i)->get() != value)
+      continue;
+    if (found != -1)
+      return -1;
+    found = static_cast<int>(i);
   }
-  return true;
+  return found;
+}
+
+static bool isPostElementwiseForGather(linalg::GenericOp op,
+                                       Value gatherResult) {
+  if (!isSimpleElementwise(op))
+    return false;
+
+  int gatherInputIndex = getSingleDpsInputIndex(op, gatherResult);
+  if (gatherInputIndex < 0)
+    return false;
+
+  SmallVector<AffineMap> maps = op.getIndexingMapsArray();
+  return maps[static_cast<unsigned>(gatherInputIndex)] ==
+         maps[op.getNumDpsInputs()];
 }
 
 } // namespace
@@ -74,7 +158,8 @@ LogicalResult fuseGatherElementwise(func::FuncOp funcOp) {
     Value capturedTensor = extractOp.getTensor();
     linalg::GenericOp preOp;
     if (auto defOp = capturedTensor.getDefiningOp<linalg::GenericOp>())
-      if (isSimpleElementwise(defOp))
+      if (isPreElementwiseForGather(defOp) &&
+          getOnlyUserOp(defOp.getResult(0)) == extractOp.getOperation())
         preOp = defOp;
 
     // --- Find post-op ---
@@ -82,14 +167,10 @@ LogicalResult fuseGatherElementwise(func::FuncOp funcOp) {
     // one simple elementwise generic → post-op.
     Value gatherResult = gatherOp->getResult(0);
     linalg::GenericOp postOp;
-    for (Operation *user : gatherResult.getUsers()) {
-      if (auto candidate = dyn_cast<linalg::GenericOp>(user)) {
-        if (isSimpleElementwise(candidate)) {
+    if (Operation *user = getOnlyUserOp(gatherResult))
+      if (auto candidate = dyn_cast<linalg::GenericOp>(user))
+        if (isPostElementwiseForGather(candidate, gatherResult))
           postOp = candidate;
-          break;
-        }
-      }
-    }
 
     if (!preOp && !postOp)
       continue; // nothing to fuse
