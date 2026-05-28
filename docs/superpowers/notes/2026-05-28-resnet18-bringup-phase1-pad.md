@@ -1,8 +1,8 @@
-# ResNet-18 bring-up — phase-1 + conv fixed, phase-2 BatchNorm-chain wall
+# ResNet-18 bring-up — phase-1+2 PASS, phase-3 runtime segfault
 
 **Date:** 2026-05-28
 **Branch:** `develop`
-**Status:** Phase-1 PASS. Conv groups route to aclnn fallback (next commit). Phase-2 walls in TileFuse codegen on **BatchNorm eval chain** (kernel_group1), `MutableOperandRange::operator[]` OOB assert.
+**Status:** Phase-1 + Phase-2 PASS @ `f755480b`. Binary builds, segfaults at runtime in phase-3 → next wall is runtime-side (network_host execution), not a compile-time codegen issue.
 
 ---
 
@@ -77,7 +77,52 @@ Effect: ResNet-18 has 43 kernel files now, all conv groups tagged
 `kind=aclnn` in `network.json`, so phase-2's `for k in network.ascendc_kernels()`
 loop skips them.
 
-## Phase-2 wall (current)
+## Phase-2 unblock (commit `f755480b`)
+
+Three classes of ops that TileFuse codegen doesn't model — all routed to aclnn-fallback:
+
+### BatchNorm (eval mode)
+- New `RecognizeBatchNormPass`: anchors on `math.sqrt`-generic, walks back to `running_var` and forward through the `1/sqrt` divf (with its cf.assert non-zero guard), centered subf, normalize/scale/bias mulf+addf chain. Folds to `func.call @__aclnn_batch_norm(x, weight, bias, running_mean, running_var)`. Strips through `tensor.expand_shape` (torch's broadcast prep from rank-1 [C] to [C,1,1] for the rank-N broadcast).
+- **Explicit DCE inside the pattern**: `applyPatternsAndFoldGreedily` doesn't DCE linalg.generic ops (they're conservatively reported with memory effects even in tensor-only mode). Walks `gBeta.getOperands()` (captured BEFORE replaceOp) depth-first, erasing whatever has `use_empty()`. Without this, the 20-BN model leaks ~200 dead ops into kernel_group1.
+- Registry: `batch_norm → BatchNorm/NCHW`. CPU ref `run_BatchNorm` in AclnnOps (`scale = inv_std * gamma; shift = beta - mean*scale; out = x*scale + shift` per-channel; eps=1e-5).
+- Phase-1 wires it: `--recognize-attention --recognize-layernorm --recognize-batchnorm --aclnn-finalize-decl`.
+
+### Pool2D
+- GroupAnalysis Step 0 fill-detach extended to `PoolingNchwMaxOp` / `PoolingNchwSumOp` so `{fill + pool}` groups reduce to single-op.
+- GroupOutlinePass branch stamps `aclnn.op="MaxPool2D"` or `"SumPool2D"` + `aclnn.kernel_size` (from the rank-2 window-template operand's TYPE) + `aclnn.strides` + `aclnn.dilations`.
+- AclnnBackend emitCall: new branch emits `run_MaxPool2D(in, ksize_arr, strides_arr, dilations_arr, &out, stream)`. SumPool same shape.
+- CPU refs templated over `IsMax`. SumPool returns raw window sum (no division — adaptive_avg_pool's `÷49` is a separate downstream mul/div).
+
+### Scheduler dominance bug (third one this session)
+`reorderGroupsContiguous` was placing `tensor.cast` ops AFTER their direct users when the cast had no group-producer but its user's other operands traced back to a group. The user landed in `gap-after-producer-group`, while the cast (with empty `prod`) inherited the consumer's downstream cluster slot — domination violation post-outline.
+
+Fix: after keyRank assignment, do a **fixed-point clip** that lowers each op's keyRank to `<= min(direct user keyRanks)`. Equal ranks are fine (origIndex tiebreak keeps the existing topological order). This is the third "scheduler doesn't model X" fix in the same area; previous two were ConstantLike pinning (commit `9cc53ab7`) and the conv-Cube kind classifier (commit `b80b68b4`).
+
+## Phase-3 wall (current — runtime)
+
+The full pipeline through `network_host_default.cpp` link succeeds:
+- `--auto-fuse-codegen` runs cleanly on every AscendC kernel group
+- `aclnn-backend` generates the host program
+- g++ links against AclnnOps + camodel libs
+
+When network_runner.py invokes the binary (`network_test_default --input ... --output ...`), it **segfaults at runtime** (SIGSEGV, rc=139). Repro:
+
+```bash
+source examples/resnet18-e2e/env_sibling.sh
+/tmp/resnet18_e2e/r18/work/network_test_default \
+  --input /tmp/resnet18_e2e/r18/input_0.npy \
+  --output /tmp/resnet18_e2e/r18/work/output_default_0.npy \
+  --dump-intermediates /tmp/resnet18_e2e/r18/work/intermediates_default
+```
+
+Direct triage:
+- Run under gdb/asan to get the backtrace and identify the offending op.
+- High-suspicion candidates given the bring-up:
+  - `run_BatchNorm` / `run_Conv2D` / `run_MaxPool2D` / `run_SumPool2D` — all CPU-reference implementations newly written this session. Most likely one of them dereferences a buffer it shouldn't or uses wrong stride math.
+  - Tensor.pad host materialization (the `tensor.pad` host codegen path from commit `9cc53ab7`) — generates raw memcpy loops; could mis-index for rank-4 inputs.
+  - `tensor.expand_shape` / `tensor.collapse_shape` aliasing — produces views that share data pointers with their source. If our pad/pool/conv allocations don't survive the right lifetime, we'd hit UAF.
+
+Old phase-2 wall content (preserved for history):
 
 `--auto-fuse-codegen` on **`kernel_group1`** aborts:
 
