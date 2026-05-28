@@ -722,6 +722,32 @@ def RecognizeAttention : Pass<"recognize-attention", "mlir::ModuleOp"> {
 // RecognizeLayerNorm
 //===----------------------------------------------------------------------===//
 
+def RecognizeBatchNorm : Pass<"recognize-batchnorm", "mlir::ModuleOp"> {
+  let summary = "Recognize decomposed BatchNorm (eval mode) and route to aclnn BatchNorm";
+  let description = [{
+    Matches the BatchNorm subgraph torch.export produces for eval-mode
+    nn.BatchNorm2d at the linalg level (per-channel broadcast over [C, H, W]):
+
+        inv_std = 1.0 / sqrt(running_var + eps)
+        out     = (x - running_mean) * inv_std * weight + bias
+
+    Anchors on `math.sqrt` inside a linalg.generic, walks back to running_var
+    and forward through the 1/sqrt divf (with its cf.assert non-zero guard),
+    centered subf, normalize/scale/bias mulf+addf chain, and folds the whole
+    region into a single
+    `func.call @__aclnn_batch_norm(x, weight, bias, running_mean, running_var)`.
+    The created private decl carries {aclnn.kind = "batch_norm"}, finalized by
+    `aclnn-finalize-decl` to aclnn.op="BatchNorm". eps is recomputed inside
+    run_BatchNorm (assumes the torch default 1e-5).
+  }];
+  let constructor = "mlir::afir::createRecognizeBatchNormPass()";
+  let dependentDialects = [
+    "mlir::func::FuncDialect",
+    "mlir::tensor::TensorDialect",
+    "mlir::linalg::LinalgDialect",
+  ];
+}
+
 def RecognizeLayerNorm : Pass<"recognize-layernorm", "mlir::ModuleOp"> {
   let summary = "Recognize decomposed LayerNorm and route to aclnn LayerNorm";
   let description = [{

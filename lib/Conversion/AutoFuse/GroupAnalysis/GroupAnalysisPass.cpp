@@ -89,16 +89,17 @@ struct AutoFuseGroupAnalysisPass
   void runOnOperation() override {
     func::FuncOp func = getOperation();
 
-    // Step 0: matmul/bmm/conv go to aclnn single-ops which allocate their own
-    // output, so a fill(0) accumulator init is redundant.  Detach it
-    // (init->bare empty) before grouping so the fill isn't pulled into an
-    // unrelated vector group as a dead dual-output (encoder group18 add+fill→two
-    // VECOUT deadlock).  Conv2D needs the same treatment so ResNet's
-    // {fill + conv_2d_nchw_fchw} groups reduce to a single-op cube group that
-    // GroupOutline can stamp aclnn.op="Conv2D".
+    // Step 0: matmul/bmm/conv/pool go to aclnn single-ops which allocate their
+    // own output, so a fill init is redundant.  Detach it (init->bare empty)
+    // before grouping so the fill isn't pulled into an unrelated vector group
+    // as a dead dual-output (encoder group18 add+fill→two VECOUT deadlock).
+    // Conv2D + Pool2D need the same treatment so ResNet's {fill + conv} /
+    // {fill + pool} groups reduce to a single-op group that GroupOutline can
+    // stamp aclnn.op.
     func.walk([&](linalg::LinalgOp op) {
       if (!isa<linalg::MatmulOp, linalg::BatchMatmulOp,
-               linalg::Conv2DNchwFchwOp>(op.getOperation()))
+               linalg::Conv2DNchwFchwOp, linalg::PoolingNchwMaxOp,
+               linalg::PoolingNchwSumOp>(op.getOperation()))
         return;
       OpOperand *init = op.getDpsInitOperand(0);
       if (auto fill = init->get().getDefiningOp<linalg::FillOp>()) {

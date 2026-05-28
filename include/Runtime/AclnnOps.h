@@ -79,6 +79,46 @@ void run_LayerNorm(
     TensorInfo *out, // allocated + written by this call
     aclrtStream stream);
 
+// CPU-reference BatchNorm-eval (aclnn-fallback for the decomposed
+// nn.BatchNorm2d eval-mode subgraph).  Per-channel affine over [..., C, ...]
+// where C = weight.shape[0]:
+//   out = (x - running_mean) / sqrt(running_var + eps) * weight + bias
+// eps is the torch default 1e-5.  All four 1-D buffers have shape [C].  x is
+// rank-N (typically rank-3 [C, H, W] post unit-extent fold; the channel axis is
+// the FIRST non-unit dim, i.e. x.shape[0]).  Host mode: CPU reference; device:
+// aclnnBatchNorm with training=false (not yet wired — falls back to CPU).
+void run_BatchNorm(
+    TensorInfo x,
+    TensorInfo weight,
+    TensorInfo bias,
+    TensorInfo running_mean,
+    TensorInfo running_var,
+    TensorInfo *out,
+    aclrtStream stream);
+
+// CPU-reference 2D pooling (aclnn-fallback for linalg.pooling_nchw_max /
+// linalg.pooling_nchw_sum).  Layouts: input [N, C, H, W] -> out [N, C, OH, OW].
+// MaxPool: out = max over window; SumPool: out = sum over window (no division —
+// avg is the caller's responsibility, ResNet's adaptive_avg_pool divides by a
+// constant downstream).  strides / kernel_size / dilations point to int64_t[2].
+// Padding is materialized upstream as tensor.pad; the kernel receives the
+// already-padded input.
+void run_MaxPool2D(
+    TensorInfo in,
+    const int64_t *kernel_size,    // [KH, KW]
+    const int64_t *strides,        // [SH, SW]
+    const int64_t *dilations,      // [DH, DW]
+    TensorInfo *out,
+    aclrtStream stream);
+
+void run_SumPool2D(
+    TensorInfo in,
+    const int64_t *kernel_size,
+    const int64_t *strides,
+    const int64_t *dilations,
+    TensorInfo *out,
+    aclrtStream stream);
+
 // CPU-reference 2D convolution (aclnn-fallback for linalg.conv_2d_nchw_fchw).
 // Layouts: input  [N, C, H, W],  weight [F, C, KH, KW] -> out [N, F, OH, OW]
 // where OH = (H - DH*(KH-1) - 1) / SH + 1 and OW analogously.

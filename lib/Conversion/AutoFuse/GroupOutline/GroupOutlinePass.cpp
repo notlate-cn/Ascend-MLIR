@@ -258,6 +258,35 @@ static func::FuncOp outlineGroup(OpBuilder &builder, ModuleOp module,
                           builder.getDenseI64ArrayAttr(dilationsVec));
     }
   }
+  // Single-op Vector pool groups also route to aclnn (TileFuse codegen
+  // doesn't model windowed reductions over NCHW yet).  The fill init was
+  // detached upstream (GroupAnalysis Step 0), so the group is a single
+  // pooling op.  Kernel-size comes from the rank-2 window operand's TYPE
+  // (linalg.pooling_nchw_*'s second `ins` is a shape-only tensor).
+  if (info.topoMembers.size() == 1) {
+    linalg::LinalgOp m2 = info.topoMembers.front();
+    Operation *memberOp = m2.getOperation();
+    auto stampPool = [&](StringRef opName, auto poolOp) {
+      kernelFunc->setAttr("aclnn.op", StringAttr::get(ctx, opName));
+      SmallVector<int64_t> stridesVec(
+          poolOp.getStrides().template getValues<int64_t>());
+      SmallVector<int64_t> dilationsVec(
+          poolOp.getDilations().template getValues<int64_t>());
+      // kernel_size from the window-template operand's shape.
+      auto kT = mlir::cast<RankedTensorType>(poolOp.getInputs()[1].getType());
+      SmallVector<int64_t> kSizeVec(kT.getShape().begin(), kT.getShape().end());
+      kernelFunc->setAttr("aclnn.kernel_size",
+                          builder.getDenseI64ArrayAttr(kSizeVec));
+      kernelFunc->setAttr("aclnn.strides",
+                          builder.getDenseI64ArrayAttr(stridesVec));
+      kernelFunc->setAttr("aclnn.dilations",
+                          builder.getDenseI64ArrayAttr(dilationsVec));
+    };
+    if (auto p = dyn_cast<linalg::PoolingNchwMaxOp>(memberOp))
+      stampPool("MaxPool2D", p);
+    else if (auto p = dyn_cast<linalg::PoolingNchwSumOp>(memberOp))
+      stampPool("SumPool2D", p);
+  }
 
   // aclnn fallback: route a standalone transpose to the aclnn CPU-reference
   // permute (the AscendC transpose codegen is unreliable; CanFuse keeps every
@@ -572,6 +601,33 @@ static bool reorderGroupsContiguous(
     for (int32_t p : prod)
       mp = std::max(mp, groupRank[p]);
     keyRank[op] = 2 * mp + 1; // cross glue: land in the gap after its producer
+  }
+
+  // Fixed-point clip: enforce SSA dominance by lowering each producer's
+  // keyRank to <= the minimum of its direct users' keyRanks.  Without this,
+  // a "no-producer" interstitial (e.g. a tensor.cast on a constant feeding an
+  // aclnn func.call) inherits its consumer's cluster slot and ends up scheduled
+  // AFTER consumers that themselves have an upstream producer pinning them
+  // earlier, breaking dominance.  Equal keyRanks are OK — origIndex (the
+  // original block order, which IS topological) is the stable_sort tiebreak.
+  bool clipChanged = true;
+  while (clipChanged) {
+    clipChanged = false;
+    for (Operation *op : ops) {
+      int minUser = std::numeric_limits<int>::max();
+      for (Operation *u : op->getUsers()) {
+        if (u == term || u->getBlock() != &block)
+          continue;
+        auto it = keyRank.find(u);
+        if (it != keyRank.end())
+          minUser = std::min(minUser, it->second);
+      }
+      if (minUser != std::numeric_limits<int>::max() &&
+          keyRank[op] > minUser) {
+        keyRank[op] = minUser;
+        clipChanged = true;
+      }
+    }
   }
 
   llvm::stable_sort(ops, [&](Operation *a, Operation *b) {

@@ -390,6 +390,28 @@ private:
         os_ << "};\n";
         os_ << "  run_Transpose(" << nameOf(callOp.getOperand(0)) << ", " << pn
             << ", " << perm.size() << ", &" << resName << ", stream);\n";
+      } else if (opAttr.getValue() == "MaxPool2D" ||
+                 opAttr.getValue() == "SumPool2D") {
+        // 2D pooling.  Operands: (input, window_template, init) per linalg's
+        // pooling op convention.  We only need `input` at runtime; the
+        // window template is shape-only and the init is the DPS buffer
+        // (allocator's responsibility).  Strides, dilations, kernel_size
+        // come from attrs stamped by GroupOutline.
+        auto strides = callee->getAttrOfType<DenseI64ArrayAttr>("aclnn.strides");
+        auto dilations =
+            callee->getAttrOfType<DenseI64ArrayAttr>("aclnn.dilations");
+        auto ksize =
+            callee->getAttrOfType<DenseI64ArrayAttr>("aclnn.kernel_size");
+        std::string sn = fresh(), dn = fresh(), kn = fresh();
+        os_ << "  static const int64_t " << sn << "[] = {" << strides[0] << ","
+            << strides[1] << "};\n";
+        os_ << "  static const int64_t " << dn << "[] = {" << dilations[0]
+            << "," << dilations[1] << "};\n";
+        os_ << "  static const int64_t " << kn << "[] = {" << ksize[0] << ","
+            << ksize[1] << "};\n";
+        os_ << "  run_" << opAttr.getValue() << "("
+            << nameOf(callOp.getOperand(0)) << ", " << kn << ", " << sn << ", "
+            << dn << ", &" << resName << ", stream);\n";
       } else if (opAttr.getValue() == "Conv2D") {
         // Conv2D carries strides + dilations as attributes; padding is
         // already materialized in the coordinator via tensor.pad.  Operand

@@ -3,7 +3,9 @@
 #include <cassert>
 #include <cmath>
 #include <cstdio>
+#include <algorithm>
 #include <cstring>
+#include <limits>
 #include <vector>
 
 // CANN headers — present on Ascend hosts; stubbed out for CI / dev builds.
@@ -486,6 +488,127 @@ void run_Matmul(TensorInfo a, TensorInfo b, TensorInfo /*init*/,
   aclDestroyTensor(bT);
   aclDestroyTensor(oT);
   freePool(pool);
+}
+
+// ---------------------------------------------------------------------------
+// BatchNorm-eval CPU reference: per-channel affine.
+//   out = (x - mean) / sqrt(var + eps) * gamma + beta
+// x is rank-N with the channel axis at position 0 (the linalg-fold-unit-extent
+// pass strips the batch axis, leaving [C, H, W] for ResNet); gamma/beta/mean/var
+// are 1-D [C].  eps = torch default 1e-5.
+// ---------------------------------------------------------------------------
+static void batchnorm_cpu(const TensorInfo &x, const TensorInfo &gamma,
+                          const TensorInfo &beta, const TensorInfo &mean,
+                          const TensorInfo &var, TensorInfo *out) {
+  const float eps = 1e-5f;
+  assert(x.rank >= 1 && "batchnorm expects rank-N input");
+  int64_t C = x.shape[0];
+  int64_t innerEl = 1;
+  for (int i = 1; i < x.rank; ++i)
+    innerEl *= x.shape[i];
+
+  allocTensorLike(x, out);
+
+  bool f16 = (x.dtype == 1);
+  auto rd = [&](const void *p, size_t i) -> float {
+    return f16 ? h2f(((const uint16_t *)p)[i]) : ((const float *)p)[i];
+  };
+  auto wr = [&](void *p, size_t i, float v) {
+    if (f16) ((uint16_t *)p)[i] = f2h(v);
+    else ((float *)p)[i] = v;
+  };
+
+  for (int64_t c = 0; c < C; ++c) {
+    float m = rd(mean.data, (size_t)c);
+    float v = rd(var.data, (size_t)c);
+    float g = rd(gamma.data, (size_t)c);
+    float b = rd(beta.data, (size_t)c);
+    float invStd = 1.0f / std::sqrt(v + eps);
+    float scale  = invStd * g;
+    float shift  = b - m * scale;
+    size_t base = (size_t)(c * innerEl);
+    for (int64_t i = 0; i < innerEl; ++i)
+      wr(out->data, base + i, rd(x.data, base + i) * scale + shift);
+  }
+}
+
+void run_BatchNorm(TensorInfo x, TensorInfo weight, TensorInfo bias,
+                   TensorInfo running_mean, TensorInfo running_var,
+                   TensorInfo *out, aclrtStream /*stream*/) {
+  if (!g_host_mode) {
+    fprintf(stderr, "[AclnnOps] run_BatchNorm: device path not implemented, "
+                    "running CPU reference on host buffers\n");
+  }
+  batchnorm_cpu(x, weight, bias, running_mean, running_var, out);
+}
+
+// ---------------------------------------------------------------------------
+// 2D pooling CPU reference (NCHW).  Either MAX (over window) or SUM.  Padding
+// already applied upstream via tensor.pad; this routine just walks windows.
+// ---------------------------------------------------------------------------
+template <bool IsMax>
+static void pool2d_cpu(const TensorInfo &in, const int64_t *kernel_size,
+                       const int64_t *strides, const int64_t *dilations,
+                       TensorInfo *out) {
+  assert(in.rank == 4 && "pool2d expects NCHW input");
+  int64_t N = in.shape[0], C = in.shape[1], H = in.shape[2], W = in.shape[3];
+  int64_t KH = kernel_size[0], KW = kernel_size[1];
+  int64_t SH = strides[0],     SW = strides[1];
+  int64_t DH = dilations[0],   DW = dilations[1];
+  int64_t OH = (H - DH * (KH - 1) - 1) / SH + 1;
+  int64_t OW = (W - DW * (KW - 1) - 1) / SW + 1;
+
+  TensorInfo tmpl = in;
+  tmpl.shape[0] = N; tmpl.shape[1] = C; tmpl.shape[2] = OH; tmpl.shape[3] = OW;
+  allocTensorLike(tmpl, out);
+
+  bool f16 = (in.dtype == 1);
+  auto rd = [&](const void *p, size_t i) -> float {
+    return f16 ? h2f(((const uint16_t *)p)[i]) : ((const float *)p)[i];
+  };
+  auto wr = [&](void *p, size_t i, float v) {
+    if (f16) ((uint16_t *)p)[i] = f2h(v);
+    else ((float *)p)[i] = v;
+  };
+
+  const float negInf = -std::numeric_limits<float>::infinity();
+  for (int64_t n = 0; n < N; ++n)
+    for (int64_t c = 0; c < C; ++c)
+      for (int64_t oh = 0; oh < OH; ++oh)
+        for (int64_t ow = 0; ow < OW; ++ow) {
+          float acc = IsMax ? negInf : 0.f;
+          for (int64_t kh = 0; kh < KH; ++kh) {
+            int64_t ih = oh * SH + kh * DH;
+            for (int64_t kw = 0; kw < KW; ++kw) {
+              int64_t iw = ow * SW + kw * DW;
+              float v = rd(in.data,
+                           (size_t)(((n * C + c) * H + ih) * W + iw));
+              if (IsMax) acc = std::max(acc, v);
+              else       acc += v;
+            }
+          }
+          wr(out->data, (size_t)(((n * C + c) * OH + oh) * OW + ow), acc);
+        }
+}
+
+void run_MaxPool2D(TensorInfo in, const int64_t *ksz, const int64_t *strides,
+                   const int64_t *dilations, TensorInfo *out,
+                   aclrtStream /*stream*/) {
+  if (!g_host_mode) {
+    fprintf(stderr, "[AclnnOps] run_MaxPool2D: device path not implemented, "
+                    "running CPU reference\n");
+  }
+  pool2d_cpu<true>(in, ksz, strides, dilations, out);
+}
+
+void run_SumPool2D(TensorInfo in, const int64_t *ksz, const int64_t *strides,
+                   const int64_t *dilations, TensorInfo *out,
+                   aclrtStream /*stream*/) {
+  if (!g_host_mode) {
+    fprintf(stderr, "[AclnnOps] run_SumPool2D: device path not implemented, "
+                    "running CPU reference\n");
+  }
+  pool2d_cpu<false>(in, ksz, strides, dilations, out);
 }
 
 // ---------------------------------------------------------------------------
