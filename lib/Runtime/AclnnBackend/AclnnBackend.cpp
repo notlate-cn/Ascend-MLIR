@@ -105,6 +105,10 @@ private:
       emitExtractSlice(sliceOp);
       return;
     }
+    if (auto padOp = dyn_cast<tensor::PadOp>(op)) {
+      emitPad(padOp);
+      return;
+    }
     if (auto retOp = dyn_cast<func::ReturnOp>(op)) {
       emitReturn(retOp);
       return;
@@ -244,6 +248,101 @@ private:
         << "; _d >= 0; --_d) { if (++_idx[_d] < _sz[_d]) break; _idx[_d] = 0; }\n";
     os_ << "    }\n  }\n";
     names_[sliceOp.getResult()] = n;
+  }
+
+  // Materialize a static tensor.pad as a host-side allocation, zero-fill, and
+  // strided copy of the source into the unpadded interior.  Used for conv
+  // padding that torch.export emits at the coordinator level (e.g. ResNet's
+  // 224->230 stem pad, the inner 3x3 pad-by-1s).  Source strides are computed
+  // from the source TYPE shape (row-major contiguous) the same way emitExtractSlice
+  // does — consistent with the contiguous-row-major convention upstream.
+  void emitPad(tensor::PadOp padOp) {
+    auto srcType = padOp.getSourceType();
+    auto resType = cast<RankedTensorType>(padOp.getResult().getType());
+    auto lows = padOp.getStaticLow();
+    auto highs = padOp.getStaticHigh();
+
+    auto anyDyn = [](llvm::ArrayRef<int64_t> xs) {
+      return llvm::any_of(xs, ShapedType::isDynamic);
+    };
+    int id = dtypeIdFor(resType.getElementType());
+    int eb = elemBytesFor(resType.getElementType());
+    if (anyDyn(lows) || anyDyn(highs) || !srcType.hasStaticShape() ||
+        !resType.hasStaticShape() || id < 0 || eb == 0) {
+      os_ << "  // WARNING: unsupported tensor.pad (dynamic or bad dtype) "
+          << padOp.getResult().getType() << "\n";
+      return;
+    }
+
+    // Extract the static pad scalar (yielded by the pad region's terminator).
+    // Conv-padding always yields a constant 0.0 — that's all we support here;
+    // zero memset works uniformly across f16/bf16/f32 (0 bit pattern is +0.0).
+    double padValue = 0.0;
+    bool padIsZero = true;
+    if (auto yieldOp = dyn_cast<tensor::YieldOp>(
+            padOp.getBody()->getTerminator())) {
+      if (auto cst = yieldOp.getValue().getDefiningOp<arith::ConstantOp>()) {
+        if (auto fa = dyn_cast<FloatAttr>(cst.getValue())) {
+          padValue = fa.getValueAsDouble();
+          padIsZero = (padValue == 0.0);
+        }
+      }
+    }
+    if (!padIsZero) {
+      os_ << "  // WARNING: non-zero tensor.pad value " << padValue
+          << " not supported by host codegen; result will be zero-filled\n";
+    }
+
+    int64_t rank = resType.getRank();
+    auto srcShape = srcType.getShape();
+    auto resShape = resType.getShape();
+    SmallVector<int64_t> srcStrides(rank, 1), dstStrides(rank, 1);
+    for (int64_t d = rank - 2; d >= 0; --d) {
+      srcStrides[d] = srcStrides[d + 1] * srcShape[d + 1];
+      dstStrides[d] = dstStrides[d + 1] * resShape[d + 1];
+    }
+    int64_t srcNumEl = 1;
+    for (int64_t s : srcShape) srcNumEl *= s;
+    int64_t dstNumEl = 1;
+    for (int64_t s : resShape) dstNumEl *= s;
+
+    std::string src = nameOf(padOp.getSource());
+    std::string n = fresh();
+    auto arr = [&](StringRef name, llvm::ArrayRef<int64_t> xs) {
+      os_ << "    const int64_t " << name << "[] = {";
+      for (auto [i, x] : llvm::enumerate(xs))
+        os_ << (i ? "," : "") << x;
+      os_ << "};\n";
+    };
+
+    os_ << "  TensorInfo " << n << "; " << n << ".rank=" << rank << "; " << n
+        << ".dtype=" << id << ";\n";
+    for (auto [d, sz] : llvm::enumerate(resShape))
+      os_ << "  " << n << ".shape[" << d << "]=" << sz << ";\n";
+    os_ << "  mlir::runtime::aclnn::rowMajorStrides(" << n << ".shape, " << n
+        << ".rank, " << n << ".strides);\n";
+    os_ << "  { // tensor.pad\n";
+    arr("_low", lows);
+    arr("_src_sh", srcShape);
+    arr("_src_st", srcStrides);
+    arr("_dst_st", dstStrides);
+    os_ << "    size_t _dst_ne = " << dstNumEl << "; " << n
+        << ".data = ::operator new(_dst_ne*" << eb << ");\n";
+    os_ << "    std::memset(" << n << ".data, 0, _dst_ne*" << eb << ");\n";
+    os_ << "    int64_t _idx[" << rank << "] = {0};\n";
+    os_ << "    for (size_t _o = 0; _o < " << srcNumEl << "; ++_o) {\n";
+    os_ << "      size_t _src_off = 0, _dst_off = 0;\n";
+    os_ << "      for (int _d = 0; _d < " << rank << "; ++_d) {\n";
+    os_ << "        _src_off += (size_t)_idx[_d] * (size_t)_src_st[_d];\n";
+    os_ << "        _dst_off += (size_t)(_idx[_d] + _low[_d]) * (size_t)_dst_st[_d];\n";
+    os_ << "      }\n";
+    os_ << "      memcpy((char*)" << n << ".data + _dst_off*" << eb
+        << ", (const char*)" << src << ".data + _src_off*" << eb << ", " << eb
+        << ");\n";
+    os_ << "      for (int _d = " << rank - 1
+        << "; _d >= 0; --_d) { if (++_idx[_d] < _src_sh[_d]) break; _idx[_d] = 0; }\n";
+    os_ << "    }\n  }\n";
+    names_[padOp.getResult()] = n;
   }
 
   // collapse_shape / expand_shape: a contiguous reshape.  Emit a new TensorInfo

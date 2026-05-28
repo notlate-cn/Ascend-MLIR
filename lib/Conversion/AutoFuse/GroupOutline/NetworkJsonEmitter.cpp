@@ -20,6 +20,7 @@
 #include "llvm/Support/JSON.h"
 #include "llvm/Support/raw_ostream.h"
 
+#include <cmath>
 #include <cstdio>
 
 namespace mlir::auto_fuse {
@@ -167,6 +168,59 @@ llvm::Error emitNetworkJson(mlir::ModuleOp module, mlir::func::FuncOp coord,
         src["dtype"] = std::move(desc["dtype"]);
       }
       valueSource[sliceOp.getResult()] = std::move(src);
+      continue;
+    }
+
+    if (auto padOp = mlir::dyn_cast<mlir::tensor::PadOp>(&op)) {
+      // Explicit pad ahead of a conv (torch.export emits one per padded conv).
+      // Materialized host-side by AclnnBackend's CoordEmitter as a zero-filled
+      // buffer with the source copied into the unpadded interior; here we just
+      // register provenance so downstream kernel arg descriptors resolve.
+      llvm::json::Object src;
+      src["from"] = "pad";
+      if (auto it = valueSource.find(padOp.getSource());
+          it != valueSource.end()) {
+        llvm::json::Object srcCopy = it->second;
+        src["source"] = std::move(srcCopy);
+      }
+      auto toArr = [](llvm::ArrayRef<int64_t> xs) {
+        llvm::json::Array a;
+        for (int64_t x : xs)
+          a.push_back(mlir::ShapedType::isDynamic(x) ? int64_t{-1} : x);
+        return a;
+      };
+      src["low"]  = toArr(padOp.getStaticLow());
+      src["high"] = toArr(padOp.getStaticHigh());
+      // Best-effort static pad value (the yielded scalar in the pad region).
+      // Almost always 0.0 for conv-padding.
+      if (auto yieldOp = mlir::dyn_cast<mlir::tensor::YieldOp>(
+              padOp.getBody()->getTerminator())) {
+        if (auto cst = yieldOp.getValue()
+                           .getDefiningOp<mlir::arith::ConstantOp>()) {
+          if (auto fa = mlir::dyn_cast<mlir::FloatAttr>(cst.getValue())) {
+            // JSON spec lacks ±inf/NaN literals; emit a string fallback so
+            // downstream parsers (Python json) don't choke.  Conv-padding
+            // uses 0.0, maxpool-padding uses -inf.
+            double dv = fa.getValueAsDouble();
+            if (std::isfinite(dv))
+              src["pad_value"] = dv;
+            else if (std::isnan(dv))
+              src["pad_value"] = "nan";
+            else
+              src["pad_value"] = (dv < 0) ? "-inf" : "inf";
+          } else if (auto ia =
+                         mlir::dyn_cast<mlir::IntegerAttr>(cst.getValue())) {
+            src["pad_value"] = static_cast<int64_t>(ia.getInt());
+          }
+        }
+      }
+      if (auto rt = mlir::dyn_cast<mlir::RankedTensorType>(
+              padOp.getResult().getType())) {
+        auto desc = tensorDescriptor(rt);
+        src["shape"] = std::move(desc["shape"]);
+        src["dtype"] = std::move(desc["dtype"]);
+      }
+      valueSource[padOp.getResult()] = std::move(src);
       continue;
     }
 

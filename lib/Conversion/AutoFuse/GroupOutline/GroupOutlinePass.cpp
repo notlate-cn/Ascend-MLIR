@@ -8,6 +8,7 @@
 #include "mlir/IR/IRMapping.h"
 #include "mlir/Pass/Pass.h"
 #include "llvm/ADT/DenseMap.h"
+#include <limits>
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/Twine.h"
@@ -521,7 +522,19 @@ static bool reorderGroupsContiguous(
     ops.push_back(&o);
   }
 
+  // Lowest possible rank.  Used to hoist constants above every cluster: their
+  // only positional requirement is "before all uses", and clustering them with a
+  // single consumer group can break SSA dominance when another non-member op
+  // captures the constant via a nested region (e.g. tensor.pad's yield).  Region
+  // captures are not modeled by the prod/cons sets below; pinning ConstantLike
+  // ops to the top of the schedule sidesteps the issue entirely.
+  constexpr int kConstantRank = std::numeric_limits<int>::min();
+
   for (Operation *op : ops) {
+    if (op->hasTrait<mlir::OpTrait::ConstantLike>()) {
+      keyRank[op] = kConstantRank;
+      continue;
+    }
     auto git = opGroup.find(op);
     if (git != opGroup.end()) {
       keyRank[op] = 2 * groupRank[git->second]; // member: own cluster
