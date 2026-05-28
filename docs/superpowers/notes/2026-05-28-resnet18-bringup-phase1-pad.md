@@ -1,8 +1,8 @@
-# ResNet-18 bring-up — phase-1 fixed, phase-2 conv codegen wall
+# ResNet-18 bring-up — phase-1 + conv fixed, phase-2 BatchNorm-chain wall
 
 **Date:** 2026-05-28
 **Branch:** `develop`
-**Status:** Phase-1 PASS (3 fixes below). Phase-2 walls in `--auto-fuse-codegen` on `linalg.conv_2d_nchw_fchw`.
+**Status:** Phase-1 PASS. Conv groups route to aclnn fallback (next commit). Phase-2 walls in TileFuse codegen on **BatchNorm eval chain** (kernel_group1), `MutableOperandRange::operator[]` OOB assert.
 
 ---
 
@@ -51,41 +51,100 @@ Coordinator-body whitelist (`lib/Conversion/AutoFuse/GroupOutline/NetworkJsonEmi
 
 Fix: assign `kConstantRank = INT_MIN` to every ConstantLike op so they sort first. Their only real positional requirement is "before all uses"; placing them at the top of the block always satisfies that without needing to model region captures.
 
-## Phase-2 wall
+## Conv → aclnn fallback (commit `b80b68b4`)
 
-`--auto-fuse-codegen` on `kernel_group0` (the stem 7×7 conv) aborts:
+Followed the existing Matmul / Transpose / Attention / LayerNorm aclnn-fallback
+pattern. Five surgical edits:
+
+1. `GroupAnalysisPass.cpp::isCubeOp` accepts `linalg::Conv2DNchwFchwOp`.
+2. `GroupAnalysisPass.cpp` Step 0 fill-detach: extended to Conv2DNchwFchwOp.
+   `{fill + conv}` groups reduce to single-op cube groups (aclnn allocates its
+   own output, init fill is dead).
+3. `GroupOutlinePass.cpp` Cube-kind classifier (line 78): accepts
+   `linalg::Conv2DNchwFchwOp`. **Both** isCubeOp sites needed fixing — the
+   outline pass rebuilds info from IR and re-classifies, so missing this is
+   what kept the conv kernel emitting `auto_fuse.kind = "Vector"`.
+4. `GroupOutlinePass.cpp` single-op cube stamping (line 240+): adds Conv2D
+   branch alongside Matmul — stamps `aclnn.op="Conv2D"` + `aclnn.strides`
+   + `aclnn.dilations` (padding lives in coordinator as `tensor.pad`).
+5. `AclnnBackend.cpp emitCall` + `AclnnOps.h/cpp`: new Conv2D branch emits
+   `run_Conv2D(in, weight, init, strides[2], dilations[2], &out, stream)`;
+   CPU reference impl supports f16/f32, applies stride+dilation only (no
+   padding — already materialized upstream). Device-mode aclnn impl deferred
+   (Conv2D falls back to CPU with a warning when `!g_host_mode`).
+
+Effect: ResNet-18 has 43 kernel files now, all conv groups tagged
+`kind=aclnn` in `network.json`, so phase-2's `for k in network.ascendc_kernels()`
+loop skips them.
+
+## Phase-2 wall (current)
+
+`--auto-fuse-codegen` on **`kernel_group1`** aborts:
 
 ```
-afir-opt: lib/Conversion/AutoFuse/TileFuse/GroupEmitter.cpp:299: Assertion
-`allOuts.size() == iterArgs.size() && "allOuts / iterArgs count mismatch"' failed.
+afir-opt: externals/llvm-project/mlir/lib/IR/OperationSupport.cpp:533:
+  mlir::OpOperand& mlir::MutableOperandRange::operator[](unsigned int) const:
+  Assertion `index < length && "index is out of bounds"' failed.
 ```
 
-`kernel_group0` is exactly:
+`kernel_group1` is the **BatchNorm eval-mode chain** that torch.export emits.
+It takes (running_mean, running_var, x, weight, bias, ...) and computes:
+
+```
+inv_std = 1.0 / sqrt(running_var + eps)
+out     = (x - running_mean) * inv_std * gamma + beta
+```
+
+The MLIR is a sequence of `linalg.generic` ops chained together, with a
+`cf.assert` guarding division-by-zero on inv_std:
+
 ```mlir
-func.func @kernel_group0(%out, %in, %weight)
-  %0 = linalg.fill ins(%cst : f32) outs(%out : tensor<1x64x112x112xf32>) -> ...
-  %1 = linalg.conv_2d_nchw_fchw {dilations=1, strides=2}
-       ins(%in, %weight : tensor<1x3x230x230xf32>, tensor<64x3x7x7xf32>)
-       outs(%0 : tensor<1x64x112x112xf32>) -> ...
-  return %1
+%21 = arith.cmpf one, %in, %cst_0 : f32
+cf.assert %21, "unimplemented: tensor with zero element"
+%22 = arith.divf %cst_1, %in : f32
 ```
 
-The TileFuse `GroupEmitter` is the loopnest builder for the kernel body — it expects each tiled body to produce one yielded result per iter_arg. For `linalg.conv_2d_nchw_fchw`, the existing emitter's `allOuts` / `iterArgs` accounting doesn't match.
+Three layers of pain here, none of which exist in BERT:
+- `math.sqrt` inside a linalg.generic body (no `--recognize-batchnorm` to fold it)
+- `arith.divf` inside a linalg.generic body (TileFuse's existing matmul-fill-revert
+  pattern hits this kind of divf — see `[[project_bert_bringup]]` Wall-B, where
+  bert-tiny needed `divf→mul` for stability)
+- `cf.assert` inside a linalg.generic body (a torch-export safety check; not
+  expected by downstream passes — `MutableOperandRange::operator[]` OOB likely
+  triggers on this op type)
 
-This isn't a pad problem — it's the **conv kernel codegen path** (Vector / AscendC). BERT never tripped it because BERT has no conv. Three plausible directions:
+BERT escapes all of this because `--recognize-layernorm` folds the whole
+LayerNorm chain into a single `@__aclnn_layer_norm` aclnn call *before*
+GroupAnalysis runs. ResNet's BatchNorm gets no equivalent treatment.
 
-1. **Route conv to aclnn fallback** (mirroring matmul / transpose / attention / layernorm).
-   - `GroupOutlinePass.cpp:241-258` already does this for standalone Matmul / Transpose / Attention / LayerNorm — tag the kernel `aclnn.op="Conv2D"` (or `Convolution`), let aclnn-backend emit `run_Conv2D(...)`.
-   - Easiest, cleanest, gets phase-2 unblocked. Cost: a real aclnn `Conv2D` op + perm/stride/dilation/padding plumbing in `run_Conv2D`.
-   - Conv is cube-heavy → aclnn is the right home regardless.
+## Phase-2 unblock options
 
-2. **Fix GroupEmitter to handle conv**:
-   - GroupEmitter assumes elementwise/reduce-style loopnest. Conv has 7 dims (N,C,H,W,F,KH,KW) with non-trivial indexing maps. Substantial work.
+1. **`--recognize-batchnorm` (recommended)**: mirror `--recognize-layernorm`,
+   match the BN chain (running_var + eps → sqrt → 1/inv → (x-mean)*inv*gamma+beta)
+   and fold to `@__aclnn_batch_norm` aclnn call. Then run_BatchNorm in
+   AclnnOps.cpp (CPU reference for sim, real aclnn for device).
+   - Touch list: `RecognizeAttention`-style new pass file, AclnnOps.h/.cpp
+     declaration + impl, run_BatchNorm emit in AclnnBackend, mirror the existing
+     `--recognize-layernorm` invocation in network_runner.py phase-1.
+   - Cleanest match to existing precedent. Conceptually small even if it
+     touches many files.
 
-3. **Decompose conv into matmul + im2col earlier**:
-   - Pre-pass to lower `linalg.conv_2d_nchw_fchw` to `linalg.matmul` over im2col. Matmul → aclnn already works. But the im2col tensor materialization is large (KH*KW*C × N*OH*OW) and would need its own host-side codegen.
+2. **Constant-fold BN parameters earlier**: in torch.export, running_mean /
+   running_var / weight / bias are CONSTANTS in eval mode. If we could fold
+   `inv_std = 1.0 / sqrt(running_var + eps)` and `scale = inv_std * gamma` and
+   `bias = beta - mean * scale` at compile time, the BN reduces to a single
+   affine transform `out = x * scale + bias` with no sqrt / divf / cf.assert.
+   - Better-than-aclnn perf (just elementwise mul+add on x).
+   - But this requires constant-folding tensor-valued math.sqrt + arith.divf,
+     which we don't have today; would need either a custom pass or a torch-side
+     pre-export rewrite.
 
-**Recommended next step:** Option 1. Mirrors the existing matmul/attention pattern; conv is fundamentally a cube op so aclnn is the natural fallback. Plus host-staging matches what other cube ops do.
+3. **Strip cf.assert from linalg.generic bodies before codegen**: just a band-aid,
+   might unblock the immediate OOB assert but the divf and sqrt issues likely
+   still bite TileFuse codegen.
+
+**Recommended:** Option 1. Cleanest match to the LayerNorm/Attention pattern
+that already works for BERT.
 
 ## Artifacts
 
