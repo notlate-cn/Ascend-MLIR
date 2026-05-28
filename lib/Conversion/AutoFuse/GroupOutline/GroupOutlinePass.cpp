@@ -75,12 +75,12 @@ rebuildGroupInfo(int32_t gid,
   info.id = gid;
   info.topoMembers = topoMembers;
 
-  // kind: any matmul-like op → Cube
+  // kind: any matmul / conv-like op → Cube (cube-class is routed to aclnn).
   info.kind =
       llvm::any_of(topoMembers,
                    [](linalg::LinalgOp op) {
-                     return isa<linalg::MatmulOp, linalg::BatchMatmulOp>(
-                         op.getOperation());
+                     return isa<linalg::MatmulOp, linalg::BatchMatmulOp,
+                                linalg::Conv2DNchwFchwOp>(op.getOperation());
                    })
           ? GroupInfo::Kind::Cube
           : GroupInfo::Kind::Vector;
@@ -234,15 +234,29 @@ static func::FuncOp outlineGroup(OpBuilder &builder, ModuleOp module,
                                ? "Cube"
                                : "Vector"));
 
-  // aclnn fallback: route a standalone cube (matmul / batch_matmul) group to the
-  // aclnn CPU-reference matmul, since AscendC cube codegen isn't ready.  Only a
-  // single-op group maps cleanly to one aclnn op; CV-fused cube groups are left
-  // for the (future) cube codegen path.  Stamping `aclnn.op` makes
-  // emitNetworkJson tag the kernel kind=aclnn and the host emit run_Matmul.
+  // aclnn fallback: route a standalone cube (matmul / batch_matmul / conv2d)
+  // group to the aclnn CPU-reference op, since AscendC cube codegen isn't ready.
+  // Only a single-op group maps cleanly to one aclnn op; CV-fused cube groups
+  // are left for the (future) cube codegen path.  Stamping `aclnn.op` makes
+  // emitNetworkJson tag the kernel kind=aclnn and the host emit run_<Op>.
   if (info.kind == GroupInfo::Kind::Cube && info.topoMembers.size() == 1) {
     linalg::LinalgOp member = info.topoMembers.front();
-    if (isa<linalg::MatmulOp, linalg::BatchMatmulOp>(member.getOperation()))
+    Operation *memberOp = member.getOperation();
+    if (isa<linalg::MatmulOp, linalg::BatchMatmulOp>(memberOp)) {
       kernelFunc->setAttr("aclnn.op", StringAttr::get(ctx, "Matmul"));
+    } else if (auto conv = dyn_cast<linalg::Conv2DNchwFchwOp>(memberOp)) {
+      // Conv2D in NCHW × FCHW layout.  Pad-as-tensor.pad lives in the
+      // coordinator (handled by NetworkJsonEmitter/AclnnBackend), so the
+      // kernel sees zero-padding semantics; only strides and dilations need
+      // to be threaded through to run_Conv2D.
+      kernelFunc->setAttr("aclnn.op", StringAttr::get(ctx, "Conv2D"));
+      SmallVector<int64_t> stridesVec(conv.getStrides().getValues<int64_t>());
+      SmallVector<int64_t> dilationsVec(conv.getDilations().getValues<int64_t>());
+      kernelFunc->setAttr("aclnn.strides",
+                          builder.getDenseI64ArrayAttr(stridesVec));
+      kernelFunc->setAttr("aclnn.dilations",
+                          builder.getDenseI64ArrayAttr(dilationsVec));
+    }
   }
 
   // aclnn fallback: route a standalone transpose to the aclnn CPU-reference

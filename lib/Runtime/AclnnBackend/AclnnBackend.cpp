@@ -390,6 +390,22 @@ private:
         os_ << "};\n";
         os_ << "  run_Transpose(" << nameOf(callOp.getOperand(0)) << ", " << pn
             << ", " << perm.size() << ", &" << resName << ", stream);\n";
+      } else if (opAttr.getValue() == "Conv2D") {
+        // Conv2D carries strides + dilations as attributes; padding is
+        // already materialized in the coordinator via tensor.pad.  Operand
+        // order matches GroupOutline boundaryIn: (input, weight, init).
+        auto strides = callee->getAttrOfType<DenseI64ArrayAttr>("aclnn.strides");
+        auto dilations =
+            callee->getAttrOfType<DenseI64ArrayAttr>("aclnn.dilations");
+        std::string sn = fresh(), dn = fresh();
+        os_ << "  static const int64_t " << sn << "[] = {" << strides[0] << ","
+            << strides[1] << "};\n";
+        os_ << "  static const int64_t " << dn << "[] = {" << dilations[0]
+            << "," << dilations[1] << "};\n";
+        os_ << "  run_Conv2D(" << nameOf(callOp.getOperand(0)) << ", "
+            << nameOf(callOp.getOperand(1)) << ", "
+            << nameOf(callOp.getOperand(2)) << ", " << sn << ", " << dn
+            << ", &" << resName << ", stream);\n";
       } else {
         os_ << "  run_" << opAttr.getValue() << "(";
         for (auto [i, arg] : llvm::enumerate(callOp.getOperands())) {

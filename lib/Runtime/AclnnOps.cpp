@@ -489,6 +489,70 @@ void run_Matmul(TensorInfo a, TensorInfo b, TensorInfo /*init*/,
 }
 
 // ---------------------------------------------------------------------------
+// 2D convolution CPU reference (NCHW input × FCHW weight → NCHW output).
+// Padding is materialized upstream as tensor.pad — the kernel sees the already
+// padded input, so we apply only strides and dilations here.
+// ---------------------------------------------------------------------------
+static void conv2d_cpu(const TensorInfo &in, const TensorInfo &weight,
+                       const int64_t *strides, const int64_t *dilations,
+                       TensorInfo *out) {
+  assert(in.rank == 4 && weight.rank == 4 && "conv2d expects NCHW × FCHW");
+  int64_t N = in.shape[0], C = in.shape[1], H = in.shape[2], W = in.shape[3];
+  int64_t F = weight.shape[0], KH = weight.shape[2], KW = weight.shape[3];
+  assert(weight.shape[1] == C && "conv2d in-channel mismatch");
+  int64_t SH = strides[0], SW = strides[1];
+  int64_t DH = dilations[0], DW = dilations[1];
+  int64_t OH = (H - DH * (KH - 1) - 1) / SH + 1;
+  int64_t OW = (W - DW * (KW - 1) - 1) / SW + 1;
+
+  TensorInfo tmpl = in;
+  tmpl.shape[0] = N; tmpl.shape[1] = F; tmpl.shape[2] = OH; tmpl.shape[3] = OW;
+  allocTensorLike(tmpl, out);
+
+  bool f16 = (in.dtype == 1);
+  auto rd = [&](const void *p, size_t i) -> float {
+    return f16 ? h2f(((const uint16_t *)p)[i]) : ((const float *)p)[i];
+  };
+  auto wr = [&](void *p, size_t i, float v) {
+    if (f16) ((uint16_t *)p)[i] = f2h(v);
+    else ((float *)p)[i] = v;
+  };
+
+  for (int64_t n = 0; n < N; ++n) {
+    for (int64_t f = 0; f < F; ++f) {
+      for (int64_t oh = 0; oh < OH; ++oh) {
+        for (int64_t ow = 0; ow < OW; ++ow) {
+          float acc = 0.f;
+          for (int64_t c = 0; c < C; ++c) {
+            for (int64_t kh = 0; kh < KH; ++kh) {
+              int64_t ih = oh * SH + kh * DH;
+              for (int64_t kw = 0; kw < KW; ++kw) {
+                int64_t iw = ow * SW + kw * DW;
+                size_t iidx = (size_t)(((n * C + c) * H + ih) * W + iw);
+                size_t widx = (size_t)(((f * C + c) * KH + kh) * KW + kw);
+                acc += rd(in.data, iidx) * rd(weight.data, widx);
+              }
+            }
+          }
+          size_t oidx = (size_t)(((n * F + f) * OH + oh) * OW + ow);
+          wr(out->data, oidx, acc);
+        }
+      }
+    }
+  }
+}
+
+void run_Conv2D(TensorInfo in, TensorInfo weight, TensorInfo /*init*/,
+                const int64_t *strides, const int64_t *dilations,
+                TensorInfo *out, aclrtStream /*stream*/) {
+  if (!g_host_mode) {
+    fprintf(stderr, "[AclnnOps] run_Conv2D: device path not implemented, "
+                    "running CPU reference on host buffers\n");
+  }
+  conv2d_cpu(in, weight, strides, dilations, out);
+}
+
+// ---------------------------------------------------------------------------
 // LayerNorm CPU reference: normalize over the last dim (size D = gamma.shape).
 //   out = (x - mean) / sqrt(var + eps) * gamma + beta
 // eps is the torch default; biased variance (divide by D), matching nn.LayerNorm.

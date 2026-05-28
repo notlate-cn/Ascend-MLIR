@@ -79,6 +79,22 @@ void run_LayerNorm(
     TensorInfo *out, // allocated + written by this call
     aclrtStream stream);
 
+// CPU-reference 2D convolution (aclnn-fallback for linalg.conv_2d_nchw_fchw).
+// Layouts: input  [N, C, H, W],  weight [F, C, KH, KW] -> out [N, F, OH, OW]
+// where OH = (H - DH*(KH-1) - 1) / SH + 1 and OW analogously.
+// strides/dilations point to int64_t[2] (= [SH, SW], [DH, DW]).
+// Padding is materialized upstream as tensor.pad — the kernel sees the already
+// padded input, so this routine does NOT apply any padding itself.
+// Host mode: CPU reference; device mode: not yet wired (falls back to CPU).
+void run_Conv2D(
+    TensorInfo in,
+    TensorInfo weight,
+    TensorInfo init,               // DPS init/output buffer (unused)
+    const int64_t *strides,        // [SH, SW]
+    const int64_t *dilations,      // [DH, DW]
+    TensorInfo *out,
+    aclrtStream stream);
+
 // CPU-reference Transpose (aclnn-fallback; the AscendC transpose codegen is
 // unreliable).  out[i] = in[j] where j[perm[d]] = i[d], i.e. out shape =
 // permute(in shape, perm).  perm has `rank` entries.  Host mode: CPU reference;

@@ -28,8 +28,9 @@ namespace {
 //===----------------------------------------------------------------------===//
 
 static bool isCubeOp(linalg::LinalgOp op) {
-  // Explicit matmul ops
-  if (isa<linalg::MatmulOp, linalg::BatchMatmulOp>(op.getOperation()))
+  // Explicit matmul / conv ops (cube-class; lowered to aclnn fallback).
+  if (isa<linalg::MatmulOp, linalg::BatchMatmulOp,
+          linalg::Conv2DNchwFchwOp>(op.getOperation()))
     return true;
   // Annotated cube ops
   if (op.getOperation()->hasAttr("ascendc.unit")) {
@@ -88,12 +89,16 @@ struct AutoFuseGroupAnalysisPass
   void runOnOperation() override {
     func::FuncOp func = getOperation();
 
-    // Step 0: matmul/bmm go to aclnn single-ops which allocate their own output,
-    // so a fill(0) accumulator init is redundant.  Detach it (init->bare empty)
-    // before grouping so the fill isn't pulled into an unrelated vector group as
-    // a dead dual-output (encoder group18 add+fill→two VECOUT deadlock).
+    // Step 0: matmul/bmm/conv go to aclnn single-ops which allocate their own
+    // output, so a fill(0) accumulator init is redundant.  Detach it
+    // (init->bare empty) before grouping so the fill isn't pulled into an
+    // unrelated vector group as a dead dual-output (encoder group18 add+fill→two
+    // VECOUT deadlock).  Conv2D needs the same treatment so ResNet's
+    // {fill + conv_2d_nchw_fchw} groups reduce to a single-op cube group that
+    // GroupOutline can stamp aclnn.op="Conv2D".
     func.walk([&](linalg::LinalgOp op) {
-      if (!isa<linalg::MatmulOp, linalg::BatchMatmulOp>(op.getOperation()))
+      if (!isa<linalg::MatmulOp, linalg::BatchMatmulOp,
+               linalg::Conv2DNchwFchwOp>(op.getOperation()))
         return;
       OpOperand *init = op.getDpsInitOperand(0);
       if (auto fill = init->get().getDefiningOp<linalg::FillOp>()) {
