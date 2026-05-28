@@ -9,7 +9,7 @@ import sys
 import webbrowser
 from typing import Any
 
-from ascend_debug import debug_graph, layout, memory, stage_graph
+from ascend_debug import debug_graph, layout, memory, stage_graph, ui_text
 from ascend_debug.runner import CommandError
 
 
@@ -180,10 +180,17 @@ def _stage_rows(
     for stage in stages:
         rel_path = str(stage["path"])
         exists = (run_dir / rel_path).exists()
-        status = "存在" if exists else "缺失"
+        status = ui_text.text("exists_status") if exists else ui_text.text("missing_status")
         view_rel_path = stage_views.get(rel_path)
-        view_cell = _link(view_rel_path, "查看 MLIR") if view_rel_path else ""
-        debug_cell = _link(f"{debug_graph_view_path}?stage={stage['order']}", "在工作台查看")
+        view_cell = (
+            _link(view_rel_path, ui_text.text("text_format_label"))
+            if view_rel_path
+            else ""
+        )
+        debug_cell = _link(
+            f"{debug_graph_view_path}?stage={stage['order']}",
+            ui_text.text("debug_graph_format_label"),
+        )
         rows.append(
             "<tr>"
             f"<td>{_cell(stage['order'])}</td>"
@@ -974,7 +981,7 @@ def _render_debug_graph_summary_view(view_rel_path: str, rel_path: str, summary:
 </div>
 <section class="panel">
 <h2>调试工作台</h2>
-<p><a href="{html.escape(_relative_href(view_rel_path, 'views/debug_graph.html'), quote=True)}">打开调试工作台</a></p>
+<p><a href="{html.escape(_relative_href(view_rel_path, 'views/debug_graph.html'), quote=True)}">{_cell(ui_text.text("open_debug_workbench"))}</a></p>
 </section>
 """
     return _summary_page_document(
@@ -1552,9 +1559,9 @@ def render_index(run_dir: pathlib.Path, manifest: dict[str, Any]) -> pathlib.Pat
     if manifest.get("commands"):
         command_section = f"""
 <details class="advanced-section">
-<summary>高级信息：执行命令</summary>
+<summary>{_cell(ui_text.text("advanced_commands_summary"))}</summary>
 <table>
-<thead><tr><th>Stage</th><th>Tool</th><th>Args</th><th>状态</th><th>报告</th></tr></thead>
+<thead><tr><th>{_cell(ui_text.text("stage_column"))}</th><th>{_cell(ui_text.text("tool_column"))}</th><th>{_cell(ui_text.text("args_column"))}</th><th>{_cell(ui_text.text("status_column"))}</th><th>{_cell(ui_text.text("report_column"))}</th></tr></thead>
 <tbody>
 {_command_rows(run_dir, manifest)}
 </tbody>
@@ -1563,8 +1570,8 @@ def render_index(run_dir: pathlib.Path, manifest: dict[str, Any]) -> pathlib.Pat
 """
     debug_graph_section = f"""
 <section class="primary-debug-section">
-<a class="primary-debug-link" href="{_cell(debug_graph_view['view_path'])}">打开调试工作台</a>
-<span>统一查看 Stage 演进、Kernel DAG、Tensor Diff、Locate 和 Memory。</span>
+<a class="primary-debug-link" href="{_cell(debug_graph_view['view_path'])}">{_cell(ui_text.text("open_debug_workbench"))}</a>
+<span>{_cell(ui_text.text("primary_debug_description"))}</span>
 </section>
 """
     document = f"""<!doctype html>
@@ -1607,15 +1614,15 @@ dd {{ margin: 0 0 0.35rem 0; }}
 <main>
 {debug_graph_section}
 <section>
-<h2>运行概览</h2>
+<h2>{_cell(ui_text.text("overview_heading"))}</h2>
 <div class="overview-grid">
 {_overview_cards(manifest)}
 </div>
 </section>
 <section>
-<h2>Stage Timeline</h2>
+<h2>{_cell(ui_text.text("stage_timeline_heading"))}</h2>
 <table>
-<thead><tr><th>顺序</th><th>Stage</th><th>MLIR</th><th>调试图</th><th>状态</th></tr></thead>
+<thead><tr><th>{_cell(ui_text.text("stage_order_column"))}</th><th>{_cell(ui_text.text("stage_column"))}</th><th>{_cell(ui_text.text("mlir_column"))}</th><th>{_cell(ui_text.text("debug_graph_column"))}</th><th>{_cell(ui_text.text("status_column"))}</th></tr></thead>
 <tbody>
 {_stage_rows(run_dir, manifest, stage_views, debug_graph_view['view_path'])}
 </tbody>

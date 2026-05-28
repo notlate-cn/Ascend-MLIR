@@ -128,18 +128,27 @@ def parse_stage_mlir(stage: dict[str, Any], text: str) -> dict[str, Any]:
     edges: list[dict[str, Any]] = []
     producer_by_value: dict[str, str] = {}
     defined_values: set[str] = set()
-    function_name = None
+    function_names: list[str] = []
+    function_node_ids: dict[str, list[str]] = {}
+
+    def note_function(name: str) -> None:
+        if name in function_node_ids:
+            return
+        function_names.append(name)
+        function_node_ids[name] = []
 
     for line_number, line in enumerate(lines, start=1):
         func_match = FUNC_RE.search(line)
         if not func_match:
             continue
         function_name = func_match.group("name")
+        note_function(function_name)
         for arg in _parse_func_args(line):
             node_id = f"n{len(nodes)}"
             node = {
                 "id": node_id,
                 "line": line_number,
+                "function": function_name,
                 "op_name": "func.arg",
                 "label": arg["name"],
                 "input_values": [],
@@ -151,12 +160,18 @@ def parse_stage_mlir(stage: dict[str, Any], text: str) -> dict[str, Any]:
                 "workspace_size_bytes": None,
             }
             nodes.append(node)
+            function_node_ids[function_name].append(node_id)
             producer_by_value[arg["name"]] = node_id
             defined_values.add(arg["name"])
 
     index = 0
+    current_function = None
     while index < len(lines):
         line = lines[index]
+        func_match = FUNC_RE.search(line)
+        if func_match:
+            current_function = func_match.group("name")
+            note_function(current_function)
         op_match = OP_RE.match(line)
         return_match = RETURN_RE.match(line)
         if not op_match and not return_match:
@@ -191,6 +206,7 @@ def parse_stage_mlir(stage: dict[str, Any], text: str) -> dict[str, Any]:
             "id": node_id,
             "line": index + 1,
             "line_end": next_index,
+            "function": current_function,
             "op_name": op_name,
             "label": result_values[0] if result_values else op_name,
             "input_values": input_values,
@@ -206,6 +222,8 @@ def parse_stage_mlir(stage: dict[str, Any], text: str) -> dict[str, Any]:
             "workspace_size_bytes": _extract_int_attr(op_text, "cann.workspace_size_bytes"),
         }
         nodes.append(node)
+        if current_function:
+            function_node_ids.setdefault(current_function, []).append(node_id)
 
         for value in input_values:
             producer = producer_by_value.get(value)
@@ -234,7 +252,12 @@ def parse_stage_mlir(stage: dict[str, Any], text: str) -> dict[str, Any]:
             "name": stage["name"],
             "path": stage["path"],
         },
-        "function": function_name,
+        "function": function_names[0] if function_names else None,
+        "functions": [
+            {"name": name, "node_ids": function_node_ids.get(name, [])}
+            for name in function_names
+            if function_node_ids.get(name)
+        ],
         "node_count": len(nodes),
         "edge_count": len(edges),
         "kernel_count": len(kernel_ids),

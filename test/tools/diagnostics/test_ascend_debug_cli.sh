@@ -665,7 +665,7 @@ TEXT
 ascend-debug open "${TMP_DIR}/debug-run-graph" --no-browser >"${TMP_DIR}/ascend-debug-open-graph.txt"
 grep -Fq '<a class="primary-debug-link" href="views/debug_graph.html">打开调试工作台</a>' "${TMP_DIR}/debug-run-graph/index.html"
 grep -Fq '<h2>Stage Timeline</h2>' "${TMP_DIR}/debug-run-graph/index.html"
-grep -Fq '<a href="views/debug_graph.html?stage=29">在工作台查看</a>' "${TMP_DIR}/debug-run-graph/index.html"
+grep -Fq '<a href="views/debug_graph.html?stage=29">图形化格式</a>' "${TMP_DIR}/debug-run-graph/index.html"
 test -f "${TMP_DIR}/debug-run-graph/summaries/debug_graph.json"
 test -f "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
 grep -Fq '<h1>Ascend Debug 调试工作台</h1>' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
@@ -673,14 +673,35 @@ grep -Fq '<svg id="unified-debug-graph-svg"' "${TMP_DIR}/debug-run-graph/views/d
 grep -Fq '<button class="mode-tab active" data-mode="stage"' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
 grep -Fq '<button class="mode-tab" data-mode="kernel"' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
 grep -Fq 'id="stage-list"' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
+grep -Fq 'id="stage-phase-controls"' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
 grep -Fq 'id="graph-search"' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
 grep -Fq 'id="graph-fit"' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
 grep -Fq 'id="graph-reset"' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
+grep -Fq 'id="sidebar-toggle"' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
+grep -Fq 'id="inspector-resizer"' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
+grep -Fq 'id="source-reader-overlay"' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
 grep -Fq 'id="inspector-detail"' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
 grep -Fq 'id="stage-diff-panel"' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
 grep -Fq 'id="graph-workspace-data"' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
+grep -Fq -- '--inspector-width' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
+grep -Fq 'class="layout-resizer"' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
+grep -Fq 'class="source-code"' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
+grep -Fq '.source-code { margin: 0; white-space: pre; overflow: auto;' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
+grep -Fq 'class="source-expand-button"' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
+grep -Fq 'class="stage-button stage-group-button' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
+grep -Fq 'class="stage-boundary-details"' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
+grep -Fq '显示边界快照' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
+grep -Fq '输入同 19 normalize-out' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
+grep -Fq 'class="function-frame"' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
+grep -Fq 'function functionFramesForGraph' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
 grep -Fq 'function beginCanvasPan' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
 grep -Fq 'function isBlankCanvasPanTarget' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
+grep -Fq 'function installInspectorResize' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
+grep -Fq 'function setSidebarCollapsed' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
+grep -Fq 'function expandSourceReader' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
+grep -Fq 'function highlightMlir' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
+grep -Fq 'localStorage.setItem("ascendDebugInspectorWidth"' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
+grep -Fq 'localStorage.setItem("ascendDebugSidebarCollapsed"' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
 grep -Fq 'event.button !== 0 && event.button !== 2' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
 grep -Fq '!isBlankCanvasPanTarget(event.target)' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
 grep -Fq 'function applyGraphScale' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
@@ -692,6 +713,7 @@ grep -Fq 'canvas.classList.add("panning")' "${TMP_DIR}/debug-run-graph/views/deb
 grep -Fq 'diff-added' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
 grep -Fq 'Stage Diff' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
 grep -Fq 'function renderKernelDag' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
+grep -Fq 'function renderStagePhaseControls' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
 grep -Fq 'Kernel DAG' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
 grep -Fq 'Tensor Diff' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
 grep -Fq 'Memory' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
@@ -710,6 +732,15 @@ assert graph["visual_kind"] == "unified-debug-workspace"
 assert graph["primary_stage"]["name"] == "kernelize-out"
 assert graph["primary_stage"]["stage_view_path"] == "views/stages/029-kernelize-out.mlir.html"
 assert graph["stage_count"] == 9
+assert len(graph["stage_groups"]) == 5
+kernelize = next(item for item in graph["stage_groups"] if item["name"] == "kernelize")
+assert kernelize["input_stage"]["name"] == "kernelize-in"
+assert kernelize["output_stage"]["name"] == "kernelize-out"
+assert kernelize["input_same_as_previous_output"] is True
+assert kernelize["previous_output_stage"]["name"] == "normalize-out"
+primary_graph = graph["primary_stage"]["graph"]
+assert primary_graph["functions"][0]["name"] == "elementwise"
+assert primary_graph["functions"][0]["node_ids"] == [node["id"] for node in primary_graph["nodes"]]
 assert len(graph["stage_diffs"]) == graph["stage_count"] - 1
 assert all("added_count" in item for item in graph["stage_diffs"])
 assert any(item["to_stage"]["name"] == "kernelize-out" for item in graph["stage_diffs"])
@@ -763,7 +794,7 @@ if grep -Fq 'views/summaries/debug_graph.json.html' "${TMP_DIR}/debug-run-graph/
   echo "index should not expose debug graph summary JSON view" >&2
   exit 1
 fi
-grep -Fq '<a href="views/stages/029-kernelize-out.mlir.html">查看 MLIR</a>' "${TMP_DIR}/debug-run-graph/index.html"
+grep -Fq '<a href="views/stages/029-kernelize-out.mlir.html">文本格式</a>' "${TMP_DIR}/debug-run-graph/index.html"
 grep -Fq '../views/kernels/kernel_0.html' "${TMP_DIR}/debug-run-graph/graphs/kernel_dag.svg"
 test -f "${TMP_DIR}/debug-run-graph/views/stages/029-kernelize-out.mlir.html"
 test -f "${TMP_DIR}/debug-run-graph/views/graphs/kernelized.mlir.html"
@@ -1056,8 +1087,8 @@ func.func @elementwise(%arg0: tensor<4x8xf16>, %arg1: tensor<4x8xf16>) -> tensor
 MLIR
 ascend-debug open "${TMP_DIR}/debug-run-stage-graph" --no-browser >"${TMP_DIR}/ascend-debug-open-stage-graph.txt"
 grep -Fq '<h2>Stage Timeline</h2>' "${TMP_DIR}/debug-run-stage-graph/index.html"
-grep -Fq '<a href="views/debug_graph.html?stage=0">在工作台查看</a>' "${TMP_DIR}/debug-run-stage-graph/index.html"
-grep -Fq '<a href="views/debug_graph.html?stage=29">在工作台查看</a>' "${TMP_DIR}/debug-run-stage-graph/index.html"
+grep -Fq '<a href="views/debug_graph.html?stage=0">图形化格式</a>' "${TMP_DIR}/debug-run-stage-graph/index.html"
+grep -Fq '<a href="views/debug_graph.html?stage=29">图形化格式</a>' "${TMP_DIR}/debug-run-stage-graph/index.html"
 test -f "${TMP_DIR}/debug-run-stage-graph/graphs/stages/000-source.graph.json"
 test -f "${TMP_DIR}/debug-run-stage-graph/graphs/stages/029-kernelize-out.graph.json"
 test ! -e "${TMP_DIR}/debug-run-stage-graph/views/graphs/stages/000-source.graph.html"
@@ -1103,9 +1134,17 @@ grep -Fq '<h2>运行概览</h2>' "${TMP_DIR}/debug-run/index.html"
 grep -Fq '<span>preset</span><strong>quick</strong>' "${TMP_DIR}/debug-run/index.html"
 grep -Fq '<span>tool</span><strong>ascend-debug</strong>' "${TMP_DIR}/debug-run/index.html"
 grep -Fq '<h2>Stage Timeline</h2>' "${TMP_DIR}/debug-run/index.html"
-grep -Fq '<a href="views/stages/000-source.mlir.html">查看 MLIR</a>' "${TMP_DIR}/debug-run/index.html"
-grep -Fq '<a href="views/debug_graph.html?stage=0">在工作台查看</a>' "${TMP_DIR}/debug-run/index.html"
-grep -Fq '<a href="views/debug_graph.html?stage=29">在工作台查看</a>' "${TMP_DIR}/debug-run/index.html"
+grep -Fq '<a href="views/stages/000-source.mlir.html">文本格式</a>' "${TMP_DIR}/debug-run/index.html"
+grep -Fq '<a href="views/debug_graph.html?stage=0">图形化格式</a>' "${TMP_DIR}/debug-run/index.html"
+grep -Fq '<a href="views/debug_graph.html?stage=29">图形化格式</a>' "${TMP_DIR}/debug-run/index.html"
+if grep -Fq '查看 MLIR' "${TMP_DIR}/debug-run/index.html"; then
+  echo "index should use 文本格式 instead of 查看 MLIR" >&2
+  exit 1
+fi
+if grep -Fq '在工作台查看' "${TMP_DIR}/debug-run/index.html"; then
+  echo "index should use 图形化格式 instead of 在工作台查看" >&2
+  exit 1
+fi
 test -f "${TMP_DIR}/debug-run/views/stages/000-source.mlir.html"
 test -f "${TMP_DIR}/debug-run/graphs/stages/000-source.graph.json"
 test ! -e "${TMP_DIR}/debug-run/views/graphs/stages/000-source.graph.html"
@@ -1115,11 +1154,11 @@ import sys
 
 html = pathlib.Path(sys.argv[1]).read_text()
 expected_rows = [
-    ("0", "source", '<a href="views/stages/000-source.mlir.html">查看 MLIR</a>', '<a href="views/debug_graph.html?stage=0">在工作台查看</a>', "存在"),
-    ("10", "normalize-in", '<a href="views/stages/010-normalize-in.mlir.html">查看 MLIR</a>', '<a href="views/debug_graph.html?stage=10">在工作台查看</a>', "存在"),
-    ("19", "normalize-out", '<a href="views/stages/019-normalize-out.mlir.html">查看 MLIR</a>', '<a href="views/debug_graph.html?stage=19">在工作台查看</a>', "存在"),
-    ("20", "kernelize-in", '<a href="views/stages/020-kernelize-in.mlir.html">查看 MLIR</a>', '<a href="views/debug_graph.html?stage=20">在工作台查看</a>', "存在"),
-    ("29", "kernelize-out", '<a href="views/stages/029-kernelize-out.mlir.html">查看 MLIR</a>', '<a href="views/debug_graph.html?stage=29">在工作台查看</a>', "存在"),
+    ("0", "source", '<a href="views/stages/000-source.mlir.html">文本格式</a>', '<a href="views/debug_graph.html?stage=0">图形化格式</a>', "存在"),
+    ("10", "normalize-in", '<a href="views/stages/010-normalize-in.mlir.html">文本格式</a>', '<a href="views/debug_graph.html?stage=10">图形化格式</a>', "存在"),
+    ("19", "normalize-out", '<a href="views/stages/019-normalize-out.mlir.html">文本格式</a>', '<a href="views/debug_graph.html?stage=19">图形化格式</a>', "存在"),
+    ("20", "kernelize-in", '<a href="views/stages/020-kernelize-in.mlir.html">文本格式</a>', '<a href="views/debug_graph.html?stage=20">图形化格式</a>', "存在"),
+    ("29", "kernelize-out", '<a href="views/stages/029-kernelize-out.mlir.html">文本格式</a>', '<a href="views/debug_graph.html?stage=29">图形化格式</a>', "存在"),
 ]
 cursor = 0
 for row in expected_rows:

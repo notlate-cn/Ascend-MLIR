@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import html
+import hashlib
 import json
 import pathlib
 from typing import Any
@@ -56,6 +57,86 @@ def _select_primary_stage(stages: list[dict[str, Any]]) -> dict[str, Any] | None
     if with_kernels:
         return max(with_kernels, key=lambda item: item["order"])
     return stages[-1] if stages else None
+
+
+def _stage_brief(stage: dict[str, Any], index: int) -> dict[str, Any]:
+    return {
+        "stage_index": index,
+        "order": stage.get("order"),
+        "name": stage.get("name"),
+        "path": stage.get("path"),
+        "stage_view_path": stage.get("stage_view_path"),
+    }
+
+
+def _stage_digest(run_dir: pathlib.Path, stage: dict[str, Any] | None) -> str | None:
+    if not isinstance(stage, dict):
+        return None
+    path = stage.get("path")
+    if not isinstance(path, str):
+        return None
+    try:
+        return hashlib.sha256((run_dir / path).read_bytes()).hexdigest()
+    except OSError:
+        return None
+
+
+def _build_stage_groups(run_dir: pathlib.Path, stages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    by_name = {stage.get("name"): (index, stage) for index, stage in enumerate(stages)}
+    groups: list[dict[str, Any]] = []
+    previous_output: tuple[int, dict[str, Any]] | None = None
+
+    source_entry = by_name.get("source")
+    if source_entry:
+        source_index, source_stage = source_entry
+        source_brief = _stage_brief(source_stage, source_index)
+        groups.append(
+            {
+                "name": "source",
+                "kind": "source",
+                "label": "source",
+                "default_stage": source_brief,
+                "input_stage": None,
+                "output_stage": source_brief,
+                "previous_output_stage": None,
+                "input_same_as_previous_output": False,
+            }
+        )
+        previous_output = source_entry
+
+    for name, input_name, output_name in (
+        ("normalize", "normalize-in", "normalize-out"),
+        ("kernelize", "kernelize-in", "kernelize-out"),
+        ("schedule", "schedule-in", "schedule-out"),
+        ("realize", "realize-in", "realize-out"),
+    ):
+        output_entry = by_name.get(output_name)
+        if not output_entry:
+            continue
+        input_entry = by_name.get(input_name)
+        output_index, output_stage = output_entry
+        input_index, input_stage = input_entry if input_entry else (None, None)
+        previous_index, previous_stage = previous_output if previous_output else (None, None)
+        same_as_previous = (
+            input_stage is not None
+            and previous_stage is not None
+            and _stage_digest(run_dir, input_stage) == _stage_digest(run_dir, previous_stage)
+        )
+        groups.append(
+            {
+                "name": name,
+                "kind": "pass",
+                "label": name,
+                "default_stage": _stage_brief(output_stage, output_index),
+                "input_stage": _stage_brief(input_stage, input_index) if input_stage is not None and input_index is not None else None,
+                "output_stage": _stage_brief(output_stage, output_index),
+                "previous_output_stage": _stage_brief(previous_stage, previous_index) if previous_stage is not None and previous_index is not None else None,
+                "input_same_as_previous_output": same_as_previous,
+            }
+        )
+        previous_output = output_entry
+
+    return groups
 
 
 def _node_base_key(node: dict[str, Any]) -> str:
@@ -321,7 +402,68 @@ def _overlay_cards(overlays: dict[str, Any]) -> str:
 def _stage_buttons(debug_graph: dict[str, Any]) -> str:
     primary = debug_graph.get("primary_stage")
     active_name = primary.get("name") if isinstance(primary, dict) else None
+    groups = debug_graph.get("stage_groups", [])
     buttons = []
+    if isinstance(groups, list) and groups:
+        for group_index, group in enumerate(groups):
+            default_stage = group.get("default_stage") if isinstance(group, dict) else None
+            if not isinstance(default_stage, dict):
+                continue
+            stage_index = default_stage.get("stage_index")
+            active = " active" if default_stage.get("name") == active_name else ""
+            meta = "输出 " + str(default_stage.get("name"))
+            previous = group.get("previous_output_stage") if isinstance(group, dict) else None
+            equivalence = ""
+            if group.get("input_same_as_previous_output") and isinstance(previous, dict):
+                equivalence = (
+                    '<small class="stage-equivalence">'
+                    f'输入同 {_cell(previous.get("order"))} {_cell(previous.get("name"))}'
+                    "</small>"
+                )
+            buttons.append(
+                f'<button class="stage-button stage-group-button{active}" '
+                f'data-stage-index="{_cell(stage_index)}" data-stage-group-index="{group_index}" type="button">'
+                '<span class="stage-group-main">'
+                f'<span>{_cell(default_stage.get("order"))}</span>{_cell(group.get("label"))}'
+                "</span>"
+                f'<small class="stage-group-meta">{_cell(meta)}</small>'
+                f"{equivalence}"
+                "</button>"
+            )
+        boundary_rows = []
+        for index, item in enumerate(debug_graph.get("stages", [])):
+            equivalent_to = ""
+            for group in groups:
+                if not isinstance(group, dict):
+                    continue
+                input_stage = group.get("input_stage")
+                previous = group.get("previous_output_stage")
+                if (
+                    isinstance(input_stage, dict)
+                    and input_stage.get("stage_index") == index
+                    and group.get("input_same_as_previous_output")
+                    and isinstance(previous, dict)
+                ):
+                    equivalent_to = (
+                        '<small class="stage-equivalence">'
+                        f'= {_cell(previous.get("order"))} {_cell(previous.get("name"))}'
+                        "</small>"
+                    )
+                    break
+            active = " active" if item.get("name") == active_name else ""
+            boundary_rows.append(
+                f'<button class="stage-button stage-boundary-button{active}" data-stage-index="{index}" type="button">'
+                f'<span>{_cell(item.get("order"))}</span>{_cell(item.get("name"))}'
+                f"{equivalent_to}"
+                "</button>"
+            )
+        buttons.append(
+            '<details class="stage-boundary-details">'
+            "<summary>显示边界快照</summary>"
+            f'<div class="stage-boundary-list">{"".join(boundary_rows)}</div>'
+            "</details>"
+        )
+        return "\n".join(buttons)
     for index, item in enumerate(debug_graph.get("stages", [])):
         active = " active" if item.get("name") == active_name else ""
         buttons.append(
@@ -383,6 +525,9 @@ def _render_html(
   --teal: #0f766e;
   --red: #dc2626;
   --amber: #d97706;
+  --sidebar-width: 15rem;
+  --inspector-width: 25rem;
+  --resizer-width: 0.55rem;
 }
 * { box-sizing: border-box; }
 body { margin: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; color: var(--text); background: var(--bg); }
@@ -392,14 +537,38 @@ h1 { margin: 0 0 0.35rem; font-size: 1.2rem; }
 h2 { margin: 0 0 0.65rem; font-size: 0.98rem; }
 h3 { margin: 0 0 0.45rem; font-size: 0.84rem; }
 .toolbar { display: flex; gap: 0.75rem; flex-wrap: wrap; align-items: center; color: var(--muted); font-size: 0.86rem; }
-.app-shell { display: grid; grid-template-columns: 15rem minmax(34rem, 1fr) 25rem; gap: 0.85rem; padding: 0.85rem; min-height: calc(100vh - 4.5rem); }
+.app-shell { display: grid; grid-template-columns: var(--sidebar-width) minmax(28rem, 1fr) var(--resizer-width) var(--inspector-width); gap: 0.55rem; padding: 0.85rem; min-height: calc(100vh - 4.5rem); }
+.app-shell.sidebar-collapsed { --sidebar-width: 3.4rem; }
 .sidebar, .graph-panel, .inspector-panel { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; }
-.sidebar { padding: 0.8rem; align-self: start; position: sticky; top: 0.85rem; }
+.sidebar { padding: 0.65rem; align-self: start; position: sticky; top: 0.85rem; overflow: hidden; }
+.sidebar-header { display: flex; align-items: center; justify-content: space-between; gap: 0.45rem; margin-bottom: 0.65rem; }
+.sidebar-header h2 { margin: 0; }
+.sidebar-toggle { border: 1px solid var(--line); border-radius: 6px; background: #ffffff; color: var(--text); padding: 0.32rem 0.45rem; cursor: pointer; font-size: 0.78rem; }
+.sidebar-toggle:hover { border-color: #60a5fa; color: #1d4ed8; }
 .mode-tabs { display: grid; grid-template-columns: 1fr; gap: 0.35rem; margin-bottom: 0.9rem; }
 .mode-tab, .stage-button { border: 1px solid var(--line); border-radius: 6px; background: #ffffff; color: var(--text); padding: 0.45rem 0.55rem; text-align: left; cursor: pointer; }
 .mode-tab.active, .stage-button.active { border-color: #60a5fa; background: #eaf2ff; color: #1d4ed8; font-weight: 700; }
+.sidebar-collapsed .sidebar { padding: 0.45rem; }
+.sidebar-collapsed .sidebar-header h2,
+.sidebar-collapsed .sidebar-body { display: none; }
+.sidebar-collapsed .sidebar-header { justify-content: center; margin-bottom: 0.45rem; }
+.sidebar-collapsed .mode-tabs { margin: 0; }
+.sidebar-collapsed .mode-tab { font-size: 0; text-align: center; padding: 0.5rem 0; }
+.sidebar-collapsed .mode-tab::before { content: attr(data-short); font-size: 0.82rem; font-weight: 700; }
 .stage-list { display: grid; gap: 0.32rem; max-height: 46vh; overflow: auto; }
 .stage-button span { display: inline-block; min-width: 2.2rem; color: var(--muted); font-family: SFMono-Regular, Menlo, Consolas, monospace; }
+.stage-group-button { display: grid; gap: 0.12rem; }
+.stage-group-main { display: block; color: inherit; font-family: inherit; }
+.stage-group-meta, .stage-equivalence { color: var(--muted); font-size: 0.72rem; font-weight: 500; }
+.stage-equivalence { color: #0f766e; }
+.stage-boundary-details { margin-top: 0.42rem; border-top: 1px solid #e4e9f1; padding-top: 0.45rem; }
+.stage-boundary-details summary { cursor: pointer; color: var(--muted); font-size: 0.78rem; margin-bottom: 0.4rem; }
+.stage-boundary-list { display: grid; gap: 0.28rem; }
+.stage-boundary-button { font-size: 0.78rem; padding: 0.36rem 0.45rem; }
+.stage-phase-controls { margin-top: 0.45rem; display: flex; align-items: center; gap: 0.4rem; flex-wrap: wrap; }
+.stage-phase-button { border: 1px solid var(--line); border-radius: 999px; background: #fff; color: var(--text); padding: 0.24rem 0.55rem; cursor: pointer; font-size: 0.76rem; }
+.stage-phase-button.active { border-color: #60a5fa; background: #eaf2ff; color: #1d4ed8; font-weight: 700; }
+.stage-phase-note { color: var(--muted); font-size: 0.76rem; }
 .stage-diff-panel { margin-top: 0.9rem; border: 1px solid #e3e8ef; border-radius: 7px; padding: 0.65rem; background: #fbfcfe; }
 .diff-counts { display: grid; grid-template-columns: repeat(3, 1fr); gap: 0.35rem; margin: 0.45rem 0; }
 .diff-pill { border-radius: 6px; border: 1px solid var(--line); padding: 0.35rem; background: #fff; font-size: 0.78rem; }
@@ -426,6 +595,10 @@ dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }
 .graph-canvas-wrap { overflow: auto; height: calc(100vh - 11rem); background: #ffffff; cursor: grab; }
 .graph-canvas-wrap.panning { cursor: grabbing; user-select: none; }
 #unified-debug-graph-svg { display: block; min-width: 100%; }
+.function-frame-box { fill: #f8fafc; fill-opacity: 0.72; stroke: #475569; stroke-width: 2; stroke-dasharray: 9 5; }
+.function-frame-label-bg { fill: #ffffff; stroke: #94a3b8; stroke-width: 1; }
+.function-frame-label { fill: #1f2937; font-size: 12px; font-weight: 700; font-family: SFMono-Regular, Menlo, Consolas, monospace; }
+.function-frame-meta { fill: #475569; font-size: 11px; }
 .graph-edge-path { fill: none; stroke: #8a95a6; stroke-width: 1.5; marker-end: url(#arrow-head); }
 .graph-edge-path.critical { stroke: var(--red); stroke-width: 2.7; }
 .graph-edge-path.fusion { stroke: #16a34a; stroke-width: 2.5; }
@@ -445,16 +618,37 @@ dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }
 .node-result { fill: #344054; font-size: 12px; font-family: SFMono-Regular, Menlo, Consolas, monospace; }
 .node-inputs { fill: #667085; font-size: 11px; font-family: SFMono-Regular, Menlo, Consolas, monospace; }
 .node-kernel { fill: var(--blue); font-size: 10px; text-anchor: end; }
+.layout-resizer { cursor: col-resize; align-self: stretch; border-radius: 999px; background: linear-gradient(90deg, transparent, #cbd5e1, transparent); min-height: calc(100vh - 6rem); }
+.layout-resizer:hover, .layout-resizer.active { background: #93c5fd; }
 .inspector-panel { min-width: 0; padding: 0.8rem; align-self: start; position: sticky; top: 0.85rem; max-height: calc(100vh - 1.7rem); overflow: auto; }
 .inspector-actions { display: flex; flex-wrap: wrap; gap: 0.45rem; margin-bottom: 0.6rem; }
 .chip { display: inline-block; border: 1px solid var(--line); border-radius: 999px; padding: 0.18rem 0.45rem; color: #344054; background: #ffffff; font-size: 0.78rem; }
 .inspector-section { border: 1px solid #e3e8ef; border-radius: 7px; background: #fbfcfe; padding: 0.65rem; margin-bottom: 0.65rem; }
 .inspector-section h3 { margin-bottom: 0.55rem; }
+.source-section-header { display: flex; justify-content: space-between; align-items: center; gap: 0.55rem; margin-bottom: 0.55rem; }
+.source-section-header h3 { margin: 0; }
+.source-expand-button { border: 1px solid var(--line); border-radius: 6px; background: #ffffff; color: var(--text); padding: 0.28rem 0.45rem; cursor: pointer; font-size: 0.76rem; }
+.source-expand-button:hover { border-color: #60a5fa; color: #1d4ed8; }
 .detail-grid { display: grid; grid-template-columns: 5.5rem minmax(0, 1fr); gap: 0.3rem 0.5rem; font-size: 0.82rem; }
 .detail-label { color: var(--muted); font-weight: 700; }
 .detail-value { min-width: 0; overflow-wrap: anywhere; font-family: SFMono-Regular, Menlo, Consolas, monospace; }
 .body-op-list { display: flex; flex-wrap: wrap; gap: 0.35rem; margin-top: 0.45rem; }
-pre { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; background: #0b1020; color: #dbeafe; border: 1px solid #1e293b; padding: 0.75rem; border-radius: 7px; font: 12px/1.45 SFMono-Regular, Menlo, Consolas, monospace; }
+pre { margin: 0; background: #0b1020; color: #dbeafe; border: 1px solid #1e293b; padding: 0.75rem; border-radius: 7px; font: 12px/1.45 SFMono-Regular, Menlo, Consolas, monospace; }
+.source-code { margin: 0; white-space: pre; overflow: auto; overflow-wrap: normal; max-height: 48vh; tab-size: 2; }
+.source-code code { display: block; min-width: max-content; }
+.mlir-comment { color: #94a3b8; font-style: italic; }
+.mlir-symbol { color: #93c5fd; }
+.mlir-ssa { color: #fcd34d; }
+.mlir-op { color: #c4b5fd; font-weight: 700; }
+.mlir-type { color: #6ee7b7; }
+.mlir-attr { color: #fca5a5; }
+.source-reader-overlay[hidden] { display: none; }
+.source-reader-overlay { position: fixed; inset: 0; z-index: 20; background: rgba(15, 23, 42, 0.62); display: grid; place-items: center; padding: 1.25rem; }
+.source-reader-panel { width: min(94vw, 84rem); height: min(88vh, 58rem); display: grid; grid-template-rows: auto minmax(0, 1fr); background: var(--panel); border: 1px solid var(--line); border-radius: 10px; box-shadow: 0 24px 70px rgba(15, 23, 42, 0.35); overflow: hidden; }
+.source-reader-header { display: flex; justify-content: space-between; align-items: center; gap: 1rem; padding: 0.8rem 1rem; border-bottom: 1px solid var(--line); }
+.source-reader-header h2 { margin: 0; }
+.source-reader-close { border: 1px solid var(--line); border-radius: 6px; background: #ffffff; color: var(--text); padding: 0.38rem 0.62rem; cursor: pointer; }
+.source-reader-code { border: 0; border-radius: 0; max-height: none; height: 100%; }
 .artifact-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(16rem, 1fr)); gap: 0.75rem; }
 table { width: 100%; border-collapse: collapse; font-size: 0.82rem; }
 th, td { border: 1px solid #d7dde7; padding: 0.34rem 0.42rem; text-align: left; vertical-align: top; }
@@ -462,6 +656,7 @@ th { background: #f2f5f9; }
 @media (max-width: 1180px) {
   .app-shell { grid-template-columns: 1fr; }
   .sidebar, .inspector-panel { position: static; max-height: none; }
+  .layout-resizer { display: none; }
   .graph-canvas-wrap { height: 62vh; }
   .graph-tools { grid-template-columns: 1fr 1fr; }
 }
@@ -493,6 +688,9 @@ let activeSearchResults = [];
 let activeSearchIndex = 0;
 const MIN_GRAPH_SCALE = 0.2;
 const MAX_GRAPH_SCALE = 3;
+const MIN_INSPECTOR_WIDTH = 320;
+const MAX_INSPECTOR_WIDTH = 920;
+let inspectorResizeState = null;
 
 function escapeHtml(value) {
   return String(value ?? "").replace(/[&<>"']/g, (char) => ({
@@ -514,6 +712,7 @@ function setInspector(title, links = [], detailHtml = "") {
   const actions = document.getElementById("inspector-actions");
   actions.innerHTML = links.map((link) => `<a class="chip" href="${escapeHtml(link.href)}">${escapeHtml(link.label)}</a>`).join("");
   document.getElementById("inspector-detail").innerHTML = detailHtml;
+  installSourceExpandActions();
 }
 
 function valueText(value) {
@@ -527,17 +726,80 @@ function detailRows(rows) {
 <div class="detail-value">${escapeHtml(valueText(value))}</div>`).join("")}</div>`;
 }
 
+function classifyMlirToken(token) {
+  if (/^\\/\\//.test(token)) return "mlir-comment";
+  if (/^%/.test(token)) return "mlir-ssa";
+  if (/^[@#]/.test(token)) return "mlir-symbol";
+  if (/^(func\\.func|linalg\\.[A-Za-z0-9_.$-]+|arith\\.[A-Za-z0-9_.$-]+|tensor\\.[A-Za-z0-9_.$-]+|memref\\.[A-Za-z0-9_.$-]+|scf\\.[A-Za-z0-9_.$-]+|ascendc\\.[A-Za-z0-9_.$-]+|emitasc\\.[A-Za-z0-9_.$-]+)$/.test(token)) return "mlir-op";
+  if (/^(tensor|memref|index|i1|i8|i16|i32|i64|ui8|f16|f32|f64|bf16)$/.test(token)) return "mlir-type";
+  if (/^[A-Za-z_][A-Za-z0-9_.$-]*:$/.test(token)) return "mlir-attr";
+  return "";
+}
+
+function highlightMlirLine(line) {
+  const commentIndex = line.indexOf("//");
+  const code = commentIndex >= 0 ? line.slice(0, commentIndex) : line;
+  const comment = commentIndex >= 0 ? line.slice(commentIndex) : "";
+  const tokenPattern = /(%[A-Za-z0-9_.$-]+|[@#][A-Za-z0-9_.$-]+|[A-Za-z_][A-Za-z0-9_.$-]*:?)/g;
+  let output = "";
+  let cursor = 0;
+  for (const match of code.matchAll(tokenPattern)) {
+    output += escapeHtml(code.slice(cursor, match.index));
+    const token = match[0];
+    const cssClass = classifyMlirToken(token);
+    output += cssClass
+      ? `<span class="${cssClass}">${escapeHtml(token)}</span>`
+      : escapeHtml(token);
+    cursor = match.index + token.length;
+  }
+  output += escapeHtml(code.slice(cursor));
+  if (comment) {
+    output += `<span class="mlir-comment">${escapeHtml(comment)}</span>`;
+  }
+  return output;
+}
+
+function highlightMlir(value) {
+  return valueText(value).split("\\n").map(highlightMlirLine).join("\\n");
+}
+
 function codeBlock(value) {
-  return `<pre>${escapeHtml(valueText(value))}</pre>`;
+  return `<pre class="source-code"><code class="mlir-code">${highlightMlir(value)}</code></pre>`;
+}
+
+function expandSourceReader(title, codeHtml) {
+  const overlay = document.getElementById("source-reader-overlay");
+  document.getElementById("source-reader-title").textContent = title || "源码阅读";
+  document.getElementById("source-reader-code").innerHTML = codeHtml || "";
+  overlay.hidden = false;
+}
+
+function closeSourceReader() {
+  document.getElementById("source-reader-overlay").hidden = true;
+}
+
+function installSourceExpandActions() {
+  document.querySelectorAll(".source-expand-button").forEach((button) => {
+    button.addEventListener("click", () => {
+      const section = button.closest(".inspector-section");
+      const title = section ? section.querySelector("h3") : null;
+      const code = section ? section.querySelector(".mlir-code") : null;
+      expandSourceReader(title ? title.textContent : "源码阅读", code ? code.innerHTML : "");
+    });
+  });
 }
 
 function renderNodeIrSection(node) {
   const hasBody = Boolean(node.region_body);
   const localIr = hasBody ? node.region_body : (node.source_excerpt || "");
+  const title = hasBody ? "Region Body" : "Op 源码";
   if (!localIr) return "";
   return `
 <section class="inspector-section">
-<h3>${hasBody ? "Region Body" : "Op 源码"}</h3>
+<div class="source-section-header">
+<h3>${title}</h3>
+<button class="source-expand-button" type="button">展开阅读</button>
+</div>
 ${codeBlock(localIr)}
 </section>`;
 }
@@ -731,8 +993,138 @@ function installGraphNavigation() {
   });
 }
 
+function setInspectorWidth(width) {
+  const clamped = clamp(Number(width) || 0, MIN_INSPECTOR_WIDTH, MAX_INSPECTOR_WIDTH);
+  document.documentElement.style.setProperty("--inspector-width", `${clamped}px`);
+  localStorage.setItem("ascendDebugInspectorWidth", String(clamped));
+}
+
+function restoreInspectorWidth() {
+  const stored = Number(localStorage.getItem("ascendDebugInspectorWidth"));
+  if (stored) setInspectorWidth(stored);
+}
+
+function installInspectorResize() {
+  const resizer = document.getElementById("inspector-resizer");
+  const shell = document.querySelector(".app-shell");
+  if (!resizer || !shell) return;
+  resizer.addEventListener("pointerdown", (event) => {
+    if (window.matchMedia("(max-width: 1180px)").matches) return;
+    event.preventDefault();
+    inspectorResizeState = {pointerId: event.pointerId};
+    resizer.classList.add("active");
+    resizer.setPointerCapture(event.pointerId);
+  });
+  resizer.addEventListener("pointermove", (event) => {
+    if (!inspectorResizeState || inspectorResizeState.pointerId !== event.pointerId) return;
+    const rect = shell.getBoundingClientRect();
+    setInspectorWidth(rect.right - event.clientX);
+  });
+  const finish = (event) => {
+    if (!inspectorResizeState || inspectorResizeState.pointerId !== event.pointerId) return;
+    inspectorResizeState = null;
+    resizer.classList.remove("active");
+    try {
+      resizer.releasePointerCapture(event.pointerId);
+    } catch (error) {
+      // Pointer capture can already be gone if the pointer left the window.
+    }
+  };
+  resizer.addEventListener("pointerup", finish);
+  resizer.addEventListener("pointercancel", finish);
+}
+
+function setSidebarCollapsed(collapsed) {
+  const shell = document.querySelector(".app-shell");
+  const button = document.getElementById("sidebar-toggle");
+  shell.classList.toggle("sidebar-collapsed", Boolean(collapsed));
+  button.textContent = collapsed ? "展开" : "收起";
+  button.setAttribute("aria-expanded", collapsed ? "false" : "true");
+  localStorage.setItem("ascendDebugSidebarCollapsed", collapsed ? "1" : "0");
+}
+
+function installSidebarToggle() {
+  const button = document.getElementById("sidebar-toggle");
+  if (!button) return;
+  setSidebarCollapsed(localStorage.getItem("ascendDebugSidebarCollapsed") === "1");
+  button.addEventListener("click", () => {
+    const shell = document.querySelector(".app-shell");
+    setSidebarCollapsed(!shell.classList.contains("sidebar-collapsed"));
+  });
+}
+
+function installSourceReader() {
+  const overlay = document.getElementById("source-reader-overlay");
+  const close = document.getElementById("source-reader-close");
+  if (!overlay || !close) return;
+  close.addEventListener("click", closeSourceReader);
+  overlay.addEventListener("click", (event) => {
+    if (event.target === overlay) closeSourceReader();
+  });
+  window.addEventListener("keydown", (event) => {
+    if (event.key === "Escape" && !overlay.hidden) closeSourceReader();
+  });
+}
+
 function activeStage() {
   return workspace.stages[activeStageIndex] || workspace.stages[0] || null;
+}
+
+function stageGroupForIndex(index) {
+  const groups = Array.isArray(workspace.stage_groups) ? workspace.stage_groups : [];
+  return groups.find((group) => {
+    const inputIndex = group.input_stage ? Number(group.input_stage.stage_index) : -1;
+    const outputIndex = group.output_stage ? Number(group.output_stage.stage_index) : -1;
+    const defaultIndex = group.default_stage ? Number(group.default_stage.stage_index) : -1;
+    return Number(index) === inputIndex || Number(index) === outputIndex || Number(index) === defaultIndex;
+  }) || null;
+}
+
+function stageBriefLabel(stage) {
+  if (!stage) return "无";
+  return `${stage.order} ${stage.name}`;
+}
+
+function activateStageIndex(index) {
+  activeStageIndex = Number(index);
+  selectedKey = null;
+  setMode("stage");
+}
+
+function updateStageButtonState() {
+  document.querySelectorAll(".stage-button").forEach((button) => {
+    button.classList.toggle("active", Number(button.dataset.stageIndex) === activeStageIndex);
+  });
+}
+
+function renderStagePhaseControls(stage = activeStage()) {
+  const controls = document.getElementById("stage-phase-controls");
+  if (!controls) return;
+  if (activeMode !== "stage" || !stage) {
+    controls.innerHTML = "";
+    return;
+  }
+  const group = stageGroupForIndex(activeStageIndex);
+  if (!group || group.kind !== "pass") {
+    controls.innerHTML = "";
+    return;
+  }
+  const phaseButtons = [];
+  if (group.input_stage) {
+    const active = Number(group.input_stage.stage_index) === activeStageIndex ? " active" : "";
+    phaseButtons.push(`<button class="stage-phase-button${active}" data-stage-index="${escapeHtml(group.input_stage.stage_index)}" type="button">输入 ${escapeHtml(stageBriefLabel(group.input_stage))}</button>`);
+  }
+  if (group.output_stage) {
+    const active = Number(group.output_stage.stage_index) === activeStageIndex ? " active" : "";
+    phaseButtons.push(`<button class="stage-phase-button${active}" data-stage-index="${escapeHtml(group.output_stage.stage_index)}" type="button">输出 ${escapeHtml(stageBriefLabel(group.output_stage))}</button>`);
+  }
+  const note = group.input_same_as_previous_output && group.previous_output_stage
+    ? `<span class="stage-phase-note">输入同 ${escapeHtml(stageBriefLabel(group.previous_output_stage))}</span>`
+    : "";
+  controls.innerHTML = `${phaseButtons.join("")}${note}`;
+  controls.querySelectorAll(".stage-phase-button").forEach((button) => {
+    button.addEventListener("click", () => activateStageIndex(button.dataset.stageIndex));
+  });
 }
 
 function activeStageDiff(stage = activeStage()) {
@@ -780,6 +1172,36 @@ function renderStageDiff(stage = activeStage()) {
 function stageNodeDiffInfo(stage, nodeId) {
   const diff = activeStageDiff(stage);
   return diff && diff.node_status ? diff.node_status[nodeId] : null;
+}
+
+function functionFramesForGraph(graph, layout) {
+  const layoutNodes = layout && layout.nodes ? layout.nodes : {};
+  let groups = Array.isArray(graph.functions) ? graph.functions : [];
+  if (!groups.length && graph.function && Array.isArray(graph.nodes)) {
+    groups = [{name: graph.function, node_ids: graph.nodes.map((node) => node.id)}];
+  }
+  const frames = [];
+  for (const group of groups) {
+    const positions = (group.node_ids || []).map((id) => layoutNodes[id]).filter(Boolean);
+    if (!positions.length) continue;
+    const minX = Math.min(...positions.map((position) => position.x));
+    const minY = Math.min(...positions.map((position) => position.y));
+    const maxX = Math.max(...positions.map((position) => position.x + position.width));
+    const maxY = Math.max(...positions.map((position) => position.y + position.height));
+    const padX = 18;
+    const padTop = 28;
+    const padBottom = 18;
+    frames.push({
+      name: group.name || "anonymous",
+      count: positions.length,
+      x: Math.max(4, minX - padX),
+      y: Math.max(4, minY - padTop),
+      width: maxX - minX + padX * 2,
+      height: maxY - minY + padTop + padBottom,
+      labelWidth: Math.min(maxX - minX + padX * 2 - 24, Math.max(168, 86 + String(group.name || "anonymous").length * 7.2)),
+    });
+  }
+  return frames;
 }
 
 function graphSearchText(value) {
@@ -871,14 +1293,27 @@ function renderStageGraph() {
     afterGraphRender();
     return;
   }
-  document.getElementById("graph-title").textContent = `Stage Graph: ${stage.order} ${stage.name}`;
+  const group = stageGroupForIndex(activeStageIndex);
+  const phase = group && group.input_stage && Number(group.input_stage.stage_index) === activeStageIndex ? "输入" : "输出";
+  document.getElementById("graph-title").textContent = group && group.kind === "pass"
+    ? `Stage Graph: ${group.name} ${phase}`
+    : `Stage Graph: ${stage.order} ${stage.name}`;
   document.getElementById("graph-subtitle").textContent = `${graph.node_count} 个节点，${graph.edge_count} 条边，${graph.kernel_count} 个 Kernel`;
-  document.querySelectorAll(".stage-button").forEach((button) => button.classList.toggle("active", Number(button.dataset.stageIndex) === activeStageIndex));
+  renderStagePhaseControls(stage);
+  updateStageButtonState();
   const layout = graph.layout;
   const nodeById = Object.fromEntries(graph.nodes.map((node, index) => [node.id, {node, index}]));
   const diff = activeStageDiff(stage);
   const firstBad = workspace.overlays.locate && workspace.overlays.locate.first_bad_kernel;
   let svg = svgHeader(layout.width || 720, layout.height || 420);
+  for (const frame of functionFramesForGraph(graph, layout)) {
+    svg += `<g class="function-frame" data-function-name="${escapeHtml(frame.name)}">
+<rect class="function-frame-box" x="${frame.x}" y="${frame.y}" width="${frame.width}" height="${frame.height}" rx="8"></rect>
+<rect class="function-frame-label-bg" x="${frame.x + 8}" y="${frame.y + 6}" width="${frame.labelWidth}" height="22" rx="5"></rect>
+<text class="function-frame-label" x="${frame.x + 16}" y="${frame.y + 21}">func.func @${escapeHtml(frame.name)}</text>
+<text class="function-frame-meta" x="${frame.x + frame.width - 72}" y="${frame.y + 21}">${frame.count} 节点</text>
+</g>`;
+  }
   for (const edge of layout.edges || []) {
     svg += `<g class="graph-edge"><path class="graph-edge-path" d="${escapeHtml(edge.path)}"></path><text class="graph-edge-label" x="${edge.label_x}" y="${edge.label_y}">${escapeHtml(truncate(edge.value, 24))}</text></g>`;
   }
@@ -992,6 +1427,7 @@ function renderKernelDag() {
   svg += "</svg>";
   document.getElementById("graph-title").textContent = "Kernel DAG";
   document.getElementById("graph-subtitle").textContent = `${summary.kernel_count || 0} 个 Kernel，${summary.graph_edges || 0} 条边，关键深度 ${summary.critical_path_depth || 0}`;
+  renderStagePhaseControls(null);
   document.getElementById("graph-canvas").innerHTML = svg;
   document.querySelectorAll(".kernel-dag-node").forEach((element) => {
     element.addEventListener("click", () => selectKernel(element.dataset.kernelId));
@@ -1028,10 +1464,12 @@ function setMode(mode) {
 
 document.querySelectorAll(".mode-tab").forEach((button) => button.addEventListener("click", () => setMode(button.dataset.mode)));
 document.querySelectorAll(".stage-button").forEach((button) => button.addEventListener("click", () => {
-  activeStageIndex = Number(button.dataset.stageIndex);
-  document.querySelectorAll(".stage-button").forEach((item) => item.classList.toggle("active", item === button));
-  setMode("stage");
+  activateStageIndex(button.dataset.stageIndex);
 }));
+restoreInspectorWidth();
+installInspectorResize();
+installSidebarToggle();
+installSourceReader();
 installCanvasPan();
 installGraphNavigation();
 renderStageGraph();
@@ -1058,11 +1496,15 @@ renderStageGraph();
 </header>
 <main class="app-shell">
 <aside class="sidebar">
+<div class="sidebar-header">
 <h2>视图模式</h2>
-<div class="mode-tabs">
-<button class="mode-tab active" data-mode="stage" type="button">Stage 演进</button>
-<button class="mode-tab" data-mode="kernel" type="button">Kernel DAG</button>
+<button id="sidebar-toggle" class="sidebar-toggle" type="button" aria-expanded="true">收起</button>
 </div>
+<div class="mode-tabs">
+<button class="mode-tab active" data-mode="stage" data-short="S" type="button">Stage 演进</button>
+<button class="mode-tab" data-mode="kernel" data-short="K" type="button">Kernel DAG</button>
+</div>
+<div class="sidebar-body">
 <h2>Stage 列表</h2>
 <div id="stage-list" class="stage-list">
 {_stage_buttons(debug_graph)}
@@ -1075,12 +1517,14 @@ renderStageGraph();
 <div class="overlay-stack">
 {_overlay_cards(overlays)}
 </div>
+</div>
 </aside>
 <section class="graph-panel">
 <div class="panel-header">
 <div>
 <h2 id="graph-title">统一 Stage Graph</h2>
 <div id="graph-subtitle" class="panel-subtitle"></div>
+<div id="stage-phase-controls" class="stage-phase-controls"></div>
 </div>
 <div class="graph-tools">
 <input id="graph-search" class="graph-search" type="search" placeholder="搜索 op、Kernel、位置">
@@ -1094,6 +1538,7 @@ renderStageGraph();
 <svg id="unified-debug-graph-svg" width="720" height="420" viewBox="0 0 720 420" xmlns="http://www.w3.org/2000/svg"></svg>
 </div>
 </section>
+<div id="inspector-resizer" class="layout-resizer" role="separator" aria-label="调整节点详情宽度" aria-orientation="vertical"></div>
 <aside class="inspector-panel">
 <h2 id="inspector-title">节点详情</h2>
 <div id="inspector-actions" class="inspector-actions"></div>
@@ -1107,6 +1552,15 @@ renderStageGraph();
 </table>
 </aside>
 </main>
+<div id="source-reader-overlay" class="source-reader-overlay" hidden>
+<section class="source-reader-panel" role="dialog" aria-modal="true" aria-labelledby="source-reader-title">
+<div class="source-reader-header">
+<h2 id="source-reader-title">源码阅读</h2>
+<button id="source-reader-close" class="source-reader-close" type="button">关闭</button>
+</div>
+<pre class="source-code source-reader-code"><code id="source-reader-code" class="mlir-code"></code></pre>
+</section>
+</div>
 <script type="application/json" id="graph-workspace-data">{workspace_json}</script>
 {script}
 </body>
@@ -1135,6 +1589,7 @@ def render_debug_graph(
             stages.append(record)
     primary_stage = _select_primary_stage(stages)
     stage_diffs = _compute_stage_diffs(stages)
+    stage_groups = _build_stage_groups(run_dir, stages)
     summary = {
         "schema_version": 1,
         "tool": "ascend-debug",
@@ -1142,6 +1597,7 @@ def render_debug_graph(
         "stage_count": len(stages),
         "primary_stage": primary_stage,
         "stage_diffs": stage_diffs,
+        "stage_groups": stage_groups,
         "stages": stages,
         "kernel_dag": kernel_summary or {},
         "overlays": _overlay_summary(

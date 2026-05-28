@@ -15,6 +15,7 @@ set(ASCEND_DEBUG_PACKAGE_SOURCES
   "${CMAKE_CURRENT_SOURCE_DIR}/ascend_debug/run_case.py"
   "${CMAKE_CURRENT_SOURCE_DIR}/ascend_debug/serve.py"
   "${CMAKE_CURRENT_SOURCE_DIR}/ascend_debug/stage_graph.py"
+  "${CMAKE_CURRENT_SOURCE_DIR}/ascend_debug/ui_text.py"
 )
 
 add_custom_command(
