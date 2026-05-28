@@ -26,6 +26,8 @@ from runner_utils.network_json import NetworkJson  # noqa: E402
 from runner_utils import logger as _lg  # noqa: E402
 from runner_utils.run_subprocess import run  # noqa: E402,F401
 
+log = _lg.get_logger("network_runner")
+
 REPO = Path(__file__).resolve().parents[1]
 AFIR_OPT       = os.environ.get("AFIR_OPT", str(REPO / "build/bin/afir-opt"))
 AFIR_TRANSLATE = os.environ.get("AFIR_TRANSLATE", str(REPO / "build/bin/afir-translate"))
@@ -95,7 +97,7 @@ def _debug_manifest_write(work, mirror_stages):
     }
     manifest_path = work / "manifest.json"
     manifest_path.write_text(json.dumps(manifest, indent=2) + "\n")
-    print(f"debug manifest → {manifest_path}")
+    log.info(f"debug manifest → {manifest_path}")
 
     if not mirror_stages:
         return
@@ -114,8 +116,8 @@ def _debug_manifest_write(work, mirror_stages):
             except FileExistsError:
                 pass
             except OSError as e:
-                print(f"warn: symlink {link} -> {target_rel}: {e}")
-    print(f"debug stages view → {stages}/")
+                log.warning(f"symlink {link} -> {target_rel}: {e}")
+    log.info(f"debug stages view → {stages}/")
 
 
 def phase1_outline_or_emit_json(args, work):
@@ -171,7 +173,7 @@ def phase1_outline_or_emit_json(args, work):
     nj = groups / "network.json"
     if not nj.exists():
         sys.exit(f"phase 1 did not produce {nj}")
-    print(f"phase 1 OK → {nj}")
+    log.info(f"phase 1 OK → {nj}")
     return groups
 
 
@@ -351,7 +353,7 @@ def phase2_codegen_compile(work, groups, network, soc="Ascend910B1"):
             vspace = work / v["space_file"]
             if vspace.exists():
                 shutil.copy(vspace, artifacts / vname / "tiling_space.json")
-    print(f"phase 2 OK → {artifacts}")
+    log.info(f"phase 2 OK → {artifacts}")
     return artifacts
 
 
@@ -630,7 +632,7 @@ def phase3_default_build_and_dump(work, groups, network, artifacts, args):
     cmd += ["--dump-intermediates", str(inter)]
     run(cmd)
 
-    print(f"phase 3 OK → {inter}")
+    log.info(f"phase 3 OK → {inter}")
     return tilings_path, inter
 
 
@@ -763,8 +765,8 @@ def phase4_autotune(work, network, inter, args):
                 (work / "tilings_default.json").read_text())
             if default_vkid in default_tilings:
                 tilings_best[default_vkid] = default_tilings[default_vkid]
-                print(f"phase 4: {kid} autotune found no config → "
-                      f"falling back to default tiling")
+                log.warning(f"phase 4: {kid} autotune found no config → "
+                            f"falling back to default tiling")
                 continue
             raise
 
@@ -780,7 +782,7 @@ def phase4_autotune(work, network, inter, args):
 
     tilings_path = work / "tilings_best.json"
     tilings_path.write_text(json.dumps(tilings_best, indent=2))
-    print(f"phase 4 OK → {tilings_path}")
+    log.info(f"phase 4 OK → {tilings_path}")
     return tilings_path
 
 
@@ -861,12 +863,14 @@ def phase5_final_run_verify(work, groups, artifacts, tilings_best_path, network,
         a = np.load(got).astype(np.float32)
         b = np.load(want).astype(np.float32)
         if a.shape != b.shape:
-            print(f"network.output[{i}]: SHAPE MISMATCH got={a.shape} want={b.shape}  FAIL")
+            log.error(f"network.output[{i}]: SHAPE MISMATCH got={a.shape} want={b.shape}  FAIL")
             fail = True
             continue
         max_diff = float(np.max(np.abs(a - b))) if a.size else 0.0
         ok = np.allclose(a, b, atol=args.atol, rtol=args.rtol, equal_nan=False)
-        print(f"network.output[{i}]: max_diff={max_diff:.4g}  {'PASS' if ok else 'FAIL'}")
+        verdict = 'PASS' if ok else 'FAIL'
+        (log.info if ok else log.error)(
+            f"network.output[{i}]: max_diff={max_diff:.4g}  {verdict}")
         if not ok:
             fail = True
     return 0 if not fail else 1
@@ -917,8 +921,8 @@ def main():
     try:
         _lg.set_context(phase="phase-1")
         groups = phase1_outline_or_emit_json(args, work)
-        print(f"workdir: {work}")
-        print(f"groups:  {groups}")
+        log.info(f"workdir: {work}")
+        log.info(f"groups:  {groups}")
         if args.max_phase < 2:
             return
 
@@ -937,8 +941,8 @@ def main():
         # autotuner and feeds phase 5 the default tilings from phase 3. Use this to
         # validate numerics fast without paying for performance search.
         if os.environ.get("NETWORK_RUNNER_SKIP_AUTOTUNE", "") not in ("", "0", "false", "no"):
-            print("[phase4] NETWORK_RUNNER_SKIP_AUTOTUNE set — skipping autotune; "
-                  "using default tilings (accuracy-only, no perf tuning).")
+            log.info("NETWORK_RUNNER_SKIP_AUTOTUNE set — skipping autotune; "
+                     "using default tilings (accuracy-only, no perf tuning).")
             tilings_best_path = work / "tilings_default.json"
         else:
             _lg.set_context(phase="phase-4", kernel="-")
