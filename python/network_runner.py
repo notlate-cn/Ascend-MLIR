@@ -23,6 +23,8 @@ if str(_REPO / "python") not in sys.path:
     sys.path.insert(0, str(_REPO / "python"))
 
 from runner_utils.network_json import NetworkJson  # noqa: E402
+from runner_utils import logger as _lg  # noqa: E402
+from runner_utils.run_subprocess import run  # noqa: E402,F401
 
 REPO = Path(__file__).resolve().parents[1]
 AFIR_OPT       = os.environ.get("AFIR_OPT", str(REPO / "build/bin/afir-opt"))
@@ -30,11 +32,6 @@ AFIR_TRANSLATE = os.environ.get("AFIR_TRANSLATE", str(REPO / "build/bin/afir-tra
 ACLNN_BACKEND  = os.environ.get("ACLNN_BACKEND", str(REPO / "build/bin/aclnn-backend"))
 RUNTIME_SESSION = os.environ.get("RUNTIME_SESSION", str(REPO / "build/bin/runtime-session"))
 AUTOTUNER      = os.environ.get("AUTOTUNER", str(REPO / "build/bin/autotuner"))
-
-
-def run(cmd, **kw):
-    print("+", " ".join(str(c) for c in cmd), flush=True)
-    subprocess.run(cmd, check=True, **kw)
 
 
 # Phase → ordered artifact paths. Scanned post-hoc in main()'s finally so
@@ -905,12 +902,20 @@ def main():
                          "wall-clock timing JSON to this dir (relative to "
                          "<workdir> if not absolute). One file per AscendC "
                          "kernel: <kernel>.timing.json.")
+    ap.add_argument("--run-id", default=None,
+                    help="Override the run id used in log prefixes. "
+                         "Defaults to <workdir-basename>-<HHMMSS>.")
+    ap.add_argument("-v", "--verbose", action="store_true",
+                    help="Show DEBUG-level logs on stderr. The file sink "
+                         "(<workdir>/log/run.log) always records DEBUG.")
     args = ap.parse_args()
 
     work = Path(args.workdir).absolute()
     work.mkdir(parents=True, exist_ok=True)
+    _lg.init_run(work, run_id=args.run_id, verbose=args.verbose)
 
     try:
+        _lg.set_context(phase="phase-1")
         groups = phase1_outline_or_emit_json(args, work)
         print(f"workdir: {work}")
         print(f"groups:  {groups}")
@@ -918,10 +923,12 @@ def main():
             return
 
         network = NetworkJson.load(str(groups / "network.json"))
+        _lg.set_context(phase="phase-2", kernel="-")
         artifacts = phase2_codegen_compile(work, groups, network, soc=args.soc)
         if args.max_phase < 3:
             return
 
+        _lg.set_context(phase="phase-3", kernel="-")
         tilings_default, inter = phase3_default_build_and_dump(work, groups, network, artifacts, args)
         if args.max_phase < 4:
             return
@@ -934,10 +941,12 @@ def main():
                   "using default tilings (accuracy-only, no perf tuning).")
             tilings_best_path = work / "tilings_default.json"
         else:
+            _lg.set_context(phase="phase-4", kernel="-")
             tilings_best_path = phase4_autotune(work, network, inter, args)
         if args.max_phase < 5:
             return
 
+        _lg.set_context(phase="phase-5", kernel="-")
         rc = phase5_final_run_verify(work, groups, artifacts, tilings_best_path, network, args)
         sys.exit(rc)
     finally:
