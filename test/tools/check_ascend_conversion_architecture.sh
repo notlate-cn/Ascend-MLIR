@@ -92,6 +92,9 @@ reject_pattern "include/Conversion/Ascend/Passes.td" "MVP|Phase 3B"
 reject_pattern "include/Conversion/Ascend" "mlir::afir|::mlir::afir|namespace[[:space:]]+(mlir::)?afir|(^|[^[:alnum:]_])afir::"
 reject_pattern "lib/Conversion/Ascend" "mlir::afir|::mlir::afir|namespace[[:space:]]+(mlir::)?afir|(^|[^[:alnum:]_])afir::"
 reject_pattern "tools/ascend-mlir-opt" "mlir::afir|::mlir::afir|namespace[[:space:]]+(mlir::)?afir|(^|[^[:alnum:]_])afir::"
+reject_pattern "include/Conversion/Ascend" "[Aa][Ff][Ii][Rr]"
+reject_pattern "lib/Conversion/Ascend" "[Aa][Ff][Ii][Rr]"
+reject_pattern "tools/ascend-mlir-opt" "[Aa][Ff][Ii][Rr]"
 
 line_count=$(wc -l < "$COMPUTE_ROOT/ComputeOpConversion.cpp")
 if [[ "$line_count" -ge 1000 ]]; then

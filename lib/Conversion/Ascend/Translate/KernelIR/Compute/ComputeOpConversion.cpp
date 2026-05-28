@@ -73,11 +73,11 @@ void emitLocalToLocalScalarCopy(OpBuilder &builder, Location loc, Type elemType,
   std::string elemTypeStr = getVerbatimScalarTypeName(elemType);
   std::string body = "{\n";
   body += "  AscendC::PipeBarrier<PIPE_ALL>();\n";
-  body += "  uint32_t _afir_count = static_cast<uint32_t>($2);\n";
-  body += "  for (uint32_t _afir_i = 0; _afir_i < _afir_count; ++_afir_i)\n";
-  body += "    $0.SetValue(_afir_i, static_cast<" + elemTypeStr +
-          ">($1.GetValue(_afir_i)));\n";
-  body += "  $0.SetSize(_afir_count);\n";
+  body += "  uint32_t _ascend_count = static_cast<uint32_t>($2);\n";
+  body += "  for (uint32_t _ascend_i = 0; _ascend_i < _ascend_count; ++_ascend_i)\n";
+  body += "    $0.SetValue(_ascend_i, static_cast<" + elemTypeStr +
+          ">($1.GetValue(_ascend_i)));\n";
+  body += "  $0.SetSize(_ascend_count);\n";
   body += "  AscendC::PipeBarrier<PIPE_ALL>();\n";
   body += "}";
   builder.create<emitasc::VerbatimOp>(
@@ -89,12 +89,12 @@ void emitLocalTensorZeroPad(OpBuilder &builder, Location loc, Type elemType,
   std::string elemTypeStr = getVerbatimScalarTypeName(elemType);
   std::string body = "{\n";
   body += "  AscendC::PipeBarrier<PIPE_ALL>();\n";
-  body += "  uint32_t _afir_begin = static_cast<uint32_t>($1);\n";
-  body += "  uint32_t _afir_end = static_cast<uint32_t>($2);\n";
-  body += "  $0.SetSize(_afir_end);\n";
-  body += "  for (uint32_t _afir_i = _afir_begin; _afir_i < _afir_end; "
-          "++_afir_i)\n";
-  body += "    $0.SetValue(_afir_i, static_cast<" + elemTypeStr + ">(0));\n";
+  body += "  uint32_t _ascend_begin = static_cast<uint32_t>($1);\n";
+  body += "  uint32_t _ascend_end = static_cast<uint32_t>($2);\n";
+  body += "  $0.SetSize(_ascend_end);\n";
+  body += "  for (uint32_t _ascend_i = _ascend_begin; _ascend_i < _ascend_end; "
+          "++_ascend_i)\n";
+  body += "    $0.SetValue(_ascend_i, static_cast<" + elemTypeStr + ">(0));\n";
   body += "  AscendC::PipeBarrier<PIPE_ALL>();\n";
   body += "}";
   builder.create<emitasc::VerbatimOp>(
@@ -386,11 +386,11 @@ Value copyGmToVecinScalar(ComputeLoweringContext &lowering, OpBuilder &builder,
 
   std::string elemTypeStr = getVerbatimScalarTypeName(elemType);
   std::string body = "{\n";
-  body += "  uint32_t _afir_count = static_cast<uint32_t>($2);\n";
-  body += "  for (uint32_t _afir_i = 0; _afir_i < _afir_count; ++_afir_i)\n";
-  body += "    $0.SetValue(_afir_i, static_cast<" + elemTypeStr +
-          ">($1.GetValue(_afir_i)));\n";
-  body += "  $0.SetSize(_afir_count);\n";
+  body += "  uint32_t _ascend_count = static_cast<uint32_t>($2);\n";
+  body += "  for (uint32_t _ascend_i = 0; _ascend_i < _ascend_count; ++_ascend_i)\n";
+  body += "    $0.SetValue(_ascend_i, static_cast<" + elemTypeStr +
+          ">($1.GetValue(_ascend_i)));\n";
+  body += "  $0.SetSize(_ascend_count);\n";
   body += "}";
   builder.create<emitasc::VerbatimOp>(loc, builder.getStringAttr(body),
                                       ValueRange{lt, srcGt, elemCount});

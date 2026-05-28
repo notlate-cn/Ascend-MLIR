@@ -84,7 +84,7 @@ func.func @selected_all_parallel_tile_materializes_inner_loop() {
 // CHECK: scf.for %{{.*}} = %c0 to %c128 step %c32
 // CHECK: emitasc.verbatim
 // CHECK-SAME: AscendC::DataCopyPadExtParams<half>
-// CHECK-SAME: $0.SetSize(_afir_count);
+// CHECK-SAME: $0.SetSize(_ascend_count);
 // CHECK: emitasc.verbatim
 // CHECK-SAME: AscendC::DataCopyPadExtParams<half>
 // CHECK-NOT: ascendc.global_tensor.get_value
@@ -92,7 +92,7 @@ func.func @selected_all_parallel_tile_materializes_inner_loop() {
 // CHECK: ascendc.add_l2
 // CHECK: ascendc.pipe_barrier pipe_all
 // CHECK: emitasc.verbatim
-// CHECK-SAME: AscendC::DataCopyPad($0, $1, _afir_params);
+// CHECK-SAME: AscendC::DataCopyPad($0, $1, _ascend_params);
 // CHECK-NOT: linalg.generic
 func.func @selected_all_parallel_tile_materializes_gm_inner_loop_strided_copy() {
   %a = memref.alloc() : memref<70x128xf16>
@@ -118,7 +118,7 @@ func.func @selected_all_parallel_tile_materializes_gm_inner_loop_strided_copy() 
 // CHECK: scf.for %{{.*}} = %c0 to %{{.*}} step %c64
 // CHECK-NOT: step %c32
 // CHECK: emitasc.verbatim
-// CHECK-SAME: AscendC::DataCopy($0, $1, _afir_count);
+// CHECK-SAME: AscendC::DataCopy($0, $1, _ascend_count);
 // CHECK: ascendc.add_l2
 // CHECK-NOT: linalg.generic
 func.func @selected_all_parallel_tile_materializes_dynamic_gm_full_inner_contiguous_copy(

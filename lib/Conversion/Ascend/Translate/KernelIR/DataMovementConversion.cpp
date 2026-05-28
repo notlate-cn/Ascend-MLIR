@@ -192,39 +192,39 @@ static void emitStridedLocalToGmCopy(OpBuilder &b, Location loc, Type elemType,
                                      Value cols, Value dstRowStride) {
   std::string elemTypeStr = getVerbatimScalarTypeName(elemType);
   std::string body = "{\n";
-  body += "  uint32_t _afir_rows = (uint32_t)$2;\n";
-  body += "  uint32_t _afir_cols = (uint32_t)$3;\n";
-  body += "  uint32_t _afir_row_stride = (uint32_t)$4;\n";
-  body += "  uint32_t _afir_block_bytes = _afir_cols * sizeof(" +
+  body += "  uint32_t _ascend_rows = (uint32_t)$2;\n";
+  body += "  uint32_t _ascend_cols = (uint32_t)$3;\n";
+  body += "  uint32_t _ascend_row_stride = (uint32_t)$4;\n";
+  body += "  uint32_t _ascend_block_bytes = _ascend_cols * sizeof(" +
           elemTypeStr + ");\n";
-  body += "  uint32_t _afir_gap_bytes = (_afir_row_stride - _afir_cols) * "
+  body += "  uint32_t _ascend_gap_bytes = (_ascend_row_stride - _ascend_cols) * "
           "sizeof(" + elemTypeStr + ");\n";
-  body += "  uint32_t _afir_count = _afir_rows * _afir_cols;\n";
-  body += "  if (_afir_gap_bytes == 0u) {\n";
-  body += "    if ((_afir_count * sizeof(" + elemTypeStr +
+  body += "  uint32_t _ascend_count = _ascend_rows * _ascend_cols;\n";
+  body += "  if (_ascend_gap_bytes == 0u) {\n";
+  body += "    if ((_ascend_count * sizeof(" + elemTypeStr +
           ")) % 32u == 0u) {\n";
-  body += "      AscendC::DataCopy($0, $1, _afir_count);\n";
+  body += "      AscendC::DataCopy($0, $1, _ascend_count);\n";
   body += "    } else {\n";
-  body += "      for (uint32_t _afir_i = 0; _afir_i < _afir_count; "
-          "++_afir_i)\n";
-  body += "        $0.SetValue(_afir_i, static_cast<" + elemTypeStr +
-          ">($1.GetValue(_afir_i)));\n";
+  body += "      for (uint32_t _ascend_i = 0; _ascend_i < _ascend_count; "
+          "++_ascend_i)\n";
+  body += "        $0.SetValue(_ascend_i, static_cast<" + elemTypeStr +
+          ">($1.GetValue(_ascend_i)));\n";
   body += "    }\n";
-  body += "  } else if ((_afir_block_bytes % 32u) == 0u && "
-          "(_afir_gap_bytes % 32u) == 0u) {\n";
-  body += "    AscendC::DataCopyExtParams _afir_params{"
-          "static_cast<uint16_t>(_afir_rows), _afir_block_bytes, 0u, "
-          "_afir_gap_bytes, 0u};\n";
-  body += "    AscendC::DataCopyPad($0, $1, _afir_params);\n";
+  body += "  } else if ((_ascend_block_bytes % 32u) == 0u && "
+          "(_ascend_gap_bytes % 32u) == 0u) {\n";
+  body += "    AscendC::DataCopyExtParams _ascend_params{"
+          "static_cast<uint16_t>(_ascend_rows), _ascend_block_bytes, 0u, "
+          "_ascend_gap_bytes, 0u};\n";
+  body += "    AscendC::DataCopyPad($0, $1, _ascend_params);\n";
   body += "  } else {\n";
-  body += "    for (uint32_t _afir_r = 0; _afir_r < _afir_rows; ++_afir_r) {\n";
-  body += "      for (uint32_t _afir_c = 0; _afir_c < _afir_cols; ++_afir_c) "
+  body += "    for (uint32_t _ascend_r = 0; _ascend_r < _ascend_rows; ++_ascend_r) {\n";
+  body += "      for (uint32_t _ascend_c = 0; _ascend_c < _ascend_cols; ++_ascend_c) "
           "{\n";
-  body += "        uint32_t _afir_local = _afir_r * _afir_cols + _afir_c;\n";
-  body += "        uint64_t _afir_gm = (uint64_t)_afir_r * _afir_row_stride + "
-          "_afir_c;\n";
-  body += "        $0.SetValue(_afir_gm, static_cast<" + elemTypeStr +
-          ">($1.GetValue(_afir_local)));\n";
+  body += "        uint32_t _ascend_local = _ascend_r * _ascend_cols + _ascend_c;\n";
+  body += "        uint64_t _ascend_gm = (uint64_t)_ascend_r * _ascend_row_stride + "
+          "_ascend_c;\n";
+  body += "        $0.SetValue(_ascend_gm, static_cast<" + elemTypeStr +
+          ">($1.GetValue(_ascend_local)));\n";
   body += "      }\n";
   body += "    }\n";
   body += "  }\n";
@@ -747,9 +747,9 @@ LogicalResult convertDataMove(func::FuncOp funcOp,
             loc,
             builder.getStringAttr(
                 "{\n"
-                "  for (uint32_t _afir_i = 0; _afir_i < (uint32_t)$2; "
-                "++_afir_i) {\n"
-                "    $0.SetValue(_afir_i, $1.GetValue(_afir_i));\n"
+                "  for (uint32_t _ascend_i = 0; _ascend_i < (uint32_t)$2; "
+                "++_ascend_i) {\n"
+                "    $0.SetValue(_ascend_i, $1.GetValue(_ascend_i));\n"
                 "  }\n"
                 "}"),
             ValueRange{dstGt, srcLt, count});

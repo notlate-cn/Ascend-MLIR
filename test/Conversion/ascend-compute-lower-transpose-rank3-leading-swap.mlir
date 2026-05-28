@@ -3,7 +3,7 @@
 // CHECK-LABEL: func.func @named_rank2_leading_swap_gm
 // CHECK: scf.for %{{.*}} = %c0 to %c128 step %c32
 // CHECK: emitasc.verbatim
-// CHECK-SAME: DataCopyPad($0, _afir_src
+// CHECK-SAME: DataCopyPad($0, _ascend_src
 // CHECK: ascendc.transpose
 // CHECK: ascendc.data_copy_l2
 // CHECK-NOT: memref.load
@@ -23,7 +23,7 @@ func.func @named_rank2_leading_swap_gm(%src: memref<384x128xf32>,
 // CHECK: ascendc.global_tensor.set_global_buffer %{{.*}}, %arg0
 // CHECK: emitasc.verbatim
 // CHECK-SAME: GetPhyAddr
-// CHECK-SAME: DataCopyPad($0, _afir_src
+// CHECK-SAME: DataCopyPad($0, _ascend_src
 // CHECK: ascendc.transpose
 // CHECK: ascendc.global_tensor.set_global_buffer %{{.*}}, %arg1
 // CHECK: ascendc.global_tensor.bracket
@@ -43,7 +43,7 @@ func.func @named_rank2_leading_swap_gm_selected_tile(
 // CHECK: scf.for %{{.*}} = %c0 to %c512 step %c96
 // CHECK: ascendc.global_tensor.set_global_buffer %{{.*}}, %arg0
 // CHECK: emitasc.verbatim
-// CHECK-SAME: DataCopyPad($0, _afir_src
+// CHECK-SAME: DataCopyPad($0, _ascend_src
 // CHECK: ascendc.transpose
 // CHECK: ascendc.global_tensor.set_global_buffer %{{.*}}, %arg1
 // CHECK-NOT: linalg.transpose
@@ -59,7 +59,7 @@ func.func @named_rank2_large_static_gm_auto_tile(
 // CHECK-LABEL: func.func @named_rank2_selected_narrow_inner_gm_auto_tile
 // CHECK: scf.for %{{.*}} = %c0 to %c512 step %c96
 // CHECK: emitasc.verbatim
-// CHECK-SAME: DataCopyPad($0, _afir_src
+// CHECK-SAME: DataCopyPad($0, _ascend_src
 // CHECK: ascendc.transpose
 // CHECK-NOT: linalg.transpose
 func.func @named_rank2_selected_narrow_inner_gm_auto_tile(

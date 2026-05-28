@@ -427,7 +427,7 @@ LogicalResult lowerLinalgToKernelIR(func::FuncOp funcOp) {
     builder.create<TPipeInitBufferOp>(allocOp.getLoc(), pipe, tbuf, len);
     // Initialize the TQue so that AllocTensor returns a tensor with a
     // valid GetSize().  Without this, ReduceSum2DL2 computes a division
-    // by zero (_afir_cols = accumLt.GetSize() / vecoutLt.GetSize()).
+    // by zero (_ascend_cols = accumLt.GetSize() / vecoutLt.GetSize()).
     Value depth = builder.create<arith::ConstantOp>(
         allocOp.getLoc(), builder.getI32IntegerAttr(1));
     builder.create<TPipeInitQueueOp>(allocOp.getLoc(), pipe, queue, depth, len);
