@@ -72,13 +72,13 @@ grep -Fq "session.result=success" \
 echo "ascend_debug.run_case=ok"
 
 mkdir -p "${TMP_DIR}/fake-source-tools"
-cat >"${TMP_DIR}/fake-source-tools/afir-opt" <<'SH'
+cat >"${TMP_DIR}/fake-source-tools/ascend-mlir-opt" <<'SH'
 #!/usr/bin/env bash
 set -euo pipefail
-printf 'afir-opt %s\n' "$*" >>"${ASCEND_DEBUG_FAKE_SOURCE_LOG}"
+printf 'ascend-mlir-opt %s\n' "$*" >>"${ASCEND_DEBUG_FAKE_SOURCE_LOG}"
 cat "$1"
 SH
-chmod +x "${TMP_DIR}/fake-source-tools/afir-opt"
+chmod +x "${TMP_DIR}/fake-source-tools/ascend-mlir-opt"
 cat >"${TMP_DIR}/fake-source-tools/ascend-mlir-translate" <<'SH'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -232,8 +232,8 @@ assert case["shape_args"] == {"arg0": [4, 8]}
 assert case["inputs"][0]["dtype"] == "f16"
 assert case["expected_outputs"][0]["dtype"] == "f16"
 PY
-grep -Fq -- 'afir-opt' "${TMP_DIR}/fake-source-tools.log"
-grep -Fq -- 'afir-opt '"${TMP_DIR}"'/debug-source-run/step8_kernel_ir.mlir --ascend-canonicalize-cann-signature --canonicalize --cse' \
+grep -Fq -- 'ascend-mlir-opt' "${TMP_DIR}/fake-source-tools.log"
+grep -Fq -- 'ascend-mlir-opt '"${TMP_DIR}"'/debug-source-run/step8_kernel_ir.mlir --ascend-canonicalize-cann-signature --canonicalize --cse' \
   "${TMP_DIR}/fake-source-tools.log"
 grep -Fq -- 'ascend-mlir-translate' "${TMP_DIR}/fake-source-tools.log"
 grep -Fq -- 'runtime-session --kernel' "${TMP_DIR}/fake-source-tools.log"

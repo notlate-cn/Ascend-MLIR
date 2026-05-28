@@ -167,7 +167,7 @@ writeDirectSourceWrapper(const MixCompileLayout &layout,
     hasByValueTiling = hasByValueTiling || arg.passTilingByValue;
   if (hasByValueTiling) {
     os << "template <typename T>\n";
-    os << "__aicore__ inline void afir_mix_copy_tiling(T *tiling, GM_ADDR tilingGM) {\n";
+    os << "__aicore__ inline void ascend_mix_copy_tiling(T *tiling, GM_ADDR tilingGM) {\n";
     os << "    uint8_t *dst = reinterpret_cast<uint8_t *>(tiling);\n";
     os << "    auto src = reinterpret_cast<__gm__ uint8_t *>(tilingGM);\n";
     os << "    for (uint32_t i = 0; i < sizeof(T); ++i)\n";
@@ -212,7 +212,7 @@ writeDirectSourceWrapper(const MixCompileLayout &layout,
     if (!arg.passTilingByValue)
       continue;
     os << "    " << arg.type << " " << arg.name << "_value{};\n";
-    os << "    afir_mix_copy_tiling(&" << arg.name << "_value, " << arg.name
+    os << "    ascend_mix_copy_tiling(&" << arg.name << "_value, " << arg.name
        << ");\n";
   }
   os << "    " << kernelName << "_origin(";

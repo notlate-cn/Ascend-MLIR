@@ -21,14 +21,20 @@ target_link_libraries(ascend-mlir-opt
 
     MLIRAffineDialect
     MLIRArithDialect
+    MLIRArithTransforms
     MLIRBufferizationDialect
+    MLIRBufferizationTransforms
     MLIRControlFlowDialect
+    MLIRControlFlowTransforms
     MLIRFuncDialect
     MLIRLinalgDialect
+    MLIRLinalgTransforms
     MLIRMathDialect
     MLIRMemRefDialect
     MLIRSCFDialect
+    MLIRSCFTransforms
     MLIRTensorDialect
+    MLIRTensorTransforms
 
     MLIRAsc
     MLIRAscUtils

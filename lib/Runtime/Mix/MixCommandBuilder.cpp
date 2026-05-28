@@ -71,7 +71,7 @@ static std::string getAclIncludeDir() {
 }
 
 static std::string getMixTilingHelperPath() {
-  if (const char *configured = std::getenv("AFIR_MIX_TILING_HELPER"))
+  if (const char *configured = std::getenv("ASCEND_MIX_TILING_HELPER"))
     if (*configured)
       return configured;
   return "mix-tiling-helper";

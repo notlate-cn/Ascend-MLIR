@@ -225,7 +225,6 @@ def _tool_from_env(env_name: str, default: str) -> str:
 def _translate_tool() -> str:
     return find_tool(
         os.environ.get("ASCEND_MLIR_TRANSLATE")
-        or os.environ.get("AFIR_TRANSLATE")
         or "ascend-mlir-translate"
     )
 
@@ -303,7 +302,7 @@ def _compile_source_case(
         infer_existing_data=True,
     )
 
-    opt = _tool_from_env("AFIR_OPT", "afir-opt")
+    opt = _tool_from_env("ASCEND_MLIR_OPT", "ascend-mlir-opt")
     translate = _translate_tool()
     runtime_session = find_tool("runtime-session")
     cxx = _tool_from_env("CXX", "c++")

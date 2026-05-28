@@ -6999,7 +6999,7 @@ static void testMixDirectWrapperUsesCurrentCannAbi() {
            "mix direct wrapper no longer requires a hard-coded workspace name");
     EXPECT(wrapper.find("TilingData_kernel_4 v4_value{}") != std::string::npos,
            "mix direct wrapper materializes by-value CANN tiling");
-    EXPECT(wrapper.find("afir_mix_copy_tiling(&v4_value, v4)") !=
+    EXPECT(wrapper.find("ascend_mix_copy_tiling(&v4_value, v4)") !=
                std::string::npos,
            "mix direct wrapper copies tiling from GM before origin call");
     EXPECT(wrapper.find("kernel_4_origin(v1, v2, v3, v4_value)") !=
