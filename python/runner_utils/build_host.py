@@ -18,8 +18,9 @@ masks the sim-mode rtSetDevice symbols).
 """
 import os
 import platform
-import subprocess
 from pathlib import Path
+
+from .run_subprocess import run as _run
 
 # Build-host architecture: pick the CANN arch dir and devlib subdir to match the
 # machine actually running g++ (x86 dev box vs aarch64 real-NPU container).
@@ -139,5 +140,4 @@ def link_host(
         "-pthread", "-lrt", "-lm", "-ldl",
     ]
 
-    print("+", " ".join(cmd), flush=True)
-    subprocess.run(cmd, check=True)
+    _run(cmd)
