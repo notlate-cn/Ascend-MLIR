@@ -1,8 +1,12 @@
-# ResNet-18 bring-up — phase-1+2 PASS, phase-3 runtime segfault
+# ResNet-18 bring-up — full e2e PASS (sim, CPU ref)
 
 **Date:** 2026-05-28
 **Branch:** `develop`
-**Status:** Phase-1 + Phase-2 PASS @ `f755480b`. Binary builds, segfaults at runtime in phase-3 → next wall is runtime-side (network_host execution), not a compile-time codegen issue.
+**Status:** Full pipeline PASS @ `901d3216`. Phase 1–5 all green. `network.output[0] max_diff=3.04e-06` vs PyTorch reference (atol/rtol = 1e-2).
+
+```
+17:00:11 phase-5: network.output[0]: max_diff=3.04e-06  PASS
+```
 
 ---
 
@@ -98,31 +102,23 @@ Three classes of ops that TileFuse codegen doesn't model — all routed to aclnn
 
 Fix: after keyRank assignment, do a **fixed-point clip** that lowers each op's keyRank to `<= min(direct user keyRanks)`. Equal ranks are fine (origIndex tiebreak keeps the existing topological order). This is the third "scheduler doesn't model X" fix in the same area; previous two were ConstantLike pinning (commit `9cc53ab7`) and the conv-Cube kind classifier (commit `b80b68b4`).
 
-## Phase-3 wall (current — runtime)
+## Phase-3 root cause (FIXED in `901d3216`)
 
-The full pipeline through `network_host_default.cpp` link succeeds:
-- `--auto-fuse-codegen` runs cleanly on every AscendC kernel group
-- `aclnn-backend` generates the host program
-- g++ links against AclnnOps + camodel libs
+gdb backtrace: SIGSEGV in `network_impl` at the stem `tensor.pad` memcpy (`network_host_default.cpp:442`), trying to read `t66.data` which was `inputs[60].data`. The 60th input slot was uninitialized → nullptr → segfault.
 
-When network_runner.py invokes the binary (`network_test_default --input ... --output ...`), it **segfaults at runtime** (SIGSEGV, rc=139). Repro:
+Root cause: ResNet's `nn.BatchNorm2d` running_mean / running_var / num_batches_tracked are PyTorch **buffers** (nn.Buffer), not parameters. torch.export does NOT inline buffers as constants — it lifts them to function arguments. The exported kernel takes 61 inputs:
+- 20 BatchNorm layers × 3 buffers = 60
+- 1 image input at the tail
 
-```bash
-source examples/resnet18-e2e/env_sibling.sh
-/tmp/resnet18_e2e/r18/work/network_test_default \
-  --input /tmp/resnet18_e2e/r18/input_0.npy \
-  --output /tmp/resnet18_e2e/r18/work/output_default_0.npy \
-  --dump-intermediates /tmp/resnet18_e2e/r18/work/intermediates_default
-```
+Our runner only passed 1 npy (the image, placed at slot 0). The image's actual slot was 60. Slot 60 read nullptr → SIGSEGV in the pad memcpy.
 
-Direct triage:
-- Run under gdb/asan to get the backtrace and identify the offending op.
-- High-suspicion candidates given the bring-up:
-  - `run_BatchNorm` / `run_Conv2D` / `run_MaxPool2D` / `run_SumPool2D` — all CPU-reference implementations newly written this session. Most likely one of them dereferences a buffer it shouldn't or uses wrong stride math.
-  - Tensor.pad host materialization (the `tensor.pad` host codegen path from commit `9cc53ab7`) — generates raw memcpy loops; could mis-index for rank-4 inputs.
-  - `tensor.expand_shape` / `tensor.collapse_shape` aliasing — produces views that share data pointers with their source. If our pad/pool/conv allocations don't survive the right lifetime, we'd hit UAF.
+Fix (commit `901d3216`):
+- `export_resnet18.py` iterates `model.named_buffers()` (= torch.export's input order) and dumps each as `input_N.npy`; the image gets slot 60.
+- `run.sh` enumerates inputs by integer (not shell glob — lexical order would put `input_10.npy` before `input_2.npy`) and passes them all under a single `--inputs` flag (argparse `nargs="+"`).
 
-Old phase-2 wall content (preserved for history):
+For BERT this issue doesn't surface because LayerNorm has only parameters (gamma, beta), no buffers — torch.export inlines them as constants, so the BERT coordinator's only input is the hidden_states tensor.
+
+## Phase-2 wall — historical (now resolved):
 
 `--auto-fuse-codegen` on **`kernel_group1`** aborts:
 
