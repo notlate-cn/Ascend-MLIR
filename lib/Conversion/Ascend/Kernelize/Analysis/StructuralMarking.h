@@ -12,7 +12,7 @@
 #include "mlir/Support/LogicalResult.h"
 #include "llvm/Support/raw_ostream.h"
 
-namespace mlir::afir::ascend::kernelize {
+namespace mlir::ascend::kernelize {
 
 class StructuralMarker {
 public:
@@ -23,6 +23,6 @@ public:
 void emitStructuralMarkingReport(raw_ostream &os,
                                  const DependencyAnalysisResult &deps);
 
-} // namespace mlir::afir::ascend::kernelize
+} // namespace mlir::ascend::kernelize
 
 #endif // ASCEND_MLIR_CONVERSION_ASCEND_KERNELIZE_STRUCTURALMARKING_H

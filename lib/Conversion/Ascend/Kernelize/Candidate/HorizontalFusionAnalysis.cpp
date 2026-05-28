@@ -23,7 +23,7 @@
 
 using namespace mlir;
 
-namespace mlir::afir::ascend::kernelize {
+namespace mlir::ascend::kernelize {
 namespace {
 
 struct HorizontalSource {
@@ -321,4 +321,4 @@ void emitHorizontalFusionReport(
   }
 }
 
-} // namespace mlir::afir::ascend::kernelize
+} // namespace mlir::ascend::kernelize

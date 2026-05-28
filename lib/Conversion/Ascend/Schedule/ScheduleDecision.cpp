@@ -14,7 +14,7 @@
 #include <algorithm>
 #include <utility>
 
-namespace mlir::afir::ascend::schedule {
+namespace mlir::ascend::schedule {
 namespace {
 
 void printTileShape(llvm::ArrayRef<int64_t> tileSizes,
@@ -201,4 +201,4 @@ void printScheduleDecisionSetReport(const ScheduleDecisionSet &decisionSet,
   }
 }
 
-} // namespace mlir::afir::ascend::schedule
+} // namespace mlir::ascend::schedule

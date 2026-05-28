@@ -46,7 +46,7 @@ using namespace mlir;
 using namespace mlir::ascendc;
 
 namespace mlir {
-namespace afir {
+namespace ascend {
 
 LogicalResult lowerGatherCompute(ComputeLoweringContext &lowering,
                                  linalg::GenericOp genOp,
@@ -569,5 +569,5 @@ LogicalResult lowerGatherCompute(ComputeLoweringContext &lowering,
   return success();
 }
 
-} // namespace afir
+} // namespace ascend
 } // namespace mlir

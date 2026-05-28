@@ -31,9 +31,9 @@ int main(int argc, char **argv) {
               func::FuncDialect, linalg::LinalgDialect, math::MathDialect,
               memref::MemRefDialect, scf::SCFDialect, tensor::TensorDialect,
               ascendc::AscendCDialect, emitasc::EmitAscDialect>();
-  afir::ascend::kernelize::registerKernelizeExternalModels(registry);
+  ascend::kernelize::registerKernelizeExternalModels(registry);
 
-  afir::registerAscendConversionPasses();
+  ascend::registerAscendConversionPasses();
 
   return asMainReturnCode(
       MlirOptMain(argc, argv, "Ascend MLIR optimizer driver\n", registry));

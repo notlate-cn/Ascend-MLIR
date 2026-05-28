@@ -142,6 +142,16 @@ def _relative_href(from_rel_path: str, to_rel_path: str) -> str:
     return posixpath.relpath(to_rel_path, start=str(source_dir))
 
 
+def _load_json_object(path: pathlib.Path, *, label: str) -> dict[str, Any]:
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise CommandError(f"could not read {label}: {path}: {error}") from error
+    if not isinstance(value, dict):
+        raise CommandError(f"{label} must be a JSON object: {path}")
+    return value
+
+
 def _metadata_rows(manifest: dict[str, Any]) -> str:
     keys = ("schema_version", "tool", "preset", "pipeline", "backend", "device_id")
     rows = []
@@ -1330,6 +1340,53 @@ th {{ background: #f1f5f9; }}
     return kernel_views
 
 
+def _safe_kernel_page_id(value: Any) -> str | None:
+    if not isinstance(value, str) or not value or value in (".", ".."):
+        return None
+    if "/" in value or "\\" in value:
+        return None
+    return value
+
+
+def _write_kernel_alias_views(run_dir: pathlib.Path, debug_graph_view: dict[str, str]) -> None:
+    summary_path = debug_graph_view.get("summary_path")
+    if not isinstance(summary_path, str):
+        return
+    summary = _load_json_object(run_dir / summary_path, label="debug graph summary")
+    detail_views = summary.get("kernel_detail_views")
+    if not isinstance(detail_views, dict):
+        return
+    for alias, target_rel_path in sorted(detail_views.items()):
+        alias_id = _safe_kernel_page_id(alias)
+        if alias_id is None or not isinstance(target_rel_path, str):
+            continue
+        target_path = pathlib.PurePosixPath(target_rel_path)
+        if len(target_path.parts) != 3 or target_path.parts[:2] != ("views", "kernels"):
+            continue
+        target_id = _safe_kernel_page_id(target_path.stem)
+        if target_id is None:
+            continue
+        alias_rel_path = f"views/kernels/{alias_id}.html"
+        if alias_rel_path == target_rel_path:
+            continue
+        if not (run_dir / target_rel_path).exists():
+            continue
+        href = html.escape(_relative_href(alias_rel_path, target_rel_path), quote=True)
+        document = f"""<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta http-equiv="refresh" content="0; url={href}">
+<title>{_cell(alias_id)} - ascend-debug</title>
+</head>
+<body>
+<p>逻辑 Kernel {_cell(alias_id)} 对应真实 Kernel <a href="{href}">{_cell(target_id)}</a>。</p>
+</body>
+</html>
+"""
+        layout.write_text(run_dir / alias_rel_path, document)
+
+
 def _kernel_rows(summary: dict[str, Any] | None, kernel_views: dict[str, str]) -> str:
     if not summary or not kernel_views:
         return ""
@@ -1555,6 +1612,7 @@ def render_index(run_dir: pathlib.Path, manifest: dict[str, Any]) -> pathlib.Pat
         json_views,
         memory_summary,
     )
+    _write_kernel_alias_views(run_dir, debug_graph_view)
     command_section = ""
     if manifest.get("commands"):
         command_section = f"""

@@ -14,7 +14,7 @@
 
 #include <mutex>
 
-namespace mlir::afir::ascend::schedule {
+namespace mlir::ascend::schedule {
 namespace {
 
 struct TemplateRegistrySingleton {
@@ -80,7 +80,7 @@ void registerBuiltinTemplates() {
   reg.templates.push_back(
       {"reduction_static", "single_tile_per_block", {kOpRoleReduction.str()}, 0, 8, 2});
   {
-    using namespace ::mlir::afir::ascend::kernelize;
+    using namespace ::mlir::ascend::kernelize;
     registerBuiltinHandwrittenContracts();
     for (llvm::StringRef kind : {kKernelizeHandwrittenKindAttentionSdpa}) {
       const HandwrittenContract *contract = lookupHandwrittenContract(kind);
@@ -153,4 +153,4 @@ void printTemplateRegistryReport(StringRef kernelId,
        << scheduleTemplate.name << "\n";
 }
 
-} // namespace mlir::afir::ascend::schedule
+} // namespace mlir::ascend::schedule

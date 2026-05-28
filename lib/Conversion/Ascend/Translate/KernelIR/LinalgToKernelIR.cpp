@@ -28,7 +28,7 @@ using namespace mlir;
 using namespace mlir::ascendc;
 
 namespace mlir {
-namespace afir {
+namespace ascend {
 
 //===----------------------------------------------------------------------===//
 // AscendCBufferContext helpers (definitions)
@@ -467,5 +467,5 @@ LogicalResult lowerLinalgToKernelIR(func::FuncOp funcOp) {
   return success();
 }
 
-} // namespace afir
+} // namespace ascend
 } // namespace mlir

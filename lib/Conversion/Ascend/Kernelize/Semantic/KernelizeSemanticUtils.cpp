@@ -18,7 +18,7 @@
 
 using namespace mlir;
 
-namespace mlir::afir::ascend::kernelize {
+namespace mlir::ascend::kernelize {
 namespace {
 
 IteratorKind convertIteratorType(utils::IteratorType iteratorType) {
@@ -347,4 +347,4 @@ LogicalResult populateTensorViewSemanticInfo(Operation *op,
   return success();
 }
 
-} // namespace mlir::afir::ascend::kernelize
+} // namespace mlir::ascend::kernelize

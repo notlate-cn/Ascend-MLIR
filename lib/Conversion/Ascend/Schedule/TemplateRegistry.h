@@ -17,7 +17,7 @@ namespace llvm {
 class raw_ostream;
 } // namespace llvm
 
-namespace mlir::afir::ascend::schedule {
+namespace mlir::ascend::schedule {
 
 /// Register a custom schedule template into the global registry.
 /// Call before the first use of matchScheduleTemplates.
@@ -34,6 +34,6 @@ void printTemplateRegistryReport(StringRef kernelId,
                                  ArrayRef<ScheduleTemplate> matches,
                                  llvm::raw_ostream &os);
 
-} // namespace mlir::afir::ascend::schedule
+} // namespace mlir::ascend::schedule
 
 #endif // ASCEND_MLIR_CONVERSION_ASCEND_SCHEDULE_TEMPLATEREGISTRY_H

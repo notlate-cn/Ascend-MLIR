@@ -18,7 +18,7 @@ namespace llvm {
 class raw_ostream;
 } // namespace llvm
 
-namespace mlir::afir::ascend::schedule {
+namespace mlir::ascend::schedule {
 
 class ScheduleCacheModel {
 public:
@@ -63,6 +63,6 @@ void printScheduleCacheReport(const ScheduleCacheReport &report,
 void printScheduleCacheReport(const ScheduleCacheModel &cacheModel,
                               llvm::raw_ostream &os);
 
-} // namespace mlir::afir::ascend::schedule
+} // namespace mlir::ascend::schedule
 
 #endif // ASCEND_MLIR_CONVERSION_ASCEND_SCHEDULE_SCHEDULECACHE_H

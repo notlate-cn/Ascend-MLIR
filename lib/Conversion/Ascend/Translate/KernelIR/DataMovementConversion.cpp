@@ -35,7 +35,7 @@ using namespace mlir;
 using namespace mlir::ascendc;
 
 namespace mlir {
-namespace afir {
+namespace ascend {
 
 // Helper: emit a runtime dim value for dimension d of a memref.
 static Value emitDim(OpBuilder &b, Location loc, Value memref, int64_t d) {
@@ -768,5 +768,5 @@ LogicalResult convertDataMove(func::FuncOp funcOp,
   return success();
 }
 
-} // namespace afir
+} // namespace ascend
 } // namespace mlir

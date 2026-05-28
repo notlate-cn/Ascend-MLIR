@@ -16,7 +16,7 @@
 
 using namespace mlir;
 
-namespace mlir::afir::ascend::kernelize {
+namespace mlir::ascend::kernelize {
 namespace {
 
 template <typename ConcreteOp>
@@ -95,4 +95,4 @@ void registerKernelizeExternalModels(DialectRegistry &registry) {
   });
 }
 
-} // namespace mlir::afir::ascend::kernelize
+} // namespace mlir::ascend::kernelize

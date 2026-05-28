@@ -46,7 +46,7 @@ using namespace mlir;
 using namespace mlir::ascendc;
 
 namespace mlir {
-namespace afir {
+namespace ascend {
 
 void ComputeLoweringContext::copyAscendCUnitAttr(Operation *src,
                                                  Operation *dst) const {
@@ -233,5 +233,5 @@ ComputeLoweringContext::allocHoisted(Operation *op, Value queue, Type elemType,
   return {tensor, forOp};
 }
 
-} // namespace afir
+} // namespace ascend
 } // namespace mlir

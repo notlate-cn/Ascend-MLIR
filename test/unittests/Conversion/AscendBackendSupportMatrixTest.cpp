@@ -15,7 +15,7 @@
 #include <memory>
 #include <type_traits>
 
-using namespace mlir::afir::ascend::backend;
+using namespace mlir::ascend::backend;
 
 static_assert(std::is_same_v<MemorySpace, mlir::ascend::MemoryPlace>,
               "backend memory spaces must use the target memory model enum");

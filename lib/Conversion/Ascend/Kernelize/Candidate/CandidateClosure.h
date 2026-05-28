@@ -15,7 +15,7 @@
 
 #include <string>
 
-namespace mlir::afir::ascend::kernelize {
+namespace mlir::ascend::kernelize {
 
 struct CandidateClosure {
   SmallVector<Operation *, 0> internalOps;
@@ -29,6 +29,6 @@ struct CandidateClosure {
 CandidateClosure computeCandidateClosure(ArrayRef<Operation *> internalOps,
                                           const ProducerConsumerIndex &index);
 
-} // namespace mlir::afir::ascend::kernelize
+} // namespace mlir::ascend::kernelize
 
 #endif // ASCEND_MLIR_CONVERSION_ASCEND_KERNELIZE_CANDIDATECLOSURE_H

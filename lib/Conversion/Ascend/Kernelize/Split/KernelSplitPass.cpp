@@ -70,7 +70,7 @@ bool isFuncEntryBlockArgument(Value value, func::FuncOp funcOp) {
 
 std::optional<std::string> getKernelId(Operation *op) {
   if (auto kernelAttr = op->getAttrOfType<StringAttr>(
-          ::mlir::afir::ascend::kKernelAttr))
+          ::mlir::ascend::kKernelAttr))
     return kernelAttr.getValue().str();
   return std::nullopt;
 }
@@ -79,7 +79,7 @@ FailureOr<SmallVector<DictionaryAttr>>
 getScheduleMetadata(func::FuncOp funcOp) {
   SmallVector<DictionaryAttr> entries;
   auto metadata = funcOp->getAttrOfType<ArrayAttr>(
-      ::mlir::afir::ascend::kScheduleKernelMetadataAttr);
+      ::mlir::ascend::kScheduleKernelMetadataAttr);
   if (!metadata)
     return entries;
 
@@ -87,13 +87,13 @@ getScheduleMetadata(func::FuncOp funcOp) {
     auto entry = dyn_cast<DictionaryAttr>(rawEntry);
     if (!entry)
       return funcOp.emitError()
-             << ::mlir::afir::ascend::kScheduleKernelMetadataAttr
+             << ::mlir::ascend::kScheduleKernelMetadataAttr
              << " element " << index << " must be a dictionary attribute";
     auto kernel =
         dyn_cast_or_null<StringAttr>(entry.get(kKernelMetadataKernelKey));
     if (!kernel)
       return funcOp.emitError()
-             << ::mlir::afir::ascend::kScheduleKernelMetadataAttr
+             << ::mlir::ascend::kScheduleKernelMetadataAttr
              << " element " << index
              << " entries must include a string kernel field";
     entries.push_back(entry);
@@ -116,7 +116,7 @@ void setFunctionScheduleAttrs(func::FuncOp funcOp,
                               DictionaryAttr scheduleMetadata) {
   Builder builder(funcOp.getContext());
   if (scheduleMetadata)
-    funcOp->setAttr(::mlir::afir::ascend::kScheduleKernelMetadataAttr,
+    funcOp->setAttr(::mlir::ascend::kScheduleKernelMetadataAttr,
                     builder.getArrayAttr({scheduleMetadata}));
 
   if (!scheduleMetadata)
@@ -124,19 +124,19 @@ void setFunctionScheduleAttrs(func::FuncOp funcOp,
 
   if (Attribute attr =
           scheduleMetadata.get(kKernelMetadataSelectedTileShapeKey))
-    funcOp->setAttr(::mlir::afir::ascend::kScheduleSelectedTileShapeAttr,
+    funcOp->setAttr(::mlir::ascend::kScheduleSelectedTileShapeAttr,
                     attr);
   if (Attribute attr = scheduleMetadata.get(kKernelMetadataGuardMarkersKey))
-    funcOp->setAttr(::mlir::afir::ascend::kScheduleGuardMarkersAttr, attr);
+    funcOp->setAttr(::mlir::ascend::kScheduleGuardMarkersAttr, attr);
   if (Attribute attr = scheduleMetadata.get(kKernelMetadataTailPoliciesKey))
-    funcOp->setAttr(::mlir::afir::ascend::kScheduleTailPoliciesAttr, attr);
+    funcOp->setAttr(::mlir::ascend::kScheduleTailPoliciesAttr, attr);
   if (Attribute attr = scheduleMetadata.get(kKernelMetadataTailPlanKey))
-    funcOp->setAttr(::mlir::afir::ascend::kScheduleTailPlanAttr, attr);
+    funcOp->setAttr(::mlir::ascend::kScheduleTailPlanAttr, attr);
   if (Attribute attr = scheduleMetadata.get(kKernelMetadataTailMarkersKey))
-    funcOp->setAttr(::mlir::afir::ascend::kScheduleTailMarkersAttr, attr);
+    funcOp->setAttr(::mlir::ascend::kScheduleTailMarkersAttr, attr);
   if (Attribute attr =
           scheduleMetadata.get(kKernelMetadataTargetTilePolicyKey))
-    funcOp->setAttr(::mlir::afir::ascend::kScheduleTargetTilePolicyAttr,
+    funcOp->setAttr(::mlir::ascend::kScheduleTargetTilePolicyAttr,
                     attr);
 }
 
@@ -328,8 +328,8 @@ func::FuncOp createOutlinedKernel(ModuleOp module, func::FuncOp source,
   auto outlined = builder.create<func::FuncOp>(source.getLoc(), plan.kernelId,
                                                funcType);
   if (Attribute normalized =
-          source->getAttr(::mlir::afir::ascend::kNormalizedAttr))
-    outlined->setAttr(::mlir::afir::ascend::kNormalizedAttr, normalized);
+          source->getAttr(::mlir::ascend::kNormalizedAttr))
+    outlined->setAttr(::mlir::ascend::kNormalizedAttr, normalized);
   setFunctionScheduleAttrs(outlined, plan.scheduleMetadata);
 
   Block *entry = outlined.addEntryBlock();
@@ -369,7 +369,7 @@ LogicalResult splitFunction(ModuleOp module, func::FuncOp funcOp) {
 
 } // namespace
 
-namespace mlir::afir {
+namespace mlir::ascend {
 
 struct AscendKernelSplitPass
     : public ::impl::AscendKernelSplitPassBase<AscendKernelSplitPass> {
@@ -393,4 +393,4 @@ std::unique_ptr<::mlir::Pass> createAscendKernelSplitPass() {
   return std::make_unique<AscendKernelSplitPass>();
 }
 
-} // namespace mlir::afir
+} // namespace mlir::ascend

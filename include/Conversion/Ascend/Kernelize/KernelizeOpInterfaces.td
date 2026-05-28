@@ -5,7 +5,7 @@ include "mlir/IR/OpBase.td"
 
 def KernelizeSemanticOpInterface
     : OpInterface<"KernelizeSemanticOpInterface"> {
-  let cppNamespace = "::mlir::afir::ascend::kernelize";
+  let cppNamespace = "::mlir::ascend::kernelize";
   let description = [{
     Provides Ascend Kernelize semantic information for operations that can
     participate in Kernelize dependency analysis.
@@ -15,7 +15,7 @@ def KernelizeSemanticOpInterface
       "Populate Kernelize semantic information.",
       "::mlir::LogicalResult",
       "populateKernelizeSemanticInfo",
-      (ins "::mlir::afir::ascend::kernelize::KernelizeOpSemanticInfo &":$info)
+      (ins "::mlir::ascend::kernelize::KernelizeOpSemanticInfo &":$info)
     >
   ];
 }

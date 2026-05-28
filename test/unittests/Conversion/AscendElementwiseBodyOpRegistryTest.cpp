@@ -7,7 +7,7 @@
 #include "Conversion/Ascend/Translate/KernelIR/Capabilities/ElementwiseBodyOpRegistry.h"
 #include "gtest/gtest.h"
 
-using namespace mlir::afir::ascend::backend;
+using namespace mlir::ascend::backend;
 
 TEST(ElementwiseBodyOpRegistryTest, LookupUnknownReturnsNull) {
   EXPECT_EQ(lookupElementwiseBodyOp("nonexistent.op"), nullptr);

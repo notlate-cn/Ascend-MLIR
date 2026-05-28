@@ -14,7 +14,7 @@
 #include <memory>
 #include <string>
 
-namespace mlir::afir::ascend::backend {
+namespace mlir::ascend::backend {
 
 using MemorySpace = ::mlir::ascend::MemoryPlace;
 inline constexpr MemorySpace kUnknownMemorySpace =
@@ -109,6 +109,6 @@ private:
   const BackendCapabilityProvider &provider;
 };
 
-} // namespace mlir::afir::ascend::backend
+} // namespace mlir::ascend::backend
 
 #endif // ASCEND_MLIR_CONVERSION_ASCEND_TRANSLATE_KERNELIR_CAPABILITIES_BACKEND_SUPPORT_MATRIX_H

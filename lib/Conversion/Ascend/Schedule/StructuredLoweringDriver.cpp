@@ -16,7 +16,7 @@
 
 using namespace mlir;
 
-namespace mlir::afir::ascend::schedule {
+namespace mlir::ascend::schedule {
 namespace {
 
 constexpr llvm::StringLiteral kLoopSkeletonV0 = "loop_skeleton_v0";
@@ -474,4 +474,4 @@ void printStructuredLoweringReport(const StructuredLoweringReport &report,
   os << "  verified_ops = " << report.verifiedOps << "\n";
 }
 
-} // namespace mlir::afir::ascend::schedule
+} // namespace mlir::ascend::schedule

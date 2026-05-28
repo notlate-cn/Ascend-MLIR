@@ -17,7 +17,7 @@
 #include "llvm/ADT/DenseSet.h"
 
 using namespace mlir;
-using namespace mlir::afir::ascend::kernelize;
+using namespace mlir::ascend::kernelize;
 
 namespace {
 

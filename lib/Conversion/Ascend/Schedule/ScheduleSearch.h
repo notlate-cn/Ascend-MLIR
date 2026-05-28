@@ -17,7 +17,7 @@ namespace llvm {
 class raw_ostream;
 } // namespace llvm
 
-namespace mlir::afir::ascend::schedule {
+namespace mlir::ascend::schedule {
 
 struct ScheduleSearchResult {
   unsigned generatedCount = 0;
@@ -42,6 +42,6 @@ void printScheduleGuardsReport(const ScheduleProblem &problem,
                                const ScheduleSearchResult &result,
                                llvm::raw_ostream &os);
 
-} // namespace mlir::afir::ascend::schedule
+} // namespace mlir::ascend::schedule
 
 #endif // ASCEND_MLIR_CONVERSION_ASCEND_SCHEDULE_SCHEDULESEARCH_H

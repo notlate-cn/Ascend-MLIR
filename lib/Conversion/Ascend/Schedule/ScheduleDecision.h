@@ -15,7 +15,7 @@ namespace llvm {
 class raw_ostream;
 } // namespace llvm
 
-namespace mlir::afir::ascend::schedule {
+namespace mlir::ascend::schedule {
 
 ScheduleDecisionSet buildScheduleDecisionSet(
     const ScheduleProblem &problem, llvm::ArrayRef<ScheduleInstance> instances,
@@ -24,6 +24,6 @@ ScheduleDecisionSet buildScheduleDecisionSet(
 void printScheduleDecisionSetReport(const ScheduleDecisionSet &decisionSet,
                                     llvm::raw_ostream &os);
 
-} // namespace mlir::afir::ascend::schedule
+} // namespace mlir::ascend::schedule
 
 #endif // ASCEND_MLIR_CONVERSION_ASCEND_SCHEDULE_SCHEDULEDECISION_H

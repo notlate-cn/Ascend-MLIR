@@ -17,7 +17,7 @@
 #include "gtest/gtest.h"
 
 using namespace mlir;
-using namespace mlir::afir::ascend::backend;
+using namespace mlir::ascend::backend;
 
 namespace {
 

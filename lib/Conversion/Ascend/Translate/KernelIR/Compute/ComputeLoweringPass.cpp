@@ -21,7 +21,7 @@
 #define GEN_PASS_DEF_ASCENDCOMPUTELOWERPASS
 #include "Conversion/Ascend/Passes.h.inc"
 
-namespace mlir::afir {
+namespace mlir::ascend {
 namespace {
 
 namespace backend = ascend::backend;
@@ -103,4 +103,4 @@ std::unique_ptr<Pass> createAscendComputeLowerPass() {
   return std::make_unique<AscendComputeLowerPass>();
 }
 
-} // namespace mlir::afir
+} // namespace mlir::ascend

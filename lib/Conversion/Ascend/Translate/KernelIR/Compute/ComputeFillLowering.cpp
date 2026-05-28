@@ -17,7 +17,7 @@
 using namespace mlir;
 using namespace mlir::ascendc;
 
-namespace mlir::afir {
+namespace mlir::ascend {
 namespace {
 
 std::pair<Value, Value> allocVeccalcForFill(ComputeLoweringContext &lowering,
@@ -199,4 +199,4 @@ LogicalResult lowerFillComputes(ComputeLoweringContext &lowering) {
   return success();
 }
 
-} // namespace mlir::afir
+} // namespace mlir::ascend

@@ -15,7 +15,7 @@
 
 using namespace mlir;
 
-namespace mlir::afir::ascend::schedule {
+namespace mlir::ascend::schedule {
 namespace {
 
 bool isDirectProducerConsumer(Operation *producer, Operation *consumer) {
@@ -221,7 +221,7 @@ buildScheduleProblem(const KernelPatternView &pattern,
   appendShapeConstraints(problem.resultShape, problem.shapeConstraints);
   appendStructureConstraints(pattern, problem.structureConstraints);
   if (const auto *hwContract =
-          ::mlir::afir::ascend::kernelize::lookupHandwrittenContract(
+          ::mlir::ascend::kernelize::lookupHandwrittenContract(
               pattern.handwrittenKind)) {
     llvm::append_range(problem.structureConstraints,
                        hwContract->structureConstraints);
@@ -278,4 +278,4 @@ void printScheduleProblemReport(const ScheduleProblem &problem,
   os << "  ]\n";
 }
 
-} // namespace mlir::afir::ascend::schedule
+} // namespace mlir::ascend::schedule

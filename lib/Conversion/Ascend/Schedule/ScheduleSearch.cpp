@@ -18,7 +18,7 @@
 
 using namespace mlir;
 
-namespace mlir::afir::ascend::schedule {
+namespace mlir::ascend::schedule {
 namespace {
 
 bool hasTileShape(ArrayRef<TileShape> tileShapes, const TileShape &candidate) {
@@ -757,4 +757,4 @@ void printScheduleGuardsReport(const ScheduleProblem &problem,
   }
 }
 
-} // namespace mlir::afir::ascend::schedule
+} // namespace mlir::ascend::schedule

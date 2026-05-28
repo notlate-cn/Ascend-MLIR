@@ -19,7 +19,7 @@
 using namespace mlir;
 
 namespace mlir {
-namespace afir {
+namespace ascend {
 namespace {
 
 bool isSupportedRank2Reduction(linalg::GenericOp op) {
@@ -828,5 +828,5 @@ LogicalResult materializeSelectedAllParallelTiles(func::FuncOp funcOp) {
   return success();
 }
 
-} // namespace afir
+} // namespace ascend
 } // namespace mlir

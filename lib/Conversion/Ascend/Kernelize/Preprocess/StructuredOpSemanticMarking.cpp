@@ -16,7 +16,7 @@
 
 using namespace mlir;
 
-namespace mlir::afir {
+namespace mlir::ascend {
 
 namespace {
 
@@ -155,4 +155,4 @@ LogicalResult markStructuredOps(func::FuncOp funcOp) {
   return success();
 }
 
-}  // namespace mlir::afir
+}  // namespace mlir::ascend

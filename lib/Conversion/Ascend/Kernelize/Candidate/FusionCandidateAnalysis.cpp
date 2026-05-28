@@ -26,7 +26,7 @@
 
 using namespace mlir;
 
-namespace mlir::afir::ascend::kernelize {
+namespace mlir::ascend::kernelize {
 namespace {
 
 bool hasRole(ArrayRef<OpRole> roles, OpRole role) {
@@ -572,4 +572,4 @@ void emitFusionCandidateReport(raw_ostream &os,
   }
 }
 
-} // namespace mlir::afir::ascend::kernelize
+} // namespace mlir::ascend::kernelize

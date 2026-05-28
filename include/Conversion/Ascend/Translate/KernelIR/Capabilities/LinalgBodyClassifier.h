@@ -11,7 +11,7 @@
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/IR/Operation.h"
 
-namespace mlir::afir::ascend::backend {
+namespace mlir::ascend::backend {
 
 bool hasIdentityOutputMaps(linalg::LinalgOp linalgOp);
 
@@ -31,6 +31,6 @@ bool isSupportedBackendGatherOutput(linalg::LinalgOp linalgOp,
 bool isSupportedBackendFinalOutput(linalg::LinalgOp linalgOp,
                                   const AscendBackendSupportMatrix &matrix);
 
-} // namespace mlir::afir::ascend::backend
+} // namespace mlir::ascend::backend
 
 #endif // ASCEND_MLIR_CONVERSION_ASCEND_TRANSLATE_KERNELIR_CAPABILITIES_LINALG_BODY_CLASSIFIER_H

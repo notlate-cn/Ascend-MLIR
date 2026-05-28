@@ -27,7 +27,7 @@
 
 using namespace mlir;
 
-namespace mlir::afir {
+namespace mlir::ascend {
 
 namespace {
 
@@ -256,4 +256,4 @@ std::unique_ptr<Pass> createAscendPreEmitCanonicalizeCannSignaturePass() {
   return std::make_unique<AscendPreEmitCanonicalizeCannSignaturePass>();
 }
 
-} // namespace mlir::afir
+} // namespace mlir::ascend

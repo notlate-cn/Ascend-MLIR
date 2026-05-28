@@ -139,6 +139,43 @@ def _build_stage_groups(run_dir: pathlib.Path, stages: list[dict[str, Any]]) -> 
     return groups
 
 
+def _stage_kernel_ids(stages: list[dict[str, Any]]) -> set[str]:
+    kernel_ids: set[str] = set()
+    for stage in stages:
+        graph = stage.get("graph")
+        if not isinstance(graph, dict):
+            continue
+        for node in graph.get("nodes", []):
+            if not isinstance(node, dict):
+                continue
+            kernel_id = node.get("kernel_id")
+            if isinstance(kernel_id, str) and kernel_id:
+                kernel_ids.add(kernel_id)
+    return kernel_ids
+
+
+def _kernel_detail_views(
+    stages: list[dict[str, Any]], kernel_summary: dict[str, Any] | None
+) -> dict[str, str]:
+    if not isinstance(kernel_summary, dict):
+        return {}
+    nodes = kernel_summary.get("nodes")
+    if not isinstance(nodes, dict):
+        return {}
+    real_kernel_ids = sorted(
+        kernel_id for kernel_id in nodes if isinstance(kernel_id, str) and kernel_id
+    )
+    views = {
+        kernel_id: f"views/kernels/{kernel_id}.html" for kernel_id in real_kernel_ids
+    }
+    if len(real_kernel_ids) == 1:
+        only_kernel = real_kernel_ids[0]
+        only_view = views[only_kernel]
+        for kernel_id in _stage_kernel_ids(stages):
+            views.setdefault(kernel_id, only_view)
+    return views
+
+
 def _node_base_key(node: dict[str, Any]) -> str:
     op_name = str(node.get("op_name") or "")
     result_type = str(node.get("result_type") or "")
@@ -316,26 +353,6 @@ def _overlay_summary(
             "movement_edge_count": memory_summary.get("movement_edge_count"),
         }
     return overlays
-
-
-def _kernel_rows(kernel_dag: dict[str, Any]) -> str:
-    nodes = kernel_dag.get("nodes") if isinstance(kernel_dag.get("nodes"), dict) else {}
-    if not nodes:
-        return '<tr><td colspan="6">没有 Kernel DAG 摘要。</td></tr>'
-    rows = []
-    for kernel_id in sorted(nodes):
-        node = nodes[kernel_id] if isinstance(nodes[kernel_id], dict) else {}
-        rows.append(
-            "<tr>"
-            f"<td>{_cell(kernel_id)}</td>"
-            f"<td>{_cell(node.get('kind'))}</td>"
-            f"<td>{_cell(node.get('depth'))}</td>"
-            f"<td>{_cell(node.get('output_shape'))}</td>"
-            f"<td>{_cell(node.get('selected_tile_shape'))}</td>"
-            f"<td>{_cell(node.get('workspace_size'))}</td>"
-            "</tr>"
-        )
-    return "\n".join(rows)
 
 
 def _artifact_link(path: str, label: str | None = None) -> str:
@@ -618,6 +635,12 @@ dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }
 .node-result { fill: #344054; font-size: 12px; font-family: SFMono-Regular, Menlo, Consolas, monospace; }
 .node-inputs { fill: #667085; font-size: 11px; font-family: SFMono-Regular, Menlo, Consolas, monospace; }
 .node-kernel { fill: var(--blue); font-size: 10px; text-anchor: end; }
+.node-badge-bg { fill: #f8fafc; stroke: #cbd5e1; stroke-width: 1; }
+.node-badge { fill: #344054; font-size: 10px; font-family: SFMono-Regular, Menlo, Consolas, monospace; }
+.semantic-group { border: 1px solid #e3e8ef; border-radius: 6px; background: #ffffff; padding: 0.55rem; margin-top: 0.55rem; }
+.semantic-group h4 { margin: 0 0 0.42rem; font-size: 0.76rem; color: #344054; }
+.semantic-group .detail-grid { grid-template-columns: minmax(7.8rem, 42%) minmax(0, 1fr); }
+.badge-list { display: flex; flex-wrap: wrap; gap: 0.32rem; margin-bottom: 0.45rem; }
 .layout-resizer { cursor: col-resize; align-self: stretch; border-radius: 999px; background: linear-gradient(90deg, transparent, #cbd5e1, transparent); min-height: calc(100vh - 6rem); }
 .layout-resizer:hover, .layout-resizer.active { background: #93c5fd; }
 .inspector-panel { min-width: 0; padding: 0.8rem; align-self: start; position: sticky; top: 0.85rem; max-height: calc(100vh - 1.7rem); overflow: auto; }
@@ -630,7 +653,7 @@ dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }
 .source-expand-button { border: 1px solid var(--line); border-radius: 6px; background: #ffffff; color: var(--text); padding: 0.28rem 0.45rem; cursor: pointer; font-size: 0.76rem; }
 .source-expand-button:hover { border-color: #60a5fa; color: #1d4ed8; }
 .detail-grid { display: grid; grid-template-columns: 5.5rem minmax(0, 1fr); gap: 0.3rem 0.5rem; font-size: 0.82rem; }
-.detail-label { color: var(--muted); font-weight: 700; }
+.detail-label { color: var(--muted); font-weight: 700; min-width: 0; overflow-wrap: anywhere; }
 .detail-value { min-width: 0; overflow-wrap: anywhere; font-family: SFMono-Regular, Menlo, Consolas, monospace; }
 .body-op-list { display: flex; flex-wrap: wrap; gap: 0.35rem; margin-top: 0.45rem; }
 pre { margin: 0; background: #0b1020; color: #dbeafe; border: 1px solid #1e293b; padding: 0.75rem; border-radius: 7px; font: 12px/1.45 SFMono-Regular, Menlo, Consolas, monospace; }
@@ -688,6 +711,8 @@ let activeSearchResults = [];
 let activeSearchIndex = 0;
 const MIN_GRAPH_SCALE = 0.2;
 const MAX_GRAPH_SCALE = 3;
+const GRAPH_CANVAS_PADDING = 160;
+const GRAPH_DEFAULT_MARGIN = 32;
 const MIN_INSPECTOR_WIDTH = 320;
 const MAX_INSPECTOR_WIDTH = 920;
 let inspectorResizeState = null;
@@ -718,6 +743,37 @@ function setInspector(title, links = [], detailHtml = "") {
 function valueText(value) {
   if (Array.isArray(value)) return value.length ? value.join(", ") : "无";
   return value == null || value === "" ? "无" : String(value);
+}
+
+function workspaceRelativeHref(runRelativePath) {
+  if (!runRelativePath) return null;
+  return runRelativePath.startsWith("views/")
+    ? runRelativePath.slice("views/".length)
+    : `../${runRelativePath}`;
+}
+
+function kernelDetailHref(kernelId) {
+  const views = workspace.kernel_detail_views || {};
+  return workspaceRelativeHref(views[kernelId]);
+}
+
+function resolveKernelDagEntry(kernelId) {
+  const nodes = workspace.kernel_dag && workspace.kernel_dag.nodes ? workspace.kernel_dag.nodes : {};
+  if (nodes[kernelId]) return {id: kernelId, node: nodes[kernelId]};
+  const views = workspace.kernel_detail_views || {};
+  const targetView = views[kernelId];
+  if (targetView) {
+    for (const [candidateId, candidate] of Object.entries(nodes)) {
+      const candidateView = views[candidateId] || `views/kernels/${candidateId}.html`;
+      if (candidateView === targetView) return {id: candidateId, node: candidate};
+    }
+  }
+  const ids = Object.keys(nodes);
+  if (ids.length === 1) {
+    const onlyId = ids[0];
+    return {id: onlyId, node: nodes[onlyId]};
+  }
+  return null;
 }
 
 function detailRows(rows) {
@@ -804,6 +860,85 @@ ${codeBlock(localIr)}
 </section>`;
 }
 
+function semanticValueText(value) {
+  if (Array.isArray(value)) return value.length ? value.join(", ") : "无";
+  if (value && typeof value === "object") return JSON.stringify(value);
+  return valueText(value);
+}
+
+function semanticDetailRows(rows) {
+  const visible = rows.filter(([, value]) => {
+    if (Array.isArray(value)) return value.length > 0;
+    return value !== undefined && value !== null && value !== "" && value !== false;
+  });
+  if (!visible.length) return "";
+  return detailRows(visible.map(([label, value]) => [label, semanticValueText(value)]));
+}
+
+function renderSemanticGroup(title, rows) {
+  const body = semanticDetailRows(rows);
+  if (!body) return "";
+  return `<div class="semantic-group"><h4>${escapeHtml(title)}</h4>${body}</div>`;
+}
+
+function renderSemanticAttrSections(node) {
+  const semantic = node.semantic_attrs || {};
+  const badges = Array.isArray(node.badges) ? node.badges : [];
+  if (!badges.length && !Object.keys(semantic).length) return "";
+  const kernel = semantic.kernel || {};
+  const dagKernel = resolveKernelDagEntry(kernel.id);
+  const dagKernelId = dagKernel && dagKernel.id !== kernel.id ? dagKernel.id : null;
+  const dagKernelNode = dagKernel ? (dagKernel.node || {}) : {};
+  const schedule = semantic.schedule || {};
+  const movement = semantic.movement || {};
+  const memory = semantic.memory || {};
+  const position = memory.position || {};
+  const badgeHtml = badges.length
+    ? `<div class="badge-list">${badges.map((badge) => `<span class="chip">${escapeHtml(badge)}</span>`).join("")}</div>`
+    : "";
+  return `
+<section class="inspector-section">
+<h3>属性分组</h3>
+${badgeHtml}
+${renderSemanticGroup("Kernel", [
+  ["kernel_id", kernel.id],
+  ["kernel_dag_id", dagKernelId],
+  ["kind", dagKernelNode.kind],
+  ["depth", dagKernelNode.depth],
+  ["output_shape", dagKernelNode.output_shape],
+  ["selected_tile_shape", dagKernelNode.selected_tile_shape],
+  ["workspace_size", dagKernelNode.workspace_size],
+  ["op_role", kernel.role],
+  ["op_roles", kernel.roles],
+  ["template_families", kernel.template_families],
+  ["primary", kernel.primary ? "true" : null],
+])}
+${renderSemanticGroup("Schedule", [
+  ["schedule_decision_id", schedule.decision_id],
+  ["schedule_family", schedule.family],
+  ["schedule_template", schedule.template],
+  ["selected_tile_shape", schedule.tile_shape],
+  ["structured_lowering", schedule.structured_lowering],
+  ["tail_policies", schedule.tail_policies],
+  ["target_tile_policy", schedule.target_tile_policy],
+  ["runtime_top_k", schedule.runtime_top_k],
+])}
+${renderSemanticGroup("Movement", [
+  ["phases", movement.phases],
+])}
+${renderSemanticGroup("Memory / Buffer", [
+  ["position.kind", position.kind],
+  ["position.depth", position.depth],
+  ["position.is_double_buffer", position.is_double_buffer ? "true" : null],
+  ["position.raw", position.raw],
+  ["tensor_id", memory.tensor_id],
+  ["reuse_id", memory.reuse_id],
+  ["position_id", memory.position_id],
+  ["memory_space", memory.memory_space],
+])}
+</section>`;
+}
+
 function renderStageNodeDetail(stage, node, diff) {
   if (!node) return '<section class="inspector-section"><h3>节点详情</h3><div class="panel-subtitle">未选中节点。</div></section>';
   const diffStatus = diff && diff.status ? diff.status : "无";
@@ -822,11 +957,14 @@ ${detailRows([
   ["Diff 状态", diffStatus],
 ])}
 </section>
+${renderSemanticAttrSections(node)}
 ${renderNodeIrSection(node)}`;
 }
 
-function svgHeader(width, height) {
-  return `<svg id="unified-debug-graph-svg" data-base-width="${width}" data-base-height="${height}" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}" xmlns="http://www.w3.org/2000/svg">
+function svgHeader(width, height, padding = GRAPH_CANVAS_PADDING) {
+  const outerWidth = width + padding * 2;
+  const outerHeight = height + padding * 2;
+  return `<svg id="unified-debug-graph-svg" data-base-width="${outerWidth}" data-base-height="${outerHeight}" data-canvas-padding="${padding}" width="${outerWidth}" height="${outerHeight}" viewBox="0 0 ${outerWidth} ${outerHeight}" xmlns="http://www.w3.org/2000/svg">
 <defs>
 <marker id="arrow-head" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
 <path d="M 0 0 L 10 5 L 0 10 z" fill="currentColor"></path>
@@ -859,12 +997,23 @@ function applyGraphScale() {
   if (zoom) zoom.textContent = `${Math.round(scale * 100)}%`;
 }
 
-function resetGraphView() {
+function currentSvgPadding() {
+  const svg = currentSvg();
+  return svg ? Number(svg.dataset.canvasPadding || 0) : 0;
+}
+
+function scrollGraphToDefaultOrigin() {
   const canvas = graphCanvas();
+  const padding = currentSvgPadding();
+  const scale = graphViewState.scale || 1;
+  canvas.scrollLeft = Math.max(0, padding * scale - GRAPH_DEFAULT_MARGIN);
+  canvas.scrollTop = Math.max(0, padding * scale - GRAPH_DEFAULT_MARGIN);
+}
+
+function resetGraphView() {
   graphViewState.scale = 1;
   applyGraphScale();
-  canvas.scrollLeft = 0;
-  canvas.scrollTop = 0;
+  scrollGraphToDefaultOrigin();
 }
 
 function fitGraphToView() {
@@ -879,8 +1028,7 @@ function fitGraphToView() {
   );
   graphViewState.scale = clamp(fitScale, MIN_GRAPH_SCALE, 1.5);
   applyGraphScale();
-  canvas.scrollLeft = 0;
-  canvas.scrollTop = 0;
+  scrollGraphToDefaultOrigin();
 }
 
 function zoomGraphAt(event) {
@@ -914,8 +1062,9 @@ function centerGraphElement(element) {
   const width = Number(element.dataset.width || 220);
   const height = Number(element.dataset.height || 82);
   const scale = graphViewState.scale || 1;
-  canvas.scrollLeft = Math.max(0, (position.x + width / 2) * scale - canvas.clientWidth / 2);
-  canvas.scrollTop = Math.max(0, (position.y + height / 2) * scale - canvas.clientHeight / 2);
+  const padding = currentSvgPadding();
+  canvas.scrollLeft = Math.max(0, (position.x + padding + width / 2) * scale - canvas.clientWidth / 2);
+  canvas.scrollTop = Math.max(0, (position.y + padding + height / 2) * scale - canvas.clientHeight / 2);
 }
 
 function isBlankCanvasPanTarget(target) {
@@ -1306,6 +1455,7 @@ function renderStageGraph() {
   const diff = activeStageDiff(stage);
   const firstBad = workspace.overlays.locate && workspace.overlays.locate.first_bad_kernel;
   let svg = svgHeader(layout.width || 720, layout.height || 420);
+  svg += `<g class="graph-content" transform="translate(${GRAPH_CANVAS_PADDING},${GRAPH_CANVAS_PADDING})">`;
   for (const frame of functionFramesForGraph(graph, layout)) {
     svg += `<g class="function-frame" data-function-name="${escapeHtml(frame.name)}">
 <rect class="function-frame-box" x="${frame.x}" y="${frame.y}" width="${frame.width}" height="${frame.height}" rx="8"></rect>
@@ -1328,6 +1478,12 @@ function renderStageGraph() {
     const diffInfo = diff && diff.node_status ? diff.node_status[node.id] : null;
     const diffClass = diffInfo && diffInfo.status !== "unchanged" ? ` diff-${diffInfo.status}` : "";
     const kernelText = node.kernel_id ? `kernel ${truncate(node.kernel_id, 22)}` : `line ${node.line}`;
+    const badgeElements = (Array.isArray(node.badges) ? node.badges.slice(0, 3) : []).map((badge, badgeIndex) => {
+      const label = truncate(badge, 30);
+      const width = Math.min(position.width - 28, Math.max(46, label.length * 6.4 + 18));
+      const y = 76 + badgeIndex * 15;
+      return `<rect class="node-badge-bg" x="14" y="${y}" width="${width}" height="12" rx="4"></rect><text class="node-badge" x="22" y="${y + 9}">${escapeHtml(label)}</text>`;
+    }).join("");
     svg += `<g class="graph-node${kernelClass}${issueClass}${diffClass}" data-node-id="${escapeHtml(node.id)}" data-node-index="${nodeById[node.id].index}" data-width="${position.width}" data-height="${position.height}" tabindex="0" role="button" transform="translate(${position.x},${position.y})">
 <title>${escapeHtml(node.op_name)}</title>
 <rect width="${position.width}" height="${position.height}" rx="6"></rect>
@@ -1335,10 +1491,13 @@ function renderStageGraph() {
 <text class="node-result" x="14" y="47">${escapeHtml(truncate(result, 30))}</text>
 <text class="node-inputs" x="14" y="68">${escapeHtml(truncate(detail, 30))}</text>
 <text class="node-kernel" x="${position.width - 14}" y="22">${escapeHtml(kernelText)}</text>
+${badgeElements}
 </g>`;
   }
-  svg += "</svg>";
+  svg += "</g></svg>";
   canvas.innerHTML = svg;
+  applyGraphScale();
+  scrollGraphToDefaultOrigin();
   document.querySelectorAll(".graph-node").forEach((element) => {
     element.addEventListener("click", () => selectStageNode(stage, graph, element.dataset.nodeId));
     element.addEventListener("keydown", (event) => {
@@ -1360,7 +1519,8 @@ function selectStageNode(stage, graph, nodeId, options = {}) {
   const node = graph.nodes.find((item) => item.id === nodeId);
   const links = [];
   if (stage.stage_view_path) links.push({label: "查看完整 MLIR", href: `../${stage.stage_view_path}${node && node.line ? `#L${node.line}` : ""}`});
-  if (node && node.kernel_id) links.push({label: "Kernel 详情", href: `kernels/${node.kernel_id}.html`});
+  const kernelHref = node && node.kernel_id ? kernelDetailHref(node.kernel_id) : null;
+  if (kernelHref) links.push({label: "Kernel 详情", href: kernelHref});
   if (node && node.kernel_id && memoryHasKernel(node.kernel_id)) links.push({label: "内存视图", href: memoryViewLink(node.kernel_id)});
   const diff = node ? stageNodeDiffInfo(stage, nodeId) : null;
   setInspector(
@@ -1400,6 +1560,7 @@ function renderKernelDag() {
   const fusionPairs = new Set((summary.simple_fusion_edges || []).map((edge) => `${edge.from}->${edge.to}`));
   const firstBad = workspace.overlays.locate && workspace.overlays.locate.first_bad_kernel;
   let svg = svgHeader(width, height);
+  svg += `<g class="graph-content" transform="translate(${GRAPH_CANVAS_PADDING},${GRAPH_CANVAS_PADDING})">`;
   for (const edge of edges) {
     const src = positions[edge.from], dst = positions[edge.to];
     if (!src || !dst) continue;
@@ -1424,11 +1585,13 @@ function renderKernelDag() {
 <text class="node-inputs" x="14" y="68">depth ${escapeHtml(node.depth)} | ws ${escapeHtml(node.workspace_size)}</text>
 </g>`;
   }
-  svg += "</svg>";
+  svg += "</g></svg>";
   document.getElementById("graph-title").textContent = "Kernel DAG";
   document.getElementById("graph-subtitle").textContent = `${summary.kernel_count || 0} 个 Kernel，${summary.graph_edges || 0} 条边，关键深度 ${summary.critical_path_depth || 0}`;
   renderStagePhaseControls(null);
   document.getElementById("graph-canvas").innerHTML = svg;
+  applyGraphScale();
+  scrollGraphToDefaultOrigin();
   document.querySelectorAll(".kernel-dag-node").forEach((element) => {
     element.addEventListener("click", () => selectKernel(element.dataset.kernelId));
     element.addEventListener("keydown", (event) => {
@@ -1446,7 +1609,8 @@ function selectKernel(kernelId, options = {}) {
   selectedKey = kernelId;
   document.querySelectorAll(".kernel-dag-node").forEach((element) => element.classList.toggle("selected", element.dataset.kernelId === kernelId));
   const node = workspace.kernel_dag && workspace.kernel_dag.nodes ? workspace.kernel_dag.nodes[kernelId] : null;
-  const links = [{label: "Kernel 详情", href: `kernels/${kernelId}.html`}];
+  const kernelHref = kernelDetailHref(kernelId);
+  const links = kernelHref ? [{label: "Kernel 详情", href: kernelHref}] : [];
   if (memoryHasKernel(kernelId)) links.push({label: "内存视图", href: memoryViewLink(kernelId)});
   setInspector(`Kernel 详情：${kernelId}`, links);
   if (options.center) {
@@ -1543,13 +1707,6 @@ renderStageGraph();
 <h2 id="inspector-title">节点详情</h2>
 <div id="inspector-actions" class="inspector-actions"></div>
 <div id="inspector-detail"></div>
-<h2>诊断叠加</h2>
-{_overlay_cards(overlays)}
-<h2>Kernel DAG</h2>
-<table>
-<thead><tr><th>Kernel</th><th>类型</th><th>深度</th><th>Shape</th><th>Tile</th><th>Workspace</th></tr></thead>
-<tbody>{_kernel_rows(kernel_dag)}</tbody>
-</table>
 </aside>
 </main>
 <div id="source-reader-overlay" class="source-reader-overlay" hidden>
@@ -1600,6 +1757,7 @@ def render_debug_graph(
         "stage_groups": stage_groups,
         "stages": stages,
         "kernel_dag": kernel_summary or {},
+        "kernel_detail_views": _kernel_detail_views(stages, kernel_summary),
         "overlays": _overlay_summary(
             tensor_diff=tensor_diff,
             locate_summary=locate_summary,

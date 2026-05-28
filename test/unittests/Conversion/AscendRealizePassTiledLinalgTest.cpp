@@ -20,8 +20,8 @@
 #include "gtest/gtest.h"
 
 using namespace mlir;
-using namespace mlir::afir::ascend;
-using namespace mlir::afir::ascend::realize;
+using namespace mlir::ascend;
+using namespace mlir::ascend::realize;
 
 namespace {
 

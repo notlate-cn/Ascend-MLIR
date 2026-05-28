@@ -16,7 +16,7 @@
 #include "llvm/ADT/StringRef.h"
 #include <string>
 
-namespace mlir::afir::ascend::kernelize {
+namespace mlir::ascend::kernelize {
 
 enum class AccessPatternKind {
   NotApplicable,
@@ -101,7 +101,7 @@ stringifyKernelizeParticipation(KernelizeParticipationKind kind);
 llvm::StringRef stringifyKernelizeSemanticTrait(KernelizeSemanticTrait trait);
 llvm::StringRef stringifyKernelizeSeedPolicy(KernelizeSeedPolicy policy);
 
-} // namespace mlir::afir::ascend::kernelize
+} // namespace mlir::ascend::kernelize
 
 #include "Conversion/Ascend/Kernelize/KernelizeOpInterfaces.h.inc"
 

@@ -24,7 +24,7 @@
 
 using namespace mlir;
 
-namespace mlir::afir::ascend::schedule {
+namespace mlir::ascend::schedule {
 namespace {
 
 void addBarrier(CoalescedAxisInfo &info, Operation *op,
@@ -276,8 +276,8 @@ AxisTailPolicy getDefaultTailPolicy(ArrayRef<AxisTailPolicy> policies) {
 }
 
 bool hasGatherIndexingMarker(Operation *op) {
-  return op && (op->hasAttr(::mlir::afir::ascend::kGatherDimAttr) ||
-                op->hasAttr(::mlir::afir::ascend::kEmbeddingDimAttr));
+  return op && (op->hasAttr(::mlir::ascend::kGatherDimAttr) ||
+                op->hasAttr(::mlir::ascend::kEmbeddingDimAttr));
 }
 
 bool hasIntegerOrIndexElementType(Value value) {
@@ -490,8 +490,8 @@ bool shouldPrintTailContractFields(
 }
 
 const PatternOpView *selectAxisCarrierOp(const KernelPatternView &pattern) {
-  const ::mlir::afir::ascend::kernelize::HandwrittenContract *contract =
-      ::mlir::afir::ascend::kernelize::lookupHandwrittenContract(
+  const ::mlir::ascend::kernelize::HandwrittenContract *contract =
+      ::mlir::ascend::kernelize::lookupHandwrittenContract(
           pattern.handwrittenKind);
   if (contract && contract->useAxisCarrierOnly)
     return selectDominantPrimaryOp(pattern);
@@ -524,8 +524,8 @@ FailureOr<CoalescedAxisInfo> coalesceAxes(const KernelPatternView &pattern) {
   SmallVector<int64_t> staticExtents(axisCount, ShapedType::kDynamic);
   SmallVector<bool> broadcastAxisMask(axisCount, false);
 
-  const ::mlir::afir::ascend::kernelize::HandwrittenContract *hwContract =
-      ::mlir::afir::ascend::kernelize::lookupHandwrittenContract(
+  const ::mlir::ascend::kernelize::HandwrittenContract *hwContract =
+      ::mlir::ascend::kernelize::lookupHandwrittenContract(
           pattern.handwrittenKind);
   bool useAxisCarrierOnly = hwContract && hwContract->useAxisCarrierOnly;
   for (const PatternOpView &opView : pattern.ops) {
@@ -633,4 +633,4 @@ void printAxisCoalescingReport(StringRef kernelId,
   os << "  ]\n";
 }
 
-} // namespace mlir::afir::ascend::schedule
+} // namespace mlir::ascend::schedule

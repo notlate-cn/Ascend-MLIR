@@ -17,7 +17,7 @@
 #include <string>
 #include <optional>
 
-namespace mlir::afir::ascend::schedule {
+namespace mlir::ascend::schedule {
 
 inline constexpr unsigned kScheduleTuningDBSchemaVersion = 1;
 
@@ -64,6 +64,6 @@ LogicalResult appendTuningResultRecords(ScheduleTuningDatabase &db,
                                         llvm::StringRef policy,
                                         ArrayRef<TuningResultKey> keys);
 
-} // namespace mlir::afir::ascend::schedule
+} // namespace mlir::ascend::schedule
 
 #endif // ASCEND_MLIR_CONVERSION_ASCEND_SCHEDULE_SCHEDULETUNINGDB_H

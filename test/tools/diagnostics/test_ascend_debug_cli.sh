@@ -379,7 +379,7 @@ cat >"${TMP_DIR}/run_manifest.json" <<'JSON'
     {
       "task_id": "kernel_0",
       "inputs": [{"name": "input", "path": "input.npy"}],
-      "outputs": [{"name": "out0", "shape": [4, 8], "dtype": "f16"}],
+      "outputs": [{"name": "out0", "shape": [-1, -1], "dtype": "f16"}],
       "workspace_size": 4096
     }
   ]
@@ -694,6 +694,27 @@ grep -Fq '显示边界快照' "${TMP_DIR}/debug-run-graph/views/debug_graph.html
 grep -Fq '输入同 19 normalize-out' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
 grep -Fq 'class="function-frame"' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
 grep -Fq 'function functionFramesForGraph' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
+grep -Fq 'class="node-badge"' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
+grep -Fq 'function renderSemanticAttrSections' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
+grep -Fq 'function resolveKernelDagEntry' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
+grep -Fq '属性分组' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
+if grep -Fq '所属 Kernel' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"; then
+  echo "node inspector should merge Kernel DAG facts into the Kernel attribute group" >&2
+  exit 1
+fi
+grep -Fq '.semantic-group .detail-grid { grid-template-columns: minmax(7.8rem, 42%) minmax(0, 1fr); }' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
+grep -Fq '.detail-label { color: var(--muted); font-weight: 700; min-width: 0; overflow-wrap: anywhere; }' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
+grep -Fq '["op_role", kernel.role]' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
+grep -Fq '["op_roles", kernel.roles]' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
+grep -Fq '["output_shape", dagKernelNode.output_shape]' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
+grep -Fq '["kernel_dag_id", dagKernelId]' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
+grep -Fq '["selected_tile_shape", schedule.tile_shape]' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
+grep -Fq '["phases", movement.phases]' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
+grep -Fq '["position.kind", position.kind]' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
+if grep -Fq '["角色", kernel.role]' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"; then
+  echo "semantic attr labels should use raw field names, not Chinese display names" >&2
+  exit 1
+fi
 grep -Fq 'function beginCanvasPan' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
 grep -Fq 'function isBlankCanvasPanTarget' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
 grep -Fq 'function installInspectorResize' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
@@ -704,6 +725,11 @@ grep -Fq 'localStorage.setItem("ascendDebugInspectorWidth"' "${TMP_DIR}/debug-ru
 grep -Fq 'localStorage.setItem("ascendDebugSidebarCollapsed"' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
 grep -Fq 'event.button !== 0 && event.button !== 2' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
 grep -Fq '!isBlankCanvasPanTarget(event.target)' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
+grep -Fq 'const GRAPH_CANVAS_PADDING = 160' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
+grep -Fq 'data-canvas-padding' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
+grep -Fq 'function scrollGraphToDefaultOrigin' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
+grep -Fq 'padding * scale - GRAPH_DEFAULT_MARGIN' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
+grep -Fq '<g class="graph-content" transform="translate(${GRAPH_CANVAS_PADDING},${GRAPH_CANVAS_PADDING})">' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
 grep -Fq 'function applyGraphScale' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
 grep -Fq 'function fitGraphToView' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
 grep -Fq 'function searchActiveGraph' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
@@ -715,6 +741,14 @@ grep -Fq 'Stage Diff' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
 grep -Fq 'function renderKernelDag' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
 grep -Fq 'function renderStagePhaseControls' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
 grep -Fq 'Kernel DAG' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
+if grep -Fq '<h2>Kernel DAG</h2>' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"; then
+  echo "node inspector should not duplicate the global Kernel DAG table" >&2
+  exit 1
+fi
+if grep -Fq '<h2>诊断叠加</h2>' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"; then
+  echo "node inspector should not duplicate global diagnostic overlays" >&2
+  exit 1
+fi
 grep -Fq 'Tensor Diff' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
 grep -Fq 'Memory' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
 if grep -Fq 'tensor&lt;' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"; then
@@ -741,10 +775,24 @@ assert kernelize["previous_output_stage"]["name"] == "normalize-out"
 primary_graph = graph["primary_stage"]["graph"]
 assert primary_graph["functions"][0]["name"] == "elementwise"
 assert primary_graph["functions"][0]["node_ids"] == [node["id"] for node in primary_graph["nodes"]]
+schedule_stage = next(item for item in graph["stages"] if item["name"] == "schedule-out")
+scheduled = next(
+    node
+    for node in schedule_stage["graph"]["nodes"]
+    if node["op_name"] == "linalg.generic" and node.get("kernel_id") == "kernel_0"
+)
+semantic = scheduled["semantic_attrs"]
+assert semantic["schedule"]["tile_shape"] == [4, 8]
+assert semantic["schedule"]["template"] == "single_tile_per_block"
+assert semantic["schedule"]["structured_lowering"] == "loop_skeleton_v0"
+assert semantic["movement"]["phases"] == ["data_copy", "vector_compute", "write_back"]
+assert "tile 4x8" in scheduled["badges"]
+assert "move data_copy/vector_compute/write_back" in scheduled["badges"]
 assert len(graph["stage_diffs"]) == graph["stage_count"] - 1
 assert all("added_count" in item for item in graph["stage_diffs"])
 assert any(item["to_stage"]["name"] == "kernelize-out" for item in graph["stage_diffs"])
 assert graph["kernel_dag"]["kernel_count"] == 1
+assert graph["kernel_dag"]["nodes"]["kernel_0"]["output_shape"] == "?x?"
 assert graph["overlays"]["tensor_diff"]["status"] == "fail"
 assert graph["overlays"]["locate"]["first_bad_kernel"] == "kernel_0"
 assert graph["overlays"]["memory"]["peak_workspace_bytes"] == 256
@@ -796,6 +844,10 @@ if grep -Fq 'views/summaries/debug_graph.json.html' "${TMP_DIR}/debug-run-graph/
 fi
 grep -Fq '<a href="views/stages/029-kernelize-out.mlir.html">文本格式</a>' "${TMP_DIR}/debug-run-graph/index.html"
 grep -Fq '../views/kernels/kernel_0.html' "${TMP_DIR}/debug-run-graph/graphs/kernel_dag.svg"
+if grep -Fq -- '-1x-1' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"; then
+  echo "dynamic kernel shapes should be shown as ?x?, not -1x-1" >&2
+  exit 1
+fi
 test -f "${TMP_DIR}/debug-run-graph/views/stages/029-kernelize-out.mlir.html"
 test -f "${TMP_DIR}/debug-run-graph/views/graphs/kernelized.mlir.html"
 test ! -e "${TMP_DIR}/debug-run-graph/views/graphs/kernel_dag.summary.json.html"
@@ -814,6 +866,7 @@ grep -Fq '<h1>kernel_0</h1>' "${TMP_DIR}/debug-run-graph/views/kernels/kernel_0.
 grep -Fq 'selected_tile_shape' "${TMP_DIR}/debug-run-graph/views/kernels/kernel_0.html"
 grep -Fq 'workspace_size' "${TMP_DIR}/debug-run-graph/views/kernels/kernel_0.html"
 grep -Fq 'workspace_size</th><td>4096' "${TMP_DIR}/debug-run-graph/views/kernels/kernel_0.html"
+grep -Fq 'output_shape</th><td>?x?' "${TMP_DIR}/debug-run-graph/views/kernels/kernel_0.html"
 grep -Fq 'MLIR Ops' "${TMP_DIR}/debug-run-graph/views/kernels/kernel_0.html"
 grep -Fq '../graphs/kernelized.mlir.html#L' "${TMP_DIR}/debug-run-graph/views/kernels/kernel_0.html"
 if grep -Fq 'DAG 摘要 JSON' "${TMP_DIR}/debug-run-graph/views/kernels/kernel_0.html"; then
@@ -836,6 +889,50 @@ grep -Fq 'summaries/memory.json.html#kernel-' "${TMP_DIR}/debug-run-graph/views/
 grep -Fq 'UB 分配' "${TMP_DIR}/debug-run-graph/views/kernels/kernel_0.html"
 grep -Fq '../summaries/memory.json.html#kernel-kernel_0' "${TMP_DIR}/debug-run-graph/views/kernels/kernel_0.html"
 grep -Fq 'class="ub-allocation-svg"' "${TMP_DIR}/debug-run-graph/views/kernels/kernel_0.html"
+cp -R "${TMP_DIR}/debug-run-graph" "${TMP_DIR}/debug-run-graph-physical-kernel"
+rm -rf "${TMP_DIR}/debug-run-graph-physical-kernel/views/kernels"
+python3 - "${TMP_DIR}/debug-run-graph-physical-kernel/graphs/kernel_dag.summary.json" <<'PY'
+import json
+import pathlib
+import sys
+
+path = pathlib.Path(sys.argv[1])
+summary = json.loads(path.read_text())
+old = "kernel_0"
+new = "physical_kernel"
+summary["nodes"] = {new if key == old else key: value for key, value in summary["nodes"].items()}
+for field in (
+    "critical_path",
+    "leaf_task_ids",
+    "prepack_candidate_root_ids",
+    "root_task_ids",
+    "runtime_input_root_ids",
+):
+    if isinstance(summary.get(field), list):
+        summary[field] = [new if item == old else item for item in summary[field]]
+for edge in summary.get("edges", []):
+    if edge.get("from") == old:
+        edge["from"] = new
+    if edge.get("to") == old:
+        edge["to"] = new
+path.write_text(json.dumps(summary, indent=2, sort_keys=True) + "\n")
+PY
+ascend-debug open "${TMP_DIR}/debug-run-graph-physical-kernel" --no-browser >"${TMP_DIR}/ascend-debug-open-physical-kernel.txt"
+test -f "${TMP_DIR}/debug-run-graph-physical-kernel/views/kernels/physical_kernel.html"
+test -f "${TMP_DIR}/debug-run-graph-physical-kernel/views/kernels/kernel_0.html"
+grep -Fq 'url=physical_kernel.html' "${TMP_DIR}/debug-run-graph-physical-kernel/views/kernels/kernel_0.html"
+grep -Fq 'function kernelDetailHref' "${TMP_DIR}/debug-run-graph-physical-kernel/views/debug_graph.html"
+grep -Fq 'function resolveKernelDagEntry' "${TMP_DIR}/debug-run-graph-physical-kernel/views/debug_graph.html"
+grep -Fq 'candidateView === targetView' "${TMP_DIR}/debug-run-graph-physical-kernel/views/debug_graph.html"
+python3 - "${TMP_DIR}/debug-run-graph-physical-kernel/summaries/debug_graph.json" <<'PY'
+import json
+import pathlib
+import sys
+
+graph = json.loads(pathlib.Path(sys.argv[1]).read_text())
+assert graph["kernel_detail_views"]["physical_kernel"] == "views/kernels/physical_kernel.html"
+assert graph["kernel_detail_views"]["kernel_0"] == "views/kernels/physical_kernel.html"
+PY
 python3 - "${TMP_DIR}/debug-run-graph/summaries/memory.json" <<'PY'
 import json
 import pathlib

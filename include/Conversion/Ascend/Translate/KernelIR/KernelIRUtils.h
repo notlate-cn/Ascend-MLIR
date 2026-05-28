@@ -15,7 +15,7 @@
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/SmallVector.h"
 
-namespace mlir::afir {
+namespace mlir::ascend {
 
 /// Shared context for Ascend KernelIR construction.
 /// Holds the single pipe and the per-alloc queue map, built once in the pass
@@ -118,6 +118,6 @@ LogicalResult materializeSelectedTransposeTiles(func::FuncOp funcOp);
 /// Run the Ascend KernelIR construction implementation on one function.
 LogicalResult lowerLinalgToKernelIR(func::FuncOp funcOp);
 
-} // namespace mlir::afir
+} // namespace mlir::ascend
 
 #endif // ASCEND_MLIR_CONVERSION_ASCEND_TRANSLATE_KERNELIR_KERNEL_IR_UTILS_H

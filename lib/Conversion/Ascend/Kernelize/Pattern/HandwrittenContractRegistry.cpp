@@ -14,7 +14,7 @@
 
 #include <mutex>
 
-namespace mlir::afir::ascend::kernelize {
+namespace mlir::ascend::kernelize {
 namespace {
 
 struct HandwrittenContractRegistrySingleton {
@@ -80,4 +80,4 @@ const HandwrittenContract *lookupHandwrittenContract(llvm::StringRef kind) {
   return it != reg.contracts.end() ? &it->second : nullptr;
 }
 
-} // namespace mlir::afir::ascend::kernelize
+} // namespace mlir::ascend::kernelize

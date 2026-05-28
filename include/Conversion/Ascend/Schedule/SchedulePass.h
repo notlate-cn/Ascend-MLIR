@@ -14,10 +14,10 @@ namespace mlir {
 class Pass;
 }
 
-namespace mlir::afir {
+namespace mlir::ascend {
 
 std::unique_ptr<Pass> createAscendSchedulePass();
 
-} // namespace mlir::afir
+} // namespace mlir::ascend
 
 #endif // ASCEND_MLIR_CONVERSION_ASCEND_SCHEDULE_PASS_H

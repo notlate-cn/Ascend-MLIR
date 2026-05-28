@@ -63,7 +63,7 @@ using namespace mlir;
 using namespace mlir::ascendc;
 using namespace mlir::emitasc;
 
-namespace mlir::afir {
+namespace mlir::ascend {
 
 //===----------------------------------------------------------------------===//
 // Helpers
@@ -1014,4 +1014,4 @@ std::unique_ptr<Pass> createAscendPreEmitPrepareForEmitPass() {
   return std::make_unique<AscendPreEmitPrepareForEmitPass>();
 }
 
-} // namespace mlir::afir
+} // namespace mlir::ascend

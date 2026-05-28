@@ -12,7 +12,7 @@
 #include "mlir/Support/LogicalResult.h"
 #include "llvm/Support/raw_ostream.h"
 
-namespace mlir::afir::ascend::schedule {
+namespace mlir::ascend::schedule {
 
 FailureOr<ScheduleProblem>
 buildScheduleProblem(const KernelPatternView &pattern,
@@ -21,6 +21,6 @@ buildScheduleProblem(const KernelPatternView &pattern,
 void printScheduleProblemReport(const ScheduleProblem &problem,
                                 llvm::raw_ostream &os);
 
-} // namespace mlir::afir::ascend::schedule
+} // namespace mlir::ascend::schedule
 
 #endif // ASCEND_MLIR_CONVERSION_ASCEND_SCHEDULE_SCHEDULEPROBLEMBUILDER_H

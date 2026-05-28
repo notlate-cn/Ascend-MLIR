@@ -8,7 +8,7 @@
 
 #include "mlir/IR/BuiltinTypes.h"
 
-namespace mlir::afir::ascend::backend {
+namespace mlir::ascend::backend {
 namespace {
 
 bool isGenericFloatDtype(mlir::Type t) {
@@ -106,4 +106,4 @@ const BackendCapabilityProvider &getDefaultBackendCapabilityProvider() {
   return provider;
 }
 
-} // namespace mlir::afir::ascend::backend
+} // namespace mlir::ascend::backend

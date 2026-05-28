@@ -26,7 +26,7 @@
 #include "llvm/Support/Casting.h"
 #include "llvm/Support/raw_ostream.h"
 
-namespace mlir::afir::ascend::realize {
+namespace mlir::ascend::realize {
 namespace {
 
 struct KernelTensorFacts {
@@ -416,4 +416,4 @@ LogicalResult BufferizationDriver::runOneShotBufferize(ModuleOp module) const {
                                                   &statistics);
 }
 
-} // namespace mlir::afir::ascend::realize
+} // namespace mlir::ascend::realize

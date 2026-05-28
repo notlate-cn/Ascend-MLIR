@@ -23,7 +23,7 @@
 
 using namespace mlir;
 
-namespace mlir::afir {
+namespace mlir::ascend {
 
 namespace {
 
@@ -458,4 +458,4 @@ LogicalResult annotateMixMatmulSemantics(func::FuncOp funcOp) {
   return success();
 }
 
-} // namespace mlir::afir
+} // namespace mlir::ascend

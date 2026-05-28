@@ -21,7 +21,7 @@
 
 using namespace mlir;
 
-namespace mlir::afir::ascend::kernelize {
+namespace mlir::ascend::kernelize {
 namespace {
 
 bool hasAtLeastTwoEntries(
@@ -190,4 +190,4 @@ void emitStructuralMarkingReport(raw_ostream &os,
   }
 }
 
-} // namespace mlir::afir::ascend::kernelize
+} // namespace mlir::ascend::kernelize

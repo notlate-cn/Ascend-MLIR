@@ -13,7 +13,7 @@
 
 #include <string>
 
-namespace mlir::afir::ascend::kernelize {
+namespace mlir::ascend::kernelize {
 
 using llvm::SmallVector;
 
@@ -67,6 +67,6 @@ void registerBuiltinHandwrittenContracts();
 /// Returns nullptr if kind is empty or not registered.
 const HandwrittenContract *lookupHandwrittenContract(llvm::StringRef kind);
 
-} // namespace mlir::afir::ascend::kernelize
+} // namespace mlir::ascend::kernelize
 
 #endif // ASCEND_MLIR_CONVERSION_ASCEND_KERNELIZE_HANDWRITTENCONTRACTREGISTRY_H

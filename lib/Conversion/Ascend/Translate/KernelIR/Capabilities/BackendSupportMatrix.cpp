@@ -10,7 +10,7 @@
 #include "llvm/Support/FormatVariadic.h"
 #include "llvm/Support/raw_ostream.h"
 
-namespace mlir::afir::ascend::backend {
+namespace mlir::ascend::backend {
 MemorySpace parseMemorySpace(int64_t value) {
   switch (value) {
   case static_cast<int64_t>(MemorySpace::GM):
@@ -193,4 +193,4 @@ UnsupportedReason AscendBackendSupportMatrix::explainDtype(
   return {"dtype", "unsupported dtype combination"};
 }
 
-} // namespace mlir::afir::ascend::backend
+} // namespace mlir::ascend::backend

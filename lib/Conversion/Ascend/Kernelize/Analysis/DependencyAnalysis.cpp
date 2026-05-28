@@ -28,7 +28,7 @@
 
 using namespace mlir;
 
-namespace mlir::afir::ascend::kernelize {
+namespace mlir::ascend::kernelize {
 namespace {
 
 void sortAndUniqueByOpId(SmallVectorImpl<Operation *> &ops,
@@ -297,4 +297,4 @@ void emitDependencyAnalysisReport(raw_ostream &os,
   }
 }
 
-} // namespace mlir::afir::ascend::kernelize
+} // namespace mlir::ascend::kernelize

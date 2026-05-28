@@ -214,23 +214,23 @@ static llvm::json::Object buildShapeDescriptor(ArrayRef<TilingFieldInfo> fields)
 static FailureOr<WorkspaceInfo> getWorkspaceInfo(func::FuncOp funcOp) {
   WorkspaceInfo info;
   auto sizeAttr = funcOp->getAttrOfType<IntegerAttr>(
-      ::mlir::afir::ascend::kCannWorkspaceSizeBytesAttr);
+      ::mlir::ascend::kCannWorkspaceSizeBytesAttr);
   if (sizeAttr) {
     int64_t sizeBytes = sizeAttr.getInt();
     if (sizeBytes < 0)
       return funcOp.emitError()
-             << ::mlir::afir::ascend::kCannWorkspaceSizeBytesAttr
+             << ::mlir::ascend::kCannWorkspaceSizeBytesAttr
              << " must be a non-negative integer attribute";
     info.sizeBytes = sizeBytes;
     info.sizeExpr = std::to_string(sizeBytes);
   }
 
   auto exprAttr = funcOp->getAttrOfType<StringAttr>(
-      ::mlir::afir::ascend::kCannWorkspaceSizeExprAttr);
+      ::mlir::ascend::kCannWorkspaceSizeExprAttr);
   if (exprAttr) {
     if (exprAttr.getValue().trim().empty())
       return funcOp.emitError()
-             << ::mlir::afir::ascend::kCannWorkspaceSizeExprAttr
+             << ::mlir::ascend::kCannWorkspaceSizeExprAttr
              << " must not be empty";
     info.sizeExpr = exprAttr.getValue().str();
   }
@@ -258,13 +258,13 @@ static int64_t getCannWorkspaceArgIndex(func::FuncOp funcOp) {
 
 static std::string getKernelKindString(func::FuncOp funcOp) {
   auto kindAttr = funcOp->getAttrOfType<StringAttr>(
-      ::mlir::afir::ascend::kAscendCKernelKindAttr);
+      ::mlir::ascend::kAscendCKernelKindAttr);
   if (!kindAttr)
     return "unknown";
   StringRef kind = kindAttr.getValue();
-  if (kind == ::mlir::afir::ascend::kAscendCKernelKindVec ||
-      kind == ::mlir::afir::ascend::kAscendCKernelKindCube ||
-      kind == ::mlir::afir::ascend::kAscendCKernelKindMix)
+  if (kind == ::mlir::ascend::kAscendCKernelKindVec ||
+      kind == ::mlir::ascend::kAscendCKernelKindCube ||
+      kind == ::mlir::ascend::kAscendCKernelKindMix)
     return kind.str();
   return "unknown";
 }
@@ -483,7 +483,7 @@ buildHostWorkspaceSizeExpr(func::FuncOp funcOp, StringRef expr,
       auto it = shapeFieldAbiPositions.find(ident);
       if (it == shapeFieldAbiPositions.end())
         return funcOp.emitError()
-               << ::mlir::afir::ascend::kCannWorkspaceSizeExprAttr
+               << ::mlir::ascend::kCannWorkspaceSizeExprAttr
                << " references unknown tiling shape field \"" << ident
                << "\"";
       usesShapeArgs = true;
@@ -499,7 +499,7 @@ buildHostWorkspaceSizeExpr(func::FuncOp funcOp, StringRef expr,
     }
 
     return funcOp.emitError()
-           << ::mlir::afir::ascend::kCannWorkspaceSizeExprAttr
+           << ::mlir::ascend::kCannWorkspaceSizeExprAttr
            << " contains unsupported character '" << expr[i] << "'";
   }
 
@@ -578,7 +578,7 @@ static FailureOr<SmallVector<DictionaryAttr>>
 collectKernelScheduleMetadata(func::FuncOp funcOp) {
   auto metadata =
       funcOp->getAttrOfType<ArrayAttr>(
-          ::mlir::afir::ascend::kScheduleKernelMetadataAttr);
+          ::mlir::ascend::kScheduleKernelMetadataAttr);
   if (!metadata)
     return SmallVector<DictionaryAttr>{};
 
@@ -588,14 +588,14 @@ collectKernelScheduleMetadata(func::FuncOp funcOp) {
     auto entry = dyn_cast<DictionaryAttr>(rawEntry);
     if (!entry)
       return funcOp.emitError()
-             << ::mlir::afir::ascend::kScheduleKernelMetadataAttr
+             << ::mlir::ascend::kScheduleKernelMetadataAttr
              << " element " << index << " must be a dictionary attribute";
 
     auto kernel =
         dyn_cast_or_null<StringAttr>(entry.get(kKernelMetadataKernelKey));
     if (!kernel)
       return funcOp.emitError()
-             << ::mlir::afir::ascend::kScheduleKernelMetadataAttr
+             << ::mlir::ascend::kScheduleKernelMetadataAttr
              << " element " << index
              << " entries must include a string kernel field";
 
@@ -630,15 +630,15 @@ static LogicalResult checkScheduleMetadataCompleteness(func::FuncOp funcOp) {
   bool hasSelectedTileShape =
       static_cast<bool>(getScheduleMetadataAttr(
           funcOp, *kernelMetadata,
-          ::mlir::afir::ascend::kScheduleSelectedTileShapeAttr,
+          ::mlir::ascend::kScheduleSelectedTileShapeAttr,
           kKernelMetadataSelectedTileShapeKey));
   bool hasTailPolicies =
       static_cast<bool>(getScheduleMetadataAttr(
           funcOp, *kernelMetadata,
-          ::mlir::afir::ascend::kScheduleTailPoliciesAttr,
+          ::mlir::ascend::kScheduleTailPoliciesAttr,
           kKernelMetadataTailPoliciesKey));
   bool hasTailPlan = static_cast<bool>(getScheduleMetadataAttr(
-      funcOp, *kernelMetadata, ::mlir::afir::ascend::kScheduleTailPlanAttr,
+      funcOp, *kernelMetadata, ::mlir::ascend::kScheduleTailPlanAttr,
       kKernelMetadataTailPlanKey));
   bool hasAnyMetadata = hasSelectedTileShape || hasTailPolicies || hasTailPlan;
   bool hasAllMetadata = hasSelectedTileShape && hasTailPolicies && hasTailPlan;
@@ -647,9 +647,9 @@ static LogicalResult checkScheduleMetadataCompleteness(func::FuncOp funcOp) {
 
   return funcOp.emitError()
          << "schedule metadata requires "
-         << ::mlir::afir::ascend::kScheduleSelectedTileShapeAttr << ", "
-         << ::mlir::afir::ascend::kScheduleTailPoliciesAttr << ", and "
-         << ::mlir::afir::ascend::kScheduleTailPlanAttr << " together";
+         << ::mlir::ascend::kScheduleSelectedTileShapeAttr << ", "
+         << ::mlir::ascend::kScheduleTailPoliciesAttr << ", and "
+         << ::mlir::ascend::kScheduleTailPlanAttr << " together";
 }
 
 static LogicalResult validateScheduleMetadataAttributes(func::FuncOp funcOp) {
@@ -660,20 +660,20 @@ static LogicalResult validateScheduleMetadataAttributes(func::FuncOp funcOp) {
 
   if (Attribute selectedTileShape = getScheduleMetadataAttr(
           funcOp, *kernelMetadata,
-          ::mlir::afir::ascend::kScheduleSelectedTileShapeAttr,
+          ::mlir::ascend::kScheduleSelectedTileShapeAttr,
           kKernelMetadataSelectedTileShapeKey))
     if (!isa<DenseI64ArrayAttr>(selectedTileShape))
       return funcOp.emitError()
-             << ::mlir::afir::ascend::kScheduleSelectedTileShapeAttr
+             << ::mlir::ascend::kScheduleSelectedTileShapeAttr
              << " must be a dense i64 array attribute";
 
   if (Attribute tailPolicies = getScheduleMetadataAttr(
           funcOp, *kernelMetadata,
-          ::mlir::afir::ascend::kScheduleTailPoliciesAttr,
+          ::mlir::ascend::kScheduleTailPoliciesAttr,
           kKernelMetadataTailPoliciesKey))
     if (!isa<ArrayAttr>(tailPolicies))
       return funcOp.emitError()
-             << ::mlir::afir::ascend::kScheduleTailPoliciesAttr
+             << ::mlir::ascend::kScheduleTailPoliciesAttr
              << " must be an array attribute";
 
   return success();
@@ -689,7 +689,7 @@ collectSelectedTileShape(func::FuncOp funcOp) {
   auto selectedTileShape = dyn_cast_or_null<DenseI64ArrayAttr>(
       getScheduleMetadataAttr(
           funcOp, *kernelMetadata,
-          ::mlir::afir::ascend::kScheduleSelectedTileShapeAttr,
+          ::mlir::ascend::kScheduleSelectedTileShapeAttr,
           kKernelMetadataSelectedTileShapeKey));
   if (!selectedTileShape)
     return SmallVector<int64_t>{};
@@ -713,7 +713,7 @@ buildScheduleTilingParams(func::FuncOp funcOp,
   if (auto selectedTileShape = dyn_cast_or_null<DenseI64ArrayAttr>(
           getScheduleMetadataAttr(
               funcOp, kernelMetadata,
-              ::mlir::afir::ascend::kScheduleSelectedTileShapeAttr,
+              ::mlir::ascend::kScheduleSelectedTileShapeAttr,
               kKernelMetadataSelectedTileShapeKey))) {
     llvm::json::Array selectedTileShapeJson;
     for (int64_t tileSize : selectedTileShape.asArrayRef())
@@ -724,18 +724,18 @@ buildScheduleTilingParams(func::FuncOp funcOp,
   if (auto tailPolicies = dyn_cast_or_null<ArrayAttr>(
           getScheduleMetadataAttr(
               funcOp, kernelMetadata,
-              ::mlir::afir::ascend::kScheduleTailPoliciesAttr,
+              ::mlir::ascend::kScheduleTailPoliciesAttr,
               kKernelMetadataTailPoliciesKey))) {
     llvm::json::Array tailPoliciesJson;
     for (auto [index, tailPolicyAttr] : llvm::enumerate(tailPolicies)) {
       auto tailPolicy = dyn_cast<StringAttr>(tailPolicyAttr);
       if (!tailPolicy)
         return funcOp.emitError()
-               << ::mlir::afir::ascend::kScheduleTailPoliciesAttr
+               << ::mlir::ascend::kScheduleTailPoliciesAttr
                << " element " << index << " must be a string attribute";
       if (!isSupportedTailPolicy(tailPolicy.getValue()))
         return funcOp.emitError()
-               << ::mlir::afir::ascend::kScheduleTailPoliciesAttr
+               << ::mlir::ascend::kScheduleTailPoliciesAttr
                << " element " << index << " has unsupported value '"
                << tailPolicy.getValue()
                << "'; expected one of must_divide, masked_tail, "
@@ -747,12 +747,12 @@ buildScheduleTilingParams(func::FuncOp funcOp,
 
   if (Attribute rawTailPlanAttr = getScheduleMetadataAttr(
           funcOp, kernelMetadata,
-          ::mlir::afir::ascend::kScheduleTailPlanAttr,
+          ::mlir::ascend::kScheduleTailPlanAttr,
           kKernelMetadataTailPlanKey)) {
     auto tailPlanAttr = dyn_cast<ArrayAttr>(rawTailPlanAttr);
     if (!tailPlanAttr)
       return funcOp.emitError()
-             << ::mlir::afir::ascend::kScheduleTailPlanAttr
+             << ::mlir::ascend::kScheduleTailPlanAttr
              << " must be an array attribute";
 
     llvm::json::Array tailPlanJson;
@@ -760,26 +760,26 @@ buildScheduleTilingParams(func::FuncOp funcOp,
       auto tailPlanEntry = dyn_cast<DictionaryAttr>(tailPlanEntryAttr);
       if (!tailPlanEntry)
         return funcOp.emitError()
-               << ::mlir::afir::ascend::kScheduleTailPlanAttr
+               << ::mlir::ascend::kScheduleTailPlanAttr
                << " element " << index
                << " must be a dictionary attribute";
 
       auto axis = dyn_cast_or_null<IntegerAttr>(tailPlanEntry.get("axis"));
       if (!axis || !axis.getType().isInteger(64))
         return funcOp.emitError()
-               << ::mlir::afir::ascend::kScheduleTailPlanAttr
+               << ::mlir::ascend::kScheduleTailPlanAttr
                << " element " << index
                << " field 'axis' must be an i64 integer attribute";
       auto selected =
           dyn_cast_or_null<StringAttr>(tailPlanEntry.get("selected"));
       if (!selected)
         return funcOp.emitError()
-               << ::mlir::afir::ascend::kScheduleTailPlanAttr
+               << ::mlir::ascend::kScheduleTailPlanAttr
                << " element " << index
                << " field 'selected' must be a string attribute";
       if (!isSupportedTailPolicy(selected.getValue()))
         return funcOp.emitError()
-               << ::mlir::afir::ascend::kScheduleTailPlanAttr
+               << ::mlir::ascend::kScheduleTailPlanAttr
                << " element " << index
                << " field 'selected' has unsupported value '"
                << selected.getValue()
@@ -789,25 +789,25 @@ buildScheduleTilingParams(func::FuncOp funcOp,
           dyn_cast_or_null<ArrayAttr>(tailPlanEntry.get("affected"));
       if (!affected)
         return funcOp.emitError()
-               << ::mlir::afir::ascend::kScheduleTailPlanAttr
+               << ::mlir::ascend::kScheduleTailPlanAttr
                << " element " << index
                << " field 'affected' must be an array attribute";
       auto align = dyn_cast_or_null<IntegerAttr>(tailPlanEntry.get("align"));
       if (!align || !align.getType().isInteger(64))
         return funcOp.emitError()
-               << ::mlir::afir::ascend::kScheduleTailPlanAttr
+               << ::mlir::ascend::kScheduleTailPlanAttr
                << " element " << index
                << " field 'align' must be an i64 integer attribute";
       auto buffering =
           dyn_cast_or_null<StringAttr>(tailPlanEntry.get("buffering"));
       if (!buffering)
         return funcOp.emitError()
-               << ::mlir::afir::ascend::kScheduleTailPlanAttr
+               << ::mlir::ascend::kScheduleTailPlanAttr
                << " element " << index
                << " field 'buffering' must be a string attribute";
       if (!isSupportedTailBufferingMode(buffering.getValue()))
         return funcOp.emitError()
-               << ::mlir::afir::ascend::kScheduleTailPlanAttr
+               << ::mlir::ascend::kScheduleTailPlanAttr
                << " element " << index
                << " field 'buffering' has unsupported value '"
                << buffering.getValue()
@@ -819,12 +819,12 @@ buildScheduleTilingParams(func::FuncOp funcOp,
         auto affectedUse = dyn_cast<StringAttr>(affectedAttr);
         if (!affectedUse)
           return funcOp.emitError()
-                 << ::mlir::afir::ascend::kScheduleTailPlanAttr
+                 << ::mlir::ascend::kScheduleTailPlanAttr
                  << " element " << index << " field 'affected' element "
                  << affectedIndex << " must be a string attribute";
         if (!isSupportedAffectedPrimitiveUse(affectedUse.getValue()))
           return funcOp.emitError()
-                 << ::mlir::afir::ascend::kScheduleTailPlanAttr
+                 << ::mlir::ascend::kScheduleTailPlanAttr
                  << " element " << index << " field 'affected' element "
                  << affectedIndex << " has unsupported value '"
                  << affectedUse.getValue()
@@ -1115,7 +1115,7 @@ collectKernelGraphNameAliases(ArrayRef<func::FuncOp> kernels,
 
     auto metadata =
         kernel->getAttrOfType<ArrayAttr>(
-            ::mlir::afir::ascend::kScheduleKernelMetadataAttr);
+            ::mlir::ascend::kScheduleKernelMetadataAttr);
     if (!metadata)
       continue;
 
@@ -1123,14 +1123,14 @@ collectKernelGraphNameAliases(ArrayRef<func::FuncOp> kernels,
       auto entry = dyn_cast<DictionaryAttr>(rawEntry);
       if (!entry)
         return kernel.emitError()
-               << ::mlir::afir::ascend::kScheduleKernelMetadataAttr
+               << ::mlir::ascend::kScheduleKernelMetadataAttr
                << " element " << index << " must be a dictionary attribute";
 
       auto internalKernel =
           dyn_cast_or_null<StringAttr>(entry.get(kKernelMetadataKernelKey));
       if (!internalKernel)
         return kernel.emitError()
-               << ::mlir::afir::ascend::kScheduleKernelMetadataAttr
+               << ::mlir::ascend::kScheduleKernelMetadataAttr
                << " element " << index
                << " entries must include a string kernel field";
 
@@ -1138,7 +1138,7 @@ collectKernelGraphNameAliases(ArrayRef<func::FuncOp> kernels,
       if (existing != aliases.end() &&
           StringRef(existing->second) != kernel.getName())
         return kernel.emitError()
-               << ::mlir::afir::ascend::kScheduleKernelMetadataAttr
+               << ::mlir::ascend::kScheduleKernelMetadataAttr
                << " element " << index << " maps internal kernel '"
                << internalKernel.getValue() << "' to both '"
                << existing->second << "' and '" << kernel.getName() << "'";
@@ -1158,7 +1158,7 @@ buildKernelGraphEdges(ModuleOp module, ArrayRef<func::FuncOp> kernels) {
     return failure();
 
   auto edgesAttr = module->getAttrOfType<ArrayAttr>(
-      ::mlir::afir::ascend::kKernelGraphEdgesAttr);
+      ::mlir::ascend::kKernelGraphEdgesAttr);
   llvm::json::Array edgesJson;
   if (!edgesAttr)
     return edgesJson;
@@ -1168,14 +1168,14 @@ buildKernelGraphEdges(ModuleOp module, ArrayRef<func::FuncOp> kernels) {
     auto edge = dyn_cast<DictionaryAttr>(edgeAttr);
     if (!edge)
       return module.emitError()
-             << ::mlir::afir::ascend::kKernelGraphEdgesAttr << " element "
+             << ::mlir::ascend::kKernelGraphEdgesAttr << " element "
              << index << " must be a dictionary attribute";
 
     auto from = dyn_cast_or_null<StringAttr>(edge.get("from"));
     auto to = dyn_cast_or_null<StringAttr>(edge.get("to"));
     if (!from || !to)
       return module.emitError()
-             << ::mlir::afir::ascend::kKernelGraphEdgesAttr << " element "
+             << ::mlir::ascend::kKernelGraphEdgesAttr << " element "
              << index << " requires string 'from' and 'to' fields";
 
     auto resolveKernelName =
@@ -1200,12 +1200,12 @@ buildKernelGraphEdges(ModuleOp module, ArrayRef<func::FuncOp> kernels) {
 
     if (!resolvedFrom)
       return module.emitError()
-             << ::mlir::afir::ascend::kKernelGraphEdgesAttr << " element "
+             << ::mlir::ascend::kKernelGraphEdgesAttr << " element "
              << index << " references unknown source kernel '"
              << from.getValue() << "'";
     if (!resolvedTo)
       return module.emitError()
-             << ::mlir::afir::ascend::kKernelGraphEdgesAttr << " element "
+             << ::mlir::ascend::kKernelGraphEdgesAttr << " element "
              << index << " references unknown target kernel '" << to.getValue()
              << "'";
 
@@ -1216,7 +1216,7 @@ buildKernelGraphEdges(ModuleOp module, ArrayRef<func::FuncOp> kernels) {
         dyn_cast_or_null<ArrayAttr>(edge.get("carried_buffers"));
     if (!carriedBuffers || carriedBuffers.empty())
       return module.emitError()
-             << ::mlir::afir::ascend::kKernelGraphEdgesAttr << " element "
+             << ::mlir::ascend::kKernelGraphEdgesAttr << " element "
              << index
              << " requires non-empty array field 'carried_buffers'";
 
@@ -1225,7 +1225,7 @@ buildKernelGraphEdges(ModuleOp module, ArrayRef<func::FuncOp> kernels) {
       auto buffer = dyn_cast<StringAttr>(bufferAttr);
       if (!buffer)
         return module.emitError()
-               << ::mlir::afir::ascend::kKernelGraphEdgesAttr << " element "
+               << ::mlir::ascend::kKernelGraphEdgesAttr << " element "
                << index << " field 'carried_buffers' element " << bufferIndex
                << " must be a string";
       carriedBuffersJson.push_back(buffer.getValue().str());
@@ -1241,7 +1241,7 @@ buildKernelGraphEdges(ModuleOp module, ArrayRef<func::FuncOp> kernels) {
 
   if (failed(detectKernelGraphCycle(kernels, edges)))
     return module.emitError()
-           << ::mlir::afir::ascend::kKernelGraphEdgesAttr
+           << ::mlir::ascend::kKernelGraphEdgesAttr
            << " must describe an acyclic kernel graph";
   return edgesJson;
 }

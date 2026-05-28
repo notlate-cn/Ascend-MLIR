@@ -9,5 +9,5 @@ void mlirRegisterAFIRPasses() {
 }
 
 void mlirRegisterAscendPasses() {
-  mlir::afir::registerAscendConversionPasses();
+  mlir::ascend::registerAscendConversionPasses();
 }

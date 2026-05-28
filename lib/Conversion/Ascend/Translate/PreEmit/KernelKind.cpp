@@ -19,7 +19,7 @@
 
 using namespace mlir;
 
-namespace mlir::afir {
+namespace mlir::ascend {
 
 namespace {
 
@@ -97,4 +97,4 @@ std::unique_ptr<Pass> createAscendPreEmitAnnotateKernelKindPass() {
   return std::make_unique<AscendPreEmitAnnotateKernelKindPass>();
 }
 
-} // namespace mlir::afir
+} // namespace mlir::ascend

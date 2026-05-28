@@ -8,7 +8,7 @@
 
 #include "llvm/ADT/STLExtras.h"
 
-namespace mlir::afir::ascend::realize {
+namespace mlir::ascend::realize {
 namespace {
 
 void printByteSize(llvm::raw_ostream &os, bool known, uint64_t byteSize) {
@@ -155,4 +155,4 @@ void printRealizeReport(llvm::ArrayRef<RealizePlanBundle> bundles,
   }
 }
 
-} // namespace mlir::afir::ascend::realize
+} // namespace mlir::ascend::realize

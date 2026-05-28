@@ -11,7 +11,7 @@
 #include <memory>
 #include <optional>
 
-namespace mlir::afir::ascend::backend {
+namespace mlir::ascend::backend {
 namespace {
 
 class TargetProfileBackendCapabilityProvider final
@@ -133,4 +133,4 @@ createTargetProfileBackendCapabilityProvider(
   return std::make_unique<TargetProfileBackendCapabilityProvider>(profile);
 }
 
-} // namespace mlir::afir::ascend::backend
+} // namespace mlir::ascend::backend

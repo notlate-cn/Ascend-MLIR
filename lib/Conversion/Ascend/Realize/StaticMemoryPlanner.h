@@ -14,7 +14,7 @@ namespace mlir::ascend {
 class TargetMemoryModel;
 } // namespace mlir::ascend
 
-namespace mlir::afir::ascend::realize {
+namespace mlir::ascend::realize {
 
 class StaticMemoryPlanner {
 public:
@@ -26,6 +26,6 @@ public:
         const ::mlir::ascend::TargetMemoryModel &memoryModel) const;
 };
 
-} // namespace mlir::afir::ascend::realize
+} // namespace mlir::ascend::realize
 
 #endif // ASCEND_MLIR_CONVERSION_ASCEND_REALIZE_STATICMEMORYPLANNER_H

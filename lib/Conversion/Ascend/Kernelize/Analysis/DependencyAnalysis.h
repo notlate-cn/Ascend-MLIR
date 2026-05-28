@@ -20,7 +20,7 @@
 
 #include <string>
 
-namespace mlir::afir::ascend::kernelize {
+namespace mlir::ascend::kernelize {
 
 struct OpSemanticSummary {
   Operation *op = nullptr;
@@ -68,6 +68,6 @@ public:
 void emitDependencyAnalysisReport(raw_ostream &os,
                                   const DependencyAnalysisResult &result);
 
-} // namespace mlir::afir::ascend::kernelize
+} // namespace mlir::ascend::kernelize
 
 #endif // ASCEND_MLIR_CONVERSION_ASCEND_KERNELIZE_DEPENDENCYANALYSIS_H

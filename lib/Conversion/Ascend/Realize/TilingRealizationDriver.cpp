@@ -15,8 +15,8 @@
 #include "llvm/ADT/SmallVector.h"
 
 using namespace mlir;
-using namespace mlir::afir::ascend;
-using namespace mlir::afir::ascend::realize;
+using namespace mlir::ascend;
+using namespace mlir::ascend::realize;
 
 namespace {
 
@@ -44,7 +44,7 @@ SmallVector<OpFoldResult> buildTileSizes(MLIRContext *ctx,
 
 } // namespace
 
-namespace mlir::afir::ascend::realize {
+namespace mlir::ascend::realize {
 
 LogicalResult TilingRealizationDriver::tileModule(ModuleOp module) const {
   IRRewriter rewriter(module.getContext());
@@ -77,4 +77,4 @@ LogicalResult TilingRealizationDriver::tileModule(ModuleOp module) const {
   return success();
 }
 
-} // namespace mlir::afir::ascend::realize
+} // namespace mlir::ascend::realize

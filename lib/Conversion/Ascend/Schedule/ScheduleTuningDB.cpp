@@ -20,7 +20,7 @@
 
 using namespace mlir;
 
-namespace mlir::afir::ascend::schedule {
+namespace mlir::ascend::schedule {
 namespace {
 
 bool parseKeyValueLine(StringRef line, llvm::StringMap<std::string> &fields) {
@@ -253,4 +253,4 @@ LogicalResult appendTuningResultRecords(ScheduleTuningDatabase &db,
   return success();
 }
 
-} // namespace mlir::afir::ascend::schedule
+} // namespace mlir::ascend::schedule

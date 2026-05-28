@@ -13,7 +13,7 @@
 
 #include <string>
 
-namespace mlir::afir::ascend::kernelize {
+namespace mlir::ascend::kernelize {
 
 struct KernelizeFamilyResolution {
   SmallVector<std::string, 2> templateFamilies;
@@ -24,6 +24,6 @@ KernelizeFamilyResolution resolveKernelizeTemplateFamilies(
     ArrayRef<std::string> lhsFamilies, ArrayRef<std::string> rhsFamilies,
     ArrayRef<KernelizePrimitiveKind> primitiveCombo);
 
-} // namespace mlir::afir::ascend::kernelize
+} // namespace mlir::ascend::kernelize
 
 #endif // ASCEND_MLIR_CONVERSION_ASCEND_KERNELIZE_FAMILY_RESOLVER_H

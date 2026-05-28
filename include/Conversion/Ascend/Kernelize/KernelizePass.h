@@ -14,10 +14,10 @@ namespace mlir {
 class Pass;
 }
 
-namespace mlir::afir {
+namespace mlir::ascend {
 
 std::unique_ptr<Pass> createAscendKernelizePass();
 
-} // namespace mlir::afir
+} // namespace mlir::ascend
 
 #endif // ASCEND_MLIR_CONVERSION_ASCEND_KERNELIZE_PASS_H

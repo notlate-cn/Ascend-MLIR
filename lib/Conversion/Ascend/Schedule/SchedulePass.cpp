@@ -49,7 +49,7 @@
 #include "Conversion/Ascend/Passes.h.inc"
 
 using namespace mlir;
-using namespace mlir::afir::ascend::schedule;
+using namespace mlir::ascend::schedule;
 
 namespace {
 
@@ -395,7 +395,7 @@ void emitScheduleReport(ArrayRef<ScheduleReportEntry> entries,
 
 } // namespace
 
-namespace mlir::afir {
+namespace mlir::ascend {
 
 struct AscendSchedulePass
     : public ::impl::AscendSchedulePassBase<AscendSchedulePass> {
@@ -418,12 +418,12 @@ struct AscendSchedulePass
       return;
     }
 
-    ::mlir::afir::ascend::debug::DebugOptions options{
-        ::mlir::afir::ascend::debug::parseDebugStage(debugStage), dumpReport};
-    if (::mlir::afir::ascend::debug::shouldDump(
-            options, ::mlir::afir::ascend::debug::DebugStage::Schedule))
-      ::mlir::afir::ascend::debug::emitStageHeader(
-          llvm::errs(), ::mlir::afir::ascend::debug::DebugStage::Schedule,
+    ::mlir::ascend::debug::DebugOptions options{
+        ::mlir::ascend::debug::parseDebugStage(debugStage), dumpReport};
+    if (::mlir::ascend::debug::shouldDump(
+            options, ::mlir::ascend::debug::DebugStage::Schedule))
+      ::mlir::ascend::debug::emitStageHeader(
+          llvm::errs(), ::mlir::ascend::debug::DebugStage::Schedule,
           getArgument());
 
     ModuleOp module = getOperation();
@@ -589,8 +589,8 @@ struct AscendSchedulePass
           std::move(structuredLoweringReport)});
     }
 
-    if (::mlir::afir::ascend::debug::shouldDump(
-            options, ::mlir::afir::ascend::debug::DebugStage::Schedule)) {
+    if (::mlir::ascend::debug::shouldDump(
+            options, ::mlir::ascend::debug::DebugStage::Schedule)) {
       printKernelPatternViews(*patternViews, llvm::errs());
       for (const ScheduleDebugEntry &entry : scheduleDebugEntries) {
         const ScheduleProblem &problem = entry.problem;
@@ -644,4 +644,4 @@ std::unique_ptr<Pass> createAscendSchedulePass() {
   return std::make_unique<AscendSchedulePass>();
 }
 
-} // namespace mlir::afir
+} // namespace mlir::ascend

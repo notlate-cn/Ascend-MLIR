@@ -14,7 +14,7 @@
 
 using namespace mlir;
 
-namespace mlir::afir::ascend::schedule {
+namespace mlir::ascend::schedule {
 
 FailureOr<llvm::SmallVector<std::string, 8>>
 loadPersistentTuningCacheFile(llvm::StringRef path) {
@@ -46,4 +46,4 @@ LogicalResult writePersistentTuningCacheFile(
   return success();
 }
 
-} // namespace mlir::afir::ascend::schedule
+} // namespace mlir::ascend::schedule

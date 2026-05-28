@@ -17,7 +17,7 @@
 
 #include <optional>
 
-namespace mlir::afir::ascend::realize {
+namespace mlir::ascend::realize {
 namespace {
 
 constexpr int64_t kVecCalcMemorySpace =
@@ -864,4 +864,4 @@ void MemoryRealizationDriver::markMemorySpaceMaterialized(
   plan.materializedCopyCount = materializationCounts.materializedCopyCount;
 }
 
-} // namespace mlir::afir::ascend::realize
+} // namespace mlir::ascend::realize

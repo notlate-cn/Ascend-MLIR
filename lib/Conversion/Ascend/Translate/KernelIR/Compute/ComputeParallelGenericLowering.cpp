@@ -46,7 +46,7 @@ using namespace mlir;
 using namespace mlir::ascendc;
 
 namespace mlir {
-namespace afir {
+namespace ascend {
 
 LogicalResult lowerParallelGenericComputes(ComputeLoweringContext &lowering) {
   func::FuncOp funcOp = lowering.funcOp;
@@ -446,7 +446,7 @@ LogicalResult lowerParallelGenericComputes(ComputeLoweringContext &lowering) {
         return Value{};
       };
 
-      using namespace mlir::afir::ascend::backend;
+      using namespace mlir::ascend::backend;
       const ElementwiseBodyOpEntry *entry =
           lookupElementwiseBodyOp(bodyOp.getName().getStringRef());
       if (!entry) continue;
@@ -508,5 +508,5 @@ LogicalResult lowerParallelGenericComputes(ComputeLoweringContext &lowering) {
   return success();
 }
 
-} // namespace afir
+} // namespace ascend
 } // namespace mlir

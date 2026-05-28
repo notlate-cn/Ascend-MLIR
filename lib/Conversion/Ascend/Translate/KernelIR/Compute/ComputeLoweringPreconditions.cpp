@@ -11,7 +11,7 @@
 
 using namespace mlir;
 
-namespace mlir::afir {
+namespace mlir::ascend {
 
 LogicalResult prepareComputeLoweringPreconditions(func::FuncOp funcOp) {
   if (failed(annotateAscendKernelKind(funcOp)))
@@ -19,4 +19,4 @@ LogicalResult prepareComputeLoweringPreconditions(func::FuncOp funcOp) {
   return annotateMixMatmulSemantics(funcOp);
 }
 
-} // namespace mlir::afir
+} // namespace mlir::ascend

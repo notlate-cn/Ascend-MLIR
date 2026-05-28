@@ -17,7 +17,7 @@
 using namespace mlir;
 using namespace mlir::ascendc;
 
-namespace mlir::afir {
+namespace mlir::ascend {
 namespace {
 
 void lowerBatchMatmulToLoops(OpBuilder &builder, linalg::BatchMatmulOp op) {
@@ -342,4 +342,4 @@ LogicalResult lowerMatmulComputes(ComputeLoweringContext &lowering) {
   return success();
 }
 
-} // namespace mlir::afir
+} // namespace mlir::ascend

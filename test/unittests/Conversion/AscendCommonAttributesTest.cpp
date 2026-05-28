@@ -11,7 +11,7 @@
 
 #include "gtest/gtest.h"
 
-namespace ascend = mlir::afir::ascend;
+namespace ascend = mlir::ascend;
 
 TEST(AscendCommonAttributesTest, SharedConstantsMatchLayerNamespaces) {
   EXPECT_EQ(ascend::kernelize::kNormalizedAttr, ascend::kNormalizedAttr);

@@ -11,7 +11,7 @@
 #include "Conversion/Ascend/Kernelize/KernelizeOpInterfaces.cpp.inc"
 #include "llvm/Support/Casting.h"
 
-namespace mlir::afir::ascend::kernelize {
+namespace mlir::ascend::kernelize {
 namespace {
 
 void appendDefaultPreferredTemplateFamilies(KernelizeOpSemanticInfo &info) {
@@ -156,4 +156,4 @@ llvm::StringRef stringifyKernelizeSeedPolicy(KernelizeSeedPolicy policy) {
   return "never_seed";
 }
 
-} // namespace mlir::afir::ascend::kernelize
+} // namespace mlir::ascend::kernelize

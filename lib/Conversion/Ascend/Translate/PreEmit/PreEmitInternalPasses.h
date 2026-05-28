@@ -12,7 +12,7 @@
 #include "mlir/Support/LogicalResult.h"
 #include <memory>
 
-namespace mlir::afir {
+namespace mlir::ascend {
 
 LogicalResult annotateAscendKernelKind(func::FuncOp funcOp);
 
@@ -21,6 +21,6 @@ std::unique_ptr<Pass> createAscendPreEmitCanonicalizeCannSignaturePass();
 std::unique_ptr<Pass> createAscendPreEmitParallelizePass();
 std::unique_ptr<Pass> createAscendPreEmitPrepareForEmitPass();
 
-} // namespace mlir::afir
+} // namespace mlir::ascend
 
 #endif // ASCEND_MLIR_LIB_CONVERSION_ASCEND_TRANSLATE_PREEMIT_INTERNAL_PASSES_H

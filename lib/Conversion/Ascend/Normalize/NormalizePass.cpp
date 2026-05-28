@@ -51,19 +51,19 @@ bool isAllowedInputOperation(Operation *op) {
 
 } // namespace
 
-namespace mlir::afir {
+namespace mlir::ascend {
 
 struct AscendNormalizePass
     : public ::impl::AscendNormalizePassBase<AscendNormalizePass> {
   using AscendNormalizePassBase::AscendNormalizePassBase;
 
   void runOnOperation() override {
-    ::mlir::afir::ascend::debug::DebugOptions options{
-        ::mlir::afir::ascend::debug::parseDebugStage(debugStage), dumpReport};
-    if (::mlir::afir::ascend::debug::shouldDump(
-            options, ::mlir::afir::ascend::debug::DebugStage::Normalize))
-      ::mlir::afir::ascend::debug::emitStageHeader(
-          llvm::errs(), ::mlir::afir::ascend::debug::DebugStage::Normalize,
+    ::mlir::ascend::debug::DebugOptions options{
+        ::mlir::ascend::debug::parseDebugStage(debugStage), dumpReport};
+    if (::mlir::ascend::debug::shouldDump(
+            options, ::mlir::ascend::debug::DebugStage::Normalize))
+      ::mlir::ascend::debug::emitStageHeader(
+          llvm::errs(), ::mlir::ascend::debug::DebugStage::Normalize,
           getArgument());
 
     ModuleOp module = getOperation();
@@ -83,7 +83,7 @@ struct AscendNormalizePass
     MLIRContext *context = module.getContext();
     module.walk([&](Operation *op) {
       if (isa<func::FuncOp>(op))
-        op->setAttr(::mlir::afir::ascend::kNormalizedAttr,
+        op->setAttr(::mlir::ascend::kNormalizedAttr,
                     BoolAttr::get(context, true));
     });
   }
@@ -93,4 +93,4 @@ std::unique_ptr<Pass> createAscendNormalizePass() {
   return std::make_unique<AscendNormalizePass>();
 }
 
-} // namespace mlir::afir
+} // namespace mlir::ascend

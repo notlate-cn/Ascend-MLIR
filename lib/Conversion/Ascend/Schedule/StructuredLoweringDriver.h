@@ -16,7 +16,7 @@ namespace llvm {
 class raw_ostream;
 } // namespace llvm
 
-namespace mlir::afir::ascend::schedule {
+namespace mlir::ascend::schedule {
 
 struct StructuredLoweringReport {
   std::string kernelId;
@@ -36,6 +36,6 @@ LogicalResult applyStructuredLoweringMarkers(
 void printStructuredLoweringReport(const StructuredLoweringReport &report,
                                    llvm::raw_ostream &os);
 
-} // namespace mlir::afir::ascend::schedule
+} // namespace mlir::ascend::schedule
 
 #endif // ASCEND_MLIR_CONVERSION_ASCEND_SCHEDULE_STRUCTUREDLOWERINGDRIVER_H

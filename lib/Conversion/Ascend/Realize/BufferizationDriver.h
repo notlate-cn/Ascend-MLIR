@@ -11,7 +11,7 @@
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/Support/LLVM.h"
 
-namespace mlir::afir::ascend::realize {
+namespace mlir::ascend::realize {
 
 class BufferizationDriver {
 public:
@@ -20,6 +20,6 @@ public:
   LogicalResult runOneShotBufferize(ModuleOp module) const;
 };
 
-} // namespace mlir::afir::ascend::realize
+} // namespace mlir::ascend::realize
 
 #endif // ASCEND_MLIR_CONVERSION_ASCEND_REALIZE_BUFFERIZATIONDRIVER_H

@@ -21,7 +21,7 @@
 #include <cstdint>
 #include <string>
 
-namespace mlir::afir::ascend::kernelize {
+namespace mlir::ascend::kernelize {
 
 struct ScheduleContract {
   SmallVector<std::string, 2> templateFamilies;
@@ -41,17 +41,17 @@ struct FusionCandidate {
   std::string rejectionReason;
 };
 
-} // namespace mlir::afir::ascend::kernelize
+} // namespace mlir::ascend::kernelize
 
 namespace llvm {
 template <>
 struct CalculateSmallVectorDefaultInlinedElements<
-    mlir::afir::ascend::kernelize::FusionCandidate> {
+    mlir::ascend::kernelize::FusionCandidate> {
   static constexpr size_t value = 0;
 };
 } // namespace llvm
 
-namespace mlir::afir::ascend::kernelize {
+namespace mlir::ascend::kernelize {
 
 class FusionCandidateAnalyzer {
 public:
@@ -64,6 +64,6 @@ void emitFusionCandidateReport(raw_ostream &os,
                                ArrayRef<FusionCandidate> candidates,
                                const ProducerConsumerIndex &index);
 
-} // namespace mlir::afir::ascend::kernelize
+} // namespace mlir::ascend::kernelize
 
 #endif // ASCEND_MLIR_CONVERSION_ASCEND_KERNELIZE_FUSIONCANDIDATEANALYSIS_H

@@ -15,7 +15,7 @@
 
 using namespace mlir;
 
-namespace mlir::afir::ascend::backend {
+namespace mlir::ascend::backend {
 namespace {
 
 bool hasVectorRole(Operation *op) {
@@ -512,4 +512,4 @@ bool isSupportedBackendFinalOutput(linalg::LinalgOp linalgOp,
   return generic && classifyBackendReductionBody(generic, matrix) != ComputeKind::Unknown;
 }
 
-} // namespace mlir::afir::ascend::backend
+} // namespace mlir::ascend::backend

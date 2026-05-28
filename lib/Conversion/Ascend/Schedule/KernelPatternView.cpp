@@ -18,7 +18,7 @@
 
 using namespace mlir;
 
-namespace mlir::afir::ascend::schedule {
+namespace mlir::ascend::schedule {
 namespace {
 
 struct PatternGroup {
@@ -219,4 +219,4 @@ void printKernelPatternViews(ArrayRef<KernelPatternView> patterns,
   }
 }
 
-} // namespace mlir::afir::ascend::schedule
+} // namespace mlir::ascend::schedule

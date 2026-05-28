@@ -9,7 +9,7 @@
 #include "gtest/gtest.h"
 
 using namespace mlir;
-using namespace mlir::afir::ascend::schedule;
+using namespace mlir::ascend::schedule;
 
 TEST(AscendScheduleDecisionTest, TailPolicyPreferenceComesFromTargetPolicy) {
   ScheduleProblem problem;

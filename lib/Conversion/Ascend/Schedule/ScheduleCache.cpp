@@ -13,7 +13,7 @@
 
 using namespace mlir;
 
-namespace mlir::afir::ascend::schedule {
+namespace mlir::ascend::schedule {
 
 std::string serializeScheduleDims(ArrayRef<int64_t> dims) {
   std::string result;
@@ -159,4 +159,4 @@ void printScheduleCacheReport(const ScheduleCacheModel &cacheModel,
     os << "  tuning_result_key = " << serializeTuningResultKey(key) << "\n";
 }
 
-} // namespace mlir::afir::ascend::schedule
+} // namespace mlir::ascend::schedule

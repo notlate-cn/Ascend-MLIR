@@ -11,7 +11,7 @@
 #include "mlir/Support/LLVM.h"
 #include "llvm/ADT/StringMap.h"
 
-namespace mlir::afir::ascend::realize {
+namespace mlir::ascend::realize {
 
 struct TranslateBridgeMaterializationCounts {
   unsigned materializedAllocCount = 0;
@@ -29,6 +29,6 @@ public:
 FailureOr<llvm::StringMap<TranslateBridgeMaterializationCounts>>
 materializeTranslateMemoryBridge(ModuleOp module);
 
-} // namespace mlir::afir::ascend::realize
+} // namespace mlir::ascend::realize
 
 #endif // ASCEND_MLIR_CONVERSION_ASCEND_REALIZE_TRANSLATEMEMORYBRIDGE_H

@@ -10,7 +10,7 @@
 
 #include <algorithm>
 
-namespace mlir::afir::ascend::realize {
+namespace mlir::ascend::realize {
 namespace {
 
 bool supportsVectorInputPlacement(
@@ -75,4 +75,4 @@ FailureOr<PlacementPlan> PlacementPlanner::build(
   return plan;
 }
 
-} // namespace mlir::afir::ascend::realize
+} // namespace mlir::ascend::realize

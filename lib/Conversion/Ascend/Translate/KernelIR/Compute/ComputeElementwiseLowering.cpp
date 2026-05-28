@@ -17,7 +17,7 @@
 using namespace mlir;
 using namespace mlir::ascendc;
 
-namespace mlir::afir {
+namespace mlir::ascend {
 
 LogicalResult lowerElementwiseComputes(ComputeLoweringContext &lowering) {
   func::FuncOp funcOp = lowering.funcOp;
@@ -126,4 +126,4 @@ LogicalResult lowerElementwiseComputes(ComputeLoweringContext &lowering) {
   return success();
 }
 
-} // namespace mlir::afir
+} // namespace mlir::ascend

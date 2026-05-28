@@ -64,6 +64,154 @@ def _extract_int_attr(text: str, name: str) -> int | None:
     return int(match.group(1)) if match else None
 
 
+def _extract_string_list_attr(text: str, name: str) -> list[str]:
+    match = re.search(rf"{re.escape(name)}\s*=\s*\[([^\]]*)\]", text)
+    if not match:
+        return []
+    return re.findall(r'"([^"]+)"', match.group(1))
+
+
+def _extract_i64_array_attr(text: str, name: str) -> list[int]:
+    match = re.search(rf"{re.escape(name)}\s*=\s*array<i64:\s*([^>]+)>", text)
+    if not match:
+        return []
+    values: list[int] = []
+    for item in match.group(1).split(","):
+        stripped = item.strip()
+        if re.fullmatch(r"-?[0-9]+", stripped):
+            values.append(int(stripped))
+    return values
+
+
+def _extract_tail_phases(text: str) -> list[str]:
+    phases: list[str] = []
+    for affected in re.findall(r"affected\s*=\s*\[([^\]]*)\]", text):
+        for phase in re.findall(r'"([^"]+)"', affected):
+            if phase not in phases:
+                phases.append(phase)
+    return phases
+
+
+def _extract_position(text: str) -> dict[str, Any]:
+    match = re.search(r"position\s*=\s*<([^>]+)>", text)
+    if not match:
+        return {}
+    raw = match.group(1).strip()
+    position: dict[str, Any] = {"raw": raw}
+    pieces = [piece.strip() for piece in raw.split(",")]
+    if pieces:
+        position["kind"] = pieces[0]
+    depth_match = re.search(r"depth\s*=\s*(-?[0-9]+)", raw)
+    if depth_match:
+        position["depth"] = int(depth_match.group(1))
+    double_match = re.search(r"is_double_buffer\s*=\s*(true|false)", raw)
+    if double_match:
+        position["is_double_buffer"] = double_match.group(1) == "true"
+    return position
+
+
+def _extract_tensor_buffer_attrs(text: str) -> dict[str, Any]:
+    attrs: dict[str, Any] = {}
+    for name in ("tensor_id", "reuse_id", "position_id"):
+        value = _extract_int_attr(text, name)
+        if value is not None:
+            attrs[name] = value
+    position = _extract_position(text)
+    if position:
+        attrs["position"] = position
+    memory_space_match = re.search(r"memory_space\s*=\s*([^,}\n]+)", text)
+    if memory_space_match:
+        attrs["memory_space"] = memory_space_match.group(1).strip()
+    return attrs
+
+
+def _build_semantic_attrs(op_name: str, op_text: str) -> dict[str, Any]:
+    kernel = {
+        key: value
+        for key, value in {
+            "id": _extract_attr(op_text, "ascend.kernel"),
+            "role": _extract_attr(op_text, "ascend.op_role"),
+            "roles": _extract_string_list_attr(op_text, "ascend.op_roles"),
+            "template_families": _extract_string_list_attr(
+                op_text, "ascend.kernelize.template_families"
+            ),
+            "primary": "ascend.primary = true" in op_text,
+        }.items()
+        if value not in (None, [], False)
+    }
+    schedule = {
+        key: value
+        for key, value in {
+            "decision_id": _extract_attr(op_text, "ascend.schedule.decision_id"),
+            "family": _extract_attr(op_text, "ascend.schedule.family"),
+            "template": _extract_attr(op_text, "ascend.schedule.template"),
+            "structured_lowering": _extract_attr(
+                op_text, "ascend.schedule.structured_lowering"
+            ),
+            "target_tile_policy": _extract_attr(
+                op_text, "ascend.schedule.target_tile_policy"
+            ),
+            "tile_shape": _extract_i64_array_attr(
+                op_text, "ascend.schedule.selected_tile_shape"
+            ),
+            "tail_policies": _extract_string_list_attr(
+                op_text, "ascend.schedule.tail_policies"
+            ),
+            "runtime_top_k": _extract_int_attr(op_text, "ascend.schedule.runtime_top_k"),
+        }.items()
+        if value not in (None, [], False)
+    }
+    phases = _extract_tail_phases(op_text)
+    if op_name == "memref.copy" and "data_copy" not in phases:
+        phases.append("data_copy")
+    if op_name.startswith("ascendc.data_copy") and "data_copy" not in phases:
+        phases.append("data_copy")
+    movement = {"phases": phases} if phases else {}
+    memory = _extract_tensor_buffer_attrs(op_text)
+    return {
+        key: value
+        for key, value in {
+            "kernel": kernel,
+            "schedule": schedule,
+            "movement": movement,
+            "memory": memory,
+        }.items()
+        if value
+    }
+
+
+def _build_node_badges(semantic_attrs: dict[str, Any]) -> list[str]:
+    badges: list[str] = []
+    kernel = semantic_attrs.get("kernel", {})
+    schedule = semantic_attrs.get("schedule", {})
+    movement = semantic_attrs.get("movement", {})
+    memory = semantic_attrs.get("memory", {})
+    tile_shape = schedule.get("tile_shape")
+    if isinstance(tile_shape, list) and tile_shape:
+        badges.append("tile " + "x".join(str(dim) for dim in tile_shape))
+    phases = movement.get("phases")
+    if isinstance(phases, list) and phases:
+        badges.append("move " + "/".join(str(phase) for phase in phases))
+    position = memory.get("position")
+    if isinstance(position, dict) and position.get("kind"):
+        badge = f"buf {position['kind']}"
+        if position.get("depth") is not None:
+            badge += f" d{position['depth']}"
+        badges.append(badge)
+        if position.get("is_double_buffer"):
+            badges.append("dbuf")
+    tail_policies = schedule.get("tail_policies")
+    if isinstance(tail_policies, list) and tail_policies:
+        unique_tail = []
+        for policy in tail_policies:
+            if policy not in unique_tail:
+                unique_tail.append(policy)
+        badges.append("tail " + "/".join(unique_tail))
+    if kernel.get("role"):
+        badges.append(str(kernel["role"]))
+    return badges
+
+
 def _extract_result_type(text: str) -> str | None:
     arrow_match = re.search(r"->\s*([^\n{]+)", text)
     if arrow_match:
@@ -158,6 +306,8 @@ def parse_stage_mlir(stage: dict[str, Any], text: str) -> dict[str, Any]:
                 "op_role": None,
                 "schedule_decision_id": None,
                 "workspace_size_bytes": None,
+                "semantic_attrs": {},
+                "badges": [],
             }
             nodes.append(node)
             function_node_ids[function_name].append(node_id)
@@ -202,6 +352,7 @@ def parse_stage_mlir(stage: dict[str, Any], text: str) -> dict[str, Any]:
         node_id = f"n{len(nodes)}"
         region_body = _extract_region_body(op_text)
         body_ops = _extract_body_ops(region_body)
+        semantic_attrs = _build_semantic_attrs(op_name, op_text)
         node = {
             "id": node_id,
             "line": index + 1,
@@ -220,6 +371,8 @@ def parse_stage_mlir(stage: dict[str, Any], text: str) -> dict[str, Any]:
             "op_role": _extract_attr(op_text, "ascend.op_role"),
             "schedule_decision_id": _extract_attr(op_text, "ascend.schedule.decision_id"),
             "workspace_size_bytes": _extract_int_attr(op_text, "cann.workspace_size_bytes"),
+            "semantic_attrs": semantic_attrs,
+            "badges": _build_node_badges(semantic_attrs),
         }
         nodes.append(node)
         if current_function:
@@ -309,7 +462,7 @@ def _truncate(value: Any, limit: int) -> str:
 
 def _compute_graph_layout(graph: dict[str, Any]) -> dict[str, Any]:
     node_width = 220
-    node_height = 82
+    node_height = 120
     column_gap = 72
     layer_gap = 86
     margin_x = 36

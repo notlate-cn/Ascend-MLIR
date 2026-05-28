@@ -9,7 +9,7 @@
 
 #include "llvm/ADT/StringRef.h"
 
-namespace mlir::afir::ascend {
+namespace mlir::ascend {
 
 inline constexpr llvm::StringLiteral kNormalizedAttr = "ascend.normalized";
 inline constexpr llvm::StringLiteral kOpRoleAttr = "ascend.op_role";
@@ -70,6 +70,6 @@ inline constexpr llvm::StringLiteral kCannWorkspaceSizeExprAttr =
 inline constexpr llvm::StringLiteral kGatherDimAttr = "gather_dim";
 inline constexpr llvm::StringLiteral kEmbeddingDimAttr = "embedding_dim";
 
-} // namespace mlir::afir::ascend
+} // namespace mlir::ascend
 
 #endif // ASCEND_MLIR_CONVERSION_ASCEND_COMMON_ATTRIBUTES_H

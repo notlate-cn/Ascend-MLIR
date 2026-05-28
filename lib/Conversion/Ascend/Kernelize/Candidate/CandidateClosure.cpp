@@ -16,7 +16,7 @@
 
 using namespace mlir;
 
-namespace mlir::afir::ascend::kernelize {
+namespace mlir::ascend::kernelize {
 namespace {
 
 void appendUniqueValue(SmallVectorImpl<Value> &values,
@@ -88,4 +88,4 @@ CandidateClosure computeCandidateClosure(ArrayRef<Operation *> internalOps,
   return closure;
 }
 
-} // namespace mlir::afir::ascend::kernelize
+} // namespace mlir::ascend::kernelize

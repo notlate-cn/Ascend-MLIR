@@ -11,7 +11,7 @@
 #include "llvm/ADT/StringRef.h"
 #include "llvm/Support/raw_ostream.h"
 
-namespace mlir::afir::ascend::debug {
+namespace mlir::ascend::debug {
 
 enum class DebugStage { None, Normalize, Kernelize, Schedule, Realize, All };
 
@@ -24,6 +24,6 @@ DebugStage parseDebugStage(StringRef value);
 bool shouldDump(DebugOptions options, DebugStage stage);
 void emitStageHeader(raw_ostream &os, DebugStage stage, StringRef passName);
 
-} // namespace mlir::afir::ascend::debug
+} // namespace mlir::ascend::debug
 
 #endif // ASCEND_MLIR_CONVERSION_ASCEND_DEBUG_DEBUGOPTIONS_H

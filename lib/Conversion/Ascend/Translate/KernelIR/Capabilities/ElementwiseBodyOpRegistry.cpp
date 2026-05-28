@@ -13,7 +13,7 @@
 
 #include <mutex>
 
-namespace mlir::afir::ascend::backend {
+namespace mlir::ascend::backend {
 namespace {
 
 struct RegistrySingleton {
@@ -125,4 +125,4 @@ lookupElementwiseBodyOp(llvm::StringRef dialectOpName) {
   return it != reg.entries.end() ? &it->second : nullptr;
 }
 
-} // namespace mlir::afir::ascend::backend
+} // namespace mlir::ascend::backend

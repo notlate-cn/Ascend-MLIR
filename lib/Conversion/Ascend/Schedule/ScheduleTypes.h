@@ -21,28 +21,28 @@
 #include <string>
 #include <utility>
 
-namespace mlir::afir::ascend::schedule {
+namespace mlir::ascend::schedule {
 
-using ::mlir::afir::ascend::kKernelAttr;
-using ::mlir::afir::ascend::kKernelizeHandwrittenKindAttentionSdpa;
-using ::mlir::afir::ascend::kKernelizeHandwrittenKindAttr;
-using ::mlir::afir::ascend::kKernelizeTemplateFamiliesAttr;
-using ::mlir::afir::ascend::kOpRoleCube;
-using ::mlir::afir::ascend::kOpRoleMemory;
-using ::mlir::afir::ascend::kOpRoleAttr;
-using ::mlir::afir::ascend::kOpRoleReduction;
-using ::mlir::afir::ascend::kOpRoleVector;
-using ::mlir::afir::ascend::kOpRolesAttr;
-using ::mlir::afir::ascend::kPrimaryAttr;
-using ::mlir::afir::ascend::kScheduleDecisionIdAttr;
-using ::mlir::afir::ascend::kScheduleGuardMarkersAttr;
-using ::mlir::afir::ascend::kScheduleKernelMetadataAttr;
-using ::mlir::afir::ascend::kScheduleSelectedTileShapeAttr;
-using ::mlir::afir::ascend::kScheduleTailPlanAttr;
-using ::mlir::afir::ascend::kScheduleTailMarkersAttr;
-using ::mlir::afir::ascend::kScheduleTailPoliciesAttr;
-using ::mlir::afir::ascend::kScheduleTargetTilePolicyAttr;
-using ::mlir::afir::ascend::kStructuredLoweringAttr;
+using ::mlir::ascend::kKernelAttr;
+using ::mlir::ascend::kKernelizeHandwrittenKindAttentionSdpa;
+using ::mlir::ascend::kKernelizeHandwrittenKindAttr;
+using ::mlir::ascend::kKernelizeTemplateFamiliesAttr;
+using ::mlir::ascend::kOpRoleCube;
+using ::mlir::ascend::kOpRoleMemory;
+using ::mlir::ascend::kOpRoleAttr;
+using ::mlir::ascend::kOpRoleReduction;
+using ::mlir::ascend::kOpRoleVector;
+using ::mlir::ascend::kOpRolesAttr;
+using ::mlir::ascend::kPrimaryAttr;
+using ::mlir::ascend::kScheduleDecisionIdAttr;
+using ::mlir::ascend::kScheduleGuardMarkersAttr;
+using ::mlir::ascend::kScheduleKernelMetadataAttr;
+using ::mlir::ascend::kScheduleSelectedTileShapeAttr;
+using ::mlir::ascend::kScheduleTailPlanAttr;
+using ::mlir::ascend::kScheduleTailMarkersAttr;
+using ::mlir::ascend::kScheduleTailPoliciesAttr;
+using ::mlir::ascend::kScheduleTargetTilePolicyAttr;
+using ::mlir::ascend::kStructuredLoweringAttr;
 
 inline constexpr llvm::StringLiteral kScheduleFamilyAttr =
     "ascend.schedule.family";
@@ -453,6 +453,6 @@ inline llvm::StringRef stringifyOpRole(OpRole role) {
   return "unknown";
 }
 
-} // namespace mlir::afir::ascend::schedule
+} // namespace mlir::ascend::schedule
 
 #endif // ASCEND_MLIR_CONVERSION_ASCEND_SCHEDULE_SCHEDULETYPES_H

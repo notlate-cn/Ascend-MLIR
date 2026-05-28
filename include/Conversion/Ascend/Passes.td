@@ -20,7 +20,7 @@ def AscendPrintTargetProfilePass
     Loads a CANN platform_config target profile and prints a stable summary
     for target model smoke tests and Ascend pipeline development.
   }];
-  let constructor = "mlir::afir::createAscendPrintTargetProfilePass()";
+  let constructor = "mlir::ascend::createAscendPrintTargetProfilePass()";
   let options = [
     Option<"soc", "soc", "std::string", /*default=*/"\"Ascend910B2\"",
            "CANN SoC version">,
@@ -36,7 +36,7 @@ def AscendNormalizePass : Pass<"ascend-normalize", "mlir::ModuleOp"> {
     normalized IR shape, stamps the module with the normalized marker, and emits
     optional debug-stage reporting.
   }];
-  let constructor = "mlir::afir::createAscendNormalizePass()";
+  let constructor = "mlir::ascend::createAscendNormalizePass()";
   let dependentDialects = [
     "mlir::func::FuncDialect",
     "mlir::tensor::TensorDialect",
@@ -63,7 +63,7 @@ def AscendKernelizePass : Pass<"ascend-kernelize", "mlir::ModuleOp"> {
     elementwise fusion before candidate analysis. Fails closed on any
     unsupported op semantics.
   }];
-  let constructor = "mlir::afir::createAscendKernelizePass()";
+  let constructor = "mlir::ascend::createAscendKernelizePass()";
   let dependentDialects = [
     "mlir::func::FuncDialect",
     "mlir::tensor::TensorDialect",
@@ -86,7 +86,7 @@ def AscendSchedulePass : Pass<"ascend-schedule", "mlir::ModuleOp"> {
     template registry, axis coalescing, and a tuning database. Supports
     persistent cache IO and target-aware tiling policy derivation.
   }];
-  let constructor = "mlir::afir::createAscendSchedulePass()";
+  let constructor = "mlir::ascend::createAscendSchedulePass()";
   let dependentDialects = [
     "mlir::func::FuncDialect",
     "mlir::tensor::TensorDialect",
@@ -133,7 +133,7 @@ def AscendKernelSplitPass : Pass<"ascend-kernel-split", "mlir::ModuleOp"> {
     cloned into the consuming kernel function. Existing single-kernel functions
     are preserved unchanged.
   }];
-  let constructor = "mlir::afir::createAscendKernelSplitPass()";
+  let constructor = "mlir::ascend::createAscendKernelSplitPass()";
   let dependentDialects = [
     "mlir::func::FuncDialect",
     "mlir::tensor::TensorDialect",
@@ -161,7 +161,7 @@ def AscendRealizePass : Pass<"ascend-realize", "mlir::ModuleOp"> {
     "mlir::linalg::LinalgDialect",
     "mlir::arith::ArithDialect"
   ];
-  let constructor = "mlir::afir::createAscendRealizePass()";
+  let constructor = "mlir::ascend::createAscendRealizePass()";
   let options = [
     Option<"debugStage", "debug-stage", "std::string", /*default=*/"\"none\"",
            "Ascend debug stage: none, normalize, kernelize, schedule, realize, all">,
@@ -188,7 +188,7 @@ def AscendComputeLowerPass : Pass<"ascend-compute-lower", "mlir::func::FuncOp"> 
     memref.copy movement to AscendC, and fails closed on support-matrix
     diagnostics.
   }];
-  let constructor = "mlir::afir::createAscendComputeLowerPass()";
+  let constructor = "mlir::ascend::createAscendComputeLowerPass()";
   let dependentDialects = [
     "mlir::ascendc::AscendCDialect",
     "mlir::emitasc::EmitAscDialect",
@@ -204,7 +204,7 @@ def AscendParallelizePass : Pass<"ascend-parallelize", "mlir::ModuleOp"> {
     Lowers Ascend kernel dispatch structure to explicit parallel loops for the
     internal AscendC kernel construction surface.
   }];
-  let constructor = "mlir::afir::createAscendParallelizePass()";
+  let constructor = "mlir::ascend::createAscendParallelizePass()";
   let dependentDialects = [
     "mlir::ascendc::AscendCDialect",
     "mlir::arith::ArithDialect",
@@ -221,7 +221,7 @@ def AscendPrepareForEmitPass
     ascendc.kernel_kind after prepare-for-emit so downstream artifact
     generation can select vec, cube, or mix compile paths per kernel.
   }];
-  let constructor = "mlir::afir::createAscendPrepareForEmitPass()";
+  let constructor = "mlir::ascend::createAscendPrepareForEmitPass()";
   let dependentDialects = [
     "mlir::ascendc::AscendCDialect",
     "mlir::emitasc::EmitAscDialect",
@@ -237,7 +237,7 @@ def AscendCanonicalizeCannSignaturePass
   let description = [{
     Canonicalizes Ascend kernel signatures to the CANN runtime ABI.
   }];
-  let constructor = "mlir::afir::createAscendCanonicalizeCannSignaturePass()";
+  let constructor = "mlir::ascend::createAscendCanonicalizeCannSignaturePass()";
   let dependentDialects = [
     "mlir::func::FuncDialect",
     "mlir::emitasc::EmitAscDialect",

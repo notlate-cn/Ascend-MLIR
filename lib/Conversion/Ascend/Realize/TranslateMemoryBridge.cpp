@@ -22,7 +22,7 @@
 
 #include <optional>
 
-namespace mlir::afir::ascend::realize {
+namespace mlir::ascend::realize {
 namespace {
 
 constexpr int64_t kVecOutMemorySpace =
@@ -592,4 +592,4 @@ materializeTranslateMemoryBridge(ModuleOp module) {
   return DefaultTranslateMemoryBridge().materialize(module);
 }
 
-} // namespace mlir::afir::ascend::realize
+} // namespace mlir::ascend::realize

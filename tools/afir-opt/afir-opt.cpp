@@ -34,7 +34,7 @@ int main(int argc, char **argv) {
   registry.insert<afir::AFIRDialect>();
   registry.insert<ascendc::AscendCDialect>();
   registry.insert<emitasc::EmitAscDialect>();
-  afir::ascend::kernelize::registerKernelizeExternalModels(registry);
+  ascend::kernelize::registerKernelizeExternalModels(registry);
 
   // Register AFIR transform dialect extension
   afir::registerTransformDialectExtension(registry);
@@ -48,7 +48,7 @@ int main(int argc, char **argv) {
   // Register AFIR-specific passes
   afir::registerAFIRPasses();
   afir::registerAFIRConversionPasses();
-  afir::registerAscendConversionPasses();
+  ascend::registerAscendConversionPasses();
 
   return asMainReturnCode(MlirOptMain(argc, argv, "AFIR optimizer driver\n", registry));
 }

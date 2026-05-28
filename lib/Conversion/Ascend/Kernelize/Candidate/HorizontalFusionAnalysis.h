@@ -21,7 +21,7 @@
 #include <cstdint>
 #include <string>
 
-namespace mlir::afir::ascend::kernelize {
+namespace mlir::ascend::kernelize {
 
 struct HorizontalFusionCandidate {
   unsigned horizontalCandidateId = 0;
@@ -33,17 +33,17 @@ struct HorizontalFusionCandidate {
   std::string rejectionReason;
 };
 
-} // namespace mlir::afir::ascend::kernelize
+} // namespace mlir::ascend::kernelize
 
 namespace llvm {
 template <>
 struct CalculateSmallVectorDefaultInlinedElements<
-    mlir::afir::ascend::kernelize::HorizontalFusionCandidate> {
+    mlir::ascend::kernelize::HorizontalFusionCandidate> {
   static constexpr size_t value = 0;
 };
 } // namespace llvm
 
-namespace mlir::afir::ascend::kernelize {
+namespace mlir::ascend::kernelize {
 
 class HorizontalFusionAnalyzer {
 public:
@@ -57,6 +57,6 @@ public:
 void emitHorizontalFusionReport(
     raw_ostream &os, ArrayRef<HorizontalFusionCandidate> horizontal);
 
-} // namespace mlir::afir::ascend::kernelize
+} // namespace mlir::ascend::kernelize
 
 #endif // ASCEND_MLIR_CONVERSION_ASCEND_KERNELIZE_HORIZONTALFUSIONANALYSIS_H

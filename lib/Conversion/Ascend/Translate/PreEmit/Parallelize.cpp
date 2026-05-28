@@ -39,7 +39,7 @@
 using namespace mlir;
 using namespace mlir::ascendc;
 
-namespace mlir::afir {
+namespace mlir::ascend {
 
 //===----------------------------------------------------------------------===//
 // Helper: find top-level parallel scf.for loops in a func
@@ -166,4 +166,4 @@ std::unique_ptr<Pass> createAscendPreEmitParallelizePass() {
   return std::make_unique<AscendPreEmitParallelizePass>();
 }
 
-} // namespace mlir::afir
+} // namespace mlir::ascend

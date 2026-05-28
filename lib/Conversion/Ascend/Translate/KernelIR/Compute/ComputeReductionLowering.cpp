@@ -46,7 +46,7 @@ using namespace mlir;
 using namespace mlir::ascendc;
 
 namespace mlir {
-namespace afir {
+namespace ascend {
 
 LogicalResult lowerReductionComputes(ComputeLoweringContext &lowering) {
   func::FuncOp funcOp = lowering.funcOp;
@@ -390,7 +390,7 @@ LogicalResult lowerReductionComputes(ComputeLoweringContext &lowering) {
       if (isa<arith::ConstantOp>(bodyOp))
         continue;
 
-      using namespace mlir::afir::ascend::backend;
+      using namespace mlir::ascend::backend;
       const ElementwiseBodyOpEntry *entry =
           lookupElementwiseBodyOp(bodyOp.getName().getStringRef());
       if (!entry)
@@ -454,5 +454,5 @@ LogicalResult lowerReductionComputes(ComputeLoweringContext &lowering) {
   return success();
 }
 
-} // namespace afir
+} // namespace ascend
 } // namespace mlir

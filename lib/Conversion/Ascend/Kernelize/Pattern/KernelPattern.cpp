@@ -31,7 +31,7 @@
 
 using namespace mlir;
 
-namespace mlir::afir::ascend::kernelize {
+namespace mlir::ascend::kernelize {
 namespace {
 
 struct CandidateBuildRecord {
@@ -746,4 +746,4 @@ void emitKernelPartitionReport(raw_ostream &os,
   }
 }
 
-} // namespace mlir::afir::ascend::kernelize
+} // namespace mlir::ascend::kernelize

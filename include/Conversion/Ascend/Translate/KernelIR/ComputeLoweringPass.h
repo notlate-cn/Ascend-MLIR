@@ -10,10 +10,10 @@
 #include "mlir/Pass/Pass.h"
 #include <memory>
 
-namespace mlir::afir {
+namespace mlir::ascend {
 
 std::unique_ptr<Pass> createAscendComputeLowerPass();
 
-} // namespace mlir::afir
+} // namespace mlir::ascend
 
 #endif // ASCEND_MLIR_CONVERSION_ASCEND_TRANSLATE_KERNELIR_COMPUTE_LOWERING_PASS_H

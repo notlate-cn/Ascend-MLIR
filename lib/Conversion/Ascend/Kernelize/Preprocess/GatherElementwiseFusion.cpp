@@ -27,7 +27,7 @@
 
 using namespace mlir;
 
-namespace mlir::afir {
+namespace mlir::ascend {
 
 namespace {
 
@@ -297,4 +297,4 @@ LogicalResult fuseGatherElementwise(func::FuncOp funcOp) {
   return success();
 }
 
-} // namespace mlir::afir
+} // namespace mlir::ascend

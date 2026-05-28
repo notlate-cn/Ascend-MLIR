@@ -10,7 +10,7 @@
 #include "RealizeTypes.h"
 #include "TranslateMemoryBridge.h"
 
-namespace mlir::afir::ascend::realize {
+namespace mlir::ascend::realize {
 
 enum class MemoryRealizationMode {
   PlanOnly,
@@ -38,6 +38,6 @@ public:
       const TranslateBridgeMaterializationCounts &materializationCounts) const;
 };
 
-} // namespace mlir::afir::ascend::realize
+} // namespace mlir::ascend::realize
 
 #endif // ASCEND_MLIR_CONVERSION_ASCEND_REALIZE_MEMORYREALIZATIONDRIVER_H

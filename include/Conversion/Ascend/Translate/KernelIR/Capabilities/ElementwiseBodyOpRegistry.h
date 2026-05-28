@@ -16,7 +16,7 @@
 
 #include <functional>
 
-namespace mlir::afir::ascend::backend {
+namespace mlir::ascend::backend {
 
 using UnaryEmitter  = std::function<void(mlir::OpBuilder &, mlir::Location,
                                          mlir::Value dst, mlir::Value src,
@@ -45,6 +45,6 @@ void registerBuiltinElementwiseBodyOps();
 const ElementwiseBodyOpEntry *
 lookupElementwiseBodyOp(llvm::StringRef dialectOpName);
 
-} // namespace mlir::afir::ascend::backend
+} // namespace mlir::ascend::backend
 
 #endif // ASCEND_MLIR_CONVERSION_ASCEND_TRANSLATE_KERNELIR_CAPABILITIES_ELEMENTWISE_BODY_OP_REGISTRY_H

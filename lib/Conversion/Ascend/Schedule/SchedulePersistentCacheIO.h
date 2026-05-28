@@ -14,7 +14,7 @@
 #include "llvm/ADT/StringRef.h"
 #include <string>
 
-namespace mlir::afir::ascend::schedule {
+namespace mlir::ascend::schedule {
 
 FailureOr<llvm::SmallVector<std::string, 8>>
 loadPersistentTuningCacheFile(llvm::StringRef path);
@@ -22,6 +22,6 @@ loadPersistentTuningCacheFile(llvm::StringRef path);
 LogicalResult writePersistentTuningCacheFile(
     llvm::StringRef path, llvm::ArrayRef<std::string> signatures);
 
-} // namespace mlir::afir::ascend::schedule
+} // namespace mlir::ascend::schedule
 
 #endif // ASCEND_MLIR_CONVERSION_ASCEND_SCHEDULE_PERSISTENT_CACHE_IO_H

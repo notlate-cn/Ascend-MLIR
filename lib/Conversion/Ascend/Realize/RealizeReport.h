@@ -11,11 +11,11 @@
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/Support/raw_ostream.h"
 
-namespace mlir::afir::ascend::realize {
+namespace mlir::ascend::realize {
 
 void printRealizeReport(llvm::ArrayRef<RealizePlanBundle> bundles,
                         llvm::raw_ostream &os);
 
-} // namespace mlir::afir::ascend::realize
+} // namespace mlir::ascend::realize
 
 #endif // ASCEND_MLIR_CONVERSION_ASCEND_REALIZE_REALIZEREPORT_H

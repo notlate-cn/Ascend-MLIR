@@ -38,7 +38,7 @@
 #include "Conversion/Ascend/Passes.h.inc"
 
 using namespace mlir;
-using namespace mlir::afir::ascend::kernelize;
+using namespace mlir::ascend::kernelize;
 
 namespace {
 
@@ -91,7 +91,7 @@ buildKernelizeReportEntries(ArrayRef<KernelPattern> patterns) {
     auto role = roleOp->getAttrOfType<StringAttr>(kOpRoleAttr);
     StringRef roleName =
         role ? role.getValue()
-             : StringRef(::mlir::afir::ascend::kOpRoleUnsupported);
+             : StringRef(::mlir::ascend::kOpRoleUnsupported);
     entries.push_back(KernelizeReportEntry{
         roleName.str(), pattern.kernelName,
         static_cast<unsigned>(pattern.primaryOps.size())});
@@ -101,7 +101,7 @@ buildKernelizeReportEntries(ArrayRef<KernelPattern> patterns) {
 
 } // namespace
 
-namespace mlir::afir {
+namespace mlir::ascend {
 
 struct AscendKernelizePass
     : public ::impl::AscendKernelizePassBase<AscendKernelizePass> {
@@ -109,16 +109,16 @@ struct AscendKernelizePass
 
   void getDependentDialects(DialectRegistry &registry) const override {
     AscendKernelizePassBase::getDependentDialects(registry);
-    ::mlir::afir::ascend::kernelize::registerKernelizeExternalModels(registry);
+    ::mlir::ascend::kernelize::registerKernelizeExternalModels(registry);
   }
 
   void runOnOperation() override {
-    ::mlir::afir::ascend::debug::DebugOptions options{
-        ::mlir::afir::ascend::debug::parseDebugStage(debugStage), dumpReport};
-    if (::mlir::afir::ascend::debug::shouldDump(
-            options, ::mlir::afir::ascend::debug::DebugStage::Kernelize))
-      ::mlir::afir::ascend::debug::emitStageHeader(
-          llvm::errs(), ::mlir::afir::ascend::debug::DebugStage::Kernelize,
+    ::mlir::ascend::debug::DebugOptions options{
+        ::mlir::ascend::debug::parseDebugStage(debugStage), dumpReport};
+    if (::mlir::ascend::debug::shouldDump(
+            options, ::mlir::ascend::debug::DebugStage::Kernelize))
+      ::mlir::ascend::debug::emitStageHeader(
+          llvm::errs(), ::mlir::ascend::debug::DebugStage::Kernelize,
           getArgument());
 
     ModuleOp module = getOperation();
@@ -154,16 +154,16 @@ struct AscendKernelizePass
       return;
     }
 
-    if (::mlir::afir::ascend::debug::shouldDump(
-            options, ::mlir::afir::ascend::debug::DebugStage::Kernelize))
+    if (::mlir::ascend::debug::shouldDump(
+            options, ::mlir::ascend::debug::DebugStage::Kernelize))
       emitDependencyAnalysisReport(llvm::errs(), *depResult);
 
     if (failed(StructuralMarker().mark(module, *depResult))) {
       signalPassFailure();
       return;
     }
-    if (::mlir::afir::ascend::debug::shouldDump(
-            options, ::mlir::afir::ascend::debug::DebugStage::Kernelize))
+    if (::mlir::ascend::debug::shouldDump(
+            options, ::mlir::ascend::debug::DebugStage::Kernelize))
       emitStructuralMarkingReport(llvm::errs(), *depResult);
 
     clearOwnedKernelizeAttrs(module);
@@ -174,30 +174,30 @@ struct AscendKernelizePass
       return;
     }
     attachRoleAttributes(module, *roleMap);
-    if (::mlir::afir::ascend::debug::shouldDump(
-            options, ::mlir::afir::ascend::debug::DebugStage::Kernelize))
+    if (::mlir::ascend::debug::shouldDump(
+            options, ::mlir::ascend::debug::DebugStage::Kernelize))
       emitOpRoleClassificationReport(llvm::errs(), *depResult, *roleMap);
 
     KernelizeConfig config;
     SmallVector<FusionCandidate> fusionCandidates =
         FusionCandidateAnalyzer().analyze(*depResult, *roleMap, config);
-    if (::mlir::afir::ascend::debug::shouldDump(
-            options, ::mlir::afir::ascend::debug::DebugStage::Kernelize))
+    if (::mlir::ascend::debug::shouldDump(
+            options, ::mlir::ascend::debug::DebugStage::Kernelize))
       emitFusionCandidateReport(llvm::errs(), fusionCandidates,
                                 depResult->index);
 
     SmallVector<MergedCandidate> mergedCandidates =
         CandidateMergeAnalyzer().analyze(fusionCandidates, *depResult, config);
-    if (::mlir::afir::ascend::debug::shouldDump(
-            options, ::mlir::afir::ascend::debug::DebugStage::Kernelize))
+    if (::mlir::ascend::debug::shouldDump(
+            options, ::mlir::ascend::debug::DebugStage::Kernelize))
       emitCandidateMergeReport(llvm::errs(), mergedCandidates,
                                depResult->index);
 
     SmallVector<HorizontalFusionCandidate> horizontalCandidates =
         HorizontalFusionAnalyzer().analyze(fusionCandidates, mergedCandidates,
                                            *depResult, config);
-    if (::mlir::afir::ascend::debug::shouldDump(
-            options, ::mlir::afir::ascend::debug::DebugStage::Kernelize))
+    if (::mlir::ascend::debug::shouldDump(
+            options, ::mlir::ascend::debug::DebugStage::Kernelize))
       emitHorizontalFusionReport(llvm::errs(), horizontalCandidates);
 
     KernelPatternGraph graph = KernelPatternBuilder().build(
@@ -206,14 +206,14 @@ struct AscendKernelizePass
         KernelPartitioner().partition(graph, *depResult);
     attachKernelPatternAttributes(module, patterns);
 
-    if (::mlir::afir::ascend::debug::shouldDump(
-            options, ::mlir::afir::ascend::debug::DebugStage::Kernelize)) {
+    if (::mlir::ascend::debug::shouldDump(
+            options, ::mlir::ascend::debug::DebugStage::Kernelize)) {
       emitKernelPatternGraphReport(llvm::errs(), graph, depResult->index);
       emitKernelPartitionReport(llvm::errs(), patterns, depResult->index);
     }
 
-    if (::mlir::afir::ascend::debug::shouldDump(
-            options, ::mlir::afir::ascend::debug::DebugStage::Kernelize))
+    if (::mlir::ascend::debug::shouldDump(
+            options, ::mlir::ascend::debug::DebugStage::Kernelize))
       emitKernelizeReport(buildKernelizeReportEntries(patterns));
   }
 };
@@ -222,4 +222,4 @@ std::unique_ptr<Pass> createAscendKernelizePass() {
   return std::make_unique<AscendKernelizePass>();
 }
 
-} // namespace mlir::afir
+} // namespace mlir::ascend

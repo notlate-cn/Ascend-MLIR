@@ -51,15 +51,15 @@ enum class AscendCKernelKind {
 
 static AscendCKernelKind getKernelKind(func::FuncOp funcOp) {
   auto kindAttr = funcOp->getAttrOfType<StringAttr>(
-      mlir::afir::ascend::kAscendCKernelKindAttr);
+      mlir::ascend::kAscendCKernelKindAttr);
   if (!kindAttr)
     return AscendCKernelKind::Unknown;
   StringRef kind = kindAttr.getValue();
-  if (kind == mlir::afir::ascend::kAscendCKernelKindVec)
+  if (kind == mlir::ascend::kAscendCKernelKindVec)
     return AscendCKernelKind::Vec;
-  if (kind == mlir::afir::ascend::kAscendCKernelKindCube)
+  if (kind == mlir::ascend::kAscendCKernelKindCube)
     return AscendCKernelKind::Cube;
-  if (kind == mlir::afir::ascend::kAscendCKernelKindMix)
+  if (kind == mlir::ascend::kAscendCKernelKindMix)
     return AscendCKernelKind::Mix;
   return AscendCKernelKind::Unknown;
 }
@@ -329,13 +329,13 @@ enum class MixPartitionKind {
 // Supported mix analysis helpers.
 static MixPartitionKind getExplicitMixPartition(Operation *op) {
   auto unitAttr = op->getAttrOfType<StringAttr>(
-      mlir::afir::ascend::kAscendCUnitAttr);
+      mlir::ascend::kAscendCUnitAttr);
   if (!unitAttr)
     return MixPartitionKind::Unknown;
   StringRef unit = unitAttr.getValue();
-  if (unit == mlir::afir::ascend::kAscendCUnitCube)
+  if (unit == mlir::ascend::kAscendCUnitCube)
     return MixPartitionKind::Cube;
-  if (unit == mlir::afir::ascend::kAscendCUnitVector)
+  if (unit == mlir::ascend::kAscendCUnitVector)
     return MixPartitionKind::Vector;
   return MixPartitionKind::Unknown;
 }

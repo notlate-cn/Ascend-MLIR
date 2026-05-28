@@ -28,7 +28,7 @@
 #include <limits>
 #include <string>
 
-namespace mlir::afir::ascend::kernelize {
+namespace mlir::ascend::kernelize {
 
 struct KernelPatternCandidate {
   unsigned candidateId = 0;
@@ -65,38 +65,38 @@ struct KernelPattern {
   ScheduleContract scheduleContract;
 };
 
-} // namespace mlir::afir::ascend::kernelize
+} // namespace mlir::ascend::kernelize
 
 namespace llvm {
 template <>
 struct CalculateSmallVectorDefaultInlinedElements<
-    mlir::afir::ascend::kernelize::KernelPatternCandidate> {
+    mlir::ascend::kernelize::KernelPatternCandidate> {
   static constexpr size_t value = 0;
 };
 
 template <>
 struct CalculateSmallVectorDefaultInlinedElements<
-    mlir::afir::ascend::kernelize::KernelPattern> {
+    mlir::ascend::kernelize::KernelPattern> {
   static constexpr size_t value = 0;
 };
 
 template <>
-struct DenseMapInfo<mlir::afir::ascend::kernelize::KernelPatternEdgeKey> {
-  using Key = mlir::afir::ascend::kernelize::KernelPatternEdgeKey;
+struct DenseMapInfo<mlir::ascend::kernelize::KernelPatternEdgeKey> {
+  using Key = mlir::ascend::kernelize::KernelPatternEdgeKey;
 
   // Candidate ids are dense zero-based indices; reserve the max sentinels for
   // DenseMap bookkeeping.
   static inline Key getEmptyKey() {
     return {std::numeric_limits<unsigned>::max(),
             std::numeric_limits<unsigned>::max(),
-            mlir::afir::ascend::kernelize::KernelPatternEdgeKind::
+            mlir::ascend::kernelize::KernelPatternEdgeKind::
                 DataDependency};
   }
 
   static inline Key getTombstoneKey() {
     return {std::numeric_limits<unsigned>::max() - 1,
             std::numeric_limits<unsigned>::max(),
-            mlir::afir::ascend::kernelize::KernelPatternEdgeKind::
+            mlir::ascend::kernelize::KernelPatternEdgeKind::
                 DataDependency};
   }
 
@@ -109,7 +109,7 @@ struct DenseMapInfo<mlir::afir::ascend::kernelize::KernelPatternEdgeKey> {
 };
 } // namespace llvm
 
-namespace mlir::afir::ascend::kernelize {
+namespace mlir::ascend::kernelize {
 
 struct KernelPatternGraph {
   SmallVector<KernelPatternCandidate> nodes;
@@ -142,6 +142,6 @@ void emitKernelPartitionReport(raw_ostream &os,
                                ArrayRef<KernelPattern> patterns,
                                const ProducerConsumerIndex &index);
 
-} // namespace mlir::afir::ascend::kernelize
+} // namespace mlir::ascend::kernelize
 
 #endif // ASCEND_MLIR_CONVERSION_ASCEND_KERNELIZE_KERNELPATTERN_H

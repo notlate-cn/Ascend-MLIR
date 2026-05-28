@@ -11,7 +11,7 @@
 
 using namespace mlir;
 
-namespace mlir::afir::ascend::kernelize {
+namespace mlir::ascend::kernelize {
 namespace {
 
 bool containsFamily(ArrayRef<std::string> families, StringRef family) {
@@ -59,4 +59,4 @@ KernelizeFamilyResolution resolveKernelizeTemplateFamilies(
   return result;
 }
 
-} // namespace mlir::afir::ascend::kernelize
+} // namespace mlir::ascend::kernelize

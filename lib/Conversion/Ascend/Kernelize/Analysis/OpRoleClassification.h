@@ -17,7 +17,7 @@
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/Support/raw_ostream.h"
 
-namespace mlir::afir::ascend::kernelize {
+namespace mlir::ascend::kernelize {
 
 using OpRoleList = SmallVector<OpRole, 4>;
 using OpRoleMap = DenseMap<Operation *, OpRoleList>;
@@ -32,6 +32,6 @@ void emitOpRoleClassificationReport(raw_ostream &os,
                                      const DependencyAnalysisResult &deps,
                                      const OpRoleMap &roleMap);
 
-} // namespace mlir::afir::ascend::kernelize
+} // namespace mlir::ascend::kernelize
 
 #endif // ASCEND_MLIR_CONVERSION_ASCEND_KERNELIZE_OPROLECLASSIFICATION_H

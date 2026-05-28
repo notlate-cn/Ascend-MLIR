@@ -12,7 +12,7 @@
 
 using namespace mlir;
 
-namespace mlir::afir {
+namespace mlir::ascend {
 namespace {
 
 class ComputeLoweringStage {
@@ -111,4 +111,4 @@ LogicalResult convertCompute(func::FuncOp funcOp, AscendCBufferContext &ctx) {
   return success();
 }
 
-} // namespace mlir::afir
+} // namespace mlir::ascend

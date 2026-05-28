@@ -15,7 +15,7 @@
 using namespace mlir;
 using namespace mlir::ascendc;
 
-namespace mlir::afir {
+namespace mlir::ascend {
 namespace {
 
 memref::AllocOp getRootAllocOp(Value value) {
@@ -124,4 +124,4 @@ LogicalResult lowerLocalScalarFallbackComputes(ComputeLoweringContext &lowering)
   return success();
 }
 
-} // namespace mlir::afir
+} // namespace mlir::ascend

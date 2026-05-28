@@ -25,7 +25,7 @@
 #define GEN_PASS_DEF_ASCENDPREPAREFOREMITPASS
 #include "Conversion/Ascend/Passes.h.inc"
 
-namespace mlir::afir {
+namespace mlir::ascend {
 namespace {
 
 struct AscendParallelizePass
@@ -75,4 +75,4 @@ std::unique_ptr<Pass> createAscendCanonicalizeCannSignaturePass() {
   return std::make_unique<AscendCanonicalizeCannSignaturePass>();
 }
 
-} // namespace mlir::afir
+} // namespace mlir::ascend

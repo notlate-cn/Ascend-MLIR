@@ -11,7 +11,7 @@
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/Support/LLVM.h"
 
-namespace mlir::afir::ascend::realize {
+namespace mlir::ascend::realize {
 
 /// Drives Schedule-decision-based tiling of linalg ops in a module using
 /// scf::tileUsingSCF. Operates on tensor IR (pre-bufferize).
@@ -23,6 +23,6 @@ public:
   LogicalResult tileModule(ModuleOp module) const;
 };
 
-} // namespace mlir::afir::ascend::realize
+} // namespace mlir::ascend::realize
 
 #endif // ASCEND_MLIR_CONVERSION_ASCEND_REALIZE_TILINGREALIZATIONDRIVER_H

@@ -11,7 +11,7 @@
 
 #include "llvm/ADT/StringRef.h"
 
-namespace mlir::afir::ascend::kernelize {
+namespace mlir::ascend::kernelize {
 
 bool matchLinalgSemanticOp(Operation *op);
 bool matchArithConstantSemanticOp(Operation *op);
@@ -26,6 +26,6 @@ LogicalResult populateTensorViewSemanticInfo(Operation *op,
                                              KernelizeOpSemanticInfo &info,
                                              llvm::StringRef modelName);
 
-} // namespace mlir::afir::ascend::kernelize
+} // namespace mlir::ascend::kernelize
 
 #endif // ASCEND_MLIR_CONVERSION_ASCEND_KERNELIZE_SEMANTIC_UTILS_H

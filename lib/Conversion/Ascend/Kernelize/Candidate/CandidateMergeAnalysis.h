@@ -21,7 +21,7 @@
 #include <cstdint>
 #include <string>
 
-namespace mlir::afir::ascend::kernelize {
+namespace mlir::ascend::kernelize {
 
 struct MergedCandidate {
   unsigned mergedCandidateId = 0;
@@ -37,17 +37,17 @@ struct MergedCandidate {
   std::string rejectionReason;
 };
 
-} // namespace mlir::afir::ascend::kernelize
+} // namespace mlir::ascend::kernelize
 
 namespace llvm {
 template <>
 struct CalculateSmallVectorDefaultInlinedElements<
-    mlir::afir::ascend::kernelize::MergedCandidate> {
+    mlir::ascend::kernelize::MergedCandidate> {
   static constexpr size_t value = 0;
 };
 } // namespace llvm
 
-namespace mlir::afir::ascend::kernelize {
+namespace mlir::ascend::kernelize {
 
 class CandidateMergeAnalyzer {
 public:
@@ -60,6 +60,6 @@ void emitCandidateMergeReport(raw_ostream &os,
                               ArrayRef<MergedCandidate> merged,
                               const ProducerConsumerIndex &index);
 
-} // namespace mlir::afir::ascend::kernelize
+} // namespace mlir::ascend::kernelize
 
 #endif // ASCEND_MLIR_CONVERSION_ASCEND_KERNELIZE_CANDIDATEMERGEANALYSIS_H

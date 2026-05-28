@@ -8,7 +8,7 @@
 
 #include "Target/Ascend/TargetMemoryModel.h"
 
-namespace mlir::afir::ascend::realize {
+namespace mlir::ascend::realize {
 namespace {
 
 static void populateMovementSteps(const StaticMemoryPlan &staticMemory,
@@ -101,4 +101,4 @@ FailureOr<MovementPlan> MovementPlanner::build(
   return plan;
 }
 
-} // namespace mlir::afir::ascend::realize
+} // namespace mlir::ascend::realize

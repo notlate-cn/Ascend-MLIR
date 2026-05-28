@@ -9,8 +9,8 @@
 #include "Conversion/Ascend/Common/Attributes.h"
 #include "gtest/gtest.h"
 
-using namespace mlir::afir::ascend;
-using namespace mlir::afir::ascend::kernelize;
+using namespace mlir::ascend;
+using namespace mlir::ascend::kernelize;
 
 TEST(HandwrittenContractRegistryTest, LookupUnknownKindReturnsNull) {
   EXPECT_EQ(lookupHandwrittenContract("nonexistent_kind"), nullptr);

@@ -17,7 +17,7 @@
 
 #include <utility>
 
-namespace mlir::afir {
+namespace mlir::ascend {
 
 struct ComputeLoweringContext {
   func::FuncOp funcOp;
@@ -140,6 +140,6 @@ LogicalResult lowerElementwiseComputes(ComputeLoweringContext &lowering);
 LogicalResult lowerFillComputes(ComputeLoweringContext &lowering);
 LogicalResult lowerLocalScalarFallbackComputes(ComputeLoweringContext &lowering);
 
-} // namespace mlir::afir
+} // namespace mlir::ascend
 
 #endif // ASCEND_MLIR_CONVERSION_ASCEND_TRANSLATE_KERNELIR_COMPUTE_COMPUTELOWERINGINTERNAL_H

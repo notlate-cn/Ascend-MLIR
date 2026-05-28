@@ -12,7 +12,7 @@
 
 #include <algorithm>
 
-namespace mlir::afir::ascend::realize {
+namespace mlir::ascend::realize {
 namespace {
 
 constexpr MemoryPlace kVectorTemporaryPlace = MemoryPlace::VECIN;
@@ -232,4 +232,4 @@ FailureOr<StaticMemoryPlan> StaticMemoryPlanner::build(
   return plan;
 }
 
-} // namespace mlir::afir::ascend::realize
+} // namespace mlir::ascend::realize

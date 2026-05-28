@@ -9,10 +9,10 @@
 
 #include "Conversion/Ascend/Kernelize/KernelizeOpInterface.h"
 
-namespace mlir::afir::ascend::kernelize {
+namespace mlir::ascend::kernelize {
 
 void registerDefaultKernelizeOpModels(KernelizeOpModelRegistry &registry);
 
-} // namespace mlir::afir::ascend::kernelize
+} // namespace mlir::ascend::kernelize
 
 #endif // ASCEND_MLIR_CONVERSION_ASCEND_KERNELIZE_KERNELIZEOPREGISTRY_H

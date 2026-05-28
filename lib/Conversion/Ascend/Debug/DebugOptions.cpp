@@ -6,7 +6,7 @@
 
 #include "Conversion/Ascend/Debug/DebugOptions.h"
 
-namespace mlir::afir::ascend::debug {
+namespace mlir::ascend::debug {
 
 DebugStage parseDebugStage(StringRef value) {
   StringRef trimmed = value.trim();
@@ -57,4 +57,4 @@ void emitStageHeader(raw_ostream &os, DebugStage stage, StringRef passName) {
   os << "\n";
 }
 
-} // namespace mlir::afir::ascend::debug
+} // namespace mlir::ascend::debug

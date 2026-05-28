@@ -14,15 +14,15 @@
 #include <cstdint>
 #include <string>
 
-namespace mlir::afir::ascend::realize {
+namespace mlir::ascend::realize {
 
-using ::mlir::afir::ascend::kKernelAttr;
-using ::mlir::afir::ascend::kKernelizeOpRoleCube;
-using ::mlir::afir::ascend::kKernelizeOpRoleVector;
-using ::mlir::afir::ascend::kOpRoleAttr;
-using ::mlir::afir::ascend::kOpRolesAttr;
-using ::mlir::afir::ascend::kScheduleDecisionIdAttr;
-using ::mlir::afir::ascend::kStructuredLoweringAttr;
+using ::mlir::ascend::kKernelAttr;
+using ::mlir::ascend::kKernelizeOpRoleCube;
+using ::mlir::ascend::kKernelizeOpRoleVector;
+using ::mlir::ascend::kOpRoleAttr;
+using ::mlir::ascend::kOpRolesAttr;
+using ::mlir::ascend::kScheduleDecisionIdAttr;
+using ::mlir::ascend::kStructuredLoweringAttr;
 
 using MemoryPlace = ::mlir::ascend::MemoryPlace;
 
@@ -161,6 +161,6 @@ struct RealizePlanBundle {
   MemoryRealizationPlan realization;
 };
 
-} // namespace mlir::afir::ascend::realize
+} // namespace mlir::ascend::realize
 
 #endif // ASCEND_MLIR_CONVERSION_ASCEND_REALIZE_REALIZETYPES_H

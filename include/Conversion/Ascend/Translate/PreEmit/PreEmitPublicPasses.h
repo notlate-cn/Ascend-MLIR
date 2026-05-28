@@ -10,12 +10,12 @@
 #include "mlir/Pass/Pass.h"
 #include <memory>
 
-namespace mlir::afir {
+namespace mlir::ascend {
 
 std::unique_ptr<Pass> createAscendParallelizePass();
 std::unique_ptr<Pass> createAscendPrepareForEmitPass();
 std::unique_ptr<Pass> createAscendCanonicalizeCannSignaturePass();
 
-} // namespace mlir::afir
+} // namespace mlir::ascend
 
 #endif // ASCEND_MLIR_CONVERSION_ASCEND_TRANSLATE_PREEMIT_PREEMIT_PUBLIC_PASSES_H

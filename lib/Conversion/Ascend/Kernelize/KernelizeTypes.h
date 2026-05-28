@@ -12,20 +12,20 @@
 
 #include "llvm/ADT/StringRef.h"
 
-namespace mlir::afir::ascend::kernelize {
+namespace mlir::ascend::kernelize {
 
-using ::mlir::afir::ascend::kKernelAttr;
-using ::mlir::afir::ascend::kKernelGraphEdgesAttr;
-using ::mlir::afir::ascend::kKernelizeHandwrittenGroupAttr;
-using ::mlir::afir::ascend::kKernelizeHandwrittenKindAttentionSdpa;
-using ::mlir::afir::ascend::kKernelizeHandwrittenKindAttr;
-using ::mlir::afir::ascend::kKernelizeMustCoLocateGroupAttr;
-using ::mlir::afir::ascend::kKernelizeMustSeparateGroupAttr;
-using ::mlir::afir::ascend::kKernelizeTemplateFamiliesAttr;
-using ::mlir::afir::ascend::kNormalizedAttr;
-using ::mlir::afir::ascend::kOpRoleAttr;
-using ::mlir::afir::ascend::kOpRolesAttr;
-using ::mlir::afir::ascend::kPrimaryAttr;
+using ::mlir::ascend::kKernelAttr;
+using ::mlir::ascend::kKernelGraphEdgesAttr;
+using ::mlir::ascend::kKernelizeHandwrittenGroupAttr;
+using ::mlir::ascend::kKernelizeHandwrittenKindAttentionSdpa;
+using ::mlir::ascend::kKernelizeHandwrittenKindAttr;
+using ::mlir::ascend::kKernelizeMustCoLocateGroupAttr;
+using ::mlir::ascend::kKernelizeMustSeparateGroupAttr;
+using ::mlir::ascend::kKernelizeTemplateFamiliesAttr;
+using ::mlir::ascend::kNormalizedAttr;
+using ::mlir::ascend::kOpRoleAttr;
+using ::mlir::ascend::kOpRolesAttr;
+using ::mlir::ascend::kPrimaryAttr;
 
 inline constexpr llvm::StringLiteral kBranchRootAttr = "ascend.branch_root";
 inline constexpr llvm::StringLiteral kBranchGroupAttr = "ascend.branch_group";
@@ -161,6 +161,6 @@ stringifyKernelPatternEdgeKind(KernelPatternEdgeKind kind) {
   return "DataDependency";
 }
 
-} // namespace mlir::afir::ascend::kernelize
+} // namespace mlir::ascend::kernelize
 
 #endif // ASCEND_MLIR_CONVERSION_ASCEND_KERNELIZE_KERNELIZETYPES_H

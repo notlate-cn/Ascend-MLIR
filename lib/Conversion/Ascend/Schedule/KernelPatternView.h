@@ -14,7 +14,7 @@
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/Support/raw_ostream.h"
 
-namespace mlir::afir::ascend::schedule {
+namespace mlir::ascend::schedule {
 
 FailureOr<SmallVector<KernelPatternView>>
 buildKernelPatternViews(ModuleOp module);
@@ -24,6 +24,6 @@ const PatternOpView *selectDominantPrimaryOp(const KernelPatternView &pattern);
 void printKernelPatternViews(ArrayRef<KernelPatternView> patterns,
                              llvm::raw_ostream &os);
 
-} // namespace mlir::afir::ascend::schedule
+} // namespace mlir::ascend::schedule
 
 #endif // ASCEND_MLIR_CONVERSION_ASCEND_SCHEDULE_KERNELPATTERNVIEW_H

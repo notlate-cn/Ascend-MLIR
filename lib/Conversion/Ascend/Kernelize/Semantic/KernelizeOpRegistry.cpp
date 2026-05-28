@@ -10,7 +10,7 @@
 
 using namespace mlir;
 
-namespace mlir::afir::ascend::kernelize {
+namespace mlir::ascend::kernelize {
 namespace {
 
 LogicalResult populateFallbackLinalgSemanticInfo(
@@ -39,4 +39,4 @@ void registerDefaultKernelizeOpModels(KernelizeOpModelRegistry &registry) {
                           populateFallbackTensorViewSemanticInfo});
 }
 
-} // namespace mlir::afir::ascend::kernelize
+} // namespace mlir::ascend::kernelize

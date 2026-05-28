@@ -144,10 +144,10 @@ struct AscendPrintTargetProfilePass
 
 } // namespace
 
-namespace mlir::afir {
+namespace mlir::ascend {
 
 std::unique_ptr<Pass> createAscendPrintTargetProfilePass() {
   return std::make_unique<AscendPrintTargetProfilePass>();
 }
 
-} // namespace mlir::afir
+} // namespace mlir::ascend

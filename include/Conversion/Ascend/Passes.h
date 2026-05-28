@@ -20,7 +20,7 @@ namespace mlir {
 class Pass;
 }
 
-namespace mlir::afir {
+namespace mlir::ascend {
 
 std::unique_ptr<Pass> createAscendPrintTargetProfilePass();
 std::unique_ptr<Pass> createAscendKernelSplitPass();
@@ -29,6 +29,6 @@ std::unique_ptr<Pass> createAscendKernelSplitPass();
 #define GEN_PASS_REGISTRATION
 #include "Conversion/Ascend/Passes.h.inc"
 
-} // namespace mlir::afir
+} // namespace mlir::ascend
 
 #endif // ASCEND_MLIR_CONVERSION_ASCEND_PASSES_H

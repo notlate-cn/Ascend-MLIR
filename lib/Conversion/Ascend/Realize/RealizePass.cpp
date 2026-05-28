@@ -45,7 +45,7 @@
 #include "Conversion/Ascend/Passes.h.inc"
 
 using namespace mlir;
-using namespace mlir::afir::ascend::realize;
+using namespace mlir::ascend::realize;
 
 namespace {
 
@@ -136,11 +136,11 @@ stampWorkspaceSizeAttrs(ModuleOp module,
     if (workspaceByteCountOverflow)
       return funcOp.emitError()
              << "computed "
-             << ::mlir::afir::ascend::kCannWorkspaceSizeBytesAttr
+             << ::mlir::ascend::kCannWorkspaceSizeBytesAttr
              << " exceeds signed 64-bit range";
 
-    funcOp->removeAttr(::mlir::afir::ascend::kCannWorkspaceSizeBytesAttr);
-    funcOp->removeAttr(::mlir::afir::ascend::kCannWorkspaceSizeExprAttr);
+    funcOp->removeAttr(::mlir::ascend::kCannWorkspaceSizeBytesAttr);
+    funcOp->removeAttr(::mlir::ascend::kCannWorkspaceSizeExprAttr);
     if (!hasKnownWorkspace)
       continue;
 
@@ -149,13 +149,13 @@ stampWorkspaceSizeAttrs(ModuleOp module,
         appendWorkspaceExprTerm(workspaceSizeExpr,
                                 std::to_string(workspaceByteCount));
       if (!workspaceSizeExpr.empty())
-        funcOp->setAttr(::mlir::afir::ascend::kCannWorkspaceSizeExprAttr,
+        funcOp->setAttr(::mlir::ascend::kCannWorkspaceSizeExprAttr,
                         builder.getStringAttr(workspaceSizeExpr));
       continue;
     }
 
     if (workspaceByteCount != 0)
-      funcOp->setAttr(::mlir::afir::ascend::kCannWorkspaceSizeBytesAttr,
+      funcOp->setAttr(::mlir::ascend::kCannWorkspaceSizeBytesAttr,
                       builder.getI64IntegerAttr(
                           static_cast<int64_t>(workspaceByteCount)));
   }
@@ -302,7 +302,7 @@ buildRealizePlanBundles(ModuleOp module,
 
 } // namespace
 
-namespace mlir::afir {
+namespace mlir::ascend {
 
 struct AscendRealizePass
     : public ::impl::AscendRealizePassBase<AscendRealizePass> {
@@ -325,12 +325,12 @@ struct AscendRealizePass
       return;
     }
 
-    ::mlir::afir::ascend::debug::DebugOptions options{
-        ::mlir::afir::ascend::debug::parseDebugStage(debugStage), dumpReport};
-    if (::mlir::afir::ascend::debug::shouldDump(
-            options, ::mlir::afir::ascend::debug::DebugStage::Realize))
-      ::mlir::afir::ascend::debug::emitStageHeader(
-          llvm::errs(), ::mlir::afir::ascend::debug::DebugStage::Realize,
+    ::mlir::ascend::debug::DebugOptions options{
+        ::mlir::ascend::debug::parseDebugStage(debugStage), dumpReport};
+    if (::mlir::ascend::debug::shouldDump(
+            options, ::mlir::ascend::debug::DebugStage::Realize))
+      ::mlir::ascend::debug::emitStageHeader(
+          llvm::errs(), ::mlir::ascend::debug::DebugStage::Realize,
           getArgument());
 
     std::optional<::mlir::ascend::TargetMemoryModel> targetMemoryModel;
@@ -413,8 +413,8 @@ struct AscendRealizePass
       }
     }
 
-    if (::mlir::afir::ascend::debug::shouldDump(
-            options, ::mlir::afir::ascend::debug::DebugStage::Realize))
+    if (::mlir::ascend::debug::shouldDump(
+            options, ::mlir::ascend::debug::DebugStage::Realize))
       printRealizeReport(*bundles, llvm::errs());
   }
 };
@@ -423,4 +423,4 @@ std::unique_ptr<Pass> createAscendRealizePass() {
   return std::make_unique<AscendRealizePass>();
 }
 
-} // namespace mlir::afir
+} // namespace mlir::ascend

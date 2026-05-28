@@ -42,7 +42,10 @@ def compact_shape(shape: Any) -> str:
     if shape is None:
         return "?"
     if isinstance(shape, list):
-        return "x".join(str(dim) for dim in shape) if shape else "scalar"
+        if not shape:
+            return "scalar"
+        dims = ["?" if dim is None or (isinstance(dim, int) and dim < 0) else str(dim) for dim in shape]
+        return "x".join(dims)
     return str(shape)
 
 
