@@ -20,6 +20,13 @@ import shutil
 import sys
 from pathlib import Path
 
+_REPO = Path(__file__).resolve().parents[3]
+if str(_REPO / "python") not in sys.path:
+    sys.path.insert(0, str(_REPO / "python"))
+from runner_utils import logger as _lg  # noqa: E402
+
+_log = _lg.get_logger("gen_dag_json")
+
 
 def build_dag(network: dict, provenance: dict) -> dict:
     # Map kernel_id → provenance entry (so we can enrich each kernel node).
@@ -118,14 +125,13 @@ def main():
     nj_path = groups / "network.json"
     pv_path = groups / "network.provenance.json"
     if not nj_path.exists():
-        print(f"error: {nj_path} not found", file=sys.stderr)
+        _log.error(f"{nj_path} not found")
         sys.exit(2)
 
     network = json.loads(nj_path.read_text())
     provenance = json.loads(pv_path.read_text()) if pv_path.exists() else None
     if provenance is None:
-        print(f"warning: {pv_path} not found — proceeding without provenance",
-              file=sys.stderr)
+        _log.warning(f"{pv_path} not found — proceeding without provenance")
 
     dag = build_dag(network, provenance or {})
     out_json = work / "dag.json"
@@ -150,8 +156,8 @@ def main():
                "  const dag = await res.json();\n")
         new = f"  const dag = {dag_str};\n"
         if old not in tmpl:
-            print("warning: viewer.html fetch block not found — viewer may "
-                  "still require http server", file=sys.stderr)
+            _log.warning("viewer.html fetch block not found — viewer may "
+                         "still require http server")
             shutil.copy(viewer_src, out_html)
         else:
             out_html.write_text(tmpl.replace(old, new))
@@ -160,7 +166,7 @@ def main():
         print(f"View in browser (no server needed):")
         print(f"  xdg-open {out_html}     # or: drag {out_html.name} into the browser")
     else:
-        print(f"warning: viewer.html not found at {viewer_src}", file=sys.stderr)
+        _log.warning(f"viewer.html not found at {viewer_src}")
 
 
 if __name__ == "__main__":

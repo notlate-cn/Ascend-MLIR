@@ -32,6 +32,13 @@ from pathlib import Path
 
 import numpy as np
 
+_REPO = Path(__file__).resolve().parents[2]
+if str(_REPO / "python") not in sys.path:
+    sys.path.insert(0, str(_REPO / "python"))
+from runner_utils import logger as _lg  # noqa: E402
+
+_log = _lg.get_logger("ascend_diff")
+
 
 def diff_pair(actual_path: Path, expected_path: Path,
               atol: float, rtol: float) -> dict:
@@ -116,12 +123,12 @@ def main_diff(argv):
     args = ap.parse_args(argv)
 
     if len(args.actual) != len(args.expected):
-        print(f"error: --actual count ({len(args.actual)}) != "
-              f"--expected count ({len(args.expected)})", file=sys.stderr)
+        _log.error(f"--actual count ({len(args.actual)}) != "
+                   f"--expected count ({len(args.expected)})")
         sys.exit(2)
     if args.names and len(args.names) != len(args.actual):
-        print(f"error: --names count ({len(args.names)}) != "
-              f"--actual count ({len(args.actual)})", file=sys.stderr)
+        _log.error(f"--names count ({len(args.names)}) != "
+                   f"--actual count ({len(args.actual)})")
         sys.exit(2)
 
     names = args.names or [f"out[{i}]" for i in range(len(args.actual))]

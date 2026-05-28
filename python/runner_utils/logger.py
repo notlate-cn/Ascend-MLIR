@@ -116,8 +116,27 @@ def init_run(workdir, run_id: Optional[str] = None, verbose: bool = False) -> st
     return rid
 
 
+def _ensure_stderr_only() -> None:
+    """Attach a stderr-only handler so standalone tools (no workdir) still log."""
+    root = logging.getLogger("ascend")
+    if root.handlers:
+        return
+    root.setLevel(logging.INFO)
+    root.propagate = False
+    sh = logging.StreamHandler(sys.stderr)
+    sh.setLevel(logging.INFO)
+    sh.setFormatter(_Formatter(color=sys.stderr.isatty()))
+    sh.addFilter(_ContextFilter())
+    root.addHandler(sh)
+
+
 def get_logger(name: str = "ascend") -> logging.Logger:
-    """Return a logger under the 'ascend' namespace."""
+    """Return a logger under the 'ascend' namespace.
+
+    If ``init_run`` was never called (standalone tool use), a stderr-only
+    handler is attached lazily so log calls aren't silently dropped.
+    """
+    _ensure_stderr_only()
     if not name or name == "ascend":
         return logging.getLogger("ascend")
     if name == "__main__":
