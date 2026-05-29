@@ -133,6 +133,48 @@ def _link(href: str, label: str) -> str:
     return f'<a href="{html.escape(href, quote=True)}">{_cell(label)}</a>'
 
 
+def _infer_stage_group_label(name: Any) -> str:
+    text = str(name or "").lower()
+    if text == "source":
+        return "source"
+    if "normalize" in text:
+        return "Normalize"
+    if "kernelize" in text:
+        return "Kernelize"
+    if "schedule" in text:
+        return "Schedule"
+    if "realize" in text:
+        return "Realize"
+    if any(
+        marker in text
+        for marker in ("compute-lower", "parallelize", "prepare-for-emit", "cann-signature")
+    ):
+        return "Translate"
+    if "kernel-dag" in text:
+        return "Kernel DAG"
+    return str(name or "")
+
+
+def _stage_group_label(stage: dict[str, Any]) -> str:
+    phase = stage.get("phase")
+    if isinstance(phase, str) and phase:
+        return phase
+    return _infer_stage_group_label(stage.get("name"))
+
+
+def _row_group_spans(items: list[Any], label_fn) -> list[int]:
+    spans = [0] * len(items)
+    index = 0
+    while index < len(items):
+        label = label_fn(items[index])
+        end = index + 1
+        while end < len(items) and label_fn(items[end]) == label:
+            end += 1
+        spans[index] = end - index
+        index = end
+    return spans
+
+
 def _stage_view_rel_path(stage_rel_path: str) -> str:
     return f"views/{stage_rel_path}.html"
 
@@ -188,7 +230,8 @@ def _stage_rows(
 ) -> str:
     rows = []
     stages = sorted(manifest["stages"], key=lambda stage: stage["order"])
-    for stage in stages:
+    spans = _row_group_spans(stages, _stage_group_label)
+    for index, stage in enumerate(stages):
         rel_path = str(stage["path"])
         exists = (run_dir / rel_path).exists()
         status = ui_text.text("exists_status") if exists else ui_text.text("missing_status")
@@ -202,8 +245,15 @@ def _stage_rows(
             f"{debug_graph_view_path}?stage={stage['order']}",
             ui_text.text("debug_graph_format_label"),
         )
+        group_cell = ""
+        if spans[index]:
+            group_cell = (
+                f'<td class="stage-group-cell" rowspan="{spans[index]}">'
+                f"{_cell(_stage_group_label(stage))}</td>"
+            )
         rows.append(
             "<tr>"
+            f"{group_cell}"
             f"<td>{_cell(stage['order'])}</td>"
             f"<td>{_cell(stage['name'])}</td>"
             f"<td>{view_cell}</td>"
@@ -253,14 +303,32 @@ def _stage_graph_rows(
 
 def _command_rows(run_dir: pathlib.Path, manifest: dict[str, Any]) -> str:
     rows = []
-    for command in manifest.get("commands", []):
+    stages_by_path = {stage.get("path"): stage for stage in manifest.get("stages", [])}
+    commands = list(manifest.get("commands", []))
+
+    def command_stage_group(command: dict[str, Any]) -> str:
+        stdout = command.get("stdout")
+        stage = stages_by_path.get(stdout)
+        if isinstance(stage, dict):
+            return _stage_group_label(stage)
+        return _infer_stage_group_label(command.get("stage"))
+
+    spans = _row_group_spans(commands, command_stage_group)
+    for index, command in enumerate(commands):
         args = " ".join(command.get("args", []))
         report_path = command.get("stderr") or command.get("stdout")
         report_cell = ""
         if report_path:
             report_cell = _path_link(report_path, exists=(run_dir / report_path).exists())
+        group_cell = ""
+        if spans[index]:
+            group_cell = (
+                f'<td class="stage-group-cell" rowspan="{spans[index]}">'
+                f"{_cell(command_stage_group(command))}</td>"
+            )
         rows.append(
             "<tr>"
+            f"{group_cell}"
             f"<td>{_cell(command.get('stage'))}</td>"
             f"<td>{_cell(command.get('tool'))}</td>"
             f"<td>{_cell(args)}</td>"
@@ -1620,7 +1688,7 @@ def render_index(run_dir: pathlib.Path, manifest: dict[str, Any]) -> pathlib.Pat
 <details class="advanced-section">
 <summary>{_cell(ui_text.text("advanced_commands_summary"))}</summary>
 <table>
-<thead><tr><th>{_cell(ui_text.text("stage_column"))}</th><th>{_cell(ui_text.text("tool_column"))}</th><th>{_cell(ui_text.text("args_column"))}</th><th>{_cell(ui_text.text("status_column"))}</th><th>{_cell(ui_text.text("report_column"))}</th></tr></thead>
+<thead><tr><th>{_cell(ui_text.text("stage_column"))}</th><th>{_cell(ui_text.text("step_column"))}</th><th>{_cell(ui_text.text("tool_column"))}</th><th>{_cell(ui_text.text("args_column"))}</th><th>{_cell(ui_text.text("status_column"))}</th><th>{_cell(ui_text.text("report_column"))}</th></tr></thead>
 <tbody>
 {_command_rows(run_dir, manifest)}
 </tbody>
@@ -1648,6 +1716,7 @@ section, details {{ margin: 1rem 0; }}
 table {{ border-collapse: collapse; width: 100%; background: #ffffff; }}
 th, td {{ border: 1px solid #cbd5e1; padding: 0.45rem 0.6rem; text-align: left; }}
 th {{ background: #f1f5f9; }}
+td.stage-group-cell {{ background: #f8fafc; color: #1f2933; font-weight: 700; vertical-align: top; }}
 .overview-grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(9rem, 1fr)); gap: 0.75rem; }}
 .overview-card {{ border: 1px solid #dbe3ee; background: #ffffff; border-radius: 8px; padding: 0.7rem; }}
 .overview-card span {{ display: block; color: #64748b; font-size: 0.78rem; font-weight: 700; margin-bottom: 0.25rem; }}
@@ -1681,7 +1750,7 @@ dd {{ margin: 0 0 0.35rem 0; }}
 <section>
 <h2>{_cell(ui_text.text("stage_timeline_heading"))}</h2>
 <table>
-<thead><tr><th>{_cell(ui_text.text("stage_order_column"))}</th><th>{_cell(ui_text.text("stage_column"))}</th><th>{_cell(ui_text.text("mlir_column"))}</th><th>{_cell(ui_text.text("debug_graph_column"))}</th><th>{_cell(ui_text.text("status_column"))}</th></tr></thead>
+<thead><tr><th>{_cell(ui_text.text("stage_column"))}</th><th>{_cell(ui_text.text("stage_order_column"))}</th><th>{_cell(ui_text.text("step_column"))}</th><th>{_cell(ui_text.text("mlir_column"))}</th><th>{_cell(ui_text.text("debug_graph_column"))}</th><th>{_cell(ui_text.text("status_column"))}</th></tr></thead>
 <tbody>
 {_stage_rows(run_dir, manifest, stage_views, debug_graph_view['view_path'])}
 </tbody>

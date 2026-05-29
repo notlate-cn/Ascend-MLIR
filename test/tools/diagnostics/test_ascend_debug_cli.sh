@@ -412,6 +412,16 @@ assert by_phase["Translate"] == [
 ]
 PY
 ascend-debug open "${TMP_DIR}/debug-run-full-codegen" --no-browser >"${TMP_DIR}/ascend-debug-open-full-codegen.txt"
+grep -Fq '<thead><tr><th>Stage</th><th>顺序</th><th>Step</th><th>MLIR</th><th>调试图</th><th>状态</th></tr></thead>' \
+  "${TMP_DIR}/debug-run-full-codegen/index.html"
+grep -Fq '<td class="stage-group-cell" rowspan="5">Kernelize</td>' \
+  "${TMP_DIR}/debug-run-full-codegen/index.html"
+grep -Fq '<td>021-kernelize-structured-ops</td>' \
+  "${TMP_DIR}/debug-run-full-codegen/index.html"
+grep -Fq '<thead><tr><th>Stage</th><th>Step</th><th>Tool</th><th>Args</th><th>状态</th><th>报告</th></tr></thead>' \
+  "${TMP_DIR}/debug-run-full-codegen/index.html"
+grep -Fq '<td class="stage-group-cell" rowspan="4">Translate</td>' \
+  "${TMP_DIR}/debug-run-full-codegen/index.html"
 test -f "${TMP_DIR}/debug-run-full-codegen/graphs/stages/021-kernelize-structured-ops.graph.json"
 test -f "${TMP_DIR}/debug-run-full-codegen/graphs/stages/060-compute-lower-out.graph.json"
 test -f "${TMP_DIR}/debug-run-full-codegen/graphs/stages/090-cann-signature-out.graph.json"

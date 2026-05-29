@@ -21,6 +21,7 @@ UI_TEXT: dict[str, str] = {
     "stage_order_column": "顺序",
     "stage_timeline_heading": "Stage Timeline",
     "status_column": "状态",
+    "step_column": "Step",
     "text_format_label": "文本格式",
     "tool_column": "Tool",
 }
