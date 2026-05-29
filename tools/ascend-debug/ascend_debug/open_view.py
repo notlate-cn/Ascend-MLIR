@@ -5,6 +5,7 @@ import html
 import json
 import pathlib
 import posixpath
+import shlex
 import sys
 import webbrowser
 from typing import Any
@@ -136,7 +137,7 @@ def _link(href: str, label: str) -> str:
 def _infer_stage_group_label(name: Any) -> str:
     text = str(name or "").lower()
     if text == "source":
-        return "source"
+        return "Source"
     if "normalize" in text:
         return "Normalize"
     if "kernelize" in text:
@@ -175,8 +176,84 @@ def _row_group_spans(items: list[Any], label_fn) -> list[int]:
     return spans
 
 
+def _commands_by_output_path(manifest: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    commands: dict[str, dict[str, Any]] = {}
+    for command in manifest.get("commands", []):
+        stdout = command.get("stdout")
+        if isinstance(stdout, str) and stdout:
+            commands[stdout] = command
+    return commands
+
+
+def _command_cell(command: dict[str, Any]) -> str:
+    tool = command.get("tool")
+    args = command.get("args", [])
+    if not tool:
+        return '<span class="muted">No standalone command</span>'
+
+    stage = command.get("stage")
+    summary_parts = [str(tool)]
+    if stage:
+        summary_parts.append(str(stage))
+    full_command = shlex.join([str(tool), *[str(arg) for arg in args]])
+    return (
+        '<details class="command-detail">'
+        f"<summary><code>{_cell(' '.join(summary_parts))}</code></summary>"
+        f'<code class="command-full">{_cell(full_command)}</code>'
+        "</details>"
+    )
+
+
+def _rowspan_attr(span: int) -> str:
+    return f' rowspan="{span}"' if span > 1 else ""
+
+
+def _stage_view_cell(view_rel_path: str | None, debug_href: str) -> str:
+    links = []
+    if view_rel_path:
+        links.append(_link(view_rel_path, ui_text.text("text_format_label")))
+    links.append(_link(debug_href, ui_text.text("debug_graph_format_label")))
+    return '<span class="view-links">' + "".join(links) + "</span>"
+
+
+def _stage_command_spans(
+    stages: list[dict[str, Any]],
+    commands_by_output: dict[str, dict[str, Any]],
+) -> tuple[list[int], list[dict[str, Any]]]:
+    spans = [0] * len(stages)
+    commands = [{} for _ in stages]
+    stage_group_spans = _row_group_spans(stages, _stage_group_label)
+    index = 0
+    while index < len(stages):
+        group_span = stage_group_spans[index] or 1
+        group_end = index + group_span
+        exact_commands = [
+            (row_index, command)
+            for row_index in range(index, group_end)
+            if (command := commands_by_output.get(str(stages[row_index]["path"])))
+        ]
+
+        if len(exact_commands) == 1:
+            spans[index] = group_span
+            commands[index] = exact_commands[0][1]
+        elif len(exact_commands) > 1:
+            for row_index in range(index, group_end):
+                spans[row_index] = 1
+                command = commands_by_output.get(str(stages[row_index]["path"]))
+                if command:
+                    commands[row_index] = command
+        else:
+            spans[index] = group_span
+        index = group_end
+    return spans, commands
+
+
 def _stage_view_rel_path(stage_rel_path: str) -> str:
     return f"views/{stage_rel_path}.html"
+
+
+def _report_view_rel_path(report_rel_path: str) -> str:
+    return f"views/{report_rel_path}.html"
 
 
 def _relative_href(from_rel_path: str, to_rel_path: str) -> str:
@@ -226,24 +303,20 @@ def _stage_rows(
     run_dir: pathlib.Path,
     manifest: dict[str, Any],
     stage_views: dict[str, str],
+    report_views: dict[str, str],
     debug_graph_view_path: str,
 ) -> str:
     rows = []
     stages = sorted(manifest["stages"], key=lambda stage: stage["order"])
     spans = _row_group_spans(stages, _stage_group_label)
+    commands_by_output = _commands_by_output_path(manifest)
+    command_spans, commands_by_row = _stage_command_spans(stages, commands_by_output)
     for index, stage in enumerate(stages):
         rel_path = str(stage["path"])
-        exists = (run_dir / rel_path).exists()
-        status = ui_text.text("exists_status") if exists else ui_text.text("missing_status")
         view_rel_path = stage_views.get(rel_path)
-        view_cell = (
-            _link(view_rel_path, ui_text.text("text_format_label"))
-            if view_rel_path
-            else ""
-        )
-        debug_cell = _link(
+        view_cell = _stage_view_cell(
+            view_rel_path,
             f"{debug_graph_view_path}?stage={stage['order']}",
-            ui_text.text("debug_graph_format_label"),
         )
         group_cell = ""
         if spans[index]:
@@ -251,14 +324,29 @@ def _stage_rows(
                 f'<td class="stage-group-cell" rowspan="{spans[index]}">'
                 f"{_cell(_stage_group_label(stage))}</td>"
             )
+        command_cell = ""
+        report_cell = ""
+        if command_spans[index]:
+            command = commands_by_row[index]
+            report_path = command.get("stderr")
+            report_link = ""
+            if report_path:
+                report_view = report_views.get(str(report_path))
+                report_link = (
+                    _link(report_view, str(report_path))
+                    if report_view
+                    else _path_link(str(report_path), exists=(run_dir / str(report_path)).exists())
+                )
+            rowspan = _rowspan_attr(command_spans[index])
+            command_cell = f'<td class="command-cell"{rowspan}>{_command_cell(command)}</td>'
+            report_cell = f'<td class="report-cell"{rowspan}>{report_link}</td>'
         rows.append(
             "<tr>"
             f"{group_cell}"
-            f"<td>{_cell(stage['order'])}</td>"
             f"<td>{_cell(stage['name'])}</td>"
-            f"<td>{view_cell}</td>"
-            f"<td>{debug_cell}</td>"
-            f"<td>{_cell(status)}</td>"
+            f'<td class="view-cell">{view_cell}</td>'
+            f"{command_cell}"
+            f"{report_cell}"
             "</tr>"
         )
     return "\n".join(rows)
@@ -296,44 +384,6 @@ def _stage_graph_rows(
             f"<td>{_cell(edge_count)}</td>"
             f"<td>{_cell(kernel_count)}</td>"
             f"<td>{_cell('存在' if exists else '缺失')}</td>"
-            "</tr>"
-        )
-    return "\n".join(rows)
-
-
-def _command_rows(run_dir: pathlib.Path, manifest: dict[str, Any]) -> str:
-    rows = []
-    stages_by_path = {stage.get("path"): stage for stage in manifest.get("stages", [])}
-    commands = list(manifest.get("commands", []))
-
-    def command_stage_group(command: dict[str, Any]) -> str:
-        stdout = command.get("stdout")
-        stage = stages_by_path.get(stdout)
-        if isinstance(stage, dict):
-            return _stage_group_label(stage)
-        return _infer_stage_group_label(command.get("stage"))
-
-    spans = _row_group_spans(commands, command_stage_group)
-    for index, command in enumerate(commands):
-        args = " ".join(command.get("args", []))
-        report_path = command.get("stderr") or command.get("stdout")
-        report_cell = ""
-        if report_path:
-            report_cell = _path_link(report_path, exists=(run_dir / report_path).exists())
-        group_cell = ""
-        if spans[index]:
-            group_cell = (
-                f'<td class="stage-group-cell" rowspan="{spans[index]}">'
-                f"{_cell(command_stage_group(command))}</td>"
-            )
-        rows.append(
-            "<tr>"
-            f"{group_cell}"
-            f"<td>{_cell(command.get('stage'))}</td>"
-            f"<td>{_cell(command.get('tool'))}</td>"
-            f"<td>{_cell(args)}</td>"
-            f"<td>{_cell(command.get('status'))}</td>"
-            f"<td>{report_cell}</td>"
             "</tr>"
         )
     return "\n".join(rows)
@@ -604,6 +654,51 @@ input.addEventListener("input", () => {{
   }}
 }});
 </script>
+</body>
+</html>
+"""
+    layout.write_text(view_path, document)
+    return view_rel_path
+
+
+def _render_report_view(run_dir: pathlib.Path, rel_path: str) -> str | None:
+    source_path = run_dir / rel_path
+    if not source_path.exists():
+        return None
+    view_rel_path = _report_view_rel_path(rel_path)
+    view_path = run_dir / view_rel_path
+    raw_href = html.escape(_relative_href(view_rel_path, rel_path), quote=True)
+    dashboard_href = html.escape(_relative_href(view_rel_path, "index.html"), quote=True)
+    try:
+        source_text = source_path.read_text(encoding="utf-8", errors="replace")
+    except OSError as error:
+        raise CommandError(f"could not read report view source: {source_path}: {error}") from error
+    document = f"""<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>{_cell(pathlib.PurePosixPath(rel_path).name)} - ascend-debug</title>
+<style>
+:root {{ color-scheme: light; }}
+body {{ font-family: sans-serif; margin: 0; color: #17202a; background: #eef2f7; }}
+header {{ position: sticky; top: 0; z-index: 1; padding: 0.75rem 1rem; background: #ffffff; border-bottom: 1px solid #cbd5e1; }}
+h1 {{ font-size: 1rem; margin: 0 0 0.5rem 0; }}
+.toolbar {{ display: flex; gap: 0.75rem; align-items: center; flex-wrap: wrap; }}
+main {{ padding: 0.75rem 1rem 2rem; }}
+pre {{ margin: 0; padding: 0.85rem; white-space: pre-wrap; overflow-wrap: anywhere; font: 12px/1.5 SFMono-Regular, Menlo, Consolas, monospace; color: #17202a; background: #ffffff; border: 1px solid #cbd5e1; border-radius: 6px; }}
+</style>
+</head>
+<body>
+<header>
+<h1>{_cell(rel_path)}</h1>
+<div class="toolbar">
+<a href="{raw_href}">原始 report.txt</a>
+<a href="{dashboard_href}">调试首页</a>
+</div>
+</header>
+<main>
+<pre>{html.escape(source_text)}</pre>
+</main>
 </body>
 </html>
 """
@@ -1199,6 +1294,25 @@ def _render_graph_mlir_views(run_dir: pathlib.Path, manifest: dict[str, Any]) ->
     return graph_views
 
 
+def _render_report_views(run_dir: pathlib.Path, manifest: dict[str, Any]) -> dict[str, str]:
+    report_paths = {
+        report["path"]
+        for report in manifest.get("reports", [])
+        if isinstance(report, dict) and isinstance(report.get("path"), str)
+    }
+    report_paths.update(
+        command["stderr"]
+        for command in manifest.get("commands", [])
+        if isinstance(command, dict) and isinstance(command.get("stderr"), str)
+    )
+    report_views = {}
+    for rel_path in sorted(report_paths):
+        view_rel_path = _render_report_view(run_dir, rel_path)
+        if view_rel_path:
+            report_views[rel_path] = view_rel_path
+    return report_views
+
+
 def _render_json_views(run_dir: pathlib.Path, manifest: dict[str, Any]) -> dict[str, str]:
     json_paths = {
         rel_path
@@ -1660,6 +1774,7 @@ def render_index(run_dir: pathlib.Path, manifest: dict[str, Any]) -> pathlib.Pat
     stage_views = _render_stage_views(run_dir, manifest)
     stage_graph_views = stage_graph.render_stage_graphs(run_dir, manifest["stages"])
     graph_views = _render_graph_mlir_views(run_dir, manifest)
+    report_views = _render_report_views(run_dir, manifest)
     kernel_summary = _load_kernel_summary(run_dir)
     memory_summary = _write_memory_summary(run_dir, kernel_summary)
     tensor_diff = _load_tensor_diff(run_dir)
@@ -1682,19 +1797,6 @@ def render_index(run_dir: pathlib.Path, manifest: dict[str, Any]) -> pathlib.Pat
         memory_summary,
     )
     _write_kernel_alias_views(run_dir, debug_graph_view)
-    command_section = ""
-    if manifest.get("commands"):
-        command_section = f"""
-<details class="advanced-section">
-<summary>{_cell(ui_text.text("advanced_commands_summary"))}</summary>
-<table>
-<thead><tr><th>{_cell(ui_text.text("stage_column"))}</th><th>{_cell(ui_text.text("step_column"))}</th><th>{_cell(ui_text.text("tool_column"))}</th><th>{_cell(ui_text.text("args_column"))}</th><th>{_cell(ui_text.text("status_column"))}</th><th>{_cell(ui_text.text("report_column"))}</th></tr></thead>
-<tbody>
-{_command_rows(run_dir, manifest)}
-</tbody>
-</table>
-</details>
-"""
     debug_graph_section = f"""
 <section class="primary-debug-section">
 <a class="primary-debug-link" href="{_cell(debug_graph_view['view_path'])}">{_cell(ui_text.text("open_debug_workbench"))}</a>
@@ -1715,8 +1817,16 @@ h1 {{ margin: 0; font-size: 1.55rem; }}
 section, details {{ margin: 1rem 0; }}
 table {{ border-collapse: collapse; width: 100%; background: #ffffff; }}
 th, td {{ border: 1px solid #cbd5e1; padding: 0.45rem 0.6rem; text-align: left; }}
-th {{ background: #f1f5f9; }}
-td.stage-group-cell {{ background: #f8fafc; color: #1f2933; font-weight: 700; vertical-align: top; }}
+th {{ background: #f1f5f9; text-align: center; }}
+td.stage-group-cell {{ background: #f8fafc; color: #1f2933; font-weight: 700; vertical-align: middle; }}
+td.view-cell {{ white-space: nowrap; }}
+.view-links {{ display: inline-flex; gap: 1rem; align-items: center; }}
+td.command-cell, td.report-cell {{ vertical-align: middle; }}
+td.command-cell {{ max-width: 28rem; }}
+.command-detail summary {{ cursor: pointer; }}
+.command-detail summary code {{ white-space: nowrap; }}
+.command-full {{ display: block; margin-top: 0.35rem; white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.35; }}
+.muted {{ color: #64748b; }}
 .overview-grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(9rem, 1fr)); gap: 0.75rem; }}
 .overview-card {{ border: 1px solid #dbe3ee; background: #ffffff; border-radius: 8px; padding: 0.7rem; }}
 .overview-card span {{ display: block; color: #64748b; font-size: 0.78rem; font-weight: 700; margin-bottom: 0.25rem; }}
@@ -1750,13 +1860,12 @@ dd {{ margin: 0 0 0.35rem 0; }}
 <section>
 <h2>{_cell(ui_text.text("stage_timeline_heading"))}</h2>
 <table>
-<thead><tr><th>{_cell(ui_text.text("stage_column"))}</th><th>{_cell(ui_text.text("stage_order_column"))}</th><th>{_cell(ui_text.text("step_column"))}</th><th>{_cell(ui_text.text("mlir_column"))}</th><th>{_cell(ui_text.text("debug_graph_column"))}</th><th>{_cell(ui_text.text("status_column"))}</th></tr></thead>
+<thead><tr><th>{_cell(ui_text.text("stage_column"))}</th><th>{_cell(ui_text.text("step_column"))}</th><th>{_cell(ui_text.text("view_column"))}</th><th>{_cell(ui_text.text("command_column"))}</th><th>{_cell(ui_text.text("report_column"))}</th></tr></thead>
 <tbody>
-{_stage_rows(run_dir, manifest, stage_views, debug_graph_view['view_path'])}
+{_stage_rows(run_dir, manifest, stage_views, report_views, debug_graph_view['view_path'])}
 </tbody>
 </table>
 </section>
-{command_section}
 </main>
 </body>
 </html>

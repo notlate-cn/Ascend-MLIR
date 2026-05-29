@@ -7,3 +7,8 @@ add_subdirectory(autotuner)
 add_subdirectory(mix-compiler)
 add_subdirectory(mix-tiling-helper)
 add_subdirectory(runtime-session)
+
+option(ASCEND_BUILD_STAGE_GRAPH_TOOL "Build the MLIR-backed ascend-stage-graph diagnostic tool" OFF)
+if(ASCEND_BUILD_STAGE_GRAPH_TOOL)
+  add_subdirectory(ascend-stage-graph)
+endif()

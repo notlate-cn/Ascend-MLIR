@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import html
+import os
 import pathlib
 import re
+import shutil
+import subprocess
 from typing import Any
 
 from ascend_debug import layout
@@ -13,6 +16,7 @@ FUNC_RE = re.compile(r"func\.func\s+@(?P<name>[A-Za-z0-9_.$-]+)\((?P<args>[^)]*)
 OP_RE = re.compile(
     r"^\s*(?P<results>%[A-Za-z0-9_.$-]+(?:\s*,\s*%[A-Za-z0-9_.$-]+)*)\s*=\s*(?P<op>[A-Za-z_][A-Za-z0-9_.]*)"
 )
+RESULTLESS_OP_RE = re.compile(r"^\s*(?P<op>[A-Za-z_][A-Za-z0-9_.]*)\b")
 RETURN_RE = re.compile(r"^\s*return\b")
 BODY_OP_RE = re.compile(
     r"^\s*(?:%[A-Za-z0-9_.$-]+(?:\s*,\s*%[A-Za-z0-9_.$-]+)*\s*=\s*)?"
@@ -35,6 +39,65 @@ def _stage_graph_rel_paths(stage_rel_path: str) -> tuple[str, str]:
         f"graphs/stages/{stem}.graph.json",
         f"views/graphs/stages/{stem}.graph.html",
     )
+
+
+def _find_mlir_stage_graph_tool() -> pathlib.Path | None:
+    env_tool = os.environ.get("ASCEND_STAGE_GRAPH_TOOL")
+    use_default_tool = os.environ.get("ASCEND_DEBUG_USE_MLIR_STAGE_GRAPH", "").lower()
+    candidates = []
+    if env_tool:
+        candidates.append(pathlib.Path(env_tool))
+    elif use_default_tool not in {"1", "true", "yes", "on"}:
+        return None
+    package_dir = pathlib.Path(__file__).resolve().parent
+    candidates.append(package_dir.parent / "ascend-stage-graph")
+    path_tool = shutil.which("ascend-stage-graph")
+    if path_tool:
+        candidates.append(pathlib.Path(path_tool))
+    for candidate in candidates:
+        if candidate.exists() and os.access(candidate, os.X_OK):
+            return candidate
+    return None
+
+
+def _run_mlir_stage_graph_tool(
+    *,
+    tool: pathlib.Path,
+    stage: dict[str, Any],
+    source_path: pathlib.Path,
+    output_path: pathlib.Path,
+) -> dict[str, Any] | None:
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    command = [
+        str(tool),
+        str(source_path),
+        "--stage-order",
+        str(stage["order"]),
+        "--stage-name",
+        str(stage["name"]),
+        "--stage-path",
+        str(stage["path"]),
+        "--output",
+        str(output_path),
+    ]
+    try:
+        subprocess.run(command, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    except (OSError, subprocess.CalledProcessError):
+        output_path.unlink(missing_ok=True)
+        return None
+    try:
+        import json
+
+        return json.loads(output_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+
+
+def _edge_class_for_kind(kind: str | None) -> str:
+    if not kind:
+        return ""
+    safe = re.sub(r"[^A-Za-z0-9_-]+", "-", kind).replace("_", "-").strip("-")
+    return f" graph-edge-{safe}" if safe else ""
 
 
 def _href(from_rel_path: str, to_rel_path: str) -> str:
@@ -226,12 +289,182 @@ def _collect_op_text(lines: list[str], index: int, op_name: str) -> tuple[str, i
         cursor = index + 1
         while cursor < len(lines):
             collected.append(lines[cursor])
-            if "} ->" in lines[cursor]:
+            if lines[cursor].strip().startswith("}"):
                 cursor += 1
                 break
             cursor += 1
         return "\n".join(collected), cursor
     return lines[index], index + 1
+
+
+def _match_resultless_op(line: str) -> re.Match[str] | None:
+    stripped = line.strip()
+    if (
+        not stripped
+        or stripped.startswith(("#", "//", "^", "}"))
+        or stripped.startswith("module")
+        or stripped.startswith("func.func")
+    ):
+        return None
+    match = RESULTLESS_OP_RE.match(line)
+    if not match:
+        return None
+    op_name = match.group("op")
+    return match if "." in op_name else None
+
+
+def _extract_linalg_out_values(op_text: str) -> list[str]:
+    match = re.search(r"\bouts\((?P<body>.*?)\)", op_text, re.S)
+    if not match:
+        return []
+    values: list[str] = []
+    for value in SSA_VALUE_RE.findall(match.group("body")):
+        if value not in values:
+            values.append(value)
+    return values
+
+
+def _observes_memory_effect(op_name: str) -> bool:
+    if op_name == "func.return" or op_name.startswith("linalg."):
+        return True
+    return op_name in {
+        "affine.load",
+        "affine.store",
+        "memref.atomic_rmw",
+        "memref.copy",
+        "memref.generic_atomic_rmw",
+        "memref.load",
+        "memref.store",
+        "vector.transfer_read",
+        "vector.transfer_write",
+    }
+
+
+RESOURCE_RULES: dict[str, dict[str, Any]] = {
+    "ascendc.pipe.init_queue": {
+        "read_inputs": (0,),
+        "write_inputs": (1,),
+    },
+    "ascendc.pipe.init_buffer": {
+        "read_inputs": (0,),
+        "write_inputs": (1,),
+    },
+    "ascendc.que_bind.alloc_tensor": {
+        "read_inputs": (0,),
+        "write_inputs": (0,),
+        "write_results": True,
+    },
+    "ascendc.que_bind.deque_tensor": {
+        "read_inputs": (0,),
+        "write_inputs": (0,),
+        "write_results": True,
+    },
+    "ascendc.que_bind.enque_tensor": {
+        "read_inputs": (1,),
+        "write_inputs": (0,),
+    },
+    "ascendc.que_bind.free_tensor": {
+        "read_inputs": (1,),
+        "write_inputs": (0,),
+    },
+    "ascendc.global_tensor.set_global_buffer": {
+        "read_inputs_from": 1,
+        "write_inputs": (0,),
+    },
+    "ascendc.add_l2": {
+        "read_inputs_from": 1,
+        "write_inputs": (0,),
+    },
+    "ascendc.broadcast_l2": {
+        "read_inputs_from": 1,
+        "write_inputs": (0,),
+    },
+    "ascendc.mul_l2": {
+        "read_inputs_from": 1,
+        "write_inputs": (0,),
+    },
+    "emitasc.member": {
+        "read_inputs": (0,),
+        "write_results": True,
+    },
+    "emitasc.verbatim": {
+        "read_inputs_from": 1,
+        "write_inputs": (0,),
+    },
+}
+
+TERMINAL_OP_REASONS: dict[str, str] = {
+    "affine.apply": "dead-helper-value",
+    "arith.addi": "dead-helper-value",
+    "arith.constant": "constant",
+    "arith.index_cast": "dead-helper-value",
+    "ascendc.que_bind.free_tensor": "resource-free-terminal",
+    "emitasc.declare_py_struct": "emit-declaration",
+    "emitasc.member": "emit-member-read",
+    "emitasc.verbatim": "emit-verbatim-side-effect",
+    "func.arg": "unused-argument",
+    "func.return": "function-return",
+    "linalg.yield": "region-yield",
+    "memref.cast": "dead-helper-value",
+    "memref.dim": "dead-helper-value",
+    "return": "function-return",
+    "scf.for": "structured-control",
+    "scf.if": "structured-control",
+}
+
+
+PURE_VALUE_RESOURCE_OPS = {
+    "ascendc.get_block_idx",
+    "ascendc.global_tensor",
+    "ascendc.pipe",
+    "ascendc.queue",
+    "ascendc.tbuf",
+    "emitasc.copy_struct",
+    "emitasc.member",
+    "emitasc.reinterpret_cast",
+}
+
+
+def _classify_resource_access(
+    op_name: str,
+    input_values: list[str],
+    result_values: list[str],
+) -> tuple[list[str], list[str], bool]:
+    reads: list[str] = []
+    writes: list[str] = []
+
+    def add_read(value: str) -> None:
+        if value not in reads:
+            reads.append(value)
+
+    def add_write(value: str) -> None:
+        if value not in writes:
+            writes.append(value)
+
+    def add_reads(values: list[str]) -> None:
+        for value in values:
+            add_read(value)
+
+    if op_name == "ascendc.pipe_barrier":
+        return [], [], True
+    rule = RESOURCE_RULES.get(op_name)
+    if rule is not None:
+        for index in rule.get("read_inputs", ()):
+            if index < len(input_values):
+                add_read(input_values[index])
+        for index in rule.get("write_inputs", ()):
+            if index < len(input_values):
+                add_write(input_values[index])
+        if "read_inputs_from" in rule:
+            add_reads(input_values[rule["read_inputs_from"] :])
+        if rule.get("write_results"):
+            for value in result_values:
+                add_write(value)
+        return reads, writes, False
+    if op_name.startswith("ascendc.") and input_values:
+        add_reads(input_values[1:])
+        add_write(input_values[0])
+    return reads, writes, False
 
 
 def _extract_region_body(op_text: str) -> str | None:
@@ -275,9 +508,52 @@ def parse_stage_mlir(stage: dict[str, Any], text: str) -> dict[str, Any]:
     nodes: list[dict[str, Any]] = []
     edges: list[dict[str, Any]] = []
     producer_by_value: dict[str, str] = {}
+    alias_base_by_value: dict[str, str] = {}
+    memory_writers_by_base: dict[str, list[str]] = {}
+    memory_effect_edges: set[tuple[str, str, str]] = set()
+    resource_writer_by_value: dict[str, str] = {}
+    resource_effect_edges: set[tuple[str, str, str, str]] = set()
+    control_edges: set[tuple[str, str, str]] = set()
+    last_effect_node: str | None = None
+    pending_barrier_node: str | None = None
     defined_values: set[str] = set()
     function_names: list[str] = []
     function_node_ids: dict[str, list[str]] = {}
+
+    def alias_base(value: str) -> str:
+        seen: set[str] = set()
+        current = value
+        while current in alias_base_by_value and current not in seen:
+            seen.add(current)
+            current = alias_base_by_value[current]
+        return current
+
+    def append_edge(
+        source: str,
+        target: str,
+        value: str,
+        *,
+        kind: str | None = None,
+        effect: str | None = None,
+    ) -> None:
+        edge: dict[str, Any] = {
+            "id": f"e{len(edges)}",
+            "from": source,
+            "to": target,
+            "value": value,
+        }
+        if kind is not None:
+            edge["kind"] = kind
+        if effect is not None:
+            edge["effect"] = effect
+        edges.append(edge)
+
+    def append_control_edge(source: str, target: str, value: str, effect: str) -> None:
+        key = (source, target, value)
+        if key in control_edges:
+            return
+        control_edges.add(key)
+        append_edge(source, target, value, kind="control", effect=effect)
 
     def note_function(name: str) -> None:
         if name in function_node_ids:
@@ -324,7 +600,8 @@ def parse_stage_mlir(stage: dict[str, Any], text: str) -> dict[str, Any]:
             note_function(current_function)
         op_match = OP_RE.match(line)
         return_match = RETURN_RE.match(line)
-        if not op_match and not return_match:
+        resultless_match = None if op_match or return_match else _match_resultless_op(line)
+        if not op_match and not return_match and not resultless_match:
             index += 1
             continue
 
@@ -338,6 +615,14 @@ def parse_stage_mlir(stage: dict[str, Any], text: str) -> dict[str, Any]:
                 if value in result_values or value not in defined_values:
                     continue
                 if value not in input_values:
+                    input_values.append(value)
+        elif resultless_match:
+            op_name = resultless_match.group("op")
+            op_text, next_index = _collect_op_text(lines, index, op_name)
+            result_values = []
+            input_values = []
+            for value in SSA_VALUE_RE.findall(op_text):
+                if value in defined_values and value not in input_values:
                     input_values.append(value)
         else:
             op_name = "func.return"
@@ -381,23 +666,72 @@ def parse_stage_mlir(stage: dict[str, Any], text: str) -> dict[str, Any]:
         for value in input_values:
             producer = producer_by_value.get(value)
             if producer:
-                edges.append(
-                    {
-                        "id": f"e{len(edges)}",
-                        "from": producer,
-                        "to": node_id,
-                        "value": value,
-                    }
-                )
+                append_edge(producer, node_id, value)
+        memory_bases = []
+        for value in input_values:
+            base = alias_base(value)
+            if base not in memory_bases:
+                memory_bases.append(base)
+        if _observes_memory_effect(op_name):
+            for base in memory_bases:
+                for writer in memory_writers_by_base.get(base, []):
+                    if writer == node_id:
+                        continue
+                    key = (writer, node_id, base)
+                    if key in memory_effect_edges:
+                        continue
+                    memory_effect_edges.add(key)
+                    append_edge(writer, node_id, base, kind="memory_effect", effect="write")
         for value in result_values:
             producer_by_value[value] = node_id
             defined_values.add(value)
+        if op_name in ("memref.subview", "memref.cast", "memref.reinterpret_cast") and input_values:
+            base = alias_base(input_values[0])
+            for value in result_values:
+                alias_base_by_value[value] = base
+        written_bases = []
+        if op_name == "memref.copy" and len(input_values) >= 2:
+            written_bases.append(alias_base(input_values[1]))
+        if op_name.startswith("linalg."):
+            written_bases.extend(alias_base(value) for value in _extract_linalg_out_values(op_text))
+        for base in written_bases:
+            writers = memory_writers_by_base.setdefault(base, [])
+            if node_id not in writers:
+                writers.append(node_id)
+        resource_reads, resource_writes, is_barrier = _classify_resource_access(
+            op_name, input_values, result_values
+        )
+        has_resource_access = bool(resource_reads or resource_writes)
+        if is_barrier:
+            if last_effect_node and last_effect_node != node_id:
+                append_control_edge(last_effect_node, node_id, "pipe_all", "barrier")
+            pending_barrier_node = node_id
+            last_effect_node = node_id
+        elif has_resource_access:
+            if pending_barrier_node and pending_barrier_node != node_id:
+                append_control_edge(pending_barrier_node, node_id, "pipe_all", "barrier")
+                pending_barrier_node = None
+            for value in resource_reads + resource_writes:
+                writer = resource_writer_by_value.get(value)
+                if not writer or writer == node_id:
+                    continue
+                effect = "write" if value in resource_writes else "read"
+                key = (writer, node_id, value, effect)
+                if key in resource_effect_edges:
+                    continue
+                resource_effect_edges.add(key)
+                append_edge(writer, node_id, value, kind="resource_effect", effect=effect)
+            for value in resource_writes:
+                resource_writer_by_value[value] = node_id
+            last_effect_node = node_id
+        elif written_bases:
+            last_effect_node = node_id
         index = next_index
 
     kernel_ids = sorted(
         {node["kernel_id"] for node in nodes if isinstance(node.get("kernel_id"), str)}
     )
-    return {
+    graph = {
         "schema_version": 1,
         "tool": "ascend-debug",
         "stage": {
@@ -424,6 +758,7 @@ def parse_stage_mlir(stage: dict[str, Any], text: str) -> dict[str, Any]:
         "nodes": nodes,
         "edges": edges,
     }
+    return _finalize_graph(graph)
 
 
 def _edge_rows(graph: dict[str, Any]) -> str:
@@ -451,6 +786,165 @@ def _kernel_rows(graph: dict[str, Any]) -> str:
             "</tr>"
         )
     return "\n".join(rows) or '<tr><td colspan="3">No kernel boundary in this stage.</td></tr>'
+
+
+def _node_brief(node: dict[str, Any], reason: str | None = None) -> dict[str, Any]:
+    brief = {
+        "id": node.get("id"),
+        "line": node.get("line"),
+        "op_name": node.get("op_name"),
+        "label": node.get("label"),
+    }
+    if reason:
+        brief["reason"] = reason
+    return brief
+
+
+def _terminal_reason(node: dict[str, Any], out_count: int, in_count: int) -> str | None:
+    op_name = str(node.get("op_name") or "")
+    if out_count > 0:
+        return None
+    if op_name in TERMINAL_OP_REASONS:
+        return TERMINAL_OP_REASONS[op_name]
+    if op_name in PURE_VALUE_RESOURCE_OPS:
+        return "dead-resource-value"
+    if op_name.startswith("arith."):
+        return "dead-helper-value"
+    if op_name.startswith("emitasc.declare"):
+        return "emit-declaration"
+    if op_name.startswith("emitasc."):
+        return "emit-terminal"
+    if op_name.startswith("scf.") and in_count > 0:
+        return "structured-control"
+    return None
+
+
+def _is_effect_like_node(node: dict[str, Any]) -> bool:
+    op_name = str(node.get("op_name") or "")
+    if op_name in PURE_VALUE_RESOURCE_OPS:
+        return False
+    if op_name in RESOURCE_RULES or op_name == "ascendc.pipe_barrier":
+        return True
+    if op_name.startswith("ascendc.") and not node.get("result_values"):
+        return True
+    if op_name.startswith("emitasc.") and not node.get("result_values"):
+        return True
+    return (
+        op_name in {"affine.store", "memref.copy", "memref.store", "vector.transfer_write"}
+        or op_name.startswith("linalg.")
+    )
+
+
+def _compute_connectivity(graph: dict[str, Any]) -> dict[str, Any]:
+    nodes = graph.get("nodes", [])
+    edges = graph.get("edges", [])
+    node_ids = {node.get("id") for node in nodes}
+    in_count: dict[str, int] = {node["id"]: 0 for node in nodes if isinstance(node.get("id"), str)}
+    out_count: dict[str, int] = {node["id"]: 0 for node in nodes if isinstance(node.get("id"), str)}
+    typed_count: dict[str, int] = {node["id"]: 0 for node in nodes if isinstance(node.get("id"), str)}
+    adjacency: dict[str, set[str]] = {node["id"]: set() for node in nodes if isinstance(node.get("id"), str)}
+    edge_kind_counts: dict[str, int] = {}
+
+    for edge in edges:
+        source = edge.get("from")
+        target = edge.get("to")
+        kind = edge.get("kind") or "value"
+        edge_kind_counts[kind] = edge_kind_counts.get(kind, 0) + 1
+        if source not in node_ids or target not in node_ids:
+            continue
+        if isinstance(source, str):
+            out_count[source] = out_count.get(source, 0) + 1
+        if isinstance(target, str):
+            in_count[target] = in_count.get(target, 0) + 1
+        if isinstance(source, str) and isinstance(target, str):
+            adjacency.setdefault(source, set()).add(target)
+            adjacency.setdefault(target, set()).add(source)
+            if kind in {"control", "memory_effect", "resource_effect", "region", "symbol"}:
+                typed_count[source] = typed_count.get(source, 0) + 1
+                typed_count[target] = typed_count.get(target, 0) + 1
+
+    seen: set[str] = set()
+    component_sizes: list[int] = []
+    for node_id in adjacency:
+        if node_id in seen:
+            continue
+        stack = [node_id]
+        seen.add(node_id)
+        size = 0
+        while stack:
+            current = stack.pop()
+            size += 1
+            for neighbor in adjacency.get(current, ()):
+                if neighbor not in seen:
+                    seen.add(neighbor)
+                    stack.append(neighbor)
+        component_sizes.append(size)
+
+    isolated_nodes = []
+    suspicious_isolated_nodes = []
+    allowed_terminal_nodes = []
+    dangling_effect_nodes = []
+    for node in nodes:
+        node_id = node.get("id")
+        if not isinstance(node_id, str):
+            continue
+        incoming = in_count.get(node_id, 0)
+        outgoing = out_count.get(node_id, 0)
+        terminal_reason = _terminal_reason(node, outgoing, incoming)
+        if incoming == 0 and outgoing == 0:
+            isolated_nodes.append(_node_brief(node, terminal_reason))
+            if terminal_reason is None:
+                suspicious_isolated_nodes.append(_node_brief(node))
+        if terminal_reason is not None:
+            allowed_terminal_nodes.append(_node_brief(node, terminal_reason))
+        if _is_effect_like_node(node) and typed_count.get(node_id, 0) == 0 and terminal_reason is None:
+            dangling_effect_nodes.append(_node_brief(node))
+
+    return {
+        "component_count": len(component_sizes),
+        "component_sizes": sorted(component_sizes, reverse=True),
+        "isolated_count": len(isolated_nodes),
+        "isolated_nodes": isolated_nodes,
+        "suspicious_isolated_count": len(suspicious_isolated_nodes),
+        "suspicious_isolated_nodes": suspicious_isolated_nodes,
+        "dangling_effect_count": len(dangling_effect_nodes),
+        "dangling_effect_nodes": dangling_effect_nodes,
+        "allowed_terminal_count": len(allowed_terminal_nodes),
+        "allowed_terminal_nodes": allowed_terminal_nodes,
+        "edge_kind_counts": edge_kind_counts,
+    }
+
+
+def _finalize_graph(graph: dict[str, Any]) -> dict[str, Any]:
+    nodes = graph.setdefault("nodes", [])
+    edges = graph.setdefault("edges", [])
+    for index, edge in enumerate(edges):
+        edge.setdefault("id", f"e{index}")
+        edge.setdefault("kind", "value")
+        if edge.get("label") is None:
+            effect = edge.get("effect")
+            value = edge.get("value", "")
+            edge["label"] = f"{effect} {value}" if effect else value
+    kernel_ids = sorted(
+        {
+            node.get("kernel_id")
+            for node in nodes
+            if isinstance(node.get("kernel_id"), str)
+        }
+    )
+    graph["node_count"] = len(nodes)
+    graph["edge_count"] = len(edges)
+    graph["kernel_count"] = len(kernel_ids)
+    graph["kernels"] = [
+        {
+            "kernel_id": kernel_id,
+            "node_ids": [node["id"] for node in nodes if node.get("kernel_id") == kernel_id],
+        }
+        for kernel_id in kernel_ids
+    ]
+    graph["kernel_ids"] = kernel_ids
+    graph["connectivity"] = _compute_connectivity(graph)
+    return graph
 
 
 def _truncate(value: Any, limit: int) -> str:
@@ -528,6 +1022,14 @@ def _compute_graph_layout(graph: dict[str, Any]) -> dict[str, Any]:
                 "from": edge["from"],
                 "to": edge["to"],
                 "value": edge["value"],
+                "kind": edge.get("kind"),
+                "effect": edge.get("effect"),
+                "label": edge.get("label")
+                or (
+                    f"{edge.get('effect')} {edge['value']}"
+                    if edge.get("effect")
+                    else edge["value"]
+                ),
                 "path": path,
                 "label_x": (source_x + target_x) / 2,
                 "label_y": (source_y + target_y) / 2 - 8,
@@ -562,11 +1064,12 @@ def render_svg_graph(
     }
     edge_elements = []
     for edge in edge_layout:
+        edge_class = _edge_class_for_kind(edge.get("kind"))
         edge_elements.append(
-            '<g class="graph-edge">'
-            f'<path class="graph-edge-path" d="{_cell(edge.get("path"))}" />'
+            f'<g class="graph-edge{edge_class}">'
+            f'<path class="graph-edge-path{edge_class}" d="{_cell(edge.get("path"))}" />'
             f'<text class="graph-edge-label" x="{_cell(edge.get("label_x"))}" '
-            f'y="{_cell(edge.get("label_y"))}">{_cell(_truncate(edge.get("value"), 24))}</text>'
+            f'y="{_cell(edge.get("label_y"))}">{_cell(_truncate(edge.get("label", edge.get("value")), 24))}</text>'
             "</g>"
         )
 
@@ -660,6 +1163,12 @@ h1 {{ margin: 0 0 0.35rem; font-size: 1rem; }}
 .graph-canvas {{ width: 100%; overflow: auto; border: 1px solid #cbd5e1; border-radius: 6px; background: #ffffff; }}
 #stage-graph-svg {{ display: block; min-width: 100%; }}
 .graph-edge-path {{ fill: none; stroke: #64748b; stroke-width: 1.5; marker-end: url(#arrow-head); }}
+.graph-edge-path.graph-edge-value {{ stroke: #64748b; }}
+.graph-edge-path.graph-edge-memory-effect {{ stroke: #0f766e; stroke-dasharray: 6 4; }}
+.graph-edge-path.graph-edge-resource-effect {{ stroke: #7c3aed; stroke-dasharray: 6 4; }}
+.graph-edge-path.graph-edge-control {{ stroke: #ea580c; stroke-dasharray: 2 4; }}
+.graph-edge-path.graph-edge-region {{ stroke: #60a5fa; stroke-dasharray: 2 6; opacity: 0.72; }}
+.graph-edge-path.graph-edge-symbol {{ stroke: #475569; stroke-dasharray: 4 4; }}
 .graph-edge-label {{ fill: #475569; font-size: 11px; font-family: SFMono-Regular, Menlo, Consolas, monospace; }}
 .graph-node {{ cursor: pointer; outline: none; }}
 .graph-node rect {{ fill: #ffffff; stroke: #94a3b8; stroke-width: 1.4; }}
@@ -746,20 +1255,33 @@ if (graphNodes.length) selectNode(Number(graphNodes[0].dataset.nodeIndex));
 
 def render_stage_graphs(run_dir: pathlib.Path, stages: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
     graph_views: dict[str, dict[str, Any]] = {}
+    mlir_tool = _find_mlir_stage_graph_tool()
     for stage in sorted(stages, key=lambda item: item["order"]):
         rel_path = stage["path"]
         source_path = run_dir / rel_path
         if not source_path.exists():
             continue
-        text = source_path.read_text(encoding="utf-8", errors="replace")
-        graph = parse_stage_mlir(stage, text)
-        graph["layout"] = _compute_graph_layout(graph)
         json_rel_path, _ = _stage_graph_rel_paths(rel_path)
+        graph: dict[str, Any] | None = None
+        if mlir_tool is not None:
+            graph = _run_mlir_stage_graph_tool(
+                tool=mlir_tool,
+                stage=stage,
+                source_path=source_path,
+                output_path=run_dir / json_rel_path,
+            )
+        if graph is None:
+            text = source_path.read_text(encoding="utf-8", errors="replace")
+            graph = parse_stage_mlir(stage, text)
+            graph["graph_source"] = "python-parser"
+        graph = _finalize_graph(graph)
+        graph["layout"] = _compute_graph_layout(graph)
         layout.write_json(run_dir / json_rel_path, graph)
         graph_views[rel_path] = {
             "json_rel_path": json_rel_path,
             "node_count": graph["node_count"],
             "edge_count": graph["edge_count"],
             "kernel_count": graph["kernel_count"],
+            "graph_source": graph.get("graph_source", "python-parser"),
         }
     return graph_views

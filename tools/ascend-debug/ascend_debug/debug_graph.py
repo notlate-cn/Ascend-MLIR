@@ -88,6 +88,26 @@ def _stage_brief(stage: dict[str, Any], index: int) -> dict[str, Any]:
     return brief
 
 
+def _stage_connectivity_record(stage: dict[str, Any]) -> dict[str, Any]:
+    graph = stage.get("graph")
+    connectivity = graph.get("connectivity") if isinstance(graph, dict) else {}
+    if not isinstance(connectivity, dict):
+        connectivity = {}
+    return {
+        "order": stage.get("order"),
+        "name": stage.get("name"),
+        "path": stage.get("path"),
+        "node_count": stage.get("node_count", 0),
+        "edge_count": stage.get("edge_count", 0),
+        "component_count": connectivity.get("component_count", 0),
+        "isolated_count": connectivity.get("isolated_count", 0),
+        "suspicious_isolated_count": connectivity.get("suspicious_isolated_count", 0),
+        "dangling_effect_count": connectivity.get("dangling_effect_count", 0),
+        "allowed_terminal_count": connectivity.get("allowed_terminal_count", 0),
+        "edge_kind_counts": connectivity.get("edge_kind_counts", {}),
+    }
+
+
 def _stage_digest(run_dir: pathlib.Path, stage: dict[str, Any] | None) -> str | None:
     if not isinstance(stage, dict):
         return None
@@ -179,7 +199,7 @@ def _build_stage_groups(run_dir: pathlib.Path, stages: list[dict[str, Any]]) -> 
             {
                 "name": name,
                 "kind": "pass",
-                "label": name,
+                "label": name.capitalize(),
                 "default_stage": _stage_brief(output_stage, output_index),
                 "input_stage": _stage_brief(input_stage, input_index) if input_stage is not None and input_index is not None else None,
                 "output_stage": _stage_brief(output_stage, output_index),
@@ -469,6 +489,27 @@ def _overlay_cards(overlays: dict[str, Any]) -> str:
     return "\n".join(cards)
 
 
+def _stage_group_children(group: dict[str, Any]) -> list[dict[str, Any]]:
+    raw_children: list[dict[str, Any]] = []
+    steps = group.get("steps")
+    if isinstance(steps, list) and steps:
+        raw_children.extend(child for child in steps if isinstance(child, dict))
+    else:
+        for key in ("input_stage", "output_stage", "default_stage"):
+            child = group.get(key)
+            if isinstance(child, dict):
+                raw_children.append(child)
+    children = []
+    seen: set[Any] = set()
+    for child in raw_children:
+        stage_index = child.get("stage_index")
+        if stage_index in seen:
+            continue
+        seen.add(stage_index)
+        children.append(child)
+    return children
+
+
 def _stage_buttons(debug_graph: dict[str, Any]) -> str:
     primary = debug_graph.get("primary_stage")
     active_name = primary.get("name") if isinstance(primary, dict) else None
@@ -476,17 +517,20 @@ def _stage_buttons(debug_graph: dict[str, Any]) -> str:
     buttons = []
     if isinstance(groups, list) and groups:
         for group_index, group in enumerate(groups):
-            default_stage = group.get("default_stage") if isinstance(group, dict) else None
+            if not isinstance(group, dict):
+                continue
+            default_stage = group.get("default_stage")
             if not isinstance(default_stage, dict):
                 continue
-            stage_index = default_stage.get("stage_index")
-            active = " active" if default_stage.get("name") == active_name else ""
+            children = _stage_group_children(group)
+            if not children:
+                continue
+            first_child = children[0]
+            child_indices = ",".join(str(child.get("stage_index")) for child in children)
+            parent_active = " parent-active" if any(child.get("name") == active_name for child in children) else ""
             steps = group.get("steps") if isinstance(group.get("steps"), list) else []
-            if steps:
-                meta = f"{len(steps)} 个步骤 dump"
-            else:
-                meta = "输出 " + str(default_stage.get("name"))
-            previous = group.get("previous_output_stage") if isinstance(group, dict) else None
+            meta = f"{len(steps)} 个步骤 dump" if steps else f"{len(children)} 个边界 dump"
+            previous = group.get("previous_output_stage")
             equivalence = ""
             if group.get("input_same_as_previous_output") and isinstance(previous, dict):
                 equivalence = (
@@ -494,55 +538,47 @@ def _stage_buttons(debug_graph: dict[str, Any]) -> str:
                     f'输入同 {_cell(previous.get("order"))} {_cell(previous.get("name"))}'
                     "</small>"
                 )
-            buttons.append(
-                f'<button class="stage-button stage-group-button{active}" '
-                f'data-stage-index="{_cell(stage_index)}" data-stage-group-index="{group_index}" type="button">'
-                '<span class="stage-group-main">'
-                f'<span>{_cell(default_stage.get("order"))}</span>{_cell(group.get("label"))}'
-                "</span>"
-                f'<small class="stage-group-meta">{_cell(meta)}</small>'
-                f"{equivalence}"
-                "</button>"
-            )
-        boundary_rows = []
-        for index, item in enumerate(debug_graph.get("stages", [])):
-            equivalent_to = ""
-            for group in groups:
-                if not isinstance(group, dict):
-                    continue
+            child_buttons = []
+            for child in children:
+                child_active = " active" if child.get("name") == active_name else ""
+                child_equivalence = ""
                 input_stage = group.get("input_stage")
-                previous = group.get("previous_output_stage")
                 if (
                     isinstance(input_stage, dict)
-                    and input_stage.get("stage_index") == index
+                    and input_stage.get("stage_index") == child.get("stage_index")
                     and group.get("input_same_as_previous_output")
                     and isinstance(previous, dict)
                 ):
-                    equivalent_to = (
+                    child_equivalence = (
                         '<small class="stage-equivalence">'
                         f'= {_cell(previous.get("order"))} {_cell(previous.get("name"))}'
                         "</small>"
                     )
-                    break
-            active = " active" if item.get("name") == active_name else ""
-            boundary_rows.append(
-                f'<button class="stage-button stage-boundary-button{active}" data-stage-index="{index}" type="button">'
-                f'<span>{_cell(item.get("order"))}</span>{_cell(item.get("name"))}'
-                f"{equivalent_to}"
+                child_buttons.append(
+                    f'<button class="stage-button stage-child-button{child_active}" '
+                    f'data-stage-index="{_cell(child.get("stage_index"))}" type="button">'
+                    f'{_cell(child.get("name"))}'
+                    f"{child_equivalence}"
+                    "</button>"
+                )
+            buttons.append(
+                f'<div class="stage-tree-group" data-stage-group-index="{group_index}">'
+                f'<button class="stage-button stage-group-parent{parent_active}" '
+                f'data-stage-index="{_cell(first_child.get("stage_index"))}" '
+                f'data-stage-child-indices="{_cell(child_indices)}" type="button">'
+                f'<span class="stage-group-main">{_cell(group.get("label"))}</span>'
+                f'<small class="stage-group-meta">{_cell(meta)}</small>'
+                f"{equivalence}"
                 "</button>"
+                f'<div class="stage-child-list">{"".join(child_buttons)}</div>'
+                "</div>"
             )
-        buttons.append(
-            '<details class="stage-boundary-details">'
-            "<summary>显示边界快照</summary>"
-            f'<div class="stage-boundary-list">{"".join(boundary_rows)}</div>'
-            "</details>"
-        )
         return "\n".join(buttons)
     for index, item in enumerate(debug_graph.get("stages", [])):
         active = " active" if item.get("name") == active_name else ""
         buttons.append(
-            f'<button class="stage-button{active}" data-stage-index="{index}" type="button">'
-            f'<span>{_cell(item.get("order"))}</span>{_cell(item.get("name"))}'
+            f'<button class="stage-button stage-child-button{active}" data-stage-index="{index}" type="button">'
+            f'{_cell(item.get("name"))}'
             "</button>"
         )
     return "\n".join(buttons)
@@ -629,21 +665,35 @@ h3 { margin: 0 0 0.45rem; font-size: 0.84rem; }
 .sidebar-collapsed .mode-tabs { margin: 0; }
 .sidebar-collapsed .mode-tab { font-size: 0; text-align: center; padding: 0.5rem 0; }
 .sidebar-collapsed .mode-tab::before { content: attr(data-short); font-size: 0.82rem; font-weight: 700; }
-.stage-list { display: grid; gap: 0.32rem; max-height: 46vh; overflow: auto; }
+.sidebar-body.kernel-mode .stage-navigation,
+.sidebar-body.kernel-mode #stage-diff-panel,
+.sidebar-body.kernel-mode #graph-audit-panel { display: none; }
+.stage-list { display: grid; gap: 0.45rem; max-height: 46vh; overflow: auto; padding-right: 0.15rem; }
+.stage-navigation h2 { margin-bottom: 0.55rem; }
+.stage-tree-group { display: grid; gap: 0.22rem; }
 .stage-button span { display: inline-block; min-width: 2.2rem; color: var(--muted); font-family: SFMono-Regular, Menlo, Consolas, monospace; }
-.stage-group-button { display: grid; gap: 0.12rem; }
+.stage-group-parent { display: grid; gap: 0.12rem; font-size: 0.86rem; font-weight: 700; }
+.stage-group-parent.parent-active { border-color: #93c5fd; background: #eff6ff; color: #1d4ed8; }
 .stage-group-main { display: block; color: inherit; font-family: inherit; }
 .stage-group-meta, .stage-equivalence { color: var(--muted); font-size: 0.72rem; font-weight: 500; }
 .stage-equivalence { color: #0f766e; }
-.stage-boundary-details { margin-top: 0.42rem; border-top: 1px solid #e4e9f1; padding-top: 0.45rem; }
-.stage-boundary-details summary { cursor: pointer; color: var(--muted); font-size: 0.78rem; margin-bottom: 0.4rem; }
-.stage-boundary-list { display: grid; gap: 0.28rem; }
-.stage-boundary-button { font-size: 0.78rem; padding: 0.36rem 0.45rem; }
+.stage-child-list { display: grid; gap: 0.24rem; }
+.stage-child-button { margin-left: 0.65rem; padding: 0.34rem 0.45rem; font-size: 0.75rem; }
 .stage-phase-controls { margin-top: 0.45rem; display: flex; align-items: center; gap: 0.4rem; flex-wrap: wrap; }
 .stage-phase-button { border: 1px solid var(--line); border-radius: 999px; background: #fff; color: var(--text); padding: 0.24rem 0.55rem; cursor: pointer; font-size: 0.76rem; }
 .stage-phase-button.active { border-color: #60a5fa; background: #eaf2ff; color: #1d4ed8; font-weight: 700; }
 .stage-phase-note { color: var(--muted); font-size: 0.76rem; }
-.stage-diff-panel { margin-top: 0.9rem; border: 1px solid #e3e8ef; border-radius: 7px; padding: 0.65rem; background: #fbfcfe; }
+.stage-graph-controls { margin-top: 0.55rem; display: flex; flex-wrap: wrap; gap: 0.45rem; align-items: center; }
+.stage-graph-controls[hidden] { display: none; }
+.segmented-control { display: inline-flex; border: 1px solid var(--line); border-radius: 7px; overflow: hidden; background: #ffffff; }
+.segmented-control button { border: 0; border-right: 1px solid var(--line); background: transparent; color: var(--text); padding: 0.32rem 0.5rem; cursor: pointer; font-size: 0.76rem; }
+.segmented-control button:last-child { border-right: 0; }
+.segmented-control button.active { background: #eaf2ff; color: #1d4ed8; font-weight: 700; }
+.control-label, .edge-filter-controls label { display: inline-flex; align-items: center; gap: 0.28rem; color: #344054; font-size: 0.76rem; }
+.control-select { border: 1px solid var(--line); border-radius: 6px; background: #ffffff; color: var(--text); padding: 0.28rem 0.42rem; font: inherit; }
+.edge-filter-controls { display: inline-flex; flex-wrap: wrap; gap: 0.42rem; align-items: center; }
+.graph-tool-button.active { border-color: #60a5fa; background: #eaf2ff; color: #1d4ed8; font-weight: 700; }
+.stage-diff-panel, .graph-audit-panel { margin-top: 0.9rem; border: 1px solid #e3e8ef; border-radius: 7px; padding: 0.65rem; background: #fbfcfe; }
 .diff-counts { display: grid; grid-template-columns: repeat(3, 1fr); gap: 0.35rem; margin: 0.45rem 0; }
 .diff-pill { border-radius: 6px; border: 1px solid var(--line); padding: 0.35rem; background: #fff; font-size: 0.78rem; }
 .diff-pill strong { display: block; font-size: 0.98rem; }
@@ -674,15 +724,31 @@ dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }
 .function-frame-label { fill: #1f2937; font-size: 12px; font-weight: 700; font-family: SFMono-Regular, Menlo, Consolas, monospace; }
 .function-frame-meta { fill: #475569; font-size: 11px; }
 .graph-edge-path { fill: none; stroke: #8a95a6; stroke-width: 1.5; marker-end: url(#arrow-head); }
+.graph-edge-path.value { stroke: #8a95a6; }
+.graph-edge-path.memory-effect { stroke: #0f766e; stroke-dasharray: 6 4; }
+.graph-edge-path.resource-effect { stroke: #7c3aed; stroke-dasharray: 6 4; }
+.graph-edge-path.control { stroke: #ea580c; stroke-dasharray: 2 4; }
+.graph-edge-path.region { stroke: #60a5fa; stroke-dasharray: 2 6; opacity: 0.72; }
+.graph-edge-path.symbol { stroke: #475569; stroke-dasharray: 4 4; }
 .graph-edge-path.critical { stroke: var(--red); stroke-width: 2.7; }
 .graph-edge-path.fusion { stroke: #16a34a; stroke-width: 2.5; }
 .graph-edge-label { fill: #586274; font-size: 11px; font-family: SFMono-Regular, Menlo, Consolas, monospace; }
+.graph-edge.dimmed { opacity: 0.12; }
+.graph-edge.focus-hidden, .graph-edge.edge-filter-hidden, .graph-edge.helper-collapsed { display: none; }
+.graph-edge.neighborhood-edge .graph-edge-path { stroke-width: 2.8; }
+.graph-edge.neighborhood-edge .graph-edge-label { font-weight: 700; fill: #334155; }
 .graph-node, .kernel-dag-node { cursor: pointer; outline: none; }
 .graph-node rect, .kernel-dag-node rect { fill: #ffffff; stroke: #95a1b2; stroke-width: 1.4; }
 .graph-node.kernel-node rect { fill: #eef6ff; stroke: var(--blue); }
 .kernel-dag-node.vec rect { fill: #ecfdf5; stroke: #10b981; }
 .kernel-dag-node.cube rect { fill: #fff7ed; stroke: #f97316; }
 .kernel-dag-node.mix rect { fill: #f5f3ff; stroke: #7c3aed; }
+.graph-node.dimmed { opacity: 0.22; }
+.graph-node.focus-hidden, .graph-node.helper-collapsed { display: none; }
+.graph-node.neighborhood-node rect { stroke: #2563eb; stroke-width: 2.6; }
+.graph-node.parent-node rect { fill: #eff6ff; }
+.graph-node.child-node rect { fill: #ecfdf5; }
+.graph-node.selected.neighborhood-node rect { stroke: var(--teal); stroke-width: 3; }
 .graph-node.issue rect, .kernel-dag-node.issue rect { stroke: var(--red); stroke-width: 3; }
 .graph-node.diff-added rect { fill: #ecfdf5; stroke: #059669; stroke-width: 2.3; }
 .graph-node.diff-changed rect { fill: #fffbeb; stroke: #d97706; stroke-width: 2.3; }
@@ -692,6 +758,8 @@ dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }
 .node-result { fill: #344054; font-size: 12px; font-family: SFMono-Regular, Menlo, Consolas, monospace; }
 .node-inputs { fill: #667085; font-size: 11px; font-family: SFMono-Regular, Menlo, Consolas, monospace; }
 .node-kernel { fill: var(--blue); font-size: 10px; text-anchor: end; }
+.empty-state-title { fill: #17202a; font-size: 15px; font-weight: 700; }
+.empty-state-subtitle { fill: #64748b; font-size: 12px; }
 .node-badge-bg { fill: #f8fafc; stroke: #cbd5e1; stroke-width: 1; }
 .node-badge { fill: #344054; font-size: 10px; font-family: SFMono-Regular, Menlo, Consolas, monospace; }
 .semantic-group { border: 1px solid #e3e8ef; border-radius: 6px; background: #ffffff; padding: 0.55rem; margin-top: 0.55rem; }
@@ -766,6 +834,7 @@ let canvasPanState = null;
 let graphViewState = {scale: 1};
 let activeSearchResults = [];
 let activeSearchIndex = 0;
+let stageNeighborhoodActive = Boolean(requestedNode);
 const MIN_GRAPH_SCALE = 0.2;
 const MAX_GRAPH_SCALE = 3;
 const GRAPH_CANVAS_PADDING = 160;
@@ -773,6 +842,43 @@ const GRAPH_DEFAULT_MARGIN = 32;
 const MIN_INSPECTOR_WIDTH = 320;
 const MAX_INSPECTOR_WIDTH = 920;
 let inspectorResizeState = null;
+const ALL_EDGE_KINDS = ["value", "memory_effect", "resource_effect", "control", "region", "symbol"];
+const VALID_HIGHLIGHT_MODES = new Set(["direct", "upstream", "downstream", "both"]);
+const VALID_DEPTHS = new Set(["1", "2", "3", "all"]);
+const HELPER_NODE_OPS = new Set([
+  "affine.apply",
+  "arith.addi",
+  "arith.constant",
+  "arith.index_cast",
+  "arith.muli",
+  "emitasc.member",
+  "emitasc.reinterpret_cast",
+  "memref.dim",
+  "tensor.dim",
+]);
+
+function parseStageGraphViewState() {
+  const focusParam = initialParams.get("focus");
+  const depthParam = initialParams.get("depth");
+  const edgeParam = initialParams.get("edges");
+  const edgeKinds = new Set(
+    edgeParam
+      ? edgeParam.split(",").filter((kind) => ALL_EDGE_KINDS.includes(kind))
+      : ALL_EDGE_KINDS
+  );
+  if (!edgeKinds.size) {
+    for (const kind of ALL_EDGE_KINDS) edgeKinds.add(kind);
+  }
+  return {
+    highlightMode: VALID_HIGHLIGHT_MODES.has(focusParam) ? focusParam : "both",
+    depth: VALID_DEPTHS.has(depthParam) ? depthParam : "all",
+    focusView: initialParams.get("view") === "focus",
+    edgeKinds,
+    foldHelpers: initialParams.get("fold") === "helpers",
+  };
+}
+
+let stageGraphViewState = parseStageGraphViewState();
 
 function escapeHtml(value) {
   return String(value ?? "").replace(/[&<>"']/g, (char) => ({
@@ -992,6 +1098,38 @@ ${renderSemanticGroup("Memory / Buffer", [
   ["reuse_id", memory.reuse_id],
   ["position_id", memory.position_id],
   ["memory_space", memory.memory_space],
+])}
+</section>`;
+}
+
+function opSampleForNodeIds(graph, nodeIds) {
+  const nodeById = Object.fromEntries((graph.nodes || []).map((node) => [node.id, node]));
+  const seen = new Set();
+  const ops = [];
+  for (const nodeId of nodeIds) {
+    const node = nodeById[nodeId];
+    const opName = node && node.op_name;
+    if (!opName || seen.has(opName)) continue;
+    seen.add(opName);
+    ops.push(opName);
+    if (ops.length >= 8) break;
+  }
+  return ops.length ? ops.join(" -> ") : "none";
+}
+
+function renderPathSummary(graph, nodeId) {
+  if (!graph || !nodeId) return "";
+  const activeEdges = (graph.edges || []).filter(edgePassesKindFilter);
+  const upstream = collectReachableNeighborhood(activeEdges, nodeId, "ancestors", Infinity);
+  const downstream = collectReachableNeighborhood(activeEdges, nodeId, "descendants", Infinity);
+  return `
+<section class="inspector-section">
+<h3>Path Summary</h3>
+${detailRows([
+  ["Upstream", `${upstream.nodeIds.size} nodes / ${upstream.edgeIds.size} edges`],
+  ["Downstream", `${downstream.nodeIds.size} nodes / ${downstream.edgeIds.size} edges`],
+  ["Upstream ops", opSampleForNodeIds(graph, upstream.nodeIds)],
+  ["Downstream ops", opSampleForNodeIds(graph, downstream.nodeIds)],
 ])}
 </section>`;
 }
@@ -1289,6 +1427,37 @@ function stageGroupForIndex(index) {
   }) || null;
 }
 
+function stageGroupChildren(group) {
+  const rawChildren = Array.isArray(group.steps) && group.steps.length
+    ? group.steps
+    : [group.input_stage, group.output_stage, group.default_stage].filter(Boolean);
+  const seen = new Set();
+  const children = [];
+  for (const child of rawChildren) {
+    const stageIndex = Number(child.stage_index);
+    if (seen.has(stageIndex)) continue;
+    seen.add(stageIndex);
+    children.push(child);
+  }
+  return children;
+}
+
+function stageNavigationSequence() {
+  const groups = Array.isArray(workspace.stage_groups) ? workspace.stage_groups : [];
+  const seen = new Set();
+  const sequence = [];
+  for (const group of groups) {
+    for (const child of stageGroupChildren(group)) {
+      const stageIndex = Number(child.stage_index);
+      if (seen.has(stageIndex)) continue;
+      seen.add(stageIndex);
+      sequence.push(child);
+    }
+  }
+  if (sequence.length) return sequence;
+  return workspace.stages.map((stage, index) => ({...stage, stage_index: index}));
+}
+
 function stageBriefLabel(stage) {
   if (!stage) return "无";
   return `${stage.order} ${stage.name}`;
@@ -1297,12 +1466,20 @@ function stageBriefLabel(stage) {
 function activateStageIndex(index) {
   activeStageIndex = Number(index);
   selectedKey = null;
+  stageNeighborhoodActive = false;
   setMode("stage");
 }
 
 function updateStageButtonState() {
-  document.querySelectorAll(".stage-button").forEach((button) => {
+  document.querySelectorAll(".stage-child-button").forEach((button) => {
     button.classList.toggle("active", Number(button.dataset.stageIndex) === activeStageIndex);
+  });
+  document.querySelectorAll(".stage-group-parent").forEach((button) => {
+    const childIndices = String(button.dataset.stageChildIndices || "")
+      .split(",")
+      .filter(Boolean)
+      .map((value) => Number(value));
+    button.classList.toggle("parent-active", childIndices.includes(activeStageIndex));
   });
 }
 
@@ -1313,33 +1490,117 @@ function renderStagePhaseControls(stage = activeStage()) {
     controls.innerHTML = "";
     return;
   }
-  const group = stageGroupForIndex(activeStageIndex);
-  if (!group || (group.kind !== "pass" && group.kind !== "phase")) {
+  const sequence = stageNavigationSequence();
+  const currentPosition = sequence.findIndex((item) => Number(item.stage_index) === activeStageIndex);
+  if (currentPosition < 0) {
     controls.innerHTML = "";
     return;
   }
   const phaseButtons = [];
-  if (Array.isArray(group.steps) && group.steps.length) {
-    for (const step of group.steps) {
-      const active = Number(step.stage_index) === activeStageIndex ? " active" : "";
-      const label = step.step || step.name;
-      phaseButtons.push(`<button class="stage-phase-button${active}" data-stage-index="${escapeHtml(step.stage_index)}" type="button">${escapeHtml(label)} ${escapeHtml(stageBriefLabel(step))}</button>`);
-    }
-  } else if (group.input_stage) {
-    const active = Number(group.input_stage.stage_index) === activeStageIndex ? " active" : "";
-    phaseButtons.push(`<button class="stage-phase-button${active}" data-stage-index="${escapeHtml(group.input_stage.stage_index)}" type="button">输入 ${escapeHtml(stageBriefLabel(group.input_stage))}</button>`);
-  }
-  if ((!Array.isArray(group.steps) || !group.steps.length) && group.output_stage) {
-    const active = Number(group.output_stage.stage_index) === activeStageIndex ? " active" : "";
-    phaseButtons.push(`<button class="stage-phase-button${active}" data-stage-index="${escapeHtml(group.output_stage.stage_index)}" type="button">输出 ${escapeHtml(stageBriefLabel(group.output_stage))}</button>`);
-  }
-  const note = group.input_same_as_previous_output && group.previous_output_stage
-    ? `<span class="stage-phase-note">输入同 ${escapeHtml(stageBriefLabel(group.previous_output_stage))}</span>`
-    : "";
-  controls.innerHTML = `${phaseButtons.join("")}${note}`;
+  const addNavButton = (label, item) => {
+    if (!item) return;
+    phaseButtons.push(`<button class="stage-phase-button" data-stage-index="${escapeHtml(item.stage_index)}" title="${label} ${escapeHtml(stageBriefLabel(item))}" aria-label="${label} ${escapeHtml(stageBriefLabel(item))}" type="button">${label}</button>`);
+  };
+  if (currentPosition > 0) addNavButton("上一页", sequence[currentPosition - 1]);
+  if (currentPosition >= 0 && currentPosition < sequence.length - 1) addNavButton("下一页", sequence[currentPosition + 1]);
+  controls.innerHTML = phaseButtons.join("");
   controls.querySelectorAll(".stage-phase-button").forEach((button) => {
     button.addEventListener("click", () => activateStageIndex(button.dataset.stageIndex));
   });
+}
+
+function syncStageGraphControls() {
+  const controls = document.getElementById("stage-graph-controls");
+  if (!controls) return;
+  controls.hidden = activeMode !== "stage";
+  document.querySelectorAll("[data-highlight-mode]").forEach((button) => {
+    button.classList.toggle("active", button.dataset.highlightMode === stageGraphViewState.highlightMode);
+  });
+  const depth = document.getElementById("highlight-depth");
+  if (depth) depth.value = stageGraphViewState.depth;
+  const focusToggle = document.getElementById("focus-toggle");
+  if (focusToggle) {
+    focusToggle.classList.toggle("active", stageGraphViewState.focusView);
+    focusToggle.setAttribute("aria-pressed", stageGraphViewState.focusView ? "true" : "false");
+  }
+  document.querySelectorAll("[data-edge-kind-filter]").forEach((input) => {
+    input.checked = stageGraphViewState.edgeKinds.has(input.dataset.edgeKindFilter);
+  });
+  const foldToggle = document.getElementById("fold-helper-toggle");
+  if (foldToggle) foldToggle.checked = stageGraphViewState.foldHelpers;
+}
+
+function updateGraphUrlState(stage, nodeId) {
+  if (!stage) return;
+  const params = new URLSearchParams(window.location.search);
+  params.set("stage", String(stage.order));
+  if (nodeId) params.set("node", nodeId);
+  else params.delete("node");
+  params.set("focus", stageGraphViewState.highlightMode);
+  params.set("depth", stageGraphViewState.depth);
+  if (stageGraphViewState.focusView) params.set("view", "focus");
+  else params.delete("view");
+  const activeEdgeKinds = ALL_EDGE_KINDS.filter((kind) => stageGraphViewState.edgeKinds.has(kind));
+  if (activeEdgeKinds.length === ALL_EDGE_KINDS.length) params.delete("edges");
+  else params.set("edges", activeEdgeKinds.join(","));
+  if (stageGraphViewState.foldHelpers) params.set("fold", "helpers");
+  else params.delete("fold");
+  const query = params.toString();
+  const nextUrl = `${window.location.pathname}${query ? `?${query}` : ""}${window.location.hash || ""}`;
+  window.history.replaceState(null, "", nextUrl);
+}
+
+function refreshStageGraphEffects(forceNeighborhood = false) {
+  if (activeMode !== "stage") return;
+  const stage = activeStage();
+  const graph = stage ? stage.graph : null;
+  if (!stage || !graph) return;
+  if (forceNeighborhood && selectedKey) stageNeighborhoodActive = true;
+  syncStageGraphControls();
+  applyStageNeighborhood(graph, selectedKey, stageNeighborhoodActive && Boolean(selectedKey));
+  if (selectedKey) updateGraphUrlState(stage, selectedKey);
+}
+
+function installStageGraphControls() {
+  document.querySelectorAll("[data-highlight-mode]").forEach((button) => {
+    button.addEventListener("click", () => {
+      stageGraphViewState.highlightMode = button.dataset.highlightMode;
+      refreshStageGraphEffects(true);
+    });
+  });
+  const depth = document.getElementById("highlight-depth");
+  if (depth) {
+    depth.addEventListener("change", () => {
+      stageGraphViewState.depth = VALID_DEPTHS.has(depth.value) ? depth.value : "all";
+      refreshStageGraphEffects(true);
+    });
+  }
+  const focusToggle = document.getElementById("focus-toggle");
+  if (focusToggle) {
+    focusToggle.addEventListener("click", () => {
+      stageGraphViewState.focusView = !stageGraphViewState.focusView;
+      refreshStageGraphEffects(true);
+    });
+  }
+  document.querySelectorAll("[data-edge-kind-filter]").forEach((input) => {
+    input.addEventListener("change", () => {
+      const kind = input.dataset.edgeKindFilter;
+      if (input.checked) stageGraphViewState.edgeKinds.add(kind);
+      else stageGraphViewState.edgeKinds.delete(kind);
+      if (!stageGraphViewState.edgeKinds.size) {
+        for (const fallbackKind of ALL_EDGE_KINDS) stageGraphViewState.edgeKinds.add(fallbackKind);
+      }
+      refreshStageGraphEffects(true);
+    });
+  });
+  const foldToggle = document.getElementById("fold-helper-toggle");
+  if (foldToggle) {
+    foldToggle.addEventListener("change", () => {
+      stageGraphViewState.foldHelpers = foldToggle.checked;
+      refreshStageGraphEffects(false);
+    });
+  }
+  syncStageGraphControls();
 }
 
 function activeStageDiff(stage = activeStage()) {
@@ -1382,6 +1643,45 @@ function renderStageDiff(stage = activeStage()) {
   ));
   const rows = [...changed, ...added, ...removed];
   details.innerHTML = rows.length ? `<ul class="diff-list">${rows.join("")}</ul>` : '<span class="panel-subtitle">没有检测到语义节点变化。</span>';
+}
+
+function renderGraphAudit(stage = activeStage()) {
+  const summary = document.getElementById("graph-audit-summary");
+  const details = document.getElementById("graph-audit-details");
+  if (!summary || !details) return;
+  if (activeMode !== "stage") {
+    summary.innerHTML = "";
+    details.innerHTML = "";
+    return;
+  }
+  const audit = stage && stage.graph && stage.graph.connectivity ? stage.graph.connectivity : {};
+  const suspicious = audit.suspicious_isolated_count || 0;
+  const dangling = audit.dangling_effect_count || 0;
+  const allowed = audit.allowed_terminal_count || 0;
+  summary.innerHTML = `
+<div class="diff-counts">
+<div class="diff-pill diff-removed-text"><strong>${escapeHtml(suspicious)}</strong>suspicious_isolated</div>
+<div class="diff-pill diff-changed-text"><strong>${escapeHtml(dangling)}</strong>dangling_effect</div>
+<div class="diff-pill diff-added-text"><strong>${escapeHtml(allowed)}</strong>allowed_terminal</div>
+</div>`;
+  const issueRows = [
+    ...(audit.suspicious_isolated_nodes || []).map((node) => ({...node, kind: "suspicious_isolated"})),
+    ...(audit.dangling_effect_nodes || []).map((node) => ({...node, kind: "dangling_effect"})),
+  ].slice(0, 8).map((node) => (
+    `<li><span class="diff-removed-text">${escapeHtml(node.kind)}</span>: ${escapeHtml(node.op_name || node.label || "node")} ${escapeHtml(node.line ? `line ${node.line}` : "")}</li>`
+  ));
+  const allowedRows = (audit.allowed_terminal_nodes || []).slice(0, 5).map((node) => (
+    `<li><span class="diff-added-text">allowed_terminal</span>: ${escapeHtml(node.op_name || node.label || "node")} ${escapeHtml(node.reason || "")}</li>`
+  ));
+  const edgeKindCounts = audit.edge_kind_counts || {};
+  const edgeKinds = Object.entries(edgeKindCounts)
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([kind, count]) => `${kind}:${count}`)
+    .join(", ");
+  details.innerHTML = `
+${issueRows.length ? `<ul class="diff-list">${issueRows.join("")}</ul>` : '<span class="panel-subtitle">没有检测到 suspicious_isolated / dangling_effect。</span>'}
+${allowedRows.length ? `<ul class="diff-list">${allowedRows.join("")}</ul>` : ""}
+<div class="panel-subtitle">components: ${escapeHtml(audit.component_count || 0)} | edge kinds: ${escapeHtml(edgeKinds || "none")}</div>`;
 }
 
 function stageNodeDiffInfo(stage, nodeId) {
@@ -1435,6 +1735,116 @@ function graphSearchText(value) {
 
 function findStageNodeElement(nodeId) {
   return Array.from(document.querySelectorAll(".graph-node")).find((element) => element.dataset.nodeId === nodeId) || null;
+}
+
+function edgeKind(edge) {
+  return edge && edge.kind ? edge.kind : "value";
+}
+
+function edgePassesKindFilter(edge) {
+  return stageGraphViewState.edgeKinds.has(edgeKind(edge));
+}
+
+function highlightDepthLimit() {
+  if (stageGraphViewState.highlightMode === "direct") return 1;
+  return stageGraphViewState.depth === "all" ? Infinity : Number(stageGraphViewState.depth);
+}
+
+function isHelperNode(node) {
+  return node && HELPER_NODE_OPS.has(node.op_name);
+}
+
+function clearStageNeighborhood() {
+  document.querySelectorAll(".graph-node").forEach((element) => {
+    element.classList.remove("dimmed", "neighborhood-node", "parent-node", "child-node", "focus-hidden", "helper-collapsed");
+  });
+  document.querySelectorAll(".graph-edge").forEach((element) => {
+    element.classList.remove("dimmed", "neighborhood-edge", "focus-hidden", "edge-filter-hidden", "helper-collapsed");
+  });
+}
+
+function collectReachableNeighborhood(edges, nodeId, direction, maxDepth = Infinity) {
+  const nodeIds = new Set();
+  const edgeIds = new Set();
+  const queue = [{id: nodeId, depth: 0}];
+  const seen = new Set([nodeId]);
+  while (queue.length) {
+    const currentItem = queue.shift();
+    const current = currentItem.id;
+    if (currentItem.depth >= maxDepth) continue;
+    for (const edge of edges) {
+      const next = direction === "ancestors"
+        ? (edge.to === current ? edge.from : null)
+        : (edge.from === current ? edge.to : null);
+      if (!next) continue;
+      if (edge.id) edgeIds.add(edge.id);
+      nodeIds.add(next);
+      if (seen.has(next)) continue;
+      seen.add(next);
+      queue.push({id: next, depth: currentItem.depth + 1});
+    }
+  }
+  return {nodeIds, edgeIds};
+}
+
+function applyEdgeAndHelperFilters(graph, selectedNodeId) {
+  const edgeById = Object.fromEntries((graph.edges || []).map((edge) => [edge.id, edge]));
+  const nodeById = Object.fromEntries((graph.nodes || []).map((node) => [node.id, node]));
+  const helperIds = new Set(
+    (graph.nodes || [])
+      .filter((node) => isHelperNode(node) && node.id !== selectedNodeId)
+      .map((node) => node.id)
+  );
+  document.querySelectorAll(".graph-node").forEach((element) => {
+    const node = nodeById[element.dataset.nodeId];
+    element.classList.toggle("helper-collapsed", stageGraphViewState.foldHelpers && helperIds.has(node && node.id));
+  });
+  document.querySelectorAll(".graph-edge").forEach((element) => {
+    const edge = edgeById[element.dataset.edgeId];
+    const helperLinked = edge && (helperIds.has(edge.from) || helperIds.has(edge.to));
+    element.classList.toggle("edge-filter-hidden", edge ? !edgePassesKindFilter(edge) : false);
+    element.classList.toggle("helper-collapsed", stageGraphViewState.foldHelpers && helperLinked);
+  });
+}
+
+function applyStageNeighborhood(graph, nodeId, enabled = true) {
+  clearStageNeighborhood();
+  if (!graph) return;
+  if (!enabled || !nodeId) {
+    applyEdgeAndHelperFilters(graph, nodeId);
+    return;
+  }
+  const activeEdges = (graph.edges || []).filter(edgePassesKindFilter);
+  const highlightDepth = highlightDepthLimit();
+  const ancestorNeighborhood = ["upstream", "both", "direct"].includes(stageGraphViewState.highlightMode)
+    ? collectReachableNeighborhood(activeEdges, nodeId, "ancestors", highlightDepth)
+    : {nodeIds: new Set(), edgeIds: new Set()};
+  const descendantNeighborhood = ["downstream", "both", "direct"].includes(stageGraphViewState.highlightMode)
+    ? collectReachableNeighborhood(activeEdges, nodeId, "descendants", highlightDepth)
+    : {nodeIds: new Set(), edgeIds: new Set()};
+  const parentIds = ancestorNeighborhood.nodeIds;
+  const childIds = descendantNeighborhood.nodeIds;
+  const connectedEdgeIds = new Set([
+    ...ancestorNeighborhood.edgeIds,
+    ...descendantNeighborhood.edgeIds,
+  ]);
+  const visibleIds = new Set([nodeId, ...parentIds, ...childIds]);
+  document.querySelectorAll(".graph-node").forEach((element) => {
+    const id = element.dataset.nodeId;
+    const isVisible = visibleIds.has(id);
+    element.classList.toggle("dimmed", !isVisible);
+    element.classList.toggle("focus-hidden", stageGraphViewState.focusView && !isVisible);
+    element.classList.toggle("neighborhood-node", isVisible);
+    element.classList.toggle("parent-node", parentIds.has(id));
+    element.classList.toggle("child-node", childIds.has(id));
+  });
+  document.querySelectorAll(".graph-edge").forEach((element) => {
+    const isConnected = connectedEdgeIds.has(element.dataset.edgeId);
+    element.classList.toggle("dimmed", !isConnected);
+    element.classList.toggle("focus-hidden", stageGraphViewState.focusView && !isConnected);
+    element.classList.toggle("neighborhood-edge", isConnected);
+  });
+  applyEdgeAndHelperFilters(graph, nodeId);
 }
 
 function findKernelNodeElement(kernelId) {
@@ -1496,6 +1906,7 @@ function searchActiveGraph() {
 function afterGraphRender() {
   applyGraphScale();
   renderStageDiff();
+  renderGraphAudit();
   searchActiveGraph();
 }
 
@@ -1518,6 +1929,7 @@ function renderStageGraph() {
     : `Stage Graph: ${stage.order} ${stage.name}`;
   document.getElementById("graph-subtitle").textContent = `${graph.node_count} 个节点，${graph.edge_count} 条边，${graph.kernel_count} 个 Kernel`;
   renderStagePhaseControls(stage);
+  syncStageGraphControls();
   updateStageButtonState();
   const layout = graph.layout;
   const nodeById = Object.fromEntries(graph.nodes.map((node, index) => [node.id, {node, index}]));
@@ -1534,7 +1946,9 @@ function renderStageGraph() {
 </g>`;
   }
   for (const edge of layout.edges || []) {
-    svg += `<g class="graph-edge"><path class="graph-edge-path" d="${escapeHtml(edge.path)}"></path><text class="graph-edge-label" x="${edge.label_x}" y="${edge.label_y}">${escapeHtml(truncate(edge.value, 24))}</text></g>`;
+    const edgeClass = edge.kind ? ` ${String(edge.kind).replace(/[^A-Za-z0-9_-]+/g, "-").replace(/_/g, "-")}` : "";
+    const edgeLabel = edge.label || edge.value;
+    svg += `<g class="graph-edge${edgeClass}" data-edge-id="${escapeHtml(edge.id)}" data-edge-kind="${escapeHtml(edge.kind || "value")}" data-edge-from="${escapeHtml(edge.from)}" data-edge-to="${escapeHtml(edge.to)}"><path class="graph-edge-path${edgeClass}" d="${escapeHtml(edge.path)}"></path><text class="graph-edge-label" x="${edge.label_x}" y="${edge.label_y}">${escapeHtml(truncate(edgeLabel, 24))}</text></g>`;
   }
   for (const node of graph.nodes) {
     const position = layout.nodes[node.id];
@@ -1568,22 +1982,23 @@ ${badgeElements}
   applyGraphScale();
   scrollGraphToDefaultOrigin();
   document.querySelectorAll(".graph-node").forEach((element) => {
-    element.addEventListener("click", () => selectStageNode(stage, graph, element.dataset.nodeId));
+    element.addEventListener("click", () => selectStageNode(stage, graph, element.dataset.nodeId, {neighborhood: true}));
     element.addEventListener("keydown", (event) => {
       if (event.key === "Enter" || event.key === " ") {
         event.preventDefault();
-        selectStageNode(stage, graph, element.dataset.nodeId);
+        selectStageNode(stage, graph, element.dataset.nodeId, {neighborhood: true});
       }
     });
   });
   const requestedNodeMatch = requestedNode && graph.nodes.find((node) => node.id === requestedNode || node.label === requestedNode);
   const preferred = requestedNodeMatch ? requestedNodeMatch.id : (selectedKey && graph.nodes.some((node) => node.id === selectedKey) ? selectedKey : (graph.nodes[0] && graph.nodes[0].id));
-  if (preferred) selectStageNode(stage, graph, preferred);
+  if (preferred) selectStageNode(stage, graph, preferred, {neighborhood: Boolean(requestedNodeMatch) || stageNeighborhoodActive, updateUrl: false});
   afterGraphRender();
 }
 
 function selectStageNode(stage, graph, nodeId, options = {}) {
   selectedKey = nodeId;
+  stageNeighborhoodActive = options.neighborhood !== false;
   document.querySelectorAll(".graph-node").forEach((element) => element.classList.toggle("selected", element.dataset.nodeId === nodeId));
   const node = graph.nodes.find((item) => item.id === nodeId);
   const links = [];
@@ -1595,8 +2010,10 @@ function selectStageNode(stage, graph, nodeId, options = {}) {
   setInspector(
     node ? `节点详情：${node.op_name} ${node.label || ""}` : "节点详情",
     links,
-    renderStageNodeDetail(stage, node, diff)
+    renderStageNodeDetail(stage, node, diff) + renderPathSummary(graph, nodeId)
   );
+  applyStageNeighborhood(graph, nodeId, stageNeighborhoodActive);
+  if (options.updateUrl !== false) updateGraphUrlState(stage, nodeId);
   if (options.center) {
     centerGraphElement(findStageNodeElement(nodeId));
   }
@@ -1607,6 +2024,20 @@ function renderKernelDag() {
   const nodes = summary.nodes || {};
   const edges = summary.edges || [];
   const ids = Object.keys(nodes).sort((a, b) => (nodes[a].depth || 0) - (nodes[b].depth || 0) || a.localeCompare(b));
+  if (!ids.length) {
+    document.getElementById("graph-title").textContent = "Kernel DAG";
+    document.getElementById("graph-subtitle").textContent = "0 个 Kernel，0 条边，关键深度 0";
+    renderStagePhaseControls(null);
+    syncStageGraphControls();
+    document.getElementById("graph-canvas").innerHTML = `${svgHeader(720, 420)}<text x="188" y="234" class="empty-state-title">当前 run 未收集 Kernel DAG 产物。</text><text x="188" y="260" class="empty-state-subtitle">需要 artifact manifest / run manifest / kernelized IR 后才能构建 Kernel DAG。</text></svg>`;
+    setInspector(
+      "Kernel DAG 为空",
+      [],
+      "<p>当前 debug run 没有 graphs/kernel_dag.summary.json，或 summary 中没有 kernel nodes。</p><p>这通常表示 collect 只收集了 pass/stage dump，没有传入 artifact/run manifest。</p>"
+    );
+    afterGraphRender();
+    return;
+  }
   const levels = {};
   for (const id of ids) {
     const depth = nodes[id].depth || 1;
@@ -1658,6 +2089,7 @@ function renderKernelDag() {
   document.getElementById("graph-title").textContent = "Kernel DAG";
   document.getElementById("graph-subtitle").textContent = `${summary.kernel_count || 0} 个 Kernel，${summary.graph_edges || 0} 条边，关键深度 ${summary.critical_path_depth || 0}`;
   renderStagePhaseControls(null);
+  syncStageGraphControls();
   document.getElementById("graph-canvas").innerHTML = svg;
   applyGraphScale();
   scrollGraphToDefaultOrigin();
@@ -1691,6 +2123,8 @@ function setMode(mode) {
   activeMode = mode;
   selectedKey = null;
   document.querySelectorAll(".mode-tab").forEach((button) => button.classList.toggle("active", button.dataset.mode === mode));
+  const sidebarBody = document.querySelector(".sidebar-body");
+  if (sidebarBody) sidebarBody.classList.toggle("kernel-mode", mode === "kernel");
   if (mode === "kernel") renderKernelDag();
   else renderStageGraph();
 }
@@ -1705,6 +2139,7 @@ installSidebarToggle();
 installSourceReader();
 installCanvasPan();
 installGraphNavigation();
+installStageGraphControls();
 renderStageGraph();
 </script>
 """
@@ -1738,14 +2173,21 @@ renderStageGraph();
 <button class="mode-tab" data-mode="kernel" data-short="K" type="button">Kernel DAG</button>
 </div>
 <div class="sidebar-body">
+<div id="stage-navigation" class="stage-navigation">
 <h2>Stage 列表</h2>
 <div id="stage-list" class="stage-list">
 {_stage_buttons(debug_graph)}
+</div>
 </div>
 <section id="stage-diff-panel" class="stage-diff-panel">
 <h2>Stage Diff</h2>
 <div id="stage-diff-summary"></div>
 <div id="stage-diff-details"></div>
+</section>
+<section id="graph-audit-panel" class="graph-audit-panel">
+<h2>Graph Audit</h2>
+<div id="graph-audit-summary"></div>
+<div id="graph-audit-details"></div>
 </section>
 <div class="overlay-stack">
 {_overlay_cards(overlays)}
@@ -1758,6 +2200,30 @@ renderStageGraph();
 <h2 id="graph-title">统一 Stage Graph</h2>
 <div id="graph-subtitle" class="panel-subtitle"></div>
 <div id="stage-phase-controls" class="stage-phase-controls"></div>
+<div id="stage-graph-controls" class="stage-graph-controls">
+<div id="highlight-mode-controls" class="segmented-control" aria-label="Highlight mode">
+<button data-highlight-mode="direct" type="button">Direct</button>
+<button data-highlight-mode="upstream" type="button">Upstream</button>
+<button data-highlight-mode="downstream" type="button">Downstream</button>
+<button data-highlight-mode="both" type="button">Both</button>
+</div>
+<label class="control-label">Depth
+<select id="highlight-depth" class="control-select">
+<option value="1">1</option>
+<option value="2">2</option>
+<option value="3">3</option>
+<option value="all">All</option>
+</select>
+</label>
+<button id="focus-toggle" class="graph-tool-button" type="button" aria-pressed="false">Focus</button>
+<div id="edge-filter-controls" class="edge-filter-controls">
+<label><input data-edge-kind-filter="value" type="checkbox" checked>value</label>
+<label><input data-edge-kind-filter="memory_effect" type="checkbox" checked>memory</label>
+<label><input data-edge-kind-filter="resource_effect" type="checkbox" checked>resource</label>
+<label><input data-edge-kind-filter="control" type="checkbox" checked>control</label>
+</div>
+<label class="control-label"><input id="fold-helper-toggle" type="checkbox">Fold helpers</label>
+</div>
 </div>
 <div class="graph-tools">
 <input id="graph-search" class="graph-search" type="search" placeholder="搜索 op、Kernel、位置">
@@ -1816,6 +2282,7 @@ def render_debug_graph(
     primary_stage = _select_primary_stage(stages)
     stage_diffs = _compute_stage_diffs(stages)
     stage_groups = _build_stage_groups(run_dir, stages)
+    stage_connectivity = [_stage_connectivity_record(stage) for stage in stages]
     summary = {
         "schema_version": 1,
         "tool": "ascend-debug",
@@ -1823,6 +2290,7 @@ def render_debug_graph(
         "stage_count": len(stages),
         "primary_stage": primary_stage,
         "stage_diffs": stage_diffs,
+        "stage_connectivity": stage_connectivity,
         "stage_groups": stage_groups,
         "stages": stages,
         "kernel_dag": kernel_summary or {},

@@ -33,6 +33,190 @@ if grep -Fq -- '--pipeline' "${TMP_DIR}/ascend-debug-collect-help.txt"; then
 fi
 echo "ascend_debug.help=ok"
 
+python3 - <<'PY'
+import sys
+
+sys.path.insert(0, "tools/ascend-debug")
+
+from ascend_debug import stage_graph
+
+mlir = """module {
+  func.func @copy_view(%arg0: memref<?xf16>, %arg1: memref<?xf16>) -> memref<?xf16> {
+    %c0 = arith.constant 0 : index
+    %dim = memref.dim %arg1, %c0 : memref<?xf16>
+    linalg.generic {indexing_maps = [], iterator_types = []} outs(%arg1 : memref<?xf16>) {
+    ^bb0(%out: f16):
+      linalg.yield %out : f16
+    }
+    %subview = memref.subview %arg1[0] [%dim] [1] : memref<?xf16> to memref<?xf16, strided<[1]>>
+    memref.copy %arg0, %subview : memref<?xf16> to memref<?xf16, strided<[1]>>
+    return %arg1 : memref<?xf16>
+  }
+}
+"""
+graph = stage_graph.parse_stage_mlir({"order": 1, "name": "copy-view", "path": "stages/copy-view.mlir"}, mlir)
+linalg_nodes = [node for node in graph["nodes"] if node["op_name"] == "linalg.generic"]
+assert len(linalg_nodes) == 1, [node["op_name"] for node in graph["nodes"]]
+copy_nodes = [node for node in graph["nodes"] if node["op_name"] == "memref.copy"]
+assert len(copy_nodes) == 1, [node["op_name"] for node in graph["nodes"]]
+copy_node = copy_nodes[0]
+assert "%arg0" in copy_node["input_values"]
+assert "%subview" in copy_node["input_values"]
+incoming_values = {
+    edge["value"]
+    for edge in graph["edges"]
+    if edge["to"] == copy_node["id"]
+}
+assert {"%arg0", "%subview"}.issubset(incoming_values), incoming_values
+return_nodes = [node for node in graph["nodes"] if node["op_name"] == "func.return"]
+assert len(return_nodes) == 1, [node["op_name"] for node in graph["nodes"]]
+copy_effects = [
+    edge
+    for edge in graph["edges"]
+    if edge["from"] == copy_node["id"]
+    and edge["to"] == return_nodes[0]["id"]
+    and edge.get("kind") == "memory_effect"
+]
+assert len(copy_effects) == 1, graph["edges"]
+assert copy_effects[0]["value"] == "%arg1", copy_effects[0]
+
+chain_mlir = """module {
+  func.func @copy_chain(%arg0: memref<?xf16>, %arg1: memref<?xf16>) -> memref<?xf16> {
+    %c0 = arith.constant 0 : index
+    %dim = memref.dim %arg1, %c0 : memref<?xf16>
+    memref.copy %arg0, %arg1 : memref<?xf16> to memref<?xf16>
+    %subview = memref.subview %arg1[0] [%dim] [1] : memref<?xf16> to memref<?xf16, strided<[1]>>
+    memref.copy %arg0, %subview : memref<?xf16> to memref<?xf16, strided<[1]>>
+    return %arg1 : memref<?xf16>
+  }
+}
+"""
+chain_graph = stage_graph.parse_stage_mlir({"order": 1, "name": "copy-chain", "path": "stages/copy-chain.mlir"}, chain_mlir)
+chain_copies = [node for node in chain_graph["nodes"] if node["op_name"] == "memref.copy"]
+assert len(chain_copies) == 2, [node["op_name"] for node in chain_graph["nodes"]]
+chain_subview = [node for node in chain_graph["nodes"] if node["op_name"] == "memref.subview"][0]
+chain_return = [node for node in chain_graph["nodes"] if node["op_name"] == "func.return"][0]
+chain_effects = [
+    edge
+    for edge in chain_graph["edges"]
+    if edge.get("kind") == "memory_effect"
+]
+assert any(edge["from"] == chain_copies[0]["id"] and edge["to"] == chain_copies[1]["id"] for edge in chain_effects), chain_effects
+assert any(edge["from"] == chain_copies[0]["id"] and edge["to"] == chain_return["id"] for edge in chain_effects), chain_effects
+assert any(edge["from"] == chain_copies[1]["id"] and edge["to"] == chain_return["id"] for edge in chain_effects), chain_effects
+assert not any(edge["from"] == chain_copies[0]["id"] and edge["to"] == chain_subview["id"] for edge in chain_effects), chain_effects
+
+resource_mlir = """module {
+  func.func @resource_chain(%pipe: i32, %src: i32, %bytes: index) {
+    %c1 = arith.constant 1 : i32
+    %queue = arith.constant 0 : i32
+    %global = arith.constant 0 : i32
+    %local = ascendc.que_bind.alloc_tensor %queue : i32
+    %sum = ascendc.que_bind.alloc_tensor %queue : i32
+    ascendc.pipe.init_queue %pipe, %queue, %c1, %bytes : i32, i32, i32, index
+    ascendc.global_tensor.set_global_buffer %global, %src, %bytes : i32, i32, index
+    emitasc.verbatim %local, %global, %bytes : i32, i32, index
+    ascendc.add_l2 %sum, %local, %local, %bytes : i32, i32, i32, index
+    ascendc.pipe_barrier pipe_all
+    ascendc.que_bind.enque_tensor %queue, %sum : i32, i32
+    return
+  }
+}
+"""
+resource_graph = stage_graph.parse_stage_mlir({"order": 60, "name": "resource-chain", "path": "stages/resource-chain.mlir"}, resource_mlir)
+resource_nodes = {node["op_name"]: node for node in resource_graph["nodes"]}
+barrier = resource_nodes["ascendc.pipe_barrier"]
+set_global = resource_nodes["ascendc.global_tensor.set_global_buffer"]
+verbatim = resource_nodes["emitasc.verbatim"]
+add_l2 = resource_nodes["ascendc.add_l2"]
+enque = resource_nodes["ascendc.que_bind.enque_tensor"]
+resource_edges = [edge for edge in resource_graph["edges"] if edge.get("kind") == "resource_effect"]
+control_edges = [edge for edge in resource_graph["edges"] if edge.get("kind") == "control"]
+assert any(edge["from"] == set_global["id"] and edge["to"] == verbatim["id"] for edge in resource_edges), resource_edges
+assert any(edge["from"] == verbatim["id"] and edge["to"] == add_l2["id"] for edge in resource_edges), resource_edges
+assert any(edge["from"] == add_l2["id"] and edge["to"] == enque["id"] for edge in resource_edges), resource_edges
+assert any(edge["to"] == barrier["id"] for edge in control_edges), control_edges
+assert any(edge["from"] == barrier["id"] and edge["to"] == enque["id"] for edge in control_edges), control_edges
+assert resource_graph["connectivity"]["dangling_effect_count"] == 0, resource_graph["connectivity"]
+
+emit_mlir = """module {
+  emitasc.declare_py_struct @Tiling
+  func.func @emit_stage(%arg0: i32, %arg1: i32) {
+    %member = emitasc.member %arg0 : i32
+    emitasc.verbatim %arg1, %member : i32, i32
+    scf.if %arg0 {
+      emitasc.verbatim %arg1, %member : i32, i32
+    }
+    return
+  }
+}
+"""
+emit_graph = stage_graph.parse_stage_mlir({"order": 80, "name": "emit-stage", "path": "stages/emit-stage.mlir"}, emit_mlir)
+connectivity = emit_graph["connectivity"]
+assert connectivity["isolated_count"] >= 1, connectivity
+assert connectivity["suspicious_isolated_count"] == 0, connectivity
+assert connectivity["dangling_effect_count"] == 0, connectivity
+terminal_ops = {
+    item["op_name"]
+    for item in connectivity["allowed_terminal_nodes"]
+}
+assert "emitasc.declare_py_struct" in terminal_ops, connectivity
+assert "func.return" in terminal_ops, connectivity
+assert connectivity["edge_kind_counts"].get("resource_effect", 0) >= 1, connectivity
+
+constructor_mlir = """module {
+  func.func @resource_constructors() {
+    %pipe = ascendc.pipe
+    %queue = ascendc.queue
+    %tensor = ascendc.global_tensor
+    %cast = emitasc.reinterpret_cast %tensor : i32
+    return
+  }
+}
+"""
+constructor_graph = stage_graph.parse_stage_mlir({"order": 60, "name": "constructors", "path": "stages/constructors.mlir"}, constructor_mlir)
+assert constructor_graph["connectivity"]["suspicious_isolated_count"] == 0, constructor_graph["connectivity"]
+assert constructor_graph["connectivity"]["dangling_effect_count"] == 0, constructor_graph["connectivity"]
+PY
+echo "ascend_debug.stage_graph_resultless_ops=ok"
+
+cat >"${TMP_DIR}/typed-stage-graph.mlir" <<'MLIR'
+module {
+  func.func @typed_graph(%arg0: memref<?xf16>, %arg1: memref<?xf16>) -> memref<?xf16> {
+    %c0 = arith.constant 0 : index
+    %dim = memref.dim %arg1, %c0 : memref<?xf16>
+    %subview = memref.subview %arg1[0] [%dim] [1] : memref<?xf16> to memref<?xf16, strided<[1]>>
+    memref.copy %arg0, %subview : memref<?xf16> to memref<?xf16, strided<[1]>>
+    return %arg1 : memref<?xf16>
+  }
+}
+MLIR
+STAGE_GRAPH_TOOL="${ASCEND_STAGE_GRAPH_TOOL:-build/bin/ascend-stage-graph}"
+if [[ -x "${STAGE_GRAPH_TOOL}" ]]; then
+  "${STAGE_GRAPH_TOOL}" \
+    "${TMP_DIR}/typed-stage-graph.mlir" \
+    --stage-order 1 \
+    --stage-name typed-stage-graph \
+    --stage-path stages/typed-stage-graph.mlir \
+    --output "${TMP_DIR}/typed-stage-graph.json"
+  python3 - "${TMP_DIR}/typed-stage-graph.json" <<'PY'
+import json
+import pathlib
+import sys
+
+graph = json.loads(pathlib.Path(sys.argv[1]).read_text())
+assert graph["stage"]["order"] == 1
+assert graph["stage"]["name"] == "typed-stage-graph"
+assert graph["nodes"]
+assert graph["edges"]
+assert any(edge.get("kind") == "value" for edge in graph["edges"]), graph["edges"]
+assert any(edge.get("kind") == "memory_effect" for edge in graph["edges"]), graph["edges"]
+PY
+  echo "ascend_stage_graph.basic=ok"
+else
+  echo "ascend_stage_graph.basic=skipped"
+fi
+
 mkdir -p "${TMP_DIR}/fake-runtime-session"
 cat >"${TMP_DIR}/fake-runtime-session/runtime-session" <<'SH'
 #!/usr/bin/env bash
@@ -412,16 +596,54 @@ assert by_phase["Translate"] == [
 ]
 PY
 ascend-debug open "${TMP_DIR}/debug-run-full-codegen" --no-browser >"${TMP_DIR}/ascend-debug-open-full-codegen.txt"
-grep -Fq '<thead><tr><th>Stage</th><th>顺序</th><th>Step</th><th>MLIR</th><th>调试图</th><th>状态</th></tr></thead>' \
+grep -Fq '<thead><tr><th>Stage</th><th>Step / Per pass</th><th>View</th><th>Command</th><th>Report</th></tr></thead>' \
+  "${TMP_DIR}/debug-run-full-codegen/index.html"
+grep -Fq 'th { background: #f1f5f9; text-align: center; }' \
+  "${TMP_DIR}/debug-run-full-codegen/index.html"
+grep -Fq '.view-links { display: inline-flex; gap: 1rem; align-items: center; }' \
   "${TMP_DIR}/debug-run-full-codegen/index.html"
 grep -Fq '<td class="stage-group-cell" rowspan="5">Kernelize</td>' \
   "${TMP_DIR}/debug-run-full-codegen/index.html"
 grep -Fq '<td>021-kernelize-structured-ops</td>' \
   "${TMP_DIR}/debug-run-full-codegen/index.html"
-grep -Fq '<thead><tr><th>Stage</th><th>Step</th><th>Tool</th><th>Args</th><th>状态</th><th>报告</th></tr></thead>' \
+grep -Fq '<td>030-kernelize-out</td>' "${TMP_DIR}/debug-run-full-codegen/index.html"
+grep -Fq '<span class="muted">No standalone command</span>' \
   "${TMP_DIR}/debug-run-full-codegen/index.html"
+grep -Fq '<td class="command-cell" rowspan="5"><details class="command-detail"><summary><code>ascend-mlir-opt kernelize</code></summary>' \
+  "${TMP_DIR}/debug-run-full-codegen/index.html"
+grep -Fq '<summary><code>ascend-mlir-opt kernelize</code></summary>' \
+  "${TMP_DIR}/debug-run-full-codegen/index.html"
+grep -Fq '<code class="command-full">ascend-mlir-opt stages/020-normalize-out.mlir &#x27;--ascend-kernelize=dump-report=true debug-stage=kernelize' \
+  "${TMP_DIR}/debug-run-full-codegen/index.html"
+grep -Fq '<td class="report-cell" rowspan="5"><a href="views/reports/030-kernelize.report.txt.html">reports/030-kernelize.report.txt</a></td>' \
+  "${TMP_DIR}/debug-run-full-codegen/index.html"
+grep -Fq '<a href="views/reports/030-kernelize.report.txt.html">reports/030-kernelize.report.txt</a>' \
+  "${TMP_DIR}/debug-run-full-codegen/index.html"
+test -f "${TMP_DIR}/debug-run-full-codegen/views/reports/030-kernelize.report.txt.html"
+grep -Fq ':root { color-scheme: light; }' "${TMP_DIR}/debug-run-full-codegen/views/reports/030-kernelize.report.txt.html"
+grep -Fq '<pre>command:' "${TMP_DIR}/debug-run-full-codegen/views/reports/030-kernelize.report.txt.html"
 grep -Fq '<td class="stage-group-cell" rowspan="4">Translate</td>' \
   "${TMP_DIR}/debug-run-full-codegen/index.html"
+if grep -Fq '<th>状态</th>' "${TMP_DIR}/debug-run-full-codegen/index.html"; then
+  echo "Stage Timeline should not expose status column" >&2
+  exit 1
+fi
+if grep -Fq '<th>Order</th>' "${TMP_DIR}/debug-run-full-codegen/index.html"; then
+  echo "Stage Timeline should not expose order column" >&2
+  exit 1
+fi
+if grep -Fq '<th>MLIR</th>' "${TMP_DIR}/debug-run-full-codegen/index.html"; then
+  echo "Stage Timeline should merge MLIR into View column" >&2
+  exit 1
+fi
+if grep -Fq '<th>Graph</th>' "${TMP_DIR}/debug-run-full-codegen/index.html"; then
+  echo "Stage Timeline should merge Graph into View column" >&2
+  exit 1
+fi
+if grep -Fq '<summary>高级信息：执行命令</summary>' "${TMP_DIR}/debug-run-full-codegen/index.html"; then
+  echo "index should merge command details into Stage Timeline" >&2
+  exit 1
+fi
 test -f "${TMP_DIR}/debug-run-full-codegen/graphs/stages/021-kernelize-structured-ops.graph.json"
 test -f "${TMP_DIR}/debug-run-full-codegen/graphs/stages/060-compute-lower-out.graph.json"
 test -f "${TMP_DIR}/debug-run-full-codegen/graphs/stages/090-cann-signature-out.graph.json"
@@ -848,7 +1070,7 @@ TEXT
 ascend-debug open "${TMP_DIR}/debug-run-graph" --no-browser >"${TMP_DIR}/ascend-debug-open-graph.txt"
 grep -Fq '<a class="primary-debug-link" href="views/debug_graph.html">打开调试工作台</a>' "${TMP_DIR}/debug-run-graph/index.html"
 grep -Fq '<h2>Stage Timeline</h2>' "${TMP_DIR}/debug-run-graph/index.html"
-grep -Fq '<a href="views/debug_graph.html?stage=29">图形化格式</a>' "${TMP_DIR}/debug-run-graph/index.html"
+grep -Fq '<a href="views/debug_graph.html?stage=29">Graph</a>' "${TMP_DIR}/debug-run-graph/index.html"
 test -f "${TMP_DIR}/debug-run-graph/summaries/debug_graph.json"
 test -f "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
 grep -Fq '<h1>Ascend Debug 调试工作台</h1>' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
@@ -871,9 +1093,42 @@ grep -Fq 'class="layout-resizer"' "${TMP_DIR}/debug-run-graph/views/debug_graph.
 grep -Fq 'class="source-code"' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
 grep -Fq '.source-code { margin: 0; white-space: pre; overflow: auto;' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
 grep -Fq 'class="source-expand-button"' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
-grep -Fq 'class="stage-button stage-group-button' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
-grep -Fq 'class="stage-boundary-details"' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
-grep -Fq '显示边界快照' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
+grep -Fq 'class="stage-tree-group"' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
+grep -Fq 'class="stage-button stage-group-parent' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
+grep -Fq 'class="stage-button stage-child-button' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
+grep -Fq 'data-stage-child-indices=' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
+grep -Fq '<span class="stage-group-main">Kernelize</span>' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
+if grep -Fq '<span class="stage-group-main"><span>' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"; then
+  echo "stage group labels should not duplicate the numeric order prefix" >&2
+  exit 1
+fi
+if grep -Eq '<span>[0-9]+</span>[0-9]{3}-' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"; then
+  echo "stage child labels should not duplicate order and numeric stage-name prefixes" >&2
+  exit 1
+fi
+grep -Fq '.stage-group-parent.parent-active' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
+grep -Fq '.sidebar-body.kernel-mode .stage-navigation' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
+grep -Fq 'sidebarBody.classList.toggle("kernel-mode", mode === "kernel")' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
+grep -Fq 'function stageNavigationSequence' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
+grep -Fq '上一页' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
+grep -Fq '下一页' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
+grep -Fq 'addNavButton("上一页", sequence[currentPosition - 1])' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
+grep -Fq 'addNavButton("下一页", sequence[currentPosition + 1])' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
+grep -Fq 'type="button">${label}</button>' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
+if grep -Fq 'type="button">${label} ${escapeHtml(stageBriefLabel(item))}</button>' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"; then
+  echo "stage pager buttons should show only 上一步/下一步 without target text" >&2
+  exit 1
+fi
+grep -Fq 'Kernel DAG 为空' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
+grep -Fq '当前 run 未收集 Kernel DAG 产物' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
+if grep -Fq 'class="stage-boundary-details"' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"; then
+  echo "stage navigation should be a single expanded tree, not a collapsed boundary drawer" >&2
+  exit 1
+fi
+if grep -Fq '显示边界快照' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"; then
+  echo "stage navigation should merge boundary snapshots into the tree" >&2
+  exit 1
+fi
 grep -Fq '输入同 19 normalize-out' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
 grep -Fq 'class="function-frame"' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
 grep -Fq 'function functionFramesForGraph' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
@@ -916,11 +1171,34 @@ grep -Fq '<g class="graph-content" transform="translate(${GRAPH_CANVAS_PADDING},
 grep -Fq 'function applyGraphScale' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
 grep -Fq 'function fitGraphToView' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
 grep -Fq 'function searchActiveGraph' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
+grep -Fq 'function applyStageNeighborhood' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
+grep -Fq 'function clearStageNeighborhood' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
+grep -Fq 'function collectReachableNeighborhood' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
+grep -Fq 'const ancestorNeighborhood = ["upstream", "both", "direct"].includes(stageGraphViewState.highlightMode)' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
+grep -Fq 'collectReachableNeighborhood(activeEdges, nodeId, "ancestors", highlightDepth)' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
+grep -Fq 'collectReachableNeighborhood(activeEdges, nodeId, "descendants", highlightDepth)' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
+grep -Fq 'id="highlight-mode-controls"' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
+grep -Fq 'data-highlight-mode="upstream"' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
+grep -Fq 'id="focus-toggle"' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
+grep -Fq 'id="highlight-depth"' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
+grep -Fq 'data-edge-kind-filter="resource_effect"' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
+grep -Fq 'id="fold-helper-toggle"' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
+grep -Fq 'function renderPathSummary' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
+grep -Fq 'function updateGraphUrlState' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
+grep -Fq 'function applyEdgeAndHelperFilters' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
+grep -Fq 'data-edge-from=' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
+grep -Fq 'data-edge-kind=' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
+grep -Fq 'neighborhood-node' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
+grep -Fq 'dimmed' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
+grep -Fq 'selectStageNode(stage, graph, preferred, {neighborhood: Boolean(requestedNodeMatch) || stageNeighborhoodActive, updateUrl: false})' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
 grep -Fq 'addEventListener("contextmenu"' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
 grep -Fq 'addEventListener("wheel"' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
 grep -Fq 'canvas.classList.add("panning")' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
 grep -Fq 'diff-added' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
 grep -Fq 'Stage Diff' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
+grep -Fq 'Graph Audit' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
+grep -Fq 'suspicious_isolated' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
+grep -Fq 'dangling_effect' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
 grep -Fq 'function renderKernelDag' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
 grep -Fq 'function renderStagePhaseControls' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
 grep -Fq 'Kernel DAG' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
@@ -956,6 +1234,13 @@ assert kernelize["output_stage"]["name"] == "kernelize-out"
 assert kernelize["input_same_as_previous_output"] is True
 assert kernelize["previous_output_stage"]["name"] == "normalize-out"
 primary_graph = graph["primary_stage"]["graph"]
+assert "connectivity" in primary_graph
+assert primary_graph["connectivity"]["suspicious_isolated_count"] == 0
+assert "stage_connectivity" in graph
+assert len(graph["stage_connectivity"]) == graph["stage_count"]
+assert all("isolated_count" in item for item in graph["stage_connectivity"])
+assert all("suspicious_isolated_count" in item for item in graph["stage_connectivity"])
+assert all("dangling_effect_count" in item for item in graph["stage_connectivity"])
 assert primary_graph["functions"][0]["name"] == "elementwise"
 assert primary_graph["functions"][0]["node_ids"] == [node["id"] for node in primary_graph["nodes"]]
 schedule_stage = next(item for item in graph["stages"] if item["name"] == "schedule-out")
@@ -1025,7 +1310,7 @@ if grep -Fq 'views/summaries/debug_graph.json.html' "${TMP_DIR}/debug-run-graph/
   echo "index should not expose debug graph summary JSON view" >&2
   exit 1
 fi
-grep -Fq '<a href="views/stages/029-kernelize-out.mlir.html">文本格式</a>' "${TMP_DIR}/debug-run-graph/index.html"
+grep -Fq '<a href="views/stages/029-kernelize-out.mlir.html">Text</a>' "${TMP_DIR}/debug-run-graph/index.html"
 grep -Fq '../views/kernels/kernel_0.html' "${TMP_DIR}/debug-run-graph/graphs/kernel_dag.svg"
 if grep -Fq -- '-1x-1' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"; then
   echo "dynamic kernel shapes should be shown as ?x?, not -1x-1" >&2
@@ -1317,13 +1602,28 @@ echo "ascend_debug.diff_fail=ok"
 ascend-debug open "${TMP_DIR}/debug-run-deep" --no-browser >"${TMP_DIR}/ascend-debug-open-deep.txt"
 test -f "${TMP_DIR}/debug-run-deep/index.html"
 grep -Fq '<span>mode</span><strong>quick</strong>' "${TMP_DIR}/debug-run-deep/index.html"
-grep -Fq '<summary>高级信息：执行命令</summary>' "${TMP_DIR}/debug-run-deep/index.html"
+grep -Fq '<thead><tr><th>Stage</th><th>Step / Per pass</th><th>View</th><th>Command</th><th>Report</th></tr></thead>' \
+  "${TMP_DIR}/debug-run-deep/index.html"
+if grep -Fq '<th>状态</th>' "${TMP_DIR}/debug-run-deep/index.html"; then
+  echo "Stage Timeline should not expose status column" >&2
+  exit 1
+fi
+if grep -Fq '<th>Order</th>' "${TMP_DIR}/debug-run-deep/index.html"; then
+  echo "Stage Timeline should not expose order column" >&2
+  exit 1
+fi
+if grep -Fq '<summary>高级信息：执行命令</summary>' "${TMP_DIR}/debug-run-deep/index.html"; then
+  echo "index should merge command details into Stage Timeline" >&2
+  exit 1
+fi
 if grep -Fq '<h2>报告</h2>' "${TMP_DIR}/debug-run-deep/index.html"; then
   echo "index should not expose a separate report section" >&2
   exit 1
 fi
-grep -Fq '<a href="reports/030-schedule.report.txt">reports/030-schedule.report.txt</a>' "${TMP_DIR}/debug-run-deep/index.html"
-grep -Fq '<a href="reports/040-realize.report.txt">reports/040-realize.report.txt</a>' "${TMP_DIR}/debug-run-deep/index.html"
+grep -Fq '<a href="views/reports/030-schedule.report.txt.html">reports/030-schedule.report.txt</a>' "${TMP_DIR}/debug-run-deep/index.html"
+grep -Fq '<a href="views/reports/040-realize.report.txt.html">reports/040-realize.report.txt</a>' "${TMP_DIR}/debug-run-deep/index.html"
+test -f "${TMP_DIR}/debug-run-deep/views/reports/030-schedule.report.txt.html"
+grep -Fq ':root { color-scheme: light; }' "${TMP_DIR}/debug-run-deep/views/reports/030-schedule.report.txt.html"
 echo "ascend_debug.open_deep=ok"
 
 mkdir -p "${TMP_DIR}/debug-run-stage-graph/stages"
@@ -1367,8 +1667,8 @@ func.func @elementwise(%arg0: tensor<4x8xf16>, %arg1: tensor<4x8xf16>) -> tensor
 MLIR
 ascend-debug open "${TMP_DIR}/debug-run-stage-graph" --no-browser >"${TMP_DIR}/ascend-debug-open-stage-graph.txt"
 grep -Fq '<h2>Stage Timeline</h2>' "${TMP_DIR}/debug-run-stage-graph/index.html"
-grep -Fq '<a href="views/debug_graph.html?stage=0">图形化格式</a>' "${TMP_DIR}/debug-run-stage-graph/index.html"
-grep -Fq '<a href="views/debug_graph.html?stage=29">图形化格式</a>' "${TMP_DIR}/debug-run-stage-graph/index.html"
+grep -Fq '<a href="views/debug_graph.html?stage=0">Graph</a>' "${TMP_DIR}/debug-run-stage-graph/index.html"
+grep -Fq '<a href="views/debug_graph.html?stage=29">Graph</a>' "${TMP_DIR}/debug-run-stage-graph/index.html"
 test -f "${TMP_DIR}/debug-run-stage-graph/graphs/stages/000-source.graph.json"
 test -f "${TMP_DIR}/debug-run-stage-graph/graphs/stages/029-kernelize-out.graph.json"
 test ! -e "${TMP_DIR}/debug-run-stage-graph/views/graphs/stages/000-source.graph.html"
@@ -1414,15 +1714,15 @@ grep -Fq '<h2>运行概览</h2>' "${TMP_DIR}/debug-run/index.html"
 grep -Fq '<span>preset</span><strong>quick</strong>' "${TMP_DIR}/debug-run/index.html"
 grep -Fq '<span>tool</span><strong>ascend-debug</strong>' "${TMP_DIR}/debug-run/index.html"
 grep -Fq '<h2>Stage Timeline</h2>' "${TMP_DIR}/debug-run/index.html"
-grep -Fq '<a href="views/stages/000-source.mlir.html">文本格式</a>' "${TMP_DIR}/debug-run/index.html"
-grep -Fq '<a href="views/debug_graph.html?stage=0">图形化格式</a>' "${TMP_DIR}/debug-run/index.html"
-grep -Fq '<a href="views/debug_graph.html?stage=29">图形化格式</a>' "${TMP_DIR}/debug-run/index.html"
+grep -Fq '<a href="views/stages/000-source.mlir.html">Text</a>' "${TMP_DIR}/debug-run/index.html"
+grep -Fq '<a href="views/debug_graph.html?stage=0">Graph</a>' "${TMP_DIR}/debug-run/index.html"
+grep -Fq '<a href="views/debug_graph.html?stage=29">Graph</a>' "${TMP_DIR}/debug-run/index.html"
 if grep -Fq '查看 MLIR' "${TMP_DIR}/debug-run/index.html"; then
-  echo "index should use 文本格式 instead of 查看 MLIR" >&2
+  echo "index should use Text instead of 查看 MLIR" >&2
   exit 1
 fi
 if grep -Fq '在工作台查看' "${TMP_DIR}/debug-run/index.html"; then
-  echo "index should use 图形化格式 instead of 在工作台查看" >&2
+  echo "index should use Graph instead of 在工作台查看" >&2
   exit 1
 fi
 test -f "${TMP_DIR}/debug-run/views/stages/000-source.mlir.html"
@@ -1434,18 +1734,18 @@ import sys
 
 html = pathlib.Path(sys.argv[1]).read_text()
 expected_rows = [
-    ("0", "source", '<a href="views/stages/000-source.mlir.html">文本格式</a>', '<a href="views/debug_graph.html?stage=0">图形化格式</a>', "存在"),
-    ("10", "normalize-in", '<a href="views/stages/010-normalize-in.mlir.html">文本格式</a>', '<a href="views/debug_graph.html?stage=10">图形化格式</a>', "存在"),
-    ("19", "normalize-out", '<a href="views/stages/019-normalize-out.mlir.html">文本格式</a>', '<a href="views/debug_graph.html?stage=19">图形化格式</a>', "存在"),
-    ("20", "kernelize-in", '<a href="views/stages/020-kernelize-in.mlir.html">文本格式</a>', '<a href="views/debug_graph.html?stage=20">图形化格式</a>', "存在"),
-    ("29", "kernelize-out", '<a href="views/stages/029-kernelize-out.mlir.html">文本格式</a>', '<a href="views/debug_graph.html?stage=29">图形化格式</a>', "存在"),
+    ("source", '<td class="view-cell"><span class="view-links"><a href="views/stages/000-source.mlir.html">Text</a><a href="views/debug_graph.html?stage=0">Graph</a></span></td>'),
+    ("normalize-in", '<td class="view-cell"><span class="view-links"><a href="views/stages/010-normalize-in.mlir.html">Text</a><a href="views/debug_graph.html?stage=10">Graph</a></span></td>'),
+    ("normalize-out", '<td class="view-cell"><span class="view-links"><a href="views/stages/019-normalize-out.mlir.html">Text</a><a href="views/debug_graph.html?stage=19">Graph</a></span></td>'),
+    ("kernelize-in", '<td class="view-cell"><span class="view-links"><a href="views/stages/020-kernelize-in.mlir.html">Text</a><a href="views/debug_graph.html?stage=20">Graph</a></span></td>'),
+    ("kernelize-out", '<td class="view-cell"><span class="view-links"><a href="views/stages/029-kernelize-out.mlir.html">Text</a><a href="views/debug_graph.html?stage=29">Graph</a></span></td>'),
 ]
 cursor = 0
-for row in expected_rows:
-    needle = "".join(f"<td>{cell}</td>" for cell in row)
+for step, view_cell in expected_rows:
+    needle = f"<td>{step}</td>{view_cell}"
     position = html.find(needle, cursor)
     if position < 0:
-        raise SystemExit(f"missing ordered stage row: {row!r}")
+        raise SystemExit(f"missing ordered stage row: {step!r}")
     cursor = position + len(needle)
 PY
 echo "ascend_debug.open=ok"
