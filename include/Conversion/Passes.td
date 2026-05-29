@@ -722,6 +722,26 @@ def RecognizeAttention : Pass<"recognize-attention", "mlir::ModuleOp"> {
 // RecognizeLayerNorm
 //===----------------------------------------------------------------------===//
 
+def RecognizeEmbedding : Pass<"recognize-embedding", "mlir::ModuleOp"> {
+  let summary = "Recognize torch.nn.Embedding gather pattern and route to aclnn";
+  let description = [{
+    torch.export lowers nn.Embedding(input_ids) into a linalg.generic whose
+    body uses tensor.extract on the embedding table with index_cast +
+    cmpi+cf.assert bounds checks. TileFuse codegen can't lower this pattern
+    (SSA dominance breaks on the extract when fused with downstream adds).
+    Match the pattern, replace with @__aclnn_embedding(table, indices), let
+    DCE clean up. The created private decl carries {aclnn.kind = "embedding"},
+    finalized by aclnn-finalize-decl to aclnn.op="Embedding".
+  }];
+  let constructor = "mlir::afir::createRecognizeEmbeddingPass()";
+  let dependentDialects = [
+    "mlir::func::FuncDialect",
+    "mlir::tensor::TensorDialect",
+    "mlir::linalg::LinalgDialect",
+    "mlir::cf::ControlFlowDialect",
+  ];
+}
+
 def RecognizeBatchNorm : Pass<"recognize-batchnorm", "mlir::ModuleOp"> {
   let summary = "Recognize decomposed BatchNorm (eval mode) and route to aclnn BatchNorm";
   let description = [{

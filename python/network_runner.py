@@ -133,7 +133,8 @@ def phase1_outline_or_emit_json(args, work):
         # subgraph. Runs pre-group-analysis on the rawest IR.
         recognized = work / "model_recognized.mlir"
         run([AFIR_OPT, "--recognize-attention", "--recognize-layernorm",
-             "--recognize-batchnorm", "--aclnn-finalize-decl",
+             "--recognize-batchnorm", "--recognize-embedding",
+             "--aclnn-finalize-decl",
              args.input_linalg, "-o", str(recognized)])
         # Step a: --linalg-fold-unit-extent-dims + --canonicalize. Canonicalize
         # folds away identity-copy generics (linalg.generic { yield %in }, e.g.

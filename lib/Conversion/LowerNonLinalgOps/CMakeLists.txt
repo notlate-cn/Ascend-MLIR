@@ -2,6 +2,7 @@ add_mlir_library(LowerNonLinalgOpsConversion
   AclnnFinalizeDeclPass.cpp
   RecognizeAttentionPass.cpp
   RecognizeBatchNormPass.cpp
+  RecognizeEmbeddingPass.cpp
   RecognizeLayerNormPass.cpp
 
   ADDITIONAL_HEADER_DIRS

@@ -1,4 +1,5 @@
 #include "Conversion/LowerNonLinalgOps/LowerNonLinalgOpsPass.h"
+#include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/Dialect/Math/IR/Math.h"
@@ -71,6 +72,53 @@ static linalg::BatchMatmulOp traceToBmm1(Value start) {
   if (bmm1 && sawExp)
     return bmm1;
   return {};
+}
+
+// Walk forward from bmm1's result through reshape and scale glue, looking for
+// an addf-only generic with 2 ranked-tensor inputs.  GPT-style causal/padding
+// masks appear here as `(Q @ K^T) * scale + mask` — the second input (the one
+// that's NOT the "main" attention path) is the mask we want to thread through.
+// Returns the mask value (potentially rank-2 [S, S]) if found, null otherwise.
+static Value findMaskFromBmm1(linalg::BatchMatmulOp bmm1) {
+  auto bodyHas = [](linalg::GenericOp g, auto pred) {
+    bool found = false;
+    g.getBody()->walk([&](Operation *op) {
+      if (pred(op))
+        found = true;
+    });
+    return found;
+  };
+  Value v = bmm1.getResult(0);
+  while (true) {
+    if (!v.hasOneUse())
+      return {};
+    Operation *user = *v.getUsers().begin();
+    if (auto ex = dyn_cast<tensor::ExpandShapeOp>(user)) {
+      v = ex.getResult();
+      continue;
+    }
+    if (auto cl = dyn_cast<tensor::CollapseShapeOp>(user)) {
+      v = cl.getResult();
+      continue;
+    }
+    auto gen = dyn_cast<linalg::GenericOp>(user);
+    if (!gen)
+      return {};
+    bool hasMul =
+        bodyHas(gen, [](Operation *op) { return isa<arith::MulFOp>(op); });
+    bool hasAddf =
+        bodyHas(gen, [](Operation *op) { return isa<arith::AddFOp>(op); });
+    if (hasMul && !hasAddf && gen.getInputs().size() == 1) {
+      // scale generic — descend.
+      v = gen.getResult(0);
+      continue;
+    }
+    if (hasAddf && !hasMul && gen.getInputs().size() == 2) {
+      Value a = gen.getInputs()[0], b = gen.getInputs()[1];
+      return (a == v) ? b : a;
+    }
+    return {};
+  }
 }
 
 // Get or insert the @__aclnn_flash_attention private decl (fully-dynamic 4D
@@ -151,14 +199,30 @@ struct RecognizeAttentionPattern
         return val;
       return rewriter.create<tensor::CastOp>(loc, dynT, val);
     };
-    // mask/init are dummy slots: FlashAttentionScore here is bidirectional
-    // (no mask) and the host CPU-reference run_FlashAttentionScore ignores both
-    // (sdpa_cpu allocates its own output). Reuse Q's casted value rather than
-    // fresh tensor.empty's — a standalone empty that feeds only this call has no
-    // kernel-group affiliation and the group-outline reorder can sink it past
-    // the call (invalid SSA / no network-json provenance).
+    // Look for a `(Q@K^T)*scale + mask` mask add in the chain between bmm1 and
+    // softmax (GPT-style causal mask, BERT-style padding mask).  If found,
+    // expand the rank-2 [S,S] mask to rank-4 [1,1,S,S] so sdpa_cpu can
+    // distinguish a real mask from the Q-placeholder by checking shape[3] == S
+    // (vs Q's shape[3] == D).  If no mask: keep the BERT bidirectional path
+    // (pass Q as a placeholder).
     Value q4dyn = castDyn(q4);
-    SmallVector<Value> args = {q4dyn, castDyn(k4), castDyn(v4), q4dyn, q4dyn};
+    Value maskArg = q4dyn;
+    if (Value mask = findMaskFromBmm1(bmm1)) {
+      auto mType = dyn_cast<RankedTensorType>(mask.getType());
+      if (mType && mType.getRank() == 2 && mType.hasStaticShape() &&
+          mType.getDimSize(0) == S && mType.getDimSize(1) == S &&
+          mType.getElementType() == elemType) {
+        // Reassociation maps [S, S] -> [1, 1, S, S]: output dims {0,1,2}
+        // collapse to input dim 0 (extents 1*1*S = S) and dim {3} → input
+        // dim 1 (extent S).
+        auto mask4 = RankedTensorType::get({1, 1, S, S}, elemType);
+        SmallVector<ReassociationIndices> maskReassoc = {{0, 1, 2}, {3}};
+        Value mask4Val = rewriter.create<tensor::ExpandShapeOp>(
+            loc, mask4, mask, maskReassoc);
+        maskArg = castDyn(mask4Val);
+      }
+    }
+    SmallVector<Value> args = {q4dyn, castDyn(k4), castDyn(v4), maskArg, q4dyn};
     auto call = rewriter.create<func::CallOp>(loc, decl, args);
 
     // Cast result back to BNSD, collapse to [BH,S,D], replace bmm2.

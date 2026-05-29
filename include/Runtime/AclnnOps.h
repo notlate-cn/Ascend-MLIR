@@ -79,6 +79,18 @@ void run_LayerNorm(
     TensorInfo *out, // allocated + written by this call
     aclrtStream stream);
 
+// CPU-reference Embedding lookup (aclnn-fallback for the gather pattern
+// torch.export emits for nn.Embedding).  table: [V, F] (vocab x feature),
+// indices: [..., N] (any rank, integer dtype int32 or int64).
+// out:     [..., N, F]  (= indices.shape ++ [F]).
+// Row lookup: out[..., i, :] = table[indices[..., i], :].  Host mode: CPU
+// reference; device mode: not wired (falls back to CPU).
+void run_Embedding(
+    TensorInfo table,
+    TensorInfo indices,
+    TensorInfo *out,
+    aclrtStream stream);
+
 // CPU-reference BatchNorm-eval (aclnn-fallback for the decomposed
 // nn.BatchNorm2d eval-mode subgraph).  Per-channel affine over [..., C, ...]
 // where C = weight.shape[0]:

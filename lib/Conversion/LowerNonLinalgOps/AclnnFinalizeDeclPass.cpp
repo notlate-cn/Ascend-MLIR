@@ -31,6 +31,7 @@ static const llvm::StringMap<AclnnOpMeta> &getRegistry() {
       {"flash_attention", {"FlashAttentionScore", "BNSD"}},
       {"layer_norm", {"LayerNorm", "ND"}},
       {"batch_norm", {"BatchNorm", "NCHW"}},
+      {"embedding", {"Embedding", "ND"}},
   };
   return table;
 }

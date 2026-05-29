@@ -233,7 +233,8 @@ static uint16_t f2h(float fv) {
 }
 
 static void sdpa_cpu(const TensorInfo &q, const TensorInfo &k,
-                     const TensorInfo &v, TensorInfo *out) {
+                     const TensorInfo &v, const TensorInfo &mask,
+                     TensorInfo *out) {
   int64_t B = q.shape[0], N = q.shape[1], S = q.shape[2], D = q.shape[3];
   float scale = 1.0f / std::sqrt((float)D);
 
@@ -252,17 +253,30 @@ static void sdpa_cpu(const TensorInfo &q, const TensorInfo &k,
     else ((float *)p)[i] = val;
   };
 
+  // RecognizeAttention forwards a real mask as rank-4 [1, 1, S, S]
+  // (expand_shape from rank-2 [S, S]).  When no mask is in the IR pattern, it
+  // passes Q as a placeholder (rank-4 [B, N, S, D]).  Distinguish by the
+  // last-dim extent: real mask has shape[3] == S (sequence), Q-placeholder
+  // has shape[3] == D (head dim).  When S == D the heuristic is ambiguous;
+  // fall back to "no mask" to keep BERT-style attention working.
+  bool applyMask =
+      (mask.rank == 4 && mask.shape[3] == S && mask.shape[2] == S &&
+       S != D && mask.data != nullptr);
+
   std::vector<float> scores((size_t)(S * S));
 
   for (int64_t b = 0; b < B; ++b) {
     for (int64_t n = 0; n < N; ++n) {
-      // QK^T / sqrt(D)
+      // QK^T / sqrt(D)  (+ mask if present, broadcast over B and N)
       for (int64_t s1 = 0; s1 < S; ++s1)
         for (int64_t s2 = 0; s2 < S; ++s2) {
           float dot = 0.f;
           for (int64_t d = 0; d < D; ++d)
             dot += rd(q.data, idx(b, n, s1, d)) * rd(k.data, idx(b, n, s2, d));
-          scores[(size_t)(s1 * S + s2)] = dot * scale;
+          float val = dot * scale;
+          if (applyMask)
+            val += rd(mask.data, (size_t)(s1 * S + s2));
+          scores[(size_t)(s1 * S + s2)] = val;
         }
       // softmax row-wise
       for (int64_t s1 = 0; s1 < S; ++s1) {
@@ -313,13 +327,13 @@ static aclTensor *makeAclTensor(const TensorInfo &ti) {
 // ---------------------------------------------------------------------------
 void run_FlashAttentionScore(
     TensorInfo q, TensorInfo k, TensorInfo v,
-    TensorInfo /*mask*/, TensorInfo /*init*/,
+    TensorInfo mask, TensorInfo /*init*/,
     TensorInfo *out, aclrtStream stream) {
 
   assert(q.rank == 4 && "expected BNSD rank-4 query");
 
   if (g_host_mode) {
-    sdpa_cpu(q, k, v, out);
+    sdpa_cpu(q, k, v, mask, out);
     return;
   }
 
@@ -488,6 +502,63 @@ void run_Matmul(TensorInfo a, TensorInfo b, TensorInfo /*init*/,
   aclDestroyTensor(bT);
   aclDestroyTensor(oT);
   freePool(pool);
+}
+
+// ---------------------------------------------------------------------------
+// Embedding lookup CPU reference: row gather from table.
+//   table: [V, F]; indices: rank-N integer; out: indices.shape ++ [F].
+// indices dtype handled for int32 (dtype id 3) and int64 (dtype id 9).
+// ---------------------------------------------------------------------------
+static void embedding_cpu(const TensorInfo &table, const TensorInfo &indices,
+                          TensorInfo *out) {
+  assert(table.rank == 2 && "embedding table must be rank-2");
+  int64_t V = table.shape[0];
+  int64_t F = table.shape[1];
+
+  // Compute total number of index entries.
+  int64_t numIdx = 1;
+  for (int i = 0; i < indices.rank; ++i)
+    numIdx *= indices.shape[i];
+
+  // Output shape = indices.shape ++ [F].
+  TensorInfo tmpl = table;
+  tmpl.rank = indices.rank + 1;
+  for (int i = 0; i < indices.rank; ++i)
+    tmpl.shape[i] = indices.shape[i];
+  tmpl.shape[indices.rank] = F;
+  allocTensorLike(tmpl, out);
+
+  size_t eb = elemBytes(table.dtype);
+  auto rowBytes = (size_t)F * eb;
+
+  auto readIdx = [&](int64_t i) -> int64_t {
+    if (indices.dtype == 3) return (int64_t)((const int32_t *)indices.data)[i];
+    if (indices.dtype == 9) return ((const int64_t *)indices.data)[i];
+    fprintf(stderr, "[AclnnOps] run_Embedding: unsupported indices dtype %d\n",
+            indices.dtype);
+    return 0;
+  };
+
+  for (int64_t i = 0; i < numIdx; ++i) {
+    int64_t row = readIdx(i);
+    if (row < 0 || row >= V) {
+      fprintf(stderr, "[AclnnOps] run_Embedding: index %lld out of [0, %lld)\n",
+              (long long)row, (long long)V);
+      row = 0;
+    }
+    std::memcpy((char *)out->data + (size_t)i * rowBytes,
+                (const char *)table.data + (size_t)row * rowBytes,
+                rowBytes);
+  }
+}
+
+void run_Embedding(TensorInfo table, TensorInfo indices, TensorInfo *out,
+                   aclrtStream /*stream*/) {
+  if (!g_host_mode) {
+    fprintf(stderr, "[AclnnOps] run_Embedding: device path not implemented, "
+                    "running CPU reference\n");
+  }
+  embedding_cpu(table, indices, out);
 }
 
 // ---------------------------------------------------------------------------
