@@ -920,21 +920,21 @@ def main():
     _lg.init_run(work, run_id=args.run_id, verbose=args.verbose)
 
     try:
-        _lg.set_context(phase="phase-1")
-        groups = phase1_outline_or_emit_json(args, work)
-        log.info(f"workdir: {work}")
-        log.info(f"groups:  {groups}")
+        with _lg.context(phase="phase-1"):
+            groups = phase1_outline_or_emit_json(args, work)
+            log.info(f"workdir: {work}")
+            log.info(f"groups:  {groups}")
         if args.max_phase < 2:
             return
 
         network = NetworkJson.load(str(groups / "network.json"))
-        _lg.set_context(phase="phase-2", kernel="-")
-        artifacts = phase2_codegen_compile(work, groups, network, soc=args.soc)
+        with _lg.context(phase="phase-2", kernel="-"):
+            artifacts = phase2_codegen_compile(work, groups, network, soc=args.soc)
         if args.max_phase < 3:
             return
 
-        _lg.set_context(phase="phase-3", kernel="-")
-        tilings_default, inter = phase3_default_build_and_dump(work, groups, network, artifacts, args)
+        with _lg.context(phase="phase-3", kernel="-"):
+            tilings_default, inter = phase3_default_build_and_dump(work, groups, network, artifacts, args)
         if args.max_phase < 4:
             return
 
@@ -946,13 +946,13 @@ def main():
                      "using default tilings (accuracy-only, no perf tuning).")
             tilings_best_path = work / "tilings_default.json"
         else:
-            _lg.set_context(phase="phase-4", kernel="-")
-            tilings_best_path = phase4_autotune(work, network, inter, args)
+            with _lg.context(phase="phase-4", kernel="-"):
+                tilings_best_path = phase4_autotune(work, network, inter, args)
         if args.max_phase < 5:
             return
 
-        _lg.set_context(phase="phase-5", kernel="-")
-        rc = phase5_final_run_verify(work, groups, artifacts, tilings_best_path, network, args)
+        with _lg.context(phase="phase-5", kernel="-"):
+            rc = phase5_final_run_verify(work, groups, artifacts, tilings_best_path, network, args)
         sys.exit(rc)
     finally:
         _debug_manifest_write(work, mirror_stages=args.debug_out)

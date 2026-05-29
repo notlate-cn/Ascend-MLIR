@@ -1,24 +1,33 @@
 """Unified Python-side debug logger for network_runner and friends.
 
 Sinks: stderr (INFO+, color when TTY) and <workdir>/log/run.log (DEBUG+).
-Context: contextvars-driven phase/kernel prefix, grep-friendly.
+The run.log file APPENDS across re-runs (each session prefixed by a
+banner line); use the `run-id` prefix on every log line to grep a single
+session out.
+
+Context: contextvars-driven phase/kernel prefix, grep-friendly.  Prefer
+the `context()` contextmanager when entering a scoped phase — it auto-
+restores the prior phase/kernel on exit, so cleanup code after the
+`with` block doesn't carry the inner phase's tag.
 
 Typical usage:
-    from runner_utils.logger import init_run, get_logger, set_context, passthrough
+    from runner_utils.logger import init_run, get_logger, context, passthrough
     init_run(workdir, run_id=args.run_id, verbose=args.verbose)
     log = get_logger(__name__)
-    set_context(phase="phase-2")
-    log.info("matmul -> aclnn picked v0")
-    passthrough("+ afir-opt ...")   # raw line, no prefix
+    with context(phase="phase-2"):
+        log.info("matmul -> aclnn picked v0")
+        passthrough("+ afir-opt ...")   # raw line, no prefix
 """
 from __future__ import annotations
 
+import contextlib
 import contextvars
 import logging
+import os
 import sys
 import time
 from pathlib import Path
-from typing import Optional
+from typing import Iterator, Optional
 
 _PASSTHROUGH = 25
 logging.addLevelName(_PASSTHROUGH, "PASS")
@@ -74,8 +83,9 @@ class _Formatter(logging.Formatter):
 
 
 def _default_run_id(workdir: Path) -> str:
+    # PID disambiguates same-second launches (CI parallel, quick re-runs).
     base = workdir.name or "run"
-    return f"{base}-{time.strftime('%H%M%S')}"
+    return f"{base}-{time.strftime('%H%M%S')}-{os.getpid()}"
 
 
 def init_run(workdir, run_id: Optional[str] = None, verbose: bool = False) -> str:
@@ -106,7 +116,16 @@ def init_run(workdir, run_id: Optional[str] = None, verbose: bool = False) -> st
     sh.addFilter(cf)
     root.addHandler(sh)
 
-    fh = logging.FileHandler(log_dir / "run.log", mode="w", encoding="utf-8")
+    # Append, don't truncate: a re-run on the same workdir would otherwise
+    # delete the prior session's log. The per-line run_id prefix makes a
+    # single session greppable; the banner below makes session boundaries
+    # eyeball-able in `tail -f` mode.
+    log_path = log_dir / "run.log"
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(log_path, "a", encoding="utf-8") as banner_fh:
+        ts = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())
+        banner_fh.write(f"\n=== run {rid} start {ts} ===\n")
+    fh = logging.FileHandler(log_path, mode="a", encoding="utf-8")
     fh.setLevel(logging.DEBUG)
     fh.setFormatter(_Formatter(color=False))
     fh.addFilter(cf)
@@ -147,6 +166,7 @@ def get_logger(name: str = "ascend") -> logging.Logger:
 
 
 def set_context(*, phase: Optional[str] = None, kernel: Optional[str] = None) -> None:
+    """Imperative phase/kernel set. Prefer `context()` for scoped use."""
     if phase is not None:
         _ctx_phase.set(phase or "-")
     if kernel is not None:
@@ -156,6 +176,31 @@ def set_context(*, phase: Optional[str] = None, kernel: Optional[str] = None) ->
 def clear_context() -> None:
     _ctx_phase.set("-")
     _ctx_kernel.set("-")
+
+
+@contextlib.contextmanager
+def context(*, phase: Optional[str] = None,
+            kernel: Optional[str] = None) -> Iterator[None]:
+    """Scoped phase/kernel tag; restores the prior values on exit.
+
+    Use around a logical phase block so cleanup code after the `with`
+    doesn't carry an inner phase tag:
+
+        with context(phase="phase-3"):
+            run_phase_3()
+        # log lines after this point revert to the outer phase
+    """
+    prev_phase = _ctx_phase.get()
+    prev_kernel = _ctx_kernel.get()
+    if phase is not None:
+        _ctx_phase.set(phase or "-")
+    if kernel is not None:
+        _ctx_kernel.set(kernel or "-")
+    try:
+        yield
+    finally:
+        _ctx_phase.set(prev_phase)
+        _ctx_kernel.set(prev_kernel)
 
 
 def current_phase() -> str:
