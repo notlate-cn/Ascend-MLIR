@@ -41,6 +41,27 @@ struct ArithConstantKernelizeExternalModel
   }
 };
 
+struct TensorConcatKernelizeExternalModel
+    : public KernelizeSemanticOpInterface::ExternalModel<
+          TensorConcatKernelizeExternalModel, tensor::ConcatOp> {
+  LogicalResult
+  populateKernelizeSemanticInfo(Operation *op,
+                                KernelizeOpSemanticInfo &info) const {
+    auto concatOp = cast<tensor::ConcatOp>(op);
+    RankedTensorType resultType = concatOp.getResultType();
+    info.participation = KernelizeParticipationKind::Analyze;
+    info.accessPattern = AccessPatternKind::LayoutTransform;
+    info.seedPolicy = KernelizeSeedPolicy::MaySeed;
+    info.modelName = "tensor_concat_external";
+    info.traits.push_back(KernelizeSemanticTrait::Structured);
+    info.traits.push_back(KernelizeSemanticTrait::LayoutTransform);
+    info.resultRanks.push_back(static_cast<unsigned>(resultType.getRank()));
+    info.iteratorKinds.append(static_cast<size_t>(resultType.getRank()),
+                              IteratorKind::Parallel);
+    return success();
+  }
+};
+
 template <typename ConcreteOp>
 struct TensorViewKernelizeExternalModel
     : public KernelizeSemanticOpInterface::ExternalModel<
@@ -87,6 +108,8 @@ void registerKernelizeExternalModels(DialectRegistry &registry) {
     attachLinalgModel<linalg::BatchMatmulTransposeBOp>(context);
   });
   registry.addExtension(+[](MLIRContext *context, tensor::TensorDialect *) {
+    tensor::ConcatOp::attachInterface<TensorConcatKernelizeExternalModel>(
+        *context);
     attachTensorViewModel<tensor::CastOp>(context);
     attachTensorViewModel<tensor::CollapseShapeOp>(context);
     attachTensorViewModel<tensor::ExpandShapeOp>(context);

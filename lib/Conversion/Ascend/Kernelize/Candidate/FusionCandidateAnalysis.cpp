@@ -10,6 +10,7 @@
 #include "Conversion/Ascend/Kernelize/Pattern/HandwrittenContractRegistry.h"
 #include "Conversion/Ascend/Kernelize/KernelizeTypes.h"
 #include "Conversion/Ascend/Kernelize/Analysis/OpRoleClassification.h"
+#include "mlir/Dialect/Tensor/IR/Tensor.h"
 #include "mlir/IR/Operation.h"
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/DenseMap.h"
@@ -306,6 +307,35 @@ FusionCandidate buildReductionInliningCandidate(
   return candidate;
 }
 
+std::optional<FusionCandidate> buildConcatRootProducerFusionCandidate(
+    Operation *seed, const DependencyAnalysisResult &deps,
+    const OpRoleMap &roleMap) {
+  if (!isa<tensor::ConcatOp>(seed))
+    return std::nullopt;
+
+  ArrayRef<Operation *> producers = getProducers(deps.index, seed);
+  if (producers.size() < 2)
+    return std::nullopt;
+
+  FusionCandidate candidate;
+  candidate.kind = CandidateKind::Fusion;
+  candidate.primitive = KernelizePrimitiveKind::ConcatRootProducerFusion;
+  candidate.primaryOps.push_back(seed);
+  candidate.internalOps.push_back(seed);
+
+  for (Operation *producer : producers) {
+    if (!isElementwiseChainOp(getRoles(roleMap, producer)) ||
+        !hasAnalyzedConsumerCount(deps.index, producer, 1))
+      return std::nullopt;
+    candidate.internalOps.push_back(producer);
+  }
+
+  sortByOpId(candidate.internalOps, deps.index);
+  candidate.benefitScore =
+      40 + 10 * static_cast<int64_t>(producers.size());
+  return candidate;
+}
+
 FusionCandidate buildFallbackSingleOpCandidate(Operation *seed) {
   FusionCandidate candidate;
   candidate.kind = CandidateKind::FallbackSingleOp;
@@ -495,6 +525,15 @@ FusionCandidateAnalyzer::analyze(const DependencyAnalysisResult &deps,
     appendLegalCandidate(candidates,
                          buildReductionInliningCandidate(seed, deps, roleMap),
                          deps, roleMap, config);
+  }
+
+  for (Operation *seed : deps.index.orderedOps) {
+    std::optional<FusionCandidate> candidate =
+        buildConcatRootProducerFusionCandidate(seed, deps, roleMap);
+    if (!candidate)
+      continue;
+    appendLegalCandidate(candidates, std::move(*candidate), deps, roleMap,
+                         config);
   }
 
   llvm::DenseSet<Operation *> attentionGroupedOps;

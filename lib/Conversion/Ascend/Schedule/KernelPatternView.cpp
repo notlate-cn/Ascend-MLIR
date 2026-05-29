@@ -8,6 +8,7 @@
 
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
+#include "mlir/Dialect/Tensor/IR/Tensor.h"
 #include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/Operation.h"
 #include "llvm/ADT/STLExtras.h"
@@ -134,11 +135,17 @@ buildKernelPatternViews(ModuleOp module) {
   unsigned nextOrdinal = 0;
 
   WalkResult walkResult = module.walk([&](func::FuncOp funcOp) {
-    return funcOp.walk([&](linalg::LinalgOp linalgOp) {
-      Operation *op = linalgOp.getOperation();
+    return funcOp.walk([&](Operation *op) {
+      auto linalgOp = dyn_cast<linalg::LinalgOp>(op);
+      bool isConcatOp = isa<tensor::ConcatOp>(op);
+      if (!linalgOp && !isConcatOp)
+        return WalkResult::advance();
+
       auto kernelAttr = op->getAttrOfType<StringAttr>(kKernelAttr);
       if (!kernelAttr) {
-        if (isReductionInitHelper(linalgOp))
+        if (linalgOp && isReductionInitHelper(linalgOp))
+          return WalkResult::advance();
+        if (isConcatOp)
           return WalkResult::advance();
         op->emitError() << "requires " << kKernelAttr;
         return WalkResult::interrupt();

@@ -58,6 +58,7 @@ enum class KernelizePrimitiveKind {
   Unknown,
   ElementwiseChain,
   ConsumerIntoPrimary,
+  ConcatRootProducerFusion,
   ReductionInlining,
   FallbackSingleOp,
   HandwrittenPattern
@@ -134,6 +135,8 @@ stringifyKernelizePrimitiveKind(KernelizePrimitiveKind kind) {
     return "ElementwiseChain";
   case KernelizePrimitiveKind::ConsumerIntoPrimary:
     return "ConsumerIntoPrimary";
+  case KernelizePrimitiveKind::ConcatRootProducerFusion:
+    return "ConcatRootProducerFusion";
   case KernelizePrimitiveKind::ReductionInlining:
     return "ReductionInlining";
   case KernelizePrimitiveKind::FallbackSingleOp:
