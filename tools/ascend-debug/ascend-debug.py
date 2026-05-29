@@ -26,8 +26,24 @@ def build_parser() -> argparse.ArgumentParser:
     collect = subparsers.add_parser("collect", help="Collect a debug run")
     collect.add_argument("input", type=pathlib.Path)
     collect.add_argument("--out", type=pathlib.Path, required=True)
-    collect.add_argument("--preset", choices=["quick", "deep"], default="quick")
-    collect.add_argument("--pipeline", choices=["normalize-kernelize"], default="normalize-kernelize")
+    collect.add_argument(
+        "--mode",
+        choices=["quick", "deep"],
+        default=None,
+        help="Collection mode: quick emits coarse phase dumps; deep emits pass-level dumps.",
+    )
+    collect.add_argument(
+        "--preset",
+        choices=["quick", "deep"],
+        default=None,
+        help=argparse.SUPPRESS,
+    )
+    collect.add_argument(
+        "--pipeline",
+        choices=["normalize-kernelize", "full-codegen"],
+        default=None,
+        help=argparse.SUPPRESS,
+    )
     collect.add_argument("--artifact-manifest", type=pathlib.Path)
     collect.add_argument("--run-manifest", type=pathlib.Path)
     collect.add_argument("--kernelized-ir", type=pathlib.Path)
@@ -39,11 +55,14 @@ def build_parser() -> argparse.ArgumentParser:
     collect.add_argument(
         "--cann-root",
         type=pathlib.Path,
-        help="CANN root for --memory-detail. Defaults to ASCEND_HOME_PATH, ASCEND_HOME, or CANN_ROOT.",
+        help=(
+            "CANN root for --mode deep or --memory-detail. Defaults to "
+            "ASCEND_HOME_PATH, ASCEND_HOME, CANN_ROOT, or ASCEND_TOOLKIT_HOME."
+        ),
     )
     collect.add_argument(
         "--soc",
-        help="SoC name for --memory-detail. Defaults to ASCEND_SOC_VERSION or Ascend910B2.",
+        help="SoC name for --mode deep or --memory-detail.",
     )
     collect.add_argument(
         "--realize-options",

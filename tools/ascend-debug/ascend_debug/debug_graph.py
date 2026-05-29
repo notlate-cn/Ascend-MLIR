@@ -8,6 +8,8 @@ from typing import Any
 
 from ascend_debug import layout, stage_graph
 
+PHASE_ORDER = ("Normalize", "Kernelize", "Schedule", "Realize", "Translate")
+
 
 def _cell(value: Any) -> str:
     return html.escape("" if value is None else str(value))
@@ -35,7 +37,7 @@ def _stage_record(
     graph = _load_json(run_dir / graph_json_rel)
     if not graph:
         return None
-    return {
+    record = {
         "order": stage["order"],
         "name": stage["name"],
         "path": stage["path"],
@@ -46,10 +48,22 @@ def _stage_record(
         "kernel_count": graph.get("kernel_count", 0),
         "graph": graph,
     }
+    for field in ("phase", "step"):
+        value = stage.get(field)
+        if isinstance(value, str) and value:
+            record[field] = value
+    return record
 
 
 def _select_primary_stage(stages: list[dict[str, Any]]) -> dict[str, Any] | None:
-    for preferred in ("kernelize-out", "schedule-out", "realize-out"):
+    for preferred in (
+        "kernelize-out",
+        "030-kernelize-out",
+        "schedule-out",
+        "040-schedule-out",
+        "realize-out",
+        "050-realize-out",
+    ):
         for item in stages:
             if item["name"] == preferred:
                 return item
@@ -60,13 +74,18 @@ def _select_primary_stage(stages: list[dict[str, Any]]) -> dict[str, Any] | None
 
 
 def _stage_brief(stage: dict[str, Any], index: int) -> dict[str, Any]:
-    return {
+    brief = {
         "stage_index": index,
         "order": stage.get("order"),
         "name": stage.get("name"),
         "path": stage.get("path"),
         "stage_view_path": stage.get("stage_view_path"),
     }
+    for field in ("phase", "step"):
+        value = stage.get(field)
+        if isinstance(value, str) and value:
+            brief[field] = value
+    return brief
 
 
 def _stage_digest(run_dir: pathlib.Path, stage: dict[str, Any] | None) -> str | None:
@@ -103,6 +122,40 @@ def _build_stage_groups(run_dir: pathlib.Path, stages: list[dict[str, Any]]) -> 
             }
         )
         previous_output = source_entry
+
+    phase_entries: dict[str, list[tuple[int, dict[str, Any]]]] = {phase: [] for phase in PHASE_ORDER}
+    for index, stage in enumerate(stages):
+        phase = stage.get("phase")
+        if isinstance(phase, str) and phase in phase_entries:
+            phase_entries[phase].append((index, stage))
+
+    if any(phase_entries.values()):
+        for phase in PHASE_ORDER:
+            entries = phase_entries[phase]
+            if not entries:
+                continue
+            default_index, default_stage = entries[-1]
+            previous_index, previous_stage = previous_output if previous_output else (None, None)
+            groups.append(
+                {
+                    "name": phase.lower().replace(" ", "-"),
+                    "kind": "phase",
+                    "label": phase,
+                    "default_stage": _stage_brief(default_stage, default_index),
+                    "input_stage": None,
+                    "output_stage": _stage_brief(default_stage, default_index),
+                    "previous_output_stage": _stage_brief(previous_stage, previous_index)
+                    if previous_stage is not None and previous_index is not None
+                    else None,
+                    "input_same_as_previous_output": False,
+                    "steps": [
+                        _stage_brief(stage, index)
+                        for index, stage in entries
+                    ],
+                }
+            )
+            previous_output = entries[-1]
+        return groups
 
     for name, input_name, output_name in (
         ("normalize", "normalize-in", "normalize-out"),
@@ -428,7 +481,11 @@ def _stage_buttons(debug_graph: dict[str, Any]) -> str:
                 continue
             stage_index = default_stage.get("stage_index")
             active = " active" if default_stage.get("name") == active_name else ""
-            meta = "输出 " + str(default_stage.get("name"))
+            steps = group.get("steps") if isinstance(group.get("steps"), list) else []
+            if steps:
+                meta = f"{len(steps)} 个步骤 dump"
+            else:
+                meta = "输出 " + str(default_stage.get("name"))
             previous = group.get("previous_output_stage") if isinstance(group, dict) else None
             equivalence = ""
             if group.get("input_same_as_previous_output") and isinstance(previous, dict):
@@ -1222,6 +1279,9 @@ function activeStage() {
 function stageGroupForIndex(index) {
   const groups = Array.isArray(workspace.stage_groups) ? workspace.stage_groups : [];
   return groups.find((group) => {
+    if (Array.isArray(group.steps) && group.steps.some((step) => Number(step.stage_index) === Number(index))) {
+      return true;
+    }
     const inputIndex = group.input_stage ? Number(group.input_stage.stage_index) : -1;
     const outputIndex = group.output_stage ? Number(group.output_stage.stage_index) : -1;
     const defaultIndex = group.default_stage ? Number(group.default_stage.stage_index) : -1;
@@ -1254,16 +1314,22 @@ function renderStagePhaseControls(stage = activeStage()) {
     return;
   }
   const group = stageGroupForIndex(activeStageIndex);
-  if (!group || group.kind !== "pass") {
+  if (!group || (group.kind !== "pass" && group.kind !== "phase")) {
     controls.innerHTML = "";
     return;
   }
   const phaseButtons = [];
-  if (group.input_stage) {
+  if (Array.isArray(group.steps) && group.steps.length) {
+    for (const step of group.steps) {
+      const active = Number(step.stage_index) === activeStageIndex ? " active" : "";
+      const label = step.step || step.name;
+      phaseButtons.push(`<button class="stage-phase-button${active}" data-stage-index="${escapeHtml(step.stage_index)}" type="button">${escapeHtml(label)} ${escapeHtml(stageBriefLabel(step))}</button>`);
+    }
+  } else if (group.input_stage) {
     const active = Number(group.input_stage.stage_index) === activeStageIndex ? " active" : "";
     phaseButtons.push(`<button class="stage-phase-button${active}" data-stage-index="${escapeHtml(group.input_stage.stage_index)}" type="button">输入 ${escapeHtml(stageBriefLabel(group.input_stage))}</button>`);
   }
-  if (group.output_stage) {
+  if ((!Array.isArray(group.steps) || !group.steps.length) && group.output_stage) {
     const active = Number(group.output_stage.stage_index) === activeStageIndex ? " active" : "";
     phaseButtons.push(`<button class="stage-phase-button${active}" data-stage-index="${escapeHtml(group.output_stage.stage_index)}" type="button">输出 ${escapeHtml(stageBriefLabel(group.output_stage))}</button>`);
   }
@@ -1444,7 +1510,10 @@ function renderStageGraph() {
   }
   const group = stageGroupForIndex(activeStageIndex);
   const phase = group && group.input_stage && Number(group.input_stage.stage_index) === activeStageIndex ? "输入" : "输出";
-  document.getElementById("graph-title").textContent = group && group.kind === "pass"
+  const stageLabel = stage.step || stage.name;
+  document.getElementById("graph-title").textContent = group && group.kind === "phase"
+    ? `Stage Graph: ${group.label} / ${stageLabel}`
+    : group && group.kind === "pass"
     ? `Stage Graph: ${group.name} ${phase}`
     : `Stage Graph: ${stage.order} ${stage.name}`;
   document.getElementById("graph-subtitle").textContent = `${graph.node_count} 个节点，${graph.edge_count} 条边，${graph.kernel_count} 个 Kernel`;

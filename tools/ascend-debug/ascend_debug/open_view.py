@@ -153,7 +153,7 @@ def _load_json_object(path: pathlib.Path, *, label: str) -> dict[str, Any]:
 
 
 def _metadata_rows(manifest: dict[str, Any]) -> str:
-    keys = ("schema_version", "tool", "preset", "pipeline", "backend", "device_id")
+    keys = ("schema_version", "tool", "mode", "preset", "pipeline", "backend", "device_id")
     rows = []
     for key in keys:
         if key in manifest:
@@ -164,6 +164,7 @@ def _metadata_rows(manifest: dict[str, Any]) -> str:
 def _overview_cards(manifest: dict[str, Any]) -> str:
     items = [
         ("tool", manifest.get("tool")),
+        ("mode", manifest.get("mode")),
         ("preset", manifest.get("preset")),
         ("pipeline", manifest.get("pipeline")),
         ("stages", len(manifest.get("stages", []))),

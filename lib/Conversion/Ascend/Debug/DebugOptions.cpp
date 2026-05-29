@@ -6,6 +6,10 @@
 
 #include "Conversion/Ascend/Debug/DebugOptions.h"
 
+#include "llvm/ADT/SmallString.h"
+#include "llvm/Support/FileSystem.h"
+#include "llvm/Support/Path.h"
+
 namespace mlir::ascend::debug {
 
 DebugStage parseDebugStage(StringRef value) {
@@ -25,6 +29,12 @@ DebugStage parseDebugStage(StringRef value) {
 
 bool shouldDump(DebugOptions options, DebugStage stage) {
   if (!options.dumpReport)
+    return false;
+  return options.stage == DebugStage::All || options.stage == stage;
+}
+
+bool shouldDumpCheckpoint(const DebugOptions &options, DebugStage stage) {
+  if (options.checkpointDumpDir.empty())
     return false;
   return options.stage == DebugStage::All || options.stage == stage;
 }
@@ -55,6 +65,38 @@ void emitStageHeader(raw_ostream &os, DebugStage stage, StringRef passName) {
   if (!passName.empty())
     os << " (" << passName << ")";
   os << "\n";
+}
+
+LogicalResult dumpCheckpoint(ModuleOp module, const DebugOptions &options,
+                             DebugStage stage, StringRef basename) {
+  if (!shouldDumpCheckpoint(options, stage))
+    return success();
+  if (basename.empty()) {
+    module.emitError() << "empty Ascend debug checkpoint name";
+    return failure();
+  }
+
+  std::error_code ec =
+      llvm::sys::fs::create_directories(options.checkpointDumpDir);
+  if (ec) {
+    module.emitError() << "failed to create Ascend debug checkpoint directory '"
+                       << options.checkpointDumpDir << "': " << ec.message();
+    return failure();
+  }
+
+  llvm::SmallString<256> path(options.checkpointDumpDir);
+  llvm::sys::path::append(path, (basename + ".mlir").str());
+
+  llvm::raw_fd_ostream os(path, ec, llvm::sys::fs::OF_Text);
+  if (ec) {
+    module.emitError() << "failed to open Ascend debug checkpoint '" << path
+                       << "': " << ec.message();
+    return failure();
+  }
+
+  module.print(os);
+  os << "\n";
+  return success();
 }
 
 } // namespace mlir::ascend::debug

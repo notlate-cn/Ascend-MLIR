@@ -326,7 +326,8 @@ struct AscendRealizePass
     }
 
     ::mlir::ascend::debug::DebugOptions options{
-        ::mlir::ascend::debug::parseDebugStage(debugStage), dumpReport};
+        ::mlir::ascend::debug::parseDebugStage(debugStage), dumpReport,
+        StringRef(debugDumpDir).str()};
     if (::mlir::ascend::debug::shouldDump(
             options, ::mlir::ascend::debug::DebugStage::Realize))
       ::mlir::ascend::debug::emitStageHeader(
@@ -376,6 +377,12 @@ struct AscendRealizePass
       signalPassFailure();
       return;
     }
+    if (failed(::mlir::ascend::debug::dumpCheckpoint(
+            getOperation(), options, ::mlir::ascend::debug::DebugStage::Realize,
+            "041-realize-planned"))) {
+      signalPassFailure();
+      return;
+    }
 
     if (materializationMode == kTiledLinalgMaterializationMode ||
         materializationMode == kFullRealizeMaterializationMode) {
@@ -398,6 +405,13 @@ struct AscendRealizePass
         signalPassFailure();
         return;
       }
+      if (failed(::mlir::ascend::debug::dumpCheckpoint(
+              getOperation(), options,
+              ::mlir::ascend::debug::DebugStage::Realize,
+              "042-realize-bufferized"))) {
+        signalPassFailure();
+        return;
+      }
     }
 
     if (materializationMode == kMemorySpaceAnnotateMaterializationMode ||
@@ -408,6 +422,13 @@ struct AscendRealizePass
               MemoryRealizationMode::MemorySpaceAnnotate))) {
         getOperation()->emitError()
             << "ascend-realize failed to materialize memory realization plan";
+        signalPassFailure();
+        return;
+      }
+      if (failed(::mlir::ascend::debug::dumpCheckpoint(
+              getOperation(), options,
+              ::mlir::ascend::debug::DebugStage::Realize,
+              "043-realize-memory-space-annotated"))) {
         signalPassFailure();
         return;
       }

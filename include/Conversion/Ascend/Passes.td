@@ -76,6 +76,8 @@ def AscendKernelizePass : Pass<"ascend-kernelize", "mlir::ModuleOp"> {
            "Ascend debug stage: none, normalize, kernelize, schedule, all">,
     Option<"dumpReport", "dump-report", "bool", /*default=*/"false",
            "Dump Ascend analysis report to stderr">,
+    Option<"debugDumpDir", "debug-dump-dir", "std::string", /*default=*/"\"\"",
+           "Directory for Ascend debug checkpoint MLIR dumps">,
   ];
 }
 
@@ -98,6 +100,8 @@ def AscendSchedulePass : Pass<"ascend-schedule", "mlir::ModuleOp"> {
            "Ascend debug stage: none, normalize, kernelize, schedule, all">,
     Option<"dumpReport", "dump-report", "bool", /*default=*/"false",
            "Dump Ascend analysis report to stderr">,
+    Option<"debugDumpDir", "debug-dump-dir", "std::string", /*default=*/"\"\"",
+           "Directory for Ascend debug checkpoint MLIR dumps">,
     Option<"runtimeTopK", "runtime-top-k", "unsigned", /*default=*/"1",
            "Maximum number of schedule decisions kept selectable at runtime">,
     Option<"targetTilePolicy", "target-tile-policy", "std::string",
@@ -167,6 +171,8 @@ def AscendRealizePass : Pass<"ascend-realize", "mlir::ModuleOp"> {
            "Ascend debug stage: none, normalize, kernelize, schedule, realize, all">,
     Option<"dumpReport", "dump-report", "bool", /*default=*/"false",
            "Dump Ascend analysis report to stderr">,
+    Option<"debugDumpDir", "debug-dump-dir", "std::string", /*default=*/"\"\"",
+           "Directory for Ascend debug checkpoint MLIR dumps">,
     Option<"placementMode", "placement-mode", "std::string",
            /*default=*/"\"gm-default\"",
            "Realize placement mode: gm-default or target-aware">,

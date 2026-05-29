@@ -419,7 +419,8 @@ struct AscendSchedulePass
     }
 
     ::mlir::ascend::debug::DebugOptions options{
-        ::mlir::ascend::debug::parseDebugStage(debugStage), dumpReport};
+        ::mlir::ascend::debug::parseDebugStage(debugStage), dumpReport,
+        StringRef(debugDumpDir).str()};
     if (::mlir::ascend::debug::shouldDump(
             options, ::mlir::ascend::debug::DebugStage::Schedule))
       ::mlir::ascend::debug::emitStageHeader(
@@ -428,6 +429,12 @@ struct AscendSchedulePass
 
     ModuleOp module = getOperation();
     clearOwnedScheduleAttrs(module);
+    if (failed(::mlir::ascend::debug::dumpCheckpoint(
+            module, options, ::mlir::ascend::debug::DebugStage::Schedule,
+            "031-schedule-cleared"))) {
+      signalPassFailure();
+      return;
+    }
 
     MLIRContext *context = module.getContext();
     ScheduleSearchOptions searchOptions;
@@ -588,6 +595,12 @@ struct AscendSchedulePass
           std::move(searchResult), std::move(decisionSet),
           std::move(structuredLoweringReport)});
     }
+    if (failed(::mlir::ascend::debug::dumpCheckpoint(
+            module, options, ::mlir::ascend::debug::DebugStage::Schedule,
+            "032-schedule-decisions"))) {
+      signalPassFailure();
+      return;
+    }
 
     if (::mlir::ascend::debug::shouldDump(
             options, ::mlir::ascend::debug::DebugStage::Schedule)) {
@@ -636,6 +649,12 @@ struct AscendSchedulePass
         signalPassFailure();
         return;
       }
+    }
+    if (failed(::mlir::ascend::debug::dumpCheckpoint(
+            module, options, ::mlir::ascend::debug::DebugStage::Schedule,
+            "033-schedule-final"))) {
+      signalPassFailure();
+      return;
     }
   }
 };

@@ -21,6 +21,16 @@ grep -Fq 'serve' "${TMP_DIR}/ascend-debug-help.txt"
 grep -Fq 'diff' "${TMP_DIR}/ascend-debug-help.txt"
 grep -Fq 'locate' "${TMP_DIR}/ascend-debug-help.txt"
 grep -Fq 'run' "${TMP_DIR}/ascend-debug-help.txt"
+ascend-debug collect --help >"${TMP_DIR}/ascend-debug-collect-help.txt" 2>&1
+grep -Fq -- '--mode {quick,deep}' "${TMP_DIR}/ascend-debug-collect-help.txt"
+if grep -Fq -- '--preset' "${TMP_DIR}/ascend-debug-collect-help.txt"; then
+  echo "collect help should not expose legacy --preset" >&2
+  exit 1
+fi
+if grep -Fq -- '--pipeline' "${TMP_DIR}/ascend-debug-collect-help.txt"; then
+  echo "collect help should not expose legacy --pipeline" >&2
+  exit 1
+fi
 echo "ascend_debug.help=ok"
 
 mkdir -p "${TMP_DIR}/fake-runtime-session"
@@ -245,7 +255,7 @@ echo "ascend_debug.run_source_case=ok"
 
 ascend-debug collect "${INPUT_MLIR}" \
   --out "${TMP_DIR}/debug-run" \
-  --pipeline normalize-kernelize
+  --preset quick
 test -f "${TMP_DIR}/debug-run/stages/000-source.mlir"
 test -f "${TMP_DIR}/debug-run/stages/010-normalize-in.mlir"
 test -f "${TMP_DIR}/debug-run/stages/019-normalize-out.mlir"
@@ -259,18 +269,17 @@ echo "ascend_debug.collect=ok"
 
 if ascend-debug collect "${INPUT_MLIR}" \
   --out "${TMP_DIR}/debug-run-memory-detail-negative" \
-  --pipeline normalize-kernelize \
+  --mode deep \
   --memory-detail >"${TMP_DIR}/ascend-debug-memory-detail-negative.txt" 2>"${TMP_DIR}/ascend-debug-memory-detail-negative.err"; then
-  echo "expected quick memory-detail collect to fail" >&2
+  echo "expected deep memory-detail collect to fail" >&2
   exit 1
 fi
-grep -Fq 'Realize memory options require --preset deep' "${TMP_DIR}/ascend-debug-memory-detail-negative.err"
+grep -Fq -- '--memory-detail is only supported by --mode quick' "${TMP_DIR}/ascend-debug-memory-detail-negative.err"
 echo "ascend_debug.collect_memory_detail_negative=ok"
 
 ascend-debug collect "${INPUT_MLIR}" \
   --out "${TMP_DIR}/debug-run-deep" \
-  --preset deep \
-  --pipeline normalize-kernelize
+  --mode quick
 test -f "${TMP_DIR}/debug-run-deep/stages/000-source.mlir"
 test -f "${TMP_DIR}/debug-run-deep/stages/010-normalize-in.mlir"
 test -f "${TMP_DIR}/debug-run-deep/stages/019-normalize-out.mlir"
@@ -285,6 +294,173 @@ test -f "${TMP_DIR}/debug-run-deep/reports/020-kernelize.report.txt"
 test -f "${TMP_DIR}/debug-run-deep/reports/030-schedule.report.txt"
 test -f "${TMP_DIR}/debug-run-deep/reports/040-realize.report.txt"
 echo "ascend_debug.collect_deep=ok"
+
+mkdir -p "${TMP_DIR}/fake-full-codegen-tools" "${TMP_DIR}/fake-full-codegen-cann"
+cat >"${TMP_DIR}/fake-full-codegen-tools/ascend-mlir-opt" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+printf 'ascend-mlir-opt %s\n' "$*" >>"${ASCEND_DEBUG_FAKE_FULL_CODEGEN_LOG}"
+input="$1"
+dump_dir=""
+for arg in "$@"; do
+  if [[ "${arg}" == *debug-dump-dir=* ]]; then
+    dump_dir="${arg#*debug-dump-dir=}"
+    dump_dir="${dump_dir%% *}"
+  fi
+done
+write_checkpoint() {
+  local name="$1"
+  mkdir -p "${dump_dir}"
+  {
+    printf '// checkpoint: %s\n' "${name}"
+    cat "${input}"
+  } >"${dump_dir}/${name}.mlir"
+}
+if [[ -n "${dump_dir}" ]]; then
+  if [[ "$*" == *"--ascend-kernelize"* ]]; then
+    write_checkpoint "021-kernelize-structured-ops"
+    write_checkpoint "022-kernelize-structural-marking"
+    write_checkpoint "023-kernelize-role-classification"
+    write_checkpoint "024-kernelize-final-patterns"
+  elif [[ "$*" == *"--ascend-schedule"* ]]; then
+    write_checkpoint "031-schedule-cleared"
+    write_checkpoint "032-schedule-decisions"
+    write_checkpoint "033-schedule-final"
+  elif [[ "$*" == *"--ascend-realize"* ]]; then
+    write_checkpoint "041-realize-planned"
+    write_checkpoint "042-realize-bufferized"
+    write_checkpoint "043-realize-memory-space-annotated"
+  fi
+fi
+cat "$1"
+SH
+chmod +x "${TMP_DIR}/fake-full-codegen-tools/ascend-mlir-opt"
+ASCEND_DEBUG_FAKE_FULL_CODEGEN_LOG="${TMP_DIR}/fake-full-codegen-tools.log" \
+  CANN_ROOT="${TMP_DIR}/fake-full-codegen-cann" \
+  ASCEND_SOC_VERSION="SyntheticSoC" \
+  PATH="${TMP_DIR}/fake-full-codegen-tools:${PATH}" \
+  ascend-debug collect "${INPUT_MLIR}" \
+    --out "${TMP_DIR}/debug-run-full-codegen" \
+    --mode deep
+test -f "${TMP_DIR}/debug-run-full-codegen/stages/010-normalize-prep-out.mlir"
+test -f "${TMP_DIR}/debug-run-full-codegen/stages/020-normalize-out.mlir"
+test -f "${TMP_DIR}/debug-run-full-codegen/stages/021-kernelize-structured-ops.mlir"
+test -f "${TMP_DIR}/debug-run-full-codegen/stages/022-kernelize-structural-marking.mlir"
+test -f "${TMP_DIR}/debug-run-full-codegen/stages/023-kernelize-role-classification.mlir"
+test -f "${TMP_DIR}/debug-run-full-codegen/stages/024-kernelize-final-patterns.mlir"
+test -f "${TMP_DIR}/debug-run-full-codegen/stages/030-kernelize-out.mlir"
+test -f "${TMP_DIR}/debug-run-full-codegen/stages/031-schedule-cleared.mlir"
+test -f "${TMP_DIR}/debug-run-full-codegen/stages/032-schedule-decisions.mlir"
+test -f "${TMP_DIR}/debug-run-full-codegen/stages/033-schedule-final.mlir"
+test -f "${TMP_DIR}/debug-run-full-codegen/stages/040-schedule-out.mlir"
+test -f "${TMP_DIR}/debug-run-full-codegen/stages/041-realize-planned.mlir"
+test -f "${TMP_DIR}/debug-run-full-codegen/stages/042-realize-bufferized.mlir"
+test -f "${TMP_DIR}/debug-run-full-codegen/stages/043-realize-memory-space-annotated.mlir"
+test -f "${TMP_DIR}/debug-run-full-codegen/stages/050-realize-out.mlir"
+test -f "${TMP_DIR}/debug-run-full-codegen/stages/060-compute-lower-out.mlir"
+test -f "${TMP_DIR}/debug-run-full-codegen/stages/070-parallelize-out.mlir"
+test -f "${TMP_DIR}/debug-run-full-codegen/stages/080-prepare-for-emit-out.mlir"
+test -f "${TMP_DIR}/debug-run-full-codegen/stages/090-cann-signature-out.mlir"
+grep -Fq -- 'debug-dump-dir=' "${TMP_DIR}/fake-full-codegen-tools.log"
+grep -Fq -- '--ascend-schedule=target-tile-policy=target-aware' "${TMP_DIR}/fake-full-codegen-tools.log"
+grep -Fq -- '--ascend-realize=materialization-mode=memory-space-annotate' "${TMP_DIR}/fake-full-codegen-tools.log"
+python3 - "${TMP_DIR}/debug-run-full-codegen/manifest.json" <<'PY'
+import json
+import pathlib
+import sys
+
+manifest = json.loads(pathlib.Path(sys.argv[1]).read_text())
+assert manifest["mode"] == "deep"
+assert manifest["pipeline"] == "full-codegen"
+stages = {stage["name"]: stage for stage in manifest["stages"]}
+by_phase = {}
+for stage in manifest["stages"]:
+    phase = stage.get("phase")
+    if phase:
+        by_phase.setdefault(phase, []).append(stage["name"])
+assert by_phase["Kernelize"] == [
+    "021-kernelize-structured-ops",
+    "022-kernelize-structural-marking",
+    "023-kernelize-role-classification",
+    "024-kernelize-final-patterns",
+    "030-kernelize-out",
+]
+assert by_phase["Schedule"] == [
+    "031-schedule-cleared",
+    "032-schedule-decisions",
+    "033-schedule-final",
+    "040-schedule-out",
+]
+assert by_phase["Realize"] == [
+    "041-realize-planned",
+    "042-realize-bufferized",
+    "043-realize-memory-space-annotated",
+    "050-realize-out",
+]
+assert stages["021-kernelize-structured-ops"]["step"] == "structured-ops"
+assert stages["033-schedule-final"]["step"] == "final"
+assert stages["043-realize-memory-space-annotated"]["step"] == "memory-space-annotated"
+assert stages["060-compute-lower-out"]["phase"] == "Translate"
+assert stages["060-compute-lower-out"]["step"] == "ascend-compute-lower"
+assert stages["090-cann-signature-out"]["phase"] == "Translate"
+assert stages["090-cann-signature-out"]["step"] == "ascend-canonicalize-cann-signature"
+assert by_phase["Translate"] == [
+    "060-compute-lower-out",
+    "070-parallelize-out",
+    "080-prepare-for-emit-out",
+    "090-cann-signature-out",
+]
+PY
+ascend-debug open "${TMP_DIR}/debug-run-full-codegen" --no-browser >"${TMP_DIR}/ascend-debug-open-full-codegen.txt"
+test -f "${TMP_DIR}/debug-run-full-codegen/graphs/stages/021-kernelize-structured-ops.graph.json"
+test -f "${TMP_DIR}/debug-run-full-codegen/graphs/stages/060-compute-lower-out.graph.json"
+test -f "${TMP_DIR}/debug-run-full-codegen/graphs/stages/090-cann-signature-out.graph.json"
+python3 - "${TMP_DIR}/debug-run-full-codegen/summaries/debug_graph.json" <<'PY'
+import json
+import pathlib
+import sys
+
+graph = json.loads(pathlib.Path(sys.argv[1]).read_text())
+phase_groups = [group for group in graph["stage_groups"] if group["kind"] == "phase"]
+assert [group["label"] for group in phase_groups] == [
+    "Normalize",
+    "Kernelize",
+    "Schedule",
+    "Realize",
+    "Translate",
+]
+translate = next(group for group in phase_groups if group["label"] == "Translate")
+kernelize = next(group for group in phase_groups if group["label"] == "Kernelize")
+schedule = next(group for group in phase_groups if group["label"] == "Schedule")
+realize = next(group for group in phase_groups if group["label"] == "Realize")
+assert [step["name"] for step in kernelize["steps"]] == [
+    "021-kernelize-structured-ops",
+    "022-kernelize-structural-marking",
+    "023-kernelize-role-classification",
+    "024-kernelize-final-patterns",
+    "030-kernelize-out",
+]
+assert [step["name"] for step in schedule["steps"]] == [
+    "031-schedule-cleared",
+    "032-schedule-decisions",
+    "033-schedule-final",
+    "040-schedule-out",
+]
+assert [step["name"] for step in realize["steps"]] == [
+    "041-realize-planned",
+    "042-realize-bufferized",
+    "043-realize-memory-space-annotated",
+    "050-realize-out",
+]
+assert [step["name"] for step in translate["steps"]] == [
+    "060-compute-lower-out",
+    "070-parallelize-out",
+    "080-prepare-for-emit-out",
+    "090-cann-signature-out",
+]
+assert "compute-lower" not in [group["name"] for group in phase_groups]
+PY
+echo "ascend_debug.collect_full_codegen=ok"
 
 mkdir -p "${TMP_DIR}/fake-memory-detail-opt" "${TMP_DIR}/fake-cann-root"
 FAKE_CANN_ROOT="$(cd "${TMP_DIR}/fake-cann-root" && pwd -P)"
@@ -335,8 +511,7 @@ PATH="${TMP_DIR}/fake-memory-detail-opt:${PATH}" \
   ASCEND_SOC_VERSION="SyntheticSoC" \
   ascend-debug collect "${INPUT_MLIR}" \
     --out "${TMP_DIR}/debug-run-memory-detail" \
-    --preset deep \
-    --pipeline normalize-kernelize \
+    --mode quick \
     --memory-detail
 grep -Fq 'placement-mode=target-aware' "${TMP_DIR}/debug-run-memory-detail/manifest.json"
 grep -Fq 'materialization-mode=plan-only' "${TMP_DIR}/debug-run-memory-detail/manifest.json"
@@ -424,8 +599,7 @@ PY
 
 ascend-debug collect "${INPUT_MLIR}" \
   --out "${TMP_DIR}/debug-run-graph" \
-  --preset deep \
-  --pipeline normalize-kernelize \
+  --mode quick \
   --artifact-manifest "${TMP_DIR}/artifact_manifest.json" \
   --run-manifest "${TMP_DIR}/run_manifest.json"
 test -f "${TMP_DIR}/debug-run-graph/graphs/artifact_manifest.json"
@@ -564,8 +738,7 @@ MLIR
 
 ascend-debug collect "${INPUT_MLIR}" \
   --out "${TMP_DIR}/debug-run-kernel-dag" \
-  --preset deep \
-  --pipeline normalize-kernelize \
+  --mode quick \
   --artifact-manifest "${TMP_DIR}/artifact_manifest_kernel_dag.json" \
   --run-manifest "${TMP_DIR}/run_manifest_kernel_dag.json" \
   --kernelized-ir "${TMP_DIR}/kernelized_kernel_dag.mlir"
@@ -1133,7 +1306,7 @@ echo "ascend_debug.diff_fail=ok"
 
 ascend-debug open "${TMP_DIR}/debug-run-deep" --no-browser >"${TMP_DIR}/ascend-debug-open-deep.txt"
 test -f "${TMP_DIR}/debug-run-deep/index.html"
-grep -Fq '<span>preset</span><strong>deep</strong>' "${TMP_DIR}/debug-run-deep/index.html"
+grep -Fq '<span>mode</span><strong>quick</strong>' "${TMP_DIR}/debug-run-deep/index.html"
 grep -Fq '<summary>高级信息：执行命令</summary>' "${TMP_DIR}/debug-run-deep/index.html"
 if grep -Fq '<h2>报告</h2>' "${TMP_DIR}/debug-run-deep/index.html"; then
   echo "index should not expose a separate report section" >&2
@@ -1415,6 +1588,7 @@ expected_paths = [
 check(manifest["schema_version"] == 1, "manifest schema_version must be 1")
 check(manifest["tool"] == "ascend-debug", "manifest tool must be ascend-debug")
 check(manifest["input"] == "stages/000-source.mlir", "manifest input must point to staged source")
+check(manifest["mode"] == "quick", "manifest mode must be quick")
 check(manifest["preset"] == "quick", "manifest preset must be quick")
 check(manifest["backend"] == "compile", "manifest backend must be compile")
 check(manifest["device_id"] is None, "manifest device_id must be null")
@@ -1455,6 +1629,7 @@ commands = manifest.get("commands", [])
 reports = manifest.get("reports", [])
 print(f"ascend_debug.deep.stage_count={len(stages)}")
 print(f"ascend_debug.deep.command_count={len(commands)}")
+check(manifest["mode"] == "quick", "deep manifest mode must be quick")
 check(manifest["preset"] == "deep", "deep manifest preset must be deep")
 check([stage["order"] for stage in stages] == [0, 10, 19, 20, 29, 30, 39, 40, 49], "deep stage orders mismatch")
 check([stage["name"] for stage in stages] == [

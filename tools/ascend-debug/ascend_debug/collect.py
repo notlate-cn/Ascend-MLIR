@@ -16,6 +16,18 @@ DEEP_REPORTS = (
     ("realize", "reports/040-realize.report.txt"),
 )
 
+FULL_CODEGEN_REPORTS = (
+    ("normalize-prep", "reports/010-normalize-prep.report.txt"),
+    ("normalize", "reports/020-normalize.report.txt"),
+    ("kernelize", "reports/030-kernelize.report.txt"),
+    ("schedule", "reports/040-schedule.report.txt"),
+    ("realize", "reports/050-realize.report.txt"),
+    ("compute-lower", "reports/060-compute-lower.report.txt"),
+    ("parallelize", "reports/070-parallelize.report.txt"),
+    ("prepare-for-emit", "reports/080-prepare-for-emit.report.txt"),
+    ("cann-signature", "reports/090-cann-signature.report.txt"),
+)
+
 KERNEL_DAG_REPORT = ("kernel-dag", "reports/050-kernel-dag.report.txt")
 
 
@@ -55,6 +67,27 @@ def _memory_detail_cann_root(args: argparse.Namespace) -> pathlib.Path:
             "--memory-detail requires --cann-root or ASCEND_HOME_PATH/ASCEND_HOME/CANN_ROOT"
         )
     return cann_root.resolve()
+
+
+def _full_codegen_cann_root(args: argparse.Namespace) -> pathlib.Path:
+    cann_root = args.cann_root or _env_path(
+        "ASCEND_HOME_PATH", "ASCEND_HOME", "CANN_ROOT", "ASCEND_TOOLKIT_HOME"
+    )
+    if not cann_root:
+        raise CommandError(
+            "--mode deep requires --cann-root or "
+            "ASCEND_HOME_PATH/ASCEND_HOME/CANN_ROOT/ASCEND_TOOLKIT_HOME"
+        )
+    return cann_root.resolve()
+
+
+def _full_codegen_soc(args: argparse.Namespace) -> str:
+    return (
+        args.soc
+        or os.environ.get("ASCEND_SOC_VERSION")
+        or os.environ.get("SOC_VERSION")
+        or "Ascend910B1"
+    )
 
 
 def _realize_pass_arg(args: argparse.Namespace) -> str:
@@ -217,19 +250,82 @@ def _run_opt_stage(
     report_rel: str,
     pass_arg: str,
 ) -> dict:
+    return _run_opt_stage_args(
+        opt=opt,
+        stage=stage,
+        input_path=input_path,
+        input_rel=input_rel,
+        output_path=output_path,
+        output_rel=output_rel,
+        report_path=report_path,
+        report_rel=report_rel,
+        pass_args=[pass_arg],
+    )
+
+
+def _run_opt_stage_args(
+    *,
+    opt: str,
+    stage: str,
+    input_path,
+    input_rel: str,
+    output_path,
+    output_rel: str,
+    report_path,
+    report_rel: str,
+    pass_args: list[str],
+) -> dict:
     run_command(
-        [opt, str(input_path), pass_arg],
+        [opt, str(input_path), *pass_args],
         stdout_path=output_path,
         stderr_report_path=report_path,
     )
-    return _record_command(stage, [input_rel, pass_arg], output_rel, report_rel)
+    return _record_command(stage, [input_rel, *pass_args], output_rel, report_rel)
+
+
+def _normalize_collect_selection(args: argparse.Namespace) -> None:
+    requested_mode = args.mode
+    legacy_preset = args.preset
+    legacy_pipeline = args.pipeline
+    if requested_mode and (legacy_preset or legacy_pipeline):
+        raise CommandError("--mode cannot be combined with legacy --preset/--pipeline")
+
+    if requested_mode == "quick":
+        args.mode = "quick"
+        args.preset = "deep"
+        args.pipeline = "normalize-kernelize"
+        return
+    if requested_mode == "deep":
+        args.mode = "deep"
+        args.preset = "deep"
+        args.pipeline = "full-codegen"
+        return
+
+    if legacy_preset or legacy_pipeline:
+        args.preset = legacy_preset or (
+            "deep" if legacy_pipeline == "full-codegen" else "quick"
+        )
+        args.pipeline = legacy_pipeline or "normalize-kernelize"
+        args.mode = "deep" if args.pipeline == "full-codegen" else "quick"
+        return
+
+    args.mode = "quick"
+    args.preset = "deep"
+    args.pipeline = "normalize-kernelize"
 
 
 def collect_run(args: argparse.Namespace) -> int:
+    _normalize_collect_selection(args)
+    if args.pipeline == "full-codegen" and args.preset != "deep":
+        raise CommandError("--pipeline full-codegen requires --preset deep")
+    if args.pipeline == "full-codegen" and args.memory_detail:
+        raise CommandError("--memory-detail is only supported by --mode quick")
     if args.preset != "deep" and (
         args.memory_detail or args.realize_options or args.cann_root or args.soc
     ):
-        raise CommandError("Realize memory options require --preset deep")
+        raise CommandError("Realize memory options require --mode quick")
+    if args.pipeline == "full-codegen":
+        return collect_full_codegen(args)
     if args.preset == "quick":
         return collect_quick(args)
     if args.preset == "deep":
@@ -269,12 +365,157 @@ def collect_quick(args: argparse.Namespace) -> int:
     )
     layout.write_manifest(
         run_dir,
+        mode=args.mode,
         preset=args.preset,
         pipeline=args.pipeline,
         stages=stages,
         version=__version__,
         commands=graph_commands,
         reports=graph_reports,
+        graphs=graphs,
+    )
+    layout.write_provenance_skeleton(
+        run_dir,
+        original_input=args.input,
+        version=__version__,
+    )
+    print(f"ascend-debug.collect.out={run_dir}")
+    return 0
+
+
+def collect_full_codegen(args: argparse.Namespace) -> int:
+    input_path = args.input.resolve()
+    run_dir = args.out.resolve()
+
+    stages = layout.FULL_CODEGEN_STAGES
+    layout.prepare_run_dir(run_dir)
+    _clear_artifacts(run_dir, stages, FULL_CODEGEN_REPORTS)
+
+    if not input_path.exists():
+        raise CommandError(f"input MLIR does not exist: {input_path}")
+
+    stage_paths = {stage.name: run_dir / stage.path for stage in stages}
+    stage_rels = {stage.name: stage.path for stage in stages}
+    report_paths = {name: run_dir / path for name, path in FULL_CODEGEN_REPORTS}
+    report_rels = {name: path for name, path in FULL_CODEGEN_REPORTS}
+
+    layout.copy_stage(input_path, stage_paths["source"])
+
+    opt = find_tool("ascend-mlir-opt")
+    cann_root = _full_codegen_cann_root(args)
+    soc = _full_codegen_soc(args)
+    checkpoint_dump_dir = run_dir / "stages"
+
+    realize_options = [
+        "materialization-mode=memory-space-annotate",
+        "dump-report=true",
+        "debug-stage=realize",
+        f"debug-dump-dir={checkpoint_dump_dir}",
+    ]
+    if args.realize_options:
+        try:
+            realize_options.extend(shlex.split(args.realize_options))
+        except ValueError as error:
+            raise CommandError(f"invalid --realize-options: {error}") from error
+
+    pass_steps = [
+        (
+            "normalize-prep",
+            "source",
+            "010-normalize-prep-out",
+            [
+                "--linalg-generalize-named-ops",
+                "--linalg-fuse-elementwise-ops",
+                "--canonicalize",
+                "--cse",
+            ],
+        ),
+        (
+            "normalize",
+            "010-normalize-prep-out",
+            "020-normalize-out",
+            ["--ascend-normalize=dump-report=true debug-stage=normalize"],
+        ),
+        (
+            "kernelize",
+            "020-normalize-out",
+            "030-kernelize-out",
+            [
+                "--ascend-kernelize="
+                "dump-report=true "
+                "debug-stage=kernelize "
+                f"debug-dump-dir={checkpoint_dump_dir}"
+            ],
+        ),
+        (
+            "schedule",
+            "030-kernelize-out",
+            "040-schedule-out",
+            [
+                "--ascend-schedule="
+                f"target-tile-policy=target-aware cann-root={cann_root} soc={soc} "
+                "dump-report=true "
+                "debug-stage=schedule "
+                f"debug-dump-dir={checkpoint_dump_dir}"
+            ],
+        ),
+        (
+            "realize",
+            "040-schedule-out",
+            "050-realize-out",
+            ["--ascend-realize=" + " ".join(realize_options)],
+        ),
+        ("compute-lower", "050-realize-out", "060-compute-lower-out", ["--ascend-compute-lower"]),
+        ("parallelize", "060-compute-lower-out", "070-parallelize-out", ["--ascend-parallelize"]),
+        (
+            "prepare-for-emit",
+            "070-parallelize-out",
+            "080-prepare-for-emit-out",
+            ["--ascend-prepare-for-emit"],
+        ),
+        (
+            "cann-signature",
+            "080-prepare-for-emit-out",
+            "090-cann-signature-out",
+            ["--ascend-canonicalize-cann-signature", "--canonicalize", "--cse"],
+        ),
+    ]
+
+    commands = [
+        _run_opt_stage_args(
+            opt=opt,
+            stage=stage,
+            input_path=stage_paths[input_stage],
+            input_rel=stage_rels[input_stage],
+            output_path=stage_paths[output_stage],
+            output_rel=stage_rels[output_stage],
+            report_path=report_paths[stage],
+            report_rel=report_rels[stage],
+            pass_args=pass_args,
+        )
+        for stage, input_stage, output_stage, pass_args in pass_steps
+    ]
+
+    graph_commands, graph_reports, graphs = _collect_graph_artifacts(
+        args=args,
+        run_dir=run_dir,
+        default_kernelized_ir=stage_paths["030-kernelize-out"],
+    )
+    commands.extend(graph_commands)
+    reports = [{"stage": name, "path": path} for name, path in FULL_CODEGEN_REPORTS]
+    reports.extend(graph_reports)
+    manifest_stages = tuple(
+        stage for stage in stages if (run_dir / stage.path).exists()
+    )
+    layout.write_manifest(
+        run_dir,
+        mode=args.mode,
+        preset=args.preset,
+        pipeline=args.pipeline,
+        stages=manifest_stages,
+        version=__version__,
+        commands=commands,
+        reports=reports,
         graphs=graphs,
     )
     layout.write_provenance_skeleton(
@@ -374,6 +615,7 @@ def collect_deep(args: argparse.Namespace) -> int:
     reports.extend(graph_reports)
     layout.write_manifest(
         run_dir,
+        mode=args.mode,
         preset=args.preset,
         pipeline=args.pipeline,
         stages=stages,

@@ -114,7 +114,8 @@ struct AscendKernelizePass
 
   void runOnOperation() override {
     ::mlir::ascend::debug::DebugOptions options{
-        ::mlir::ascend::debug::parseDebugStage(debugStage), dumpReport};
+        ::mlir::ascend::debug::parseDebugStage(debugStage), dumpReport,
+        StringRef(debugDumpDir).str()};
     if (::mlir::ascend::debug::shouldDump(
             options, ::mlir::ascend::debug::DebugStage::Kernelize))
       ::mlir::ascend::debug::emitStageHeader(
@@ -146,6 +147,12 @@ struct AscendKernelizePass
         return;
       }
     }
+    if (failed(::mlir::ascend::debug::dumpCheckpoint(
+            module, options, ::mlir::ascend::debug::DebugStage::Kernelize,
+            "021-kernelize-structured-ops"))) {
+      signalPassFailure();
+      return;
+    }
 
     FailureOr<DependencyAnalysisResult> depResult =
         DependencyAnalyzer().analyze(module);
@@ -162,6 +169,12 @@ struct AscendKernelizePass
       signalPassFailure();
       return;
     }
+    if (failed(::mlir::ascend::debug::dumpCheckpoint(
+            module, options, ::mlir::ascend::debug::DebugStage::Kernelize,
+            "022-kernelize-structural-marking"))) {
+      signalPassFailure();
+      return;
+    }
     if (::mlir::ascend::debug::shouldDump(
             options, ::mlir::ascend::debug::DebugStage::Kernelize))
       emitStructuralMarkingReport(llvm::errs(), *depResult);
@@ -174,6 +187,12 @@ struct AscendKernelizePass
       return;
     }
     attachRoleAttributes(module, *roleMap);
+    if (failed(::mlir::ascend::debug::dumpCheckpoint(
+            module, options, ::mlir::ascend::debug::DebugStage::Kernelize,
+            "023-kernelize-role-classification"))) {
+      signalPassFailure();
+      return;
+    }
     if (::mlir::ascend::debug::shouldDump(
             options, ::mlir::ascend::debug::DebugStage::Kernelize))
       emitOpRoleClassificationReport(llvm::errs(), *depResult, *roleMap);
@@ -205,6 +224,12 @@ struct AscendKernelizePass
     SmallVector<KernelPattern> patterns =
         KernelPartitioner().partition(graph, *depResult);
     attachKernelPatternAttributes(module, patterns);
+    if (failed(::mlir::ascend::debug::dumpCheckpoint(
+            module, options, ::mlir::ascend::debug::DebugStage::Kernelize,
+            "024-kernelize-final-patterns"))) {
+      signalPassFailure();
+      return;
+    }
 
     if (::mlir::ascend::debug::shouldDump(
             options, ::mlir::ascend::debug::DebugStage::Kernelize)) {
