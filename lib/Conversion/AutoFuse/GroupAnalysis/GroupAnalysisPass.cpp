@@ -6,6 +6,7 @@
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
+#include "mlir/Dialect/Tensor/IR/Tensor.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/Pass/Pass.h"
 #include "llvm/ADT/SmallVector.h"
@@ -88,6 +89,41 @@ struct AutoFuseGroupAnalysisPass
 
   void runOnOperation() override {
     func::FuncOp func = getOperation();
+
+    // Step 0-pre: Unshare multi-use tensor.empty ops.
+    //
+    // torch-mlir export CSE's tensor.empty by type — e.g. 12 layers' QKV
+    // projection transposes all output [64x192] and end up sharing one
+    // %empty. In SSA tensor semantics this is sound (each linalg op
+    // returns a fresh value), but after bufferization the empty becomes
+    // one memref with N writes; only the last wins, prior results read
+    // garbage (NaN). When CanFuse later allows fusing those N independent
+    // ops into one kernel (e.g. horizontal transpose fusion), the bug
+    // surfaces as NaN throughout the network.
+    //
+    // Fix: rematerialize a fresh tensor.empty for every use after the
+    // first. tensor.empty is value-less so cloning is correctness-safe;
+    // bufferization downstream gets one memref per op, eliminating the
+    // shared-write hazard.
+    {
+      SmallVector<tensor::EmptyOp> shared;
+      func.walk([&](tensor::EmptyOp e) {
+        if (!e.getResult().use_empty() && !e.getResult().hasOneUse())
+          shared.push_back(e);
+      });
+      for (tensor::EmptyOp e : shared) {
+        SmallVector<OpOperand *> uses;
+        for (OpOperand &u : e.getResult().getUses())
+          uses.push_back(&u);
+        OpBuilder b(e);
+        b.setInsertionPointAfter(e);
+        // Keep the first use bound to the original; clone for the rest.
+        for (size_t i = 1; i < uses.size(); ++i) {
+          Operation *cloneOp = b.clone(*e.getOperation());
+          uses[i]->set(cloneOp->getResult(0));
+        }
+      }
+    }
 
     // Step 0: matmul/bmm/conv/pool go to aclnn single-ops which allocate their
     // own output, so a fill init is redundant.  Detach it (init->bare empty)
