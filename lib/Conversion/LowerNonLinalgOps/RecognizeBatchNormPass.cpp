@@ -48,14 +48,23 @@ static bool bodyHas(linalg::GenericOp g) {
   return found;
 }
 
-// First linalg.generic user of `v` whose body contains an OpT.
+// The UNIQUE linalg.generic user of `v` whose body contains an OpT.  Returns
+// null if there is no such user OR if there is more than one: with multiple
+// candidates (e.g. the gamma-scaled value also feeds a residual/second-bias
+// add) we cannot tell which generic is the real batchnorm affine op, and
+// guessing would silently fold with the wrong gamma/beta.  The caller bails on
+// null rather than guess.
 template <typename OpT>
 static linalg::GenericOp userGenericWithBody(Value v) {
+  linalg::GenericOp found;
   for (Operation *u : v.getUsers())
     if (auto g = dyn_cast<linalg::GenericOp>(u))
-      if (bodyHas<OpT>(g))
-        return g;
-  return {};
+      if (bodyHas<OpT>(g)) {
+        if (found)
+          return {}; // ambiguous
+        found = g;
+      }
+  return found;
 }
 
 // The (single) other tensor input of a 2-input generic.
