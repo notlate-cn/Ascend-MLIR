@@ -407,7 +407,6 @@ examples/two-elewise-e2e/run.sh                            # 最小 e2e
 | 网络 | sim 全 e2e | 真 NPU 全 e2e | 关键修复 commit |
 |---|---|---|---|
 | two-elewise | ✓ | — | — |
-| dyn-bucketed | ✓ | — | — |
 | autotune-stress-elewise | ✓ | — | — |
 | **encoder**（attention 块）| ✓ max_diff=7.15e-7 | ✓ | MEMORY [GroupAnalysis fusion bugs] 4 commit |
 | **BERT-tiny** | ✓ | ✓ max_diff=1.4e-5（910C）| MEMORY [BERT bring-up] `652088a2` |
