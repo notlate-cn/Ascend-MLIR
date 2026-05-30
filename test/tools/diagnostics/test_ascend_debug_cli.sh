@@ -763,16 +763,16 @@ assert by_phase["Realize"] == [
     "050-realize-out",
 ]
 assert stages["021-kernelize-structured-ops"]["step"] == "structured-ops"
-assert stages["021-kernelize-structured-ops"]["step_info"]["title"] == "Identify kernelizable ops"
-assert "supported structured" in stages["021-kernelize-structured-ops"]["step_info"]["purpose"]
+assert stages["021-kernelize-structured-ops"]["step_info"]["title"] == "识别可 Kernelize 的算子"
+assert "structured/tensor/arith" in stages["021-kernelize-structured-ops"]["step_info"]["purpose"]
 assert stages["033-schedule-final"]["step"] == "final"
-assert stages["033-schedule-final"]["step_info"]["title"] == "Attach schedule contract"
+assert stages["033-schedule-final"]["step_info"]["title"] == "挂载 Schedule 契约"
 assert "tile_params" in stages["033-schedule-final"]["step_info"]["outputs"]
 assert stages["043-realize-memory-space-annotated"]["step"] == "memory-space-annotated"
-assert stages["043-realize-memory-space-annotated"]["step_info"]["title"] == "Annotate memory spaces"
+assert stages["043-realize-memory-space-annotated"]["step_info"]["title"] == "标注内存空间"
 assert stages["060-compute-lower-out"]["phase"] == "Translate"
 assert stages["060-compute-lower-out"]["step"] == "ascend-compute-lower"
-assert stages["060-compute-lower-out"]["step_info"]["title"] == "Lower compute to AscendC IR"
+assert stages["060-compute-lower-out"]["step_info"]["title"] == "Lower 到 AscendC IR"
 assert stages["090-cann-signature-out"]["phase"] == "Translate"
 assert stages["090-cann-signature-out"]["step"] == "ascend-canonicalize-cann-signature"
 assert by_phase["Translate"] == [
@@ -785,10 +785,10 @@ PY
 ascend-debug open "${TMP_DIR}/debug-run-full-codegen" --no-browser >"${TMP_DIR}/ascend-debug-open-full-codegen.txt"
 grep -Fq '<thead><tr><th>Stage</th><th>Step / Per pass</th><th>View</th><th>Command</th><th>Report</th></tr></thead>' \
   "${TMP_DIR}/debug-run-full-codegen/index.html"
-grep -Fq 'Identify kernelizable ops' "${TMP_DIR}/debug-run-full-codegen/index.html"
-grep -Fq 'Attach schedule contract' "${TMP_DIR}/debug-run-full-codegen/index.html"
-grep -Fq 'Annotate memory spaces' "${TMP_DIR}/debug-run-full-codegen/index.html"
-grep -Fq 'Lower compute to AscendC IR' "${TMP_DIR}/debug-run-full-codegen/index.html"
+grep -Fq '识别可 Kernelize 的算子' "${TMP_DIR}/debug-run-full-codegen/index.html"
+grep -Fq '挂载 Schedule 契约' "${TMP_DIR}/debug-run-full-codegen/index.html"
+grep -Fq '标注内存空间' "${TMP_DIR}/debug-run-full-codegen/index.html"
+grep -Fq 'Lower 到 AscendC IR' "${TMP_DIR}/debug-run-full-codegen/index.html"
 grep -Fq 'th { background: #f1f5f9; text-align: center; }' \
   "${TMP_DIR}/debug-run-full-codegen/index.html"
 grep -Fq '.view-links { display: inline-flex; gap: 1rem; align-items: center; }' \
@@ -869,10 +869,10 @@ assert [step["name"] for step in schedule["steps"]] == [
     "033-schedule-final",
     "040-schedule-out",
 ]
-assert schedule["steps"][0]["step_info"]["title"] == "Clear stale schedule metadata"
-assert schedule["steps"][1]["step_info"]["title"] == "Choose tile and tail plan"
-assert schedule["steps"][2]["step_info"]["title"] == "Attach schedule contract"
-assert schedule["steps"][3]["step_info"]["title"] == "Schedule output boundary"
+assert schedule["steps"][0]["step_info"]["title"] == "清理旧 Schedule 元数据"
+assert schedule["steps"][1]["step_info"]["title"] == "选择 tile 和 tail 方案"
+assert schedule["steps"][2]["step_info"]["title"] == "挂载 Schedule 契约"
+assert schedule["steps"][3]["step_info"]["title"] == "Schedule 输出边界"
 assert schedule["steps"][3]["same_as_previous"]["stage"] == "033-schedule-final"
 assert [step["name"] for step in realize["steps"]] == [
     "041-realize-planned",
@@ -1396,6 +1396,15 @@ grep -Fq 'data-edge-from=' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
 grep -Fq 'data-edge-kind=' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
 grep -Fq 'neighborhood-node' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
 grep -Fq 'dimmed' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
+grep -Fq 'id="step-explanation"' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
+if grep -Fq 'function renderStepInspectorSection' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"; then
+  echo "node inspector should not carry a second step explanation renderer" >&2
+  exit 1
+fi
+if grep -Fq '<h3>Step Explanation</h3>' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"; then
+  echo "node inspector should not duplicate the center step explanation" >&2
+  exit 1
+fi
 grep -Fq 'selectStageNode(stage, graph, preferred, {neighborhood: shouldRefreshNeighborhood, updateUrl: false})' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
 grep -Fq 'addEventListener("contextmenu"' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
 grep -Fq 'addEventListener("wheel"' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"

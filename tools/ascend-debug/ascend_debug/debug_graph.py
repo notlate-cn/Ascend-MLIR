@@ -1778,11 +1778,11 @@ function stageSameAsPreviousText(stage) {
 function stepExplanationRows(stage) {
   const info = stageStepInfo(stage);
   const rows = [
-    ["Purpose", info.purpose],
-    ["Inputs", info.inputs],
-    ["Outputs", info.outputs],
-    ["Inspect", info.inspect_hint],
-    ["Failures", info.common_failures],
+    ["目的", info.purpose],
+    ["输入", info.inputs],
+    ["输出", info.outputs],
+    ["检查重点", info.inspect_hint],
+    ["常见问题", info.common_failures],
   ].filter(([, value]) => value !== undefined && value !== null && value !== "");
   const sameText = stageSameAsPreviousText(stage);
   return {info, rows, sameText};
@@ -1805,23 +1805,6 @@ function updateStepExplanation(stage) {
   const html = renderStepExplanation(stage);
   panel.hidden = !html;
   panel.innerHTML = html;
-}
-
-function renderStepInspectorSection(stage) {
-  if (!stage) return "";
-  const {info, rows, sameText} = stepExplanationRows(stage);
-  if (!Object.keys(info).length && !sameText) return "";
-  const detail = rows.length ? detailRows(rows) : "";
-  const same = sameText ? `<div class="panel-subtitle">${escapeHtml(sameText)}</div>` : "";
-  return `
-<section class="inspector-section">
-<h3>Step Explanation</h3>
-<div class="provenance-block">
-<h4>${escapeHtml(stageStepTitle(stage))}</h4>
-${detail}
-${same}
-</div>
-</section>`;
 }
 
 function selectedStageNodeSignature(stage, nodeId) {
@@ -2415,7 +2398,7 @@ function selectStageNode(stage, graph, nodeId, options = {}) {
   setInspector(
     node ? `节点详情：${node.op_name} ${node.label || ""}` : "节点详情",
     links,
-    renderStepInspectorSection(stage) + renderStageNodeDetail(stage, graph, node, diff) + renderPathSummary(graph, nodeId)
+    renderStageNodeDetail(stage, graph, node, diff) + renderPathSummary(graph, nodeId)
   );
   applyStageNeighborhood(graph, nodeId, stageNeighborhoodActive);
   if (options.updateUrl !== false) updateGraphUrlState(stage, nodeId);

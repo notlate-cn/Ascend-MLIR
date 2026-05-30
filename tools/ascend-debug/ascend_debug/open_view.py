@@ -400,7 +400,7 @@ def _stage_rows(
             step_detail = (
                 '<div class="step-detail">'
                 f"{_cell(step_purpose)}"
-                + (f'<div class="step-output">Output: {_cell(step_outputs)}</div>' if step_outputs else "")
+                + (f'<div class="step-output">输出：{_cell(step_outputs)}</div>' if step_outputs else "")
                 + "</div>"
             )
         rel_path = str(stage["path"])
