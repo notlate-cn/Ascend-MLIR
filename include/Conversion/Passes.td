@@ -503,7 +503,10 @@ def AutoFuseGroupAnalysis : Pass<"auto-fuse-group-analysis", "mlir::func::FuncOp
            "Keep matmul/batch_matmul ops as standalone groups (no Cube+Vector "
            "epilogue fusion) so they can be routed to the aclnn matmul fallback">,
   ];
-  let dependentDialects = ["mlir::linalg::LinalgDialect", "mlir::func::FuncDialect"];
+  // Arith + Tensor are created by the step-0 pre-passes: const-fold-transpose
+  // builds a new arith.constant, and unshare-empty clones tensor.empty.
+  let dependentDialects = ["mlir::linalg::LinalgDialect", "mlir::func::FuncDialect",
+                           "mlir::arith::ArithDialect", "mlir::tensor::TensorDialect"];
 }
 
 def AutoFuseGroupOutline : Pass<"auto-fuse-group-outline", "mlir::ModuleOp"> {
