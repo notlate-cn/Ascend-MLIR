@@ -8,9 +8,12 @@
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
 #include "mlir/IR/Builders.h"
+#include "mlir/IR/BuiltinAttributes.h"
+#include "mlir/IR/DialectResourceBlobManager.h"
 #include "mlir/Pass/Pass.h"
 #include "llvm/ADT/SmallVector.h"
 #include <algorithm>
+#include <cstring>
 
 #define GEN_PASS_DECL_AUTOFUSEGROUPANALYSIS
 #define GEN_PASS_DEF_AUTOFUSEGROUPANALYSIS
@@ -122,6 +125,100 @@ struct AutoFuseGroupAnalysisPass
           Operation *cloneOp = b.clone(*e.getOperation());
           uses[i]->set(cloneOp->getResult(0));
         }
+      }
+    }
+
+    // Step 0-pre.2: Constant-fold weight transposes.
+    //
+    // `linalg.transpose ins(arith.constant<W>) outs(...) perm=P` →
+    // `arith.constant<W permuted by P>`. Each transformer layer feeds its
+    // Q/K/V/output projection / FFN weights through a transpose before the
+    // matmul; those transposes are pure data-shuffles of immutable bytes,
+    // perfectly suited to compile-time evaluation. GPT-2 small ⇒ 49 of 97
+    // transposes are weight-fed (~50%); folding eliminates one dispatch
+    // per matched site at zero runtime risk (no new codegen path).
+    //
+    // Handles both inline DenseElementsAttr (small constants the parser
+    // inlines) and DenseResourceElementsAttr (torch-imported weights via
+    // dense_resource blobs). The folded result is always inline dense —
+    // downstream emitters (AclnnBackend) bake constant bytes into the
+    // generated host source regardless of attr flavor, so the IR-size
+    // bloat is washed out by the final binary.
+    {
+      SmallVector<linalg::TransposeOp> toFold;
+      func.walk([&](linalg::TransposeOp tr) {
+        Value src = tr.getInput();
+        if (!src || !src.getDefiningOp<arith::ConstantOp>())
+          return;
+        toFold.push_back(tr);
+      });
+      for (auto tr : toFold) {
+        auto cst = cast<arith::ConstantOp>(tr.getInput().getDefiningOp());
+        auto srcType = cast<RankedTensorType>(cst.getType());
+        auto resType = cast<RankedTensorType>(tr.getResult()[0].getType());
+        Type elemType = srcType.getElementType();
+        if (!elemType.isIntOrFloat())
+          continue;
+        unsigned bitWidth = elemType.getIntOrFloatBitWidth();
+        if (bitWidth == 0 || bitWidth % 8 != 0)
+          continue; // skip non-byte-aligned (i1 packing)
+        unsigned elemBytes = bitWidth / 8;
+
+        // Pull raw bytes from either inline-dense or dense_resource.
+        ArrayRef<char> srcRaw;
+        if (auto dense = dyn_cast<DenseElementsAttr>(cst.getValue())) {
+          if (dense.isSplat())
+            continue; // splat is permutation-invariant
+          srcRaw = dense.getRawData();
+        } else if (auto resAttr = dyn_cast<DenseResourceElementsAttr>(
+                       cst.getValue())) {
+          auto *blob = resAttr.getRawHandle().getBlob();
+          if (!blob)
+            continue;
+          srcRaw = blob->getData();
+        } else {
+          continue;
+        }
+
+        int64_t numEl = srcType.getNumElements();
+        if (numEl == 0 ||
+            int64_t(srcRaw.size()) < numEl * int64_t(elemBytes))
+          continue;
+
+        auto perm = tr.getPermutation();
+        auto srcShape = srcType.getShape();
+        auto outShape = resType.getShape();
+        unsigned rank = perm.size();
+        if (rank == 0)
+          continue;
+        SmallVector<int64_t> srcStrides(rank, 1), outStrides(rank, 1);
+        for (int d = rank - 2; d >= 0; --d) {
+          srcStrides[d] = srcStrides[d + 1] * srcShape[d + 1];
+          outStrides[d] = outStrides[d + 1] * outShape[d + 1];
+        }
+        SmallVector<char> dstRaw(numEl * elemBytes);
+        SmallVector<int64_t> srcIdx(rank);
+        for (int64_t lin = 0; lin < numEl; ++lin) {
+          int64_t r = lin;
+          for (unsigned d = 0; d < rank; ++d) {
+            srcIdx[d] = r / srcStrides[d];
+            r %= srcStrides[d];
+          }
+          int64_t outLin = 0;
+          for (unsigned d = 0; d < rank; ++d)
+            outLin += srcIdx[perm[d]] * outStrides[d];
+          std::memcpy(&dstRaw[outLin * elemBytes],
+                      &srcRaw[lin * elemBytes], elemBytes);
+        }
+
+        auto foldedAttr = DenseElementsAttr::getFromRawBuffer(resType, dstRaw);
+        OpBuilder b(tr);
+        auto newCst =
+            b.create<arith::ConstantOp>(tr.getLoc(), resType, foldedAttr);
+        tr.getResult()[0].replaceAllUsesWith(newCst.getResult());
+        tr.erase();
+        if (cst->use_empty())
+          cst.erase();
       }
     }
 
