@@ -43,13 +43,18 @@ namespace {
 static constexpr StringRef kAclnnFuncName = "__aclnn_flash_attention";
 
 // Backward search from `start` over the softmax glue.  Returns the unique
-// upstream batch_matmul (bmm1) iff a single one is reachable AND a math.exp was
-// seen along the way; otherwise null.
+// upstream batch_matmul (bmm1) iff a single one is reachable AND a full softmax
+// was seen along the way; otherwise null.  Softmax is identified by BOTH a
+// math.exp AND a reduction (the normalization sum over the key dim) between the
+// two bmms -- requiring the reduction distinguishes real softmax attention from
+// a bare `exp(Q@K^T) @ V` (kernelized/linear attention, or two GEMMs with an
+// exp activation), which must NOT be folded to FlashAttentionScore.
 static linalg::BatchMatmulOp traceToBmm1(Value start) {
   SmallVector<Value> worklist{start};
   DenseSet<Operation *> visited;
   linalg::BatchMatmulOp bmm1;
   bool sawExp = false;
+  bool sawReduction = false;
 
   while (!worklist.empty()) {
     Value v = worklist.pop_back_val();
@@ -65,11 +70,15 @@ static linalg::BatchMatmulOp traceToBmm1(Value start) {
     if (!visited.insert(def).second)
       continue;
     def->walk([&](math::ExpOp) { sawExp = true; });
+    if (auto linalgOp = dyn_cast<linalg::LinalgOp>(def))
+      if (llvm::is_contained(linalgOp.getIteratorTypesArray(),
+                             utils::IteratorType::reduction))
+        sawReduction = true;
     for (Value operand : def->getOperands())
       worklist.push_back(operand);
   }
 
-  if (bmm1 && sawExp)
+  if (bmm1 && sawExp && sawReduction)
     return bmm1;
   return {};
 }

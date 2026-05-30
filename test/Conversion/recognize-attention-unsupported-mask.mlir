@@ -39,13 +39,35 @@ func.func @attn_unsupported_mask(%q: tensor<2x4x8xf32>, %kt: tensor<2x8x4xf32>,
 
   // softmax stand-in: exp (recognition keys on exp between the two bmms)
   %p0 = tensor.empty() : tensor<2x4x4xf32>
+  %e = linalg.generic {indexing_maps = [affine_map<(d0,d1,d2)->(d0,d1,d2)>,
+                                        affine_map<(d0,d1,d2)->(d0,d1,d2)>],
+                       iterator_types = ["parallel","parallel","parallel"]}
+       ins(%masked : tensor<2x4x4xf32>) outs(%p0 : tensor<2x4x4xf32>) {
+  ^bb0(%in: f32, %out: f32):
+    %ee = math.exp %in : f32
+    linalg.yield %ee : f32
+  } -> tensor<2x4x4xf32>
+  // softmax sum-reduce + normalize, so the region is recognized as attention
+  // and reaches the mask check (this test exercises the mask bail, not the
+  // missing-softmax bail).
+  %r0 = tensor.empty() : tensor<2x4x1xf32>
+  %rf = linalg.fill ins(%cst : f32) outs(%r0 : tensor<2x4x1xf32>) -> tensor<2x4x1xf32>
+  %sum = linalg.generic {indexing_maps = [affine_map<(d0,d1,d2)->(d0,d1,d2)>,
+                                          affine_map<(d0,d1,d2)->(d0,d1,0)>],
+                         iterator_types = ["parallel","parallel","reduction"]}
+         ins(%e : tensor<2x4x4xf32>) outs(%rf : tensor<2x4x1xf32>) {
+  ^bb0(%in: f32, %out: f32):
+    %s = arith.addf %in, %out : f32
+    linalg.yield %s : f32
+  } -> tensor<2x4x1xf32>
   %probs = linalg.generic {indexing_maps = [affine_map<(d0,d1,d2)->(d0,d1,d2)>,
+                                            affine_map<(d0,d1,d2)->(d0,d1,0)>,
                                             affine_map<(d0,d1,d2)->(d0,d1,d2)>],
                            iterator_types = ["parallel","parallel","parallel"]}
-           ins(%masked : tensor<2x4x4xf32>) outs(%p0 : tensor<2x4x4xf32>) {
-  ^bb0(%in: f32, %out: f32):
-    %e = math.exp %in : f32
-    linalg.yield %e : f32
+           ins(%e, %sum : tensor<2x4x4xf32>, tensor<2x4x1xf32>) outs(%p0 : tensor<2x4x4xf32>) {
+  ^bb0(%in: f32, %s: f32, %out: f32):
+    %d = arith.divf %in, %s : f32
+    linalg.yield %d : f32
   } -> tensor<2x4x4xf32>
 
   %o0 = tensor.empty() : tensor<2x4x8xf32>
