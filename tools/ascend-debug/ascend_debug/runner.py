@@ -9,7 +9,22 @@ from dataclasses import dataclass
 
 
 class CommandError(RuntimeError):
-    pass
+    def __init__(
+        self,
+        message: str,
+        *,
+        argv: tuple[str, ...] | None = None,
+        returncode: int | None = None,
+        stderr: str | None = None,
+        stdout_path: pathlib.Path | None = None,
+        stderr_report_path: pathlib.Path | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.argv = argv
+        self.returncode = returncode
+        self.stderr = stderr
+        self.stdout_path = stdout_path
+        self.stderr_report_path = stderr_report_path
 
 
 @dataclass(frozen=True)
@@ -89,7 +104,12 @@ def run_command(
             temp_path.unlink(missing_ok=True)
         command = shlex.join(argv)
         raise CommandError(
-            f"command failed with exit code {completed.returncode}: {command}\n{completed.stderr}"
+            f"command failed with exit code {completed.returncode}: {command}\n{completed.stderr}",
+            argv=tuple(argv),
+            returncode=completed.returncode,
+            stderr=completed.stderr,
+            stdout_path=stdout_path,
+            stderr_report_path=stderr_report_path,
         )
 
     if temp_path:

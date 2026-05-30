@@ -9,6 +9,7 @@ import re
 import struct
 from typing import Any
 
+from ascend_debug import __version__, failure, layout
 from ascend_debug.runner import CommandError, find_tool, run_command
 
 
@@ -229,30 +230,154 @@ def _translate_tool() -> str:
     )
 
 
-def _run_artifact_case(case_path: pathlib.Path, run_dir: pathlib.Path) -> int:
+def _runtime_command(
+    *,
+    stage: str,
+    tool: str,
+    argv: list[str],
+    args: list[str],
+    stdout_path: pathlib.Path,
+    stdout_rel: str,
+    stderr_path: pathlib.Path,
+    stderr_rel: str,
+) -> dict[str, Any]:
+    try:
+        run_command(
+            argv,
+            stdout_path=stdout_path,
+            stderr_report_path=stderr_path,
+        )
+    except CommandError as error:
+        error.debug_command = failure.failed_command_record(
+            stage=stage,
+            tool=tool,
+            args=args,
+            stdout=stdout_rel,
+            stderr=stderr_rel,
+            error=error,
+        )
+        raise
+    return failure.command_record(
+        stage=stage,
+        tool=tool,
+        args=args,
+        stdout=stdout_rel,
+        stderr=stderr_rel,
+    )
+
+
+def _write_runtime_manifest(
+    *,
+    run_dir: pathlib.Path,
+    case_path: pathlib.Path,
+    commands: list[dict[str, Any]],
+    status: str,
+    failed_stage: str | None = None,
+    failed_phase: str | None = None,
+    failure_status: str | None = None,
+) -> None:
+    layout.write_manifest(
+        run_dir,
+        mode="run",
+        preset="run",
+        pipeline="runtime-session",
+        stages=(),
+        version=__version__,
+        backend="runtime",
+        input_path=str(case_path),
+        status=status,
+        failed_stage=failed_stage,
+        failed_phase=failed_phase,
+        failure_status=failure_status,
+        commands=commands,
+        reports=failure.report_records_from_commands(commands),
+        graphs=[],
+    )
+
+
+def _write_runtime_failure(
+    *,
+    run_dir: pathlib.Path,
+    case_path: pathlib.Path,
+    commands: list[dict[str, Any]],
+    error: CommandError,
+    default_stage: str,
+    phase: str,
+) -> None:
+    failed_command = failure.command_from_error(error)
+    manifest_commands = [*commands]
+    if failed_command:
+        manifest_commands.append(failed_command)
+    failed_stage = str((failed_command or {}).get("stage") or default_stage)
+    status_rel = failure.write_run_status(
+        run_dir,
+        stage=failed_stage,
+        phase=phase,
+        command=failed_command,
+        error=error,
+    )
+    _write_runtime_manifest(
+        run_dir=run_dir,
+        case_path=case_path,
+        commands=manifest_commands,
+        status="failed",
+        failed_stage=failed_stage,
+        failed_phase=phase,
+        failure_status=status_rel,
+    )
+
+
+def _run_artifact_case(
+    case_path: pathlib.Path,
+    run_dir: pathlib.Path,
+    commands: list[dict[str, Any]],
+) -> int:
     reports_dir = run_dir / "reports"
     run_manifest = run_dir / "run_manifest.json"
     runtime_session = find_tool("runtime-session")
-    run_command(
-        [
-            runtime_session,
-            "--case",
-            str(case_path),
-            "--emit-run-manifest",
-            str(run_manifest),
-        ],
-        stdout_path=run_dir / "runtime-session.prepare.log",
-        stderr_report_path=reports_dir / "runtime-session.prepare.stderr.txt",
+    commands.append(
+        _runtime_command(
+            stage="runtime-prepare",
+            tool="runtime-session",
+            argv=[
+                runtime_session,
+                "--case",
+                str(case_path),
+                "--emit-run-manifest",
+                str(run_manifest),
+            ],
+            args=[
+                "--case",
+                str(case_path),
+                "--emit-run-manifest",
+                "run_manifest.json",
+            ],
+            stdout_path=run_dir / "runtime-session.prepare.log",
+            stdout_rel="runtime-session.prepare.log",
+            stderr_path=reports_dir / "runtime-session.prepare.stderr.txt",
+            stderr_rel="reports/runtime-session.prepare.stderr.txt",
+        )
     )
-    run_command(
-        [
-            runtime_session,
-            "--run-manifest",
-            str(run_manifest),
-            "--run",
-        ],
-        stdout_path=run_dir / "runtime-session.run.log",
-        stderr_report_path=reports_dir / "runtime-session.run.stderr.txt",
+    commands.append(
+        _runtime_command(
+            stage="runtime-run",
+            tool="runtime-session",
+            argv=[
+                runtime_session,
+                "--run-manifest",
+                str(run_manifest),
+                "--run",
+            ],
+            args=[
+                "--run-manifest",
+                "run_manifest.json",
+                "--run",
+            ],
+            stdout_path=run_dir / "runtime-session.run.log",
+            stdout_rel="runtime-session.run.log",
+            stderr_path=reports_dir / "runtime-session.run.stderr.txt",
+            stderr_rel="reports/runtime-session.run.stderr.txt",
+        )
     )
     return 0
 
@@ -262,6 +387,7 @@ def _compile_source_case(
     root: dict[str, Any],
     case_path: pathlib.Path,
     run_dir: pathlib.Path,
+    commands: list[dict[str, Any]],
 ) -> pathlib.Path:
     if "artifact" in root:
         raise CommandError("case.json must not contain both source and artifact")
@@ -323,17 +449,30 @@ def _compile_source_case(
     host_tiling = run_dir / "host_tiling.cpp"
     artifact_root = run_dir / "artifact"
 
-    run_command(
-        [
-            opt,
-            str(source_mlir),
-            "--linalg-generalize-named-ops",
-            "--linalg-fuse-elementwise-ops",
-            "--canonicalize",
-            "--cse",
-        ],
-        stdout_path=step1,
-        stderr_report_path=reports_dir / "010-fuse.stderr.txt",
+    commands.append(
+        _runtime_command(
+            stage="source-fuse",
+            tool="ascend-mlir-opt",
+            argv=[
+                opt,
+                str(source_mlir),
+                "--linalg-generalize-named-ops",
+                "--linalg-fuse-elementwise-ops",
+                "--canonicalize",
+                "--cse",
+            ],
+            args=[
+                str(source_mlir),
+                "--linalg-generalize-named-ops",
+                "--linalg-fuse-elementwise-ops",
+                "--canonicalize",
+                "--cse",
+            ],
+            stdout_path=step1,
+            stdout_rel="step1_fused.mlir",
+            stderr_path=reports_dir / "010-fuse.stderr.txt",
+            stderr_rel="reports/010-fuse.stderr.txt",
+        )
     )
     stages = [
         (step1, ["--ascend-normalize"], step2, "020-normalize"),
@@ -363,57 +502,112 @@ def _compile_source_case(
         ),
     ]
     for input_path, pass_args, output_path, report_name in stages:
-        run_command(
-            [opt, str(input_path), *pass_args],
-            stdout_path=output_path,
-            stderr_report_path=reports_dir / f"{report_name}.stderr.txt",
+        commands.append(
+            _runtime_command(
+                stage=report_name,
+                tool="ascend-mlir-opt",
+                argv=[opt, str(input_path), *pass_args],
+                args=[input_path.name, *pass_args],
+                stdout_path=output_path,
+                stdout_rel=output_path.name,
+                stderr_path=reports_dir / f"{report_name}.stderr.txt",
+                stderr_rel=f"reports/{report_name}.stderr.txt",
+            )
         )
 
-    run_command(
-        [
-            translate,
-            "-mlir-to-cann",
-            str(step9),
-            f"--tiling-space-out={tiling_space}",
-            f"--artifact-manifest-out={artifact_manifest}",
-            f"--host-tiling-out={host_tiling}",
-            f"--cann-soc={soc}",
-            "-o",
-            str(kernel_cpp),
-        ],
-        stdout_path=run_dir / "ascend-mlir-translate.log",
-        stderr_report_path=reports_dir / "100-translate.stderr.txt",
+    commands.append(
+        _runtime_command(
+            stage="translate",
+            tool="ascend-mlir-translate",
+            argv=[
+                translate,
+                "-mlir-to-cann",
+                str(step9),
+                f"--tiling-space-out={tiling_space}",
+                f"--artifact-manifest-out={artifact_manifest}",
+                f"--host-tiling-out={host_tiling}",
+                f"--cann-soc={soc}",
+                "-o",
+                str(kernel_cpp),
+            ],
+            args=[
+                "-mlir-to-cann",
+                step9.name,
+                f"--tiling-space-out={tiling_space.name}",
+                f"--artifact-manifest-out={artifact_manifest.name}",
+                f"--host-tiling-out={host_tiling.name}",
+                f"--cann-soc={soc}",
+                "-o",
+                kernel_cpp.name,
+            ],
+            stdout_path=run_dir / "ascend-mlir-translate.log",
+            stdout_rel="ascend-mlir-translate.log",
+            stderr_path=reports_dir / "100-translate.stderr.txt",
+            stderr_rel="reports/100-translate.stderr.txt",
+        )
     )
 
-    run_command(
-        [
-            runtime_session,
-            "--kernel",
-            str(kernel_cpp),
-            "--kernel-kind",
-            kernel_kind,
-            "--soc",
-            soc,
-            "--output",
-            str(artifact_root),
-            "--name",
-            kernel_name,
-        ],
-        stdout_path=run_dir / "runtime-session.compile.log",
-        stderr_report_path=reports_dir / "runtime-session.compile.stderr.txt",
+    commands.append(
+        _runtime_command(
+            stage="runtime-compile",
+            tool="runtime-session",
+            argv=[
+                runtime_session,
+                "--kernel",
+                str(kernel_cpp),
+                "--kernel-kind",
+                kernel_kind,
+                "--soc",
+                soc,
+                "--output",
+                str(artifact_root),
+                "--name",
+                kernel_name,
+            ],
+            args=[
+                "--kernel",
+                kernel_cpp.name,
+                "--kernel-kind",
+                kernel_kind,
+                "--soc",
+                soc,
+                "--output",
+                "artifact",
+                "--name",
+                kernel_name,
+            ],
+            stdout_path=run_dir / "runtime-session.compile.log",
+            stdout_rel="runtime-session.compile.log",
+            stderr_path=reports_dir / "runtime-session.compile.stderr.txt",
+            stderr_rel="reports/runtime-session.compile.stderr.txt",
+        )
     )
-    run_command(
-        [
-            cxx,
-            "-std=c++17",
-            "-shared",
-            "-fPIC",
-            str(host_tiling),
-            "-o",
-            str(artifact_root / "host_tiling.so"),
-        ],
-        stdout_path=run_dir / "host-tiling.compile.log",
-        stderr_report_path=reports_dir / "host-tiling.compile.stderr.txt",
+    commands.append(
+        _runtime_command(
+            stage="host-tiling-compile",
+            tool=pathlib.Path(cxx).name,
+            argv=[
+                cxx,
+                "-std=c++17",
+                "-shared",
+                "-fPIC",
+                str(host_tiling),
+                "-o",
+                str(artifact_root / "host_tiling.so"),
+            ],
+            args=[
+                "-std=c++17",
+                "-shared",
+                "-fPIC",
+                host_tiling.name,
+                "-o",
+                "artifact/host_tiling.so",
+            ],
+            stdout_path=run_dir / "host-tiling.compile.log",
+            stdout_rel="host-tiling.compile.log",
+            stderr_path=reports_dir / "host-tiling.compile.stderr.txt",
+            stderr_rel="reports/host-tiling.compile.stderr.txt",
+        )
     )
 
     artifact_case: dict[str, Any] = {
@@ -450,13 +644,49 @@ def run_case(args: argparse.Namespace) -> int:
 
     run_dir = args.out.resolve()
     run_dir.mkdir(parents=True, exist_ok=True)
+    for stale in ("manifest.json", "run_status.json", "index.html"):
+        (run_dir / stale).unlink(missing_ok=True)
 
     root = _load_json(case_path)
     if root.get("schema_version") != 1:
         raise CommandError("case.json requires schema_version: 1")
-    if "source" in root:
-        artifact_case = _compile_source_case(root=root, case_path=case_path, run_dir=run_dir)
-        return _run_artifact_case(artifact_case, run_dir)
-    if "artifact" in root:
-        return _run_artifact_case(case_path, run_dir)
+    commands: list[dict[str, Any]] = []
+    try:
+        if "source" in root:
+            artifact_case = _compile_source_case(
+                root=root,
+                case_path=case_path,
+                run_dir=run_dir,
+                commands=commands,
+            )
+            result = _run_artifact_case(artifact_case, run_dir, commands)
+            _write_runtime_manifest(
+                run_dir=run_dir,
+                case_path=case_path,
+                commands=commands,
+                status="success",
+            )
+            return result
+        if "artifact" in root:
+            result = _run_artifact_case(case_path, run_dir, commands)
+            _write_runtime_manifest(
+                run_dir=run_dir,
+                case_path=case_path,
+                commands=commands,
+                status="success",
+            )
+            return result
+    except CommandError as error:
+        failed_command = failure.command_from_error(error)
+        failed_stage = str((failed_command or {}).get("stage") or "")
+        failed_phase = "runtime" if failed_stage in ("runtime-prepare", "runtime-run") else "compile"
+        _write_runtime_failure(
+            run_dir=run_dir,
+            case_path=case_path,
+            commands=commands,
+            error=error,
+            default_stage="runtime",
+            phase=failed_phase,
+        )
+        raise
     raise CommandError("case.json requires either source or artifact")

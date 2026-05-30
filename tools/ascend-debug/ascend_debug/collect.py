@@ -5,7 +5,7 @@ import os
 import pathlib
 import shlex
 
-from ascend_debug import __version__, kernel_dag, layout
+from ascend_debug import __version__, failure, kernel_dag, layout
 from ascend_debug.runner import CommandError, find_tool, run_command
 
 
@@ -37,19 +37,64 @@ def _clear_artifacts(run_dir, stages, reports=()) -> None:
     for _, report in reports:
         (run_dir / report).unlink(missing_ok=True)
     (run_dir / "manifest.json").unlink(missing_ok=True)
+    (run_dir / "run_status.json").unlink(missing_ok=True)
     (run_dir / "provenance.json").unlink(missing_ok=True)
     (run_dir / "index.html").unlink(missing_ok=True)
 
 
 def _record_command(stage: str, args: list[str], stdout_path: str, report_path: str) -> dict:
-    return {
-        "stage": stage,
-        "tool": "ascend-mlir-opt",
-        "args": args,
-        "stdout": stdout_path,
-        "stderr": report_path,
-        "status": "success",
-    }
+    return failure.command_record(
+        stage=stage,
+        tool="ascend-mlir-opt",
+        args=args,
+        stdout=stdout_path,
+        stderr=report_path,
+    )
+
+
+def _write_collect_failure_manifest(
+    *,
+    args: argparse.Namespace,
+    run_dir: pathlib.Path,
+    stages: tuple[layout.StageArtifact, ...],
+    commands: list[dict],
+    reports: list[dict] | None,
+    graphs: list[dict] | None,
+    error: CommandError,
+) -> None:
+    failed_command = failure.command_from_error(error)
+    manifest_commands = [*commands]
+    if failed_command:
+        manifest_commands.append(failed_command)
+    failed_stage = str((failed_command or {}).get("stage") or "collect")
+    status_rel = failure.write_run_status(
+        run_dir,
+        stage=failed_stage,
+        phase="compile",
+        command=failed_command,
+        error=error,
+    )
+    report_records = reports if reports is not None else failure.report_records_from_commands(manifest_commands)
+    layout.write_manifest(
+        run_dir,
+        mode=args.mode,
+        preset=args.preset,
+        pipeline=args.pipeline,
+        stages=failure.existing_stages(run_dir, stages),
+        version=__version__,
+        status="failed",
+        failed_stage=failed_stage,
+        failed_phase="compile",
+        failure_status=status_rel,
+        commands=manifest_commands,
+        reports=report_records,
+        graphs=graphs or [],
+    )
+    layout.write_provenance_skeleton(
+        run_dir,
+        original_input=args.input,
+        version=__version__,
+    )
 
 
 def _env_path(*names: str) -> pathlib.Path | None:
@@ -275,11 +320,22 @@ def _run_opt_stage_args(
     report_rel: str,
     pass_args: list[str],
 ) -> dict:
-    run_command(
-        [opt, str(input_path), *pass_args],
-        stdout_path=output_path,
-        stderr_report_path=report_path,
-    )
+    try:
+        run_command(
+            [opt, str(input_path), *pass_args],
+            stdout_path=output_path,
+            stderr_report_path=report_path,
+        )
+    except CommandError as error:
+        error.debug_command = failure.failed_command_record(
+            stage=stage,
+            tool="ascend-mlir-opt",
+            args=[input_rel, *pass_args],
+            stdout=output_rel,
+            stderr=report_rel,
+            error=error,
+        )
+        raise
     return _record_command(stage, [input_rel, *pass_args], output_rel, report_rel)
 
 
@@ -354,15 +410,52 @@ def collect_quick(args: argparse.Namespace) -> int:
     layout.copy_stage(source, normalize_in)
 
     opt = find_tool("ascend-mlir-opt")
-    run_command([opt, str(normalize_in), "--ascend-normalize"], stdout_path=normalize_out)
-    layout.copy_stage(normalize_out, kernelize_in)
-    run_command([opt, str(kernelize_in), "--ascend-kernelize"], stdout_path=kernelize_out)
+    commands: list[dict] = []
+    try:
+        commands.append(
+            _run_opt_stage_args(
+                opt=opt,
+                stage="normalize",
+                input_path=normalize_in,
+                input_rel="stages/010-normalize-in.mlir",
+                output_path=normalize_out,
+                output_rel="stages/019-normalize-out.mlir",
+                report_path=run_dir / "reports/010-normalize.report.txt",
+                report_rel="reports/010-normalize.report.txt",
+                pass_args=["--ascend-normalize"],
+            )
+        )
+        layout.copy_stage(normalize_out, kernelize_in)
+        commands.append(
+            _run_opt_stage_args(
+                opt=opt,
+                stage="kernelize",
+                input_path=kernelize_in,
+                input_rel="stages/020-kernelize-in.mlir",
+                output_path=kernelize_out,
+                output_rel="stages/029-kernelize-out.mlir",
+                report_path=run_dir / "reports/020-kernelize.report.txt",
+                report_rel="reports/020-kernelize.report.txt",
+                pass_args=["--ascend-kernelize"],
+            )
+        )
 
-    graph_commands, graph_reports, graphs = _collect_graph_artifacts(
-        args=args,
-        run_dir=run_dir,
-        default_kernelized_ir=kernelize_out,
-    )
+        graph_commands, graph_reports, graphs = _collect_graph_artifacts(
+            args=args,
+            run_dir=run_dir,
+            default_kernelized_ir=kernelize_out,
+        )
+    except CommandError as error:
+        _write_collect_failure_manifest(
+            args=args,
+            run_dir=run_dir,
+            stages=stages,
+            commands=commands,
+            reports=None,
+            graphs=None,
+            error=error,
+        )
+        raise
     layout.write_manifest(
         run_dir,
         mode=args.mode,
@@ -370,7 +463,7 @@ def collect_quick(args: argparse.Namespace) -> int:
         pipeline=args.pipeline,
         stages=stages,
         version=__version__,
-        commands=graph_commands,
+        commands=[*commands, *graph_commands],
         reports=graph_reports,
         graphs=graphs,
     )
@@ -481,26 +574,39 @@ def collect_full_codegen(args: argparse.Namespace) -> int:
         ),
     ]
 
-    commands = [
-        _run_opt_stage_args(
-            opt=opt,
-            stage=stage,
-            input_path=stage_paths[input_stage],
-            input_rel=stage_rels[input_stage],
-            output_path=stage_paths[output_stage],
-            output_rel=stage_rels[output_stage],
-            report_path=report_paths[stage],
-            report_rel=report_rels[stage],
-            pass_args=pass_args,
-        )
-        for stage, input_stage, output_stage, pass_args in pass_steps
-    ]
+    commands = []
+    try:
+        for stage, input_stage, output_stage, pass_args in pass_steps:
+            commands.append(
+                _run_opt_stage_args(
+                    opt=opt,
+                    stage=stage,
+                    input_path=stage_paths[input_stage],
+                    input_rel=stage_rels[input_stage],
+                    output_path=stage_paths[output_stage],
+                    output_rel=stage_rels[output_stage],
+                    report_path=report_paths[stage],
+                    report_rel=report_rels[stage],
+                    pass_args=pass_args,
+                )
+            )
 
-    graph_commands, graph_reports, graphs = _collect_graph_artifacts(
-        args=args,
-        run_dir=run_dir,
-        default_kernelized_ir=stage_paths["030-kernelize-out"],
-    )
+        graph_commands, graph_reports, graphs = _collect_graph_artifacts(
+            args=args,
+            run_dir=run_dir,
+            default_kernelized_ir=stage_paths["030-kernelize-out"],
+        )
+    except CommandError as error:
+        _write_collect_failure_manifest(
+            args=args,
+            run_dir=run_dir,
+            stages=stages,
+            commands=commands,
+            reports=None,
+            graphs=None,
+            error=error,
+        )
+        raise
     commands.extend(graph_commands)
     reports = [{"stage": name, "path": path} for name, path in FULL_CODEGEN_REPORTS]
     reports.extend(graph_reports)
@@ -546,70 +652,83 @@ def collect_deep(args: argparse.Namespace) -> int:
     layout.copy_stage(stage_paths["source"], stage_paths["normalize-in"])
 
     opt = find_tool("ascend-mlir-opt")
-    commands = [
-        _run_opt_stage(
-            opt=opt,
-            stage="normalize",
-            input_path=stage_paths["normalize-in"],
-            input_rel="stages/010-normalize-in.mlir",
-            output_path=stage_paths["normalize-out"],
-            output_rel="stages/019-normalize-out.mlir",
-            report_path=report_paths["normalize"],
-            report_rel=report_rels["normalize"],
-            pass_arg="--ascend-normalize",
+    commands = []
+    try:
+        commands.append(
+            _run_opt_stage(
+                opt=opt,
+                stage="normalize",
+                input_path=stage_paths["normalize-in"],
+                input_rel="stages/010-normalize-in.mlir",
+                output_path=stage_paths["normalize-out"],
+                output_rel="stages/019-normalize-out.mlir",
+                report_path=report_paths["normalize"],
+                report_rel=report_rels["normalize"],
+                pass_arg="--ascend-normalize",
+            )
         )
-    ]
 
-    layout.copy_stage(stage_paths["normalize-out"], stage_paths["kernelize-in"])
-    commands.append(
-        _run_opt_stage(
-            opt=opt,
-            stage="kernelize",
-            input_path=stage_paths["kernelize-in"],
-            input_rel="stages/020-kernelize-in.mlir",
-            output_path=stage_paths["kernelize-out"],
-            output_rel="stages/029-kernelize-out.mlir",
-            report_path=report_paths["kernelize"],
-            report_rel=report_rels["kernelize"],
-            pass_arg="--ascend-kernelize",
+        layout.copy_stage(stage_paths["normalize-out"], stage_paths["kernelize-in"])
+        commands.append(
+            _run_opt_stage(
+                opt=opt,
+                stage="kernelize",
+                input_path=stage_paths["kernelize-in"],
+                input_rel="stages/020-kernelize-in.mlir",
+                output_path=stage_paths["kernelize-out"],
+                output_rel="stages/029-kernelize-out.mlir",
+                report_path=report_paths["kernelize"],
+                report_rel=report_rels["kernelize"],
+                pass_arg="--ascend-kernelize",
+            )
         )
-    )
 
-    layout.copy_stage(stage_paths["kernelize-out"], stage_paths["schedule-in"])
-    commands.append(
-        _run_opt_stage(
-            opt=opt,
-            stage="schedule",
-            input_path=stage_paths["schedule-in"],
-            input_rel="stages/030-schedule-in.mlir",
-            output_path=stage_paths["schedule-out"],
-            output_rel="stages/039-schedule-out.mlir",
-            report_path=report_paths["schedule"],
-            report_rel=report_rels["schedule"],
-            pass_arg="--ascend-schedule=target-tile-policy=legacy-default dump-report=true debug-stage=schedule",
+        layout.copy_stage(stage_paths["kernelize-out"], stage_paths["schedule-in"])
+        commands.append(
+            _run_opt_stage(
+                opt=opt,
+                stage="schedule",
+                input_path=stage_paths["schedule-in"],
+                input_rel="stages/030-schedule-in.mlir",
+                output_path=stage_paths["schedule-out"],
+                output_rel="stages/039-schedule-out.mlir",
+                report_path=report_paths["schedule"],
+                report_rel=report_rels["schedule"],
+                pass_arg="--ascend-schedule=target-tile-policy=legacy-default dump-report=true debug-stage=schedule",
+            )
         )
-    )
 
-    layout.copy_stage(stage_paths["schedule-out"], stage_paths["realize-in"])
-    commands.append(
-        _run_opt_stage(
-            opt=opt,
-            stage="realize",
-            input_path=stage_paths["realize-in"],
-            input_rel="stages/040-realize-in.mlir",
-            output_path=stage_paths["realize-out"],
-            output_rel="stages/049-realize-out.mlir",
-            report_path=report_paths["realize"],
-            report_rel=report_rels["realize"],
-            pass_arg=_realize_pass_arg(args),
+        layout.copy_stage(stage_paths["schedule-out"], stage_paths["realize-in"])
+        commands.append(
+            _run_opt_stage(
+                opt=opt,
+                stage="realize",
+                input_path=stage_paths["realize-in"],
+                input_rel="stages/040-realize-in.mlir",
+                output_path=stage_paths["realize-out"],
+                output_rel="stages/049-realize-out.mlir",
+                report_path=report_paths["realize"],
+                report_rel=report_rels["realize"],
+                pass_arg=_realize_pass_arg(args),
+            )
         )
-    )
 
-    graph_commands, graph_reports, graphs = _collect_graph_artifacts(
-        args=args,
-        run_dir=run_dir,
-        default_kernelized_ir=stage_paths["kernelize-out"],
-    )
+        graph_commands, graph_reports, graphs = _collect_graph_artifacts(
+            args=args,
+            run_dir=run_dir,
+            default_kernelized_ir=stage_paths["kernelize-out"],
+        )
+    except CommandError as error:
+        _write_collect_failure_manifest(
+            args=args,
+            run_dir=run_dir,
+            stages=stages,
+            commands=commands,
+            reports=None,
+            graphs=None,
+            error=error,
+        )
+        raise
     commands.extend(graph_commands)
     reports = [{"stage": name, "path": path} for name, path in DEEP_REPORTS]
     reports.extend(graph_reports)

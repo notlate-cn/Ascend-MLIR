@@ -3,7 +3,9 @@ set -euo pipefail
 
 INPUT_MLIR="$1"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "${SCRIPT_DIR}/../../.." && pwd -P)"
 TMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/ascend-debug-cli.XXXXXX")"
+TMP_REAL="$(cd "${TMP_DIR}" && pwd -P)"
 SERVE_PID=""
 cleanup() {
   if [[ -n "${SERVE_PID}" ]]; then
@@ -33,11 +35,7 @@ if grep -Fq -- '--pipeline' "${TMP_DIR}/ascend-debug-collect-help.txt"; then
 fi
 echo "ascend_debug.help=ok"
 
-python3 - <<'PY'
-import sys
-
-sys.path.insert(0, "tools/ascend-debug")
-
+PYTHONPATH="${REPO_ROOT}/tools/ascend-debug${PYTHONPATH:+:${PYTHONPATH}}" python3 - <<'PY'
 from ascend_debug import stage_graph
 
 mlir = """module {
@@ -105,6 +103,40 @@ assert any(edge["from"] == chain_copies[0]["id"] and edge["to"] == chain_copies[
 assert any(edge["from"] == chain_copies[0]["id"] and edge["to"] == chain_return["id"] for edge in chain_effects), chain_effects
 assert any(edge["from"] == chain_copies[1]["id"] and edge["to"] == chain_return["id"] for edge in chain_effects), chain_effects
 assert not any(edge["from"] == chain_copies[0]["id"] and edge["to"] == chain_subview["id"] for edge in chain_effects), chain_effects
+
+multiline_linalg_mlir = """module {
+  func.func @multiline_linalg(
+      %arg0: tensor<70x128xf16>,
+      %arg1: tensor<70x128xf16>) -> tensor<70x128xf16> {
+    %empty0 = tensor.empty() : tensor<70x128xf16>
+    %add0 = linalg.generic {
+      indexing_maps = [
+        affine_map<(d0, d1) -> (d0, d1)>,
+        affine_map<(d0, d1) -> (d0, d1)>,
+        affine_map<(d0, d1) -> (d0, d1)>
+      ],
+      iterator_types = ["parallel", "parallel"]
+    } ins(%arg0, %arg1 : tensor<70x128xf16>, tensor<70x128xf16>)
+      outs(%empty0 : tensor<70x128xf16>) {
+    ^bb0(%x: f16, %y: f16, %o: f16):
+      %v = arith.addf %x, %y : f16
+      linalg.yield %v : f16
+    } -> tensor<70x128xf16>
+    return %add0 : tensor<70x128xf16>
+  }
+}
+"""
+multiline_graph = stage_graph.parse_stage_mlir({"order": 1, "name": "multiline-linalg", "path": "stages/multiline-linalg.mlir"}, multiline_linalg_mlir)
+args = [node for node in multiline_graph["nodes"] if node["op_name"] == "func.arg"]
+empty = next(node for node in multiline_graph["nodes"] if node["op_name"] == "tensor.empty")
+generic = next(node for node in multiline_graph["nodes"] if node["op_name"] == "linalg.generic")
+assert [arg["label"] for arg in args] == ["%arg0", "%arg1"], multiline_graph["nodes"]
+assert {"%arg0", "%arg1", "%empty0"}.issubset(set(generic["input_values"])), generic
+assert "%empty0" in generic["input_values"], generic
+assert any(edge["from"] == args[0]["id"] and edge["to"] == generic["id"] and edge["value"] == "%arg0" for edge in multiline_graph["edges"]), multiline_graph["edges"]
+assert any(edge["from"] == args[1]["id"] and edge["to"] == generic["id"] and edge["value"] == "%arg1" for edge in multiline_graph["edges"]), multiline_graph["edges"]
+assert any(edge["from"] == empty["id"] and edge["to"] == generic["id"] and edge["value"] == "%empty0" for edge in multiline_graph["edges"]), multiline_graph["edges"]
+assert multiline_graph["connectivity"]["suspicious_isolated_count"] == 0, multiline_graph["connectivity"]
 
 resource_mlir = """module {
   func.func @resource_chain(%pipe: i32, %src: i32, %bytes: index) {
@@ -255,15 +287,75 @@ ASCEND_DEBUG_FAKE_RUNTIME_LOG="${TMP_DIR}/fake-runtime-session.log" \
   PATH="${TMP_DIR}/fake-runtime-session:${PATH}" \
   ascend-debug run "${TMP_DIR}/case.json" --out "${TMP_DIR}/debug-case-run"
 test -f "${TMP_DIR}/debug-case-run/run_manifest.json"
-grep -Fq -- "--case ${TMP_DIR}/case.json --emit-run-manifest ${TMP_DIR}/debug-case-run/run_manifest.json" \
+grep -Fq -- "--case ${TMP_REAL}/case.json --emit-run-manifest ${TMP_REAL}/debug-case-run/run_manifest.json" \
   "${TMP_DIR}/fake-runtime-session.log"
-grep -Fq -- "--run-manifest ${TMP_DIR}/debug-case-run/run_manifest.json --run" \
+grep -Fq -- "--run-manifest ${TMP_REAL}/debug-case-run/run_manifest.json --run" \
   "${TMP_DIR}/fake-runtime-session.log"
-grep -Fq "run_manifest.path=${TMP_DIR}/debug-case-run/run_manifest.json" \
+grep -Fq "run_manifest.path=${TMP_REAL}/debug-case-run/run_manifest.json" \
   "${TMP_DIR}/debug-case-run/runtime-session.prepare.log"
 grep -Fq "session.result=success" \
   "${TMP_DIR}/debug-case-run/runtime-session.run.log"
 echo "ascend_debug.run_case=ok"
+
+mkdir -p "${TMP_DIR}/fake-runtime-session-fail"
+cat >"${TMP_DIR}/fake-runtime-session-fail/runtime-session" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' "$*" >>"${ASCEND_DEBUG_FAKE_RUNTIME_FAIL_LOG}"
+if [[ "$#" -eq 4 && "$1" == "--case" && "$3" == "--emit-run-manifest" ]]; then
+  mkdir -p "$(dirname "$4")"
+  printf '{"backend":"sim","tasks":[]}\n' >"$4"
+  printf 'run_manifest.path=%s\n' "$4"
+  exit 0
+fi
+if [[ "$#" -eq 3 && "$1" == "--run-manifest" && "$3" == "--run" ]]; then
+  printf 'runtime-session: error: simulated launch failure in test fixture before session.result\n' >&2
+  exit 88
+fi
+printf 'unexpected runtime-session invocation: %s\n' "$*" >&2
+exit 2
+SH
+chmod +x "${TMP_DIR}/fake-runtime-session-fail/runtime-session"
+if ASCEND_DEBUG_FAKE_RUNTIME_FAIL_LOG="${TMP_DIR}/fake-runtime-session-fail.log" \
+  PATH="${TMP_DIR}/fake-runtime-session-fail:${PATH}" \
+  ascend-debug run "${TMP_DIR}/case.json" --out "${TMP_DIR}/debug-case-run-fail" \
+  >"${TMP_DIR}/debug-case-run-fail.stdout" \
+  2>"${TMP_DIR}/debug-case-run-fail.stderr"; then
+  echo "expected ascend-debug run failure case to return non-zero" >&2
+  exit 1
+fi
+test -f "${TMP_DIR}/debug-case-run-fail/manifest.json"
+test -f "${TMP_DIR}/debug-case-run-fail/run_status.json"
+test -f "${TMP_DIR}/debug-case-run-fail/run_manifest.json"
+test -f "${TMP_DIR}/debug-case-run-fail/runtime-session.prepare.log"
+test -f "${TMP_DIR}/debug-case-run-fail/reports/runtime-session.run.stderr.txt"
+grep -Fq 'runtime-session: error: simulated launch failure in test fixture before session.result' \
+  "${TMP_DIR}/debug-case-run-fail/reports/runtime-session.run.stderr.txt"
+python3 - "${TMP_DIR}/debug-case-run-fail/manifest.json" "${TMP_DIR}/debug-case-run-fail/run_status.json" <<'PY'
+import json
+import pathlib
+import sys
+
+manifest = json.loads(pathlib.Path(sys.argv[1]).read_text())
+status = json.loads(pathlib.Path(sys.argv[2]).read_text())
+assert manifest["status"] == "failed", manifest
+assert manifest["failed_stage"] == "runtime-run", manifest
+assert manifest["failed_phase"] == "runtime", manifest
+assert manifest["failure_status"] == "run_status.json", manifest
+assert manifest["backend"] == "runtime", manifest
+commands = manifest["commands"]
+assert [command["status"] for command in commands] == ["success", "failed"], commands
+assert commands[-1]["exit_code"] == 88, commands[-1]
+assert status["status"] == "failed", status
+assert status["failure"]["stage"] == "runtime-run", status
+assert status["failure"]["phase"] == "runtime", status
+assert status["failure"]["command"]["exit_code"] == 88, status
+PY
+ascend-debug open "${TMP_DIR}/debug-case-run-fail" --no-browser >"${TMP_DIR}/ascend-debug-open-run-fail.txt"
+grep -Fq '<h2>Run Status</h2>' "${TMP_DIR}/debug-case-run-fail/index.html"
+grep -Fq 'runtime-run' "${TMP_DIR}/debug-case-run-fail/index.html"
+grep -Fq 'runtime-session: error: simulated launch failure in test fixture before session.result' "${TMP_DIR}/debug-case-run-fail/index.html"
+echo "ascend_debug.run_case_failure_workspace=ok"
 
 mkdir -p "${TMP_DIR}/fake-source-tools"
 cat >"${TMP_DIR}/fake-source-tools/ascend-mlir-opt" <<'SH'
@@ -427,11 +519,11 @@ assert case["inputs"][0]["dtype"] == "f16"
 assert case["expected_outputs"][0]["dtype"] == "f16"
 PY
 grep -Fq -- 'ascend-mlir-opt' "${TMP_DIR}/fake-source-tools.log"
-grep -Fq -- 'ascend-mlir-opt '"${TMP_DIR}"'/debug-source-run/step8_kernel_ir.mlir --ascend-canonicalize-cann-signature --canonicalize --cse' \
+grep -Fq -- 'ascend-mlir-opt '"${TMP_REAL}"'/debug-source-run/step8_kernel_ir.mlir --ascend-canonicalize-cann-signature --canonicalize --cse' \
   "${TMP_DIR}/fake-source-tools.log"
 grep -Fq -- 'ascend-mlir-translate' "${TMP_DIR}/fake-source-tools.log"
 grep -Fq -- 'runtime-session --kernel' "${TMP_DIR}/fake-source-tools.log"
-grep -Fq -- "--case ${TMP_DIR}/debug-source-run/case.artifact.json --emit-run-manifest ${TMP_DIR}/debug-source-run/run_manifest.json" \
+grep -Fq -- "--case ${TMP_REAL}/debug-source-run/case.artifact.json --emit-run-manifest ${TMP_REAL}/debug-source-run/run_manifest.json" \
   "${TMP_DIR}/fake-source-tools.log"
 grep -Fq "session.result=success" \
   "${TMP_DIR}/debug-source-run/runtime-session.run.log"
@@ -478,6 +570,67 @@ test -f "${TMP_DIR}/debug-run-deep/reports/020-kernelize.report.txt"
 test -f "${TMP_DIR}/debug-run-deep/reports/030-schedule.report.txt"
 test -f "${TMP_DIR}/debug-run-deep/reports/040-realize.report.txt"
 echo "ascend_debug.collect_deep=ok"
+
+mkdir -p "${TMP_DIR}/fake-collect-fail-tools"
+cat >"${TMP_DIR}/fake-collect-fail-tools/ascend-mlir-opt" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+printf 'ascend-mlir-opt %s\n' "$*" >>"${ASCEND_DEBUG_FAKE_COLLECT_FAIL_LOG}"
+if [[ "$*" == *"--ascend-kernelize"* ]]; then
+  printf 'stages/020-kernelize-in.mlir:10:3: error: ascend-kernelize test fixture rejected unsupported op\n' >&2
+  exit 77
+fi
+cat "$1"
+SH
+chmod +x "${TMP_DIR}/fake-collect-fail-tools/ascend-mlir-opt"
+if ASCEND_DEBUG_FAKE_COLLECT_FAIL_LOG="${TMP_DIR}/fake-collect-fail-tools.log" \
+  PATH="${TMP_DIR}/fake-collect-fail-tools:${PATH}" \
+  ascend-debug collect "${INPUT_MLIR}" \
+    --out "${TMP_DIR}/debug-collect-fail" \
+    --mode quick \
+    >"${TMP_DIR}/debug-collect-fail.stdout" \
+    2>"${TMP_DIR}/debug-collect-fail.stderr"; then
+  echo "expected ascend-debug collect failure case to return non-zero" >&2
+  exit 1
+fi
+test -f "${TMP_DIR}/debug-collect-fail/manifest.json"
+test -f "${TMP_DIR}/debug-collect-fail/run_status.json"
+test -f "${TMP_DIR}/debug-collect-fail/stages/000-source.mlir"
+test -f "${TMP_DIR}/debug-collect-fail/stages/019-normalize-out.mlir"
+test -f "${TMP_DIR}/debug-collect-fail/stages/020-kernelize-in.mlir"
+test ! -f "${TMP_DIR}/debug-collect-fail/stages/029-kernelize-out.mlir"
+grep -Fq 'ascend-kernelize test fixture rejected unsupported op' "${TMP_DIR}/debug-collect-fail/reports/020-kernelize.report.txt"
+python3 - "${TMP_DIR}/debug-collect-fail/manifest.json" "${TMP_DIR}/debug-collect-fail/run_status.json" <<'PY'
+import json
+import pathlib
+import sys
+
+manifest = json.loads(pathlib.Path(sys.argv[1]).read_text())
+status = json.loads(pathlib.Path(sys.argv[2]).read_text())
+assert manifest["status"] == "failed", manifest
+assert manifest["failed_stage"] == "kernelize", manifest
+assert manifest["failed_phase"] == "compile", manifest
+assert manifest["failure_status"] == "run_status.json", manifest
+assert [stage["name"] for stage in manifest["stages"]] == [
+    "source",
+    "normalize-in",
+    "normalize-out",
+    "kernelize-in",
+], manifest["stages"]
+commands = manifest["commands"]
+assert [command["stage"] for command in commands] == ["normalize", "kernelize"], commands
+assert [command["status"] for command in commands] == ["success", "failed"], commands
+assert commands[-1]["exit_code"] == 77, commands[-1]
+assert status["status"] == "failed", status
+assert status["failure"]["stage"] == "kernelize", status
+assert status["failure"]["phase"] == "compile", status
+assert status["failure"]["command"]["stderr"] == "reports/020-kernelize.report.txt", status
+PY
+ascend-debug open "${TMP_DIR}/debug-collect-fail" --no-browser >"${TMP_DIR}/ascend-debug-open-collect-fail.txt"
+grep -Fq '<h2>Run Status</h2>' "${TMP_DIR}/debug-collect-fail/index.html"
+grep -Fq 'kernelize' "${TMP_DIR}/debug-collect-fail/index.html"
+grep -Fq 'ascend-kernelize test fixture rejected unsupported op' "${TMP_DIR}/debug-collect-fail/index.html"
+echo "ascend_debug.collect_failure_workspace=ok"
 
 mkdir -p "${TMP_DIR}/fake-full-codegen-tools" "${TMP_DIR}/fake-full-codegen-cann"
 cat >"${TMP_DIR}/fake-full-codegen-tools/ascend-mlir-opt" <<'SH'
@@ -1082,6 +1235,10 @@ grep -Fq 'id="stage-phase-controls"' "${TMP_DIR}/debug-run-graph/views/debug_gra
 grep -Fq 'id="graph-search"' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
 grep -Fq 'id="graph-fit"' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
 grep -Fq 'id="graph-reset"' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
+grep -Fq '<button id="graph-reset" class="graph-tool-button" type="button">Reset</button>' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
+grep -Fq 'function defaultStageGraphViewState()' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
+grep -Fq 'function resetStageGraphViewState()' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
+grep -Fq 'stageGraphViewState = defaultStageGraphViewState();' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
 grep -Fq 'id="sidebar-toggle"' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
 grep -Fq 'id="inspector-resizer"' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
 grep -Fq 'id="source-reader-overlay"' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
@@ -1184,13 +1341,26 @@ grep -Fq 'id="highlight-depth"' "${TMP_DIR}/debug-run-graph/views/debug_graph.ht
 grep -Fq 'data-edge-kind-filter="resource_effect"' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
 grep -Fq 'id="fold-helper-toggle"' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
 grep -Fq 'function renderPathSummary' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
+grep -Fq 'function renderProvenanceSection' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
+grep -Fq 'function directGraphContext' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
+grep -Fq 'function kernelRuntimeStatus' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
+grep -Fq 'function tensorDiffForKernel' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
+grep -Fq 'function renderKernelLineage' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
+grep -Fq '<h3>Provenance</h3>' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
+grep -Fq 'provenance-edge-chip' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
 grep -Fq 'function updateGraphUrlState' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
+grep -Fq 'let pendingStageSelection = null;' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
+grep -Fq 'let requestedNodeConsumed = false;' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
+grep -Fq 'function selectedStageNodeSignature' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
+grep -Fq 'function resolveStageNodeSelection' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
+grep -Fq 'pendingStageSelection = selectedStageNodeSignature(activeStage(), selectedKey);' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
+grep -Fq 'stageNeighborhoodActive = true;' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
 grep -Fq 'function applyEdgeAndHelperFilters' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
 grep -Fq 'data-edge-from=' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
 grep -Fq 'data-edge-kind=' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
 grep -Fq 'neighborhood-node' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
 grep -Fq 'dimmed' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
-grep -Fq 'selectStageNode(stage, graph, preferred, {neighborhood: Boolean(requestedNodeMatch) || stageNeighborhoodActive, updateUrl: false})' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
+grep -Fq 'selectStageNode(stage, graph, preferred, {neighborhood: shouldRefreshNeighborhood, updateUrl: false})' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
 grep -Fq 'addEventListener("contextmenu"' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
 grep -Fq 'addEventListener("wheel"' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
 grep -Fq 'canvas.classList.add("panning")' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"

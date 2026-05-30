@@ -98,6 +98,12 @@ def write_manifest(
     pipeline: str,
     stages: tuple[StageArtifact, ...],
     version: str,
+    backend: str = "compile",
+    input_path: str | None = None,
+    status: str = "success",
+    failed_stage: str | None = None,
+    failed_phase: str | None = None,
+    failure_status: str | None = None,
     commands: list[dict[str, Any]] | None = None,
     reports: list[dict[str, Any]] | None = None,
     graphs: list[dict[str, Any]] | None = None,
@@ -110,25 +116,33 @@ def write_manifest(
             record["step"] = stage.step
         return record
 
-    write_json(
-        run_dir / "manifest.json",
-        {
-            "schema_version": 1,
-            "tool": "ascend-debug",
-            "version": version,
-            "input": stages[0].path,
-            "mode": mode,
-            "preset": preset,
-            "pipeline": pipeline,
-            "backend": "compile",
-            "device_id": None,
-            "device_scope": "single_run_single_device",
-            "stages": [stage_record(stage) for stage in stages],
-            "commands": commands or [],
-            "reports": reports or [],
-            "graphs": graphs or [],
-        },
-    )
+    manifest = {
+        "schema_version": 1,
+        "tool": "ascend-debug",
+        "version": version,
+        "mode": mode,
+        "preset": preset,
+        "pipeline": pipeline,
+        "backend": backend,
+        "status": status,
+        "device_id": None,
+        "device_scope": "single_run_single_device",
+        "stages": [stage_record(stage) for stage in stages],
+        "commands": commands or [],
+        "reports": reports or [],
+        "graphs": graphs or [],
+    }
+    if input_path is not None:
+        manifest["input"] = input_path
+    elif stages:
+        manifest["input"] = stages[0].path
+    if failed_stage:
+        manifest["failed_stage"] = failed_stage
+    if failed_phase:
+        manifest["failed_phase"] = failed_phase
+    if failure_status:
+        manifest["failure_status"] = failure_status
+    write_json(run_dir / "manifest.json", manifest)
 
 
 def write_provenance_skeleton(

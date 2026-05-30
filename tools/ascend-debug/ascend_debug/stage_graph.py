@@ -12,7 +12,7 @@ from ascend_debug import layout
 
 
 SSA_VALUE_RE = re.compile(r"%[A-Za-z0-9_.$-]+")
-FUNC_RE = re.compile(r"func\.func\s+@(?P<name>[A-Za-z0-9_.$-]+)\((?P<args>[^)]*)\)")
+FUNC_START_RE = re.compile(r"func\.func\s+@(?P<name>[A-Za-z0-9_.$-]+)\s*\(")
 OP_RE = re.compile(
     r"^\s*(?P<results>%[A-Za-z0-9_.$-]+(?:\s*,\s*%[A-Za-z0-9_.$-]+)*)\s*=\s*(?P<op>[A-Za-z_][A-Za-z0-9_.]*)"
 )
@@ -107,14 +107,89 @@ def _href(from_rel_path: str, to_rel_path: str) -> str:
     return posixpath.relpath(to_rel_path, start=str(source_dir))
 
 
-def _parse_func_args(line: str) -> list[dict[str, Any]]:
-    match = FUNC_RE.search(line)
+def _split_top_level_commas(text: str) -> list[str]:
+    pieces: list[str] = []
+    start = 0
+    angle_depth = 0
+    bracket_depth = 0
+    paren_depth = 0
+    for index, char in enumerate(text):
+        if char == "<":
+            angle_depth += 1
+        elif char == ">":
+            angle_depth = max(0, angle_depth - 1)
+        elif char == "[":
+            bracket_depth += 1
+        elif char == "]":
+            bracket_depth = max(0, bracket_depth - 1)
+        elif char == "(":
+            paren_depth += 1
+        elif char == ")":
+            paren_depth = max(0, paren_depth - 1)
+        elif char == "," and not angle_depth and not bracket_depth and not paren_depth:
+            pieces.append(text[start:index].strip())
+            start = index + 1
+    pieces.append(text[start:].strip())
+    return [piece for piece in pieces if piece]
+
+
+def _collect_func_header(lines: list[str], index: int) -> tuple[str | None, int]:
+    if not FUNC_START_RE.search(lines[index]):
+        return None, index + 1
+    collected: list[str] = []
+    cursor = index
+    paren_depth = 0
+    seen_args = False
+    while cursor < len(lines):
+        line = lines[cursor]
+        collected.append(line)
+        for char in line:
+            if char == "(":
+                seen_args = True
+                paren_depth += 1
+            elif char == ")" and seen_args:
+                paren_depth -= 1
+                if paren_depth <= 0:
+                    return "\n".join(collected), cursor + 1
+        cursor += 1
+    return "\n".join(collected), cursor
+
+
+def _parse_func_decl(header: str) -> tuple[str, list[dict[str, Any]]] | None:
+    match = FUNC_START_RE.search(header)
     if not match:
-        return []
+        return None
+    args_start = header.find("(", match.start())
+    if args_start < 0:
+        return match.group("name"), []
+    depth = 0
+    args_end = -1
+    for index, char in enumerate(header[args_start:], start=args_start):
+        if char == "(":
+            depth += 1
+        elif char == ")":
+            depth -= 1
+            if depth == 0:
+                args_end = index
+                break
+    if args_end < 0:
+        return match.group("name"), []
+    args_text = header[args_start + 1 : args_end]
     args = []
-    for arg_match in re.finditer(r"(?P<name>%[A-Za-z0-9_.$-]+)\s*:\s*(?P<type>[^,\)]+)", match.group("args")):
-        args.append({"name": arg_match.group("name"), "type": arg_match.group("type").strip()})
-    return args
+    for piece in _split_top_level_commas(args_text):
+        arg_match = re.match(
+            r"\s*(?P<name>%[A-Za-z0-9_.$-]+)\s*:\s*(?P<type>.+?)\s*$",
+            piece,
+            re.S,
+        )
+        if arg_match:
+            args.append(
+                {
+                    "name": arg_match.group("name"),
+                    "type": " ".join(arg_match.group("type").split()),
+                }
+            )
+    return match.group("name"), args
 
 
 def _extract_attr(text: str, name: str) -> str | None:
@@ -276,20 +351,24 @@ def _build_node_badges(semantic_attrs: dict[str, Any]) -> list[str]:
 
 
 def _extract_result_type(text: str) -> str | None:
-    arrow_match = re.search(r"->\s*([^\n{]+)", text)
-    if arrow_match:
-        return arrow_match.group(1).strip()
+    arrow_matches = list(re.finditer(r"->\s*([^\n{]+)", text))
+    if arrow_matches:
+        return arrow_matches[-1].group(1).strip()
     colon_match = re.search(r":\s*([^\n]+)$", text.strip())
     return colon_match.group(1).strip() if colon_match else None
 
 
 def _collect_op_text(lines: list[str], index: int, op_name: str) -> tuple[str, int]:
     collected = [lines[index]]
-    if op_name.startswith("linalg.") and op_name != "linalg.yield":
+    if op_name == "linalg.generic":
+        seen_region = lines[index].strip().startswith("^bb")
         cursor = index + 1
         while cursor < len(lines):
             collected.append(lines[cursor])
-            if lines[cursor].strip().startswith("}"):
+            stripped = lines[cursor].strip()
+            if stripped.startswith("^bb"):
+                seen_region = True
+            if seen_region and stripped.startswith("}"):
                 cursor += 1
                 break
             cursor += 1
@@ -472,10 +551,10 @@ def _extract_region_body(op_text: str) -> str | None:
     in_region = False
     for line in op_text.splitlines()[1:]:
         stripped = line.strip()
-        if stripped.startswith("}"):
-            break
         if stripped.startswith("^bb"):
             in_region = True
+        if in_region and stripped.startswith("}"):
+            break
         if in_region and stripped:
             body_lines.append(stripped)
     return "\n".join(body_lines) if body_lines else None
@@ -561,13 +640,20 @@ def parse_stage_mlir(stage: dict[str, Any], text: str) -> dict[str, Any]:
         function_names.append(name)
         function_node_ids[name] = []
 
-    for line_number, line in enumerate(lines, start=1):
-        func_match = FUNC_RE.search(line)
-        if not func_match:
+    index = 0
+    while index < len(lines):
+        line_number = index + 1
+        func_header, next_index = _collect_func_header(lines, index)
+        if not func_header:
+            index = next_index
             continue
-        function_name = func_match.group("name")
+        func_decl = _parse_func_decl(func_header)
+        if not func_decl:
+            index = next_index
+            continue
+        function_name, args = func_decl
         note_function(function_name)
-        for arg in _parse_func_args(line):
+        for arg in args:
             node_id = f"n{len(nodes)}"
             node = {
                 "id": node_id,
@@ -589,14 +675,16 @@ def parse_stage_mlir(stage: dict[str, Any], text: str) -> dict[str, Any]:
             function_node_ids[function_name].append(node_id)
             producer_by_value[arg["name"]] = node_id
             defined_values.add(arg["name"])
+        index = next_index
 
     index = 0
     current_function = None
     while index < len(lines):
         line = lines[index]
-        func_match = FUNC_RE.search(line)
-        if func_match:
-            current_function = func_match.group("name")
+        func_header, _ = _collect_func_header(lines, index)
+        func_decl = _parse_func_decl(func_header) if func_header else None
+        if func_decl:
+            current_function = func_decl[0]
             note_function(current_function)
         op_match = OP_RE.match(line)
         return_match = RETURN_RE.match(line)

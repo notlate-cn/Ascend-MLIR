@@ -766,6 +766,13 @@ dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }
 .semantic-group h4 { margin: 0 0 0.42rem; font-size: 0.76rem; color: #344054; }
 .semantic-group .detail-grid { grid-template-columns: minmax(7.8rem, 42%) minmax(0, 1fr); }
 .badge-list { display: flex; flex-wrap: wrap; gap: 0.32rem; margin-bottom: 0.45rem; }
+.provenance-grid { display: grid; gap: 0.55rem; }
+.provenance-block { border: 1px solid #e3e8ef; border-radius: 6px; background: #ffffff; padding: 0.55rem; }
+.provenance-block h4 { margin: 0 0 0.42rem; font-size: 0.76rem; color: #344054; }
+.provenance-edge-list { display: flex; flex-wrap: wrap; gap: 0.32rem; }
+.provenance-edge-chip { display: inline-flex; gap: 0.28rem; align-items: baseline; max-width: 100%; border: 1px solid #dbe3ee; border-radius: 999px; padding: 0.16rem 0.42rem; background: #f8fafc; color: #344054; font-size: 0.74rem; }
+.provenance-edge-chip strong { color: #17202a; }
+.provenance-edge-chip code { overflow-wrap: anywhere; white-space: normal; }
 .layout-resizer { cursor: col-resize; align-self: stretch; border-radius: 999px; background: linear-gradient(90deg, transparent, #cbd5e1, transparent); min-height: calc(100vh - 6rem); }
 .layout-resizer:hover, .layout-resizer.active { background: #93c5fd; }
 .inspector-panel { min-width: 0; padding: 0.8rem; align-self: start; position: sticky; top: 0.85rem; max-height: calc(100vh - 1.7rem); overflow: auto; }
@@ -817,6 +824,7 @@ let activeMode = "stage";
 const initialParams = new URLSearchParams(window.location.search);
 const requestedStage = initialParams.get("stage");
 const requestedNode = initialParams.get("node");
+let requestedNodeConsumed = false;
 
 function defaultStageIndex() {
   if (requestedStage) {
@@ -830,6 +838,7 @@ function defaultStageIndex() {
 
 let activeStageIndex = defaultStageIndex();
 let selectedKey = null;
+let pendingStageSelection = null;
 let canvasPanState = null;
 let graphViewState = {scale: 1};
 let activeSearchResults = [];
@@ -857,25 +866,34 @@ const HELPER_NODE_OPS = new Set([
   "tensor.dim",
 ]);
 
+function defaultStageGraphViewState() {
+  return {
+    highlightMode: "both",
+    depth: "all",
+    focusView: false,
+    edgeKinds: new Set(ALL_EDGE_KINDS),
+    foldHelpers: false,
+  };
+}
+
 function parseStageGraphViewState() {
+  const state = defaultStageGraphViewState();
   const focusParam = initialParams.get("focus");
   const depthParam = initialParams.get("depth");
   const edgeParam = initialParams.get("edges");
-  const edgeKinds = new Set(
-    edgeParam
-      ? edgeParam.split(",").filter((kind) => ALL_EDGE_KINDS.includes(kind))
-      : ALL_EDGE_KINDS
-  );
-  if (!edgeKinds.size) {
-    for (const kind of ALL_EDGE_KINDS) edgeKinds.add(kind);
+  state.highlightMode = VALID_HIGHLIGHT_MODES.has(focusParam) ? focusParam : state.highlightMode;
+  state.depth = VALID_DEPTHS.has(depthParam) ? depthParam : state.depth;
+  state.focusView = initialParams.get("view") === "focus";
+  if (edgeParam) {
+    const edgeKinds = new Set(edgeParam.split(",").filter((kind) => ALL_EDGE_KINDS.includes(kind)));
+    state.edgeKinds = edgeKinds;
   }
-  return {
-    highlightMode: VALID_HIGHLIGHT_MODES.has(focusParam) ? focusParam : "both",
-    depth: VALID_DEPTHS.has(depthParam) ? depthParam : "all",
-    focusView: initialParams.get("view") === "focus",
-    edgeKinds,
-    foldHelpers: initialParams.get("fold") === "helpers",
-  };
+  if (!state.edgeKinds.size) {
+    state.edgeKinds = new Set();
+    for (const kind of ALL_EDGE_KINDS) state.edgeKinds.add(kind);
+  }
+  state.foldHelpers = initialParams.get("fold") === "helpers";
+  return state;
 }
 
 let stageGraphViewState = parseStageGraphViewState();
@@ -1134,7 +1152,181 @@ ${detailRows([
 </section>`;
 }
 
-function renderStageNodeDetail(stage, node, diff) {
+function kernelDagEntry(kernelId) {
+  if (!kernelId) return null;
+  const resolved = resolveKernelDagEntry(kernelId);
+  if (!resolved) return null;
+  return {id: resolved.id, node: resolved.node || {}};
+}
+
+function tensorDiffForKernel(kernelId) {
+  if (!kernelId) return null;
+  const tensorDiff = workspace.overlay_details && workspace.overlay_details.tensor_diff ? workspace.overlay_details.tensor_diff : {};
+  const comparisons = Array.isArray(tensorDiff.comparisons) ? tensorDiff.comparisons : [];
+  return comparisons.find((item) => item && (item.kernel_id === kernelId || item.task_id === kernelId)) || null;
+}
+
+function kernelRuntimeStatus(kernelId) {
+  if (!kernelId) return {status: "no-kernel"};
+  const locate = workspace.overlay_details && workspace.overlay_details.locate ? workspace.overlay_details.locate : {};
+  const comparison = tensorDiffForKernel(kernelId);
+  const failedIds = Array.isArray(locate.failed_kernel_ids) ? locate.failed_kernel_ids : [];
+  const passedIds = Array.isArray(locate.passed_kernel_ids) ? locate.passed_kernel_ids : [];
+  let locateStatus = "unchecked";
+  if (locate.first_bad_kernel === kernelId) locateStatus = "first-bad";
+  else if (failedIds.includes(kernelId)) locateStatus = "failed";
+  else if (passedIds.includes(kernelId)) locateStatus = "passed";
+  return {
+    status: locateStatus,
+    tensorStatus: comparison ? comparison.status : "none",
+    comparisonId: comparison ? comparison.id : null,
+    maxAbsError: comparison ? comparison.max_abs_error : null,
+    firstBadKernel: locate.first_bad_kernel,
+    firstBadDepth: locate.first_bad_depth,
+  };
+}
+
+function directGraphContext(graph, nodeId) {
+  const nodeById = Object.fromEntries((graph.nodes || []).map((node) => [node.id, node]));
+  const edges = graph.edges || [];
+  const enrich = (edge, direction) => {
+    const peerId = direction === "in" ? edge.from : edge.to;
+    const peer = nodeById[peerId] || {};
+    const peerOp = peer.op_name || peer.label || peerId;
+    return {
+      ...edge,
+      direction,
+      peerId,
+      peerOp,
+      peerLabel: peer.label || peerOp,
+    };
+  };
+  return {
+    incoming: edges.filter((edge) => edge.to === nodeId).map((edge) => enrich(edge, "in")),
+    outgoing: edges.filter((edge) => edge.from === nodeId).map((edge) => enrich(edge, "out")),
+  };
+}
+
+function renderProvenanceEdgeList(edges, emptyText) {
+  if (!edges.length) return `<div class="panel-subtitle">${escapeHtml(emptyText)}</div>`;
+  return `<div class="provenance-edge-list">${edges.slice(0, 12).map((edge) => `
+<span class="provenance-edge-chip">
+<strong>${escapeHtml(edge.direction === "in" ? "from" : "to")}</strong>
+<code>${escapeHtml(edge.peerOp)}</code>
+<span>${escapeHtml(edge.kind || "value")}</span>
+<code>${escapeHtml(edge.label || edge.value || "")}</code>
+</span>`).join("")}</div>`;
+}
+
+function renderKernelLineage(node) {
+  const kernelId = node && node.kernel_id;
+  const functionName = node && node.function;
+  if (!kernelId && !functionName) return "";
+  const entry = kernelId ? kernelDagEntry(kernelId) : null;
+  const dagNode = entry ? entry.node : {};
+  const dagId = entry ? entry.id : null;
+  const edges = workspace.kernel_dag && Array.isArray(workspace.kernel_dag.edges) ? workspace.kernel_dag.edges : [];
+  const upstream = edges.filter((edge) => edge.to === dagId).map((edge) => edge.from);
+  const downstream = edges.filter((edge) => edge.from === dagId).map((edge) => edge.to);
+  const ops = Array.isArray(dagNode.ops) ? dagNode.ops.map((op) => op.label || op.op).filter(Boolean).slice(0, 6) : [];
+  return `
+<div class="provenance-block">
+<h4>Kernel Lineage</h4>
+${detailRows([
+  ["stage kernel", kernelId || "none"],
+  ["function", functionName],
+  ["dag kernel", dagId],
+  ["kind/depth", dagId ? `${dagNode.kind || "unknown"} / ${dagNode.depth || "?"}` : "none"],
+  ["upstream", upstream.length ? upstream.join(", ") : "none"],
+  ["downstream", downstream.length ? downstream.join(", ") : "none"],
+  ["ops", ops.length ? ops.join(" -> ") : "none"],
+  ["shape/tile", [dagNode.output_shape, dagNode.selected_tile_shape].filter(Boolean).join(" / ")],
+  ["workspace", dagNode.workspace_size],
+])}
+</div>`;
+}
+
+function renderDataflowProvenance(graph, node) {
+  if (!graph || !node) return "";
+  const context = directGraphContext(graph, node.id);
+  return `
+<div class="provenance-block">
+<h4>Stage Dataflow</h4>
+${detailRows([
+  ["node", `${node.id} ${node.op_name || ""}`],
+  ["results", node.result_values || node.label],
+  ["inputs", node.input_values],
+])}
+${renderProvenanceEdgeList(context.incoming, "没有直接输入边。")}
+${renderProvenanceEdgeList(context.outgoing, "没有直接输出边。")}
+</div>`;
+}
+
+function renderRuntimeProvenance(node) {
+  const kernelId = node && node.kernel_id;
+  if (!kernelId) return "";
+  const runtime = kernelRuntimeStatus(kernelId);
+  return `
+<div class="provenance-block">
+<h4>Runtime / Locate</h4>
+${detailRows([
+  ["locate", runtime.status],
+  ["tensor_diff", runtime.tensorStatus],
+  ["comparison", runtime.comparisonId],
+  ["max_abs_error", runtime.maxAbsError],
+  ["first_bad", runtime.firstBadKernel],
+  ["first_bad_depth", runtime.firstBadDepth],
+])}
+</div>`;
+}
+
+function renderMovementProvenance(node) {
+  if (!node) return "";
+  const semantic = node.semantic_attrs || {};
+  const movement = semantic.movement || {};
+  const memory = semantic.memory || {};
+  const position = memory.position || {};
+  const rows = [
+    ["movement", movement.phases],
+    ["memory_space", memory.memory_space],
+    ["position", position.raw],
+    ["tensor_id", memory.tensor_id],
+    ["reuse_id", memory.reuse_id],
+    ["position_id", memory.position_id],
+  ];
+  if (!semanticDetailRows(rows)) return "";
+  return `
+<div class="provenance-block">
+<h4>Movement / Memory</h4>
+${semanticDetailRows(rows)}
+</div>`;
+}
+
+function renderProvenanceSection(stage, graph, node) {
+  if (!node) return "";
+  return `
+<section class="inspector-section">
+<h3>Provenance</h3>
+<div class="provenance-grid">
+<div class="provenance-block">
+<h4>Stage Origin</h4>
+${detailRows([
+  ["stage", `${stage.order} ${stage.name}`],
+  ["phase/step", [stage.phase, stage.step].filter(Boolean).join(" / ")],
+  ["path", stage.path],
+  ["line", node.line_end && node.line_end !== node.line ? `${node.line}-${node.line_end}` : node.line],
+  ["graph_source", graph.graph_source || graph.tool || "ascend-debug"],
+])}
+</div>
+${renderKernelLineage(node)}
+${renderDataflowProvenance(graph, node)}
+${renderRuntimeProvenance(node)}
+${renderMovementProvenance(node)}
+</div>
+</section>`;
+}
+
+function renderStageNodeDetail(stage, graph, node, diff) {
   if (!node) return '<section class="inspector-section"><h3>节点详情</h3><div class="panel-subtitle">未选中节点。</div></section>';
   const diffStatus = diff && diff.status ? diff.status : "无";
   return `
@@ -1153,6 +1345,7 @@ ${detailRows([
 ])}
 </section>
 ${renderSemanticAttrSections(node)}
+${renderProvenanceSection(stage, graph, node)}
 ${renderNodeIrSection(node)}`;
 }
 
@@ -1209,6 +1402,16 @@ function resetGraphView() {
   graphViewState.scale = 1;
   applyGraphScale();
   scrollGraphToDefaultOrigin();
+  resetStageGraphViewState();
+}
+
+function resetStageGraphViewState() {
+  if (activeMode !== "stage") return;
+  stageGraphViewState = defaultStageGraphViewState();
+  stageNeighborhoodActive = false;
+  refreshStageGraphEffects(false);
+  const stage = activeStage();
+  if (stage) updateGraphUrlState(stage, selectedKey);
 }
 
 function fitGraphToView() {
@@ -1463,10 +1666,43 @@ function stageBriefLabel(stage) {
   return `${stage.order} ${stage.name}`;
 }
 
+function selectedStageNodeSignature(stage, nodeId) {
+  const graph = stage ? stage.graph : null;
+  const node = graph && nodeId ? (graph.nodes || []).find((item) => item.id === nodeId) : null;
+  if (!node) return null;
+  return {
+    id: node.id,
+    label: node.label || "",
+    opName: node.op_name || "",
+    resultValues: Array.isArray(node.result_values) ? [...node.result_values] : [],
+    line: node.line || null,
+  };
+}
+
+function resolveStageNodeSelection(graph, signature) {
+  const nodes = graph && Array.isArray(graph.nodes) ? graph.nodes : [];
+  if (!nodes.length) return null;
+  if (!signature) return nodes[0].id;
+  const byId = nodes.find((node) => node.id === signature.id);
+  if (byId) return byId.id;
+  const primaryResult = signature.resultValues && signature.resultValues[0];
+  if (primaryResult) {
+    const byResult = nodes.find((node) => Array.isArray(node.result_values) && node.result_values.includes(primaryResult));
+    if (byResult) return byResult.id;
+  }
+  if (signature.label) {
+    const byLabel = nodes.find((node) => node.label === signature.label && node.op_name === signature.opName);
+    if (byLabel) return byLabel.id;
+  }
+  const byOpAndLine = nodes.find((node) => node.op_name === signature.opName && node.line === signature.line);
+  if (byOpAndLine) return byOpAndLine.id;
+  return nodes[0].id;
+}
+
 function activateStageIndex(index) {
+  pendingStageSelection = selectedStageNodeSignature(activeStage(), selectedKey);
   activeStageIndex = Number(index);
-  selectedKey = null;
-  stageNeighborhoodActive = false;
+  stageNeighborhoodActive = true;
   setMode("stage");
 }
 
@@ -1990,9 +2226,16 @@ ${badgeElements}
       }
     });
   });
-  const requestedNodeMatch = requestedNode && graph.nodes.find((node) => node.id === requestedNode || node.label === requestedNode);
-  const preferred = requestedNodeMatch ? requestedNodeMatch.id : (selectedKey && graph.nodes.some((node) => node.id === selectedKey) ? selectedKey : (graph.nodes[0] && graph.nodes[0].id));
-  if (preferred) selectStageNode(stage, graph, preferred, {neighborhood: Boolean(requestedNodeMatch) || stageNeighborhoodActive, updateUrl: false});
+  const pendingMatch = pendingStageSelection ? resolveStageNodeSelection(graph, pendingStageSelection) : null;
+  const requestedNodeMatch = !pendingStageSelection && !requestedNodeConsumed && requestedNode
+    ? graph.nodes.find((node) => node.id === requestedNode || node.label === requestedNode)
+    : null;
+  const selectedMatch = !pendingMatch && selectedKey && graph.nodes.some((node) => node.id === selectedKey) ? selectedKey : null;
+  const preferred = pendingMatch || (requestedNodeMatch && requestedNodeMatch.id) || selectedMatch || (graph.nodes[0] && graph.nodes[0].id);
+  const shouldRefreshNeighborhood = Boolean(pendingMatch || requestedNodeMatch || stageNeighborhoodActive);
+  if (requestedNodeMatch) requestedNodeConsumed = true;
+  pendingStageSelection = null;
+  if (preferred) selectStageNode(stage, graph, preferred, {neighborhood: shouldRefreshNeighborhood, updateUrl: false});
   afterGraphRender();
 }
 
@@ -2010,7 +2253,7 @@ function selectStageNode(stage, graph, nodeId, options = {}) {
   setInspector(
     node ? `节点详情：${node.op_name} ${node.label || ""}` : "节点详情",
     links,
-    renderStageNodeDetail(stage, node, diff) + renderPathSummary(graph, nodeId)
+    renderStageNodeDetail(stage, graph, node, diff) + renderPathSummary(graph, nodeId)
   );
   applyStageNeighborhood(graph, nodeId, stageNeighborhoodActive);
   if (options.updateUrl !== false) updateGraphUrlState(stage, nodeId);
@@ -2228,7 +2471,7 @@ renderStageGraph();
 <div class="graph-tools">
 <input id="graph-search" class="graph-search" type="search" placeholder="搜索 op、Kernel、位置">
 <button id="graph-fit" class="graph-tool-button" type="button">适配</button>
-<button id="graph-reset" class="graph-tool-button" type="button">重置</button>
+<button id="graph-reset" class="graph-tool-button" type="button">Reset</button>
 <span id="graph-zoom-value" class="zoom-value">100%</span>
 <span id="graph-search-status" class="search-status"></span>
 </div>

@@ -43,6 +43,15 @@ def load_manifest(run_dir: pathlib.Path) -> dict[str, Any]:
         raise CommandError(f"manifest must be a JSON object: {manifest_path}")
     if "schema_version" not in manifest:
         raise CommandError(f"manifest missing schema_version: {manifest_path}")
+    for field in ("status", "failed_stage", "failed_phase"):
+        if field in manifest and not isinstance(manifest[field], str):
+            raise CommandError(f"manifest {field} must be a string: {manifest_path}")
+    if "failure_status" in manifest:
+        _validate_run_relative_path(
+            manifest["failure_status"],
+            manifest_path=manifest_path,
+            label="failure_status",
+        )
     stages = manifest.get("stages")
     if not isinstance(stages, list):
         raise CommandError(f"manifest stages must be a list: {manifest_path}")
@@ -283,6 +292,7 @@ def _metadata_rows(manifest: dict[str, Any]) -> str:
 def _overview_cards(manifest: dict[str, Any]) -> str:
     items = [
         ("tool", manifest.get("tool")),
+        ("status", manifest.get("status", "success")),
         ("mode", manifest.get("mode")),
         ("preset", manifest.get("preset")),
         ("pipeline", manifest.get("pipeline")),
@@ -297,6 +307,75 @@ def _overview_cards(manifest: dict[str, Any]) -> str:
         f'<div class="overview-card"><span>{_cell(label)}</span><strong>{_cell(value)}</strong></div>'
         for label, value in items
     )
+
+
+def _load_run_status(run_dir: pathlib.Path, manifest: dict[str, Any]) -> dict[str, Any] | None:
+    status_rel = manifest.get("failure_status")
+    if not isinstance(status_rel, str) or not status_rel:
+        status_rel = "run_status.json"
+    status_path = run_dir / status_rel
+    if not status_path.exists():
+        return None
+    return _load_json_object(status_path, label="run status")
+
+
+def _run_status_section(
+    run_dir: pathlib.Path,
+    manifest: dict[str, Any],
+    report_views: dict[str, str],
+) -> str:
+    run_status = _load_run_status(run_dir, manifest)
+    status = manifest.get("status", "success")
+    if status == "success":
+        return ""
+    if not run_status:
+        return ""
+    failure = run_status.get("failure", {}) if isinstance(run_status, dict) else {}
+    if not isinstance(failure, dict):
+        failure = {}
+    command = failure.get("command", {})
+    if not isinstance(command, dict):
+        command = {}
+    command_args = command.get("args", [])
+    if not isinstance(command_args, list):
+        command_args = []
+    full_command = ""
+    if command.get("tool"):
+        full_command = shlex.join([str(command.get("tool")), *[str(arg) for arg in command_args]])
+    stderr = command.get("stderr")
+    stderr_cell = "none"
+    if isinstance(stderr, str) and stderr:
+        stderr_view = report_views.get(stderr)
+        stderr_cell = (
+            _link(stderr_view, stderr)
+            if stderr_view
+            else _path_link(stderr, exists=(run_dir / stderr).exists())
+        )
+    stdout = command.get("stdout")
+    stdout_cell = "none"
+    if isinstance(stdout, str) and stdout:
+        stdout_cell = _path_link(stdout, exists=(run_dir / stdout).exists())
+    message = failure.get("message") or command.get("message") or ""
+    return f"""
+<section class="run-status-section">
+<h2>Run Status</h2>
+<div class="run-status-banner {html.escape(str(status), quote=True)}">
+<strong>{_cell(status)}</strong>
+<span>{_cell(failure.get('phase') or manifest.get('failed_phase') or 'none')} / {_cell(failure.get('stage') or manifest.get('failed_stage') or 'none')}</span>
+</div>
+<table>
+<tbody>
+<tr><th>phase</th><td>{_cell(failure.get('phase') or manifest.get('failed_phase'))}</td></tr>
+<tr><th>stage</th><td>{_cell(failure.get('stage') or manifest.get('failed_stage'))}</td></tr>
+<tr><th>exit_code</th><td>{_cell(command.get('exit_code'))}</td></tr>
+<tr><th>stdout</th><td>{stdout_cell}</td></tr>
+<tr><th>stderr</th><td>{stderr_cell}</td></tr>
+<tr><th>command</th><td><code class="command-full">{_cell(full_command)}</code></td></tr>
+<tr><th>message</th><td><pre class="failure-message">{_cell(message)}</pre></td></tr>
+</tbody>
+</table>
+</section>
+"""
 
 
 def _stage_rows(
@@ -1316,7 +1395,12 @@ def _render_report_views(run_dir: pathlib.Path, manifest: dict[str, Any]) -> dic
 def _render_json_views(run_dir: pathlib.Path, manifest: dict[str, Any]) -> dict[str, str]:
     json_paths = {
         rel_path
-        for rel_path in ("summaries/memory.json", "summaries/tensor_diff.json", "summaries/locate.json")
+        for rel_path in (
+            "run_status.json",
+            "summaries/memory.json",
+            "summaries/tensor_diff.json",
+            "summaries/locate.json",
+        )
         if (run_dir / rel_path).exists()
     }
     json_views = {}
@@ -1775,6 +1859,7 @@ def render_index(run_dir: pathlib.Path, manifest: dict[str, Any]) -> pathlib.Pat
     stage_graph_views = stage_graph.render_stage_graphs(run_dir, manifest["stages"])
     graph_views = _render_graph_mlir_views(run_dir, manifest)
     report_views = _render_report_views(run_dir, manifest)
+    run_status_section = _run_status_section(run_dir, manifest, report_views)
     kernel_summary = _load_kernel_summary(run_dir)
     memory_summary = _write_memory_summary(run_dir, kernel_summary)
     tensor_diff = _load_tensor_diff(run_dir)
@@ -1831,6 +1916,10 @@ td.command-cell {{ max-width: 28rem; }}
 .overview-card {{ border: 1px solid #dbe3ee; background: #ffffff; border-radius: 8px; padding: 0.7rem; }}
 .overview-card span {{ display: block; color: #64748b; font-size: 0.78rem; font-weight: 700; margin-bottom: 0.25rem; }}
 .overview-card strong {{ display: block; font-size: 1.1rem; overflow-wrap: anywhere; }}
+.run-status-section {{ border: 1px solid #fecaca; background: #fff7f7; border-radius: 8px; padding: 0.9rem; }}
+.run-status-banner {{ display: flex; gap: 0.75rem; align-items: center; flex-wrap: wrap; margin-bottom: 0.75rem; color: #7f1d1d; }}
+.run-status-banner strong {{ font-size: 1.05rem; text-transform: uppercase; }}
+.failure-message {{ margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; background: #ffffff; color: #7f1d1d; border: 1px solid #fecaca; border-radius: 6px; padding: 0.5rem; }}
 .primary-debug-section {{ display: flex; gap: 0.75rem; align-items: center; flex-wrap: wrap; border: 1px solid #bfdbfe; background: #eff6ff; border-radius: 8px; padding: 0.9rem; margin: 1rem 0; }}
 .primary-debug-link {{ display: inline-block; padding: 0.45rem 0.7rem; background: #1d4ed8; color: #ffffff; border-radius: 6px; text-decoration: none; font-weight: 700; }}
 .advanced-section {{ border: 1px solid #dbe3ee; background: #ffffff; border-radius: 8px; padding: 0.75rem; }}
@@ -1851,6 +1940,7 @@ dd {{ margin: 0 0 0.35rem 0; }}
 <header><div class="inner"><h1>Ascend Debug</h1></div></header>
 <main>
 {debug_graph_section}
+{run_status_section}
 <section>
 <h2>{_cell(ui_text.text("overview_heading"))}</h2>
 <div class="overview-grid">
