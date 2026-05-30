@@ -19,6 +19,13 @@ func.func @elementwise(%arg0: tensor<64xf16>, %arg1: tensor<64xf16>) -> tensor<6
 }
 
 // CHECK: Ascend realize report (ascend-realize)
+// CHECK: DebugStepCatalog:
+// CHECK:   step = "realize.plan-memory"
+// CHECK:   title = "Build memory realization plan"
+// CHECK:   step = "realize.bufferize"
+// CHECK:   outputs = "memref IR with explicit buffers and view chains"
+// CHECK:   step = "realize.annotate-memory-space"
+// CHECK:   inspect_hint = "Check alloc/copy nodes, memory_space attrs, workspace slots, and deferred movement counts."
 // CHECK: Realize report
 // CHECK-NEXT:   kernels = 1
 // CHECK: BufferizedKernelIR:

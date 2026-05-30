@@ -262,7 +262,6 @@ def _dag_kernels(summary: dict[str, Any] | None) -> list[dict[str, Any]]:
                 "kind": node.get("kind"),
                 "workspace_size": _int_value(node.get("workspace_size")),
                 "output_shape": node.get("output_shape"),
-                "selected_tile_shape": node.get("selected_tile_shape"),
                 "input_degree": node.get("input_degree"),
                 "output_degree": node.get("output_degree"),
             }

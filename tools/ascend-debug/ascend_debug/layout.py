@@ -16,6 +16,178 @@ class StageArtifact:
     step: str | None = None
 
 
+STEP_INFO_BY_STEP: dict[str, dict[str, str]] = {
+    "source": {
+        "title": "Source input",
+        "purpose": "Original MLIR before Ascend debug collection starts.",
+        "inputs": "user-provided MLIR file",
+        "outputs": "baseline IR for the first compiler phase",
+        "inspect_hint": "Use this to confirm the test case shape, operands, and original op sequence.",
+        "common_failures": "Wrong test input or stale run directory.",
+    },
+    "linalg-cleanup": {
+        "title": "Canonicalize tensor/linalg input",
+        "purpose": "Run generic cleanup before Ascend-specific normalization.",
+        "inputs": "source MLIR",
+        "outputs": "canonical linalg/tensor IR",
+        "inspect_hint": "Check whether named ops were generalized and obvious CSE/canonicalize noise disappeared.",
+        "common_failures": "Unsupported high-level op remains before Kernelize.",
+    },
+    "ascend-normalize": {
+        "title": "Normalize output boundary",
+        "purpose": "Provide the stable normalized IR consumed by Kernelize.",
+        "inputs": "canonical linalg/tensor IR",
+        "outputs": "ascend.normalized function IR",
+        "inspect_hint": "Check function attrs and linalg.generic bodies before kernel grouping.",
+        "common_failures": "Missing ascend.normalized marker or unsupported dialect survives.",
+    },
+    "structured-ops": {
+        "title": "Identify kernelizable ops",
+        "purpose": "Find supported structured/tensor/arith ops that can participate in kernel formation.",
+        "inputs": "normalized tensor/linalg IR",
+        "outputs": "semantic participation facts for dependency analysis",
+        "inspect_hint": "Check which ops are analyzed, transparent, ignored, or rejected.",
+        "common_failures": "An expected producer is unsupported or disappeared from dependency analysis.",
+    },
+    "structural-marking": {
+        "title": "Mark structural relationships",
+        "purpose": "Mark roots, transparent view chains, branch/merge groups, and co-location constraints.",
+        "inputs": "dependency graph",
+        "outputs": "structural markers on participating ops",
+        "inspect_hint": "Check view-like ops, branch groups, and boundary roots before role classification.",
+        "common_failures": "A view chain or shared input creates a wrong boundary or missing edge.",
+    },
+    "role-classification": {
+        "title": "Classify op roles",
+        "purpose": "Assign Vector, Cube, Reduction, Memory, and Primary roles for candidate construction.",
+        "inputs": "structurally marked dependency graph",
+        "outputs": "ascend.op_roles and primary role markers",
+        "inspect_hint": "Check whether the intended compute root became Primary and got the expected role.",
+        "common_failures": "Role mismatch prevents fusion or sends the op to the wrong template family.",
+    },
+    "final-patterns": {
+        "title": "Build final kernel patterns",
+        "purpose": "Merge candidates, choose kernel partitions, and attach kernel ids.",
+        "inputs": "role-classified candidate graph",
+        "outputs": "ascend.kernel, ascend.primary, template family metadata, kernel graph edges",
+        "inspect_hint": "Check kernel ids, primary ops, template families, and cross-kernel edges.",
+        "common_failures": "Unexpected split/merge, missing primary op, or incorrect kernel graph edge.",
+    },
+    "ascend-kernelize": {
+        "title": "Kernelize output boundary",
+        "purpose": "Expose the stable kernelized IR consumed by Schedule.",
+        "inputs": "final kernel patterns",
+        "outputs": "phase boundary with kernel ids and pattern metadata",
+        "inspect_hint": "This may be identical to the final internal Kernelize step when no extra cleanup runs.",
+        "common_failures": "Boundary differs unexpectedly from final kernel patterns.",
+    },
+    "cleared": {
+        "title": "Clear stale schedule metadata",
+        "purpose": "Remove previous schedule attrs so the current run cannot reuse stale decision data.",
+        "inputs": "kernelized IR with optional old schedule attrs",
+        "outputs": "kernelized IR without owned schedule attrs",
+        "inspect_hint": "Check that old decision_id, tile_params, tail_plan, and target policy attrs are gone.",
+        "common_failures": "Old schedule attrs survive and make later steps look successful for the wrong reason.",
+    },
+    "decisions": {
+        "title": "Choose tile and tail plan",
+        "purpose": "Build schedule problems, match templates, search candidates, and select the runtime contract.",
+        "inputs": "kernel patterns and target model",
+        "outputs": "schedule candidates, selected decision, tile_params, tail_plan",
+        "inspect_hint": "Check ScheduleDecisionSet, tile_params, tail_policies, and tuning cache keys.",
+        "common_failures": "No template, empty candidates, guard budget pruning, or missing target model data.",
+    },
+    "final": {
+        "title": "Attach schedule contract",
+        "purpose": "Attach the chosen schedule decision as the downstream symbolic runtime contract.",
+        "inputs": "selected schedule decision",
+        "outputs": "decision_id, tile_params, tail_plan, tail_policies, target_tile_policy, structured lowering marker",
+        "inspect_hint": "Primary ops and func attrs should expose the same decision_id, tile_params, tail_policies, and target_tile_policy.",
+        "common_failures": "Kernel metadata mismatch, missing tile_params, or incomplete tail plan.",
+    },
+    "ascend-schedule": {
+        "title": "Schedule output boundary",
+        "purpose": "Expose the stable scheduled IR consumed by Realize.",
+        "inputs": "schedule-attached IR",
+        "outputs": "phase boundary with symbolic tile and tail contracts",
+        "inspect_hint": "This is often identical to Attach schedule contract; check the same-as marker.",
+        "common_failures": "Boundary differs unexpectedly from the attached schedule contract.",
+    },
+    "planned": {
+        "title": "Build memory realization plan",
+        "purpose": "Plan buffer values, placement, movement, workspace, and realization without mutating tensor semantics.",
+        "inputs": "scheduled tensor IR",
+        "outputs": "placement plan, movement plan, static memory plan",
+        "inspect_hint": "Check planned GM/on-chip places, movement demands, workspace slots, and deferred decisions.",
+        "common_failures": "Missing schedule contract, impossible placement, or unsupported movement path.",
+    },
+    "bufferized": {
+        "title": "Bufferize tensor IR",
+        "purpose": "Convert tensor values to memrefs while preserving producer/consumer and view-chain relationships.",
+        "inputs": "planned tensor IR",
+        "outputs": "memref IR with explicit buffers and view chains",
+        "inspect_hint": "Check new allocs, subviews, copies, and whether linalg inputs/outs still match the planned values.",
+        "common_failures": "Bufferization failure, lost view-chain relation, or unexpected temporary buffer.",
+    },
+    "memory-space-annotated": {
+        "title": "Annotate memory spaces",
+        "purpose": "Materialize the memory plan by assigning GM/VECIN/VECCALC/VECOUT spaces and required copies/views.",
+        "inputs": "bufferized memref IR",
+        "outputs": "memory_space attrs, workspace layout, materialized movement",
+        "inspect_hint": "Check alloc/copy nodes, memory_space attrs, workspace slots, and deferred movement counts.",
+        "common_failures": "Half-applied bridge, missing output copy, invalid dynamic view rewrite, or workspace reuse error.",
+    },
+    "ascend-realize": {
+        "title": "Realize output boundary",
+        "purpose": "Expose the stable memref/memory-space IR consumed by backend lowering.",
+        "inputs": "memory-space annotated IR",
+        "outputs": "phase boundary with realized buffers and movement",
+        "inspect_hint": "This may be identical to the last Realize internal step when no extra cleanup runs.",
+        "common_failures": "Boundary differs unexpectedly from annotated memory-space IR.",
+    },
+    "ascend-compute-lower": {
+        "title": "Lower compute to AscendC IR",
+        "purpose": "Replace linalg/memref compute and movement with AscendC dialect operations.",
+        "inputs": "realized memref IR",
+        "outputs": "AscendC compute, copy, local tensor, and queue operations",
+        "inspect_hint": "Check whether primary compute ops became AscendC loops/copies and whether tile args are used.",
+        "common_failures": "Unsupported op, missing tile_arg, invalid memory space, or unsupported view chain.",
+    },
+    "ascend-parallelize": {
+        "title": "Map parallel loops",
+        "purpose": "Map compiler loops and symbolic tile parameters to block-level parallel execution.",
+        "inputs": "AscendC compute IR with tile args",
+        "outputs": "block index usage and parallelized loop structure",
+        "inspect_hint": "Check ascendc.get_block_idx and loop bounds for TB_M/TB_N usage.",
+        "common_failures": "Loop not parallelized, wrong block dimension, or tile arg no longer dominates use.",
+    },
+    "ascend-prepare-for-emit": {
+        "title": "Prepare for CANN emission",
+        "purpose": "Normalize AscendC IR into the form accepted by the CANN printer and host tiling ABI.",
+        "inputs": "parallelized AscendC IR",
+        "outputs": "emit-ready AscendC global function and tiling struct usage",
+        "inspect_hint": "Check function signature, py_struct tiling data, and global/local tensor setup.",
+        "common_failures": "ABI shape mismatch, missing tiling field, or unsupported emit construct.",
+    },
+    "ascend-canonicalize-cann-signature": {
+        "title": "Canonicalize CANN signature",
+        "purpose": "Rewrite the function ABI to the final CANN kernel signature.",
+        "inputs": "emit-ready AscendC function",
+        "outputs": "CANN-compatible kernel arguments and tiling struct",
+        "inspect_hint": "Check input/output pointer order, workspace/tiling args, and final kernel attrs.",
+        "common_failures": "Wrong argument order, missing output buffer, or tiling struct mismatch.",
+    },
+}
+
+
+def step_info_for(stage: StageArtifact) -> dict[str, str] | None:
+    if stage.step and stage.step in STEP_INFO_BY_STEP:
+        return STEP_INFO_BY_STEP[stage.step]
+    if stage.name == "source":
+        return STEP_INFO_BY_STEP["source"]
+    return None
+
+
 QUICK_NORMALIZE_KERNELIZE_STAGES: tuple[StageArtifact, ...] = (
     StageArtifact(0, "source", "stages/000-source.mlir"),
     StageArtifact(10, "normalize-in", "stages/010-normalize-in.mlir"),
@@ -114,6 +286,9 @@ def write_manifest(
             record["phase"] = stage.phase
         if stage.step:
             record["step"] = stage.step
+        step_info = step_info_for(stage)
+        if step_info:
+            record["step_info"] = step_info
         return record
 
     manifest = {

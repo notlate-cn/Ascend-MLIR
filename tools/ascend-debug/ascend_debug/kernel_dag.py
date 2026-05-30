@@ -235,18 +235,6 @@ def first_output(task: dict[str, Any] | None) -> dict[str, Any]:
     return {}
 
 
-def selected_tile(entry: dict[str, Any] | None) -> str:
-    if not entry:
-        return "?"
-    entries = entry.get("scheduleEntries")
-    if not isinstance(entries, list) or not entries or not isinstance(entries[0], dict):
-        return "?"
-    tiling = entries[0].get("tilingParams")
-    if not isinstance(tiling, dict):
-        return "?"
-    return compact_shape(tiling.get("selected_tile_shape"))
-
-
 def default_runtime_input_roots(roots: list[str], tasks_by_id: dict[str, dict[str, Any]]) -> set[str]:
     runtime_roots: set[str] = set()
     if "kernel_0" in roots:
@@ -318,7 +306,6 @@ def analyze(
             "output_degree": len(succ[kernel_id]),
             "output_shape": compact_shape(output.get("shape")),
             "output_dtype": output.get("dtype", ""),
-            "selected_tile_shape": selected_tile(entries_by_id.get(kernel_id)),
             "workspace_size": (
                 task.get("workspace_size")
                 if task and "workspace_size" in task
@@ -433,7 +420,7 @@ def render_svg(summary: dict[str, Any], out: Path, kernel_view_base: str | None 
     )
     add(
         '<text class="tiny" x="36" y="92">Columns are DAG depth. Hover a node in a browser for '
-        'full op lines, shape, tile, workspace, and candidate markers.</text>'
+        'full op lines, shape, workspace, and candidate markers.</text>'
     )
     add(
         '<text class="tiny" x="36" y="110">Green edges are topology-level hints only; '
@@ -522,12 +509,11 @@ def render_svg(summary: dict[str, Any], out: Path, kernel_view_base: str | None 
             f'in:{node["input_degree"]} out:{node["output_degree"]}  '
             f'out:{node["output_shape"]} {node["output_dtype"]}'
         ).strip()
-        tile_line = f'tile:{node["selected_tile_shape"]}'
+        tile_line = f'workspace:{node["workspace_size"]}'
         title_lines = [
             kernel_id,
             f'kind={node["kind"]}',
             io_line,
-            tile_line,
             f'workspace_size={node["workspace_size"]}',
         ]
         for op in node["ops"]:

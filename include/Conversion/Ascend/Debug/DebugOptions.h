@@ -9,6 +9,7 @@
 
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/Support/LLVM.h"
+#include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/Support/raw_ostream.h"
 #include <string>
@@ -23,10 +24,24 @@ struct DebugOptions {
   std::string checkpointDumpDir;
 };
 
+struct DebugStepInfo {
+  StringRef checkpoint;
+  StringRef id;
+  StringRef title;
+  StringRef purpose;
+  StringRef inputs;
+  StringRef outputs;
+  StringRef inspectHint;
+  StringRef commonFailures;
+};
+
 DebugStage parseDebugStage(StringRef value);
 bool shouldDump(DebugOptions options, DebugStage stage);
 bool shouldDumpCheckpoint(const DebugOptions &options, DebugStage stage);
 void emitStageHeader(raw_ostream &os, DebugStage stage, StringRef passName);
+ArrayRef<DebugStepInfo> getDebugStepCatalog(DebugStage stage);
+const DebugStepInfo *lookupDebugStepInfo(StringRef checkpoint);
+void emitDebugStepCatalog(raw_ostream &os, DebugStage stage);
 LogicalResult dumpCheckpoint(ModuleOp module, const DebugOptions &options,
                              DebugStage stage, StringRef basename);
 

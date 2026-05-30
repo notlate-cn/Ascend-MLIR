@@ -391,6 +391,18 @@ def _stage_rows(
     commands_by_output = _commands_by_output_path(manifest)
     command_spans, commands_by_row = _stage_command_spans(stages, commands_by_output)
     for index, stage in enumerate(stages):
+        step_info = stage.get("step_info") if isinstance(stage.get("step_info"), dict) else {}
+        step_title = step_info.get("title") or stage["name"]
+        step_purpose = step_info.get("purpose")
+        step_outputs = step_info.get("outputs")
+        step_detail = ""
+        if step_purpose or step_outputs:
+            step_detail = (
+                '<div class="step-detail">'
+                f"{_cell(step_purpose)}"
+                + (f'<div class="step-output">Output: {_cell(step_outputs)}</div>' if step_outputs else "")
+                + "</div>"
+            )
         rel_path = str(stage["path"])
         view_rel_path = stage_views.get(rel_path)
         view_cell = _stage_view_cell(
@@ -422,7 +434,8 @@ def _stage_rows(
         rows.append(
             "<tr>"
             f"{group_cell}"
-            f"<td>{_cell(stage['name'])}</td>"
+            f'<td><div class="step-title">{_cell(step_title)}</div>'
+            f'<div class="step-file">{_cell(stage["name"])}</div>{step_detail}</td>'
             f'<td class="view-cell">{view_cell}</td>'
             f"{command_cell}"
             f"{report_cell}"
@@ -1114,13 +1127,12 @@ def _render_memory_summary_view(view_rel_path: str, rel_path: str, summary: dict
                 f"<td>{_cell(kernel.get('depth'))}</td>"
                 f"<td>{_cell(kernel.get('workspace_size'))}</td>"
                 f"<td>{_cell(kernel.get('kind'))}</td>"
-                f"<td>{_cell(kernel.get('selected_tile_shape'))}</td>"
                 "</tr>"
             )
-        workspace_rows = "".join(rows) or '<tr><td colspan="5">没有 workspace 数据。</td></tr>'
+        workspace_rows = "".join(rows) or '<tr><td colspan="4">没有 workspace 数据。</td></tr>'
         body.append(
             "<h2>Workspace 概览</h2>"
-            "<table><thead><tr><th>Kernel</th><th>深度</th><th>Workspace bytes</th><th>类型</th><th>Tile</th></tr></thead>"
+            "<table><thead><tr><th>Kernel</th><th>深度</th><th>Workspace bytes</th><th>类型</th></tr></thead>"
             f"<tbody>{workspace_rows}</tbody></table>"
         )
 
@@ -1511,7 +1523,6 @@ def _render_kernel_views(
             ("output_degree", node.get("output_degree")),
             ("output_shape", node.get("output_shape")),
             ("output_dtype", node.get("output_dtype")),
-            ("selected_tile_shape", node.get("selected_tile_shape")),
             ("workspace_size", node.get("workspace_size")),
             ("is_root", node.get("is_root")),
             ("is_leaf", node.get("is_leaf")),
@@ -1666,7 +1677,6 @@ def _kernel_rows(summary: dict[str, Any] | None, kernel_views: dict[str, str]) -
             f"<td>{_cell(node.get('kind'))}</td>"
             f"<td>{_cell(node.get('depth'))}</td>"
             f"<td>{_cell(node.get('output_shape'))}</td>"
-            f"<td>{_cell(node.get('selected_tile_shape'))}</td>"
             f"<td>{_cell(node.get('workspace_size'))}</td>"
             f"<td>{_cell(len(node.get('ops', [])))}</td>"
             "</tr>"
@@ -1710,7 +1720,6 @@ def _memory_overview_rows(summary: dict[str, Any] | None, kernel_views: dict[str
             f"<td>{_cell(kernel.get('kind'))}</td>"
             f"<td>{_cell(kernel.get('input_degree'))}</td>"
             f"<td>{_cell(kernel.get('output_degree'))}</td>"
-            f"<td>{_cell(kernel.get('selected_tile_shape'))}</td>"
             "</tr>"
         )
     return "\n".join(rows)
@@ -1844,7 +1853,7 @@ def _memory_section(summary: dict[str, Any] | None, kernel_views: dict[str, str]
 <dt>有 workspace 的 Kernel</dt><dd>{_cell(summary.get('workspace_kernel_count'))}</dd>
 </dl>
 <table>
-<thead><tr><th>Kernel</th><th>深度</th><th>Workspace bytes</th><th>类型</th><th>输入</th><th>输出</th><th>Tile</th></tr></thead>
+<thead><tr><th>Kernel</th><th>深度</th><th>Workspace bytes</th><th>类型</th><th>输入</th><th>输出</th></tr></thead>
 <tbody>
 {rows}
 </tbody>
@@ -1904,6 +1913,10 @@ table {{ border-collapse: collapse; width: 100%; background: #ffffff; }}
 th, td {{ border: 1px solid #cbd5e1; padding: 0.45rem 0.6rem; text-align: left; }}
 th {{ background: #f1f5f9; text-align: center; }}
 td.stage-group-cell {{ background: #f8fafc; color: #1f2933; font-weight: 700; vertical-align: middle; }}
+td .step-title {{ font-weight: 700; }}
+td .step-file {{ color: #64748b; font-family: SFMono-Regular, Menlo, Consolas, monospace; font-size: 0.78rem; margin-top: 0.1rem; }}
+td .step-detail {{ color: #475569; font-size: 0.82rem; line-height: 1.35; margin-top: 0.28rem; }}
+td .step-output {{ color: #334155; margin-top: 0.15rem; }}
 td.view-cell {{ white-space: nowrap; }}
 .view-links {{ display: inline-flex; gap: 1rem; align-items: center; }}
 td.command-cell, td.report-cell {{ vertical-align: middle; }}

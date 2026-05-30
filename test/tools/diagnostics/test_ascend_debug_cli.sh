@@ -138,6 +138,34 @@ assert any(edge["from"] == args[1]["id"] and edge["to"] == generic["id"] and edg
 assert any(edge["from"] == empty["id"] and edge["to"] == generic["id"] and edge["value"] == "%empty0" for edge in multiline_graph["edges"]), multiline_graph["edges"]
 assert multiline_graph["connectivity"]["suspicious_isolated_count"] == 0, multiline_graph["connectivity"]
 
+tile_mlir = """module {
+  func.func @tile_attrs(%arg0: tensor<70x128xf16>, %arg1: tensor<70x128xf16>) -> tensor<70x128xf16> {
+    %empty0 = tensor.empty() : tensor<70x128xf16>
+    %add0 = linalg.generic {indexing_maps = [], iterator_types = ["parallel", "parallel"]} ins(%arg0, %arg1 : tensor<70x128xf16>, tensor<70x128xf16>) outs(%empty0 : tensor<70x128xf16>) attrs = {
+      ascend.schedule.tile_binding = "symbolic",
+      ascend.schedule.tile_params = [
+        {axis = 0 : i64, axis_kind = "parallel", binding = "runtime", default = 70 : i64, extent = 70 : i64, name = "TB_M", primitive_uses = ["data_copy", "vector_compute", "write_back"], roles = ["bind_core", "kernel_loop"], upper_bound = 70 : i64},
+        {axis = 1 : i64, axis_kind = "parallel", binding = "runtime", default = 70 : i64, extent = 128 : i64, name = "TB_N", primitive_uses = ["data_copy", "vector_compute", "write_back"], roles = ["kernel_loop", "vectorize"], upper_bound = 70 : i64}
+      ],
+      ascend.schedule.target_tile_policy = "target_ub_70"
+    } {
+    ^bb0(%x: f16, %y: f16, %o: f16):
+      %v = arith.addf %x, %y : f16
+      linalg.yield %v : f16
+    } -> tensor<70x128xf16>
+    return %add0 : tensor<70x128xf16>
+  }
+}
+"""
+tile_graph = stage_graph.parse_stage_mlir({"order": 32, "name": "tile-attrs", "path": "stages/tile-attrs.mlir"}, tile_mlir)
+tile_node = next(node for node in tile_graph["nodes"] if node["op_name"] == "linalg.generic")
+schedule = tile_node["semantic_attrs"]["schedule"]
+assert schedule["tile_binding"] == "symbolic", schedule
+assert [param["name"] for param in schedule["tile_params"]] == ["TB_M", "TB_N"], schedule
+assert schedule["tile_params"][0]["default"] == 70, schedule
+assert schedule["tile_params"][1]["extent"] == 128, schedule
+assert "tile TB_M/TB_N" in tile_node["badges"], tile_node["badges"]
+
 resource_mlir = """module {
   func.func @resource_chain(%pipe: i32, %src: i32, %bytes: index) {
     %c1 = arith.constant 1 : i32
@@ -735,10 +763,16 @@ assert by_phase["Realize"] == [
     "050-realize-out",
 ]
 assert stages["021-kernelize-structured-ops"]["step"] == "structured-ops"
+assert stages["021-kernelize-structured-ops"]["step_info"]["title"] == "Identify kernelizable ops"
+assert "supported structured" in stages["021-kernelize-structured-ops"]["step_info"]["purpose"]
 assert stages["033-schedule-final"]["step"] == "final"
+assert stages["033-schedule-final"]["step_info"]["title"] == "Attach schedule contract"
+assert "tile_params" in stages["033-schedule-final"]["step_info"]["outputs"]
 assert stages["043-realize-memory-space-annotated"]["step"] == "memory-space-annotated"
+assert stages["043-realize-memory-space-annotated"]["step_info"]["title"] == "Annotate memory spaces"
 assert stages["060-compute-lower-out"]["phase"] == "Translate"
 assert stages["060-compute-lower-out"]["step"] == "ascend-compute-lower"
+assert stages["060-compute-lower-out"]["step_info"]["title"] == "Lower compute to AscendC IR"
 assert stages["090-cann-signature-out"]["phase"] == "Translate"
 assert stages["090-cann-signature-out"]["step"] == "ascend-canonicalize-cann-signature"
 assert by_phase["Translate"] == [
@@ -751,15 +785,19 @@ PY
 ascend-debug open "${TMP_DIR}/debug-run-full-codegen" --no-browser >"${TMP_DIR}/ascend-debug-open-full-codegen.txt"
 grep -Fq '<thead><tr><th>Stage</th><th>Step / Per pass</th><th>View</th><th>Command</th><th>Report</th></tr></thead>' \
   "${TMP_DIR}/debug-run-full-codegen/index.html"
+grep -Fq 'Identify kernelizable ops' "${TMP_DIR}/debug-run-full-codegen/index.html"
+grep -Fq 'Attach schedule contract' "${TMP_DIR}/debug-run-full-codegen/index.html"
+grep -Fq 'Annotate memory spaces' "${TMP_DIR}/debug-run-full-codegen/index.html"
+grep -Fq 'Lower compute to AscendC IR' "${TMP_DIR}/debug-run-full-codegen/index.html"
 grep -Fq 'th { background: #f1f5f9; text-align: center; }' \
   "${TMP_DIR}/debug-run-full-codegen/index.html"
 grep -Fq '.view-links { display: inline-flex; gap: 1rem; align-items: center; }' \
   "${TMP_DIR}/debug-run-full-codegen/index.html"
 grep -Fq '<td class="stage-group-cell" rowspan="5">Kernelize</td>' \
   "${TMP_DIR}/debug-run-full-codegen/index.html"
-grep -Fq '<td>021-kernelize-structured-ops</td>' \
+grep -Fq '<div class="step-file">021-kernelize-structured-ops</div>' \
   "${TMP_DIR}/debug-run-full-codegen/index.html"
-grep -Fq '<td>030-kernelize-out</td>' "${TMP_DIR}/debug-run-full-codegen/index.html"
+grep -Fq '<div class="step-file">030-kernelize-out</div>' "${TMP_DIR}/debug-run-full-codegen/index.html"
 grep -Fq '<span class="muted">No standalone command</span>' \
   "${TMP_DIR}/debug-run-full-codegen/index.html"
 grep -Fq '<td class="command-cell" rowspan="5"><details class="command-detail"><summary><code>ascend-mlir-opt kernelize</code></summary>' \
@@ -831,6 +869,11 @@ assert [step["name"] for step in schedule["steps"]] == [
     "033-schedule-final",
     "040-schedule-out",
 ]
+assert schedule["steps"][0]["step_info"]["title"] == "Clear stale schedule metadata"
+assert schedule["steps"][1]["step_info"]["title"] == "Choose tile and tail plan"
+assert schedule["steps"][2]["step_info"]["title"] == "Attach schedule contract"
+assert schedule["steps"][3]["step_info"]["title"] == "Schedule output boundary"
+assert schedule["steps"][3]["same_as_previous"]["stage"] == "033-schedule-final"
 assert [step["name"] for step in realize["steps"]] == [
     "041-realize-planned",
     "042-realize-bufferized",
@@ -918,7 +961,6 @@ cat >"${TMP_DIR}/artifact_manifest.json" <<'JSON'
       "kernel_id": "kernel_0",
       "kernelKind": "vec",
       "scheduleEntries": [
-        {"tilingParams": {"selected_tile_shape": [4, 8]}}
       ],
       "workspaceSizeBytes": 4096
     }
@@ -1003,7 +1045,6 @@ cat >"${TMP_DIR}/artifact_manifest_kernel_dag.json" <<'JSON'
       "kernel_id": "kernel_0",
       "kernelKind": "vec",
       "scheduleEntries": [
-        {"tilingParams": {"selected_tile_shape": [1, 4, 128]}}
       ],
       "workspaceSizeBytes": 0
     },
@@ -1011,7 +1052,6 @@ cat >"${TMP_DIR}/artifact_manifest_kernel_dag.json" <<'JSON'
       "kernel_id": "kernel_1",
       "kernelKind": "vec",
       "scheduleEntries": [
-        {"tilingParams": {"selected_tile_shape": [128, 384]}}
       ],
       "workspaceSizeBytes": 0
     },
@@ -1019,7 +1059,6 @@ cat >"${TMP_DIR}/artifact_manifest_kernel_dag.json" <<'JSON'
       "kernel_id": "kernel_2",
       "kernelKind": "mix",
       "scheduleEntries": [
-        {"tilingParams": {"selected_tile_shape": [1, 4, 384, 128]}}
       ],
       "workspaceSizeBytes": 4096
     },
@@ -1027,7 +1066,6 @@ cat >"${TMP_DIR}/artifact_manifest_kernel_dag.json" <<'JSON'
       "kernel_id": "kernel_3",
       "kernelKind": "vec",
       "scheduleEntries": [
-        {"tilingParams": {"selected_tile_shape": [1, 4, 128]}}
       ],
       "workspaceSizeBytes": 0
     },
@@ -1035,7 +1073,6 @@ cat >"${TMP_DIR}/artifact_manifest_kernel_dag.json" <<'JSON'
       "kernel_id": "kernel_4",
       "kernelKind": "vec",
       "scheduleEntries": [
-        {"tilingParams": {"selected_tile_shape": [1, 4, 128]}}
       ],
       "workspaceSizeBytes": 0
     }
@@ -1303,7 +1340,6 @@ grep -Fq '["op_role", kernel.role]' "${TMP_DIR}/debug-run-graph/views/debug_grap
 grep -Fq '["op_roles", kernel.roles]' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
 grep -Fq '["output_shape", dagKernelNode.output_shape]' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
 grep -Fq '["kernel_dag_id", dagKernelId]' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
-grep -Fq '["selected_tile_shape", schedule.tile_shape]' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
 grep -Fq '["phases", movement.phases]' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
 grep -Fq '["position.kind", position.kind]' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
 if grep -Fq '["角色", kernel.role]' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"; then
@@ -1420,11 +1456,9 @@ scheduled = next(
     if node["op_name"] == "linalg.generic" and node.get("kernel_id") == "kernel_0"
 )
 semantic = scheduled["semantic_attrs"]
-assert semantic["schedule"]["tile_shape"] == [4, 8]
 assert semantic["schedule"]["template"] == "single_tile_per_block"
 assert semantic["schedule"]["structured_lowering"] == "loop_skeleton_v0"
 assert semantic["movement"]["phases"] == ["data_copy", "vector_compute", "write_back"]
-assert "tile 4x8" in scheduled["badges"]
 assert "move data_copy/vector_compute/write_back" in scheduled["badges"]
 assert len(graph["stage_diffs"]) == graph["stage_count"] - 1
 assert all("added_count" in item for item in graph["stage_diffs"])
@@ -1501,7 +1535,6 @@ grep -Fq 'color: #dbeafe' "${TMP_DIR}/debug-run-graph/views/stages/029-kernelize
 grep -Fq '<span class="line-number">1</span>' "${TMP_DIR}/debug-run-graph/views/stages/029-kernelize-out.mlir.html"
 grep -Fq 'ascend.kernel' "${TMP_DIR}/debug-run-graph/views/stages/029-kernelize-out.mlir.html"
 grep -Fq '<h1>kernel_0</h1>' "${TMP_DIR}/debug-run-graph/views/kernels/kernel_0.html"
-grep -Fq 'selected_tile_shape' "${TMP_DIR}/debug-run-graph/views/kernels/kernel_0.html"
 grep -Fq 'workspace_size' "${TMP_DIR}/debug-run-graph/views/kernels/kernel_0.html"
 grep -Fq 'workspace_size</th><td>4096' "${TMP_DIR}/debug-run-graph/views/kernels/kernel_0.html"
 grep -Fq 'output_shape</th><td>?x?' "${TMP_DIR}/debug-run-graph/views/kernels/kernel_0.html"
@@ -1912,11 +1945,10 @@ expected_rows = [
 ]
 cursor = 0
 for step, view_cell in expected_rows:
-    needle = f"<td>{step}</td>{view_cell}"
-    position = html.find(needle, cursor)
-    if position < 0:
-        raise SystemExit(f"missing ordered stage row: {step!r}")
-    cursor = position + len(needle)
+    view_position = html.find(view_cell, cursor)
+    if view_position < 0:
+        raise SystemExit(f"missing ordered view cell: {step!r}")
+    cursor = view_position + len(view_cell)
 PY
 echo "ascend_debug.open=ok"
 

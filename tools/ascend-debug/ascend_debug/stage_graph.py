@@ -113,8 +113,21 @@ def _split_top_level_commas(text: str) -> list[str]:
     angle_depth = 0
     bracket_depth = 0
     paren_depth = 0
+    brace_depth = 0
+    in_string = False
+    escaped = False
     for index, char in enumerate(text):
-        if char == "<":
+        if in_string:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == '"':
+                in_string = False
+            continue
+        if char == '"':
+            in_string = True
+        elif char == "<":
             angle_depth += 1
         elif char == ">":
             angle_depth = max(0, angle_depth - 1)
@@ -126,7 +139,17 @@ def _split_top_level_commas(text: str) -> list[str]:
             paren_depth += 1
         elif char == ")":
             paren_depth = max(0, paren_depth - 1)
-        elif char == "," and not angle_depth and not bracket_depth and not paren_depth:
+        elif char == "{":
+            brace_depth += 1
+        elif char == "}":
+            brace_depth = max(0, brace_depth - 1)
+        elif (
+            char == ","
+            and not angle_depth
+            and not bracket_depth
+            and not paren_depth
+            and not brace_depth
+        ):
             pieces.append(text[start:index].strip())
             start = index + 1
     pieces.append(text[start:].strip())
@@ -209,6 +232,85 @@ def _extract_string_list_attr(text: str, name: str) -> list[str]:
     return re.findall(r'"([^"]+)"', match.group(1))
 
 
+def _extract_balanced_attr_value(
+    text: str,
+    name: str,
+    opener: str,
+    closer: str,
+) -> str | None:
+    match = re.search(rf"{re.escape(name)}\s*=\s*{re.escape(opener)}", text)
+    if not match:
+        return None
+    start = match.end() - 1
+    depth = 0
+    in_string = False
+    escaped = False
+    for index, char in enumerate(text[start:], start=start):
+        if in_string:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == '"':
+                in_string = False
+            continue
+        if char == '"':
+            in_string = True
+        elif char == opener:
+            depth += 1
+        elif char == closer:
+            depth -= 1
+            if depth == 0:
+                return text[start + 1 : index]
+    return None
+
+
+def _extract_field_string(text: str, name: str) -> str | None:
+    match = re.search(rf"\b{re.escape(name)}\s*=\s*\"([^\"]+)\"", text)
+    return match.group(1) if match else None
+
+
+def _extract_field_int(text: str, name: str) -> int | None:
+    match = re.search(rf"\b{re.escape(name)}\s*=\s*(-?[0-9]+)", text)
+    return int(match.group(1)) if match else None
+
+
+def _extract_field_string_list(text: str, name: str) -> list[str]:
+    body = _extract_balanced_attr_value(text, name, "[", "]")
+    if body is None:
+        return []
+    return re.findall(r'"([^"]+)"', body)
+
+
+def _extract_tile_params_attr(text: str) -> list[dict[str, Any]]:
+    body = _extract_balanced_attr_value(text, "ascend.schedule.tile_params", "[", "]")
+    if body is None:
+        return []
+    params: list[dict[str, Any]] = []
+    for piece in _split_top_level_commas(body):
+        record = piece.strip()
+        if record.startswith("{") and record.endswith("}"):
+            record = record[1:-1]
+        param = {
+            key: value
+            for key, value in {
+                "name": _extract_field_string(record, "name"),
+                "axis": _extract_field_int(record, "axis"),
+                "axis_kind": _extract_field_string(record, "axis_kind"),
+                "binding": _extract_field_string(record, "binding"),
+                "default": _extract_field_int(record, "default"),
+                "upper_bound": _extract_field_int(record, "upper_bound"),
+                "extent": _extract_field_int(record, "extent"),
+                "roles": _extract_field_string_list(record, "roles"),
+                "primitive_uses": _extract_field_string_list(record, "primitive_uses"),
+            }.items()
+            if value is not None and value != [] and value is not False
+        }
+        if param:
+            params.append(param)
+    return params
+
+
 def _extract_i64_array_attr(text: str, name: str) -> list[int]:
     match = re.search(rf"{re.escape(name)}\s*=\s*array<i64:\s*([^>]+)>", text)
     if not match:
@@ -289,9 +391,8 @@ def _build_semantic_attrs(op_name: str, op_text: str) -> dict[str, Any]:
             "target_tile_policy": _extract_attr(
                 op_text, "ascend.schedule.target_tile_policy"
             ),
-            "tile_shape": _extract_i64_array_attr(
-                op_text, "ascend.schedule.selected_tile_shape"
-            ),
+            "tile_binding": _extract_attr(op_text, "ascend.schedule.tile_binding"),
+            "tile_params": _extract_tile_params_attr(op_text),
             "tail_policies": _extract_string_list_attr(
                 op_text, "ascend.schedule.tail_policies"
             ),
@@ -324,9 +425,6 @@ def _build_node_badges(semantic_attrs: dict[str, Any]) -> list[str]:
     schedule = semantic_attrs.get("schedule", {})
     movement = semantic_attrs.get("movement", {})
     memory = semantic_attrs.get("memory", {})
-    tile_shape = schedule.get("tile_shape")
-    if isinstance(tile_shape, list) and tile_shape:
-        badges.append("tile " + "x".join(str(dim) for dim in tile_shape))
     phases = movement.get("phases")
     if isinstance(phases, list) and phases:
         badges.append("move " + "/".join(str(phase) for phase in phases))
@@ -345,6 +443,14 @@ def _build_node_badges(semantic_attrs: dict[str, Any]) -> list[str]:
             if policy not in unique_tail:
                 unique_tail.append(policy)
         badges.append("tail " + "/".join(unique_tail))
+    tile_params = schedule.get("tile_params")
+    if isinstance(tile_params, list) and tile_params:
+        names = [
+            str(param.get("name"))
+            for param in tile_params
+            if isinstance(param, dict) and param.get("name")
+        ]
+        badges.append("tile " + "/".join(names) if names else "tile params")
     if kernel.get("role"):
         badges.append(str(kernel["role"]))
     return badges

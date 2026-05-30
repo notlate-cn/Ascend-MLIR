@@ -35,6 +35,12 @@ func.func @pattern_partition(%arg0: tensor<16xf32>,
   return %1 : tensor<16xf32>
 }
 
+// CHECK: DebugStepCatalog:
+// CHECK:   step = "kernelize.structured-ops"
+// CHECK:   title = "Identify kernelizable ops"
+// CHECK:   purpose = "Find supported structured/tensor/arith ops that can participate in kernel formation."
+// CHECK:   step = "kernelize.final-patterns"
+// CHECK:   outputs = "ascend.kernel, ascend.primary, template family metadata, kernel graph edges"
 // CHECK: KernelPatternGraph
 // CHECK: pattern_candidate_id = 0
 // CHECK-SAME: source = "Fusion"

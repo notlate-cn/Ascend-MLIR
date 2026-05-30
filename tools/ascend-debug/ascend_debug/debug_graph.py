@@ -52,6 +52,9 @@ def _stage_record(
         value = stage.get(field)
         if isinstance(value, str) and value:
             record[field] = value
+    step_info = stage.get("step_info")
+    if isinstance(step_info, dict):
+        record["step_info"] = step_info
     return record
 
 
@@ -85,6 +88,12 @@ def _stage_brief(stage: dict[str, Any], index: int) -> dict[str, Any]:
         value = stage.get(field)
         if isinstance(value, str) and value:
             brief[field] = value
+    step_info = stage.get("step_info")
+    if isinstance(step_info, dict):
+        brief["step_info"] = step_info
+    same_as_previous = stage.get("same_as_previous")
+    if isinstance(same_as_previous, dict):
+        brief["same_as_previous"] = same_as_previous
     return brief
 
 
@@ -115,9 +124,39 @@ def _stage_digest(run_dir: pathlib.Path, stage: dict[str, Any] | None) -> str | 
     if not isinstance(path, str):
         return None
     try:
-        return hashlib.sha256((run_dir / path).read_bytes()).hexdigest()
-    except OSError:
+        text = (run_dir / path).read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
         return None
+    lines = text.splitlines()
+    start = 0
+    while start < len(lines):
+        stripped = lines[start].strip()
+        if stripped == "" or stripped.startswith("//"):
+            start += 1
+            continue
+        break
+    payload = "\n".join(lines[start:])
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def _annotate_stage_equivalence(run_dir: pathlib.Path, stages: list[dict[str, Any]]) -> None:
+    previous_stage: dict[str, Any] | None = None
+    previous_digest: str | None = None
+    for stage in stages:
+        digest = _stage_digest(run_dir, stage)
+        if (
+            previous_stage is not None
+            and digest is not None
+            and previous_digest is not None
+            and digest == previous_digest
+        ):
+            stage["same_as_previous"] = {
+                "stage": previous_stage.get("name"),
+                "order": previous_stage.get("order"),
+                "reason": "IR payload is identical to the previous dumped step after ignoring debug header comments.",
+            }
+        previous_stage = stage
+        previous_digest = digest
 
 
 def _build_stage_groups(run_dir: pathlib.Path, stages: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -541,7 +580,17 @@ def _stage_buttons(debug_graph: dict[str, Any]) -> str:
             child_buttons = []
             for child in children:
                 child_active = " active" if child.get("name") == active_name else ""
+                child_step_info = child.get("step_info") if isinstance(child.get("step_info"), dict) else {}
+                child_title = child_step_info.get("title") or child.get("name")
+                child_purpose = child_step_info.get("purpose")
                 child_equivalence = ""
+                same_as_previous = child.get("same_as_previous")
+                if isinstance(same_as_previous, dict):
+                    child_equivalence = (
+                        '<small class="stage-equivalence">'
+                        f'= {_cell(same_as_previous.get("order"))} {_cell(same_as_previous.get("stage"))}'
+                        "</small>"
+                    )
                 input_stage = group.get("input_stage")
                 if (
                     isinstance(input_stage, dict)
@@ -557,8 +606,14 @@ def _stage_buttons(debug_graph: dict[str, Any]) -> str:
                 child_buttons.append(
                     f'<button class="stage-button stage-child-button{child_active}" '
                     f'data-stage-index="{_cell(child.get("stage_index"))}" type="button">'
-                    f'{_cell(child.get("name"))}'
-                    f"{child_equivalence}"
+                    f'<span class="stage-child-title">{_cell(child_title)}</span>'
+                    f'<small class="stage-child-file">{_cell(child.get("name"))}</small>'
+                    + (
+                        f'<small class="stage-child-purpose">{_cell(child_purpose)}</small>'
+                        if child_purpose
+                        else ""
+                    )
+                    + f"{child_equivalence}"
                     "</button>"
                 )
             buttons.append(
@@ -679,6 +734,9 @@ h3 { margin: 0 0 0.45rem; font-size: 0.84rem; }
 .stage-equivalence { color: #0f766e; }
 .stage-child-list { display: grid; gap: 0.24rem; }
 .stage-child-button { margin-left: 0.65rem; padding: 0.34rem 0.45rem; font-size: 0.75rem; }
+.stage-child-title { display: block; color: inherit; font-weight: 700; line-height: 1.15; }
+.stage-child-file { display: block; margin-top: 0.08rem; color: #475569; font-family: SFMono-Regular, Menlo, Consolas, monospace; font-size: 0.68rem; line-height: 1.15; }
+.stage-child-purpose { display: block; margin-top: 0.16rem; color: var(--muted); font-size: 0.68rem; line-height: 1.22; }
 .stage-phase-controls { margin-top: 0.45rem; display: flex; align-items: center; gap: 0.4rem; flex-wrap: wrap; }
 .stage-phase-button { border: 1px solid var(--line); border-radius: 999px; background: #fff; color: var(--text); padding: 0.24rem 0.55rem; cursor: pointer; font-size: 0.76rem; }
 .stage-phase-button.active { border-color: #60a5fa; background: #eaf2ff; color: #1d4ed8; font-weight: 700; }
@@ -711,12 +769,19 @@ dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }
 .graph-panel { min-width: 0; overflow: hidden; }
 .panel-header { display: flex; justify-content: space-between; gap: 1rem; align-items: center; padding: 0.7rem 0.85rem; border-bottom: 1px solid #e4e9f1; }
 .panel-subtitle { color: var(--muted); font-size: 0.82rem; }
+.step-explanation { margin-top: 0.5rem; max-width: 54rem; border: 1px solid #e3e8ef; border-radius: 7px; background: #fbfcfe; padding: 0.55rem 0.65rem; font-size: 0.78rem; color: #344054; }
+.step-explanation[hidden] { display: none; }
+.step-explanation-title { margin-bottom: 0.32rem; color: #17202a; font-weight: 700; }
+.step-explanation-grid { display: grid; grid-template-columns: 4.8rem minmax(0, 1fr); gap: 0.22rem 0.5rem; }
+.step-explanation-grid dt { color: var(--muted); font-weight: 700; }
+.step-explanation-grid dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }
+.step-explanation-same { margin-top: 0.35rem; color: #0f766e; font-size: 0.74rem; }
 .graph-tools { display: grid; grid-template-columns: minmax(12rem, 20rem) auto auto auto minmax(7rem, auto); gap: 0.45rem; align-items: center; }
 .graph-search { border: 1px solid var(--line); border-radius: 6px; padding: 0.42rem 0.55rem; min-width: 0; font: inherit; }
 .graph-tool-button { border: 1px solid var(--line); border-radius: 6px; background: #fff; padding: 0.42rem 0.6rem; cursor: pointer; color: var(--text); }
 .graph-tool-button:hover { border-color: #60a5fa; color: #1d4ed8; }
 .zoom-value, .search-status { color: var(--muted); font-size: 0.78rem; white-space: nowrap; }
-.graph-canvas-wrap { overflow: auto; height: calc(100vh - 11rem); background: #ffffff; cursor: grab; }
+.graph-canvas-wrap { overflow: auto; height: calc(100vh - 15rem); min-height: 22rem; background: #ffffff; cursor: grab; }
 .graph-canvas-wrap.panning { cursor: grabbing; user-select: none; }
 #unified-debug-graph-svg { display: block; min-width: 100%; }
 .function-frame-box { fill: #f8fafc; fill-opacity: 0.72; stroke: #475569; stroke-width: 2; stroke-dasharray: 9 5; }
@@ -1042,9 +1107,35 @@ ${codeBlock(localIr)}
 }
 
 function semanticValueText(value) {
-  if (Array.isArray(value)) return value.length ? value.join(", ") : "无";
+  if (Array.isArray(value)) {
+    if (!value.length) return "无";
+    if (value.some((item) => item && typeof item === "object")) {
+      return value.map((item) => semanticValueText(item)).join("; ");
+    }
+    return value.join(", ");
+  }
   if (value && typeof value === "object") return JSON.stringify(value);
   return valueText(value);
+}
+
+function tileParamText(params) {
+  if (!Array.isArray(params) || !params.length) return null;
+  return params.map((param) => {
+    if (!param || typeof param !== "object") return semanticValueText(param);
+    const name = param.name || "tile";
+    const details = [];
+    if (param.axis !== undefined) details.push(`axis=${param.axis}`);
+    if (param.axis_kind) details.push(`kind=${param.axis_kind}`);
+    if (param.binding) details.push(`binding=${param.binding}`);
+    if (param.default !== undefined) details.push(`default=${param.default}`);
+    if (param.upper_bound !== undefined) details.push(`upper_bound=${param.upper_bound}`);
+    if (param.extent !== undefined) details.push(`extent=${param.extent}`);
+    if (Array.isArray(param.roles) && param.roles.length) details.push(`roles=${param.roles.join("/")}`);
+    if (Array.isArray(param.primitive_uses) && param.primitive_uses.length) {
+      details.push(`uses=${param.primitive_uses.join("/")}`);
+    }
+    return `${name}: ${details.join(", ")}`;
+  }).join("; ");
 }
 
 function semanticDetailRows(rows) {
@@ -1087,7 +1178,6 @@ ${renderSemanticGroup("Kernel", [
   ["kind", dagKernelNode.kind],
   ["depth", dagKernelNode.depth],
   ["output_shape", dagKernelNode.output_shape],
-  ["selected_tile_shape", dagKernelNode.selected_tile_shape],
   ["workspace_size", dagKernelNode.workspace_size],
   ["op_role", kernel.role],
   ["op_roles", kernel.roles],
@@ -1098,11 +1188,14 @@ ${renderSemanticGroup("Schedule", [
   ["schedule_decision_id", schedule.decision_id],
   ["schedule_family", schedule.family],
   ["schedule_template", schedule.template],
-  ["selected_tile_shape", schedule.tile_shape],
   ["structured_lowering", schedule.structured_lowering],
   ["tail_policies", schedule.tail_policies],
   ["target_tile_policy", schedule.target_tile_policy],
   ["runtime_top_k", schedule.runtime_top_k],
+])}
+${renderSemanticGroup("Tile", [
+  ["tile_binding", schedule.tile_binding],
+  ["tile_params", tileParamText(schedule.tile_params)],
 ])}
 ${renderSemanticGroup("Movement", [
   ["phases", movement.phases],
@@ -1240,7 +1333,7 @@ ${detailRows([
   ["upstream", upstream.length ? upstream.join(", ") : "none"],
   ["downstream", downstream.length ? downstream.join(", ") : "none"],
   ["ops", ops.length ? ops.join(" -> ") : "none"],
-  ["shape/tile", [dagNode.output_shape, dagNode.selected_tile_shape].filter(Boolean).join(" / ")],
+  ["shape", dagNode.output_shape],
   ["workspace", dagNode.workspace_size],
 ])}
 </div>`;
@@ -1664,6 +1757,71 @@ function stageNavigationSequence() {
 function stageBriefLabel(stage) {
   if (!stage) return "无";
   return `${stage.order} ${stage.name}`;
+}
+
+function stageStepInfo(stage) {
+  return stage && stage.step_info && typeof stage.step_info === "object" ? stage.step_info : {};
+}
+
+function stageStepTitle(stage) {
+  const info = stageStepInfo(stage);
+  return info.title || (stage && (stage.step || stage.name)) || "Stage";
+}
+
+function stageSameAsPreviousText(stage) {
+  const same = stage && stage.same_as_previous;
+  if (!same || typeof same !== "object" || !same.stage) return "";
+  const reason = same.reason || "IR payload is identical to previous dumped step.";
+  return `${reason} Reference: ${same.order || ""} ${same.stage}.`;
+}
+
+function stepExplanationRows(stage) {
+  const info = stageStepInfo(stage);
+  const rows = [
+    ["Purpose", info.purpose],
+    ["Inputs", info.inputs],
+    ["Outputs", info.outputs],
+    ["Inspect", info.inspect_hint],
+    ["Failures", info.common_failures],
+  ].filter(([, value]) => value !== undefined && value !== null && value !== "");
+  const sameText = stageSameAsPreviousText(stage);
+  return {info, rows, sameText};
+}
+
+function renderStepExplanation(stage) {
+  if (!stage) return "";
+  const {info, rows, sameText} = stepExplanationRows(stage);
+  if (!Object.keys(info).length && !sameText) return "";
+  const body = rows.length
+    ? `<dl class="step-explanation-grid">${rows.map(([label, value]) => `<dt>${escapeHtml(label)}</dt><dd>${escapeHtml(value)}</dd>`).join("")}</dl>`
+    : "";
+  const same = sameText ? `<div class="step-explanation-same">${escapeHtml(sameText)}</div>` : "";
+  return `<div class="step-explanation-title">${escapeHtml(stageStepTitle(stage))}</div>${body}${same}`;
+}
+
+function updateStepExplanation(stage) {
+  const panel = document.getElementById("step-explanation");
+  if (!panel) return;
+  const html = renderStepExplanation(stage);
+  panel.hidden = !html;
+  panel.innerHTML = html;
+}
+
+function renderStepInspectorSection(stage) {
+  if (!stage) return "";
+  const {info, rows, sameText} = stepExplanationRows(stage);
+  if (!Object.keys(info).length && !sameText) return "";
+  const detail = rows.length ? detailRows(rows) : "";
+  const same = sameText ? `<div class="panel-subtitle">${escapeHtml(sameText)}</div>` : "";
+  return `
+<section class="inspector-section">
+<h3>Step Explanation</h3>
+<div class="provenance-block">
+<h4>${escapeHtml(stageStepTitle(stage))}</h4>
+${detail}
+${same}
+</div>
+</section>`;
 }
 
 function selectedStageNodeSignature(stage, nodeId) {
@@ -2151,19 +2309,23 @@ function renderStageGraph() {
   const graph = stage ? stage.graph : null;
   const canvas = document.getElementById("graph-canvas");
   if (!graph || !graph.layout) {
+    document.getElementById("graph-title").textContent = stage ? `Stage Graph: ${stageStepTitle(stage)}` : "Stage Graph";
+    document.getElementById("graph-subtitle").textContent = stage ? `${stage.order} ${stage.name}` : "";
+    updateStepExplanation(stage);
     canvas.innerHTML = `${svgHeader(720, 420)}<text x="28" y="42">当前 Stage 没有可展示的图。</text></svg>`;
     afterGraphRender();
     return;
   }
   const group = stageGroupForIndex(activeStageIndex);
   const phase = group && group.input_stage && Number(group.input_stage.stage_index) === activeStageIndex ? "输入" : "输出";
-  const stageLabel = stage.step || stage.name;
+  const stageLabel = stageStepTitle(stage);
   document.getElementById("graph-title").textContent = group && group.kind === "phase"
     ? `Stage Graph: ${group.label} / ${stageLabel}`
     : group && group.kind === "pass"
     ? `Stage Graph: ${group.name} ${phase}`
     : `Stage Graph: ${stage.order} ${stage.name}`;
-  document.getElementById("graph-subtitle").textContent = `${graph.node_count} 个节点，${graph.edge_count} 条边，${graph.kernel_count} 个 Kernel`;
+  document.getElementById("graph-subtitle").textContent = `${stage.order} ${stage.name} | ${graph.node_count} 个节点，${graph.edge_count} 条边，${graph.kernel_count} 个 Kernel`;
+  updateStepExplanation(stage);
   renderStagePhaseControls(stage);
   syncStageGraphControls();
   updateStageButtonState();
@@ -2253,7 +2415,7 @@ function selectStageNode(stage, graph, nodeId, options = {}) {
   setInspector(
     node ? `节点详情：${node.op_name} ${node.label || ""}` : "节点详情",
     links,
-    renderStageNodeDetail(stage, graph, node, diff) + renderPathSummary(graph, nodeId)
+    renderStepInspectorSection(stage) + renderStageNodeDetail(stage, graph, node, diff) + renderPathSummary(graph, nodeId)
   );
   applyStageNeighborhood(graph, nodeId, stageNeighborhoodActive);
   if (options.updateUrl !== false) updateGraphUrlState(stage, nodeId);
@@ -2270,6 +2432,7 @@ function renderKernelDag() {
   if (!ids.length) {
     document.getElementById("graph-title").textContent = "Kernel DAG";
     document.getElementById("graph-subtitle").textContent = "0 个 Kernel，0 条边，关键深度 0";
+    updateStepExplanation(null);
     renderStagePhaseControls(null);
     syncStageGraphControls();
     document.getElementById("graph-canvas").innerHTML = `${svgHeader(720, 420)}<text x="188" y="234" class="empty-state-title">当前 run 未收集 Kernel DAG 产物。</text><text x="188" y="260" class="empty-state-subtitle">需要 artifact manifest / run manifest / kernelized IR 后才能构建 Kernel DAG。</text></svg>`;
@@ -2331,6 +2494,7 @@ function renderKernelDag() {
   svg += "</g></svg>";
   document.getElementById("graph-title").textContent = "Kernel DAG";
   document.getElementById("graph-subtitle").textContent = `${summary.kernel_count || 0} 个 Kernel，${summary.graph_edges || 0} 条边，关键深度 ${summary.critical_path_depth || 0}`;
+  updateStepExplanation(null);
   renderStagePhaseControls(null);
   syncStageGraphControls();
   document.getElementById("graph-canvas").innerHTML = svg;
@@ -2442,6 +2606,7 @@ renderStageGraph();
 <div>
 <h2 id="graph-title">统一 Stage Graph</h2>
 <div id="graph-subtitle" class="panel-subtitle"></div>
+<div id="step-explanation" class="step-explanation" hidden></div>
 <div id="stage-phase-controls" class="stage-phase-controls"></div>
 <div id="stage-graph-controls" class="stage-graph-controls">
 <div id="highlight-mode-controls" class="segmented-control" aria-label="Highlight mode">
@@ -2522,6 +2687,7 @@ def render_debug_graph(
         record = _stage_record(run_dir=run_dir, stage=stage, graph_view=graph_view)
         if record:
             stages.append(record)
+    _annotate_stage_equivalence(run_dir, stages)
     primary_stage = _select_primary_stage(stages)
     stage_diffs = _compute_stage_diffs(stages)
     stage_groups = _build_stage_groups(run_dir, stages)
