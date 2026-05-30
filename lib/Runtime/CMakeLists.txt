@@ -25,7 +25,6 @@ add_mlir_library(AscendCRuntime
   Execution/SessionHandle.cpp
   Execution/SimBackend.cpp
   Execution/TaskGraph.cpp
-  Mix/AscendCMixCompiler.cpp
   Mix/MixAbi.cpp
   Mix/MixAbiExtractor.cpp
   Mix/MixCompileMetadata.cpp
