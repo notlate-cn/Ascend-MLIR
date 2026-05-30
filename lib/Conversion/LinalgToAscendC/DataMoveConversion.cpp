@@ -116,20 +116,26 @@ static Value materializeRowStride(OpBuilder &b, Location loc, Value memref) {
   // share it (verified contiguous-nested in isMaybeRowStridedND).
   if (!ShapedType::isDynamic(strides[r - 2]))
     return b.create<arith::ConstantIndexOp>(loc, strides[r - 2]);
+  // Release-safe barriers (were debug-only `assert`s): each marks a strided
+  // pattern this helper does not yet handle and would otherwise compute a wrong
+  // row stride (= wrong GM address) silently in a release build.  The handled
+  // case (rank-2, unit-stride subview) is unaffected.
   auto subview = memref.getDefiningOp<memref::SubViewOp>();
-  assert(subview && "dynamic-stride 2-D strided memref must come from a "
-                    "memref.subview (materializeRowStride extension needed)");
+  if (!subview)
+    llvm::report_fatal_error("LinalgToAscendC: dynamic-stride strided memref "
+                             "must come from a memref.subview "
+                             "(materializeRowStride extension needed)");
   for (OpFoldResult s : subview.getMixedStrides()) {
     auto attr = dyn_cast<Attribute>(s);
-    assert(attr && cast<IntegerAttr>(attr).getInt() == 1 &&
-           "non-unit subview stride: materializeRowStride needs extension");
-    (void)attr;
+    if (!attr || cast<IntegerAttr>(attr).getInt() != 1)
+      llvm::report_fatal_error("LinalgToAscendC: non-unit subview stride "
+                               "(materializeRowStride extension needed)");
   }
   Value src = subview.getSource();
   auto srcMrt = cast<MemRefType>(src.getType());
-  assert(srcMrt.getRank() == 2 &&
-         "rank>2 source: materializeRowStride needs extension");
-  (void)srcMrt;
+  if (srcMrt.getRank() != 2)
+    llvm::report_fatal_error("LinalgToAscendC: rank>2 strided-copy source "
+                             "(materializeRowStride extension needed)");
   return b.create<memref::DimOp>(loc, src, 1);
 }
 

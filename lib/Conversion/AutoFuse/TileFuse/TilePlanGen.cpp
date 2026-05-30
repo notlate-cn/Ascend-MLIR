@@ -1395,7 +1395,16 @@ TilePlan genVectorTilePlan(func::FuncOp func,
     double s = costEstimate(g, info, vecDims, d, elemBytes, soc);
     if (s < bestScore) { bestScore = s; best = &d; }
   }
-  assert(bestScore < kInfeasible && "no feasible tiling case");
+  // Release-safe barrier (was a debug-only `assert`): if every candidate
+  // tiling is infeasible, building a kernel from the best-of-infeasible draft
+  // silently produces a UB-overflowing / WIP-codegen kernel.  Fail loud instead
+  // of miscompiling.  The passing pipeline always finds a feasible plan, so this
+  // never fires for valid kernels.
+  if (bestScore >= kInfeasible)
+    llvm::report_fatal_error(
+        "auto-fuse: no feasible tiling case (all candidate tilings exceed the "
+        "UB budget or hit a WIP codegen path); refusing to build an infeasible "
+        "kernel");
 
   TilePlan plan = buildPlan(func, info, g, *best, builder, loc);
   populateConstraints(plan, info, func, elemBytes, soc);
