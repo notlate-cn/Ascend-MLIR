@@ -173,6 +173,28 @@ struct RecognizeAttentionPattern
     int64_t D = qType.getDimSize(2);
     Type elemType = qType.getElementType();
 
+    // Determine the additive mask up front -- before any IR mutation -- so we
+    // can bail cleanly when a mask is present but cannot be represented in the
+    // FlashAttentionScore [1,1,S,S] contract (only a rank-2 [S,S] mask is
+    // supported; sdpa_cpu tells a real mask from the Q-placeholder by
+    // shape[3] == S vs == D).  Folding such a region anyway would silently drop
+    // the mask -- Q would be passed as the no-mask placeholder -- turning a
+    // causal/padding-masked attention into a bidirectional one.  notifyMatchFailure
+    // instead keeps the explicit mask add + bmms in place for the generic path.
+    Value maskRank2; // rank-2 [S,S] mask to thread through, or null = no mask
+    if (Value mask = findMaskFromBmm1(bmm1)) {
+      auto mType = dyn_cast<RankedTensorType>(mask.getType());
+      if (mType && mType.getRank() == 2 && mType.hasStaticShape() &&
+          mType.getDimSize(0) == S && mType.getDimSize(1) == S &&
+          mType.getElementType() == elemType)
+        maskRank2 = mask;
+      else
+        return rewriter.notifyMatchFailure(
+            bmm2, "attention mask present but unsupported by the "
+                  "FlashAttentionScore [1,1,S,S] contract; refusing to fold "
+                  "(would silently drop the mask)");
+    }
+
     // K = transpose(K^T, [0,2,1]) : [BH,D,S] -> [BH,S,D]
     Value kInit = rewriter.create<tensor::EmptyOp>(
         loc, ArrayRef<int64_t>{BH, S, D}, elemType);
@@ -199,28 +221,21 @@ struct RecognizeAttentionPattern
         return val;
       return rewriter.create<tensor::CastOp>(loc, dynT, val);
     };
-    // Look for a `(Q@K^T)*scale + mask` mask add in the chain between bmm1 and
-    // softmax (GPT-style causal mask, BERT-style padding mask).  If found,
-    // expand the rank-2 [S,S] mask to rank-4 [1,1,S,S] so sdpa_cpu can
-    // distinguish a real mask from the Q-placeholder by checking shape[3] == S
-    // (vs Q's shape[3] == D).  If no mask: keep the BERT bidirectional path
-    // (pass Q as a placeholder).
+    // Thread the mask (determined above) through to FlashAttentionScore: expand
+    // the rank-2 [S,S] mask to rank-4 [1,1,S,S] so sdpa_cpu can distinguish a
+    // real mask from the Q-placeholder by checking shape[3] == S (vs Q's
+    // shape[3] == D).  No mask -> keep the bidirectional path (Q as placeholder).
     Value q4dyn = castDyn(q4);
     Value maskArg = q4dyn;
-    if (Value mask = findMaskFromBmm1(bmm1)) {
-      auto mType = dyn_cast<RankedTensorType>(mask.getType());
-      if (mType && mType.getRank() == 2 && mType.hasStaticShape() &&
-          mType.getDimSize(0) == S && mType.getDimSize(1) == S &&
-          mType.getElementType() == elemType) {
-        // Reassociation maps [S, S] -> [1, 1, S, S]: output dims {0,1,2}
-        // collapse to input dim 0 (extents 1*1*S = S) and dim {3} → input
-        // dim 1 (extent S).
-        auto mask4 = RankedTensorType::get({1, 1, S, S}, elemType);
-        SmallVector<ReassociationIndices> maskReassoc = {{0, 1, 2}, {3}};
-        Value mask4Val = rewriter.create<tensor::ExpandShapeOp>(
-            loc, mask4, mask, maskReassoc);
-        maskArg = castDyn(mask4Val);
-      }
+    if (maskRank2) {
+      // Reassociation maps [S, S] -> [1, 1, S, S]: output dims {0,1,2}
+      // collapse to input dim 0 (extents 1*1*S = S) and dim {3} → input
+      // dim 1 (extent S).
+      auto mask4 = RankedTensorType::get({1, 1, S, S}, elemType);
+      SmallVector<ReassociationIndices> maskReassoc = {{0, 1, 2}, {3}};
+      Value mask4Val = rewriter.create<tensor::ExpandShapeOp>(
+          loc, mask4, maskRank2, maskReassoc);
+      maskArg = castDyn(mask4Val);
     }
     SmallVector<Value> args = {q4dyn, castDyn(k4), castDyn(v4), maskArg, q4dyn};
     auto call = rewriter.create<func::CallOp>(loc, decl, args);
