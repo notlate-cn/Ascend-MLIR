@@ -47,7 +47,6 @@ set(ASCEND_REALIZE_SOURCES
   Realize/RealizePass.cpp
   Realize/RealizeReport.cpp
   Realize/StaticMemoryPlanner.cpp
-  Realize/TilingRealizationDriver.cpp
 )
 
 set(ASCEND_TRANSLATE_KERNELIR_SOURCES
@@ -58,7 +57,7 @@ set(ASCEND_TRANSLATE_KERNELIR_SOURCES
   Translate/KernelIR/Capabilities/LinalgBodyClassifier.cpp
   Translate/KernelIR/LinalgToKernelIR.cpp
   Translate/KernelIR/DataMovementConversion.cpp
-  Translate/KernelIR/ComputeSelectedTileLowering.cpp
+  Translate/KernelIR/ComputeSymbolicTileLowering.cpp
   Translate/KernelIR/Compute/ComputeOpConversion.cpp
   Translate/KernelIR/Compute/ComputeLoweringContext.cpp
   Translate/KernelIR/Compute/ComputeTransposeLowering.cpp

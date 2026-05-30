@@ -6539,7 +6539,10 @@ static void testDebugCaseEmitsPreparedRunManifest() {
           "decisionId": "kernel_0.decision.0",
           "guard": "arg0_dim0 == 4",
           "tilingParams": {
-            "selected_tile_shape": [4]
+            "tile_binding": "symbolic",
+            "tile_params": [
+              { "name": "TB_M", "default": 4 }
+            ]
           }
         }
       ],
@@ -6644,7 +6647,7 @@ static void testDebugCaseEmitsPreparedRunManifest() {
   EXPECT(task.invocation.rtol == 0.02, "debug case rtol");
   EXPECT(task.invocation.workspaceSize == 4096, "debug case workspace");
   EXPECT(task.invocation.tiling && task.invocation.tiling->params ==
-                                      "selected_tile_shape=4",
+             "TB_M=4",
          "debug case tiling params are generated");
 }
 

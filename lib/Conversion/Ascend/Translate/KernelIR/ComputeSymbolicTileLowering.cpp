@@ -78,6 +78,37 @@ std::optional<std::string> getRuntimeTileParamName(Operation *op,
   return std::nullopt;
 }
 
+std::optional<int64_t> getTileParamI64(Operation *op, int64_t logicalAxis,
+                                       StringRef fieldName) {
+  if (!hasSymbolicTileBinding(op))
+    return std::nullopt;
+
+  auto tileParams = op->getAttrOfType<ArrayAttr>(
+      ascend::kScheduleTileParamsAttr);
+  if (!tileParams)
+    return std::nullopt;
+
+  for (Attribute rawEntry : tileParams) {
+    auto entry = dyn_cast<DictionaryAttr>(rawEntry);
+    if (!entry)
+      continue;
+    auto axis = dyn_cast_or_null<IntegerAttr>(entry.get("axis"));
+    if (!axis || axis.getInt() != logicalAxis)
+      continue;
+    auto value = dyn_cast_or_null<IntegerAttr>(entry.get(fieldName));
+    if (!value || !value.getType().isInteger(64))
+      return std::nullopt;
+    return value.getInt();
+  }
+
+  return std::nullopt;
+}
+
+std::optional<int64_t> getTileParamDefault(Operation *op,
+                                           int64_t logicalAxis) {
+  return getTileParamI64(op, logicalAxis, "default");
+}
+
 StringAttr getArgTileName(func::FuncOp funcOp, unsigned argNumber) {
   auto argAttrs = funcOp->getAttrOfType<ArrayAttr>(kFuncArgAttrsAttr);
   if (!argAttrs || argNumber >= argAttrs.size())
@@ -191,7 +222,7 @@ bool isRank2BroadcastTransposeMap(AffineMap map) {
          second.getValue() == 0;
 }
 
-bool isSupportedSelectedTileMap(Value operand, AffineMap map) {
+bool isSupportedSymbolicTileMap(Value operand, AffineMap map) {
   auto memrefType = dyn_cast<MemRefType>(operand.getType());
   if (!memrefType)
     return false;
@@ -202,7 +233,7 @@ bool isSupportedSelectedTileMap(Value operand, AffineMap map) {
   return false;
 }
 
-bool isSupportedSelectedAllParallelTileMap(Value operand, AffineMap map) {
+bool isSupportedSymbolicAllParallelTileMap(Value operand, AffineMap map) {
   auto memrefType = dyn_cast<MemRefType>(operand.getType());
   if (!memrefType)
     return false;
@@ -221,11 +252,11 @@ bool hasSupportedSelectedAllParallelTileMaps(linalg::GenericOp op,
     return false;
 
   for (unsigned i = 0, e = op.getNumDpsInputs(); i < e; ++i)
-    if (!isSupportedSelectedAllParallelTileMap(
+    if (!isSupportedSymbolicAllParallelTileMap(
             op.getDpsInputOperand(i)->get(), maps[i]))
       return false;
 
-  return isSupportedSelectedAllParallelTileMap(writebackTarget, maps.back());
+  return isSupportedSymbolicAllParallelTileMap(writebackTarget, maps.back());
 }
 
 FailureOr<int64_t> getStaticReductionExtent(linalg::GenericOp op,
@@ -241,7 +272,7 @@ FailureOr<int64_t> getStaticReductionExtent(linalg::GenericOp op,
   return failure();
 }
 
-LogicalResult validateSelectedReductionTile(linalg::GenericOp op,
+LogicalResult validateSymbolicReductionTile(linalg::GenericOp op,
                                             ArrayRef<AffineMap> maps,
                                             int64_t reductionTile) {
   if (ShapedType::isDynamic(reductionTile))
@@ -249,40 +280,40 @@ LogicalResult validateSelectedReductionTile(linalg::GenericOp op,
 
   FailureOr<int64_t> reductionExtent = getStaticReductionExtent(op, maps);
   if (failed(reductionExtent) || ShapedType::isDynamic(*reductionExtent))
-    return op.emitError("selected reduction tile requires full reduction axis");
+    return op.emitError("symbolic reduction tile requires full reduction axis");
   if (reductionTile != *reductionExtent)
-    return op.emitError("selected reduction tile requires full reduction axis");
+    return op.emitError("symbolic reduction tile requires full reduction axis");
 
   return success();
 }
 
-LogicalResult validateSelectedAllParallelTile(linalg::GenericOp op,
+LogicalResult validateSymbolicAllParallelTile(linalg::GenericOp op,
                                               Value outMemref,
                                               int64_t innerTile) {
   if (ShapedType::isDynamic(innerTile) || innerTile <= 0)
-    return op.emitError("selected all-parallel tile requires a static "
+    return op.emitError("symbolic all-parallel tile requires a static "
                         "positive inner tile");
 
   auto outType = dyn_cast<MemRefType>(outMemref.getType());
   if (!outType || outType.getRank() != 2)
-    return op.emitError("selected all-parallel tile requires a rank-2 output");
+    return op.emitError("symbolic all-parallel tile requires a rank-2 output");
 
   return success();
 }
 
-LogicalResult validateSelectedTileMaps(linalg::GenericOp op,
+LogicalResult validateSymbolicTileMaps(linalg::GenericOp op,
                                        ArrayRef<AffineMap> maps,
                                        Value writebackTarget) {
   if (maps.size() !=
       static_cast<size_t>(op.getNumDpsInputs() + op.getNumDpsInits()))
-    return op.emitError("unsupported selected-tile indexing map");
+    return op.emitError("unsupported symbolic-tile indexing map");
 
   for (unsigned i = 0, e = op.getNumDpsInputs(); i < e; ++i)
-    if (!isSupportedSelectedTileMap(op.getDpsInputOperand(i)->get(), maps[i]))
-      return op.emitError("unsupported selected-tile indexing map");
+    if (!isSupportedSymbolicTileMap(op.getDpsInputOperand(i)->get(), maps[i]))
+      return op.emitError("unsupported symbolic-tile indexing map");
 
-  if (!isSupportedSelectedTileMap(writebackTarget, maps.back()))
-    return op.emitError("unsupported selected-tile indexing map");
+  if (!isSupportedSymbolicTileMap(writebackTarget, maps.back()))
+    return op.emitError("unsupported symbolic-tile indexing map");
 
   return success();
 }
@@ -473,7 +504,7 @@ bool touchesAnyRoot(Operation *op, ArrayRef<Value> roots) {
   });
 }
 
-bool canMoveSelectedTileLoopBeforeWriteback(linalg::GenericOp op,
+bool canMoveSymbolicTileLoopBeforeWriteback(linalg::GenericOp op,
                                             memref::CopyOp writeback,
                                             Value outMemref) {
   SmallVector<Value, 4> inputRoots = inputMemrefRoots(op);
@@ -496,10 +527,10 @@ bool canMoveSelectedTileLoopBeforeWriteback(linalg::GenericOp op,
   return true;
 }
 
-Operation *selectedTileInsertionPoint(linalg::GenericOp op,
+Operation *symbolicTileInsertionPoint(linalg::GenericOp op,
                                       memref::CopyOp writeback,
                                       Value outMemref) {
-  if (!canMoveSelectedTileLoopBeforeWriteback(op, writeback, outMemref))
+  if (!canMoveSymbolicTileLoopBeforeWriteback(op, writeback, outMemref))
     return nullptr;
 
   Operation *targetDef = writeback.getTarget().getDefiningOp();
@@ -560,14 +591,14 @@ linalg::FillOp findRedundantZeroFill(Value target, Operation *anchor) {
 } // namespace
 
 
-LogicalResult materializeSelectedReductionTiles(func::FuncOp funcOp) {
+LogicalResult materializeSymbolicReductionTiles(func::FuncOp funcOp) {
   OpBuilder builder(funcOp.getContext());
   SmallVector<linalg::GenericOp> candidates;
   funcOp.walk([&](linalg::GenericOp op) {
     if (op->getParentOfType<scf::ForOp>())
       return;
-    if (op->getAttrOfType<DenseI64ArrayAttr>(
-            ascend::kScheduleSelectedTileShapeAttr))
+    if (hasSymbolicTileBinding(op) &&
+        op->getAttrOfType<ArrayAttr>(ascend::kScheduleTileParamsAttr))
       candidates.push_back(op);
   });
 
@@ -575,15 +606,17 @@ LogicalResult materializeSelectedReductionTiles(func::FuncOp funcOp) {
     if (!isSupportedRank2Reduction(genOp))
       continue;
 
-    auto selectedTile = genOp->getAttrOfType<DenseI64ArrayAttr>(
-        ascend::kScheduleSelectedTileShapeAttr);
-    if (!selectedTile || selectedTile.asArrayRef().size() < 2)
+    std::optional<int64_t> tileRowsDefault =
+        getTileParamDefault(genOp.getOperation(), /*logicalAxis=*/0);
+    std::optional<int64_t> reductionTileDefault =
+        getTileParamDefault(genOp.getOperation(), /*logicalAxis=*/1);
+    if (!tileRowsDefault || !reductionTileDefault)
       return genOp.emitError(
-          "selected rank-2 reduction tile requires at least two dimensions");
-    int64_t tileRows = selectedTile.asArrayRef()[0];
+          "symbolic rank-2 reduction tile requires two tile params");
+    int64_t tileRows = *tileRowsDefault;
     if (ShapedType::isDynamic(tileRows) || tileRows <= 0)
       return genOp.emitError(
-          "selected reduction tile requires a static positive parallel tile");
+          "symbolic reduction tile requires a positive parallel default");
 
     Value outMemref = genOp.getDpsInitOperand(0)->get();
     auto outType = dyn_cast<MemRefType>(outMemref.getType());
@@ -595,15 +628,15 @@ LogicalResult materializeSelectedReductionTiles(func::FuncOp funcOp) {
       continue;
 
     auto maps = genOp.getIndexingMapsArray();
-    if (failed(validateSelectedTileMaps(genOp, maps, writeback.getTarget())))
+    if (failed(validateSymbolicTileMaps(genOp, maps, writeback.getTarget())))
       return failure();
-    if (failed(validateSelectedReductionTile(
-            genOp, maps, selectedTile.asArrayRef()[1])))
+    if (failed(validateSymbolicReductionTile(
+            genOp, maps, *reductionTileDefault)))
       return failure();
 
     Location loc = genOp.getLoc();
     Operation *insertionPoint =
-        selectedTileInsertionPoint(genOp, writeback, outMemref);
+        symbolicTileInsertionPoint(genOp, writeback, outMemref);
     if (!insertionPoint)
       continue;
 
@@ -637,7 +670,7 @@ LogicalResult materializeSelectedReductionTiles(func::FuncOp funcOp) {
       break;
     }
     if (!reductionExtent)
-      return genOp.emitError("selected reduction tile requires a rank-2 input");
+      return genOp.emitError("symbolic reduction tile requires a rank-2 input");
 
     IRMapping mapper;
     for (unsigned i = 0, e = genOp.getNumDpsInputs(); i < e; ++i) {
@@ -646,7 +679,7 @@ LogicalResult materializeSelectedReductionTiles(func::FuncOp funcOp) {
           bodyBuilder, loc, input, maps[i], forOp.getInductionVar(),
           tileRowsValue, reductionExtent);
       if (failed(tiledInput))
-        return genOp.emitError("unsupported selected-tile indexing map");
+        return genOp.emitError("unsupported symbolic-tile indexing map");
       mapper.map(input, *tiledInput);
     }
 
@@ -663,7 +696,7 @@ LogicalResult materializeSelectedReductionTiles(func::FuncOp funcOp) {
         bodyBuilder, loc, dstMemref, maps.back(), forOp.getInductionVar(),
         tileRowsValue, reductionExtent);
     if (failed(tiledDst))
-      return writeback.emitError("unsupported selected-tile indexing map");
+      return writeback.emitError("unsupported symbolic-tile indexing map");
     bodyBuilder.create<memref::CopyOp>(loc, tiledOut, *tiledDst);
 
     genOp.erase();
@@ -678,7 +711,7 @@ LogicalResult materializeSelectedReductionTiles(func::FuncOp funcOp) {
   return success();
 }
 
-LogicalResult materializeSelectedTransposeTiles(func::FuncOp funcOp) {
+LogicalResult materializeSymbolicTransposeTiles(func::FuncOp funcOp) {
   OpBuilder builder(funcOp.getContext());
   SmallVector<linalg::TransposeOp> candidates;
   funcOp.walk([&](linalg::TransposeOp op) {
@@ -728,30 +761,8 @@ LogicalResult materializeSelectedTransposeTiles(func::FuncOp funcOp) {
       return true;
     };
 
-    auto selectedTile = transposeOp->getAttrOfType<DenseI64ArrayAttr>(
-        ascend::kScheduleSelectedTileShapeAttr);
-    if (selectedTile) {
-      if (selectedTile.asArrayRef().size() < 2)
-        return transposeOp.emitError("selected rank-2 transpose tile requires "
-                                     "at least two dimensions");
-      tileRows = selectedTile.asArrayRef()[0];
-      tileCols = selectedTile.asArrayRef()[1];
-      if (ShapedType::isDynamic(tileRows) || tileRows <= 0)
-        return transposeOp.emitError(
-            "selected transpose tile requires a static positive outer tile");
-      if (ShapedType::isDynamic(tileCols) || tileCols <= 0)
-        return transposeOp.emitError(
-            "selected transpose tile requires a static positive inner tile");
-      if (!ShapedType::isDynamic(outShape[1]) && tileCols != outShape[1]) {
-        // GM rank-2 swap lowering consumes full output rows. A generic UB tile
-        // may cap the wrong dimension, so fall back to a full-inner row slice.
-        if (!deriveStaticFullInnerTile())
-          continue;
-      }
-    } else {
-      if (!deriveStaticFullInnerTile())
-        continue;
-    }
+    if (!deriveStaticFullInnerTile())
+      continue;
 
     if (ShapedType::isDynamic(outType.getShape()[1]) ||
         tileCols != outType.getShape()[1])
@@ -798,23 +809,21 @@ LogicalResult materializeSelectedTransposeTiles(func::FuncOp funcOp) {
     IRMapping mapper;
     mapper.map(inMemref, inputTile);
     mapper.map(outMemref, outputTile);
-    Operation *cloned = bodyBuilder.clone(*transposeOp, mapper);
-    if (selectedTile)
-      cloned->removeAttr(ascend::kScheduleSelectedTileShapeAttr);
+    bodyBuilder.clone(*transposeOp, mapper);
     transposeOp.erase();
   }
 
   return success();
 }
 
-LogicalResult materializeSelectedAllParallelTiles(func::FuncOp funcOp) {
+LogicalResult materializeSymbolicAllParallelTiles(func::FuncOp funcOp) {
   OpBuilder builder(funcOp.getContext());
   SmallVector<linalg::GenericOp> candidates;
   funcOp.walk([&](linalg::GenericOp op) {
     if (op->getParentOfType<scf::ForOp>())
       return;
-    if (op->getAttrOfType<DenseI64ArrayAttr>(
-            ascend::kScheduleSelectedTileShapeAttr))
+    if (hasSymbolicTileBinding(op) &&
+        op->getAttrOfType<ArrayAttr>(ascend::kScheduleTileParamsAttr))
       candidates.push_back(op);
   });
 
@@ -822,19 +831,21 @@ LogicalResult materializeSelectedAllParallelTiles(func::FuncOp funcOp) {
     if (!isSupportedRank2AllParallel(genOp))
       continue;
 
-    auto selectedTile = genOp->getAttrOfType<DenseI64ArrayAttr>(
-        ascend::kScheduleSelectedTileShapeAttr);
-    if (!selectedTile || selectedTile.asArrayRef().size() < 2)
-      return genOp.emitError("selected rank-2 all-parallel tile requires "
-                             "at least two dimensions");
-    int64_t tileRows = selectedTile.asArrayRef()[0];
+    std::optional<int64_t> tileRowsDefault =
+        getTileParamDefault(genOp.getOperation(), /*logicalAxis=*/0);
+    std::optional<int64_t> tileColsDefault =
+        getTileParamDefault(genOp.getOperation(), /*logicalAxis=*/1);
+    if (!tileRowsDefault || !tileColsDefault)
+      return genOp.emitError(
+          "symbolic rank-2 all-parallel tile requires two tile params");
+    int64_t tileRows = *tileRowsDefault;
     if (ShapedType::isDynamic(tileRows) || tileRows <= 0)
-      return genOp.emitError("selected all-parallel tile requires a static "
-                             "positive outer tile");
-    int64_t tileCols = selectedTile.asArrayRef()[1];
+      return genOp.emitError("symbolic all-parallel tile requires a positive "
+                             "outer default");
+    int64_t tileCols = *tileColsDefault;
     if (ShapedType::isDynamic(tileCols) || tileCols <= 0)
-      return genOp.emitError("selected all-parallel tile requires a static "
-                             "positive inner tile");
+      return genOp.emitError("symbolic all-parallel tile requires a positive "
+                             "inner default");
 
     Value outMemref = genOp.getDpsInitOperand(0)->get();
     auto outType = dyn_cast<MemRefType>(outMemref.getType());
@@ -849,13 +860,13 @@ LogicalResult materializeSelectedAllParallelTiles(func::FuncOp funcOp) {
     if (!hasSupportedSelectedAllParallelTileMaps(genOp, maps,
                                                  writeback.getTarget()))
       continue;
-    if (failed(validateSelectedAllParallelTile(
-            genOp, outMemref, selectedTile.asArrayRef()[1])))
+    if (failed(validateSymbolicAllParallelTile(
+            genOp, outMemref, tileCols)))
       return failure();
 
     Location loc = genOp.getLoc();
     Operation *insertionPoint =
-        selectedTileInsertionPoint(genOp, writeback, outMemref);
+        symbolicTileInsertionPoint(genOp, writeback, outMemref);
     if (!insertionPoint)
       continue;
 
@@ -905,7 +916,7 @@ LogicalResult materializeSelectedAllParallelTiles(func::FuncOp funcOp) {
             tileBuilder, loc, input, maps[i], forOp.getInductionVar(),
             colOffset, tileRowsValue, tileColsValue);
         if (failed(tiledInput))
-          return genOp.emitError("unsupported selected-tile indexing map");
+          return genOp.emitError("unsupported symbolic-tile indexing map");
         mapper.map(input, *tiledInput);
       }
 
@@ -918,7 +929,7 @@ LogicalResult materializeSelectedAllParallelTiles(func::FuncOp funcOp) {
           tileBuilder, loc, dstMemref, maps.back(), forOp.getInductionVar(),
           colOffset, tileRowsValue, tileColsValue);
       if (failed(tiledDst))
-        return writeback.emitError("unsupported selected-tile indexing map");
+        return writeback.emitError("unsupported symbolic-tile indexing map");
       tileBuilder.create<memref::CopyOp>(loc, tiledOut, *tiledDst);
       return success();
     };

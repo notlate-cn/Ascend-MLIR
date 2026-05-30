@@ -150,31 +150,6 @@ add_test(NAME AscendHandwrittenContractRegistryTest
   COMMAND $<TARGET_FILE:AscendHandwrittenContractRegistryTest>
 )
 
-add_executable(AscendRealizePassTiledLinalgTest
-  AscendRealizePassTiledLinalgTest.cpp
-)
-
-target_include_directories(AscendRealizePassTiledLinalgTest PRIVATE
-  ${ASCEND_CONVERSION_INTERNAL_INCLUDE_DIR}
-)
-
-target_link_libraries(AscendRealizePassTiledLinalgTest PRIVATE
-  RuntimeUnitTestSupport
-  AscendConversion
-  MLIRLinalgDialect
-  MLIRLinalgTransforms
-  MLIRSCFDialect
-  MLIRSCFTransforms
-  MLIRTensorDialect
-  MLIRTilingInterface
-)
-
-add_dependencies(RuntimeUnitTests AscendRealizePassTiledLinalgTest)
-
-add_test(NAME AscendRealizePassTiledLinalgTest
-  COMMAND $<TARGET_FILE:AscendRealizePassTiledLinalgTest>
-)
-
 add_executable(AscendElementwiseBodyOpRegistryTest
   AscendElementwiseBodyOpRegistryTest.cpp
 )

@@ -676,6 +676,30 @@ std::string renderTilingParamValue(const llvm::json::Value &value) {
   return renderJsonScalar(value);
 }
 
+void appendSymbolicTileParamDefaults(
+    const llvm::json::Object &params,
+    std::vector<std::pair<std::string, std::string>> &fields) {
+  const llvm::json::Array *tileParams = params.getArray("tile_params");
+  if (!tileParams)
+    return;
+
+  for (const llvm::json::Value &rawParam : *tileParams) {
+    const llvm::json::Object *param = rawParam.getAsObject();
+    if (!param)
+      continue;
+    auto name = param->getString("name");
+    auto defaultValue = param->getInteger("default");
+    if (!name || !defaultValue)
+      continue;
+    fields.emplace_back(name->str(), llvm::Twine(*defaultValue).str());
+  }
+}
+
+bool isTilingMetadataField(llvm::StringRef name) {
+  return name == "tile_binding" || name == "tile_params" ||
+         name == "tail_policies" || name == "tail_plan";
+}
+
 std::string renderTilingParams(const llvm::json::Object &scheduleEntry) {
   const llvm::json::Object *params = scheduleEntry.getObject("tilingParams");
   if (!params || params->empty())
@@ -683,9 +707,13 @@ std::string renderTilingParams(const llvm::json::Object &scheduleEntry) {
 
   std::vector<std::pair<std::string, std::string>> fields;
   fields.reserve(params->size());
-  for (const auto &field : *params)
+  appendSymbolicTileParamDefaults(*params, fields);
+  for (const auto &field : *params) {
+    if (isTilingMetadataField(field.getFirst()))
+      continue;
     fields.emplace_back(field.getFirst().str(),
                         renderTilingParamValue(field.getSecond()));
+  }
   std::sort(fields.begin(), fields.end());
 
   std::string rendered;

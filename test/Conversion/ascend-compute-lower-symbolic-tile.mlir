@@ -40,8 +40,7 @@ func.func @symbolic_all_parallel_tile_step() {
           roles = ["bind_core", "kernel_loop", "vectorize"],
           upper_bound = 128 : i64
         }
-      ],
-      ascend.schedule.selected_tile_shape = array<i64: 64, 128>}
+      ] }
       ins(%a, %b : memref<70x128xf16, 9 : i32>,
                     memref<70x128xf16, 9 : i32>)
       outs(%out : memref<70x128xf16, 10 : i32>) {
@@ -89,8 +88,7 @@ func.func @symbolic_reduction_tile_step() {
           roles = ["full_reduction"],
           upper_bound = 128 : i64
         }
-      ],
-      ascend.schedule.selected_tile_shape = array<i64: 32, 128>}
+      ] }
       ins(%a : memref<70x128xf16, 9 : i32>)
       outs(%out : memref<70xf16, 10 : i32>) {
     ^bb0(%a_elem: f16, %acc: f16):

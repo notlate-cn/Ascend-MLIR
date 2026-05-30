@@ -11,7 +11,6 @@ module {
           [i64],
           ["dim_arg0_0"]>
   ) attributes {
-      ascend.schedule.selected_tile_shape = array<i64: 64, 128>,
       ascend.schedule.tail_policies = ["masked_tail", "full_extent"],
       ascend.schedule.tail_plan = [
         {

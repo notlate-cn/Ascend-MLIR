@@ -246,7 +246,7 @@ NPU 与 CPU 对比不应由 NPU path 直接跑 CPU。`ascend-debug collect` 应�
 
 统一 debug graph 应继续增强：
 
-- node 显示 kernel id、kernel kind、op summary、output shape、selected tile、workspace size
+- node 显示 kernel id、kernel kind、op summary、output shape、symbolic tile params、workspace size
 - edge 显示 value / boundary / checkpoint 信息
 - 标注 critical path、prepack root、simple fusion hint
 - 接入 diff summary，高亮 failed / first-bad boundary

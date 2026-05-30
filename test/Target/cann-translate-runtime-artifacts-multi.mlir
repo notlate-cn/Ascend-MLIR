@@ -44,8 +44,6 @@
 // MANIFEST: "executionUnit": "aicore"
 // MANIFEST: "kernelKind": "vec"
 // MANIFEST: "decisionId": "kernel_a.decision.0"
-// MANIFEST: "selected_tile_shape": [
-// MANIFEST-NEXT: 32
 // MANIFEST: "tile_binding": "symbolic"
 // MANIFEST: "tile_params": [
 // MANIFEST-NEXT: {
@@ -80,8 +78,6 @@
 // MANIFEST: "executionUnit": "aicore"
 // MANIFEST: "kernelKind": "mix"
 // MANIFEST: "decisionId": "kernel_b.decision.0"
-// MANIFEST: "selected_tile_shape": [
-// MANIFEST-NEXT: 64
 // MANIFEST: "shape": {
 // MANIFEST: "rank": 1
 // MANIFEST: "shapeArgOrder": [
@@ -101,7 +97,6 @@ module attributes {
       ascend.schedule.kernel_metadata = [{
         decision_id = "kernel_a.decision.0",
         kernel = "internal_kernel_a",
-        selected_tile_shape = array<i64: 32>,
         tile_binding = "symbolic",
         tile_params = [{
           axis = 0 : i64,
@@ -151,7 +146,6 @@ module attributes {
       ascend.schedule.kernel_metadata = [{
         decision_id = "kernel_b.decision.0",
         kernel = "internal_kernel_b",
-        selected_tile_shape = array<i64: 64>,
         tail_policies = ["masked_tail"],
         tail_plan = [{
           affected = ["data_copy", "vector_compute"],

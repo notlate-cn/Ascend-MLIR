@@ -4,7 +4,7 @@
 
 **Goal:** Replace the static selected-tile lowering contract with role-generic symbolic tile metadata and runtime tiling fields.
 
-**Architecture:** Schedule still ranks concrete candidate defaults, but it emits `tile_params` as the authoritative contract. Runtime artifact emission exports those params to tiling metadata. Compute selected-tile lowering consumes tile fields when present and keeps `selected_tile_shape` only as a legacy fallback.
+**Architecture:** Schedule still ranks concrete candidate defaults, but it emits `tile_params` as the authoritative contract. Runtime artifact emission exports those params to tiling metadata. Symbolic tile lowering consumes tile fields; the old `selected_tile_shape` field and fallback path are removed.
 
 **Tech Stack:** MLIR C++ passes, CANN artifact manifest emission, lit/FileCheck tests, xvm verification.
 
@@ -19,7 +19,7 @@
 
 - [x] Add shared attribute names `ascend.schedule.tile_params` and `ascend.schedule.tile_binding`.
 - [x] Add schedule data structs for symbolic tile params, including logical axis, name, binding, default, upper bound, extent, roles, and primitive uses.
-- [x] Update the V2 schedule decision section to state that `selected_tile_shape` is legacy/debug only.
+- [x] Update the V2 schedule decision section to state that `selected_tile_shape` is removed, not legacy/debug.
 
 ### Task 2: RED Tests For Schedule Metadata
 
@@ -32,7 +32,7 @@
       the upstream kernelize contract selecting it as memory.
 - [x] Run Schedule and check for `ascend.schedule.tile_binding = "symbolic"`.
 - [x] Check role-derived `ascend.schedule.tile_params`.
-- [x] Check `selected_tile_shape` is not the only tile metadata.
+- [x] Check `tile_params` is the tile metadata contract.
 
 ### Task 3: Emit Symbolic Tile Metadata
 
@@ -42,7 +42,7 @@
 
 - [x] Build tile param entries from `ScheduleProblem.axes.axisScheduleConstraints` and selected decision defaults.
 - [x] Preserve `tile_params` in op-level, legacy function-level, and per-kernel schedule metadata.
-- [x] Keep legacy `selected_tile_shape` emission for compatibility.
+- [x] Remove legacy `selected_tile_shape` emission.
 - [x] Extend the Schedule report with symbolic tile params.
 
 ### Task 4: RED Tests For Artifact Export
@@ -63,7 +63,7 @@
 - [x] Validate `tile_params` schema.
 - [x] Emit `tile_params` in artifact manifest schedule entries and kernel entries.
 - [x] Generate host tiling field defaults from `tile_params`.
-- [x] Keep old `selected_tile_shape` manifest output for legacy consumers.
+- [x] Remove old `selected_tile_shape` manifest output.
 
 ### Task 6: RED Tests For Runtime Tile Consumption
 
@@ -72,17 +72,17 @@
 
 - [x] Add rank-2 all-parallel and rank-2 reduction tests with `tile_params`.
 - [x] Check `scf.for` steps are derived from function i64 tile arguments.
-- [x] Check the old static selected-tile path remains accepted.
+- [x] Delete old static selected-tile path checks and require symbolic metadata.
 
 ### Task 7: Consume Runtime Tile Params In Compute Lowering
 
 **Files:**
-- Modify: `lib/Conversion/Ascend/Translate/KernelIR/ComputeSelectedTileLowering.cpp`
+- Modify: `lib/Conversion/Ascend/Translate/KernelIR/ComputeSymbolicTileLowering.cpp`
 
 - [x] Add helpers to read tile params from op attrs.
 - [x] Add function i64 tile arguments when symbolic params are present and no matching argument exists.
-- [x] Use runtime tile arg values for selected all-parallel and reduction loop steps.
-- [x] Keep transpose/static fallback on `selected_tile_shape` until its dedicated symbolic lowering is implemented.
+- [x] Use runtime tile arg values for symbolic all-parallel and reduction loop steps.
+- [x] Remove transpose/static fallback on `selected_tile_shape`.
 
 ### Task 8: Verification
 

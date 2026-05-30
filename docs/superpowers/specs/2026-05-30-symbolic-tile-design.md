@@ -2,10 +2,10 @@
 
 ## Problem
 
-The current Schedule implementation materializes a concrete
-`ascend.schedule.selected_tile_shape` and downstream lowering uses that value as
-the loop step. This turns a schedule candidate into a compile-time constant and
-prevents autotuning and host tiling from selecting tile sizes for dynamic shapes.
+The previous Schedule implementation materialized a concrete
+`ascend.schedule.selected_tile_shape` and downstream lowering used that value as
+the loop step. That turned a schedule candidate into a compile-time constant and
+prevented autotuning and host tiling from selecting tile sizes for dynamic shapes.
 
 The design target is a symbolic tile contract:
 
@@ -58,9 +58,9 @@ Field meanings:
 - `primitive_uses`: primitive uses that constrain legality and tail policy.
 
 `ascend.schedule.tile_binding = "symbolic"` marks that `tile_params` is the
-authoritative lowering contract. `selected_tile_shape` can still be emitted for
-legacy compatibility and report readability, but new lowering must not require
-it.
+authoritative lowering contract. The old static selected-tile field is removed:
+Schedule must not emit it, artifact translation must not export it, and lowering
+must not accept it as a fallback.
 
 ## Role Coverage
 
@@ -104,18 +104,19 @@ When `tile_binding = "symbolic"`:
 - A pass may use `upper_bound` to size static resources, but it must not use
   `upper_bound` as the loop step.
 
-Legacy rule:
+Removal rule:
 
-- `selected_tile_shape` remains accepted for existing static tests and kernels.
-- New dynamic tests must assert that `tile_params` exists and is exported into
-  runtime artifact tiling params.
+- Existing static selected-tile tests are deleted or rewritten to use
+  `tile_params`.
+- Dynamic tests assert that `tile_params` exists and is exported into runtime
+  artifact tiling params.
 
 ## Non-Goals
 
 - Shape bucket design.
 - Full autotuner cost-history schema.
 - Replacing CANN matmul API tiling internals.
-- Removing all legacy `selected_tile_shape` tests in one patch.
+- Shape-bucket schema and persistence.
 
 ## Acceptance Criteria
 
@@ -124,6 +125,6 @@ Legacy rule:
 - Runtime artifact manifest includes `tile_params`.
 - Host tiling C++ initializes symbolic tile fields from defaults when no tuning
   record is present.
-- Compute selected-tile lowering can consume runtime tile params for supported
-  rank-2 all-parallel and reduction kernels.
-- Existing static tests keep passing through the legacy fallback path.
+- Symbolic tile lowering consumes runtime tile params for supported rank-2
+  all-parallel and reduction kernels.
+- The old static selected-tile fallback has no tests and no implementation path.

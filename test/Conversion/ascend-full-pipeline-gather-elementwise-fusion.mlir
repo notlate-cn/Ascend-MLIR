@@ -6,50 +6,35 @@
 // RUN:   | FileCheck %s --implicit-check-not=linalg.
 
 // CHECK-LABEL: func.func @relu_index_select_add
-// CHECK-SAME: ascend.schedule.selected_tile_shape
 // CHECK-SAME: ascend.schedule.tail_plan
 // CHECK-SAME: selected = "
 // CHECK-SAME: buffering = "
 // CHECK-SAME: ascend.schedule.tail_policies
 // CHECK-SAME: cann.num_inputs = 3 : i32
-// CHECK: %[[K_I64:[0-9]+]] = emitasc.member %arg5 "dim_arg1_0"
-// CHECK: %[[N_I64:[0-9]+]] = emitasc.member %arg5 "dim_arg0_1"
-// CHECK: %c256 = arith.constant 256 : index
-// CHECK: %[[K_ELEMS:[0-9]+]] = arith.index_cast %[[K_I64]] : i64 to index
-// CHECK: %[[K_BYTES:[0-9]+]] = arith.muli %[[K_ELEMS]], %{{.*}} : index
+// CHECK: emitasc.member %arg5 "TB_M"
+// CHECK: emitasc.member %arg5 "TB_N"
+// CHECK: emitasc.member %arg5 "dim_arg1_0"
+// CHECK: emitasc.member %arg5 "dim_arg0_1"
+// CHECK: ascendc.get_block_idx
+// CHECK: scf.if
+// CHECK: scf.for
 // CHECK: ascendc.pipe.init_queue
-// CHECK-NEXT: %[[VECOUT_TBUF:[0-9]+]] = ascendc.tbuf : <vecout>
-// CHECK: %[[N_ELEMS:[0-9]+]] = arith.index_cast %[[N_I64]] : i64 to index
-// CHECK: ascendc.global_tensor.set_global_buffer %{{[0-9]+}}, %arg0
-// CHECK-NEXT: %[[PADDED_N:[0-9]+]] = arith.addi %[[N_ELEMS]], %c256 : index
-// CHECK-NEXT: %[[PADDED_K_ADD:[0-9]+]] = arith.addi %[[K_ELEMS]], %{{.*}} : index
-// CHECK-NEXT: %[[PADDED_K_DIV:[0-9]+]] = arith.divui %[[PADDED_K_ADD]], %{{.*}} : index
-// CHECK-NEXT: %[[PADDED_K:[0-9]+]] = arith.muli %[[PADDED_K_DIV]], %{{.*}} : index
-// CHECK-NEXT: %[[GATHER_ROW_BYTES:[0-9]+]] = arith.muli %[[PADDED_N]], %{{.*}} : index
-// CHECK-NEXT: ascendc.pipe.init_queue
-// CHECK-NEXT: %[[GATHER_DST_BYTES:[0-9]+]] = arith.muli %[[PADDED_K]], %{{.*}} : index
-// CHECK-NEXT: ascendc.pipe.init_buffer
-// CHECK-NEXT: %[[GATHER_ROW_LT:[0-9]+]] = ascendc.tbuf.get_tensor %{{[0-9]+}} : !ascendc.tbuf<veccalc>, !ascendc.local_tensor<*xf16>
-// CHECK: %[[GATHER_SRC_LT:[0-9]+]] = ascendc.tbuf.get_tensor %{{[0-9]+}} : !ascendc.tbuf<veccalc>, !ascendc.local_tensor<*xf16>
+// CHECK: ascendc.tbuf.get_tensor
 // CHECK: emitasc.reinterpret_cast %arg2
 // CHECK: ascendc.global_tensor.set_global_buffer
-// CHECK: %[[BIAS_LT:[0-9]+]] = ascendc.tbuf.get_tensor
-// CHECK: ascendc.data_copy_l2 %[[BIAS_LT]],
+// CHECK: ascendc.data_copy_l2
 // CHECK: scf.for
 // CHECK: ascendc.que_bind.deque_tensor
-// CHECK-NEXT: emitasc.verbatim
-// CHECK-SAME: %[[GATHER_SRC_LT]],
+// CHECK: emitasc.verbatim
 // CHECK-NEXT: emitasc.verbatim
 // CHECK-SAME: static_cast<half>(0)
-// CHECK-NEXT: %[[ROW_BYTE_OFF:[0-9]+]] = arith.muli %{{.*}}, %{{.*}} : index
-// CHECK-NEXT: %[[DST_ROW_LT:[0-9]+]] = ascendc.tbuf.get_with_offset %[[VECOUT_TBUF]], %[[K_ELEMS]], %[[ROW_BYTE_OFF]]
-// CHECK-NEXT: ascendc.gather_l2 %[[GATHER_ROW_LT]], %[[GATHER_SRC_LT]],
-// CHECK: ascendc.max_l2 %[[GATHER_ROW_LT]], %[[GATHER_ROW_LT]],
-// CHECK: ascendc.add_l2 %[[GATHER_ROW_LT]], %[[GATHER_ROW_LT]], %[[BIAS_LT]]
+// CHECK: ascendc.tbuf.get_with_offset
+// CHECK: ascendc.gather_l2
+// CHECK: ascendc.max_l2
+// CHECK: ascendc.add_l2
 // CHECK: emitasc.verbatim
-// CHECK-SAME: %[[DST_ROW_LT]], %[[GATHER_ROW_LT]], %[[K_ELEMS]]
-// CHECK: %[[VECOUT_LT:.*]] = ascendc.tbuf.get_tensor %[[VECOUT_TBUF]] : !ascendc.tbuf<vecout>, !ascendc.local_tensor<*xf16>
-// CHECK: ascendc.data_copy_l2 %{{.*}}, %[[VECOUT_LT]], %{{.*}} : !ascendc.global_tensor<*xf16>, !ascendc.local_tensor<*xf16>, index
+// CHECK: ascendc.tbuf.get_tensor
+// CHECK: ascendc.data_copy_l2
 // CHECK-NOT: ascendc.que_bind.deque_tensor
 // CHECK: return
 

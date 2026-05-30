@@ -25,7 +25,6 @@ func.func @gather_output_bridge(%data: memref<4x8xf16>,
       attrs = {ascend.kernel = "kernel_0",
                ascend.op_role = "vector",
                ascend.schedule.decision_id = "kernel_0.decision.0",
-               ascend.schedule.selected_tile_shape = array<i64: 64, 8>,
                ascend.schedule.structured_lowering = "loop_skeleton_v0",
                ascend.schedule.tail_plan = [
                  {axis = 0 : i64,

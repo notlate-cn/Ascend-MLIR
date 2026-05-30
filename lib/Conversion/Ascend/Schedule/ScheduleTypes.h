@@ -37,7 +37,6 @@ using ::mlir::ascend::kPrimaryAttr;
 using ::mlir::ascend::kScheduleDecisionIdAttr;
 using ::mlir::ascend::kScheduleGuardMarkersAttr;
 using ::mlir::ascend::kScheduleKernelMetadataAttr;
-using ::mlir::ascend::kScheduleSelectedTileShapeAttr;
 using ::mlir::ascend::kScheduleTileBindingAttr;
 using ::mlir::ascend::kScheduleTileBindingSymbolic;
 using ::mlir::ascend::kScheduleTileParamsAttr;

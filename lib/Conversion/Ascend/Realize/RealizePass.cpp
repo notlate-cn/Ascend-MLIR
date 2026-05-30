@@ -10,7 +10,6 @@
 #include "Conversion/Ascend/Debug/DebugOptions.h"
 #include "BufferizationDriver.h"
 #include "MemoryRealizationDriver.h"
-#include "TilingRealizationDriver.h"
 #include "MovementPlanner.h"
 #include "PlacementPlanner.h"
 #include "RealizeReport.h"
@@ -54,17 +53,13 @@ constexpr llvm::StringLiteral kOneShotBufferizeMaterializationMode =
     "one-shot-bufferize";
 constexpr llvm::StringLiteral kMemorySpaceAnnotateMaterializationMode =
     "memory-space-annotate";
-constexpr llvm::StringLiteral kTiledLinalgMaterializationMode = "tiled-linalg";
-constexpr llvm::StringLiteral kFullRealizeMaterializationMode = "full-realize";
 constexpr llvm::StringLiteral kGmDefaultPlacementMode = "gm-default";
 constexpr llvm::StringLiteral kTargetAwarePlacementMode = "target-aware";
 
 static bool isSupportedMaterializationMode(StringRef mode) {
   return mode == kPlanOnlyMaterializationMode ||
          mode == kOneShotBufferizeMaterializationMode ||
-         mode == kMemorySpaceAnnotateMaterializationMode ||
-         mode == kTiledLinalgMaterializationMode ||
-         mode == kFullRealizeMaterializationMode;
+         mode == kMemorySpaceAnnotateMaterializationMode;
 }
 
 static bool isSupportedPlacementMode(StringRef mode) {
@@ -384,20 +379,8 @@ struct AscendRealizePass
       return;
     }
 
-    if (materializationMode == kTiledLinalgMaterializationMode ||
-        materializationMode == kFullRealizeMaterializationMode) {
-      TilingRealizationDriver tilingDriver;
-      if (failed(tilingDriver.tileModule(getOperation()))) {
-        getOperation()->emitError()
-            << "ascend-realize tiled-linalg: tiling failed";
-        signalPassFailure();
-        return;
-      }
-    }
-
     if (materializationMode == kOneShotBufferizeMaterializationMode ||
-        materializationMode == kMemorySpaceAnnotateMaterializationMode ||
-        materializationMode == kFullRealizeMaterializationMode) {
+        materializationMode == kMemorySpaceAnnotateMaterializationMode) {
       BufferizationDriver bufferizationDriver;
       if (failed(bufferizationDriver.runOneShotBufferize(getOperation()))) {
         getOperation()->emitError()
@@ -414,8 +397,7 @@ struct AscendRealizePass
       }
     }
 
-    if (materializationMode == kMemorySpaceAnnotateMaterializationMode ||
-        materializationMode == kFullRealizeMaterializationMode) {
+    if (materializationMode == kMemorySpaceAnnotateMaterializationMode) {
       MemoryRealizationDriver memoryRealizationDriver;
       if (failed(memoryRealizationDriver.materialize(
               getOperation(), *bundles,

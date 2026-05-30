@@ -230,7 +230,6 @@ cat > "${RUNTIME_SESSION_ARTIFACT_MANIFEST}" <<'EOF'
           "priority": 0,
           "hostTilingId": "kernel_a_tiling",
           "tilingParams": {
-            "selected_tile_shape": [32]
           }
         },
         {
@@ -239,7 +238,6 @@ cat > "${RUNTIME_SESSION_ARTIFACT_MANIFEST}" <<'EOF'
           "priority": 99,
           "fallback": true,
           "tilingParams": {
-            "selected_tile_shape": [16]
           }
         }
       ],
@@ -267,7 +265,6 @@ cat > "${RUNTIME_SESSION_ARTIFACT_MANIFEST}" <<'EOF'
           "decisionId": "kernel_b.decision.0",
           "guard": "true",
           "tilingParams": {
-            "selected_tile_shape": [64]
           }
         }
       ],
@@ -352,7 +349,6 @@ assert tasks[0]["block_dim"] == 4
 tiling_path = pathlib.Path(tasks[0]["tiling"]["binary"])
 assert tiling_path.exists(), tiling_path
 assert tiling_path.stat().st_size == 16
-assert tasks[1]["tiling"]["params"] == "selected_tile_shape=64"
 expect_equal(tasks[0]["inputs"], [{
     "name": "arg0",
     "path": input_path,

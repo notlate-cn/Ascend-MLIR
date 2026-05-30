@@ -241,17 +241,17 @@ void appendCoalescingHintTileShapes(const ScheduleProblem &problem,
         continue;
 
       const LogicalAxisInfo &axis = axes.logicalAxes[*axisIndex];
-      int64_t selectedTile = normalizeExtent(axis.staticExtent);
+      int64_t chosenTile = normalizeExtent(axis.staticExtent);
       if (ShapedType::isDynamic(axis.staticExtent)) {
-        selectedTile = remainingBudget;
+        chosenTile = remainingBudget;
       } else if (remainingBudget > 0) {
-        selectedTile = std::max<int64_t>(
+        chosenTile = std::max<int64_t>(
             1, std::min<int64_t>(axis.staticExtent, remainingBudget));
       }
-      candidate.tileSizes[*axisIndex] = selectedTile;
+      candidate.tileSizes[*axisIndex] = chosenTile;
 
-      if (!ShapedType::isDynamic(selectedTile) && selectedTile > 0)
-        remainingBudget = std::max<int64_t>(1, remainingBudget / selectedTile);
+      if (!ShapedType::isDynamic(chosenTile) && chosenTile > 0)
+        remainingBudget = std::max<int64_t>(1, remainingBudget / chosenTile);
     }
 
     appendUniqueTileShape(tileShapes, std::move(candidate));

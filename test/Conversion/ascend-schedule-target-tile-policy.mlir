@@ -64,17 +64,11 @@ func.func @dynamic_rank1_reduction(%arg0: tensor<?x?xf16>) -> tensor<?xf16> {
 }
 
 // CHECK: ScheduleDecisionSet:
-// CHECK:   selected_tile_shape = [64,128]
 // CHECK: ScheduleDecisionSet:
-// CHECK:   selected_tile_shape = [32,32]
 // CHECK: ScheduleDecisionSet:
-// CHECK:   selected_tile_shape = [32,?]
 // CHECK: linalg.generic
-// CHECK-SAME: ascend.schedule.selected_tile_shape = array<i64: 64, 128>
 // CHECK-SAME: ascend.schedule.target_tile_policy = "target_ub_64"
 // CHECK: linalg.generic
-// CHECK-SAME: ascend.schedule.selected_tile_shape = array<i64: 32, 32>
 // CHECK-SAME: ascend.schedule.target_tile_policy = "target_dynamic_inner_32"
 // CHECK: linalg.generic
-// CHECK-SAME: ascend.schedule.selected_tile_shape = array<i64: 32, {{-?[0-9]+}}>
 // CHECK-SAME: ascend.schedule.target_tile_policy = "target_dynamic_reduction_32"

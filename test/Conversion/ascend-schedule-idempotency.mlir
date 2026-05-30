@@ -7,7 +7,6 @@ func.func @stale_schedule_metadata(%arg0: tensor<64xf16>,
       ascend.schedule.kernel_metadata = [
         {
           kernel = "kernel_0",
-          selected_tile_shape = array<i64: 1>,
           guard_markers = [],
           tail_policies = [],
           tail_plan = [],
@@ -15,7 +14,6 @@ func.func @stale_schedule_metadata(%arg0: tensor<64xf16>,
           target_tile_policy = "stale_policy"
         }
       ],
-      ascend.schedule.selected_tile_shape = array<i64: 1>,
       ascend.schedule.tail_policies = [],
       ascend.schedule.tail_plan = [],
       ascend.schedule.target_tile_policy = "stale_policy"
@@ -36,7 +34,6 @@ func.func @stale_schedule_metadata(%arg0: tensor<64xf16>,
       ascend.schedule.decision_id = "stale.decision",
       ascend.schedule.runtime_top_k = 99 : i64,
       ascend.schedule.structured_lowering = "stale_skeleton",
-      ascend.schedule.selected_tile_shape = array<i64: 1>,
       ascend.schedule.tail_policies = [],
       ascend.schedule.tail_plan = [],
       ascend.schedule.target_tile_policy = "stale_policy"
@@ -51,11 +48,9 @@ func.func @stale_schedule_metadata(%arg0: tensor<64xf16>,
 // CHECK-LABEL: func.func @stale_schedule_metadata
 // CHECK-SAME: ascend.schedule.kernel_metadata
 // CHECK-SAME: kernel = "kernel_0"
-// CHECK-SAME: selected_tile_shape = array<i64: 32>
 // CHECK-NOT: stale_policy
 // CHECK: linalg.generic
 // CHECK-SAME: ascend.schedule.family = "vector_generic"
 // CHECK-SAME: ascend.schedule.runtime_top_k = 1 : i64
-// CHECK-SAME: ascend.schedule.selected_tile_shape = array<i64: 32>
 // CHECK-SAME: ascend.schedule.target_tile_policy = "target_default_32"
 // CHECK-NOT: stale_policy

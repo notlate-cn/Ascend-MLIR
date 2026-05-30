@@ -37,8 +37,8 @@ using namespace mlir;
 namespace {
 
 constexpr llvm::StringLiteral kKernelMetadataKernelKey = "kernel";
-constexpr llvm::StringLiteral kKernelMetadataSelectedTileShapeKey =
-    "selected_tile_shape";
+constexpr llvm::StringLiteral kKernelMetadataTileBindingKey = "tile_binding";
+constexpr llvm::StringLiteral kKernelMetadataTileParamsKey = "tile_params";
 constexpr llvm::StringLiteral kKernelMetadataGuardMarkersKey =
     "guard_markers";
 constexpr llvm::StringLiteral kKernelMetadataTailPoliciesKey =
@@ -122,10 +122,10 @@ void setFunctionScheduleAttrs(func::FuncOp funcOp,
   if (!scheduleMetadata)
     return;
 
-  if (Attribute attr =
-          scheduleMetadata.get(kKernelMetadataSelectedTileShapeKey))
-    funcOp->setAttr(::mlir::ascend::kScheduleSelectedTileShapeAttr,
-                    attr);
+  if (Attribute attr = scheduleMetadata.get(kKernelMetadataTileBindingKey))
+    funcOp->setAttr(::mlir::ascend::kScheduleTileBindingAttr, attr);
+  if (Attribute attr = scheduleMetadata.get(kKernelMetadataTileParamsKey))
+    funcOp->setAttr(::mlir::ascend::kScheduleTileParamsAttr, attr);
   if (Attribute attr = scheduleMetadata.get(kKernelMetadataGuardMarkersKey))
     funcOp->setAttr(::mlir::ascend::kScheduleGuardMarkersAttr, attr);
   if (Attribute attr = scheduleMetadata.get(kKernelMetadataTailPoliciesKey))

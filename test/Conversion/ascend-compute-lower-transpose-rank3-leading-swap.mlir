@@ -17,7 +17,7 @@ func.func @named_rank2_leading_swap_gm(%src: memref<384x128xf32>,
   return
 }
 
-// CHECK-LABEL: func.func @named_rank2_leading_swap_gm_selected_tile
+// CHECK-LABEL: func.func @named_rank2_leading_swap_gm_symbolic_tile
 // CHECK: scf.for %{{.*}} = %c0 to %c128 step %c32
 // CHECK-NOT: memref.subview
 // CHECK: ascendc.global_tensor.set_global_buffer %{{.*}}, %arg0
@@ -28,11 +28,10 @@ func.func @named_rank2_leading_swap_gm(%src: memref<384x128xf32>,
 // CHECK: ascendc.global_tensor.set_global_buffer %{{.*}}, %arg1
 // CHECK: ascendc.global_tensor.bracket
 // CHECK-NOT: linalg.transpose
-func.func @named_rank2_leading_swap_gm_selected_tile(
+func.func @named_rank2_leading_swap_gm_symbolic_tile(
     %src: memref<384x128xf32>,
     %dst: memref<128x384xf32>) {
   linalg.transpose
-      {ascend.schedule.selected_tile_shape = array<i64: 32, 384>}
       ins(%src : memref<384x128xf32>)
       outs(%dst : memref<128x384xf32>)
       permutation = [1, 0]
@@ -66,7 +65,6 @@ func.func @named_rank2_selected_narrow_inner_gm_auto_tile(
     %src: memref<128x512xf32>,
     %dst: memref<512x128xf32>) {
   linalg.transpose
-      {ascend.schedule.selected_tile_shape = array<i64: 512, 96>}
       ins(%src : memref<128x512xf32>)
       outs(%dst : memref<512x128xf32>)
       permutation = [1, 0]

@@ -374,11 +374,11 @@ LogicalResult lowerLinalgToKernelIR(func::FuncOp funcOp) {
   MLIRContext *ctx = funcOp.getContext();
   OpBuilder builder(ctx);
 
-  if (failed(materializeSelectedReductionTiles(funcOp)))
+  if (failed(materializeSymbolicReductionTiles(funcOp)))
     return failure();
-  if (failed(materializeSelectedAllParallelTiles(funcOp)))
+  if (failed(materializeSymbolicAllParallelTiles(funcOp)))
     return failure();
-  if (failed(materializeSelectedTransposeTiles(funcOp)))
+  if (failed(materializeSymbolicTransposeTiles(funcOp)))
     return failure();
 
   // -----------------------------------------------------------------------

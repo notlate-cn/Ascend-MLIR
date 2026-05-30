@@ -2,7 +2,6 @@
 // RUN: sed -n '/\/\/ MULTI-BEGIN/,/\/\/ MULTI-END/p' %s | ascend-mlir-translate -mlir-to-cann --tiling-space-out=%t.tiling.json > %t.cpp
 // RUN: FileCheck %s --input-file=%t.tiling.json --check-prefix=TILING
 // RUN: sed -n '/\/\/ BAD-TAIL-BEGIN/,/\/\/ BAD-TAIL-END/p' %s | not ascend-mlir-translate -mlir-to-cann --artifact-manifest-out=%t.bad-tail.manifest.json 2>&1 | FileCheck %s --check-prefix=BAD-TAIL
-// RUN: sed -n '/\/\/ BAD-SELECTED-TILE-SHAPE-TOP-BEGIN/,/\/\/ BAD-SELECTED-TILE-SHAPE-TOP-END/p' %s | not ascend-mlir-translate -mlir-to-cann --artifact-manifest-out=%t.bad-selected-tile-shape-top.manifest.json 2>&1 | FileCheck %s --check-prefix=BAD-SELECTED-TILE-SHAPE-TOP
 // RUN: sed -n '/\/\/ BAD-TAIL-POLICIES-TOP-BEGIN/,/\/\/ BAD-TAIL-POLICIES-TOP-END/p' %s | not ascend-mlir-translate -mlir-to-cann --artifact-manifest-out=%t.bad-tail-policies-top.manifest.json 2>&1 | FileCheck %s --check-prefix=BAD-TAIL-POLICIES-TOP
 // RUN: sed -n '/\/\/ BAD-TAIL-POLICIES-VALUE-BEGIN/,/\/\/ BAD-TAIL-POLICIES-VALUE-END/p' %s | not ascend-mlir-translate -mlir-to-cann --artifact-manifest-out=%t.bad-tail-policies-value.manifest.json 2>&1 | FileCheck %s --check-prefix=BAD-TAIL-POLICIES-VALUE
 // RUN: sed -n '/\/\/ PARTIAL-NO-TAIL-PLAN-BEGIN/,/\/\/ PARTIAL-NO-TAIL-PLAN-END/p' %s | not ascend-mlir-translate -mlir-to-cann --artifact-manifest-out=%t.partial-no-tail-plan.manifest.json 2>&1 | FileCheck %s --check-prefix=PARTIAL-NO-TAIL-PLAN
@@ -26,11 +25,10 @@
 // TILING: "kernel": "kernel_a"
 // TILING: "schema_version": "2.0"
 // BAD-TAIL: ascend.schedule.tail_policies element 1 must be a string attribute
-// BAD-SELECTED-TILE-SHAPE-TOP: ascend.schedule.selected_tile_shape must be a dense i64 array attribute
 // BAD-TAIL-POLICIES-TOP: ascend.schedule.tail_policies must be an array attribute
 // BAD-TAIL-POLICIES-VALUE: ascend.schedule.tail_policies element 0 has unsupported value 'unknown_tail_policy'
-// PARTIAL-NO-TAIL-PLAN: schedule metadata requires ascend.schedule.selected_tile_shape, ascend.schedule.tail_policies, and ascend.schedule.tail_plan together
-// PARTIAL-NO-TAIL-POLICIES: schedule metadata requires ascend.schedule.selected_tile_shape, ascend.schedule.tail_policies, and ascend.schedule.tail_plan together
+// PARTIAL-NO-TAIL-PLAN: schedule metadata requires ascend.schedule.tail_policies and ascend.schedule.tail_plan together
+// PARTIAL-NO-TAIL-POLICIES: schedule metadata requires ascend.schedule.tail_policies and ascend.schedule.tail_plan together
 // BAD-TAIL-PLAN: ascend.schedule.tail_plan element 0 must be a dictionary attribute
 // BAD-TAIL-PLAN-TOP: ascend.schedule.tail_plan must be an array attribute
 // BAD-TAIL-PLAN-I64: ascend.schedule.tail_plan element 0 field 'axis' must be an i64 integer attribute
@@ -183,7 +181,6 @@ module {
       %a: memref<?xf16>, %out: memref<?xf16>, %ws: memref<ui8>,
       %tiling: !emitasc.py_struct<"TilingData", [i64], ["TB_M"]>
   ) attributes {
-      ascend.schedule.selected_tile_shape = array<i64: 64>,
       ascend.schedule.tail_policies = ["masked_tail", 1 : i64],
       ascend.schedule.tail_plan = [
         {
@@ -202,38 +199,12 @@ module {
 }
 // BAD-TAIL-END
 
-// BAD-SELECTED-TILE-SHAPE-TOP-BEGIN
-module {
-  func.func @bad_selected_tile_shape_top(
-      %a: memref<?xf16>, %out: memref<?xf16>, %ws: memref<ui8>,
-      %tiling: !emitasc.py_struct<"TilingData", [i64], ["TB_M"]>
-  ) attributes {
-      ascend.schedule.selected_tile_shape = 64 : i64,
-      ascend.schedule.tail_policies = ["masked_tail"],
-      ascend.schedule.tail_plan = [
-        {
-          affected = ["data_copy"],
-          align = 16 : i64,
-          axis = 0 : i64,
-          buffering = "separate_tail_buffer",
-          selected = "masked_tail"
-        }
-      ],
-      ascendc.aicore,
-      ascendc.global,
-      cann.num_inputs = 1 : i32} {
-    func.return
-  }
-}
-// BAD-SELECTED-TILE-SHAPE-TOP-END
-
 // BAD-TAIL-POLICIES-TOP-BEGIN
 module {
   func.func @bad_tail_policies_top(
       %a: memref<?xf16>, %out: memref<?xf16>, %ws: memref<ui8>,
       %tiling: !emitasc.py_struct<"TilingData", [i64], ["TB_M"]>
   ) attributes {
-      ascend.schedule.selected_tile_shape = array<i64: 64>,
       ascend.schedule.tail_policies = "masked_tail",
       ascend.schedule.tail_plan = [
         {
@@ -258,7 +229,6 @@ module {
       %a: memref<?xf16>, %out: memref<?xf16>, %ws: memref<ui8>,
       %tiling: !emitasc.py_struct<"TilingData", [i64], ["TB_M"]>
   ) attributes {
-      ascend.schedule.selected_tile_shape = array<i64: 64>,
       ascend.schedule.tail_policies = ["unknown_tail_policy"],
       ascend.schedule.tail_plan = [
         {
@@ -283,7 +253,6 @@ module {
       %a: memref<?xf16>, %out: memref<?xf16>, %ws: memref<ui8>,
       %tiling: !emitasc.py_struct<"TilingData", [i64], ["TB_M"]>
   ) attributes {
-      ascend.schedule.selected_tile_shape = array<i64: 64>,
       ascend.schedule.tail_policies = ["masked_tail"],
       ascendc.aicore,
       ascendc.global,
@@ -299,7 +268,6 @@ module {
       %a: memref<?xf16>, %out: memref<?xf16>, %ws: memref<ui8>,
       %tiling: !emitasc.py_struct<"TilingData", [i64], ["TB_M"]>
   ) attributes {
-      ascend.schedule.selected_tile_shape = array<i64: 64>,
       ascend.schedule.tail_plan = [
         {
           affected = ["data_copy"],
@@ -323,7 +291,6 @@ module {
       %a: memref<?xf16>, %out: memref<?xf16>, %ws: memref<ui8>,
       %tiling: !emitasc.py_struct<"TilingData", [i64], ["TB_M"]>
   ) attributes {
-      ascend.schedule.selected_tile_shape = array<i64: 64>,
       ascend.schedule.tail_policies = ["masked_tail"],
       ascend.schedule.tail_plan = ["masked_tail"],
       ascendc.aicore,
@@ -340,7 +307,6 @@ module {
       %a: memref<?xf16>, %out: memref<?xf16>, %ws: memref<ui8>,
       %tiling: !emitasc.py_struct<"TilingData", [i64], ["TB_M"]>
   ) attributes {
-      ascend.schedule.selected_tile_shape = array<i64: 64>,
       ascend.schedule.tail_policies = ["masked_tail"],
       ascend.schedule.tail_plan = "masked_tail",
       ascendc.aicore,
@@ -357,7 +323,6 @@ module {
       %a: memref<?xf16>, %out: memref<?xf16>, %ws: memref<ui8>,
       %tiling: !emitasc.py_struct<"TilingData", [i64], ["TB_M"]>
   ) attributes {
-      ascend.schedule.selected_tile_shape = array<i64: 64>,
       ascend.schedule.tail_policies = ["masked_tail"],
       ascend.schedule.tail_plan = [
         {
@@ -382,7 +347,6 @@ module {
       %a: memref<?xf16>, %out: memref<?xf16>, %ws: memref<ui8>,
       %tiling: !emitasc.py_struct<"TilingData", [i64], ["TB_M"]>
   ) attributes {
-      ascend.schedule.selected_tile_shape = array<i64: 64>,
       ascend.schedule.tail_policies = ["masked_tail"],
       ascend.schedule.tail_plan = [
         {
@@ -407,7 +371,6 @@ module {
       %a: memref<?xf16>, %out: memref<?xf16>, %ws: memref<ui8>,
       %tiling: !emitasc.py_struct<"TilingData", [i64], ["TB_M"]>
   ) attributes {
-      ascend.schedule.selected_tile_shape = array<i64: 64>,
       ascend.schedule.tail_policies = ["masked_tail"],
       ascend.schedule.tail_plan = [
         {
@@ -432,7 +395,6 @@ module {
       %a: memref<?xf16>, %out: memref<?xf16>, %ws: memref<ui8>,
       %tiling: !emitasc.py_struct<"TilingData", [i64], ["TB_M"]>
   ) attributes {
-      ascend.schedule.selected_tile_shape = array<i64: 64>,
       ascend.schedule.tail_policies = ["masked_tail"],
       ascend.schedule.tail_plan = [
         {

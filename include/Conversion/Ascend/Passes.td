@@ -178,7 +178,7 @@ def AscendRealizePass : Pass<"ascend-realize", "mlir::ModuleOp"> {
            "Realize placement mode: gm-default or target-aware">,
     Option<"materializationMode", "materialization-mode", "std::string",
            /*default=*/"\"plan-only\"",
-           "Realize materialization mode: plan-only, one-shot-bufferize, memory-space-annotate, tiled-linalg, or full-realize">,
+           "Realize materialization mode: plan-only, one-shot-bufferize, or memory-space-annotate">,
     Option<"soc", "soc", "std::string", /*default=*/"\"Ascend910B2\"",
            "CANN SoC version for target-aware placement">,
     Option<"cannRoot", "cann-root", "std::string", /*default=*/"\"\"",

@@ -43,8 +43,6 @@ struct WorkspaceInfo {
 static constexpr llvm::StringLiteral kKernelMetadataKernelKey = "kernel";
 static constexpr llvm::StringLiteral kKernelMetadataDecisionIdKey =
     "decision_id";
-static constexpr llvm::StringLiteral kKernelMetadataSelectedTileShapeKey =
-    "selected_tile_shape";
 static constexpr llvm::StringLiteral kKernelMetadataTileBindingKey =
     "tile_binding";
 static constexpr llvm::StringLiteral kKernelMetadataTileParamsKey =
@@ -659,11 +657,6 @@ static LogicalResult checkScheduleMetadataCompleteness(func::FuncOp funcOp) {
   if (failed(kernelMetadata))
     return failure();
 
-  bool hasSelectedTileShape =
-      static_cast<bool>(getScheduleMetadataAttr(
-          funcOp, *kernelMetadata,
-          ::mlir::ascend::kScheduleSelectedTileShapeAttr,
-          kKernelMetadataSelectedTileShapeKey));
   bool hasTileBinding = static_cast<bool>(getScheduleMetadataAttr(
       funcOp, *kernelMetadata, ::mlir::ascend::kScheduleTileBindingAttr,
       kKernelMetadataTileBindingKey));
@@ -678,14 +671,13 @@ static LogicalResult checkScheduleMetadataCompleteness(func::FuncOp funcOp) {
   bool hasTailPlan = static_cast<bool>(getScheduleMetadataAttr(
       funcOp, *kernelMetadata, ::mlir::ascend::kScheduleTailPlanAttr,
       kKernelMetadataTailPlanKey));
-  bool hasAnyMetadata = hasSelectedTileShape || hasTileBinding ||
-                        hasTileParams || hasTailPolicies || hasTailPlan;
-  bool hasAllMetadata = hasSelectedTileShape && hasTailPolicies && hasTailPlan;
+  bool hasAnyMetadata =
+      hasTileBinding || hasTileParams || hasTailPolicies || hasTailPlan;
+  bool hasAllMetadata = hasTailPolicies && hasTailPlan;
   if (hasAnyMetadata && !hasAllMetadata)
     return funcOp.emitError()
            << "schedule metadata requires "
-           << ::mlir::ascend::kScheduleSelectedTileShapeAttr << ", "
-           << ::mlir::ascend::kScheduleTailPoliciesAttr << ", and "
+           << ::mlir::ascend::kScheduleTailPoliciesAttr << " and "
            << ::mlir::ascend::kScheduleTailPlanAttr << " together";
   if (hasAnyMetadata && hasTileBinding != hasTileParams)
     return funcOp.emitError()
@@ -701,15 +693,6 @@ static LogicalResult validateScheduleMetadataAttributes(func::FuncOp funcOp) {
       lookupKernelScheduleMetadata(funcOp);
   if (failed(kernelMetadata))
     return failure();
-
-  if (Attribute selectedTileShape = getScheduleMetadataAttr(
-          funcOp, *kernelMetadata,
-          ::mlir::ascend::kScheduleSelectedTileShapeAttr,
-          kKernelMetadataSelectedTileShapeKey))
-    if (!isa<DenseI64ArrayAttr>(selectedTileShape))
-      return funcOp.emitError()
-             << ::mlir::ascend::kScheduleSelectedTileShapeAttr
-             << " must be a dense i64 array attribute";
 
   if (Attribute tileBinding = getScheduleMetadataAttr(
           funcOp, *kernelMetadata,
@@ -739,27 +722,6 @@ static LogicalResult validateScheduleMetadataAttributes(func::FuncOp funcOp) {
              << " must be an array attribute";
 
   return success();
-}
-
-static FailureOr<SmallVector<int64_t>>
-collectSelectedTileShape(func::FuncOp funcOp) {
-  FailureOr<DictionaryAttr> kernelMetadata =
-      lookupKernelScheduleMetadata(funcOp);
-  if (failed(kernelMetadata))
-    return failure();
-
-  auto selectedTileShape = dyn_cast_or_null<DenseI64ArrayAttr>(
-      getScheduleMetadataAttr(
-          funcOp, *kernelMetadata,
-          ::mlir::ascend::kScheduleSelectedTileShapeAttr,
-          kKernelMetadataSelectedTileShapeKey));
-  if (!selectedTileShape)
-    return SmallVector<int64_t>{};
-
-  SmallVector<int64_t> values;
-  values.append(selectedTileShape.asArrayRef().begin(),
-                selectedTileShape.asArrayRef().end());
-  return values;
 }
 
 static FailureOr<llvm::StringMap<int64_t>>
@@ -804,17 +766,6 @@ buildScheduleTilingParams(func::FuncOp funcOp,
     return failure();
   if (failed(validateScheduleMetadataAttributes(funcOp)))
     return failure();
-
-  if (auto selectedTileShape = dyn_cast_or_null<DenseI64ArrayAttr>(
-          getScheduleMetadataAttr(
-              funcOp, kernelMetadata,
-              ::mlir::ascend::kScheduleSelectedTileShapeAttr,
-              kKernelMetadataSelectedTileShapeKey))) {
-    llvm::json::Array selectedTileShapeJson;
-    for (int64_t tileSize : selectedTileShape.asArrayRef())
-      selectedTileShapeJson.push_back(tileSize);
-    tilingParams["selected_tile_shape"] = std::move(selectedTileShapeJson);
-  }
 
   if (auto tileBinding = dyn_cast_or_null<StringAttr>(
           getScheduleMetadataAttr(
@@ -1685,7 +1636,6 @@ LogicalResult emitHostTilingCpp(ModuleOp module, StringRef outPath,
     WorkspaceInfo workspaceInfo;
     SmallVector<TilingFieldInfo> fields;
     SmallVector<unsigned> shapeFieldPositions;
-    SmallVector<int64_t> selectedTileShape;
     llvm::StringMap<int64_t> tileParamDefaults;
     std::string hostWorkspaceExpr;
     bool workspaceExprUsesShapeArgs = false;
@@ -1712,10 +1662,6 @@ LogicalResult emitHostTilingCpp(ModuleOp module, StringRef outPath,
         collectTilingFields(kernel, *tilingTypeOr);
     if (failed(fieldsOr))
       return failure();
-    FailureOr<SmallVector<int64_t>> selectedTileShape =
-        collectSelectedTileShape(kernel);
-    if (failed(selectedTileShape))
-      return failure();
     FailureOr<llvm::StringMap<int64_t>> tileParamDefaults =
         collectTileParamDefaults(kernel);
     if (failed(tileParamDefaults))
@@ -1731,7 +1677,6 @@ LogicalResult emitHostTilingCpp(ModuleOp module, StringRef outPath,
     info.tilingType = *tilingTypeOr;
     info.workspaceInfo = *workspaceInfo;
     info.fields = std::move(*fieldsOr);
-    info.selectedTileShape = std::move(*selectedTileShape);
     info.tileParamDefaults = std::move(*tileParamDefaults);
     for (auto [index, nameAttr] : llvm::enumerate(names)) {
       StringRef name = cast<StringAttr>(nameAttr).getValue();
@@ -1795,7 +1740,6 @@ LogicalResult emitHostTilingCpp(ModuleOp module, StringRef outPath,
       os << "    return 1;\n";
       os << "  " << info.structName << " data{};\n";
       unsigned shapeIndex = 0;
-      unsigned tileIndex = 0;
       for (auto [index, nameAttr] : llvm::enumerate(names)) {
         StringRef name = cast<StringAttr>(nameAttr).getValue();
         os << "  data." << name << " = ";
@@ -1804,11 +1748,8 @@ LogicalResult emitHostTilingCpp(ModuleOp module, StringRef outPath,
         } else if (auto defaultIt = info.tileParamDefaults.find(name);
                    defaultIt != info.tileParamDefaults.end()) {
           os << defaultIt->second;
-        } else if (tileIndex < info.selectedTileShape.size()) {
-          os << info.selectedTileShape[tileIndex++];
         } else {
           os << "0";
-          ++tileIndex;
         }
         os << ";\n";
       }

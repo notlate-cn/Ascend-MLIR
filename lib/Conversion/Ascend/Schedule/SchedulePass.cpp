@@ -96,7 +96,6 @@ static void clearOwnedScheduleAttrs(Operation *op) {
   op->removeAttr(kScheduleDecisionIdAttr);
   op->removeAttr(kScheduleRuntimeTopKAttr);
   op->removeAttr(kStructuredLoweringAttr);
-  op->removeAttr(kScheduleSelectedTileShapeAttr);
   op->removeAttr(kScheduleGuardMarkersAttr);
   op->removeAttr(kScheduleTailPoliciesAttr);
   op->removeAttr(kScheduleTailPlanAttr);

@@ -36,7 +36,7 @@ func.func @large_rank2_vector(%arg0: tensor<640x15000xf16>,
 // CHECK:   selected = kernel_0.decision.0
 // CHECK-NEXT:   candidate_guards = 2
 // CHECK-NEXT:   decision_guards = 0
-// CHECK-NEXT:   selected_tile_shape = [32,15000]
+// CHECK-NEXT:   tile_params =
 // CHECK: linalg.generic
 // CHECK-SAME: ascend.schedule.family = "vector_generic"
-// CHECK-SAME: ascend.schedule.selected_tile_shape = array<i64: 32, 15000>
+// CHECK-SAME: ascend.schedule.tile_binding = "symbolic"

@@ -14,8 +14,6 @@
 // MANIFEST: "guard": "arg0_dim0 <= 128"
 // MANIFEST: "priority": 0
 // MANIFEST: "shapeBucketKey": "M.small"
-// MANIFEST: "selected_tile_shape": [
-// MANIFEST-NEXT: 32
 // MANIFEST: "workspaceSizeBytes": 1024
 // MANIFEST: "blockDim": 1
 // MANIFEST: "decisionId": "kernel_variant.fallback"
@@ -23,8 +21,6 @@
 // MANIFEST: "guard": "arg0_dim0 > 0"
 // MANIFEST: "priority": 99
 // MANIFEST: "shapeBucketKey": "M.fallback"
-// MANIFEST: "selected_tile_shape": [
-// MANIFEST-NEXT: 16
 // MANIFEST: "workspaceSizeBytes": 2048
 
 // TILING: "guardSet": [
@@ -59,7 +55,6 @@ module {
           guard = "arg0_dim0 <= 128",
           kernel = "kernel_variant",
           priority = 0 : i64,
-          selected_tile_shape = array<i64: 32>,
           shape_bucket_key = "M.small",
           tail_policies = ["masked_tail"],
           tail_plan = [{
@@ -78,7 +73,6 @@ module {
           guard = "arg0_dim0 > 0",
           kernel = "kernel_variant",
           priority = 99 : i64,
-          selected_tile_shape = array<i64: 16>,
           shape_bucket_key = "M.fallback",
           tail_policies = ["scalar_epilogue"],
           tail_plan = [{

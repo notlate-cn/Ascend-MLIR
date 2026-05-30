@@ -103,17 +103,17 @@ LogicalResult convertDataMove(func::FuncOp funcOp, AscendCBufferContext &ctx);
 /// Returns failure() if any required queue mapping is missing.
 LogicalResult convertCompute(func::FuncOp funcOp, AscendCBufferContext &ctx);
 
-/// Materialize selected rank-2 reduction tiles as explicit scf loops before
+/// Materialize symbolic rank-2 reduction tiles as explicit scf loops before
 /// data-move and compute conversion consume the linalg/memref surface.
-LogicalResult materializeSelectedReductionTiles(func::FuncOp funcOp);
+LogicalResult materializeSymbolicReductionTiles(func::FuncOp funcOp);
 
-/// Materialize selected rank-2 all-parallel tiles as explicit scf loops before
+/// Materialize symbolic rank-2 all-parallel tiles as explicit scf loops before
 /// data-move and compute conversion consume the linalg/memref surface.
-LogicalResult materializeSelectedAllParallelTiles(func::FuncOp funcOp);
+LogicalResult materializeSymbolicAllParallelTiles(func::FuncOp funcOp);
 
-/// Materialize selected rank-2 GM transpose tiles as explicit scf loops before
+/// Materialize symbolic rank-2 GM transpose tiles as explicit scf loops before
 /// compute conversion lowers each tile.
-LogicalResult materializeSelectedTransposeTiles(func::FuncOp funcOp);
+LogicalResult materializeSymbolicTransposeTiles(func::FuncOp funcOp);
 
 /// Run the Ascend KernelIR construction implementation on one function.
 LogicalResult lowerLinalgToKernelIR(func::FuncOp funcOp);

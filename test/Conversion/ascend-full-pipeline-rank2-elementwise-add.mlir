@@ -5,7 +5,6 @@
 // CHECK-SAME: %{{.*}}: memref<ui8>
 // CHECK-SAME: !emitasc.py_struct<"TilingData"
 // CHECK-SAME: ["TB_M", "TB_N"
-// CHECK-SAME: ascend.schedule.selected_tile_shape = array<i64: 32, 128>
 // CHECK-SAME: ascend.schedule.tail_policies = ["masked_tail", "masked_tail"]
 // CHECK-SAME: ascend.schedule.tile_binding = "symbolic"
 // CHECK-SAME: cann.num_inputs = 2 : i32

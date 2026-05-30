@@ -22,8 +22,6 @@ namespace {
 constexpr llvm::StringLiteral kLoopSkeletonV0 = "loop_skeleton_v0";
 constexpr llvm::StringLiteral kKernelMetadataKernelKey = "kernel";
 constexpr llvm::StringLiteral kKernelMetadataDecisionIdKey = "decision_id";
-constexpr llvm::StringLiteral kKernelMetadataSelectedTileShapeKey =
-    "selected_tile_shape";
 constexpr llvm::StringLiteral kKernelMetadataTileBindingKey = "tile_binding";
 constexpr llvm::StringLiteral kKernelMetadataTileParamsKey = "tile_params";
 constexpr llvm::StringLiteral kKernelMetadataGuardMarkersKey =
@@ -210,12 +208,11 @@ ArrayAttr buildTailMarkersAttr(MLIRContext *context,
   return builder.getArrayAttr(entries);
 }
 
-void setScheduleMetadata(Operation *op, DenseI64ArrayAttr selectedTileShape,
-                         StringAttr tileBinding, ArrayAttr tileParams,
+void setScheduleMetadata(Operation *op, StringAttr tileBinding,
+                         ArrayAttr tileParams,
                          ArrayAttr guardMarkers, ArrayAttr tailPolicies,
                          ArrayAttr tailPlan, ArrayAttr tailMarkers,
                          StringAttr targetTilePolicy) {
-  op->setAttr(kScheduleSelectedTileShapeAttr, selectedTileShape);
   op->setAttr(kScheduleTileBindingAttr, tileBinding);
   op->setAttr(kScheduleTileParamsAttr, tileParams);
   op->setAttr(kScheduleGuardMarkersAttr, guardMarkers);
@@ -226,7 +223,6 @@ void setScheduleMetadata(Operation *op, DenseI64ArrayAttr selectedTileShape,
 }
 
 void clearLegacyFunctionScheduleMetadata(func::FuncOp funcOp) {
-  funcOp->removeAttr(kScheduleSelectedTileShapeAttr);
   funcOp->removeAttr(kScheduleTileBindingAttr);
   funcOp->removeAttr(kScheduleTileParamsAttr);
   funcOp->removeAttr(kScheduleGuardMarkersAttr);
@@ -237,7 +233,6 @@ void clearLegacyFunctionScheduleMetadata(func::FuncOp funcOp) {
 }
 
 void setLegacyFunctionScheduleMetadata(func::FuncOp funcOp,
-                                       DenseI64ArrayAttr selectedTileShape,
                                        StringAttr tileBinding,
                                        ArrayAttr tileParams,
                                        ArrayAttr guardMarkers,
@@ -245,7 +240,6 @@ void setLegacyFunctionScheduleMetadata(func::FuncOp funcOp,
                                        ArrayAttr tailPlan,
                                        ArrayAttr tailMarkers,
                                        StringAttr targetTilePolicy) {
-  funcOp->setAttr(kScheduleSelectedTileShapeAttr, selectedTileShape);
   funcOp->setAttr(kScheduleTileBindingAttr, tileBinding);
   funcOp->setAttr(kScheduleTileParamsAttr, tileParams);
   funcOp->setAttr(kScheduleGuardMarkersAttr, guardMarkers);
@@ -258,7 +252,6 @@ void setLegacyFunctionScheduleMetadata(func::FuncOp funcOp,
 DictionaryAttr
 buildKernelScheduleMetadataEntry(Builder &builder, StringRef kernelId,
                                  StringRef decisionId,
-                                 DenseI64ArrayAttr selectedTileShape,
                                  StringAttr tileBinding,
                                  ArrayAttr tileParams,
                                  ArrayAttr guardMarkers,
@@ -270,8 +263,6 @@ buildKernelScheduleMetadataEntry(Builder &builder, StringRef kernelId,
                            builder.getStringAttr(kernelId)),
       builder.getNamedAttr(kKernelMetadataDecisionIdKey,
                            builder.getStringAttr(decisionId)),
-      builder.getNamedAttr(kKernelMetadataSelectedTileShapeKey,
-                           selectedTileShape),
       builder.getNamedAttr(kKernelMetadataTileBindingKey, tileBinding),
       builder.getNamedAttr(kKernelMetadataTileParamsKey, tileParams),
       builder.getNamedAttr(kKernelMetadataGuardMarkersKey, guardMarkers),
@@ -284,7 +275,6 @@ buildKernelScheduleMetadataEntry(Builder &builder, StringRef kernelId,
 }
 
 bool kernelScheduleMetadataEntryMatches(DictionaryAttr entry,
-                                        DenseI64ArrayAttr selectedTileShape,
                                         StringAttr tileBinding,
                                         ArrayAttr tileParams,
                                         ArrayAttr guardMarkers,
@@ -292,8 +282,7 @@ bool kernelScheduleMetadataEntryMatches(DictionaryAttr entry,
                                         ArrayAttr tailPlan,
                                         ArrayAttr tailMarkers,
                                         StringAttr targetTilePolicy) {
-  return entry.get(kKernelMetadataSelectedTileShapeKey) == selectedTileShape &&
-         entry.get(kKernelMetadataTileBindingKey) == tileBinding &&
+  return entry.get(kKernelMetadataTileBindingKey) == tileBinding &&
          entry.get(kKernelMetadataTileParamsKey) == tileParams &&
          entry.get(kKernelMetadataGuardMarkersKey) == guardMarkers &&
          entry.get(kKernelMetadataTailPoliciesKey) == tailPolicies &&
@@ -303,7 +292,6 @@ bool kernelScheduleMetadataEntryMatches(DictionaryAttr entry,
 }
 
 LogicalResult verifyLegacyFunctionScheduleMetadataShape(func::FuncOp funcOp) {
-  bool hasSelectedTileShape = funcOp->hasAttr(kScheduleSelectedTileShapeAttr);
   bool hasTileBinding = funcOp->hasAttr(kScheduleTileBindingAttr);
   bool hasTileParams = funcOp->hasAttr(kScheduleTileParamsAttr);
   bool hasGuardMarkers = funcOp->hasAttr(kScheduleGuardMarkersAttr);
@@ -311,16 +299,14 @@ LogicalResult verifyLegacyFunctionScheduleMetadataShape(func::FuncOp funcOp) {
   bool hasTailPlan = funcOp->hasAttr(kScheduleTailPlanAttr);
   bool hasTailMarkers = funcOp->hasAttr(kScheduleTailMarkersAttr);
   bool hasTargetTilePolicy = funcOp->hasAttr(kScheduleTargetTilePolicyAttr);
-  bool hasAnyMetadata = hasSelectedTileShape || hasTileBinding ||
-                        hasTileParams || hasGuardMarkers || hasTailPolicies ||
+  bool hasAnyMetadata = hasTileBinding || hasTileParams || hasGuardMarkers || hasTailPolicies ||
                         hasTailPlan || hasTailMarkers || hasTargetTilePolicy;
   bool hasAllCoreMetadata =
-      hasSelectedTileShape && hasTailPolicies && hasTailPlan;
+      hasTailPolicies && hasTailPlan;
   if (hasAnyMetadata && !hasAllCoreMetadata)
     return funcOp.emitError()
            << "function schedule metadata must include "
-           << kScheduleSelectedTileShapeAttr << ", "
-           << kScheduleTailPoliciesAttr << ", and "
+           << kScheduleTailPoliciesAttr << " and "
            << kScheduleTailPlanAttr << " together";
   if (hasAnyMetadata && hasTileBinding != hasTileParams)
     return funcOp.emitError()
@@ -333,7 +319,6 @@ LogicalResult verifyLegacyFunctionScheduleMetadataShape(func::FuncOp funcOp) {
 FailureOr<ArrayAttr>
 upsertKernelScheduleMetadata(func::FuncOp funcOp, StringRef kernelId,
                              StringRef decisionId,
-                             DenseI64ArrayAttr selectedTileShape,
                              StringAttr tileBinding,
                              ArrayAttr tileParams,
                              ArrayAttr guardMarkers, ArrayAttr tailPolicies,
@@ -365,8 +350,8 @@ upsertKernelScheduleMetadata(func::FuncOp funcOp, StringRef kernelId,
       if (entryKernel.getValue() == kernelId) {
         foundKernel = true;
         if (!kernelScheduleMetadataEntryMatches(
-                entry, selectedTileShape, tileBinding, tileParams,
-                guardMarkers, tailPolicies, tailPlan, tailMarkers,
+                entry, tileBinding, tileParams, guardMarkers, tailPolicies,
+                tailPlan, tailMarkers,
                 targetTilePolicy))
           return funcOp.emitError()
                  << "function contains conflicting schedule metadata for "
@@ -379,16 +364,14 @@ upsertKernelScheduleMetadata(func::FuncOp funcOp, StringRef kernelId,
 
   if (!foundKernel)
     entries.push_back(buildKernelScheduleMetadataEntry(
-        builder, kernelId, decisionId, selectedTileShape, tileBinding,
-        tileParams, guardMarkers, tailPolicies, tailPlan, tailMarkers,
-        targetTilePolicy));
+        builder, kernelId, decisionId, tileBinding, tileParams, guardMarkers,
+        tailPolicies, tailPlan, tailMarkers, targetTilePolicy));
 
   return builder.getArrayAttr(entries);
 }
 
 void reconcileLegacyFunctionScheduleMetadata(func::FuncOp funcOp,
                                              ArrayAttr kernelMetadata,
-                                             DenseI64ArrayAttr selectedTileShape,
                                              StringAttr tileBinding,
                                              ArrayAttr tileParams,
                                              ArrayAttr guardMarkers,
@@ -400,17 +383,17 @@ void reconcileLegacyFunctionScheduleMetadata(func::FuncOp funcOp,
   for (Attribute rawEntry : kernelMetadata) {
     auto entry = cast<DictionaryAttr>(rawEntry);
     if (!kernelScheduleMetadataEntryMatches(
-            entry, selectedTileShape, tileBinding, tileParams, guardMarkers,
-            tailPolicies, tailPlan, tailMarkers, targetTilePolicy)) {
+            entry, tileBinding, tileParams, guardMarkers, tailPolicies,
+            tailPlan, tailMarkers, targetTilePolicy)) {
       allEntriesShareMetadata = false;
       break;
     }
   }
 
   if (allEntriesShareMetadata) {
-    setLegacyFunctionScheduleMetadata(funcOp, selectedTileShape, tileBinding,
-                                      tileParams, guardMarkers, tailPolicies,
-                                      tailPlan, tailMarkers, targetTilePolicy);
+    setLegacyFunctionScheduleMetadata(funcOp, tileBinding, tileParams,
+                                      guardMarkers, tailPolicies, tailPlan,
+                                      tailMarkers, targetTilePolicy);
     return;
   }
 
@@ -418,7 +401,6 @@ void reconcileLegacyFunctionScheduleMetadata(func::FuncOp funcOp,
 }
 
 LogicalResult preserveFunctionScheduleMetadata(Operation *op,
-                                               DenseI64ArrayAttr selectedTileShape,
                                                StringAttr tileBinding,
                                                ArrayAttr tileParams,
                                                ArrayAttr guardMarkers,
@@ -445,15 +427,15 @@ LogicalResult preserveFunctionScheduleMetadata(Operation *op,
 
   FailureOr<ArrayAttr> kernelMetadata = upsertKernelScheduleMetadata(
       funcOp, kernelAttr.getValue(), decisionIdAttr.getValue(),
-      selectedTileShape, tileBinding, tileParams, guardMarkers, tailPolicies,
-      tailPlan, tailMarkers, targetTilePolicy);
+      tileBinding, tileParams, guardMarkers, tailPolicies, tailPlan,
+      tailMarkers, targetTilePolicy);
   if (failed(kernelMetadata))
     return failure();
 
   funcOp->setAttr(kScheduleKernelMetadataAttr, *kernelMetadata);
   reconcileLegacyFunctionScheduleMetadata(
-      funcOp, *kernelMetadata, selectedTileShape, tileBinding, tileParams,
-      guardMarkers, tailPolicies, tailPlan, tailMarkers, targetTilePolicy);
+      funcOp, *kernelMetadata, tileBinding, tileParams, guardMarkers,
+      tailPolicies, tailPlan, tailMarkers, targetTilePolicy);
   return success();
 }
 
@@ -500,8 +482,6 @@ LogicalResult applyStructuredLoweringMarkers(
   if (!metadataOp)
     return failure();
   MLIRContext *context = metadataOp->getContext();
-  DenseI64ArrayAttr selectedTileShape = DenseI64ArrayAttr::get(
-      context, decisionSet.decisions.front().instance.tileShape.tileSizes);
   const ScheduleDecision &selectedDecision = decisionSet.decisions.front();
   StringAttr tileBinding =
       StringAttr::get(context, kScheduleTileBindingSymbolic);
@@ -536,13 +516,12 @@ LogicalResult applyStructuredLoweringMarkers(
     opView.op->setAttr(kStructuredLoweringAttr,
                        StringAttr::get(opView.op->getContext(),
                                        kLoopSkeletonV0));
-    setScheduleMetadata(opView.op, selectedTileShape, tileBinding, tileParams,
-                        guardMarkers,
+    setScheduleMetadata(opView.op, tileBinding, tileParams, guardMarkers,
                         tailPolicies, tailPlan, tailMarkers,
                         targetTilePolicy);
     if (failed(preserveFunctionScheduleMetadata(
-            opView.op, selectedTileShape, tileBinding, tileParams,
-            guardMarkers, tailPolicies, tailPlan, tailMarkers,
+            opView.op, tileBinding, tileParams, guardMarkers, tailPolicies,
+            tailPlan, tailMarkers,
             targetTilePolicy)))
       return failure();
     ++report.verifiedOps;

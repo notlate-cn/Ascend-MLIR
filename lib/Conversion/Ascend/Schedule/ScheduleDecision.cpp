@@ -18,20 +18,6 @@
 namespace mlir::ascend::schedule {
 namespace {
 
-void printTileShape(llvm::ArrayRef<int64_t> tileSizes,
-                    llvm::raw_ostream &os) {
-  os << "[";
-  for (auto [index, tileSize] : llvm::enumerate(tileSizes)) {
-    if (index != 0)
-      os << ",";
-    if (ShapedType::isDynamic(tileSize))
-      os << "?";
-    else
-      os << tileSize;
-  }
-  os << "]";
-}
-
 void printMaybeDynamic(int64_t value, llvm::raw_ostream &os) {
   if (ShapedType::isDynamic(value))
     os << "?";
@@ -204,12 +190,12 @@ TileParamBinding selectTileParamBinding(const ScheduleProblem &problem,
 }
 
 int64_t selectRuntimeDefaultTile(const ScheduleProblem &problem,
-                                 int64_t selectedTile, int64_t extent) {
+                                 int64_t chosenTile, int64_t extent) {
   int64_t fallback = problem.targetTilePolicy.defaultParallelTile;
   if (fallback <= 0)
     fallback = 1;
-  if (!ShapedType::isDynamic(selectedTile) && selectedTile > 0)
-    fallback = selectedTile;
+  if (!ShapedType::isDynamic(chosenTile) && chosenTile > 0)
+    fallback = chosenTile;
   if (!ShapedType::isDynamic(extent) && extent > 0)
     fallback = std::min(fallback, extent);
   return std::max<int64_t>(1, fallback);
@@ -217,7 +203,7 @@ int64_t selectRuntimeDefaultTile(const ScheduleProblem &problem,
 
 ScheduleTileParam buildTileParamForTileIndex(const ScheduleProblem &problem,
                                              unsigned tileIndex,
-                                             int64_t selectedTile) {
+                                             int64_t chosenTile) {
   ScheduleTileParam param;
   param.logicalAxisId = tileIndex;
   param.name = defaultTileParamName(problem, tileIndex);
@@ -242,17 +228,17 @@ ScheduleTileParam buildTileParamForTileIndex(const ScheduleProblem &problem,
   switch (param.binding) {
   case TileParamBinding::Runtime:
     param.defaultValue =
-        selectRuntimeDefaultTile(problem, selectedTile, param.extent);
+        selectRuntimeDefaultTile(problem, chosenTile, param.extent);
     param.upperBound = param.defaultValue;
     break;
   case TileParamBinding::Extent:
     param.defaultValue =
-        !ShapedType::isDynamic(param.extent) ? param.extent : selectedTile;
+        !ShapedType::isDynamic(param.extent) ? param.extent : chosenTile;
     param.upperBound = param.defaultValue;
     break;
   case TileParamBinding::StaticFallback:
-    param.defaultValue = selectedTile;
-    param.upperBound = selectedTile;
+    param.defaultValue = chosenTile;
+    param.upperBound = chosenTile;
     break;
   }
   return param;
@@ -373,9 +359,6 @@ void printScheduleDecisionSetReport(const ScheduleDecisionSet &decisionSet,
        << selectedInstance.candidateGuards.size() << "\n";
     os << "  decision_guards = " << selectedInstance.decisionGuards.size()
        << "\n";
-    os << "  selected_tile_shape = ";
-    printTileShape(selectedDecision.instance.tileShape.tileSizes, os);
-    os << "\n";
     os << "  tile_params = ";
     printTileParams(selectedDecision.tileParams, os);
     os << "\n";

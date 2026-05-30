@@ -641,7 +641,7 @@ struct ScheduleProblemBuildContext {
 
 `ScheduleInstance` 是搜索空间中的**候选描述**：符号化、不完整，仅描述调度形态（切哪些轴、轴如何分层、cache/pipeline 策略等）和 tile 参数表达式，不把某个 concrete tile 当成后续 lowering 的唯一事实。`ScheduleDecision` 是其**精化结果**：已求值、带 guard、字段完整。两者关系通过组合而非字段复制表达（见 4.6.2 节）。
 
-**符号化 tile 约束**：第三层不得把 `selected_tile_shape` 作为第四、五层的主 contract。主 contract 是 `tile_params`：每个 logical tile 维度都有 `name`、`axis`、`binding`、`default`、`upper_bound`、`extent`、`roles` 和 `primitive_uses`。其中 `default` 是 host tiling 在没有 tuning 命中时的默认值，`upper_bound` 是资源合法性上界，二者都不是编译期固定 loop step。`selected_tile_shape` 只允许作为 legacy/debug 字段保留，不能成为新 lowering 的必需输入。
+**符号化 tile 约束**：第三层不得把 `selected_tile_shape` 作为第四、五层的 contract，也不得继续把它作为 legacy/debug 字段写入 IR 或 artifact。主 contract 是 `tile_params`：每个 logical tile 维度都有 `name`、`axis`、`binding`、`default`、`upper_bound`、`extent`、`roles` 和 `primitive_uses`。其中 `default` 是 host tiling 在没有 tuning 命中时的默认值，`upper_bound` 是资源合法性上界，二者都不是编译期固定 loop step。
 
 **`ScheduleInstance` 最小字段**：
 
@@ -983,9 +983,8 @@ struct ScheduleDecision {
   CachePlan cachePlan;                     // cache 计划（已从 cacheChoices 具体化）
   PromotionHints promotionHints;           // 片上提升意图（含 isBinding 字段）
   SmallVector<ScheduleTileParam> tileParams;
-                                          // 新主 contract：后续 lowering / host tiling
-                                          // 消费符号 tile 参数，而不是
-                                          // selected_tile_shape 常量数组
+                                          // 主 contract：后续 lowering / host tiling
+                                          // 只消费符号 tile 参数
   SmallVector<ScheduledAxisTailPlan> tailPlans;
                                           // 每根已调度轴的最终 tail 处理计划
 };

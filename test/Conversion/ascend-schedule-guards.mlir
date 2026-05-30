@@ -137,7 +137,6 @@ func.func @reduction_keeps_split_logical_axis_guard(%arg0: tensor<2x4xf16>)
 // CHECK-NEXT:   selected = kernel_1.decision.0
 // CHECK-NEXT:   candidate_guards = 2
 // CHECK-NEXT:   decision_guards = 0
-// CHECK-NEXT:   selected_tile_shape = [32,8]
 
 // CHECK: ScheduleSearch:
 // CHECK-NEXT:   kernel = kernel_2

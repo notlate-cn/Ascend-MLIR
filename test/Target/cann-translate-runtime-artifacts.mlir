@@ -37,9 +37,6 @@
 // MANIFEST-DAG: "kernel_id": "broadcast_add_reducesum",
 // MANIFEST-DAG: "hostTilingId": "broadcast_add_reducesum.host_tiling"
 // MANIFEST: "tilingParams": {
-// MANIFEST-NEXT: "selected_tile_shape": [
-// MANIFEST-NEXT: 64,
-// MANIFEST-NEXT: 15000
 // MANIFEST: "tile_binding": "symbolic"
 // MANIFEST: "tile_params": [
 // MANIFEST-NEXT: {
@@ -150,7 +147,6 @@ module {
           upper_bound = 15000 : i64
         }
       ],
-      ascend.schedule.selected_tile_shape = array<i64: 64, 15000>,
       ascend.schedule.tail_policies = ["masked_tail", "full_extent"],
       ascend.schedule.tail_plan = [
         {
