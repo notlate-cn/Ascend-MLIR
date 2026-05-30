@@ -1,0 +1,128 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Ascend-MLIR architecture (simplified, with VectorPlan submodules). -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1180 640" font-family="Inter, Helvetica, Arial, sans-serif">
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#333"/>
+    </marker>
+    <style>
+      .title { font-size: 22px; font-weight: 700; fill: #111; }
+      .group-title { font-size: 14px; font-weight: 700; fill: #333; }
+      .name  { font-size: 14px; font-weight: 600; fill: #111; }
+      .sub   { font-size: 11px; fill: #555; }
+      .edge  { stroke: #333; stroke-width: 1.6; fill: none; marker-end: url(#arrow); }
+      .edge-inner { stroke: #666; stroke-width: 1.3; fill: none; marker-end: url(#arrow); }
+      rect.box   { stroke: #2c3e50; stroke-width: 1.2; rx: 8; ry: 8; }
+      rect.group { fill: #fef6e9; stroke: #b58900; stroke-width: 1.4; stroke-dasharray: 6 4; rx: 10; ry: 10; }
+    </style>
+  </defs>
+
+  <text class="title" x="590" y="38" text-anchor="middle">Ascend-MLIR — main modules (VectorPlan expanded)</text>
+
+  <!-- Row 1: frontend → linalg -->
+  <g id="frontend">
+    <rect class="box" x="40" y="80" width="220" height="70" fill="#e8f1fb"/>
+    <text class="name" x="150" y="108" text-anchor="middle">PyTorch frontend</text>
+    <text class="sub"  x="150" y="126" text-anchor="middle">torch.export + torch-mlir</text>
+    <text class="sub"  x="150" y="140" text-anchor="middle">python/torch/torch2linalg</text>
+  </g>
+
+  <g id="linalg">
+    <rect class="box" x="310" y="80" width="200" height="70" fill="#fff4d6"/>
+    <text class="name" x="410" y="108" text-anchor="middle">linalg IR</text>
+    <text class="sub"  x="410" y="126" text-anchor="middle">(+ TorchFrontend normalize)</text>
+    <text class="sub"  x="410" y="140" text-anchor="middle">lib/Conversion/TorchFrontend</text>
+  </g>
+
+  <path class="edge" d="M260,115 L310,115"/>
+  <path class="edge" d="M510,115 L600,115 L600,170"/>
+
+  <!-- VectorPlan group -->
+  <g id="vectorplan">
+    <rect class="group" x="60" y="170" width="1080" height="240"/>
+    <text class="group-title" x="80" y="194">VectorPlan  (lib/Conversion/VectorPlan)</text>
+
+    <!-- 4 submodules in a row -->
+    <g id="vp-groupanalysis">
+      <rect class="box" x="80" y="220" width="220" height="100" fill="#fbe9d6"/>
+      <text class="name" x="190" y="246" text-anchor="middle">GroupAnalysis</text>
+      <text class="sub"  x="190" y="266" text-anchor="middle">classifies linalg ops into</text>
+      <text class="sub"  x="190" y="280" text-anchor="middle">fusion groups</text>
+      <text class="sub"  x="190" y="298" text-anchor="middle">assigns group_id, topo_index</text>
+    </g>
+
+    <g id="vp-groupoutline">
+      <rect class="box" x="330" y="220" width="240" height="100" fill="#fbe9d6"/>
+      <text class="name" x="450" y="246" text-anchor="middle">GroupOutline</text>
+      <text class="sub"  x="450" y="266" text-anchor="middle">outline each group into</text>
+      <text class="sub"  x="450" y="280" text-anchor="middle">a private kernel func</text>
+      <text class="sub"  x="450" y="298" text-anchor="middle">NetworkJsonEmitter → network.json</text>
+    </g>
+
+    <g id="vp-tilefuse">
+      <rect class="box" x="600" y="220" width="240" height="100" fill="#fbe9d6"/>
+      <text class="name" x="720" y="246" text-anchor="middle">TileFuse</text>
+      <text class="sub"  x="720" y="266" text-anchor="middle">TilePlanGen (autoschedule)</text>
+      <text class="sub"  x="720" y="280" text-anchor="middle">Collapse · TileFuseUtils</text>
+      <text class="sub"  x="720" y="298" text-anchor="middle">→ tile loop nest + symbolic extents</text>
+    </g>
+
+    <g id="vp-tileinfo">
+      <rect class="box" x="870" y="220" width="250" height="100" fill="#fbe9d6"/>
+      <text class="name" x="995" y="246" text-anchor="middle">TileInfo</text>
+      <text class="sub"  x="995" y="266" text-anchor="middle">TilePlanToTileInfo</text>
+      <text class="sub"  x="995" y="280" text-anchor="middle">lowers plan to AscendC</text>
+      <text class="sub"  x="995" y="298" text-anchor="middle">tiling_data + block_dim_expr</text>
+    </g>
+
+    <path class="edge-inner" d="M300,270 L330,270"/>
+    <path class="edge-inner" d="M570,270 L600,270"/>
+    <path class="edge-inner" d="M840,270 L870,270"/>
+
+    <!-- Supporting passes / analyses inside the codegen flow -->
+    <rect class="box" x="80" y="340" width="1040" height="50" fill="#fafafa"/>
+    <text class="sub" x="100" y="361" font-weight="600">supporting passes (around TileFuse/TileInfo):</text>
+    <text class="sub" x="100" y="378">SymbolizeShapes (AFIR · SymbolicShape) → bufferize → AscendCBufferPlacement → LinalgToAscendC → AscendCParallelize → FinalizeKernel → CanonicalizeCannSignature</text>
+  </g>
+
+  <!-- Row 3: backends -->
+  <path class="edge" d="M450,410 L450,460"/>
+  <path class="edge" d="M720,410 L720,460"/>
+  <path class="edge" d="M995,410 L995,460"/>
+
+  <g id="ascendc-target">
+    <rect class="box" x="40" y="460" width="290" height="110" fill="#fde7e7"/>
+    <text class="name" x="185" y="488" text-anchor="middle">AscendC kernel emit</text>
+    <text class="sub"  x="185" y="508" text-anchor="middle">lib/Target/CannKernel</text>
+    <text class="sub"  x="185" y="524" text-anchor="middle">MLIR → AscendC C++ kernel</text>
+    <text class="sub"  x="185" y="540" text-anchor="middle">tool: afir-translate</text>
+  </g>
+
+  <g id="aclnn">
+    <rect class="box" x="360" y="460" width="290" height="110" fill="#fde7e7"/>
+    <text class="name" x="505" y="488" text-anchor="middle">Aclnn backend</text>
+    <text class="sub"  x="505" y="508" text-anchor="middle">lib/Runtime/AclnnBackend</text>
+    <text class="sub"  x="505" y="524" text-anchor="middle">host-side op dispatch</text>
+    <text class="sub"  x="505" y="540" text-anchor="middle">tool: aclnn-backend</text>
+  </g>
+
+  <g id="runtime">
+    <rect class="box" x="680" y="460" width="460" height="110" fill="#fde7e7"/>
+    <text class="name" x="910" y="488" text-anchor="middle">Mix runner / Execution</text>
+    <text class="sub"  x="910" y="508" text-anchor="middle">lib/Runtime/{Mix, Execution, Profile, Artifact, Support}</text>
+    <text class="sub"  x="910" y="524" text-anchor="middle">runs AscendC kernels + aclnn ops via network.json</text>
+    <text class="sub"  x="910" y="540" text-anchor="middle">driver: python/network_runner.py · tool: mix-compiler</text>
+  </g>
+
+  <path class="edge" d="M330,515 L360,515"/>
+  <path class="edge" d="M650,515 L680,515"/>
+
+  <!-- Legend -->
+  <g id="legend" transform="translate(40,600)">
+    <rect x="0" y="0" width="14" height="10" fill="#e8f1fb" stroke="#2c3e50"/><text class="sub" x="20" y="9">frontend</text>
+    <rect x="90" y="0" width="14" height="10" fill="#fff4d6" stroke="#2c3e50"/><text class="sub" x="110" y="9">IR artifact</text>
+    <rect x="190" y="0" width="14" height="10" fill="#fbe9d6" stroke="#2c3e50"/><text class="sub" x="210" y="9">VectorPlan submodule</text>
+    <rect x="345" y="0" width="14" height="10" fill="#fef6e9" stroke="#b58900" stroke-dasharray="4 3"/><text class="sub" x="365" y="9">subsystem grouping</text>
+    <rect x="485" y="0" width="14" height="10" fill="#fde7e7" stroke="#2c3e50"/><text class="sub" x="505" y="9">target / runtime</text>
+  </g>
+</svg>
