@@ -1,4 +1,5 @@
 #include "Conversion/LowerNonLinalgOps/LowerNonLinalgOpsPass.h"
+#include "RecognizeUtils.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/ControlFlow/IR/ControlFlowOps.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
@@ -44,12 +45,7 @@ namespace {
 
 static constexpr StringRef kAclnnFuncName = "__aclnn_embedding";
 
-template <typename OpT>
-static bool bodyHas(linalg::GenericOp g) {
-  bool found = false;
-  g.getBody()->walk([&](OpT) { found = true; });
-  return found;
-}
+// bodyHas: see RecognizeUtils.h.
 
 static func::FuncOp getOrCreateDecl(ModuleOp module,
                                     RankedTensorType tableType,

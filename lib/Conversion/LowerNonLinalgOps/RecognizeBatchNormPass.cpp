@@ -1,4 +1,5 @@
 #include "Conversion/LowerNonLinalgOps/LowerNonLinalgOpsPass.h"
+#include "RecognizeUtils.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
@@ -41,39 +42,7 @@ namespace {
 
 static constexpr StringRef kAclnnFuncName = "__aclnn_batch_norm";
 
-template <typename OpT>
-static bool bodyHas(linalg::GenericOp g) {
-  bool found = false;
-  g.getBody()->walk([&](OpT) { found = true; });
-  return found;
-}
-
-// The UNIQUE linalg.generic user of `v` whose body contains an OpT.  Returns
-// null if there is no such user OR if there is more than one: with multiple
-// candidates (e.g. the gamma-scaled value also feeds a residual/second-bias
-// add) we cannot tell which generic is the real batchnorm affine op, and
-// guessing would silently fold with the wrong gamma/beta.  The caller bails on
-// null rather than guess.
-template <typename OpT>
-static linalg::GenericOp userGenericWithBody(Value v) {
-  linalg::GenericOp found;
-  for (Operation *u : v.getUsers())
-    if (auto g = dyn_cast<linalg::GenericOp>(u))
-      if (bodyHas<OpT>(g)) {
-        if (found)
-          return {}; // ambiguous
-        found = g;
-      }
-  return found;
-}
-
-// The (single) other tensor input of a 2-input generic.
-static Value otherInput(linalg::GenericOp g, Value known) {
-  for (Value in : g.getInputs())
-    if (in != known)
-      return in;
-  return {};
-}
+// bodyHas / userGenericWithBody / otherInput: see RecognizeUtils.h.
 
 // Walk backward through tensor.expand_shape (the broadcast-prep torch.export
 // emits to lift rank-1 affine params [C] up to rank-N for the elementwise
