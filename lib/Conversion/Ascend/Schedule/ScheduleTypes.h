@@ -38,6 +38,9 @@ using ::mlir::ascend::kScheduleDecisionIdAttr;
 using ::mlir::ascend::kScheduleGuardMarkersAttr;
 using ::mlir::ascend::kScheduleKernelMetadataAttr;
 using ::mlir::ascend::kScheduleSelectedTileShapeAttr;
+using ::mlir::ascend::kScheduleTileBindingAttr;
+using ::mlir::ascend::kScheduleTileBindingSymbolic;
+using ::mlir::ascend::kScheduleTileParamsAttr;
 using ::mlir::ascend::kScheduleTailPlanAttr;
 using ::mlir::ascend::kScheduleTailMarkersAttr;
 using ::mlir::ascend::kScheduleTailPoliciesAttr;
@@ -91,6 +94,12 @@ enum class PrimitiveAxisUseKind {
 enum class TailBufferingMode {
   SeparateTailBuffer,
   ReuseMainBufferAfterDrain,
+};
+
+enum class TileParamBinding {
+  Runtime,
+  Extent,
+  StaticFallback,
 };
 
 enum class CoalescingHintKind {
@@ -245,10 +254,23 @@ struct ScheduledAxisTailPlan {
   bool emitsRuntimeGuard = false;
 };
 
+struct ScheduleTileParam {
+  unsigned logicalAxisId = 0;
+  std::string name;
+  AxisKind axisKind = AxisKind::Unknown;
+  TileParamBinding binding = TileParamBinding::Runtime;
+  int64_t defaultValue = ShapedType::kDynamic;
+  int64_t upperBound = ShapedType::kDynamic;
+  int64_t extent = ShapedType::kDynamic;
+  SmallVector<AxisExecutionRole, 3> roles;
+  SmallVector<PrimitiveAxisUseKind, 4> primitiveUses;
+};
+
 struct ScheduleDecision {
   std::string decisionId;
   ScheduleInstance instance;
   SmallVector<ScheduledAxisTailPlan, 4> tailPlans;
+  SmallVector<ScheduleTileParam, 4> tileParams;
 };
 
 struct ScheduleDecisionSet {
@@ -401,6 +423,18 @@ inline llvm::StringRef stringifyTailBufferingMode(TailBufferingMode mode) {
     return "reuse_main_buffer_after_drain";
   }
   return "separate_tail_buffer";
+}
+
+inline llvm::StringRef stringifyTileParamBinding(TileParamBinding binding) {
+  switch (binding) {
+  case TileParamBinding::Runtime:
+    return "runtime";
+  case TileParamBinding::Extent:
+    return "extent";
+  case TileParamBinding::StaticFallback:
+    return "static_fallback";
+  }
+  return "runtime";
 }
 
 inline llvm::StringRef stringifyGuardKind(GuardKind kind) {

@@ -174,6 +174,7 @@ func.func @batch_matmul_logical_axes(%lhs: tensor<2x4x8xf16>,
 // CHECK-NEXT:   candidate_guards = 2
 // CHECK-NEXT:   decision_guards = 0
 // CHECK-NEXT:   selected_tile_shape = [32,8]
+// CHECK-NEXT:   tile_params = [name=TB_M axis=0 binding=runtime {{.*}}] [name=TB_N axis=1 binding=runtime {{.*}}]
 // CHECK-NEXT:   tail_plans = [axis=0 selected=masked_tail affected=[data_copy,vector_compute,write_back] align=0 buffering=separate_tail_buffer guard=false extent=? tile=32 main=? tail=?] [axis=1 selected=masked_tail affected=[data_copy,vector_compute,write_back] align=0 buffering=separate_tail_buffer guard=false extent=8 tile=8 main=8 tail=0]
 // CHECK: ScheduleSearch:
 // CHECK-NEXT:   kernel = kernel_4
@@ -215,6 +216,7 @@ func.func @batch_matmul_logical_axes(%lhs: tensor<2x4x8xf16>,
 // CHECK-NEXT:   candidate_guards = 2
 // CHECK-NEXT:   decision_guards = 0
 // CHECK-NEXT:   selected_tile_shape = [640,128,256]
+// CHECK-NEXT:   tile_params = {{.*}}[name=t_K axis=2 binding=extent {{.*}}]
 // CHECK-NEXT:   tail_plans = {{.*}}[axis=2 selected=full_extent affected=[reduction] align=0 buffering=separate_tail_buffer guard=false extent=256 tile=256 main=256 tail=0]
 // CHECK: ScheduleSearch:
 // CHECK-NEXT:   kernel = kernel_7
@@ -231,6 +233,7 @@ func.func @batch_matmul_logical_axes(%lhs: tensor<2x4x8xf16>,
 // CHECK-NEXT:   candidate_guards = 3
 // CHECK-NEXT:   decision_guards = 0
 // CHECK-NEXT:   selected_tile_shape = [2,4,16,8]
+// CHECK-NEXT:   tile_params = {{.*}}[name=Tb_N axis=3 binding=extent {{.*}}]
 // CHECK-NEXT:   tail_plans = {{.*}}[axis=3 selected=full_extent affected=[reduction] align=0 buffering=separate_tail_buffer guard=false extent=8 tile=8 main=8 tail=0]
 // CHECK: schedule_family = "vector_generic"
 // CHECK: schedule_template = "single_tile_per_block"

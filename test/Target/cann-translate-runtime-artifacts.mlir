@@ -40,10 +40,39 @@
 // MANIFEST-NEXT: "selected_tile_shape": [
 // MANIFEST-NEXT: 64,
 // MANIFEST-NEXT: 15000
+// MANIFEST: "tile_binding": "symbolic"
+// MANIFEST: "tile_params": [
+// MANIFEST-NEXT: {
+// MANIFEST-DAG: "axis": 0,
+// MANIFEST-DAG: "axisKind": "parallel",
+// MANIFEST-DAG: "binding": "runtime",
+// MANIFEST-DAG: "default": 32,
+// MANIFEST-DAG: "extent": 64,
+// MANIFEST-DAG: "name": "TB_M",
+// MANIFEST-DAG: "primitiveUses": [
+// MANIFEST-DAG: "data_copy"
+// MANIFEST-DAG: "vector_compute"
+// MANIFEST-DAG: "roles": [
+// MANIFEST-DAG: "kernel_loop"
+// MANIFEST-DAG: "vectorize"
+// MANIFEST-DAG: "upperBound": 64
+// MANIFEST-NEXT: },
+// MANIFEST-NEXT: {
+// MANIFEST-DAG: "axis": 1,
+// MANIFEST-DAG: "axisKind": "reduction",
+// MANIFEST-DAG: "binding": "extent",
+// MANIFEST-DAG: "default": 15000,
+// MANIFEST-DAG: "extent": 15000,
+// MANIFEST-DAG: "name": "TB_N",
+// MANIFEST-DAG: "primitiveUses": [
+// MANIFEST-DAG: "reduction"
+// MANIFEST-DAG: "roles": [
+// MANIFEST-DAG: "full_reduction"
+// MANIFEST-DAG: "upperBound": 15000
 // MANIFEST: "tail_plan": [
 // MANIFEST-NEXT: {
 // MANIFEST-DAG: "affectedPrimitiveUses": [
-// MANIFEST-DAG: "data_copy",
+// MANIFEST-DAG: "data_copy"
 // MANIFEST-DAG: "vector_compute"
 // MANIFEST-DAG: "alignmentGranularity": 16,
 // MANIFEST-DAG: "axis": 0,
@@ -72,7 +101,7 @@
 // HOST: extern "C"
 // HOST: int32_t broadcast_add_reducesum_GetTilingSize(void)
 // HOST: int32_t broadcast_add_reducesum_GetTiling(const int64_t* shape_args, int32_t shape_count, void* tiling_out)
-// HOST: data.TB_M = 64;
+// HOST: data.TB_M = 32;
 // HOST: data.TB_N = 15000;
 // HOST: data.dim_arg0_0 = shape_args[0];
 // HOST: data.dim_arg1_1 = shape_args[1];
@@ -96,6 +125,31 @@ module {
           [i64, i64, i64, i64],
           ["TB_M", "TB_N", "dim_arg0_0", "dim_arg1_1"]>
   ) attributes {
+      ascend.schedule.tile_binding = "symbolic",
+      ascend.schedule.tile_params = [
+        {
+          axis = 0 : i64,
+          axis_kind = "parallel",
+          binding = "runtime",
+          default = 32 : i64,
+          extent = 64 : i64,
+          name = "TB_M",
+          primitive_uses = ["data_copy", "vector_compute"],
+          roles = ["kernel_loop", "vectorize"],
+          upper_bound = 64 : i64
+        },
+        {
+          axis = 1 : i64,
+          axis_kind = "reduction",
+          binding = "extent",
+          default = 15000 : i64,
+          extent = 15000 : i64,
+          name = "TB_N",
+          primitive_uses = ["reduction"],
+          roles = ["full_reduction"],
+          upper_bound = 15000 : i64
+        }
+      ],
       ascend.schedule.selected_tile_shape = array<i64: 64, 15000>,
       ascend.schedule.tail_policies = ["masked_tail", "full_extent"],
       ascend.schedule.tail_plan = [

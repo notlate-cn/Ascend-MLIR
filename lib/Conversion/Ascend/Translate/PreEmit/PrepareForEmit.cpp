@@ -35,6 +35,7 @@
 
 #include "PreEmitInternalPasses.h"
 
+#include "Conversion/Ascend/Common/Attributes.h"
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/Affine/Utils.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
@@ -73,6 +74,7 @@ namespace mlir::ascend {
 static constexpr int64_t kGMSpace = 22;
 
 static constexpr const char *kTilingDataStructName = "TilingData";
+static constexpr llvm::StringLiteral kFuncArgAttrsAttr = "arg_attrs";
 static constexpr const char *kDefaultTileNames[] = {"TB_M", "TB_N", "Tb_M",
                                                     "Tb_N", "t_K"};
 static constexpr unsigned kDefaultTileNameCount =
@@ -180,6 +182,16 @@ static emitasc::PyStructType getTilingStructTypeFromType(Type type) {
   if (auto memrefType = dyn_cast<MemRefType>(type))
     return dyn_cast<emitasc::PyStructType>(memrefType.getElementType());
   return {};
+}
+
+static StringAttr getArgTileName(func::FuncOp func, unsigned argNumber) {
+  auto argAttrs = func->getAttrOfType<ArrayAttr>(kFuncArgAttrsAttr);
+  if (!argAttrs || argNumber >= argAttrs.size())
+    return {};
+  auto dict = dyn_cast<DictionaryAttr>(argAttrs[argNumber]);
+  if (!dict)
+    return {};
+  return dyn_cast_or_null<StringAttr>(dict.get(kScheduleTileArgAttr));
 }
 
 static void appendTilingTypeNames(emitasc::PyStructType tilingType,
@@ -407,8 +419,16 @@ static LogicalResult prepareFunc(func::FuncOp func) {
   tilingNameStorage.reserve(i64Args.size() + dimKeys.size());
 
   // i64 tile-size args
-  for (unsigned i = 0; i < i64Args.size(); ++i)
-    tilingNameStorage.push_back(i < kDefaultTileNameCount ? kDefaultTileNames[i] : "field");
+  for (unsigned i = 0; i < i64Args.size(); ++i) {
+    if (StringAttr tileArgName =
+            getArgTileName(func, i64Args[i].getArgNumber())) {
+      tilingNameStorage.push_back(tileArgName.getValue().str());
+      continue;
+    }
+    tilingNameStorage.push_back(i < kDefaultTileNameCount
+                                    ? kDefaultTileNames[i]
+                                    : "field");
+  }
   // dim fields: "dim_argN_D"
   for (const DimKey &key : dimKeys)
     tilingNameStorage.push_back("dim_arg" + std::to_string(key.argNumber) +
@@ -919,6 +939,34 @@ static LogicalResult prepareFunc(func::FuncOp func) {
   SmallVector<unsigned> toErase;
   for (BlockArgument arg : i64Args)
     toErase.push_back(arg.getArgNumber());
+
+  SmallVector<bool> eraseArg(entry.getNumArguments(), false);
+  for (unsigned idx : toErase)
+    if (idx < eraseArg.size())
+      eraseArg[idx] = true;
+
+  auto oldArgAttrs = func->getAttrOfType<ArrayAttr>(kFuncArgAttrsAttr);
+  SmallVector<Attribute> preservedArgAttrs;
+  bool hasPreservedArgAttrs = false;
+  preservedArgAttrs.reserve(entry.getNumArguments() - toErase.size());
+  for (unsigned i = 0, e = entry.getNumArguments(); i < e; ++i) {
+    if (eraseArg[i])
+      continue;
+    SmallVector<NamedAttribute> attrs;
+    if (oldArgAttrs && i < oldArgAttrs.size()) {
+      if (auto dict = dyn_cast<DictionaryAttr>(oldArgAttrs[i])) {
+        for (NamedAttribute attr : dict) {
+          if (attr.getName().getValue() == kScheduleTileArgAttr)
+            continue;
+          attrs.push_back(attr);
+        }
+      }
+    }
+    if (!attrs.empty())
+      hasPreservedArgAttrs = true;
+    preservedArgAttrs.push_back(DictionaryAttr::get(ctx, attrs));
+  }
+
   llvm::sort(toErase, std::greater<unsigned>());
   for (unsigned idx : toErase)
     entry.eraseArgument(idx);
@@ -928,6 +976,10 @@ static LogicalResult prepareFunc(func::FuncOp func) {
   for (BlockArgument arg : entry.getArguments())
     newArgTypes.push_back(arg.getType());
   func.setFunctionType(FunctionType::get(ctx, newArgTypes, /*results=*/{}));
+  if (hasPreservedArgAttrs)
+    func->setAttr(kFuncArgAttrsAttr, ArrayAttr::get(ctx, preservedArgAttrs));
+  else
+    func->removeAttr(kFuncArgAttrsAttr);
 
   // ── 10. Add {ascendc.aicore, ascendc.global} attributes ─────────────────
   func->setAttr("ascendc.aicore", UnitAttr::get(ctx));

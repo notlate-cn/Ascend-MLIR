@@ -45,6 +45,10 @@ static constexpr llvm::StringLiteral kKernelMetadataDecisionIdKey =
     "decision_id";
 static constexpr llvm::StringLiteral kKernelMetadataSelectedTileShapeKey =
     "selected_tile_shape";
+static constexpr llvm::StringLiteral kKernelMetadataTileBindingKey =
+    "tile_binding";
+static constexpr llvm::StringLiteral kKernelMetadataTileParamsKey =
+    "tile_params";
 static constexpr llvm::StringLiteral kKernelMetadataTailPoliciesKey =
     "tail_policies";
 static constexpr llvm::StringLiteral kKernelMetadataTailPlanKey =
@@ -561,6 +565,34 @@ static bool isSupportedAffectedPrimitiveUse(StringRef value) {
       .Default(false);
 }
 
+static bool isSupportedTileBinding(StringRef value) {
+  return llvm::StringSwitch<bool>(value)
+      .Case("runtime", true)
+      .Case("extent", true)
+      .Case("static_fallback", true)
+      .Default(false);
+}
+
+static bool isSupportedTileAxisKind(StringRef value) {
+  return llvm::StringSwitch<bool>(value)
+      .Case("parallel", true)
+      .Case("reduction", true)
+      .Case("unknown", true)
+      .Default(false);
+}
+
+static bool isSupportedAxisExecutionRole(StringRef value) {
+  return llvm::StringSwitch<bool>(value)
+      .Case("bind_core", true)
+      .Case("kernel_loop", true)
+      .Case("vectorize", true)
+      .Case("full_reduction", true)
+      .Case("chunked_reduction", true)
+      .Case("broadcast_projection", true)
+      .Case("layout_carry", true)
+      .Default(false);
+}
+
 static FailureOr<SmallVector<DictionaryAttr>>
 collectKernelScheduleMetadata(func::FuncOp funcOp);
 
@@ -632,6 +664,12 @@ static LogicalResult checkScheduleMetadataCompleteness(func::FuncOp funcOp) {
           funcOp, *kernelMetadata,
           ::mlir::ascend::kScheduleSelectedTileShapeAttr,
           kKernelMetadataSelectedTileShapeKey));
+  bool hasTileBinding = static_cast<bool>(getScheduleMetadataAttr(
+      funcOp, *kernelMetadata, ::mlir::ascend::kScheduleTileBindingAttr,
+      kKernelMetadataTileBindingKey));
+  bool hasTileParams = static_cast<bool>(getScheduleMetadataAttr(
+      funcOp, *kernelMetadata, ::mlir::ascend::kScheduleTileParamsAttr,
+      kKernelMetadataTileParamsKey));
   bool hasTailPolicies =
       static_cast<bool>(getScheduleMetadataAttr(
           funcOp, *kernelMetadata,
@@ -640,16 +678,22 @@ static LogicalResult checkScheduleMetadataCompleteness(func::FuncOp funcOp) {
   bool hasTailPlan = static_cast<bool>(getScheduleMetadataAttr(
       funcOp, *kernelMetadata, ::mlir::ascend::kScheduleTailPlanAttr,
       kKernelMetadataTailPlanKey));
-  bool hasAnyMetadata = hasSelectedTileShape || hasTailPolicies || hasTailPlan;
+  bool hasAnyMetadata = hasSelectedTileShape || hasTileBinding ||
+                        hasTileParams || hasTailPolicies || hasTailPlan;
   bool hasAllMetadata = hasSelectedTileShape && hasTailPolicies && hasTailPlan;
-  if (!hasAnyMetadata || hasAllMetadata)
-    return success();
+  if (hasAnyMetadata && !hasAllMetadata)
+    return funcOp.emitError()
+           << "schedule metadata requires "
+           << ::mlir::ascend::kScheduleSelectedTileShapeAttr << ", "
+           << ::mlir::ascend::kScheduleTailPoliciesAttr << ", and "
+           << ::mlir::ascend::kScheduleTailPlanAttr << " together";
+  if (hasAnyMetadata && hasTileBinding != hasTileParams)
+    return funcOp.emitError()
+           << "schedule metadata requires "
+           << ::mlir::ascend::kScheduleTileBindingAttr << " and "
+           << ::mlir::ascend::kScheduleTileParamsAttr << " together";
 
-  return funcOp.emitError()
-         << "schedule metadata requires "
-         << ::mlir::ascend::kScheduleSelectedTileShapeAttr << ", "
-         << ::mlir::ascend::kScheduleTailPoliciesAttr << ", and "
-         << ::mlir::ascend::kScheduleTailPlanAttr << " together";
+  return success();
 }
 
 static LogicalResult validateScheduleMetadataAttributes(func::FuncOp funcOp) {
@@ -666,6 +710,24 @@ static LogicalResult validateScheduleMetadataAttributes(func::FuncOp funcOp) {
       return funcOp.emitError()
              << ::mlir::ascend::kScheduleSelectedTileShapeAttr
              << " must be a dense i64 array attribute";
+
+  if (Attribute tileBinding = getScheduleMetadataAttr(
+          funcOp, *kernelMetadata,
+          ::mlir::ascend::kScheduleTileBindingAttr,
+          kKernelMetadataTileBindingKey))
+    if (!isa<StringAttr>(tileBinding))
+      return funcOp.emitError()
+             << ::mlir::ascend::kScheduleTileBindingAttr
+             << " must be a string attribute";
+
+  if (Attribute tileParams = getScheduleMetadataAttr(
+          funcOp, *kernelMetadata,
+          ::mlir::ascend::kScheduleTileParamsAttr,
+          kKernelMetadataTileParamsKey))
+    if (!isa<ArrayAttr>(tileParams))
+      return funcOp.emitError()
+             << ::mlir::ascend::kScheduleTileParamsAttr
+             << " must be an array attribute";
 
   if (Attribute tailPolicies = getScheduleMetadataAttr(
           funcOp, *kernelMetadata,
@@ -700,6 +762,39 @@ collectSelectedTileShape(func::FuncOp funcOp) {
   return values;
 }
 
+static FailureOr<llvm::StringMap<int64_t>>
+collectTileParamDefaults(func::FuncOp funcOp) {
+  FailureOr<DictionaryAttr> kernelMetadata =
+      lookupKernelScheduleMetadata(funcOp);
+  if (failed(kernelMetadata))
+    return failure();
+
+  llvm::StringMap<int64_t> defaults;
+  auto tileParams = dyn_cast_or_null<ArrayAttr>(getScheduleMetadataAttr(
+      funcOp, *kernelMetadata, ::mlir::ascend::kScheduleTileParamsAttr,
+      kKernelMetadataTileParamsKey));
+  if (!tileParams)
+    return defaults;
+
+  for (auto [index, rawEntry] : llvm::enumerate(tileParams)) {
+    auto entry = dyn_cast<DictionaryAttr>(rawEntry);
+    if (!entry)
+      return funcOp.emitError()
+             << ::mlir::ascend::kScheduleTileParamsAttr << " element "
+             << index << " must be a dictionary attribute";
+    auto name = dyn_cast_or_null<StringAttr>(entry.get("name"));
+    auto defaultValue = dyn_cast_or_null<IntegerAttr>(entry.get("default"));
+    if (!name || !defaultValue || !defaultValue.getType().isInteger(64))
+      return funcOp.emitError()
+             << ::mlir::ascend::kScheduleTileParamsAttr << " element "
+             << index
+             << " must include string 'name' and i64 'default' fields";
+    defaults[name.getValue()] = defaultValue.getInt();
+  }
+
+  return defaults;
+}
+
 static FailureOr<llvm::json::Object>
 buildScheduleTilingParams(func::FuncOp funcOp,
                           DictionaryAttr kernelMetadata) {
@@ -719,6 +814,120 @@ buildScheduleTilingParams(func::FuncOp funcOp,
     for (int64_t tileSize : selectedTileShape.asArrayRef())
       selectedTileShapeJson.push_back(tileSize);
     tilingParams["selected_tile_shape"] = std::move(selectedTileShapeJson);
+  }
+
+  if (auto tileBinding = dyn_cast_or_null<StringAttr>(
+          getScheduleMetadataAttr(
+              funcOp, kernelMetadata,
+              ::mlir::ascend::kScheduleTileBindingAttr,
+              kKernelMetadataTileBindingKey))) {
+    tilingParams["tile_binding"] = tileBinding.getValue().str();
+  }
+
+  if (Attribute rawTileParamsAttr = getScheduleMetadataAttr(
+          funcOp, kernelMetadata,
+          ::mlir::ascend::kScheduleTileParamsAttr,
+          kKernelMetadataTileParamsKey)) {
+    auto tileParamsAttr = dyn_cast<ArrayAttr>(rawTileParamsAttr);
+    if (!tileParamsAttr)
+      return funcOp.emitError()
+             << ::mlir::ascend::kScheduleTileParamsAttr
+             << " must be an array attribute";
+
+    llvm::json::Array tileParamsJson;
+    for (auto [index, tileParamEntryAttr] : llvm::enumerate(tileParamsAttr)) {
+      auto tileParamEntry = dyn_cast<DictionaryAttr>(tileParamEntryAttr);
+      if (!tileParamEntry)
+        return funcOp.emitError()
+               << ::mlir::ascend::kScheduleTileParamsAttr
+               << " element " << index
+               << " must be a dictionary attribute";
+
+      auto name = dyn_cast_or_null<StringAttr>(tileParamEntry.get("name"));
+      if (!name)
+        return funcOp.emitError()
+               << ::mlir::ascend::kScheduleTileParamsAttr << " element "
+               << index << " field 'name' must be a string attribute";
+      auto axis = dyn_cast_or_null<IntegerAttr>(tileParamEntry.get("axis"));
+      auto defaultValue =
+          dyn_cast_or_null<IntegerAttr>(tileParamEntry.get("default"));
+      auto upperBound =
+          dyn_cast_or_null<IntegerAttr>(tileParamEntry.get("upper_bound"));
+      auto extent =
+          dyn_cast_or_null<IntegerAttr>(tileParamEntry.get("extent"));
+      if (!axis || !axis.getType().isInteger(64) || !defaultValue ||
+          !defaultValue.getType().isInteger(64) || !upperBound ||
+          !upperBound.getType().isInteger(64) || !extent ||
+          !extent.getType().isInteger(64))
+        return funcOp.emitError()
+               << ::mlir::ascend::kScheduleTileParamsAttr << " element "
+               << index
+               << " fields 'axis', 'default', 'upper_bound', and 'extent' "
+                  "must be i64 integer attributes";
+      auto axisKind =
+          dyn_cast_or_null<StringAttr>(tileParamEntry.get("axis_kind"));
+      if (!axisKind || !isSupportedTileAxisKind(axisKind.getValue()))
+        return funcOp.emitError()
+               << ::mlir::ascend::kScheduleTileParamsAttr << " element "
+               << index
+               << " field 'axis_kind' must be one of parallel, reduction, "
+                  "unknown";
+      auto binding =
+          dyn_cast_or_null<StringAttr>(tileParamEntry.get("binding"));
+      if (!binding || !isSupportedTileBinding(binding.getValue()))
+        return funcOp.emitError()
+               << ::mlir::ascend::kScheduleTileParamsAttr << " element "
+               << index
+               << " field 'binding' must be one of runtime, extent, "
+                  "static_fallback";
+
+      auto roles = dyn_cast_or_null<ArrayAttr>(tileParamEntry.get("roles"));
+      if (!roles)
+        return funcOp.emitError()
+               << ::mlir::ascend::kScheduleTileParamsAttr << " element "
+               << index << " field 'roles' must be an array attribute";
+      llvm::json::Array rolesJson;
+      for (auto [roleIndex, roleAttr] : llvm::enumerate(roles)) {
+        auto role = dyn_cast<StringAttr>(roleAttr);
+        if (!role || !isSupportedAxisExecutionRole(role.getValue()))
+          return funcOp.emitError()
+                 << ::mlir::ascend::kScheduleTileParamsAttr << " element "
+                 << index << " field 'roles' element " << roleIndex
+                 << " has unsupported value";
+        rolesJson.push_back(role.getValue().str());
+      }
+
+      auto primitiveUses =
+          dyn_cast_or_null<ArrayAttr>(tileParamEntry.get("primitive_uses"));
+      if (!primitiveUses)
+        return funcOp.emitError()
+               << ::mlir::ascend::kScheduleTileParamsAttr << " element "
+               << index
+               << " field 'primitive_uses' must be an array attribute";
+      llvm::json::Array primitiveUsesJson;
+      for (auto [useIndex, useAttr] : llvm::enumerate(primitiveUses)) {
+        auto use = dyn_cast<StringAttr>(useAttr);
+        if (!use || !isSupportedAffectedPrimitiveUse(use.getValue()))
+          return funcOp.emitError()
+                 << ::mlir::ascend::kScheduleTileParamsAttr << " element "
+                 << index << " field 'primitive_uses' element " << useIndex
+                 << " has unsupported value";
+        primitiveUsesJson.push_back(use.getValue().str());
+      }
+
+      llvm::json::Object tileParamObject;
+      tileParamObject["name"] = name.getValue().str();
+      tileParamObject["axis"] = axis.getInt();
+      tileParamObject["axisKind"] = axisKind.getValue().str();
+      tileParamObject["binding"] = binding.getValue().str();
+      tileParamObject["default"] = defaultValue.getInt();
+      tileParamObject["upperBound"] = upperBound.getInt();
+      tileParamObject["extent"] = extent.getInt();
+      tileParamObject["roles"] = std::move(rolesJson);
+      tileParamObject["primitiveUses"] = std::move(primitiveUsesJson);
+      tileParamsJson.push_back(std::move(tileParamObject));
+    }
+    tilingParams["tile_params"] = std::move(tileParamsJson);
   }
 
   if (auto tailPolicies = dyn_cast_or_null<ArrayAttr>(
@@ -1477,6 +1686,7 @@ LogicalResult emitHostTilingCpp(ModuleOp module, StringRef outPath,
     SmallVector<TilingFieldInfo> fields;
     SmallVector<unsigned> shapeFieldPositions;
     SmallVector<int64_t> selectedTileShape;
+    llvm::StringMap<int64_t> tileParamDefaults;
     std::string hostWorkspaceExpr;
     bool workspaceExprUsesShapeArgs = false;
     std::string structName;
@@ -1506,6 +1716,10 @@ LogicalResult emitHostTilingCpp(ModuleOp module, StringRef outPath,
         collectSelectedTileShape(kernel);
     if (failed(selectedTileShape))
       return failure();
+    FailureOr<llvm::StringMap<int64_t>> tileParamDefaults =
+        collectTileParamDefaults(kernel);
+    if (failed(tileParamDefaults))
+      return failure();
 
     auto types = tilingTypeOr->getTypesAttr().getValue();
     auto names = tilingTypeOr->getNamesAttr().getValue();
@@ -1518,6 +1732,7 @@ LogicalResult emitHostTilingCpp(ModuleOp module, StringRef outPath,
     info.workspaceInfo = *workspaceInfo;
     info.fields = std::move(*fieldsOr);
     info.selectedTileShape = std::move(*selectedTileShape);
+    info.tileParamDefaults = std::move(*tileParamDefaults);
     for (auto [index, nameAttr] : llvm::enumerate(names)) {
       StringRef name = cast<StringAttr>(nameAttr).getValue();
       if (isShapeField(name))
@@ -1586,6 +1801,9 @@ LogicalResult emitHostTilingCpp(ModuleOp module, StringRef outPath,
         os << "  data." << name << " = ";
         if (isShapeField(name)) {
           os << "shape_args[" << shapeIndex++ << "]";
+        } else if (auto defaultIt = info.tileParamDefaults.find(name);
+                   defaultIt != info.tileParamDefaults.end()) {
+          os << defaultIt->second;
         } else if (tileIndex < info.selectedTileShape.size()) {
           os << info.selectedTileShape[tileIndex++];
         } else {

@@ -46,6 +46,21 @@
 // MANIFEST: "decisionId": "kernel_a.decision.0"
 // MANIFEST: "selected_tile_shape": [
 // MANIFEST-NEXT: 32
+// MANIFEST: "tile_binding": "symbolic"
+// MANIFEST: "tile_params": [
+// MANIFEST-NEXT: {
+// MANIFEST-DAG: "axis": 0,
+// MANIFEST-DAG: "axisKind": "parallel",
+// MANIFEST-DAG: "binding": "runtime",
+// MANIFEST-DAG: "default": 32,
+// MANIFEST-DAG: "extent": 128,
+// MANIFEST-DAG: "name": "TB_M",
+// MANIFEST-DAG: "primitiveUses": [
+// MANIFEST-DAG: "data_copy"
+// MANIFEST-DAG: "vector_compute"
+// MANIFEST-DAG: "roles": [
+// MANIFEST-DAG: "kernel_loop"
+// MANIFEST-DAG: "upperBound": 64
 // MANIFEST: "shape": {
 // MANIFEST: "rank": 1
 // MANIFEST: "shapeArgOrder": [
@@ -87,6 +102,18 @@ module attributes {
         decision_id = "kernel_a.decision.0",
         kernel = "internal_kernel_a",
         selected_tile_shape = array<i64: 32>,
+        tile_binding = "symbolic",
+        tile_params = [{
+          axis = 0 : i64,
+          axis_kind = "parallel",
+          binding = "runtime",
+          default = 32 : i64,
+          extent = 128 : i64,
+          name = "TB_M",
+          primitive_uses = ["data_copy", "vector_compute"],
+          roles = ["kernel_loop"],
+          upper_bound = 64 : i64
+        }],
         tail_policies = ["masked_tail"],
         tail_plan = [{
           affected = ["data_copy", "vector_compute"],

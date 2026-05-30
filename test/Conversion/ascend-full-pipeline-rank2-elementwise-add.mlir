@@ -4,19 +4,24 @@
 // CHECK-SAME: %{{.*}}: memref<70x128xf16>
 // CHECK-SAME: %{{.*}}: memref<ui8>
 // CHECK-SAME: !emitasc.py_struct<"TilingData"
+// CHECK-SAME: ["TB_M", "TB_N"
 // CHECK-SAME: ascend.schedule.selected_tile_shape = array<i64: 32, 128>
 // CHECK-SAME: ascend.schedule.tail_policies = ["masked_tail", "masked_tail"]
+// CHECK-SAME: ascend.schedule.tile_binding = "symbolic"
 // CHECK-SAME: cann.num_inputs = 2 : i32
+// CHECK: emitasc.member %{{.*}} "TB_M"
+// CHECK: emitasc.member %{{.*}} "TB_N"
+// CHECK: arith.index_cast %{{.*}} : i64 to index
 // CHECK: ascendc.get_block_idx
-// CHECK: arith.muli %{{.*}}, %c32
+// CHECK: arith.muli %{{.*}}, %{{.*}} : index
 // CHECK: scf.if
-// CHECK: ascendc.data_copy_l2
+// CHECK: scf.for
+// CHECK: emitasc.verbatim
 // CHECK: ascendc.add_l2
 // CHECK-NEXT: ascendc.pipe_barrier pipe_all
 // CHECK-NEXT: ascendc.que_bind.free_tensor
 // CHECK-NEXT: ascendc.que_bind.free_tensor
-// CHECK: ascendc.data_copy_l2
-// CHECK-NOT: scf.for
+// CHECK: emitasc.verbatim
 // CHECK-NOT: linalg.generic
 
 #identity = affine_map<(d0, d1) -> (d0, d1)>

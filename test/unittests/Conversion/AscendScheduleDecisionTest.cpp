@@ -46,3 +46,51 @@ TEST(AscendScheduleDecisionTest, TailPolicyPreferenceComesFromTargetPolicy) {
   EXPECT_EQ(decisions.decisions.front().tailPlans.front().selectedPolicy,
             AxisTailPolicy::PadAndMask);
 }
+
+TEST(AscendScheduleDecisionTest, MemoryRoleTileParamsUseCopyOnly) {
+  ScheduleProblem problem;
+  problem.kernelId = "kernel_memory";
+  problem.dominantRole = OpRole::Memory;
+  problem.targetTilePolicy.defaultParallelTile = 32;
+
+  LogicalAxisInfo axis;
+  axis.logicalAxisId = 0;
+  axis.kind = AxisKind::Parallel;
+  axis.staticExtent = 70;
+  problem.axes.logicalAxes.push_back(axis);
+
+  AxisScheduleConstraint constraint;
+  constraint.logicalAxisId = 0;
+  constraint.kind = AxisKind::Parallel;
+  constraint.allowedRoles.push_back(AxisExecutionRole::BindCoreCandidate);
+  constraint.allowedRoles.push_back(AxisExecutionRole::KernelLoopCandidate);
+  constraint.primitiveUses.push_back(PrimitiveAxisUseKind::DataCopy);
+  constraint.primitiveUses.push_back(PrimitiveAxisUseKind::VectorCompute);
+  constraint.primitiveUses.push_back(PrimitiveAxisUseKind::WriteBack);
+  problem.axes.axisScheduleConstraints.push_back(std::move(constraint));
+
+  ScheduleTemplate tmpl{"memory_copy", "single_tile_per_block",
+                        {"memory"}, 1, 8, 0};
+  ScheduleInstance instance;
+  instance.instanceId = "kernel_memory.memory_copy.0";
+  instance.tmpl = tmpl;
+  instance.tileShape.tileSizes.push_back(32);
+
+  ScheduleDecisionSet decisions = buildScheduleDecisionSet(problem, instance);
+  ASSERT_EQ(decisions.decisions.size(), 1u);
+
+  const auto &tileParams = decisions.decisions.front().tileParams;
+  ASSERT_EQ(tileParams.size(), 1u);
+  EXPECT_EQ(tileParams.front().name, "TB_M");
+  EXPECT_EQ(tileParams.front().logicalAxisId, 0u);
+  EXPECT_EQ(tileParams.front().binding, TileParamBinding::Runtime);
+  EXPECT_EQ(tileParams.front().defaultValue, 32);
+  EXPECT_EQ(tileParams.front().upperBound, 32);
+  EXPECT_EQ(tileParams.front().extent, 70);
+
+  ASSERT_EQ(tileParams.front().primitiveUses.size(), 2u);
+  EXPECT_EQ(tileParams.front().primitiveUses[0],
+            PrimitiveAxisUseKind::DataCopy);
+  EXPECT_EQ(tileParams.front().primitiveUses[1],
+            PrimitiveAxisUseKind::WriteBack);
+}

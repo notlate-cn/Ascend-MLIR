@@ -15,12 +15,15 @@
 #include "llvm/ADT/STLExtras.h"
 
 #include <algorithm>
+#include <optional>
 
 using namespace mlir;
 
 namespace mlir {
 namespace ascend {
 namespace {
+
+static constexpr llvm::StringLiteral kFuncArgAttrsAttr = "arg_attrs";
 
 bool isSupportedRank2Reduction(linalg::GenericOp op) {
   if (op.getNumDpsInits() != 1)
@@ -38,6 +41,118 @@ bool isSupportedRank2AllParallel(linalg::GenericOp op) {
   return iterTypes.size() == 2 &&
          iterTypes[0] == utils::IteratorType::parallel &&
          iterTypes[1] == utils::IteratorType::parallel;
+}
+
+bool hasSymbolicTileBinding(Operation *op) {
+  auto binding =
+      op->getAttrOfType<StringAttr>(ascend::kScheduleTileBindingAttr);
+  return binding && binding.getValue() == ascend::kScheduleTileBindingSymbolic;
+}
+
+std::optional<std::string> getRuntimeTileParamName(Operation *op,
+                                                   int64_t logicalAxis) {
+  if (!hasSymbolicTileBinding(op))
+    return std::nullopt;
+
+  auto tileParams = op->getAttrOfType<ArrayAttr>(
+      ascend::kScheduleTileParamsAttr);
+  if (!tileParams)
+    return std::nullopt;
+
+  for (Attribute rawEntry : tileParams) {
+    auto entry = dyn_cast<DictionaryAttr>(rawEntry);
+    if (!entry)
+      continue;
+    auto axis = dyn_cast_or_null<IntegerAttr>(entry.get("axis"));
+    if (!axis || axis.getInt() != logicalAxis)
+      continue;
+    auto binding = dyn_cast_or_null<StringAttr>(entry.get("binding"));
+    if (!binding || binding.getValue() != "runtime")
+      continue;
+    auto name = dyn_cast_or_null<StringAttr>(entry.get("name"));
+    if (!name)
+      continue;
+    return name.getValue().str();
+  }
+
+  return std::nullopt;
+}
+
+StringAttr getArgTileName(func::FuncOp funcOp, unsigned argNumber) {
+  auto argAttrs = funcOp->getAttrOfType<ArrayAttr>(kFuncArgAttrsAttr);
+  if (!argAttrs || argNumber >= argAttrs.size())
+    return {};
+  auto dict = dyn_cast<DictionaryAttr>(argAttrs[argNumber]);
+  if (!dict)
+    return {};
+  return dyn_cast_or_null<StringAttr>(
+      dict.get(ascend::kScheduleTileArgAttr));
+}
+
+void refreshFunctionType(func::FuncOp funcOp) {
+  Block &entry = funcOp.getBody().front();
+  SmallVector<Type> inputs;
+  inputs.reserve(entry.getNumArguments());
+  for (BlockArgument arg : entry.getArguments())
+    inputs.push_back(arg.getType());
+  funcOp.setFunctionType(FunctionType::get(
+      funcOp.getContext(), inputs, funcOp.getFunctionType().getResults()));
+}
+
+void setArgTileName(func::FuncOp funcOp, unsigned argNumber, StringRef name) {
+  MLIRContext *ctx = funcOp.getContext();
+  auto existingArgAttrs =
+      funcOp->getAttrOfType<ArrayAttr>(kFuncArgAttrsAttr);
+  SmallVector<Attribute> newArgAttrs;
+  newArgAttrs.reserve(funcOp.getNumArguments());
+  for (unsigned i = 0, e = funcOp.getNumArguments(); i < e; ++i) {
+    SmallVector<NamedAttribute> attrs;
+    if (existingArgAttrs && i < existingArgAttrs.size()) {
+      if (auto dict = dyn_cast<DictionaryAttr>(existingArgAttrs[i])) {
+        for (NamedAttribute attr : dict)
+          attrs.push_back(attr);
+      }
+    }
+    if (i == argNumber) {
+      llvm::erase_if(attrs, [](NamedAttribute attr) {
+        return attr.getName().getValue() == ascend::kScheduleTileArgAttr;
+      });
+      attrs.push_back(NamedAttribute(
+          StringAttr::get(ctx, ascend::kScheduleTileArgAttr),
+          StringAttr::get(ctx, name)));
+    }
+    newArgAttrs.push_back(DictionaryAttr::get(ctx, attrs));
+  }
+  funcOp->setAttr(kFuncArgAttrsAttr, ArrayAttr::get(ctx, newArgAttrs));
+}
+
+BlockArgument getOrCreateRuntimeTileArg(func::FuncOp funcOp, Location loc,
+                                        StringRef name) {
+  Block &entry = funcOp.getBody().front();
+  for (BlockArgument arg : entry.getArguments()) {
+    if (!arg.getType().isInteger(64))
+      continue;
+    StringAttr argName = getArgTileName(funcOp, arg.getArgNumber());
+    if (argName && argName.getValue() == name)
+      return arg;
+  }
+
+  auto arg = entry.addArgument(IntegerType::get(funcOp.getContext(), 64), loc);
+  refreshFunctionType(funcOp);
+  setArgTileName(funcOp, arg.getArgNumber(), name);
+  return arg;
+}
+
+Value buildTileStep(OpBuilder &builder, Location loc, func::FuncOp funcOp,
+                    Operation *op, int64_t logicalAxis,
+                    int64_t fallbackTile) {
+  if (std::optional<std::string> name =
+          getRuntimeTileParamName(op, logicalAxis)) {
+    BlockArgument tileArg = getOrCreateRuntimeTileArg(funcOp, loc, *name);
+    return builder.create<arith::IndexCastOp>(loc, builder.getIndexType(),
+                                              tileArg);
+  }
+  return builder.create<arith::ConstantIndexOp>(loc, fallbackTile);
 }
 
 } // namespace
@@ -497,7 +612,8 @@ LogicalResult materializeSelectedReductionTiles(func::FuncOp funcOp) {
         findRedundantZeroFill(dstMemref, writeback.getOperation());
     builder.setInsertionPoint(insertionPoint);
     Value zero = builder.create<arith::ConstantIndexOp>(loc, 0);
-    Value step = builder.create<arith::ConstantIndexOp>(loc, tileRows);
+    Value step = buildTileStep(builder, loc, funcOp, genOp.getOperation(),
+                               /*logicalAxis=*/0, tileRows);
     Value rows = getDimValue(builder, loc, dstMemref, 0);
 
     auto forOp = builder.create<scf::ForOp>(loc, zero, rows, step);
@@ -746,10 +862,15 @@ LogicalResult materializeSelectedAllParallelTiles(func::FuncOp funcOp) {
     Value dstMemref = writeback.getTarget();
     builder.setInsertionPoint(insertionPoint);
     Value zero = builder.create<arith::ConstantIndexOp>(loc, 0);
-    Value step = builder.create<arith::ConstantIndexOp>(loc, tileRows);
+    Value step = buildTileStep(builder, loc, funcOp, genOp.getOperation(),
+                               /*logicalAxis=*/0, tileRows);
     Value rows = getDimValue(builder, loc, dstMemref, 0);
     Value innerExtent = getDimValue(builder, loc, dstMemref, 1);
     bool dynamicInner = ShapedType::isDynamic(outType.getShape()[1]);
+    bool hasRuntimeInnerTile =
+        getRuntimeTileParamName(genOp.getOperation(),
+                                /*logicalAxis=*/1)
+            .has_value();
     bool hasRank2SubviewInput = false;
     for (unsigned i = 0, e = genOp.getNumDpsInputs(); i < e; ++i) {
       auto inputType =
@@ -761,6 +882,7 @@ LogicalResult materializeSelectedAllParallelTiles(func::FuncOp funcOp) {
       }
     }
     bool needsInnerLoop =
+        hasRuntimeInnerTile ||
         (!dynamicInner && tileCols < outType.getShape()[1]) ||
         (dynamicInner && hasRank2SubviewInput);
 
@@ -802,7 +924,9 @@ LogicalResult materializeSelectedAllParallelTiles(func::FuncOp funcOp) {
     };
 
     if (needsInnerLoop) {
-      Value colStep = bodyBuilder.create<arith::ConstantIndexOp>(loc, tileCols);
+      Value colStep = buildTileStep(bodyBuilder, loc, funcOp,
+                                    genOp.getOperation(),
+                                    /*logicalAxis=*/1, tileCols);
       auto colFor = bodyBuilder.create<scf::ForOp>(loc, zero, innerExtent,
                                                    colStep);
       OpBuilder innerBuilder(funcOp.getContext());

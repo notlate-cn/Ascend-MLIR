@@ -639,7 +639,9 @@ struct ScheduleProblemBuildContext {
 
 #### 4.5.6 ScheduleInstance 与搜索空间
 
-`ScheduleInstance` 是搜索空间中的**候选描述**：符号化、不完整，仅描述调度形态（切哪些轴、轴如何分层、cache/pipeline 策略等），不含具体 tile 数值。`ScheduleDecision` 是其**精化结果**：已求值、带 guard、字段完整。两者关系通过组合而非字段复制表达（见 4.6.2 节）。
+`ScheduleInstance` 是搜索空间中的**候选描述**：符号化、不完整，仅描述调度形态（切哪些轴、轴如何分层、cache/pipeline 策略等）和 tile 参数表达式，不把某个 concrete tile 当成后续 lowering 的唯一事实。`ScheduleDecision` 是其**精化结果**：已求值、带 guard、字段完整。两者关系通过组合而非字段复制表达（见 4.6.2 节）。
+
+**符号化 tile 约束**：第三层不得把 `selected_tile_shape` 作为第四、五层的主 contract。主 contract 是 `tile_params`：每个 logical tile 维度都有 `name`、`axis`、`binding`、`default`、`upper_bound`、`extent`、`roles` 和 `primitive_uses`。其中 `default` 是 host tiling 在没有 tuning 命中时的默认值，`upper_bound` 是资源合法性上界，二者都不是编译期固定 loop step。`selected_tile_shape` 只允许作为 legacy/debug 字段保留，不能成为新 lowering 的必需输入。
 
 **`ScheduleInstance` 最小字段**：
 
@@ -950,6 +952,24 @@ struct ScheduledAxisTailPlan {
   bool emitsRuntimeGuard;                 // MustDivide 或动态 tail 分支需要运行时 guard 时为 true
 };
 
+enum class TileParamBinding {
+  Runtime,        // Host tiling / tuning DB 在运行期给出 tile value
+  Extent,         // tile value 等于该轴运行期 extent，不参与 autotune split
+  StaticFallback  // 仅用于 legacy lowering 的静态兼容路径
+};
+
+struct ScheduleTileParam {
+  StringRef name;                          // TilingData 字段名，例如 TB_M / TB_N / t_K
+  LogicalAxisId axis;
+  AxisKind axisKind;
+  TileParamBinding binding;
+  Expr defaultExpr;                        // fallback tile，不是编译期固定 loop step
+  Expr upperBoundExpr;                     // 资源合法性上界
+  Expr extentExpr;                         // 真实轴长度
+  SmallVector<AxisExecutionRole> roles;
+  SmallVector<PrimitiveAxisUseKind> primitiveUses;
+};
+
 struct ScheduleDecision {
   // --- 精化来源 ---
   ScheduleInstance scheduleInstance;  // 选中的候选（含所有符号化字段）
@@ -962,6 +982,10 @@ struct ScheduleDecision {
   UnitAssignment unitAssignment;           // Cube/Vector 分配（已确定）
   CachePlan cachePlan;                     // cache 计划（已从 cacheChoices 具体化）
   PromotionHints promotionHints;           // 片上提升意图（含 isBinding 字段）
+  SmallVector<ScheduleTileParam> tileParams;
+                                          // 新主 contract：后续 lowering / host tiling
+                                          // 消费符号 tile 参数，而不是
+                                          // selected_tile_shape 常量数组
   SmallVector<ScheduledAxisTailPlan> tailPlans;
                                           // 每根已调度轴的最终 tail 处理计划
 };
@@ -1012,7 +1036,7 @@ struct ScheduleDecisionSet {
 
 #### 4.6.4 输出：`ScheduleDecisionSet`
 
-`ScheduleDecisionSet` 持有一个或多个 `ScheduleDecision`。动态 shape 场景下，多个 decision 会在编译/部署准备阶段被物化为多个 guard 分支或 kernel variant，运行时只做 guard 匹配和 ABI 查询。
+`ScheduleDecisionSet` 持有一个或多个 `ScheduleDecision`。动态 shape 场景下，多个 decision 会在编译/部署准备阶段被物化为多个 guard 分支或 kernel variant，运行时只做 guard 匹配和 ABI 查询。单个 decision 内部的 tile 大小通过 `tileParams` 进入 host tiling ABI；autotuner 或 fallback heuristic 只写运行期 tiling 字段，不重写 kernel IR。
 
 #### 4.6.5 编译期、准备阶段与运行期分工
 
@@ -1024,6 +1048,8 @@ struct ScheduleDecisionSet {
 | 运行期                 | 根据当前 shape 匹配 Artifact Manifest 中的 guard/fallback，调用 Host Tiling ABI 的 `GetTiling` / `GetBlockDim` / `GetWorkspaceSize`，不执行调优搜索 |
 
 **Level-1 评分只允许使用**：legality、片上容量合法性、`cacheMissPenalty`、`bankConflictPenalty`、promotion / movement 数量、`blockDimExpr` 是否可直接求值、execution unit 与 memory hierarchy 匹配情况。
+
+**Host Tiling 分工补充**：`GetTiling` 必须写入 `tile_params.name` 对应的 `TilingData` 字段。若 tuning DB 没有命中，则使用 `defaultExpr` 并按 `extentExpr` 与 `upperBoundExpr` clamp。`upperBoundExpr` 可用于静态 buffer 上界与 verifier，但不能作为 loop step 替代运行期 tile 字段。
 
 **准备阶段选择链**：
 

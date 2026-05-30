@@ -43,6 +43,14 @@ inline constexpr llvm::StringLiteral kStructuredLoweringAttr =
     "ascend.schedule.structured_lowering";
 inline constexpr llvm::StringLiteral kScheduleSelectedTileShapeAttr =
     "ascend.schedule.selected_tile_shape";
+inline constexpr llvm::StringLiteral kScheduleTileParamsAttr =
+    "ascend.schedule.tile_params";
+inline constexpr llvm::StringLiteral kScheduleTileBindingAttr =
+    "ascend.schedule.tile_binding";
+inline constexpr llvm::StringLiteral kScheduleTileBindingSymbolic =
+    "symbolic";
+inline constexpr llvm::StringLiteral kScheduleTileArgAttr =
+    "ascend.schedule.tile_arg";
 inline constexpr llvm::StringLiteral kScheduleGuardMarkersAttr =
     "ascend.schedule.guard_markers";
 inline constexpr llvm::StringLiteral kScheduleTailPoliciesAttr =
