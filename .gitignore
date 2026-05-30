@@ -45,6 +45,7 @@ examples/**/*_kernel_gen.cpp
 examples/**/*_family.json
 examples/**/*__v*_space.json
 examples/**/tiling_space.json
+examples/aclnn-attn-e2e/test_attention
 
 # generated simulator kernels (test/tools/runtime/simulator outputs)
 test/tools/runtime/simulator/
