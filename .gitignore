@@ -36,3 +36,29 @@ externals/llvm-project
 
 examples/ascendc-handbook
 examples/dev-env.md
+
+# generated e2e pipeline artifacts (examples/*/run.sh outputs)
+examples/**/build_*/
+examples/**/*_kernel.mlir
+examples/**/*_kernel.cpp
+examples/**/*_kernel_gen.cpp
+examples/**/*_family.json
+examples/**/*__v*_space.json
+examples/**/tiling_space.json
+
+# generated simulator kernels (test/tools/runtime/simulator outputs)
+test/tools/runtime/simulator/
+
+# legacy walkthrough generated pipeline intermediates (deletion candidates; see handoff 2026-05-30 §3.2)
+examples/**/step*_input_out.mlir
+examples/**/step*_fused.mlir
+examples/**/step*_marked.mlir
+examples/**/step*_tiled.mlir
+examples/**/step*_bufferized.mlir
+examples/**/step*_buffer_placement.mlir
+examples/**/step*_ascendc.mlir
+examples/**/step*_parallelize.mlir
+examples/**/step*_cann.mlir
+examples/**/step*.tiling_space.json
+examples/**/output_step*.mlir
+examples/**/output_step*_sim.cpp
