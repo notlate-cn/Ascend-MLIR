@@ -122,6 +122,10 @@ def _binding_arg_name(name: str) -> str:
     return name.split(".", 1)[1] if "." in name else name
 
 
+def _binding_task_name(name: str) -> str | None:
+    return name.split(".", 1)[0] if "." in name else None
+
+
 def _normalize_binding(
     raw: Any,
     *,
@@ -380,6 +384,116 @@ def _run_artifact_case(
         )
     )
     return 0
+
+
+def _relative_to_run_dir(path: pathlib.Path, run_dir: pathlib.Path) -> str | None:
+    try:
+        return str(path.resolve().relative_to(run_dir))
+    except ValueError:
+        return None
+
+
+def _emit_tensor_diff_if_possible(
+    *,
+    case_path: pathlib.Path,
+    run_dir: pathlib.Path,
+    commands: list[dict[str, Any]],
+) -> None:
+    root = _load_json(case_path)
+    outputs = _normalize_bindings(
+        root,
+        case_dir=case_path.parent,
+        field="outputs",
+        required=False,
+        infer_existing_data=False,
+    )
+    expected_outputs = _normalize_bindings(
+        root,
+        case_dir=case_path.parent,
+        field="expected_outputs",
+        required=False,
+        infer_existing_data=False,
+    )
+    if not outputs or not expected_outputs:
+        return
+
+    outputs_by_name = {str(binding["name"]): binding for binding in outputs}
+    validation = root.get("validation") if isinstance(root.get("validation"), dict) else {}
+    atol = validation.get("atol", 1.0e-5)
+    rtol = validation.get("rtol", 1.0e-5)
+    comparisons: list[dict[str, Any]] = []
+    for expected in expected_outputs:
+        name = str(expected["name"])
+        actual = outputs_by_name.get(name)
+        if actual is None and len(outputs) == 1 and len(expected_outputs) == 1:
+            actual = outputs[0]
+        if actual is None:
+            continue
+        actual_rel = _relative_to_run_dir(pathlib.Path(str(actual["path"])), run_dir)
+        expected_rel = _relative_to_run_dir(pathlib.Path(str(expected["path"])), run_dir)
+        if actual_rel is None or expected_rel is None:
+            continue
+
+        task_name = _binding_task_name(name)
+        binding_name = _binding_arg_name(name)
+        comparison: dict[str, Any] = {
+            "id": f"checkpoint/{task_name or binding_name}",
+            "lhs": expected_rel,
+            "rhs": actual_rel,
+            "atol": atol,
+            "rtol": rtol,
+        }
+        if task_name:
+            comparison["kernel_id"] = task_name
+            comparison["task_id"] = task_name
+        comparisons.append(comparison)
+
+    if not comparisons:
+        return
+
+    tensors_dir = run_dir / "tensors"
+    summaries_dir = run_dir / "summaries"
+    tensors_dir.mkdir(parents=True, exist_ok=True)
+    summaries_dir.mkdir(parents=True, exist_ok=True)
+    tensor_manifest = tensors_dir / "manifest.json"
+    tensor_summary = summaries_dir / "tensor_diff.json"
+    tensor_manifest.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "comparisons": comparisons,
+            },
+            indent=2,
+            sort_keys=False,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    runtime_session = find_tool("runtime-session")
+    commands.append(
+        _runtime_command(
+            stage="runtime-diff",
+            tool="runtime-session",
+            argv=[
+                runtime_session,
+                "--compare-tensors",
+                str(tensor_manifest),
+                "--emit-validation-summary",
+                str(tensor_summary),
+            ],
+            args=[
+                "--compare-tensors",
+                "tensors/manifest.json",
+                "--emit-validation-summary",
+                "summaries/tensor_diff.json",
+            ],
+            stdout_path=run_dir / "runtime-session.diff.log",
+            stdout_rel="runtime-session.diff.log",
+            stderr_path=run_dir / "reports/runtime-session.diff.stderr.txt",
+            stderr_rel="reports/runtime-session.diff.stderr.txt",
+        )
+    )
 
 
 def _compile_source_case(
@@ -660,6 +774,11 @@ def run_case(args: argparse.Namespace) -> int:
                 commands=commands,
             )
             result = _run_artifact_case(artifact_case, run_dir, commands)
+            _emit_tensor_diff_if_possible(
+                case_path=artifact_case,
+                run_dir=run_dir,
+                commands=commands,
+            )
             _write_runtime_manifest(
                 run_dir=run_dir,
                 case_path=case_path,
@@ -669,6 +788,11 @@ def run_case(args: argparse.Namespace) -> int:
             return result
         if "artifact" in root:
             result = _run_artifact_case(case_path, run_dir, commands)
+            _emit_tensor_diff_if_possible(
+                case_path=case_path,
+                run_dir=run_dir,
+                commands=commands,
+            )
             _write_runtime_manifest(
                 run_dir=run_dir,
                 case_path=case_path,
@@ -679,7 +803,11 @@ def run_case(args: argparse.Namespace) -> int:
     except CommandError as error:
         failed_command = failure.command_from_error(error)
         failed_stage = str((failed_command or {}).get("stage") or "")
-        failed_phase = "runtime" if failed_stage in ("runtime-prepare", "runtime-run") else "compile"
+        failed_phase = (
+            "runtime"
+            if failed_stage in ("runtime-prepare", "runtime-run", "runtime-diff")
+            else "compile"
+        )
         _write_runtime_failure(
             run_dir=run_dir,
             case_path=case_path,

@@ -65,6 +65,7 @@ RUNTIME_SESSION_PREPARED_INPUT="$(mktemp /tmp/runtime_session_prepared_input.XXX
 RUNTIME_SESSION_PREPARED_OUTPUT="$(mktemp /tmp/runtime_session_prepared_output.XXXXXX.npy)"
 RUNTIME_SESSION_PREPARED_EXPECTED="$(mktemp /tmp/runtime_session_prepared_expected.XXXXXX.npy)"
 RUNTIME_SESSION_PREPARE_BINDING_STDERR="$(mktemp /tmp/runtime_session_prepare_binding.XXXXXX.err)"
+RUNTIME_SESSION_TENSOR_DIFF_DIR="$(mktemp -d)"
 RUNTIME_SESSION_CASE_DIR="$(mktemp -d)"
 RUNTIME_SESSION_CASE_JSON="${RUNTIME_SESSION_CASE_DIR}/case.json"
 RUNTIME_SESSION_CASE_RUN_MANIFEST="${RUNTIME_SESSION_CASE_DIR}/run_manifest.json"
@@ -80,6 +81,7 @@ cleanup() {
   rm -rf "$FAKE_ARTIFACT_ROOT"
   rm -rf "$RUNTIME_SESSION_ARTIFACT_ROOT"
   rm -rf "$RUNTIME_SESSION_SECOND_ARTIFACT_ROOT"
+  rm -rf "$RUNTIME_SESSION_TENSOR_DIFF_DIR"
   rm -rf "$RUNTIME_SESSION_CASE_DIR"
   rm -f "$INVALID_STDERR" "$RUN_STDERR" "$TEST_RUNTIME_BIN" \
         "$CONFLICT_STDERR" "$INVALID_KIND_STDERR" \
@@ -303,6 +305,116 @@ def write_npy(path, element_count):
 write_npy(sys.argv[1], 128)
 write_npy(sys.argv[2], 128)
 PY
+
+echo "--- Checking runtime-session tensor comparison path ---"
+mkdir -p "${RUNTIME_SESSION_TENSOR_DIFF_DIR}/tensors/cpu" \
+         "${RUNTIME_SESSION_TENSOR_DIFF_DIR}/tensors/npu" \
+         "${RUNTIME_SESSION_TENSOR_DIFF_DIR}/summaries"
+python3 - "${RUNTIME_SESSION_TENSOR_DIFF_DIR}" <<'PY'
+import pathlib
+import struct
+import sys
+
+root = pathlib.Path(sys.argv[1])
+
+def write_f32(path, values):
+    header = "{'descr': '<f4', 'fortran_order': False, 'shape': (%d,), }" % len(values)
+    header_bytes = header.encode("latin1")
+    padding = 16 - ((10 + len(header_bytes) + 1) % 16)
+    header_bytes += b" " * padding + b"\n"
+    payload = b"".join(struct.pack("<f", value) for value in values)
+    path.write_bytes(
+        b"\x93NUMPY\x01\x00" + struct.pack("<H", len(header_bytes)) + header_bytes + payload
+    )
+
+write_f32(root / "tensors/cpu/output0.npy", [1.0, 2.0, 3.0, 4.0])
+write_f32(root / "tensors/npu/output0.npy", [1.0, 2.001, 3.0, 4.0])
+write_f32(root / "tensors/npu/output_bad.npy", [1.0, 2.2, 3.0, 4.0])
+PY
+cat > "${RUNTIME_SESSION_TENSOR_DIFF_DIR}/tensors/manifest.json" <<'JSON'
+{
+  "schema_version": 1,
+  "comparisons": [
+    {
+      "id": "checkpoint/kernel_0",
+      "kernel_id": "kernel_0",
+      "task_id": "kernel_0",
+      "lhs": "tensors/cpu/output0.npy",
+      "rhs": "tensors/npu/output0.npy",
+      "atol": 0.01,
+      "rtol": 0.01
+    }
+  ]
+}
+JSON
+build/bin/runtime-session \
+  --compare-tensors "${RUNTIME_SESSION_TENSOR_DIFF_DIR}/tensors/manifest.json" \
+  --emit-validation-summary "${RUNTIME_SESSION_TENSOR_DIFF_DIR}/summaries/tensor_diff.json" \
+  >"${RUNTIME_SESSION_TENSOR_DIFF_DIR}/compare_pass.log"
+grep -q '^validation.status=pass$' "${RUNTIME_SESSION_TENSOR_DIFF_DIR}/compare_pass.log"
+python3 - "${RUNTIME_SESSION_TENSOR_DIFF_DIR}/summaries/tensor_diff.json" <<'PY'
+import json
+import pathlib
+import sys
+
+summary = json.loads(pathlib.Path(sys.argv[1]).read_text())
+assert summary["schema_version"] == 1
+assert summary["tool"] == "runtime-session"
+assert summary["status"] == "pass"
+assert summary["comparison_count"] == 1
+assert summary["failed_count"] == 0
+comparison = summary["comparisons"][0]
+assert comparison["id"] == "checkpoint/kernel_0"
+assert comparison["kernel_id"] == "kernel_0"
+assert comparison["task_id"] == "kernel_0"
+assert comparison["status"] == "pass"
+assert comparison["shape"] == [4]
+assert comparison["lhs_dtype"] == "f32"
+assert comparison["rhs_dtype"] == "f32"
+assert comparison["element_count"] == 4
+assert comparison["max_abs_error"] > 0.0
+assert comparison["max_rel_error"] > 0.0
+assert comparison["mean_abs_error"] > 0.0
+PY
+cat > "${RUNTIME_SESSION_TENSOR_DIFF_DIR}/tensors/manifest_fail.json" <<'JSON'
+{
+  "schema_version": 1,
+  "comparisons": [
+    {
+      "id": "checkpoint/kernel_0",
+      "kernel_id": "kernel_0",
+      "task_id": "kernel_0",
+      "lhs": "tensors/cpu/output0.npy",
+      "rhs": "tensors/npu/output_bad.npy",
+      "atol": 0.01,
+      "rtol": 0.01
+    }
+  ]
+}
+JSON
+if build/bin/runtime-session \
+  --compare-tensors "${RUNTIME_SESSION_TENSOR_DIFF_DIR}/tensors/manifest_fail.json" \
+  --emit-validation-summary "${RUNTIME_SESSION_TENSOR_DIFF_DIR}/summaries/tensor_diff_fail.json" \
+  >"${RUNTIME_SESSION_TENSOR_DIFF_DIR}/compare_fail.log"; then
+  echo "Error: runtime-session tensor comparison mismatch unexpectedly succeeded" >&2
+  exit 1
+fi
+grep -q '^validation.status=fail$' "${RUNTIME_SESSION_TENSOR_DIFF_DIR}/compare_fail.log"
+python3 - "${RUNTIME_SESSION_TENSOR_DIFF_DIR}/summaries/tensor_diff_fail.json" <<'PY'
+import json
+import pathlib
+import sys
+
+summary = json.loads(pathlib.Path(sys.argv[1]).read_text())
+assert summary["tool"] == "runtime-session"
+assert summary["status"] == "fail"
+assert summary["failed_count"] == 1
+comparison = summary["comparisons"][0]
+assert comparison["status"] == "fail"
+assert comparison["max_abs_error"] > 0.1
+assert comparison["max_rel_error"] > 0.05
+PY
+
 build/bin/runtime-session \
   --artifact-manifest "${RUNTIME_SESSION_ARTIFACT_MANIFEST}" \
   --artifact-root "${FAKE_ARTIFACT_ROOT}" \
@@ -570,7 +682,7 @@ cat > "${RUNTIME_SESSION_RUN_MANIFEST}" <<EOF
   ],
   "tiling": {
     "schema": "${PROJECT_ROOT}/examples/relu-broadcast-transpose/build_mainline/phase5_tiling_space.json",
-    "params": "dim_arg0_0=640,dim_arg1_0=500,dim_arg0_1=1,dim_arg1_1=640"
+    "params": "TB_M=32,TB_N=32,dim_arg0_0=640,dim_arg1_0=500,dim_arg1_1=640,dim_arg0_1=1"
   },
   "block_dim": 20,
   "workspace_size": 16777216,
@@ -612,7 +724,7 @@ cat > "${RUNTIME_SESSION_DAG_MANIFEST}" <<EOF
       ],
       "tiling": {
         "schema": "${PROJECT_ROOT}/examples/relu-broadcast-transpose/build_mainline/phase5_tiling_space.json",
-        "params": "dim_arg0_0=640,dim_arg1_0=500,dim_arg0_1=1,dim_arg1_1=640"
+        "params": "TB_M=32,TB_N=32,dim_arg0_0=640,dim_arg1_0=500,dim_arg1_1=640,dim_arg0_1=1"
       },
       "block_dim": 20,
       "workspace_size": 16777216,
@@ -629,7 +741,7 @@ cat > "${RUNTIME_SESSION_DAG_MANIFEST}" <<EOF
       ],
       "tiling": {
         "schema": "${PROJECT_ROOT}/examples/relu-broadcast-transpose/build_mainline/phase5_tiling_space.json",
-        "params": "dim_arg0_0=640,dim_arg1_0=500,dim_arg0_1=1,dim_arg1_1=640"
+        "params": "TB_M=32,TB_N=32,dim_arg0_0=640,dim_arg1_0=500,dim_arg1_1=640,dim_arg0_1=1"
       },
       "block_dim": 20,
       "workspace_size": 16777216,
@@ -648,7 +760,7 @@ cat > "${RUNTIME_SESSION_DAG_MANIFEST}" <<EOF
       ],
       "tiling": {
         "schema": "${PROJECT_ROOT}/examples/relu-broadcast-transpose/build_mainline/phase5_tiling_space.json",
-        "params": "dim_arg0_0=640,dim_arg1_0=500,dim_arg0_1=1,dim_arg1_1=640"
+        "params": "TB_M=32,TB_N=32,dim_arg0_0=640,dim_arg1_0=500,dim_arg1_1=640,dim_arg0_1=1"
       },
       "block_dim": 20,
       "workspace_size": 16777216,

@@ -2,6 +2,7 @@
 #include "Runtime/RuntimeFrontendCore.h"
 #include "Runtime/DebugCase.h"
 #include "Runtime/RunManifest.h"
+#include "Runtime/TensorDiff.h"
 #include "Runtime/ToolDiscovery.h"
 #include "Runtime/ExecutionBackend.h"
 #include "Runtime/ExecutionSession.h"
@@ -133,6 +134,16 @@ llvm::cl::opt<std::string> NpyDir(
 llvm::cl::opt<std::string> RunManifestPath(
     "run-manifest",
     llvm::cl::desc("JSON manifest describing artifact root, bindings, and execution settings"),
+    llvm::cl::init(""),
+    llvm::cl::cat(RuntimeSessionCategory));
+llvm::cl::opt<std::string> CompareTensorsPath(
+    "compare-tensors",
+    llvm::cl::desc("Tensor comparison manifest to evaluate and summarize"),
+    llvm::cl::init(""),
+    llvm::cl::cat(RuntimeSessionCategory));
+llvm::cl::opt<std::string> EmitValidationSummaryPath(
+    "emit-validation-summary",
+    llvm::cl::desc("Write tensor validation summary JSON"),
     llvm::cl::init(""),
     llvm::cl::cat(RuntimeSessionCategory));
 llvm::cl::opt<std::string> TestingDriver(
@@ -391,6 +402,40 @@ int main(int argc, char **argv) {
   llvm::cl::ParseCommandLineOptions(
       argc, argv,
       "task graph runtime planning and execution CLI for artifacts and session graphs\n");
+
+  if (!CompareTensorsPath.empty() || !EmitValidationSummaryPath.empty()) {
+    if (CompareTensorsPath.empty() || EmitValidationSummaryPath.empty()) {
+      llvm::errs() << "Error: --compare-tensors requires --emit-validation-summary\n";
+      return 4;
+    }
+    if (RunSession || !RunManifestPath.empty()
+#ifndef ASCEND_RUNTIME_SESSION_RUN_ONLY
+        || !DebugCasePath.empty() || !ArtifactManifestPath.empty() ||
+        !EmitRunManifestPath.empty() || !ArtifactRoot.empty() ||
+        !KernelFile.empty() || !ShapeArgAssignments.empty() ||
+        !InputPathAssignments.empty() || !ExpectedOutputPathAssignments.empty() ||
+        !OutputArgs.empty() || !CannMlir.empty() || !NpyDir.empty()
+#endif
+        || !TestingDriver.empty()
+    ) {
+      llvm::errs() << "Error: --compare-tensors cannot be combined with runtime planning, compile, or run options\n";
+      return 4;
+    }
+
+    TensorDiffRequest request;
+    request.manifestPath = CompareTensorsPath;
+    request.outputSummaryPath = EmitValidationSummaryPath;
+    auto resultOr = emitTensorDiffSummaryFromManifest(request);
+    if (!resultOr) {
+      llvm::errs() << "Error: " << llvm::toString(resultOr.takeError()) << "\n";
+      return 4;
+    }
+    llvm::outs() << "validation.comparisons=" << resultOr->comparisonCount << "\n";
+    llvm::outs() << "validation.failed=" << resultOr->failedCount << "\n";
+    llvm::outs() << "validation.status=" << (resultOr->passed ? "pass" : "fail") << "\n";
+    llvm::outs() << "validation.summary=" << EmitValidationSummaryPath << "\n";
+    return resultOr->passed ? 0 : 1;
+  }
 
   std::string caseRunManifestPath;
 #ifndef ASCEND_RUNTIME_SESSION_RUN_ONLY

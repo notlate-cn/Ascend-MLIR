@@ -7,6 +7,7 @@
 #include <cmath>
 #include <cstdint>
 #include <cstring>
+#include <limits>
 #include <string>
 
 namespace mlir::runtime {
@@ -119,8 +120,13 @@ compareRuntimeOutputs(llvm::ArrayRef<NDArray> actual,
           static_cast<double>(toFloat(expectedArray.data, elementIndex,
                                       expectedArray.dtype));
       const double diff = std::abs(actualValue - expectedValue);
+      const double relDiff =
+          expectedValue == 0.0 ? (diff == 0.0 ? 0.0
+                                              : std::numeric_limits<double>::max())
+                               : diff / std::abs(expectedValue);
       totalDiff += diff;
       result.maxAbsDiff = std::max(result.maxAbsDiff, diff);
+      result.maxRelDiff = std::max(result.maxRelDiff, relDiff);
       if (diff > atol + rtol * std::abs(expectedValue))
         result.passed = false;
     }

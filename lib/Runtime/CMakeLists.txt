@@ -10,6 +10,7 @@ add_mlir_library(AscendCRuntime
   Artifact/RunManifest.cpp
   Artifact/RuntimeSessionArtifactCompile.cpp
   Artifact/RuntimeSessionRequestBuilder.cpp
+  Artifact/TensorDiff.cpp
   Execution/DefaultExecutionRunner.cpp
   Execution/DynamicLibraryArtifactEnv.cpp
   Execution/BackendCapabilities.cpp

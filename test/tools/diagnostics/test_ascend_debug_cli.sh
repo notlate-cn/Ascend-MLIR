@@ -294,6 +294,13 @@ if [[ "$#" -eq 3 && "$1" == "--run-manifest" && "$3" == "--run" ]]; then
   printf 'session.result=success\n'
   exit 0
 fi
+if [[ "$#" -eq 4 && "$1" == "--compare-tensors" && "$3" == "--emit-validation-summary" ]]; then
+  test -f "$2"
+  mkdir -p "$(dirname "$4")"
+  printf '{"schema_version":1,"tool":"runtime-session","status":"pass","comparison_count":1,"failed_count":0,"comparisons":[]}\n' >"$4"
+  printf 'validation.status=pass\n'
+  exit 0
+fi
 printf 'unexpected runtime-session invocation: %s\n' "$*" >&2
 exit 2
 SH

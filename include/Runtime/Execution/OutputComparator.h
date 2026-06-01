@@ -11,6 +11,7 @@ namespace mlir::runtime {
 struct OutputComparisonResult {
   bool passed = false;
   double maxAbsDiff = 0.0;
+  double maxRelDiff = 0.0;
   double meanAbsDiff = 0.0;
   std::string errorMessage;
 };
