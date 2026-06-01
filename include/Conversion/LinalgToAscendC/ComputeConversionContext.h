@@ -110,8 +110,12 @@ struct ComputeCtx {
 // convertCompute() phase handlers — each lowers one op category in `funcOp`
 // using `cc`, in the order convertCompute calls them (ctx state threads
 // through).  Defined in their own TUs (ComputeReduce/Parallel/Ops.cpp).
+LogicalResult convertFillPrePass(func::FuncOp funcOp, ComputeCtx &cc);
 LogicalResult convertReduceGenerics(func::FuncOp funcOp, ComputeCtx &cc);
 LogicalResult convertParallelGenerics(func::FuncOp funcOp, ComputeCtx &cc);
+LogicalResult convertMatmuls(func::FuncOp funcOp, ComputeCtx &cc);
+LogicalResult convertElementwise(func::FuncOp funcOp, ComputeCtx &cc);
+LogicalResult convertFills(func::FuncOp funcOp, ComputeCtx &cc);
 
 } // namespace afir
 } // namespace mlir
