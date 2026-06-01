@@ -3,9 +3,12 @@
 
 #include "Conversion/AutoFuse/GroupInfo.h"
 #include "Conversion/AutoFuse/TilePlan.h"
+#include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringRef.h"
+
+#include <utility>
 
 // Internal contract for the TilePlanGen god-file split: symbols extracted out of
 // TilePlanGen.cpp's anonymous namespace that are still called across the new
@@ -50,6 +53,11 @@ double costEstimate(const auto_fuse::AxisGrouping &g,
                     const llvm::DenseSet<int> &vecDims,
                     const auto_fuse::TilePlanDraft &draft, unsigned elemBytes,
                     SocConstants soc, bool relaxNonBlockUbY = false);
+
+// Classify the trailing bias/activation epilogue chain after a linalg.matmul.
+// Returns {hasBias, epilogueKindName}.  Defined in TilePlanCubeAnalysis.cpp.
+std::pair<bool, llvm::StringRef>
+classifyCubeEpilogueChain(func::FuncOp func, auto_fuse::CubeKind cubeKind);
 
 } // namespace mlir::afir
 
