@@ -1188,6 +1188,25 @@ LogicalResult convertCompute(func::FuncOp funcOp, AscendCBufferContext &ctx) {
     return ba && ba.getArgNumber() == 0;
   };
 
+  // Helper: is this transpose correctly realizable by AscendC::Transpose?
+  // That intrinsic lowers to a single `vtranspose` (CANN
+  // kernel_operator_vec_transpose) — a fixed 16x16 fractal-block transpose of
+  // 16-bit data, i.e. a 2D last-two-axis swap.  Other ranks/perms (e.g. rank-3
+  // [1,0,2]) or non-16-bit dtypes silently produce wrong values, so we refuse
+  // them here — such transposes must be routed to aclnn upstream (CanFuse keeps
+  // them out of fusion groups).  NB: the remaining requirement — that the 16x16
+  // blocks tile cleanly (no ragged tail) — is a tiling-layer guarantee (the
+  // examples pin XBLOCK=16) and is not statically checkable here: by this stage
+  // the operand memrefs are dynamic-shaped tiles.
+  auto transposeSupportedByIntrinsic = [](Type elemType,
+                                          ArrayRef<int64_t> perm) -> bool {
+    // vtranspose dtype set is half / int16 / uint16 (bf16 is NOT supported).
+    if (!(elemType.isF16() || elemType.isInteger(16)))
+      return false;
+    // Only a rank-2 [1,0] swap maps to vtranspose's 2D semantics.
+    return perm.size() == 2 && perm[0] == 1 && perm[1] == 0;
+  };
+
   // Helper: detect index_select gather (column gather).
   // Stamped by --mark-structured-ops: {gather_dim = N : i64} attribute.
   auto isIndexSelectGeneric = [](linalg::GenericOp op) -> bool {
@@ -1657,6 +1676,23 @@ LogicalResult convertCompute(func::FuncOp funcOp, AscendCBufferContext &ctx) {
 
     // ---- Transpose generic: emit ascendc.transpose ----
     if (isTransposeGeneric(genOp)) {
+      // Only the rank-2 [1,0] 16-bit case is correct via AscendC::Transpose;
+      // refuse anything else rather than silently emit a wrong vtranspose.
+      {
+        AffineMap inMap = genOp.getIndexingMapsArray()[0];
+        SmallVector<int64_t> perm;
+        for (AffineExpr e : inMap.getResults())
+          perm.push_back(
+              static_cast<int64_t>(cast<AffineDimExpr>(e).getPosition()));
+        auto inMrt =
+            cast<MemRefType>(genOp.getDpsInputOperand(0)->get().getType());
+        if (!transposeSupportedByIntrinsic(inMrt.getElementType(), perm)) {
+          genOp.emitError(
+              "LinalgToAscendC: AscendC::Transpose only supports a rank-2 "
+              "[1,0] transpose of 16-bit data; route this transpose to aclnn");
+          return failure();
+        }
+      }
       Value inMemref = genOp.getDpsInputOperand(0)->get();
       Location loc = genOp.getLoc();
       builder.setInsertionPoint(genOp);
@@ -1883,6 +1919,14 @@ LogicalResult convertCompute(func::FuncOp funcOp, AscendCBufferContext &ctx) {
         break;
       }
       case IndexingMapAnalysis::Kind::PureTranspose: {
+        // Same intrinsic restriction as the standalone transpose handler: only
+        // a rank-2 [1,0] 16-bit swap is correct via vtranspose.
+        if (!transposeSupportedByIntrinsic(elemType, analysis.permutation)) {
+          genOp.emitError(
+              "LinalgToAscendC: AscendC::Transpose only supports a rank-2 "
+              "[1,0] transpose of 16-bit data; route this transpose to aclnn");
+          return failure();
+        }
         // The transpose source may already be on-chip (VECIN) — e.g. when the
         // transpose was absorbed into a downstream elementwise generic and
         // InsertTileBuffers placed a VECIN tile for the operand (whose load was
