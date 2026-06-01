@@ -12,6 +12,7 @@
  * License.
  */
 
+#include "Conversion/LinalgToAscendC/ComputeConversionContext.h"
 #include "Conversion/LinalgToAscendC/ComputeConversionHelpers.h"
 #include "Conversion/LinalgToAscendC/LinalgToAscendCUtils.h"
 
@@ -44,175 +45,7 @@ namespace afir {
 LogicalResult convertCompute(func::FuncOp funcOp, AscendCBufferContext &ctx) {
   MLIRContext *mlirCtx = funcOp.getContext();
   OpBuilder builder(mlirCtx);
-
-  auto getSubviewSizeValue = [&](OpBuilder &b, Location loc, Value memref,
-                                 unsigned dim) -> Value {
-    auto subviewOp = memref.getDefiningOp<memref::SubViewOp>();
-    if (!subviewOp)
-      return Value{};
-    SmallVector<OpFoldResult> mixedSizes = subviewOp.getMixedSizes();
-    // `dim` indexes the (possibly rank-reduced) RESULT; mixedSizes is indexed by
-    // SOURCE rank.  For a rank-reducing subview (e.g. peel-outer-R's
-    // x[1, a_tile, R2] -> [a_tile, R2]) the dropped unit dims must be skipped so
-    // result dim d maps to the d-th kept source dim — otherwise the reduction
-    // extent (R2) is read as the dropped unit size and the reduce degenerates.
-    llvm::SmallBitVector dropped = subviewOp.getDroppedDims();
-    unsigned srcDim = 0, kept = 0;
-    for (; srcDim < mixedSizes.size(); ++srcDim) {
-      if (dropped[srcDim])
-        continue;
-      if (kept == dim)
-        break;
-      ++kept;
-    }
-    if (srcDim >= mixedSizes.size())
-      return Value{};
-    OpFoldResult size = mixedSizes[srcDim];
-    if (auto attr = size.dyn_cast<Attribute>())
-      return b.create<arith::ConstantIndexOp>(loc,
-                                              cast<IntegerAttr>(attr).getInt());
-    return size.get<Value>();
-  };
-
-  auto computeProduct = [&](OpBuilder &b, Location loc,
-                            ArrayRef<Value> dims) -> Value {
-    Value totalElems;
-    for (Value s : dims)
-      totalElems = totalElems ? b.create<arith::MulIOp>(loc, totalElems, s) : s;
-    if (!totalElems)
-      totalElems = b.create<arith::ConstantIndexOp>(loc, 1);
-    return totalElems;
-  };
-
-  // Helper: get a local_tensor by deque from a queue.
-  auto dequeTensor = [&](OpBuilder &b, Location loc, Value queue,
-                         Type elemType) -> Value {
-    return b.create<TQueBindDequeTensorOp>(loc, LocalTensorType::get(elemType),
-                                           queue);
-  };
-
-  // Helper: alloc a local_tensor from a queue.
-  auto allocTensor = [&](OpBuilder &b, Location loc, Value queue,
-                         Type elemType) -> Value {
-    return b.create<TQueBindAllocTensorOp>(loc, LocalTensorType::get(elemType),
-                                           queue);
-  };
-
-  // Helper: get_tensor from a fresh TBuf (for VECCALC temporaries with no
-  // queue, or buffers without an alloc-based queue).
-  auto tbufTensor = [&](OpBuilder &b, Location loc, int64_t ms,
-                        Type elemType) -> Value {
-    auto pos = static_cast<TPosition>(ms > 0 ? ms : 0);
-    Value tbuf = b.create<TBufOp>(loc, TBufType::get(mlirCtx, pos));
-    return b.create<TBufGetTensorOp>(loc, LocalTensorType::get(elemType), tbuf,
-                                     /*len=*/Value{});
-  };
-
-  // Helper: compute the linear byte offset for a subview into its parent alloc.
-  // For a 2D row-major parent with shape [D0 x D1]:
-  //   linear_offset_bytes = (offsets[0] * D1 + offsets[1]) * elem_bytes
-  // Returns null Value if `memref` is not a subview.
-  auto subviewByteOffset = [&](OpBuilder &b, Location loc,
-                                Value memref) -> Value {
-    auto subviewOp = memref.getDefiningOp<memref::SubViewOp>();
-    if (!subviewOp)
-      return Value{};
-    Value parent = subviewOp.getSource();
-    auto parentType = cast<MemRefType>(parent.getType());
-    if (parentType.getRank() != 2)
-      return Value{};
-
-    SmallVector<OpFoldResult> mixedOffsets = subviewOp.getMixedOffsets();
-    // Row stride = dim[1] of parent alloc.
-    Value rowStride;
-    if (!ShapedType::isDynamic(parentType.getShape()[1]))
-      rowStride =
-          b.create<arith::ConstantIndexOp>(loc, parentType.getShape()[1]);
-    else
-      rowStride = b.create<memref::DimOp>(
-          loc, parent, b.create<arith::ConstantIndexOp>(loc, 1));
-
-    auto toIndex = [&](OpFoldResult ofr) -> Value {
-      if (auto attr = ofr.dyn_cast<Attribute>())
-        return b.create<arith::ConstantIndexOp>(
-            loc, cast<IntegerAttr>(attr).getInt());
-      return ofr.get<Value>();
-    };
-    Value off0 = toIndex(mixedOffsets[0]);
-    Value off1 = toIndex(mixedOffsets[1]);
-
-    Value linearElems = b.create<arith::MulIOp>(loc, off0, rowStride);
-    linearElems = b.create<arith::AddIOp>(loc, linearElems, off1);
-    unsigned elemBytes = parentType.getElementTypeBitWidth() / 8;
-    Value bytesVal = b.create<arith::ConstantIndexOp>(loc, elemBytes);
-    return b.create<arith::MulIOp>(loc, linearElems, bytesVal);
-  };
-
-  // Helper: obtain a local_tensor slice via tbuf.get_with_offset.
-  // Returns null if no tbuf registered for `memref`.
-  auto tbufSlice = [&](OpBuilder &b, Location loc, Value memref,
-                        Value sizeBytes, Value offsetBytes) -> Value {
-    Value tbuf = ctx.getTBuf(memref);
-    if (!tbuf)
-      return Value{};
-    auto mrt = cast<MemRefType>(memref.getType());
-    return b.create<TBufGetWithOffsetOp>(
-        loc, LocalTensorType::get(mrt.getElementType()), tbuf, sizeBytes,
-        offsetBytes);
-  };
-
-  // Helper: get a read-side local_tensor for a compute operand.
-  // If `memref` is a subview of a live-tensor buffer, use tbuf.get_with_offset
-  // to obtain the correctly-offset slice (avoids returning the whole tensor).
-  // Otherwise deque from queue or fall back to fresh tbuf.
-  auto readTensor = [&](OpBuilder &b, Location loc, Value memref) -> Value {
-    auto mrt = cast<MemRefType>(memref.getType());
-    if (ctx.getLiveTensor(memref)) {
-      if (Value byteOff = subviewByteOffset(b, loc, memref)) {
-        Value sizeBytes = computeByteCount(b, loc, memref);
-        if (Value t = tbufSlice(b, loc, memref, sizeBytes, byteOff))
-          return t;
-      }
-      return ctx.getLiveTensor(memref);
-    }
-    if (Value q = ctx.getQueue(memref))
-      return dequeTensor(b, loc, q, mrt.getElementType());
-    return tbufTensor(b, loc, getMemorySpace(mrt), mrt.getElementType());
-  };
-
-  // Helper: get a write-side local_tensor for a compute output.
-  // If `memref` is a subview, use tbuf.get_with_offset so the write lands at
-  // the correct offset inside the parent buffer (e.g. VECOUT sub-tile).
-  // Otherwise prefer alloc_tensor from queue, else fresh tbuf.
-  auto writeTensor = [&](OpBuilder &b, Location loc, Value memref) -> Value {
-    auto mrt = cast<MemRefType>(memref.getType());
-    if (Value byteOff = subviewByteOffset(b, loc, memref)) {
-      Value sizeBytes = computeByteCount(b, loc, memref);
-      if (Value t = tbufSlice(b, loc, memref, sizeBytes, byteOff))
-        return t;
-    }
-    if (Value live = ctx.getLiveTensor(memref))
-      return live;
-    if (Value q = ctx.getQueue(memref))
-      return allocTensor(b, loc, q, mrt.getElementType());
-    return tbufTensor(b, loc, getMemorySpace(mrt), mrt.getElementType());
-  };
-
-  // Helper: allocate a write-side tensor before the nearest enclosing for-loop
-  // and enqueue it after.  This ensures the queue slot stays valid across all
-  // iterations of that loop (e.g. CO1 accumulating across K, VECOUT across
-  // Tb_M/Tb_N).  Returns {localTensor, hoistFor} where hoistFor may be null.
-  auto allocHoisted =
-      [&](Operation *op, Value queue, Type elemType,
-          Location loc) -> std::pair<Value, scf::ForOp> {
-    scf::ForOp forOp = getEnclosingFor(op);
-    if (!forOp)
-      return {allocTensor(builder, loc, queue, elemType), nullptr};
-    OpBuilder::InsertionGuard guard(builder);
-    builder.setInsertionPoint(forOp);
-    Value tensor = allocTensor(builder, loc, queue, elemType);
-    return {tensor, forOp};
-  };
+  ComputeCtx cc{builder, ctx, mlirCtx};
 
   // --- linalg.generic {iterator_types contains "reduction"} ---
   //
@@ -234,146 +67,6 @@ LogicalResult convertCompute(func::FuncOp funcOp, AscendCBufferContext &ctx) {
   //   - The final accumulated VECCALC (over parallel dims) is reduced via reduce_sum_2d_l2
   //     with ReduceLayout::AR (A=parallel rows, R=reduction cols).
   //
-
-  // Helper: allocate a fresh on-chip VECCALC buffer matching the given dynamic
-  // sizes, insert tbuf + init_buffer, and return {tbufVal, localTensorVal}.
-  // On-chip buffers do not use memref.alloc; lifetime is managed by TPipe.
-  auto allocVeccalc =
-      [&](OpBuilder &b, Location loc, Type elemType,
-          SmallVector<Value> dynSizes) -> std::pair<Value, Value> {
-    Value tbuf = b.create<TBufOp>(loc, TBufType::get(mlirCtx, TPosition::VECCALC));
-    // Byte size = product(dynSizes) * elemBytes
-    Value totalElems;
-    for (Value s : dynSizes)
-      totalElems = totalElems ? b.create<arith::MulIOp>(loc, totalElems, s) : s;
-    if (!totalElems)
-      totalElems = b.create<arith::ConstantIndexOp>(loc, 1);
-    unsigned elemBytes = elemType.getIntOrFloatBitWidth() / 8;
-    Value byteSize = b.create<arith::MulIOp>(
-        loc, totalElems, b.create<arith::ConstantIndexOp>(loc, elemBytes));
-    b.create<TPipeInitBufferOp>(loc, ctx.pipe, tbuf, byteSize);
-
-    Value lt = b.create<TBufGetTensorOp>(
-        loc, LocalTensorType::get(elemType), tbuf, /*len=*/Value{});
-    return {tbuf, lt};
-  };
-
-  // Helper: copy `elemCount` elements from a GM GlobalTensor into a fresh
-  // VECIN TQue (AllocTensor → DataCopy → EnQue → DeQue) and return the
-  // dequeued VECIN LocalTensor.  The AscendC simulator only supports
-  // DataCopy from GM → VECIN TQue (not directly to VECCALC TBuf).
-  auto copyGmToVecin =
-      [&](OpBuilder &b, Location loc, Type elemType, Value srcGt,
-          Value elemCount, Value bufferElemCount = Value{},
-          SmallVectorImpl<std::pair<Value, Value>> *tempVecinTensors =
-              nullptr) -> Value {
-    if (!bufferElemCount)
-      bufferElemCount = elemCount;
-    unsigned elemBytes = elemType.getIntOrFloatBitWidth() / 8;
-    Value byteSize = b.create<arith::MulIOp>(
-        loc, bufferElemCount, b.create<arith::ConstantIndexOp>(loc, elemBytes));
-    Value vecinTbuf =
-        b.create<TBufOp>(loc, TBufType::get(mlirCtx, TPosition::VECIN));
-    b.create<TPipeInitBufferOp>(loc, ctx.pipe, vecinTbuf, byteSize);
-    Value vecinQue =
-        b.create<QueueOp>(loc, QueueType::get(mlirCtx, TPosition::VECIN, 1));
-    Value depth = b.create<arith::ConstantOp>(loc, b.getI32IntegerAttr(1));
-    b.create<TPipeInitQueueOp>(loc, ctx.pipe, vecinQue, depth, byteSize);
-    Value lt = b.create<TQueBindAllocTensorOp>(
-        loc, LocalTensorType::get(elemType), vecinQue);
-    b.create<DataCopyL2Op>(loc, lt, srcGt, elemCount);
-    b.create<TQueBindEnqueTensorOp>(loc, vecinQue, lt);
-    Value dequeued = b.create<TQueBindDequeTensorOp>(
-        loc, LocalTensorType::get(elemType), vecinQue);
-    if (tempVecinTensors)
-      tempVecinTensors->push_back({vecinQue, dequeued});
-    return dequeued;
-  };
-
-  // Helper: copy a row-strided 2-D tile from GM into a packed VECIN TQue.
-  // The GM source is `srcGt` pointing at the tile origin; the tile is
-  // `rows` blocks of `cols` elements, consecutive blocks `rowStride` elements
-  // apart in GM (gap = rowStride - cols); the VECIN destination is packed
-  // [rows*cols].  This is the [XBLOCK_SUB x RBLOCK_0] chunk of x[A,R] in the
-  // RBLOCK reduction-split path, whose subview layout is strided<[R, 1]> with
-  // R != RBLOCK_0 — a flat DataCopy of rows*cols elements would read
-  // contiguous memory from the origin (the wrong rows).  Emitted as a verbatim
-  // doing one plain DataCopy per row (the AscendC dialect has no strided-copy
-  // op here).  Requires RBLOCK_0*elem_bytes % 32 == 0 — the tiling-space
-  // generator is expected to honour that for the reduction-split tunable.
-  //
-  // `initB` is where the buffer/queue are *allocated* (hoisted out of the
-  // RBLOCK loop to function entry, so InitBuffer/InitQueue run once instead of
-  // once per trip — repeating them would exhaust the UB pool); `b` is where
-  // the per-trip AllocTensor / copy / EnQue / DeQue go.  `rows/cols/rowStride`
-  // must be valid at `initB`'s insertion point too (loop-invariant).  Returns
-  // {dequeued tensor, queue} so the caller can FreeTensor it after use (a
-  // shared depth-1 queue would otherwise dead-lock the next AllocTensor).
-  auto copyGmToVecinStrided =
-      [&](OpBuilder &initB, OpBuilder &b, Location loc, Type elemType,
-          Value srcGt, Value rows, Value cols,
-          Value rowStride) -> std::pair<Value, Value> {
-    unsigned elemBytes = elemType.getIntOrFloatBitWidth() / 8;
-    Value nElems = initB.create<arith::MulIOp>(loc, rows, cols);
-    Value byteSize = initB.create<arith::MulIOp>(
-        loc, nElems, initB.create<arith::ConstantIndexOp>(loc, elemBytes));
-    Value vecinTbuf =
-        initB.create<TBufOp>(loc, TBufType::get(mlirCtx, TPosition::VECIN));
-    initB.create<TPipeInitBufferOp>(loc, ctx.pipe, vecinTbuf, byteSize);
-    Value vecinQue =
-        initB.create<QueueOp>(loc, QueueType::get(mlirCtx, TPosition::VECIN, 1));
-    Value depth = initB.create<arith::ConstantOp>(loc, b.getI32IntegerAttr(1));
-    initB.create<TPipeInitQueueOp>(loc, ctx.pipe, vecinQue, depth, byteSize);
-    Value lt = b.create<TQueBindAllocTensorOp>(
-        loc, LocalTensorType::get(elemType), vecinQue);
-    std::string ets = cppScalarName(elemType);
-    // One plain DataCopy per row: src row `i` lives at $1[i*rowStride] in GM
-    // (GetPhyAddr → fresh GlobalTensor), dst row `i` at $0[i*cols] in UB.
-    // Uses only the proven DataCopy / GetPhyAddr / LocalTensor::operator[]
-    // path (rather than a strided DataCopyPad, which this AscendC/sim build
-    // does not handle for GM→UB).  Requires cols*sizeof(elem) % 32 == 0.
-    std::string tmpl =
-        "{\n"
-        "  for (uint32_t _afir_i = 0; _afir_i < (uint32_t)$2; _afir_i++) {\n"
-        "    AscendC::GlobalTensor<" + ets + "> _afir_gt;\n"
-        "    _afir_gt.SetGlobalBuffer($1.GetPhyAddr(_afir_i * (uint32_t)$4));\n"
-        "    AscendC::DataCopy($0[_afir_i * (uint32_t)$3], _afir_gt, (uint32_t)$3);\n"
-        "  }\n"
-        "}";
-    b.create<emitasc::VerbatimOp>(loc, b.getStringAttr(tmpl),
-                                  ValueRange({lt, srcGt, rows, cols, rowStride}));
-    b.create<TQueBindEnqueTensorOp>(loc, vecinQue, lt);
-    Value deq = b.create<TQueBindDequeTensorOp>(
-        loc, LocalTensorType::get(elemType), vecinQue);
-    return {deq, vecinQue};
-  };
-
-  // Helper: get a runtime Value for dimension `dim` of a memref.
-  auto getDynDim = [&](OpBuilder &b, Location loc, Value memref,
-                        unsigned dim) -> Value {
-    if (Value subviewSize = getSubviewSizeValue(b, loc, memref, dim))
-      return subviewSize;
-    auto mrt = cast<MemRefType>(memref.getType());
-    if (!ShapedType::isDynamic(mrt.getShape()[dim]))
-      return b.create<arith::ConstantIndexOp>(loc, mrt.getShape()[dim]);
-    return b.create<memref::DimOp>(loc, memref, dim);
-  };
-
-  auto getBufferDimSizes = [&](ArrayRef<Value> dims,
-                               Operation *anchor) -> SmallVector<Value> {
-    SmallVector<Value> bufferDims;
-    bufferDims.reserve(dims.size());
-    for (Value dim : dims)
-      bufferDims.push_back(getEnclosingLoopStepBound(dim, anchor));
-    return bufferDims;
-  };
-
-  auto freeTempVecinTensors =
-      [&](OpBuilder &b, Location loc,
-          ArrayRef<std::pair<Value, Value>> tempVecinTensors) {
-    for (auto [queue, tensor] : tempVecinTensors)
-      b.create<TQueBindFreeTensorOp>(loc, queue, tensor);
-  };
 
   // ------------------------------------------------------------------
   // Fill PRE-pass: any linalg.fill writing a VECCALC (ms==11) buffer is an
@@ -401,7 +94,7 @@ LogicalResult convertCompute(func::FuncOp funcOp, AscendCBufferContext &ctx) {
         localDst = builder.create<TBufGetTensorOp>(
             loc, LocalTensorType::get(elemTy), tbuf, /*len=*/Value{});
       else
-        localDst = writeTensor(builder, loc, dst);
+        localDst = cc.writeTensor(builder, loc, dst);
       Value count = computeElementCount(builder, loc, dst);
       auto dupOp = builder.create<DuplicateL2Op>(loc, localDst,
                                                  fillOp.getInputs()[0], count);
@@ -460,7 +153,7 @@ LogicalResult convertCompute(func::FuncOp funcOp, AscendCBufferContext &ctx) {
         // Full map — use this operand to fill iterDimSizes.
         auto mrt = cast<MemRefType>(inMemref.getType());
         for (unsigned d = 0; d < iterRank; ++d)
-          iterDimSizes[d] = getDynDim(builder, loc, inMemref, d);
+          iterDimSizes[d] = cc.getDynDim(builder, loc, inMemref, d);
         if (inMap.isIdentity())
           fullRankSv = inMemref.getDefiningOp<memref::SubViewOp>();
         break;
@@ -472,7 +165,7 @@ LogicalResult convertCompute(func::FuncOp funcOp, AscendCBufferContext &ctx) {
       unsigned outDim = 0;
       for (unsigned d = 0; d < iterRank; ++d) {
         if (!iterDimSizes[d] && iterTypes[d] == utils::IteratorType::parallel)
-          iterDimSizes[d] = getDynDim(builder, loc, outMemref, outDim++);
+          iterDimSizes[d] = cc.getDynDim(builder, loc, outMemref, outDim++);
       }
     }
 
@@ -565,7 +258,7 @@ LogicalResult convertCompute(func::FuncOp funcOp, AscendCBufferContext &ctx) {
     // that will hold the element-wise intermediate results before reduction.
     // NOTE: plain Value (not a structured binding) so the chooseDst lambda
     // below can capture it; .first (tbuf) is unused here.
-    Value accumLt = allocVeccalc(initB, loc, elemType, allocShape).second;
+    Value accumLt = cc.allocVeccalc(initB, loc, elemType, allocShape).second;
 
     // Zero-initialize the accumulator.  The linalg.generic outs operand
     // provides the initial accumulator value, which is 0.0 (set by the
@@ -617,14 +310,14 @@ LogicalResult convertCompute(func::FuncOp funcOp, AscendCBufferContext &ctx) {
             srcShapeVals.push_back(
                 builder.create<arith::IndexCastOp>(
                     loc, builder.getI32Type(),
-                    getDynDim(builder, loc, inMemref, srcDimIdx++)));
+                    cc.getDynDim(builder, loc, inMemref, srcDimIdx++)));
           else
             srcShapeVals.push_back(
                 builder.create<arith::ConstantIntOp>(loc, builder.getI32Type(), 1));
         }
-        Value srcLt = readTensor(builder, loc, inMemref);
+        Value srcLt = cc.readTensor(builder, loc, inMemref);
         auto [bcastTbuf, bcastLt] =
-            allocVeccalc(builder, loc, elemType, fullShape);
+            cc.allocVeccalc(builder, loc, elemType, fullShape);
         auto bcastOp = builder.create<BroadcastL2Op>(
             loc, bcastLt, srcLt,
             dstShapeVals, srcShapeVals,
@@ -640,7 +333,7 @@ LogicalResult convertCompute(func::FuncOp funcOp, AscendCBufferContext &ctx) {
         unsigned srcRank = srcMrt.getRank();
         SmallVector<Value> srcDims;
         for (unsigned d = 0; d < srcRank; ++d)
-          srcDims.push_back(getDynDim(builder, loc, inMemref, d));
+          srcDims.push_back(cc.getDynDim(builder, loc, inMemref, d));
         Value srcElemCount = builder.create<arith::ConstantIndexOp>(loc, 1);
         for (Value d : srcDims)
           srcElemCount = builder.create<arith::MulIOp>(loc, srcElemCount, d);
@@ -649,7 +342,7 @@ LogicalResult convertCompute(func::FuncOp funcOp, AscendCBufferContext &ctx) {
         builder.create<GlobalTensorSetGlobalBufferOp>(loc, srcGt, inMemref,
                                                        /*size=*/Value{});
         Value srcLt =
-            copyGmToVecin(builder, loc, elemType, srcGt, srcElemCount,
+            cc.copyGmToVecin(builder, loc, elemType, srcGt, srcElemCount,
                           /*bufferElemCount=*/Value{}, &vecinFrees);
         SmallVector<Value> dstShapeVals, srcShapeVals;
         for (Value s : fullShape)
@@ -669,7 +362,7 @@ LogicalResult convertCompute(func::FuncOp funcOp, AscendCBufferContext &ctx) {
                 builder.create<arith::ConstantIntOp>(loc, builder.getI32Type(), 1));
         }
         auto [bcastTbuf, bcastLt] =
-            allocVeccalc(builder, loc, elemType, fullShape);
+            cc.allocVeccalc(builder, loc, elemType, fullShape);
         auto bcastOp = builder.create<BroadcastL2Op>(
             loc, bcastLt, srcLt,
             dstShapeVals, srcShapeVals,
@@ -701,9 +394,9 @@ LogicalResult convertCompute(func::FuncOp funcOp, AscendCBufferContext &ctx) {
           // Sizes/stride used for the (hoisted) buffer alloc must be loop-
           // invariant — use the function-entry copies when hoisting.
           Value rows = hoist ? strideRowsEntry
-                             : getDynDim(builder, loc, inMemref, 0);
+                             : cc.getDynDim(builder, loc, inMemref, 0);
           Value cols = hoist ? strideColsEntry
-                             : getDynDim(builder, loc, inMemref, 1);
+                             : cc.getDynDim(builder, loc, inMemref, 1);
           Value rowStride =
               hoist ? strideRowStrideEntry
                     : initB.create<arith::ConstantIndexOp>(
@@ -711,7 +404,7 @@ LogicalResult convertCompute(func::FuncOp funcOp, AscendCBufferContext &ctx) {
                                    cast<MemRefType>(inMemref.getType())
                                        .getLayout())
                                    .getStrides()[0]);
-          auto [deq, q] = copyGmToVecinStrided(initB, builder, loc, elemType,
+          auto [deq, q] = cc.copyGmToVecinStrided(initB, builder, loc, elemType,
                                                srcGt, rows, cols, rowStride);
           inputLts[i] = deq;
           // The per-trip AllocTensor comes from a depth-1 VECIN queue, so it
@@ -724,12 +417,12 @@ LogicalResult convertCompute(func::FuncOp funcOp, AscendCBufferContext &ctx) {
           vecinFrees.push_back({q, deq});
         } else {
           inputLts[i] =
-              copyGmToVecin(builder, loc, elemType, srcGt, totalElems,
+              cc.copyGmToVecin(builder, loc, elemType, srcGt, totalElems,
                             /*bufferElemCount=*/Value{}, &vecinFrees);
         }
       } else {
         // Already VECIN or VECCALC — use readTensor as-is.
-        inputLts[i] = readTensor(builder, loc, inMemref);
+        inputLts[i] = cc.readTensor(builder, loc, inMemref);
       }
     }
 
@@ -799,7 +492,7 @@ LogicalResult convertCompute(func::FuncOp funcOp, AscendCBufferContext &ctx) {
         if (it != valToLt.end()) return it->second;
         // Scalar constant? Fill a fresh VECCALC with duplicate_l2.
         if (auto constOp = v.getDefiningOp<arith::ConstantOp>()) {
-          auto [dupTbuf, dupLt] = allocVeccalc(initB, loc, elemType, allocShape);
+          auto [dupTbuf, dupLt] = cc.allocVeccalc(initB, loc, elemType, allocShape);
           auto dupOp = builder.create<DuplicateL2Op>(loc, dupLt, constOp.getResult(), count);
           copyAscendCUnitAttr(genOp.getOperation(), dupOp.getOperation());
           valToLt[v] = dupLt;
@@ -812,7 +505,7 @@ LogicalResult convertCompute(func::FuncOp funcOp, AscendCBufferContext &ctx) {
       auto chooseDst = [&](Value result) -> Value {
         if (result == yieldedVal)
           return accumLt;
-        auto [tmpTbuf, tmpLt] = allocVeccalc(initB, loc, elemType, allocShape);
+        auto [tmpTbuf, tmpLt] = cc.allocVeccalc(initB, loc, elemType, allocShape);
         valToLt[result] = tmpLt;
         return tmpLt;
       };
@@ -905,7 +598,7 @@ LogicalResult convertCompute(func::FuncOp funcOp, AscendCBufferContext &ctx) {
         }
       }
     }
-    Value vecoutLt = writeTensor(builder, loc, outMemref);
+    Value vecoutLt = cc.writeTensor(builder, loc, outMemref);
     auto layoutAttr = ReduceLayoutAttr::get(mlirCtx, layout);
 
     // When hoisting (RBLOCK reduction-split), give reduce_sum_2d_l2 a
@@ -919,7 +612,7 @@ LogicalResult convertCompute(func::FuncOp funcOp, AscendCBufferContext &ctx) {
           loc, totalElemsEntry,
           entryBuilder.create<arith::ConstantIndexOp>(loc, 64));
       reduceScratch =
-          allocVeccalc(entryBuilder, loc, elemType, {scratchElems}).second;
+          cc.allocVeccalc(entryBuilder, loc, elemType, {scratchElems}).second;
     }
 
     auto emitVecinFrees = [&] {
@@ -942,9 +635,9 @@ LogicalResult convertCompute(func::FuncOp funcOp, AscendCBufferContext &ctx) {
       } else {
         for (unsigned d = 0;
              d < cast<MemRefType>(outMemref.getType()).getRank(); ++d)
-          outDyn.push_back(getDynDim(builder, loc, outMemref, d));
+          outDyn.push_back(cc.getDynDim(builder, loc, outMemref, d));
       }
-      auto [tmpTbuf, tmpLt] = allocVeccalc(initB, loc, elemType, outDyn);
+      auto [tmpTbuf, tmpLt] = cc.allocVeccalc(initB, loc, elemType, outDyn);
       auto reduceOp = builder.create<ReduceSum2DL2Op>(
           loc, tmpLt, accumLt, layoutAttr, /*sharedTmpBuffer=*/reduceScratch);
       copyAscendCUnitAttr(genOp.getOperation(), reduceOp.getOperation());
@@ -1061,9 +754,9 @@ LogicalResult convertCompute(func::FuncOp funcOp, AscendCBufferContext &ctx) {
       Type i32Type  = builder.getI32Type();
 
       // Tb_M = dim[0] of output, N = dim[1] of data, K = dim[1] of output
-      Value tbM  = getDynDim(builder, loc, outMemref, 0);
-      Value dimN = getDynDim(builder, loc, dataMemref, 1);
-      Value dimK = getDynDim(builder, loc, outMemref, 1);
+      Value tbM  = cc.getDynDim(builder, loc, outMemref, 0);
+      Value dimN = cc.getDynDim(builder, loc, dataMemref, 1);
+      Value dimK = cc.getDynDim(builder, loc, outMemref, 1);
 
       unsigned elemBytes = elemType.getIntOrFloatBitWidth() / 8;
 
@@ -1072,16 +765,16 @@ LogicalResult convertCompute(func::FuncOp funcOp, AscendCBufferContext &ctx) {
       // If indices are in GM (ms=0), copy into VECCALC first.
       auto idxMrt = cast<MemRefType>(indicesMemref.getType());
       Type idxElemType = idxMrt.getElementType();
-      Value idxCount = getDynDim(builder, loc, indicesMemref, 0);
+      Value idxCount = cc.getDynDim(builder, loc, indicesMemref, 0);
       Value indicesLt;
       int64_t idxMs = getMemorySpace(indicesMemref.getType());
       if (idxMs == 9 /*VECIN*/ || idxMs == 11 /*VECCALC*/) {
-        indicesLt = readTensor(builder, loc, indicesMemref);
+        indicesLt = cc.readTensor(builder, loc, indicesMemref);
       } else {
         // GM: copy indices into a fresh VECCALC buffer.
         SmallVector<Value> idxDims = {idxCount};
         auto [idxTbuf, idxLt] =
-            allocVeccalc(builder, loc, idxElemType, idxDims);
+            cc.allocVeccalc(builder, loc, idxElemType, idxDims);
         Value idxGt = builder.create<GlobalTensorOp>(
             loc, GlobalTensorType::get(idxElemType));
         builder.create<GlobalTensorSetGlobalBufferOp>(loc, idxGt, indicesMemref,
@@ -1096,7 +789,7 @@ LogicalResult convertCompute(func::FuncOp funcOp, AscendCBufferContext &ctx) {
           builder.create<arith::ConstantIntOp>(loc, i32Type, 0);
 
       // Alloc the VECOUT output tensor.
-      Value dstLt = writeTensor(builder, loc, outMemref);
+      Value dstLt = cc.writeTensor(builder, loc, outMemref);
 
       Value zero = builder.create<arith::ConstantIndexOp>(loc, 0);
       Value one  = builder.create<arith::ConstantIndexOp>(loc, 1);
@@ -1171,7 +864,7 @@ LogicalResult convertCompute(func::FuncOp funcOp, AscendCBufferContext &ctx) {
             Value processedRowLt = dataRowLt;
             if (preOp) {
               Value procLt =
-                  allocVeccalc(b, forLoc, elemType, SmallVector<Value>{dimN})
+                  cc.allocVeccalc(b, forLoc, elemType, SmallVector<Value>{dimN})
                       .second;
               Value dimN_i32 = b.create<arith::IndexCastOp>(forLoc, b.getI32Type(), dimN);
 
@@ -1186,7 +879,7 @@ LogicalResult convertCompute(func::FuncOp funcOp, AscendCBufferContext &ctx) {
                 auto it = preValToLt.find(v);
                 if (it != preValToLt.end()) return it->second;
                 if (auto constOp = v.getDefiningOp<arith::ConstantOp>()) {
-                  auto [dupTbuf2, dupLt] = allocVeccalc(b, forLoc, elemType,
+                  auto [dupTbuf2, dupLt] = cc.allocVeccalc(b, forLoc, elemType,
                                                          SmallVector<Value>{dimN});
                   auto dupOp2 = b.create<DuplicateL2Op>(forLoc, dupLt, constOp.getResult(), dimN_i32);
                   copyAscendCUnitAttr(preOp.getOperation(), dupOp2.getOperation());
@@ -1231,7 +924,7 @@ LogicalResult convertCompute(func::FuncOp funcOp, AscendCBufferContext &ctx) {
             Value dstRowLt = b.create<LocalTensorSubIndexOp>(
                 forLoc, LocalTensorType::get(elemType), dstLt, dstElemOff);
             Value gatheredRowLt =
-                allocVeccalc(b, forLoc, elemType, SmallVector<Value>{dimK})
+                cc.allocVeccalc(b, forLoc, elemType, SmallVector<Value>{dimK})
                     .second;
             b.create<GatherL2Op>(forLoc, gatheredRowLt, processedRowLt,
                                  indicesLt, srcBaseAddr, dimK_i32);
@@ -1254,12 +947,12 @@ LogicalResult convertCompute(func::FuncOp funcOp, AscendCBufferContext &ctx) {
                   Value argMemref = postOp.getDpsInputOperand(argNum)->get();
                   if (argMemref == outMemref) return gatheredRowLt;
                   // Other inputs (bias, etc.) — read their tensor
-                  return readTensor(b, forLoc, argMemref);
+                  return cc.readTensor(b, forLoc, argMemref);
                 }
                 auto it = postValToLt.find(v);
                 if (it != postValToLt.end()) return it->second;
                 if (auto constOp = v.getDefiningOp<arith::ConstantOp>()) {
-                  auto [dupTbuf3, dupLt] = allocVeccalc(b, forLoc, elemType,
+                  auto [dupTbuf3, dupLt] = cc.allocVeccalc(b, forLoc, elemType,
                                                          SmallVector<Value>{dimK});
                   auto dupOp3 = b.create<DuplicateL2Op>(forLoc, dupLt, constOp.getResult(), dimK_i32v);
                   copyAscendCUnitAttr(postOp.getOperation(), dupOp3.getOperation());
@@ -1333,13 +1026,13 @@ LogicalResult convertCompute(func::FuncOp funcOp, AscendCBufferContext &ctx) {
                   int64_t argMs = getMemorySpace(argMemref.getType());
                   if (argMs > 0) {
                     // On-chip: use readTensor directly.
-                    Value lt = readTensor(b, forLoc, argMemref);
+                    Value lt = cc.readTensor(b, forLoc, argMemref);
                     bodyValToLt[v] = lt;
                     return lt;
                   }
                   // GM: copy through a VECIN queue so the vector op observes
                   // a synchronized local tensor on real hardware.
-                  Value argCount = getDynDim(b, forLoc, argMemref, 0);
+                  Value argCount = cc.getDynDim(b, forLoc, argMemref, 0);
                   auto argMrt = cast<MemRefType>(argMemref.getType());
                   Type argElem = argMrt.getElementType();
                   Value argQueue = b.create<QueueOp>(
@@ -1367,7 +1060,7 @@ LogicalResult convertCompute(func::FuncOp funcOp, AscendCBufferContext &ctx) {
                   return argLt;
                 }
                 if (auto constOp = v.getDefiningOp<arith::ConstantOp>()) {
-                  auto [dupTbuf4, dupLt] = allocVeccalc(b, forLoc, elemType,
+                  auto [dupTbuf4, dupLt] = cc.allocVeccalc(b, forLoc, elemType,
                                                          SmallVector<Value>{dimK});
                   auto dupOp4 = b.create<DuplicateL2Op>(forLoc, dupLt, constOp.getResult(), dimK_i32v);
                   copyAscendCUnitAttr(genOp.getOperation(), dupOp4.getOperation());
@@ -1425,7 +1118,7 @@ LogicalResult convertCompute(func::FuncOp funcOp, AscendCBufferContext &ctx) {
                   forLoc, b.getF32FloatAttr(0.0f));
             if (zeroVal) {
               Value zeroLt =
-                  allocVeccalc(b, forLoc, elemType, SmallVector<Value>{dimK})
+                  cc.allocVeccalc(b, forLoc, elemType, SmallVector<Value>{dimK})
                       .second;
               auto dupOp =
                   b.create<DuplicateL2Op>(forLoc, zeroLt, zeroVal, dimK_i32);
@@ -1501,11 +1194,11 @@ LogicalResult convertCompute(func::FuncOp funcOp, AscendCBufferContext &ctx) {
                           (ShapedType::isDynamic(inMrt.getDimSize(1)) ||
                            inMrt.getDimSize(1) != strides[0]);
         if (rowStrided) {
-          Value rows = getDynDim(builder, loc, inMemref, 0);
-          Value cols = getDynDim(builder, loc, inMemref, 1);
+          Value rows = cc.getDynDim(builder, loc, inMemref, 0);
+          Value cols = cc.getDynDim(builder, loc, inMemref, 1);
           Value rowStride =
               builder.create<arith::ConstantIndexOp>(loc, strides[0]);
-          auto [deq, q] = copyGmToVecinStrided(builder, builder, loc,
+          auto [deq, q] = cc.copyGmToVecinStrided(builder, builder, loc,
                                                 tElemType, srcGt, rows, cols,
                                                 rowStride);
           srcLt = deq;
@@ -1514,11 +1207,11 @@ LogicalResult convertCompute(func::FuncOp funcOp, AscendCBufferContext &ctx) {
           Value n = builder.create<arith::ConstantIndexOp>(loc, 1);
           for (unsigned d = 0; d < inMrt.getRank(); ++d)
             n = builder.create<arith::MulIOp>(
-                loc, n, getDynDim(builder, loc, inMemref, d));
-          srcLt = copyGmToVecin(builder, loc, tElemType, srcGt, n);
+                loc, n, cc.getDynDim(builder, loc, inMemref, d));
+          srcLt = cc.copyGmToVecin(builder, loc, tElemType, srcGt, n);
         }
       } else {
-        srcLt = readTensor(builder, loc, inMemref);
+        srcLt = cc.readTensor(builder, loc, inMemref);
       }
 
       // --- destination tile + transpose ---
@@ -1529,16 +1222,16 @@ LogicalResult convertCompute(func::FuncOp funcOp, AscendCBufferContext &ctx) {
         SmallVector<Value> outDims;
         for (unsigned d = 0;
              d < cast<MemRefType>(outMemref.getType()).getRank(); ++d)
-          outDims.push_back(getDynDim(builder, loc, outMemref, d));
+          outDims.push_back(cc.getDynDim(builder, loc, outMemref, d));
         auto [transpTbuf, dstLt] =
-            allocVeccalc(builder, loc, tElemType, outDims);
+            cc.allocVeccalc(builder, loc, tElemType, outDims);
         auto transposeOp = builder.create<TransposeOp>(loc, dstLt, srcLt);
         copyAscendCUnitAttr(genOp.getOperation(), transposeOp.getOperation());
         ctx.setLiveTensor(outMemref, dstLt);
         if (srcFreeQueue)
           builder.create<TQueBindFreeTensorOp>(loc, srcFreeQueue, srcLt);
       } else {
-        Value dstLt = writeTensor(builder, loc, outMemref);
+        Value dstLt = cc.writeTensor(builder, loc, outMemref);
         auto transposeOp = builder.create<TransposeOp>(loc, dstLt, srcLt);
         copyAscendCUnitAttr(genOp.getOperation(), transposeOp.getOperation());
         if (Value q = ctx.getQueue(outMemref))
@@ -1569,22 +1262,22 @@ LogicalResult convertCompute(func::FuncOp funcOp, AscendCBufferContext &ctx) {
           [](AffineExpr e) { return isa<AffineDimExpr>(e); });
       if (inMap.getNumResults() == iterRank && allDimExprs) {
         for (unsigned d = 0; d < iterRank; ++d)
-          iterDimSizes[d] = getDynDim(builder, loc, inMemref, d);
+          iterDimSizes[d] = cc.getDynDim(builder, loc, inMemref, d);
         break;
       }
     }
     // Fall back: fill remaining dims from output (all parallel, same rank).
     for (unsigned d = 0; d < iterRank; ++d)
       if (!iterDimSizes[d])
-        iterDimSizes[d] = getDynDim(builder, loc, outMemref, d);
+        iterDimSizes[d] = cc.getDynDim(builder, loc, outMemref, d);
 
     // totalElems is the actual element count for this tile.  Buffer
     // allocation uses the enclosing loop-step upper bound so tail iterations
     // reuse one max-sized queue/tbuf instead of repeatedly InitBuffer-ing.
-    Value totalElems = computeProduct(builder, loc, iterDimSizes);
+    Value totalElems = cc.computeProduct(builder, loc, iterDimSizes);
     SmallVector<Value> bufferDimSizes =
-        getBufferDimSizes(iterDimSizes, genOp.getOperation());
-    Value bufferTotalElems = computeProduct(builder, loc, bufferDimSizes);
+        cc.getBufferDimSizes(iterDimSizes, genOp.getOperation());
+    Value bufferTotalElems = cc.computeProduct(builder, loc, bufferDimSizes);
     SmallVector<std::pair<Value, Value>> tempVecinTensors;
 
     Value outQueue = ctx.getQueue(outMemref);
@@ -1592,7 +1285,7 @@ LogicalResult convertCompute(func::FuncOp funcOp, AscendCBufferContext &ctx) {
     if (!outQueue) {
       // Allocate the shared VECCALC accumulator for intermediate results.
       auto [accumTbuf, veccalcAccumLt] =
-          allocVeccalc(builder, loc, elemType, bufferDimSizes);
+          cc.allocVeccalc(builder, loc, elemType, bufferDimSizes);
       accumLt = veccalcAccumLt;
     }
 
@@ -1613,10 +1306,10 @@ LogicalResult convertCompute(func::FuncOp funcOp, AscendCBufferContext &ctx) {
           builder.create<GlobalTensorSetGlobalBufferOp>(loc, srcGt, inMemref,
                                                          /*size=*/Value{});
           inputLts[i] =
-              copyGmToVecin(builder, loc, elemType, srcGt, totalElems,
+              cc.copyGmToVecin(builder, loc, elemType, srcGt, totalElems,
                             bufferTotalElems, &tempVecinTensors);
         } else {
-          inputLts[i] = readTensor(builder, loc, inMemref);
+          inputLts[i] = cc.readTensor(builder, loc, inMemref);
         }
         break;
       }
@@ -1642,14 +1335,14 @@ LogicalResult convertCompute(func::FuncOp funcOp, AscendCBufferContext &ctx) {
             if (inResult && srcDimIdx < srcRank)
               srcShapeVals.push_back(builder.create<arith::IndexCastOp>(
                   loc, builder.getI32Type(),
-                  getDynDim(builder, loc, inMemref, srcDimIdx++)));
+                  cc.getDynDim(builder, loc, inMemref, srcDimIdx++)));
             else
               srcShapeVals.push_back(
                   builder.create<arith::ConstantIntOp>(loc, builder.getI32Type(), 1));
           }
-          Value srcLt = readTensor(builder, loc, inMemref);
+          Value srcLt = cc.readTensor(builder, loc, inMemref);
           auto [bcastTbuf, bcastLt] =
-              allocVeccalc(builder, loc, elemType, bufferDimSizes);
+              cc.allocVeccalc(builder, loc, elemType, bufferDimSizes);
           auto bcastOp = builder.create<BroadcastL2Op>(
               loc, bcastLt, srcLt,
               dstShapeVals, srcShapeVals,
@@ -1660,7 +1353,7 @@ LogicalResult convertCompute(func::FuncOp funcOp, AscendCBufferContext &ctx) {
           // broadcast from GM: copy via VECIN TQue first, then broadcast_l2.
           SmallVector<Value> srcDims;
           for (unsigned d = 0; d < srcRank; ++d)
-            srcDims.push_back(getDynDim(builder, loc, inMemref, d));
+            srcDims.push_back(cc.getDynDim(builder, loc, inMemref, d));
           Value srcElemCount = builder.create<arith::ConstantIndexOp>(loc, 1);
           for (Value d : srcDims)
             srcElemCount = builder.create<arith::MulIOp>(loc, srcElemCount, d);
@@ -1669,7 +1362,7 @@ LogicalResult convertCompute(func::FuncOp funcOp, AscendCBufferContext &ctx) {
           builder.create<GlobalTensorSetGlobalBufferOp>(loc, srcGt, inMemref,
                                                          /*size=*/Value{});
           Value srcLt =
-              copyGmToVecin(builder, loc, elemType, srcGt, srcElemCount,
+              cc.copyGmToVecin(builder, loc, elemType, srcGt, srcElemCount,
                             srcElemCount, &tempVecinTensors);
           SmallVector<Value> dstShapeVals, srcShapeVals;
           for (Value s : iterDimSizes)
@@ -1689,7 +1382,7 @@ LogicalResult convertCompute(func::FuncOp funcOp, AscendCBufferContext &ctx) {
                   builder.create<arith::ConstantIntOp>(loc, builder.getI32Type(), 1));
           }
           auto [bcastTbuf, bcastLt] =
-              allocVeccalc(builder, loc, elemType, bufferDimSizes);
+              cc.allocVeccalc(builder, loc, elemType, bufferDimSizes);
           auto bcastOp = builder.create<BroadcastL2Op>(
               loc, bcastLt, srcLt,
               dstShapeVals, srcShapeVals,
@@ -1716,7 +1409,7 @@ LogicalResult convertCompute(func::FuncOp funcOp, AscendCBufferContext &ctx) {
         // Mirrors the BroadcastTranspose case below.
         Value srcVecinLt;
         if (inMs == 9 /*VECIN*/) {
-          srcVecinLt = readTensor(builder, loc, inMemref);
+          srcVecinLt = cc.readTensor(builder, loc, inMemref);
         } else {
           SmallVector<Value> srcDims;
           for (int64_t permDim : analysis.permutation)
@@ -1730,11 +1423,11 @@ LogicalResult convertCompute(func::FuncOp funcOp, AscendCBufferContext &ctx) {
           builder.create<GlobalTensorSetGlobalBufferOp>(loc, srcGt, inMemref,
                                                          /*size=*/Value{});
           srcVecinLt =
-              copyGmToVecin(builder, loc, elemType, srcGt, srcElemCount);
+              cc.copyGmToVecin(builder, loc, elemType, srcGt, srcElemCount);
         }
 
         auto [transpTbuf, transpLt] =
-            allocVeccalc(builder, loc, elemType, bufferDimSizes);
+            cc.allocVeccalc(builder, loc, elemType, bufferDimSizes);
         auto transposeOp = builder.create<TransposeOp>(loc, transpLt, srcVecinLt);
         copyAscendCUnitAttr(genOp.getOperation(), transposeOp.getOperation());
         inputLts[i] = transpLt;
@@ -1749,11 +1442,11 @@ LogicalResult convertCompute(func::FuncOp funcOp, AscendCBufferContext &ctx) {
         unsigned srcRank = srcMrt.getRank();
         SmallVector<Value> srcDimsVals;
         for (unsigned d = 0; d < srcRank; ++d)
-          srcDimsVals.push_back(getDynDim(builder, loc, inMemref, d));
+          srcDimsVals.push_back(cc.getDynDim(builder, loc, inMemref, d));
 
         Value srcVecinLt;
         if (inMs == 9 /*VECIN*/) {
-          srcVecinLt = readTensor(builder, loc, inMemref);
+          srcVecinLt = cc.readTensor(builder, loc, inMemref);
         } else {
           Value srcElemCount = builder.create<arith::ConstantIndexOp>(loc, 1);
           for (Value d : srcDimsVals)
@@ -1763,7 +1456,7 @@ LogicalResult convertCompute(func::FuncOp funcOp, AscendCBufferContext &ctx) {
           builder.create<GlobalTensorSetGlobalBufferOp>(loc, srcGt, inMemref,
                                                          /*size=*/Value{});
           srcVecinLt =
-              copyGmToVecin(builder, loc, elemType, srcGt, srcElemCount,
+              cc.copyGmToVecin(builder, loc, elemType, srcGt, srcElemCount,
                             srcElemCount, &tempVecinTensors);
         }
 
@@ -1808,7 +1501,7 @@ LogicalResult convertCompute(func::FuncOp funcOp, AscendCBufferContext &ctx) {
         }
 
         auto [finalTbuf, finalLt] =
-            allocVeccalc(builder, loc, elemType, bufferDimSizes);
+            cc.allocVeccalc(builder, loc, elemType, bufferDimSizes);
         auto bcastOp = builder.create<BroadcastL2Op>(
             loc, finalLt, srcVecinLt,
             bcastDstShape, bcastSrcShape,
@@ -1846,14 +1539,14 @@ LogicalResult convertCompute(func::FuncOp funcOp, AscendCBufferContext &ctx) {
     }
 
     if (outQueue && !dagBody)
-      accumLt = allocTensor(builder, loc, outQueue, elemType);
+      accumLt = cc.allocTensor(builder, loc, outQueue, elemType);
     else if (outQueue)
-      accumLt = allocVeccalc(builder, loc, elemType, bufferDimSizes).second;
+      accumLt = cc.allocVeccalc(builder, loc, elemType, bufferDimSizes).second;
 
     // ---- Step 2: Walk body and inline arith ops onto VECCALC tensors ----
     // Per-op dst: a fresh VECCALC for DAG bodies, else the in-place accumulator.
     auto nextDst = [&]() -> Value {
-      return dagBody ? allocVeccalc(builder, loc, elemType, bufferDimSizes).second
+      return dagBody ? cc.allocVeccalc(builder, loc, elemType, bufferDimSizes).second
                      : accumLt;
     };
     unsigned numBodyArgs = bodyBlock.getNumArguments();
@@ -1895,7 +1588,7 @@ LogicalResult convertCompute(func::FuncOp funcOp, AscendCBufferContext &ctx) {
         // Scalar constant? Fill a fresh VECCALC with duplicate_l2.
         if (auto constOp = v.getDefiningOp<arith::ConstantOp>()) {
           auto [dupTbuf, dupLt] =
-              allocVeccalc(builder, loc, elemType, bufferDimSizes);
+              cc.allocVeccalc(builder, loc, elemType, bufferDimSizes);
           auto dupOp = builder.create<DuplicateL2Op>(loc, dupLt, constOp.getResult(), totalElems);
           copyAscendCUnitAttr(genOp.getOperation(), dupOp.getOperation());
           valToLt[v] = dupLt;
@@ -1967,7 +1660,7 @@ LogicalResult convertCompute(func::FuncOp funcOp, AscendCBufferContext &ctx) {
         // The barrier serializes V-pipe so subsequent ops wait for Erf.
         Value src = resolve(erfOp.getOperand());
         if (!src) continue;
-        Value erfDst = allocVeccalc(builder, loc, elemType, bufferDimSizes).second;
+        Value erfDst = cc.allocVeccalc(builder, loc, elemType, bufferDimSizes).second;
         std::string ets = cppScalarName(elemType);
         // PIPE_V (not PIPE_ALL): empirically PIPE_V drives BERT group20
         // zero_frac 12.5%→3.1%; PIPE_ALL regressed to max_diff=0.4
@@ -2053,7 +1746,7 @@ LogicalResult convertCompute(func::FuncOp funcOp, AscendCBufferContext &ctx) {
       }
       builder.create<TQueBindEnqueTensorOp>(loc, outQueue, resultLt);
     }
-    freeTempVecinTensors(builder, loc, tempVecinTensors);
+    cc.freeTempVecinTensors(builder, loc, tempVecinTensors);
     // If outMemref has no queue (VECCALC alloc without a queue), the result
     // already resides in the VECCALC tbuf and will be consumed by the next op.
 
@@ -2083,14 +1776,14 @@ LogicalResult convertCompute(func::FuncOp funcOp, AscendCBufferContext &ctx) {
     Type elemTypeA = cast<MemRefType>(A.getType()).getElementType();
     Type elemTypeC = cast<MemRefType>(C.getType()).getElementType();
 
-    Value tensorA = dequeTensor(builder, loc, qA, elemTypeA);
-    Value tensorB = dequeTensor(builder, loc, qB, elemTypeA);
+    Value tensorA = cc.dequeTensor(builder, loc, qA, elemTypeA);
+    Value tensorB = cc.dequeTensor(builder, loc, qB, elemTypeA);
 
     // CO1 accumulates across the K-loop: alloc before the enclosing for-loop,
     // enque after it, so the queue slot is held for all K iterations.
     // CO1 uses its own element type (f32 for half-precision matmul accumulation).
     auto [tensorC, cHoistFor] =
-        allocHoisted(matmulOp, qC, elemTypeC, loc);
+        cc.allocHoisted(matmulOp, qC, elemTypeC, loc);
 
     // Build MmadParams with runtime m/n/k values.
     // A: [m x k], B: [k x n]
@@ -2155,8 +1848,8 @@ LogicalResult convertCompute(func::FuncOp funcOp, AscendCBufferContext &ctx) {
     Location loc = ewOp.getLoc();
     builder.setInsertionPoint(ewOp);
 
-    Value localSrc0 = readTensor(builder, loc, src0);
-    Value localSrc1 = readTensor(builder, loc, src1);
+    Value localSrc0 = cc.readTensor(builder, loc, src0);
+    Value localSrc1 = cc.readTensor(builder, loc, src1);
 
     // For VECOUT (ms=10) where dst is a subview of the whole VECOUT alloc:
     //   - Hoist alloc_tensor for the full VECOUT buffer before the enclosing
@@ -2174,21 +1867,21 @@ LogicalResult convertCompute(func::FuncOp funcOp, AscendCBufferContext &ctx) {
     if (dstMs == 10 && ctx.getQueue(dst)) {
       Value q = ctx.getQueue(dst);
       auto mrt = cast<MemRefType>(dst.getType());
-      auto [t, f] = allocHoisted(ewOp, q, mrt.getElementType(), loc);
+      auto [t, f] = cc.allocHoisted(ewOp, q, mrt.getElementType(), loc);
       localDst = t;
       dstHoistFor = f;
       // If dst is a subview, write through an offset slice of the tbuf rather
       // than to the start of the alloc_tensor.
       if (isDstSubview) {
-        if (Value byteOff = subviewByteOffset(builder, loc, dst)) {
+        if (Value byteOff = cc.subviewByteOffset(builder, loc, dst)) {
           Value sizeBytes = computeByteCount(builder, loc, dst);
-          writeTarget = tbufSlice(builder, loc, dst, sizeBytes, byteOff);
+          writeTarget = cc.tbufSlice(builder, loc, dst, sizeBytes, byteOff);
         }
       }
       if (!writeTarget)
         writeTarget = localDst;
     } else {
-      localDst = writeTensor(builder, loc, dst);
+      localDst = cc.writeTensor(builder, loc, dst);
       writeTarget = localDst;
     }
 
@@ -2272,7 +1965,7 @@ LogicalResult convertCompute(func::FuncOp funcOp, AscendCBufferContext &ctx) {
     Location loc = fillOp.getLoc();
     builder.setInsertionPoint(fillOp);
 
-    Value localDst = writeTensor(builder, loc, dst);
+    Value localDst = cc.writeTensor(builder, loc, dst);
     Value count = computeElementCount(builder, loc, dst);
     auto dupOp =
         builder.create<DuplicateL2Op>(loc, localDst, fillOp.getInputs()[0], count);

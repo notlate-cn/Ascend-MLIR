@@ -2,6 +2,7 @@ add_mlir_library(LinalgToAscendCConversion
   LinalgToAscendCPass.cpp
   DataMoveConversion.cpp
   ComputeConversion.cpp
+  ComputeConversionContext.cpp
   ComputeConversionHelpers.cpp
 
   ADDITIONAL_HEADER_DIRS
