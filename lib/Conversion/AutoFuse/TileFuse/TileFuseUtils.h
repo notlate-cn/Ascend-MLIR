@@ -6,6 +6,15 @@
 
 namespace mlir::afir {
 
+// True iff `gen` is a matmul-shaped generic: 3-D iter [par, par, red], 2 inputs
+// + 1 init, and a multiply-accumulate body (arith.mulf AND arith.addf).  With
+// checkCanonicalMaps=true it additionally requires the canonical matmul
+// indexing maps (m,k)/(k,n)/(m,n) -- RestoreMatmul uses the strict form to
+// restore only genuine canonical-layout matmuls; CubeEmitter and the Collapse
+// pass use the loose (shape+body-only) form.
+bool isMatmulGeneric(mlir::linalg::GenericOp gen,
+                     bool checkCanonicalMaps = false);
+
 mlir::Value castToIndex(mlir::OpBuilder &b, mlir::Location loc, mlir::Value v);
 
 mlir::Value getAxisExtentValue(mlir::OpBuilder &b, mlir::Location loc,

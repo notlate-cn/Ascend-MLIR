@@ -199,4 +199,42 @@ Value getAxisExtentValue(OpBuilder &b, Location loc,
   llvm_unreachable("axis not found in any operand map");
 }
 
+bool isMatmulGeneric(linalg::GenericOp gen, bool checkCanonicalMaps) {
+  auto iter = gen.getIteratorTypesArray();
+  if (iter.size() != 3)
+    return false;
+  if (iter[0] != utils::IteratorType::parallel ||
+      iter[1] != utils::IteratorType::parallel ||
+      iter[2] != utils::IteratorType::reduction)
+    return false;
+  if (gen.getNumDpsInputs() != 2 || gen.getNumDpsInits() != 1)
+    return false;
+
+  bool hasMul = false, hasAdd = false;
+  for (Operation &op : gen.getBody()->getOperations()) {
+    if (isa<arith::MulFOp>(op))
+      hasMul = true;
+    else if (isa<arith::AddFOp>(op))
+      hasAdd = true;
+  }
+  if (!hasMul || !hasAdd)
+    return false;
+  if (!checkCanonicalMaps)
+    return true;
+
+  // Canonical matmul indexing maps: (m,k) / (k,n) / (m,n).
+  auto maps = gen.getIndexingMapsArray();
+  if (maps.size() != 3)
+    return false;
+  MLIRContext *ctx = gen.getContext();
+  auto m = getAffineDimExpr(0, ctx);
+  auto n = getAffineDimExpr(1, ctx);
+  auto k = getAffineDimExpr(2, ctx);
+  auto in0Expected = AffineMap::get(3, 0, {m, k}, ctx);
+  auto in1Expected = AffineMap::get(3, 0, {k, n}, ctx);
+  auto outExpected = AffineMap::get(3, 0, {m, n}, ctx);
+  return maps[0] == in0Expected && maps[1] == in1Expected &&
+         maps[2] == outExpected;
+}
+
 } // namespace mlir::afir
