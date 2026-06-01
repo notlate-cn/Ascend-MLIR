@@ -12,6 +12,7 @@
  * License.
  */
 
+#include "Conversion/LinalgToAscendC/ComputeConversionHelpers.h"
 #include "Conversion/LinalgToAscendC/LinalgToAscendCUtils.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
@@ -40,16 +41,6 @@ static Value emitDim(OpBuilder &b, Location loc, Value memref, int64_t d) {
   if (!ShapedType::isDynamic(mrt.getShape()[d]))
     return b.create<arith::ConstantIndexOp>(loc, mrt.getShape()[d]);
   return b.create<memref::DimOp>(loc, memref, d);
-}
-
-// Helper: C++ scalar type name for a verbatim DataCopy template.
-static std::string cppScalarName(Type t) {
-  if (t.isF32()) return "float";
-  if (t.isF16()) return "half";
-  if (t.isBF16()) return "bfloat16_t";
-  if (auto it = dyn_cast<IntegerType>(t))
-    return "int" + std::to_string(it.getWidth()) + "_t";
-  return "float";
 }
 
 // Helper: detect a 2-D memref whose rows may be non-contiguous in memory — a

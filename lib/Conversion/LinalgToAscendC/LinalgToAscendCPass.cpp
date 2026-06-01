@@ -13,6 +13,7 @@
  */
 
 #include "Conversion/LinalgToAscendC/LinalgToAscendCPass.h"
+#include "Conversion/LinalgToAscendC/ComputeConversionHelpers.h"
 #include "Conversion/LinalgToAscendC/LinalgToAscendCUtils.h"
 
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
@@ -74,36 +75,6 @@ Value computeElementCount(OpBuilder &b, Location loc, Value memrefVal) {
   if (!count)
     count = b.create<arith::ConstantIndexOp>(loc, 1);
   return count;
-}
-
-static Value getEnclosingLoopStepBound(Value value, Operation *anchor) {
-  auto matchesEnclosingStep = [&](Value candidate) -> bool {
-    for (Operation *parent = anchor; parent; parent = parent->getParentOp()) {
-      auto forOp = dyn_cast<scf::ForOp>(parent);
-      if (forOp && candidate == forOp.getStep())
-        return true;
-    }
-    return false;
-  };
-
-  if (auto minOp = value.getDefiningOp<arith::MinSIOp>()) {
-    if (matchesEnclosingStep(minOp.getLhs()))
-      return minOp.getLhs();
-    if (matchesEnclosingStep(minOp.getRhs()))
-      return minOp.getRhs();
-  }
-  if (auto minOp = value.getDefiningOp<arith::MinUIOp>()) {
-    if (matchesEnclosingStep(minOp.getLhs()))
-      return minOp.getLhs();
-    if (matchesEnclosingStep(minOp.getRhs()))
-      return minOp.getRhs();
-  }
-  if (auto minOp = value.getDefiningOp<affine::AffineMinOp>()) {
-    for (Value operand : minOp.getOperands())
-      if (matchesEnclosingStep(operand))
-        return operand;
-  }
-  return value;
 }
 
 static Value getAllocDynamicSizeBound(OpBuilder &b, Location loc, Value size,
