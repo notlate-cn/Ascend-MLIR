@@ -392,7 +392,8 @@ def _stage_rows(
     command_spans, commands_by_row = _stage_command_spans(stages, commands_by_output)
     for index, stage in enumerate(stages):
         step_info = stage.get("step_info") if isinstance(stage.get("step_info"), dict) else {}
-        step_title = step_info.get("title") or stage["name"]
+        step_title = step_info.get("title") or stage.get("step") or "未命名 Step"
+        step_id = stage.get("step")
         step_purpose = step_info.get("purpose")
         step_outputs = step_info.get("outputs")
         step_detail = ""
@@ -435,7 +436,8 @@ def _stage_rows(
             "<tr>"
             f"{group_cell}"
             f'<td><div class="step-title">{_cell(step_title)}</div>'
-            f'<div class="step-file">{_cell(stage["name"])}</div>{step_detail}</td>'
+            + (f'<div class="step-id">Step ID: {_cell(step_id)}</div>' if step_id else "")
+            + f'<div class="step-file">Dump: {_cell(stage["name"])}</div>{step_detail}</td>'
             f'<td class="view-cell">{view_cell}</td>'
             f"{command_cell}"
             f"{report_cell}"
@@ -1914,6 +1916,7 @@ th, td {{ border: 1px solid #cbd5e1; padding: 0.45rem 0.6rem; text-align: left; 
 th {{ background: #f1f5f9; text-align: center; }}
 td.stage-group-cell {{ background: #f8fafc; color: #1f2933; font-weight: 700; vertical-align: middle; }}
 td .step-title {{ font-weight: 700; }}
+td .step-id {{ color: #475569; font-family: SFMono-Regular, Menlo, Consolas, monospace; font-size: 0.78rem; margin-top: 0.1rem; }}
 td .step-file {{ color: #64748b; font-family: SFMono-Regular, Menlo, Consolas, monospace; font-size: 0.78rem; margin-top: 0.1rem; }}
 td .step-detail {{ color: #475569; font-size: 0.82rem; line-height: 1.35; margin-top: 0.28rem; }}
 td .step-output {{ color: #334155; margin-top: 0.15rem; }}

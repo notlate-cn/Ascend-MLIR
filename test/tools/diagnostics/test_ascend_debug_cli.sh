@@ -796,15 +796,35 @@ grep -Fq '识别可 Kernelize 的算子' "${TMP_DIR}/debug-run-full-codegen/inde
 grep -Fq '挂载 Schedule 契约' "${TMP_DIR}/debug-run-full-codegen/index.html"
 grep -Fq '标注内存空间' "${TMP_DIR}/debug-run-full-codegen/index.html"
 grep -Fq 'Lower 到 AscendC IR' "${TMP_DIR}/debug-run-full-codegen/index.html"
+grep -Fq '<div class="step-id">Step ID: structured-ops</div>' \
+  "${TMP_DIR}/debug-run-full-codegen/index.html"
+grep -Fq '<div class="step-id">Step ID: ascend-kernelize</div>' "${TMP_DIR}/debug-run-full-codegen/index.html"
 grep -Fq 'th { background: #f1f5f9; text-align: center; }' \
   "${TMP_DIR}/debug-run-full-codegen/index.html"
 grep -Fq '.view-links { display: inline-flex; gap: 1rem; align-items: center; }' \
   "${TMP_DIR}/debug-run-full-codegen/index.html"
 grep -Fq '<td class="stage-group-cell" rowspan="5">Kernelize</td>' \
   "${TMP_DIR}/debug-run-full-codegen/index.html"
-grep -Fq '<div class="step-file">021-kernelize-structured-ops</div>' \
+grep -Fq '<div class="step-file">Dump: 021-kernelize-structured-ops</div>' \
   "${TMP_DIR}/debug-run-full-codegen/index.html"
-grep -Fq '<div class="step-file">030-kernelize-out</div>' "${TMP_DIR}/debug-run-full-codegen/index.html"
+grep -Fq '<div class="step-file">Dump: 030-kernelize-out</div>' "${TMP_DIR}/debug-run-full-codegen/index.html"
+if grep -Fq '<div class="step-title">021-kernelize-structured-ops</div>' "${TMP_DIR}/debug-run-full-codegen/index.html"; then
+  echo "open view should not use dump names as Step titles" >&2
+  exit 1
+fi
+test -f "${TMP_DIR}/debug-run-full-codegen/views/debug_graph.html"
+grep -Fq '<span class="stage-child-title">structured-ops</span>' \
+  "${TMP_DIR}/debug-run-full-codegen/views/debug_graph.html"
+grep -Fq '<span class="stage-child-title">ascend-kernelize</span>' \
+  "${TMP_DIR}/debug-run-full-codegen/views/debug_graph.html"
+if grep -Fq '<span class="stage-child-title">识别可 Kernelize 的算子</span>' "${TMP_DIR}/debug-run-full-codegen/views/debug_graph.html"; then
+  echo "stage sidebar child buttons should show Step ID, not the readable Step title" >&2
+  exit 1
+fi
+if grep -Fq 'class="stage-child-file"' "${TMP_DIR}/debug-run-full-codegen/views/debug_graph.html"; then
+  echo "stage sidebar child buttons should show only Step ID, not dump artifact names" >&2
+  exit 1
+fi
 grep -Fq '<span class="muted">No standalone command</span>' \
   "${TMP_DIR}/debug-run-full-codegen/index.html"
 grep -Fq '<td class="command-cell" rowspan="5"><details class="command-detail"><summary><code>ascend-mlir-opt kernelize</code></summary>' \
@@ -1293,10 +1313,18 @@ grep -Fq 'class="panel-title-block"' "${TMP_DIR}/debug-run-graph/views/debug_gra
 grep -Fq 'class="panel-tools-column"' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
 grep -Fq 'class="panel-control-strip"' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
 grep -Fq '.panel-header { display: grid; grid-template-columns: minmax(0, 1fr) minmax(17rem, 24rem);' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
-grep -Fq '.panel-tools-column { justify-self: end; width: 100%; display: grid;' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
-grep -Fq '.panel-control-strip { display: flex; flex-wrap: wrap;' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
+grep -Fq '.panel-tools-column { align-self: stretch; justify-self: end; width: 100%; display: grid; grid-template-rows: auto minmax(0, 1fr);' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
+grep -Fq '.panel-control-strip { min-height: 0; display: grid; grid-template-rows: auto minmax(0, 1fr);' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
+grep -Fq '.stage-graph-controls { order: 1;' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
+grep -Fq '.panel-control-strip .stage-phase-controls { order: 2; align-self: end;' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
+grep -Fq '.step-explanation-grid { display: grid; grid-template-columns: max-content minmax(0, 1fr);' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
+grep -Fq '.step-explanation-grid dd { margin: 0; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
 if grep -Fq '.panel-control-strip { grid-column: 1 / -1;' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"; then
   echo "stage graph controls should live in the right header column, not a full-width row" >&2
+  exit 1
+fi
+if grep -Fq '.step-explanation-grid { display: grid; grid-template-columns: 4.8rem minmax(0, 1fr) 4.8rem minmax(0, 1fr);' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"; then
+  echo "step explanations should use one label/value pair per row, not two compressed pairs per row" >&2
   exit 1
 fi
 grep -Fq -- '--inspector-width' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
@@ -1321,6 +1349,66 @@ grep -Fq '.stage-group-parent.parent-active' "${TMP_DIR}/debug-run-graph/views/d
 grep -Fq '.sidebar-body.kernel-mode .stage-navigation' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
 grep -Fq 'sidebarBody.classList.toggle("kernel-mode", mode === "kernel")' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
 grep -Fq 'function stageNavigationSequence' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
+grep -Fq 'const paddedOrder = orderText.padStart(3, "0");' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
+grep -Fq 'stageName.startsWith(`${paddedOrder}-`)' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
+grep -Fq '${escapeHtml(stageDiffTitle(diff.from_stage))} -> ${escapeHtml(stageDiffTitle(diff.to_stage))}' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
+grep -Fq 'document.getElementById("graph-title").textContent = stageStepHeaderTitle(stage);' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
+grep -Fq 'document.getElementById("graph-subtitle").textContent = `${graph.node_count} 个节点，${graph.edge_count} 条边，${graph.kernel_count} 个 Kernel`;' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
+grep -Fq '["Stage", stageStageTitle(stage)]' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
+grep -Fq '["Artifact", stage.path]' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
+grep -Fq 'return info.title || (stage && stage.step) || "未命名 Step";' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
+grep -Fq 'function stageStepId(stage)' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
+grep -Fq 'function stageStepHeaderTitle(stage)' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
+grep -Fq 'function stageDiffTitle(stage)' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
+grep -Fq 'return `Dump: ${stageBriefLabel(stage)}`;' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
+if grep -Fq '${escapeHtml(diff.from_stage.order)} ${escapeHtml(diff.from_stage.name)} ->' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"; then
+  echo "stage diff summary should not duplicate order and numeric stage-name prefixes" >&2
+  exit 1
+fi
+if grep -Fq 'return info.title || (stage && (stage.step || stage.name)) || "Stage";' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"; then
+  echo "stageStepTitle should not fall back to dump artifact names" >&2
+  exit 1
+fi
+if grep -Fq '["stage", stageBriefLabel(stage)]' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"; then
+  echo "stage origin should show phase as Stage and keep dump identity in a separate row" >&2
+  exit 1
+fi
+if grep -Fq '["Step", stageStepTitle(stage)]' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"; then
+  echo "stage origin should not repeat the Step title shown in the graph header" >&2
+  exit 1
+fi
+if grep -Fq '["Step ID", stage.step || "无"]' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"; then
+  echo "stage origin should not repeat the Step ID shown in the graph header" >&2
+  exit 1
+fi
+if grep -Fq '["Dump", stageBriefLabel(stage)]' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"; then
+  echo "stage origin and node detail should avoid duplicate dump rows; artifact path is enough" >&2
+  exit 1
+fi
+if grep -Fq '["phase/step", [stage.phase, stage.step].filter(Boolean).join(" / ")]' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"; then
+  echo "stage origin should split phase and step into separate rows" >&2
+  exit 1
+fi
+if grep -Fq '["Stage", `${stage.order} ${stage.name}`]' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"; then
+  echo "node detail should label dumped stage identity as Dump, not Stage" >&2
+  exit 1
+fi
+if grep -Fq '`Stage Graph: ${group.label} / ${stageLabel}`' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"; then
+  echo "stage graph title should use the Chinese step title without the English Stage Graph prefix or phase label" >&2
+  exit 1
+fi
+if grep -Fq '`${stageBriefLabel(stage)} | ${graph.node_count} 个节点' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"; then
+  echo "stage graph subtitle should not repeat the dumped stage file name" >&2
+  exit 1
+fi
+if grep -Fq '<small class="stage-child-file">{_cell(child.get("name"))}</small>' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"; then
+  echo "stage sidebar should label dump artifact names explicitly" >&2
+  exit 1
+fi
+if grep -Fq 'Dump: kernelize-in' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"; then
+  echo "stage sidebar should not show dump names when Step ID is unavailable" >&2
+  exit 1
+fi
 grep -Fq '上一页' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
 grep -Fq '下一页' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
 grep -Fq 'addNavButton("上一页", sequence[currentPosition - 1])' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
@@ -1338,6 +1426,10 @@ if grep -Fq 'class="stage-boundary-details"' "${TMP_DIR}/debug-run-graph/views/d
 fi
 if grep -Fq '显示边界快照' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"; then
   echo "stage navigation should merge boundary snapshots into the tree" >&2
+  exit 1
+fi
+if grep -Fq 'class="stage-child-purpose"' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"; then
+  echo "stage sidebar child buttons should omit long purpose text; main panel owns step explanations" >&2
   exit 1
 fi
 grep -Fq '输入同 19 normalize-out' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"

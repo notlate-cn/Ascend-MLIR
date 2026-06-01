@@ -360,7 +360,8 @@ def _changed_fields(before: dict[str, Any], after: dict[str, Any]) -> list[dict[
 
 def _compute_stage_diffs(stages: list[dict[str, Any]]) -> list[dict[str, Any]]:
     diffs = []
-    for before, after in zip(stages, stages[1:]):
+    for before_index, (before, after) in enumerate(zip(stages, stages[1:])):
+        after_index = before_index + 1
         before_nodes = _semantic_nodes(before.get("graph", {}))
         after_nodes = _semantic_nodes(after.get("graph", {}))
         before_keys = set(before_nodes)
@@ -413,16 +414,8 @@ def _compute_stage_diffs(stages: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
         diffs.append(
             {
-                "from_stage": {
-                    "order": before.get("order"),
-                    "name": before.get("name"),
-                    "path": before.get("path"),
-                },
-                "to_stage": {
-                    "order": after.get("order"),
-                    "name": after.get("name"),
-                    "path": after.get("path"),
-                },
+                "from_stage": _stage_brief(before, before_index),
+                "to_stage": _stage_brief(after, after_index),
                 "added_count": len(added_keys),
                 "removed_count": len(removed_keys),
                 "changed_count": len(changed),
@@ -549,6 +542,13 @@ def _stage_group_children(group: dict[str, Any]) -> list[dict[str, Any]]:
     return children
 
 
+def _stage_step_id_label(stage: dict[str, Any]) -> str:
+    step = stage.get("step")
+    if isinstance(step, str) and step:
+        return step
+    return "source" if stage.get("name") == "source" else "无 Step ID"
+
+
 def _stage_buttons(debug_graph: dict[str, Any]) -> str:
     primary = debug_graph.get("primary_stage")
     active_name = primary.get("name") if isinstance(primary, dict) else None
@@ -580,40 +580,11 @@ def _stage_buttons(debug_graph: dict[str, Any]) -> str:
             child_buttons = []
             for child in children:
                 child_active = " active" if child.get("name") == active_name else ""
-                child_step_info = child.get("step_info") if isinstance(child.get("step_info"), dict) else {}
-                child_title = child_step_info.get("title") or child.get("name")
-                child_purpose = child_step_info.get("purpose")
-                child_equivalence = ""
-                same_as_previous = child.get("same_as_previous")
-                if isinstance(same_as_previous, dict):
-                    child_equivalence = (
-                        '<small class="stage-equivalence">'
-                        f'= {_cell(same_as_previous.get("order"))} {_cell(same_as_previous.get("stage"))}'
-                        "</small>"
-                    )
-                input_stage = group.get("input_stage")
-                if (
-                    isinstance(input_stage, dict)
-                    and input_stage.get("stage_index") == child.get("stage_index")
-                    and group.get("input_same_as_previous_output")
-                    and isinstance(previous, dict)
-                ):
-                    child_equivalence = (
-                        '<small class="stage-equivalence">'
-                        f'= {_cell(previous.get("order"))} {_cell(previous.get("name"))}'
-                        "</small>"
-                    )
+                child_title = _stage_step_id_label(child)
                 child_buttons.append(
                     f'<button class="stage-button stage-child-button{child_active}" '
                     f'data-stage-index="{_cell(child.get("stage_index"))}" type="button">'
                     f'<span class="stage-child-title">{_cell(child_title)}</span>'
-                    f'<small class="stage-child-file">{_cell(child.get("name"))}</small>'
-                    + (
-                        f'<small class="stage-child-purpose">{_cell(child_purpose)}</small>'
-                        if child_purpose
-                        else ""
-                    )
-                    + f"{child_equivalence}"
                     "</button>"
                 )
             buttons.append(
@@ -735,14 +706,12 @@ h3 { margin: 0 0 0.45rem; font-size: 0.84rem; }
 .stage-child-list { display: grid; gap: 0.24rem; }
 .stage-child-button { margin-left: 0.65rem; padding: 0.34rem 0.45rem; font-size: 0.75rem; }
 .stage-child-title { display: block; color: inherit; font-weight: 700; line-height: 1.15; }
-.stage-child-file { display: block; margin-top: 0.08rem; color: #475569; font-family: SFMono-Regular, Menlo, Consolas, monospace; font-size: 0.68rem; line-height: 1.15; }
-.stage-child-purpose { display: block; margin-top: 0.16rem; color: var(--muted); font-size: 0.68rem; line-height: 1.22; }
 .stage-phase-controls { display: flex; align-items: center; gap: 0.4rem; flex-wrap: wrap; }
 .stage-phase-controls:empty { display: none; }
 .stage-phase-button { border: 1px solid var(--line); border-radius: 999px; background: #fff; color: var(--text); padding: 0.24rem 0.55rem; cursor: pointer; font-size: 0.76rem; }
 .stage-phase-button.active { border-color: #60a5fa; background: #eaf2ff; color: #1d4ed8; font-weight: 700; }
 .stage-phase-note { color: var(--muted); font-size: 0.76rem; }
-.stage-graph-controls { display: flex; flex-wrap: wrap; gap: 0.38rem 0.45rem; align-items: center; justify-content: flex-end; min-width: 0; }
+.stage-graph-controls { order: 1; flex: 1 1 100%; display: flex; flex-wrap: wrap; gap: 0.38rem 0.45rem; align-items: center; justify-content: flex-end; min-width: 0; }
 .stage-graph-controls[hidden] { display: none; }
 .segmented-control { display: inline-flex; border: 1px solid var(--line); border-radius: 7px; overflow: hidden; background: #ffffff; }
 .segmented-control button { border: 0; border-right: 1px solid var(--line); background: transparent; color: var(--text); padding: 0.32rem 0.5rem; cursor: pointer; font-size: 0.76rem; }
@@ -775,13 +744,13 @@ dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }
 .step-explanation { max-width: 54rem; border: 1px solid #e3e8ef; border-radius: 7px; background: #fbfcfe; padding: 0.5rem 0.6rem; font-size: 0.77rem; line-height: 1.28; color: #344054; }
 .step-explanation[hidden] { display: none; }
 .step-explanation-title { margin-bottom: 0.32rem; color: #17202a; font-weight: 700; }
-.step-explanation-grid { display: grid; grid-template-columns: 4.8rem minmax(0, 1fr) 4.8rem minmax(0, 1fr); gap: 0.22rem 0.5rem; align-items: start; }
-.step-explanation-grid dt { color: var(--muted); font-weight: 700; }
-.step-explanation-grid dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }
-.step-explanation-same { margin-top: 0.35rem; color: #0f766e; font-size: 0.74rem; }
-.panel-tools-column { justify-self: end; width: 100%; display: grid; gap: 0.46rem; align-content: start; }
-.panel-control-strip { display: flex; flex-wrap: wrap; gap: 0.38rem 0.52rem; align-items: center; justify-content: flex-end; min-width: 0; }
-.panel-control-strip .stage-phase-controls { justify-content: flex-end; }
+.step-explanation-grid { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 0.22rem 0.5rem; align-items: start; }
+.step-explanation-grid dt { color: var(--muted); font-weight: 700; white-space: nowrap; }
+.step-explanation-grid dd { margin: 0; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.step-explanation-same { margin-top: 0.35rem; color: #0f766e; font-size: 0.74rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.panel-tools-column { align-self: stretch; justify-self: end; width: 100%; display: grid; grid-template-rows: auto minmax(0, 1fr); gap: 0.46rem; }
+.panel-control-strip { min-height: 0; display: grid; grid-template-rows: auto minmax(0, 1fr); gap: 0.38rem; justify-items: end; align-items: start; min-width: 0; }
+.panel-control-strip .stage-phase-controls { order: 2; align-self: end; margin-top: 0.1rem; justify-content: flex-end; }
 .graph-tools { width: 100%; display: grid; grid-template-columns: minmax(0, 1fr) auto auto auto; gap: 0.42rem; align-items: center; }
 .graph-search { border: 1px solid var(--line); border-radius: 6px; padding: 0.42rem 0.55rem; min-width: 0; font: inherit; }
 .graph-tool-button { border: 1px solid var(--line); border-radius: 6px; background: #fff; padding: 0.42rem 0.6rem; cursor: pointer; color: var(--text); }
@@ -892,7 +861,7 @@ th { background: #f2f5f9; }
   .graph-tools { grid-template-columns: 1fr 1fr; }
 }
 @media (max-width: 1500px) {
-  .step-explanation-grid { grid-template-columns: 4.8rem minmax(0, 1fr); }
+  .step-explanation-grid { grid-template-columns: max-content minmax(0, 1fr); }
 }
 </style>
 """
@@ -1418,9 +1387,8 @@ function renderProvenanceSection(stage, graph, node) {
 <div class="provenance-block">
 <h4>Stage Origin</h4>
 ${detailRows([
-  ["stage", `${stage.order} ${stage.name}`],
-  ["phase/step", [stage.phase, stage.step].filter(Boolean).join(" / ")],
-  ["path", stage.path],
+  ["Stage", stageStageTitle(stage)],
+  ["Artifact", stage.path],
   ["line", node.line_end && node.line_end !== node.line ? `${node.line}-${node.line_end}` : node.line],
   ["graph_source", graph.graph_source || graph.tool || "ascend-debug"],
 ])}
@@ -1440,7 +1408,6 @@ function renderStageNodeDetail(stage, graph, node, diff) {
 <section class="inspector-section">
 <h3>节点详情</h3>
 ${detailRows([
-  ["Stage", `${stage.order} ${stage.name}`],
   ["Op", node.op_name],
   ["结果", node.result_values || node.label],
   ["输入", node.input_values],
@@ -1770,6 +1737,10 @@ function stageNavigationSequence() {
 
 function stageBriefLabel(stage) {
   if (!stage) return "无";
+  const stageName = String(stage.name || "");
+  const orderText = stage.order === undefined || stage.order === null ? "" : String(stage.order);
+  const paddedOrder = orderText.padStart(3, "0");
+  if (orderText && stageName.startsWith(`${paddedOrder}-`)) return stageName;
   return `${stage.order} ${stage.name}`;
 }
 
@@ -1777,9 +1748,31 @@ function stageStepInfo(stage) {
   return stage && stage.step_info && typeof stage.step_info === "object" ? stage.step_info : {};
 }
 
+function stageStageTitle(stage) {
+  if (!stage) return "无";
+  if (stage.phase) return stage.phase;
+  return stage.name === "source" ? "Source" : "无";
+}
+
 function stageStepTitle(stage) {
   const info = stageStepInfo(stage);
-  return info.title || (stage && (stage.step || stage.name)) || "Stage";
+  return info.title || (stage && stage.step) || "未命名 Step";
+}
+
+function stageStepId(stage) {
+  if (!stage) return "无 Step ID";
+  if (stage.step) return stage.step;
+  return stage.name === "source" ? "source" : "无 Step ID";
+}
+
+function stageStepHeaderTitle(stage) {
+  return `${stageStepTitle(stage)} / ${stageStepId(stage)}`;
+}
+
+function stageDiffTitle(stage) {
+  const info = stageStepInfo(stage);
+  if (info.title || (stage && stage.step)) return stageStepTitle(stage);
+  return `Dump: ${stageBriefLabel(stage)}`;
 }
 
 function stageSameAsPreviousText(stage) {
@@ -1890,7 +1883,8 @@ function renderStagePhaseControls(stage = activeStage()) {
   const phaseButtons = [];
   const addNavButton = (label, item) => {
     if (!item) return;
-    phaseButtons.push(`<button class="stage-phase-button" data-stage-index="${escapeHtml(item.stage_index)}" title="${label} ${escapeHtml(stageBriefLabel(item))}" aria-label="${label} ${escapeHtml(stageBriefLabel(item))}" type="button">${label}</button>`);
+    const stepTitle = stageStepHeaderTitle(item);
+    phaseButtons.push(`<button class="stage-phase-button" data-stage-index="${escapeHtml(item.stage_index)}" title="${label} ${escapeHtml(stepTitle)}" aria-label="${label} ${escapeHtml(stepTitle)}" type="button">${label}</button>`);
   };
   if (currentPosition > 0) addNavButton("上一页", sequence[currentPosition - 1]);
   if (currentPosition >= 0 && currentPosition < sequence.length - 1) addNavButton("下一页", sequence[currentPosition + 1]);
@@ -2015,7 +2009,7 @@ function renderStageDiff(stage = activeStage()) {
     return;
   }
   summary.innerHTML = `
-<div class="panel-subtitle">${escapeHtml(diff.from_stage.order)} ${escapeHtml(diff.from_stage.name)} -> ${escapeHtml(diff.to_stage.order)} ${escapeHtml(diff.to_stage.name)}</div>
+<div class="panel-subtitle">${escapeHtml(stageDiffTitle(diff.from_stage))} -> ${escapeHtml(stageDiffTitle(diff.to_stage))}</div>
 <div class="diff-counts">
 <div class="diff-pill diff-added-text"><strong>${escapeHtml(diff.added_count)}</strong>新增</div>
 <div class="diff-pill diff-changed-text"><strong>${escapeHtml(diff.changed_count)}</strong>变化</div>
@@ -2306,22 +2300,15 @@ function renderStageGraph() {
   const graph = stage ? stage.graph : null;
   const canvas = document.getElementById("graph-canvas");
   if (!graph || !graph.layout) {
-    document.getElementById("graph-title").textContent = stage ? `Stage Graph: ${stageStepTitle(stage)}` : "Stage Graph";
-    document.getElementById("graph-subtitle").textContent = stage ? `${stage.order} ${stage.name}` : "";
+    document.getElementById("graph-title").textContent = stage ? stageStepHeaderTitle(stage) : "Stage Graph";
+    document.getElementById("graph-subtitle").textContent = "";
     updateStepExplanation(stage);
     canvas.innerHTML = `${svgHeader(720, 420)}<text x="28" y="42">当前 Stage 没有可展示的图。</text></svg>`;
     afterGraphRender();
     return;
   }
-  const group = stageGroupForIndex(activeStageIndex);
-  const phase = group && group.input_stage && Number(group.input_stage.stage_index) === activeStageIndex ? "输入" : "输出";
-  const stageLabel = stageStepTitle(stage);
-  document.getElementById("graph-title").textContent = group && group.kind === "phase"
-    ? `Stage Graph: ${group.label} / ${stageLabel}`
-    : group && group.kind === "pass"
-    ? `Stage Graph: ${group.name} ${phase}`
-    : `Stage Graph: ${stage.order} ${stage.name}`;
-  document.getElementById("graph-subtitle").textContent = `${stage.order} ${stage.name} | ${graph.node_count} 个节点，${graph.edge_count} 条边，${graph.kernel_count} 个 Kernel`;
+  document.getElementById("graph-title").textContent = stageStepHeaderTitle(stage);
+  document.getElementById("graph-subtitle").textContent = `${graph.node_count} 个节点，${graph.edge_count} 条边，${graph.kernel_count} 个 Kernel`;
   updateStepExplanation(stage);
   renderStagePhaseControls(stage);
   syncStageGraphControls();
