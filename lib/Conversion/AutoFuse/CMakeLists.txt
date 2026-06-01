@@ -34,6 +34,7 @@ add_mlir_library(MLIRAutoFuse
   TileFuse/TilePlanSchema.cpp
   TileFuse/TilePlanCost.cpp
   TileFuse/TilePlanCubeAnalysis.cpp
+  TileFuse/TilePlanBuild.cpp
   TileFuse/LoopNestBuilder.cpp
   TileFuse/SliceComputer.cpp
   TileFuse/GroupEmitter.cpp

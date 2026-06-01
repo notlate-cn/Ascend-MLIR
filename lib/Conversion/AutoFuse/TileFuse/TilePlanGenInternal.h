@@ -4,6 +4,7 @@
 #include "Conversion/AutoFuse/GroupInfo.h"
 #include "Conversion/AutoFuse/TilePlan.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
+#include "mlir/IR/Builders.h"
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringRef.h"
@@ -58,6 +59,18 @@ double costEstimate(const auto_fuse::AxisGrouping &g,
 // Returns {hasBias, epilogueKindName}.  Defined in TilePlanCubeAnalysis.cpp.
 std::pair<bool, llvm::StringRef>
 classifyCubeEpilogueChain(func::FuncOp func, auto_fuse::CubeKind cubeKind);
+
+// Plan-build (TilePlanBuild.cpp): materialize a TilePlan for one draft, and
+// attach its tiling constraints.  Called by genVectorTilePlan (same TU) and by
+// buildPlanForDraft (TilePlanGen.cpp), hence promoted here.
+auto_fuse::TilePlan buildPlan(func::FuncOp func,
+                              const auto_fuse::CollapsedGroupInfo &info,
+                              const auto_fuse::AxisGrouping &g,
+                              const auto_fuse::TilePlanDraft &draft,
+                              OpBuilder &builder, Location loc);
+void populateConstraints(auto_fuse::TilePlan &plan,
+                         const auto_fuse::CollapsedGroupInfo &info,
+                         func::FuncOp func, unsigned elemBytes, SocConstants soc);
 
 } // namespace mlir::afir
 
