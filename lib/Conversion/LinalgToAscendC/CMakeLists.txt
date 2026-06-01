@@ -4,6 +4,7 @@ add_mlir_library(LinalgToAscendCConversion
   ComputeConversion.cpp
   ComputeConversionContext.cpp
   ComputeConversionHelpers.cpp
+  ComputeParallel.cpp
 
   ADDITIONAL_HEADER_DIRS
   ${CMAKE_SOURCE_DIR}/include/Conversion

@@ -107,6 +107,11 @@ struct ComputeCtx {
       ArrayRef<std::pair<Value, Value>> tempVecinTensors);
 };
 
+// convertCompute() phase handlers — each lowers one op category in `funcOp`
+// using `cc`, in the order convertCompute calls them (ctx state threads
+// through).  Defined in their own TUs (ComputeReduce/Parallel/Ops.cpp).
+LogicalResult convertParallelGenerics(func::FuncOp funcOp, ComputeCtx &cc);
+
 } // namespace afir
 } // namespace mlir
 
