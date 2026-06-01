@@ -737,11 +737,12 @@ h3 { margin: 0 0 0.45rem; font-size: 0.84rem; }
 .stage-child-title { display: block; color: inherit; font-weight: 700; line-height: 1.15; }
 .stage-child-file { display: block; margin-top: 0.08rem; color: #475569; font-family: SFMono-Regular, Menlo, Consolas, monospace; font-size: 0.68rem; line-height: 1.15; }
 .stage-child-purpose { display: block; margin-top: 0.16rem; color: var(--muted); font-size: 0.68rem; line-height: 1.22; }
-.stage-phase-controls { margin-top: 0.45rem; display: flex; align-items: center; gap: 0.4rem; flex-wrap: wrap; }
+.stage-phase-controls { display: flex; align-items: center; gap: 0.4rem; flex-wrap: wrap; }
+.stage-phase-controls:empty { display: none; }
 .stage-phase-button { border: 1px solid var(--line); border-radius: 999px; background: #fff; color: var(--text); padding: 0.24rem 0.55rem; cursor: pointer; font-size: 0.76rem; }
 .stage-phase-button.active { border-color: #60a5fa; background: #eaf2ff; color: #1d4ed8; font-weight: 700; }
 .stage-phase-note { color: var(--muted); font-size: 0.76rem; }
-.stage-graph-controls { margin-top: 0.55rem; display: flex; flex-wrap: wrap; gap: 0.45rem; align-items: center; }
+.stage-graph-controls { display: flex; flex-wrap: wrap; gap: 0.38rem 0.45rem; align-items: center; justify-content: flex-end; min-width: 0; }
 .stage-graph-controls[hidden] { display: none; }
 .segmented-control { display: inline-flex; border: 1px solid var(--line); border-radius: 7px; overflow: hidden; background: #ffffff; }
 .segmented-control button { border: 0; border-right: 1px solid var(--line); background: transparent; color: var(--text); padding: 0.32rem 0.5rem; cursor: pointer; font-size: 0.76rem; }
@@ -767,20 +768,27 @@ dl { margin: 0; display: grid; grid-template-columns: 6.2rem 1fr; gap: 0.24rem 0
 dt { color: var(--muted); font-weight: 700; }
 dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }
 .graph-panel { min-width: 0; overflow: hidden; }
-.panel-header { display: flex; justify-content: space-between; gap: 1rem; align-items: center; padding: 0.7rem 0.85rem; border-bottom: 1px solid #e4e9f1; }
-.panel-subtitle { color: var(--muted); font-size: 0.82rem; }
-.step-explanation { margin-top: 0.5rem; max-width: 54rem; border: 1px solid #e3e8ef; border-radius: 7px; background: #fbfcfe; padding: 0.55rem 0.65rem; font-size: 0.78rem; color: #344054; }
+.panel-header { display: grid; grid-template-columns: minmax(0, 1fr) minmax(17rem, 24rem); gap: 0.6rem 1rem; align-items: start; padding: 0.72rem 0.85rem 0.65rem; border-bottom: 1px solid #e4e9f1; }
+.panel-title-block { min-width: 0; display: grid; gap: 0.34rem; align-content: start; }
+.panel-title-block h2 { margin: 0; line-height: 1.25; }
+.panel-subtitle { color: var(--muted); font-size: 0.82rem; line-height: 1.25; }
+.step-explanation { max-width: 54rem; border: 1px solid #e3e8ef; border-radius: 7px; background: #fbfcfe; padding: 0.5rem 0.6rem; font-size: 0.77rem; line-height: 1.28; color: #344054; }
 .step-explanation[hidden] { display: none; }
 .step-explanation-title { margin-bottom: 0.32rem; color: #17202a; font-weight: 700; }
-.step-explanation-grid { display: grid; grid-template-columns: 4.8rem minmax(0, 1fr); gap: 0.22rem 0.5rem; }
+.step-explanation-grid { display: grid; grid-template-columns: 4.8rem minmax(0, 1fr) 4.8rem minmax(0, 1fr); gap: 0.22rem 0.5rem; align-items: start; }
 .step-explanation-grid dt { color: var(--muted); font-weight: 700; }
 .step-explanation-grid dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }
 .step-explanation-same { margin-top: 0.35rem; color: #0f766e; font-size: 0.74rem; }
-.graph-tools { display: grid; grid-template-columns: minmax(12rem, 20rem) auto auto auto minmax(7rem, auto); gap: 0.45rem; align-items: center; }
+.panel-tools-column { justify-self: end; width: 100%; display: grid; gap: 0.46rem; align-content: start; }
+.panel-control-strip { display: flex; flex-wrap: wrap; gap: 0.38rem 0.52rem; align-items: center; justify-content: flex-end; min-width: 0; }
+.panel-control-strip .stage-phase-controls { justify-content: flex-end; }
+.graph-tools { width: 100%; display: grid; grid-template-columns: minmax(0, 1fr) auto auto auto; gap: 0.42rem; align-items: center; }
 .graph-search { border: 1px solid var(--line); border-radius: 6px; padding: 0.42rem 0.55rem; min-width: 0; font: inherit; }
 .graph-tool-button { border: 1px solid var(--line); border-radius: 6px; background: #fff; padding: 0.42rem 0.6rem; cursor: pointer; color: var(--text); }
 .graph-tool-button:hover { border-color: #60a5fa; color: #1d4ed8; }
 .zoom-value, .search-status { color: var(--muted); font-size: 0.78rem; white-space: nowrap; }
+.search-status { grid-column: 1 / -1; justify-self: end; }
+.search-status:empty { display: none; }
 .graph-canvas-wrap { overflow: auto; height: calc(100vh - 15rem); min-height: 22rem; background: #ffffff; cursor: grab; }
 .graph-canvas-wrap.panning { cursor: grabbing; user-select: none; }
 #unified-debug-graph-svg { display: block; min-width: 100%; }
@@ -877,8 +885,14 @@ th { background: #f2f5f9; }
   .app-shell { grid-template-columns: 1fr; }
   .sidebar, .inspector-panel { position: static; max-height: none; }
   .layout-resizer { display: none; }
+  .panel-header { grid-template-columns: 1fr; }
+  .panel-tools-column { justify-self: stretch; }
+  .panel-control-strip, .stage-graph-controls, .panel-control-strip .stage-phase-controls { justify-content: flex-start; }
   .graph-canvas-wrap { height: 62vh; }
   .graph-tools { grid-template-columns: 1fr 1fr; }
+}
+@media (max-width: 1500px) {
+  .step-explanation-grid { grid-template-columns: 4.8rem minmax(0, 1fr); }
 }
 </style>
 """
@@ -2586,10 +2600,20 @@ renderStageGraph();
 </aside>
 <section class="graph-panel">
 <div class="panel-header">
-<div>
+<div class="panel-title-block">
 <h2 id="graph-title">统一 Stage Graph</h2>
 <div id="graph-subtitle" class="panel-subtitle"></div>
 <div id="step-explanation" class="step-explanation" hidden></div>
+</div>
+<div class="panel-tools-column">
+<div class="graph-tools">
+<input id="graph-search" class="graph-search" type="search" placeholder="搜索 op、Kernel、位置">
+<button id="graph-fit" class="graph-tool-button" type="button">适配</button>
+<button id="graph-reset" class="graph-tool-button" type="button">Reset</button>
+<span id="graph-zoom-value" class="zoom-value">100%</span>
+<span id="graph-search-status" class="search-status"></span>
+</div>
+<div class="panel-control-strip">
 <div id="stage-phase-controls" class="stage-phase-controls"></div>
 <div id="stage-graph-controls" class="stage-graph-controls">
 <div id="highlight-mode-controls" class="segmented-control" aria-label="Highlight mode">
@@ -2616,12 +2640,6 @@ renderStageGraph();
 <label class="control-label"><input id="fold-helper-toggle" type="checkbox">Fold helpers</label>
 </div>
 </div>
-<div class="graph-tools">
-<input id="graph-search" class="graph-search" type="search" placeholder="搜索 op、Kernel、位置">
-<button id="graph-fit" class="graph-tool-button" type="button">适配</button>
-<button id="graph-reset" class="graph-tool-button" type="button">Reset</button>
-<span id="graph-zoom-value" class="zoom-value">100%</span>
-<span id="graph-search-status" class="search-status"></span>
 </div>
 </div>
 <div id="graph-canvas" class="graph-canvas-wrap">

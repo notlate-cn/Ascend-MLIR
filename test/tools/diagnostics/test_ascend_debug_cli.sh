@@ -1289,6 +1289,16 @@ grep -Fq 'id="source-reader-overlay"' "${TMP_DIR}/debug-run-graph/views/debug_gr
 grep -Fq 'id="inspector-detail"' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
 grep -Fq 'id="stage-diff-panel"' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
 grep -Fq 'id="graph-workspace-data"' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
+grep -Fq 'class="panel-title-block"' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
+grep -Fq 'class="panel-tools-column"' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
+grep -Fq 'class="panel-control-strip"' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
+grep -Fq '.panel-header { display: grid; grid-template-columns: minmax(0, 1fr) minmax(17rem, 24rem);' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
+grep -Fq '.panel-tools-column { justify-self: end; width: 100%; display: grid;' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
+grep -Fq '.panel-control-strip { display: flex; flex-wrap: wrap;' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
+if grep -Fq '.panel-control-strip { grid-column: 1 / -1;' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"; then
+  echo "stage graph controls should live in the right header column, not a full-width row" >&2
+  exit 1
+fi
 grep -Fq -- '--inspector-width' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
 grep -Fq 'class="layout-resizer"' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
 grep -Fq 'class="source-code"' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
