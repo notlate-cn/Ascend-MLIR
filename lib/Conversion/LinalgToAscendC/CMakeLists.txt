@@ -2,6 +2,7 @@ add_mlir_library(LinalgToAscendCConversion
   LinalgToAscendCPass.cpp
   DataMoveConversion.cpp
   ComputeConversion.cpp
+  ComputeConversionHelpers.cpp
 
   ADDITIONAL_HEADER_DIRS
   ${CMAKE_SOURCE_DIR}/include/Conversion

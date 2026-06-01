@@ -12,6 +12,7 @@
  * License.
  */
 
+#include "Conversion/LinalgToAscendC/ComputeConversionHelpers.h"
 #include "Conversion/LinalgToAscendC/LinalgToAscendCUtils.h"
 
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
@@ -43,44 +44,6 @@ namespace afir {
 LogicalResult convertCompute(func::FuncOp funcOp, AscendCBufferContext &ctx) {
   MLIRContext *mlirCtx = funcOp.getContext();
   OpBuilder builder(mlirCtx);
-
-  auto copyAscendCUnitAttr = [](Operation *src, Operation *dst) {
-    if (!src || !dst)
-      return;
-    if (auto unitAttr = src->getAttrOfType<StringAttr>("ascendc.unit"))
-      dst->setAttr("ascendc.unit", unitAttr);
-  };
-
-  auto getEnclosingLoopStepBound = [](Value value,
-                                      Operation *anchor) -> Value {
-    auto matchesEnclosingStep = [&](Value candidate) -> bool {
-      for (Operation *parent = anchor; parent; parent = parent->getParentOp()) {
-        auto forOp = dyn_cast<scf::ForOp>(parent);
-        if (forOp && candidate == forOp.getStep())
-          return true;
-      }
-      return false;
-    };
-
-    if (auto minOp = value.getDefiningOp<arith::MinSIOp>()) {
-      if (matchesEnclosingStep(minOp.getLhs()))
-        return minOp.getLhs();
-      if (matchesEnclosingStep(minOp.getRhs()))
-        return minOp.getRhs();
-    }
-    if (auto minOp = value.getDefiningOp<arith::MinUIOp>()) {
-      if (matchesEnclosingStep(minOp.getLhs()))
-        return minOp.getLhs();
-      if (matchesEnclosingStep(minOp.getRhs()))
-        return minOp.getRhs();
-    }
-    if (auto minOp = value.getDefiningOp<affine::AffineMinOp>()) {
-      for (Value operand : minOp.getOperands())
-        if (matchesEnclosingStep(operand))
-          return operand;
-    }
-    return value;
-  };
 
   auto getSubviewSizeValue = [&](OpBuilder &b, Location loc, Value memref,
                                  unsigned dim) -> Value {
@@ -235,14 +198,6 @@ LogicalResult convertCompute(func::FuncOp funcOp, AscendCBufferContext &ctx) {
     return tbufTensor(b, loc, getMemorySpace(mrt), mrt.getElementType());
   };
 
-  // Helper: return the nearest enclosing scf::ForOp of `op`, or nullptr.
-  auto getEnclosingFor = [](Operation *op) -> scf::ForOp {
-    for (Operation *p = op->getParentOp(); p; p = p->getParentOp())
-      if (auto f = dyn_cast<scf::ForOp>(p))
-        return f;
-    return nullptr;
-  };
-
   // Helper: allocate a write-side tensor before the nearest enclosing for-loop
   // and enqueue it after.  This ensures the queue slot stays valid across all
   // iterations of that loop (e.g. CO1 accumulating across K, VECOUT across
@@ -279,85 +234,6 @@ LogicalResult convertCompute(func::FuncOp funcOp, AscendCBufferContext &ctx) {
   //   - The final accumulated VECCALC (over parallel dims) is reduced via reduce_sum_2d_l2
   //     with ReduceLayout::AR (A=parallel rows, R=reduction cols).
   //
-  // Analysis of a single input indexing map relative to the iteration space.
-  struct IndexingMapAnalysis {
-    enum class Kind {
-      Identity,           // (d0,d1)->(d0,d1): direct read
-      PureBroadcast,      // (d0,d1)->(d0): some dims absent, no reordering
-      PureTranspose,      // (d0,d1)->(d1,d0): all dims present, permuted
-      BroadcastTranspose, // (d0,d1)->(d1,0): constants + reordering
-    };
-    Kind kind;
-    SmallVector<int64_t> permutation;    // valid for PureTranspose, BroadcastTranspose
-    SmallVector<int64_t> broadcastDims;  // iteration dims absent from output
-  };
-
-  // Analyze an input indexing map to classify how the input is accessed
-  // relative to the iteration space of rank `iterRank`.
-  auto analyzeIndexingMap = [](AffineMap map,
-                                unsigned iterRank) -> IndexingMapAnalysis {
-    IndexingMapAnalysis result;
-
-    // Identity: fast path
-    if (map.isIdentity()) {
-      result.kind = IndexingMapAnalysis::Kind::Identity;
-      return result;
-    }
-
-    // Collect which iteration dims appear in the map results (as dim exprs)
-    // and which results are constants.
-    SmallVector<int64_t> presentDims;  // iteration dim positions that appear
-    bool hasConstant = false;
-    for (AffineExpr expr : map.getResults()) {
-      if (auto dimExpr = dyn_cast<AffineDimExpr>(expr)) {
-        presentDims.push_back(static_cast<int64_t>(dimExpr.getPosition()));
-      } else if (isa<AffineConstantExpr>(expr)) {
-        hasConstant = true;
-      } else {
-        // Non-trivial affine expression: not handled.
-        result.kind = IndexingMapAnalysis::Kind::Identity; // fallback: treat as identity
-        return result;
-      }
-    }
-
-    // Determine broadcast dims: iteration dims not in presentDims.
-    for (unsigned d = 0; d < iterRank; ++d) {
-      if (llvm::find(presentDims, static_cast<int64_t>(d)) == presentDims.end())
-        result.broadcastDims.push_back(d);
-    }
-
-    bool hasBroadcast = !result.broadcastDims.empty() || hasConstant;
-    bool hasTranspose = !llvm::is_sorted(presentDims);
-
-    if (hasConstant || (hasBroadcast && hasTranspose)) {
-      result.kind = IndexingMapAnalysis::Kind::BroadcastTranspose;
-      result.permutation.assign(presentDims.begin(), presentDims.end());
-      return result;
-    }
-
-    if (hasBroadcast) {
-      result.kind = IndexingMapAnalysis::Kind::PureBroadcast;
-      return result;
-    }
-
-    if (hasTranspose) {
-      result.kind = IndexingMapAnalysis::Kind::PureTranspose;
-      result.permutation.assign(presentDims.begin(), presentDims.end());
-      return result;
-    }
-
-    result.kind = IndexingMapAnalysis::Kind::Identity;
-    return result;
-  };
-
-  // Helper: return true when an AffineMap is a "broadcast" map for the given
-  // iterator rank — i.e., it projects away at least one dimension (a dim whose
-  // axis does not appear in the map's result expressions).
-  auto isBroadcastMap = [](AffineMap map, unsigned iterRank) -> bool {
-    if (map.getNumResults() >= iterRank)
-      return false;
-    return true;
-  };
 
   // Helper: allocate a fresh on-chip VECCALC buffer matching the given dynamic
   // sizes, insert tbuf + init_buffer, and return {tbufVal, localTensorVal}.
@@ -412,16 +288,6 @@ LogicalResult convertCompute(func::FuncOp funcOp, AscendCBufferContext &ctx) {
     if (tempVecinTensors)
       tempVecinTensors->push_back({vecinQue, dequeued});
     return dequeued;
-  };
-
-  // C++ scalar type name for a verbatim template.
-  auto cppScalarName = [](Type t) -> std::string {
-    if (t.isF32()) return "float";
-    if (t.isF16()) return "half";
-    if (t.isBF16()) return "bfloat16_t";
-    if (auto it = dyn_cast<IntegerType>(t))
-      return "int" + std::to_string(it.getWidth()) + "_t";
-    return "float";
   };
 
   // Helper: copy a row-strided 2-D tile from GM into a packed VECIN TQue.
@@ -1134,91 +1000,6 @@ LogicalResult convertCompute(func::FuncOp funcOp, AscendCBufferContext &ctx) {
     if (allParallel && op.getNumDpsInits() == 1)
       parallelGenericOps.push_back(op);
   });
-
-  // Helper: detect a standalone transpose generic (any rank).
-  // Pattern: 1 input with a non-identity permutation map, 1 output with identity
-  // map, body is a single linalg.yield of the input block argument (no computation).
-  auto isTransposeGeneric = [](linalg::GenericOp op) -> bool {
-    if (op.getNumDpsInputs() != 1 || op.getNumDpsInits() != 1)
-      return false;
-    auto maps = op.getIndexingMapsArray();
-    if (maps.size() != 2)
-      return false;
-    AffineMap inMap  = maps[0];
-    AffineMap outMap = maps[1];
-    unsigned rank    = op.getIteratorTypesArray().size();
-    if (rank == 0)
-      return false;
-    // Output must be identity
-    if (!outMap.isIdentity())
-      return false;
-    // Input must have same rank as iteration space (no broadcast)
-    if (inMap.getNumResults() != rank)
-      return false;
-    // All input map results must be distinct AffineDimExprs (no constants, no complex exprs)
-    SmallVector<int64_t> perm(rank, -1);
-    for (unsigned r = 0; r < rank; ++r) {
-      auto dimExpr = dyn_cast<AffineDimExpr>(inMap.getResult(r));
-      if (!dimExpr)
-        return false;
-      int64_t pos = static_cast<int64_t>(dimExpr.getPosition());
-      if (pos < 0 || pos >= static_cast<int64_t>(rank))
-        return false;
-      perm[r] = pos;
-    }
-    // All positions must be distinct (no repeated dim in permutation)
-    llvm::SmallDenseSet<int64_t> seen;
-    for (unsigned r = 0; r < rank; ++r)
-      if (!seen.insert(perm[r]).second)
-        return false;
-    // Must be a non-identity permutation
-    bool isIdentityPerm = true;
-    for (unsigned r = 0; r < rank; ++r)
-      if (perm[r] != static_cast<int64_t>(r)) { isIdentityPerm = false; break; }
-    if (isIdentityPerm)
-      return false;
-    // Body must be yield-only (single linalg.yield yielding the input block arg)
-    Block &body = *op.getBody();
-    if (body.getOperations().size() != 1)
-      return false;
-    auto yieldOp = dyn_cast<linalg::YieldOp>(&body.front());
-    if (!yieldOp || yieldOp.getNumOperands() != 1)
-      return false;
-    auto ba = dyn_cast<BlockArgument>(yieldOp.getOperand(0));
-    return ba && ba.getArgNumber() == 0;
-  };
-
-  // Helper: is this transpose correctly realizable by AscendC::Transpose?
-  // That intrinsic lowers to a single `vtranspose` (CANN
-  // kernel_operator_vec_transpose) — a fixed 16x16 fractal-block transpose of
-  // 16-bit data, i.e. a 2D last-two-axis swap.  Other ranks/perms (e.g. rank-3
-  // [1,0,2]) or non-16-bit dtypes silently produce wrong values, so we refuse
-  // them here — such transposes must be routed to aclnn upstream (CanFuse keeps
-  // them out of fusion groups).  NB: the remaining requirement — that the 16x16
-  // blocks tile cleanly (no ragged tail) — is a tiling-layer guarantee (the
-  // examples pin XBLOCK=16) and is not statically checkable here: by this stage
-  // the operand memrefs are dynamic-shaped tiles.
-  auto transposeSupportedByIntrinsic = [](Type elemType,
-                                          ArrayRef<int64_t> perm) -> bool {
-    // vtranspose dtype set is half / int16 / uint16 (bf16 is NOT supported).
-    if (!(elemType.isF16() || elemType.isInteger(16)))
-      return false;
-    // Only a rank-2 [1,0] swap maps to vtranspose's 2D semantics.
-    return perm.size() == 2 && perm[0] == 1 && perm[1] == 0;
-  };
-
-  // Helper: detect index_select gather (column gather).
-  // Stamped by --mark-structured-ops: {gather_dim = N : i64} attribute.
-  auto isIndexSelectGeneric = [](linalg::GenericOp op) -> bool {
-    return op->hasAttr("gather_dim");
-  };
-
-  // Helper: detect embedding gather (row gather).
-  // Stamped by --mark-structured-ops: {embedding_dim = N : i64} attribute.
-  auto isEmbeddingGeneric = [](linalg::GenericOp op) -> bool {
-    return op->hasAttr("embedding_dim");
-  };
-  (void)isEmbeddingGeneric; // reserved for future use
 
   for (linalg::GenericOp genOp : parallelGenericOps) {
     Value outMemref = genOp.getDpsInitOperand(0)->get();
