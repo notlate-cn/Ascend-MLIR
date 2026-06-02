@@ -4,6 +4,7 @@
 //
 //===----------------------------------------------------------------------===//
 
+#include "Target/CannKernel/AfirConfusionTransposeKernelSource.h"
 #include "Target/CannKernel/CannTranslation.h"
 #include "Target/CannKernel/SocSpec.h"
 #include "Target/CannKernel/UbCostExpr.h"
@@ -3377,6 +3378,18 @@ LogicalResult mlir::translateToCannKernel(Operation *op, raw_ostream &os,
   os << "#include \"adv_api/broadcast/broadcast.h\"\n";
   os << "#include \"adv_api/reduce/reduce.h\"\n";
   os << "\n";
+
+  // ConfusionTranspose (rank-2 [1,0] transpose, f16/f32, arbitrary size) is
+  // emitted inline when any kernel in the module uses it (LinalgToAscendC stamps
+  // `afir.uses_confusion_transpose`). Built on AscendC::TransDataTo5HD; vendored
+  // from AutoFuse. Inlining avoids kernel-JIT include-path plumbing.
+  bool usesConfusionTranspose = false;
+  moduleOp.walk([&](func::FuncOp f) {
+    if (f->hasAttr("afir.uses_confusion_transpose"))
+      usesConfusionTranspose = true;
+  });
+  if (usesConfusionTranspose)
+    os << mlir::afir::kAfirConfusionTransposeSource << "\n\n";
 
   // First pass: emit TilingData struct declarations + per-func space.json.
   //
