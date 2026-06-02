@@ -145,6 +145,16 @@ def phase1_outline_or_emit_json(args, work):
         intermediate = work / "model_unit_folded.mlir"
         run([AFIR_OPT, "--linalg-fold-unit-extent-dims", "--canonicalize",
              str(recognized), "-o", str(intermediate)])
+        # Step a2: gated transpose→elementwise fold. A standalone transpose is
+        # otherwise kept as its own group and routed to aclnn; when its sole
+        # consumer is a pure-elementwise generic AND the on-chip transpose
+        # template can codegen it (f16/i16 ∧ rank-2 [1,0]), absorb the perm into
+        # the consumer's input map and drop the transpose. f32 / rank-N / general
+        # perms are left untouched (→ aclnn), so attention layout transposes are
+        # unchanged. Trailing canonicalize DCEs the now-dead transpose init.
+        folded = work / "model_transpose_folded.mlir"
+        run([AFIR_OPT, "--fuse-transpose-into-elementwise", "--canonicalize",
+             str(intermediate), "-o", str(folded)])
         # Step b: --auto-fuse-group-analysis + --auto-fuse-group-outline
         # Cube (matmul/batch_matmul) groups are routed to the aclnn matmul
         # fallback by default — the auto-fuse AscendC cube codegen isn't ready —
@@ -155,7 +165,7 @@ def phase1_outline_or_emit_json(args, work):
         run([AFIR_OPT,
              analysis,
              f"--auto-fuse-group-outline=output-dir={groups}",
-             str(intermediate),
+             str(folded),
              "-o", str(work / "_outlined_combined.mlir")])
     else:
         # Hand-written network: copy DIR/*.mlir → groups/, run emit-network-json
