@@ -9,6 +9,7 @@ class Pass;
 namespace mlir::afir {
 
 std::unique_ptr<Pass> createAclnnFinalizeDeclPass();
+std::unique_ptr<Pass> createFuseTransposeIntoElementwisePass();
 std::unique_ptr<Pass> createRecognizeAttentionPass();
 std::unique_ptr<Pass> createRecognizeBatchNormPass();
 std::unique_ptr<Pass> createRecognizeEmbeddingPass();

@@ -1,5 +1,6 @@
 add_mlir_library(LowerNonLinalgOpsConversion
   AclnnFinalizeDeclPass.cpp
+  FuseTransposeIntoElementwisePass.cpp
   RecognizeAttentionPass.cpp
   RecognizeBatchNormPass.cpp
   RecognizeEmbeddingPass.cpp
@@ -17,4 +18,6 @@ add_mlir_library(LowerNonLinalgOpsConversion
   MLIRMathDialect
   MLIRTensorDialect
   MLIRPass
+  # transposeSupportedByIntrinsic — the on-chip transpose capability gate.
+  LinalgToAscendCConversion
 )

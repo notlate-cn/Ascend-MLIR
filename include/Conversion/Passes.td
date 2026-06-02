@@ -745,6 +745,24 @@ def RecognizeEmbedding : Pass<"recognize-embedding", "mlir::ModuleOp"> {
   ];
 }
 
+def FuseTransposeIntoElementwise
+    : Pass<"fuse-transpose-into-elementwise", "mlir::ModuleOp"> {
+  let summary = "Absorb a transpose into its sole elementwise consumer (gated)";
+  let description = [{
+    A standalone linalg.transpose is otherwise kept as its own group and routed
+    to the aclnn single-op fallback. When its SOLE consumer is a pure-elementwise
+    linalg.generic, fold the permutation into that consumer's input indexing map
+    and delete the transpose (the "eliminate" form, like
+    --linalg-fuse-elementwise-ops) — GATED to the cases the on-chip transpose
+    template can codegen: transposeSupportedByIntrinsic (f16/i16 ∧ rank-2 [1,0]).
+    f32 / rank-N / general perms stay as separate transposes → aclnn, unchanged.
+  }];
+  let constructor = "mlir::afir::createFuseTransposeIntoElementwisePass()";
+  let dependentDialects = [
+    "mlir::linalg::LinalgDialect",
+  ];
+}
+
 def RecognizeBatchNorm : Pass<"recognize-batchnorm", "mlir::ModuleOp"> {
   let summary = "Recognize decomposed BatchNorm (eval mode) and route to aclnn BatchNorm";
   let description = [{
