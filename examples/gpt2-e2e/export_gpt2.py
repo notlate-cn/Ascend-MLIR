@@ -97,12 +97,78 @@ class MiniGPT(nn.Module):
             persistent=False,
         )
 
-    def forward(self, input_ids):
-        x = self.tok_emb(input_ids) + self.pos_emb(self.pos_ids)
+    def embed(self, input_ids):
+        """Host-side embedding: returns hidden_states [B, S, C]."""
+        return self.tok_emb(input_ids) + self.pos_emb(self.pos_ids)
+
+    def forward_from_hidden(self, hidden):
+        x = hidden
         for blk in self.blocks:
             x = blk(x)
         x = self.ln_f(x)
         return self.lm_head(x)
+
+    def forward(self, input_ids):
+        return self.forward_from_hidden(self.embed(input_ids))
+
+
+class FromHiddenWrapper(nn.Module):
+    """Exposes MiniGPT.forward_from_hidden as the module forward for export."""
+
+    def __init__(self, model):
+        super().__init__()
+        self.model = model
+
+    def forward(self, hidden):
+        return self.model.forward_from_hidden(hidden)
+
+
+def export_from_hidden(model, args, outdir):
+    """Port real GPT-2 weights, build hidden on host, export forward-from-hidden.
+
+    torch.export lifts nn.Buffers (pos_ids + per-layer causal masks) as network
+    inputs (params are inlined as constants). We must dump ALL inputs in the
+    exact signature order: pos_ids, mask_0..mask_11, hidden. The hidden index is
+    recorded so the generation driver knows which input to vary each step.
+    """
+    from port_gpt2_weights import port_weights, load_tokenizer
+    from transformers import GPT2LMHeadModel
+
+    port_weights(model, GPT2LMHeadModel.from_pretrained("gpt2").eval())
+    tok = load_tokenizer()
+    ids = tok(args.prompt, return_tensors="pt").input_ids[0]
+    pad = torch.zeros(1, args.seq, dtype=torch.long)
+    pad[0, : ids.shape[0]] = ids
+
+    with torch.no_grad():
+        hidden = model.embed(pad).detach()          # host-side embedding
+        expected = model.forward_from_hidden(hidden)
+    np.save(outdir / "expected_0.npy", expected.numpy())
+
+    wrapper = FromHiddenWrapper(model).eval()
+    ep = torch.export.export(wrapper, (hidden,))
+    bufs = dict(wrapper.named_buffers())
+    n = 0
+    hidden_idx = None
+    for s in ep.graph_signature.input_specs:
+        kind = str(s.kind)
+        if "PARAMETER" in kind:
+            continue  # inlined as constants in linalg
+        if "BUFFER" in kind:
+            t = bufs[s.target]
+        else:  # USER_INPUT == hidden
+            t = hidden
+            hidden_idx = n
+        np.save(outdir / f"input_{n}.npy", t.detach().cpu().numpy())
+        n += 1
+    (outdir / "hidden_input_index.txt").write_text(str(hidden_idx))
+
+    mlir_text = torch_to_linalg(wrapper, [hidden], None)
+    (outdir / "step0_linalg.mlir").write_text(mlir_text)
+
+    print(f"prompt={args.prompt!r} real_tokens={ids.shape[0]}")
+    print(f"hidden={tuple(hidden.shape)} expected={tuple(expected.shape)}")
+    print(f"wrote {n} inputs (hidden at index {hidden_idx}) + expected_0 + linalg")
 
 
 def main():
@@ -114,6 +180,11 @@ def main():
     ap.add_argument("--seq", type=int, default=8)
     ap.add_argument("--dtype", choices=["fp16", "fp32"], default="fp32")
     ap.add_argument("--seed", type=int, default=0)
+    ap.add_argument("--from-hidden", action="store_true",
+                    help="port real GPT-2 weights, lift embedding to host, "
+                         "export forward-from-hidden (input = hidden_states)")
+    ap.add_argument("--prompt", default="The capital of France is",
+                    help="prompt used to build hidden_states for --from-hidden")
     ap.add_argument("--outdir", required=True)
     args = ap.parse_args()
 
@@ -128,6 +199,10 @@ def main():
 
     outdir = Path(args.outdir)
     outdir.mkdir(parents=True, exist_ok=True)
+
+    if args.from_hidden:
+        export_from_hidden(model, args, outdir)
+        return
 
     with torch.no_grad():
         expected = model(input_ids)

@@ -87,6 +87,12 @@ def main():
     assert max_diff < 1e-3, f"golden mismatch {max_diff}"
     print("GOLDEN PASS")
 
+    with torch.no_grad():
+        hidden = mini.embed(pad)
+        ours2 = mini.forward_from_hidden(hidden)[0, T - 1]
+    assert torch.allclose(ours, ours2, atol=1e-6), "from_hidden path diverged"
+    print("FROM_HIDDEN EQUIV PASS")
+
 
 if __name__ == "__main__":
     main()
