@@ -34,10 +34,13 @@ func.func @fold_f16(%x: tensor<16x32xf16>) -> tensor<32x16xf16> {
   return %out : tensor<32x16xf16>
 }
 
-// f32: gate rejects → transpose survives (→ aclnn, unchanged).
-// CHECK-LABEL: func.func @keep_f32
-// CHECK:         linalg.transpose
-func.func @keep_f32(%x: tensor<16x32xf32>) -> tensor<32x16xf32> {
+// f32: ConfusionTranspose handles it → folded to one vector group too.
+// CHECK-LABEL: func.func @fold_f32
+// CHECK-NOT:     linalg.transpose
+// CHECK:         linalg.generic
+// CHECK-SAME:      ins(%arg0 : tensor<16x32xf32>)
+// CHECK-SAME:      auto_fuse.group_id
+func.func @fold_f32(%x: tensor<16x32xf32>) -> tensor<32x16xf32> {
   %zero = arith.constant 0.0 : f32
   %t_init = tensor.empty() : tensor<32x16xf32>
   %t = linalg.transpose ins(%x : tensor<16x32xf32>)

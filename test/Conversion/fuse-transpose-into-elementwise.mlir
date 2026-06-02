@@ -38,10 +38,12 @@ func.func @fold_f16_transpose_relu(%x: tensor<16x32xf16>) -> tensor<32x16xf16> {
 }
 
 // ---------------------------------------------------------------------------
-// f32: vtranspose can't → NOT folded (transpose stays).
-// CHECK-LABEL: func.func @keep_f32_transpose_relu
-// CHECK:         linalg.transpose
-func.func @keep_f32_transpose_relu(%x: tensor<16x32xf32>) -> tensor<32x16xf32> {
+// f32 [1,0] → FOLDED (ConfusionTranspose handles f32 too).
+// CHECK-LABEL: func.func @fold_f32_transpose_relu
+// CHECK-NOT:     linalg.transpose
+// CHECK:         linalg.generic
+// CHECK-SAME:      ins(%arg0 : tensor<16x32xf32>)
+func.func @fold_f32_transpose_relu(%x: tensor<16x32xf32>) -> tensor<32x16xf32> {
   %zero = arith.constant 0.0 : f32
   %t_init = tensor.empty() : tensor<32x16xf32>
   %t = linalg.transpose ins(%x : tensor<16x32xf32>)
@@ -56,6 +58,27 @@ func.func @keep_f32_transpose_relu(%x: tensor<16x32xf32>) -> tensor<32x16xf32> {
     linalg.yield %v : f32
   } -> tensor<32x16xf32>
   return %out : tensor<32x16xf32>
+}
+
+// ---------------------------------------------------------------------------
+// bf16: not f16/f32 → NOT folded (transpose stays → aclnn).
+// CHECK-LABEL: func.func @keep_bf16_transpose_relu
+// CHECK:         linalg.transpose
+func.func @keep_bf16_transpose_relu(%x: tensor<16x32xbf16>) -> tensor<32x16xbf16> {
+  %zero = arith.constant 0.0 : bf16
+  %t_init = tensor.empty() : tensor<32x16xbf16>
+  %t = linalg.transpose ins(%x : tensor<16x32xbf16>)
+                        outs(%t_init : tensor<32x16xbf16>) permutation = [1, 0]
+  %r_init = tensor.empty() : tensor<32x16xbf16>
+  %out = linalg.generic {
+      indexing_maps = [#id2, #id2],
+      iterator_types = ["parallel", "parallel"]}
+      ins(%t : tensor<32x16xbf16>) outs(%r_init : tensor<32x16xbf16>) {
+  ^bb0(%in: bf16, %o: bf16):
+    %v = arith.maximumf %in, %zero : bf16
+    linalg.yield %v : bf16
+  } -> tensor<32x16xbf16>
+  return %out : tensor<32x16xbf16>
 }
 
 // ---------------------------------------------------------------------------

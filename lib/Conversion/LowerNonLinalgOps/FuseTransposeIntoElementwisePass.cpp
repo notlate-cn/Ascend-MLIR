@@ -32,9 +32,9 @@ namespace {
 // Gate (all required):
 //   1. transpose result has exactly one use,
 //   2. that use is an *input* of an all-parallel (elementwise) linalg.generic,
-//   3. transposeSupportedByIntrinsic(elemType, perm) — i.e. f16/i16 ∧ rank-2
-//      [1,0] (AscendC::Transpose / vtranspose is a 16x16 16-bit swap; anything
-//      else stays a separate transpose → aclnn, unchanged).
+//   3. transposeSupportedByConfusion(elemType, perm) — i.e. f16/f32 ∧ rank-2
+//      [1,0] (codegen::AfirConfusionTranspose2D handles either dtype at any
+//      size; anything else stays a separate transpose → aclnn, unchanged).
 //
 // Rewrite: t = transpose(x, perm) feeding the generic via map M becomes the
 // generic reading x via M' with perm composed in.  Because
@@ -66,7 +66,7 @@ struct FuseTransposeIntoElementwisePattern
 
       ArrayRef<int64_t> perm = tp.getPermutation();
       auto inTy = cast<ShapedType>(tp.getInput().getType());
-      if (!transposeSupportedByIntrinsic(inTy.getElementType(), perm))
+      if (!transposeSupportedByConfusion(inTy.getElementType(), perm))
         continue;
 
       // The consumer must read the full transpose result (no broadcast on this
