@@ -155,6 +155,16 @@ def phase1_outline_or_emit_json(args, work):
         folded = work / "model_transpose_folded.mlir"
         run([AFIR_OPT, "--fuse-transpose-into-elementwise", "--canonicalize",
              str(intermediate), "-o", str(folded)])
+        # Step a3: --afir-symbolize-shapes — mint a symbol per dynamic `?` dim
+        # and attach afir.symbolic_shapes / afir.dim_symbols so the outliner emits
+        # a symbolic axis_extent instead of choking on the torch-lowered
+        # tensor.dim in the coordinator body.  MUST run after the fold /
+        # fuse-transpose / canonicalize rewrites (which create fresh ops and would
+        # drop the attrs) and right before outlining.  No-op for static input.
+        symbolized = work / "model_symbolized.mlir"
+        run([AFIR_OPT, "--afir-symbolize-shapes", str(folded),
+             "-o", str(symbolized)])
+        folded = symbolized
         # Step b: --auto-fuse-group-analysis + --auto-fuse-group-outline
         # Cube (matmul/batch_matmul) groups are routed to the aclnn matmul
         # fallback by default — the auto-fuse AscendC cube codegen isn't ready —

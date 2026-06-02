@@ -270,6 +270,33 @@ llvm::Error emitNetworkJson(mlir::ModuleOp module, mlir::func::FuncOp coord,
       continue;
     }
 
+    // A compile-time scalar (e.g. the `%c1` index feeding a tensor.dim, or a
+    // shape literal): no runtime provenance needed.  Skip it — only ops that
+    // produce a *tensor* or a dynamic-dim value that flows into a kernel call
+    // need a descriptor.
+    if (mlir::isa<mlir::arith::ConstantOp>(&op))
+      continue;
+
+    // A dynamic-dimension query on a coordinator value: record an "input_dim"
+    // provenance so a kernel size-arg that consumes it resolves to the actual
+    // runtime extent (the runner reads the source input's npy shape).  Without
+    // this the outliner non-deterministically leaves tensor.dim in the
+    // coordinator (vs sinking it into the kernel) and emission flakily failed
+    // with "unsupported op in coordinator body: tensor.dim".
+    if (auto dimOp = mlir::dyn_cast<mlir::tensor::DimOp>(&op)) {
+      auto it = valueSource.find(dimOp.getSource());
+      std::optional<int64_t> cdim = dimOp.getConstantIndex();
+      if (it != valueSource.end() && cdim) {
+        llvm::json::Object src;
+        src["from"] = "input_dim";
+        if (auto *nameV = it->second.get("name"))
+          src["name"] = *nameV;
+        src["dim"] = *cdim;
+        valueSource[dimOp.getResult()] = std::move(src);
+      }
+      continue;
+    }
+
     if (auto callOp = mlir::dyn_cast<mlir::func::CallOp>(&op)) {
       llvm::StringRef calleeName = callOp.getCallee();
 
