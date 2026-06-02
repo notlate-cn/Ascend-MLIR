@@ -61,6 +61,25 @@ add_test(NAME AscendScheduleDecisionTest
   COMMAND $<TARGET_FILE:AscendScheduleDecisionTest>
 )
 
+add_executable(AscendScheduleTemplateRegistryTest
+  AscendScheduleTemplateRegistryTest.cpp
+)
+
+target_include_directories(AscendScheduleTemplateRegistryTest PRIVATE
+  ${ASCEND_CONVERSION_INTERNAL_INCLUDE_DIR}
+)
+
+target_link_libraries(AscendScheduleTemplateRegistryTest PRIVATE
+  RuntimeUnitTestSupport
+  AscendConversion
+)
+
+add_dependencies(RuntimeUnitTests AscendScheduleTemplateRegistryTest)
+
+add_test(NAME AscendScheduleTemplateRegistryTest
+  COMMAND $<TARGET_FILE:AscendScheduleTemplateRegistryTest>
+)
+
 add_executable(AscendRealizePlannerTest
   AscendRealizePlannerTest.cpp
 )

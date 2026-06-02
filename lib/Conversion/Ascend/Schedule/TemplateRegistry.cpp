@@ -7,25 +7,34 @@
 #include "TemplateRegistry.h"
 
 #include "Conversion/Ascend/Kernelize/Pattern/HandwrittenContractRegistry.h"
+#include "ScheduleTemplateImplementation.h"
 
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/Support/ManagedStatic.h"
 #include "llvm/Support/raw_ostream.h"
 
+#include <memory>
 #include <mutex>
+#include <utility>
 
 namespace mlir::ascend::schedule {
 namespace {
 
 struct TemplateRegistrySingleton {
   std::mutex mu;
-  SmallVector<ScheduleTemplate> templates;
+  SmallVector<std::unique_ptr<ScheduleTemplateImplementation>> templates;
   bool builtinsRegistered = false;
 };
 
 llvm::ManagedStatic<TemplateRegistrySingleton> gRegistry;
 
 TemplateRegistrySingleton &registry() { return *gRegistry; }
+
+void appendTemplateImplementation(
+    TemplateRegistrySingleton &reg,
+    std::unique_ptr<ScheduleTemplateImplementation> implementation) {
+  reg.templates.push_back(std::move(implementation));
+}
 
 bool hasTag(ArrayRef<std::string> tags, StringRef tag) {
   return llvm::any_of(tags, [&](const std::string &candidate) {
@@ -66,6 +75,20 @@ void sortTemplates(SmallVectorImpl<ScheduleTemplate> &templates) {
   });
 }
 
+void sortTemplateImplementations(
+    SmallVectorImpl<const ScheduleTemplateImplementation *> &templates) {
+  llvm::sort(templates, [](const ScheduleTemplateImplementation *lhs,
+                           const ScheduleTemplateImplementation *rhs) {
+    const ScheduleTemplate &lhsMetadata = lhs->metadata();
+    const ScheduleTemplate &rhsMetadata = rhs->metadata();
+    if (lhsMetadata.priority != rhsMetadata.priority)
+      return lhsMetadata.priority < rhsMetadata.priority;
+    if (lhsMetadata.family != rhsMetadata.family)
+      return lhsMetadata.family < rhsMetadata.family;
+    return lhsMetadata.name < rhsMetadata.name;
+  });
+}
+
 } // namespace
 
 void registerBuiltinTemplates() {
@@ -75,10 +98,12 @@ void registerBuiltinTemplates() {
     return;
   reg.builtinsRegistered = true;
 
-  reg.templates.push_back(
-      {"vector_generic", "single_tile_per_block", {kOpRoleVector.str()}, 1, 8, 0});
-  reg.templates.push_back(
-      {"reduction_static", "single_tile_per_block", {kOpRoleReduction.str()}, 0, 8, 2});
+  appendTemplateImplementation(
+      reg, createSingleTilePerBlockTemplateImplementation(
+               kScheduleFamilyVectorGeneric, kOpRoleVector, 1, 8, 0));
+  appendTemplateImplementation(
+      reg, createSingleTilePerBlockTemplateImplementation(
+               kScheduleFamilyReductionStatic, kOpRoleReduction, 0, 8, 2));
   {
     using namespace ::mlir::ascend::kernelize;
     registerBuiltinHandwrittenContracts();
@@ -95,30 +120,41 @@ void registerBuiltinTemplates() {
       tmpl.minRank = spec.minRank;
       tmpl.maxRank = spec.maxRank;
       tmpl.priority = spec.priority;
-      reg.templates.push_back(std::move(tmpl));
+      appendTemplateImplementation(
+          reg, createGroupedTilePerBlockTemplateImplementation(std::move(tmpl)));
     }
   }
-  reg.templates.push_back(
-      {"cube_static_matmul", "single_tile_per_block", {kOpRoleCube.str()}, 2, 3, 3});
-  reg.templates.push_back(
-      {"memory_copy", "single_tile_per_block", {kOpRoleMemory.str()}, 0, 8, 4});
+  appendTemplateImplementation(
+      reg, createSingleTilePerBlockTemplateImplementation(
+               kScheduleFamilyCubeStaticMatmul, kOpRoleCube, 2, 3, 3));
+  appendTemplateImplementation(
+      reg, createSingleTilePerBlockTemplateImplementation(
+               kScheduleFamilyMemoryCopy, kOpRoleMemory, 0, 8, 4));
 }
 
 void registerTemplate(ScheduleTemplate tmpl) {
-  TemplateRegistrySingleton &reg = registry();
-  std::lock_guard<std::mutex> lock(reg.mu);
-  reg.templates.push_back(std::move(tmpl));
+  registerTemplateImplementation(createRoleDrivenTemplateImplementation(
+      std::move(tmpl), "role-driven schedule template"));
 }
 
-SmallVector<ScheduleTemplate>
-matchScheduleTemplates(const ScheduleProblem &problem) {
+void registerTemplateImplementation(
+    std::unique_ptr<ScheduleTemplateImplementation> implementation) {
+  TemplateRegistrySingleton &reg = registry();
+  std::lock_guard<std::mutex> lock(reg.mu);
+  appendTemplateImplementation(reg, std::move(implementation));
+}
+
+SmallVector<const ScheduleTemplateImplementation *>
+matchScheduleTemplateImplementations(const ScheduleProblem &problem) {
   registerBuiltinTemplates();
 
   TemplateRegistrySingleton &reg = registry();
   std::lock_guard<std::mutex> lock(reg.mu);
 
-  SmallVector<ScheduleTemplate> matches;
-  for (const ScheduleTemplate &scheduleTemplate : reg.templates) {
+  SmallVector<const ScheduleTemplateImplementation *> matches;
+  for (const std::unique_ptr<ScheduleTemplateImplementation> &implementation :
+       reg.templates) {
+    const ScheduleTemplate &scheduleTemplate = implementation->metadata();
     if (problem.resultRank < scheduleTemplate.minRank ||
         problem.resultRank > scheduleTemplate.maxRank)
       continue;
@@ -126,18 +162,31 @@ matchScheduleTemplates(const ScheduleProblem &problem) {
       continue;
     if (!tagsIntersect(scheduleTemplate.tags, problem.templateTags))
       continue;
-    matches.push_back(scheduleTemplate);
+    matches.push_back(implementation.get());
   }
 
-  SmallVector<ScheduleTemplate> exactRoleMatches;
+  SmallVector<const ScheduleTemplateImplementation *> exactRoleMatches;
   StringRef roleTag = stringifyOpRole(problem.dominantRole);
-  for (const ScheduleTemplate &scheduleTemplate : matches) {
+  for (const ScheduleTemplateImplementation *implementation : matches) {
+    const ScheduleTemplate &scheduleTemplate = implementation->metadata();
     if (hasTag(scheduleTemplate.tags, roleTag))
-      exactRoleMatches.push_back(scheduleTemplate);
+      exactRoleMatches.push_back(implementation);
   }
   if (!exactRoleMatches.empty())
     matches = std::move(exactRoleMatches);
 
+  sortTemplateImplementations(matches);
+  return matches;
+}
+
+SmallVector<ScheduleTemplate>
+matchScheduleTemplates(const ScheduleProblem &problem) {
+  SmallVector<const ScheduleTemplateImplementation *> implementations =
+      matchScheduleTemplateImplementations(problem);
+  SmallVector<ScheduleTemplate> matches;
+  matches.reserve(implementations.size());
+  for (const ScheduleTemplateImplementation *implementation : implementations)
+    matches.push_back(implementation->metadata());
   sortTemplates(matches);
   return matches;
 }
@@ -151,6 +200,20 @@ void printTemplateRegistryReport(StringRef kernelId,
   for (const ScheduleTemplate &scheduleTemplate : matches)
     os << "  template = " << scheduleTemplate.family << "/"
        << scheduleTemplate.name << "\n";
+}
+
+void printTemplateRegistryReport(
+    StringRef kernelId,
+    ArrayRef<const ScheduleTemplateImplementation *> matches,
+    llvm::raw_ostream &os) {
+  os << "TemplateRegistry:\n";
+  os << "  kernel = " << kernelId << "\n";
+  os << "  matches = " << matches.size() << "\n";
+  for (const ScheduleTemplateImplementation *implementation : matches) {
+    const ScheduleTemplate &scheduleTemplate = implementation->metadata();
+    os << "  template = " << scheduleTemplate.family << "/"
+       << scheduleTemplate.name << "\n";
+  }
 }
 
 } // namespace mlir::ascend::schedule

@@ -1331,6 +1331,12 @@ grep -Fq -- '--inspector-width' "${TMP_DIR}/debug-run-graph/views/debug_graph.ht
 grep -Fq 'class="layout-resizer"' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
 grep -Fq 'class="source-code"' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
 grep -Fq '.source-code { margin: 0; white-space: pre; overflow: auto;' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
+grep -Fq '.graph-panel { min-width: 0; overflow: hidden; display: grid; grid-template-rows: auto minmax(0, 1fr);' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
+grep -Fq '.graph-canvas-wrap { overflow: auto; min-height: 22rem; height: auto;' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
+if grep -Fq '.graph-canvas-wrap { overflow: auto; height: calc(100vh - 15rem);' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"; then
+  echo "graph canvas should fill the graph panel instead of using a shorter fixed viewport height" >&2
+  exit 1
+fi
 grep -Fq 'class="source-expand-button"' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
 grep -Fq 'class="stage-tree-group"' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
 grep -Fq 'class="stage-button stage-group-parent' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
@@ -1352,13 +1358,14 @@ grep -Fq 'function stageNavigationSequence' "${TMP_DIR}/debug-run-graph/views/de
 grep -Fq 'const paddedOrder = orderText.padStart(3, "0");' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
 grep -Fq 'stageName.startsWith(`${paddedOrder}-`)' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
 grep -Fq '${escapeHtml(stageDiffTitle(diff.from_stage))} -> ${escapeHtml(stageDiffTitle(diff.to_stage))}' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
-grep -Fq 'document.getElementById("graph-title").textContent = stageStepHeaderTitle(stage);' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
+grep -Fq 'document.getElementById("graph-title").textContent = stageGraphHeaderTitle(stage);' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
 grep -Fq 'document.getElementById("graph-subtitle").textContent = `${graph.node_count} 个节点，${graph.edge_count} 条边，${graph.kernel_count} 个 Kernel`;' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
 grep -Fq '["Stage", stageStageTitle(stage)]' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
 grep -Fq '["Artifact", stage.path]' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
 grep -Fq 'return info.title || (stage && stage.step) || "未命名 Step";' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
 grep -Fq 'function stageStepId(stage)' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
-grep -Fq 'function stageStepHeaderTitle(stage)' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
+grep -Fq 'function stageGraphHeaderTitle(stage)' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
+grep -Fq 'return `${stageStageTitle(stage)} / ${stageStepId(stage)}`;' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
 grep -Fq 'function stageDiffTitle(stage)' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
 grep -Fq 'return `Dump: ${stageBriefLabel(stage)}`;' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
 if grep -Fq '${escapeHtml(diff.from_stage.order)} ${escapeHtml(diff.from_stage.name)} ->' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"; then
@@ -1439,17 +1446,60 @@ grep -Fq 'class="node-badge"' "${TMP_DIR}/debug-run-graph/views/debug_graph.html
 grep -Fq 'function renderSemanticAttrSections' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
 grep -Fq 'function resolveKernelDagEntry' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
 grep -Fq '属性分组' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
+if grep -Fq 'class="badge-list"' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"; then
+  echo "node inspector should not duplicate module facts as a non-clickable badge list" >&2
+  exit 1
+fi
 if grep -Fq '所属 Kernel' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"; then
   echo "node inspector should merge Kernel DAG facts into the Kernel attribute group" >&2
   exit 1
 fi
-grep -Fq '.semantic-group .detail-grid { grid-template-columns: minmax(7.8rem, 42%) minmax(0, 1fr); }' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
-grep -Fq '.detail-label { color: var(--muted); font-weight: 700; min-width: 0; overflow-wrap: anywhere; }' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
+grep -Fq '.detail-grid { display: grid; grid-template-columns: 1fr;' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
+grep -Fq '.semantic-group .detail-grid { gap: 0.34rem; }' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
+if grep -Fq '.semantic-group .detail-grid { grid-template-columns: minmax(7.8rem, 42%) minmax(0, 1fr); }' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"; then
+  echo "semantic attribute groups should use single-column rows to avoid narrow two-column wrapping" >&2
+  exit 1
+fi
+grep -Fq 'class="detail-row"' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
+grep -Fq '<div class="detail-row">' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
+grep -Fq '.detail-row { border: 1px solid #e3e8ef;' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
+grep -Fq '.detail-label { color: #475569; font-weight: 800; font-size: 0.72rem;' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
+grep -Fq '.detail-value { color: #111827; min-width: 0; white-space: nowrap; overflow-x: auto;' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
 grep -Fq '["op_role", kernel.role]' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
 grep -Fq '["op_roles", kernel.roles]' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
 grep -Fq '["output_shape", dagKernelNode.output_shape]' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
 grep -Fq '["kernel_dag_id", dagKernelId]' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
-grep -Fq '["phases", movement.phases]' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
+grep -Fq 'function movementPhasesHtml(phases)' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
+grep -Fq 'class="tile-param-list"' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
+grep -Fq 'class="tile-param-card"' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
+grep -Fq '.tile-param-field { min-width: 0; display: grid; grid-template-columns: 5.6rem minmax(0, 1fr);' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
+if grep -Fq '.tile-param-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr));' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"; then
+  echo "tile param fields should use readable single-column rows in the narrow inspector" >&2
+  exit 1
+fi
+grep -Fq 'class="phase-legend"' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
+grep -Fq 'GM/UB 间搬运输入、输出或中间值' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
+if grep -Fq '${phase}: ${movementPhaseDescription(phase)}' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"; then
+  echo "movement legend value should not repeat the phase name already shown in the left column" >&2
+  exit 1
+fi
+if grep -Fq 'phase-chip-list' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"; then
+  echo "movement group should not repeat phases as both chips and legend rows" >&2
+  exit 1
+fi
+if grep -Fq '这些 phase 描述当前 op 在调度/搬运计划中的职责' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"; then
+  echo "movement group should avoid a redundant explanatory sentence above the phase rows" >&2
+  exit 1
+fi
+grep -Fq 'movement phases' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
+if grep -Fq 'move data_copy/vector_compute/write_back' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"; then
+  echo "movement phase details should live in the Movement group, not in raw badge text" >&2
+  exit 1
+fi
+if grep -Fq 'function tileParamText(params)' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"; then
+  echo "tile params should render as structured rows instead of a semicolon-joined long line" >&2
+  exit 1
+fi
 grep -Fq '["position.kind", position.kind]' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
 if grep -Fq '["角色", kernel.role]' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"; then
   echo "semantic attr labels should use raw field names, not Chinese display names" >&2
@@ -1523,6 +1573,15 @@ grep -Fq 'Stage Diff' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
 grep -Fq 'Graph Audit' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
 grep -Fq 'suspicious_isolated' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
 grep -Fq 'dangling_effect' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
+grep -Fq 'class="audit-summary-strip' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
+grep -Fq 'class="audit-metrics"' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
+grep -Fq 'class="audit-detail-group audit-issues"' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
+grep -Fq 'class="audit-detail-list"' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
+grep -Fq '.audit-metric-label { min-width: 0; overflow: hidden; text-overflow: ellipsis;' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
+if grep -Fq '<strong>${escapeHtml(suspicious)}</strong>suspicious_isolated' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"; then
+  echo "Graph Audit should not render long audit keys inside cramped diff pills" >&2
+  exit 1
+fi
 grep -Fq 'function renderKernelDag' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
 grep -Fq 'function renderStagePhaseControls' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
 grep -Fq 'Kernel DAG' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
@@ -1577,7 +1636,8 @@ semantic = scheduled["semantic_attrs"]
 assert semantic["schedule"]["template"] == "single_tile_per_block"
 assert semantic["schedule"]["structured_lowering"] == "loop_skeleton_v0"
 assert semantic["movement"]["phases"] == ["data_copy", "vector_compute", "write_back"]
-assert "move data_copy/vector_compute/write_back" in scheduled["badges"]
+assert "movement phases" in scheduled["badges"]
+assert "move data_copy/vector_compute/write_back" not in scheduled["badges"]
 assert len(graph["stage_diffs"]) == graph["stage_count"] - 1
 assert all("added_count" in item for item in graph["stage_diffs"])
 assert any(item["to_stage"]["name"] == "kernelize-out" for item in graph["stage_diffs"])

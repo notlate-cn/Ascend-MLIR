@@ -61,6 +61,18 @@ inline constexpr llvm::StringLiteral kScheduleTargetTilePolicyAttr =
     "ascend.schedule.target_tile_policy";
 inline constexpr llvm::StringLiteral kScheduleKernelMetadataAttr =
     "ascend.schedule.kernel_metadata";
+inline constexpr llvm::StringLiteral kScheduleFamilyVectorGeneric =
+    "vector_generic";
+inline constexpr llvm::StringLiteral kScheduleFamilyReductionStatic =
+    "reduction_static";
+inline constexpr llvm::StringLiteral kScheduleFamilyCubeStaticMatmul =
+    "cube_static_matmul";
+inline constexpr llvm::StringLiteral kScheduleFamilyMemoryCopy =
+    "memory_copy";
+inline constexpr llvm::StringLiteral kScheduleTemplateSingleTilePerBlock =
+    "single_tile_per_block";
+inline constexpr llvm::StringLiteral kScheduleTemplateGroupedTilePerBlock =
+    "grouped_tile_per_block";
 inline constexpr llvm::StringLiteral kAscendCUnitAttr = "ascendc.unit";
 inline constexpr llvm::StringLiteral kAscendCUnitCube = "AiCore.Cube";
 inline constexpr llvm::StringLiteral kAscendCUnitVector = "AiCore.Vector";

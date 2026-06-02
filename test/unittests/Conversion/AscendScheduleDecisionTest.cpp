@@ -33,7 +33,8 @@ TEST(AscendScheduleDecisionTest, TailPolicyPreferenceComesFromTargetPolicy) {
   constraint.primitiveUses.push_back(PrimitiveAxisUseKind::GatherIndex);
   problem.axes.axisScheduleConstraints.push_back(std::move(constraint));
 
-  ScheduleTemplate tmpl{"vector_generic", "single_tile_per_block",
+  ScheduleTemplate tmpl{kScheduleFamilyVectorGeneric.str(),
+                        kScheduleTemplateSingleTilePerBlock.str(),
                         {"vector"}, 1, 8, 0};
   ScheduleInstance instance;
   instance.instanceId = "kernel_0.vector_generic.0";
@@ -69,7 +70,8 @@ TEST(AscendScheduleDecisionTest, MemoryRoleTileParamsUseCopyOnly) {
   constraint.primitiveUses.push_back(PrimitiveAxisUseKind::WriteBack);
   problem.axes.axisScheduleConstraints.push_back(std::move(constraint));
 
-  ScheduleTemplate tmpl{"memory_copy", "single_tile_per_block",
+  ScheduleTemplate tmpl{kScheduleFamilyMemoryCopy.str(),
+                        kScheduleTemplateSingleTilePerBlock.str(),
                         {"memory"}, 1, 8, 0};
   ScheduleInstance instance;
   instance.instanceId = "kernel_memory.memory_copy.0";

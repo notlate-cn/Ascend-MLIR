@@ -729,6 +729,22 @@ h3 { margin: 0 0 0.45rem; font-size: 0.84rem; }
 .diff-changed-text { color: #b45309; }
 .diff-removed-text { color: #b91c1c; }
 .diff-list { margin: 0.4rem 0 0; padding-left: 1rem; color: #344054; font-size: 0.78rem; max-height: 7.5rem; overflow: auto; }
+.audit-summary-strip { display: grid; gap: 0.12rem; margin-top: 0.45rem; border: 1px solid #dbe3ee; border-radius: 6px; padding: 0.45rem 0.5rem; background: #ffffff; color: #334155; }
+.audit-summary-strip strong { font-size: 0.82rem; color: #17202a; }
+.audit-summary-strip span { color: var(--muted); font-size: 0.74rem; line-height: 1.25; }
+.audit-summary-strip.warn { border-color: #fde68a; background: #fffbeb; }
+.audit-summary-strip.ok { border-color: #bbf7d0; background: #f0fdf4; }
+.audit-metrics { display: grid; grid-template-columns: 1fr; gap: 0.25rem; margin-top: 0.45rem; }
+.audit-metric { display: grid; grid-template-columns: 1.8rem minmax(0, 1fr); align-items: center; gap: 0.4rem; border: 1px solid #e3e8ef; border-radius: 6px; background: #ffffff; padding: 0.28rem 0.42rem; }
+.audit-metric-value { font-weight: 800; font-size: 0.9rem; line-height: 1; text-align: right; }
+.audit-metric-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #475569; font-family: SFMono-Regular, Menlo, Consolas, monospace; font-size: 0.7rem; }
+.audit-detail-group { margin-top: 0.55rem; padding-top: 0.5rem; border-top: 1px solid #e3e8ef; }
+.audit-detail-heading { display: flex; align-items: center; justify-content: space-between; gap: 0.4rem; margin-bottom: 0.28rem; color: #344054; font-size: 0.74rem; font-weight: 800; }
+.audit-detail-list { display: grid; gap: 0.26rem; margin: 0; padding: 0; list-style: none; font-size: 0.74rem; }
+.audit-detail-row { display: grid; grid-template-columns: minmax(0, 1fr); gap: 0.05rem; color: #344054; }
+.audit-kind { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: SFMono-Regular, Menlo, Consolas, monospace; font-size: 0.68rem; }
+.audit-node { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #17202a; }
+.audit-meta { margin-top: 0.5rem; color: var(--muted); font-size: 0.72rem; line-height: 1.3; }
 .overlay-stack { display: grid; gap: 0.55rem; margin-top: 0.9rem; }
 .metric-card { border: 1px solid #e3e8ef; border-radius: 7px; padding: 0.6rem; background: #fbfcfe; }
 .metric-card.fail { border-color: #fecaca; background: #fff7f7; }
@@ -736,7 +752,7 @@ h3 { margin: 0 0 0.45rem; font-size: 0.84rem; }
 dl { margin: 0; display: grid; grid-template-columns: 6.2rem 1fr; gap: 0.24rem 0.45rem; }
 dt { color: var(--muted); font-weight: 700; }
 dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }
-.graph-panel { min-width: 0; overflow: hidden; }
+.graph-panel { min-width: 0; overflow: hidden; display: grid; grid-template-rows: auto minmax(0, 1fr); align-self: stretch; }
 .panel-header { display: grid; grid-template-columns: minmax(0, 1fr) minmax(17rem, 24rem); gap: 0.6rem 1rem; align-items: start; padding: 0.72rem 0.85rem 0.65rem; border-bottom: 1px solid #e4e9f1; }
 .panel-title-block { min-width: 0; display: grid; gap: 0.34rem; align-content: start; }
 .panel-title-block h2 { margin: 0; line-height: 1.25; }
@@ -758,7 +774,7 @@ dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }
 .zoom-value, .search-status { color: var(--muted); font-size: 0.78rem; white-space: nowrap; }
 .search-status { grid-column: 1 / -1; justify-self: end; }
 .search-status:empty { display: none; }
-.graph-canvas-wrap { overflow: auto; height: calc(100vh - 15rem); min-height: 22rem; background: #ffffff; cursor: grab; }
+.graph-canvas-wrap { overflow: auto; min-height: 22rem; height: auto; background: #ffffff; cursor: grab; }
 .graph-canvas-wrap.panning { cursor: grabbing; user-select: none; }
 #unified-debug-graph-svg { display: block; min-width: 100%; }
 .function-frame-box { fill: #f8fafc; fill-opacity: 0.72; stroke: #475569; stroke-width: 2; stroke-dasharray: 9 5; }
@@ -806,8 +822,21 @@ dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }
 .node-badge { fill: #344054; font-size: 10px; font-family: SFMono-Regular, Menlo, Consolas, monospace; }
 .semantic-group { border: 1px solid #e3e8ef; border-radius: 6px; background: #ffffff; padding: 0.55rem; margin-top: 0.55rem; }
 .semantic-group h4 { margin: 0 0 0.42rem; font-size: 0.76rem; color: #344054; }
-.semantic-group .detail-grid { grid-template-columns: minmax(7.8rem, 42%) minmax(0, 1fr); }
-.badge-list { display: flex; flex-wrap: wrap; gap: 0.32rem; margin-bottom: 0.45rem; }
+.semantic-group .detail-grid { gap: 0.34rem; }
+.semantic-note { margin: 0.1rem 0 0.45rem; color: var(--muted); font-size: 0.72rem; line-height: 1.3; }
+.tile-param-list { display: grid; gap: 0.45rem; }
+.tile-param-card { border: 1px solid #dbe3ee; border-radius: 6px; background: #fbfcfe; padding: 0.45rem 0.5rem; }
+.tile-param-card h5 { margin: 0 0 0.34rem; font-size: 0.76rem; color: #17202a; font-family: SFMono-Regular, Menlo, Consolas, monospace; }
+.tile-param-grid { display: grid; grid-template-columns: 1fr; gap: 0.24rem; font-size: 0.76rem; }
+.tile-param-field { min-width: 0; display: grid; grid-template-columns: 5.6rem minmax(0, 1fr); gap: 0.35rem; align-items: baseline; }
+.tile-param-field span { color: var(--muted); font-weight: 700; font-size: 0.68rem; white-space: nowrap; }
+.tile-param-field code { min-width: 0; overflow-wrap: anywhere; color: #17202a; }
+.tile-chip-list { display: flex; flex-wrap: wrap; gap: 0.26rem; }
+.tile-chip { display: inline-flex; align-items: center; max-width: 100%; border: 1px solid #dbe3ee; border-radius: 999px; padding: 0.13rem 0.4rem; background: #f8fafc; color: #344054; font-size: 0.72rem; font-family: SFMono-Regular, Menlo, Consolas, monospace; }
+.phase-legend { display: grid; gap: 0.28rem; font-size: 0.74rem; line-height: 1.32; }
+.phase-legend-row { display: grid; grid-template-columns: minmax(7.4rem, max-content) minmax(0, 1fr); gap: 0.35rem; align-items: start; }
+.phase-legend-row code { color: #17202a; }
+.phase-legend-row span { color: #475569; }
 .provenance-grid { display: grid; gap: 0.55rem; }
 .provenance-block { border: 1px solid #e3e8ef; border-radius: 6px; background: #ffffff; padding: 0.55rem; }
 .provenance-block h4 { margin: 0 0 0.42rem; font-size: 0.76rem; color: #344054; }
@@ -826,9 +855,10 @@ dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }
 .source-section-header h3 { margin: 0; }
 .source-expand-button { border: 1px solid var(--line); border-radius: 6px; background: #ffffff; color: var(--text); padding: 0.28rem 0.45rem; cursor: pointer; font-size: 0.76rem; }
 .source-expand-button:hover { border-color: #60a5fa; color: #1d4ed8; }
-.detail-grid { display: grid; grid-template-columns: 5.5rem minmax(0, 1fr); gap: 0.3rem 0.5rem; font-size: 0.82rem; }
-.detail-label { color: var(--muted); font-weight: 700; min-width: 0; overflow-wrap: anywhere; }
-.detail-value { min-width: 0; overflow-wrap: anywhere; font-family: SFMono-Regular, Menlo, Consolas, monospace; }
+.detail-grid { display: grid; grid-template-columns: 1fr; gap: 0.38rem; font-size: 0.82rem; }
+.detail-row { border: 1px solid #e3e8ef; border-radius: 6px; background: #ffffff; padding: 0.34rem 0.42rem; min-width: 0; }
+.detail-label { color: #475569; font-weight: 800; font-size: 0.72rem; line-height: 1.2; min-width: 0; overflow-wrap: anywhere; margin-bottom: 0.12rem; }
+.detail-value { color: #111827; min-width: 0; white-space: nowrap; overflow-x: auto; overflow-y: hidden; overflow-wrap: normal; font-family: SFMono-Regular, Menlo, Consolas, monospace; padding-bottom: 0.04rem; }
 .body-op-list { display: flex; flex-wrap: wrap; gap: 0.35rem; margin-top: 0.45rem; }
 pre { margin: 0; background: #0b1020; color: #dbeafe; border: 1px solid #1e293b; padding: 0.75rem; border-radius: 7px; font: 12px/1.45 SFMono-Regular, Menlo, Consolas, monospace; }
 .source-code { margin: 0; white-space: pre; overflow: auto; overflow-wrap: normal; max-height: 48vh; tab-size: 2; }
@@ -1007,8 +1037,10 @@ function resolveKernelDagEntry(kernelId) {
 
 function detailRows(rows) {
   return `<div class="detail-grid">${rows.map(([label, value]) => `
+<div class="detail-row">
 <div class="detail-label">${escapeHtml(label)}</div>
-<div class="detail-value">${escapeHtml(valueText(value))}</div>`).join("")}</div>`;
+<div class="detail-value">${escapeHtml(valueText(value))}</div>
+</div>`).join("")}</div>`;
 }
 
 function classifyMlirToken(token) {
@@ -1101,24 +1133,38 @@ function semanticValueText(value) {
   return valueText(value);
 }
 
-function tileParamText(params) {
+function chipList(values, className) {
+  if (!Array.isArray(values) || !values.length) return "";
+  return `<div class="${className}-list">${values.map((value) => `<span class="${className}">${escapeHtml(value)}</span>`).join("")}</div>`;
+}
+
+function tileParamField(label, value) {
+  if (Array.isArray(value) && !value.length) return "";
+  if (value === undefined || value === null || value === "" || value === false) return "";
+  const displayValue = Array.isArray(value) ? value.join("/") : value;
+  return `<div class="tile-param-field"><span>${escapeHtml(label)}</span><code>${escapeHtml(displayValue)}</code></div>`;
+}
+
+function tileParamsHtml(params) {
   if (!Array.isArray(params) || !params.length) return null;
-  return params.map((param) => {
+  const cards = params.map((param) => {
     if (!param || typeof param !== "object") return semanticValueText(param);
     const name = param.name || "tile";
-    const details = [];
-    if (param.axis !== undefined) details.push(`axis=${param.axis}`);
-    if (param.axis_kind) details.push(`kind=${param.axis_kind}`);
-    if (param.binding) details.push(`binding=${param.binding}`);
-    if (param.default !== undefined) details.push(`default=${param.default}`);
-    if (param.upper_bound !== undefined) details.push(`upper_bound=${param.upper_bound}`);
-    if (param.extent !== undefined) details.push(`extent=${param.extent}`);
-    if (Array.isArray(param.roles) && param.roles.length) details.push(`roles=${param.roles.join("/")}`);
-    if (Array.isArray(param.primitive_uses) && param.primitive_uses.length) {
-      details.push(`uses=${param.primitive_uses.join("/")}`);
-    }
-    return `${name}: ${details.join(", ")}`;
-  }).join("; ");
+    const fields = [
+      tileParamField("axis", param.axis),
+      tileParamField("kind", param.axis_kind),
+      tileParamField("binding", param.binding),
+      tileParamField("default", param.default),
+      tileParamField("upper_bound", param.upper_bound),
+      tileParamField("extent", param.extent),
+      tileParamField("roles", param.roles),
+    ].filter(Boolean).join("");
+    const uses = Array.isArray(param.primitive_uses) && param.primitive_uses.length
+      ? `<div class="tile-param-field"><span>uses</span>${chipList(param.primitive_uses, "tile-chip")}</div>`
+      : "";
+    return `<div class="tile-param-card"><h5>${escapeHtml(name)}</h5><div class="tile-param-grid">${fields}${uses}</div></div>`;
+  }).join("");
+  return `<div class="tile-param-list">${cards}</div>`;
 }
 
 function semanticDetailRows(rows) {
@@ -1136,6 +1182,27 @@ function renderSemanticGroup(title, rows) {
   return `<div class="semantic-group"><h4>${escapeHtml(title)}</h4>${body}</div>`;
 }
 
+function renderSemanticGroupBody(title, body) {
+  if (!body) return "";
+  return `<div class="semantic-group"><h4>${escapeHtml(title)}</h4>${body}</div>`;
+}
+
+function movementPhaseDescription(phase) {
+  const descriptions = {
+    data_copy: "GM/UB 间搬运输入、输出或中间值",
+    vector_compute: "向量计算主体阶段",
+    write_back: "把结果写回目标 buffer 或 GM",
+  };
+  return descriptions[phase] || "Schedule movement phase";
+}
+
+function movementPhasesHtml(phases) {
+  if (!Array.isArray(phases) || !phases.length) return "";
+  const legend = phases.map((phase) => `
+<div class="phase-legend-row"><code>${escapeHtml(phase)}</code><span>${escapeHtml(movementPhaseDescription(phase))}</span></div>`).join("");
+  return `<div class="phase-legend">${legend}</div>`;
+}
+
 function renderSemanticAttrSections(node) {
   const semantic = node.semantic_attrs || {};
   const badges = Array.isArray(node.badges) ? node.badges : [];
@@ -1148,13 +1215,9 @@ function renderSemanticAttrSections(node) {
   const movement = semantic.movement || {};
   const memory = semantic.memory || {};
   const position = memory.position || {};
-  const badgeHtml = badges.length
-    ? `<div class="badge-list">${badges.map((badge) => `<span class="chip">${escapeHtml(badge)}</span>`).join("")}</div>`
-    : "";
   return `
 <section class="inspector-section">
 <h3>属性分组</h3>
-${badgeHtml}
 ${renderSemanticGroup("Kernel", [
   ["kernel_id", kernel.id],
   ["kernel_dag_id", dagKernelId],
@@ -1176,13 +1239,11 @@ ${renderSemanticGroup("Schedule", [
   ["target_tile_policy", schedule.target_tile_policy],
   ["runtime_top_k", schedule.runtime_top_k],
 ])}
-${renderSemanticGroup("Tile", [
-  ["tile_binding", schedule.tile_binding],
-  ["tile_params", tileParamText(schedule.tile_params)],
-])}
-${renderSemanticGroup("Movement", [
-  ["phases", movement.phases],
-])}
+${renderSemanticGroupBody("Tile", `
+${semanticDetailRows([["tile_binding", schedule.tile_binding]])}
+${tileParamsHtml(schedule.tile_params) || ""}
+`)}
+${renderSemanticGroupBody("Movement", movementPhasesHtml(movement.phases))}
 ${renderSemanticGroup("Memory / Buffer", [
   ["position.kind", position.kind],
   ["position.depth", position.depth],
@@ -1765,8 +1826,8 @@ function stageStepId(stage) {
   return stage.name === "source" ? "source" : "无 Step ID";
 }
 
-function stageStepHeaderTitle(stage) {
-  return `${stageStepTitle(stage)} / ${stageStepId(stage)}`;
+function stageGraphHeaderTitle(stage) {
+  return `${stageStageTitle(stage)} / ${stageStepId(stage)}`;
 }
 
 function stageDiffTitle(stage) {
@@ -1883,7 +1944,7 @@ function renderStagePhaseControls(stage = activeStage()) {
   const phaseButtons = [];
   const addNavButton = (label, item) => {
     if (!item) return;
-    const stepTitle = stageStepHeaderTitle(item);
+    const stepTitle = stageGraphHeaderTitle(item);
     phaseButtons.push(`<button class="stage-phase-button" data-stage-index="${escapeHtml(item.stage_index)}" title="${label} ${escapeHtml(stepTitle)}" aria-label="${label} ${escapeHtml(stepTitle)}" type="button">${label}</button>`);
   };
   if (currentPosition > 0) addNavButton("上一页", sequence[currentPosition - 1]);
@@ -2043,20 +2104,30 @@ function renderGraphAudit(stage = activeStage()) {
   const suspicious = audit.suspicious_isolated_count || 0;
   const dangling = audit.dangling_effect_count || 0;
   const allowed = audit.allowed_terminal_count || 0;
+  const issueCount = suspicious + dangling;
+  const summaryClass = issueCount ? "warn" : "ok";
+  const summaryTitle = issueCount ? `${issueCount} 个连接问题` : "连接检查通过";
+  const summaryText = issueCount
+    ? "存在 dangling 或 isolated 节点，下面列出需要检查的项。"
+    : "没有检测到 suspicious_isolated / dangling_effect。";
   summary.innerHTML = `
-<div class="diff-counts">
-<div class="diff-pill diff-removed-text"><strong>${escapeHtml(suspicious)}</strong>suspicious_isolated</div>
-<div class="diff-pill diff-changed-text"><strong>${escapeHtml(dangling)}</strong>dangling_effect</div>
-<div class="diff-pill diff-added-text"><strong>${escapeHtml(allowed)}</strong>allowed_terminal</div>
+<div class="audit-summary-strip ${summaryClass}">
+<strong>${escapeHtml(summaryTitle)}</strong>
+<span>${escapeHtml(summaryText)}</span>
+</div>
+<div class="audit-metrics">
+<div class="audit-metric"><span class="audit-metric-value diff-removed-text">${escapeHtml(suspicious)}</span><span class="audit-metric-label" title="suspicious_isolated">suspicious_isolated</span></div>
+<div class="audit-metric"><span class="audit-metric-value diff-changed-text">${escapeHtml(dangling)}</span><span class="audit-metric-label" title="dangling_effect">dangling_effect</span></div>
+<div class="audit-metric"><span class="audit-metric-value diff-added-text">${escapeHtml(allowed)}</span><span class="audit-metric-label" title="allowed_terminal">allowed_terminal</span></div>
 </div>`;
   const issueRows = [
     ...(audit.suspicious_isolated_nodes || []).map((node) => ({...node, kind: "suspicious_isolated"})),
     ...(audit.dangling_effect_nodes || []).map((node) => ({...node, kind: "dangling_effect"})),
   ].slice(0, 8).map((node) => (
-    `<li><span class="diff-removed-text">${escapeHtml(node.kind)}</span>: ${escapeHtml(node.op_name || node.label || "node")} ${escapeHtml(node.line ? `line ${node.line}` : "")}</li>`
+    `<li class="audit-detail-row"><span class="audit-kind diff-removed-text" title="${escapeHtml(node.kind)}">${escapeHtml(node.kind)}</span><span class="audit-node">${escapeHtml(node.op_name || node.label || "node")} ${escapeHtml(node.line ? `line ${node.line}` : "")}</span></li>`
   ));
   const allowedRows = (audit.allowed_terminal_nodes || []).slice(0, 5).map((node) => (
-    `<li><span class="diff-added-text">allowed_terminal</span>: ${escapeHtml(node.op_name || node.label || "node")} ${escapeHtml(node.reason || "")}</li>`
+    `<li class="audit-detail-row"><span class="audit-kind diff-added-text" title="allowed_terminal">allowed_terminal</span><span class="audit-node">${escapeHtml(node.op_name || node.label || "node")} ${escapeHtml(node.reason || "")}</span></li>`
   ));
   const edgeKindCounts = audit.edge_kind_counts || {};
   const edgeKinds = Object.entries(edgeKindCounts)
@@ -2064,9 +2135,12 @@ function renderGraphAudit(stage = activeStage()) {
     .map(([kind, count]) => `${kind}:${count}`)
     .join(", ");
   details.innerHTML = `
-${issueRows.length ? `<ul class="diff-list">${issueRows.join("")}</ul>` : '<span class="panel-subtitle">没有检测到 suspicious_isolated / dangling_effect。</span>'}
-${allowedRows.length ? `<ul class="diff-list">${allowedRows.join("")}</ul>` : ""}
-<div class="panel-subtitle">components: ${escapeHtml(audit.component_count || 0)} | edge kinds: ${escapeHtml(edgeKinds || "none")}</div>`;
+<div class="audit-detail-group audit-issues">
+<div class="audit-detail-heading"><span>Issues</span><span>${escapeHtml(issueRows.length)}</span></div>
+${issueRows.length ? `<ul class="audit-detail-list">${issueRows.join("")}</ul>` : '<span class="panel-subtitle">没有检测到 suspicious_isolated / dangling_effect。</span>'}
+</div>
+${allowedRows.length ? `<div class="audit-detail-group audit-allowed"><div class="audit-detail-heading"><span>Allowed terminal</span><span>${escapeHtml(allowedRows.length)}</span></div><ul class="audit-detail-list">${allowedRows.join("")}</ul></div>` : ""}
+<div class="audit-meta">components: ${escapeHtml(audit.component_count || 0)}<br>edge kinds: ${escapeHtml(edgeKinds || "none")}</div>`;
 }
 
 function stageNodeDiffInfo(stage, nodeId) {
@@ -2300,14 +2374,14 @@ function renderStageGraph() {
   const graph = stage ? stage.graph : null;
   const canvas = document.getElementById("graph-canvas");
   if (!graph || !graph.layout) {
-    document.getElementById("graph-title").textContent = stage ? stageStepHeaderTitle(stage) : "Stage Graph";
+    document.getElementById("graph-title").textContent = stage ? stageGraphHeaderTitle(stage) : "Stage Graph";
     document.getElementById("graph-subtitle").textContent = "";
     updateStepExplanation(stage);
     canvas.innerHTML = `${svgHeader(720, 420)}<text x="28" y="42">当前 Stage 没有可展示的图。</text></svg>`;
     afterGraphRender();
     return;
   }
-  document.getElementById("graph-title").textContent = stageStepHeaderTitle(stage);
+  document.getElementById("graph-title").textContent = stageGraphHeaderTitle(stage);
   document.getElementById("graph-subtitle").textContent = `${graph.node_count} 个节点，${graph.edge_count} 条边，${graph.kernel_count} 个 Kernel`;
   updateStepExplanation(stage);
   renderStagePhaseControls(stage);

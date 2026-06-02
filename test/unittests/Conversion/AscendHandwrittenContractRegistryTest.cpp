@@ -65,7 +65,8 @@ TEST(HandwrittenContractRegistryTest, AttentionSdpaHasScheduleTemplate) {
   ASSERT_NE(contract, nullptr);
   EXPECT_EQ(contract->scheduleTemplate.kindId,
             kKernelizeHandwrittenKindAttentionSdpa.str());
-  EXPECT_EQ(contract->scheduleTemplate.tilingLayout, "grouped_tile_per_block");
+  EXPECT_EQ(contract->scheduleTemplate.tilingLayout,
+            kScheduleTemplateGroupedTilePerBlock.str());
   EXPECT_EQ(contract->scheduleTemplate.minRank, 2u);
   EXPECT_EQ(contract->scheduleTemplate.maxRank, 4u);
   EXPECT_EQ(contract->scheduleTemplate.priority, 2);

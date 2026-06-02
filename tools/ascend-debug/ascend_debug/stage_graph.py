@@ -427,7 +427,7 @@ def _build_node_badges(semantic_attrs: dict[str, Any]) -> list[str]:
     memory = semantic_attrs.get("memory", {})
     phases = movement.get("phases")
     if isinstance(phases, list) and phases:
-        badges.append("move " + "/".join(str(phase) for phase in phases))
+        badges.append("movement phases")
     position = memory.get("position")
     if isinstance(position, dict) and position.get("kind"):
         badge = f"buf {position['kind']}"

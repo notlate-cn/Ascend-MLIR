@@ -31,6 +31,7 @@ set(ASCEND_SCHEDULE_SOURCES
   Schedule/SchedulePersistentCacheIO.cpp
   Schedule/ScheduleProblemBuilder.cpp
   Schedule/ScheduleSearch.cpp
+  Schedule/ScheduleTemplateImplementation.cpp
   Schedule/ScheduleTuningDB.cpp
   Schedule/StructuredLoweringDriver.cpp
   Schedule/KernelPatternView.cpp

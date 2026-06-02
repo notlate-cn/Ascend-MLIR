@@ -8,6 +8,7 @@
 #define ASCEND_MLIR_CONVERSION_ASCEND_SCHEDULE_SCHEDULESEARCH_H
 
 #include "ScheduleTypes.h"
+#include "ScheduleTemplateImplementation.h"
 
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/SmallVector.h"
@@ -26,11 +27,13 @@ struct ScheduleSearchResult {
 };
 
 ScheduleSearchResult searchScheduleInstancesWithStats(
-    const ScheduleProblem &problem, ArrayRef<ScheduleTemplate> templates,
+    const ScheduleProblem &problem,
+    ArrayRef<const ScheduleTemplateImplementation *> templates,
     const ScheduleSearchOptions &options = ScheduleSearchOptions());
 
 SmallVector<ScheduleInstance, 4> searchScheduleInstances(
-    const ScheduleProblem &problem, ArrayRef<ScheduleTemplate> templates,
+    const ScheduleProblem &problem,
+    ArrayRef<const ScheduleTemplateImplementation *> templates,
     const ScheduleSearchOptions &options = ScheduleSearchOptions());
 
 void printScheduleSearchReport(StringRef kernelId, unsigned generatedCount,

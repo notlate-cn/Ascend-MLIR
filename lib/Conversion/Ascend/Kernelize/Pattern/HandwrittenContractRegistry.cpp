@@ -58,7 +58,7 @@ void registerBuiltinHandwrittenContracts() {
 
   HandwrittenContract::TemplateSpec &tmpl = attnContract.scheduleTemplate;
   tmpl.kindId = kKernelizeHandwrittenKindAttentionSdpa.str();
-  tmpl.tilingLayout = "grouped_tile_per_block";
+  tmpl.tilingLayout = kScheduleTemplateGroupedTilePerBlock.str();
   tmpl.tags = {kKernelizeHandwrittenKindAttentionSdpa.str(),
                kOpRoleCube.str(), kOpRoleReduction.str(),
                kOpRoleVector.str()};

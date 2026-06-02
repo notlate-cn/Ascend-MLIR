@@ -64,7 +64,7 @@ struct ScheduleReportEntry {
 
 struct ScheduleDebugEntry {
   ScheduleProblem problem;
-  SmallVector<ScheduleTemplate> templateMatches;
+  SmallVector<const ScheduleTemplateImplementation *> templateMatches;
   ScheduleSearchResult searchResult;
   ScheduleDecisionSet decisionSet;
   StructuredLoweringReport structuredLoweringReport;
@@ -522,8 +522,8 @@ struct AscendSchedulePass
       }
       applySemanticAlignmentGranularity(*scheduleProblem);
 
-      SmallVector<ScheduleTemplate> templateMatches =
-          matchScheduleTemplates(*scheduleProblem);
+      SmallVector<const ScheduleTemplateImplementation *> templateMatches =
+          matchScheduleTemplateImplementations(*scheduleProblem);
       if (templateMatches.empty()) {
         scheduleCacheModel.recordNegativeCacheEntry();
         if (const PatternOpView *primaryOpView =
