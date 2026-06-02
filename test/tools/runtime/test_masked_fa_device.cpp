@@ -43,11 +43,15 @@ static TensorInfo mk(std::vector<int64_t> shape, float *data) {
   return t;
 }
 
-int main() {
-  const int S = 4, D = 8;  // B=1, N=1, S=4, D=8
+#define LOG(...) do { std::fprintf(stderr, __VA_ARGS__); std::fflush(stderr); } while (0)
 
-  std::vector<float> q(S * D), k(S * D), v(S * D);
-  for (int i = 0; i < S * D; ++i) {
+int main() {
+  // GPT-2-representative, FA-hardware-friendly shapes: 12 heads, S=64, D=64.
+  const int Hh = 12, S = 64, D = 64;
+  const int NEL = Hh * S * D;
+
+  std::vector<float> q(NEL), k(NEL), v(NEL);
+  for (int i = 0; i < NEL; ++i) {
     q[i] = 0.01f * ((i * 7) % 13);
     k[i] = 0.01f * ((i * 5) % 11);
     v[i] = 0.10f * ((i * 3) % 9);
@@ -58,30 +62,37 @@ int main() {
     for (int j = 0; j < S; ++j)
       if (j > i) mask[i * S + j] = -1e9f;
 
-  TensorInfo qt = mk({1, 1, S, D}, q.data());
-  TensorInfo kt = mk({1, 1, S, D}, k.data());
-  TensorInfo vt = mk({1, 1, S, D}, v.data());
+  TensorInfo qt = mk({1, Hh, S, D}, q.data());
+  TensorInfo kt = mk({1, Hh, S, D}, k.data());
+  TensorInfo vt = mk({1, Hh, S, D}, v.data());
   TensorInfo mt = mk({1, 1, S, S}, mask.data());
 
   // 1) HOST reference (sdpa_cpu applies the causal mask).
+  LOG("[mfa] host sdpa_cpu ...\n");
   setHostMode(true);
   TensorInfo hostOut;
   run_FlashAttentionScore(qt, kt, vt, mt, qt, &hostOut, nullptr);
+  LOG("[mfa] host done\n");
 
   // 2) DEVICE path.
   setHostMode(false);
+  LOG("[mfa] aclInit ...\n");
   if (aclInit(nullptr) != ACL_SUCCESS) {
     std::printf("aclInit failed — cannot run device test\n");
     return 2;
   }
   int devId = 0;
   if (const char *e = std::getenv("ASCEND_DEVICE_ID")) devId = std::atoi(e);
+  LOG("[mfa] aclrtSetDevice(%d) ...\n", devId);
   aclrtSetDevice(devId);
   aclrtStream stream = nullptr;
   aclrtCreateStream(&stream);
+  LOG("[mfa] device run_FlashAttentionScore ...\n");
   TensorInfo devOut;
   run_FlashAttentionScore(qt, kt, vt, mt, qt, &devOut, stream);
+  LOG("[mfa] sync ...\n");
   aclrtSynchronizeStream(stream);
+  LOG("[mfa] device done\n");
 
   // 3) Compare device vs host (causal) output.
   const float *h = (const float *)hostOut.data;

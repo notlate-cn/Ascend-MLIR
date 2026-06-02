@@ -115,6 +115,7 @@ static size_t elemBytes(int dtype) {
     case 1:  return 2;  // ACL_FLOAT16 = float16
     case 2:  return 1;  // ACL_INT8
     case 3:  return 4;  // ACL_INT32
+    case 12: return 1;  // ACL_BOOL
     case 27: return 2;  // ACL_BF16
     default: return 2;
   }
@@ -339,8 +340,19 @@ void run_FlashAttentionScore(
   }
 
   int64_t numHeads = q.shape[1];
+  int64_t seqLen   = q.shape[2];
   int64_t headDim  = q.shape[3];
   double  scale    = 1.0 / std::sqrt(static_cast<double>(headDim));
+
+  // A real causal mask is forwarded as a distinct [1, 1, S, S] tensor (the
+  // no-mask case reuses Q as the placeholder, so mask.data == q.data). aclnn
+  // FlashAttentionScore ignores preTokens/nextTokens under sparseMode 0, so we
+  // pass an explicit BOOL attenMask ([1,1,S,S], true = masked-out). Without it
+  // the device path attends bidirectionally and silently drops the causal mask
+  // the recognizer captured.
+  bool causal = (mask.data != nullptr && mask.data != q.data &&
+                 mask.rank == 4 && mask.shape[2] == seqLen &&
+                 mask.shape[3] == seqLen);
 
   // host-in/host-out: stage q/k/v H2D, run on device, copy result D2H.
   std::vector<void *> pool;
@@ -353,6 +365,23 @@ void run_FlashAttentionScore(
   aclTensor *kT   = makeAclTensor(kD);
   aclTensor *vT   = makeAclTensor(vD);
   aclTensor *outT = makeAclTensor(oD);
+
+  // Build a BOOL causal attenMask [1,1,S,S] (true above the diagonal = masked).
+  aclTensor *attenMaskT = nullptr;
+  std::vector<uint8_t> maskBool;
+  if (causal) {
+    maskBool.assign((size_t)(seqLen * seqLen), 0);
+    for (int64_t i = 0; i < seqLen; ++i)
+      for (int64_t j = i + 1; j < seqLen; ++j)
+        maskBool[(size_t)(i * seqLen + j)] = 1;  // mask future keys
+    TensorInfo mh;
+    mh.rank = 4;
+    mh.dtype = 12;  // ACL_BOOL
+    mh.shape[0] = 1; mh.shape[1] = 1; mh.shape[2] = seqLen; mh.shape[3] = seqLen;
+    rowMajorStrides(mh.shape, 4, mh.strides);
+    mh.data = maskBool.data();
+    attenMaskT = makeAclTensor(stageToDevice(mh, pool));
+  }
 
   // Allocate softmax intermediates required by the training-oriented API.
   // Shape: [B, N, S, 8] float32 (8-element alignment used by flash attention).
@@ -377,12 +406,12 @@ void run_FlashAttentionScore(
       /*realShiftOptional=*/nullptr,    // no positional bias
       /*dropMaskOptional=*/nullptr,     // no dropout
       /*paddingMaskOptional=*/nullptr,  // no padding mask
-      /*attenMaskOptional=*/nullptr,    // full bidirectional attention
+      /*attenMaskOptional=*/attenMaskT,  // BOOL causal mask, or null = bidir
       /*prefixOptional=*/nullptr,
       scale,
       /*keepProb=*/1.0,
       /*preTokens=*/65536,             // attend to all previous tokens
-      /*nextTokens=*/65536,            // attend to all following tokens
+      /*nextTokens=*/65536,            // mask defines causality, not the band
       numHeads,
       const_cast<char *>("BNSD"),
       /*innerPrecise=*/0,
@@ -411,6 +440,7 @@ void run_FlashAttentionScore(
   aclDestroyTensor(outT);
   aclDestroyTensor(softmaxMaxT);
   aclDestroyTensor(softmaxSumT);
+  if (attenMaskT) aclDestroyTensor(attenMaskT);
   freePool(pool);
 }
 
