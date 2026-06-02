@@ -281,11 +281,20 @@ def _eval_axis_extent(space: dict, params: dict) -> int:
 def _eval_ub_cost(space: dict, params: dict) -> int:
     """Evaluate UB cost under integer params.
 
-    CannTranslation emits `ub_cost_bytes_exprs` as a list of per-buffer
-    aligned-size expressions (pure +-*/; ceilDiv as ((a+b-1)/b)). The
-    runtime peak is `2 * max(...)` (2x for input+output TBufs live
-    concurrently). Returns 0 if the list is absent — callers should
-    treat that as "unknown UB cost" and skip UB-aware pruning.
+    CannTranslation emits `ub_cost_bytes_exprs` as a single combined SUM of
+    every InitBuffer's aligned size (pure +-*/; ceilDiv as ((a+b-1)/b)). The
+    TPipe bump allocator never reclaims, so that SUM IS the real live-UB
+    high-water mark — compare it directly against `ub_budget_bytes`.
+
+    Do NOT re-apply a 2x factor: that was the safety margin for the OLD
+    max-single-buffer model (room for an input + output TBuf concurrently).
+    Against the SUM it double-counts, so for a buffer-heavy kernel (e.g. a
+    fused bias-add + erf-GELU, ~27 live UB tiles) EVERY candidate fails the
+    doubled check, `fits` goes empty, and the picker falls back to the
+    LARGEST tile — overflowing UB into invalid GM scalar addrs (rc=507035).
+
+    Returns 0 if the list is absent — callers treat that as "unknown UB cost"
+    and skip UB-aware pruning.
     """
     exprs = space.get("ub_cost_bytes_exprs") or []
     if not exprs:
@@ -295,7 +304,7 @@ def _eval_ub_cost(space: dict, params: dict) -> int:
         v = eval_block_dim({"block_dim_expr": expr}, params)
         if v > peak:
             peak = v
-    return 2 * peak
+    return peak
 
 
 def _read_family(work, kid):
@@ -590,8 +599,11 @@ def phase3_default_build_and_dump(work, groups, network, artifacts, args):
                         trial[p["name"]] = v
                         if 0 < _eval_ub_cost(space, trial) <= ub_budget:
                             fits.append(v)
-                    if fits:
-                        pick = fits[-1]
+                    # Largest that fits; if NONE fits, take the smallest
+                    # candidate (least UB overflow) rather than the largest —
+                    # overshooting UB produces invalid GM scalar addresses
+                    # (rc=507035) on real hardware.
+                    pick = fits[-1] if fits else vals[0]
                 params[p["name"]] = pick
         # eval_block_dim grammar uses shape_key names directly (e.g. arg0_dim0),
         # not the param names — register the shape_key → value mapping for it.
