@@ -2,9 +2,10 @@
 
 Date: 2026-06-02
 Branch: `develop`
-Status: ✅ **RESOLVED on sim** — a dynamic `?` seq dim now compiles + runs
-end-to-end through `network_runner` (camodel). See "Resolution" below; the
-original diagnosis (kept for context) is under "The gap chain".
+Status: ✅ **RESOLVED — sim + real 910C** — a dynamic `?` seq dim now compiles +
+runs end-to-end through `network_runner` on both camodel and real NPU (device 7).
+See "Resolution" below; the original diagnosis (kept for context) is under "The
+gap chain".
 
 ## Resolution (2026-06-02, commits `11cc77b0`, `74da4d26`, `d8bbad9f`)
 
@@ -33,12 +34,18 @@ the pre-existing missing-example-script `example-pipelines.mlir`). Four layers:
    `(1,3072)` not `(1,64,3072)`). Now expand reads its explicit `output_shape`
    operand; collapse multiplies the grouped source dims.
 
-Remaining (unchanged): full dynamic **GPT-2** additionally needs the causal mask
-generated in-graph (`triu`) instead of a fixed `[64,64]` buffer; real-NPU
-(`--backend npu`) validation of the dynamic path not yet run. Multi-symbol
-kernels (>1 distinct torch `Dim`) use the "first input dynamic dim" shortcut —
-fine for single-`Dim` exports, revisit if a model needs two independent dynamic
-axes.
+**Real-NPU validated** (2026-06-02, device 7, `examples/gelu-dyn-e2e` with
+`BACKEND=npu`, seq=48): `network.output[0] max_diff=2.384e-07 PASS`. The
+`[npu-launch]` trace shows `tiling.word[2]=48` — the ShapeDerived seq extent
+resolved from the input npy shape at launch (not the `-1` placeholder), seq=48
+≠ the GPT-2 static 64 → confirms runtime resolution on hardware. block_dim=192,
+no hang. Committed example `examples/gelu-dyn-e2e/` (model.mlir + numpy-only
+gen_inputs.py + run.sh; `SEQ=N` selectable) is the regression gate.
+
+Remaining: full dynamic **GPT-2** additionally needs the causal mask generated
+in-graph (`triu`) instead of a fixed `[64,64]` buffer. Multi-symbol kernels (>1
+distinct torch `Dim`) use the "first input dynamic dim" shortcut — fine for
+single-`Dim` exports, revisit if a model needs two independent dynamic axes.
 
 ---
 
