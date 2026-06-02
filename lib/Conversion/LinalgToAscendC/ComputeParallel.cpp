@@ -1154,14 +1154,31 @@ LogicalResult convertParallelGenerics(func::FuncOp funcOp, ComputeCtx &cc) {
       //
       // Mix-kernel guard: same reason as the body-start barrier — mix
       // kernel emitter rejects extra ops in the single executable chain.
+      // The EnQued tensor MUST be allocated from this VECOUT queue.  accumLt is
+      // a real queue tensor only for a linear (non-DAG) body (see the
+      // `outQueue && !dagBody` alloc above); a DAG body uses a VECCALC accumLt,
+      // and an Erf/op tail writes a fresh VECCALC temp — in both cases resultLt
+      // is a VECCALC tbuf.  Enqueuing a VECCALC tensor into a VECOUT queue
+      // deadlocks on real 910C (the queue's alloc slot is never filled, so the
+      // DeQue + downstream strided store wait forever; camodel tolerates it).
+      // Copy the result into a queue-allocated tensor first.
+      Value enqLt = resultLt;
+      bool resultIsQueueTensor = (!dagBody && resultLt == accumLt);
       if (!isMixKernel) {
         auto preEnqueBarrier = builder.create<ascendc::PipeBarrierOp>(
             loc, ascendc::PipeAttr::get(builder.getContext(),
                                          ascendc::Pipe::PIPE_V));
         copyAscendCUnitAttr(genOp.getOperation(),
                             preEnqueBarrier.getOperation());
+        if (!resultIsQueueTensor) {
+          Value vecoutLt = cc.allocTensor(builder, loc, outQueue, elemType);
+          auto cp = builder.create<DataCopyL2Op>(loc, vecoutLt, resultLt,
+                                                 totalElems);
+          copyAscendCUnitAttr(genOp.getOperation(), cp.getOperation());
+          enqLt = vecoutLt;
+        }
       }
-      builder.create<TQueBindEnqueTensorOp>(loc, outQueue, resultLt);
+      builder.create<TQueBindEnqueTensorOp>(loc, outQueue, enqLt);
     }
     cc.freeTempVecinTensors(builder, loc, tempVecinTensors);
     // If outMemref has no queue (VECCALC alloc without a queue), the result
