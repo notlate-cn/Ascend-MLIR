@@ -63,7 +63,14 @@ class MLP(nn.Module):
         self.proj = nn.Linear(4 * n_embd, n_embd, bias=True)
 
     def forward(self, x):
-        return self.proj(nn.functional.gelu(self.fc(x), approximate="tanh"))
+        h = self.fc(x)
+        # gelu_new (tanh approximation, matches HF). Written out with explicit
+        # multiplies for the cube: torch's gelu(approximate="tanh") lowers x**3
+        # to math.fpowi, which the AscendC codegen cannot lower; h*h*h becomes
+        # math.mulf (supported) and is numerically identical here.
+        g = 0.5 * h * (1.0 + torch.tanh(
+            0.7978845608028654 * (h + 0.044715 * h * h * h)))
+        return self.proj(g)
 
 
 class Block(nn.Module):
