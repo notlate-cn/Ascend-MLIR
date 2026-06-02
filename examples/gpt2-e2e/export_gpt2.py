@@ -123,6 +123,20 @@ class FromHiddenWrapper(nn.Module):
         return self.model.forward_from_hidden(hidden)
 
 
+def params_to_buffers(mod):
+    """Recursively convert nn.Parameters to non-persistent buffers.
+
+    torch-mlir inlines PARAMETERs as constants (static C++ arrays) but lifts
+    BUFFERs as runtime inputs. At 124M params, inlining produces a ~1GB MLIR and
+    multi-GB C++ that g++ cannot compile, so we turn weights into npy-fed inputs.
+    """
+    for name, p in list(mod.named_parameters(recurse=False)):
+        delattr(mod, name)
+        mod.register_buffer(name, p.data, persistent=False)
+    for child in mod.children():
+        params_to_buffers(child)
+
+
 def export_from_hidden(model, args, outdir):
     """Port real GPT-2 weights, build hidden on host, export forward-from-hidden.
 
@@ -145,7 +159,12 @@ def export_from_hidden(model, args, outdir):
         expected = model.forward_from_hidden(hidden)
     np.save(outdir / "expected_0.npy", expected.numpy())
 
+    # Drop embedding tables (host-only, already used) so they aren't lifted as
+    # large unused network inputs; then turn weights into npy-fed inputs.
+    del model.tok_emb
+    del model.pos_emb
     wrapper = FromHiddenWrapper(model).eval()
+    params_to_buffers(wrapper)
     ep = torch.export.export(wrapper, (hidden,))
     bufs = dict(wrapper.named_buffers())
     n = 0
