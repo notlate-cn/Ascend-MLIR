@@ -18,6 +18,7 @@
 #include "llvm/Support/raw_ostream.h"
 
 #include <fstream>
+#include <optional>
 #include <string>
 
 namespace mlir::runtime {
@@ -51,6 +52,23 @@ private:
     return "/*unknown*/";
   }
 
+  // Resolve an `index` SSA value (a dynamic-shape extent) to a host C++
+  // expression reading it from a staged TensorInfo's shape, e.g.
+  // `tensor.dim %arg0, 1` → "inputs[0].shape[1]".  Returns nullopt for forms we
+  // don't model (only plain `tensor.dim <known-value>, <const>` is supported —
+  // enough for the from-torch dynamic-shape `tensor.empty(%dim)` pattern).
+  std::optional<std::string> resolveIndexExpr(Value v) {
+    auto dimOp = v.getDefiningOp<tensor::DimOp>();
+    if (!dimOp) return std::nullopt;
+    auto cst = dimOp.getIndex().getDefiningOp<arith::ConstantOp>();
+    if (!cst) return std::nullopt;
+    auto ia = dyn_cast<IntegerAttr>(cst.getValue());
+    if (!ia) return std::nullopt;
+    std::string src = nameOf(dimOp.getSource());
+    if (src == "/*unknown*/") return std::nullopt;
+    return src + ".shape[" + std::to_string(ia.getInt()) + "]";
+  }
+
   void emitOp(Operation &op) {
     if (auto callOp = dyn_cast<func::CallOp>(op))
       return emitCall(callOp);
@@ -74,7 +92,28 @@ private:
       auto rt = dyn_cast<RankedTensorType>(emptyOp.getType());
       int id = rt ? dtypeIdFor(rt.getElementType()) : -1;
       int eb = rt ? elemBytesFor(rt.getElementType()) : 0;
-      if (!rt || !rt.hasStaticShape() || id < 0 || eb == 0) {
+      // Resolve each dim to a host expression: static dims are literals; dynamic
+      // dims (from-torch dynamic shape) read from a staged input's shape at
+      // runtime via their `tensor.dim` size operand.  Bail only when the dtype
+      // is unsupported or a dynamic extent can't be modeled.
+      SmallVector<std::string> dimExprs;
+      bool resolvable = rt && id >= 0 && eb != 0;
+      if (resolvable) {
+        auto dynSizes = emptyOp.getDynamicSizes();
+        unsigned dynI = 0;
+        for (int64_t sz : rt.getShape()) {
+          if (mlir::ShapedType::isDynamic(sz)) {
+            auto e = dynI < dynSizes.size()
+                         ? resolveIndexExpr(dynSizes[dynI++])
+                         : std::nullopt;
+            if (!e) { resolvable = false; break; }
+            dimExprs.push_back(*e);
+          } else {
+            dimExprs.push_back(std::to_string(sz));
+          }
+        }
+      }
+      if (!resolvable) {
         os_ << "  // WARNING: unsupported tensor.empty " << emptyOp.getType()
             << "\n";
         os_ << "  TensorInfo " << n << ";\n";
@@ -83,8 +122,8 @@ private:
       }
       os_ << "  TensorInfo " << n << "; " << n << ".rank=" << rt.getRank()
           << "; " << n << ".dtype=" << id << "; // tensor.empty\n";
-      for (auto [d, sz] : llvm::enumerate(rt.getShape()))
-        os_ << "  " << n << ".shape[" << d << "]=" << sz << ";\n";
+      for (auto [d, e] : llvm::enumerate(dimExprs))
+        os_ << "  " << n << ".shape[" << d << "]=" << e << ";\n";
       os_ << "  mlir::runtime::aclnn::rowMajorStrides(" << n << ".shape, " << n
           << ".rank, " << n << ".strides);\n";
       // DPS-init buffers may be wired into kernel ABI slots that the kernel
@@ -95,9 +134,11 @@ private:
       // The kernel's unrelated scalar paths can fault on those bytes (real-NPU
       // "GM address accessed by scalar exceeds 48 bits" on BERT group20).
       // Zero-init defends against this without touching kernel codegen.
-      os_ << "  { size_t _b = (size_t)" << rt.getNumElements() << "*" << eb
-          << "; " << n << ".data = ::operator new(_b); std::memset("
-          << n << ".data, 0, _b); }\n";
+      // Byte size is computed at runtime so dynamic dims work.
+      os_ << "  { size_t _b = (size_t)" << eb << "; for (int _d = 0; _d < " << n
+          << ".rank; ++_d) _b *= (size_t)" << n << ".shape[_d]; " << n
+          << ".data = ::operator new(_b); std::memset(" << n
+          << ".data, 0, _b); }\n";
       names_[emptyOp.getResult()] = n;
       return;
     }
@@ -354,14 +395,51 @@ private:
     auto rt = dyn_cast<RankedTensorType>(res.getType());
     std::string srcName = nameOf(src);
     std::string n = fresh();
-    if (!rt || !rt.hasStaticShape()) {
+    if (!rt) {
+      names_[res] = srcName; // fall back to alias
+      return;
+    }
+    // Per-dim C++ shape expressions: static dims are literals; dynamic dims
+    // (from-torch dynamic shape) resolve at runtime — expand_shape reads its
+    // explicit output_shape operand, collapse_shape multiplies the grouped
+    // source dims (a contiguous reshape preserves element count).
+    SmallVector<std::string> dimExprs;
+    bool resolvable = true;
+    if (rt.hasStaticShape()) {
+      for (int64_t sz : rt.getShape())
+        dimExprs.push_back(std::to_string(sz));
+    } else if (auto exp = res.getDefiningOp<tensor::ExpandShapeOp>()) {
+      auto dynOperands = exp.getOutputShape();
+      unsigned dynI = 0;
+      for (int64_t sz : exp.getStaticOutputShape()) {
+        if (mlir::ShapedType::isDynamic(sz)) {
+          auto e = dynI < dynOperands.size()
+                       ? resolveIndexExpr(dynOperands[dynI++])
+                       : std::nullopt;
+          if (!e) { resolvable = false; break; }
+          dimExprs.push_back(*e);
+        } else {
+          dimExprs.push_back(std::to_string(sz));
+        }
+      }
+    } else if (auto col = res.getDefiningOp<tensor::CollapseShapeOp>()) {
+      for (auto &group : col.getReassociationIndices()) {
+        std::string prod = "(int64_t)1";
+        for (int64_t s : group)
+          prod += "*(int64_t)" + srcName + ".shape[" + std::to_string(s) + "]";
+        dimExprs.push_back(prod);
+      }
+    } else {
+      resolvable = false;
+    }
+    if (!resolvable) {
       names_[res] = srcName; // fall back to alias
       return;
     }
     os_ << "  TensorInfo " << n << " = " << srcName << "; " << n
         << ".rank=" << rt.getRank() << "; // reshape view\n";
-    for (auto [d, sz] : llvm::enumerate(rt.getShape()))
-      os_ << "  " << n << ".shape[" << d << "]=" << sz << ";\n";
+    for (auto [d, e] : llvm::enumerate(dimExprs))
+      os_ << "  " << n << ".shape[" << d << "]=" << e << ";\n";
     os_ << "  mlir::runtime::aclnn::rowMajorStrides(" << n << ".shape, " << n
         << ".rank, " << n << ".strides);\n";
     names_[res] = n;
