@@ -255,13 +255,14 @@ static void sdpa_cpu(const TensorInfo &q, const TensorInfo &k,
 
   // RecognizeAttention forwards a real mask as rank-4 [1, 1, S, S]
   // (expand_shape from rank-2 [S, S]).  When no mask is in the IR pattern, it
-  // passes Q as a placeholder (rank-4 [B, N, S, D]).  Distinguish by the
-  // last-dim extent: real mask has shape[3] == S (sequence), Q-placeholder
-  // has shape[3] == D (head dim).  When S == D the heuristic is ambiguous;
-  // fall back to "no mask" to keep BERT-style attention working.
+  // passes Q itself as the placeholder (arg[3] == arg[0]), so the mask buffer
+  // is literally the Q buffer.  A pointer compare distinguishes the two
+  // robustly — unlike the old "shape[3] == S && S != D" heuristic, which
+  // silently dropped a real causal mask whenever head_dim == seq_len (e.g.
+  // GPT-2 with a 64-token window and D = 64).
   bool applyMask =
-      (mask.rank == 4 && mask.shape[3] == S && mask.shape[2] == S &&
-       S != D && mask.data != nullptr);
+      (mask.data != nullptr && mask.data != q.data && mask.rank == 4 &&
+       mask.shape[2] == S && mask.shape[3] == S);
 
   std::vector<float> scores((size_t)(S * S));
 
