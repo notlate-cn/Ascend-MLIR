@@ -1,12 +1,15 @@
 #include "Conversion/AutoFuse/GroupOutline/NetworkJsonEmitter.h"
 #include "Conversion/AutoFuse/AutoFusePasses.h"
 #include "Conversion/AutoFuse/GroupInfo.h"
+#include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
+#include "mlir/Dialect/Tensor/IR/Tensor.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/IRMapping.h"
 #include "mlir/Pass/Pass.h"
+#include "llvm/ADT/BitVector.h"
 #include "llvm/ADT/DenseMap.h"
 #include <limits>
 #include "llvm/ADT/DenseSet.h"
@@ -643,6 +646,118 @@ static bool reorderGroupsContiguous(
 }
 
 //===----------------------------------------------------------------------===//
+// eliminateDynamicDimArgs — drop explicit `index` dim-args from outlined
+// kernels, deriving the dynamic extent from an input tensor's shape instead.
+//===----------------------------------------------------------------------===//
+//
+// torch's dynamic-shape lowering plumbs each `?` extent as an explicit `index`
+// SSA value (`tensor.dim %in, %d` in the coordinator → an `index` kernel arg
+// feeding `tensor.empty(%arg)`).  That extra arg has no place in the tiling
+// schema (TileParam wants a Tunable; ShapeDerived wants an input dim) and, post
+// bufferize, resolves to a stale arg position = a GM pointer (the `ptr*dim` /
+// uint32-truncation CCE errors).  Hand-written dynamic kernels instead derive
+// the extent IN-KERNEL via `tensor.dim %inputArg, %d`, which
+// collectShapeDerivedFields already turns into a `dim_arg<A>_<D>` ShapeDerived
+// field.  Rewrite the from-torch kernels into that same shape:
+//   1. replace the index arg's uses with `tensor.dim %srcInput, %dynDim`;
+//   2. erase the index arg + the matching coordinator call operand;
+//   3. rebuild the kernel type + re-stamp `auto_fuse.call_arg_index`;
+//   4. erase any now-dead coordinator `tensor.dim`.
+// A single torch.export `Dim` ⇒ one shape symbol ⇒ all dynamic dims are equal,
+// so "first input tensor arg with a dynamic dim" is a sound source (the shortcut
+// the dynamic-shape handoff endorses).  Bail loudly if no such source exists.
+static LogicalResult eliminateDynamicDimArgs(ModuleOp module,
+                                             func::FuncOp coordFunc) {
+  MLIRContext *ctx = module.getContext();
+  SmallVector<func::FuncOp> kernels;
+  module.walk([&](func::FuncOp f) {
+    if (f.isPrivate() && !f.getBody().empty() &&
+        f.getSymName().starts_with("kernel_group"))
+      kernels.push_back(f);
+  });
+
+  for (func::FuncOp kernel : kernels) {
+    Block &entry = kernel.getBody().front();
+
+    // Index-typed block args are the plumbed dynamic-dim values (no tile params
+    // exist yet at outline time).
+    SmallVector<unsigned> idxArgs;
+    for (unsigned i = 0, e = entry.getNumArguments(); i < e; ++i)
+      if (isa<IndexType>(entry.getArgument(i).getType()))
+        idxArgs.push_back(i);
+    if (idxArgs.empty())
+      continue;
+
+    // Source = first tensor input arg carrying a dynamic dim.
+    unsigned srcArgNo = 0;
+    int64_t srcDim = -1;
+    for (unsigned i = 0, e = entry.getNumArguments(); i < e && srcDim < 0; ++i) {
+      auto t = dyn_cast<RankedTensorType>(entry.getArgument(i).getType());
+      if (!t)
+        continue;
+      for (int64_t d = 0, r = t.getRank(); d < r; ++d)
+        if (t.isDynamicDim(d)) {
+          srcArgNo = i;
+          srcDim = d;
+          break;
+        }
+    }
+    if (srcDim < 0)
+      return kernel.emitError("dynamic dim-arg elimination: kernel has an index "
+                              "dim-arg but no tensor input with a dynamic dim "
+                              "to derive the extent from");
+
+    OpBuilder b(&entry, entry.begin());
+    Location loc = kernel.getLoc();
+    Value srcArg = entry.getArgument(srcArgNo);
+    Value cst = b.create<arith::ConstantIndexOp>(loc, srcDim);
+    Value dim = b.create<tensor::DimOp>(loc, srcArg, cst);
+    for (unsigned ai : idxArgs)
+      entry.getArgument(ai).replaceAllUsesWith(dim);
+
+    // Drop the matching coordinator call operands (call operand i ↔ kernel arg
+    // i, both in boundaryIn order).
+    func::CallOp call;
+    coordFunc.walk([&](func::CallOp c) {
+      if (c.getCallee() == kernel.getSymName())
+        call = c;
+    });
+    if (call) {
+      llvm::BitVector dropOperands(call->getNumOperands());
+      for (unsigned ai : idxArgs)
+        dropOperands.set(ai);
+      call->eraseOperands(dropOperands);
+    }
+
+    // Erase the index args (reverse order keeps lower indices stable), rebuild
+    // the function type (preserving results), then re-stamp call_arg_index
+    // contiguously on the remaining args.
+    for (unsigned ai : llvm::reverse(idxArgs))
+      entry.eraseArgument(ai);
+    if (kernel->getAttr("arg_attrs"))
+      kernel->removeAttr("arg_attrs");
+    SmallVector<Type> newArgTypes(entry.getArgumentTypes().begin(),
+                                  entry.getArgumentTypes().end());
+    kernel.setFunctionType(
+        FunctionType::get(ctx, newArgTypes, kernel.getResultTypes()));
+    for (unsigned i = 0, e = entry.getNumArguments(); i < e; ++i)
+      kernel.setArgAttr(i, "auto_fuse.call_arg_index",
+                        IntegerAttr::get(IntegerType::get(ctx, 32), (int32_t)i));
+  }
+
+  // Erase any now-dead coordinator tensor.dim ops left after dropping operands.
+  SmallVector<Operation *> dead;
+  coordFunc.walk([&](tensor::DimOp d) {
+    if (d->use_empty())
+      dead.push_back(d);
+  });
+  for (Operation *op : dead)
+    op->erase();
+
+  return success();
+}
+
+//===----------------------------------------------------------------------===//
 // Main pass
 //===----------------------------------------------------------------------===//
 
@@ -760,6 +875,13 @@ struct AutoFuseGroupOutlinePass
 
     // Step 7: Strip all auto_fuse.* attributes
     stripAutoFuseAttrs(module);
+
+    // Step 7a: Eliminate explicit `index` dynamic-dim args plumbed by torch's
+    // dynamic-shape lowering, deriving the extent in-kernel from an input
+    // tensor's shape (the hand-written-dynamic-kernel mechanism the rest of the
+    // pipeline already supports).  No-op for static / hand-written networks.
+    if (failed(eliminateDynamicDimArgs(module, coordFunc)))
+      return signalPassFailure();
 
     // Step 7b: Optionally split full-reduce kernels into partial+combine pairs
     // (RCore template). Models AF's GeneratorRCoreTask / phase_1+phase_2 graph
