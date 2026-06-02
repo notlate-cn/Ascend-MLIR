@@ -22,6 +22,9 @@ namespace runtime {
 struct TilingField {
   std::string name;
   std::string type; // "int32" | "int64" (unknown defaults to int64)
+  // Non-empty for shape-derived (dynamic) params: `arg<N>_dim<D>`, resolved
+  // from input N's runtime shape at launch rather than from a fixed tiling.
+  std::string shapeKey;
 };
 
 class TilingSchema {

@@ -53,6 +53,10 @@ llvm::Expected<TilingSchema> TilingSchema::fromJson(llvm::StringRef path) {
       f.type = typeStr->str();
     else
       f.type = "int64";
+    // Shape-derived (dynamic) params carry a `shape_key` ("arg<N>_dim<D>") so
+    // the launcher can resolve them from the runtime input shapes.
+    if (auto shapeKey = obj->getString("shape_key"))
+      f.shapeKey = shapeKey->str();
     schema.fields_.push_back(std::move(f));
   }
   return schema;

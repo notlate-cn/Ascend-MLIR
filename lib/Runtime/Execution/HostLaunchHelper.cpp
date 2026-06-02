@@ -335,8 +335,22 @@ extern "C" int hostLaunchAscendCKernel(
       // Build a CSV in schema-declared order; missing values default to 0.
       std::string csv;
       for (const auto &field : schemaOr->fields()) {
-        auto pit = tIt->second.params.find(field.name);
-        int64_t val = (pit != tIt->second.params.end()) ? pit->second : 0;
+        int64_t val;
+        // Shape-derived (dynamic) params carry a `shape_key` ("arg<N>_dim<D>");
+        // their value is the runtime extent of input N's dim D, NOT the fixed
+        // (placeholder -1) entry in the tilings JSON.  Resolving it here lets
+        // from-torch dynamic-shape kernels get the real row count at launch.
+        int argN, dimD;
+        if (!field.shapeKey.empty() &&
+            std::sscanf(field.shapeKey.c_str(), "arg%d_dim%d", &argN, &dimD) ==
+                2 &&
+            argN >= 0 && argN < numInputs && dimD >= 0 &&
+            dimD < inputs[argN].rank) {
+          val = inputs[argN].shape[dimD];
+        } else {
+          auto pit = tIt->second.params.find(field.name);
+          val = (pit != tIt->second.params.end()) ? pit->second : 0;
+        }
         if (!csv.empty()) csv.push_back(',');
         csv += field.name;
         csv.push_back('=');
