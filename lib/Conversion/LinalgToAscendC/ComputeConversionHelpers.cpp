@@ -195,6 +195,14 @@ bool transposeSupportedByIntrinsic(Type elemType, ArrayRef<int64_t> perm) {
   return perm.size() == 2 && perm[0] == 1 && perm[1] == 0;
 }
 
+bool transposeSupportedByConfusion(Type elemType, ArrayRef<int64_t> perm) {
+  // AF ConfusionTranspose (ND2ND_ONLY) handles f16 and f32 at any [H,W] size;
+  // the MVP supports the rank-2 [1,0] swap.
+  if (!(elemType.isF16() || elemType.isF32()))
+    return false;
+  return perm.size() == 2 && perm[0] == 1 && perm[1] == 0;
+}
+
 bool isIndexSelectGeneric(linalg::GenericOp op) {
   return op->hasAttr("gather_dim");
 }

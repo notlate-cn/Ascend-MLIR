@@ -73,6 +73,13 @@ bool isTransposeGeneric(linalg::GenericOp op);
 // dtype and a rank-2 [1,0] swap.  See ComputeConversion.cpp for the rationale.
 bool transposeSupportedByIntrinsic(Type elemType, ArrayRef<int64_t> perm);
 
+// True when a transpose is realizable by the AF ConfusionTranspose path
+// (codegen::AfirConfusionTranspose2D, built on AscendC::TransDataTo5HD): f16 OR
+// f32, rank-2 [1,0] swap, ANY [H,W] size (the 16x16 fractal blocking is internal,
+// unlike the bare vtranspose). Replaces transposeSupportedByIntrinsic at the
+// on-chip transpose emit sites.
+bool transposeSupportedByConfusion(Type elemType, ArrayRef<int64_t> perm);
+
 // Detect index_select (column) gather — stamped {gather_dim} by marking.
 bool isIndexSelectGeneric(linalg::GenericOp op);
 

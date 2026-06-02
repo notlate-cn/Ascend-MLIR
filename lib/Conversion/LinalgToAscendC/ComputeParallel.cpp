@@ -42,6 +42,32 @@ using namespace mlir::ascendc;
 namespace mlir {
 namespace afir {
 
+// Emit codegen::AfirConfusionTranspose2D<T>(dst, src, tmp, H, W) — the AF
+// ConfusionTranspose (TransDataTo5HD-based) rank-2 [1,0] transpose of a src tile
+// [H,W] into a dst tile [W,H]. Allocates a small VECCALC uint8 scratch (used
+// only for tail-column handling). Stamps `afir.uses_confusion_transpose` on the
+// func so CannTranslation emits the device source. Returns the verbatim op so
+// the caller can copy the ascendc.* unit attr onto it.
+static Operation *emitConfusionTranspose(func::FuncOp funcOp, ComputeCtx &cc,
+                                         OpBuilder &b, Location loc,
+                                         Type elemType, Value dstLt, Value srcLt,
+                                         Value srcH, Value srcW) {
+  funcOp->setAttr("afir.uses_confusion_transpose", b.getUnitAttr());
+  // uint8 scratch (AfirConfusionTranspose2D takes LocalTensor<uint8_t>).
+  Type ui8 = IntegerType::get(b.getContext(), 8, IntegerType::Unsigned);
+  Value tmpLt =
+      cc.allocVeccalc(b, loc, ui8,
+                      {b.create<arith::ConstantIndexOp>(loc, 4096)})
+          .second;
+  std::string ets = cppScalarName(elemType);
+  std::string tmpl = "codegen::AfirConfusionTranspose2D<" + ets +
+                     ">($0, $1, $2, (uint32_t)$3, (uint32_t)$4);\n"
+                     "  AscendC::PipeBarrier<PIPE_ALL>()";
+  return b.create<emitasc::VerbatimOp>(
+      loc, b.getStringAttr(tmpl),
+      ValueRange({dstLt, srcLt, tmpLt, srcH, srcW}));
+}
+
 LogicalResult convertParallelGenerics(func::FuncOp funcOp, ComputeCtx &cc) {
   [[maybe_unused]] OpBuilder &builder = cc.builder;
   [[maybe_unused]] AscendCBufferContext &ctx = cc.ctx;
@@ -526,10 +552,10 @@ LogicalResult convertParallelGenerics(func::FuncOp funcOp, ComputeCtx &cc) {
       continue;
     }
 
-    // ---- Transpose generic: emit ascendc.transpose ----
+    // ---- Transpose generic: emit codegen::AfirConfusionTranspose2D ----
     if (isTransposeGeneric(genOp)) {
-      // Only the rank-2 [1,0] 16-bit case is correct via AscendC::Transpose;
-      // refuse anything else rather than silently emit a wrong vtranspose.
+      // ConfusionTranspose handles f16/f32 rank-2 [1,0] at any size; refuse
+      // anything else rather than silently emit a wrong transpose.
       {
         AffineMap inMap = genOp.getIndexingMapsArray()[0];
         SmallVector<int64_t> perm;
@@ -538,10 +564,10 @@ LogicalResult convertParallelGenerics(func::FuncOp funcOp, ComputeCtx &cc) {
               static_cast<int64_t>(cast<AffineDimExpr>(e).getPosition()));
         auto inMrt =
             cast<MemRefType>(genOp.getDpsInputOperand(0)->get().getType());
-        if (!transposeSupportedByIntrinsic(inMrt.getElementType(), perm)) {
+        if (!transposeSupportedByConfusion(inMrt.getElementType(), perm)) {
           genOp.emitError(
-              "LinalgToAscendC: AscendC::Transpose only supports a rank-2 "
-              "[1,0] transpose of 16-bit data; route this transpose to aclnn");
+              "LinalgToAscendC: on-chip transpose supports only a rank-2 "
+              "[1,0] transpose of f16/f32 data; route this transpose to aclnn");
           return failure();
         }
       }
@@ -593,6 +619,9 @@ LogicalResult convertParallelGenerics(func::FuncOp funcOp, ComputeCtx &cc) {
       }
 
       // --- destination tile + transpose ---
+      // ConfusionTranspose transposes the src tile [srcH,srcW] -> dst [srcW,srcH].
+      Value srcH = cc.getDynDim(builder, loc, inMemref, 0);
+      Value srcW = cc.getDynDim(builder, loc, inMemref, 1);
       if (getMemorySpace(outMemref.getType()) == 11 /*VECCALC*/) {
         // Preserve template: an on-chip intermediate, possibly read by several
         // consumers — fresh VECCALC TBuf, registered as the live tensor so the
@@ -603,15 +632,19 @@ LogicalResult convertParallelGenerics(func::FuncOp funcOp, ComputeCtx &cc) {
           outDims.push_back(cc.getDynDim(builder, loc, outMemref, d));
         auto [transpTbuf, dstLt] =
             cc.allocVeccalc(builder, loc, tElemType, outDims);
-        auto transposeOp = builder.create<TransposeOp>(loc, dstLt, srcLt);
-        copyAscendCUnitAttr(genOp.getOperation(), transposeOp.getOperation());
+        auto *transposeOp = emitConfusionTranspose(funcOp, cc, builder, loc,
+                                                   tElemType, dstLt, srcLt,
+                                                   srcH, srcW);
+        copyAscendCUnitAttr(genOp.getOperation(), transposeOp);
         ctx.setLiveTensor(outMemref, dstLt);
         if (srcFreeQueue)
           builder.create<TQueBindFreeTensorOp>(loc, srcFreeQueue, srcLt);
       } else {
         Value dstLt = cc.writeTensor(builder, loc, outMemref);
-        auto transposeOp = builder.create<TransposeOp>(loc, dstLt, srcLt);
-        copyAscendCUnitAttr(genOp.getOperation(), transposeOp.getOperation());
+        auto *transposeOp = emitConfusionTranspose(funcOp, cc, builder, loc,
+                                                   tElemType, dstLt, srcLt,
+                                                   srcH, srcW);
+        copyAscendCUnitAttr(genOp.getOperation(), transposeOp);
         if (Value q = ctx.getQueue(outMemref))
           builder.create<TQueBindEnqueTensorOp>(loc, q, dstLt);
         if (srcFreeQueue)
@@ -771,12 +804,11 @@ LogicalResult convertParallelGenerics(func::FuncOp funcOp, ComputeCtx &cc) {
         break;
       }
       case IndexingMapAnalysis::Kind::PureTranspose: {
-        // Same intrinsic restriction as the standalone transpose handler: only
-        // a rank-2 [1,0] 16-bit swap is correct via vtranspose.
-        if (!transposeSupportedByIntrinsic(elemType, analysis.permutation)) {
+        // ConfusionTranspose handles f16/f32 rank-2 [1,0] at any size.
+        if (!transposeSupportedByConfusion(elemType, analysis.permutation)) {
           genOp.emitError(
-              "LinalgToAscendC: AscendC::Transpose only supports a rank-2 "
-              "[1,0] transpose of 16-bit data; route this transpose to aclnn");
+              "LinalgToAscendC: on-chip transpose supports only a rank-2 "
+              "[1,0] transpose of f16/f32 data; route this transpose to aclnn");
           return failure();
         }
         // The transpose source may already be on-chip (VECIN) — e.g. when the
@@ -786,8 +818,11 @@ LogicalResult convertParallelGenerics(func::FuncOp funcOp, ComputeCtx &cc) {
         // the live tensor).  In that case reuse it; otherwise copy from GM.
         // Mirrors the BroadcastTranspose case below.
         Value srcVecinLt;
+        Value srcH, srcW; // src tile [srcH,srcW] -> dst [srcW,srcH]
         if (inMs == 9 /*VECIN*/) {
           srcVecinLt = cc.readTensor(builder, loc, inMemref);
+          srcH = cc.getDynDim(builder, loc, inMemref, 0);
+          srcW = cc.getDynDim(builder, loc, inMemref, 1);
         } else {
           SmallVector<Value> srcDims;
           for (int64_t permDim : analysis.permutation)
@@ -802,12 +837,16 @@ LogicalResult convertParallelGenerics(func::FuncOp funcOp, ComputeCtx &cc) {
                                                          /*size=*/Value{});
           srcVecinLt =
               cc.copyGmToVecin(builder, loc, elemType, srcGt, srcElemCount);
+          srcH = srcDims[0];
+          srcW = srcDims[1];
         }
 
         auto [transpTbuf, transpLt] =
             cc.allocVeccalc(builder, loc, elemType, bufferDimSizes);
-        auto transposeOp = builder.create<TransposeOp>(loc, transpLt, srcVecinLt);
-        copyAscendCUnitAttr(genOp.getOperation(), transposeOp.getOperation());
+        auto *transposeOp = emitConfusionTranspose(funcOp, cc, builder, loc,
+                                                   elemType, transpLt,
+                                                   srcVecinLt, srcH, srcW);
+        copyAscendCUnitAttr(genOp.getOperation(), transposeOp);
         inputLts[i] = transpLt;
         break;
       }
