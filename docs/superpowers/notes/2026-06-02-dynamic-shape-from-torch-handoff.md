@@ -2,8 +2,50 @@
 
 Date: 2026-06-02
 Branch: `develop`
-Status: non-deterministic `tensor.dim` bug FIXED + committed; full dynamic-shape
-compile still blocked, root cause diagnosed, correct fix route identified.
+Status: ✅ **RESOLVED on sim** — a dynamic `?` seq dim now compiles + runs
+end-to-end through `network_runner` (camodel). See "Resolution" below; the
+original diagnosis (kept for context) is under "The gap chain".
+
+## Resolution (2026-06-02, commits `11cc77b0`, `74da4d26`, `d8bbad9f`)
+
+Implemented the "Correct fix route" plus the predicted NEXT gaps. Repro
+`gelu(x+b)` on `tensor<1x?x3072xf32>` → `network.output[0] max_diff=9.537e-07
+PASS` (static twin identical → no regression; full lit 110/111, the 1 fail is
+the pre-existing missing-example-script `example-pipelines.mlir`). Four layers:
+
+1. **Eliminate the index dim-arg** (`GroupOutlinePass.cpp:eliminateDynamicDimArgs`,
+   run after the outline loop, before `emitFiles`). Replaces each `index` kernel
+   arg's uses with `tensor.dim %inputArg, %dynDim`, drops the arg + the matching
+   coordinator call operand, re-stamps `auto_fuse.call_arg_index`. This is the
+   route this doc proposed; `collectShapeDerivedFields` then turns the in-kernel
+   `tensor.dim` into a `dim_arg<A>_<D>` ShapeDerived field as for hand-written
+   dynamic kernels — so the phase-2 CCE `ptr*dim`/uint32 errors vanish.
+2. **Host alloc for dynamic `tensor.empty`** (`AclnnBackend.cpp`): was bailing to
+   an uninitialized `TensorInfo` (→ SIGSEGV). Now resolves each dynamic dim from
+   its `tensor.dim` size operand → `inputs[N].shape[D]`, byte size at runtime.
+3. **Runtime ShapeDerived tiling resolution** (`TilingSchema` + `HostLaunchHelper`):
+   the `dim_arg0_0` param's tilings-JSON value is the `-1` placeholder; packing it
+   into TilingData made the kernel loop on a garbage extent (camodel hang). Parse
+   the schema `shape_key` ("arg<N>_dim<D>") and resolve the value from
+   `inputs[N].shape[D]` at launch.
+4. **Host codegen for dynamic reshape** (`AclnnBackend.cpp:emitReshapeView`): was
+   aliasing the source on any dynamic collapse/expand (→ output rank wrong,
+   `(1,3072)` not `(1,64,3072)`). Now expand reads its explicit `output_shape`
+   operand; collapse multiplies the grouped source dims.
+
+Remaining (unchanged): full dynamic **GPT-2** additionally needs the causal mask
+generated in-graph (`triu`) instead of a fixed `[64,64]` buffer; real-NPU
+(`--backend npu`) validation of the dynamic path not yet run. Multi-symbol
+kernels (>1 distinct torch `Dim`) use the "first input dynamic dim" shortcut —
+fine for single-`Dim` exports, revisit if a model needs two independent dynamic
+axes.
+
+---
+
+## Original diagnosis (pre-resolution, kept for context)
+
+Status (at handoff time): non-deterministic `tensor.dim` bug FIXED + committed;
+full dynamic-shape compile still blocked, root cause diagnosed, fix route below.
 
 ## Goal
 
