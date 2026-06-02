@@ -63,7 +63,7 @@ class MLP(nn.Module):
         self.proj = nn.Linear(4 * n_embd, n_embd, bias=True)
 
     def forward(self, x):
-        return self.proj(nn.functional.gelu(self.fc(x)))
+        return self.proj(nn.functional.gelu(self.fc(x), approximate="tanh"))
 
 
 class Block(nn.Module):
