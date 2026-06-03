@@ -291,34 +291,6 @@ def _extract_attr_as_str(text: str, name: str) -> str | None:
     return str(int_val) if int_val is not None else None
 
 
-def _extract_tile_params_attr(text: str) -> list[dict[str, Any]]:
-    body = _extract_balanced_attr_value(text, "auto_fuse.tiling_infos", "[", "]")
-    if body is None:
-        return []
-    params: list[dict[str, Any]] = []
-    for piece in _split_top_level_commas(body):
-        record = piece.strip()
-        if record.startswith("{") and record.endswith("}"):
-            record = record[1:-1]
-        param = {
-            key: value
-            for key, value in {
-                "name": _extract_field_string(record, "name"),
-                "axis": _extract_field_int(record, "axis"),
-                "axis_kind": _extract_field_string(record, "axis_kind"),
-                "binding": _extract_field_string(record, "binding"),
-                "default": _extract_field_int(record, "default"),
-                "upper_bound": _extract_field_int(record, "upper_bound"),
-                "extent": _extract_field_int(record, "extent"),
-                "roles": _extract_field_string_list(record, "roles"),
-                "primitive_uses": _extract_field_string_list(record, "primitive_uses"),
-            }.items()
-            if value is not None and value != [] and value is not False
-        }
-        if param:
-            params.append(param)
-    return params
-
 
 def _extract_i64_array_attr(text: str, name: str) -> list[int]:
     match = re.search(rf"{re.escape(name)}\s*=\s*array<i64:\s*([^>]+)>", text)
@@ -383,9 +355,6 @@ def _build_semantic_attrs(op_name: str, op_text: str) -> dict[str, Any]:
             "role": _extract_attr(op_text, "auto_fuse.kind")
             or _extract_attr(op_text, "aclnn.op")
             or _extract_attr(op_text, "aclnn.kind"),
-            "template_families": _extract_string_list_attr(
-                op_text, "afir.reduce_template"
-            ),
         }.items()
         if value not in (None, [], False)
     }
@@ -396,7 +365,9 @@ def _build_semantic_attrs(op_name: str, op_text: str) -> dict[str, Any]:
             "default_tile_size": _extract_attr(op_text, "auto_fuse.default_tile_size"),
             "block_dim": _extract_attr(op_text, "afir.block_dim_expr"),
             "axis_extent": _extract_attr(op_text, "afir.axis_extent_expr"),
-            "tile_params": _extract_tile_params_attr(op_text),
+            # NOTE: develop emits tile params under module-level
+            # `auto_fuse.tiling_infos`; per-op extraction can't reach it.
+            # Per-op tile_params badge deferred (needs module-level parse).
         }.items()
         if value not in (None, [], False)
     }
