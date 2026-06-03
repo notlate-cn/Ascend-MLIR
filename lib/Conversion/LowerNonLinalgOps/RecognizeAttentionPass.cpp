@@ -173,14 +173,29 @@ struct RecognizeAttentionPattern
     auto qType = dyn_cast<RankedTensorType>(q.getType());
     auto ktType = dyn_cast<RankedTensorType>(kt.getType());
     auto vType = dyn_cast<RankedTensorType>(v.getType());
-    if (!qType || !ktType || !vType || !qType.hasStaticShape() ||
-        qType.getRank() != 3)
-      return rewriter.notifyMatchFailure(bmm2, "non-static rank-3 operands");
+    if (!qType || !ktType || !vType || qType.getRank() != 3)
+      return rewriter.notifyMatchFailure(bmm2, "non rank-3 operands");
 
     int64_t BH = qType.getDimSize(0);
-    int64_t S = qType.getDimSize(1);
+    int64_t S = qType.getDimSize(1); // may be dynamic (variable seq length)
     int64_t D = qType.getDimSize(2);
     Type elemType = qType.getElementType();
+    // BH (batch*heads) and D (head dim) must be static; only the sequence dim S
+    // may be dynamic.  A dynamic BH/D would need runtime head counts the BNSD
+    // construction below cannot express.
+    if (ShapedType::isDynamic(BH) || ShapedType::isDynamic(D))
+      return rewriter.notifyMatchFailure(bmm2, "dynamic batch*heads or head dim");
+
+    // Dynamic sequence length: a Value for S (Q's dim 1), used to build the
+    // dynamic tensor.empty / expand_shape sizes below.  sOFR() yields S as an
+    // OpFoldResult (the dynamic Value, or a static index attr).
+    bool dynS = ShapedType::isDynamic(S);
+    Value sVal;
+    if (dynS)
+      sVal = rewriter.create<tensor::DimOp>(loc, q, 1);
+    auto sOFR = [&]() -> OpFoldResult {
+      return dynS ? OpFoldResult(sVal) : OpFoldResult(rewriter.getIndexAttr(S));
+    };
 
     // Determine the additive mask up front -- before any IR mutation -- so we
     // can bail cleanly when a mask is present but cannot be represented in the
@@ -193,9 +208,11 @@ struct RecognizeAttentionPattern
     Value maskRank2; // rank-2 [S,S] mask to thread through, or null = no mask
     if (Value mask = findMaskFromBmm1(bmm1)) {
       auto mType = dyn_cast<RankedTensorType>(mask.getType());
-      if (mType && mType.getRank() == 2 && mType.hasStaticShape() &&
-          mType.getDimSize(0) == S && mType.getDimSize(1) == S &&
-          mType.getElementType() == elemType)
+      // Accept a rank-2 [S,S] mask whose dims match the (possibly dynamic) S:
+      // getDimSize == S compares kDynamic==kDynamic when S is dynamic, or the
+      // literal extents when static.
+      if (mType && mType.getRank() == 2 && mType.getDimSize(0) == S &&
+          mType.getDimSize(1) == S && mType.getElementType() == elemType)
         maskRank2 = mask;
       else
         return rewriter.notifyMatchFailure(
@@ -206,7 +223,10 @@ struct RecognizeAttentionPattern
 
     // K = transpose(K^T, [0,2,1]) : [BH,D,S] -> [BH,S,D]
     Value kInit = rewriter.create<tensor::EmptyOp>(
-        loc, ArrayRef<int64_t>{BH, S, D}, elemType);
+        loc,
+        ArrayRef<OpFoldResult>{rewriter.getIndexAttr(BH), sOFR(),
+                               rewriter.getIndexAttr(D)},
+        elemType);
     Operation *kT = rewriter.create<linalg::TransposeOp>(
         loc, kt, kInit, ArrayRef<int64_t>{0, 2, 1});
     Value k = kT->getResult(0);
@@ -214,8 +234,12 @@ struct RecognizeAttentionPattern
     // Expand each [BH,S,D] -> BNSD [BH,1,S,D].
     auto bnsd = RankedTensorType::get({BH, 1, S, D}, elemType);
     SmallVector<ReassociationIndices> reassoc = {{0, 1}, {2}, {3}};
+    SmallVector<OpFoldResult> bnsdSizes = {rewriter.getIndexAttr(BH),
+                                           rewriter.getIndexAttr(1), sOFR(),
+                                           rewriter.getIndexAttr(D)};
     auto expand = [&](Value src) -> Value {
-      return rewriter.create<tensor::ExpandShapeOp>(loc, bnsd, src, reassoc);
+      return rewriter.create<tensor::ExpandShapeOp>(loc, bnsd, src, reassoc,
+                                                    bnsdSizes);
     };
     Value q4 = expand(q);
     Value k4 = expand(k);
@@ -237,13 +261,29 @@ struct RecognizeAttentionPattern
     Value q4dyn = castDyn(q4);
     Value maskArg = q4dyn;
     if (maskRank2) {
-      // Reassociation maps [S, S] -> [1, 1, S, S]: output dims {0,1,2}
-      // collapse to input dim 0 (extents 1*1*S = S) and dim {3} → input
-      // dim 1 (extent S).
       auto mask4 = RankedTensorType::get({1, 1, S, S}, elemType);
-      SmallVector<ReassociationIndices> maskReassoc = {{0, 1, 2}, {3}};
-      Value mask4Val = rewriter.create<tensor::ExpandShapeOp>(
-          loc, mask4, maskRank2, maskReassoc);
+      Value mask4Val;
+      if (dynS) {
+        // Dynamic causal mask: thread a distinct [1,1,S,S] buffer as a causal
+        // *sentinel*.  FlashAttentionScore regenerates the triangular mask from
+        // the runtime seq length (on both device and sdpa_cpu), so the buffer's
+        // values are unused — only "a mask is present, shaped [1,1,S,S]" matters.
+        // This lets the in-graph `triu` mask DCE instead of forcing an AscendC
+        // kernel for its index/compare/select chain (which the vector codegen
+        // can't tile).  The static path keeps threading the real mask.
+        mask4Val = rewriter.create<tensor::EmptyOp>(
+            loc,
+            ArrayRef<OpFoldResult>{rewriter.getIndexAttr(1),
+                                   rewriter.getIndexAttr(1), sOFR(), sOFR()},
+            elemType);
+      } else {
+        // Reassociation maps [S, S] -> [1, 1, S, S]: output dims {0,1,2}
+        // collapse to input dim 0 (extents 1*1*S = S) and dim {3} → input
+        // dim 1 (extent S).
+        SmallVector<ReassociationIndices> maskReassoc = {{0, 1, 2}, {3}};
+        mask4Val = rewriter.create<tensor::ExpandShapeOp>(loc, mask4, maskRank2,
+                                                          maskReassoc);
+      }
       maskArg = castDyn(mask4Val);
     }
     SmallVector<Value> args = {q4dyn, castDyn(k4), castDyn(v4), maskArg, q4dyn};

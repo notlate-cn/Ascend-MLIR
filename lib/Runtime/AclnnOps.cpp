@@ -254,13 +254,19 @@ static void sdpa_cpu(const TensorInfo &q, const TensorInfo &k,
     else ((float *)p)[i] = val;
   };
 
-  // RecognizeAttention forwards a real mask as rank-4 [1, 1, S, S]
-  // (expand_shape from rank-2 [S, S]).  When no mask is in the IR pattern, it
-  // passes Q itself as the placeholder (arg[3] == arg[0]), so the mask buffer
-  // is literally the Q buffer.  A pointer compare distinguishes the two
-  // robustly — unlike the old "shape[3] == S && S != D" heuristic, which
-  // silently dropped a real causal mask whenever head_dim == seq_len (e.g.
-  // GPT-2 with a 64-token window and D = 64).
+  // RecognizeAttention forwards a mask as rank-4 [1, 1, S, S].  When no mask is
+  // in the IR pattern, it passes Q itself as the placeholder (arg[3] == arg[0]),
+  // so the mask buffer is literally the Q buffer.  A pointer compare
+  // distinguishes the two robustly — unlike the old "shape[3] == S && S != D"
+  // heuristic, which silently dropped a real causal mask whenever
+  // head_dim == seq_len (e.g. GPT-2 with a 64-token window and D = 64).
+  //
+  // FlashAttentionScore is a CAUSAL contract: when a mask is present we apply
+  // the triangular mask regenerated from the runtime seq length S, IGNORING the
+  // buffer's values — identical to the device path, which likewise rebuilds a
+  // BOOL triu(diag=1) mask from seqLen.  This lets a dynamic-shape causal mask be
+  // threaded as a value-less [1,1,S,S] sentinel, so the in-graph `triu` mask need
+  // not be codegen'd.  The static path's real causal mask gives the same result.
   bool applyMask =
       (mask.data != nullptr && mask.data != q.data && mask.rank == 4 &&
        mask.shape[2] == S && mask.shape[3] == S);
@@ -276,8 +282,8 @@ static void sdpa_cpu(const TensorInfo &q, const TensorInfo &k,
           for (int64_t d = 0; d < D; ++d)
             dot += rd(q.data, idx(b, n, s1, d)) * rd(k.data, idx(b, n, s2, d));
           float val = dot * scale;
-          if (applyMask)
-            val += rd(mask.data, (size_t)(s1 * S + s2));
+          if (applyMask && s2 > s1) // causal: mask future keys (col > row)
+            val = -std::numeric_limits<float>::infinity();
           scores[(size_t)(s1 * S + s2)] = val;
         }
       // softmax row-wise

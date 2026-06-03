@@ -10,6 +10,7 @@
 #include "mlir/IR/MLIRContext.h"
 #include "mlir/Parser/Parser.h"
 #include "llvm/ADT/DenseMap.h"
+#include "llvm/ADT/SmallBitVector.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringSet.h"
 #include "llvm/Support/Error.h"
@@ -240,44 +241,121 @@ private:
     };
     int id = dtypeIdFor(resType.getElementType());
     int eb = elemBytesFor(resType.getElementType());
-    if (anyDyn(offsets) || anyDyn(sizes) || anyDyn(strides) || id < 0 ||
-        eb == 0) {
-      os_ << "  // WARNING: unsupported extract_slice (dynamic or bad dtype) "
+    int64_t srcRank = srcType.getRank();
+    auto srcShape = srcType.getShape();
+    std::string src = nameOf(sliceOp.getSource());
+    std::string n = fresh();
+
+    bool allStatic = !anyDyn(offsets) && !anyDyn(sizes) && !anyDyn(strides) &&
+                     srcType.hasStaticShape();
+
+    if (id < 0 || eb == 0 || src == "/*unknown*/") {
+      os_ << "  // WARNING: unsupported extract_slice (bad dtype/source) "
           << sliceOp.getResult().getType() << "\n";
       return;
     }
 
-    int64_t srcRank = srcType.getRank();
-    auto srcShape = srcType.getShape();
-    SmallVector<int64_t> srcStrides(srcRank, 1);
-    for (int64_t d = srcRank - 2; d >= 0; --d)
-      srcStrides[d] = srcStrides[d + 1] * srcShape[d + 1];
-    int64_t numEl = 1;
-    for (int64_t s : sizes)
-      numEl *= s;
+    if (allStatic) {
+      SmallVector<int64_t> srcStrides(srcRank, 1);
+      for (int64_t d = srcRank - 2; d >= 0; --d)
+        srcStrides[d] = srcStrides[d + 1] * srcShape[d + 1];
+      int64_t numEl = 1;
+      for (int64_t s : sizes)
+        numEl *= s;
+      auto arr = [&](StringRef name, llvm::ArrayRef<int64_t> xs) {
+        os_ << "    const int64_t " << name << "[] = {";
+        for (auto [i, x] : llvm::enumerate(xs))
+          os_ << (i ? "," : "") << x;
+        os_ << "};\n";
+      };
+      os_ << "  TensorInfo " << n << "; " << n << ".rank=" << resType.getRank()
+          << "; " << n << ".dtype=" << id << ";\n";
+      for (auto [d, sz] : llvm::enumerate(resType.getShape()))
+        os_ << "  " << n << ".shape[" << d << "]=" << sz << ";\n";
+      os_ << "  mlir::runtime::aclnn::rowMajorStrides(" << n << ".shape, " << n
+          << ".rank, " << n << ".strides);\n";
+      os_ << "  { // tensor.extract_slice\n";
+      arr("_off", offsets);
+      arr("_sz", sizes);
+      arr("_st", strides);
+      arr("_ss", srcStrides);
+      os_ << "    size_t _ne = " << numEl << "; " << n
+          << ".data = ::operator new(_ne*" << eb << ");\n";
+      os_ << "    int64_t _idx[" << srcRank << "] = {0};\n";
+      os_ << "    for (size_t _o = 0; _o < _ne; ++_o) {\n";
+      os_ << "      size_t _s = 0; for (int _d = 0; _d < " << srcRank
+          << "; ++_d) _s += (size_t)(_off[_d] + _idx[_d]*_st[_d]) * (size_t)_ss[_d];\n";
+      os_ << "      memcpy((char*)" << n << ".data + _o*" << eb
+          << ", (const char*)" << src << ".data + _s*" << eb << ", " << eb
+          << ");\n";
+      os_ << "      for (int _d = " << srcRank - 1
+          << "; _d >= 0; --_d) { if (++_idx[_d] < _sz[_d]) break; _idx[_d] = 0; }\n";
+      os_ << "    }\n  }\n";
+      names_[sliceOp.getResult()] = n;
+      return;
+    }
 
-    std::string src = nameOf(sliceOp.getSource());
-    std::string n = fresh();
-    auto arr = [&](StringRef name, llvm::ArrayRef<int64_t> xs) {
+    // Dynamic path: static offsets+strides; sizes / source shape resolved from
+    // runtime TensorInfo shapes (from-torch dynamic seq, e.g. the qkv `split` on
+    // a [1,?,3C] tensor — which is also rank-reducing, dropping the unit batch).
+    if (anyDyn(offsets) || anyDyn(strides)) {
+      os_ << "  // WARNING: unsupported extract_slice (dynamic offset/stride) "
+          << sliceOp.getResult().getType() << "\n";
+      return;
+    }
+    auto srcDimExpr = [&](int64_t d) -> std::string {
+      return ShapedType::isDynamic(srcShape[d])
+                 ? src + ".shape[" + std::to_string(d) + "]"
+                 : std::to_string(srcShape[d]);
+    };
+    SmallVector<OpFoldResult> mixedSizes = sliceOp.getMixedSizes();
+    SmallVector<std::string> sizeExprs(srcRank);
+    for (int64_t d = 0; d < srcRank; ++d) {
+      if (ShapedType::isDynamic(sizes[d])) {
+        auto e = resolveIndexExpr(cast<Value>(mixedSizes[d]));
+        sizeExprs[d] = e ? *e : srcDimExpr(d); // full-dim slice fallback
+      } else {
+        sizeExprs[d] = std::to_string(sizes[d]);
+      }
+    }
+    auto exprArr = [&](StringRef name, ArrayRef<std::string> xs) {
       os_ << "    const int64_t " << name << "[] = {";
       for (auto [i, x] : llvm::enumerate(xs))
         os_ << (i ? "," : "") << x;
       os_ << "};\n";
     };
+    SmallVector<std::string> offStr, stStr, srcShStr;
+    for (int64_t o : offsets)
+      offStr.push_back(std::to_string(o));
+    for (int64_t s : strides)
+      stStr.push_back(std::to_string(s));
+    for (int64_t d = 0; d < srcRank; ++d)
+      srcShStr.push_back(srcDimExpr(d));
 
+    // Map result dims → kept (non-dropped) src dims, so a rank-reducing slice
+    // takes the sizes of the surviving dims (the dropped dims are unit-size).
+    llvm::SmallBitVector dropped = sliceOp.getDroppedDims();
     os_ << "  TensorInfo " << n << "; " << n << ".rank=" << resType.getRank()
         << "; " << n << ".dtype=" << id << ";\n";
-    for (auto [d, sz] : llvm::enumerate(resType.getShape()))
-      os_ << "  " << n << ".shape[" << d << "]=" << sz << ";\n";
+    {
+      int rr = 0;
+      for (int64_t d = 0; d < srcRank; ++d)
+        if (!dropped[d])
+          os_ << "  " << n << ".shape[" << rr++ << "]=" << sizeExprs[d] << ";\n";
+    }
     os_ << "  mlir::runtime::aclnn::rowMajorStrides(" << n << ".shape, " << n
         << ".rank, " << n << ".strides);\n";
-    os_ << "  { // tensor.extract_slice\n";
-    arr("_off", offsets);
-    arr("_sz", sizes);
-    arr("_st", strides);
-    arr("_ss", srcStrides);
-    os_ << "    size_t _ne = " << numEl << "; " << n
-        << ".data = ::operator new(_ne*" << eb << ");\n";
+    os_ << "  { // tensor.extract_slice (dynamic)\n";
+    exprArr("_off", offStr);
+    exprArr("_sz", sizeExprs);
+    exprArr("_st", stStr);
+    exprArr("_ssh", srcShStr);
+    os_ << "    int64_t _ss[" << srcRank << "]; _ss[" << srcRank - 1
+        << "]=1; for (int _d=" << srcRank - 2
+        << "; _d>=0; --_d) _ss[_d]=_ss[_d+1]*_ssh[_d+1];\n";
+    os_ << "    size_t _ne = 1; for (int _d=0; _d<" << srcRank
+        << "; ++_d) _ne *= (size_t)_sz[_d];\n";
+    os_ << "    " << n << ".data = ::operator new(_ne*" << eb << ");\n";
     os_ << "    int64_t _idx[" << srcRank << "] = {0};\n";
     os_ << "    for (size_t _o = 0; _o < _ne; ++_o) {\n";
     os_ << "      size_t _s = 0; for (int _d = 0; _d < " << srcRank
