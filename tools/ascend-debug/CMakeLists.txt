@@ -21,6 +21,9 @@ add_custom_command(
   COMMAND "${CMAKE_COMMAND}" -E copy_directory
           "${CMAKE_CURRENT_SOURCE_DIR}/ascend_debug"
           "${ASCEND_DEBUG_PACKAGE_OUTPUT}"
+  # Drop any developer __pycache__ that copy_directory picked up so the
+  # installed package carries no stale, Python-version-specific bytecode.
+  COMMAND "${CMAKE_COMMAND}" -E rm -rf "${ASCEND_DEBUG_PACKAGE_OUTPUT}/__pycache__"
   COMMAND chmod +x "${ASCEND_DEBUG_OUTPUT}"
   DEPENDS "${ASCEND_DEBUG_SOURCE}"
           ${ASCEND_DEBUG_PACKAGE_SOURCES}

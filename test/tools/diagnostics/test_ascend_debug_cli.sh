@@ -8,6 +8,9 @@ trap 'rm -rf "$WORK"' EXIT
 
 ascend-debug collect "$INPUT" --out "$WORK/run"
 
+# The expected count (6) mirrors collect.PASS_STEPS
+# (tools/ascend-debug/ascend_debug/collect.py). If a stage is added/removed
+# there, update this glob range and the STAGES_OK CHECK in the .mlir.
 STAGES_OK="$(find "$WORK/run/stages" -name '0[1-6]0-*.mlir' | wc -l | tr -d ' ')"
 echo "STAGES_OK=$STAGES_OK"
 
