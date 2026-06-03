@@ -22,6 +22,18 @@ A literal lift onto `develop` is **not feasible**. `develop` and `dev-nyh` both 
 
 The tool's `collect` drives dev-nyh's named stage passes and reads `ascend.*` markers; `develop` has neither. Therefore "port" = **re-target** the tool to `develop`'s real pipeline and metadata.
 
+## 1b. Relationship to `develop`'s existing debug system
+
+`develop` already carries a separate, purpose-built debug system (landed 2026-05-27→29, `docs/auto-fuse/debug.md` §7.2–7.7, handoff `docs/superpowers/notes/2026-05-29-debug-system-session-summary.md`), driven through `network_runner.py --debug-out`:
+
+- **Logging/tracing:** `python/runner_utils/logger.py`, `run_subprocess.py`.
+- **Compile-time artifacts:** `<work>/manifest.json` + `stages/` symlinks (network_runner **phase**-level: per-kernel cpp / tiling json), `groups/network.json` + `network.provenance.json`, `profiles/`.
+- **Diagnostics:** `python/tools/ascend_diff.py` (L0 output diff + `locate` first-bad-kernel), `python/tools/ascend_kernel_dag_viz/` (self-contained HTML+JS kernel DAG viewer).
+
+That system deliberately chose **not** to introduce an `ascend-debug` binary. Its `manifest`/`stages` are **phase-granularity** (network_runner's 5 phases), and its visualization is the **kernel DAG**. It has **no per-lowering-pass IR snapshots and no per-stage IR structural graph** — which is exactly what dev-nyh's `collect` + `open`/`stage_graph` provide.
+
+**Decision (2026-06-03):** port dev-nyh's `ascend-debug` as a **standalone parallel tool** (its own `tools/ascend-debug/` dir, its own `ascend-debug` binary, its own manifest), re-targeted to `develop`'s `afir-opt` pipeline. We do **not** integrate into develop's existing debug system and accept the conceptual overlap (manifest/DAG/diff/locate exist in both). No file-path or binary-name collisions: develop's tooling lives under `python/tools/`, this lives under `tools/ascend-debug/`; the `ascend-debug` binary name is new.
+
 ## 2. Goals / Non-Goals
 
 **Goals (MVP):**
