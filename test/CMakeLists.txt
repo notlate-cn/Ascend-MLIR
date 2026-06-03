@@ -9,6 +9,7 @@ configure_lit_site_cfg(
 set(AFIR_TEST_DEPENDS
   afir-opt
   afir-translate
+  ascend-debug
   FileCheck
   count
   not
