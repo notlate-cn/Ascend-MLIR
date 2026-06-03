@@ -12,9 +12,15 @@ export PATH="$REPO/build/bin:$PATH"
 
 rm -rf "$WORK"
 mkdir -p "$WORK"
-# Model build + golden need torch; run them in a torch env if available.
-PYTHONPATH="$REPO/python/torch" python3 "$SCRIPT_DIR/gen.py" \
-  --out-dir "$WORK" --seq "${SEQ:-48}"
+# The model build + golden need torch. On a torch-less host (e.g. the real-NPU
+# container) set FIXTURE_DIR to a dir holding pre-generated model.mlir + x.npy +
+# expected.npy (staged from a torch host); otherwise build them here with gen.py.
+if [ -n "${FIXTURE_DIR:-}" ] && [ -f "$FIXTURE_DIR/model.mlir" ]; then
+  cp "$FIXTURE_DIR/model.mlir" "$FIXTURE_DIR/x.npy" "$FIXTURE_DIR/expected.npy" "$WORK/"
+else
+  PYTHONPATH="$REPO/python/torch" python3 "$SCRIPT_DIR/gen.py" \
+    --out-dir "$WORK" --seq "${SEQ:-48}"
+fi
 
 cd "$REPO"
 NETWORK_RUNNER_SKIP_AUTOTUNE=1 PYTHONPATH=python python3 python/network_runner.py \
