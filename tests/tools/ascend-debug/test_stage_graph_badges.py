@@ -70,3 +70,24 @@ def test_arg_node_carries_tile_and_shape_badges():
         or any("s0,s1" in b for b in arg_nodes["%arg0"]["badges"])
     assert arg_nodes["%arg1"]["semantic_attrs"]["schedule"].get("default_tile_size") == "128" \
         or any("128" in b for b in arg_nodes["%arg1"]["badges"])
+
+
+def test_attr_block_does_not_leak_across_functions():
+    # k1 has NO attributes; k2 HAS kernel_kind. k1 must NOT inherit k2's kind.
+    text = (
+        'module {\n'
+        '  func.func @k1(%a: tensor<?xf32>) -> tensor<?xf32> {\n'
+        '    return %a : tensor<?xf32>\n'
+        '  }\n'
+        '  func.func @k2(%b: tensor<?xf32>) -> tensor<?xf32> '
+        'attributes {ascendc.kernel_kind = "vec"} {\n'
+        '    return %b : tensor<?xf32>\n'
+        '  }\n'
+        '}\n'
+    )
+    graph = stage_graph.parse_stage_mlir({"order": 1, "name": "s", "path": "p"}, text)
+    fn = {n["function"]: n for n in graph["nodes"] if n["op_name"] == "func.func"}
+    # k1 has no kernel kind
+    assert fn["k1"]["semantic_attrs"].get("kernel", {}).get("role") is None
+    # k2 correctly has its own kind
+    assert fn["k2"]["semantic_attrs"]["kernel"]["role"] == "vec"

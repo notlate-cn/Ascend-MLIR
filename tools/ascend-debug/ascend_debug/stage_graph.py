@@ -182,8 +182,18 @@ def _collect_func_attr_block(lines: list[str], start_index: int) -> str:
     """Collect the ``attributes { ... }`` block between the func args' closing
     ``)`` and the body-opening ``{``. ``start_index`` is the line index right
     after ``_collect_func_header`` finished (i.e. its returned ``next_index``).
-    Returns the text including the braces, or ``""`` if there is no block."""
-    text = "\n".join(lines[start_index:])
+    Returns the text including the braces, or ``""`` if there is no block.
+
+    The search is bounded to lines before the next ``func.func`` declaration so
+    that a function without its own attributes block never inherits the next
+    sibling function's ``attributes`` block."""
+    # Find the end of the search region: stop before the next func.func line.
+    next_func_index = len(lines)
+    for i in range(start_index, len(lines)):
+        if FUNC_START_RE.search(lines[i]):
+            next_func_index = i
+            break
+    text = "\n".join(lines[start_index:next_func_index])
     # MLIR func attribute dicts are written ``attributes { ... }`` (no ``=``),
     # so the generic ``name = opener`` extractor does not apply. Find the
     # keyword and scan balanced braces up to (but not into) the body ``{``.
