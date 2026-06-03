@@ -2,9 +2,23 @@
 
 Date: 2026-06-03
 Branch: `develop`
-Status: dynamic attention + dynamic LayerNorm both work; 2-layer dynamic GPT
-clears phase-1 + phase-2 codegen; now blocked in phase-3 (host) on an
-unresolved `-1` dynamic dim propagated through a coordinator `collapse_shape`.
+Status: ✅ **multi-layer dynamic-seq GPT-2 PASSES end-to-end on sim.** A 2-block
+from-scratch GPT (attention + LayerNorm + MLP + residuals, dynamic `?` seq)
+runs through all 5 network_runner phases on camodel; the SAME compiled artifact
+handles seq=20/40/48/96 (`max_diff=7.15e-7`). Regression example committed at
+`examples/gpt2-dyn-e2e/`. Remaining: real-NPU validation; scale to real GPT-2
+dims (n_embd=768 / 12 layers — same ops, just bigger); weight-tied lm_head +
+embedding for a full generative model.
+
+## ✅ Walls cracked (8 commits, the full chain)
+
+`41098902` dynamic attention (Q/K/V + causal-mask sentinel + dynamic
+extract_slice) · `a2b40f3b` --remove-cf-assert · `7914d11b` dynamic LayerNorm
+(--lower-broadcast-extract + findBcast expand) · `d32d0ee0` cross-arg memref.dim
+resolution (PackTilingData canonicalizes field coords) · `51b02395`
+shape_equalities -1 skip · `d3a29e85` gpt2-dyn-e2e regression example. No static
+regression (lit 110/111 — the 1 fail is pre-existing; static LN + gelu-dyn-e2e
+green). The detail of each wall is below.
 
 ## Update — LayerNorm cracked + codegen walls (committed)
 
