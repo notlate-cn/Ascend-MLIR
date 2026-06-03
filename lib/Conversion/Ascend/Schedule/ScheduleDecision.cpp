@@ -201,6 +201,12 @@ int64_t selectRuntimeDefaultTile(const ScheduleProblem &problem,
   return std::max<int64_t>(1, fallback);
 }
 
+int64_t selectRuntimeTileUpperBound(int64_t defaultValue, int64_t extent) {
+  if (!ShapedType::isDynamic(extent) && extent > 0)
+    return extent;
+  return defaultValue;
+}
+
 ScheduleTileParam buildTileParamForTileIndex(const ScheduleProblem &problem,
                                              unsigned tileIndex,
                                              int64_t chosenTile) {
@@ -228,8 +234,9 @@ ScheduleTileParam buildTileParamForTileIndex(const ScheduleProblem &problem,
   switch (param.binding) {
   case TileParamBinding::Runtime:
     param.defaultValue =
-        selectRuntimeDefaultTile(problem, chosenTile, param.extent);
-    param.upperBound = param.defaultValue;
+        selectRuntimeDefaultTile(problem, ShapedType::kDynamic, param.extent);
+    param.upperBound =
+        selectRuntimeTileUpperBound(param.defaultValue, param.extent);
     break;
   case TileParamBinding::Extent:
     param.defaultValue =
@@ -267,10 +274,13 @@ AxisTailPolicy selectConcreteTailPolicy(
 
 ScheduledAxisTailPlan buildTailPlanForTileIndex(const ScheduleProblem &problem,
                                                 unsigned tileIndex,
-                                                int64_t tileSize) {
+                                                int64_t tileSize,
+                                                const ScheduleTileParam *param) {
   ScheduledAxisTailPlan plan;
   plan.logicalAxisId = tileIndex;
-  plan.tileSize = tileSize;
+  plan.tileSize = param && param->binding == TileParamBinding::Runtime
+                      ? ShapedType::kDynamic
+                      : tileSize;
   plan.tailBufferingMode = TailBufferingMode::SeparateTailBuffer;
 
   if (tileIndex < problem.axes.logicalAxes.size()) {
@@ -304,11 +314,15 @@ ScheduledAxisTailPlan buildTailPlanForTileIndex(const ScheduleProblem &problem,
 
 SmallVector<ScheduledAxisTailPlan, 4>
 buildTailPlans(const ScheduleProblem &problem,
-               const ScheduleInstance &instance) {
+               const ScheduleInstance &instance,
+               ArrayRef<ScheduleTileParam> tileParams) {
   SmallVector<ScheduledAxisTailPlan, 4> tailPlans;
   tailPlans.reserve(instance.tileShape.tileSizes.size());
   for (auto [index, tileSize] : llvm::enumerate(instance.tileShape.tileSizes)) {
-    tailPlans.push_back(buildTailPlanForTileIndex(problem, index, tileSize));
+    const ScheduleTileParam *param =
+        index < tileParams.size() ? &tileParams[index] : nullptr;
+    tailPlans.push_back(
+        buildTailPlanForTileIndex(problem, index, tileSize, param));
   }
   return tailPlans;
 }
@@ -326,8 +340,9 @@ ScheduleDecisionSet buildScheduleDecisionSet(
                            llvm::Twine(index))
                               .str();
     decision.instance = instance;
-    decision.tailPlans = buildTailPlans(problem, decision.instance);
     decision.tileParams = buildTileParams(problem, decision.instance);
+    decision.tailPlans =
+        buildTailPlans(problem, decision.instance, decision.tileParams);
     decisionSet.decisions.push_back(std::move(decision));
   }
 

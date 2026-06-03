@@ -101,9 +101,9 @@ STEP_INFO_BY_STEP: dict[str, dict[str, str]] = {
         "title": "挂载 Schedule 契约",
         "purpose": "把选中的 schedule decision 挂到 IR 上，作为后续符号化运行时契约。",
         "inputs": "选中的 schedule decision",
-        "outputs": "decision_id、tile_params、tail_plan、tail_policies、target_tile_policy、structured lowering 标记",
-        "inspect_hint": "Primary op 和 func 属性应暴露一致的 decision_id、tile_params、tail_policies 和 target_tile_policy。",
-        "common_failures": "Kernel 元数据不一致、缺少 tile_params，或 tail plan 不完整。",
+        "outputs": "decision_id、tile_params、tail_plan、tail_policies、target_tile_policy、schedule_contract",
+        "inspect_hint": "Primary op 和 func 属性应暴露一致的 decision_id、tile_params、tail_policies、target_tile_policy 和 schedule_contract。",
+        "common_failures": "Kernel 元数据不一致、缺少 tile_params 或 schedule_contract，或 tail plan 不完整。",
     },
     "ascend-schedule": {
         "title": "Schedule 输出边界",

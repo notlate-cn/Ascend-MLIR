@@ -385,8 +385,8 @@ def _build_semantic_attrs(op_name: str, op_text: str) -> dict[str, Any]:
             "decision_id": _extract_attr(op_text, "ascend.schedule.decision_id"),
             "family": _extract_attr(op_text, "ascend.schedule.family"),
             "template": _extract_attr(op_text, "ascend.schedule.template"),
-            "structured_lowering": _extract_attr(
-                op_text, "ascend.schedule.structured_lowering"
+            "schedule_contract": _extract_attr(
+                op_text, "ascend.schedule.schedule_contract"
             ),
             "target_tile_policy": _extract_attr(
                 op_text, "ascend.schedule.target_tile_policy"

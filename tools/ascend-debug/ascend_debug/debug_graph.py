@@ -1234,7 +1234,7 @@ ${renderSemanticGroup("Schedule", [
   ["schedule_decision_id", schedule.decision_id],
   ["schedule_family", schedule.family],
   ["schedule_template", schedule.template],
-  ["structured_lowering", schedule.structured_lowering],
+  ["schedule_contract", schedule.schedule_contract],
   ["tail_policies", schedule.tail_policies],
   ["target_tile_policy", schedule.target_tile_policy],
   ["runtime_top_k", schedule.runtime_top_k],

@@ -17,7 +17,7 @@ func.func @collapse_chain_movement(%arg0: tensor<4x16xf16>,
       ascend.kernel = "collapse_kernel",
       ascend.op_role = "vector",
       ascend.schedule.decision_id = "collapse_kernel.decision.0",
-      ascend.schedule.structured_lowering = "loop_skeleton_v0"
+      ascend.schedule.schedule_contract = "generic_tiled_loop"
     } {
   ^bb0(%x: f16, %y: f16, %o: f16):
     %v = arith.addf %x, %y : f16
@@ -40,7 +40,7 @@ func.func @collapse_chain_movement(%arg0: tensor<4x16xf16>,
       ascend.kernel = "collapse_kernel",
       ascend.op_role = "vector",
       ascend.schedule.decision_id = "collapse_kernel.decision.0",
-      ascend.schedule.structured_lowering = "loop_skeleton_v0"
+      ascend.schedule.schedule_contract = "generic_tiled_loop"
     } {
   ^bb0(%x: f16, %o: f16):
     %v = arith.negf %x : f16
@@ -67,7 +67,7 @@ func.func @expand_chain_movement(%arg0: tensor<64xf16>,
       ascend.kernel = "expand_kernel",
       ascend.op_role = "vector",
       ascend.schedule.decision_id = "expand_kernel.decision.0",
-      ascend.schedule.structured_lowering = "loop_skeleton_v0"
+      ascend.schedule.schedule_contract = "generic_tiled_loop"
     } {
   ^bb0(%x: f16, %y: f16, %o: f16):
     %v = arith.addf %x, %y : f16
@@ -90,7 +90,7 @@ func.func @expand_chain_movement(%arg0: tensor<64xf16>,
       ascend.kernel = "expand_kernel",
       ascend.op_role = "vector",
       ascend.schedule.decision_id = "expand_kernel.decision.0",
-      ascend.schedule.structured_lowering = "loop_skeleton_v0"
+      ascend.schedule.schedule_contract = "generic_tiled_loop"
     } {
   ^bb0(%x: f16, %o: f16):
     %v = arith.negf %x : f16
@@ -115,7 +115,7 @@ func.func @reshape_chain_movement(%arg0: tensor<4x8xf32>) -> tensor<8x4xf32>
       ascend.kernel = "reshape_kernel",
       ascend.op_role = "vector",
       ascend.schedule.decision_id = "reshape_kernel.decision.0",
-      ascend.schedule.structured_lowering = "loop_skeleton_v0"
+      ascend.schedule.schedule_contract = "generic_tiled_loop"
     } {
   ^bb0(%x: f32, %o: f32):
     linalg.yield %x : f32
@@ -140,7 +140,7 @@ func.func @reshape_chain_movement(%arg0: tensor<4x8xf32>) -> tensor<8x4xf32>
       ascend.kernel = "reshape_kernel",
       ascend.op_role = "vector",
       ascend.schedule.decision_id = "reshape_kernel.decision.0",
-      ascend.schedule.structured_lowering = "loop_skeleton_v0"
+      ascend.schedule.schedule_contract = "generic_tiled_loop"
     } {
   ^bb0(%x: f32, %o: f32):
     %v = arith.negf %x : f32

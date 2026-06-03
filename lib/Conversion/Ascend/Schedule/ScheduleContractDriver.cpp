@@ -1,10 +1,10 @@
-//===- StructuredLoweringDriver.cpp - Ascend structured lowering ------===//
+//===- ScheduleContractDriver.cpp - Ascend schedule contract markers ------===//
 //
 // Part of the Ascend-MLIR Project
 //
 //===----------------------------------------------------------------------===//
 
-#include "StructuredLoweringDriver.h"
+#include "ScheduleContractDriver.h"
 
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/IR/Builders.h"
@@ -19,7 +19,7 @@ using namespace mlir;
 namespace mlir::ascend::schedule {
 namespace {
 
-constexpr llvm::StringLiteral kLoopSkeletonV0 = "loop_skeleton_v0";
+constexpr llvm::StringLiteral kGenericTiledLoopContract = "generic_tiled_loop";
 constexpr llvm::StringLiteral kKernelMetadataKernelKey = "kernel";
 constexpr llvm::StringLiteral kKernelMetadataDecisionIdKey = "decision_id";
 constexpr llvm::StringLiteral kKernelMetadataTileBindingKey = "tile_binding";
@@ -415,7 +415,7 @@ LogicalResult preserveFunctionScheduleMetadata(Operation *op,
   auto kernelAttr = op->getAttrOfType<StringAttr>(kKernelAttr);
   if (!kernelAttr)
     return op->emitError()
-           << "structured lowering requires " << kKernelAttr;
+           << "schedule contract requires " << kKernelAttr;
 
   if (failed(verifyLegacyFunctionScheduleMetadataShape(funcOp)))
     return failure();
@@ -423,7 +423,7 @@ LogicalResult preserveFunctionScheduleMetadata(Operation *op,
   auto decisionIdAttr = op->getAttrOfType<StringAttr>(kScheduleDecisionIdAttr);
   if (!decisionIdAttr)
     return op->emitError()
-           << "structured lowering requires " << kScheduleDecisionIdAttr;
+           << "schedule contract requires " << kScheduleDecisionIdAttr;
 
   FailureOr<ArrayAttr> kernelMetadata = upsertKernelScheduleMetadata(
       funcOp, kernelAttr.getValue(), decisionIdAttr.getValue(),
@@ -442,26 +442,26 @@ LogicalResult preserveFunctionScheduleMetadata(Operation *op,
 } // namespace
 
 LogicalResult
-applyStructuredLoweringMarkers(const KernelPatternView &pattern,
-                               const ScheduleProblem &scheduleProblem,
-                               const ScheduleDecisionSet &decisionSet) {
-  StructuredLoweringReport report;
-  return applyStructuredLoweringMarkers(pattern, scheduleProblem, decisionSet,
-                                        report);
+applyScheduleContractMarkers(const KernelPatternView &pattern,
+                             const ScheduleProblem &scheduleProblem,
+                             const ScheduleDecisionSet &decisionSet) {
+  ScheduleContractReport report;
+  return applyScheduleContractMarkers(pattern, scheduleProblem, decisionSet,
+                                      report);
 }
 
-LogicalResult applyStructuredLoweringMarkers(
+LogicalResult applyScheduleContractMarkers(
     const KernelPatternView &pattern, const ScheduleProblem &scheduleProblem,
-    const ScheduleDecisionSet &decisionSet, StructuredLoweringReport &report) {
+    const ScheduleDecisionSet &decisionSet, ScheduleContractReport &report) {
   report.kernelId = scheduleProblem.kernelId;
-  report.skeleton = kLoopSkeletonV0.str();
+  report.contract = kGenericTiledLoopContract.str();
   report.verifiedOps = 0;
 
   if (pattern.kernelId != scheduleProblem.kernelId ||
       decisionSet.kernelId != scheduleProblem.kernelId) {
     if (Operation *op = getDiagnosticOp(pattern))
       op->emitError()
-          << "structured lowering kernel id mismatch: pattern = "
+          << "schedule contract kernel id mismatch: pattern = "
           << pattern.kernelId << ", problem = " << scheduleProblem.kernelId
           << ", decision set = " << decisionSet.kernelId;
     return failure();
@@ -470,7 +470,7 @@ LogicalResult applyStructuredLoweringMarkers(
   if (decisionSet.decisions.empty()) {
     if (Operation *op = getDiagnosticOp(pattern))
       op->emitError()
-          << "structured lowering requires at least one schedule decision for "
+          << "schedule contract requires at least one schedule decision for "
              "kernel "
           << scheduleProblem.kernelId;
     return failure();
@@ -498,13 +498,13 @@ LogicalResult applyStructuredLoweringMarkers(
     auto decisionIdAttr =
         op->getAttrOfType<StringAttr>(kScheduleDecisionIdAttr);
     if (!decisionIdAttr) {
-      op->emitError() << "structured lowering requires "
+      op->emitError() << "schedule contract requires "
                       << kScheduleDecisionIdAttr << " = \""
                       << selectedDecisionId << "\"";
       return failure();
     }
     if (decisionIdAttr.getValue() != selectedDecisionId) {
-      op->emitError() << "structured lowering expected "
+      op->emitError() << "schedule contract expected "
                       << kScheduleDecisionIdAttr << " = \""
                       << selectedDecisionId << "\", got \""
                       << decisionIdAttr.getValue() << "\"";
@@ -513,9 +513,9 @@ LogicalResult applyStructuredLoweringMarkers(
   }
 
   for (const PatternOpView &opView : pattern.ops) {
-    opView.op->setAttr(kStructuredLoweringAttr,
-                       StringAttr::get(opView.op->getContext(),
-                                       kLoopSkeletonV0));
+    opView.op->setAttr(
+        kScheduleContractAttr,
+        StringAttr::get(opView.op->getContext(), kGenericTiledLoopContract));
     setScheduleMetadata(opView.op, tileBinding, tileParams, guardMarkers,
                         tailPolicies, tailPlan, tailMarkers,
                         targetTilePolicy);
@@ -530,11 +530,11 @@ LogicalResult applyStructuredLoweringMarkers(
   return success();
 }
 
-void printStructuredLoweringReport(const StructuredLoweringReport &report,
-                                   llvm::raw_ostream &os) {
-  os << "StructuredLowering:\n";
+void printScheduleContractReport(const ScheduleContractReport &report,
+                                 llvm::raw_ostream &os) {
+  os << "ScheduleContract:\n";
   os << "  kernel = " << report.kernelId << "\n";
-  os << "  skeleton = " << report.skeleton << "\n";
+  os << "  contract = " << report.contract << "\n";
   os << "  verified_ops = " << report.verifiedOps << "\n";
 }
 

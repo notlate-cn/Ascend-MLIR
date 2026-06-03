@@ -21,7 +21,7 @@ func.func @concat_copy_after_writer(%arg0: memref<4x8xf16>,
       attrs = {ascend.kernel = "kernel_0",
                ascend.op_role = "vector",
                ascend.schedule.decision_id = "kernel_0.decision.0",
-               ascend.schedule.structured_lowering = "loop_skeleton_v0"} {
+               ascend.schedule.schedule_contract = "generic_tiled_loop"} {
   ^bb0(%a: f16, %b: f16, %out: f16):
     %sum = arith.addf %a, %b : f16
     linalg.yield %sum : f16
@@ -61,7 +61,7 @@ func.func @concat_copy_before_writer(%arg0: memref<4x8xf16>,
       attrs = {ascend.kernel = "kernel_0",
                ascend.op_role = "vector",
                ascend.schedule.decision_id = "kernel_0.decision.0",
-               ascend.schedule.structured_lowering = "loop_skeleton_v0"} {
+               ascend.schedule.schedule_contract = "generic_tiled_loop"} {
   ^bb0(%a: f16, %b: f16, %out_elem: f16):
     %sum = arith.addf %a, %b : f16
     linalg.yield %sum : f16

@@ -19,5 +19,5 @@ func.func @elementwise(%arg0: tensor<64xf16>, %arg1: tensor<64xf16>) -> tensor<6
   return %out : tensor<64xf16>
 }
 
-// CHECK: error: ascend-realize requires complete scheduled structured lowering attributes
-// EMPTY: error: ascend-realize requires at least one op with scheduled structured lowering attributes
+// CHECK: error: ascend-realize requires complete schedule contract attributes
+// EMPTY: error: ascend-realize requires at least one op with schedule contract attributes

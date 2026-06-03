@@ -50,7 +50,7 @@ using ::mlir::ascend::kScheduleTailPlanAttr;
 using ::mlir::ascend::kScheduleTailMarkersAttr;
 using ::mlir::ascend::kScheduleTailPoliciesAttr;
 using ::mlir::ascend::kScheduleTargetTilePolicyAttr;
-using ::mlir::ascend::kStructuredLoweringAttr;
+using ::mlir::ascend::kScheduleContractAttr;
 
 inline constexpr llvm::StringLiteral kScheduleFamilyAttr =
     "ascend.schedule.family";

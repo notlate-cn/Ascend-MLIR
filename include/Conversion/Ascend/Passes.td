@@ -151,7 +151,7 @@ def AscendRealizePass : Pass<"ascend-realize", "mlir::ModuleOp"> {
   let summary = "Construct Ascend MLIR memory realization plans";
   let description = [{
     Pass for the Ascend Realize stage. The default mode preserves IR unchanged,
-    validates that Schedule/StructuredLowering attributes are present, and emits
+    validates that schedule contract attributes are present, and emits
     an optional debug report with GM-only plan objects. The opt-in
     one-shot-bufferize materialization mode runs upstream One-Shot Bufferize.
     The opt-in memory-space-annotate mode runs One-Shot Bufferize first and

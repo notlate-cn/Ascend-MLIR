@@ -21,15 +21,15 @@ using ::mlir::ascend::kKernelizeOpRoleCube;
 using ::mlir::ascend::kKernelizeOpRoleVector;
 using ::mlir::ascend::kOpRoleAttr;
 using ::mlir::ascend::kOpRolesAttr;
+using ::mlir::ascend::kScheduleContractAttr;
 using ::mlir::ascend::kScheduleDecisionIdAttr;
-using ::mlir::ascend::kStructuredLoweringAttr;
 
 using MemoryPlace = ::mlir::ascend::MemoryPlace;
 
 struct RealizeKernelView {
   std::string kernelId;
   std::string decisionId;
-  std::string structuredLowering;
+  std::string scheduleContract;
   unsigned scheduledOps = 0;
 };
 

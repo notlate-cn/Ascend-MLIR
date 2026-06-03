@@ -16,6 +16,10 @@
 // TILING-DAG: "soc": "Ascend910B2"
 // TILING: "fixed": false
 // TILING: "name": "TB_M"
+// TILING: "values": [
+// TILING-NEXT: 1,
+// TILING-DAG: 32,
+// TILING-DAG: 64
 // TILING: "fixed": true
 // TILING: "name": "dim_arg0_0"
 // TILING: "shape_key": "arg0_dim0"

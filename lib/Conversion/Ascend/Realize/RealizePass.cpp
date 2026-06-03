@@ -164,18 +164,17 @@ buildRealizePlanBundles(ModuleOp module,
                         bool &emittedError) {
   DenseMap<StringRef, unsigned> scheduledOpsByKernel;
   DenseMap<StringRef, std::string> decisionByKernel;
-  DenseMap<StringRef, std::string> skeletonByKernel;
+  DenseMap<StringRef, std::string> contractByKernel;
 
   WalkResult walkResult = module.walk([&](Operation *op) {
     auto kernelAttr = op->getAttrOfType<StringAttr>(kKernelAttr);
     auto decisionAttr = op->getAttrOfType<StringAttr>(kScheduleDecisionIdAttr);
-    auto skeletonAttr = op->getAttrOfType<StringAttr>(kStructuredLoweringAttr);
-    if (!kernelAttr && !decisionAttr && !skeletonAttr)
+    auto contractAttr = op->getAttrOfType<StringAttr>(kScheduleContractAttr);
+    if (!kernelAttr && !decisionAttr && !contractAttr)
       return WalkResult::advance();
-    if (!kernelAttr || !decisionAttr || !skeletonAttr) {
+    if (!kernelAttr || !decisionAttr || !contractAttr) {
       op->emitError()
-          << "ascend-realize requires complete scheduled structured "
-             "lowering attributes";
+          << "ascend-realize requires complete schedule contract attributes";
       emittedError = true;
       return WalkResult::interrupt();
     }
@@ -189,9 +188,9 @@ buildRealizePlanBundles(ModuleOp module,
       emittedError = true;
       return WalkResult::interrupt();
     }
-    auto skeletonIt = skeletonByKernel.find(kernel);
-    if (skeletonIt != skeletonByKernel.end() &&
-        skeletonIt->second != skeletonAttr.getValue().str()) {
+    auto contractIt = contractByKernel.find(kernel);
+    if (contractIt != contractByKernel.end() &&
+        contractIt->second != contractAttr.getValue().str()) {
       op->emitError()
           << "ascend-realize requires consistent schedule attributes per "
              "kernel";
@@ -200,7 +199,7 @@ buildRealizePlanBundles(ModuleOp module,
     }
     ++scheduledOpsByKernel[kernel];
     decisionByKernel[kernel] = decisionAttr.getValue().str();
-    skeletonByKernel[kernel] = skeletonAttr.getValue().str();
+    contractByKernel[kernel] = contractAttr.getValue().str();
     return WalkResult::advance();
   });
 
@@ -208,8 +207,8 @@ buildRealizePlanBundles(ModuleOp module,
     return failure();
 
   if (scheduledOpsByKernel.empty()) {
-    module.emitError("ascend-realize requires at least one op with scheduled "
-                     "structured lowering attributes");
+    module.emitError("ascend-realize requires at least one op with schedule "
+                     "contract attributes");
     emittedError = true;
     return failure();
   }
@@ -240,7 +239,7 @@ buildRealizePlanBundles(ModuleOp module,
     RealizePlanBundle bundle;
     bundle.kernel.kernelId = kernel.str();
     bundle.kernel.decisionId = decisionByKernel[kernel];
-    bundle.kernel.structuredLowering = skeletonByKernel[kernel];
+    bundle.kernel.scheduleContract = contractByKernel[kernel];
     bundle.kernel.scheduledOps = scheduledOpsByKernel[kernel];
     auto bufferizedIt = bufferizedByKernel.find(bundle.kernel.kernelId);
     if (bufferizedIt != bufferizedByKernel.end())
@@ -362,8 +361,7 @@ struct AscendRealizePass
     if (failed(bundles)) {
       if (!emittedError)
         getOperation()->emitError()
-            << "ascend-realize requires scheduled structured lowering "
-               "attributes";
+            << "ascend-realize requires schedule contract attributes";
       signalPassFailure();
       return;
     }

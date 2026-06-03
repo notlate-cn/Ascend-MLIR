@@ -6,7 +6,7 @@ func.func @inconsistent_schedule_attrs(%arg0: tensor<64xf16>,
   %first = linalg.generic {
     ascend.kernel = "kernel_0",
     ascend.schedule.decision_id = "kernel_0.decision.0",
-    ascend.schedule.structured_lowering = "loop_skeleton_v0",
+    ascend.schedule.schedule_contract = "generic_tiled_loop",
     indexing_maps = [
       affine_map<(d0) -> (d0)>,
       affine_map<(d0) -> (d0)>,
@@ -24,7 +24,7 @@ func.func @inconsistent_schedule_attrs(%arg0: tensor<64xf16>,
   %second = linalg.generic {
     ascend.kernel = "kernel_0",
     ascend.schedule.decision_id = "kernel_0.decision.1",
-    ascend.schedule.structured_lowering = "loop_skeleton_v0",
+    ascend.schedule.schedule_contract = "generic_tiled_loop",
     indexing_maps = [
       affine_map<(d0) -> (d0)>,
       affine_map<(d0) -> (d0)>,

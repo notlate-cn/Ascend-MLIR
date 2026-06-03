@@ -5,7 +5,7 @@ func.func @partial_schedule_attrs(%arg0: tensor<64xf16>, %arg1: tensor<64xf16>) 
   %valid = linalg.generic {
     ascend.kernel = "kernel_0",
     ascend.schedule.decision_id = "kernel_0.decision.0",
-    ascend.schedule.structured_lowering = "loop_skeleton_v0",
+    ascend.schedule.schedule_contract = "generic_tiled_loop",
     indexing_maps = [
       affine_map<(d0) -> (d0)>,
       affine_map<(d0) -> (d0)>,
@@ -36,4 +36,4 @@ func.func @partial_schedule_attrs(%arg0: tensor<64xf16>, %arg1: tensor<64xf16>) 
   return %partial : tensor<64xf16>
 }
 
-// CHECK: error: ascend-realize requires complete scheduled structured lowering attributes
+// CHECK: error: ascend-realize requires complete schedule contract attributes

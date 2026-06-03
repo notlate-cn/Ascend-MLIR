@@ -1634,7 +1634,7 @@ scheduled = next(
 )
 semantic = scheduled["semantic_attrs"]
 assert semantic["schedule"]["template"] == "single_tile_per_block"
-assert semantic["schedule"]["structured_lowering"] == "loop_skeleton_v0"
+assert semantic["schedule"]["schedule_contract"] == "generic_tiled_loop"
 assert semantic["movement"]["phases"] == ["data_copy", "vector_compute", "write_back"]
 assert "movement phases" in scheduled["badges"]
 assert "move data_copy/vector_compute/write_back" not in scheduled["badges"]

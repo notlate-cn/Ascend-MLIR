@@ -16,7 +16,7 @@
 #include "ScheduleSearch.h"
 #include "ScheduleTuningDB.h"
 #include "ScheduleTypes.h"
-#include "StructuredLoweringDriver.h"
+#include "ScheduleContractDriver.h"
 #include "TemplateRegistry.h"
 #include "Target/Ascend/CannTargetProfileLoader.h"
 #include "Target/Ascend/TargetCostModel.h"
@@ -67,7 +67,7 @@ struct ScheduleDebugEntry {
   SmallVector<const ScheduleTemplateImplementation *> templateMatches;
   ScheduleSearchResult searchResult;
   ScheduleDecisionSet decisionSet;
-  StructuredLoweringReport structuredLoweringReport;
+  ScheduleContractReport scheduleContractReport;
 };
 
 constexpr llvm::StringLiteral kLegacyDefaultTilePolicyMode = "legacy-default";
@@ -95,7 +95,9 @@ static void clearOwnedScheduleAttrs(Operation *op) {
   op->removeAttr(kScheduleTemplateAttr);
   op->removeAttr(kScheduleDecisionIdAttr);
   op->removeAttr(kScheduleRuntimeTopKAttr);
-  op->removeAttr(kStructuredLoweringAttr);
+  op->removeAttr(kScheduleContractAttr);
+  op->removeAttr(kScheduleTileBindingAttr);
+  op->removeAttr(kScheduleTileParamsAttr);
   op->removeAttr(kScheduleGuardMarkersAttr);
   op->removeAttr(kScheduleTailPoliciesAttr);
   op->removeAttr(kScheduleTailPlanAttr);
@@ -577,10 +579,10 @@ struct AscendSchedulePass
         op->setAttr(kScheduleRuntimeTopKAttr, runtimeTopKAttr);
       }
 
-      StructuredLoweringReport structuredLoweringReport;
-      if (failed(applyStructuredLoweringMarkers(pattern, *scheduleProblem,
-                                                decisionSet,
-                                                structuredLoweringReport))) {
+      ScheduleContractReport scheduleContractReport;
+      if (failed(applyScheduleContractMarkers(pattern, *scheduleProblem,
+                                              decisionSet,
+                                              scheduleContractReport))) {
         signalPassFailure();
         return;
       }
@@ -592,7 +594,7 @@ struct AscendSchedulePass
       scheduleDebugEntries.push_back(ScheduleDebugEntry{
           std::move(*scheduleProblem), std::move(templateMatches),
           std::move(searchResult), std::move(decisionSet),
-          std::move(structuredLoweringReport)});
+          std::move(scheduleContractReport)});
     }
     if (failed(::mlir::ascend::debug::dumpCheckpoint(
             module, options, ::mlir::ascend::debug::DebugStage::Schedule,
@@ -616,8 +618,7 @@ struct AscendSchedulePass
                                   searchResult.keptInstances, llvm::errs());
         printScheduleGuardsReport(problem, searchResult, llvm::errs());
         printScheduleDecisionSetReport(entry.decisionSet, llvm::errs());
-        printStructuredLoweringReport(entry.structuredLoweringReport,
-                                      llvm::errs());
+        printScheduleContractReport(entry.scheduleContractReport, llvm::errs());
       }
       printScheduleCacheReport(scheduleCacheModel, llvm::errs());
       emitScheduleReport(reportEntries, llvm::errs());

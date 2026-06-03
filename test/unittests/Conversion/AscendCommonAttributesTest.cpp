@@ -26,10 +26,10 @@ TEST(AscendCommonAttributesTest, SharedConstantsMatchLayerNamespaces) {
             ascend::kScheduleDecisionIdAttr);
   EXPECT_EQ(ascend::realize::kScheduleDecisionIdAttr,
             ascend::kScheduleDecisionIdAttr);
-  EXPECT_EQ(ascend::schedule::kStructuredLoweringAttr,
-            ascend::kStructuredLoweringAttr);
-  EXPECT_EQ(ascend::realize::kStructuredLoweringAttr,
-            ascend::kStructuredLoweringAttr);
+  EXPECT_EQ(ascend::schedule::kScheduleContractAttr,
+            ascend::kScheduleContractAttr);
+  EXPECT_EQ(ascend::realize::kScheduleContractAttr,
+            ascend::kScheduleContractAttr);
   EXPECT_EQ(ascend::schedule::kScheduleTailPoliciesAttr,
             ascend::kScheduleTailPoliciesAttr);
   EXPECT_EQ(ascend::schedule::kScheduleTailPlanAttr,

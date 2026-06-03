@@ -46,7 +46,7 @@ func.func @non_identity_output_map(%arg0: tensor<4x4xf16>,
       ascend.kernel = "kernel_non_identity",
       ascend.op_role = "vector",
       ascend.schedule.decision_id = "kernel_non_identity.decision.0",
-      ascend.schedule.structured_lowering = "loop_skeleton_v0"
+      ascend.schedule.schedule_contract = "generic_tiled_loop"
     } {
   ^bb0(%x: f16, %y: f16, %o: f16):
     %v = arith.addf %x, %y : f16
@@ -76,7 +76,7 @@ func.func @view_mediated_downstream_user(%arg0: tensor<64xf16>,
       ascend.kernel = "kernel_producer",
       ascend.op_role = "vector",
       ascend.schedule.decision_id = "kernel_producer.decision.0",
-      ascend.schedule.structured_lowering = "loop_skeleton_v0"
+      ascend.schedule.schedule_contract = "generic_tiled_loop"
     } {
   ^bb0(%x: f16, %y: f16, %o: f16):
     %v = arith.addf %x, %y : f16
@@ -97,7 +97,7 @@ func.func @view_mediated_downstream_user(%arg0: tensor<64xf16>,
       ascend.kernel = "kernel_consumer",
       ascend.op_role = "vector",
       ascend.schedule.decision_id = "kernel_consumer.decision.0",
-      ascend.schedule.structured_lowering = "loop_skeleton_v0"
+      ascend.schedule.schedule_contract = "generic_tiled_loop"
     } {
   ^bb0(%x: f16, %o: f16):
     %v = arith.maximumf %x, %x : f16
@@ -127,7 +127,7 @@ func.func @cast_mediated_downstream_user(%arg0: memref<64xf16>,
       ascend.kernel = "kernel_cast_producer",
       ascend.op_role = "vector",
       ascend.schedule.decision_id = "kernel_cast_producer.decision.0",
-      ascend.schedule.structured_lowering = "loop_skeleton_v0"
+      ascend.schedule.schedule_contract = "generic_tiled_loop"
     } {
   ^bb0(%x: f16, %y: f16, %o: f16):
     %v = arith.addf %x, %y : f16
@@ -148,7 +148,7 @@ func.func @cast_mediated_downstream_user(%arg0: memref<64xf16>,
       ascend.kernel = "kernel_cast_consumer",
       ascend.op_role = "vector",
       ascend.schedule.decision_id = "kernel_cast_consumer.decision.0",
-      ascend.schedule.structured_lowering = "loop_skeleton_v0"
+      ascend.schedule.schedule_contract = "generic_tiled_loop"
     } {
   ^bb0(%x: f16, %o: f16):
     %v = arith.maximumf %x, %x : f16

@@ -17,7 +17,7 @@ func.func @target_aware_vector_temporary(%arg0: tensor<64xf16>, %arg1: tensor<64
       ascend.kernel = "kernel_0",
       ascend.op_role = "vector",
       ascend.schedule.decision_id = "kernel_0.decision.0",
-      ascend.schedule.structured_lowering = "loop_skeleton_v0"
+      ascend.schedule.schedule_contract = "generic_tiled_loop"
     } {
   ^bb0(%x: f16, %y: f16, %o: f16):
     %v = arith.addf %x, %y : f16
@@ -37,7 +37,7 @@ func.func @target_aware_vector_temporary(%arg0: tensor<64xf16>, %arg1: tensor<64
       ascend.kernel = "kernel_0",
       ascend.op_role = "vector",
       ascend.schedule.decision_id = "kernel_0.decision.0",
-      ascend.schedule.structured_lowering = "loop_skeleton_v0"
+      ascend.schedule.schedule_contract = "generic_tiled_loop"
     } {
   ^bb0(%x: f16, %o: f16):
     %v = arith.negf %x : f16
@@ -62,7 +62,7 @@ func.func @target_aware_non_vector_temporary(%arg0: tensor<64xf16>, %arg1: tenso
       ascend.kernel = "kernel_1",
       ascend.op_role = "cube",
       ascend.schedule.decision_id = "kernel_1.decision.0",
-      ascend.schedule.structured_lowering = "loop_skeleton_v0"
+      ascend.schedule.schedule_contract = "generic_tiled_loop"
     } {
   ^bb0(%x: f16, %y: f16, %o: f16):
     %v = arith.addf %x, %y : f16
@@ -82,7 +82,7 @@ func.func @target_aware_non_vector_temporary(%arg0: tensor<64xf16>, %arg1: tenso
       ascend.kernel = "kernel_1",
       ascend.op_role = "vector",
       ascend.schedule.decision_id = "kernel_1.decision.0",
-      ascend.schedule.structured_lowering = "loop_skeleton_v0"
+      ascend.schedule.schedule_contract = "generic_tiled_loop"
     } {
   ^bb0(%x: f16, %o: f16):
     %v = arith.negf %x : f16

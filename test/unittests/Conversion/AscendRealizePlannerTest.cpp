@@ -116,7 +116,7 @@ module {
       attrs = {ascend.kernel = "kernel_0",
                ascend.op_role = "vector",
                ascend.schedule.decision_id = "kernel_0.decision.0",
-               ascend.schedule.structured_lowering = "loop_skeleton_v0"} {
+               ascend.schedule.schedule_contract = "generic_tiled_loop"} {
     ^bb0(%lhs: f16, %rhs: f16, %old: f16):
       %sum = arith.addf %lhs, %rhs : f16
       linalg.yield %sum : f16
@@ -132,7 +132,7 @@ module {
       attrs = {ascend.kernel = "kernel_0",
                ascend.op_role = "vector",
                ascend.schedule.decision_id = "kernel_0.decision.0",
-               ascend.schedule.structured_lowering = "loop_skeleton_v0"} {
+               ascend.schedule.schedule_contract = "generic_tiled_loop"} {
     ^bb0(%x: f16, %old: f16):
       %neg = arith.negf %x : f16
       linalg.yield %neg : f16
@@ -162,7 +162,7 @@ module {
       attrs = {ascend.kernel = "kernel_0",
                ascend.op_roles = ["Primary", "Vector", "Injective"],
                ascend.schedule.decision_id = "kernel_0.decision.0",
-               ascend.schedule.structured_lowering = "loop_skeleton_v0"} {
+               ascend.schedule.schedule_contract = "generic_tiled_loop"} {
     ^bb0(%lhs: f16, %rhs: f16, %old: f16):
       %sum = arith.addf %lhs, %rhs : f16
       linalg.yield %sum : f16
@@ -178,7 +178,7 @@ module {
       attrs = {ascend.kernel = "kernel_0",
                ascend.op_roles = ["Primary", "Vector", "Injective"],
                ascend.schedule.decision_id = "kernel_0.decision.0",
-               ascend.schedule.structured_lowering = "loop_skeleton_v0"} {
+               ascend.schedule.schedule_contract = "generic_tiled_loop"} {
     ^bb0(%x: f16, %old: f16):
       %neg = arith.negf %x : f16
       linalg.yield %neg : f16
@@ -193,7 +193,7 @@ RealizePlanBundle makePlanBundle() {
   RealizePlanBundle bundle;
   bundle.kernel.kernelId = "kernel_0";
   bundle.kernel.decisionId = "kernel_0.decision.0";
-  bundle.kernel.structuredLowering = "loop_skeleton_v0";
+  bundle.kernel.scheduleContract = "generic_tiled_loop";
   bundle.kernel.scheduledOps = 1;
   bundle.bufferizedIR = makeBufferizedKernelIR();
   bundle.placement = makePlacementPlan();
@@ -843,7 +843,7 @@ module {
       attrs = {ascend.kernel = "kernel_0",
                ascend.op_role = "vector",
                ascend.schedule.decision_id = "kernel_0.decision.0",
-               ascend.schedule.structured_lowering = "loop_skeleton_v0"} {
+               ascend.schedule.schedule_contract = "generic_tiled_loop"} {
     ^bb0(%lhs: f32, %rhs: f32, %old: f32):
       %0 = arith.addf %lhs, %rhs : f32
       linalg.yield %0 : f32
@@ -897,7 +897,7 @@ module {
       attrs = {ascend.kernel = "kernel_0",
                ascend.op_role = "vector",
                ascend.schedule.decision_id = "kernel_0.decision.0",
-               ascend.schedule.structured_lowering = "loop_skeleton_v0"} {
+               ascend.schedule.schedule_contract = "generic_tiled_loop"} {
     ^bb0(%input: f32, %old: f32):
       %0 = arith.negf %input : f32
       linalg.yield %0 : f32
@@ -986,7 +986,7 @@ module {
       attrs = {ascend.kernel = "kernel_0",
                ascend.op_role = "vector",
                ascend.schedule.decision_id = "kernel_0.decision.0",
-               ascend.schedule.structured_lowering = "loop_skeleton_v0"} {
+               ascend.schedule.schedule_contract = "generic_tiled_loop"} {
     ^bb0(%lhs: f32, %rhs: f32, %old: f32):
       %sum = arith.addf %lhs, %rhs : f32
       linalg.yield %sum : f32
@@ -1095,7 +1095,7 @@ module {
       attrs = {ascend.kernel = "kernel_0",
                ascend.op_role = "vector",
                ascend.schedule.decision_id = "kernel_0.decision.0",
-               ascend.schedule.structured_lowering = "loop_skeleton_v0"} {
+               ascend.schedule.schedule_contract = "generic_tiled_loop"} {
     ^bb0(%lhs: f32, %rhs: f32, %old: f32):
       %sum = arith.addf %lhs, %rhs : f32
       linalg.yield %sum : f32
@@ -1135,7 +1135,7 @@ module {
       ascend.kernel = "kernel_0",
       ascend.op_role = "cube",
       ascend.schedule.decision_id = "kernel_0.decision.0",
-      ascend.schedule.structured_lowering = "loop_skeleton_v0"
+      ascend.schedule.schedule_contract = "generic_tiled_loop"
     }
       ins(%lhs, %rhs : memref<4x4xf16>, memref<4x4xf16>)
       outs(%mat : memref<4x4xf32>)
@@ -1152,7 +1152,7 @@ module {
         attrs = {ascend.kernel = "kernel_0",
                  ascend.op_role = "vector",
                  ascend.schedule.decision_id = "kernel_0.decision.0",
-                 ascend.schedule.structured_lowering = "loop_skeleton_v0"} {
+                 ascend.schedule.schedule_contract = "generic_tiled_loop"} {
       ^bb0(%x: f32, %bias_elem: f32, %old: f32):
         %sum = arith.addf %x, %bias_elem : f32
         linalg.yield %sum : f32
@@ -1194,7 +1194,7 @@ module {
       ascend.kernel = "kernel_0",
       ascend.op_role = "cube",
       ascend.schedule.decision_id = "kernel_0.decision.0",
-      ascend.schedule.structured_lowering = "loop_skeleton_v0"
+      ascend.schedule.schedule_contract = "generic_tiled_loop"
     }
       ins(%lhs, %rhs : memref<2x4x8xf16>, memref<2x8x16xf16>)
       outs(%mat : memref<2x4x16xf32>)
@@ -1210,7 +1210,7 @@ module {
       attrs = {ascend.kernel = "kernel_0",
                ascend.op_role = "vector",
                ascend.schedule.decision_id = "kernel_0.decision.0",
-               ascend.schedule.structured_lowering = "loop_skeleton_v0"} {
+               ascend.schedule.schedule_contract = "generic_tiled_loop"} {
     ^bb0(%x: f32, %bias_elem: f32, %old: f32):
       %sum = arith.addf %x, %bias_elem : f32
       linalg.yield %sum : f32

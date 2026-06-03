@@ -48,7 +48,7 @@ TEST(AscendScheduleDecisionTest, TailPolicyPreferenceComesFromTargetPolicy) {
             AxisTailPolicy::PadAndMask);
 }
 
-TEST(AscendScheduleDecisionTest, MemoryRoleTileParamsUseCopyOnly) {
+TEST(AscendScheduleDecisionTest, RuntimeTileParamsDescribeSearchSpace) {
   ScheduleProblem problem;
   problem.kernelId = "kernel_memory";
   problem.dominantRole = OpRole::Memory;
@@ -76,7 +76,7 @@ TEST(AscendScheduleDecisionTest, MemoryRoleTileParamsUseCopyOnly) {
   ScheduleInstance instance;
   instance.instanceId = "kernel_memory.memory_copy.0";
   instance.tmpl = tmpl;
-  instance.tileShape.tileSizes.push_back(32);
+  instance.tileShape.tileSizes.push_back(64);
 
   ScheduleDecisionSet decisions = buildScheduleDecisionSet(problem, instance);
   ASSERT_EQ(decisions.decisions.size(), 1u);
@@ -87,7 +87,7 @@ TEST(AscendScheduleDecisionTest, MemoryRoleTileParamsUseCopyOnly) {
   EXPECT_EQ(tileParams.front().logicalAxisId, 0u);
   EXPECT_EQ(tileParams.front().binding, TileParamBinding::Runtime);
   EXPECT_EQ(tileParams.front().defaultValue, 32);
-  EXPECT_EQ(tileParams.front().upperBound, 32);
+  EXPECT_EQ(tileParams.front().upperBound, 70);
   EXPECT_EQ(tileParams.front().extent, 70);
 
   ASSERT_EQ(tileParams.front().primitiveUses.size(), 2u);
@@ -95,4 +95,8 @@ TEST(AscendScheduleDecisionTest, MemoryRoleTileParamsUseCopyOnly) {
             PrimitiveAxisUseKind::DataCopy);
   EXPECT_EQ(tileParams.front().primitiveUses[1],
             PrimitiveAxisUseKind::WriteBack);
+
+  ASSERT_EQ(decisions.decisions.front().tailPlans.size(), 1u);
+  EXPECT_TRUE(ShapedType::isDynamic(
+      decisions.decisions.front().tailPlans.front().tileSize));
 }

@@ -39,8 +39,8 @@ inline constexpr llvm::StringLiteral kKernelizeTemplateFamiliesAttr =
 inline constexpr llvm::StringLiteral kPrimaryAttr = "ascend.primary";
 inline constexpr llvm::StringLiteral kScheduleDecisionIdAttr =
     "ascend.schedule.decision_id";
-inline constexpr llvm::StringLiteral kStructuredLoweringAttr =
-    "ascend.schedule.structured_lowering";
+inline constexpr llvm::StringLiteral kScheduleContractAttr =
+    "ascend.schedule.schedule_contract";
 inline constexpr llvm::StringLiteral kScheduleTileParamsAttr =
     "ascend.schedule.tile_params";
 inline constexpr llvm::StringLiteral kScheduleTileBindingAttr =

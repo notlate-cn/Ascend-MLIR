@@ -19,6 +19,7 @@
 #include "llvm/Support/JSON.h"
 #include "llvm/Support/raw_ostream.h"
 
+#include <algorithm>
 #include <cctype>
 #include <functional>
 #include <optional>
@@ -33,6 +34,14 @@ struct TilingFieldInfo {
   std::string type;
   bool isShape = false;
   std::string shapeKey;
+};
+
+struct TileParamSpaceInfo {
+  std::string name;
+  std::string binding;
+  int64_t defaultValue = ShapedType::kDynamic;
+  int64_t upperBound = ShapedType::kDynamic;
+  int64_t extent = ShapedType::kDynamic;
 };
 
 struct WorkspaceInfo {
@@ -164,17 +173,84 @@ collectTilingFields(func::FuncOp funcOp, emitasc::PyStructType tilingType) {
   return fields;
 }
 
-static llvm::json::Array buildTilingSchema(ArrayRef<TilingFieldInfo> fields) {
+static void appendUniqueTileValue(SmallVectorImpl<int64_t> &values,
+                                  int64_t value, int64_t upperBound) {
+  if (value <= 0)
+    return;
+  if (!ShapedType::isDynamic(upperBound))
+    value = std::min(value, upperBound);
+  if (!llvm::is_contained(values, value))
+    values.push_back(value);
+}
+
+static SmallVector<int64_t>
+buildRuntimeTileSearchValues(const TileParamSpaceInfo &tileParam) {
+  SmallVector<int64_t> values;
+  int64_t upperBound = tileParam.upperBound;
+  if (ShapedType::isDynamic(upperBound) || upperBound <= 0)
+    upperBound = tileParam.defaultValue;
+  if (!ShapedType::isDynamic(tileParam.extent) && tileParam.extent > 0)
+    upperBound = ShapedType::isDynamic(upperBound) || upperBound <= 0
+                     ? tileParam.extent
+                     : std::min(upperBound, tileParam.extent);
+  if (ShapedType::isDynamic(upperBound) || upperBound <= 0)
+    upperBound = 1;
+
+  int64_t defaultValue = tileParam.defaultValue;
+  if (ShapedType::isDynamic(defaultValue) || defaultValue <= 0)
+    defaultValue = std::min<int64_t>(32, upperBound);
+
+  appendUniqueTileValue(values, 1, upperBound);
+  appendUniqueTileValue(values, defaultValue / 4, upperBound);
+  appendUniqueTileValue(values, defaultValue / 2, upperBound);
+  appendUniqueTileValue(values, defaultValue, upperBound);
+  appendUniqueTileValue(values, defaultValue * 2, upperBound);
+  appendUniqueTileValue(values, defaultValue * 4, upperBound);
+  if (!ShapedType::isDynamic(tileParam.extent) && tileParam.extent > 0) {
+    appendUniqueTileValue(values, tileParam.extent / 4, upperBound);
+    appendUniqueTileValue(values, tileParam.extent / 2, upperBound);
+    appendUniqueTileValue(values, tileParam.extent, upperBound);
+  }
+
+  llvm::sort(values);
+  values.erase(std::unique(values.begin(), values.end()), values.end());
+  return values;
+}
+
+static llvm::json::Array buildTilingSchema(
+    ArrayRef<TilingFieldInfo> fields,
+    const llvm::StringMap<TileParamSpaceInfo> *tileParams = nullptr) {
   llvm::json::Array schema;
   for (const TilingFieldInfo &field : fields) {
     llvm::json::Object entry;
     entry["name"] = field.name;
     entry["type"] = field.type;
-    entry["fixed"] = field.isShape;
-    if (field.isShape)
+    const TileParamSpaceInfo *tileParam = nullptr;
+    if (tileParams) {
+      auto tileParamIt = tileParams->find(field.name);
+      if (tileParamIt != tileParams->end())
+        tileParam = &tileParamIt->second;
+    }
+    bool hasTileParam = tileParam != nullptr;
+    bool fixedTileParam = hasTileParam && tileParam->binding != "runtime";
+    entry["fixed"] = field.isShape || fixedTileParam;
+    if (field.isShape) {
       entry["shape_key"] = field.shapeKey;
-    else
+    } else if (hasTileParam) {
+      llvm::json::Array values;
+      if (fixedTileParam) {
+        int64_t value = tileParam->defaultValue;
+        if (!ShapedType::isDynamic(value))
+          values.push_back(value);
+        entry["value"] = ShapedType::isDynamic(value) ? 0 : value;
+      } else {
+        for (int64_t value : buildRuntimeTileSearchValues(*tileParam))
+          values.push_back(value);
+      }
+      entry["values"] = std::move(values);
+    } else {
       entry["values"] = llvm::json::Array{};
+    }
     schema.push_back(std::move(entry));
   }
   return schema;
@@ -724,19 +800,19 @@ static LogicalResult validateScheduleMetadataAttributes(func::FuncOp funcOp) {
   return success();
 }
 
-static FailureOr<llvm::StringMap<int64_t>>
-collectTileParamDefaults(func::FuncOp funcOp) {
+static FailureOr<llvm::StringMap<TileParamSpaceInfo>>
+collectTileParamSpaceInfos(func::FuncOp funcOp) {
   FailureOr<DictionaryAttr> kernelMetadata =
       lookupKernelScheduleMetadata(funcOp);
   if (failed(kernelMetadata))
     return failure();
 
-  llvm::StringMap<int64_t> defaults;
+  llvm::StringMap<TileParamSpaceInfo> infos;
   auto tileParams = dyn_cast_or_null<ArrayAttr>(getScheduleMetadataAttr(
       funcOp, *kernelMetadata, ::mlir::ascend::kScheduleTileParamsAttr,
       kKernelMetadataTileParamsKey));
   if (!tileParams)
-    return defaults;
+    return infos;
 
   for (auto [index, rawEntry] : llvm::enumerate(tileParams)) {
     auto entry = dyn_cast<DictionaryAttr>(rawEntry);
@@ -745,16 +821,29 @@ collectTileParamDefaults(func::FuncOp funcOp) {
              << ::mlir::ascend::kScheduleTileParamsAttr << " element "
              << index << " must be a dictionary attribute";
     auto name = dyn_cast_or_null<StringAttr>(entry.get("name"));
+    auto binding = dyn_cast_or_null<StringAttr>(entry.get("binding"));
     auto defaultValue = dyn_cast_or_null<IntegerAttr>(entry.get("default"));
-    if (!name || !defaultValue || !defaultValue.getType().isInteger(64))
+    auto upperBound = dyn_cast_or_null<IntegerAttr>(entry.get("upper_bound"));
+    auto extent = dyn_cast_or_null<IntegerAttr>(entry.get("extent"));
+    if (!name || !binding || !defaultValue ||
+        !defaultValue.getType().isInteger(64) || !upperBound ||
+        !upperBound.getType().isInteger(64) || !extent ||
+        !extent.getType().isInteger(64))
       return funcOp.emitError()
              << ::mlir::ascend::kScheduleTileParamsAttr << " element "
              << index
-             << " must include string 'name' and i64 'default' fields";
-    defaults[name.getValue()] = defaultValue.getInt();
+             << " must include string 'name'/'binding' and i64 "
+                "'default'/'upper_bound'/'extent' fields";
+    TileParamSpaceInfo info;
+    info.name = name.getValue().str();
+    info.binding = binding.getValue().str();
+    info.defaultValue = defaultValue.getInt();
+    info.upperBound = upperBound.getInt();
+    info.extent = extent.getInt();
+    infos[info.name] = std::move(info);
   }
 
-  return defaults;
+  return infos;
 }
 
 static FailureOr<llvm::json::Object>
@@ -1190,6 +1279,10 @@ buildKernelManifestEntry(func::FuncOp funcOp, int64_t entryIndex,
       collectTilingFields(funcOp, *tilingTypeOr);
   if (failed(fieldsOr))
     return failure();
+  FailureOr<llvm::StringMap<TileParamSpaceInfo>> tileParamInfos =
+      collectTileParamSpaceInfos(funcOp);
+  if (failed(tileParamInfos))
+    return failure();
   FailureOr<llvm::json::Object> tilingParams =
       buildScheduleTilingParams(funcOp);
   if (failed(tilingParams))
@@ -1211,7 +1304,7 @@ buildKernelManifestEntry(func::FuncOp funcOp, int64_t entryIndex,
   kernelEntry["entry_index"] = entryIndex;
   kernelEntry["shapeBucketKey"] = buildShapeBucketKey(*metadataEntries);
   kernelEntry["guardSet"] = buildGuardSet(*metadataEntries);
-  kernelEntry["tilingSchema"] = buildTilingSchema(*fieldsOr);
+  kernelEntry["tilingSchema"] = buildTilingSchema(*fieldsOr, &*tileParamInfos);
   kernelEntry["scheduleEntries"] = std::move(*scheduleEntries);
   kernelEntry["tilingParams"] = std::move(*tilingParams);
   kernelEntry["abiSignature"] = (funcOp.getName() + ":cann_static").str();
@@ -1512,6 +1605,10 @@ LogicalResult emitTilingSpaceJson(ModuleOp module, StringRef outPath,
         collectTilingFields(kernel, *tilingTypeOr);
     if (failed(fieldsOr))
       return failure();
+    FailureOr<llvm::StringMap<TileParamSpaceInfo>> tileParamInfos =
+        collectTileParamSpaceInfos(kernel);
+    if (failed(tileParamInfos))
+      return failure();
     FailureOr<WorkspaceInfo> workspaceInfo = getWorkspaceInfo(kernel);
     if (failed(workspaceInfo))
       return failure();
@@ -1532,7 +1629,8 @@ LogicalResult emitTilingSpaceJson(ModuleOp module, StringRef outPath,
     kernelObject["workspace_size_expr"] = workspaceInfo->sizeExpr;
     kernelObject["shapeBucketKey"] = buildShapeBucketKey(*metadataEntries);
     kernelObject["guardSet"] = buildGuardSet(*metadataEntries);
-    kernelObject["tiling_params"] = buildTilingSchema(*fieldsOr);
+    kernelObject["tiling_params"] =
+        buildTilingSchema(*fieldsOr, &*tileParamInfos);
     kernelObject["scheduleEntries"] = std::move(*scheduleEntries);
     return kernelObject;
   };
@@ -1573,6 +1671,10 @@ emitArtifactManifestJson(ModuleOp module, StringRef outPath,
       collectTilingFields(primaryKernel, *tilingTypeOr);
   if (failed(fieldsOr))
     return failure();
+  FailureOr<llvm::StringMap<TileParamSpaceInfo>> primaryTileParamInfos =
+      collectTileParamSpaceInfos(primaryKernel);
+  if (failed(primaryTileParamInfos))
+    return failure();
 
   FailureOr<llvm::json::Object> tilingParams =
       buildScheduleTilingParams(primaryKernel);
@@ -1609,7 +1711,8 @@ emitArtifactManifestJson(ModuleOp module, StringRef outPath,
   root["kernelName"] = primaryKernel.getName().str();
   root["shapeBucketKey"] = buildShapeBucketKey(*primaryMetadataEntries);
   root["guardSet"] = buildGuardSet(*primaryMetadataEntries);
-  root["tilingSchema"] = buildTilingSchema(*fieldsOr);
+  root["tilingSchema"] =
+      buildTilingSchema(*fieldsOr, &*primaryTileParamInfos);
   root["scheduleEntries"] = std::move(*scheduleEntries);
   root["abiSignature"] = (primaryKernel.getName() + ":cann_static").str();
   root["cacheKey"] =
@@ -1636,7 +1739,7 @@ LogicalResult emitHostTilingCpp(ModuleOp module, StringRef outPath,
     WorkspaceInfo workspaceInfo;
     SmallVector<TilingFieldInfo> fields;
     SmallVector<unsigned> shapeFieldPositions;
-    llvm::StringMap<int64_t> tileParamDefaults;
+    llvm::StringMap<TileParamSpaceInfo> tileParamInfos;
     std::string hostWorkspaceExpr;
     bool workspaceExprUsesShapeArgs = false;
     std::string structName;
@@ -1662,9 +1765,9 @@ LogicalResult emitHostTilingCpp(ModuleOp module, StringRef outPath,
         collectTilingFields(kernel, *tilingTypeOr);
     if (failed(fieldsOr))
       return failure();
-    FailureOr<llvm::StringMap<int64_t>> tileParamDefaults =
-        collectTileParamDefaults(kernel);
-    if (failed(tileParamDefaults))
+    FailureOr<llvm::StringMap<TileParamSpaceInfo>> tileParamInfos =
+        collectTileParamSpaceInfos(kernel);
+    if (failed(tileParamInfos))
       return failure();
 
     auto types = tilingTypeOr->getTypesAttr().getValue();
@@ -1677,7 +1780,7 @@ LogicalResult emitHostTilingCpp(ModuleOp module, StringRef outPath,
     info.tilingType = *tilingTypeOr;
     info.workspaceInfo = *workspaceInfo;
     info.fields = std::move(*fieldsOr);
-    info.tileParamDefaults = std::move(*tileParamDefaults);
+    info.tileParamInfos = std::move(*tileParamInfos);
     for (auto [index, nameAttr] : llvm::enumerate(names)) {
       StringRef name = cast<StringAttr>(nameAttr).getValue();
       if (isShapeField(name))
@@ -1745,9 +1848,12 @@ LogicalResult emitHostTilingCpp(ModuleOp module, StringRef outPath,
         os << "  data." << name << " = ";
         if (isShapeField(name)) {
           os << "shape_args[" << shapeIndex++ << "]";
-        } else if (auto defaultIt = info.tileParamDefaults.find(name);
-                   defaultIt != info.tileParamDefaults.end()) {
-          os << defaultIt->second;
+        } else if (auto tileParamIt = info.tileParamInfos.find(name);
+                   tileParamIt != info.tileParamInfos.end()) {
+          int64_t fallbackValue = tileParamIt->second.defaultValue;
+          if (ShapedType::isDynamic(fallbackValue) || fallbackValue <= 0)
+            fallbackValue = 1;
+          os << fallbackValue;
         } else {
           os << "0";
         }

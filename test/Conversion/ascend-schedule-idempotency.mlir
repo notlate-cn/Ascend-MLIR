@@ -33,7 +33,7 @@ func.func @stale_schedule_metadata(%arg0: tensor<64xf16>,
       ascend.schedule.template = "stale_template",
       ascend.schedule.decision_id = "stale.decision",
       ascend.schedule.runtime_top_k = 99 : i64,
-      ascend.schedule.structured_lowering = "stale_skeleton",
+      ascend.schedule.schedule_contract = "stale_contract",
       ascend.schedule.tail_policies = [],
       ascend.schedule.tail_plan = [],
       ascend.schedule.target_tile_policy = "stale_policy"

@@ -33,7 +33,7 @@ set(ASCEND_SCHEDULE_SOURCES
   Schedule/ScheduleSearch.cpp
   Schedule/ScheduleTemplateImplementation.cpp
   Schedule/ScheduleTuningDB.cpp
-  Schedule/StructuredLoweringDriver.cpp
+  Schedule/ScheduleContractDriver.cpp
   Schedule/KernelPatternView.cpp
   Schedule/TemplateRegistry.cpp
   Schedule/SchedulePass.cpp

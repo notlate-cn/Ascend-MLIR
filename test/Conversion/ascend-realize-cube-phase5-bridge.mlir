@@ -89,7 +89,7 @@ module {
         ascend.kernel = "kernel_0",
         ascend.op_role = "cube",
         ascend.schedule.decision_id = "kernel_0.decision.0",
-        ascend.schedule.structured_lowering = "loop_skeleton_v0"
+        ascend.schedule.schedule_contract = "generic_tiled_loop"
       }
         ins(%lhs, %rhs : tensor<?x?xf16>, tensor<?x?xf16>)
         outs(%out : tensor<?x?xf32>) -> tensor<?x?xf32>
@@ -107,7 +107,7 @@ module {
           ascend.kernel = "kernel_0",
           ascend.op_role = "vector",
           ascend.schedule.decision_id = "kernel_0.decision.0",
-          ascend.schedule.structured_lowering = "loop_skeleton_v0"
+          ascend.schedule.schedule_contract = "generic_tiled_loop"
         } {
       ^bb0(%x: f32, %bias: f32, %acc: f32):
         %sum = arith.addf %x, %bias : f32

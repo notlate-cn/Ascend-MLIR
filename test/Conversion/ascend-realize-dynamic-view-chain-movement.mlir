@@ -17,7 +17,7 @@ func.func @dynamic_extract_slice_consumer(
       ascend.kernel = "kernel_0",
       ascend.op_role = "vector",
       ascend.schedule.decision_id = "kernel_0.decision.0",
-      ascend.schedule.structured_lowering = "loop_skeleton_v0"
+      ascend.schedule.schedule_contract = "generic_tiled_loop"
     } {
   ^bb0(%a: f32, %o: f32):
     linalg.yield %a : f32
@@ -41,7 +41,7 @@ func.func @dynamic_extract_slice_consumer(
       ascend.kernel = "kernel_0",
       ascend.op_role = "vector",
       ascend.schedule.decision_id = "kernel_0.decision.0",
-      ascend.schedule.structured_lowering = "loop_skeleton_v0"
+      ascend.schedule.schedule_contract = "generic_tiled_loop"
     } {
   ^bb0(%a: f32, %o: f32):
     %neg = arith.negf %a : f32
@@ -60,7 +60,7 @@ func.func @dynamic_extract_slice_consumer(
       ascend.kernel = "kernel_0",
       ascend.op_role = "vector",
       ascend.schedule.decision_id = "kernel_0.decision.0",
-      ascend.schedule.structured_lowering = "loop_skeleton_v0"
+      ascend.schedule.schedule_contract = "generic_tiled_loop"
     } {
   ^bb0(%a: f32, %o: f32):
     %neg = arith.negf %a : f32
