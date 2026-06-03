@@ -227,4 +227,62 @@ module {
       mlir::ascend::normalize::verifyEntryNormalization(*module)));
 }
 
+TEST(AscendSymbolConstraintsTest, EntryVerifierRejectsOverMergedSymbolConstraints) {
+  auto context = createContext();
+  OwningOpRef<ModuleOp> module = parseModule(*context, R"mlir(
+module {
+  func.func @over_merged(%arg0: tensor<?xf16>, %arg1: tensor<?xf16>,
+                         %out: tensor<?xf16>) -> tensor<?xf16>
+      attributes {
+        ascend.symbol_constraints = [
+          {sym_name = "arg0_dim0", members = [
+            {value = 0 : i64, dim = 0 : i64},
+            {value = 1 : i64, dim = 0 : i64},
+            {value = 2 : i64, dim = 0 : i64},
+            {value = 3 : i64, dim = 0 : i64}
+          ]}
+        ]
+      } {
+    %0 = linalg.generic {
+        indexing_maps = [
+          affine_map<(d0) -> (d0)>,
+          affine_map<(d0) -> (d0)>],
+        iterator_types = ["parallel"]}
+        ins(%arg0 : tensor<?xf16>)
+        outs(%out : tensor<?xf16>) {
+      ^bb0(%x: f16, %outv: f16):
+        linalg.yield %x : f16
+      } -> tensor<?xf16>
+    return %0 : tensor<?xf16>
+  }
+}
+)mlir");
+  ASSERT_TRUE(module);
+
+  EXPECT_TRUE(failed(
+      mlir::ascend::normalize::verifyEntryNormalization(*module)));
+}
+
+TEST(AscendSymbolConstraintsTest, EntryVerifierRejectsStaticDimMembers) {
+  auto context = createContext();
+  OwningOpRef<ModuleOp> module = parseModule(*context, R"mlir(
+module {
+  func.func @static_member(%arg0: tensor<4x?xf16>)
+      attributes {
+        ascend.symbol_constraints = [
+          {sym_name = "arg0_dim0", members = [
+            {value = 0 : i64, dim = 0 : i64}
+          ]}
+        ]
+      } {
+    return
+  }
+}
+)mlir");
+  ASSERT_TRUE(module);
+
+  EXPECT_TRUE(failed(
+      mlir::ascend::normalize::verifyEntryNormalization(*module)));
+}
+
 } // namespace
