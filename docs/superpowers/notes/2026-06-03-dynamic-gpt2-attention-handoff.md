@@ -2,13 +2,15 @@
 
 Date: 2026-06-03
 Branch: `develop`
-Status: ✅ **multi-layer dynamic-seq GPT-2 PASSES end-to-end on sim.** A 2-block
-from-scratch GPT (attention + LayerNorm + MLP + residuals, dynamic `?` seq)
-runs through all 5 network_runner phases on camodel; the SAME compiled artifact
-handles seq=20/40/48/96 (`max_diff=7.15e-7`). Regression example committed at
-`examples/gpt2-dyn-e2e/`. Remaining: real-NPU validation; scale to real GPT-2
-dims (n_embd=768 / 12 layers — same ops, just bigger); weight-tied lm_head +
-embedding for a full generative model.
+Status: ✅ **multi-layer dynamic-seq GPT-2 PASSES end-to-end on sim AND real
+910C.** A 2-block from-scratch GPT (attention + LayerNorm + MLP + residuals,
+dynamic `?` seq) runs through all 5 network_runner phases: sim (seq=20/40/48/96,
+`max_diff=7.15e-7`) and **real device 7** (`BACKEND=npu` seq=48,
+`max_diff=9.537e-7 PASS`; `[npu-launch] tiling.word[2/3]=48` confirms the seq
+extent resolved from the input shape at launch on hardware). Regression example
+`examples/gpt2-dyn-e2e/` (use `FIXTURE_DIR=/data/gser/gpt2dyn-fixtures` on the
+torch-less container). Remaining: scale to real GPT-2 dims (n_embd=768 / 12
+layers — same ops); weight-tied lm_head + embedding for a full generative model.
 
 ## ✅ Walls cracked (8 commits, the full chain)
 
