@@ -47,7 +47,8 @@ def test_func_node_emitted_with_kind_and_tiling_badges():
     func_nodes = [n for n in graph["nodes"] if n["op_name"] == "func.func"]
     assert len(func_nodes) == 1
     fn = func_nodes[0]
-    assert fn["function"] == "@k"
+    assert fn["function"] == "k"
+    assert fn["label"] == "@k"
     assert fn["semantic_attrs"]["kernel"]["role"] == "vec"
     assert fn["semantic_attrs"]["schedule"]["block_dim"] == "ceil((d0*d1)/XBLOCK)"
     assert fn["semantic_attrs"]["schedule"]["axis_extent"] == "(d0*d1)"

@@ -789,7 +789,7 @@ def parse_stage_mlir(stage: dict[str, Any], text: str) -> dict[str, Any]:
         func_node = {
             "id": func_node_id,
             "line": line_number,
-            "function": f"@{function_name}",
+            "function": function_name,
             "op_name": "func.func",
             "label": f"@{function_name}",
             "input_values": [],
