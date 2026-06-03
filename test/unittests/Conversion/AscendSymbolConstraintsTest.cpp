@@ -4,8 +4,10 @@
 //
 //===----------------------------------------------------------------------===//
 
+#include "Conversion/Ascend/Common/Attributes.h"
 #include "Conversion/Ascend/Common/SymbolConstraints.h"
 #include "Conversion/Ascend/Normalize/EntryNormalizationVerifier.h"
+#include "Conversion/Ascend/Normalize/SymbolEquivalenceAnalysis.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
@@ -282,6 +284,40 @@ module {
   ASSERT_TRUE(module);
 
   EXPECT_TRUE(failed(
+      mlir::ascend::normalize::verifyEntryNormalization(*module)));
+}
+
+TEST(AscendSymbolConstraintsTest, EntryVerifierAcceptsGeneratedStaticBridge) {
+  auto context = createContext();
+  OwningOpRef<ModuleOp> module = parseModule(*context, R"mlir(
+module {
+  func.func @static_bridge(%static: tensor<4xf16>, %dynamic: tensor<?xf16>,
+                           %out: tensor<?xf16>) -> tensor<?xf16> {
+    %0 = linalg.generic {
+        indexing_maps = [
+          affine_map<(d0) -> (d0)>,
+          affine_map<(d0) -> (d0)>,
+          affine_map<(d0) -> (d0)>],
+        iterator_types = ["parallel"]}
+        ins(%static, %dynamic : tensor<4xf16>, tensor<?xf16>)
+        outs(%out : tensor<?xf16>) {
+      ^bb0(%static_elem: f16, %dynamic_elem: f16, %outv: f16):
+        linalg.yield %dynamic_elem : f16
+      } -> tensor<?xf16>
+    return %0 : tensor<?xf16>
+  }
+}
+)mlir");
+  ASSERT_TRUE(module);
+  auto func = module->lookupSymbol<func::FuncOp>("static_bridge");
+  ASSERT_TRUE(func);
+
+  FailureOr<mlir::ascend::normalize::SymbolEquivalenceResult> expected =
+      mlir::ascend::normalize::analyzeSymbolEquivalence(func);
+  ASSERT_FALSE(failed(expected));
+  func->setAttr(mlir::ascend::kSymbolConstraintsAttr, expected->attr);
+
+  EXPECT_TRUE(succeeded(
       mlir::ascend::normalize::verifyEntryNormalization(*module)));
 }
 

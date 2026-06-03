@@ -33,8 +33,7 @@ bool isStaticRankedTensorDim(symbol::DimRef ref) {
 class ExpectedEquivalenceClosure {
 public:
   void addEquality(symbol::DimRef lhs, symbol::DimRef rhs) {
-    if (lhs == rhs || isStaticRankedTensorDim(lhs) ||
-        isStaticRankedTensorDim(rhs))
+    if (lhs == rhs)
       return;
 
     unsigned lhsId = getOrCreate(lhs);
