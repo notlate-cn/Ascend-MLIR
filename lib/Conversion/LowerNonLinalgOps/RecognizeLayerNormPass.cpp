@@ -92,10 +92,17 @@ struct RecognizeLayerNormPattern : public OpRewritePattern<linalg::GenericOp> {
           }
     };
     findBcast(rstd);
+    // rstd may reach the broadcast through a reshape (collapse OR expand — the
+    // dynamic path reshapes rstd [?] -> [1,?,1] before broadcasting).
     if (!gBcast)
-      for (Operation *u : rstd.getUsers())
+      for (Operation *u : rstd.getUsers()) {
         if (auto c = dyn_cast<tensor::CollapseShapeOp>(u))
           findBcast(c.getResult());
+        else if (auto e = dyn_cast<tensor::ExpandShapeOp>(u))
+          findBcast(e.getResult());
+        if (gBcast)
+          break;
+      }
     if (!gBcast)
       return rewriter.notifyMatchFailure(gRstd, "no rstd broadcast");
 

@@ -814,6 +814,27 @@ def RecognizeLayerNorm : Pass<"recognize-layernorm", "mlir::ModuleOp"> {
   ];
 }
 
+def LowerBroadcastExtract : Pass<"lower-broadcast-extract", "mlir::func::FuncOp"> {
+  let summary = "Raise torch's extract-based dynamic broadcast to an affine-map "
+                "linalg broadcast";
+  let description = [{
+    torch lowers a dynamic broadcast (a tensor whose dim might be 1) as an
+    extract-based generic with a `dim==1 ? 0 : index` guard, rather than a clean
+    affine-map broadcast.  That form defeats RecognizeLayerNorm's broadcast
+    matcher (and the vector codegen).  This pass converts such a generic back to
+    an `ins`-broadcast generic (`yield %in` with a broadcast indexing map).  The
+    spurious guard is dropped only when its tested dim is the SAME SSA value as
+    the output init's matching loop extent (so `index in [0,dim)` makes the
+    guard a no-op).  No-op for static / already-canonical broadcasts.
+  }];
+  let constructor = "mlir::afir::createLowerBroadcastExtractPass()";
+  let dependentDialects = [
+    "mlir::arith::ArithDialect",
+    "mlir::tensor::TensorDialect",
+    "mlir::linalg::LinalgDialect",
+  ];
+}
+
 //===----------------------------------------------------------------------===//
 // AclnnFinalizeDecl
 //===----------------------------------------------------------------------===//

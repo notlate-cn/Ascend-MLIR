@@ -5,6 +5,7 @@ add_mlir_library(LowerNonLinalgOpsConversion
   RecognizeBatchNormPass.cpp
   RecognizeEmbeddingPass.cpp
   RecognizeLayerNormPass.cpp
+  LowerBroadcastExtractPass.cpp
 
   ADDITIONAL_HEADER_DIRS
   ${CMAKE_SOURCE_DIR}/include/Conversion

@@ -139,10 +139,20 @@ def phase1_outline_or_emit_json(args, work):
         # network-json emitter can't represent.  Runs first so the subsequent
         # recognize/canonicalize can DCE that now-dead shape arithmetic.  No-op
         # for static input (no such guards).
+        # --lower-broadcast-extract raises torch's extract-based dynamic
+        # broadcast (a `dim==1 ? 0 : idx` guarded tensor.extract) back to a clean
+        # affine-map linalg broadcast, so RecognizeLayerNorm's isBroadcastCopy
+        # matches the dynamic-seq decomposition.  Its guard-dropping soundness
+        # needs the guard's tested dim CSE'd to the same SSA as the output init's
+        # loop extent (torch emits them as distinct `tensor.dim` ops), so run
+        # --canonicalize --cse first.  recognize-attention runs BEFORE the
+        # canonicalize (its current contract); recognize-layernorm after the
+        # broadcast cleanup.  All no-ops for static input.
         run([AFIR_OPT, "--remove-cf-assert",
-             "--recognize-attention", "--recognize-layernorm",
-             "--recognize-batchnorm", "--recognize-embedding",
-             "--aclnn-finalize-decl",
+             "--recognize-attention", "--recognize-batchnorm",
+             "--recognize-embedding",
+             "--canonicalize", "--cse", "--lower-broadcast-extract",
+             "--recognize-layernorm", "--aclnn-finalize-decl",
              args.input_linalg, "-o", str(recognized)])
         # Step a: --linalg-fold-unit-extent-dims + --canonicalize. Canonicalize
         # folds away identity-copy generics (linalg.generic { yield %in }, e.g.
