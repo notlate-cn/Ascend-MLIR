@@ -6,10 +6,11 @@ from ascend_debug import __version__, layout
 from ascend_debug.runner import CommandError, find_tool, run_command
 
 # (stage_name, input_stage_key, output_stage_key, [afir-opt pass flags])
-# Stages are a logical 6-way split of develop's `--auto-fuse-codegen`
-# pipeline (lib/Conversion/AutoFuse/Pipeline.cpp). Order is preserved
-# exactly; only dump points are inserted. Flags are afir-opt CLI names
-# from include/Conversion/Passes.td. NO C++ dump options.
+# A logical 6-way split of develop's `--auto-fuse-codegen` pipeline
+# (lib/Conversion/AutoFuse/Pipeline.cpp), in exact pass order; only dump
+# points are inserted. NOTE: group-analysis/group-outline are NOT part of
+# --auto-fuse-codegen (they belong to the separate --auto-fuse outlining
+# pipeline) and must not appear here. Verified end-to-end on add_mul_relu.mlir.
 PASS_STEPS: list[tuple[str, str, str, list[str]]] = [
     (
         "normalize", "source", "010-normalize-out",
@@ -21,14 +22,7 @@ PASS_STEPS: list[tuple[str, str, str, list[str]]] = [
         ],
     ),
     (
-        "kernelize", "010-normalize-out", "020-kernelize-out",
-        [
-            "--auto-fuse-group-analysis",
-            "--auto-fuse-group-outline",
-        ],
-    ),
-    (
-        "schedule", "020-kernelize-out", "030-schedule-out",
+        "schedule", "010-normalize-out", "020-schedule-out",
         [
             "--auto-fuse-restore-matmul",
             "--auto-fuse-isolate-kernel-outputs",
@@ -38,9 +32,18 @@ PASS_STEPS: list[tuple[str, str, str, list[str]]] = [
         ],
     ),
     (
-        "realize", "030-schedule-out", "040-realize-out",
+        "bufferize", "020-schedule-out", "030-bufferize-out",
         [
+            "--one-shot-bufferize=bufferize-function-boundaries=true "
+            "allow-return-allocs-from-loops=true "
+            "function-boundary-type-conversion=identity-layout-map",
             "--annotate-ascendc-kernel-kind",
+            "--cse",
+        ],
+    ),
+    (
+        "realize", "030-bufferize-out", "040-realize-out",
+        [
             "--auto-fuse-fold-shadow-alloc",
             "--auto-fuse-insert-tile-buffers",
             "--ascendc-buffer-placement",
@@ -52,9 +55,9 @@ PASS_STEPS: list[tuple[str, str, str, list[str]]] = [
         [
             "--ascendc-decompose-multi-axis-broadcast",
             "--ascendc-parallelize",
-            "--ascendc-flatten-gm-ptr",
             "--canonicalize",
             "--cse",
+            "--ascendc-flatten-gm-ptr",
         ],
     ),
     (
@@ -63,6 +66,8 @@ PASS_STEPS: list[tuple[str, str, str, list[str]]] = [
             "--auto-fuse-verify-tiling-info-schema",
             "--ascendc-pack-tiling-data",
             "--ascendc-finalize-kernel",
+            "--cse",
+            "--canonicalize",
             "--canonicalize-cann-signature",
             "--ascendc-rcore-combine",
         ],
