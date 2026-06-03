@@ -2,9 +2,41 @@
 
 Date: 2026-06-03
 Branch: `develop`
-Status: **dynamic attention works end-to-end on sim**; full dynamic GPT-2 blocked
-on dynamic LayerNorm (extract-based dynamic broadcast not matched by the
-recognizer → decomposed LN → outliner use-before-def cycle).
+Status: dynamic attention + dynamic LayerNorm both work; 2-layer dynamic GPT
+clears phase-1 + phase-2 codegen; now blocked in phase-3 (host) on an
+unresolved `-1` dynamic dim propagated through a coordinator `collapse_shape`.
+
+## Update — LayerNorm cracked + codegen walls (committed)
+
+Walls broken since the original blocker below (all on `develop`):
+- `7914d11b` **dynamic LayerNorm**: new `--lower-broadcast-extract` pass raises
+  torch's extract-based dynamic broadcast (`dim==1 ? 0 : idx` guarded
+  `tensor.extract`) to a clean affine-map `ins`-broadcast, so
+  RecognizeLayerNorm's `isBroadcastCopy` matches → LN folds to
+  `@__aclnn_layer_norm` (no decomposed kernel → no outliner cycle). Guard dropped
+  only when its tested dim is the SAME SSA as the output init's loop extent
+  (CSE'd via `--canonicalize --cse` first). `findBcast` also traverses
+  `expand_shape`. phase-1 reordered: recognize-attention, then canon+cse, then
+  broadcast-lower + recognize-layernorm.
+- `d32d0ee0` **cross-arg memref.dim**: PackTilingData now canonicalizes the
+  ShapeDerived field's `(sourceArg,sourceDim)` (not just the dim query) so a dim
+  shared across args via shape_equalities (residual `collapse_shape`:
+  arg3.dim1 == arg0.dim0) resolves to its TilingData member instead of leaving a
+  `memref.dim` ascir-translate can't print.
+
+**Current wall (phase-3, host):** `shape_equalities[kernel_group8]: arg0.dim0=-1,
+arg3.dim1=20`. kernel_group8's arg0 is `%collapsed_66` (a coordinator
+collapse_shape); its dynamic dim reaches the host as the `-1` placeholder
+instead of 20. The host shape-propagation (AclnnBackend CoordEmitter +
+runner_utils) doesn't resolve this intermediate's dynamic dim. NEXT: trace
+`%collapsed_66`'s source in the coordinator and fix where the `-1` enters (an
+alloc/kernel-result/reshape whose dynamic dim wasn't filled from the input
+shape). Likely more host shape-propagation gaps + then dynamic reduce /
+embedding / lm_head behind it.
+
+---
+
+## Original blocker (now resolved — kept for context)
 
 ## Goal
 
