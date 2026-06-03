@@ -432,8 +432,14 @@ def _validate_shape_equalities(space, network, kid, runner_inputs):
                     f"shape_equalities[{kid}]: call_arg_index={call_idx} "
                     f"dim={dim_idx} out of range for shape {tuple(shape)}")
             resolved.append((call_idx, dim_idx, int(shape[dim_idx])))
-        # All members of a group must have the same value.
-        vals = {v for _, _, v in resolved}
+        # All members of a group must have the same value.  Skip members that
+        # resolve to the dynamic placeholder (-1): an arg propagated through a
+        # dynamic reshape (e.g. a matmul result collapsed [1,?,K]->[?,K]) carries
+        # a `shape` override with -1 for the dynamic dim, which the runner can't
+        # resolve symbolically here — but the C++ host materializes it from the
+        # real runtime shapes, so it isn't a user error.  The remaining resolved
+        # members still catch genuinely inconsistent input shapes.
+        vals = {v for _, _, v in resolved if v >= 0}
         if len(vals) > 1:
             details = ", ".join(
                 f"arg{c}.dim{d}={v}" for c, d, v in resolved)
