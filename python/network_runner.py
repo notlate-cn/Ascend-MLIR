@@ -132,7 +132,15 @@ def phase1_outline_or_emit_json(args, work):
         # the calls kind=aclnn. All passes are no-ops when the model has no such
         # subgraph. Runs pre-group-analysis on the rawest IR.
         recognized = work / "model_recognized.mlir"
-        run([AFIR_OPT, "--recognize-attention", "--recognize-layernorm",
+        # --remove-cf-assert strips torch's dynamic-shape runtime broadcast guards
+        # (cf.assert "dynamic negative broadcast sizes").  They are side-effecting,
+        # so they never DCE and keep the dead in-graph causal-mask `triu` shape
+        # arithmetic (index_cast roundtrips) alive in the coordinator, which the
+        # network-json emitter can't represent.  Runs first so the subsequent
+        # recognize/canonicalize can DCE that now-dead shape arithmetic.  No-op
+        # for static input (no such guards).
+        run([AFIR_OPT, "--remove-cf-assert",
+             "--recognize-attention", "--recognize-layernorm",
              "--recognize-batchnorm", "--recognize-embedding",
              "--aclnn-finalize-decl",
              args.input_linalg, "-o", str(recognized)])

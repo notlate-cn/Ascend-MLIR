@@ -42,6 +42,7 @@ target_link_libraries(afir-opt
     MarkStructuredOpsConversion
     MLIRAutoFuse
     LowerNonLinalgOpsConversion
+    TorchFrontendConversion
     MLIREmitAsc
     AFIRUtils
 )
