@@ -42,6 +42,26 @@ add_test(NAME AscendCommonAttributesTest
   COMMAND $<TARGET_FILE:AscendCommonAttributesTest>
 )
 
+add_executable(AscendSymbolConstraintsTest
+  AscendSymbolConstraintsTest.cpp
+)
+
+target_include_directories(AscendSymbolConstraintsTest PRIVATE
+  ${ASCEND_CONVERSION_INTERNAL_INCLUDE_DIR}
+)
+
+target_link_libraries(AscendSymbolConstraintsTest PRIVATE
+  RuntimeUnitTestSupport
+  AscendConversion
+  MLIRParser
+)
+
+add_dependencies(RuntimeUnitTests AscendSymbolConstraintsTest)
+
+add_test(NAME AscendSymbolConstraintsTest
+  COMMAND $<TARGET_FILE:AscendSymbolConstraintsTest>
+)
+
 add_executable(AscendScheduleDecisionTest
   AscendScheduleDecisionTest.cpp
 )
