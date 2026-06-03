@@ -1,5 +1,7 @@
 // RUN: sed -n '/\/\/ R1-BEGIN/,/\/\/ R1-END/p' %s | afir-opt --ascend-normalize | FileCheck %s --check-prefix=R1
+// RUN: sed -n '/\/\/ R1-DUP-BEGIN/,/\/\/ R1-DUP-END/p' %s | afir-opt --ascend-normalize | FileCheck %s --check-prefix=R1-DUP --implicit-check-not='sym_name = "arg0_dim0"'
 // RUN: sed -n '/\/\/ R2-BEGIN/,/\/\/ R2-END/p' %s | afir-opt --ascend-normalize | FileCheck %s --check-prefix=R2
+// RUN: sed -n '/\/\/ R2-CUSTOM-BEGIN/,/\/\/ R2-CUSTOM-END/p' %s | afir-opt --ascend-normalize | FileCheck %s --check-prefix=R2-CUSTOM
 // RUN: sed -n '/\/\/ R3-BEGIN/,/\/\/ R3-END/p' %s | afir-opt --ascend-normalize | FileCheck %s --check-prefix=R3
 // RUN: sed -n '/\/\/ R4-BEGIN/,/\/\/ R4-END/p' %s | afir-opt --ascend-normalize | FileCheck %s --check-prefix=R4
 // RUN: sed -n '/\/\/ R4-NEG-BEGIN/,/\/\/ R4-NEG-END/p' %s | afir-opt --ascend-normalize | FileCheck %s --check-prefix=R4-NEG --implicit-check-not='sym_name = "arg0_dim0"'
@@ -35,6 +37,26 @@ func.func @r1_generic_matmul_like(%lhs: tensor<?x?xf16>,
 // R1-DAG: {members = [{{[^]]*}}{dim = 1 : i64, value = 0 : i64}{{[^]]*}}{dim = 0 : i64, value = 1 : i64}{{[^]]*}}], sym_name = "arg0_dim1"}
 // R1-DAG: {members = [{{[^]]*}}{dim = 1 : i64, value = 1 : i64}{{[^]]*}}{dim = 1 : i64, value = 2 : i64}{{[^]]*}}{dim = 1 : i64, value = 3 : i64}{{[^]]*}}], sym_name = "arg1_dim1"}
 
+// R1-DUP-BEGIN
+func.func @r1_repeated_iterator_same_map(%arg0: tensor<?x?xf16>,
+                                         %out: tensor<4xf16>) -> tensor<4xf16> {
+  %0 = linalg.generic {
+      indexing_maps = [
+        affine_map<(d0) -> (d0, d0)>,
+        affine_map<(d0) -> (d0)>],
+      iterator_types = ["parallel"]}
+      ins(%arg0 : tensor<?x?xf16>)
+      outs(%out : tensor<4xf16>) {
+    ^bb0(%x: f16, %outv: f16):
+      linalg.yield %outv : f16
+    } -> tensor<4xf16>
+  return %0 : tensor<4xf16>
+}
+// R1-DUP-END
+
+// R1-DUP-LABEL: func.func @r1_repeated_iterator_same_map
+// R1-DUP: ascend.symbol_constraints = []
+
 // R2-BEGIN
 func.func @r2_named_matmul(%lhs: tensor<?x?xf16>,
                            %rhs: tensor<?x?xf16>,
@@ -50,6 +72,26 @@ func.func @r2_named_matmul(%lhs: tensor<?x?xf16>,
 // R2-DAG: {members = [{{[^]]*}}{dim = 0 : i64, value = 0 : i64}{{[^]]*}}{dim = 0 : i64, value = 2 : i64}{{[^]]*}}{dim = 0 : i64, value = 3 : i64}{{[^]]*}}], sym_name = "arg0_dim0"}
 // R2-DAG: {members = [{{[^]]*}}{dim = 1 : i64, value = 0 : i64}{{[^]]*}}{dim = 0 : i64, value = 1 : i64}{{[^]]*}}], sym_name = "arg0_dim1"}
 // R2-DAG: {members = [{{[^]]*}}{dim = 1 : i64, value = 1 : i64}{{[^]]*}}{dim = 1 : i64, value = 2 : i64}{{[^]]*}}{dim = 1 : i64, value = 3 : i64}{{[^]]*}}], sym_name = "arg1_dim1"}
+
+// R2-CUSTOM-BEGIN
+func.func @r2_named_matmul_custom_maps(%lhs: tensor<?x?xf16>,
+                                       %rhs: tensor<?x?xf16>,
+                                       %out: tensor<?x?xf16>) -> tensor<?x?xf16> {
+  %0 = linalg.matmul indexing_maps = [
+        affine_map<(m, n, k) -> (k, m)>,
+        affine_map<(m, n, k) -> (k, n)>,
+        affine_map<(m, n, k) -> (m, n)>]
+      ins(%lhs, %rhs : tensor<?x?xf16>, tensor<?x?xf16>)
+      outs(%out : tensor<?x?xf16>) -> tensor<?x?xf16>
+  return %0 : tensor<?x?xf16>
+}
+// R2-CUSTOM-END
+
+// R2-CUSTOM-LABEL: func.func @r2_named_matmul_custom_maps
+// R2-CUSTOM: ascend.symbol_constraints
+// R2-CUSTOM-DAG: {members = [{{[^]]*}}{dim = 0 : i64, value = 0 : i64}{{[^]]*}}{dim = 0 : i64, value = 1 : i64}{{[^]]*}}], sym_name = "arg0_dim0"}
+// R2-CUSTOM-DAG: {members = [{{[^]]*}}{dim = 1 : i64, value = 0 : i64}{{[^]]*}}{dim = 0 : i64, value = 2 : i64}{{[^]]*}}{dim = 0 : i64, value = 3 : i64}{{[^]]*}}], sym_name = "arg0_dim1"}
+// R2-CUSTOM-DAG: {members = [{{[^]]*}}{dim = 1 : i64, value = 1 : i64}{{[^]]*}}{dim = 1 : i64, value = 2 : i64}{{[^]]*}}{dim = 1 : i64, value = 3 : i64}{{[^]]*}}], sym_name = "arg1_dim1"}
 
 // R3-BEGIN
 func.func @r3_producer_consumer(%arg0: tensor<?x?xf16>,

@@ -198,14 +198,16 @@ LogicalResult addDpsResultInitEqualities(AnalysisState &state,
   return success();
 }
 
-LogicalResult analyzeGeneric(AnalysisState &state, linalg::GenericOp generic) {
-  SmallVector<AffineMap> maps = generic.getIndexingMapsArray();
+LogicalResult analyzeProjectedDimEqualities(AnalysisState &state,
+                                            linalg::LinalgOp linalgOp,
+                                            StringRef rule) {
+  SmallVector<AffineMap> maps = linalgOp.getIndexingMapsArray();
   SmallVector<Value> operands;
-  llvm::append_range(operands, generic.getDpsInputs());
-  llvm::append_range(operands, generic.getDpsInits());
+  llvm::append_range(operands, linalgOp.getDpsInputs());
+  llvm::append_range(operands, linalgOp.getDpsInits());
 
   if (maps.size() != operands.size())
-    return generic.emitError()
+    return linalgOp->emitError()
            << "Normalize symbol equivalence expected one indexing map per "
               "linalg operand";
 
@@ -217,63 +219,37 @@ LogicalResult analyzeGeneric(AnalysisState &state, linalg::GenericOp generic) {
 
     AffineMap map = maps[operandIndex];
     if (map.getNumResults() != static_cast<unsigned>(type.getRank()))
-      return generic.emitError()
+      return linalgOp->emitError()
              << "Normalize symbol equivalence expected indexing map rank to "
                 "match operand rank";
 
+    llvm::DenseMap<unsigned, int64_t> dimByIterator;
+    llvm::DenseSet<unsigned> duplicateIterators;
     for (auto [dim, expr] : llvm::enumerate(map.getResults())) {
       auto dimExpr = dyn_cast<AffineDimExpr>(expr);
       if (!dimExpr)
         continue;
-      refsByIterator[dimExpr.getPosition()].push_back(
-          symbol::DimRef{operand, static_cast<int64_t>(dim)});
+      unsigned iterator = dimExpr.getPosition();
+      auto insertion =
+          dimByIterator.try_emplace(iterator, static_cast<int64_t>(dim));
+      if (!insertion.second)
+        duplicateIterators.insert(iterator);
+    }
+
+    for (auto &entry : dimByIterator) {
+      if (duplicateIterators.contains(entry.first))
+        continue;
+      refsByIterator[entry.first].push_back(
+          symbol::DimRef{operand, entry.second});
     }
   }
 
   for (auto &entry : refsByIterator) {
     SmallVectorImpl<symbol::DimRef> &refs = entry.second;
     for (unsigned i = 1, e = refs.size(); i < e; ++i)
-      if (failed(state.addEquality(refs.front(), refs[i],
-                                   "r1_linalg_generic")))
+      if (failed(state.addEquality(refs.front(), refs[i], rule)))
         return failure();
   }
-  return success();
-}
-
-LogicalResult analyzeMatmul(AnalysisState &state, linalg::LinalgOp op) {
-  auto inputs = op.getDpsInputs();
-  if (inputs.size() < 2 || op->getNumResults() < 1)
-    return success();
-
-  Value lhs = inputs[0];
-  Value rhs = inputs[1];
-  Value result = op->getResult(0);
-  if (failed(state.addDimEquality(lhs, 0, result, 0, "r2_linalg_matmul")) ||
-      failed(state.addDimEquality(lhs, 1, rhs, 0, "r2_linalg_matmul")) ||
-      failed(state.addDimEquality(rhs, 1, result, 1, "r2_linalg_matmul")))
-    return failure();
-  return success();
-}
-
-LogicalResult analyzeBatchMatmul(AnalysisState &state, linalg::LinalgOp op) {
-  auto inputs = op.getDpsInputs();
-  if (inputs.size() < 2 || op->getNumResults() < 1)
-    return success();
-
-  Value lhs = inputs[0];
-  Value rhs = inputs[1];
-  Value result = op->getResult(0);
-  if (failed(state.addDimEquality(lhs, 0, rhs, 0,
-                                  "r2_linalg_batch_matmul")) ||
-      failed(state.addDimEquality(lhs, 0, result, 0,
-                                  "r2_linalg_batch_matmul")) ||
-      failed(state.addDimEquality(lhs, 1, result, 1,
-                                  "r2_linalg_batch_matmul")) ||
-      failed(state.addDimEquality(lhs, 2, rhs, 1,
-                                  "r2_linalg_batch_matmul")) ||
-      failed(state.addDimEquality(rhs, 2, result, 2,
-                                  "r2_linalg_batch_matmul")))
-    return failure();
   return success();
 }
 
@@ -436,11 +412,13 @@ LogicalResult analyzeOperation(AnalysisState &state, Operation *op) {
       return failure();
 
   if (auto generic = dyn_cast<linalg::GenericOp>(op))
-    return analyzeGeneric(state, generic);
+    return analyzeProjectedDimEqualities(state, generic, "r1_linalg_generic");
   if (isa<linalg::MatmulOp>(op))
-    return analyzeMatmul(state, cast<linalg::LinalgOp>(op));
+    return analyzeProjectedDimEqualities(state, cast<linalg::LinalgOp>(op),
+                                         "r2_linalg_matmul");
   if (isa<linalg::BatchMatmulOp>(op))
-    return analyzeBatchMatmul(state, cast<linalg::LinalgOp>(op));
+    return analyzeProjectedDimEqualities(state, cast<linalg::LinalgOp>(op),
+                                         "r2_linalg_batch_matmul");
   if (auto slice = dyn_cast<tensor::ExtractSliceOp>(op))
     return analyzeExtractSlice(state, slice);
   if (auto empty = dyn_cast<tensor::EmptyOp>(op))
