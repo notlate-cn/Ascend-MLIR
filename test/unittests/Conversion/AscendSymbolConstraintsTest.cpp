@@ -104,6 +104,49 @@ module {
   EXPECT_TRUE(failed(mlir::ascend::symbol::verifySymbolConstraintAttr(func)));
 }
 
+TEST(AscendSymbolConstraintsTest, RejectsNonI64SerializedMemberFields) {
+  auto context = createContext();
+  OwningOpRef<ModuleOp> module = parseModule(*context, R"mlir(
+module {
+  func.func @bad(%arg0: tensor<?xf16>)
+      attributes {
+        ascend.symbol_constraints = [
+          {sym_name = "arg0_dim0", members = [
+            {value = 0 : i32, dim = 0 : i64}
+          ]}
+        ]
+      } {
+    return
+  }
+}
+)mlir");
+  ASSERT_TRUE(module);
+  auto func = module->lookupSymbol<func::FuncOp>("bad");
+  ASSERT_TRUE(func);
+
+  EXPECT_TRUE(failed(mlir::ascend::symbol::verifySymbolConstraintAttr(func)));
+}
+
+TEST(AscendSymbolConstraintsTest, SkipsNonRankedFunctionArgumentsInOrdinals) {
+  auto context = createContext();
+  OwningOpRef<ModuleOp> module = parseModule(*context, R"mlir(
+module {
+  func.func @ordinals(%idx: index, %arg0: tensor<?xf16>) {
+    return
+  }
+}
+)mlir");
+  ASSERT_TRUE(module);
+  auto func = module->lookupSymbol<func::FuncOp>("ordinals");
+  ASSERT_TRUE(func);
+
+  mlir::ascend::symbol::ValueOrdinalMap ordinals =
+      mlir::ascend::symbol::buildValueOrdinalMap(func);
+
+  EXPECT_EQ(ordinals.count(func.getArgument(0)), 0u);
+  EXPECT_EQ(ordinals.lookup(func.getArgument(1)), 0);
+}
+
 TEST(AscendSymbolConstraintsTest, LooksUpClassForResolvedDimRef) {
   auto context = createContext();
   OwningOpRef<ModuleOp> module = parseModule(*context, R"mlir(

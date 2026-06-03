@@ -42,6 +42,21 @@ LogicalResult verifyDimInBounds(func::FuncOp func, DimRef ref) {
   return success();
 }
 
+FailureOr<int64_t> parseI64Field(func::FuncOp func, DictionaryAttr dict,
+                                 StringRef fieldName) {
+  auto intAttr = dyn_cast_or_null<IntegerAttr>(dict.get(fieldName));
+  if (!intAttr)
+    return func.emitError() << kSymbolConstraintsAttr << " field "
+                            << fieldName << " must be i64";
+
+  auto intType = dyn_cast<IntegerType>(intAttr.getType());
+  if (!intType || !intType.isSignless() || intType.getWidth() != 64)
+    return func.emitError() << kSymbolConstraintsAttr << " field "
+                            << fieldName << " must be i64";
+
+  return intAttr.getValue().getSExtValue();
+}
+
 FailureOr<DimRef> parseDimRef(func::FuncOp func,
                               const ValueOrdinalMap &ordinals,
                               Attribute rawMember) {
@@ -51,21 +66,18 @@ FailureOr<DimRef> parseDimRef(func::FuncOp func,
            << kSymbolConstraintsAttr
            << " class member must be a dictionary attribute";
 
-  auto valueAttr = dyn_cast_or_null<IntegerAttr>(member.get(kValueKey));
-  if (!valueAttr)
-    return func.emitError() << kSymbolConstraintsAttr
-                            << " class member must include an integer value";
-  auto dimAttr = dyn_cast_or_null<IntegerAttr>(member.get(kDimKey));
-  if (!dimAttr)
-    return func.emitError() << kSymbolConstraintsAttr
-                            << " class member must include an integer dim";
+  FailureOr<int64_t> ordinal = parseI64Field(func, member, kValueKey);
+  if (failed(ordinal))
+    return failure();
+  FailureOr<int64_t> dim = parseI64Field(func, member, kDimKey);
+  if (failed(dim))
+    return failure();
 
-  int64_t ordinal = valueAttr.getInt();
-  FailureOr<Value> value = resolveValueOrdinal(func, ordinals, ordinal);
+  FailureOr<Value> value = resolveValueOrdinal(func, ordinals, *ordinal);
   if (failed(value))
     return failure();
 
-  DimRef ref{*value, dimAttr.getInt()};
+  DimRef ref{*value, *dim};
   if (failed(verifyDimInBounds(func, ref)))
     return failure();
   return ref;
@@ -93,8 +105,10 @@ bool SymbolConstraintTable::areEquivalent(DimRef lhs, DimRef rhs) const {
 ValueOrdinalMap buildValueOrdinalMap(func::FuncOp func) {
   ValueOrdinalMap ordinals;
   int64_t nextOrdinal = 0;
-  for (BlockArgument arg : func.getArguments())
-    ordinals.try_emplace(arg, nextOrdinal++);
+  for (BlockArgument arg : func.getArguments()) {
+    if (isRankedTensor(arg))
+      ordinals.try_emplace(arg, nextOrdinal++);
+  }
 
   func.walk([&](Operation *op) {
     for (OpResult result : op->getResults()) {
