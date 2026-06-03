@@ -4,6 +4,7 @@ set(ASCEND_COMMON_SOURCES
 
 set(ASCEND_NORMALIZE_SOURCES
   Normalize/NormalizePass.cpp
+  Normalize/SymbolEquivalenceAnalysis.cpp
 )
 
 set(ASCEND_KERNELIZE_SOURCES

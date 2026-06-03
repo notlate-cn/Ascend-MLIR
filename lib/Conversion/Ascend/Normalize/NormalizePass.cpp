@@ -6,7 +6,9 @@
 
 #include "Conversion/Ascend/Normalize/NormalizePass.h"
 
+#include "SymbolEquivalenceAnalysis.h"
 #include "Conversion/Ascend/Common/Attributes.h"
+#include "Conversion/Ascend/Common/SymbolConstraints.h"
 #include "Conversion/Ascend/Debug/DebugOptions.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/ControlFlow/IR/ControlFlowOps.h"
@@ -81,11 +83,30 @@ struct AscendNormalizePass
     }
 
     MLIRContext *context = module.getContext();
-    module.walk([&](Operation *op) {
-      if (isa<func::FuncOp>(op))
-        op->setAttr(::mlir::ascend::kNormalizedAttr,
-                    BoolAttr::get(context, true));
-    });
+    if (module
+            .walk([&](func::FuncOp func) {
+              if (func->getAttr(::mlir::ascend::kSymbolConstraintsAttr) &&
+                  failed(::mlir::ascend::symbol::verifySymbolConstraintAttr(
+                      func)))
+                return WalkResult::interrupt();
+
+              FailureOr<::mlir::ascend::normalize::SymbolEquivalenceResult>
+                  constraints =
+                      ::mlir::ascend::normalize::analyzeSymbolEquivalence(
+                          func);
+              if (failed(constraints))
+                return WalkResult::interrupt();
+
+              func->setAttr(::mlir::ascend::kSymbolConstraintsAttr,
+                            constraints->attr);
+              func->setAttr(::mlir::ascend::kNormalizedAttr,
+                            BoolAttr::get(context, true));
+              return WalkResult::advance();
+            })
+            .wasInterrupted()) {
+      signalPassFailure();
+      return;
+    }
   }
 };
 
