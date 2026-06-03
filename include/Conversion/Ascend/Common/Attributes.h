@@ -12,6 +12,8 @@
 namespace mlir::ascend {
 
 inline constexpr llvm::StringLiteral kNormalizedAttr = "ascend.normalized";
+inline constexpr llvm::StringLiteral kSymbolConstraintsAttr =
+    "ascend.symbol_constraints";
 inline constexpr llvm::StringLiteral kOpRoleAttr = "ascend.op_role";
 inline constexpr llvm::StringLiteral kOpRolesAttr = "ascend.op_roles";
 inline constexpr llvm::StringLiteral kOpRoleVector = "vector";

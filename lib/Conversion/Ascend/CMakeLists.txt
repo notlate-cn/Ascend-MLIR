@@ -1,3 +1,7 @@
+set(ASCEND_COMMON_SOURCES
+  Common/SymbolConstraints.cpp
+)
+
 set(ASCEND_NORMALIZE_SOURCES
   Normalize/NormalizePass.cpp
 )
@@ -88,6 +92,7 @@ set(ASCEND_DEBUG_SOURCES
 )
 
 add_mlir_library(AscendConversion
+  ${ASCEND_COMMON_SOURCES}
   ${ASCEND_NORMALIZE_SOURCES}
   ${ASCEND_KERNELIZE_SOURCES}
   ${ASCEND_SCHEDULE_SOURCES}
