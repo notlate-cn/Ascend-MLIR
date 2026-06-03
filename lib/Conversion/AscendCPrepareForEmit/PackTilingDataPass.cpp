@@ -158,8 +158,15 @@ packTilingDataFromSchema(func::FuncOp func,
     for (size_t i = 0; i < schema.fields.size(); ++i) {
       auto &f = schema.fields[i];
       if (f.kind != SchemaFieldKind::ShapeDerived) continue;
-      if (f.sourceArg != (int32_t)cArg) continue;
-      if (f.sourceDim != (int32_t)cDim) continue;
+      // Canonicalize the FIELD's (sourceArg, sourceDim) the same way, so a dim
+      // query that maps to the symbol's representative arg (e.g. arg0.dim0)
+      // still matches a field keyed on a shape-equal arg (e.g. dim_arg3_1):
+      // both reduce to the same root.  Without this, dynamic dims shared across
+      // args (residual collapse_shape: arg3.dim1 == arg0.dim0) leave an
+      // unresolved memref.dim that ascir-translate cannot emit.
+      auto [fArg, fDim] = canonicalize(f.sourceArg, f.sourceDim);
+      if ((int64_t)fArg != (int64_t)cArg) continue;
+      if (fDim != cDim) continue;
       OpBuilder b(dimOp);
       Value idxVal = b.create<arith::IndexCastOp>(
           dimOp.getLoc(), indexTy, fieldVals[i]);
