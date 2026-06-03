@@ -219,6 +219,8 @@ git commit -m "feat(ascend-debug): port runner/layout/ui_text (pipeline-agnostic
 
 ### Task 3: Rewrite `collect.py` for develop's 6-stage afir-opt pipeline
 
+> **Post-execution correction (commit `66bcef0a`):** the `PASS_STEPS` below was found wrong during e2e verification — it included a `kernelize` stage of `--auto-fuse-group-analysis`/`--auto-fuse-group-outline` (those belong to the separate `--auto-fuse` *outlining* pipeline, not `--auto-fuse-codegen`) and omitted the required `one-shot-bufferize`. The shipped, end-to-end-verified stage table is **normalize → schedule → bufferize → realize → parallelize → finalize**; see the corrected table in the spec §4 and `tools/ascend-debug/ascend_debug/collect.py`. The code block below is retained for history.
+
 **Files:**
 - Create: `tools/ascend-debug/ascend_debug/collect.py` (rewrite; not a verbatim port)
 - Test: `tests/tools/ascend-debug/test_collect_stages.py`
