@@ -178,6 +178,45 @@ def _collect_func_header(lines: list[str], index: int) -> tuple[str | None, int]
     return "\n".join(collected), cursor
 
 
+def _collect_func_attr_block(lines: list[str], start_index: int) -> str:
+    """Collect the ``attributes { ... }`` block between the func args' closing
+    ``)`` and the body-opening ``{``. ``start_index`` is the line index right
+    after ``_collect_func_header`` finished (i.e. its returned ``next_index``).
+    Returns the text including the braces, or ``""`` if there is no block."""
+    text = "\n".join(lines[start_index:])
+    # MLIR func attribute dicts are written ``attributes { ... }`` (no ``=``),
+    # so the generic ``name = opener`` extractor does not apply. Find the
+    # keyword and scan balanced braces up to (but not into) the body ``{``.
+    match = re.search(r"\battributes\b", text)
+    if not match:
+        return ""
+    brace_start = text.find("{", match.end())
+    if brace_start < 0:
+        return ""
+    depth = 0
+    in_string = False
+    escaped = False
+    for index in range(brace_start, len(text)):
+        char = text[index]
+        if in_string:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == '"':
+                in_string = False
+            continue
+        if char == '"':
+            in_string = True
+        elif char == "{":
+            depth += 1
+        elif char == "}":
+            depth -= 1
+            if depth == 0:
+                return text[brace_start : index + 1]
+    return ""
+
+
 def _parse_func_decl(header: str) -> tuple[str, list[dict[str, Any]]] | None:
     match = FUNC_START_RE.search(header)
     if not match:
@@ -354,7 +393,9 @@ def _build_semantic_attrs(op_name: str, op_text: str) -> dict[str, Any]:
             or _extract_attr_as_str(op_text, "auto_fuse.topo_index"),
             "role": _extract_attr(op_text, "auto_fuse.kind")
             or _extract_attr(op_text, "aclnn.op")
-            or _extract_attr(op_text, "aclnn.kind"),
+            or _extract_attr(op_text, "aclnn.kind")
+            or _extract_attr(op_text, "ascendc.kernel_kind"),
+            "symbolic_shape": _extract_attr(op_text, "afir.symbolic_shape"),
         }.items()
         if value not in (None, [], False)
     }
@@ -362,7 +403,7 @@ def _build_semantic_attrs(op_name: str, op_text: str) -> dict[str, Any]:
         key: value
         for key, value in {
             "family": _extract_attr(op_text, "afir.reduce_template"),
-            "default_tile_size": _extract_attr(op_text, "auto_fuse.default_tile_size"),
+            "default_tile_size": _extract_attr_as_str(op_text, "auto_fuse.default_tile_size"),
             "block_dim": _extract_attr(op_text, "afir.block_dim_expr"),
             "axis_extent": _extract_attr(op_text, "afir.axis_extent_expr"),
             # NOTE: develop emits tile params under module-level
@@ -422,6 +463,16 @@ def _build_node_badges(semantic_attrs: dict[str, Any]) -> list[str]:
             if isinstance(param, dict) and param.get("name")
         ]
         badges.append("tile " + "/".join(names) if names else "tile params")
+    default_tile_size = schedule.get("default_tile_size")
+    if default_tile_size is not None:
+        badges.append(f"tile {default_tile_size}")
+    if schedule.get("block_dim"):
+        badges.append("block_dim")
+    if schedule.get("axis_extent"):
+        badges.append("axis")
+    symbolic_shape = kernel.get("symbolic_shape")
+    if symbolic_shape:
+        badges.append(f"shape {symbolic_shape}")
     if kernel.get("role"):
         badges.append(str(kernel["role"]))
     return badges
@@ -730,8 +781,32 @@ def parse_stage_mlir(stage: dict[str, Any], text: str) -> dict[str, Any]:
             continue
         function_name, args = func_decl
         note_function(function_name)
+        attr_block = _collect_func_attr_block(lines, next_index)
+        func_semantic = _build_semantic_attrs(
+            "func.func", func_header + " " + attr_block
+        )
+        func_node_id = f"n{len(nodes)}"
+        func_node = {
+            "id": func_node_id,
+            "line": line_number,
+            "function": f"@{function_name}",
+            "op_name": "func.func",
+            "label": f"@{function_name}",
+            "input_values": [],
+            "result_values": [],
+            "result_type": None,
+            "kernel_id": None,
+            "op_role": None,
+            "schedule_decision_id": None,
+            "workspace_size_bytes": None,
+            "semantic_attrs": func_semantic,
+            "badges": _build_node_badges(func_semantic),
+        }
+        nodes.append(func_node)
+        function_node_ids[function_name].append(func_node_id)
         for arg in args:
             node_id = f"n{len(nodes)}"
+            arg_semantic = _build_semantic_attrs("func.arg", arg["type"])
             node = {
                 "id": node_id,
                 "line": line_number,
@@ -745,8 +820,8 @@ def parse_stage_mlir(stage: dict[str, Any], text: str) -> dict[str, Any]:
                 "op_role": None,
                 "schedule_decision_id": None,
                 "workspace_size_bytes": None,
-                "semantic_attrs": {},
-                "badges": [],
+                "semantic_attrs": arg_semantic,
+                "badges": _build_node_badges(arg_semantic),
             }
             nodes.append(node)
             function_node_ids[function_name].append(node_id)
