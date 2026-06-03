@@ -282,8 +282,17 @@ def _extract_field_string_list(text: str, name: str) -> list[str]:
     return re.findall(r'"([^"]+)"', body)
 
 
+def _extract_attr_as_str(text: str, name: str) -> str | None:
+    """Extract an attribute as a string, handling both quoted and integer forms."""
+    quoted = _extract_attr(text, name)
+    if quoted is not None:
+        return quoted
+    int_val = _extract_int_attr(text, name)
+    return str(int_val) if int_val is not None else None
+
+
 def _extract_tile_params_attr(text: str) -> list[dict[str, Any]]:
-    body = _extract_balanced_attr_value(text, "ascend.schedule.tile_params", "[", "]")
+    body = _extract_balanced_attr_value(text, "auto_fuse.tiling_infos", "[", "]")
     if body is None:
         return []
     params: list[dict[str, Any]] = []
@@ -369,34 +378,25 @@ def _build_semantic_attrs(op_name: str, op_text: str) -> dict[str, Any]:
     kernel = {
         key: value
         for key, value in {
-            "id": _extract_attr(op_text, "ascend.kernel"),
-            "role": _extract_attr(op_text, "ascend.op_role"),
-            "roles": _extract_string_list_attr(op_text, "ascend.op_roles"),
+            "id": _extract_attr_as_str(op_text, "auto_fuse.group_id")
+            or _extract_attr_as_str(op_text, "auto_fuse.topo_index"),
+            "role": _extract_attr(op_text, "auto_fuse.kind")
+            or _extract_attr(op_text, "aclnn.op")
+            or _extract_attr(op_text, "aclnn.kind"),
             "template_families": _extract_string_list_attr(
-                op_text, "ascend.kernelize.template_families"
+                op_text, "afir.reduce_template"
             ),
-            "primary": "ascend.primary = true" in op_text,
         }.items()
         if value not in (None, [], False)
     }
     schedule = {
         key: value
         for key, value in {
-            "decision_id": _extract_attr(op_text, "ascend.schedule.decision_id"),
-            "family": _extract_attr(op_text, "ascend.schedule.family"),
-            "template": _extract_attr(op_text, "ascend.schedule.template"),
-            "structured_lowering": _extract_attr(
-                op_text, "ascend.schedule.structured_lowering"
-            ),
-            "target_tile_policy": _extract_attr(
-                op_text, "ascend.schedule.target_tile_policy"
-            ),
-            "tile_binding": _extract_attr(op_text, "ascend.schedule.tile_binding"),
+            "family": _extract_attr(op_text, "afir.reduce_template"),
+            "default_tile_size": _extract_attr(op_text, "auto_fuse.default_tile_size"),
+            "block_dim": _extract_attr(op_text, "afir.block_dim_expr"),
+            "axis_extent": _extract_attr(op_text, "afir.axis_extent_expr"),
             "tile_params": _extract_tile_params_attr(op_text),
-            "tail_policies": _extract_string_list_attr(
-                op_text, "ascend.schedule.tail_policies"
-            ),
-            "runtime_top_k": _extract_int_attr(op_text, "ascend.schedule.runtime_top_k"),
         }.items()
         if value not in (None, [], False)
     }
@@ -846,9 +846,9 @@ def parse_stage_mlir(stage: dict[str, Any], text: str) -> dict[str, Any]:
             "region_body": region_body,
             "body_ops": body_ops,
             "body_summary": _summarize_body_ops(body_ops),
-            "kernel_id": _extract_attr(op_text, "ascend.kernel"),
-            "op_role": _extract_attr(op_text, "ascend.op_role"),
-            "schedule_decision_id": _extract_attr(op_text, "ascend.schedule.decision_id"),
+            "kernel_id": _extract_attr_as_str(op_text, "auto_fuse.group_id"),
+            "op_role": _extract_attr(op_text, "auto_fuse.kind"),
+            "schedule_decision_id": None,
             "workspace_size_bytes": _extract_int_attr(op_text, "cann.workspace_size_bytes"),
             "semantic_attrs": semantic_attrs,
             "badges": _build_node_badges(semantic_attrs),
