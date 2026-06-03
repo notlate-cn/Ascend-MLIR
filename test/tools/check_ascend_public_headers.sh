@@ -12,6 +12,7 @@ allowed_headers=(
   "include/Conversion/Ascend/Translate/KernelIR/KernelIRUtils.h"
   "include/Conversion/Ascend/Translate/PreEmit/PreEmitPublicPasses.h"
   "include/Conversion/Ascend/Common/Attributes.h"
+  "include/Conversion/Ascend/Common/SymbolConstraints.h"
   "include/Conversion/Ascend/Debug/DebugOptions.h"
   "include/Conversion/Ascend/Kernelize/KernelizeExternalModels.h"
   "include/Conversion/Ascend/Kernelize/KernelizeOpInterface.h"
