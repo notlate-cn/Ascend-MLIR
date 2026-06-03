@@ -5,7 +5,7 @@
 // RUN: sed -n '/\/\/ R4-NEG-BEGIN/,/\/\/ R4-NEG-END/p' %s | afir-opt --ascend-normalize | FileCheck %s --check-prefix=R4-NEG --implicit-check-not='sym_name = "arg0_dim0"'
 // RUN: sed -n '/\/\/ R5-BEGIN/,/\/\/ R5-END/p' %s | afir-opt --ascend-normalize | FileCheck %s --check-prefix=R5
 // RUN: sed -n '/\/\/ R6-BEGIN/,/\/\/ R6-END/p' %s | afir-opt --ascend-normalize | FileCheck %s --check-prefix=R6
-// RUN: sed -n '/\/\/ STATIC-BEGIN/,/\/\/ STATIC-END/p' %s | afir-opt --ascend-normalize | FileCheck %s --check-prefix=STATIC --implicit-check-not='sym_name = "arg0_dim0"'
+// RUN: sed -n '/\/\/ STATIC-BEGIN/,/\/\/ STATIC-END/p' %s | afir-opt --ascend-normalize | FileCheck %s --check-prefix=STATIC --implicit-check-not='sym_name = "arg0_dim0"' --implicit-check-not='dim = 0 : i64'
 // RUN: sed -n '/\/\/ BAD-BEGIN/,/\/\/ BAD-END/p' %s | not afir-opt --ascend-normalize 2>&1 | FileCheck %s --check-prefix=BAD
 
 // R1-BEGIN
@@ -31,9 +31,9 @@ func.func @r1_generic_matmul_like(%lhs: tensor<?x?xf16>,
 
 // R1-LABEL: func.func @r1_generic_matmul_like
 // R1: ascend.symbol_constraints
-// R1-DAG: sym_name = "arg0_dim0"
-// R1-DAG: sym_name = "arg0_dim1"
-// R1-DAG: sym_name = "arg1_dim1"
+// R1-DAG: {members = [{{[^]]*}}{dim = 0 : i64, value = 0 : i64}{{[^]]*}}{dim = 0 : i64, value = 2 : i64}{{[^]]*}}{dim = 0 : i64, value = 3 : i64}{{[^]]*}}], sym_name = "arg0_dim0"}
+// R1-DAG: {members = [{{[^]]*}}{dim = 1 : i64, value = 0 : i64}{{[^]]*}}{dim = 0 : i64, value = 1 : i64}{{[^]]*}}], sym_name = "arg0_dim1"}
+// R1-DAG: {members = [{{[^]]*}}{dim = 1 : i64, value = 1 : i64}{{[^]]*}}{dim = 1 : i64, value = 2 : i64}{{[^]]*}}{dim = 1 : i64, value = 3 : i64}{{[^]]*}}], sym_name = "arg1_dim1"}
 
 // R2-BEGIN
 func.func @r2_named_matmul(%lhs: tensor<?x?xf16>,
@@ -47,9 +47,9 @@ func.func @r2_named_matmul(%lhs: tensor<?x?xf16>,
 
 // R2-LABEL: func.func @r2_named_matmul
 // R2: ascend.symbol_constraints
-// R2-DAG: sym_name = "arg0_dim0"
-// R2-DAG: sym_name = "arg0_dim1"
-// R2-DAG: sym_name = "arg1_dim1"
+// R2-DAG: {members = [{{[^]]*}}{dim = 0 : i64, value = 0 : i64}{{[^]]*}}{dim = 0 : i64, value = 2 : i64}{{[^]]*}}{dim = 0 : i64, value = 3 : i64}{{[^]]*}}], sym_name = "arg0_dim0"}
+// R2-DAG: {members = [{{[^]]*}}{dim = 1 : i64, value = 0 : i64}{{[^]]*}}{dim = 0 : i64, value = 1 : i64}{{[^]]*}}], sym_name = "arg0_dim1"}
+// R2-DAG: {members = [{{[^]]*}}{dim = 1 : i64, value = 1 : i64}{{[^]]*}}{dim = 1 : i64, value = 2 : i64}{{[^]]*}}{dim = 1 : i64, value = 3 : i64}{{[^]]*}}], sym_name = "arg1_dim1"}
 
 // R3-BEGIN
 func.func @r3_producer_consumer(%arg0: tensor<?x?xf16>,
@@ -81,8 +81,8 @@ func.func @r3_producer_consumer(%arg0: tensor<?x?xf16>,
 
 // R3-LABEL: func.func @r3_producer_consumer
 // R3: ascend.symbol_constraints
-// R3-DAG: sym_name = "arg0_dim0"
-// R3-DAG: sym_name = "arg0_dim1"
+// R3-DAG: {members = [{{[^]]*}}{dim = 0 : i64, value = 0 : i64}{{[^]]*}}{dim = 0 : i64, value = 3 : i64}{{[^]]*}}{dim = 0 : i64, value = 4 : i64}{{[^]]*}}], sym_name = "arg0_dim0"}
+// R3-DAG: {members = [{{[^]]*}}{dim = 1 : i64, value = 0 : i64}{{[^]]*}}{dim = 1 : i64, value = 3 : i64}{{[^]]*}}{dim = 1 : i64, value = 4 : i64}{{[^]]*}}], sym_name = "arg0_dim1"}
 
 // R4-BEGIN
 func.func @r4_extract_full_slice(%src: tensor<?x?xf16>) -> tensor<?x?xf16> {
@@ -98,8 +98,8 @@ func.func @r4_extract_full_slice(%src: tensor<?x?xf16>) -> tensor<?x?xf16> {
 
 // R4-LABEL: func.func @r4_extract_full_slice
 // R4: ascend.symbol_constraints
-// R4-DAG: sym_name = "arg0_dim0"
-// R4-DAG: sym_name = "arg0_dim1"
+// R4-DAG: {members = [{{[^]]*}}{dim = 0 : i64, value = 0 : i64}{{[^]]*}}{dim = 0 : i64, value = 1 : i64}{{[^]]*}}], sym_name = "arg0_dim0"}
+// R4-DAG: {members = [{{[^]]*}}{dim = 1 : i64, value = 0 : i64}{{[^]]*}}{dim = 1 : i64, value = 1 : i64}{{[^]]*}}], sym_name = "arg0_dim1"}
 
 // R4-NEG-BEGIN
 func.func @r4_strided_slice_does_not_merge(%src: tensor<?xf16>) -> tensor<?xf16> {
@@ -127,8 +127,8 @@ func.func @r5_tensor_dim_empty(%src: tensor<?x?xf16>) -> tensor<?x?xf16> {
 
 // R5-LABEL: func.func @r5_tensor_dim_empty
 // R5: ascend.symbol_constraints
-// R5-DAG: sym_name = "arg0_dim0"
-// R5-DAG: sym_name = "arg0_dim1"
+// R5-DAG: {members = [{{[^]]*}}{dim = 0 : i64, value = 0 : i64}{{[^]]*}}{dim = 0 : i64, value = 1 : i64}{{[^]]*}}], sym_name = "arg0_dim0"}
+// R5-DAG: {members = [{{[^]]*}}{dim = 1 : i64, value = 0 : i64}{{[^]]*}}{dim = 1 : i64, value = 1 : i64}{{[^]]*}}], sym_name = "arg0_dim1"}
 
 // R6-BEGIN
 func.func @r6_linalg_broadcast(%input: tensor<?x?xf16>,
@@ -141,8 +141,8 @@ func.func @r6_linalg_broadcast(%input: tensor<?x?xf16>,
 
 // R6-LABEL: func.func @r6_linalg_broadcast
 // R6: ascend.symbol_constraints
-// R6-DAG: sym_name = "arg0_dim0"
-// R6-DAG: sym_name = "arg0_dim1"
+// R6-DAG: {members = [{{[^]]*}}{dim = 0 : i64, value = 0 : i64}{{[^]]*}}{dim = 1 : i64, value = 1 : i64}{{[^]]*}}{dim = 1 : i64, value = 2 : i64}{{[^]]*}}], sym_name = "arg0_dim0"}
+// R6-DAG: {members = [{{[^]]*}}{dim = 1 : i64, value = 0 : i64}{{[^]]*}}{dim = 2 : i64, value = 1 : i64}{{[^]]*}}{dim = 2 : i64, value = 2 : i64}{{[^]]*}}], sym_name = "arg0_dim1"}
 
 // STATIC-BEGIN
 func.func @static_dims_are_not_members(%arg0: tensor<4x?xf16>,
@@ -163,7 +163,7 @@ func.func @static_dims_are_not_members(%arg0: tensor<4x?xf16>,
 
 // STATIC-LABEL: func.func @static_dims_are_not_members
 // STATIC: ascend.symbol_constraints
-// STATIC: sym_name = "arg0_dim1"
+// STATIC: {members = [{{[^]]*}}{dim = 1 : i64, value = 0 : i64}{{[^]]*}}{dim = 1 : i64, value = 1 : i64}{{[^]]*}}{dim = 1 : i64, value = 2 : i64}{{[^]]*}}], sym_name = "arg0_dim1"}
 
 // BAD-BEGIN
 func.func @bad_existing_symbol_attr(%arg0: tensor<?xf16>)
@@ -179,4 +179,4 @@ func.func @bad_existing_symbol_attr(%arg0: tensor<?xf16>)
 }
 // BAD-END
 
-// BAD: duplicate DimRef in symbol constraints
+// BAD: duplicate member dim ref
