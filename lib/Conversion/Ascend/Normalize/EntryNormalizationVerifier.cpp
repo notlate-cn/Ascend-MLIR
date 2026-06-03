@@ -144,6 +144,52 @@ collectExpectedSingletonMembers(func::FuncOp func, ArrayAttr expectedAttr) {
   return singletons;
 }
 
+LogicalResult collectExpectedDynamicClasses(
+    func::FuncOp func, ArrayAttr expectedAttr,
+    SmallVectorImpl<SmallVector<symbol::DimRef, 4>> &expectedClasses) {
+  symbol::ValueOrdinalMap ordinals = symbol::buildValueOrdinalMap(func);
+
+  for (Attribute rawClass : expectedAttr) {
+    auto klass = dyn_cast<DictionaryAttr>(rawClass);
+    if (!klass)
+      return func.emitError()
+             << "generated symbol constraints class must be a dictionary";
+
+    auto members = dyn_cast_or_null<ArrayAttr>(klass.get(kMembersKey));
+    if (!members)
+      return func.emitError()
+             << "generated symbol constraints class members must be an array";
+
+    SmallVector<symbol::DimRef, 4> dynamicMembers;
+    for (Attribute rawMember : members) {
+      FailureOr<symbol::DimRef> ref =
+          parseGeneratedDimRef(func, ordinals, rawMember);
+      if (failed(ref))
+        return failure();
+      if (!isStaticRankedTensorDim(*ref))
+        dynamicMembers.push_back(*ref);
+    }
+
+    if (!dynamicMembers.empty())
+      expectedClasses.push_back(std::move(dynamicMembers));
+  }
+
+  return success();
+}
+
+bool containsMember(ArrayRef<symbol::DimRef> members, symbol::DimRef ref) {
+  return llvm::is_contained(members, ref);
+}
+
+bool haveSameMembers(ArrayRef<symbol::DimRef> lhs,
+                     ArrayRef<symbol::DimRef> rhs) {
+  if (lhs.size() != rhs.size())
+    return false;
+  return llvm::all_of(lhs, [&](symbol::DimRef member) {
+    return containsMember(rhs, member);
+  });
+}
+
 void buildExpectedClosure(const SymbolEquivalenceResult &expected,
                           ExpectedEquivalenceClosure &closure) {
   for (const SymbolEqualityProof &proof : expected.proofs)
@@ -165,6 +211,32 @@ LogicalResult verifyExpectedProofCoverage(
                      << " equality proof";
     result = failure();
   }
+  return result;
+}
+
+LogicalResult verifyExpectedDynamicClassCompleteness(
+    func::FuncOp func, const symbol::SymbolConstraintTable &table,
+    ArrayRef<SmallVector<symbol::DimRef, 4>> expectedClasses) {
+  LogicalResult result = success();
+
+  for (ArrayRef<symbol::DimRef> expectedMembers : expectedClasses) {
+    bool found = llvm::any_of(
+        table.classes, [&](const symbol::SymbolConstraintClass &klass) {
+          SmallVector<symbol::DimRef, 4> actualDynamicMembers;
+          for (symbol::DimRef member : klass.members) {
+            if (!isStaticRankedTensorDim(member))
+              actualDynamicMembers.push_back(member);
+          }
+          return haveSameMembers(expectedMembers, actualDynamicMembers);
+        });
+    if (found)
+      continue;
+
+    func.emitError()
+        << "symbol constraints missing complete generated dynamic class";
+    result = failure();
+  }
+
   return result;
 }
 
@@ -234,8 +306,16 @@ LogicalResult verifyFuncSymbolConstraints(func::FuncOp func) {
   if (failed(expectedSingletonMembers))
     return failure();
 
+  SmallVector<SmallVector<symbol::DimRef, 4>, 8> expectedDynamicClasses;
+  if (failed(collectExpectedDynamicClasses(func, expected->attr,
+                                           expectedDynamicClasses)))
+    return failure();
+
   LogicalResult result = success();
   if (failed(verifyExpectedProofCoverage(func, *table, *expected)))
+    result = failure();
+  if (failed(verifyExpectedDynamicClassCompleteness(
+          func, *table, expectedDynamicClasses)))
     result = failure();
   if (failed(verifyNoExtraSymbolConstraints(
           func, *table, expectedClosure, *expectedSingletonMembers)))
