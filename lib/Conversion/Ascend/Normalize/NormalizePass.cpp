@@ -6,6 +6,7 @@
 
 #include "Conversion/Ascend/Normalize/NormalizePass.h"
 
+#include "EntryNormalizationVerifier.h"
 #include "SymbolEquivalenceAnalysis.h"
 #include "Conversion/Ascend/Common/Attributes.h"
 #include "Conversion/Ascend/Common/SymbolConstraints.h"
@@ -99,14 +100,23 @@ struct AscendNormalizePass
 
               func->setAttr(::mlir::ascend::kSymbolConstraintsAttr,
                             constraints->attr);
-              func->setAttr(::mlir::ascend::kNormalizedAttr,
-                            BoolAttr::get(context, true));
               return WalkResult::advance();
             })
             .wasInterrupted()) {
       signalPassFailure();
       return;
     }
+
+    if (failed(
+            ::mlir::ascend::normalize::verifyEntryNormalization(module))) {
+      signalPassFailure();
+      return;
+    }
+
+    module.walk([&](func::FuncOp func) {
+      func->setAttr(::mlir::ascend::kNormalizedAttr,
+                    BoolAttr::get(context, true));
+    });
   }
 };
 

@@ -5,6 +5,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "Conversion/Ascend/Common/SymbolConstraints.h"
+#include "Conversion/Ascend/Normalize/EntryNormalizationVerifier.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
@@ -175,6 +176,55 @@ module {
   auto found = table->lookup({func.getArgument(1), 0});
   ASSERT_NE(found, nullptr);
   EXPECT_EQ(found->symName.getValue(), "arg0_dim0");
+}
+
+TEST(AscendSymbolConstraintsTest, EntryVerifierRejectsMissingSymbolConstraints) {
+  auto context = createContext();
+  OwningOpRef<ModuleOp> module = parseModule(*context, R"mlir(
+module {
+  func.func @missing(%arg0: tensor<?xf16>) -> tensor<?xf16> {
+    return %arg0 : tensor<?xf16>
+  }
+}
+)mlir");
+  ASSERT_TRUE(module);
+
+  EXPECT_TRUE(failed(
+      mlir::ascend::normalize::verifyEntryNormalization(*module)));
+}
+
+TEST(AscendSymbolConstraintsTest,
+     EntryVerifierRejectsIncompleteSymbolConstraints) {
+  auto context = createContext();
+  OwningOpRef<ModuleOp> module = parseModule(*context, R"mlir(
+module {
+  func.func @incomplete(%arg0: tensor<?xf16>, %out: tensor<?xf16>)
+      -> tensor<?xf16>
+      attributes {
+        ascend.symbol_constraints = [
+          {sym_name = "arg0_dim0", members = [
+            {value = 0 : i64, dim = 0 : i64}
+          ]}
+        ]
+      } {
+    %0 = linalg.generic {
+        indexing_maps = [
+          affine_map<(d0) -> (d0)>,
+          affine_map<(d0) -> (d0)>],
+        iterator_types = ["parallel"]}
+        ins(%arg0 : tensor<?xf16>)
+        outs(%out : tensor<?xf16>) {
+      ^bb0(%x: f16, %outv: f16):
+        linalg.yield %x : f16
+      } -> tensor<?xf16>
+    return %0 : tensor<?xf16>
+  }
+}
+)mlir");
+  ASSERT_TRUE(module);
+
+  EXPECT_TRUE(failed(
+      mlir::ascend::normalize::verifyEntryNormalization(*module)));
 }
 
 } // namespace

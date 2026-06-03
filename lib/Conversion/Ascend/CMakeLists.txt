@@ -3,6 +3,7 @@ set(ASCEND_COMMON_SOURCES
 )
 
 set(ASCEND_NORMALIZE_SOURCES
+  Normalize/EntryNormalizationVerifier.cpp
   Normalize/NormalizePass.cpp
   Normalize/SymbolEquivalenceAnalysis.cpp
 )
