@@ -45,11 +45,22 @@ def write_f16_npy(path: Path, shape: tuple[int, ...], values: list[float]) -> No
             f.write(struct.pack("<e", value))
 
 
+def write_i64_tiling(path: Path, values: tuple[int, ...]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("wb") as f:
+        for value in values:
+            f.write(struct.pack("<q", value))
+
+
 def num_elements(shape: tuple[int, ...]) -> int:
     total = 1
     for dim in shape:
         total *= dim
     return total
+
+
+def round_f16(value: float) -> float:
+    return struct.unpack("<e", struct.pack("<e", value))[0]
 
 
 def write_case_arrays(root: Path) -> None:
@@ -104,6 +115,64 @@ def write_case_arrays(root: Path) -> None:
     write_f16_npy(broadcast_dir / "input.npy", (1, 640), base)
     write_f16_npy(broadcast_dir / "bias.npy", (2, 640), bias)
     write_f16_npy(broadcast_dir / "expected.npy", (2, 640), expected)
+
+    relu_diag_data0 = [
+        round_f16(-1.0 + (2.0 * (i % 640) / 639.0)) for i in range(640)
+    ]
+    relu_diag_data1 = [
+        round_f16(((r * 17 + c * 3) % 257) / 128.0 - 1.0)
+        for r in range(500)
+        for c in range(640)
+    ]
+    relu_diag_broadcast = [
+        max(relu_diag_data0[c], 0.0) for _r in range(500) for c in range(640)
+    ]
+    relu_diag_full = [
+        round_f16(max(relu_diag_data0[c], 0.0) + relu_diag_data1[r * 640 + c])
+        for r in range(500)
+        for c in range(640)
+    ]
+
+    relu_broadcast_dir = root / "relu_diag_broadcast_store"
+    relu_broadcast_dir.mkdir(parents=True, exist_ok=True)
+    write_f16_npy(relu_broadcast_dir / "input_data0.npy", (640,), relu_diag_data0)
+    write_f16_npy(
+        relu_broadcast_dir / "expected.npy", (500, 640), relu_diag_broadcast
+    )
+
+    relu_strided_dir = root / "relu_diag_strided_copy"
+    relu_strided_dir.mkdir(parents=True, exist_ok=True)
+    write_f16_npy(
+        relu_strided_dir / "input_data1.npy", (500, 640), relu_diag_data1
+    )
+    write_f16_npy(
+        relu_strided_dir / "expected.npy", (500, 640), relu_diag_data1
+    )
+
+    relu_full_dir = root / "relu_diag_broadcast_add"
+    relu_full_dir.mkdir(parents=True, exist_ok=True)
+    write_f16_npy(relu_full_dir / "input_data0.npy", (640,), relu_diag_data0)
+    write_f16_npy(relu_full_dir / "input_data1.npy", (500, 640), relu_diag_data1)
+    write_f16_npy(relu_full_dir / "expected.npy", (500, 640), relu_diag_full)
+
+    relu_generated_dir = root / "relu_diag_generated_buffers"
+    relu_generated_dir.mkdir(parents=True, exist_ok=True)
+    write_f16_npy(
+        relu_generated_dir / "input_data0.npy", (640,), relu_diag_data0
+    )
+    write_f16_npy(
+        relu_generated_dir / "input_data1.npy", (500, 640), relu_diag_data1
+    )
+    write_f16_npy(
+        relu_generated_dir / "expected.npy", (500, 640), relu_diag_full
+    )
+
+    relu_tiling_dir = root / "relu_diag_tiling_abi"
+    relu_tiling_dir.mkdir(parents=True, exist_ok=True)
+    write_f16_npy(relu_tiling_dir / "input_data0.npy", (640,), relu_diag_data0)
+    write_f16_npy(relu_tiling_dir / "input_data1.npy", (500, 640), relu_diag_data1)
+    write_f16_npy(relu_tiling_dir / "expected.npy", (500, 640), relu_diag_full)
+    write_i64_tiling(relu_tiling_dir / "tiling.bin", (32, 32, 640, 500, 640, 1))
 
 
 def main() -> None:

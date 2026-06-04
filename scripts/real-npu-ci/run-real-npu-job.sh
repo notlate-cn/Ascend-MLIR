@@ -26,8 +26,8 @@ This script is normally run as the container ENTRYPOINT. Configure it with:
   ASCEND_MLIR_CI_REF         Git ref, branch, tag, or commit. Default: HEAD.
   ASCEND_MLIR_CI_CASE        Example case name. Use docker-run.sh --case all
                               for the real-NPU suite. Special cases include
-                              microcases, real-npu-multikernel, and
-                              transformer-real-npu.
+                              microcases, relu-broadcast-diagnostics,
+                              real-npu-multikernel, and transformer-real-npu.
                               Default: relu-broadcast-transpose.
   ASCEND_MLIR_CI_CMD         Optional custom command to run after build. When set,
                               it takes precedence over ASCEND_MLIR_CI_CASE.
@@ -394,6 +394,38 @@ run_microcases() {
   done
 }
 
+run_relu_broadcast_diagnostics() {
+  local diag_out="${OUT_DIR}/relu-broadcast-diagnostics"
+  mkdir -p "${diag_out}"
+  # shellcheck source=/dev/null
+  source "${SRC_DIR}/examples/real-npu-microcases/cases.sh"
+  log "prepare relu-broadcast diagnostic microcases"
+  (
+    cd "${SRC_DIR}"
+    if [[ -n "${ASCEND_HOME_PATH:-}" ]]; then
+      source_if_exists "${ASCEND_HOME_PATH}/set_env.sh"
+    fi
+    # shellcheck source=/dev/null
+    source examples/env.sh
+    export RUNTIME_SESSION="${SRC_DIR}/build/bin/runtime-session"
+    bash examples/real-npu-microcases/prepare.sh \
+      --out-dir "${diag_out}" \
+      --include-relu-diagnostics
+  ) >"${LOG_DIR}/relu-broadcast-diagnostics-prepare.log" 2>&1
+
+  for case_name in "${REAL_NPU_RELU_DIAGNOSTIC_MICROCASES[@]}"; do
+    local manifest="${diag_out}/${case_name}/run_manifest.json"
+    [[ -f "${manifest}" ]] || fail "diagnostic manifest not found: ${manifest}"
+    mkdir -p "${OUT_DIR}/relu-broadcast-diagnostics-real/${case_name}"
+    log "run real NPU diagnostic ${case_name}"
+    run_real_manifest \
+      "${manifest}" \
+      "${OUT_DIR}/relu-broadcast-diagnostics-real/${case_name}/run_manifest.npu.json" \
+      "${OUT_DIR}/relu-broadcast-diagnostics-real/${case_name}/output.npy" \
+      >"${LOG_DIR}/relu-diagnostic-${case_name}-npu.log" 2>&1
+  done
+}
+
 run_multikernel() {
   local multi_out="${OUT_DIR}/real-npu-multikernel"
   mkdir -p "${multi_out}"
@@ -453,6 +485,9 @@ else
   case "${CASE_NAME}" in
     microcases)
       run_microcases
+      ;;
+    relu-broadcast-diagnostics|relu-diagnostics)
+      run_relu_broadcast_diagnostics
       ;;
     real-npu-multikernel|multikernel)
       run_multikernel

@@ -47,6 +47,7 @@ Options:
                             from versions.env.
   --case NAME               Example case to run. NAME comes from
                             examples/<NAME>/run.sh. Special: microcases,
+                            relu-broadcast-diagnostics,
                             real-npu-multikernel, transformer-real-npu, all.
                             all runs each case in a separate real-NPU container.
                             Default: relu-broadcast-transpose
@@ -186,6 +187,7 @@ list_cases() {
     sort
   if [[ -f examples/real-npu-microcases/prepare.sh ]]; then
     echo microcases
+    echo relu-broadcast-diagnostics
   fi
   if [[ -f examples/real-npu-multikernel/run.sh ]]; then
     echo real-npu-multikernel

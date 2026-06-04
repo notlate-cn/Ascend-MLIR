@@ -6,11 +6,12 @@ PYTHON="${PYTHON:-python3}"
 RUNTIME_SESSION="${RUNTIME_SESSION:-runtime-session}"
 OUT_DIR=""
 SKIP_COMPILE=false
+INCLUDE_RELU_DIAGNOSTICS=false
 
 usage() {
   cat <<'EOF' >&2
 Usage:
-  prepare.sh --out-dir <dir> [--skip-compile]
+  prepare.sh --out-dir <dir> [--skip-compile] [--include-relu-diagnostics]
 
 Generates real-NPU microcase data, kernels, run manifests, and optionally
 runtime-session artifacts.
@@ -27,6 +28,10 @@ while [ "$#" -gt 0 ]; do
       ;;
     --skip-compile)
       SKIP_COMPILE=true
+      shift
+      ;;
+    --include-relu-diagnostics)
+      INCLUDE_RELU_DIAGNOSTICS=true
       shift
       ;;
     *)
@@ -50,7 +55,14 @@ write_manifest() {
   local case_name="$1"
   local inputs_json="$2"
   local shape_json="$3"
+  local block_dim="${4:-1}"
+  local workspace_size="${5:-8192}"
+  local tiling_binary="${6:-}"
   local artifact_root="${OUT_DIR}/${case_name}/artifact"
+  local tiling_json=""
+  if [[ -n "${tiling_binary}" ]]; then
+    tiling_json='      "tiling": { "binary": "'"${tiling_binary}"'" },'
+  fi
   mkdir -p "${artifact_root}"
   cat >"${OUT_DIR}/${case_name}/run_manifest.json" <<EOF
 {
@@ -71,8 +83,9 @@ write_manifest() {
       "expected_outputs": [
         { "name": "out", "path": "${OUT_DIR}/${case_name}/expected.npy" }
       ],
-      "block_dim": 1,
-      "workspace_size": 8192,
+${tiling_json}
+      "block_dim": ${block_dim},
+      "workspace_size": ${workspace_size},
       "profiling": true,
       "atol": 0.0,
       "rtol": 0.0
@@ -145,5 +158,48 @@ write_manifest broadcast_add \
   '[{ "name": "input", "path": "'"${OUT_DIR}"'/broadcast_add/input.npy" }, { "name": "bias", "path": "'"${OUT_DIR}"'/broadcast_add/bias.npy" }]' \
   '[2, 640]'
 compile_case broadcast_add
+
+if "${INCLUDE_RELU_DIAGNOSTICS}"; then
+  copy_kernel relu_diag_broadcast_store
+  write_manifest relu_diag_broadcast_store \
+    '[{ "name": "data0", "path": "'"${OUT_DIR}"'/relu_diag_broadcast_store/input_data0.npy" }]' \
+    '[500, 640]' \
+    20 \
+    8192
+  compile_case relu_diag_broadcast_store
+
+  copy_kernel relu_diag_strided_copy
+  write_manifest relu_diag_strided_copy \
+    '[{ "name": "data1", "path": "'"${OUT_DIR}"'/relu_diag_strided_copy/input_data1.npy" }]' \
+    '[500, 640]' \
+    20 \
+    8192
+  compile_case relu_diag_strided_copy
+
+  copy_kernel relu_diag_broadcast_add
+  write_manifest relu_diag_broadcast_add \
+    '[{ "name": "data0", "path": "'"${OUT_DIR}"'/relu_diag_broadcast_add/input_data0.npy" }, { "name": "data1", "path": "'"${OUT_DIR}"'/relu_diag_broadcast_add/input_data1.npy" }]' \
+    '[500, 640]' \
+    20 \
+    8192
+  compile_case relu_diag_broadcast_add
+
+  copy_kernel relu_diag_generated_buffers
+  write_manifest relu_diag_generated_buffers \
+    '[{ "name": "data0", "path": "'"${OUT_DIR}"'/relu_diag_generated_buffers/input_data0.npy" }, { "name": "data1", "path": "'"${OUT_DIR}"'/relu_diag_generated_buffers/input_data1.npy" }]' \
+    '[500, 640]' \
+    20 \
+    8192
+  compile_case relu_diag_generated_buffers
+
+  copy_kernel relu_diag_tiling_abi
+  write_manifest relu_diag_tiling_abi \
+    '[{ "name": "data0", "path": "'"${OUT_DIR}"'/relu_diag_tiling_abi/input_data0.npy" }, { "name": "data1", "path": "'"${OUT_DIR}"'/relu_diag_tiling_abi/input_data1.npy" }]' \
+    '[500, 640]' \
+    20 \
+    0 \
+    "${OUT_DIR}/relu_diag_tiling_abi/tiling.bin"
+  compile_case relu_diag_tiling_abi
+fi
 
 echo "real NPU microcases prepared under ${OUT_DIR}"

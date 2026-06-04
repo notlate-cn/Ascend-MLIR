@@ -49,7 +49,8 @@ Options:
   --repo-url URL         Git repository URL to clone inside the container.
   --ref REF              Git ref, branch, tag, or commit to test. Default: HEAD
   --case NAME            Example case to run. Special cases include microcases,
-                         real-npu-multikernel, transformer-real-npu, and all.
+                         relu-broadcast-diagnostics, real-npu-multikernel,
+                         transformer-real-npu, and all.
                          all runs each suite case in a separate container.
                          Default: relu-broadcast-transpose
   --cmd COMMAND          Custom command to run after build, from repo root.

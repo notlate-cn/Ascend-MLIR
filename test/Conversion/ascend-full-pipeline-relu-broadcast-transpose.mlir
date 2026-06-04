@@ -14,8 +14,11 @@
 // CHECK-NEXT: emitasc.member %{{.*}} "dim_arg1_0"
 // CHECK-NEXT: emitasc.member %{{.*}} "dim_arg1_1"
 // CHECK-NEXT: emitasc.member %{{.*}} "dim_arg0_1"
-// CHECK-NOT: linalg.generic
-// CHECK: ascendc.data_copy_l2
+// CHECK: scf.for
+// CHECK: ascendc.global_tensor.set_global_buffer
+// CHECK-NOT: ascendc.pipe.init_queue
+// CHECK: ascendc.que_bind.alloc_tensor
+// CHECK-NEXT: ascendc.data_copy_l2
 // CHECK-NOT: linalg.generic
 // CHECK: ascendc.broadcast_l2
 // CHECK-NOT: linalg.generic

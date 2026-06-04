@@ -345,13 +345,17 @@ LogicalResult lowerParallelGenericComputes(ComputeLoweringContext &lowering) {
           Value srcElemCount = builder.create<arith::ConstantIndexOp>(loc, 1);
           for (Value d : srcDimsVals)
             srcElemCount = builder.create<arith::MulIOp>(loc, srcElemCount, d);
+          SmallVector<Value> srcBufferDims =
+              getBufferDimSizes(lowering, srcDimsVals, genOp.getOperation());
+          Value srcBufferElemCount =
+              lowering.computeProduct(builder, loc, srcBufferDims);
           Value srcGt = builder.create<GlobalTensorOp>(
               loc, GlobalTensorType::get(elemType));
           builder.create<GlobalTensorSetGlobalBufferOp>(loc, srcGt, inMemref,
                                                          /*size=*/Value{});
           srcVecinLt =
               copyGmToVecin(lowering, builder, loc, elemType, srcGt, srcElemCount,
-                            srcElemCount, &ownedInputTensors);
+                            srcBufferElemCount, &ownedInputTensors);
         }
 
         // Step 2: Broadcast directly into iteration-space order [iterDimSizes]
