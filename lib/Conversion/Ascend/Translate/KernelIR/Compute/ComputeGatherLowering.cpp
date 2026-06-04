@@ -161,13 +161,19 @@ LogicalResult lowerGatherCompute(ComputeLoweringContext &lowering,
   Value outBytesPerRow =
       builder.create<arith::MulIOp>(loc, dimK, elemBytesVal);
 
-  // Collect enclosing scf.for induction variables to compute the global
-  // row offset into the data memref.  The generic sits inside nested
-  // tiling loops whose IVs sum to the tile origin in the data tensor.
-  SmallVector<Value> enclosingIVs;
+  // Collect the row-axis tile origin from the enclosing loop nest.  The gather
+  // generic is tiled over output axes [M, K]; only the outer M tile origin
+  // contributes to the source row.  The inner K tile origin selects the
+  // indices/bias/output slice and must not be added to the data row base.
+  SmallVector<Value> enclosingIVsOuterToInner;
   for (Operation *p = genOp->getParentOp(); p; p = p->getParentOp())
     if (auto f = dyn_cast<scf::ForOp>(p))
-      enclosingIVs.push_back(f.getInductionVar());
+      enclosingIVsOuterToInner.push_back(f.getInductionVar());
+  std::reverse(enclosingIVsOuterToInner.begin(),
+               enclosingIVsOuterToInner.end());
+  Value rowTileOrigin;
+  if (!enclosingIVsOuterToInner.empty())
+    rowTileOrigin = enclosingIVsOuterToInner.front();
 
   // Data is in GM: set up a GlobalTensor for row-by-row copy.
   Value dataGt = builder.create<GlobalTensorOp>(
@@ -295,10 +301,10 @@ LogicalResult lowerGatherCompute(ComputeLoweringContext &lowering,
   builder.create<scf::ForOp>(
       loc, zero, tbM, one, ValueRange{},
       [&](OpBuilder &b, Location forLoc, Value rowIdx, ValueRange) {
-        // Global row = sum(enclosing IVs) + rowIdx (tile-local row)
         Value globalRow = rowIdx;
-        for (Value iv : enclosingIVs)
-          globalRow = b.create<arith::AddIOp>(forLoc, globalRow, iv);
+        if (rowTileOrigin)
+          globalRow = b.create<arith::AddIOp>(forLoc, globalRow,
+                                              rowTileOrigin);
 
         // Step 1: Copy one data row from GM → VECCALC.
         // Offset the GlobalTensor by globalRow * N elements, then DataCopy.

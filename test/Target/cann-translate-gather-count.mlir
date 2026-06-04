@@ -1,19 +1,18 @@
 // RUN: ascend-mlir-translate -mlir-to-cann %s | FileCheck %s
 
 // CHECK-LABEL: void gather_count_uses_result_count
-// CHECK: uint32_t _afir_idx32_count = static_cast<uint32_t>(c16_i32);
-// CHECK: uint32_t _afir_idx32_padded_count = _afir_idx32_count == 0u ? 0u : ((_afir_idx32_count + 127u) / 128u) * 128u;
-// CHECK: uint32_t _afir_idx32_bytes = _afir_idx32_padded_count * sizeof(uint32_t);
-// CHECK: SetSize(_afir_idx32_count);
-// CHECK: for (uint32_t _afir_i = 0; _afir_i < _afir_idx32_count; _afir_i++)
-// CHECK: for (uint32_t _afir_i = _afir_idx32_count; _afir_i < _afir_idx32_padded_count; _afir_i++)
-// CHECK: _afir_idx32_0.SetValue(_afir_i, 0u);
-// CHECK: _afir_idx32_0.SetSize(_afir_idx32_padded_count);
+// CHECK-NOT: _afir_idx32
 // CHECK: uint32_t _afir_gather_count = static_cast<uint32_t>(c16_i32);
 // CHECK: uint32_t _afir_gather_padded_count = _afir_gather_count == 0u ? 0u : ((_afir_gather_count + 127u) / 128u) * 128u;
 // CHECK: SetSize(_afir_gather_padded_count);
-// CHECK: SetSize((uint32_t)c128_idx);
-// CHECK: AscendC::Gather(
+// CHECK: SetSize((uint32_t)(c128_idx / 2u));
+// CHECK-NOT: AscendC::Gather(
+// CHECK: for (uint32_t _afir_i = 0; _afir_i < _afir_gather_count; ++_afir_i)
+// CHECK: uint32_t _afir_elem_offset = (static_cast<uint32_t>(
+// CHECK-SAME: / 2u) + static_cast<uint32_t>(
+// CHECK-SAME: .GetValue(_afir_i));
+// CHECK: SetValue(_afir_i,
+// CHECK-SAME: GetValue(_afir_elem_offset)
 module {
   func.func @gather_count_uses_result_count(
       %arg0: memref<?xf16>,

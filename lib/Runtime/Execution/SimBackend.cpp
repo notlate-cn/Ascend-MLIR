@@ -12,11 +12,13 @@
 #include "llvm/Support/Error.h"
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/FormatVariadic.h"
+#include "llvm/Support/MemoryBuffer.h"
 #include "llvm/Support/Path.h"
 #include "llvm/Support/raw_ostream.h"
 
 #include <chrono>
 #include <condition_variable>
+#include <cerrno>
 #include <functional>
 #include <future>
 #include <cstring>
@@ -26,6 +28,8 @@
 #include <thread>
 #include <type_traits>
 #include <utility>
+#include <sys/wait.h>
+#include <unistd.h>
 
 namespace mlir::runtime {
 
@@ -517,6 +521,42 @@ materializeSimulatorProfileArtifact(const ExecutionRequest &request,
   return profilePath.str().str();
 }
 
+std::string simulatorProfileArtifactPath(const ExecutionRequest &request) {
+  llvm::SmallString<256> profilePath(request.workingDirectory);
+  llvm::sys::path::append(profilePath, "opprof", "simulator", "trace.json");
+  return profilePath.str().str();
+}
+
+ExecutionResult buildProcessIsolatedSimulatorResult(
+    const ExecutionRequest &request, int64_t elapsedUs) {
+  ExecutionResult result;
+  result.taskId = request.task.taskId;
+  for (const TensorBinding &binding : request.task.invocation.outputs)
+    result.producedFiles.push_back(binding.path);
+
+  ProfileTrace runtimeTrace;
+  runtimeTrace.sessionId = request.sessionId;
+  runtimeTrace.setAttribute("simulator_launch_model", "dispatch_thread");
+  runtimeTrace.addCounter("serialized_launch_count", 1);
+  if (request.task.invocation.enableProfiling) {
+    std::string profilePath = simulatorProfileArtifactPath(request);
+    result.producedFiles.push_back(profilePath);
+    runtimeTrace.addProfileArtifact(request.task.taskId,
+                                    ExecutionBackendKind::Simulation,
+                                    profilePath, elapsedUs, elapsedUs);
+  }
+  result.profileTrace = std::move(runtimeTrace);
+  return result;
+}
+
+void writeChildError(llvm::StringRef path, llvm::StringRef message) {
+  std::error_code ec;
+  llvm::raw_fd_ostream os(path, ec, llvm::sys::fs::OF_Text);
+  if (ec)
+    return;
+  os << message << "\n";
+}
+
 uint32_t magicForKernelKind(KernelKind kind) {
   switch (kind) {
   case KernelKind::Vec:
@@ -529,7 +569,7 @@ uint32_t magicForKernelKind(KernelKind kind) {
 }
 
 llvm::Expected<ExecutionResult>
-runWithExecutor(const ExecutionRequest &request) {
+runWithExecutorInProcess(const ExecutionRequest &request) {
   if (request.task.artifact.kernelKind == KernelKind::Mix) {
     if (request.task.artifact.sharedLibraryPath.empty()) {
       return stageError("artifact",
@@ -638,6 +678,75 @@ runWithExecutor(const ExecutionRequest &request) {
   return result;
 }
 
+llvm::Expected<ExecutionResult>
+runWithExecutor(const ExecutionRequest &request) {
+  auto runStart = std::chrono::steady_clock::now();
+
+  llvm::SmallString<256> childErrorPath;
+  if (auto ec = llvm::sys::fs::createTemporaryFile(
+          "ascend-sim-child-error", "log", childErrorPath)) {
+    return llvm::createStringError(ec,
+                                   "[sim:subprocess] cannot create error file");
+  }
+
+  pid_t pid = fork();
+  if (pid < 0) {
+    llvm::sys::fs::remove(childErrorPath);
+    return llvm::createStringError(llvm::inconvertibleErrorCode(),
+                                   "[sim:subprocess] fork failed: %s",
+                                   std::strerror(errno));
+  }
+
+  if (pid == 0) {
+    auto resultOr = runWithExecutorInProcess(request);
+    if (!resultOr) {
+      writeChildError(childErrorPath, llvm::toString(resultOr.takeError()));
+      _exit(1);
+    }
+    _exit(0);
+  }
+
+  int status = 0;
+  pid_t waited = 0;
+  do {
+    waited = waitpid(pid, &status, 0);
+  } while (waited < 0 && errno == EINTR);
+
+  if (waited < 0) {
+    llvm::sys::fs::remove(childErrorPath);
+    return llvm::createStringError(llvm::inconvertibleErrorCode(),
+                                   "[sim:subprocess] waitpid failed: %s",
+                                   std::strerror(errno));
+  }
+
+  auto readChildError = [&]() -> std::string {
+    auto bufferOr = llvm::MemoryBuffer::getFile(childErrorPath);
+    llvm::sys::fs::remove(childErrorPath);
+    if (!bufferOr)
+      return {};
+    return (*bufferOr)->getBuffer().str();
+  };
+
+  if (!WIFEXITED(status) || WEXITSTATUS(status) != 0) {
+    std::string detail = readChildError();
+    if (detail.empty()) {
+      if (WIFSIGNALED(status)) {
+        detail = llvm::formatv("child terminated by signal {0}",
+                               WTERMSIG(status)).str();
+      } else {
+        detail = llvm::formatv("child exited with status {0}", status).str();
+      }
+    }
+    return llvm::createStringError(llvm::inconvertibleErrorCode(), "%s",
+                                   detail.c_str());
+  }
+
+  llvm::sys::fs::remove(childErrorPath);
+  auto elapsed = std::chrono::duration_cast<std::chrono::microseconds>(
+      std::chrono::steady_clock::now() - runStart);
+  return buildProcessIsolatedSimulatorResult(request, elapsed.count());
+}
+
 } // namespace
 
 llvm::Expected<std::string>
@@ -661,10 +770,10 @@ BackendCapabilities SimBackend::capabilities() const {
     return driver_->capabilities();
 
   BackendCapabilities caps;
-  caps.supportsConcurrentDispatch = true;
+  caps.supportsConcurrentDispatch = false;
   caps.supportsConcurrentExecution = false;
   caps.requiresSerializedLaunch = true;
-  caps.maxConcurrentTasks = 1024;
+  caps.maxConcurrentTasks = 1;
   caps.maxConcurrentStreams = 1;
   return caps;
 }

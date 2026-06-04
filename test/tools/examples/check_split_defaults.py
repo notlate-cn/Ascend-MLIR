@@ -25,6 +25,22 @@ def python_int_constant(script: str, name: str) -> int:
     return int(match.group(1))
 
 
+def assert_tiling_default_preferred(script: str) -> None:
+    if "schedule_defaults" not in script:
+        fail("run-mainline must read generated schedule tiling defaults")
+    default_pos = script.find('elif "default" in field:')
+    schedule_default_pos = script.find("elif name in schedule_defaults:")
+    values_pos = script.find('elif field.get("values"):')
+    if default_pos < 0:
+        fail("run-mainline tiling selection must prefer generated defaults")
+    if schedule_default_pos < 0:
+        fail("run-mainline tiling selection must use schedule defaults")
+    if values_pos < 0:
+        fail("run-mainline tiling selection must still support explicit values")
+    if default_pos > schedule_default_pos or schedule_default_pos > values_pos:
+        fail("run-mainline tiling selection must check default before values")
+
+
 def main(argv: list[str]) -> int:
     if len(argv) != 4:
         fail("usage: check_split_defaults.py RUN_MAINLINE GEN_DATA TILING_SPACE")
@@ -62,6 +78,7 @@ def main(argv: list[str]) -> int:
         fail("run-mainline BLOCK_DIM should be derived when not overridden")
     if "BLOCK_DIM=$(((HM + TILE_M - 1) / TILE_M))" not in run_mainline:
         fail("run-mainline BLOCK_DIM is not derived from HM/TILE_M")
+    assert_tiling_default_preferred(run_mainline)
 
     return 0
 

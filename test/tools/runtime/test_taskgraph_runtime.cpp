@@ -2358,8 +2358,8 @@ static void testDefaultBackendRequiresDriver() {
   if (!simOr || !npuOr)
     return;
 
-  EXPECT((*simOr)->allowsConcurrentTaskDispatch(),
-         "real simulation backend opts into concurrent task dispatch");
+  EXPECT(!(*simOr)->allowsConcurrentTaskDispatch(),
+         "real simulation backend uses process-isolated serial dispatch");
   EXPECT((*npuOr)->allowsConcurrentTaskDispatch(),
          "real npu backend allows concurrent dispatch");
 
@@ -2386,8 +2386,8 @@ static void testBackendCapabilitiesExposeSimAndNpuContracts() {
 
   if (simOr) {
     const BackendCapabilities caps = (*simOr)->capabilities();
-    EXPECT(caps.supportsConcurrentDispatch,
-           "sim backend advertises concurrent dispatch");
+    EXPECT(!caps.supportsConcurrentDispatch,
+           "driverless sim backend advertises process-isolated serial dispatch");
     EXPECT((*simOr)->allowsConcurrentTaskDispatch() ==
                caps.supportsConcurrentDispatch,
            "sim backend dispatchability is derived from capabilities");
@@ -2395,8 +2395,8 @@ static void testBackendCapabilitiesExposeSimAndNpuContracts() {
            "sim backend advertises non-concurrent execution");
     EXPECT(caps.requiresSerializedLaunch,
            "sim backend advertises serialized launch");
-    EXPECT(caps.maxConcurrentTasks == 1024,
-           "sim backend advertises the expected task capacity");
+    EXPECT(caps.maxConcurrentTasks == 1,
+           "sim backend advertises one in-process task slot");
     EXPECT(caps.maxConcurrentStreams == 1,
            "sim backend advertises a single stream");
   }
@@ -4515,6 +4515,84 @@ static void testExecutionSessionRunsReadyRootsConcurrently() {
     EXPECT(traceOr->counters.find("resource_wait_count") ==
                traceOr->counters.end(),
            "execution session concurrent run does not report fake resource wait count");
+  }
+}
+
+static void testExecutionSessionHonorsSerializedLaunchCapability() {
+  class SerializedLaunchBackendDriver final : public ExecutionBackendDriver {
+  public:
+    BackendCapabilities capabilities() const override {
+      BackendCapabilities caps;
+      caps.supportsConcurrentDispatch = true;
+      caps.supportsConcurrentExecution = false;
+      caps.requiresSerializedLaunch = true;
+      caps.maxConcurrentTasks = 2;
+      caps.maxConcurrentStreams = 2;
+      return caps;
+    }
+
+    llvm::Expected<ExecutionResult>
+    run(const ExecutionRequest &request) override {
+      {
+        std::lock_guard<std::mutex> lock(mu);
+        seenTaskIds.push_back(request.task.taskId);
+      }
+
+      const int runningNow = ++runningCount;
+      int observedMax = maxRunning.load();
+      while (runningNow > observedMax &&
+             !maxRunning.compare_exchange_weak(observedMax, runningNow)) {
+      }
+
+      if (request.task.taskId == "task_a" || request.task.taskId == "task_b")
+        std::this_thread::sleep_for(std::chrono::milliseconds(80));
+
+      --runningCount;
+
+      ExecutionResult result;
+      result.taskId = request.task.taskId;
+      return result;
+    }
+
+    std::atomic<int> runningCount{0};
+    std::atomic<int> maxRunning{0};
+    std::mutex mu;
+    std::vector<std::string> seenTaskIds;
+  };
+
+  TaskGraph graph;
+
+  RuntimeTask taskA;
+  taskA.taskId = "task_a";
+
+  RuntimeTask taskB;
+  taskB.taskId = "task_b";
+
+  RuntimeTask taskJoin;
+  taskJoin.taskId = "task_join";
+  taskJoin.dependencies = {"task_a", "task_b"};
+
+  auto addA = graph.addTask(taskA);
+  EXPECT(!addA, "execution session serialized launch add task_a");
+  auto addJoin = graph.addTask(taskJoin);
+  EXPECT(!addJoin, "execution session serialized launch add task_join");
+  auto addB = graph.addTask(taskB);
+  EXPECT(!addB, "execution session serialized launch add task_b");
+
+  auto driver = std::make_shared<SerializedLaunchBackendDriver>();
+  SerializedLaunchBackendDriver *driverPtr = driver.get();
+  ExecutionSession session(ExecutionBackendKind::Simulation, driver);
+
+  auto traceOr = session.run(graph);
+  EXPECT((bool)traceOr, "execution session serialized launch run succeeds");
+  EXPECT(driverPtr->maxRunning.load() == 1,
+         "execution session honors requiresSerializedLaunch without backend overlap");
+  EXPECT(driverPtr->seenTaskIds.size() == 3,
+         "execution session serialized launch still runs all tasks");
+  if (traceOr) {
+    auto it = traceOr->attributes.find("scheduler_mode");
+    EXPECT(it != traceOr->attributes.end() && it->second == "concurrent",
+           "execution session serialized launch keeps global scheduler mode");
   }
 }
 
@@ -7136,6 +7214,7 @@ int main() {
   testExecutionSessionMergesSchedulerObservabilityIntoTrace();
   testExecutionSessionPublishesStreamObservability();
   testExecutionSessionRunsReadyRootsConcurrently();
+  testExecutionSessionHonorsSerializedLaunchCapability();
   testExecutionSessionCanForceSerialSchedulerViaEnv();
   testExecutionSessionFailureStopsJoinAfterConcurrentRootFailure();
   testExecutionSessionCanReleaseWorkingDirectoriesForProcessExit();

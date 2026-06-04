@@ -1,4 +1,5 @@
 // RUN: afir-opt %s --linalg-generalize-named-ops --linalg-fuse-elementwise-ops --ascend-normalize --ascend-kernelize --ascend-schedule='target-tile-policy=legacy-default' --ascend-realize='materialization-mode=memory-space-annotate' --ascend-compute-lower --ascend-parallelize --ascend-prepare-for-emit --ascend-canonicalize-cann-signature | FileCheck %s
+// RUN: afir-opt %s --linalg-generalize-named-ops --linalg-fuse-elementwise-ops --ascend-normalize --ascend-kernelize --ascend-schedule='target-tile-policy=legacy-default' --ascend-realize='materialization-mode=memory-space-annotate' --ascend-compute-lower --ascend-parallelize --ascend-prepare-for-emit --ascend-canonicalize-cann-signature | FileCheck --check-prefix=NOPAD %s
 
 // CHECK-LABEL: func.func @relu_transpose_broadcast_add
 // CHECK-SAME: %{{.*}}: memref<?x1xf16>
@@ -6,7 +7,7 @@
 // CHECK-SAME: %{{.*}}: memref<?x?xf16
 // CHECK-SAME: %{{.*}}: memref<ui8>
 // CHECK-SAME: !emitasc.py_struct<"TilingData"
-// CHECK-SAME: ["dim_arg0_0", "dim_arg1_0", "dim_arg1_1", "dim_arg0_1"]
+// CHECK-SAME: ["TB_M", "TB_N", "dim_arg0_0", "dim_arg1_0", "dim_arg1_1", "dim_arg0_1"]
 // CHECK-SAME: ascend.schedule.tail_policies = ["masked_tail", "masked_tail"]
 // CHECK-SAME: cann.num_inputs = 2 : i32
 // CHECK-NOT: linalg.generic
@@ -30,6 +31,10 @@
 // CHECK-NOT: linalg.generic
 // CHECK: return
 // CHECK-NOT: linalg.generic
+
+// NOPAD-LABEL: func.func @relu_transpose_broadcast_add
+// NOPAD-NOT: AscendC::DataCopyPad
+// NOPAD: return
 
 module {
   func.func @relu_transpose_broadcast_add(

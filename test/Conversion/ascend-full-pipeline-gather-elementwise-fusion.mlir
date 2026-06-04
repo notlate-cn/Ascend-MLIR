@@ -17,13 +17,16 @@
 // CHECK: emitasc.member %arg5 "dim_arg0_1"
 // CHECK: ascendc.get_block_idx
 // CHECK: scf.if
-// CHECK: scf.for
+// CHECK: scf.for [[K_TILE:%[^ ]+]] =
 // CHECK: ascendc.pipe.init_queue
 // CHECK: ascendc.tbuf.get_tensor
 // CHECK: emitasc.reinterpret_cast %arg2
 // CHECK: ascendc.global_tensor.set_global_buffer
 // CHECK: ascendc.data_copy_l2
-// CHECK: scf.for
+// CHECK: scf.for [[ROW:%[^ ]+]] =
+// CHECK-NOT: arith.addi [[ROW]], [[K_TILE]]
+// CHECK: arith.addi [[ROW]], {{%[0-9]+}} : index
+// CHECK: ascendc.global_tensor.bracket
 // CHECK: ascendc.que_bind.deque_tensor
 // CHECK: emitasc.verbatim
 // CHECK-NEXT: emitasc.verbatim
@@ -34,7 +37,8 @@
 // CHECK: ascendc.add_l2
 // CHECK: emitasc.verbatim
 // CHECK: ascendc.tbuf.get_tensor
-// CHECK: ascendc.data_copy_l2
+// CHECK: emitasc.verbatim
+// CHECK-SAME: _ascend_row_stride
 // CHECK-NOT: ascendc.que_bind.deque_tensor
 // CHECK: return
 

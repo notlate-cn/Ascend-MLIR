@@ -60,6 +60,7 @@ packExampleTiling(const std::string &schemaPath) {
     return schemaOr.takeError();
 
   const std::string params =
+      "TB_M=32,TB_N=32,"
       "dim_arg0_0=640,dim_arg1_0=500,"
       "dim_arg0_1=1,dim_arg1_1=640";
 

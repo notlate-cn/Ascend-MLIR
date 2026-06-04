@@ -16,6 +16,7 @@ IMAGE="${ASCEND_MLIR_CI_IMAGE:-${ASCEND_MLIR_CI_DEFAULT_REMOTE_IMAGE:-${ASCEND_M
 CASE_NAME="${ASCEND_MLIR_CI_CASE:-relu-broadcast-transpose}"
 CMD="${ASCEND_MLIR_CI_CMD:-}"
 SKIP_SIM="${ASCEND_MLIR_CI_SKIP_SIM:-0}"
+NPU_RUN_TIMEOUT_SECONDS="${ASCEND_MLIR_CI_NPU_RUN_TIMEOUT_SECONDS:-600}"
 DEVICE_ID="${ASCEND_DEVICE_ID:-7}"
 REF="${ASCEND_MLIR_CI_REF:-}"
 JOB_ROOT="${ASCEND_MLIR_CI_JOB_ROOT:-}"
@@ -54,6 +55,9 @@ Options:
   --skip-sim                Prepare ordinary example artifacts, then run only
                             the real NPU phase. Diagnostic only; not a
                             readiness gate for candidate kernel fixes.
+  --npu-timeout SECONDS     Per-manifest real NPU runtime-session timeout.
+                            Default: ASCEND_MLIR_CI_NPU_RUN_TIMEOUT_SECONDS
+                            or 600.
   --list-cases              Print local case names and exit.
   --device-id ID            NPU device id. Default: ASCEND_DEVICE_ID or 7
   --ref REF                 Label recorded in job output. Default: <HEAD>-local
@@ -115,6 +119,10 @@ while [[ $# -gt 0 ]]; do
     --skip-sim)
       SKIP_SIM=1
       shift
+      ;;
+    --npu-timeout)
+      NPU_RUN_TIMEOUT_SECONDS="$2"
+      shift 2
       ;;
     --device-id)
       DEVICE_ID="$2"
@@ -202,6 +210,11 @@ cd "${REPO_ROOT}"
 if [[ -z "${REMOTE}" ]]; then
   echo "--remote is required, or set ASCEND_MLIR_CI_REMOTE" >&2
   usage >&2
+  exit 2
+fi
+
+if ! [[ "${NPU_RUN_TIMEOUT_SECONDS}" =~ ^[1-9][0-9]*$ ]]; then
+  echo "--npu-timeout must be a positive integer: ${NPU_RUN_TIMEOUT_SECONDS}" >&2
   exit 2
 fi
 
@@ -316,6 +329,7 @@ runner_args=(
   --source-dir "${REMOTE_DIR}"
   --ref "${REF}"
   --case "${CASE_NAME}"
+  --npu-timeout "${NPU_RUN_TIMEOUT_SECONDS}"
   --device-id "${DEVICE_ID}"
   --jobs "${JOBS}"
 )

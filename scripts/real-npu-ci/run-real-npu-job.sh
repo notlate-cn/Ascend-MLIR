@@ -6,6 +6,7 @@ REF="${ASCEND_MLIR_CI_REF:-HEAD}"
 CASE_NAME="${ASCEND_MLIR_CI_CASE:-relu-broadcast-transpose}"
 CMD="${ASCEND_MLIR_CI_CMD:-}"
 SKIP_SIM="${ASCEND_MLIR_CI_SKIP_SIM:-0}"
+NPU_RUN_TIMEOUT_SECONDS="${ASCEND_MLIR_CI_NPU_RUN_TIMEOUT_SECONDS:-600}"
 JOB_ROOT="${ASCEND_MLIR_CI_JOB_ROOT:-/data/nyh/real-npu-jobs}"
 SOURCE_DIR="${ASCEND_MLIR_CI_SOURCE_DIR:-}"
 LLVM_BUILD_DIR="${LLVM_BUILD_DIR:-/opt/llvm/build}"
@@ -33,6 +34,9 @@ This script is normally run as the container ENTRYPOINT. Configure it with:
   ASCEND_MLIR_CI_SKIP_SIM    Set to 1 to skip ordinary example sim execution and
                               run the real NPU phase only. Diagnostic only; not a
                               readiness gate for candidate kernel fixes.
+  ASCEND_MLIR_CI_NPU_RUN_TIMEOUT_SECONDS
+                              Per-manifest real NPU runtime-session timeout in
+                              seconds. Default: 600.
   ASCEND_MLIR_CI_JOB_ROOT    Output root. Default: /data/nyh/real-npu-jobs.
   ASCEND_MLIR_CI_SOURCE_DIR  Optional mounted source tree.
   ASCEND_MLIR_CI_INCREMENTAL_SOURCE
@@ -83,6 +87,11 @@ fail() {
   exit 1
 }
 
+if ! [[ "${NPU_RUN_TIMEOUT_SECONDS}" =~ ^[1-9][0-9]*$ ]]; then
+  fail "ASCEND_MLIR_CI_NPU_RUN_TIMEOUT_SECONDS must be a positive integer: ${NPU_RUN_TIMEOUT_SECONDS}"
+fi
+command -v timeout >/dev/null 2>&1 || fail "timeout command is required for real NPU run guarding"
+
 run_logged() {
   local name="$1"
   shift
@@ -108,6 +117,7 @@ record_job_env() {
     echo "case=${CASE_NAME}"
     echo "cmd=${CMD}"
     echo "skip_sim=${SKIP_SIM}"
+    echo "npu_run_timeout_seconds=${NPU_RUN_TIMEOUT_SECONDS}"
     echo "job_dir=${JOB_DIR}"
     echo "source_dir=${SOURCE_DIR}"
     echo "src_dir=${SRC_DIR}"
@@ -255,7 +265,9 @@ for task in data.get("tasks", []):
     rewrite_outputs(task.get("outputs"))
 dst.write_text(json.dumps(data, indent=2) + "\n")
 PY
-  env -i \
+  local rc=0
+  timeout --kill-after=30s "${NPU_RUN_TIMEOUT_SECONDS}s" \
+    env -i \
     HOME="${HOME:-/root}" \
     USER="${USER:-root}" \
     PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" \
@@ -270,7 +282,11 @@ PY
         source "${ASCEND_HOME_PATH}/set_env.sh" >/dev/null 2>&1 || true
       fi
       "${RUN_RUNTIME_SESSION}" --run-manifest "$1" --run
-    ' bash "${real_manifest}"
+    ' bash "${real_manifest}" || rc=$?
+  if [[ "${rc}" -eq 124 || "${rc}" -eq 137 ]]; then
+    echo "ERROR: real NPU runtime-session timed out after ${NPU_RUN_TIMEOUT_SECONDS}s for manifest: ${source_manifest}" >&2
+  fi
+  return "${rc}"
 }
 
 run_example_case() {

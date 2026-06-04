@@ -182,6 +182,8 @@ for entry in entries:
         "kernel_file": root.get("kernel_file", ""),
         "soc": root.get("soc", ""),
         "tiling_params": entry["tilingSchema"],
+        "tilingParams": entry.get("tilingParams", {}),
+        "scheduleEntries": entry.get("scheduleEntries", []),
     }
     (schema_dir / f"{kernel_id}_tiling_space.json").write_text(
         json.dumps(schema, indent=2) + "\n", encoding="utf-8")
@@ -234,6 +236,17 @@ shape_values = {
     "result0_dim1": n,
 }
 
+schedule_defaults = {}
+for tile_param in root.get("tilingParams", {}).get("tile_params", []):
+    name = tile_param.get("name")
+    if name and "default" in tile_param:
+        schedule_defaults.setdefault(name, int(tile_param["default"]))
+for entry in root.get("scheduleEntries", []):
+    for tile_param in entry.get("tilingParams", {}).get("tile_params", []):
+        name = tile_param.get("name")
+        if name and "default" in tile_param:
+            schedule_defaults.setdefault(name, int(tile_param["default"]))
+
 params = []
 for field in root.get("tiling_params", []):
     name = field["name"]
@@ -244,6 +257,10 @@ for field in root.get("tiling_params", []):
         value = shape_values[shape_key]
     elif "fixed_value" in field:
         value = int(field["fixed_value"])
+    elif "default" in field:
+        value = int(field["default"])
+    elif name in schedule_defaults:
+        value = schedule_defaults[name]
     elif field.get("values"):
         value = int(field["values"][0])
     else:

@@ -88,29 +88,47 @@ print(f"compare ok: shape={actual.shape} dtype={actual.dtype}")
 PY
 }
 
+require_runtime_session_success() {
+  if ! grep -q '^session.result=success$' /tmp/runtime_simbackend_run.log; then
+    echo "runtime-session did not report success:" >&2
+    cat /tmp/runtime_simbackend_run.log >&2
+    return 1
+  fi
+
+  LAST_PROFILE_PATH="$(sed -n 's/^session\.profile\[[0-9][0-9]*\]=//p' /tmp/runtime_simbackend_run.log | head -n1)"
+  LAST_SUMMARY_PATH="$(sed -n 's/^session\.profile\.summary=//p' /tmp/runtime_simbackend_run.log | head -n1)"
+  if [ -z "${LAST_SUMMARY_PATH}" ] || [ ! -f "${LAST_SUMMARY_PATH}" ]; then
+    echo "runtime-session did not emit a retained profile summary:" >&2
+    cat /tmp/runtime_simbackend_run.log >&2
+    return 1
+  fi
+}
+
 run_runtime_session_manifest() {
   local manifest="$1"
   local status=0
   CURRENT_RETRIES=0
   LAST_PROFILE_PATH=""
   LAST_SUMMARY_PATH=""
-  if "${RUNTIME_SESSION}" --run-manifest "${manifest}" --run >/tmp/runtime_simbackend_run.log 2>&1; then
-    LAST_PROFILE_PATH="$(sed -n 's/^session\.profile\[[0-9][0-9]*\]=//p' /tmp/runtime_simbackend_run.log | head -n1)"
-    LAST_SUMMARY_PATH="$(sed -n 's/^session\.profile\.summary=//p' /tmp/runtime_simbackend_run.log | head -n1)"
-    test -f "${LAST_SUMMARY_PATH}"
+  "${RUNTIME_SESSION}" --run-manifest "${manifest}" --run \
+    >/tmp/runtime_simbackend_run.log 2>&1 || status=$?
+  if [ "${status}" -eq 0 ]; then
+    require_runtime_session_success
     return 0
   fi
-  status=$?
   if [ "${status}" -ne 134 ] && [ "${status}" -ne 139 ]; then
     return "${status}"
   fi
   echo "retrying runtime-session after simulator process exit ${status}" >&2
   sleep 1
   CURRENT_RETRIES=1
-  "${RUNTIME_SESSION}" --run-manifest "${manifest}" --run >/tmp/runtime_simbackend_run.log 2>&1
-  LAST_PROFILE_PATH="$(sed -n 's/^session\.profile\[[0-9][0-9]*\]=//p' /tmp/runtime_simbackend_run.log | head -n1)"
-  LAST_SUMMARY_PATH="$(sed -n 's/^session\.profile\.summary=//p' /tmp/runtime_simbackend_run.log | head -n1)"
-  test -f "${LAST_SUMMARY_PATH}"
+  status=0
+  "${RUNTIME_SESSION}" --run-manifest "${manifest}" --run \
+    >/tmp/runtime_simbackend_run.log 2>&1 || status=$?
+  if [ "${status}" -ne 0 ]; then
+    return "${status}"
+  fi
+  require_runtime_session_success
 }
 
 record_summary() {
@@ -216,8 +234,15 @@ ${inputs_json}
 EOF
 
   echo "--- SimBackend vec example: $(basename "${example_dir}") ---"
-  run_runtime_session_manifest "${manifest}"
-  test -f "${actual_output}"
+  if run_runtime_session_manifest "${manifest}"; then
+    :
+  else
+    return "$?"
+  fi
+  if [ ! -s "${actual_output}" ]; then
+    echo "runtime-session produced an empty output file: ${actual_output}" >&2
+    return 1
+  fi
   compare_npy "${expected_path}" "${actual_output}" "${atol}" "${rtol}"
   record_summary \
     "$(basename "${example_dir}")" \
@@ -328,26 +353,32 @@ EOF
   local status=0
   CURRENT_RETRIES=0
   LAST_PROFILE_PATH=""
-  if ! ASCEND_DAV_SIM_VERSION="${DAV_SIM_VERSION}" \
+  LAST_SUMMARY_PATH=""
+  ASCEND_DAV_SIM_VERSION="${DAV_SIM_VERSION}" \
     LD_LIBRARY_PATH="$(runtime_verify_mix_ld_library_path "${artifact_root}")" \
     "${RUNTIME_SESSION}" --run-manifest "${manifest}" --run \
-    >/tmp/runtime_simbackend_run.log 2>&1; then
-    status=$?
+    >/tmp/runtime_simbackend_run.log 2>&1 || status=$?
+  if [ "${status}" -ne 0 ]; then
     if [ "${status}" -ne 134 ] && [ "${status}" -ne 139 ]; then
       return "${status}"
     fi
     echo "retrying runtime-session mix run after simulator process exit ${status}" >&2
     sleep 1
     CURRENT_RETRIES=1
+    status=0
     ASCEND_DAV_SIM_VERSION="${DAV_SIM_VERSION}" \
     LD_LIBRARY_PATH="$(runtime_verify_mix_ld_library_path "${artifact_root}")" \
       "${RUNTIME_SESSION}" --run-manifest "${manifest}" --run \
-      >/tmp/runtime_simbackend_run.log 2>&1
+      >/tmp/runtime_simbackend_run.log 2>&1 || status=$?
+    if [ "${status}" -ne 0 ]; then
+      return "${status}"
+    fi
   fi
-  LAST_PROFILE_PATH="$(sed -n 's/^session\.profile\[[0-9][0-9]*\]=//p' /tmp/runtime_simbackend_run.log | head -n1)"
-  LAST_SUMMARY_PATH="$(sed -n 's/^session\.profile\.summary=//p' /tmp/runtime_simbackend_run.log | head -n1)"
-  test -f "${LAST_SUMMARY_PATH}"
-  test -f "${actual_output}"
+  require_runtime_session_success
+  if [ ! -s "${actual_output}" ]; then
+    echo "runtime-session produced an empty output file: ${actual_output}" >&2
+    return 1
+  fi
   compare_npy "${expected_path}" "${actual_output}" "${atol}" "${rtol}"
   record_summary \
     "$(basename "${example_dir}")" \
@@ -365,7 +396,7 @@ run_vec_example \
   "    { \"name\": \"data0\", \"path\": \"${PROJECT_ROOT}/examples/relu-broadcast-transpose/build_mainline/input_data0.npy\" },
     { \"name\": \"data1\", \"path\": \"${PROJECT_ROOT}/examples/relu-broadcast-transpose/build_mainline/input_data1.npy\" }" \
   "${PROJECT_ROOT}/examples/relu-broadcast-transpose/build_mainline/output_expected.npy" \
-  "dim_arg0_0=640,dim_arg1_0=500,dim_arg0_1=1,dim_arg1_1=640" \
+  "TB_M=32,TB_N=32,dim_arg0_0=640,dim_arg1_0=500,dim_arg0_1=1,dim_arg1_1=640" \
   "20" "1e-2" "1e-2" \
   "build_mainline/step10_kernel.cpp" \
   "${PROJECT_ROOT}/examples/relu-broadcast-transpose/build_mainline/phase5_tiling_space.json"
@@ -380,7 +411,7 @@ run_vec_example \
     { \"name\": \"arg2\", \"path\": \"${PROJECT_ROOT}/examples/add-broadcast-concat/build_mainline/input_c.npy\" },
     { \"name\": \"arg3\", \"path\": \"${PROJECT_ROOT}/examples/add-broadcast-concat/build_mainline/input_d.npy\" }" \
   "${PROJECT_ROOT}/examples/add-broadcast-concat/build_mainline/output.npy" \
-  "dim_arg0_0=640,dim_arg1_1=500,dim_arg1_0=640,dim_arg2_0=640,dim_arg3_0=640,dim_arg3_1=500" \
+  "TB_M=32,TB_N=32,dim_arg0_0=640,dim_arg1_1=500,dim_arg1_0=640,dim_arg2_0=640,dim_arg3_0=640,dim_arg3_1=500" \
   "20" "1e-2" "1e-2" \
   "build_mainline/step10_kernel.cpp" \
   "${PROJECT_ROOT}/examples/add-broadcast-concat/build_mainline/phase5_tiling_space.json"
@@ -393,7 +424,7 @@ run_vec_example \
   "    { \"name\": \"a\", \"path\": \"${PROJECT_ROOT}/examples/broadcast-add-reduce/build_mainline/input_a.npy\" },
     { \"name\": \"b\", \"path\": \"${PROJECT_ROOT}/examples/broadcast-add-reduce/build_mainline/input_b.npy\" }" \
   "${PROJECT_ROOT}/examples/broadcast-add-reduce/build_mainline/output_c.npy" \
-  "dim_arg0_0=640,dim_arg1_1=128,dim_arg1_0=640" \
+  "TB_M=32,dim_arg0_0=640,dim_arg1_1=128,dim_arg1_0=640" \
   "20" "10" "1e-2" \
   "build_mainline/step10_kernel.cpp" \
   "${PROJECT_ROOT}/examples/broadcast-add-reduce/build_mainline/phase5_tiling_space.json"

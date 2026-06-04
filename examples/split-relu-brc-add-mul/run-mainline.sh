@@ -231,6 +231,19 @@ shape_values = {
     "arg4_dim0": n,
 }
 
+schedule_defaults = {}
+for kernel in root.get("kernels", []):
+    for entry in kernel.get("scheduleEntries", []):
+        for tile_param in entry.get("tilingParams", {}).get("tile_params", []):
+            name = tile_param.get("name")
+            if name and "default" in tile_param:
+                schedule_defaults.setdefault(name, int(tile_param["default"]))
+for entry in root.get("scheduleEntries", []):
+    for tile_param in entry.get("tilingParams", {}).get("tile_params", []):
+        name = tile_param.get("name")
+        if name and "default" in tile_param:
+            schedule_defaults.setdefault(name, int(tile_param["default"]))
+
 params = []
 for field in root.get("tiling_params", []):
     name = field["name"]
@@ -241,6 +254,10 @@ for field in root.get("tiling_params", []):
         value = shape_values[shape_key]
     elif "fixed_value" in field:
         value = int(field["fixed_value"])
+    elif "default" in field:
+        value = int(field["default"])
+    elif name in schedule_defaults:
+        value = schedule_defaults[name]
     elif field.get("values"):
         value = int(field["values"][0])
     else:

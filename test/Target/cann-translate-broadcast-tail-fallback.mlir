@@ -100,4 +100,42 @@ func.func @broadcast_full_tile_gm_fallback(
       : !ascendc.local_tensor<*xf16>, !ascendc.local_tensor<*xf16>, i32, i32, i32, i32
   return
 }
+
+// CHECK-LABEL: void broadcast_row_fallback
+// CHECK: AscendC::TBuf<AscendC::TPosition::VECCALC> _afir_bcast_src_tbuf_
+// CHECK: uint32_t _afir_src_count = _afir_ds[1];
+// CHECK: AscendC::LocalTensor<half> [[SRC2:_afir_bcast_src_[0-9]+]] =
+// CHECK: [[SRC2]].SetValue(_afir_i, static_cast<half>(
+// CHECK: for (uint32_t _afir_r = 0; _afir_r < _afir_ds[0]; ++_afir_r) {
+// CHECK: uint32_t _afir_row_offset = _afir_r * _afir_ds[1];
+// CHECK: for (uint32_t _afir_c = 0; _afir_c < _afir_ds[1]; ++_afir_c)
+// CHECK: {{.*}}.SetValue(_afir_row_offset + _afir_c, [[SRC2]].GetValue(_afir_c));
+// CHECK-NOT: AscendC::Broadcast<half, 2, 0>
+// CHECK: AscendC::PipeBarrier<PIPE_ALL>();
+func.func @broadcast_row_fallback(
+    %arg0: memref<?xf16>,
+    %arg1: memref<?xf16>,
+    %workspace: memref<ui8>,
+    %tiling: !emitasc.py_struct<"TilingData", [i64], ["dim"]>
+) attributes {ascendc.aicore, ascendc.global, cann.num_inputs = 1 : i32} {
+  %pipe = ascendc.pipe
+  %src_q = ascendc.queue : <vecin, 1>
+  %gt = ascendc.global_tensor : !ascendc.global_tensor<*xf16>
+  %c0 = arith.constant 0 : i32
+  %cast = emitasc.reinterpret_cast %arg0 : memref<?xf16> to memref<?xf16, 22 : i32>
+  ascendc.global_tensor.set_global_buffer %gt, %cast, %c0 : !ascendc.global_tensor<*xf16>, memref<?xf16, 22 : i32>, i32
+  %alloc = ascendc.que_bind.alloc_tensor %src_q : !ascendc.queue<vecin, 1>, !ascendc.local_tensor<*xf16>
+  %cols = arith.constant 32 : i32
+  ascendc.data_copy_l2 %alloc, %gt, %cols : !ascendc.local_tensor<*xf16>, !ascendc.global_tensor<*xf16>, i32
+  ascendc.que_bind.enque_tensor %src_q, %alloc : !ascendc.queue<vecin, 1>, !ascendc.local_tensor<*xf16>
+  %src = ascendc.que_bind.deque_tensor %src_q : !ascendc.queue<vecin, 1>, !ascendc.local_tensor<*xf16>
+  %dst_tbuf = ascendc.tbuf : <veccalc>
+  %dst = ascendc.tbuf.get_tensor %dst_tbuf : !ascendc.tbuf<veccalc>, !ascendc.local_tensor<*xf16>
+  %rows = arith.constant 32 : i32
+  %one = arith.constant 1 : i32
+  ascendc.broadcast_l2 %dst, %src, %rows, %cols, %one, %cols
+      {constRank = 2 : i32, operandSegmentSizes = array<i32: 1, 1, 2, 2>}
+      : !ascendc.local_tensor<*xf16>, !ascendc.local_tensor<*xf16>, i32, i32, i32, i32
+  return
+}
 }

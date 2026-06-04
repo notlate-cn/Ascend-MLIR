@@ -339,6 +339,7 @@ llvm::Expected<ProfileTrace> ExecutionSession::run(const TaskGraph &graph) {
     size_t inFlightTasks = 0;
     size_t maxInFlightTasks = 0;
     std::string firstErrorMessage;
+    std::mutex serializedLaunchMutex;
 
     const unsigned concurrencyHint = std::thread::hardware_concurrency();
     const size_t backendTaskCapacity =
@@ -444,7 +445,12 @@ llvm::Expected<ProfileTrace> ExecutionSession::run(const TaskGraph &graph) {
           continue;
         }
 
-        auto resultOr = workerBackend->run(request);
+        auto resultOr = [&]() -> llvm::Expected<ExecutionResult> {
+          if (!backendCaps.requiresSerializedLaunch)
+            return workerBackend->run(request);
+          std::lock_guard<std::mutex> lock(serializedLaunchMutex);
+          return workerBackend->run(request);
+        }();
 
         if (!resultOr) {
           {

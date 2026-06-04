@@ -14,6 +14,7 @@ REF="${ASCEND_MLIR_CI_REF:-HEAD}"
 CASE_NAME="${ASCEND_MLIR_CI_CASE:-relu-broadcast-transpose}"
 CMD="${ASCEND_MLIR_CI_CMD:-}"
 SKIP_SIM="${ASCEND_MLIR_CI_SKIP_SIM:-0}"
+NPU_RUN_TIMEOUT_SECONDS="${ASCEND_MLIR_CI_NPU_RUN_TIMEOUT_SECONDS:-600}"
 JOB_ROOT="${ASCEND_MLIR_CI_JOB_ROOT:-/data/nyh/real-npu-jobs}"
 DEVICE_ID="${ASCEND_DEVICE_ID:-7}"
 SOURCE_DIR="${ASCEND_MLIR_CI_SOURCE_DIR:-}"
@@ -55,6 +56,8 @@ Options:
                          Takes precedence over --case.
   --skip-sim             Prepare ordinary example artifacts, then run only the
                          real NPU phase. Diagnostic only; not a readiness gate.
+  --npu-timeout SECONDS  Per-manifest real NPU runtime-session timeout.
+                         Default: ASCEND_MLIR_CI_NPU_RUN_TIMEOUT_SECONDS or 600.
   --job-root DIR         Host/container job root. Default: /data/nyh/real-npu-jobs
   --device-id ID         NPU device id. Default: ASCEND_DEVICE_ID or 7
   --source-dir DIR       Use a mounted local source tree instead of cloning.
@@ -99,6 +102,10 @@ while [[ $# -gt 0 ]]; do
     --skip-sim)
       SKIP_SIM=1
       shift
+      ;;
+    --npu-timeout)
+      NPU_RUN_TIMEOUT_SECONDS="$2"
+      shift 2
       ;;
     --job-root)
       JOB_ROOT="$2"
@@ -166,6 +173,11 @@ if [[ -z "${REPO_URL}" && -z "${SOURCE_DIR}" ]]; then
   exit 2
 fi
 
+if ! [[ "${NPU_RUN_TIMEOUT_SECONDS}" =~ ^[1-9][0-9]*$ ]]; then
+  echo "--npu-timeout must be a positive integer: ${NPU_RUN_TIMEOUT_SECONDS}" >&2
+  exit 2
+fi
+
 if ! command -v docker >/dev/null 2>&1; then
   echo "docker is required on the real-NPU host" >&2
   exit 1
@@ -221,6 +233,7 @@ if [[ "${CASE_NAME}" == "all" && -z "${CMD}" ]]; then
       --image "${IMAGE}"
       --ref "${REF}"
       --case "${suite_case}"
+      --npu-timeout "${NPU_RUN_TIMEOUT_SECONDS}"
       --job-root "${JOB_ROOT}"
       --device-id "${DEVICE_ID}"
       --llvm-build-dir "${LLVM_BUILD_DIR}"
@@ -269,6 +282,7 @@ DOCKER_ENV=(
   -e ASCEND_MLIR_CI_CASE="${CASE_NAME}"
   -e ASCEND_MLIR_CI_CMD="${CMD}"
   -e ASCEND_MLIR_CI_SKIP_SIM="${SKIP_SIM}"
+  -e ASCEND_MLIR_CI_NPU_RUN_TIMEOUT_SECONDS="${NPU_RUN_TIMEOUT_SECONDS}"
   -e ASCEND_MLIR_CI_JOB_ROOT="${JOB_ROOT}"
   -e ASCEND_MLIR_CI_SOURCE_DIR="${SOURCE_DIR:+/workspace/source}"
   -e ASCEND_MLIR_CI_INCREMENTAL_SOURCE="${INCREMENTAL_SOURCE}"
