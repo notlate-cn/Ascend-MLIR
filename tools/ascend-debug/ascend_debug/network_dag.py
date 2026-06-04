@@ -38,6 +38,7 @@ def build_kernel_dag_summary(network: dict[str, Any],
     kernels = network.get("kernels", []) or []
     kids = [k["id"] for k in kernels if "id" in k]
 
+    kid_set = set(kids)
     preds: dict[str, list[str]] = {kid: [] for kid in kids}
     edges: list[dict[str, Any]] = []
     seen_edges: set[tuple[str, str]] = set()
@@ -48,7 +49,10 @@ def build_kernel_dag_summary(network: dict[str, Any],
         for arg in k.get("args", []) or []:
             if arg.get("from") == "kernel":
                 src = arg.get("kernel")
-                if src is None:
+                # Ignore dangling refs to unknown kernels so they can't inflate
+                # depth or emit orphan edges (well-formed network.json never has
+                # these; hand-crafted/partial inputs might).
+                if src is None or src not in kid_set:
                     continue
                 preds[kid].append(src)
                 key = (src, kid)
