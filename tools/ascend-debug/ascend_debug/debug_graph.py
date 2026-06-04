@@ -267,7 +267,9 @@ def _stage_kernel_ids(stages: list[dict[str, Any]]) -> set[str]:
 
 
 def _kernel_detail_views(
-    stages: list[dict[str, Any]], kernel_summary: dict[str, Any] | None
+    run_dir: pathlib.Path,
+    stages: list[dict[str, Any]],
+    kernel_summary: dict[str, Any] | None,
 ) -> dict[str, str]:
     if not isinstance(kernel_summary, dict):
         return {}
@@ -277,9 +279,13 @@ def _kernel_detail_views(
     real_kernel_ids = sorted(
         kernel_id for kernel_id in nodes if isinstance(kernel_id, str) and kernel_id
     )
-    views = {
-        kernel_id: f"views/kernels/{kernel_id}.html" for kernel_id in real_kernel_ids
-    }
+
+    def _detail_view(kernel_id: str) -> str:
+        if (run_dir / "kernels" / kernel_id / "index.html").exists():
+            return f"kernels/{kernel_id}/index.html"
+        return f"views/kernels/{kernel_id}.html"
+
+    views = {kernel_id: _detail_view(kernel_id) for kernel_id in real_kernel_ids}
     if len(real_kernel_ids) == 1:
         only_kernel = real_kernel_ids[0]
         only_view = views[only_kernel]
@@ -2765,7 +2771,7 @@ def render_debug_graph(
         "stage_groups": stage_groups,
         "stages": stages,
         "kernel_dag": kernel_summary or {},
-        "kernel_detail_views": _kernel_detail_views(stages, kernel_summary),
+        "kernel_detail_views": _kernel_detail_views(run_dir, stages, kernel_summary),
         "overlays": _overlay_summary(
             tensor_diff=tensor_diff,
             locate_summary=locate_summary,

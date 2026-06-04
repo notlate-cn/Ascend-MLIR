@@ -3,8 +3,9 @@ from __future__ import annotations
 import json
 import pathlib
 import shutil
+import types
 
-from ascend_debug import __version__, layout, network_dag
+from ascend_debug import __version__, collect, layout, network_dag, open_view
 from ascend_debug.runner import CommandError
 
 # Network-level lowering-stage IR dumps that network_runner's outline phase
@@ -90,4 +91,70 @@ def ingest_run(args) -> int:
     print(f"ascend-debug.ingest.out={run_dir}")
     print(f"ascend-debug.ingest.kernels={summary['kernel_count']}")
     print(f"ascend-debug.ingest.stages={len(stages)}")
+
+    # Per-kernel orchestration: for each kernel that has a pre-codegen IR dump,
+    # build a sub-dashboard (collect's 6 stages + generated .cpp + tiling JSON)
+    # under run_dir/kernels/<kid>. Resilient: one kernel's failure must not
+    # abort ingest.
+    dashboard_count = 0
+    for k in network.get("kernels", []):
+        kid = k.get("id")
+        if not isinstance(kid, str) or not kid:
+            continue
+        kernel_ir = workdir / "groups" / f"{kid}.mlir"
+        if not kernel_ir.exists():
+            print(f"ascend-debug.ingest.skip={kid} (no groups/{kid}.mlir)")
+            continue
+        kdir = run_dir / "kernels" / kid
+        try:
+            collect.collect_run(types.SimpleNamespace(input=kernel_ir, out=kdir))
+        except CommandError as error:
+            print(f"ascend-debug.ingest.skip={kid} (collect failed: {error})")
+            continue
+
+        try:
+            cpp_src = workdir / f"{kid}.cpp"
+            if cpp_src.exists():
+                cpp_dst = kdir / "stages" / "070-codegen.cpp"
+                cpp_dst.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copyfile(cpp_src, cpp_dst)
+                man = _load_json(kdir / "manifest.json", f"{kid} manifest.json")
+                rebuilt = [
+                    layout.StageArtifact(
+                        order=s["order"], name=s["name"], path=s["path"], step=s.get("step")
+                    )
+                    for s in man.get("stages", [])
+                ]
+                rebuilt.append(
+                    layout.StageArtifact(
+                        order=70, name="codegen", path="stages/070-codegen.cpp", step="codegen"
+                    )
+                )
+                layout.write_manifest(
+                    kdir,
+                    mode=man["mode"],
+                    preset=man.get("preset", ""),
+                    pipeline=man.get("pipeline", "auto-fuse-codegen"),
+                    stages=tuple(rebuilt),
+                    version=man.get("version", "0.1"),
+                    commands=man.get("commands", []),
+                    reports=man.get("reports", []),
+                    graphs=man.get("graphs", []),
+                )
+
+            for suffix in ("_best.json", "_space.json"):
+                tiling_src = workdir / f"{kid}{suffix}"
+                if tiling_src.exists():
+                    tiling_dst = kdir / "tiling" / f"{kid}{suffix}"
+                    tiling_dst.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copyfile(tiling_src, tiling_dst)
+
+            open_view.open_run(types.SimpleNamespace(run_dir=kdir, no_browser=True))
+        except (OSError, ValueError, CommandError, KeyError) as error:
+            print(f"ascend-debug.ingest.skip={kid} (sub-dashboard failed: {error})")
+            continue
+
+        dashboard_count += 1
+
+    print(f"ascend-debug.ingest.kernel_dashboards={dashboard_count}")
     return 0
