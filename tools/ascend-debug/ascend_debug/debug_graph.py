@@ -780,7 +780,7 @@ dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }
 .zoom-value, .search-status { color: var(--muted); font-size: 0.78rem; white-space: nowrap; }
 .search-status { grid-column: 1 / -1; justify-self: end; }
 .search-status:empty { display: none; }
-.graph-canvas-wrap { overflow: auto; min-height: 22rem; height: auto; background: #ffffff; cursor: grab; }
+.graph-canvas-wrap { overflow: auto; min-height: 22rem; height: 72vh; background: #ffffff; cursor: grab; }
 .graph-canvas-wrap.panning { cursor: grabbing; user-select: none; }
 #unified-debug-graph-svg { display: block; min-width: 100%; }
 .function-frame-box { fill: #f8fafc; fill-opacity: 0.72; stroke: #475569; stroke-width: 2; stroke-dasharray: 9 5; }
