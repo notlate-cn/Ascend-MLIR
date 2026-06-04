@@ -216,6 +216,26 @@ TEST(AscendTargetCostModelTest, BuildsPathCostsForDirectEdges) {
   EXPECT_EQ(*costModel->estimateTransferCycles(vecoutToGm, 192), 3);
 }
 
+TEST(AscendTargetCostModelTest, BuildsPathCostsForPathVariants) {
+  TargetProfile profile = makeProfileWithRates();
+  profile.intrinsics.push_back(
+      {"Intrinsic_data_move_transpose_l12l0b", {"f16"}});
+
+  FailureOr<TargetMemoryModel> memoryModel = buildMemoryModel(profile);
+  ASSERT_TRUE(succeeded(memoryModel));
+  FailureOr<TargetCostModel> costModel = buildCostModel(profile, *memoryModel);
+  ASSERT_TRUE(succeeded(costModel));
+
+  llvm::SmallVector<PathEdge> gmToB1 =
+      memoryModel->findDirectPaths(MemoryPlace::GM, MemoryPlace::B1);
+  ASSERT_EQ(gmToB1.size(), 2u);
+  ASSERT_TRUE(succeeded(costModel->getPathCost(gmToB1[0])));
+  ASSERT_TRUE(succeeded(costModel->getPathCost(gmToB1[1])));
+  EXPECT_EQ(costModel->getPathCost(gmToB1[0])->startupCycles, 2);
+  EXPECT_EQ(costModel->getPathCost(gmToB1[1])->startupCycles, 3);
+  EXPECT_EQ(costModel->getPathCost(gmToB1[1])->rateName, "ddr_read_rate");
+}
+
 TEST(AscendTargetCostModelTest, RejectsMissingRequiredPathRate) {
   TargetProfile profile = makeProfileWithRates();
   llvm::erase_if(profile.memoryRates, [](const TargetMemoryRateInfo &rate) {

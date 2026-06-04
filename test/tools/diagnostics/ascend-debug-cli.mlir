@@ -19,6 +19,7 @@ func.func @elementwise(%arg0: tensor<4x8xf16>, %arg1: tensor<4x8xf16>) -> tensor
 }
 
 // CHECK: ascend_debug.help=ok
+// CHECK: ascend_debug.stage_graph_symbol_constraints=ok
 // CHECK: ascend_debug.collect=ok
 // CHECK: ascend_debug.collect_memory_detail_negative=ok
 // CHECK: ascend_debug.collect_deep=ok

@@ -186,6 +186,19 @@ LogicalResult verifyPathClosure(const TargetMemoryModel &memoryModel,
           return failure();
         }
 
+        FailureOr<SmallVector<PathConstraint>> constraints =
+            memoryModel.getPathConstraints(edge);
+        if (failed(constraints) || constraints->empty() ||
+            llvm::any_of(*constraints, [](const PathConstraint &constraint) {
+              return constraint.dtypes.empty();
+            })) {
+          emitFailure(os, "TargetPathIntrinsicMissing");
+          os << ": missing path constraints for ";
+          printPath(os, edge);
+          os << " kind " << stringifyPathKind(*kind) << "\n";
+          return failure();
+        }
+
         if (requiresIntrinsic(*kind) &&
             !hasIntrinsicForPathKind(intrinsicModel, *kind)) {
           emitFailure(os, "TargetPathIntrinsicMissing");

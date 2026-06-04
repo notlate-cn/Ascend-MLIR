@@ -358,18 +358,66 @@ def _changed_fields(before: dict[str, Any], after: dict[str, Any]) -> list[dict[
     return changes
 
 
+def _semantic_functions(graph: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    functions: dict[str, dict[str, Any]] = {}
+    for function in graph.get("functions", []):
+        if not isinstance(function, dict):
+            continue
+        name = function.get("name")
+        if isinstance(name, str) and name:
+            functions[name] = function
+    return functions
+
+
+def _function_diff_facts(function: dict[str, Any]) -> dict[str, Any]:
+    semantic = function.get("semantic_attrs")
+    if not isinstance(semantic, dict):
+        semantic = {}
+    normalize = semantic.get("normalize")
+    if not isinstance(normalize, dict):
+        normalize = {}
+    return {
+        "normalized": normalize.get("normalized"),
+        "symbol_constraints": normalize.get("symbol_constraints")
+        if "symbol_constraints" in normalize
+        else None,
+    }
+
+
+def _changed_function_fields(
+    before: dict[str, Any], after: dict[str, Any]
+) -> list[dict[str, Any]]:
+    changes = []
+    before_facts = _function_diff_facts(before)
+    after_facts = _function_diff_facts(after)
+    for field in sorted(after_facts):
+        if before_facts.get(field) != after_facts.get(field):
+            changes.append(
+                {
+                    "field": field,
+                    "before": before_facts.get(field),
+                    "after": after_facts.get(field),
+                }
+            )
+    return changes
+
+
 def _compute_stage_diffs(stages: list[dict[str, Any]]) -> list[dict[str, Any]]:
     diffs = []
     for before_index, (before, after) in enumerate(zip(stages, stages[1:])):
         after_index = before_index + 1
         before_nodes = _semantic_nodes(before.get("graph", {}))
         after_nodes = _semantic_nodes(after.get("graph", {}))
+        before_functions = _semantic_functions(before.get("graph", {}))
+        after_functions = _semantic_functions(after.get("graph", {}))
         before_keys = set(before_nodes)
         after_keys = set(after_nodes)
         added_keys = sorted(after_keys - before_keys)
         removed_keys = sorted(before_keys - after_keys)
         common_keys = sorted(before_keys & after_keys)
+        common_function_names = sorted(set(before_functions) & set(after_functions))
         changed = []
+        changed_functions = []
         unchanged_count = 0
         node_status: dict[str, dict[str, Any]] = {}
 
@@ -412,17 +460,31 @@ def _compute_stage_diffs(stages: list[dict[str, Any]]) -> list[dict[str, Any]]:
                         "changes": [],
                     }
 
+        for function_name in common_function_names:
+            before_function = before_functions[function_name]
+            after_function = after_functions[function_name]
+            changes = _changed_function_fields(before_function, after_function)
+            if changes:
+                changed_functions.append(
+                    {
+                        "name": function_name,
+                        "line": after_function.get("line"),
+                        "changes": changes,
+                    }
+                )
+
         diffs.append(
             {
                 "from_stage": _stage_brief(before, before_index),
                 "to_stage": _stage_brief(after, after_index),
                 "added_count": len(added_keys),
                 "removed_count": len(removed_keys),
-                "changed_count": len(changed),
+                "changed_count": len(changed) + len(changed_functions),
                 "unchanged_count": unchanged_count,
                 "added_nodes": [_node_brief(after_nodes[key]) for key in added_keys[:64]],
                 "removed_nodes": [_node_brief(before_nodes[key]) for key in removed_keys[:64]],
                 "changed_nodes": changed[:64],
+                "changed_functions": changed_functions[:64],
                 "node_status": node_status,
             }
         )
@@ -833,6 +895,11 @@ dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }
 .tile-param-field code { min-width: 0; overflow-wrap: anywhere; color: #17202a; }
 .tile-chip-list { display: flex; flex-wrap: wrap; gap: 0.26rem; }
 .tile-chip { display: inline-flex; align-items: center; max-width: 100%; border: 1px solid #dbe3ee; border-radius: 999px; padding: 0.13rem 0.4rem; background: #f8fafc; color: #344054; font-size: 0.72rem; font-family: SFMono-Regular, Menlo, Consolas, monospace; }
+.symbol-constraint-list { display: grid; gap: 0.42rem; }
+.symbol-constraint-card { border: 1px solid #dbe3ee; border-radius: 6px; background: #fbfcfe; padding: 0.45rem 0.5rem; }
+.symbol-constraint-card h5 { margin: 0 0 0.34rem; font-size: 0.76rem; color: #17202a; font-family: SFMono-Regular, Menlo, Consolas, monospace; }
+.symbol-member-list { display: flex; flex-wrap: wrap; gap: 0.26rem; }
+.symbol-member { display: inline-flex; border: 1px solid #dbe3ee; border-radius: 999px; padding: 0.13rem 0.4rem; background: #ffffff; color: #344054; font-size: 0.7rem; font-family: SFMono-Regular, Menlo, Consolas, monospace; }
 .phase-legend { display: grid; gap: 0.28rem; font-size: 0.74rem; line-height: 1.32; }
 .phase-legend-row { display: grid; grid-template-columns: minmax(7.4rem, max-content) minmax(0, 1fr); gap: 0.35rem; align-items: start; }
 .phase-legend-row code { color: #17202a; }
@@ -1167,6 +1234,42 @@ function tileParamsHtml(params) {
   return `<div class="tile-param-list">${cards}</div>`;
 }
 
+function functionInfoForNode(node) {
+  if (!node || !node.function) return {};
+  const stage = activeStage();
+  const graph = stage && stage.graph ? stage.graph : {};
+  const functions = Array.isArray(graph.functions) ? graph.functions : [];
+  return functions.find((item) => item && item.name === node.function) || {};
+}
+
+function symbolMemberText(member) {
+  if (!member || typeof member !== "object") return semanticValueText(member);
+  const value = member.value !== undefined && member.value !== null ? `value ${member.value}` : "value ?";
+  const dim = member.dim !== undefined && member.dim !== null ? `dim ${member.dim}` : "dim ?";
+  return `${value} ${dim}`;
+}
+
+function symbolConstraintsHtml(constraints) {
+  if (!Array.isArray(constraints) || !constraints.length) return "";
+  const cards = constraints.map((constraint) => {
+    if (!constraint || typeof constraint !== "object") return "";
+    const name = constraint.sym_name || "symbol";
+    const members = Array.isArray(constraint.members) ? constraint.members : [];
+    const memberHtml = members.length
+      ? `<div class="symbol-member-list">${members.map((member) => `<span class="symbol-member">${escapeHtml(symbolMemberText(member))}</span>`).join("")}</div>`
+      : `<span class="panel-subtitle">无成员</span>`;
+    return `<div class="symbol-constraint-card"><h5>${escapeHtml(name)}</h5>${memberHtml}</div>`;
+  }).filter(Boolean).join("");
+  return cards ? `<div class="symbol-constraint-list">${cards}</div>` : "";
+}
+
+function symbolConstraintsFieldValue(normalize) {
+  if (!normalize || typeof normalize !== "object" || !Object.prototype.hasOwnProperty.call(normalize, "symbol_constraints")) return null;
+  const constraints = normalize.symbol_constraints;
+  if (!Array.isArray(constraints)) return semanticValueText(constraints);
+  return constraints.length ? constraints.length : "[]";
+}
+
 function semanticDetailRows(rows) {
   const visible = rows.filter(([, value]) => {
     if (Array.isArray(value)) return value.length > 0;
@@ -1206,7 +1309,9 @@ function movementPhasesHtml(phases) {
 function renderSemanticAttrSections(node) {
   const semantic = node.semantic_attrs || {};
   const badges = Array.isArray(node.badges) ? node.badges : [];
-  if (!badges.length && !Object.keys(semantic).length) return "";
+  const functionInfo = functionInfoForNode(node);
+  const functionSemantic = functionInfo.semantic_attrs || {};
+  if (!badges.length && !Object.keys(semantic).length && !Object.keys(functionSemantic).length) return "";
   const kernel = semantic.kernel || {};
   const dagKernel = resolveKernelDagEntry(kernel.id);
   const dagKernelId = dagKernel && dagKernel.id !== kernel.id ? dagKernel.id : null;
@@ -1215,9 +1320,17 @@ function renderSemanticAttrSections(node) {
   const movement = semantic.movement || {};
   const memory = semantic.memory || {};
   const position = memory.position || {};
+  const normalize = functionSemantic.normalize || {};
+  const symbolConstraints = Array.isArray(normalize.symbol_constraints) ? normalize.symbol_constraints : [];
   return `
 <section class="inspector-section">
 <h3>属性分组</h3>
+${renderSemanticGroup("Normalize", [
+  ["function", functionInfo.name],
+  ["normalized", normalize.normalized ? "true" : null],
+  ["symbol_constraints", symbolConstraintsFieldValue(normalize)],
+])}
+${renderSemanticGroupBody("Symbol Constraints", symbolConstraintsHtml(symbolConstraints))}
 ${renderSemanticGroup("Kernel", [
   ["kernel_id", kernel.id],
   ["kernel_dag_id", dagKernelId],
@@ -2081,13 +2194,17 @@ function renderStageDiff(stage = activeStage()) {
     const fields = (node.changes || []).map((change) => change.field).join(", ");
     return `<li><span class="diff-changed-text">${escapeHtml(after.op_name || after.label || "node")}</span>: ${escapeHtml(fields || "metadata")}</li>`;
   });
+  const changedFunctions = (diff.changed_functions || []).slice(0, 5).map((func) => {
+    const fields = (func.changes || []).map((change) => change.field).join(", ");
+    return `<li><span class="diff-changed-text">func.func @${escapeHtml(func.name || "anonymous")}</span>: ${escapeHtml(fields || "function metadata")}</li>`;
+  });
   const added = (diff.added_nodes || []).slice(0, 5).map((node) => (
     `<li><span class="diff-added-text">${escapeHtml(node.op_name || node.label || "node")}</span>: 新增</li>`
   ));
   const removed = (diff.removed_nodes || []).slice(0, 5).map((node) => (
     `<li><span class="diff-removed-text">${escapeHtml(node.op_name || node.label || "node")}</span>: 从当前 Stage 移除</li>`
   ));
-  const rows = [...changed, ...added, ...removed];
+  const rows = [...changedFunctions, ...changed, ...added, ...removed];
   details.innerHTML = rows.length ? `<ul class="diff-list">${rows.join("")}</ul>` : '<span class="panel-subtitle">没有检测到语义节点变化。</span>';
 }
 

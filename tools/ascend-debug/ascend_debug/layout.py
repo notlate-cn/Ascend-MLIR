@@ -37,9 +37,9 @@ STEP_INFO_BY_STEP: dict[str, dict[str, str]] = {
         "title": "Normalize 输出边界",
         "purpose": "给 Kernelize 提供稳定的 normalized IR。",
         "inputs": "规范化后的 linalg/tensor IR",
-        "outputs": "带 ascend.normalized 标记的函数 IR",
-        "inspect_hint": "检查 kernel 分组前的函数属性和 linalg.generic body。",
-        "common_failures": "缺少 ascend.normalized 标记，或仍有不支持的 dialect。",
+        "outputs": "带 ascend.normalized 和 symbol constraints 的函数 IR",
+        "inspect_hint": "检查 kernel 分组前的函数属性、symbol constraints 和 linalg.generic body。",
+        "common_failures": "缺少 ascend.normalized、symbol constraints 非法，或仍有不支持的 dialect。",
     },
     "structured-ops": {
         "title": "识别可 Kernelize 的算子",

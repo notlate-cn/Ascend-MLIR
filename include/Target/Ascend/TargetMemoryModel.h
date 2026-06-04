@@ -15,6 +15,7 @@
 #include "mlir/Support/LLVM.h"
 #include "llvm/Support/raw_ostream.h"
 #include <cstdint>
+#include <string>
 
 namespace mlir::ascend {
 
@@ -30,6 +31,18 @@ struct PathEdge {
     return srcPlace == other.srcPlace && dstPlace == other.dstPlace &&
            pathVariant == other.pathVariant;
   }
+};
+
+struct PathConstraint {
+  SmallVector<std::string> dtypes;
+  int64_t minRank = 1;
+  int64_t maxRank = 0;
+  bool requires2DLoad = false;
+  bool allowsTranspose = false;
+};
+
+struct PathRoute {
+  SmallVector<PathEdge> edges;
 };
 
 struct CapacityRule {
@@ -60,11 +73,12 @@ public:
   FailureOr<AlignmentRule> getAlignment(MemoryPlace place) const;
   bool isPlaceVisibleTo(MemoryPlace place, ExecutionUnit unit) const;
 
-  // Direct edge lookup only. Multi-hop target routing is deferred to the
-  // later target routing task.
   SmallVector<PathEdge> findDirectPaths(MemoryPlace src,
                                         MemoryPlace dst) const;
+  SmallVector<PathRoute> findPaths(MemoryPlace src, MemoryPlace dst) const;
   FailureOr<PathKind> getPathKind(const PathEdge &edge) const;
+  FailureOr<SmallVector<PathConstraint>>
+  getPathConstraints(const PathEdge &edge) const;
 
 private:
   friend class TargetMemoryModelBuilder;
@@ -74,6 +88,7 @@ private:
   DenseMap<MemoryPlace, VisibilityRule> visibilityRules;
   DenseMap<MemoryPlace, SmallVector<PathEdge>> pathGraph;
   DenseMap<PathEdge, PathKind> pathKinds;
+  DenseMap<PathEdge, SmallVector<PathConstraint>> pathConstraints;
 };
 
 class TargetMemoryModelBuilder {

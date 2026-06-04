@@ -24,9 +24,12 @@ constexpr DebugStepInfo kNormalizeSteps[] = {
     {"020-normalize-out", "normalize.output-boundary",
      "Normalize output boundary",
      "Provide the stable normalized IR consumed by Kernelize.",
-     "canonical linalg/tensor IR", "ascend.normalized function IR",
-     "Check function attrs and linalg.generic bodies before kernel grouping.",
-     "Missing ascend.normalized marker or unsupported dialect survives."},
+     "canonical linalg/tensor IR",
+     "ascend.normalized plus function symbol constraints",
+     "Check function attrs, symbol constraints, and linalg.generic bodies before "
+     "kernel grouping.",
+     "Missing ascend.normalized marker, invalid symbol constraints, or "
+     "unsupported dialect survives."},
 };
 
 constexpr DebugStepInfo kKernelizeSteps[] = {

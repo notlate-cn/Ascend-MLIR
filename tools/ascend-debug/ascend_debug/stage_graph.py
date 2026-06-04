@@ -163,17 +163,40 @@ def _collect_func_header(lines: list[str], index: int) -> tuple[str | None, int]
     cursor = index
     paren_depth = 0
     seen_args = False
+    args_closed = False
+    attr_brace_depth = 0
+    in_string = False
+    escaped = False
     while cursor < len(lines):
         line = lines[cursor]
         collected.append(line)
-        for char in line:
-            if char == "(":
+        for char_index, char in enumerate(line):
+            if in_string:
+                if escaped:
+                    escaped = False
+                elif char == "\\":
+                    escaped = True
+                elif char == '"':
+                    in_string = False
+                continue
+            if char == '"':
+                in_string = True
+                continue
+            if not args_closed and char == "(":
                 seen_args = True
                 paren_depth += 1
-            elif char == ")" and seen_args:
+            elif not args_closed and char == ")" and seen_args:
                 paren_depth -= 1
                 if paren_depth <= 0:
+                    args_closed = True
+            elif args_closed and char == "{":
+                before = line[:char_index].rstrip()
+                if attr_brace_depth > 0 or before.endswith("attributes"):
+                    attr_brace_depth += 1
+                else:
                     return "\n".join(collected), cursor + 1
+            elif args_closed and char == "}" and attr_brace_depth > 0:
+                attr_brace_depth -= 1
         cursor += 1
     return "\n".join(collected), cursor
 
@@ -309,6 +332,63 @@ def _extract_tile_params_attr(text: str) -> list[dict[str, Any]]:
         if param:
             params.append(param)
     return params
+
+
+def _extract_symbol_constraints_attr(text: str) -> list[dict[str, Any]] | None:
+    body = _extract_balanced_attr_value(text, "ascend.symbol_constraints", "[", "]")
+    if body is None:
+        return None
+    constraints: list[dict[str, Any]] = []
+    for piece in _split_top_level_commas(body):
+        record = piece.strip()
+        if not record:
+            continue
+        if record.startswith("{") and record.endswith("}"):
+            record = record[1:-1]
+        members_body = _extract_balanced_attr_value(record, "members", "[", "]")
+        members: list[dict[str, int]] = []
+        if members_body is not None:
+            for member_piece in _split_top_level_commas(members_body):
+                member = member_piece.strip()
+                if member.startswith("{") and member.endswith("}"):
+                    member = member[1:-1]
+                dim = _extract_field_int(member, "dim")
+                value = _extract_field_int(member, "value")
+                if dim is not None and value is not None:
+                    members.append({"value": value, "dim": dim})
+        constraint = {
+            key: value
+            for key, value in {
+                "sym_name": _extract_field_string(record, "sym_name"),
+                "members": members,
+            }.items()
+            if value not in (None, [], False)
+        }
+        if constraint:
+            constraints.append(constraint)
+    return constraints
+
+
+def _build_function_semantic_attrs(func_header: str) -> dict[str, Any]:
+    normalized = bool(re.search(r"\bascend\.normalized\s*=\s*true\b", func_header))
+    symbol_constraints = _extract_symbol_constraints_attr(func_header)
+    normalize: dict[str, Any] = {}
+    if normalized:
+        normalize["normalized"] = True
+    if symbol_constraints is not None:
+        normalize["symbol_constraints"] = symbol_constraints
+    return {"normalize": normalize} if normalize else {}
+
+
+def _build_function_badges(semantic_attrs: dict[str, Any]) -> list[str]:
+    badges: list[str] = []
+    normalize = semantic_attrs.get("normalize", {})
+    if normalize.get("normalized"):
+        badges.append("normalized")
+    symbol_constraints = normalize.get("symbol_constraints")
+    if isinstance(symbol_constraints, list) and symbol_constraints:
+        badges.append(f"symbols {len(symbol_constraints)}")
+    return badges
 
 
 def _extract_i64_array_attr(text: str, name: str) -> list[int]:
@@ -704,6 +784,7 @@ def parse_stage_mlir(stage: dict[str, Any], text: str) -> dict[str, Any]:
     defined_values: set[str] = set()
     function_names: list[str] = []
     function_node_ids: dict[str, list[str]] = {}
+    function_records: dict[str, dict[str, Any]] = {}
 
     def alias_base(value: str) -> str:
         seen: set[str] = set()
@@ -759,6 +840,13 @@ def parse_stage_mlir(stage: dict[str, Any], text: str) -> dict[str, Any]:
             continue
         function_name, args = func_decl
         note_function(function_name)
+        semantic_attrs = _build_function_semantic_attrs(func_header)
+        function_records[function_name] = {
+            "name": function_name,
+            "line": line_number,
+            "semantic_attrs": semantic_attrs,
+            "badges": _build_function_badges(semantic_attrs),
+        }
         for arg in args:
             node_id = f"n{len(nodes)}"
             node = {
@@ -792,6 +880,9 @@ def parse_stage_mlir(stage: dict[str, Any], text: str) -> dict[str, Any]:
         if func_decl:
             current_function = func_decl[0]
             note_function(current_function)
+            _, next_index = _collect_func_header(lines, index)
+            index = next_index
+            continue
         op_match = OP_RE.match(line)
         return_match = RETURN_RE.match(line)
         resultless_match = None if op_match or return_match else _match_resultless_op(line)
@@ -935,7 +1026,17 @@ def parse_stage_mlir(stage: dict[str, Any], text: str) -> dict[str, Any]:
         },
         "function": function_names[0] if function_names else None,
         "functions": [
-            {"name": name, "node_ids": function_node_ids.get(name, [])}
+            {
+                key: value
+                for key, value in {
+                    "name": name,
+                    "line": function_records.get(name, {}).get("line"),
+                    "node_ids": function_node_ids.get(name, []),
+                    "semantic_attrs": function_records.get(name, {}).get("semantic_attrs"),
+                    "badges": function_records.get(name, {}).get("badges"),
+                }.items()
+                if value not in (None, [], False, {})
+            }
             for name in function_names
             if function_node_ids.get(name)
         ],

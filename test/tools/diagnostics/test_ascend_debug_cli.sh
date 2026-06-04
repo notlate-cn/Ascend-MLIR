@@ -36,7 +36,7 @@ fi
 echo "ascend_debug.help=ok"
 
 PYTHONPATH="${REPO_ROOT}/tools/ascend-debug${PYTHONPATH:+:${PYTHONPATH}}" python3 - <<'PY'
-from ascend_debug import stage_graph
+from ascend_debug import debug_graph, stage_graph
 
 mlir = """module {
   func.func @copy_view(%arg0: memref<?xf16>, %arg1: memref<?xf16>) -> memref<?xf16> {
@@ -237,8 +237,85 @@ constructor_mlir = """module {
 constructor_graph = stage_graph.parse_stage_mlir({"order": 60, "name": "constructors", "path": "stages/constructors.mlir"}, constructor_mlir)
 assert constructor_graph["connectivity"]["suspicious_isolated_count"] == 0, constructor_graph["connectivity"]
 assert constructor_graph["connectivity"]["dangling_effect_count"] == 0, constructor_graph["connectivity"]
+
+normalize_mlir = """module {
+  func.func @normalize_symbols(%arg0: tensor<?x?xf16>, %arg1: tensor<?x?xf16>, %arg2: tensor<?x?xf16>) -> tensor<?x?xf16> attributes {
+    ascend.normalized = true,
+    ascend.symbol_constraints = [
+      {members = [{dim = 0 : i64, value = 0 : i64}, {dim = 0 : i64, value = 2 : i64}, {dim = 0 : i64, value = 3 : i64}], sym_name = "arg0_dim0"},
+      {members = [{dim = 1 : i64, value = 0 : i64}, {dim = 0 : i64, value = 1 : i64}], sym_name = "arg0_dim1"}
+    ]
+  } {
+    return %arg2 : tensor<?x?xf16>
+  }
+}
+"""
+normalize_graph = stage_graph.parse_stage_mlir({"order": 20, "name": "020-normalize-out", "path": "stages/020-normalize-out.mlir"}, normalize_mlir)
+function = next(item for item in normalize_graph["functions"] if item["name"] == "normalize_symbols")
+normalize = function["semantic_attrs"]["normalize"]
+assert normalize["normalized"] is True, normalize
+assert [klass["sym_name"] for klass in normalize["symbol_constraints"]] == ["arg0_dim0", "arg0_dim1"], normalize
+assert normalize["symbol_constraints"][0]["members"] == [
+    {"dim": 0, "value": 0},
+    {"dim": 0, "value": 2},
+    {"dim": 0, "value": 3},
+], normalize
+assert "normalized" in function["badges"], function
+assert "symbols 2" in function["badges"], function
+
+source_mlir = """module {
+  func.func @normalize_symbols(%arg0: tensor<?x?xf16>, %arg1: tensor<?x?xf16>, %arg2: tensor<?x?xf16>) -> tensor<?x?xf16> {
+    return %arg2 : tensor<?x?xf16>
+  }
+}
+"""
+source_graph = stage_graph.parse_stage_mlir({"order": 10, "name": "010-normalize-prep-out", "path": "stages/010-normalize-prep-out.mlir"}, source_mlir)
+diff = debug_graph._compute_stage_diffs([
+    {"order": 10, "name": "010-normalize-prep-out", "path": "stages/010-normalize-prep-out.mlir", "graph": source_graph},
+    {"order": 20, "name": "020-normalize-out", "path": "stages/020-normalize-out.mlir", "graph": normalize_graph},
+])[0]
+assert diff["changed_count"] == 1, diff
+assert diff["changed_functions"][0]["name"] == "normalize_symbols", diff
+assert [change["field"] for change in diff["changed_functions"][0]["changes"]] == [
+    "normalized",
+    "symbol_constraints",
+], diff
+
+empty_constraints_mlir = """module {
+  func.func @static_symbols(%arg0: tensor<70x128xf16>) -> tensor<70x128xf16> attributes {
+    ascend.normalized = true,
+    ascend.symbol_constraints = []
+  } {
+    return %arg0 : tensor<70x128xf16>
+  }
+}
+"""
+empty_constraints_graph = stage_graph.parse_stage_mlir({"order": 20, "name": "020-normalize-out", "path": "stages/020-normalize-out.mlir"}, empty_constraints_mlir)
+static_function = next(item for item in empty_constraints_graph["functions"] if item["name"] == "static_symbols")
+static_normalize = static_function["semantic_attrs"]["normalize"]
+assert static_normalize["normalized"] is True, static_normalize
+assert "symbol_constraints" in static_normalize, static_normalize
+assert static_normalize["symbol_constraints"] == [], static_normalize
+
+empty_source_mlir = """module {
+  func.func @static_symbols(%arg0: tensor<70x128xf16>) -> tensor<70x128xf16> {
+    return %arg0 : tensor<70x128xf16>
+  }
+}
+"""
+empty_source_graph = stage_graph.parse_stage_mlir({"order": 10, "name": "010-normalize-prep-out", "path": "stages/010-normalize-prep-out.mlir"}, empty_source_mlir)
+empty_diff = debug_graph._compute_stage_diffs([
+    {"order": 10, "name": "010-normalize-prep-out", "path": "stages/010-normalize-prep-out.mlir", "graph": empty_source_graph},
+    {"order": 20, "name": "020-normalize-out", "path": "stages/020-normalize-out.mlir", "graph": empty_constraints_graph},
+])[0]
+assert "symbol_constraints" in [
+    change["field"]
+    for function_change in empty_diff["changed_functions"]
+    for change in function_change["changes"]
+], empty_diff
 PY
 echo "ascend_debug.stage_graph_resultless_ops=ok"
+echo "ascend_debug.stage_graph_symbol_constraints=ok"
 
 cat >"${TMP_DIR}/typed-stage-graph.mlir" <<'MLIR'
 module {
@@ -1461,7 +1538,13 @@ grep -Fq 'function functionFramesForGraph' "${TMP_DIR}/debug-run-graph/views/deb
 grep -Fq 'class="node-badge"' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
 grep -Fq 'function renderSemanticAttrSections' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
 grep -Fq 'function resolveKernelDagEntry' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
+grep -Fq 'function functionInfoForNode(node)' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
+grep -Fq 'function symbolConstraintsFieldValue(normalize)' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
+grep -Fq 'function symbolConstraintsHtml(constraints)' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
 grep -Fq '属性分组' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
+grep -Fq 'Symbol Constraints' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
+grep -Fq '["normalized", normalize.normalized ? "true" : null]' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
+grep -Fq '["symbol_constraints", symbolConstraintsFieldValue(normalize)]' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
 if grep -Fq 'class="badge-list"' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"; then
   echo "node inspector should not duplicate module facts as a non-clickable badge list" >&2
   exit 1

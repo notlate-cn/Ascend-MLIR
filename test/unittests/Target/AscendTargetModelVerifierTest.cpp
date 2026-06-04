@@ -103,6 +103,25 @@ TEST(AscendTargetModelVerifierTest, AcceptsClosedTargetModel) {
   EXPECT_TRUE(message.empty());
 }
 
+TEST(AscendTargetModelVerifierTest, AcceptsClosedTransposePathVariant) {
+  TargetProfile profile = makeClosedProfile();
+  profile.intrinsics.push_back(
+      {"Intrinsic_data_move_transpose_l12l0b", {"f16"}});
+
+  FailureOr<TargetMemoryModel> memoryModel = buildMemoryModel(profile);
+  ASSERT_TRUE(succeeded(memoryModel));
+  FailureOr<TargetIntrinsicModel> intrinsicModel = buildIntrinsicModel(profile);
+  ASSERT_TRUE(succeeded(intrinsicModel));
+  FailureOr<TargetCostModel> costModel = buildCostModel(profile, *memoryModel);
+  ASSERT_TRUE(succeeded(costModel));
+
+  std::string message;
+  llvm::raw_string_ostream os(message);
+  EXPECT_TRUE(mlir::succeeded(TargetModelVerifier().verify(
+      profile, *memoryModel, *intrinsicModel, *costModel, os)));
+  EXPECT_TRUE(message.empty());
+}
+
 TEST(AscendTargetModelVerifierTest, RejectsMissingMovementIntrinsic) {
   TargetProfile profile = makeClosedProfile();
   llvm::erase_if(profile.intrinsics, [](const TargetIntrinsicInfo &intrinsic) {
