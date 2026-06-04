@@ -189,6 +189,17 @@ def ingest_run(args) -> int:
             layout.write_json(kdir / "manifest.json", man)
 
             open_view.open_run(types.SimpleNamespace(run_dir=kdir, no_browser=True))
+
+            # Skip the per-kernel overview hop: send the kernel index.html
+            # straight to its stage-evolution workbench (views/debug_graph.html
+            # defaults to stage mode). Mirrors the main entry redirect below.
+            (kdir / "index.html").write_text(
+                '<!doctype html><meta charset="utf-8">'
+                '<meta http-equiv="refresh" content="0; url=views/debug_graph.html">'
+                '<title>ascend-debug · ' + kid + '</title>'
+                '<a href="views/debug_graph.html">打开 Kernel 工作台 →</a>',
+                encoding="utf-8",
+            )
         except (OSError, ValueError, CommandError, KeyError) as error:
             print(f"ascend-debug.ingest.skip={kid} (sub-dashboard failed: {error})")
             continue

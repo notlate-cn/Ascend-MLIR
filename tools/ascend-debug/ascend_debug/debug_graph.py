@@ -653,6 +653,12 @@ def _render_html(
     overlays = debug_graph.get("overlays", {})
     kernel_dag = debug_graph.get("kernel_dag", {})
     summary_path = debug_graph.get("summary_path", "summaries/debug_graph.json")
+    parent_view = debug_graph.get("parent_view")
+    back_link = (
+        f'<a href="../{_cell(parent_view)}">← 返回整网</a>'
+        if isinstance(parent_view, str) and parent_view
+        else ""
+    )
     workspace_json = layout.json_script_payload(debug_graph)
     style = """
 <style>
@@ -2719,6 +2725,7 @@ setMode(activeMode);
 <div>
 <h1>Ascend Debug 调试工作台</h1>
 <div class="toolbar">
+{back_link}
 <a href="../index.html">调试首页</a>
 <a href="../{_cell(summary_path)}">原始 debug_graph.json</a>
 <span>主 Stage：{_cell(primary_stage.get('name') if primary_stage else 'none')}</span>
@@ -2885,6 +2892,9 @@ def render_debug_graph(
         "summary_path": "summaries/debug_graph.json",
         "view_path": "views/debug_graph.html",
     }
+    parent_view = manifest.get("parent_view")
+    if isinstance(parent_view, str) and parent_view:
+        summary["parent_view"] = parent_view
     layout.write_json(run_dir / "summaries/debug_graph.json", summary)
     _render_html(run_dir=run_dir, debug_graph=summary, view_rel_path="views/debug_graph.html")
     return {
