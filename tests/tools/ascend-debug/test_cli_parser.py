@@ -16,11 +16,19 @@ def _load_entry():
     return module
 
 
-def test_parser_has_only_collect_and_open():
+def test_parser_has_collect_open_ingest():
     entry = _load_entry()
     parser = entry.build_parser()
     sub = next(a for a in parser._actions if hasattr(a, "choices") and a.choices)
-    assert set(sub.choices) == {"collect", "open"}
+    assert set(sub.choices) == {"collect", "open", "ingest"}
+
+
+def test_ingest_args():
+    entry = _load_entry()
+    parser = entry.build_parser()
+    args = parser.parse_args(["ingest", "wd", "--out", "run"])
+    assert str(args.network_workdir) == "wd"
+    assert str(args.out) == "run"
 
 
 def test_collect_requires_input_and_out():

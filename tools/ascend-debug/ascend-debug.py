@@ -7,6 +7,7 @@ import sys
 
 from ascend_debug import __version__
 from ascend_debug.collect import collect_run
+from ascend_debug.ingest import ingest_run
 from ascend_debug.open_view import open_run
 from ascend_debug.runner import CommandError
 
@@ -28,6 +29,11 @@ def build_parser() -> argparse.ArgumentParser:
     open_cmd.add_argument("run_dir", type=pathlib.Path)
     open_cmd.add_argument("--no-browser", action="store_true")
     open_cmd.set_defaults(handler=open_run)
+
+    ingest = subparsers.add_parser("ingest", help="Build a workbench run dir from a network_runner work dir")
+    ingest.add_argument("network_workdir", type=pathlib.Path)
+    ingest.add_argument("--out", type=pathlib.Path, required=True)
+    ingest.set_defaults(handler=ingest_run)
 
     return parser
 
