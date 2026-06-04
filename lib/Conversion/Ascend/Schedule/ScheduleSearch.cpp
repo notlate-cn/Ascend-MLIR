@@ -124,6 +124,13 @@ bool isLowerRankedInstance(const ScheduleInstance &lhs,
   if (lhs.tileShape.tileSizes.size() != rhs.tileShape.tileSizes.size())
     return lhs.tileShape.tileSizes.size() < rhs.tileShape.tileSizes.size();
 
+  unsigned lhsGuardCount =
+      lhs.candidateGuards.size() + lhs.decisionGuards.size();
+  unsigned rhsGuardCount =
+      rhs.candidateGuards.size() + rhs.decisionGuards.size();
+  if (lhsGuardCount != rhsGuardCount)
+    return lhsGuardCount < rhsGuardCount;
+
   if (lhs.tmpl.family != rhs.tmpl.family)
     return lhs.tmpl.family < rhs.tmpl.family;
   if (lhs.tmpl.name != rhs.tmpl.name)
@@ -222,35 +229,98 @@ std::string getSymbolicTileParamName(StringRef symbolName) {
   return (llvm::Twine("T_") + symbolName).str();
 }
 
-void appendCandidateGuards(const ScheduleProblem &problem,
-                           SmallVectorImpl<ScheduleGuard> &guards) {
+bool isFullExtentTile(int64_t tileSize, const LogicalAxisInfo &axis) {
+  if (ShapedType::isDynamic(tileSize))
+    return ShapedType::isDynamic(axis.staticExtent);
+  return !ShapedType::isDynamic(axis.staticExtent) &&
+         tileSize == axis.staticExtent;
+}
+
+bool isRuntimeTileAxis(const AxisScheduleConstraint *constraint) {
+  if (!constraint)
+    return false;
+  return hasAxisExecutionRole(constraint->allowedRoles,
+                              AxisExecutionRole::BindCoreCandidate) ||
+         hasAxisExecutionRole(constraint->allowedRoles,
+                              AxisExecutionRole::KernelLoopCandidate) ||
+         hasAxisExecutionRole(constraint->allowedRoles,
+                              AxisExecutionRole::VectorizeCandidate) ||
+         hasAxisExecutionRole(constraint->allowedRoles,
+                              AxisExecutionRole::ChunkedReduction);
+}
+
+bool hasGuardText(ArrayRef<ScheduleGuard> guards, StringRef text) {
+  return llvm::any_of(guards, [&](const ScheduleGuard &guard) {
+    return guard.text == text;
+  });
+}
+
+void appendUniqueGuard(SmallVectorImpl<ScheduleGuard> &guards,
+                       ScheduleGuard guard) {
+  if (hasGuardText(guards, guard.text))
+    return;
+  guards.push_back(std::move(guard));
+}
+
+void appendSymbolicTileGuards(const ScheduleProblem &problem,
+                              const TileShape &tileShape,
+                              SmallVectorImpl<ScheduleGuard> &guards) {
+  for (auto [index, tileSize] : llvm::enumerate(tileShape.tileSizes)) {
+    if (index >= problem.axes.logicalAxes.size())
+      continue;
+
+    const LogicalAxisInfo &axis = problem.axes.logicalAxes[index];
+    if (axis.symbolName.empty() || isFullExtentTile(tileSize, axis))
+      continue;
+
+    const AxisScheduleConstraint *constraint =
+        lookupAxisScheduleConstraint(problem.axes, axis.logicalAxisId);
+    if (!isRuntimeTileAxis(constraint))
+      continue;
+
+    std::string paramName = getSymbolicTileParamName(axis.symbolName);
+    ScheduleGuard positiveGuard;
+    positiveGuard.kind = GuardKind::PositiveExtent;
+    positiveGuard.axisDomain = GuardAxisDomain::LogicalAxis;
+    positiveGuard.dim = axis.logicalAxisId;
+    positiveGuard.value = ShapedType::kDynamic;
+    positiveGuard.text = (llvm::Twine(paramName) + " > 0").str();
+    appendUniqueGuard(guards, std::move(positiveGuard));
+
+    ScheduleGuard upperBoundGuard;
+    upperBoundGuard.kind = GuardKind::ShapeDynamic;
+    upperBoundGuard.axisDomain = GuardAxisDomain::LogicalAxis;
+    upperBoundGuard.dim = axis.logicalAxisId;
+    upperBoundGuard.value = ShapedType::kDynamic;
+    upperBoundGuard.text =
+        (llvm::Twine(paramName) + " <= " + axis.symbolName).str();
+    appendUniqueGuard(guards, std::move(upperBoundGuard));
+
+    if (!constraint || constraint->semanticAlignmentGranularity <= 0)
+      continue;
+
+    ScheduleGuard alignGuard;
+    alignGuard.kind = GuardKind::DivisibleBy;
+    alignGuard.axisDomain = GuardAxisDomain::LogicalAxis;
+    alignGuard.dim = axis.logicalAxisId;
+    alignGuard.value = constraint->semanticAlignmentGranularity;
+    alignGuard.text =
+        (llvm::Twine(paramName) + " % " +
+         llvm::Twine(constraint->semanticAlignmentGranularity) + " == 0")
+            .str();
+    appendUniqueGuard(guards, std::move(alignGuard));
+  }
+}
+
+void appendResultShapeGuards(const ScheduleProblem &problem,
+                             SmallVectorImpl<ScheduleGuard> &guards) {
   for (auto [index, dim] : llvm::enumerate(problem.resultShape)) {
     StringRef symbolName;
     if (index < problem.axes.logicalAxes.size())
       symbolName = problem.axes.logicalAxes[index].symbolName;
 
-    if (ShapedType::isDynamic(dim) && !symbolName.empty()) {
-      ScheduleGuard positiveGuard;
-      positiveGuard.kind = GuardKind::PositiveExtent;
-      positiveGuard.axisDomain = GuardAxisDomain::LogicalAxis;
-      positiveGuard.dim = index;
-      positiveGuard.value = ShapedType::kDynamic;
-      positiveGuard.text =
-          (llvm::Twine(getSymbolicTileParamName(symbolName)) + " > 0").str();
-      guards.push_back(std::move(positiveGuard));
-
-      ScheduleGuard upperBoundGuard;
-      upperBoundGuard.kind = GuardKind::ShapeDynamic;
-      upperBoundGuard.axisDomain = GuardAxisDomain::LogicalAxis;
-      upperBoundGuard.dim = index;
-      upperBoundGuard.value = ShapedType::kDynamic;
-      upperBoundGuard.text =
-          (llvm::Twine(getSymbolicTileParamName(symbolName)) + " <= " +
-           symbolName)
-              .str();
-      guards.push_back(std::move(upperBoundGuard));
+    if (ShapedType::isDynamic(dim) && !symbolName.empty())
       continue;
-    }
 
     ScheduleGuard guard;
     guard.axisDomain = GuardAxisDomain::ResultDim;
@@ -268,6 +338,13 @@ void appendCandidateGuards(const ScheduleProblem &problem,
     }
     guards.push_back(std::move(guard));
   }
+}
+
+void appendCandidateGuards(const ScheduleProblem &problem,
+                           const TileShape &tileShape,
+                           SmallVectorImpl<ScheduleGuard> &guards) {
+  appendSymbolicTileGuards(problem, tileShape, guards);
+  appendResultShapeGuards(problem, guards);
 }
 
 const AxisScheduleConstraint *
@@ -319,7 +396,7 @@ ScheduleInstance makeInstance(const ScheduleProblem &problem,
   ScheduleInstance instance;
   instance.tmpl = tmpl;
   instance.tileShape = std::move(tileShape);
-  appendCandidateGuards(problem, instance.candidateGuards);
+  appendCandidateGuards(problem, instance.tileShape, instance.candidateGuards);
   appendDecisionGuards(problem, instance.tileShape.tileSizes,
                        instance.decisionGuards);
   if (hasDynamicTileSize(instance.tileShape))

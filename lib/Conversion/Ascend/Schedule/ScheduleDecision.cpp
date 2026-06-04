@@ -213,6 +213,10 @@ int64_t selectRuntimeTileUpperBound(int64_t defaultValue, int64_t extent) {
   return defaultValue;
 }
 
+bool isDynamicFullExtentTile(int64_t chosenTile, int64_t extent) {
+  return ShapedType::isDynamic(chosenTile) && ShapedType::isDynamic(extent);
+}
+
 ScheduleTileParam buildTileParamForTileIndex(const ScheduleProblem &problem,
                                              unsigned tileIndex,
                                              int64_t chosenTile) {
@@ -237,10 +241,13 @@ ScheduleTileParam buildTileParamForTileIndex(const ScheduleProblem &problem,
   augmentPrimitiveUsesForRole(problem, tileIndex, param.primitiveUses);
 
   param.binding = selectTileParamBinding(problem, tileIndex, param);
+  if (param.binding == TileParamBinding::Runtime &&
+      isDynamicFullExtentTile(chosenTile, param.extent))
+    param.binding = TileParamBinding::Extent;
   switch (param.binding) {
   case TileParamBinding::Runtime:
     param.defaultValue =
-        selectRuntimeDefaultTile(problem, ShapedType::kDynamic, param.extent);
+        selectRuntimeDefaultTile(problem, chosenTile, param.extent);
     param.upperBound =
         selectRuntimeTileUpperBound(param.defaultValue, param.extent);
     break;
