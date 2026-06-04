@@ -5,7 +5,7 @@ import pathlib
 import shutil
 import types
 
-from ascend_debug import __version__, collect, fusion_graph, layout, network_dag, open_view
+from ascend_debug import __version__, collect, layout, network_dag, open_view
 from ascend_debug.runner import CommandError
 
 # Network-level lowering-stage IR dumps that network_runner's outline phase
@@ -27,6 +27,15 @@ def _load_json(path: pathlib.Path, label: str) -> dict:
         return json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError) as error:
         raise CommandError(f"could not read {label}: {path}: {error}") from error
+
+
+def _read_json(path: pathlib.Path):
+    if not path.exists():
+        return None
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
 
 
 def _find_network_ir(workdir: pathlib.Path) -> pathlib.Path | None:
@@ -56,6 +65,17 @@ def ingest_run(args) -> int:
         raise CommandError(
             f"network.json has unexpected structure: {net_path}: {error}"
         ) from error
+    # Enrich each kernel node with its tiling JSON so the workbench detail panel
+    # can show best/space without a second fetch.
+    for kid, node in summary.get("nodes", {}).items():
+        tiling: dict = {}
+        best = _read_json(workdir / f"{kid}_best.json")
+        if best is not None:
+            tiling["best"] = best
+        space = _read_json(workdir / f"{kid}_space.json")
+        if space is not None:
+            tiling["space"] = space
+        node["tiling"] = tiling
     layout.write_json(run_dir / "graphs" / "kernel_dag.summary.json", summary)
     if provenance is not None:
         layout.write_json(run_dir / "network.provenance.json", provenance)
@@ -165,13 +185,8 @@ def ingest_run(args) -> int:
 
     print(f"ascend-debug.ingest.kernel_dashboards={dashboard_count}")
 
-    # Build the fusion-partition graph as the network entry: a cytoscape viewer
-    # with the graph data inlined into run_dir/index.html.
-    fg = fusion_graph.build_fusion_graph(network, provenance, workdir)
-    layout.write_json(run_dir / "fusion_graph.json", fg)
-    template = (pathlib.Path(__file__).resolve().parent / "fusion_viewer.html").read_text(encoding="utf-8")
-    placeholder = '<script id="fusion-data" type="application/json">{}</script>'
-    payload = '<script id="fusion-data" type="application/json">' + json.dumps(fg) + '</script>'
-    (run_dir / "index.html").write_text(template.replace(placeholder, payload), encoding="utf-8")
-    print(f"ascend-debug.ingest.fusion_graph={run_dir / 'index.html'}")
+    # The dev-nyh workbench is the network entry: regenerate run_dir/index.html,
+    # which reads graphs/kernel_dag.summary.json and defaults to Kernel-DAG mode.
+    open_view.open_run(types.SimpleNamespace(run_dir=run_dir, no_browser=True))
+    print(f"ascend-debug.ingest.workbench={run_dir / 'index.html'}")
     return 0

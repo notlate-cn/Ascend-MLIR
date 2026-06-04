@@ -904,7 +904,7 @@ th { background: #f2f5f9; }
     script = """
 <script>
 const workspace = JSON.parse(document.getElementById("graph-workspace-data").textContent);
-let activeMode = "stage";
+let activeMode = (workspace.kernel_dag && workspace.kernel_dag.nodes && Object.keys(workspace.kernel_dag.nodes).length) ? "kernel" : "stage";
 const initialParams = new URLSearchParams(window.location.search);
 const requestedStage = initialParams.get("stage");
 const requestedNode = initialParams.get("node");
@@ -2552,7 +2552,7 @@ function renderKernelDag() {
 <rect width="${nodeW}" height="${nodeH}" rx="7"></rect>
 <text class="node-op" x="14" y="24">${escapeHtml(id)} [${escapeHtml(kind)}]</text>
 <text class="node-result" x="14" y="48">${escapeHtml(truncate(op, 31))}</text>
-<text class="node-inputs" x="14" y="68">depth ${escapeHtml(node.depth)} | ws ${escapeHtml(node.workspace_size)}</text>
+<text class="node-inputs" x="14" y="68">depth ${escapeHtml(node.depth)} | ${escapeHtml(node.output_shape ? JSON.stringify(node.output_shape) : "?")}</text>
 </g>`;
   }
   svg += "</g></svg>";
@@ -2577,6 +2577,34 @@ function renderKernelDag() {
   afterGraphRender();
 }
 
+function renderKernelDetail(node) {
+  if (!node) return "";
+  const overview = `
+<section class="inspector-section">
+<h3>节点详情</h3>
+${detailRows([
+  ["Kind", node.kind],
+  ["输出 Shape", node.output_shape ? JSON.stringify(node.output_shape) : null],
+  ["输出 Dtype", node.output_dtype],
+  ["深度", node.depth],
+])}
+</section>`;
+  const sourceOps = Array.isArray(node.source_ops) ? node.source_ops : [];
+  const sourceSection = sourceOps.length
+    ? `<section class="inspector-section"><h3>Source ops</h3><ul class="detail-source-ops">${sourceOps.map((so) => `<li><code>${escapeHtml(so.id || so.name || "op")}</code>${so.loc ? ` <span class="panel-subtitle">${escapeHtml(truncate(so.loc, 80))}</span>` : ""}</li>`).join("")}</ul></section>`
+    : "";
+  let tilingSection = "";
+  const tiling = node.tiling || {};
+  if (tiling.best && typeof tiling.best === "object") {
+    const rows = Object.entries(tiling.best).map(([k, v]) => [k, typeof v === "object" ? JSON.stringify(v) : v]);
+    tilingSection += `<section class="inspector-section"><h3>Tiling (best)</h3>${detailRows(rows)}</section>`;
+  }
+  if (tiling.space) {
+    tilingSection += `<section class="inspector-section"><details><summary>Tiling space</summary><pre>${escapeHtml(JSON.stringify(tiling.space, null, 2))}</pre></details></section>`;
+  }
+  return overview + sourceSection + tilingSection;
+}
+
 function selectKernel(kernelId, options = {}) {
   selectedKey = kernelId;
   document.querySelectorAll(".kernel-dag-node").forEach((element) => element.classList.toggle("selected", element.dataset.kernelId === kernelId));
@@ -2584,7 +2612,7 @@ function selectKernel(kernelId, options = {}) {
   const kernelHref = kernelDetailHref(kernelId);
   const links = kernelHref ? [{label: "Kernel 详情", href: kernelHref}] : [];
   if (memoryHasKernel(kernelId)) links.push({label: "内存视图", href: memoryViewLink(kernelId)});
-  setInspector(`Kernel 详情：${kernelId}`, links);
+  setInspector(`Kernel 详情：${kernelId}`, links, node ? renderKernelDetail(node) : "");
   if (options.center) {
     centerGraphElement(findKernelNodeElement(kernelId));
   }
@@ -2611,7 +2639,7 @@ installSourceReader();
 installCanvasPan();
 installGraphNavigation();
 installStageGraphControls();
-renderStageGraph();
+setMode(activeMode);
 </script>
 """
     document = f"""<!doctype html>
