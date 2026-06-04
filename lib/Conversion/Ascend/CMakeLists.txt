@@ -18,6 +18,7 @@ set(ASCEND_KERNELIZE_SOURCES
   Kernelize/Preprocess/MixMatmulSemantics.cpp
   Kernelize/Analysis/DependencyAnalysis.cpp
   Kernelize/Analysis/OpRoleClassification.cpp
+  Kernelize/Analysis/SymbolAxisSpace.cpp
   Kernelize/Analysis/StructuralMarking.cpp
   Kernelize/Candidate/CandidateClosure.cpp
   Kernelize/Candidate/CandidateMergeAnalysis.cpp

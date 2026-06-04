@@ -7,6 +7,7 @@
 #ifndef ASCEND_MLIR_CONVERSION_ASCEND_KERNELIZE_DEPENDENCYANALYSIS_H
 #define ASCEND_MLIR_CONVERSION_ASCEND_KERNELIZE_DEPENDENCYANALYSIS_H
 
+#include "Conversion/Ascend/Kernelize/Analysis/SymbolAxisSpace.h"
 #include "Conversion/Ascend/Kernelize/KernelizeTypes.h"
 #include "mlir/IR/AffineMap.h"
 #include "mlir/IR/BuiltinOps.h"
@@ -21,28 +22,6 @@
 #include <string>
 
 namespace mlir::ascend::kernelize {
-
-struct LogicalAxis {
-  Operation *func = nullptr;
-  unsigned axisId = 0;
-  std::string symbolName;
-  IteratorKind kind = IteratorKind::Unknown;
-  bool hasMixedIteratorKinds = false;
-  unsigned memberCount = 0;
-};
-
-struct FunctionAxisSpace {
-  Operation *func = nullptr;
-  SmallVector<LogicalAxis, 4> axes;
-};
-
-struct OpAxisRef {
-  int64_t axisId = -1;
-  std::string symbolName;
-  IteratorKind iteratorKind = IteratorKind::Unknown;
-
-  bool hasAxis() const { return axisId >= 0; }
-};
 
 struct OpSemanticSummary {
   Operation *op = nullptr;

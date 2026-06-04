@@ -122,6 +122,7 @@ require_file "lib/Conversion/Ascend/Kernelize/Preprocess/GatherElementwiseFusion
 require_file "lib/Conversion/Ascend/Kernelize/Preprocess/StructuredOpSemanticMarking.cpp"
 require_file "lib/Conversion/Ascend/Kernelize/Analysis/DependencyAnalysis.h"
 require_file "lib/Conversion/Ascend/Kernelize/Analysis/OpRoleClassification.h"
+require_file "lib/Conversion/Ascend/Kernelize/Analysis/SymbolAxisSpace.h"
 require_file "lib/Conversion/Ascend/Kernelize/Analysis/StructuralMarking.h"
 require_file "lib/Conversion/Ascend/Kernelize/Candidate/CandidateClosure.h"
 require_file "lib/Conversion/Ascend/Kernelize/Candidate/CandidateMergeAnalysis.h"
@@ -162,3 +163,10 @@ reject_file "lib/Conversion/Ascend/Kernelize/StructuredOpSemanticMarking.cpp"
 reject_file "lib/Conversion/Ascend/Kernelize/KernelPattern.cpp"
 reject_file "lib/Conversion/Ascend/Kernelize/KernelPattern.h"
 reject_file "lib/Conversion/Ascend/Kernelize/KernelSplitPass.cpp"
+
+require_pattern \
+  "lib/Conversion/Ascend/Schedule/AxisCoalescer.cpp" \
+  "SymbolAxisSpace"
+reject_pattern \
+  "lib/Conversion/Ascend/Schedule/AxisCoalescer.cpp" \
+  "struct AxisSymbolRef|collectRawAxisSymbols|lookupSymbolForDim|mapRawAxisToLogicalAxis"
