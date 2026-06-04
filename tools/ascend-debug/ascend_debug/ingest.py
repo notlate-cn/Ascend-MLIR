@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import pathlib
+import re
 import shutil
 import types
 
@@ -36,6 +37,75 @@ def _read_json(path: pathlib.Path):
         return json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return None
+
+
+_OUT_RE = re.compile(r"out(\d+)\.npy$")
+_EXP_RE = re.compile(r"expected(\d+)\.npy$")
+
+
+def _build_tensor_diff(workdir: pathlib.Path, run_dir: pathlib.Path,
+                       atol: float = 1e-2, rtol: float = 1e-2) -> bool:
+    """If <workdir> was executed (outputs/out<i>.npy + expected<i>.npy),
+    write <run_dir>/summaries/tensor_diff.json (workbench schema). Returns
+    True if written, False if the run has no executed outputs."""
+    out_dir = workdir / "outputs"
+    if not out_dir.is_dir():
+        return False
+    actual: dict[int, pathlib.Path] = {}
+    for p in out_dir.glob("out*.npy"):
+        m = _OUT_RE.search(p.name)
+        if m:
+            actual[int(m.group(1))] = p
+    expected: dict[int, pathlib.Path] = {}
+    for p in workdir.glob("expected*.npy"):
+        m = _EXP_RE.search(p.name)
+        if m:
+            expected[int(m.group(1))] = p
+    indices = sorted(i for i in actual if i in expected)
+    if not indices:
+        return False
+    try:
+        import numpy as np
+    except Exception:
+        return False
+    comparisons = []
+    for i in indices:
+        try:
+            a = np.load(actual[i]).astype("float32")
+            b = np.load(expected[i]).astype("float32")
+        except Exception:
+            continue
+        if a.shape != b.shape:
+            comparisons.append({
+                "status": "FAIL", "id": f"network.output[{i}]",
+                "kernel_id": None, "task_id": None,
+                "max_abs_error": None, "max_rel_error": None,
+                "mean_abs_error": None, "atol": atol, "rtol": rtol,
+            })
+            continue
+        diff = abs(a - b)
+        max_abs = float(diff.max()) if a.size else 0.0
+        mean_abs = float(diff.mean()) if a.size else 0.0
+        ok = bool(np.allclose(a, b, atol=atol, rtol=rtol, equal_nan=False)) if a.size else True
+        comparisons.append({
+            "status": "PASS" if ok else "FAIL",
+            "id": f"network.output[{i}]",
+            "kernel_id": None, "task_id": None,
+            "max_abs_error": max_abs, "max_rel_error": None,
+            "mean_abs_error": mean_abs, "atol": atol, "rtol": rtol,
+        })
+    if not comparisons:
+        return False
+    failed = sum(1 for c in comparisons if c["status"] != "PASS")
+    summary = {
+        "schema_version": 1, "tool": "ascend-debug",
+        "status": "PASS" if failed == 0 else "FAIL",
+        "comparison_count": len(comparisons), "failed_count": failed,
+        "comparisons": comparisons,
+    }
+    (run_dir / "summaries").mkdir(parents=True, exist_ok=True)
+    layout.write_json(run_dir / "summaries" / "tensor_diff.json", summary)
+    return True
 
 
 def _find_network_ir(workdir: pathlib.Path) -> pathlib.Path | None:
@@ -195,6 +265,11 @@ def ingest_run(args) -> int:
         dashboard_count += 1
 
     print(f"ascend-debug.ingest.kernel_dashboards={dashboard_count}")
+
+    # If the run was executed (sim), write the L0 tensor-diff summary so the
+    # Tensor Diff panel shows per-output PASS/FAIL + error metrics.
+    if _build_tensor_diff(workdir, run_dir):
+        print(f"ascend-debug.ingest.tensor_diff={run_dir / 'summaries' / 'tensor_diff.json'}")
 
     # The dev-nyh workbench is the network entry: regenerate run_dir/index.html,
     # which reads graphs/kernel_dag.summary.json and defaults to Kernel-DAG mode.
