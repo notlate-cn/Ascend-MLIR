@@ -2360,7 +2360,7 @@ function searchActiveGraph() {
       if (!element) continue;
       element.classList.add("search-match");
       activeSearchResults.push({
-        select: () => selectKernel(kernelId, {center: true}),
+        select: () => selectKernel(kernelId, {center: true, expand: false}),
       });
     }
   }
@@ -2375,28 +2375,10 @@ function afterGraphRender() {
   searchActiveGraph();
 }
 
-function renderStageGraph() {
-  const stage = activeStage();
-  const graph = stage ? stage.graph : null;
-  const canvas = document.getElementById("graph-canvas");
-  if (!graph || !graph.layout) {
-    document.getElementById("graph-title").textContent = stage ? stageGraphHeaderTitle(stage) : "Stage Graph";
-    document.getElementById("graph-subtitle").textContent = "";
-    updateStepExplanation(stage);
-    canvas.innerHTML = `${svgHeader(720, 420)}<text x="28" y="42">当前 Stage 没有可展示的图。</text></svg>`;
-    afterGraphRender();
-    return;
-  }
-  document.getElementById("graph-title").textContent = stageGraphHeaderTitle(stage);
-  document.getElementById("graph-subtitle").textContent = `${graph.node_count} 个节点，${graph.edge_count} 条边，${graph.kernel_count} 个 Kernel`;
-  updateStepExplanation(stage);
-  renderStagePhaseControls(stage);
-  syncStageGraphControls();
-  updateStageButtonState();
-  const layout = graph.layout;
+function buildGraphSvg(graph, layout, options = {}) {
+  const diff = options.diff || null;
+  const firstBad = options.firstBad;
   const nodeById = Object.fromEntries(graph.nodes.map((node, index) => [node.id, {node, index}]));
-  const diff = activeStageDiff(stage);
-  const firstBad = workspace.overlays.locate && workspace.overlays.locate.first_bad_kernel;
   let svg = svgHeader(layout.width || 720, layout.height || 420);
   svg += `<g class="graph-content" transform="translate(${GRAPH_CANVAS_PADDING},${GRAPH_CANVAS_PADDING})">`;
   for (const frame of functionFramesForGraph(graph, layout)) {
@@ -2440,7 +2422,78 @@ ${badgeElements}
 </g>`;
   }
   svg += "</g></svg>";
-  canvas.innerHTML = svg;
+  return svg;
+}
+
+function setBackToNetworkVisible(visible) {
+  const button = document.getElementById("back-to-network");
+  if (button) button.hidden = !visible;
+}
+
+function renderGroupOps(kernelId) {
+  const node = workspace.kernel_dag && workspace.kernel_dag.nodes ? workspace.kernel_dag.nodes[kernelId] : null;
+  const g = node && node.ops_graph;
+  if (!g || !Array.isArray(g.nodes) || !g.nodes.length || !g.layout) return false;
+  const canvas = document.getElementById("graph-canvas");
+  document.getElementById("graph-title").textContent = kernelId;
+  document.getElementById("graph-subtitle").textContent = `${g.nodes.length} ops · 融合内部视图`;
+  updateStepExplanation(null);
+  renderStagePhaseControls(null);
+  syncStageGraphControls();
+  setBackToNetworkVisible(true);
+  canvas.innerHTML = buildGraphSvg(g, g.layout, {});
+  applyGraphScale();
+  scrollGraphToDefaultOrigin();
+  document.querySelectorAll(".graph-node").forEach((element) => {
+    const inspect = () => selectGroupOpNode(g, element.dataset.nodeId);
+    element.addEventListener("click", inspect);
+    element.addEventListener("keydown", (event) => {
+      if (event.key === "Enter" || event.key === " ") {
+        event.preventDefault();
+        inspect();
+      }
+    });
+  });
+  const first = g.nodes[0] && g.nodes[0].id;
+  if (first) selectGroupOpNode(g, first);
+  afterGraphRender();
+  return true;
+}
+
+function selectGroupOpNode(graph, nodeId) {
+  document.querySelectorAll(".graph-node").forEach((element) => element.classList.toggle("selected", element.dataset.nodeId === nodeId));
+  const node = graph.nodes.find((item) => item.id === nodeId);
+  const stageLike = {name: graph.function || "group", path: ""};
+  setInspector(
+    node ? `节点详情：${node.op_name} ${node.label || ""}` : "节点详情",
+    [],
+    node ? renderStageNodeDetail(stageLike, graph, node, null) : ""
+  );
+}
+
+function renderStageGraph() {
+  setBackToNetworkVisible(false);
+  const stage = activeStage();
+  const graph = stage ? stage.graph : null;
+  const canvas = document.getElementById("graph-canvas");
+  if (!graph || !graph.layout) {
+    document.getElementById("graph-title").textContent = stage ? stageGraphHeaderTitle(stage) : "Stage Graph";
+    document.getElementById("graph-subtitle").textContent = "";
+    updateStepExplanation(stage);
+    canvas.innerHTML = `${svgHeader(720, 420)}<text x="28" y="42">当前 Stage 没有可展示的图。</text></svg>`;
+    afterGraphRender();
+    return;
+  }
+  document.getElementById("graph-title").textContent = stageGraphHeaderTitle(stage);
+  document.getElementById("graph-subtitle").textContent = `${graph.node_count} 个节点，${graph.edge_count} 条边，${graph.kernel_count} 个 Kernel`;
+  updateStepExplanation(stage);
+  renderStagePhaseControls(stage);
+  syncStageGraphControls();
+  updateStageButtonState();
+  const layout = graph.layout;
+  const diff = activeStageDiff(stage);
+  const firstBad = workspace.overlays.locate && workspace.overlays.locate.first_bad_kernel;
+  canvas.innerHTML = buildGraphSvg(graph, layout, {diff, firstBad});
   applyGraphScale();
   scrollGraphToDefaultOrigin();
   document.querySelectorAll(".graph-node").forEach((element) => {
@@ -2489,6 +2542,7 @@ function selectStageNode(stage, graph, nodeId, options = {}) {
 }
 
 function renderKernelDag() {
+  setBackToNetworkVisible(false);
   const summary = workspace.kernel_dag || {};
   const nodes = summary.nodes || {};
   const edges = summary.edges || [];
@@ -2573,7 +2627,7 @@ function renderKernelDag() {
       }
     });
   });
-  if (ids.length) selectKernel(selectedKey && nodes[selectedKey] ? selectedKey : ids[0]);
+  if (ids.length) selectKernel(selectedKey && nodes[selectedKey] ? selectedKey : ids[0], {expand: false});
   afterGraphRender();
 }
 
@@ -2616,6 +2670,13 @@ function selectKernel(kernelId, options = {}) {
   if (options.center) {
     centerGraphElement(findKernelNodeElement(kernelId));
   }
+  // Single-click also expands the group into its internal op subgraph, reusing
+  // the Stage Graph renderer. Guard: only expand when ops_graph has nodes;
+  // otherwise stay on the Kernel DAG (detail panel already updated above).
+  if (options.expand !== false && node && node.ops_graph
+      && Array.isArray(node.ops_graph.nodes) && node.ops_graph.nodes.length) {
+    renderGroupOps(kernelId);
+  }
 }
 
 function setMode(mode) {
@@ -2629,6 +2690,10 @@ function setMode(mode) {
 }
 
 document.querySelectorAll(".mode-tab").forEach((button) => button.addEventListener("click", () => setMode(button.dataset.mode)));
+(() => {
+  const back = document.getElementById("back-to-network");
+  if (back) back.addEventListener("click", () => renderKernelDag());
+})();
 document.querySelectorAll(".stage-button").forEach((button) => button.addEventListener("click", () => {
   activateStageIndex(button.dataset.stageIndex);
 }));
@@ -2696,6 +2761,7 @@ setMode(activeMode);
 <section class="graph-panel">
 <div class="panel-header">
 <div class="panel-title-block">
+<button id="back-to-network" class="graph-tool-button" type="button" hidden>← 回网络</button>
 <h2 id="graph-title">统一 Stage Graph</h2>
 <div id="graph-subtitle" class="panel-subtitle"></div>
 <div id="step-explanation" class="step-explanation" hidden></div>
