@@ -195,6 +195,8 @@ static void emitStridedLocalToGmCopy(OpBuilder &b, Location loc, Type elemType,
   body += "  uint32_t _ascend_rows = (uint32_t)$2;\n";
   body += "  uint32_t _ascend_cols = (uint32_t)$3;\n";
   body += "  uint32_t _ascend_row_stride = (uint32_t)$4;\n";
+  body += "  uint32_t _ascend_block_bytes = _ascend_cols * sizeof(" +
+          elemTypeStr + ");\n";
   body += "  uint32_t _ascend_gap_bytes = (_ascend_row_stride - _ascend_cols) * "
           "sizeof(" + elemTypeStr + ");\n";
   body += "  uint32_t _ascend_count = _ascend_rows * _ascend_cols;\n";
@@ -208,6 +210,12 @@ static void emitStridedLocalToGmCopy(OpBuilder &b, Location loc, Type elemType,
   body += "        $0.SetValue(_ascend_i, static_cast<" + elemTypeStr +
           ">($1.GetValue(_ascend_i)));\n";
   body += "    }\n";
+  body += "  } else if ((_ascend_block_bytes % 32u) == 0u && "
+          "(_ascend_gap_bytes % 32u) == 0u) {\n";
+  body += "    AscendC::DataCopyExtParams _ascend_params{"
+          "static_cast<uint16_t>(_ascend_rows), _ascend_block_bytes, 0u, "
+          "_ascend_gap_bytes, 0u};\n";
+  body += "    AscendC::DataCopyPad($0, $1, _ascend_params);\n";
   body += "  } else {\n";
   body += "    for (uint32_t _ascend_r = 0; _ascend_r < _ascend_rows; ++_ascend_r) {\n";
   body += "      for (uint32_t _ascend_c = 0; _ascend_c < _ascend_cols; ++_ascend_c) "

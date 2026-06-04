@@ -1,5 +1,4 @@
 // RUN: afir-opt %s --linalg-generalize-named-ops --linalg-fuse-elementwise-ops --ascend-normalize --ascend-kernelize --ascend-schedule='target-tile-policy=legacy-default' --ascend-realize='materialization-mode=memory-space-annotate' --ascend-compute-lower --ascend-parallelize --ascend-prepare-for-emit --ascend-canonicalize-cann-signature | FileCheck %s
-// RUN: afir-opt %s --linalg-generalize-named-ops --linalg-fuse-elementwise-ops --ascend-normalize --ascend-kernelize --ascend-schedule='target-tile-policy=legacy-default' --ascend-realize='materialization-mode=memory-space-annotate' --ascend-compute-lower --ascend-parallelize --ascend-prepare-for-emit --ascend-canonicalize-cann-signature | FileCheck --check-prefix=NOPAD %s
 
 // CHECK-LABEL: func.func @relu_transpose_broadcast_add
 // CHECK-SAME: %{{.*}}: memref<?x1xf16>
@@ -31,10 +30,6 @@
 // CHECK-NOT: linalg.generic
 // CHECK: return
 // CHECK-NOT: linalg.generic
-
-// NOPAD-LABEL: func.func @relu_transpose_broadcast_add
-// NOPAD-NOT: AscendC::DataCopyPad
-// NOPAD: return
 
 module {
   func.func @relu_transpose_broadcast_add(

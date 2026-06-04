@@ -3756,20 +3756,12 @@ static void fixBrokenOpEmitters(Operation *moduleOp) {
         }
       }
     }
-    bool firstSrcShapeIsConstOne = false;
-    if (rank == 2 && !srcShapeVals.empty()) {
-      Value firstSrc = srcShapeVals.front();
-      if (auto constOp = firstSrc.getDefiningOp<arith::ConstantOp>()) {
-        if (auto intAttr = dyn_cast<IntegerAttr>(constOp.getValue()))
-          firstSrcShapeIsConstOne = intAttr.getInt() == 1;
-      }
-    }
     // Use actual element type of dst instead of hardcoded 'half'.
     auto dstElemType =
         cast<ascendc::LocalTensorType>(op.getDst().getType()).getElementType();
     std::string elemTypeStr = getAscendCScalarTypeName(dstElemType);
     Value pipeVal;
-    if (rank == 2 && (axis == 1 || (axis == 0 && firstSrcShapeIsConstOne))) {
+    if (rank == 2 && axis == 1) {
       if (auto funcOp = op->getParentOfType<func::FuncOp>()) {
         funcOp.walk([&](ascendc::PipeOp pipeOp) {
           pipeVal = pipeOp.getResult();
@@ -3778,11 +3770,7 @@ static void fixBrokenOpEmitters(Operation *moduleOp) {
       }
     }
     bool useColumnBroadcastFallback = (rank == 2 && axis == 1 && pipeVal);
-    bool useRowBroadcastFallback =
-        (rank == 2 && axis == 0 && firstSrcShapeIsConstOne && pipeVal);
-    bool useRank2BroadcastFallback =
-        useColumnBroadcastFallback || useRowBroadcastFallback;
-    if (useRank2BroadcastFallback) {
+    if (useColumnBroadcastFallback) {
       unsigned pipeOperand = 2 + (2 * rank);
       unsigned scratchId = broadcastScratchId++;
       std::string tbufName =
@@ -3791,9 +3779,7 @@ static void fixBrokenOpEmitters(Operation *moduleOp) {
           "_afir_bcast_src_" + std::to_string(scratchId);
       tmpl += "  AscendC::TBuf<AscendC::TPosition::VECCALC> " + tbufName +
               ";\n";
-      tmpl += useRowBroadcastFallback
-                  ? "  uint32_t _afir_src_count = _afir_ds[1];\n"
-                  : "  uint32_t _afir_src_count = _afir_ds[0];\n";
+      tmpl += "  uint32_t _afir_src_count = _afir_ds[0];\n";
       tmpl += "  uint32_t _afir_src_bytes = _afir_src_count * sizeof(" +
               elemTypeStr + ");\n";
       tmpl += "  uint32_t _afir_src_aligned_bytes = _afir_src_bytes == 0u ? "
@@ -3811,48 +3797,39 @@ static void fixBrokenOpEmitters(Operation *moduleOp) {
               elemTypeStr + ">($1.GetValue(_afir_i)));\n";
       tmpl += "  " + tensorName + ".SetSize(_afir_src_count);\n";
       tmpl += "  AscendC::PipeBarrier<PIPE_ALL>();\n";
-      if (useRowBroadcastFallback) {
-        tmpl += "  for (uint32_t _afir_r = 0; _afir_r < _afir_ds[0]; ++_afir_r) {\n";
-        tmpl += "    uint32_t _afir_row_offset = _afir_r * _afir_ds[1];\n";
-        tmpl += "    for (uint32_t _afir_c = 0; _afir_c < _afir_ds[1]; ++_afir_c)\n";
-        tmpl += "      $0.SetValue(_afir_row_offset + _afir_c, " + tensorName +
-                ".GetValue(_afir_c));\n";
-        tmpl += "  }\n";
-      } else {
-        tmpl += "  if (_afir_ss[1] == 1u) {\n";
-        tmpl += "    for (uint32_t _afir_r = 0; _afir_r < _afir_ds[0]; ++_afir_r) {\n";
-        tmpl += "      auto _afir_v = " + tensorName + ".GetValue(_afir_r);\n";
-        tmpl += "      uint32_t _afir_row_offset = _afir_r * _afir_ds[1];\n";
-        tmpl += "      if (((_afir_row_offset * sizeof(" + elemTypeStr +
-                ")) % 32u) == 0u && ((_afir_ds[1] * sizeof(" + elemTypeStr +
-                ")) % 32u) == 0u) {\n";
-        tmpl += "        for (uint32_t _afir_c = 0; _afir_c < _afir_ds[1]; "
-                "_afir_c += 1024u) {\n";
-        tmpl += "          uint32_t _afir_chunk = ((_afir_ds[1] - _afir_c) < "
-                "1024u) ? (_afir_ds[1] - _afir_c) : 1024u;\n";
-        tmpl += "          AscendC::Duplicate($0[_afir_row_offset + _afir_c], "
-                "_afir_v, _afir_chunk);\n";
-        tmpl += "          uint32_t _afir_vec_elems = 32u / sizeof(" +
-                elemTypeStr + ");\n";
-        tmpl += "          uint32_t _afir_tail_base = (_afir_chunk / "
-                "_afir_vec_elems) * _afir_vec_elems;\n";
-        tmpl += "          for (uint32_t _afir_t = _afir_tail_base; "
-                "_afir_t < _afir_chunk; ++_afir_t)\n";
-        tmpl += "            $0.SetValue(_afir_row_offset + _afir_c + "
-                "_afir_t, _afir_v);\n";
-        tmpl += "        }\n";
-        tmpl += "      } else {\n";
-        tmpl += "        for (uint32_t _afir_c = 0; _afir_c < _afir_ds[1]; "
-                "++_afir_c)\n";
-        tmpl += "          $0.SetValue(_afir_row_offset + _afir_c, _afir_v);\n";
-        tmpl += "      }\n";
-        tmpl += "    }\n";
-        tmpl += "  } else {\n";
-        tmpl += "    AscendC::Broadcast<" + elemTypeStr + ", " +
-                std::to_string(rank) + ", " + std::to_string(axis) +
-                ">($0, $1, _afir_ds, _afir_ss);\n";
-        tmpl += "  }\n";
-      }
+      tmpl += "  if (_afir_ss[1] == 1u) {\n";
+      tmpl += "    for (uint32_t _afir_r = 0; _afir_r < _afir_ds[0]; ++_afir_r) {\n";
+      tmpl += "      auto _afir_v = " + tensorName + ".GetValue(_afir_r);\n";
+      tmpl += "      uint32_t _afir_row_offset = _afir_r * _afir_ds[1];\n";
+      tmpl += "      if (((_afir_row_offset * sizeof(" + elemTypeStr +
+              ")) % 32u) == 0u && ((_afir_ds[1] * sizeof(" + elemTypeStr +
+              ")) % 32u) == 0u) {\n";
+      tmpl += "        for (uint32_t _afir_c = 0; _afir_c < _afir_ds[1]; "
+              "_afir_c += 1024u) {\n";
+      tmpl += "          uint32_t _afir_chunk = ((_afir_ds[1] - _afir_c) < "
+              "1024u) ? (_afir_ds[1] - _afir_c) : 1024u;\n";
+      tmpl += "          AscendC::Duplicate($0[_afir_row_offset + _afir_c], "
+              "_afir_v, _afir_chunk);\n";
+      tmpl += "          uint32_t _afir_vec_elems = 32u / sizeof(" +
+              elemTypeStr + ");\n";
+      tmpl += "          uint32_t _afir_tail_base = (_afir_chunk / "
+              "_afir_vec_elems) * _afir_vec_elems;\n";
+      tmpl += "          for (uint32_t _afir_t = _afir_tail_base; "
+              "_afir_t < _afir_chunk; ++_afir_t)\n";
+      tmpl += "            $0.SetValue(_afir_row_offset + _afir_c + "
+              "_afir_t, _afir_v);\n";
+      tmpl += "        }\n";
+      tmpl += "      } else {\n";
+      tmpl += "        for (uint32_t _afir_c = 0; _afir_c < _afir_ds[1]; "
+              "++_afir_c)\n";
+      tmpl += "          $0.SetValue(_afir_row_offset + _afir_c, _afir_v);\n";
+      tmpl += "      }\n";
+      tmpl += "    }\n";
+      tmpl += "  } else {\n";
+      tmpl += "    AscendC::Broadcast<" + elemTypeStr + ", " +
+              std::to_string(rank) + ", " + std::to_string(axis) +
+              ">($0, $1, _afir_ds, _afir_ss);\n";
+      tmpl += "  }\n";
       tmpl += "  AscendC::PipeBarrier<PIPE_ALL>();\n";
       tmpl += "}";
     } else {
@@ -3870,7 +3847,7 @@ static void fixBrokenOpEmitters(Operation *moduleOp) {
       args.push_back(v);
     for (Value v : op.getSrcShape())
       args.push_back(v);
-    if (useRank2BroadcastFallback)
+    if (useColumnBroadcastFallback)
       args.push_back(pipeVal);
 
     rewriter.create<emitasc::VerbatimOp>(
