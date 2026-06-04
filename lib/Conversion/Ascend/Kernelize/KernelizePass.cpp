@@ -17,6 +17,7 @@
 #include "Conversion/Ascend/Kernelize/KernelizeTypes.h"
 #include "Conversion/Ascend/Kernelize/Analysis/OpRoleClassification.h"
 #include "Conversion/Ascend/Kernelize/Analysis/StructuralMarking.h"
+#include "Conversion/Ascend/Normalize/SymbolEquivalenceAnalysis.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/ControlFlow/IR/ControlFlowOps.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
@@ -146,6 +147,15 @@ struct AscendKernelizePass
         signalPassFailure();
         return;
       }
+      FailureOr<::mlir::ascend::normalize::SymbolEquivalenceResult>
+          constraints =
+              ::mlir::ascend::normalize::analyzeSymbolEquivalence(funcOp);
+      if (failed(constraints)) {
+        signalPassFailure();
+        return;
+      }
+      funcOp->setAttr(::mlir::ascend::kSymbolConstraintsAttr,
+                      constraints->attr);
     }
     if (failed(::mlir::ascend::debug::dumpCheckpoint(
             module, options, ::mlir::ascend::debug::DebugStage::Kernelize,

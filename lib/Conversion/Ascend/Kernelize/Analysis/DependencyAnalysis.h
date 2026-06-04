@@ -22,6 +22,28 @@
 
 namespace mlir::ascend::kernelize {
 
+struct LogicalAxis {
+  Operation *func = nullptr;
+  unsigned axisId = 0;
+  std::string symbolName;
+  IteratorKind kind = IteratorKind::Unknown;
+  bool hasMixedIteratorKinds = false;
+  unsigned memberCount = 0;
+};
+
+struct FunctionAxisSpace {
+  Operation *func = nullptr;
+  SmallVector<LogicalAxis, 4> axes;
+};
+
+struct OpAxisRef {
+  int64_t axisId = -1;
+  std::string symbolName;
+  IteratorKind iteratorKind = IteratorKind::Unknown;
+
+  bool hasAxis() const { return axisId >= 0; }
+};
+
 struct OpSemanticSummary {
   Operation *op = nullptr;
   OperationId opId;
@@ -57,6 +79,8 @@ struct UnsupportedProducerDiagnostic {
 struct DependencyAnalysisResult {
   ProducerConsumerIndex index;
   DenseMap<Operation *, OpSemanticSummary> summaries;
+  SmallVector<FunctionAxisSpace, 4> axisSpaces;
+  DenseMap<Operation *, SmallVector<OpAxisRef, 4>> opAxisMap;
   SmallVector<UnsupportedProducerDiagnostic, 4> unsupportedProducers;
 };
 
