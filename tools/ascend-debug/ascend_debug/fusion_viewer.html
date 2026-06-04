@@ -1,0 +1,254 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>fusion-partition graph - ascend-debug</title>
+<style>
+  html, body { margin: 0; padding: 0; height: 100%; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+  #app { display: flex; height: 100vh; }
+  #cy { flex: 1; min-width: 0; background: #fafafa; }
+  #sidebar {
+    width: 400px; padding: 12px 16px;
+    background: #fff; border-left: 1px solid #ddd;
+    overflow-y: auto; font-size: 13px;
+  }
+  h1 { margin: 0 0 8px; font-size: 18px; }
+  h2 { margin: 16px 0 4px; font-size: 14px; color: #444; }
+  .hint { color: #888; font-size: 12px; }
+  pre { background: #f4f4f4; padding: 6px 8px; border-radius: 3px;
+        font-size: 11px; overflow-x: auto; white-space: pre-wrap; }
+  .pill { display: inline-block; padding: 2px 6px; margin-right: 4px;
+          border-radius: 3px; font-size: 11px;
+          background: #eee; border: 1px solid #ccc; }
+  .pill.ascendc { background: #d8e8ff; border-color: #6699cc; }
+  .pill.aclnn   { background: #ffe5cc; border-color: #cc9966; }
+  .pill.op      { background: #eef0f2; border-color: #aab; }
+  table.kv { width: 100%; border-collapse: collapse; }
+  table.kv td { padding: 2px 6px; vertical-align: top; }
+  table.kv td:first-child { color: #666; width: 110px; }
+  ul.ops { padding-left: 16px; margin: 4px 0; }
+  ul.ops li { margin: 2px 0; font-size: 12px; }
+  .role { display: inline-block; padding: 1px 5px; margin-right: 4px;
+          background: #ffeecc; border-radius: 3px; font-size: 11px; }
+  #drill { display: none; margin: 12px 0 4px; padding: 6px 12px;
+           font-size: 13px; font-weight: 700; color: #fff; background: #1d4ed8;
+           border: none; border-radius: 5px; cursor: pointer; }
+  #drill:hover { background: #1640a8; }
+  details summary { cursor: pointer; }
+</style>
+</head>
+<body>
+<div id="app">
+  <div id="cy"></div>
+  <div id="sidebar">
+    <h1>融合切分图</h1>
+    <div class="hint" id="meta">loading...</div>
+    <div id="detail">
+      <p class="hint">单击 group 展开/收起；点击查看详情。</p>
+    </div>
+    <button id="drill">打开 Kernel 详情 →</button>
+  </div>
+</div>
+
+<script src="https://unpkg.com/cytoscape@3.28.1/dist/cytoscape.min.js"></script>
+<script src="https://unpkg.com/dagre@0.8.5/dist/dagre.min.js"></script>
+<script src="https://unpkg.com/cytoscape-dagre@2.5.0/cytoscape-dagre.js"></script>
+<script src="https://unpkg.com/cytoscape-expand-collapse@4.1.1/cytoscape-expand-collapse.js"></script>
+<script id="fusion-data" type="application/json">{}</script>
+<script>
+(function () {
+  const fg = JSON.parse(document.getElementById('fusion-data').textContent || '{}');
+  const elements = fg.elements || [];
+
+  const groupCount = elements.filter(e => e.data && e.data.type === 'group').length;
+  document.getElementById('meta').innerHTML =
+    `groups: <b>${groupCount}</b> &middot; elements: ${elements.length} &middot; kernels: ${fg.kernel_count ?? '?'}`;
+
+  const dataById = new Map();
+  for (const e of elements) {
+    if (e.data && e.data.id !== undefined && e.data.source === undefined) {
+      dataById.set(e.data.id, e.data);
+    }
+  }
+
+  const colorByKind = { 'ascendc': '#d8e8ff', 'aclnn': '#ffe5cc' };
+  const borderByKind = { 'ascendc': '#6699cc', 'aclnn': '#cc9966' };
+
+  const cy = cytoscape({
+    container: document.getElementById('cy'),
+    elements: elements,
+    style: [
+      { selector: 'node[type="group"]', style: {
+          'background-color': ele => colorByKind[ele.data('kind')] || '#e8e8e8',
+          'border-color':     ele => borderByKind[ele.data('kind')] || '#888',
+          'background-opacity': 0.55,
+          'border-width': 2,
+          'shape': 'round-rectangle',
+          'label': ele => {
+            const k = ele.data('kind') || '';
+            const s = ele.data('shape');
+            const line2 = (k + ' ' + (s ? JSON.stringify(s) : '')).trim();
+            return ele.data('label') + (line2 ? '\n' + line2 : '');
+          },
+          'font-size': 11,
+          'font-weight': 'bold',
+          'text-wrap': 'wrap',
+          'text-valign': 'top',
+          'text-halign': 'center',
+          'padding': '12px',
+      }},
+      { selector: 'node[type="op"]', style: {
+          'background-color': '#f3f5f7',
+          'border-color': '#aab',
+          'border-width': 1,
+          'shape': 'round-rectangle',
+          'label': 'data(label)',
+          'font-size': 9,
+          'text-wrap': 'wrap',
+          'text-valign': 'center',
+          'text-halign': 'center',
+          'padding': '4px',
+          'width': 'label', 'height': 'label',
+      }},
+      { selector: ':parent', style: {
+          'text-valign': 'top',
+          'text-halign': 'center',
+          'background-opacity': 0.18,
+      }},
+      { selector: 'node:selected', style: {
+          'border-width': 3, 'border-color': '#222',
+      }},
+      { selector: 'edge', style: {
+          'curve-style': 'bezier',
+          'target-arrow-shape': 'triangle',
+          'arrow-scale': 0.8,
+          'line-color': '#888',
+          'target-arrow-color': '#888',
+          'width': 1.4,
+      }},
+      { selector: 'edge[intra]', style: {
+          'line-color': '#c0c4c8',
+          'target-arrow-color': '#c0c4c8',
+          'line-style': 'dashed',
+          'width': 1,
+      }},
+      // Fallback styling: collapsed children hidden via .collapsed-child class.
+      { selector: '.collapsed-child', style: { 'display': 'none' } },
+    ],
+    layout: { name: 'dagre', rankDir: 'TB', nodeSep: 30, rankSep: 60 },
+  });
+
+  // Prefer the expand-collapse extension; fall back to manual hide/show.
+  let api = null;
+  const useExt = typeof cy.expandCollapse === 'function';
+  if (useExt) {
+    try {
+      cy.expandCollapse({
+        layoutBy: { name: 'dagre', rankDir: 'TB', nodeSep: 30, rankSep: 60 },
+        fisheye: false, animate: false, undoable: false,
+      });
+      api = cy.expandCollapse('get');
+      api.collapseAll();
+    } catch (err) {
+      api = null;
+    }
+  }
+
+  // Manual fallback: hide every group's children by default.
+  const collapsedGroups = new Set();
+  function manualCollapse(node) {
+    node.children().addClass('collapsed-child');
+    collapsedGroups.add(node.id());
+  }
+  function manualExpand(node) {
+    node.children().removeClass('collapsed-child');
+    collapsedGroups.delete(node.id());
+    cy.layout({ name: 'dagre', rankDir: 'TB', nodeSep: 30, rankSep: 60 }).run();
+  }
+  if (!api) {
+    cy.nodes('[type="group"]').forEach(manualCollapse);
+    cy.layout({ name: 'dagre', rankDir: 'TB', nodeSep: 30, rankSep: 60 }).run();
+  }
+
+  function toggle(node) {
+    if (api) {
+      if (api.isCollapsible(node)) api.collapse(node);
+      else if (api.isExpandable(node)) api.expand(node);
+    } else {
+      if (collapsedGroups.has(node.id())) manualExpand(node);
+      else manualCollapse(node);
+    }
+  }
+
+  let currentNode = null;
+  const drillBtn = document.getElementById('drill');
+  drillBtn.addEventListener('click', () => {
+    if (currentNode && currentNode.data('drill')) {
+      window.location.href = currentNode.data('drill');
+    }
+  });
+
+  function showDetail(node) {
+    currentNode = node;
+    const detail = document.getElementById('detail');
+    if (!node) {
+      detail.innerHTML = '<p class="hint">单击 group 展开/收起；点击查看详情。</p>';
+      drillBtn.style.display = 'none';
+      return;
+    }
+    const d = node.data();
+    let html = `<span class="pill ${d.kind || d.type}">${d.kind || d.type}</span>`;
+    html += `<b style="font-size:14px">${d.label ?? d.id}</b>`;
+    html += '<table class="kv">';
+    html += `<tr><td>id</td><td><code>${d.id}</code></td></tr>`;
+    if (d.kind) html += `<tr><td>kind</td><td>${d.kind}</td></tr>`;
+    if (d.shape !== undefined && d.shape !== null) html += `<tr><td>shape</td><td>${JSON.stringify(d.shape)}</td></tr>`;
+    if (d.dtype) html += `<tr><td>dtype</td><td>${d.dtype}</td></tr>`;
+    if (d.result_type) html += `<tr><td>result</td><td>${d.result_type}</td></tr>`;
+    html += '</table>';
+
+    if (d.source_ops && d.source_ops.length) {
+      html += '<h2>source ops</h2><ul class="ops">';
+      for (const so of d.source_ops) {
+        const role = so.op_role ? `<span class="role">${so.op_role}</span>` : '';
+        html += `<li>${role}<code>${so.id ?? ''}</code> ${so.name ?? ''}`;
+        if (so.loc) html += `<div class="hint" style="margin-left:14px">${so.loc}</div>`;
+        html += '</li>';
+      }
+      html += '</ul>';
+    }
+
+    const tiling = d.tiling || {};
+    if (tiling.best || tiling.space) {
+      html += '<h2>tiling</h2>';
+      if (tiling.best && typeof tiling.best === 'object') {
+        html += '<table class="kv">';
+        for (const [k, v] of Object.entries(tiling.best)) {
+          html += `<tr><td>${k}</td><td>${typeof v === 'object' ? JSON.stringify(v) : v}</td></tr>`;
+        }
+        html += '</table>';
+      }
+      if (tiling.space) {
+        html += `<details><summary>space</summary><pre>${JSON.stringify(tiling.space, null, 2)}</pre></details>`;
+      }
+    }
+    detail.innerHTML = html;
+
+    if (d.drill) {
+      drillBtn.style.display = 'inline-block';
+    } else {
+      drillBtn.style.display = 'none';
+    }
+  }
+
+  cy.on('tap', 'node[type="group"]', e => {
+    const n = e.target;
+    toggle(n);
+    showDetail(n);
+  });
+  cy.on('tap', 'node[type="op"]', e => showDetail(e.target));
+  cy.on('tap', e => { if (e.target === cy) showDetail(null); });
+})();
+</script>
+</body>
+</html>

@@ -1899,6 +1899,12 @@ def render_index(run_dir: pathlib.Path, manifest: dict[str, Any]) -> pathlib.Pat
 <span>{_cell(ui_text.text("primary_debug_description"))}</span>
 </section>
 """
+    parent_view = manifest.get("parent_view")
+    back_link = (
+        f'<a class="back-link" href="{_attr(parent_view)}">← 返回整网</a>'
+        if isinstance(parent_view, str) and parent_view
+        else ""
+    )
     document = f"""<!doctype html>
 <html lang="zh-CN">
 <head>
@@ -1950,10 +1956,11 @@ dd {{ margin: 0 0 0.35rem 0; }}
 .locate-panel dl {{ margin: 0; }}
 .locate-panel dt {{ float: none; clear: none; margin: 0 0 0.15rem 0; color: #475569; font-weight: 700; }}
 .locate-panel dd {{ margin: 0 0 0.6rem 0; }}
+.back-link {{ display: inline-block; margin-top: 0.5rem; color: #1d4ed8; text-decoration: none; font-size: 0.9rem; }}
 </style>
 </head>
 <body>
-<header><div class="inner"><h1>Ascend Debug</h1></div></header>
+<header><div class="inner">{back_link}<h1>Ascend Debug</h1></div></header>
 <main>
 {debug_graph_section}
 {run_status_section}
