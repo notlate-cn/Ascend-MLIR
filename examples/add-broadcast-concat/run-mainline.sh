@@ -12,9 +12,14 @@ PYTHON="${PYTHON:-python3}"
 M=640
 N=500
 SOC="${SOC_VERSION:-Ascend910B1}"
+PREPARE_RUNTIME_ARTIFACTS=false
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
+    --prepare-runtime-artifacts)
+      PREPARE_RUNTIME_ARTIFACTS=true
+      shift
+      ;;
     --m)
       M="$2"
       shift 2
@@ -46,6 +51,14 @@ VALIDATION_LOG="$BUILD_DIR/runtime-session.run.log"
 
 echo "add-broadcast-concat: generate data M=$M N=$N"
 "$PYTHON" "$DIR/gen_inputs.py" --M "$M" --N "$N" --outdir "$BUILD_DIR"
+
+if $PREPARE_RUNTIME_ARTIFACTS; then
+  echo "add-broadcast-concat: prepare runtime artifacts $CASE_JSON"
+  SOC_VERSION="$SOC" "$ASCEND_DEBUG" run "$CASE_JSON" \
+    --out "$BUILD_DIR" \
+    --prepare-runtime-artifacts
+  exit 0
+fi
 
 echo "add-broadcast-concat: ascend-debug run $CASE_JSON"
 SOC_VERSION="$SOC" "$ASCEND_DEBUG" run "$CASE_JSON" --out "$BUILD_DIR"

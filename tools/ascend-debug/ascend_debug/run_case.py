@@ -335,6 +335,8 @@ def _run_artifact_case(
     case_path: pathlib.Path,
     run_dir: pathlib.Path,
     commands: list[dict[str, Any]],
+    *,
+    prepare_runtime_artifacts: bool = False,
 ) -> int:
     reports_dir = run_dir / "reports"
     run_manifest = run_dir / "run_manifest.json"
@@ -362,6 +364,8 @@ def _run_artifact_case(
             stderr_rel="reports/runtime-session.prepare.stderr.txt",
         )
     )
+    if prepare_runtime_artifacts:
+        return 0
     commands.append(
         _runtime_command(
             stage="runtime-run",
@@ -765,6 +769,9 @@ def run_case(args: argparse.Namespace) -> int:
     if root.get("schema_version") != 1:
         raise CommandError("case.json requires schema_version: 1")
     commands: list[dict[str, Any]] = []
+    prepare_runtime_artifacts = bool(
+        getattr(args, "prepare_runtime_artifacts", False)
+    )
     try:
         if "source" in root:
             artifact_case = _compile_source_case(
@@ -773,12 +780,18 @@ def run_case(args: argparse.Namespace) -> int:
                 run_dir=run_dir,
                 commands=commands,
             )
-            result = _run_artifact_case(artifact_case, run_dir, commands)
-            _emit_tensor_diff_if_possible(
-                case_path=artifact_case,
-                run_dir=run_dir,
-                commands=commands,
+            result = _run_artifact_case(
+                artifact_case,
+                run_dir,
+                commands,
+                prepare_runtime_artifacts=prepare_runtime_artifacts,
             )
+            if not prepare_runtime_artifacts:
+                _emit_tensor_diff_if_possible(
+                    case_path=artifact_case,
+                    run_dir=run_dir,
+                    commands=commands,
+                )
             _write_runtime_manifest(
                 run_dir=run_dir,
                 case_path=case_path,
@@ -787,12 +800,18 @@ def run_case(args: argparse.Namespace) -> int:
             )
             return result
         if "artifact" in root:
-            result = _run_artifact_case(case_path, run_dir, commands)
-            _emit_tensor_diff_if_possible(
-                case_path=case_path,
-                run_dir=run_dir,
-                commands=commands,
+            result = _run_artifact_case(
+                case_path,
+                run_dir,
+                commands,
+                prepare_runtime_artifacts=prepare_runtime_artifacts,
             )
+            if not prepare_runtime_artifacts:
+                _emit_tensor_diff_if_possible(
+                    case_path=case_path,
+                    run_dir=run_dir,
+                    commands=commands,
+                )
             _write_runtime_manifest(
                 run_dir=run_dir,
                 case_path=case_path,

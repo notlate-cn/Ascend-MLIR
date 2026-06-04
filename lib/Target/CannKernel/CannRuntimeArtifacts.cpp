@@ -670,6 +670,53 @@ static bool isSupportedAxisExecutionRole(StringRef value) {
 static FailureOr<SmallVector<DictionaryAttr>>
 collectKernelScheduleMetadata(func::FuncOp funcOp);
 
+static std::optional<std::string>
+selectMergedSinkKernelName(func::FuncOp funcOp,
+                           ArrayRef<std::string> metadataKernelNames) {
+  if (metadataKernelNames.empty())
+    return std::nullopt;
+
+  ModuleOp module = funcOp->getParentOfType<ModuleOp>();
+  if (!module)
+    return std::nullopt;
+
+  auto edgesAttr = module->getAttrOfType<ArrayAttr>(
+      ::mlir::ascend::kKernelGraphEdgesAttr);
+  if (!edgesAttr)
+    return std::nullopt;
+
+  llvm::StringSet<> metadataKernels;
+  for (const std::string &name : metadataKernelNames)
+    metadataKernels.insert(name);
+
+  llvm::StringSet<> fromKernels;
+  llvm::StringSet<> toKernels;
+  for (Attribute rawEdge : edgesAttr) {
+    auto edge = dyn_cast<DictionaryAttr>(rawEdge);
+    if (!edge)
+      continue;
+    auto from = dyn_cast_or_null<StringAttr>(edge.get("from"));
+    auto to = dyn_cast_or_null<StringAttr>(edge.get("to"));
+    if (!from || !to || from.getValue() == to.getValue())
+      continue;
+    if (!metadataKernels.contains(from.getValue()) ||
+        !metadataKernels.contains(to.getValue()))
+      continue;
+    fromKernels.insert(from.getValue());
+    toKernels.insert(to.getValue());
+  }
+
+  std::optional<std::string> sinkKernel;
+  for (const std::string &name : metadataKernelNames) {
+    if (!toKernels.contains(name) || fromKernels.contains(name))
+      continue;
+    if (sinkKernel && *sinkKernel != name)
+      return std::nullopt;
+    sinkKernel = name;
+  }
+  return sinkKernel;
+}
+
 static FailureOr<DictionaryAttr>
 lookupKernelScheduleMetadata(func::FuncOp funcOp) {
   auto entriesOr = collectKernelScheduleMetadata(funcOp);
@@ -689,6 +736,8 @@ collectKernelScheduleMetadata(func::FuncOp funcOp) {
     return SmallVector<DictionaryAttr>{};
 
   SmallVector<DictionaryAttr> matchingEntries;
+  SmallVector<DictionaryAttr> allEntries;
+  SmallVector<std::string> metadataKernelNames;
   DictionaryAttr singleFallbackEntry;
   for (auto [index, rawEntry] : llvm::enumerate(metadata)) {
     auto entry = dyn_cast<DictionaryAttr>(rawEntry);
@@ -705,6 +754,8 @@ collectKernelScheduleMetadata(func::FuncOp funcOp) {
              << " element " << index
              << " entries must include a string kernel field";
 
+    allEntries.push_back(entry);
+    metadataKernelNames.push_back(kernel.getValue().str());
     if (kernel.getValue() == funcOp.getName())
       matchingEntries.push_back(entry);
     if (!singleFallbackEntry && metadata.size() == 1)
@@ -715,6 +766,17 @@ collectKernelScheduleMetadata(func::FuncOp funcOp) {
     return matchingEntries;
   if (singleFallbackEntry)
     return SmallVector<DictionaryAttr>{singleFallbackEntry};
+  if (std::optional<std::string> sinkKernel =
+          selectMergedSinkKernelName(funcOp, metadataKernelNames)) {
+    SmallVector<DictionaryAttr> sinkEntries;
+    for (auto [entry, kernelName] :
+         llvm::zip_equal(allEntries, metadataKernelNames)) {
+      if (kernelName == *sinkKernel)
+        sinkEntries.push_back(entry);
+    }
+    if (!sinkEntries.empty())
+      return sinkEntries;
+  }
   return SmallVector<DictionaryAttr>{};
 }
 

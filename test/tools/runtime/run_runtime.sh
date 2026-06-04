@@ -843,7 +843,9 @@ bash test/tools/runtime/test_prepare_npu_smoke_manifests.sh
 bash test/tools/runtime/test_prepare_real_npu_microcases.sh
 bash test/tools/runtime/test_prepare_real_npu_multikernel.sh
 bash test/tools/runtime/test_real_npu_transformer_case_registration.sh
+bash test/tools/runtime/test_real_npu_skip_sim_registration.sh
 bash test/tools/runtime/test_example_prepare_manifest_usage.sh
+bash test/tools/runtime/test_broadcast_prepare_tiling.sh
 
 # Compile test drivers
 echo "--- Compiling runtime tests ---"

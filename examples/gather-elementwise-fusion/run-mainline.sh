@@ -23,6 +23,7 @@ INDEX_TAIL_GUARD=16
 INDEX_HIGH=""
 SOC="${SOC_VERSION:-Ascend910B1}"
 VERBOSE=false
+PREPARE_RUNTIME_ARTIFACTS=false
 
 require_arg() {
   local opt="$1"
@@ -35,6 +36,10 @@ require_arg() {
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
+    --prepare-runtime-artifacts)
+      PREPARE_RUNTIME_ARTIFACTS=true
+      shift
+      ;;
     --m)
       require_arg "$1" "${2:-}"
       M="$2"
@@ -296,6 +301,11 @@ cat > "$RUN_MANIFEST" <<EOF
   "rtol": 1e-2
 }
 EOF
+
+if $PREPARE_RUNTIME_ARTIFACTS; then
+  echo "gather-elementwise-fusion: prepared runtime artifacts"
+  exit 0
+fi
 
 "$RUNTIME_SESSION" \
   --run-manifest "$RUN_MANIFEST" \

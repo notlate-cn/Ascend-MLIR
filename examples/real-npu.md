@@ -7,6 +7,7 @@
 ```shell
 export ASCEND_MLIR_CI_REMOTE='<real host or SSH config alias>'
 export ASCEND_MLIR_CI_REMOTE_PORT='<ssh port>'
+export ASCEND_MLIR_CI_SSH_USERNAME='<ssh username>'
 export ASCEND_MLIR_CI_SSH_PASSWORD='<set locally only>'
 ```
 

@@ -13,6 +13,7 @@ REPO_URL="${ASCEND_MLIR_CI_REPO_URL:-}"
 REF="${ASCEND_MLIR_CI_REF:-HEAD}"
 CASE_NAME="${ASCEND_MLIR_CI_CASE:-relu-broadcast-transpose}"
 CMD="${ASCEND_MLIR_CI_CMD:-}"
+SKIP_SIM="${ASCEND_MLIR_CI_SKIP_SIM:-0}"
 JOB_ROOT="${ASCEND_MLIR_CI_JOB_ROOT:-/data/nyh/real-npu-jobs}"
 DEVICE_ID="${ASCEND_DEVICE_ID:-7}"
 SOURCE_DIR="${ASCEND_MLIR_CI_SOURCE_DIR:-}"
@@ -52,6 +53,8 @@ Options:
                          Default: relu-broadcast-transpose
   --cmd COMMAND          Custom command to run after build, from repo root.
                          Takes precedence over --case.
+  --skip-sim             Prepare ordinary example artifacts, then run only the
+                         real NPU phase. Diagnostic only; not a readiness gate.
   --job-root DIR         Host/container job root. Default: /data/nyh/real-npu-jobs
   --device-id ID         NPU device id. Default: ASCEND_DEVICE_ID or 7
   --source-dir DIR       Use a mounted local source tree instead of cloning.
@@ -92,6 +95,10 @@ while [[ $# -gt 0 ]]; do
     --cmd)
       CMD="$2"
       shift 2
+      ;;
+    --skip-sim)
+      SKIP_SIM=1
+      shift
       ;;
     --job-root)
       JOB_ROOT="$2"
@@ -239,6 +246,9 @@ if [[ "${CASE_NAME}" == "all" && -z "${CMD}" ]]; then
     if [[ "${CLEAN}" == "1" && "${first_case}" == "1" ]]; then
       suite_args+=(--clean)
     fi
+    if [[ "${SKIP_SIM}" == "1" ]]; then
+      suite_args+=(--skip-sim)
+    fi
     for extra_arg in "${EXTRA_DOCKER_ARGS[@]}"; do
       suite_args+=(--docker-arg "${extra_arg}")
     done
@@ -258,6 +268,7 @@ DOCKER_ENV=(
   -e ASCEND_MLIR_CI_REF="${REF}"
   -e ASCEND_MLIR_CI_CASE="${CASE_NAME}"
   -e ASCEND_MLIR_CI_CMD="${CMD}"
+  -e ASCEND_MLIR_CI_SKIP_SIM="${SKIP_SIM}"
   -e ASCEND_MLIR_CI_JOB_ROOT="${JOB_ROOT}"
   -e ASCEND_MLIR_CI_SOURCE_DIR="${SOURCE_DIR:+/workspace/source}"
   -e ASCEND_MLIR_CI_INCREMENTAL_SOURCE="${INCREMENTAL_SOURCE}"

@@ -5,6 +5,7 @@ REPO_URL="${ASCEND_MLIR_CI_REPO_URL:-}"
 REF="${ASCEND_MLIR_CI_REF:-HEAD}"
 CASE_NAME="${ASCEND_MLIR_CI_CASE:-relu-broadcast-transpose}"
 CMD="${ASCEND_MLIR_CI_CMD:-}"
+SKIP_SIM="${ASCEND_MLIR_CI_SKIP_SIM:-0}"
 JOB_ROOT="${ASCEND_MLIR_CI_JOB_ROOT:-/data/nyh/real-npu-jobs}"
 SOURCE_DIR="${ASCEND_MLIR_CI_SOURCE_DIR:-}"
 LLVM_BUILD_DIR="${LLVM_BUILD_DIR:-/opt/llvm/build}"
@@ -29,6 +30,9 @@ This script is normally run as the container ENTRYPOINT. Configure it with:
                               Default: relu-broadcast-transpose.
   ASCEND_MLIR_CI_CMD         Optional custom command to run after build. When set,
                               it takes precedence over ASCEND_MLIR_CI_CASE.
+  ASCEND_MLIR_CI_SKIP_SIM    Set to 1 to skip ordinary example sim execution and
+                              run the real NPU phase only. Diagnostic only; not a
+                              readiness gate for candidate kernel fixes.
   ASCEND_MLIR_CI_JOB_ROOT    Output root. Default: /data/nyh/real-npu-jobs.
   ASCEND_MLIR_CI_SOURCE_DIR  Optional mounted source tree.
   ASCEND_MLIR_CI_INCREMENTAL_SOURCE
@@ -103,6 +107,7 @@ record_job_env() {
     echo "ref=${REF}"
     echo "case=${CASE_NAME}"
     echo "cmd=${CMD}"
+    echo "skip_sim=${SKIP_SIM}"
     echo "job_dir=${JOB_DIR}"
     echo "source_dir=${SOURCE_DIR}"
     echo "src_dir=${SRC_DIR}"
@@ -250,7 +255,22 @@ for task in data.get("tasks", []):
     rewrite_outputs(task.get("outputs"))
 dst.write_text(json.dumps(data, indent=2) + "\n")
 PY
-  "${RUN_RUNTIME_SESSION}" --run-manifest "${real_manifest}" --run
+  env -i \
+    HOME="${HOME:-/root}" \
+    USER="${USER:-root}" \
+    PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" \
+    ASCEND_DEVICE_ID="${ASCEND_DEVICE_ID:-7}" \
+    ASCEND_HOME_PATH="${ASCEND_HOME_PATH:-}" \
+    ASCEND_TOOLKIT_HOME="${ASCEND_TOOLKIT_HOME:-${ASCEND_HOME_PATH:-}}" \
+    ASCEND_RUNTIME_TRACE_LAUNCH="${ASCEND_RUNTIME_TRACE_LAUNCH:-1}" \
+    RUN_RUNTIME_SESSION="${RUN_RUNTIME_SESSION}" \
+    bash -lc '
+      source /usr/local/Ascend/driver/bin/setenv.bash >/dev/null 2>&1 || true
+      if [ -n "${ASCEND_HOME_PATH:-}" ]; then
+        source "${ASCEND_HOME_PATH}/set_env.sh" >/dev/null 2>&1 || true
+      fi
+      "${RUN_RUNTIME_SESSION}" --run-manifest "$1" --run
+    ' bash "${real_manifest}"
 }
 
 run_example_case() {
@@ -258,7 +278,11 @@ run_example_case() {
   local case_dir="${SRC_DIR}/examples/${case_name}"
   [[ -f "${case_dir}/run.sh" ]] || fail "example run.sh not found: ${case_dir}/run.sh"
 
-  log "run xvm-style sim pipeline for ${case_name}"
+  if [[ "${SKIP_SIM}" == "1" ]]; then
+    log "prepare real-NPU artifacts without sim for ${case_name}"
+  else
+    log "run xvm-style sim pipeline for ${case_name}"
+  fi
   (
     cd "${SRC_DIR}"
     if [[ -n "${ASCEND_HOME_PATH:-}" ]]; then
@@ -270,8 +294,12 @@ run_example_case() {
     export AFIR_OPT="${SRC_DIR}/build/bin/afir-opt"
     export AFIR_TRANSLATE="${SRC_DIR}/build/bin/afir-translate"
     export RUNTIME_SESSION="${SRC_DIR}/build/bin/runtime-session"
-    bash "examples/${case_name}/run.sh" --log
-  ) >"${LOG_DIR}/${case_name}-sim.log" 2>&1
+    if [[ "${SKIP_SIM}" == "1" ]]; then
+      bash "examples/${case_name}/run.sh" --prepare-runtime-artifacts --log
+    else
+      bash "examples/${case_name}/run.sh" --log
+    fi
+  ) >"${LOG_DIR}/${case_name}-$([[ "${SKIP_SIM}" == "1" ]] && echo prepare || echo sim).log" 2>&1
 
   local manifest=""
   local manifest_candidates=(
@@ -363,7 +391,11 @@ run_multikernel() {
     source examples/env.sh
     export RUNTIME_SESSION="${SRC_DIR}/build/bin/runtime-session"
     export RUN_ONLY_RUNTIME_SESSION="${RUN_RUNTIME_SESSION}"
-    bash examples/real-npu-multikernel/run.sh --out-dir "${multi_out}"
+    multikernel_args=(--out-dir "${multi_out}")
+    if [[ "${SKIP_SIM}" == "1" ]]; then
+      multikernel_args+=(--skip-sim)
+    fi
+    bash examples/real-npu-multikernel/run.sh "${multikernel_args[@]}"
   ) >"${LOG_DIR}/real-npu-multikernel.log" 2>&1
 }
 

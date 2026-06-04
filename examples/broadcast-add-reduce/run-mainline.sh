@@ -20,9 +20,14 @@ SEED=42
 BLOCK_DIM=20
 SOC="${SOC_VERSION:-Ascend910B1}"
 VERBOSE=false
+PREPARE_RUNTIME_ARTIFACTS=false
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
+    --prepare-runtime-artifacts)
+      PREPARE_RUNTIME_ARTIFACTS=true
+      shift
+      ;;
     --m)
       M="$2"
       shift 2
@@ -190,6 +195,11 @@ echo "==================== [STAGE 13] runtime-session sim ===================="
   --atol 10 \
   --rtol 1e-2 \
   --emit-run-manifest "$PREPARED_RUN_MANIFEST"
+
+if $PREPARE_RUNTIME_ARTIFACTS; then
+  echo "broadcast-add-reduce: prepared runtime artifacts"
+  exit 0
+fi
 
 "$RUNTIME_SESSION" \
   --run-manifest "$PREPARED_RUN_MANIFEST" \

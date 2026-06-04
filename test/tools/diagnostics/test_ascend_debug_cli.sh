@@ -332,6 +332,22 @@ grep -Fq "session.result=success" \
   "${TMP_DIR}/debug-case-run/runtime-session.run.log"
 echo "ascend_debug.run_case=ok"
 
+ASCEND_DEBUG_FAKE_RUNTIME_LOG="${TMP_DIR}/fake-runtime-session-prepare-only.log" \
+  PATH="${TMP_DIR}/fake-runtime-session:${PATH}" \
+  ascend-debug run "${TMP_DIR}/case.json" \
+    --out "${TMP_DIR}/debug-case-prepare-only" \
+    --prepare-runtime-artifacts
+test -f "${TMP_DIR}/debug-case-prepare-only/run_manifest.json"
+grep -Fq -- "--case ${TMP_REAL}/case.json --emit-run-manifest ${TMP_REAL}/debug-case-prepare-only/run_manifest.json" \
+  "${TMP_DIR}/fake-runtime-session-prepare-only.log"
+if grep -Fq -- "--run-manifest ${TMP_REAL}/debug-case-prepare-only/run_manifest.json --run" \
+    "${TMP_DIR}/fake-runtime-session-prepare-only.log"; then
+  echo "prepare-only ascend-debug run unexpectedly executed runtime-session --run" >&2
+  exit 1
+fi
+test ! -f "${TMP_DIR}/debug-case-prepare-only/runtime-session.run.log"
+echo "ascend_debug.run_case_prepare_only=ok"
+
 mkdir -p "${TMP_DIR}/fake-runtime-session-fail"
 cat >"${TMP_DIR}/fake-runtime-session-fail/runtime-session" <<'SH'
 #!/usr/bin/env bash

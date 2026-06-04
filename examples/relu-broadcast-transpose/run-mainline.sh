@@ -13,9 +13,14 @@ M=640
 N=500
 SEED=42
 SOC="${SOC_VERSION:-Ascend910B1}"
+PREPARE_RUNTIME_ARTIFACTS=false
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
+    --prepare-runtime-artifacts)
+      PREPARE_RUNTIME_ARTIFACTS=true
+      shift
+      ;;
     --m)
       M="$2"
       shift 2
@@ -52,6 +57,14 @@ VALIDATION_LOG="$BUILD_DIR/runtime-session.run.log"
 echo "relu-broadcast-transpose: generate data M=$M N=$N seed=$SEED"
 "$PYTHON" "$DIR/gen_inputs.py" --m "$M" --n "$N" --seed "$SEED" \
   --out-dir "$BUILD_DIR"
+
+if $PREPARE_RUNTIME_ARTIFACTS; then
+  echo "relu-broadcast-transpose: prepare runtime artifacts $CASE_JSON"
+  SOC_VERSION="$SOC" "$ASCEND_DEBUG" run "$CASE_JSON" \
+    --out "$BUILD_DIR" \
+    --prepare-runtime-artifacts
+  exit 0
+fi
 
 echo "relu-broadcast-transpose: ascend-debug run $CASE_JSON"
 SOC_VERSION="$SOC" "$ASCEND_DEBUG" run "$CASE_JSON" --out "$BUILD_DIR"

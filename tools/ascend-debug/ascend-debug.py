@@ -94,6 +94,11 @@ def build_parser() -> argparse.ArgumentParser:
     run = subparsers.add_parser("run", help="Prepare and run a case.json")
     run.add_argument("case", type=pathlib.Path)
     run.add_argument("--out", type=pathlib.Path, required=True)
+    run.add_argument(
+        "--prepare-runtime-artifacts",
+        action="store_true",
+        help="Prepare runtime artifacts and run_manifest.json without executing the runtime session.",
+    )
     run.set_defaults(handler=run_case)
 
     return parser

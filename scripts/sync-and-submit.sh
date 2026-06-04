@@ -15,6 +15,7 @@ REMOTE_DIR="${ASCEND_MLIR_CI_REMOTE_DIR:-${ASCEND_MLIR_CI_REMOTE_SOURCE_DIR:-/da
 IMAGE="${ASCEND_MLIR_CI_IMAGE:-${ASCEND_MLIR_CI_DEFAULT_REMOTE_IMAGE:-${ASCEND_MLIR_CI_DEFAULT_LLVM_IMAGE:-ascend-mlir-builder:aarch64-ubuntu22.04-llvm21}}}"
 CASE_NAME="${ASCEND_MLIR_CI_CASE:-relu-broadcast-transpose}"
 CMD="${ASCEND_MLIR_CI_CMD:-}"
+SKIP_SIM="${ASCEND_MLIR_CI_SKIP_SIM:-0}"
 DEVICE_ID="${ASCEND_DEVICE_ID:-7}"
 REF="${ASCEND_MLIR_CI_REF:-}"
 JOB_ROOT="${ASCEND_MLIR_CI_JOB_ROOT:-}"
@@ -50,6 +51,9 @@ Options:
                             Default: relu-broadcast-transpose
   --cmd COMMAND             Custom command to run after build, from repo root.
                             Takes precedence over --case.
+  --skip-sim                Prepare ordinary example artifacts, then run only
+                            the real NPU phase. Diagnostic only; not a
+                            readiness gate for candidate kernel fixes.
   --list-cases              Print local case names and exit.
   --device-id ID            NPU device id. Default: ASCEND_DEVICE_ID or 7
   --ref REF                 Label recorded in job output. Default: <HEAD>-local
@@ -107,6 +111,10 @@ while [[ $# -gt 0 ]]; do
     --cmd)
       CMD="$2"
       shift 2
+      ;;
+    --skip-sim)
+      SKIP_SIM=1
+      shift
       ;;
     --device-id)
       DEVICE_ID="$2"
@@ -313,6 +321,9 @@ runner_args=(
 )
 if [[ -n "${CMD}" ]]; then
   runner_args+=(--cmd "${CMD}")
+fi
+if [[ "${SKIP_SIM}" == "1" ]]; then
+  runner_args+=(--skip-sim)
 fi
 if [[ "${INCREMENTAL}" == "1" ]]; then
   runner_args+=(--incremental-source)

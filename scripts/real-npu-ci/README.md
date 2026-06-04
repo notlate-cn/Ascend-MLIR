@@ -315,6 +315,20 @@ scripts/sync-and-submit.sh \
   --case all
 ```
 
+如果只做真机定位，可以加 `--skip-sim`。该模式对普通 example 调用
+`run.sh --prepare-runtime-artifacts`，只生成数据、artifact 和
+`run_manifest.json`，再用 run-only `runtime-session` 在 clean driver/CANN
+环境下执行 NPU manifest；不会生成 `<case>-sim.log`。这只能作为诊断入口，
+不能替代 candidate fix readiness 所需的 xvm sim gate。
+
+```shell
+scripts/sync-and-submit.sh \
+  --remote-dir /data/{username}/Codex-Ascend-MLIR-current \
+  --case add-broadcast-concat \
+  --skip-sim \
+  --device-id 5
+```
+
 完整 Transformer 真机诊断使用独立 case。它会先运行 full graph
 compile/translate/artifact 准备，不进入 full simulator runtime，然后用
 run-only `runtime-session` 走标准真机 NPU 阶段：
@@ -402,7 +416,7 @@ scripts/sync-and-submit.sh --list-cases
 - `transformer-real-npu`：运行 `examples/transformer/run-mainline.sh --prepare-runtime-artifacts` 生成 58-task full Transformer artifacts，再用标准 run-only 真机路径执行。
 - `all`：运行当前 real-NPU 全量用例，包含六个普通 example 和 `real-npu-multikernel`；host 包装脚本会为每个 case 启动独立容器。
 
-`--case` 是保留的快捷方式，适合继续跑“example sim gate + 改 manifest 后真机 NPU run”的固定流程；`--cmd` 是通用入口，会覆盖 `--case`，适合全量脚本、临时排查命令或自定义验证流程。
+`--case` 是保留的快捷方式，默认跑“example sim gate + 改 manifest 后真机 NPU run”的固定流程；`--skip-sim` 会把普通 example 切到“prepare artifacts + NPU run”的诊断流程；`--cmd` 是通用入口，会覆盖 `--case`，适合全量脚本、临时排查命令或自定义验证流程。
 
 注意：
 
@@ -427,6 +441,7 @@ scripts/sync-and-submit.sh --list-cases
     build-project.log
     build-run-only.log
     <case>-sim.log
+    <case>-prepare.log
     <case>-npu.log
     microcases-prepare.log
     microcase-<name>-npu.log
@@ -460,6 +475,15 @@ session.validation=pass
 session.backend=npu
 session.result=success
 session.validation=pass
+```
+
+`--skip-sim` 诊断模式下查看 prepare/NPU 日志：
+
+```shell
+grep -E 'prepare runtime artifacts|run_manifest.path' \
+  "${latest}/logs/relu-broadcast-transpose-prepare.log"
+grep -E 'session.backend|session.result|session.validation' \
+  "${latest}/logs/relu-broadcast-transpose-npu.log"
 ```
 
 多 kernel 调度用例可以这样查看：
