@@ -86,7 +86,7 @@ TEST(AscendScheduleDecisionTest, RuntimeTileParamsDescribeSearchSpace) {
   EXPECT_EQ(tileParams.front().name, "TB_M");
   EXPECT_EQ(tileParams.front().logicalAxisId, 0u);
   EXPECT_EQ(tileParams.front().binding, TileParamBinding::Runtime);
-  EXPECT_EQ(tileParams.front().defaultValue, 32);
+  EXPECT_EQ(tileParams.front().defaultValue, 64);
   EXPECT_EQ(tileParams.front().upperBound, 70);
   EXPECT_EQ(tileParams.front().extent, 70);
 

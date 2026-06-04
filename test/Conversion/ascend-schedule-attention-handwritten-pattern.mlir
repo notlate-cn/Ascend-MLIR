@@ -50,7 +50,7 @@ func.func @sdpa_like(%q: tensor<2x4x8xf16>,
 // CHECK:   handwritten_kind = "attention_sdpa"
 // CHECK: ScheduleProblem:
 // CHECK:   template_tags = [cube, attention_sdpa]
-// CHECK:   structure_constraints = [matmul_contract, handwritten_group, attention_sdpa_chain]
+// CHECK:   structure_constraints = [matmul_contract, branch_merge_axes_consistent, handwritten_group, attention_sdpa_chain]
 // CHECK: TemplateRegistry:
 // CHECK:   kernel = kernel_0
 // CHECK:   template = attention_sdpa/grouped_tile_per_block

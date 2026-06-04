@@ -6,7 +6,7 @@
 // CHECK-SAME: %{{.*}}: memref<?x?xf16
 // CHECK-SAME: %{{.*}}: memref<ui8>
 // CHECK-SAME: !emitasc.py_struct<"TilingData"
-// CHECK-SAME: ["TB_M", "TB_N", "dim_arg0_0", "dim_arg1_0", "dim_arg1_1", "dim_arg0_1"]
+// CHECK-SAME: ["T_arg1_dim0", "T_arg0_dim0", "dim_arg0_0", "dim_arg1_0", "dim_arg1_1", "dim_arg0_1"]
 // CHECK-SAME: ascend.schedule.tail_policies = ["masked_tail", "masked_tail"]
 // CHECK-SAME: cann.num_inputs = 2 : i32
 // CHECK-NOT: linalg.generic

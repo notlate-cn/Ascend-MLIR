@@ -396,7 +396,7 @@ run_vec_example \
   "    { \"name\": \"data0\", \"path\": \"${PROJECT_ROOT}/examples/relu-broadcast-transpose/build_mainline/input_data0.npy\" },
     { \"name\": \"data1\", \"path\": \"${PROJECT_ROOT}/examples/relu-broadcast-transpose/build_mainline/input_data1.npy\" }" \
   "${PROJECT_ROOT}/examples/relu-broadcast-transpose/build_mainline/output_expected.npy" \
-  "TB_M=32,TB_N=32,dim_arg0_0=640,dim_arg1_0=500,dim_arg0_1=1,dim_arg1_1=640" \
+  "T_arg1_dim0=32,T_arg0_dim0=32,dim_arg0_0=640,dim_arg1_0=500,dim_arg0_1=1,dim_arg1_1=640" \
   "20" "1e-2" "1e-2" \
   "build_mainline/step10_kernel.cpp" \
   "${PROJECT_ROOT}/examples/relu-broadcast-transpose/build_mainline/phase5_tiling_space.json"
@@ -411,7 +411,7 @@ run_vec_example \
     { \"name\": \"arg2\", \"path\": \"${PROJECT_ROOT}/examples/add-broadcast-concat/build_mainline/input_c.npy\" },
     { \"name\": \"arg3\", \"path\": \"${PROJECT_ROOT}/examples/add-broadcast-concat/build_mainline/input_d.npy\" }" \
   "${PROJECT_ROOT}/examples/add-broadcast-concat/build_mainline/output.npy" \
-  "TB_M=32,TB_N=32,dim_arg0_0=640,dim_arg1_1=500,dim_arg1_0=640,dim_arg2_0=640,dim_arg3_0=640,dim_arg3_1=500" \
+  "T_arg0_dim0=32,T_arg1_dim1=32,dim_arg0_0=640,dim_arg1_1=500,dim_arg1_0=640,dim_arg2_0=640,dim_arg3_0=640,dim_arg3_1=500" \
   "20" "1e-2" "1e-2" \
   "build_mainline/step10_kernel.cpp" \
   "${PROJECT_ROOT}/examples/add-broadcast-concat/build_mainline/phase5_tiling_space.json"
@@ -424,7 +424,7 @@ run_vec_example \
   "    { \"name\": \"a\", \"path\": \"${PROJECT_ROOT}/examples/broadcast-add-reduce/build_mainline/input_a.npy\" },
     { \"name\": \"b\", \"path\": \"${PROJECT_ROOT}/examples/broadcast-add-reduce/build_mainline/input_b.npy\" }" \
   "${PROJECT_ROOT}/examples/broadcast-add-reduce/build_mainline/output_c.npy" \
-  "TB_M=32,dim_arg0_0=640,dim_arg1_1=128,dim_arg1_0=640" \
+  "T_arg0_dim0=32,dim_arg0_0=640,dim_arg1_1=128,dim_arg1_0=640" \
   "20" "10" "1e-2" \
   "build_mainline/step10_kernel.cpp" \
   "${PROJECT_ROOT}/examples/broadcast-add-reduce/build_mainline/phase5_tiling_space.json"
@@ -446,7 +446,7 @@ run_vec_example \
     { \"name\": \"scale0\", \"path\": \"${PROJECT_ROOT}/examples/split-relu-brc-add-mul/build_mainline/scale0.npy\" },
     { \"name\": \"scale1\", \"path\": \"${PROJECT_ROOT}/examples/split-relu-brc-add-mul/build_mainline/scale1.npy\" }" \
   "${PROJECT_ROOT}/examples/split-relu-brc-add-mul/build_mainline/output.npy" \
-  "dim_arg0_1=512,dim_arg1_0=320,dim_arg0_0=640,dim_arg3_0=512,dim_arg2_0=320,dim_arg4_0=512" \
+  "T_arg1_dim0=32,T_arg0_dim1=32,dim_arg0_1=512,dim_arg1_0=320,dim_arg0_0=640,dim_arg3_0=512,dim_arg2_0=320,dim_arg4_0=512" \
   "10" "1e-2" "1e-2" \
   "build_mainline/step10_kernel.cpp" \
   "${PROJECT_ROOT}/examples/split-relu-brc-add-mul/build_mainline/phase5_tiling_space.json"

@@ -167,6 +167,16 @@ reject_file "lib/Conversion/Ascend/Kernelize/KernelSplitPass.cpp"
 require_pattern \
   "lib/Conversion/Ascend/Schedule/AxisCoalescer.cpp" \
   "SymbolAxisSpace"
+require_file "lib/Conversion/Ascend/Schedule/ScheduleAxisContract.h"
+require_pattern \
+  "lib/Conversion/Ascend/Schedule/ScheduleProblemBuilder.cpp" \
+  "buildScheduleAxisContract"
+require_pattern \
+  "lib/Conversion/Ascend/Schedule/ScheduleProblemBuilder.cpp" \
+  "appendSymbolShapeConstraints"
+reject_pattern \
+  "lib/Conversion/Ascend/Schedule" \
+  "parseSymbolConstraintAttr"
 reject_pattern \
   "lib/Conversion/Ascend/Schedule/AxisCoalescer.cpp" \
   "struct AxisSymbolRef|collectRawAxisSymbols|lookupSymbolForDim|mapRawAxisToLogicalAxis"

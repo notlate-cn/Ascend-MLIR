@@ -251,6 +251,8 @@ buildScheduleProblem(const KernelPatternView &pattern,
   appendShapeConstraints(problem.resultShape, problem.shapeConstraints);
   appendSymbolShapeConstraints(primaryOp, problem.shapeConstraints);
   appendStructureConstraints(pattern, problem.structureConstraints);
+  llvm::append_range(problem.structureConstraints,
+                     problem.axisContract.propagationConstraints);
   if (const auto *hwContract =
           ::mlir::ascend::kernelize::lookupHandwrittenContract(
               pattern.handwrittenKind)) {

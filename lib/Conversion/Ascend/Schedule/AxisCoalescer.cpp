@@ -12,6 +12,7 @@
 #include "Conversion/Ascend/Kernelize/Pattern/HandwrittenContractRegistry.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
+#include "mlir/Dialect/Tensor/IR/Tensor.h"
 #include "mlir/IR/AffineExpr.h"
 #include "mlir/IR/AffineMap.h"
 #include "mlir/IR/BuiltinAttributes.h"
@@ -568,6 +569,27 @@ const PatternOpView *selectAxisCarrierOp(const KernelPatternView &pattern) {
   return selectDominantPrimaryOp(pattern);
 }
 
+FailureOr<CoalescedAxisInfo> coalesceTensorConcatAxes(tensor::ConcatOp concatOp) {
+  CoalescedAxisInfo info;
+  RankedTensorType resultType = concatOp.getResultType();
+  unsigned axisCount = static_cast<unsigned>(resultType.getRank());
+  info.logicalAxes.reserve(axisCount);
+
+  for (unsigned axis = 0; axis < axisCount; ++axis) {
+    LogicalAxisInfo axisInfo;
+    axisInfo.logicalAxisId = axis;
+    axisInfo.kind = AxisKind::Parallel;
+    axisInfo.staticExtent = resultType.getDimSize(axis);
+    axisInfo.rawAxes.push_back({concatOp.getOperation(), axis});
+    info.logicalAxes.push_back(std::move(axisInfo));
+    info.parallelAxes.push_back(axis);
+  }
+
+  deriveAxisScheduleConstraints(info);
+  deriveAxisCoalescingHints(info);
+  return info;
+}
+
 } // namespace
 
 FailureOr<CoalescedAxisInfo> coalesceAxes(const KernelPatternView &pattern) {
@@ -577,6 +599,10 @@ FailureOr<CoalescedAxisInfo> coalesceAxes(const KernelPatternView &pattern) {
 
   Operation *axisOp = axisOpView->op;
   auto linalgOp = dyn_cast<linalg::LinalgOp>(axisOp);
+  if (!linalgOp) {
+    if (auto concatOp = dyn_cast<tensor::ConcatOp>(axisOp))
+      return coalesceTensorConcatAxes(concatOp);
+  }
   if (!linalgOp) {
     axisOp->emitError() << "axis coalescing requires a linalg axis carrier op";
     return failure();

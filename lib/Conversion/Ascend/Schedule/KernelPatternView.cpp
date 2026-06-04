@@ -137,15 +137,17 @@ buildKernelPatternViews(ModuleOp module) {
   WalkResult walkResult = module.walk([&](func::FuncOp funcOp) {
     return funcOp.walk([&](Operation *op) {
       auto linalgOp = dyn_cast<linalg::LinalgOp>(op);
-      bool isConcatOp = isa<tensor::ConcatOp>(op);
-      if (!linalgOp && !isConcatOp)
+      bool isTensorStructureOp =
+          isa<tensor::ConcatOp, tensor::CollapseShapeOp,
+              tensor::ExpandShapeOp, tensor::ExtractSliceOp>(op);
+      if (!linalgOp && !isTensorStructureOp)
         return WalkResult::advance();
 
       auto kernelAttr = op->getAttrOfType<StringAttr>(kKernelAttr);
       if (!kernelAttr) {
         if (linalgOp && isReductionInitHelper(linalgOp))
           return WalkResult::advance();
-        if (isConcatOp)
+        if (isTensorStructureOp)
           return WalkResult::advance();
         op->emitError() << "requires " << kKernelAttr;
         return WalkResult::interrupt();

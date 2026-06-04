@@ -11,8 +11,8 @@
 // CHECK-SAME: buffering = "
 // CHECK-SAME: ascend.schedule.tail_policies
 // CHECK-SAME: cann.num_inputs = 3 : i32
-// CHECK: emitasc.member %arg5 "TB_M"
-// CHECK: emitasc.member %arg5 "TB_N"
+// CHECK: emitasc.member %arg5 "T_arg0_dim0"
+// CHECK: emitasc.member %arg5 "T_arg1_dim0"
 // CHECK: emitasc.member %arg5 "dim_arg1_0"
 // CHECK: emitasc.member %arg5 "dim_arg0_1"
 // CHECK: ascendc.get_block_idx
