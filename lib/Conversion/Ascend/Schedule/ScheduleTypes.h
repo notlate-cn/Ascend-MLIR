@@ -201,6 +201,18 @@ struct CoalescedAxisInfo {
   SmallVector<AxisCoalescingHint> axisCoalescingHints;
 };
 
+struct SymbolicAxisRef {
+  unsigned logicalAxisId = 0;
+  std::string symbolName;
+  AxisKind kind = AxisKind::Unknown;
+};
+
+struct ScheduleAxisContract {
+  SmallVector<SymbolicAxisRef, 4> tileableAxes;
+  SmallVector<SymbolicAxisRef, 2> requiredReductionAxes;
+  SmallVector<std::string, 2> propagationConstraints;
+};
+
 struct TargetTilePolicy {
   std::string policyId = "target_default_32";
   int64_t defaultParallelTile = 32;
@@ -219,6 +231,7 @@ struct ScheduleProblem {
   unsigned resultElementBitWidth = 0;
   SmallVector<int64_t> resultShape;
   CoalescedAxisInfo axes;
+  ScheduleAxisContract axisContract;
   TargetTilePolicy targetTilePolicy;
   unsigned guardBudget = 8;
   SmallVector<std::string> templateTags;

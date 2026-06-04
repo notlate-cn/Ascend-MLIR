@@ -8,6 +8,7 @@
 
 #include "KernelPatternView.h"
 #include "Conversion/Ascend/Kernelize/Pattern/HandwrittenContractRegistry.h"
+#include "ScheduleAxisContract.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/Operation.h"
 #include "llvm/ADT/STLExtras.h"
@@ -215,6 +216,11 @@ buildScheduleProblem(const KernelPatternView &pattern,
       elementType.isIntOrFloat() ? elementType.getIntOrFloatBitWidth() : 0;
   llvm::append_range(problem.resultShape, resultType.getShape());
   problem.axes = axes;
+  FailureOr<ScheduleAxisContract> axisContract =
+      buildScheduleAxisContract(pattern, axes);
+  if (failed(axisContract))
+    return failure();
+  problem.axisContract = std::move(*axisContract);
   problem.guardBudget = 8;
   appendTemplateTag(problem.dominantRole, problem.templateTags);
   appendContractTemplateTags(pattern, problem.templateTags);
@@ -247,6 +253,12 @@ void printScheduleProblemReport(const ScheduleProblem &problem,
   os << "\n";
   os << "  structure_constraints = ";
   printStringList(problem.structureConstraints, os);
+  os << "\n";
+  os << "  tileable_axes = ";
+  printScheduleAxisList(problem.axisContract.tileableAxes, os);
+  os << "\n";
+  os << "  required_reduction_axes = ";
+  printScheduleAxisList(problem.axisContract.requiredReductionAxes, os);
   os << "\n";
   os << "  axis_constraints = [\n";
   bool printTailContract =

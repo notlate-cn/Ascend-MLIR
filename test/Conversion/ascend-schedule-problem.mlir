@@ -140,6 +140,8 @@ func.func @horizontal_siblings(%arg0: tensor<4x8xf32>,
 // CHECK-NEXT:   template_tags = [vector]
 // CHECK-NEXT:   shape_constraints = [d0 == 4, d1 == 8]
 // CHECK-NEXT:   structure_constraints = [elementwise_chain]
+// CHECK-NEXT:   tileable_axes = [axis0, axis1]
+// CHECK-NEXT:   required_reduction_axes = []
 // CHECK-NEXT:   axis_constraints = [
 // CHECK-NEXT:     axis=0 roles=[bind_core,kernel_loop,vectorize] tail=masked_tail
 // CHECK-NEXT:     axis=1 roles=[bind_core,kernel_loop,vectorize] tail=masked_tail
@@ -164,6 +166,8 @@ func.func @horizontal_siblings(%arg0: tensor<4x8xf32>,
 // CHECK-NEXT:   template_tags = [vector]
 // CHECK-NEXT:   shape_constraints = [d0 dynamic, d1 == 8]
 // CHECK-NEXT:   structure_constraints = []
+// CHECK-NEXT:   tileable_axes = [arg0_dim0, axis1]
+// CHECK-NEXT:   required_reduction_axes = []
 
 // CHECK: AxisCoalescing:
 // CHECK-NEXT:   kernel = kernel_2
@@ -181,6 +185,8 @@ func.func @horizontal_siblings(%arg0: tensor<4x8xf32>,
 // CHECK-NEXT:   template_tags = [cube]
 // CHECK-NEXT:   shape_constraints = [d0 == 4, d1 == 16]
 // CHECK-NEXT:   structure_constraints = [matmul_contract]
+// CHECK-NEXT:   tileable_axes = [axis0, axis1]
+// CHECK-NEXT:   required_reduction_axes = [axis2]
 
 // CHECK: AxisCoalescing:
 // CHECK-NEXT:   kernel = kernel_3
@@ -198,6 +204,8 @@ func.func @horizontal_siblings(%arg0: tensor<4x8xf32>,
 // CHECK-NEXT:   template_tags = [reduction]
 // CHECK-NEXT:   shape_constraints = [d0 == 4]
 // CHECK-NEXT:   structure_constraints = [single_reduction_region]
+// CHECK-NEXT:   tileable_axes = [axis0]
+// CHECK-NEXT:   required_reduction_axes = [axis1]
 // CHECK-NEXT:   axis_constraints = [
 // CHECK-NEXT:     axis=0 roles=[bind_core,kernel_loop,vectorize] tail=masked_tail
 // CHECK-NEXT:     axis=1 roles=[full_reduction] tail=full_extent

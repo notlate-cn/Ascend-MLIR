@@ -33,6 +33,7 @@ set(ASCEND_KERNELIZE_SOURCES
 
 set(ASCEND_SCHEDULE_SOURCES
   Schedule/AxisCoalescer.cpp
+  Schedule/ScheduleAxisContract.cpp
   Schedule/ScheduleCache.cpp
   Schedule/ScheduleDecision.cpp
   Schedule/SchedulePersistentCacheIO.cpp
