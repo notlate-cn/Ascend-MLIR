@@ -38,7 +38,12 @@ def ingest_run(args) -> int:
     (run_dir / "graphs").mkdir(exist_ok=True)
     (run_dir / "stages").mkdir(exist_ok=True)
 
-    summary = network_dag.build_kernel_dag_summary(network, provenance)
+    try:
+        summary = network_dag.build_kernel_dag_summary(network, provenance)
+    except (TypeError, AttributeError, KeyError) as error:
+        raise CommandError(
+            f"network.json has unexpected structure: {net_path}: {error}"
+        ) from error
     layout.write_json(run_dir / "graphs" / "kernel_dag.summary.json", summary)
     if provenance is not None:
         layout.write_json(run_dir / "network.provenance.json", provenance)
