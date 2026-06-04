@@ -132,6 +132,12 @@ void addPrimitiveUse(SmallVectorImpl<PrimitiveAxisUseKind> &uses,
 
 std::string defaultTileParamName(const ScheduleProblem &problem,
                                  unsigned tileIndex) {
+  if (tileIndex < problem.axes.logicalAxes.size()) {
+    StringRef symbolName = problem.axes.logicalAxes[tileIndex].symbolName;
+    if (!symbolName.empty())
+      return (llvm::Twine("T_") + symbolName).str();
+  }
+
   if (problem.dominantRole == OpRole::Cube && tileIndex == 2)
     return "t_K";
 

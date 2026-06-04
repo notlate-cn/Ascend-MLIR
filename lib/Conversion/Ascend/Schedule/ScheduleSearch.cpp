@@ -218,9 +218,40 @@ bool isBoundedParallelVectorTile(const ScheduleProblem &problem,
   return hasBoundedParallelAxis;
 }
 
-void appendCandidateGuards(ArrayRef<int64_t> shape,
+std::string getSymbolicTileParamName(StringRef symbolName) {
+  return (llvm::Twine("T_") + symbolName).str();
+}
+
+void appendCandidateGuards(const ScheduleProblem &problem,
                            SmallVectorImpl<ScheduleGuard> &guards) {
-  for (auto [index, dim] : llvm::enumerate(shape)) {
+  for (auto [index, dim] : llvm::enumerate(problem.resultShape)) {
+    StringRef symbolName;
+    if (index < problem.axes.logicalAxes.size())
+      symbolName = problem.axes.logicalAxes[index].symbolName;
+
+    if (ShapedType::isDynamic(dim) && !symbolName.empty()) {
+      ScheduleGuard positiveGuard;
+      positiveGuard.kind = GuardKind::PositiveExtent;
+      positiveGuard.axisDomain = GuardAxisDomain::LogicalAxis;
+      positiveGuard.dim = index;
+      positiveGuard.value = ShapedType::kDynamic;
+      positiveGuard.text =
+          (llvm::Twine(getSymbolicTileParamName(symbolName)) + " > 0").str();
+      guards.push_back(std::move(positiveGuard));
+
+      ScheduleGuard upperBoundGuard;
+      upperBoundGuard.kind = GuardKind::ShapeDynamic;
+      upperBoundGuard.axisDomain = GuardAxisDomain::LogicalAxis;
+      upperBoundGuard.dim = index;
+      upperBoundGuard.value = ShapedType::kDynamic;
+      upperBoundGuard.text =
+          (llvm::Twine(getSymbolicTileParamName(symbolName)) + " <= " +
+           symbolName)
+              .str();
+      guards.push_back(std::move(upperBoundGuard));
+      continue;
+    }
+
     ScheduleGuard guard;
     guard.axisDomain = GuardAxisDomain::ResultDim;
     guard.dim = index;
@@ -288,7 +319,7 @@ ScheduleInstance makeInstance(const ScheduleProblem &problem,
   ScheduleInstance instance;
   instance.tmpl = tmpl;
   instance.tileShape = std::move(tileShape);
-  appendCandidateGuards(problem.resultShape, instance.candidateGuards);
+  appendCandidateGuards(problem, instance.candidateGuards);
   appendDecisionGuards(problem, instance.tileShape.tileSizes,
                        instance.decisionGuards);
   if (hasDynamicTileSize(instance.tileShape))

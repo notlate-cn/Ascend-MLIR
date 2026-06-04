@@ -122,37 +122,39 @@ func.func @reduction_keeps_split_logical_axis_guard(%arg0: tensor<2x4xf16>)
 // CHECK-NEXT:   kernel = kernel_1
 // CHECK: ScheduleGuards:
 // CHECK-NEXT:   kernel = kernel_1
-// CHECK-NEXT:   candidate_guards = 2
+// CHECK-NEXT:   candidate_guards = 3
 // CHECK-NEXT:   decision_guards = 0
 // CHECK-NOT:   decision_guard = a0 % 64 == 0
 // CHECK-NOT:   decision_guard =
 // CHECK-NEXT:   guard_budget = 8
 // CHECK-NEXT:   pruned_by_guard_budget = 0
-// CHECK-NEXT:   candidate_guard = d0 > 0
+// CHECK-NEXT:   candidate_guard = T_arg0_dim0 > 0
+// CHECK-NEXT:   candidate_guard = T_arg0_dim0 <= arg0_dim0
 // CHECK-NEXT:   candidate_guard = d1 == 8
 // CHECK: ScheduleDecisionSet:
 // CHECK-NEXT:   kernel = kernel_1
 // CHECK-NEXT:   decisions = 4
 // CHECK-NEXT:   runtime_top_k = 1
 // CHECK-NEXT:   selected = kernel_1.decision.0
-// CHECK-NEXT:   candidate_guards = 2
+// CHECK-NEXT:   candidate_guards = 3
 // CHECK-NEXT:   decision_guards = 0
 
 // CHECK: ScheduleSearch:
 // CHECK-NEXT:   kernel = kernel_2
 // CHECK: ScheduleGuards:
 // CHECK-NEXT:   kernel = kernel_2
-// CHECK-NEXT:   candidate_guards = 1
+// CHECK-NEXT:   candidate_guards = 2
 // CHECK-NEXT:   decision_guards = 0
 // CHECK-NEXT:   guard_budget = 8
 // CHECK-NEXT:   pruned_by_guard_budget = 0
-// CHECK-NEXT:   candidate_guard = d0 > 0
+// CHECK-NEXT:   candidate_guard = T_arg0_dim0 > 0
+// CHECK-NEXT:   candidate_guard = T_arg0_dim0 <= arg0_dim0
 // CHECK: ScheduleDecisionSet:
 // CHECK-NEXT:   kernel = kernel_2
 // CHECK-NEXT:   decisions = 4
 // CHECK-NEXT:   runtime_top_k = 1
 // CHECK-NEXT:   selected = kernel_2.decision.0
-// CHECK-NEXT:   candidate_guards = 1
+// CHECK-NEXT:   candidate_guards = 2
 // CHECK-NEXT:   decision_guards = 0
 
 // CHECK: ScheduleSearch:

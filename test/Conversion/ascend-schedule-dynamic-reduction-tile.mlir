@@ -22,5 +22,6 @@ func.func @dynamic_reduction(%arg0: tensor<?x?xf16>) -> tensor<?xf16> {
 // CHECK: ScheduleDecisionSet:
 // CHECK:   kernel = kernel_0
 // CHECK:   selected = kernel_0.decision.0
-// CHECK-NEXT:   candidate_guards = 1
+// CHECK-NEXT:   candidate_guards = 2
 // CHECK-NEXT:   decision_guards = 0
+// CHECK-NEXT:   tile_params = [name=T_arg0_dim0 axis=0 binding=runtime

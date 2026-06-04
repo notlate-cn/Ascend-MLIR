@@ -171,9 +171,9 @@ func.func @batch_matmul_logical_axes(%lhs: tensor<2x4x8xf16>,
 // CHECK:   decisions = 4
 // CHECK:   runtime_top_k = 1
 // CHECK:   selected = kernel_3.decision.0
-// CHECK-NEXT:   candidate_guards = 2
+// CHECK-NEXT:   candidate_guards = 3
 // CHECK-NEXT:   decision_guards = 0
-// CHECK-NEXT:   tile_params = [name=TB_M axis=0 binding=runtime {{.*}}] [name=TB_N axis=1 binding=runtime {{.*}}]
+// CHECK-NEXT:   tile_params = [name=T_arg0_dim0 axis=0 binding=runtime {{.*}}] [name=TB_N axis=1 binding=runtime {{.*}}]
 // CHECK-NEXT:   tail_plans = [axis=0 selected=masked_tail affected=[data_copy,vector_compute,write_back] align=0 buffering=separate_tail_buffer guard=false extent=? tile=? main=? tail=?] [axis=1 selected=masked_tail affected=[data_copy,vector_compute,write_back] align=0 buffering=separate_tail_buffer guard=false extent=8 tile=? main=? tail=?]
 // CHECK: ScheduleSearch:
 // CHECK-NEXT:   kernel = kernel_4
