@@ -7,8 +7,10 @@
 #include "ScheduleProblemBuilder.h"
 
 #include "KernelPatternView.h"
+#include "Conversion/Ascend/Kernelize/Analysis/SymbolAxisSpace.h"
 #include "Conversion/Ascend/Kernelize/Pattern/HandwrittenContractRegistry.h"
 #include "ScheduleAxisContract.h"
+#include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/Operation.h"
 #include "llvm/ADT/STLExtras.h"
@@ -85,6 +87,28 @@ void appendShapeConstraints(ArrayRef<int64_t> shape,
 
     constraints.push_back((llvm::Twine("d") + llvm::Twine(index) + " == " +
                            llvm::Twine(dim))
+                              .str());
+  }
+}
+
+void appendSymbolShapeConstraints(Operation *primaryOp,
+                                  SmallVectorImpl<std::string> &constraints) {
+  if (!primaryOp)
+    return;
+  auto func = primaryOp->getParentOfType<func::FuncOp>();
+  if (!func)
+    return;
+
+  FailureOr<::mlir::ascend::kernelize::SymbolAxisSpace> symbolAxes =
+      ::mlir::ascend::kernelize::buildSymbolAxisSpace(func);
+  if (failed(symbolAxes))
+    return;
+
+  for (const ::mlir::ascend::kernelize::LogicalAxis &axis :
+       symbolAxes->function.axes) {
+    if (axis.memberCount <= 1 || axis.symbolName.empty())
+      continue;
+    constraints.push_back((llvm::Twine("dim_equal(") + axis.symbolName + ")")
                               .str());
   }
 }
@@ -225,6 +249,7 @@ buildScheduleProblem(const KernelPatternView &pattern,
   appendTemplateTag(problem.dominantRole, problem.templateTags);
   appendContractTemplateTags(pattern, problem.templateTags);
   appendShapeConstraints(problem.resultShape, problem.shapeConstraints);
+  appendSymbolShapeConstraints(primaryOp, problem.shapeConstraints);
   appendStructureConstraints(pattern, problem.structureConstraints);
   if (const auto *hwContract =
           ::mlir::ascend::kernelize::lookupHandwrittenContract(

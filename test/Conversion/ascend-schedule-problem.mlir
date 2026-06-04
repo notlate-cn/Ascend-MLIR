@@ -164,7 +164,7 @@ func.func @horizontal_siblings(%arg0: tensor<4x8xf32>,
 // CHECK-NEXT:   result_shape = [?, 8]
 // CHECK-NEXT:   guard_budget = 8
 // CHECK-NEXT:   template_tags = [vector]
-// CHECK-NEXT:   shape_constraints = [d0 dynamic, d1 == 8]
+// CHECK-NEXT:   shape_constraints = [d0 dynamic, d1 == 8, dim_equal(arg0_dim0)]
 // CHECK-NEXT:   structure_constraints = []
 // CHECK-NEXT:   tileable_axes = [arg0_dim0, axis1]
 // CHECK-NEXT:   required_reduction_axes = []
