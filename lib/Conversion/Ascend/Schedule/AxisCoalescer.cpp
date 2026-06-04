@@ -7,8 +7,10 @@
 #include "AxisCoalescer.h"
 
 #include "Conversion/Ascend/Common/Attributes.h"
+#include "Conversion/Ascend/Common/SymbolConstraints.h"
 #include "KernelPatternView.h"
 #include "Conversion/Ascend/Kernelize/Pattern/HandwrittenContractRegistry.h"
+#include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/IR/AffineExpr.h"
 #include "mlir/IR/AffineMap.h"
@@ -16,6 +18,7 @@
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/Operation.h"
 #include "llvm/ADT/STLExtras.h"
+#include "llvm/ADT/StringMap.h"
 #include "llvm/ADT/Twine.h"
 
 #include <algorithm>
@@ -70,6 +73,121 @@ unsigned getAxisCount(Operation *op, OpRole primaryRole,
   }
 
   return iteratorCount;
+}
+
+struct AxisSymbolRef {
+  std::string symName;
+  int64_t classOrdinal = -1;
+};
+
+using RawAxisSymbols = SmallVector<std::optional<AxisSymbolRef>, 4>;
+
+std::optional<AxisSymbolRef>
+lookupSymbolForDim(const symbol::SymbolConstraintTable *symbols, Value value,
+                   int64_t dim) {
+  if (!symbols)
+    return std::nullopt;
+
+  symbol::DimRef ref{value, dim};
+  for (auto [classIndex, klass] : llvm::enumerate(symbols->classes)) {
+    if (!llvm::is_contained(klass.members, ref))
+      continue;
+    return AxisSymbolRef{klass.symName.getValue().str(),
+                         static_cast<int64_t>(classIndex)};
+  }
+  return std::nullopt;
+}
+
+LogicalResult mergeRawAxisSymbol(RawAxisSymbols &rawSymbols, unsigned rawAxis,
+                                 AxisSymbolRef symbol,
+                                 CoalescedAxisInfo &info, Operation *op) {
+  if (rawAxis >= rawSymbols.size())
+    return success();
+
+  if (!rawSymbols[rawAxis]) {
+    rawSymbols[rawAxis] = std::move(symbol);
+    return success();
+  }
+
+  if (rawSymbols[rawAxis]->symName == symbol.symName)
+    return success();
+
+  std::string reason =
+      (llvm::Twine("conflicting symbol constraints for raw axis ") +
+       llvm::Twine(rawAxis) + ": " + rawSymbols[rawAxis]->symName + " vs " +
+       symbol.symName)
+          .str();
+  addBarrier(info, op, AxisBarrierKind::RankMismatch, reason);
+  op->emitError() << reason;
+  return failure();
+}
+
+FailureOr<RawAxisSymbols>
+collectRawAxisSymbols(linalg::LinalgOp linalgOp, unsigned axisCount,
+                      const symbol::SymbolConstraintTable *symbols,
+                      CoalescedAxisInfo &info) {
+  RawAxisSymbols rawSymbols(axisCount);
+  if (!symbols || symbols->classes.empty())
+    return rawSymbols;
+
+  Operation *op = linalgOp.getOperation();
+  SmallVector<AffineMap> indexingMaps = linalgOp.getIndexingMapsArray();
+  OperandRange operands = op->getOperands();
+  unsigned count =
+      std::min<unsigned>(indexingMaps.size(), op->getNumOperands());
+
+  for (unsigned mapIndex = 0; mapIndex < count; ++mapIndex) {
+    auto shapedType = dyn_cast<ShapedType>(operands[mapIndex].getType());
+    if (!shapedType || !shapedType.hasRank())
+      continue;
+    AffineMap map = indexingMaps[mapIndex];
+    if (map.getNumResults() != static_cast<unsigned>(shapedType.getRank()))
+      continue;
+
+    for (auto [resultIndex, expr] : llvm::enumerate(map.getResults())) {
+      auto dimExpr = dyn_cast<AffineDimExpr>(expr);
+      if (!dimExpr)
+        continue;
+      unsigned rawAxis = dimExpr.getPosition();
+      if (rawAxis >= axisCount)
+        continue;
+
+      std::optional<AxisSymbolRef> symbol = lookupSymbolForDim(
+          symbols, operands[mapIndex], static_cast<int64_t>(resultIndex));
+      if (!symbol)
+        continue;
+      if (failed(mergeRawAxisSymbol(rawSymbols, rawAxis, std::move(*symbol),
+                                    info, op)))
+        return failure();
+    }
+  }
+  return rawSymbols;
+}
+
+void buildSymbolToLogicalAxisMap(ArrayRef<std::optional<AxisSymbolRef>> symbols,
+                                 llvm::StringMap<unsigned> &symbolToAxis) {
+  for (auto [axis, symbol] : llvm::enumerate(symbols)) {
+    if (!symbol)
+      continue;
+    symbolToAxis.try_emplace(symbol->symName, static_cast<unsigned>(axis));
+  }
+}
+
+std::optional<unsigned>
+mapRawAxisToLogicalAxis(unsigned rawAxis,
+                        ArrayRef<std::optional<AxisSymbolRef>> rawSymbols,
+                        const llvm::StringMap<unsigned> &symbolToAxis,
+                        unsigned axisCount) {
+  if (rawAxis >= axisCount)
+    return std::nullopt;
+
+  if (rawAxis < rawSymbols.size() && rawSymbols[rawAxis]) {
+    auto it = symbolToAxis.find(rawSymbols[rawAxis]->symName);
+    if (it != symbolToAxis.end())
+      return it->second;
+  }
+
+  return rawAxis;
 }
 
 LogicalResult mergeStaticExtent(SmallVectorImpl<int64_t> &staticExtents,
@@ -130,10 +248,17 @@ LogicalResult collectIndexingMapInfo(linalg::LinalgOp linalgOp,
                                      OpRole patternRole, unsigned axisCount,
                                      SmallVectorImpl<int64_t> &staticExtents,
                                      SmallVectorImpl<bool> &broadcastAxes,
-                                     CoalescedAxisInfo &info) {
+                                     CoalescedAxisInfo &info,
+                                     const symbol::SymbolConstraintTable *symbols,
+                                     const llvm::StringMap<unsigned>
+                                         &symbolToAxis) {
   Operation *op = linalgOp.getOperation();
   SmallVector<AffineMap> indexingMaps = linalgOp.getIndexingMapsArray();
   OperandRange operands = op->getOperands();
+  FailureOr<RawAxisSymbols> rawSymbols =
+      collectRawAxisSymbols(linalgOp, axisCount, symbols, info);
+  if (failed(rawSymbols))
+    return failure();
 
   unsigned mapCount = static_cast<unsigned>(indexingMaps.size());
   unsigned operandCount = static_cast<unsigned>(operands.size());
@@ -186,21 +311,26 @@ LogicalResult collectIndexingMapInfo(linalg::LinalgOp linalgOp,
         continue;
       }
 
-      unsigned axis = dimExpr.getPosition();
-      if (axis >= axisCount) {
+      unsigned rawAxis = dimExpr.getPosition();
+      if (rawAxis >= axisCount) {
         addBarrier(info, op, AxisBarrierKind::RankMismatch,
                    (llvm::Twine("indexing map ") + llvm::Twine(mapIndex) +
-                    " references axis " + llvm::Twine(axis) +
+                    " references axis " + llvm::Twine(rawAxis) +
                     " outside axis count " + llvm::Twine(axisCount))
                        .str());
         continue;
       }
-
-      usedAxes[axis] = true;
-      int64_t extent = shapedType.getDimSize(resultIndex);
-      if (isPostReductionSingletonCarry(linalgOp, patternRole, axis, extent))
+      std::optional<unsigned> axis = mapRawAxisToLogicalAxis(
+          rawAxis, *rawSymbols, symbolToAxis, axisCount);
+      if (!axis)
         continue;
-      if (failed(mergeStaticExtent(staticExtents, axis, extent, info, op)))
+
+      usedAxes[*axis] = true;
+      int64_t extent = shapedType.getDimSize(resultIndex);
+      if (isPostReductionSingletonCarry(linalgOp, patternRole, rawAxis,
+                                        extent))
+        continue;
+      if (failed(mergeStaticExtent(staticExtents, *axis, extent, info, op)))
         return failure();
     }
 
@@ -214,9 +344,12 @@ LogicalResult collectIndexingMapInfo(linalg::LinalgOp linalgOp,
   return success();
 }
 
-void appendPatternRawAxes(const KernelPatternView &pattern, unsigned axisCount,
-                          CoalescedAxisInfo &info,
-                          Operation *axisOnlyOp = nullptr) {
+LogicalResult
+appendPatternRawAxes(const KernelPatternView &pattern, unsigned axisCount,
+                     CoalescedAxisInfo &info,
+                     const symbol::SymbolConstraintTable *symbols,
+                     const llvm::StringMap<unsigned> &symbolToAxis,
+                     Operation *axisOnlyOp = nullptr) {
   for (const PatternOpView &opView : pattern.ops) {
     if (axisOnlyOp && opView.op != axisOnlyOp)
       continue;
@@ -227,8 +360,17 @@ void appendPatternRawAxes(const KernelPatternView &pattern, unsigned axisCount,
     unsigned iteratorCount =
         static_cast<unsigned>(linalgOp.getIteratorTypesArray().size());
     unsigned rawAxisCount = std::min(axisCount, iteratorCount);
-    for (unsigned axis = 0; axis < rawAxisCount; ++axis)
-      info.logicalAxes[axis].rawAxes.push_back({opView.op, axis});
+    FailureOr<RawAxisSymbols> rawSymbols =
+        collectRawAxisSymbols(linalgOp, axisCount, symbols, info);
+    if (failed(rawSymbols))
+      return failure();
+    for (unsigned rawAxis = 0; rawAxis < rawAxisCount; ++rawAxis) {
+      std::optional<unsigned> logicalAxis = mapRawAxisToLogicalAxis(
+          rawAxis, *rawSymbols, symbolToAxis, axisCount);
+      if (!logicalAxis || *logicalAxis >= info.logicalAxes.size())
+        continue;
+      info.logicalAxes[*logicalAxis].rawAxes.push_back({opView.op, rawAxis});
+    }
 
     if (iteratorCount < axisCount) {
       addBarrier(info, opView.op, AxisBarrierKind::RankMismatch,
@@ -237,6 +379,7 @@ void appendPatternRawAxes(const KernelPatternView &pattern, unsigned axisCount,
                      .str());
     }
   }
+  return success();
 }
 
 void printAxisList(ArrayRef<unsigned> axes, llvm::raw_ostream &os) {
@@ -339,6 +482,8 @@ void deriveAxisScheduleConstraints(CoalescedAxisInfo &info) {
     AxisScheduleConstraint constraint;
     constraint.logicalAxisId = axis.logicalAxisId;
     constraint.kind = axis.kind;
+    constraint.symbolName = axis.symbolName;
+    constraint.symbolClassOrdinal = axis.symbolClassOrdinal;
 
     switch (axis.kind) {
     case AxisKind::Parallel:
@@ -521,6 +666,24 @@ FailureOr<CoalescedAxisInfo> coalesceAxes(const KernelPatternView &pattern) {
       linalgOp.getIteratorTypesArray();
   unsigned axisCount = getAxisCount(axisOp, axisOpView->role,
                                    static_cast<unsigned>(iteratorTypes.size()));
+  std::optional<symbol::SymbolConstraintTable> symbolTable;
+  if (func::FuncOp func = axisOp->getParentOfType<func::FuncOp>()) {
+    FailureOr<symbol::SymbolConstraintTable> parsedSymbols =
+        symbol::parseSymbolConstraintAttr(func);
+    if (failed(parsedSymbols))
+      return failure();
+    if (!parsedSymbols->classes.empty())
+      symbolTable = std::move(*parsedSymbols);
+  }
+  const symbol::SymbolConstraintTable *symbols =
+      symbolTable ? &*symbolTable : nullptr;
+  FailureOr<RawAxisSymbols> axisCarrierSymbols =
+      collectRawAxisSymbols(linalgOp, axisCount, symbols, info);
+  if (failed(axisCarrierSymbols))
+    return failure();
+  llvm::StringMap<unsigned> symbolToAxis;
+  buildSymbolToLogicalAxisMap(*axisCarrierSymbols, symbolToAxis);
+
   SmallVector<int64_t> staticExtents(axisCount, ShapedType::kDynamic);
   SmallVector<bool> broadcastAxisMask(axisCount, false);
 
@@ -539,7 +702,8 @@ FailureOr<CoalescedAxisInfo> coalesceAxes(const KernelPatternView &pattern) {
     }
     if (failed(collectIndexingMapInfo(patternLinalgOp, axisOpView->role,
                                       axisCount, staticExtents,
-                                      broadcastAxisMask, info)))
+                                      broadcastAxisMask, info, symbols,
+                                      symbolToAxis)))
       return failure();
   }
 
@@ -558,6 +722,11 @@ FailureOr<CoalescedAxisInfo> coalesceAxes(const KernelPatternView &pattern) {
     axisInfo.logicalAxisId = axis;
     axisInfo.kind = kind;
     axisInfo.staticExtent = staticExtents[axis];
+    if (axis < axisCarrierSymbols->size() && (*axisCarrierSymbols)[axis]) {
+      axisInfo.symbolName = (*axisCarrierSymbols)[axis]->symName;
+      axisInfo.symbolClassOrdinal =
+          (*axisCarrierSymbols)[axis]->classOrdinal;
+    }
     info.logicalAxes.push_back(std::move(axisInfo));
 
     switch (kind) {
@@ -576,8 +745,10 @@ FailureOr<CoalescedAxisInfo> coalesceAxes(const KernelPatternView &pattern) {
       info.broadcastAxes.push_back(axis);
   }
 
-  appendPatternRawAxes(pattern, axisCount, info,
-                       useAxisCarrierOnly ? axisOp : nullptr);
+  if (failed(appendPatternRawAxes(pattern, axisCount, info, symbols,
+                                  symbolToAxis,
+                                  useAxisCarrierOnly ? axisOp : nullptr)))
+    return failure();
   deriveAxisScheduleConstraints(info);
   deriveAxisCoalescingHints(info);
 
@@ -619,6 +790,8 @@ void printAxisCoalescingReport(StringRef kernelId,
       os << " semantic_align="
          << constraint.semanticAlignmentGranularity;
     }
+    if (!constraint.symbolName.empty())
+      os << " sym=" << constraint.symbolName;
     os << "\n";
   }
   os << "  ]\n";

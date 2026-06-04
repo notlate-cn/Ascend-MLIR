@@ -159,6 +159,8 @@ struct LogicalAxisInfo {
   unsigned logicalAxisId = 0;
   AxisKind kind = AxisKind::Unknown;
   int64_t staticExtent = ShapedType::kDynamic;
+  std::string symbolName;
+  int64_t symbolClassOrdinal = -1;
   SmallVector<std::pair<Operation *, unsigned>> rawAxes;
 };
 
@@ -171,6 +173,8 @@ struct AxisCoalescingBarrier {
 struct AxisScheduleConstraint {
   unsigned logicalAxisId = 0;
   AxisKind kind = AxisKind::Unknown;
+  std::string symbolName;
+  int64_t symbolClassOrdinal = -1;
   SmallVector<AxisExecutionRole, 3> allowedRoles;
   SmallVector<AxisTailPolicy, 3> allowedTailPolicies;
   SmallVector<PrimitiveAxisUseKind, 4> primitiveUses;

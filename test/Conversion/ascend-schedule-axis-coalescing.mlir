@@ -6,6 +6,7 @@
 // RUN: sed -n '/\/\/ EMBEDDING-TAIL-BEGIN/,/\/\/ EMBEDDING-TAIL-END/p' %s | afir-opt --ascend-schedule='target-tile-policy=legacy-default dump-report=true debug-stage=schedule' 2>&1 | FileCheck %s --check-prefix=EMBED
 // RUN: sed -n '/\/\/ PERMUTED-GATHER-TAIL-BEGIN/,/\/\/ PERMUTED-GATHER-TAIL-END/p' %s | afir-opt --ascend-schedule='target-tile-policy=legacy-default dump-report=true debug-stage=schedule' 2>&1 | FileCheck %s --check-prefix=PERMUTE
 // RUN: sed -n '/\/\/ TARGET-GATHER-BEGIN/,/\/\/ TARGET-GATHER-END/p' %s | afir-opt --ascend-schedule='target-tile-policy=target-aware cann-root=%S/Inputs/ascend-schedule-target-tile-cann soc=SyntheticScheduleSoC dump-report=true debug-stage=schedule' 2>&1 | FileCheck %s --check-prefix=TARGETGATHER
+// RUN: sed -n '/\/\/ SYMBOL-GATHER-BEGIN/,/\/\/ SYMBOL-GATHER-END/p' %s | afir-opt --ascend-normalize --ascend-schedule='target-tile-policy=legacy-default dump-report=true debug-stage=schedule' 2>&1 | FileCheck %s --check-prefix=SYMBOLGATHER
 // RUN: sed -n '/\/\/ POST-REDUCE-BEGIN/,/\/\/ POST-REDUCE-END/p' %s | afir-opt --ascend-schedule='target-tile-policy=legacy-default dump-report=true debug-stage=schedule' 2>&1 | FileCheck %s --check-prefix=POSTREDUCE
 // RUN: sed -n '/\/\/ CONFLICT-BEGIN/,/\/\/ CONFLICT-END/p' %s | not afir-opt --ascend-schedule='target-tile-policy=legacy-default' 2>&1 | FileCheck %s --check-prefix=CONFLICT
 
@@ -309,6 +310,52 @@ func.func @manual_target_gather_tail_contract(%data: tensor<?x?xf32>,
 }
 // TARGET-GATHER-END
 
+// SYMBOL-GATHER-BEGIN
+func.func @symbolic_permuted_gather_axis(%arg0: tensor<?x?xf16>,
+                                         %indices: tensor<?xi64>)
+    -> tensor<?x?xf16> {
+  %c0 = arith.constant 0 : index
+  %c1 = arith.constant 1 : index
+  %m = tensor.dim %arg0, %c0 : tensor<?x?xf16>
+  %n = tensor.dim %arg0, %c1 : tensor<?x?xf16>
+  %empty0 = tensor.empty(%m, %n) : tensor<?x?xf16>
+  %base = linalg.generic {
+      indexing_maps = [
+        affine_map<(d0, d1) -> (d0, d1)>,
+        affine_map<(d0, d1) -> (d0, d1)>],
+      iterator_types = ["parallel", "parallel"]}
+      ins(%arg0 : tensor<?x?xf16>)
+      outs(%empty0 : tensor<?x?xf16>)
+      attrs = {
+        ascend.kernel = "kernel_0",
+        ascend.op_role = "vector"
+      } {
+    ^bb0(%x: f16, %out_elem: f16):
+      linalg.yield %x : f16
+    } -> tensor<?x?xf16>
+
+  %empty1 = tensor.empty(%n, %m) : tensor<?x?xf16>
+  %out = linalg.generic {
+      indexing_maps = [
+        affine_map<(d0, d1) -> (d0)>,
+        affine_map<(d0, d1) -> (d1, d0)>,
+        affine_map<(d0, d1) -> (d0, d1)>],
+      iterator_types = ["parallel", "parallel"]}
+      ins(%indices, %base : tensor<?xi64>, tensor<?x?xf16>)
+      outs(%empty1 : tensor<?x?xf16>)
+      attrs = {
+        ascend.kernel = "kernel_0",
+        ascend.op_role = "vector",
+        ascend.primary = true,
+        gather_dim = 1 : i64
+      } {
+    ^bb0(%idx: i64, %x: f16, %out_elem: f16):
+      linalg.yield %x : f16
+    } -> tensor<?x?xf16>
+  return %out : tensor<?x?xf16>
+}
+// SYMBOL-GATHER-END
+
 // POST-REDUCE-BEGIN
 #post_reduce_in = affine_map<(d0, d1) -> (d0, d1)>
 #post_reduce_out = affine_map<(d0, d1) -> (d0, 0)>
@@ -544,6 +591,18 @@ func.func @manual_axis_static_extent_conflict(
 // TARGETGATHER-NEXT: axis=0 kind=parallel roles=[bind_core,kernel_loop,vectorize,broadcast_projection] tail=masked_tail group=1 allowed_tail=[masked_tail,scalar_epilogue] primitive_uses=[data_copy,vector_compute,write_back] semantic_align=0
 // TARGETGATHER-NEXT: axis=1 kind=parallel roles=[bind_core,kernel_loop,vectorize] tail=masked_tail group=1 allowed_tail=[masked_tail,scalar_epilogue,pad_and_mask] primitive_uses=[data_copy,vector_compute,write_back,gather_index] semantic_align=8
 // TARGETGATHER-NEXT: ]
+
+// SYMBOLGATHER: AxisCoalescing:
+// SYMBOLGATHER-NEXT: kernel = kernel_0
+// SYMBOLGATHER-NEXT: logical_axes = 2
+// SYMBOLGATHER-NEXT: parallel_axes = [0, 1]
+// SYMBOLGATHER-NEXT: reduction_axes = []
+// SYMBOLGATHER-NEXT: broadcast_axes = [0]
+// SYMBOLGATHER-NEXT: barriers = 0
+// SYMBOLGATHER-NEXT: axis_constraints = [
+// SYMBOLGATHER-NEXT: axis=0 kind=parallel roles=[bind_core,kernel_loop,vectorize,broadcast_projection] tail=masked_tail group=1 allowed_tail=[masked_tail,scalar_epilogue] primitive_uses=[data_copy,vector_compute,write_back] semantic_align=0 sym=arg0_dim0
+// SYMBOLGATHER-NEXT: axis=1 kind=parallel roles=[bind_core,kernel_loop,vectorize] tail=masked_tail group=1 allowed_tail=[masked_tail,scalar_epilogue,pad_and_mask] primitive_uses=[data_copy,vector_compute,write_back,gather_index] semantic_align=16 sym=arg0_dim1
+// SYMBOLGATHER-NEXT: ]
 
 // POSTREDUCE: SchedulePatternView:
 // POSTREDUCE-NEXT: kernel = kernel_0

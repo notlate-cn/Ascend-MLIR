@@ -264,6 +264,8 @@ void printScheduleProblemReport(const ScheduleProblem &problem,
       os << " semantic_align="
          << constraint.semanticAlignmentGranularity;
     }
+    if (!constraint.symbolName.empty())
+      os << " sym=" << constraint.symbolName;
     os << "\n";
   }
   os << "  ]\n";
