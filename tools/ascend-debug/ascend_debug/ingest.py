@@ -5,7 +5,7 @@ import pathlib
 import shutil
 import types
 
-from ascend_debug import __version__, collect, layout, network_dag, open_view, stage_graph
+from ascend_debug import __version__, collect, layout, network_dag, open_view
 from ascend_debug.runner import CommandError
 
 # Network-level lowering-stage IR dumps that network_runner's outline phase
@@ -76,18 +76,6 @@ def ingest_run(args) -> int:
         if space is not None:
             tiling["space"] = space
         node["tiling"] = tiling
-        # Enrich each kernel node with its internal op subgraph so the workbench
-        # can expand a group into the same SVG renderer the Stage Graph uses.
-        # Compute the layout here (Python side) so ops_graph is structurally
-        # identical to a stage graph and the JS draw path can be reused as-is.
-        kernel_ir = workdir / "groups" / f"{kid}.mlir"
-        if kernel_ir.exists():
-            text = kernel_ir.read_text(encoding="utf-8", errors="replace")
-            sub = stage_graph.parse_stage_mlir(
-                {"order": 0, "name": kid, "path": str(kernel_ir)}, text
-            )
-            sub["layout"] = stage_graph._compute_graph_layout(sub)
-            node["ops_graph"] = sub
     layout.write_json(run_dir / "graphs" / "kernel_dag.summary.json", summary)
     if provenance is not None:
         layout.write_json(run_dir / "network.provenance.json", provenance)
