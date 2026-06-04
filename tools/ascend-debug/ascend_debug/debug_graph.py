@@ -802,6 +802,7 @@ dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }
 .graph-edge-path.symbol { stroke: #475569; stroke-dasharray: 4 4; }
 .graph-edge-path.critical { stroke: var(--red); stroke-width: 2.7; }
 .graph-edge-path.fusion { stroke: #16a34a; stroke-width: 2.5; }
+.graph-edge-path.bypass-edge { stroke: var(--teal); stroke-width: 1.8; stroke-dasharray: 5 4; marker-end: url(#arrow-head); }
 .graph-edge-label { fill: #586274; font-size: 11px; font-family: SFMono-Regular, Menlo, Consolas, monospace; }
 .graph-edge.dimmed { opacity: 0.12; }
 .graph-edge.focus-hidden, .graph-edge.edge-filter-hidden, .graph-edge.helper-collapsed { display: none; }
@@ -945,16 +946,38 @@ const ALL_EDGE_KINDS = ["value", "memory_effect", "resource_effect", "control", 
 const VALID_HIGHLIGHT_MODES = new Set(["direct", "upstream", "downstream", "both"]);
 const VALID_DEPTHS = new Set(["1", "2", "3", "all"]);
 const HELPER_NODE_OPS = new Set([
-  "affine.apply",
+  "scf.for",
+  "scf.if",
+  "scf.yield",
+  "scf.forall",
+  "tensor.extract_slice",
+  "tensor.insert_slice",
+  "tensor.collapse_shape",
+  "tensor.expand_shape",
+  "tensor.empty",
+  "arith.subi",
+  "arith.divsi",
+  "arith.divui",
+  "arith.remsi",
+  "arith.minsi",
+  "arith.maxsi",
+  "arith.cmpi",
+  "arith.select",
+  "arith.index_castui",
+  "arith.muli",
   "arith.addi",
   "arith.constant",
   "arith.index_cast",
-  "arith.muli",
-  "emitasc.member",
-  "emitasc.reinterpret_cast",
+  "affine.apply",
+  "affine.min",
+  "affine.max",
   "memref.dim",
   "tensor.dim",
+  "emitasc.member",
+  "emitasc.reinterpret_cast",
 ]);
+
+const VALID_FOLD_MODES = new Set(["full", "hide", "bypass"]);
 
 function defaultStageGraphViewState() {
   return {
@@ -962,7 +985,7 @@ function defaultStageGraphViewState() {
     depth: "all",
     focusView: false,
     edgeKinds: new Set(ALL_EDGE_KINDS),
-    foldHelpers: false,
+    foldMode: "bypass",
   };
 }
 
@@ -982,7 +1005,8 @@ function parseStageGraphViewState() {
     state.edgeKinds = new Set();
     for (const kind of ALL_EDGE_KINDS) state.edgeKinds.add(kind);
   }
-  state.foldHelpers = initialParams.get("fold") === "helpers";
+  const foldParam = initialParams.get("fold");
+  state.foldMode = VALID_FOLD_MODES.has(foldParam) ? foldParam : "bypass";
   return state;
 }
 
@@ -1984,8 +2008,8 @@ function syncStageGraphControls() {
   document.querySelectorAll("[data-edge-kind-filter]").forEach((input) => {
     input.checked = stageGraphViewState.edgeKinds.has(input.dataset.edgeKindFilter);
   });
-  const foldToggle = document.getElementById("fold-helper-toggle");
-  if (foldToggle) foldToggle.checked = stageGraphViewState.foldHelpers;
+  const foldMode = document.getElementById("fold-mode");
+  if (foldMode) foldMode.value = stageGraphViewState.foldMode;
 }
 
 function updateGraphUrlState(stage, nodeId) {
@@ -2001,7 +2025,7 @@ function updateGraphUrlState(stage, nodeId) {
   const activeEdgeKinds = ALL_EDGE_KINDS.filter((kind) => stageGraphViewState.edgeKinds.has(kind));
   if (activeEdgeKinds.length === ALL_EDGE_KINDS.length) params.delete("edges");
   else params.set("edges", activeEdgeKinds.join(","));
-  if (stageGraphViewState.foldHelpers) params.set("fold", "helpers");
+  if (stageGraphViewState.foldMode && stageGraphViewState.foldMode !== "bypass") params.set("fold", stageGraphViewState.foldMode);
   else params.delete("fold");
   const query = params.toString();
   const nextUrl = `${window.location.pathname}${query ? `?${query}` : ""}${window.location.hash || ""}`;
@@ -2016,6 +2040,7 @@ function refreshStageGraphEffects(forceNeighborhood = false) {
   if (forceNeighborhood && selectedKey) stageNeighborhoodActive = true;
   syncStageGraphControls();
   applyStageNeighborhood(graph, selectedKey, stageNeighborhoodActive && Boolean(selectedKey));
+  renderBypassEdges(graph);
   if (selectedKey) updateGraphUrlState(stage, selectedKey);
 }
 
@@ -2051,10 +2076,10 @@ function installStageGraphControls() {
       refreshStageGraphEffects(true);
     });
   });
-  const foldToggle = document.getElementById("fold-helper-toggle");
-  if (foldToggle) {
-    foldToggle.addEventListener("change", () => {
-      stageGraphViewState.foldHelpers = foldToggle.checked;
+  const foldMode = document.getElementById("fold-mode");
+  if (foldMode) {
+    foldMode.addEventListener("change", () => {
+      stageGraphViewState.foldMode = VALID_FOLD_MODES.has(foldMode.value) ? foldMode.value : "bypass";
       refreshStageGraphEffects(false);
     });
   }
@@ -2266,15 +2291,16 @@ function applyEdgeAndHelperFilters(graph, selectedNodeId) {
       .filter((node) => isHelperNode(node) && node.id !== selectedNodeId)
       .map((node) => node.id)
   );
+  const foldActive = stageGraphViewState.foldMode !== "full";
   document.querySelectorAll(".graph-node").forEach((element) => {
     const node = nodeById[element.dataset.nodeId];
-    element.classList.toggle("helper-collapsed", stageGraphViewState.foldHelpers && helperIds.has(node && node.id));
+    element.classList.toggle("helper-collapsed", foldActive && helperIds.has(node && node.id));
   });
   document.querySelectorAll(".graph-edge").forEach((element) => {
     const edge = edgeById[element.dataset.edgeId];
     const helperLinked = edge && (helperIds.has(edge.from) || helperIds.has(edge.to));
     element.classList.toggle("edge-filter-hidden", edge ? !edgePassesKindFilter(edge) : false);
-    element.classList.toggle("helper-collapsed", stageGraphViewState.foldHelpers && helperLinked);
+    element.classList.toggle("helper-collapsed", foldActive && helperLinked);
   });
 }
 
@@ -2316,6 +2342,89 @@ function applyStageNeighborhood(graph, nodeId, enabled = true) {
     element.classList.toggle("neighborhood-edge", isConnected);
   });
   applyEdgeAndHelperFilters(graph, nodeId);
+}
+
+function computeBypassEdges(graph) {
+  const nodes = graph.nodes || [];
+  const edges = graph.edges || [];
+  const nodeById = Object.fromEntries(nodes.map((node) => [node.id, node]));
+  const adjacency = new Map();
+  const directRealEdges = new Set();
+  for (const edge of edges) {
+    if (!adjacency.has(edge.from)) adjacency.set(edge.from, []);
+    adjacency.get(edge.from).push(edge.to);
+    const fromHelper = isHelperNode(nodeById[edge.from]);
+    const toHelper = isHelperNode(nodeById[edge.to]);
+    if (!fromHelper && !toHelper) directRealEdges.add(`${edge.from}->${edge.to}`);
+  }
+  const bypass = [];
+  const bypassSeen = new Set();
+  for (const start of nodes) {
+    if (isHelperNode(start)) continue;
+    // DFS over only-helper paths leaving `start` until reaching another real node.
+    const visited = new Set();
+    const stack = (adjacency.get(start.id) || []).slice();
+    while (stack.length) {
+      const current = stack.pop();
+      if (visited.has(current)) continue;
+      visited.add(current);
+      const currentNode = nodeById[current];
+      if (!currentNode) continue;
+      if (!isHelperNode(currentNode)) {
+        // reached a real node via helper-only path
+        if (current === start.id) continue;
+        const key = `${start.id}->${current}`;
+        if (directRealEdges.has(key) || bypassSeen.has(key)) continue;
+        bypassSeen.add(key);
+        bypass.push({from: start.id, to: current});
+        continue; // stop traversal at real boundary
+      }
+      for (const next of adjacency.get(current) || []) {
+        if (!visited.has(next)) stack.push(next);
+      }
+    }
+  }
+  return bypass;
+}
+
+function bypassEdgePath(layout, from, to) {
+  const a = layout.nodes[from];
+  const b = layout.nodes[to];
+  if (!a || !b) return null;
+  const x1 = a.x + a.width / 2;
+  const y1 = a.y + a.height;
+  const x2 = b.x + b.width / 2;
+  const y2 = b.y;
+  const midY = (y1 + y2) / 2;
+  return `M ${x1} ${y1} C ${x1} ${midY}, ${x2} ${midY}, ${x2} ${y2}`;
+}
+
+function renderBypassEdges(graph) {
+  const svg = document.getElementById("unified-debug-graph-svg");
+  if (svg) {
+    const existing = svg.querySelector(".bypass-edge-layer");
+    if (existing) existing.remove();
+  }
+  if (!svg || !graph || !graph.layout || stageGraphViewState.foldMode !== "bypass") return;
+  const layout = graph.layout;
+  const content = svg.querySelector(".graph-content");
+  if (!content) return;
+  const SVG_NS = "http://www.w3.org/2000/svg";
+  const group = document.createElementNS(SVG_NS, "g");
+  group.setAttribute("class", "graph-edge bypass-edge-layer");
+  let appended = 0;
+  for (const bypass of computeBypassEdges(graph)) {
+    const d = bypassEdgePath(layout, bypass.from, bypass.to);
+    if (!d) continue;
+    const path = document.createElementNS(SVG_NS, "path");
+    path.setAttribute("class", "graph-edge-path bypass-edge");
+    path.setAttribute("d", d);
+    path.setAttribute("data-bypass-from", bypass.from);
+    path.setAttribute("data-bypass-to", bypass.to);
+    group.appendChild(path);
+    appended += 1;
+  }
+  if (appended) content.appendChild(group);
 }
 
 function findKernelNodeElement(kernelId) {
@@ -2453,6 +2562,7 @@ function renderStageGraph() {
   const diff = activeStageDiff(stage);
   const firstBad = workspace.overlays.locate && workspace.overlays.locate.first_bad_kernel;
   canvas.innerHTML = buildGraphSvg(graph, layout, {diff, firstBad});
+  renderBypassEdges(graph);
   applyGraphScale();
   scrollGraphToDefaultOrigin();
   document.querySelectorAll(".graph-node").forEach((element) => {
@@ -2750,7 +2860,13 @@ setMode(activeMode);
 <label><input data-edge-kind-filter="resource_effect" type="checkbox" checked>resource</label>
 <label><input data-edge-kind-filter="control" type="checkbox" checked>control</label>
 </div>
-<label class="control-label"><input id="fold-helper-toggle" type="checkbox">Fold helpers</label>
+<label class="control-label">折叠
+<select id="fold-mode" class="control-select">
+<option value="full">完整</option>
+<option value="hide">折叠·隐藏</option>
+<option value="bypass">折叠·旁路</option>
+</select>
+</label>
 </div>
 </div>
 </div>
