@@ -7,6 +7,17 @@ import shutil
 from ascend_debug import __version__, layout, network_dag
 from ascend_debug.runner import CommandError
 
+# Network-level lowering-stage IR dumps that network_runner's outline phase
+# writes, in pipeline order. ingest registers whichever are present so the
+# Stage Timeline shows the network's lowering progression.
+_NETWORK_STAGES = [
+    ("model_recognized.mlir", "recognized"),
+    ("model_unit_folded.mlir", "unit-folded"),
+    ("model_transpose_folded.mlir", "transpose-folded"),
+    ("model_symbolized.mlir", "symbolized"),
+    ("_outlined_combined.mlir", "outlined"),
+]
+
 
 def _load_json(path: pathlib.Path, label: str) -> dict:
     if not path.exists():
@@ -48,21 +59,35 @@ def ingest_run(args) -> int:
     if provenance is not None:
         layout.write_json(run_dir / "network.provenance.json", provenance)
 
-    network_ir = _find_network_ir(workdir)
-    if network_ir is None:
-        raise CommandError(
-            f"no network IR found under {workdir} "
-            "(looked for _outlined_combined.mlir, groups/network.mlir, groups/kernel_group*.mlir)"
-        )
-    stage_dst = run_dir / "stages" / "000-network.mlir"
-    shutil.copyfile(network_ir, stage_dst)
-    stages = (
-        layout.StageArtifact(order=0, name="network", path="stages/000-network.mlir", step="source"),
-    )
+    stages: list = []
+    order = 0
+    for fname, name in _NETWORK_STAGES:
+        src = workdir / fname
+        if not src.exists():
+            continue
+        order += 10
+        rel = f"stages/{order:03d}-{name}.mlir"
+        shutil.copyfile(src, run_dir / rel)
+        stages.append(layout.StageArtifact(order=order, name=name, path=rel, step=name))
+
+    if not stages:
+        # Fallback: no named lowering dumps — register a single network IR.
+        fallback = _find_network_ir(workdir)
+        if fallback is None:
+            raise CommandError(
+                f"no network IR found under {workdir} "
+                "(looked for the model_*.mlir lowering dumps, _outlined_combined.mlir, "
+                "groups/network.mlir, groups/kernel_group*.mlir)"
+            )
+        shutil.copyfile(fallback, run_dir / "stages" / "000-network.mlir")
+        stages.append(layout.StageArtifact(order=0, name="network",
+                                           path="stages/000-network.mlir", step="source"))
+
     layout.write_manifest(
         run_dir, mode="network-ingest", preset="", pipeline="auto-fuse-outline",
-        stages=stages, version=__version__, commands=[], reports=[], graphs=[],
+        stages=tuple(stages), version=__version__, commands=[], reports=[], graphs=[],
     )
     print(f"ascend-debug.ingest.out={run_dir}")
     print(f"ascend-debug.ingest.kernels={summary['kernel_count']}")
+    print(f"ascend-debug.ingest.stages={len(stages)}")
     return 0
