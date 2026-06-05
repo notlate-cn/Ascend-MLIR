@@ -74,6 +74,22 @@ def AFIRSymbolizeShapesPass : Pass<"afir-symbolize-shapes", "mlir::func::FuncOp"
   let constructor = "mlir::createAFIRSymbolizeShapesPass()";
 }
 
+def AFIRSymbolicDimCSEPass : Pass<"afir-symbolic-dim-cse", "mlir::func::FuncOp"> {
+  let summary = "Merge tensor.dim ops that denote the same shape symbol";
+  let description = [{
+    Runs after `afir-symbolize-shapes`.  Two `tensor.dim` ops can compute the
+    same integer while querying different SSA values (e.g. `tensor.dim %arg0, 0`
+    and `tensor.dim %1, 0` where both dim-0s are symbol `s0`); stock CSE cannot
+    merge them because the operands differ.  Using `afir.dim_symbols` and the
+    serialized `afir.symbolic_shape(s)` attrs, this pass groups such ops by
+    symbol id and collapses each group (size >= 2) to a single canonical
+    `tensor.dim` on the symbol's root block argument, placed at the entry block
+    so it dominates every use.  Constant or compound (`s0*s1`) dims are left for
+    plain canonicalization.  No-op when `afir.dim_symbols` is absent.
+  }];
+  let constructor = "mlir::createAFIRSymbolicDimCSEPass()";
+}
+
 def AFIRVerifySymbolicShapesPass : Pass<"afir-verify-symbolic-shapes", "mlir::func::FuncOp"> {
   let summary = "Verify the afir.symbolic_shapes / afir.dim_symbols attributes";
   let description = [{

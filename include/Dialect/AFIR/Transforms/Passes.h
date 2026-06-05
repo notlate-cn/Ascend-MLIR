@@ -21,6 +21,8 @@ std::unique_ptr<Pass> createLinalgAddBroadcastPass();
 
 std::unique_ptr<Pass> createAFIRSymbolizeShapesPass();
 
+std::unique_ptr<Pass> createAFIRSymbolicDimCSEPass();
+
 std::unique_ptr<Pass> createAFIRVerifySymbolicShapesPass();
 
 std::unique_ptr<Pass> createAFIREmitNetworkJsonPass();

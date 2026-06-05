@@ -6,6 +6,7 @@ add_mlir_dialect_library(AFIRTransforms
   LinalgMark.cpp
   LinalgAddBroadcast.cpp
   AFIRSymbolizeShapes.cpp
+  AFIRSymbolicDimCSE.cpp
   AFIRVerifySymbolicShapes.cpp
   EmitNetworkJsonPass.cpp
 
