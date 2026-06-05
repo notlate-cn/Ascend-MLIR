@@ -96,14 +96,17 @@ invocation). Lives at
      (constant or compound expr).
    - record d in classes[key].
 
-2. Canonicalize each class with ≥2 members (or ≥1 member that is not already the
-   canonical op):
+2. Canonicalize each class with ≥2 members:
    - root = idToRoot[key]; canonical value = `tensor.dim %arg{root.arg}, %c{root.dim}`.
-   - Reuse: if some member is already exactly that op AND sits at/above all other
-     members (entry block ⇒ trivially true when placed first), use it.
-     Otherwise materialize one fresh `tensor.dim` at the top of the entry block
-     (after the index constants). Index constant for root.dim is created/reused.
-   - RAUW every other member to the canonical value; erase the now-dead members.
+   - Materialize one fresh `tensor.dim` at the top of the entry block (right after
+     a created/reused index constant for root.dim). For simplicity the canonical
+     op is *always* freshly created — even if a member already happens to be
+     exactly that op, it is RAUW'd and erased like any other member; the
+     downstream `--canonicalize`/`--cse` (which run right after this pass in both
+     wiring sites) fold away the resulting redundant constant/op. (An earlier
+     draft proposed reusing an existing root-dim member to avoid the fresh op;
+     dropped as needless complexity.)
+   - RAUW every member to the canonical value; erase the now-dead members.
 ```
 
 Entry-block placement is unconditionally safe: block args dominate the whole
@@ -116,8 +119,8 @@ Considered alternative B: never create a new op, pick the earliest existing
 member that dominates the rest. Rejected: needs `DominanceInfo`, and a class with
 no single dominating member can't be fully merged. Fresh-anchor fully collapses
 every class to one op with simpler code; it introduces a new op only when ≥2
-members exist (always a net reduction) and reuses an existing root-dim op when
-one is already there.
+members exist (always a net reduction), and the immediately-following
+canonicalize/CSE folds any redundancy the unconditional fresh op leaves behind.
 
 ## Correctness / safety
 
