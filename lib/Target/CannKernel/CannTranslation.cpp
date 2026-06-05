@@ -2162,6 +2162,12 @@ static LogicalResult emitTilingSpaceJson(StringRef outPath,
   // From auto_fuse.tiling_infos (set by TilePlanGen): tunable field -> the
   // static extent of the axis it tiles (-1 if dynamic) and its default value.
   llvm::DenseMap<StringRef, std::pair<int64_t, int64_t>> tunableInfo; // name -> {axisSize, default}
+  // Tile-data legality constraints (e.g. {divides, XBLOCK_SUB, XBLOCK},
+  // {le_bytes, ...}) from TilePlanGen.  Carried into tiling_space.json so the
+  // default-tiling picker (and autotuner) can reject illegal candidate combos
+  // — without this the picker silently picks XBLOCK_SUB > XBLOCK, the inner
+  // loop trips count==0 and the kernel writes no output (all-zero result).
+  llvm::json::Array constraintsArr;
   if (auto moduleOp = funcOp->getParentOfType<ModuleOp>()) {
     if (auto infos = moduleOp->getAttrOfType<ArrayAttr>("auto_fuse.tiling_infos")) {
       for (Attribute ia : infos) {
@@ -2179,6 +2185,21 @@ static LogicalResult emitTilingSpaceJson(StringRef outPath,
             if (fn)
               tunableInfo[fn.getValue()] = {as ? as.getInt() : -1,
                                             dv ? dv.getInt() : 0};
+          }
+        }
+        if (auto cs = dyn_cast_or_null<ArrayAttr>(entry.get("constraints"))) {
+          for (Attribute ca : cs) {
+            auto cd = dyn_cast<DictionaryAttr>(ca);
+            if (!cd) continue;
+            auto kind = dyn_cast_or_null<StringAttr>(cd.get("kind"));
+            auto lhs = dyn_cast_or_null<StringAttr>(cd.get("lhs"));
+            auto rhs = dyn_cast_or_null<StringAttr>(cd.get("rhs"));
+            if (!kind || !lhs || !rhs) continue;
+            llvm::json::Object c;
+            c["kind"] = kind.getValue().str();
+            c["lhs"] = lhs.getValue().str();
+            c["rhs"] = rhs.getValue().str();
+            constraintsArr.push_back(std::move(c));
           }
         }
         break;
@@ -2391,6 +2412,8 @@ static LogicalResult emitTilingSpaceJson(StringRef outPath,
   }
 
   root["tiling_params"]  = std::move(params);
+  if (!constraintsArr.empty())
+    root["constraints"] = std::move(constraintsArr);
 
   std::error_code ec;
   llvm::raw_fd_ostream f(outPath, ec);

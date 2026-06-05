@@ -541,6 +541,35 @@ def _shape_key_values_for_kernel(space, network, kid, runner_inputs):
     return out
 
 
+def _filter_by_divides(vals, name, constraints, picked):
+    """Drop candidate values that violate a `divides` constraint relating
+    `name` to an already-picked tunable.
+
+    `divides(lhs, rhs)` means lhs | rhs (rhs % lhs == 0). TilePlanGen emits
+    e.g. {kind: divides, lhs: XBLOCK_SUB, rhs: XBLOCK} — the inner sub-tile
+    must divide (hence be <=) the block tile, else the kernel's inner loop
+    trips count==0 and writes no output. Only constraints whose *other*
+    operand is an already-picked param (a bare name in `picked`) are
+    evaluated; ones with literal/expression operands (e.g. le_bytes) are left
+    to UB pruning / the autotuner.
+    """
+    out = list(vals)
+    for c in constraints:
+        if c.get("kind") != "divides":
+            continue
+        lhs, rhs = c.get("lhs"), c.get("rhs")
+        if name == lhs and rhs in picked:
+            rv = picked[rhs]
+            out = [v for v in out if v > 0 and rv % v == 0]
+        elif name == rhs and lhs in picked:
+            lv = picked[lhs]
+            out = [v for v in out if lv > 0 and v % lv == 0]
+    # Never over-filter to empty: fall back to the smallest candidate (least
+    # likely to exceed the related tile / UB) rather than reintroducing a
+    # too-large pick.
+    return out if out else [min(vals)]
+
+
 def phase3_default_build_and_dump(work, groups, network, artifacts, args):
     """Build network_host.cpp with default tilings, g++ link, run, dump intermediates.
 
@@ -594,6 +623,7 @@ def phase3_default_build_and_dump(work, groups, network, artifacts, args):
         # and at R≥256 on dyn-bucketed-e2e that produced all-zero output.
         ub_budget = int(space.get("ub_budget_bytes", 0))
         block_dim_expr = space.get("block_dim_expr", "") or ""
+        constraints = space.get("constraints", []) or []
         for p in space.get("tiling_params", []):
             if not p.get("fixed", False):
                 name = p["name"]
@@ -624,6 +654,11 @@ def phase3_default_build_and_dump(work, groups, network, artifacts, args):
                         vals = capped if capped else [extent]
                     elif not capped:
                         vals = [extent]
+                # Enforce tile-data legality (e.g. XBLOCK_SUB | XBLOCK) against
+                # params already picked this loop. Block params are picked
+                # before the inner tile params that divide them, so the related
+                # value is present in `params` by now.
+                vals = _filter_by_divides(vals, name, constraints, params)
                 pick = vals[-1]
                 if ub_budget > 0 and space.get("ub_cost_bytes_exprs"):
                     trial = dict(params)
