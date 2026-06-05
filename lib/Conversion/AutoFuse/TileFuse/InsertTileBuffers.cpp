@@ -251,7 +251,15 @@ struct AutoFuseInsertTileBuffersPass
       Type outKey = outMrt.getElementType();
       auto cached = sharedVecout.find(outKey);
       Value vecout;
-      if (cached != sharedVecout.end() &&
+      // The shared-VECOUT optimization serializes multiple outputs through one
+      // queue within the same loop body.  A ragged-tail genOp (allocAnchor ==
+      // genOp, i.e. directly inside an scf.if) re-emits the SAME output with a
+      // *different* (dynamic remainder) size; reusing the main loop's static-
+      // tile-sized buffer makes the reduce row/col counts (derived from the
+      // VECOUT queue's InitQueue byte-length) wrong in the tail.  Force a fresh
+      // subview-matching alloc there, exactly as the VECIN/VECCALC paths do.
+      bool inTailBlock = (allocAnchor == genOp.getOperation());
+      if (!inTailBlock && cached != sharedVecout.end() &&
           domInfo.dominates(cached->second.getOperation(), allocAnchor)) {
         vecout = cached->second.getResult();
         // Serialize: the previous output's UB→GM store (MTE3) must finish
@@ -265,7 +273,10 @@ struct AutoFuseInsertTileBuffersPass
         auto a = allocOnChipMatchingSubview(builder, loc, gmOut,
                                             /*VECOUT=*/10, allocAnchor);
         vecout = a.getResult();
-        sharedVecout[outKey] = a;
+        // A tail buffer is dynamic-remainder-sized; don't let it become the
+        // shared buffer that a later genOp would reuse with a mismatched size.
+        if (!inTailBlock)
+          sharedVecout[outKey] = a;
       } else {
         builder.setInsertionPoint(genOp);
         auto a = allocOnChip(builder, loc, gmOut, /*VECOUT=*/10);
