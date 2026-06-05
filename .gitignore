@@ -35,3 +35,4 @@ externals/llvm-project
 
 examples/ascendc-handbook
 examples/dev-env.md
+examples/real-npu.local.env

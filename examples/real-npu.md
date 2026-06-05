@@ -13,6 +13,7 @@ export ASCEND_MLIR_CI_SSH_PASSWORD='<set locally only>'
 
 优先使用 SSH key；如必须使用密码，只在本地环境变量中临时设置
 `ASCEND_MLIR_CI_SSH_PASSWORD`，不要提交到文档、脚本或 shell history。
+优先从被 `.gitignore` 忽略的 `examples/real-npu.local.env` 中读取上述环境信息。
 
 ## 2. Host工作目录和环境安装
 
