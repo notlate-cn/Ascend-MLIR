@@ -45,7 +45,7 @@ from ascend_debug import debug_graph, layout, stage_graph
 mlir = """module {
   func.func @copy_view(%arg0: memref<?xf16>, %arg1: memref<?xf16>) -> memref<?xf16> {
     %c0 = arith.constant 0 : index
-    %dim = memref.dim %arg1, %c0 : memref<?xf16>
+    %dim = memref.dim %arg1, %c0 : memref<?xf16> // dynamic length
     linalg.generic {indexing_maps = [], iterator_types = []} outs(%arg1 : memref<?xf16>) {
     ^bb0(%out: f16):
       linalg.yield %out : f16
@@ -57,6 +57,36 @@ mlir = """module {
 }
 """
 graph = stage_graph.parse_stage_mlir({"order": 1, "name": "copy-view", "path": "stages/copy-view.mlir"}, mlir)
+constant_nodes = [node for node in graph["nodes"] if node["op_name"] == "arith.constant"]
+assert len(constant_nodes) == 1, [node["op_name"] for node in graph["nodes"]]
+assert constant_nodes[0]["constant_value"] == "0", constant_nodes[0]
+assert stage_graph._node_output_shape_lines(constant_nodes[0]) == ["%c0 = 0 index"], constant_nodes[0]
+dim_nodes = [node for node in graph["nodes"] if node["op_name"] == "memref.dim"]
+assert len(dim_nodes) == 1, [node["op_name"] for node in graph["nodes"]]
+assert dim_nodes[0]["result_values"] == ["%dim"], dim_nodes[0]
+assert dim_nodes[0]["result_type"] == "index", dim_nodes[0]
+assert "//" not in dim_nodes[0]["result_type"], dim_nodes[0]
+
+tensor_dim_mlir = """module {
+  func.func @tensor_dim_comment(%arg0: tensor<?xf16>) -> tensor<?xf16> {
+    %c0 = arith.constant 0 : index
+    %dim_m = tensor.dim %arg0, %c0 : tensor<?xf16> // M dimension
+    return %arg0 : tensor<?xf16>
+  }
+}
+"""
+tensor_dim_graph = stage_graph.parse_stage_mlir(
+    {"order": 1, "name": "tensor-dim-comment", "path": "stages/tensor-dim-comment.mlir"},
+    tensor_dim_mlir,
+)
+tensor_dim_nodes = [
+    node for node in tensor_dim_graph["nodes"] if node["op_name"] == "tensor.dim"
+]
+assert len(tensor_dim_nodes) == 1, [node["op_name"] for node in tensor_dim_graph["nodes"]]
+assert tensor_dim_nodes[0]["result_values"] == ["%dim_m"], tensor_dim_nodes[0]
+assert tensor_dim_nodes[0]["result_type"] == "index", tensor_dim_nodes[0]
+assert "//" not in tensor_dim_nodes[0]["result_type"], tensor_dim_nodes[0]
+
 commented_args_mlir = """module {
   func.func @commented_args(
       %input_a : tensor<?xf16>,      // [M] - broadcast input
@@ -80,6 +110,22 @@ commented_dim = next(node for node in commented_args_graph["nodes"] if node["op_
 assert commented_dim["input_values"] == ["%input_b", "%c1"], commented_dim
 assert any(edge["to"] == commented_dim["id"] and edge["value"] == "%input_b" for edge in commented_args_graph["edges"]), commented_args_graph["edges"]
 
+long_type = "tensor<" + "x".join(str(1024 * (index + 1)) for index in range(16)) + "xf16>"
+long_type_mlir = f"""module {{
+  func.func @long_type(%arg0: {long_type}) -> {long_type} {{
+    return %arg0 : {long_type}
+  }}
+}}
+"""
+long_type_graph = stage_graph.parse_stage_mlir(
+    {"order": 1, "name": "long-type", "path": "stages/long-type.mlir"},
+    long_type_mlir,
+)
+long_type_graph = stage_graph._finalize_graph(long_type_graph)
+long_type_graph["layout"] = stage_graph._compute_graph_layout(long_type_graph)
+long_arg = next(node for node in long_type_graph["nodes"] if node["op_name"] == "func.arg")
+long_arg_layout = long_type_graph["layout"]["nodes"][long_arg["id"]]
+assert long_arg_layout["height"] > long_type_graph["layout"]["node_height"], long_arg_layout
 linalg_nodes = [node for node in graph["nodes"] if node["op_name"] == "linalg.generic"]
 assert len(linalg_nodes) == 1, [node["op_name"] for node in graph["nodes"]]
 copy_nodes = [node for node in graph["nodes"] if node["op_name"] == "memref.copy"]
@@ -1530,6 +1576,25 @@ grep -Fq 'class="source-code"' "${TMP_DIR}/debug-run-graph/views/debug_graph.htm
 grep -Fq '.source-code { margin: 0; white-space: pre; overflow: auto;' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
 grep -Fq '.graph-panel { min-width: 0; min-height: 0; overflow: hidden; display: grid; grid-template-rows: auto minmax(0, 1fr);' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
 grep -Fq '.graph-canvas-wrap { overflow: auto; min-height: 0; height: auto;' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
+grep -Fq '.node-shape {' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
+grep -Fq 'function outputShapeLinesForNode(node)' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
+grep -Fq 'function wrapNodeOutputText(text, limit = NODE_OUTPUT_WRAP_LIMIT)' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
+grep -Fq 'function nodeOutputValue(node, value)' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
+grep -Fq 'return resultValues.flatMap((value, index) =>' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
+grep -Fq 'outputShapeLines.map((line, lineIndex) =>' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
+grep -Fq '<text class="node-shape" x="14" y="${47 + lineIndex * 14}">' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
+if grep -Fq 'truncate(line, 30)' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"; then
+  echo "stage graph output/type lines should wrap instead of hard truncating" >&2
+  exit 1
+fi
+if grep -Fq '<text class="node-result" x="14" y="47">${escapeHtml(truncate(result, 30))}</text>' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"; then
+  echo "stage graph nodes should not repeat the output value on a separate result line" >&2
+  exit 1
+fi
+if grep -Fq 'shape: ${node.result_type}' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"; then
+  echo "stage graph nodes should bind output value and type directly, not show a separate shape label" >&2
+  exit 1
+fi
 if grep -Fq '.graph-canvas-wrap { overflow: auto; height: calc(100vh - 15rem);' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"; then
   echo "graph canvas should fill the graph panel instead of using a shorter fixed viewport height" >&2
   exit 1
@@ -2274,8 +2339,10 @@ assert graph["edge_count"] >= 2
 assert graph["kernel_count"] == 1
 assert graph["layout"]["visual_kind"] == "svg-dag"
 assert graph["layout"]["direction"] == "top-to-bottom"
+assert graph["layout"]["node_height"] == 136
 assert len(graph["layout"]["nodes"]) == graph["node_count"]
 assert len(graph["layout"]["edges"]) == graph["edge_count"]
+assert all(node["height"] == 136 for node in graph["layout"]["nodes"].values())
 for edge in graph["edges"]:
     source = graph["layout"]["nodes"][edge["from"]]
     target = graph["layout"]["nodes"][edge["to"]]
@@ -2305,6 +2372,25 @@ grep -Fq '.sidebar-body { min-height: 0; overflow-y: auto;' "${TMP_DIR}/debug-ru
 grep -Fq '.inspector-panel { min-width: 0; padding: 0.8rem; overflow-y: auto;' "${TMP_DIR}/debug-run/views/debug_graph.html"
 grep -Fq '.graph-canvas-wrap { overflow: auto; min-height: 0; height: auto;' "${TMP_DIR}/debug-run/views/debug_graph.html"
 grep -Fq 'if (!(event.ctrlKey || event.metaKey)) return;' "${TMP_DIR}/debug-run/views/debug_graph.html"
+grep -Fq '.node-shape {' "${TMP_DIR}/debug-run/views/debug_graph.html"
+grep -Fq 'function outputShapeLinesForNode(node)' "${TMP_DIR}/debug-run/views/debug_graph.html"
+grep -Fq 'function wrapNodeOutputText(text, limit = NODE_OUTPUT_WRAP_LIMIT)' "${TMP_DIR}/debug-run/views/debug_graph.html"
+grep -Fq 'function nodeOutputValue(node, value)' "${TMP_DIR}/debug-run/views/debug_graph.html"
+grep -Fq 'return resultValues.flatMap((value, index) =>' "${TMP_DIR}/debug-run/views/debug_graph.html"
+grep -Fq 'outputShapeLines.map((line, lineIndex) =>' "${TMP_DIR}/debug-run/views/debug_graph.html"
+grep -Fq '<text class="node-shape" x="14" y="${47 + lineIndex * 14}">' "${TMP_DIR}/debug-run/views/debug_graph.html"
+if grep -Fq 'truncate(line, 30)' "${TMP_DIR}/debug-run/views/debug_graph.html"; then
+  echo "stage graph output/type lines should wrap instead of hard truncating" >&2
+  exit 1
+fi
+if grep -Fq '<text class="node-result" x="14" y="47">${escapeHtml(truncate(result, 30))}</text>' "${TMP_DIR}/debug-run/views/debug_graph.html"; then
+  echo "stage graph nodes should not repeat the output value on a separate result line" >&2
+  exit 1
+fi
+if grep -Fq 'shape: ${node.result_type}' "${TMP_DIR}/debug-run/views/debug_graph.html"; then
+  echo "stage graph nodes should bind output value and type directly, not show a separate shape label" >&2
+  exit 1
+fi
 grep -Fq '<h1>Ascend Debug</h1>' "${TMP_DIR}/debug-run/index.html"
 grep -Fq '<h2>运行概览</h2>' "${TMP_DIR}/debug-run/index.html"
 grep -Fq '<span>preset</span><strong>quick</strong>' "${TMP_DIR}/debug-run/index.html"

@@ -1028,6 +1028,7 @@ dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }
 .graph-node:hover rect, .graph-node.selected rect, .kernel-dag-node:hover rect, .kernel-dag-node.selected rect { stroke: var(--teal); stroke-width: 2.6; }
 .node-op { fill: var(--text); font-size: 13px; font-weight: 700; }
 .node-result { fill: #344054; font-size: 12px; font-family: SFMono-Regular, Menlo, Consolas, monospace; }
+.node-shape { fill: #0f766e; font-size: 11px; font-family: SFMono-Regular, Menlo, Consolas, monospace; }
 .node-inputs { fill: #667085; font-size: 11px; font-family: SFMono-Regular, Menlo, Consolas, monospace; }
 .node-kernel { fill: var(--blue); font-size: 10px; text-anchor: end; }
 .empty-state-title { fill: #17202a; font-size: 15px; font-weight: 700; }
@@ -1146,6 +1147,7 @@ const MIN_GRAPH_SCALE = 0.2;
 const MAX_GRAPH_SCALE = 3;
 const GRAPH_CANVAS_PADDING = 160;
 const GRAPH_DEFAULT_MARGIN = 32;
+const NODE_OUTPUT_WRAP_LIMIT = 28;
 const MIN_INSPECTOR_WIDTH = 320;
 const MAX_INSPECTOR_WIDTH = 920;
 let inspectorResizeState = null;
@@ -1744,19 +1746,23 @@ ${renderMovementProvenance(node)}
 function renderStageNodeDetail(stage, graph, node, diff) {
   if (!node) return '<section class="inspector-section"><h3>节点详情</h3><div class="panel-subtitle">未选中节点。</div></section>';
   const diffStatus = diff && diff.status ? diff.status : "无";
+  const detailItems = [
+    ["Op", node.op_name],
+    ["结果", node.result_values || node.label],
+    ["输入", node.input_values],
+    ["Type", node.result_type],
+    ["Kernel", node.kernel_id],
+    ["角色", node.op_role],
+    ["行号", node.line_end && node.line_end !== node.line ? `${node.line}-${node.line_end}` : node.line],
+    ["Diff 状态", diffStatus],
+  ];
+  if (node.constant_value !== undefined && node.constant_value !== null && node.constant_value !== "") {
+    detailItems.splice(2, 0, ["常量值", node.constant_value]);
+  }
   return `
 <section class="inspector-section">
 <h3>节点详情</h3>
-${detailRows([
-  ["Op", node.op_name],
-  ["结果", node.result_values || node.label],
-  ["输入", node.input_values],
-  ["Type", node.result_type],
-  ["Kernel", node.kernel_id],
-  ["角色", node.op_role],
-  ["行号", node.line_end && node.line_end !== node.line ? `${node.line}-${node.line_end}` : node.line],
-  ["Diff 状态", diffStatus],
-])}
+${detailRows(detailItems)}
 </section>
 ${renderSemanticAttrSections(node)}
 ${renderProvenanceSection(stage, graph, node)}
@@ -2427,6 +2433,51 @@ ${allowedRows.length ? `<div class="audit-detail-group audit-allowed"><div class
 <div class="audit-meta">components: ${escapeHtml(audit.component_count || 0)}<br>edge kinds: ${escapeHtml(edgeKinds || "none")}</div>`;
 }
 
+function wrapNodeOutputText(text, limit = NODE_OUTPUT_WRAP_LIMIT) {
+  let remaining = String(text || "").trim();
+  const lines = [];
+  while (remaining.length > limit) {
+    let cut = -1;
+    for (const separator of [" ", ",", ">"]) {
+      const candidate = remaining.lastIndexOf(separator, limit);
+      if (candidate > cut) cut = candidate;
+    }
+    let chunk = "";
+    if (cut <= 0) {
+      chunk = remaining.slice(0, limit).trimEnd();
+      remaining = remaining.slice(limit).trimStart();
+    } else {
+      chunk = remaining.slice(0, cut + 1).trimEnd();
+      remaining = remaining.slice(cut + 1).trimStart();
+    }
+    if (chunk) lines.push(chunk);
+  }
+  if (remaining) lines.push(remaining);
+  return lines.length ? lines : [""];
+}
+
+function nodeOutputValue(node, value) {
+  const constantValue = node && node.op_name === "arith.constant" ? node.constant_value : null;
+  if (constantValue === undefined || constantValue === null || constantValue === "") return value;
+  return `${value} = ${constantValue}`;
+}
+
+function outputShapeLinesForNode(node) {
+  const resultValues = Array.isArray(node.result_values) ? node.result_values.filter(Boolean) : [];
+  if (!resultValues.length) return [];
+  const resultTypes = Array.isArray(node.result_types) ? node.result_types : [];
+  const fallbackType = node.result_type || "";
+  const typeForIndex = (index) => resultTypes[index] || fallbackType;
+  return resultValues.flatMap((value, index) => {
+    const outputValue = nodeOutputValue(node, value);
+    const type = typeForIndex(index);
+    if (!type) return wrapNodeOutputText(outputValue);
+    const combined = `${outputValue} ${type}`;
+    if (combined.length <= NODE_OUTPUT_WRAP_LIMIT) return [combined];
+    return [...wrapNodeOutputText(outputValue), ...wrapNodeOutputText(type)];
+  });
+}
+
 function stageNodeDiffInfo(stage, nodeId) {
   const diff = activeStageDiff(stage);
   return diff && diff.node_status ? diff.node_status[nodeId] : null;
@@ -2693,7 +2744,11 @@ function renderStageGraph() {
   for (const node of graph.nodes) {
     const position = layout.nodes[node.id];
     if (!position) continue;
-    const result = node.result_values && node.result_values.length ? node.result_values.join(", ") : node.label;
+    const outputShapeLines = outputShapeLinesForNode(node);
+    const outputShapeElements = outputShapeLines.map((line, lineIndex) =>
+      `<text class="node-shape" x="14" y="${47 + lineIndex * 14}">${escapeHtml(line)}</text>`
+    ).join("");
+    const inputsY = outputShapeLines.length ? 47 + outputShapeLines.length * 14 + 5 : 47;
     const inputs = node.input_values && node.input_values.length ? node.input_values.join(", ") : "root";
     const detail = node.body_summary ? `body: ${node.body_summary}` : `in: ${inputs}`;
     const issueClass = firstBad && node.kernel_id === firstBad ? " issue" : "";
@@ -2704,15 +2759,15 @@ function renderStageGraph() {
     const badgeElements = (Array.isArray(node.badges) ? node.badges.slice(0, 3) : []).map((badge, badgeIndex) => {
       const label = truncate(badge, 30);
       const width = Math.min(position.width - 28, Math.max(46, label.length * 6.4 + 18));
-      const y = 76 + badgeIndex * 15;
+      const y = inputsY + 22 + badgeIndex * 15;
       return `<rect class="node-badge-bg" x="14" y="${y}" width="${width}" height="12" rx="4"></rect><text class="node-badge" x="22" y="${y + 9}">${escapeHtml(label)}</text>`;
     }).join("");
     svg += `<g class="graph-node${kernelClass}${issueClass}${diffClass}" data-node-id="${escapeHtml(node.id)}" data-node-index="${nodeById[node.id].index}" data-width="${position.width}" data-height="${position.height}" tabindex="0" role="button" transform="translate(${position.x},${position.y})">
 <title>${escapeHtml(node.op_name)}</title>
 <rect width="${position.width}" height="${position.height}" rx="6"></rect>
 <text class="node-op" x="14" y="24">${escapeHtml(truncate(node.op_name, 28))}</text>
-<text class="node-result" x="14" y="47">${escapeHtml(truncate(result, 30))}</text>
-<text class="node-inputs" x="14" y="68">${escapeHtml(truncate(detail, 30))}</text>
+${outputShapeElements}
+<text class="node-inputs" x="14" y="${inputsY}">${escapeHtml(truncate(detail, 30))}</text>
 <text class="node-kernel" x="${position.width - 14}" y="22">${escapeHtml(kernelText)}</text>
 ${badgeElements}
 </g>`;

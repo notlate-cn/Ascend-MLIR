@@ -539,12 +539,74 @@ def _build_node_badges(semantic_attrs: dict[str, Any]) -> list[str]:
     return badges
 
 
-def _extract_result_type(text: str) -> str | None:
+def _strip_line_comment(text: str) -> str:
+    return text.split("//", 1)[0].rstrip()
+
+
+def _split_top_level_type_suffix(text: str) -> tuple[str, str | None]:
+    angle_depth = 0
+    bracket_depth = 0
+    paren_depth = 0
+    brace_depth = 0
+    in_string = False
+    escaped = False
+    for index, char in enumerate(text):
+        if in_string:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == '"':
+                in_string = False
+            continue
+        if char == '"':
+            in_string = True
+        elif char == "<":
+            angle_depth += 1
+        elif char == ">":
+            angle_depth = max(0, angle_depth - 1)
+        elif char == "[":
+            bracket_depth += 1
+        elif char == "]":
+            bracket_depth = max(0, bracket_depth - 1)
+        elif char == "(":
+            paren_depth += 1
+        elif char == ")":
+            paren_depth = max(0, paren_depth - 1)
+        elif char == "{":
+            brace_depth += 1
+        elif char == "}":
+            brace_depth = max(0, brace_depth - 1)
+        elif (
+            char == ":"
+            and not angle_depth
+            and not bracket_depth
+            and not paren_depth
+            and not brace_depth
+        ):
+            return text[:index].strip(), text[index + 1 :].strip()
+    return text.strip(), None
+
+
+def _extract_result_type(op_name: str, text: str) -> str | None:
+    if op_name in {"memref.dim", "tensor.dim"}:
+        return "index"
     arrow_matches = list(re.finditer(r"->\s*([^\n{]+)", text))
     if arrow_matches:
-        return arrow_matches[-1].group(1).strip()
+        return _strip_line_comment(arrow_matches[-1].group(1)).strip()
     colon_match = re.search(r":\s*([^\n]+)$", text.strip())
-    return colon_match.group(1).strip() if colon_match else None
+    return _strip_line_comment(colon_match.group(1)).strip() if colon_match else None
+
+
+def _extract_constant_value(op_name: str, text: str) -> str | None:
+    if op_name != "arith.constant":
+        return None
+    first_line = _strip_line_comment(text.strip()).strip()
+    match = re.search(r"\barith\.constant\b(?P<body>.*)$", first_line)
+    if not match:
+        return None
+    value_text, _ = _split_top_level_type_suffix(match.group("body").strip())
+    return value_text or None
 
 
 def _collect_op_text(lines: list[str], index: int, op_name: str) -> tuple[str, int]:
@@ -935,7 +997,8 @@ def parse_stage_mlir(stage: dict[str, Any], text: str) -> dict[str, Any]:
             "label": result_values[0] if result_values else op_name,
             "input_values": input_values,
             "result_values": result_values,
-            "result_type": _extract_result_type(op_text),
+            "result_type": _extract_result_type(op_name, op_text),
+            "constant_value": _extract_constant_value(op_name, op_text),
             "source_excerpt": op_text,
             "region_body": region_body,
             "body_ops": body_ops,
@@ -1252,9 +1315,85 @@ def _truncate(value: Any, limit: int) -> str:
     return text[: max(0, limit - 1)] + "..."
 
 
+NODE_WIDTH = 220
+BASE_NODE_HEIGHT = 136
+NODE_OUTPUT_WRAP_LIMIT = 28
+
+
+def _wrap_node_output_text(text: str, limit: int = NODE_OUTPUT_WRAP_LIMIT) -> list[str]:
+    remaining = str(text).strip()
+    lines: list[str] = []
+    while len(remaining) > limit:
+        cut = -1
+        for separator in (" ", ",", ">"):
+            candidate = remaining.rfind(separator, 0, limit + 1)
+            if candidate > cut:
+                cut = candidate
+        if cut <= 0:
+            cut = limit
+            chunk = remaining[:cut].rstrip()
+            remaining = remaining[cut:].lstrip()
+        else:
+            chunk = remaining[: cut + 1].rstrip()
+            remaining = remaining[cut + 1 :].lstrip()
+        if chunk:
+            lines.append(chunk)
+    if remaining:
+        lines.append(remaining)
+    return lines or [""]
+
+
+def _node_output_value(node: dict[str, Any], value: str) -> str:
+    constant_value = node.get("constant_value")
+    if (
+        node.get("op_name") == "arith.constant"
+        and constant_value not in (None, "")
+    ):
+        return f"{value} = {constant_value}"
+    return value
+
+
+def _node_output_shape_lines(node: dict[str, Any]) -> list[str]:
+    result_values = [
+        str(value)
+        for value in node.get("result_values", [])
+        if value not in (None, "")
+    ]
+    if not result_values:
+        return []
+    result_types = node.get("result_types")
+    if not isinstance(result_types, list):
+        result_types = []
+    fallback_type = str(node.get("result_type") or "")
+    lines: list[str] = []
+    for index, value in enumerate(result_values):
+        output_value = _node_output_value(node, value)
+        result_type = str(result_types[index] if index < len(result_types) else fallback_type)
+        if not result_type:
+            lines.extend(_wrap_node_output_text(output_value))
+            continue
+        combined = f"{output_value} {result_type}"
+        if len(combined) <= NODE_OUTPUT_WRAP_LIMIT:
+            lines.append(combined)
+            continue
+        lines.extend(_wrap_node_output_text(output_value))
+        lines.extend(_wrap_node_output_text(result_type))
+    return lines
+
+
+def _node_display_height(node: dict[str, Any]) -> int:
+    output_line_count = len(_node_output_shape_lines(node))
+    inputs_y = 47 + output_line_count * 14 + 5 if output_line_count else 47
+    badge_count = min(len(node.get("badges", [])) if isinstance(node.get("badges"), list) else 0, 3)
+    badge_bottom = inputs_y + 22
+    if badge_count:
+        badge_bottom += (badge_count - 1) * 15 + 12
+    return max(BASE_NODE_HEIGHT, badge_bottom + 14)
+
+
 def _compute_graph_layout(graph: dict[str, Any]) -> dict[str, Any]:
-    node_width = 220
-    node_height = 120
+    node_width = NODE_WIDTH
+    node_height = BASE_NODE_HEIGHT
     column_gap = 72
     layer_gap = 86
     margin_x = 36
@@ -1280,22 +1419,36 @@ def _compute_graph_layout(graph: dict[str, Any]) -> dict[str, Any]:
         layers.setdefault(layer, []).append(node_id)
 
     node_layout: dict[str, dict[str, Any]] = {}
+    height_by_id = {
+        node["id"]: _node_display_height(node)
+        for node in graph["nodes"]
+    }
+    layer_height_by_layer = {
+        layer: max(height_by_id.get(node_id, node_height) for node_id in node_ids)
+        for layer, node_ids in layers.items()
+    }
+    y_by_layer: dict[int, int] = {}
+    next_y = margin_y
+    for layer in sorted(layers):
+        y_by_layer[layer] = next_y
+        next_y += layer_height_by_layer.get(layer, node_height) + layer_gap
     max_x = margin_x
     max_y = margin_y
     for layer in sorted(layers):
         for row, node_id in enumerate(layers[layer]):
             x = margin_x + row * (node_width + column_gap)
-            y = margin_y + layer * (node_height + layer_gap)
+            y = y_by_layer[layer]
+            height = height_by_id.get(node_id, node_height)
             node_layout[node_id] = {
                 "x": x,
                 "y": y,
                 "width": node_width,
-                "height": node_height,
+                "height": height,
                 "layer": layer,
                 "row": row,
             }
             max_x = max(max_x, x + node_width)
-            max_y = max(max_y, y + node_height)
+            max_y = max(max_y, y + height)
 
     edge_layout = []
     for edge in graph["edges"]:
