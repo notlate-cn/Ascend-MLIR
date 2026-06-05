@@ -19,11 +19,25 @@ syntactically identical (same operands). Two redundancy classes exist:
 
 Concrete measurement (`examples/gpt2-dyn-e2e/build_e2e/model_symbolized.mlir`):
 9 `tensor.dim` ops, `afir.dim_symbols = [{arg=0, dim=1, id=0}]` (one symbol).
-All 9 equal `s0`. 5 are `tensor.dim %arg0, %c1`; 4 query intermediate results.
-Symbol-aware CSE collapses all 9 → **one** `tensor.dim %arg0, %c1`.
+5 are `tensor.dim %arg0, %c1` (resolve to `s0` via the arg attr); 4 query
+intermediate results.
 
-`two-elewise-dyn-e2e` is too simple to show this (every dim already on `%arg0`),
-so `gpt2-dyn` is the demonstrating/regression case.
+**Coverage caveat (measured during implementation — corrects an earlier "9→1"
+estimate).** The pass collapses the 5 `%arg0` dups → **one**, giving **9→5**, not
+9→1. The 4 remaining dims query `call @__aclnn_layer_norm(...)` results, and
+`AFIRSymbolizeShapes::transfer()` only annotates linalg / reshape / pad / cast /
+empty / alloc / extract_slice ops — **not `func.call`** — so those results carry
+no `afir.symbolic_shapes` and the pass cannot resolve their symbol. On gpt2-dyn
+the surviving merge therefore overlaps with what plain `--cse` could do (the 5
+were syntactically identical); the *cross-value* capability that only this pass
+has is real and lit-tested (see `@merge_same_symbol`, whose `%0` is a
+`linalg.generic` result) but is not exercised by gpt2-dyn's specific
+aclnn-call-backed intermediates. Capturing those 4 would require extending
+`AFIRSymbolizeShapes` to propagate shapes through `func.call` — out of scope here,
+noted as future work.
+
+`two-elewise-dyn-e2e` is too simple to show any merge (every dim already on
+`%arg0`), so `gpt2-dyn` is the demonstrating/regression case.
 
 ## Goal & non-goals
 
@@ -126,8 +140,9 @@ one is already there.
    `afir.dim_symbols` + several same-symbol `tensor.dim` on different args/values
    ⇒ FileCheck that exactly one `tensor.dim` per symbol remains and uses count
    drops. Include a negative: a compound `s0*s1` dim is left untouched.
-2. **gpt2-dyn regression** — `model_symbolized.mlir` 9 `tensor.dim` → 1 after the
-   pass; full phase-5 e2e still PASS (sim), `max_diff` unchanged (7.15e-7).
+2. **gpt2-dyn regression** — `model_symbolized.mlir` `tensor.dim` count drops
+   (9→5, see Coverage caveat); full phase-5 e2e still PASS (sim), `max_diff`
+   unchanged (7.15e-7).
 3. **two-elewise-dyn / gelu-dyn** phase-5 PASS (no regression; nothing to merge).
 4. **static graphs unaffected** — pass returns early when `afir.dim_symbols`
    absent.
@@ -147,3 +162,30 @@ one is already there.
 - Exact pipeline insertion points (registered `--auto-fuse` builder vs
   `network_runner` phase-1) — grep where `afir-symbolize-shapes` is listed.
 - Confirm tile-fuse has no raw-dim-provenance dependency (safety check above).
+
+## Results (2026-06-05, implemented)
+
+Implemented across commits `ecc50f0f` (scaffold), `ab1d798e` (logic + lit),
+`27ba7719` (review fixes), `04058c0d` (pipeline wiring). Pass lives at
+`lib/Dialect/AFIR/Transforms/AFIRSymbolicDimCSE.cpp`; wired in `Pipeline.cpp`
+(after `createAFIRSymbolizeShapesPass`) and `network_runner.py` (`--afir-symbolize-shapes
+--afir-symbolic-dim-cse`).
+
+- **Insertion points** were exactly `lib/Conversion/AutoFuse/Pipeline.cpp:97` and
+  `python/network_runner.py:183`.
+- **Provenance safety** confirmed empirically: gpt2-dyn full phase-5 e2e PASS,
+  `max_diff = 7.153e-7` (bit-identical to baseline) — rewriting which arg a dim
+  queries changed nothing downstream.
+- **Op-count:** gpt2-dyn `model_symbolized.mlir` **9 → 5** `tensor.dim` (the 5
+  `%arg0` dups → 1; the 4 aclnn-call-result dims unresolved — see Coverage
+  caveat). two-elewise-dyn: no merge (already minimal), PASS 4.88e-4. gelu-dyn:
+  PASS 2.384e-7. static two-elewise: PASS (early-return). AFIR lit 112/113 (the
+  one failure is the pre-existing env-gated `tools/examples/example-pipelines.mlir`).
+
+### Follow-up opportunity
+
+Extend `AFIRSymbolizeShapes::transfer()` to propagate symbolic shapes through
+`func.call` results (at least the `@__aclnn_*` ops whose output shape equals an
+input's). That would let this pass also collapse the 4 gpt2-dyn call-result dims
+(9→1) and is the only thing standing between the current result and the original
+estimate. Separate change; not done here.

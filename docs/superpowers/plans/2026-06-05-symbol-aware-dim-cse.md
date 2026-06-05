@@ -431,7 +431,12 @@ Regenerate `model_symbolized.mlir` through the new driver and count dims:
 NETWORK_RUNNER_SKIP_AUTOTUNE=1 MAX_PHASE=1 bash examples/gpt2-dyn-e2e/run.sh
 grep -c "tensor.dim " examples/gpt2-dyn-e2e/build_e2e/model_symbolized.mlir
 ```
-Expected: `1` (was 9). The single survivor is `tensor.dim %arg0, %c1`.
+Expected: `5` (was 9). The 5 identical `tensor.dim %arg0, %c1` collapse to one;
+the 4 remaining dims query `call @__aclnn_layer_norm` results, which
+`AFIRSymbolizeShapes` does not annotate (it skips `func.call`), so the pass can't
+resolve their symbol. (The earlier "9→1" estimate was wrong — see the spec's
+"Coverage caveat".) The cross-value capability is still exercised by the lit
+test's `linalg.generic`-result case.
 
 - [ ] **Step 2: gpt2-dyn — full phase-5 e2e, max_diff unchanged**
 
@@ -482,7 +487,7 @@ git commit -m "docs: record symbol-aware-dim-cse regression results"
 
 - **Spec coverage:** standalone pass (Task 1–2), fresh-anchor canonicalization with
   entry-block placement (Task 2 Step 3), pipeline wiring at both symbolize sites
-  (Task 3), lit incl. compound-negative + gpt2-dyn 9→1 + e2e provenance check
+  (Task 3), lit incl. compound-negative + gpt2-dyn 9→5 + e2e provenance check
   (Task 2, Task 4). All spec sections map to a task.
 - **Provenance safety:** verified empirically by Task 4 Step 2 (gpt2-dyn e2e
   max_diff unchanged), which is stronger than the spec's "grep tile-fuse" idea.
