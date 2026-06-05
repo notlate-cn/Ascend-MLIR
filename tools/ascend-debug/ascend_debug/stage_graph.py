@@ -220,7 +220,10 @@ def _parse_func_decl(header: str) -> tuple[str, list[dict[str, Any]]] | None:
                 break
     if args_end < 0:
         return match.group("name"), []
-    args_text = header[args_start + 1 : args_end]
+    args_text = "\n".join(
+        line.split("//", 1)[0].rstrip()
+        for line in header[args_start + 1 : args_end].splitlines()
+    )
     args = []
     for piece in _split_top_level_commas(args_text):
         arg_match = re.match(

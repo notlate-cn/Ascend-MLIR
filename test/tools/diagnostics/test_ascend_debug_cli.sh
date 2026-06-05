@@ -57,6 +57,29 @@ mlir = """module {
 }
 """
 graph = stage_graph.parse_stage_mlir({"order": 1, "name": "copy-view", "path": "stages/copy-view.mlir"}, mlir)
+commented_args_mlir = """module {
+  func.func @commented_args(
+      %input_a : tensor<?xf16>,      // [M] - broadcast input
+      %input_b : tensor<?x?xf16>     // [M, N] - matrix input
+  ) -> tensor<?xf16> {
+    %c1 = arith.constant 1 : index
+    %dim_n = tensor.dim %input_b, %c1 : tensor<?x?xf16>
+    return %input_a : tensor<?xf16>
+  }
+}
+"""
+commented_args_graph = stage_graph.parse_stage_mlir(
+    {"order": 1, "name": "commented-args", "path": "stages/commented-args.mlir"},
+    commented_args_mlir,
+)
+commented_arg_nodes = [
+    node for node in commented_args_graph["nodes"] if node["op_name"] == "func.arg"
+]
+assert [node["label"] for node in commented_arg_nodes] == ["%input_a", "%input_b"], commented_arg_nodes
+commented_dim = next(node for node in commented_args_graph["nodes"] if node["op_name"] == "tensor.dim")
+assert commented_dim["input_values"] == ["%input_b", "%c1"], commented_dim
+assert any(edge["to"] == commented_dim["id"] and edge["value"] == "%input_b" for edge in commented_args_graph["edges"]), commented_args_graph["edges"]
+
 linalg_nodes = [node for node in graph["nodes"] if node["op_name"] == "linalg.generic"]
 assert len(linalg_nodes) == 1, [node["op_name"] for node in graph["nodes"]]
 copy_nodes = [node for node in graph["nodes"] if node["op_name"] == "memref.copy"]
