@@ -154,6 +154,67 @@ strided-copy 逻辑填 `blockCount + stride`,不是恒 0。
 长度 = rem(DataCopyPad 带 offset 吃不对齐),elementwise 算满 T 不 store 垃圾,
 reduce 靠累加层已有的 count 只折真实元素。不需要 identity 基建,只改尾块、不动主循环。
 
+## 8. 实现结果与修正(2026-06-05,branch `feature/tail-block-ragged`)
+
+实现完成,**单一 ragged 尾块已落地并验证**;过程中纠正了两处设计期的判断。
+
+### 8.1 已落地(commits)
+
+| commit | 内容 |
+|--------|------|
+| `d88c5d14` | GroupEmitter 尾块:overlap → ragged(honest IV `outerOfTailIV+mainInnerUb` + `sizeOverride=rem`) |
+| `762b1c7d` | 删 overlap 留下的孤儿字段 `innerTileExtent/Step` + 文档 |
+| `fde72897` | CannTranslation:尾块 GM↔UB copy → DataCopyPad |
+| `982fccc9` | 删失效的 `afir.ragged_tail` 属性,改文档(见 §8.2) |
+| `9b7056f3` | **修 store-count bug**(见 §8.3),InsertTileBuffers |
+| `492992f9` | f16 尾块 gate 用 32B 对齐内维(D2=16) |
+| `b7b953d0` | 删 `Divides{32}` 尾对齐拒绝约束 + 3 个 Collapse lit |
+
+验证:f32 ragged 尾(`reduce-sum-3d-tail-e2e`)max_diff=0;f16 ragged 尾
+(`reduce-sum-3d-f16-tail-e2e`,D2=16)`session.validation=pass`、DataCopyPad 落在尾块;
+全回归 **43/43 lit + 7/7 e2e PASS**(含 dynamic 尾 `gelu-dyn` 2.4e-7、reduction-split
+`reduce-big-r`、multi-output `two-elewise`)。
+
+### 8.2 修正一:`afir.ragged_tail` 属性不存活 bufferize
+
+设计假设给尾 `scf.if` 打 `afir.ragged_tail` 属性、CannTranslation 据此识别尾块。
+**实测该 discardable 属性被 one-shot-bufferize 丢弃**(scf.if 被重建为 memref 类型)。
+改为**结构识别**:尾块是 AutoFuse codegen 路径里**唯一**的 `arith.cmpi slt`-guarded
+scf.if(per-core guard 用 `ult`)。该耦合在 `GroupEmitter.cpp` 的 slt guard 处和
+CannTranslation 的 walk 处**双向注释**(改谓词会断掉尾块识别)。DataCopyPad 是
+superset-correct,误判只损性能不损正确性;只要尾 guard 保持 `slt` 就无漏判。
+
+### 8.3 修正二:真正的 bug 是 reduce 输出 store 的 count,而非 §3 的 store 长度
+
+§3 假设 `sizeOverride=rem` 会让 load/compute/store **一起**变 rem。实际 `sizeOverride`
+传到了 load,但 reduce 的 **VECOUT 输出 buffer 被 `sharedVecout` 缓存复用**(主循环 hoist
+的静态-T VECOUT 支配了尾块),而 reduce kernel 的行/列数是从 VECOUT 队列 `InitQueue`
+字节长**反推**的 → 尾块仍按静态 T 算行列 → 尾输出错(f32 尾也被打破,max_diff 3.25)。
+修法(`9b7056f3`,InsertTileBuffers):尾块 genOp(`allocAnchor==genOp`,即直接在
+scf.if 内)**不复用** sharedVecout、按真实 rem 子视图新分配 VECOUT(与 VECIN 路径一致),
+也不把尾块动态 buffer 注册进缓存。主循环路径字节级不变。
+
+### 8.4 §3 "静态-T buffer / 无 shadow-alloc" 的实际情况
+
+无 memref 级 shadow-alloc。尾块在 AscendC 层用一对**动态尺寸**的 `init_queue`/
+`init_buffer`(按 `rem*cols` 尺寸),与主循环 hoist 的静态-T 队列分开。这是 ragged 的
+预期形态(每核尾块一次,不在热路径),X 策略成立,无需升级到 spec 的 Y(解耦静态-T)。
+
+### 8.5 顺带揭出的正交 bug(**未修,future work**)
+
+原 XFAIL 注释把 f16 失败归因于"尾偏移不对齐"——**错**(该用例因 forced `exit 0` 从未真跑)。
+真因有二:(a) §8.3 的 store-count(已修);(b) **与尾块无关**的"每行 reduce 输入
+load 不对齐":per-row `DataCopy($0[i*cols], gt, cols)` 要求 `cols*sizeof%32==0`
+(`ComputeConversionContext.cpp:247`),D2=8 f16=16B 违反 → sim SIGSEGV,**无尾也崩**
+(bisect:D2=8/24 崩、16/32 过)。这是独立的"内 reduce 维 < 32B"限制,本设计不覆盖。
+建议 follow-up:① TilePlanGen 加 `Divides{32, dim_inner*elemBytes}` 约束**早拒/早诊**;
+或 ② per-row load 改 `DataCopyPad`(注:strided DataCopyPad GM→UB 此 sim build 未验证)。
+
+### 8.6 mode ②(reduction 轴尾巴,§4.3)仍延后
+
+本计划只交付 mode ①(parallel 轴 f16 尾)。reduction 轴尾巴(`emitGroupWithReductionSplit`
+的 `for(0,ext,RBLOCK)` 不整除)仍是潜在 gap,独立成后续计划。
+
 ## 参考
 
 - `lib/Target/CannKernel/CannTranslation.cpp:2627`(DataCopyPad 仅累加器 store,待推广到尾块)、
