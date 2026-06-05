@@ -1505,8 +1505,8 @@ grep -Fq -- '--inspector-width' "${TMP_DIR}/debug-run-graph/views/debug_graph.ht
 grep -Fq 'class="layout-resizer"' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
 grep -Fq 'class="source-code"' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
 grep -Fq '.source-code { margin: 0; white-space: pre; overflow: auto;' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
-grep -Fq '.graph-panel { min-width: 0; overflow: hidden; display: grid; grid-template-rows: auto minmax(0, 1fr);' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
-grep -Fq '.graph-canvas-wrap { overflow: auto; min-height: 22rem; height: auto;' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
+grep -Fq '.graph-panel { min-width: 0; min-height: 0; overflow: hidden; display: grid; grid-template-rows: auto minmax(0, 1fr);' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
+grep -Fq '.graph-canvas-wrap { overflow: auto; min-height: 0; height: auto;' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
 if grep -Fq '.graph-canvas-wrap { overflow: auto; height: calc(100vh - 15rem);' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"; then
   echo "graph canvas should fill the graph panel instead of using a shorter fixed viewport height" >&2
   exit 1
@@ -2274,6 +2274,14 @@ RESOLVED_RUN_DIR="$(python3 -c 'import pathlib, sys; print(pathlib.Path(sys.argv
 ascend-debug open "${TMP_DIR}/debug-run" --no-browser >"${TMP_DIR}/ascend-debug-open.txt"
 grep -Fq "ascend-debug.open.index=${RESOLVED_RUN_DIR}/index.html" "${TMP_DIR}/ascend-debug-open.txt"
 test -f "${TMP_DIR}/debug-run/index.html"
+test -f "${TMP_DIR}/debug-run/views/debug_graph.html"
+grep -Fq 'height: 100%; overflow: hidden;' "${TMP_DIR}/debug-run/views/debug_graph.html"
+grep -Fq '.app-shell { display: grid;' "${TMP_DIR}/debug-run/views/debug_graph.html"
+grep -Fq 'height: calc(100vh - var(--header-height));' "${TMP_DIR}/debug-run/views/debug_graph.html"
+grep -Fq '.sidebar-body { min-height: 0; overflow-y: auto;' "${TMP_DIR}/debug-run/views/debug_graph.html"
+grep -Fq '.inspector-panel { min-width: 0; padding: 0.8rem; overflow-y: auto;' "${TMP_DIR}/debug-run/views/debug_graph.html"
+grep -Fq '.graph-canvas-wrap { overflow: auto; min-height: 0; height: auto;' "${TMP_DIR}/debug-run/views/debug_graph.html"
+grep -Fq 'if (!(event.ctrlKey || event.metaKey)) return;' "${TMP_DIR}/debug-run/views/debug_graph.html"
 grep -Fq '<h1>Ascend Debug</h1>' "${TMP_DIR}/debug-run/index.html"
 grep -Fq '<h2>运行概览</h2>' "${TMP_DIR}/debug-run/index.html"
 grep -Fq '<span>preset</span><strong>quick</strong>' "${TMP_DIR}/debug-run/index.html"
