@@ -1,20 +1,22 @@
 # two-elewise-e2e
 
-End-to-end demo for the **automatic group-outline path** of `network_runner.py`.
+End-to-end demo for the **automatic group-outline path** of `network_runner.py`,
+exercising both intra-chain elementwise fusion and the outline split.
 
 ## What it shows
 
-`model.mlir` contains two completely independent `linalg.generic` ops in a
+`model.mlir` contains two independent elementwise **chains** (2 ops each) in a
 single `func.func @model`:
 
-  - `out0 = a + b`
-  - `out1 = c * d`
+  - `out0 = (a + b) * e`
+  - `out1 = (c * d) + f`
 
-Because the two ops share no inputs and no SSA dependencies, the
-`--auto-fuse-group-analysis` + `--auto-fuse-group-outline` passes split
-the function into two AscendC kernels (`kernel_group0`, `kernel_group1`).
-This complements `examples/mixed-attn-e2e/`, which feeds a hand-written
-`network.mlir` directly.
+Within each chain the two ops share an SSA dependency, so
+`--auto-fuse-group-analysis` fuses them into one Vector kernel. The two chains
+share no inputs and no SSA dependencies, so `--auto-fuse-group-outline` still
+splits the function into two AscendC kernels (`kernel_group0`, `kernel_group1`),
+each now containing two fused ops (`add,mul` / `mul,add`). This complements
+`examples/mixed-attn-e2e/`, which feeds a hand-written `network.mlir` directly.
 
 ## Run
 
