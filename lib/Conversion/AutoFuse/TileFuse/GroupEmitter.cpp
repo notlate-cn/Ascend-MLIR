@@ -719,6 +719,12 @@ SmallVector<Value> emitGroup(OpBuilder &builder, Location loc,
     innermostFor = loopNest.allForOps.back();
     builder.setInsertionPointAfter(innermostFor);
 
+    // NOTE: this `slt` predicate is LOAD-BEARING.  CannTranslation
+    // (the ragged-tail DataCopyPad walk, ~CannTranslation.cpp:2663) detects
+    // the ragged tail structurally by THIS being the sole `arith.cmpi slt` in
+    // the AutoFuse codegen path (the per-core guard uses `ult`).  The
+    // tile-fuse-level `afir.ragged_tail` tag does NOT survive bufferization,
+    // so do not change this predicate without updating that walk.
     Value cond = builder.create<arith::CmpIOp>(
         loc, arith::CmpIPredicate::slt,
         loopNest.mainInnerUb, loopNest.remaining);
@@ -727,10 +733,6 @@ SmallVector<Value> emitGroup(OpBuilder &builder, Location loc,
                                    innermostFor.getResultTypes().end());
     tailIf = builder.create<scf::IfOp>(loc, resultTypes, cond,
                                         /*withElseRegion=*/true);
-    // Mark this scf.if as the ragged tail so CannTranslation can LATER route
-    // its GM↔UB DataCopy to DataCopyPad (follow-up task; unaligned f16 tail
-    // not yet legal on its own).
-    tailIf->setAttr("afir.ragged_tail", builder.getUnitAttr());
 
     {
       OpBuilder::InsertionGuard g(builder);
@@ -738,11 +740,10 @@ SmallVector<Value> emitGroup(OpBuilder &builder, Location loc,
 
       // Ragged-tail: process the true remainder [covered, extent) at honest
       // offset `outerOfTailIV + mainInnerUb` with honest size
-      // `remaining - mainInnerUb`.  No overlap / recompute; this scf.if is
-      // tagged `afir.ragged_tail` so that CannTranslation can LATER route this
-      // block's GM↔UB DataCopy to DataCopyPad (keying off that tag).  That
-      // consumer is a follow-up task, so an unaligned f16 tail is not yet legal
-      // on its own.
+      // `remaining - mainInnerUb`.  No overlap / recompute.  CannTranslation
+      // routes this block's GM↔UB DataCopy to DataCopyPad (it detects the tail
+      // via the `slt` guard above), so an unaligned f16 tail offset/length is
+      // legal here.
       Value honestTailSize = builder.create<arith::SubIOp>(
           loc, loopNest.remaining, loopNest.mainInnerUb);
       Value honestIV = builder.create<arith::AddIOp>(
