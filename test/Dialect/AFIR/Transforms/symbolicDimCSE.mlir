@@ -7,7 +7,7 @@
 // CHECK: %[[C0:.*]] = arith.constant 0 : index
 // CHECK: %[[D:.*]] = tensor.dim %arg0, %[[C0]]
 // CHECK-NOT: tensor.dim
-// CHECK: return
+// CHECK: return %[[D]], %[[D]], %[[D]]
 func.func @merge_same_symbol(
     %arg0: tensor<?xf32> {afir.symbolic_shape = "s0"},
     %arg1: tensor<?xf32> {afir.symbolic_shape = "s0"})
@@ -32,6 +32,7 @@ func.func @merge_same_symbol(
 // A compound (s0*s1) dim is not a single symbol -> left untouched.
 // CHECK-LABEL: func.func @leave_compound
 // CHECK: tensor.dim %arg0, %c0
+// CHECK-NOT: tensor.dim
 func.func @leave_compound(
     %arg0: tensor<?xf32> {afir.symbolic_shape = "(s0*s1)"})
     -> index

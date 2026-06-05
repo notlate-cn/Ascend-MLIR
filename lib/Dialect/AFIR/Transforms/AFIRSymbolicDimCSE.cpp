@@ -2,8 +2,10 @@
 //
 // Part of the Ascend-MLIR Project
 //
-// Merges `tensor.dim` ops that denote the same dynamic-shape symbol into one
-// canonical `tensor.dim` on the symbol's root block argument.  Reads the attrs
+// When two or more `tensor.dim` ops denote the same dynamic-shape symbol,
+// replaces them with one canonical `tensor.dim` on the symbol's root block
+// argument.  A lone `tensor.dim` for a symbol is left untouched (nothing to
+// merge).  Reads the attrs
 // produced by --afir-symbolize-shapes (afir.dim_symbols on the func,
 // afir.symbolic_shape on args, afir.symbolic_shapes on ops).  See
 // docs/superpowers/specs/2026-06-05-symbol-aware-dim-cse-design.md.
@@ -51,9 +53,9 @@ static std::optional<SymId> resolveSymbol(Value v, int64_t idx,
       return std::nullopt;
     serialized = attr.getValue();
   } else {
-    Operation *def = v.getDefiningOp();
-    if (!def)
-      return std::nullopt;
+    // A non-block-argument value is necessarily an OpResult, so it always has a
+    // defining op.
+    Operation *def = cast<OpResult>(v).getOwner();
     auto arr = def->getAttrOfType<ArrayAttr>("afir.symbolic_shapes");
     if (!arr)
       return std::nullopt;
@@ -91,7 +93,8 @@ struct AFIRSymbolicDimCSEPass
       auto id = cast<IntegerAttr>(d.get("id")).getInt();
       auto arg = cast<IntegerAttr>(d.get("arg")).getInt();
       auto dim = cast<IntegerAttr>(d.get("dim")).getInt();
-      idToRoot[(SymId)id] = {(unsigned)arg, (unsigned)dim};
+      idToRoot[static_cast<SymId>(id)] = {static_cast<unsigned>(arg),
+                                          static_cast<unsigned>(dim)};
     }
 
     // Group resolvable tensor.dim ops by symbol id.
@@ -130,9 +133,9 @@ struct AFIRSymbolicDimCSEPass
         continue; // nothing to merge.
       Root root = idToRoot[sym];
       Value rootArg = entry.getArgument(root.arg);
-      Value cidx = getIdx((int64_t)root.dim);
+      Value cidx = getIdx(static_cast<int64_t>(root.dim));
       b.setInsertionPointAfter(cidx.getDefiningOp());
-      auto canon = b.create<tensor::DimOp>(func.getLoc(), rootArg, cidx);
+      auto canon = b.create<tensor::DimOp>(members.front().getLoc(), rootArg, cidx);
       for (tensor::DimOp m : members) {
         m.getResult().replaceAllUsesWith(canon.getResult());
         m.erase();
