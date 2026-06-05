@@ -39,6 +39,12 @@
   instructions. Check `scripts/sync-and-submit.sh --help` or
   `scripts/real-npu-ci/docker-run.sh --help` before relying on a default; pass
   `--device-id` explicitly when reproducing a prior result.
+- real-NPU CI should use the Ascend-focused build profile by default:
+  `--build-profile ascend`. This routes project builds through
+  `scripts/build.sh --build-ascend`, disables AFIR-only build surfaces, and
+  maps legacy example variables such as `AFIR_OPT` to the ascend-prefixed
+  tools. Use `--build-profile full` only when intentionally validating
+  AFIR-only tools or bindings.
 
 ## Day-to-Day Ascend Development
 

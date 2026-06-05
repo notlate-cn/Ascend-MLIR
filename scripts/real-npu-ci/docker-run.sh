@@ -25,6 +25,7 @@ INCREMENTAL_SOURCE="${ASCEND_MLIR_CI_INCREMENTAL_SOURCE:-0}"
 USE_CCACHE="${ASCEND_MLIR_CI_USE_CCACHE:-1}"
 CCACHE_DIR_HOST="${ASCEND_MLIR_CI_CCACHE_DIR:-}"
 CLEAN="${ASCEND_MLIR_CI_CLEAN:-0}"
+BUILD_PROFILE="${ASCEND_MLIR_CI_BUILD_PROFILE:-ascend}"
 EXTRA_DOCKER_ARGS=()
 ENTRYPOINT_ARGS=()
 REAL_NPU_ALL_CASES=(
@@ -70,6 +71,8 @@ Options:
   --jobs N               Build parallelism inside the container. Default: 6
   --ccache-dir DIR       Host ccache directory to mount at /ccache.
   --no-ccache            Do not mount or use ccache.
+  --build-profile NAME   Project build profile inside the container: ascend or full.
+                         Default: ascend.
   --clean                Remove build dirs before building.
   --docker-arg ARG       Extra argument passed to docker run. May be repeated.
   --help                 Show this help.
@@ -148,6 +151,10 @@ while [[ $# -gt 0 ]]; do
       USE_CCACHE=0
       shift
       ;;
+    --build-profile)
+      BUILD_PROFILE="$2"
+      shift 2
+      ;;
     --clean)
       CLEAN=1
       shift
@@ -165,8 +172,16 @@ while [[ $# -gt 0 ]]; do
       usage >&2
       exit 2
       ;;
-  esac
+esac
 done
+
+case "${BUILD_PROFILE}" in
+  ascend|full) ;;
+  *)
+    echo "--build-profile must be 'ascend' or 'full': ${BUILD_PROFILE}" >&2
+    exit 2
+    ;;
+esac
 
 if [[ -z "${REPO_URL}" && -z "${SOURCE_DIR}" ]]; then
   echo "one of --repo-url or --source-dir is required" >&2
@@ -240,6 +255,7 @@ if [[ "${CASE_NAME}" == "all" && -z "${CMD}" ]]; then
       --llvm-build-dir "${LLVM_BUILD_DIR}"
       --cann-home "${CANN_HOME}"
       --jobs "${JOBS}"
+      --build-profile "${BUILD_PROFILE}"
     )
     if [[ -n "${REPO_URL}" ]]; then
       suite_args+=(--repo-url "${REPO_URL}")
@@ -289,6 +305,7 @@ DOCKER_ENV=(
   -e ASCEND_MLIR_CI_INCREMENTAL_SOURCE="${INCREMENTAL_SOURCE}"
   -e ASCEND_MLIR_CI_USE_CCACHE="${USE_CCACHE}"
   -e ASCEND_MLIR_CI_CLEAN="${CLEAN}"
+  -e ASCEND_MLIR_CI_BUILD_PROFILE="${BUILD_PROFILE}"
 )
 
 if [[ "${USE_CCACHE}" == "1" ]]; then

@@ -15,6 +15,7 @@ JOBS="${ASCEND_MLIR_CI_JOBS:-6}"
 INCREMENTAL_SOURCE="${ASCEND_MLIR_CI_INCREMENTAL_SOURCE:-0}"
 USE_CCACHE="${ASCEND_MLIR_CI_USE_CCACHE:-1}"
 CLEAN="${ASCEND_MLIR_CI_CLEAN:-0}"
+BUILD_PROFILE="${ASCEND_MLIR_CI_BUILD_PROFILE:-ascend}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 usage() {
@@ -44,6 +45,8 @@ This script is normally run as the container ENTRYPOINT. Configure it with:
   ASCEND_MLIR_CI_JOBS        Build parallelism. Default: 6.
   ASCEND_MLIR_CI_USE_CCACHE   Use ccache when available. Default: 1.
   ASCEND_MLIR_CI_CLEAN        Remove local build dirs before building. Default: 0.
+  ASCEND_MLIR_CI_BUILD_PROFILE
+                              Project build profile: ascend or full. Default: ascend.
   LLVM_BUILD_DIR             Required LLVM build dir, unless ASCEND_MLIR_CI_BUILD_LLVM=1.
   ASCEND_HOME_PATH           CANN toolkit root.
   ASCEND_DEVICE_ID           NPU device id.
@@ -90,6 +93,10 @@ fail() {
 if ! [[ "${NPU_RUN_TIMEOUT_SECONDS}" =~ ^[1-9][0-9]*$ ]]; then
   fail "ASCEND_MLIR_CI_NPU_RUN_TIMEOUT_SECONDS must be a positive integer: ${NPU_RUN_TIMEOUT_SECONDS}"
 fi
+case "${BUILD_PROFILE}" in
+  ascend|full) ;;
+  *) fail "ASCEND_MLIR_CI_BUILD_PROFILE must be 'ascend' or 'full': ${BUILD_PROFILE}" ;;
+esac
 command -v timeout >/dev/null 2>&1 || fail "timeout command is required for real NPU run guarding"
 
 run_logged() {
@@ -126,6 +133,7 @@ record_job_env() {
     echo "incremental_source=${INCREMENTAL_SOURCE}"
     echo "use_ccache=${USE_CCACHE}"
     echo "ccache_dir=${CCACHE_DIR:-}"
+    echo "build_profile=${BUILD_PROFILE}"
     echo "ascend_home_path=${ASCEND_HOME_PATH:-}"
     echo "ascend_device_id=${ASCEND_DEVICE_ID:-}"
     uname -a || true
@@ -176,7 +184,6 @@ if [[ "${CLEAN}" == "1" ]]; then
   rm -rf "${SRC_DIR}/build" "${RUN_ONLY_BUILD_DIR}"
 fi
 
-cmake_launcher_args=()
 if [[ "${USE_CCACHE}" == "1" ]] && command -v ccache >/dev/null 2>&1; then
   export CCACHE_DIR="${CCACHE_DIR:-/ccache}"
   export CCACHE_BASEDIR="${CCACHE_BASEDIR:-${SRC_DIR}}"
@@ -185,10 +192,6 @@ if [[ "${USE_CCACHE}" == "1" ]] && command -v ccache >/dev/null 2>&1; then
   mkdir -p "${CCACHE_DIR}" || true
   export CMAKE_C_COMPILER_LAUNCHER=ccache
   export CMAKE_CXX_COMPILER_LAUNCHER=ccache
-  cmake_launcher_args=(
-    -DCMAKE_C_COMPILER_LAUNCHER=ccache
-    -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
-  )
   log "ccache enabled: ${CCACHE_DIR}"
 elif [[ "${USE_CCACHE}" == "1" ]]; then
   log "ccache requested but not found; continuing without ccache"
@@ -214,21 +217,53 @@ log "build project"
   if [[ -n "${ASCEND_HOME_PATH:-}" ]]; then
     source_if_exists "${ASCEND_HOME_PATH}/set_env.sh"
   fi
+  build_args=(--build-ascend)
+  if [[ "${BUILD_PROFILE}" == "full" ]]; then
+    build_args=(--build-project)
+  fi
   BUILD_DIR="${SRC_DIR}/build" \
   LLVM_BUILD_DIR="${LLVM_BUILD_DIR}" \
   NUM_JOBS="${JOBS}" \
-  bash scripts/build.sh --build-project --jobs "${JOBS}"
+  bash scripts/build.sh "${build_args[@]}" --jobs "${JOBS}"
 ) >"${LOG_DIR}/build-project.log" 2>&1
 
 log "build run-only runtime-session"
 (
   cd "${SRC_DIR}"
-  cmake -G Ninja -S "${SRC_DIR}" -B "${RUN_ONLY_BUILD_DIR}" \
-    -DLLVM_BUILD_DIR="${LLVM_BUILD_DIR}" \
-    -DASCEND_RUNTIME_SESSION_RUN_ONLY=ON \
-    "${cmake_launcher_args[@]}"
+  run_only_cmake_args=(
+    -DLLVM_BUILD_DIR="${LLVM_BUILD_DIR}"
+    -DASCEND_RUNTIME_SESSION_RUN_ONLY=ON
+  )
+  if [[ "${BUILD_PROFILE}" == "ascend" ]]; then
+    run_only_cmake_args+=(
+      -DASCEND_ENABLE_AFIR=OFF
+      -DASCEND_ENABLE_TESTS=OFF
+      -DAFIR_ENABLE_BINDING_PYTHON=OFF
+    )
+  fi
+  if [[ -n "${CMAKE_C_COMPILER_LAUNCHER:-}" ]]; then
+    run_only_cmake_args+=("-DCMAKE_C_COMPILER_LAUNCHER=${CMAKE_C_COMPILER_LAUNCHER}")
+  fi
+  if [[ -n "${CMAKE_CXX_COMPILER_LAUNCHER:-}" ]]; then
+    run_only_cmake_args+=("-DCMAKE_CXX_COMPILER_LAUNCHER=${CMAKE_CXX_COMPILER_LAUNCHER}")
+  fi
+  cmake -G Ninja -S "${SRC_DIR}" -B "${RUN_ONLY_BUILD_DIR}" "${run_only_cmake_args[@]}"
   cmake --build "${RUN_ONLY_BUILD_DIR}" --target runtime-session -j"${JOBS}"
 ) >"${LOG_DIR}/build-run-only.log" 2>&1
+
+configure_project_tool_env() {
+  # shellcheck source=/dev/null
+  source examples/env.sh
+  export PATH="${SRC_DIR}/build/bin:${PATH}"
+  if [[ "${BUILD_PROFILE}" == "ascend" ]]; then
+    export AFIR_OPT="${SRC_DIR}/build/bin/ascend-mlir-opt"
+    export AFIR_TRANSLATE="${SRC_DIR}/build/bin/ascend-mlir-translate"
+  else
+    export AFIR_OPT="${SRC_DIR}/build/bin/afir-opt"
+    export AFIR_TRANSLATE="${SRC_DIR}/build/bin/afir-translate"
+  fi
+  export RUNTIME_SESSION="${SRC_DIR}/build/bin/runtime-session"
+}
 
 run_real_manifest() {
   local source_manifest="$1"
@@ -304,12 +339,7 @@ run_example_case() {
     if [[ -n "${ASCEND_HOME_PATH:-}" ]]; then
       source_if_exists "${ASCEND_HOME_PATH}/set_env.sh"
     fi
-    # shellcheck source=/dev/null
-    source examples/env.sh
-    export PATH="${SRC_DIR}/build/bin:${PATH}"
-    export AFIR_OPT="${SRC_DIR}/build/bin/afir-opt"
-    export AFIR_TRANSLATE="${SRC_DIR}/build/bin/afir-translate"
-    export RUNTIME_SESSION="${SRC_DIR}/build/bin/runtime-session"
+    configure_project_tool_env
     if [[ "${SKIP_SIM}" == "1" ]]; then
       bash "examples/${case_name}/run.sh" --prepare-runtime-artifacts --log
     else
@@ -353,12 +383,7 @@ run_custom_cmd() {
     if [[ -n "${ASCEND_HOME_PATH:-}" ]]; then
       source_if_exists "${ASCEND_HOME_PATH}/set_env.sh"
     fi
-    # shellcheck source=/dev/null
-    source examples/env.sh
-    export PATH="${SRC_DIR}/build/bin:${PATH}"
-    export AFIR_OPT="${SRC_DIR}/build/bin/afir-opt"
-    export AFIR_TRANSLATE="${SRC_DIR}/build/bin/afir-translate"
-    export RUNTIME_SESSION="${SRC_DIR}/build/bin/runtime-session"
+    configure_project_tool_env
     export RUN_ONLY_RUNTIME_SESSION="${RUN_RUNTIME_SESSION}"
     bash -lc "${cmd}"
   ) >"${LOG_DIR}/custom-cmd.log" 2>&1
@@ -375,9 +400,7 @@ run_microcases() {
     if [[ -n "${ASCEND_HOME_PATH:-}" ]]; then
       source_if_exists "${ASCEND_HOME_PATH}/set_env.sh"
     fi
-    # shellcheck source=/dev/null
-    source examples/env.sh
-    export RUNTIME_SESSION="${SRC_DIR}/build/bin/runtime-session"
+    configure_project_tool_env
     bash examples/real-npu-microcases/prepare.sh --out-dir "${micro_out}"
   ) >"${LOG_DIR}/microcases-prepare.log" 2>&1
 
@@ -405,9 +428,7 @@ run_relu_broadcast_diagnostics() {
     if [[ -n "${ASCEND_HOME_PATH:-}" ]]; then
       source_if_exists "${ASCEND_HOME_PATH}/set_env.sh"
     fi
-    # shellcheck source=/dev/null
-    source examples/env.sh
-    export RUNTIME_SESSION="${SRC_DIR}/build/bin/runtime-session"
+    configure_project_tool_env
     bash examples/real-npu-microcases/prepare.sh \
       --out-dir "${diag_out}" \
       --include-relu-diagnostics
@@ -435,9 +456,7 @@ run_multikernel() {
     if [[ -n "${ASCEND_HOME_PATH:-}" ]]; then
       source_if_exists "${ASCEND_HOME_PATH}/set_env.sh"
     fi
-    # shellcheck source=/dev/null
-    source examples/env.sh
-    export RUNTIME_SESSION="${SRC_DIR}/build/bin/runtime-session"
+    configure_project_tool_env
     export RUN_ONLY_RUNTIME_SESSION="${RUN_RUNTIME_SESSION}"
     multikernel_args=(--out-dir "${multi_out}")
     if [[ "${SKIP_SIM}" == "1" ]]; then
@@ -454,12 +473,7 @@ run_transformer_real_npu() {
     if [[ -n "${ASCEND_HOME_PATH:-}" ]]; then
       source_if_exists "${ASCEND_HOME_PATH}/set_env.sh"
     fi
-    # shellcheck source=/dev/null
-    source examples/env.sh
-    export PATH="${SRC_DIR}/build/bin:${PATH}"
-    export AFIR_OPT="${SRC_DIR}/build/bin/afir-opt"
-    export AFIR_TRANSLATE="${SRC_DIR}/build/bin/afir-translate"
-    export RUNTIME_SESSION="${SRC_DIR}/build/bin/runtime-session"
+    configure_project_tool_env
     bash examples/transformer/run-mainline.sh \
       --prepare-runtime-artifacts \
       --batch "${ASCEND_MLIR_TRANSFORMER_BATCH:-1}" \

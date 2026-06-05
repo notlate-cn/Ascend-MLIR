@@ -351,6 +351,7 @@ scripts/real-npu-ci/docker-run.sh \
   --source-dir "$PWD" \
   --ref "$(git rev-parse --short HEAD)" \
   --case relu-broadcast-transpose \
+  --build-profile ascend \
   --device-id 7
 ```
 

@@ -18,14 +18,15 @@ fi
 
 # Default configuration
 BUILD_TYPE="${BUILD_TYPE:-Release}"
-BUILD_DIR="${PROJECT_ROOT}/build"
-INSTALL_DIR="${PROJECT_ROOT}/install"
+BUILD_DIR="${BUILD_DIR:-${PROJECT_ROOT}/build}"
+INSTALL_DIR="${INSTALL_DIR:-${PROJECT_ROOT}/install}"
 LLVM_BUILD_DIR="$(resolve_llvm_build_dir || true)"
 NUM_JOBS="${NUM_JOBS:-$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 4)}"
 PROJECT_PROFILE="full"
 PROJECT_ENABLE_AFIR_OVERRIDE=""
 PROJECT_ENABLE_TESTS_OVERRIDE=""
 PROJECT_ENABLE_PYTHON_OVERRIDE=""
+PROJECT_CCACHE_MODE="${ASCEND_MLIR_USE_CCACHE:-auto}"
 
 # Colors for output
 RED='\033[0;31m'
@@ -94,6 +95,8 @@ Options:
                          Enable AFIR Python bindings
     --disable-python-bindings
                          Disable AFIR Python bindings
+    --enable-ccache      Require ccache when configuring project builds
+    --disable-ccache     Do not auto-enable ccache for project builds
     --llvm-build-dir    Path to LLVM build directory (default: externals/llvm-project/build)
     --jobs N            Number of parallel jobs (default: auto)
     --help              Show this help message
@@ -103,6 +106,12 @@ Environment Variables:
     BUILD_DIR           Build directory path
     LLVM_BUILD_DIR      LLVM build directory path
     NUM_JOBS            Number of parallel jobs
+    ASCEND_MLIR_USE_CCACHE
+                        ccache mode: auto, ON, or OFF (default: auto)
+    CMAKE_C_COMPILER_LAUNCHER
+                        Explicit C compiler launcher; overrides auto-detect
+    CMAKE_CXX_COMPILER_LAUNCHER
+                        Explicit CXX compiler launcher; overrides auto-detect
 
 Examples:
     $0 --build-all                           # Build everything
@@ -201,6 +210,8 @@ build_project() {
     local project_enable_python="ON"
     local project_targets=("all")
     local project_extra_targets=("ascir-translate")
+    local cmake_c_compiler_launcher="${CMAKE_C_COMPILER_LAUNCHER:-}"
+    local cmake_cxx_compiler_launcher="${CMAKE_CXX_COMPILER_LAUNCHER:-}"
 
     if [ "${PROJECT_PROFILE}" = "ascend" ]; then
         project_enable_afir="OFF"
@@ -228,6 +239,33 @@ build_project() {
         project_enable_python="${PROJECT_ENABLE_PYTHON_OVERRIDE}"
     fi
 
+    case "${PROJECT_CCACHE_MODE}" in
+        auto|AUTO|"")
+            if command -v ccache >/dev/null 2>&1; then
+                [ -n "${cmake_c_compiler_launcher}" ] || cmake_c_compiler_launcher="ccache"
+                [ -n "${cmake_cxx_compiler_launcher}" ] || cmake_cxx_compiler_launcher="ccache"
+            fi
+            ;;
+        ON|on|1|true|TRUE|yes|YES)
+            if command -v ccache >/dev/null 2>&1; then
+                [ -n "${cmake_c_compiler_launcher}" ] || cmake_c_compiler_launcher="ccache"
+                [ -n "${cmake_cxx_compiler_launcher}" ] || cmake_cxx_compiler_launcher="ccache"
+            else
+                print_error "ccache was requested but was not found in PATH"
+                exit 1
+            fi
+            ;;
+        OFF|off|0|false|FALSE|no|NO)
+            [ "${cmake_c_compiler_launcher}" != "ccache" ] || cmake_c_compiler_launcher=""
+            [ "${cmake_cxx_compiler_launcher}" != "ccache" ] || cmake_cxx_compiler_launcher=""
+            ;;
+        *)
+            print_error "Invalid ASCEND_MLIR_USE_CCACHE value: ${PROJECT_CCACHE_MODE}"
+            print_error "Expected: auto, ON, or OFF"
+            exit 1
+            ;;
+    esac
+
     mkdir -p "${BUILD_DIR}"
     cd "${BUILD_DIR}"
 
@@ -236,15 +274,17 @@ build_project() {
     print_info "  ASCEND_ENABLE_AFIR:          ${project_enable_afir}"
     print_info "  ASCEND_ENABLE_TESTS:         ${project_enable_tests}"
     print_info "  AFIR_ENABLE_BINDING_PYTHON:  ${project_enable_python}"
+    print_info "  C compiler launcher:         ${cmake_c_compiler_launcher:-<none>}"
+    print_info "  CXX compiler launcher:       ${cmake_cxx_compiler_launcher:-<none>}"
     print_info "Build targets: ${project_targets[*]}${project_extra_targets[*]:+ ${project_extra_targets[*]}}"
 
     configure_project() {
         local launcher_args=()
-        if [ -n "${CMAKE_C_COMPILER_LAUNCHER:-}" ]; then
-            launcher_args+=("-DCMAKE_C_COMPILER_LAUNCHER=${CMAKE_C_COMPILER_LAUNCHER}")
+        if [ -n "${cmake_c_compiler_launcher}" ]; then
+            launcher_args+=("-DCMAKE_C_COMPILER_LAUNCHER=${cmake_c_compiler_launcher}")
         fi
-        if [ -n "${CMAKE_CXX_COMPILER_LAUNCHER:-}" ]; then
-            launcher_args+=("-DCMAKE_CXX_COMPILER_LAUNCHER=${CMAKE_CXX_COMPILER_LAUNCHER}")
+        if [ -n "${cmake_cxx_compiler_launcher}" ]; then
+            launcher_args+=("-DCMAKE_CXX_COMPILER_LAUNCHER=${cmake_cxx_compiler_launcher}")
         fi
 
         cmake -G Ninja "${PROJECT_ROOT}" \
@@ -295,14 +335,14 @@ build_project() {
         done
 
         actual="$(cache_value CMAKE_C_COMPILER_LAUNCHER)"
-        if [ "${actual}" != "${CMAKE_C_COMPILER_LAUNCHER:-}" ]; then
-            print_info "CMake cache mismatch for CMAKE_C_COMPILER_LAUNCHER: '${actual}' -> '${CMAKE_C_COMPILER_LAUNCHER:-}'"
+        if [ "${actual}" != "${cmake_c_compiler_launcher}" ]; then
+            print_info "CMake cache mismatch for CMAKE_C_COMPILER_LAUNCHER: '${actual}' -> '${cmake_c_compiler_launcher}'"
             return 0
         fi
 
         actual="$(cache_value CMAKE_CXX_COMPILER_LAUNCHER)"
-        if [ "${actual}" != "${CMAKE_CXX_COMPILER_LAUNCHER:-}" ]; then
-            print_info "CMake cache mismatch for CMAKE_CXX_COMPILER_LAUNCHER: '${actual}' -> '${CMAKE_CXX_COMPILER_LAUNCHER:-}'"
+        if [ "${actual}" != "${cmake_cxx_compiler_launcher}" ]; then
+            print_info "CMake cache mismatch for CMAKE_CXX_COMPILER_LAUNCHER: '${actual}' -> '${cmake_cxx_compiler_launcher}'"
             return 0
         fi
 
@@ -512,6 +552,14 @@ while [[ $# -gt 0 ]]; do
             ;;
         --disable-python-bindings)
             PROJECT_ENABLE_PYTHON_OVERRIDE="OFF"
+            shift
+            ;;
+        --enable-ccache)
+            PROJECT_CCACHE_MODE="ON"
+            shift
+            ;;
+        --disable-ccache)
+            PROJECT_CCACHE_MODE="OFF"
             shift
             ;;
         --jobs)

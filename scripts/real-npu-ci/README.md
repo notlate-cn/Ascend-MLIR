@@ -369,6 +369,9 @@ scripts/sync-and-submit.sh \
 - `--image`：来自 `versions.env` 的 `ASCEND_MLIR_CI_DEFAULT_REMOTE_IMAGE`，当前是 `swr.cn-east-2.myhuaweicloud.com/ascendmlir/ascend-mlir-builder:aarch64-ubuntu22.04-llvm21`
 - `--device-id`：`7`
 - `--jobs`：`6`
+- `--build-profile`：`ascend`，即容器内项目构建默认使用
+  `scripts/build.sh --build-ascend`；只有明确验证 AFIR-only 工具或
+  Python bindings 时才传 `--build-profile full`
 - `--remote-dir`：建议显式传 `/data/{username}/Codex-Ascend-MLIR-current`，或一次性设置 `ASCEND_MLIR_CI_REMOTE_DIR`
 - 增量编译：默认开启，直接在 `--remote-dir` 内复用 `build/` 和 `build-runtime-session-run-only/`
 - ccache：默认开启，cache 目录按 `--remote-dir` 派生，例如 `/data/{username}/ccache/Codex-Ascend-MLIR-current`
@@ -382,6 +385,7 @@ scripts/sync-and-submit.sh \
   --case add-broadcast-concat \
   --device-id 7 \
   --jobs 6 \
+  --build-profile ascend \
   --ccache-dir /data/{username}/ccache/my-worktree
 ```
 

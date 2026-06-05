@@ -29,6 +29,7 @@ INCREMENTAL="${ASCEND_MLIR_CI_INCREMENTAL_SOURCE:-1}"
 USE_CCACHE="${ASCEND_MLIR_CI_USE_CCACHE:-1}"
 CCACHE_DIR="${ASCEND_MLIR_CI_CCACHE_DIR:-}"
 CLEAN="${ASCEND_MLIR_CI_CLEAN:-0}"
+BUILD_PROFILE="${ASCEND_MLIR_CI_BUILD_PROFILE:-ascend}"
 
 usage() {
   cat <<'EOF'
@@ -73,6 +74,8 @@ Options:
   --ccache-dir DIR          Host ccache directory. Default is derived from
                             --remote-dir under /data/nyh/ccache/.
   --no-ccache               Do not mount or use ccache.
+  --build-profile NAME      Project build profile inside the real-NPU container:
+                            ascend or full. Default: ascend.
   --help                    Show this help.
 
 The sync step includes tracked files, populated submodule files, and unignored
@@ -165,6 +168,10 @@ while [[ $# -gt 0 ]]; do
       USE_CCACHE=0
       shift
       ;;
+    --build-profile)
+      BUILD_PROFILE="$2"
+      shift 2
+      ;;
     --list-cases)
       LIST_CASES=1
       shift
@@ -214,6 +221,14 @@ if [[ -z "${REMOTE}" ]]; then
   usage >&2
   exit 2
 fi
+
+case "${BUILD_PROFILE}" in
+  ascend|full) ;;
+  *)
+    echo "--build-profile must be 'ascend' or 'full': ${BUILD_PROFILE}" >&2
+    exit 2
+    ;;
+esac
 
 if ! [[ "${NPU_RUN_TIMEOUT_SECONDS}" =~ ^[1-9][0-9]*$ ]]; then
   echo "--npu-timeout must be a positive integer: ${NPU_RUN_TIMEOUT_SECONDS}" >&2
@@ -334,6 +349,7 @@ runner_args=(
   --npu-timeout "${NPU_RUN_TIMEOUT_SECONDS}"
   --device-id "${DEVICE_ID}"
   --jobs "${JOBS}"
+  --build-profile "${BUILD_PROFILE}"
 )
 if [[ -n "${CMD}" ]]; then
   runner_args+=(--cmd "${CMD}")
