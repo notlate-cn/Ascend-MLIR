@@ -2644,6 +2644,66 @@ static void fixBrokenOpEmitters(Operation *moduleOp) {
     rewriter.eraseOp(op);
   });
 
+  // Ragged-tail GM↔UB copies (the tile-fuse ragged-tail `scf.if`) →
+  // DataCopyPad, so an unaligned f16 offset/length (rem·elemBytes not 32B
+  // aligned) is legal.  Plain DataCopy requires 32B-block alignment and
+  // silently drops/over-reads otherwise.  GM offset is already baked into the
+  // GlobalTensor (SetGlobalBuffer base+offset); DataCopyPad just takes a byte
+  // length.  Load needs a (no-op) DataCopyPadExtParams; store does not.
+  //
+  // GroupEmitter tags the tail `scf.if` with `afir.ragged_tail`, but that
+  // DISCARDABLE unit attr does NOT survive one-shot-bufferize: bufferization
+  // re-creates the `scf.if` with memref (instead of tensor) result types and
+  // drops the attr.  So we detect the tail structurally instead: GroupEmitter
+  // is the ONLY site in the whole AutoFuse codegen path that emits an
+  // `arith.cmpi slt` (GroupEmitter.cpp:722 — the
+  // `slt(mainInnerUb, remaining)` ragged-tail guard); the per-core work guard
+  // uses `ult`.  So "nearest enclosing scf.if whose condition is an
+  // `arith.cmpi slt`" uniquely identifies the ragged tail post-bufferize.
+  auto inRaggedTail = [](Operation *op) -> bool {
+    for (Operation *p = op->getParentOp(); p; p = p->getParentOp())
+      if (auto ifOp = dyn_cast<scf::IfOp>(p))
+        if (auto cmp = ifOp.getCondition().getDefiningOp<arith::CmpIOp>())
+          if (cmp.getPredicate() == arith::CmpIPredicate::slt)
+            return true;
+    return false;
+  };
+  moduleOp->walk([&](ascendc::DataCopyL2Op op) {
+    if (!inRaggedTail(op))
+      return;
+    bool store = isa<ascendc::GlobalTensorType>(op.getDst().getType());
+    bool load = isa<ascendc::GlobalTensorType>(op.getSrc().getType());
+    if (store == load)
+      return; // UB↔UB or GM↔GM — leave on the default path
+    // Accumulator stores are already rewritten by the walk above; skip.
+    if (store && op.getSrc().getDefiningOp<ascendc::TBufGetTensorOp>())
+      return;
+    Value localSide = store ? op.getSrc() : op.getDst();
+    auto lt = cast<ascendc::LocalTensorType>(localSide.getType());
+    std::string elemTypeStr = getAscendCScalarTypeName(lt.getElementType());
+    rewriter.setInsertionPoint(op);
+    Location loc = op.getLoc();
+    std::string tmpl;
+    if (store) {
+      tmpl = "{\n  AscendC::DataCopyExtParams _afir_dcp{(uint16_t)1, "
+             "(uint32_t)($2 * sizeof(" + elemTypeStr + ")), (uint32_t)0, "
+             "(uint32_t)0, (uint32_t)0};\n"
+             "  AscendC::DataCopyPad($0, $1, _afir_dcp);\n}";
+    } else {
+      tmpl = "{\n  AscendC::DataCopyExtParams _afir_dcp{(uint16_t)1, "
+             "(uint32_t)($2 * sizeof(" + elemTypeStr + ")), (uint32_t)0, "
+             "(uint32_t)0, (uint32_t)0};\n"
+             "  AscendC::DataCopyPadExtParams<" + elemTypeStr +
+             "> _afir_pad{false, (uint8_t)0, (uint8_t)0, (" + elemTypeStr +
+             ")0};\n"
+             "  AscendC::DataCopyPad($0, $1, _afir_dcp, _afir_pad);\n}";
+    }
+    rewriter.create<emitasc::VerbatimOp>(
+        loc, rewriter.getStringAttr(tmpl),
+        ValueRange({op.getDst(), op.getSrc(), op.getCalCount()}));
+    rewriter.eraseOp(op);
+  });
+
   // DataCopyL2Op with GlobalTensorBracketOp source → verbatim
   //
   // PyAsc emits `GlobalTensor<T> row = base(offset);`, but AscendC's operator()
