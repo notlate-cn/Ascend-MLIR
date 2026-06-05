@@ -1,5 +1,5 @@
-// RUN: afir-opt --ascend-normalize --ascend-kernelize='dump-report=true debug-stage=kernelize' %s 2>&1 | FileCheck %s
-// RUN: sed -n '/\/\/ MISSING-NORMALIZE-BEGIN/,/\/\/ MISSING-NORMALIZE-END/p' %s | not afir-opt --ascend-kernelize 2>&1 | FileCheck %s --check-prefix=MISSING-NORMALIZE
+// RUN: ascend-mlir-opt --ascend-normalize --ascend-kernelize='dump-report=true debug-stage=kernelize' %s 2>&1 | FileCheck %s
+// RUN: sed -n '/\/\/ MISSING-NORMALIZE-BEGIN/,/\/\/ MISSING-NORMALIZE-END/p' %s | not ascend-mlir-opt --ascend-kernelize 2>&1 | FileCheck %s --check-prefix=MISSING-NORMALIZE
 
 func.func @elementwise(%arg0: tensor<4x8xf16>, %arg1: tensor<4x8xf16>) -> tensor<4x8xf16> {
   %empty = tensor.empty() : tensor<4x8xf16>

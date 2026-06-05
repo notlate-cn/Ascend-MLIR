@@ -1,4 +1,4 @@
-// RUN: afir-opt %s --ascend-prepare-for-emit --ascend-canonicalize-cann-signature | FileCheck %s
+// RUN: ascend-mlir-opt %s --ascend-prepare-for-emit --ascend-canonicalize-cann-signature | FileCheck %s
 
 func.func @static_kernel() -> memref<4xf32> {
   %out = memref.alloc() : memref<4xf32>

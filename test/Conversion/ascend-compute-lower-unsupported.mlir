@@ -1,4 +1,4 @@
-// RUN: not afir-opt %s --ascend-compute-lower 2>&1 | FileCheck %s
+// RUN: not ascend-mlir-opt %s --ascend-compute-lower 2>&1 | FileCheck %s
 
 // CHECK: unsupported movement path VECCALC -> GM
 func.func @unsupported_copy(%dst: memref<?x?xf32>) {

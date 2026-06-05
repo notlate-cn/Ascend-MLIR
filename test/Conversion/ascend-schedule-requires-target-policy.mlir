@@ -1,4 +1,4 @@
-// RUN: not afir-opt %s --ascend-normalize --ascend-kernelize --ascend-schedule 2>&1 | FileCheck %s
+// RUN: not ascend-mlir-opt %s --ascend-normalize --ascend-kernelize --ascend-schedule 2>&1 | FileCheck %s
 
 func.func @requires_explicit_target_policy(%arg0: tensor<64xf16>,
                                            %arg1: tensor<64xf16>)

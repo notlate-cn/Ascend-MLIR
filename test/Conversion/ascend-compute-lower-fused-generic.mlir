@@ -1,4 +1,4 @@
-// RUN: afir-opt %s --ascend-compute-lower | FileCheck %s
+// RUN: ascend-mlir-opt %s --ascend-compute-lower | FileCheck %s
 
 #map_broadcast = affine_map<(d0, d1) -> (d1, 0)>
 #map_identity = affine_map<(d0, d1) -> (d0, d1)>

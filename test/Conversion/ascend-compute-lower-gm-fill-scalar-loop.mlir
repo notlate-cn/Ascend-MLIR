@@ -1,4 +1,4 @@
-// RUN: afir-opt %s --ascend-compute-lower | FileCheck %s
+// RUN: ascend-mlir-opt %s --ascend-compute-lower | FileCheck %s
 
 // CHECK-LABEL: func.func @fill_gm_arg(
 // CHECK: ascendc.duplicate_l2

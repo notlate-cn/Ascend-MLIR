@@ -1,4 +1,4 @@
-// RUN: afir-opt %s --ascend-compute-lower | FileCheck %s
+// RUN: ascend-mlir-opt %s --ascend-compute-lower | FileCheck %s
 
 #map_par_reduce_lhs = affine_map<(d0, d1) -> (d0)>
 #map_par_reduce_rhs = affine_map<(d0, d1) -> (d0, d1)>

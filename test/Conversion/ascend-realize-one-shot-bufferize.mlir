@@ -1,5 +1,5 @@
-// RUN: afir-opt %s --ascend-realize='materialization-mode=one-shot-bufferize' | FileCheck %s
-// RUN: not afir-opt %s --ascend-realize='materialization-mode=bad' 2>&1 | FileCheck %s --check-prefix=BAD
+// RUN: ascend-mlir-opt %s --ascend-realize='materialization-mode=one-shot-bufferize' | FileCheck %s
+// RUN: not ascend-mlir-opt %s --ascend-realize='materialization-mode=bad' 2>&1 | FileCheck %s --check-prefix=BAD
 
 func.func @realize_one_shot(%arg0: tensor<4xf32>, %arg1: tensor<4xf32>) -> tensor<4xf32> attributes {ascend.normalized = true} {
   %empty = tensor.empty() : tensor<4xf32>

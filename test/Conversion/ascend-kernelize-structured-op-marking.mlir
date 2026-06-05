@@ -1,4 +1,4 @@
-// RUN: afir-opt %s --ascend-normalize --ascend-kernelize | FileCheck %s
+// RUN: ascend-mlir-opt %s --ascend-normalize --ascend-kernelize | FileCheck %s
 
 // ============================================================
 // Test 1: index_select pattern (column gather) -> gather_dim = 1

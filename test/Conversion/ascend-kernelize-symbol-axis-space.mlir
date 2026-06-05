@@ -1,4 +1,4 @@
-// RUN: sed -n '/\/\/ PERMUTED-BEGIN/,/\/\/ PERMUTED-END/p' %s | afir-opt --ascend-normalize --ascend-kernelize='debug-stage=kernelize dump-report=true' 2>&1 | FileCheck %s --check-prefix=PERMUTED
+// RUN: sed -n '/\/\/ PERMUTED-BEGIN/,/\/\/ PERMUTED-END/p' %s | ascend-mlir-opt --ascend-normalize --ascend-kernelize='debug-stage=kernelize dump-report=true' 2>&1 | FileCheck %s --check-prefix=PERMUTED
 
 // PERMUTED-BEGIN
 func.func @kernelize_symbol_axis_space_transpose(

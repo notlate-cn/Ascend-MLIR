@@ -1,7 +1,7 @@
 // RUN: rm -f %t.cache
-// RUN: afir-opt %s --ascend-normalize --ascend-kernelize --ascend-schedule='target-tile-policy=legacy-default tuning-cache-out=%t.cache' | FileCheck %s --check-prefix=IR
+// RUN: ascend-mlir-opt %s --ascend-normalize --ascend-kernelize --ascend-schedule='target-tile-policy=legacy-default tuning-cache-out=%t.cache' | FileCheck %s --check-prefix=IR
 // RUN: test -s %t.cache
-// RUN: afir-opt %s --ascend-normalize --ascend-kernelize --ascend-schedule='target-tile-policy=legacy-default tuning-cache-in=%t.cache dump-report=true debug-stage=schedule' 2>&1 | FileCheck %s --check-prefix=CACHE
+// RUN: ascend-mlir-opt %s --ascend-normalize --ascend-kernelize --ascend-schedule='target-tile-policy=legacy-default tuning-cache-in=%t.cache dump-report=true debug-stage=schedule' 2>&1 | FileCheck %s --check-prefix=CACHE
 
 func.func @persistent_cache_vector(%arg0: tensor<64xf32>,
                                    %arg1: tensor<64xf32>,

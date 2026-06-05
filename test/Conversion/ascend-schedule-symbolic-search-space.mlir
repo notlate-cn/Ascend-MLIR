@@ -1,5 +1,5 @@
-// RUN: sed -n '/\/\/ BASIC-BEGIN/,/\/\/ BASIC-END/p' %s | afir-opt --ascend-normalize --ascend-kernelize --ascend-schedule='target-tile-policy=legacy-default dump-report=true debug-stage=schedule' 2>&1 | FileCheck %s --check-prefix=BASIC
-// RUN: sed -n '/\/\/ BUDGET-BEGIN/,/\/\/ BUDGET-END/p' %s | afir-opt --ascend-normalize --ascend-kernelize --ascend-schedule='target-tile-policy=legacy-default dump-report=true debug-stage=schedule max-search-budget=1' 2>&1 | FileCheck %s --check-prefix=BUDGET
+// RUN: sed -n '/\/\/ BASIC-BEGIN/,/\/\/ BASIC-END/p' %s | ascend-mlir-opt --ascend-normalize --ascend-kernelize --ascend-schedule='target-tile-policy=legacy-default dump-report=true debug-stage=schedule' 2>&1 | FileCheck %s --check-prefix=BASIC
+// RUN: sed -n '/\/\/ BUDGET-BEGIN/,/\/\/ BUDGET-END/p' %s | ascend-mlir-opt --ascend-normalize --ascend-kernelize --ascend-schedule='target-tile-policy=legacy-default dump-report=true debug-stage=schedule max-search-budget=1' 2>&1 | FileCheck %s --check-prefix=BUDGET
 
 // BASIC-BEGIN
 func.func @symbolic_dynamic_vector(%arg0: tensor<?x?xf16>,

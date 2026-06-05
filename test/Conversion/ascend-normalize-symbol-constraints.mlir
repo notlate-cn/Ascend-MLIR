@@ -1,14 +1,14 @@
-// RUN: sed -n '/\/\/ R1-BEGIN/,/\/\/ R1-END/p' %s | afir-opt --ascend-normalize | FileCheck %s --check-prefix=R1
-// RUN: sed -n '/\/\/ R1-DUP-BEGIN/,/\/\/ R1-DUP-END/p' %s | afir-opt --ascend-normalize | FileCheck %s --check-prefix=R1-DUP --implicit-check-not='sym_name = "arg0_dim0"'
-// RUN: sed -n '/\/\/ R2-BEGIN/,/\/\/ R2-END/p' %s | afir-opt --ascend-normalize | FileCheck %s --check-prefix=R2
-// RUN: sed -n '/\/\/ R2-CUSTOM-BEGIN/,/\/\/ R2-CUSTOM-END/p' %s | afir-opt --ascend-normalize | FileCheck %s --check-prefix=R2-CUSTOM
-// RUN: sed -n '/\/\/ R3-BEGIN/,/\/\/ R3-END/p' %s | afir-opt --ascend-normalize | FileCheck %s --check-prefix=R3
-// RUN: sed -n '/\/\/ R4-BEGIN/,/\/\/ R4-END/p' %s | afir-opt --ascend-normalize | FileCheck %s --check-prefix=R4
-// RUN: sed -n '/\/\/ R4-NEG-BEGIN/,/\/\/ R4-NEG-END/p' %s | afir-opt --ascend-normalize | FileCheck %s --check-prefix=R4-NEG --implicit-check-not='sym_name = "arg0_dim0"'
-// RUN: sed -n '/\/\/ R5-BEGIN/,/\/\/ R5-END/p' %s | afir-opt --ascend-normalize | FileCheck %s --check-prefix=R5
-// RUN: sed -n '/\/\/ R6-BEGIN/,/\/\/ R6-END/p' %s | afir-opt --ascend-normalize | FileCheck %s --check-prefix=R6
-// RUN: sed -n '/\/\/ STATIC-BEGIN/,/\/\/ STATIC-END/p' %s | afir-opt --ascend-normalize | FileCheck %s --check-prefix=STATIC --implicit-check-not='sym_name = "arg0_dim0"' --implicit-check-not='dim = 0 : i64'
-// RUN: sed -n '/\/\/ BAD-BEGIN/,/\/\/ BAD-END/p' %s | not afir-opt --ascend-normalize 2>&1 | FileCheck %s --check-prefix=BAD
+// RUN: sed -n '/\/\/ R1-BEGIN/,/\/\/ R1-END/p' %s | ascend-mlir-opt --ascend-normalize | FileCheck %s --check-prefix=R1
+// RUN: sed -n '/\/\/ R1-DUP-BEGIN/,/\/\/ R1-DUP-END/p' %s | ascend-mlir-opt --ascend-normalize | FileCheck %s --check-prefix=R1-DUP --implicit-check-not='sym_name = "arg0_dim0"'
+// RUN: sed -n '/\/\/ R2-BEGIN/,/\/\/ R2-END/p' %s | ascend-mlir-opt --ascend-normalize | FileCheck %s --check-prefix=R2
+// RUN: sed -n '/\/\/ R2-CUSTOM-BEGIN/,/\/\/ R2-CUSTOM-END/p' %s | ascend-mlir-opt --ascend-normalize | FileCheck %s --check-prefix=R2-CUSTOM
+// RUN: sed -n '/\/\/ R3-BEGIN/,/\/\/ R3-END/p' %s | ascend-mlir-opt --ascend-normalize | FileCheck %s --check-prefix=R3
+// RUN: sed -n '/\/\/ R4-BEGIN/,/\/\/ R4-END/p' %s | ascend-mlir-opt --ascend-normalize | FileCheck %s --check-prefix=R4
+// RUN: sed -n '/\/\/ R4-NEG-BEGIN/,/\/\/ R4-NEG-END/p' %s | ascend-mlir-opt --ascend-normalize | FileCheck %s --check-prefix=R4-NEG --implicit-check-not='sym_name = "arg0_dim0"'
+// RUN: sed -n '/\/\/ R5-BEGIN/,/\/\/ R5-END/p' %s | ascend-mlir-opt --ascend-normalize | FileCheck %s --check-prefix=R5
+// RUN: sed -n '/\/\/ R6-BEGIN/,/\/\/ R6-END/p' %s | ascend-mlir-opt --ascend-normalize | FileCheck %s --check-prefix=R6
+// RUN: sed -n '/\/\/ STATIC-BEGIN/,/\/\/ STATIC-END/p' %s | ascend-mlir-opt --ascend-normalize | FileCheck %s --check-prefix=STATIC --implicit-check-not='sym_name = "arg0_dim0"' --implicit-check-not='dim = 0 : i64'
+// RUN: sed -n '/\/\/ BAD-BEGIN/,/\/\/ BAD-END/p' %s | not ascend-mlir-opt --ascend-normalize 2>&1 | FileCheck %s --check-prefix=BAD
 
 // R1-BEGIN
 func.func @r1_generic_matmul_like(%lhs: tensor<?x?xf16>,

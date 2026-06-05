@@ -1,4 +1,4 @@
-// RUN: not afir-opt %s --ascend-compute-lower 2>&1 | FileCheck %s
+// RUN: not ascend-mlir-opt %s --ascend-compute-lower 2>&1 | FileCheck %s
 
 #map_parallel = affine_map<(d0, d1) -> (d0)>
 #map_reduction = affine_map<(d0, d1) -> (d0, d1)>

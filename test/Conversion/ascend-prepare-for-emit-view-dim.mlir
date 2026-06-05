@@ -1,4 +1,4 @@
-// RUN: afir-opt %s --ascend-prepare-for-emit --ascend-canonicalize-cann-signature | FileCheck %s
+// RUN: ascend-mlir-opt %s --ascend-prepare-for-emit --ascend-canonicalize-cann-signature | FileCheck %s
 
 module {
   func.func @collapse_dim_kernel(%arg0: memref<?x4x?x?xf32>, %out: memref<?xf32>) {

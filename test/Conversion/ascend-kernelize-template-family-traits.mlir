@@ -1,4 +1,4 @@
-// RUN: afir-opt %s --ascend-normalize --ascend-kernelize='dump-report=true debug-stage=kernelize' 2>&1 | FileCheck %s
+// RUN: ascend-mlir-opt %s --ascend-normalize --ascend-kernelize='dump-report=true debug-stage=kernelize' 2>&1 | FileCheck %s
 
 func.func @cube_vector_family(%arg0: tensor<4x4xf16>,
                               %arg1: tensor<4x4xf16>,

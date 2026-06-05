@@ -1,5 +1,5 @@
 // RUN: echo '# ascend.schedule.tuning_db schema=2' > %t.bad
-// RUN: not afir-opt %s --ascend-normalize --ascend-kernelize --ascend-schedule='target-tile-policy=legacy-default tuning-db-in=%t.bad' 2>&1 | FileCheck %s
+// RUN: not ascend-mlir-opt %s --ascend-normalize --ascend-kernelize --ascend-schedule='target-tile-policy=legacy-default tuning-db-in=%t.bad' 2>&1 | FileCheck %s
 
 func.func @invalid_tuning_db(%arg0: tensor<8xf32>,
                              %arg1: tensor<8xf32>,

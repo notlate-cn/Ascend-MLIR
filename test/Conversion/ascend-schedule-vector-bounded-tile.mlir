@@ -1,4 +1,4 @@
-// RUN: afir-opt %s --ascend-normalize --ascend-kernelize --ascend-schedule='target-tile-policy=legacy-default dump-report=true debug-stage=schedule' 2>&1 | FileCheck %s
+// RUN: ascend-mlir-opt %s --ascend-normalize --ascend-kernelize --ascend-schedule='target-tile-policy=legacy-default dump-report=true debug-stage=schedule' 2>&1 | FileCheck %s
 
 func.func @large_rank2_vector(%arg0: tensor<640x15000xf16>,
                               %arg1: tensor<640x15000xf16>)

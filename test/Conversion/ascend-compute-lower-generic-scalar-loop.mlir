@@ -1,4 +1,4 @@
-// RUN: afir-opt %s --ascend-compute-lower | FileCheck %s
+// RUN: ascend-mlir-opt %s --ascend-compute-lower | FileCheck %s
 
 #identity4 = affine_map<(d0, d1, d2, d3) -> (d0, d1, d2, d3)>
 

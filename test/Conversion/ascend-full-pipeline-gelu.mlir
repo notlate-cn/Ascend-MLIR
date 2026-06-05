@@ -1,4 +1,4 @@
-// RUN: afir-opt %s --ascend-normalize --ascend-kernelize --ascend-schedule='target-tile-policy=legacy-default' --ascend-realize='materialization-mode=memory-space-annotate' --ascend-compute-lower | FileCheck %s --implicit-check-not=linalg.generic --implicit-check-not=ascendc.abs_l2
+// RUN: ascend-mlir-opt %s --ascend-normalize --ascend-kernelize --ascend-schedule='target-tile-policy=legacy-default' --ascend-realize='materialization-mode=memory-space-annotate' --ascend-compute-lower | FileCheck %s --implicit-check-not=linalg.generic --implicit-check-not=ascendc.abs_l2
 
 // GELU: x * 0.5 * (1 + erf(x / sqrt(2)))
 // math.erf has no validated AscendC L2 lowering yet. The current contract is a

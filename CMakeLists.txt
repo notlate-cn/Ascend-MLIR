@@ -11,6 +11,21 @@ if(NOT CMAKE_BUILD_TYPE)
   set(CMAKE_BUILD_TYPE Release)
 endif()
 
+option(ASCEND_ENABLE_AFIR
+  "Build AFIR dialect, AFIR-only tools, AFIR C API, and AFIR Python bindings"
+  ON)
+option(ASCEND_ENABLE_TESTS
+  "Configure lit and unit-test targets"
+  ON)
+option(AFIR_ENABLE_BINDING_PYTHON
+  "Build AFIR Python bindings"
+  OFF)
+
+if(AFIR_ENABLE_BINDING_PYTHON AND NOT ASCEND_ENABLE_AFIR)
+  message(FATAL_ERROR
+    "AFIR_ENABLE_BINDING_PYTHON requires ASCEND_ENABLE_AFIR=ON")
+endif()
+
 # LLVM/MLIR配置
 # 用户通过 -DLLVM_BUILD_DIR 指定 LLVM 构建根目录
 # 如果未指定，则使用默认的 externals/llvm-project/build
@@ -85,18 +100,26 @@ set(CMAKE_LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib)
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
 
 # 添加子目录
-add_subdirectory(include/Dialect/AFIR)
+if(ASCEND_ENABLE_AFIR)
+  add_subdirectory(include/Dialect/AFIR)
+endif()
 add_subdirectory(include/Conversion)
-add_subdirectory(lib/Dialect/AFIR)
+if(ASCEND_ENABLE_AFIR)
+  add_subdirectory(lib/Dialect/AFIR)
+endif()
 add_subdirectory(lib/Conversion)
 add_subdirectory(lib/Target)
 add_subdirectory(lib/CAPI)
 add_subdirectory(lib/Runtime)
-add_subdirectory(lib/Utils)
+if(ASCEND_ENABLE_AFIR)
+  add_subdirectory(lib/Utils)
+endif()
 add_subdirectory(tools)
 add_subdirectory(examples)
-enable_testing()
-add_subdirectory(test)
+if(ASCEND_ENABLE_TESTS)
+  enable_testing()
+  add_subdirectory(test)
+endif()
 
 # 只构建必要的pyasc，注意需要先构建其tablegen
 add_subdirectory(${PYASC_DIR}/lib/TableGen EXCLUDE_FROM_ALL)

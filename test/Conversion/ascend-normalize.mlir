@@ -1,7 +1,7 @@
-// RUN: sed -n '1,/\/\/ -----/p' %s | afir-opt --ascend-normalize | FileCheck %s
-// RUN: sed -n '/\/\/ CF-BR-BEGIN/,/\/\/ CF-BR-END/p' %s | not afir-opt --ascend-normalize 2>&1 | FileCheck %s --check-prefix=CF-BR-ERR
-// RUN: sed -n '/\/\/ AFFINE-BEGIN/,/\/\/ AFFINE-END/p' %s | not afir-opt --ascend-normalize 2>&1 | FileCheck %s --check-prefix=AFFINE-ERR
-// RUN: sed -n '/\/\/ UNKNOWN-BEGIN/,/\/\/ UNKNOWN-END/p' %s | not afir-opt --allow-unregistered-dialect --ascend-normalize 2>&1 | FileCheck %s --check-prefix=UNKNOWN-ERR
+// RUN: sed -n '1,/\/\/ -----/p' %s | ascend-mlir-opt --ascend-normalize | FileCheck %s
+// RUN: sed -n '/\/\/ CF-BR-BEGIN/,/\/\/ CF-BR-END/p' %s | not ascend-mlir-opt --ascend-normalize 2>&1 | FileCheck %s --check-prefix=CF-BR-ERR
+// RUN: sed -n '/\/\/ AFFINE-BEGIN/,/\/\/ AFFINE-END/p' %s | not ascend-mlir-opt --ascend-normalize 2>&1 | FileCheck %s --check-prefix=AFFINE-ERR
+// RUN: sed -n '/\/\/ UNKNOWN-BEGIN/,/\/\/ UNKNOWN-END/p' %s | not ascend-mlir-opt --allow-unregistered-dialect --ascend-normalize 2>&1 | FileCheck %s --check-prefix=UNKNOWN-ERR
 
 func.func @valid(%arg0: tensor<4x8xf16>, %arg1: tensor<4x8xf16>) -> tensor<4x8xf16> {
   %empty = tensor.empty() : tensor<4x8xf16>

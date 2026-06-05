@@ -1,5 +1,5 @@
-// RUN: afir-opt %s --ascend-normalize --ascend-kernelize --ascend-schedule='target-tile-policy=legacy-default dump-report=true debug-stage=schedule' 2>&1 | FileCheck %s
-// RUN: rm -rf %t && mkdir -p %t && afir-opt %s --ascend-normalize --ascend-kernelize --ascend-schedule='target-tile-policy=legacy-default debug-stage=schedule debug-dump-dir=%t' >/dev/null 2>/dev/null && FileCheck %s --input-file=%t/033-schedule-final.mlir --check-prefix=DUMP
+// RUN: ascend-mlir-opt %s --ascend-normalize --ascend-kernelize --ascend-schedule='target-tile-policy=legacy-default dump-report=true debug-stage=schedule' 2>&1 | FileCheck %s
+// RUN: rm -rf %t && mkdir -p %t && ascend-mlir-opt %s --ascend-normalize --ascend-kernelize --ascend-schedule='target-tile-policy=legacy-default debug-stage=schedule debug-dump-dir=%t' >/dev/null 2>/dev/null && FileCheck %s --input-file=%t/033-schedule-final.mlir --check-prefix=DUMP
 
 func.func @elementwise_chain(%arg0: tensor<64xf16>, %arg1: tensor<64xf16>,
                              %arg2: tensor<64xf16>) -> tensor<64xf16> {

@@ -1,4 +1,4 @@
-// RUN: afir-opt %s --ascend-realize='materialization-mode=memory-space-annotate' | FileCheck %s
+// RUN: ascend-mlir-opt %s --ascend-realize='materialization-mode=memory-space-annotate' | FileCheck %s
 
 #col = affine_map<(d0, d1) -> (d1)>
 #id = affine_map<(d0, d1) -> (d0, d1)>

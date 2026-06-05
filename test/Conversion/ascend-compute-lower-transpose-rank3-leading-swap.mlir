@@ -1,4 +1,4 @@
-// RUN: afir-opt %s --ascend-compute-lower | FileCheck %s
+// RUN: ascend-mlir-opt %s --ascend-compute-lower | FileCheck %s
 
 // CHECK-LABEL: func.func @named_rank2_leading_swap_gm
 // CHECK: scf.for %{{.*}} = %c0 to %c128 step %c32

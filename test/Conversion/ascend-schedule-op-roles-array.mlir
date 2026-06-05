@@ -1,4 +1,4 @@
-// RUN: afir-opt %s --ascend-schedule='target-tile-policy=legacy-default dump-report=true debug-stage=schedule' 2>&1 | FileCheck %s
+// RUN: ascend-mlir-opt %s --ascend-schedule='target-tile-policy=legacy-default dump-report=true debug-stage=schedule' 2>&1 | FileCheck %s
 
 func.func @roles_array_only(%arg0: tensor<64xf16>,
                             %arg1: tensor<64xf16>) -> tensor<64xf16>

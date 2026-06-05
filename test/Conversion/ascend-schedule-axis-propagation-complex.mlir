@@ -1,4 +1,4 @@
-// RUN: afir-opt %s --split-input-file --ascend-normalize --ascend-kernelize --ascend-schedule='target-tile-policy=legacy-default dump-report=true debug-stage=schedule' 2>&1 | FileCheck %s
+// RUN: ascend-mlir-opt %s --split-input-file --ascend-normalize --ascend-kernelize --ascend-schedule='target-tile-policy=legacy-default dump-report=true debug-stage=schedule' 2>&1 | FileCheck %s
 
 func.func @transpose_preserves_symbol_axes(%arg0: tensor<?x?xf16>,
                                            %out: tensor<?x?xf16>)

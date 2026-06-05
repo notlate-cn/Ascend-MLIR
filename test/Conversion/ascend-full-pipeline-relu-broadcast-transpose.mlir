@@ -1,4 +1,4 @@
-// RUN: afir-opt %s --linalg-generalize-named-ops --linalg-fuse-elementwise-ops --ascend-normalize --ascend-kernelize --ascend-schedule='target-tile-policy=legacy-default' --ascend-realize='materialization-mode=memory-space-annotate' --ascend-compute-lower --ascend-parallelize --ascend-prepare-for-emit --ascend-canonicalize-cann-signature | FileCheck %s
+// RUN: ascend-mlir-opt %s --linalg-generalize-named-ops --linalg-fuse-elementwise-ops --ascend-normalize --ascend-kernelize --ascend-schedule='target-tile-policy=legacy-default' --ascend-realize='materialization-mode=memory-space-annotate' --ascend-compute-lower --ascend-parallelize --ascend-prepare-for-emit --ascend-canonicalize-cann-signature | FileCheck %s
 
 // CHECK-LABEL: func.func @relu_transpose_broadcast_add
 // CHECK-SAME: %{{.*}}: memref<?x1xf16>

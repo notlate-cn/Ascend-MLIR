@@ -1,4 +1,4 @@
-// RUN: afir-opt %s --ascend-normalize --ascend-kernelize='debug-stage=kernelize dump-report=true' 2>&1 | FileCheck %s
+// RUN: ascend-mlir-opt %s --ascend-normalize --ascend-kernelize='debug-stage=kernelize dump-report=true' 2>&1 | FileCheck %s
 
 func.func @named_transpose(%arg0: tensor<4x8xf16>) -> tensor<8x4xf16> {
   %empty = tensor.empty() : tensor<8x4xf16>

@@ -1,5 +1,5 @@
-// RUN: sed -n '/\/\/ NAMED-RANK3-BEGIN/,/\/\/ NAMED-RANK3-END/p' %s | not afir-opt --ascend-compute-lower 2>&1 | FileCheck %s --check-prefix=NAMED-RANK3
-// RUN: sed -n '/\/\/ GENERIC-RANK3-BEGIN/,/\/\/ GENERIC-RANK3-END/p' %s | not afir-opt --ascend-compute-lower 2>&1 | FileCheck %s --check-prefix=GENERIC-RANK3
+// RUN: sed -n '/\/\/ NAMED-RANK3-BEGIN/,/\/\/ NAMED-RANK3-END/p' %s | not ascend-mlir-opt --ascend-compute-lower 2>&1 | FileCheck %s --check-prefix=NAMED-RANK3
+// RUN: sed -n '/\/\/ GENERIC-RANK3-BEGIN/,/\/\/ GENERIC-RANK3-END/p' %s | not ascend-mlir-opt --ascend-compute-lower 2>&1 | FileCheck %s --check-prefix=GENERIC-RANK3
 
 // NAMED-RANK3: unsupported compute kind unknown
 // NAMED-RANK3: linalg.transpose

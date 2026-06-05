@@ -1,4 +1,4 @@
-// RUN: afir-opt %s --ascend-realize='placement-mode=target-aware cann-root=%S/Inputs/ascend-target-aware-placement-cann soc=SyntheticSoC materialization-mode=memory-space-annotate dump-report=true debug-stage=realize' 2>&1 | FileCheck %s
+// RUN: ascend-mlir-opt %s --ascend-realize='placement-mode=target-aware cann-root=%S/Inputs/ascend-target-aware-placement-cann soc=SyntheticSoC materialization-mode=memory-space-annotate dump-report=true debug-stage=realize' 2>&1 | FileCheck %s
 
 func.func @collapse_chain_movement(%arg0: tensor<4x16xf16>,
                                    %arg1: tensor<4x16xf16>) -> tensor<64xf16>

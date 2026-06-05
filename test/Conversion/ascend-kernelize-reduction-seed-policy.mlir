@@ -1,4 +1,4 @@
-// RUN: afir-opt %s --ascend-normalize --ascend-kernelize='dump-report=true debug-stage=kernelize' 2>&1 | FileCheck %s
+// RUN: ascend-mlir-opt %s --ascend-normalize --ascend-kernelize='dump-report=true debug-stage=kernelize' 2>&1 | FileCheck %s
 
 func.func @row_sum_then_vector(%arg0: tensor<32x64xf32>,
                                %arg1: tensor<32xf32>,

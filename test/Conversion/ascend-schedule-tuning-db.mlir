@@ -1,7 +1,7 @@
 // RUN: rm -f %t.db
-// RUN: afir-opt %s --ascend-normalize --ascend-kernelize --ascend-schedule='target-tile-policy=legacy-default tuning-db-out=%t.db' | FileCheck %s --check-prefix=IR
+// RUN: ascend-mlir-opt %s --ascend-normalize --ascend-kernelize --ascend-schedule='target-tile-policy=legacy-default tuning-db-out=%t.db' | FileCheck %s --check-prefix=IR
 // RUN: cat %t.db | FileCheck %s --check-prefix=DB
-// RUN: afir-opt %s --ascend-normalize --ascend-kernelize --ascend-schedule='target-tile-policy=legacy-default tuning-db-in=%t.db dump-report=true debug-stage=schedule' 2>&1 | FileCheck %s --check-prefix=CACHE
+// RUN: ascend-mlir-opt %s --ascend-normalize --ascend-kernelize --ascend-schedule='target-tile-policy=legacy-default tuning-db-in=%t.db dump-report=true debug-stage=schedule' 2>&1 | FileCheck %s --check-prefix=CACHE
 
 func.func @tuning_db_vector(%arg0: tensor<64xf32>,
                             %arg1: tensor<64xf32>,

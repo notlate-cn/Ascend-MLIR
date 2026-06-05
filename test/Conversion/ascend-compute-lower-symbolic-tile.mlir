@@ -1,4 +1,4 @@
-// RUN: afir-opt %s --ascend-compute-lower | FileCheck %s
+// RUN: ascend-mlir-opt %s --ascend-compute-lower | FileCheck %s
 
 #identity = affine_map<(d0, d1) -> (d0, d1)>
 #project_row = affine_map<(d0, d1) -> (d0)>

@@ -1,10 +1,10 @@
-// RUN: sed -n '/\/\/ MERGE-BEGIN/,/\/\/ MERGE-END/p' %s | afir-opt --ascend-normalize --ascend-kernelize='debug-stage=kernelize dump-report=true' 2>&1 | FileCheck %s --check-prefix=MERGE
-// RUN: sed -n '/\/\/ REVERSE-BEGIN/,/\/\/ REVERSE-END/p' %s | afir-opt --ascend-normalize --ascend-kernelize='debug-stage=kernelize dump-report=true' 2>&1 | FileCheck %s --check-prefix=REVERSE
-// RUN: sed -n '/\/\/ SUBSUMED-BEGIN/,/\/\/ SUBSUMED-END/p' %s | afir-opt --ascend-normalize --ascend-kernelize='debug-stage=kernelize dump-report=true' 2>&1 | FileCheck %s --check-prefix=SUBSUMED
-// RUN: sed -n '/\/\/ HORIZONTAL-BEGIN/,/\/\/ HORIZONTAL-END/p' %s | afir-opt --ascend-normalize --ascend-kernelize='debug-stage=kernelize dump-report=true' 2>&1 | FileCheck %s --check-prefix=HORIZONTAL
-// RUN: sed -n '/\/\/ HORIZONTAL-SHAPE-BEGIN/,/\/\/ HORIZONTAL-SHAPE-END/p' %s | afir-opt --ascend-normalize --ascend-kernelize='debug-stage=kernelize dump-report=true' 2>&1 | FileCheck %s --check-prefix=SHAPE
-// RUN: sed -n '/\/\/ OUTS-BEGIN/,/\/\/ OUTS-END/p' %s | afir-opt --ascend-normalize --ascend-kernelize='debug-stage=kernelize dump-report=true' 2>&1 | FileCheck %s --check-prefix=OUTS
-// RUN: sed -n '/\/\/ DEPENDENCY-BEGIN/,/\/\/ DEPENDENCY-END/p' %s | afir-opt --ascend-normalize --ascend-kernelize='debug-stage=kernelize dump-report=true' 2>&1 | FileCheck %s --check-prefix=DEPENDENCY
+// RUN: sed -n '/\/\/ MERGE-BEGIN/,/\/\/ MERGE-END/p' %s | ascend-mlir-opt --ascend-normalize --ascend-kernelize='debug-stage=kernelize dump-report=true' 2>&1 | FileCheck %s --check-prefix=MERGE
+// RUN: sed -n '/\/\/ REVERSE-BEGIN/,/\/\/ REVERSE-END/p' %s | ascend-mlir-opt --ascend-normalize --ascend-kernelize='debug-stage=kernelize dump-report=true' 2>&1 | FileCheck %s --check-prefix=REVERSE
+// RUN: sed -n '/\/\/ SUBSUMED-BEGIN/,/\/\/ SUBSUMED-END/p' %s | ascend-mlir-opt --ascend-normalize --ascend-kernelize='debug-stage=kernelize dump-report=true' 2>&1 | FileCheck %s --check-prefix=SUBSUMED
+// RUN: sed -n '/\/\/ HORIZONTAL-BEGIN/,/\/\/ HORIZONTAL-END/p' %s | ascend-mlir-opt --ascend-normalize --ascend-kernelize='debug-stage=kernelize dump-report=true' 2>&1 | FileCheck %s --check-prefix=HORIZONTAL
+// RUN: sed -n '/\/\/ HORIZONTAL-SHAPE-BEGIN/,/\/\/ HORIZONTAL-SHAPE-END/p' %s | ascend-mlir-opt --ascend-normalize --ascend-kernelize='debug-stage=kernelize dump-report=true' 2>&1 | FileCheck %s --check-prefix=SHAPE
+// RUN: sed -n '/\/\/ OUTS-BEGIN/,/\/\/ OUTS-END/p' %s | ascend-mlir-opt --ascend-normalize --ascend-kernelize='debug-stage=kernelize dump-report=true' 2>&1 | FileCheck %s --check-prefix=OUTS
+// RUN: sed -n '/\/\/ DEPENDENCY-BEGIN/,/\/\/ DEPENDENCY-END/p' %s | ascend-mlir-opt --ascend-normalize --ascend-kernelize='debug-stage=kernelize dump-report=true' 2>&1 | FileCheck %s --check-prefix=DEPENDENCY
 
 // MERGE-BEGIN
 func.func @vector_chain_into_reduction(%arg0: tensor<4x8xf32>,

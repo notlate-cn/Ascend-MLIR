@@ -1,4 +1,4 @@
-// RUN: afir-opt %s --ascend-normalize --ascend-kernelize --ascend-schedule='target-tile-policy=legacy-default' --ascend-realize='materialization-mode=memory-space-annotate' --ascend-compute-lower --ascend-parallelize --ascend-prepare-for-emit --ascend-canonicalize-cann-signature | tee %t.mlir | FileCheck %s
+// RUN: ascend-mlir-opt %s --ascend-normalize --ascend-kernelize --ascend-schedule='target-tile-policy=legacy-default' --ascend-realize='materialization-mode=memory-space-annotate' --ascend-compute-lower --ascend-parallelize --ascend-prepare-for-emit --ascend-canonicalize-cann-signature | tee %t.mlir | FileCheck %s
 // RUN: python3 %S/../tools/check_ascend_queue_lifetime.py %t.mlir | FileCheck %s --check-prefix=LIFETIME
 
 // CHECK-LABEL: func.func @queue_lifetime_full_pipeline

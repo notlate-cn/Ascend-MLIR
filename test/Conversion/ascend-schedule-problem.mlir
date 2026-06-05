@@ -1,5 +1,5 @@
-// RUN: sed -n '/\/\/ MAIN-BEGIN/,/\/\/ MAIN-END/p' %s | afir-opt --ascend-normalize --ascend-kernelize --ascend-schedule='target-tile-policy=legacy-default dump-report=true debug-stage=schedule' 2>&1 | FileCheck %s
-// RUN: sed -n '/\/\/ HORIZONTAL-BEGIN/,/\/\/ HORIZONTAL-END/p' %s | afir-opt --ascend-normalize --ascend-kernelize --ascend-schedule='target-tile-policy=legacy-default dump-report=true debug-stage=schedule' 2>&1 | FileCheck %s --check-prefix=HORIZONTAL
+// RUN: sed -n '/\/\/ MAIN-BEGIN/,/\/\/ MAIN-END/p' %s | ascend-mlir-opt --ascend-normalize --ascend-kernelize --ascend-schedule='target-tile-policy=legacy-default dump-report=true debug-stage=schedule' 2>&1 | FileCheck %s
+// RUN: sed -n '/\/\/ HORIZONTAL-BEGIN/,/\/\/ HORIZONTAL-END/p' %s | ascend-mlir-opt --ascend-normalize --ascend-kernelize --ascend-schedule='target-tile-policy=legacy-default dump-report=true debug-stage=schedule' 2>&1 | FileCheck %s --check-prefix=HORIZONTAL
 
 // MAIN-BEGIN
 func.func @rank2_vector_chain(%arg0: tensor<4x8xf32>,

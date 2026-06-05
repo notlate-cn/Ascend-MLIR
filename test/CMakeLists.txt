@@ -6,22 +6,25 @@ configure_lit_site_cfg(
   ${CMAKE_CURRENT_SOURCE_DIR}/lit.cfg.py
 )
 
-set(AFIR_TEST_DEPENDS
-  afir-opt
+set(ASCEND_TEST_DEPENDS
   ascend-mlir-opt
-  ascend-mlir-translate
-  ascend-debug
-  afir-translate
   FileCheck
   count
   not
 )
 
-add_lit_testsuite(check-afir "Running AFIR regression tests"
-  ${CMAKE_CURRENT_BINARY_DIR}
-  DEPENDS ${AFIR_TEST_DEPENDS}
+set(ASCEND_LIT "${LLVM_EXTERNAL_LIT}")
+if(NOT ASCEND_LIT)
+  set(ASCEND_LIT "${LLVM_TOOLS_BINARY_DIR}/llvm-lit")
+endif()
+
+add_custom_target(check-ascend-conversion
+  COMMAND "${ASCEND_LIT}" -v --filter "ascend-"
+          --filter-out "phase5-transformer-dynamic-smoke"
+          "${CMAKE_CURRENT_BINARY_DIR}/Conversion"
+  DEPENDS ${ASCEND_TEST_DEPENDS}
 )
-set_target_properties(check-afir PROPERTIES FOLDER "Tests")
+set_target_properties(check-ascend-conversion PROPERTIES FOLDER "Tests")
 
 function(add_afir_lit_directory relative_dir)
   set(lit_suite "${CMAKE_CURRENT_BINARY_DIR}/${relative_dir}")
@@ -34,22 +37,41 @@ function(add_afir_lit_directory relative_dir)
   set_target_properties("check-${name_var}" PROPERTIES FOLDER "Tests")
 endfunction()
 
-foreach(lit_dir
-    Conversion
-    Dialect
-    Dialect/AFIR
-    Dialect/AFIR/Transforms
-    Target
-    tools
-    tools/diagnostics
-    tools/examples
-    tools/longrun
-    tools/runtime)
-  add_afir_lit_directory(${lit_dir})
-endforeach()
+if(ASCEND_ENABLE_AFIR)
+  set(AFIR_TEST_DEPENDS
+    afir-opt
+    ascend-mlir-opt
+    ascend-mlir-translate
+    ascend-debug
+    afir-translate
+    FileCheck
+    count
+    not
+  )
 
-if(AFIR_ENABLE_BINDING_PYTHON)
-  add_afir_lit_directory(python)
+  add_lit_testsuite(check-afir "Running AFIR regression tests"
+    ${CMAKE_CURRENT_BINARY_DIR}
+    DEPENDS ${AFIR_TEST_DEPENDS}
+  )
+  set_target_properties(check-afir PROPERTIES FOLDER "Tests")
+
+  foreach(lit_dir
+      Conversion
+      Dialect
+      Dialect/AFIR
+      Dialect/AFIR/Transforms
+      Target
+      tools
+      tools/diagnostics
+      tools/examples
+      tools/longrun
+      tools/runtime)
+    add_afir_lit_directory(${lit_dir})
+  endforeach()
+
+  if(AFIR_ENABLE_BINDING_PYTHON)
+    add_afir_lit_directory(python)
+  endif()
 endif()
 
 function(add_ascend_lit_alias alias_target legacy_target)
@@ -60,7 +82,11 @@ function(add_ascend_lit_alias alias_target legacy_target)
   endif()
 endfunction()
 
-add_ascend_lit_alias(check-ascend check-afir)
+if(TARGET check-afir)
+  add_ascend_lit_alias(check-ascend check-afir)
+else()
+  add_ascend_lit_alias(check-ascend check-ascend-conversion)
+endif()
 add_ascend_lit_alias(check-ascend-tools check-afir-tools)
 add_ascend_lit_alias(check-ascend-tools-diagnostics check-afir-tools-diagnostics)
 add_ascend_lit_alias(check-ascend-tools-examples check-afir-tools-examples)

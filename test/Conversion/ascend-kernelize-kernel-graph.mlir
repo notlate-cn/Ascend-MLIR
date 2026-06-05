@@ -1,4 +1,4 @@
-// RUN: afir-opt %s --ascend-normalize --ascend-kernelize | FileCheck %s
+// RUN: ascend-mlir-opt %s --ascend-normalize --ascend-kernelize | FileCheck %s
 
 func.func @transpose_chain(%arg0: tensor<4x8xf16>) -> tensor<4x8xf16> {
   %empty0 = tensor.empty() : tensor<8x4xf16>

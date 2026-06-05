@@ -1,4 +1,4 @@
-// RUN: not afir-opt %s --ascend-normalize --ascend-kernelize 2>&1 | FileCheck %s
+// RUN: not ascend-mlir-opt %s --ascend-normalize --ascend-kernelize 2>&1 | FileCheck %s
 
 func.func @unsupported_linalg_result_rank_mismatch(
     %arg0: tensor<4xf32>, %arg1: tensor<4x4xf32>)

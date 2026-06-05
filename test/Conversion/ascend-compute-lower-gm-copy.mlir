@@ -1,4 +1,4 @@
-// RUN: afir-opt %s --ascend-compute-lower | FileCheck %s
+// RUN: ascend-mlir-opt %s --ascend-compute-lower | FileCheck %s
 
 // CHECK-LABEL: func.func @copy_gm_to_gm
 // CHECK: ascendc.global_tensor

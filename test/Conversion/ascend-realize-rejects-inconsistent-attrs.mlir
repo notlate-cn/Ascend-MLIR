@@ -1,4 +1,4 @@
-// RUN: not afir-opt %s --ascend-realize 2>&1 | FileCheck %s
+// RUN: not ascend-mlir-opt %s --ascend-realize 2>&1 | FileCheck %s
 
 func.func @inconsistent_schedule_attrs(%arg0: tensor<64xf16>,
                                        %arg1: tensor<64xf16>) -> tensor<64xf16> {

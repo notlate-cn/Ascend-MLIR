@@ -40,6 +40,25 @@
   `scripts/real-npu-ci/docker-run.sh --help` before relying on a default; pass
   `--device-id` explicitly when reproducing a prior result.
 
+## Day-to-Day Ascend Development
+
+- Current routine development is primarily under `lib/Conversion/Ascend`.
+- Prefer the focused xvm build entry point for this work:
+  `./scripts/build.sh --build-ascend --llvm-build-dir /home/niu/code/llvm-project/llvm/build`
+- `--build-ascend` keeps the Ascend conversion/tool workflow available while
+  skipping AFIR-only build surfaces by default:
+  - builds `AscendConversion`, `ascend-mlir-opt`, `ascend-mlir-translate`,
+    `ascend-debug`, `runtime-session`, `mix-compiler`, and
+    `mix-tiling-helper`;
+  - configures with `ASCEND_ENABLE_AFIR=OFF`, `ASCEND_ENABLE_TESTS=OFF`, and
+    `AFIR_ENABLE_BINDING_PYTHON=OFF` unless explicitly overridden.
+- For focused conversion regression after `lib/Conversion/Ascend` changes, use
+  `ninja -C build-ascend-check check-ascend-conversion` from an xvm CMake
+  configuration with `ASCEND_ENABLE_AFIR=OFF` and `ASCEND_ENABLE_TESTS=ON`.
+- Do not treat `--build-ascend` or `check-ascend-conversion` as a substitute
+  for full AFIR/runtime/real-NPU validation when the change touches AFIR-only
+  code, runtime behavior, generated artifacts, or hardware execution.
+
 ## Runtime Architecture
 
 - Runtime library layout:

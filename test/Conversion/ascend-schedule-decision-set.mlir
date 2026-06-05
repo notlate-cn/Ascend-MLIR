@@ -1,6 +1,6 @@
-// RUN: afir-opt %s --ascend-normalize --ascend-kernelize --ascend-schedule='target-tile-policy=legacy-default dump-report=true debug-stage=schedule' 2>&1 | FileCheck %s --check-prefix=DEFAULT
-// RUN: afir-opt %s --ascend-normalize --ascend-kernelize --ascend-schedule='target-tile-policy=legacy-default dump-report=true debug-stage=schedule runtime-top-k=2' 2>&1 | FileCheck %s --check-prefix=RUNTIME-TOP-K-2
-// RUN: afir-opt %s --ascend-normalize --ascend-kernelize --ascend-schedule='target-tile-policy=legacy-default dump-report=true debug-stage=schedule runtime-top-k=0' 2>&1 | FileCheck %s --check-prefix=RUNTIME-TOP-K-ZERO
+// RUN: ascend-mlir-opt %s --ascend-normalize --ascend-kernelize --ascend-schedule='target-tile-policy=legacy-default dump-report=true debug-stage=schedule' 2>&1 | FileCheck %s --check-prefix=DEFAULT
+// RUN: ascend-mlir-opt %s --ascend-normalize --ascend-kernelize --ascend-schedule='target-tile-policy=legacy-default dump-report=true debug-stage=schedule runtime-top-k=2' 2>&1 | FileCheck %s --check-prefix=RUNTIME-TOP-K-2
+// RUN: ascend-mlir-opt %s --ascend-normalize --ascend-kernelize --ascend-schedule='target-tile-policy=legacy-default dump-report=true debug-stage=schedule runtime-top-k=0' 2>&1 | FileCheck %s --check-prefix=RUNTIME-TOP-K-ZERO
 
 func.func @elementwise_chain(%arg0: tensor<64xf16>, %arg1: tensor<64xf16>,
                              %arg2: tensor<64xf16>) -> tensor<64xf16> {

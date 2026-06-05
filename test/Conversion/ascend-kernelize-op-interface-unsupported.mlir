@@ -1,4 +1,4 @@
-// RUN: not afir-opt %s --ascend-normalize --ascend-kernelize='debug-stage=kernelize dump-report=true' 2>&1 | FileCheck %s
+// RUN: not ascend-mlir-opt %s --ascend-normalize --ascend-kernelize='debug-stage=kernelize dump-report=true' 2>&1 | FileCheck %s
 
 func.func @unsupported_tensor_producer(%arg0: tensor<4xf32>) -> tensor<4xf32> {
   %generated = tensor.generate {

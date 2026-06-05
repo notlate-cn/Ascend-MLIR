@@ -1,7 +1,9 @@
 # Conversion passes TableGen definitions
-set(LLVM_TARGET_DEFINITIONS Passes.td)
-mlir_tablegen(Passes.h.inc -gen-pass-decls -name AFIRConversion)
-add_public_tablegen_target(AFIRConversionPassIncGen)
+if(ASCEND_ENABLE_AFIR)
+  set(LLVM_TARGET_DEFINITIONS Passes.td)
+  mlir_tablegen(Passes.h.inc -gen-pass-decls -name AFIRConversion)
+  add_public_tablegen_target(AFIRConversionPassIncGen)
+endif()
 
 set(LLVM_TARGET_DEFINITIONS Ascend/Passes.td)
 mlir_tablegen(Ascend/Passes.h.inc -gen-pass-decls -name AscendConversion)

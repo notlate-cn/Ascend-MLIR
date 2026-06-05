@@ -1,4 +1,4 @@
-// RUN: afir-opt %s --ascend-normalize --ascend-kernelize \
+// RUN: ascend-mlir-opt %s --ascend-normalize --ascend-kernelize \
 // RUN:   --ascend-schedule='target-tile-policy=legacy-default' \
 // RUN:   --ascend-realize='materialization-mode=memory-space-annotate' \
 // RUN:   --ascend-compute-lower --ascend-parallelize \

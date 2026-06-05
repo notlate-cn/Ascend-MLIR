@@ -1,4 +1,4 @@
-// RUN: afir-opt %s --linalg-fuse-elementwise-ops --ascend-normalize --ascend-kernelize --ascend-schedule='target-tile-policy=legacy-default' --ascend-realize='materialization-mode=memory-space-annotate' --ascend-compute-lower --ascend-parallelize --ascend-prepare-for-emit --ascend-canonicalize-cann-signature | FileCheck %s --implicit-check-not=memref.copy --implicit-check-not=linalg.
+// RUN: ascend-mlir-opt %s --linalg-fuse-elementwise-ops --ascend-normalize --ascend-kernelize --ascend-schedule='target-tile-policy=legacy-default' --ascend-realize='materialization-mode=memory-space-annotate' --ascend-compute-lower --ascend-parallelize --ascend-prepare-for-emit --ascend-canonicalize-cann-signature | FileCheck %s --implicit-check-not=memref.copy --implicit-check-not=linalg.
 
 // CHECK-LABEL: func.func @ewop_broadcast_concat
 // CHECK-SAME: cann.num_inputs = 4 : i32

@@ -1,5 +1,5 @@
-// RUN: sed -n '/\/\/ TRANSPOSE-BEGIN/,/\/\/ TRANSPOSE-END/p' %s | afir-opt --ascend-normalize --ascend-kernelize --ascend-schedule='target-tile-policy=legacy-default' --ascend-kernel-split | FileCheck %s
-// RUN: sed -n '/\/\/ CAPTURE-BEGIN/,/\/\/ CAPTURE-END/p' %s | afir-opt --ascend-kernel-split | FileCheck %s --check-prefix=CAPTURE
+// RUN: sed -n '/\/\/ TRANSPOSE-BEGIN/,/\/\/ TRANSPOSE-END/p' %s | ascend-mlir-opt --ascend-normalize --ascend-kernelize --ascend-schedule='target-tile-policy=legacy-default' --ascend-kernel-split | FileCheck %s
+// RUN: sed -n '/\/\/ CAPTURE-BEGIN/,/\/\/ CAPTURE-END/p' %s | ascend-mlir-opt --ascend-kernel-split | FileCheck %s --check-prefix=CAPTURE
 
 // TRANSPOSE-BEGIN
 func.func @transpose_chain(%arg0: tensor<4x8xf16>) -> tensor<4x8xf16> {

@@ -1,6 +1,6 @@
-// RUN: sed -n '/\/\/ VALID-BEGIN/,/\/\/ VALID-END/p' %s | afir-opt --ascend-normalize --ascend-kernelize | FileCheck %s --check-prefix=VALID
-// RUN: sed -n '/\/\/ REDUCTION-BEGIN/,/\/\/ REDUCTION-END/p' %s | afir-opt --ascend-normalize --ascend-kernelize | FileCheck %s --check-prefix=REDUCTION
-// RUN: sed -n '/\/\/ PREMAP-BEGIN/,/\/\/ PREMAP-END/p' %s | afir-opt --ascend-normalize --ascend-kernelize | FileCheck %s --check-prefix=PREMAP
+// RUN: sed -n '/\/\/ VALID-BEGIN/,/\/\/ VALID-END/p' %s | ascend-mlir-opt --ascend-normalize --ascend-kernelize | FileCheck %s --check-prefix=VALID
+// RUN: sed -n '/\/\/ REDUCTION-BEGIN/,/\/\/ REDUCTION-END/p' %s | ascend-mlir-opt --ascend-normalize --ascend-kernelize | FileCheck %s --check-prefix=REDUCTION
+// RUN: sed -n '/\/\/ PREMAP-BEGIN/,/\/\/ PREMAP-END/p' %s | ascend-mlir-opt --ascend-normalize --ascend-kernelize | FileCheck %s --check-prefix=PREMAP
 
 // VALID-BEGIN
 #id = affine_map<(d0, d1) -> (d0, d1)>

@@ -22,6 +22,10 @@ BUILD_DIR="${PROJECT_ROOT}/build"
 INSTALL_DIR="${PROJECT_ROOT}/install"
 LLVM_BUILD_DIR="$(resolve_llvm_build_dir || true)"
 NUM_JOBS="${NUM_JOBS:-$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 4)}"
+PROJECT_PROFILE="full"
+PROJECT_ENABLE_AFIR_OVERRIDE=""
+PROJECT_ENABLE_TESTS_OVERRIDE=""
+PROJECT_ENABLE_PYTHON_OVERRIDE=""
 
 # Colors for output
 RED='\033[0;31m'
@@ -75,12 +79,21 @@ Options:
     --build-pyasc       Build PyAsc from source
     --build-deps        Build all dependencies
     --build-project     Build Ascend-MLIR project only
+    --build-ascend      Build Ascend conversion and ascend-prefixed tools only
     --build-all         Build dependencies and project
     --build-tests       Build and run tests
     --build-coverage    Build with coverage instrumentation and generate coverage report
     --clean             Clean build directory
     --release           Build in Release mode (default)
     --debug             Build in Debug mode
+    --enable-afir       Enable AFIR dialect, AFIR-only tools, and AFIR C API
+    --disable-afir      Disable AFIR dialect, AFIR-only tools, and AFIR C API
+    --enable-tests      Configure lit and unit-test targets
+    --disable-tests     Skip configuring lit and unit-test targets
+    --enable-python-bindings
+                         Enable AFIR Python bindings
+    --disable-python-bindings
+                         Disable AFIR Python bindings
     --llvm-build-dir    Path to LLVM build directory (default: externals/llvm-project/build)
     --jobs N            Number of parallel jobs (default: auto)
     --help              Show this help message
@@ -95,6 +108,7 @@ Examples:
     $0 --build-all                           # Build everything
     $0 --build-llvm                          # Build LLVM/MLIR only
     $0 --build-project                       # Build Ascend-MLIR only
+    $0 --build-ascend                        # Build Ascend conversion/tool profile
     $0 --build-tests                         # Build and run tests
     $0 --build-coverage                      # Run test coverage analysis
     $0 --llvm-build-dir /path/to/llvm/build  # Use external LLVM build
@@ -177,15 +191,52 @@ build_pyasc() {
 
 build_project() {
     local start_time=$(date +%s)
-    print_info "Building Ascend-MLIR..."
+    print_info "Building Ascend-MLIR (${PROJECT_PROFILE} profile)..."
 
     # Check LLVM build directory
     check_llvm_build_dir
+
+    local project_enable_afir="ON"
+    local project_enable_tests="ON"
+    local project_enable_python="ON"
+    local project_targets=("all")
+    local project_extra_targets=("ascir-translate")
+
+    if [ "${PROJECT_PROFILE}" = "ascend" ]; then
+        project_enable_afir="OFF"
+        project_enable_tests="OFF"
+        project_enable_python="OFF"
+        project_targets=(
+            AscendConversion
+            ascend-mlir-opt
+            ascend-mlir-translate
+            ascend-debug
+            runtime-session
+            mix-compiler
+            mix-tiling-helper
+        )
+        project_extra_targets=()
+    fi
+
+    if [ -n "${PROJECT_ENABLE_AFIR_OVERRIDE}" ]; then
+        project_enable_afir="${PROJECT_ENABLE_AFIR_OVERRIDE}"
+    fi
+    if [ -n "${PROJECT_ENABLE_TESTS_OVERRIDE}" ]; then
+        project_enable_tests="${PROJECT_ENABLE_TESTS_OVERRIDE}"
+    fi
+    if [ -n "${PROJECT_ENABLE_PYTHON_OVERRIDE}" ]; then
+        project_enable_python="${PROJECT_ENABLE_PYTHON_OVERRIDE}"
+    fi
 
     mkdir -p "${BUILD_DIR}"
     cd "${BUILD_DIR}"
 
     print_info "Using LLVM from: ${LLVM_BUILD_DIR}"
+    print_info "CMake options:"
+    print_info "  ASCEND_ENABLE_AFIR:          ${project_enable_afir}"
+    print_info "  ASCEND_ENABLE_TESTS:         ${project_enable_tests}"
+    print_info "  AFIR_ENABLE_BINDING_PYTHON:  ${project_enable_python}"
+    print_info "Build targets: ${project_targets[*]}${project_extra_targets[*]:+ ${project_extra_targets[*]}}"
 
     configure_project() {
         local launcher_args=()
@@ -199,7 +250,9 @@ build_project() {
         cmake -G Ninja "${PROJECT_ROOT}" \
             -DCMAKE_BUILD_TYPE=${BUILD_TYPE} \
             -DCMAKE_INSTALL_PREFIX="${INSTALL_DIR}" \
-            -DAFIR_ENABLE_BINDING_PYTHON=true \
+            -DASCEND_ENABLE_AFIR="${project_enable_afir}" \
+            -DASCEND_ENABLE_TESTS="${project_enable_tests}" \
+            -DAFIR_ENABLE_BINDING_PYTHON="${project_enable_python}" \
             -DPython3_EXECUTABLE="$(which python3)" \
             -DLLVM_BUILD_DIR="${LLVM_BUILD_DIR}" \
             "${launcher_args[@]}"
@@ -217,43 +270,73 @@ build_project() {
         configure_project
     }
 
+    cache_value() {
+        local key="$1"
+        sed -n "s/^${key}:[^=]*=//p" CMakeCache.txt 2>/dev/null | tail -n 1
+    }
+
+    cache_requires_reconfigure() {
+        [ -f CMakeCache.txt ] || return 0
+
+        local actual
+        for entry in \
+            "CMAKE_BUILD_TYPE=${BUILD_TYPE}" \
+            "LLVM_BUILD_DIR=${LLVM_BUILD_DIR}" \
+            "ASCEND_ENABLE_AFIR=${project_enable_afir}" \
+            "ASCEND_ENABLE_TESTS=${project_enable_tests}" \
+            "AFIR_ENABLE_BINDING_PYTHON=${project_enable_python}"; do
+            local key="${entry%%=*}"
+            local expected="${entry#*=}"
+            actual="$(cache_value "${key}")"
+            if [ "${actual}" != "${expected}" ]; then
+                print_info "CMake cache mismatch for ${key}: '${actual}' -> '${expected}'"
+                return 0
+            fi
+        done
+
+        actual="$(cache_value CMAKE_C_COMPILER_LAUNCHER)"
+        if [ "${actual}" != "${CMAKE_C_COMPILER_LAUNCHER:-}" ]; then
+            print_info "CMake cache mismatch for CMAKE_C_COMPILER_LAUNCHER: '${actual}' -> '${CMAKE_C_COMPILER_LAUNCHER:-}'"
+            return 0
+        fi
+
+        actual="$(cache_value CMAKE_CXX_COMPILER_LAUNCHER)"
+        if [ "${actual}" != "${CMAKE_CXX_COMPILER_LAUNCHER:-}" ]; then
+            print_info "CMake cache mismatch for CMAKE_CXX_COMPILER_LAUNCHER: '${actual}' -> '${CMAKE_CXX_COMPILER_LAUNCHER:-}'"
+            return 0
+        fi
+
+        return 1
+    }
+
+    build_selected_targets() {
+        ninja -j${NUM_JOBS} "${project_targets[@]}"
+        if [ "${#project_extra_targets[@]}" -gt 0 ]; then
+            ninja -j${NUM_JOBS} "${project_extra_targets[@]}"
+        fi
+    }
+
     # Check if this is an incremental build (build.ninja exists)
     if [ -f "build.ninja" ]; then
         print_info "Incremental build detected (build.ninja exists)"
-        local needs_reconfigure=false
-        if [ -n "${CMAKE_C_COMPILER_LAUNCHER:-}" ] &&
-           ! grep -q "CMAKE_C_COMPILER_LAUNCHER.*${CMAKE_C_COMPILER_LAUNCHER}" CMakeCache.txt 2>/dev/null; then
-            needs_reconfigure=true
-        fi
-        if [ -n "${CMAKE_CXX_COMPILER_LAUNCHER:-}" ] &&
-           ! grep -q "CMAKE_CXX_COMPILER_LAUNCHER.*${CMAKE_CXX_COMPILER_LAUNCHER}" CMakeCache.txt 2>/dev/null; then
-            needs_reconfigure=true
-        fi
-        if $needs_reconfigure; then
-            print_info "CMake launcher changed; reconfiguring..."
+        if cache_requires_reconfigure; then
+            print_info "CMake configuration changed; reconfiguring..."
             configure_project_with_retry
         else
             print_info "Skipping CMake configuration, running ninja directly..."
         fi
-        if ! ninja -j${NUM_JOBS}; then
-            print_warn "Incremental build failed; recreating build directory and reconfiguring..."
-            cd "${PROJECT_ROOT}"
-            rm -rf "${BUILD_DIR}"
-            mkdir -p "${BUILD_DIR}"
-            cd "${BUILD_DIR}"
+        if ! build_selected_targets; then
+            print_warn "Incremental build failed; reconfiguring once and retrying..."
             configure_project_with_retry
-            cmake --build . --target all -j${NUM_JOBS}
+            build_selected_targets
         fi
     else
         print_info "First-time build or CMake configuration needed"
         # Pass LLVM_BUILD_DIR to cmake, it will automatically derive MLIR_DIR
         configure_project_with_retry
-        cmake --build . --target all -j${NUM_JOBS}
+        build_selected_targets
     fi
 
-    # Build ascir-translate (EXCLUDE_FROM_ALL, must be built explicitly)
-    print_info "Building ascir-translate..."
-    ninja -j${NUM_JOBS} ascir-translate
     touch "${BUILD_DIR}/.last_build_time"
 
     local end_time=$(date +%s)
@@ -344,6 +427,7 @@ BUILD_LLVM=false
 BUILD_STABLEHLO=false
 BUILD_PYASC=false
 BUILD_PROJECT=false
+BUILD_ASCEND=false
 BUILD_TESTS=false
 BUILD_COVERAGE=false
 CLEAN=false
@@ -370,6 +454,13 @@ while [[ $# -gt 0 ]]; do
             ;;
         --build-project)
             BUILD_PROJECT=true
+            PROJECT_PROFILE="full"
+            shift
+            ;;
+        --build-ascend)
+            BUILD_ASCEND=true
+            BUILD_PROJECT=true
+            PROJECT_PROFILE="ascend"
             shift
             ;;
         --build-all)
@@ -397,6 +488,30 @@ while [[ $# -gt 0 ]]; do
             ;;
         --debug)
             BUILD_TYPE="Debug"
+            shift
+            ;;
+        --enable-afir)
+            PROJECT_ENABLE_AFIR_OVERRIDE="ON"
+            shift
+            ;;
+        --disable-afir)
+            PROJECT_ENABLE_AFIR_OVERRIDE="OFF"
+            shift
+            ;;
+        --enable-tests)
+            PROJECT_ENABLE_TESTS_OVERRIDE="ON"
+            shift
+            ;;
+        --disable-tests)
+            PROJECT_ENABLE_TESTS_OVERRIDE="OFF"
+            shift
+            ;;
+        --enable-python-bindings)
+            PROJECT_ENABLE_PYTHON_OVERRIDE="ON"
+            shift
+            ;;
+        --disable-python-bindings)
+            PROJECT_ENABLE_PYTHON_OVERRIDE="OFF"
             shift
             ;;
         --jobs)
@@ -463,7 +578,7 @@ if $BUILD_COVERAGE; then
 fi
 
 # If no options specified, show usage
-if ! $BUILD_LLVM && ! $BUILD_STABLEHLO && ! $BUILD_PYASC && ! $BUILD_PROJECT && ! $BUILD_TESTS && ! $BUILD_COVERAGE && ! $CLEAN; then
+if ! $BUILD_LLVM && ! $BUILD_STABLEHLO && ! $BUILD_PYASC && ! $BUILD_PROJECT && ! $BUILD_ASCEND && ! $BUILD_TESTS && ! $BUILD_COVERAGE && ! $CLEAN; then
     print_warn "No build target specified."
     usage
 fi

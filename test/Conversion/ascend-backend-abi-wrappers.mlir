@@ -1,6 +1,6 @@
-// RUN: sed -n '/\/\/ ABI-BEGIN/,/\/\/ ABI-END/p' %s | afir-opt --ascend-prepare-for-emit --ascend-canonicalize-cann-signature | FileCheck %s
-// RUN: sed -n '/\/\/ PARALLELIZE-BEGIN/,/\/\/ PARALLELIZE-END/p' %s | afir-opt --ascend-parallelize | FileCheck %s --check-prefix=PARALLELIZE
-// RUN: sed -n '/\/\/ SERIAL-BEGIN/,/\/\/ SERIAL-END/p' %s | afir-opt --ascend-parallelize | FileCheck %s --check-prefix=SERIAL
+// RUN: sed -n '/\/\/ ABI-BEGIN/,/\/\/ ABI-END/p' %s | ascend-mlir-opt --ascend-prepare-for-emit --ascend-canonicalize-cann-signature | FileCheck %s
+// RUN: sed -n '/\/\/ PARALLELIZE-BEGIN/,/\/\/ PARALLELIZE-END/p' %s | ascend-mlir-opt --ascend-parallelize | FileCheck %s --check-prefix=PARALLELIZE
+// RUN: sed -n '/\/\/ SERIAL-BEGIN/,/\/\/ SERIAL-END/p' %s | ascend-mlir-opt --ascend-parallelize | FileCheck %s --check-prefix=SERIAL
 
 // CHECK-LABEL: func.func @broadcast_add_reducesum
 // CHECK-SAME: %[[A:[a-z0-9]+]]: memref<?xf16>

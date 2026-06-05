@@ -1,4 +1,4 @@
-// RUN: afir-opt %s --ascend-schedule='target-tile-policy=legacy-default dump-report=true debug-stage=schedule' 2>&1 | FileCheck %s
+// RUN: ascend-mlir-opt %s --ascend-schedule='target-tile-policy=legacy-default dump-report=true debug-stage=schedule' 2>&1 | FileCheck %s
 
 func.func @manual_memory_copy_kernel(%arg0: tensor<4x8xf32>)
     -> tensor<4x8xf32> {

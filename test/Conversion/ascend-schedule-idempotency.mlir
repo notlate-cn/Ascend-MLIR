@@ -1,4 +1,4 @@
-// RUN: afir-opt %s --ascend-normalize --ascend-kernelize --ascend-schedule='target-tile-policy=legacy-default' | FileCheck %s
+// RUN: ascend-mlir-opt %s --ascend-normalize --ascend-kernelize --ascend-schedule='target-tile-policy=legacy-default' | FileCheck %s
 
 func.func @stale_schedule_metadata(%arg0: tensor<64xf16>,
                                    %arg1: tensor<64xf16>)

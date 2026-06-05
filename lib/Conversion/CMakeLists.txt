@@ -1,3 +1,5 @@
-add_subdirectory(AFIRToASCIR)
-add_subdirectory(AFIRToASCIRText)
+if(ASCEND_ENABLE_AFIR)
+  add_subdirectory(AFIRToASCIR)
+  add_subdirectory(AFIRToASCIRText)
+endif()
 add_subdirectory(Ascend)

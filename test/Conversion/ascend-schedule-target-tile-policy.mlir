@@ -1,4 +1,4 @@
-// RUN: afir-opt %s --ascend-normalize --ascend-kernelize --ascend-schedule='target-tile-policy=target-aware cann-root=%S/Inputs/ascend-schedule-target-tile-cann soc=SyntheticScheduleSoC dump-report=true debug-stage=schedule' 2>&1 | FileCheck %s
+// RUN: ascend-mlir-opt %s --ascend-normalize --ascend-kernelize --ascend-schedule='target-tile-policy=target-aware cann-root=%S/Inputs/ascend-schedule-target-tile-cann soc=SyntheticScheduleSoC dump-report=true debug-stage=schedule' 2>&1 | FileCheck %s
 
 func.func @dynamic_vector(%arg0: tensor<?x128xf16>,
                           %arg1: tensor<?x128xf16>) -> tensor<?x128xf16> {

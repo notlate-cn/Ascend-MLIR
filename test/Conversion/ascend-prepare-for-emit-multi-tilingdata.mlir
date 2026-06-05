@@ -1,4 +1,4 @@
-// RUN: afir-opt %s --ascend-prepare-for-emit | FileCheck %s
+// RUN: ascend-mlir-opt %s --ascend-prepare-for-emit | FileCheck %s
 
 // CHECK-DAG: emitasc.declare_py_struct !emitasc.py_struct<"TilingData_kernel_a"
 // CHECK-DAG: emitasc.declare_py_struct !emitasc.py_struct<"TilingData_kernel_b"

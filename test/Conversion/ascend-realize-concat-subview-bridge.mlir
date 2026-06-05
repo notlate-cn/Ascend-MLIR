@@ -1,4 +1,4 @@
-// RUN: afir-opt %s --split-input-file --ascend-realize='materialization-mode=memory-space-annotate' | FileCheck %s
+// RUN: ascend-mlir-opt %s --split-input-file --ascend-realize='materialization-mode=memory-space-annotate' | FileCheck %s
 
 #identity = affine_map<(d0, d1) -> (d0, d1)>
 

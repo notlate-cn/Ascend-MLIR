@@ -1,6 +1,5 @@
 // RUN: ascend-mlir-opt --help 2>&1 | FileCheck %s --check-prefix=HELP --implicit-check-not=convert-afir-to-ascir
 // RUN: ascend-mlir-opt %s --ascend-normalize --ascend-kernelize | FileCheck %s
-// RUN: afir-opt --help 2>&1 | FileCheck %s --check-prefix=AFIR-HELP
 
 func.func @elementwise(%arg0: tensor<4x8xf16>, %arg1: tensor<4x8xf16>) -> tensor<4x8xf16> {
   %empty = tensor.empty() : tensor<4x8xf16>
@@ -21,8 +20,6 @@ func.func @elementwise(%arg0: tensor<4x8xf16>, %arg1: tensor<4x8xf16>) -> tensor
 }
 
 // HELP: --ascend-normalize
-// AFIR-HELP-DAG: --convert-afir-to-ascir
-// AFIR-HELP-DAG: --ascend-normalize
 // CHECK-LABEL: func.func @elementwise
 // CHECK: ascend.normalized = true
 // CHECK: ascend.kernel
