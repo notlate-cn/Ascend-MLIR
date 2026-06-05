@@ -36,7 +36,11 @@ fi
 echo "ascend_debug.help=ok"
 
 PYTHONPATH="${REPO_ROOT}/tools/ascend-debug${PYTHONPATH:+:${PYTHONPATH}}" python3 - <<'PY'
-from ascend_debug import debug_graph, stage_graph
+import json
+import pathlib
+import tempfile
+
+from ascend_debug import debug_graph, layout, stage_graph
 
 mlir = """module {
   func.func @copy_view(%arg0: memref<?xf16>, %arg1: memref<?xf16>) -> memref<?xf16> {
@@ -142,6 +146,7 @@ tile_mlir = """module {
   func.func @tile_attrs(%arg0: tensor<70x128xf16>, %arg1: tensor<70x128xf16>) -> tensor<70x128xf16> {
     %empty0 = tensor.empty() : tensor<70x128xf16>
     %add0 = linalg.generic {indexing_maps = [], iterator_types = ["parallel", "parallel"]} ins(%arg0, %arg1 : tensor<70x128xf16>, tensor<70x128xf16>) outs(%empty0 : tensor<70x128xf16>) attrs = {
+      ascend.kernel = "kernel_0",
       ascend.schedule.tile_binding = "symbolic",
       ascend.schedule.tile_params = [
         {axis = 0 : i64, axis_kind = "parallel", binding = "runtime", default = 70 : i64, extent = 70 : i64, name = "TB_M", primitive_uses = ["data_copy", "vector_compute", "write_back"], roles = ["bind_core", "kernel_loop"], upper_bound = 70 : i64},
@@ -165,6 +170,82 @@ assert [param["name"] for param in schedule["tile_params"]] == ["TB_M", "TB_N"],
 assert schedule["tile_params"][0]["default"] == 70, schedule
 assert schedule["tile_params"][1]["extent"] == 128, schedule
 assert "tile TB_M/TB_N" in tile_node["badges"], tile_node["badges"]
+
+schedule_report = """ScheduleProblem:
+  kernel = kernel_0
+  role = Vector
+  result_rank = 2
+  result_shape = [?x8]
+  guard_budget = 8
+  template_tags = [vector, elementwise]
+  shape_constraints = [d0 dynamic, d1 == 8, dim_equal(arg0_dim0)]
+  structure_constraints = [concat_axis_barrier, multi_reduction_consistent]
+  tileable_axes = [arg0_dim0]
+  required_reduction_axes = [arg0_dim1]
+  axis_constraints = [
+    axis=0 roles=[bind_core,kernel_loop,vectorize] tail=masked_tail sym=arg0_dim0
+    axis=1 roles=[reduction] tail=full_extent sym=arg0_dim1
+  ]
+TemplateRegistry:
+  kernel = kernel_0
+"""
+schedule_contracts = debug_graph._parse_schedule_problem_report(schedule_report)
+assert schedule_contracts["kernel_0"]["shape_constraints"] == [
+    "d0 dynamic",
+    "d1 == 8",
+    "dim_equal(arg0_dim0)",
+], schedule_contracts
+assert schedule_contracts["kernel_0"]["structure_constraints"] == [
+    "concat_axis_barrier",
+    "multi_reduction_consistent",
+], schedule_contracts
+assert schedule_contracts["kernel_0"]["tileable_axes"] == ["arg0_dim0"], schedule_contracts
+assert schedule_contracts["kernel_0"]["required_reduction_axes"] == ["arg0_dim1"], schedule_contracts
+assert "schedule axis contract" in debug_graph._schedule_axis_contract_badge(schedule_contracts["kernel_0"])
+debug_run = pathlib.Path(tempfile.mkdtemp(prefix="ascend-debug-axis-contract."))
+layout.prepare_run_dir(debug_run)
+layout.write_json(debug_run / "graphs/stages/033-schedule-final.graph.json", tile_graph)
+(debug_run / "reports/040-schedule.report.txt").write_text(schedule_report, encoding="utf-8")
+debug_graph.render_debug_graph(
+    run_dir=debug_run,
+    manifest={
+        "stages": [
+            {
+                "order": 33,
+                "name": "033-schedule-final",
+                "path": "stages/033-schedule-final.mlir",
+                "phase": "Schedule",
+                "step": "final",
+            }
+        ],
+        "reports": [{"stage": "schedule", "path": "reports/040-schedule.report.txt"}],
+    },
+    stage_graph_views={
+        "stages/033-schedule-final.mlir": {
+            "json_rel_path": "graphs/stages/033-schedule-final.graph.json"
+        }
+    },
+    kernel_summary=None,
+    tensor_diff=None,
+    locate_summary=None,
+    memory_summary=None,
+)
+debug_summary = json.loads((debug_run / "summaries/debug_graph.json").read_text())
+assert debug_summary["schedule_axis_contracts"]["kernel_0"] == schedule_contracts["kernel_0"], debug_summary
+annotated_nodes = [
+    node
+    for stage in debug_summary["stages"]
+    for node in stage["graph"]["nodes"]
+    if node.get("kernel_id") == "kernel_0"
+]
+assert any(
+    node.get("semantic_attrs", {}).get("schedule", {}).get("axis_contract") == schedule_contracts["kernel_0"]
+    for node in annotated_nodes
+), annotated_nodes
+assert any("schedule axis contract" in node.get("badges", []) for node in annotated_nodes), annotated_nodes
+debug_html = (debug_run / "views/debug_graph.html").read_text()
+assert "Schedule Axis Contract" in debug_html, debug_html
+assert "axisContract.shape_constraints" in debug_html, debug_html
 
 resource_mlir = """module {
   func.func @resource_chain(%pipe: i32, %src: i32, %bytes: index) {
@@ -1543,8 +1624,12 @@ grep -Fq 'function symbolConstraintsFieldValue(normalize)' "${TMP_DIR}/debug-run
 grep -Fq 'function symbolConstraintsHtml(constraints)' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
 grep -Fq '属性分组' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
 grep -Fq 'Symbol Constraints' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
+grep -Fq 'Schedule Axis Contract' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
 grep -Fq '["normalized", normalize.normalized ? "true" : null]' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
 grep -Fq '["symbol_constraints", symbolConstraintsFieldValue(normalize)]' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
+grep -Fq '["shape_constraints", axisContract.shape_constraints]' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
+grep -Fq '["tileable_axes", axisContract.tileable_axes]' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
+grep -Fq '["required_reduction_axes", axisContract.required_reduction_axes]' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
 if grep -Fq 'class="badge-list"' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"; then
   echo "node inspector should not duplicate module facts as a non-clickable badge list" >&2
   exit 1

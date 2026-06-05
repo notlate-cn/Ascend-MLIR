@@ -4,6 +4,7 @@ import html
 import hashlib
 import json
 import pathlib
+import re
 from typing import Any
 
 from ascend_debug import layout, stage_graph
@@ -23,6 +24,147 @@ def _load_json(path: pathlib.Path) -> dict[str, Any] | None:
     except (OSError, UnicodeDecodeError, json.JSONDecodeError):
         return None
     return value if isinstance(value, dict) else None
+
+
+def _split_report_list(value: str) -> list[str]:
+    value = value.strip()
+    if not (value.startswith("[") and value.endswith("]")):
+        return []
+    body = value[1:-1].strip()
+    if not body:
+        return []
+    items: list[str] = []
+    start = 0
+    depth = 0
+    for index, char in enumerate(body):
+        if char in "([{":
+            depth += 1
+        elif char in ")]}":
+            depth = max(0, depth - 1)
+        elif char == "," and depth == 0:
+            item = body[start:index].strip()
+            if item:
+                items.append(item)
+            start = index + 1
+    item = body[start:].strip()
+    if item:
+        items.append(item)
+    return items
+
+
+def _parse_schedule_problem_report(text: str) -> dict[str, dict[str, Any]]:
+    contracts: dict[str, dict[str, Any]] = {}
+    current: dict[str, Any] | None = None
+
+    def finish_current() -> None:
+        if not current:
+            return
+        kernel = current.get("kernel")
+        if isinstance(kernel, str) and kernel:
+            current["source"] = "schedule_report"
+            contracts[kernel] = dict(current)
+
+    list_fields = {
+        "template_tags",
+        "shape_constraints",
+        "structure_constraints",
+        "tileable_axes",
+        "required_reduction_axes",
+    }
+    int_fields = {"result_rank", "guard_budget"}
+    field_re = re.compile(r"^\s{2}(?P<name>[A-Za-z_]+)\s*=\s*(?P<value>.*)$")
+
+    for line in text.splitlines():
+        stripped = line.strip()
+        if stripped == "ScheduleProblem:":
+            finish_current()
+            current = {}
+            continue
+        if current is None:
+            continue
+        if line == stripped and stripped.endswith(":"):
+            finish_current()
+            current = None
+            continue
+        match = field_re.match(line)
+        if not match:
+            continue
+        name = match.group("name")
+        value = match.group("value").strip()
+        if name in list_fields:
+            current[name] = _split_report_list(value)
+        elif name in int_fields and re.fullmatch(r"-?[0-9]+", value):
+            current[name] = int(value)
+        elif name in {"kernel", "role", "result_shape"}:
+            current[name] = value
+    finish_current()
+    return contracts
+
+
+def _load_schedule_axis_contracts(
+    run_dir: pathlib.Path, manifest: dict[str, Any]
+) -> dict[str, dict[str, Any]]:
+    contracts: dict[str, dict[str, Any]] = {}
+    reports = manifest.get("reports")
+    if not isinstance(reports, list):
+        return contracts
+    for report in reports:
+        if not isinstance(report, dict):
+            continue
+        stage = report.get("stage")
+        rel_path = report.get("path")
+        if not isinstance(rel_path, str):
+            continue
+        if stage != "schedule" and "schedule.report" not in rel_path:
+            continue
+        try:
+            text = (run_dir / rel_path).read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            continue
+        contracts.update(_parse_schedule_problem_report(text))
+    return contracts
+
+
+def _schedule_axis_contract_badge(contract: dict[str, Any]) -> str:
+    fields = (
+        "shape_constraints",
+        "structure_constraints",
+        "tileable_axes",
+        "required_reduction_axes",
+    )
+    return "schedule axis contract" if any(contract.get(field) for field in fields) else ""
+
+
+def _annotate_schedule_axis_contracts(
+    stages: list[dict[str, Any]],
+    contracts: dict[str, dict[str, Any]],
+) -> None:
+    if not contracts:
+        return
+    for stage in stages:
+        graph = stage.get("graph")
+        if not isinstance(graph, dict):
+            continue
+        for node in graph.get("nodes", []):
+            if not isinstance(node, dict):
+                continue
+            kernel_id = node.get("kernel_id")
+            if not isinstance(kernel_id, str) or kernel_id not in contracts:
+                continue
+            semantic = node.setdefault("semantic_attrs", {})
+            if not isinstance(semantic, dict):
+                semantic = {}
+                node["semantic_attrs"] = semantic
+            schedule = semantic.setdefault("schedule", {})
+            if not isinstance(schedule, dict):
+                schedule = {}
+                semantic["schedule"] = schedule
+            schedule["axis_contract"] = contracts[kernel_id]
+            badge = _schedule_axis_contract_badge(contracts[kernel_id])
+            if badge:
+                badges = node.setdefault("badges", [])
+                if isinstance(badges, list) and badge not in badges:
+                    badges.append(badge)
 
 
 def _stage_record(
@@ -314,6 +456,12 @@ def _semantic_nodes(graph: dict[str, Any]) -> dict[str, dict[str, Any]]:
 
 
 def _node_diff_facts(node: dict[str, Any]) -> dict[str, Any]:
+    semantic = node.get("semantic_attrs")
+    if not isinstance(semantic, dict):
+        semantic = {}
+    schedule = semantic.get("schedule")
+    if not isinstance(schedule, dict):
+        schedule = {}
     return {
         "op_name": node.get("op_name"),
         "result_type": node.get("result_type"),
@@ -322,6 +470,7 @@ def _node_diff_facts(node: dict[str, Any]) -> dict[str, Any]:
         "kernel_id": node.get("kernel_id"),
         "op_role": node.get("op_role"),
         "schedule_decision_id": node.get("schedule_decision_id"),
+        "schedule_axis_contract": schedule.get("axis_contract"),
         "workspace_size_bytes": node.get("workspace_size_bytes"),
     }
 
@@ -1317,6 +1466,7 @@ function renderSemanticAttrSections(node) {
   const dagKernelId = dagKernel && dagKernel.id !== kernel.id ? dagKernel.id : null;
   const dagKernelNode = dagKernel ? (dagKernel.node || {}) : {};
   const schedule = semantic.schedule || {};
+  const axisContract = schedule.axis_contract || {};
   const movement = semantic.movement || {};
   const memory = semantic.memory || {};
   const position = memory.position || {};
@@ -1351,6 +1501,18 @@ ${renderSemanticGroup("Schedule", [
   ["tail_policies", schedule.tail_policies],
   ["target_tile_policy", schedule.target_tile_policy],
   ["runtime_top_k", schedule.runtime_top_k],
+])}
+${renderSemanticGroup("Schedule Axis Contract", [
+  ["source", axisContract.source],
+  ["role", axisContract.role],
+  ["result_rank", axisContract.result_rank],
+  ["result_shape", axisContract.result_shape],
+  ["guard_budget", axisContract.guard_budget],
+  ["template_tags", axisContract.template_tags],
+  ["shape_constraints", axisContract.shape_constraints],
+  ["structure_constraints", axisContract.structure_constraints],
+  ["tileable_axes", axisContract.tileable_axes],
+  ["required_reduction_axes", axisContract.required_reduction_axes],
 ])}
 ${renderSemanticGroupBody("Tile", `
 ${semanticDetailRows([["tile_binding", schedule.tile_binding]])}
@@ -2866,6 +3028,8 @@ def render_debug_graph(
         record = _stage_record(run_dir=run_dir, stage=stage, graph_view=graph_view)
         if record:
             stages.append(record)
+    schedule_axis_contracts = _load_schedule_axis_contracts(run_dir, manifest)
+    _annotate_schedule_axis_contracts(stages, schedule_axis_contracts)
     _annotate_stage_equivalence(run_dir, stages)
     primary_stage = _select_primary_stage(stages)
     stage_diffs = _compute_stage_diffs(stages)
@@ -2881,6 +3045,7 @@ def render_debug_graph(
         "stage_connectivity": stage_connectivity,
         "stage_groups": stage_groups,
         "stages": stages,
+        "schedule_axis_contracts": schedule_axis_contracts,
         "kernel_dag": kernel_summary or {},
         "kernel_detail_views": _kernel_detail_views(stages, kernel_summary),
         "overlays": _overlay_summary(
