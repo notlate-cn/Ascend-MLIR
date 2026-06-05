@@ -727,46 +727,38 @@ SmallVector<Value> emitGroup(OpBuilder &builder, Location loc,
                                    innermostFor.getResultTypes().end());
     tailIf = builder.create<scf::IfOp>(loc, resultTypes, cond,
                                         /*withElseRegion=*/true);
+    // Mark this scf.if as the ragged tail so CannTranslation routes its
+    // GM↔UB DataCopy to DataCopyPad (unaligned f16 offset/length legal).
+    tailIf->setAttr("afir.ragged_tail", builder.getUnitAttr());
 
     {
       OpBuilder::InsertionGuard g(builder);
       builder.setInsertionPointToStart(tailIf.thenBlock());
 
-      // Overlap-tail: process a STATIC slice of size T at offset
-      // `innerTileExtent - innerTileStep`, instead of a dynamic-size slice
-      // clamped to `remaining - mainInnerUb`.  Benefits:
-      //   - slice size is a compile-time T, matches the main loop's tile,
-      //     so bufferize does NOT wrap the linalg in a shadow-alloc
-      //     sandwich and DataCopy counts trivially meet dtype alignment.
-      //   - the only cost is that this tail re-computes the last
-      //     `T - actual_tail_size` rows that the prior main iter (or the
-      //     previous block's main loop) already produced; since both
-      //     elementwise and parallel-axis reduce are deterministic per
-      //     output row, the duplicate writes converge to the same value.
-      //
-      // Precondition: `innerTileExtent >= innerTileStep`.  The scf.if
-      // condition (mainInnerUb < remaining) only fires on the tail core,
-      // and in current workloads the tail core's enclosing axis always
-      // has `extent >= XBLOCK_SUB` (the tiling space enforces this).  If
-      // a future workload violates the precondition, the offset would
-      // underflow — TODO: scalar fallback or DataCopyPad for that edge.
-      Value tailComposed = builder.create<arith::SubIOp>(
-          loc, loopNest.innerTileExtent, loopNest.innerTileStep);
+      // Ragged-tail: process the true remainder [covered, extent) at honest
+      // offset `outerOfTailIV + mainInnerUb` with honest size
+      // `remaining - mainInnerUb`.  No overlap / recompute; the GM DataCopy of
+      // this block is routed to DataCopyPad (see CannTranslation
+      // `afir.ragged_tail` walk) so an unaligned f16 offset/length is legal.
+      Value honestTailSize = builder.create<arith::SubIOp>(
+          loc, loopNest.remaining, loopNest.mainInnerUb);
+      Value honestIV = builder.create<arith::AddIOp>(
+          loc, loopNest.outerOfTailIV, loopNest.mainInnerUb);
 
       DenseMap<int, Value> tailLoopIVs = loopNest.loopIVs;
-      tailLoopIVs[loopNest.innerTileAxisIdx] = tailComposed;
-      // No sizeOverride — tail uses the planned static tile size.
+      tailLoopIVs[loopNest.innerTileAxisIdx] = honestIV;
+
+      DenseMap<int, Value> tailSizeOverride;
+      tailSizeOverride[loopNest.innerTileAxisIdx] = honestTailSize;
 
       SmallVector<Value> tailIterArgs(innermostFor.getResults().begin(),
                                        innermostFor.getResults().end());
 
-      // Tail body is inside any BCast for(s); disable hoisting (already
-      // applied to the main body).
       SmallVector<Value> tailYieldVals =
           emitGroupBodyOnce(builder, loc, info, plan,
                              tailLoopIVs, loopNest.outerLoopIVs,
                              tailIterArgs, /*bcastForOps=*/{},
-                             /*sizeOverride=*/nullptr);
+                             /*sizeOverride=*/&tailSizeOverride);
       builder.create<scf::YieldOp>(loc, tailYieldVals);
     }
 
