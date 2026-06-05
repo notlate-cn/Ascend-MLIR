@@ -180,8 +180,8 @@ def phase1_outline_or_emit_json(args, work):
         # fuse-transpose / canonicalize rewrites (which create fresh ops and would
         # drop the attrs) and right before outlining.  No-op for static input.
         symbolized = work / "model_symbolized.mlir"
-        run([AFIR_OPT, "--afir-symbolize-shapes", str(folded),
-             "-o", str(symbolized)])
+        run([AFIR_OPT, "--afir-symbolize-shapes", "--afir-symbolic-dim-cse",
+             str(folded), "-o", str(symbolized)])
         folded = symbolized
         # Step b: --auto-fuse-group-analysis + --auto-fuse-group-outline
         # Cube (matmul/batch_matmul) groups are routed to the aclnn matmul

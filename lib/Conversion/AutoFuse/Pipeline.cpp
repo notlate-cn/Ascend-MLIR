@@ -95,6 +95,9 @@ void registerAutoFusePipeline() {
         // afir.symbolic_shapes / afir.iter_extents on the ops) so tile-fuse can
         // carry the symbolic axis extents through to the AscendC kernel.
         pm.addNestedPass<func::FuncOp>(mlir::createAFIRSymbolizeShapesPass());
+        // Collapse tensor.dim ops that denote the same dynamic symbol into one
+        // canonical dim on the root arg (stock CSE can't, the sources differ).
+        pm.addNestedPass<func::FuncOp>(mlir::createAFIRSymbolicDimCSEPass());
         // P1b: TileFuse is now a ModuleOp pass (it may emit multiple
         // <name>__v<i> sibling funcs from one outlined group).
         pm.addPass(createAutoFuseTileFusePass());
