@@ -69,6 +69,10 @@ struct RebuiltGroupInfo {
   llvm::SmallVector<Operation *> opsToClone;
   llvm::SmallVector<Value> boundaryIn;  // external inputs to the op range
   llvm::SmallVector<Value> boundaryOut; // range results used outside the range
+  // External pure-intermediate tensor.empty operands excluded from boundaryIn;
+  // outlineGroup rematerializes each inside the kernel (sized from a same-typed
+  // boundaryIn sibling) instead of passing it as a (soon-dead) kernel arg.
+  llvm::SmallVector<Value> rematEmpties;
 };
 
 static RebuiltGroupInfo
@@ -144,6 +148,52 @@ rebuildGroupInfo(int32_t gid,
     return false;
   };
 
+  // Pre-compute the range results consumed outside the range (boundary
+  // outputs).  Used below to keep an output-backing tensor.empty as a kernel
+  // arg while letting a *pure intermediate* empty be rematerialized.
+  llvm::DenseSet<Operation *> rangeOpSet;
+  for (auto *op : info.opsToClone) rangeOpSet.insert(op);
+  llvm::DenseSet<Value> usedOutsideSet;
+  for (auto *op : info.opsToClone)
+    for (Value result : op->getResults())
+      if (llvm::any_of(result.getUsers(),
+                       [&](Operation *u) { return !rangeOpSet.count(u); }))
+        usedOutsideSet.insert(result);
+
+  // A `tensor.empty` operand that only seeds in-range ops whose results stay
+  // internal (never a boundary output) is a pure scratch / intermediate buffer
+  // (e.g. the `%t` init of a `t = a + b; out = t * e` chain).  Don't
+  // externalize it as a kernel arg — outlineGroup rematerializes it (and its
+  // shape subgraph) inside the kernel.  Per-kernel codegen then fuses the chain
+  // and DCEs the dead empty, so this avoids leaving an unused (dead) kernel
+  // arg frozen in the call ABI.  An empty that backs a boundary output (the DPS
+  // result buffer) is left as a kernel arg.
+  // Also require the empty's consuming op to have a same-typed sibling operand
+  // (e.g. an elementwise input) so outlineGroup can re-derive the empty's
+  // dynamic dims from a kernel-local value instead of cloning the original dim
+  // subgraph — which, after CSE, may read dims off a value owned by another
+  // group (cross-group dangling reference).
+  // The empty's consuming op must have a same-typed EXTERNAL operand (e.g. an
+  // elementwise input) — it becomes a boundaryIn arg, so outlineGroup can
+  // re-derive the empty's dynamic dims from that (mapped) value rather than
+  // cloning the original dim subgraph (which, after CSE, may read dims off a
+  // value owned by another group → cross-group dangling reference).
+  auto isPureIntermediateEmpty = [&](Value operand) -> bool {
+    Operation *def = operand.getDefiningOp();
+    if (!def || !isa<tensor::EmptyOp>(def)) return false;
+    bool anyUse = false, hasExternalSibling = false;
+    for (Operation *user : operand.getUsers()) {
+      if (!rangeOpSet.count(user)) return false; // escapes range → keep as arg
+      anyUse = true;
+      for (Value r : user->getResults())
+        if (usedOutsideSet.count(r)) return false; // backs output → keep as arg
+      for (Value o : user->getOperands())
+        if (o != operand && o.getType() == operand.getType() && !isInternal(o))
+          hasExternalSibling = true;
+    }
+    return anyUse && hasExternalSibling;
+  };
+
   // boundaryIn: walk ALL nested regions to catch scalar constants captured
   // inside linalg body blocks (e.g. %cst used in arith.divf inside the body).
   // ConstantLike operands (arith.constant fill values / weights) are NOT passed
@@ -164,6 +214,12 @@ rebuildGroupInfo(int32_t gid,
             def && def->hasTrait<mlir::OpTrait::ConstantLike>() &&
             !mlir::isa<mlir::ShapedType>(operand.getType()))
           continue; // scalar const: rematerialized, not an arg
+        // Rematerialize pure intermediate tensor.empty scratch buffers too.
+        if (isPureIntermediateEmpty(operand)) {
+          info.rematEmpties.push_back(operand);
+          seen.insert(operand);
+          continue; // intermediate empty: rematerialized, not an arg
+        }
         info.boundaryIn.push_back(operand);
         seen.insert(operand);
       }
@@ -304,10 +360,10 @@ static func::FuncOp outlineGroup(OpBuilder &builder, ModuleOp module,
     }
   }
 
-  // Rematerialize ConstantLike operands inside the kernel (they were excluded
-  // from boundaryIn).  Clone each referenced constant once and map it so the
-  // member clones below pick up the in-kernel constant instead of a dangling
-  // cross-region reference.
+  // Rematerialize ConstantLike scalar operands inside the kernel (they were
+  // excluded from boundaryIn).  Clone each referenced constant once and map it
+  // so the member clones below pick up the in-kernel constant instead of a
+  // dangling cross-region reference.
   builder.setInsertionPointToEnd(body);
   for (Operation *op : info.opsToClone)
     op->walk([&](Operation *innerOp) {
@@ -320,6 +376,36 @@ static func::FuncOp outlineGroup(OpBuilder &builder, ModuleOp module,
           builder.clone(*def, mapping); // scalar const only
       }
     });
+
+  // Rematerialize the excluded pure-intermediate tensor.empty scratch buffers
+  // (info.rematEmpties).  Rebuild each from a same-typed boundaryIn sibling of
+  // its consuming op (already mapped to a block arg) rather than cloning the
+  // original dim subgraph — which, after CSE, can read dims off a value owned
+  // by another group and dangle.  Per-kernel codegen later fuses the chain and
+  // DCEs this empty, so it never materializes a real buffer.
+  llvm::DenseSet<Operation *> rangeOps;
+  for (Operation *op : info.opsToClone) rangeOps.insert(op);
+  for (Value empty : info.rematEmpties) {
+    auto ty = cast<RankedTensorType>(empty.getType());
+    Value src; // a mapped, same-typed sibling operand of an in-range user
+    for (Operation *user : empty.getUsers()) {
+      if (!rangeOps.count(user)) continue;
+      for (Value o : user->getOperands())
+        if (o != empty && o.getType() == ty && mapping.contains(o)) {
+          src = mapping.lookup(o);
+          break;
+        }
+      if (src) break;
+    }
+    SmallVector<Value> dynDims;
+    for (int64_t d = 0, r = ty.getRank(); d < r; ++d)
+      if (ty.isDynamicDim(d) && src)
+        dynDims.push_back(builder.create<tensor::DimOp>(
+            empty.getLoc(), src, d));
+    Value rebuilt = builder.create<tensor::EmptyOp>(
+        empty.getLoc(), ty.getShape(), ty.getElementType(), dynDims);
+    mapping.map(empty, rebuilt);
+  }
 
   // Clone all ops in block range order (linalg + interstitial non-linalg).
   for (Operation *op : info.opsToClone)
