@@ -376,44 +376,11 @@ void populateConstraints(TilePlan &plan, const CollapsedGroupInfo &info,
     return ""; // unknown
   };
 
-  // Tail-offset alignment (≈ AF kAligned default at AlignmentStrategy).  The
-  // LoopNestBuilder overlap-tail emits the tail slice at GM offset
-  // `extent - innerTileStep` (composed with the outer block IV that lands on a
-  // tile boundary).  For the tail's GM DataCopy to be 32-byte aligned, we need
-  //   ((extent - INNER_TILE) * elemBytes) % 32 == 0
-  // Encoded as a Divides constraint with lhs=32 and rhs the byte offset expr.
-  // When the inner tile evenly divides `extent` (no tail) the rhs is
-  // `(K-1)*INNER_TILE*elemBytes`; since `INNER_TILE*elemBytes` is itself 32-
-  // byte aligned (the AscendC DataCopy size requirement, already implicit in
-  // our XBLOCK_SUB choice), this is trivially satisfied.  The constraint only
-  // bites when tail fires AND the residual offset is not 32-byte aligned —
-  // exactly the f16-reduce-tail bug class (reduce-sum-3d-f16-tail-e2e).
-  //
-  // Emitted on the innermost Inner-level TileParam per tileable group (the
-  // axis that LoopNestBuilder picks for tail-peel: highest-axisIdx Inner).
-  // Skipped if the axis extent is unresolvable.  Emitted BEFORE the LeBytes
-  // early-return below so a partial per-axis product doesn't suppress this
-  // (the alignment expr only needs the one axis's extent, not all).
-  const TileParam *innermostInner = nullptr;
-  for (auto &grp : plan.tileable)
-    for (auto &tp : grp)
-      if (tp.level == TileLevel::Inner)
-        if (!innermostInner || tp.axisIdx > innermostInner->axisIdx)
-          innermostInner = &tp;
-  if (innermostInner) {
-    std::string extent;
-    const auto &ax = info.collapsedAxes[innermostInner->axisIdx];
-    if (ax.staticSize != ShapedType::kDynamic)
-      extent = std::to_string(ax.staticSize);
-    else if (ax.extent.isValid() && symTable)
-      extent = ax.extent.emitC(nameFor);
-    if (!extent.empty()) {
-      std::string rhs = "((" + extent + " - " + innermostInner->name + ") * " +
-                        std::to_string(elemBytes) + ")";
-      plan.constraints.push_back(
-          {TileConstraint::Divides, "32", std::move(rhs)});
-    }
-  }
+  // (Removed: the Divides{32, (extent-INNER)*elemBytes} tail-alignment reject
+  // constraint.  The ragged tail now routes its GM store through DataCopyPad,
+  // which handles an unaligned f16 tail offset/length directly, so misaligned
+  // tilings are correct rather than rejected.  Aligned tilings remain
+  // naturally preferred by the footprint/cost model below.)
 
   std::string product;
   bool ok = true;

@@ -2,10 +2,11 @@
 
 // CHECK: auto_fuse.tiling_infos
 // CHECK-SAME: block_dim_expr = "ceil(1024/XBLOCK)"
-// P6a: TileConstraint emission — XBLOCK_SUB | XBLOCK divides; tail-offset
-// alignment (32 | (extent - INNER_TILE) * elemBytes, ≈ AF kAligned default);
-// conservative LeBytes footprint check against the SoC UB capacity.
-// CHECK-SAME: constraints = [{kind = "divides", lhs = "XBLOCK_SUB", rhs = "XBLOCK"}, {kind = "divides", lhs = "32", rhs = "((1024 - XBLOCK_SUB) * 4)"}, {kind = "le_bytes", lhs = "((12) * XBLOCK_SUB)", rhs = "196608"}]
+// P6a: TileConstraint emission — XBLOCK_SUB | XBLOCK divides; conservative
+// LeBytes footprint check against the SoC UB capacity.  (The tail-offset 32B
+// reject constraint was dropped: the ragged tail's GM store now goes through
+// DataCopyPad, which handles unaligned f16 tail offset/length.)
+// CHECK-SAME: constraints = [{kind = "divides", lhs = "XBLOCK_SUB", rhs = "XBLOCK"}, {kind = "le_bytes", lhs = "((12) * XBLOCK_SUB)", rhs = "196608"}]
 // Schema v2: fields lose `abi_index` (array order is the ABI order);
 // tunables keep arg_index / axis_size / default_value / kind / name.
 // CHECK-SAME: fields = [
