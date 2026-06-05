@@ -4,6 +4,16 @@
 # true remainder at honest offset/size and the GM store goes through
 # DataCopyPad, so the unaligned f16 tail offset is legal and rows 48..49 are
 # written.  Verifies session.validation=pass.
+#
+# Geometry: ROWS = D0*D1 = 5*10 = 50, XBLOCK_SUB = 16 → 50 % 16 = 2, so the
+# last block carries a 2-row RAGGED TAIL.  This gate verifies the f16 ragged
+# tail (honest offset + DataCopyPad store + rem-sized buffer).
+#
+# D2 = 16 keeps each reduce-input row 32-byte aligned (16 half = 32 bytes).
+# The per-row reduce-input GM→UB DataCopy requires cols*sizeof(elem) % 32 == 0
+# (a separate pre-existing limitation, see ComputeConversionContext.cpp:247);
+# a sub-32B inner dim (e.g. D2=8 = 16 bytes) crashes the sim independently of
+# the tail.  Choosing D2=16 isolates this gate to the f16 ragged-tail path.
 
 # ============================================================================
 set -e
@@ -13,7 +23,7 @@ AFIR_TRANSLATE="${AFIR_TRANSLATE:-afir-translate}"
 RUNTIME_SESSION="${RUNTIME_SESSION:-runtime-session}"
 PYTHON="${PYTHON:-python3}"
 
-D0=5; D1=10; D2=8
+D0=5; D1=10; D2=16
 ROWS=$(( D0 * D1 ))
 # f16 DataCopy requires 32-byte alignment = 16 half elements per copy.
 # XBLOCK_SUB must be a multiple of 16 for f16 output writes.
