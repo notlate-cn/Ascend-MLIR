@@ -122,8 +122,6 @@ LoopNestResult buildLoopNest(OpBuilder &builder, Location loc,
       result.remaining = remaining;
       result.mainInnerUb = mainInnerUb;
       result.outerOfTailIV = parentIV;
-      result.innerTileExtent = innerExtent;
-      result.innerTileStep = tp->ssa;
     }
   }
 
