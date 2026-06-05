@@ -377,8 +377,8 @@ void populateConstraints(TilePlan &plan, const CollapsedGroupInfo &info,
   };
 
   // (Removed: the Divides{32, (extent-INNER)*elemBytes} tail-alignment reject
-  // constraint.  The ragged tail now routes its GM store through DataCopyPad,
-  // which handles an unaligned f16 tail offset/length directly, so misaligned
+  // constraint.  The ragged tail now routes its GM<->UB copies through
+  // DataCopyPad, which handles an unaligned f16 tail offset/length directly, so misaligned
   // tilings are correct rather than rejected.  Aligned tilings remain
   // naturally preferred by the footprint/cost model below.)
 

@@ -2651,15 +2651,14 @@ static void fixBrokenOpEmitters(Operation *moduleOp) {
   // GlobalTensor (SetGlobalBuffer base+offset); DataCopyPad just takes a byte
   // length.  Load needs a (no-op) DataCopyPadExtParams; store does not.
   //
-  // GroupEmitter tags the tail `scf.if` with `afir.ragged_tail`, but that
-  // DISCARDABLE unit attr does NOT survive one-shot-bufferize: bufferization
-  // re-creates the `scf.if` with memref (instead of tensor) result types and
-  // drops the attr.  So we detect the tail structurally instead: GroupEmitter
-  // is the ONLY site in the whole AutoFuse codegen path that emits an
-  // `arith.cmpi slt` (GroupEmitter.cpp:722 — the
-  // `slt(mainInnerUb, remaining)` ragged-tail guard); the per-core work guard
-  // uses `ult`.  So "nearest enclosing scf.if whose condition is an
-  // `arith.cmpi slt`" uniquely identifies the ragged tail post-bufferize.
+  // A source-level `afir.ragged_tail` attr on the tail `scf.if` would NOT
+  // survive one-shot-bufferize (it re-creates the `scf.if` with memref result
+  // types and drops discardable attrs), so we detect the tail structurally:
+  // GroupEmitter is the ONLY site in the whole AutoFuse codegen path that
+  // emits an `arith.cmpi slt` (the `slt(mainInnerUb, remaining)` ragged-tail
+  // guard in GroupEmitter::emitGroup); the per-core work guard uses `ult`.
+  // So "nearest enclosing scf.if whose condition is an `arith.cmpi slt`"
+  // uniquely identifies the ragged tail post-bufferize.
   auto inRaggedTail = [](Operation *op) -> bool {
     for (Operation *p = op->getParentOp(); p; p = p->getParentOp())
       if (auto ifOp = dyn_cast<scf::IfOp>(p))

@@ -719,9 +719,9 @@ SmallVector<Value> emitGroup(OpBuilder &builder, Location loc,
     innermostFor = loopNest.allForOps.back();
     builder.setInsertionPointAfter(innermostFor);
 
-    // NOTE: this `slt` predicate is LOAD-BEARING.  CannTranslation
-    // (the ragged-tail DataCopyPad walk, ~CannTranslation.cpp:2663) detects
-    // the ragged tail structurally by THIS being the sole `arith.cmpi slt` in
+    // NOTE: this `slt` predicate is LOAD-BEARING.  CannTranslation's
+    // ragged-tail DataCopyPad walk detects the ragged tail structurally by
+    // THIS being the sole `arith.cmpi slt` in
     // the AutoFuse codegen path (the per-core guard uses `ult`).  The
     // tile-fuse-level `afir.ragged_tail` tag does NOT survive bufferization,
     // so do not change this predicate without updating that walk.

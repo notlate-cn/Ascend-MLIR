@@ -257,7 +257,7 @@ struct AutoFuseInsertTileBuffersPass
       // *different* (dynamic remainder) size; reusing the main loop's static-
       // tile-sized buffer makes the reduce row/col counts (derived from the
       // VECOUT queue's InitQueue byte-length) wrong in the tail.  Force a fresh
-      // subview-matching alloc there, exactly as the VECIN/VECCALC paths do.
+      // subview-matching alloc there, exactly as the VECIN path does.
       bool inTailBlock = (allocAnchor == genOp.getOperation());
       if (!inTailBlock && cached != sharedVecout.end() &&
           domInfo.dominates(cached->second.getOperation(), allocAnchor)) {
