@@ -30,10 +30,117 @@ using namespace mlir;
 using namespace mlir::afir::symshape;
 
 namespace {
+
+struct Root {
+  unsigned arg;
+  unsigned dim;
+};
+
+/// Resolves the serialized symbol id that `tensor.dim v, idx` denotes, or
+/// nullopt if v has no symbolic shape here, idx is out of range, or the dim is
+/// not a bare symbol (constant or compound expr).
+static std::optional<SymId> resolveSymbol(Value v, int64_t idx,
+                                          func::FuncOp func) {
+  StringRef serialized;
+  if (auto barg = dyn_cast<BlockArgument>(v)) {
+    if (barg.getOwner() != &func.getBody().front())
+      return std::nullopt;
+    auto attr = func.getArgAttrOfType<StringAttr>(barg.getArgNumber(),
+                                                  "afir.symbolic_shape");
+    if (!attr)
+      return std::nullopt;
+    serialized = attr.getValue();
+  } else {
+    Operation *def = v.getDefiningOp();
+    if (!def)
+      return std::nullopt;
+    auto arr = def->getAttrOfType<ArrayAttr>("afir.symbolic_shapes");
+    if (!arr)
+      return std::nullopt;
+    unsigned resNo = cast<OpResult>(v).getResultNumber();
+    if (resNo >= arr.size())
+      return std::nullopt;
+    auto s = dyn_cast<StringAttr>(arr[resNo]);
+    if (!s)
+      return std::nullopt;
+    serialized = s.getValue();
+  }
+  auto list = parseSymExprList(serialized);
+  if (!list || idx < 0 || (size_t)idx >= list->size())
+    return std::nullopt;
+  const SymExpr &e = (*list)[idx];
+  if (e.getKind() != SymExpr::Kind::Sym)
+    return std::nullopt;
+  return e.getSym();
+}
+
 struct AFIRSymbolicDimCSEPass
     : public impl::AFIRSymbolicDimCSEPassBase<AFIRSymbolicDimCSEPass> {
-  void runOnOperation() override {}
+  void runOnOperation() override {
+    func::FuncOp func = getOperation();
+    if (func.isExternal() || func.getBody().empty())
+      return;
+    auto dimSymbols = func->getAttrOfType<ArrayAttr>("afir.dim_symbols");
+    if (!dimSymbols)
+      return; // not symbolized / fully static.
+
+    // id -> root (arg, dim).
+    DenseMap<SymId, Root> idToRoot;
+    for (Attribute a : dimSymbols) {
+      auto d = cast<DictionaryAttr>(a);
+      auto id = cast<IntegerAttr>(d.get("id")).getInt();
+      auto arg = cast<IntegerAttr>(d.get("arg")).getInt();
+      auto dim = cast<IntegerAttr>(d.get("dim")).getInt();
+      idToRoot[(SymId)id] = {(unsigned)arg, (unsigned)dim};
+    }
+
+    // Group resolvable tensor.dim ops by symbol id.
+    DenseMap<SymId, SmallVector<tensor::DimOp>> classes;
+    func.walk([&](tensor::DimOp d) {
+      std::optional<int64_t> idx = d.getConstantIndex();
+      if (!idx)
+        return;
+      std::optional<SymId> sym = resolveSymbol(d.getSource(), *idx, func);
+      if (!sym || !idToRoot.count(*sym))
+        return;
+      classes[*sym].push_back(d);
+    });
+
+    // Deterministic order: sort symbol ids.
+    SmallVector<SymId> keys;
+    for (auto &kv : classes)
+      keys.push_back(kv.first);
+    llvm::sort(keys);
+
+    Block &entry = func.getBody().front();
+    OpBuilder b(&getContext());
+    DenseMap<int64_t, Value> idxConsts; // dedup index constants we create.
+    auto getIdx = [&](int64_t v) -> Value {
+      Value &slot = idxConsts[v];
+      if (!slot) {
+        b.setInsertionPointToStart(&entry);
+        slot = b.create<arith::ConstantIndexOp>(func.getLoc(), v);
+      }
+      return slot;
+    };
+
+    for (SymId sym : keys) {
+      SmallVector<tensor::DimOp> &members = classes[sym];
+      if (members.size() < 2)
+        continue; // nothing to merge.
+      Root root = idToRoot[sym];
+      Value rootArg = entry.getArgument(root.arg);
+      Value cidx = getIdx((int64_t)root.dim);
+      b.setInsertionPointAfter(cidx.getDefiningOp());
+      auto canon = b.create<tensor::DimOp>(func.getLoc(), rootArg, cidx);
+      for (tensor::DimOp m : members) {
+        m.getResult().replaceAllUsesWith(canon.getResult());
+        m.erase();
+      }
+    }
+  }
 };
+
 } // namespace
 
 std::unique_ptr<Pass> mlir::createAFIRSymbolicDimCSEPass() {
