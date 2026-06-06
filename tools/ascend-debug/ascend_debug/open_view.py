@@ -1245,6 +1245,7 @@ def _render_debug_graph_summary_view(view_rel_path: str, rel_path: str, summary:
 {_summary_card("主 Stage", primary.get('name'))}
 {_summary_card("Kernels", kernel_dag.get('kernel_count'))}
 {_summary_card("Kernel 边", kernel_dag.get('graph_edges'))}
+{_summary_card("Kernel DAG 来源", kernel_dag.get('semantic_source'))}
 </div>
 <section class="panel">
 <h2>调试工作台</h2>

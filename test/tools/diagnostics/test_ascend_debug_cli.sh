@@ -16,6 +16,9 @@ cleanup() {
 }
 trap cleanup EXIT
 
+test -f "${REPO_ROOT}/docs/schemas/ascend-debug/v1/README.md"
+grep -Fq 'schema_version' "${REPO_ROOT}/docs/schemas/ascend-debug/v1/README.md"
+
 ascend-debug --help >"${TMP_DIR}/ascend-debug-help.txt" 2>&1
 grep -Fq 'collect' "${TMP_DIR}/ascend-debug-help.txt"
 grep -Fq 'open' "${TMP_DIR}/ascend-debug-help.txt"
@@ -25,6 +28,7 @@ grep -Fq 'locate' "${TMP_DIR}/ascend-debug-help.txt"
 grep -Fq 'run' "${TMP_DIR}/ascend-debug-help.txt"
 ascend-debug collect --help >"${TMP_DIR}/ascend-debug-collect-help.txt" 2>&1
 grep -Fq -- '--mode {quick,deep}' "${TMP_DIR}/ascend-debug-collect-help.txt"
+grep -Fq -- '--debug-contract-dir' "${TMP_DIR}/ascend-debug-collect-help.txt"
 if grep -Fq -- '--preset' "${TMP_DIR}/ascend-debug-collect-help.txt"; then
   echo "collect help should not expose legacy --preset" >&2
   exit 1
@@ -40,7 +44,18 @@ import json
 import pathlib
 import tempfile
 
-from ascend_debug import debug_graph, layout, stage_graph
+from ascend_debug import contracts, debug_graph, layout, stage_graph
+
+contract_root = pathlib.Path(tempfile.mkdtemp(prefix="ascend-debug-contracts."))
+(contract_root / "stage_manifest.json").write_text(json.dumps({
+    "schema": "ascend.debug.stage_manifest",
+    "schema_version": 1,
+    "producer": {"tool": "fixture"},
+    "data": {"stages": []}
+}), encoding="utf-8")
+bundle = contracts.load_contract_bundle(contract_root)
+assert bundle.has("ascend.debug.stage_manifest"), bundle.available_schemas()
+assert bundle.get("ascend.debug.stage_manifest")["data"]["stages"] == []
 
 mlir = """module {
   func.func @copy_view(%arg0: memref<?xf16>, %arg1: memref<?xf16>) -> memref<?xf16> {
@@ -57,6 +72,7 @@ mlir = """module {
 }
 """
 graph = stage_graph.parse_stage_mlir({"order": 1, "name": "copy-view", "path": "stages/copy-view.mlir"}, mlir)
+assert graph["semantic_source"] == "legacy_mlir_regex", graph
 constant_nodes = [node for node in graph["nodes"] if node["op_name"] == "arith.constant"]
 assert len(constant_nodes) == 1, [node["op_name"] for node in graph["nodes"]]
 assert constant_nodes[0]["constant_value"] == "0", constant_nodes[0]
@@ -1405,6 +1421,98 @@ grep -Fq 'ascend_debug.kernel_dag.fallback_schedule_entries=1' "${TMP_DIR}/debug
 grep -Fq 'ascend_debug.kernel_dag.kernel.kernel_0.schedule_entries=2' "${TMP_DIR}/debug-run-graph/reports/050-kernel-dag.report.txt"
 echo "ascend_debug.collect_graph=ok"
 
+mkdir -p "${TMP_DIR}/debug-contract"
+cat >"${TMP_DIR}/debug-contract/stage_manifest.json" <<'JSON'
+{
+  "schema": "ascend.debug.stage_manifest",
+  "schema_version": 1,
+  "producer": {"tool": "fixture"},
+  "data": {
+    "stages": [
+      {"order": 0, "name": "source", "path": "stages/000-source.mlir"}
+    ]
+  }
+}
+JSON
+cat >"${TMP_DIR}/debug-contract/kernel_dag.json" <<'JSON'
+{
+  "schema": "ascend.debug.kernel_dag",
+  "schema_version": 1,
+  "producer": {"tool": "fixture"},
+  "data": {
+    "kernel_count": 1,
+    "task_count": 0,
+    "graph_edges": 0,
+    "kind_counts": {"vec": 1, "cube": 0, "mix": 0},
+    "root_tasks": 1,
+    "root_task_ids": ["kernel_0"],
+    "leaf_tasks": 1,
+    "leaf_task_ids": ["kernel_0"],
+    "runtime_input_roots": 0,
+    "runtime_input_root_ids": [],
+    "prepack_candidate_roots": 1,
+    "prepack_candidate_root_ids": ["kernel_0"],
+    "critical_path_depth": 1,
+    "critical_path": ["kernel_0"],
+    "simple_fusion_edges": [],
+    "edges": [],
+    "nodes": {
+      "kernel_0": {
+        "kind": "vec",
+        "depth": 1,
+        "input_degree": 0,
+        "output_degree": 0,
+        "output_shape": "4x8",
+        "output_dtype": "f16",
+        "workspace_size": 0,
+        "semantic_source": "debug_contract",
+        "raw": {"unknown_field": "kept"}
+      }
+    }
+  }
+}
+JSON
+ascend-debug collect "${INPUT_MLIR}" \
+  --out "${TMP_DIR}/debug-run-contract" \
+  --mode quick \
+  --debug-contract-dir "${TMP_DIR}/debug-contract"
+test -f "${TMP_DIR}/debug-run-contract/debug_contract/stage_manifest.json"
+test -f "${TMP_DIR}/debug-run-contract/debug_contract/kernel_dag.json"
+test -f "${TMP_DIR}/debug-run-contract/graphs/kernel_dag.summary.json"
+grep -Fq 'ascend.debug.stage_manifest' "${TMP_DIR}/debug-run-contract/debug_contract/stage_manifest.json"
+python3 - "${TMP_DIR}/debug-run-contract/manifest.json" <<'PY'
+import json
+import pathlib
+import sys
+
+manifest = json.loads(pathlib.Path(sys.argv[1]).read_text())
+contracts = [item for item in manifest.get("graphs", []) if item.get("kind") == "debug-contract"]
+assert contracts == [
+{
+    "kind": "debug-contract",
+    "path": "debug_contract/kernel_dag.json",
+    "schema": "ascend.debug.kernel_dag",
+},
+{
+    "kind": "debug-contract",
+    "path": "debug_contract/stage_manifest.json",
+    "schema": "ascend.debug.stage_manifest",
+}
+], contracts
+PY
+python3 - "${TMP_DIR}/debug-run-contract/graphs/kernel_dag.summary.json" <<'PY'
+import json
+import pathlib
+import sys
+
+summary = json.loads(pathlib.Path(sys.argv[1]).read_text())
+assert summary["semantic_source"] == "debug_contract", summary
+assert summary["nodes"]["kernel_0"]["semantic_source"] == "debug_contract", summary
+assert summary["nodes"]["kernel_0"]["raw"]["unknown_field"] == "kept", summary
+assert summary["nodes"]["kernel_0"]["output_shape"] == "4x8", summary
+PY
+echo "ascend_debug.collect_contracts=ok"
+
 cat >"${TMP_DIR}/artifact_manifest_kernel_dag.json" <<'JSON'
 {
   "kernel_entries": [
@@ -2011,6 +2119,7 @@ assert len(graph["stage_diffs"]) == graph["stage_count"] - 1
 assert all("added_count" in item for item in graph["stage_diffs"])
 assert any(item["to_stage"]["name"] == "kernelize-out" for item in graph["stage_diffs"])
 assert graph["kernel_dag"]["kernel_count"] == 1
+assert graph["kernel_dag"]["semantic_source"] == "legacy_adapter"
 assert graph["kernel_dag"]["nodes"]["kernel_0"]["output_shape"] == "?x?"
 kernel_0 = graph["kernel_dag"]["nodes"]["kernel_0"]
 assert kernel_0["schedule_entry_count"] == 2, kernel_0
@@ -2127,6 +2236,7 @@ grep -Fq '<h1>Locate 摘要</h1>' "${TMP_DIR}/debug-run-graph/views/summaries/lo
 test ! -e "${TMP_DIR}/debug-run-graph/views/summaries/debug_graph.json.html"
 grep -Fq '内存视图' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
 grep -Fq 'summaries/memory.json.html#kernel-' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
+grep -Fq 'legacy_adapter' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
 grep -Fq 'renderKernelDagScheduleEntries' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
 grep -Fq 'Schedule Entries' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"
 grep -Fq 'schedule_entry_count' "${TMP_DIR}/debug-run-graph/views/debug_graph.html"

@@ -48,6 +48,11 @@ def build_parser() -> argparse.ArgumentParser:
     collect.add_argument("--run-manifest", type=pathlib.Path)
     collect.add_argument("--kernelized-ir", type=pathlib.Path)
     collect.add_argument(
+        "--debug-contract-dir",
+        type=pathlib.Path,
+        help="Directory containing versioned Ascend Debug Contract JSON files.",
+    )
+    collect.add_argument(
         "--memory-detail",
         action="store_true",
         help="Use target-aware Realize options so memory.json can include UB/workspace slot lifetimes when available.",

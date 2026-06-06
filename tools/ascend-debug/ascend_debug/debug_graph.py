@@ -1642,6 +1642,7 @@ ${detailRows([
   ["output_shape", node.output_shape],
   ["output_dtype", node.output_dtype],
   ["workspace_size", node.workspace_size],
+  ["semantic_source", node.semantic_source],
   ["schedule_entry_count", node.schedule_entry_count],
   ["guarded_schedule_entry_count", node.guarded_schedule_entry_count],
   ["fallback_schedule_entry_count", node.fallback_schedule_entry_count],
@@ -3038,6 +3039,7 @@ renderStageGraph();
 <a href="../{_cell(summary_path)}">原始 debug_graph.json</a>
 <span>主 Stage：{_cell(primary_stage.get('name') if primary_stage else 'none')}</span>
 <span>Kernel DAG：{_cell(kernel_dag.get('kernel_count', 0))} 个 Kernel</span>
+<span>Kernel DAG 来源：{_cell(kernel_dag.get('semantic_source'))}</span>
 </div>
 </div>
 </header>

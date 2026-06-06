@@ -1110,6 +1110,7 @@ def parse_stage_mlir(stage: dict[str, Any], text: str) -> dict[str, Any]:
     graph = {
         "schema_version": 1,
         "tool": "ascend-debug",
+        "semantic_source": "legacy_mlir_regex",
         "stage": {
             "order": stage["order"],
             "name": stage["name"],

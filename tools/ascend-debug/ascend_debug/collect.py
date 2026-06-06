@@ -3,9 +3,10 @@ from __future__ import annotations
 import argparse
 import os
 import pathlib
+import shutil
 import shlex
 
-from ascend_debug import __version__, failure, kernel_dag, layout
+from ascend_debug import __version__, contracts, failure, kernel_dag, layout
 from ascend_debug.runner import CommandError, find_tool, run_command
 
 
@@ -40,6 +41,7 @@ def _clear_artifacts(run_dir, stages, reports=()) -> None:
     (run_dir / "run_status.json").unlink(missing_ok=True)
     (run_dir / "provenance.json").unlink(missing_ok=True)
     (run_dir / "index.html").unlink(missing_ok=True)
+    shutil.rmtree(run_dir / "debug_contract", ignore_errors=True)
 
 
 def _record_command(stage: str, args: list[str], stdout_path: str, report_path: str) -> dict:
@@ -164,6 +166,15 @@ def _graph_requested(args: argparse.Namespace) -> bool:
     )
 
 
+def _contract_graph_requested(
+    contract_bundle: contracts.ContractBundle | None,
+) -> bool:
+    return bool(
+        contract_bundle
+        and contract_bundle.has(kernel_dag.KERNEL_DAG_CONTRACT_SCHEMA)
+    )
+
+
 def _resolve_existing_path(path: pathlib.Path, *, label: str) -> pathlib.Path:
     resolved = path.resolve()
     if not resolved.exists():
@@ -183,20 +194,114 @@ def _copy_graph_artifact(
     return {"kind": kind, "path": rel_path}
 
 
+def _collect_debug_contracts(
+    args: argparse.Namespace,
+    run_dir: pathlib.Path,
+) -> tuple[contracts.ContractBundle | None, list[dict]]:
+    contract_dir = getattr(args, "debug_contract_dir", None)
+    if not contract_dir:
+        return None, []
+    bundle = contracts.load_contract_bundle(contract_dir)
+    out_dir = run_dir / "debug_contract"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    graph_records: list[dict] = []
+    for path in sorted(bundle.root.glob("*.json")):
+        contract = contracts.load_contract_file(path)
+        rel_path = f"debug_contract/{path.name}"
+        layout.copy_stage(path, run_dir / rel_path)
+        graph_records.append(
+            {
+                "kind": "debug-contract",
+                "schema": contract["schema"],
+                "path": rel_path,
+            }
+        )
+    return bundle, graph_records
+
+
 def _collect_graph_artifacts(
     *,
     args: argparse.Namespace,
     run_dir: pathlib.Path,
     default_kernelized_ir: pathlib.Path,
+    contract_bundle: contracts.ContractBundle | None = None,
 ) -> tuple[list[dict], list[dict], list[dict]]:
-    if not _graph_requested(args):
+    if not _graph_requested(args) and not _contract_graph_requested(contract_bundle):
         return [], [], []
-    if not args.artifact_manifest:
+    if not args.artifact_manifest and not _contract_graph_requested(contract_bundle):
         raise CommandError("--artifact-manifest is required when collecting graph artifacts")
 
     graphs: list[dict] = []
     commands: list[dict] = []
     reports: list[dict] = []
+    svg_rel = "graphs/kernel_dag.svg"
+    summary_rel = "graphs/kernel_dag.summary.json"
+    report_stage, report_rel = KERNEL_DAG_REPORT
+
+    if contract_bundle and contract_bundle.has(kernel_dag.KERNEL_DAG_CONTRACT_SCHEMA):
+        if args.artifact_manifest:
+            artifact_manifest = _resolve_existing_path(
+                args.artifact_manifest, label="artifact manifest"
+            )
+            graphs.append(
+                _copy_graph_artifact(
+                    src=artifact_manifest,
+                    run_dir=run_dir,
+                    rel_path="graphs/artifact_manifest.json",
+                    kind="artifact-manifest",
+                )
+            )
+        if args.run_manifest:
+            run_manifest = _resolve_existing_path(args.run_manifest, label="run manifest")
+            graphs.append(
+                _copy_graph_artifact(
+                    src=run_manifest,
+                    run_dir=run_dir,
+                    rel_path="graphs/run_manifest.json",
+                    kind="run-manifest",
+                )
+            )
+        if args.kernelized_ir:
+            kernelized_ir = _resolve_existing_path(
+                args.kernelized_ir, label="kernelized IR"
+            )
+            graphs.append(
+                _copy_graph_artifact(
+                    src=kernelized_ir,
+                    run_dir=run_dir,
+                    rel_path="graphs/kernelized.mlir",
+                    kind="kernelized-ir",
+                )
+            )
+        contract = contract_bundle.get(kernel_dag.KERNEL_DAG_CONTRACT_SCHEMA)
+        summary = kernel_dag.summary_from_contract(contract)
+        kernel_dag.render_svg(summary, run_dir / svg_rel, "../views/kernels")
+        kernel_dag.write_summary(summary, run_dir / summary_rel)
+        kernel_dag.write_report(summary, run_dir / report_rel)
+        commands.append(
+            {
+                "stage": report_stage,
+                "tool": "ascend-debug",
+                "args": [
+                    "--debug-contract",
+                    kernel_dag.KERNEL_DAG_CONTRACT_SCHEMA,
+                    "--svg-out",
+                    svg_rel,
+                    "--summary-out",
+                    summary_rel,
+                ],
+                "stdout": report_rel,
+                "status": "success",
+            }
+        )
+        reports.append({"stage": report_stage, "path": report_rel})
+        graphs.extend(
+            [
+                {"kind": "kernel-dag-svg", "path": svg_rel},
+                {"kind": "kernel-dag-summary", "path": summary_rel},
+            ]
+        )
+        return commands, reports, graphs
 
     artifact_manifest = _resolve_existing_path(args.artifact_manifest, label="artifact manifest")
     manifest_rel = "graphs/artifact_manifest.json"
@@ -238,9 +343,6 @@ def _collect_graph_artifacts(
     )
     kernelized_ir_dst = run_dir / "graphs/kernelized.mlir"
 
-    svg_rel = "graphs/kernel_dag.svg"
-    summary_rel = "graphs/kernel_dag.summary.json"
-    report_stage, report_rel = KERNEL_DAG_REPORT
     tool_args = [
         "--artifact-manifest",
         manifest_rel,
@@ -399,6 +501,7 @@ def collect_quick(args: argparse.Namespace) -> int:
 
     if not input_path.exists():
         raise CommandError(f"input MLIR does not exist: {input_path}")
+    contract_bundle, contract_graphs = _collect_debug_contracts(args, run_dir)
 
     source = run_dir / stages[0].path
     normalize_in = run_dir / stages[1].path
@@ -444,6 +547,7 @@ def collect_quick(args: argparse.Namespace) -> int:
             args=args,
             run_dir=run_dir,
             default_kernelized_ir=kernelize_out,
+            contract_bundle=contract_bundle,
         )
     except CommandError as error:
         _write_collect_failure_manifest(
@@ -465,7 +569,7 @@ def collect_quick(args: argparse.Namespace) -> int:
         version=__version__,
         commands=[*commands, *graph_commands],
         reports=graph_reports,
-        graphs=graphs,
+        graphs=[*contract_graphs, *graphs],
     )
     layout.write_provenance_skeleton(
         run_dir,
@@ -486,6 +590,7 @@ def collect_full_codegen(args: argparse.Namespace) -> int:
 
     if not input_path.exists():
         raise CommandError(f"input MLIR does not exist: {input_path}")
+    contract_bundle, contract_graphs = _collect_debug_contracts(args, run_dir)
 
     stage_paths = {stage.name: run_dir / stage.path for stage in stages}
     stage_rels = {stage.name: stage.path for stage in stages}
@@ -595,6 +700,7 @@ def collect_full_codegen(args: argparse.Namespace) -> int:
             args=args,
             run_dir=run_dir,
             default_kernelized_ir=stage_paths["030-kernelize-out"],
+            contract_bundle=contract_bundle,
         )
     except CommandError as error:
         _write_collect_failure_manifest(
@@ -622,7 +728,7 @@ def collect_full_codegen(args: argparse.Namespace) -> int:
         version=__version__,
         commands=commands,
         reports=reports,
-        graphs=graphs,
+        graphs=[*contract_graphs, *graphs],
     )
     layout.write_provenance_skeleton(
         run_dir,
@@ -643,6 +749,7 @@ def collect_deep(args: argparse.Namespace) -> int:
 
     if not input_path.exists():
         raise CommandError(f"input MLIR does not exist: {input_path}")
+    contract_bundle, contract_graphs = _collect_debug_contracts(args, run_dir)
 
     stage_paths = {stage.name: run_dir / stage.path for stage in stages}
     report_paths = {name: run_dir / path for name, path in DEEP_REPORTS}
@@ -717,6 +824,7 @@ def collect_deep(args: argparse.Namespace) -> int:
             args=args,
             run_dir=run_dir,
             default_kernelized_ir=stage_paths["kernelize-out"],
+            contract_bundle=contract_bundle,
         )
     except CommandError as error:
         _write_collect_failure_manifest(
@@ -741,7 +849,7 @@ def collect_deep(args: argparse.Namespace) -> int:
         version=__version__,
         commands=commands,
         reports=reports,
-        graphs=graphs,
+        graphs=[*contract_graphs, *graphs],
     )
     layout.write_provenance_skeleton(
         run_dir,

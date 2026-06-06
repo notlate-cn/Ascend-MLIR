@@ -13,6 +13,7 @@ from typing import Any
 
 
 VALID_KERNEL_KINDS = ("vec", "cube", "mix")
+KERNEL_DAG_CONTRACT_SCHEMA = "ascend.debug.kernel_dag"
 
 
 def kernel_sort_key(kernel_id: str) -> tuple[int, str]:
@@ -153,6 +154,138 @@ def summarize_schedule_entries(kernel_entry: dict[str, Any] | None) -> list[dict
 def is_guarded_schedule_entry(entry: dict[str, Any]) -> bool:
     guard = str(entry.get("guard") or "").strip()
     return bool(guard and guard != "true")
+
+
+def _as_list(value: Any) -> list[Any]:
+    return value if isinstance(value, list) else []
+
+
+def _as_dict(value: Any) -> dict[str, Any]:
+    return value if isinstance(value, dict) else {}
+
+
+def _as_int(value: Any, default: int = 0) -> int:
+    return value if isinstance(value, int) and not isinstance(value, bool) else default
+
+
+def normalize_contract_node(kernel_id: str, node: Any) -> dict[str, Any]:
+    raw_node = _as_dict(node)
+    schedule_entries = _as_list(raw_node.get("schedule_entries"))
+    host_tiling_ids = _as_list(raw_node.get("host_tiling_ids"))
+    tile_param_names = _as_list(raw_node.get("tile_param_names"))
+    normalized = dict(raw_node)
+    normalized.setdefault("kind", "vec")
+    if normalized["kind"] not in VALID_KERNEL_KINDS:
+        normalized["kind"] = "vec"
+    normalized.setdefault("depth", 1)
+    normalized.setdefault("input_degree", 0)
+    normalized.setdefault("output_degree", 0)
+    normalized.setdefault("output_shape", "?")
+    normalized.setdefault("output_dtype", "")
+    normalized.setdefault("workspace_size", 0)
+    normalized.setdefault("schedule_entries", schedule_entries)
+    normalized.setdefault("schedule_entry_count", len(schedule_entries))
+    normalized.setdefault(
+        "guarded_schedule_entry_count",
+        sum(1 for entry in schedule_entries if isinstance(entry, dict) and is_guarded_schedule_entry(entry)),
+    )
+    normalized.setdefault(
+        "fallback_schedule_entry_count",
+        sum(
+            1
+            for entry in schedule_entries
+            if isinstance(entry, dict) and entry.get("fallback") is True
+        ),
+    )
+    normalized.setdefault("host_tiling_ids", host_tiling_ids)
+    normalized.setdefault("tile_param_names", tile_param_names)
+    normalized.setdefault("ops", [])
+    normalized.setdefault("is_root", False)
+    normalized.setdefault("is_leaf", False)
+    normalized.setdefault("is_runtime_input_root", False)
+    normalized.setdefault("is_prepack_candidate_root", False)
+    normalized.setdefault("touches_simple_fusion_edge", False)
+    normalized.setdefault("semantic_source", "debug_contract")
+    normalized.setdefault("raw", {})
+    normalized["kernel_id"] = kernel_id
+    return normalized
+
+
+def summary_from_contract(contract: dict[str, Any]) -> dict[str, Any]:
+    if contract.get("schema") != KERNEL_DAG_CONTRACT_SCHEMA:
+        raise SystemExit(
+            f"expected {KERNEL_DAG_CONTRACT_SCHEMA}, got {contract.get('schema')}"
+        )
+    data = _as_dict(contract.get("data"))
+    raw_nodes = _as_dict(data.get("nodes"))
+    nodes = {
+        kernel_id: normalize_contract_node(kernel_id, node)
+        for kernel_id, node in sorted(raw_nodes.items(), key=lambda item: kernel_sort_key(item[0]))
+        if isinstance(kernel_id, str)
+    }
+    root_ids = [item for item in _as_list(data.get("root_task_ids")) if isinstance(item, str)]
+    leaf_ids = [item for item in _as_list(data.get("leaf_task_ids")) if isinstance(item, str)]
+    runtime_input_root_ids = [
+        item for item in _as_list(data.get("runtime_input_root_ids")) if isinstance(item, str)
+    ]
+    prepack_root_ids = [
+        item for item in _as_list(data.get("prepack_candidate_root_ids")) if isinstance(item, str)
+    ]
+    for kernel_id, node in nodes.items():
+        node["is_root"] = kernel_id in root_ids
+        node["is_leaf"] = kernel_id in leaf_ids
+        node["is_runtime_input_root"] = kernel_id in runtime_input_root_ids
+        node["is_prepack_candidate_root"] = kernel_id in prepack_root_ids
+    kind_counts = _as_dict(data.get("kind_counts"))
+    edges = [edge for edge in _as_list(data.get("edges")) if isinstance(edge, dict)]
+    simple_fusion_edges = [
+        edge for edge in _as_list(data.get("simple_fusion_edges")) if isinstance(edge, dict)
+    ]
+    return {
+        "semantic_source": "debug_contract",
+        "kernel_count": _as_int(data.get("kernel_count"), len(nodes)),
+        "task_count": _as_int(data.get("task_count"), 0),
+        "graph_edges": _as_int(data.get("graph_edges"), len(edges)),
+        "schedule_entry_count": _as_int(
+            data.get("schedule_entry_count"),
+            sum(_as_int(node.get("schedule_entry_count"), 0) for node in nodes.values()),
+        ),
+        "guarded_schedule_entry_count": _as_int(
+            data.get("guarded_schedule_entry_count"),
+            sum(
+                _as_int(node.get("guarded_schedule_entry_count"), 0)
+                for node in nodes.values()
+            ),
+        ),
+        "fallback_schedule_entry_count": _as_int(
+            data.get("fallback_schedule_entry_count"),
+            sum(
+                _as_int(node.get("fallback_schedule_entry_count"), 0)
+                for node in nodes.values()
+            ),
+        ),
+        "host_tiling_binding_count": _as_int(data.get("host_tiling_binding_count"), 0),
+        "kind_counts": {kind: _as_int(kind_counts.get(kind), 0) for kind in VALID_KERNEL_KINDS},
+        "root_tasks": _as_int(data.get("root_tasks"), len(root_ids)),
+        "root_task_ids": root_ids,
+        "leaf_tasks": _as_int(data.get("leaf_tasks"), len(leaf_ids)),
+        "leaf_task_ids": leaf_ids,
+        "runtime_input_roots": _as_int(
+            data.get("runtime_input_roots"), len(runtime_input_root_ids)
+        ),
+        "runtime_input_root_ids": runtime_input_root_ids,
+        "prepack_candidate_roots": _as_int(
+            data.get("prepack_candidate_roots"), len(prepack_root_ids)
+        ),
+        "prepack_candidate_root_ids": prepack_root_ids,
+        "critical_path_depth": _as_int(data.get("critical_path_depth"), 0),
+        "critical_path": [
+            item for item in _as_list(data.get("critical_path")) if isinstance(item, str)
+        ],
+        "simple_fusion_edges": simple_fusion_edges,
+        "edges": edges,
+        "nodes": nodes,
+    }
 
 
 def compact_shape(shape: Any) -> str:
@@ -433,6 +566,7 @@ def analyze(
             }
         )
         nodes[kernel_id] = {
+            "semantic_source": "legacy_adapter",
             "kind": normalize_kind(entries_by_id.get(kernel_id)),
             "depth": depth.get(kernel_id, 1),
             "input_degree": len(pred[kernel_id]),
@@ -476,6 +610,7 @@ def analyze(
     )
 
     return {
+        "semantic_source": "legacy_adapter",
         "kernel_count": len(kernel_ids),
         "task_count": len(tasks_by_id),
         "graph_edges": len(edges),
